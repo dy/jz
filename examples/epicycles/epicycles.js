@@ -5,7 +5,9 @@
 // `terms` components: sweep from 1 (blocky silhouette) to 256 (exact reconstruction).
 // High-freq arms draw thinner and dimmer, low-freq arms thick and bright, so the chain
 // reads big→small. The ghost curve shows the full target; the bright traced path accumulates.
-// Gibbs ringing is visible at sharp corners when terms ≈ 20–60.
+// Gibbs ringing is visible at sharp corners when terms ≈ 20–60. Current runs through it: a pulse
+// train flows down the arm chain, centre to pen — the vector sum being added up — and pulses circle
+// the target curve, their heads splatted into a fading heat field.
 //
 // Interaction (host-side): ptr.down paints a custom closed path → DFT on release.
 // Idle LFO sweeps terms 1→256 so the pedagogical arc plays automatically.
@@ -14,7 +16,8 @@
 // resize(w,h) → Uint32Array; init() computes DFT; frame(t, phi, terms) renders.
 
 let W = 0, H = 0
-let px
+let px, heat
+let chX = new Float64Array(257), chY = new Float64Array(257)   // this frame's arm chain, centre → pen
 
 let N = 256
 let TRACE_STEPS = 256
@@ -48,7 +51,48 @@ export let setShape = (id) => { SHAPE = id | 0 }
 export let resize = (w, h) => {
   W = w; H = h
   px = new Uint32Array(w * h)
+  heat = new Float32Array(w * h)
   return px
+}
+
+// a hot dot: into the heat field (keep = 1, it leaves a fading tail) or straight onto the frame (keep = 0)
+let dot = (hx_, hy_, r, keep) => {
+  let x0 = (hx_ - r) | 0, x1 = (hx_ + r + 1.0) | 0, y0 = (hy_ - r) | 0, y1 = (hy_ + r + 1.0) | 0
+  if (x0 < 0) x0 = 0
+  if (y0 < 0) y0 = 0
+  if (x1 > W - 1) x1 = W - 1
+  if (y1 > H - 1) y1 = H - 1
+  let ir2 = 1.0 / (r * r)
+  let y = y0
+  while (y <= y1) {
+    let x = x0
+    while (x <= x1) {
+      let dx = x + 0.5 - hx_, dy = y + 0.5 - hy_
+      let q = 1.0 - (dx * dx + dy * dy) * ir2
+      if (q > 0.0) {
+        let p = y * W + x
+        if (keep === 1) { if (heat[p] < q) heat[p] = q }
+        else { let c = px[p] & 255, g = c + ((255 - c) * q) | 0; px[p] = (255 << 24) | (g << 16) | (g << 8) | g }
+      }
+      x++
+    }
+    y++
+  }
+}
+
+// a hot dot at fraction f of the polyline (xs, ys, n points), by arc length
+let along = (xs, ys, n, f, r) => {
+  let len = 0.0, i = 0
+  while (i < n - 1) { len += Math.sqrt((xs[i + 1] - xs[i]) * (xs[i + 1] - xs[i]) + (ys[i + 1] - ys[i]) * (ys[i + 1] - ys[i])); i++ }
+  let goal = f * len
+  i = 0
+  while (i < n - 1) {
+    let sl = Math.sqrt((xs[i + 1] - xs[i]) * (xs[i + 1] - xs[i]) + (ys[i + 1] - ys[i]) * (ys[i + 1] - ys[i]))
+    if (goal <= sl && sl > 0.0) { let u = goal / sl; dot(xs[i] + (xs[i + 1] - xs[i]) * u, ys[i] + (ys[i + 1] - ys[i]) * u, r, 0); return 0 }
+    goal -= sl
+    i++
+  }
+  return 0
 }
 
 // Sample the chosen closed curve into hx/hy
@@ -309,6 +353,7 @@ export let frame = (t, phi, terms) => {
 
   // ── Epicycle chain: circles and arms ──
   let ex = ocx, ey = ocy
+  chX[0] = ex; chY[0] = ey
   let ki = 0
   while (ki < T) {
     let k = sortedIdx[ki] | 0
@@ -347,7 +392,37 @@ export let frame = (t, phi, terms) => {
     }
 
     ex = nx; ey = ny
+    chX[ki + 1] = ex; chY[ki + 1] = ey
     ki++
+  }
+
+  // the current: a train down the chain, pulses round the target curve; heat composited, then cooled
+  let q = 0
+  while (q < 3) {
+    let f = t * 0.4 + q / 3.0
+    let s2 = 0
+    while (s2 < 6) { along(chX, chY, T + 1, (f - s2 * 0.01) - Math.floor(f - s2 * 0.01), 3.2 - s2 * 0.4); s2++ }   // head + fading tail
+    q++
+  }
+  q = 0
+  while (q < 5) {
+    let f = q / 5.0 - t * 0.025
+    f = f - Math.floor(f)
+    let gi = (f * N) | 0, gu = f * N - gi
+    let g1 = gi + 1 < N ? gi + 1 : 0
+    dot(ocx + scale * (hx[gi] + (hx[g1] - hx[gi]) * gu), ocy + scale * (hy[gi] + (hy[g1] - hy[gi]) * gu), 2.6, 1)
+    q++
+  }
+  ci = 0
+  while (ci < total) {
+    let hh = heat[ci]
+    if (hh > 0.004) {
+      let c = px[ci] & 255
+      let g = c + ((255 - c) * hh) | 0
+      px[ci] = (255 << 24) | (g << 16) | (g << 8) | g
+      heat[ci] = hh * 0.9
+    }
+    ci++
   }
 
   // ── Pen tip: bright white dot ──

@@ -20,6 +20,9 @@
 // distance regardless of how degenerate the nearby zero is, so one uniform formula stays a constant
 // line width everywhere, with no special-casing of particular (n,m).
 //
+// Between the nodal curves a quiet tone shows the plate's phase, lighter where it swings up (F > 0),
+// darker where it swings down, so the cells read as the alternating half-waves they are.
+//
 // The distance is scaled to come out in SCREEN PIXELS directly (S = the short screen side in px
 // converts the plate's [0,1]-normalized distance), so the rendered line width stays the same
 // constant few pixels at any canvas resolution, with no per-resolution tuning.
@@ -74,12 +77,16 @@ export let frame = (n, m) => {
       // clamp needed even far from any line (dn huge): $math.exp2's own range guard already maps
       // any exponent past -1075 to a clean 0.0 in both engines, same as V8's native Math.exp.
       let bright = Math.exp(-dn)
+      // phase tone: the half-wave's sign, softly (F ∈ [−2, 2])
+      let f3 = f * 3.0
+      let tone = 0.075 + 0.05 * f3 / (1.0 + Math.abs(f3))
+      let v = Math.min(1.0, bright + tone)
       // Math.round (not `|0` truncate): near the plate's own symmetry axes, n or m odd puts a whole
       // ROW/COLUMN exactly on a coincidental zero of cos(), where jz's polynomial $math.cos2 and
       // V8's native Math.cos agree only to ~1e-7 (not the ~1e-16 two independent correctly-rounded
       // implementations usually share). round() absorbs that hair either way, where a truncate
       // wouldn't.
-      let g = Math.round(bright * 255.0) | 0
+      let g = Math.round(v * 255.0) | 0
       px[j] = (255 << 24) | (g << 16) | (g << 8) | g     // white nodal curves on black
       j++; qx++
     }

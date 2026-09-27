@@ -4,10 +4,10 @@
 <meta charset="utf-8">
 <meta name="viewport" content="user-scalable=0" />
 <title>N-body - jz</title>
-<meta name="description" content="1024-body gravity — pairwise attraction. Plain JavaScript compiled to WebAssembly with jz." />
+<meta name="description" content="Three bodies in a chaotic dance tear each other’s star disks into tidal bridges and tails. Plain JavaScript compiled to WebAssembly with jz." />
 <link rel="canonical" href="https://jz.js.org/examples/nbody/" />
 <meta property="og:title" content="N-body - jz" />
-<meta property="og:description" content="1024-body gravity — pairwise attraction. Plain JavaScript compiled to WebAssembly with jz." />
+<meta property="og:description" content="Three bodies in a chaotic dance tear each other’s star disks into tidal bridges and tails. Plain JavaScript compiled to WebAssembly with jz." />
 <meta property="og:url" content="https://jz.js.org/examples/nbody/" />
 <meta property="og:image" content="https://jz.js.org/examples/thumbs/nbody.webp" />
 <meta name="twitter:card" content="summary_large_image" />
@@ -20,8 +20,8 @@ import { runDemo, trackPointer } from "../lib/jzdemo.js"
 let t = 0
 const demo = runDemo({
   name: "nbody",
-  hint: "an n-body gravitational dance · click-hold to add a planet",
-  size: { dpr: 2, budget: null },
+  hint: "three bodies tear each other’s star disks into tidal tails · click-hold to add a body · double-click to restart",
+  size: { dpr: 2, budget: 2200000 },
   load: (e) => e.init(),
   frame: (e) => { t += 1 / 60; if (holding) e.grow?.(ptr.x, ptr.y); e.frame(t) },
 })

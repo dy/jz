@@ -1,37 +1,26 @@
-// Waves — the 2D wave equation u_tt = c²∇²u on a height field, shaded by where
-// light lands after bending through the surface: each texel's ray lands shifted
-// by the local gradient (x' = x − F·∇u), landings accumulate into a density map,
-// and density maps to monochrome exposure. Still water is neutral gray; wave
-// fronts read as bright seams against darker troughs — genuine density changes,
-// nothing outlined. After KZ_LAB_E's caustics simulation
-// (x.com/KZ_LAB_E/status/1979210373921411098).
+// Waves — the 2D wave equation u_tt = c²∇²u on a height field, seen from above as black water
+// under a dark studio. Each pixel's surface normal comes from the height gradient and reflects the
+// view ray into the room: a ring light circling just off the zenith (so a slope in ANY direction
+// catches it and every ripple draws a whole circle), a softbox toward the top of the frame for
+// depth, a dim fill strip opposite, darkness everywhere else. The reflection is weighted by water's Fresnel reflectance
+// (Schlick, n = 1.33: 2% face-on, rising toward grazing) and exposed through 1 − e^(−x). Still
+// water mirrors the black ceiling; every ring, wake and interference web lights up where its slope
+// turns toward the light — rain photographed on a black pond.
 //
-// drop(x,y) presses a dip and lets the physics make the ring — then the crater
-// REBOUNDS: a smaller opposite pulse ~⅓ s later and a fainter dip after that,
-// the damped oscillation of a real drop, so each splash rings outward as a
-// TRAIN of waves. Dragging carves a moving dimple that leaves a viscous WAKE —
-// briefly lossy water, so the groove collapses without the elastic rebound
-// ridge that would draw a bright line along the stroke's spine.
+// rain(x,y) is a small dip with no rebound; drop(x,y) presses a dip and lets the physics make the ring — then the crater REBOUNDS: a smaller
+// opposite pulse ~⅓ s later and a fainter dip after that, the damped oscillation of a real drop,
+// so each splash rings outward as a TRAIN of waves. Dragging carves a moving dimple that leaves a
+// viscous WAKE — briefly lossy water, so the groove collapses without an elastic rebound ridge.
 //
-// The light pass casts FOUR rays per texel from quarter-offset origins, with
-// gradients bilinearly interpolated from the gradient field: the sampling
-// lattice that a single centre ray imprints wherever the map stretches simply
-// never forms, with no jitter noise — and a flat sheet stays exactly flat by
-// symmetry. One 3-tap blur absorbs the residual grain; the tone LUT anchors
-// density 1 at neutral #9e9e9e with a v^2.5 contrast around it.
-//
-// frame(t, sx, sy, stick, foc): stick > 0 presses the moving dimple at (sx,sy);
-// foc is the pool depth — how far a ray shears per unit slope.
-// clear() stills the sheet. resize(w,h) → Uint32Array (ARGB).
+// frame(t, sx, sy, stick, foc): stick > 0 presses the moving dimple at (sx,sy); foc is the relief —
+// how steeply a unit of height tilts the mirror. clear() stills the sheet. resize(w,h) → Uint32Array.
 
 let W = 0, H = 0, px
 let a, b               // wave height now / previous (leapfrog pair)
-let L                  // light-density map, rebuilt every frame
-let Ls                 // blur scratch
-let gxF, gyF           // gradient field of the surface, rebuilt every frame
+let Ls                 // smoothing scratch
+let gxF, gyF           // the surface's slope field, rebuilt every frame (then shaded)
 let sponge             // per-cell sponge multiplier (1 inside, dips at the walls)
 let wk                 // per-cell WAKE damping — the stick's trail is briefly lossy water
-let glut               // Int32Array(1024) — density → exposure
 let sp = new Float64Array(3)   // stick trail: previous (x, y) + active flag — fractional
                                // module scalars live in a Float64Array (i32-narrowing)
 
@@ -41,8 +30,8 @@ const C2 = 0.45        // wave speed² — deliberately NEAR the stencil's stabi
 const SUB = 1          // one leapfrog substep per frame
 const DAMP = 0.999     // rings LAST — the pool holds several generations of waves at once,
                        // and interference webbing needs them all alive together
-const VISC = 0.05      // ∇² smoothing per frame — thick water: fine chop dies in a beat,
-                       // the broad swell rolls on, bands render smooth and heavy
+const VISC = 0.025     // ∇² smoothing per frame — a little thickness: the finest chop dies
+                       // in a beat while rings roll on far enough to cross and interfere
 const MARGIN = 26      // edge-sponge width (cells) — wide and gentle: an abrupt sponge
                        // reflects, and reflections pile up as corner surges
 const O = 0.66667, D = 0.16667, CEN = -3.33333   // 9-point isotropic Laplacian weights
@@ -55,7 +44,7 @@ const REBOUND = 21     // frames between the pulses of one splash (~⅓ s)
 export let resize = (w, h) => {
   W = w; H = h
   a = new Float64Array(w * h); b = new Float64Array(w * h)
-  L = new Float64Array(w * h); Ls = new Float64Array(w * h)
+  Ls = new Float64Array(w * h)
   gxF = new Float64Array(w * h); gyF = new Float64Array(w * h)
   sponge = new Float32Array(w * h)
   wk = new Float32Array(w * h)
@@ -85,20 +74,6 @@ export let resize = (w, h) => {
       x++
     }
     y++
-  }
-  // Neutral exposure: one undisturbed ray per pixel is #9e9e9e. The v^2.5 contrast pulls
-  // mids dark and lets folds blaze, anchored so still water never shifts tone.
-  glut = new Int32Array(1024)
-  i = 0
-  while (i < 1024) {
-    let v = i * 0.00390625                 // bucket ↔ density v = i/256, range 0..4
-    let vp = v * v                         // v² — strong but GRADED: overlapping rings
-    let lum = 255.0 * (1.0 - Math.exp(-0.967 * vp))   // modulate instead of crushing to flat
-                                           // black (v³ made bands binary and killed the
-                                           // interference); density 1 stays #9e9e9e
-    let c = lum | 0
-    glut[i] = (255 << 24) | (c << 16) | (c << 8) | c
-    i++
   }
   return px
 }
@@ -155,6 +130,9 @@ export let drop = (cx, cy) => {
     k++
   }
 }
+
+// a raindrop: a small dip with no rebound train — the drizzle between the big drops
+export let rain = (cx, cy) => { plop(cx, cy, 3.6, -1.2) }
 
 // one leapfrog substep of the linear wave equation
 let step = () => {
@@ -311,100 +289,45 @@ export let frame = (t, sx, sy, stick, foc) => {
     vp++
   }
 
-  // ── shade: FOUR rays per texel, from quarter-offset origins with gradients bilinearly
-  // interpolated from the gradient field. A single centre ray imprints the sampling
-  // lattice wherever the map stretches (a checkered tiling around every wave); jittering
-  // it trades the lattice for visible noise. Supersampling does neither: the lattice
-  // never forms, and a flat sheet stays EXACTLY flat by symmetry. ──
-  let i = 0
-  while (i < n) { L[i] = 0.0; gxF[i] = 0.0; gyF[i] = 0.0; i++ }
+  let S = foc * 0.006                      // relief: height gradient → mirror tilt
+  // the slope field (central differences; the 1-px frame stays flat)
   let y = 1
   while (y < h - 1) {
     let row = y * w, x = 1
     while (x < w - 1) {
       let c = row + x
-      gxF[c] = (a[c + 1] - a[c - 1]) * 0.5
-      gyF[c] = (a[c + w] - a[c - w]) * 0.5
+      gxF[c] = (a[c + 1] - a[c - 1]) * 0.5 * S
+      gyF[c] = (a[c + w] - a[c - w]) * 0.5 * S
       x++
     }
     y++
   }
-  y = 1
-  while (y < h - 1) {
-    let row = y * w, x = 1
-    while (x < w - 1) {
-      let c = row + x
-      // the four sub-rays at (x±¼, y±¼); gradient bilinearly mixed toward each corner
-      let sub = 0
-      while (sub < 4) {
-        let ox = sub === 0 || sub === 2 ? -0.25 : 0.25
-        let oy = sub < 2 ? -0.25 : 0.25
-        let cnx = ox < 0.0 ? c - 1 : c + 1
-        let cny = oy < 0.0 ? c - w : c + w
-        let cnd = oy < 0.0 ? cnx - w : cnx + w
-        // bilinear weights for a ±¼ offset: 0.5625 / 0.1875 / 0.1875 / 0.0625
-        let gx = gxF[c] * 0.5625 + gxF[cnx] * 0.1875 + gxF[cny] * 0.1875 + gxF[cnd] * 0.0625
-        let gy = gyF[c] * 0.5625 + gyF[cnx] * 0.1875 + gyF[cny] * 0.1875 + gyF[cnd] * 0.0625
-        // the ray bends toward the surface normal: the hit shifts DOWNHILL — crests
-        // converge light (bright), pressed dimples diverge it (dark)
-        let xf = x + ox + foc * gx
-        let yf = y + oy + foc * gy
-        if (xf >= 0.0 && xf < w - 1.001 && yf >= 0.0 && yf < h - 1.001) {
-          let xi = xf | 0, yi = yf | 0
-          let fx = xf - xi, fy = yf - yi
-          let c2i = yi * w + xi
-          L[c2i] = L[c2i] + 0.25 * (1.0 - fx) * (1.0 - fy)
-          L[c2i + 1] = L[c2i + 1] + 0.25 * fx * (1.0 - fy)
-          L[c2i + w] = L[c2i + w] + 0.25 * (1.0 - fx) * fy
-          L[c2i + w + 1] = L[c2i + w + 1] + 0.25 * fx * fy
-        }
-        sub++
-      }
-      x++
-    }
-    y++
-  }
-  // one separable 3-tap blur pass — enough to absorb splat grain, and no more:
-  // a second pass visibly blunts the seams
-  let bp = 0
-  while (bp < 1) {
-    y = 0
-    while (y < h) {
-      let row = y * w
-      Ls[row] = L[row]
-      let x = 1
-      while (x < w - 1) { let c = row + x; Ls[c] = (L[c - 1] + L[c] + L[c] + L[c + 1]) * 0.25; x++ }
-      Ls[row + w - 1] = L[row + w - 1]
-      y++
-    }
-    let x = 0
-    while (x < w) {
-      L[x] = Ls[x]
-      let yy = 1
-      while (yy < h - 1) { let c = yy * w + x; L[c] = (Ls[c - w] + Ls[c] + Ls[c] + Ls[c + w]) * 0.25; yy++ }
-      L[(h - 1) * w + x] = Ls[(h - 1) * w + x]
-      x++
-    }
-    bp++
-  }
-  // The interior ray loop cannot feed the outermost texels on a flat sheet, and the blur
-  // spreads that deficit inward. Pin the three-pixel frame to neutral exposure instead of
-  // showing a synthetic black outline around an otherwise flat field.
-  let edge = 0
-  while (edge < 3) {
-    let ex = 0
-    while (ex < w) { L[edge * w + ex] = 1.0; L[(h - 1 - edge) * w + ex] = 1.0; ex++ }
-    let ey = edge + 1
-    while (ey < h - 1 - edge) { L[ey * w + edge] = 1.0; L[ey * w + w - 1 - edge] = 1.0; ey++ }
-    edge++
-  }
-
-  // ── tone map: density → monochrome exposure ──
-  i = 0
-  while (i < n) {
-    let q = (L[i] * 256.0) | 0
-    if (q > 1023) q = 1023
-    px[i] = glut[q]
-    i++
+  // shade: reflect the view ray off each slope into the studio
+  let c = 0
+  while (c < n) {
+    let gx = gxF[c], gy = gyF[c]
+    let nz = 1.0 / Math.sqrt(gx * gx + gy * gy + 1.0)
+    // reflected view ray (the camera looks straight down): r = (−2nz²·gx, −2nz²·gy, 2nz² − 1)
+    let k = 2.0 * nz * nz
+    let rx = -k * gx, ry = -k * gy
+    // the softbox: a soft-edged rectangle of sky just off the zenith, toward the top of the frame —
+    // flat water mirrors the dark beside it, the gentlest slope toward it catches it
+    let bx = 1.0 - Math.max(0.0, Math.min(1.0, (Math.abs(rx) - 0.34) * 14.0))
+    let by = 1.0 - Math.max(0.0, Math.min(1.0, (Math.abs(ry + 0.17) - 0.07) * 28.0))
+    // the fill: a thin strip just off the zenith the other way
+    let fx = 1.0 - Math.max(0.0, Math.min(1.0, (Math.abs(rx) - 0.3) * 14.0))
+    let fy = 1.0 - Math.max(0.0, Math.min(1.0, (Math.abs(ry - 0.2) - 0.025) * 40.0))
+    // the ring light: a band of sky circling the zenith
+    let rho = Math.sqrt(rx * rx + ry * ry)
+    let ring = 1.0 - Math.max(0.0, Math.min(1.0, (Math.abs(rho - 0.15) - 0.035) * 30.0))
+    let rad = 55.0 * ring + 85.0 * bx * by + 20.0 * fx * fy + 0.25
+    // Fresnel (Schlick, n = 1.33): R₀ = 0.02 face-on, rising as the surface turns away
+    let m = 1.0 - nz
+    let m2 = m * m
+    let fr = 0.02 + 0.98 * m2 * m2 * m
+    let v = 1.0 - Math.exp(-fr * rad)
+    let g = (v * 255.0) | 0
+    px[c] = (255 << 24) | (g << 16) | (g << 8) | g
+    c++
   }
 }

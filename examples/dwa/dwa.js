@@ -30,6 +30,7 @@ let MAXO = 40
 let ox = new Float64Array(MAXO), oy = new Float64Array(MAXO)
 let ovx = new Float64Array(MAXO), ovy = new Float64Array(MAXO)
 let nobs = 0
+let cvl = new Float64Array(9), cvr = new Float64Array(9), cben = new Float64Array(9)   // the 3×3 window's scores
 
 // theme palette [paperR,G,B, inkR,G,B] — black floor, white barriers
 let th = new Float64Array(6)
@@ -58,17 +59,34 @@ let bl = (idx, r, g, b, a) => {
   px[idx] = (255 << 24) | (nb << 16) | (ng << 8) | nr
 }
 
-let lineA = (x0, y0, x1, y1, r, g, b, a) => {
-  let x = x0 | 0, y = y0 | 0, xe = x1 | 0, ye = y1 | 0
-  let dx = Math.abs(xe - x), dy = Math.abs(ye - y)
-  let sx = x < xe ? 1 : -1, sy = y < ye ? 1 : -1, err = dx - dy, gd = 0
-  while (gd < 6000) {
-    if (x >= 0 && x < W && y >= 0 && y < H) bl(y * W + x, r, g, b, a)
-    if (x === xe && y === ye) break
-    let e2 = 2 * err
-    if (e2 > -dy) { err -= dy; x += sx }
-    if (e2 < dx) { err += dx; y += sy }
-    gd++
+// anti-aliased hairline: a coverage splat every half pixel along the segment
+let hairA = (x0, y0, x1, y1, r, g, b, a) => {
+  let dx = x1 - x0, dy = y1 - y0
+  let n = (Math.sqrt(dx * dx + dy * dy) * 2.0 | 0) + 1, q = 0
+  while (q < n) {
+    let fx = x0 + dx * q / n - 0.5, fy = y0 + dy * q / n - 0.5
+    let ix = Math.floor(fx), iy = Math.floor(fy), ux = fx - ix, uy = fy - iy
+    if (ix >= 0 && ix < W - 1 && iy >= 0 && iy < H - 1) {
+      let c = iy * W + ix
+      bl(c, r, g, b, a * (1.0 - ux) * (1.0 - uy))
+      bl(c + 1, r, g, b, a * ux * (1.0 - uy))
+      bl(c + W, r, g, b, a * (1.0 - ux) * uy)
+      bl(c + W + 1, r, g, b, a * ux * uy)
+    }
+    q++
+  }
+}
+
+// anti-aliased hairline circle
+let circA = (cx, cy, rad, r, g, b, a) => {
+  let n = (rad * 6.283185307179586 | 0) + 8, q = 0
+  let px0 = cx + rad, py0 = cy
+  while (q < n) {
+    q++
+    let an = q * 6.283185307179586 / n
+    let px1 = cx + Math.cos(an) * rad, py1 = cy + Math.sin(an) * rad
+    hairA(px0, py0, px1, py1, r, g, b, a)
+    px0 = px1; py0 = py1
   }
 }
 
@@ -223,7 +241,7 @@ export let frame = (t) => {
   let paper = (255 << 24) | ((pb | 0) << 16) | ((pg | 0) << 8) | (pr | 0)
   let n = W * H, c = 0
   while (c < n) {
-    let ti = (trail[c] * 252) >> 8
+    let ti = (trail[c] * 254) >> 8
     trail[c] = ti
     if (ti === 0) { px[c] = paper }
     else {
@@ -234,10 +252,17 @@ export let frame = (t) => {
     c++
   }
 
-  // the barriers (white discs)
+  // the barriers: white discs, each with its configuration-space safety ring (where the robot's centre
+  // may not go) and a ghost of where it will be at the end of the planning horizon
   let brp = BR * k
   i = 0
-  while (i < nobs) { discA(u0 + k * ox[i], v0 - k * oy[i], brp, ir, ig, ib, 1.0); i++ }
+  while (i < nobs) {
+    let bu = u0 + k * ox[i], bv = v0 - k * oy[i]
+    circA(bu, bv, (BR + RR + SAFED) * k, ir, ig, ib, 0.22)
+    hairA(bu, bv, bu + k * ovx[i] * TAU * 6.0, bv - k * ovy[i] * TAU * 6.0, ir, ig, ib, 0.3)
+    discA(bu, bv, brp, ir, ig, ib, 1.0)
+    i++
+  }
 
   // the target's anticipated (future) position — his prevTargetDist/newTargetDist use the advanced target
   let fgx = goal[0] + goal[2] * TAU, fgy = goal[1] + goal[3] * TAU
@@ -245,7 +270,7 @@ export let frame = (t) => {
 
   // ── plan over the 3×3 reachable (vL, vR) window ──
   let vlo = rob[VL], vro = rob[VR]
-  let best = -1e30, bvl = vlo, bvr = vro
+  let best = -1e30, bvl = vlo, bvr = vro, nc = 0, worst = 1e30
   let ia = 0
   while (ia < 3) {
     let vL = vlo + (ia - 1) * AW
@@ -258,7 +283,7 @@ export let frame = (t) => {
           // the WHOLE path (Fox/Burgard/Thrun's dist term). Davison checks only the endpoint, which lets a
           // long arc punch through a wall — the full-path, space-time check is what lets it steer AROUND.
           let dvr = vR - vL
-          let ex = rx, ey = ry, eh = rh, lpu = u0 + k * rx, lpv = v0 - k * ry, s = 0, distObs = 1e30
+          let ex = rx, ey = ry, eh = rh, s = 0, distObs = 1e30
           while (s < STEPS) {
             if (dvr < 1e-6 && dvr > -1e-6) {
               ex += vL * DT * Math.cos(eh); ey += vL * DT * Math.sin(eh)
@@ -277,19 +302,43 @@ export let frame = (t) => {
               if (d < distObs) distObs = d
               j++
             }
-            let u = u0 + k * ex, vv = v0 - k * ey
-            lineA(lpu, lpv, u, vv, ir, ig, ib, 0.14)
-            lpu = u; lpv = vv; s++
+            s++
           }
           let newD = Math.sqrt((ex - fgx) * (ex - fgx) + (ey - fgy) * (ey - fgy))
           let cost = distObs < SAFED ? OW * (SAFED - distObs) : 0.0
           let benefit = FW * (prevD - newD) - cost
           if (benefit > best) { best = benefit; bvl = vL; bvr = vR }
+          if (benefit < worst) worst = benefit
+          cvl[nc] = vL; cvr[nc] = vR; cben[nc] = benefit; nc++
         }
         ib++
       }
     }
     ia++
+  }
+
+  // every reachable arc, as bright as its score ranks — the window the planner chose from
+  let span = best - worst > 1e-9 ? best - worst : 1e-9
+  let cj = 0
+  while (cj < nc) {
+    let vL = cvl[cj], vR = cvr[cj], dvr = vR - vL
+    let ex = rx, ey = ry, eh = rh, lpu = u0 + k * rx, lpv = v0 - k * ry, s = 0
+    let al = 0.1 + 0.5 * (cben[cj] - worst) / span
+    while (s < STEPS) {
+      if (dvr < 1e-6 && dvr > -1e-6) {
+        ex += vL * DT * Math.cos(eh); ey += vL * DT * Math.sin(eh)
+      } else {
+        let R = (RW * 0.5) * (vR + vL) / dvr
+        let nth = eh + dvr * DT / RW
+        ex += R * (Math.sin(nth) - Math.sin(eh))
+        ey -= R * (Math.cos(nth) - Math.cos(eh))
+        eh = nth
+      }
+      let u = u0 + k * ex, vv = v0 - k * ey
+      hairA(lpu, lpv, u, vv, ir, ig, ib, al)
+      lpu = u; lpv = vv; s++
+    }
+    cj++
   }
 
   // chosen arc: bright red
@@ -306,7 +355,8 @@ export let frame = (t) => {
       eh2 = nth
     }
     let u = u0 + k * ex2, vv = v0 - k * ey2
-    lineA(lpu2, lpv2, u, vv, ACR | 0, ACG | 0, ACB | 0, 0.95)
+    hairA(lpu2, lpv2, u, vv, ACR | 0, ACG | 0, ACB | 0, 1.0)
+    hairA(lpu2 + 0.5, lpv2 + 0.5, u + 0.5, vv + 0.5, ACR | 0, ACG | 0, ACB | 0, 0.6)
     lpu2 = u; lpv2 = vv; s2++
   }
 

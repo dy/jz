@@ -19,7 +19,7 @@ import { runDemo } from "../lib/jzdemo.js"
 
 const demo = runDemo({
   name: "maze",
-  hint: "a maze, carved then solved by flood-fill — click to regenerate",
+  hint: "a maze, carved then solved by flood-fill, current running through its walls — touch to spark · double-click regenerates",
   size: { budget: 110000, odd: true },   // odd dims = walls + passages; chunky cells, CSS upscales
   bg: "#000",
   cursor: "pointer",
@@ -27,7 +27,11 @@ const demo = runDemo({
   // re-roll: carve and solve a brand-new maze
   randomize: (e) => e.restart?.(),
 })
-demo.cv.addEventListener("pointerdown", () => { if (demo.engine) demo.engine.restart() })
+demo.cv.addEventListener("pointerdown", (e) => {
+  const r = demo.cv.getBoundingClientRect()
+  demo.engine?.spark((e.clientX - r.left) / r.width, (e.clientY - r.top) / r.height)
+})
+demo.cv.addEventListener("dblclick", () => demo.engine?.restart())
 </script>
 </body>
 </html>

@@ -1,8 +1,11 @@
 // Newton fractal — Newton–Raphson root-finding turned into a picture. Every pixel is a
 // start point z₀ for the iteration  z ← z − a·p(z)/p′(z)  on p(z) = z³ − 1, whose three
-// roots are the cube roots of unity. Color = which root the orbit falls into (the basin
-// of attraction); brightness = how fast it got there. The basins meet on a fractal
-// boundary — between any two colors lurks a speck of the third, forever.
+// roots are the cube roots of unity. Tone = which root the orbit falls into (the basin
+// of attraction); brightness = how fast it got there, as a smooth count continuous across whole
+// steps: plain Newton converges quadratically, ν = n − log₂(log d² / log ε); relaxed by a it
+// converges linearly, each step shrinking d² by k = |1 − a|², ν = n − log(d²/ε) / log k — falling off
+// exponentially, so the quick heart of each basin glows and the slow fractal boundary sinks into
+// shadow. Between any two basins lurks a speck of the third, forever.
 //
 // Unlike Mandelbrot/Julia (escape time), this is CONVERGENCE: the boundary is where
 // Newton's method can't decide. `a` is the relaxation factor, passed as f64 args so it
@@ -27,6 +30,9 @@ export let resize = (w, h) => {
 
 export let frame = (t, are, aim, vcx, vcy, vscale) => {
   let scale = vscale
+  let k = (1.0 - are) * (1.0 - are) + aim * aim      // the linear contraction of d² per relaxed step
+  let lin = k > 0.0001 ? 1.0 : 0.0
+  let ilk = lin > 0.5 ? 1.0 / Math.log(k) : 0.0
   let j = 0, py = 0
   while (py < H) {
     let y0 = (py * invH - 0.5) * 2.0 * scale + vcy
@@ -64,14 +70,14 @@ export let frame = (t, are, aim, vcx, vcy, vscale) => {
         if (d2x * d2x + d2y * d2y < EPS) { root = 3; break }
         it++
       }
-      // shade by speed of convergence (fewer iters → brighter); gray level by basin
-      let s = 1.0 - it / MAXIT
-      s = s * s                            // gamma — deepen the boundary filigree
-      let lo = 0.18 + 0.82 * s
-      let gg = 0
-      if (root == 1) { gg = (95.0 * lo) | 0 }
-      else if (root == 2) { gg = (165.0 * lo) | 0 }
-      else if (root == 3) { gg = (235.0 * lo) | 0 }
+      // smooth convergence count: how far the last step undershot ε, in quadratic-convergence steps
+      let tone = root == 1 ? 0.36 : root == 2 ? 0.66 : root == 3 ? 1.0 : 0.0
+      let rx = root == 1 ? 1.0 : -0.5, ry = root == 2 ? R3 : root == 3 ? -R3 : 0.0
+      let d2 = (zx - rx) * (zx - rx) + (zy - ry) * (zy - ry) + 1e-300
+      let le = Math.log(d2) + 13.815510557964274       // log(d²/ε); log ε = −13.8155
+      let nu = lin > 0.5 ? it - le * ilk : it - Math.log(Math.log(d2) / -13.815510557964274) * 1.4426950408889634
+      let b = Math.exp(-nu * 0.16)
+      let gg = (Math.min(1.0, tone * b * 1.35) * 255.0) | 0
       px[j] = (255 << 24) | (gg << 16) | (gg << 8) | gg
       j++; qx++
     }

@@ -4,8 +4,14 @@
 // trail and steer away from the rival's, so instead of merging into one network the two
 // contest territory: borders between them writhe as each colony's growth pushes back the
 // other's. Colonies differ slightly in sensor angle/speed so their networks have a different
-// character (A: longer, smoother strands; B: tighter, twitchier mesh). resize(w,h) →
-// Uint32Array; frame() steps both colonies' agents + both trail maps and renders.
+// character (A: longer, smoother strands; B: tighter, twitchier mesh). Motor parameters follow
+// Jones's Physarum model (Artificial Life 16(2), 2010: sensor angle 22.5°, turn 45°, sensor offset
+// 9, step 1), including its crowding rule — one agent per cell: an agent blocked by another turns
+// to a random heading and deposits nothing, which is what keeps the network fine instead of
+// collapsing every agent into a few thick tubes; the trail diffuses only part-way toward its 3×3 mean each step, so strands stay the
+// fine veins of a real plasmodium instead of blurring into blobs, and the render maps trail strength
+// through 1 − e^(−k·v), so every vein reads in graded light. resize(w,h) → Uint32Array; frame()
+// steps both colonies' agents + both trail maps and renders.
 
 let W = 0, H = 0, px
 let axA, ayA, ahA          // colony A agent x, y, heading
@@ -14,13 +20,15 @@ let naA = 0, naB = 0
 let taA, tbA                // colony A trail map ping-pong
 let taB, tbB                // colony B trail map ping-pong
 let flip = 0                 // shared — both trail maps march together
+let occ                      // Uint8Array — agents per cell (the crowding rule allows one)
 
 // Per-colony sensor/motor parameters — B senses wider and turns harder for a different
 // network character (tighter, more tangled mesh vs A's longer, smoother strands).
-let SA_A = 0.5, SD_A = 9.0, TA_A = 0.4, SP_A = 1.0
-let SA_B = 0.65, SD_B = 7.5, TA_B = 0.5, SP_B = 1.15
-let REPEL = 2.0               // "sense own − REPEL·other" — territorial pressure
-let DECAY = 0.90
+let SA_A = 0.3927, SD_A = 9.0, TA_A = 0.7854, SP_A = 1.0     // 22.5°, 9, 45°, 1 — Jones's canonical set
+let SA_B = 0.52, SD_B = 7.0, TA_B = 0.6, SP_B = 1.1
+let REPEL = 1.2               // "sense own − REPEL·other" — territorial pressure
+let DECAY = 0.93
+let DIFF = 0.35               // how far each step diffuses toward the 3×3 mean (1 = a full box blur)
 
 export let resize = (w, h) => {
   W = w; H = h
@@ -28,7 +36,8 @@ export let resize = (w, h) => {
   taA = new Float64Array(n); tbA = new Float64Array(n)
   taB = new Float64Array(n); tbB = new Float64Array(n)
   px = new Uint32Array(n)
-  let na = (n * 0.10) | 0          // ~10% of cells are agents, split across both colonies
+  occ = new Uint8Array(n)
+  let na = (n * 0.14) | 0          // ~14% of cells are agents, split across both colonies
   naA = na >> 1
   naB = na - naA
   axA = new Float64Array(naA); ayA = new Float64Array(naA); ahA = new Float64Array(naA)
@@ -43,9 +52,13 @@ let scatterColony = (ax, ay, ah, na, cx, cy, rad) => {
   while (a < na) {
     let ang = Math.random() * 6.283185307179586
     let r = Math.sqrt(Math.random()) * rad
-    ax[a] = cx + Math.cos(ang) * r
-    ay[a] = cy + Math.sin(ang) * r
+    let x = cx + Math.cos(ang) * r, y = cy + Math.sin(ang) * r
+    if (x < 0.0) x += W; else if (x >= W) x -= W
+    if (y < 0.0) y += H; else if (y >= H) y -= H
+    ax[a] = x; ay[a] = y
     ah[a] = ang
+    let c = (y | 0) * W + (x | 0)
+    if (occ[c] < 255) occ[c] = occ[c] + 1
     a++
   }
 }
@@ -54,7 +67,7 @@ let scatterColony = (ax, ay, ah, na, cx, cy, rad) => {
 // toward each other (and around the torus) — territory to contest from the first frame.
 export let seed = () => {
   let n = W * H, i = 0
-  while (i < n) { taA[i] = 0.0; tbA[i] = 0.0; taB[i] = 0.0; tbB[i] = 0.0; i++ }
+  while (i < n) { taA[i] = 0.0; tbA[i] = 0.0; taB[i] = 0.0; tbB[i] = 0.0; occ[i] = 0; i++ }
   let cx = W * 0.5, cy = H * 0.5, rad = (W < H ? W : H) * 0.22
   let ox = (W < H ? W : H) * 0.18
   scatterColony(axA, ayA, ahA, naA, cx - ox, cy, rad)
@@ -115,14 +128,19 @@ let stepColony = (own, other, ax, ay, ah, na, sang, sdist, tstep, spd) => {
     let ny = y + Math.sin(h) * spd
     if (nx < 0.0) nx += W; else if (nx >= W) nx -= W
     if (ny < 0.0) ny += H; else if (ny >= H) ny -= H
-    ax[a] = nx; ay[a] = ny; ah[a] = h
-    let c = (ny | 0) * W + (nx | 0)
-    own[c] = own[c] + 0.6
+    let c0 = (y | 0) * W + (x | 0), c = (ny | 0) * W + (nx | 0)
+    if (c !== c0 && occ[c] > 0) {
+      ah[a] = Math.random() * 6.283185307179586      // blocked: turn anywhere, deposit nothing
+    } else {
+      if (c !== c0) { occ[c0] = occ[c0] - 1; occ[c] = occ[c] + 1 }
+      ax[a] = nx; ay[a] = ny; ah[a] = h
+      own[c] = own[c] + 0.3
+    }
     a++
   }
 }
 
-// 3×3 box blur + decay, src → dst (toroidal wrap). Shared by both colonies' trail maps.
+// Partial diffusion toward the 3×3 mean + decay, src → dst (toroidal wrap). Shared by both colonies.
 let blurDecay = (src, dst) => {
   let w = W, h = H, y = 0
   while (y < h) {
@@ -136,7 +154,7 @@ let blurDecay = (src, dst) => {
       let s = src[rn + xw] + src[rn + x] + src[rn + xe]
             + src[rc + xw] + src[rc + x] + src[rc + xe]
             + src[rs + xw] + src[rs + x] + src[rs + xe]
-      dst[rc + x] = (s * 0.11111111) * DECAY
+      dst[rc + x] = (src[rc + x] * (1.0 - DIFF) + s * 0.11111111 * DIFF) * DECAY
       x++
     }
     y++
@@ -158,17 +176,13 @@ export let frame = (t) => {
   blurDecay(srcB, dstB)
   flip = 1 - flip
 
-  // ---- render: monochrome — colony A is bright white, colony B a distinct mid-gray, so the two
-  // networks stay legible without any colour; contested zones (both present) glow a touch brighter
-  // so the writhing borders read as a seam ----
+  // ---- render: monochrome — colony A in white light, colony B a step dimmer, so the two networks
+  // stay legible without colour; each through 1 − e^(−k·v), so veins grade from faint to bright ----
   let n = W * H, i = 0
   while (i < n) {
-    let va = dstA[i] * 1.6
-    if (va > 1.0) va = 1.0
-    let vb = dstB[i] * 1.6
-    if (vb > 1.0) vb = 1.0
-    let ov = va < vb ? va : vb
-    let v = va * 255.0 + vb * 135.0 + ov * 55.0
+    let va = 1.0 - Math.exp(-dstA[i] * 0.9)
+    let vb = 1.0 - Math.exp(-dstB[i] * 0.9)
+    let v = va * 250.0 + vb * 150.0
     if (v > 255.0) v = 255.0
     let vi = v | 0
     px[i] = (255 << 24) | (vi << 16) | (vi << 8) | vi

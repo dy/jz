@@ -4,10 +4,10 @@
 <meta charset="utf-8">
 <meta name="viewport" content="user-scalable=0" />
 <title>Truchet Tiles - jz</title>
-<meta name="description" content="Two random arc tiles assemble into endless flowing labyrinths. Plain JavaScript compiled to WebAssembly with jz." />
+<meta name="description" content="Two random arc tiles chain into an endless labyrinth, current running its paths; tap to spark. Plain JavaScript compiled to WebAssembly with jz." />
 <link rel="canonical" href="https://jz.js.org/examples/truchet/" />
 <meta property="og:title" content="Truchet Tiles - jz" />
-<meta property="og:description" content="Two random arc tiles assemble into endless flowing labyrinths. Plain JavaScript compiled to WebAssembly with jz." />
+<meta property="og:description" content="Two random arc tiles chain into an endless labyrinth, current running its paths; tap to spark. Plain JavaScript compiled to WebAssembly with jz." />
 <meta property="og:url" content="https://jz.js.org/examples/truchet/" />
 <meta property="og:image" content="https://jz.js.org/examples/thumbs/truchet.webp" />
 <meta name="twitter:card" content="summary_large_image" />
@@ -15,25 +15,31 @@
 </head>
 <body>
 <script type="module">
-import { runDemo, trackPointer } from "../lib/jzdemo.js"
+import { runDemo } from "../lib/jzdemo.js"
 
-let lastDown = false
+// A tap sparks current into the touched tile; a horizontal drag sets the tile size; the dice re-seeds.
+let tile = 22, downX = 0, downTile = 22, dragging = false, moved = false
 const demo = runDemo({
   name: "truchet",
-  hint: "Truchet tiles — click to re-seed, drag to change tile size",
+  hint: "Truchet tiles, current running their paths — tap to spark · drag ↔ for tile size · dice re-seeds",
+  cursor: "pointer",
   load: (e) => { e.init?.() },
-  frame: (e, t) => {
-    // Click (press and release) re-seeds
-    if (!ptr.down && lastDown) e.seed?.()
-    lastDown = ptr.down
-
-    // Drag changes tile size: right = bigger tiles
-    const tileSize = ptr.down ? (12 + ptr.x * 40) | 0 : 22
-    e.frame(t, tileSize)
-  },
+  frame: (e, t) => e.frame(t, tile),
+  randomize: (e) => e.seed(),
 })
-
-const ptr = trackPointer(demo.cv)
+const cv = demo.cv
+cv.addEventListener("pointerdown", (e) => { dragging = true; moved = false; downX = e.clientX; downTile = tile; try { cv.setPointerCapture(e.pointerId) } catch {} })
+cv.addEventListener("pointermove", (e) => {
+  if (!dragging) return
+  const dx = e.clientX - downX
+  if (Math.abs(dx) > 6) moved = true
+  if (moved) tile = Math.max(10, Math.min(60, Math.round(downTile + dx * 0.08)))
+})
+cv.addEventListener("pointerup", (e) => {
+  if (dragging && !moved) { const r = cv.getBoundingClientRect(); demo.engine?.spark((e.clientX - r.left) / r.width, (e.clientY - r.top) / r.height, tile) }
+  dragging = false
+})
+cv.addEventListener("pointerleave", () => { dragging = false })
 </script>
 </body>
 </html>

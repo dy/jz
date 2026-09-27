@@ -28,7 +28,7 @@ let k = LO, n = 280, userSet = false
 const statEl = document.getElementById("stat")
 const demo = runDemo({
   name: "times-table",
-  hint: "multiplication tables mod N — drag ↔ to scrub the multiplier, ↕ for the point count",
+  hint: "multiplication tables mod N, current tracing i → ik → ik² — tap to spark · drag ↔ multiplier, ↕ point count",
   size: { budget: 700000 },
   frame: (e, t) => {
     if (ptr.down) {
@@ -45,6 +45,13 @@ const demo = runDemo({
   randomize: () => { k = 1.0 + Math.random() * 47.0; n = Math.round(60 + Math.random() * 360); userSet = true },
 })
 const ptr = trackPointer(demo.cv)
+let dx0 = 0, dy0 = 0
+demo.cv.addEventListener("pointerdown", (e) => { dx0 = e.clientX; dy0 = e.clientY })
+demo.cv.addEventListener("pointerup", (e) => {
+  if (Math.hypot(e.clientX - dx0, e.clientY - dy0) > 6) return
+  const r = demo.cv.getBoundingClientRect()
+  demo.engine?.spark((e.clientX - r.left) / r.width, (e.clientY - r.top) / r.height)
+})
 </script>
 </body>
 </html>

@@ -10,15 +10,16 @@
 //   c = d/2 + e/99 − SWIRL
 //   → point at (u,v) = (3q·sin c, 3(q+9d)·cos c)
 // Each grid point lands somewhere on a feathered plume — the cap is the low-d core, the barbs
-// are the sin(d²−PULSE) ripple sweeping outward. Points splat additively into an RGB
-// accumulator (hue follows d, so the ribs band into rainbow rings) and tone-map through a
-// soft-saturation exp curve.
+// are the sin(d²−PULSE) ripple sweeping outward. Points splat additively in white and tone-map
+// through a soft-saturation exp curve; each point's light rides the ripple's crest — so light runs
+// through the barbs with the swimming beat — and a hashed per-point twinkle flashes sparkles across
+// the feathers.
 // The original animates with PULSE = 2t (the swimming beat rippling through the barbs) and
 // SWIRL = t/18 (the slow drift of the whole figure). frame(pulse, swirl, ka, fx, fy, hue0)
 // takes those two phases directly — the host integrates them from adjustable RATES, so the
 // medusas' swimming tempo and drift direction are drivable live without the figure snapping.
 // The three shape constants K/FX/FY rewrite the formula into sibling species of the same
-// family; hue0 spins the palette. Defaults (5, 14, 30, 0) are the original.
+// family; hue0 reseeds the sparkles. Defaults (5, 14, 30, 0) are the original.
 // resize(w,h) → Uint32Array px.
 let W = 0, H = 0, px
 let acc               // Float64Array, W*H*3 — additive RGB exposure for this frame
@@ -79,23 +80,16 @@ export let frame = (pulse, swirl, ka, fx, fy, hue0) => {
       let u = (3.0 * q * Math.sin(c) - 76.0) * s
       let v = (3.0 * (q + 9.0 * d) * Math.cos(c) + 226.0) * s
 
-      // hue follows d — the ripple bands ring into a rainbow; inline HSV→RGB (S=.9, V=1)
-      let hue = (d - 4.0) * 95.0 + 50.0 + swirl * 144.0 + hue0   // swirl·144 ≡ the original's t·8
-      hue = hue - Math.floor(hue / 360.0) * 360.0
-      let hs = hue / 60.0
-      let hf = hs - Math.floor(hs * 0.5) * 2.0            // position within a 120° double-sector
-      let xx = 1.0 - (hf < 1.0 ? 1.0 - hf : hf - 1.0)     // triangle wave 0→1→0
-      let cr = 0.1, cg = 0.1, cb = 0.1                    // V·(1−S) floor
-      let xc = 0.1 + 0.9 * xx
-      if (hs < 1.0) { cr = 1.0; cg = xc }
-      else if (hs < 2.0) { cr = xc; cg = 1.0 }
-      else if (hs < 3.0) { cg = 1.0; cb = xc }
-      else if (hs < 4.0) { cg = xc; cb = 1.0 }
-      else if (hs < 5.0) { cr = xc; cb = 1.0 }
-      else { cr = 1.0; cb = xc }
-
-      splat(c1x + u, c1y + v, cr * 110.0, cg * 110.0, cb * 110.0)
-      splat(c2x - u, c2y - v, cr * 110.0, cg * 110.0, cb * 110.0)
+      // white light: brighter on the ripple's crest, and a sparkle when this point's own clock ticks over
+      let crest = Math.sin(d * d - pulse)
+      crest = crest > 0.0 ? crest * crest * crest * crest : 0.0
+      let hsh = Math.sin(x * 12.9898 + y * 78.233 + hue0) * 43758.5453
+      hsh = hsh - Math.floor(hsh)
+      let tw = hsh * 17.0 + pulse * 0.15
+      tw = tw - Math.floor(tw)
+      let w = 38.0 + 70.0 * crest + (tw < 0.018 ? 900.0 * (1.0 - tw / 0.018) : 0.0)
+      splat(c1x + u, c1y + v, w, w, w)
+      splat(c2x - u, c2y - v, w, w, w)
       x++
     }
     y++

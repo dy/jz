@@ -6,6 +6,12 @@
 // Rendered classic-style: a coarse cell-grid bitmap (BW×BH) is stretched to the canvas with
 // CORRIDORS WIDE and WALLS 1px, and a wall only lights up where it borders a carved cell — so
 // the background is always black and the maze grows out of the dark as it carves.
+//
+// Current runs through the walls: a perfect maze's walls form one connected tree, so electrons walk
+// it cell by cell — straight on or a random turn at each junction, never back, dying at a dead end
+// and reborn elsewhere — each leaving a fading heat trail. spark(fx, fy) sends a burst of them out
+// of the wall nearest a touch. The solved path is a conductor too: a dim trace with pulses streaming
+// from the entrance to the exit.
 // resize(w,h) → Uint32Array; frame() advances; restart() begins anew.
 
 let W = 0, H = 0, px
@@ -21,6 +27,14 @@ let q, qh, qt           // BFS queue
 let phase = 0           // 0 generate · 1 solve · 2 backtrace · 3 done
 let waitc = 0
 let cur = 0             // backtrace cursor
+let heat                // Float32Array per bitmap cell — the electrons' fading trails
+let NP = 0, MAXP = 512  // live electrons (ambient count, set from the grid) and the cap with sparks
+let ex = new Int32Array(MAXP), ey = new Int32Array(MAXP), ed = new Int32Array(MAXP)   // cell + heading
+let pn = 0              // electrons in flight
+let tick = 0            // frame count: electrons step every other frame
+let path, plen = 0      // the solution, goal → start (bitmap indices), and its length
+let pp = new Int32Array(16), pq = 0   // pulses on the solution: their positions (index into path from its start end)
+let DX = new Int32Array([0, 1, 0, -1]), DY = new Int32Array([-1, 0, 1, 0])
 // theme palette: [paperR,G,B, inkR,G,B] — harness-fed; default = dark theme (black ground, light maze)
 let th = new Float64Array(6)
 th[0] = 0.0; th[1] = 0.0; th[2] = 0.0; th[3] = 235.0; th[4] = 235.0; th[5] = 235.0
@@ -36,6 +50,9 @@ export let resize = (w, h) => {
   BW = 2 * GX + 1; BH = 2 * GY + 1
   bit = new Int32Array(BW * BH)
   shade = new Int32Array(BW * BH)
+  heat = new Float32Array(BW * BH)
+  path = new Int32Array(BW * BH)
+  NP = ((GX * GY) / 45) | 0; if (NP < 8) NP = 8
   vis = new Int32Array(GX * GY)
   stack = new Int32Array(GX * GY)
   dist = new Int32Array(BW * BH)
@@ -84,6 +101,63 @@ export let restart = () => {
   vis[0] = 1; bit[cellBit(0, 0)] = 0                  // start cell (0,0)
   stack[0] = 0; sp = 1
   phase = 0; waitc = 0
+  i = 0
+  while (i < n) { heat[i] = 0.0; i++ }
+  pn = 0; plen = 0; pq = 0
+}
+
+// a lit wall is a wall cell that shading drew (it borders a carved cell)
+let lit = (x, y) => x >= 0 && x < BW && y >= 0 && y < BH && bit[y * BW + x] === 1 && shade[y * BW + x] > 0
+
+// place electron k on a random lit wall, heading any way
+let born = (k) => {
+  let tries = 0
+  while (tries < 40) {
+    let x = (Math.random() * BW) | 0, y = (Math.random() * BH) | 0
+    if (lit(x, y)) { ex[k] = x; ey[k] = y; ed[k] = (Math.random() * 4) | 0; return 1 }
+    tries++
+  }
+  return 0
+}
+
+// one step along the walls: straight on, or a random open turn; never back; a dead end ends the walk
+let walk = (k) => {
+  let d = ed[k], x = ex[k], y = ey[k]
+  let opts = 0, pick = -1
+  let j = 0
+  while (j < 4) {
+    if (j !== ((d + 2) & 3) && lit(x + DX[j], y + DY[j])) {
+      opts++
+      if (j === d && Math.random() < 0.55) { pick = j; opts = 99 }
+      else if (opts < 99 && Math.random() * opts < 1.0) pick = j
+    }
+    j++
+  }
+  if (pick < 0) return 0
+  ex[k] = x + DX[pick]; ey[k] = y + DY[pick]; ed[k] = pick
+  return 1
+}
+
+// a touch: a burst of electrons from the lit wall nearest (fx, fy) ∈ 0..1
+export let spark = (fx, fy) => {
+  let cx = (fx * BW) | 0, cy = (fy * BH) | 0, r = 0
+  while (r < 12) {
+    let y = cy - r
+    while (y <= cy + r) {
+      let x = cx - r
+      while (x <= cx + r) {
+        if (lit(x, y)) {
+          let k = 0
+          while (k < 16 && pn < MAXP) { ex[pn] = x; ey[pn] = y; ed[pn] = k & 3; heat[y * BW + x] = 1.0; pn++; k++ }
+          return 1
+        }
+        x++
+      }
+      y++
+    }
+    r++
+  }
+  return 0
 }
 
 let genStep = () => {
@@ -138,7 +212,7 @@ let shadeCells = () => {
     while (cx < BW) {
       let bi = cy * BW + cx
       let b = bit[bi], g = 0
-      if (b === 2) g = 255
+      if (b === 2) g = 60                                // the solution: a dim trace the pulses light
       else if (b === 0) { if (dist[bi] >= 0) g = 20 }   // explored flood: near-black so the bg stays black
       else {
         let seen = 0, yy = cy - 1
@@ -170,19 +244,50 @@ export let frame = (t) => {
     let k = 0
     while (k < GX * 2) {
       bit[cur] = 2                                     // mark path (special value)
+      path[plen] = cur; plen++
       if (prev[cur] < 0) { phase = 3; waitc = 0; break }
       cur = prev[cur]; k++
     }
-  } else { waitc++; if (waitc > 150) restart() }
+  } else {
+    // current along the solution: a pulse leaves the entrance every 30 frames, a cell a frame
+    if (waitc % 30 === 0 && pq < 16) { pp[pq] = 0; pq++ }
+    let k = 0
+    while (k < pq) {
+      let s2 = 0
+      while (s2 < 1 && pp[k] < plen) { heat[path[plen - 1 - pp[k]]] = 1.0; pp[k]++; s2++ }
+      if (pp[k] >= plen) { pq--; pp[k] = pp[pq]; k-- }
+      k++
+    }
+    waitc++; if (waitc > 520) restart()
+  }
 
-  // render: stretch the cell grid to the canvas — wide black corridors, thin light walls
   shadeCells()
+
+  // the current: trails cool, the ambient crew is topped up, every electron takes its steps
+  let n = BW * BH, i = 0
+  while (i < n) { heat[i] = heat[i] * 0.95; i++ }
+  tick++
+  while (pn < NP && born(pn) === 1) pn++
+  let k = 0
+  while (k < pn) {
+    let s2 = 0, alive = 1
+    while (s2 < (tick & 1) && alive === 1) { alive = walk(k); if (alive === 1) heat[ey[k] * BW + ex[k]] = 1.0; s2++ }
+    if (alive === 0) {
+      if (k >= NP) { pn--; ex[k] = ex[pn]; ey[k] = ey[pn]; ed[k] = ed[pn]; k-- }   // a spark's electron is spent
+      else born(k)
+    }
+    k++
+  }
+
+  // render: stretch the cell grid to the canvas — wide black corridors, thin light walls, hot current
   let y = 0
   while (y < H) {
     let brow = rowMap[y] * BW
     let x = 0
     while (x < W) {
-      let v = shade[brow + colMap[x]] / 255.0   // 0 = ground, 1 = bright wall/solution
+      let c = brow + colMap[x]
+      let v = shade[c] / 255.0 + heat[c]          // 0 = ground, 1 = bright wall/solution/current
+      if (v > 1.0) v = 1.0
       let r = (th[0] + (th[3] - th[0]) * v) | 0
       let g = (th[1] + (th[4] - th[1]) * v) | 0
       let b = (th[2] + (th[5] - th[2]) * v) | 0

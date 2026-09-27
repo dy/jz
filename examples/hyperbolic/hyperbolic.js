@@ -1,227 +1,97 @@
-// Poincaré disk — hyperbolic plane tessellation in the "Circle Limit" style.
-// The Poincaré disk model embeds the entire hyperbolic plane inside the unit disk;
-// geodesics (straight lines in hyperbolic geometry) appear as circular arcs
-// perpendicular to the boundary circle.
+// Poincaré disk — the hyperbolic plane tiled by a (2, p, q) triangle group, in the black-and-white
+// of Escher's Circle Limit. The disk model holds the whole hyperbolic plane inside the unit circle;
+// its straight lines (geodesics) are circular arcs meeting the rim at right angles.
 //
-// We tile using the {∞,3} triangle group: start with an ideal triangle (vertices
-// on the boundary), repeatedly invert each third vertex through the opposite
-// geodesic edge. This generates the Farey-sequence / Ford-circle fractal of
-// nested geodesic arcs converging to the boundary.
+// Every pixel is folded into ONE fundamental triangle — angles π/p at the centre, π/q at a vertex,
+// π/2 at the third — by reflecting it across the triangle's three mirrors until it lies inside: the
+// real axis, the line through the origin at angle π/p, and the circle orthogonal to the rim that
+// meets that line at π/q (centre d, radius r with d² = 1 + r², d·sin(π/p) = r·cos(π/q)). The count
+// of reflections is the triangle's parity: even white, odd black, so neighbours always differ — the
+// two-colour triangle-group tiling. Circle inversions stretch space by r²/|w−c|²; tracking that
+// conformal factor turns each mirror distance into a distance in screen pixels, so every edge is
+// anti-aliased at exactly one pixel, the {p, q} polygon edges are drawn as hairlines, and triangles
+// smaller than a few pixels fade to grey toward the rim — the limit itself.
 //
-// jz rules obeyed:
-//   · All persistent fractional state in Float64Array (module-level floats → i32)
-//   · frame() args carry fractional parameters (f64 in wasm)
-//   · resize() allocates; frame() never does
-//   · Pixel layout: (255<<24)|(b<<16)|(g<<8)|r  (little-endian RGBA)
-//
-// resize(w,h) → Uint32Array   frame(t, rotAngle)
+// The view is a hyperbolic translation: z ↦ (z + a)/(1 + āz) brings the point a to the centre, so
+// moving a travels through the plane (the tiles swell from the rim and shrink back into it), followed
+// by a rotation. resize(w,h) → Uint32Array; frame(t, ax, ay, rot, p, q).
 
 let W = 0, H = 0, px
-// Persistent fractional state: [0]=cx_screen [1]=cy_screen [2]=R_screen [3..]=stack scratch
-// Stack lives here: each entry = 7 doubles (u0x,u0y, u1x,u1y, u2x,u2y, depth)
-let st           // Float64Array for stack
-let f64          // Float64Array for misc fractional state [0]=cx [1]=cy [2]=R
-
-const MAX_DEPTH = 7
-const STACK_STRIDE = 7
-const STACK_CAP = 6000   // 6000 triangles × 7 = 42000 floats
 
 export let resize = (w, h) => {
   W = w; H = h
   px = new Uint32Array(w * h)
-  f64 = new Float64Array(4)
-  st = new Float64Array(STACK_CAP * STACK_STRIDE)
   return px
 }
 
-// Additive pixel accumulation — clamp each channel
-let addpix = (x, y, r, g, b) => {
-  if (x < 0 || x >= W || y < 0 || y >= H) return
-  let idx = (y | 0) * W + (x | 0)
-  let p = px[idx]
-  let rr = (p & 0xff) + r; if (rr > 255) rr = 255
-  let gg = ((p >> 8) & 0xff) + g; if (gg > 255) gg = 255
-  let bb = ((p >> 16) & 0xff) + b; if (bb > 255) bb = 255
-  px[idx] = (255 << 24) | (bb << 16) | (gg << 8) | rr
-}
+export let frame = (t, ax, ay, rot, p, q) => {
+  let cp = Math.cos(Math.PI / p), sp = Math.sin(Math.PI / p), cq = Math.cos(Math.PI / q)
+  let d = cq / Math.sqrt(cq * cq - sp * sp)       // mirror circle: centre (d, 0), radius r
+  let r = Math.sqrt(d * d - 1.0), r2 = r * r
+  let cr = Math.cos(rot), sr = Math.sin(rot)
+  let aa = 1.0 - ax * ax - ay * ay
+  let R = (W < H ? W : H) * 0.47                  // disk radius, px
+  let cx = W * 0.5, cy = H * 0.5, pw = 1.0 / R    // one pixel, in disk units
+  let TRI = (d - r) * sp * 0.5                    // ~ the fundamental triangle's inradius
 
-// Draw a geodesic arc between two ideal (boundary) points u=(ux,uy), v=(vx,vy).
-// Samples the orthogonal circle and plots points inside the unit disk.
-let drawGeodesic = (ux, uy, vx, vy, R_scr, cx_scr, cy_scr, depth, cr, cg, cb) => {
-  let dot = ux * vx + uy * vy
-  let denom = 1.0 + dot
-  if (denom < 0.0) denom = -denom
-  let STEPS = 0
-  if (denom < 1e-7) {
-    // Nearly antipodal → diameter line
-    STEPS = 200
-    let i = 0
-    while (i < STEPS) {
-      let t2 = i / (STEPS - 1.0)
-      let px2 = ux + (vx - ux) * t2
-      let py2 = uy + (vy - uy) * t2
-      let r2 = px2 * px2 + py2 * py2
-      if (r2 < 0.999) {
-        let sx = cx_scr + px2 * R_scr
-        let sy = cy_scr - py2 * R_scr
-        addpix(sx | 0, sy | 0, cr, cg, cb)
+  let j = 0, iy = 0
+  while (iy < H) {
+    let zy = (cy - iy - 0.5) * pw
+    let ix = 0
+    while (ix < W) {
+      let zx = (ix + 0.5 - cx) * pw
+      let rr = zx * zx + zy * zy
+      let v = 0.0
+      if (rr < 1.0) {
+        // hyperbolic translation a → 0: w = (z + a)/(1 + ā z), |dw/dz| = (1 − |a|²)/|1 + ā z|²
+        let nx = zx + ax, ny = zy + ay
+        let dx = 1.0 + ax * zx + ay * zy, dy = ax * zy - ay * zx
+        let dd = dx * dx + dy * dy
+        let ux = (nx * dx + ny * dy) / dd, uy = (ny * dx - nx * dy) / dd
+        let sc = aa / dd
+        let wx = ux * cr - uy * sr, wy = ux * sr + uy * cr
+        // fold into the fundamental triangle
+        let par = 0, it = 0, done = 0
+        while (done === 0 && it < 60) {
+          done = 1
+          if (wy < 0.0) { wy = -wy; par = par ^ 1; done = 0 }
+          let s = wy * cp - wx * sp                  // side of the line at angle π/p
+          if (s > 0.0) { wx = wx + 2.0 * s * sp; wy = wy - 2.0 * s * cp; par = par ^ 1; done = 0 }
+          let ex = wx - d, e2 = ex * ex + wy * wy
+          if (e2 < r2) {                             // inside the mirror circle → invert
+            let k = r2 / e2
+            wx = d + ex * k; wy = wy * k; sc = sc * k
+            par = par ^ 1; done = 0
+          }
+          it++
+        }
+        // distances to the three mirrors, in screen pixels
+        let ps = pw * sc
+        let dA = wy / ps
+        let dL = (wx * sp - wy * cp) / ps
+        let ex = wx - d
+        let dC = (Math.sqrt(ex * ex + wy * wy) - r) / ps
+        let m = dA < dL ? dA : dL
+        m = m < dC ? m : dC
+        let base = par === 0 ? 0.9 : 0.05
+        let c = m * 2.0
+        c = c > 1.0 ? 1.0 : c
+        v = 0.47 + (base - 0.47) * c                // anti-aliased across every mirror
+        let e = 1.0 - dC * 0.8                        // {p,q} polygon edges: a grey hairline
+        if (e > 0.0) v = v + (0.47 - v) * e * 0.85
+        let f = (TRI / ps - 1.2) * 0.4                // tiles under a few px melt to grey
+        f = f < 0.0 ? 0.0 : f > 1.0 ? 1.0 : f
+        v = 0.47 + (v - 0.47) * f
+        let rim = (1.0 - Math.sqrt(rr)) * R           // the boundary circle, anti-aliased
+        if (rim < 1.0) v = v * rim + 0.75 * (1.0 - rim)
+      } else {
+        let rim = (Math.sqrt(rr) - 1.0) * R
+        if (rim < 1.0) v = 0.75 * (1.0 - rim)
       }
-      i++
+      let g = (v * 255.0) | 0
+      px[j] = (255 << 24) | (g << 16) | (g << 8) | g
+      j++; ix++
     }
-    return
-  }
-  let cx = (ux + vx) / (1.0 + dot)
-  let cy = (uy + vy) / (1.0 + dot)
-  let r2 = cx * cx + cy * cy - 1.0
-  if (r2 < 0.0) r2 = 0.0
-  let R = Math.sqrt(r2)
-
-  // Arc length in screen pixels ≈ 2πR * R_scr; skip if too small
-  let arcPx = 2.0 * 3.14159265 * R * R_scr
-  if (arcPx < 1.5) return
-
-  STEPS = (arcPx | 0) + 4
-  if (STEPS > 800) STEPS = 800
-
-  let i2 = 0
-  while (i2 < STEPS) {
-    let angle = i2 / STEPS * 6.28318530718
-    let px2 = cx + R * Math.cos(angle)
-    let py2 = cy + R * Math.sin(angle)
-    // Only draw inside the open unit disk
-    if (px2 * px2 + py2 * py2 < 0.999) {
-      let sx = cx_scr + px2 * R_scr
-      let sy = cy_scr - py2 * R_scr
-      addpix(sx | 0, sy | 0, cr, cg, cb)
-    }
-    i2++
-  }
-}
-
-// Invert point (px,py) in the geodesic circle for edge (ux,uy)-(vx,vy).
-// The geodesic circle has center C=(cx,cy) and radius R; inversion maps p → C + R²(p-C)/|p-C|²
-// We write result into result[0..1].
-let invertPt = (ptx, pty, ux, uy, vx, vy, result) => {
-  let dot = ux * vx + uy * vy
-  let denom = 1.0 + dot
-  if (denom < 0.0) denom = -denom
-  if (denom < 1e-9) {
-    // Diameter case: reflect through the perpendicular bisector line
-    // The "reflection" in a diameter geodesic is Euclidean reflection through that diameter
-    let len = Math.sqrt(ux * ux + uy * uy)
-    if (len < 1e-12) { result[0] = ptx; result[1] = pty; return }
-    // normal to diameter direction: rotate (ux,uy) by 90°
-    let nx = -uy / len, ny = ux / len
-    let proj = ptx * nx + pty * ny
-    result[0] = ptx - 2.0 * proj * nx
-    result[1] = pty - 2.0 * proj * ny
-    return
-  }
-  let cx = (ux + vx) / (1.0 + dot)
-  let cy = (uy + vy) / (1.0 + dot)
-  let R2 = cx * cx + cy * cy - 1.0
-  if (R2 < 0.0) R2 = 0.0
-  let dx = ptx - cx
-  let dy = pty - cy
-  let d2 = dx * dx + dy * dy
-  if (d2 < 1e-20) { result[0] = ptx; result[1] = pty; return }
-  result[0] = cx + R2 * dx / d2
-  result[1] = cy + R2 * dy / d2
-}
-
-export let frame = (t, rotAngle) => {
-  // Clear to black inside the disk, dark gray outside
-  let cx_scr = W * 0.5
-  let cy_scr = H * 0.5
-  let minD = W < H ? W : H
-  let R_scr = minD * 0.47
-
-  let n = W * H
-  let i = 0
-  while (i < n) { px[i] = 0xff000000 | 0; i++ }
-
-  // Draw the boundary circle (bright white ring)
-  let circSteps = 1200
-  let k = 0
-  while (k < circSteps) {
-    let a = k / circSteps * 6.28318530718
-    let sx = cx_scr + Math.cos(a) * R_scr
-    let sy = cy_scr + Math.sin(a) * R_scr
-    addpix(sx | 0, sy | 0, 200, 200, 200)
-    k++
-  }
-
-  // Color table by depth: bright at depth 0, dimmer deeper (grayscale)
-  let result = f64   // reuse f64 scratch for inversion results [0],[1]
-
-  // Three initial ideal vertices of the seed triangle, rotated by rotAngle
-  let cos0 = Math.cos(rotAngle)
-  let sin0 = Math.sin(rotAngle)
-
-  // Base triangle: vertices at angles 0, 2π/3, 4π/3 on unit circle
-  let a0 = rotAngle
-  let a1 = rotAngle + 2.0943951023931953  // 2π/3
-  let a2 = rotAngle + 4.1887902047863905  // 4π/3
-
-  let v0x = Math.cos(a0), v0y = Math.sin(a0)
-  let v1x = Math.cos(a1), v1y = Math.sin(a1)
-  let v2x = Math.cos(a2), v2y = Math.sin(a2)
-
-  // Stack: push initial triangle (depth 0)
-  let top = 0
-  st[top + 0] = v0x; st[top + 1] = v0y
-  st[top + 2] = v1x; st[top + 3] = v1y
-  st[top + 4] = v2x; st[top + 5] = v2y
-  st[top + 6] = 0.0  // depth
-  top += STACK_STRIDE
-
-  while (top > 0) {
-    top -= STACK_STRIDE
-    let u0x = st[top + 0], u0y = st[top + 1]
-    let u1x = st[top + 2], u1y = st[top + 3]
-    let u2x = st[top + 4], u2y = st[top + 5]
-    let depth = st[top + 6] | 0
-
-    // Color by depth: gray level spread across 80..255
-    let gv = (80 + (depth * 45) % 175) | 0
-    let cr = gv, cg = gv, cb = gv
-
-    // Draw 3 geodesic edges
-    drawGeodesic(u0x, u0y, u1x, u1y, R_scr, cx_scr, cy_scr, depth, cr, cg, cb)
-    drawGeodesic(u1x, u1y, u2x, u2y, R_scr, cx_scr, cy_scr, depth, cr, cg, cb)
-    drawGeodesic(u0x, u0y, u2x, u2y, R_scr, cx_scr, cy_scr, depth, cr, cg, cb)
-
-    if (depth < MAX_DEPTH && top + 3 * STACK_STRIDE <= STACK_CAP * STACK_STRIDE) {
-      // Reflect u2 in edge u0-u1 → new child triangle (u0,u1,w0)
-      invertPt(u2x, u2y, u0x, u0y, u1x, u1y, result)
-      let w0x = result[0], w0y = result[1]
-
-      // Reflect u0 in edge u1-u2 → new child triangle (w1,u1,u2)
-      invertPt(u0x, u0y, u1x, u1y, u2x, u2y, result)
-      let w1x = result[0], w1y = result[1]
-
-      // Reflect u1 in edge u0-u2 → new child triangle (u0,w2,u2)
-      invertPt(u1x, u1y, u0x, u0y, u2x, u2y, result)
-      let w2x = result[0], w2y = result[1]
-
-      let nd = depth + 1
-      st[top + 0] = u0x; st[top + 1] = u0y
-      st[top + 2] = u1x; st[top + 3] = u1y
-      st[top + 4] = w0x; st[top + 5] = w0y
-      st[top + 6] = nd
-      top += STACK_STRIDE
-
-      st[top + 0] = w1x; st[top + 1] = w1y
-      st[top + 2] = u1x; st[top + 3] = u1y
-      st[top + 4] = u2x; st[top + 5] = u2y
-      st[top + 6] = nd
-      top += STACK_STRIDE
-
-      st[top + 0] = u0x; st[top + 1] = u0y
-      st[top + 2] = w2x; st[top + 3] = w2y
-      st[top + 4] = u2x; st[top + 5] = u2y
-      st[top + 6] = nd
-      top += STACK_STRIDE
-    }
+    iy++
   }
 }

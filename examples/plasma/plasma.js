@@ -1,8 +1,10 @@
 // Plasma — FBM domain-warp genart. Per pixel: three layers of sine-based fBm
 // (octaves 1..5, freq doubling, amp halving) domain-warped into each other.
 // q = fbm(x,y,t), r = fbm(x+q, y+q, t*0.6), v = fbm(x+r, y, t*0.3).
-// v ∈ [-1,1] is mapped to a teal↔magenta palette via integer channel ramps —
-// no per-pixel divides, pure trig + multiply → jz's fast sin/cos pipeline wins.
+// v ∈ [-1,1] is mapped through a 4-stop colour ramp (grey by default) — and laced with fine
+// iso-lines of the warped field, cos¹⁶(8πu): thin where the field runs steep, swelling where it
+// flattens, like ink marbling or damascus steel. No per-pixel divides, pure trig + multiply →
+// jz's fast sin/cos pipeline wins.
 let W = 0, H = 0, px, invW = 0, invH = 0
 let pal                                  // 4 RGB colour-ramp stops (12 ints) the value sweeps through
 
@@ -119,8 +121,12 @@ export let frame = (t) => {
       // v = fbm(x+r, y, t*0.3)
       let v = fbm(x + r, y, t3, v_a1y, v_a2y, v_a3y, v_a4y, v_a5y)
 
-      // map v ∈ [-1,1] → u ∈ [0,1]
-      let u = v * 0.5 + 0.5
+      // map v ∈ [-1,1] → f ∈ [0,1], laced with iso-lines: 8 levels across the field, sharpened to
+      // hairlines by cos¹⁶, lifting the value they cross
+      let f = v * 0.5 + 0.5
+      let cl = Math.cos(f * 25.132741228718345)
+      let c2 = cl * cl, c4 = c2 * c2, c8 = c4 * c4
+      let u = f * 0.78 + c8 * c8 * (0.2 + 0.25 * f)
 
       // watercolor ink: lift u where the finger dragged (cheap radial falloff, skipped when idle)
       if (smearOn) {

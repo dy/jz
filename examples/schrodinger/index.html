@@ -4,10 +4,10 @@
 <meta charset="utf-8">
 <meta name="viewport" content="user-scalable=0" />
 <title>Schrödinger - jz</title>
-<meta name="description" content="A quantum wavepacket diffracts through a double slit and tunnels. Plain JavaScript compiled to WebAssembly with jz." />
+<meta name="description" content="Quantum wavepackets diffract through a double slit, their wavefronts visible, fringes building up on a detector plate. Plain JavaScript compiled to WebAssembly with jz." />
 <link rel="canonical" href="https://jz.js.org/examples/schrodinger/" />
 <meta property="og:title" content="Schrödinger - jz" />
-<meta property="og:description" content="A quantum wavepacket diffracts through a double slit and tunnels. Plain JavaScript compiled to WebAssembly with jz." />
+<meta property="og:description" content="Quantum wavepackets diffract through a double slit, their wavefronts visible, fringes building up on a detector plate. Plain JavaScript compiled to WebAssembly with jz." />
 <meta property="og:url" content="https://jz.js.org/examples/schrodinger/" />
 <meta property="og:image" content="https://jz.js.org/examples/thumbs/schrodinger.webp" />
 <meta name="twitter:card" content="summary_large_image" />
@@ -17,12 +17,14 @@
 <script type="module">
 import { runDemo } from "../lib/jzdemo.js"
 
+// A fresh wide packet leaves the source every 9 s, so fringes keep building on the detector plate.
+let lastEmit = 0
 const demo = runDemo({
   name: "schrodinger",
-  hint: "Schrödinger wavepacket — double-slit interference · drag to draw photons · double-click to reset",
+  hint: "Schrödinger wavepacket — double-slit interference builds up on the plate · drag to draw photons · double-click to reset",
   size: { budget: 160000 },
-  load: (e) => { e.init?.() },
-  frame: (e, t) => { e.frame(t) },
+  load: (e, d) => { e.init?.(); lastEmit = d.t },
+  frame: (e, t) => { if (t - lastEmit > 9) { e.emit(); lastEmit = t } e.frame(t) },
 })
 
 // Draw photons: each press/flick injects a wavepacket at the cursor heading in the swipe direction

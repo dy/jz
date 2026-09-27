@@ -6,9 +6,15 @@
 // the enclosing circle). The center follows: k4·z4 = k1·z1+k2·z2+k3·z3 ± 2√(sum of products).
 // Complex arithmetic stays in Float64Arrays — no module-level fractional globals that jz would
 // narrow to i32. Everything persistent lives in typed arrays; frame() args are f64-safe.
+//
+// Current meshes through the packing like gears: a pulse runs round its circle, and at the tangency
+// point with a chosen neighbour it crosses over and turns the other way. Neighbours are found by the
+// tangency test itself (centre distance = r₁ + r₂, or R − r against the enclosing circle), searched
+// only when a pulse picks its next hop. Heads splat into a fading heat field; spark(fx, fy) starts
+// pulses on the ring nearest a touch.
 // resize(w,h) → Uint32Array; frame(t, panX, panY, zoom) renders.
 
-let W = 0, H = 0, px
+let W = 0, H = 0, px, heat
 
 // circle store: up to 16000 circles (cx, cy, cr each as f64) — deep enough that zooming keeps
 // finding fresh generations instead of bottoming out on bare gaps
@@ -50,13 +56,75 @@ let addpix = (x, y, r, g, b) => {
 
 // Gray level by depth: spread 80..255
 let depthColor = (d, buf) => {
-  let g = (80 + (d * 45) % 175) | 0
+  let g = (45 + (d * 29) % 70) | 0
   buf[0] = g
   buf[1] = g
   buf[2] = g
 }
 
 let color_buf = new Float64Array(3)
+
+// pulses: circle, angle, rotation sense (±1), the neighbour it will hop to and the tangency angle there
+let NA = 28, MAXP = 80
+let pc = new Int32Array(MAXP), pn = new Int32Array(MAXP)
+let pa = new Float64Array(MAXP), pd = new Float64Array(MAXP), pt = new Float64Array(MAXP)
+let np = 0
+let view = new Float64Array(4)   // last frame's transform: centre x, y, scale (px per unit), armed
+let tch = new Float64Array(3)    // a pending touch: x, y px, armed
+
+// a random neighbour of circle c tangent to it and big enough to see; writes pn/pt for pulse k
+let pickHop = (k) => {
+  let c = pc[k], x = cx_[c], y = cy_[c], r = cr_[c]
+  let seen = 0, best = -1, j = 0
+  let minR = 2.5 / view[2]
+  while (j < ncircles) {
+    if (j !== c && cr_[j] > minR) {
+      let dx = cx_[j] - x, dy = cy_[j] - y
+      let d = Math.sqrt(dx * dx + dy * dy)
+      let gap = c === 0 || j === 0 ? d - Math.abs(r - cr_[j]) : d - (r + cr_[j])
+      if (gap < 1e-6 * (r + cr_[j]) && gap > -1e-6 * (r + cr_[j])) {
+        seen++
+        if (Math.random() * seen < 1.0) best = j
+      }
+    }
+    j++
+  }
+  pn[k] = best
+  if (best >= 0) {
+    // the tangency point lies on the line of centres: toward the neighbour, except that a circle touches
+    // the enclosing ring on its far side from the origin
+    pt[k] = best === 0 ? Math.atan2(y, x) : Math.atan2(cy_[best] - y, cx_[best] - x)
+  }
+}
+
+let place = (k, c) => {
+  pc[k] = c; pa[k] = Math.random() * 6.283185307179586; pd[k] = Math.random() < 0.5 ? -1.0 : 1.0
+  pickHop(k)
+}
+
+// hot dot into the heat field
+let dot = (hx, hy, r) => {
+  let x0 = (hx - r) | 0, x1 = (hx + r + 1.0) | 0, y0 = (hy - r) | 0, y1 = (hy + r + 1.0) | 0
+  if (x0 < 0) x0 = 0
+  if (y0 < 0) y0 = 0
+  if (x1 > W - 1) x1 = W - 1
+  if (y1 > H - 1) y1 = H - 1
+  let ir2 = 1.0 / (r * r)
+  let y = y0
+  while (y <= y1) {
+    let x = x0
+    while (x <= x1) {
+      let dx = x + 0.5 - hx, dy = y + 0.5 - hy
+      let q = 1.0 - (dx * dx + dy * dy) * ir2
+      if (q > 0.0) { let p = y * W + x; if (heat[p] < q) heat[p] = q }
+      x++
+    }
+    y++
+  }
+}
+
+// a touch: pulses on the ring nearest (fx, fy) ∈ 0..1, both ways round
+export let spark = (fx, fy) => { tch[0] = fx * W; tch[1] = fy * H; tch[2] = 1.0 }
 
 // build the Apollonian gasket from scratch, storing circles
 let buildGasket = (R) => {
@@ -147,6 +215,8 @@ let gasket_built = 0
 export let resize = (w, h) => {
   W = w; H = h
   px = new Uint32Array(w * h)
+  heat = new Float32Array(w * h)
+  np = 0
   state[3] = -1.0  // force rebuild
   return px
 }
@@ -187,6 +257,7 @@ export let frame = (t, panX, panY, zoom) => {
     let sr = gr * scale
 
     if (sr < 0.4) { ci++; continue }   // sub-pixel, skip
+    if (sx + sr < 0.0 || sx - sr > W || sy + sr < 0.0 || sy - sr > H) { ci++; continue }   // off screen
 
     // color by depth
     depthColor(dep, color_buf)
@@ -212,5 +283,62 @@ export let frame = (t, panX, panY, zoom) => {
     }
 
     ci++
+  }
+
+  // the current: place missing pulses, advance each ~1 px per sub-step, hop at the tangency point
+  view[0] = cx0; view[1] = cy0; view[2] = scale; view[3] = 1.0
+  if (tch[2] > 0.5) {
+    tch[2] = 0.0
+    let best = -1, bd = 1e30, j = 0
+    while (j < ncircles) {
+      let dx = cx0 + cx_[j] * scale - tch[0], dy = cy0 - cy_[j] * scale - tch[1]
+      let e = Math.abs(Math.sqrt(dx * dx + dy * dy) - cr_[j] * scale)
+      if (e < bd && cr_[j] * scale > 2.5) { bd = e; best = j }
+      j++
+    }
+    if (best >= 0) {
+      let a = Math.atan2(-(tch[1] - cy0) / scale - cy_[best], (tch[0] - cx0) / scale - cx_[best])
+      let q = 0
+      while (q < 4 && np < MAXP) { pc[np] = best; pa[np] = a; pd[np] = q < 2 ? 1.0 : -1.0; pickHop(np); np++; q++ }
+    }
+  }
+  while (np < NA) { place(np, 1 + ((Math.random() * (ncircles < 400 ? ncircles - 1 : 400)) | 0)); np++ }
+  let k = 0
+  while (k < np) {
+    let sub = 0
+    while (sub < 3) {
+      let c = pc[k], r = cr_[c]
+      let step = 0.55 / (r * scale)
+      let a = pa[k] + pd[k] * step
+      pa[k] = a
+      dot(cx0 + (cx_[c] + Math.cos(a) * r) * scale, cy0 - (cy_[c] + Math.sin(a) * r) * scale, 2.2)
+      // reached the tangency point? cross to the neighbour, turning the other way
+      let n = pn[k]
+      if (n >= 0) {
+        let da = a - pt[k]
+        da = da - Math.floor(da / 6.283185307179586 + 0.5) * 6.283185307179586
+        if (da < step && da > -step) {
+          let tx = cx_[c] + Math.cos(pt[k]) * r, ty = cy_[c] + Math.sin(pt[k]) * r
+          pc[k] = n; pa[k] = Math.atan2(ty - cy_[n], tx - cx_[n]); pd[k] = -pd[k]
+          pickHop(k)
+        }
+      }
+      sub++
+    }
+    if (k >= NA && Math.random() < 0.004) { np--; pc[k] = pc[np]; pa[k] = pa[np]; pd[k] = pd[np]; pn[k] = pn[np]; pt[k] = pt[np]; k-- }
+    k++
+  }
+
+  // composite the heat over the rings, and let it cool
+  i = 0
+  while (i < total) {
+    let hh = heat[i]
+    if (hh > 0.004) {
+      let p = px[i] & 255
+      let g = p + ((255 - p) * hh) | 0
+      px[i] = (255 << 24) | (g << 16) | (g << 8) | g
+      heat[i] = hh * 0.965
+    }
+    i++
   }
 }

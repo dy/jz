@@ -4,10 +4,10 @@
 <meta charset="utf-8">
 <meta name="viewport" content="user-scalable=0" />
 <title>Swarm - jz</title>
-<meta name="description" content="Flies that chase and circle the cursor. Plain JavaScript compiled to WebAssembly with jz." />
+<meta name="description" content="Flies chase the cursor, every path kept as a long-exposure hairline. Plain JavaScript compiled to WebAssembly with jz." />
 <link rel="canonical" href="https://jz.js.org/examples/swarm/" />
 <meta property="og:title" content="Swarm - jz" />
-<meta property="og:description" content="Flies that chase and circle the cursor. Plain JavaScript compiled to WebAssembly with jz." />
+<meta property="og:description" content="Flies chase the cursor, every path kept as a long-exposure hairline. Plain JavaScript compiled to WebAssembly with jz." />
 <meta property="og:url" content="https://jz.js.org/examples/swarm/" />
 <meta property="og:image" content="https://jz.js.org/examples/thumbs/swarm.webp" />
 <meta name="twitter:card" content="summary_large_image" />
@@ -18,25 +18,27 @@
 import { runDemo, trackPointer } from "../lib/jzdemo.js"
 
 // The flies chase the cursor (that's the toy). A click releases one fly; holding keeps
-// releasing them at a steady rate.
-let holding = false, lastSpawn = 0
+// releasing them at a steady rate. Left alone, the cursor's stand-in drifts on a slow
+// Lissajous path, so the swarm roams and its long exposure fills the frame.
+let holding = false, lastSpawn = 0, lastMove = -1e9
 
 const demo = runDemo({
   name: "swarm",
-  hint: "a swarm of flies chasing the cursor",
-  size: { dpr: 2, budget: null },
+  hint: "flies chase the cursor, their paths a long exposure · click-hold to release more",
+  size: { dpr: 2, budget: 2200000 },
   load: (e) => e.init(),
   frame: (e, t) => {
     if (holding && t - lastSpawn > 0.09) { e.addFlies(ptr.x, ptr.y, 1); lastSpawn = t }   // ~11/s while held
+    if (t - lastMove > 3) e.setTarget(0.5 + 0.32 * Math.sin(t * 0.23), 0.5 + 0.3 * Math.sin(t * 0.37 + 1))
     e.frame(t)
   },
 })
 
 const ptr = trackPointer(demo.cv)
-demo.cv.addEventListener("pointermove", () => { if (demo.engine) demo.engine.setTarget(ptr.x, ptr.y) })
+demo.cv.addEventListener("pointermove", () => { if (demo.engine) { demo.engine.setTarget(ptr.x, ptr.y); lastMove = demo.t } })
 demo.cv.addEventListener("pointerdown", () => {
   if (!demo.engine) return
-  holding = true
+  holding = true; lastMove = demo.t
   demo.engine.setTarget(ptr.x, ptr.y)
   demo.engine.addFlies(ptr.x, ptr.y, 1)            // single fly per click
 })

@@ -120,14 +120,15 @@ test('example: watercolor fluid stencils vectorize f64x2 and stay bit-exact', ()
 // Stencil vectorizer: waves is the 2-D wave equation — a 9-point sweep over two height
 // buffers swapped each frame. With stencil the inner x-loop lifts to f64x2
 // (neighbour loads a[c±1] / a[rn+x], derived IV c=rc+x). BIT-EXACT end-to-end — the swap
-// is outside the loop so the in-loop read/write bases stay distinct (no aliasing); the
-// caustics splat and tone map are untouched scalar.
+// is outside the loop so the in-loop read/write bases stay distinct (no aliasing). The slope
+// field is a stencil too; the reflection shading reads it as a per-pixel map and stays scalar.
 test('example: waves wave-equation stencil vectorizes f64x2 and stays bit-exact', () => {
     const src = fs.readFileSync(new URL('../examples/waves/waves.js', import.meta.url), 'utf8');
     const base = (jz.compile(src, { ...OPT, stencil: false, wat: true }).match(/f64x2\./g) || []).length;
     const sten = (jz.compile(src, { ...OPT, wat: true }).match(/f64x2\./g) || []).length;
-    // Keep the recovered SIMD floor; later rewrites may add vector operations.
-    ok(sten >= 46 && sten > base, `waves frame: stencil pass recovers under the Root-F magnitude guard (${base} → ${sten} f64x2)`);
+    // Keep the recovered SIMD floor; later rewrites may add vector operations. (43 since the
+    // reflection render replaced the caustic splat, whose blur passes were stencils too.)
+    ok(sten >= 43 && sten > base, `waves frame: stencil pass recovers under the Root-F magnitude guard (${base} → ${sten} f64x2)`);
     const run = (opts) => {
         const { exports } = jz(src, opts);
         // the field must outsize the edge sponge (MARGIN 18 a side) or the render crushes to black
@@ -139,11 +140,11 @@ test('example: waves wave-equation stencil vectorizes f64x2 and stays bit-exact'
     };
     const simd = run({ ...OPT }), scal = run({ ...OPT, stencil: false });
     is(simd.length, scal.length);
-    // non-vacuous: the caustic map must show real contrast — white fold filaments (red channel
-    // saturates only at the caustic highlights) AND deep-teal shadow cells
+    // non-vacuous: the reflection must show real contrast — bright ripples where slopes catch the
+    // studio lights AND still water mirroring the dark ceiling
     const red = simd.map(v => v & 0xff);
     ok(red.filter(v => v > 180).length > 30 && red.filter(v => v < 25).length > 30,
-        `waves renders caustic contrast (${red.filter(v => v > 180).length} bright, ${red.filter(v => v < 25).length} dark)`);
+        `waves renders reflection contrast (${red.filter(v => v > 180).length} bright, ${red.filter(v => v < 25).length} dark)`);
     is(simd.filter((v, i) => v !== scal[i]).length, 0, 'waves SIMD stencil bit-exact vs scalar (12288 px, 60 frames)');
 });
 
@@ -306,7 +307,8 @@ test('example: toroidal-wrap stencils (diffusion, slime) vectorize and stay bit-
     // — value-exact for any finite integer-valued f64, not an approximation.
     const cases = [
         { name: 'diffusion', want: 60, drive: (e) => { const p = e.resize(64, 48); if (e.seedRect) e.seedRect(20, 15, 40, 30); for (let f = 0; f < 8; f++) e.frame(); return [...p]; } },
-        { name: 'slime', want: 13, drive: (e) => { const p = e.resize(64, 48); e.seed(); for (let f = 0; f < 20; f++) e.frame(f); return [...p]; } },
+        // slime: 18 since its blur became a partial mix, src·(1−D) + mean·D
+        { name: 'slime', want: 18, drive: (e) => { const p = e.resize(64, 48); e.seed(); for (let f = 0; f < 20; f++) e.frame(f); return [...p]; } },
     ];
     for (const { name, want, drive } of cases) {
         const src = fs.readFileSync(new URL(`../examples/${name}/${name}.js`, import.meta.url), 'utf8');

@@ -21,7 +21,7 @@ let panX = 0.0, panY = 0.0, zoom = 1.0
 let lastPx = 0, lastPy = 0
 const demo = runDemo({
   name: "apollonian",
-  hint: "Apollonian gasket — drag to pan, scroll to zoom",
+  hint: "Apollonian gasket, current meshing through it like gears — tap to spark · drag to pan · scroll to zoom",
   frame: (e, t) => {
     // ptr.x/y are already normalized to the canvas (0..1), and the kernel maps panX→panX·W
     // pixels — so a drag delta IS the pan delta, 1:1 in screen space. (The old code divided by
@@ -35,6 +35,14 @@ const demo = runDemo({
   },
 })
 const ptr = trackPointer(demo.cv)
+// a tap (no drag) sparks current into the nearest ring
+let dx0 = 0, dy0 = 0
+demo.cv.addEventListener("pointerdown", (e) => { dx0 = e.clientX; dy0 = e.clientY })
+demo.cv.addEventListener("pointerup", (e) => {
+  if (Math.hypot(e.clientX - dx0, e.clientY - dy0) > 6) return
+  const r = demo.cv.getBoundingClientRect()
+  demo.engine?.spark((e.clientX - r.left) / r.width, (e.clientY - r.top) / r.height)
+})
 
 demo.cv.addEventListener("wheel", (e) => {
   e.preventDefault()
