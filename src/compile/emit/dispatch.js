@@ -13,7 +13,7 @@ import {
   callWithArgs, FALSE_NAN, MAX_CLOSURE_ARITY, TRUE_NAN, UNDEF_NAN, WASM_OPS, applyBigintRepresentationAction, asF64, asI32, asI64, asParamType, asPtrOffset, block64, boolBoxIR, boxBigInt, carrierF64, carrierF64Narrow, emitNum, extractF64Bits, flat, freshId, fromI64, isBoolAtom, isBoundName, isGlobal, isLit, isNullish, isNullishLit, litVal, materializeDeferredBigint, maybeUnboxBigInt, mkPtrIR, nullExpr, nullableBoolBoxIR, ptrOffsetIR, readVar, resolveValType, temp, tempI32, tempI64, toI32, toNumF64, toStrI64, truthyIR, typed, unboxBoolIR, undefExpr, valKindToPtr,
 } from '../../ir.js'
 import { BIGINT_JOINT_BINARY_OPS, isPresentNumber, hasAmbiguousBoolMerge, nullishArm, valTypeOf } from '../../kind.js'
-import { VAL, lookupValType, repOf, repOfGlobal, numericStorage } from '../../reps.js'
+import { VAL, lookupValType, repOf, repOfGlobal, numericStorage, mayBeUndefined } from '../../reps.js'
 import { nonNegIntLiteral } from '../../static.js'
 import { functionLength } from '../../function.js'
 import { exprType, isTerminator } from '../../type.js'
@@ -594,6 +594,13 @@ export function boolCarrier(name, node, ir) {
 }
 
 /** Emit let/const initializations as typed local.set instructions. */
+// A typed element the emitter loaded bare (its index proven inside the array),
+// widened to f64 where the element is narrower. A checked read carries its own tag.
+const presentElement = v => Array.isArray(v) && !v.checkedNumRead && (
+  v[0] === 'f64.load' ||
+  ((v[0] === 'f64.promote_f32' || v[0] === 'f64.convert_i32_s' || v[0] === 'f64.convert_i32_u') &&
+    Array.isArray(v[1]) && typeof v[1][0] === 'string' && /^(?:f32|i32)\.load/.test(v[1][0])))
+
 export function emitDecl(...inits) {
   const result = []
   // A `let`/`const` declared inside a loop creates a *fresh* binding each
@@ -942,6 +949,9 @@ export function emitDecl(...inits) {
     }
     const localType = ctx.func.locals.get(name) || 'f64'
     const ptrKind = repOf(name)?.ptrKind
+    // A binding the summary lets be absent, initialized from an element the
+    // emitter loaded without a check: this definition holds a number.
+    if (localType === 'f64' && presentElement(val) && mayBeUndefined(name)) (ctx.func.presentInits ??= []).push(name)
     // ptrKind inheritance for alias-init decls is predicted at PLAN time
     // (inheritPtrAliases — slice-4 P1); emit only asserts parity here.
     // Miss (val carries a ptrKind the plan didn't predict) means the predictor
@@ -1174,7 +1184,23 @@ export function emitBlockBody(node) {
       // Each cell is allocated at its first dominating use (placePreboxedLocalInits).
       const cellInits = frame.preboxInits?.get(s)
       if (cellInits) out.push(...cellInits)
+      const presentFrom = frame.presentInits?.length ?? 0
       out.push(...emitVoid(s))
+      // A declaration initialized from a present element (emitDecl) holds a
+      // number for the rest of this block, while nothing below assigns it.
+      if (frame.presentInits && frame.presentInits.length > presentFrom) {
+        const declared = Array.isArray(s) && (s[0] === 'let' || s[0] === 'const')
+        for (const name of frame.presentInits.splice(presentFrom)) {
+          if (!declared) continue
+          let reassigned = false
+          for (let j = i + 1; j < stmts.length; j++) if (isReassigned(stmts[j], name)) { reassigned = true; break }
+          if (reassigned) continue
+          const refinements = ctx.func.refinements ??= new Map()
+          const cur = refinements.get(name)
+          accumulated.push([name, cur])
+          refinements.set(name, cur ? { ...cur, notNullish: true } : { notNullish: true })
+        }
+      }
       // Sibling statements after an unconditional return/throw/break/continue
       // (or a nested `{}`/`;`-block whose OWN last statement is one) are
       // UNREACHABLE — real JS never evaluates them, so a reference inside

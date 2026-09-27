@@ -62,6 +62,7 @@ import { forEachLocalDef, isArr } from './node-utils.js'
 import { matchOuterPixelLoop } from './outer-scaffold.js'
 import { tryOuterStripRest } from './outer-strip.js'
 import { tryRampMap } from './ramp.js'
+import { tryPrefilter } from './prefilter.js'
 import { tryGeneralReduce, tryReduce } from './reduce.js'
 import { canonicalizeIfBr, foldVecIdentities, matchBlockLoop, normalizeTransparentBlocks } from './scaffold.js'
 import { tryGeneralStencil, tryStencil } from './stencil.js'
@@ -307,6 +308,8 @@ export function vectorizeLaneLocal(fn, opts = {}) {
           if (lifted) r = { wrapper: ['block', ...canon.setup, lifted.wrapper, ...canon.landing], newLocalDecls: [...canon.decls, ...lifted.newLocalDecls] }
         }
       }
+      // A guard whose first test the lanes can answer, over work too heavy to be common.
+      if (!r) r = tryPrefilter(bl, fnLocals, freshIdRef)
       // --why-not-simd: a canonical loop-shaped candidate that no SIMD pass took.
       // Reported BEFORE the scalar strength-reduce fallback (which fires on most
       // affine loops and would otherwise mask "didn't vectorize"). Diagnostic only.
