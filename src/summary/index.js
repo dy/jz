@@ -2072,7 +2072,8 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
         if (row && Number.isInteger(i) && i >= 0) return row[i] ?? ABSENT
         return orAbsent(entryOf(recv, ik))
       }
-      if (t === K.STRING) return STRING
+      // A string's character, or nothing past its end.
+      if (t === K.STRING) return orAbsent(STRING)
       // A computed key on a known shape reads one of its slots (a dispatch table's member), or misses.
       if (t === K.OBJECT && paramOf(recv) !== UNKNOWN) { let k = K.NONE; for (const sid of shapesOf(paramOf(recv))) { for (const s of slots(sid)) k = merge(k, s); k = merge(k, anySideOf(sid)) } return orAbsent(k) }
       if (dictOrObject(recv)) {

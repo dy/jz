@@ -15,7 +15,9 @@ import { ptrBits, i64Hex, OBJECT_SCHEMA_HI_MASK, objectSchemaGuardHex } from '..
 import { VAL, repOf, numericStorage, mayBeUndefined } from '../reps.js'
 import { valTypeOf, censusMaybeUndefined, censusMaybeUndefinedKind, numericDenied } from '../kind.js'
 import { intExprRange } from '../static.js'
-import { K, bitOf, hasTag, NULL_BITS, TAGS } from '../summary/kind.js'
+import { K, bitOf, hasTag, NULL_BITS, TAGS, NUMBER_OPS } from '../summary/kind.js'
+import { COMPOUND_NUMERIC_OPS } from '../kind-traits.js'
+import { COMPARE_OPS } from '../ast.js'
 import { typed } from './tag.js'
 import { temp, tempI32, tempI64, block64 } from './locals.js'
 import { ptrTypeEq } from './pointers.js'
@@ -107,6 +109,76 @@ export const coerceNullishToNum = (valIR) => typed(
       ['then', ['f64.const', 'nan']],
       ['else', cloneIR(valIR)]]]],
   'f64')
+
+// Runtime helpers whose result is a number whatever they read.
+const NUMERIC_HELPERS = new Set(['$__time_ms', '$__len', '$__str_len', '$__length', '$__to_num', '$__ptr_type', '$__ptr_offset', '$__to_int32'])
+
+/** Whether the value `v` yields may be the undefined a read answers for a miss:
+ *  a constant arm (an index past the end of an array), or a runtime reader's
+ *  result (an element of open kind, an empty array's `pop`, a missing key).
+ *  A local the expression itself sets answers by what it was set to. The kind
+ *  of such a read names its elements, so a numeric consumer would otherwise
+ *  take the undefined box as a number and carry its payload to the result. */
+export const mayYieldUndef = (v, scope = v) => {
+  if (!Array.isArray(v)) return false
+  const op = v[0]
+  if (op === 'f64.const') return v[1] === `nan:${UNDEF_NAN}`
+  if (op === 'block' || op === 'then' || op === 'else') return v.length > 1 && mayYieldUndef(v[v.length - 1], scope)
+  if (op === 'if') return v.some(c => Array.isArray(c) && (c[0] === 'then' || c[0] === 'else') && mayYieldUndef(c, scope))
+  if (op === 'select') return mayYieldUndef(v[1], scope) || mayYieldUndef(v[2], scope)
+  if (op === 'local.tee') return mayYieldUndef(v[2], scope)
+  if (op === 'f64.reinterpret_i64') return mayYieldUndef(v[1], scope)
+  if (op === 'call') return typeof v[1] === 'string' && v[1].startsWith('$__') && !NUMERIC_HELPERS.has(v[1])
+  if (op === 'local.get' && scope !== v) {
+    const name = v[1]
+    const sets = (n) => Array.isArray(n) && ((n[0] === 'local.set' || n[0] === 'local.tee') && n[1] === name && mayYieldUndef(n[2], n[2]) || n.some(sets))
+    return sets(scope)
+  }
+  return false
+}
+
+/** Whether the summary lets the expression `node` be missing, and its value
+ *  `v` is no shape that is a number by construction (arithmetic, a conversion,
+ *  a load the emitter made without a bounds test): a `find` that matched
+ *  nothing, a key a Map does not hold. A conditional answers by its arms, each
+ *  with its own value, where the value keeps the arms apart: the kind of the
+ *  whole joins what any arm may be on any path, while the emitter knows how it
+ *  loaded each (`a[i] > m ? a[i] : m` over an index in range is two numbers).
+ *  A binding that is an arm answers by what it holds: one that normalizes on
+ *  write, or that a guard or its definition holds present, is a number. */
+const mayMissExpr = (node, v) => typeof node !== 'string' && mayMissValue(node, v)
+/** Whether the value `v` of the expression `node` shows the undefined of a
+ *  miss (`mayYieldUndef`), read against the expression that made it: a sum's
+ *  helper calls return its result, never a miss. */
+export const mayYieldUndefOf = (node, v) => mayMissValue(node, v, false)
+// Operators whose result is their own: a sum or a concatenation, a product, a
+// comparison, a `typeof`. Their operands convert where they are read.
+const OWN_RESULT_OPS = new Set([...NUMBER_OPS, ...COMPOUND_NUMERIC_OPS, ...COMPARE_OPS, '+', '+=', 'u-', 'u+', '!', 'typeof', 'in', 'instanceof', '`', 'str'])
+const armTail = (v, tag) => { const a = v.find(c => Array.isArray(c) && c[0] === tag); return a && a.length > 1 ? a[a.length - 1] : null }
+const mayMissValue = (node, v, byKind = true) => {
+  if (!Array.isArray(v)) return false
+  if (Array.isArray(node) && OWN_RESULT_OPS.has(node[0])) return false
+  if (Array.isArray(node) && node[0] === '?:' && node.length === 4) {
+    if (v[0] === 'select' && v.length === 4) return mayMissValue(node[2], v[1], byKind) || mayMissValue(node[3], v[2], byKind)
+    const hit = v[0] === 'if' ? armTail(v, 'then') : null, miss = hit && armTail(v, 'else')
+    if (miss) return mayMissValue(node[2], hit, byKind) || mayMissValue(node[3], miss, byKind)
+  }
+  if (typeof node === 'string' && (v[0] === 'local.get' || v[0] === 'local.tee') && v[1] === `$${node}`) {
+    if (v[0] === 'local.tee') return mayMissValue(node, v[2], byKind)
+    if (numericStorage(node) || ctx.func.refinements?.get(node)?.notNullish) return false
+    if (ctx.func.maybeNullish?.has(node) || mayBeUndefined(node)) return true
+  }
+  return mayYieldUndef(v) || byKind && !(v[0] === 'f64.load' || isNumericIR(v)) &&
+    ctx.summary?.at(ctx.func.current)?.mayBeNullishExpr(node) === true
+}
+
+/** `v` with the undefined box taken to NaN: one compare and a select. */
+export const missToNaN = (v) => {
+  const t = temp('miss')
+  return typed(['block', ['result', 'f64'], ['local.set', `$${t}`, asF64(v)],
+    ['select', ['f64.const', 'nan'], ['local.get', `$${t}`],
+      ['i64.eq', ['i64.reinterpret_f64', ['local.get', `$${t}`]], ['i64.const', UNDEF_NAN]]]], 'f64')
+}
 
 /** ToNumber for a runtime value that is a Number or an atom (a closure's
  *  result in a program without `__to_num`): true→1, false/null→0, any other
@@ -261,6 +333,8 @@ export function toNumF64(node, v) {
           ['i64.eq', ['i64.reinterpret_f64', asF64(v)], ['i64.const', UNDEF_NAN]]], 'f64')
       return coerceNullishToNum(asF64(v))
     }
+    // The kind names what a read finds; a read that finds nothing answers undefined.
+    if (typeof node !== 'string' && (mayYieldUndef(v) || mayMissExpr(node, v))) return missToNaN(v)
     return asF64(v)
   }
   if (vt === VAL.DATE) {
@@ -373,6 +447,12 @@ export function toNumF64(node, v) {
       const lit = f[1]
       if (lit.startsWith('nan:'))                           // NaN-boxed sentinel/pointer
         return typed(['f64.const', lit.slice(4) === NULL_NAN ? 0 : 'nan'], 'f64')
+    }
+    // An expression the summary lets be missing converts where it is used:
+    // null is 0 and undefined NaN, a number itself.
+    if (mayYieldUndef(f) || mayMissExpr(node, f)) {
+      const t = temp('miss')
+      return typed(['block', ['result', 'f64'], ['local.set', `$${t}`, f], coerceNullishToNum(typed(['local.get', `$${t}`], 'f64'))], 'f64')
     }
     return f
   }

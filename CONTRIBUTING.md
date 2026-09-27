@@ -292,6 +292,32 @@ BigInt reads retain their raw-payload fact, while checked reads box only the
 successful branch. Atomic value operations share the existing operation catalogue
 with the summary: their result is an element or an exception, never undefined.
 
+A kind names what a read finds, and a read that finds nothing answers
+undefined: an index past the end of an array, a typed array or a string, an
+empty array's `pop`, a `find` that matched nothing, a key a Map does not hold.
+The undefined box is a NaN whose payload f64 arithmetic carries to its result,
+which then reads as undefined again, so ToNumber (`toNumF64`) converts a value
+that may be the box before a number is made of it. A constant miss arm folds
+to NaN (`checkedNumRead`); a value whose IR may yield the box (`mayYieldUndef`:
+a constant arm, a runtime reader's result, a local the expression set to
+either) or whose expression the summary lets be missing takes one compare and
+a select (`missToNaN`); a value that is a number by construction (arithmetic, a
+conversion, a load made without a bounds test) converts nothing. The kind of
+a conditional joins what any arm may be on any path, so a conditional answers
+by its arms, each with its own value (`mayMissValue`): a binding by what it
+holds (one that normalizes on write, or that a guard or its definition holds
+present, is a number), an element by how the emitter loaded it, an operator by
+its own result (a sum's helper calls return the sum). `a[i] > m ? a[i] : m`
+over an index in range is two numbers and converts nothing, which the lane
+lifts read as the select they take. A
+Float32Array store converts its value as a Float64Array's does: the payload
+survives the demotion and the promotion of a read. A string's character past
+its end is absent in the summary (`orAbsent(STRING)`), so an identity test of
+it stays live, and `+` takes a string operand that may be missing for a string
+only beside a string that is there; beside anything else the run decides
+(`stringMayMiss`). `test/missing-read.js` holds every receiver against every
+binding form and use.
+
 Computed typed-element reads delegate their bounds check to the element reader.
 Checked integer-read locals stay in word storage when the binding-use census
 proves every read is a bitwise operand or a discarded integer-element store.

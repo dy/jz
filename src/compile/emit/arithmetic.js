@@ -12,7 +12,7 @@ import { censusMaybeUndefined, censusMaybeUndefinedKind, numericDenied, valTypeO
 import { VAL, mayBeUndefined } from '../../reps.js'
 import { negRangeFitsI32 } from '../../static.js'
 import { K, hasTag, tagsOf, tagOf, paramOf, UNKNOWN, isPostfixRecovery } from '../../summary/kind.js'
-import { exprType } from '../../type.js'
+import { exprType, inBoundsArrIdx } from '../../type.js'
 import { storedValue } from '../../bridge.js'
 import {
   bigIntDivIR, bigIntDomainsCanMix, bigIntJointDispatch, bigIntOperand, bigIntUnary, bigintMemberAssignTarget, bigintMixReject, bigintResult, computedBoxOf, hasBigintDomain, numericStep,
@@ -202,6 +202,17 @@ const mayBeMissing = (node) => {
   return k != null && (hasTag(k, K.ABSENT) || hasTag(k, K.NULLISH))
 }
 
+// Whether a string operand may be missing: an index read the loop around it
+// does not bound, a binding the summary lets be absent, any other expression
+// whose kind carries a missing value.
+const stringMayMiss = (node) => {
+  if (Array.isArray(node) && node[0] === 'str') return false
+  if (typeof node === 'string') return mayBeMissing(node)
+  if (!mayBeMissing(node)) return false
+  return !(Array.isArray(node) && node[0] === '[]' && node.length === 3 && typeof node[1] === 'string' && typeof node[2] === 'string' &&
+    inBoundsArrIdx(ctx).has(node[1] + '\x00' + node[2]))
+}
+
 // Unknown addition shares one coercion path. The numeric guard keeps ordinary
 // numbers inline; the helper owns ToPrimitive, string precedence and BigInts.
 const genericAdd = (a, b, slowOnly = false) => {
@@ -259,8 +270,14 @@ export const arithmeticOps = {
     // String concatenation: pure string operands skip generic ToString coercion.
     // Number/nullish joins cannot concatenate. The numeric path still applies
     // ToNumber, preserving null as zero and a missing value as NaN.
-    const vtA = valTypeOf(a) ?? (censusMaybeUndefinedKind(a) === VAL.NUMBER ? VAL.NUMBER : null)
-    const vtB = valTypeOf(b) ?? (censusMaybeUndefinedKind(b) === VAL.NUMBER ? VAL.NUMBER : null)
+    const kindA = valTypeOf(a) ?? (censusMaybeUndefinedKind(a) === VAL.NUMBER ? VAL.NUMBER : null)
+    const kindB = valTypeOf(b) ?? (censusMaybeUndefinedKind(b) === VAL.NUMBER ? VAL.NUMBER : null)
+    // A string that may be missing decides the sum only beside a string that
+    // is there (a concatenation either way): beside anything else the missing
+    // value adds as NaN, so its kind is open and the run decides.
+    const missA = kindA === VAL.STRING && stringMayMiss(a), missB = kindB === VAL.STRING && stringMayMiss(b)
+    const vtA = missA && !(kindB === VAL.STRING && !missB) ? null : kindA
+    const vtB = missB && !(kindA === VAL.STRING && !missA) ? null : kindB
     // mayBeUndefined join (Slice 3, .work/archive/todo.md §deletion-sweep
     // §4 — the "NEWLY added" `+` STRING-concat gap): a STRING claim whose only
     // proof is a maybeUndefined-flagged dict/Map census read (or a bare name
@@ -275,7 +292,10 @@ export const arithmeticOps = {
     // flagged operand always falls through to the explicit `strI64`/toStrI64
     // coercion — that function's OWN existing censusMaybeUndefined guard
     // already stringifies the sentinel correctly ("undefined", not garbage).
-    const stringSafe = (vt, n) => vt === VAL.STRING && !censusMaybeUndefined(n)
+    // An element or a character read where the index may pass the end is a
+    // string only when it is there: past it the read is undefined, which adds
+    // as NaN and concatenates as "undefined" (stringMayMiss).
+    const stringSafe = (vt, n) => vt === VAL.STRING && !censusMaybeUndefined(n) && !stringMayMiss(n)
     if (stringSafe(vtA, a) && stringSafe(vtB, b)) {
       // Fused append-unit: `buf += s[i]` skips 1-char SSO construction + generic concat dispatch
       // when rhs is a string-index. The code unit flows from __char_at into memory and bump-

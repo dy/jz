@@ -2177,17 +2177,28 @@ export default (ctx) => {
         guard(['f64.store', off, asF64(storeV)]),
         ['local.get', `$${vt}`]], 'f64')
     }
-    if (et === 6) {
-      if (void_ && (ctx.transform.optFlags & OPTF.leanCheckedIdx) && pureStorable(valIR)) return typed(['block', ...pre,
-        guard(['f32.store', off, ['f32.demote_f64', asF64(valIR)]])], 'void')
+    if (et === 6) { // Float32Array
+      // The stored value's number, as for a Float64Array: the payload of a
+      // missing element survives the demotion and the promotion of a read, so
+      // the raw value would read back undefined where JS reads NaN.
+      const stored = toNumF64(val, valIR)
+      if (void_) {
+        if ((ctx.transform.optFlags & OPTF.leanCheckedIdx) && pureStorable(stored)) return typed(['block', ...pre,
+          guard(['f32.store', off, ['f32.demote_f64', asF64(stored)]])], 'void')
+        const vt = temp('tw')
+        return typed(['block', ...pre,
+          ['local.set', `$${vt}`, asF64(stored)],
+          guard(['f32.store', off, ['f32.demote_f64', ['local.get', `$${vt}`]]])], 'void')
+      }
       const vt = temp('tw')
-      return typed(void_ ? ['block', ...pre,
+      const reread = typed(['local.get', `$${vt}`], 'f64')
+      const storeV = stored === valIR ? reread
+        : ctx.core.stdlib['__to_num'] ? toNumF64(val, reread)
+        : coerceNullishToNum(reread)
+      return typed(['block', ['result', 'f64'], ...pre,
         ['local.set', `$${vt}`, asF64(valIR)],
-        guard(['f32.store', off, ['f32.demote_f64', ['local.get', `$${vt}`]]])]
-        : ['block', ['result', 'f64'], ...pre,
-        ['local.set', `$${vt}`, asF64(valIR)],
-        guard(['f32.store', off, ['f32.demote_f64', ['local.get', `$${vt}`]]]),
-        ['local.get', `$${vt}`]], void_ ? 'void' : 'f64') // Float32Array
+        guard(['f32.store', off, ['f32.demote_f64', asF64(storeV)]]),
+        ['local.get', `$${vt}`]], 'f64')
     }
     // Integer store: when the source is already i32-typed (bitwise ops, |0, known-i32 var) —
     // OR an `f64.convert_i32_*` that peels back to i32 (an Int8/Uint8/Int16/… element READ
