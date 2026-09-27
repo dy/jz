@@ -94,59 +94,60 @@ export const registerDurableLog = () => {
   // memory.copy shifts, reverse/sort's swaps, fill's overwrite) leaks round 1's
   // data into round 2 even though the length reads back correct. WHOLE-ARRAY
   // snapshot-on-first-touch (not per-element logging — see the design comment
-  // in collection.js for why): idempotent-per-`off` scan (identical shape to
-  // __durable_fwd_log's above, own 256-entry/16-byte-stride table so it never
-  // interacts with collections' OWN use of the fwd/slot logs), and on the
-  // round's true first touch to a given durable array, reads len/cap FRESH off
-  // the header (still the true pre-round values at that point, whichever site
-  // got there first) and memcpy's the CURRENT `len*8` live bytes into a fresh
-  // shadow block. `__durable_arr_heal` (wired into `__clear` post-hoc, like the
-  // other three heals) restores the header words AND memcpy's the shadow back —
+  // in collection.js for why): the round's first touch of a durable array
+  // reads len/cap FRESH off the header (still the true pre-round values at
+  // that point, whichever site got there first) and copies the `len*8` live
+  // bytes beside them. `__durable_arr_heal` (wired into `__clear` post-hoc,
+  // like the other three heals) restores the header words AND the cells —
   // exact byte-for-byte recovery, not durableSlotLogIR's "value unrecoverable,
   // undefined is honest" fallback: arrays need the true prior value back to
   // satisfy the splice repro (`a.splice(1,2)` must give the SAME answer every
-  // round, not just the same LENGTH). 256 entries mirrors __durable_fwd_buf's
-  // own trap-on-overflow ceiling — 0 pending entries in the overwhelmingly
-  // common program (most durable arrays are never mutated in place at all).
-  declGlobal('__durable_arr_buf', 'i32')
-  declGlobal('__durable_arr_n', 'i32')
+  // round, not just the same LENGTH).
+  //
+  // Sized by the data, not by a ceiling: a simulation keeps its state in
+  // durable arrays and writes every one of them each step, thousands of vec3
+  // in one round. `__durable_arr_seen` holds one bit per durable 8-byte
+  // address, so "already saved this round" is a load and a test on every later
+  // store; `__durable_arr_log` heads a list of records [next, off, len, cap,
+  // cells], one allocation each. Both live in the round's arena and die with
+  // it. The heal walks the list newest first, as an undo log does: a header a
+  // shift rebased onto another record's cells is overwritten by the older
+  // record that owns them.
+  declGlobal('__durable_arr_seen', 'i32')
+  declGlobal('__durable_arr_log', 'i32')
   ctx.core.stdlib['__durable_arr_snap'] = `(func $__durable_arr_snap (param $off i32)
-    (local $n i32) (local $i i32) (local $base i32) (local $len i32) (local $shadow i32)
-    (local.set $n (global.get $__durable_arr_n))
-    (block $scanned (loop $scan
-      (br_if $scanned (i32.ge_s (local.get $i) (local.get $n)))
-      (local.set $base (i32.add (global.get $__durable_arr_buf) (i32.mul (local.get $i) (i32.const 16))))
-      (if (i32.eq (i32.load (local.get $base)) (local.get $off)) (then (return)))
-      (local.set $i (i32.add (local.get $i) (i32.const 1)))
-      (br $scan)))
-    (if (i32.eqz (global.get $__durable_arr_buf))
-      (then (global.set $__durable_arr_buf (call $__alloc (i32.const 4096)))))
-    (if (i32.ge_s (local.get $n) (i32.const 256)) (then (unreachable)))
+    (local $cell i32) (local $bit i32) (local $len i32) (local $rec i32)
+    (if (i32.eqz (global.get $__durable_arr_seen))
+      (then
+        (local.set $len (i32.add (i32.shr_u (global.get $__heap_reset) (i32.const 6)) (i32.const 1)))
+        (global.set $__durable_arr_seen (call $__alloc (local.get $len)))
+        (memory.fill (global.get $__durable_arr_seen) (i32.const 0) (local.get $len))))
+    (local.set $cell (i32.add (global.get $__durable_arr_seen) (i32.shr_u (local.get $off) (i32.const 6))))
+    (local.set $bit (i32.shl (i32.const 1) (i32.and (i32.shr_u (local.get $off) (i32.const 3)) (i32.const 7))))
+    (if (i32.and (i32.load8_u (local.get $cell)) (local.get $bit)) (then (return)))
+    (i32.store8 (local.get $cell) (i32.or (i32.load8_u (local.get $cell)) (local.get $bit)))
     (local.set $len (i32.load (i32.sub (local.get $off) (i32.const 8))))
-    (local.set $shadow (call $__alloc (i32.shl (local.get $len) (i32.const 3))))
-    (memory.copy (local.get $shadow) (local.get $off) (i32.shl (local.get $len) (i32.const 3)))
-    (local.set $base (i32.add (global.get $__durable_arr_buf) (i32.mul (local.get $n) (i32.const 16))))
-    (i32.store (local.get $base) (local.get $off))
-    (i32.store offset=4 (local.get $base) (local.get $len))
-    (i32.store offset=8 (local.get $base) (i32.load (i32.sub (local.get $off) (i32.const 4))))
-    (i32.store offset=12 (local.get $base) (local.get $shadow))
-    (global.set $__durable_arr_n (i32.add (local.get $n) (i32.const 1))))`
+    (local.set $rec (call $__alloc (i32.add (i32.const 16) (i32.shl (local.get $len) (i32.const 3)))))
+    (i32.store (local.get $rec) (global.get $__durable_arr_log))
+    (i32.store offset=4 (local.get $rec) (local.get $off))
+    (i32.store offset=8 (local.get $rec) (local.get $len))
+    (i32.store offset=12 (local.get $rec) (i32.load (i32.sub (local.get $off) (i32.const 4))))
+    (memory.copy (i32.add (local.get $rec) (i32.const 16)) (local.get $off) (i32.shl (local.get $len) (i32.const 3)))
+    (global.set $__durable_arr_log (local.get $rec)))`
   ctx.core.stdlib['__durable_arr_heal'] = `(func $__durable_arr_heal
-    (local $i i32) (local $n i32) (local $base i32) (local $off i32) (local $len i32) (local $shadow i32)
-    (local.set $n (global.get $__durable_arr_n))
+    (local $rec i32) (local $off i32) (local $len i32)
+    (local.set $rec (global.get $__durable_arr_log))
     (block $done (loop $l
-      (br_if $done (i32.ge_s (local.get $i) (local.get $n)))
-      (local.set $base (i32.add (global.get $__durable_arr_buf) (i32.mul (local.get $i) (i32.const 16))))
-      (local.set $off (i32.load (local.get $base)))
-      (local.set $len (i32.load offset=4 (local.get $base)))
+      (br_if $done (i32.eqz (local.get $rec)))
+      (local.set $off (i32.load offset=4 (local.get $rec)))
+      (local.set $len (i32.load offset=8 (local.get $rec)))
       (i32.store (i32.sub (local.get $off) (i32.const 8)) (local.get $len))
-      (i32.store (i32.sub (local.get $off) (i32.const 4)) (i32.load offset=8 (local.get $base)))
-      (local.set $shadow (i32.load offset=12 (local.get $base)))
-      (memory.copy (local.get $off) (local.get $shadow) (i32.shl (local.get $len) (i32.const 3)))
-      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (i32.store (i32.sub (local.get $off) (i32.const 4)) (i32.load offset=12 (local.get $rec)))
+      (memory.copy (local.get $off) (i32.add (local.get $rec) (i32.const 16)) (i32.shl (local.get $len) (i32.const 3)))
+      (local.set $rec (i32.load (local.get $rec)))
       (br $l)))
-    (global.set $__durable_arr_n (i32.const 0))
-    (global.set $__durable_arr_buf (i32.const 0)))`
+    (global.set $__durable_arr_log (i32.const 0))
+    (global.set $__durable_arr_seen (i32.const 0)))`
 
   // Durable SLOT log — the value-write sibling of the relocation log above. A
   // collection whose storage is DURABLE (init-created dict, off < __heap_reset)

@@ -967,6 +967,30 @@ test('_clear() heals a durable array\'s data past a same-round shrink-then-grow 
   is(exports.f(), '1,2,,,', 'round 2 — same answer, not a further-eroded array')
 })
 
+// The snapshot log is sized by the data: a simulation writes every one of its
+// state vectors each step, far past any fixed count of touched arrays.
+test('_clear() heals thousands of durable arrays written in one round', () => {
+  const src = `
+    const N = 4096
+    const ps = []
+    for (let i = 0; i < N; i++) ps.push([i, i * 2, i * 3])
+    export let step = (k) => {
+      let s = 0
+      for (let i = 0; i < N; i++) { const p = ps[i]; p[0] += k; p[1] += k; p[2] += k; s += p[0] + p[1] + p[2] }
+      return s
+    }`
+  const want = (rounds) => { let s = 0; for (let i = 0; i < 4096; i++) s += i * 6 + 3 * rounds; return s }
+  for (const optimize of levels(false, 2)) {
+    const { exports } = jz(src, { optimize })
+    is(exports.step(1), want(1), 'first step of round 1')
+    is(exports.step(1), want(2), 'a second step builds on the first')
+    exports._clear()
+    is(exports.step(1), want(1), 'round 2 starts from the state module init left')
+    exports._clear()
+    is(exports.step(1), want(1), 'round 3 likewise')
+  }
+})
+
 // .shift()'s in-place rebasing is documented (module/array.js, __arr_shift's own
 // comment) as INTENTIONALLY surviving `_clear()` — a durable array's header pointer
 // permanently advances, treated as legitimate persistent state, not a per-round
