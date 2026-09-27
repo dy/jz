@@ -6,12 +6,12 @@
 
 import { representationProgramHasBigint } from '../representation-plan.js'
 import { ctx, inc, LAYOUT } from '../../ctx.js'
-import { asF64, asI32, asI64, block64, emitNum, f64rem, isGlobal, isLit, isPostfix, isPureIR, litVal, readI64, temp, toNumF64, toStrI64, typed, withTemp } from '../../ir.js'
+import { asF64, asI32, asI64, block64, coerceNullishToNum, emitNum, f64rem, isGlobal, isLit, isPostfix, isPureIR, litVal, readI64, temp, toNumF64, toStrI64, typed, withTemp } from '../../ir.js'
 import { MUTATE_OPS, some } from '../../ast.js'
 import { censusMaybeUndefined, censusMaybeUndefinedKind, numericDenied, valTypeOf } from '../../kind.js'
 import { VAL, mayBeUndefined } from '../../reps.js'
 import { negRangeFitsI32 } from '../../static.js'
-import { K, hasTag, tagsOf, tagOf, paramOf, UNKNOWN, isPostfixRecovery } from '../../summary/kind.js'
+import { K, core, hasTag, tagsOf, tagOf, paramOf, UNKNOWN, isPostfixRecovery } from '../../summary/kind.js'
 import { exprType, inBoundsArrIdx } from '../../type.js'
 import { storedValue } from '../../bridge.js'
 import {
@@ -202,6 +202,17 @@ const mayBeMissing = (node) => {
   return k != null && (hasTag(k, K.ABSENT) || hasTag(k, K.NULLISH))
 }
 
+// Whether the summary holds `node` to a number or a missing value: a field a
+// literal declared undefined and every store made a number, an element past
+// the end of a number array. A call's result keeps the generic sum: its kind
+// is the callee's, which a closure table's call sites pin as open
+// (test/closures.js, the fail-open pins of the parameter lattice).
+const numberOrMissing = (node) => {
+  if (Array.isArray(node) && (node[0] === '()' || node[0] === '?.()')) return false
+  const k = ctx.summary?.at(ctx.func.current)?.kindOfExpr(node)
+  return k != null && tagOf(core(k)) === K.NUMBER
+}
+
 // Whether a string operand may be missing: an index read the loop around it
 // does not bound, a binding the summary lets be absent, any other expression
 // whose kind carries a missing value.
@@ -364,6 +375,21 @@ export const arithmeticOps = {
     if (hasBigintDomain(a) || hasBigintDomain(b)) {
       bigintMixReject('+', a, b)
       return bigintResult(['i64.add', bigIntOperand(a), bigIntOperand(b)], self)
+    }
+    // A side the summary holds to a number or a missing value is no string and
+    // no object: with the other a number the sum is numeric, the missing value
+    // converted (null is 0, undefined NaN) behind the self-compare every real
+    // number passes.
+    if ((vtA == null || vtB == null) && (vtA === VAL.NUMBER || vtA == null && numberOrMissing(a)) &&
+        (vtB === VAL.NUMBER || vtB == null && numberOrMissing(b))) {
+      const side = (vt, n) => {
+        if (vt === VAL.NUMBER) return toNumF64(n, emit(n))
+        const t = temp('add'), get = () => typed(['local.get', `$${t}`], 'f64')
+        return typed(['if', ['result', 'f64'], ['f64.eq', ['local.tee', `$${t}`, asF64(emit(n))], get()],
+          ['then', get()], ['else', coerceNullishToNum(get())]], 'f64')
+      }
+      const x = side(vtA, a)
+      return typed(['f64.add', x, side(vtB, b)], 'f64')
     }
     // Runtime string dispatch when at least one side could be a string. When one side has
     // a known non-STRING vtype, skip its `__is_str_key` (statically false). Common in

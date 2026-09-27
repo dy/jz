@@ -287,7 +287,10 @@ Implicit ToNumber rejects BigInt. Explicit `Number()` accepts its payload and
 delegates all other parsing to the same helper. Unary plus and string positions
 use ToNumber; an unboxed object pointer is never a numeric proof. Excluding a
 BigInt tag does not prove a Number: unresolved addition uses the shared
-ToPrimitive/string/BigInt helper, with plain numbers kept inline. Present typed
+ToPrimitive/string/BigInt helper, with plain numbers kept inline. A side the
+summary holds to a number or a missing value (a field declared undefined and
+stored numbers) is no string and no object: with the other side a number the
+sum is numeric, the missing value converted behind a self-compare. Present typed
 BigInt reads retain their raw-payload fact, while checked reads box only the
 successful branch. Atomic value operations share the existing operation catalogue
 with the summary: their result is an element or an exception, never undefined.
