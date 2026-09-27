@@ -7,24 +7,22 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { runInNewContext } from 'node:vm'
 import test from 'tst'
-import { is } from 'tst/assert.js'
-import { benchmarkRatio, classifyBenchmarkChecksum, correctBenchmarkRow, headlineStats, timedBenchmarkRow, CLS_ICO, LAB } from '../assets/headline.js'
+import { is, almost } from 'tst/assert.js'
+import { benchmarkRatio, classifyBenchmarkChecksum, correctBenchmarkRow, figure, timedBenchmarkRow, CLS_ICO, LAB } from '../assets/headline.js'
 
 const C = (jz, rest) => ({ targets: { jz, ...rest } })
 
-test('headline: ratios are geomean(target/jz), peak is max, sizes are median', () => {
+test('figure: speed is geomean(target/jz), size is the median of jz/target', () => {
   const r = { cases: {
     a: C({ medianUs: 100, bytes: 1000, parity: 'ok' },
       { v8: { medianUs: 200, parity: 'ok' }, as: { medianUs: 300, bytes: 900, parity: 'ok' }, 'rust-wasm': { medianUs:90, parity: 'ok' } }),
     b: C({ medianUs: 100, bytes: 2000, parity: 'ok' },
       { v8: { medianUs: 400, parity: 'ok' }, as: { medianUs: 300, bytes: 1000, parity: 'ok' }, 'rust-wasm': { medianUs:110, parity: 'ok' } }),
   } }
-  const s = headlineStats(r)
-  is(s.asspeed, '3×')    // geomean(300/100, 300/100) — the figure this test exists to pin
-  is(s.v8, '2.8×')       // geomean(2, 4) = √8
-  is(s.rust, '1×')       // geomean(0.9, 1.1) ≈ 0.995 → 1×
-  is(s.peak, '4×')       // max V8/jz speedup, not a geomean
-  is(s.assize, '1.6×')   // median(1000/900, 2000/1000) averages both middle values
+  almost(figure(r, 'speed', 'as'), 3, 1e-12)                        // geomean(300/100, 300/100)
+  almost(figure(r, 'speed', 'v8'), Math.sqrt(8), 1e-12)              // geomean(2, 4)
+  almost(figure(r, 'speed', 'rust-wasm'), Math.sqrt(.99), 1e-12)     // geomean(0.9, 1.1)
+  almost(figure(r, 'size', 'as'), (1000 / 900 + 2000 / 1000) / 2, 1e-12)   // the median averages both middle values
 })
 
 test('headline: a WRONG-result (parity DIFF) run is excluded from the ratio', () => {
@@ -32,7 +30,7 @@ test('headline: a WRONG-result (parity DIFF) run is excluded from the ratio', ()
     a: C({ medianUs: 100, parity: 'ok' }, { as: { medianUs: 300, parity: 'ok' } }),
     b: C({ medianUs: 100, parity: 'ok' }, { as: { medianUs: 9999, parity: 'DIFF' } }),  // miscompiled → must not count
   } }
-  is(headlineStats(r).asspeed, '3×')   // only case `a`; the DIFF run is dropped
+  almost(figure(r, 'speed', 'as'), 3, 1e-12)   // only case `a`; the DIFF run is dropped
 })
 
 test('headline: benchmark-row validity is exact and positive timing is a separate boundary', () => {
@@ -64,16 +62,14 @@ test('headline: independently verified FMA variants are exact checksum alternati
     is(classifyBenchmarkChecksum(checksum, 7, [null, undefined, NaN]), 'DIFF', 'missing and NaN alternatives are not checksums')
 })
 
-test('headline: a WRONG-result JZ row is excluded from speed, size, memory, and peak', () => {
+test('figure: a WRONG-result JZ row is excluded from speed, size and memory', () => {
   const r = { cases: {
     good: C({ medianUs: 100, bytes: 200, memKb: 100, parity: 'ok' }, { v8: { medianUs: 300, memKb: 300, parity: 'ok' }, as: { medianUs: 300, bytes: 100, parity: 'ok' } }),
     wrong: C({ medianUs: 1, bytes: 1, memKb: 1, parity: 'DIFF' }, { v8: { medianUs: 9999, memKb: 9999, parity: 'ok' }, as: { medianUs: 9999, bytes: 9999, parity: 'ok' } }),
   } }
-  const stats = headlineStats(r)
-  is(stats.asspeed, '3×', 'wrong JZ timing does not inflate speed')
-  is(stats.peak, '3×', 'wrong JZ timing does not inflate peak')
-  is(stats.assize, '2×', 'wrong JZ bytes do not shrink the size ratio')
-  is(stats.v8mem, '0.33×', 'memory is the fraction of V8 RSS used by JZ')
+  almost(figure(r, 'speed', 'as'), 3, 1e-12, 'wrong JZ timing does not inflate speed')
+  almost(figure(r, 'size', 'as'), 2, 1e-12, 'wrong JZ bytes do not shrink the size ratio')
+  almost(figure(r, 'memory', 'v8'), 1 / 3, 1e-12, 'memory is the fraction of V8 RSS used by JZ')
 })
 
 test('benchmark ratios: paired positive finite measurements, independent columns and no retained state', () => {
@@ -99,34 +95,31 @@ test('benchmark ratios: paired positive finite measurements, independent columns
   }
 })
 
-test('headline: size median excludes invalid and lab cases; RSS direction is explicit for V8 and AssemblyScript', () => {
+test('figure: size median excludes invalid and lab cases; RSS direction is explicit for V8 and AssemblyScript', () => {
   const pair = (bytes, memKb = 50) => C({ bytes, memKb, parity: 'ok' }, {
     as: { bytes: 100, memKb: 100, parity: 'ok' }, v8: { memKb: 100, parity: 'ok' },
   })
   const cases = { a: pair(100), b: pair(300), c: pair(900), jz: pair(99999), bad: pair(Infinity) }
-  const s = headlineStats({ cases })
-  is(s.assize, '3×', 'odd median over valid finite sizes outside LAB')
-  is(s.v8mem, '0.50×', 'half the RSS reads as half of V8')
-  is(s.asmem, '0.50×', 'half the RSS reads as half of AssemblyScript')
+  is(figure({ cases }, 'size', 'as'), 3, 'odd median over valid finite sizes outside LAB')
+  almost(figure({ cases }, 'memory', 'v8'), .5, 1e-12, 'half the RSS reads as half of V8')
+  almost(figure({ cases }, 'memory', 'as'), .5, 1e-12, 'half the RSS reads as half of AssemblyScript')
   delete cases.c
-  is(headlineStats({ cases }).assize, '2×', 'even median averages middle values')
+  is(figure({ cases }, 'size', 'as'), 2, 'even median averages middle values')
   cases.a.targets.as.parity = 'DIFF'
-  is(headlineStats({ cases }).assize, '3×', 'wrong AssemblyScript row excluded')
-  is(headlineStats({ cases: {} }).assize, null, 'empty size hidden')
-  is(headlineStats({ cases: {} }).v8mem, null, 'empty RSS hidden')
-  is(headlineStats({ cases: {} }).asmem, null, 'empty AssemblyScript RSS hidden')
-  is(headlineStats({ cases: { a: pair(100, 200) } }).v8mem, '2.00×', 'double RSS is not described as a saving')
+  is(figure({ cases }, 'size', 'as'), 3, 'wrong AssemblyScript row excluded')
+  is(figure({ cases: {} }, 'size', 'as'), null, 'empty size hidden')
+  is(figure({ cases: {} }, 'memory', 'v8'), null, 'empty RSS hidden')
+  is(figure({ cases: {} }, 'memory', 'as'), null, 'empty AssemblyScript RSS hidden')
+  almost(figure({ cases: { a: pair(100, 200) } }, 'memory', 'v8'), 2, 1e-12, 'double RSS is not described as a saving')
 })
 
-test('headline: missing-parity and zero-time rows are excluded', () => {
+test('figure: missing-parity and zero-time rows are excluded', () => {
   const r = { cases: {
     good: C({ medianUs: 100, parity: 'ok' }, { v8: { medianUs: 300, parity: 'ok' } }),
     unknown: C({ medianUs: 1 }, { v8: { medianUs: 9999, parity: 'ok' } }),
     zero: C({ medianUs: 0, parity: 'ok' }, { v8: { medianUs: 9999, parity: 'ok' } }),
   } }
-  const stats = headlineStats(r)
-  is(stats.v8, '3×', 'only positive rows with accepted checksums contribute')
-  is(stats.peak, '3×', 'invalid zero-time rows cannot produce Infinity')
+  almost(figure(r, 'speed', 'v8'), 3, 1e-12, 'only positive rows with accepted checksums contribute; zero time cannot produce Infinity')
 })
 
 test('bench page: invalid rows stay outside corpus and per-case ratio bars', () => {
@@ -163,7 +156,7 @@ test('bench page: reference and CI snapshots render Perry independently, with ma
       addEventListener() {}, setAttribute(k, v) { this.attrs[k] = v },
     } }
     await runInNewContext(`(async () => {${script}\n})()`, {
-      benchmarkRatio, correctBenchmarkRow, headlineStats, timedBenchmarkRow, CLS_ICO, LAB,
+      benchmarkRatio, correctBenchmarkRow, timedBenchmarkRow, CLS_ICO, LAB,
       document, URLSearchParams, location: { search }, navigator: { userAgent: 'test' },
       fetch: async path => {
         fetched.push(path)
@@ -225,19 +218,19 @@ test('bench chart: tiny native RSS cannot clip hosted runtimes; missing memory s
   is(rendered.map(r => Math.round(r.maxLin)), [2, 2, 2, 2, 2], 'shared scale keeps all measured bars below the 12× cutoff')
 })
 
-test('headline: an attempted-but-failed run ({status:"fail"}) is excluded, never NaN', () => {
+test('figure: an attempted-but-failed run ({status:"fail"}) is excluded, never NaN', () => {
   const r = { cases: {
     a: C({ medianUs: 100, parity: 'ok' }, { 'porf-native': { medianUs: 300, parity: 'ok' } }),
     b: C({ medianUs: 100, parity: 'ok' }, { 'porf-native': { status: 'fail', reason: 'memory access out of bounds' } }),  // didn't run → must not count, must not NaN
   } }
-  is(headlineStats(r).porf, '3×')   // only case `a`; the failed run is dropped, not pushed as undefined/jz
+  almost(figure(r, 'speed', 'porf-native'), 3, 1e-12)   // only case `a`; the failed run is dropped, not pushed as undefined/jz
 })
 
-test('headline: null when a target is absent (never NaN/Infinity)', () => {
-  const s = headlineStats({ cases: { a: C({ medianUs: 100, parity: 'ok' }, { v8: { medianUs: 200, parity: 'ok' } }) } })
-  is(s.asspeed, null)    // no AssemblyScript target anywhere
-  is(s.porf, null)
-  is(s.assize, null)
+test('figure: null when a target is absent (never NaN/Infinity)', () => {
+  const r = { cases: { a: C({ medianUs: 100, parity: 'ok' }, { v8: { medianUs: 200, parity: 'ok' } }) } }
+  is(figure(r, 'speed', 'as'), null)    // no AssemblyScript target anywhere
+  is(figure(r, 'speed', 'porf-native'), null)
+  is(figure(r, 'size', 'as'), null)
 })
 
 test('bench README: aggregate geomeans exclude wrong and unclassified rows on either side', () => {

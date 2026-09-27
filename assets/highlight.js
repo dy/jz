@@ -1,16 +1,18 @@
 // One syntax highlighter for the site: the REPL editor, its WAT pane and the guide's
 // code blocks. One regex per language, monochrome classes — k keyword, t Type, n number,
-// s string, c comment — and each surface sets the class colors on its own palette.
+// s string, c comment, d declared name, f called name, p punctuation/operator — and each
+// surface sets the class tones on its own palette (names bright, structure receding).
 const esc = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;')
 
-// JS: comment / jz`…` / string / number / keyword / Type. A jz-tagged template body is
-// JZ source, so it is highlighted as code rather than as a string (the group sits ahead
-// of the string group; alternation is ordered).
-const TOKEN = /(\/\/[^\n]*|\/\*[\s\S]*?\*\/)|(\bjz`(?:\\.|[^`\\])*`)|('(?:\\.|[^'\\\n])*'?|"(?:\\.|[^"\\\n])*"?|`(?:\\.|[^`\\])*`?)|\b(0[xXbBoO][0-9a-fA-F_]+|\d[\d_]*(?:\.\d+)?(?:[eE][+-]?\d+)?)\b|\b(let|const|var|function|class|new|return|if|else|for|while|do|break|continue|export|import|from|default|try|catch|finally|throw|typeof|instanceof|in|of|switch|case|this|extends|super|static|null|undefined|true|false)\b|\b([A-Z][A-Za-z0-9_]*)\b/g
-const TOKEN_CLS = ['c', 'jz', 's', 'n', 'k', 't']
-// WAT: comment(;;) / string / $name / keyword / type / number
-const WTOKEN = /(;;[^\n]*)|("(?:\\.|[^"\\\n])*")|(\$[^\s()";]+)|\b(module|func|param|result|local|global|memory|data|table|elem|type|import|export|start|mut|offset|align|shared|block|loop|if|then|else|end|br|br_if|call|call_indirect|return)\b|\b(i32|i64|f32|f64|v128|funcref|externref)\b|(-?(?:0x[0-9a-fA-F_]+|\d[\d_]*(?:\.\d+)?(?:[eE][+-]?\d+)?|nan|inf))/g
-const WCLS = ['c', 's', 't', 'k', 't', 'n']
+// JS: comment / jz`…` / string / number / keyword / Type / declared name (after let,
+// const, var, function, class) / called name (before a paren) / punctuation. A jz-tagged
+// template body is JZ source, so it is highlighted as code rather than as a string (the
+// group sits ahead of the string group; alternation is ordered).
+const TOKEN = /(\/\/[^\n]*|\/\*[\s\S]*?\*\/)|(\bjz`(?:\\.|[^`\\])*`)|('(?:\\.|[^'\\\n])*'?|"(?:\\.|[^"\\\n])*"?|`(?:\\.|[^`\\])*`?)|\b(0[xXbBoO][0-9a-fA-F_]+|\d[\d_]*(?:\.\d+)?(?:[eE][+-]?\d+)?)\b|\b(let|const|var|function|class|new|return|if|else|for|while|do|break|continue|export|import|from|default|try|catch|finally|throw|typeof|instanceof|in|of|switch|case|this|extends|super|static|null|undefined|true|false)\b|\b([A-Z][A-Za-z0-9_]*)\b|((?<=\b(?:let|const|var|function|class)\s+)[A-Za-z_$][\w$]*)|([A-Za-z_$][\w$]*(?=\s*\())|([()[\]{};,.]|=>|[-+*\/%=<>!&|^~?:]+)/g
+const TOKEN_CLS = ['c', 'jz', 's', 'n', 'k', 't', 'd', 'f', 'p']
+// WAT: comment(;;) / string / $name / keyword / type / number / paren
+const WTOKEN = /(;;[^\n]*)|("(?:\\.|[^"\\\n])*")|(\$[^\s()";]+)|\b(module|func|param|result|local|global|memory|data|table|elem|type|import|export|start|mut|offset|align|shared|block|loop|if|then|else|end|br|br_if|call|call_indirect|return)\b|\b(i32|i64|f32|f64|v128|funcref|externref)\b|(-?(?:0x[0-9a-fA-F_]+|\d[\d_]*(?:\.\d+)?(?:[eE][+-]?\d+)?|nan|inf))|([()])/g
+const WCLS = ['c', 's', 'd', 'k', 't', 'n', 'p']
 
 const tokenize = (src, re, cls) => {
   let html = '', last = 0, m; re.lastIndex = 0
