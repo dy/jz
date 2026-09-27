@@ -28,6 +28,7 @@ import { instantiate } from '../interop.js'
 import { FLOATBEATS, moduleSrc } from '../examples/jukebox/floatbeats.js'
 import { timedBenchmarkRow } from '../assets/headline.js'
 import { PORFFOR_RELEASE, PORFFOR_REV, porfforEvidenceMatches, porfforFloor } from './_porffor-floor.js'
+import { WASM_BAND_TOL } from '../bench/claims.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const ROOT = join(HERE, '..')
@@ -447,7 +448,6 @@ const WASM_TODO = {
 //   red     ratio > 1.05          — a rival leads; fails the gate
 // The gate's failure bar is unchanged (red fails); the split changes what the
 // evidence CLAIMS: the strict/band/red counts print with every run.
-const WASM_BAND_TOL = 1.05
 
 // ── Run the speed harness ───────────────────────────────────────────────────
 // Full corpus (no --cases): the fastest-wasm claim is gated on EVERY case, not a curated

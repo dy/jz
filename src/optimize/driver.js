@@ -21,6 +21,7 @@ import {
 import { hoistInvariantPtrOffset, splitLoopPrivateScratch, hoistInvariantLoop, narrowLoopBound, cseScalarLoad } from './licm.js'
 import { promoteGlobals } from './globals.js'
 import { unswitchTypedParamLoop, unswitchStringRepLoop } from './unswitch.js'
+import { foldGuardedUpdates } from './guarded-update.js'
 import { wideAccumulator } from './wide-accumulator.js'
 import { devirtSchemaReads, foldStaticConstArrayReads, devirtConstFnArrayCalls } from './devirt.js'
 
@@ -124,6 +125,8 @@ export function optimizeFunc(fn, cfg, globalTypes, reachableWrites) {
     // iteration in hot dot/sum-style reduction loops.
     foldV128Memargs(fn)
   }
+  // After the lift: the vectorizer reads a conditional update in its branch form.
+  if (cfg && cfg.guardedUpdate === true) foldGuardedUpdates(fn)
   // Preserve source-unrolled SSA scratch before propagation sinks its single
   // definition into a local.tee. The transform is gated while it matures; when
   // enabled, its moved invariants ride the normal LICM pass once more below.

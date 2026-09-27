@@ -290,6 +290,15 @@ export function fusedRewrite(fn, bigint = false, inlineTruthy = true) {
     if (!bounds.has(name)) bounds.set(name, boundedFloatLocal(name, defs.get(name), owners, params))
     return bounds.get(name)
   }
+  // A local's reads in the function as it stood before this walk.
+  let readCount
+  get.reads = name => {
+    if (!readCount) {
+      readCount = new Map()
+      walkAst(fn, { enter: n => { if (n[0] === 'local.get') readCount.set(n[1], (readCount.get(n[1]) || 0) + 1) } })
+    }
+    return readCount.get(name) || 0
+  }
   // Flow intervals for the range folds below, valid for this walk's tree only.
   tagFlowRanges(fn, bodyStart, floatLocals)
   for (let i = bodyStart; i < fn.length; i++) {
@@ -297,7 +306,7 @@ export function fusedRewrite(fn, bigint = false, inlineTruthy = true) {
     if (Array.isArray(c)) fn[i] = walkRewrite(c, !skipInline, freshI64, freshF64, get, bigint, inlineTruthy)
   }
   clearFlowRanges(fn)
-  mergeByteStores(fn, bodyStart)
+  mergeByteStores(fn, bodyStart, get.reads)
   if (newDecls.length) fn.splice(bodyStart, 0, ...newDecls)
 }
 
@@ -441,8 +450,9 @@ const wordByte = (value, width, k) => {
  *  expression and differ by the byte position; the values read one word local,
  *  which a temp the emitter sets beside each store may carry. The first store
  *  keeps its address and value expressions, so their tees stay, and the later
- *  stores go; a temp's set stays as a dead pure assignment. */
-function mergeByteStores(list, start) {
+ *  stores go, each with the temp only it read (`reads` counts a local's reads
+ *  in the function). */
+function mergeByteStores(list, start, reads) {
   for (let i = start; i < list.length; i++) {
     const first = storeStmt(list[i])
     if (!first || (first.node[0] !== 'i32.store8' && first.node[0] !== 'i32.store16')) continue
@@ -467,10 +477,12 @@ function mergeByteStores(list, start) {
     const merged = [bytes === 2 ? 'i32.store16' : 'i32.store']
     if (first.parts.offset) merged.push(`offset=${first.parts.offset}`)
     merged.push(first.parts.addr, unmask(first.parts.value, mask))
-    if (first.temp) list[i][2] = merged
-    else list[i] = merged
+    // A temp read once was read by its store alone: its set goes with the store.
     const rest = []
-    for (let k = 1; k < run; k++) { const s = list[i + k]; if (s[0] === 'block') rest.push(s[1]) }
+    for (let k = 1; k < run; k++) { const s = list[i + k]; if (s[0] === 'block' && reads(s[1][1]) !== 1) rest.push(s[1]) }
+    if (first.temp && reads(first.temp) === 1) list[i] = merged
+    else if (first.temp) list[i][2] = merged
+    else list[i] = merged
     list.splice(i + 1, run - 1, ...rest)
   }
 }
@@ -788,10 +800,10 @@ function walkRewrite(node, doInline, freshI64, freshF64, get, bigint, inlineTrut
       }
     }
   }
-  if (op === 'block' || op === 'loop' || op === 'then' || op === 'else') {
+  if (get && (op === 'block' || op === 'loop' || op === 'then' || op === 'else')) {
     let start = 1
     while (start < node.length && (typeof node[start] === 'string' || (Array.isArray(node[start]) && node[start][0] === 'result'))) start++
-    mergeByteStores(node, start)
+    mergeByteStores(node, start, get.reads)
   }
   return node
 }

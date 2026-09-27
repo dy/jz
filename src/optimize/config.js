@@ -63,7 +63,7 @@ const ALL_ON = Object.freeze(Object.fromEntries(PASS_NAMES.map(n => [n, true])))
 const ALL_OFF = Object.freeze(Object.fromEntries(PASS_NAMES.map(n => [n, false])))
 // Default (level 2) preset body — shared with 'fast' below, which derives from it.
 const L3_PRESET = Object.freeze({ ...ALL_ON, hoistConstantPool: false, arrayMinCap: 4, reduceUnroll: true, relaxedSimd: true, inlineFns: true, rotateLoops: true, watrLicm: true, watrProfile: 'speed', watrGuard: false, unrollScalarChain: true, selectArmUpdates: true })
-const L2_PRESET = Object.freeze({ ...ALL_ON, nestedSmallConstForUnroll: 'auto', splitScratch: false, boolConvertToSelect: false, speculateSchemaBranches: false, recursionUnroll: false, unswitchStringRepLoop: false, unrollScalarChain: false, selectArmUpdates: false, watrProfile: 'speed', inlinePtrOffsetFast: false })
+const L2_PRESET = Object.freeze({ ...ALL_ON, nestedSmallConstForUnroll: 'auto', splitScratch: false, boolConvertToSelect: false, speculateSchemaBranches: false, recursionUnroll: false, unswitchStringRepLoop: false, unrollScalarChain: false, selectArmUpdates: false, guardedUpdate: false, watrProfile: 'speed', inlinePtrOffsetFast: false })
 
 const LEVEL_PRESETS = Object.freeze({
   0: ALL_OFF,
@@ -110,6 +110,7 @@ const LEVEL_PRESETS = Object.freeze({
     unrollRecurrence: false,  // ×2 body duplication is a size regression — speed-only
     unrollScalarChain: false, // ×2 body duplication is a size regression — speed-only
     selectArmUpdates: false,  // latency-for-predictability trade — speed-only
+    guardedUpdate: false,     // latency-for-predictability trade — speed-only
     forInUnroll: false,       // one body copy per schema key — speed-only
     clampPeel: false,         // edge-clamp peel triples a stencil loop (clamp-free interior + 2 edges) to vectorize — speed-only
     sentinelGuards: false,    // a sentinel guard copies its loop or block suffix — speed-only

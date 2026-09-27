@@ -4,7 +4,7 @@ import { execFileSync, spawnSync } from 'node:child_process'
 import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { cpus, homedir, tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { createRequire } from 'node:module'
 import { compile } from '../index.js'
 import { resolveModuleGraph } from '../src/resolve.js'
@@ -27,6 +27,12 @@ const WABT_INCLUDE_DIR = process.env.WABT_INCLUDE_DIR || (existsSync(join(WABT_W
 // jz case fails to compile to native. Derive it from WABT_W2C_DIR; override via SIMDE_DIR.
 const SIMDE_DIR = process.env.SIMDE_DIR || join(WABT_W2C_DIR, '..', 'third_party', 'simde')
 const W2C_POSTPROCESS = join(ROOT, 'scripts', 'native', 'postprocess-watr.awk')
+// A/B baseline: the compiler of another checkout, measured beside this tree's
+// on one machine. Paired rounds alternate `jz` and `jz-base`, so their ratio is
+// the change's own effect whatever CPU the runner drew.
+const JZ_BASE_ROOT = process.env.JZ_BASE_ROOT ? resolve(process.env.JZ_BASE_ROOT) : null
+const compileBase = JZ_BASE_ROOT ? (await import(pathToFileURL(join(JZ_BASE_ROOT, 'index.js')).href)).compile : null
+const gitHead = cwd => { try { return execFileSync('git', ['rev-parse', '--short', 'HEAD'], { cwd, encoding: 'utf8' }).trim() } catch { return null } }
 // Native-speed profile. Guard-page mmap makes the hoisted memory base stable
 // across memory.grow and preserves OOB trapping after the postprocessor removes
 // inline bounds checks. The unchecked stack-depth counter is WABT's documented
@@ -421,6 +427,8 @@ const jzHostWasmPath = c => join(caseBuild(c), `${c.id}-host.wasm`)
 // build that `run` measures) — each axis shows jz's best profile, mirroring how
 // a real deployment picks -Os for footprint-critical and speed for hot paths.
 const jzSizeWasmPath = c => join(caseBuild(c), `${c.id}-size.wasm`)
+const jzBaseWasmPath = c => join(caseBuild(c), `${c.id}-base-host.wasm`)
+const jzBaseSizeWasmPath = c => join(caseBuild(c), `${c.id}-base-size.wasm`)
 const flatPath = c => join(caseBuild(c), `${c.id}-flat.js`)
 const porfFlatPath = c => join(caseBuild(c), `${c.id}-porf-flat.js`)
 const nativeFlatPath = c => join(caseBuild(c), `${c.id}-native-flat.js`)
@@ -508,7 +516,7 @@ const watrModuleSources = () => ({
 // row's timed/run build; `level: 'size'` is the -Os build the size column reads.
 // Both offload formatting via env.logResult (the benchlibHostSource patch), so
 // the comparison to AS — which offloads via @external logLine — is like-for-like.
-const compileJzAt = (c, optimize) => {
+const compileJzAt = (c, optimize, compiler = compile) => {
   const isWatr = c.id === 'watr'
   // Graph cases resolve their whole import graph (GRAPH_CASES), then swap the
   // real benchlib for the env.logResult-patched host build.
@@ -524,7 +532,7 @@ const compileJzAt = (c, optimize) => {
       ...(isWatr ? watrModuleSources() : {}),
     }
   }
-  return compile(code, {
+  return compiler(code, {
     jzify: isWatr || isGraph,
     modules,
     imports: {
@@ -538,20 +546,20 @@ const compileJzAt = (c, optimize) => {
   })
 }
 
-const compileJzHost = c => {
+const compileJzHost = (c, compiler = compile, path = jzHostWasmPath(c)) => {
   // All benches compile at level 'speed' — full watr inlining + L3 cap/hash
   // tuning. If any pass at this level produces wrong checksums or crashes,
   // that's an optimizer bug to be fixed, not a reason to back off. This is the
   // build `run` times; the size column reads compileJzSize's -Os build instead.
-  const wasm = compileJzAt(c, { level: 'speed', ...(process.env.JZ_SIMD ? { vectorizeLaneLocal: true } : {}) })
-  writeFileSync(jzHostWasmPath(c), wasm)
+  const wasm = compileJzAt(c, { level: 'speed', ...(process.env.JZ_SIMD ? { vectorizeLaneLocal: true } : {}) }, compiler)
+  writeFileSync(path, wasm)
 }
 
 // -Os build for the size column — jz's smallest wasm for this case (no unroll /
 // inline body-duplication the speed tier trades bytes for). Same source, same
 // host imports, same memory; only the optimize tier differs.
-const compileJzSize = c => {
-  writeFileSync(jzSizeWasmPath(c), compileJzAt(c, { level: 'size' }))
+const compileJzSize = (c, compiler = compile, path = jzSizeWasmPath(c)) => {
+  writeFileSync(path, compileJzAt(c, { level: 'size' }, compiler))
 }
 
 // Part 3 (jz×jz self-compile row): the `jz` CASE under the `jz` TARGET is the one
@@ -1019,6 +1027,15 @@ const targets = {
       c.id === 'jz' ? () => compileJzSelfIsolated(c) : () => { compileJzHost(c); compileJzSize(c) },
       ['node', join(LIB, 'run-jz-host.mjs'), jzHostWasmPath(c)]),
   },
+  'jz-base': {
+    name: 'jz at base → V8 wasm',
+    // The self-compile cell stays with `jz`: its prep is a child process of this tree.
+    available: c => !!compileBase && c.id !== 'jz' && has('node'),
+    bin: jzBaseSizeWasmPath,
+    run: c => tryRun('jz-base', c,
+      () => { compileJzHost(c, compileBase, jzBaseWasmPath(c)); compileJzSize(c, compileBase, jzBaseSizeWasmPath(c)) },
+      ['node', join(LIB, 'run-jz-host.mjs'), jzBaseWasmPath(c)]),
+  },
   as: {
     name: 'AssemblyScript (asc -O3)',
     available: c => !!c.as && has('asc'),
@@ -1197,6 +1214,7 @@ const TARGET_CMDS = {
   scriptc: 'scriptc build <case>-flat.js -o <case>-scriptc  (static AOT: TS-checker typing + LLVM, no engine) → run binary',
   perry: 'perry compile <case>-native-flat.js -o <case>-perry --fp-contract off --cache-dir <build>/perry-cache (default LLVM optimization, native CPU, linked runtime + GC) → run binary',
   jz: "time: compile(src, { optimize: 'speed' }); size: compile(src, { optimize: 'size' }) → node (V8 wasm)",
+  'jz-base': 'the same builds by the compiler at JZ_BASE_ROOT (meta.base) → node (V8 wasm)',
   as: 'time: asc <case>.as.ts -O3; size: asc <case>.as.ts -Osize (--runtime stub --noAssert)',
   'rust-wasm': 'rustc --target wasm32-wasip1 -C opt-level=3 <case>.rs → node (V8 wasm)',
   'go-wasm': 'GOOS=wasip1 GOARCH=wasm go build <case>.go → node (V8 wasm)',
@@ -1727,7 +1745,9 @@ if (JSON_PATH) {
   for (const c of Object.values(jsonOut.cases)) for (const tid of Object.keys(c.targets)) usedTargets.add(tid)
   jsonOut.meta = {
     date: new Date().toISOString().slice(0, 16).replace('T', ' ') + ' UTC',
-    commit: (() => { try { return execFileSync('git', ['rev-parse', '--short', 'HEAD'], { cwd: ROOT, encoding: 'utf8' }).trim() } catch { return null } })(),
+    commit: gitHead(ROOT),
+    // The commit `jz-base` rows were compiled by.
+    ...(JZ_BASE_ROOT && usedTargets.has('jz-base') && { base: gitHead(JZ_BASE_ROOT) }),
     host: { platform: process.platform, arch: process.arch, cpu: cpus()[0]?.model ?? null },
     versions: Object.fromEntries(Object.entries({
       jz: JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')).version,

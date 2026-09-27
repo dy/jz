@@ -51,6 +51,7 @@ import { warn, ctx } from '../../ctx.js'
 import { walkAst } from '../../ast.js'
 import { constNum, isI32Const } from './addr-model.js'
 import { tryChannelReduce } from './blur-channel.js'
+import { canonicalizeCounters } from './counter-run.js'
 import { tryDivergentEscapeVectorize } from './divergent-escape.js'
 import { hoistReductionInvariantsIn, slpPairsIn } from './dot-slp.js'
 import { vecState } from './lift.js'
@@ -291,6 +292,21 @@ export function vectorizeLaneLocal(fn, opts = {}) {
         ?? tryGeneralStencil(node, fnLocals, freshIdRef, stencil, bl, { aliasVersion })
         ?? tryGeneralReduce(bl, fnLocals, freshIdRef, multiAcc)
         ?? tryGatherMap(bl, fnLocals, freshIdRef, distinctParams)
+      // An output cursor beside the counter (`op += 2`) reads as a recurrence to
+      // every recognizer above. Rewritten over the exit counter (counter-run.js),
+      // the same loop is a map; the rewrite stays only with a lift that takes it.
+      if (!r) {
+        const canon = canonicalizeCounters(node, fnLocals, freshIdRef)
+        const cbl = canon && matchBlockLoop(canon.node, { allowPreamble: true, allowInlinedLi: true })
+        if (cbl) {
+          for (const d of canon.decls) fnLocals.set(d[1], d[2])
+          cbl.outsideReads = outsideReads
+          const lifted = tryMemCopyFill(cbl, fnLocals, freshIdRef)
+            ?? tryVectorize(cbl, fnLocals, freshIdRef, pureFuncMap, constLocals)
+            ?? tryGeneralMap(canon.node, fnLocals, freshIdRef, cbl, { aliasVersion })
+          if (lifted) r = { wrapper: ['block', ...canon.setup, lifted.wrapper, ...canon.landing], newLocalDecls: [...canon.decls, ...lifted.newLocalDecls] }
+        }
+      }
       // --why-not-simd: a canonical loop-shaped candidate that no SIMD pass took.
       // Reported BEFORE the scalar strength-reduce fallback (which fires on most
       // affine loops and would otherwise mask "didn't vectorize"). Diagnostic only.

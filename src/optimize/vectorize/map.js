@@ -1,6 +1,8 @@
 import { nodeEqual as exprEq, cloneNode, walkAst } from '../../ast.js'
 import { _isAddressLocal, _isPixelIndexLocal, _offsetLocalStride, laneAccess, isI32Const, isLocalGet, matchConstMulIV, matchLaneAddr, matchLaneOffset, matchMirrorAddr, matchStrideAddr, affineIvCoeff, hasNestedLoopOrCall, indexDefs } from './addr-model.js'
 import { aliasGuards } from './alias.js'
+import { clearFlowRanges, tagFlowRanges } from '../flow-range.js'
+import { f64Range } from '../../ir.js'
 import { isProfitable } from './cost-model.js'
 import { normTee } from './idioms.js'
 import { INT_WIDEN_F32, LANE_INFO, LOAD_OPS, STORE_OPS, floatLane } from './lane-tables.js'
@@ -41,6 +43,29 @@ function splatScalar(name, scalarType, laneType) {
   if (scalarType === 'i32' && laneType === 'f32') return [splat, ['f32.convert_i32_s', get]]
   if (scalarType === laneType && (laneType === 'i64' || laneType === 'f64' || laneType === 'f32')) return [splat, get]
   return null
+}
+
+// The f64 locals every truncation of the body reads within i32 range: the flow
+// of the body's own clamps and bounded arithmetic (optimize/flow-range.js)
+// decides at each read, and a local counts when all its truncated reads agree.
+function rangedTruncations(body, fnLocals) {
+  const floats = new Set()
+  for (const [name, type] of fnLocals) if (type === 'f64') floats.add(name)
+  const scope = ['func', '$_', ...body]
+  tagFlowRanges(scope, 2, floats)
+  const verdict = new Map()
+  for (const s of body) walkAst(s, { enter: n => {
+    if (n[0] !== 'i64.trunc_sat_f64_s' && n[0] !== 'i32.trunc_sat_f64_s') return
+    const x = n[1]
+    if (!isArr(x) || x[0] !== 'local.get') return
+    const r = f64Range(x, null, true)
+    const ok = !!r && r.lo >= -2147483648 && r.hi <= 2147483647
+    verdict.set(x[1], ok && verdict.get(x[1]) !== false)
+  } })
+  clearFlowRanges(scope)
+  const ranged = new Set()
+  for (const [name, ok] of verdict) if (ok) ranged.add(name)
+  return ranged
 }
 
 export function tryVectorize(bl, fnLocals, freshIdRef, pureFuncMap, constLocals) {
@@ -355,6 +380,7 @@ export function tryVectorize(bl, fnLocals, freshIdRef, pureFuncMap, constLocals)
   const newLanedLocals = new Map()  // origName → laneName (bare string; see getOrAllocLanedLocal)
   const extraLocals = []  // canon temps allocated during lift
   const ctx = liftCtx(laneType, incVar, localKind, freshIdRef, fnLocals, newLanedLocals, extraLocals, aosPixelStride, pureFuncMap, constLocals)
+  if (laneType === 'f64') ctx.i32Ranged = rangedTruncations(body, fnLocals)
   const lifted = []
   for (const s of body2) {
     const r = liftStmt(s, ctx)
