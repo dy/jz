@@ -552,29 +552,56 @@ test('destruct: namespace-as-value alias inside a function body', () => {
   is(f(16), 4)
 })
 
-// A builtin-namespace alias carries no storage (it's a compile-time-only
-// rewrite to the resolved emit key) — reassigning it must be a clear compile
-// error, never a silent miscompile that targets nothing.
-test('destruct: reassigning a plain alias `let sin = Math.sin` is a compile error', () => {
-  let error
-  try { compile(`let sin = Math.sin
+// An alias is a name substitution and holds no value, so only a binding nothing
+// writes takes one. A written binding is a variable seeded with the member.
+test('destruct: a written `let sin = Math.sin` is a variable', () => {
+  const { exports: { f } } = jz(`let sin = Math.sin
 sin = 5
-export let f = () => sin`) } catch (e) { error = e }
-  ok(error && /Cannot reassign 'sin'/.test(error.message), `expected a reassignment error, got: ${error?.message}`)
+export let f = () => sin`)
+  is(f(), 5)
 })
 
-test('destruct: reassigning a destructured member `{abs}` is a compile error', () => {
-  let error
-  try { compile(`let { abs } = Math
+test('destruct: a written destructured member `{abs}` is a variable', () => {
+  const { exports: { f } } = jz(`let { abs } = Math
 abs = 5
-export let f = () => abs`) } catch (e) { error = e }
-  ok(error && /Cannot reassign 'abs'/.test(error.message), `expected a reassignment error, got: ${error?.message}`)
+export let f = () => abs`)
+  is(f(), 5)
 })
 
-test('destruct: reassigning a function-scope destructured member is a compile error', () => {
-  let error
-  try { compile(`export let f = (x) => { let { abs } = Math; abs = 5; return abs }`) } catch (e) { error = e }
-  ok(error && /Cannot reassign 'abs'/.test(error.message), `expected a reassignment error, got: ${error?.message}`)
+test('destruct: a written function-scope destructured member is a variable', () => {
+  const { exports: { f } } = jz(`export let f = (x) => { let { abs, PI } = Math; abs = x; return abs + PI }`)
+  is(f(1), 1 + Math.PI)
+})
+
+test('destruct: a let seeded with a builtin constant tracks a minimum', () => {
+  const { exports: { f, g } } = jz(`
+    export let f = (a) => { let best = Number.POSITIVE_INFINITY; for (let i = 0; i < 3; i++) if (a + i < best) best = a + i; return best }
+    export let g = (a) => { let lo = Number.MAX_VALUE, hi = Number.NEGATIVE_INFINITY; [lo, hi] = [a, a * 2]; return lo + hi }`)
+  is(f(2), 2)
+  is(g(3), 9)
+})
+
+test('destruct: a closure writes the builtin-seeded binding it captures', () => {
+  const { exports: { f } } = jz(`export let f = (x) => { const bump = () => { best = x }; let best = Number.MAX_VALUE; bump(); return best }`)
+  is(f(5), 5)
+})
+
+test('destruct: a written function member is called through its value', () => {
+  const { exports: { f } } = jz(`export let f = (a) => { let g = Math.sqrt; if (a < 0) g = Math.abs; return g(a) }`)
+  is(f(16), 4)
+  is(f(-4), 4)
+})
+
+test('destruct: writing a const bound to a builtin member is a compile error', () => {
+  for (const src of [
+    `const p = Math.PI; export let f = () => { p = 1; return p }`,
+    `const { PI } = Math; export let f = () => { PI = 1; return PI }`,
+    `export let f = () => { const p = Math.PI; p = 1; return p }`,
+  ]) {
+    let error
+    try { compile(src) } catch (e) { error = e }
+    ok(error && /const/.test(error.message), `expected a const error, got: ${error?.message}`)
+  }
 })
 
 // jzify hoists top-level `function` declarations to the front of their

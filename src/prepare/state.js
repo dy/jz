@@ -83,6 +83,10 @@ export let funcLocalNames
 // Lets the `.`-handler tell a function receiver — where `.caller`/`.callee` are
 // prohibited introspection — from a data object that merely has such a field.
 export let funcValueNames
+// Per-arrow `{ params, body, names }`: the arrow's source and, once asked for,
+// every name written under it. A binding nothing writes may be a compile-time alias;
+// a written one needs storage.
+export let arrowWrites
 // Names bound directly to jz's own Promise-runtime helper CALLS (jzify/
 // async.js's ASYNC_RUNTIME + jzify/transform.js's Promise canonicalization —
 // `new Promise(fn)` → __p_exec(fn), `Promise.withResolvers()` →
@@ -139,6 +143,7 @@ export const resetPrepState = () => {
   mutatedArrayNames = new Set()
   funcLocalNames = [new Set()]
   funcValueNames = [new Set()]
+  arrowWrites = []
   promiseRecvNames = new Set()
   withResolversRecvNames = new Set()
   prepState.reassignedTopLevel = new Set()

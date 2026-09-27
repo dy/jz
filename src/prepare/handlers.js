@@ -31,12 +31,12 @@ import { hasFunc, isFuncValueLocal, isUnresolvableBareIdent, renameFunc, shadows
 import { STD_HOST_EXPORTS } from '../std/index.js'
 import { MUTATING_ARRAY_METHODS, alwaysFalsy, alwaysTruthy, dropDeadPostfix, foldConstIf, stringValue, stripBoolNot, truncateUnreachable } from './const-fold.js'
 import { arrayLiteralItems, isDestructPattern, patternItems, simpleArrayPatternItems, substPattern } from './destructure.js'
-import { mintLocal, scanReassignedTopLevel } from './ident-purity.js'
+import { mintLocal, scanReassignedTopLevel, writtenNames } from './ident-purity.js'
 import { bindStaticConst, bindStaticGlobal, deleteStaticGlobal, hoistIndexedConstLiterals, invalidateMutatedArray, staticString, staticStringArrayValues, staticStringExpr, stringArrayValues } from './literals.js'
 import { INTRINSIC_CALLEES, addHostImport, builtinAliasKeyOf, bundledSource, foldImportMetaResolve, foldNamespaceIntrospection, importMetaUrl, isBundledModule, isImportMeta, isImportMetaProp, moduleAstFor, namespaceMemberAliases, namespaceMemberAssigns, namespaceModOf, recordModuleInitFacts, resolveImportMeta } from './module-resolve.js'
 import { bindSchema, censusUnknownInitDecl, inferAssignSchema, objLiteralSid } from './schema.js'
 import { bindingNames, bodyCapturesName, collectLoopDeclNames, declareGlobal, inlineArrayLen, isDeclared, markLoopLocal, mintForScope, popScope, prescanBlockDecls, pushScope, resolveScope, substIdents, withLoopLocalNames } from './scope.js'
-import { CONSTANTS, ERR_CLASS_SET, F64_CONSTANTS, GLOBALS, INSTANCEOF_ALLOW, NS_CTORS, SIMD_NS, STATIC_CONSTS, assignedStaticGlobals, builtinMemberKey, freshPrepareId, funcLocalNames, funcValueNames, loopLocalNames, mutatedArrayNames, ownerStack, prepState, promiseRecvNames, renameSerial, scopes, staticConstScopes, withResolversRecvNames } from './state.js'
+import { CONSTANTS, ERR_CLASS_SET, F64_CONSTANTS, GLOBALS, INSTANCEOF_ALLOW, NS_CTORS, SIMD_NS, STATIC_CONSTS, arrowWrites, assignedStaticGlobals, builtinMemberKey, freshPrepareId, funcLocalNames, funcValueNames, loopLocalNames, mutatedArrayNames, ownerStack, prepState, promiseRecvNames, renameSerial, scopes, staticConstScopes, withResolversRecvNames } from './state.js'
 
 
 // Avoid materializing `node.slice(1)` at every recursive dispatch. Nearly all
@@ -873,6 +873,7 @@ const handlers = {
     pushScope(fnScope)
     funcLocalNames.push(new Set(fnScope.values()))
     funcValueNames.push(new Set())
+    arrowWrites.push({ params, body, names: null })
 
     const nextParams = []
     const bodyPrefix = []
@@ -925,6 +926,7 @@ const handlers = {
     renameSerial.pop()
     funcLocalNames.pop()
     funcValueNames.pop()
+    arrowWrites.pop()
     prepState.depth--
     return result
   },
@@ -1881,6 +1883,19 @@ function expandDestruct(pattern, source, out, decls = null, srcLen = null) {
   }
 }
 
+/** Something writes the binding `name` being declared here: the module's
+ *  census at the top level, the enclosing arrow's inside a function. */
+function bindingWritten(name) {
+  if (prepState.depth === 0) return !!prepState.reassignedTopLevel?.has(name)
+  const top = arrowWrites[arrowWrites.length - 1]
+  return (top.names ||= writtenNames(top.body, writtenNames(top.params))).has(name)
+}
+
+/** An alias is a name substitution and holds no value, so only a binding
+ *  nothing writes takes one. A written `let best = Number.MAX_VALUE` is a
+ *  variable seeded with the member. */
+const registerMemberAlias = (name, key) => !bindingWritten(name) && registerBuiltinAlias(name, key)
+
 /** Bind `name` to builtin emit key `key` at the current scope (module
  *  `scope.chain` at depth 0, block scope otherwise) instead of declaring a
  *  real global/local — mirrors the `const alias = fn` function-alias fast
@@ -1964,7 +1979,7 @@ function preRegisterBuiltinAliases(stmts) {
         const mod = builtinModOf(init)
         if (mod) {
           const aliases = namespaceMemberAliases(name, mod)
-          if (aliases) for (const [target, key] of aliases) registerBuiltinAlias(target, key)
+          if (aliases) for (const [target, key] of aliases) registerMemberAlias(target, key)
         }
       } else if (!isDestructPattern(name) && typeof name === 'string' && Array.isArray(init) &&
                  init[0] === '.' && typeof init[1] === 'string' && typeof init[2] === 'string') {
@@ -1972,7 +1987,7 @@ function preRegisterBuiltinAliases(stmts) {
         if (mod) {
           includeModule(mod)
           const key = `${mod}.${init[2]}`
-          if (ctx.core.emit[key] != null) registerBuiltinAlias(name, key)
+          if (ctx.core.emit[key] != null) registerMemberAlias(name, key)
         }
       }
     }
@@ -2050,7 +2065,7 @@ function prepDecl(op, ...inits) {
     // would box the builtin as a first-class value on every reference.
     if (!isDestructPattern(name) && typeof name === 'string') {
       const memberKey = builtinMemberKey(normed)
-      if (memberKey && registerBuiltinAlias(name, memberKey)) continue
+      if (memberKey && registerMemberAlias(name, memberKey)) continue
       // `const M = Math` at module top level — a bare reference to a whole
       // builtin namespace (no member, no dot). Same reasoning as above: there's
       // no runtime namespace object to box, so alias `name` straight to the
@@ -2088,6 +2103,14 @@ function prepDecl(op, ...inits) {
       if (typeof normed === 'string' && hasModule(normed)) {
         const aliases = namespaceMemberAliases(name, normed)
         if (aliases) {
+          // A written target needs storage: declare each member on its own, and
+          // the plain declaration settles alias or variable per name.
+          if (aliases.some(([target]) => bindingWritten(target))) {
+            const split = prepDecl(op, ...aliases.map(([target, key]) =>
+              ['=', target, ['.', init, key.slice(key.indexOf('.') + 1)]]))
+            if (split) rest.push(...split.slice(1))
+            continue
+          }
           for (const [target, key] of aliases) {
             if (registerBuiltinAlias(target, key)) continue
             // Exported CONSTANT member (export let { PI } = Math): real storage,

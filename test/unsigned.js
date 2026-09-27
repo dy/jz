@@ -351,7 +351,7 @@ test('compound writes: grouped targets do not bypass readonly or invalid-target 
   for (const op of ['+=', '-=', '*=', '/=', '%=', '**=', '&=', '|=', '^=', '<<=', '>>=', '>>>=']) {
     for (const optimize of levels(false, 1, 2, 3)) {
       throws(() => compileSrc(`export function f(){const value=1; ((value)) ${op} 1; return value}`, {optimize}), /const/, `${op}: grouped const`)
-      throws(() => compileSrc(`let target=Math.sin; export function f(){((target)) ${op} 1; return 0}`, {optimize}), /bound to builtin/, `${op}: grouped alias`)
+      throws(() => compileSrc(`const target=Math.sin; export function f(){((target)) ${op} 1; return 0}`, {optimize}), /const/, `${op}: grouped alias`)
       throws(() => compileSrc(`export function f(){if(false){(1+2) ${op} 1} return 0}`, {optimize}), /invalid assignment target/, `${op}: dead invalid target`)
       const shadow = `const value=1; export function f(){let value=4; ((value)) ${op} 1; return value}`
       is(run(shadow, {optimize}).f(), oracle(shadow).f(), 'a shadowing let remains writable')
