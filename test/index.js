@@ -82,6 +82,7 @@ const TESTS = [
   'typed-fill',
   'typed-payload',
   'typed-decode',
+  'shift-precedence',
   'unroll-cost',
   'sentinel-guard',
   'twin-locals',

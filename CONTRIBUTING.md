@@ -1313,6 +1313,13 @@ cli.js          command-line driver (`jz` binary): flags → compile opts, file 
 
 Current pipeline: `source → parse (subscript/jessie) → jzify (always on; the test-only `strict` option skips it) → prepare → compile → optimize → link → watr (WAT→binary)`
 
+The parser entry (`src/parse.js`) orders the operators of every first
+character longest first. subscript tries them newest-first and commits to the
+first whose text matches, and a one-character operator matches any text it
+begins: `>`, registered after `>>`, took the first character of a shift
+standing right of a comparison, so `a < b >> c` read `(a < b) >> c`
+(subscript 10.8.1; `test/shift-precedence.js`).
+
 **One shared optimizer, owned by watr (`~/projects/watr`).** Generic optimizer changes belong there, with tests in both projects. JZ supplies language-specific analysis, representation contracts, and lowering. The existing generic passes in `src/optimize/` are migration work: consolidate them into watr and delete JZ copies, rather than building a competing optimizer. Never patch only `node_modules`.
 
 The tape (`src/ir/tape.js`) transports WAT through link. Settled program summaries own semantic facts; watr owns generic optimization. [PLAN.md](PLAN.md) prioritizes reliable builds and stateful audio DSP. Further IR or state refactors need a demonstrated defect, bottleneck, or deletion. Each migration slice deletes the authority it replaces.
