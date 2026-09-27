@@ -7,7 +7,7 @@
 import { DBG_INVARIANTS } from '../../debug.js'
 import print from 'watr/print'
 import { STR_HCACHE_BIT } from '../../../layout.js'
-import { ASSIGN_OPS, T, commaList, firstRefKind, isBlockBody, isReassigned } from '../../ast.js'
+import { ASSIGN_OPS, MUTATE_OPS, T, commaList, firstRefKind, isBlockBody, isReassigned } from '../../ast.js'
 import { PTR, ctx, err, inc, emitArity, setLinkDemand } from '../../ctx.js'
 import {
   callWithArgs, FALSE_NAN, MAX_CLOSURE_ARITY, TRUE_NAN, UNDEF_NAN, WASM_OPS, applyBigintRepresentationAction, asF64, asI32, asI64, asParamType, asPtrOffset, block64, boolBoxIR, boxBigInt, carrierF64, carrierF64Narrow, emitNum, extractF64Bits, flat, freshId, fromI64, isBoolAtom, isBoundName, isGlobal, isLit, isNullish, isNullishLit, litVal, materializeDeferredBigint, maybeUnboxBigInt, mkPtrIR, nullExpr, nullableBoolBoxIR, ptrOffsetIR, readVar, resolveValType, temp, tempI32, tempI64, toI32, toNumF64, toStrI64, truthyIR, typed, unboxBoolIR, undefExpr, valKindToPtr,
@@ -1156,6 +1156,23 @@ function nestedWritesOf(node, loopWrites) {
 /** Emit block body as flat list of WASM instructions. Unwraps {} and delegates to emitVoid per statement.
  *  Also drives early-return refinement: `if (!guard) return/throw` narrows `guard` for the
  *  rest of the enclosing block. Refinements added here are rolled back on block exit. */
+// The names a statement reads an element of or stores an element into on
+// every path through it, the stored ones marked: the operands an operator
+// always evaluates, never an arm, a right side that may not run, a loop body
+// or a closure. A statement that leaves hands nothing to what follows it.
+const elementUses = (n, out) => {
+  if (!Array.isArray(n)) return out
+  const op = n[0]
+  if (op == null || op === 'str' || op === '=>' || op === 'return' || op === 'throw' || op === 'break' || op === 'continue') return out
+  if (op === 'if' || op === '?:' || op === '?' || op === '&&' || op === '||' || op === '??' || op === '?.' || op === '?.()' || op === '?.[]' || op === 'while' || op === 'switch') return elementUses(n[1], out)
+  if (op === 'for') { elementUses(n[1], out); return elementUses(n[2], out) }
+  if (op === 'do' || op === 'for-of' || op === 'for-in' || op === 'for-await' || op === 'catch' || op === 'finally' || op === 'label') return out
+  if (op === '[]' && n.length === 3 && typeof n[1] === 'string' && !out.has(n[1])) out.set(n[1], false)
+  if (MUTATE_OPS.has(op) && Array.isArray(n[1]) && n[1][0] === '[]' && n[1].length === 3 && typeof n[1][1] === 'string') out.set(n[1][1], true)
+  for (let i = 1; i < n.length; i++) elementUses(n[i], out)
+  return out
+}
+
 export function emitBlockBody(node) {
   const inner = node[1]
   const stmts = Array.isArray(inner) && inner[0] === ';' ? inner.slice(1) : [inner]
@@ -1185,7 +1202,24 @@ export function emitBlockBody(node) {
       const cellInits = frame.preboxInits?.get(s)
       if (cellInits) out.push(...cellInits)
       const presentFrom = frame.presentInits?.length ?? 0
+      const savedFrom = frame.savedStores?.length ?? 0, checkedFrom = frame.checkedRecv?.length ?? 0
       out.push(...emitVoid(s))
+      // A receiver the statement read an element of or stored one into on
+      // every path, and checked (the emitter threw for a missing one), holds
+      // an object for the rest of this block: a binding of the function
+      // nothing assigns. One the fixed store (emit-assign.js) saved for the
+      // reset stays saved.
+      const saved = frame.savedStores ? frame.savedStores.splice(savedFrom) : null
+      const checked = frame.checkedRecv ? frame.checkedRecv.splice(checkedFrom) : null
+      if (frame.body) for (const [name, stored] of elementUses(s, new Map())) {
+        const cur = ctx.func.refinements?.get(name)
+        const keep = stored && saved?.includes(name) && !cur?.saved
+        if (!keep && (cur?.notNullish || !checked?.includes(name))) continue
+        const bound = isGlobal(name) ? ctx.scope.consts?.has(name) : !frame.boxed?.has(name) && !isReassigned(frame.body, name)
+        if (!bound) continue
+        accumulated.push([name, cur])
+        ;(ctx.func.refinements ??= new Map()).set(name, { ...cur, notNullish: true, ...(keep ? { saved: true } : null) })
+      }
       // A declaration initialized from a present element (emitDecl) holds a
       // number for the rest of this block, while nothing below assigns it.
       if (frame.presentInits && frame.presentInits.length > presentFrom) {

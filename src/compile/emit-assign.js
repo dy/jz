@@ -90,10 +90,13 @@ function storeArrayPayload(arrExpr, idxNode, valueExpr, persist) {
  *  receiver that may be missing throws as the store would; a durable array is
  *  saved for the reset before its first store of a round. */
 function storeFixedElement(arr, index, valueExpr, nullable) {
-  const base = tempI32('fb'), recv = nullable ? temp('fr') : null
-  const saved = hasDurableReset() ? [durableArrSnapNode(base)] : []
-  if (saved.length) inc('__durable_arr_snap')
+  const held = typeof arr === 'string' ? ctx.func.refinements?.get(arr) : null
+  const base = tempI32('fb'), recv = nullable && !held?.notNullish ? temp('fr') : null
+  // A store of this block already saved the array (dispatch.js emitBlockBody).
+  const saved = hasDurableReset() && !held?.saved ? [durableArrSnapNode(base)] : []
+  if (saved.length) { inc('__durable_arr_snap'); if (typeof arr === 'string') (ctx.func.savedStores ??= []).push(arr) }
   const ptr = recv ? typed(['local.get', `$${recv}`], 'f64') : asF64(emit(arr))
+  if (recv && typeof arr === 'string') (ctx.func.checkedRecv ??= []).push(arr)
   return withTemp(valueExpr, t => [
     ...(recv ? [['local.set', `$${recv}`, asF64(emit(arr))], ['if', isNullish(ptr), ['then', ['drop', throwTypeErrorIR()]]]] : []),
     ['local.set', `$${base}`, ['i32.wrap_i64', ['i64.and', ['i64.reinterpret_f64', ptr], ['i64.const', LAYOUT.OFFSET_MASK]]]],

@@ -788,7 +788,12 @@ export default (ctx) => {
           setup.push(['local.set', `$${key}`, storedValue(idx)])
           if (keyType) ctx.func.localValTypesOverlay.set(key, presentNumber ? NUMBER : keyType)
         }
-        setup.push(['if', isNullish(typed(['local.get', `$${h}`], 'f64')), ['then', ['drop', throwTypeErrorIR()]]])
+        // A name a statement of this block already checked is present (dispatch.js
+        // emitBlockBody); the block emitter holds a name checked here present past it.
+        if (!(typeof arr === 'string' && ctx.func.refinements?.get(arr)?.notNullish)) {
+          setup.push(['if', isNullish(typed(['local.get', `$${h}`], 'f64')), ['then', ['drop', throwTypeErrorIR()]]])
+          if (typeof arr === 'string') (ctx.func.checkedRecv ??= []).push(arr)
+        }
       }
       // The capture is the receiver, past its check: the summary answers for
       // it as for the expression (its cell, its fixed length).
