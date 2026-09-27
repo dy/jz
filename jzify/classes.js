@@ -3,10 +3,12 @@
  * @module jzify/classes
  */
 
-import { extractParams, objectLiteralEntries, ACCESSOR_GET, ACCESSOR_SET, MUTATE_OPS, BRAND, CLASS_T } from '../src/ast.js'
+import { extractParams, objectLiteralEntries, blockStmts, refsName, REFS_IN_EXPR, ACCESSOR_GET, ACCESSOR_SET, MUTATE_OPS, BRAND, CLASS_T } from '../src/ast.js'
 import { ctx, err, warn } from '../src/ctx.js'
+import { usesArguments } from './arguments.js'
+import { MAX_CLOSURE_ARITY } from '../src/ir.js'
 
-export function createClassLowering({ transform, names, JC, constStrings, atModuleScope }) {
+export function createClassLowering({ transform, names, JC, constStrings, atModuleScope, lowerArguments, readsConstructor }) {
 // === class lowering ===
 //
 // A class is lowered to a factory arrow. Instance state is a plain object;
@@ -58,6 +60,28 @@ const memberFn = value => {
 }
 const memberKind = (value, fn) => fn[0] === 'function*' ? (value[0] === 'async' ? 'asyncgen' : 'gen') : value[0] === 'async' ? 'async' : undefined
 const mapMemberBody = (value, f) => value[0] === 'async' ? ['async', mapMemberBody(value[1], f)] : [value[0], value[1], value[2], f(value[3])]
+
+// A member is a function with `arguments` of its own; the arrow it lowers to
+// has none, so the member's is lowered first, as a function's is.
+const ownArguments = (params, body) => usesArguments(params) || usesArguments(body)
+  ? lowerArguments(arrowParams(params ?? null), block(body)) : [params, body]
+
+// A default reading `this` is evaluated where the receiver is bound, in the
+// body: `(a, b = this.k)` → `(a, b)` and `b = b === undefined ? this.k : b`
+// ahead of the statements, with every default after it, in their order.
+const bodyDefaults = (params, body) => {
+  const list = extractParams(arrowParams(params ?? null))
+  const from = list.findIndex(p => Array.isArray(p) && p[0] === '=' && typeof p[1] === 'string' && usesThis(p[2]))
+  if (from < 0) return [params, body]
+  const names = [], inits = []
+  for (let i = 0; i < list.length; i++) {
+    const p = list[i]
+    if (i < from || !Array.isArray(p) || p[0] !== '=' || typeof p[1] !== 'string') { names.push(p); continue }
+    names.push(p[1])
+    inits.push(['=', p[1], ['?:', ['===', p[1], [null, undefined]], p[2], p[1]]])
+  }
+  return [['()', names.length === 1 ? names[0] : [',', ...names]], ['{}', [';', ...inits, ...blockStmts(block(body))]]]
+}
 
 const classBodyItems = (body) =>
   body == null ? [] : Array.isArray(body) && body[0] === ';' ? body.slice(1) : [body]
@@ -220,7 +244,7 @@ function splitCtorSuper(body) {
 function objectMethodUsesThis(prop) {
   if (!Array.isArray(prop) || prop[0] !== ':' || typeof prop[1] !== 'string') return false
   const fn = memberFn(prop[2])
-  return fn != null && usesThis(fn[3])
+  return fn != null && (usesThis(fn[3]) || usesThis(fn[2]))
 }
 
 // Object-literal accessors take the same slots as class accessors; the entry
@@ -280,8 +304,11 @@ function accessorMethod(it, constStrings, dynamic = false) {
 
 // Object methods receive `this` through the closure ABI. Class lowering passes
 // its bound receiver explicitly, retaining the existing class-method contract.
-const methodValue = (mparams, mbody, kind, receiver) => {
+const methodValue = (params, body, kind, receiver) => {
+  const own = ownArguments(params, body)
   const to = receiver ?? names.objThis()
+  // a class's receiver is in scope of the parameters; an object's is bound in the body
+  const [mparams, mbody] = receiver == null ? bodyDefaults(own[0], own[1]) : [renameThis(own[0], to), own[1]]
   const fn = kind === 'gen'
   ? transform(['function*', null, mparams, renameThis(mbody, to)])
   : kind === 'asyncgen'
@@ -324,10 +351,13 @@ const methodValue = (mparams, mbody, kind, receiver) => {
 //
 // The contract: an instance holds its fields and nothing else, so a member
 // is shadowed by an own property only when the program stores one under the
-// member's literal name (`o.len = …`); a computed-key store or a store by
+// member's literal name (`o.len = …`, or `this.len = …` in the class, which
+// gives the instance a field of the name); a computed-key store or a store by
 // code the compiler cannot see (a host, `Object.assign`) does not reach a
 // member, `'len' in o` is false, and a method read as a value is bound to
-// its receiver.
+// its receiver. What JS keeps on the prototype besides methods is a member
+// too: a store to `C.prototype.p` (foldPrototypeStores below) and, where the
+// program reads one, `constructor` (the class, called as its factory).
 const structClasses = new Map()   // this module's classes by local name
 let moduleImports = null          // the module's imports and the binding resolver (index.js), or null
 /** The class a name of this module denotes: one lowered here, or one imported
@@ -377,8 +407,9 @@ function lowerStruct({ name, base, ctorParams, ctorBody, methods, fields, static
     : kind === 'asyncgen' ? ['async', ['function*', null, selfList(mparams), body]]
     : kind === 'async' ? ['async', ['=>', withSelf(mparams), body]] : ['=>', withSelf(mparams), body])
   // The methods, each a function of the receiver, and a binder for a method read as a value.
-  for (const [mname, mparams, mbody, kind] of methods) {
-    hoists.push(['let', ['=', methodFn(cls, mname), fnOf(kind, mparams, block(rewrite(mbody)))]])
+  for (const [mname, params, body, kind] of methods) {
+    const [mparams, mbody] = ownArguments(params, body)
+    hoists.push(['let', ['=', methodFn(cls, mname), fnOf(kind, rewrite(mparams), block(rewrite(mbody)))]])
     const plist = extractParams(arrowParams(mparams ?? null))
     const simple = plist.every(p => typeof p === 'string')
     const args = simple ? plist.map((_, i) => names.classSuperArg(i)) : [['...', names.classSuperArg(0)]]
@@ -389,7 +420,7 @@ function lowerStruct({ name, base, ctorParams, ctorBody, methods, fields, static
   // The initializer: the base's first, then the field initializers, then the constructor body.
   const split = base ? splitCtorSuper(ctorBody) : { args: null, body: ctorBody }
   const forwarded = ctorParams == null && base ? Array.from({ length: DEFAULT_DERIVED_CTOR_ARITY }, (_, i) => names.classSuperArg(i)) : null
-  const ctorList = forwarded ?? (ctorParams == null ? [] : extractParams(ctorParams))
+  const ctorList = forwarded ?? (ctorParams == null ? [] : extractParams(rewrite(ctorParams)))
   const initStmts = []
   // The statements before `super(…)` run first, in the scope of the rest.
   if (base && split.pre) initStmts.push(...split.pre)
@@ -409,13 +440,19 @@ function lowerStruct({ name, base, ctorParams, ctorBody, methods, fields, static
   }
   hoists.push(['let', ['=', entry.init, transform(['=>', withSelf(['()', ctorList.length === 0 ? null : ctorList.length === 1 ? ctorList[0] : [',', ...ctorList]]), ['{}', [';', ...rewrite(initStmts)]]])]])
   // The factory: the instance with every field, initialized, returned. Its
-  // parameters forward to the initializer, which holds any default or pattern.
-  const fparams = ctorList.map((p, i) => typeof p === 'string' ? p : Array.isArray(p) && p[0] === '...' ? p : names.classSuperArg(i))
+  // parameters forward to the initializer. A default of the initializer's is
+  // taken by the factory too, once, so an argument left out (`new Vector3()`)
+  // arrives as the default's value, never as an undefined the initializer's
+  // own default would replace in a kind that keeps it; a default reading the
+  // receiver, a pattern and a rest parameter forward as given.
+  const fparams = ctorList.map((p, i) => typeof p === 'string' || (Array.isArray(p) && p[0] === '...') ? p
+    : Array.isArray(p) && p[0] === '=' && typeof p[1] === 'string' && !refsName(p[2], self, REFS_IN_EXPR) ? ['=', p[1], transform(p[2])] : names.classSuperArg(i))
+  const fargs = fparams.map(p => Array.isArray(p) && p[0] === '=' ? p[1] : p)
   const props = [...allFields.map(f => [':', f, UNDEF]), [':', brand, UNDEF]]
   const lit = ['{}', props.length === 1 ? props[0] : [',', ...props]]
   const factory = ['=>', ['()', fparams.length === 0 ? null : fparams.length === 1 ? fparams[0] : [',', ...fparams]], ['{}', [';',
     ['let', ['=', self, lit]],
-    ['()', entry.init, [',', self, ...fparams]],
+    ['()', entry.init, [',', self, ...fargs]],
     ['return', self]]]]
   for (const [sname, value, kind] of statics) {
     if (kind === true && (sname.endsWith(ACCESSOR_GET) || sname.endsWith(ACCESSOR_SET))) entry.staticAccessors.add(sname)
@@ -430,7 +467,23 @@ function lowerStruct({ name, base, ctorParams, ctorBody, methods, fields, static
       : value == null ? UNDEF : transform(renameThis(value, cls))
     trailers.push(['=', ['.', cls, sname], rhs])
   }
-  return factory
+  if (!readsConstructor()) return factory
+  // `o.constructor` is the instance's class, a member every class overrides:
+  // called, its factory (`new this.constructor(…)`); read, the class itself.
+  // A class expression binds its factory for the member to name.
+  const ref = trailers || name == null ? cls : names.classStatic()
+  const ctor = methodFn(cls, 'constructor')
+  entry.methods.set('constructor', ctor)
+  // the factory's parameters, defaults included: an argument left out
+  // (`new this.constructor()`) arrives defaulted, as at `new C()`
+  hoists.push(['let', ['=', ctor, ['=>', ['()', fparams.length ? [',', self, ...fparams] : self], ['()', ref, fargs.length === 0 ? null : fargs.length === 1 ? fargs[0] : [',', ...fargs]]]]])
+  // a factory of more parameters than a closure carries is read as a function of their array
+  const wide = fparams.length > MAX_CLOSURE_ARITY, value = wide ? ctor + CLASS_T + 'value' : ref
+  if (wide) hoists.push(['let', ['=', value, ['=>', ['()', ['...', names.classSuperArg(0)]], ['()', ref, ['...', names.classSuperArg(0)]]]]])
+  hoists.push(['let', ['=', ctor + BIND, ['=>', ['()', self], value]]])
+  if (trailers) return factory
+  hoists.push(['let', ['=', ref, factory]])
+  return ref
 }
 
 function lowerClass(name, heritage, body, hoists, trailers) {
@@ -461,7 +514,8 @@ function lowerClass(name, heritage, body, hoists, trailers) {
       const fn = memberFn(it[2]), kind = memberKind(it[2], fn)
       if (key === 'constructor' && typeof it[1] === 'string') {
         if (kind) jzifyError('`constructor` cannot be a generator or async')
-        ctorParams = arrowParams(fn[2] ?? null); ctorBody = fn[3]
+        const [cparams, cbody] = ownArguments(arrowParams(fn[2] ?? null), fn[3])
+        ctorParams = cparams; ctorBody = cbody
       } else methods.push([key, fn[2], fn[3], kind])
       continue
     }
@@ -549,12 +603,16 @@ function lowerClass(name, heritage, body, hoists, trailers) {
   }
   for (const [mname, mparams, mbody, kind] of methods)
     litProps.push([':', mname, methodValue(mparams, mbody, kind, self)])
+  // `o.constructor` is the instance's class: the factory, bound below for the slot to hold.
+  const ctorMember = readsConstructor()
+  const cls = name || names.classStatic()
+  if (ctorMember) litProps.push([':', 'constructor', cls])
   // The instance holds its class's members as slots, which JS keeps on the
   // prototype: a brand gives the instance a layout of its own, whose members
   // enumeration hides (module/schema.js ctx.schema.hidden).
-  if (heritage == null && methods.length) {
+  if (heritage == null && (methods.length || ctorMember)) {
     const brand = BRAND + (ctx.transform.classId = (ctx.transform.classId ?? 0) + 1)
-    ;(ctx.transform.classMembers ??= new Map()).set(brand, new Set(methods.map(([mname]) => mname)))
+    ;(ctx.transform.classMembers ??= new Map()).set(brand, new Set(ctorMember ? [...methods.map(([mname]) => mname), 'constructor'] : methods.map(([mname]) => mname)))
     litProps.push([':', brand, UNDEF])
   }
   const lit = ['{}', litProps.length === 0 ? null : litProps.length === 1 ? litProps[0] : [',', ...litProps]]
@@ -590,6 +648,10 @@ function lowerClass(name, heritage, body, hoists, trailers) {
       stmts.push(['=', ['.', self, mname], methodValue(mparams, rewriteSuperMethodCalls(mbody, superMethodVars), kind, self)])
       stmts.push(['()', '__hide_member', [',', self, ['str', mname]]])
     }
+    if (ctorMember) {
+      stmts.push(['=', ['.', self, 'constructor'], cls])
+      stmts.push(['()', '__hide_member', [',', self, ['str', 'constructor']]])
+    }
     ctorBody = rewriteSuperMethodCalls(ctorBody, superMethodVars)
     if (defaultArgs) params = ['()', defaultArgs.length === 1 ? defaultArgs[0] : [',', ...defaultArgs]]
   } else {
@@ -608,9 +670,8 @@ function lowerClass(name, heritage, body, hoists, trailers) {
   }
   stmts.push(['return', self])
   const factory = ['=>', arrowParams(params), ['{}', [';', ...stmts]]]
-  if (!dynamicBase && statics.length === 0) return factory
+  if (!dynamicBase && statics.length === 0 && !ctorMember) return factory
 
-  const cls = name || names.classStatic()
   const staticStmts = []
   if (dynamicBase) staticStmts.push(['let', ['=', baseRef, transform(heritage)]])
   staticStmts.push(['let', ['=', cls, factory]])
@@ -717,4 +778,114 @@ export function foldPseudoClassical(stmts) {
     out.push(st)
   }
   return out
+}
+
+// ── Prototype stores ─────────────────────────────────────────────────────────
+// `C.prototype.p = v` on a class `C` of the scope, in a static block of `C`
+// (`this.prototype.p` there) or among the scope's statements, with
+// `Object.assign(C.prototype, {…})` as its batch form, names a member of the
+// class. A function is a method. Any other value is a property every instance
+// reads until it stores its own: a getter of the class. A literal stored once
+// as the class is defined (in its static block, or in the statements right
+// after its declaration) is the getter's result; any other value lives in a
+// binding of the scope, assigned where the store stood. A name stored both as
+// a function and as a value keeps its stores, as does a function stored again
+// once an instance may exist, and a class the scope reassigns or whose
+// prototype it replaces whole.
+export function foldPrototypeStores(stmts) {
+  const declOf = (st) => !Array.isArray(st) ? null : st[0] === 'class' && typeof st[1] === 'string' ? st
+    : st[0] === 'export' || st[0] === 'default' ? declOf(st[1]) : null
+  const replaced = (name) => stmts.some(st => Array.isArray(st) && st[0] === '=' &&
+    (st[1] === name || Array.isArray(st[1]) && st[1][0] === '.' && st[1][1] === name && st[1][2] === 'prototype'))
+  const declared = new Set(stmts.map(declOf).filter(c => c && !replaced(c[1])).map(c => c[1]))
+  if (!declared.size) return stmts
+
+  const list = (n) => n == null ? [] : Array.isArray(n) && n[0] === ';' ? n.slice(1) : [n]
+  const isBlock = (it) => Array.isArray(it) && it[0] === 'static' && Array.isArray(it[1]) && it[1][0] === '{}'
+  const owner = (n, self) => !Array.isArray(n) || n[0] !== '.' || n[2] !== 'prototype' || typeof n[1] !== 'string' ? null
+    : n[1] === 'this' ? self : declared.has(n[1]) ? n[1] : null
+  // The members a statement stores on a prototype: { cls, props: [[name, value], …] }, or null.
+  const storesOf = (st, self) => {
+    if (!Array.isArray(st)) return null
+    if (st[0] === '=' && Array.isArray(st[1]) && st[1][0] === '.' && typeof st[1][2] === 'string') {
+      const cls = owner(st[1][1], self)
+      return cls ? { cls, props: [[st[1][2], st[2]]] } : null
+    }
+    if (st[0] !== '()' || !Array.isArray(st[1]) || st[1][0] !== '.' || st[1][1] !== 'Object' || st[1][2] !== 'assign') return null
+    const args = Array.isArray(st[2]) && st[2][0] === ',' ? st[2].slice(1) : [st[2]]
+    const cls = args.length === 2 ? owner(args[0], self) : null
+    if (!cls || !Array.isArray(args[1]) || args[1][0] !== '{}') return null
+    const props = objectLiteralEntries(args[1].slice(1)).map(p => typeof p === 'string' ? [p, p]
+      : Array.isArray(p) && p[0] === ':' && typeof p[1] === 'string' ? [p[1], p[2]] : null)
+    return props.length && !props.includes(null) ? { cls, props } : null
+  }
+
+  // Every store of a name, in order; `early` where no instance precedes it.
+  const stores = new Map()   // class → name → [{ value, early }]
+  const note = (cls, name, value, early) => {
+    let byName = stores.get(cls)
+    if (!byName) stores.set(cls, byName = new Map())
+    let l = byName.get(name)
+    if (!l) byName.set(name, l = [])
+    l.push({ value, early })
+  }
+  const noteAll = (st, self, early) => { const f = storesOf(st, self); if (f) for (const [n, v] of f.props) note(f.cls, n, v, f.cls === early); return f }
+  let run = null   // the class whose declaration the statements so far follow directly
+  for (const st of stmts) {
+    const c = declOf(st)
+    if (c) {
+      for (const it of list(c[3])) if (isBlock(it)) for (const s of list(it[1][1])) noteAll(s, declared.has(c[1]) ? c[1] : null, c[1])
+      run = c[1]
+    } else if (!noteAll(st, null, run)) run = null
+  }
+  if (!stores.size) return stmts
+
+  const isFn = (v) => { const fn = Array.isArray(v) && v[0] === 'async' ? v[1] : v; return Array.isArray(fn) && (fn[0] === 'function' || fn[0] === 'function*') && !fn[1] }
+  const isLiteral = (v) => Array.isArray(v) && (v[0] === 'bool' || v[0] == null && v.length === 2)
+  const anon = (v) => v[0] === 'async' ? ['async', anon(v[1])] : [v[0], null, v[2], v[3]]
+  const kindOf = (l) => l.every(s => isFn(s.value)) ? (l.length === 1 || l.every(s => s.early) ? 'method' : null) : l.some(s => isFn(s.value)) ? null
+    : l.length === 1 && l[0].early && isLiteral(l[0].value) ? 'literal' : 'binding'
+  const kind = (cls, name) => { const l = stores.get(cls)?.get(name); return l ? kindOf(l) : null }
+  const binding = (cls, name) => cls + CLASS_T + 'proto' + CLASS_T + name
+
+  // A statement with its folded stores taken out: a binding's assignment stays where the store stood.
+  const folded = (st, self) => {
+    const f = storesOf(st, self)
+    if (!f) return [st]
+    const out = [], left = []
+    for (const p of f.props) {
+      const k = kind(f.cls, p[0])
+      if (k === 'binding') out.push(['=', binding(f.cls, p[0]), p[1]])
+      else if (k == null) left.push(p)
+    }
+    if (left.length === f.props.length) return [st]
+    if (left.length) out.push(['()', ['.', 'Object', 'assign'], [',', ['.', f.cls, 'prototype'],
+      ['{}', left.length === 1 ? [':', left[0][0], left[0][1]] : [',', ...left.map(p => [':', p[0], p[1]])]]]])
+    return out
+  }
+  const bindings = []
+  const withMembers = (c) => {
+    const byName = stores.get(c[1])
+    const items = []
+    for (const it of list(c[3])) {
+      if (isBlock(it)) {
+        const rest = list(it[1][1]).flatMap(s => folded(s, declared.has(c[1]) ? c[1] : null))
+        if (rest.length) items.push(['static', ['{}', rest.length === 1 ? rest[0] : [';', ...rest]]])
+        continue
+      }
+      // a member of the class a prototype store replaces
+      const name = Array.isArray(it) && (it[0] === 'get' || it[0] === 'set' || it[0] === ':' && isFn(it[2])) && typeof it[1] === 'string' ? it[1] : null
+      if (name == null || !byName?.has(name) || kind(c[1], name) == null) items.push(it)
+    }
+    for (const [name, l] of byName ?? []) {
+      const k = kindOf(l)
+      if (k === 'method') items.push([':', name, anon(l[l.length - 1].value)])
+      else if (k === 'literal') items.push(['get', name, null, ['return', l[0].value]])
+      else if (k === 'binding') { bindings.push(binding(c[1], name)); items.push(['get', name, null, ['return', binding(c[1], name)]]) }
+    }
+    return ['class', c[1], c[2], items.length === 0 ? null : items.length === 1 ? items[0] : [';', ...items]]
+  }
+  const redecl = (st, c) => st[0] === 'class' ? c : [st[0], redecl(st[1], c)]
+  const out = stmts.flatMap(st => { const c = declOf(st); return c ? [redecl(st, withMembers(c))] : folded(st, null) })
+  return bindings.length ? [['let', ...bindings], ...out] : out
 }

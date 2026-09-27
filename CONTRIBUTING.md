@@ -1421,6 +1421,35 @@ instance's class as it would through a prototype (`classMemberIn`); a static
 call `C.s(…)` reaches the lifted function `C$s` in the summary as in the
 emitter (`liftedProp`, method-dispatch.js `tryFnPropCall`).
 
+A member is a function of its own: `arguments` in a method, an accessor or
+a constructor is the member's (`ownArguments`, lowered as a function's before
+the arrow), and a default parameter may read `this` (`rewrite(mparams)` on
+the schema path, `bodyDefaults` for an object literal's method, whose
+receiver is bound in the body). The factory takes the initializer's defaults
+(one reading the receiver stays the initializer's alone), so `new C()` and
+`new this.constructor()` pass the default's value for an argument left out,
+never an undefined the initializer's default would replace in a kind that
+keeps it: a `Vector3` built without arguments holds numbers, a `Box3` holds
+its vectors. A store under an accessor's name on a receiver the summary
+types as instances of a class without the accessor is the field's slot
+store (class-dispatch.js `lacksSlot`). A field stored under a method's name
+(`this._onChangeCallback = cb` beside `_onChangeCallback() {}`) is the own
+property that shadows the method: the summary marks the name
+(`dynamicProps`), and the emitter's dispatch reads the field's slot in place
+before calling the member (class-dispatch.js `ownSlot`). A store to
+`C.prototype.p` in a static block of `C` or among the statements of the scope
+declaring it, and `Object.assign(C.prototype, {…})`, name members of the class
+(`foldPrototypeStores`): a function is a method, a literal stored as the
+class is defined is a getter's result, any other value lives in a binding
+the getter reads; a store the fold cannot take is rejected. In a program that
+reads a `constructor` member (`new this.constructor(…)`, `a.constructor === C`)
+every class carries one: called, its factory; read, the class itself (a
+wrapper of a rest parameter where the factory has more parameters than a
+closure carries). A typed-array constructor named as a value
+(`{ Float32Array }`, `switch (a.constructor)`) is the function `jz:typed`
+makes of it, and `E.constructor` on a value that is not `this` asks its
+`__ctor`, which answers a typed array's function or reads the member.
+
 The summary walks what the program reaches: a function or closure is walked
 once a call binds its parameters, the host holds it (an export, an escaped
 or host-held callable), emitted code calls it (a class dispatcher) or a

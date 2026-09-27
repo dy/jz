@@ -925,21 +925,32 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
    *  later argument or nothing (a default replaces the nothing). The arguments
    *  a rest parameter collects escape; a surplus argument past the declared
    *  parameters is one the callee never observes. */
+  // The parameters whose default some call lets run: an argument missing,
+  // one that may be undefined, or a caller the summary cannot see. The
+  // walk joins a default's kind into its parameter there alone, so a
+  // `toArray(array = [], offset = 0)` every caller hands a typed array keeps
+  // the typed array's kind; the emitter drops the default's check as well.
+  const defaultRuns = new Set()
+  const runDefault = (key) => { if (key != null && !defaultRuns.has(key)) { defaultRuns.add(key); changed = true } }
+  const mayBeMissing = (k) => tagOf(k) === K.ANY || hasTag(k, K.NULLISH) || hasTag(k, K.ABSENT)
+  const runDefaults = (scope, defaults) => { if (defaults) for (const p in defaults) runDefault(keyIn(scope, p)) }
   const bind = (scope, names, base, n, defaults, ctx = null) => {
     reach(scope)
     // Unknown callers make the parameters ANY. Arguments from known callers
     // still flow through those parameters, including callbacks and their effects.
-    if (escaped.has(scope)) { escapeArgs(base, n); return }
+    if (escaped.has(scope)) { escapeArgs(base, n); runDefaults(scope, defaults); return }
     const s = spreadAt(base, n)
     let tail = NULLISH
     for (let i = s; i < n; i++) tail = merge(tail, ks[base + i])
     const passive = passiveParamsOf(scope, names, defaults)
     for (let i = 0; i < names.length; i++) {
       if (names[i] == null) continue
-      const quiet = passive.has(names[i]), key = ctx === null ? keyIn(scope, names[i]) : ctxKey(ctx, keyIn(scope, names[i]))
-      if (i < s) bindParam(key, ks[base + i], quiet)
-      else if (s < n) bindParam(key, defaults?.[names[i]] ? core(tail) : tail, quiet)
-      else if (!defaults?.[names[i]]) bindParam(key, NULLISH, quiet)
+      const quiet = passive.has(names[i]), base_ = keyIn(scope, names[i]), key = ctx === null ? base_ : ctxKey(ctx, base_)
+      const dflt = defaults?.[names[i]]
+      if (i < s) { bindParam(key, ks[base + i], quiet); if (!dflt || !mayBeMissing(ks[base + i])) continue }
+      else if (s < n) { bindParam(key, dflt ? core(tail) : tail, quiet); if (!dflt) continue }
+      else if (!dflt) { bindParam(key, NULLISH, quiet); continue }
+      runDefault(key); runDefault(base_)
     }
     if (names.rest != null) {
       if (names.restName != null) restBind(scope, names.restName, base, names.rest, n)
@@ -1401,6 +1412,9 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   // The class members by name (a receiver the summary cannot name calls each class's).
   const membersByName = new Map()   // member name → the class functions bearing it
   if (classes) for (const e of classes.values()) for (const [name, fn] of e.methods) { let l = membersByName.get(name); if (!l) membersByName.set(name, l = []); l.push(fn) }
+  // A field under a member's name (`this.m = f` in a class with a method `m`)
+  // holds the own property that shadows the member.
+  if (classes) for (const e of classes.values()) for (const f of e.fields ?? []) if (e.methods.has(f)) dynamicProps.add(f)
   const dataProperty = prop => typeof prop === 'string' && !byProp.has(getterOf(prop)) && !membersByName.has(getterOf(prop))
   const NO_MEMBERS = []
   // The receiver a class function sees through a receiver the summary cannot
@@ -1949,6 +1963,9 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     if (t === K.OBJECT && paramOf(recv) !== UNKNOWN) {
       if (iterFacts(paramOf(recv))) return optionalResult(op, recv, ITER_RECORD_KEYS.includes(prop) ? kind(K.CLOSURE) : NULLISH)
       const i = schemas[paramOf(recv)].indexOf(prop)
+      // a slot under a member's name reads as its value, or as the member bound where it holds none
+      const shadowed = i >= 0 ? classMember(recv, prop) : null
+      if (shadowed) { callWith(binderOf(shadowed), core(recv)); return optionalResult(op, recv, ANY) }
       if (i >= 0) return optionalResult(op, recv, slots(paramOf(recv))[i])
       const gi = schemas[paramOf(recv)].indexOf(getterOf(prop))
       // a deleted accessor reads as absent, or as whatever a store added under its name
@@ -2185,7 +2202,8 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   const storeMember = (sid, prop, v) => {
     const i = schemas[sid].indexOf(prop), setter = i < 0 ? classOfSid(sid)?.methods.get(setterOf(prop)) ?? null : null
     const si = schemas[sid].indexOf(setterOf(prop))
-    if (i >= 0) raiseSlot(sid, i, v)
+    // a slot under a member's name is called in the member's place, by callers the summary does not pair with it
+    if (i >= 0) { raiseSlot(sid, i, v); if (classOfSid(sid)?.methods.has(prop)) escape(v) }
     else if (si >= 0) {
       const s = slots(sid)[si], b = sp
       pushK(v)
@@ -2730,8 +2748,9 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     current = key
     reset()
     scanForwards(key, body, params, defaults)
-    // a default runs only where its argument is missing: its writes are on a path
-    if (defaults) { branch++; for (const p of defaultNamesOf(defaults)) bindParam(paramKey(key, p), expr(defaults[p])); branch-- }
+    // a default runs only where its argument is missing: its writes are on a
+    // path, and its value reaches the parameter where some call lets it run
+    if (defaults) { branch++; for (const p of defaultNamesOf(defaults)) { const pk = paramKey(key, p), dk = expr(defaults[p]); if (defaultRuns.has(pk)) bindParam(pk, dk) } branch-- }
     if (params) for (const p of reassignedIn(body, params, defaults)) { const id = paramKey(key, p); if (id !== null) pre.add(id) }
     if (isBlock(body)) {
       stmt(body)
@@ -2775,7 +2794,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     schemas, layouts, sitesByLayout, objectKinds, methods, sidByKey,
     funcNames: new Set(funcByName.keys()), imports: new Map(imports),
     numeric, dynamicProps, builtinOwnProps, escaped, typedReadPresent, typedProps, typedPropsByAux, openSchemas, indexedSchemas, hostSchemas, opaqueSchemas, deletable, deleteReach,
-    sideProps, sideWild, wildProps, wildValues, pendingAll, keyedCells, cellShapes, cellLostObject, closureProps, iterSites, reached,
+    sideProps, sideWild, wildProps, wildValues, pendingAll, keyedCells, cellShapes, cellLostObject, closureProps, iterSites, reached, defaultRuns,
     contracts: null,   // the result contracts, built at the freeze below
   }
   const queries = summaryQueries(queryFacts, true)
@@ -2979,6 +2998,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       if (!reached.has(f.name)) continue
       if (f.rest) { if (escaped.has(f.name)) restUnknown(f.name, f.rest); else raise(kinds, keyIn(f.name, f.rest), restArrayOf(f.name)) }
       if (escaped.has(f.name)) for (const p of f.sig.params) if (!p.rest) bindParam(keyIn(f.name, p.name), ANY)
+      if (exported(f) || hostClosures.has(f.name) || escaped.has(f.name)) runDefaults(f.name, f.defaults)
       const contexts = initContexts.get(f.name)
       if (contexts === undefined || plainInits.has(f.name) || escaped.has(f.name)) walkFunction(f.name, f.body, paramNamesOf(f), f.defaults)
       if (contexts !== undefined) for (const c of contexts.values()) { activeCtx = c; walkFunction(f.name, f.body, paramNamesOf(f), f.defaults); activeCtx = null }
@@ -2988,6 +3008,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       if (hostClosures.has(id) || escaped.has(id)) reach(id)
       if (!reached.has(id)) continue
       if (escaped.has(id)) for (const p of closureParams[id]) if (p != null) bindParam(keyIn(id, p), ANY)
+      if (hostClosures.has(id) || escaped.has(id)) runDefaults(id, closureDefaults[id])
       if (closureParams[id].restName != null) { if (escaped.has(id)) restUnknown(id, closureParams[id].restName); else raise(kinds, keyIn(id, closureParams[id].restName), restArrayOf(id)) }
       walkFunction(id, closureBodies[id], closureParams[id], closureDefaults[id])
       if (hostClosures.has(id)) escapeToHost(results.get(id) ?? K.NONE)

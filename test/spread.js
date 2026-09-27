@@ -842,3 +842,21 @@ test('spread into a method: a program without a string of its own compiles', () 
   const w = compile(src, { wat: true })
   ok(!/__is_str_key/.test(w), 'the loop reads its elements by index')
 })
+
+// three.js utils: `function warn(...params) { …; console.warn(message, ...params) }`.
+// The values a spread prints are as many as the run decides, so they print
+// from the array the arguments build: the text is what the host prints for
+// the same arguments given one by one.
+test('spread into console: the arguments print as the values they spread to', () => {
+  if (onWasi()) return  // the text goes to fd_write; the js host's print is what this reads
+  const src = `function warn(...params) { const message = 'THREE.' + params.shift(); console.warn(message, ...params) }
+    export let f = () => { warn('Vector3: bad', 1, 'x', true); warn('alone'); const p = [1.5, 'b']
+      console.log(...p); console.log('m', ...p, 'z', ...[]); console.log(...[]); console.error(...p, p.length); return 1 }`
+  const lines = []
+  const { log, warn, error } = console
+  console.log = console.warn = console.error = (...a) => lines.push(a.join(' '))
+  try { for (const optimize of levels(0, 2)) is(jz(src, { optimize }).exports.f(), 1, `O${optimize}`) }
+  finally { Object.assign(console, { log, warn, error }) }
+  const want = ['THREE.Vector3: bad 1 x true', 'THREE.alone', '1.5 b', 'm 1.5 b z', '', '1.5 b 2']
+  is(lines.slice(0, want.length), want)
+})

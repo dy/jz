@@ -51,6 +51,7 @@ export const JZIFY_CLASS_ERRORS = {
   computedStaticMember: 'non-constant computed static class member names are not supported — use a literal name',
   staticMember: 'this `static` member shape is not supported (static fields, methods and blocks are)',
   superProp: '`super` property access is not supported: no class inheritance',
+  prototypeStore: 'a store to a class\'s prototype names a member of the class only as a statement of the scope that declares the class, or of its static block, under a literal name that holds either functions or other values — move it there, or declare the member in the class',
 }
 
 /** Build prepare handler map from shared reject messages. */

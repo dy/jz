@@ -2696,6 +2696,18 @@ function prepareModule(specifier, source) {
     if (!ctx.transform.parse) err('compile-time module bundling requires ctx.transform.parse (injected by the jz pipeline)')
     ast = ctx.transform.parse(source)
   }
+  // The module's source positions follow the program's: every `loc` of its
+  // AST is shifted past the sources before it, so an error or advisory at
+  // any node the lowering keeps (an inlined body's, a clone's) names this
+  // module and its line (ctx.js locate).
+  if (typeof source === 'string' && ctx.error.src != null && Array.isArray(ast) && !ctx.module.locBases?.has(ast)) {
+    const parts = ctx.error.parts ??= []
+    const base = (parts.length ? parts[parts.length - 1].end : ctx.error.src.length) + 1
+    parts.push({ file: specifier, base, end: base + source.length, src: source })
+    ;(ctx.module.locBases ??= new WeakSet()).add(ast)
+    const shift = (n) => { if (!Array.isArray(n)) return; if (typeof n.loc === 'number') n.loc += base; for (let i = 1; i < n.length; i++) shift(n[i]) }
+    shift(ast)
+  }
   if (ctx.transform.jzify) { prepareImports(ast); ast = ctx.transform.jzify(ast, { importedBinding, std: ctx.module.inStd }) }
   ast = hoistIndexedConstLiterals(ast)
   const savedDepth = prepState.depth; prepState.depth = 0
@@ -2837,7 +2849,8 @@ function prepareModule(specifier, source) {
       // Sub-module funcs already had their own walk; parent's rename map doesn't apply.
       if (func._modulePrefix && func._modulePrefix !== prefix) continue
       const funcParams = new Set(func.sig?.params?.map(p => p.name) || [])
-      walk(func.body, funcParams)
+      // a concise body that is one name (`() => fn`) is the reference itself
+      func.body = walk(func.body, funcParams)
       if (func.defaults) for (const [k, v] of Object.entries(func.defaults)) func.defaults[k] = walk(v, funcParams)
     }
     // Also rename init code AST

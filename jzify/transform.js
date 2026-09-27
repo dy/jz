@@ -3,9 +3,11 @@
  * @module jzify/transform
  */
 
-import { rewriteChildren, JZ_BLOCK_OPS, LABEL_BODY_OPS, ACCESSOR_GET, ACCESSOR_SET } from '../src/ast.js'
+import { rewriteChildren, JZ_BLOCK_OPS, LABEL_BODY_OPS, ACCESSOR_GET, ACCESSOR_SET, objectLiteralEntries } from '../src/ast.js'
 import { isDestructurePat } from './hoist-vars.js'
+import { foldPrototypeStores } from './classes.js'
 import { ERR_CLASS_NAMES } from '../err-codes.js'
+import { JZIFY_CLASS_ERRORS as JC } from '../src/op-policy.js'
 import { TYPED_ELEM_NAMES } from '../layout.js'
 
 const TYPED_ARRAYS = new Set(['Float64Array','Float32Array','Float16Array','Int32Array','Uint32Array',
@@ -22,7 +24,7 @@ const TYPED_ARRAYS = new Set(['Float64Array','Float32Array','Float16Array','Int3
 // fallback) BEFORE prepare's sound handler ever sees the node — default mode
 // then never reaches the tag/schema/range machinery strict mode uses, so
 // `new TypeError(x) instanceof RangeError` wrongly answers `true` there.
-const CORE_INSTANCEOF_ALLOW = new Set(['Array', 'Map', 'Set', 'ArrayBuffer', 'DataView', ...TYPED_ELEM_NAMES, ...ERR_CLASS_NAMES])
+const CORE_INSTANCEOF_ALLOW = new Set(['Array', 'Map', 'Set', 'ArrayBuffer', 'DataView', ...TYPED_ELEM_NAMES, 'Float16Array', 'Uint8ClampedArray', ...ERR_CLASS_NAMES])
 
 const isProto = n => Array.isArray(n) && n[0] === '.' && Array.isArray(n[1]) && n[1][0] === '.' && n[1][2] === 'prototype'
 const groupedName = node => typeof node === 'string' ? node
@@ -221,8 +223,10 @@ export function createTransform(opts) {
 
     if (op === ';') {
       const hoisted = [], rest = []
-      for (let i = 0; i < args.length; i++) {
-        const stmt = args[i]
+      // a function's statements fold their classes' prototype stores as the module's do (jzify/index.js)
+      const stmts = fnDepth > 0 ? foldPrototypeStores(args) : args
+      for (let i = 0; i < stmts.length; i++) {
+        const stmt = stmts[i]
         if (Array.isArray(stmt) && stmt[0] === 'function' && stmt[1]) {
           hoisted.push(hoistFnDecl(stmt[1], stmt[2], stmt[3]))
           continue
@@ -250,7 +254,7 @@ export function createTransform(opts) {
         // `using` consumes the REST of the scope into its try body (disposal
         // runs at scope exit however the scope exits).
         if (Array.isArray(stmt) && stmt[0] === 'using') {
-          rest.push(lowerUsing(stmt.slice(1), args.slice(i + 1)))
+          rest.push(lowerUsing(stmt.slice(1), stmts.slice(i + 1)))
           break
         }
         // Labeled BLOCK in statement position (`lbl: { … }`): unambiguous here —
@@ -369,6 +373,19 @@ export function createTransform(opts) {
         if (callee === 'queueMicrotask' && !shadowsBuiltin('queueMicrotask') && rest.length) {
           return [',', ['()', ['.', '__mt', 'push'], ...rest.map(a => a == null ? a : transform(a))], 'undefined']
         }
+      }
+      // `Object.defineProperties(o, { k: d, … })` with a literal map is each
+      // property's `Object.defineProperty(o, 'k', d)` in order, and `o`.
+      if (Array.isArray(callee) && callee[0] === '.' && callee[1] === 'Object' && callee[2] === 'defineProperties' && !shadowsBuiltin('Object')) {
+        const a = rest.length === 1 && Array.isArray(rest[0]) && rest[0][0] === ',' ? rest[0].slice(1) : rest
+        const entries = a.length === 2 && Array.isArray(a[1]) && a[1][0] === '{}' ? objectLiteralEntries(a[1].slice(1)) : null
+        if (entries && entries.every(e => Array.isArray(e) && e[0] === ':' && typeof e[1] === 'string')) {
+          const t = names.genTemp('dps')
+          return transform(['()', ['=>', ['()', t], ['{}', [';',
+            ...entries.map(e => ['()', ['.', 'Object', 'defineProperty'], [',', t, [null, e[1]], e[2]]]),
+            ['return', t]]]], a[0]])
+        }
+        throw new Error('jzify: `Object.defineProperties(o, map)` lowers to one `Object.defineProperty` per key, so `map` must be an object literal with literal keys – spell the calls out otherwise')
       }
       // URLSearchParams rides the jz-source std module `jz:usp` (src/std/usp.js);
       // `new URLSearchParams(x)` unwraps to this same call via the `new` handler.
@@ -508,6 +525,10 @@ export function createTransform(opts) {
 
     '='(lhs, rhs) {
       if (isDestructurePat(lhs)) return ['=', transformPattern(lhs), transform(rhs)]
+      // a store the prototype fold left (classes.js foldPrototypeStores): a class, lowered either way, has no prototype to take it
+      if (Array.isArray(lhs) && (lhs[0] === '.' || lhs[0] === '[]') && Array.isArray(lhs[1]) && lhs[1][0] === '.' && lhs[1][2] === 'prototype'
+          && typeof lhs[1][1] === 'string' && opts.isClass(lhs[1][1]))
+        throw new Error('jzify: ' + JC.prototypeStore)
       // a static accessor of a class of this module: the slot function on the class (classes.js)
       if (Array.isArray(lhs) && lhs[0] === '.' && typeof lhs[1] === 'string' && typeof lhs[2] === 'string' && opts.classStaticAccessor(lhs[1], lhs[2] + ACCESSOR_SET))
         return ['()', ['.', lhs[1], lhs[2] + ACCESSOR_SET], transform(rhs)]

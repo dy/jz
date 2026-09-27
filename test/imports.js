@@ -1225,3 +1225,16 @@ test('bundling: an importer\'s alias does not leak into a module prepared beneat
   }
   is(jz('import { f } from "./a.js"\nexport const main = () => f()', { modules: modules3 }).exports.main(), 1001)
 })
+
+// A bundled module's source positions follow the program's (prepareModule
+// shifts its AST's `loc`s), so an error at a node of that module names the
+// module and quotes its own line (ctx.js locate), not the entry's.
+test('imports: an error in a bundled module names the module and its line', () => {
+  const main = `import { f } from './e.js'\nexport let r = () => f({ k: 1 })`
+  const modules = { './e.js': `const k = 1\nexport const f = (o) => {\n  delete o.k\n  return k\n}\n` }
+  let msg = null
+  try { jz(main, { modules }) } catch (e) { msg = e.message }
+  ok(msg != null && /at \.\/e\.js:3:11\n\s+delete o\.k/.test(msg), `names the module: ${JSON.stringify(msg?.slice(0, 160))}`)
+  try { jz(`export let r = () => {\n  delete r.k\n}`) } catch (e) { msg = e.message }
+  ok(/at line 2:\d+\n/.test(msg), `the program's own error keeps its plain line: ${JSON.stringify(msg?.slice(0, 160))}`)
+})

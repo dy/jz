@@ -1,5 +1,5 @@
 /** Read-only summary queries. This module has no access to solver transfers. */
-import { ACCESSOR_GET, CLASS_T, isBrand, schemaKey, isArrayIndexKey } from '../ast.js'
+import { ACCESSOR_GET, ACCESSOR_SET, CLASS_T, isBrand, schemaKey, isArrayIndexKey } from '../ast.js'
 import { encodeTypedElemAux, ctorFromElemAux } from '../../layout.js'
 import { ATOMICS_VALUE_OPS, builtinCalleeVal, methodValType } from '../kind-traits.js'
 import { VAL } from '../reps.js'
@@ -16,7 +16,7 @@ export function summaryQueries(facts, internal = false) {
   const { kinds, incoming, fields, results, receivers, closures, closuresByBody, declared, parent, nameKeys, forwards, siteResults,
     scopeOfSig, scopeOfBody, scopeOfParams, cellUp, elems, tuples, cellProps, cellWild, closureSets, closureSetIds, cells, jsonKinds, unions, shapeUnions,
     schemas, layouts, sitesByLayout, objectKinds, methods, sidByKey, funcNames, imports, numeric, dynamicProps, builtinOwnProps, typedReadPresent, typedProps, typedPropsByAux, openSchemas, indexedSchemas,
-    sideProps, sideWild, wildProps, wildValues, pendingAll, keyedCells, cellShapes, cellLostObject, closureProps, escaped, iterSites, reached } = facts
+    sideProps, sideWild, wildProps, wildValues, pendingAll, keyedCells, cellShapes, cellLostObject, closureProps, escaped, iterSites, reached, defaultRuns } = facts
   // The solver owns union-find compression; querying a root never writes it.
   const cell = id => { while (cellUp[id] !== id) id = cellUp[id]; return id }
   const MIXABLE_TAGS = bitOf(K.HASH) | bitOf(K.OBJECT) | bitOf(K.NUMBER) | bitOf(K.STRING) | bitOf(K.BOOL) | bitOf(K.BIGINT)
@@ -432,6 +432,8 @@ export function summaryQueries(facts, internal = false) {
       numericDenied: name => { const key = keyOfAnywhere(name), denied = k => numeric.get(k) === false; return key !== null && (typeof key === 'number' ? denied(key) : key.some(denied)) },
       // Incoming arguments/defaults before any reassignment in the body.
       paramKindOf: name => { const key = keyOf(name); return key === null ? K.NONE : pub(canon(incoming[key] ?? K.NONE)) },
+      // Whether some call lets the parameter's default run (a missing or possibly undefined argument, an unseen caller).
+      defaultMayRun: name => { const key = keyOf(name); return key === null || !defaultRuns || defaultRuns.has(key) },
       elemOfKind: k => pub(elemOf(k)),
       valOf: name => valOf(readKind(name)),
       // A layout's class member by slot name (`x`, `x__get`, `x__set`); null when its class has none or it is no class's.
@@ -440,8 +442,16 @@ export function summaryQueries(facts, internal = false) {
       layoutSlot: (sid, name) => schemas[sid]?.includes(name) === true,
       // Whether a name may be stored beside the layout's slots at any of its construction sites (a dynamic property).
       layoutSide: (sid, name) => (sitesByLayout.get(sid) ?? [sid]).some(site => tagOf(sideOf(site, name)) !== K.NONE),
-      // One non-nullish class receiver, with no possible own-member shadow.
-      classCallee: (recv, name) => { const r = kindOfExpr(recv); if (tagOf(r) !== K.OBJECT || paramOf(r) === UNKNOWN || isNullable(r)) return null; const fn = classMember(r, name); return fn && !memberMayBeOwn(name) ? fn : null },
+      // One non-nullish class receiver, with no possible own-member shadow: a
+      // getter's is a property of its name, stored where the class has no setter to take the store.
+      classCallee: (recv, name) => {
+        const r = kindOfExpr(recv)
+        if (tagOf(r) !== K.OBJECT || paramOf(r) === UNKNOWN || isNullable(r)) return null
+        const fn = classMember(r, name)
+        if (!fn || memberMayBeOwn(name)) return null
+        const prop = name.endsWith(ACCESSOR_GET) ? name.slice(0, -ACCESSOR_GET.length) : null
+        return prop !== null && memberMayBeOwn(prop) && !classMember(r, prop + ACCESSOR_SET) ? null : fn
+      },
       // valOf deliberately declines nullable kinds; payload queries do not.
       valOfExpr: e => valOf(kindOfExpr(e)),
       mayBeNullishExpr: e => { const k = kindOfExpr(e); return hasTag(k, K.NULLISH) || hasTag(k, K.ABSENT) },

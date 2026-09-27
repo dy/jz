@@ -2174,3 +2174,14 @@ test('closures: conditional cell placement preserves shared, nested and recursiv
     }
   }
 })
+
+// A concise arrow body that is one name returns the function it names: the
+// walk of the program's facts takes it as a value (walk-facts.js), and a
+// bundled module renames it to its own prefix (prepare/handlers.js).
+test('closures: a concise body naming a function returns it as a value', () => {
+  const src = `const V = (x) => x + 1\nconst W = (x) => x + 2\nconst get = () => V\nconst pick = (k) => k ? V : W\nexport let f = () => get()(3) * 10 + pick(0)(3)`
+  for (const optimize of levels(0, 1, 2, 3)) is(jz(src, { optimize }).exports.f(), 45, `O${optimize}`)
+  const modules = { './v.js': `const V = (x) => x + 1\nexport const get = () => V\nexport { V }` }
+  const main = `import { get, V } from './v.js'\nexport let f = () => get()(3) * 10 + (get() === V ? 1 : 0)`
+  for (const optimize of levels(0, 2)) is(jz(main, { optimize, modules }).exports.f(), 41, `imported, O${optimize}`)
+})

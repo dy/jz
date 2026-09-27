@@ -1502,3 +1502,20 @@ test('checkpoint lane: every write checks its full width before the wasm32 bound
     }
   }
 })
+
+// A function's properties have no header slot to live in: they are keyed in
+// the global property table, which `memory.reset()` returns to what init left
+// (the snapshot sweep, wat/assemble/stdlib-pull.js). The table's one-slot
+// cache holds 1 while empty: -1 would be the first function's own key.
+test('reset: a function\'s init-time properties survive it, in a bundled module too', () => {
+  if (onWasi()) return  // memory.reset is the js host's
+  const single = `const f = (x) => x + 1\nf.tag = 'XYZ'\nconst get = () => { return f }\nexport let r = () => (f.tag === 'XYZ' ? 1 : 0) + (get() === f ? 10 : 0)`
+  const modules = { './e.js': `class E { constructor(o = E.D) { this._o = o } self() { return E } }\nE.D = 'XYZ'\nconst f = (x) => x + 1\nf.n = 7\nconst get = () => { return f }\nexport { E, f, get }` }
+  const bundled = `import { E, f } from './e.js'\nexport let r = () => (E.D === 'XYZ' ? 1 : 0) + (new E()._o === 'XYZ' ? 10 : 0) + f.n * 100`
+  for (const [label, src, opts, want] of [['one module', single, {}, 11], ['bundled', bundled, { modules }, 711]]) {
+    for (const optimize of levels(0, 2)) {
+      const m = jz(src, { ...opts, optimize })
+      for (let round = 0; round < 3; round++) { is(m.exports.r(), want, `${label}, O${optimize}, round ${round}`); m.memory.reset() }
+    }
+  }
+})

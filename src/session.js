@@ -270,7 +270,7 @@ export function beginSession({ emitter, globals, hooks, source, optimize, warnin
   // watr's generated-name counters (inline/outline/…): per-compile, else warm
   // recompiles emit history-dependent WAT text (__inl5 → __inl15).
   resetNameUids()
-  if (source !== undefined) ctx.error.src = source
+  if (source !== undefined) { ctx.error.src = source; ctx.error.parts = null }
   initWarnings(warnings ?? null)
   if (alloc === false) ctx.transform.alloc = false
   if (strict) ctx.transform.strict = true

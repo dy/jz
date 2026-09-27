@@ -31,7 +31,7 @@ import { literalTruthiness, nullishArm } from './lattice.js'
 import { censusMaybeUndefinedKind } from './dict-census.js'
 import { valOf as summaryVal, contractVal } from '../summary/index.js'
 import { typedIndexKnown } from '../type/canonical-bounds.js'
-import { NUMBER, isPostfixRecovery } from '../summary/kind.js'
+import { K, NUMBER, TAGS, NULL_BITS, bitOf, tagsOf, isPostfixRecovery } from '../summary/kind.js'
 import { shapeOf, jsonConstString, spreadMergeResolves } from './shape.js'
 
 /**
@@ -499,9 +499,17 @@ VT['+'] = (args) => {
     const v = view.valOfExpr(['+', args[0], args[1]])
     if (v != null) return v
     if (numericDenied(args[0], view) || numericDenied(args[1], view)) return null
+    // A side the summary lets be a string, a heap value or a BigInt makes the
+    // sum the run's to decide (`a[0] + a[1]` over a number-or-string element).
+    if (!addsAsNumber(view.kindOfExpr(args[0])) || !addsAsNumber(view.kindOfExpr(args[1]))) return null
   }
   return VAL.NUMBER
 }
+/** A kind whose every value adds as a number: numbers, booleans and missing
+ *  values, or the kind that names no tag at all (ANY keeps the optimistic
+ *  contract above). */
+const ADDEND_BITS = bitOf(K.NUMBER) | bitOf(K.BOOL) | NULL_BITS
+const addsAsNumber = k => tagsOf(k) === TAGS || (tagsOf(k) & ~ADDEND_BITS) === 0
 /** A bare name the numeric demand pass denied a number. */
 export const numericDenied = (node, view = ctx.summary?.at(ctx.func.current)) =>
   typeof node === 'string' && view != null && view.numericDenied(node)
@@ -524,6 +532,11 @@ VT['+='] = (args) => {
   const tb = valTypeOf(args[1])
   if (ta === VAL.STRING || tb === VAL.STRING) return VAL.STRING
   if (ta === VAL.BIGINT || tb === VAL.BIGINT) return VAL.BIGINT
+  // as for `+`: a side the summary lets be a string or a heap value leaves the sum to the run
+  if (ctx.summary && (ta == null || tb == null)) {
+    const view = ctx.summary.at(ctx.func.current)
+    if (!addsAsNumber(view.kindOfExpr(args[0])) || !addsAsNumber(view.kindOfExpr(args[1]))) return null
+  }
   return VAL.NUMBER
 }
 const compoundNumericVT = (args) => {

@@ -13,7 +13,7 @@ import { OPTF } from '../ctx.js'
 
 import { ctx, err, inc, warnDeopt, PTR, LAYOUT, setLinkDemand } from '../ctx.js'
 import { T, ACCESSOR_SET } from '../ast.js'
-import { classAccessor, classesWith } from './emit/class-dispatch.js'
+import { classAccessor, classesWith, lacksSlot } from './emit/class-dispatch.js'
 import { staticPropertyKey, staticIndexKey, staticObjectProps, inlineArraySid, structLiteralFields, inplaceKey } from '../static.js'
 import { packedI32, structInline } from '../abi/index.js'
 import { i64Hex, encodePtrHi, OBJECT_SCHEMA_HI_MASK, objectSchemaGuardHex } from '../../layout.js'
@@ -699,6 +699,10 @@ export function emitElementAssign(arr, idx, val, node = null) {
 // the plain store (`.raw` target). The expression's value stays `v`.
 function classSetterStore(obj, prop, val) {
   if (!classesWith(prop + ACCESSOR_SET).length) return undefined
+  // a receiver the summary types as instances without the setter (a `this`
+  // of another class, its field) stores plainly, as itself: held in a local
+  // it would lose its type, and the slot store its offset
+  if (lacksSlot(obj, prop + ACCESSOR_SET)) return undefined
   const void_ = ctx.func._expect === 'void'
   const vT = temp('accv')
   // JS order: the receiver, then the value; the expression's value stays `v`
@@ -729,6 +733,8 @@ function accessorStore(obj, prop, val) {
   // dispatch tested each) carries it only as a slot of an object literal's
   // schema or as a static pair on a class value: with neither, the store is plain
   if (!known && !ctx.transform.dynamicAccessorNames?.has(prop) && !ctx.schema.list.some(s => s?.includes(setter))) return null
+  // the summary's layouts say the same for a receiver it types (module/core.js slotAccessorRead)
+  if (!known && lacksSlot(obj, setter)) return null
   const void_ = ctx.func._expect === 'void'
   // JS order: the receiver, then the value
   const pre = []

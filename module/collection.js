@@ -20,7 +20,7 @@ import { VAL, lookupValType } from '../src/reps.js'
 import { isLiteralStr, ACCESSOR_GET, ACCESSOR_SET } from '../src/ast.js'
 import { ctx, inc, PTR, LAYOUT, registerGetter, declGlobal, setLinkDemand } from '../src/ctx.js'
 import { stringHash } from '../src/string-data.js'
-import { OBJECT_SCHEMA_HI_MASK, STR_INTERN_BIT, STR_HCACHE_BIT, ssoBitI64Hex, encodePtrHi, i64Hex, deletedMaskWat, deletedSlotWat, markDeletedSlotWat, DATA_VIEW_FLAG, HIDDEN_PROPERTY_SEQ } from '../layout.js'
+import { OBJECT_SCHEMA_HI_MASK, STR_INTERN_BIT, STR_HCACHE_BIT, ssoBitI64Hex, encodePtrHi, i64Hex, deletedMaskWat, deletedSlotWat, markDeletedSlotWat, DATA_VIEW_FLAG, HIDDEN_PROPERTY_SEQ, DYN_CACHE_EMPTY } from '../layout.js'
 import { ssoEncode } from './string.js'
 import { errorCodeLiteral, ERR } from '../err-codes.js'
 import { requireReceiverWat } from './core/error-object.js'
@@ -366,10 +366,11 @@ export default (ctx) => {
   // metacircular workloads (watr WAT parser): ~96% of execution sits in
   // __dyn_get_t / __ihash_get_local. Caches last-seen (off → propsPtr) at
   // the top of __dyn_get_t; invalidated by __dyn_set when the same off's
-  // propsPtr is replaced (rehash on grow). Sentinel cache_off = -1 cannot
-  // collide with a real memory offset (always non-negative i32).
+  // propsPtr is replaced (rehash on grow). The empty cache holds 1, which no
+  // key is: a memory offset is a multiple of 8, a closure's key is negative
+  // (-1 - its table index, so -1 is the first function's).
   if (!ctx.scope.globals.has('__dyn_get_cache_off'))
-    declGlobal('__dyn_get_cache_off', 'i32', -1)
+    declGlobal('__dyn_get_cache_off', 'i32', DYN_CACHE_EMPTY)
   if (!ctx.scope.globals.has('__dyn_get_cache_props'))
     declGlobal('__dyn_get_cache_props', 'f64')
   // Schema name table for __dyn_get's OBJECT-schema fallback (polymorphic-receiver

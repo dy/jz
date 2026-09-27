@@ -26,7 +26,9 @@ export const ERR_CLASS_SET = new Set(ERR_CLASS_NAMES)
 // RHS support is closed: Array/Map/Set fold or tag-compare (PTR.ARRAY/MAP/SET); the 8
 // TYPED_ELEM_NAMES ctors + ArrayBuffer tag/aux-compare (PTR.TYPED+aux / PTR.BUFFER); the
 // 7 Error classes tag+sid-compare (module/schema.js's ctx.schema.errorSid — one
-// distinct sid per class). Deliberately NARROWER than
+// distinct sid per class). Float16Array and Uint8ClampedArray carry a flag bit of
+// their own beside the element code they share with Uint16Array and Uint8Array, so
+// the aux-compare tells each apart. Deliberately NARROWER than
 // layout.js's full TYPED_CTORS (14 names): excluded here —
 //   - BigInt64Array / BigUint64Array: layout.js's encodeTypedElemAux collapses BOTH to
 //     the identical aux (base code 7 | TYPED_ELEM_BIGINT_FLAG) — no bit distinguishes
@@ -34,10 +36,8 @@ export const ERR_CLASS_SET = new Set(ERR_CLASS_NAMES)
 //     apart. Same "tag-indistinguishable → reject" call this file already makes for
 //     WeakMap/WeakSet below, extended here to a collision the design doc's own RHS
 //     table didn't flag.
-//   - Float16Array / Uint8ClampedArray: not a collision (their extra flag bit IS unique),
-//     simply out of the shipped scope — omitted for symmetry with the two ctors above
-//     rather than partially widening TYPED_ELEM_NAMES.
-export const INSTANCEOF_ALLOW = new Set(['Array', 'Map', 'Set', 'ArrayBuffer', 'DataView', ...TYPED_ELEM_NAMES, ...ERR_CLASS_NAMES])
+export const TYPED_INSTANCEOF = [...TYPED_ELEM_NAMES, 'Float16Array', 'Uint8ClampedArray']
+export const INSTANCEOF_ALLOW = new Set(['Array', 'Map', 'Set', 'ArrayBuffer', 'DataView', ...TYPED_INSTANCEOF, ...ERR_CLASS_NAMES])
 
 // Module-level prepare state. Six independent stacks/scalars that together form
 // the prepare-pass working set. Lifecycle: reinitialized by `resetPrepState()`,

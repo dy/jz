@@ -292,8 +292,12 @@ function walkFactsRoot(root, full, callerFunc, doSchema, cache = true) {
   const testMembers = new WeakSet()     // `.` nodes consumed only as a truthiness test
   // A concise arrow whose whole body is one bare identifier has no enclosing
   // array node for observeNodeFacts to visit. The value is returned, hence the
-  // referenced object escapes just like `return name` in a block body.
-  if (typeof root === 'string') acc.nameEscapes.add(root)
+  // referenced object escapes just like `return name` in a block body, and a
+  // function it names is taken as a value (`() => fn`).
+  if (typeof root === 'string') {
+    acc.nameEscapes.add(root)
+    if (full && isFuncRef(root, ctx.funcs.names)) acc.addressTakenNames.add(root)
+  }
   const walkFacts = (node, fullWalk, inArrow, caller) => {
     if (!Array.isArray(node)) return
     const op = node[0]
@@ -306,6 +310,8 @@ function walkFactsRoot(root, full, callerFunc, doSchema, cache = true) {
       if (parsed) ctx.schema.register(parsed.names)
     }
     if (op === '=>') {
+      // a concise body naming a function returns it as a value
+      if (fullWalk && isFuncRef(node[2], ctx.funcs.names)) acc.addressTakenNames.add(node[2])
       for (let i = 1; i < node.length; i++) walkFacts(node[i], fullWalk, true, caller)
       return
     }
