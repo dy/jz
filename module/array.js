@@ -15,7 +15,7 @@ import { emit, spread, deps, idx as emitIndex, storedValue, storedValueNarrow, s
 import { censusMaybeUndefinedKind, isPresentNumber, valTypeOf } from '../src/kind.js'
 import { extractParams, classifyParam, PARAM_NAME, ASSIGN_OPS, isArrayIndexKey } from '../src/ast.js'
 import { staticPropertyKey, staticObjectProps, inlineArraySid, inlineArrayUnion, staticIndexKey, intLiteralValue, structLiteralFields, intExprRange } from '../src/static.js'
-import { VAL, lookupValType, lookupNotString, isDisjointFrom, KIND_UNIVERSE, mayBeUndefined, repOf } from '../src/reps.js'
+import { VAL, lookupValType, lookupNotString, isDisjointFrom, KIND_UNIVERSE, mayBeUndefined, repOf, repOfGlobal } from '../src/reps.js'
 import { structInline } from '../src/abi/index.js'
 import { ctx, inc, err, warnDeopt, PTR, LAYOUT, followForwardingWat, setLinkDemand } from '../src/ctx.js'
 import { strHashLiteral, dynPropsFilterSetIR, durableFwdLogIR, durableArrSnapIR, durableArrSnapNode } from './collection.js'
@@ -1129,8 +1129,10 @@ export default (ctx) => {
       // is built at one count and nothing in the program resizes any of them)
       // never relocates either, whatever names reach it: its base is the raw
       // offset, its length the count.
-      const fixedLen = ctx.summary?.at(ctx.func.current)?.fixedLenOfExpr(arr) ?? null
-      const neverGrown = fixedLen != null || (typeof arr === 'string' && ctx.func.localReps?.get(arr)?.neverGrown === true)
+      // A module const frozen after init (plan/scope.js) knows its length the same way.
+      const rep = typeof arr === 'string' ? ctx.func.localReps?.get(arr) ?? repOfGlobal(arr) : null
+      const fixedLen = ctx.summary?.at(ctx.func.current)?.fixedLenOfExpr(arr) ?? (rep?.neverGrown === true ? rep.arrayLen ?? null : null)
+      const neverGrown = fixedLen != null || rep?.neverGrown === true
       const arrBase = () => neverGrown || (typeof arr === 'string' && currentBinding(arr))
         ? ['i32.wrap_i64', ['i64.and', ['i64.reinterpret_f64', ptrExpr], ['i64.const', LAYOUT.OFFSET_MASK]]]
         : ctx.transform.optimize?.leanRuntime ? (inc('__ptr_offset'), ['call', '$__ptr_offset', ['i64.reinterpret_f64', ptrExpr]])
@@ -1213,7 +1215,7 @@ export default (ctx) => {
         && (range => range != null && range[0] >= 0 && range[1] < fixedLen)(intExprRange(idx))
       const idxProvenInBounds = fixedProven || keyIsNum && typeof arr === 'string' && (staticProven ||
         (typeof idx === 'string' && inBoundsArrIdx(ctx).has(arr + '\x00' + idx)) ||
-        (ctx.func.localReps?.get(arr)?.arrayLen != null && typedIdxProven(arr, idx)))
+        (rep?.arrayLen != null && typedIdxProven(arr, idx)))
       // Tag reads whose receiver folded to a compile-time constant box: when the
       // decl registers the same bits as a STATIC array (ctx.scope.staticArrs) and
       // the program never resizes/aliases the name, optimize's

@@ -14,7 +14,7 @@ import {
 
 export function summaryQueries(facts, internal = false) {
   const { kinds, incoming, fields, results, receivers, closures, closuresByBody, declared, parent, nameKeys, forwards, siteResults,
-    scopeOfSig, scopeOfBody, scopeOfParams, cellUp, elems, tuples, lens, stores, cellProps, cellWild, closureSets, closureSetIds, cells, jsonKinds, unions, shapeUnions,
+    scopeOfSig, scopeOfBody, scopeOfParams, cellUp, elems, tuples, lens, stores, built, grown, unknown, presentReads, cellProps, cellWild, closureSets, closureSetIds, cells, jsonKinds, unions, shapeUnions,
     schemas, layouts, sitesByLayout, objectKinds, methods, sidByKey, funcNames, imports, numeric, dynamicProps, builtinOwnProps, typedReadPresent, typedProps, typedPropsByAux, openSchemas, indexedSchemas,
     sideProps, sideWild, wildProps, wildValues, pendingAll, keyedCells, cellShapes, cellLostObject, closureProps, escaped, iterSites, reached } = facts
   // The solver owns union-find compression; querying a root never writes it.
@@ -238,8 +238,9 @@ export function summaryQueries(facts, internal = false) {
           const row = tuples.get(cell(paramOf(r))), idx = n[2]
           const i = typeof idx === 'number' ? idx : Array.isArray(idx) && idx[0] == null ? idx[1] : null
           if (row && Number.isInteger(i) && i >= 0) return row[i] ?? kind(K.ABSENT)
-          // A literal index the fixed length holds reads an element, never past the end.
-          if (Number.isInteger(i) && i >= 0 && i < fixedLen(r)) return entryOf(r, kindOfExpr(idx))
+          // An index the fixed length holds reads an element, never past the end:
+          // a literal under it, or a read the solver's walk found inside it.
+          if ((Number.isInteger(i) && i >= 0 && i < fixedLen(r)) || presentReads.has(n)) return entryOf(r, kindOfExpr(idx))
         }
         if (t === K.OBJECT && paramOf(r) !== UNKNOWN) { let k = K.NONE; for (const sid of shapesOf(paramOf(r))) { for (const s of slots(sid)) k = merge(k, s); k = merge(k, anySideOf(sid)) } return orAbsent(k) }
         if (t === K.TYPED) return !typedElementKey(n[2], kindOfExpr(n[2]) === NUMBER) ? core(kindOfExpr(n[2])) === NUMBER ? orAbsent(merge(typedElemKind(r), typedPropsOf(r))) : ANY
@@ -435,6 +436,18 @@ export function summaryQueries(facts, internal = false) {
       // The fixed length of the array a name or an expression holds; null when it may change or differ.
       fixedLenOf: name => fixedLen(readKind(name)),
       fixedLenOfExpr: e => fixedLen(kindOfExpr(e)),
+      // The length a module binding's array has after module init and keeps
+      // (index.js `built`, `grown`, `unknown`): what it was built with plus the
+      // elements the top level pushed through this very name in counted loops;
+      // null when anything else resized it, or the pushes went through another name.
+      frozenLenOf: name => {
+        const k = readKind(name)
+        if (tagOf(core(k)) !== K.ARRAY || paramOf(k) === UNKNOWN) return null
+        const c = cell(paramOf(k)), n = built.get(c), g = grown.get(c)
+        if (!(n >= 0) || unknown.has(c) || (g && g.name !== name)) return null
+        const len = n + (g?.n ?? 0)
+        return stores.get(c) >= len ? null : len
+      },
       // The element cell's own kind: presence included, no absent member for a read past the end.
       elemKindOf: name => { const k = readKind(name); return celled(k) ? pub(elemOf(k)) : null },
       arrayElemSidOf: name => { const k = readKind(name); if (tagOf(k) !== K.ARRAY || paramOf(k) === UNKNOWN) return null; const e = elemOf(k); return tagOf(e) === K.OBJECT && !isNullable(e) && publicSid(e) !== UNKNOWN ? publicSid(e) : null },

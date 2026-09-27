@@ -13,7 +13,7 @@
 import { isReassigned, ASSIGN_OPS as WRITE_OPS, walkAst, some, someDeep, callArgs } from '../ast.js'
 import { ctx, getFactStore } from '../ctx.js'
 import { isNullable, core, NUMBER } from '../summary/kind.js'
-import { repOf } from '../reps.js'
+import { repOf, repOfGlobal } from '../reps.js'
 import { typedStorageNameCtor } from '../typed-context.js'
 import { intLiteralValue, intExprRange, constIntExpr } from '../static.js'
 import {
@@ -111,7 +111,7 @@ export function typedIdxProven(recv, idx, node = null) {
   const ip = intervalProvenIdx(ctx)
   if (ownNode && ip.has(node) || ip.has(idxKey(recv, idx))) return true
   const len = ctx.func.typedLen?.get(recv) ?? ctx.scope?.globalTypedLen?.get(recv)
-    ?? ctx.func.localReps?.get(recv)?.arrayLen
+    ?? ctx.func.localReps?.get(recv)?.arrayLen ?? repOfGlobal(recv)?.arrayLen
   if (len == null) return false
   // 7. refined-range proof: an i32-typed index whose closed hull (branch-local
   //    compare refinements ∩ ranged decl reps ∩ const chains) fits [0, len).

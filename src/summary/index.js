@@ -448,6 +448,22 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   const LEN_OPEN = -1
   const lens = new Map()         // cell root → count | LEN_OPEN
   const stores = new Map()       // cell root → greatest literal index stored at
+  // An array frozen after module init: built at a count (`built`, the literals'
+  // count as `lens` had it before any push), grown only by pushes at the top
+  // level of a module through one binding's name, each inside counted loops
+  // and no other branch, so their number is known (`grown`, recomputed every
+  // round), and never resized in any other way (`unknown`). The binding holds
+  // its final pointer, so a read through it after init needs no forwarding
+  // follow and knows the length.
+  const built = new Map()        // cell root → count | LEN_OPEN
+  const grown = new Map()        // cell root → { n, name }: init pushes' count and the one name they went through
+  const unknown = new Set()      // cell roots resized in a way no count follows
+  const trips = []               // the trip counts of the counted loops being walked
+  let countedDepth = 0           // how many of the paths `branch` counts are counted loops
+  // The element reads whose index the walk found inside the receiver's fixed
+  // length (a counter's span), by node: the query has no loop in view and
+  // reads them present through this set.
+  const presentReads = new Set()
   const lenCell = (arr) => tagOf(core(arr)) === K.ARRAY && paramOf(arr) !== UNKNOWN ? cell(paramOf(arr)) : -1
   // A change of either fact asks for another round: a read kinded under a
   // count that a later statement of the round opens is kinded again. The
@@ -458,8 +474,12 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     if (onOpen && old >= 0) onOpen(old, why, current, site)
     lens.set(c, n); changed = true
   }
-  const fixLen = (c, n) => { const old = lens.get(c); setLen(c, old === undefined || old === n ? n : LEN_OPEN, `built at ${n} elements elsewhere`) }
-  const openLen = (arr, why) => { const c = lenCell(arr); if (c >= 0) setLen(c, LEN_OPEN, why) }
+  const fixLen = (c, n) => {
+    const old = lens.get(c); setLen(c, old === undefined || old === n ? n : LEN_OPEN, `built at ${n} elements elsewhere`)
+    const was = built.get(c); built.set(c, was === undefined || was === n ? n : LEN_OPEN)
+  }
+  /** The array's length may change: by a counted init push (`counted`) or in a way no count follows. */
+  const openLen = (arr, why, counted = false) => { const c = lenCell(arr); if (c >= 0) { setLen(c, LEN_OPEN, why); if (!counted) unknown.add(c) } }
   /** The fixed length of the array `arr` holds, -1 where it may change or differ. */
   const fixedLen = (arr) => { const c = lenCell(arr), n = c < 0 ? -1 : lens.get(c); return n >= 0 && !(stores.get(c) >= n) ? n : -1 }
   // The integers an index can be, `[lo, hi]`: a literal, a constant, the
@@ -504,7 +524,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     const c = lenCell(arr)
     if (c < 0) return
     const span = typeof idx === 'string' && isArrayIndexKey(idx) ? [+idx, +idx] : spanOf(idx)
-    if (!span || span[0] < 0) setLen(c, LEN_OPEN, 'stored at an index the walk cannot bound')
+    if (!span || span[0] < 0) { setLen(c, LEN_OPEN, 'stored at an index the walk cannot bound'); unknown.add(c) }
     else if (!(stores.get(c) >= span[1])) {
       if (onOpen && lens.get(c) >= 0 && span[1] >= lens.get(c)) onOpen(lens.get(c), `stored at index ${span[1]}`, current, site)
       stores.set(c, span[1]); changed = true
@@ -636,6 +656,11 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     const la = lens.get(a) ?? LEN_OPEN, lb = lens.get(b) ?? LEN_OPEN
     if (la !== lb) { if (onOpen && (la >= 0 || lb >= 0)) onOpen(Math.max(la, lb), lb < 0 || la < 0 ? 'joined with an array whose length may change' : `joined with an array of ${Math.min(la, lb)} elements`, current, site); lens.set(a, LEN_OPEN) }
     if (stores.get(b) > (stores.get(a) ?? -1)) stores.set(a, stores.get(b))
+    const ba = built.get(a) ?? LEN_OPEN, bb = built.get(b) ?? LEN_OPEN
+    built.set(a, ba === bb ? ba : LEN_OPEN)
+    if (unknown.has(b)) unknown.add(a)
+    const ga = grown.get(a), gb = grown.get(b)
+    if (gb) { if (!ga) grown.set(a, gb); else if (ga.name === gb.name) ga.n += gb.n; else unknown.add(a) }
     // The cells are one before the rows merge: a row that reaches itself ends here.
     if (rows) { tuples.set(b, null); for (let i = 0; i < ra.length; i++) { const nk = merge(ra[i], rb[i]); if (nk !== ra[i]) ra[i] = nk } }
     if (hostArrays.has(b)) hostArrays.add(a)
@@ -802,7 +827,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
         for (const v of cellProps.get(c)?.values() ?? []) escapeToHost(v, seen)
         escapeToHost(cellWild.get(c) ?? K.NONE, seen)
         hostArrays.add(c)
-        setLen(c, LEN_OPEN, 'handed to the host')
+        setLen(c, LEN_OPEN, 'handed to the host'); unknown.add(c)
         if (retainedArrays.has(c)) raiseElem(k, ANY)
       }
     }
@@ -1747,7 +1772,18 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     if (t === K.BUFFER && name === 'slice') return kind(K.BUFFER)
     if (t === K.ARRAY) {
       if (name === 'pop' || name === 'shift' || name === 'sort' || name === 'reverse' || name === 'splice' || name === 'copyWithin') invalidateTuple(recv)
-      if (name === 'push' || name === 'unshift' || name === 'pop' || name === 'shift' || name === 'splice') openLen(recv, `resized by ${name}`)
+      // A push at a module's top level, through a module binding's name, inside
+      // counted loops alone, adds a known number of elements once, at init.
+      if (name === 'push') {
+        const via = node && Array.isArray(node[1]) && typeof node[1][1] === 'string' && current === null && branch === countedDepth
+          && bindingScope[keyOf(node[1][1]) ?? -1] === MODULE && spreadAt(base, n) === n ? node[1][1] : null
+        openLen(recv, 'resized by push', via !== null)
+        const c = lenCell(recv)
+        if (c >= 0 && via !== null) {
+          const g = grown.get(c), count = trips.reduce((p, t) => p * t, n)
+          if (!g) grown.set(c, { n: count, name: via }); else if (g.name === via) g.n += count; else unknown.add(c)
+        }
+      } else if (name === 'unshift' || name === 'pop' || name === 'shift' || name === 'splice') openLen(recv, `resized by ${name}`)
       if (node && ARRAY_CALLBACKS.has(name)) return arrayCallback(node, recv, name, base, n)
       if (name === 'push' || name === 'unshift') { for (let i = 0; i < n; i++) raiseElem(recv, ks[base + i]); return NUMBER }
       // The searches compare by strict equality or SameValueZero and keep nothing of their argument.
@@ -2156,7 +2192,8 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
         if (row && Number.isInteger(i) && i >= 0) return row[i] ?? ABSENT
         // An index the fixed length holds reads an element, never past the end.
         const span = spanOf(idx)
-        if (span && span[0] >= 0 && span[1] < fixedLen(recv)) return entryOf(recv, ik)
+        if (span && span[0] >= 0 && span[1] < fixedLen(recv)) { presentReads.add(n); return entryOf(recv, ik) }
+        presentReads.delete(n)
         return orAbsent(entryOf(recv, ik))
       }
       if (t === K.STRING) return STRING
@@ -2679,9 +2716,9 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       loopAssigns(n); stmt(n[1]); branch++; selectedExpr(n[2], 0)
       const mark = rtop, counted = countedLoop(n)
       if (n[2] != null) proves(n[2], true)
-      if (counted) spans.set(counted[0], [counted[1], counted[2]])
+      if (counted) { spans.set(counted[0], [counted[1], counted[2]]); trips.push(Math.max(0, counted[2] - counted[1] + 1)); countedDepth++ }
       stmt(n[4])
-      if (counted) spans.delete(counted[0])
+      if (counted) { spans.delete(counted[0]); trips.pop(); countedDepth-- }
       unwind(mark); selectedExpr(n[3], 0); branch--
       return
     }
@@ -2898,7 +2935,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   }
   const queryFacts = {
     kinds, incoming, fields, results, closures, declared, parent, nameKeys, forwards, siteResults, receivers,
-    scopeOfSig, scopeOfBody, scopeOfParams, cellUp, elems, tuples, lens, stores, cellProps, cellWild, closureSets, closureSetIds, cells, jsonKinds, closuresByBody, unions, shapeUnions,
+    scopeOfSig, scopeOfBody, scopeOfParams, cellUp, elems, tuples, lens, stores, built, grown, unknown, presentReads, cellProps, cellWild, closureSets, closureSetIds, cells, jsonKinds, closuresByBody, unions, shapeUnions,
     schemas, layouts, sitesByLayout, objectKinds, methods, sidByKey,
     funcNames: new Set(funcByName.keys()), imports: new Map(imports),
     numeric, dynamicProps, builtinOwnProps, escaped, typedReadPresent, typedProps, typedPropsByAux, openSchemas, indexedSchemas, hostSchemas, opaqueSchemas, deletable, deleteReach,
@@ -3101,6 +3138,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   const rounds = (step) => { for (let round = 0; ; round++) { if (round === 10000) throw new Error('summary: no fixpoint'); if (!step()) return } }
   const fixpoint = () => rounds(() => {
     changed = false
+    grown.clear()   // the init pushes are counted afresh by every round's walk
     for (const f of funcs) {
       if (exported(f) || hostClosures.has(f.name) || escaped.has(f.name) || f.sig.dispatcher) reach(f.name)   // a dispatcher is called by emitted code
       if (!reached.has(f.name)) continue
@@ -3152,7 +3190,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   const seeded = [...seedable].filter(p => (entryNumeric.has(p) || isCompatible(p)) && tagOf(kinds[p] ?? K.NONE) === K.ANY)
   if (seeded.length) {
     kinds.length = 0; incoming.length = 0; fields.length = 0; objectKinds.clear(); opaqueSchemas.clear(); hostSchemas.clear(); hostArrays.clear(); retainedArrays.clear(); hostClosures.clear(); results.clear(); escaped.clear(); certainKeys.clear(); for (let i = 0; i < elems.length; i++) { elems[i] = K.NONE; cellUp[i] = i }
-    tuples.clear(); lens.clear(); stores.clear()
+    tuples.clear(); lens.clear(); stores.clear(); built.clear(); grown.clear(); unknown.clear(); presentReads.clear()
     pendingAll = false; pendingIndexed = false; wildValues = K.NONE; wildProps.clear(); sideProps.clear(); sideWild.clear(); closureProps.clear(); sideByProp.clear(); foreignObjects = false; foreignProps.clear(); deletable.clear(); deleteReach.unknown = false
     seed(seeded)
     fixpoint()

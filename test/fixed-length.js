@@ -161,6 +161,69 @@ test('fixed length: a reset restores a durable array stored to directly', () => 
   }
 })
 
+// An array frozen after module init: built at a count and grown only by pushes
+// at the module's top level through its own const name, inside counted loops.
+// Its const binding holds the final pointer, so reads through it after init
+// skip the forwarding follow and know the length.
+const frozenLen = (src, name) => { compile(src, { optimize: 0 }); return ctx.summary.at(undefined).frozenLenOf(name) }
+
+test('frozen length: counted top-level pushes through the binding fix the length', () => {
+  is(frozenLen(`const ps = []\nfor (let i = 0; i < 100; i++) ps.push([i, i * 2, i * 3])\nexport const f = () => ps[3][1]`, 'ps'), 100)
+  is(frozenLen(`const N = 4\nconst ps = []\nfor (let i = 0; i < N; i++) for (let j = 0; j < 3; j++) { ps.push(i * 10 + j); ps.push(-j) }\nexport const f = () => ps[5]`, 'ps'), 24, 'two pushes per pass of nested loops')
+  is(frozenLen(`const ps = [7, 8]\nfor (let i = 0; i < 5; i++) ps.push(i)\nexport const f = () => ps[6]`, 'ps'), 7, 'a literal start counts')
+  const none = (body, why) => is(frozenLen(`const ps = []\n${body}\nexport const f = (v) => ps[0]`, 'ps'), null, why)
+  none('for (let i = 0; i < 10; i++) if (i % 2) ps.push(i)', 'a push under a condition')
+  none('const add = (v) => ps.push(v)\nfor (let i = 0; i < 10; i++) add(i)', 'a push inside a function')
+  none('for (let i = 0; i < 10; i++) ps.push(i)\nexport const g = (v) => ps.push(v)', 'a push at runtime')
+  none('const alias = ps\nfor (let i = 0; i < 10; i++) alias.push(i)', 'pushes through another name')
+  none('for (let i = 0; i < 10; i++) ps.push(i)\nps.pop()', 'a pop after the pushes')
+  none('for (let i = 0; i < 10; i++) ps.push(...[i, i])', 'a spread push')
+})
+
+test('frozen length: reads through the binding match the host, past the length and across relocation', () => {
+  const kernels = [
+    ['vec3 list', `const ps = []
+      for (let i = 0; i < 100; i++) ps.push([i, i * 2, i * 3])
+      export const f = () => { let s = 0; for (let i = 0; i < 100; i++) { const p = ps[i]; s += p[0] + p[1] * p[2] } return s }`, []],
+    ['a read past the length', `const ps = []
+      for (let i = 0; i < 10; i++) ps.push(i)
+      export const f = (k) => { const v = ps[k]; return v === undefined ? -1 : v }`, [12]],
+    ['a thousand pushes relocate the array', `const ps = []
+      for (let i = 0; i < 1000; i++) ps.push(i * 0.5)
+      export const f = () => { let s = 0; for (let i = 0; i < 1000; i++) s += ps[i]; return s }`, []],
+    ['elements written in place', `const ps = []
+      for (let i = 0; i < 50; i++) ps.push([i, i])
+      export const f = (k) => { for (let i = 0; i < 50; i++) { const p = ps[i]; p[1] = p[0] * k } let s = 0; for (let i = 0; i < 50; i++) s += ps[i][1]; return s }`, [3]],
+  ]
+  for (const [name, src, args] of kernels)
+    for (const optimize of levels(0, 1, 2, 3, 'size')) agree(src, 'f', args, { optimize }, `${name} at ${optimize}`)
+})
+
+test('frozen length: a read through the binding follows no forward and loads no length', () => {
+  const src = `const ps = []
+    for (let i = 0; i < 100; i++) ps.push([i, i * 2, i * 3])
+    export const f = () => { let s = 0; for (let i = 0; i < 100; i++) { const p = ps[i]; s += p[0] + p[1] * p[2] } return s }`
+  for (const optimize of levels(2, 3)) {
+    const body = funcWat(wat(src, { optimize }), 'f')
+    ok(!/__ptr_offset|i32\.load|__throw_property_nullish/.test(body), `only element loads at ${optimize}`)
+  }
+})
+
+// An element read whose counter the walk found inside the fixed length is
+// present, by node: a field of it reads its slot, an element of it its cell.
+test('fixed length: a counted read of an array of one shape reads slots and cells directly', () => {
+  const src = `const planes = [{ normal: [0, 1, 0], constant: 2 }, { normal: [1, 0, 0], constant: -1 }, { normal: [0, 0, 1], constant: 3 }]
+    export const f = (x, y, z) => { let s = 0; for (let i = 0; i < 3; i++) { const n = planes[i].normal; s += n[0] * x + n[1] * y + n[2] * z + planes[i].constant } return s }`
+  for (const optimize of levels(0, 2, 3)) agree(src, 'f', [1, 2, 3], { optimize }, `at ${optimize}`)
+  for (const optimize of levels(2, 3)) {
+    const body = funcWat(wat(src, { optimize }), 'f')
+    ok(!/__dyn_get|__ptr_offset|__throw_property_nullish/.test(body), `no lookup, follow or check at ${optimize}`)
+  }
+  const warnings = { entries: [] }
+  compile(src, { warnings, optimize: 2 })
+  ok(!warnings.entries.some(e => e.code === 'deopt-prop-read'), 'no dynamic property read')
+})
+
 test('fixed length: the advisory names the first cause an array keeps its checks by', () => {
   const warnings = { entries: [] }
   compile(`const out = [0, 0, 0]\nexport const f = (k) => { out.push(k); return out[0] }`, { warnings, why: true })

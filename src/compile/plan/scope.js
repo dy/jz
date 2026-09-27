@@ -104,6 +104,10 @@ export const moduleGlobalKinds = (summary) => {
     if (vt == null) { vts.delete(name); ctx.scope.globalTypedElem?.delete(name); continue }
     vts.set(name, vt)
     if (vt === VAL.ARRAY) {
+      // A const binding frozen after init at a known length holds its final
+      // pointer: reads through it skip the forwarding follow and know the length.
+      const frozen = ctx.scope.consts?.has(name) ? summary.frozenLenOf(name) : null
+      if (frozen != null) updateGlobalRep(name, { arrayLen: frozen, neverGrown: true })
       const e = summary.elemKindOf(name)
       if (e != null && !hasTag(e, K.NULLISH)) {
         const ev = valOf(core(e))
