@@ -81,6 +81,7 @@ const TESTS = [
   'number-or-missing',
   'typed-fill',
   'typed-payload',
+  'typed-decode',
   'unroll-cost',
   'sentinel-guard',
   'twin-locals',

@@ -1679,7 +1679,14 @@ constant after the vector loop when any lane's BITS differ from that splat
 (`constantFlagStore`, `map.js`; a float compare read a NaN entry as changed).
 The typed-param unswitch
 (`src/optimize/unswitch.js`) looks through the inline array arm to the
-typed read it specializes. The summary keeps typed-array named properties
+typed read it specializes. The accesses it leaves to the helpers (a loop of
+several output receivers, a body too large to copy, a stored value of open
+kind) decode their receiver once before the loop (`src/optimize/typed-decode.js`):
+the element count, the data address and the float width in three locals, no
+elements for a receiver that is no Float32Array or Float64Array. Each access
+tests `i < n`, loads or stores directly inside, and calls the helper outside,
+which answers a missing receiver, another kind and an index past the end
+(speed tier: the helper call stays beside the direct path). The summary keeps typed-array named properties
 per element type (`typedPropsByAux`): a property stored on a `Uint8Array`
 never reaches a read of an `Int32Array`, and an escape opens no cell, since
 a typed array's properties come from stores the walk sees or from a builtin

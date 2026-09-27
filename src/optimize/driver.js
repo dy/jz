@@ -22,6 +22,7 @@ import { hoistInvariantPtrOffset, splitLoopPrivateScratch, hoistInvariantLoop, n
 import { promoteGlobals } from './globals.js'
 import { unswitchTypedParamLoop, unswitchStringRepLoop } from './unswitch.js'
 import { foldGuardedUpdates } from './guarded-update.js'
+import { hoistTypedDecode } from './typed-decode.js'
 import { wideAccumulator } from './wide-accumulator.js'
 import { devirtSchemaReads, foldStaticConstArrayReads, devirtConstFnArrayCalls } from './devirt.js'
 
@@ -127,6 +128,8 @@ export function optimizeFunc(fn, cfg, globalTypes, reachableWrites) {
   }
   // After the lift: the vectorizer reads a conditional update in its branch form.
   if (cfg && cfg.guardedUpdate === true) foldGuardedUpdates(fn)
+  // After the unswitch and the lift: the accesses they left to the helpers.
+  if (cfg && cfg.typedDecode === true) hoistTypedDecode(fn)
   // Preserve source-unrolled SSA scratch before propagation sinks its single
   // definition into a local.tee. The transform is gated while it matures; when
   // enabled, its moved invariants ride the normal LICM pass once more below.
