@@ -469,6 +469,24 @@ const i32Narrowed = n => {
   return null
 }
 
+// The address clamp of a select-form checked read (module/typedarray.js):
+// `select(i, 0, valid)` keeps a load that always runs inside its array. In an
+// arm the guard `valid` selects, the clamp is the index. Returns a copy, the
+// path to the clamp alone: the select form may still be the one that is kept.
+const unclamp = (n, valid) => {
+  if (!Array.isArray(n)) return n
+  if (n[0] === 'select' && n.length === 4 && n[3]?.[0] === 'local.get' && n[3][1] === valid &&
+      n[2]?.[0] === 'i32.const' && n[2][1] === 0) return n[1]
+  let out = n
+  for (let i = 1; i < n.length; i++) {
+    const c = unclamp(n[i], valid)
+    if (c === n[i]) continue
+    if (out === n) out = Object.assign(n.slice(), n)
+    out[i] = c
+  }
+  return out
+}
+
 // Shared by integer conversion and comparison. Only callers holding the
 // checkedNumRead proof may replace the missing arm with its numeric answer.
 const mapCheckedRead = (n, hitOf, miss, branchOnly = false) => {
@@ -479,7 +497,9 @@ const mapCheckedRead = (n, hitOf, miss, branchOnly = false) => {
   }
   const branch = n[0] === 'if' && n.length === 5 && n[3]?.[0] === 'then' && n[3].length === 2 && n[4]?.[0] === 'else' && n[4].length === 2
   if (!branch && !(n[0] === 'select' && n.length === 4)) return null
-  const hit = hitOf(branch ? n[3][1] : n[1])
+  // a select turned into a branch runs its hit under the guard
+  const guarded = !branch && branchOnly && n[3]?.[0] === 'local.get' ? unclamp(n[1], n[3][1]) : null
+  const hit = hitOf(branch ? n[3][1] : guarded ?? n[1])
   if (!hit) return null
   const cond = branch ? n[2] : n[3], absent = ['i32.const', miss]
   return typed(branch || branchOnly

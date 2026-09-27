@@ -531,6 +531,10 @@ do not imply equal numbers across signed and unsigned domains.
 Checked reads share one lowering for integer conversion and comparison:
 conversion maps absence to zero; comparison keeps the answer for undefined.
 Dependent index reads use branches to avoid address clamps on serial load chains.
+A comparison that turns the branch-free read into a branch drops the clamp:
+the load runs under the guard, where the clamp selects the index
+(`mapCheckedRead`), and the bound is the constant of a length the binding
+fixes, as in the branch form, so the loop keeps no register for it.
 They also share exact integer expression narrowing, including conditionals;
 early conversion folding cannot hide those integer branches from SIMD lifting.
 Saturating integer conversions opt into the shared floating range query's

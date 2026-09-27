@@ -1863,8 +1863,10 @@ export default (ctx) => {
       // len inlines to one header load for a RESOLVED elem type (no call — the
       // SIMD recognizers require call-free kernel bodies): owned byteLen at
       // base-8, view byteLen at descriptor[0]; elemCount = byteLen >> shift.
+      // A length the binding fixes (staticTypedLen) is its constant, as in leanLen.
       const ti = tempI32('tbi'), tin = tempI32('tbn')
-      const lenIR = ['i32.shr_u',
+      const staticLen = staticTypedLen(arr)
+      const lenIR = staticLen != null ? ['i32.const', staticLen] : ['i32.shr_u',
         ['i32.load', isView ? typedBase(emit(arr)) : ['i32.sub', typedBase(emit(arr)), ['i32.const', 8]]],
         ['i32.const', SHIFT[et]]]
       const off = ['i32.add', typedDataAddr(emit(arr), isView),
