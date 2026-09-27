@@ -1532,6 +1532,11 @@ A binding read only for truthiness or arithmetic keeps the raw carrier. The
 compile-time rejection remains for the one case a plan typed such a binding
 as one concrete non-Boolean kind.
 
+A typed array's `fill` converts its value once for a numeric array (`fill('12')`
+stores 12), writes the first element through the element writer and doubles
+the filled run with `memory.copy` (`__typed_fill`): one body for every element
+kind, log2(n) copies for n elements.
+
 Every array position argument (fill, copyWithin, slice, splice, with, the
 search methods' fromIndex) is captured and coerced through `positionArgs`
 (`src/bridge.js`): ToIntegerOrInfinity converts a string, reads a Boolean as

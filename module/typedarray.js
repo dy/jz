@@ -93,7 +93,7 @@ export default (ctx) => {
     // auto-scan — which diverges under self-compile (jz.wasm), dropping it ("Unknown func
     // $__clamp_idx" on typed .fill/.subarray in the kernel). Declare it manually here so the
     // reliable dep path includes it. Pinned by test/self-compile-includes.js.
-    __typed_fill: ['__len', '__typed_set_idx', '__clamp_idx'],
+    __typed_fill: ['__len', '__typed_set_idx', '__clamp_idx', '__typed_shift', '__typed_data', '__ptr_aux'],
     __typed_reverse: ['__len', '__typed_get_idx', '__typed_set_idx'],
     __typed_copyWithin: ['__len', '__typed_get_idx', '__typed_set_idx', '__clamp_idx'],
     __typed_sort: ['__len', '__typed_get_idx', '__typed_set_idx'],
@@ -1407,20 +1407,30 @@ export default (ctx) => {
 
   // .fill(value, start?, end?) for typed arrays. The plain-array __arr_fill gates
   // on PTR.ARRAY and silently no-ops a typed receiver (the storage layout and
-  // element width differ); this loops the element-width-aware __typed_set_idx
-  // over the clamped range so every element kind (u8…f64, BigInt) fills correctly.
+  // element width differ). The first element goes through the element-width-
+  // aware __typed_set_idx (its conversion, its kind, its throw); the rest are
+  // its bytes, and each copy doubles the filled run: one body for every element
+  // kind (u8…f64, BigInt), log2(n) copies for n elements.
   // start/end default 0/length, accept negatives, and clamp to [0, length].
   ctx.core.stdlib['__typed_fill'] = `(func $__typed_fill (param $ptr i64) (param $val f64) (param $start i32) (param $end i32) (result f64)
-    (local $len i32) (local $i i32)
+    (local $len i32) (local $a i32) (local $n i32) (local $k i32) (local $rest i32)
     (local.set $len (call $__len (local.get $ptr)))
     (local.set $start (call $__clamp_idx (local.get $start) (local.get $len)))
     (local.set $end (call $__clamp_idx (local.get $end) (local.get $len)))
-    (local.set $i (local.get $start))
-    (block $done (loop $fill
-      (br_if $done (i32.ge_s (local.get $i) (local.get $end)))
-      (drop (call $__typed_set_idx (local.get $ptr) (local.get $i) (local.get $val)))
-      (local.set $i (i32.add (local.get $i) (i32.const 1)))
-      (br $fill)))
+    (if (i32.lt_s (local.get $start) (local.get $end))
+      (then
+        (drop (call $__typed_set_idx (local.get $ptr) (local.get $start) (local.get $val)))
+        (local.set $k (call $__typed_shift (i32.and (call $__ptr_aux (local.get $ptr)) (i32.const 7))))
+        (local.set $a (i32.add (call $__typed_data (local.get $ptr)) (i32.shl (local.get $start) (local.get $k))))
+        (local.set $n (i32.shl (i32.sub (local.get $end) (local.get $start)) (local.get $k)))
+        (local.set $k (i32.shl (i32.const 1) (local.get $k)))
+        (block $done (loop $more
+          (br_if $done (i32.ge_u (local.get $k) (local.get $n)))
+          (local.set $rest (i32.sub (local.get $n) (local.get $k)))
+          (memory.copy (i32.add (local.get $a) (local.get $k)) (local.get $a)
+            (select (local.get $k) (local.get $rest) (i32.le_u (local.get $k) (local.get $rest))))
+          (local.set $k (i32.shl (local.get $k) (i32.const 1)))
+          (br $more)))))
     (f64.reinterpret_i64 (local.get $ptr)))`
 
   // Element-width/-kind-aware read: arr[i] → f64, the read mirror of __typed_set_idx.
@@ -1539,11 +1549,16 @@ export default (ctx) => {
 
   ctx.core.emit['.typed:fill'] = (arr, val, start, end) => {
     inc('__typed_fill')
+    // A numeric array fills with the value's number, converted once before the
+    // fill (`fill('12')` stores 12). A BigInt array takes the value as it is, and
+    // so does an array of open kind in a program that holds BigInts.
+    const r = resolveElem(arr)
+    const numeric = r ? !r.isBigInt : !representationProgramHasBigint(ctx)
     // ToIntegerOrInfinity position args (23.2.3.8 step 6/8) — asI32Sat, not asI32:
     // __clamp_idx needs ±Infinity saturated to INT32_MAX/MIN (see src/ir.js).
     return typed(['call', '$__typed_fill',
       asI64(emit(arr)),
-      val == null ? undefExpr() : asF64(emit(val)),
+      val == null ? undefExpr() : numeric ? asF64(toNumF64(val, emit(val))) : asF64(emit(val)),
       start == null ? ['i32.const', 0] : asI32Sat(emit(start)),
       end == null ? ['i32.const', 0x7FFFFFFF] : asI32Sat(emit(end))], 'f64')
   }

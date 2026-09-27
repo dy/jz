@@ -79,6 +79,7 @@ const TESTS = [
   'definite-init',
   'missing-read',
   'number-or-missing',
+  'typed-fill',
   'unroll-cost',
   'sentinel-guard',
   'twin-locals',
