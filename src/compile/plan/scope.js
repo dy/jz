@@ -271,7 +271,7 @@ export const inferModuleIntGlobals = (ast) => {
     const op = e[0]
     if (op == null) { const v = e[1]; return typeof v === 'string' || typeof v === 'boolean' }
     // `[` is prepare's array-literal form.
-    return op === '{}' || op === '[' || op === '=>' || op === 'new' || op === 'str' || op === '`'
+    return op === '{}' || op === '[' || op === '=>' || op === 'new' || op === 'str' || op === 'strcat'
   }
 
   // Collect every assignment RHS (init + reassignments, program-wide). `fromParam`

@@ -123,7 +123,7 @@ const TYPED_FROM = /^((Int|Uint|Float|BigInt|BigUint)(8|16|32|64)(Clamped)?Array
 // valueOf: the conversion is a call to the ToPrimitive function it lowers to (ir/coerce.js
 // TO_PRIMITIVE, runtime roots only then). Operators converting their operands: ToNumber
 // (arithmetic, bitwise, relational) and ToPrimitive (`+`, templates, loose equality).
-const CONVERTING_OPS = new Set([...NUMBER_OPS, ...COMPOUND_NUMERIC_OPS, ...RELATIONAL_OPS, 'u-', 'u+', '+', '+=', '`', '==', '!='])
+const CONVERTING_OPS = new Set([...NUMBER_OPS, ...COMPOUND_NUMERIC_OPS, ...RELATIONAL_OPS, 'u-', 'u+', '+', '+=', 'strcat', '==', '!='])
 // Pure callees that convert no argument.
 const NON_CONVERTING = /^(Array\.(isArray|of|from)|Object\.(is|getPrototypeOf|isFrozen|keys|values|entries|getOwnPropertyNames)|Boolean|Date\.now|performance\.now)$/
 // Constructors that convert their arguments (a typed array each element of an array source).
@@ -497,7 +497,7 @@ function census(view, roots, declRoots, params, typedParams = NO_NAMES) {
     const op = n[0]
     if (op == null || op === 'bool' || op === 'str') return
     if (isFunctionNode(n)) { allocates(); return }   // its own frame; a call to it is counted at the call
-    if (isObjectLiteral(n) || op === '[' || op === '`') allocates()
+    if (isObjectLiteral(n) || op === '[' || op === 'strcat') allocates()
     if (op === '+' && !scalarKind(view, n)) allocates()   // a concatenation
     if (op === 'yield' || op === 'await') unsafe(op)   // the frame is suspended: what runs meanwhile allocates too
     if (op === '__tp_call') unknownCall('conversion method')   // an own toString/valueOf closure (emit/to-primitive.js)
