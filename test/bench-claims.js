@@ -28,27 +28,23 @@ import { correctBenchmarkRow, LAB, timedBenchmarkRow } from '../assets/headline.
 import { machineState } from '../bench/machine-state.mjs'
 import { PORFFOR_RELEASE, PORFFOR_REV, porfforEvidenceMatches, porfforFloor } from './_porffor-floor.js'
 import { MEMORY_CASES, memoryFloor } from './_memory-floor.js'
+import { CLAIM_RIVALS, JIT_RIVALS, JSC_EXCEPTION_BAND_TOL, JSC_FAMILY_RIVALS, TIGHT_INT_LOOP_CASES, V8_FAMILY_RIVALS, WASM_BAND_TOL } from '../bench/claims.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
-const WASM_BAND_TOL = 1.05   // keep in lockstep with test/bench.js
 // The named rivals of the claim. Unlike test/bench.js's availability-filtered
 // list (what can run HERE), the reference dataset must contest ALL of them.
 // (Porffor left the wasm field with its 2026 rewrite — it contests from the
 // native band as `porf-native`, presence-gated below, geomean-pinned in
 // test/bench.js.)
-const CLAIM_RIVALS = ['c-wasm', 'rust-wasm', 'go-wasm', 'tinygo', 'zig-wasm', 'as']
 // The OTHER published promise — "outruns the JIT" — same committed-evidence
 // discipline as the wasm claim (audit 2026-07-28: it was ungated; the snapshot
 // held 19 JIT losses across 9 cases that no test surfaced). Every JS-runtime
 // lane in the reference dataset counts; absence of a lane is a coverage hole,
 // not a pass (same COVERAGE_FLOOR as the wasm rivals).
-const JIT_RIVALS = ['v8', 'deno', 'bun', 'jsc']
 // V8-family engines (node's V8, Deno's V8) get the full strict-leadership claim on
 // every case, no exception. Bun and JSC (both JavaScriptCore) carry the scoped
 // exception below — split out so a lane's engine family, not its runtime name,
 // decides which claim it's held to.
-const V8_FAMILY_RIVALS = ['v8', 'deno']
-const JSC_FAMILY_RIVALS = ['bun', 'jsc']
 // DECIDED CLAIM SCOPING 2026-08-01 (.work/archive/todo.md "DECISIONS EXECUTED 2026-08-01" +
 // evidence "VM + DICT DISSECTED: HARD TAILS, ~0% CLOSABLE" 2026-07-31): the
 // tight-integer-loop class (register-VM dispatch, hash-probe chains, checksum
@@ -65,10 +61,8 @@ const JSC_FAMILY_RIVALS = ['bun', 'jsc']
 // holds over instead of quietly excluding what falls outside it). These (case,
 // rival) pairs are exempt from strict leadership below but still gated by a sanity
 // band (JSC_EXCEPTION_BAND_TOL) — a regression tripwire, not a claim.
-const TIGHT_INT_LOOP_CASES = ['vm', 'dict', 'crc32']
 // Not a leadership bar. If a bun/jsc lead on these cases ever widens past 1.5×
 // that's a real jz regression, not just the standing rival-execution-model gap.
-const JSC_EXCEPTION_BAND_TOL = 1.5
 // Minimum per-rival coverage as a FRACTION of the corpus (audit 2026-07-28:
 // the old ">=5 rows" floor let 5 successes from a 60-case corpus count as
 // "contested"). 0.7 is set from real corpus portability, not convenience: the
