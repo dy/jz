@@ -18,15 +18,30 @@ on:
       targets:
         description: comma-separated targets
         default: jz,v8,bun,jsc,c-wasm,rust-wasm,as
+      base:
+        description: commit to measure beside this tree as jz-base (A/B on one machine)
+        default: ''
 jobs:
   probe:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: 24
       - run: npm install
+      # The base compiler runs from its own checkout against this tree's
+      # installed dependencies; both builds are timed in alternating rounds.
+      - name: check out the A/B base
+        if: ${{ inputs.base != '' }}
+        env:
+          BASE: ${{ inputs.base }}
+        run: |
+          git worktree add "$RUNNER_TEMP/jz-base" "$BASE"
+          ln -s "$PWD/node_modules" "$RUNNER_TEMP/jz-base/node_modules"
+          echo "JZ_BASE_ROOT=$RUNNER_TEMP/jz-base" >> "$GITHUB_ENV"
       - uses: oven-sh/setup-bun@v2
       - name: install JavaScriptCore
         run: |
@@ -48,6 +63,7 @@ jobs:
           REPEATS: ${{ inputs.repeats }}
           TARGETS: ${{ inputs.targets }}
         run: |
+          [ -n "$JZ_BASE_ROOT" ] && TARGETS="${TARGETS/jz,/jz,jz-base,}"
           node bench/bench.mjs --cases="$CASES" --targets="$TARGETS" --paired="$REPEATS" --json="$RUNNER_TEMP/probe.json"
       - uses: actions/upload-artifact@v4
         if: always()
