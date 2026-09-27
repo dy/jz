@@ -22,7 +22,7 @@ import { nanPrefixHex, TYPED_ELEM_NAMES, TYPED_ELEM_CODE, TYPED_ELEM_BIGINT_FLAG
 import { err, inc, PTR, LAYOUT, registerGetter, setLinkDemand, getFactStore } from '../src/ctx.js'
 import { errorCodeLiteral, ERR } from '../err-codes.js'
 import { representationProgramHasBigint } from '../src/compile/representation-plan.js'
-import { plannedTypedStorageCtor, plannedTypedStorageInfo } from '../src/compile/typed-storage-plan.js'
+import { plannedTypedStorageCtor, plannedTypedStorageInfo, plannedTypedPayloadInfo } from '../src/compile/typed-storage-plan.js'
 import { isNullable } from '../src/summary/kind.js'
 import { activeBoundsAssumption } from '../src/type/canonical-bounds.js'
 import { requireReceiverWat } from './core/error-object.js'
@@ -1249,8 +1249,10 @@ export default (ctx) => {
    *  Returns { et, isView, isBigInt } or null. Delegates constructors,
    *  aliases, copy-producing chains, receiver-returning mutators, and
    *  subarray views to the frozen TypedStoragePlan authority. */
-  const resolveElem = (arr) => {
-    const info = plannedTypedStorageInfo(ctx, arr)
+  const resolveElem = (arr, payload = false) => {
+    // `payload`: the access rejects a missing receiver itself, so a receiver
+    // that is one constructor or missing answers with the constructor.
+    const info = payload ? plannedTypedPayloadInfo(ctx, arr) : plannedTypedStorageInfo(ctx, arr)
     if (!info) return null
     if (info.isF16) setLinkDemand('f16')
     if (info.isClamped) setLinkDemand('clamped')
@@ -2004,11 +2006,15 @@ export default (ctx) => {
   // then store only when `i u< len` — JS silently IGNORES out-of-bounds typed
   // writes, where the unchecked store corrupted adjacent heap (Root F).
   ctx.core.emit['.typed:[]='] = (arr, i, val, void_ = false, node = null) => {
-    const r = resolveElem(arr)
+    // The store rejects a missing receiver below (`nullable`), so the payload's
+    // kind serves. A BigInt element keeps the runtime writer: the value an
+    // assignment yields is boxed there.
+    const known = resolveElem(arr), payload = known ? null : resolveElem(arr, true)
+    const r = known ?? (payload?.isBigInt ? null : payload)
     if (r == null) return null
     const { et, isView, isBigInt } = r
     const proven = typedIdxProven(arr, i, node)
-    const nullable = isNullable(ctx.summary?.at(ctx.func.current).kindOfExpr(arr)) &&
+    const nullable = !known || isNullable(ctx.summary?.at(ctx.func.current).kindOfExpr(arr)) &&
       !(typeof arr === 'string' && (repOf(arr)?.ptrKind != null || ctx.func.refinements?.get(arr)?.val != null || activeBoundsAssumption(ctx, arr, i)))
     const nestedIndex = Array.isArray(i) && i[0] === '[]'
     const pre = []

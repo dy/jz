@@ -80,6 +80,7 @@ const TESTS = [
   'missing-read',
   'number-or-missing',
   'typed-fill',
+  'typed-payload',
   'unroll-cost',
   'sentinel-guard',
   'twin-locals',

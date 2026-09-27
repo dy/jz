@@ -1641,7 +1641,10 @@ pin the source's own functions).
 Generic reads in the self-compiled kernel cost helper entries, and the warm
 self-compile gate is paid in them. Five rules keep the common shapes inline:
 a typed array that may be unset indexes through its payload kind after the
-nullish check, and a key the summary cannot type still indexes directly once
+nullish check (a store through it as well: `plannedTypedPayloadInfo` answers
+the payload's constructor, and the store rejects the missing receiver after
+its key and value are evaluated; a BigInt element keeps the runtime writer,
+which boxes the value the assignment yields), and a key the summary cannot type still indexes directly once
 a runtime test proves it an integer the i32 index holds exactly (a typed
 array answers a number key from its elements alone; a property name, an
 undefined key or a huge integer keeps the dynamic get); an optional chain's
