@@ -76,6 +76,7 @@ const TESTS = [
   'present-init',
   'missing-arith',
   'super-order',
+  'definite-init',
   'unroll-cost',
   'sentinel-guard',
   'twin-locals',

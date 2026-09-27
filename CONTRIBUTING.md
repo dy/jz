@@ -414,7 +414,12 @@ top-level statement assigns it unconditionally (`initWrites`: initialized like
 a declaration, as `parse.comment ??= {…}` is), and `a ??= b` leaves the binding
 holding `core(a) ∪ b`. Definite initialization (a literal's `undefined` field
 that the following statements store before any other use) covers an
-assignment-bound literal and a bracket-string store too. A call through
+assignment-bound literal and a bracket-string store too. A statement that does
+not name the object runs between the stores (what a constructor computes
+before it assigns) unless it may return, a stored null or undefined counts
+like any other value, and the proof ends for a caller where a callee's
+statement ended it: a method the constructor calls reads the fields assigned
+after the call as undefined, its own class's and a derived class's. A call through
 a binding the fixpoint knows only as nullish so far, and a spread of a nullish
 value, contribute nothing rather than escaping their operands: both throw at
 run time, and an escape is permanent. A loop's test guards its body the way an
