@@ -2372,8 +2372,12 @@ export default (ctx) => {
     // cursor a guard proved) reads its slot directly, the layout the guarded
     // read above retains (readHoistedProp); without the shape on the receiver
     // the access dispatched on the shape set at every read.
+    // An expression the summary knows is never nullish takes the same slot
+    // (`f[i].normal`, a present element of an array of one shape).
     const receiver = emit(obj)
-    if (typeof obj === 'string' && receiver?.type === 'f64' && receiver.ptrKind == null && !ctx.schema.isBoxed(obj)) {
+    const oneShape = receiver?.type === 'f64' && receiver.ptrKind == null &&
+      (typeof obj === 'string' ? !ctx.schema.isBoxed(obj) : ctx.summary?.at(ctx.func.current).mayBeNullishExpr(obj) === false)
+    if (oneShape) {
       const sid = ctx.summary?.at(ctx.func.current).objectSidOfExpr(obj)
       if (sid != null && ctx.schema.list[sid]?.includes(prop)) {
         const shaped = typed(['i32.wrap_i64', asI64(receiver)], 'i32')
