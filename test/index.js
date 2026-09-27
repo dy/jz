@@ -71,6 +71,7 @@ const TESTS = [
   'store-merge',
   'const-seed',
   'guarded-update',
+  'quantize',
   'unroll-cost',
   'sentinel-guard',
   'twin-locals',

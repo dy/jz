@@ -244,7 +244,10 @@ export function liftStmt(stmt, ctx) {
       if (!inner) return liftFail(ctx, `narrowing store ${ctx.laneType}->${sty}: unrecognized conversion`)
       const innerV = liftExprV(inner, ctx)
       if (ctx.fail) return null
-      const ns = narrowStore(addr, innerV, ctx.laneType, sty, ctx, stmt[2][0])
+      // A lane the body bounds within i32 truncates as a vector: there the
+      // saturating lane conversion is the scalar word conversion, NaN to zero too.
+      const ranged = sty !== 'f32' && isArr(inner) && inner[0] === 'local.get' && ctx.i32Ranged?.has(inner[1])
+      const ns = narrowStore(addr, innerV, ctx.laneType, sty, ctx, ranged ? 'i32.trunc_sat_f64_s' : unmaskStore(stmt[2], sty)[0])
       return ns || liftFail(ctx, `no narrowing ${ctx.laneType}->${sty}`)
     }
     const val = liftExprV(stmt[2], ctx)
@@ -750,7 +753,17 @@ export function liftExprV(expr, ctx) {
 // int store: toI32's guarded select, the exact element-store conversion call
 // (toInt32, src/ir/numeric.js), or a bare trunc_sat. The inner X is the f64/f32
 // lane value computed before the cast.
+// A mask that keeps every bit the store writes is idle: `(v | 0) & 0xffff` into
+// a 16-bit element stores the low word of `v | 0`.
+const STORE_BITS = { i8: 0xff, i16: 0xffff }
+export function unmaskStore(val, sty) {
+  const bits = STORE_BITS[sty]
+  while (bits && isArr(val) && val[0] === 'i32.and' && val.length === 3 && isI32Const(val[2]) && (Number(val[2][1]) & bits) === bits) val = val[1]
+  return val
+}
+
 export function peelNarrowConv(val, sty) {
+  val = unmaskStore(val, sty)
   if (!isArr(val)) return null
   if (sty === 'f32') return val[0] === 'f32.demote_f64' ? val[1] : null
   // int element (i8/i16/i32): peel ToInt32 (`x | 0`). jz's general lowering is an
