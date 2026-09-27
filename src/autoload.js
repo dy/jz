@@ -131,7 +131,6 @@ const OP_MODULES = {
   '!==': ['core', 'string'],
   'typeof': ['core', 'string'],
   '[': ['core', 'array'],
-  '{': ['core', 'object', 'string', 'collection'],
   'delete': ['core', 'collection', 'string'],
   '//': ['core', 'string', 'regex'],
   '**': ['math'],

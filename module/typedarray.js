@@ -3021,7 +3021,7 @@ export default (ctx) => {
   const codecOpts = (node, method, allowPad) => {
     let url = 0, pad = 1
     if (node === undefined) return { url, pad }
-    if (!Array.isArray(node) || (node[0] !== '{' && node[0] !== '{}'))
+    if (!Array.isArray(node) || node[0] !== '{}')
       err(`${method} options must be a literal object — jz resolves codec options at compile time`)
     // prepared literals arrive as ['{}'|'{', ...entries] (entries may also ride
     // a single ','/';' wrapper node)

@@ -1139,15 +1139,6 @@ const handlers = {
     return ['[]', prep(args[0]), key != null ? staticString(key) : prep(args[1])]
   },
 
-  // Bare block statement: push scope for let/const shadowing
-  '{'(inner) {
-    pushScope()
-    prescanBlockDecls(inner)
-    const result = ['{', prep(inner)]
-    popScope()
-    return result
-  },
-
   // Object literal - flatten comma, expand shorthand
   '{}'(...args) {
     const inner = args[0]

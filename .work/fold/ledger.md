@@ -81,7 +81,8 @@ fold | concept | Δsrc lines | Δdist bytes | Δcompile time, RSS | commit
 21 | `try` after prepare: prepare's `'try'` handler returns `catch`/`finally` nodes, so 11 checks for the parser's `try` beside them never matched. Where `try` stood without `catch`/`finally` (collectStepRange, load-CSE CONTROL, written-keys OBSERVES) the prepared nodes are handled soundly as they are: step bounds sum every write, CSE tables are per statement list (probes against Node agree), and a throw past a store leaves only an unreachable literal | −1 | −91 | — | 99599a7d
 22 | `do` after prepare: prepare's `'do'` handler (and jzify in default mode) rewrites do/while into a flag-guarded `while`, so the 26 checks for `do` in compile-stage code, interval-proof's `do` frame and the summary's `do` arm never ran. walk-facts' `TEST_SLOTS` and ast.js's jzify tables keep theirs: `observeNodeFacts` and jzify see raw ASTs | −6 | −410 | — | f29dd8a9
 23 | the parser's array literal `['[]', x]` after prepare, which returns `['[', …]` for a literal and a three-element `['[]', obj, key]` for an access: dropped beside the prepared form in isEmptyArrayLit, freshArrayInit, isFreshArrayCtor (whose prepared empty literal staticArrayElems already covers) and looksNonNumeric. typedStaticLen keeps its: recordGlobalRep runs it during prepare | −3 | −116 | — | 7c5315ef
-24 | for-of/for-in heads after prepare, which lowers both into a classic index `for` (its `'for'` handler): frame-effects' head-binding notes, its iterator-record allocation and the loop filter's head exclusion never matched | −6 | −345 | — | this commit
+24 | for-of/for-in heads after prepare, which lowers both into a classic index `for` (its `'for'` handler): frame-effects' head-binding notes, its iterator-record allocation and the loop filter's head exclusion never matched | −6 | −345 | — | 31ccfb45
+25 | the bare-block op `{`: subscript parses every block as `{}` and nothing builds `{`, so prepare's `'{'` handler, `OP_MODULES['{']` and four compile-stage checks never ran | −10 | −137 | — | this commit
 
 ## Validation runs (default leg, widened oracle against the baseline)
 
@@ -115,6 +116,12 @@ side by side on the same machine; keys differing only in source are the expected
 - `compile/analyze/frame-effects.js` names the parser's template op `` ` `` in CONVERTING_OPS and in walkExpr's allocation test, but prepare turns every template into `strcat` (or a folded string), so neither fires: a template's ToPrimitive call and its allocation are invisible to the frame census. Miscompile, O2 and O3 (O0/O1 correct): `a[0] = 1; const x = a[0]; const s = `${o}`; const y = a[0]; return x * 100 + y + s.length` with `o.toString()` writing `a[0] = 42` returns 102, Node 143 (the stale load is reused); the same program with `'' + o` returns 143. Fix: `strcat` where `` ` `` is (and in plan/scope.js `looksNonNumeric`, which also names only `` ` ``; no repro there). Output change: load CSE and arena rewind see the conversion and allocation.
 
 - `compile/plan/advise.js` `isHeapAlloc` counts the parser's array literal `['[]', x]`, which prepare turns into `['[', …]`, so the heap-growth advisory never counts an array literal. Fix changes warnings.
+
+- Names for ops that no prepared tree carries (op census below): `compile/array-view.js` skips `'regex'` (a regex literal is `'//'`), `compile/param-numeric.js` treats `'template'` as a string literal (a template is `strcat`). Each test never matches; replacing the name changes output.
+
+- `new` with an expression constructor (`new (c ? A : B)(n)`) keeps prepare's `['new', ctor, …]` fallback when jzify does not run (strict mode) and fails at emit with "Unknown op: new". Its 19 compile-stage checks only run on programs that end in that error; a prepare-time rejection would give it a proper message (error text change).
+
+Op census (full default leg, f29dd8a9): every node reaching compile entry, by op and arity, 88 ops. Absent: `switch`, `try`, `do`, `{`, `new`, `` ` ``, `of`, the parser's `['[]', x]`, raw unary `-`/`+`, `var`, `function`, `await`. Present though prepare "removes" it: one `['yield', null]` (sloppy `let yield;`, test/parser-bugs.js), and 6,117 `['()', x]`, all of them arrow parameter lists in ten sampled files.
 
 ## Rejections and owner decisions
 

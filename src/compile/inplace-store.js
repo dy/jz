@@ -182,7 +182,7 @@ export function scanInplaceStores(programFacts) {
       const op = n[0]
       // statement-position '{}' is a BLOCK (post-prepare bodies are
       // ['{}', [';', ...stmts]]), not an object literal
-      if (op === ';' || op === '{' || op === '{}') {
+      if (op === ';' || op === '{}') {
         const list = n.slice(1)
         for (let i = 0; i < list.length; i++) walkStmt(list[i], list, i)
         return

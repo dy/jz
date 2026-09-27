@@ -336,7 +336,7 @@ function minusZeroSafe(body, vars) {
   const stmts = (n) => {
     if (!safe || !isArr(n)) return
     const op = n[0]
-    if (op === ';' || op === '{}' || op === '{') { for (let i = 1; i < n.length; i++) stmts(n[i]); return }
+    if (op === ';' || op === '{}') { for (let i = 1; i < n.length; i++) stmts(n[i]); return }
     if (op === 'if' || op === 'while') { walk(n[1], true); for (let i = 2; i < n.length; i++) stmts(n[i]); return }
     if (op === 'for') { for (let i = 1; i < n.length - 1; i++) stmts(n[i]); stmts(n[n.length - 1]); return }
     if (op === 'let' || op === 'const') {
@@ -366,7 +366,7 @@ export function selectArmUpdatesIn(body, cm) {
     if (n[0] === 'for' || n[0] === 'while') {
       const walkStmts = (m) => {
         if (!isArr(m)) return m
-        if (m[0] === ';' || m[0] === '{}' || m[0] === '{') {
+        if (m[0] === ';' || m[0] === '{}') {
           for (let i = 1; i < m.length; i++) {
             const r = isArr(m[i]) && m[i][0] === 'if' ? trySelectArmUpdates(m[i], zeroSafe) : null
             m[i] = r ? r[0] : walkStmts(m[i])
