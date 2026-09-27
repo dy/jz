@@ -57,6 +57,7 @@ import { ATOMICS_VALUE_OPS, builtinCalleeVal, methodValType } from '../kind-trai
 import { summaryQueries } from './query.js'
 import { buildResultContracts, unbounded } from './contract.js'
 import { frameRoots } from '../function.js'
+import { definitelyAssigned } from './definite.js'
 export { CARRIER, PRESENCE, contractVal, unbounded } from './contract.js'
 
 import {
@@ -2446,8 +2447,16 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   const declare = (name, k) => { const key = keyOf(name); if (key !== null) raise(kinds, key, k) }
   // A declaration without a value is absent until assigned (`let buf; export
   // const setup = () => buf = new Float64Array(n)`: a read before `setup` is one
-  // the program does not mean to make).
-  const decl = (n) => { for (let i = 1; i < n.length; i++) { const d = n[i]; if (typeof d === 'string') declare(d, ABSENT); else if (Array.isArray(d) && d[0] === '=') { if (typeof d[1] === 'string') { if (n[0] === 'const' && Array.isArray(d[2]) && d[2][0] == null && Number.isInteger(d[2][1])) ints.set(d[1], d[2][1]); declare(d[1], cursorOpen(d[1], d[2]) ?? literalInto(d[1], d[2])) } else destructure(d[1], expr(d[2])) } } }
+  // the program does not mean to make), unless its function assigns it before
+  // every read (definite.js): that one never shows what it was declared with.
+  const assignedFirst = new Map()   // function or closure → its bare declarations assigned before every read
+  const bare = (name) => {
+    if (current === null) return ABSENT
+    let names = assignedFirst.get(current)
+    if (!names) assignedFirst.set(current, names = definitelyAssigned(typeof current === 'string' ? funcByName.get(current).body : closureBodies[current]))
+    return names.has(name) ? K.NONE : ABSENT
+  }
+  const decl = (n) => { for (let i = 1; i < n.length; i++) { const d = n[i]; if (typeof d === 'string') declare(d, bare(d)); else if (Array.isArray(d) && d[0] === '=') { if (typeof d[1] === 'string') { if (n[0] === 'const' && Array.isArray(d[2]) && d[2][0] == null && Number.isInteger(d[2][1])) ints.set(d[1], d[2][1]); declare(d[1], cursorOpen(d[1], d[2]) ?? literalInto(d[1], d[2])) } else destructure(d[1], expr(d[2])) } } }
   // A `{}` declared into a name is allocated as the runtime allocates it
   // (module/object.js's `{}`): with the binding's schema when that holds every
   // literal key (`let o = {}` then `o.a = 1` merges `a` into it), an empty one
