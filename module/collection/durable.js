@@ -174,11 +174,18 @@ export const durableLenLogIR = (base) => {
 // for those). Collections keep durableFwdLogIR/durableLenLogIR unchanged for their
 // OWN table-header growth — this is a parallel, independent mechanism, not a
 // replacement of the shared one.
+// The round's first store into a durable array saves it (core/durable-log.js
+// `__durable_arr_snap`); every later store finds its bit set. The bit test is
+// inline, so a store in a loop pays a byte load and a branch, not a call: the
+// call runs once per array per round, and while the round has saved nothing.
 export const durableArrSnapIR = (base) => {
   if (!hasDurableReset()) return ''
   return `
     (if (i32.lt_u (local.get $${base}) ${heapResetWat()})
-      (then (call $__durable_arr_snap (local.get $${base}))))`
+      (then (if (i32.or (i32.eqz (global.get $__durable_arr_seen))
+                        (i32.eqz (i32.and (i32.load8_u (i32.add (global.get $__durable_arr_seen) (i32.shr_u (local.get $${base}) (i32.const 6))))
+                                          (i32.shl (i32.const 1) (i32.and (i32.shr_u (local.get $${base}) (i32.const 3)) (i32.const 7))))))
+        (then (call $__durable_arr_snap (local.get $${base}))))))`
 }
 
 // IR-node (array-tree) twin of durableArrSnapIR, for the two array mutators built as
@@ -192,8 +199,12 @@ export const durableArrSnapIR = (base) => {
 // overload). This one call, added to that emitter, fixes both gaps for that path at once.
 export const durableArrSnapNode = (base) => {
   if (!hasDurableReset()) return ['nop']
-  return ['if', ['i32.lt_u', ['local.get', `$${base}`], ['global.get', '$__heap_reset']],
-    ['then', ['call', '$__durable_arr_snap', ['local.get', `$${base}`]]]]
+  const b = ['local.get', `$${base}`], seen = ['global.get', '$__durable_arr_seen']
+  const unsaved = ['i32.or', ['i32.eqz', seen],
+    ['i32.eqz', ['i32.and', ['i32.load8_u', ['i32.add', seen, ['i32.shr_u', b, ['i32.const', 6]]]],
+      ['i32.shl', ['i32.const', 1], ['i32.and', ['i32.shr_u', b, ['i32.const', 3]], ['i32.const', 7]]]]]]
+  return ['if', ['i32.lt_u', b, ['global.get', '$__heap_reset']],
+    ['then', ['if', unsaved, ['then', ['call', '$__durable_arr_snap', b]]]]]
 }
 
 // Value-write sibling of durableFwdLogIR: an EPHEMERAL boxed value stored into a
