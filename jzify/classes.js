@@ -192,23 +192,28 @@ function rewriteSuperMethodCalls(node, baseMethodVars, recv) {
 // A call's argument node with `recv` prepended: `null` → recv, `a` → `[',', recv, a]`.
 const withReceiver = (args, recv) => args == null ? recv : Array.isArray(args) && args[0] === ',' ? [',', recv, ...args.slice(1)] : [',', recv, args]
 
+// A derived constructor's body around its `super(…)` statement: the call's
+// arguments, the statements before it (`pre`, which run before the base's
+// constructor and may compute those arguments) and the body after it.
 function splitCtorSuper(body) {
-  if (body == null) return { args: null, body }
-  if (isSuperCall(body)) return { args: body.slice(2), body: null }
+  if (body == null) return { args: null, pre: null, body }
+  if (isSuperCall(body)) return { args: body.slice(2), pre: null, body: null }
   if (Array.isArray(body) && body[0] === '{}') {
     const inner = splitCtorSuper(body[1])
-    return { args: inner.args, body: ['{}', inner.body] }
+    return { args: inner.args, pre: inner.pre, body: ['{}', inner.body] }
   }
   if (Array.isArray(body) && body[0] === ';') {
-    const out = [';']
+    const pre = [], out = [';']
     let args = null
     for (const stmt of body.slice(1)) {
       if (args == null && isSuperCall(stmt)) { args = stmt.slice(2); continue }
-      out.push(stmt)
+      if (args == null) pre.push(stmt); else out.push(stmt)
     }
-    return { args, body: out.length === 1 ? null : out.length === 2 ? out[1] : out }
+    // No `super(…)` statement: the body as it is, none of it before a call.
+    if (args == null) return { args: null, pre: null, body }
+    return { args, pre: pre.some(s => s != null) ? pre.filter(s => s != null) : null, body: out.length === 1 ? null : out.length === 2 ? out[1] : out }
   }
-  return { args: null, body }
+  return { args: null, pre: null, body }
 }
 
 // Object methods read `this` at invocation; arrows keep their lexical receiver.
@@ -386,6 +391,8 @@ function lowerStruct({ name, base, ctorParams, ctorBody, methods, fields, static
   const forwarded = ctorParams == null && base ? Array.from({ length: DEFAULT_DERIVED_CTOR_ARITY }, (_, i) => names.classSuperArg(i)) : null
   const ctorList = forwarded ?? (ctorParams == null ? [] : extractParams(ctorParams))
   const initStmts = []
+  // The statements before `super(…)` run first, in the scope of the rest.
+  if (base && split.pre) initStmts.push(...split.pre)
   if (base) {
     // `super(a, b)` passes its arguments; a constructor without one, or none, forwards its own
     const given = split.args == null ? null : split.args.length === 0 || split.args[0] == null ? [] : Array.isArray(split.args[0]) && split.args[0][0] === ',' ? split.args[0].slice(1) : split.args
@@ -562,6 +569,12 @@ function lowerClass(name, heritage, body, hoists, trailers) {
       ? Array.from({ length: DEFAULT_DERIVED_CTOR_ARITY }, (_, i) => names.classSuperArg(i))
       : null
     const baseArgs = split.args ?? (defaultArgs ? [defaultArgs.length === 1 ? defaultArgs[0] : [',', ...defaultArgs]] : extractParams(ctorParams))
+    // The statements before `super(…)` run first, in the scope of the rest.
+    if (split.pre) {
+      const pre = transform([';', ...split.pre])
+      if (Array.isArray(pre) && pre[0] === ';') stmts.push(...pre.slice(1).filter(s => s != null))
+      else if (pre != null) stmts.push(pre)
+    }
     stmts.push(['let', ['=', self, ['()', baseRef, ...baseArgs.map(transform)]]])
     const superMethodVars = new Map()
     let superIdx = 0

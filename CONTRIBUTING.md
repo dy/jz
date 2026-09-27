@@ -1361,6 +1361,9 @@ awaits tests at the top of `while (true)`. Class lowering (`jzify/classes.js`)
 takes `static async` methods on both of its paths and a bare `super()`, and the
 member census counts an optional method call (`o.m?.()`) as a read, since the
 call binds the method as a value first (`src/compile/emit/class-dispatch.js`).
+A derived constructor's statements before `super(…)` run before the base's
+initializer and may compute the call's arguments (`splitCtorSuper`); the
+derived class's field initializers follow the call, then the rest of the body.
 The schema lowering (a class as a layout with a brand and functions of the
 receiver) takes a base class of another module: prepare brings a module's
 imports in ahead of its lowering (`prepareImports`, in the order ES evaluates
