@@ -175,17 +175,15 @@ export const durableLenLogIR = (base) => {
 // OWN table-header growth — this is a parallel, independent mechanism, not a
 // replacement of the shared one.
 // The round's first store into a durable array saves it (core/durable-log.js
-// `__durable_arr_snap`); every later store finds its bit set. The bit test is
-// inline, so a store in a loop pays a byte load and a branch, not a call: the
-// call runs once per array per round, and while the round has saved nothing.
+// `__durable_arr_snap`); every later store finds its bit set and returns. The
+// helpers built from these templates (push, splice, fill, set) already pay a
+// call per operation, so they ask the helper; the inliner copies their bodies
+// into callers, and the bit test inline would be copied with them.
 export const durableArrSnapIR = (base) => {
   if (!hasDurableReset()) return ''
   return `
     (if (i32.lt_u (local.get $${base}) ${heapResetWat()})
-      (then (if (i32.or (i32.eqz (global.get $__durable_arr_seen))
-                        (i32.eqz (i32.and (i32.load8_u (i32.add (global.get $__durable_arr_seen) (i32.shr_u (local.get $${base}) (i32.const 6))))
-                                          (i32.shl (i32.const 1) (i32.and (i32.shr_u (local.get $${base}) (i32.const 3)) (i32.const 7))))))
-        (then (call $__durable_arr_snap (local.get $${base}))))))`
+      (then (call $__durable_arr_snap (local.get $${base}))))`
 }
 
 // IR-node (array-tree) twin of durableArrSnapIR, for the two array mutators built as
@@ -197,6 +195,9 @@ export const durableArrSnapIR = (base) => {
 // per-element one, since it's a DIFFERENT code path than the `__arr_splice` stdlib
 // function the heal-length session patched: that one only handles the WITH-inserts
 // overload). This one call, added to that emitter, fixes both gaps for that path at once.
+// A direct element store (emit-assign.js storeFixedElement, call-args.js) is a
+// few instructions, so here the bit test is inline: a store in a loop pays a
+// byte load and a branch, and the call runs once per array per round.
 export const durableArrSnapNode = (base) => {
   if (!hasDurableReset()) return ['nop']
   const b = ['local.get', `$${base}`], seen = ['global.get', '$__durable_arr_seen']
