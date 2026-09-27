@@ -540,6 +540,9 @@ export function paramNumericArrayLike(body, name, _seen = new Set()) {
     if (!Array.isArray(node)) return
     const op = node[0]
     if (op == null || op === 'str' || op === 'template') return
+    // A statement that is the bare name discards it (an inlined callee's
+    // `return out` whose caller drops the result): no use.
+    if (op === ';') { for (let i = 1; i < node.length; i++) if (!names.has(node[i])) walk(node[i]); return }
     // The alias declaration itself: the view/copy call is a use, its args walk.
     if ((op === 'let' || op === 'const') && node.length === 2 && Array.isArray(node[1]) && node[1][0] === '=' && names.has(node[1][1]) && node[1][1] !== name) {
       const init = node[1][2]
@@ -631,4 +634,101 @@ export function paramNumericArrayLike(body, name, _seen = new Set()) {
   // Numeric writes or a proven forwarded receiver supply the same evidence.
   if (!paramAllUsesNumeric(subst(body), elem, new Set(), !(numericUse || numericStores === true))) return null
   return { writes }
+}
+
+/** The body may store into the array `name` holds, or into an array that one
+ *  holds: an element write, a mutating method, or a use that hands the storage
+ *  on (an unknown callee, a callee that stores into its parameter, a binding
+ *  other than a declared copy). Element and property reads, comparisons,
+ *  tests, `return` and a forward into a parameter that is itself unwritten are
+ *  not. A local declared from the array or from one of its elements
+ *  (`const p = ps[i]`) names the same storage. The boundary copies a plain
+ *  host array in; this decides whether its elements are copied back
+ *  (`jz:i64exp` `t`, `Array+`). It may say "written" of an array nothing
+ *  writes, never the reverse. */
+const ARRAY_READ_METHODS = new Set(['at', 'concat', 'entries', 'every', 'filter', 'find', 'findIndex', 'findLast',
+  'findLastIndex', 'flat', 'flatMap', 'forEach', 'includes', 'indexOf', 'join', 'keys', 'lastIndexOf', 'map',
+  'reduce', 'reduceRight', 'slice', 'some', 'subarray', 'toReversed', 'toSorted', 'toSpliced', 'toString', 'values', 'with'])
+export function paramArrayWritten(body, name, _seen = new Set()) {
+  let written = false
+  const flat1 = (a) => Array.isArray(a) && a[0] === ',' ? a.slice(1).flatMap(flat1) : [a]
+  const names = new Set([name])
+  // The storage itself or an element chain off it: `ps`, `ps[i]`, `ps[i][j]`.
+  const rooted = (n) => typeof n === 'string' ? names.has(n) : Array.isArray(n) && n[0] === '[]' && n.length === 3 && rooted(n[1])
+  const decl = (n) => (n[0] === 'let' || n[0] === 'const') && n.length === 2 && Array.isArray(n[1]) && n[1][0] === '=' && typeof n[1][1] === 'string'
+  const closures = new Map()
+  for (let grew = true; grew;) {
+    grew = false
+    walkAst(body, { enter: (n) => {
+      if (!decl(n)) return
+      const [, local, init] = n[1]
+      if (Array.isArray(init) && init[0] === '=>' && !closures.has(local)) {
+        const ps = Array.isArray(init[1]) ? init[1].slice(1) : [init[1]]
+        if (ps.every(p => typeof p === 'string')) closures.set(local, { params: ps, body: init[2] })
+      }
+      if (rooted(init) && !names.has(local)) { names.add(local); grew = true }
+    } })
+  }
+  const isProp = (n) => Array.isArray(n) && (n[0] === '.' || n[0] === '?.') && n.length === 3 && rooted(n[1])
+  // An operand that is the storage is read where it stands; anything else walks.
+  const operand = (n) => { if (rooted(n)) index(n); else walk(n) }
+  // The indices of an element chain are ordinary expressions.
+  const index = (n) => { for (; Array.isArray(n); n = n[1]) walk(n[2]) }
+  const walk = (node) => {
+    if (written) return
+    if (typeof node === 'string') { if (names.has(node)) written = true; return }   // a use no arm below accounts for hands the storage on
+    if (!Array.isArray(node)) return
+    const op = node[0]
+    if (op == null || op === 'str' || op === 'template') return
+    if (op === ';') { for (let i = 1; i < node.length; i++) operand(node[i]); return }   // a discarded value
+    if (decl(node) && names.has(node[1][1]) && node[1][1] !== name) { index(node[1][2]); return }
+    if (op === '=>') {
+      const ps = node[1]
+      const shadowed = Array.isArray(ps) ? ps.some(p => names.has(p) || (Array.isArray(p) && names.has(p[1]))) : names.has(ps)
+      if (!shadowed) { walk(node[1]); walk(node[2]) }
+      return
+    }
+    if (MUTATE_OPS.has(op)) {
+      if (rooted(node[1]) || isProp(node[1])) { written = true; return }
+      for (let i = 1; i < node.length; i++) walk(node[i])
+      return
+    }
+    if (op === 'delete') { if (rooted(node[1]) || isProp(node[1])) { written = true; return } }
+    if (rooted(node)) { index(node); return }
+    if (isProp(node)) { index(node[1]); return }
+    if (op === '[]' && node.length === 3) { walk(node[1]); operand(node[2]); return }   // a key is converted, not kept
+    if (op === 'return' || op === 'typeof' || op === '!') { operand(node[1]); return }
+    // An operator converts its operands: the value it yields is not the array.
+    if (EQUALITY_OPS.has(op) || RELATIONAL_OPS.has(op) || NUM_BIN_OPS.has(op) || op === '+' || op === '-'
+        || op === 'u-' || op === 'u+' || op === '~' || op === 'strcat' || op === 'in' || op === 'instanceof') {
+      for (let i = 1; i < node.length; i++) operand(node[i])
+      return
+    }
+    if (op === '?:' && node.length === 4) { operand(node[1]); walk(node[2]); walk(node[3]); return }
+    if (op === 'if' || op === 'while') { operand(node[1]); for (let i = 2; i < node.length; i++) walk(node[i]); return }
+    if (op === '()' && isProp(node[1])) {
+      if (!ARRAY_READ_METHODS.has(node[1][2])) { written = true; return }
+      index(node[1][1])
+      for (let i = 2; i < node.length; i++) walk(node[i])
+      return
+    }
+    if (op === '()' && typeof node[1] === 'string') {
+      const args = node.slice(2).flatMap(flat1)
+      const cl = closures.get(node[1])
+      const fn = cl ? null : ctx.funcs.map?.get(node[1])
+      for (let i = 0; i < args.length; i++) {
+        if (!rooted(args[i])) { walk(args[i]); continue }
+        index(args[i])
+        const target = cl ? cl.params[i] : (fn && fn.body && !fn.raw && !fn.rest && fn.sig?.params?.[i]?.name)
+        if (!target) { written = true; return }
+        const key = node[1] + '#' + i
+        if (_seen.has(key)) continue   // the visit in progress finds that callee's own stores
+        if (paramArrayWritten(cl ? cl.body : fn.body, target, new Set([..._seen, key]))) { written = true; return }
+      }
+      return
+    }
+    for (let i = 1; i < node.length; i++) walk(node[i])
+  }
+  walk(body)
+  return written
 }

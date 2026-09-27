@@ -5,6 +5,8 @@ import { representationHostBoxesParam } from './representation-plan.js'
 import { CARRIER } from '../summary/contract.js'
 import { valOf, core } from '../summary/kind.js'
 import { isExported } from './func-exports.js'
+import { paramArrayWritten } from './param-numeric.js'
+import { frameNode } from '../function.js'
 
 /**
  * Boundary-wrap predicate: exports whose body-driven result OR any param narrowed
@@ -118,6 +120,8 @@ export function synthesizeBoundaryWrappers() {
       wrapNode.push(['param', `$${p.name}`, p.jsstring ? 'externref' : paramIsI64(p) ? 'i64' : 'f64'])
       if (paramIsI64(p)) i64Params.push(i)
       if (p.boundaryTyped) (typedSlots ??= {})[String(i)] = p.boundaryTyped
+      // A plain array the body may store into: its elements are copied back.
+      else if (p.boundaryI64 && func.body && paramArrayWritten(frameNode(func), p.name)) (typedSlots ??= {})[String(i)] = 'Array+'
       if (representationHostBoxesParam(ctx, func, i)) {
         if (!paramIsI64(p)) throw new Error(`RepresentationPlan host-box param lacks i64 boundary: ${name}[${i}]`)
         bigintBoxParams.push(i)

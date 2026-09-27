@@ -964,6 +964,11 @@ export const wrap = (memSrc, inst, state) => {
     }
   }
   const finishRet = (raw, read) => asyncMod ? adopt(raw, read) : read(raw)
+  // A result that is one of the written arguments is that argument: an
+  // in-place kernel's `return out` hands the caller its own array.
+  const hostOf = (writeBack, raw) => {
+    if (typeof raw === 'bigint') for (const [host, b] of writeBack) if (b === raw) return host
+  }
   // `raw` may arrive as either a genuine i64 BigInt (heap-module exports with
   // an i64-carrier result) or a NaN-boxed f64 number (the legacy carrier) —
   // same two shapes `mem.read` itself normalizes at its own entry (line
@@ -1132,9 +1137,12 @@ export const wrap = (memSrc, inst, state) => {
     // storage. Element conversion is ToNumber, as the numeric reads would apply.
     // A `+` suffix marks a slot the body writes: the storage is copied back into
     // the host value after the call (the host array itself is never a view).
+    // `Array+` is a plain array the body may store into: it crosses as itself.
     const typedSlot = ie?.t?.[i]
     let host = null
-    if (typedSlot) {
+    if (typedSlot === 'Array+') {
+      if (Array.isArray(x) || ArrayBuffer.isView(x)) host = x
+    } else if (typedSlot) {
       const writes = typedSlot.endsWith('+')
       const Ctor = globalThis[writes ? typedSlot.slice(0, -1) : typedSlot]
       // A jz buffer of the same kind is the storage itself (zero copy); one of
@@ -1181,11 +1189,27 @@ export const wrap = (memSrc, inst, state) => {
     if (host && writeBack) writeBack.push([host, b])
     return b
   }
-  // After the call: copy each written typed slot back into the host value it
-  // came from. A typed host array takes the storage through `set`; a plain
-  // array element by element.
+  // A plain array's numbers, as the module left them, into the host array they
+  // were copied from; an element that is itself an array in both takes its own.
+  // Other elements and the length stay the host's.
+  const copyElements = (host, p) => {
+    const m = new DataView(mem.buffer)
+    let off = offset(p)
+    while (m.getInt32(off - 4, true) === -1) off = m.getUint32(off - 8, true)
+    const n = Math.min(host.length, m.getInt32(off - 8, true))
+    for (let i = 0; i < n; i++) {
+      const e = m.getBigInt64(off + i * 8, true)
+      if (!isBox(e)) host[i] = i64ToF64(e)
+      else if (type(e) === 1) { if (Array.isArray(host[i])) copyElements(host[i], e) }
+      else if (type(e) === 0 && offset(e) === 0 && aux(e) === 0) host[i] = NaN
+    }
+  }
+  // After the call: copy each written slot back into the host value it came
+  // from. A typed host array takes the storage through `set`; a plain array
+  // element by element.
   const copyBack = (writeBack) => {
     for (const [host, b] of writeBack) {
+      if (type(b) === 1) { copyElements(host, b); continue }
       const view = mem.read(b)
       if (ArrayBuffer.isView(host)) host.set(view.subarray(0, host.length))
       else for (let i = 0; i < host.length && i < view.length; i++) host[i] = view[i]
@@ -1251,7 +1275,11 @@ export const wrap = (memSrc, inst, state) => {
         if (lastErrBitsWritable) lastErrBits.value = 0n
         try {
           const ret = fn.apply(null, a)
-          if (writeBack?.length) copyBack(writeBack)
+          if (writeBack?.length) {
+            copyBack(writeBack)
+            const host = hostOf(writeBack, ret)
+            if (host) return host
+          }
           if (typeof ret === 'bigint' && !(ie && ie.r)) return ret
           return finishRet(ret, readRet)
         } catch (error) {
@@ -1270,7 +1298,11 @@ export const wrap = (memSrc, inst, state) => {
         if (lastErrBitsWritable) lastErrBits.value = 0n
         try {
           const ret = fn.apply(null, args.map(i64Arg(ie, ext, memWrapVal, hostAbi, name, writeBack)))
-          if (writeBack?.length) copyBack(writeBack)
+          if (writeBack?.length) {
+            copyBack(writeBack)
+            const host = hostOf(writeBack, ret)
+            if (host) return host
+          }
           if (typeof ret === 'bigint' && !(ie && ie.r)) return ret
           return finishRet(ret, readRet)
         } catch (error) {

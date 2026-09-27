@@ -478,7 +478,51 @@ test('interop: one numeric store cannot type an otherwise unknown output buffer'
   const bytes = compile(src)
   const lanes = JSON.parse(new TextDecoder().decode(WebAssembly.Module.customSections(interop.toModule(bytes), 'jz:i64exp')[0]))
   for (const name of ['mixed', 'copy', 'unstable', 'boolean', 'nullable'])
-    is(lanes.find(e => e.name === name).t?.['0'], undefined, `${name}: unknown stored values retain the generic boundary`)
+    is(lanes.find(e => e.name === name).t?.['0'], 'Array+', `${name}: unknown stored values retain the generic boundary`)
+})
+
+// The generic boundary copies a plain array in, so a body that may store into
+// it hands the numbers back: the caller's array reads as JS leaves it.
+test('interop: a plain array the body stores into takes its numbers back', () => {
+  const src = `
+    const put = (out) => { out[0] = 5; return out }
+    export let add = (out, a, b) => { out[0] = a[0] + b[0]; out[1] = a[1] + b[1]; out[2] = a[2] + b[2]; return out }
+    export let copy = (out, a) => { out[0] = a[0]; out[1] = a[1]; return 0 }
+    export let viaHelper = (out) => { put(out); return 1 }
+    export let nested = (ps, k) => { for (let i = 0; i < ps.length; i++) { const p = ps[i]; p[0] = p[0] + k; p[1] = p[1] + p[0] } return ps.length }
+    export let partial = (out, a) => { out[1] = a[0] + a[1]; return 0 }
+    export let special = (out, a) => { out[0] = a[0] + a[1]; out[1] = a[2] + a[2]; return 0 }
+    export let reads = (a, b) => a[0] + b[1]`
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const bytes = compile(src, { optimize })
+    const lanes = Object.fromEntries(JSON.parse(new TextDecoder().decode(WebAssembly.Module.customSections(interop.toModule(bytes), 'jz:i64exp')[0])).map(e => [e.name, e.t ?? null]))
+    is(lanes.add['1'], undefined, 'an array the body only reads is not copied back')
+    is(lanes.reads, null)
+    const { exports } = interop.instantiate(bytes)
+    const out = [0, 0, 0], a = [1, 2, 3], b = [4, 5, 6]
+    is(exports.add(out, a, b), out, 'the returned argument is the caller\'s own array')
+    is(out.join(), '5,7,9')
+    is(a.join() + ';' + b.join(), '1,2,3;4,5,6', 'the operands are untouched')
+    const two = [0, 0]
+    exports.copy(two, [7, 8])
+    is(two.join(), '7,8', 'a copied element')
+    const h = [0, 0, 0]
+    exports.viaHelper(h)
+    is(h.join(), '5,0,0', 'a store made in a callee')
+    const ps = [[1, 2], [3, 4]], first = ps[0]
+    is(exports.nested(ps, 10), 2)
+    is(JSON.stringify(ps), '[[11,13],[13,17]]', 'an array held by the array')
+    is(ps[0], first, 'which stays the caller\'s own')
+    const mixed = ['keep', 0, 'tail']
+    exports.partial(mixed, [2, 3])
+    is(mixed.join(), 'keep,5,tail', 'other elements stay the host\'s')
+    const sp = [1, 1]
+    exports.special(sp, [Infinity, -Infinity, -0])
+    ok(sp[0] !== sp[0] && Object.is(sp[1], -0), 'NaN and negative zero cross as themselves')
+    const typed = new Float64Array(2)
+    exports.copy(typed, new Float64Array([2, 3]))
+    is(typed.join(), '2,3', 'a typed host array takes its storage back')
+  }
 })
 
 test('interop: numeric input contracts propagate to output buffers independently of parameter order', () => {

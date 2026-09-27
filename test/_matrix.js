@@ -73,7 +73,8 @@ export function adaptI64(mod, raw) {
       const back = []
       const a = args.map((x, i) => {
         const slot = t?.[String(i)]
-        if (slot) return typedArg(x, slot.endsWith('+') ? slot.slice(0, -1) : slot, slot.endsWith('+'), back)
+        // `Array+` is a plain array: it crosses the generic lane as itself.
+        if (slot && slot !== 'Array+') return typedArg(x, slot.endsWith('+') ? slot.slice(0, -1) : slot, slot.endsWith('+'), back)
         return piSet.has(i) ? argBits(coerce(x)) : x
       })
       const ret = fn(...a)
