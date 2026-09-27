@@ -239,8 +239,9 @@ JavaScript's bounds checks.
 - `jz kernel.js --wat` or `compile(src, { wat: true })` prints the WAT. Search
   for `v128` to confirm vectorization and for `__dyn_get` or `__ext_call` to find
   dynamic fallbacks.
-- `--why` names the first operation that kept each loop scalar and each arena
-  unreclaimed; `warnings` collects the same advisories from the API, with each
+- `--why` names the first operation that kept each loop scalar, each arena
+  unreclaimed and each fixed-count array's checks in place (`array-open`);
+  `warnings` collects the same advisories from the API, with each
   property read left dynamic (`deopt-prop-read`), each class kept as closures
   (`class-generic`) and the first cause an object shape is lost by (`shape-lost`).
 - Float loop counters, plain arrays and loop-carried dependencies are the common

@@ -592,6 +592,16 @@ test('destruct: a written function member is called through its value', () => {
   is(f(-4), 4)
 })
 
+test('destruct: an alias of an alias resolves through the key, written or not', () => {
+  for (const src of [
+    `const b = Math.fround\nconst fr = b\nexport let f = (x) => fr(x)`,
+    `const b = Math.fround\nlet fr\nfr = b\nexport let f = (x) => fr(x)`,
+    `const b = Math.fround\nlet fr = b\nexport let f = (x) => fr(x)`,
+    `export let f = (x) => { const b = Math.fround; const fr = b; return fr(x) }`,
+  ]) is(jz(src).exports.f(1.1), Math.fround(1.1), src.replace(/\s+/g, ' '))
+  is(jz(`const P = Math.PI\nconst Q = P\nexport let f = (x) => Q * x`).exports.f(2), Math.PI * 2, 'a constant through two names')
+})
+
 test('destruct: writing a const bound to a builtin member is a compile error', () => {
   for (const src of [
     `const p = Math.PI; export let f = () => { p = 1; return p }`,

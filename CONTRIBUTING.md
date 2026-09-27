@@ -1307,6 +1307,21 @@ through inference; shared Watr inlining can remove their frame after lowering.
 Cross-function FunctionPlan queries expose only the scalar facts and schema-ID
 arrays their callers need. Scalars pass through; arrays are copied. There is no
 recursive projection of arbitrary representation objects.
+The summary knows an array's length where it cannot change (`lens`): every
+array of a cell is a literal of one count, nothing resizes or deletes from any
+of them, no store names an index the count does not hold (a counted loop bounds
+its counter, a const its name) and no holder is out of sight. Such a read is
+the cell's own load off the raw base, never absent inside the count; a
+literal-index store inside it is the cell's own store, behind the reset's
+snapshot of a durable array. A module const grown only by counted top-level
+pushes through its own name is frozen after init (`frozenLenOf`): its binding
+holds the final pointer, so reads through it follow no forward. An element
+read whose index the walk finds inside a fixed length is present by node
+(`presentReads`), and a never-nullish expression of one layout reads its slot
+directly. A bare `let` assigned before every read declares empty, not absent
+(`summary/definite.js`). The block emitter holds a name a checked read or
+store dereferenced present for the rest of its block. `why` reports the first
+cause an array built at a fixed count keeps its checks by (`array-open`).
 Record scalar replacement uses one validator for field access, nonescape and
 whole-record replacement. Replacement values evaluate before any field changes;
 aliases, captures, differing field sets and observed record values keep storage.
