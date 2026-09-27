@@ -1,5 +1,5 @@
 import { ctx } from '../ctx.js'
-import { T, isBlockBody, isReassigned, walkAst, MUTATE_OPS } from '../ast.js'
+import { T, isBlockBody, isReassigned, walkAst, MUTATE_OPS, ACCESSOR_GET } from '../ast.js'
 import { constIntExpr } from '../static.js'
 import { intCertainMap } from '../type.js'
 import { typedElemAux } from '../../layout.js'
@@ -268,15 +268,29 @@ export function analyzeFuncForEmit(func, programFacts) {
   // store the element (analyze/frame-effects.js runsAccessor; a closure has no
   // census of its own).
   const cseReads = []
-  if (_o && _o.loadCSE !== false && block && mapOrOverlaySize(ctx.func.typedElem) && !(func.frame ? func.frame.runsAccessor : viewsOn())
-      && cseLoads(body, n => ctx.func.typedElem.get(n) ?? (UNTYPED_KINDS.has(valTypeOf(n)) ? UNTYPED : null), read => {
+  // A field of an object the summary shapes, under a name no accessor bears:
+  // a plain slot load (cse-load.js fieldOf).
+  const fieldRead = summary ? (n) => {
+    const prop = n[2]
+    if (prop === 'length' || ctx.summary?.memberMayBeOwn?.(prop)) return false
+    const sids = summary.shapesOfExpr(n[1])
+    if (!sids?.length) return false
+    // A name some class or literal gives an accessor is a field on the layouts that hold none.
+    if (!ctx.transform.accessorNames?.has(prop) && !ctx.transform.literalAccessorNames?.has(prop)) return true
+    const slot = prop + ACCESSOR_GET, dynamic = ctx.transform.dynamicAccessorNames?.has(prop) === true
+    return !sids.some(sid => summary.layoutMember(sid, slot) || summary.layoutSlot(sid, slot) || (dynamic && summary.layoutSide(sid, slot)))
+  } : null
+  const typedLoads = mapOrOverlaySize(ctx.func.typedElem) > 0
+  if (_o && _o.loadCSE !== false && block && (typedLoads || fieldRead) && !(func.frame ? func.frame.runsAccessor : viewsOn())
+      && cseLoads(body, n => (typedLoads ? ctx.func.typedElem.get(n) : null) ?? (UNTYPED_KINDS.has(valTypeOf(n)) ? UNTYPED : null), read => {
         const name = freshCseName()
         summary?.alias(name, read, false)
         if (read[0] === '[]') cseReads.push([name, read])
         return name
       }, n => valTypeOf(n) === VAL.NUMBER,
         n => n[0] === '()' && typeof n[1] === 'string' && ctx.funcs.map.get(n[1])?.frame?.writesOuter === false,
-        n => runsConversion(summary, n)) > 0)
+        n => runsConversion(summary, n), fieldRead,
+        recv => { const vt = typeof recv === 'string' ? valTypeOf(recv) : null; return vt !== VAL.ARRAY && vt !== VAL.TYPED && vt !== VAL.STRING }) > 0)
     invalidateLocalsCache(body)
 
   if (block) {

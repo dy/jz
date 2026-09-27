@@ -84,6 +84,7 @@ const TESTS = [
   'typed-decode',
   'shift-precedence',
   'loop-step',
+  'field-cse',
   'unroll-cost',
   'sentinel-guard',
   'twin-locals',
