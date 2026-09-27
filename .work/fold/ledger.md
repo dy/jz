@@ -178,9 +178,17 @@ wall-clock perf flake), 0 of 10,032; opt3 4645/4645, 0 of 9,878; wasi 4698/4698,
 14,584; dist jz.js 2,738,840 → 2,717,989 B, jz.wasm 20,191,586 → 20,025,631 B; test:self,
 test262 and builtins as above.
 
-Merged with main 0ea57ea1 (8885fa9e): the Summary table above. Not yet on main: the main
-checkout holds another session's uncommitted edits to 18 of the files this merge updates,
-so the fast-forward (`git merge --ff-only fold` there) waits for that work to be committed.
+Merged with main 0ea57ea1 (8885fa9e): the Summary table above.
+
+Merged with main cb1de1cd (e2389f5f, one conflict: the preset line in
+src/optimize/config.js, resolved to presets identical to main's at every level) and landed
+on main by fast-forward on September 27 at the user's call. Before landing: oracle CLEAN
+(870 entries); main's fourteen new test files, test/summary-queries.js and
+test/to-primitive.js pass on the merge; the four-leg run was stopped at about a fifth
+under a load average of 60. Other sessions held uncommitted edits in 20 of fold's files in
+the shared checkout; each took a clean three-way merge of fold's change into the working
+file, so their work stays uncommitted and intact. For that, fold keeps `literalOf` and
+the raw-ternary callee test in plan/scope.js (aa246ced).
 
 ## Codegen candidates (output changes; logged, not landed)
 
