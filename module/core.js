@@ -2375,11 +2375,14 @@ export default (ctx) => {
     // cursor a guard proved) reads its slot directly, the layout the guarded
     // read above retains (readHoistedProp); without the shape on the receiver
     // the access dispatched on the shape set at every read.
-    // An expression the summary knows is never nullish takes the same slot
-    // (`f[i].normal`, a present element of an array of one shape).
+    // An element or a field the summary knows is never nullish takes the same
+    // slot (`f[i].normal`, a present element of an array of one shape). A
+    // literal is built as the runtime builds it (a spread copies own fields
+    // alone), so its reads keep their own lowering.
     const receiver = emit(obj)
     const oneShape = receiver?.type === 'f64' && receiver.ptrKind == null &&
-      (typeof obj === 'string' ? !ctx.schema.isBoxed(obj) : ctx.summary?.at(ctx.func.current).mayBeNullishExpr(obj) === false)
+      (typeof obj === 'string' ? !ctx.schema.isBoxed(obj)
+        : (obj[0] === '[]' || obj[0] === '.') && ctx.summary?.at(ctx.func.current).mayBeNullishExpr(obj) === false)
     if (oneShape) {
       const sid = ctx.summary?.at(ctx.func.current).objectSidOfExpr(obj)
       if (sid != null && ctx.schema.list[sid]?.includes(prop)) {

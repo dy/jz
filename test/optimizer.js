@@ -5866,7 +5866,7 @@ export let main = () => { const ps = mk(100); run2(ps); return ps[0].x }`
 // A constant array literal indexed in place (prepare hoists it to a static const)
 // reads without the forwarding hop, the length load or the bounds test when the
 // index's integer hull stays under the literal's length; a named static const
-// keeps the test but drops the hop and the length load.
+// is an array of fixed length (the summary's `lens`) and reads the same way.
 test('static const array reads fold: inline literal under a mask is one load, a named const drops the hop', () => {
   const src = `const T = [2, 4, 2, 9]
 export let f = (k) => T[k & 3]
@@ -5875,7 +5875,7 @@ export let h = (k) => [1, 2, 3][k & 3]`
   const w = compile(src, { optimize: 'speed', wat: true })
   const gw = funcWat(w, 'g'), fw = funcWat(w, 'f'), hw = funcWat(w, 'h')
   ok(!/__ptr_offset_fwd|i32\.lt_u|\(if/.test(gw) && (gw.match(/f64\.load/g) ?? []).length === 1, 'inline literal: the load alone')
-  ok(!/__ptr_offset_fwd/.test(fw) && /i32\.lt_u/.test(fw), 'named const: no hop, the bounds test stays')
+  ok(!/__ptr_offset_fwd|i32\.lt_u|\(if/.test(fw) && (fw.match(/f64\.load/g) ?? []).length === 1, 'named const: the load alone as well')
   ok(/i32\.lt_u/.test(hw), 'a hull past the length keeps the test')
   const { f, g, h } = run(src), ref = oracle(src)
   for (const k of [0, 1, 2, 3, 5, -1, 4294967295]) { is(f(k), ref.f(k)); is(g(k), ref.g(k)); is(h(k), ref.h(k)) }
