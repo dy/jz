@@ -1141,7 +1141,8 @@ export const wrap = (memSrc, inst, state) => {
     const typedSlot = ie?.t?.[i]
     let host = null
     if (typedSlot === 'Array+') {
-      if (Array.isArray(x) || ArrayBuffer.isView(x)) host = x
+      // An array or a typed array takes its elements back; a DataView has none.
+      if (Array.isArray(x) || (ArrayBuffer.isView(x) && !(x instanceof DataView))) host = x
     } else if (typedSlot) {
       const writes = typedSlot.endsWith('+')
       const Ctor = globalThis[writes ? typedSlot.slice(0, -1) : typedSlot]
@@ -1211,6 +1212,7 @@ export const wrap = (memSrc, inst, state) => {
     for (const [host, b] of writeBack) {
       if (type(b) === 1) { copyElements(host, b); continue }
       const view = mem.read(b)
+      if (!ArrayBuffer.isView(view) || view instanceof DataView) continue
       if (ArrayBuffer.isView(host)) host.set(view.subarray(0, host.length))
       else for (let i = 0; i < host.length && i < view.length; i++) host[i] = view[i]
     }
