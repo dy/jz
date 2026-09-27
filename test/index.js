@@ -73,6 +73,7 @@ const TESTS = [
   'guarded-update',
   'quantize',
   'prefilter',
+  'present-init',
   'unroll-cost',
   'sentinel-guard',
   'twin-locals',
