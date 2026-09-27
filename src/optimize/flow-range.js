@@ -116,7 +116,7 @@ export function tagFlowRanges(fn, bodyStart, floatLocals) {
     for (let i = 1; i < n.length; i++) { env = walk(n[i], env); if (!env) return null }
     return LEAVES.has(op) ? null : env
   }
-  for (let i = bodyStart; i < fn.length; i++) walk(fn[i], new Map())
+  seq(fn.slice(bodyStart), new Map())
   if (abort) clearFlowRanges(fn)
 }
 
