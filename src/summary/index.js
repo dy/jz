@@ -797,7 +797,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
         case '!': case 'typeof': case 'void': walk(n[1], true); return
         case '===': case '!==': walk(n[1], true); walk(n[2], true); return
         case '&&': case '||': case '??': walk(n[1], passive); walk(n[2], passive); return
-        case '?:': walk(n[1], true); walk(n[2], passive); walk(n[3], passive); return
+        case '?': case '?:': walk(n[1], true); walk(n[2], passive); walk(n[3], passive); return
         case 'if': walk(n[1], true); walk(n[2], false); walk(n[3], false); return
         case 'while': walk(n[1], true); walk(n[2], false); return
         case 'for': walk(n[1], false); walk(n[2], true); walk(n[3], false); walk(n[4], false); return
@@ -2005,7 +2005,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
         : Array.isArray(key) && (key[0] == null || key[0] === 'str') ? key[1] : null
       if (dataProperty(prop)) { selectedExpr(n[1], 0); return K.NONE }
     }
-    if (mask !== 7 && !logical && n?.[0] !== '?:' && n?.[0] !== ',') return selectKind(expr(n), mask)
+    if (mask !== 7 && !logical && n?.[0] !== '?' && n?.[0] !== '?:' && n?.[0] !== ',') return selectKind(expr(n), mask)
     if (n == null) return NULLISH
     if (typeof n === 'number') return NUMBER
     if (typeof n === 'string') {
@@ -2150,7 +2150,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       branch--
       return merge(a, b)
     }
-    if (op === '?:') {
+    if (op === '?' || op === '?:') {
       selectedExpr(n[1], 0)
       const truth = decided(n[1])
       if (truth === 'pending') return K.NONE
@@ -2660,6 +2660,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     // `(d = ops[i++])` as a condition: the assigned name is truthy on the path it guards.
     if (op === '=' && typeof c[1] === 'string') { if (when) refineName(c[1], NOT_NULLISH); return }
     if (op === '!') { proves(c[1], !when); return }
+    if (op === '()' && c.length === 2) { proves(c[1], when); return }
     if ((op === '&&' && when) || (op === '||' && !when)) { proves(c[1], when); proves(c[2], when); return }
     const tp = typeofPredicateOf(c)
     if (tp) {
@@ -2878,7 +2879,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     if (op === '[]') { useOf(n[1], OTHER); demand(n[2]); return }
     // A value-carrying operator reads its arms in the context of its own read;
     // `??` tests its left arm for nullish, which ToNumber would make NaN.
-    if (op === '?:') { demand(n[1]); useOf(n[2], cx, into); useOf(n[3], cx, into); return }
+    if (op === '?' || op === '?:') { demand(n[1]); useOf(n[2], cx, into); useOf(n[3], cx, into); return }
     if (op === '&&' || op === '||') { useOf(n[1], cx, into); useOf(n[2], cx, into); return }
     if (op === '??') { useOf(n[1], atMost(COMPAT, cx, into)); useOf(n[2], cx, into); return }
     // For number|undefined locals, equality with a definite number cannot
@@ -2893,6 +2894,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       useOf(n[1], eqCx(n[1], n[2])); useOf(n[2], eqCx(n[2], n[1])); return
     }
     if (op === ',') { for (let i = 1; i < n.length - 1; i++) demand(n[i]); useOf(n[n.length - 1], cx, into); return }
+    if (op === '()' && n.length === 2) { useOf(n[1], cx, into); return }
     if (op === '()') {
       const callee = n[1], as = n[2], count = argCount(as)
       if (typeof callee === 'string') {
