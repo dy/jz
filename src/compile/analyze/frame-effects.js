@@ -504,6 +504,7 @@ function census(view, roots, declRoots, params, typedParams = NO_NAMES) {
     if (isFunctionNode(n)) { allocates(); return }   // its own frame; a call to it is counted at the call
     if (isObjectLiteral(n) || op === '[' || op === '`') allocates()
     if (op === '+' && !scalarKind(view, n)) allocates()   // a concatenation
+    if (op === 'yield' || op === 'await') unsafe(op)   // the frame is suspended: what runs meanwhile allocates too
     if (op === '__tp_call') unknownCall('conversion method')   // an own toString/valueOf closure (emit/to-primitive.js)
     if (runsConversion(view, n)) conversion()
     if (ASSIGN_OPS.has(op) || op === '++' || op === '--') {

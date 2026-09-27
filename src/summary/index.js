@@ -2169,6 +2169,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     if (op === 'typeof') { selectedExpr(n[1], 0); return STRING }
     if (op === 'delete') { stmt(n); return BOOL }
     if (op === 'void') { selectedExpr(n[1], 0); return NULLISH }
+    if (op === 'await') return expr(n[1]) === K.NONE ? K.NONE : ANY
     // A spread reads its source's elements (an array's, a typed array's, a
     // string's characters); a source of another kind is iterated by code the summary does not model.
     // A spread of nothing, or of a nullish value (a TypeError), contributes no element.

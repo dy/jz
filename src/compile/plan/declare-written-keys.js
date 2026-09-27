@@ -111,7 +111,7 @@ export const declareWrittenKeys = (ast) => {
   // definition or assignment of a value that holds none of these runs nothing.
   // `some` stops at an arrow: a function is not run by being defined.
   const OBSERVES = new Set(['()', 'new', 'in', '...', 'delete', 'if', '?:', 'for',
-    'while', '&&', '||', '??', 'return', 'throw', 'break', 'continue'])
+    'while', '&&', '||', '??', 'await', 'yield', 'return', 'throw', 'break', 'continue'])
   // (a direct call is the one observer `blind` below can see through)
   const funcs = ctx.funcs?.map
   const observes = (n) => Array.isArray(n) && OBSERVES.has(n[0])

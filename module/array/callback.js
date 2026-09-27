@@ -61,7 +61,7 @@ const NOT_PURE_OPS = new Set([
   ';', '{}', 'let', 'const', '=>', 'return', 'throw',
   'if', 'for', 'while', 'break', 'continue',
   'catch', 'finally', '=', '+=', '-=', '*=', '/=', '%=', '&=', '|=', '^=',
-  '<<=', '>>=', '>>>=', '||=', '&&=', '??=', '++', '--', 'delete',
+  '<<=', '>>=', '>>>=', '||=', '&&=', '??=', '++', '--', 'delete', 'yield', 'await',
 ])
 function isPureExpr(node) {
   if (node == null || typeof node !== 'object' || !Array.isArray(node)) return true

@@ -258,7 +258,7 @@ export function inferInternalArrayLengths() {
         if (n[1] === name || carries(n[2], name) || (Array.isArray(n[1]) && refs(n[1], name))) safe[k] = false
       }
       if (n[0] === 'delete') for (const [name, k] of ps) if (refs(n[1], name)) safe[k] = false
-      if (n[0] === 'return' || n[0] === 'throw')
+      if (n[0] === 'return' || n[0] === 'throw' || n[0] === 'yield')
         for (const [name, k] of ps) if (carries(n[1], name)) safe[k] = false
       if (n[0] === '()') {
         const args = callArgs(n), callee = typeof n[1] === 'string' ? n[1] : null
@@ -313,7 +313,7 @@ export function inferInternalArrayLengths() {
         if (n !== defs.get(name) && (ASSIGN_OPS.has(n[0]) || n[0] === '++' || n[0] === '--') &&
             (n[1] === name || carries(n[2], name) || (Array.isArray(n[1]) && refs(n[1], name)))) { ok = false; return }
         if ((n[0] === 'delete' && refs(n[1], name)) ||
-            ((n[0] === 'return' || n[0] === 'throw') && carries(n[1], name))) { ok = false; return }
+            ((n[0] === 'return' || n[0] === 'throw' || n[0] === 'yield') && carries(n[1], name))) { ok = false; return }
         if (n[0] === '()') {
           const args = callArgs(n), callee = typeof n[1] === 'string' ? n[1] : null
           if (refs(n[1], name)) { ok = false; return }
@@ -434,7 +434,7 @@ export function inferTypedValueRanges(storeRanges) {
           if (!r) s.bad = true; else s.range = hull(s.range, r)
         }
         // Aliases/returns escape the receiver; element/property reads do not.
-        if (n[0] === 'return' || n[0] === 'throw') for (const [name, k] of ps) if (carries(n[1], name)) sum[k].bad = true
+        if (n[0] === 'return' || n[0] === 'throw' || n[0] === 'yield') for (const [name, k] of ps) if (carries(n[1], name)) sum[k].bad = true
         if (ASSIGN_OPS.has(n[0])) for (const [name, k] of ps) {
           if (n[1] === name || carries(n[2], name)) sum[k].bad = true
           if (Array.isArray(n[1]) && n[1][0] !== '[]' && mentions(n[1], name)) sum[k].bad = true
@@ -522,7 +522,7 @@ export function inferTypedValueRanges(storeRanges) {
             if (Array.isArray(n[1]) && n[1][0] !== '[]' && mentions(n[1], name)) merge(name, null)
           }
         }
-        if (n[0] === 'return' || n[0] === 'throw') for (const name of [...ranges.keys()]) if (carries(n[1], name)) merge(name, null)
+        if (n[0] === 'return' || n[0] === 'throw' || n[0] === 'yield') for (const name of [...ranges.keys()]) if (carries(n[1], name)) merge(name, null)
         if (n[0] === '()') {
           const args = callArgs(n), callee = typeof n[1] === 'string' ? n[1] : null
           const target = callee ? summaries.get(callee) : null
