@@ -154,7 +154,7 @@ export function inferInternalArrayLengths() {
       const a = pushCount(n[2], arr), b = pushCount(n[3], arr)
       return a != null && a === b ? a : null
     }
-    if (n[0] === 'while' || n[0] === 'do' || n[0] === 'for' || n[0] === 'switch')
+    if (n[0] === 'while' || n[0] === 'for')
       return refs(n, arr) ? null : 0
     if (n[0] === 'return' || n[0] === 'throw' || n[0] === 'break' || n[0] === 'continue') return null
     if (ASSIGN_OPS.has(n[0]) || n[0] === '++' || n[0] === '--') {
@@ -203,7 +203,7 @@ export function inferInternalArrayLengths() {
           if (size != null) { len = size; defNode = d } else bad = true
         }
       }
-      if ((n[0] === 'if' || n[0] === '?:' || n[0] === '&&' || n[0] === '||' || n[0] === '??' || n[0] === 'while' || n[0] === 'do' || n[0] === 'switch' || n[0] === 'catch' || n[0] === 'finally') && refs(n, arr)) {
+      if ((n[0] === 'if' || n[0] === '?:' || n[0] === '&&' || n[0] === '||' || n[0] === '??' || n[0] === 'while' || n[0] === 'catch' || n[0] === 'finally') && refs(n, arr)) {
         bad = true
         return false
       }

@@ -271,6 +271,22 @@ test('ToPrimitive: evaluate once and look up the second method after the first c
   `, [0, 0])
 })
 
+test('ToPrimitive: a template literal runs the conversion method between two loads', () => {
+  // A prepared template is `strcat`: the frame census must see its ToPrimitive
+  // call, or load CSE reuses the typed-array read from before the method's store.
+  check(`
+    const a = new Float64Array(4)
+    const o = { toString() { a[0] = 42; return 'x' } }
+    export function f(k) {
+      a[0] = k
+      const x = a[0]
+      const s = \`\${o}\`
+      const y = a[0]
+      return x * 100 + y + s.length
+    }
+  `, [1, 2])
+})
+
 test('ToPrimitive: addition uses the default hint even beside a string', () => {
   check(`
     function add(a, b) { return a + b }

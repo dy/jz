@@ -273,7 +273,7 @@ export function analyzeValTypes(body) {
   // this only as a preallocation hint (the table still grows), so a missed
   // alias costs speed while an over/underestimate cannot affect semantics.
   const dictDomain = (name) => dictDomainOf(body, name)
-  function walk(node, cond) {
+  function walk(node) {
     if (!Array.isArray(node)) return
     const op = node[0]
     if (op === '=>') return  // don't leak inner-closure val types
@@ -425,7 +425,7 @@ export function analyzeValTypes(body) {
       }
     }
     if (op === '=' && typeof node[1] === 'string') {
-      walk(node[2], cond)
+      walk(node[2])
       const merged = ctx.schema.resolve?.(node[1])
       const hasPropertyWrites = ctx.types.dynWriteVars?.has(node[1]) || ctx.types.literalWriteKeys?.get(node[1])?.size
       const dict = Array.isArray(node[2]) && node[2][0] === '{}' && node[2].length === 1 &&
@@ -457,23 +457,10 @@ export function analyzeValTypes(body) {
         ctx.func.localProps.get(obj).add(prop)
       }
     }
-    // Conditional-position threading (the param-write rule above): arms whose
-    // execution depends on a runtime test descend with cond=true — 'if'/'?:'
-    // arms (their tests stay at the current position), '&&'/'||'/'??' right
-    // sides, and every part of a loop (a body that may run zero times).
-    // Everything else inherits the caller's position.
-    if (op === 'if' || op === '?:') { walk(node[1], cond); for (let i = 2; i < node.length; i++) walk(node[i], true); return }
-    if (op === '&&' || op === '||' || op === '??') { walk(node[1], cond); walk(node[2], true); return }
-    // Loops and try: every part may run zero times (loop body / catch arm) or
-    // stop mid-way (a throw skips the try body's tail) — all conditional.
-    if (op === 'while' || op === 'do' || op === 'for' || op === 'for-in' || op === 'for-of' || op === 'try') {
-      for (let i = 1; i < node.length; i++) walk(node[i], true)
-      return
-    }
-    for (let i = 1; i < node.length; i++) walk(node[i], cond)
+    for (let i = 1; i < node.length; i++) walk(node[i])
   }
   const objAssignSites = []
-  walk(body, false)
+  walk(body)
   joinReassignedTypedLens(body, n => ctx.func.typedElem?.has(n) ?? false,
     n => ctx.func.typedLen?.get(n) ?? ctx.scope.globalTypedLen?.get(n) ?? null,
     (n, l) => (ctx.func.typedLen ??= new Map()).set(n, l))

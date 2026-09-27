@@ -86,7 +86,6 @@ export function initSchema(ctx) {
   // key → schemaId for O(1) dedupe; prop → [{id, slot}] for O(matches) structural find.
   const byKey = new Map()
   const byProp = new Map()
-  ctx.schema._byKey = byKey
   ctx.schema._byProp = byProp
 
   // `salt` (optional): forces a schema id DISTINCT from every other registration
@@ -163,14 +162,6 @@ export function initSchema(ctx) {
    *  host-side sid→class map it needs (a compiled module has no other way to
    *  recover compile-time schema-id semantics — see interop.js decodeThrown). */
   ctx.schema.errorSidEntries = () => errorClassBySid
-  /** Every registered class name, in ERR_CLASS_NAMES' fixed order, restricted
-   *  to classes actually minted so far — the deterministic iteration order
-   *  `emitErrorInstanceof`'s base-'Error' OR-chain and ir.js's toStrI64 arm
-   *  need (Map insertion order would instead follow first-use source order,
-   *  which can legitimately differ between two semantically-identical
-   *  programs and would make emitted bytes depend on incidental AST-walk
-   *  order rather than program content). */
-  ctx.schema.errorClassesUsed = () => ERR_CLASS_NAMES.filter(c => errorSidByClass.has(c))
 
   /** schemaId for a variable name: ValueRep first, then module-level ctx.schema.vars.
    *  Both paths exist because vars covers names without a per-function ValueRep

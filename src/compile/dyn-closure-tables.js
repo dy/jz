@@ -65,7 +65,7 @@ const safeTableUse = (u) =>
   (u[BINDING_USE_KIND] === USE.MEMBER_W && !u[BINDING_USE_COMPOUND] && u[BINDING_USE_COMPUTED])
 
 const isEmptyArrayLit = (rhs) =>
-  Array.isArray(rhs) && ((rhs[0] === '[' && rhs.length === 1) || (rhs[0] === '[]' && rhs.length <= 2))
+  Array.isArray(rhs) && rhs[0] === '[' && rhs.length === 1
 
 // Every top-level root: the entry module's `ast` plus one per bundled module
 // (imported files' top-level statements live in ctx.module.moduleInits, not `ast`).
@@ -127,7 +127,7 @@ const isArrowArrayLit = (rhs) =>
 function everyUseIsIndexedCall(node, name) {
   if (!Array.isArray(node)) return true
   const op = node[0]
-  if (op === 'let' || op === 'const' || op === 'var') {
+  if (op === 'let' || op === 'const') {
     for (let i = 1; i < node.length; i++) {
       const d = node[i]
       if (typeof d === 'string') continue                          // uninitialized decl
@@ -209,8 +209,8 @@ const isExportedName = (name) => {
 function mentionsName(node, name) {
   if (!Array.isArray(node)) return false
   const op = node[0]
-  if (op === '=>' || op === 'function') return false
-  if (op === 'let' || op === 'const' || op === 'var') {
+  if (op === '=>') return false
+  if (op === 'let' || op === 'const') {
     for (let i = 1; i < node.length; i++) {
       const d = node[i]
       if (typeof d === 'string') continue                        // uninitialized decl — binding, not a use
@@ -249,8 +249,8 @@ function mentionsName(node, name) {
 function everyUseIsIndexedCallOrLiteralWrite(node, name, inLoop) {
   if (!Array.isArray(node)) return true
   const op = node[0]
-  if (op === 'for' || op === 'while' || op === 'do') inLoop = true
-  if (op === 'let' || op === 'const' || op === 'var') {
+  if (op === 'for' || op === 'while') inLoop = true
+  if (op === 'let' || op === 'const') {
     for (let i = 1; i < node.length; i++) {
       const d = node[i]
       if (typeof d === 'string') continue                          // uninitialized decl

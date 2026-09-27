@@ -10,7 +10,7 @@ import { STR_HCACHE_BIT } from '../../../layout.js'
 import { ASSIGN_OPS, MUTATE_OPS, T, commaList, firstRefKind, isBlockBody, isReassigned } from '../../ast.js'
 import { PTR, ctx, err, inc, emitArity, setLinkDemand } from '../../ctx.js'
 import {
-  callWithArgs, FALSE_NAN, MAX_CLOSURE_ARITY, TRUE_NAN, UNDEF_NAN, WASM_OPS, applyBigintRepresentationAction, asF64, asI32, asI64, asParamType, asPtrOffset, block64, boolBoxIR, boxBigInt, carrierF64, carrierF64Narrow, emitNum, extractF64Bits, flat, freshId, fromI64, isBoolAtom, isBoundName, isGlobal, isLit, isNullish, isNullishLit, litVal, materializeDeferredBigint, maybeUnboxBigInt, mkPtrIR, nullExpr, nullableBoolBoxIR, ptrOffsetIR, readVar, resolveValType, temp, tempI32, tempI64, toI32, toNumF64, toStrI64, truthyIR, typed, unboxBoolIR, undefExpr, valKindToPtr,
+  callWithArgs, FALSE_NAN, MAX_CLOSURE_ARITY, TRUE_NAN, UNDEF_NAN, WASM_OPS, applyBigintRepresentationAction, asF64, asI32, asI64, asParamType, asPtrOffset, block64, boolBoxIR, boxBigInt, carrierF64, carrierF64Narrow, emitNum, extractF64Bits, flat, freshId, fromI64, isBoolAtom, isBoundName, isGlobal, isLit, isNullish, isNullishLit, litVal, materializeDeferredBigint, mayYieldUndefOf, maybeUnboxBigInt, mkPtrIR, nullExpr, nullableBoolBoxIR, ptrOffsetIR, readVar, resolveValType, temp, tempI32, tempI64, toI32, toNumF64, toStrI64, truthyIR, typed, unboxBoolIR, undefExpr, valKindToPtr,
 } from '../../ir.js'
 import { BIGINT_JOINT_BINARY_OPS, isPresentNumber, hasAmbiguousBoolMerge, nullishArm, valTypeOf } from '../../kind.js'
 import { VAL, lookupValType, repOf, repOfGlobal, numericStorage, mayBeUndefined } from '../../reps.js'
@@ -1081,7 +1081,7 @@ function setFlowVal(name, vt, expr, value) {
   // A tagged Boolean binding reads through its mixed kind at every use: a
   // flow fact of one store's kind would read its atom as a raw number.
   if (boolTaggedBinding(name)) { ctx.func.localValTypesOverlay?.delete(name); return }
-  const k = value?.checkedNumRead ? orAbsent(NUMBER)
+  const k = value?.checkedNumRead || vt === VAL.NUMBER && mayYieldUndefOf(expr, value) ? orAbsent(NUMBER)
     : value?.presentNumRead || vt === VAL.NUMBER && isPresentNumber(ctx, expr) ? NUMBER : ctx.summary?.at(ctx.func.current).kindOfExpr(expr)
   // A nullable BigInt operation also produces Number on its absent arm.
   // Its payload-oriented VT must not turn the stored union into raw BigInt.
@@ -1093,7 +1093,7 @@ function setFlowVal(name, vt, expr, value) {
   else ctx.func.localValTypesOverlay.delete(name)
 }
 
-const FLOW_LOOP_OPS = new Set(['while', 'do', 'for', 'for-in', 'for-of'])
+const FLOW_LOOP_OPS = new Set(['while', 'for'])
 
 // Names assigned at a NESTED position within `node` (anything except a
 // top-level `name = rhs` statement head or top-level decl head, both
@@ -1164,9 +1164,9 @@ const elementUses = (n, out) => {
   if (!Array.isArray(n)) return out
   const op = n[0]
   if (op == null || op === 'str' || op === '=>' || op === 'return' || op === 'throw' || op === 'break' || op === 'continue') return out
-  if (op === 'if' || op === '?:' || op === '?' || op === '&&' || op === '||' || op === '??' || op === '?.' || op === '?.()' || op === '?.[]' || op === 'while' || op === 'switch') return elementUses(n[1], out)
+  if (op === 'if' || op === '?:' || op === '?' || op === '&&' || op === '||' || op === '??' || op === '?.' || op === '?.()' || op === '?.[]' || op === 'while') return elementUses(n[1], out)
   if (op === 'for') { elementUses(n[1], out); return elementUses(n[2], out) }
-  if (op === 'do' || op === 'for-of' || op === 'for-in' || op === 'for-await' || op === 'catch' || op === 'finally' || op === 'label') return out
+  if (op === 'catch' || op === 'finally' || op === 'label') return out
   if ((op === '[]' && n.length === 3 || op === '.' && typeof n[2] === 'string') && typeof n[1] === 'string' && !out.has(n[1])) out.set(n[1], false)
   if (MUTATE_OPS.has(op) && Array.isArray(n[1]) && n[1][0] === '[]' && n[1].length === 3 && typeof n[1][1] === 'string') out.set(n[1][1], true)
   for (let i = 1; i < n.length; i++) elementUses(n[i], out)

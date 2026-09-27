@@ -368,14 +368,14 @@ function createFactStore() {
     // module-global would leak entries across compiles, so resetFactStore()
     // must swap in a fresh WeakMap every beginSession. See each consuming
     // site for the field it replaces.
-    ccInBounds: new WeakMap(),        // src/type.js inBoundsCharCodeAt (was ctx.func._ccBody/ccInBounds)
-    aiInBounds: new WeakMap(),        // src/type.js inBoundsArrIdx (was ctx.func._aiBody/aiInBounds)
-    aiLitBounds: new WeakMap(),       // src/type.js inBoundsArrIdx/litBoundArrIdx (was ctx.func.aiLitBounds)
-    ipProven: new WeakMap(),          // src/type.js intervalProvenIdx (was ctx.func._ipBody/ipProven)
-    ipRanges: new WeakMap(),          // src/type.js intervalProvenIdx/intervalIdxRanges/stampClonedIdxProof (was ctx.func.ipRanges)
-    constPropAliases: new WeakMap(),  // src/compile/flow-types.js constPropAliases (was ctx.func._constPropAliasBody/_constPropAliases)
-    boolEager: new WeakMap(),         // src/compile/emit.js boolEagerBody (was ctx.func._boolEagerBody/_boolEagerValue)
-    typedBundleGuards: new WeakMap(), // module/typedarray.js typedBundleGuard (was ctx.func._typedBundleBody/_typedBundleGuards)
+    ccInBounds: new WeakMap(),        // src/type.js inBoundsCharCodeAt
+    aiInBounds: new WeakMap(),        // src/type.js inBoundsArrIdx
+    aiLitBounds: new WeakMap(),       // src/type.js inBoundsArrIdx/litBoundArrIdx
+    ipProven: new WeakMap(),          // src/type.js intervalProvenIdx
+    ipRanges: new WeakMap(),          // src/type.js intervalProvenIdx/intervalIdxRanges/stampClonedIdxProof
+    constPropAliases: new WeakMap(),  // src/compile/flow-types.js constPropAliases
+    boolEager: new WeakMap(),         // src/compile/emit.js boolEagerBody
+    typedBundleGuards: new WeakMap(), // module/typedarray.js typedBundleGuard
     // A loop versioned in the source (compile/twin-locals.js): the typed
     // accesses its extent test proves, and both copies' bodies, which the
     // emitter versions no further.
@@ -404,7 +404,7 @@ export function reset(proto, globals, bridge) {
                                     // check must not false-positive on inherited Object.prototype
                                     // names ('toString', 'constructor', …) — emit is already
                                     // prototype-less via derive(), this matches it.
-    stdlibDeps: {},   // populated per-module at init time (was STDLIB_DEPS in this file)
+    stdlibDeps: {},   // populated per-module at init time
     includes: new Set(),
     extImports: new Set(),  // __ext_* helpers actually emitted as env imports —
                             // pullStdlib() removes them from `includes` after wiring,
@@ -578,9 +578,6 @@ export function reset(proto, globals, bridge) {
                            //   layout: its objects carry their own sid, and a slot
                            //   store by a layout they do not have lands past their
                            //   fields (materializeAutoBoxSchemas, inferAssignSchema).
-    // (varsBarred deleted — BindingId totality makes cross-function bare-name
-    //  collisions unrepresentable; same name ⇒ same binding, so the bar census
-    //  and its belt had nothing left to guard.)
     register: null,
     find: null,
     dateSid: null,
@@ -597,11 +594,6 @@ export function reset(proto, globals, bridge) {
                           // single-write and non-escaping by construction — read by
                           // kind.js valTypeOf's VT['[]'] to recover an element's kind
                           // through `let [a, b] = [1, BigInt(v)]`-shaped destructuring.
-    // SlotFact unification (product-lattice design .work/archive/lattice-design.md
-    // §1/§5 Slice 6a, OQ2 6a/6b split): schemaId → Array<SlotFact | undefined>,
-    // one record per (sid, idx) replacing 4 formerly-parallel Maps that shared
-    // the IDENTICAL clash-poison/OR-join write discipline (FINDING-2) —
-    // slotTypes, slotObjSids, slotTypedCtors, slotBigintObserved. Each
     slotConstInts: new Map(), // schemaId → Array<int | null | undefined>
                               //   integer discriminants observed at every source
                               //   literal construction of a schema. null means
@@ -788,10 +780,6 @@ export function reset(proto, globals, bridge) {
     cseId: 0,           // monotonic id for CSE temps (freshCseName) — per-compile, so warm-process WAT text is deterministic
                         // (loop-model freshLoopId). Per-compile (reset here), not a module-global —
                         // so compile(P) is deterministic regardless of prior compiles in the process.
-    closureId: 0,       // monotonic id for src/compile/closure-plan.js's ClosureId — a SEPARATE
-                        // space from the others above: identifies a closure PLAN RECORD, never
-                        // names anything emitted.
-                        // Per-compile (reset here) for the same determinism reason.
   }
 
   // Inspection sink. Populated by compile() only when transform.inspect is true.
@@ -889,8 +877,7 @@ export function reset(proto, globals, bridge) {
   }
 
   // ctx.plans — session-owned plan store: the pre-emission frozen-fact
-  // WeakMaps (src/compile/closure-plan.js's ClosureEnvPlan records,
-  // representation-plan.js's normalized carrier facts, and the lowering links
+  // WeakMaps (representation-plan.js's normalized carrier facts, and the lowering links
   // that carry each emitted loop's facts, src/ir/control.js)
   // must be rebuilt directly by reset() every session, as ONE ctx subtree —
   // the SAME idiom ctx.features/ctx.linkDemand already use just above (a
@@ -899,8 +886,7 @@ export function reset(proto, globals, bridge) {
   // module-global map here would let entries from a PRIOR compile() survive
   // into the next one; owning the maps on ctx and rebuilding them in reset()
   // closes that leak without each module keeping private reset plumbing.
-  // Consumers (module/function.js's ctx.closure.make, src/compile/emit.js's
-  // closure-plan reads, the optimizer's lowering-link reads)
+  // Consumers (the optimizer's lowering-link reads)
   // read ctx.plans.* — no import-time WeakMap binding to go stale.
   ctx.plans = {
     programIndex: null,           // frozen source/graph facts plus the variant-ID registrar, closed before emit
@@ -913,7 +899,6 @@ export function reset(proto, globals, bridge) {
     typedStorageData: new WeakMap(), // handle → frozen typed receiver/result facts (typed-storage-plan.js only)
     typedStorageProgram: { initialized: false, calls: new Map(), info: new Map(), hasTypedFields: false },
     start: null,                  // synthetic __start identity, planned before body emission
-    closures: new WeakMap(),      // src/compile/closure-plan.js mintClosureEnvPlans, keyed on closure body node
     loweringLinks: new WeakMap(), // src/ir/control.js, keyed on the WAT loop-block node: { plan, lowering }
     compoundOf: new WeakMap(),    // an emitter-rebuilt node → the slot it lands in: a binding name, a member reference, or true for a tagged slot (emit/assignment.js, module/array/callback.js)
   }

@@ -36,7 +36,7 @@ const isArr = Array.isArray
 const isName = (x) => typeof x === 'string'
 const argsNode = (list) => list.length === 0 ? null : list.length === 1 ? list[0] : [',', ...list]
 const MAX_LANES = 8
-const PURE_OPS = new Set(['+', '-', '*', '/', '%', '**', '&', '|', '^', '<<', '>>', '>>>', '~', '!', '<', '<=', '>', '>=', '==', '!=', '===', '!==', '&&', '||', '??', '?', 'str', 'bool'])
+const PURE_OPS = new Set(['+', '-', '*', '/', '%', '**', '&', '|', '^', '<<', '>>', '>>>', '~', '!', '<', '<=', '>', '>=', '==', '!=', '===', '!==', '&&', '||', '??', 'str', 'bool'])
 
 /** An expression whose evaluation neither reads nor writes anything another
  *  expression's evaluation could change: names, literals, field reads of names,
@@ -74,7 +74,7 @@ function fieldReadsOnly(nodes, p) {
       return
     }
     if ((ASSIGN_OPS.has(op) || op === '++' || op === '--' || op === 'delete') && isArr(n[1]) && n[1][1] === p) { ok = false; return }
-    if ((op === 'let' || op === 'const' || op === 'var') && n.slice(1).some(d => d === p || (isArr(d) && d[1] === p))) { ok = false; return }
+    if ((op === 'let' || op === 'const') && n.slice(1).some(d => d === p || (isArr(d) && d[1] === p))) { ok = false; return }
     for (let i = 1; i < n.length; i++) walk(n[i], nested)
   }
   for (const n of nodes) walk(n, false)

@@ -2,6 +2,7 @@ import { ctx } from '../ctx.js'
 import { enterActiveFunction } from './active-function.js'
 import { nullExpr } from '../ir.js'
 import { VAL, updateRep } from '../reps.js'
+import { refsName, REFS_THROUGH_ARROWS } from '../ast.js'
 
 // A binding the summary names one exact shape for takes it: the slot reads
 // and stores need the layout. A parameter the call lattice already typed
@@ -60,13 +61,6 @@ export function emitPreboxedLocalInits(isSeeded) {
   return inits
 }
 
-const mentions = (n, name) => {
-  if (typeof n === 'string') return n === name
-  if (!Array.isArray(n)) return false
-  for (let i = 1; i < n.length; i++) if (mentions(n[i], name)) return true
-  return false
-}
-
 // Descend only through blocks and a single conditional arm containing EVERY
 // reference. Never move the prologue allocation through a loop; its existing
 // per-iteration capture handling owns backedges. Multiple statements/arms keep
@@ -77,14 +71,14 @@ const preboxPoint = (body, name) => {
   let at = null, single = true
   for (let i = list ? 1 : 0; i < (list ? inner.length : 1); i++) {
     const stmt = list ? inner[i] : inner
-    if (!mentions(stmt, name)) continue
+    if (!refsName(stmt, name, REFS_THROUGH_ARROWS)) continue
     if (at !== null) { single = false; break }
     at = stmt
   }
   if (single && Array.isArray(at)) {
     if (at[0] === '{}' || at[0] === ';') return preboxPoint(at, name) || at
-    if (at[0] === 'if' && !mentions(at[1], name)) {
-      const yes = mentions(at[2], name), no = mentions(at[3], name)
+    if (at[0] === 'if' && !refsName(at[1], name, REFS_THROUGH_ARROWS)) {
+      const yes = refsName(at[2], name, REFS_THROUGH_ARROWS), no = refsName(at[3], name, REFS_THROUGH_ARROWS)
       if (yes !== no) return preboxPoint(at[yes ? 2 : 3], name) || at
     }
   }

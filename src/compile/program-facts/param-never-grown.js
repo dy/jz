@@ -71,7 +71,7 @@ export function analyzeParamNeverGrown(paramReps) {
     const paramIdx = new Map((func.sig?.params || []).map((p, k) => [p.name, k]))
     const objLocals = new Set()
     const collectObjDecls = (n) => walkAst(n, { enter: n => {
-      if (n[0] === 'let' || n[0] === 'const' || n[0] === 'var') {
+      if (n[0] === 'let' || n[0] === 'const') {
         for (let i = 1; i < n.length; i++) {
           const d = n[i]
           if (Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string' &&

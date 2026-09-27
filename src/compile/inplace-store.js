@@ -182,7 +182,7 @@ export function scanInplaceStores(programFacts) {
       const op = n[0]
       // statement-position '{}' is a BLOCK (post-prepare bodies are
       // ['{}', [';', ...stmts]]), not an object literal
-      if (op === ';' || op === '{' || op === '{}') {
+      if (op === ';' || op === '{}') {
         const list = n.slice(1)
         for (let i = 0; i < list.length; i++) walkStmt(list[i], list, i)
         return
@@ -218,20 +218,12 @@ export function scanInplaceStores(programFacts) {
         } else walkVal(rhs, stmts, stmtIdx)
         return
       }
-      if (op === 'for-of') {
-        // `for (const p of arr)` binds untracked element aliases
-        const src = n[2]
-        if (typeof src === 'string') poisonElem(src)
-        else walkVal(src, stmts, stmtIdx)
-        for (let i = 3; i < n.length; i++) walkStmt(n[i], stmts, stmtIdx)
-        return
-      }
       if (op === '=>') {
         // closure body: value-walk everything (captured aliases poison via names)
         for (let i = 1; i < n.length; i++) walkVal(n[i], stmts, stmtIdx)
         return
       }
-      if (op === 'for' || op === 'while' || op === 'do' || op === 'if' || op === 'for-in') {
+      if (op === 'for' || op === 'while' || op === 'if') {
         // for is flat post-prepare: ['for', init, cond, step, body]
         for (let i = 1; i < n.length; i++) walkStmt(n[i], stmts, stmtIdx)
         return

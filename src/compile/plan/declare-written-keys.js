@@ -72,11 +72,6 @@ export const declareWrittenKeys = (ast) => {
     if (!s) writes.set(name, s = new Set())
     s.add(key)
   }
-  // Every name a pattern binds (its property keys too: a harmless surplus).
-  const patternNames = (t) => {
-    if (typeof t === 'string') return other(t)
-    walkAst(t, { enter: n => { for (let i = 1; i < n.length; i++) other(n[i]) } })
-  }
   const census = (root) => walkAst(root, { enter: (n) => {
     const op = n[0]
     if (MUTATE_OPS.has(op)) {
@@ -85,14 +80,11 @@ export const declareWrittenKeys = (ast) => {
       else if (Array.isArray(t)) {
         if (t[0] === '.' && typeof t[1] === 'string' && typeof t[2] === 'string') write(t[1], t[2])
         else if (t[0] === '[]' && t.length === 3 && typeof t[1] === 'string') { if (isLiteralStr(t[2])) write(t[1], t[2][1]); else dict.add(t[1]) }
-        else if (t[0] === '{}' || (t[0] === '[]' && t.length !== 3)) patternNames(t)
       }
     }
     else if (op === '()' && n[1] === 'Object.assign') { const t = Array.isArray(n[2]) && n[2][0] === ',' ? n[2][1] : n[2]; if (typeof t === 'string') dict.add(t) }
     else if (op === '=>') for (const p of collectParamNames(extractParams(n[1]))) other(p)
     else if (op === 'catch') { other(n[1]); other(n[2]) }
-    else if (op === 'for-of' || op === 'for-in' || op === 'for-await')
-      patternNames(Array.isArray(n[1]) && (n[1][0] === 'let' || n[1][0] === 'const' || n[1][0] === 'var') ? n[1][1] : n[1])
   } })
   census(ast)
   for (const init of ctx.module.moduleInits ?? []) census(init)
@@ -108,7 +100,7 @@ export const declareWrittenKeys = (ast) => {
   // and JSON all say so — and a store that may not have run yet made them
   // say so falsely. Definite: a statement-level `name.k = v` / `name['k'] = v`
   // in the same statement list as the binding, with nothing between them that
-  // could run other code — no call, no loop, no branch, no try — since without
+  // could run other code — no call, no loop, no branch — since without
   // a call no closure runs and no enumeration happens. A store anywhere else
   // is conditional, keeps its key out of the literal, and lands in the dyn
   // sidecar as before, which every observer already reads at runtime.
@@ -118,8 +110,8 @@ export const declareWrittenKeys = (ast) => {
   // deletion, or control flow that makes what follows conditional. A plain
   // definition or assignment of a value that holds none of these runs nothing.
   // `some` stops at an arrow: a function is not run by being defined.
-  const OBSERVES = new Set(['()', 'new', 'in', '...', 'delete', 'if', '?:', 'try', 'switch', 'for', 'for-of', 'for-in', 'for-await',
-    'while', 'do', '&&', '||', '??', 'await', 'yield', 'return', 'throw', 'break', 'continue'])
+  const OBSERVES = new Set(['()', 'new', 'in', '...', 'delete', 'if', '?:', 'for',
+    'while', '&&', '||', '??', 'await', 'yield', 'return', 'throw', 'break', 'continue'])
   // (a direct call is the one observer `blind` below can see through)
   const funcs = ctx.funcs?.map
   const observes = (n) => Array.isArray(n) && OBSERVES.has(n[0])
@@ -133,7 +125,7 @@ export const declareWrittenKeys = (ast) => {
   const bindingOf = (st) => {
     if (!Array.isArray(st)) return null
     if ((st[0] === '=' || st[0] === '??=') && typeof st[1] === 'string' && literalKeys(st[2])) return [st[1], st[2]]
-    if ((st[0] === 'let' || st[0] === 'const' || st[0] === 'var') && st.length === 2 && Array.isArray(st[1]) && st[1][0] === '=' && typeof st[1][1] === 'string' && literalKeys(st[1][2])) return [st[1][1], st[1][2]]
+    if ((st[0] === 'let' || st[0] === 'const') && st.length === 2 && Array.isArray(st[1]) && st[1][0] === '=' && typeof st[1][1] === 'string' && literalKeys(st[1][2])) return [st[1][1], st[1][2]]
     return null
   }
   // A statement between a literal and its store observes nothing when its only

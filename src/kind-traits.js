@@ -95,11 +95,6 @@ const CALLEE_VAL = {
   'Object.isSealed': VAL.BOOL,
   'Object.isExtensible': VAL.BOOL,
   'ArrayBuffer.isView': VAL.BOOL,
-  // jzify-synthesized `instanceof Map/Set/TypedArray` predicates (autoload
-  // CALL_MODULES) — same boolean-carrier classification as the ops they lower.
-  __is_map: VAL.BOOL,
-  __is_set: VAL.BOOL,
-  __is_typed: VAL.BOOL,
   // Atomics (module/atomics.js): wait → result string, isLockFree → boolean,
   // notify → count. Value ops resolve by RECEIVER width in calleeValType below
   // (Int32Array → NUMBER, BigInt64Array → BIGINT).

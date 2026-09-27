@@ -34,7 +34,6 @@ import {
   assertProgramFactsShape,
 } from '../program-facts.js'
 import { buildProgramIndex, releaseLiftedAddressTakenNames } from '../program-index.js'
-import { buildDictKindIndex } from '../dict-kind-index.js'
 import narrowSignatures, {
   specializeBimorphicTyped, specializeValKindDichotomy, speculateTypedParams, refineDynKeys,
   applyJsstringBoundaryCarrierStandalone, seedResultKinds,
@@ -177,17 +176,6 @@ export default function plan(ast, profiler, summarize) {
   // Always-on (core-simplification-audit.md §4(ii) slice 7 — measured <0.03 ms/compile,
   // see assertProgramFactsShape's own doc for the numbers).
   assertProgramFactsShape(programFacts, 'post-programIndex')
-  // DictKindIndex (dict-kind-index.js): per-key kind facts for an array-literal
-  // receiver used as a static string-keyed dictionary (a `for (k in OBJ) T[k] =
-  // …` unroll over a constant object literal — never schema-registered, since
-  // that mechanism only fires on a `{}`-literal AST node). Depends on
-  // ProgramIndex.resolveComputedSourceIds (the HANDLER-forwarding alias channel), so it
-  // must run after the index above; independent of synthesizeComputedDispatch-
-  // CallSites/releaseLiftedValueUsed (neither reads nor feeds it), placed here
-  // only to keep every "built once, right after ProgramIndex" fact together.
-  programFacts.dictKinds = t('buildDictKindIndex', () => buildDictKindIndex(ctx, programFacts, ast, programFacts.programIndex))
-  ctx.types.dictKinds = programFacts.dictKinds
-
   t('materializeAutoBoxSchemas', () => materializeAutoBoxSchemas(programFacts))
   t('resolveClosureWidth', () => resolveClosureWidth(programFacts))
   if (canSkipWholeProgramNarrowing(programFacts)) {

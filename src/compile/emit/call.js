@@ -403,14 +403,8 @@ export const callOps = {
     findFreeVars(body, paramSet, captures)
     for (const def of Object.values(defaults)) findFreeVars(def, paramSet, captures)
 
-    // Pass closure info including rest param and defaults. rawParams is the
-    // ClosureEnvPlan fallback lookup key for a destructured-param closure
-    // (src/compile/closure-plan.js's mintClosureEnvPlans doc) — `body` above
-    // was just reassigned to a FRESH array when bodyPrefix is non-empty, so
-    // the plan (minted pre-emission, before this reassignment ever happened)
-    // cannot be keyed on it; rawParams is untouched by this rewrite and is
-    // the same reference the mint saw.
-    const closureInfo = { params, body, captures, restParam, rawParams, scope: rawParams }   // scope: the summary's key for this closure (src/summary at)
+    // Pass closure info including rest param and defaults.
+    const closureInfo = { params, body, captures, restParam, scope: rawParams }   // scope: the summary's key for this closure (src/summary at)
     if (Object.keys(defaults).length) closureInfo.defaults = defaults
     return ctx.closure.make(closureInfo)
   },

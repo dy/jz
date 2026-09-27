@@ -19,8 +19,7 @@ export function findFreeVars(node, bound, free, scope) {
   if (typeof node === 'string') {
     if (bound.has(node) || free.includes(node)) return
     // repOf(node)?.intConst: a name the CURRENT function itself received as a
-    // constant-folded capture (module/function.js's ctx.closure.make/
-    // legacyDerive, mirrored in src/compile/closure-plan.js's mintArrow) has
+    // constant-folded capture (module/function.js's ctx.closure.make) has
     // no entry in ctx.func.locals — folding it away IS the point, there's no
     // slot to declare. Without this arm, a closure nested inside THIS one
     // that references the same name reads as "not in scope" here and gets
@@ -862,7 +861,7 @@ export function restViewAliases(body, rest) {
       if (names.has(t)) return false
       if (Array.isArray(t) && (t[0] === '[]' || t[0] === '.' || t[0] === '?.') && names.has(t[1])) return false
     }
-    if (op === 'let' || op === 'const' || op === 'var') {
+    if (op === 'let' || op === 'const') {
       for (let i = 1; i < node.length; i++) {
         const d = node[i]
         if (!Array.isArray(d) || d[0] !== '=') continue
@@ -886,7 +885,7 @@ export function restViewAliases(body, rest) {
 // (walk-count design A1) — factored out for the same reason as
 // flatObjectCandidate above.
 const freshArrayInit = (s) => s[BINDING_USE_DECLS] === 1 && Array.isArray(s[BINDING_USE_INIT])
-  && (s[BINDING_USE_INIT][0] === '[' || (s[BINDING_USE_INIT][0] === '[]' && s[BINDING_USE_INIT].length <= 2))
+  && s[BINDING_USE_INIT][0] === '['
 function neverGrownCandidate(s) {
   // Candidate: a single-declaration binding initialized from a fresh array literal.
   return freshArrayInit(s) && arrayUsesSafe(s)
@@ -924,15 +923,12 @@ export function scanObjectArrayFacts(body) {
   return [flatObjects || EMPTY_SCAN_MAP, sliceViews || EMPTY_SCAN_SET, neverGrown || EMPTY_SCAN_SET, ownCurrent || EMPTY_SCAN_SET]
 }
 
-// Both `Array(n)` and `new Array(n)` normalize to a `new.Array` call by prepare; an
-// empty literal stays `['[]', null]`. (Typed ctors become `new.Float64Array` etc. — the
-// exact-match on `new.Array` keeps them out.) A decl so initialized described its own
-// initial contents: the schema census's push observations may settle on it.
+// Both `Array(n)` and `new Array(n)` normalize to a `new.Array` call by prepare.
+// (Typed ctors become `new.Float64Array` etc. — the exact-match on `new.Array`
+// keeps them out.) A decl so initialized described its own initial contents: the
+// schema census's push observations may settle on it.
 export const isFreshArrayCtor = (rhs) =>
-  Array.isArray(rhs) && (
-    (rhs[0] === '[]' && rhs.length <= 2) ||             // empty `[]`
-    (rhs[0] === '()' && rhs[1] === 'new.Array')         // `Array(n)` / `new Array(n)` / `Array()`
-  )
+  Array.isArray(rhs) && rhs[0] === '()' && rhs[1] === 'new.Array'   // `Array(n)` / `new Array(n)` / `Array()`
 
 /**
  * Narrow uint32 accumulator locals to unsigned i32. A local qualifies when its
@@ -1220,7 +1216,6 @@ export function collectBareEscapes(body, locals, crossClosure) {
     if (op === 'if') { walk(node[1], 'value'); walk(node[2], 'stmt'); walk(node[3], 'stmt'); return }
     if (op === 'for') { walk(node[1], 'stmt'); walk(node[2], 'value'); walk(node[3], 'stmt'); walk(node[4], 'stmt'); return }
     if (op === 'while') { walk(node[1], 'value'); walk(node[2], 'stmt'); return }
-    if (op === 'do') { walk(node[1], 'stmt'); walk(node[2], 'value'); return }
     if ((op === '++' || op === '--') && typeof node[1] === 'string') {
       if (mode === 'value') escape(node[1])
       return
@@ -1355,8 +1350,7 @@ function collectStepRange(node, name, rangeOf, unit = 1) {
     if (t.P !== e.P || t.N !== e.N) return null   // arms disagree — non-deterministic per-iteration motion
     return t
   }
-  if (op === 'for' || op === 'for-in' || op === 'for-of' || op === 'while' || op === 'do'
-      || op === 'switch' || op === 'try' || op === '=>')
+  if (op === 'for' || op === 'while' || op === '=>')
     return refsName(node, name, REFS_IN_EXPR) ? null : { P: 0, N: 0 }
   let P = 0, N = 0
   for (let i = 1; i < node.length; i++) {
@@ -1475,7 +1469,7 @@ export function stampBodyRanges(body, readPresent, typedLens) {
   // A reduction inside an outer loop needs an initializer in that iteration.
   // Peeled regions may reuse binding names; join their independently proved
   // hulls, then require every write to belong to one of those regions.
-  const loops = new Set(['for', 'for-in', 'for-of', 'while', 'do'])
+  const loops = new Set(['for', 'while'])
   walkAst(body, { enter: node => {
     if (node[0] === '=>') {
       for (const name of collectAssignedNames(node, new Set())) bad.add(name)
@@ -1520,7 +1514,7 @@ export function stampBodyRanges(body, readPresent, typedLens) {
         }
       }
     }
-    if (loops.has(node[0])) regions.push(node[node[0] === 'for' ? 4 : node[0] === 'while' ? 2 : node[0] === 'do' ? 1 : 3])
+    if (loops.has(node[0])) regions.push(node[node[0] === 'for' ? 4 : 2])
   }, exit: node => { if (loops.has(node[0])) regions.pop() } })
   for (const [name, proof] of proofs)
     if (!proof.ambiguous && !writesOutsideLoop(body, proof.loops, name)) {

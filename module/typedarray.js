@@ -22,7 +22,7 @@ import { nanPrefixHex, TYPED_ELEM_NAMES, TYPED_ELEM_CODE, TYPED_ELEM_BIGINT_FLAG
 import { err, inc, PTR, LAYOUT, registerGetter, setLinkDemand, getFactStore } from '../src/ctx.js'
 import { errorCodeLiteral, ERR } from '../err-codes.js'
 import { representationProgramHasBigint } from '../src/compile/representation-plan.js'
-import { plannedTypedStorageCtor, plannedTypedStorageInfo } from '../src/compile/typed-storage-plan.js'
+import { plannedTypedStorageCtor, plannedTypedStorageInfo, plannedTypedPayloadInfo } from '../src/compile/typed-storage-plan.js'
 import { isNullable } from '../src/summary/kind.js'
 import { activeBoundsAssumption } from '../src/type/canonical-bounds.js'
 import { requireReceiverWat } from './core/error-object.js'
@@ -93,7 +93,7 @@ export default (ctx) => {
     // auto-scan — which diverges under self-compile (jz.wasm), dropping it ("Unknown func
     // $__clamp_idx" on typed .fill/.subarray in the kernel). Declare it manually here so the
     // reliable dep path includes it. Pinned by test/self-compile-includes.js.
-    __typed_fill: ['__len', '__typed_set_idx', '__clamp_idx'],
+    __typed_fill: ['__len', '__typed_set_idx', '__clamp_idx', '__typed_shift', '__typed_data', '__ptr_aux'],
     __typed_reverse: ['__len', '__typed_get_idx', '__typed_set_idx'],
     __typed_copyWithin: ['__len', '__typed_get_idx', '__typed_set_idx', '__clamp_idx'],
     __typed_sort: ['__len', '__typed_get_idx', '__typed_set_idx'],
@@ -670,19 +670,6 @@ export default (ctx) => {
     return typed(['f64.convert_i32_s', ptrTypeEq(va, PTR.TYPED)], 'f64')
   }
 
-  // x instanceof Float64Array | Int32Array | … — typed-pointer predicate emitted
-  // by jzify. NaN-check first, then __ptr_type === PTR.TYPED. Aux-byte ctor
-  // discrimination (Float64 vs Int32) lives downstream in typedElem analysis —
-  // this predicate only asserts "is some TypedArray". Result i32 (boolean).
-  ctx.core.emit['__is_typed'] = (x) => {
-    if (x === undefined) return typed(['i32.const', 0], 'i32')
-    const v = asF64(emit(x))
-    const t = temp('ityp')
-    return typed(['i32.and',
-      ['f64.ne', ['local.tee', `$${t}`, v], ['local.get', `$${t}`]],
-      ptrTypeEq(['local.get', `$${t}`], PTR.TYPED)], 'i32')
-  }
-
   // buf.slice(begin?, end?) on a BUFFER → fresh BUFFER with the byte range copied.
   // Dispatches statically for proven buffer receivers, including expressions.
   // Indices normalize through __clamp_idx (negative wraps from the end, then
@@ -1249,8 +1236,10 @@ export default (ctx) => {
    *  Returns { et, isView, isBigInt } or null. Delegates constructors,
    *  aliases, copy-producing chains, receiver-returning mutators, and
    *  subarray views to the frozen TypedStoragePlan authority. */
-  const resolveElem = (arr) => {
-    const info = plannedTypedStorageInfo(ctx, arr)
+  const resolveElem = (arr, payload = false) => {
+    // `payload`: the access rejects a missing receiver itself, so a receiver
+    // that is one constructor or missing answers with the constructor.
+    const info = payload ? plannedTypedPayloadInfo(ctx, arr) : plannedTypedStorageInfo(ctx, arr)
     if (!info) return null
     if (info.isF16) setLinkDemand('f16')
     if (info.isClamped) setLinkDemand('clamped')
@@ -1407,20 +1396,30 @@ export default (ctx) => {
 
   // .fill(value, start?, end?) for typed arrays. The plain-array __arr_fill gates
   // on PTR.ARRAY and silently no-ops a typed receiver (the storage layout and
-  // element width differ); this loops the element-width-aware __typed_set_idx
-  // over the clamped range so every element kind (u8…f64, BigInt) fills correctly.
+  // element width differ). The first element goes through the element-width-
+  // aware __typed_set_idx (its conversion, its kind, its throw); the rest are
+  // its bytes, and each copy doubles the filled run: one body for every element
+  // kind (u8…f64, BigInt), log2(n) copies for n elements.
   // start/end default 0/length, accept negatives, and clamp to [0, length].
   ctx.core.stdlib['__typed_fill'] = `(func $__typed_fill (param $ptr i64) (param $val f64) (param $start i32) (param $end i32) (result f64)
-    (local $len i32) (local $i i32)
+    (local $len i32) (local $a i32) (local $n i32) (local $k i32) (local $rest i32)
     (local.set $len (call $__len (local.get $ptr)))
     (local.set $start (call $__clamp_idx (local.get $start) (local.get $len)))
     (local.set $end (call $__clamp_idx (local.get $end) (local.get $len)))
-    (local.set $i (local.get $start))
-    (block $done (loop $fill
-      (br_if $done (i32.ge_s (local.get $i) (local.get $end)))
-      (drop (call $__typed_set_idx (local.get $ptr) (local.get $i) (local.get $val)))
-      (local.set $i (i32.add (local.get $i) (i32.const 1)))
-      (br $fill)))
+    (if (i32.lt_s (local.get $start) (local.get $end))
+      (then
+        (drop (call $__typed_set_idx (local.get $ptr) (local.get $start) (local.get $val)))
+        (local.set $k (call $__typed_shift (i32.and (call $__ptr_aux (local.get $ptr)) (i32.const 7))))
+        (local.set $a (i32.add (call $__typed_data (local.get $ptr)) (i32.shl (local.get $start) (local.get $k))))
+        (local.set $n (i32.shl (i32.sub (local.get $end) (local.get $start)) (local.get $k)))
+        (local.set $k (i32.shl (i32.const 1) (local.get $k)))
+        (block $done (loop $more
+          (br_if $done (i32.ge_u (local.get $k) (local.get $n)))
+          (local.set $rest (i32.sub (local.get $n) (local.get $k)))
+          (memory.copy (i32.add (local.get $a) (local.get $k)) (local.get $a)
+            (select (local.get $k) (local.get $rest) (i32.le_u (local.get $k) (local.get $rest))))
+          (local.set $k (i32.shl (local.get $k) (i32.const 1)))
+          (br $more)))))
     (f64.reinterpret_i64 (local.get $ptr)))`
 
   // Element-width/-kind-aware read: arr[i] → f64, the read mirror of __typed_set_idx.
@@ -1539,11 +1538,16 @@ export default (ctx) => {
 
   ctx.core.emit['.typed:fill'] = (arr, val, start, end) => {
     inc('__typed_fill')
+    // A numeric array fills with the value's number, converted once before the
+    // fill (`fill('12')` stores 12). A BigInt array takes the value as it is, and
+    // so does an array of open kind in a program that holds BigInts.
+    const r = resolveElem(arr)
+    const numeric = r ? !r.isBigInt : !representationProgramHasBigint(ctx)
     // ToIntegerOrInfinity position args (23.2.3.8 step 6/8) — asI32Sat, not asI32:
     // __clamp_idx needs ±Infinity saturated to INT32_MAX/MIN (see src/ir.js).
     return typed(['call', '$__typed_fill',
       asI64(emit(arr)),
-      val == null ? undefExpr() : asF64(emit(val)),
+      val == null ? undefExpr() : numeric ? asF64(toNumF64(val, emit(val))) : asF64(emit(val)),
       start == null ? ['i32.const', 0] : asI32Sat(emit(start)),
       end == null ? ['i32.const', 0x7FFFFFFF] : asI32Sat(emit(end))], 'f64')
   }
@@ -1846,8 +1850,10 @@ export default (ctx) => {
       // len inlines to one header load for a RESOLVED elem type (no call — the
       // SIMD recognizers require call-free kernel bodies): owned byteLen at
       // base-8, view byteLen at descriptor[0]; elemCount = byteLen >> shift.
+      // A length the binding fixes (staticTypedLen) is its constant, as in leanLen.
       const ti = tempI32('tbi'), tin = tempI32('tbn')
-      const lenIR = ['i32.shr_u',
+      const staticLen = staticTypedLen(arr)
+      const lenIR = staticLen != null ? ['i32.const', staticLen] : ['i32.shr_u',
         ['i32.load', isView ? typedBase(emit(arr)) : ['i32.sub', typedBase(emit(arr)), ['i32.const', 8]]],
         ['i32.const', SHIFT[et]]]
       const off = ['i32.add', typedDataAddr(emit(arr), isView),
@@ -1989,11 +1995,15 @@ export default (ctx) => {
   // then store only when `i u< len` — JS silently IGNORES out-of-bounds typed
   // writes, where the unchecked store corrupted adjacent heap (Root F).
   ctx.core.emit['.typed:[]='] = (arr, i, val, void_ = false, node = null) => {
-    const r = resolveElem(arr)
+    // The store rejects a missing receiver below (`nullable`), so the payload's
+    // kind serves. A BigInt element keeps the runtime writer: the value an
+    // assignment yields is boxed there.
+    const known = resolveElem(arr), payload = known ? null : resolveElem(arr, true)
+    const r = known ?? (payload?.isBigInt ? null : payload)
     if (r == null) return null
     const { et, isView, isBigInt } = r
     const proven = typedIdxProven(arr, i, node)
-    const nullable = isNullable(ctx.summary?.at(ctx.func.current).kindOfExpr(arr)) &&
+    const nullable = !known || isNullable(ctx.summary?.at(ctx.func.current).kindOfExpr(arr)) &&
       !(typeof arr === 'string' && (repOf(arr)?.ptrKind != null || ctx.func.refinements?.get(arr)?.val != null || activeBoundsAssumption(ctx, arr, i)))
     const nestedIndex = Array.isArray(i) && i[0] === '[]'
     const pre = []
@@ -2177,17 +2187,28 @@ export default (ctx) => {
         guard(['f64.store', off, asF64(storeV)]),
         ['local.get', `$${vt}`]], 'f64')
     }
-    if (et === 6) {
-      if (void_ && (ctx.transform.optFlags & OPTF.leanCheckedIdx) && pureStorable(valIR)) return typed(['block', ...pre,
-        guard(['f32.store', off, ['f32.demote_f64', asF64(valIR)]])], 'void')
+    if (et === 6) { // Float32Array
+      // The stored value's number, as for a Float64Array: the payload of a
+      // missing element survives the demotion and the promotion of a read, so
+      // the raw value would read back undefined where JS reads NaN.
+      const stored = toNumF64(val, valIR)
+      if (void_) {
+        if ((ctx.transform.optFlags & OPTF.leanCheckedIdx) && pureStorable(stored)) return typed(['block', ...pre,
+          guard(['f32.store', off, ['f32.demote_f64', asF64(stored)]])], 'void')
+        const vt = temp('tw')
+        return typed(['block', ...pre,
+          ['local.set', `$${vt}`, asF64(stored)],
+          guard(['f32.store', off, ['f32.demote_f64', ['local.get', `$${vt}`]]])], 'void')
+      }
       const vt = temp('tw')
-      return typed(void_ ? ['block', ...pre,
+      const reread = typed(['local.get', `$${vt}`], 'f64')
+      const storeV = stored === valIR ? reread
+        : ctx.core.stdlib['__to_num'] ? toNumF64(val, reread)
+        : coerceNullishToNum(reread)
+      return typed(['block', ['result', 'f64'], ...pre,
         ['local.set', `$${vt}`, asF64(valIR)],
-        guard(['f32.store', off, ['f32.demote_f64', ['local.get', `$${vt}`]]])]
-        : ['block', ['result', 'f64'], ...pre,
-        ['local.set', `$${vt}`, asF64(valIR)],
-        guard(['f32.store', off, ['f32.demote_f64', ['local.get', `$${vt}`]]]),
-        ['local.get', `$${vt}`]], void_ ? 'void' : 'f64') // Float32Array
+        guard(['f32.store', off, ['f32.demote_f64', asF64(storeV)]]),
+        ['local.get', `$${vt}`]], 'f64')
     }
     // Integer store: when the source is already i32-typed (bitwise ops, |0, known-i32 var) —
     // OR an `f64.convert_i32_*` that peels back to i32 (an Int8/Uint8/Int16/… element READ
@@ -3034,7 +3055,7 @@ export default (ctx) => {
   const codecOpts = (node, method, allowPad) => {
     let url = 0, pad = 1
     if (node === undefined) return { url, pad }
-    if (!Array.isArray(node) || (node[0] !== '{' && node[0] !== '{}'))
+    if (!Array.isArray(node) || node[0] !== '{}')
       err(`${method} options must be a literal object — jz resolves codec options at compile time`)
     // prepared literals arrive as ['{}'|'{', ...entries] (entries may also ride
     // a single ','/';' wrapper node)

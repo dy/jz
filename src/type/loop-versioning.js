@@ -42,7 +42,6 @@ export function stableLoopNames(body, cond, step) {
       if (seen.has(root)) return false
       seen.add(root)
       return some(root, n => {
-        if (n[0] === '()' && n.length === 2) return false
         if (n[0] !== '()' && n[0] !== '?.()' && n[0] !== 'new') return false
         const callee = n[1], fn = typeof callee === 'string' && ctx.funcs.map?.get(callee)
         if (fn && !fn.raw) return frameRoots(fn).some(r => changes(r, fn.sig))
@@ -311,7 +310,7 @@ function maxCursorAdvance(n, c) {
     const eA = elseB !== undefined ? maxCursorAdvance(elseB, c) : 0
     return tA == null || eA == null ? null : cA + Math.max(tA, eA)
   }
-  if (op === 'for' || op === 'while' || op === 'do') return isReassigned(n, c) ? null : 0
+  if (op === 'for' || op === 'while') return isReassigned(n, c) ? null : 0
   if (op === '=>') return 0   // unreachable: containsNestedClosure already bailed the caller
   let sum = 0
   for (let k = 1; k < n.length; k++) {

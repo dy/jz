@@ -315,7 +315,7 @@ export function maxAdvanceBudget(root, name, { constInt, evRange, closureWrites,
     const out = []
     const walk = (y) => {
       if (!Array.isArray(y)) return
-      if (y[0] === 'let' || y[0] === 'const' || y[0] === 'var') {
+      if (y[0] === 'let' || y[0] === 'const') {
         for (let i = 1; i < y.length; i++) if (Array.isArray(y[i]) && y[i][0] === '=') walk(y[i][2])
         return
       }
@@ -405,8 +405,8 @@ export function maxAdvanceBudget(root, name, { constInt, evRange, closureWrites,
       const trips = nestedTrips(n)
       return trips == null ? null : head + trips * per
     }
-    if (op === 'while' || op === 'for' || op === 'do' || op === 'for-of' || op === 'for-in' ||
-        op === 'switch' || op === 'try' || op === 'catch' || op === 'finally' ||
+    if (op === 'while' || op === 'for' ||
+        op === 'catch' || op === 'finally' ||
         op === 'break' || op === 'continue' || op === 'return' || op === 'throw')
       return isReassigned(n, name) ? null : 0
     return seq(n.slice(1))

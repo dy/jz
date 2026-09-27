@@ -5,7 +5,7 @@ import { VAL } from '../../reps.js'
 import { adviseJsstringCarrier } from '../narrow.js'
 
 /** Compile-time advisories — heap growth, SIMD hints. */
-const HEAP_LOOP_OPS = new Set(['for', 'for-in', 'for-of', 'while', 'do', 'do-while'])
+const HEAP_LOOP_OPS = new Set(['for', 'while'])
 const HEAP_VALS = new Set([
   VAL.ARRAY, VAL.STRING, VAL.OBJECT, VAL.HASH, VAL.SET, VAL.MAP,
   VAL.CLOSURE, VAL.TYPED, VAL.REGEX, VAL.BUFFER,

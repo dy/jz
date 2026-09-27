@@ -275,8 +275,8 @@ export const inferModuleIntGlobals = (ast) => {
     if (!Array.isArray(e)) return false
     const op = e[0]
     if (op == null) { const v = e[1]; return typeof v === 'string' || typeof v === 'boolean' }
-    // `[` is prepare's array-literal form; `[]` length-2 is the raw (pre-prepare) one.
-    return op === '{}' || op === '[' || (op === '[]' && e.length === 2) || op === '=>' || op === 'new' || op === 'str' || op === '`'
+    // `[` is prepare's array-literal form.
+    return op === '{}' || op === '[' || op === '=>' || op === 'new' || op === 'str' || op === 'strcat'
   }
 
   // Collect every assignment RHS (init + reassignments, program-wide). `fromParam`
@@ -789,7 +789,7 @@ export const devirtGlobalCalls = (ast) => {
       for (let i = 2; i < node.length; i++) walkStraightLine(node[i], onCall)
       return
     }
-    if (op === '=>' || op === 'function') return
+    if (op === '=>') return
     for (let i = 1; i < node.length; i++) walkStraightLine(node[i], onCall)
   }
   const reachable = new Set()

@@ -19,6 +19,7 @@
  */
 
 import { walkAst } from '../ast.js'
+import { readsVar } from './vectorize/outer-scaffold.js'
 
 const isArr = (x) => Array.isArray(x)   // wrapped: jz self-compile rejects a builtin used as a value
 
@@ -91,9 +92,6 @@ function cloneFuse(node, c) {
 const isConsumeShape = (rhs, acc) => isArr(rhs) && ADD_OPS.has(rhs[0]) &&
   ((isArr(rhs[1]) && rhs[1][0] === 'local.get' && rhs[1][1] === acc) ||
    (isArr(rhs[2]) && rhs[2][0] === 'local.get' && rhs[2][1] === acc))
-
-const readsLocal = (n, name) => isArr(n) &&
-  ((n[0] === 'local.get' && n[1] === name) || n.some((c, i) => i > 0 && readsLocal(c, name)))
 
 // Find `(local.set A (ADD (local.get A) (call $self …)))` (either operand order).
 // That statement IS the recursive call's only consumer — the fusion site.
@@ -184,7 +182,7 @@ export function recursionUnroll(fn) {
     const loop = inLoop || op === 'loop'
     if ((op === 'local.set' || op === 'local.tee') && n[1] === accName) {
       if (isConsumeShape(n[2], accName)) { accSeen = true; vetAcc(n[2], loop); return }
-      if (op === 'local.tee' || accSeen || loop || readsLocal(n[2], accName)) { accBail = true; return }
+      if (op === 'local.tee' || accSeen || loop || readsVar(n[2], accName)) { accBail = true; return }
       accSeen = true; vetAcc(n[2], loop); return
     }
     if (op === 'local.get' && n[1] === accName) accSeen = true
@@ -194,7 +192,7 @@ export function recursionUnroll(fn) {
     // double-count the already-shared accumulation — no sound fusion, bail.
     if (op === 'return' && n.length > 1 &&
         !(isArr(n[1]) && n[1][0] === 'local.get' && n[1][1] === accName) &&
-        readsLocal(n[1], accName)) { accBail = true; return }
+        readsVar(n[1], accName)) { accBail = true; return }
     for (let i = 1; i < n.length; i++) vetAcc(n[i], loop)
   }
   for (const s of template) vetAcc(s, false)

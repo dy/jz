@@ -1,7 +1,7 @@
 /**
  * Integer-certainty fixpoint: a monotone-down dataflow over a body's binding
- * defs, answering "is this expression provably integer-valued" (`intCertainMap`/
- * `intExprChecker`) or the richer 3-level lattice (`intLevelMap`/`intLevelChecker`
+ * defs, answering "is this expression provably integer-valued" (`intCertainMap`)
+ * or the richer 3-level lattice (`intLevelMap`/`intLevelChecker`
  * — see the lattice doc comment below `makeIntLevelExpr`). Shared by
  * `analyzeIntCertain` and `program-facts.js`. Fully independent of every other
  * `type/` family — a true leaf.
@@ -173,7 +173,7 @@ function intLevelMapIn(body, capturedNames, slotLevelOf, defs, readPresent) {
   // params 0 so the unknown entry value grounds the lattice; i32-narrowed
   // params (integer ABI) stay strict. Seeding 0 is always conservative —
   // at worst it re-applies a floor/round that was a runtime no-op — so a
-  // mismatched ctx.func.current (whole-program intExprChecker callers) can only
+  // mismatched ctx.func.current can only
   // forgo an optimization, never miscompile.
   for (const p of ctx.func.current?.params || [])
     if (p.type !== 'i32' && levels.has(p.name)) levels.set(p.name, 0)
@@ -207,15 +207,7 @@ export function intCertainMap(body, capturedNames, slotIntOf) {
   return out
 }
 
-/** Returns `expr => boolean` — integer-shaped expressions in `body`. */
-export function intExprChecker(body, slotIntOf) {
-  const slotLevelOf = _slotLevelAdapter(slotIntOf)
-  const levelOf = makeIntLevelExpr(intLevelMap(body, undefined, slotLevelOf), slotLevelOf)
-  return (expr) => levelOf(expr) >= 1
-}
-
-/** Returns `expr => 0|1|2` over `body`'s level fixpoint — the strict-i32
- *  sibling of `intExprChecker` (slot census / raw-i32 consumers). */
+/** Returns `expr => 0|1|2` over `body`'s level fixpoint (slot census / raw-i32 consumers). */
 export function intLevelChecker(body, slotLevelOf) {
   return makeIntLevelExpr(intLevelMap(body, undefined, slotLevelOf), slotLevelOf)
 }

@@ -6,7 +6,7 @@
  *   in typed-provenance.js; the pure PTR.TYPED aux codec lives in layout.js)
  * - scanBoundedLoops / inBoundsCharCodeAt: charCodeAt i32 contract proof
  * - loop unroll helpers: smallConstForTripCount, cloneWithSubst, …
- * - intCertainMap / intExprChecker: integer-shaped binding analysis
+ * - intCertainMap: integer-shaped binding analysis
  *
  * ── NUMERIC WIDENING INVARIANT (shared contract with emit.js) ──
  * "When does i32 arithmetic stay i32 vs widen to f64" is decided in TWO places
@@ -52,20 +52,18 @@
  */
 export { typedElemCtor } from './typed-provenance.js'
 export {
-  idxKey, isUnitIncrement, isUnitDecrement, scanBoundedLoops, inBoundsCharCodeAt,
-  scanBoundedArrIdx, inBoundsArrIdx, litBoundArrIdx,
+  idxKey, isUnitIncrement, scanBoundedLoops, inBoundsCharCodeAt,
+  scanBoundedArrIdx, inBoundsArrIdx,
 } from './type/canonical-bounds.js'
 export {
   MAX_SMALL_FOR_UNROLL, MAX_NESTED_FOR_UNROLL, containsNestedClosure, containsNestedLoop,
   nestedSmallLoopBudget, containsDeclOf, containsKnownTypedArrayIndex, smallConstForTripCount,
   isTerminator,
 } from './type/loop-unroll.js'
-export { intLevelMap, intCertainMap, intExprChecker, intLevelChecker } from './type/int-certain.js'
-export { intervalProvenIdx, intervalIdxRanges } from './type/interval-proof.js'
+export { intLevelMap, intCertainMap, intLevelChecker } from './type/int-certain.js'
 export { exprType } from './type/expr-type.js'
 export { cloneWithSubst } from './type/clone.js'
 export {
-  typedStaticLen, typedIdxProven, affineIdxOfIV, SLOT_OPS, bodyAffineEnv, versionableTypedFor,
-  isCondExpr,
+  typedStaticLen, typedIdxProven, SLOT_OPS, isCondExpr,
 } from './type/loop-versioning.js'
 export { versionableTypedNest } from './type/loop-versioning-nest.js'

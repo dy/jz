@@ -36,7 +36,7 @@ export const PHASE_NAMES = [
   'plan:specializeFixedRestCalls', 'plan:splitCharScan', 'plan:laneRecordParams', 'plan:scalarizeArrayLiterals', 'plan:scalarizeObjectLiterals',
   'plan:promoteIntArrayLiterals', 'plan:scalarizeTypedArrays', 'plan:synthesizeComputedDispatchCallSites',
   'plan:synthesizeMemberDispatchCallSites', 'plan:releaseLiftedAddressTakenNames', 'plan:buildProgramIndex',
-  'plan:buildDictKindIndex', 'plan:materializeAutoBoxSchemas', 'plan:resolveClosureWidth', 'plan:applyExportTypedArrayAbi',
+  'plan:materializeAutoBoxSchemas', 'plan:resolveClosureWidth', 'plan:applyExportTypedArrayAbi',
   'plan:collectSlotConstants', 'plan:narrowSignatures', 'plan:analyzeParamDistinctness', 'plan:refineSlotWriteHazards',
   'plan:analyzeParamNeverGrown', 'plan:scanInplaceStores', 'plan:specializeBimorphicTyped', 'plan:specializeValKindDichotomy',
   'plan:speculateTypedParams', 'plan:refineDynKeys', 'plan:refineSlotIntCensus',

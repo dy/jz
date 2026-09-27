@@ -199,7 +199,7 @@ export function specializeValKindDichotomy(programFacts) {
   // Landslide threshold — a pass-registry tuning key (src/passes.js
   // TUNING_KEYS), not a hidden local constant: a visible/overridable knob
   // like every other tuning key (e.g. scalarTypedArrayLen).
-  const DOMINANCE = ctx.transform.optimize?.valKindDominance ?? 0.9
+  const DOMINANCE = 0.9
 
   const sitesByCallee = new Map()
   for (const cs of callSites) {
@@ -437,7 +437,7 @@ export function speculateTypedParams(programFacts, ast) {
     if (list) list.push(cs); else sitesByCallee.set(cs.callee, [cs])
   }
   const hasLoop = (n) => Array.isArray(n)
-    && (n[0] === 'for' || n[0] === 'while' || n[0] === 'do' || n.some((c, i) => i > 0 && hasLoop(c)))
+    && (n[0] === 'for' || n[0] === 'while' || n.some((c, i) => i > 0 && hasLoop(c)))
 
   // ---- weak evidence engine (see doc above) ----
   const DBG2 = typeof process !== 'undefined' && !!process.env?.JZ_DBG_SPEC

@@ -45,7 +45,7 @@ import { invalidateRewrittenBody } from './analyze/body-facts.js'
 import { withBodyTypedFacts } from './flow-state.js'
 
 const isArr = Array.isArray
-const LOOPS = new Set(['for', 'while', 'do', 'for-of', 'for-in'])
+const LOOPS = new Set(['for', 'while'])
 const num = (v) => [null, v]
 const plus = (e, k) => k === 0 ? e : ['+', e, num(k)]
 const times = (k, e) => k === 1 ? e : ['*', num(k), e]

@@ -17,7 +17,7 @@ import { typed, asF64, asI64, asI32, UNDEF_NAN, TOMB_NAN, temp, tempI32, tempI64
 import { emit, deps, call, storedValue } from '../src/bridge.js'
 import { valTypeOf } from '../src/kind.js'
 import { VAL, lookupValType } from '../src/reps.js'
-import { hasOwnContinue, isBlockBody, isLiteralStr, ACCESSOR_GET, ACCESSOR_SET } from '../src/ast.js'
+import { isLiteralStr, ACCESSOR_GET, ACCESSOR_SET } from '../src/ast.js'
 import { ctx, inc, PTR, LAYOUT, registerGetter, declGlobal, setLinkDemand } from '../src/ctx.js'
 import { stringHash } from '../src/string-data.js'
 import { OBJECT_SCHEMA_HI_MASK, STR_INTERN_BIT, STR_HCACHE_BIT, ssoBitI64Hex, encodePtrHi, i64Hex, deletedMaskWat, deletedSlotWat, markDeletedSlotWat, DATA_VIEW_FLAG, HIDDEN_PROPERTY_SEQ } from '../layout.js'
@@ -26,7 +26,6 @@ import { errorCodeLiteral, ERR } from '../err-codes.js'
 import { requireReceiverWat } from './core/error-object.js'
 import { sameValueZeroIdentityChain, mapHashStringArm, mapHashBigintArm } from '../layout-kinds.js'
 import { trySlotUpdate } from '../src/compile/slot-update.js'
-import { withControlFrame } from '../src/compile/flow-state.js'
 import { captureCallback } from './array/callback.js'
 import { demandHostReceiver } from '../src/compile/func-exports.js'
 import { ENUM_DATA, ENUM_GET, ownKeys, viewsOn, enumViewsOn } from './schema.js'
@@ -185,7 +184,6 @@ const keyEq = (fullEq) =>
         (else ${fullEq}))`
 const strEqG = keyEq('(call $__str_eq (i64.load offset=8 (local.get $slot)) (local.get $key))')
 const sameValueZeroEqG = keyEq('(call $__same_value_zero (i64.load offset=8 (local.get $slot)) (local.get $key))')
-const bitEq = '(i64.eq (i64.load offset=8 (local.get $slot)) (local.get $key))'
 
 import { collectionLaneBytes, genUpsert, genLookup, genDelete, genUpsertGrow, genEphemeralSlotUpsert, genEphemeralFixedSlot, genLookupStrict, genUpsertStrictPrehashed } from './collection/upsert.js'
 import { classHasMember, classMemberIn } from '../src/compile/emit/class-dispatch.js'
@@ -626,24 +624,6 @@ export default (ctx) => {
           ['i64.reinterpret_f64', og], asI64(emit(['str', 'size'])), ['local.get', `$${t}`],
           ['i32.const', strHashLiteral('size')]]]]]], 'f64')
   })
-
-  // x instanceof Map / Set — typed-pointer predicates emitted by jzify. NaN-check
-  // first (non-pointer numbers must report false), then compare __ptr_type tag.
-  // Mirrors module/array.js's Array.isArray inline form. Result is i32 (boolean).
-  ctx.core.emit['__is_map'] = (x) => {
-    const v = asF64(emit(x))
-    const t = temp('imap')
-    return typed(['i32.and',
-      ['f64.ne', ['local.tee', `$${t}`, v], ['local.get', `$${t}`]],
-      ptrTypeEq(['local.get', `$${t}`], PTR.MAP)], 'i32')
-  }
-  ctx.core.emit['__is_set'] = (x) => {
-    const v = asF64(emit(x))
-    const t = temp('iset')
-    return typed(['i32.and',
-      ['f64.ne', ['local.tee', `$${t}`, v], ['local.get', `$${t}`]],
-      ptrTypeEq(['local.get', `$${t}`], PTR.SET)], 'i32')
-  }
 
   // Generated Set probe functions
   ctx.core.stdlib['__set_add'] = () => genUpsert('__set_add', SET_ENTRY, '$__map_hash', sameValueZeroEqG, PTR.SET, false, ctx.linkDemand.external)
@@ -2776,91 +2756,6 @@ export default (ctx) => {
   // Raw pre-bound local reference for the tolerant path above — lets the
   // non-nullish arm re-enter __iter_arr without re-evaluating the source expr.
   ctx.core.emit['__raw_local'] = (name) => typed(['local.get', `$${name}`], 'f64')
-
-  // === for...in on dynamic objects (HASH iteration) ===
-
-  // Flatten a statement/block to void IR — a self-compile-robust inline of
-  // emitVoid+emitBlockBody (see the call site in for-in for why the bridge
-  // emitVoid can't be used here). Recurses into `{}` blocks; emits each leaf
-  // statement in void position and drops any leftover value.
-  const emitFlatVoid = (node) => {
-    if (isBlockBody(node)) {
-      if (node.length === 1) return []
-      const inner = node[1]
-      const stmts = Array.isArray(inner) && inner[0] === ';' ? inner.slice(1) : [inner]
-      const out = []
-      for (const s of stmts) if (s != null && typeof s !== 'number') out.push(...emitFlatVoid(s))
-      return out
-    }
-    const ir = emit(node, 'void')
-    if (ir == null) return []
-    const items = Array.isArray(ir) && (typeof ir[0] === 'string' || ir[0] == null) ? [ir] : ir
-    return ir.type && ir.type !== 'void' ? [...items, 'drop'] : items
-  }
-
-  // for-in: iterate HASH entries, binding key string to loop variable.
-  // Also handles OBJECT/ARRAY/etc whose dynamic props are stored at off-16
-  // as a HASH (see __dyn_set). Non-HASH receivers redirect to that props HASH.
-  ctx.core.emit['for-in'] = (varName, src, body) => {
-    const off = tempI32('ho'), cap = tempI32('hc'), n = tempI32('hn'), ord = tempI32('hr')
-    const i = tempI32('hi'), slot = tempI32('hs')
-    const ptrI64 = tempI64('hp'), srcOff = tempI32('hso'), srcType = tempI32('hst')
-    if (!ctx.func.locals.has(varName)) ctx.func.locals.set(varName, 'f64')
-    const id = freshId(ctx)
-    const brk = `$brk${id}`, loop = `$loop${id}`, cont = `$cont${id}`
-    const va = asF64(emit(src))
-    const needsCont = hasOwnContinue(body)
-    const control = { brk, loop: needsCont ? cont : loop }
-    let bodyFlat
-    // NOTE: `flat(body)` (the bridge-dispatched emitVoid) miscompiles in this
-    // self-compile call context — it returns [] for a void-postfix body
-    // (`for (k in o) n++`, lowered to `(++n)-1`), silently dropping the loop
-    // body so the kernel-compiled for-in iterates but does nothing. The exact
-    // same emit+flatten logic inlined here compiles correctly. emitFlatVoid
-    // mirrors emitVoid/emitBlockBody (minus early-return refinement narrowing,
-    // which a loop body does not need).
-    bodyFlat = withControlFrame(control, () => emitFlatVoid(body))
-    const bodyBlock = needsCont ? [['block', cont, ...bodyFlat]] : bodyFlat
-    inc('__ptr_type', '__len', '__coll_order')
-    return [
-      // Save source ptr as i64
-      ['local.set', `$${ptrI64}`, ['i64.reinterpret_f64', va]],
-      ['local.set', `$${srcType}`, ['call', '$__ptr_type', ['local.get', `$${ptrI64}`]]],
-      // If not HASH, follow off-16 to props hash (or zero if no props yet).
-      ['if', ['i32.ne', ['local.get', `$${srcType}`], ['i32.const', PTR.HASH]],
-        ['then',
-          ['local.set', `$${srcOff}`, ['call', '$__ptr_offset', ['local.get', `$${ptrI64}`]]],
-          ['if', ['i32.ge_u', ['local.get', `$${srcOff}`], ['i32.const', 16]],
-            ['then',
-              ['local.set', `$${ptrI64}`, ['i64.load', ['i32.sub', ['local.get', `$${srcOff}`], ['i32.const', 16]]]]],
-            ['else',
-              ['local.set', `$${ptrI64}`, ['i64.const', 0]]]]]],
-      // Empty / null props: skip iteration entirely.
-      ['if', ['i64.ne', ['local.get', `$${ptrI64}`], ['i64.const', 0]],
-        ['then',
-          ['local.set', `$${off}`, ['call', '$__ptr_offset', ['local.get', `$${ptrI64}`]]],
-          ['local.set', `$${cap}`, ['call', '$__cap', ['local.get', `$${ptrI64}`]]],
-          // Snapshot live slots in insertion order (JS for-in spec order). Walk
-          // the snapshot; re-check occupancy so a key the body deletes before it
-          // is reached is skipped rather than re-bound from an emptied slot. Bound
-          // is __coll_order's OWN live count, not the header length (core.js
-          // __coll_order header comment: the two can disagree — a header-trusting
-          // bound can walk off the snapshot into unrelated memory).
-          ['local.set', `$${ord}`, ['call', '$__coll_order', ['local.get', `$${off}`], ['local.get', `$${cap}`], ['i32.const', MAP_ENTRY]]],
-          ['local.set', `$${n}`, ['global.get', '$__coll_order_n']],
-          ['local.set', `$${i}`, ['i32.const', 0]],
-          ['block', brk, ['loop', loop,
-            ['br_if', brk, ['i32.ge_s', ['local.get', `$${i}`], ['local.get', `$${n}`]]],
-            ['local.set', `$${slot}`, ['i32.load', ['i32.add', ['local.get', `$${ord}`],
-              ['i32.shl', ['local.get', `$${i}`], ['i32.const', 2]]]]],
-            ['if', ['i64.ne', ['i64.load', ['local.get', `$${slot}`]], ['i64.const', 0]],
-              ['then',
-                ['local.set', `$${varName}`, ['f64.reinterpret_i64', ['i64.load', ['i32.add', ['local.get', `$${slot}`], ['i32.const', 8]]]]],
-                ...bodyBlock]],
-            ['local.set', `$${i}`, ['i32.add', ['local.get', `$${i}`], ['i32.const', 1]]],
-            ['br', loop]]]]]
-    ]
-  }
 }
 
 // Walk a Set/Map backing table (bound f64 local `t`), copying one column of each

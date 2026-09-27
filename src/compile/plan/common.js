@@ -18,7 +18,7 @@ export const optimizing = () => { const c = ctx.transform.optimize; return !!c &
 
 /** Ops whose body opens a new loop scope. (`for-in`/`for-of` excluded — they
  *  bind a fresh per-iter local on each entry, so jz lowers them differently.) */
-export const LOOP_OPS = new Set(['for', 'while', 'do', 'do-while'])
+export const LOOP_OPS = new Set(['for', 'while'])
 
 const SIMPLE_BINARY_OPS = new Set(['+', '-', '*', '/', '%', '&', '|', '^', '<<', '>>', '>>>'])
 /** Inline-substitution argument check — pure, side-effect-free, captures nothing. */
@@ -27,7 +27,7 @@ export const isSimpleArg = node => {
   if (!Array.isArray(node)) return false
   if (node[0] == null) return typeof node[1] === 'number'
   if (node[0] === 'str') return typeof node[1] === 'string'
-  if (node[0] === 'u-' || (node[0] === '-' && node.length === 2)) return isSimpleArg(node[1])
+  if (node[0] === 'u-') return isSimpleArg(node[1])
   if (SIMPLE_BINARY_OPS.has(node[0]))
     return isSimpleArg(node[1]) && isSimpleArg(node[2])
   return false

@@ -110,57 +110,18 @@ const defineBindings = (define) => {
 
 const nowMs = () => globalThis.performance?.now ? globalThis.performance.now() : Date.now()
 
-// profile.memory (diagnostic opt-in, self-compile-memory campaign,
-// .work/self-compile-memory.md): also samples process.memoryUsage() around
-// every named phase, forcing a GC first (--expose-gc) so the reading is a
-// true live-set snapshot, not accumulated-not-yet-collected garbage. Never
-// set by any real caller (build/test/CLI) — inert (zero extra work, zero new
-// fields) unless a diagnostic script opts in explicitly. Purely additive to
-// the existing entries/totals shape, so it cannot change any existing
-// consumer's behavior, and it never touches compiled output bytes (this
-// function only wraps host-side wall-clock/memory bookkeeping around calls
-// that already happen).
 const compileProfiler = (profile) => {
   if (profile == null) return null
   if (typeof profile !== 'object') throw new TypeError('opts.profile must be an object sink (populated with compile-phase entries/totals); for a wasm name section use opts.names')
   profile.entries ||= []
   profile.totals ||= {}
-  const sampleMem = !!profile.memory
-  // Cheap structural counts from the shared ctx singleton — answers "what is
-  // live" (function/schema/scope table sizes), not just "how many bytes":
-  // guarded per-field since ctx's subkeys populate progressively through the
-  // pipeline (empty/absent early on is expected, not a bug).
-  const counts = () => {
-    if (!sampleMem) return undefined
-    const sz = (m) => m instanceof Map || m instanceof Set ? m.size : Array.isArray(m) ? m.length : undefined
-    return {
-      funcs: sz(ctx.funcs?.list), schemas: sz(ctx.schema?.list),
-      slotFacts: sz(ctx.schema?.slotFacts), slotConstInts: sz(ctx.schema?.slotConstInts),
-      slotIntLevels: sz(ctx.schema?.slotIntLevels), slotIntCertain: sz(ctx.schema?.slotIntCertain),
-      slotI32Certain: sz(ctx.schema?.slotI32Certain),
-      globals: sz(ctx.scope?.globals), warnings: sz(ctx.warnings),
-    }
-  }
-  // Forcing a full GC before every reading is precise but costly on a multi-GB
-  // heap; restrict it to top-level phase names (no ':' — the fine-grained
-  // sub-phases like 'plan:narrowSignatures'/'optMod:optimizeFuncs' already
-  // share the SAME allocations their parent phase will also see collected) so
-  // one diagnostic run stays a bounded, one-off cost, not a multiplied one.
-  const snap = (forceGc) => {
-    if (sampleMem && forceGc && typeof global.gc === 'function') global.gc()
-    return { mem: process.memoryUsage(), counts: counts() }
-  }
   return {
     time(name, fn) {
-      const forceGc = !name.includes(':')
-      const before = sampleMem ? snap(forceGc) : null
       const start = nowMs()
       try { return fn() }
       finally {
         const ms = nowMs() - start
-        const entry = { name, ms }
-        if (sampleMem) { entry.before = before; entry.after = snap(forceGc) }
-        profile.entries.push(entry)
+        profile.entries.push({ name, ms })
         profile.totals[name] = (profile.totals[name] || 0) + ms
       }
     },
@@ -401,20 +362,6 @@ export function _compileInProcess(code, opts = {}) {
   }
 }
 
-// =============================================================================
-// Optimization auto-tuning: scan prepared AST + ctx.funcs.list to infer program
-// properties, then emit per-pass overrides. When the user does not explicitly
-// configure individual passes, the result is merged in before resolveOptimize()
-// so the compiler self-tunes.
-// =============================================================================
-
-const AUTO_CFG_LOOP_OPS = new Set(['for', 'while', 'do', 'do-while'])
-const AUTO_CFG_TYPED_CTORS = new Set([
-  'new.Float32Array', 'new.Float64Array', 'new.Int8Array', 'new.Int16Array',
-  'new.Int32Array', 'new.Uint8Array', 'new.Uint16Array', 'new.Uint32Array',
-  'new.Uint8ClampedArray',
-])
-
 // Test-matrix bridge: when JZ_TEST_* env vars are set, inject them as default
 // opts so the npm test suite can be re-run under varying configurations (opt
 // levels, host, jzify, …) without source changes. User-supplied opts always win
@@ -513,19 +460,6 @@ const setupCtx = (code, opts) => {
   }
 }
 
-// U+E000 (T) prefixes every jz-generated local. The JS spec forbids it in
-// identifiers, but subscript's parser is lenient and accepts it — so a user name
-// carrying it could silently alias a compiler temp. Reject it in identifier
-// position on the RAW parse (before jzify, which legitimately mints T-prefixed
-// temps of its own). String-literal nodes are `[null, …]` and skipped, so
-// `"……"` data is fine; only walked when the char is present in source.
-// (moved to src/front.js — the canonical front half owns the guard so the
-// self-compile kernel enforces it identically)
-
-// resolveWatrOpts + the post-watr proof repair moved to src/optimize/watr-tail.js
-// (ONE final-optimizer tail shared verbatim with the self-compile kernel — the two
-// pipelines previously drifted); re-exported above for scripts/audit-fixpoint.mjs.
-
 // One compilation at a time: the pipeline runs on the shared context, which a
 // nested compile() would reset under it. Advisories reach their callback once
 // the compilation is over (flushWarnings), so a callback may compile again.
@@ -556,14 +490,6 @@ const compilePipeline = (code, opts = {}) => {
     // pure registration with no output effect. Never set by real callers.
     eagerStdlib: opts._eagerStdlib,
   })
-
-  // Hidden AST-shape auto-configuration REMOVED (2026-07-22): the default tier
-  // silently flipped watr:false / retuned thresholds past size heuristics, so
-  // DEAD code changed the optimization of retained code (+30% output size
-  // measured at the threshold crossing) and "default" named no stable pipeline.
-  // Default now IS the level-2 preset, always. Compile budget is an explicit
-  // choice: `optimize: 'fast'` (level-2 shapes with watr off — the former auto
-  // behavior, ~2-3× faster compiles on large inputs, bigger/slower output).
 
   // opts.noSimd: force auto-vectorization off regardless of opt level — a
   // portability escape hatch for engines without the SIMD proposal (parallels
@@ -622,10 +548,6 @@ const compilePipeline = (code, opts = {}) => {
   // miscompiled (dropped a reassigned-param tee, corrupted divergent-escape
   // SIMD). Shared VERBATIM with scripts/self.js so kernel output cannot drift.
   const optimized = watrTail(module, cfg, { ...tailFacts(cfg), time })
-  // NO post-watr generic optimizer. jz does all lowering — including auto-vectorization — before
-  // watr (src/wat/assemble.js optimizeModule → optimizeFunc); watr is the sole generic fixpoint and
-  // runs exactly once. Re-running jz's leaf pipeline here dropped a reassigned-param local.tee and
-  // corrupted divergent-escape SIMD. The proof repair above is the deliberately narrow exception.
   // Snapshot the final, optimized module: run hermetic init once, bake its
   // globals/heap, and remove the spent start. With stable function indices the
   // probe's encoded bodies become the final binary; otherwise the baked AST

@@ -216,10 +216,6 @@ export function hasAmbiguousBoolMerge(node, vt = valTypeOf) {
     if (ta && ta === tb) return hasAmbiguousBoolMerge(a, vt) || hasAmbiguousBoolMerge(b, vt)
     return false
   }
-  // Parenthesized grouping `(expr)` (node.length === 2 non-call — see
-  // VT['()'] above for the call-vs-grouping shape invariant): the merge, if
-  // any, lives one level down. Checked AFTER the merge ops (rarer shape).
-  if (op === '()' && node.length === 2) return hasAmbiguousBoolMerge(node[1], vt)
   return false
 }
 
@@ -548,13 +544,6 @@ VT['()'] = (args) => {
   }
   // for-in's read-only key list (src/prepare) — always an Array of key strings.
   if (callee === '__keys_ro' || callee === '__keys_dyn') return VAL.ARRAY
-  // Ternary is parsed as call to '?' operator: ['()', ['?', cond, a, b]]
-  if (Array.isArray(callee) && callee[0] === '?') {
-    const truthy = literalTruthiness(callee[1])
-    if (truthy != null) return valTypeOf(truthy ? callee[2] : callee[3])
-    const ta = valTypeOf(callee[2]), tb = valTypeOf(callee[3])
-    return ta && ta === tb ? ta : null
-  }
   // Closure-table dispatch `NAME[idx](args)` on a table the lattice scans
   // proved indexed-call-only (dyn-closure-tables.js): the summary's contract of
   // the closure set the table holds, the join of its members' results.
@@ -616,18 +605,6 @@ VT['()'] = (args) => {
     const vt = methodValType(method, obj, valTypeOf(obj), ctx)
     if (vt != null) return vt
   }
-  // Parenthesized NON-call grouping `(expr)` — a real call's tail is always
-  // [callee, rawArgsNode] (length 2, even for a zero-arg call: prep's '()'
-  // handler always keeps the args slot, ast.js callArgs/setCallArgs's
-  // canonical shape), so args.length === 1 here can ONLY be a grouping node
-  // `['()', expr]`, never a call. Falls through to here when `expr`'s own
-  // head didn't match one of the callee-shaped special cases above (ternary/
-  // '[]'/'.'/string dispatch) — a plain comparison/logical/literal grouping
-  // like `(x>0)`. research.md §Carrier invariant MECHANISM B: this fallthrough
-  // used to return null (the detector blind spot — `((x>0)&&1)` collapsed to
-  // an unrecognized NUMBER/null merge instead of the true BOOL∪NUMBER kind).
-  // Pure structural unwrap: the grouping's type IS its inner expression's type.
-  if (args.length === 1) return valTypeOf(callee)
   return null
 }
 

@@ -123,7 +123,7 @@ const TYPED_FROM = /^((Int|Uint|Float|BigInt|BigUint)(8|16|32|64)(Clamped)?Array
 // valueOf: the conversion is a call to the ToPrimitive function it lowers to (ir/coerce.js
 // TO_PRIMITIVE, runtime roots only then). Operators converting their operands: ToNumber
 // (arithmetic, bitwise, relational) and ToPrimitive (`+`, templates, loose equality).
-const CONVERTING_OPS = new Set([...NUMBER_OPS, ...COMPOUND_NUMERIC_OPS, ...RELATIONAL_OPS, 'u-', 'u+', '+', '+=', '`', '==', '!='])
+const CONVERTING_OPS = new Set([...NUMBER_OPS, ...COMPOUND_NUMERIC_OPS, ...RELATIONAL_OPS, 'u-', 'u+', '+', '+=', 'strcat', '==', '!='])
 // Pure callees that convert no argument.
 const NON_CONVERTING = /^(Array\.(isArray|of|from)|Object\.(is|getPrototypeOf|isFrozen|keys|values|entries|getOwnPropertyNames)|Boolean|Date\.now|performance\.now)$/
 // Constructors that convert their arguments (a typed array each element of an array source).
@@ -346,7 +346,7 @@ function census(view, roots, declRoots, params, typedParams = NO_NAMES) {
   const scanDecls = (n, nested) => {
     if (!isArr(n)) return
     const op = n[0]
-    if (op === 'let' || op === 'const' || op === 'var') {
+    if (op === 'let' || op === 'const') {
       for (let i = 1; i < n.length; i++) {
         const d = n[i]
         if (isName(d)) { note(d, undefined, nested, true); continue }
@@ -362,11 +362,6 @@ function census(view, roots, declRoots, params, typedParams = NO_NAMES) {
       else if (isArr(n[1]) && (n[1][0] === '[]' || n[1][0] === '{}')) for (const nm of patternNames(n[1])) note(nm, null, nested, false)
     }
     if (op === '++' || op === '--') { if (isName(n[1])) note(n[1], null, nested, false) }
-    if (op === 'for' && isArr(n[1]) && (n[1][0] === 'of' || n[1][0] === 'in')) {
-      const head = n[1][1]
-      if (isArr(head) && (head[0] === 'const' || head[0] === 'let' || head[0] === 'var')) for (let i = 1; i < head.length; i++) { if (isName(head[i])) note(head[i], null, nested, true); else for (const nm of patternNames(head[i])) note(nm, null, nested, true) }
-      else if (isName(head)) note(head, null, nested, false)
-    }
     const inner = isFunctionNode(n)
     for (let i = 1; i < n.length; i++) scanDecls(n[i], nested || inner)
   }
@@ -502,7 +497,7 @@ function census(view, roots, declRoots, params, typedParams = NO_NAMES) {
     const op = n[0]
     if (op == null || op === 'bool' || op === 'str') return
     if (isFunctionNode(n)) { allocates(); return }   // its own frame; a call to it is counted at the call
-    if (isObjectLiteral(n) || op === '[' || op === '`') allocates()
+    if (isObjectLiteral(n) || op === '[' || op === 'strcat') allocates()
     if (op === '+' && !scalarKind(view, n)) allocates()   // a concatenation
     if (op === 'yield' || op === 'await') unsafe(op)   // the frame is suspended: what runs meanwhile allocates too
     if (op === '__tp_call') unknownCall('conversion method')   // an own toString/valueOf closure (emit/to-primitive.js)
@@ -564,7 +559,6 @@ function census(view, roots, declRoots, params, typedParams = NO_NAMES) {
     }
     if (op === '.') { const fns = accessorFunctions(n[2], n[1], n[2] + ACCESSOR_GET); if (fns === null) unsafe('accessor ' + n[2]); else reaches(fns) }
     if (runsAccessor(view, n)) { out.runsAccessor = true; unknownCall('accessor') }
-    if (op === 'for' && isArr(n[1]) && (n[1][0] === 'of' || n[1][0] === 'in')) allocates()   // an iterator record, key strings
     for (let i = 1; i < n.length; i++) walkExpr(n[i])
   }
   for (const r of roots) walkExpr(r)
@@ -578,7 +572,7 @@ function loopsOf(body) {
   const walk = (n) => {
     if (!isArr(n) || isFunctionNode(n)) return
     const op = n[0]
-    if (op === 'for' && n[4] !== undefined && !(isArr(n[1]) && (n[1][0] === 'of' || n[1][0] === 'in'))) loops.push({ body: n[4], roots: [n[2], n[3], n[4]].filter(x => x != null) })
+    if (op === 'for' && n[4] !== undefined) loops.push({ body: n[4], roots: [n[2], n[3], n[4]].filter(x => x != null) })
     else if (op === 'while' && n[2] !== undefined) loops.push({ body: n[2], roots: [n[1], n[2]] })
     for (let i = 1; i < n.length; i++) walk(n[i])
   }

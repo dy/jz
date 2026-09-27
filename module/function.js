@@ -10,7 +10,6 @@
  * @module fn
  */
 
-import { DBG_INVARIANTS } from '../src/debug.js'
 import { typed, asF64, asI64, mkPtrIR, temp, tempI32, MAX_CLOSURE_ARITY, UNDEF_NAN, ptrTypeEq, throwTypeErrorIR } from '../src/ir.js'
 import { emit, storedValue, storedValuePlanned } from '../src/bridge.js'
 import { constNumExpr } from '../src/static.js'
@@ -23,9 +22,6 @@ import { PTR, LAYOUT, inc, err, declGlobal, setLinkDemand, registerGetter } from
 import { functionLength } from '../src/function.js'
 import { dataLen, dataPush } from '../src/static-data.js'
 
-// Republished on ctx.closure below for src/compile/closure-plan.js's
-// mintClosureEnvPlans — a pure function of `body` alone, safely re-derivable
-// pre-emission to replicate ctx.closure.make's own int-const capture fold.
 const topLevelIntConsts = (body) => {
   const inner = Array.isArray(body) && body[0] === '{}' ? body[1] : body
   const stmts = Array.isArray(inner) && inner[0] === ';' ? inner.slice(1) : []
@@ -52,13 +48,6 @@ export default (ctx) => {
   if (!ctx.closure.table) ctx.closure.table = []
   if (!ctx.closure.lengths) ctx.closure.lengths = []
   if (!ctx.closure.bodies) ctx.closure.bodies = []
-  // Republished for src/compile/closure-plan.js's mintClosureEnvPlans (Slice 1,
-  // .work/archive/closure-plan-design.md) — via ctx.closure rather than a direct
-  // cross-import, so this module-factory file and the plan mint it feeds don't
-  // form an import cycle (matches ctx.closure.make/.call's own module→ctx→src
-  // publication channel).
-  ctx.closure.topLevelIntConsts = topLevelIntConsts
-
   ctx.closure.types.add(1) // presence triggers $ftN type emission
 
   ctx.closure.mint = (name, length) => {
@@ -92,7 +81,7 @@ export default (ctx) => {
    * @param {{ params: string[], body, captures: string[], restParam: string|null }} info
    * @returns {WasmNode} NaN-boxed closure pointer
    */
-  ctx.closure.make = ({ params, body, captures, restParam, defaults, rawParams, scope }) => {
+  ctx.closure.make = ({ params, body, captures, restParam, defaults, scope }) => {
     const fixedN = params.length - (restParam ? 1 : 0)
     if (fixedN > MAX_CLOSURE_ARITY) err(`Closure with ${fixedN} fixed params exceeds MAX_CLOSURE_ARITY=${MAX_CLOSURE_ARITY}`)
     if (restParam && fixedN >= MAX_CLOSURE_ARITY) err(`Closure with rest param needs at least one free slot — ${fixedN} fixed params leaves none (MAX_CLOSURE_ARITY=${MAX_CLOSURE_ARITY})`)
@@ -101,67 +90,21 @@ export default (ctx) => {
     const owner = ctx.func.current?.name ?? ctx.closure.emitting
     if (owner) (ctx.closure.owner ??= new Map()).set(fnName, owner)
 
-    // ClosureEnvPlan (src/compile/closure-plan.js's mintClosureEnvPlans,
-    // see .work/archive/todo.md) — the frozen pre-emission
-    // capture classification (free vars, constant folds, boxed cells), keyed
-    // on THIS closure's own body node, or — a destructured-param closure
-    // only, see that module's own doc — on `rawParams` (untouched by the
-    // destructuring-prepend rewrite that reassigns `body` before this call,
-    // emit.js's '=>' handler). A miss (this closure sits outside a shape the
-    // mint walks) fails open to the legacy inline re-derivation below.
-    const plan = ctx.plans.closures.get(body) ??
-      (rawParams != null && typeof rawParams === 'object' ? ctx.plans.closures.get(rawParams) : undefined)
-
-    const legacyDerive = () => {
-      const localIntConsts = ctx.func.body ? topLevelIntConsts(ctx.func.body) : new Map()
-      const intConsts = new Map()
-      for (const name of captures) {
-        // Third fallback mirrors src/compile/closure-plan.js's mintArrow (see
-        // its doc comment): a depth≥2 capture chain whose constant was
-        // declared in an ANCESTOR closure, not the current one, is invisible
-        // to topLevelIntConsts(ctx.func.body) (current-frame-only) and
-        // ctx.scope.constInts (module-only) alike — repOf(name)?.intConst
-        // carries it forward regardless, since the ancestor's own
-        // seedClosureFrame already republished its fold into this frame's
-        // localReps before this arrow's capture set is derived. Keeping this
-        // legacy path in lockstep with the plan's is required, not optional:
-        // DBG_INVARIANTS diffs the two and treats any mismatch as a hard
-        // error (ClosureEnvPlan drift, just below).
-        const v = ctx.scope.constInts?.get(name) ?? localIntConsts.get(name) ?? repOf(name)?.intConst
-        if (v != null && !ctx.func.boxed?.has(name)) intConsts.set(name, v)
-      }
-      const env = intConsts.size ? captures.filter(name => !intConsts.has(name)) : captures
-      const boxed = env.filter(c => ctx.func.boxed?.has(c))
-      return { env, intConsts, boxed, storage: env.length === 0 ? 'none' : 'heap' }
+    const localIntConsts = ctx.func.body ? topLevelIntConsts(ctx.func.body) : new Map()
+    const captureIntConsts = new Map()
+    for (const name of captures) {
+      // Third fallback: a depth≥2 capture chain whose constant was
+      // declared in an ANCESTOR closure, not the current one, is invisible
+      // to topLevelIntConsts(ctx.func.body) (current-frame-only) and
+      // ctx.scope.constInts (module-only) alike — repOf(name)?.intConst
+      // carries it forward regardless, since the ancestor's own
+      // seedClosureFrame already republished its fold into this frame's
+      // localReps before this arrow's capture set is derived.
+      const v = ctx.scope.constInts?.get(name) ?? localIntConsts.get(name) ?? repOf(name)?.intConst
+      if (v != null && !ctx.func.boxed?.has(name)) captureIntConsts.set(name, v)
     }
-
-    // Plan is PRIMARY when present: the mint already computed the full
-    // classification, so the legacy walk over `captures` below is skipped
-    // entirely on the common path — only DBG_INVARIANTS still runs it, as a
-    // shadow-assert rather than the source of truth (flipped from Slice 1).
-    let envCaptures, captureIntConsts, boxedCaptures, storage
-    if (plan) {
-      captureIntConsts = new Map()
-      const boxed = []
-      envCaptures = []
-      for (const c of plan.captures) {
-        if (c.mode === 'constant') captureIntConsts.set(c.name, c.constant)
-        else { envCaptures.push(c.name); if (c.mode === 'cell') boxed.push(c.name) }
-      }
-      boxedCaptures = boxed
-      storage = plan.storage
-    } else {
-      ;({ env: envCaptures, intConsts: captureIntConsts, boxed: boxedCaptures, storage } = legacyDerive())
-    }
-
-    if (DBG_INVARIANTS && plan) {
-      const legacy = legacyDerive()
-      const sameOrder = (a, b) => a.length === b.length && a.every((v, i) => v === b[i])
-      const sameMap = (a, b) => a.size === b.size && [...a].every(([k, v]) => b.get(k) === v)
-      if (storage !== legacy.storage || !sameOrder(envCaptures, legacy.env) ||
-          !sameOrder(boxedCaptures, legacy.boxed) || !sameMap(captureIntConsts, legacy.intConsts))
-        err(`ClosureEnvPlan drift: ${fnName} plan storage=${storage} env=[${envCaptures}] boxed=[${boxedCaptures}] consts=[${[...captureIntConsts]}] vs legacy storage=${legacy.storage} env=[${legacy.env}] boxed=[${legacy.boxed}] consts=[${[...legacy.intConsts]}]`)
-    }
+    const envCaptures = captureIntConsts.size ? captures.filter(name => !captureIntConsts.has(name)) : captures
+    const boxedCaptures = envCaptures.filter(c => ctx.func.boxed?.has(c))
 
     const captureValTypes = new Map()
     const captureSchemaVars = new Map()
@@ -269,7 +212,7 @@ export default (ctx) => {
     // Tag IR with .closureBodyName so emitDecl can register the binding for direct dispatch
     // (skip call_indirect on a const-bound, non-escaping closure local). See emit.js '()' handler.
     setLinkDemand('closure')
-    if (storage === 'none') {
+    if (envCaptures.length === 0) {
       // No captures — just a function reference
       const ir = mkPtrIR(PTR.CLOSURE, tableIdx, 0)
       ir.closureBodyName = fnName

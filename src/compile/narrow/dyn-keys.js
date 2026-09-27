@@ -24,7 +24,7 @@ export function refineDynKeys(programFacts) {
   const addressTaken = programFacts.programIndex.addressTaken
   const indexed = (recv) => INDEXED.has(tagOf(ctx.summary.kindOfExpr(recv)))
   const dynamic = (body) => some(body, n =>
-    n[0] === 'for-in' || (n[0] === '[]' && !isLiteralStr(n[2]) && !indexed(n[1])), REFS_THROUGH_ARROWS)
+    (n[0] === '[]' && !isLiteralStr(n[2]) && !indexed(n[1])), REFS_THROUGH_ARROWS)
   const isLive = f => isExported(f) || paramReps.has(f.name) || addressTaken.has(f.name)
 
   for (const f of ctx.funcs.list) if (f.body && isLive(f) && dynamic(f.body)) return

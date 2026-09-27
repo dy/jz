@@ -84,8 +84,7 @@ export function extractRefinements(cond, out, sense = true) {
   // 'isArray'] pair. jzify passes Array/Map/Set/TypedArray/ArrayBuffer/Error-family
   // `instanceof` straight through as a real `['instanceof', name, rhs]` node (see
   // the case just below), but this arm stays for any other caller still shaped
-  // as a direct predicate call, including the legacy bare-string __is_map /
-  // __is_set / __is_typed callees.
+  // as a direct predicate call.
   if (op === '()' && sense && typeof cond[2] === 'string') {
     const callee = cond[1]
     const val = predicateRefinement(callee)
@@ -223,7 +222,7 @@ function constPropAliases() {
   if (hit) return hit
   const out = new Map()
   walkAst(body, { enter: (n, parent) => {
-    if (parent !== null && (n[0] === '=>' || n[0] === 'function')) return false
+    if (parent !== null && n[0] === '=>') return false
     if (n[0] === 'const') for (let i = 1; i < n.length; i++) {
       const d = n[i]
       if (Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string' &&
@@ -241,9 +240,6 @@ function predicateRefinement(callee) {
   if (callee === 'Array.isArray') return VAL.ARRAY
   if (Array.isArray(callee) && callee[0] === '.' && callee[1] === 'Array' && callee[2] === 'isArray')
     return VAL.ARRAY
-  if (callee === '__is_map') return VAL.MAP
-  if (callee === '__is_set') return VAL.SET
-  if (callee === '__is_typed') return VAL.TYPED
   return null
 }
 
@@ -309,7 +305,7 @@ export function inferSchemaBranch(body) {
   const byName = new Map()
   walkAst(body, { enter: n => {
     const op = n[0]
-    if (op === '=>' || op === 'function') return false
+    if (op === '=>') return false
     if (op === '.' && typeof n[1] === 'string' && typeof n[2] === 'string') {
       let row = byName.get(n[1])
       if (!row) byName.set(n[1], row = { props: new Set(), accesses: 0 })

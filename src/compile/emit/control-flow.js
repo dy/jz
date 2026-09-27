@@ -1,5 +1,5 @@
 /**
- * The loop-unroll machinery (freshenUnrolledScalarBindings, unrollSmallConstFor, forInBodyCost, unrollForIn, extractHoistableLiterals, ...), emitLoopFreshBoxed (public) plus the if/for/switch/while/label/break/continue emitter properties. 'for' alone is the single biggest AST-op handler in the file.
+ * The loop-unroll machinery (freshenUnrolledScalarBindings, unrollSmallConstFor, forInBodyCost, unrollForIn, extractHoistableLiterals, ...), emitLoopFreshBoxed (public) plus the if/for/while/label/break/continue emitter properties. 'for' alone is the single biggest AST-op handler in the file.
  *
  * @module compile/emit/control-flow
  */
@@ -213,7 +213,7 @@ const foldedBodyCost = (body, name, value) => {
 function keysRoSrc(node) {
   if (!Array.isArray(node)) return null
   if (node[0] === '()' && node[1] === '__keys_ro') return node[2]
-  if (node[0] === '?:' || node[0] === '?') {
+  if (node[0] === '?:') {
     const last = node[node.length - 1]
     if (Array.isArray(last) && last[0] === '()' && last[1] === '__keys_ro') return last[2]
   }
@@ -381,7 +381,7 @@ const extractHoistableLiterals = (body) => {
  * `frame.loopFresh`). Returns the alloc IR to splice at loop-body entry.
  */
 // Nested scopes whose declarations are their own: a closure or an inner loop.
-const LOOP_FRESH_BOUNDARY_OPS = new Set(['=>', 'for', 'for-of', 'for-in', 'while', 'do'])
+const LOOP_FRESH_BOUNDARY_OPS = new Set(['=>', 'for', 'while'])
 function emitLoopFreshBoxed(body, frame) {
   if (!ctx.func.boxed?.size) return []
   const names = new Set()
@@ -1059,28 +1059,6 @@ export const controlFlowOps = {
     result.push(loopBlockNode)
     return result.length === 1 ? result[0] : result
     })
-  },
-
-  'switch': (discriminant, ...cases) => {
-    const disc = `${T}disc${freshId(ctx)}`
-    ctx.func.locals.set(disc, 'f64')
-
-    const result = [['local.set', `$${disc}`, asF64(emit(discriminant))]]
-
-    for (const c of cases) {
-      if (c[0] === 'case') {
-        const [, test, body] = c
-        const skip = `$skip${freshId(ctx)}`
-        // Block: skip if discriminant != test, otherwise execute body
-        result.push(['block', skip,
-          ['br_if', skip, typed(['f64.ne', typed(['local.get', `$${disc}`], 'f64'), asF64(emit(test))], 'i32')],
-          ...emitVoid(body)])
-      } else if (c[0] === 'default') {
-        result.push(...emitVoid(c[1]))
-      }
-    }
-
-    return result
   },
 
   'while': (cond, body) => controlFlowOps['for'](null, cond, null, body),

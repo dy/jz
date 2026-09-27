@@ -50,8 +50,7 @@ const hasFreeJump = (n, depth = 0) => {
   const op = n[0]
   if ((op === 'break' || op === 'continue') && n[1] == null) return depth === 0
   if (FN_BOUNDARY_OPS.has(op)) return false
-  const inner = op === 'while' || op === 'do' || op === 'for' || op === 'for-in' ||
-    op === 'for-of' || op === 'switch' ? depth + 1 : depth
+  const inner = op === 'while' || op === 'do' || op === 'for' || op === 'switch' ? depth + 1 : depth
   return n.some((c, i) => i > 0 && hasFreeJump(c, inner))
 }
 

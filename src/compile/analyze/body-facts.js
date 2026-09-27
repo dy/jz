@@ -407,7 +407,7 @@ function computeBodyFacts(body, bodyFacts, elemOrigin) {
       if (locals.has(node[1])) locals.set(node[1], 'f64')
     }
 
-    if (op === 'for' || op === 'for-in' || op === 'for-of') {
+    if (op === 'for') {
       if (node[1] != null) markEscapeValue(node[1])
     }
 

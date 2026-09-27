@@ -930,7 +930,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
           return
         }
         case '=>': for (const p of paramNames(n[1])) candidates.delete(p); walk(n[2], false); return
-        case 'let': case 'const': case 'var':
+        case 'let': case 'const':
           for (let i = 1; i < n.length; i++) { const d = n[i]; if (typeof d === 'string') candidates.delete(d); else if (Array.isArray(d) && d[0] === '=') candidates.delete(d[1]); if (Array.isArray(d) && d[0] === '=') walk(d[2], false); else walk(d, false) }
           return
         case 'catch': candidates.delete(n[1]); walk(n[2], false); return
@@ -2196,7 +2196,8 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
         presentReads.delete(n)
         return orAbsent(entryOf(recv, ik))
       }
-      if (t === K.STRING) return STRING
+      // A string's character, or nothing past its end.
+      if (t === K.STRING) return orAbsent(STRING)
       // A computed key on a known shape reads one of its slots (a dispatch table's member), or misses.
       if (t === K.OBJECT && paramOf(recv) !== UNKNOWN) { let k = K.NONE; for (const sid of shapesOf(paramOf(recv))) { for (const s of slots(sid)) k = merge(k, s); k = merge(k, anySideOf(sid)) } return orAbsent(k) }
       if (dictOrObject(recv)) {
@@ -2339,7 +2340,6 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     else if (logical) v = merge(op === '??=' ? core(expr(target)) : expr(target), expr(value))
     else { const a = expr(target); v = value == null ? arith(op, a) : arith(op, a, expr(value)) }
     if (typeof target === 'string') return assignName(target, v)
-    if (Array.isArray(target) && (target[0] === '{}' || target[0] === '[]') && !(target[0] === '[]' && target.length === 3)) { destructure(target, v); return v }
     if (Array.isArray(target) && (target[0] === '.' || target[0] === '?.')) {
       const recv = receiver(target[1]), prop = target[2], t = tagOf(recv)
       // A store through a nullish receiver throws before storing.
@@ -2433,29 +2433,42 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   // The member a store targets on `name`: `name.f` or `name['f']`.
   const storedMember = (t, name) => Array.isArray(t) && t[1] === name
     ? t[0] === '.' && typeof t[2] === 'string' ? t[2] : t[0] === '[]' && t.length === 3 ? literalKeyOf(t[2]) : null : null
+  // A statement that may leave its function before the statements after it run.
+  const leaves = (v) => Array.isArray(v) && (v[0] === 'return' || v[0] !== '=>' && v[0] !== 'function' && v[0] !== 'function*' && v.some(leaves))
   // The fields `name` is definitely assigned by the statements from `from`
   // on: a store `name.f = v` whose value does not read the object, or a call
   // `F(name, …)` to a function that so assigns its first parameter (a class
   // initializer, jzify/classes.js), until a statement uses `name` otherwise.
+  // A statement that does not name the object cannot read it and runs between
+  // the stores (the values a constructor computes before it assigns them),
+  // unless it may return. False when a statement ended the list: the object
+  // may have been read there, so a caller's later stores are not definite
+  // either (a base constructor that calls a method of the instance).
   const definiteStores = (list, from, name, assigned, seen) => {
     for (let i = from; i < list.length; i++) {
       const st = list[i]
-      if (!Array.isArray(st)) return
+      if (st == null) continue
+      if (!Array.isArray(st)) return false
       const member = st[0] === '=' ? storedMember(st[1], name) : null
       if (member !== null) {
-        if (mentions(st[2], name, assigned) || isNullishLit(st[2])) return
+        if (mentions(st[2], name, assigned)) return false
         assigned.add(member)
         continue
       }
       const f = st[0] === '()' && typeof st[1] === 'string' ? funcByName.get(st[1]) : undefined
       const as = f ? args(st[2]) : null
-      if (!f || as[0] !== name || seen.has(f) || as.slice(1).some(a => mentions(a, name, assigned))) return
-      const p0 = f.sig.params[0]
-      if (!p0 || p0.rest) return
-      seen.add(f)
-      const body = f.body, stmts = isBlock(body) ? (Array.isArray(body[1]) && body[1][0] === ';' ? body[1].slice(1) : [body[1]]) : []
-      definiteStores(stmts, 0, p0.name, assigned, seen)
+      if (f && as[0] === name) {
+        if (seen.has(f) || as.slice(1).some(a => mentions(a, name, assigned))) return false
+        const p0 = f.sig.params[0]
+        if (!p0 || p0.rest) return false
+        seen.add(f)
+        const body = f.body, stmts = isBlock(body) ? (Array.isArray(body[1]) && body[1][0] === ';' ? body[1].slice(1) : [body[1]]) : []
+        if (!definiteStores(stmts, 0, p0.name, assigned, seen)) return false
+        continue
+      }
+      if (mentions(st, name, assigned) || leaves(st)) return false
     }
+    return true
   }
   // Definite initialization is structural: a literal is examined once.
   const definiteSeen = new Set()
@@ -2493,7 +2506,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     if (!names) assignedFirst.set(current, names = definitelyAssigned(typeof current === 'string' ? funcByName.get(current).body : closureBodies[current]))
     return names.has(name) ? K.NONE : ABSENT
   }
-  const decl = (n) => { for (let i = 1; i < n.length; i++) { const d = n[i]; if (typeof d === 'string') declare(d, bare(d)); else if (Array.isArray(d) && d[0] === '=') { if (typeof d[1] === 'string') { if (n[0] === 'const' && Array.isArray(d[2]) && d[2][0] == null && Number.isInteger(d[2][1])) ints.set(d[1], d[2][1]); declare(d[1], cursorOpen(d[1], d[2]) ?? literalInto(d[1], d[2])) } else destructure(d[1], expr(d[2])) } } }
+  const decl = (n) => { for (let i = 1; i < n.length; i++) { const d = n[i]; if (typeof d === 'string') declare(d, bare(d)); else if (Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string') { if (n[0] === 'const' && Array.isArray(d[2]) && d[2][0] == null && Number.isInteger(d[2][1])) ints.set(d[1], d[2][1]); declare(d[1], cursorOpen(d[1], d[2]) ?? literalInto(d[1], d[2])) } } }
   // A `{}` declared into a name is allocated as the runtime allocates it
   // (module/object.js's `{}`): with the binding's schema when that holds every
   // literal key (`let o = {}` then `o.a = 1` merges `a` into it), an empty one
@@ -2520,32 +2533,6 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   const iterElemOf = (it) => !iterable(it) ? K.NONE : tagOf(it) === K.ARRAY ? elemOf(it) : tagOf(it) === K.TYPED ? typedElemKind(it) : tagOf(it) === K.STRING ? STRING : ANY
   const rowOf = (src) => tagOf(src) === K.ARRAY && paramOf(src) !== UNKNOWN ? tuples.get(cell(paramOf(src))) : null
   const elemAt = (src, i) => { const row = rowOf(src); return row ? row[i] ?? ABSENT : orAbsent(iterElemOf(src)) }
-  const entriesOf = (p) => p == null ? [] : Array.isArray(p) && p[0] === ',' ? p.slice(1) : [p]
-  const destructure = (target, src) => {
-    if (typeof target === 'string') return assignName(target, src)
-    if (!Array.isArray(target)) return
-    const op = target[0]
-    if (op === '=') return destructure(target[1], merge(src, expr(target[2])))
-    if (op === '{}') {
-      for (const e of entriesOf(target[1])) {
-        if (typeof e === 'string') destructure(e, member('.', src, e))
-        else if (e[0] === '=' && typeof e[1] === 'string') destructure(e, member('.', src, e[1]))
-        else if (e[0] === ':' && typeof e[1] === 'string') destructure(e[2], member('.', src, e[1]))
-        else { if (e[0] === ':') expr(e[1]); escape(src); destructure(e[0] === ':' ? e[2] : e[1], ANY) }
-      }
-      return
-    }
-    if (op === '[]') {
-      let i = 0
-      for (const e of entriesOf(target[1])) {
-        if (e == null) { i++; continue }
-        if (Array.isArray(e) && e[0] === '...') destructure(e[1], cellOf(e, K.ARRAY, iterElemOf(src)))
-        else destructure(e, elemAt(src, i++))
-      }
-      return
-    }
-    escape(src)
-  }
 
   // Scopes: a function (its name), a closure (its id) or the module (null).
   // A scope declares its parameters, its `let`/`const`/`var` names, loop
@@ -2585,7 +2572,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     const op = n[0]
     if (op === 'this') receiverScopes.add(scope)
     if (straight && scope === MODULE && (op === '=' || op === '??=') && typeof n[1] === 'string') initWrites.add(n[1])
-    if (op === 'let' || op === 'const' || op === 'var') {
+    if (op === 'let' || op === 'const') {
       for (let i = 1; i < n.length; i++) {
         const d = n[i], name = typeof d === 'string' ? d : d?.[0] === '=' ? d[1] : null
         if (typeof name === 'string') { declareIn(scope, name); writes.push([scope, name, typeof d === 'string' ? null : d[2]]) }
@@ -2604,7 +2591,6 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       collect(n[2], id)
       return
     }
-    else if (op === 'for-of' || op === 'for-in' || op === 'for-await') { const t = Array.isArray(n[1]) && (n[1][0] === 'let' || n[1][0] === 'const' || n[1][0] === 'var') ? n[1][1] : n[1]; if (typeof t === 'string') declareIn(scope, t) }
     else if (op === 'catch' && typeof n[2] === 'string') declareIn(scope, n[2])
     if (MUTATE_OPS.has(op) && typeof n[1] === 'string') writes.push([scope, n[1], null])
     // Writes make an empty literal a dictionary unless it has a materialized schema.
@@ -2698,7 +2684,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     if (typeof n === 'string') { expr(n); return }
     if (!Array.isArray(n)) return
     const op = n[0]
-    if (op === 'let' || op === 'const' || op === 'var') return decl(n)
+    if (op === 'let' || op === 'const') return decl(n)
     if (op === 'return') { if (current != null) raiseResult(current, n.length > 1 ? expr(n[1]) : NULLISH); return }
     if (op === ';' || op === '{}') {
       // A guard that leaves (`if (x == null) return`) proves its names for the statements after it.
@@ -2722,13 +2708,6 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       unwind(mark); selectedExpr(n[3], 0); branch--
       return
     }
-    if (op === 'for-of' || op === 'for-in' || op === 'for-await') {
-      loopAssigns(n)
-      const it = expr(n[2]), target = Array.isArray(n[1]) && (n[1][0] === 'let' || n[1][0] === 'const' || n[1][0] === 'var') ? n[1][1] : n[1]
-      destructure(target, op === 'for-in' ? STRING : iterElemOf(it))
-      branch++; stmt(n[3]); branch--
-      return
-    }
     if (op === 'if') {
       selectedExpr(n[1], 0)
       const truth = decided(n[1])
@@ -2740,7 +2719,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       branch--
       return
     }
-    if (op === 'while' || op === 'do') { loopAssigns(n); branch++; selectedExpr(n[1], 0); const mark = rtop; if (op === 'while') proves(n[1], true); stmt(n[2]); unwind(mark); branch--; return }
+    if (op === 'while') { loopAssigns(n); branch++; selectedExpr(n[1], 0); const mark = rtop; proves(n[1], true); stmt(n[2]); unwind(mark); branch--; return }
     // Prepared try statements: `['catch', tryBody, param?, handler]`, `['finally', inner, cleanup]`.
     if (op === 'catch') { branch++; stmt(n[1]); if (typeof n[2] === 'string') declare(n[2], ANY); stmt(n[3]); branch--; return }
     if (op === 'finally') { branch++; stmt(n[1]); stmt(n[2]); branch--; return }
@@ -2757,10 +2736,8 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       if (tagOf(r) === K.OBJECT || tagOf(r) === K.ANY) poisonAll(r, k, ABSENT)
       return
     }
-    if (op === 'switch') { selectedExpr(n[1], 0); branch++; for (let i = 2; i < n.length; i++) stmt(n[i]); branch--; return }
-    if (op === 'case') { selectedExpr(n[1], 0); for (let i = 2; i < n.length; i++) stmt(n[i]); return }
     if (op === 'label') { stmt(n[2]); return }
-    if (op === 'break' || op === 'continue' || op === 'default') return
+    if (op === 'break' || op === 'continue') return
     if (op === 'export') { for (let i = 1; i < n.length; i++) stmt(n[i]); return }
     selectedExpr(n, 0)
   }
@@ -3038,7 +3015,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       }
       return
     }
-    if (op === 'let' || op === 'const' || op === 'var') { for (let i = 1; i < n.length; i++) { const d = n[i]; if (Array.isArray(d) && d[0] === '=') { if (typeof d[1] === 'string') useOf(d[2], FLOW, keyOf(d[1])); else demand(d[2]) } } return }
+    if (op === 'let' || op === 'const') { for (let i = 1; i < n.length; i++) { const d = n[i]; if (Array.isArray(d) && d[0] === '=') { if (typeof d[1] === 'string') useOf(d[2], FLOW, keyOf(d[1])); else demand(d[2]) } } return }
     if (op === '=') {
       const t = n[1]
       if (typeof t === 'string') { useOf(n[2], FLOW, keyOf(t)); return }

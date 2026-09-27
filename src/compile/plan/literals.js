@@ -168,7 +168,7 @@ const safeScalarObjectUse = (node, name, keys, statement = false) => {
   for (let i = 1; i < node.length; i++) {
     const stmt = op === ';' || (op === '{}' && node.length === 2)
       || (op === 'for' && i === 4) || (op === 'while' && i === 2)
-      || (op === 'do' && i === 1) || (op === 'if' && i >= 2)
+      || (op === 'if' && i >= 2)
     if (!safeScalarObjectUse(node[i], name, keys, stmt)) return false
   }
   return true
@@ -420,7 +420,35 @@ function scalarizeTypedArrayLiterals(node) {
   return rewriteChildren(node, scalarizeTypedArrayLiterals)
 }
 
-const containsTypedArrayAccess = (body, names) => some(body, n => n[0] === '[]' && typeof n[1] === 'string' && names.has(n[1]))
+const mentionsAny = (node, names) => typeof node === 'string' ? names.has(node) : Array.isArray(node) && node.some((c, i) => i > 0 && mentionsAny(c, names))
+
+// The names a counter reaches in a body: itself, and every binding declared
+// from or assigned an expression that mentions one.
+const reachedBy = (body, counter) => {
+  const reached = new Set([counter])
+  const grow = n => {
+    if (n[0] === 'let' || n[0] === 'const') {
+      for (let i = 1; i < n.length; i++) {
+        const d = n[i]
+        if (Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string' && !reached.has(d[1]) && mentionsAny(d[2], reached)) return reached.add(d[1]), true
+      }
+      return false
+    }
+    return ASSIGN_OPS.has(n[0]) && typeof n[1] === 'string' && !reached.has(n[1]) && mentionsAny(n[2], reached) ? (reached.add(n[1]), true) : false
+  }
+  while (some(body, grow, { skipArrow: false })) { /* a binding reached lets the next be */ }
+  return reached
+}
+
+// A copy per value of the counter is what makes an element index a literal:
+// the body reads or writes an element of `names` at an index the counter
+// reaches. A body that never does is the same in every copy (bezfit's six
+// passes over a 48-element scratch array wrote the whole nest out six times
+// and scalarized nothing).
+const indexesByCounter = (body, names, counter) => {
+  const reached = reachedBy(body, counter)
+  return some(body, n => n[0] === '[]' && n.length === 3 && typeof n[1] === 'string' && names.has(n[1]) && mentionsAny(n[2], reached))
+}
 
 function smallScalarTypedForTrip(init, cond, step) {
   const end = smallConstForTripCount(init, cond, step, maxScalarTypedLoopUnroll())
@@ -459,7 +487,7 @@ const unrollTypedArrayLoops = (node, names) => {
   }
   if (node[0] === 'for') {
     const trip = smallScalarTypedForTrip(node[1], node[2], node[3])
-    if (trip && containsTypedArrayAccess(node[4], names) && scalarTypedLoopBudget(node[4]) * trip.end <= maxScalarTypedNestedUnroll() &&
+    if (trip && indexesByCounter(node[4], names, trip.name) && scalarTypedLoopBudget(node[4]) * trip.end <= maxScalarTypedNestedUnroll() &&
         !hasControlTransfer(node[4]) && !containsDeclOf(node[4], trip.name) && !isReassigned(node[4], trip.name)) {
       const out = [';']
       const bindings = new Set()
@@ -772,10 +800,7 @@ function scalarizeObjectLiterals(node) {
 // several function bodies, so the check must span the whole program.
 
 const ASSIGN_OR_UPDATE = (op) => MUTATE_OPS.has(op)
-// Module-scope binding ops. `var` survives to compile at module scope (jzify only
-// lowers it to `let` inside functions), so fold it too — the reassignment guard
-// below keeps a re-bound `var` heap-backed.
-const isDeclOp = (op) => op === 'let' || op === 'const' || op === 'var'
+const isDeclOp = (op) => op === 'let' || op === 'const'
 const declaresName = (node, name) => {
   if (!isDeclOp(node[0])) return false
   for (let i = 1; i < node.length; i++) {
@@ -1039,7 +1064,6 @@ const _numericCallbackBody = (fn) => {
     if (n[0] == null) return typeof n[1] === 'number' // number node — wrapper is null OR undefined in the live AST
     if (_NUM_OPS.has(n[0])) return n.slice(1).every(a => a == null || numeric(a))
     if (n[0] === '()' && typeof n[1] === 'string' && n[1].startsWith('Math.')) return true
-    if (n[0] === '?' && n.length === 4) return numeric(n[2]) && numeric(n[3])
     return false
   }
   // expression body only; block bodies ({…return…}) stay conservative
@@ -1252,20 +1276,6 @@ const _disqualifyPromotion = (node, candidates, disqualified, initSet, valTypes)
     return
   }
 
-  // for-of / for-in iteration: receiver position is `node[2]` (a bare name
-  // there would otherwise trigger escape). TYPED supports iteration, so
-  // allow the receiver but walk the body for other refs.
-  if (op === 'for-of' || op === 'for-in') {
-    // Walk decl (node[1]), iter (node[2]), body (node[3]); receiver as bare
-    // name is fine — only the body matters for further refs to the same name
-    // (but body refs would shadow or escape, which other rules catch).
-    for (let i = 1; i < node.length; i++) {
-      const child = node[i]
-      if (i === 2 && typeof child === 'string' && candidates.has(child)) continue
-      _disqualifyPromotion(child, candidates, disqualified, initSet, valTypes)
-    }
-    return
-  }
 
   // Generic — recurse into children. Bare-name refs at unhandled positions
   // hit the string-leaf branch above and disqualify on contact.

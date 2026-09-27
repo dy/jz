@@ -31,7 +31,7 @@ const replace = (n, i, w, cx, cy) =>
   !Array.isArray(n) ? n : isMod(n, i, w) ? cx : isFloorDiv(n, i, w) ? cy : n.map(c => replace(c, i, w, cx, cy))
 // a `continue` that targets THIS loop (not one nested inside) — would skip the increment
 const hasOuterContinue = (n) => Array.isArray(n) &&
-  (n[0] === 'continue' || (n[0] !== 'while' && n[0] !== 'for' && n[0] !== 'do' && n[0] !== '=>' && n.some(hasOuterContinue)))
+  (n[0] === 'continue' || (n[0] !== 'while' && n[0] !== 'for' && n[0] !== '=>' && n.some(hasOuterContinue)))
 
 
 // Try to strength-reduce one `while` statement. Returns [seed, loop] or null. `cm` is

@@ -26,8 +26,8 @@ const isIvMinus1 = (n, iv) => isArr(n) && n[0] === '-' && n[1] === iv && litN(n[
 
 // Ops whose presence makes duplicating the body in place unsound (control that escapes the cell,
 // or a call that could alias/mutate `arr` or reorder side effects).
-const REJECT = new Set(['for', 'while', 'do', 'for-in', 'for-of', 'break', 'continue', 'return',
-  'throw', 'switch', 'try', 'catch', 'finally', '=>', 'label'])
+const REJECT = new Set(['for', 'while', 'break', 'continue', 'return',
+  'throw', 'catch', 'finally', '=>', 'label'])
 const hasUnsafe = (n) => some(n, node => REJECT.has(node[0]) || (node[0] === '()' && typeof node[1] === 'string'))   // function call `f(args)`
 
 // Substitute every value-reference of `iv` with (iv + 1); leave the op slot and property keys.
@@ -336,7 +336,7 @@ function minusZeroSafe(body, vars) {
   const stmts = (n) => {
     if (!safe || !isArr(n)) return
     const op = n[0]
-    if (op === ';' || op === '{}' || op === '{') { for (let i = 1; i < n.length; i++) stmts(n[i]); return }
+    if (op === ';' || op === '{}') { for (let i = 1; i < n.length; i++) stmts(n[i]); return }
     if (op === 'if' || op === 'while') { walk(n[1], true); for (let i = 2; i < n.length; i++) stmts(n[i]); return }
     if (op === 'for') { for (let i = 1; i < n.length - 1; i++) stmts(n[i]); stmts(n[n.length - 1]); return }
     if (op === 'let' || op === 'const') {
@@ -366,7 +366,7 @@ export function selectArmUpdatesIn(body, cm) {
     if (n[0] === 'for' || n[0] === 'while') {
       const walkStmts = (m) => {
         if (!isArr(m)) return m
-        if (m[0] === ';' || m[0] === '{}' || m[0] === '{') {
+        if (m[0] === ';' || m[0] === '{}') {
           for (let i = 1; i < m.length; i++) {
             const r = isArr(m[i]) && m[i][0] === 'if' ? trySelectArmUpdates(m[i], zeroSafe) : null
             m[i] = r ? r[0] : walkStmts(m[i])

@@ -71,34 +71,6 @@ import { VAL, updateRep, updateGlobalRep } from '../reps.js'
 // Primitives live in src/param-reps.js (cycle-free leaf). Lifecycle phases
 // below document when each field is valid during narrowSignatures.
 
-// === Source registry =======================================================
-
-const SOURCES = []
-
-/** Register an evidence source. Insertion order = precedence: earlier sources
- *  win the merge for a given name. */
-const registerEvidence = (name, fn) => { SOURCES.push({ name, fn }) }
-
-/** Infer per-name facts by running every registered evidence source.
- *  Returns Map<name, fact>; callers pass `fact` straight to updateRep.
- *
- *  Merge semantics: first source wins per FIELD. Sources contribute orthogonal
- *  facts (`notStringEvidence` → `{notString}`; a future source may add
- *  `{intConst}` etc.); a later source's field is only kept if no earlier
- *  source set the same key on the same name. */
-export const inferParams = (body, candidates) => {
-  if (!candidates || candidates.length === 0) return new Map()
-  const merged = new Map()
-  for (const { fn } of SOURCES) {
-    const facts = fn(body, candidates)
-    for (const [n, fact] of facts) {
-      const prev = merged.get(n)
-      merged.set(n, prev ? { ...fact, ...prev } : fact)
-    }
-  }
-  return merged
-}
-
 // === Source: method evidence — RETIRED (rung 2/3, member-access shape) =====
 //
 // `name.method(...)` used to be a cheap STRING/ARRAY signal: STRING_ONLY_METHODS
@@ -234,15 +206,16 @@ const notStringEvidence = (body, names) => {
   return out
 }
 
-registerEvidence('notString', notStringEvidence)
+/** Infer per-name facts: Map<name, fact>; callers pass `fact` straight to updateRep. */
+export const inferParams = (body, candidates) =>
+  !candidates || candidates.length === 0 ? new Map() : notStringEvidence(body, candidates)
 
 // === Per-function orchestration ============================================
 //
 // Single front door for everything that narrows local + param shape from a
 // function body. Two layers fold together here:
 //
-//   • Registry sources (above) seed undecided params with `{ val: VAL.* }`
-//     evidence merged across all registered fact-returners.
+//   • `inferParams` (above) seeds undecided params with its evidence.
 //   • Body-wide ctx-mutating passes (`analyzeValTypes`, `analyzeIntCertain`)
 //     walk the AST and write directly to `ctx.func.localReps` — they also
 //     populate `ctx.func.typedElem`, `ctx.schema.vars`, regex tracking, etc.

@@ -20,7 +20,7 @@ const primitive = n => {
   return t === K.NUMBER || t === K.BOOL || t === K.STRING || t === K.NULLISH || t === K.ABSENT
 }
 const ops = new Set(['+', '-', '*', '/', '%', '**', '|', '&', '^', '<<', '>>', '>>>', '~', '!',
-  '&&', '||', '??', '?', '?:', ',', '==', '===', '!=', '!==', '<', '<=', '>', '>=', 'u-', 'u+', 'void', 'typeof'])
+  '&&', '||', '??', '?:', ',', '==', '===', '!=', '!==', '<', '<=', '>', '>=', 'u-', 'u+', 'void', 'typeof'])
 // Count matching reads in the same walk that proves evaluation safe; -1 rejects.
 const countReads = (n, readNode) => {
   if (!Array.isArray(n)) return typeof n !== 'string' || primitive(n) ? 0 : -1

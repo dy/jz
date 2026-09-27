@@ -172,13 +172,6 @@ function jsonShapeStrings(ctx, expr) {
   return null
 }
 
-function hashCapFor(n) {
-  let cap = 8
-  const need = Math.max(1, Math.ceil(n * 4 / 3))
-  while (cap < need) cap <<= 1
-  return cap
-}
-
 export default (ctx) => {
   // JSON.stringify's toJSON step (compile/emit/to-json.js): a program defining
   // toJSON passes each value through it, with its key, before the omit test.

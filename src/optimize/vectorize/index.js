@@ -247,7 +247,10 @@ export function vectorizeLaneLocal(fn, opts = {}) {
       // the scalar local, and the scalar tail runs only past the lanes. Every
       // recognizer classifies through laneAccess with this set — the ramp map
       // builds its own scaffold, so it takes the set directly.
-      const outsideReads = liveOutOf(here)
+      // Scanned on the first query: the scan reads the whole continuation, and
+      // most blocks never reach a recognizer that asks.
+      let live = null
+      const outsideReads = { has: (name) => (live ??= liveOutOf(here)).has(name) }
       if (bl) {
         const link = ctx.plans.loweringLinks.get(node)
         if (link && link.lowering.ivName != null) bl.incVar = dollar(link.lowering.ivName)

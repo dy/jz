@@ -87,15 +87,15 @@ export const isI32 = (v) => Number.isInteger(v) && v >= I32_MIN && v <= I32_MAX 
 // === Statement / block-body classification ===
 
 /** Statement operators — distinguish block bodies from object literals. */
-export const STMT_OPS = new Set([';', 'let', 'const', 'return', 'if', 'for', 'for-in', 'while', 'break', 'continue', 'switch',
+export const STMT_OPS = new Set([';', 'let', 'const', 'return', 'if', 'for', 'while', 'break', 'continue', 'switch',
   '=', '+=', '-=', '*=', '/=', '%=', '**=', '&=', '|=', '^=', '>>=', '<<=', '>>>=', '||=', '&&=', '??=',
   'throw', 'try', 'catch', 'finally', '++', '--', '()'])
 
 /** jzify superset: pre-lowered JS shapes before prepare strips them. */
-export const JZ_BLOCK_OPS = new Set([...STMT_OPS, 'var', 'for-of', 'do', 'function', 'class', 'import', 'export', 'label', 'case', 'default'])
+export const JZ_BLOCK_OPS = new Set([...STMT_OPS, 'var', 'do', 'function', 'class', 'import', 'export', 'label', 'case', 'default'])
 
 /** Valid labeled-statement bodies in jzify. */
-export const LABEL_BODY_OPS = new Set([';', 'if', 'for', 'for-in', 'for-of', 'while', 'do', 'switch', 'try', 'throw'])
+export const LABEL_BODY_OPS = new Set([';', 'if', 'for', 'while', 'do', 'switch', 'try', 'throw'])
 
 /** Distinguish a function block body `{ … }` from an expression object literal `({a:1})`. */
 export const isBlockBody = (body) =>
@@ -276,7 +276,7 @@ export function isReassigned(body, name) {
  *  plain assignment reached before any read — definitely-assigned), 'read'
  *  (a read, a compound/inc write — those read first — or ANY reference inside
  *  conditionally-executed code: if/ternary/short-circuit arms, loop bodies and
- *  steps, switch cases, try/catch regions, closures), or null (no reference).
+ *  steps, try/catch regions, closures), or null (no reference).
  *  Drives the uninit-`let` maybeNullish flag: only a first-ref 'write' proves
  *  the binding never reads its `undefined` init (`let s; while ((s = …) < K)`). */
 export function firstRefKind(n, name) {
@@ -320,9 +320,7 @@ export function firstRefKind(n, name) {
     if (op === 'while') return walk(m[1]) ?? condRef(m[2])   // cond evaluates ≥ once
     if (op === 'for' && m.length === 5)                      // init + first cond eval run once
       return walk(m[1]) ?? walk(m[2]) ?? condRef(m[3], m[4])
-    if (op === 'for-of' || op === 'for-in') return walk(m[2]) ?? condRef(m[1], m[3])
-    if (op === 'switch') return walk(m[1]) ?? condRef(...m.slice(2))
-    if (op === 'try' || op === 'catch' || op === 'finally' || op === '?.') return condRef(m)
+    if (op === 'catch' || op === 'finally' || op === '?.') return condRef(m)
     for (let k = 1; k < m.length; k++) { const r = walk(m[k]); if (r) return r }
     return null
   }
@@ -546,7 +544,7 @@ export function hasOwnContinue(body) {
   if (!Array.isArray(body)) return false
   const op = body[0]
   if (op === 'continue') return true
-  if (op === 'for' || op === 'while' || op === 'do') return false
+  if (op === 'for' || op === 'while') return false
   for (let i = 1; i < body.length; i++) if (hasOwnContinue(body[i])) return true
   return false
 }
@@ -566,7 +564,7 @@ export function hasOwnBreakOrContinue(body) {
   if (!Array.isArray(body)) return false
   const op = body[0]
   if (op === 'break' || op === 'continue') return true
-  if (op === 'for' || op === 'while' || op === 'do' || op === '=>') return false
+  if (op === 'for' || op === 'while' || op === '=>') return false
   for (let i = 1; i < body.length; i++) if (hasOwnBreakOrContinue(body[i])) return true
   return false
 }

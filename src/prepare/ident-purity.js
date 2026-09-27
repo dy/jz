@@ -1,8 +1,7 @@
 /**
  * BindingId renaming and call purity predicates: `mintLocal` (the
  * function-local rename minter), `scanReassignedTopLevel`, `\u` escape decoding
- * (IDESC/decodeIdent), and the callFree predicate used to
- * recognize safe-to-fold calls.
+ * (IDESC/decodeIdent).
  *
  * @module prepare/ident-purity
  */
@@ -115,19 +114,6 @@ const decodeIdent = s => s.includes('\\u')
   ? s.replace(IDESC, (_, b, p) => String.fromCodePoint(parseInt(b || p, 16)))
   : s
 
-// A for-loop bound `arr.length` may be snapshotted into a pre-loop local only when
-// nothing in the loop can change it. Two ways it can change: a write to the receiver
-// (`arr = …`, `arr.length = …`, `arr[k] = …`) or a call — push/pop/splice mutate
-// directly, and any call can reach `arr` through an alias the compiler can't track
-// locally (compilePendingClosures grows ctx.closure.bodies this way). Both predicates
-// recurse the whole node; nested arrow *definitions* are harmless until invoked, and
-// an invocation is itself a call node, so `callFree` already covers escaped mutators.
-const callFree = node => {
-  if (!Array.isArray(node)) return true
-  if (node[0] === '()' || node[0] === 'new') return false
-  for (let i = 1; i < node.length; i++) if (!callFree(node[i])) return false
-  return true
-}
 export const normalizeIdents = node => {
   if (!Array.isArray(node)) return
   // Literal-value wrapper [null, X] / [undefined, X]: X is a value, not an identifier
