@@ -70,6 +70,7 @@ const TESTS = [
   'flow-range',
   'store-merge',
   'const-seed',
+  'guarded-update',
   'unroll-cost',
   'sentinel-guard',
   'twin-locals',

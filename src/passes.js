@@ -97,6 +97,7 @@ export const PASS_NAMES = [
   'hoistConstLit',            // loop-invariant const array/object literal hoist (allocate once)
   'unrollScalarChain',        // serial-chain (address-carried scalar) ×2 pairing — speed-only
   'selectArmUpdates',         // disjoint-arm update chain → select accumulation — speed-only
+  'guardedUpdate',            // a data-dependent last conjunct folds into the update it guards (optimize/guarded-update.js) — speed-only
   // WAT-pipeline passes previously gated only by `undefined !== false` inside
   // optimizeFunc (found by the registry-coverage gate on its first run):
   'foldStaticArrReads',       // const-index reads of static-data arrays → immediates
