@@ -10,34 +10,34 @@ fix landed on its own. No compiled byte changed: not in the corpus (oracle at si
 and not in any of the ~50,000 compiles the four test legs make. The fix changes only
 programs of the shape it repairs.
 
-Against main 673a38d7 (after merging it), every row measured side by side:
+Against main 0ea57ea1 (merged in as 8885fa9e), every row measured side by side:
 
-| metric | main 673a38d7 | fold 2e2d1e29 | Δ |
+| metric | main 0ea57ea1 | fold 8885fa9e | Δ |
 |---|---|---|---|
-| dist/jz.js | 2,738,840 B | 2,717,989 B | −20,851 B (−0.76 %) |
-| dist/jz.js gzip -9 | 756,441 B | 750,101 B | −6,340 B |
-| dist/jz.wasm (self-compile) | 20,191,586 B | 20,025,631 B | −165,955 B (−0.82 %) |
+| dist/jz.js | 2,743,638 B | 2,722,787 B | −20,851 B (−0.76 %) |
+| dist/jz.js gzip -9 | 758,030 B | 751,677 B | −6,353 B |
+| dist/jz.wasm (self-compile) | 20,233,342 B | 20,067,384 B | −165,958 B (−0.82 %) |
 | dist/interop.js | 37,927 B | 37,927 B | 0 |
 | compiler source (src, module, jzify, index.js, vs 36553d6f) | 307 files | 305 files | 82 files changed, +205 −1,758 lines |
 | oracle O0/O2/O3/size + O1/fast | | | CLEAN, 870 entries |
-| default leg | 4848/4849 | 4849/4850 | 0 of 16,182 outputs changed |
-| opt0 leg | 4643/4644 | 4645/4645 | 0 of 10,032 |
-| opt3 leg | 4644/4644 | 4645/4645 | 0 of 9,878 |
-| wasi leg | 4697/4697 | 4698/4698 | 0 of 14,584 |
+| default leg | 4874/4875 | 4875/4876 | 0 of 17,146 outputs changed |
+| opt0 leg | 4670/4670 | 4671/4671 | 0 of 10,982 |
+| opt3 leg | 4670/4670 | 4671/4671 | 0 of 10,826 |
+| wasi leg | 4723/4723 | 4723/4724 | 0 of 15,548 |
 | test:self, test:self:perf | | 79/79, 5/5 | |
 | test:262 | pass 3195, neg-reject 4045, fail 0, skip 16418, xfail 2 | identical | |
 | test:262:builtins | pass 880, fail 0, xfail 43, skip 8445 | identical | |
 | lint:imports, audit:files | | clean | |
-| compile time, watr / jessie (4 alternating runs, load ≈ 6) | 6515 / 1602 ms | 5847 / 1541 ms | −10.3 % / −3.8 %, faster in every paired round |
-| allocation, watr / jessie (scavenges at a fixed 16 MB young generation) | 1,685–1,689 / 401–405 | 1,278–1,281 / 369–373 | −24 % / −8 % |
-| peak RSS at a fixed young generation, watr / jessie | 801–816 / 443 MB | 708–797 / 406–433 MB | lower |
+| compile time, watr / jessie (vs 673a38d7, 4 alternating runs, load ≈ 6) | 6515 / 1602 ms | 5847 / 1541 ms | −10.3 % / −3.8 %, faster in every paired round |
+| allocation, watr / jessie (scavenges at a fixed 16 MB young generation) | 1,687–1,691 / 404–405 | 1,278–1,279 / 370–372 | −24 % / −8 % |
+| peak RSS at a fixed young generation, watr / jessie | 839–848 / 392–395 MB | 762–774 / 405–411 MB | −9 % / +3 % |
 
-The failures on the main side are main's own: web-smoke reads assets/grid-life.js, which
-e408a309 deleted (both sides fail it), and a wall-clock perf assertion ("spread concat
-14.9 ms < 5 ms") hit under a load average above 100 (0 changed outputs there). The one
-extra test on the fold side is the fix's regression test.
+Both default legs fail web-smoke: it reads assets/grid-life.js, which main's e408a309
+deleted. The fold's one wasi failure is a wall-clock assertion ("destruct swap 14.8 ms <
+5 ms", normally 0.1 ms) under a load average of 50; test/perf.js then passed 68/68 three
+times on the same head. The extra test on the fold side is the fix's regression test.
 
-compile-budget's own row flagged watr at +11 % peak RSS once; with V8's default young-
+compile-budget's own rows are unusable on this machine (base and head run minutes apart under a load average of 6 to 200: one run read watr at +11 % peak RSS, the last at −74 % time and +121 % RSS); with V8's default young-
 generation sizing, identical code swings by up to 30 % between runs (822 and 1151 MB on
 the same head), and the fixed-size measurement above removes that heuristic.
 
@@ -172,7 +172,15 @@ jz.wasm 20,124,950 → 19,959,008 B.
 The codegen fix (74822a57) against 5c4b4f01: default 4841/4841, opt0 4636/4636, opt3
 4636/4636, wasi 4689/4689; 0 changed outputs in every leg, the new keys are its test's.
 
-Merged with main 673a38d7 (2e2d1e29): the Summary table above.
+Merged with main 673a38d7 (2e2d1e29): oracle CLEAN (870); default 4849/4850 against main's
+4848/4849 (web-smoke on both), 0 of 16,182 changed; opt0 4645/4645 (main 4643/4644, a
+wall-clock perf flake), 0 of 10,032; opt3 4645/4645, 0 of 9,878; wasi 4698/4698, 0 of
+14,584; dist jz.js 2,738,840 → 2,717,989 B, jz.wasm 20,191,586 → 20,025,631 B; test:self,
+test262 and builtins as above.
+
+Merged with main 0ea57ea1 (8885fa9e): the Summary table above. Not yet on main: the main
+checkout holds another session's uncommitted edits to 18 of the files this merge updates,
+so the fast-forward (`git merge --ff-only fold` there) waits for that work to be committed.
 
 ## Codegen candidates (output changes; logged, not landed)
 
