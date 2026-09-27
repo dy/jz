@@ -72,6 +72,7 @@ const TESTS = [
   'const-seed',
   'guarded-update',
   'quantize',
+  'prefilter',
   'unroll-cost',
   'sentinel-guard',
   'twin-locals',
