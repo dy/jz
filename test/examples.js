@@ -111,7 +111,10 @@ test('example: watercolor fluid stencils vectorize f64x2 and stay bit-exact', ()
     // velocity sweeps (`w = WV`, `WV = w >> 1`) still lift. Recovering the ink
     // sweeps needs a source-level integer versioning of an f64 width:
     // `if (W === (W | 0)) <nest with W | 0> else <nest>`, typed per copy.
-    is(sten, 39, `watercolor sweeps: velocity stencils lift, ink sweeps wait on an f64 width (${base} → ${sten} f64x2)`);
+    // 39 → 40 (2026-09-28): the SLP store-pair packer packs two adjacent initial
+    // stores of the module initializer (`$__start`) into one v128 store; the sweeps
+    // are as before (`slp: false` gives 39 on both sides).
+    is(sten, 40, `watercolor sweeps: velocity stencils lift, ink sweeps wait on an f64 width (${base} → ${sten} f64x2)`);
     const run = (opts) => {
         const { exports } = jz(src, opts);
         const px = exports.resize(64, 48);
