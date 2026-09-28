@@ -111,7 +111,7 @@ test('claims: reference evidence covers the complete benchmark corpus', () => {
   const expected = readdirSync(join(ROOT, 'bench'), { withFileTypes: true })
     .filter(d => d.isDirectory() && !d.name.startsWith('_') && existsSync(join(ROOT, 'bench', d.name, `${d.name}.js`)))
     .map(d => d.name)
-  const missing = expected.filter(name => !cases[name])
+  const missing = expected.filter(name => !cases[name] && !PENDING_CASES.has(name))
   ok(missing.length === 0, `reference evidence is missing cases: ${missing.join(', ')}`)
 })
 
@@ -382,10 +382,16 @@ test('claims: JZ does not lose to pinned Porffor native by case or geomean', () 
 // Per-case jz-vs-best-rival ratios for a rival set: [id, ratio, who]. `ids`
 // (optional Set) restricts which cases are considered — used to carve the
 // JSC tight-integer-loop exception out of the general bun/jsc claim.
+// Cases the claims do not yet cover: a library's own code added to the corpus
+// (bench/stdlib-*, AGENTS.md's "tracked as todo in the gate until jz takes the
+// lead — never silently accepted"). Excluded from the strict and band tests and
+// from the corpus-coverage test until the todo below flips; a case leaves this
+// set the commit it leads.
+const PENDING_CASES = new Set(['stdlib-exp', 'stdlib-gamma', 'stdlib-erf', 'stdlib-pow', 'stdlib-ddot'])
 const caseRatios = (rivals, ids = null) => {
   const out = []
   for (const [id, c] of Object.entries(cases)) {
-    if (ids && !ids.has(id)) continue
+    if (ids ? !ids.has(id) : PENDING_CASES.has(id)) continue
     const jz = c.targets?.jz
     if (!timedBenchmarkRow(jz)) continue
     let best = null, who = null
@@ -430,6 +436,12 @@ bandTest('wasm rival', CLAIM_RIVALS)
 const nonExceptionIds = new Set(Object.keys(cases).filter(id => !TIGHT_INT_LOOP_CASES.includes(id)))
 strictTest('V8-family JIT (v8/node, deno)', V8_FAMILY_RIVALS)
 bandTest('V8-family JIT (v8/node, deno)', V8_FAMILY_RIVALS)
+test.todo('claims: the stdlib cases lead every V8-family engine (PENDING_CASES)', () => {
+  const measured = new Set([...PENDING_CASES].filter(id => cases[id]))
+  ok(measured.size === PENDING_CASES.size, `unmeasured: ${[...PENDING_CASES].filter(id => !cases[id]).join(', ')}`)
+  const notLed = caseRatios(V8_FAMILY_RIVALS, measured).filter(([, r]) => r >= 1.0).map(([id, r, who]) => `${id} ${r.toFixed(3)}× (${who})`)
+  ok(notLed.length === 0, `not led: ${notLed.join(', ')}`)
+})
 strictTest('bun/jsc JIT (outside the tight-integer-loop exception)', JSC_FAMILY_RIVALS, nonExceptionIds)
 bandTest('bun/jsc JIT (outside the tight-integer-loop exception)', JSC_FAMILY_RIVALS, nonExceptionIds)
 

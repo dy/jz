@@ -4,6 +4,7 @@
 //   STDLIB_ROOT=<dir holding node_modules/@stdlib> node scripts/stdlib-probe.mjs <command>
 //
 //   dump <spec> <out.json>     the lowered { code, modules } graph, a plain compile() input
+//   bench <spec> <case> <kind> <lo> <hi> [lo2 hi2]   a bench/<case> from the package (see benchCase)
 //   one <spec>                 one scalar function: compile, diff against Node, time
 //   sweep <namespace> <out>    every package of a namespace, one process each → JSON lines
 //   report <out> [list]        summarize a sweep
@@ -15,7 +16,7 @@
 // stdlib is CommonJS with load-time environment detection; `graph` lowers it to the ESM
 // module map compile() takes. Install: npm i --ignore-scripts @stdlib/stdlib (2.2 GB).
 import { createRequire } from 'node:module'
-import { readFileSync, readdirSync, existsSync, appendFileSync, writeFileSync } from 'node:fs'
+import { readFileSync, readdirSync, existsSync, appendFileSync, writeFileSync, mkdirSync } from 'node:fs'
 import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
@@ -312,9 +313,103 @@ function dump(spec, file) {
   console.log(`${Object.keys(g.modules).length} modules → ${file}`)
 }
 
+// A bench case (bench/<case>/<case>.js) from a package: its lowered graph bundled
+// into one file by esbuild (scope-hoisted, unminified: the package's own code,
+// only the module seams gone), then the sweep. `kind` names the call shape and
+// the inputs follow the package's own benchmark/benchmark.js:
+//   unary  lo hi              y = fn( x )
+//   binary lo hi lo2 hi2      z = fn( x, y )
+//   blas1  lo hi              d = fn( N, x, 1, y, 1 ) over two N-vectors, integer-valued
+//                             so a reduction sums exactly in any lane order (the
+//                             checksum is bit for bit), N varied so no compiler hoists
+//                             the pure call out of the sweep
+// The case is a library workload: bench.mjs lowers it with jzify (LOWERED_CASES).
+async function benchCase(spec, id, kind, ...ranges) {
+  const arity = { unary: 2, binary: 4, blas1: 2 }[kind]
+  if (!arity || ranges.length < arity || ranges.slice(0, arity).some(r => !Number.isFinite(+r)))
+    throw new Error(`bench <spec> <case> unary|binary|blas1 <lo> <hi> [lo2 hi2]: got ${[kind, ...ranges].join(' ')}`)
+  const { build } = await import('esbuild')
+  const g = graph(`import fn from '${spec}'\nexport default fn`)
+  const r = await build({
+    stdin: { contents: g.code, resolveDir: '/', loader: 'js', sourcefile: 'driver.js' },
+    bundle: true, format: 'esm', platform: 'neutral', target: 'es2020', write: false, minify: false, legalComments: 'none',
+    plugins: [{ name: 'lowered', setup(b) {
+      b.onResolve({ filter: /.*/ }, (a) => a.path in g.modules ? { path: a.path, namespace: 'lowered' } : undefined)
+      b.onLoad({ filter: /.*/, namespace: 'lowered' }, (a) => ({ contents: g.modules[a.path], loader: 'js', resolveDir: '/' }))
+    } }],
+  })
+  let js = r.outputFiles[0].text
+  const tail = js.match(/\nexport \{\s*(\w+) as default\s*\};?\s*$/)
+  if (!tail) throw new Error('no default export in the bundle')
+  js = js.slice(0, tail.index).replace(/^\/\/ lowered:.*\n/gm, '')
+  const [lo, hi, lo2, hi2] = ranges.map(Number)
+  const version = JSON.parse(readFileSync(join(ROOT, 'node_modules/@stdlib/stdlib/package.json'), 'utf8')).version
+  const sweep = kind === 'unary' ? `for (let i = 0; i < N_EVAL; i++) out[i] = fn(x[i & (N_IN - 1)])`
+    : kind === 'binary' ? `for (let i = 0; i < N_EVAL; i++) out[i] = fn(x[i & (N_IN - 1)], y[i & (N_IN - 1)])`
+    : `for (let i = 0; i < N_EVAL; i++) out[i] = fn(N_IN - (i & 7), x, 1, y, 1)`
+  const inputs = kind === 'unary' ? `const x = uniform(N_IN, ${lo}, ${hi}, 0x1234abcd)`
+    : kind === 'binary' ? `const x = uniform(N_IN, ${lo}, ${hi}, 0x1234abcd), y = uniform(N_IN, ${lo2 ?? lo}, ${hi2 ?? hi}, 0x9e3779b9)`
+    : `const x = uniform(N_IN, ${lo}, ${hi}, 0x1234abcd), y = uniform(N_IN, ${lo}, ${hi}, 0x9e3779b9)
+  for (let i = 0; i < N_IN; i++) { x[i] = Math.floor(x[i]); y[i] = Math.floor(y[i]) }   // exact products and sums, whatever the lane order`
+  const evals = kind === 'blas1' ? '1 << 12' : '1 << 20'
+  const source = `// ${id}.js — ${spec} from stdlib ${version} (Apache-2.0), bundled from its CommonJS
+// sources by scripts/stdlib-probe.mjs (\`bench ${spec} ${id} ${kind} ${ranges.join(' ')}\`):
+// the package's own code with the module seams gone, nothing rewritten. The
+// sweep follows its benchmark/benchmark.js: inputs uniform in [${lo}, ${hi}]${kind === 'binary' ? ` and [${lo2 ?? lo}, ${hi2 ?? hi}]` : kind === 'blas1' ? ', integer-valued (exact in any order), N varied per call' : ''}.
+// Copyright (c) The Stdlib Authors. Licensed under the Apache License, Version 2.0
+// (http://www.apache.org/licenses/LICENSE-2.0); the notices of the bundled files
+// are retained by reference to the package.
+import { checksumF64, medianUs, printResult } from '../_lib/benchlib.js'
+
+${js.trim()}
+
+const fn = ${tail[1]}
+const N_IN = ${kind === 'blas1' ? 1024 : 4096}
+const N_EVAL = ${evals}
+const N_RUNS = 21
+const N_WARMUP = 5
+
+// XorShift32, uniform in [lo, hi): deterministic per target.
+const uniform = (n, lo, hi, seed) => {
+  const out = new Float64Array(n)
+  let s = seed | 0
+  for (let i = 0; i < n; i++) {
+    s ^= s << 13
+    s ^= s >>> 17
+    s ^= s << 5
+    out[i] = lo + ((s >>> 0) / 4294967296) * (hi - lo)
+  }
+  return out
+}
+
+const run = () => {
+  ${inputs}
+  const out = new Float64Array(N_EVAL)
+  const sweep = () => { ${sweep} }
+  for (let i = 0; i < N_WARMUP; i++) sweep()
+  const samples = new Float64Array(N_RUNS)
+  for (let i = 0; i < N_RUNS; i++) {
+    const t0 = performance.now()
+    sweep()
+    samples[i] = performance.now() - t0
+  }
+  printResult(medianUs(samples), checksumF64(out), N_EVAL, 1, N_RUNS)
+}
+
+export let main = () => {
+  run()
+}
+`
+  const dir = join(dirname(SELF), '..', 'bench', id)
+  mkdirSync(dir, { recursive: true })
+  writeFileSync(join(dir, `${id}.js`), source)
+  console.log(`${dir}/${id}.js: ${source.length} B, ${Object.keys(g.modules).length} modules`)
+}
+
 const [cmd, ...args] = process.argv.slice(2)
 if (cmd === 'one') { const r = one(args[0]); console.log(args.includes('--json') ? '@@' + JSON.stringify(r) : r); process.exit(0) }
 else if (cmd === 'dump') dump(args[0], args[1])
+else if (cmd === 'bench') await benchCase(args[0], args[1], args[2], ...args.slice(3))
 else if (cmd === 'sweep') sweep(args[0], args[1], +(args[2] || 4))
 else if (cmd === 'report') report(args[0], args[1] === 'list')
 else if (cmd === 'blas') blas(args)

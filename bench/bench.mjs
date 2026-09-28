@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { GRAPH_CASES, HOST_ADAPTERS, graphSources } from './_lib/graph.js'
+import { GRAPH_CASES, LOWERED_CASES, HOST_ADAPTERS, graphSources } from './_lib/graph.js'
 import { execFileSync, spawnSync } from 'node:child_process'
 import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { cpus, homedir, tmpdir } from 'node:os'
@@ -95,6 +95,7 @@ const porfIsNew = () => {
 mkdirSync(BUILD, { recursive: true })
 
 const CASE_NAMES = {
+  'stdlib-exp': 'stdlib exp', 'stdlib-gamma': 'stdlib gamma', 'stdlib-erf': 'stdlib erf', 'stdlib-pow': 'stdlib pow', 'stdlib-ddot': 'stdlib ddot',
   biquad: 'biquad filter cascade',
   mat4: 'mat4 multiply',
   poly: 'polymorphic reduce',
@@ -533,7 +534,7 @@ const compileJzAt = (c, optimize, compiler = compile) => {
     }
   }
   return compiler(code, {
-    jzify: isWatr || isGraph,
+    jzify: isWatr || isGraph || LOWERED_CASES.has(c.id),
     modules,
     imports: {
       ...hostImports,
@@ -1720,7 +1721,7 @@ function emitWebWasm(caseIds) {
           ...(isWatr ? watrModuleSources() : {}),
         }
       }
-      const opts = { jzify: isWatr || isGraph, modules, optimize: { level: 'speed' }, ...caseMemory(c) }
+      const opts = { jzify: isWatr || isGraph || LOWERED_CASES.has(c.id), modules, optimize: { level: 'speed' }, ...caseMemory(c) }
       let wasm
       const times = []
       for (let i = 0; i < 3; i++) {

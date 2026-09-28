@@ -14,6 +14,12 @@ bench/<case>/<case>.npy.py  optional NumPy baseline
 bench/<case>/<case>.wat     optional hand-written WAT baseline
 ```
 
+The `stdlib-*` cases are a library's own code: `@stdlib/stdlib`'s packages
+bundled from their CommonJS sources by `scripts/stdlib-probe.mjs bench <spec>
+<case> <kind> <lo> <hi> [lo2 hi2]` (esbuild, scope-hoisted, unminified), the
+sweep after the package's own `benchmark/benchmark.js`. Regenerate them there,
+never edit them; they take the jzify lowering (`LOWERED_CASES`, `_lib/graph.js`).
+
 Every case prints the same line:
 
 ```txt
