@@ -560,7 +560,12 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   const argRanges = new Map()   // function name → { ranges: ([lo, hi] | null)[] }, the settled hulls of the last round
   const roundArgs = new Map()    // this round's, recorded afresh
   const moved = new Map()        // `${fn}#${i}` → rounds its hull changed in
-  const openArgs = new Set()     // positions that changed four rounds over
+  const openArgs = new Set()     // positions that changed four rounds over, or reached by another channel
+  let directArgs = false         // `bind` runs for a direct call: the one channel `noteArgs` sees
+  // A function bound through any other channel (a property or table call, an
+  // iterator helper, `.call`/`.apply`) receives arguments no direct call shows:
+  // every position opens.
+  const openAllArgs = (name) => { const f = funcByName.get(name); if (f) paramNamesOf(f).forEach((_, i) => openArgs.add(`${name}#${i}`)) }
   const paramRangeOf = (fn, name) => {
     const f = funcByName.get(fn)
     if (!f) return null
@@ -1138,6 +1143,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   const runDefaults = (scope, defaults) => { if (defaults) for (const p in defaults) runDefault(keyIn(scope, p)) }
   const bind = (scope, names, base, n, defaults, ctx = null) => {
     reach(scope)
+    if (!directArgs && typeof scope === 'string') openAllArgs(scope)
     // Unknown callers make the parameters ANY. Arguments from known callers
     // still flow through those parameters, including callbacks and their effects.
     if (escaped.has(scope)) { escapeArgs(base, n); runDefaults(scope, defaults); return }
@@ -1380,7 +1386,8 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       if (callee === '__hide_member') return NUMBER // metadata only; the preceding assignment owns the value write
       const f = funcByName.get(callee)
       if (f) {
-        bind(callee, paramNamesOf(f), base, n, f.defaults, f.rest || !n || escaped.has(callee) ? null : initContextFor(callee, ks[base]))
+        directArgs = true
+        try { bind(callee, paramNamesOf(f), base, n, f.defaults, f.rest || !n || escaped.has(callee) ? null : initContextFor(callee, ks[base])) } finally { directArgs = false }
         noteArgs(callee, f, node, n, base)
         return resultAt(callee, base, n, node)
       }

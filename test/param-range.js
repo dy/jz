@@ -38,6 +38,11 @@ test('parameter hull: an unbounded call, a widening recursion, an escaped functi
     export const u = (i) => fs[i](3)`, 'esc'), null, 'a function a table may call takes anything')
   is(JSON.stringify(ranges(`function f(x) { return x }
     export const s = () => f(1) + f(...[2, 3])`, 'f')), JSON.stringify([null]), 'a spread argument leaves the position open')
+  is(JSON.stringify(ranges(`function nz(v, out, o) { out[o] = v; return out }
+    function m(v) { return nz(v, [0, 0], 0) }
+    m.assign = nz
+    const W = [0, 0]
+    export const p = (v) => { m.assign(v, W, 5); return W.length + m(v)[0] }`, 'nz')), JSON.stringify([null, null, null]), 'a function also called through a property receives what no direct call shows')
 })
 
 const sampler = `const perm = new Uint8Array(512)
