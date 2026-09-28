@@ -1,17 +1,17 @@
 // Math.pow accuracy — differential gates over every pow path jz emits, against the
-// host's own Math.pow (V8 ports the same fdlibm algorithm — see module/math.js) and
+// host's own Math.pow (V8 calls the platform C library's pow; see module/math.js) and
 // against authoritative correctly-rounded vectors:
 //
 //   1. $math.pow_core — Arm's optimized-routines pow (table-driven double-double log,
-//      exact split product, jz's exp table; module/math.js), the kernel the runtime-y
-//      $math.pow takes for every positive finite base and non-integer exponent, and for
-//      integer exponents past its square-and-multiply fast path (|y| ≤ 16). Documented
-//      worst case 0.54 ulp: bit-exact against the host on nearly every input, one ulp
-//      off on the rest — V8 ports fdlibm's e_pow.c, itself "nearly rounded", so an
-//      occasional last-ulp difference between two sub-ulp kernels is expected, not a
-//      jz bug. Before this the fallback was `exp(y·log(x))`, whose composed error grows
-//      with |y·ln x| — many ulps off for the exponents real content uses (PQ/HDR
-//      transfer curves, gamma decodes).
+//      exact split product, jz's exp table; module/math.js), the kernel $math.pow takes
+//      for every positive finite base and finite exponent but 2 (x·x, as V8 answers it),
+//      integers included. Documented worst case 0.54 ulp: bit-exact against the host on
+//      nearly every input, one ulp off on the rest: V8 25.9 calls the platform's libm
+//      pow, itself not correctly rounded and different between Node's own arm64 and x64
+//      builds, so an occasional last-ulp difference between two sub-ulp kernels is
+//      expected, not a jz bug. Before this the fallback was `exp(y·log(x))`, whose
+//      composed error grows with |y·ln x|, many ulps off for the exponents real content
+//      uses (PQ/HDR transfer curves, gamma decodes).
 //   2. $math.pow_fold — the CORRECTLY-ROUNDED CONST-EXPONENT fold under
 //      `optimize.crPow` (the authoritative comment is above emitPow in module/math.js):
 //      `x ** C` / Math.pow(x, C) with a compile-time-constant, non-integer, non-±0.5,
@@ -22,18 +22,12 @@
 //      to confirm the fold took the cheap path (no `$math.pow`/`$math.pow_core` call)
 //      rather than silently falling through to the general call, which would make the
 //      gate vacuous.
-//   3. $math.fifthroot — the bit-hack-seed + 3-Newton-step kernel the k/5 fold
-//      (x ** 2.4, the sRGB/Rec.709 decode gamma) uses UNCONDITIONALLY by default. NOT a
-//      ≤1ulp guarantee: 3 steps leave a worst case in the low millions of ulp (measured
-//      ~2.6M; a 4th step, prototyped on an unmerged branch, brings it to a few hundred
-//      but never shipped) — a REGRESSION GUARD pins the bound so a broken correction
-//      term or a lost Newton step cannot pass silently. $math.cbrt, this fold's usual
-//      downstream neighbour in the sRGB/Oklab pipeline, is itself a documented
-//      non-bit-exact approximation, so ≤1ulp here buys no externally-observable win.
-//      Flag semantics: crPow OFF (default) — the k/5 fifthroot fast path fires
-//      unconditionally, the pre-CR-pow behaviour bit-for-bit (approxPow is meaningless
-//      there). crPow ON — $math.pow_fold takes the correctly-rounded kernel, and
-//      fifthroot requires an explicit `{ optimize: { approxPow: true } }` opt-in.
+//   3. $math.fifthroot: the bit-hack-seed + 4-Newton-step kernel of the k/5 fold
+//      (x ** 2.4, the sRGB/Rec.709 decode gamma), opt-in with
+//      `{ optimize: { approxPow: true } }`; by default `x ** 2.4` is $math.pow, as V8.
+//      NOT a ≤1ulp guarantee: tens of ulp; a REGRESSION GUARD pins the bound so a
+//      broken correction term or a lost Newton step cannot pass silently. Under crPow
+//      the fold takes $math.pow_fold's correctly rounded kernel unless approxPow is set.
 //   4. The correctly-rounded vector gate — test/vectors/pow-cr.txt: 5152 lines of
 //      `xbits ybits resultbits` (big-endian f64 hex), generated with mpmath 1.4.1 at
 //      200-bit precision (round-to-nearest on the final float conversion), inputs
@@ -190,10 +184,15 @@ test('const-exponent pow fold — SIMD twin (pow_fold_v) matches the scalar fold
 
 // === 3. $math.fifthroot — the k/5 fold's default kernel ===
 
-test('fifthroot-backed pow fold reaches WAT via $math.fifthroot by default (not $math.pow/$math.pow_fold)', () => {
+const APPROX = { optimize: { approxPow: true } }
+
+test('x ** 2.4 is $math.pow by default, as V8; approxPow folds it through $math.fifthroot', () => {
   const text = wat('export let f = (x) => x ** 2.4')
-  ok(text.includes('call $math.fifthroot'), 'x ** 2.4 must fold through $math.fifthroot by default')
-  ok(!/call \$math\.pow(_core|_fold)? /.test(text), 'x ** 2.4 must not fall through to the general pow paths')
+  ok(/call \$math\.pow(?![\w.])/.test(text), 'x ** 2.4 takes the pow kernel by default')
+  ok(!text.includes('call $math.fifthroot'), 'the fifthroot fold is opt-in')
+  const approx = wat('export let f = (x) => x ** 2.4', APPROX)
+  ok(approx.includes('call $math.fifthroot'), 'approxPow folds x ** 2.4 through $math.fifthroot')
+  ok(!/call \$math\.pow(_core|_fold)? /.test(approx), 'approxPow must not fall through to the general pow paths')
 })
 
 test('x ** 2.4 under crPow (without approxPow) routes through the correctly-rounded $math.pow_fold', () => {
@@ -240,9 +239,9 @@ const exactFifthPow = (x, k) => {
 // machine/input variance.
 const ULP_CEILING = 96
 
-test(`fifthroot pow fold (default path) — worst case stays under ${ULP_CEILING} ulp vs the exact rational power (regression guard)`, () => {
+test(`fifthroot pow fold (approxPow): worst case stays under ${ULP_CEILING} ulp vs the exact rational power (regression guard)`, () => {
   const rng = mkRng(0x51DEC0DE)
-  const fifth = run(perExp(FIFTH_EXPS))
+  const fifth = run(perExp(FIFTH_EXPS), APPROX)
   let worstOverall = 0
   for (const [i, c] of FIFTH_EXPS.entries()) {
     const f = fifth[`e${i}`]

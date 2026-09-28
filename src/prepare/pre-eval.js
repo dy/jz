@@ -70,9 +70,9 @@
  *   - String folding uses the same UTF-16 units on both hosts. Case conversion
  *     remains ASCII-only. Mixed string+number `+` is deliberately not folded:
  *     the kernel formatter and host shortest-round-trip formatting can differ.
- *   - `Math.pow`/`**` folds via the exact 3-way split emit.js's own
- *     constant-arg fast path already uses (math-kernel.js `pow`) — zero new
- *     divergence from today's compiled output.
+ *   - `Math.pow`/`**` folds through the runtime $math.pow's twin
+ *     (math-kernel.js `pow`), which every constant fold in module/math.js's
+ *     emitPow agrees with: a fold computes what the compiled code computes.
  *   - `optimize.rationalConst !== false` (default ON) gates the rational
  *     carry; off, numeric folding still happens (still shrinks WAT) via
  *     plain sequential per-op f64 rounding — bit-exact vs naive JS

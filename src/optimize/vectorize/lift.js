@@ -687,7 +687,7 @@ export function liftExprV(expr, ctx) {
     return [entry.simd, a, b]
   }
 
-  // Transcendental call → its bit-exact f64x2 mirror (pow/exp/log/exp2/sin/cos/atan2/hypot).
+  // Transcendental call → its bit-exact f64x2 mirror (pow/exp/log/sin/cos/atan2/hypot/cbrt).
   // f64 lane only (the *2/_v helpers are f64x2). SIMD_PINNED keeps the scalar target alive
   // through watr's single-caller inlining so the `call` node still exists at lift time.
   // `$__to_num` is a numeric coercion jz wraps around a helper param it couldn't prove is f64

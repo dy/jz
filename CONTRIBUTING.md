@@ -1862,23 +1862,22 @@ as written, which x64 builds of V8 compute; arm64 builds of Node and Chrome let 
 C compiler fuse `a*b + c` and differ in the last bit on a fraction of a percent of
 arguments, and run those kernels up to 1.4× faster than the unfused wasm.
 
-`x ** c` with a constant non-integer exponent is the `$math.pow` kernel, one
-implementation for constant and runtime exponents within an ulp of the host:
-Arm's optimized-routines pow, a double-double log from a 128-entry table
-(`scripts/pow-log-table.mjs` derives and checks it) and the shared exp
-table, 10 ns a call against V8's 6; the ladder in front of it takes the
-common case (a positive finite base, a non-integer exponent) straight to
-the kernel and walks the edge cases only for the rest. The constant fold
-in `src/prepare/math-kernel.js` is the kernel's twin, bit for bit.
-The k/5 fifthroot fold runs four Newton steps (the last a correction) and
-measures a worst case of ~40 ulp across its exponents against the exact
-rational power, which `test/pow.js` pins under a 96 ulp ceiling. The lane vectorizer lifts a constant-exponent pow per lane through the
-same kernel, bit-exact with the scalar loop. `2 ** x` is a table kernel
-(`math/trig-tables.js` EXP2_TAB: 2^(j/64) as the nearest double and the tail its
-rounding dropped; `scripts/exp-table.mjs`): reduce to |f| ≤ 1/128, T + T·(q + tail)
-with q the exact-coefficient remainder series, one exponent build; 0.52 ulp against
-a 200-bit reference, scalar, 2-wide and the constant folder bit-identical
-(`test/math.js`).
+`Math.pow` and `**` follow V8's `math::pow`: y = 2 is x·x, y = ½ is √(x + 0) with
++∞ at x = −∞, and every other pair, integer exponents included, is the platform C
+library's pow in V8 (Apple's libm on macOS, glibc on Linux, different again between
+Node's own arm64 and x64 builds). jz stands in Arm's optimized-routines pow: a
+double-double log from a 128-entry table (`scripts/pow-log-table.mjs` derives and
+checks it) and the 2^(j/64) exp table with tails (`math/trig-tables.js` EXP2_TAB,
+`scripts/exp-table.mjs`), 0.54 ulp, V8's bits on 99.7% of arguments against Node
+25.9's arm64 and x64 builds on macOS. So `x ** 3` calls the kernel as V8 calls pow (x·x·x rounds
+twice and differs on a quarter of arguments), a constant exponent folds only to 1,
+x, x·x or the square root, and the constant folder is the kernel's twin. A constant
+base x > 0 folds the kernel's first half instead: log x is a compile-time
+double-double (`powLogSplit`), and `$math.pow_c` runs the exponential half on y, bit
+for bit `Math.pow(x, y)` (`2 ** y`, `10 ** (dB / 20)`). The k/5
+fifthroot fold (four Newton steps, ~40 ulp, pinned under 96 by `test/pow.js`) is
+opt-in as `optimize.approxPow`; `optimize.crPow` takes the correctly rounded
+kernel.
 
 Values use proven raw lanes or tagged carriers; heap values use NaN-boxing (see README). The legacy `ctx` store still carries compilation state. Consult its lifecycle ownership table in [`src/ctx.js`](src/ctx.js) before changing state; new persistent facts belong in ProgramIndex and frozen summaries, not another ambient store.
 

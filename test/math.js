@@ -372,35 +372,30 @@ test('** operator (power)', async () => {
   is(await evaluate('10 ** 0'), 1)
 })
 
-test('Math.pow / ** — constant-integer-exponent fold (bit-identical, stdlib-free)', async () => {
-  // A constant integer exponent lowers to inline square-and-multiply instead of a
-  // $math.pow call — bit-identical to the runtime integer fast path (proven below
-  // against the non-folding runtime-exponent path), and pulling no stdlib.
+test('Math.pow / **: exponents 0, 1, 2 and ½ fold as V8 answers them; other integers take the kernel', async () => {
+  // V8's math::pow answers y = 2 with x·x and y = ½ with √(x + 0); every other exponent, 3
+  // included, is the C library's pow, which rounds x³ once where x·x·x rounds twice.
   const m = run(`
     export let ref = (x, e) => x ** e
-    export let p2 = (x) => x ** 2
-    export let p3 = (x) => x ** 3
-    export let p6 = (x) => x ** 6
-    export let p8 = (x) => x ** 8
-    export let pm2 = (x) => x ** -2
     export let p0 = (x) => x ** 0
     export let p1 = (x) => x ** 1
+    export let p2 = (x) => x ** 2
+    export let p3 = (x) => x ** 3
+    export let pm2 = (x) => x ** -2
+    export let ph = (x) => x ** 0.5
   `)
-  is(m.p2(3), 9); is(m.p3(2), 8); is(m.p6(2), 64); is(m.p8(2), 256)
-  is(m.pm2(2), 0.25); is(m.p0(7), 1); is(m.p1(5), 5)
-  // Sign falls out of the f64 sign bit: even→positive, odd→signed; −0 survives.
+  is(m.p2(3), 9); is(m.p3(2), 8); is(m.pm2(2), 0.25); is(m.p0(7), 1); is(m.p1(5), 5)
   is(m.p3(-2), -8); is(m.p2(-2), 4)
   ok(Object.is(m.p3(-0), -0)); ok(Object.is(m.p2(-0), 0))
+  ok(Object.is(m.ph(-0), 0), '(-0) ** 0.5 is √(−0 + 0) = +0'); is(m.ph(-Infinity), Infinity)
+  is(m.p3(0.3), 0.026999999999999996, '0.3 ** 3 is the rounded cube, not 0.3·0.3·0.3 = 0.027')
   // Every awkward operand matches the runtime $math.pow exactly (NaN/±Inf/±0/subnormal).
-  for (const x of [0, -0, 1.1, -1.1, 3.14159, 1e150, NaN, Infinity, -Infinity, Number.MIN_VALUE]) {
-    for (const [fn, n] of [[m.p2, 2], [m.p3, 3], [m.p6, 6], [m.p8, 8], [m.pm2, -2]])
+  for (const x of [0, -0, 1.1, -1.1, 3.14159, 0.3, 1e150, NaN, Infinity, -Infinity, Number.MIN_VALUE])
+    for (const [fn, n] of [[m.p0, 0], [m.p1, 1], [m.p2, 2], [m.p3, 3], [m.pm2, -2], [m.ph, 0.5]])
       ok(Object.is(fn(x), m.ref(x, n)), `x=${x} n=${n}`)
-  }
-  // When every pow use folds, the math.pow/exp/log stdlib is gone entirely.
-  const wat = compile(`export let f = (x) => x ** 2 + x ** 3`, { wat: true })
+  // Where the exponent is 2 or ½ the answer is an expression: no pow kernel at all.
+  const wat = compile(`export let f = (x) => x ** 2 + x ** 0.5`, { wat: true })
   ok(!/\(func \$math\.pow/.test(wat), 'math.pow stdlib elided')
-  ok(!/\(func \$math\.exp/.test(wat), 'math.exp stdlib elided')
-  ok(!/\(func \$math\.log/.test(wat), 'math.log stdlib elided')
 })
 
 test('Math.pow / ** — a constant non-integer exponent takes the pow kernel, bit-identical to a runtime exponent', () => {
@@ -427,16 +422,13 @@ test('Math.pow / ** — a constant non-integer exponent takes the pow kernel, bi
   ok(/\(func \$math\.pow/.test(wat), 'the pow kernel is the one implementation')
 })
 
-test('Math.pow / ** — positive-constant base lowers to exp (no pow/log stdlib)', async () => {
-  const m = run(`export let f = (n) => 2 ** (n / 12)`)
-  almost(m.f(5), Math.pow(2, 5 / 12), 1e-6)
-  almost(m.f(0), 1, 1e-6)
-  const wat = compile(`export let g = (n) => 440 * (2 ** (n / 12))`, { wat: true })
-  ok(!/\(func \$math\.pow/.test(wat), 'math.pow stdlib elided for 2 ** (n/12)')
-  ok(!/\(func \$math\.log/.test(wat), 'math.log stdlib elided')
-  // exp route used — as a `$math.exp` func, or (since the O(1) loop-free exp is now
-  // inlinable) its inlined body, identified by the Taylor coefficient 1/6.
-  ok(/\(func \$math\.exp|0\.16666666666666666/.test(wat), 'uses math.exp (func or inlined)')
+test('Math.pow / **: a constant base 2 is Math.pow(2, y), exact at integers', () => {
+  const m = run(`export let f = (n) => 2 ** (n / 12)
+    export let g = (y) => 2 ** y
+    export let ref = (x, y) => Math.pow(x, y)`)
+  for (const n of [0, 5, -7, 12, 13.5, 1e3, -1e3]) is(m.f(n), m.ref(2, n / 12), `2 ** (${n}/12)`)
+  for (let k = -1074; k <= 1023; k += 7) is(m.g(k), 2 ** k, `2 ** ${k}`)
+  is(m.g(1024), Infinity); is(m.g(-1075), 0); is(m.g(NaN), NaN); ok(Object.is(m.g(-Infinity), 0))
 })
 
 test('Math.cbrt', async () => {
@@ -945,11 +937,11 @@ test('Math.hypot/min/max: spread and mixed scalar-spread arguments', () => {
   is(exports.mx0(), 7)
 })
 
-// ── The exponential table kernels ───────────────────────────────────────────
-// $math.exp2 and pow's tail reduce to 2^(j/64) × a short remainder polynomial
-// (module/math/trig-tables.js EXP2_TAB, EXP2_Q, EXP_Q): the table is re-derived
-// here at 200 bits, and 2 ** y is held within 0.75 ulp of that reference
-// (measured 0.52) over a random sweep of its whole range.
+// ── pow's exponential table ─────────────────────────────────────────────────
+// $math.pow_core's tail reduces to 2^(j/64) × a short remainder polynomial
+// (module/math/trig-tables.js EXP2_TAB, EXP_Q): the table is re-derived here at
+// 200 bits, and 2 ** y is held within 0.75 ulp of that reference over a random
+// sweep of its whole range.
 const P200 = 200n, ONE200 = 1n << P200
 const ln2Fix = (() => { let s = 0n, t = ONE200 / 3n, k = 1n; while (t) { s += t / k; t = t / 9n; k += 2n } return 2n * s })()
 const expFix = (x) => { let s = ONE200, t = ONE200; for (let n = 1n; t; n++) { t = t * x / ONE200 / n; s += t } return s }

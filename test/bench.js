@@ -161,19 +161,18 @@ const SPEED = {
 // included, and the licence is for THIS known output only. A math helper that
 // changes its last bits changes the pin, and must say so here.
 //
-//   colorconv/colorlch  `(c + 0.055) / 1.055) ** 2.4` takes jz's fifthroot fold
-//                       (module/math.js, the k/5 constant-exponent path): 4 ulp,
-//                       4.9e-16 relative. Their three `Math.cbrt` calls are
-//                       bit-exact with V8 (0 ulp) — jz runs the same fdlibm.
-//   colorlog            `Math.pow(2, x)` takes jz's exp2, within 1 ulp of V8's
-//                       (the 2^(j/64) table kernel, module/math/trig-tables.js
-//                       EXP2_TAB: 0.52 ulp against a 200-bit reference, V8's
-//                       fdlibm about 1); the bench checksum is bitwise, so one
-//                       ulp is still a different sum.
+//   colorconv/colorlch  `(c + 0.055) / 1.055) ** 2.4` takes jz's pow kernel, where
+//                       V8 calls the platform C library's pow: 0.3% of channel
+//                       values differ, by 1 ulp (1.2e-16 relative). Their three
+//                       `Math.cbrt` calls are bit-exact with V8 (0 ulp): jz runs
+//                       V8's own fdlibm.
+//   colorlog            `Math.pow(2, x)` takes the same kernel with the log of 2
+//                       folded ($math.pow_c): 0.25% differ, by 1 ulp; the bench
+//                       checksum is bitwise, so one ulp is still a different sum.
 const LAB_SPEED = {
-  colorlog:  { v8: 'win', jz: 297103274, why: 'Math.pow(2, x) through jz exp2 – 1 ulp' },
-  colorlch:  { v8: 'win', jz: 615123418,  why: '** 2.4 through jz fifthroot fold — 4 ulp, 4.9e-16 relative; cbrt bit-exact' },
-  colorconv: { v8: 'tie', jz: 3731035495, why: '** 2.4 through jz fifthroot fold — 4 ulp, 4.9e-16 relative; cbrt bit-exact' },
+  colorlog:  { v8: 'win', jz: 552360023, why: 'Math.pow(2, x) through the jz pow kernel, V8 through libm – 1 ulp on 0.25%' },
+  colorlch:  { v8: 'win', jz: 131843097, why: '** 2.4 through the jz pow kernel, V8 through libm – 1 ulp on 0.3%; cbrt bit-exact' },
+  colorconv: { v8: 'tie', jz: 134618619, why: '** 2.4 through the jz pow kernel, V8 through libm – 1 ulp on 0.3%; cbrt bit-exact' },
 }
 const SPEED_TOL = { win: 1.0, tie: 1.05, near: 1.10, trail: 1.25 }
 // TIMING POLICY (extends the native-C rule below to every timing gate): a shared

@@ -269,12 +269,13 @@ export const LANE_COMPARE = {
 export const PPC_CALL2 = {
   '$math.sin': '$math.sin2', '$math.cos': '$math.cos2',
   '$math.pow': '$math.pow2',   // 2-arg; the two-wide kernel, bit-exact with the scalar path (module/math/simd.js)
+  '$math.pow_c': '$math.pow_c_v',   // a constant base: y and the base's splatted constants
   '$math.atan2': '$math.atan2_2', '$math.hypot': '$math.hypot_2',   // 2-arg; bit-exact extract/repack
   '$math.cbrt': '$math.cbrt_v', '$math.fifthroot': '$math.fifthroot_v',   // 1-arg; per-lane scalar repack
   '$math.pow_fold': '$math.pow_fold_v',   // 2-arg (x, c); only reachable under optimize.crPow — see module/math.js
-  // log/exp/exp2: both lanes through one evaluation on their common path, scalar at the edges;
-  // bit-exact either way ($math.log_v/exp_v/exp2_v, module/math/simd.js).
-  '$math.log': '$math.log_v', '$math.exp': '$math.exp_v', '$math.exp2': '$math.exp2_v',
+  // log/exp: both lanes through one evaluation on their common path, scalar at the edges;
+  // bit-exact either way ($math.log_v/exp_v, module/math/simd.js).
+  '$math.log': '$math.log_v', '$math.exp': '$math.exp_v',
 }
 
 // Transcendentals the auto-vectorizer bridges to f64x2 mirrors — BOTH the scalar sources (kept

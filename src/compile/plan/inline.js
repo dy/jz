@@ -423,7 +423,7 @@ const inlineInStmt = (stmt, candidates, loopVariantNames = null, hot = false) =>
   //
   // More than one declarator splices only in an innermost loop. That is where
   // it pays, and why: the call it removes is what kept the lane vectorizer out
-  // of the loop — colorlog's three `decode` calls became three `exp2_v` lifts
+  // of the loop — colorlog's three `decode` calls became three vector lifts
   // and the case went from 1.13x V8 to 0.54. A site in an outer loop gains
   // nothing, and the copies only add size: fft binds its sine and cosine
   // polynomials once per stage, and splicing them grew the module 5% for no
