@@ -51,9 +51,12 @@ import { createFunction } from '../function.js'
  *   `$union`, `$spec`, `#restN`).
  * @param {string} opts.kind          Stable specialization family tag. This is
  *   identity metadata, not a representation fact.
- * @param {object} [opts.sig]         Full replacement `{params, results}`.
- *   Omitted → a fresh shallow copy of `origin.sig` (the VAL-kind dichotomy
- *   shape: the clone's ABI is unchanged, only its paramReps facts are pinned).
+ * @param {object} [opts.sig]         The signature facts the clone changes
+ *   (`{params, results}`, an ABI switch's `ptrKind`), laid over a copy of
+ *   `origin.sig`: every other fact on the origin's signature (a pointer
+ *   result's `ptrKind`/`ptrAux`, `unsignedResult`) carries over. Omitted →
+ *   the copy alone (the VAL-kind dichotomy shape: the clone's ABI is
+ *   unchanged, only its paramReps facts are pinned).
  * @param {*} [opts.body]             Replacement body. Omitted → `origin.body`
  *   (only fixed-rest's rest-destructuring rewrite needs this).
  * @param {string|null} [opts.rest] Rest binding; fixed-arity variants clear it.
@@ -92,7 +95,10 @@ export function materializeVariant({
     // two reads), and a temp bound for one function must not appear in the
     // body of another whose locals were settled without it.
     clone = createFunction(cloneName, body !== undefined ? body : cloneNode(origin.body),
-      sig || { params: origin.sig.params.map(p => ({ ...p })), results: [...origin.sig.results] },
+      // the origin's signature whole: its pointer result (`ptrKind`/`ptrAux`
+      // beside an i32 result, narrow/results.js) and every other fact on it,
+      // under whatever the caller's `sig` states (its params, an ABI change)
+      { ...origin.sig, params: origin.sig.params.map(p => ({ ...p })), results: [...origin.sig.results], ...sig },
       false, origin.defaults, rest)
     clone.valResult = origin.valResult
     clone.valResultMayBeUndefined = origin.valResultMayBeUndefined

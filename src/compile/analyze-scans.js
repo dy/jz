@@ -3,7 +3,7 @@
  * @module analyze-scans
  */
 
-import { ASSIGN_OPS, COMPARE_OPS, MUTATE_OPS, effectiveWriteValue, ACCESSOR_GET, ACCESSOR_SET, collectAssignedNames, collectParamName, collectParamNames, extractParams, classifyParam, PARAM_DEFAULT, isBlockBody, REFS_IN_EXPR, refsName, some, T, isLiteralStr, walkAst, isReassigned, takeScratchMap, releaseScratchMap } from '../ast.js'
+import { ASSIGN_OPS, COMPARE_OPS, MUTATE_OPS, effectiveWriteValue, ACCESSOR_GET, ACCESSOR_SET, collectAssignedNames, collectParamName, collectParamNames, extractParams, classifyParam, PARAM_DEFAULT, isBlockBody, REFS_IN_EXPR, refsName, some, T, isLiteralStr, walkAst, isReassigned, takeScratchMap, releaseScratchMap, refsAny } from '../ast.js'
 import { ctx, getFactStore } from '../ctx.js'
 import {
   staticObjectProps, staticArrayElems, staticIndexKey, staticValue, intExprRange, NO_VALUE,
@@ -1186,26 +1186,54 @@ function collectComparedNames(body, crossClosure) {
  * evidence walk already uses program-wide.
  */
 export function collectBareEscapes(body, locals, crossClosure) {
+  // The global census spans functions; definition edges belong to one body.
+  return bareEscapeScan(body, crossClosure, collectComparedNames(body, crossClosure), null, !crossClosure).escaped()
+}
+
+/**
+ * The bare-escape census of module globals: one scan per body (module inits,
+ * each function), so a definition edge binds the names of its own body, and
+ * one comparison tolerance, the program's. A global is one cell for every
+ * body: blamed in one, it blames what flows into it in the others
+ * (`const d = G` at module level, `x * d` in a function).
+ *
+ * `wide` names hold a constant outside the i32 range. No comparison bounds
+ * such a value, so they get no comparison tolerance, and a comparison reads
+ * their exact value: only a ToInt32 sink leaves them storable as i32.
+ */
+export function collectGlobalBareEscapes(bodies, isGlobal, wide) {
+  let compared = null
+  for (const body of bodies) for (const name of collectComparedNames(body, true)) (compared ||= new Set()).add(name)
+  const scans = bodies.map(body => bareEscapeScan(body, true, compared || EMPTY_SCAN_SET, wide, true))
+  const out = new Set(), queue = []
+  const take = (names) => { for (const name of names) if (isGlobal(name) && !out.has(name)) { out.add(name); queue.push(name) } }
+  for (const scan of scans) take(scan.escaped())
+  for (let i = 0; i < queue.length; i++) for (const scan of scans) take(scan.blame(queue[i]))
+  return out
+}
+
+const THROUGH_ARROWS = { skipArrow: false }
+
+function bareEscapeScan(body, crossClosure, compared, wide, keepEdges) {
   let escaped = null
-  const compared = collectComparedNames(body, crossClosure)
   const edges = new Map(), queue = []
-  let collecting = true
+  let collecting = true, drained = 0
   const edge = (name, rhs) => {
-    // The global census spans functions; definition edges belong to one body.
-    if (!collecting || crossClosure) return
+    if (!collecting || !keepEdges) return
     if (!edges.has(name)) edges.set(name, [])
     edges.get(name).push(rhs)
   }
   const escape = name => {
-    if (compared.has(name) || escapeInRangeI32(name) || escaped?.has(name)) return
+    if (escaped?.has(name)) return
+    if (!wide?.has(name) && (compared.has(name) || escapeInRangeI32(name))) return
     ;(escaped ||= new Set()).add(name)
     queue.push(name)
   }
-  const walk = (node, mode) => {   // mode: 'idx' | 'edge' | 'value' | 'stmt'
+  const walk = (node, mode) => {   // mode: 'idx' | 'cmp' | 'edge' | 'value' | 'stmt'
     // A closed binding hull can prove a bare use safe even under an operator
     // the range query cannot model, such as division. Otherwise value uses
     // propagate back through definitions; word conversions stop that demand.
-    if (typeof node === 'string') { if (mode === 'value') escape(node); return }
+    if (typeof node === 'string') { if (mode === 'value' || (mode === 'cmp' && wide?.has(node))) escape(node); return }
     if (!Array.isArray(node)) return
     const op = node[0]
     if (op === '=>') { if (crossClosure) walk(node[2], isBlockBody(node[2]) ? 'stmt' : 'value'); return }  // local mode: separate scope/body; global mode: descend (see doc)
@@ -1231,7 +1259,11 @@ export function collectBareEscapes(body, locals, crossClosure) {
     if (op === '?:' && mode !== 'value') {
       walk(node[1], 'value'); walk(node[2], mode); walk(node[3], mode); return
     }
-    if (ESCAPE_SAFE_ROOT_OPS.has(op)) { for (let i = 1; i < node.length; i++) walk(node[i], 'idx'); return }
+    if (ESCAPE_SAFE_ROOT_OPS.has(op)) {
+      const sink = COMPARE_OPS.has(op) ? 'cmp' : 'idx'
+      for (let i = 1; i < node.length; i++) walk(node[i], sink)
+      return
+    }
     if (op === '()' && INT_MATH_FNS_I32.has(mathFnName(node[1]))) { walk(node[2], 'idx'); return }
     if (op === 'let' || op === 'const') {
       for (let i = 1; i < node.length; i++) {
@@ -1248,19 +1280,32 @@ export function collectBareEscapes(body, locals, crossClosure) {
       return
     }
     if (ESCAPE_ROOT_EDGE_OPS.has(op) && typeof node[1] === 'string') { walk(node[2], 'idx'); return }
-    if ((mode === 'idx' || mode === 'edge') && (op === ',' || AFFINE_INDEX_OPS.has(op))) {
+    if ((mode === 'idx' || mode === 'cmp' || mode === 'edge') && (op === ',' || AFFINE_INDEX_OPS.has(op))) {
       for (let i = 1; i < node.length; i++) walk(node[i], mode)
       return
     }
     mode = 'value'   // fell out of an idx/edge-affine chain (or already were in 'value' mode)
-    if (escapeInRangeI32(node)) return
+    // a bounded result says nothing of a wide operand a comparison inside it reads
+    if (escapeInRangeI32(node) && !(wide && refsAny(node, wide, THROUGH_ARROWS))) return
     for (let i = 1; i < node.length; i++) walk(node[i], mode)
   }
-  walk(body, 'stmt')
   // A value copied through locals still escapes from each arithmetic source.
+  const drain = () => { for (; drained < queue.length; drained++) for (const rhs of edges.get(queue[drained]) || []) walk(rhs, 'value') }
+  walk(body, 'stmt')
   collecting = false
-  for (let i = 0; i < queue.length; i++) for (const rhs of edges.get(queue[i]) || []) walk(rhs, 'value')
-  return escaped || EMPTY_SCAN_SET
+  drain()
+  return {
+    escaped: () => escaped || EMPTY_SCAN_SET,
+    // Blame `name` from outside this body; the names that newly escape here.
+    blame: (name) => {
+      if (!edges.has(name) || escaped?.has(name)) return EMPTY_SCAN_SET
+      const from = queue.length
+      ;(escaped ||= new Set()).add(name)
+      queue.push(name)
+      drain()
+      return queue.slice(from + 1)
+    },
+  }
 }
 
 // A finite trip count plus bounded per-iteration motion proves an accumulator's

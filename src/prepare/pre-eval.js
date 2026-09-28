@@ -81,7 +81,7 @@
  * @module prepare/pre-eval
  */
 
-import { COMPARE_OPS, extractParams, classifyParam, PARAM_NAME } from '../ast.js'
+import { COMPARE_OPS, MUTATE_OPS, TYPEOF, typeofPredicate, walkAst, extractParams, classifyParam, PARAM_NAME } from '../ast.js'
 import { ctx } from '../ctx.js'
 import { int32, numBinOp } from '../static.js'
 import { MATH_KERNEL, powFold } from './math-kernel.js'
@@ -521,6 +521,24 @@ function collectArgs(argsNode) {
 // evalConst — full-subtree constant evaluation (EvalResult space, no AST
 // round-trips mid-chain — see module doc).
 // ---------------------------------------------------------------------------
+/** What `typeof name` is where the program fixes it: a function (declared, a
+ *  builtin's, or a constant bound to one), else null. Feature detection asks
+ *  this of a builtin at load time (`typeof Math.fround === 'function'`) and
+ *  selects by the answer, which the target gives once, here. */
+function typeofName(name, state, seen) {
+  if (state.written.has(name)) return null
+  if (state.funcByName.has(name)) return 'function'
+  if (name.startsWith('math.')) return MATH_CONST[name.slice(5)] !== undefined ? 'number' : MATH_KERNEL[name.slice(5)] ? 'function' : null
+  if (!state.consts.has(name) || seen?.has(name)) return null
+  seen = (seen || new Set()).add(name)
+  // the constant's value as it folds: a selection by an earlier answer settles here
+  let init = state.folded.get(name)
+  if (init === undefined) { state.folded.set(name, null); state.folded.set(name, init = foldNode(state.consts.get(name), new Map(), state)) }
+  if (typeof init === 'string') return typeofName(init, state, seen)
+  const value = init == null ? null : literalOf(init)
+  return value == null ? null : value.t === 'num' ? 'number' : value.t === 'str' ? 'string' : value.t === 'bool' ? 'boolean' : value.t === 'undef' ? 'undefined' : value.t === 'null' ? 'object' : null
+}
+
 function evalConst(node, env, state) {
   if (typeof node === 'string') {
     const b = env.get(node)
@@ -546,6 +564,13 @@ function evalConst(node, env, state) {
   if (op === 'u-' || op === 'u+' || op === '!' || op === '~') {
     const a = evalConst(node[1], env, state)
     return a && foldUnary(op, a)
+  }
+  if (op === '===' || op === '!==' || op === '==' || op === '!=') {
+    const tp = typeofPredicate(node)
+    if (tp && !env.has(tp.name)) {
+      const kind = typeofName(tp.name, state)
+      if (kind != null) return boolResult((typeof tp.code === 'number' ? TYPEOF[kind] === tp.code : kind === tp.code) === tp.eq)
+    }
   }
   if (op === '+' || op === '**' || BINARY_OPS.has(op)) {
     if (node.length !== 3) return null
@@ -728,6 +753,9 @@ function foldNode(node, env, state) {
     return (a === node[1] && b === node[2]) ? node : [op, a, b]
   }
   if ((op === '?:' || op === '?') && node.length === 4) {
+    // a settled test leaves the arm it selects, whatever the other arm is
+    const test = evalConst(node[1], env, state)
+    if (test) return foldNode(node[toBoolean(test) ? 2 : 3], env, state)
     const c = foldNode(node[1], env, state)
     const t = foldNode(node[2], env, state)
     const e = foldNode(node[3], env, state)
@@ -903,7 +931,19 @@ export function preEval(ast) {
   const rationalOn = ctx.transform.optimize?.rationalConst !== false
   const funcByName = new Map()
   for (const f of ctx.funcs.list) funcByName.set(f.name, f)
-  const state = { rationalOn, funcByName, evaluating: new Set() }
+  // Module constants bound to a name, and every name the program writes after
+  // its declaration: `typeof` of a constant is its value's (typeofName).
+  const consts = new Map(), written = new Set()
+  const census = (root, top) => walkAst(root, { enter: (n, parent) => {
+    // a declarator binds; every other assignment writes
+    if (MUTATE_OPS.has(n[0]) && typeof n[1] === 'string' && !(n[0] === '=' && parent && (parent[0] === 'let' || parent[0] === 'const'))) written.add(n[1])
+    if (top && n[0] === 'const') for (let i = 1; i < n.length; i++) if (Array.isArray(n[i]) && n[i][0] === '=' && typeof n[i][1] === 'string') consts.set(n[i][1], n[i][2])
+    if (n[0] === '=>') top = false
+  } })
+  for (const f of ctx.funcs.list) census(f.body, false)
+  for (const init of ctx.module.moduleInits) census(init, true)
+  census(ast, true)
+  const state = { rationalOn, funcByName, consts, written, folded: new Map(), evaluating: new Set() }
   for (const f of ctx.funcs.list) f.body = foldFunctionBody(f.body, state)
   for (let i = 0; i < ctx.module.moduleInits.length; i++)
     ctx.module.moduleInits[i] = foldBlockLike(ctx.module.moduleInits[i], new Map(), state)

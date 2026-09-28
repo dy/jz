@@ -1,14 +1,14 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" class="paper">
 
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <script>(() => { try { document.documentElement.dataset.theme = localStorage.getItem('theme') || 'dark' } catch (e) { document.documentElement.dataset.theme = 'dark' } })()</script>
+    <script>(() => { try { document.documentElement.dataset.theme = localStorage.getItem('theme') || 'light' } catch (e) { document.documentElement.dataset.theme = 'light' } })()</script>
     <title>JavaScript to WebAssembly Compiler | JZ</title>
     <meta name="description" content="Compile numeric JavaScript to fast, minimal WebAssembly – no rewrite, no annotations, no runtime, no GC.">
     <link rel="canonical" href="https://jz.js.org/">
-    <meta name="theme-color" content="#000000">
+    <meta name="theme-color" content="#f7f7f7">
     <!-- social card — 1200×630 og:image (assets/og.png) for a rich preview -->
     <meta property="og:type" content="website">
     <meta property="og:url" content="https://jz.js.org/">
@@ -30,49 +30,20 @@
         padding: 0;
       }
 
+      /* The page sits on the blueprint grid (html.paper, assets/site.css): the column steps in whole 80px
+   units, the grid's origin is its left ruler, and every block below is sized in whole cells — heights in
+   80s (sections), 40s (rows, boxes) or 8s (text). Text is trimmed to its ink (cap line → baseline) and
+   padded by --bl, so baselines sit on grid lines; display sizes are picked so the cap line does too
+   (Futura cap height: .761em medium, .754em bold → 42px = 32 cap, 31.8px = 24, 21px = 16). */
       :root {
         --mono: var(--font-mono);
-        /* colours come from assets/site.css as light-dark() tokens; the hero pins them back to dark (it stays a dark island) */
-        --padx: 40px;
-        --cw: 960px;
-        /* padx = a mid unit (40 = 5·8px) so the mobile/narrow side inset lands on the grid; cw = 12 big units wide, so the grid coincides */
-        --u: 8px;
-        --u2: 40px;
-        --U: 80px;
-        /* blueprint grid: 8px minor · 40px mid · 80px major (= the logo, nested) */
-        --grid-over: clamp(var(--u2), calc(var(--gx-pad) - var(--U)), calc(2 * var(--U)));
-        /* blueprint bleed past the content column each side: ≥40px (always wider than the column), ≤160px. Snapped below to whole 80px steps (40 → 80 → 160, never the 120 half-bleed) so the grid width (cw + 2·over) stays a multiple of 80 — no half-cut cells. ≤1180px goes full-width. The grid is 8 units tall from the band top; the 1-unit nav overlays its top unit. */
-        --colw: calc(var(--cw) + 2 * var(--padx));
-        /* hero/pitch column box */
-        --gx-pad: var(--padx);
-        /* grid-aligned side inset (pre-round() fallback; refined below) */
-      }
-
-      /* THE one side inset every full-bleed section shares: content-left snapped to the 80px MAJOR grid,
-   so the column occupies whole big cells (cw = 12 big units) and its edges land on the same 40/80
-   lines the grid + grid-current pulses use. Built on 100vw, which does NOT change when a vertical
-   scrollbar appears (unlike clientWidth) — so with the grid anchored at the page origin (0,0) below,
-   content never shifts on load.
-   NB: round() must be the 2-arg form `round(value, interval)` — Chrome parses the explicit
-   `to-nearest` keyword form as invalid (a quirk), though both are spec-valid. */
-      @supports (padding: round(1px, 1px)) {
-        :root {
-          --gx-pad: max(var(--padx), round(calc((100vw - var(--cw)) / 2), var(--U)));
-          --grid-raw: min(calc(var(--gx-pad) - var(--U)), calc(100vw - var(--cw) - var(--gx-pad) - var(--U)));
-          /* desired bleed: ≤ each gutter − 1 unit, so ≥1 unit of empty padding clears the viewport both sides (no half-cut, breathing room) */
-          --grid-over: clamp(var(--u2), calc(var(--grid-raw) - mod(var(--grid-raw), var(--U))), calc(2 * var(--U)));
-          /* floor to a whole 80px step so the bleed is 40 → 80 → 160, never the 120 half-bleed (e.g. at 1480px): min 40 (½-unit, the always-wider floor), max 160. cw + 2·over stays a multiple of 80. */
-        }
-      }
-
-      html,
-      body {
-        height: 100%;
-        overflow-x: clip;
+        --in: var(--U);
+        /* text inset from the left ruler: logo, stats, FAQ and author start one major unit in; the REPL and examples span ruler to ruler */
+        --pitch: calc(2 * var(--U));
+        /* bench row: one figure per 2 units */
       }
 
       body {
-        background: var(--paper);
         color: var(--ink);
         font-family: var(--font);
         -webkit-font-smoothing: antialiased;
@@ -83,102 +54,94 @@
         color: inherit;
       }
 
-      /* ::selection lives in assets/site.css now — one shared highlight across all pages */
-
-      /* ─────────────────────────── HERO — the live demo (grid-current's electron pulses) + blueprint grid
-   occupy a fixed 9-unit (720px) band; the logo, title, description, live FPS/switch and metrics all sit ON it. */
-      .hero {
-        position: relative;
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        background: var(--paper);
-        overflow: hidden;
-        min-height: var(--band-h);
-        --band-h: calc(8 * var(--U));
-        color: var(--ink);
+      /* the column every section's content sits in: ruler to ruler */
+      .col {
+        width: var(--cw);
+        margin-left: var(--gx-pad);
       }
 
-      /* band = 8 units (640px) = the grid; the nav floats over its top, content sits on the grid. The hero themes with the page — its blueprint lines (below) and its live pulses (inverted via a CSS filter) flip with the theme. */
+      /* a bordered box whose four edges land ON grid lines: left/top border inside the box, right/bottom
+   drawn just outside by a 1px offset shadow — the first pixel of the next cell, where the grid line is */
+      .gbox {
+        border: 0 solid var(--gbox);
+        border-width: 1px 0 0 1px;
+        box-shadow: 1px 1px var(--gbox);
+      }
 
-      /* the live demo (grid-current.js's electron pulses) paints onto the grid band — exactly the grid's box */
+      @supports (text-box: trim-both cap alphabetic) {
+
+        .hero-nav a,
+        .hero h1,
+        .metrics b,
+        .metrics .lab,
+        .faq .fq,
+        .faq .ans p,
+        .faq .ans .rl,
+        .faq .ans .tags,
+        .examples h2,
+        .ex-all span,
+        .author h2,
+        .author p,
+        .install > span,
+        .sponsor .report {
+          text-box: trim-both cap alphabetic;
+        }
+
+        .hero h1,
+        .metrics b,
+        .faq .ans p,
+        .faq .ans .rl,
+        .faq .ans .tags,
+        .examples h2,
+        .author h2,
+        .author p {
+          padding-top: var(--bl);
+        }
+      }
+
+      /* dark theme only: the grid carries a live current — assets/grid-current.js compiled in-page by jz.
+   Page-wide, hero-high, fading out above the REPL; its pulses ride the same lines the CSS draws. */
       .grid-current {
+        display: none;
         position: absolute;
         top: 0;
-        left: calc(var(--gx-pad) - var(--grid-over));
-        z-index: 1;
-        display: block;
-        width: calc(var(--cw) + 2 * var(--grid-over) + 1px);
-        height: calc(8 * var(--U));
-        pointer-events: none;
-        opacity: 1;
-        contain: paint;
-      }
-
-      /* Width = content column (--cw) + --grid-over each side (a whole multiple of 80, no half-cut) + 1px so the gradient's final major line lands inside the box; left = content-left − --grid-over so the pulses' grid runs through the content edges. top = 1 unit (below the header band), height = 8 units (640px). Explicit width because a <canvas> is a replaced element; JS reads the rect and only re-fits when the size actually changes. */
-      /* plain alpha (not mix-blend-mode: screen): the pulses composite predictably over the black band +
-     blueprint lines, so they're visible on every frame. */
-
-      /* blueprint grid — three nested levels (8 minor · 40 mid · 80 major) sharing ONE origin so they nest.
-   Origin = this element's top-left = the content column's left minus --grid-over (a whole-unit bleed), 1
-   unit down (below the header band). A length (never shifts with scrollbar/viewport). The grid-current canvas
-   shares the SAME box + origin (gridX=0), so its pulses land on these lines. Hard-edged at the band bottom — no fade. */
-      .hero::before {
-        content: '';
-        position: absolute;
-        top: 0;
-        left: calc(var(--gx-pad) - var(--grid-over));
-        width: calc(var(--cw) + 2 * var(--grid-over) + 1px);
-        height: calc(8 * var(--U));
-        z-index: 1;
-        pointer-events: none;
-        border-bottom: 1px solid light-dark(rgba(255, 255, 255, .7), rgba(255, 255, 255, .17));
-        /* the band-closing rule. The right ruler is NOT a border — the +1px width above lets the tiled gradient draw its final major line at the content edge, identical to every other vertical rule. */
-        background-image:
-          linear-gradient(light-dark(rgba(255, 255, 255, .85), rgba(255, 255, 255, .062)) 1px, transparent 1px),
-          linear-gradient(90deg, light-dark(rgba(255, 255, 255, .85), rgba(255, 255, 255, .062)) 1px, transparent 1px),
-          linear-gradient(light-dark(rgba(255, 255, 255, .38), rgba(255, 255, 255, .05)) 1px, transparent 1px),
-          linear-gradient(90deg, light-dark(rgba(255, 255, 255, .38), rgba(255, 255, 255, .05)) 1px, transparent 1px),
-          linear-gradient(light-dark(rgba(255, 255, 255, .16), rgba(255, 255, 255, .028)) 1px, transparent 1px),
-          linear-gradient(90deg, light-dark(rgba(255, 255, 255, .16), rgba(255, 255, 255, .028)) 1px, transparent 1px);
-        /* white grid both themes; light keeps the major line clearly visible on the gray but BELOW full white, so the boosted full-white pulses (which travel along the lines) still pop over it — at ~85% the line is near-white and white-on-white hides the pulses. */
-        background-size: var(--U) var(--U), var(--U) var(--U), var(--u2) var(--u2), var(--u2) var(--u2), var(--u) var(--u), var(--u) var(--u);
-        /* origin = this inset box's top-left (the 0 0 below is box-relative). A length, not a percentage: % in
-     background-position resolves per layer against (area − image size), so the 8/40/80 tiles would each
-     phase to a different origin (the stray vertical lines / wrong divisions). A length also keeps the grid
-     independent of viewport width — it CANNOT shift when a scrollbar appears post-load. The grid-current
-     canvas is inset to this same corner and passes gridX=0, so its pulses land on these same lines. */
-        background-position: 0 0;
-      }
-
-      /* top bar — a 1-unit-tall header band above the grid; menu right-aligned to the content column */
-      .hero-nav {
-        position: absolute;
-        z-index: 2;
-        top: 20px;
         left: 0;
-        right: 0;
-        max-width: var(--colw);
-        margin-inline: calc(var(--gx-pad) - var(--padx)) auto;
-        /* the same content column as the pitch + every section */
+        z-index: -1;
+        width: 100%;
+        height: calc(7 * var(--U));
+        pointer-events: none;
+        -webkit-mask-image: linear-gradient(#000 calc(100% - var(--U)), transparent);
+        mask-image: linear-gradient(#000 calc(100% - var(--U)), transparent);
+      }
+
+      :root[data-theme="dark"] .grid-current {
+        display: block;
+      }
+
+      /* MENU — one unit tall; its caps centred in the 40–80 cell (where the other pages' logo sits, so the menu holds
+   still between pages), the icon cells ending on the right ruler as on every page */
+      .top {
+        height: var(--U);
+        padding-top: var(--u2);
+      }
+
+      .hero-nav {
         display: flex;
         justify-content: flex-end;
         align-items: center;
-        gap: 24px;
-        height: 60px;
-        padding: 0 var(--padx);
-        -webkit-user-select: none;
-        user-select: none;
+        --nav-gap: 24px;
+        gap: var(--nav-gap);
+        height: var(--u2);
+        padding-left: var(--in);
       }
 
-      /* the menu floats over the grid (absolute, top:20); non-selectable so a draw-drag doesn't select it */
       .hero-nav a {
         color: var(--ink);
         opacity: .72;
         text-decoration: none;
-        font-size: 12px;
+        font-size: var(--fs-caps);
         text-transform: uppercase;
-        letter-spacing: .14em;
+        letter-spacing: var(--ls-caps);
         transition: opacity .18s;
       }
 
@@ -187,752 +150,436 @@
       }
 
       .hero-nav .ver {
+        font-size: var(--fs-small);
         text-transform: none;
         letter-spacing: .02em;
         opacity: .5;
+        margin-left: var(--nav-gap);   /* set apart from the menu: twice its gap */
       }
 
       .hero-nav .gh {
         display: flex;
       }
 
-      /* the pitch — a width-limited column, centred as a block but set LEFT (Swiss / Futura wants the flush-left axis).
-   Left: logo + title, then the description and npm CTA. Right: a "Speed" line and the live JS↔WASM switch.
-   The Speed line shows covered-corpus geomeans vs V8 / AssemblyScript — peak SIMD, other targets and size
-   figures live on the bench strip (the expanded view). */
-      .pitch {
-        position: relative;
-        z-index: 2;
-        flex: 1 1 auto;
-        min-height: 0;
-        width: 100%;
-        max-width: var(--colw);
-        text-align: left;
-        margin-inline: calc(var(--gx-pad) - var(--padx)) auto;
-        /* the SAME content column as every section + the nav: content-left = gx-pad, width = cw */
-        display: grid;
-        grid-template-columns: calc(7 * var(--U)) calc(5 * var(--U));
-        column-gap: 0;
-        align-items: start;
-        align-content: start;
-        /* left 7 units (logo+title, description); right 5 units (400px) — the speed metrics + toggle, left-aligned. 7 + 5 = cw (12 units). */
-        padding: var(--U) var(--padx) clamp(36px, 5vw, 60px);
-        /* 80px (1 unit) top gap above the logo */
-        pointer-events: none;
-        -webkit-user-select: none;
-        user-select: none;
+      /* HERO — under the menu ruler: the logo on units 1–2, the title across its JZ letters, the bench row hanging from
+   the next half-unit line under them. No fixed height: it ends 64px under the last label band (a half-unit line,
+   as every band ends 16px past one; the script keeps it there), so the REPL keeps one distance however the
+   figures wrap. */
+      .hero {
+        padding: var(--U) 0 64px;
       }
 
-      /* clicks fall through to the live sim; text non-selectable so dragging on the band to draw never selects the intro */
-      .pitch a,
-      .pitch button {
-        pointer-events: auto;
+      .hero > .col,
+      .faq-wrap,
+      .author-wrap {
+        padding-inline: var(--in);
       }
 
-      /* 4 quadrants on the band: logo+title (top-left) | metrics (top-right) ; description (bottom-left) | FPS+switch (bottom-right).
-   Two independent columns: the left stacks logo+title (160px) → description right under it; the right stacks
-   the metrics (dropped to the title level) → FPS+switch below them. */
-      .pcol {
-        display: flex;
-        flex-direction: column;
-        min-width: 0;
-      }
-
-      .pleft {
-        gap: 36px;
-      }
-
-      /* logo+title (160) → description; fixed 36px to seat the description level with the readout units on the right */
-      .pright {
-        gap: 40px;
-        align-items: flex-start;
-      }
-
-      /* fixed 40px gap on desktop; the metrics block (below) ends level with the logo, so the FPS/switch land at the description's level */
       .phead {
         display: flex;
-        align-items: flex-start;
-        gap: 20px;
-        min-width: 0;
+        gap: var(--u2);
       }
 
-      /* logo + title top-aligned; the title's own padding-top (below) drops it to the height of the JZ letters */
+      /* the logo fills a 2×2 major cell, offset 1px so all four framing grid lines stay visible around it; in the
+   dark theme its glint ring (assets/glint.js, site.css) sits on those lines */
+      .logo {
+        display: block;
+        flex: 0 0 auto;
+        line-height: 0;
+      }
+
+      .logo img {
+        display: block;
+        width: calc(2 * var(--U) - 1px);
+        height: calc(2 * var(--U) - 1px);
+        margin: 1px 0 0 1px;
+      }
+
+      /* the page title (.title, assets/site.css) — the one exception to hanging from a grid line: its caps start at
+   the logo's JZ letters (72px down the 160px mark; 36px down the 80px one on phones), set optically with the
+   mark. Narrow phones break it in three (the .m breaks), wider screens in two (.d). */
+      .hero h1 {
+        align-self: flex-start;
+        margin-top: 72px;
+        white-space: nowrap;
+      }
+
+      .hero h1 .m {
+        display: none;
+      }
+
+      /* bench row — figure over label, the label led by its cell's class icon; one per --pitch; the chevron opens
+   the bench page */
       .metrics {
+        display: grid;
+        grid-template-columns: repeat(5, var(--pitch)) auto;
+        align-items: start;
+        margin-top: var(--u2);
+      }
+
+      .metrics .stat {
         display: flex;
         flex-direction: column;
-        gap: 4px;
         align-items: flex-start;
-        margin-top: 72px;
-        min-height: calc(2 * var(--U) - 70px);
+        gap: var(--u);
+        -webkit-appearance: none;
+        appearance: none;
+        padding: 0;
+        border: 0;
+        background: none;
+        color: inherit;
+        font: inherit;
+        text-align: left;
+        cursor: pointer;
       }
 
-      /* "Speed" + stats sit on the general line; min-height still ends the block at the logo bottom (2 units − the drop), so the FPS/switch below stay aligned with the description */
-      .mrow {
+      /* the label line: a 24px band whose caps hang from its 8px line — the half-unit line under the figure — so
+   the label touches the cell's corner there; led by the cell's class (JS · WASM · native), the bench's own glyphs
+   in one quiet tone, a solid square with its mark knocked out, centred on the label's caps */
+      .metrics .under {
         display: flex;
-        align-items: baseline;
-        flex-wrap: wrap;
-        gap: clamp(8px, 1vw, 16px);
+        align-items: flex-start;
+        gap: 6px;
+        height: 24px;
+        padding-top: var(--u);
+        font-size: var(--fs-caps);
       }
 
-      /* the three big speed numbers, sharing a baseline */
-      .metrics .mstats {
-        gap: 0;
-      }
-
-      /* each stat owns its own 120px square (3 mid-units) so the three numbers line up on the grid */
-      .metrics .stat {
-        width: 120px;
-      }
-
-      /* substrate-class glyph before each stat label (JS · WASM · native) — same marks + themed
-   brand colours as the bench chart (.cico.cls-* in assets/site.css); here just size + spacing. */
-      .metrics .stat span {
-        display: inline-flex;
+      /* a cap-high box: the 12px glyph overhangs the 9px caps evenly, centred on them, without growing the band */
+      .metrics .ic {
+        display: flex;
         align-items: center;
+        height: 1cap;
       }
-      .metrics .stat span i {   /* the (average)/(native) qualifier — a quiet italic note after the target */
-        font-style: italic;
-        font-size: .9em;
-        margin-left: .35em;
-      }
+
       .metrics .cico {
         width: 12px;
         height: 12px;
-        margin-right: 5px;
-      }
-
-      /* logo — the opaque jz mark in the 2×2 major cell, offset 1px to the bottom-right: a hairline gap on the
-   TOP/LEFT keeps those grid lines visible, while the bottom/right edges sit flush ON the grid lines (no gap).
-   (At full 2-unit size its opaque black covered the top/left lines — a grid line sits at the cell's start edge.) */
-      .logo {
-        position: relative;
-        display: inline-block;
-        line-height: 0;
-        isolation: isolate;
-        flex: 0 0 auto;
-      }
-
-      /* 2 units; sits beside the title in the head row */
-      .logo img {
-        display: block;
-        width: calc(var(--U) * 2 - 1px);
-        height: calc(var(--U) * 2 - 1px);
-        margin: 1px 0 0 1px;
-        position: relative;
-        z-index: 1;
-      }
-
-      /* 159px in the 160px cell, pushed to the bottom-right: 1px gap top/left (grid lines show), bottom/right edges land ON the grid lines */
-      /* reflection — a 1px ring (conic-gradient rebuilt each frame; JS sets .background) sitting ON the four
-   framing grid lines. inset is `0 -1px -1px 0`, NOT 0: the gradient draws each line at the tile START, so
-   the cell's top/left lines fall just inside (0..1) but its bottom/right lines fall just OUTSIDE (160..161)
-   — the ring extends 1px past the bottom/right edges to meet them. z-index ABOVE the mark + screen blend →
-   the bevel glints on all four sides (top/left over the gap, bottom/right over the mark's flush edge). */
-      .logo-refl {
-        position: absolute;
-        inset: 0 -1px -1px 0;
-        z-index: 2;
-        pointer-events: none;
-        padding: 1px;
-        -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
-        -webkit-mask-composite: xor;
-        mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
-        mask-composite: exclude;
-        mix-blend-mode: screen;
-        filter: drop-shadow(0 0 7px rgba(150, 185, 255, .55)) drop-shadow(0 0 15px rgba(120, 150, 255, .3));
-      }
-
-      /* softer, blurrier glow */
-      .pitch h1 {
-        font-size: 40px;
-        font-weight: 400;
-        line-height: 1.06;
-        letter-spacing: -.015em;
-        padding-top: 68px;
-        overflow-wrap: break-word;
-        text-shadow: light-dark(none, 0 1px 12px rgba(0, 0, 0, .45));
-      }
-
-      /* padding-top drops the title to the JZ letters' height (letters start ~46% down the 158px mark); 2 lines via the <br>, column-constrained */
-      .pitch h1 b {
-        font-weight: 700;
-      }
-
-      .pitch .sub {
-        margin-left: var(--u2);
-        max-width: 32em;
-        font-size: 16px;
-        line-height: 24px;
-        color: var(--ink);
-        text-wrap: pretty;
-      }
-
-      /* hero install chip — the conversion action beside the pitch, indented with the sub.
-   Opaque mini-CLI box (same palette as the .cli chip) so it covers the band's grid lines;
-   -16px offsets .pleft's 36px gap → 20px under the slogan */
-      .pleft .install {
-        align-self: flex-start;
-        /* .pleft stretches children; the box must hug the command, not span the column */
-        margin-left: var(--u2);
-        margin-top: -20px;
-        padding: 12px 16px;
-        background: light-dark(#0c0e11, #000);
-        border: 1px solid light-dark(#20242a, #1c1c25);
-        color: #e8e8ea;
-      }
-
-      .pleft .install .dollar {
-        color: #6a6f78;
-      }
-
-      .pleft .install.copied::after {
-        color: #9aa0a8;
-      }
-
-      /* the FPS readout + JS↔JZ switch (bottom-right quadrant). Fixed FPS width so a changing
-   digit count can't shift the switch. */
-      .cta-live {
-        display: flex;
-        flex-direction: row-reverse;
-        align-items: center;
-        gap: 40px;
-        flex: 0 0 auto;
-      }
-
-      /* Hallmark · pre-emit critique: P5 H5 E5 S5 R5 V4
-       * The existing demo already proves the product; this status makes that proof visible
-       * without introducing a new surface or competing with the JS/JZ control. */
-      .live-demo {
-        display: flex;
-        flex-direction: column;
-        align-items: flex-start;
-        gap: 1.5rem;
-        width: 100%;
-        min-width: 0;
-        max-width: 100%;
-      }
-
-      .compile-proof {
-        display: flex;
-        align-items: baseline;
-        flex-wrap: wrap;
-        gap: 4px 6px;
-        max-width: 100%;
-        margin: 0;
         color: var(--dim);
-        font-size: 12px;
+      }
+
+      .metrics .cico .term-bg {
+        fill: currentColor;
+      }
+
+      .metrics .cico.cls-native path {
+        stroke: var(--paper);
+      }
+
+      /* hovered or focused, the cell's icon takes its class colour — the bench page's own (JS gold · WASM violet · terminal) */
+      .metrics .cico,
+      .metrics .cico * {
+        transition: color .18s, fill .18s, stroke .18s;
+      }
+
+      .metrics .stat:is(:hover, :focus-visible) .cls-js {
+        color: var(--cls-js);
+      }
+
+      .metrics .stat:is(:hover, :focus-visible) .cls-wasm {
+        color: var(--cls-wasm);
+      }
+
+      .metrics .stat:is(:hover, :focus-visible) .cls-native {
+        color: var(--cls-native);
+      }
+
+      .metrics .stat:is(:hover, :focus-visible) .cls-native .term-bg {
+        fill: var(--cls-native-bg);
+      }
+
+      .metrics .stat:is(:hover, :focus-visible) .cls-native path {
+        stroke: currentColor;
+      }
+
+      .metrics .stat b {
+        font-size: var(--fs-figure);
+        font-weight: 700;
+        line-height: 1;
+        letter-spacing: -.01em;
         font-variant-numeric: tabular-nums;
-        letter-spacing: .01em;
       }
 
-      .compile-proof .proof-data {
-        min-width: 0;
-        white-space: normal;
-        overflow-wrap: anywhere;
+      .metrics .stat .lab {
+        font-size: var(--fs-caps);
+        line-height: 1;
+        text-transform: uppercase;
+        letter-spacing: var(--ls-caps);
+        color: var(--dim);
+        white-space: nowrap;
       }
 
-      /* "hero demo" — the line's subject, wearing the shared .lnk fashion (site.css): opens this
-   exact source in the REPL below. Only the colour is local — a step brighter than the dim data. */
-      .compile-proof .proof-link {
+      .metrics .stat:hover .lab {
+        color: var(--ink);
+      }
+
+      .metrics .more {
+        display: flex;
+        width: 24px;
+        height: 24px;
+        color: var(--ink);
+      }
+
+      .metrics .more svg {
+        width: 24px;
+        height: 24px;
+      }
+
+      /* TRY — the real REPL, embedded (?embed = tabs, no chrome), ruler to ruler, 7 units tall */
+      .repl-embed {
+        --gbox: light-dark(#070707, var(--rule));
+        display: block;
+        height: calc(7 * var(--U));
+        background: #070707;
+      }
+
+      /* FAQ — half a unit under the REPL's bottom ruler, one question per 80px row. Text between two rules is the
+   exception to hanging: a question's caps sit centred between its row's dividers (32px either side); plain
+   <details>, each opening on its own. An open row is 64, so the answer's first baseline is the next major line;
+   after that the answer keeps fixed spacing (every block a whole number of 8px cells) and ends on a half-unit
+   line (the script); the section's end lands on a major line. */
+      .faq {
+        padding: var(--u2) 0 0;
+      }
+
+      /* row dividers in the rulers' tone, drawn inside the row (an inset shadow), so every row stays exactly 80 */
+      .faq details + details {
+        box-shadow: inset 0 1px var(--rule);
+      }
+
+      .faq summary {
+        list-style: none;
+        cursor: pointer;
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+        gap: 24px;
+        height: var(--U);
+        padding-top: 32px;
+        color: var(--ink);
+        -webkit-tap-highlight-color: transparent;
+        transition: color .16s;
+      }
+
+      .faq details[open] summary {
+        height: 64px;
+      }
+
+      .faq summary::-webkit-details-marker {
+        display: none;
+      }
+
+      .faq summary:hover {
+        color: light-dark(#000, #fff);
+      }
+
+      /* each question is an h2 for the page outline; 21px bold = 16px caps → cap line and baseline on grid lines */
+      .faq summary .fq {
+        font-size: var(--fs-head);
+        font-weight: 600;
+        line-height: 1;
+        max-width: 720px;
+      }
+
+      /* the bench row's chevron (square caps, heavy stroke), pointing down; centred on the question's caps */
+      .faq summary .chev {
+        flex: 0 0 auto;
+        width: 24px;
+        height: 24px;
+        margin-top: -4px;
+        color: var(--ink);
+        transition: transform .24s cubic-bezier(.34, .72, .28, 1.3);
+      }
+
+      .faq details[open] summary .chev {
+        transform: rotate(180deg);
+      }
+
+      .faq .ans {
+        container-type: inline-size;
+        padding-bottom: 24px;   /* grown by the script to the next half-unit line, so the next row starts on one */
+      }
+
+      .faq .ans p + table,
+      .faq .ans p + .bench-svg,
+      .faq .ans p + .subset,
+      .faq .ans .subset + p,
+      .faq .ans .bench-svg + p {
+        margin-top: var(--u2);
+      }
+
+      .faq .ans p + p {
+        margin-top: 16px;
+      }
+
+      .faq details[open] .ans {
+        animation: faq-reveal .3s cubic-bezier(.22, .6, .36, 1);
+      }
+
+      /* opacity only: the height transition carries the motion, and layout reads stay transform-free */
+      @keyframes faq-reveal {
+        from {
+          opacity: 0;
+        }
+      }
+
+      /* smooth height expand/collapse where supported (Chrome 129+); elsewhere native + the fade above */
+      @supports (interpolate-size: allow-keywords) {
+        html {
+          interpolate-size: allow-keywords;
+        }
+
+        .faq details::details-content {
+          block-size: 0;
+          overflow: clip;
+          overflow-clip-margin: 1px;   /* a full-width table's right edge is drawn 1px past the box */
+          transition: block-size .32s cubic-bezier(.22, .6, .36, 1), content-visibility .32s;
+          transition-behavior: allow-discrete;
+        }
+
+        .faq details[open]::details-content {
+          block-size: auto;
+        }
+      }
+
+      .faq .ans b {
+        color: var(--ink);
+      }
+
+      /* tables inside FAQ answers — rows of 40, text baseline 24px down each row, rules on grid lines: each cell
+   draws its top and left edge, the table's shadow the right and bottom ones (just past it, like .gbox) */
+      .faq .ans table {
+        width: 100%;
+        box-shadow: 1px 1px var(--rule);
+        border-collapse: separate;
+        border-spacing: 0;
+        font-size: var(--fs-body);
+        line-height: 24px;
+      }
+
+      .faq .ans th,
+      .faq .ans td {
+        text-align: left;
+        vertical-align: top;
+        border: 0 solid var(--rule);
+        border-width: 1px 0 0 1px;
+        padding: calc((39px - 1cap) / 2) 16px;
+        /* between two rules, the caps centred: 1px rule + equal space above the cap line and below the baseline
+   → rows of 40 (64, 88… when a cell wraps; the lines 24px apart) */
+      }
+
+      @supports (text-box: trim-both cap alphabetic) {
+
+        .faq .ans th,
+        .faq .ans td {
+          text-box: trim-both cap alphabetic;
+        }
+      }
+
+      .faq .ans th:first-child {
+        width: calc(4 * var(--U));
+      }
+
+      .faq .ans thead th {
+        font-weight: 700;
+        color: var(--ink);
+      }
+
+      .faq .ans tbody td {
         color: var(--soft);
       }
 
-      .compile-proof[data-state="loading"] .proof-data {
-        opacity: .65;
-      }
-
-      .compile-proof[data-state="error"] .proof-data {
-        color: var(--mute);
-      }
-
-      /* the CTA: the readout (sparkline + number) leads, the compact JS/JZ switch sits 40px to its right — further than the 28px inside the readout, so the switch reads as separate. switch stays first in the DOM for a11y; row-reverse only flips the visual order. */
-      /* footer install chip reuses .install */
-      .install {
-        display: inline-flex;
-        align-items: baseline;
-        gap: 9px;
-        font-family: var(--mono);
-        font-size: 13.5px;
+      /* the chart's 720×474 box, its height rounded down to whole cells so the text after it stays on the grid */
+      .faq .ans .bench-svg {
+        display: block;
+        width: 100%;
+        max-width: calc(7 * var(--U));
+        aspect-ratio: 720 / 474;
+        height: round(down, min(100cqw, 7 * var(--U)) * 474 / 720, var(--u));
         color: var(--ink);
-        background: none;
-        border: 0;
-        padding: 0;
+      }
+
+      /* transparent currentColor chart, inlined so it inherits --ink and follows the theme toggle; aspect-ratio reserves space pre-inject (no layout shift) */
+      .faq .ans .bench-svg svg {
+        display: block;
+        width: 100%;
+        height: 100%;
+      }
+
+      /* "What is not supported" — a hairline box of struck tags (not compiled), on the grid: 16px insets, 24px rows */
+      .faq .ans .subset {
+        max-width: calc(8 * var(--U));
+      }
+
+      .faq .ans .ring {
+        border: 1px solid light-dark(rgba(0, 0, 0, .14), rgba(255, 255, 255, .14));
+        padding: 15px 16px 15px 15px;
+      }
+
+      .faq .ans .rl {
+        display: block;
+        margin-bottom: 16px;
+        font-size: var(--fs-caps);
+        text-transform: uppercase;
+        letter-spacing: var(--ls-caps);
+        color: var(--dim);
+      }
+
+      .faq .ans .tags {
+        font-family: var(--mono);
+        font-size: var(--fs-mono);
+        line-height: 24px;
+      }
+
+      /* a tag is one unbreakable phrase; a wider gap (space + margin) sets tags apart from the words inside them */
+      .faq .ans .t {
+        margin-right: 8px;
+        white-space: nowrap;
+        color: var(--ink);
+        text-decoration: line-through;
+        text-decoration-color: var(--mute);
+      }
+
+      /* INSTALL — a 3-unit × half-unit command box, centred on the column: click to copy */
+      .cli {
+        height: calc(2 * var(--U));
+        padding-top: var(--u2);
+      }
+
+      .install {
+        --gbox: light-dark(#0c0e11, var(--rule));
+        display: flex;
+        align-items: flex-start;
+        gap: 9px;
+        width: calc(3 * var(--U));
+        height: var(--u2);
+        margin-left: calc(var(--gx-pad) + (var(--cw) - 3 * var(--U)) / 2);
+        padding: 0 16px;
+        font-family: var(--mono);
+        font-size: var(--fs-mono);
+        background: light-dark(#0c0e11, transparent);
+        color: #e8e8ea;
         cursor: copy;
       }
 
+      /* the command's baseline 24px down the box (its 1px top border included) */
+      .install > span {
+        margin-top: calc(23px - 1cap);
+      }
+
       .install .dollar {
-        color: var(--mute);
+        color: #6a6f78;
       }
 
       .install.copied::after {
         content: 'copied';
-        margin-left: 9px;
+        align-self: center;
+        margin-left: auto;
         font-family: var(--font);
-        font-size: 10.5px;
-        letter-spacing: .14em;
+        font-size: var(--fs-caps);
+        letter-spacing: var(--ls-caps);
         text-transform: uppercase;
-        color: var(--soft);
-      }
-
-      /* brief click feedback — no persistent label */
-
-      /* stats (.mgroup/.mlabel/.mstats/.stat — number over a small label) now live in assets/site.css,
-   the ONE shared definition reused by the bench strip so the two metric blocks can't drift. */
-
-      .fps {
-        flex: 0 0 auto;
-        display: inline-flex;
-        align-items: center;
-        gap: 16px;
-        color: var(--ink);
-        font-family: var(--font);
-      }
-
-      /* sparkline → number readout */
-      .fps-spark {
-        width: 80px;
-        height: 34px;
-        display: block;
-        position: relative;
-        top: -6px;
-      }
-
-      /* lifted so it sits above the number's baseline, not centered on it */
-      .fps .metric {
-        display: inline-flex;
-        align-items: baseline;
-        gap: 4px;
-      }
-
-      /* tight number↔unit */
-      .fps .metric b {
-        font-weight: 400;
-        font-size: 20px;
-        font-variant-numeric: tabular-nums;
-        display: inline-block;
-        min-width: 2.8ch;
-        text-align: right;
-      }
-
-      /* fixed width → no shifting */
-      .fps .metric.ms b {
-        width: 6ch;
-      }
-
-      /* FIXED width (not min) — the number's right edge, and the "fps" after it, never move as the value changes (up to ~5 digits + comma) */
-      .fps .unit {
-        font-size: 12px;
-        color: var(--dim);
-      }
-
-      /* JS↔WASM engine switch — the main CTA: big, skeuomorphic (deep-milled track, raised metal knob), barely rounded */
-      .engine {
-        position: relative;
-        top: -2px;
-        left: -2px;
-        flex: 0 0 auto;
-        width: 88px;
-        height: 46px;
-        border: 0;
-        padding: 0;
-        cursor: pointer;
-        border-radius: 999px;
-        -webkit-appearance: none;
-        appearance: none;
-        /* the JS/JZ toggle keeps its pill shape (the one rounded element we keep) */
-        background: linear-gradient(180deg, #050505, #1c1c1c 60%, #262626);
-        box-shadow: inset 0 3px 6px rgba(0, 0, 0, .9), inset 0 -2px 3px rgba(255, 255, 255, .05),
-          inset 0 0 0 1px rgba(0, 0, 0, .6), 0 1px 0 rgba(255, 255, 255, .06),
-          0 0 0 1px rgba(255, 255, 255, .16);
-      }
-
-      /* no outer drop shadow (pointless on black, unwanted on gray); keep the milled insets + the 1px outline that lets it read on either bg */
-      .engine .knob {
-        position: absolute;
-        top: 4px;
-        left: 4px;
-        width: 38px;
-        height: 38px;
-        border-radius: 999px;
-        z-index: 1;
-        background: linear-gradient(180deg, #fff 0%, #ededed 45%, #c4c4c8 100%);
-        box-shadow: 0 3px 6px rgba(0, 0, 0, .6), 0 1px 2px rgba(0, 0, 0, .5),
-          inset 0 1px 1px rgba(255, 255, 255, .95), inset 0 -2px 2px rgba(0, 0, 0, .18);
-        transition: transform .24s cubic-bezier(.34, .72, .28, 1.3);
-      }
-
-      .engine.jz .knob {
-        transform: translateX(42px);
-      }
-
-      /* travel = width − knob − insets (88 − 38 − 8) → JS / JZ states sit side by side, never overlap */
-      .engine .lbl-js,
-      .engine .lbl-jz {
-        position: absolute;
-        top: 0;
-        height: 100%;
-        width: 44px;
-        z-index: 2;
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        font: 700 14px/1 var(--font);
-        letter-spacing: .02em;
-        color: rgba(255, 255, 255, .4);
-        transition: color .2s;
-        pointer-events: none;
-      }
-
-      .engine .lbl-js {
-        left: 0;
-      }
-
-      .engine .lbl-jz {
-        right: 0;
-      }
-
-      .engine.js .lbl-js {
-        color: #141414;
-      }
-
-      .engine.jz .lbl-jz {
-        color: #141414;
-      }
-
-      @media (prefers-reduced-motion: reduce) {
-        .engine .knob {
-          transition: none;
-        }
-      }
-
-      /* <1080 — a slightly smaller switch; the full-size one reads too big once the layout tightens */
-      @media (max-width: 1080px) {
-        .engine {
-          width: 76px;
-          height: 40px;
-          top: -2px;
-        }
-
-        .engine .knob {
-          width: 32px;
-          height: 32px;
-        }
-
-        .engine.jz .knob {
-          transform: translateX(36px);
-        }
-
-        .engine .lbl-js,
-        .engine .lbl-jz {
-          width: 38px;
-          font-size: 12px;
-        }
-      }
-
-      /* below ~the content column's fit width, the bled grid can't stay whole-celled with padding → let it go full-bleed (the one place the grid may touch the edges; edge cells cut by the viewport are fine here) */
-      @media (max-width: 1180px) {
-
-        .grid-current,
-        .hero::before {
-          left: 0;
-          width: 100%;
-        }
-      }
-
-      /* ≤1040 — the 2-col flexes + the perf numbers leave their fixed 120px grid cells and flow, so nothing clips before the stack */
-      @media (max-width: 1040px) {
-        .pitch {
-          grid-template-columns: minmax(0, 1fr) auto;
-        }
-
-        .metrics .mstats {
-          gap: clamp(18px, 2.6vw, 32px);
-        }
-
-        .metrics .stat {
-          width: auto;
-        }
-      }
-
-      /* ≤960 — stack: the metrics + FPS/switch wrap below the description, no title-level drop (margin-top:0) */
-      @media (max-width: 960px) {
-        .pitch {
-          grid-template-columns: 1fr;
-          row-gap: clamp(24px, 4vh, 40px);
-        }
-
-        .pright {
-          margin-top: 0;
-          gap: 16px;
-        }
-
-        .metrics {
-          margin-top: 0;
-          min-height: 0;
-        }
-      }
-
-      /* 721–960 — tablet: the bench numbers and the FPS/switch fit on one line, side by side */
-      @media (min-width: 721px) and (max-width: 960px) {
-        .pright {
-          flex-direction: row;
-          justify-content: flex-start;
-          column-gap: clamp(24px, 4vw, 56px);
-          row-gap: 16px;
-          margin-left: var(--u2);
-        }
-        .metrics {
-          flex-shrink: 0;
-        }
-      }
-
-      @media (max-width: 720px) {
-
-        /* one column: the left stack (logo+title, description) then the right stack (metrics, FPS/switch) */
-        .pitch {
-          grid-template-columns: 1fr;
-          row-gap: clamp(22px, 4vh, 40px);
-        }
-
-        .pright {
-          margin-top: 0;
-          margin-left: 0;
-          gap: 20px;
-        }
-
-        /* no title-level drop once stacked; flush-left (drop the 40px indent); tighter gap */
-        .pitch .sub {
-          margin-left: 0;
-        }
-
-        .pleft .install {
-          margin-left: 0;
-        }
-
-        /* description, speed metrics + op/s sit flush with the logo on mobile (−40px) */
-        .cta-live {
-          gap: 14px;
-        }
-
-        /* tighter readout↔toggle so the cta fits within the indent */
-        .metrics .mstats {
-          gap: 10px;
-        }
-
-        /* tighter so the 3 stats stay on one line when indented */
-        .phead {
-          align-items: flex-end;
-          gap: 16px;
-        }
-
-        /* logo + title side-by-side; title bottom-aligned to the JZ letters */
-        .metrics .mstats .stat b {
-          font-size: 24px;
-        }
-
-        /* lighter speed numbers on mobile */
-        .logo img {
-          width: 80px;
-          height: 80px;
-          margin: 0;
-        }
-
-        /* 80px mark on mobile (1 unit) */
-        .pitch h1 {
-          font-size: 20px;
-          padding-top: 0;
-          position: relative;
-          top: -4px;
-        }
-
-        /* fixed small size on mobile; lifted to sit at the JZ letters, not below */
-        .hero-nav {
-          gap: 14px;
-          padding: 12px var(--padx);
-        }
-
-        .hero-nav a.opt {
-          display: none;
-        }
-      }
-
-      /* <480 — tightened: logo sits 20px from the edge (halved inset); the header padding-x is halved; the
-   "experimental" tag hides (no room). Description / metrics / op/s stay flush with the logo (margin-left 0
-   from the ≤720 rule above). */
-      @media (max-width: 479px) {
-        .pitch {
-          padding-left: 20px;
-          padding-right: 20px;
-        }
-
-        /* logo now 20px from the edge */
-        .hero-nav {
-          padding-inline: 20px;
-          justify-content: flex-start;
-        }
-
-        /* header padding-x halved; menu flush-left ONLY here, where "experimental" is hidden */
-        .hero-nav>a:first-of-type {
-          margin-left: 20px;
-        }
-
-        /* 20px gap before the first menu item (aligns with the description) */
-        .hero-nav .ver {
-          margin-left: auto;
-        }
-
-        /* version + GitHub pushed to the right */
-        .hero-nav .ver .exp {
-          display: none;
-        }
-      }
-
-      /* ─────────── TRY — the real REPL embedded (chrome-stripped via ?embed): edit or paste source, hit
-   Run, read the WAT + console, race it “js vs wasm”. The standalone REPL lives at /repl/. ─────────── */
-      .try {
-        position: relative;
-        z-index: 3;
-        margin-top: calc(-3 * var(--U));
-        padding: 0 var(--padx) clamp(20px, 3vw, 32px);
-        pointer-events: none;
-      }
-
-      /* rides up onto the grid band; no bg + click-through so the blueprint around the REPL (and its pulse shooter) stays clickable */
-      .try-wrap {
-        max-width: calc(var(--cw) + 1px);
-        margin-inline: calc(var(--gx-pad) - var(--padx)) auto;
-      }
-
-      /* the shared content column (cw) + 1px so the panel's right border lands ON the content-right grid line and covers it (its left border already does) */
-      .repl-embed {
-        display: block;
-        width: 100%;
-        height: clamp(440px, 66vh, 640px);
-        border: 1px solid light-dark(rgba(255, 255, 255, .35), #1c1c25);
-        background: #000;
-        pointer-events: auto;
-      }
-
-      /* a gently-transparent white frame on the gray in light (like the faint grid lines), subtle dark on black in dark; re-enable clicks on the REPL (the .try section is click-through) */
-      /* stacked (≤800) hero is taller, so the REPL must ride up less or it covers the FPS/switch. Placed AFTER .try so it wins the cascade. */
-      @media (max-width: 960px) {
-        .try {
-          margin-top: calc(-2 * var(--U));
-        }
-
-        /* stacked hero content ends lower (install chip + proof line) — bottom padding ≥ the REPL's
-   2-unit ride-up, plus 24px of air, so the REPL can never sit on content */
-        .pitch {
-          padding-bottom: calc(2 * var(--U) + 24px);
-        }
-
-        /* one minor unit down — stacked layouts land the proof text exactly on the 6-unit major rule
-   (reads as strikethrough) */
-        .compile-proof {
-          margin-top: 8px;
-        }
-      }
-
-      /* stacked hero is short, so the REPL still rides ~160px up onto the grid (clear of the FPS/switch) */
-      @media (max-width: 479px) {
-        .try {
-          padding-inline: 0;
-        }
-      }
-
-      /* code section spans edge to edge on the narrowest phones */
-
-      /* ─────────────────────────── EXAMPLES — 8 square previews on the centred content column, no gaps, no labels ─────────────────────────── */
-      /* focused install command — a centred CLI line before the FAQ */
-      .cli {
-        background: var(--paper);
-        padding: 40px var(--padx);
-        text-align: center;
-      }
-
-      /* tight, symmetric breathing room around the lone install chip */
-      .cli .install {
-        font-size: clamp(14px, 1.5vw, 16px);
-        width: 250px;
-        max-width: 100%;
-        justify-content: flex-start;
-        background: light-dark(#0c0e11, transparent);
-        color: #e8e8ea;
-        border: 1px solid light-dark(#20242a, transparent);
-        border-radius: 0;
-        padding: 11px 18px;
-      }
-
-      /* a mini-CLI: square, fixed width. The box only shows in light — on the black page it's invisible, just the command text */
-      .cli .install .dollar {
-        color: #6a6f78;
-      }
-
-      .cli .install.copied::after {
         color: #9aa0a8;
-      }
-
-      /* ── SPONSOR — the closing ask. Identical component to the bench page's "Report a slow case":
-   the .report chip lives in assets/site.css (ONE definition, both pages). Only this section wrapper
-   is local — it mirrors bench's #honest (centred, 16px question, chip 14px under it). ── */
-      .author {
-        background: var(--paper);
-        padding: 56px var(--padx) 0;
-      }
-
-      .author-wrap {
-        max-width: var(--cw);
-        margin-inline: calc(var(--gx-pad) - var(--padx)) auto;
-        display: grid;
-        grid-template-columns: 2fr 1fr;
-        gap: 40px;
-        align-items: start;
-      }
-
-      /* same column inset as the FAQ (.faq-wrap) on tablet+ */
-      @media (min-width: 721px) {
-        .author-wrap {
-          padding-inline: 40px;
-        }
-      }
-
-      .author-text h2 {
-        margin: 0 0 12px;
-        font-size: 18px;
-        font-weight: 600;
-        color: var(--ink);
-      }
-
-      .author-text p {
-        margin: 0 0 12px;
-        font-size: 15px;
-        line-height: 24px;
-        color: var(--dim);
-        max-width: 60ch;
-      }
-
-      .sponsor {
-        padding-top: 30px;
-        text-align: left;
-      }
-
-      @media (max-width: 720px) {
-        .author-wrap {
-          grid-template-columns: 1fr;
-          gap: 32px;
-        }
-
-        .sponsor {
-          padding-top: 0;
-          text-align: center;
-        }
-      }
-
-      .sponsor p {
-        margin: 0;
-        font-size: 16px;
-        line-height: 24px;
-        color: var(--ink);
       }
 
       /* type-on reveal: JS empties .cmd + adds .caret-on when the chip scrolls into view, then types it back. The block caret blinks. */
@@ -944,9 +591,9 @@
         content: '';
         display: inline-block;
         width: .58ch;
-        height: 1.05em;
+        height: 1cap;
         margin-left: 2px;
-        vertical-align: -.16em;
+        vertical-align: baseline;
         background: currentColor;
         animation: caret-blink 1.06s step-end infinite;
       }
@@ -957,35 +604,37 @@
         }
       }
 
+      /* EXAMPLES — one example per major cell, two rows, ruler to ruler, the section closing on the last row; the
+   column's width in units decides how many fit (the script hides the rest), the last cell opens the gallery */
+      /* ends at the last row's bottom edge: the next section's ruler closes the thumbnails, no padding under them */
       .examples {
-        background: var(--paper);
-        padding: clamp(40px, 6vw, 72px) var(--padx);
+        height: calc(4 * var(--U));
+        padding-top: var(--U);
+        overflow: hidden;
       }
 
-      .ex-wrap {
-        max-width: var(--cw);
-        margin-inline: calc(var(--gx-pad) - var(--padx)) auto;
-      }
-
-      /* on the grid column (content-left = gx-pad) */
       .examples h2 {
-        font-size: clamp(22px, 3vw, 32px);
+        margin-bottom: 56px;
+        padding-inline: var(--in);
+        font-size: var(--fs-figure);
         font-weight: 700;
+        line-height: 1;
         letter-spacing: -.015em;
-        line-height: 1.06;
-        margin: 0 0 clamp(18px, 2.4vw, 28px) 40px;
       }
 
       .exrow {
         display: grid;
-        grid-template-columns: repeat(8, 1fr);
-        gap: 0;
+        grid-template-columns: repeat(auto-fill, var(--U));
+        grid-auto-rows: var(--U);
       }
 
       .exrow a {
         display: block;
-        aspect-ratio: 1;
         overflow: hidden;
+      }
+
+      .exrow a[hidden] {
+        display: none;
       }
 
       .exrow img {
@@ -1001,295 +650,196 @@
         filter: grayscale(.35) brightness(1.05) contrast(1.03);
       }
 
+      /* "More →" — baseline on the cell's 48px line */
       .exrow .ex-all {
         display: flex;
-        align-items: center;
         justify-content: center;
-        padding: 8px;
-        text-align: center;
         text-decoration: none;
         color: var(--soft);
-        font-size: clamp(11px, 1.05vw, 13px);
-        letter-spacing: .01em;
-        line-height: 1.35;
+        font-size: var(--fs-small);
         transition: color .16s;
       }
 
-      /* last cell → the full gallery; stays black (transparent), only the text brightens on hover */
+      .exrow .ex-all span {
+        margin-top: calc(48px - 1cap);
+      }
+
       .exrow .ex-all:hover {
         color: light-dark(#000, #fff);
       }
 
-      /* darken in light, brighten in dark */
-      @media (max-width: 720px) {
-        .exrow {
-          grid-template-columns: repeat(4, 1fr);
-        }
-
-        .examples h2 {
-          margin-left: 0;
-        }
+      /* INSPIRATION — story and the ask side by side, both headed on the same line; the ask takes the last 3 units */
+      .author {
+        padding: var(--U) 0 var(--u2);
       }
 
-      @media (max-width: 479px) {
-        .examples {
-          padding-inline: 20px;
-        }
-
-        /* halved side inset — keeps the title 20px from the edge */
-        .exrow {
-          margin-inline: -20px;
-        }
-
-        /* the image grid bleeds past it, full-width edge to edge */
+      .author-wrap {
+        display: grid;
+        grid-template-columns: 1fr calc(3 * var(--U));
+        column-gap: var(--U);
       }
 
-      /* ─────────────────────────── FAQ — native <details> accordion, narrow centred column ─────────────────────────── */
-      .faq {
-        background: var(--paper);
-        padding: clamp(20px, 3vw, 32px) var(--padx) clamp(28px, 4vw, 48px);
-      }
-
-      /* top = pitch bottom gap; the centred install command closes the section below */
-      .faq-wrap {
-        max-width: var(--cw);
-        margin-inline: calc(var(--gx-pad) - var(--padx)) auto;
-      }
-
-      /* shared content column (no extra inset) */
-      @media (min-width: 721px) {
-        .faq-wrap {
-          padding-inline: 40px;
-        }
-      }
-
-      /* gentle side breathing room on tablet+ (none on phones) */
-      @media (max-width: 479px) {
-        .faq {
-          padding-inline: 20px;
-        }
-      }
-
-      /* 20px only on the narrowest phones; ≥480 keeps the shared column inset (matches the examples header) */
-      .faq summary .fq {
-        max-width: 720px;
-      }
-
-      /* rows + dividers span the full container; only the text is capped to a readable width */
-      /* each question is an h2 for the page outline; it renders as the summary's own text */
-      .faq summary .fq {
-        font: inherit;
-        margin: 0;
-      }
-
-      .faq details {
-        border-top: 1px solid var(--line);
-      }
-
-      .faq details:first-of-type {
-        border-top: 0;
-      }
-
-      .faq summary {
-        list-style: none;
-        cursor: pointer;
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        gap: 24px;
-        padding: clamp(16px, 1.8vw, 22px) 0;
-        font-size: clamp(15px, 1.5vw, 18px);
+      .author h2 {
+        margin-bottom: 24px;
+        font-size: var(--fs-head);
         font-weight: 600;
-        color: var(--ink);
-        -webkit-tap-highlight-color: transparent;
-        transition: color .16s;
-      }
-
-      .faq summary::-webkit-details-marker {
-        display: none;
-      }
-
-      .faq summary:hover {
-        color: light-dark(#000, #fff);
-      }
-
-      /* brighten in dark, darken in light — never white on the gray */
-      .faq summary .chev {
-        flex: 0 0 auto;
-        width: 17px;
-        height: 17px;
-        color: var(--dim);
-        transition: transform .24s cubic-bezier(.34, .72, .28, 1.3), color .16s;
-      }
-
-      .faq details[open] summary .chev {
-        transform: rotate(180deg);
+        line-height: 1;
         color: var(--ink);
       }
 
-      .faq .ans {
-        padding: 0 8px clamp(20px, 2.2vw, 26px) 0;
-      }
-
-      /* gentle gap between paragraphs within an answer */
-      .faq details[open] .ans {
-        animation: faq-reveal .3s cubic-bezier(.22, .6, .36, 1);
-      }
-
-      @keyframes faq-reveal {
-        from {
-          opacity: 0;
-          transform: translateY(-8px);
-        }
-
-        to {
-          opacity: 1;
-          transform: translateY(0);
-        }
-      }
-
-      /* smooth height expand/collapse where supported (Chrome 129+); elsewhere native + the fade above */
-      @supports (interpolate-size: allow-keywords) {
-        html {
-          interpolate-size: allow-keywords;
-        }
-
-        .faq details::details-content {
-          block-size: 0;
-          overflow: hidden;
-          transition: block-size .32s cubic-bezier(.22, .6, .36, 1), content-visibility .32s;
-          transition-behavior: allow-discrete;
-        }
-
-        .faq details[open]::details-content {
-          block-size: auto;
-        }
-      }
-
-      .faq .ans b {
-        color: var(--ink);
-      }
-
-      /* bold call-outs read white against the soft body */
-      /* tables inside FAQ answers (Good-for · comparison) — square, hairline, blueprint-consistent (no radius, --line rules) */
-      .faq .ans table {
-        width: 100%;
-        border-collapse: collapse;
-        margin: 18px 0 14px;
-        font-size: 16px;
+      .author p {
+        font-size: var(--fs-body);
         line-height: 24px;
-      }
-
-      .faq .ans th,
-      .faq .ans td {
-        text-align: left;
-        padding: 8px 12px;
-        border: 1px solid var(--line);
-        vertical-align: top;
-      }
-
-      .faq .ans thead th,
-      .faq .ans tbody th {
-        font-weight: 700;
-        color: var(--ink);
-      }
-
-      .faq .ans tbody td {
-        color: var(--soft);
-      }
-
-      .faq .ans .y {
-        color: var(--ink);
-        font-weight: 700;
-      }
-
-      /* the cells JZ wins on — read at full ink */
-      @media (max-width: 560px) {
-        .faq .ans table {
-          font-size: 14px;
-        }
-
-        .faq .ans th,
-        .faq .ans td {
-          padding: 6px 8px;
-        }
-      }
-
-      .faq .ans .bench-svg {
-        display: block;
-        width: 100%;
-        max-width: 560px;
-        margin: 18px 0 14px;
-        aspect-ratio: 720 / 474;
-        color: var(--ink);
-      }
-
-      /* transparent currentColor chart, inlined so it inherits --ink and follows the theme toggle; aspect-ratio reserves space pre-inject (no layout shift) */
-      .faq .ans .bench-svg svg {
-        display: block;
-        width: 100%;
-        height: auto;
-      }
-
-      /* "What JS parts" — three nested square boxes: NOT SUPPORTED ⊃ COMPAT ⊃ STRICT (the README onion).
-   Plain hairline borders, no fill, no radius — nesting + labels carry it; struck tags = not compiled. */
-      .faq .ans .subset {
-        max-width: 520px;
-        margin: 18px 0 14px;
-      }
-
-      .faq .ans .ring {
-        border: 1px solid;
-        padding: 11px 16px 15px;
-      }
-
-      /* border darkens toward the core — the density cue (outer faint → strict darkest) */
-      .faq .ans .ring.out {
-        border-color: light-dark(rgba(0, 0, 0, 0.12), rgba(255, 255, 255, 0.1));
-      }
-
-      .faq .ans .ring.mid {
-        border-color: light-dark(rgba(0, 0, 0, 0.22), rgba(255, 255, 255, 0.2));
-        margin-top: 10px;
-      }
-
-      .faq .ans .ring.in {
-        border-color: light-dark(rgba(0, 0, 0, 0.36), rgba(255, 255, 255, 0.32));
-        margin-top: 10px;
-      }
-
-      .faq .ans .rl {
-        display: block;
-        font-size: 10px;
-        text-transform: uppercase;
-        letter-spacing: 0.14em;
-        margin-bottom: 7px;
         color: var(--dim);
+        max-width: 60ch;
       }
 
-      .faq .ans .t {
-        display: inline-block;
-        font-family: var(--mono);
-        font-size: 14px;
-        line-height: 20px;
-        margin: 2px 11px 2px 0;
-        white-space: nowrap;
-        color: var(--ink);
+      .author p + p {
+        margin-top: 16px;
       }
 
-      /* outer ring = not compiled; these stay in regular JS → struck */
-      .faq .ans .ring.out > .t {
-        text-decoration: line-through;
+      .author p a {
+        color: inherit;
+        text-decoration: underline;
         text-decoration-color: var(--mute);
+        text-decoration-thickness: 1px;
+        text-underline-offset: 2px;
       }
 
-      /* FOOTER — the shared footer (brand · nav columns · credit over "MIT · ॐ") lives in assets/site.css,
-   the ONE definition reused on the landing, bench and examples so they can never drift. No copy here. */
+      .author p a:hover {
+        text-decoration-color: currentColor;
+      }
 
-      /* Reduced motion: kill CSS transitions/animations (engine knob, hovers) — the standard reset.
-   The grid pulses (.grid-current) stay ON: they're sparse, dim, slow ambient motion (no flashing,
-   no parallax) — the low-risk kind — and they're the page's one live demo, so gating them would be
-   inconsistent with showing the FPS/JS-vs-JZ readout at all. */
+      /* the shared CTA chip (assets/site.css), squared to 2 units × half a unit */
+      .sponsor .report {
+        --gbox: var(--ink);
+        display: block;
+        width: calc(2 * var(--U));
+        height: var(--u2);
+        margin: 0;
+        padding: calc(23px - 1cap) 0 0;
+        text-align: center;
+      }
+
+      /* FOOTER — shared (assets/site.css); here it takes the text inset */
+      footer .fwrap {
+        padding-inline: var(--in);
+      }
+
+      /* ≤1039 — the column is 9–11 units: the bench row folds into rows of three (five figures and the chevron) */
+      @media (max-width: 1039px) {
+        .metrics {
+          grid-template-columns: repeat(3, var(--pitch));
+          row-gap: 24px;
+        }
+      }
+
+      /* ≤959 — the column is under 11 units: the ask drops below the story, half a unit under it, a unit of air below */
+      @media (max-width: 959px) {
+        .author-wrap {
+          grid-template-columns: 1fr;
+          row-gap: var(--u2);
+        }
+
+        .author {
+          padding-bottom: var(--U);
+        }
+      }
+
+      /* ≤799 — phones and narrow tablets: no inset, a 1-unit logo beside the title, the figures in rows of three */
+      @media (max-width: 799px) {
+        :root {
+          --in: 0px;
+          --pitch: calc(2 * var(--U));
+        }
+
+        .hero {
+          padding-top: var(--u2);
+        }
+
+        .hero h1 {
+          margin-top: 36px;
+        }
+
+        .phead {
+          gap: 16px;
+        }
+
+        .logo img {
+          width: calc(var(--U) - 1px);
+          height: calc(var(--U) - 1px);
+        }
+
+
+        .metrics {
+          margin-top: var(--u2);
+        }
+
+        .faq .ans th:first-child {
+          width: 50%;
+        }
+
+        .repl-embed {
+          height: calc(6 * var(--U));
+        }
+
+        .hero-nav {
+          --nav-gap: 14px;
+        }
+      }
+
+      /* <528 — the column is under 6 units: the title in three lines (last baseline y 244, so the figures hang from
+   the next half-unit line, 280), figures in rows of two */
+      @media (max-width: 527px) {
+        .metrics {
+          margin-top: 36px;
+        }
+
+        .hero h1 .d {
+          display: none;
+        }
+
+        .hero h1 .m {
+          display: revert;
+        }
+
+        .metrics {
+          grid-template-columns: repeat(2, var(--pitch));
+        }
+      }
+
+      /* <480 — (the side inset shrinks to 2 minor units: assets/site.css) the menu starts at the left */
+      @media (max-width: 479px) {
+        .hero-nav {
+          justify-content: flex-start;
+        }
+
+        .hero-nav .ver {
+          margin-left: auto;
+        }
+
+      }
+
+      /* <352 — a three-unit column: the title steps down to what fits beside the logo, the figures take two
+   narrow columns with wrapping labels (the script keeps the row and the hero's end on half-unit lines) */
+      @media (max-width: 351px) {
+        .hero h1 {
+          font-size: var(--fs-body);
+          line-height: 24px;
+        }
+
+        .metrics {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+
+        .metrics .stat .lab {
+          white-space: normal;
+        }
+      }
+
+      /* Reduced motion: kill CSS transitions/animations (hovers, FAQ reveal) — the standard reset.
+   The dark theme's grid pulses (.grid-current) stay ON: sparse, dim, slow ambient motion (no flashing,
+   no parallax) — the low-risk kind. */
       @media (prefers-reduced-motion: reduce) {
         * {
           animation-duration: .001ms !important;
@@ -1308,93 +858,66 @@
 
   <body>
 
-    <main class="hero">
-      <!-- the live demo IS the blueprint grid's electron pulses (grid-current.js), compiled in-page; the
-       in-pitch JS/JZ switch flips its engine and the FPS/ms readout times the frame -->
-      <canvas class="grid-current" id="grid-current" aria-hidden="true"></canvas>
+    <!-- dark theme only: the grid's live current (assets/grid-current.js), compiled in-page by jz -->
+    <canvas class="grid-current" id="grid-current" aria-hidden="true"></canvas>
 
-      <nav class="hero-nav site-nav" aria-label="Main navigation">
-        <a href="guide/">guide</a>
-        <a href="examples/">examples</a>
-        <a href="bench/">bench</a>
-        <a href="repl/">repl</a>
-        <a class="ver" href="https://www.npmjs.com/package/jz" target="_blank" rel="noopener"><span data-ver>v0.8.1</span> <span class="exp">experimental</span></a>
-        <button class="theme-toggle" type="button" aria-label="Toggle light or dark theme" title="Toggle theme">
-          <svg class="i-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z" />
-          </svg>
-          <svg class="i-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <circle cx="12" cy="12" r="4" />
-            <path d="M12 2v2M12 20v2M2 12h2M20 12h2M5 5l1.4 1.4M17.6 17.6 19 19M19 5l-1.4 1.4M6.4 17.6 5 19" />
-          </svg>
-        </button>
-        <a class="gh" href="https://github.com/dy/jz" target="_blank" rel="noopener" aria-label="jz on GitHub">
-          <svg viewBox="0 0 16 16" width="20" height="20" aria-hidden="true">
-            <path fill="currentColor"
-              d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z" />
-          </svg>
-        </a>
-      </nav>
+    <header class="top">
+    <nav class="hero-nav col site-nav" aria-label="Main navigation">
+      <a href="guide/">guide</a>
+      <a href="examples/">examples</a>
+      <a href="bench/">bench</a>
+      <a href="repl/">repl</a>
+      <a class="ver" href="https://www.npmjs.com/package/jz" target="_blank" rel="noopener"><span data-ver>v0.8.1</span></a>
+      <button class="theme-toggle" type="button" aria-label="Toggle light or dark theme" title="Toggle theme">
+        <svg class="i-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z" />
+        </svg>
+        <svg class="i-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <circle cx="12" cy="12" r="4" />
+          <path d="M12 2v2M12 20v2M2 12h2M20 12h2M5 5l1.4 1.4M17.6 17.6 19 19M19 5l-1.4 1.4M6.4 17.6 5 19" />
+        </svg>
+      </button>
+      <a class="gh" href="https://github.com/dy/jz" target="_blank" rel="noopener" aria-label="jz on GitHub">
+        <svg viewBox="0 0 16 16" width="20" height="20" aria-hidden="true">
+          <path fill="currentColor"
+            d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z" />
+        </svg>
+      </a>
+    </nav>
+    </header>
 
-      <section class="pitch">
-        <div class="pcol pleft">
-          <div class="phead">
-            <a class="logo" href="./" aria-label="JZ – home"><img src="jz.svg" width="160" height="160" alt="JZ"><span class="logo-refl" aria-hidden="true"></span></a>
-            <h1>Plain JS<br class="hb">at native speed</h1>
-          </div>
-          <p class="sub">Compile plain JS to WASM, ahead of time.<br/> For DSP, math, visuals, and more.</p>
-          <button class="install" id="install1" title="click to copy"><span class="dollar">$</span><span class="cmd">npm install jz</span></button>
-        </div>
+    <main class="hero ruled">
+      <div class="col">
+      <div class="phead">
+        <a class="logo" href="./" aria-label="JZ – home"><img src="jz.svg" width="160" height="160" alt="JZ"></a>
+        <h1 class="title">Compute-first<br class="m"> JS<br class="d"> compiling<br class="m"> to WASM</h1>
+      </div>
 
-        <div class="pcol pright">
-          <!-- top-right quadrant: "Faster than" over the three selling stats (one line) + bench link.
-           V8 = your runtime, Porffor = the JS-AOT rival (its native artifact), AssemblyScript = the wasm-language
-           incumbent. peak-SIMD and the size/memory figures live on the bench strip (the expanded view). -->
-          <div class="metrics">
-            <span class="mlabel">Faster than</span>
-            <div class="mrow">
-              <div class="mstats">
-                <a class="stat" href="bench/"><b :text="v8">2.2×</b><span data-cls="js">V8<i>(average)</i></span></a>
-                <a class="stat" href="bench/"><b :text="asspeed">2.1×</b><span data-cls="wasm">AssemblyScript</span></a>
-                <a class="stat" href="bench/"><b :text="porf">15×</b><span data-cls="native">Porffor</span></a>
-              </div>
-            </div>
-          </div>
-
-          <!-- bottom-right quadrant (drops to the description's level): the CTA — flip the live demo
-           between plain JS and jz-compiled WASM; the fps/ms it drives reads right beside it. -->
-          <div class="live-demo">
-            <div class="cta-live">
-              <button class="engine jz" id="engine" role="switch" aria-checked="true" aria-label="Run the live demo as plain JS or as JZ-compiled WASM"><span class="lbl-js">JS</span><span class="lbl-jz">JZ</span><span class="knob"></span></button>
-              <div class="fps" aria-label="compute throughput, operations per second">
-                <canvas class="fps-spark" id="fps-spark"></canvas><span class="metric ms" title="Compute passes per second – how many times the engine runs the whole frame. Uncapped by your ~60 Hz display. Higher is better; flip JS/JZ to compare."><b
-                    id="ms-num">··</b><span class="unit">op/s</span></span>
-              </div>
-            </div>
-            <p class="compile-proof" id="compile-proof" data-state="loading" aria-live="polite">
-              <a class="proof-link lnk" id="compile-proof-link" href="repl/" title="Open the hero demo source in the REPL">Demo</a>
-              <span class="proof-data" id="compile-proof-data">compiling in your browser…</span>
-            </p>
-          </div>
-        </div>
-      </section>
+      <!-- five rotating figures, each JZ ÷ a target in the named quantity: speed (above 1× = faster), memory and
+       size (below 1× = less). Each cell is one class of targets — JS, WASM or native — marked by the icon leading
+       its label; it cycles through that field, holds under hover or focus, steps on click. Pre-filled with each
+       field's first; the numbers come from bench/results.json through assets/headline.js. -->
+      <div class="metrics">
+        <button class="stat" type="button" :scope="{ f: fields[0] }" :onclick="step(f)" :onpointerenter="f.hold = true" :onpointerleave="f.hold = false" :onfocus="f.hold = true" :onblur="f.hold = false" :title="tip(f)"><b :text="fmt(f.shown)">2.36×</b><span class="under"><i class="ic" data-cls="js"></i><span class="lab" :text="label(f)">V8 speed</span></span></button>
+        <button class="stat" type="button" :scope="{ f: fields[1] }" :onclick="step(f)" :onpointerenter="f.hold = true" :onpointerleave="f.hold = false" :onfocus="f.hold = true" :onblur="f.hold = false" :title="tip(f)"><b :text="fmt(f.shown)">2.23×</b><span class="under"><i class="ic" data-cls="wasm"></i><span class="lab" :text="label(f)">AS speed</span></span></button>
+        <button class="stat" type="button" :scope="{ f: fields[2] }" :onclick="step(f)" :onpointerenter="f.hold = true" :onpointerleave="f.hold = false" :onfocus="f.hold = true" :onblur="f.hold = false" :title="tip(f)"><b :text="fmt(f.shown)">1.04×</b><span class="under"><i class="ic" data-cls="native"></i><span class="lab" :text="label(f)">C speed</span></span></button>
+        <button class="stat" type="button" :scope="{ f: fields[3] }" :onclick="step(f)" :onpointerenter="f.hold = true" :onpointerleave="f.hold = false" :onfocus="f.hold = true" :onblur="f.hold = false" :title="tip(f)"><b :text="fmt(f.shown)">0.66×</b><span class="under"><i class="ic" data-cls="native"></i><span class="lab" :text="label(f)">Porf memory</span></span></button>
+        <button class="stat" type="button" :scope="{ f: fields[4] }" :onclick="step(f)" :onpointerenter="f.hold = true" :onpointerleave="f.hold = false" :onfocus="f.hold = true" :onblur="f.hold = false" :title="tip(f)"><b :text="fmt(f.shown)">0.82×</b><span class="under"><i class="ic" data-cls="wasm"></i><span class="lab" :text="label(f)">AS size</span></span></button>
+        <a class="more" href="bench/" aria-label="All benchmarks" title="All benchmarks"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="square" aria-hidden="true"><path d="M2 5l7 7-7 7" /></svg></a>
+      </div>
+      </div>
     </main>
 
-    <section class="try" id="try">
-      <div class="try-wrap">
-        <!-- the real REPL, embedded (chrome-stripped via ?embed): edit or paste source, Run, read the WAT
-         and console. It opens on a runnable preset — hit “js vs wasm” to race the same source. -->
-        <iframe class="repl-embed" src="repl/?embed" title="JZ REPL – edit, compile, run" loading="lazy"></iframe>
-      </div>
+    <section class="try ruled" id="try">
+      <!-- the real REPL, embedded (?embed = tabs, no chrome): edit, read the WAT, Run -->
+      <iframe class="repl-embed col gbox" src="repl/?embed" title="JZ REPL – edit, compile, run" loading="lazy"></iframe>
     </section>
 
-    <section class="faq">
-      <div class="faq-wrap">
+    <section class="faq ruled">
+      <div class="faq-wrap col">
 
-        <details name="faq" open>
-          <summary><h2 class="fq">What is JZ?</h2><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <path d="M6 9l6 6 6-6" />
-            </svg></summary>
+        <details open>
+          <summary><h2 class="fq">What is JZ?</h2><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="square" aria-hidden="true"><path d="M5 9l7 7 7-7" /></svg></summary>
           <div class="ans prose">
             <p>JZ (<em>javascript zero</em>) compiles JavaScript ahead of time to a plain <code>.wasm</code> module: no engine, no GC, no type annotations, auto-SIMD, byte-identical output.</p>
             <p><em>Valid JZ is valid JS</em> – drop the compile step and the same file keeps running.</p>
@@ -1434,79 +957,65 @@
             </table>
           </div>
         </details>
-        <details name="faq">
-          <summary><h2 class="fq">How do I use it?</h2><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <path d="M6 9l6 6 6-6" />
-            </svg></summary>
-          <div class="ans prose">The CLI (<code>jz kernel.js</code>) or the API (<code>compile()</code>) produces a plain <code>.wasm</code> you load like any other module. <a href="https://github.com/dy/jz" target="_blank"
-              rel="noopener">Setup &amp; options →</a></div>
+        <details>
+          <summary><h2 class="fq">How do I use it?</h2><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="square" aria-hidden="true"><path d="M5 9l7 7 7-7" /></svg></summary>
+          <div class="ans prose">
+            <p>The CLI (<code>jz kernel.js</code>) or the API (<code>compile()</code>) produces a plain <code>.wasm</code> you load like any other module. <a href="https://github.com/dy/jz" target="_blank" rel="noopener">Setup &amp; options →</a></p>
+          </div>
         </details>
-        <details name="faq">
-          <summary><h2 class="fq">Is it fast?</h2><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <path d="M6 9l6 6 6-6" />
-            </svg></summary>
+        <details>
+          <summary><h2 class="fq">Is it fast?</h2><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="square" aria-hidden="true"><path d="M5 9l7 7 7-7" /></svg></summary>
           <div class="ans prose">
             <p>Faster than V8 and AssemblyScript on almost every kernel we measure, about 2× on average. Every number, and every loss, is on the <a href="bench/">bench page</a>.</p>
             <a href="bench/" class="bench-svg" id="bench-chart" role="img" aria-label="Geomean speed across the bench corpus – jz vs the wasm field (C, Rust, Go, Zig, MoonBit, AssemblyScript, compiled to WASM and run in V8), V8 itself, and Porffor's native AOT; native C the lone reference, jz = 1.00× baseline"></a>
             <p>If you hit a slow case, <a href="https://github.com/dy/jz/issues/new?title=Slow%20case%3A%20&amp;body=Paste%20the%20slow%20JS%20(or%20a%20%2Frepl%2F%20link)%2C%20which%20engine%20it%20loses%20to%2C%20and%20the%20slowdown%3A%0A%0A" target="_blank" rel="noopener">report it →</a></p>
           </div>
         </details>
-        <details name="faq">
-          <summary><h2 class="fq">How can it beat V8?</h2><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <path d="M6 9l6 6 6-6" />
-            </svg></summary>
+        <details>
+          <summary><h2 class="fq">How can it beat V8?</h2><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="square" aria-hidden="true"><path d="M5 9l7 7 7-7" /></svg></summary>
           <div class="ans prose">
             <p>WASM isn’t magically faster: V8 also compiles hot JS to machine code. But V8 has to stay ready for any JavaScript, so every hot loop carries checks and a garbage collector. JZ sees the whole program before it runs: fixed layouts, direct calls, no GC, and SIMD on loops V8 leaves scalar.</p>
           </div>
         </details>
-        <details name="faq">
-          <summary><h2 class="fq">What is not supported?</h2><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <path d="M6 9l6 6 6-6" />
-            </svg></summary>
+        <details>
+          <summary><h2 class="fq">What is not supported?</h2><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="square" aria-hidden="true"><path d="M5 9l7 7 7-7" /></svg></summary>
           <div class="ans prose">
             <div class="subset">
               <div class="ring out">
                 <span class="rl">Not supported</span>
-                <span class="t">eval Function with</span><span class="t">Proxy Reflect</span><span class="t">descriptors</span><span class="t">prototype chains</span><span class="t">top-level await</span><span class="t">import()</span><span class="t">DOM</span><span class="t">Node Intl Temporal</span>
+                <div class="tags"><span class="t">eval Function with</span> <span class="t">Proxy Reflect</span> <span class="t">descriptors</span> <span class="t">prototype chains</span> <span class="t">top-level await</span> <span class="t">import()</span> <span class="t">DOM</span> <span class="t">Node Intl Temporal</span></div>
               </div>
             </div>
             <p>What differs: no GC (call <code>memory.reset()</code>), 64-bit BigInt, compile-time regexes, ASCII case and UTC dates. <a href="https://github.com/dy/jz#faq" target="_blank" rel="noopener">Details →</a></p>
           </div>
         </details>
-        <details name="faq">
-          <summary><h2 class="fq">Why no types?</h2><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <path d="M6 9l6 6 6-6" />
-            </svg></summary>
-          <div class="ans prose">JS code already carries useful type evidence: <code>let x = 0.5</code>, <code>Float32Array</code>, an array index, a loop counter. JZ infers it instead of turning the file into another language. Ambiguous values take a slower dynamic path.</div>
+        <details>
+          <summary><h2 class="fq">Why no types?</h2><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="square" aria-hidden="true"><path d="M5 9l7 7 7-7" /></svg></summary>
+          <div class="ans prose">
+            <p>JS code already carries useful type evidence: <code>let x = 0.5</code>, <code>Float32Array</code>, an array index, a loop counter. JZ infers it instead of turning the file into another language. Ambiguous values take a slower dynamic path.</p>
+          </div>
         </details>
-        <details name="faq">
-          <summary><h2 class="fq">How does it compare?</h2><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <path d="M6 9l6 6 6-6" />
-            </svg></summary>
+        <details>
+          <summary><h2 class="fq">How does it compare?</h2><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="square" aria-hidden="true"><path d="M5 9l7 7 7-7" /></svg></summary>
           <div class="ans prose">
             <p>Porffor aims at the full spec but emits no WASM and runs slower than V8 on the <a href="bench/">cases</a> it completes. AssemblyScript compiles a typed TypeScript dialect; its WASM runs about 2× behind JZ on the corpus. scriptc makes native binaries from TypeScript, no WASM.</p>
             <p>Rust, C, Zig and Go compiled to WASM run about 2× behind JZ by geomean, Go’s over 4×; as native binaries only C is level. If it is already Rust, keep it in Rust. If it is JavaScript, a rewrite buys a second toolchain and test suite for slower WASM.</p>
           </div>
         </details>
-        <details name="faq" id="native">
-          <summary><h2 class="fq">Can it go native?</h2><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <path d="M6 9l6 6 6-6" />
-            </svg></summary>
+        <details id="native">
+          <summary><h2 class="fq">Can it go native?</h2><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="square" aria-hidden="true"><path d="M5 9l7 7 7-7" /></svg></summary>
           <div class="ans prose">
             <p><code>jz → wasm2c → clang -O3</code> produces a standalone native binary. See <a href="https://github.com/dy/jz/blob/main/scripts/native/README.md" target="_blank" rel="noopener">full pipeline →</a>.</p>
           </div>
         </details>
-        <details name="faq">
-          <summary><h2 class="fq">Can it compile itself?</h2><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <path d="M6 9l6 6 6-6" />
-            </svg></summary>
-          <div class="ans prose">JZ compiles itself to <a href="https://github.com/dy/jz/releases/latest/" target="_blank" rel="noopener"><code>jz.wasm</code></a>. CI checks the wasm-hosted compiler against the test suite. <a href="https://github.com/dy/jz/actions/workflows/self-compile.yml" target="_blank"
-              rel="noopener" aria-label="self-compile CI status"><img src="https://github.com/dy/jz/actions/workflows/self-compile.yml/badge.svg" alt="self-compile CI status" style="height:18px;vertical-align:middle"></a></div>
+        <details>
+          <summary><h2 class="fq">Can it compile itself?</h2><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="square" aria-hidden="true"><path d="M5 9l7 7 7-7" /></svg></summary>
+          <div class="ans prose">
+            <p>JZ compiles itself to <a href="https://github.com/dy/jz/releases/latest/" target="_blank" rel="noopener"><code>jz.wasm</code></a>. CI checks the wasm-hosted compiler against the test suite. <a href="https://github.com/dy/jz/actions/workflows/self-compile.yml" target="_blank" rel="noopener" aria-label="self-compile CI status"><img src="https://github.com/dy/jz/actions/workflows/self-compile.yml/badge.svg" alt="self-compile CI status" style="height:16px;vertical-align:baseline"></a></p>
+          </div>
         </details>
-        <details name="faq">
-          <summary><h2 class="fq">Is it production ready?</h2><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <path d="M6 9l6 6 6-6" />
-            </svg></summary>
+        <details>
+          <summary><h2 class="fq">Is it production ready?</h2><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="square" aria-hidden="true"><path d="M5 9l7 7 7-7" /></svg></summary>
           <div class="ans prose">
             <p>It’s <b>experimental</b> (pre-1.0) – ABI can still shift.</p>
             <p>But real code already ships on it: <a href="https://github.com/colorjs/color-space#wasm" target="_blank" rel="noopener">color-space v3</a> builds its precompiled 27-space WASM backend with JZ.</p>
@@ -1518,46 +1027,52 @@
     </section>
 
     <section class="cli">
-      <button class="install" id="install3" title="click to copy"><span class="dollar">$</span><span class="cmd">npm install jz</span></button>
+      <button class="install gbox" id="install3" title="click to copy"><span class="dollar">$</span><span class="cmd">npm install jz</span></button>
     </section>
 
-    <section class="examples">
-      <div class="ex-wrap">
-        <h2>Examples</h2>
-        <div class="exrow">
-          <a href="examples/raymarcher/"><img src="examples/thumbs/raymarcher.webp" alt="Raymarcher" loading="lazy"></a>
-          <a href="examples/lorenz/"><img src="examples/thumbs/lorenz.webp" alt="Lorenz" loading="lazy"></a>
-          <a href="examples/boids/"><img src="examples/thumbs/boids.webp" alt="Boids" loading="lazy"></a>
-          <a href="examples/nbody/"><img src="examples/thumbs/nbody.webp" alt="N-body" loading="lazy"></a>
-          <a href="examples/metaballs/"><img src="examples/thumbs/metaballs.webp" alt="Metaballs" loading="lazy"></a>
-          <a href="examples/mandelbrot/"><img src="examples/thumbs/mandelbrot.webp" alt="Mandelbrot" loading="lazy"></a>
-          <a href="examples/julia/"><img src="examples/thumbs/julia.webp" alt="Julia" loading="lazy"></a>
-          <a href="examples/buddhabrot/"><img src="examples/thumbs/buddhabrot.webp" alt="Buddhabrot" loading="lazy"></a>
-          <a href="examples/plasma/"><img src="examples/thumbs/plasma.webp" alt="Plasma" loading="lazy"></a>
-          <a href="examples/game-of-life/"><img src="examples/thumbs/game-of-life.webp" alt="Game of Life" loading="lazy"></a>
-          <a href="examples/chladni/"><img src="examples/thumbs/chladni.webp" alt="Chladni" loading="lazy"></a>
-          <a href="examples/phyllotaxis/"><img src="examples/thumbs/phyllotaxis.webp" alt="Phyllotaxis" loading="lazy"></a>
-          <a href="examples/attractors/"><img src="examples/thumbs/attractors.webp" alt="Attractors" loading="lazy"></a>
-          <a href="examples/newton/"><img src="examples/thumbs/newton.webp" alt="Newton" loading="lazy"></a>
-          <a href="examples/penrose/"><img src="examples/thumbs/penrose.webp" alt="Penrose" loading="lazy"></a>
-          <a class="ex-all" href="examples/">More →</a>
-        </div>
+    <section class="examples ruled">
+      <h2 class="col">Examples</h2>
+      <!-- one example per major cell, two rows: as many as the column's units hold (the script hides the rest) -->
+      <div class="exrow col">
+        <a href="examples/raymarcher/"><img src="examples/thumbs/raymarcher.webp" alt="Raymarcher" loading="lazy"></a>
+        <a href="examples/lorenz/"><img src="examples/thumbs/lorenz.webp" alt="Lorenz" loading="lazy"></a>
+        <a href="examples/boids/"><img src="examples/thumbs/boids.webp" alt="Boids" loading="lazy"></a>
+        <a href="examples/nbody/"><img src="examples/thumbs/nbody.webp" alt="N-body" loading="lazy"></a>
+        <a href="examples/metaballs/"><img src="examples/thumbs/metaballs.webp" alt="Metaballs" loading="lazy"></a>
+        <a href="examples/mandelbrot/"><img src="examples/thumbs/mandelbrot.webp" alt="Mandelbrot" loading="lazy"></a>
+        <a href="examples/julia/"><img src="examples/thumbs/julia.webp" alt="Julia" loading="lazy"></a>
+        <a href="examples/buddhabrot/"><img src="examples/thumbs/buddhabrot.webp" alt="Buddhabrot" loading="lazy"></a>
+        <a href="examples/plasma/"><img src="examples/thumbs/plasma.webp" alt="Plasma" loading="lazy"></a>
+        <a href="examples/game-of-life/"><img src="examples/thumbs/game-of-life.webp" alt="Game of Life" loading="lazy"></a>
+        <a href="examples/chladni/"><img src="examples/thumbs/chladni.webp" alt="Chladni" loading="lazy"></a>
+        <a href="examples/phyllotaxis/"><img src="examples/thumbs/phyllotaxis.webp" alt="Phyllotaxis" loading="lazy"></a>
+        <a href="examples/attractors/"><img src="examples/thumbs/attractors.webp" alt="Attractors" loading="lazy"></a>
+        <a href="examples/newton/"><img src="examples/thumbs/newton.webp" alt="Newton" loading="lazy"></a>
+        <a href="examples/penrose/"><img src="examples/thumbs/penrose.webp" alt="Penrose" loading="lazy"></a>
+        <a href="examples/blackhole/"><img src="examples/thumbs/blackhole.webp" alt="Black Hole" loading="lazy"></a>
+        <a href="examples/lenia/"><img src="examples/thumbs/lenia.webp" alt="Lenia" loading="lazy"></a>
+        <a href="examples/apollonian/"><img src="examples/thumbs/apollonian.webp" alt="Apollonian Gasket" loading="lazy"></a>
+        <a href="examples/hydrogen/"><img src="examples/thumbs/hydrogen.webp" alt="Hydrogen Orbitals" loading="lazy"></a>
+        <a href="examples/fern/"><img src="examples/thumbs/fern.webp" alt="Barnsley Fern" loading="lazy"></a>
+        <a href="examples/voronoi/"><img src="examples/thumbs/voronoi.webp" alt="Voronoi" loading="lazy"></a>
+        <a href="examples/truchet/"><img src="examples/thumbs/truchet.webp" alt="Truchet Tiles" loading="lazy"></a>
+        <a href="examples/burningship/"><img src="examples/thumbs/burningship.webp" alt="Burning Ship" loading="lazy"></a>
+        <a class="ex-all" href="examples/"><span>More →</span></a>
       </div>
     </section>
 
-    <!-- the closing ask — same shape as bench's "Slower than your JS? → Report a slow case":
-     a plain question, then the shared .report chip. One dev, no funding; no hard sell. -->
-    <section class="author">
-      <div class="author-wrap">
-        <div class="author-text prose">
+    <!-- the story and the ask side by side, headed on one line; the ask is the shared .report chip -->
+    <section class="author ruled">
+      <div class="author-wrap col">
+        <div class="author-text">
           <h2>Inspiration</h2>
-          <p>JS is considered not a real language, unfit for DSP. Runtime with JIT, GC hits, language quirks. Spec only adds and never deprecates.</p>
-          <p>But I like minimal, functional style JS, <a href="https://www.crockford.com/javascript/" target="_blank" rel="noopener">Crockford’s good parts</a>. So I decided to secure that subset – drop the legacy, OOP, classes, runtime. Javascript Zero. I am not a compiler engineer, so I went in steps: <a href="https://github.com/dy/subscript" target="_blank" rel="noopener">subscript</a> parser, then <a href="https://github.com/dy/watr" target="_blank" rel="noopener">watr</a> compiler, and these turned out well. JZ followed. Foundation was done by hand, AI took off the details.</p>
+          <p>JS is considered unfit for speed, not a real language. Runtime with JIT, GC arbitrary hits, language quirks. Spec only adds and never deprecates.</p>
+          <p>I liked minimal, functional style JS, <a href="https://www.crockford.com/javascript/" target="_blank" rel="noopener">Crockford’s good parts</a>, and I decided to secure that subset – drop the legacy, OOP, classes, runtime. Called it Javascript Zero. I am not a compiler engineer, so I went in steps: <a href="https://github.com/dy/subscript" target="_blank" rel="noopener">subscript</a> parser, then <a href="https://github.com/dy/watr" target="_blank" rel="noopener">watr</a> compiler, and these turned out well. JZ followed. Foundation was done by hand, AI took off the details.</p>
           <p>The ambition: faster than V8, smaller than AssemblyScript, JZ ⊂ JS.</p>
         </div>
         <div class="sponsor">
-          <p>Find it useful?</p>
-          <a class="report" href="https://github.com/sponsors/dy" target="_blank" rel="noopener">Sponsor the dev</a>
+          <h2>Find it useful?</h2>
+          <a class="report gbox" href="https://github.com/sponsors/dy" target="_blank" rel="noopener">Sponsor the dev</a>
         </div>
       </div>
     </section>
@@ -1587,68 +1102,62 @@
 
     <script type="module" src="assets/version.js"></script>
     <script type="module" src="assets/theme.js"></script>
+    <script type="module" src="assets/glint.js"></script>
 
     <script type="module">
-      // One screen: the blueprint grid's electron pulses are a real jz program (assets/grid-current.js),
-      // compiled HERE in the page. The JS/JZ switch flips between jz-compiled wasm and the same source run
-      // as plain JS; the FPS/ms readout times its frame. The real REPL (wat · console) is embedded below.
-      import { compile as jzCompile, instantiate as instantiateJz } from './dist/jz.js'
       import sprae from './assets/sprae.js'
-      import { headlineStats, CLS_ICO } from './assets/headline.js'
+      import { figure, CLS_ICO } from './assets/headline.js'
+      import rhythm, { snap } from './assets/rhythm.js'
       const $ = id => document.getElementById(id)
-      const compileProof = $('compile-proof')
-      const compileProofData = $('compile-proof-data')
-      const compileProofLink = $('compile-proof-link')
-      // the same base64url-of-UTF-8 encoding the repl decodes from its #hash
-      const b64url = (s) => {
-        const b = new TextEncoder().encode(s)
-        let t = ''
-        for (let i = 0; i < b.length; i += 8192) t += String.fromCharCode(...b.subarray(i, i + 8192))
-        return btoa(t).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
-      }
-      // "hero demo": plain click hash-navigates the embedded REPL below to this source (no reload — the
-      // repl's hashchange handler loads + builds it) and scrolls it into view; modified clicks follow
-      // the href, the standalone repl permalink loadSource keeps fresh
-      compileProofLink?.addEventListener('click', (e) => {
-        const embed = document.querySelector('.repl-embed')
-        if (!embed || !src || e.metaKey || e.ctrlKey || e.shiftKey) return
-        e.preventDefault()
-        embed.src = 'repl/?embed#' + b64url(src)
-        embed.scrollIntoView({ behavior: 'smooth', block: 'center' })
-      })
-      const setCompileProof = (state, text) => {
-        if (!compileProof || !compileProofData) return
-        compileProof.dataset.state = state
-        compileProof.setAttribute('aria-busy', state === 'loading' ? 'true' : 'false')
-        compileProofData.textContent = text
-      }
-      const formatCompileMs = ms => ms < .1 ? '<0.1 ms' : ms < 10 ? `${ms.toFixed(1)} ms` : `${Math.round(ms)} ms`
-      const formatWasmBytes = bytes => {
-        if (bytes < 1024) return `${bytes} B`
-        const kb = bytes / 1024
-        return `${kb < 10 ? kb.toFixed(1) : Math.round(kb)} kB`
-      }
+      const root = document.documentElement
 
-        // Blueprint grid: inset --grid-pad from the band's top-left in pure CSS — stable, no JS origin to set.
-
-        // live metrics — a sprae binding over the committed bench/results.json. The markup is pre-filled
-        // (no flash); the `:text` directives on the stat <b>s and the sub figure read this reactive state,
-        // which we fill from the fresh bench numbers so the row always reflects the latest run.
+        // ── Bench row: five cells, each rotating through a field of targets — JZ ÷ target in the named quantity
+        //    (speed: above 1× is faster; memory, size: below 1× is less). A cell steps every few seconds
+        //    (staggered), holds under the pointer or focus, steps on click; the number eases in log space (the
+        //    ratios span 0.1…150) while the label switches on the spot. Only like-for-like pairs: memory is JZ built
+        //    natively against native binaries, size against toolchains that also build for size.
         ; (async () => {
-          const m = sprae(document.querySelector('.pitch'),
-            { v8: '2.2×', asspeed: '2.1×', porf: '15×', peak: '12.4×' })   // hero stats; v8 (geomean) + peak (best SIMD case) also feed the sub
-          // prepend the substrate-class glyph to each stat label (JS · WASM · native),
-          // the same marks the bench chart uses — one shared source (CLS_ICO).
-          for (const el of document.querySelectorAll('.metrics .stat span[data-cls]'))
-            el.insertAdjacentHTML('afterbegin', CLS_ICO[el.dataset.cls] || '')
-          try {
-            const r = await (await fetch('bench/results.json')).json()
-            const s = headlineStats(r)               // shared with the bench page → identical figures
-            if (s.v8) m.v8 = s.v8                     // same source, faster than V8 (geomean)
-            if (s.peak) m.peak = s.peak              // best single-case SIMD win → the sub's "up to 13.5×"
-            if (s.asspeed) m.asspeed = s.asspeed     // jz vs AssemblyScript, speed geomean
-            if (s.porf) m.porf = s.porf              // jz vs Porffor's native artifact (porf-native lane), speed geomean
-          } catch { }
+          const FIELDS = [   // [quantity, JZ lane, [[bench target, name, what it is]]] — one class of targets per cell
+            ['speed', 'jz', [['v8', 'V8', 'the same JS in Node (V8)'], ['deno', 'Deno', 'the same JS in Deno'], ['bun', 'Bun', 'the same JS in Bun'], ['jsc', 'JSC', "the same JS in JavaScriptCore, Safari's engine"], ['javy', 'QuickJS', 'the same JS in QuickJS (Javy)']]],
+            ['speed', 'jz', [['as', 'AS', 'AssemblyScript → WASM'], ['c-wasm', 'C', 'C → WASM'], ['rust-wasm', 'Rust', 'Rust → WASM'], ['zig-wasm', 'Zig', 'Zig → WASM'], ['go-wasm', 'Go', 'Go → WASM'], ['moonbit', 'MoonBit', 'MoonBit → WASM']]],
+            ['speed', 'jz', [['nat', 'C', 'native C (clang -O3)'], ['rust', 'Rust', 'native Rust'], ['zig', 'Zig', 'native Zig'], ['go', 'Go', 'native Go'], ['porf-native', 'Porf', 'Porffor (JS → native)'], ['perry', 'Perry', 'Perry (TS → native)'], ['numpy', 'NumPy', 'NumPy']]],
+            ['memory', 'jz-w2c', [['porf-native', 'Porf', "Porffor's native binary; JZ built natively (wasm2c)"], ['nat', 'C', 'native C; JZ built natively (wasm2c)'], ['rust', 'Rust', 'native Rust; JZ built natively (wasm2c)'], ['zig', 'Zig', 'native Zig; JZ built natively (wasm2c)'], ['go', 'Go', 'native Go; JZ built natively (wasm2c)']]],
+            ['size', 'jz', [['as', 'AS', 'AssemblyScript -Osize'], ['moonbit', 'MoonBit', 'MoonBit → WASM']]],
+          ]
+          const HOW = { speed: 'above 1× is faster', memory: 'below 1× is less', size: 'below 1× is smaller' }
+          const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches
+          const fmt = x => !(x > 0) ? '–' : (x < .01 ? x.toPrecision(1) : x < 10 ? x.toFixed(2) : x < 100 ? x.toFixed(1) : Math.round(x)) + '×'
+          const cur = f => f.items[f.i]
+          const step = f => {
+            const from = f.shown, run = ++f.run
+            f.i = (f.i + 1) % f.items.length
+            const to = cur(f).x
+            if (reduced || !(from > 0)) return f.shown = to
+            const t0 = performance.now(), a = Math.log(from), b = Math.log(to)
+            const tick = now => {
+              if (run !== f.run) return
+              const p = Math.min(1, (now - t0) / 320)
+              f.shown = Math.exp(a + (b - a) * (1 - (1 - p) ** 3))
+              if (p < 1) requestAnimationFrame(tick)
+            }
+            requestAnimationFrame(tick)
+          }
+          const cells = [...document.querySelectorAll('.metrics .stat')]
+          for (const i of document.querySelectorAll('.metrics .ic')) i.innerHTML = CLS_ICO[i.dataset.cls].replace(/<title>.*?<\/title>/, '')   // the button's own title explains it
+          const st = sprae(document.querySelector('.metrics'), {
+            fields: FIELDS.map(([q, base, items], k) => ({ q, base, i: 0, run: 0, hold: false, shown: parseFloat(cells[k].querySelector('b').textContent), items: items.map(([t, n, d]) => ({ t, n, d, x: null })) })),
+            fmt, step,
+            label: f => cur(f).n + ' ' + f.q,
+            tip: f => `JZ ${f.q} ÷ ${cur(f).d}, bench ${f.q === 'size' ? 'median' : 'geomean'} – ${HOW[f.q]}`,
+          })
+          let results
+          try { results = await (await fetch('bench/results.json')).json() } catch { return }   // no data → the pre-filled figures stay put
+          st.fields.forEach((f, k) => {
+            f.items = f.items.map(it => ({ ...it, x: figure(results, f.q, it.t, f.base) })).filter(it => it.x > 0)
+            if (!f.items.length) return
+            f.shown = f.items[0].x
+            if (!reduced) setTimeout(() => setInterval(() => f.hold || document.hidden || step(f), 3200), 1600 + k * 640)
+          })
         })()
 
         // Bench chart (FAQ "Is it fast?"): inline the committed bench/bench.svg rather than <img> it, so its
@@ -1666,19 +1175,24 @@
           } catch { host.remove() }
         })()
 
-        // In-page links to a FAQ item (e.g. "or native" → #native) open that <details>: the name="faq"
-        // accordion won't expand from anchor navigation alone, so force it on click + on an initial hash.
+        // ── Rhythm (assets/rhythm.js): an open answer ends on a half-unit line, so the next question hangs from one;
+        //    the ends of the FAQ and Inspiration sections land on major lines, so every ruler after them does too.
+        //    The examples row shows as many as two rows of the column's units hold. ──
+        rhythm(() => {
+          snap(document.querySelector('.metrics'), 'marginTop', 'top', 40)       // the bench row hangs from a half-unit line
+          snap(document.querySelector('.hero'), 'paddingBottom', 'bottom', 40)   // and the hero ends on one (both no-ops where the CSS already lands there)
+          for (const el of document.querySelectorAll('.faq details[open] .ans')) snap(el, 'paddingBottom', 'bottom', 40)
+          snap(document.querySelector('.sponsor'), 'marginTop', 'top', 40)   // stacked under the story (narrow screens), the ask hangs from a half-unit line
+          for (const el of document.querySelectorAll('.faq, .author')) snap(el, 'paddingBottom', 'bottom', 80)
+          const row = document.querySelector('.exrow'), n = 2 * Math.round(row.clientWidth / 80) - 1
+          for (const [i, a] of [...row.querySelectorAll('a:not(.ex-all)')].entries()) a.hidden = i >= n
+        })
+
+        // In-page links to a FAQ item (e.g. "or native" → #native) open that <details>: a closed
+        // one won't expand from anchor navigation alone, so force it on click + on an initial hash.
         const openFaq = id => { const d = document.getElementById(id)?.closest('details'); if (d) d.open = true }
         document.querySelectorAll('a[href^="#"]').forEach(a => a.addEventListener('click', () => openFaq(a.getAttribute('href').slice(1))))
         if (location.hash.length > 1) openFaq(location.hash.slice(1))
-
-      // the hero install chip: click-to-copy (no type-on — it's above the fold, visible at once)
-      const inst1 = $('install1')
-      if (inst1) inst1.addEventListener('click', async () => {
-        try { await navigator.clipboard.writeText('npm install jz') } catch { }
-        inst1.classList.add('copied')
-        setTimeout(() => inst1.classList.remove('copied'), 1400)
-      })
 
       // the lone install chip (CLI section): click-to-copy
       const inst3 = $('install3')
@@ -1707,180 +1221,62 @@
         }
       }
 
-      // ── The hero sparkles ARE the live demo: grid-current.js, compiled in-page, painting electron-like
-      //    pulses along the blueprint grid. The JS/JZ switch flips between jz-compiled wasm and the SAME
-      //    source run as plain JS; the FPS/ms readout times that frame. The real REPL (wat · console) is
-      //    embedded below. The grid + canvas share an inset origin (--grid-pad in from the corner) and the canvas
-      //    is pinned to a fixed width, so a resize never reshuffles the pulses or drifts them off the static grid. ──
-      const currentCv = $('grid-current')
-      const currentCtx = currentCv.getContext('2d', { alpha: true })
-      let currentJz = null, currentJs = null, kind = 'jz', src = ''
-      const cur = () => (kind === 'jz' ? currentJz : currentJs)
-      let currentImg = null, currentOut32 = null, currentPx = null, currentW = 0, currentH = 0
-      let pxJz = null, pxJs = null                        // each engine keeps its own pixel buffer + sim state
-      // Size BOTH engines to the canvas once (on load / resize), caching each one's buffer. The JS/JZ switch
-      // then just re-points the loop at the live buffer — it never re-resizes, so flipping is seamless: the
-      // pulses keep flowing (and keep their state) while only the *timed* engine — and the ms readout — change.
-      const sizeBoth = () => {
-        if (!currentW) return
-        const r = currentCv.getBoundingClientRect()
-        const scale = r.width ? currentW / r.width : 1     // canvas origin (its inset top-left) = the grid's origin; pulses pass gridX=0
-        if (currentJz) { pxJz = currentJz.resize(currentW, currentH); try { currentJz.configure(0, scale) } catch { } }
-        if (currentJs) { pxJs = currentJs.resize(currentW, currentH); try { currentJs.configure(0, scale) } catch { } }
-        currentPx = kind === 'jz' ? pxJz : pxJs
+      // ── Dark theme: the blueprint grid carries a live current — assets/grid-current.js, a real jz program
+      //    compiled HERE in the page (the compiler loads only when the page goes dark). Its grid shares the
+      //    page's origin (canvas at 0,0, gridX = the column's ruler), so the pulses ride the lines the CSS draws. ──
+      const cv = $('grid-current'), ctx = cv.getContext('2d')
+      let eng = null, px = null, img = null, out32 = null, W = 0, H = 0, raf = 0, booting = null
+      const dark = () => root.dataset.theme === 'dark'
+      // Size the backing store to the canvas box at an INTEGER device scale — a fractional one slides the
+      // pulses off the CSS grid lines.
+      const fit = (force) => {
+        const r = cv.getBoundingClientRect()
+        if (!eng || !r.width) return
+        let scale = Math.min(Math.round(devicePixelRatio || 1), 2)
+        if (r.width * r.height * scale * scale > 6e6) scale = 1
+        const w = Math.round(r.width * scale), h = Math.round(r.height * scale)
+        if (!force && w === W && h === H) return
+        W = cv.width = w; H = cv.height = h
+        img = ctx.createImageData(W, H); out32 = new Uint32Array(img.data.buffer)
+        px = eng.resize(W, H)
+        const gx = parseFloat(getComputedStyle(root).backgroundPositionX) % 80   // the grid's origin: the column's left ruler
+        try { eng.configure(gx * scale, scale) } catch { }
       }
-      const bindEngine = () => { currentPx = kind === 'jz' ? pxJz : pxJs }   // switch → re-point at the live buffer
-      const fitCurrent = () => {
-        if (!currentJz && !currentJs) return
-        // Size to the band the CSS lays out (content column + --grid-over each side, LEFT-anchored to the column, capped to the viewport
-        // inset). On wide screens that width is FIXED, so resizing doesn't change it — and the guard below then keeps
-        // the running sim untouched (no re-stream). Only when the size really changes do we re-fit; the procedural
-        // pulses re-stream in then, staying tied to the static grid.
-        const r = currentCv.getBoundingClientRect()       // the left-anchored band: min(--cw + 2·over, element − gx-pad + over)
-        // Render near device resolution so the pulses are crisp 1px rules sitting ON the static hash grid.
-        let scale = Math.min(devicePixelRatio || 1, 2)
-        const BUDGET = 4000000   // keep the backing at the display's exact device resolution (scale = dpr) so the canvas isn't resampled — a fractional scale slid the Life cells off the CSS grid lines
-        const want = r.width * r.height * scale * scale
-        if (want > BUDGET) scale *= Math.sqrt(BUDGET / want)
-        const newW = Math.max(8, Math.round(r.width * scale) >> 1 << 1)
-        // Tie H to W's exact ratio so one `scale` maps 80px → 80px on BOTH axes (independent rounding drifted
-        // the vertical rules ~1.5px across the band).
-        const newH = Math.max(8, Math.round(newW * r.height / r.width))
-        if (newW === currentW && newH === currentH && currentImg) return   // size unchanged (resize within the fixed band) → keep the running sim, no re-stream
-        currentW = newW; currentH = newH
-        currentCv.width = currentW; currentCv.height = currentH
-        currentImg = currentCtx.createImageData(currentW, currentH)
-        currentOut32 = new Uint32Array(currentImg.data.buffer)
-        sizeBoth()
-      }
-      // The live demo depends on the theme: DARK = the electron pulses (grid-current — a dark sky of shooting
-      // stars); LIGHT = the Game of Life (grid-life — lit cells read on the gray where white pulses can't).
-      const demoSrc = () => document.documentElement.dataset.theme === 'light' ? 'assets/grid-life.js' : 'assets/grid-current.js'
-      let loading = false, pendingTheme = null
-      const loadSource = async (path) => {
-        setCompileProof('loading', 'compiling in your browser…')
-        let text
-        try { text = await (await fetch(path)).text() }
-        catch { setCompileProof('error', 'source unavailable'); return }
-        src = text
-        if (compileProofLink) compileProofLink.href = 'repl/#' + b64url(src)
-        let jzEng = null, jsEng = null, jzErr = null
-        // Compile ONCE, visibly: the proof line reports this exact source, compile duration and
-        // artifact — no canned benchmark. Instantiate the resulting bytes separately so the
-        // measurement is compiler time, not host startup or network time.
+      const boot = () => booting ??= (async () => {
+        const src = await (await fetch('assets/grid-current.js')).text()
         try {
-          const started = performance.now()
-          const wasm = jzCompile(src, { optimize: 3 })
-          const compileMs = performance.now() - started
-          jzEng = instantiateJz(wasm).exports
-          setCompileProof('success', `runs the same source as JS or JZ, compiled to ${formatWasmBytes(wasm.byteLength)} WASM`)
-        } catch (e) {
-          jzErr = e
-          setCompileProof('error', 'compile unavailable in this browser')
-          console.error('jz hero compile failed:', e)
-        }
-        try {                                                                   // the SAME source as plain JS, for the toggle. Safari can reject importing a blob: module — isolate it
-          const u = URL.createObjectURL(new Blob([src], { type: 'text/javascript' }))
-          try { jsEng = await import(u) } finally { URL.revokeObjectURL(u) }
-        } catch { }
-        currentJz = jzEng; currentJs = jsEng; pxJz = null; pxJs = null
-        if (currentImg) sizeBoth(); else fitCurrent()                          // first load fits the canvas; a theme swap reuses it
-        // Safari/JSC canonicalizes NaN-boxed wasm→JS returns: jz's resize() comes back NaN, not a typed array.
-        // When the wasm engine can't return its buffer, run the demo on plain JS and lock the toggle; else keep wasm.
-        if ((!currentJz || !ArrayBuffer.isView(pxJz)) && currentJs) {
-          currentJz = null; setEngineUI('js'); engineEl.disabled = true
-          engineEl.style.cursor = 'default'
-          engineEl.title = jzErr ? 'jz compile failed (bug – see console): running as plain JS'
-            : 'WASM engine unavailable in this browser – running the live demo as plain JS'
-        } else if (currentJz) {
-          engineEl.disabled = false; engineEl.style.cursor = ''; engineEl.removeAttribute('title')
-        }
-        bindEngine()
-      }
-      // re-entrant: a toggle mid-load is remembered and reloaded once the current load settles
-      const loadCurrent = async () => {
-        if (loading) { pendingTheme = document.documentElement.dataset.theme; return }
-        loading = true
-        let want = document.documentElement.dataset.theme
-        do { pendingTheme = null; await loadSource(want === 'light' ? 'assets/grid-life.js' : 'assets/grid-current.js'); want = pendingTheme } while (want)
-        loading = false
-      }
-
-      // ── fps sparkline — frames/sec the engine can COMPUTE (1000/frame-ms), uncapped by the display's 60Hz.
-      //    fpsHist stores fps; drawFps normalizes to fpsRef (running max), so the line is high for the faster engine. ──
-      const msNum = $('ms-num'), fpsSpark = $('fps-spark')
-      const fctx = fpsSpark.getContext('2d')
-      let fpsHist = new Array(44).fill(0), fpsRef = 0, curMs = 0, curFps = 0, fpsW = 0, fpsH = 0
-      const sizeFps = () => {
-        const r = fpsSpark.getBoundingClientRect(), dpr = Math.min(2, devicePixelRatio || 1)
-        fpsW = Math.max(1, Math.round(r.width)); fpsH = Math.max(1, Math.round(r.height))
-        fpsSpark.width = fpsW * dpr; fpsSpark.height = fpsH * dpr; fctx.setTransform(dpr, 0, 0, dpr, 0, 0)
-      }
-      const drawFps = () => {
-        if (!fpsW) sizeFps()
-        const n = fpsHist.length, ref = fpsRef || 1, xs = i => i / (n - 1) * fpsW, ys = v => fpsH - Math.min(1, v / ref) * (fpsH - 2) - 1
-        fctx.clearRect(0, 0, fpsW, fpsH)
-        fctx.beginPath(); fctx.moveTo(0, fpsH)
-        for (let i = 0; i < n; i++) fctx.lineTo(xs(i), ys(fpsHist[i]))
-        fctx.lineTo(fpsW, fpsH); fctx.closePath()
-        const c = document.documentElement.dataset.theme === 'light' ? '0,0,0' : '255,255,255'   // black sparkline in light, white in dark
-        const grad = fctx.createLinearGradient(0, 0, 0, fpsH)
-        grad.addColorStop(0, `rgba(${c},.4)`); grad.addColorStop(1, `rgba(${c},.03)`)
-        fctx.fillStyle = grad; fctx.fill()
-        fctx.beginPath()
-        for (let i = 0; i < n; i++) { const x = xs(i), y = ys(fpsHist[i]); i ? fctx.lineTo(x, y) : fctx.moveTo(x, y) }
-        fctx.strokeStyle = `rgba(${c},.95)`; fctx.lineWidth = 1.5; fctx.lineJoin = 'round'; fctx.stroke()
-      }
-      const renderFps = () => {
-        if (curFps <= 0) { msNum.textContent = '··'; return }
-        const p = Math.pow(10, Math.max(0, Math.floor(Math.log10(curFps)) - 1))   // 2 significant figures, so the live number stays calm as the timing wobbles
-        msNum.textContent = (Math.round(curFps / p) * p).toLocaleString('en-US')
-      }
-      let _refit; sizeFps(); addEventListener('resize', () => { sizeFps(); drawFps(); clearTimeout(_refit); _refit = setTimeout(fitCurrent, 140) })   /* the grid-current canvas is sized to the viewport inset, so re-fit when it settles (debounced); the pulses re-stream in */
-
-      // ── the loop: step the active engine, time JUST its frame() (the compute that differs between JS and
-      //    JZ — the blit is identical), blit to the grid-current canvas, update fps + ms ──
-      let msEMA = 0, sparkTick = 0
+          const { compile, instantiate } = await import('./dist/jz.js')
+          eng = instantiate(compile(src, { optimize: 3 })).exports
+          fit(true)
+        } catch (e) { console.error('jz hero compile failed:', e) }
+        // Safari/JSC canonicalizes NaN-boxed wasm→JS returns: resize() comes back NaN, not a typed array.
+        // Then run the same source as plain JS (valid jz is valid JS).
+        if (ArrayBuffer.isView(px)) return
+        const u = URL.createObjectURL(new Blob([src], { type: 'text/javascript' }))
+        try { eng = await import(u); fit(true) } catch { eng = null } finally { URL.revokeObjectURL(u) }
+      })()
       const loop = (now) => {
-        requestAnimationFrame(loop)
-        const e = cur()
-        if (loading || !e || !currentPx) return   // hold while the demo source is being (re)loaded on a theme swap
-        const t0 = performance.now()
-        try { e.frame(now * 0.001) } catch { return }
-        const ms = performance.now() - t0; msEMA = msEMA ? msEMA * 0.9 + ms * 0.1 : ms
-        currentOut32.set(currentPx); currentCtx.putImageData(currentImg, 0, 0)
-        curMs = msEMA
-        curFps = curMs > 0 ? 1000 / Math.max(0.01, curMs) : 0   // frames/sec the engine can compute, uncapped (0.01ms floor just caps the silliness on an ultra-fast frame)
-        if (curFps > fpsRef) fpsRef = curFps
-        if (++sparkTick % 2 === 0) { fpsHist.push(curFps); fpsHist.shift(); drawFps() }   // ~30 Hz sparkline — fps; drawFps normalizes to fpsRef (line is high for the faster engine)
-        renderFps()
+        raf = dark() ? requestAnimationFrame(loop) : 0      // light theme → the loop stops itself
+        if (!raf || !ArrayBuffer.isView(px)) return
+        try { eng.frame(now * 0.001) } catch { return }
+        out32.set(px); ctx.putImageData(img, 0, 0)
       }
+      const sync = async () => { if (!dark()) return; await boot(); if (!raf) raf = requestAnimationFrame(loop) }
+      new MutationObserver(sync).observe(root, { attributes: true, attributeFilter: ['data-theme'] })
+      sync()
+      let refit; addEventListener('resize', () => { clearTimeout(refit); refit = setTimeout(fit, 140) })
 
-      // ── JS↔JZ switch: flip the sparkle engine between jz-compiled wasm and the SAME source run as plain
-      //    JS; both stay sized, so bindEngine just re-points the loop — the pulses flow on, only the ms changes ──
-      const engineEl = $('engine')
-      const setEngineUI = (k) => { kind = k; engineEl.classList.toggle('jz', k === 'jz'); engineEl.classList.toggle('js', k === 'js'); engineEl.setAttribute('aria-checked', k === 'jz') }
-      engineEl.onclick = () => { setEngineUI(kind === 'jz' ? 'js' : 'jz'); bindEngine() }
-
-      // ── pointer on the band: press = a white pulse burst (and, in Life, light the cell); drag = a pen that
-      //    draws cells (a no-op on the pulse demo). Both engines get every call so their boards stay identical. ──
-      const heroEl = document.querySelector('.hero')
-      let drawing = false
-      const heroXY = (e) => { const r = currentCv.getBoundingClientRect(); return [(e.clientX - r.left) / r.width, (e.clientY - r.top) / r.height] }
-      const heroCall = (fn, nx, ny) => { if (nx < 0 || nx > 1 || ny < 0 || ny > 1) return; try { currentJz?.[fn]?.(nx, ny) } catch { }; try { currentJs?.[fn]?.(nx, ny) } catch { } }
-      heroEl.addEventListener('pointerdown', (e) => {
-        if (e.target.closest('a, button, iframe')) return        // let the nav / switch handle their own clicks
-        drawing = true
-        const [nx, ny] = heroXY(e); heroCall('spawn', nx, ny)
+      // press on the grid = a four-way pulse burst from the nearest major crossing
+      addEventListener('pointerdown', (e) => {
+        if (!raf || e.target.closest('a, button, iframe, input, summary')) return
+        const r = cv.getBoundingClientRect(), nx = (e.clientX - r.left) / r.width, ny = (e.clientY - r.top) / r.height
+        if (nx >= 0 && nx <= 1 && ny >= 0 && ny <= 1) try { eng.spawn(nx, ny) } catch { }
       })
-      heroEl.addEventListener('pointermove', (e) => { if (drawing) { const [nx, ny] = heroXY(e); heroCall('pen', nx, ny) } })
-      addEventListener('pointerup', () => { drawing = false })
-      addEventListener('pointercancel', () => { drawing = false })
+
 
       // ── dev tuning panel: live sliders for the grid-current dials. HIDDEN unless the URL hash contains `tune`
-      //    (open …/#tune to reveal, drop it to hide). Each slider calls param() on BOTH engines so the JS⇄JZ
-      //    switch stays in step. Indices match assets/grid-current.js param(i,v) (0..6). ──
-      const setParam = (i, v) => { try { currentJz?.param?.(i, v) } catch { }; try { currentJs?.param?.(i, v) } catch { } }
+      //    (open …/#tune to reveal, drop it to hide). Indices match assets/grid-current.js param(i,v) (0..6). ──
+      const setParam = (i, v) => { try { eng?.param?.(i, v) } catch { } }
       const TUNABLES = [
         { i: 0, name: 'Subgrid rest', min: 0.5, max: 6, step: 0.1, val: 1.1, hint: '↑ = fewer subgrid pulses' },
         { i: 1, name: 'Main rest', min: 0.5, max: 6, step: 0.1, val: 0.5, hint: '↑ = fewer main pulses' },
@@ -1913,58 +1309,6 @@
       }
       const syncTunePanel = () => { if (/tune/.test(location.hash)) buildTunePanel().style.display = ''; else if (tunePanel) tunePanel.style.display = 'none' }
       addEventListener('hashchange', syncTunePanel); syncTunePanel()
-
-        // ── boot: compile the theme's demo both ways, fit to the band, start the loop (the Safari fallback now
-        //    lives inside loadSource). Reload the demo whenever the theme flips — pulses (dark) ⇄ Life (light). ──
-        ; (async () => {
-          setEngineUI('jz')
-          await loadCurrent()
-        })()
-      requestAnimationFrame(loop)   // drive the grid regardless of how the JS-fallback import settles (it no-ops until an engine is ready)
-      new MutationObserver(loadCurrent).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] })
-
-      // ── Logo reflection: the 1px bevel ring catches light. On a mouse the glare FACES the cursor and
-      // sharpens/brightens as it nears — no autonomous spin; on touch / no pointer it's a gentle rotating
-      // sheen. A smaller back-light always sits opposite the highlight. Pure pointer math, no sim. ──
-      const logoEl = document.querySelector('.logo')
-      const reflEl = logoEl && logoEl.querySelector('.logo-refl')
-      const N = 72, STEP = 360 / N
-      const smooth = new Float32Array(N)
-      const hasMouse = matchMedia('(hover: hover) and (pointer: fine)').matches   // drive by cursor, else animate
-      let pmx = innerWidth * 0.5, pmy = -200   // start above the page → an initial top-edge glow
-      addEventListener('pointermove', e => { pmx = e.clientX; pmy = e.clientY }, { passive: true })
-      const reflect = (now) => {
-        requestAnimationFrame(reflect)
-        if (!reflEl) return
-        const lr = logoEl.getBoundingClientRect()
-        if (lr.bottom < 0 || lr.top > innerHeight) return
-        let ang, prox
-        if (hasMouse) {                            // face the cursor; intensity falls off with distance, no spin
-          const lw = lr.width, dx = pmx - (lr.left + lw / 2), dy = pmy - (lr.top + lr.height / 2)
-          prox = Math.exp(-Math.hypot(dx, dy) / lw * 0.7)
-          ang = Math.atan2(dx, -dy)
-        } else {                                   // touch / no pointer: a gentle rotating sheen
-          prox = 0.55
-          ang = now * 0.00018
-        }
-        const bright = 0.22 + 0.7 * prox                            // bright spot near; far floor lifted 0.16→0.22 so distance stays visible, not just less-blurred
-        const sigma = 5.4 - 3.5 * prox                              // wide/diffuse far, tight near (in bins)
-        const center = ((ang / (2 * Math.PI)) * N % N + N) % N, opp = (center + N / 2) % N
-        const stops = []
-        for (let i = 0; i < N; i++) {
-          let d1 = Math.abs(i - center); d1 = Math.min(d1, N - d1)
-          let d2 = Math.abs(i - opp); d2 = Math.min(d2, N - d2)
-          const target = bright * Math.exp(-(d1 * d1) / (2 * sigma * sigma))               // primary highlight
-            + bright * 0.4 * Math.exp(-(d2 * d2) / (2 * (sigma * 1.3) ** 2))    // smaller back-light
-          smooth[i] += (target - smooth[i]) * 0.16
-          stops.push(`rgba(216,230,255,${smooth[i].toFixed(3)}) ${(i * STEP).toFixed(1)}deg`)
-        }
-        stops.push(`rgba(216,230,255,${smooth[0].toFixed(3)}) 360deg`)
-        reflEl.style.background = `conic-gradient(${stops.join(',')})`
-        const blur = 2 + 3 * (1 - prox)                             // near→2px, far→5px — kept tight so the far glow reads as a glint, not a dissolving haze
-        reflEl.style.filter = `drop-shadow(0 0 ${blur.toFixed(1)}px rgba(150,185,255,.5)) drop-shadow(0 0 ${(blur * 2).toFixed(1)}px rgba(120,150,255,.28))`
-      }
-      requestAnimationFrame(reflect)
     </script>
   </body>
 

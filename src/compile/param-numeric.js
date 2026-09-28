@@ -2,7 +2,8 @@ import { ctx } from '../ctx.js'
 import { EQUALITY_OPS, MUTATE_OPS, RELATIONAL_OPS, T, walkAst } from '../ast.js'
 import { typedCtorRawOf } from '../static.js'
 import { VAL } from '../reps.js'
-import { K, tagOf, paramOf } from '../summary/kind.js'
+import { K, tagOf, paramOf, hasTag, core } from '../summary/kind.js'
+import { frameNode } from '../function.js'
 import { TYPED_ELEM_BIGINT_FLAG } from '../../layout.js'
 
 // A receiver the program holds as a typed array: its declaring constructor, or
@@ -53,6 +54,59 @@ const NUM_BIN_OPS = new Set(['*', '/', '%', '**', '&', '|', '^', '<<', '>>', '>>
 // signals string intent and is rejected (handled in the walk below).
 // A string literal/template operand poisons relational numeric inference.
 const isStrLiteral = (n) => Array.isArray(n) && (n[0] === 'str' || n[0] === 'template')
+
+// The names (of `names`) a condition proves numbers when it is `when`: `x !== x`
+// holds for NaN alone, `x === 0.0` (a strict test against a number: a literal, or
+// an operand the summary knows as a number) for a number alone; a call of a
+// top-level predicate whose body is such a test of its parameter (`isnan( x )`,
+// `isInfinite( x )`) proves its argument; `&&`, `||` and `!` combine them (each
+// arm of a true `||` must prove a name). A `return` of a name so proven gives
+// back a number, never the parameter's own value: libm's
+// `if ( isnan( x ) ) { return x; }` keeps the export's f64 contract.
+const NO_NAMES = new Set()
+const numLit = (e) => typeof e === 'number' || e === 'Infinity' || e === 'NaN' ||
+  (Array.isArray(e) && ((e[0] == null && typeof e[1] === 'number') || e[0] === 'nan' || ((e[0] === 'u-' || e[0] === '-') && e.length === 2 && numLit(e[1]))))
+const flatArgs = (a) => Array.isArray(a) && a[0] === ',' ? a.slice(1).flatMap(flatArgs) : [a]
+// A name the summary knows as a number in `scope`: not one that may be undefined (`undefined === undefined` holds).
+const numberIn = (scope) => {
+  const view = ctx.summary?.at(scope)
+  return view ? (e) => { const k = view.kindOfExpr(e); return k != null && tagOf(core(k)) === K.NUMBER && !hasTag(k, K.NULLISH) && !hasTag(k, K.ABSENT) } : () => false
+}
+export function numericGuard(c, when, names, isNum, depth = 0) {
+  if (!Array.isArray(c) || depth > 3) return NO_NAMES
+  const op = c[0]
+  if (op === '!') return numericGuard(c[1], !when, names, isNum, depth)
+  if (op === '()' && c.length === 2) return numericGuard(c[1], when, names, isNum, depth)
+  if (op === '&&' || op === '||' || op === '__eager&&' || op === '__eager||') {   // prepare's eager forms are the same tests
+    const a = numericGuard(c[1], when, names, isNum, depth), b = numericGuard(c[2], when, names, isNum, depth)
+    if ((op === '&&' || op === '__eager&&') === when) return !a.size ? b : !b.size ? a : new Set([...a, ...b])
+    return a.size && b.size ? new Set([...a].filter(n => b.has(n))) : NO_NAMES
+  }
+  if (!when) return NO_NAMES
+  const number = (e) => numLit(e) || (typeof e === 'string' && !names.has(e) && isNum(e))
+  if (op === '!==' && names.has(c[1]) && c[1] === c[2]) return new Set([c[1]])
+  if (op === '===') {
+    if (names.has(c[1]) && number(c[2])) return new Set([c[1]])
+    if (names.has(c[2]) && number(c[1])) return new Set([c[2]])
+    return NO_NAMES
+  }
+  if (op === '()' && typeof c[1] === 'string') {
+    const fn = ctx.funcs.map.get(c[1])
+    if (!fn?.body || fn.raw || fn.defaults) return NO_NAMES
+    const params = fn.sig.params.map(p => p.name)
+    let body = fn.body
+    if (Array.isArray(body) && body[0] === '{}') body = body[1]
+    if (Array.isArray(body) && body[0] === ';') body = body.length === 2 ? body[1] : null
+    if (Array.isArray(body) && body[0] === 'return') body = body[1]
+    const proven = numericGuard(body, true, new Set(params), numberIn(fn.name), depth + 1)
+    if (!proven.size) return NO_NAMES
+    const args = c.slice(2).flatMap(flatArgs), out = new Set()
+    params.forEach((p, i) => { if (proven.has(p) && names.has(args[i])) out.add(args[i]) })
+    return out
+  }
+  return NO_NAMES
+}
+const assignsAny = (n, names) => { let hit = false; walkAst(n, { enter: (m) => { if (MUTATE_OPS.has(m[0]) && names.has(m[1])) hit = true } }); return hit }
 
 /** True iff every use of param `name` in `body` is numeric-COMPATIBLE *and* at
  *  least one use is numeric-PROVING — so coercing it to a number once at entry is
@@ -120,6 +174,16 @@ export function paramAllUsesNumeric(body, name, _seen = new Set(), requireProof 
     for (let i = 1; i < node.length; i++) collectNum(node[i])
   })(body)
   let ok = true, proven = false
+  let guarded = null   // the names a numeric guard proves on the current path (numericGuard)
+  const isNum = numberIn(ctx.func.current)
+  const guardedWalk = (cond, when, arm) => {
+    const names_ = numericGuard(cond, when, names, isNum)
+    if (!names_.size || assignsAny(arm, names_)) { walk(arm); return }
+    const prior = guarded
+    guarded = new Set([...(prior ?? []), ...names_])
+    walk(arm)
+    guarded = prior
+  }
   // A param in a numeric-operand slot is a PROVING use; recurse into a non-param sub-expr.
   const numOperand = (n) => { if (names.has(n)) proven = true; else walk(n) }
   // Positional call args, flattening the `(, a b c)` node multi-arg calls parse to —
@@ -149,6 +213,18 @@ export function paramAllUsesNumeric(body, name, _seen = new Set(), requireProof 
       return
     }
     if (MUTATE_OPS.has(op) && names.has(node[1])) { ok = false; return }
+    // A return, or a conditional's arm, of a name a numeric guard proves: a
+    // number leaves, not the parameter's value (neither a proof nor a reject).
+    if (op === 'return' && node.length === 2 && names.has(node[1]) && guarded?.has(node[1])) return
+    if (op === '=' && typeof node[1] === 'string' && !names.has(node[1]) && names.has(node[2]) && guarded?.has(node[2])) return   // the lowering of a guarded early return
+    if ((op === 'if' || op === 'while') && node.length >= 3) { walk(node[1]); guardedWalk(node[1], true, node[2]); if (node.length > 3) guardedWalk(node[1], false, node[3]); return }
+    if (op === '?:' && node.length === 4 && (names.has(node[2]) || names.has(node[3]))) {
+      walk(node[1])
+      const yes = numericGuard(node[1], true, names, isNum), no = numericGuard(node[1], false, names, isNum)
+      if (!(names.has(node[2]) && yes.has(node[2]))) walk(node[2])
+      if (!(names.has(node[3]) && no.has(node[3]))) walk(node[3])
+      return
+    }
     // Compound assignment: `-=`/`*=`/… ToNumber the value; `+=` does so when the
     // target is a numeric local (`let s = 0; s += a[i]`, the accumulator idiom).
     if (typeof op === 'string' && op.length >= 2 && op.endsWith('=') && op !== '==' && op !== '===' && op !== '!=' && op !== '!==' && op !== '<=' && op !== '>=' && op !== '=' && node.length === 3 && typeof node[1] === 'string') {
@@ -158,6 +234,15 @@ export function paramAllUsesNumeric(body, name, _seen = new Set(), requireProof 
     if (typedIndex(node)) { if (!names.has(node[2])) walk(node[2]); return }
     if (NUM_BIN_OPS.has(op) && node.length === 3) {     // numeric binary: operands are ToNumber'd
       numOperand(node[1]); numOperand(node[2])
+      return
+    }
+    // An equality against a number (`x !== x`, `x === PINF`) reads the param as
+    // compatible, neither proving nor rejecting; against anything else it tells
+    // the value's own type apart, so the param stays as it is.
+    if (EQUALITY_OPS.has(op) && node.length === 3 && (names.has(node[1]) || names.has(node[2]))) {
+      const other = names.has(node[1]) ? node[2] : node[1]
+      if (!names.has(other) && !numLit(other) && !(typeof other === 'string' && isNum(other))) { ok = false; return }
+      if (!names.has(other)) walk(other)
       return
     }
     // min/max ternary (`x < y ? x : y` — clampPeel synthesizes `__pks = min(r,w)`
@@ -303,14 +388,34 @@ const STRING_RECV_METHODS = new Set([
  *     pointer, out of the f64-number contract; conservatively we reject it)
  *   - passing `name` to a call / returning it / storing into an aggregate: the
  *     value escapes where it could be ToString'd; reject conservatively. */
-export function paramNeverString(body, name) {
+export function paramNeverString(body, name, _seen = new Set()) {
   if (body == null) return false
   let ok = true
+  const names = new Set([name]), isNum = numberIn(ctx.func.current)
+  let guarded = false   // a numeric guard proves the name on the current path (numericGuard)
+  const guardedWalk = (cond, when, arm) => {
+    if (!numericGuard(cond, when, names, isNum).size || assignsAny(arm, names)) { walk(arm); return }
+    const prior = guarded
+    guarded = true
+    walk(arm)
+    guarded = prior
+  }
   const walk = (node) => {
     if (!ok || node == null) return
     if (typeof node === 'string') { if (node === name) ok = false; return }  // bare escape → reject
     if (!Array.isArray(node)) return
     const op = node[0]
+    // A return, or a conditional's arm, of the name under a numeric guard gives
+    // back a number, never the value itself (no ToString can reach it).
+    if (op === 'return' && node.length === 2 && node[1] === name && guarded) return
+    if (op === '=' && typeof node[1] === 'string' && node[1] !== name && node[2] === name && guarded) return   // the lowering of a guarded early return
+    if ((op === 'if' || op === 'while') && node.length >= 3) { walk(node[1]); guardedWalk(node[1], true, node[2]); if (node.length > 3) guardedWalk(node[1], false, node[3]); return }
+    if (op === '?:' && node.length === 4 && (node[2] === name || node[3] === name)) {
+      walk(node[1])
+      if (!(node[2] === name && numericGuard(node[1], true, names, isNum).size)) walk(node[2])
+      if (!(node[3] === name && numericGuard(node[1], false, names, isNum).size)) walk(node[3])
+      return
+    }
     // Closure capture: recurse into the arrow (params — default-value exprs
     // may reference `name` — and body) unless the arrow's OWN param list
     // shadows `name`, exactly mirroring paramAllUsesNumeric's arrow arm just
@@ -353,6 +458,16 @@ export function paramNeverString(body, name) {
       for (let i = 1; i <= 2; i++) if (node[i] !== name) walk(node[i])
       return
     }
+    // An equality against a number (`x !== x`, `x === 0.0`, `x === PINF`: libm's
+    // guards) reads the param as a number would be read; against anything else
+    // (`x === true`, `x == null`) it tells the value's own type apart, which
+    // the boundary's number would not.
+    if (EQUALITY_OPS.has(op) && node.length === 3 && (node[1] === name || node[2] === name)) {
+      const other = node[1] === name ? node[2] : node[1]
+      if (other !== name && !numLit(other) && !(typeof other === 'string' && isNum(other))) { ok = false; return }
+      if (other !== name) walk(other)
+      return
+    }
     if ((op === 'u-' || op === 'u+' || op === '~') && node.length === 2) {
       if (node[1] !== name) walk(node[1]); return
     }
@@ -370,6 +485,21 @@ export function paramNeverString(body, name) {
     // Member access / method call on the param → it's a pointer, not an f64 number:
     // reject (out of contract). `.`/`?.`/`[]` with the name as receiver.
     if ((op === '.' || op === '?.' || op === '[]') && node[1] === name) { ok = false; return }
+    // Passed to a module-level function: the value is that function's own
+    // parameter, judged by its body (cycle-guarded), as paramAllUsesNumeric
+    // forwards. stdlib's `export let f = (x) => fn(x)` and every helper call.
+    if (op === '()' && typeof node[1] === 'string' && !_seen.has(node[1])) {
+      const fn = ctx.funcs.map?.get(node[1])
+      if (fn && fn.body && !fn.raw && Array.isArray(fn.sig?.params) && !fn.rest) {
+        const args = flatArgs(node.length > 2 ? (node.length === 3 ? node[2] : [',', ...node.slice(2)]) : null).filter(a => a != null)
+        for (let i = 0; i < args.length; i++) {
+          if (args[i] !== name) { walk(args[i]); continue }
+          const param = fn.sig.params[i]
+          if (param == null || !paramNeverString(frameNode(fn), param.name, new Set([..._seen, node[1]]))) { ok = false; return }   // the frame: a default's use counts
+        }
+        return
+      }
+    }
     // `=`/compound reassignment of the param to a non-numeric value: reject if it
     // could become a string. A reassignment makes the param mutable — conservatively
     // require the RHS to be string-free too (recurse), and the target isn't a use.
@@ -465,6 +595,110 @@ export function paramValueOnly(body, name) {
   return ok
 }
 
+/** Names of `body` that only count: a parameter of `params`, or a local, whose
+ *  every definition is a number built from such names and whose every use is an
+ *  operand of arithmetic, a comparison, a step, a copy into another counting
+ *  name, or an index. Counting is evidence, not absence of it: a name enters
+ *  the result only when arithmetic, a step or a relational compare reads it
+ *  (or a copy of it), so the lone key of `o[k]` stays a key. The strided
+ *  signature `(N, x, strideX, offsetX)` walks a cursor seeded from one
+ *  parameter and stepped by another; both count. */
+const countingCache = new WeakMap()
+const STEP_OPS = new Set(['+=', '-=', '*=', '++', '--'])
+export function countingNames(body, params) {
+  if (!Array.isArray(body) || !params?.length) return EMPTY_NAMES
+  const cached = countingCache.get(body)
+  if (cached) return cached
+  const cands = new Set(params), defs = new Map(), copies = [], evidence = new Set()
+  const define = (name, init) => {
+    if (typeof name !== 'string') return
+    if (!defs.has(name)) defs.set(name, [])
+    if (init !== undefined) defs.get(name).push(init)
+  }
+  walkAst(body, { enter: (n) => {
+    const op = n[0]
+    if (op === 'let' || op === 'const') {
+      for (let i = 1; i < n.length; i++) {
+        const d = n[i]
+        if (typeof d === 'string') { cands.add(d); define(d) }
+        else if (Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string') { cands.add(d[1]); define(d[1], d[2]) }
+      }
+    } else if (op === '=' && typeof n[1] === 'string') define(n[1], n[2])
+  } })
+  const isMath = (callee) => (typeof callee === 'string' && callee.startsWith('math.')) || (Array.isArray(callee) && callee[0] === '.' && callee[1] === 'Math')
+  const num = (e) => {
+    if (typeof e === 'number') return true
+    if (typeof e === 'string') return cands.has(e)
+    if (!Array.isArray(e)) return false
+    const op = e[0]
+    if (op == null) return typeof e[1] === 'number'
+    if (op === 'u-' || op === 'u+' || op === '~' || (op === '-' && e.length === 2)) return num(e[1])
+    if ((NUM_BIN_OPS.has(op) || op === '+' || op === '-') && e.length === 3) return num(e[1]) && num(e[2])
+    if (op === '?:') return num(e[2]) && num(e[3])
+    if (op === '.' && e[2] === 'length') return true
+    if (op === '()' && isMath(e[1])) return true
+    return false
+  }
+  let changed = true
+  const reject = (name) => { if (cands.delete(name)) changed = true }
+  const operand = (n) => { if (typeof n === 'string') { if (cands.has(n)) evidence.add(n) } else visit(n, true) }
+  // `numeric`: the position takes a number as a number
+  const visit = (n, numeric) => {
+    if (typeof n === 'string') { if (!numeric) reject(n); return }
+    if (!Array.isArray(n)) return
+    const op = n[0]
+    if (op == null || op === 'str') return
+    if (op === '=>') { walkAst(n, { enter: (m) => { for (let i = 1; i < m.length; i++) if (typeof m[i] === 'string') reject(m[i]) } }); return }
+    if (op === 'let' || op === 'const') {
+      for (let i = 1; i < n.length; i++) { const d = n[i]; if (Array.isArray(d) && d[0] === '=') { if (typeof d[1] === 'string') visit(d[2], cands.has(d[1])); else visit(d, false) } }
+      return
+    }
+    if (MUTATE_OPS.has(op)) {
+      const t = n[1]
+      if (typeof t === 'string') {
+        if (STEP_OPS.has(op)) { if (cands.has(t)) evidence.add(t); if (n[2] != null) operand(n[2]) }
+        else if (op === '=') visit(n[2], cands.has(t))
+        else { reject(t); visit(n[2], false) }
+        return
+      }
+      visit(t, false)
+      for (let i = 2; i < n.length; i++) visit(n[i], false)
+      return
+    }
+    if (op === '[]' && n.length === 3) { visit(n[1], false); visit(n[2], true); return }
+    if (op === '.' || op === '?.') { visit(n[1], false); return }
+    if (op === '+' && n.length === 3 && (isStrLiteral(n[1]) || isStrLiteral(n[2]))) { visit(n[1], false); visit(n[2], false); return }
+    if ((NUM_BIN_OPS.has(op) || RELATIONAL_OPS.has(op) || op === '+' || op === '-') && n.length === 3) { operand(n[1]); operand(n[2]); return }
+    if (EQUALITY_OPS.has(op) && n.length === 3) { visit(n[1], true); visit(n[2], true); return }
+    if ((op === 'u-' || op === 'u+' || op === '~' || op === '-' || op === '!') && n.length === 2) { visit(n[1], true); return }
+    if (op === '?:' && n.length === 4) { visit(n[1], true); visit(n[2], numeric); visit(n[3], numeric); return }
+    if (op === '&&' || op === '||') { for (let i = 1; i < n.length; i++) visit(n[i], true); return }
+    if (op === 'if' || op === 'while') { visit(n[1], true); for (let i = 2; i < n.length; i++) visit(n[i], false); return }
+    if (op === 'for' && n.length === 5) { visit(n[1], false); visit(n[2], true); visit(n[3], false); visit(n[4], false); return }
+    if (op === 'return') { visit(n[1], true); return }
+    if (op === '()' && isMath(n[1])) { for (let i = 2; i < n.length; i++) visit(n[i], true); return }
+    if (op === ',') { for (let i = 1; i < n.length; i++) visit(n[i], numeric && i === n.length - 1); return }
+    for (let i = 1; i < n.length; i++) visit(n[i], false)
+  }
+  while (changed) {
+    changed = false
+    for (const [name, inits] of defs) if (cands.has(name) && !inits.every(num)) reject(name)
+    evidence.clear()
+    visit(body, false)
+  }
+  // a copy counts for its source: `ix = offsetX; ix += strideX`
+  for (const [name, inits] of defs) for (const init of inits) if (typeof init === 'string') copies.push([name, init])
+  for (let grew = true; grew;) {
+    grew = false
+    for (const [to, from] of copies) if (evidence.has(to) && cands.has(from) && !evidence.has(from)) { evidence.add(from); grew = true }
+  }
+  const out = new Set()
+  for (const name of evidence) if (cands.has(name)) out.add(name)
+  countingCache.set(body, out)
+  return out
+}
+const EMPTY_NAMES = new Set()
+
 /** Exported-param `name` used only as a numeric array-like: every use is an
  *  element read `name[i]`, an element write `name[i] = v` (or compound/update),
  *  `name.length`, or a forward into a user function whose parameter is itself
@@ -478,8 +712,9 @@ export function paramValueOnly(body, name) {
  *  is JS for the numeric arrays such a parameter is written for. */
 const TYPED_RECEIVER_METHODS = new Set(['subarray', 'slice', 'set', 'fill', 'copyWithin', 'indexOf', 'lastIndexOf', 'includes', 'at'])
 const TYPED_WRITE_METHODS = new Set(['set', 'fill', 'copyWithin'])
-export function paramNumericArrayLike(body, name, _seen = new Set()) {
+export function paramNumericArrayLike(body, name, _seen = new Set(), params = null) {
   if (body == null) return null
+  const counting = countingNames(body, params)
   let ok = true, used = false, writes = false, numericUse = false
   let numericStores = null
   const summary = ctx.summary?.at(body)
@@ -519,7 +754,7 @@ export function paramNumericArrayLike(body, name, _seen = new Set()) {
   } })
   function numericIndex(e) {
     if (typeof e === 'number') return true
-    if (typeof e === 'string') return numericLocals.has(e)
+    if (typeof e === 'string') return numericLocals.has(e) || counting.has(e)
     if (!Array.isArray(e)) return false
     const op = e[0]
     if (op == null) return typeof e[1] === 'number'
@@ -563,6 +798,8 @@ export function paramNumericArrayLike(body, name, _seen = new Set()) {
         // A numeric output buffer may have no element reads to supply the
         // proof below. Its stores give the same evidence as numeric fill.
         numericStores = numericStores !== false && op === '=' && summary?.valOfExpr(v) === VAL.NUMBER
+        // `y[i] += n` adds to the element: a number beside it is no string being built.
+        if (op === '+=' && summary?.valOfExpr(v) === VAL.NUMBER) numericUse = true
         walk(t[2]); for (let i = 2; i < node.length; i++) walk(node[i])
         return
       }
@@ -571,6 +808,11 @@ export function paramNumericArrayLike(body, name, _seen = new Set()) {
     if (op === '[]' && node.length === 3 && names.has(node[1])) {
       if (!numericIndex(node[2])) { ok = false; return }
       used = true; walk(node[2]); return
+    }
+    // `y[i] + n`, n a proven number: the same evidence as the `+=` store above.
+    if (op === '+' && node.length === 3) {
+      const elemRead = (e) => Array.isArray(e) && e[0] === '[]' && e.length === 3 && names.has(e[1])
+      if ((elemRead(node[1]) && summary?.valOfExpr(node[2]) === VAL.NUMBER) || (elemRead(node[2]) && summary?.valOfExpr(node[1]) === VAL.NUMBER)) numericUse = true
     }
     // Typed-array methods on the receiver keep it typed (`data.subarray(a, b)`,
     // `out.set(src)`); the writing ones mark the storage for copy-back, and a
@@ -594,7 +836,8 @@ export function paramNumericArrayLike(body, name, _seen = new Set()) {
         if (!names.has(args[i])) { walk(args[i]); continue }
         const target = cl ? cl.params[i] : (fn && fn.body && !fn.raw && !fn.rest && fn.sig?.params?.[i]?.name)
         const targetBody = cl ? cl.body : fn?.body
-        const inner = target && !_seen.has(node[1] + '#' + i) && paramNumericArrayLike(targetBody, target, new Set([..._seen, node[1] + '#' + i]))
+        const targetParams = cl ? cl.params : fn?.sig?.params?.map(q => q.name)
+        const inner = target && !_seen.has(node[1] + '#' + i) && paramNumericArrayLike(targetBody, target, new Set([..._seen, node[1] + '#' + i]), targetParams)
         if (!inner) { ok = false; return }
         used = true; numericUse = true
         if (inner.writes) writes = true

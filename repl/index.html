@@ -12,8 +12,8 @@
 <meta property="og:image" content="https://jz.js.org/assets/og.png">
 <meta name="twitter:card" content="summary_large_image">
 <link rel="icon" href="../jz.svg" type="image/svg+xml">
-<!-- ?embed (the landing iframes this) → drops the masthead. The embedded editor is always dark (the
-     standalone repl page stays cassette-gray; only the embed flips), regardless of the landing theme. -->
+<!-- ?embed (the landing iframes this) → tabs instead of the split, no brand. The embedded editor is
+     always dark (the standalone editor stays light; only the embed flips), regardless of the landing theme. -->
 <script>new URLSearchParams(location.search).has('embed') && document.documentElement.classList.add('embed')</script>
 <style>
 /* ── Dark, to match the site (assets/site.css is color-scheme:dark). Geometric sans chrome,
@@ -30,19 +30,23 @@
      WAT/CLI on the right, which read as the "low-level" output. ?embed flips this whole
      block back to dark (one override) so the landing's dark section stays seamless.
      The right pane (.right) is ALWAYS dark — its colors live in its own var block. ── */
-  --ink: #1b1c1e;         /* code text */
-  --paper: #d5d8dc;       /* editor / body background — cool, fresh light gray (cassette-like), not stark white */
-  --mid: #585b5f;         /* comments */
-  --soft: #464a4e;        /* strings */
-  --faint: #bbbec2;       /* hairlines (darker than the gray bg so they show) */
-  --guide: #adb1b7;       /* nesting guide line */
-  --gut-fg: #8a8d91;      /* line numbers */
-  --num: #292a2d;         /* number tokens */
-  --active: #e1e4e8;      /* active (caret) line — a touch brighter than the gray */
-  --sel: rgba(0,0,0,.15); /* selection (light areas) */
-  --sb: #b3b6ba;          /* editor scrollbar */
+  --ink: #111214;         /* code text */
+  --paper: #f7f7f7;       /* editor / body background — the site's blueprint paper */
+  --mid: #6c6f74;         /* comments */
+  --soft: #45484d;        /* strings */
+  --faint: #dedfe1;       /* hairlines */
+  --guide: #d4d5d8;       /* nesting guide line */
+  --gut-fg: #a0a3a8;      /* line numbers */
+  --num: #202124;         /* number tokens */
+  --def: #000;            /* declared names — the brightest step of the tone ladder */
+  --call: #16181b;        /* called names */
+  --kw: #6c6f74;          /* keywords recede behind the names they introduce */
+  --punct: #9a9da1;       /* punctuation and operators, quietest */
+  --active: #ececed;      /* active (caret) line — a touch darker than the paper */
+  --sel: rgba(0,0,0,.12); /* selection (light areas) */
+  --sb: #cfd0d3;          /* editor scrollbar */
   --err: #c0291f;         /* compile-error squiggle */
-  --drop-bg: rgba(213,216,220,.9);
+  --drop-bg: rgba(247,247,247,.9);
   --code-top: 14px;       /* editor top inset — code starts at the top (logo now lives bottom-left) */
   --band: #000;
   --gutw: 30px;           /* line-number gutter width — recomputed to digit count by renderGutter */
@@ -113,14 +117,23 @@ main { flex: 1; display: flex; min-height: 0; min-width: 0; }   /* min-width:0 l
 #wat ::selection, #out ::selection, #expr::selection { background: rgba(255,255,255,.20); }
 /* monochrome syntax: weight + gray steps. The editor (#hl) follows its theme; the WAT (#wat)
    is always on the dark pane, so its number/string/comment hues are fixed light. */
-#hl .k, #wat .k { font-weight: 700; }                  /* keyword */
-#hl .t, #wat .t { font-weight: 600; }                  /* Type / builtin / $name */
-#hl .n { font-weight: 600; color: var(--num); }        /* number (editor) */
-#hl .s { color: var(--soft); }                         /* string  (editor) */
-#hl .c { color: var(--mid); }                          /* comment (editor) */
-#wat .n { font-weight: 600; color: #c8c8c8; }          /* number  (WAT, dark) */
-#wat .s { color: #9a9a9a; }                            /* string  (WAT, dark) */
-#wat .c { color: var(--dim); }                         /* comment (WAT, dark) */
+/* a tone ladder, not hues: declared names brightest, then calls, plain identifiers, keywords,
+   strings, and punctuation quietest; weight marks keywords and names, italics comments. */
+#hl .k { font-weight: 700; color: var(--kw); }         /* keyword */
+#hl .d { font-weight: 700; color: var(--def); }        /* declared name */
+#hl .f { color: var(--call); }                         /* called name */
+#hl .t { font-weight: 600; }                           /* Type / builtin */
+#hl .n { font-weight: 600; color: var(--num); }        /* number */
+#hl .s { color: var(--soft); }                         /* string */
+#hl .c { color: var(--mid); font-style: italic; }      /* comment */
+#hl .p { color: var(--punct); }                        /* punctuation / operator */
+#wat .k { font-weight: 700; color: #9a9a9a; }          /* WAT (always dark): keyword */
+#wat .d { font-weight: 700; color: #fff; }             /* $name */
+#wat .t { font-weight: 600; color: #d6d6d6; }          /* type */
+#wat .n { font-weight: 600; color: #e6e6e6; }          /* number */
+#wat .s { color: #9a9a9a; }                            /* string */
+#wat .c { color: #6a6a6a; font-style: italic; }        /* comment */
+#wat .p { color: #555; }                               /* paren */
 /* the page's only hue: semantic red, compile-error position */
 #hl .e { text-decoration: underline wavy var(--err) 2px; text-underline-offset: 3px; }
 
@@ -148,7 +161,7 @@ select { font-family: var(--sans); font-size: 12px; background: transparent; col
 select:focus-visible, button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px solid var(--ink); outline-offset: -1px; }
 
 /* icons (wasm · settings) — inherit the pane color, fade until hover */
-.ico { display: inline-flex; align-items: center; gap: 4px; padding: 6px 7px; border: 0;
+.ico { position: relative; display: inline-flex; align-items: center; gap: 4px; padding: 6px 7px; border: 0;
   background: transparent; color: inherit; opacity: .62; cursor: pointer; font: inherit; transition: opacity .18s; }
 .ico:hover { opacity: 1; }
 .ico.wasm { font-size: 11px; text-transform: uppercase; letter-spacing: .12em; }
@@ -260,22 +273,64 @@ select:focus-visible, button:focus-visible, input:focus-visible, textarea:focus-
   .check input { width: 18px; height: 18px; }
 }
 
-/* ?embed: the landing iframes this in its own section — flip the EDITOR theme to dark (one override of
-   the whole token block, always — independent of the landing theme), hide the brand (the landing shows
-   it), and reclaim the logo's top inset so the code starts at the top. The right pane is unchanged. */
+/* ── tabs: the embed's layout (the standalone page never shows them) ── */
+.tabs, .embed-only { display: none; }
+
+/* ?embed: the landing iframes this as one black box — flip the EDITOR theme to dark (one override of
+   the whole token block, independent of the landing theme), hide the brand (the landing shows it), and
+   trade the split for tabs: module.js · module.wat · Run, one full-size pane at a time. The panes keep
+   their DOM; .right and .terminal dissolve (display: contents) so each pane stacks under the tab bar
+   and the watbar's size + actions float into the bar's right end. Hidden panes use visibility, so
+   the editor and WAT keep their scroll. */
 html.embed {
-  --ink: #e6e6e6; --paper: #0b0b0b; --mid: #8a8a8a; --soft: #b3b3b3; --faint: #242424;
-  --guide: #ffffff24; --gut-fg: #4e4e4e; --num: #c8c8c8; --active: #17181d; --sel: rgba(255,255,255,.20);
+  --ink: #d0d0d0; --paper: #070707; --mid: #6a6a6a; --soft: #a8a8a8; --faint: #1c1c1c;
+  --guide: #ffffff1c; --gut-fg: #4e4e4e; --num: #e6e6e6; --active: #121212; --sel: rgba(255,255,255,.20);
+  --def: #fff; --call: #f0f0f0; --kw: #8c8c8c; --punct: #6a6a6a;
   --sb: #3a3a3a; --err: #ff5a5a; --drop-bg: rgba(20,20,26,.78);
-  --code-top: 12px;
+  --code-top: 14px; --tabh: 40px;
   color-scheme: dark;
 }
-html.embed .brand { display: none; }
+html.embed .brand, html.embed .divider, html.embed .hdivider { display: none; }
+html.embed main { position: relative; display: block; }
+html.embed .right, html.embed .terminal { display: contents; }
+html.embed .right { --bg: #070707; }
+html.embed .code, html.embed #wat, html.embed .console { position: absolute; inset: var(--tabh) 0 0; visibility: hidden; }
+html.embed #wat, html.embed .console { background: var(--bg); }
+html.embed #wat { padding: 12px 0 8px 6px; }
+html.embed main[data-tab="js"] .code, html.embed main[data-tab="wat"] #wat, html.embed main[data-tab="run"] .console { visibility: visible; }
+html.embed .tabs { position: absolute; top: 0; left: 0; right: 0; z-index: 4; height: var(--tabh);
+  display: flex; background: #070707; border-bottom: 1px solid #161616; }
+.tab { display: inline-flex; align-items: center; gap: 10px; padding: 0 22px; border: 0; background: transparent;
+  color: #6e6e6e; font: 400 14px/1 var(--sans); letter-spacing: .01em; cursor: pointer; transition: color .15s, background .15s; }
+.tab:hover { color: #bdbdbd; }
+/* the active tab is lit: a lighter face that runs into nothing (the bar's rule stops under it), white label */
+.tab[aria-selected="true"] { background: #1c1c1c; color: #fff; box-shadow: inset 0 -1px #1c1c1c; }
+/* icons by tone only: dim at rest, the label's own tone on the active tab */
+.tab svg { width: 15px; height: 15px; flex: none; color: #4a4a4a; transition: color .15s; }
+.tab:hover svg { color: #7a7a7a; }
+.tab[aria-selected="true"] svg { color: #bdbdbd; }
+.tab:focus-visible { outline: 2px solid #e6e6e6; outline-offset: -2px; }
+html.embed .watbar { left: auto; height: var(--tabh); gap: 2px; padding: 0 10px 0 0; background: none; border: 0; color: #8c8c8c; }
+html.embed .embed-only { display: inline-flex; }
+html.embed #stat { margin-right: 8px; }
+@media (max-width: 560px) {
+  .tab { padding: 0 12px; gap: 7px; }
+  .tab svg, html.embed #stat { display: none; }
+}
+@media (max-width: 420px) {
+  .tab { padding: 0 10px; }
+  html.embed #dl span { display: none; }
+}
 </style>
 </head>
 <body>
 
-<main>
+<main data-tab="js">
+  <div class="tabs" role="tablist" aria-label="REPL views">
+    <button class="tab" role="tab" data-tab="js" data-ico="js" aria-selected="true">module.js</button>
+    <button class="tab" role="tab" data-tab="wat" data-ico="wasm" aria-selected="false" tabindex="-1">module.wat</button>
+    <button class="tab" role="tab" data-tab="run" aria-selected="false" tabindex="-1"><svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M7 4.5v15l12-7.5z"/></svg>Run</button>
+  </div>
   <div class="pane code">
     <div id="activeline"></div>
     <a class="brand" href="../" aria-label="jz — home" title="jz — home">
@@ -311,6 +366,9 @@ html.embed .brand { display: none; }
             <label class="check"><input type="checkbox" id="names"> names</label>
           </div>
         </div>
+        <a id="full" class="ico embed-only" href="./" target="_blank" rel="noopener" title="open in the full REPL" aria-label="open in the full REPL">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 4h6v6M20 4l-8 8M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/></svg>
+        </a>
       </span>
     </div>
     <div class="terminal">
@@ -330,6 +388,7 @@ html.embed .brand { display: none; }
 
 <script type="module">
 import { highlight, highlightWat } from '../assets/highlight.js'
+import { CLS_ICO } from '../assets/headline.js'
 // The whole point: the compiler runs HERE, in the page — parse, type inference,
 // WASM emit, instantiate. No server, no build step. (dist/jz.js is the
 // standalone bundle — `npm run build` regenerates it.)
@@ -781,7 +840,35 @@ const decodeHash = (h) => {
   return new TextDecoder().decode(Uint8Array.from(b, c => c.charCodeAt(0)))
 }
 
-// editor niceties: Tab = 2 spaces, Cmd/Ctrl+Enter focuses the prompt
+// ── tabs (?embed): module.js · module.wat · Run — one pane at a time. Run rebuilds (top-level runs
+//    again) and, when the prompt hint is a concrete call like orbit(100000), evaluates it. ──
+const EMBED = document.documentElement.classList.contains('embed')
+const tabs = [...document.querySelectorAll('.tab')]
+for (const t of tabs) if (t.dataset.ico) t.insertAdjacentHTML('afterbegin', CLS_ICO[t.dataset.ico].replace(/ class="[^"]*"|<title>.*?<\/title>/g, ''))
+const showTab = (name) => {
+  mainEl.dataset.tab = name
+  for (const t of tabs) { const on = t.dataset.tab === name; t.setAttribute('aria-selected', on); t.tabIndex = on ? 0 : -1 }
+}
+const run = () => {
+  showTab('run')
+  build()
+  if (!expr.value && /^\w+\([^…]*\)$/.test(expr.placeholder)) expr.value = expr.placeholder
+  if (state.ok) runExpr()
+  expr.focus()
+}
+for (const t of tabs) t.addEventListener('click', () => t.dataset.tab === 'run' ? run() : showTab(t.dataset.tab))
+document.querySelector('.tabs').addEventListener('keydown', (e) => {
+  const d = e.key === 'ArrowRight' ? 1 : e.key === 'ArrowLeft' ? -1 : 0
+  if (!d) return
+  const i = tabs.indexOf(document.activeElement), next = tabs[(i + d + tabs.length) % tabs.length]
+  next.focus(); if (next.dataset.tab !== 'run') showTab(next.dataset.tab)
+})
+
+// open the full REPL on this source — the embed's own URL isn't visible
+const permalink = () => location.origin + location.pathname + '#' + encodeHash(editor.value)
+$('full').addEventListener('click', (e) => { e.currentTarget.href = permalink() })
+
+// editor niceties: Tab = 2 spaces, Cmd/Ctrl+Enter runs (embed) or focuses the prompt
 editor.addEventListener('keydown', (e) => {
   if (e.key === 'Tab') {
     e.preventDefault()
@@ -793,7 +880,7 @@ editor.addEventListener('keydown', (e) => {
       editor.selectionStart = editor.selectionEnd = s + 2
       editor.dispatchEvent(new Event('input'))
     }
-  } else if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) expr.focus()
+  } else if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) EMBED ? run() : expr.focus()
 })
 
 // ── boot ────────────────────────────────────────────────────────────────────

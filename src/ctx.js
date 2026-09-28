@@ -105,6 +105,7 @@ function createFunctions() {
     multiProp: new Map(), // obj.prop → lifted implementations, including reassignments
     exports: Object.create(null), // export names may shadow Object.prototype
     globalDevirt: null,
+    builtinWrapped: null,   // a builtin's value wrapper (prepare/entry.js) → the builtin key it forwards to
     runtimeRoots: new Set(), // prepared functions called by runtime kernels
     // Fixed-rest variants precede ProgramIndex: { variant, origin, kind }.
     // ProgramIndex consumes this queue once; later variants register directly.
@@ -980,11 +981,8 @@ export function warn(code, message, meta = {}, loc = null) {
   if (ctx.warnings.seen.has(key)) return
   ctx.warnings.seen.add(key)
   const entry = { code, message, ...meta }
-  if (loc != null && ctx.error.src) {
-    const before = ctx.error.src.slice(0, loc)
-    entry.line = before.split('\n').length
-    entry.column = loc - before.lastIndexOf('\n')
-  }
+  const at = locate(loc)
+  if (at) { entry.line = at.line; entry.column = at.col; if (at.file) entry.file = at.file }
   ctx.warnings.sink.entries.push(entry)
   ctx.warnings.pending.push(entry)
 }
@@ -1002,16 +1000,23 @@ export function warnDeopt(code, message, meta = {}) {
 }
 
 /** Throw with source location context. */
+/** The source a position falls in: the program's, or a bundled module's, whose
+ *  positions follow it (prepare/handlers.js prepareModule); null without a source. */
+export function locate(loc) {
+  if (loc == null || !ctx.error.src) return null
+  const part = ctx.error.parts?.find(p => loc >= p.base && loc < p.end)
+  const src = part ? part.src : ctx.error.src, at = part ? loc - part.base : loc
+  const before = src.slice(0, at)
+  const line = before.split('\n').length
+  const col = at - before.lastIndexOf('\n')
+  return { file: part?.file ?? null, line, col, text: src.split('\n')[line - 1] }
+}
+
 export function err(msg, cause) {
   let detail = msg
 
-  if (ctx.error.loc != null && ctx.error.src) {
-    const before = ctx.error.src.slice(0, ctx.error.loc)
-    const line = before.split('\n').length
-    const col = ctx.error.loc - before.lastIndexOf('\n')
-    const src = ctx.error.src.split('\n')[line - 1]
-    detail += `\n  at line ${line}:${col}\n  ${src}\n  ${' '.repeat(col - 1)}^`
-  }
+  const at = locate(ctx.error.loc)
+  if (at) detail += `\n  at ${at.file ? at.file + ':' : 'line '}${at.line}:${at.col}\n  ${at.text}\n  ${' '.repeat(at.col - 1)}^`
 
   if (ctx.func.current?.name) {
     detail += `\n  in function: ${ctx.func.current.name}`

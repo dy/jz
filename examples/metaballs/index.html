@@ -4,10 +4,10 @@
 <meta charset="utf-8">
 <meta name="viewport" content="user-scalable=0" />
 <title>Metaballs - jz</title>
-<meta name="description" content="Organic blobs — 2D implicit surface marching. Plain JavaScript compiled to WebAssembly with jz." />
+<meta name="description" content="Liquid-metal blobs merge and split in the glow of their own field. Plain JavaScript compiled to WebAssembly with jz." />
 <link rel="canonical" href="https://jz.js.org/examples/metaballs/" />
 <meta property="og:title" content="Metaballs - jz" />
-<meta property="og:description" content="Organic blobs — 2D implicit surface marching. Plain JavaScript compiled to WebAssembly with jz." />
+<meta property="og:description" content="Liquid-metal blobs merge and split in the glow of their own field. Plain JavaScript compiled to WebAssembly with jz." />
 <meta property="og:url" content="https://jz.js.org/examples/metaballs/" />
 <meta property="og:image" content="https://jz.js.org/examples/thumbs/metaballs.webp" />
 <meta name="twitter:card" content="summary_large_image" />
@@ -21,7 +21,7 @@ import { runDemo, trackPointer } from "../lib/jzdemo.js"
 let holding = false
 const demo = runDemo({
   name: "metaballs",
-  hint: "metaballs — a 2D implicit surface · hold to grow one",
+  hint: "metaballs — a 2D implicit surface as liquid metal · hold to grow one",
   size: { budget: 1000000, dpr: 2 },
   load: (e) => { e.init() },
   frame: (e, t) => {

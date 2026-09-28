@@ -45,6 +45,10 @@ test('slp: multi-array map (a+b) packs + bit-exact', () => {
 })
 
 // === Soundness pins: SLP MUST bail when a typed-array view exists ===
+// The two statements of each pair differ: an unrolled body of two equal
+// statements is rolled back to one (plan/counted-loops.js) and taken by the
+// lane vectorizer, which versions on aliasing itself; SLP is what these pin.
+// The values stay small integers and halves, so the sums are exact in any order.
 
 test('slp: bails on a subarray view (aliasing)', () => {
   // `v = a.subarray(1)` overlaps `a`; packing the shifted write would miscompile.
@@ -52,7 +56,7 @@ test('slp: bails on a subarray view (aliasing)', () => {
     let a = new Float64Array(65), v = a.subarray(1)
     export let run = () => {
       for (let i = 0; i < 64; i++) a[i] = i + 1.0
-      for (let i = 0; i < 64; i += 2) { v[i] = a[i] * 2.0; v[i+1] = a[i+1] * 2.0 }
+      for (let i = 0; i < 64; i += 2) { v[i] = a[i] + 1.0; v[i+1] = a[i+1] + 2.0 }
       let s = 0.0; for (let i = 0; i < 64; i++) s = s + a[i]; return s
     }`
   is(fires(src), 0, 'view present → SLP bails (no v128 store)')
@@ -130,7 +134,7 @@ test('slp: bails on a buffer-backed view (the watr self-compile class)', () => {
     let a = new Float64Array(buf), o = new Float64Array(buf)
     export let run = () => {
       for (let i = 0; i < 64; i++) a[i] = i * 0.5
-      for (let i = 0; i < 64; i += 2) { o[i] = a[i] * 2.0 + 1.0; o[i+1] = a[i+1] * 2.0 + 1.0 }
+      for (let i = 0; i < 64; i += 2) { o[i] = a[i] * 2.0 + 1.0; o[i+1] = a[i+1] * 3.0 + 1.0 }
       let s = 0.0; for (let i = 0; i < 64; i++) s = s + o[i]; return s
     }`
   is(fires(src), 0, 'buffer-backed view → SLP bails (no v128 store)')

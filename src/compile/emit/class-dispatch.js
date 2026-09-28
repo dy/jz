@@ -13,7 +13,7 @@ import { OBJECT_SCHEMA_HI_MASK, objectSchemaGuardHex } from '../../../layout.js'
 import { ctx, inc } from '../../ctx.js'
 import { createFunction, frameRoots } from '../../function.js'
 import { CLASS_T, ACCESSOR_GET, ACCESSOR_SET, MUTATE_OPS } from '../../ast.js'
-import { asF64, asI64, boolBoxIR, isNullish, isUndef, rawBigInt, temp, throwTypeErrorIR, typed } from '../../ir.js'
+import { asF64, asI64, boolBoxIR, isNullish, isUndef, ptrOffsetIR, rawBigInt, temp, throwTypeErrorIR, typed, MAX_CLOSURE_ARITY } from '../../ir.js'
 import { valTypeOf } from '../../kind.js'
 import { VAL } from '../../reps.js'
 import { callContractOf } from '../representation-plan.js'
@@ -51,6 +51,28 @@ const knownNonInstance = (obj) => {
 }
 /** Whether the summary rules the receiver out as a class instance: a kind other than an object. */
 const notAnObject = (obj) => { const k = ctx.summary?.at(ctx.func.current).kindOfExpr(obj); return k != null && tagOf(k) !== K.OBJECT && tagOf(k) !== K.ANY && tagOf(k) !== K.NONE }
+/** Whether the summary lists the receiver's layouts and none holds `slot`
+ *  (an accessor's), as a slot of its schema or as a member of its class: the
+ *  access is then plain, and keeps the receiver's own type (a `this` of the
+ *  class, a field read). A derived class installs an accessor on the base
+ *  instance dynamically (jzify/classes.js recordAccessor): where the summary
+ *  admits such a store the slot may be present. */
+export const lacksSlot = (obj, slot) => {
+  const view = ctx.summary?.at(ctx.func.current), layouts = view?.shapesOfExpr(obj)
+  if (!layouts?.length) return false
+  const prop = slot.endsWith(ACCESSOR_GET) ? slot.slice(0, -ACCESSOR_GET.length) : slot.slice(0, -ACCESSOR_SET.length)
+  if (ctx.transform.dynamicAccessorNames?.has(prop)) { const k = view.kindOfExpr(['.', obj, slot]); if (k == null || tagOf(k) !== K.NONE) return false }
+  return layouts.every(sid => !ctx.schema.list[sid]?.includes(slot) && !classOfSid(sid)?.methods.has(slot))
+}
+
+/** The slot a field `name` takes in every one of the classes' layouts, or -1:
+ *  a field under a member's name holds the own property that shadows it. */
+const ownSlot = (entries, name) => {
+  const at = (e) => { const sid = sidOf(e); return sid == null ? -1 : ctx.schema.list[sid].indexOf(name) }
+  const i = at(entries[0])
+  return i >= 0 && entries.every(e => at(e) === i) ? i : -1
+}
+const local = (name) => typed(['local.get', `$${name}`], 'f64')
 
 const tagEq = (recv, sid) => ['i64.eq', ['i64.and', ['i64.reinterpret_f64', ['local.get', `$${recv}`]], ['i64.const', OBJECT_SCHEMA_HI_MASK]], ['i64.const', objectSchemaGuardHex(sid)]]
 
@@ -59,10 +81,12 @@ const tagEq = (recv, sid) => ['i64.eq', ['i64.and', ['i64.reinterpret_f64', ['lo
  * the receiver (null when the class lacks the member), `build(fn, recv)` emits
  * the access through it, `rest(recv)` the access on any other receiver, and
  * `dispatcher` the shared function for a receiver the summary cannot name
- * (`held` names a local the caller has already set to the receiver's value).
+ * (`held` names a local the caller has already set to the receiver's value),
+ * `own(value, recv)` the access through the own property a field of the
+ * member's name holds (`value` names the local it was read into).
  * Returns undefined when the receiver is no class instance.
  */
-function dispatch(obj, name, fnOf, build, rest, dispatcher, held) {
+function dispatch(obj, name, fnOf, build, rest, dispatcher, held, own) {
   if (inDispatcher()) return undefined
   // a scalar-replaced literal (SRoA, no heap presence) is never an instance
   if (typeof obj === 'string' && ctx.func.flatObjects?.has(obj)) return undefined
@@ -77,8 +101,16 @@ function dispatch(obj, name, fnOf, build, rest, dispatcher, held) {
   if (fns.some(f => f !== fn)) return ctx.funcs.names.has(dispatcher) ? dispatcher : undefined
   // An own property stored under the member's name shadows it: probe it
   // first and take the ordinary path on a hit (the class contract).
+  const slot = own && ctx.summary.memberMayBeOwn(name) ? ownSlot(known.entries, name) : -1
   const member = (t) => {
     if (!ctx.summary.memberMayBeOwn(name)) return asF64(build(fn, t))
+    // the field's slot, read in place: undefined where the instance stored none
+    if (slot >= 0) {
+      const v = temp('own')
+      return ['block', ['result', 'f64'],
+        ['local.set', `$${v}`, typed(ctx.abi.object.ops.load(ptrOffsetIR(local(t), VAL.OBJECT), slot), 'f64')],
+        ['if', ['result', 'f64'], isUndef(local(v)), ['then', asF64(build(fn, t))], ['else', asF64(own(v, t))]]]
+    }
     inc('__dyn_get_expr', '__ptr_type')
     return ['if', ['result', 'f64'],
       isUndef(['f64.reinterpret_i64', ['call', '$__dyn_get_expr', ['i64.reinterpret_f64', ['local.get', `$${t}`]], asI64(emit(['str', name]))]]),
@@ -115,14 +147,17 @@ const carried = (node, call) => {
 export function classMethodCall(obj, method, args, rest) {
   if (!classes()) return undefined
   const node = ['()', ['.', obj, method], argList(args)]
-  const r = dispatch(obj, method, e => e.methods.get(method) ?? null, (fn, recv) => carried(node, ['()', fn, withReceiver(recv, args)]), rest, dispatcherName(method, 'call'))
+  // an own property is called as the closure it holds, a spread through the ordinary path
+  const own = ctx.closure.call && !args.some(a => Array.isArray(a) && a[0] === '...')
+    ? (v, recv) => ctx.closure.call(local(v), args, false, true, local(recv)) : (v, recv) => rest(recv)
+  const r = dispatch(obj, method, e => e.methods.get(method) ?? null, (fn, recv) => carried(node, ['()', fn, withReceiver(recv, args)]), rest, dispatcherName(method, 'call'), undefined, own)
   return typeof r === 'string' ? emit(['()', r, withReceiver(obj, args)]) : r
 }
 
 /** `obj.method` read as a value: the method bound to the receiver. */
 export function classMethodValue(obj, method, rest) {
   if (!classes() || isAccessorSlot(method) || !classesWith(method).length) return undefined
-  const r = dispatch(obj, method, e => e.methods.has(method) ? e.methods.get(method) + BIND : null, (fn, recv) => emit(['()', fn, recv]), rest, dispatcherName(method, 'read'))
+  const r = dispatch(obj, method, e => e.methods.has(method) ? e.methods.get(method) + BIND : null, (fn, recv) => emit(['()', fn, recv]), rest, dispatcherName(method, 'read'), undefined, local)
   return typeof r === 'string' ? emit(['()', r, obj]) : r
 }
 
@@ -242,6 +277,9 @@ export function synthesizeClassDispatchers() {
   for (const e of entries) for (const k of e.methods.keys()) keys.add(k)
   const R = CLASS_T + 'r', A = (i) => CLASS_T + 'a' + i
   const argList = (n) => n === 0 ? null : n === 1 ? A(0) : [',', ...Array.from({ length: n }, (_, i) => A(i))]
+  // a receiver of no class calls what it holds through the closure ABI: more
+  // arguments than it carries inline go as the array a spread builds
+  const closureArgs = (n) => n > MAX_CLOSURE_ARITY ? ['...', ['[', ...Array.from({ length: n }, (_, i) => A(i))]] : argList(n)
   defineOwnProbe()
   const define = (name, arity, arm, fallback, prop) => {
     if (byName.has(name)) return
@@ -261,7 +299,7 @@ export function synthesizeClassDispatchers() {
     if (isSet) { if (written.has(prop)) define(dispatcherName(key, 'call'), 1, { key, call: fn => ['()', fn, withR(1)] }, ['=', ['.', R, prop], A(0)], prop); continue }
     if (called.has(key)) {
       const arity = Math.max(0, ...entries.map(e => { const f = byName.get(e.methods.get(key)); return f ? f.sig.params.length - 1 : 0 }))
-      define(dispatcherName(key, 'call'), arity, { key, call: fn => ['()', fn, withR(arity)] }, ['()', ['.', R, key], argList(arity)], key)
+      define(dispatcherName(key, 'call'), arity, { key, call: fn => ['()', fn, withR(arity)] }, ['()', ['.', R, key], closureArgs(arity)], key)
     }
     if (read.has(key)) define(dispatcherName(key, 'read'), 0, { key, call: fn => ['()', fn + BIND, R] }, ['.', R, key], key)
   }

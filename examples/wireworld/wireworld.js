@@ -61,6 +61,7 @@
 
 let W = 0, H = 0, px
 let a, b                 // ping-pong state grids
+let heat                 // Float32Array — per-cell glow: heads set it, it decays each step (comet tails)
 let srcX, srcY           // electron-injection sources (wire dead ends)
 let srcPeriod, srcPhase  // each source's OWN cadence — a chip full of clock domains, not one
                          // synchronized strobe (set once, when the source is placed)
@@ -80,6 +81,7 @@ let triStack            // explicit DFS stack for sierpinski's triangle subdivis
 export let resize = (w, h) => {
   W = w; H = h
   a = new Int32Array(w * h); b = new Int32Array(w * h)
+  heat = new Float32Array(w * h)
   srcX = new Int32Array(MAXSRC); srcY = new Int32Array(MAXSRC)
   srcPeriod = new Int32Array(MAXSRC); srcPhase = new Int32Array(MAXSRC)
   prevKind = new Int32Array(8)
@@ -743,15 +745,19 @@ export let frame = (t) => {
     k = k + 1
   }
 
-  // render — an IC current-flow palette: empty PURE black (die substrate), conductor a dim
-  // slate trace, tail a cooling blue afterglow, head hot electric cyan (live current).
+  // render — current made visible: a head sets its cell's heat to 1, a tail to at least 0.55, and
+  // heat decays every step, so each electron drags a fading comet tail along its wire. Conductor
+  // is a grey trace, empty substrate pure black, live current white-hot.
   let n = w * h, i = 0
   while (i < n) {
-    let s = a[i], r = 0, g = 0, bl = 0
-    if (s === 3) { r = 44; g = 52; bl = 64 }
-    else if (s === 2) { r = 32; g = 116; bl = 182 }
-    else if (s === 1) { r = 160; g = 228; bl = 255 }
-    px[i] = (255 << 24) | (bl << 16) | (g << 8) | r
+    let s = a[i], e = heat[i] * 0.82
+    if (s === 1) e = 1.0
+    else if (s === 2 && e < 0.55) e = 0.55
+    else if (s === 0) e = 0.0
+    heat[i] = e
+    let v = s === 0 ? 0.0 : 0.28 + 0.72 * e
+    let g = (v * 255.0) | 0
+    px[i] = (255 << 24) | (g << 16) | (g << 8) | g
     i++
   }
 }

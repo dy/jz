@@ -21,7 +21,10 @@
 // Render: brightness is a two-sided Gaussian in phase, peaking at θ=0 (fast attack, slower decay,
 // like a real bioluminescent flash), floored at an EMBER so no firefly ever goes fully dark. Each
 // firefly splats a small cubic core + a softer quadratic halo (no per-pixel transcendentals — same
-// divide-free-falloff spirit as chladni's ridge). Colour is grayscale except right at the flash peak,
+// divide-free-falloff spirit as chladni's ridge); a flashing one adds a wide faint bloom, so a patch
+// in sync lights the meadow around it. The image persists like a phosphor — glow = max(glow·decay,
+// this frame) — so a flash lingers as an afterglow and a travelling front reads as a band of light,
+// while the resting embers never accumulate. Colour is grayscale except right at the flash peak,
 // where it warms a hair (firefly-motivated, not literal bioluminescence green). You watch synchrony
 // rise from scattered noise to travelling waves of collective flashing across the whole meadow.
 //
@@ -37,7 +40,8 @@
 // when driven with the same call sequence.
 
 let W = 0, H = 0, px
-let glow                                // Float32Array W*H — per-pixel brightness, rebuilt every frame
+let glow                                // Float32Array W*H — persistent per-pixel brightness (the afterglow)
+let acc                                 // Float32Array W*H — this frame's splats, rebuilt every frame
 
 const MAXN = 3200
 let count = 2600                        // current N (randomize varies it in [2200,3200))
@@ -55,8 +59,8 @@ let ghead = new Int32Array(1)           // per-cell head index, -1 = empty; size
 let gnext = new Int32Array(MAXN)        // per-firefly "next in this cell" link
 
 // persistent FRACTIONAL scalars (Float64Array — see header)
-const I_R = 0, I_R2 = 1, I_CELL = 2, I_SPACING = 3, I_K = 4, I_CLOCK = 5, I_FLASHR2 = 6, I_SCATR2 = 7, I_WAMP = 8
-let ST = new Float64Array(9)
+const I_R = 0, I_R2 = 1, I_CELL = 2, I_SPACING = 3, I_K = 4, I_CLOCK = 5, I_FLASHR2 = 6, I_SCATR2 = 7, I_WAMP = 8, I_BLOOMR = 9
+let ST = new Float64Array(10)
 
 let SEED = 0                            // custom LCG seed (i32) — never Math.random, see header
 
@@ -83,6 +87,9 @@ const SIG_ATTACK = 0.22, SIG_DECAY = 0.44     // flash pulse phase width (fast a
 const CORE_R = 1.7, INV_CORE_R2 = 1.0 / (CORE_R * CORE_R)   // bright 2-4px core, cubic falloff
 const HALO_R = 3.4, INV_HALO_R2 = 1.0 / (HALO_R * HALO_R)   // soft halo, quadratic falloff
 const HALO_AMT = 0.40
+const BLOOM_SPACINGS = 1.3             // wide bloom radius, in firefly spacings: flashing neighbours merge
+const BLOOM_AMT = 0.22, BLOOM_MIN = 0.3 // bloom strength; only a firefly brighter than BLOOM_MIN blooms
+const AFTER = 0.965                     // afterglow persistence per frame (half-life ≈ 20 frames)
 
 const FLASH_FRAC = 0.16, SCATTER_FRAC = 0.12   // interaction radii, fraction of min(W,H)
 
@@ -112,6 +119,7 @@ let recalcGeometry = () => {
   ST[I_R2] = r * r
   ST[I_CELL] = r
   ST[I_WAMP] = spacing * WANDER_FRAC
+  ST[I_BLOOMR] = spacing * BLOOM_SPACINGS
   let s = W < H ? W : H
   let fr = s * FLASH_FRAC, sr = s * SCATTER_FRAC
   ST[I_FLASHR2] = fr * fr
@@ -244,10 +252,14 @@ let brightness = (th) => {
 }
 
 // Cubic-core + quadratic-halo splat — divide-free falloff (same spirit as chladni's ridge), no
-// per-pixel transcendentals. Loop bounds are clipped (not skipped) so edge fireflies still show.
+// per-pixel transcendentals. A bright (flashing) firefly widens its footprint to the bloom radius.
+// Loop bounds are clipped (not skipped) so edge fireflies still show.
 let splat = (fxp, fyp, b) => {
   let ix = fxp | 0, iy = fyp | 0
-  let x0 = ix - 3, x1 = ix + 3, y0 = iy - 3, y1 = iy + 3
+  let bl = b > BLOOM_MIN ? (b - BLOOM_MIN) * BLOOM_AMT : 0.0
+  let br = ST[I_BLOOMR], ibr2 = 1.0 / (br * br)
+  let r = bl > 0.0 ? (br | 0) + 1 : 3
+  let x0 = ix - r, x1 = ix + r, y0 = iy - r, y1 = iy + r
   if (x0 < 0) x0 = 0
   if (y0 < 0) y0 = 0
   if (x1 > W - 1) x1 = W - 1
@@ -263,27 +275,33 @@ let splat = (fxp, fyp, b) => {
       core = core > 0.0 ? core * core * core : 0.0
       let halo = 1.0 - d2 * INV_HALO_R2
       halo = halo > 0.0 ? halo * halo : 0.0
-      let add = b * (core + halo * HALO_AMT)
-      if (add > 0.0) { let idx = py * W + pxk; glow[idx] = glow[idx] + add }
+      let bloom = 1.0 - d2 * ibr2
+      bloom = bloom > 0.0 ? bloom * bloom : 0.0
+      let add = b * (core + halo * HALO_AMT) + bl * bloom
+      if (add > 0.0) { let idx = py * W + pxk; acc[idx] = acc[idx] + add }
       pxk++
     }
     py++
   }
 }
 
-// glow → px: grayscale, warming only right at the flash peak (v³ gate keeps the ember/mid range
-// neutral) — "near-white flashes with the faintest warm tint; grayscale otherwise."
+// acc → glow (phosphor persistence: the brighter of this frame and the decayed afterglow) → px:
+// grayscale, warming only right at the flash peak (v³ gate keeps the ember/mid range neutral) —
+// "near-white flashes with the faintest warm tint; grayscale otherwise."
 let composite = () => {
   let n = W * H, i = 0
   while (i < n) {
-    let v = glow[i]; if (v > 1.0) v = 1.0
+    let a = acc[i], g = glow[i] * AFTER
+    let v = a > g ? a : g
+    glow[i] = v
+    if (v > 1.0) v = 1.0
     let v3 = v * v * v
     let r = (v * 255.0) | 0
-    let g = (v * 255.0 - v3 * 6.0) | 0
+    let gg = (v * 255.0 - v3 * 6.0) | 0
     let b = (v * 255.0 - v3 * 24.0) | 0
-    if (g < 0) g = 0
+    if (gg < 0) gg = 0
     if (b < 0) b = 0
-    px[i] = (255 << 24) | (b << 16) | (g << 8) | r
+    px[i] = (255 << 24) | (b << 16) | (gg << 8) | r
     i++
   }
 }
@@ -292,6 +310,7 @@ export let resize = (w, h) => {
   W = w; H = h
   px = new Uint32Array(w * h)
   glow = new Float32Array(w * h)
+  acc = new Float32Array(w * h)
   recalcGeometry()
   return px
 }
@@ -354,7 +373,7 @@ export let frame = (t) => {
   while (s < SUBSTEPS) { integrate(); s++ }
 
   let n = W * H, i = 0
-  while (i < n) { glow[i] = 0.0; i++ }
+  while (i < n) { acc[i] = 0.0; i++ }
   i = 0
   while (i < count) { splat(fx[i], fy[i], brightness(theta[i])); i++ }
   composite()

@@ -9,6 +9,7 @@
 // registration isn't always the whole story: some emitters call another
 // module's stdlib helper directly, an edge this table can't see).
 export const DERIVED_PROP_MODULES = Object.assign(Object.create(null), {
+  "BYTES_PER_ELEMENT": ["typedarray"],
   "add": ["collection"],
   "at": ["array", "string", "typedarray"],
   "buffer": ["typedarray"],

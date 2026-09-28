@@ -29,6 +29,7 @@ export const PASS_NAMES = [
   'narrowLoopBound',          // f64 loop bound → hoisted i32 (unblocks the lane-vectorizer)
   'wideAccumulator',          // f64 integer accumulator carried as i64 under a runtime magnitude guard (versioned loop)
   'splitCharScan',            // charCodeAt scan loops: split at min(N, s.length) → i32 char carrier (plan-level)
+  'countedLoops',             // cursors, computed starts and unrolled bodies → one counter from 0, unit stride versioned (plan/counted-loops.js)
   // Pre-analyze loop-shape transforms — applied in compile/index.js (NOT this pass pipeline), but
   // gated by these flags. Listing them here is load-bearing: ALL_OFF sets them false so level 0/1
   // (the self-compile fast path) actually skip them, instead of `undefined !== false` running them

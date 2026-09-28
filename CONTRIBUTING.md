@@ -589,7 +589,20 @@ boxed values independently of the element width. Presence is part of that
 proof: a missing numeric payload addresses the property `"undefined"`.
 Numeric demand owns typed-store coercion proofs. Usage-only parameter scans
 must not classify a typed receiver's unknown key or stored value as numeric:
-the key may name a property, which stores the value unchanged.
+the key may name a property, which stores the value unchanged. In the demand
+pass a typed array's index is a read that is no evidence (`index()`): a
+parameter read only there keeps its key as it is, one also stepped or added is
+a number by the boundary contract.
+A parameter returned as itself reaches the host with its identity (`fib('1')`
+is `'1'`), so its export boxes it. A return, or the assignment an early return
+lowers to, under a guard only a number passes (`x !== x`, `x === 0.0`, a
+predicate whose body is such a test of its parameter: `isnan( x )`,
+`isInfinite( x )`, through `&&`, `||`, `!`) gives back a number: both the
+demand pass (`numericProofs`) and the parameter proofs (`numericGuard`,
+param-numeric.js) read it as a numeric-compatible use, and libm's
+`if ( isnan( x ) ) { return x; }` keeps the f64 export. An equality against
+a number reads the parameter as a number would be read; against anything else
+it tells the value's own type apart and the parameter stays as it is.
 Dispatch reuses the later lossless i32 local-storage proof even when the
 summary's earlier kind still admits absence. The same bounds query reuses a
 settled i32 index's range when it fits the receiver length.
@@ -876,7 +889,15 @@ place. A dictionary joined with objects or primitives keeps its cell; the
 object shapes ride on the cell and its reads join both. A parameter used only
 in tests, identity compares and `typeof` keeps the shapes of a join it
 cannot name. A conditional on a parameter no call has bound waits for a later
-round; one the kinds decide walks only its live arm. A rest parameter is a
+round; one the kinds decide walks only its live arm (`x == null` of a kind
+without the nullish tags; `x.p` of a number, a boolean or a BigInt outside
+their few methods, which is undefined). `if (x.p)` proves `x` non-nullish
+where true and, where false and every object `x` may hold answers `p` with a
+class flag (`static { C.prototype.isC = true }`, a getter of the literal), no
+object at all; with the per-kind clones narrow/specialize.js gives a function
+whose parameter's callers disagree, `te[12] = x` in the else arm of
+`Matrix4.setPosition` stores a number in one clone and nothing in the other.
+A rest parameter is a
 tuple of its arguments by position, absent past a call's count. Set cells
 follow their elements; iterating a Set, Map or string materializes its
 members. A read or store through a nullish receiver, a call of a name no
@@ -1276,11 +1297,13 @@ jzify/          pre-compile desugar (index.js orchestrator + phase modules)
   switch.js     switch fall-through lowering
   generators.js function*/yield state machines + iterator-helper loop fusion
   hoist-vars.js var hoisting; arguments.js — arguments/rest lowering
+  settle-vars.js a `var`, or a bare `let`, declared at the assignment that dominates its uses (`const` when written once); a counter declared by its loop
 src/
   prepare/      validate, normalize, extract exports/imports (index.js)
   compile/      analyze → infer → plan → narrow → emit; ProgramIndex; program facts; driver (index.js)
                 analyze/frame-effects.js: per-function and per-loop escape census (what outlives a frame or an iteration)
                 plan/lanes.js: record parameters as scalar lanes (a parameter read only field by field, at literal or known-shape sites)
+                plan/counted-loops.js: a counted loop over its trip number (computed start, unrolled body rolled back, unit stride versioned); literal-start cursors are the lane vectorizer's (optimize/vectorize/counter-run.js)
   optimize/     WAT-array passes + vectorize.js + loop-rewind.js (per-iteration heap restore, after the vectorizer);
                 arena-rewind, sort-locals, low-word-mask are tape passes run by link
   link/         whole-module passes on the tape: treeshake, custom sections, throw-runtime prune, function order, local names (index.js)
@@ -1451,6 +1474,35 @@ see (`Error`, an expression) or as an expression with statics, and the
 instance's class as it would through a prototype (`classMemberIn`); a static
 call `C.s(…)` reaches the lifted function `C$s` in the summary as in the
 emitter (`liftedProp`, method-dispatch.js `tryFnPropCall`).
+
+A member is a function of its own: `arguments` in a method, an accessor or
+a constructor is the member's (`ownArguments`, lowered as a function's before
+the arrow), and a default parameter may read `this` (`rewrite(mparams)` on
+the schema path, `bodyDefaults` for an object literal's method, whose
+receiver is bound in the body). The factory takes the initializer's defaults
+(one reading the receiver stays the initializer's alone), so `new C()` and
+`new this.constructor()` pass the default's value for an argument left out,
+never an undefined the initializer's default would replace in a kind that
+keeps it: a `Vector3` built without arguments holds numbers, a `Box3` holds
+its vectors. A store under an accessor's name on a receiver the summary
+types as instances of a class without the accessor is the field's slot
+store (class-dispatch.js `lacksSlot`). A field stored under a method's name
+(`this._onChangeCallback = cb` beside `_onChangeCallback() {}`) is the own
+property that shadows the method: the summary marks the name
+(`dynamicProps`), and the emitter's dispatch reads the field's slot in place
+before calling the member (class-dispatch.js `ownSlot`). A store to
+`C.prototype.p` in a static block of `C` or among the statements of the scope
+declaring it, and `Object.assign(C.prototype, {…})`, name members of the class
+(`foldPrototypeStores`): a function is a method, a literal stored as the
+class is defined is a getter's result, any other value lives in a binding
+the getter reads; a store the fold cannot take is rejected. In a program that
+reads a `constructor` member (`new this.constructor(…)`, `a.constructor === C`)
+every class carries one: called, its factory; read, the class itself (a
+wrapper of a rest parameter where the factory has more parameters than a
+closure carries). A typed-array constructor named as a value
+(`{ Float32Array }`, `switch (a.constructor)`) is the function `jz:typed`
+makes of it, and `E.constructor` on a value that is not `this` asks its
+`__ctor`, which answers a typed array's function or reads the member.
 
 The summary walks what the program reaches: a function or closure is walked
 once a call binds its parameters, the host holds it (an export, an escaped

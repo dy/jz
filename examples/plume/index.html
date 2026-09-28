@@ -4,10 +4,10 @@
 <meta charset="utf-8">
 <meta name="viewport" content="user-scalable=0" />
 <title>Plume - jz</title>
-<meta name="description" content="Seven lines of trig unfold 40k points into rainbow feathers — tweet-sized generative art. Plain JavaScript compiled to WebAssembly with jz." />
+<meta name="description" content="Seven lines of trig unfold 40k points into sparkling feathers — tweet-sized generative art. Plain JavaScript compiled to WebAssembly with jz." />
 <link rel="canonical" href="https://jz.js.org/examples/plume/" />
 <meta property="og:title" content="Plume - jz" />
-<meta property="og:description" content="Seven lines of trig unfold 40k points into rainbow feathers — tweet-sized generative art. Plain JavaScript compiled to WebAssembly with jz." />
+<meta property="og:description" content="Seven lines of trig unfold 40k points into sparkling feathers — tweet-sized generative art. Plain JavaScript compiled to WebAssembly with jz." />
 <meta property="og:url" content="https://jz.js.org/examples/plume/" />
 <meta property="og:image" content="https://jz.js.org/examples/thumbs/plume.webp" />
 <meta name="twitter:card" content="summary_large_image" />
@@ -17,12 +17,12 @@
 <script type="module">
 import { runDemo, trackPointer } from "../lib/jzdemo.js"
 
-// Two rainbow feather-plumes from seven lines of trig (see plume.js — after the piece shared
+// Two sparkling feather-plumes from seven lines of trig (see plume.js — after the piece shared
 // by @Rainmaker1973). Drag steers the MOVEMENT: ↕ sets the swimming-pulse tempo (the ripple
 // beating through the barbs), ↔ sets the drift — right of centre swirls forward, left swirls
 // BACKWARD, the middle freezes it. Both are integrated as phases, so changing speed never
-// snaps the figure. The dice re-rolls the formula's shape constants (the 5/14/30) plus the
-// palette; double-click restores the original formula and motion.
+// snaps the figure. The dice re-rolls the formula's shape constants (the 5/14/30) and reseeds the
+// sparkles; double-click restores the original formula and motion.
 let ka = 5.0, fx = 14.0, fy = 30.0, hue0 = 0
 let pulseRate = 2.0, swirlRate = 1 / 18          // the original's 2t and t/18
 let pulse = 0, swirl = 0, last = -1

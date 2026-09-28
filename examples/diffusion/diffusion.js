@@ -11,10 +11,13 @@
 //
 // Parameters: Du=0.16, Dv=0.08, F=0.054, k=0.062  (fingerprint / coral)
 // frame() runs STEPS sub-steps per call for visible evolution at 60 fps.
+// Render: V in grey, and wherever V is growing — the reaction's advancing fronts — a white spark,
+// from V now minus V a frame ago (vP): the pattern shows where it is being written, like current.
 
 let W = 0, H = 0
 let uA, vA, uB, vB  // ping-pong double-buffered fields
 let px               // Uint32 pixel output
+let vP               // V as last rendered — its growth since then lights the fronts
 let flip = 0         // 0: read A write B  |  1: read B write A
 let STEPS = 8
 let Du = 0.16, Dv = 0.08, F = 0.054, k = 0.062
@@ -25,6 +28,7 @@ export let resize = (w, h) => {
   uA = new Float64Array(n); vA = new Float64Array(n)
   uB = new Float64Array(n); vB = new Float64Array(n)
   px = new Uint32Array(n)
+  vP = new Float64Array(n)
   clear()
   return px
 }
@@ -176,12 +180,14 @@ export let frame = () => {
     s++
   }
 
-  // render the current read buffer's V → grayscale. The V field peaks near ~0.4, so a raw
-  // v*255 reads as a dim mid-gray — lift it (gain ≈ 2.6) so the coral is crisp white on black.
+  // render the current read buffer's V → grayscale. The V field peaks near ~0.4, so lift it
+  // (gain 1.8) to a mid-grey coral; where it grew since the last frame, a white spark on top.
   let i = 0
   while (i < n) {
     let v = flip === 0 ? vA[i] : vB[i]
-    let b = v * 2.6
+    let dv = v - vP[i]
+    vP[i] = v
+    let b = v * 1.8 + (dv > 0.0 ? dv * 60.0 : 0.0)
     if (b < 0.0) b = 0.0
     if (b > 1.0) b = 1.0
     let g = (b * 255.0) | 0

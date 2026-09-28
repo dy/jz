@@ -4,10 +4,10 @@
 <meta charset="utf-8">
 <meta name="viewport" content="user-scalable=0" />
 <title>Newton's Cradle - jz</title>
-<meta name="description" content="Newton's cradle — kinetic energy passing through. Plain JavaScript compiled to WebAssembly with jz." />
+<meta name="description" content="A chrome Newton's cradle: kinetic energy passes down the row, each ball mirrors its neighbours. Plain JavaScript compiled to WebAssembly with jz." />
 <link rel="canonical" href="https://jz.js.org/examples/cradle/" />
 <meta property="og:title" content="Newton's Cradle - jz" />
-<meta property="og:description" content="Newton's cradle — kinetic energy passing through. Plain JavaScript compiled to WebAssembly with jz." />
+<meta property="og:description" content="A chrome Newton's cradle: kinetic energy passes down the row, each ball mirrors its neighbours. Plain JavaScript compiled to WebAssembly with jz." />
 <meta property="og:url" content="https://jz.js.org/examples/cradle/" />
 <meta property="og:image" content="https://jz.js.org/examples/thumbs/cradle.webp" />
 <meta name="twitter:card" content="summary_large_image" />
@@ -23,9 +23,8 @@ let dragging = false
 
 const demo = runDemo({
   name: "cradle",
-  hint: "Newton's cradle — kinetic energy passing through",
+  hint: "Newton's cradle — kinetic energy passing through · drag a ball to lift it · double-click resets",
   size: { budget: 1800000, dpr: 2 },
-  bg: "#f2f0ea",
   cursor: "pointer",
   frame: (e) => e.frame(0),
 })

@@ -50,3 +50,42 @@ test('param defaults: a default\'s growth, slot writes and captures count', () =
   // a closure a default makes captures the parameter's binding, not its value
   ['captured binding', `export const run = (n) => { const f = (a, g = () => a * 2) => { a = a + 1; return g() }; return f(n) }`, [5]],
 ]))
+
+// A default's kind joins its parameter only where some call lets the default
+// run (summary/index.js `defaultRuns`: a missing or possibly undefined
+// argument, a spread, a caller the summary cannot see), and the emitter drops
+// a default no call lets run. `toArray(array = [], offset = 0)` handed a typed
+// array by every caller then stores as into a typed array, not through the
+// polymorphic array store the `[]` default used to force.
+test('param defaults: a default runs where a call lets it, and only there', () => {
+  agree([
+    ['every call passes it', `const f = (a, o = 0) => a[o] + 1\nexport const run = () => f(new Float32Array([5, 6]), 1) + f(new Float32Array([7]), 0)`, []],
+    ['a call omits it', `const f = (a, o = 1) => a[o] + 1\nexport const run = () => f(new Float32Array([5, 6])) + f(new Float32Array([7, 8]), 0)`, []],
+    ['undefined passed', `const f = (a, o = 1) => a[o] + 1\nexport const run = () => f(new Float32Array([5, 6]), undefined) + f(new Float32Array([7, 8]), 0)`, []],
+    ['a possibly undefined local passed', `const f = (a, o = 1) => a[o] + 1\nexport const run = (k) => { let i; if (k > 5) i = 0; return f(new Float32Array([5, 6]), i) }`, [1]],
+    ['forwarded through a wrapper', `const f = (a, o = 1) => a[o] + 1\nconst g = (a, o) => f(a, o)\nexport const run = () => g(new Float32Array([5, 6])) + g(new Float32Array([7, 8]), 0)`, []],
+    ['the host omits it', `export const run = (a = 5, b = 7) => a * 10 + b`, []],
+    ['a spread call', `const f = (a, o = 1) => a[o] + 1\nexport const run = () => { const args = [new Float32Array([5, 6])]; return f(...args) }`, []],
+    ['a default of another kind, one caller', `class V { constructor() { this.x = 1; this.y = 2 } toArray(array = [], offset = 0) { array[offset] = this.x; array[offset + 1] = this.y; return array } }\nexport const run = () => { const a = new Float32Array(4); new V().toArray(a, 2); return a[2] * 10 + a[3] }`, []],
+    ['a default of another kind, both ways', `class V { constructor() { this.x = 1; this.y = 2 } toArray(array = [], offset = 0) { array[offset] = this.x; array[offset + 1] = this.y; return array } }\nexport const run = () => { const a = new Float32Array(4); new V().toArray(a, 2); const b = new V().toArray(); return a[2] * 10 + a[3] + b.length * 100 + b[1] * 1000 }`, []],
+    ['a callee only the default reaches', `const mk = () => 9\nconst f = (a, o = mk()) => a + o\nexport const run = () => f(1, 2) * 10 + f(1)`, []],
+    ['a factory forwarding undefined to the initializer', `class V { constructor(x = 3, y = x * 2) { this.x = x; this.y = y } }\nexport const run = () => { const a = new V(), b = new V(1); return a.x + a.y * 10 + b.x * 100 + b.y * 1000 }`, []],
+    ['a specialized variant keeps the default that reassigns', `const f = (a, b = (a = new Int8Array(9))) => { let s = 0; for (let i = 0; i < a.length; i++) s += 1; return s }\nexport const run = (n) => f(new Int8Array(3)) + f(new Int8Array(3), 0) * 100 + n`, [0]],
+  ])
+  const w = jz.compile(`class V { constructor() { this.x = 1; this.y = 2 } toArray(array = [], offset = 0) { array[offset] = this.x; array[offset + 1] = this.y; return array } }\nexport const run = () => { const a = new Float32Array(4); new V().toArray(a, 2); return a[2] * 10 + a[3] }`, { wat: true, optimize: 'speed' })
+  is((w.match(/__arr_set_idx_ptr/g) || []).length, 0, 'a typed array every caller passes is stored as a typed array')
+})
+
+// A class factory takes its initializer's defaults (jzify/classes.js
+// lowerStruct): an argument `new C()` or `new this.constructor()` leaves out
+// arrives as the default's value, never as an undefined the initializer's
+// own default would replace in a kind that keeps it. The fields then hold
+// the default's kind alone, with no nullish value to test for.
+test('param defaults: a constructor argument left out arrives as the default, not as undefined', () => {
+  const src = `class V { constructor(x = 0) { this.x = x } }
+    class B { constructor(min = new V(3), max = new V(4)) { this.min = min; this.max = max } clone() { return new this.constructor() } sum() { return this.min.x + this.max.x } }
+    export const run = () => { const c = new B().clone(); return c.sum() * 10 + new B(new V(1)).sum() }`
+  agree([['left out', src, []]])
+  const w = jz.compile(src, { wat: true, optimize: 2 })
+  is((w.match(/__throw_property_nullish/g) || []).length, 0, 'the fields are read as objects, never tested for a nullish value')
+})

@@ -1127,21 +1127,32 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
    *  later argument or nothing (a default replaces the nothing). The arguments
    *  a rest parameter collects escape; a surplus argument past the declared
    *  parameters is one the callee never observes. */
+  // The parameters whose default some call lets run: an argument missing,
+  // one that may be undefined, or a caller the summary cannot see. The
+  // walk joins a default's kind into its parameter there alone, so a
+  // `toArray(array = [], offset = 0)` every caller hands a typed array keeps
+  // the typed array's kind; the emitter drops the default's check as well.
+  const defaultRuns = new Set()
+  const runDefault = (key) => { if (key != null && !defaultRuns.has(key)) { defaultRuns.add(key); changed = true } }
+  const mayBeMissing = (k) => tagOf(k) === K.ANY || hasTag(k, K.NULLISH) || hasTag(k, K.ABSENT)
+  const runDefaults = (scope, defaults) => { if (defaults) for (const p in defaults) runDefault(keyIn(scope, p)) }
   const bind = (scope, names, base, n, defaults, ctx = null) => {
     reach(scope)
     // Unknown callers make the parameters ANY. Arguments from known callers
     // still flow through those parameters, including callbacks and their effects.
-    if (escaped.has(scope)) { escapeArgs(base, n); return }
+    if (escaped.has(scope)) { escapeArgs(base, n); runDefaults(scope, defaults); return }
     const s = spreadAt(base, n)
     let tail = NULLISH
     for (let i = s; i < n; i++) tail = merge(tail, ks[base + i])
     const passive = passiveParamsOf(scope, names, defaults)
     for (let i = 0; i < names.length; i++) {
       if (names[i] == null) continue
-      const quiet = passive.has(names[i]), key = ctx === null ? keyIn(scope, names[i]) : ctxKey(ctx, keyIn(scope, names[i]))
-      if (i < s) bindParam(key, ks[base + i], quiet)
-      else if (s < n) bindParam(key, defaults?.[names[i]] ? core(tail) : tail, quiet)
-      else if (!defaults?.[names[i]]) bindParam(key, NULLISH, quiet)
+      const quiet = passive.has(names[i]), base_ = keyIn(scope, names[i]), key = ctx === null ? base_ : ctxKey(ctx, base_)
+      const dflt = defaults?.[names[i]]
+      if (i < s) { bindParam(key, ks[base + i], quiet); if (!dflt || !mayBeMissing(ks[base + i])) continue }
+      else if (s < n) { bindParam(key, dflt ? core(tail) : tail, quiet); if (!dflt) continue }
+      else if (!dflt) { bindParam(key, NULLISH, quiet); continue }
+      runDefault(key); runDefault(base_)
     }
     if (names.rest != null) {
       if (names.restName != null) restBind(scope, names.restName, base, names.rest, n)
@@ -1572,9 +1583,21 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   // A parameter no call has bound yet decides nothing: the conditional waits
   // for a later round rather than walking a default arm its arguments exclude.
   const paramKeys = new Set()
+  // The properties a number, a boolean or a BigInt has: `x.p` of one outside them is undefined.
+  const PRIMITIVE_METHODS = new Set(['toString', 'toFixed', 'toExponential', 'toPrecision', 'valueOf', 'toLocaleString', 'constructor'])
   const decided = (c) => {
     if (!Array.isArray(c)) return undefined
     const op = c[0]
+    // `x.p` of a value that is a number, a boolean or a BigInt (a missing one
+    // throws) is undefined: false, so `if (x.isVector3)` given a number walks
+    // its else arm alone (the clone narrow/specialize.js gives the method).
+    if ((op === '.' || op === '?.') && typeof c[1] === 'string' && typeof c[2] === 'string') {
+      const key = keyOf(c[1])
+      if (key === null) return undefined
+      const k = kinds[key]
+      if (k == null || tagOf(k) === K.NONE) return paramKeys.has(key) ? 'pending' : undefined
+      return (k & TAGS & ~(bitOf(K.NUMBER) | bitOf(K.BOOL) | bitOf(K.BIGINT) | NULL_BITS)) === 0 && !PRIMITIVE_METHODS.has(c[2]) ? false : undefined
+    }
     if (op !== '===' && op !== '!==' && op !== '==' && op !== '!=') return undefined
     const x = isNullishLiteral(c[2]) ? c[1] : isNullishLiteral(c[1]) ? c[2] : null
     if (typeof x !== 'string') return undefined
@@ -1604,6 +1627,9 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   // The class members by name (a receiver the summary cannot name calls each class's).
   const membersByName = new Map()   // member name → the class functions bearing it
   if (classes) for (const e of classes.values()) for (const [name, fn] of e.methods) { let l = membersByName.get(name); if (!l) membersByName.set(name, l = []); l.push(fn) }
+  // A field under a member's name (`this.m = f` in a class with a method `m`)
+  // holds the own property that shadows the member.
+  if (classes) for (const e of classes.values()) for (const f of e.fields ?? []) if (e.methods.has(f)) dynamicProps.add(f)
   const dataProperty = prop => typeof prop === 'string' && !byProp.has(getterOf(prop)) && !membersByName.has(getterOf(prop))
   const NO_MEMBERS = []
   // The receiver a class function sees through a receiver the summary cannot
@@ -2164,6 +2190,9 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     if (t === K.OBJECT && paramOf(recv) !== UNKNOWN) {
       if (iterFacts(paramOf(recv))) return optionalResult(op, recv, ITER_RECORD_KEYS.includes(prop) ? kind(K.CLOSURE) : NULLISH)
       const i = schemas[paramOf(recv)].indexOf(prop)
+      // a slot under a member's name reads as its value, or as the member bound where it holds none
+      const shadowed = i >= 0 ? classMember(recv, prop) : null
+      if (shadowed) { callWith(binderOf(shadowed), core(recv)); return optionalResult(op, recv, ANY) }
       if (i >= 0) return optionalResult(op, recv, slots(paramOf(recv))[i])
       const gi = schemas[paramOf(recv)].indexOf(getterOf(prop))
       // a deleted accessor reads as absent, or as whatever a store added under its name
@@ -2404,7 +2433,8 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   const storeMember = (sid, prop, v) => {
     const i = schemas[sid].indexOf(prop), setter = i < 0 ? classOfSid(sid)?.methods.get(setterOf(prop)) ?? null : null
     const si = schemas[sid].indexOf(setterOf(prop))
-    if (i >= 0) raiseSlot(sid, i, v)
+    // a slot under a member's name is called in the member's place, by callers the summary does not pair with it
+    if (i >= 0) { raiseSlot(sid, i, v); if (classOfSid(sid)?.methods.has(prop)) escape(v) }
     else if (si >= 0) {
       const s = slots(sid)[si], b = sp
       pushK(v)
@@ -2903,6 +2933,64 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   const isNullishRef = (v) => isNullishLit(v) || v === 'undefined' || v === 'null'
   const typeofPredicates = new Map()   // condition node → its typeof predicate, or null, read once
   const typeofPredicateOf = (c) => { let tp = typeofPredicates.get(c); if (tp === undefined) typeofPredicates.set(c, tp = typeofPredicate(c)); return tp }
+  // The names a condition proves numbers when it is `when`: `x !== x` holds
+  // for NaN alone and `x === 0.0` for a number alone (a strict test against a
+  // number); a call of a predicate whose body is such a test of its parameter
+  // (`isnan( x )`, `isInfinite( x )`) proves its argument; `&&`, `||` and `!`
+  // combine them (either arm of a true `||` must prove a name). `isNum` reads
+  // an operand's number-ness in the calling pass's view. A returned parameter
+  // under such a guard is a number, not the parameter's own value: libm's
+  // `if ( isnan( x ) ) { return x; }` keeps the export's f64 contract.
+  const NO_NAMES = new Set()
+  const numericPredicates = new Map()   // function name → the parameter indices its true result proves numbers
+  const isNumLit = (b) => typeof b === 'number' || b === 'Infinity' || b === 'NaN' ||
+    (Array.isArray(b) && ((b[0] == null && typeof b[1] === 'number') || b[0] === 'nan' || ((b[0] === 'u-' || b[0] === '-') && b.length === 2 && isNumLit(b[1]))))
+  const numericProofs = (c, when, isNum) => {
+    if (!Array.isArray(c)) return NO_NAMES
+    const op = c[0]
+    if (op === '!') return numericProofs(c[1], !when, isNum)
+    if (op === '()' && c.length === 2) return numericProofs(c[1], when, isNum)
+    if (op === '&&' || op === '||' || op === '__eager&&' || op === '__eager||') {   // prepare's eager forms are the same tests
+      const a = numericProofs(c[1], when, isNum), b = numericProofs(c[2], when, isNum)
+      if ((op === '&&' || op === '__eager&&') === when) return !a.size ? b : !b.size ? a : new Set([...a, ...b])
+      return a.size && b.size ? new Set([...a].filter(name => b.has(name))) : NO_NAMES
+    }
+    if (!when) return NO_NAMES
+    if (op === '!==' && typeof c[1] === 'string' && c[1] === c[2]) return new Set([c[1]])
+    if (op === '===' && c[1] !== c[2]) {   // `v === v` holds for undefined too
+      if (typeof c[1] === 'string' && (isNumLit(c[2]) || isNum(c[2]))) return new Set([c[1]])
+      if (typeof c[2] === 'string' && (isNumLit(c[1]) || isNum(c[1]))) return new Set([c[2]])
+      return NO_NAMES
+    }
+    if (op === '()' && typeof c[1] === 'string' && funcByName.has(c[1])) {
+      let proven = numericPredicates.get(c[1])
+      if (proven === undefined) {
+        numericPredicates.set(c[1], proven = [])   // a predicate calling itself proves nothing
+        const f = funcByName.get(c[1]), params = (f.sig?.params ?? []).map(p => p.name)
+        let body = f.body
+        if (Array.isArray(body) && body[0] === '{}') body = body[1]
+        if (Array.isArray(body) && body[0] === ';') body = body.length === 2 ? body[1] : null
+        if (Array.isArray(body) && body[0] === 'return') body = body[1]
+        const names = numericProofs(body, true, isNum)
+        proven = params.map((name, i) => names.has(name) ? i : -1).filter(i => i >= 0)
+        numericPredicates.set(c[1], proven)
+      }
+      if (!proven.length) return NO_NAMES
+      const args = Array.isArray(c[2]) && c[2][0] === ',' ? c[2].slice(1) : [c[2]], out = new Set()
+      for (const i of proven) if (typeof args[i] === 'string') out.add(args[i])
+      return out
+    }
+    return NO_NAMES
+  }
+  const isNumberHere = (b) => { if (typeof b !== 'string') return false; const k = expr(b); return tagOf(core(k)) === K.NUMBER && !hasTag(k, K.NULLISH) && !hasTag(k, K.ABSENT) }
+  /** Whether the class of layout `sid` answers `prop` with a literal true: a getter returning the literal. */
+  const flagOf = (sid, prop) => {
+    const fn = classOfSid(sid)?.methods.get(getterOf(prop))
+    let b = fn != null ? funcByName.get(fn)?.body : undefined
+    if (Array.isArray(b) && b[0] === '{}') b = b[1]
+    if (Array.isArray(b) && b[0] === ';' && b.length === 2) b = b[1]
+    return Array.isArray(b) && b[0] === 'return' && Array.isArray(b[1]) && b[1][0] === 'bool' && b[1][1] === 1
+  }
   /** Push what the condition `c` proves when it is `when`. */
   const proves = (c, when) => {
     if (typeof c === 'string') { if (when) refineName(c, NOT_NULLISH); return }
@@ -2913,6 +3001,21 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     if (op === '!') { proves(c[1], !when); return }
     if (op === '()' && c.length === 2) { proves(c[1], when); return }
     if ((op === '&&' && when) || (op === '||' && !when)) { proves(c[1], when); proves(c[2], when); return }
+    // `x.p` as a condition (`if (x.isVector3)`): true, `x` is no nullish
+    // value; false, `x` is none of its objects when every object it may hold
+    // answers `p` with a literal true, the class flag a getter of the literal
+    // answers (`static { C.prototype.isC = true }`, jzify/classes.js
+    // foldPrototypeStores): `te[12] = x` in the else arm of Matrix4.setPosition
+    // stores nothing where `x` is a Vector3 (narrow/specialize.js gives the
+    // method a clone per argument kind, so the shape is known there).
+    if ((op === '.' || op === '?.') && typeof c[1] === 'string' && typeof c[2] === 'string') {
+      if (when) { refineName(c[1], NOT_NULLISH); return }
+      // the parameter names the shapes only where the object is the kind's one heap tag
+      const k = expr(c[1]), id = paramOf(k)
+      if (tagOf(core(k)) === K.OBJECT && id !== UNKNOWN && shapesOf(id).every(sid => flagOf(sid, c[2]))) refineName(c[1], TAGS & ~bitOf(K.OBJECT))
+      return
+    }
+    for (const name of numericProofs(c, when, isNumberHere)) refineName(name, bitOf(K.NUMBER))
     const tp = typeofPredicateOf(c)
     if (tp) {
       const bits = TYPEOF_TAGS[typeof tp.code === 'string' ? tp.code : TYPEOF_NAME[tp.code]]
@@ -2966,8 +3069,9 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     current = key
     reset()
     scanForwards(key, body, params, defaults)
-    // a default runs only where its argument is missing: its writes are on a path
-    if (defaults) { branch++; for (const p of defaultNamesOf(defaults)) bindParam(paramKey(key, p), expr(defaults[p])); branch-- }
+    // a default runs only where its argument is missing: its writes are on a
+    // path, and its value reaches the parameter where some call lets it run
+    if (defaults) { branch++; for (const p of defaultNamesOf(defaults)) { const pk = paramKey(key, p), dk = expr(defaults[p]); if (defaultRuns.has(pk)) bindParam(pk, dk) } branch-- }
     if (params) for (const p of reassignedIn(body, params, defaults)) { const id = paramKey(key, p); if (id !== null) pre.add(id) }
     if (isBlock(body)) {
       stmt(body)
@@ -2986,7 +3090,12 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   // when its other reads are those of a number that JS would not convert
   // another kind at: a `+` operand (a string concatenates), a relational
   // compare against an unknown (two strings compare as strings), an equality
-  // against a number, the tested arm of `??`. An index is neither: `a[k]`
+  // against a number or against itself (`x !== x`, true of NaN alone), the
+  // tested arm of `??`. A returned value is read where the call is: a
+  // function's result is a slot its `return`s flow into, read in the context
+  // of every call (unread when the call is a statement, and by the host as
+  // itself, which is no evidence). An index is neither, unless the receiver
+  // is a typed array, whose only keys are element indices: `a[k]`
   // converts `k` to a property key, and `a['1.0']` is no element; nor is a
   // typed-array constructor's argument, which copies an array. A demanded or
   // compatible parameter of an exported function arrives as f64 (spec/
@@ -3011,7 +3120,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     schemas, layouts, sitesByLayout, objectKinds, methods, sidByKey,
     funcNames: new Set(funcByName.keys()), imports: new Map(imports),
     numeric, dynamicProps, builtinOwnProps, escaped, typedReadPresent, typedProps, typedPropsByAux, openSchemas, indexedSchemas, hostSchemas, opaqueSchemas, deletable, deleteReach,
-    sideProps, sideWild, wildProps, wildValues, pendingAll, keyedCells, cellShapes, cellLostObject, closureProps, iterSites, reached,
+    sideProps, sideWild, wildProps, wildValues, pendingAll, keyedCells, cellShapes, cellLostObject, closureProps, iterSites, reached, defaultRuns,
     contracts: null,   // the result contracts, built at the freeze below
   }
   const queries = summaryQueries(queryFacts, true)
@@ -3087,6 +3196,40 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     if (level === NEUTRAL) return
     for (const key of keys) useKey(key, level)
   }
+  // A function's result, keyed beside the bindings: `return e` flows into it.
+  const resultKeys = new Map()
+  const resultKey = (scope) => { let key = resultKeys.get(scope); if (key === undefined) resultKeys.set(scope, key = 'ret\0' + scope); return key }
+  /** The result of `callee` read in context `cx`. */
+  const readResult = (callee, cx, into) => { const level = cx === FLOW ? demandOf(into) : cx; if (level !== NEUTRAL) useKey(resultKey(callee), level) }
+  /** The key of an element access. A typed array has elements and nothing
+   *  else to name, so its key is no property key; nor is the read a conversion
+   *  (`a[NaN]` is no element): no evidence either way. Any other receiver
+   *  takes a property key. */
+  // A typed array's index converts to a key: a number indexes an element, a
+  // string names a property, so the read is compatible with a number without
+  // proving one (a parameter read only there keeps its key as it is; one also
+  // stepped or added is a number by the boundary contract, param-numeric.js).
+  const index = (key, recv) => { if (tagOf(recv) === K.TYPED) useOf(key, NEUTRAL); else demand(key) }
+  // The names a guard proves numbers on the current path (numericProofs): a
+  // `return x`, or an assignment `t = x` (the lowering of an early return),
+  // reads a number there, not the parameter's identity. A name the guarded
+  // statement assigns is not held; a closure's body starts with none.
+  let provenNumeric = null
+  const provenRead = (v) => typeof v === 'string' && provenNumeric?.has(v)
+  const isNumberExprHere = (b) => { if (typeof b !== 'string') return false; const k = kindOfExpr(b); return tagOf(core(k)) === K.NUMBER && !hasTag(k, K.NULLISH) && !hasTag(k, K.ABSENT) }
+  const under = (names, body, fn) => {
+    if (!names.size) return fn()
+    const assigned = new Set()
+    assignsIn(body, assigned)
+    const prior = provenNumeric
+    provenNumeric = new Set(prior ?? [])
+    for (const name of names) if (!assigned.has(name)) provenNumeric.add(name)
+    fn()
+    provenNumeric = prior
+  }
+  const provenArm = (arm, names, cx, into) => { if (typeof arm === 'string' && (names.has(arm) || provenNumeric?.has(arm))) useOf(arm, COMPAT); else useOf(arm, cx, into) }
+  /** A statement: a call there leaves its result unread. */
+  const run = (n) => { if (Array.isArray(n) && n[0] === '()' && n.length > 2) demand(n, NEUTRAL); else demand(n) }
   const isStringExpr = (e) => tagOf(kindOfExpr(e)) === K.STRING
   const isBigintExpr = (e) => tagOf(kindOfExpr(e)) === K.BIGINT
   const isNumberExpr = (e) => typeof e === 'number' || (Array.isArray(e) && ((e[0] == null && typeof e[1] === 'number') || NUMBER_OPS.has(e[0]) || e[0] === 'u-' || e[0] === 'u+' || (e[0] === '.' && e[2] === 'length'))) || tagOf(kindOfExpr(e)) === K.NUMBER
@@ -3099,7 +3242,14 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     if (!Array.isArray(n)) return
     const op = n[0]
     if (op == null || op === 'str' || op === 'bool' || op === 'nan') return
-    if (op === '=>') { demand(n[2]); return }
+    if (op === '=>') { const prior = provenNumeric; provenNumeric = null; demand(n[2]); provenNumeric = prior; return }
+    if (op === ';' || (op === '{}' && isBlock(n))) { for (let i = 1; i < n.length; i++) run(n[i]); return }
+    if (op === 'if') { demand(n[1]); under(numericProofs(n[1], true, isNumberExprHere), n[2], () => run(n[2])); under(numericProofs(n[1], false, isNumberExprHere), n[3], () => run(n[3])); return }
+    if (op === 'while') { demand(n[1]); under(numericProofs(n[1], true, isNumberExprHere), n[2], () => run(n[2])); return }
+    if (op === 'return') {
+      if (n.length > 1) { if (provenRead(n[1])) useOf(n[1], COMPAT); else if (current != null) useOf(n[1], FLOW, resultKey(current)); else demand(n[1]) }
+      return
+    }
     if (op === '.' || op === '?.') { if (typeof n[2] === 'string') useOf(n, cx, into); else { demand(n[1]); demand(n[2]) } return }
     if (op === '{}' && isLiteral(n)) {
       // A literal's value flows into its slot; a shorthand `{ g }` reads `g`.
@@ -3110,33 +3260,37 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       }
       return
     }
-    if (op === 'let' || op === 'const') { for (let i = 1; i < n.length; i++) { const d = n[i]; if (Array.isArray(d) && d[0] === '=') { if (typeof d[1] === 'string') useOf(d[2], FLOW, keyOf(d[1])); else demand(d[2]) } } return }
+    if (op === 'let' || op === 'const') { for (let i = 1; i < n.length; i++) { const d = n[i]; if (Array.isArray(d) && d[0] === '=') { if (provenRead(d[2])) useOf(d[2], COMPAT); else if (typeof d[1] === 'string') useOf(d[2], FLOW, keyOf(d[1])); else demand(d[2]) } } return }
     if (op === '=') {
       const t = n[1]
-      if (typeof t === 'string') { useOf(n[2], FLOW, keyOf(t)); return }
+      if (typeof t === 'string') { if (provenRead(n[2])) useOf(n[2], COMPAT); else useOf(n[2], FLOW, keyOf(t)); return }
       if (Array.isArray(t) && t[0] === '.' && typeof t[2] === 'string') { demand(t[1]); const keys = slotKeysOf(t[1], t[2]); if (keys.length) useOf(n[2], FLOW, keys); else demand(n[2]); return }
-      if (Array.isArray(t) && t[0] === '[]') { const r = kindOfExpr(t[1]); demand(t[1]); demand(t[2]); demand(n[2], tagOf(r) === K.TYPED && typedElemKind(r) === NUMBER && typedElementKey(t[2], kindOfExpr(t[2]) === NUMBER) ? NUM : OTHER); return }
+      if (Array.isArray(t) && t[0] === '[]') { const r = kindOfExpr(t[1]); demand(t[1]); index(t[2], r); demand(n[2], tagOf(r) === K.TYPED && typedElemKind(r) === NUMBER && typedElementKey(t[2], kindOfExpr(t[2]) === NUMBER) ? NUM : OTHER); return }
       demand(t); demand(n[2]); return
     }
     // `+` and `+=` convert a number, a boolean or a nullish operand and concatenate a string; against a string operand the other is a string.
     if (op === '+=') { const str = isStringExpr(n[1]) || isStringExpr(n[2]), num = tagOf(core(kindOfExpr(n[1]))) === K.NUMBER && tagOf(core(kindOfExpr(n[2]))) === K.NUMBER; useOf(n[1], str ? OTHER : num ? NUM : COMPAT); useOf(n[2], str ? OTHER : num ? NUM : COMPAT); return }
     // Beside a BigInt operand ToNumeric completes only for a BigInt (kind.js
     // arith): a Number there throws, so the read converts nothing.
+    // `??=`, `||=`, `&&=` test the target as it is (undefined is no NaN) and store the value unconverted.
+    if (op === '??=' || op === '||=' || op === '&&=') { useOf(n[1], OTHER); if (typeof n[1] === 'string') useOf(n[2], FLOW, keyOf(n[1])); else demand(n[2]); return }
     if (MUTATE_OPS.has(op)) { const cx = n[2] !== undefined && isBigintExpr(n[2]) ? OTHER : NUM; useOf(n[1], cx); if (n[2] !== undefined) useOf(n[2], cx); return }
     if (NUMBER_OPS.has(op) || op === 'u-' || op === 'u+' || op === '+1' || op === '-1') { const cx = n.length === 3 && (isBigintExpr(n[1]) || isBigintExpr(n[2])) ? OTHER : NUM; for (let i = 1; i < n.length; i++) useOf(n[i], cx); return }
     if (op === '+') { const num = tagOf(core(kindOfExpr(n[1]))) === K.NUMBER && tagOf(core(kindOfExpr(n[2]))) === K.NUMBER; useOf(n[1], isStringExpr(n[2]) || isBigintExpr(n[2]) ? OTHER : num ? NUM : COMPAT); useOf(n[2], isStringExpr(n[1]) || isBigintExpr(n[1]) ? OTHER : num ? NUM : COMPAT); return }
     // A relational compare converts against a number; two strings compare as strings, so an unknown pair is compatible.
     if (op === '<' || op === '<=' || op === '>' || op === '>=') { useOf(n[1], relCx(n[2])); useOf(n[2], relCx(n[1])); return }
-    if (op === '[]') { useOf(n[1], OTHER); demand(n[2]); return }
+    if (op === '[]') { useOf(n[1], OTHER); index(n[2], kindOfExpr(n[1])); return }
     // A value-carrying operator reads its arms in the context of its own read;
     // `??` tests its left arm for nullish, which ToNumber would make NaN.
-    if (op === '?' || op === '?:') { demand(n[1]); useOf(n[2], cx, into); useOf(n[3], cx, into); return }
+    if (op === '?' || op === '?:') { demand(n[1]); provenArm(n[2], numericProofs(n[1], true, isNumberExprHere), cx, into); provenArm(n[3], numericProofs(n[1], false, isNumberExprHere), cx, into); return }
     if (op === '&&' || op === '||') { useOf(n[1], cx, into); useOf(n[2], cx, into); return }
     if (op === '??') { useOf(n[1], atMost(COMPAT, cx, into)); useOf(n[2], cx, into); return }
     // For number|undefined locals, equality with a definite number cannot
     // distinguish undefined from numeric NaN. Other kinds still require the
     // compatible (non-coercing) contract: null/boolean identity must survive.
     if (op === '==' || op === '!=' || op === '===' || op === '!==') {
+      // `x !== x` holds for NaN alone: of a number it reads the number, of any other kind nothing.
+      if (typeof n[1] === 'string' && n[1] === n[2]) { useOf(n[1], COMPAT); return }
       const eqCx = (value, other) => {
         if (kindOfExpr(other) !== NUMBER) return OTHER
         const k = kindOfExpr(value)
@@ -3152,7 +3306,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
         // Math takes numbers, except sumPrecise, which takes an iterable.
         if ((callee.startsWith('Math.') || callee.startsWith('math.')) && !callee.endsWith('.sumPrecise')) { for (let i = 0; i < count; i++) useOf(argAt(as, i), NUM); return }
         const f = funcByName.get(callee)
-        if (f && !escaped.has(callee)) { for (let i = 0; i < count; i++) { const p = f.sig.params[i]; if (p && !p.rest) useOf(argAt(as, i), FLOW, keyIn(callee, p.name)); else demand(argAt(as, i)) } return }
+        if (f && !escaped.has(callee)) { readResult(callee, cx, into); for (let i = 0; i < count; i++) { const p = f.sig.params[i]; if (p && !p.rest) useOf(argAt(as, i), FLOW, keyIn(callee, p.name)); else demand(argAt(as, i)) } return }
       }
       // A closure binding by name, or the closure set a callee expression
       // reads (`TABLE[k](…)`): each member's parameter is a flow target; a
@@ -3163,10 +3317,12 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
         const members = membersOf(paramOf(ck))
         if (members.length === 1) {
           const id = members[0], names = callableParams(id)
+          if (!escaped.has(id)) readResult(id, cx, into)
           for (let i = 0; i < count; i++) { const name = i < names.length ? names[i] : null; if (!escaped.has(id) && name != null) useOf(argAt(as, i), FLOW, keyIn(id, name)); else demand(argAt(as, i)) }
           return
         }
         const ids = members.filter(id => !escaped.has(id))
+        for (const id of ids) readResult(id, cx, into)
         for (let i = 0; i < count; i++) {
           const keys = ids.map(id => callableParams(id)[i] != null ? keyIn(id, callableParams(id)[i]) : null)
           if (ids.length && keys.every(k => k !== null)) useOf(argAt(as, i), FLOW, keys); else demand(argAt(as, i))
@@ -3216,6 +3372,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       if (!reached.has(f.name)) continue
       if (f.rest) { if (escaped.has(f.name)) restUnknown(f.name, f.rest); else raise(kinds, keyIn(f.name, f.rest), restArrayOf(f.name)) }
       if (escaped.has(f.name)) for (const p of f.sig.params) if (!p.rest) bindParam(keyIn(f.name, p.name), ANY)
+      if (exported(f) || hostClosures.has(f.name) || escaped.has(f.name)) runDefaults(f.name, f.defaults)
       const contexts = initContexts.get(f.name)
       if (contexts === undefined || plainInits.has(f.name) || escaped.has(f.name)) walkFunction(f.name, f.body, paramNamesOf(f), f.defaults)
       if (contexts !== undefined) for (const c of contexts.values()) { activeCtx = c; walkFunction(f.name, f.body, paramNamesOf(f), f.defaults); activeCtx = null }
@@ -3225,6 +3382,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       if (hostClosures.has(id) || escaped.has(id)) reach(id)
       if (!reached.has(id)) continue
       if (escaped.has(id)) for (const p of closureParams[id]) if (p != null) bindParam(keyIn(id, p), ANY)
+      if (hostClosures.has(id) || escaped.has(id)) runDefaults(id, closureDefaults[id])
       if (closureParams[id].restName != null) { if (escaped.has(id)) restUnknown(id, closureParams[id].restName); else raise(kinds, keyIn(id, closureParams[id].restName), restArrayOf(id)) }
       walkFunction(id, closureBodies[id], closureParams[id], closureDefaults[id])
       if (hostClosures.has(id)) escapeToHost(results.get(id) ?? K.NONE)
@@ -3251,13 +3409,23 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   // program's own coercion; a compatible one is also a `+` operand, and the
   // wrapper rejects the string or object JS would have concatenated; a
   // parameter that also flows to the host stays ANY.
+  const exportedNames = new Set(funcs.filter(exported).map(f => f.name))
+  // An expression body is the result itself. A callable that escaped is called,
+  // and its result read, where no walk sees; an exported function's result
+  // reaches the host as itself (`fib('1')` is '1'): both results are denied.
+  const frame = (scope, body, roots) => {
+    provenNumeric = null
+    current = scope
+    if (escaped.has(scope) || (typeof scope === 'string' && exportedNames.has(scope)) || hostClosures.has(scope)) deny(resultKey(scope))
+    for (const r of roots) { if (r === body && !isBlock(body)) useOf(body, FLOW, resultKey(scope)); else demand(r) }
+  }
   rounds(() => {
     demandChanged = false
     // a parameter default runs in the frame: its uses of the parameters count
-    for (const f of funcs) { current = f.name; for (const r of frameRoots(f)) demand(r) }
-    for (let id = 0; id < closureBodies.length; id++) { current = id; for (const r of frameRoots({ body: closureBodies[id], defaults: closureDefaults[id] })) demand(r) }
+    for (const f of funcs) frame(f.name, f.body, frameRoots(f))
+    for (let id = 0; id < closureBodies.length; id++) frame(id, closureBodies[id], frameRoots({ body: closureBodies[id], defaults: closureDefaults[id] }))
     current = null
-    for (const top of tops) demand(top)
+    for (const top of tops) run(top)
     return demandChanged
   })
   const seeded = [...seedable].filter(p => (entryNumeric.has(p) || isCompatible(p)) && tagOf(kinds[p] ?? K.NONE) === K.ANY)
@@ -3302,7 +3470,6 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     return marked
   })
   const dispatcher = new Set(funcs.filter(f => f.sig?.dispatcher === true).map(f => f.name))
-  const exportedNames = new Set(funcs.filter(exported).map(f => f.name))
   const published = summaryQueries(queryFacts)
   queryFacts.contracts = buildResultContracts({
     results: new Map([...results.keys()].map(key => [key, published.resultOf(key)])), funcs, closureCount: closureBodies.length, closureSets, setBase: SET_BASE, membersOf, certain, returns,

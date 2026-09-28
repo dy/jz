@@ -54,6 +54,7 @@ import { indexArrayPatterns } from './index-array-patterns.js'
 import { inlineHotInternalCalls, inlineLocalLambdas, specializeFixedRestCalls } from './inline.js'
 import { laneRecordParams } from './lanes.js'
 import { bindNestedRowLengths, unrollRowLenPadLoops, splitCharScanLoops } from './loops.js'
+import { guardConstants, canonicalizeCountedLoops } from './counted-loops.js'
 import {
   scalarizeFunctionTypedArrays, scalarizeFunctionArrayLiterals,
   promoteIntArrayLiterals, scalarizeFunctionObjectLiterals, analyzeParamDistinctness,
@@ -129,6 +130,10 @@ export default function plan(ast, profiler, summarize) {
   sweep('inlineLocalLambdas', inlineLocalLambdas)
   sweep('specializeFixedRestCalls', () => specializeFixedRestCalls(facts()))
   if (optimizing()) {
+    // After inlining, so a stride passed as a literal is one: the loops then
+    // read over their trip number, the form every later pass takes.
+    sweep('guardConstants', guardConstants)
+    sweep('canonicalizeCountedLoops', canonicalizeCountedLoops)
     sweep('splitCharScan', splitCharScanLoops)
     // Record parameters read field by field become lanes before the object
     // scalarizer looks: a literal passed to such a callee has no reader left.

@@ -4,10 +4,10 @@
 <meta charset="utf-8">
 <meta name="viewport" content="user-scalable=0" />
 <title>L-Systems - jz</title>
-<meta name="description" content="String-rewriting grammars draw Koch, the dragon, and growing plants. Plain JavaScript compiled to WebAssembly with jz." />
+<meta name="description" content="String-rewriting grammars grow eight classics: Koch, the dragon, Sierpiński, Hilbert, Gosper, Lévy C, a plant and a bush. Plain JavaScript compiled to WebAssembly with jz." />
 <link rel="canonical" href="https://jz.js.org/examples/lsystem/" />
 <meta property="og:title" content="L-Systems - jz" />
-<meta property="og:description" content="String-rewriting grammars draw Koch, the dragon, and growing plants. Plain JavaScript compiled to WebAssembly with jz." />
+<meta property="og:description" content="String-rewriting grammars grow eight classics: Koch, the dragon, Sierpiński, Hilbert, Gosper, Lévy C, a plant and a bush. Plain JavaScript compiled to WebAssembly with jz." />
 <meta property="og:url" content="https://jz.js.org/examples/lsystem/" />
 <meta property="og:image" content="https://jz.js.org/examples/thumbs/lsystem.webp" />
 <meta name="twitter:card" content="summary_large_image" />
@@ -20,7 +20,8 @@ import { runDemo } from "../lib/jzdemo.js"
 let lastT = 0, forced = -1, forcedT0 = 0   // re-roll pins a random system for a few cycles, then resumes
 const demo = runDemo({
   name: "lsystem",
-  hint: "L-system fractals — Koch, Dragon, Sierpinski, Plant — click to cycle",
+  cursor: "pointer",
+  hint: "L-system fractals — Koch, dragon, Sierpiński, plant, Hilbert, Gosper, Lévy C, bush · touch to spark · dice for another",
   size: { budget: 2600000, dpr: 2 },
   frame: (e, t) => {
     lastT = t
@@ -31,14 +32,18 @@ const demo = runDemo({
       cycleT = ((t - forcedT0) % period) / period
       if (t - forcedT0 > period * 3) forced = -1 // after a few regrowths, hand back to the auto-tour
     } else {
-      sysIdx = Math.floor(t / period) % 4
+      sysIdx = Math.floor(t / period) % 8
       cycleT = (t % period) / period
     }
     const progress = Math.min(1, cycleT * 1.6)   // draw over the first ~2/3 of the period, then hold
     e.frame(t, sysIdx, progress)
   },
-  // re-roll: jump to a random one of the four systems and regrow it from scratch
-  randomize: () => { forced = Math.floor(Math.random() * 4); forcedT0 = lastT },
+  // re-roll: jump to a random one of the eight systems and regrow it from scratch
+  randomize: () => { forced = Math.floor(Math.random() * 8); forcedT0 = lastT },
+})
+demo.cv.addEventListener("pointerdown", (e) => {
+  const r = demo.cv.getBoundingClientRect()
+  demo.engine?.spark((e.clientX - r.left) / r.width, (e.clientY - r.top) / r.height)
 })
 </script>
 </body>

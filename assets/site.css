@@ -23,40 +23,102 @@
   --mast-px: 24px;       /* header inset — matches the examples grid padding-x */
 
   /* ── Themed palette — ONE set of tokens, each a light-dark(LIGHT, DARK) pair. A page opts into theming
-     by setting data-theme on <html> (the no-flash snippet does this from localStorage, else the dark default); the
-     toggle then flips `color-scheme` (below) and every token switches at once. Pages that DON'T opt in
-     (the full-screen example demos, the repl) keep the dark default. The landing hero pins these back to
-     their dark values (it's a fixed dark island over the live demo). ── */
-  color-scheme: dark;
-  /* light values share the repl's cassette gray — a cool washed light, not stark white */
-  --ink:   light-dark(#1b1c1e, #f0f0f2);   /* primary text */
-  --soft:  light-dark(#464a4e, #b7b7c1);   /* secondary text */
-  --dim:   light-dark(#585b5f, #7e7e8a);   /* tertiary / labels */
-  --mute:  light-dark(#8a8d91, #50505a);   /* faintest text / separators */
-  --paper: light-dark(#d5d8dc, #000000);   /* page background — cassette gray */
-  --band:  light-dark(#d5d8dc, #000000);   /* chrome blends with the page (header has no band) */
-  --line:  light-dark(#bbbec2, #1c1c25);   /* hairline — darker than the gray so it shows (never white) */
+     by setting data-theme on <html> (the no-flash snippet does this from localStorage, else the light default); the
+     toggle then flips `color-scheme` (below) and every token switches at once. ── */
+  color-scheme: light;
+  /* light = blueprint paper: near-white, ink near-black */
+  --ink:   light-dark(#111214, #f0f0f2);   /* primary text */
+  --soft:  light-dark(#45484d, #b7b7c1);   /* secondary text */
+  --dim:   light-dark(#6c6f74, #7e7e8a);   /* tertiary / labels */
+  --mute:  light-dark(#a0a3a8, #50505a);   /* faintest text / separators */
+  --paper: light-dark(#f7f7f7, #000000);   /* page background */
+  --band:  light-dark(#f7f7f7, #000000);   /* chrome blends with the page (header has no band) */
+  --line:  light-dark(#dedfe1, #1c1c25);   /* hairline */
+  --rule:  light-dark(#d2d2d4, #4a4a54);   /* rulers — above every grid line and crossing (80px × 80px included) */
 
   /* substrate-class brand colours (JS gold · WASM violet · native terminal) — themed light-dark
-     pairs so the class glyphs on the bench chart, the strip, and the landing hero all track the theme. */
+     pairs so the class glyphs on the bench chart and the strip track the theme. */
   --cls-js:     light-dark(#caa10a, #f0db4f);
   --cls-wasm:   light-dark(#654ff0, #9a8bf5);
   --cls-native: light-dark(#b7b7c1, #8a8a93);          /* the >_ prompt — light, since it now sits inside the dark terminal square below */
   --cls-native-bg: light-dark(#232428, transparent);   /* terminal square behind the prompt; transparent in dark so the glyph stays a bare >_ as before */
 
-  /* ── ONE shared content column for every page (landing hero, bench, examples): content-left snapped
-     to the 80px grid, width = cw. So the column lines up edge-to-edge as you move between pages. ── */
-  --U: 80px;             /* major grid unit — also the rounding step for the shared inset */
-  --cw: 960px;          /* content column width = 12 big units */
-  --padx: 40px;          /* base side inset (a mid unit) */
+  /* ── Blueprint grid: 80px major lines (= half the logo) · 40px mid lines · 8px unit lines — all translucent,
+     so where they cross the ink adds up into dots. A line of a coarser level also carries the finer ones, so
+     the levels stack: rulers > 80px lines > 40px lines > unit crossings (the dots) > 8px lines. ── */
+  --u: 8px;
+  --u2: 40px;
+  --U: 80px;
+  --g-maj: light-dark(rgba(0,0,0,.02), rgba(255,255,255,.06));    /* ink added by each level: an 80px line = all three */
+  --g-mid: light-dark(rgba(0,0,0,.022), rgba(255,255,255,.05));   /* a 40px line = mid + unit */
+  --g-min: light-dark(rgba(0,0,0,.012), rgba(255,255,255,.028));  /* an 8px line; two crossing = a dot, still under a 40px line */
+
+  /* ── ONE shared content column for every page: width = cw, left edge = gx-pad. The width STEPS in
+     whole major units (never fluid) and the column is centred, so both edges — the rulers — and every
+     cell inside land on grid lines at any viewport. So the column lines up across pages. ── */
+  --cw: 960px;           /* content column width: 12 major units at most */
+  --padx: 40px;          /* minimum side inset (a mid unit) */
   --colw: calc(var(--cw) + 2 * var(--padx));
-  --gx-pad: var(--padx); /* grid-aligned side inset; snapped to --U just below */
+  --gx-pad: var(--padx); /* column left edge; centred just below */
+
+  /* ── Type: seven sizes, one per role — every text on the site takes one. Display sizes are picked so their
+     caps are whole grid cells (Futura caps: .761em medium, .754em bold → 42px = 32, 31.8px = 24, 21px = 16). ── */
+  --fs-display: 42px;    /* page and hero titles */
+  --lh-display: 40px;    /* their line */
+  --title-top: var(--U); /* a page title's caps: this far under the menu ruler (the landing logo's top line) */
+  --fs-figure: 31.8px;   /* figures, landing section titles */
+  --fs-head: 21px;       /* questions, block heads */
+  --fs-body: 16px;       /* reading text, on 24px lines */
+  --fs-small: 13px;      /* meta and data: version, footer, captions, table rows */
+  --fs-caps: 12px;       /* uppercase, tracked: menu, figure labels, chips, section and column heads */
+  --fs-mono: 13px;       /* code, and figures in tables */
+  --ls-caps: .1em;       /* the one tracking for uppercase caps labels */
+
+  /* ── The one alignment rule: a block HANGS its first line's caps from a field line (40/80); every line of
+     text keeps its BASELINE on the 8px grid; nothing is centred but icons and controls. Where a size's caps
+     aren't whole cells (16px body, 13px small), the baseline wins and the cap line sits a few px under the
+     field line. ── */
+  /* baseline grid: pad a text block trimmed to its ink (text-box, cap line → last baseline) up to whole
+     minor cells, so its baselines sit on grid lines. `padding-top: var(--bl)` on the trimmed block. */
+  --bl: mod(calc(-1 * 1cap), var(--u));
 }
+/* phones: the side inset shrinks to 2 minor units, so 352–479px screens keep a four-unit column */
+@media (max-width: 479px) { :root { --padx: 16px; } }
+/* phones and narrow tablets: the display size steps down (31.5px medium = 24px caps, still whole cells) and a
+   title's caps hang half a unit under the menu ruler (y 120, the landing logo's top line there) */
+@media (max-width: 799px) { :root { --fs-display: 31.5px; --lh-display: 32px; --title-top: var(--u2); } }
 :root[data-theme="light"] { color-scheme: light; }   /* explicit override; the toggle sets data-theme on <html> */
 :root[data-theme="dark"]  { color-scheme: dark; }
-@supports (padding: round(1px, 1px)) {
-  :root { --gx-pad: max(var(--padx), round(calc((100vw - var(--cw)) / 2), var(--U))); }
+@supports (padding: mod(1px, 1px)) {
+  :root {
+    --cw: min(960px, calc(100vw - 2 * var(--padx) - mod(100vw - 2 * var(--padx), var(--U))));
+    --gx-pad: max(var(--padx), round(calc((100vw - var(--cw)) / 2), var(--u)));
+  }
 }
+
+/* ── Lined paper (pages opt in with <html class="paper">): the grid over the whole page, its origin on
+   the column's left edge, and the rulers — the column's two edges, the full page height, under
+   everything. +1px width puts the right ruler ON its grid line (a line is the first pixel of its cell);
+   a line is the first pixel of its cell at every level. ── */
+html.paper {
+  background-color: var(--paper);
+  background-image:
+    linear-gradient(var(--g-maj) 1px, transparent 1px), linear-gradient(90deg, var(--g-maj) 1px, transparent 1px),
+    linear-gradient(var(--g-mid) 1px, transparent 1px), linear-gradient(90deg, var(--g-mid) 1px, transparent 1px),
+    linear-gradient(var(--g-min) 1px, transparent 1px), linear-gradient(90deg, var(--g-min) 1px, transparent 1px);
+  background-size: var(--U) var(--U), var(--U) var(--U), var(--u2) var(--u2), var(--u2) var(--u2), var(--u) var(--u), var(--u) var(--u);
+  background-position: var(--gx-pad) 0;
+}
+html.paper body { position: relative; display: flow-root; min-height: 100vh; background: none; }   /* flow-root: a first child's top margin stays inside, so the rulers start at the page top */
+html.paper body::before {
+  content: ''; position: absolute; top: 0; bottom: 0; z-index: -1; pointer-events: none; box-sizing: border-box;   /* its own, not the page's reset: example pages have none */
+  left: var(--gx-pad); width: calc(var(--cw) + 1px);
+  border-inline: 1px solid var(--rule);
+}
+/* horizontal ruler: a full-width section's top edge, drawn inside it (an inset shadow) so it takes no height.
+   The masthead's is the one-unit line under the menu, across the page. */
+.ruled { box-shadow: inset 0 1px var(--rule); }
+html.paper .masthead::after { content: ''; position: absolute; left: 0; right: 0; top: var(--U); border-top: 1px solid var(--rule); pointer-events: none; }
 
 /* Cross-document View Transitions: every page links this stylesheet, so same-origin navigations
    (landing ↔ examples ↔ bench ↔ repl) cross-fade instead of hard-cutting. The shared masthead column
@@ -66,9 +128,17 @@
 /* Futura (the brand face) for every title, site-wide. */
 h1, h2, h3, h4, h5, h6 { font-family: var(--font); }
 
-/* substrate-class glyphs (JS / WASM / native), shared by the bench chart, the strip, and the
-   landing hero. Markup comes from CLS_ICO in assets/headline.js; colour via currentColor + the
-   themed --cls-* tokens. Default size fits the dense bench rows; the strip/hero bump it locally. */
+/* Page title — one face and one place on every page: the display size, caps --title-top under the menu ruler
+   (each page's main starts right at the ruler), trimmed to its ink so the cap line sits exactly there. Only
+   margin-top is set here, so a page keeps its own space under the title. */
+.title { margin-top: var(--title-top); font-size: var(--fs-display); font-weight: 500; letter-spacing: -.01em; line-height: var(--lh-display); text-wrap: balance; }
+@supports (text-box: trim-both cap alphabetic) {
+  .title, .prose p { text-box: trim-both cap alphabetic; padding-top: var(--bl); }   /* prose: baselines on the 8px grid */
+}
+
+/* substrate-class glyphs (JS / WASM / native), shared by the bench chart and the strip. Markup
+   comes from CLS_ICO in assets/headline.js; colour via currentColor + the themed --cls-* tokens.
+   Default size fits the dense bench rows; the strip bumps it locally. */
 .cico { width: 11px; height: 11px; flex: none; }
 .cico.cls-js     { color: var(--cls-js); }
 .cico.cls-wasm   { color: var(--cls-wasm); }
@@ -91,20 +161,36 @@ h1, h2, h3, h4, h5, h6 { font-family: var(--font); }
 }
 .masthead.fixed { position: fixed; top: 0; left: 0; right: 0; z-index: 200; margin-top: 0; padding-top: 20px; }
 .masthead .logo { display: flex; align-items: center; line-height: 0; flex: 0 0 auto; }
+
+/* Logo glint (assets/glint.js), dark theme: a 1px bevel ring on the lines framing the logo — a conic gradient
+   the script rebuilds each frame — catches light. inset `0 -1px -1px 0`: top/left on the cell's first pixels,
+   bottom/right just past the mark, where the next grid lines are. Screen-blended above the mark, so it glints
+   on all four sides; at rest it stays a faint border, so the black mark keeps its edge on the black page. */
+.logo { position: relative; isolation: isolate; }
+.logo img { position: relative; z-index: 1; }
+.logo-refl { display: none; position: absolute; inset: 0 -1px -1px 0; z-index: 2; pointer-events: none; padding: 1px;
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0); -webkit-mask-composite: xor;
+  mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0); mask-composite: exclude; mix-blend-mode: screen; }
+:root[data-theme="dark"] .logo-refl { display: block; }
 .masthead .logo img { display: block; width: 40px; height: 40px; }
 
-/* brand: the jz.svg logo (links home) + the section label. The logo is the SVG FILE itself — never re-created in Futura text. */
-.masthead .brand { display: flex; align-items: baseline; gap: .55em; flex: 0 0 auto; margin-top: -16px; }   /* the label's baseline sits on the logo's bottom edge (logo lifted to it), not centered */
-.masthead .brand .sub { font-size: 19px; font-weight: 400; letter-spacing: -.02em; color: var(--dim); text-decoration: none; transition: color .18s; position: relative; top: -3px; }   /* lift the label so its baseline meets the JZ letters' baseline (not the logo's lower edge) */
-.masthead .brand a.sub:hover { color: light-dark(#000, #fff); }
-.masthead .tag { font-size: 12.5px; color: var(--dim); margin-left: 16px; }
+/* brand: the jz.svg logo, linking home. The logo is the SVG FILE itself — never re-created in Futura text. The page
+   is named by the menu (its active item), not by a label beside the mark. */
+.masthead .brand { display: flex; flex: 0 0 auto; }
+.masthead .tag { font-size: var(--fs-small); color: var(--dim); margin-left: 16px; }
 
-.masthead nav { margin-left: auto; display: flex; align-items: center; gap: 20px; }
-.masthead nav a { color: var(--ink); opacity: .7; text-decoration: none; font-size: 12px;
-  text-transform: uppercase; letter-spacing: .14em; transition: opacity .18s; }
+.masthead nav { margin-left: auto; display: flex; align-items: center; --nav-gap: 20px; gap: var(--nav-gap); }
+.masthead nav a { color: var(--ink); opacity: .7; text-decoration: none; font-size: var(--fs-caps);
+  text-transform: uppercase; letter-spacing: var(--ls-caps); transition: opacity .18s; }
 .masthead nav a:hover { opacity: 1; }
-.masthead .ver { text-transform: none; letter-spacing: .02em; opacity: .6; }
+.masthead .ver { font-size: var(--fs-small); text-transform: none; letter-spacing: .02em; opacity: .6; margin-left: var(--nav-gap); }   /* set apart from the menu: twice its gap */
 .masthead .gh { display: flex; }
+/* the two icons take a grid cell each, the last ending on the right ruler — the logo's cell, mirrored. A cell
+   meets its neighbour flush (the negative margin cancels the menu's gap) and fills on hover. */
+.site-nav > :is(.theme-toggle, .gh) { flex: none; width: var(--u2); height: var(--u2); margin-left: calc(-1 * var(--nav-gap));
+  display: inline-flex; align-items: center; justify-content: center; opacity: .7; transition: opacity .18s, background-color .18s; }
+.site-nav > :is(.theme-toggle, .gh):hover { opacity: 1; background: light-dark(rgba(0,0,0,.06), rgba(255,255,255,.1)); }
+.site-nav > .theme-toggle { margin-left: 0; }   /* the first icon keeps the menu's gap from the words (the version) before it */
 
 /* ── Theme toggle — an icon-only button after the version; one sun/moon glyph that swaps via the
    ::before content per theme. Shared by the masthead (bench/examples) and the landing hero-nav. ── */
@@ -126,65 +212,63 @@ h1, h2, h3, h4, h5, h6 { font-family: var(--font); }
 .lnk:hover, .lnk:focus-visible { text-decoration-color: currentColor; }
 
 /* Shared reading style: FAQ answers and the getting-started guide. */
-.prose { max-width: 720px; font-size: 16px; line-height: 24px; color: var(--ink); }
+.prose { max-width: 720px; font-size: var(--fs-body); line-height: 24px; color: var(--ink); }
 .prose p { margin: 0; }
-.prose p+p { margin-top: .7em; }
+.prose p+p { margin-top: 16px; }
 .prose a { color: inherit; text-decoration: underline; text-decoration-color: var(--mute); text-decoration-thickness: 1px; text-underline-offset: 2px; transition: text-decoration-color .16s; }
 .prose a:hover, .prose a:focus-visible { text-decoration-color: currentColor; }
-.prose :not(pre)>code { font-family: var(--font-mono); font-size: .85em; color: var(--ink); background: light-dark(rgba(0,0,0,.06), rgba(255,255,255,.08)); padding: .1em .4em; white-space: nowrap; }
+.prose :not(pre)>code { font-family: var(--font-mono); font-size: var(--fs-mono); line-height: 0; color: var(--ink); background: light-dark(rgba(0,0,0,.06), rgba(255,255,255,.08)); padding: .1em .4em; white-space: nowrap; }   /* line-height 0: a second font must not grow the line box off the 24px rhythm */
 
 /* ─── CTA chip — the ONE call-to-action button, shared: the bench page's "Report a slow case" and the
    landing's "Sponsor the dev". Outline box in ink on paper; inverts on hover. Pattern: a plain 16px
    question in a centred section, then this chip 14px below it. ─── */
-.report { display: inline-block; margin-top: 14px; font-family: var(--font); font-size: 12px; text-transform: uppercase; letter-spacing: .1em; color: var(--ink); background: var(--paper); border: 1px solid var(--ink); padding: 8px 15px; text-decoration: none; transition: background .14s, color .14s; }
+.report { display: inline-block; margin-top: 14px; font-family: var(--font); font-size: var(--fs-caps); text-transform: uppercase; letter-spacing: var(--ls-caps); color: var(--ink); background: var(--paper); border: 1px solid var(--ink); padding: 8px 15px; text-decoration: none; transition: background .14s, color .14s; }
 .report:hover { background: var(--ink); color: var(--paper); }
 
-/* ─── Footer — shared on landing, bench, examples. Logo + nav columns grouped left;
-   descriptor, credit and license stacked right. ─── */
-footer { padding: clamp(48px,7vw,80px) var(--padx) 56px; background: var(--paper); }
-footer .about { margin: 0 0 8px; color: var(--mute); font: inherit; line-height: 1.5; }   /* as quiet as the credit line below it */
-footer .fwrap { max-width: var(--cw); margin-inline: calc(var(--gx-pad) - var(--padx)) auto; display: flex; align-items: flex-start; gap: clamp(36px,4.5vw,60px); }
+/* ─── Footer — shared on landing, bench, examples. Logo + nav columns grouped left; descriptor, credit and
+   license stacked right. On the grid: 40/80 paddings, columns on 40px steps, every line's baseline on a
+   minor grid line (trimmed blocks padded by --bl, 8px apart → 24px baselines). ─── */
+footer { padding: var(--u2) var(--padx) var(--U); background: var(--paper); }
+html.paper footer { background: none; box-shadow: inset 0 1px var(--rule); }   /* on lined paper: no paper of its own, a ruler across its top */
+footer .fwrap { max-width: var(--cw); margin-inline: calc(var(--gx-pad) - var(--padx)) auto; display: flex; align-items: flex-start; gap: var(--u2); }
 footer .wordmark { display: inline-flex; line-height: 0; text-decoration: none; }
 footer .wordmark img { width: 40px; height: 40px; display: block; }
-footer .fcol { display: flex; flex-direction: column; gap: 2px; }
-footer .fcol a { text-decoration: none; color: var(--soft); font-size: 13.5px; padding: 4px 0; transition: color .16s; }
+footer .fcol { display: flex; flex-direction: column; gap: var(--u); width: var(--U); }
+footer .fcol a { text-decoration: none; color: var(--soft); font-size: var(--fs-small); transition: color .16s; }
 footer .fcol a:hover { color: light-dark(#000, #fff); }
-footer .legal { width: 50%; margin-left: auto; padding-top: 4px; display: flex; flex-direction: column; align-items: flex-end; gap: 4px; font-size: 12.5px; text-align: right; color: var(--dim); }
+footer .legal { margin-left: auto; display: flex; flex-direction: column; align-items: flex-end; gap: var(--u); font-size: var(--fs-small); line-height: 24px; text-align: right; color: var(--dim); }
+footer .legal .about { margin: 0; font: inherit; color: var(--mute); }   /* inherit: a page's own p rule must not resize it */
 footer .legal .credit { color: var(--mute); }   /* "made with watr and jessie" — muted lead, soft links (jz's parser + assembler) */
 footer .legal .dot { color: var(--mute); }       /* the middot between MIT and ॐ */
 footer .legal a { color: var(--soft); text-decoration: none; }
 footer .legal a:hover { color: light-dark(#000, #fff); }
 footer .legal .om { font-size: 15px; font-weight: 700; }   /* Devanagari strokes are thin — bump weight so ॐ reads as dark as the MIT link (same colour, matched density) */
-@media (max-width: 640px) { footer { padding-inline: 20px; } footer .fwrap { flex-wrap: wrap; gap: 18px 16px; } footer .legal { width: 100%; } }   /* wrap the right column below navigation when space is tight */
+@supports (text-box: trim-both cap alphabetic) {
+  footer .fcol a, footer .legal > * { text-box: trim-both cap alphabetic; padding-top: var(--bl); }
+}
+@media (max-width: 640px) { footer .fwrap { flex-wrap: wrap; row-gap: var(--u2); } footer .legal { width: 100%; align-items: flex-start; text-align: left; } }   /* the right column drops below navigation when space is tight */
 
 @media (max-width: 520px) {
   .masthead { gap: 10px; }
-  .masthead .wordmark { font-size: 15px; }
-  .masthead nav { gap: 14px; }
-  .masthead nav a { font-size: 11px; }
-  .masthead .exp { display: none; }            /* hide the "experimental" tag — no room on phones */
-  .masthead .brand .sub { display: none; }     /* the section label beside the logo may drop on phones */
+  .masthead nav { --nav-gap: 14px; }
 }
 
-/* ── Shared headline metrics — the SAME block on the landing hero and the bench strip.
-   The six figures come from assets/headline.js (one data source); this is the one visual
-   definition, so the two pages can never drift. Each page supplies the palette tokens
-   (--ink / --dim / --mute). Grouped into Speed / Size via .mgroup + .mlabel. ── */
-.mgroup { display: flex; flex-direction: column; gap: 12px; }
-.mlabel { font-size: 12px; font-weight: 400; text-transform: none; letter-spacing: .02em; color: var(--dim); }   /* reuse the version chrome style — no bespoke micro-caps */
-.mstats { display: flex; align-items: flex-start; gap: clamp(14px, 1.7vw, 24px); flex-wrap: wrap; }
-.mstats .stat { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; text-decoration: none; color: inherit; }
-.mstats .stat b { font-size: 32px; font-weight: 700; letter-spacing: -.01em; line-height: 1; font-variant-numeric: tabular-nums; }
-.mstats .stat span { font-size: 11.5px; line-height: 1.35; color: var(--dim); max-width: 15ch; }
-.mstats .stat:hover b { color: light-dark(#000, #fff); }   /* darken in light, brighten in dark — never white on the gray */
-
-/* Keep every primary destination visible; compact the surrounding chrome first. */
-.site-nav a[aria-current="page"] { opacity: 1; }
+/* Keep every primary destination visible; compact the surrounding chrome first. The active item names the
+   page: full ink, and a 2px bar at the logo's foot (the menu shares the logo's centre line, so the foot is 20px
+   below the caps' centre) — on lined paper that is the menu ruler, the bar a tab on it. */
+.site-nav a[aria-current="page"] { opacity: 1; position: relative; }
+.site-nav a[aria-current="page"]::after { content: ''; position: absolute; left: 0; right: 0; bottom: calc(.5cap - 20px); height: 2px; background: currentColor; }
+/* On lined paper the logo takes the 40–80 cell above the menu ruler and the menu shares its centre line — the
+   question-and-chevron rule of the landing FAQ: a 40–80 band, labels trimmed to their ink and centred in it,
+   icons with them. The landing's menu sits in the same cell, so the header holds still between pages. */
+@supports (text-box: trim-both cap alphabetic) { .site-nav a { text-box: trim-both cap alphabetic; } }
+html.paper .masthead { height: 60px; align-items: flex-start; }
+html.paper .masthead .brand { margin-top: 20px; }
+html.paper .masthead nav { height: var(--u2); margin-top: 20px; align-items: center; }
 @media (max-width: 800px) {
-  .site-nav .ver, .masthead:has(.site-nav) .brand .sub { display: none; }
+  .site-nav .ver { display: none; }
 }
 @media (max-width: 520px) {
-  .masthead .site-nav { gap: 8px; }
-  .masthead .site-nav a { letter-spacing: .1em; }
+  .masthead .site-nav { --nav-gap: 8px; }
   .site-nav a.gh { display: none; }
 }

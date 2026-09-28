@@ -280,8 +280,11 @@ export function analyzeFuncForEmit(func, programFacts) {
     return !sids.some(sid => summary.layoutMember(sid, slot) || summary.layoutSlot(sid, slot) || (dynamic && summary.layoutSide(sid, slot)))
   } : null
   const typedLoads = mapOrOverlaySize(ctx.func.typedElem) > 0
+  // A BigInt element read that may miss keeps its own load: the shared temp
+  // is an i64, which has no room for the miss (a number's temp carries it).
+  const bigintFree = (ctor) => ctor == null || /^(?:new\.)?Big/.test(ctor) ? null : ctor
   if (_o && _o.loadCSE !== false && block && (typedLoads || fieldRead) && !(func.frame ? func.frame.runsAccessor : viewsOn())
-      && cseLoads(body, n => (typedLoads ? ctx.func.typedElem.get(n) : null) ?? (UNTYPED_KINDS.has(valTypeOf(n)) ? UNTYPED : null), read => {
+      && cseLoads(body, n => (typedLoads ? bigintFree(ctx.func.typedElem.get(n)) : null) ?? (UNTYPED_KINDS.has(valTypeOf(n)) ? UNTYPED : null), read => {
         const name = freshCseName()
         summary?.alias(name, read, false)
         if (read[0] === '[]') cseReads.push([name, read])

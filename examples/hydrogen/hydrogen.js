@@ -13,7 +13,7 @@ let nOf = new Int32Array([1, 2, 2, 2, 3, 3, 3, 3, 4])   // principal quantum num
 let norm                                                 // Float64Array(NORB) — peak |ψ|² per orbital
 
 // world half-extent (Bohr radii) that frames orbital i — grows like n² (the cloud's size)
-let scaleOf = (i) => { let n = nOf[i]; return 3.5 * (n * n) + 5.0 }
+let scaleOf = (i) => { let n = nOf[i]; return 2.6 * (n * n) + 3.0 }
 
 // signed wavefunction amplitude ψ at (r, cosθ=ct, sinθ=st) for orbital index i
 let psi = (i, r, ct, st) => {

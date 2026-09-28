@@ -9,8 +9,8 @@
 //
 // The ambient field is PROCEDURAL: a pulse's position is a pure function of time, computed fresh every frame —
 // no accumulator, nothing that drifts (click bursts use a small fixed ring of typed arrays, also drift-free).
-// That keeps the jz-compiled wasm and the same source run as plain JS byte-identical (the JS/JZ switch flips
-// between identical frames), on two rules:
+// That keeps the jz-compiled wasm and the same source run as plain JS byte-identical (the landing falls back
+// to plain JS where the wasm engine can't run), on two rules:
 //
 //  1. Persisted state lives in the Float64Array F (grid spacing, time anchor, the live tunables) and the typed
 //     burst-ring arrays — never an integer-initialized module `let` global, which jz narrows to i32 and would

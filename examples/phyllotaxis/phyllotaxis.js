@@ -3,6 +3,9 @@
 // continued fraction [2;1,1,1,…] makes it the "most irrational" number, packing seeds with
 // zero gaps. The beauty: vary α even a fraction of a degree and the seeds fan into spoke-wheels
 // or spiral arms and back. frame(t, ang) feeds the divergence angle; drag scrubs it live.
+//
+// Each seed is drawn as a lit floret — a small sphere, key light upper left, a specular glint, an
+// anti-aliased rim — packed edge to edge like the seeds of a sunflower head.
 
 let W = 0, H = 0, px
 
@@ -18,34 +21,44 @@ export let resize = (w, h) => {
   return px
 }
 
-let addpix = (x, y, rr, gg, bb) => {
-  if (x < 0 || x >= W || y < 0 || y >= H) return
-  let idx = (y | 0) * W + (x | 0)
-  let p = px[idx]
-  let r = (p & 0xff) + rr; if (r > 255) r = 255
-  let g = ((p >> 8) & 0xff) + gg; if (g > 255) g = 255
-  let b = ((p >> 16) & 0xff) + bb; if (b > 255) b = 255
-  px[idx] = (255 << 24) | (b << 16) | (g << 8) | r
-}
-
-let disc = (cx, cy, radius, rr, gg, bb) => {
-  let xi = (cx - radius) | 0, xe = (cx + radius + 1.0) | 0
-  let yi = (cy - radius) | 0, ye = (cy + radius + 1.0) | 0
-  let r2 = radius * radius
-  let dy = yi
-  while (dy <= ye) {
-    let dx = xi
-    while (dx <= xe) {
-      let ddx = dx - cx, ddy = dy - cy
-      if (ddx * ddx + ddy * ddy <= r2) addpix(dx, dy, rr, gg, bb)
-      dx++
+// one floret: a lit sphere of radius rad, anti-aliased by coverage at its rim
+let floret = (cx, cy, rad) => {
+  let xi = Math.floor(cx - rad - 1.0), xe = Math.ceil(cx + rad + 1.0)
+  let yi = Math.floor(cy - rad - 1.0), ye = Math.ceil(cy + rad + 1.0)
+  if (xi < 0) xi = 0
+  if (yi < 0) yi = 0
+  if (xe > W - 1) xe = W - 1
+  if (ye > H - 1) ye = H - 1
+  let inv = 1.0 / rad
+  let y = yi
+  while (y <= ye) {
+    let x = xi
+    while (x <= xe) {
+      let nx = (x + 0.5 - cx) * inv, ny = (y + 0.5 - cy) * inv
+      let d2 = nx * nx + ny * ny
+      let a = (1.0 - Math.sqrt(d2)) * rad + 0.5          // coverage across the rim
+      if (a > 0.0) {
+        if (a > 1.0) a = 1.0
+        let nz = Math.sqrt(d2 < 1.0 ? 1.0 - d2 : 0.0)
+        let lam = -0.45 * nx - 0.55 * ny + 0.7 * nz        // key light, upper left
+        if (lam < 0.0) lam = 0.0
+        let hl = -0.24 * nx - 0.3 * ny + 0.92 * nz          // Blinn half-vector toward the viewer
+        let sp = hl > 0.0 ? hl * hl : 0.0
+        sp = sp * sp; sp = sp * sp; sp = sp * sp
+        let v = 0.12 + 0.8 * lam + sp * 0.5
+        if (v > 1.0) v = 1.0
+        let idx = y * W + x
+        let o = px[idx] & 255
+        let g = (o + (v * 255.0 - o) * a) | 0
+        px[idx] = (255 << 24) | (g << 16) | (g << 8) | g
+      }
+      x++
     }
-    dy++
+    y++
   }
 }
 
 export let frame = (t, ang, nf, dotMul) => {
-  // Clear to near-black
   let total = W * H, i = 0
   while (i < total) { px[i] = (255 << 24); i++ }
 
@@ -54,21 +67,16 @@ export let frame = (t, ang, nf, dotMul) => {
   let cx = W * 0.5, cy = H * 0.5
   let minDim = W < H ? W : H
   let scale = minDim * 0.47 / Math.sqrt(N)
-  let dotR = scale * 0.32 * dotMul     // dot/gap ratio — re-roll varies how tightly the seeds pack
-  if (dotR < 0.6) dotR = 0.6
+  let dotR = scale * 0.8 * dotMul      // floret radius: ~touching at dotMul 1 — re-roll varies how tightly they pack
+  if (dotR < 0.8) dotR = 0.8
 
-  i = 0
-  while (i < N) {
+  // outermost first, so the inner florets overlap the outer ones like a real flower head
+  i = N - 1
+  while (i >= 0) {
     let fi = i + 0.0
     let theta = fi * ang
     let rr = scale * Math.sqrt(fi)
-    let px2 = cx + rr * Math.cos(theta)
-    let py2 = cy + rr * Math.sin(theta)
-
-    // Gray ramp by index — spiral arms read as gradient; palette button recolors
-    let cg = (40 + (fi / N) * 215) | 0
-
-    disc(px2, py2, dotR, cg, cg, cg)
-    i++
+    floret(cx + rr * Math.cos(theta), cy + rr * Math.sin(theta), dotR * (0.8 + 0.2 * rr / (minDim * 0.47)))
+    i--
   }
 }

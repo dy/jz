@@ -105,6 +105,7 @@ const LEVEL_PRESETS = Object.freeze({
     ...ALL_ON,
     watrProfile: null,        // keep watr's OWN size-leaning default (outline/tailmerge/rettail on) — the one tier where those size-for-speed folds belong
     smallConstForUnroll: false, nestedSmallConstForUnroll: false, splitScratch: false, vectorizeLaneLocal: false, splitCharScan: false,
+    countedLoops: false,      // a versioned loop keeps its original as the other arm — speed-for-size
     hoistGlobalConstLoads: false, maskedSuffixGuard: false,
     recursionUnroll: false,   // body tripling is a size regression — speed-only
     unrollRecurrence: false,  // ×2 body duplication is a size regression — speed-only

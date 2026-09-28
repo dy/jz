@@ -7,7 +7,7 @@
 // a child process with `process`/`Buffer` deleted imports dist/jz.js and
 // compiles + instantiates + runs the same sources the pages compile —
 // the REPL's default sample (parsed out of repl/index.html so it cannot
-// drift) and both landing hero grids — at the pages' own optimize levels.
+// drift) and the landing's dark-theme grid current — at the pages' own optimize levels.
 // Wired into the suite → `prepublishOnly` runs it on every publish.
 import test from 'tst'
 import { ok, is } from 'tst/assert.js'
@@ -24,7 +24,7 @@ const replHtml = readFileSync(join(ROOT, 'repl/index.html'), 'utf8')
 const introMatch = replHtml.match(/const INTRO_SRC = `([\s\S]*?)`/)
 
 test('web-smoke: highlighting preserves source through empty, partial and repeated edits', () => {
-  const plain = html => html.replace(/<span class="[ktsnc]">|<\/span>/g, '').replace(/&lt;/g, '<').replace(/&amp;/g, '&')
+  const plain = html => html.replace(/<span class="[ktsncdfp]">|<\/span>/g, '').replace(/&lt;/g, '<').replace(/&amp;/g, '&')
   for (const [render, a, b] of [
     [highlight, 'jz`export const x = "<&"`\nconst after = 2', 'jz`return 3` + jz`return 4`'],
     [highlightWat, '(module (func $f (result i32) i32.const -1))', '(data "<&") ;; comment'],
@@ -47,7 +47,7 @@ test('web-smoke: highlighting preserves source through empty, partial and repeat
   ok(highlightWat('(i32.const -1)').includes('<span class="n">-1</span>'), 'negative WAT literal is one number token')
 })
 
-test('web-smoke: dist/jz.js compiles the REPL sample + hero grids with no Node globals', () => {
+test('web-smoke: dist/jz.js compiles the REPL sample + hero grid with no Node globals', () => {
   ok(introMatch, 'INTRO_SRC found in repl/index.html')
   // Fresh browser bundle — the artifact under test is what ships, not the source tree.
   const built = spawnSync(process.execPath, [join(ROOT, 'scripts/build-dist.mjs'), '--js-only'], { cwd: ROOT, timeout: 120_000, encoding: 'utf8' })
@@ -65,7 +65,6 @@ test('web-smoke: dist/jz.js compiles the REPL sample + hero grids with no Node g
     const sources = JSON.parse(${JSON.stringify(JSON.stringify({
       repl: { src: introMatch[1], opt: 3 },                                                 // repl/index.html default (optimize radio: speed)
       gridCurrent: { src: readFileSync(join(ROOT, 'assets/grid-current.js'), 'utf8'), opt: 3 },  // index.html hero, dark theme
-      gridLife: { src: readFileSync(join(ROOT, 'assets/grid-life.js'), 'utf8'), opt: 3 },        // index.html hero, light theme
     }))})
     delete globalThis.process
     delete globalThis.Buffer
@@ -85,6 +84,6 @@ test('web-smoke: dist/jz.js compiles the REPL sample + hero grids with no Node g
   `
   const run = spawnSync(process.execPath, ['--input-type=module'], { input: driver, cwd: ROOT, timeout: 120_000, encoding: 'utf8' })
   is(run.status, 0, `browser-sim compile failed:\n${run.stderr || run.stdout}`)
-  for (const name of ['repl', 'gridCurrent', 'gridLife', 'orbit'])
+  for (const name of ['repl', 'gridCurrent', 'orbit'])
     ok(run.stdout.includes(`ok ${name}`), `${name} compiled + ran in browser condition`)
 })

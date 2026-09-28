@@ -2531,3 +2531,18 @@ test('objects: a wide schema read by a computed key probes its static key index'
   const lean = compile(src, { wat: true, optimize: 'size' })
   ok(!indexed(lean), 'size mode lays out no index')
 })
+
+// `Object.defineProperties(o, { k: d, … })` with a literal map is each key's
+// `Object.defineProperty(o, 'k', d)` in order (jzify/transform.js); the value
+// of the call is `o`. three.js's Object3D installs its vectors this way.
+test('Object.defineProperties: a literal map of descriptors defines each property in order', () => {
+  const src = `class V { constructor() { this.x = 3 } }
+    class O { constructor() { const position = new V(); Object.defineProperties(this, { position: { configurable: true, enumerable: true, value: position }, id: { value: 7 } }) } }
+    export let f = () => { const o = new O(); return o.position.x * 10 + o.id }
+    export let g = () => { const o = Object.defineProperties({ a: 1 }, { b: { value: 2 }, c: { value: 3, writable: true } }); return o.a + o.b * 10 + o.c * 100 + Object.keys(o).length * 1000 }`
+  for (const optimize of levels(0, 2)) { const ex = jz(src, { optimize }).exports; is(ex.f(), 37, `O${optimize}`); is(ex.g(), 3321, `keys, O${optimize}`) }
+  // a map that is no literal has no keys to lower: rejected, not looked up as an unknown builtin
+  let msg = null
+  try { compile(`export let f = () => { const d = { a: { value: 1 } }; return Object.defineProperties({}, d).a }`) } catch (e) { msg = e.message }
+  ok(msg != null && /defineProperties.*literal/.test(msg), `a non-literal map is rejected: ${JSON.stringify(msg?.slice(0, 100))}`)
+})

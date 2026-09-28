@@ -113,6 +113,12 @@ export const TYPED_ELEM_CLAMPED_FLAG = 64
 export const DATA_VIEW_FLAG = 128
 export const DATA_VIEW_AUX = DATA_VIEW_FLAG | TYPED_ELEM_VIEW_FLAG
 
+/** What the dynamic-property cache's offset holds while the cache is empty
+ *  (module/collection.js `__dyn_get_cache_off`). No key is 1: a memory offset
+ *  is a multiple of 8, a closure's key is negative (-1 - its table index, so
+ *  -1 is the first function's). */
+export const DYN_CACHE_EMPTY = 1
+
 export const TYPED_ELEM_NAMES = ['Int8Array', 'Uint8Array', 'Int16Array', 'Uint16Array',
   'Int32Array', 'Uint32Array', 'Float32Array', 'Float64Array']
 

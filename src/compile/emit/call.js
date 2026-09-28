@@ -419,8 +419,12 @@ export const callOps = {
     // one statically-known function rewrites to that function, so the
     // known-top-level-function branch emits a direct `call`, dropping the
     // indirect/trampoline path.
-    if (typeof callee === 'string' && ctx.funcs.globalDevirt?.has(callee))
+    // A builtin's value wrapper forwards its arguments as they are: the
+    // builtin takes them typed, where a call of the wrapper would box them.
+    if (typeof callee === 'string' && ctx.funcs.globalDevirt?.has(callee)) {
       callee = ctx.funcs.globalDevirt.get(callee)
+      callee = ctx.funcs.builtinWrapped?.get(callee) ?? callee
+    }
 
     if (Array.isArray(callee) && callee[0] === '.')  return emitMethodCall(callee, parsed, callArgs, optional)
 

@@ -1,9 +1,9 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" class="paper">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<script>(()=>{try{document.documentElement.dataset.theme=localStorage.getItem('theme')||'dark'}catch(e){document.documentElement.dataset.theme='dark'}})()</script>
+<script>(()=>{try{document.documentElement.dataset.theme=localStorage.getItem('theme')||'light'}catch(e){document.documentElement.dataset.theme='light'}})()</script>
 <title>JavaScript to WebAssembly Examples | JZ</title>
 <meta name="description" content="Live demos written in plain JavaScript and compiled to WebAssembly by jz: fractals, fluids, cellular automata, physics, ray tracing, audio.">
 <link rel="canonical" href="https://jz.js.org/examples/">
@@ -29,24 +29,28 @@ html, body {
    so the examples grid lines up edge-to-edge with the landing and bench. */
 .masthead { max-width: var(--colw); margin-inline: calc(var(--gx-pad) - var(--padx)) auto; padding-inline: var(--padx); }
 
-/* Classical Swiss grid on the shared content column, even gutters, caption under each frame */
+/* The gallery on the blueprint grid: a card per 4-unit module — a 3.5-unit shot and caption, half a unit of
+   gutter — from the left ruler; rows 4 units apart, the first on a major line (the script lands the intro's end
+   there); under 720px, one full-column card per row. */
 .grid {
   max-width: var(--colw);
   margin-inline: calc(var(--gx-pad) - var(--padx)) auto;
-  padding: 36px var(--padx) 72px;
+  padding: 0 var(--padx) var(--U);   /* starts at the menu ruler: the title (.title, assets/site.css) sets its own distance */
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(min(248px, 100%), 1fr));
-  gap: 44px 28px;
+  grid-template-columns: repeat(auto-fill, calc(3.5 * var(--U)));
+  column-gap: var(--u2);
+  grid-template-rows: auto;
+  grid-auto-rows: calc(4 * var(--U));
 }
 
-.intro { grid-column: 1 / -1; max-width: 60ch; }
-.intro h1 { font-size: 28px; font-weight: 400; margin-bottom: 12px; }
-.intro p { color: var(--soft); font-size: 16px; line-height: 1.5; }
+.intro { grid-column: 1 / -1; max-width: 60ch; padding-bottom: var(--u2); }
+.intro h1 { margin-bottom: 24px; }
+.intro p { color: var(--soft); font-size: var(--fs-body); line-height: 24px; }
 
 .cell { display: block; text-decoration: none; color: inherit; }
 
 .cell .shot {
-  aspect-ratio: 760 / 468;
+  height: calc(2.5 * var(--U));
   overflow: hidden;
   background: #000;
 }
@@ -65,12 +69,12 @@ html, body {
   transform: scale(1.035);
 }
 
-.cell .cap { padding-top: 11px; }
-
+/* caption on the baseline grid: the name's baseline 24px under the shot, the description's lines 16px apart */
 .cell .name {
   display: block;
+  padding-top: calc(24px - 1cap);
   font-family: var(--font);
-  font-size: 15px;
+  font-size: var(--fs-body);
   font-weight: 400;
   letter-spacing: -.01em;
   color: var(--ink);
@@ -78,28 +82,32 @@ html, body {
 
 .cell .desc {
   display: block;
-  margin-top: 3px;
-  font-size: 12px;
-  line-height: 1.45;
+  padding-top: calc(16px - 1cap);
+  font-size: var(--fs-small);
+  line-height: 16px;
   color: var(--dim);
 }
 
-@media (max-width: 640px) {
-  .masthead, .grid { padding-inline: 20px; }   /* halve the side inset on phones — matches bench (header + body) */
-  .grid { gap: 28px 16px; }                     /* tighter cells; the big desktop gaps read as too large stacked */
+@supports (text-box: trim-both cap alphabetic) {
+  .cell .name, .cell .desc, .intro p { text-box: trim-both cap alphabetic; }
+  .intro p { padding-top: var(--bl); }
+}
+
+@media (max-width: 719px) {
+  .grid { grid-template-columns: 1fr; }   /* the column is a whole number of units, so one card fills it */
 }
 </style>
 </head>
 <body>
 
 <header class="masthead">
-  <div class="brand"><a class="logo" href="../"><img src="../jz.svg" width="40" height="40" alt="jz"></a><span class="sub">examples</span></div>
+  <div class="brand"><a class="logo" href="../"><img src="../jz.svg" width="40" height="40" alt="jz"></a></div>
   <nav class="site-nav" aria-label="Main navigation">
     <a href="../guide/">guide</a>
     <a href="../examples/" aria-current="page">examples</a>
     <a href="../bench/">bench</a>
     <a href="../repl/">repl</a>
-    <a class="ver" href="https://www.npmjs.com/package/jz" target="_blank" rel="noopener"><span data-ver>v0.7.0</span> <span class="exp">experimental</span></a>
+    <a class="ver" href="https://www.npmjs.com/package/jz" target="_blank" rel="noopener"><span data-ver>v0.7.0</span></a>
     <button class="theme-toggle" type="button" aria-label="Toggle light or dark theme" title="Toggle theme">
       <svg class="i-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
       <svg class="i-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M5 5l1.4 1.4M17.6 17.6 19 19M19 5l-1.4 1.4M6.4 17.6 5 19"/></svg>
@@ -112,7 +120,7 @@ html, body {
 
 <main class="grid" id="grid">
   <div class="intro">
-    <h1>JavaScript to WebAssembly examples</h1>
+    <h1 class="title">JavaScript to WebAssembly examples</h1>
     <p>Open a demo to compare JavaScript and WebAssembly, inspect the source, and try it in the playground.</p>
   </div>
 <!-- Generated from examples.js by npm run build:site. -->
@@ -128,7 +136,7 @@ html, body {
     <div class="shot"><img src="./thumbs/nbody.webp" width="760" height="468" loading="lazy" alt="N-body"></div>
     <div class="cap">
       <span class="name">nbody</span>
-      <span class="desc">1024-body gravity — pairwise attraction</span>
+      <span class="desc">three bodies in a chaotic dance tear each other’s star disks into tidal bridges and tails</span>
     </div>
   </a>
   <a class="cell" href="./boids/">
@@ -149,7 +157,7 @@ html, body {
     <div class="shot"><img src="./thumbs/swarm.webp" width="760" height="468" loading="lazy" alt="Swarm"></div>
     <div class="cap">
       <span class="name">swarm</span>
-      <span class="desc">flies that chase and circle the cursor</span>
+      <span class="desc">flies chase the cursor, every path kept as a long-exposure hairline</span>
     </div>
   </a>
   <a class="cell" href="./dwa/">
@@ -177,7 +185,7 @@ html, body {
     <div class="shot"><img src="./thumbs/julia.webp" width="760" height="468" loading="lazy" alt="Julia"></div>
     <div class="cap">
       <span class="name">julia</span>
-      <span class="desc">z² + c — click any point to make it c, or let it morph on its own</span>
+      <span class="desc">z² + c drawn by its distance estimate — a crisp white coastline in a soft glow; click any point to make it c</span>
     </div>
   </a>
   <a class="cell" href="./buddhabrot/">
@@ -219,7 +227,7 @@ html, body {
     <div class="shot"><img src="./thumbs/domain-color.webp" width="760" height="468" loading="lazy" alt="Domain Coloring"></div>
     <div class="cap">
       <span class="name">domain‑color</span>
-      <span class="desc">a complex function as an analytic landscape — zeros sink dark, poles flare bright</span>
+      <span class="desc">an enhanced phase portrait — bands of log|f| cross sectors of arg f in a conformal checkerboard that shrinks into every zero and pole</span>
     </div>
   </a>
   <a class="cell" href="./fern/">
@@ -233,7 +241,7 @@ html, body {
     <div class="shot"><img src="./thumbs/sph.webp" width="760" height="468" loading="lazy" alt="Particle Fluid"></div>
     <div class="cap">
       <span class="name">sph</span>
-      <span class="desc">smoothed-particle-style liquid — pairwise repulsion &amp; viscosity, the classic O(N²) sum</span>
+      <span class="desc">smoothed-particle liquid sloshing in a rocking tank — pairwise repulsion &amp; viscosity, the classic O(N²) sum</span>
     </div>
   </a>
   <a class="cell" href="./lbm/">
@@ -247,14 +255,14 @@ html, body {
     <div class="shot"><img src="./thumbs/cloth.webp" width="760" height="468" loading="lazy" alt="Cloth"></div>
     <div class="cap">
       <span class="name">cloth</span>
-      <span class="desc">Verlet cloth with shear bracing — grab, twist, and let the wind billow it</span>
+      <span class="desc">Verlet cloth in 3D — a gathered satin curtain pleats at the rail; grab it, swing it, let the wind billow it</span>
     </div>
   </a>
   <a class="cell" href="./waves/">
     <div class="shot"><img src="./thumbs/waves.webp" width="760" height="468" loading="lazy" alt="Waves"></div>
     <div class="cap">
       <span class="name">waves</span>
-      <span class="desc">viscous black gestures dissolve into silver caustics — real folds from the 2D wave equation</span>
+      <span class="desc">rain on black water — the 2D wave equation carries every ring, and each slope mirrors the studio lights</span>
     </div>
   </a>
   <a class="cell" href="./ocean/">
@@ -282,7 +290,7 @@ html, body {
     <div class="shot"><img src="./thumbs/cradle.webp" width="760" height="468" loading="lazy" alt="Newton&#39;s Cradle"></div>
     <div class="cap">
       <span class="name">cradle</span>
-      <span class="desc">Newton&#39;s cradle — kinetic energy passing through</span>
+      <span class="desc">a chrome Newton&#39;s cradle — kinetic energy passes down the row; each ball mirrors its neighbours</span>
     </div>
   </a>
   <a class="cell" href="./interference/">
@@ -296,14 +304,14 @@ html, body {
     <div class="shot"><img src="./thumbs/schrodinger.webp" width="760" height="468" loading="lazy" alt="Schrödinger"></div>
     <div class="cap">
       <span class="name">schrodinger</span>
-      <span class="desc">a quantum wavepacket diffracts through a double slit and tunnels</span>
+      <span class="desc">quantum wavepackets diffract through a double slit, their wavefronts visible, fringes building up on a detector plate</span>
     </div>
   </a>
   <a class="cell" href="./hydrogen/">
     <div class="shot"><img src="./thumbs/hydrogen.webp" width="760" height="468" loading="lazy" alt="Hydrogen Orbitals"></div>
     <div class="cap">
       <span class="name">hydrogen</span>
-      <span class="desc">the electron clouds of the hydrogen atom — |ψₙₗₘ|² in phase color, morphing s→p→d→f</span>
+      <span class="desc">the electron clouds of the hydrogen atom — |ψₙₗₘ|² morphing s→p→d→f</span>
     </div>
   </a>
   <a class="cell" href="./erosion/">
@@ -317,7 +325,7 @@ html, body {
     <div class="shot"><img src="./thumbs/plasma.webp" width="760" height="468" loading="lazy" alt="Plasma"></div>
     <div class="cap">
       <span class="name">plasma</span>
-      <span class="desc">FBM domain-warp — the classic flowing plasma</span>
+      <span class="desc">FBM domain-warp plasma laced with its own iso-lines — flowing silver silk</span>
     </div>
   </a>
   <a class="cell" href="./lorenz/">
@@ -345,21 +353,21 @@ html, body {
     <div class="shot"><img src="./thumbs/metaballs.webp" width="760" height="468" loading="lazy" alt="Metaballs"></div>
     <div class="cap">
       <span class="name">metaballs</span>
-      <span class="desc">organic blobs — 2D implicit surface marching</span>
+      <span class="desc">liquid-metal blobs merge and split in the glow of their own field</span>
     </div>
   </a>
   <a class="cell" href="./voronoi/">
     <div class="shot"><img src="./thumbs/voronoi.webp" width="760" height="468" loading="lazy" alt="Voronoi"></div>
     <div class="cap">
       <span class="name">voronoi</span>
-      <span class="desc">brute-force nearest-site cells, drifting</span>
+      <span class="desc">brute-force nearest-site cells, drifting — white ribs with current flowing along them</span>
     </div>
   </a>
   <a class="cell" href="./phyllotaxis/">
     <div class="shot"><img src="./thumbs/phyllotaxis.webp" width="760" height="468" loading="lazy" alt="Phyllotaxis"></div>
     <div class="cap">
       <span class="name">phyllotaxis</span>
-      <span class="desc">seeds at the golden angle — a hair off 137.5° breaks the sunflower</span>
+      <span class="desc">lit florets at the golden angle pack a sunflower head — a hair off 137.5° breaks it</span>
     </div>
   </a>
   <a class="cell" href="./harmonograph/">
@@ -373,7 +381,7 @@ html, body {
     <div class="shot"><img src="./thumbs/plume.webp" width="760" height="468" loading="lazy" alt="Plume"></div>
     <div class="cap">
       <span class="name">plume</span>
-      <span class="desc">seven lines of trig unfold 40k points into rainbow feathers — tweet-sized generative art</span>
+      <span class="desc">seven lines of trig unfold 40k points into sparkling feathers — tweet-sized generative art</span>
     </div>
   </a>
   <a class="cell" href="./epicycles/">
@@ -408,7 +416,7 @@ html, body {
     <div class="shot"><img src="./thumbs/truchet.webp" width="760" height="468" loading="lazy" alt="Truchet Tiles"></div>
     <div class="cap">
       <span class="name">truchet</span>
-      <span class="desc">two random arc tiles assemble into endless flowing labyrinths</span>
+      <span class="desc">two random arc tiles chain into an endless labyrinth — current runs its paths; tap to spark</span>
     </div>
   </a>
   <a class="cell" href="./penrose/">
@@ -422,14 +430,14 @@ html, body {
     <div class="shot"><img src="./thumbs/hyperbolic.webp" width="760" height="468" loading="lazy" alt="Hyperbolic Tiling"></div>
     <div class="cap">
       <span class="name">hyperbolic</span>
-      <span class="desc">a tessellation of the Poincaré disk — Escher&#39;s Circle Limit</span>
+      <span class="desc">a (2,p,q) triangle group tiles the Poincaré disk in the black and white of Escher&#39;s Circle Limit — drag to travel</span>
     </div>
   </a>
   <a class="cell" href="./lsystem/">
     <div class="shot"><img src="./thumbs/lsystem.webp" width="760" height="468" loading="lazy" alt="L-Systems"></div>
     <div class="cap">
       <span class="name">lsystem</span>
-      <span class="desc">string-rewriting grammars draw Koch, the dragon, and growing plants</span>
+      <span class="desc">string-rewriting grammars grow eight classics — Koch, the dragon, Hilbert, Gosper, and plants that taper trunk to twig</span>
     </div>
   </a>
   <a class="cell" href="./ulam/">
@@ -457,7 +465,7 @@ html, body {
     <div class="shot"><img src="./thumbs/diffusion.webp" width="760" height="468" loading="lazy" alt="Reaction–Diffusion"></div>
     <div class="cap">
       <span class="name">diffusion</span>
-      <span class="desc">Gray–Scott — organic coral &amp; labyrinths</span>
+      <span class="desc">Gray–Scott coral &amp; labyrinths — the growing fronts spark white</span>
     </div>
   </a>
   <a class="cell" href="./bz/">
@@ -513,7 +521,7 @@ html, body {
     <div class="shot"><img src="./thumbs/maze.webp" width="760" height="468" loading="lazy" alt="Maze"></div>
     <div class="cap">
       <span class="name">maze</span>
-      <span class="desc">recursive-backtracker maze, then BFS solve</span>
+      <span class="desc">recursive-backtracker maze, then BFS solve — current runs through its walls; touch to spark</span>
     </div>
   </a>
   <a class="cell" href="./wireworld/">
@@ -605,5 +613,16 @@ html, body {
 
 <script type="module" src="../assets/version.js"></script>
 <script type="module" src="../assets/theme.js"></script>
+<script type="module" src="../assets/glint.js"></script>
+<script type="module">
+// layout rhythm: the standfirst hangs from a half-unit line; the first row of cards and the footer (and its
+// ruler) start on major grid lines
+import rhythm, { snap } from '../assets/rhythm.js'
+rhythm(() => {
+  snap(document.querySelector('.intro p'), 'paddingTop', 'top', 40)   // the standfirst hangs from a half-unit line (padding: a margin would collapse into the title's)
+  snap(document.querySelector('.intro'), 'paddingBottom', 'bottom', 80)   // the first row of cards on a major line
+  snap(document.querySelector('main'), 'paddingBottom', 'bottom', 80)
+})
+</script>
 </body>
 </html>

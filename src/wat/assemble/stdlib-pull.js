@@ -16,6 +16,7 @@ import { ctx, inc, resolveIncludes, err, declGlobal } from '../../ctx.js'
 import { walkAst, some } from '../../ast.js'
 import { dataAlign, dataPush, dataLen, strPoolLen } from '../../static-data.js'
 import { MEM_OPS, findBodyStart } from '../../ir.js'
+import { DYN_CACHE_EMPTY } from '../../../layout.js'
 import { installHelperCounters, instrumentHelperCounter } from '../../helper-counters.js'
 
 // Each helper is parsed once into its owned, mutable IR. Late SIMD helpers
@@ -280,7 +281,7 @@ export function pullStdlib(sec) {
       const globalRestores = []
       if (!ctx.memory.shared && ctx.scope.globals.has('__heap_reset')) {
         const startFn = sec.start.find(n => Array.isArray(n) && n[0] === 'func' && n[1] === '$__start')
-        const SNAP_PROTOCOL = new Set(['__heap', '__heap_reset', '__heap_start', '__dyn_props', '__dyn_props_filter',
+        const SNAP_PROTOCOL = new Set(['__heap', '__heap_reset', '__heap_start',
           '__dyn_get_cache_off', '__dyn_get_cache_props', '__durable_fwd_buf', '__durable_fwd_n',
           '__durable_arr_seen', '__durable_arr_log', '__gsnap_base'])
         const runtimeWritten = new Set()
@@ -397,12 +398,12 @@ export function pullStdlib(sec) {
       // relocation both reach here independent of each other).
       const resets = []
       if (ctx.core.includes.has('__dyn_set')) {
-        if (ctx.scope.globals.has('__dyn_props')) resets.push(`(global.set $__dyn_props (f64.const 0))`)
-        // The membership filter mirrors the table: emptying __dyn_props makes every
-        // set bit a stale false-positive — safe, but a warm compile-clear loop would
-        // saturate the filter and erode its skip rate. Reset them together.
-        if (ctx.scope.globals.has('__dyn_props_filter')) resets.push(`(global.set $__dyn_props_filter (i64.const 0))`)
-        if (ctx.scope.globals.has('__dyn_get_cache_off')) resets.push(`(global.set $__dyn_get_cache_off (i32.const -1))`)
+        // The table and its membership filter return to what `__start` left
+        // (the snapshot sweep above): a property a function was given at
+        // init has no header to live in, so the table built there is its
+        // home, below the watermark; what a round inserts into it is logged
+        // and healed like any durable hash's entries.
+        if (ctx.scope.globals.has('__dyn_get_cache_off')) resets.push(`(global.set $__dyn_get_cache_off (i32.const ${DYN_CACHE_EMPTY}))`)
         if (ctx.scope.globals.has('__dyn_get_cache_props')) resets.push(`(global.set $__dyn_get_cache_props (f64.const 0))`)
       }
       // for-in enum cache (core.js __hash_keys_ro / object.js ro-enumeration):

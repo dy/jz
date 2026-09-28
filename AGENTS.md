@@ -44,6 +44,11 @@ What this implies for HOW we optimize:
 - `npm run test:self` — self-compile gate: builds `dist/jz.wasm` and round-trips real
   programs through the wasm-hosted compiler. Codegen changes can break the bootstrap.
 - `npm run test:262` / `test:262:builtins` — conformance subset.
+- `npm run test:three` — three.js's math layer (the `three` devDependency, unmodified):
+  every module compiles, `test/three/api.js` and `test/three/kernels.js` answer what
+  Node answers, the kernels' V8 ratios print (a bar under `JZ_THREE_PIN=1`). A group
+  jz gets wrong is listed in `KNOWN` there with its cause; the gate fails when it
+  starts to agree.
 
 A test that **passes standalone but fails in the full suite** is almost always a
 **compile-state leak** — global mutable state that isn't reset between `compile()`

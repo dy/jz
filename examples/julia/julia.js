@@ -1,8 +1,11 @@
 // Julia set — escape-time fractal z ← z² + c, evaluated per pixel. Unlike Mandelbrot
 // (where c is the pixel), here c is a single constant for the whole image, so as c moves
 // the fractal morphs continuously. c is passed as f64 args (a setter global would be
-// narrowed to i32 in jz, freezing the shape). Smooth-iteration grayscale. The tight
-// per-pixel complex iteration is exactly the kind of float loop jz turns into clean wasm.
+// narrowed to i32 in jz, freezing the shape). The loop also carries the derivative dz ← 2z·dz, so
+// each escaped pixel knows its distance to the set, d = |z|·ln|z| / |dz| (Milnor's distance
+// estimate; Peitgen & Saupe, The Science of Fractal Images, 1988). Measured in pixels, it draws the
+// boundary as a crisp white hairline at any zoom, lit by a glow that fades with log-distance. The tight per-pixel complex iteration is exactly the kind of float loop jz turns into
+// clean wasm.
 // resize(w,h) → Uint32Array; frame(t, cre, cim, vcx, vcy, vscale) renders the view centred
 // at (vcx,vcy) with half-height vscale — the host drives those from scroll-zoom / drag-pan.
 
@@ -16,16 +19,20 @@ export let resize = (w, h) => {
 }
 
 export let frame = (t, cre, cim, vcx, vcy, vscale) => {
+  let pxs = H / (2.0 * vscale)   // pixels per world unit
   let j = 0, py = 0
   while (py < H) {
     let y0 = (py * invH - 0.5) * 2.0 * vscale + vcy
     let qx = 0
     while (qx < W) {
       let x0 = (qx * invW - 0.5) * 2.0 * vscale * aspect + vcx
-      let zx = x0, zy = y0
+      let zx = x0, zy = y0, dx = 1.0, dy = 0.0
       let it = 0
       let zx2 = zx * zx, zy2 = zy * zy
-      while (it < MAXIT && zx2 + zy2 < 16.0) {
+      while (it < MAXIT && zx2 + zy2 < 10000.0) {   // a wide bailout keeps the distance estimate continuous
+        let ndx = 2.0 * (zx * dx - zy * dy)
+        dy = 2.0 * (zx * dy + zy * dx)
+        dx = ndx
         zy = 2.0 * zx * zy + cim
         zx = zx2 - zy2 + cre
         zx2 = zx * zx; zy2 = zy * zy
@@ -33,13 +40,18 @@ export let frame = (t, cre, cim, vcx, vcy, vscale) => {
       }
       let g = 0
       if (it < MAXIT) {
-        // smooth iteration count → grayscale band
-        let mu = it + 1.0 - Math.log(Math.log(zx2 + zy2) * 0.5) * 1.442695
-        let s = mu / MAXIT
-        if (s < 0.0) s = 0.0
-        if (s > 1.0) s = 1.0
-        // emphasize the filaments with a sqrt curve
-        g = (Math.sqrt(s) * 255.0) | 0
+        let m2 = zx2 + zy2
+        // distance to the set, in pixels
+        let de = Math.sqrt(m2 / (dx * dx + dy * dy)) * Math.log(m2) * 0.5 * pxs
+        // a hairline on the boundary and a glow fading with log-distance
+        let core = 1.0 - de
+        if (core < 0.0) core = 0.0
+        let l2 = Math.log(de + 1e-9) * 1.4426950408889634
+        let glow = 1.0 - l2 * 0.14
+        glow = glow < 0.0 ? 0.0 : glow > 1.0 ? 1.0 : glow
+        let v = core * 0.9 + glow * glow * 0.42
+        if (v > 1.0) v = 1.0
+        g = (v * 255.0) | 0
       }
       px[j] = (255 << 24) | (g << 16) | (g << 8) | g
       j++; qx++

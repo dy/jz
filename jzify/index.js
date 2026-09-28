@@ -10,11 +10,13 @@
 import { JZIFY_CLASS_ERRORS as JC } from '../src/op-policy.js'
 import { createAsyncLowering } from './async.js'
 import { STD_GLOBALS } from '../src/std/index.js'
+import { TYPED_CTORS, TYPED_BYTES } from '../src/std/typed.js'
 import { createNames } from './names.js'
 import { foldStaticExportHelpers, foldStaticBundlerHelpers, canonicalizeObjectIdioms } from './bundler.js'
 import { createSwitchLowering, normalizeCaseBody } from './switch.js'
-import { createClassLowering, foldPseudoClassical } from './classes.js'
+import { createClassLowering, foldPseudoClassical, foldPrototypeStores } from './classes.js'
 import { hoistVars, prependDecls } from './hoist-vars.js'
+import { settleVars } from './settle-vars.js'
 import { createArgumentsLowering } from './arguments.js'
 import { createTransform, bindGenerators } from './transform.js'
 import { createGeneratorLowering } from './generators.js'
@@ -55,6 +57,11 @@ const declaredAtModuleScope = (name) => {
   for (let s = activeBuiltinScope; s; s = s.parent) if (s.names.has(name)) return s.parent == null
   return false
 }
+// The nearest declaration of `name` from the active scope is a class.
+const declaredClass = (name) => {
+  for (let s = activeBuiltinScope; s; s = s.parent) if (s.names.has(name)) return s.classes.has(name)
+  return false
+}
 // A node's builtin scope is entered around its own rewrite and left after
 // it: a pair, not a wrapper taking a closure, so a walk allocates nothing
 // per node (the self-compile makes a closure record for each).
@@ -72,7 +79,7 @@ const functionNameWrite = name => {
 // every other function.
 const buildBuiltinScopes = root => {
   const map = new WeakMap()
-  const childScope = parent => ({ parent, names: new Set(), strict: parent?.strict ?? false, self: null })
+  const childScope = parent => ({ parent, names: new Set(), classes: new Set(), strict: parent?.strict ?? false, self: null })
   const functionDecls = new WeakSet()
   const strictBody = body => {
     if (Array.isArray(body) && body[0] === '{}') body = body[1]
@@ -88,15 +95,20 @@ const buildBuiltinScopes = root => {
     for (let stmt of list) {
       if (!Array.isArray(stmt)) continue
       if (stmt[0] === 'export') stmt = stmt[1]
+      // `export default class C {}` / `function f() {}` declares its name as well
+      if (Array.isArray(stmt) && stmt[0] === 'default') stmt = stmt[1]
       if (!Array.isArray(stmt)) continue
       const op = stmt[0]
       if (op === 'let' || op === 'const' || op === 'var' || op === 'using') {
         for (let i = 1; i < stmt.length; i++) {
           const d = stmt[i]
           addPatternNames(scope, Array.isArray(d) && d[0] === '=' ? d[1] : d)
+          // a class expression's binding names a class too (`const C = class {}`)
+          if (Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string' && Array.isArray(d[2]) && d[2][0] === 'class') scope.classes.add(d[1])
         }
       } else if ((op === 'function' || op === 'function*' || op === 'class') && typeof stmt[1] === 'string') {
         addBuiltinName(scope, stmt[1])
+        if (op === 'class') scope.classes.add(stmt[1])
         functionDecls.add(stmt)
       } else if (op === 'async' && Array.isArray(stmt[1]) &&
           (stmt[1][0] === 'function' || stmt[1][0] === 'function*')) {
@@ -209,6 +221,7 @@ let transform, transformScope, transformParams
   lowerClass: () => lowerClass,
   classBrand: (name) => declaredAtModuleScope(name) ? classBrand(name) : null,
   classStaticAccessor: (name, slot) => declaredAtModuleScope(name) && classStaticAccessor(name, slot),
+  isClass: declaredClass,
   lowerObjectLiteralThis: () => lowerObjectLiteralThis,
   lowerObjectLiteralAccessors: () => lowerObjectLiteralAccessors,
   shadowsBuiltin: shadowsJzifyBuiltin,
@@ -217,7 +230,7 @@ let transform, transformScope, transformParams
 bindTransform(transform)
 
 const constStrings = new Map()
-;({ lowerClass, lowerObjectLiteralThis, lowerObjectLiteralAccessors, classBrand, classStaticAccessor, resetClasses } = createClassLowering({ transform, names, JC, constStrings, atModuleScope }))
+;({ lowerClass, lowerObjectLiteralThis, lowerObjectLiteralAccessors, classBrand, classStaticAccessor, resetClasses } = createClassLowering({ transform, names, JC, constStrings, atModuleScope, lowerArguments, readsConstructor: () => ctorUse.on }))
 const generatorNames = new Set()
 // Program mints iterator objects (generators anywhere, hand-rolled `next()`
 // members, `[Symbol.iterator]` methods) — gates the for-of protocol fork so
@@ -227,6 +240,9 @@ const generatorNames = new Set()
 // (`witness`): a module iterates what another one mints. `std` marks the
 // compiler's own `jz:` modules, whose member calls the iterator rewrite leaves.
 const iterProto = { on: false, helpers: false, program: false, programHelpers: false, std: false }
+// Whether the program reads a `constructor` member (`new this.constructor(…)`,
+// `a.constructor === C`): its classes then carry the member (classes.js).
+const ctorUse = { on: false, program: false }
 const genErr = (msg) => { throw new Error('jzify: ' + msg) }
 const { lowerGenerator, desugarForOfGenerator, desugarForOfProtocol, unwindChain, fuseTerminal, fusedLoop, isTerminal } = createGeneratorLowering({ transform, transformParams, err: genErr, generatorNames, genTemp: (t) => names.genTemp(t), iterProto, lowerArguments })
 const { lowerAsync, lowerAsyncGen } = createAsyncLowering({ genTemp: (t) => names.genTemp(t), err: genErr })
@@ -260,6 +276,7 @@ function canonSymbols(node, bindings = false) {
     if (op === '()' && Array.isArray(node[1]) && node[1][0] === '.' && ITER_HELPER_NAMES.has(node[1][2]))
       iterProto.helpers = true
     if (op === 'instanceof' && node[2] === 'Iterator' && !shadowsJzifyBuiltin('Iterator')) iterProto.helpers = true
+    if ((op === '.' || op === '?.') && node[2] === 'constructor') ctorUse.on = true
     // a well-known symbol is a reserved prop with no slot to assign: the
     // polyfill `Symbol.dispose ||= Symbol('dispose')` is a no-op statement
     if (!shadowsJzifyBuiltin('Symbol') && (op === '||=' || op === '??=' || op === '=') &&
@@ -294,6 +311,40 @@ function canonSymbols(node, bindings = false) {
           ['let', ['=', temp, node[1]]], result,
         ]]], null)
       }
+    }
+    return node
+  } finally { leaveBuiltinScope(prior) }
+}
+
+// A typed-array constructor named as a value (`{ Float32Array }`, an argument,
+// `=== Float32Array`) is the function `jz:typed` makes of it. `new`,
+// `instanceof` and a static member name the constructor itself, where the
+// compiler resolves it; `Float32Array.BYTES_PER_ELEMENT` is its number.
+// `E.constructor` asks `__ctor` of the same module, which answers a typed
+// array's function and reads any other value's member; `this.constructor` is
+// the member a class's instance carries (classes.js).
+function typedCtorValues(node) {
+  if (!Array.isArray(node) || node[0] == null || node[0] === 'str') return node
+  const prior = enterBuiltinScope(node)
+  try {
+    const op = node[0]
+    const named = (n) => typeof n === 'string' && TYPED_CTORS.has(n) && !scopeHasBuiltin(activeBuiltinScope, n)
+    if (op === '.' && named(node[1]) && node[2] === 'BYTES_PER_ELEMENT') { node.splice(0, node.length, null, TYPED_BYTES[node[1]]); return node }
+    // a shorthand property `{ Float32Array }` keeps its name
+    if (op === '{}' || op === ',') for (let i = 1; i < node.length; i++) if (op === '{}' ? named(node[i]) : node.shorthand && named(node[i])) node[i] = [':', node[i], '__' + node[i]]
+    if (op === '{}' && Array.isArray(node[1]) && node[1][0] === ',') node[1].shorthand = true
+    const target = MUTATE_OPS.has(op) || op === 'delete'
+    // `x.constructor === Object` is a shape test the bundler folds (bundler.js), not a read of the constructor
+    const compared = (op === '===' || op === '!==' || op === '==' || op === '!=') && (node[1] === 'Object' || node[2] === 'Object' || node[1] === 'Array' || node[2] === 'Array' || node[1] === 'Function' || node[2] === 'Function')
+    for (let i = 1; i < node.length; i++) {
+      const c = node[i]
+      if (typeof c === 'string') {
+        if (named(c) && !(op === 'new' || op === 'instanceof' && i === 2 || op === '.' || op === '?.' || op === '()' && i === 1 || op === ':' && i === 1)) node[i] = '__' + c
+        continue
+      }
+      typedCtorValues(c)
+      if (Array.isArray(c) && c[0] === '.' && c[2] === 'constructor' && c[1] !== 'this' && c[1] !== 'super' && !(target && i === 1) && !compared)
+        node[i] = ['()', '__ctor', c[1]]
     }
     return node
   } finally { leaveBuiltinScope(prior) }
@@ -420,7 +471,9 @@ export default function jzify(ast, { structs = true, importedBinding = null, std
   iterProto.on = iterProto.program
   iterProto.helpers = iterProto.programHelpers
   iterProto.std = std
+  ctorUse.on = ctorUse.program
   ast = canonSymbols(ast, true)
+  if (!std) ast = typedCtorValues(ast)
   ast = hoistModuleDynamicImports(ast)
   ast = implicitStdImports(ast)
   resetClasses(structs, importedBinding ? { list: importsOf(ast), importedBinding } : null)
@@ -439,9 +492,11 @@ export default function jzify(ast, { structs = true, importedBinding = null, std
     }
   }
   const hoisted = new Set()
+  ast = settleVars(ast)
   ast = hoistVars(ast, hoisted)
   if (hoisted.size) ast = prependDecls(ast, hoisted)
   if (Array.isArray(ast) && ast[0] === ';') ast = [';', ...foldPseudoClassical(ast.slice(1))]
+  if (Array.isArray(ast)) { const stmts = foldPrototypeStores(ast[0] === ';' ? ast.slice(1) : [ast]); ast = stmts.length === 1 ? stmts[0] : [';', ...stmts] }
   builtinScopes = buildBuiltinScopes(ast)
   let out = transformScope(ast)
   // The lowerings reference runtime helpers (`__p_new`, `__it_drain`,
@@ -462,13 +517,16 @@ jzify.imports = (ast) => importsOf(implicitStdImports(ast))
 jzify.witness = (asts) => {
   iterProto.program = false
   iterProto.programHelpers = false
+  ctorUse.program = false
   for (const ast of asts) {
     activeBuiltinScope = null
     builtinScopes = buildBuiltinScopes(ast)
     iterProto.on = false
     iterProto.helpers = false
+    ctorUse.on = false
     canonSymbols(ast)
     iterProto.program ||= iterProto.on
     iterProto.programHelpers ||= iterProto.helpers
+    ctorUse.program ||= ctorUse.on
   }
 }

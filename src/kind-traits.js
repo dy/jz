@@ -149,15 +149,18 @@ export function calleeValType(callee, _args, ctx) {
     const vt = c && contractVal(c)
     if (vt) return vt
   }
-  const f = ctx.funcs.map?.get(callee)
+  // A global bound once to a function calls that function (plan/scope.js
+  // devirtGlobalCalls): the call's result is the function's, in its representation.
+  const name = ctx.funcs.map?.has(callee) ? callee : ctx.funcs.globalDevirt?.get(callee)
+  const f = name == null ? null : ctx.funcs.map?.get(name)
   if (!f) return null
   // The contract published for the callable identity (ProgramIndex, from the
   // summary the plan read), then the live summary's own where the published
   // one names no single kind (a variant's own summary is the later one).
-  const c = ctx.plans.programIndex?.resultContract(f) ?? ctx.summary?.resultContract(callee)
+  const c = ctx.plans.programIndex?.resultContract(f) ?? ctx.summary?.resultContract(name)
   const vt = c && contractVal(c)
   if (vt) return vt
-  return ctx.summary ? valOf(ctx.summary.resultContract(callee).kind) : null
+  return ctx.summary ? valOf(ctx.summary.resultContract(name).kind) : null
 }
 
 export function methodValType(method, obj, objType, ctx) {

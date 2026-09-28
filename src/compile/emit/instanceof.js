@@ -50,8 +50,8 @@ function emitTagInstanceof(a, rhs) {
   return ptrTypeEq(asF64(emit(a)), wantPtr)
 }
 
-/** TypedArray ctors (the 8 TYPED_ELEM_NAMES — see prepare's INSTANCEOF_ALLOW comment
- *  for why BigInt64Array/BigUint64Array/Float16Array/Uint8ClampedArray are
+/** TypedArray ctors (the 8 TYPED_ELEM_NAMES, Float16Array and Uint8ClampedArray — see
+ *  prepare's INSTANCEOF_ALLOW comment for why BigInt64Array/BigUint64Array are
  *  excluded from RHS entirely, not just this arm). Static ctor name comes from either
  *  a literal `new X(...)` call node (prepare's runtime-ctor path always emits
  *  `['()', 'new.X', args]`) or a bound name's narrowed `typedCtor` rep field — both
@@ -69,8 +69,8 @@ function emitTypedInstanceof(a, rhs) {
   // Runtime: PTR.TYPED tag AND element-code match. Mask off TYPED_ELEM_VIEW_FLAG before
   // comparing — a VIEW typed array (`new Int32Array(buffer)`) and an OWNED one
   // (`new Int32Array(4)`) are both really `instanceof Int32Array` in JS; only the
-  // element-type bits (which the 8-name allowlist keeps collision-free — see prepare's
-  // comment) are load-bearing for identity.
+  // element-type bits and the flags beside them (which the allowlist keeps
+  // collision-free — see prepare's comment) are load-bearing for identity.
   inc('__ptr_type', '__ptr_aux')
   const elemCode = rhs === 'DataView' ? DATA_VIEW_FLAG : encodeTypedElemAux(rhs, false)
   // Compute `a` exactly ONCE into a local — the bits are read twice below (tag,
@@ -145,6 +145,6 @@ function emitErrorInstanceof(a, rhs) {
 export function emitInstanceof(a, rhs) {
   if (isBrand(rhs)) return classInstanceof(a, rhs)
   if (rhs in INSTANCEOF_TAG) return emitTagInstanceof(a, rhs)
-  if (rhs === 'DataView' || TYPED_ELEM_NAMES.includes(rhs)) return emitTypedInstanceof(a, rhs)
+  if (rhs === 'DataView' || TYPED_ELEM_NAMES.includes(rhs) || rhs === 'Float16Array' || rhs === 'Uint8ClampedArray') return emitTypedInstanceof(a, rhs)
   return emitErrorInstanceof(a, rhs)
 }

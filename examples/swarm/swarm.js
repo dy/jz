@@ -7,10 +7,12 @@
 // decorrelated per-fly wander (no closed streamlines, so flies can't fall into orbits).
 //
 // The per-fly random re-targeting is what makes the motion look randomized (not an orbit);
-// the lerp+wander gives the lazy buzz. Each fly is a triangle facing its motion.
-// Coordinates are kept in pixels (as in the swf). resize(w,h) → Uint32Array.
+// the lerp+wander gives the lazy buzz. Each fly is a triangle facing its motion, and its path is
+// traced into a slowly fading ink buffer — a long exposure of the buzz, like flies photographed
+// round a lamp. Coordinates are kept in pixels (as in the swf). resize(w,h) → Uint32Array.
 
 let W = 0, H = 0, px
+let ink                               // Float32Array — the long-exposure trace of every path
 let MAXN = 3000
 let x = new Float64Array(MAXN)        // position (px)
 let y = new Float64Array(MAXN)
@@ -35,6 +37,7 @@ let REROLL = 22         // re-target interval in frames (~0.35s)
 export let resize = (w, h) => {
   W = w; H = h
   px = new Uint32Array(w * h)
+  ink = new Float32Array(w * h)
   return px
 }
 
@@ -53,7 +56,13 @@ let spawn1 = (nx, ny) => {
   reroll(i); count++
 }
 
-export let init = () => { count = 0; let i = 0; while (i < 20) { spawn1(0.5, 0.4); i++ } }   // MOOCHNUMBER = 20
+export let init = () => {
+  count = 0
+  let i = 0, n = W * H
+  while (i < n) { ink[i] = 0; i++ }
+  i = 0
+  while (i < 20) { spawn1(0.5, 0.4); i++ }   // MOOCHNUMBER = 20
+}
 export let setTarget = (a, b) => { cx = a; cy = b }
 export let setTheme = (pr, pg, pb, ir, ig, ib) => { th[0] = pr; th[1] = pg; th[2] = pb; th[3] = ir; th[4] = ig; th[5] = ib }
 export let addFlies = (a, b, n) => { let i = 0; while (i < n) { spawn1(a, b); i++ } }
@@ -85,13 +94,48 @@ let tri = (cxf, cyf, ux, uy, s, col) => {
   }
 }
 
+// additive deposit of weight a at pixel (ix, iy)
+let dep = (ix, iy, a) => {
+  if (ix >= 0 && ix < W && iy >= 0 && iy < H) ink[iy * W + ix] += a
+}
+
+// anti-aliased hairline from (ax,ay) to (bx,by): bilinear splats every half pixel
+let trace = (ax, ay, bx, by) => {
+  let dx = bx - ax, dy = by - ay
+  let n = (Math.sqrt(dx * dx + dy * dy) * 2.0 | 0) + 1
+  let k = 0
+  while (k < n) {
+    let fx = ax + dx * k / n - 0.5, fy = ay + dy * k / n - 0.5
+    let ix = Math.floor(fx), iy = Math.floor(fy)
+    let ux = fx - ix, uy = fy - iy
+    dep(ix, iy, (1.0 - ux) * (1.0 - uy) * 0.5)
+    dep(ix + 1, iy, ux * (1.0 - uy) * 0.5)
+    dep(ix, iy + 1, (1.0 - ux) * uy * 0.5)
+    dep(ix + 1, iy + 1, ux * uy * 0.5)
+    k++
+  }
+}
+
 export let frame = (t) => {
-  let bg = (255 << 24) | ((th[2] | 0) << 16) | ((th[1] | 0) << 8) | (th[0] | 0)   // page paper
+  // the exposure: paths fade slowly (half-life ≈ 3 s), so each fly leaves a wandering hairline;
+  // composite it at up to half the ink's strength over the paper, saturating softly where paths pile up
+  let pr = th[0], pg = th[1], pb = th[2], ir = th[3], ig = th[4], ib = th[5]
   let i = 0, n = W * H
-  while (i < n) { px[i] = bg; i++ }
+  while (i < n) {
+    let e = ink[i] * 0.996
+    ink[i] = e
+    let v = e < 1.0 ? e * 0.55 : 0.55
+    let r = (pr + (ir - pr) * v) | 0
+    let g = (pg + (ig - pg) * v) | 0
+    let b = (pb + (ib - pb) * v) | 0
+    px[i] = (255 << 24) | (b << 16) | (g << 8) | r
+    i++
+  }
 
   let kick = (W < H ? W : H) * WKICK
-  let col = (255 << 24) | ((th[5] | 0) << 16) | ((th[4] | 0) << 8) | (th[3] | 0)  // page ink (flies)
+  let size = (W < H ? W : H) * 0.0085
+  if (size < 5.0) size = 5.0
+  let col = (255 << 24) | ((ib | 0) << 16) | ((ig | 0) << 8) | (ir | 0)  // page ink (flies)
   i = 0
   while (i < count) {
     tmr[i] -= 1.0
@@ -102,9 +146,10 @@ export let frame = (t) => {
     wvy[i] = wvy[i] * WDECAY + (Math.random() - 0.5) * kick
     // direct lerp toward the (random, near-cursor) target — no inertia, so it can't orbit it
     let mvx = dx * LERP + wvx[i], mvy = dy * LERP + wvy[i]
+    trace(x[i], y[i], x[i] + mvx, y[i] + mvy)
     x[i] += mvx; y[i] += mvy
     let d = Math.sqrt(mvx * mvx + mvy * mvy) + 0.0001
-    tri(x[i], y[i], mvx / d, mvy / d, 7.0, col)       // face actual motion
+    tri(x[i], y[i], mvx / d, mvy / d, size, col)      // face actual motion
     i++
   }
 }

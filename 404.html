@@ -1,9 +1,9 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" class="paper">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<script>(()=>{try{document.documentElement.dataset.theme=localStorage.getItem('theme')||'dark'}catch(e){document.documentElement.dataset.theme='dark'}})()</script>
+<script>(()=>{try{document.documentElement.dataset.theme=localStorage.getItem('theme')||'light'}catch(e){document.documentElement.dataset.theme='light'}})()</script>
 <title>Not found - jz</title>
 <meta name="robots" content="noindex">
 <!-- GitHub Pages serves this for any missing path, so every URL here is root-absolute. -->
@@ -13,15 +13,16 @@
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 html, body { min-height: 100%; }
 body { background: var(--paper); color: var(--ink); font-family: var(--font); }
-main { max-width: var(--cw); margin: 0 auto; padding: 18vh var(--padx) 24vh; }
-h1 { font-size: clamp(28px, 5vw, 48px); font-weight: 700; letter-spacing: -.02em; line-height: 1.06; }
-p { margin-top: 16px; font-size: 16px; line-height: 24px; color: var(--dim); }
+.masthead, main { max-width: var(--colw); margin-inline: calc(var(--gx-pad) - var(--padx)) auto; padding-inline: var(--padx); }   /* the shared column (assets/site.css) */
+main { padding-block: 0 calc(3 * var(--U)); }   /* starts at the menu ruler: the title (.title, assets/site.css) sets its own distance */
+p { margin-top: 16px; font-size: var(--fs-body); line-height: 24px; color: var(--dim); }
+@supports (text-box: trim-both cap alphabetic) { p { text-box: trim-both cap alphabetic; padding-top: var(--bl); } }   /* baseline on the 8px grid */
 p a { color: var(--ink); }
 </style>
 </head>
 <body>
 <header class="masthead">
-  <div class="brand"><a class="logo" href="/"><img src="/jz.svg" width="40" height="40" alt="jz"></a><span class="sub">404</span></div>
+  <div class="brand"><a class="logo" href="/"><img src="/jz.svg" width="40" height="40" alt="jz"></a></div>
   <nav>
     <a href="/repl/">repl</a>
     <a href="/examples/">examples</a>
@@ -29,8 +30,14 @@ p a { color: var(--ink); }
   </nav>
 </header>
 <main>
-  <h1>No such page.</h1>
+  <h1 class="title">No such page.</h1>
   <p>Try the <a href="/">home page</a>, the <a href="/repl/">repl</a>, the <a href="/examples/">examples</a> or the <a href="/bench/">bench</a>.</p>
 </main>
+<script type="module" src="/assets/glint.js"></script>
+<script type="module">
+// layout rhythm: the line under the title hangs from a half-unit line
+import rhythm, { snap } from '/assets/rhythm.js'
+rhythm(() => snap(document.querySelector('main p'), 'marginTop', 'top', 40))
+</script>
 </body>
 </html>

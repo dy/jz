@@ -23,8 +23,8 @@ const titleOf = (n) => byName[n]?.title || n.replace(/-/g, ' ')
 ;(() => {
   const root = document.documentElement
   const set = (t) => { root.dataset.theme = t }
-  // dark by default (jz's identity); only an explicit toggle to light persists. OS preference ignored.
-  if (!root.dataset.theme) { try { set(localStorage.getItem('theme') || 'dark') } catch { set('dark') } }
+  // light by default (the site's blueprint paper); only an explicit toggle persists. OS preference ignored.
+  if (!root.dataset.theme) { try { set(localStorage.getItem('theme') || 'light') } catch { set('light') } }
   addEventListener('click', (e) => {
     if (!e.target.closest?.('.theme-toggle')) return
     const next = root.dataset.theme === 'light' ? 'dark' : 'light'; set(next)
@@ -80,13 +80,13 @@ const addMasthead = (name) => {
   // into the themed page like the other pages' headers, no separate band)
   header.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:200;background:transparent'
   header.innerHTML = `
-    <div class="brand"><a class="logo" href="../../"><img src="../../jz.svg" width="40" height="40" alt="jz"></a><a class="sub" href="../">examples</a></div>
+    <div class="brand"><a class="logo" href="../../"><img src="../../jz.svg" width="40" height="40" alt="jz"></a></div>
     <nav class="site-nav" aria-label="Main navigation">
       <a href="../../guide/">guide</a>
-      <a href="../../examples/">examples</a>
+      <a href="../../examples/" aria-current="page">examples</a>
       <a href="../../bench/">bench</a>
       <a href="../../repl/">repl</a>
-      <a class="ver" href="https://www.npmjs.com/package/jz" target="_blank" rel="noopener"><span data-ver>v0.7.0</span> <span class="exp">experimental</span></a>
+      <a class="ver" href="https://www.npmjs.com/package/jz" target="_blank" rel="noopener"><span data-ver>v0.7.0</span></a>
       <button class="theme-toggle" type="button" aria-label="Toggle light or dark theme" title="Toggle theme">
         <svg class="i-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
         <svg class="i-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M5 5l1.4 1.4M17.6 17.6 19 19M19 5l-1.4 1.4M6.4 17.6 5 19"/></svg>
@@ -96,34 +96,36 @@ const addMasthead = (name) => {
       </a>
     </nav>`
   document.body.insertBefore(header, document.body.firstChild)
-  // Frame the demo between the two bands: the fixed 80px masthead on top and the 64px
-  // bottom bar below. The canvas fills that gap (runDemo sizes the backing to this box, so it
-  // fills edge-to-edge — no letterbox). The HUD's own <canvas> lives inside .jz-bar
-  // (body > div > canvas), so `body > canvas` = the demo.
+  const glint = document.createElement('script')   // the dark logo's ring, as on every other page; after the header, whose .logo it finds
+  glint.type = 'module'; glint.src = new URL('../../assets/glint.js', import.meta.url).href
+  document.head.appendChild(glint)
+  // Frame the demo on the site's lined paper (html.paper, assets/site.css): the grid around it, the
+  // column's rulers either side, the menu ruler above. The demo takes one cell of that grid — the
+  // column's width, from one half-unit under the menu ruler (--jz-top: the demo keeps its distance from the
+  // menu, as a page's content does) down to the last half-unit line that still leaves the bottom
+  // bar its band — and its box is the cell's inside (1px in from each line), so four rulers frame it
+  // on either theme. --jz-h is the cell's height, --jz-barh the bar's band (a unit; half on phones):
+  // one source of truth for the canvas, the bar, the code panel and the edge chevrons. The HUD's own
+  // <canvas> lives inside .jz-bar (body > div > canvas), so `body > canvas` = the demo.
+  document.documentElement.classList.add('paper')
   if (!document.getElementById('jz-canvas-fit')) {
     const fit = document.createElement('style')
     fit.id = 'jz-canvas-fit'
-    // The demo is centered to the shared site column (consistent with bench/examples/home) — not
-    // edge-to-edge. The two bands inset to the same column so the logo + controls align with the
-    // demo's edges. The fullscreen button (⛶) drops the cap so it fills the viewport. `--jz-demopad`
-    // is the symmetric inset that yields a `--jz-democol`-wide centered column.
-    // --jz-barh is the bottom-bar height — one source of truth shared by the bar, the canvas
-    // height (below) and the code panel; a single media query trims it on phones (≤480px) and the
-    // canvas reclaims the space automatically. Top band stays a fixed 80px.
+    // 100dvh (not 100vh): Safari's 100vh counts the dynamic toolbar, making the box taller than the
+    // host-measured backing → object-fit:contain then letterboxes it with white top/bottom bands.
     fit.textContent =
-      ':root{--jz-democol:960px;--jz-demopad:max(24px,calc(50% - 480px));--jz-barh:64px}'
-      + '@media (max-width:480px){:root{--jz-barh:44px}}'
-      // themed page — centering creates side margins, so the bg beside the canvas melds with the theme
-      // (black in dark, cassette gray in light) instead of a hard frame. Only on framed standalone pages.
-      + 'html,body{background:var(--paper)!important}'
-      + 'body > canvas:not(.gradient){position:fixed!important;top:80px!important;left:50%!important;'
-      + 'transform:translateX(-50%)!important;width:min(100vw,var(--jz-democol))!important;'
-      // 100dvh (not 100vh): Safari's 100vh counts the dynamic toolbar, making the box taller than the
-      // host-measured backing → object-fit:contain then letterboxes it with white top/bottom bands.
-      + 'height:calc(100dvh - 80px - var(--jz-barh))!important;object-fit:contain!important}'
-      + '.masthead.fixed{padding-inline:var(--jz-demopad)!important}'
-      + 'html.jz-full body > canvas:not(.gradient){width:100vw!important}'
-      + 'html.jz-full .masthead.fixed{padding-inline:24px!important}'
+      ':root{--jz-top:calc(var(--U) + var(--u2));--jz-barh:var(--U);--jz-h:calc(100dvh - var(--jz-top) - var(--jz-barh))}'
+      + '@supports (height:round(down,1px,1px)){:root{--jz-h:round(down,100dvh - var(--jz-top) - var(--jz-barh),var(--u2))}}'
+      + '@media (max-width:480px){:root{--jz-barh:var(--u2)}}'
+      + 'body > canvas:not(.gradient){position:fixed!important;top:calc(var(--jz-top) + 1px)!important;left:calc(var(--gx-pad) + 1px)!important;'
+      // fill, not contain: the backing is sized from this very box, so only rounding separates their aspects —
+      // contain would letterbox that sliver off the rulers
+      + 'transform:none!important;width:calc(var(--cw) - 1px)!important;height:calc(var(--jz-h) - 1px)!important;object-fit:fill!important}'
+      // the bands keep to the column, so the logo and the controls end on the rulers
+      + '.masthead.fixed{padding-inline:var(--gx-pad) calc(100% - var(--gx-pad) - var(--cw))!important}'
+      // the bar: its band under the demo, a ruler across its top, its controls centred between the two
+      + 'html.paper:not(.jz-saver) .jz-bar{top:calc(var(--jz-top) + var(--jz-h));bottom:auto;min-height:var(--jz-barh);padding-block:0;'
+      + 'padding-inline:var(--gx-pad) calc(100% - var(--gx-pad) - var(--cw));background:none;box-shadow:inset 0 1px var(--rule)}'
     document.head.appendChild(fit)
   }
 }
@@ -149,16 +151,14 @@ const addEdgeNav = (name) => {
     <style>
       /* No chrome — big white chevrons + label, with a soft dark outline (drop-shadow /
          text-shadow) so they stay legible on dark, light AND mid-gray frames alike. */
-      html.jz-full .jz-edge,
-      html.jz-code-open .jz-edge { display: none; }   /* fullscreen / open code = focused single view — no neighbours */
+      html.jz-code-open .jz-edge { display: none; }   /* open code = focused single view — no neighbours */
       .jz-edge a {
         position: fixed; top: 50%; transform: translateY(-50%); z-index: 150;
         display: flex; align-items: center; text-decoration: none; user-select: none;
         -webkit-tap-highlight-color: transparent; color: light-dark(#000, #fff);   /* black on the light (gray) frame, white on the dark */
         font-family: Futura, 'Futura PT', 'Avant Garde', Jost, 'Helvetica Neue', sans-serif;
       }
-      .jz-edge-prev { left: 10px; }
-      .jz-edge-next { right: 10px; flex-direction: row-reverse; }
+      .jz-edge-next { flex-direction: row-reverse; }
       .jz-edge .chip {
         flex: none; display: flex; align-items: center; justify-content: center;
         filter: drop-shadow(0 0 1px light-dark(rgba(255,255,255,.9), rgba(0,0,0,.9))) drop-shadow(0 1px 3px light-dark(rgba(255,255,255,.55), rgba(0,0,0,.6)));   /* halo flips with the theme so the chevron stays legible over the canvas too */
@@ -167,16 +167,19 @@ const addEdgeNav = (name) => {
       .jz-edge .label {
         max-width: 0; overflow: hidden; white-space: nowrap; box-sizing: border-box;
         font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .14em;
-        opacity: 0; text-shadow:
-          light-dark(0 0 1px #fff, 0 0 2px rgba(0,0,0,.9)),
-          light-dark(0 0 2px #fff, 0 1px 2px rgba(0,0,0,.7)),
-          light-dark(0 0 4px #fff, 0 0 4px rgba(0,0,0,.4));   /* white outline in light (legible over the dark demo), dark halo in dark */
+        opacity: 0; color: #fff; text-shadow: 0 0 2px rgba(0,0,0,.9), 0 1px 2px rgba(0,0,0,.7), 0 0 4px rgba(0,0,0,.4);   /* it opens over the demo, whatever the theme: white in a dark halo */
         transition: max-width .34s cubic-bezier(.22,.6,.36,1), opacity .26s, padding .34s;
       }
       .jz-edge a:hover .chip { transform: scale(1.15); }
       .jz-edge a:hover .label { max-width: 220px; opacity: 1; }
       .jz-edge-prev:hover .label { padding-left: 8px; }
       .jz-edge-next:hover .label { padding-right: 8px; }
+      /* on the grid: each chevron takes the cell just outside its ruler, level with the demo's middle */
+      .jz-edge-prev { left: calc(var(--gx-pad) - var(--u2)); }
+      .jz-edge-next { right: calc(100vw - var(--gx-pad) - var(--cw) - var(--u2)); }
+      @supports (top: round(down, 1px, 1px)) {
+        .jz-edge a { top: calc(var(--jz-top) + round(down, (var(--jz-h) - var(--u2)) / 2, var(--u2))); transform: none; }
+      }
       @media (hover: none) { .jz-edge .label { display: none; } }
       @media (prefers-reduced-motion: reduce) { .jz-edge .chip, .jz-edge .label { transition: none; } }
     </style>`
@@ -353,9 +356,8 @@ export const hud = ({ kind = 'jz', onSwitch, src = '', code = '', nav = '', mete
   el.innerHTML = `
     <style>
       .jz-bar { position: fixed; left: 0; right: 0; bottom: 0; z-index: 100; min-height: var(--jz-barh, 64px); box-sizing: border-box;
-        display: flex; align-items: center; gap: 18px; padding: 10px var(--jz-demopad, 28px); background: var(--paper);
+        display: flex; align-items: center; gap: 18px; padding: 10px 28px; background: var(--paper);
         font-family: var(--font, Futura, 'Futura PT', 'Avant Garde', Jost, 'Helvetica Neue', sans-serif); user-select: none; }
-      html.jz-full .jz-bar { padding-inline: 24px; }
       /* full caption — never trimmed; the bar grows taller (min-height above) to fit every line. */
       .jz-bar .jz-desc { flex: 1 1 auto; min-width: 0; font-size: 13px; line-height: 1.3; color: var(--dim); letter-spacing: .01em; }
       .jz-bar .jz-links { display: block; margin-top: 3px; }   /* wiki/code links on their OWN line under the title */
@@ -438,11 +440,10 @@ export const hud = ({ kind = 'jz', onSwitch, src = '', code = '', nav = '', mete
       .jz-codelink { font: inherit; color: var(--soft); background: none; border: 0; padding: 0; cursor: pointer;
         text-decoration: underline; text-underline-offset: 2px; white-space: nowrap; }
       .jz-codelink:hover, .jz-codelink.on { color: var(--ink); }
-      .jz-code-panel { position: fixed; top: 80px; bottom: var(--jz-barh, 64px); left: 50%; transform: translateX(-50%);
-        width: min(100vw, var(--jz-democol, 960px)); z-index: 140; background: rgba(6,6,9,.96);
+      .jz-code-panel { position: fixed; top: calc(var(--jz-top) + 1px); left: calc(var(--gx-pad) + 1px);   /* the demo's own cell */
+        width: calc(var(--cw) - 1px); height: calc(var(--jz-h) - 1px); z-index: 140; background: rgba(6,6,9,.96);
         opacity: 0; visibility: hidden; transition: opacity .18s ease; }
       .jz-code-panel.on { opacity: 1; visibility: visible; }
-      html.jz-full .jz-code-panel { width: 100vw; }
       .jz-code-scroll { position: absolute; inset: 0; overflow: auto; overscroll-behavior: contain; }
       .jz-code-pre { margin: 0; padding: 30px 34px; color: #d6d6de; tab-size: 2;
         font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);

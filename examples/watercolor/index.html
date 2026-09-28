@@ -18,13 +18,33 @@
 import { runDemo } from "../lib/jzdemo.js"
 
 const R = 11
-let t = 0, nextDrip = 30, nextStir = 90, painting = false
+let t = 0, nextDrip = 30, nextStir = 90, nextStroke = 200, painting = false
+// an unattended brush: a curving stroke over ~50 frames that pushes ink along its own direction,
+// so the bath keeps combing into marbled tendrils even with nobody at the brush
+let sk = null
+const startStroke = (d) => {
+  sk = { f: 0, n: 50, x: d.W * (0.15 + Math.random() * 0.7), y: d.H * (0.2 + Math.random() * 0.6),
+    a: Math.random() * 6.28, turn: (Math.random() - 0.5) * 0.09, step: Math.min(d.W, d.H) * 0.012 }
+}
+const strokeStep = (e) => {
+  sk.a += sk.turn
+  const fx = Math.cos(sk.a), fy = Math.sin(sk.a)
+  sk.x += fx * sk.step; sk.y += fy * sk.step
+  e.paint(sk.x, sk.y, R, fx * 1.1, fy * 1.1)
+  if (++sk.f >= sk.n) sk = null
+}
+// the opening composition: two sinuous strokes, as the gallery thumbnail shows it
+const compose = (e, d) => {
+  e.clear()
+  for (let i = 0; i <= 30; i++) e.paint((0.18 + i * 0.021) * d.W, (0.36 + Math.sin(i * 0.32) * 0.12) * d.H, 12, 1.4, 0.2)
+  for (let i = 0; i <= 24; i++) e.paint((0.8 - i * 0.024) * d.W, (0.62 + Math.cos(i * 0.32) * 0.12) * d.H, 12, -1.2, 0.3)
+}
 const demo = runDemo({
   name: "watercolor",
   hint: "ink on flowing water — press to bloom a drop, drag to comb marbled tendrils",
   size: { budget: 180000 },
   bg: "#000",
-  load: (e) => e.clear(),
+  load: (e, d) => compose(e, d),
   // re-roll: wash the bath and drip a fresh scatter of ink blooms
   randomize: (e, d) => { e.clear(); for (let i = 0; i < 5; i++) { const a = Math.random() * 6.28; e.paint(Math.random() * d.W, Math.random() * d.H, R + 3, Math.cos(a) * 0.6, Math.sin(a) * 0.6) } },
   frame: (e) => {
@@ -32,8 +52,10 @@ const demo = runDemo({
     if (!painting && t > nextDrip) {
       const a = Math.random() * 6.28
       e.paint(demo.W * (0.1 + Math.random() * 0.8), demo.H * (0.1 + Math.random() * 0.8), R + 4, Math.cos(a) * 0.35, Math.sin(a) * 0.35)
-      nextDrip = t + 180 + Math.random() * 140   // one drop every ~3-5s — the bath clears between
+      nextDrip = t + 90 + Math.random() * 80    // a drop every ~1.5-3 s
     }
+    if (!painting && !sk && t > nextStroke) { startStroke(demo); nextStroke = t + 360 + Math.random() * 240 }
+    if (sk && !painting) strokeStep(e)
     // ambient current: a slow wandering stir keeps the bath alive (ink-less — it only combs)
     if (t > nextStir) {
       const a2 = t * 0.05 + Math.random() * 1.5

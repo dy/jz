@@ -1,9 +1,9 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" class="paper">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<script>(()=>{try{document.documentElement.dataset.theme=localStorage.getItem('theme')||'dark'}catch(e){document.documentElement.dataset.theme='dark'}})()</script>
+<script>(()=>{try{document.documentElement.dataset.theme=localStorage.getItem('theme')||'light'}catch(e){document.documentElement.dataset.theme='light'}})()</script>
 <title>Guide | JZ</title>
 <meta name="description" content="Compile JavaScript to WebAssembly with JZ. Install, run your first WASM function, pass typed arrays, and keep the same JavaScript as a fallback.">
 <link rel="canonical" href="https://jz.js.org/guide/">
@@ -15,37 +15,87 @@
 <link rel="icon" href="../jz.svg" type="image/svg+xml">
 <link rel="stylesheet" href="../assets/site.css">
 <style>
-/* The guide shares the FAQ's prose; code is a quiet terminal surface. */
+/* The guide: a diagram, numbered steps (a caption line, then code or a table), no paragraphs. Code is a quiet
+   terminal surface; tables share the landing FAQ's grid (rows of 40, rules on grid lines). */
 *, *::before, *::after { box-sizing: border-box; }
 body { margin: 0; background: var(--paper); color: var(--ink); font-family: var(--font); -webkit-font-smoothing: antialiased; }
 .masthead, main { max-width: var(--colw); margin-inline: calc(var(--gx-pad) - var(--padx)) auto; padding-inline: var(--padx); }
-main { padding-block: 48px 32px; }
-h1 { margin: 0 0 14px; font-size: clamp(28px, 4vw, 40px); line-height: 1.15; font-weight: 400; }
-/* standfirst: orients a reader who landed here cold, before the first instruction. */
-.prose .lede { margin: 0 0 28px; max-width: 29em; font-size: clamp(17px, 2vw, 19px); line-height: 1.45; color: var(--dim); }
-h2 { margin: 36px 0 12px; font-size: 18px; font-weight: 600; }
-.terminal { margin: 20px 0; padding: 20px 24px; background: #000; color: #e6e6e6; border: 1px solid #222; overflow-x: auto; font: 13.5px/22px var(--font-mono); color-scheme: dark; }
+main { padding-block: 0 32px; }   /* starts at the menu ruler: the title (.title, assets/site.css) sets its own distance */
+/* a flowing document on the baseline grid: every line's baseline on the 8px grid (.prose p is trimmed and padded
+   in site.css), blocks a whole number of 8px cells apart */
+h1 { margin-bottom: 40px; }
+.prose { max-width: calc(9 * var(--U)); }
+h2 { margin: 40px 0 16px; font-size: var(--fs-head); font-weight: 700; }
+h2 code { font-size: .9em; background: none; padding: 0; }
+
+/* the idea in one picture: one file, two runtimes */
+.flow { display: block; width: 100%; max-width: calc(7 * var(--U)); height: auto; margin: 0 0 8px; overflow: visible; color: var(--ink); }   /* the side notes overflow into the column */
+.flow rect, .flow path { fill: none; stroke: currentColor; stroke-width: 1; }
+.flow path { stroke: var(--dim); }
+.flow .head { fill: var(--dim); stroke: none; }
+.flow text { font-family: var(--font); fill: currentColor; }
+.flow .file { font: 13px var(--font-mono); text-anchor: middle; }
+.flow .edge { font-size: 12px; text-transform: uppercase; letter-spacing: .1em; text-anchor: middle; fill: var(--dim); }
+.flow .note { font-size: 13px; fill: var(--dim); }
+
+/* numbered steps: the number hangs in a one-unit column, the step's content runs beside it */
+.steps { list-style: none; margin: 0; padding: 0; counter-reset: step; }
+.step { position: relative; padding-left: var(--U); counter-increment: step; }
+.step h2::before { content: counter(step); position: absolute; left: 0; font-weight: 400; color: var(--mute); font-variant-numeric: tabular-nums; }
+.plain { margin-top: 64px; }
+.prose .cap { margin: 0 0 8px; color: var(--soft); }
+.prose .cap + .terminal, .prose .cap + table { margin-top: 16px; }
+
+/* tables — rows of 40, the text's caps centred between rules on grid lines */
+.prose table { width: 100%; margin: 24px 0; box-shadow: 1px 1px var(--rule); border-collapse: separate; border-spacing: 0; font-size: var(--fs-body); line-height: 24px; }
+.prose th, .prose td { text-align: left; vertical-align: top; border: 0 solid var(--rule); border-width: 1px 0 0 1px; padding: calc((39px - 1cap) / 2) 16px; }
+.prose th { font-size: var(--fs-caps); font-weight: 500; text-transform: uppercase; letter-spacing: var(--ls-caps); color: var(--dim); }
+.prose td { color: var(--soft); }
+.prose td:first-child { width: calc(3 * var(--U)); color: var(--ink); }
+.prose td code { white-space: normal; overflow-wrap: anywhere; }
+.prose .cover td:first-child { width: 50%; color: var(--soft); }
+@supports (text-box: trim-both cap alphabetic) { .prose th, .prose td { text-box: trim-both cap alphabetic; } }
+
+/* where to go next: the menu's caps, in a row */
+.next { display: flex; flex-wrap: wrap; gap: 8px 32px; margin-top: 40px; }
+.next a { font-size: var(--fs-caps); text-transform: uppercase; letter-spacing: var(--ls-caps); text-decoration: none; color: var(--ink); }
+.next a::after { content: ' →'; color: var(--dim); }
+.next a:hover { text-decoration: underline; text-underline-offset: 4px; }
+@supports (text-box: trim-both cap alphabetic) { h2 { text-box: trim-both cap alphabetic; } .terminal { text-box: trim-both cap alphabetic; } }
+/* code: 24px lines, the first baseline 24px into the box, the box's edge drawn inside (no border height) */
+.terminal { margin: 24px 0; padding: calc(24px - 1cap) 24px 16px; background: #000; color: #e6e6e6; box-shadow: inset 0 0 0 1px #222; overflow: auto hidden; font: var(--fs-mono)/24px var(--font-mono); color-scheme: dark; }   /* hidden on y: the trimmed line space under the last baseline is not overflow */
 .terminal code { font: inherit; }
 .terminal:focus-visible { outline: 2px solid var(--ink); outline-offset: 3px; }
 .terminal ::selection { color: #000; background: #ddd; }
-/* token classes from assets/highlight.js, styled as the REPL styles #hl on its dark palette */
-.terminal .k { font-weight: 700; }                  /* keyword */
+/* token classes from assets/highlight.js, on the REPL's dark tone ladder (names bright, structure receding) */
+.terminal { color: #d0d0d0; }
+.terminal .k { font-weight: 700; color: #8c8c8c; }  /* keyword */
+.terminal .d { font-weight: 700; color: #fff; }     /* declared name */
+.terminal .f { color: #f0f0f0; }                    /* called name */
 .terminal .t { font-weight: 600; }                  /* Type / builtin */
-.terminal .n { font-weight: 600; color: #c8c8c8; }  /* number */
-.terminal .s { color: #b3b3b3; }                    /* string */
-.terminal .c { color: #8a8a8a; }                    /* comment */
-@media (max-width: 640px) { .masthead, main { padding-inline: 20px; } main { padding-top: 32px; } .terminal { padding: 16px; font-size: 12px; } }
+.terminal .n { font-weight: 600; color: #e6e6e6; }  /* number */
+.terminal .s { color: #a8a8a8; }                    /* string */
+.terminal .c { color: #6a6a6a; font-style: italic; }  /* comment */
+.terminal .p { color: #6a6a6a; }                    /* punctuation / operator */
+@media (max-width: 640px) {
+  .terminal { padding-inline: 16px; }
+  .step { padding-left: var(--u2); }
+  .prose td:first-child { width: auto; }
+  .flow .note { display: none; }
+  .flow .file { font-size: 18px; }
+  .flow .edge { font-size: 16px; }
+}
 </style>
 </head>
 <body>
 <header class="masthead">
-  <div class="brand"><a class="logo" href="../"><img src="../jz.svg" width="40" height="40" alt="jz"></a><span class="sub">guide</span></div>
+  <div class="brand"><a class="logo" href="../"><img src="../jz.svg" width="40" height="40" alt="jz"></a></div>
   <nav class="site-nav" aria-label="Main navigation">
     <a href="../guide/" aria-current="page">guide</a>
     <a href="../examples/">examples</a>
     <a href="../bench/">bench</a>
     <a href="../repl/">repl</a>
-    <a class="ver" href="https://www.npmjs.com/package/jz" target="_blank" rel="noopener"><span data-ver>v0.9.2</span> <span class="exp">experimental</span></a>
+    <a class="ver" href="https://www.npmjs.com/package/jz" target="_blank" rel="noopener"><span data-ver>v0.9.2</span></a>
     <button class="theme-toggle" type="button" aria-label="Toggle light or dark theme" title="Toggle theme">
       <svg class="i-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
       <svg class="i-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M5 5l1.4 1.4M17.6 17.6 19 19M19 5l-1.4 1.4M6.4 17.6 5 19"/></svg>
@@ -58,10 +108,34 @@ h2 { margin: 36px 0 12px; font-size: 18px; font-weight: 600; }
 
 <main>
 <article class="prose">
-  <h1>Start with a function you already have.</h1>
-  <p class="lede">JZ compiles a distilled subset of JavaScript to WebAssembly. Nothing here is a new language: no annotations to add, and the file you compile still runs as plain JavaScript.</p>
-  <p>Wrap that function in a <code>jz</code> template and it comes back as a WebAssembly module with the function exported, ready to call.</p>
-  <pre class="terminal" tabindex="0" aria-label="JavaScript: compile and call a function"><code id="tag-run" class="language-javascript">import jz from 'jz'
+  <h1 class="title">Start with a function you already have.</h1>
+
+  <svg class="flow" viewBox="0 0 560 160" role="img" aria-label="One JavaScript file: jz compiles it to kernel.wasm for speed, and it still runs as JavaScript for fallback and tests">
+    <rect x="0.5" y="60.5" width="159" height="39"/>
+    <rect x="400.5" y="0.5" width="159" height="39"/>
+    <rect x="400.5" y="120.5" width="159" height="39"/>
+    <path d="M160 80H240V20H393M240 80V140H393"/>
+    <path class="head" d="M393 16l8 4-8 4zM393 136l8 4-8 4z"/>
+    <text class="file" x="80" y="84.5">kernel.js</text>
+    <text class="file" x="480" y="24.5">kernel.wasm</text>
+    <text class="file" x="480" y="144.5">kernel.js</text>
+    <text class="edge" x="320" y="12">jz</text>
+    <text class="edge" x="320" y="132">as is</text>
+    <text class="note" x="576" y="24.5">fast path</text>
+    <text class="note" x="576" y="144.5">fallback, tests</text>
+  </svg>
+
+  <ol class="steps">
+    <li class="step">
+      <h2>Install</h2>
+      <pre class="terminal" tabindex="0" aria-label="Install JZ"><code>npm install jz</code></pre>
+      <p class="cap">Or try it first in the <a href="../repl/">playground</a>, nothing to install.</p>
+    </li>
+
+    <li class="step">
+      <h2>Compile a function</h2>
+      <p class="cap">No annotations: types are read off the arithmetic.</p>
+      <pre class="terminal" tabindex="0" aria-label="JavaScript: compile and call a function"><code id="tag-run" class="language-javascript">import jz from 'jz'
 
 const { exports } = jz`
   export const dist = (x, y) =&gt;
@@ -69,13 +143,12 @@ const { exports } = jz`
 `
 
 console.log(exports.dist(3, 4)) // 5</code></pre>
-  <p>The tag compiles and instantiates once, so keep the module around: every call to <code>exports.dist</code> from here runs WebAssembly. Notice what the source never said – that <code>x</code> and <code>y</code> are numbers. JZ read that off the arithmetic.</p>
-  <pre class="terminal" tabindex="0" aria-label="Install JZ"><code>npm install jz</code></pre>
-  <p>Or open the <a href="../repl/">playground</a> first, with nothing to install.</p>
+    </li>
 
-  <h2>Give it a whole loop</h2>
-  <p>A two-line function shows the shape of it. Loops are where it earns its keep: crossing into WASM costs something each time, so hand it a whole array rather than one number.</p>
-  <pre class="terminal" tabindex="0" aria-label="JavaScript: pass a typed array"><code id="array-run" class="language-javascript">import jz from 'jz'
+    <li class="step">
+      <h2>Pass whole arrays</h2>
+      <p class="cap">Each crossing into WASM costs; hand it a batch, not one number.</p>
+      <pre class="terminal" tabindex="0" aria-label="JavaScript: pass a typed array"><code id="array-run" class="language-javascript">import jz from 'jz'
 
 const { exports, memory } = jz`
   export const sum = a =&gt; {
@@ -88,14 +161,61 @@ const { exports, memory } = jz`
 const values = new Float64Array([1, 2, 3])
 console.log(exports.sum(values)) // 6
 memory.reset()</code></pre>
-  <p>Arrays, strings and objects cross the boundary for you. What they allocate stays on the heap until you say otherwise, so finish the batch, then call <code>memory.reset()</code>: it invalidates every pointer and view handed out before it. If state has to survive between calls, read the <a href="https://github.com/dy/jz/blob/main/README.md#host-memory-contract">memory contract</a> first.</p>
+      <table>
+        <thead><tr><th>Value</th><th>Crosses the boundary</th></tr></thead>
+        <tbody>
+          <tr><td>number</td><td>directly</td></tr>
+          <tr><td>string, array, typed array</td><td>copied in, decoded out; numeric writes copied back</td></tr>
+          <tr><td>plain object</td><td>by reference, through the host</td></tr>
+          <tr><td><code>memory.Float64Array(n)</code></td><td>shared storage, no copy</td></tr>
+          <tr><td>heap allocations</td><td>kept until <code>memory.reset()</code>, which invalidates earlier pointers</td></tr>
+        </tbody>
+      </table>
+    </li>
 
-  <h2>Your fallback is the same file</h2>
-  <p>Already have a numeric kernel? Leave it where it is. Export its functions and compile the file in your build:</p>
-  <pre class="terminal" tabindex="0" aria-label="Compile an existing JavaScript file"><code>npx jz kernel.js -o kernel.wasm</code></pre>
-  <p>Ship the <code>.wasm</code> and load it with <code>instantiate</code> from <code>jz/interop</code>; the compiler stays in your build. The <code>.js</code> you compiled from is still there, still running as JavaScript. <a href="https://github.com/dy/jz#usage">API and CLI reference →</a></p>
-  <p>Start with one kernel and run your existing tests against both versions. JZ is experimental and does not support a <a href="https://github.com/dy/jz#faq">few JavaScript features</a>, so measure the whole call, transfer included, before you trust a speedup.</p>
-  <p><a href="../examples/">Find an example to adapt</a> · <a href="../bench/">See the measurements</a></p>
+    <li class="step">
+      <h2>Ship the <code>.wasm</code></h2>
+      <p class="cap">The compiler stays in the build; the page loads a 13 KB runtime.</p>
+      <pre class="terminal" tabindex="0" aria-label="Compile from the command line"><code>npx jz kernel.js               # → kernel.wasm
+npx jz kernel.js -O3           # fastest; -Os smallest
+npx jz kernel.js --host wasi   # standalone WASI module
+npx jz kernel.js --why         # what kept a loop scalar</code></pre>
+      <pre class="terminal" tabindex="0" aria-label="JavaScript: load a prebuilt module"><code class="language-javascript">import { instantiate } from 'jz/interop'
+
+const wasm = await fetch('kernel.wasm').then(r =&gt; r.arrayBuffer())
+const { exports } = instantiate(wasm)</code></pre>
+    </li>
+
+    <li class="step">
+      <h2>Check both</h2>
+      <table>
+        <tbody>
+          <tr><td>Tests</td><td>run them against <code>kernel.js</code> and <code>kernel.wasm</code></td></tr>
+          <tr><td>Speed</td><td>time the whole call, transfer included</td></tr>
+          <tr><td>Scalar loops</td><td><code>--why</code> names the operation that blocked SIMD</td></tr>
+        </tbody>
+      </table>
+    </li>
+  </ol>
+
+  <h2 class="plain">What compiles</h2>
+  <table class="cover">
+    <thead><tr><th>Supported</th><th>Not supported</th></tr></thead>
+    <tbody>
+      <tr><td>classes, closures, generators, async/await</td><td><code>eval</code>, <code>Function</code>, <code>with</code></td></tr>
+      <tr><td>destructuring, spread, 64-bit BigInt</td><td>Proxy, Reflect, prototype chains</td></tr>
+      <tr><td>typed arrays, Map, Set, JSON, RegExp, Date</td><td>top-level <code>await</code>, <code>import()</code></td></tr>
+      <tr><td>timers, Web codecs, ES modules</td><td>DOM, Node modules, Intl, Temporal</td></tr>
+    </tbody>
+  </table>
+  <p class="cap">No GC, ASCII case, UTC dates: <a href="https://github.com/dy/jz#faq">where it differs from JS</a>.</p>
+
+  <nav class="next" aria-label="Next">
+    <a href="../examples/">Examples</a>
+    <a href="../bench/">Benchmarks</a>
+    <a href="../repl/">Playground</a>
+    <a href="https://github.com/dy/jz#usage">API reference</a>
+  </nav>
 </article>
 </main>
 <footer>
@@ -121,6 +241,15 @@ memory.reset()</code></pre>
 </footer>
 <script type="module" src="../assets/version.js"></script>
 <script type="module" src="../assets/theme.js"></script>
+<script type="module" src="../assets/glint.js"></script>
+<script type="module">
+// layout rhythm: each section heading hangs from a half-unit line; the footer (and its ruler) starts on a major one
+import rhythm, { snap } from '../assets/rhythm.js'
+rhythm(() => {
+  for (const el of document.querySelectorAll('.prose h2')) snap(el, 'paddingTop', 'top', 40)   // padding: a margin would collapse into the one above
+  snap(document.querySelector('main'), 'paddingBottom', 'bottom', 80)
+})
+</script>
 <script type="module">
 import { highlight } from '../assets/highlight.js'
 for (const code of document.querySelectorAll('code.language-javascript')) code.innerHTML = highlight(code.textContent)

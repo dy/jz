@@ -7,7 +7,7 @@ import { collectParamNames, extractParams } from '../src/ast.js'
 import { hasArrayPattern } from '../src/iterator-pattern.js'
 import { isDestructurePat } from './hoist-vars.js'
 
-function usesArguments(node) {
+export function usesArguments(node) {
   if (node === 'arguments') return true
   if (!Array.isArray(node)) return false
   // Nested function OR generator bodies own their own `arguments` — a

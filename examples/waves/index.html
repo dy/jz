@@ -4,10 +4,10 @@
 <meta charset="utf-8">
 <meta name="viewport" content="user-scalable=0" />
 <title>Waves - jz</title>
-<meta name="description" content="Viscous black gestures dissolve into silver caustics — real folds from the 2D wave equation. Plain JavaScript compiled to WebAssembly with jz." />
+<meta name="description" content="Rain on black water: the 2D wave equation carries every ring, and each slope mirrors the studio lights. Plain JavaScript compiled to WebAssembly with jz." />
 <link rel="canonical" href="https://jz.js.org/examples/waves/" />
 <meta property="og:title" content="Waves - jz" />
-<meta property="og:description" content="Viscous black gestures dissolve into silver caustics — real folds from the 2D wave equation. Plain JavaScript compiled to WebAssembly with jz." />
+<meta property="og:description" content="Rain on black water: the 2D wave equation carries every ring, and each slope mirrors the studio lights. Plain JavaScript compiled to WebAssembly with jz." />
 <meta property="og:url" content="https://jz.js.org/examples/waves/" />
 <meta property="og:image" content="https://jz.js.org/examples/thumbs/waves.webp" />
 <meta name="twitter:card" content="summary_large_image" />
@@ -17,27 +17,31 @@
 <script type="module">
 import { runDemo } from "../lib/jzdemo.js"
 
-// Monochrome caustics after KZ_LAB_E's simulation: drops and pointer pressure disturb a
-// neutral sheet, then the wave equation opens them into silver fold lines. Each drop
-// REBOUNDS — a damped train of rings, like real water. Click adds a drop, drag draws a
-// stroke, scroll changes the refraction depth.
-let foc = 440                         // pool depth (focal length of the refraction)
+// Rain on black water: drops and pointer pressure disturb the surface, the wave equation carries
+// the rings, and the studio's softbox catches every slope that turns toward it. Each drop REBOUNDS —
+// a damped train of rings, like real water. Click adds a drop, drag draws a stroke, scroll changes
+// the relief.
+let foc = 440                         // relief: how steeply the height tilts the mirror
 let down = false, stick = false       // stick engages only after real movement — a clean
 let sx = 0, sy = 0, dx0 = 0, dy0 = 0  // click must NOT press the stick under its own drop
-let nextDrop = 0, breakTrail = false
-const scheduleDrop = (t) => { nextDrop = t + 1.2 + Math.random() * 1.6 }   // a lively rain:
-                                       // interference needs several ring families in flight
+let nextDrop = 0, nextRain = 0, breakTrail = false
+const scheduleDrop = (t) => { nextDrop = t + 2.2 + Math.random() * 2.4 }   // a big drop every few s,
+                                       // a light drizzle between them — ring families to interfere
 
 const demo = runDemo({
   name: "waves",
-  hint: "monochrome caustics — click to drop · drag through the sheet · scroll = depth",
-  size: { budget: 360000 },          // 4 rays/texel — a notch coarser keeps 60fps headroom
-  bg: "#9e9e9e",
+  hint: "rain on black water — click to drop · drag through the surface · scroll = relief",
+  size: { budget: 520000 },
+  bg: "#000",
   load: (e, d) => { e.clear(); nextDrop = d.t + 0.8 },
   frame: (e, t, d) => {
     if (!down && t >= nextDrop) {
       e.drop(d.W * (0.15 + Math.random() * 0.7), d.H * (0.15 + Math.random() * 0.7))
       scheduleDrop(t)
+    }
+    if (!down && t >= nextRain) {
+      e.rain(d.W * (0.08 + Math.random() * 0.84), d.H * (0.08 + Math.random() * 0.84))
+      nextRain = t + 0.08 + Math.random() * 0.24
     }
     let active = stick ? 1.0 : 0.0
     if (breakTrail) { active = 0.0; breakTrail = false }

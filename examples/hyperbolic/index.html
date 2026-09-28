@@ -4,10 +4,10 @@
 <meta charset="utf-8">
 <meta name="viewport" content="user-scalable=0" />
 <title>Hyperbolic Tiling - jz</title>
-<meta name="description" content="A tessellation of the Poincaré disk — Escher's Circle Limit. Plain JavaScript compiled to WebAssembly with jz." />
+<meta name="description" content="A (2,p,q) triangle group tiles the Poincaré disk in the black and white of Escher's Circle Limit; drag to travel. Plain JavaScript compiled to WebAssembly with jz." />
 <link rel="canonical" href="https://jz.js.org/examples/hyperbolic/" />
 <meta property="og:title" content="Hyperbolic Tiling - jz" />
-<meta property="og:description" content="A tessellation of the Poincaré disk — Escher's Circle Limit. Plain JavaScript compiled to WebAssembly with jz." />
+<meta property="og:description" content="A (2,p,q) triangle group tiles the Poincaré disk in the black and white of Escher's Circle Limit; drag to travel. Plain JavaScript compiled to WebAssembly with jz." />
 <meta property="og:url" content="https://jz.js.org/examples/hyperbolic/" />
 <meta property="og:image" content="https://jz.js.org/examples/thumbs/hyperbolic.webp" />
 <meta name="twitter:card" content="summary_large_image" />
@@ -17,26 +17,34 @@
 <script type="module">
 import { runDemo, trackPointer } from "../lib/jzdemo.js"
 
-let baseAngle = 0.0, userSet = false
+// The view is a hyperbolic translation a → centre (see hyperbolic.js). Idle, a eases along a slow
+// Lissajous path, so the tiles swell from the rim and sink back into it; a drag travels by moving a
+// directly; the dice steps through (p, q) triangle groups.
+const GROUPS = [[7, 3], [5, 4], [4, 6], [8, 3], [6, 4], [4, 5], [3, 8], [5, 5]]
+let g = 0, ax = 0, ay = 0, idleAt = -10, lx = 0, ly = 0, nowT = 0
 const demo = runDemo({
   name: "hyperbolic",
-  hint: "Poincaré disk tessellation — drag to rotate the hyperbolic plane",
+  hint: "Poincaré disk tiled by a triangle group — drag to travel through the hyperbolic plane · dice for another {p,q}",
+  size: { budget: 700000 },
   frame: (e, t) => {
-    let rot
-    if (ptr.down) {
-      // Map horizontal drag to rotation angle: full width = full rotation
-      rot = (ptr.x * 2 - 1) * Math.PI
-      baseAngle = rot
-      userSet = true
-    } else {
-      // Slow autonomous rotation when not dragging
-      const drift = userSet ? 0.0 : 0.12
-      rot = baseAngle + t * drift
+    nowT = t
+    if (!ptr.down && t - idleAt > 4) {
+      ax += (0.62 * Math.sin(t * 0.11) - ax) * 0.012
+      ay += (0.55 * Math.sin(t * 0.083 + 1.3) - ay) * 0.012
     }
-    e.frame(t, rot)
+    e.frame(t, ax, ay, t * 0.02, GROUPS[g][0], GROUPS[g][1])
   },
+  randomize: () => { g = (g + 1) % GROUPS.length },
 })
-const ptr = trackPointer(demo.cv)
+const ptr = trackPointer(demo.cv, (s) => {
+  if (s.down) {
+    const k = 1.6 * demo.cv.clientHeight / Math.min(demo.cv.clientWidth, demo.cv.clientHeight)
+    ax -= (s.x - lx) * k * demo.cv.clientWidth / demo.cv.clientHeight; ay += (s.y - ly) * k
+    const m = Math.hypot(ax, ay); if (m > 0.93) { ax *= 0.93 / m; ay *= 0.93 / m }
+    idleAt = nowT
+  }
+  lx = s.x; ly = s.y
+})
 </script>
 </body>
 </html>

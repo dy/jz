@@ -80,6 +80,17 @@ const eagerCallFreeBooleans = n => walkAst(n, { enter: n => {
 
 const bodyHasCall = body => some(body, n => n[0] === '()' || n[0] === 'new')
 
+/** An element or length read of a typed array over simple operands: no effect,
+ *  one value until a write. The receiver's kind is the caller's (`callerView`):
+ *  a plain array or a dictionary keeps its read where it stands. */
+let callerView = null
+const isRead = (n) => Array.isArray(n) && typeof n[1] === 'string' && tagOf(core(callerView?.kindOfExpr(n[1]) ?? K.NONE)) === K.TYPED && (
+  (n[0] === '[]' && n.length === 3 && isSimpleArg(n[2])) ||
+  (n[0] === '.' && n[2] === 'length'))
+/** A callee that computes from its arguments alone. */
+const isPureCallee = (c) => (typeof c === 'string' && c.startsWith('math.') && c !== 'math.random') ||
+  (Array.isArray(c) && c[0] === '.' && c[1] === 'Math' && c[2] !== 'random')
+
 const inlinedBody = (func, args) => {
   if (some(func.body, n => n[0] === 'this')) return null
   const params = func.sig.params
@@ -109,10 +120,16 @@ const inlinedBody = (func, args) => {
     walk(func.body)
     return n
   }
+  // A read (`x[i]`, `a.length`) holds its value for as long as nothing writes:
+  // into a body that writes and calls nothing it substitutes like a name, where
+  // the parameter is read once. `s += abs(x[i])` then is `s += Math.abs(x[i])`,
+  // the form every later pass knows, instead of a temp ahead of the statement.
+  const still = !writesParams && !some(func.body, n => MUTATE_OPS.has(n[0]) || n[0] === 'new' || (n[0] === '()' && !isPureCallee(n[1])))
   for (let i = 0; i < params.length; i++) {
     const arg = args[i]
     const atom = typeof arg === 'string' || typeof arg === 'number' || (Array.isArray(arg) && (arg[0] == null || arg[0] === 'str'))
     if (!writesParams && isSimpleArg(arg) && (atom || uses(params[i].name) <= 1)) { subst.set(params[i].name, arg); continue }
+    if (still && isRead(arg) && uses(params[i].name) === 1) { subst.set(params[i].name, arg); continue }
     const tmp = `${T}inarg${freshId(ctx)}`
     // Parameter writes belong to the call's storage, never its caller's binding.
     argPrefix.push([writesParams ? 'let' : 'const', ['=', tmp, arg]])
@@ -307,12 +324,16 @@ const inlineInStmt = (stmt, candidates, loopVariantNames = null, hot = false) =>
   // a one-liner that calls another fn) puts the effect in `value`, not `prefix`.
   // Emit it as a trailing statement so the effect runs; a pure value is dropped
   // later by vacuum/DCE. (Dropping it lost the parser's seek() idx-advance → ∞ loop.)
+  // A name or a literal is dropped here: it runs nothing, and left as a statement
+  // it reads as a use of the name to every scan ahead of emission (`return y`
+  // of an in-place kernel made `y` escape, and its receiver dynamic).
   if (isCandidateCall(stmt, candidates)) {
     const args = callArgs(stmt)
     const shape = args && inlinedBody(candidates.get(stmt[1]), args)
     if (shape) {
       const { hoisted, rest } = partitionInvariantPrefix(shape.prefix, loopVariantNames)
-      const splice = shape.value !== null ? [...rest, shape.value] : rest
+      const inert = shape.value === null || typeof shape.value !== 'object' || shape.value[0] == null
+      const splice = inert ? rest : [...rest, shape.value]
       return { node: ['{}', [';', ...splice]], changed: true, splice, hoisted }
     }
   }
@@ -817,6 +838,7 @@ export const inlineHotInternalCalls = (programFacts, ast) => {
     // caller's heap arrays.
     const activeCandidates = isExported(func) ? exportedCandidates : candidates
     if (isExported(func) && !activeCandidates.size) continue
+    callerView = ctx.summary?.at(func.sig) ?? null
     // Expression-bodied arrows (`() => expr`) have func.body as the return
     // value itself — never a `{}` block. inlineInStmt treats its argument as a
     // statement (discards the return value of any top-level candidate call),

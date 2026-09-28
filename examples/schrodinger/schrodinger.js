@@ -1,6 +1,9 @@
 // Schrödinger equation — Visscher leapfrog, double-slit potential.
 // ψ = R + iI evolved as staggered real/imaginary fields.
-// Render: brightness = |ψ|².
+// Render: brightness is the amplitude |ψ| striped by the phase (cos arg ψ = R/|ψ|), so the packet
+// shows its wavefronts, not just a blur; the barrier is a pale wall. At the right edge a detector
+// plate accumulates |ψ|² where the waves arrive — the double-slit fringes build up on it the way
+// they do on the photographic plate of the real experiment.
 //
 // Visscher scheme (stable), forward-time Schrödinger ∂ψ/∂t = i(½∇²ψ − Vψ):
 //   R_{n+1} = R_n + dt*(-0.5*L(I_n) + V*I_n)
@@ -13,9 +16,10 @@ let R   // Float64Array — real part of ψ
 let I   // Float64Array — imaginary part of ψ
 let V   // Float32Array — barrier potential
 let px  // Uint32Array  — pixel output
+let det // Float64Array(H) — the detector plate: |ψ|² accumulated per row at the right edge
 
 const DT = 0.05
-const SUBSTEPS = 10
+const SUBSTEPS = 16
 const BORDER = 6
 
 export let resize = (w, h) => {
@@ -25,6 +29,7 @@ export let resize = (w, h) => {
   I = new Float64Array(n)
   V = new Float32Array(n)
   px = new Uint32Array(n)
+  det = new Float64Array(h)
   buildV()
   init()
   return px
@@ -52,7 +57,8 @@ let buildV = () => {
   }
 }
 
-export let init = () => {
+// Superimpose a wide rightward packet at the left — wide enough to cover both slits coherently.
+export let emit = () => {
   let w = W, h = H, n = w * h
   let x0 = (w * 0.2) | 0
   let y0 = (h * 0.5) | 0
@@ -65,10 +71,18 @@ export let init = () => {
     let y = (i / w) | 0
     let dx = x - x0, dy = y - y0
     let env = Math.exp(-(dx * dx + dy * dy) / sig2)
-    R[i] = env * Math.cos(kx * x)
-    I[i] = env * Math.sin(kx * x)
+    R[i] = R[i] + env * Math.cos(kx * x)
+    I[i] = I[i] + env * Math.sin(kx * x)
     i++
   }
+}
+
+export let init = () => {
+  let n = W * H, i = 0
+  while (i < n) { R[i] = 0.0; I[i] = 0.0; i++ }
+  i = 0
+  while (i < H) { det[i] = 0.0; i++ }
+  emit()
 }
 
 // Draw a fresh photon: superimpose a compact Gaussian wavepacket at (fx,fy ∈ 0..1) carrying
@@ -197,20 +211,43 @@ export let frame = (t) => {
     s++
   }
 
-  let n = W * H, scale = 2.6
-  let i = 0
-  while (i < n) {
-    if (V[i] > 0.5) {
-      // barrier: dim gray
-      px[i] = (255 << 24) | (40 << 16) | (40 << 8) | 40
-    } else {
-      let ri = R[i], ii = I[i]
-      let prob = (ri * ri + ii * ii) * scale
-      if (prob > 1.0) prob = 1.0
-      // gray = |ψ|² density, gamma-lifted so the interference fringes read instead of blowing to white
-      let g = (Math.sqrt(prob) * 255.0) | 0
-      px[i] = (255 << 24) | (g << 16) | (g << 8) | g
+  // the detector plate: the column just inside the absorbing border collects |ψ|², slowly fading
+  let xd = W - BORDER - 2, mx = 1e-9
+  let y = 0
+  while (y < H) {
+    let k = y * W + xd
+    let d = det[y] * 0.998 + (R[k] * R[k] + I[k] * I[k])
+    det[y] = d
+    if (d > mx) mx = d
+    y++
+  }
+  let plate = (W * 0.035) | 0
+  if (plate < 4) plate = 4
+
+  y = 0
+  while (y < H) {
+    let row = y * W
+    let x = 0
+    while (x < W - plate) {
+      let i = row + x
+      if (V[i] > 0.5) {
+        px[i] = (255 << 24) | (150 << 16) | (150 << 8) | 150     // the barrier: a pale wall
+      } else {
+        let ri = R[i], ii = I[i]
+        let a = Math.sqrt(ri * ri + ii * ii)
+        // amplitude, softly saturating, striped by the phase: wavefronts inside the packet
+        let amp = 1.0 - Math.exp(-a * 2.2)
+        let crest = 0.5 + 0.5 * ri / (a + 1e-12)
+        let g = (amp * (0.3 + 0.7 * crest) * 255.0) | 0
+        px[i] = (255 << 24) | (g << 16) | (g << 8) | g
+      }
+      x++
     }
-    i++
+    // the plate: exposure as brightness, a hairline edge facing the field
+    let e = (Math.sqrt(det[y] / mx) * 235.0) | 0
+    px[row + x] = (255 << 24) | (90 << 16) | (90 << 8) | 90
+    x++
+    while (x < W) { px[row + x] = (255 << 24) | (e << 16) | (e << 8) | e; x++ }
+    y++
   }
 }

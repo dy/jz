@@ -23,13 +23,36 @@
  * @module console
  */
 
-import { typed, asF64, asI64, carrierF64Narrow, mkPtrIR, NULL_NAN, UNDEF_NAN, FALSE_NAN, TRUE_NAN } from '../src/ir.js'
+import { typed, asF64, asI64, carrierF64Narrow, mkPtrIR, temp, tempI32, freshId, NULL_NAN, UNDEF_NAN, FALSE_NAN, TRUE_NAN } from '../src/ir.js'
 import { emit, bool, deps, reg, wat, hostImport } from '../src/bridge.js'
 import { valTypeOf, censusMaybeUndefined } from '../src/kind.js'
 import { exprType } from '../src/type.js'
 import { VAL } from '../src/reps.js'
 import { inc, PTR, LAYOUT } from '../src/ctx.js'
 import { dataAlign, dataLen, dataPush } from '../src/static-data.js'
+
+// Arguments holding a spread (`console.warn(msg, ...params)`) are as many
+// values as the run decides: they print from the array they build, `one(bits,
+// last)` each element with a space after all but the last, `end()` the newline.
+const isSpread = (a) => Array.isArray(a) && a[0] === '...'
+const printSpread = (ctx, args, one, end) => {
+  inc('__ptr_offset', '__len')
+  const arr = temp('pa'), base = tempI32('pb'), n = tempI32('pn'), i = tempI32('pi'), id = freshId(ctx)
+  const at = ['local.get', `$${i}`], bits = ['i64.reinterpret_f64', ['local.get', `$${arr}`]]
+  return typed(['block', ['result', 'f64'],
+    ['local.set', `$${arr}`, asF64(emit(['[', ...args]))],
+    ['local.set', `$${base}`, ['call', '$__ptr_offset', bits]],
+    ['local.set', `$${n}`, ['call', '$__len', bits]],
+    ['local.set', `$${i}`, ['i32.const', 0]],
+    ['block', `$pbrk${id}`, ['loop', `$ploop${id}`,
+      ['br_if', `$pbrk${id}`, ['i32.ge_s', at, ['local.get', `$${n}`]]],
+      ...one(['i64.load', ['i32.add', ['local.get', `$${base}`], ['i32.shl', at, ['i32.const', 3]]]],
+        ['i32.ge_s', ['i32.add', at, ['i32.const', 1]], ['local.get', `$${n}`]]),
+      ['local.set', `$${i}`, ['i32.add', at, ['i32.const', 1]]],
+      ['br', `$ploop${id}`]]],
+    ...end(),
+    ['f64.const', 0]], 'f64')
+}
 
 // A template literal (`a${x}b`) lowers to ['strcat', ...parts] in prepare; a
 // `'a=' + x + ' b=' + y` chain is a left-leaning `+` tree rooted at a string
@@ -158,6 +181,13 @@ const setupWasi = (ctx) => {
     ctx.core.emit[`console.${method}`] = (...args) => {
       needFdWrite()
       inc('__write_byte')
+      if (args.some(isSpread)) {
+        inc('__write_val')
+        return printSpread(ctx, args,
+          (bits, last) => [['call', '$__write_val', ['i32.const', fd], bits],
+            ['if', ['i32.eqz', last], ['then', ['call', '$__write_byte', ['i32.const', fd], ['i32.const', 32]]]]],
+          () => [['call', '$__write_byte', ['i32.const', fd], ['i32.const', 10]]])
+      }
       const ir = []
       const writePart = (part) => {
         if (Array.isArray(part) && part[0] === 'str' && part[1] === '') return
@@ -250,6 +280,9 @@ const setupJsHost = (ctx) => {
   const makeConsole = (method, fd) => {
     ctx.core.emit[`console.${method}`] = (...args) => {
       needPrint()
+      if (args.some(isSpread)) return printSpread(ctx, args,
+        (bits, last) => [['call', '$__print', bits, ['i32.const', fd], ['select', ['i32.const', 0], ['i32.const', 32], last]]],
+        () => [['call', '$__print', ['i64.reinterpret_f64', emptyStr()], ['i32.const', fd], ['i32.const', 10]]])
       // Each segment carries its trailing separator (0=none, 32=space, 10=newline).
       // Template-concat chains (`a${x}b`) flatten to per-`${}` segments — the host
       // stringifies, so jz drops __str_concat/__to_str entirely.

@@ -628,6 +628,29 @@ export default (ctx) => {
     return boffDyn(obj)
   })
 
+  // .BYTES_PER_ELEMENT — a typed array's element width: its constructor's where
+  // the plan names it, the element code's at run time (a DataView has none).
+  // Any other receiver reads the name as an ordinary property.
+  registerGetter('.BYTES_PER_ELEMENT', (obj) => {
+    const ctor = plannedTypedStorageCtor(ctx, obj)
+    const et = ctor?.startsWith('new.') ? TYPED_ELEM_CODE[ctor.endsWith('.view') ? ctor.slice(4, -5) : ctor.slice(4)] : null
+    if (et != null) return typed(['block', ['result', 'f64'], ['drop', asF64(emit(obj))], ['f64.const', 1 << SHIFT[et]]], 'f64')
+    ctx.module.include('collection')
+    ctx.module.include('array')
+    inc('__ptr_type', '__ptr_aux', '__typed_shift', '__dyn_get_expr_t_h')
+    const o = temp('bpe'), t = tempI32('bpet')
+    const og = ['local.get', `$${o}`], bits = ['i64.reinterpret_f64', og]
+    return typed(['block', ['result', 'f64'],
+      ['local.set', `$${o}`, asF64(emit(obj))],
+      ['local.set', `$${t}`, ['call', '$__ptr_type', bits]],
+      ['if', ['result', 'f64'],
+        ['i32.and', ['i32.and', ['f64.ne', og, og], ['i32.eq', ['local.get', `$${t}`], ['i32.const', PTR.TYPED]]],
+          ['i32.eqz', ['i32.and', ['call', '$__ptr_aux', bits], ['i32.const', DATA_VIEW_FLAG]]]],
+        ['then', ['f64.convert_i32_s', ['i32.shl', ['i32.const', 1], ['call', '$__typed_shift', ['i32.and', ['call', '$__ptr_aux', bits], ['i32.const', 7]]]]]],
+        ['else', ['f64.reinterpret_i64', ['call', '$__dyn_get_expr_t_h', bits, asI64(emit(['str', 'BYTES_PER_ELEMENT'])), ['local.get', `$${t}`],
+          ['i32.const', strHashLiteral('BYTES_PER_ELEMENT')]]]]]], 'f64')
+  })
+
   // Runtime fallback for .byteOffset when variable view-ness is unknown.
   ctx.core.stdlib['__byte_offset'] = `(func $__byte_offset (param $ptr i64) (result i32)
     (local $off i32)

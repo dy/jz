@@ -4,10 +4,10 @@
 <meta charset="utf-8">
 <meta name="viewport" content="user-scalable=0" />
 <title>Cloth - jz</title>
-<meta name="description" content="Verlet cloth with shear bracing — grab, twist, and let the wind billow it. Plain JavaScript compiled to WebAssembly with jz." />
+<meta name="description" content="Verlet cloth in 3D: a gathered satin curtain pleats at the rail; grab it, swing it, let the wind billow it. Plain JavaScript compiled to WebAssembly with jz." />
 <link rel="canonical" href="https://jz.js.org/examples/cloth/" />
 <meta property="og:title" content="Cloth - jz" />
-<meta property="og:description" content="Verlet cloth with shear bracing — grab, twist, and let the wind billow it. Plain JavaScript compiled to WebAssembly with jz." />
+<meta property="og:description" content="Verlet cloth in 3D: a gathered satin curtain pleats at the rail; grab it, swing it, let the wind billow it. Plain JavaScript compiled to WebAssembly with jz." />
 <meta property="og:url" content="https://jz.js.org/examples/cloth/" />
 <meta property="og:image" content="https://jz.js.org/examples/thumbs/cloth.webp" />
 <meta name="twitter:card" content="summary_large_image" />
@@ -19,9 +19,8 @@ import { runDemo } from "../lib/jzdemo.js"
 
 const demo = runDemo({
   name: "cloth",
-  hint: "a spring-mass cloth — grab and swing it",
+  hint: "a spring-mass curtain in 3D, gathered into pleats · grab and swing it · double-click resets",
   size: { dpr: 1.5, budget: 600000 },
-  bg: "#f3f1ec",
   cursor: "grab",
   frame: (e, t) => e.frame(t),
 })

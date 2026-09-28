@@ -1,425 +1,253 @@
-// L-system fractals — Koch snowflake, Dragon curve, Sierpinski arrowhead, Fractal plant.
-// An L-system rewrites an axiom string by applying production rules repeatedly (string
-// substitution), then interprets the result as turtle-graphics commands. This gives
-// self-similar fractal curves from tiny rule tables.
+// L-system fractals — an axiom string rewritten by production rules again and again (string
+// substitution), then read as turtle-graphics commands: F (or A/B where marked) draws a step, + and −
+// turn, [ and ] push and pop the turtle. Tiny rule tables give self-similar curves and plants.
+// Eight classics, one table: Koch snowflake, Heighway dragon, Sierpiński arrowhead, fractal plant,
+// Hilbert curve, Gosper flowsnake, Lévy C curve, and a bush.
 //
-// Symbol encoding: 0=F 1=+ 2=- 3=[ 4=] 5=X 6=Y 7=A 8=B
+// Render: every step is an anti-aliased segment, coverage from its exact distance to each pixel, and
+// overlaps keep the brighter ink (max, not sum). A curve brightens along its length, so the order in
+// which it folds is legible; a plant's strokes taper with branch depth, trunk to twig; a glowing pen
+// marks the tip while it grows. Once grown, current runs through it: pulses travel the string in its
+// drawing order — along a curve end to end, up each branch of a plant — lighting a fading tail, and
+// spark(fx, fy) fires one from the stroke nearest a touch.
+//
+// Symbol encoding: 0=F 1=+ 2=− 3=[ 4=] 5=X 6=Y 7=A 8=B
 // resize(w,h) → Uint32Array; frame(t, systemIdx, progress) renders.
 
 let W = 0, H = 0, px
 
-// Two large string buffers for ping-pong L-system expansion — typed arrays avoid i32 narrowing
-let lstr = new Uint8Array(2000000)   // current expanded string
-let lbuf = new Uint8Array(2000000)   // expansion workspace
-let llen = new Int32Array(1)         // actual string length
+let NSYS = 8, NSYM = 9
+// per system: axiom, rules (symbol → replacement), turn angle (deg), depth, start heading (deg,
+// screen y down), draws A/B too, is a plant (strokes taper with branch depth)
+let AX = ['F++F++F', 'FX', 'A', 'X', 'A', 'A', 'F', 'F']
+let ANG = new Float64Array([60, 90, 60, 25, 90, 60, 45, 22.5])
+let DEP = new Int32Array([5, 12, 8, 6, 6, 4, 12, 4])
+let HEAD = new Float64Array([0, 0, 0, -90, 0, 0, 0, -90])
+let DRAWAB = new Int32Array([0, 0, 1, 0, 0, 1, 0, 0])
+let PLANT = new Int32Array([0, 0, 0, 1, 0, 0, 0, 1])
+// rules as [system, symbol, replacement] — symbols absent here rewrite to themselves
+let RULES = [
+  0, 'F', 'F-F++F-F',
+  1, 'X', 'X+YF+', 1, 'Y', '-FX-Y',
+  2, 'A', 'B-A-B', 2, 'B', 'A+B+A',
+  3, 'X', 'F+[[X]-X]-F[-FX]+X', 3, 'F', 'FF',
+  4, 'A', '+BF-AFA-FB+', 4, 'B', '-AF+BFB+FA-',
+  5, 'A', 'A-B--B+A++AA+B-', 5, 'B', '+A-BB--B-A++A+B',
+  6, 'F', '+F--F+',
+  7, 'F', 'FF+[+F-F-F]-[-F+F+F]',
+]
 
-// Track current system to detect changes
-let curSys = new Float64Array(1)     // -1 means "not yet expanded"
+let code = (c) => c === 'F' ? 0 : c === '+' ? 1 : c === '-' ? 2 : c === '[' ? 3 : c === ']' ? 4 : c === 'X' ? 5 : c === 'Y' ? 6 : c === 'A' ? 7 : 8
 
-// Turtle state (fractional → Float64Array to avoid i32 narrowing)
-let tstate = new Float64Array(3)     // [x, y, heading]
-let tstack = new Float64Array(3 * 200) // push/pop stack (200 levels)
-let tdepth = new Int32Array(1)       // stack depth
+// the rule table, flattened: rule (si, sym) is rdat[roff[k] .. roff[k] + rlen[k]), k = si·NSYM + sym
+let roff = new Int32Array(NSYS * NSYM), rlen = new Int32Array(NSYS * NSYM), rdat = new Uint8Array(256)
+let tableBuilt = 0
+let buildTable = () => {
+  let n = 0, i = 0
+  while (i < RULES.length) {
+    let k = RULES[i] * NSYM + code(RULES[i + 1])
+    let s = RULES[i + 2]
+    roff[k] = n; rlen[k] = s.length
+    let j = 0
+    while (j < s.length) { rdat[n] = code(s[j]); n++; j++ }
+    i += 3
+  }
+  tableBuilt = 1
+}
 
-// Bounds from pre-pass
-let bounds = new Float64Array(4)     // [minX, maxX, minY, maxY]
+// Two string buffers for ping-pong expansion
+let CAP = 1800000
+let lstr = new Uint8Array(CAP)
+let lbuf = new Uint8Array(CAP)
+let slen = 0
+let curSys = -1
+
+let tstack = new Float64Array(4 * 256)  // turtle push/pop stack: x, y, heading, depth
+let bounds = new Float64Array(4)        // turtle-space extent: minX, maxX, minY, maxY
+let segs = 0                            // drawing steps in the expanded string
+let NA = 6                              // ambient pulses, evenly spaced along the drawing order
+let MAXS = 24
+let spk = new Float64Array(MAXS), ns = 0   // touch pulses: their position along the drawing order
+let tgt = new Float64Array(3)           // a pending touch (x, y px, armed)
 
 export let resize = (w, h) => {
   W = w; H = h
   px = new Uint32Array(w * h)
-  curSys[0] = -1.0  // force re-expansion on first frame
   return px
 }
 
-// Expand L-system for the given system index into lstr/llen
-let expandSystem = (si) => {
-  // --- System parameters (encoded as integer symbol arrays) ---
+let draws = (si, sym) => sym === 0 || (DRAWAB[si] === 1 && (sym === 7 || sym === 8))
 
-  // Axiom arrays — we'll write them into lstr directly
-  // Koch: F++F++F  (F=0, +=1)
-  // Dragon: FX  (F=0, X=5)
-  // Sierpinski: A  (A=7)
-  // Plant: X  (X=5)
-
-  // Rule for each symbol (result is a sequence of codes)
-  // We'll interpret si to pick axiom and rules
-
-  // Clear and write axiom
-  let alen = 0
-  if (si == 0) {
-    // Koch: axiom = F++F++F
-    lstr[0] = 0; lstr[1] = 1; lstr[2] = 1
-    lstr[3] = 0; lstr[4] = 1; lstr[5] = 1; lstr[6] = 0
-    alen = 7
-  } else if (si == 1) {
-    // Dragon: axiom = FX
-    lstr[0] = 0; lstr[1] = 5
-    alen = 2
-  } else if (si == 2) {
-    // Sierpinski: axiom = A
-    lstr[0] = 7
-    alen = 1
-  } else {
-    // Plant: axiom = X
-    lstr[0] = 5
-    alen = 1
-  }
-
-  llen[0] = alen
-
-  // depth per system
-  let depth = 4
-  if (si == 1) depth = 11
-  if (si == 2) depth = 6
-  if (si == 3) depth = 5
-
+// Expand system si, then walk it once (unit steps) for its extent and step count.
+let expand = (si) => {
+  if (tableBuilt === 0) buildTable()
+  let ax = AX[si]
+  slen = ax.length
+  let i = 0
+  while (i < slen) { lstr[i] = code(ax[i]); i++ }
   let d = 0
-  while (d < depth) {
-    // Expand: read lstr[0..llen[0]], write rewritten to lbuf
-    let rlen = 0
-    let cap = 1800000
-    let i = 0
-    let clen = llen[0]
-    while (i < clen) {
-      let sym = lstr[i]
-      // Check if we have room
-      if (rlen >= cap) { i = clen; break }
-
-      if (si == 0) {
-        // Koch rules: F → F-F++F-F, + → +, - → -
-        if (sym == 0) {
-          // F → F - F + + F - F  (codes: 0,2,0,1,1,0,2,0)
-          if (rlen + 8 > cap) { i = clen; break }
-          lbuf[rlen] = 0; lbuf[rlen+1] = 2; lbuf[rlen+2] = 0; lbuf[rlen+3] = 1
-          lbuf[rlen+4] = 1; lbuf[rlen+5] = 0; lbuf[rlen+6] = 2; lbuf[rlen+7] = 0
-          rlen = rlen + 8
-        } else {
-          lbuf[rlen] = sym; rlen++
-        }
-      } else if (si == 1) {
-        // Dragon rules: F → F, X → X+YF+, Y → -FX-Y
-        if (sym == 5) {
-          // X → X + Y F +  (codes: 5,1,6,0,1)
-          if (rlen + 5 > cap) { i = clen; break }
-          lbuf[rlen] = 5; lbuf[rlen+1] = 1; lbuf[rlen+2] = 6; lbuf[rlen+3] = 0; lbuf[rlen+4] = 1
-          rlen = rlen + 5
-        } else if (sym == 6) {
-          // Y → - F X - Y  (codes: 2,0,5,2,6)
-          if (rlen + 5 > cap) { i = clen; break }
-          lbuf[rlen] = 2; lbuf[rlen+1] = 0; lbuf[rlen+2] = 5; lbuf[rlen+3] = 2; lbuf[rlen+4] = 6
-          rlen = rlen + 5
-        } else {
-          lbuf[rlen] = sym; rlen++
-        }
-      } else if (si == 2) {
-        // Sierpinski: A → B-A-B, B → A+B+A
-        if (sym == 7) {
-          // A → B - A - B  (codes: 8,2,7,2,8)
-          if (rlen + 5 > cap) { i = clen; break }
-          lbuf[rlen] = 8; lbuf[rlen+1] = 2; lbuf[rlen+2] = 7; lbuf[rlen+3] = 2; lbuf[rlen+4] = 8
-          rlen = rlen + 5
-        } else if (sym == 8) {
-          // B → A + B + A  (codes: 7,1,8,1,7)
-          if (rlen + 5 > cap) { i = clen; break }
-          lbuf[rlen] = 7; lbuf[rlen+1] = 1; lbuf[rlen+2] = 8; lbuf[rlen+3] = 1; lbuf[rlen+4] = 7
-          rlen = rlen + 5
-        } else {
-          lbuf[rlen] = sym; rlen++
-        }
-      } else {
-        // Plant: X → F+[[X]-X]-F[-FX]+X, F → FF
-        if (sym == 5) {
-          // X → F + [ [ X ] - X ] - F [ - F X ] + X
-          // codes: 0,1,3,3,5,4,2,5,4,2,0,3,2,0,5,4,1,5
-          if (rlen + 18 > cap) { i = clen; break }
-          lbuf[rlen]    = 0; lbuf[rlen+1]  = 1; lbuf[rlen+2]  = 3; lbuf[rlen+3]  = 3
-          lbuf[rlen+4]  = 5; lbuf[rlen+5]  = 4; lbuf[rlen+6]  = 2; lbuf[rlen+7]  = 5
-          lbuf[rlen+8]  = 4; lbuf[rlen+9]  = 2; lbuf[rlen+10] = 0; lbuf[rlen+11] = 3
-          lbuf[rlen+12] = 2; lbuf[rlen+13] = 0; lbuf[rlen+14] = 5; lbuf[rlen+15] = 4
-          lbuf[rlen+16] = 1; lbuf[rlen+17] = 5
-          rlen = rlen + 18
-        } else if (sym == 0) {
-          // F → FF
-          if (rlen + 2 > cap) { i = clen; break }
-          lbuf[rlen] = 0; lbuf[rlen+1] = 0
-          rlen = rlen + 2
-        } else {
-          lbuf[rlen] = sym; rlen++
-        }
-      }
+  while (d < DEP[si]) {
+    let n = 0
+    i = 0
+    while (i < slen && n < CAP - 32) {
+      let sym = lstr[i], k = si * NSYM + sym, l = rlen[k]
+      if (l === 0) { lbuf[n] = sym; n++ }
+      else { let o = roff[k], j = 0; while (j < l) { lbuf[n] = rdat[o + j]; n++; j++ } }
       i++
     }
-
-    // Copy lbuf back to lstr
-    llen[0] = rlen
-    let j = 0
-    while (j < rlen) { lstr[j] = lbuf[j]; j++ }
-
+    slen = n
+    i = 0
+    while (i < slen) { lstr[i] = lbuf[i]; i++ }
     d++
   }
+  let ang = ANG[si] * Math.PI / 180.0
+  let x = 0.0, y = 0.0, h = HEAD[si] * Math.PI / 180.0, sp = 0
+  bounds[0] = 0.0; bounds[1] = 0.0; bounds[2] = 0.0; bounds[3] = 0.0
+  segs = 0
+  i = 0
+  while (i < slen) {
+    let sym = lstr[i]
+    if (draws(si, sym)) {
+      x += Math.cos(h); y += Math.sin(h); segs++
+      if (x < bounds[0]) bounds[0] = x
+      if (x > bounds[1]) bounds[1] = x
+      if (y < bounds[2]) bounds[2] = y
+      if (y > bounds[3]) bounds[3] = y
+    } else if (sym === 1) h -= ang
+    else if (sym === 2) h += ang
+    else if (sym === 3) { if (sp < 256) { tstack[sp * 4] = x; tstack[sp * 4 + 1] = y; tstack[sp * 4 + 2] = h; sp++ } }
+    else if (sym === 4) { if (sp > 0) { sp--; x = tstack[sp * 4]; y = tstack[sp * 4 + 1]; h = tstack[sp * 4 + 2] } }
+    i++
+  }
+  curSys = si
 }
 
-// Turtle walk: doPass=0 → bounds only, doPass=1 → draw
-// Returns total drawing segments counted (only meaningful in bounds pass)
-let addpix = (x, y, rr, gg, bb) => {
-  if (x < 0 || x >= W || y < 0 || y >= H) return
-  let idx = y * W + x
-  let p = px[idx]
-  let r = (p & 0xff) + rr
-  let g = ((p >> 8) & 0xff) + gg
-  let b = ((p >> 16) & 0xff) + bb
-  if (r > 255) r = 255
-  if (g > 255) g = 255
-  if (b > 255) b = 255
-  px[idx] = (255 << 24) | (b << 16) | (g << 8) | r
+// ink v at coverage a, keeping the brighter of what is there
+let ink = (p, v) => {
+  let g = (v * 255.0) | 0
+  if (g > (px[p] & 255)) px[p] = (255 << 24) | (g << 16) | (g << 8) | g
 }
 
-let line = (x0, y0, x1, y1, rr, gg, bb) => {
+// anti-aliased segment of width w: coverage from each pixel's exact distance to the segment
+let seg = (x0, y0, x1, y1, w, v) => {
+  let hw = w * 0.5
+  let xa = Math.floor((x0 < x1 ? x0 : x1) - hw - 1.0), xb = Math.ceil((x0 > x1 ? x0 : x1) + hw + 1.0)
+  let ya = Math.floor((y0 < y1 ? y0 : y1) - hw - 1.0), yb = Math.ceil((y0 > y1 ? y0 : y1) + hw + 1.0)
+  if (xa < 0) xa = 0
+  if (ya < 0) ya = 0
+  if (xb > W - 1) xb = W - 1
+  if (yb > H - 1) yb = H - 1
   let dx = x1 - x0, dy = y1 - y0
-  let adx = dx < 0.0 ? -dx : dx, ady = dy < 0.0 ? -dy : dy
-  let steps = (adx > ady ? adx : ady) | 0
-  if (steps < 1) steps = 1
-  let xi = dx / steps, yi = dy / steps
-  let x = x0, y = y0, s = 0
-  while (s <= steps) { addpix(x | 0, y | 0, rr, gg, bb); x += xi; y += yi; s++ }
+  let l2 = dx * dx + dy * dy + 1e-12
+  let y = ya
+  while (y <= yb) {
+    let x = xa
+    while (x <= xb) {
+      let qx = x + 0.5 - x0, qy = y + 0.5 - y0
+      let u = (qx * dx + qy * dy) / l2
+      u = u < 0.0 ? 0.0 : u > 1.0 ? 1.0 : u
+      let ex = qx - dx * u, ey = qy - dy * u
+      let a = hw + 0.5 - Math.sqrt(ex * ex + ey * ey)
+      if (a > 0.0) ink(y * W + x, v * (a > 1.0 ? 1.0 : a))
+      x++
+    }
+    y++
+  }
 }
+
+// the pen: a soft glow at the growing tip
+let pen = (cx, cy, r) => {
+  let ri = (r | 0) + 1, oy = -ri
+  while (oy <= ri) {
+    let ox = -ri
+    while (ox <= ri) {
+      let ix = (cx | 0) + ox, iy = (cy | 0) + oy
+      if (ix >= 0 && ix < W && iy >= 0 && iy < H) {
+        let d = Math.sqrt((ix + 0.5 - cx) * (ix + 0.5 - cx) + (iy + 0.5 - cy) * (iy + 0.5 - cy)) / r
+        if (d < 1.0) ink(iy * W + ix, (1.0 - d) * (1.0 - d))
+      }
+      ox++
+    }
+    oy++
+  }
+}
+
+// a touch: the next frame fires a pulse from the stroke nearest (fx, fy) ∈ 0..1
+export let spark = (fx, fy) => { tgt[0] = fx * W; tgt[1] = fy * H; tgt[2] = 1.0 }
 
 export let frame = (t, systemIdx, progress) => {
-  let si = (systemIdx | 0) % 4
+  let si = (systemIdx | 0) % NSYS
+  if (si < 0) si += NSYS
+  if (curSys !== si) { expand(si); ns = 0 }
 
-  // Re-expand string if system changed
-  if (curSys[0] != si) {
-    curSys[0] = si
-    expandSystem(si)
-  }
+  let n = W * H, i = 0
+  while (i < n) { px[i] = (255 << 24); i++ }
+  if (segs === 0) return
 
-  // Clear canvas
-  let n = W * H
-  let ci = 0
-  while (ci < n) { px[ci] = (255 << 24); ci++ }
-
-  // Angle per system (in radians stored as f64)
-  let ang = 0.0
-  if (si == 0) ang = 1.0471975511965976  // 60° = PI/3
-  if (si == 1) ang = 1.5707963267948966  // 90° = PI/2
-  if (si == 2) ang = 1.0471975511965976  // 60°
-  if (si == 3) ang = 0.4363323129985824  // 25° = PI/180*25
-
-  // Single gray for all systems — palette button recolors
-  let cr = 200, cg = 200, cb = 200
-
-  let slen = llen[0]
-
-  // Count total drawing segments (F for most, A+B for Sierpinski)
-  let totalSegs = 0
-  let ii = 0
-  while (ii < slen) {
-    let sym = lstr[ii]
-    if (sym == 0) totalSegs++                       // F always draws
-    if (si == 2 && (sym == 7 || sym == 8)) totalSegs++ // A,B for Sierpinski
-    ii++
-  }
-
-  if (totalSegs == 0) return
-
-  // --- Bounds pass ---
-  // We need a turtle walk to find the extent of the curve
-  // Use separate local vars (f64) for turtle state in this pass
-  let bx = 0.0, by = 0.0, bh = 0.0
-  let minX = 0.0, maxX = 0.0, minY = 0.0, maxY = 0.0
-  let first = 1
-
-  // Reset stack
-  tdepth[0] = 0
-
-  let bi = 0
-  while (bi < slen) {
-    let sym = lstr[bi]
-    let draws = 0
-    if (sym == 0) draws = 1
-    if (si == 2 && (sym == 7 || sym == 8)) draws = 1
-
-    if (draws == 1) {
-      let nx = bx + Math.cos(bh)
-      let ny = by + Math.sin(bh)
-      if (first == 1) {
-        minX = bx; maxX = bx; minY = by; maxY = by; first = 0
-      }
-      if (nx < minX) minX = nx
-      if (nx > maxX) maxX = nx
-      if (ny < minY) minY = ny
-      if (ny > maxY) maxY = ny
-      bx = nx; by = ny
-    } else if (sym == 1) {
-      bh = bh - ang   // turn left
-    } else if (sym == 2) {
-      bh = bh + ang   // turn right
-    } else if (sym == 3) {
-      // push
-      let sp = tdepth[0]
-      if (sp < 200) {
-        tstack[sp * 3]     = bx
-        tstack[sp * 3 + 1] = by
-        tstack[sp * 3 + 2] = bh
-        tdepth[0] = sp + 1
-      }
-    } else if (sym == 4) {
-      // pop
-      let sp = tdepth[0] - 1
-      if (sp >= 0) {
-        bx = tstack[sp * 3]
-        by = tstack[sp * 3 + 1]
-        bh = tstack[sp * 3 + 2]
-        tdepth[0] = sp
-      }
-    }
-    bi++
-  }
-
-  // Compute scale/offset to fit 90% of canvas
-  let spanX = maxX - minX
-  let spanY = maxY - minY
+  // fit the extent into 88% of the frame, uniform scale
+  let spanX = bounds[1] - bounds[0], spanY = bounds[3] - bounds[2]
   if (spanX < 0.0001) spanX = 0.0001
   if (spanY < 0.0001) spanY = 0.0001
+  let sx = W * 0.88 / spanX, sy = H * 0.88 / spanY
+  let scale = sx < sy ? sx : sy
+  let offX = (W - (bounds[1] + bounds[0]) * scale) * 0.5
+  let offY = (H - (bounds[3] + bounds[2]) * scale) * 0.5
 
-  let scaleX = W * 0.9 / spanX
-  let scaleY = H * 0.9 / spanY
-  let scale = scaleX < scaleY ? scaleX : scaleY  // uniform scale
-
-  let offX = (W - (maxX + minX) * scale) * 0.5
-  let offY = (H - (maxY + minY) * scale) * 0.5
-
-  // --- Draw pass ---
-  let drawUpTo = (progress * totalSegs) | 0
-  if (drawUpTo > totalSegs) drawUpTo = totalSegs
-
-  let dx = 0.0, dy = 0.0, dh = 0.0
-  tdepth[0] = 0
-  let segCount = 0
-
-  // Starting heading: 0 (rightward) for Koch/dragon/Sierpiński; the plant grows UP,
-  // i.e. -PI/2 in screen coords (y increases downward). The turtle starts at (0,0) in
-  // turtle space, which the bounds fit projects to (offX, offY).
-  if (si == 3) {
-    dh = -1.5707963267948966
-  } else {
-    dh = 0.0
+  let upto = (progress * segs) | 0
+  if (upto > segs) upto = segs
+  let wb = (W < H ? W : H) / 720.0
+  if (wb < 1.0) wb = 1.0
+  let plant = PLANT[si] === 1
+  let ang = ANG[si] * Math.PI / 180.0
+  // pulses: the ambient ones glide on the clock once the drawing is grown; touch pulses advance and expire
+  let grown = upto >= segs
+  let spd = segs / 900.0 > 0.4 ? segs / 900.0 : 0.4     // a pulse crosses the whole drawing in ~15 s
+  let tail = segs * 0.025 + 6.0
+  let a0 = t * 60.0 * spd
+  i = 0
+  while (i < ns) {
+    spk[i] = spk[i] + spd
+    if (spk[i] - tail > segs) { ns--; spk[i] = spk[ns]; i-- }
+    i++
   }
-  dx = offX
-  dy = offY
-
-  if (si == 3) {
-    // The shared bounds pass above ran with heading 0 — redo it with the plant's
-    // -PI/2 heading so the fit matches what the draw pass will actually trace.
-    bx = 0.0; by = 0.0; bh = -1.5707963267948966
-    minX = 0.0; maxX = 0.0; minY = 0.0; maxY = 0.0; first = 1
-    tdepth[0] = 0
-
-    let pi2 = 0
-    while (pi2 < slen) {
-      let sym2 = lstr[pi2]
-      let draws2 = 0
-      if (sym2 == 0) draws2 = 1
-
-      if (draws2 == 1) {
-        let nx2 = bx + Math.cos(bh)
-        let ny2 = by + Math.sin(bh)
-        if (first == 1) {
-          minX = bx; maxX = bx; minY = by; maxY = by; first = 0
-        }
-        if (bx < minX) minX = bx
-        if (bx > maxX) maxX = bx
-        if (by < minY) minY = by
-        if (by > maxY) maxY = by
-        if (nx2 < minX) minX = nx2
-        if (nx2 > maxX) maxX = nx2
-        if (ny2 < minY) minY = ny2
-        if (ny2 > maxY) maxY = ny2
-        bx = nx2; by = ny2
-      } else if (sym2 == 1) {
-        bh = bh - ang
-      } else if (sym2 == 2) {
-        bh = bh + ang
-      } else if (sym2 == 3) {
-        let sp2 = tdepth[0]
-        if (sp2 < 200) {
-          tstack[sp2 * 3]     = bx
-          tstack[sp2 * 3 + 1] = by
-          tstack[sp2 * 3 + 2] = bh
-          tdepth[0] = sp2 + 1
-        }
-      } else if (sym2 == 4) {
-        let sp2 = tdepth[0] - 1
-        if (sp2 >= 0) {
-          bx = tstack[sp2 * 3]
-          by = tstack[sp2 * 3 + 1]
-          bh = tstack[sp2 * 3 + 2]
-          tdepth[0] = sp2
+  let bestK = -1, bestD = 1e30
+  let x = offX, y = offY, h = HEAD[si] * Math.PI / 180.0, sp = 0, dep = 0, k = 0
+  i = 0
+  while (i < slen && k < upto) {
+    let sym = lstr[i]
+    if (draws(si, sym)) {
+      let nx = x + Math.cos(h) * scale, ny = y + Math.sin(h) * scale
+      let w = plant ? wb * 3.4 * Math.pow(0.7, dep) : wb * 1.1
+      let v = plant ? 0.6 : 0.22 + 0.4 * k / segs
+      // the brightest pulse tail over this stroke
+      let hot = 0.0
+      if (grown) {
+        let j = 0
+        while (j < NA) {
+          let d = a0 + j * segs / NA - k
+          d = d - Math.floor(d / segs) * segs
+          if (d < tail) { let e = 1.0 - d / tail; if (e > hot) hot = e }
+          j++
         }
       }
-      pi2++
-    }
-
-    spanX = maxX - minX
-    spanY = maxY - minY
-    if (spanX < 0.0001) spanX = 0.0001
-    if (spanY < 0.0001) spanY = 0.0001
-
-    scaleX = W * 0.9 / spanX
-    scaleY = H * 0.9 / spanY
-    scale = scaleX < scaleY ? scaleX : scaleY
-
-    offX = (W - (maxX + minX) * scale) * 0.5
-    offY = (H - (maxY + minY) * scale) * 0.5
+      let j = 0
+      while (j < ns) {
+        let d = spk[j] - k
+        if (d >= 0.0 && d < tail) { let e = 1.0 - d / tail; if (e > hot) hot = e }
+        j++
+      }
+      seg(x, y, nx, ny, w * (1.0 + 0.8 * hot), v + (1.0 - v) * hot)
+      if (tgt[2] > 0.5) {
+        let ddx = nx - tgt[0], ddy = ny - tgt[1], dd = ddx * ddx + ddy * ddy
+        if (dd < bestD) { bestD = dd; bestK = k }
+      }
+      x = nx; y = ny; k++
+    } else if (sym === 1) h -= ang
+    else if (sym === 2) h += ang
+    else if (sym === 3) { if (sp < 256) { tstack[sp * 4] = x; tstack[sp * 4 + 1] = y; tstack[sp * 4 + 2] = h; tstack[sp * 4 + 3] = dep; sp++; dep++ } }
+    else if (sym === 4) { if (sp > 0) { sp--; x = tstack[sp * 4]; y = tstack[sp * 4 + 1]; h = tstack[sp * 4 + 2]; dep = tstack[sp * 4 + 3] | 0 } }
+    i++
   }
-
-  // Reset turtle for draw pass
-  dx = offX
-  dy = offY
-  dh = si == 3 ? -1.5707963267948966 : 0.0
-  tdepth[0] = 0
-  segCount = 0
-
-  let di = 0
-  while (di < slen) {
-    let sym = lstr[di]
-    let draws = 0
-    if (sym == 0) draws = 1
-    if (si == 2 && (sym == 7 || sym == 8)) draws = 1
-
-    if (draws == 1) {
-      if (segCount < drawUpTo) {
-        let nx = dx + Math.cos(dh) * scale
-        let ny = dy + Math.sin(dh) * scale
-        line(dx, dy, nx, ny, cr, cg, cb)
-        dx = nx; dy = ny
-      } else {
-        // Still advance position even if not drawing (for correct state)
-        dx = dx + Math.cos(dh) * scale
-        dy = dy + Math.sin(dh) * scale
-      }
-      segCount++
-    } else if (sym == 1) {
-      dh = dh - ang
-    } else if (sym == 2) {
-      dh = dh + ang
-    } else if (sym == 3) {
-      let sp = tdepth[0]
-      if (sp < 200) {
-        tstack[sp * 3]     = dx
-        tstack[sp * 3 + 1] = dy
-        tstack[sp * 3 + 2] = dh
-        tdepth[0] = sp + 1
-      }
-    } else if (sym == 4) {
-      let sp = tdepth[0] - 1
-      if (sp >= 0) {
-        dx = tstack[sp * 3]
-        dy = tstack[sp * 3 + 1]
-        dh = tstack[sp * 3 + 2]
-        tdepth[0] = sp
-      }
-    }
-    di++
-  }
+  if (upto < segs) pen(x, y, wb * 7.0)
+  if (tgt[2] > 0.5) { tgt[2] = 0.0; if (bestK >= 0 && ns < MAXS) { spk[ns] = bestK; ns++ } }
 }

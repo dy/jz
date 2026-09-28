@@ -33,7 +33,7 @@ export const PHASE_NAMES = [
   'plan:moduleGlobalKinds', 'plan:unboxConstTypedGlobals', 'plan:inferModuleIntGlobals', 'plan:collectFacts',
   'plan:classifyHashDictGlobals', 'plan:flattenFuncNamespaces', 'plan:declareWrittenKeys', 'plan:devirtGlobalCalls', 'plan:devirtClassCalls', 'plan:indexArrayPatterns',
   'plan:bindNestedRowLengths', 'plan:unrollRowLenPadLoops', 'plan:inlineHotInternalCalls', 'plan:inlineLocalLambdas',
-  'plan:specializeFixedRestCalls', 'plan:splitCharScan', 'plan:laneRecordParams', 'plan:scalarizeArrayLiterals', 'plan:scalarizeObjectLiterals',
+  'plan:specializeFixedRestCalls', 'plan:guardConstants', 'plan:canonicalizeCountedLoops', 'plan:splitCharScan', 'plan:laneRecordParams', 'plan:scalarizeArrayLiterals', 'plan:scalarizeObjectLiterals',
   'plan:promoteIntArrayLiterals', 'plan:scalarizeTypedArrays', 'plan:synthesizeComputedDispatchCallSites',
   'plan:synthesizeMemberDispatchCallSites', 'plan:releaseLiftedAddressTakenNames', 'plan:buildProgramIndex',
   'plan:materializeAutoBoxSchemas', 'plan:resolveClosureWidth', 'plan:applyExportTypedArrayAbi',

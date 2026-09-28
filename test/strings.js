@@ -5,7 +5,7 @@ import { compile } from '../index.js'
 import jz from '../index.js'
 import { strHashLiteral } from '../module/collection.js'
 import { levels } from './_matrix.js'
-import { run, oracle, cases } from './util.js'
+import { run, oracle, cases, agree } from './util.js'
 
 test('string operands: preserve boolean, numeric, BigInt and nullable identities', () => {
   const src = `export function f(n) {
@@ -1531,4 +1531,26 @@ test('charCodeAt on a dissolved concat buffer reads UTF-16 units', () => {
       is(exports.fold(), refFold, `O${optimize}: fold of ${e}`)
     }
   }
+})
+
+// A `+` whose side the summary holds to a number or a string (an element of
+// an array built by stores, `toArray`'s default array) is the run's to decide:
+// its value type is no NUMBER (kind/val-type-of.js VT['+'] addsAsNumber), so
+// the `+ 4` after it concatenates instead of adding 4 to a string's box, which
+// keeps the string and drops the 4. three.js Euler.toArray is this shape.
+test('string concat: a chain over a number-or-string element stays a concatenation', () => {
+  for (const [label, src] of [
+    ['an array built by stores', `export const f = () => { const a = []; a[0] = 0.5; a[1] = 'ZXY'; return a[0] + a[1] + 4 }`],
+    ['the string first', `export const f = () => { const a = []; a[0] = 0.5; a[1] = 'ZXY'; return a[1] + a[0] + 4 }`],
+    ['through a binding', `export const f = () => { const a = []; a[0] = 0.5; a[1] = 'ZXY'; const s = a[1]; return a[0] + s + 4 }`],
+    ['from a function', `const mk = (o) => { const a = []; a[0] = 0.5; a[1] = o; return a }\nexport const f = () => { const a = mk('ZXY'); return a[0] + a[1] + 4 }`],
+    ['a default array a method fills', `class E { constructor() { this._x = 0.1; this._o = 'XYZ' } toArray(array = [], offset = 0) { array[offset] = this._x; array[offset + 1] = this._o; return array } }\nexport const f = () => { const a = new E().toArray(); return a.length + a[1] + 4 }`],
+    ['a number-or-array element', `export const f = () => { const a = []; a[0] = 0.5; a[1] = [1, 2]; return a[0] + a[1] + 4 }`],
+    ['a number-or-boolean element adds', `export const f = () => { const a = []; a[0] = 0.5; a[1] = true; return a[0] + a[1] + 4 }`],
+    ['a compound add of the element', `export const f = () => { const a = []; a[0] = 0.5; a[1] = 'ZXY'; let t = 1; t += a[1]; return t + 4 }`],
+    ['the value of a compound add', `export const f = () => { const a = []; a[0] = 0.5; a[1] = 'ZXY'; let t = 1; return (t += a[1]) + 4 }`],
+    ['the value of an assignment', `export const f = () => { const a = []; a[0] = 0.5; a[1] = 'ZXY'; let t; return (t = a[1]) + 4 }`],
+    ['the value of a conditional', `export const f = () => { const a = []; a[0] = 0.5; a[1] = 'ZXY'; return (a.length > 1 ? a[1] : a[0]) + 4 }`],
+    ['in a loop', `export const f = () => { const a = []; a[0] = 'k'; a[1] = 2; let s = ''; for (let i = 0; i < 3; i++) s = s + (a[0] + a[1] + i); return s }`],
+  ]) for (const optimize of levels(0, 2)) agree(src, 'f', [], { optimize }, `${label}, O${optimize}`)
 })

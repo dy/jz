@@ -119,9 +119,9 @@ export function emitFunc(func, functionPlan, programFacts) {
   // their header words may be read ahead of a loop that writes no header
   // (optimize/licm.js), where a receiver that might be missing could not be.
   const presentArrays = new Set()
-  const view = ctx.summary?.at(body)
-  const presentArray = (nm) => { const k = view?.kindOfExpr(nm); return k != null && tagOf(core(k)) === K.ARRAY && !isNullable(k) }
-  if (view) {
+  const kinds = ctx.summary?.at(body)
+  const presentArray = (nm) => { const k = kinds?.kindOfExpr(nm); return k != null && tagOf(core(k)) === K.ARRAY && !isNullable(k) }
+  if (kinds) {
     for (const p of sig.params) if (presentArray(p.name)) presentArrays.add(`$${p.name}`)
     if (installedPlan.localReps) for (const nm of installedPlan.localReps.keys()) if (presentArray(nm)) presentArrays.add(`$${nm}`)
     if (ctx.scope.consts) for (const nm of ctx.scope.consts) if (isGlobal(nm) && presentArray(nm)) presentArrays.add(`$${nm}`)
@@ -175,8 +175,14 @@ export function emitFunc(func, functionPlan, programFacts) {
   // charDecomp prologue is resolved in `collectParamInits` below.
   const defaults = func.defaults || {}
   const defaultInits = new Map()
+  // the summary's view of the function: a variant's calls are its source's
+  const pi = programFacts.programIndex
+  const source = pi.sourceFunctionById(pi.sourceIdOfVariant(pi.variantIdOf(func)))
+  const view = ctx.summary?.at(source?.name ?? name)
   for (const [pname, defVal] of Object.entries(defaults)) {
     const p = sig.params.find(p => p.name === pname)
+    // a default no call lets run (every caller passes the argument) is dead
+    if (view && !view.defaultMayRun(pname)) continue
     // jsstring-carrier params with string-literal defaults skip wasm-side
     // substitution — the interop wrapper applies the default JS-side (the
     // value rides through `jz:extparam`). The wasm side never sees a null
