@@ -7,14 +7,17 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import jz, { compile } from '../index.js'
-import { levels } from './_matrix.js'
+import { levels, onWasi } from './_matrix.js'
 import { oracle } from './util.js'
 
 // JSON keeps key order; undefined and a thrown TypeError get names of their own
 const show = (v) => JSON.stringify(v, (k, x) => x === undefined ? '<undefined>' : x)
 const outcome = (f) => { try { return show(f()) } catch (e) { return e instanceof TypeError ? 'TypeError' : 'throws ' + e.message } }
+// a host object stays behind the JS boundary: the hostless WASI one cannot pass it in
+const hostObject = (v) => v !== null && typeof v === 'object' && (!Array.isArray(v) || v.some(hostObject))
 const agree = (cases) => {
   for (const [name, src, ...args] of cases) for (const optimize of levels(0, 2, 3)) {
+    if (onWasi() && args.some(hostObject)) continue
     const want = outcome(() => oracle(src).f(...args))
     is(outcome(() => jz(src, { optimize }).exports.f(...args)), want, `${name} O${optimize}`)
   }
