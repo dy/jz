@@ -800,6 +800,18 @@ export const controlFlowOps = {
           // non-unit monotone stride: positivity is the soundness condition
           if (vs.stepBy?.name != null)
             conjs.push(['i64.ge_s', slotI64(vs.stepBy.name, vs.stepBy.kind), i64c(1)])
+          // A strided iv stops at the last value its stride reaches below the
+          // bound, entry + ⌊(max − entry) / stride⌋·stride: taking the bound for
+          // it put a butterfly's far access past the length (the split-radix
+          // FFT's `i0 += id` loops), and the guard never held. A stride the
+          // conjunct above rejects divides as 1 here, the guard failing anyway.
+          if (vs.stepBy && vs.stepBy.lit !== 1) {
+            const entry = levelInfo.get(vs).entryIR()
+            const stride = vs.stepBy.lit != null ? i64c(vs.stepBy.lit)
+              : ['select', slotI64(vs.stepBy.name, vs.stepBy.kind), i64c(1), ['i64.ge_s', slotI64(vs.stepBy.name, vs.stepBy.kind), i64c(1)]]
+            result.push(['local.set', `$${maxIv}`, ['i64.add', entry,
+              ['i64.mul', ['i64.div_s', ['i64.sub', ['local.get', `$${maxIv}`], entry], stride], stride]]])
+          }
           // one extent conjunct pair per (recv, a, slots) group: hi = a*maxIv+Σkᵢ·slotᵢ
           // +maxC < len, plus lo = a*entry+Σkᵢ·slotᵢ+minC ≥ 0 — folded when the static
           // start proves it, read from the live iv local otherwise (top level only)

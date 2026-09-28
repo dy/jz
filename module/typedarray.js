@@ -1876,7 +1876,9 @@ export default (ctx) => {
   }
 
   ctx.core.emit['.typed:[]'] = (arr, i, node = null) => {
-    const r = resolveElem(arr)
+    // Under a versioning guard the receiver is present (the guard tested it):
+    // one that may be missing reads as its payload's kind.
+    const r = resolveElem(arr, typeof arr === 'string' && activeBoundsAssumption(ctx, arr, i))
     if (r == null) return null // open ctor: array.js uses the tagged runtime reader
     const { et, isView, isBigInt } = r
     // idxKey builds a string (JSON.stringify for expression indices) — price
