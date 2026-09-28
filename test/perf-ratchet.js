@@ -152,6 +152,12 @@ const loopBodyOps = (wat) => {
 // other function's count is unchanged. Measured, a loop that stores a fresh
 // array into one receiver made at start runs 2.6 -> 3.2 ns an iteration, one
 // that stores into 64 receivers in turn 5.1 -> 5.3.
+// Number keys that name no element (2026-09-28): `a[o + i] = v` with o read
+// from a host array stored into a[trunc(o + i)] for a fractional o, where
+// JavaScript drops the store. The key's own test (emit/dispatch.js keyIndex) is
+// what the checked arm pays; the versioned arm takes the key whole (its guard
+// tests o integral), and so do integer-valued keys: slice 64828 → 65228, the
+// other categories unchanged.
 
 // An object made at start is saved before the round's first store into it
 // of a value that names memory of the round (2026-09-29, module/core/
