@@ -876,7 +876,15 @@ place. A dictionary joined with objects or primitives keeps its cell; the
 object shapes ride on the cell and its reads join both. A parameter used only
 in tests, identity compares and `typeof` keeps the shapes of a join it
 cannot name. A conditional on a parameter no call has bound waits for a later
-round; one the kinds decide walks only its live arm. A rest parameter is a
+round; one the kinds decide walks only its live arm (`x == null` of a kind
+without the nullish tags; `x.p` of a number, a boolean or a BigInt outside
+their few methods, which is undefined). `if (x.p)` proves `x` non-nullish
+where true and, where false and every object `x` may hold answers `p` with a
+class flag (`static { C.prototype.isC = true }`, a getter of the literal), no
+object at all; with the per-kind clones narrow/specialize.js gives a function
+whose parameter's callers disagree, `te[12] = x` in the else arm of
+`Matrix4.setPosition` stores a number in one clone and nothing in the other.
+A rest parameter is a
 tuple of its arguments by position, absent past a call's count. Set cells
 follow their elements; iterating a Set, Map or string materializes its
 members. A read or store through a nullish receiver, a call of a name no

@@ -89,7 +89,12 @@ test('class members: a store to the class\'s prototype names a member', () => ag
   ['a flag in the statement after the class', `class V { constructor(x = 0) { this.x = x } }\nV.prototype.isV = true\nexport const f = () => new V(2).isV ? 1 : 0`],
   ['read on instances of two classes', `class V { static { V.prototype.isV = true } constructor() { this.x = 1 } } class Q { constructor() { this.w = 1 } }
     const is = o => o.isV === true ? 1 : 0; export const f = () => is(new V()) * 10 + is(new Q())`],
-  // three.js Matrix4.setPosition(x, y, z): a vector or three numbers
+  // three.js Matrix4.setPosition(x, y, z): a vector or three numbers. The method
+  // is cloned per argument kind (narrow/specialize.js); the clone keeps the
+  // origin's pointer result (variant.js), read here through the chained `.e[i]`.
+  ['read on a number by many callers and an instance by one, chained', `class V { static { V.prototype.isVector3 = true } constructor(x = 0, y = 0, z = 0) { this.x = x; this.y = y; this.z = z } }
+    class M { constructor() { this.e = [0, 0, 0] } setPosition(x, y, z) { const te = this.e; if (x.isVector3) { te[0] = x.x; te[1] = x.y; te[2] = x.z } else { te[0] = x; te[1] = y; te[2] = z } return this } }
+    export const f = () => new M().setPosition(new V(1, 2, 3)).e[2] * 10 + ${Array.from({ length: 10 }, (_, i) => `new M().setPosition(${i}, 5, 6).e[1]`).join(' + ')}`],
   ['read on an instance or a number', `class V { static { V.prototype.isVector3 = true } constructor(x = 0, y = 0, z = 0) { this.x = x; this.y = y; this.z = z } }
     class M { constructor() { this.e = [0, 0, 0] } setPosition(x, y, z) { const te = this.e; if (x.isVector3) { te[0] = x.x; te[1] = x.y; te[2] = x.z } else { te[0] = x; te[1] = y; te[2] = z } return this } }
     export const f = () => new M().setPosition(new V(1, 2, 3)).e[2] * 10 + new M().setPosition(4, 5, 6).e[1]`],

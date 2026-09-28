@@ -241,14 +241,18 @@ test('paramReps val: consistent ARRAY callers fold to direct header read', () =>
 })
 
 test('paramReps val: caller disagreement forces __length poly', () => {
-  // Caller a passes array, caller b passes string → val sticky-null on the
-  // lattice → callee falls back to fully-polymorphic __length.
+  // Caller a passes array, caller b passes string, caller c passes what the
+  // host gives → val sticky-null on the lattice → callee falls back to
+  // fully-polymorphic __length. (Two resolved kinds alone would be cloned
+  // per kind, specializeValKindDichotomy; the unresolved host site keeps
+  // the generic original, the mechanism under test.)
   // sourceInline off: inlined, each site resolves monomorphically and the
   // poly __length (the mechanism under test) correctly disappears.
   const wat = jz.compile(`
     const lenOf = (xs) => xs.length
     export const a = () => lenOf([1, 2, 3])
     export const b = () => lenOf('foo')
+    export const c = (v) => lenOf(v)
   `, { wat: true, optimize: { sourceInline: false } })
   ok(count(wat, /\$__length\b/g) >= 1, 'sticky-null val should keep __length')
 })
@@ -2243,6 +2247,29 @@ test('cross-call array-elem kind: bimorphic callers fail open', () => {
     }
   `)
   is(exports.f(), 'x3', 'mixed elem kinds stay value-correct via the generic path')
+})
+
+// A parameter given a number by one caller and an object by another is two
+// functions (narrow/specialize.js specializeValKindDichotomy clones every
+// combination the resolved sites carry, not a landslide majority alone), and
+// in each the flag test `if (x.isV)` is decided or refined by the summary: a
+// number has no `isV`, so only the else arm is walked; an object every shape
+// of which answers a literal true leaves the else arm with no object. The
+// store `te[0] = x` then keeps `te` numeric in both, where one body walked
+// with the union stored the object and every later `+` over `te[0]` paid the
+// runtime dispatch. three.js Matrix4.setPosition(x, y, z) is this shape.
+test('val-kind dichotomy: a number-or-object parameter is cloned per kind, and a flag test narrows each', () => {
+  const src = `class V { static { V.prototype.isV = true } constructor(k = 1) { this.k = k } }
+    const te = [0, 0]
+    const f = (x) => { if (x.isV) te[0] = x.k; else te[0] = x; return te[0] }
+    const g = () => f(5)
+    const h = () => f(new V(7))
+    export const run = () => g() + h() * 10 + (te[0] + 1) * 100`
+  is(jz(src, { optimize: 2 }).exports.run(), 875)
+  if (belowOpt(2)) return
+  const w = jz.compile(src, { optimize: 2, wat: true })
+  ok(/\(func \$f\$number\b/.test(w) && /\(func \$f\$object\b/.test(w), 'one clone per argument kind')
+  is((w.match(/__to_num|__add_slow|__is_str_key/g) || []).length, 0, 'the array element stays a number: no conversion or string dispatch')
 })
 
 test('narrowMutatedParams: monotone int-mutated param promotes to i32 param+result (cursor-through-helper)', () => {

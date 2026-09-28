@@ -1380,9 +1380,21 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   // A parameter no call has bound yet decides nothing: the conditional waits
   // for a later round rather than walking a default arm its arguments exclude.
   const paramKeys = new Set()
+  // The properties a number, a boolean or a BigInt has: `x.p` of one outside them is undefined.
+  const PRIMITIVE_METHODS = new Set(['toString', 'toFixed', 'toExponential', 'toPrecision', 'valueOf', 'toLocaleString', 'constructor'])
   const decided = (c) => {
     if (!Array.isArray(c)) return undefined
     const op = c[0]
+    // `x.p` of a value that is a number, a boolean or a BigInt (a missing one
+    // throws) is undefined: false, so `if (x.isVector3)` given a number walks
+    // its else arm alone (the clone narrow/specialize.js gives the method).
+    if ((op === '.' || op === '?.') && typeof c[1] === 'string' && typeof c[2] === 'string') {
+      const key = keyOf(c[1])
+      if (key === null) return undefined
+      const k = kinds[key]
+      if (k == null || tagOf(k) === K.NONE) return paramKeys.has(key) ? 'pending' : undefined
+      return (k & TAGS & ~(bitOf(K.NUMBER) | bitOf(K.BOOL) | bitOf(K.BIGINT) | NULL_BITS)) === 0 && !PRIMITIVE_METHODS.has(c[2]) ? false : undefined
+    }
     if (op !== '===' && op !== '!==' && op !== '==' && op !== '!=') return undefined
     const x = isNullishLiteral(c[2]) ? c[1] : isNullishLiteral(c[1]) ? c[2] : null
     if (typeof x !== 'string') return undefined
@@ -2685,6 +2697,63 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   const isNullishRef = (v) => isNullishLit(v) || v === 'undefined' || v === 'null'
   const typeofPredicates = new Map()   // condition node → its typeof predicate, or null, read once
   const typeofPredicateOf = (c) => { let tp = typeofPredicates.get(c); if (tp === undefined) typeofPredicates.set(c, tp = typeofPredicate(c)); return tp }
+  // for NaN alone and `x === 0.0` for a number alone (a strict test against a
+  // number); a call of a predicate whose body is such a test of its parameter
+  // (`isnan( x )`, `isInfinite( x )`) proves its argument; `&&`, `||` and `!`
+  // combine them (either arm of a true `||` must prove a name). `isNum` reads
+  // an operand's number-ness in the calling pass's view. A returned parameter
+  // under such a guard is a number, not the parameter's own value: libm's
+  // `if ( isnan( x ) ) { return x; }` keeps the export's f64 contract.
+  const NO_NAMES = new Set()
+  const numericPredicates = new Map()   // function name → the parameter indices its true result proves numbers
+  const isNumLit = (b) => typeof b === 'number' || b === 'Infinity' || b === 'NaN' ||
+    (Array.isArray(b) && ((b[0] == null && typeof b[1] === 'number') || b[0] === 'nan' || ((b[0] === 'u-' || b[0] === '-') && b.length === 2 && isNumLit(b[1]))))
+  const numericProofs = (c, when, isNum) => {
+    if (!Array.isArray(c)) return NO_NAMES
+    const op = c[0]
+    if (op === '!') return numericProofs(c[1], !when, isNum)
+    if (op === '()' && c.length === 2) return numericProofs(c[1], when, isNum)
+    if (op === '&&' || op === '||' || op === '__eager&&' || op === '__eager||') {   // prepare's eager forms are the same tests
+      const a = numericProofs(c[1], when, isNum), b = numericProofs(c[2], when, isNum)
+      if ((op === '&&' || op === '__eager&&') === when) return !a.size ? b : !b.size ? a : new Set([...a, ...b])
+      return a.size && b.size ? new Set([...a].filter(name => b.has(name))) : NO_NAMES
+    }
+    if (!when) return NO_NAMES
+    if (op === '!==' && typeof c[1] === 'string' && c[1] === c[2]) return new Set([c[1]])
+    if (op === '===' && c[1] !== c[2]) {   // `v === v` holds for undefined too
+      if (typeof c[1] === 'string' && (isNumLit(c[2]) || isNum(c[2]))) return new Set([c[1]])
+      if (typeof c[2] === 'string' && (isNumLit(c[1]) || isNum(c[1]))) return new Set([c[2]])
+      return NO_NAMES
+    }
+    if (op === '()' && typeof c[1] === 'string' && funcByName.has(c[1])) {
+      let proven = numericPredicates.get(c[1])
+      if (proven === undefined) {
+        numericPredicates.set(c[1], proven = [])   // a predicate calling itself proves nothing
+        const f = funcByName.get(c[1]), params = (f.sig?.params ?? []).map(p => p.name)
+        let body = f.body
+        if (Array.isArray(body) && body[0] === '{}') body = body[1]
+        if (Array.isArray(body) && body[0] === ';') body = body.length === 2 ? body[1] : null
+        if (Array.isArray(body) && body[0] === 'return') body = body[1]
+        const names = numericProofs(body, true, isNum)
+        proven = params.map((name, i) => names.has(name) ? i : -1).filter(i => i >= 0)
+        numericPredicates.set(c[1], proven)
+      }
+      if (!proven.length) return NO_NAMES
+      const args = Array.isArray(c[2]) && c[2][0] === ',' ? c[2].slice(1) : [c[2]], out = new Set()
+      for (const i of proven) if (typeof args[i] === 'string') out.add(args[i])
+      return out
+    }
+    return NO_NAMES
+  }
+  const isNumberHere = (b) => { if (typeof b !== 'string') return false; const k = expr(b); return tagOf(core(k)) === K.NUMBER && !hasTag(k, K.NULLISH) && !hasTag(k, K.ABSENT) }
+  /** Whether the class of layout `sid` answers `prop` with a literal true: a getter returning the literal. */
+  const flagOf = (sid, prop) => {
+    const fn = classOfSid(sid)?.methods.get(getterOf(prop))
+    let b = fn != null ? funcByName.get(fn)?.body : undefined
+    if (Array.isArray(b) && b[0] === '{}') b = b[1]
+    if (Array.isArray(b) && b[0] === ';' && b.length === 2) b = b[1]
+    return Array.isArray(b) && b[0] === 'return' && Array.isArray(b[1]) && b[1][0] === 'bool' && b[1][1] === 1
+  }
   /** Push what the condition `c` proves when it is `when`. */
   const proves = (c, when) => {
     if (typeof c === 'string') { if (when) refineName(c, NOT_NULLISH); return }
@@ -2695,6 +2764,21 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     if (op === '!') { proves(c[1], !when); return }
     if (op === '()' && c.length === 2) { proves(c[1], when); return }
     if ((op === '&&' && when) || (op === '||' && !when)) { proves(c[1], when); proves(c[2], when); return }
+    // `x.p` as a condition (`if (x.isVector3)`): true, `x` is no nullish
+    // value; false, `x` is none of its objects when every object it may hold
+    // answers `p` with a literal true, the class flag a getter of the literal
+    // answers (`static { C.prototype.isC = true }`, jzify/classes.js
+    // foldPrototypeStores): `te[12] = x` in the else arm of Matrix4.setPosition
+    // stores nothing where `x` is a Vector3 (narrow/specialize.js gives the
+    // method a clone per argument kind, so the shape is known there).
+    if ((op === '.' || op === '?.') && typeof c[1] === 'string' && typeof c[2] === 'string') {
+      if (when) { refineName(c[1], NOT_NULLISH); return }
+      // the parameter names the shapes only where the object is the kind's one heap tag
+      const k = expr(c[1]), id = paramOf(k)
+      if (tagOf(core(k)) === K.OBJECT && id !== UNKNOWN && shapesOf(id).every(sid => flagOf(sid, c[2]))) refineName(c[1], TAGS & ~bitOf(K.OBJECT))
+      return
+    }
+    for (const name of numericProofs(c, when, isNumberHere)) refineName(name, bitOf(K.NUMBER))
     const tp = typeofPredicateOf(c)
     if (tp) {
       const bits = TYPEOF_TAGS[typeof tp.code === 'string' ? tp.code : TYPEOF_NAME[tp.code]]

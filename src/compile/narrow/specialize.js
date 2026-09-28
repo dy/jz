@@ -187,19 +187,18 @@ export function specializeBimorphicTyped(programFacts) {
  * the call sites PROVEN to carry that kind is sound without touching
  * `func.sig.params[k].type`/`ptrKind` at all. That decouples this pass
  * from specializeBimorphicTyped's "abort unless EVERY site resolves"
- * discipline: a genuine landslide majority (≥90% of RESOLVED sites, the
- * DOMINANCE threshold below) gets ONE clone; the minority AND any still-
- * unresolved sites simply keep calling the untouched, fully generic
- * original — no partial-coverage risk, because the original never
- * changes.
+ * discipline: every combination of kinds the resolved sites carry gets a
+ * clone of its own, and any still-unresolved site simply keeps calling the
+ * untouched, fully generic original — no partial-coverage risk, because the
+ * original never changes. Cloning both sides of a split (not the landslide
+ * majority alone) is what lets the summary's second pass see each clone's
+ * parameter as one kind: a method given a number here and an object there
+ * (three.js `setPosition(x, y, z)`) otherwise stores the union into whatever
+ * it writes, and the imprecision spreads from there.
  */
 export function specializeValKindDichotomy(programFacts) {
   const { callSites, paramReps } = programFacts
   const addressTaken = programFacts.programIndex.addressTaken
-  // Landslide threshold — a pass-registry tuning key (src/passes.js
-  // TUNING_KEYS), not a hidden local constant: a visible/overridable knob
-  // like every other tuning key (e.g. scalarTypedArrayLen).
-  const DOMINANCE = 0.9
 
   const sitesByCallee = new Map()
   for (const cs of callSites) {
@@ -247,14 +246,10 @@ export function specializeValKindDichotomy(programFacts) {
         counts.set(kind, (counts.get(kind) || 0) + 1)
       }
       if (resolved === 0 || counts.size !== 2) continue   // need exactly 2 distinct resolved kinds
-
-      let domKind = null, domCount = -1
-      for (const [kind, c] of counts) if (c > domCount) { domCount = c; domKind = kind }
-      if (domCount / resolved < DOMINANCE) continue        // not a landslide — no clear majority to exploit
       // specializeBimorphicTyped's own domain — pinning TYPED needs the matching
       // ptrKind/type ABI switch (applyPointerParamAbi/bimorphic's job), which this
       // pass deliberately never touches; leave TYPED dichotomies to that pass.
-      if (domKind === VAL.TYPED) continue
+      if (counts.has(VAL.TYPED)) continue
       // Forwarding to unchanged user callees consumes the same ABI in either
       // body. A clone buys nothing there. Builtins, receiver operations, returns
       // and other uses can consume the pinned kind; keep those candidates.
@@ -262,28 +257,41 @@ export function specializeValKindDichotomy(programFacts) {
       const reads = uses.get(p.name)?.[BINDING_USE_USES]
       if (!reads?.some(u => u[BINDING_USE_KIND] !== USE.CALL_ARG || !ctx.funcs.map.get(u[BINDING_USE_CALLEE])?.body)) continue
 
-      pins.push({ k, domKind })
+      pins.push({ k })
       perPosKinds.push(siteKinds)
     }
     if (!pins.length) continue
 
-    // ONE clone, pinned at every qualifying position to its dominant kind. A
-    // site routes to the clone only if it matches EVERY pinned position's
-    // dominant kind; any site that misses on even one (minority OR
-    // unresolved) keeps calling the untouched, fully generic original.
+    // One clone per combination of kinds the resolved sites carry at the
+    // pinned positions (two positions of two kinds each: up to four), each
+    // pinned to its combination and called by exactly the sites carrying it.
+    // A site unresolved at any pinned position keeps calling the untouched,
+    // fully generic original, which the summary then walks only where such a
+    // site exists: `Matrix4.setPosition(x, y, z)`, given a number by one
+    // caller and a Vector3 by another, is two functions, each of one kind.
     // No `sig` override: this pass never changes the ABI, only paramReps —
     // materializeVariant's default (a fresh copy of origin.sig) is exactly
     // the clone this used to build by hand.
-    const eligibleSites = sites.filter((_, si) => pins.every((pn, pi) => perPosKinds[pi][si] === pn.domKind))
-    const clone = materializeVariant({
-      origin: func, name: `${func.name}$${pins.map(pn => pn.domKind).join('$')}`, kind: 'val-kind', paramReps,
-      factOverrides: pins.map(({ k, domKind }) => ({
-        k, patch: r => { r.val = domKind; joinKinds(r, 'possibleKinds', [domKind]) },
-      })),
-      eligibleSites, fallback: func,
+    const combos = new Map()   // kinds joined → { kinds, sites }
+    sites.forEach((site, si) => {
+      const kinds = pins.map((_, pi) => perPosKinds[pi][si])
+      if (kinds.some(k => k == null)) return
+      const key = kinds.join('$')
+      let c = combos.get(key)
+      if (!c) combos.set(key, c = { kinds, sites: [] })
+      c.sites.push(site)
     })
-    if (typeof process !== 'undefined' && process.env?.JZ_DBG_VALKIND)
-      console.error('[valkind-clone]', func.name, '->', clone.name, JSON.stringify(pins.map(pn => pn.domKind)))
+    for (const { kinds, sites: eligibleSites } of combos.values()) {
+      const clone = materializeVariant({
+        origin: func, name: `${func.name}$${kinds.join('$')}`, kind: 'val-kind', paramReps,
+        factOverrides: pins.map(({ k }, pi) => ({
+          k, patch: r => { r.val = kinds[pi]; joinKinds(r, 'possibleKinds', [kinds[pi]]) },
+        })),
+        eligibleSites, fallback: func,
+      })
+      if (typeof process !== 'undefined' && process.env?.JZ_DBG_VALKIND)
+        console.error('[valkind-clone]', func.name, '->', clone.name, JSON.stringify(kinds))
+    }
   }
 
   if (DBG_INVARIANTS) assertValKindConsistent(paramReps)
