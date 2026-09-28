@@ -3,7 +3,7 @@
 // of one that holds none (summary/index.js decided). The summary walks the arm
 // that runs alone, so an overloaded function, its first argument samples here
 // and options there, keeps the options object's shape where only the samples'
-// path runs; the plan drops the arm that never runs (plan/fold-kind-tests.js).
+// path runs.
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import jz, { compile } from '../index.js'
