@@ -1858,13 +1858,14 @@ The Math functions are V8's own: `module/math/ieee754.js` transliterates V8's
 and `src/prepare/math-kernel.js` folds constants with the same C in JS.
 `test/math-v8.js` holds all three to V8 bit for bit: ±0, subnormals, arguments
 past 2^19·π/2 (Payne–Hanek, `__kernel_rem_pio2`), NaN, ±∞. The reference is the C
-as written, which x64 builds of V8 compute; arm64 builds of Node and Chrome let the
-C compiler fuse `a*b + c` and differ in the last bit on a fraction of a percent of
-arguments. There V8 runs exp, log1p and atanh up to 1.5× faster than jz: its C
-fuses, and V8's arm64 wasm code builds each f64 constant in five instructions where
-the C loads it. sin, cos and tan run level with it or ahead: the reduction is
-inline, sin and cos run one kernel, picked by a branch on n's parity as in C, and a
-vector takes one kernel where both lanes' parities agree, as an audio phase's do.
+as written, which x64 builds of V8 compute; Node's arm64 build lets the C compiler
+fuse `a*b + c` and differs in the last bit on up to 1.3% of arguments, Chrome 153's on
+2–10%. On arm64 Node runs exp, log, log2, log1p, tanh and atanh up to 1.4× faster
+than jz: its C fuses, and V8's arm64 wasm code builds each f64 constant in up to five
+instructions where the C loads it. sin, cos and tan run level with it or ahead: the
+reduction is inline, sin and cos run one kernel, picked by a branch on n's parity as
+in C, and a vector takes one kernel where both lanes' parities agree, as an audio
+phase's do.
 
 `Math.pow` and `**` follow V8's `math::pow`: y = 2 is x·x, y = ½ is √(x + 0) with
 +∞ at x = −∞, and every other pair, integer exponents included, is the platform C
@@ -1873,8 +1874,9 @@ Node's own arm64 and x64 builds). jz stands in Arm's optimized-routines pow: a
 double-double log from a 128-entry table (`scripts/pow-log-table.mjs` derives and
 checks it) and the 2^(j/64) exp table with tails (`math/trig-tables.js` EXP2_TAB,
 `scripts/exp-table.mjs`), 0.54 ulp, V8's bits on 99.7% of arguments against Node
-25.9's arm64 and x64 builds on macOS. So `x ** 3` calls the kernel as V8 calls pow (x·x·x rounds
-twice and differs on a quarter of arguments), a constant exponent folds only to 1,
+25.9's arm64 and x64 builds on macOS, 10 ns a call where Apple's libm takes 6.6. So
+`x ** 3` calls the kernel as V8 calls pow (x·x·x rounds twice and differs on a quarter
+of arguments), a constant exponent folds only to 1,
 x, x·x or the square root, and the constant folder is the kernel's twin. A constant
 base x > 0 folds the kernel's first half instead: log x is a compile-time
 double-double (`powLogSplit`), and `$math.pow_c` runs the exponential half on y, bit

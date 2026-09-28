@@ -117,7 +117,7 @@ Where behaviour differs from JS:
 - **ASCII case, UTC dates.** No locale or timezone tables: case conversion is ASCII, `normalize` returns its input, Date getters use UTC.
 - **Fixed shapes.** Object fields are slots resolved at compile time; `Object.freeze` does nothing and errors carry `name` and `message` only.
 - **Class methods stay bound.** An extracted class method retains its instance. Object-literal methods use the call receiver.
-- **Math is V8's x64 Math.** Every function returns V8's bits (its own fdlibm, which V8's arm64 builds round differently in the last bit on a fraction of a percent of arguments). `Math.pow`, which V8 hands to the platform's C library, agrees on all but about 0.3% of arguments, one ulp apart.
+- **Math is V8's x64 Math.** Every function returns V8's bits (its own fdlibm, which V8's arm64 builds round differently in the last bit on up to 1.3% of arguments in Node, 10% in Chrome). `Math.pow`, which V8 hands to the platform's C library, agrees on all but about 0.3% of arguments, one ulp apart.
 - **Numeric export parameters.** A parameter an exported function never uses as a string is compiled as a number and converted at the boundary: `export let add = (a, b) => a + b` gives `add(1, '2')` as 3, where JavaScript concatenates.
 
 </details>
