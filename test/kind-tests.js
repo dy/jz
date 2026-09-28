@@ -64,3 +64,23 @@ test('kind tests: typeof and a name decide their tests where the kinds do', () =
   compile(hooks, { warnings: { entries } })
   ok(!entries.some(e => e.code === 'shape-lost'), entries.filter(e => e.code === 'shape-lost').map(e => e.message).join('; '))
 })
+
+// A parameter's default reads its argument by position when the function reads
+// `arguments` (jzify/arguments.js). What the calls pass there decides the
+// default's test: a `null` argument is no missing one, so `f(null)` keeps it.
+test('kind tests: a default read by position runs only where a call leaves the argument out', () => {
+  const cases = [
+    `function f(a = 9) { return arguments.length * 100 + (a === null ? 10 : a === undefined ? 20 : a) }
+export let g = () => f() * 1000 + f(null)`,
+    `function f(a = 9) { return arguments.length * 100 + a }
+export let g = () => f() * 1000 + f(5)`,
+    `function f(a = 9) { return arguments.length * 100 + a }
+export let g = () => f() * 1000 + f(undefined)`,
+    `function f(a, b = 7) { return arguments.length * 100 + a + b }
+export let g = () => f(1) * 1000 + f(1, 2)`,
+  ]
+  for (const src of cases) {
+    const want = oracle(src).g()
+    for (const optimize of levels(0, 2)) is(jz(src, { optimize }).exports.g(), want, `${src.split('\n')[1]} at ${optimize}`)
+  }
+})

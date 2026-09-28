@@ -1814,10 +1814,11 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     if (!hasTag(k, K.NULLISH) && !hasTag(k, K.ABSENT)) eq = false
     else if ((t === K.NULLISH || t === K.ABSENT) && (op === '==' || op === '!=')) eq = true
     else if (t === K.ABSENT && at >= 0) eq = isUndefinedLiteral(isNullishLiteral(c[2]) ? c[2] : c[1])
-    // a parameter no call passes an argument for is undefined itself: equal
-    // to undefined, unequal to null (`if (n11 !== undefined) this.set(n11, …)`
-    // in Matrix4's constructor forwards nothing when every `new Matrix4()` gives none)
-    else if ((t === K.NULLISH || t === K.ABSENT) && paramKeys.has(ctxBase[key] ?? key) && !argBound.has(key)) eq = isUndefinedLiteral(isNullishLiteral(c[2]) ? c[2] : c[1])
+    // a named parameter no call passes an argument for is undefined itself:
+    // equal to undefined, unequal to null (`if (n11 !== undefined) this.set(n11, …)`
+    // in Matrix4's constructor forwards nothing when every `new Matrix4()` gives none);
+    // a position of packed arguments has its row above, `null` there as it is
+    else if ((t === K.NULLISH || t === K.ABSENT) && at < 0 && paramKeys.has(ctxBase[key] ?? key) && !argBound.has(key)) eq = isUndefinedLiteral(isNullishLiteral(c[2]) ? c[2] : c[1])
     else return undefined
     return op === '===' || op === '==' ? eq : !eq
   }
