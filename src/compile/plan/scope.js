@@ -548,7 +548,7 @@ export const inferModuleIntGlobals = (ast) => {
  * an alias could reach the table) keep the dynamic path. Together these can
  * eliminate the `__dyn_*` machinery from a namespace-only program outright.
  */
-export const flattenFuncNamespaces = (ast) => {
+export const flattenFuncNamespaces = (ast, propMap = null) => {
   const names = ctx.funcs.names
   if (!names?.size) return false
   // Cheap structural gate: a flattenable namespace exists only if some lifted
@@ -562,9 +562,11 @@ export const flattenFuncNamespaces = (ast) => {
       if (names.has(n.slice(0, i))) { hasNs = true; break outer }
   }
   // A namespace of plain values only (`parse.comment ??= {…}`, no arrow
-  // property) lifts no name: its witness is a top-level property store on a
-  // function, in a module initializer or the entry (the declared-keys pass
-  // then sees the flattened global as a literal-bound name).
+  // property) lifts no name: its witness is a store to a function's property,
+  // anywhere (`propMap`, the program facts' written properties), or a
+  // top-level compound one, in a module initializer or the entry (the
+  // declared-keys pass then sees the flattened global as a literal-bound name).
+  if (!hasNs && propMap) for (const n of propMap.keys()) if (names.has(n)) { hasNs = true; break }
   if (!hasNs) {
     const topStore = (st) => Array.isArray(st) && ASSIGN_OPS.has(st[0]) && Array.isArray(st[1]) && st[1][0] === '.' && typeof st[1][1] === 'string' && names.has(st[1][1])
     const stmts = (root) => Array.isArray(root) && root[0] === ';' ? root.slice(1) : [root]
@@ -1262,6 +1264,11 @@ export const dropUnreadGlobals = (ast, programFacts) => {
 export const materializeAutoBoxSchemas = (programFacts) => {
   if (!ctx.schema.register) return
   for (const [name, props] of programFacts.propMap) {
+    // A function's properties are the function value's own, in the table its
+    // pointer keys (flattenFuncNamespaces dissolves them where the function
+    // never escapes): a box would stand in for the function wherever its name
+    // is read as a value, a callable no more.
+    if (ctx.funcs.names.has(name)) continue
     // A name whose objects are minted elsewhere (`const alias = ns.inner`, a
     // parameter) or whose sources disagree keeps no merged or boxed layout:
     // the declaration's value replaces a box, and a slot store by a layout
@@ -1284,8 +1291,6 @@ export const materializeAutoBoxSchemas = (programFacts) => {
     const schema = ['__inner__', ...allProps]
     const schemaId = ctx.schema.register(schema)
     ctx.schema.vars.set(name, schemaId)
-    if (ctx.funcs.names.has(name) && !ctx.scope.globals.has(name))
-      declGlobal(name, 'f64')
     if (!ctx.schema.autoBox) ctx.schema.autoBox = new Map()
     ctx.schema.autoBox.set(name, { schemaId, schema })
   }

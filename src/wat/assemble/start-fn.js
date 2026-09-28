@@ -94,8 +94,7 @@ function buildBoxInit() {
       inc('__alloc_hdr', '__mkptr')
       boxInit.push(
         ['local.set', `$${bt}`, ['call', '$__alloc_hdr', ['i32.const', 0], ['i32.const', Math.max(1, schema.length)]]],
-        ['f64.store', ['local.get', `$${bt}`],
-          ctx.funcs.names.has(name) ? ['f64.const', 0] : ['global.get', `$${name}`]],
+        ['f64.store', ['local.get', `$${bt}`], ['global.get', `$${name}`]],
         // A property the program adds later reads `undefined` until it does.
         ...schema.slice(1).map((_, i) =>
           ['f64.store', ['i32.add', ['local.get', `$${bt}`], ['i32.const', (i + 1) * 8]], undefExpr()]),

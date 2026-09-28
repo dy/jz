@@ -371,7 +371,7 @@ export default (ctx) => {
     // wrong value (`[]`, not the real own-key list), not a reject — same
     // function-object-reflection gap, same remedy, as the `.length`/`.name`
     // reject in prepare/index.js's `.` handler.
-    if ((typeof obj === 'string' ? lookupValType(obj) : valTypeOf(obj)) === VAL.CLOSURE)
+    if ((typeof obj === 'string' ? lookupValType(obj) : valTypeOf(obj)) === VAL.CLOSURE || ctx.summary?.at(ctx.func.current).valOfExpr(obj) === VAL.CLOSURE)
       err('Object.keys/getOwnPropertyNames on a function value is not supported — jz compiles closures/named functions straight to WASM funcs with no reflectable property bag; jz has no general function-object reflection')
     if (isHashTyped(obj)) return ro ? emitHashKeysRO(obj) : emitHashKeys(obj)
     if (arrayValType(obj)) return idxKeys(obj, '__len')

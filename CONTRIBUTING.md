@@ -809,7 +809,7 @@ a literal-bound name's layout is no sidecar entry: the plan declares the key
 in the literal (`plan/declare-written-keys.js`: `{ a: 1, b: undefined }` for
 `o.b = 2` or `o['b'] = 2`), so it is a slot of one closed layout; the name's
 layout is bound for the per-name slot paths, which keeps a flattened object
-property out of the function namespace box. Definite means the store runs
+property from being boxed (`materializeAutoBoxSchemas`). Definite means the store runs
 before anything can observe the object: a statement of the same list as the
 binding, with nothing between them that could run other code or ask about
 keys (`in`, a spread, a deletion, a branch, a loop, an unresolved call);
@@ -829,15 +829,18 @@ of another literal) ends its run: an alias reaches code the pass cannot
 follow, and a key declared after a computed store would sit ahead of it in
 the layout. A namespace of plain values (`parse.comment ??= {…}` with no
 arrow property) flattens like one with arrows (`plan/scope.js`
-`flattenFuncNamespaces` witnesses it by a top-level property store on a
-function), so the pass sees the flattened global as a literal-bound name. A
-call through a global bound once to a function (`devirtGlobalCalls`: a
-flattened `m.assign = nz` called as `m.assign(…)`, an alias `nrm = m.assign`)
-rewrites to the function's own call, so the call census, the inliner and the
-parameter proofs read it as one; a global nothing reads once its calls are
-rewritten, or an alias of one, drops its init and leaves `ctx.funcs.globalDevirt`,
-so the function's address is no longer taken by it. One read as a value, or
-one the host holds, keeps both. A conditional store keeps
+`flattenFuncNamespaces` witnesses it by a store to a function's property
+anywhere, or a top-level compound one), so the pass sees the flattened global
+as a literal-bound name. A function's properties are never boxed: where the
+function escapes they stay in the table its pointer keys, so the function
+read as a value is still callable and still a function to `typeof`. A call
+through a global bound once to a function (`devirtGlobalCalls`: a flattened
+`m.assign = nz` called as `m.assign(…)`, an alias `nrm = m.assign`) rewrites
+to the function's own call, so the call census, the inliner and the parameter
+proofs read it as one; a global nothing reads once its calls are rewritten, or
+an alias of one, drops its init and leaves `ctx.funcs.globalDevirt`, so the
+function's address is no longer taken by it. One read as a value, or one the
+host holds, keeps both. A conditional store keeps
 its key out of the literal and in the sidecar, because a declared slot is an
 own property from the literal on and `in`, hasOwnProperty, for-in and
 Object.keys would all report it before the store. This is the one place a

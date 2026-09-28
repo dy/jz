@@ -113,7 +113,7 @@ export default function plan(ast, profiler, summarize) {
   // Function-namespace SROA — dissolve reassigned `f.prop` slots into module
   // globals before inlining/narrowing, so all downstream passes see plain
   // globals instead of the dynamic property machinery.
-  sweep('flattenFuncNamespaces', () => flattenFuncNamespaces(ast))
+  sweep('flattenFuncNamespaces', () => flattenFuncNamespaces(ast, facts().propMap))
   // A literal-key write outside a literal-bound name's layout becomes a
   // declared slot of that literal (flattened function properties included).
   sweep('declareWrittenKeys', () => declareWrittenKeys(ast))

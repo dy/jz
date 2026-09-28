@@ -22,6 +22,7 @@ const TESTS = [
   'data',
   'destruct',
   'closures',
+  'function-props',
   'classes',
   'class-members',
   'method-receivers',
