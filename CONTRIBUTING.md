@@ -1367,6 +1367,22 @@ directly. A bare `let` assigned before every read declares empty, not absent
 (`summary/definite.js`). The block emitter holds a name a checked read or
 store dereferenced present for the rest of its block. `why` reports the first
 cause an array built at a fixed count keeps its checks by (`array-open`).
+The summary also keeps the hull of the arguments each parameter receives over
+a function's direct calls (`paramRangesOf`: a counter's span, arithmetic on
+it, a caller's own hull through a chain of calls; open where a call is
+unbounded, exported, escaped, or a recursion keeps widening it); the emitter
+starts a parameter's flow interval from it, so a ToInt32 of `floor(y) + gy`
+inside a sampler needs no infinity guard. A loop that writes no array header
+(element stores only, calls to functions the module-wide census finds header
+safe, `collectHeaderSafeFuncs`) reads a present array's forwarding word and
+length once before the loop (`presentArrays`, optimize/licm.js); a durable
+array such a loop stores into is saved for the reset ahead of it. An element
+receiver whose one missing value is absence throws from its own bounds test;
+an unbounded index stores in place when inside the length and asks the helper
+past it; a strict equality of two numbers-or-missing compares inline; and
+`const g = f` of a function the module holds, a name or a member of an
+imported namespace, reads as `f` (a call through it is direct, an export of it
+re-exports the function).
 Record scalar replacement uses one validator for field access, nonescape and
 whole-record replacement. Replacement values evaluate before any field changes;
 aliases, captures, differing field sets and observed record values keep storage.

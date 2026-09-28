@@ -137,6 +137,10 @@ const CASE_NAMES = {
   jessie: 'jessie parser',
   jz: 'jz JS compiler (self-compile)',
   webaudio: 'Web Audio graph render (web-audio-api engine)',
+  polytri: 'polygon triangulation + decomposition (pmndrs/math)',
+  worley: 'Worley noise field (pmndrs/math)',
+  fabrik: 'FABRIK inverse kinematics (pmndrs/math)',
+  quatmul: 'quaternion product + inverse (pmndrs/math)',
 }
 
 const HOST_STUB = join(BENCH_DIR, '_lib', 'host-stub.js')
@@ -151,8 +155,9 @@ const HIDDEN_FROM_GEOMEAN = LAB
 // Only the self-compile graph bundles stay out of bench/web/ — their wasm is multi-MB
 // (jz.wasm embeds the whole compiler). The color* lab kernels stay playable in-page.
 // webaudio stays out too: its host-adapter imports need the stubs
-// run-jz-host.mjs wires, which the page's instantiate does not.
-const NO_WEB = new Set(['watr', 'jessie', 'jz', 'webaudio'])
+// run-jz-host.mjs wires, which the page's instantiate does not. The pmndrs/math
+// cases import a vendored module graph the page does not serve.
+const NO_WEB = new Set(['watr', 'jessie', 'jz', 'webaudio', 'polytri', 'worley', 'fabrik', 'quatmul'])
 // Non-jz cases get the 1-page wasm default — plenty for a bench kernel's own
 // data. The `jz` CASE (self-compile: jz compiling itself) is its own path
 // entirely — see compileJzSelfIsolated / bench/_lib/compile-jz-self.mjs below,

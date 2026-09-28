@@ -172,6 +172,10 @@ all prep steps to run.
 | [`delayline`](delayline/delayline.js) | modulated feedback comb through a power-of-two ring — wrap-masked indexing, genuine loop-carried feedback, q16 fraction splits |
 | [`glyfparse`](glyfparse/glyfparse.js) | TrueType `glyf`-style flag/coordinate decoding — variable-length byte grammar, bit tests, running accumulators |
 | [`deltae`](deltae/deltae.js) | CIEDE2000 over Lab pairs — branchy transcendental colorimetry (lab row, like the other colorjs probes: per-libm checksums) |
+| [`polytri`](polytri/polytri.js) | ear-clipping triangulation + convex decomposition of flat plain-array polygons ([pmndrs/math](_lib/pmath/README.md), unmodified) — index arrays built per call, out-buffers written past their length, polygon copies pushed element by element: the runtime-built-array kernel |
+| [`worley`](worley/worley.js) | Worley (cellular) noise field, 2-D + 3-D (pmndrs/math) — `perm[Math.floor(x) + g & 255]` byte-table gathers through a `{ perm }` record, 9 + 27 feature distances per sample, a running minimum: the hash-noise kernel |
+| [`fabrik`](fabrik/fabrik.js) | FABRIK inverse kinematics, ten bones (pmndrs/math) — forward/backward passes over an array of bone objects holding `start`/`end` arrays and a `joint` record, directions normalized into module scratch arrays, the best solution saved and restored: the object-graph kernel |
+| [`quatmul`](quatmul/quatmul.js) | quaternion products, inverses and normalizations over arrays of four-element plain arrays (pmndrs/math) — one out-parameter, pointer chasing between the elements: the fixed-size linear-algebra kernel |
 
 The **`lab` rows** — the self-referential `watr`/`jessie`/`jz` (JZ or its deps
 compiling code) and the JS-only intrinsic probes `colorconv`/`colorlch`/
