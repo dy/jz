@@ -17,7 +17,7 @@ import { extractParams, classifyParam, PARAM_NAME, ASSIGN_OPS, isArrayIndexKey }
 import { staticPropertyKey, staticObjectProps, inlineArraySid, inlineArrayUnion, staticIndexKey, intLiteralValue, structLiteralFields, intExprRange } from '../src/static.js'
 import { VAL, lookupValType, lookupNotString, isDisjointFrom, KIND_UNIVERSE, mayBeUndefined, repOf, repOfGlobal } from '../src/reps.js'
 import { structInline } from '../src/abi/index.js'
-import { ctx, inc, err, warnDeopt, PTR, LAYOUT, followForwardingWat, setLinkDemand } from '../src/ctx.js'
+import { ctx, inc, err, strictCode, warnDeopt, PTR, LAYOUT, followForwardingWat, setLinkDemand } from '../src/ctx.js'
 import { strHashLiteral, dynPropsFilterSetIR, durableFwdLogIR, durableArrSnapIR, durableArrSnapNode } from './collection.js'
 import { hasDurableReset } from './collection/durable.js'
 import { errorCodeLiteral, ERR } from '../err-codes.js'
@@ -976,7 +976,7 @@ export default (ctx) => {
       return true
     }
     const dynLoad = (objExpr, keyExpr) => {
-      if (ctx.transform.strict) err(`strict mode: dynamic property access \`${typeof arr === 'string' ? arr : '<expr>'}[<expr>]\` falls back to __dyn_get. Use a literal key or known typed-array receiver, or pass { strict: false }.`)
+      if (strictCode()) err(`strict mode: dynamic property access \`${typeof arr === 'string' ? arr : '<expr>'}[<expr>]\` falls back to __dyn_get. Use a literal key or known typed-array receiver, or pass { strict: false }.`)
       warnDeopt('deopt-dyn-read', `dynamic property read \`${typeof arr === 'string' ? arr : '<expr>'}[…]\` couldn't resolve a static type — it falls back to a runtime hash lookup (~1.5–2× slower than a typed/slot read, far worse in a hot loop). Use a literal key, a typed-array receiver, or a Map for genuinely dynamic keys.`)
       const fn = ensureHostOpaqueGet() ? '__dyn_get_any' : '__dyn_get'
       if (fn === '__dyn_get') inc(fn)

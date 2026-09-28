@@ -11,7 +11,7 @@ import { inBoundsArrIdx } from '../../type/canonical-bounds.js'
 import { bodyOnlyCharCodeAtCalls } from '../../abi/string.js'
 import { T, isLeaf, isReassigned } from '../../ast.js'
 import { includeForRuntimeKeyIteration, includeModule } from '../../autoload.js'
-import { LAYOUT, PTR, ctx, emitArity, err, inc, setLinkDemand, warnDeopt } from '../../ctx.js'
+import { LAYOUT, PTR, ctx, emitArity, err, strictCode, inc, setLinkDemand, warnDeopt } from '../../ctx.js'
 import {
   BOXED_MUTATORS, TRUE_NAN, allocPtr, asF64, asI32, asI64, block64, boolBoxIR, cloneIR, deferBigintBox, dispatchByPtrType, freshId, isBoolAtom, isGlobal, isNullish, materializeDeferredBigint, ptrOffsetIR, ptrTypeEq, reconstructArgsWithSpreads, sidecarOverride, temp, tempI32, throwTypeErrorIR, typed, undefExpr, usesDynProps,
 } from '../../ir.js'
@@ -727,7 +727,7 @@ function tryDynamicPropCall({ obj, method, parsed, vt, callMethod, optional = fa
       return callMethod(obj, (fn, receiver, ...args) => ctx.closure.call(
         asF64(emit(fn)), args, false, false, receiver == null ? null : asF64(storedValue(receiver))))
     includeForRuntimeKeyIteration()
-    if (ctx.transform.strict)
+    if (strictCode())
       err(`strict mode: method call \`${typeof obj === 'string' ? obj : '<expr>'}.${method}(...)\` on a value of unknown type pulls dynamic dispatch stdlib. Annotate the receiver type or pass { strict: false }.`)
     const objTmp = temp('mobj')
     const propTmp = temp('mprop')
@@ -844,7 +844,7 @@ function externalMethodFallback({ obj, method, parsed }) {
         ['then', throwTypeErrorIR()],
         ['else', emitNonCallable(obj, parsed, recv())]]], 'f64')
   }
-  if (ctx.transform.strict)
+  if (strictCode())
     err(`strict mode: method call \`${typeof obj === 'string' ? obj : '<expr>'}.${method}(...)\` on a value of unknown type falls through to host \`__ext_call\`. Annotate the receiver type or pass { strict: false }.`)
   // RequireObjectCoercible (ES 13.3 — the nullish-receiver
   // check) must run BEFORE the target-capability branch below chooses

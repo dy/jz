@@ -1027,6 +1027,11 @@ export function locate(loc) {
   return { file: part?.file ?? null, line, col, text: src.split('\n')[line - 1] }
 }
 
+/** Strict mode governs the program's own code, not the compiler's runtime
+ *  (`jz:` modules, their signatures marked in prepare): a kind the summary
+ *  sharpens may route a runtime function through a path strict mode rejects. */
+export const strictCode = () => ctx.transform.strict && !ctx.func.current?.std
+
 export function err(msg, cause) {
   let detail = msg
 

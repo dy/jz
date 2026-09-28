@@ -11,7 +11,7 @@ import { OPTF } from '../ctx.js'
  * @module compile/emit-assign
  */
 
-import { ctx, err, inc, warnDeopt, PTR, LAYOUT, setLinkDemand } from '../ctx.js'
+import { ctx, err, strictCode, inc, warnDeopt, PTR, LAYOUT, setLinkDemand } from '../ctx.js'
 import { T, ACCESSOR_SET } from '../ast.js'
 import { classAccessor, classesWith, lacksSlot } from './emit/class-dispatch.js'
 import { staticPropertyKey, staticIndexKey, staticObjectProps, inlineArraySid, structLiteralFields, inplaceKey, intExprRange } from '../static.js'
@@ -164,7 +164,7 @@ const isPureChain = (n) => typeof n === 'string' || (Array.isArray(n) && (n[0] =
 function ensureDynSetAllowed(arr) {
   const arrLabel = typeof arr === 'string' ? arr : '<expr>'
   warnDeopt('deopt-dyn-write', `dynamic property write \`${arrLabel}[…] = …\` couldn't resolve a static type — it falls back to a runtime hash store (~2× slower than a typed/slot write, far worse in a hot loop). Use a literal key, a numeric typed-array index, or a Map for genuinely dynamic keys.`)
-  if (!ctx.transform.strict) return
+  if (!strictCode()) return
   err(`strict mode: dynamic property assignment \`${arrLabel}[<expr>] = ...\` falls back to __dyn_set. Use a literal key or known array/typed-array numeric index, or pass { strict: false }.`)
 }
 

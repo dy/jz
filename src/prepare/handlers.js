@@ -2626,6 +2626,7 @@ function defFunc(name, node) {
   // Sub-module `export let X` is just a re-importable symbol — staying internal
   // unlocks treeshake + type specialization once main stops referencing it.
   const exported = !!ctx.funcs.exports[name] && ctx.module.moduleStack.length === 0
+  if (ctx.module.inStd) sig.std = true
   const funcInfo = createFunction(name, body, sig, exported, hasDefaults ? defaults : null, hasRest[0] ?? null)
   ctx.funcs.list.push(funcInfo)
   ctx.funcs.names.add(name)
