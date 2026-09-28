@@ -725,7 +725,8 @@ export const controlFlowOps = {
           for (const c of vs.cands) {
             if (!isNullable(ctx.summary?.at(ctx.func.current).kindOfExpr(c.recv)) || freeRefs.get(c.recv)?.val) continue
             conjs.push(['i32.eqz', isNullish(asF64(emit(c.recv)))])
-            freeRefs.set(c.recv, { val: VAL.TYPED })
+            // present in the fast arm: its reads take the kind without the missing part
+            freeRefs.set(c.recv, { val: VAL.TYPED, notNullish: true })
           }
           // max iv as i64. An 'f64' bound (untyped param, unknown box) converts via
           // ceil (`<`: the max int iv under B) / floor (`<=`) + trunc_sat — never
