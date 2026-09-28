@@ -469,6 +469,25 @@ test('interop: numeric output-only buffers use typed storage and copy back on re
   }
 })
 
+// The host array is the one the function mutated: a store past its end grows
+// it, a length store shrinks it, and the function returns it, as in JS.
+test('interop: a plain array written past its end comes back grown, and shrunk by a length store', () => {
+  const src = `export function set(out, o, v) { out[o] = v; return out }
+    export function trim(out, n) { out.length = n; return out }`
+  for (const optimize of levels(0, 2, 3)) {
+    const { exports } = interop.instantiate(compile(src, { optimize }))
+    const a = [0, 0]
+    is(exports.set(a, 5, 7), a, 'the argument comes back')
+    is(a.length, 6, 'grown to hold the store')
+    is(a[5], 7); is(a[0], 0); is(a[3], undefined, 'the gap is empty')
+    is(exports.set(a, 1, 3), a); is(a.join(), '0,3,,,,7', 'an in-range store keeps the rest')
+    is(exports.trim(a, 1), a); is(a.length, 1, 'a length store shrinks it'); is(a[0], 0)
+    const empty = []
+    exports.set(empty, 0, 1)
+    is(empty.join(), '1', 'an empty array grows from nothing')
+  }
+})
+
 test('interop: one numeric store cannot type an otherwise unknown output buffer', () => {
   const src = `export let mixed = (out, v) => { out[0] = 1; out[1] = v }
     export let copy = (out, src) => { for (let i = 0; i < 2; i++) out[i] = src[i] }

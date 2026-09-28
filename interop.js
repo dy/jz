@@ -1191,13 +1191,16 @@ export const wrap = (memSrc, inst, state) => {
     return b
   }
   // A plain array's numbers, as the module left them, into the host array they
-  // were copied from; an element that is itself an array in both takes its own.
-  // Other elements and the length stay the host's.
+  // were copied from, at the length the module left it (a store past the end
+  // grew it, a `length` store shrank it: the host array is the one the
+  // function mutated); an element that is itself an array in both takes its
+  // own. Other elements stay the host's.
   const copyElements = (host, p) => {
     const m = new DataView(mem.buffer)
     let off = offset(p)
     while (m.getInt32(off - 4, true) === -1) off = m.getUint32(off - 8, true)
-    const n = Math.min(host.length, m.getInt32(off - 8, true))
+    const n = m.getInt32(off - 8, true)
+    if (host.length !== n) host.length = n
     for (let i = 0; i < n; i++) {
       const e = m.getBigInt64(off + i * 8, true)
       if (!isBox(e)) host[i] = i64ToF64(e)
