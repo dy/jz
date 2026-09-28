@@ -890,8 +890,10 @@ object shapes ride on the cell and its reads join both. A parameter used only
 in tests, identity compares and `typeof` keeps the shapes of a join it
 cannot name. A conditional on a parameter no call has bound waits for a later
 round; one the kinds decide walks only its live arm (`x == null` of a kind
-without the nullish tags; `x.p` of a number, a boolean or a BigInt outside
-their few methods, which is undefined). `if (x.p)` proves `x` non-nullish
+without the nullish tags; `x === undefined` of a parameter no call passes an
+argument for, forwarded as it is or not, `argBound`: three's `Matrix4(n11, …)`
+forwards to `set` only when given values; `x.p` of a number, a boolean or a
+BigInt outside their few methods, which is undefined). `if (x.p)` proves `x` non-nullish
 where true and, where false and every object `x` may hold answers `p` with a
 class flag (`static { C.prototype.isC = true }`, a getter of the literal), no
 object at all; with the per-kind clones narrow/specialize.js gives a function

@@ -671,7 +671,11 @@ export const inlineHotInternalCalls = (programFacts, ast) => {
     if (func.raw || !func.body || func.rest) continue
     if (isExported(func) && !soleCallerExport) continue
     if (programFacts.addressTakenNames.has(func.name) && !soleCallerExport) continue
-    if (func.defaults && Object.keys(func.defaults).length) continue
+    // A default some call lets run has no place in a spliced body; one no call
+    // does (the summary's defaultRuns, emit-func.js drops its check too) is
+    // no default: three's `toArray(array = [], offset = 0)` and
+    // `fromArray(array, offset = 0)` inline where every caller passes both.
+    if (func.defaults && Object.keys(func.defaults).some(p => ctx.summary?.at(func.name)?.defaultMayRun(p) !== false)) continue
     const paramNames = new Set((func.sig?.params || []).map(p => p.name))
     if (paramNames.size && some(func.body, n => {
       if (n[0] !== '()' || !Array.isArray(n[1]) || n[1][0] !== '.') return false
