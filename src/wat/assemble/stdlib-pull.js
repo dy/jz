@@ -275,7 +275,8 @@ export function pullStdlib(sec) {
       // `__start` a global's post-init value IS its declared init — restore the constant
       // directly, no slot. Excluded: the runtime-protocol globals (each has its own
       // reset right here in `__clear` — resetting `__heap_reset` itself would be
-      // self-defeating), `__tof_*` coercion scratch (written-before-read within one
+      // self-defeating; the escape flag `__esc` every frame and the host save and
+      // restore around a call), `__tof_*` coercion scratch (written-before-read within one
       // expression, can never carry state across a round) and `__hc_*` helper counters
       // (diagnostics must observe rounds, not be reset by them).
       const globalRestores = []
@@ -283,7 +284,7 @@ export function pullStdlib(sec) {
         const startFn = sec.start.find(n => Array.isArray(n) && n[0] === 'func' && n[1] === '$__start')
         const SNAP_PROTOCOL = new Set(['__heap', '__heap_reset', '__heap_start',
           '__dyn_get_cache_off', '__dyn_get_cache_props', '__durable_fwd_buf', '__durable_fwd_n',
-          '__durable_arr_buf', '__durable_arr_n', '__gsnap_base'])
+          '__durable_arr_buf', '__durable_arr_n', '__gsnap_base', '__esc'])
         const runtimeWritten = new Set()
         const scanSet = (node) => {
           if (node[0] === 'global.set' && typeof node[1] === 'string' && node[1][0] === '$') runtimeWritten.add(node[1].slice(1))

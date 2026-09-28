@@ -18,7 +18,7 @@
 import { DBG_INVARIANTS } from '../debug.js'
 import { resetTape, fromWat, toWat, verify } from '../ir/tape.js'
 import { treeshake } from './treeshake.js'
-import { schemaSections } from './sections.js'
+import { schemaSections, releaseSection } from './sections.js'
 import { pruneUnusedThrowRuntime } from './throw-runtime.js'
 import { orderFuncs } from './order.js'
 import { stripLocalRenameSuffixes } from './rename-locals.js'
@@ -47,9 +47,15 @@ export function link(module, facts) {
   }
   if (DBG_INVARIANTS) check(root, 'after the body passes')
   if (!cfg || cfg.fusedRewrite !== false) foldLowWordMasks(root)
-  if (!cfg || cfg.arenaRewind !== false) arenaRewind(root, facts)
+  // The rewind's proof runs at every level (the host's release of a call's
+  // argument copies reads it); the rewrite only where the rewind is on.
+  const rewind = !cfg || cfg.arenaRewind !== false
+  const arena = arenaRewind(root, { ...facts, rewrite: rewind })
+  // Which exports keep memory per call: the advisory reads the verdict itself.
+  if (rewind) facts.adviseKept?.(arena)
   const callCount = treeshake(root, { removeDead: !cfg || cfg.treeshake !== false, userFuncs: facts.userFuncs, userGlobals: facts.userGlobals })
   schemaSections(root, facts)
+  if (facts.exportInner) releaseSection(root, arena.releasable, facts.exportInner, arena.flagged)
   pruneUnusedThrowRuntime(root, facts)
   // watr's `sortLocals` orders the final body's declarations; the tape orders them only when watr does not run
   if ((!cfg || cfg.sortLocalsByUse !== false) && !(cfg && cfg.watr)) sortLocalsByUse(root)

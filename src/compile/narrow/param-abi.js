@@ -20,6 +20,7 @@ import { ensureParamRep } from '../../param-reps.js'
 import { scanBindingUses, USE, BINDING_USE_KIND, BINDING_USE_USES } from '../analyze-scans.js'
 import { K, tagOf, core } from '../../summary/kind.js'
 import { frameNode } from '../../function.js'
+import { materializeVariant } from '../variant.js'
 
 // narrowMutatedParams: admit a body-WRITTEN param into the i32 specialization
 // when every mutation of it is provably int-preserving. Reuses type.js's
@@ -326,42 +327,119 @@ export function applyTypedPointerParamAbi(paramReps, addressTaken) {
 }
 
 
+/** The element kinds an export's typed slots take. The origin, under the public
+ *  name, takes Float64Array at every slot; each variant, under a hidden export
+ *  name (`<function>:<key>`), is the same body with its own kinds: Float32Array
+ *  at every slot, or Float32Array at the in-place slots (stored into and read)
+ *  and Float64Array at the others. The host calls the one its arguments fit
+ *  exactly (interop.js), so an element the body stores and reads back rounds
+ *  as the caller's own array rounds it, and a Float32Array block crosses as
+ *  itself. */
+const ORIGIN_KINDS = { inPlace: 'Float64Array', other: 'Float64Array' }
+const KIND_VARIANTS = [
+  { key: 'Float32Array', inPlace: 'Float32Array', other: 'Float32Array' },
+  { key: 'mixed', inPlace: 'Float32Array', other: 'Float64Array' },
+]
+
+/** Each node of `from` → its copy in `to`, a structural clone (ast.js cloneNode). */
+function twinNodes(from, to) {
+  const twin = new Map(), stack = [from, to]
+  while (stack.length) {
+    const b = stack.pop(), a = stack.pop()
+    if (!Array.isArray(a) || !Array.isArray(b)) continue
+    twin.set(a, b)
+    for (let i = 0; i < a.length; i++) stack.push(a[i], b[i])
+  }
+  return twin
+}
+
+/** A slot takes the typed pointer ABI in `ctor`'s kind: the wrapper normalizes
+ *  the host value at entry, the lattice sees a typed argument at every
+ *  forward. The pointer narrowing itself waits for applyTypedPointerParamAbi,
+ *  after the fixpoint: an i32 signature this early reads as a numeric i32 at
+ *  every forward (applyI32ParamSpecialization) instead of a pointer. A
+ *  trailing `+` asks the wrapper to copy the storage back after the call. */
+function typeSlot(func, k, ctor, writes, inPlace, paramReps) {
+  const p = func.sig.params[k], rep = ensureParamRep(paramReps, func.name, k)
+  rep.val = VAL.TYPED
+  ;(rep.possibleKinds ||= new Set()).add(VAL.TYPED)   // the boundary supplies this kind
+  rep.typedCtor = 'new.' + ctor
+  rep.recvArrTyped = true   // the receiver IS typed: no runtime kind probe at reads
+  p.boundaryTyped = writes ? ctor + '+' : ctor
+  if (inPlace) p.boundaryInPlace = true
+}
+
+/** The kind variants an export's slots call for, each exported under its
+ *  hidden name, minted once: Float32Array always, the mixed kinds only where
+ *  an in-place slot and another stand side by side (otherwise they are the
+ *  origin's, or Float32Array's). A variant minted after some slots took the
+ *  origin's kinds takes them in its own. A variant calls what its origin
+ *  calls, from its own body: those calls join the census, so every callee's
+ *  lattice sees the kinds the variant passes (a callee fed two kinds splits
+ *  per kind, specializeBimorphicTyped). */
+function mintKindVariants(func, slots, paramReps, callSites) {
+  const typed = func.sig.params.filter(p => p.boundaryTyped)
+  const inPlace = typed.some(p => p.boundaryInPlace) || slots.some(s => s.inPlace)
+  const other = typed.some(p => !p.boundaryInPlace) || slots.some(s => !s.inPlace)
+  const own = callSites.filter(cs => cs.callerFunc === func)
+  func.boundaryVariants ??= []
+  for (const kinds of KIND_VARIANTS) {
+    if (func.boundaryVariants.some(v => v.func.boundaryKinds === kinds)) continue
+    if (kinds.inPlace !== kinds.other && !(inPlace && other)) continue
+    const clone = materializeVariant({ origin: func, name: `${func.name}$${kinds.key}`, kind: 'boundary-kind', paramReps, eligibleSites: [], fallback: func })
+    clone.boundaryKinds = kinds
+    clone.boundaryOrigin = func.name
+    // a slot copied typed keeps its in-place mark: it takes its kind in the variant's
+    clone.sig.params.forEach((p, k) => { if (p.boundaryTyped) typeSlot(clone, k, p.boundaryInPlace ? kinds.inPlace : kinds.other, p.boundaryTyped.endsWith('+'), !!p.boundaryInPlace, paramReps) })
+    const twin = twinNodes(func.body, clone.body), at = n => twin.get(n) ?? n
+    for (const cs of own) {
+      if (!twin.has(cs.node)) continue
+      const argList = cs.argList.map(at), node = at(cs.node)
+      callSites.push(cs.synthetic ? { callee: cs.callee, argList, callerFunc: clone, node, synthetic: true } : { callee: cs.callee, argList, callerFunc: clone, node })
+    }
+    const exportName = `${func.name}:${kinds.key}`
+    ctx.funcs.exports[exportName] = clone.name
+    func.boundaryVariants.push({ exportName, func: clone })
+  }
+}
+
 /** Exported parameters used only as numeric array-likes (paramNumericArrayLike)
- *  take the typed pointer ABI as Float64Array: the wrapper normalizes the host
- *  value at entry (`jz:i64exp` `t`), the lattice sees a typed argument at every
- *  forward, and the body reads typed storage. Seeded before the signature
- *  fixpoint so callees fed from the parameter inherit the kind. */
+ *  take the typed pointer ABI (typeSlot, `jz:i64exp` `t`, the in-place slots in
+ *  `k`), and the body reads typed storage. A round types an export's slots in
+ *  the origin and in each kind variant (above) by its own kinds, so every
+ *  round's summary sees them all. Seeded before the signature fixpoint so
+ *  callees fed from the parameter inherit the kind. */
 export function applyExportTypedArrayAbi(paramReps, callSites, addressTaken) {
   const touched = []
   const calledInside = new Set()
   for (const cs of callSites) calledInside.add(cs.callee)
-  for (const func of ctx.funcs.list) {
-    if (!isExported(func) || func.raw || !func.body) continue
+  // A copy: minting appends the variants, typed here with their origin.
+  for (const func of ctx.funcs.list.slice()) {
+    if (!isExported(func) || func.raw || !func.body || func.boundaryOrigin) continue
     // The contract holds at the boundary only: an internal caller or a value
     // use could hand the function any array, so such exports keep the dynamic path.
     if (calledInside.has(func.name) || addressTaken.has(func.name)) continue
     const restIdx = func.rest ? func.sig.params.length - 1 : -1
+    const slots = []
     func.sig.params.forEach((p, k) => {
       if (k === restIdx || p.boundaryTyped || p.type !== 'f64' || p.ptrKind != null || p.jsstring || func.defaults?.[p.name] != null) return
       const use = paramNumericArrayLike(frameNode(func), p.name, new Set(), func.sig.params.map(q => q.name))
-      if (!use) return
-      const rep = ensureParamRep(paramReps, func.name, k)
-      rep.val = VAL.TYPED
-      ;(rep.possibleKinds ||= new Set()).add(VAL.TYPED)   // the boundary supplies this kind
-      rep.typedCtor = 'new.Float64Array'
-      rep.recvArrTyped = true   // the receiver IS typed: no runtime kind probe at reads
-      // The pointer narrowing itself waits for applyTypedPointerParamAbi, after
-      // the fixpoint: an i32 signature this early reads as a numeric i32 at
-      // every forward (applyI32ParamSpecialization) instead of a pointer. A
-      // trailing `+` asks the wrapper to copy the storage back after the call.
-      p.boundaryTyped = use.writes ? 'Float64Array+' : 'Float64Array'
-      if (touched.at(-1) !== func.body) touched.push(func.body)
-      // The typed readers live in the typedarray module, which only a source
-      // constructor would otherwise pull in.
-      ctx.module.include?.('typedarray')
+      // An element the body stores and reads back observes the element kind.
+      if (use) slots.push({ k, writes: use.writes, inPlace: use.writes && use.reads })
     })
+    if (!slots.length) continue
+    mintKindVariants(func, slots, paramReps, callSites)
+    for (const target of [func, ...func.boundaryVariants.map(v => v.func)]) {
+      const kinds = target.boundaryKinds ?? ORIGIN_KINDS
+      for (const { k, writes, inPlace } of slots) typeSlot(target, k, inPlace ? kinds.inPlace : kinds.other, writes, inPlace, paramReps)
+      touched.push(target.body)
+    }
+    // The typed readers live in the typedarray module, which only a source
+    // constructor would otherwise pull in.
+    ctx.module.include?.('typedarray')
   }
   // A settled signature fact: the bodies read their parameters' kinds (analyze.js seam).
   if (touched.length) invalidateBodies(touched)
   return touched.length > 0
 }
+

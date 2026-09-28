@@ -4529,7 +4529,8 @@ test('propagateLocals: forwards single-use temps and tees the first of multiple 
     [`export let f = (a, c) => { let p = a[0] + a[1]; let r = p; if (c) r = p * 2; return r }`, [[new Float64Array([3, 4]), 0], [new Float64Array([3, 4]), 1]]],
     [`export let f = (a) => { let v = a[0]; a[0] = 99; return v + a[0] }`, [[new Float64Array([7])]]],
     [`export let f = (a, n) => { let k = a[0] * 2; let s = 0; for (let i = 0; i < n; i++) s += k; return s }`, [[new Float64Array([5]), 0], [new Float64Array([5]), 1], [new Float64Array([5]), 3]]],
-    [`export let f = (a, d) => { let q = (100 / d) | 0; a[0] = 7; return q + a[0] }`, [[new Int32Array([0]), 0], [new Int32Array([0]), 5]]],
+    // an argument stored into and read back takes a float array (README: in-place array arguments)
+    [`export let f = (a, d) => { let q = (100 / d) | 0; a[0] = 7; return q + a[0] }`, [[new Float64Array([0]), 0], [new Float64Array([0]), 5]]],
   ]) {
     const js = oracle(s).f
     for (const level of [{ level: 1 }, { level: 2, watr: false }, { level: 'fast' }, { level: 2 }, { level: 'speed' }]) {

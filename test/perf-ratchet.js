@@ -104,6 +104,17 @@ const loopBodyOps = (wat) => {
   return count
 }
 
+// Element-kind variants (2026-09-28): an export whose array parameter the body
+// uses as numbers has Float32Array variants beside it (narrow/param-abi.js),
+// the same loops over another element kind, of which a call runs one. Their
+// loops count: buf 14409 -> 15798, nest 2187 -> 3571, fgather 5960 -> 12560,
+// ring 5880 -> 18720 (an in-place slot beside a read-only one keeps the mixed
+// variant too). slice 64828 -> 68806: its variants add 8074, and
+// __dyn_get_any, called from both wrappers, stays outlined where one wrapper
+// inlined it (-4096). A receiver the summary cannot type is tested before its
+// loop, not per iteration (compile/analyze/frame-effects.js): condref and the
+// numeric categories are unchanged. The bench corpus exports no array
+// parameter; its sizes do not move.
 // Signed zero of `x + 0` (2026-09-27): the fold `x + 0.0 → x` held only for an
 // integer x (−0 + 0 is +0; stdlib's gamma-lanczos-sum divided by that zero), so
 // the corpus's f64 `+ 0` sites keep their add: mixed 1137 → 1148, the other

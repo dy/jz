@@ -87,3 +87,23 @@ export function schemaSections(root, { schemas, fieldContracts, namedUses, error
     custom('jz:views', out)
   }
 }
+
+/** `jz:release`: the exports whose calls keep nothing they allocate or are
+ *  handed (optimize/arena-rewind.js), so the host may rewind the heap to where
+ *  it stood before it copied their arguments in (interop.js); `flag` names
+ *  those whose frames run escape sites, released only when the call left the
+ *  escape flag down, which the module then exports as `__esc`. `exportInner`
+ *  maps each export name to the function its wrapper calls. */
+export function releaseSection(root, releasable, exportInner, conditional) {
+  const release = [], flag = []
+  for (const [name, inner] of exportInner) if (releasable.has(inner)) { release.push(name); if (conditional?.has(inner)) flag.push(name) }
+  if (!release.length) return
+  const c = push(root, node(intern('@custom')))
+  push(c, str('"jz:release"'))
+  push(c, bytes([...utf8.encode(JSON.stringify(flag.length ? { release, flag } : { release }))]))
+  if (flag.length) {
+    const e = push(root, node(intern('export')))
+    push(e, str('"__esc"'))
+    push(push(e, node(intern('global'))), str('$__esc'))
+  }
+}

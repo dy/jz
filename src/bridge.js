@@ -152,10 +152,13 @@ export const bind = (name, handler) => {
 }
 
 /** Register a host import once, idempotent on (module, name). Stdlib modules
- *  call this from each use site without re-adding the env/wasi import. */
-export const hostImport = (mod, name, fn) => {
+ *  call this from each use site without re-adding the env/wasi import.
+ *  `keeps`: the host may keep a value it is handed (a callback it schedules);
+ *  any other runtime import keeps nothing (optimize/arena-rewind.js). */
+export const hostImport = (mod, name, fn, keeps = false) => {
   if (ctx.module.imports.some(i => i[1] === `"${mod}"` && i[2] === `"${name}"`)) return
   ctx.module.imports.push(['import', `"${mod}"`, `"${name}"`, fn])
+  if (!keeps) ctx.module.keepsNothing.add(fn[1])
 }
 
 /** WAT stdlib→stdlib deps for `resolveIncludes()`. */

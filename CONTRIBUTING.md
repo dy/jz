@@ -1053,6 +1053,61 @@ under the function's WAT name once its body is emitted, and inserted after
 the peephole walk, which copies the spine of every loop it changes inside
 (optimize/loop-rewind.js).
 
+An escape the census finds at one node of a function's or a closure's frame
+(a heap value stored where it outlives the call, a growth of an outer
+container, a call it cannot name) is a site, not a verdict, when it may not
+run on a call: in a branch (an `if` or `?:` arm, the right side of `&&`, `||`
+or `??`, a logical assignment's store, a `catch` handler), past a statement
+that may return, or behind its own test (an element store grows only a
+receiver that is no typed array, tested where the receiver may be one; the
+tests meeting at one site raise the flag where any receiver is none). A
+test runs no iteration: in a loop, or a callback run per element, it stands
+before the outermost loop the receiver stays the same through, never outside
+a named arrow's body (it runs from each of its calls), and a receiver that
+changes within the innermost leaves no test. Any other escape
+runs on every call that reaches it, a loop's body included, and stays a
+verdict: a flag every call raises would buy nothing. The emitter
+raises the escape flag `$__esc` where a site runs (emit/dispatch.js), and
+link restores a conditional frame's heap at return only when the flag stayed
+down: it saves and clears the flag at entry and joins it back at exit
+(optimize/arena-rewind.js). What link itself would veto at one instruction (a
+store of a table's global, a call that hands a host import a value, an
+indirect call into a table holding unsafe code) raises the flag there under
+the same rule. A frame restores on the flag for a reason of its own (a census
+site, or a flag raised in user code); one a runtime kernel's rare path alone
+flags keeps its heap, so no call pays the protocol for it. The runtime's own
+host imports (bridge.js hostImport) keep nothing they are handed but a
+callback they schedule, so a call to one is no escape. A catch raises the
+flag, since the frames an exception left skipped their epilogues. A frame
+that suspends, a kernel filing into a module-wide table and a tail call out
+of a frame stay vetoed; a loop's per-iteration rewind reads no flag, so a
+loop with a site or a flagging callee is not rewound; a site the emitter never
+flagged (compile/index.js checks each) leaves its frame whole. Flag writes no
+conditional frame can reach are dropped; a guard whose test sets a local a
+later read shares (optimize/cse-address.js) keeps the test.
+
+A call through a binding the summary resolves to closures (`calleeOf`) runs
+those closures: each is censused through its own view and its arena facts join
+the caller's. Link takes the closures they were emitted as, every closure the
+summary never saw, and every table entry that is no closure as the targets of
+the indirect call.
+
+An exported parameter used as a numeric array (paramNumericArrayLike) is
+Float64Array in the export and has kind variants under hidden export names
+(narrow/param-abi.js): Float32Array at every typed slot, and Float32Array at
+the slots stored into and read back with Float64Array at the others. The host
+calls the one the arguments fit exactly (interop.js kindDispatch); a slot read
+after it is written takes only its own kind, or a plain Array for Float64Array.
+A variant is minted only where its kinds differ (the mixed one where an
+in-place slot stands beside another) and takes each slot in the same round as
+its origin, so the summary is rebuilt no more often than without it. A variant
+calls what its origin calls, from its own body: those calls join the call-site
+census, so a callee fed both kinds splits per kind (specializeBimorphicTyped)
+instead of going generic.
+`jz:release` names the exports whose calls keep nothing, `flag` those that keep
+nothing when the escape flag stays down: the host rewinds the heap to where it
+stood before it copied the arguments in.
+
 `E[Symbol.iterator]()` is `__it_from(E)` for every receiver (jzify): an
 indexed value's own iterator, a collection's snapshot view, a provider's
 `@@iterator` result, a machine itself; a jz builtin carries no `@@iterator`

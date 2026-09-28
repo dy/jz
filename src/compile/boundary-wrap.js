@@ -112,12 +112,15 @@ export function synthesizeBoundaryWrappers() {
       : ['func', `$${name}$exp`]
     // jsstring params flow as externref end-to-end; boxed params ride i64; numbers f64.
     const i64Params = [], bigintBoxParams = []
-    // Slots the wrapper normalizes to a typed array before boxing (`t`).
-    let typedSlots = null
+    // Slots the wrapper normalizes to a typed array before boxing (`t`), and
+    // those the body stores into and reads back (`k`), where only an argument
+    // of the slot's own kind is exact (narrow/param-abi.js boundaryInPlace).
+    let typedSlots = null, inPlaceSlots = null
     sig.params.forEach((p, i) => {
       wrapNode.push(['param', `$${p.name}`, p.jsstring ? 'externref' : paramIsI64(p) ? 'i64' : 'f64'])
       if (paramIsI64(p)) i64Params.push(i)
       if (p.boundaryTyped) (typedSlots ??= {})[String(i)] = p.boundaryTyped
+      if (p.boundaryInPlace) (inPlaceSlots ??= []).push(i)
       if (representationHostBoxesParam(ctx, func, i)) {
         if (!paramIsI64(p)) throw new Error(`RepresentationPlan host-box param lacks i64 boundary: ${name}[${i}]`)
         bigintBoxParams.push(i)
@@ -160,7 +163,7 @@ export function synthesizeBoundaryWrappers() {
       // `m` (lane count) marks a multi-value result so interop / the test adapter decode each
       // lane (vs `r`'s single reinterpret). Always recorded — even with no i64 params — so the
       // numeric-only `(a,b)=>[a+1,b+2]` tuple still gets its lanes turned back into numbers.
-      func._exportI64 = { p: i64Params, m: sig.results.length, t: typedSlots }
+      func._exportI64 = { p: i64Params, m: sig.results.length, t: typedSlots, k: inPlaceSlots }
       wrappers.push(wrapNode)
       continue
     }
@@ -197,7 +200,7 @@ export function synthesizeBoundaryWrappers() {
     // Record the i64 carrier map for interop.js (jz:i64exp). A pure-numeric
     // export records nothing.
     if (i64Params.length || resultReinterpret)
-      func._exportI64 = { p: i64Params, r: resultReinterpret ? 1 : 0, t: typedSlots }
+      func._exportI64 = { p: i64Params, r: resultReinterpret ? 1 : 0, t: typedSlots, k: inPlaceSlots }
     wrappers.push(wrapNode)
   }
   return wrappers

@@ -705,17 +705,21 @@ const EMPTY_NAMES = new Set()
  *  numeric array-like (recursive, cycle guarded), and at least one such use
  *  exists, plus `return name` (the storage is returned; identity is not
  *  preserved). No reassignment, no other escape. Returns null when not, else
- *  `{ writes }`. Under the export contract the host value is normalized to a
- *  Float64Array at entry and, when written, copied back on return (interop,
- *  `jz:i64exp` `t`), so the body reads and writes typed storage: no receiver
- *  fork, no ToNumber runtime. An element is a number wherever it flows, which
- *  is JS for the numeric arrays such a parameter is written for. */
+ *  `{ writes, reads }`: whether the body stores into the storage, and whether
+ *  it reads an element back (a read, a compound store, a reading method, a
+ *  callee that reads, or the storage returned to the host). Under the export
+ *  contract the host value arrives as the slot's typed array (Float64Array or
+ *  Float32Array, narrow/param-abi.js) and, when written, is copied back on
+ *  return (interop, `jz:i64exp` `t`), so the body reads and writes typed
+ *  storage: no receiver fork, no ToNumber runtime. An element is a number
+ *  wherever it flows, which is JS for the numeric arrays such a parameter is
+ *  written for. */
 const TYPED_RECEIVER_METHODS = new Set(['subarray', 'slice', 'set', 'fill', 'copyWithin', 'indexOf', 'lastIndexOf', 'includes', 'at'])
 const TYPED_WRITE_METHODS = new Set(['set', 'fill', 'copyWithin'])
 export function paramNumericArrayLike(body, name, _seen = new Set(), params = null) {
   if (body == null) return null
   const counting = countingNames(body, params)
-  let ok = true, used = false, writes = false, numericUse = false
+  let ok = true, used = false, writes = false, reads = false, numericUse = false
   let numericStores = null
   const summary = ctx.summary?.at(body)
   const flat1 = (a) => Array.isArray(a) && a[0] === ',' ? a.slice(1).flatMap(flat1) : [a]
@@ -775,7 +779,7 @@ export function paramNumericArrayLike(body, name, _seen = new Set(), params = nu
     // The alias declaration itself: the view/copy call is a use, its args walk.
     if ((op === 'let' || op === 'const') && node.length === 2 && Array.isArray(node[1]) && node[1][0] === '=' && names.has(node[1][1]) && node[1][1] !== name) {
       const init = node[1][2]
-      used = true
+      used = true; reads = true
       for (let i = 2; i < init.length; i++) walk(init[i])
       return
     }
@@ -792,6 +796,7 @@ export function paramNumericArrayLike(body, name, _seen = new Set(), params = nu
         const v = node[2]
         if (!numericIndex(t[2]) || (Array.isArray(v) && (v[0] === 'str' || v[0] === 'template' || (v[0] === '+' && v.length === 3 && (isStrLiteral(v[1]) || isStrLiteral(v[2])))))) { ok = false; return }
         writes = true; used = true
+        if (op !== '=') reads = true   // `y[i] += v`, `y[i]++` read the element they store
         // A numeric output buffer may have no element reads to supply the
         // proof below. Its stores give the same evidence as numeric fill.
         numericStores = numericStores !== false && op === '=' && summary?.valOfExpr(v) === VAL.NUMBER
@@ -804,7 +809,7 @@ export function paramNumericArrayLike(body, name, _seen = new Set(), params = nu
     if (op === 'delete') { if (Array.isArray(node[1]) && names.has(node[1][1])) { ok = false; return } }
     if (op === '[]' && node.length === 3 && names.has(node[1])) {
       if (!numericIndex(node[2])) { ok = false; return }
-      used = true; walk(node[2]); return
+      used = true; reads = true; walk(node[2]); return
     }
     // `y[i] + n`, n a proven number: the same evidence as the `+=` store above.
     if (op === '+' && node.length === 3) {
@@ -817,13 +822,14 @@ export function paramNumericArrayLike(body, name, _seen = new Set(), params = nu
     if (op === '()' && Array.isArray(node[1]) && node[1][0] === '.' && names.has(node[1][1]) && TYPED_RECEIVER_METHODS.has(node[1][2])) {
       used = true
       if (TYPED_WRITE_METHODS.has(node[1][2])) writes = true
+      if (node[1][2] !== 'set' && node[1][2] !== 'fill') reads = true
       if (node[1][2] === 'fill' && numericIndex(node[2])) numericUse = true
       for (let i = 2; i < node.length; i++) walk(node[i])
       return
     }
     // `return data` on an in-place kernel returns the storage itself (the host
     // sees a typed array with the same contents; identity is not preserved).
-    if (op === 'return' && names.has(node[1])) { used = true; return }
+    if (op === 'return' && names.has(node[1])) { used = true; reads = true; return }
     if ((op === '.' || op === '?.') && names.has(node[1])) { if (node[2] !== 'length') ok = false; else used = true; return }
     if (op === '()' && typeof node[1] === 'string') {
       const args = node.slice(2).flatMap(flat1)
@@ -838,6 +844,7 @@ export function paramNumericArrayLike(body, name, _seen = new Set(), params = nu
         if (!inner) { ok = false; return }
         used = true; numericUse = true
         if (inner.writes) writes = true
+        if (inner.reads) reads = true
       }
       return
     }
@@ -870,5 +877,5 @@ export function paramNumericArrayLike(body, name, _seen = new Set(), params = nu
   // forces a number, so a string parameter indexed into a concat stays a string.
   // Numeric writes or a proven forwarded receiver supply the same evidence.
   if (!paramAllUsesNumeric(subst(body), elem, new Set(), !(numericUse || numericStores === true))) return null
-  return { writes }
+  return { writes, reads }
 }

@@ -186,6 +186,9 @@ export const statementOps = {
       // marker again via the 'throw' emitter above, so escaping-throw decode is
       // unaffected.
       ['global.set', '$__jz_last_err_bits', ['i64.const', 0]],
+      // A frame the exception left skipped its epilogue, and with it the escape
+      // flag it held for this frame (optimize/arena-rewind.js): assume it rose.
+      ...(ctx.plans.escapeFlag ? [['global.set', '$__esc', ['i32.const', 1]]] : []),
       ...(caughtIR ? [['local.set', `$${errName}`, caughtIR]] : []),
       ...handlerIR,
       ['f64.const', 0]], 'f64')
@@ -228,6 +231,7 @@ export const statementOps = {
       // so a later genuine trap in this instance decodes as RuntimeError, not
       // the swallowed error.
       ['global.set', '$__jz_last_err_bits', ['i64.const', 0]],
+      ...(ctx.plans.escapeFlag ? [['global.set', '$__esc', ['i32.const', 1]]] : []),
       ...throwCleanup,
       ['global.set', '$__jz_last_err_bits', ['i64.reinterpret_f64', ['local.get', `$${errLocal}`]]],
       ['throw', '$__jz_err', ['local.get', `$${errLocal}`]]]

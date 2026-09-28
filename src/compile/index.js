@@ -30,7 +30,7 @@ import { dataLen, dataBytes, strPoolLen, strPoolBytes } from '../static-data.js'
  * @module compile
  */
 
-import { ctx, err, PTR, HEAP, getFactStore } from '../ctx.js'
+import { ctx, err, PTR, HEAP, getFactStore, declGlobal } from '../ctx.js'
 import { createFunction, frameNode, frameRoots } from '../function.js'
 import { functionPlanOf, publishFunctionPlan, retireFunctionPlan } from './function-plan.js'
 import { FIELD } from '../../layout.js'
@@ -62,7 +62,8 @@ import {
   pullStdlib, syncImports, optimizeModule, stripStaticDataPrefix, hoistConstGlobalInits, stripDeadLazyTables, stripDeadInternedSpans,
 } from '../wat/assemble.js'
 import { link } from '../link/index.js'
-import { summarize, K, hasTag, tagOf, paramOf, UNKNOWN } from '../summary/index.js'
+import { summarize, K, hasTag, tagOf, tagsOf, paramOf, UNKNOWN } from '../summary/index.js'
+import { bitOf, NULL_BITS } from '../summary/kind.js'
 import { programPins } from '../optimize/watr-tail.js'
 import { stablePtrGlobalNames } from '../optimize/globals.js'
 import { synthesizeClassDispatchers } from './emit/class-dispatch.js'
@@ -243,12 +244,34 @@ export function assemble(ast, profiler) {
   const censusFrames = () => {
     const loops = ctx.plans.rewindLoops = new WeakSet()
     ctx.plans.rewindLoopLabels = null
-    for (const [name, frame] of transitiveFrameEffects(ctx.funcs.list)) {
+    const facts = transitiveFrameEffects(ctx.funcs.list)
+    ctx.plans.closureCalls = facts.closureCalls
+    ctx.plans.closureSites = facts.closureSites
+    // The escape sites the emitter flags (emit/dispatch.js): every function's
+    // and every resolved closure's own.
+    const sites = ctx.plans.escapeSites = new WeakSet(), guards = ctx.plans.siteGuards = new WeakMap()
+    // A site two censuses name (a named arrow's body, also a closure's) raises
+    // outright if either says so, else where any receiver either names is untyped.
+    const guard = (n, g) => { const prev = guards.get(n); guards.set(n, g === null || prev === null ? null : prev ? [...new Set([...prev, ...g])] : g) }
+    let any = false
+    for (const [name, frame] of facts) {
       const f = ctx.funcs.map.get(name)
       if (!f) continue
       f.frame = frame
       for (const body of frame.loops) loops.add(body)
+      for (const n of frame.sites ?? []) { sites.add(n); any = true }
+      for (const [n, g] of frame.siteGuards ?? []) guard(n, g)
     }
+    for (const set of facts.closureSites.values()) for (const n of set) { sites.add(n); any = true }
+    for (const m of facts.closureSiteGuards.values()) for (const [n, g] of m) guard(n, g)
+    // The escape flag: census sites raise it, and link raises it where its own
+    // vetoes run (optimize/arena-rewind.js), so it is declared for every
+    // program; link drops the writes no conditional frame reads, and with them
+    // the global.
+    declGlobal('__esc', 'i32', 0)
+    ctx.plans.escapeFlag = true
+    ctx.plans.hasSites = any
+    ctx.plans.instrumented = new WeakSet()
   }
   timePhase(profiler, 'frameEffects', censusFrames)
 
@@ -592,11 +615,12 @@ export function assemble(ast, profiler) {
       }
     }
     if (isExported(f) && isBoundaryWrapped(f) && f._exportI64) {
-      const { p, r, m, t } = f._exportI64
+      const { p, r, m, t, k } = f._exportI64
+      // `v`: the hidden exports of the same body with other slot kinds
+      // (narrow/param-abi.js mintKindVariants), for the host to choose from.
+      const v = f.boundaryVariants?.length ? f.boundaryVariants.map(x => x.exportName) : null
       for (const exportName of exportNamesOf(f.name))
-        lateI64.push(t
-          ? (m ? { name: exportName, p, m, t } : r ? { name: exportName, p, r, t } : { name: exportName, p, t })
-          : (m ? { name: exportName, p, m } : r ? { name: exportName, p, r } : { name: exportName, p }))
+        lateI64.push({ name: exportName, p, ...(m ? { m } : r ? { r } : {}), ...(t ? { t } : {}), ...(k ? { k } : {}), ...(v ? { v } : {}) })
     }
     if (isExported(f)) {
       const tag = []
@@ -621,7 +645,14 @@ export function assemble(ast, profiler) {
     if (func) lateNamedExports.push(['export', `"${name}"`, ['func', `$${isBoundaryWrapped(func) ? val + '$exp' : val}`]])
     else if (ctx.scope.globals.has(val)) lateNamedExports.push(['export', `"${name}"`, ['global', `$${val}`]])
   }
+  // Each export whose arguments the host copies into memory (a boxed or rest
+  // parameter) and the function its wrapper calls: link names those whose
+  // calls keep nothing (`jz:release`).
+  const exportInner = new Map()
+  for (const f of programFacts.programIndex.concreteFunctionOrder())
+    if (isExported(f) && (f._exportI64?.p?.length || f.rest)) for (const exportName of exportNamesOf(f.name)) exportInner.set(exportName, `$${f.name}`)
   const lateFacts = {
+    exportInner,
     rest: lateRest,
     ext: lateExt,
     i64: lateI64,
@@ -852,18 +883,68 @@ export function assemble(ast, profiler) {
   // allocation escape, so a caller cannot rewind over a call to it.
   // Threads sharing one heap pointer (sharedMemory) cannot rewind: one thread's
   // restore would discard every other thread's allocations.
-  const rewindable = new Map(), unsafe = new Set()
+  // A kind that holds no heap value: numbers, booleans, null and undefined
+  // (the result of a function that returns nothing). An empty kind is no
+  // proof: the summary saw no value reach it (a function it only met as a value).
+  const SCALAR_TAGS = bitOf(K.NUMBER) | bitOf(K.BOOL) | NULL_BITS
+  const holdsNoHeap = (k) => k != null && tagsOf(k) !== 0 && (tagsOf(k) & ~SCALAR_TAGS) === 0
+  // `conditional`: the frames that run escape sites, and the first site's reason.
+  const rewindable = new Map(), unsafe = new Set(), conditional = new Map()
+  // An escape site the emitter never flagged (emit/dispatch.js) runs unseen:
+  // its frame stays whole, a function's own or a closure's (each body it was
+  // emitted as).
+  const unflagged = (sites) => sites != null && [...sites].some(n => !ctx.plans.instrumented?.has(n))
+  for (const [id, sites] of ctx.plans.closureSites ?? []) if (unflagged(sites))
+    for (const [name, sid] of ctx.closure.summaryId ?? []) if (sid === id) unsafe.add(`$${name}`)
   for (const f of ctx.funcs.list) {
     if (f.raw || ctx.memory.atomic) continue
     const frame = f.frame
     if (frame == null || frame.arenaUnsafe) { unsafe.add(`$${f.name}`); ctx.transform.whyNotRewind?.(`$${f.name}`, 'escape: ' + (frame?.why ?? 'no census')); continue }
+    if (unflagged(frame.sites)) { unsafe.add(`$${f.name}`); ctx.transform.whyNotRewind?.(`$${f.name}`, 'escape: a site left unflagged'); continue }
+    if (frame.flagged) conditional.set(`$${f.name}`, frame.siteWhy ?? 'an escape')
     // A rewound frame returns a scalar: a heap result (a pointer kind, a
-    // tagged f64 the plan cannot prove a number) lives in the arena it would
-    // free; a multi-value or void result has no place for the saved pointer.
+    // tagged f64 the summary cannot hold to numbers, booleans and nullish
+    // values) lives in the arena it would free; a multi-value result has no
+    // place for the saved pointer.
     if (f.sig.results.length !== 1 || f.sig.ptrKind != null) { ctx.transform.whyNotRewind?.(`$${f.name}`, f.sig.ptrKind != null ? 'result: heap value' : 'result: not one scalar'); continue }
     const ty = f.sig.results[0]
-    if (ty === 'i32' || (ty === 'f64' && f.valResult === VAL.NUMBER)) rewindable.set(`$${f.name}`, ty)
-    else ctx.transform.whyNotRewind?.(`$${f.name}`, 'result: not a proven number')
+    if (ty === 'i32' || (ty === 'f64' && (f.valResult === VAL.NUMBER || holdsNoHeap(ctx.summary?.resultOf(f.name))))) rewindable.set(`$${f.name}`, ty)
+    else ctx.transform.whyNotRewind?.(`$${f.name}`, 'result: may hold a heap value')
+  }
+  // An export that keeps memory on every call, read off the rewind's verdict
+  // (optimize/arena-rewind.js): it allocates and is not rewound, or the host's
+  // copies of its array arguments (`boxed`) cannot be released. A heap result
+  // has its own advisory (plan/advise.js heap-return).
+  function adviseKept(rewindable, boxed) {
+    return ({ releasable, rewound, allocates, why }) => {
+      for (const f of programFacts.programIndex.concreteFunctionOrder()) {
+        if (!isExported(f) || f.raw || f.boundaryOrigin) continue
+        const inner = `$${f.name}`
+        if (!rewindable.has(inner) && !f.frame?.arenaUnsafe) continue   // a heap result
+        const keeps = allocates(inner) && !rewound.has(inner), copies = boxed.has(exportNamesOf(f.name)[0]) && !releasable.has(inner)
+        if (!keeps && !copies) continue
+        const reason = f.frame?.arenaUnsafe ? f.frame.why : why(inner) ?? 'its result may hold a heap value'
+        const what = keeps && copies ? 'what it allocates and the copies the host makes of its arguments' : keeps ? 'what it allocates' : 'the copies the host makes of its arguments'
+        for (const name of exportNamesOf(f.name))
+          warn('heap-per-call', `export '${name}' keeps ${what} on every call (${reason}): memory grows with each call; call memory.reset() between batches from the host`, { fn: f.name, reason }, f.body?.loc)
+      }
+    }
+  }
+  // The closures a resolved call may run, by emitted name: link reads them as
+  // the targets of the indirect calls such calls compile to. A closure whose
+  // body the summary never saw (one cloned after it ran) may be any of them.
+  const closureNames = new Set(), closuresById = new Map(), unseenClosures = []
+  for (const [name, id] of ctx.closure.summaryId ?? []) {
+    closureNames.add(`$${name}`)
+    if (id === undefined) unseenClosures.push(`$${name}`)
+    else (closuresById.get(id) ?? closuresById.set(id, []).get(id)).push(`$${name}`)
+  }
+  const closuresOf = (ids) => { const out = new Set(unseenClosures); for (const id of ids) for (const n of closuresById.get(id) ?? []) out.add(n); return out }
+  const closureTargets = new Map()
+  for (const f of ctx.funcs.list) if (f.frame?.closures?.size) closureTargets.set(`$${f.name}`, closuresOf(f.frame.closures))
+  for (const [name, id] of ctx.closure.summaryId ?? []) {
+    const calls = id === undefined ? null : ctx.plans.closureCalls?.get(id)
+    if (calls?.size) closureTargets.set(`$${name}`, closuresOf(calls))
   }
   // Snapshot the settled field contract before handing plain data to link.
   // Numeric refinements are part of this boundary too, not just value kinds.
@@ -886,7 +967,13 @@ export function assemble(ast, profiler) {
   return { module, link: {
     optimize: ctx.transform.optimize,
     userFuncs: lateFacts.userFuncs, userGlobals: ctx.scope.userGlobals,
-    rewindable, unsafe, heapAddr: ctx.memory.shared ? HEAP.PTR_ADDR : null,
+    rewindable, unsafe, heapAddr: ctx.memory.shared ? HEAP.PTR_ADDR : null, exportInner: lateFacts.exportInner,
+    // Module bindings that never hold a heap value: a write to one strands nothing.
+    scalarGlobals: new Set([...(ctx.scope.userGlobals ?? [])].filter(g => holdsNoHeap(ctx.summary?.kindOfExpr(g))).map(g => `$${g}`)),
+    adviseKept: ctx.warnings && ctx.transform.alloc !== false ? adviseKept(rewindable, lateFacts.exportInner) : null,
+    closureTargets, closureNames, conditional, keepsNothing: ctx.module.keepsNothing,
+    censused: new Set([...ctx.funcs.list.filter(f => f.frame).map(f => `$${f.name}`),
+      ...[...ctx.closure.summaryId ?? []].filter(([, id]) => id !== undefined && ctx.plans.closureSites?.has(id)).map(([name]) => `$${name}`)]),
     report: ctx.transform.whyNotRewind ?? null,
     schemas: ctx.schema.list, fieldContracts, namedUses: ctx.schema.namedUses, errorSids: lateFacts.errorSidEntries, brandSids: ctx.schema.brandEntries(),
     viewSids: ctx.schema.list.flatMap((names, sid) => enumView(names) ? [sid] : []),

@@ -84,7 +84,9 @@ const makeJsAllocator = (mem, heapGlobal) => {
     const d = dv()
     if (d.getUint32(HEAP.PTR_ADDR, true) < HEAP.START) d.setInt32(HEAP.PTR_ADDR, HEAP.START, true)
   }
-  return { alloc, reset, initHeapPtr }
+  // The heap top and the post-init base: `memory.used` is their distance, and a
+  // call that may release its argument copies rewinds the top to a mark.
+  return { alloc, reset, initHeapPtr, top: getPtr, setTop: setPtr, base }
 }
 
 // ── Custom-section reading ──────────────────────────────────────────────────
@@ -379,7 +381,7 @@ export const memory = (src) => {
 
   // Allocator scaffold: bumps the exported `$__heap` global (or memory[1020] for
   // shared memory). Wasm `_alloc` takes over when exported; `_clear`/jsReset rewinds.
-  const { alloc: jsAlloc, reset: jsReset, initHeapPtr } = makeJsAllocator(mem, wasmExports?.__heap)
+  const { alloc: jsAlloc, reset: jsReset, initHeapPtr, top, setTop, base } = makeJsAllocator(mem, wasmExports?.__heap)
   // `_alloc`'s i32 result crosses the wasm→JS boundary SIGNED (same ToInt32 rule as any
   // other i32 — see makeJsAllocator's comment); `>>> 0` restores the true unsigned address
   // once the heap grows past 2 GiB, matching jsAlloc's own already-unsigned return.
@@ -409,13 +411,19 @@ export const memory = (src) => {
   // If already enhanced, just update bindings (new module compiled into same memory)
   if (_enhanced.has(mem)) {
     if (wasmAlloc) { alloc = wasmAlloc; mem.alloc = alloc }
-    mem.reset = reset
+    mem.reset = () => { mem._views = new WeakMap(); reset() }
     if (extMap) mem._extMap = extMap
     return mem
   }
 
   // Patch methods onto the Memory instance
   mem._extMap = extMap
+  // Bytes the heap holds above the mark `memory.reset()` returns to: what calls
+  // allocated and kept, and what the host allocated. A host that sees it climb
+  // call after call has a leak to fix; a reset returns it to 0.
+  Object.defineProperty(mem, 'used', { get: () => top() - base, configurable: true })
+  mem._top = top
+  mem._setTop = setTop
 
   mem.Array = (data) => {
     const n = data.length, off = hdr(n, n, n * 8)
@@ -461,6 +469,9 @@ export const memory = (src) => {
 
   mem.wrapVal = function(v) {
     if (v === null || v === undefined) return coerce(v)
+    // A view the module left on a host object (`__ext_set`) is the module's own
+    // storage, read back as itself.
+    if (typeof v === 'object') { const own = mem._views?.get(v); if (own !== undefined) return own }
     if (typeof v === 'number') return v
     if (typeof v === 'boolean') return v ? TRUE_NAN : FALSE_NAN
     if (typeof v === 'string') return mem.String(v)
@@ -785,8 +796,10 @@ export const memory = (src) => {
 
   mem.alloc = alloc
   // The compiled reset owns the post-init mark, cache invalidation and durable
-  // state healing. A JS-only memory has no runtime state and just rewinds.
-  mem.reset = reset
+  // state healing. A JS-only memory has no runtime state and just rewinds. The
+  // views the module left on host objects (`__ext_set`) name storage a reset frees.
+  mem._views = new WeakMap()
+  mem.reset = () => { mem._views = new WeakMap(); reset() }
 
   // TypedArray constructors: memory.Float64Array(data), etc.
   // Bulk-copy path: when input is a TypedArray whose element type matches
@@ -873,7 +886,7 @@ export const wrap = (memSrc, inst, state) => {
   const i64Exp = new Map()
   const i64Bytes = customSection(mod, 'jz:i64exp')
   if (i64Bytes) {
-    try { for (const e of JSON.parse(td.decode(i64Bytes))) i64Exp.set(e.name, { p: new Set(e.p || []), r: !!e.r, t: e.t || null }) }
+    try { for (const e of JSON.parse(td.decode(i64Bytes))) i64Exp.set(e.name, { p: new Set(e.p || []), r: !!e.r, t: e.t || null, k: new Set(e.k || []), v: e.v || null }) }
     catch { /* ignore */ }
   }
   // jz:hostabi — the ONE authority for per-slot host-BigInt ingress policy
@@ -894,6 +907,17 @@ export const wrap = (memSrc, inst, state) => {
   // rest elements). A slot in neither `raw` nor `tag` has no evidence of any
   // kind: i64Arg (below) rejects a plain bigint there instead of guessing
   // from the absence.
+  // jz:release — exports whose calls keep nothing they allocate or are handed
+  // (optimize/arena-rewind.js): the wrapper rewinds the heap to where it stood
+  // before the arguments were copied in. `flag`: those whose frames run escape
+  // sites, released only when the call left the exported escape flag down.
+  const releases = new Set(), flagged = new Set()
+  const releaseBytes = customSection(mod, 'jz:release')
+  if (releaseBytes) {
+    try { const r = JSON.parse(td.decode(releaseBytes)); for (const n of r.release) releases.add(n); for (const n of r.flag ?? []) flagged.add(n) }
+    catch { /* ignore */ }
+  }
+  const esc = realInst.exports.__esc
   const hostAbiExp = new Map()
   const hostAbiBytes = customSection(mod, 'jz:hostabi')
   if (hostAbiBytes) {
@@ -1090,7 +1114,7 @@ export const wrap = (memSrc, inst, state) => {
   // arg. An i64-carrier param (per jz:i64exp) gets the box bits: `coerce` for
   // pure-scalar modules, `mem.wrapVal` for heap modules. The box never materializes
   // as f64, so JSC can't canonicalize it.
-  const i64Arg = (ie, ext, box, hostAbi, name, writeBack) => (x, i) => {
+  const i64Arg = (ie, ext, box, hostAbi, name, writeBack, shared = writeBack && new Map()) => (x, i) => {
     if (ext?.has(i)) return x === undefined && ext.def?.has(i) ? ext.def.get(i) : x
     // A BigInt is a value at a `val` slot whatever its bits (the function reads
     // the parameter only as a scalar, so no handle belongs there); elsewhere
@@ -1133,20 +1157,37 @@ export const wrap = (memSrc, inst, state) => {
     // A `+` suffix marks a slot the body writes: the storage is copied back into
     // the host value after the call (the host array itself is never a view).
     const typedSlot = ie?.t?.[i]
-    let host = null
+    // Where the call's copy of an array argument goes back after the call
+    // (copyBack below), or null: nothing comes back.
+    let back = null
+    // One host array at two slots of one kind is one copy, as it is one object in JS.
+    const orig = x, key = typedSlot ? typedSlot.replace('+', '') : ''
+    const prior = shared && orig != null && typeof orig === 'object' ? shared.get(orig) : undefined
+    if (prior?.key === key) {
+      // A slot that writes where the first one only read: the copy comes back.
+      if (typedSlot?.endsWith('+') && !prior.back) { writeBack.push([hostBack(orig), prior.b]); prior.back = true }
+      return prior.b
+    }
+    const jzBuffer = (typeof x === 'bigint' && isBox(x)) || (typeof x === 'number' && x !== x)
     if (typedSlot) {
       const writes = typedSlot.endsWith('+')
-      const Ctor = globalThis[writes ? typedSlot.slice(0, -1) : typedSlot]
-      // A jz buffer of the same kind is the storage itself (zero copy); one of
-      // another kind converts through its view like any host array. A box is an
-      // i64 carrier or the legacy f64 NaN carrier (a NaN number).
-      if ((typeof x === 'bigint' && isBox(x)) || (typeof x === 'number' && x !== x)) {
+      const Ctor = globalThis[key]
+      // An owned jz buffer of the slot's kind is the storage itself (zero
+      // copy). A subarray of one (its box holds a descriptor, not the
+      // elements) or a buffer of another kind converts through its view like
+      // any host array, and what the call writes goes back into that buffer.
+      // A box is an i64 carrier or the legacy f64 NaN carrier (a NaN number).
+      if (jzBuffer) {
         const view = mem.read(x)
-        if (!(view instanceof Ctor)) { if (writes && ArrayBuffer.isView(view)) host = view; x = Ctor.from(view) }
+        if (!(view instanceof Ctor) || (aux(x) & TYPED_ELEM_VIEW_FLAG)) { if (writes) back = { box: x }; x = Ctor.from(view) }
       } else {
-        if (writes && x != null && typeof x === 'object') host = x
+        if (writes && x != null && typeof x === 'object') back = hostBack(x)
         x = x instanceof Ctor ? x : Ctor.from(x)
       }
+    } else if (writeBack && !jzBuffer && (Array.isArray(x) || (ArrayBuffer.isView(x) && !(x instanceof DataView)))) {
+      // An array at a slot the compiler left open reaches the module as a copy
+      // in its own kind; what the module writes into it comes back.
+      back = hostBack(x)
     }
     let w
     if (plainBigint) {
@@ -1178,18 +1219,94 @@ export const wrap = (memSrc, inst, state) => {
       return encodeSSO(w)
     }
     const b = bits(w)                                // i64 param: pass the box bits
-    if (host && writeBack) writeBack.push([host, b])
+    // A host array's nested arrays (a worklet's channel buffers) are copies
+    // too: which element copies it made, to copy back those still in place.
+    if (back?.to && Array.isArray(orig) && type(b) === PTR.ARRAY) back.cells = cellsOf(b, 0)
+    if (back && writeBack) writeBack.push([back, b])
+    if (shared && orig != null && typeof orig === 'object') shared.set(orig, { key, b, back: !!back })
     return b
   }
-  // After the call: copy each written typed slot back into the host value it
-  // came from. A typed host array takes the storage through `set`; a plain
-  // array element by element.
+  // The copy-back target of a host array: the array itself, or, for a view of
+  // this memory, the region it spans (the call may grow the memory, detaching
+  // the view, and the elements stay where they were).
+  const hostBack = (x) => ArrayBuffer.isView(x) && x.buffer === mem.buffer
+    ? { region: [x.constructor, x.byteOffset, x.length] } : { to: x }
+  // After the call: copy each array argument's copy back where it came from,
+  // both read now, after anything the call grew. A typed target takes the
+  // elements through `set` (converting to its own kind); a plain array takes
+  // the numbers, element by element: its other changes (length, non-numeric
+  // elements) stay in the module, as README documents.
   const copyBack = (writeBack) => {
-    for (const [host, b] of writeBack) {
-      const view = mem.read(b)
-      if (ArrayBuffer.isView(host)) host.set(view.subarray(0, host.length))
-      else for (let i = 0; i < host.length && i < view.length; i++) host[i] = view[i]
+    for (const [back, b] of writeBack) {
+      if (back.box !== undefined && type(back.box) === PTR.ARRAY) {
+        // A jz array converted for a typed slot takes the numbers into its own cells.
+        const src = mem.read(b), { m, off, n } = arrayCells(back.box)
+        for (let i = 0; i < n && i < src.length; i++) m.setFloat64(off + i * 8, src[i], true)
+        continue
+      }
+      const dst = back.box !== undefined ? mem.read(back.box)
+        : back.region ? new back.region[0](mem.buffer, back.region[1], back.region[2]) : back.to
+      if (type(b) === PTR.TYPED) {
+        const src = mem.read(b)
+        if (ArrayBuffer.isView(dst)) dst.set(src.length > dst.length ? src.subarray(0, dst.length) : src)
+        else for (let i = 0; i < dst.length && i < src.length; i++) dst[i] = src[i]
+      } else if (type(b) === PTR.ARRAY) backArray(dst, b, back.cells)
     }
+  }
+  // A plain host array takes back its numbers, and the writes into each nested
+  // array or typed array the call's copy still holds where it was made (one the
+  // module replaced stays in the module, as a changed element does).
+  const backArray = (dst, b, cells) => {
+    const { m, off, n } = arrayCells(b)
+    for (let i = 0; i < n && i < dst.length; i++) {
+      const e = m.getBigInt64(off + i * 8, true)
+      if (!isBox(e)) { dst[i] = i64ToF64(e); continue }
+      if (type(e) === 0 && aux(e) === 0 && offset(e) === 0) { dst[i] = NaN; continue }
+      const c = cells?.[i], d = dst[i]
+      if (!c || c.e !== e || d == null || typeof d !== 'object') continue
+      if (type(e) === PTR.TYPED) { if (ArrayBuffer.isView(d)) { const src = mem.read(e); d.set(src.length > d.length ? src.subarray(0, d.length) : src) } }
+      else if (Array.isArray(d)) backArray(d, e, c.kids)
+    }
+  }
+  // The element cells of a jz array right after it was made from a host array:
+  // the copies of its nested arrays, down a few levels.
+  const cellsOf = (b, depth) => {
+    const { m, off, n } = arrayCells(b), out = new Array(n)
+    for (let i = 0; i < n; i++) {
+      const e = m.getBigInt64(off + i * 8, true)
+      if (!isBox(e)) continue
+      if (type(e) === PTR.TYPED) out[i] = { e, kids: null }
+      else if (type(e) === PTR.ARRAY && depth < 4) out[i] = { e, kids: cellsOf(e, depth + 1) }
+    }
+    return out
+  }
+  // A jz array's element cells, past any forwarding its growth left.
+  const arrayCells = (box) => {
+    const m = new DataView(mem.buffer)
+    let off = offset(box)
+    while (m.getInt32(off - 4, true) === -1) off = m.getUint32(off - 8, true)
+    return { m, off, n: m.getInt32(off - 8, true) }
+  }
+
+  // A call's heap: `enter` marks where the heap stood before the arguments
+  // were copied in; `leave` rewinds to it when the export keeps nothing
+  // (`jz:release`) and no call made inside it (a host import calling back into
+  // the module) kept anything either. `mem._kept` carries that, per nesting.
+  // An export whose frame runs escape sites (`flag`) releases only a call that
+  // returned with the escape flag down; the flag is saved and cleared around
+  // the call as a conditional frame does it (optimize/arena-rewind.js), and a
+  // call that threw releases nothing.
+  const enter = (flag) => {
+    const mark = { top: mem._top(), kept: mem._kept, esc: flag && esc ? esc.value : 0 }
+    mem._kept = false
+    if (flag && esc) esc.value = 0
+    return mark
+  }
+  const leave = (mark, release, flag, returned) => {
+    const escaped = flag && (!esc || esc.value !== 0 || !returned)
+    if (release && !mem._kept && !escaped) mem._setTop(mark.top)
+    mem._kept = mark.kept || !release || escaped || mem._kept
+    if (flag && esc) esc.value |= mark.esc
   }
 
   // Pure scalar module (no memory): pass f64 values directly, no marshaling
@@ -1241,47 +1358,112 @@ export const wrap = (memSrc, inst, state) => {
       const ext = extExp.get(name)
       const ie = i64Exp.get(name)
       const hostAbi = hostAbiExp.get(name)
+      const release = releases.has(name), flag = flagged.has(name)
       exports[name] = (...args) => {
-        const writeBack = ie?.t ? [] : null
-        const a = args.slice(0, fixed).map(i64Arg(ie, ext, memWrapVal, hostAbi, name, writeBack))
-        while (a.length < fixed) { const i = a.length; a.push(ie && ie.p.has(i) ? UNDEF_NAN : undefined) }
-        const restArr = mem.Array(args.slice(fixed).map(restElemArg(hostAbi, name)))   // BigInt box (i64 carrier)
-        a.push(ie && ie.p.has(fixed) ? restArr : i64ToF64(restArr))
-        // audit-#8 P1-1 belt-and-braces — see the scalar-module wrapper above.
-        if (lastErrBitsWritable) lastErrBits.value = 0n
+        const writeBack = [], mark = enter(flag)
+        let returned = false
         try {
+          const a = args.slice(0, fixed).map(i64Arg(ie, ext, memWrapVal, hostAbi, name, writeBack))
+          while (a.length < fixed) { const i = a.length; a.push(ie && ie.p.has(i) ? UNDEF_NAN : undefined) }
+          const restArr = mem.Array(args.slice(fixed).map(restElemArg(hostAbi, name)))   // BigInt box (i64 carrier)
+          a.push(ie && ie.p.has(fixed) ? restArr : i64ToF64(restArr))
+          // audit-#8 P1-1 belt-and-braces — see the scalar-module wrapper above.
+          if (lastErrBitsWritable) lastErrBits.value = 0n
           const ret = fn.apply(null, a)
-          if (writeBack?.length) copyBack(writeBack)
+          returned = true
+          if (writeBack.length) copyBack(writeBack)
           if (typeof ret === 'bigint' && !(ie && ie.r)) return ret
           return finishRet(ret, readRet)
         } catch (error) {
           decodeThrown(error)
-        }
+        } finally { leave(mark, release, flag, returned) }
       }
     } else if (typeof fn === 'function') {
       const ext = extExp.get(name)
       const ie = i64Exp.get(name)
       const hostAbi = hostAbiExp.get(name)
       const len = fn.length
+      const release = releases.has(name), flag = flagged.has(name)
       exports[name] = (...args) => {
         while (args.length < len) args.push(undefined)
-        const writeBack = ie?.t ? [] : null
-        // audit-#8 P1-1 belt-and-braces — see the scalar-module wrapper above.
-        if (lastErrBitsWritable) lastErrBits.value = 0n
+        const writeBack = [], mark = enter(flag)
+        let returned = false
         try {
-          const ret = fn.apply(null, args.map(i64Arg(ie, ext, memWrapVal, hostAbi, name, writeBack)))
-          if (writeBack?.length) copyBack(writeBack)
+          const a = args.map(i64Arg(ie, ext, memWrapVal, hostAbi, name, writeBack))
+          // audit-#8 P1-1 belt-and-braces — see the scalar-module wrapper above.
+          if (lastErrBitsWritable) lastErrBits.value = 0n
+          const ret = fn.apply(null, a)
+          returned = true
+          if (writeBack.length) copyBack(writeBack)
           if (typeof ret === 'bigint' && !(ie && ie.r)) return ret
           return finishRet(ret, readRet)
         } catch (error) {
           decodeThrown(error)
-        }
+        } finally { leave(mark, release, flag, returned) }
       }
     } else {
       exports[name] = fn
     }
   }
+  // An export whose typed slots take other kinds in variants (`v`, hidden
+  // exports of the same body) calls the one the arguments fit.
+  for (const [name, ie] of i64Exp) {
+    if (!ie.v || !exports[name]) continue
+    const cands = [name, ...ie.v].filter(n => exports[n])
+    exports[name] = kindDispatch(name, cands.map(n => [exports[n], slotsOf(i64Exp.get(n))]))
+    for (const n of ie.v) delete exports[n]
+  }
   return exports
+}
+
+// ── Typed slots: which of an export's variants an argument list fits ────────
+// A typed slot's kind, and whether the body stores into it and reads back
+// (`k`): there only an argument of the slot's own kind is exact.
+const slotsOf = (ie) => Object.entries(ie?.t ?? {}).map(([i, t]) => [+i, t.replace('+', ''), ie.k.has(+i)])
+const ELEM_NAMES = ['Int8Array', 'Uint8Array', 'Int16Array', 'Uint16Array', 'Int32Array', 'Uint32Array', 'Float32Array', 'Float64Array']
+// The element kind an argument brings: a typed array's own (a host one, or a
+// jz buffer by its box), 'Array' for any other object (Array.from reads it as
+// an array-like), null for anything else.
+const argKind = (x) => {
+  if ((typeof x === 'bigint' && isBox(x)) || (typeof x === 'number' && x !== x)) {
+    const t = type(x), a = aux(x)
+    if (t === PTR.ARRAY) return 'Array'
+    if (t !== PTR.TYPED || (a & DATA_VIEW_FLAG)) return null
+    return a & 16 ? 'BigInt64Array' : a & 32 ? 'Float16Array' : a & 64 ? 'Uint8ClampedArray' : ELEM_NAMES[a & 7]
+  }
+  if (x == null || typeof x !== 'object') return null
+  if (ArrayBuffer.isView(x)) return x instanceof DataView ? null : x.constructor.name
+  return 'Array'
+}
+// How an argument of `kind` fits a slot of `ctor`: 0 as itself, 1 through a
+// conversion to Float64Array that is exact (numbers, and every numeric
+// element kind but where the body reads back what it stores: there an element
+// rounds by its kind), -1 not at all.
+const EXACT_IN_F64 = new Set(['Array', 'Int8Array', 'Uint8Array', 'Uint8ClampedArray', 'Int16Array', 'Uint16Array', 'Int32Array', 'Uint32Array', 'Float16Array', 'Float32Array'])
+const fitOf = (kind, ctor, inPlace) => kind === ctor ? 0
+  : ctor !== 'Float64Array' || !EXACT_IN_F64.has(kind) ? -1
+  : inPlace && kind !== 'Array' ? -1 : 1
+const kindDispatch = (name, cands) => (...args) => {
+  let best = null, cost = Infinity
+  for (const [fn, slots] of cands) {
+    let c = 0
+    for (const [i, ctor, inPlace] of slots) {
+      const f = fitOf(argKind(args[i]), ctor, inPlace)
+      if (f < 0) { c = Infinity; break }
+      c += f
+    }
+    if (c < cost) { best = fn; cost = c; if (!c) break }
+  }
+  if (best) return best(...args)
+  // Name the argument no variant takes, by the origin's slots.
+  for (const [i, , inPlace] of cands[0][1]) {
+    const kind = argKind(args[i])
+    if (kind == null || !(EXACT_IN_F64.has(kind) || kind === 'Float64Array'))
+      throw new TypeError(`jz: argument ${i} of ${name}() must be an array of numbers (got ${kind ?? (args[i] === null ? 'null' : typeof args[i])})`)
+    if (inPlace && kind !== 'Float64Array' && kind !== 'Float32Array' && kind !== 'Array')
+      throw new TypeError(`jz: ${name}() stores into argument ${i} and reads it back, so it takes a Float64Array, a Float32Array or an Array (got ${kind})`)
+  }
+  throw new TypeError(`jz: ${name}() stores into arguments and reads them back; pass them as one kind, all Float32Array or all Float64Array or Array`)
 }
 
 // Host-call return marshalling shared by opts.imports wrappers, __ext_call and
@@ -1367,20 +1549,16 @@ const prepareInterop = (opts) => {
     return (prop in extRecv(objBig, prop, 'membership test')) ? 1 : 0
   }
   opts._interp.__ext_set = (objBig, propBig, valBig) => {
-    let v = state.mem.read(valBig)
-    // A TYPED value decodes to a LIVE VIEW into wasm's own linear memory
-    // (mem.read's t===3 branch: `new Ctor(mem.buffer, off, len)`) — sound for
-    // a value read-and-immediately-consumed inside one host call, but a host
-    // OBJECT PROPERTY is real, persistent JS state: any later Memory.grow()
-    // (the bump allocator never frees, so any sufficiently long-running
-    // program eventually grows) detaches/reallocates `mem.buffer`, silently
-    // invalidating every such view still held on the host side — the next
-    // access throws "detached ArrayBuffer" (or, for a stale non-typed read,
-    // would silently read zeros). A host object is host-owned persistent
-    // state: store an independent copy. `.slice()` is TypedArray's native
-    // same-ctor copy — exactly `new Ctor(view)` with no manual size/offset
-    // bookkeeping — and a no-op for every other decoded value shape.
-    if (ArrayBuffer.isView(v)) v = v.slice()
+    const v = state.mem.read(valBig)
+    // A typed array (or DataView) the module stores on a host object keeps its
+    // identity: the property holds a live view of the module's storage, and a
+    // read of it back into the module (wrapVal) is that storage again, so
+    // state kept on a host object (`p.state ??= new Float64Array(n)`) carries
+    // from call to call as in JS. A view of wasm memory detaches when the
+    // memory grows: the host then reads an empty array, and the module still
+    // reads its own. The store keeps a pointer into the heap, so the call
+    // around it releases nothing (`_kept`, wrap's leave).
+    if (ArrayBuffer.isView(v)) { state.mem._views?.set(v, valBig); state.mem._kept = true }
     const prop = state.mem.read(propBig)
     extRecv(objBig, prop, 'property write')[prop] = v
     return 1

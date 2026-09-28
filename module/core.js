@@ -39,6 +39,10 @@ import { bitOf, isNullable, K, tagOf as summaryTagOf, core as summaryCore } from
 import { inBoundsArrIdx } from '../src/type/canonical-bounds.js'
 
 const NAN_BITS = nanPrefixHex()
+// The RangeError of an allocation linear memory cannot hold: the code goes to
+// the marker the host decodes (interop.js decodeThrown), then the throw.
+const HEAP_EXHAUSTED_THROW = `(global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${errorCodeLiteral(ERR.HEAP_EXHAUSTED)})))
+  (throw $__jz_err (f64.const ${errorCodeLiteral(ERR.HEAP_EXHAUSTED)}))`
 
 // Element count from a validated TYPED offset and decoded aux bits.
 // Views carry byte length in their descriptor; DataView has no indexed elements.
@@ -602,6 +606,11 @@ export default (ctx) => {
   // overflows i32 at the wasm32 max of 65536 pages (4 GiB); the byte capacity
   // itself lives in the i64 `__heap_end64`. This sum is at most 65536:
   // allocation's byte-addition guard, not a page-count check, detects overflow.
+  // Memory that cannot grow (its declared maximum, wasm32's 4 GiB or the
+  // engine's limit) throws the RangeError a JS engine throws for an allocation
+  // it cannot make, through the coded-error marker the host decodes; the heap
+  // pointer has not moved, so a caller that catches it, or the host after a
+  // `memory.reset()`, finds the heap as it was.
   ctx.core.stdlib['__memgrow'] = `(func $__memgrow (param $next i32)
     (local $cur i32) (local $need i32) (local $floor i32)
     (local.set $need (i32.add (i32.shr_u (local.get $next) (i32.const 16)) (i32.ne (i32.and (local.get $next) (i32.const 65535)) (i32.const 0))))
@@ -627,7 +636,7 @@ export default (ctx) => {
         ;; a floor past the wasm32 ceiling or the engine's limit fails; the exact delta retries
         (if (i32.eq (memory.grow (local.get $cur)) (i32.const -1))
           (then (if (i32.eq (memory.grow (i32.sub (local.get $need) (memory.size))) (i32.const -1))
-            (then (unreachable)))))))
+            (then ${HEAP_EXHAUSTED_THROW}))))))
     (global.set $__heap_end (i32.shl (memory.size) (i32.const 16)))
     (global.set $__heap_end64 (i64.shl (i64.extend_i32_u (memory.size)) (i64.const 16))))`
 
@@ -650,7 +659,7 @@ export default (ctx) => {
       (block $done (loop $retry
         (local.set $ptr (i32.atomic.load (i32.const ${HEAP.PTR_ADDR})))
         (local.set $next (i32.and (i32.add (i32.add (local.get $ptr) (local.get $bytes)) (i32.const 7)) (i32.const -8)))
-        (if (i32.lt_u (local.get $next) (local.get $ptr)) (then (unreachable)))
+        (if (i32.lt_u (local.get $next) (local.get $ptr)) (then ${HEAP_EXHAUSTED_THROW}))
         (if (i32.gt_u (local.get $next) (global.get $__heap_end))
           (then (call $__memgrow (local.get $next))))
         (br_if $done (i32.eq
@@ -661,7 +670,7 @@ export default (ctx) => {
       (local $ptr i32) (local $next i32)
       (local.set $ptr (i32.load (i32.const ${HEAP.PTR_ADDR})))
       (local.set $next (i32.and (i32.add (i32.add (local.get $ptr) (local.get $bytes)) (i32.const 7)) (i32.const -8)))
-      (if (i32.lt_u (local.get $next) (local.get $ptr)) (then (unreachable)))
+      (if (i32.lt_u (local.get $next) (local.get $ptr)) (then ${HEAP_EXHAUSTED_THROW}))
       (if (i32.gt_u (local.get $next) (global.get $__heap_end))
         (then (call $__memgrow (local.get $next))))
       (i32.store (i32.const ${HEAP.PTR_ADDR}) (local.get $next))
@@ -695,7 +704,7 @@ export default (ctx) => {
       (local $ptr i32) (local $next i32)
       (local.set $ptr (global.get $__heap))
       (local.set $next (i32.and (i32.add (i32.add (local.get $ptr) (local.get $bytes)) (i32.const 7)) (i32.const -8)))
-      (if (i32.lt_u (local.get $next) (local.get $ptr)) (then (unreachable)))
+      (if (i32.lt_u (local.get $next) (local.get $ptr)) (then ${HEAP_EXHAUSTED_THROW}))
       (if (i32.gt_u (local.get $next) (global.get $__heap_end))
         (then (call $__memgrow (local.get $next))))
       (global.set $__heap (local.get $next))

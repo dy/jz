@@ -37,10 +37,21 @@ test('warnings: heap-loop when a loop body allocates', () => {
   is(ws[0].code, 'heap-loop')
 })
 
-test('warnings: arena-rewind-skipped on parametric export that allocates', () => {
-  const ws = warningsFor('export let f = (n) => { let xs = []; xs.push(n); return xs.length }')
+test('warnings: an export whose calls keep nothing stays quiet, parameters and all', () => {
+  is(warningsFor('export let f = (n) => { let xs = []; xs.push(n); return xs.length }').length, 0)
+  is(warningsFor('export let f = (buf) => { let s = 0; const t = [0]; for (let i = 0; i < buf.length; i++) s += buf[i]; return s + t.length }').filter(w => w.code === 'heap-per-call').length, 0)
+})
+
+test('warnings: heap-per-call names what an export keeps and why', () => {
+  const ws = warningsFor('import { log } from "env"\nexport let f = (n) => { const o = { x: n }; log(o); return 1 }', { imports: { env: { log() {} } } }).filter(w => w.code === 'heap-per-call')
   is(ws.length, 1)
-  is(ws[0].code, 'arena-rewind-skipped')
+  ok(/export 'f' keeps what it allocates/.test(ws[0].message) && /calls log/.test(ws[0].message), ws[0].message)
+  ok(/memory\.reset\(\)/.test(ws[0].message))
+})
+
+test('warnings: an export whose calls keep memory only when an escape runs stays quiet', () => {
+  // made once, kept once: the rewind reads the escape flag (optimize/arena-rewind.js), `why` names the site
+  is(warningsFor('let st = null\nexport let f = (n) => { if (!st) st = new Float64Array(n); st[0] += n; return st[0] }').filter(w => w.code === 'heap-per-call').length, 0)
 })
 
 test('warnings: arena-rewindable zero-arg scalar export stays quiet', () => {
