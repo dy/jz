@@ -861,6 +861,58 @@ test('restricted statement boundaries honor ASI and every line terminator (asi-a
       'a do block is followed directly by while, including nested sibling blocks')
 })
 
+// Two statements on one line need `;` between them unless the first ended in a
+// block of its own (§12.10). The ASI layer split them wherever its line flag was
+// up: after any `}` (an arrow body, an object literal, a function expression) and
+// anywhere after the first line break, so each of these compiled.
+test('statements on one line need a separator (asi-and-line-terminator-context)', () => {
+    for (const src of [
+        'export let a = () => {}export let b = 2',
+        'export let a = () => { f(1) } export let b = 2',
+        'let o = { a: 1 } let b = 2',
+        'let f = function () {} f()',
+        'let C = class {} let d = 1',
+        'x = () => {} y = 2',
+        'export default {} export let b = 2',
+        'if (c) x = () => {} y = 2',
+        'if (c) {} else x = {} y = 2',
+        'L: x = {} y = 2',
+        'let a = 1\nlet b = 2 3',
+        'x = 1\ny = z y = 2',
+        'debugger (z)',
+        'switch (c) { case 1: a() b() }',
+        'do x = {} while (c)',
+        'function F() { throw {} y = 2 }',
+    ]) rejects(src)
+    for (const src of [
+        'export let a = () => {}\nexport let b = 2',
+        'export let a = () => {}; export let b = 2',
+        'if (c) { x = () => {} } y = 2',
+        'if (c) {} else {} y = 2',
+        'function g() {} g()',
+        'class C {} let d = 1',
+        '{ } y = 2',
+        'L: { } y = 2',
+        'try {} catch {} y = 2',
+        'switch (c) {} y = 2',
+        'for (;;) { break } y = 2',
+        'export function k() {} export let v = 1',
+        'export default class {} y = 2',
+        'switch (c) { case 1: if (x) {} y() }',
+        'class K { *g() {} static *h() {} get x() {} set x(v) {} m() {} }',
+        'x = () => {} /* a comment\n with a line break */ y = 2',
+    ]) ok(Array.isArray(parse(src)), `valid: ${JSON.stringify(src)}`)
+})
+
+// A postfix `++` takes no line break before it: `x`, a line break, `++y` is
+// `x; ++y`, and a statement that ends in `}` is followed by a prefix `++`.
+test('an update after a line break or a block is a prefix one (asi-and-line-terminator-context)', () => {
+    is(jz('export let f = () => {\n  let x = 1, y = 1\n  x\n  ++y\n  return x * 10 + y\n}').exports.f(), 12)
+    is(jz('export let f = () => {\n  let x = 1, y = 1\n  x\n  --y\n  return x * 10 + y\n}').exports.f(), 10)
+    is(jz('export let f = (c) => {\n  let n = 0\n  if (c) {} ++n\n  switch (c) {} ++n\n  return n\n}').exports.f(1), 2)
+    is(jz('export let f = () => { let x = 1; x++; return x }').exports.f(), 2)
+})
+
 test('adjacent string literals require a real statement boundary (other-jessie-context-loss)', () => {
     rejects("0;\nvar s = '''';", 'adjacent string literals')
     rejects('0;\nvar s = """";', 'adjacent string literals')

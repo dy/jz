@@ -1586,15 +1586,15 @@ export function validateEarlyErrors(ast, source, sourceType = 'jz', sourceBase =
       }
     }
     if (op === '++' || op === '--') {
+      // After a line break an update is a prefix one (src/parse.js): at a
+      // statement's end it has nothing to update.
+      if (node.length === 2 && node[1] == null) fail(`'${op}' update without an operand`)
       const specialIdentifier = isNode(node[1]) && (node[1][0] === 'nan' ||
         (node[1][0] == null && typeof node[1][1] === 'number' && !Number.isFinite(node[1][1])))
       const asiStatement = isNode(node[1]) && (node[1][0] === 'switch' || node[1][0] === 'if')
       if (!specialIdentifier && !asiStatement && !isAssignmentTarget(node[1], false)) fail(`invalid update target for '${op}'`)
-      // Postfix update has a hard no-LineTerminator restriction. Across a
-      // newline it must instead be parsed as a new prefix update; if the
-      // operator reaches a statement/final boundary, that fallback has no
-      // operand and the program is invalid. Do not blanket-reject the newline:
-      // `x\n++y` is valid (the AST currently cannot reconstruct its meaning).
+      // A postfix update the parser could not place (its gap was read before a
+      // backtrack) still meets the no-LineTerminator restriction here.
       if (node.length > 2 && node[2] == null && typeof node.loc === 'number') {
         const prev = previousSourceToken(source, node.loc)
         if (prev[1]) {

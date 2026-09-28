@@ -1573,7 +1573,11 @@ generated from Node's Unicode data by `scripts/gen-unicode-id.mjs`, since the
 compiled compiler has no `\p{…}`), and every stage after the early errors sees
 an escaped name decoded. Between tokens stand the WhiteSpace and
 LineTerminator characters and no others; the space layer owns the comments and
-ends a line at LF, CR, LS and PS (`test/identifiers.js`).
+ends a line at LF, CR, LS and PS (`test/identifiers.js`). Two statements on one
+line need `;` between them unless the first ended in a block of its own, and a
+postfix `++`/`--` takes no line break before it: the step layer checks every
+place the ASI layer splits a statement off, and every statement body end,
+against the gap the space layer saw (`test/parser-bugs.js`).
 
 A parsed node's `loc` indexes the compile's sources laid end to end: the
 program's text from 0, then each bundled module's after the one before

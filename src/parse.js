@@ -73,17 +73,22 @@ jessieParse.id = c => {
 // space separators, NBSP, ZWNBSP, LS and PS, refuses a control character, and
 // flags `parse.newline` for a CR, LS or PS, and for a line terminator inside a
 // block comment, for the restricted productions (`break\rL` is two
-// statements). A zero-argument wrapper: the kernel rejects a spread into
-// asi.js's fixed-arity space.
+// statements). It keeps the gap before the token it stops at: where the gap
+// began (the end of the token before) and whether a line terminator is in it.
+// A zero-argument wrapper: the kernel rejects a spread into asi.js's
+// fixed-arity space.
 jessieParse.comment = {}
+let gapFrom = -1, gapEnd = -1, gapLine = false
 const asiSpace = jessieParse.space
 jessieParse.space = () => {
+  const start = idx
+  let line = false
   for (;;) {
     const from = idx
     const cc = asiSpace()
     for (let i = from; i < idx; i++) {
       const c = cur.charCodeAt(i)
-      if (c === 13) jessieParse.newline = true
+      if (lineEnd(c)) { line = true; if (c === 13) jessieParse.newline = true }
       else if (c !== 59 && !isSpace(c)) err('Unexpected character', i)
     }
     if (cc === 47 && cur.charCodeAt(idx + 1) === 47) {
@@ -93,13 +98,128 @@ jessieParse.space = () => {
     } else if (cc === 47 && cur.charCodeAt(idx + 1) === 42) {
       // an unterminated one runs to the end; the early errors name it
       const close = cur.indexOf('*/', idx + 2), end = close < 0 ? cur.length : close
-      for (let i = idx + 2; i < end; i++) if (lineEnd(cur.charCodeAt(i))) { jessieParse.newline = true; break }
+      for (let i = idx + 2; i < end; i++) if (lineEnd(cur.charCodeAt(i))) { jessieParse.newline = line = true; break }
       seek(close < 0 ? end : end + 2)
     } else if (cc >= 0xa0 && isSpace(cc)) {
-      if (cc === 0x2028 || cc === 0x2029) jessieParse.newline = true
+      if (cc === 0x2028 || cc === 0x2029) jessieParse.newline = line = true
       skip()
-    } else return cc
+    } else {
+      if (idx > start) { gapFrom = start; gapEnd = idx; gapLine = line }
+      return cc
+    }
   }
+}
+
+// Statement separation (§12.10): a statement that ends in an expression or a
+// declarator needs `;` before the next one, or a line terminator between. The
+// ASI layer splits two statements wherever its line flag is up, and the flag
+// stays up past the line that raised it and goes up at every `}`: `a = b c`
+// after any line break, `x = () => {} y` and `debugger(x)` each read as two
+// statements. A split stands when a line terminator precedes the next
+// statement, or when the statement before ended itself: with the `}` of a
+// block, a declaration, a try or switch, or a control statement's braced body,
+// or with the `)` of a do-while. Bodies come unwrapped from their braces, so
+// the enter/exit hooks keep where the brace group closed last opened: a body
+// lying past it was braced.
+const opens = []
+let closedOpen = -1, closedAt = -1
+const asiEnter = jessieParse.enter, asiExit = jessieParse.exit
+jessieParse.enter = (p, end) => { asiEnter(); if (end === 125) opens.push(idx - 1) }
+jessieParse.exit = (p, end) => {
+  asiExit(p, end)
+  if (end === 125) { closedOpen = opens.length ? opens.pop() : -1; closedAt = idx - 1 }
+}
+// switch.js consumes its body's braces itself and fires only the exit: a mark
+// stands for the opening the exit takes.
+const switchOp = lookup[115]?.ops?.find(d => d.op === 'switch')
+if (switchOp) {
+  const parseSwitch = switchOp.map
+  switchOp.map = (a) => {
+    opens.push(-1)
+    const depth = opens.length, r = parseSwitch(a)
+    if (opens.length === depth) opens.pop()
+    return r
+  }
+}
+// The least source position in a node, Infinity where none is kept.
+const firstLoc = (n) => {
+  if (!Array.isArray(n)) return Infinity
+  let at = typeof n.loc === 'number' ? n.loc : Infinity
+  for (let i = 1; i < n.length; i++) { const c = firstLoc(n[i]); if (c < at) at = c }
+  return at
+}
+const CONTROL = new Set(['if', 'for', 'for await', 'while', 'with', ':'])
+const bodyOf = st => st[0] === 'if' && st.length > 3 ? st[3] : st[2]
+const isFn = n => Array.isArray(n) && (n[0] === 'function' || n[0] === 'function*' || n[0] === 'class' ||
+  n[0] === 'async' && Array.isArray(n[1]) && (n[1][0] === 'function' || n[1][0] === 'function*'))
+// Whether statement `st` ended with the `}` of the brace group opened at `open`.
+// A class member splits like a statement: a method or accessor ends in its body.
+const endsInBrace = (st, open) => {
+  for (;;) {
+    if (!Array.isArray(st)) return true   // no brace of its own: the braces were a body's around it
+    const op = st[0]
+    if (op === '{}' || op === 'try' || op === 'switch' || op === 'get' || op === 'set' || isFn(st)) return true
+    if (op === 'static') { st = st[1]; continue }
+    if (op === 'export') return isFn(st[1]) || Array.isArray(st[1]) && st[1][0] === 'default' && isFn(st[1][1])
+    if (!CONTROL.has(op)) return false
+    st = bodyOf(st)
+    if (st == null || firstLoc(st) > open) return true   // an empty or braced body
+  }
+}
+// Whether statement `st` ended with the `)` of a do-while (ASI inserts `;` after it on one line).
+const endsInDo = (st) => {
+  for (;;) {
+    if (!Array.isArray(st)) return false
+    if (st[0] === 'do') return true
+    if (!CONTROL.has(st[0])) return false
+    st = bodyOf(st)
+  }
+}
+// Where the token before the one at `at` ends: -1 behind a line terminator,
+// -2 where the gap was skipped before a backtrack and is not known here.
+const endBefore = (at) => {
+  if (gapEnd === at) return gapLine ? -1 : gapFrom - 1
+  const c = cur.charCodeAt(at - 1)
+  return isSpace(c) || c === 47 ? -2 : at - 1
+}
+// Whether statement `st`, whose last token ends at `end` (endBefore), stands
+// apart from the next; `closed`/`open` are the brace group closed last then. A
+// `}` the hooks did not see close (none is known) cannot be told apart: it stands.
+const separated = (st, end, closed, open) => {
+  if (end < 0) return true
+  const prev = cur.charCodeAt(end)
+  if (prev === 41) return endsInDo(st)
+  return prev === 125 && (end !== closed || endsInBrace(st, open))
+}
+// A postfix `++`/`--` takes no line terminator before it (§15.13, a restricted
+// production), and no statement ends in one. After either the `++` starts the
+// next statement: `x`, a line break, `++y` is `x; ++y`, which the ASI layer
+// read as `x++; y`.
+const prefixOnly = (st, at, cc) => {
+  if (cur.charCodeAt(at + 1) !== cc) return false
+  const end = endBefore(at)
+  return end === -1 || end >= 0 && end === closedAt && cur.charCodeAt(end) === 125 && endsInBrace(st, closedOpen)
+}
+// Statements meet in two places: where the ASI layer splits one off at the
+// statement level, and where a statement body parsed at `body` precedence (a
+// control statement's, a case's) ends and its caller reads on, a new case
+// statement or the `while` of a do-while. The first place two meet unseparated
+// is kept, and reported once the early errors had their say: theirs name the
+// fault more precisely where they apply (`if (a) x = 1 else …`).
+const body = (prec.asi ?? prec[';']) + .5
+let joinedAt = -1
+const asiStep = jessieParse.step
+jessieParse.step = (a, p, cc, expr) => {
+  if (!Array.isArray(a) && typeof a !== 'string') return asiStep(a, p, cc, expr)
+  const list = a[0] === ';' && Array.isArray(a), n = list ? a.length : 0, last = list ? a[n - 1] : a, at = idx
+  if ((cc === 43 || cc === 45) && prefixOnly(last, at, cc)) return jessieParse.asi(a, p, expr) ?? null
+  // the gap before this token, read before a split parses on past it
+  const end = endBefore(at), closed = closedAt, open = closedOpen
+  const r = asiStep(a, p, cc, expr)
+  // the ASI layer split `a` off (a new list headed by it, or the list grown), or a body ended
+  if (joinedAt < 0 && cc !== 59 && cc !== 125 && (r ? list ? r === a && a.length > n : r !== a && Array.isArray(r) && r[0] === ';' && r[1] === a : p === body) &&
+      !separated(last, end, closed, open)) joinedAt = at
+  return r
 }
 
 // An escaped name means its decoded one (§12.7.1): `\u0061` and `a` are one
@@ -206,13 +326,17 @@ const parse = (src, sourceType = 'jz', base = 0) => {
   // lexical validation below.
   const parseSource = typeof src === 'string' && src.includes('\r') ? src.replace(/\r(?!\n)/g, '\n') : src
   let ast
-  try { ast = jessieParse(parseSource) }
-  catch (e) {
+  joinedAt = gapFrom = gapEnd = closedOpen = closedAt = -1
+  opens.length = 0
+  try {
+    ast = jessieParse(parseSource)
+    validateEarlyErrors(ast, src, sourceType, base)
+    if (joinedAt >= 0) err('Expected ; or a line break before this statement', joinedAt)
+  } catch (e) {
     if (!(e instanceof SyntaxError)) throw e
     const stop = stoppedAt(e.message, parseSource), at = where(base == null ? here() : base + stop.at)
     throw SyntaxError(at ? stop.message + at : e.message)
   }
-  validateEarlyErrors(ast, src, sourceType, base)
   decodeNames(ast)
   if (base !== 0) place(ast, base)
   return ast
