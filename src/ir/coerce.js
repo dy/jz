@@ -238,6 +238,9 @@ const coerceNullishToStr = (valIR) => {
  *  maybeNullish, which get a runtime nullish coerce (null-flow correctness). */
 export function toNumF64(node, v) {
   if (numericStorage(node)) return asF64(v)
+  // A local whose ToNumber rides in a shadow (compile/num-shadow.js).
+  const shadow = typeof node === 'string' ? ctx.func.numShadow?.get(node) : null
+  if (shadow) { const r = typed(['local.get', `$${shadow}`], 'f64'); r.valKind = VAL.NUMBER; return r }
   // An i32 node carrying `.ptrKind` is an *unboxed pointer* (object/array local),
   // not a number — skipping coercion would reinterpret pointer bits as an f64.
   // Only a plain i32 (loop counter, `x|0`) is genuinely already-numeric.

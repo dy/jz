@@ -70,6 +70,7 @@ export function createActiveFunction({
     directClosures,
     zeroInitSeen: null,
     maybeNullish: null,
+    numShadow: null,
     taggedLocals: null,
     boxedResult: false,
     valResult: null,
@@ -153,7 +154,7 @@ export function isInactiveFunction(ctx) {
     frame.flowValBlocked === null && frame.repsFrozen === false && unallocated(frame.p1Predicted) &&
     emptyMap(frame.localValTypesOverlay) && frame.localTypedElemsOverlay === null &&
     unallocated(frame.closureAux) && frame.directClosures === null && unallocated(frame.zeroInitSeen) &&
-    unallocated(frame.maybeNullish) && unallocated(frame.taggedLocals) &&
+    unallocated(frame.maybeNullish) && unallocated(frame.numShadow) && unallocated(frame.taggedLocals) &&
     frame.boxedResult === false && frame.valResult === null && frame.mixedAtomReturn === false &&
     frame.charDecomp === null && frame.charDecompGlobals === false && frame.concatBufs === null &&
     frame.probeHoist === null && frame.lenHoist === null && frame.hoistTempDefs === null &&

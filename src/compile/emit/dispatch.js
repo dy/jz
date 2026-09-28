@@ -667,6 +667,8 @@ export function emitDecl(...inits) {
       // NaN-box undef sentinel — and wasm zero-inits locals anyway, so a 0 init is
       // equivalent for the assigned-before-read pattern that earns i32.
       result.push(['local.set', `$${i}`, ctx.func.locals.get(i) === 'i32' ? ['i32.const', 0] : undef])
+      const shadow = ctx.func.numShadow?.get(i)
+      if (shadow) result.push(['local.set', `$${shadow}`, ['f64.const', 'nan']])
       continue
     }
     if (!Array.isArray(i) || i[0] !== '=') continue
@@ -1042,6 +1044,8 @@ export function emitDecl(...inits) {
     const zeroInit = isLit(coerced) && coerced[1] === 0 && !Object.is(coerced[1], -0) && !ctx.func.stack.length
     if (!zeroInit || ctx.func.zeroInitSeen?.has(name)) {
       result.push(['local.set', `$${name}`, coerced])
+      const shadow = ctx.func.numShadow?.get(name)
+      if (shadow) result.push(['local.set', `$${shadow}`, toNumF64(init, typed(['local.get', `$${name}`], 'f64'))])
       // Record the def node (by reference, not a copy) so stripCanon's single-use
       // hoist-temp lookup (see isHoistTemp above) can mutate it in place later.
       if (localType === 'f64' && isHoistTemp(name)) (ctx.func.hoistTempDefs ??= new Map()).set(name, coerced)

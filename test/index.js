@@ -95,6 +95,7 @@ const TESTS = [
   'late-field',
   'index-key',
   'primitive-store',
+  'num-shadow',
   'variant-result',
   'call-boundary',
   'call-release',

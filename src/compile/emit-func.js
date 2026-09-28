@@ -21,6 +21,7 @@ import { enterFunc, emitPreboxedLocalInits, placePreboxedLocalInits } from './fu
 import { isBoundaryWrapped } from './boundary-wrap.js'
 import { hoistUnionCursorUnbox } from './coercion-hoist.js'
 import { isExported } from './func-exports.js'
+import { planNumericShadows } from './num-shadow.js'
 
 /**
  * Phase: emit one user function to WAT IR.
@@ -147,6 +148,8 @@ export function emitFunc(func, functionPlan, programFacts) {
       if (r.mayBeUndefined || r.missArg) (ctx.func.maybeNullish ??= new Set()).add(pname)
     }
   }
+
+  planNumericShadows(body, sig.params)
 
   const fn = ['func', `$${name}`]
   // Stamp the emit-side CSE, alias, and stable-header facts captured from the

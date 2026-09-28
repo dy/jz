@@ -11,7 +11,8 @@ import { ctx } from '../ctx.js'
 import { isI32 } from '../ast.js'
 import { VAL, lookupValType, repOf, repOfGlobal, numericStorage } from '../reps.js'
 import { intExprRange } from '../static.js'
-import { numberStorageValue, toNumF64 } from './coerce.js'
+import { numberStorageValue, toNumF64, coerceNullishToNum } from './coerce.js'
+import { isNumericIR } from './classify.js'
 import { typed } from './tag.js'
 import { temp, tempI32 } from './locals.js'
 import { asF64, asI32, toI32 } from './numeric.js'
@@ -288,6 +289,15 @@ export function writeVar(name, valIR, void_, source) {
         ['local.set', dollar(name), numberStorageValue(ref)], ref], 'f64')
     }
     coerced = source === undefined ? numberStorageValue(valIR) : toNumF64(source, valIR)
+  }
+  // A numeric shadow (compile/num-shadow.js) takes the value's ToNumber.
+  const shadow = t === 'f64' ? ctx.func.numShadow?.get(name) : null
+  if (shadow) {
+    const ref = typed(['local.get', dollar(name)], 'f64')
+    const num = source !== undefined ? toNumF64(source, ref)
+      : coerced.type === 'i32' || isNumericIR(coerced) ? ref : coerceNullishToNum(ref)
+    const set = [['local.set', dollar(name), coerced], ['local.set', `$${shadow}`, num]]
+    return void_ ? typed(['block', ...set], 'void') : typed(['block', ['result', 'f64'], ...set, ref], 'f64')
   }
   if (void_) return typed(['local.set', dollar(name), coerced], 'void')
   const teeNode = typed(['local.tee', dollar(name), coerced], t)
