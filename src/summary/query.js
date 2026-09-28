@@ -16,7 +16,8 @@ export function summaryQueries(facts, internal = false) {
   const { kinds, incoming, fields, results, receivers, closures, closuresByBody, declared, parent, nameKeys, forwards, siteResults,
     scopeOfSig, scopeOfBody, scopeOfParams, cellUp, elems, tuples, lens, stores, built, grown, unknown, presentReads, paramRangesOf, cellProps, cellWild, closureSets, closureSetIds, cells, jsonKinds, unions, shapeUnions,
     schemas, layouts, sitesByLayout, objectKinds, methods, sidByKey, funcNames, imports, numeric, strung, dynamicProps, builtinOwnProps, typedReadPresent, typedProps, typedPropsByAux, openSchemas, indexedSchemas,
-    sideProps, sideWild, wildProps, wildValues, pendingAll, keyedCells, cellShapes, cellLostObject, closureProps, escaped, iterSites, reached, defaultRuns } = facts
+    sideProps, sideWild, wildProps, wildValues, pendingAll, keyedCells, cellShapes, cellLostObject, closureProps, escaped, iterSites, reached, defaultRuns,
+    boolKeys, storeBits, paramKeys } = facts
   // The solver owns union-find compression; querying a root never writes it.
   const cell = id => { while (cellUp[id] !== id) id = cellUp[id]; return id }
   const MIXABLE_TAGS = bitOf(K.HASH) | bitOf(K.OBJECT) | bitOf(K.NUMBER) | bitOf(K.STRING) | bitOf(K.BOOL) | bitOf(K.BIGINT)
@@ -466,6 +467,20 @@ export function summaryQueries(facts, internal = false) {
       stringDemand: name => { const key = keyOfAnywhere(name); return key !== null && (typeof key === 'number' ? strung.has(key) : key.some(k => strung.has(k))) },
       numericDemand: name => { const key = keyOfAnywhere(name), isNumeric = k => numeric.get(k) === 2; return key !== null && (typeof key === 'number' ? isNumeric(key) : key.every(isNumeric)) },
       numericStorage: name => { const key = keyOf(name), k = readKind(name); return key !== null && numeric.get(key) === 2 && tagOf(core(k)) === K.NUMBER && hasTag(k, K.ABSENT) && !hasTag(k, K.NULLISH) },
+      // The binding's own kind, on every path: no guard's presence, no alias.
+      bindingKindOf: name => pub(readKey(keyOfAnywhere(name))),
+      // A Boolean reaches the binding (a store, a definition or an argument of
+      // a kind naming BOOL, or one Boolean by its syntax): bit 1; one of its
+      // stores may be another value by its syntax: bit 2.
+      boolStores: name => {
+        const key = keyOfAnywhere(name), bits = k => (boolKeys?.has(k) ? 1 : 0) | (storeBits?.get(k) ?? 0)
+        if (key === null) return 0
+        if (typeof key === 'number') return bits(key)
+        let b = 0
+        for (const k of key) b |= bits(k)
+        return b
+      },
+      isParam: name => { const key = keyOfAnywhere(name); return key !== null && (typeof key === 'number' ? paramKeys?.has(key) : key.some(k => paramKeys?.has(k))) === true },
       // The demand pass denied the binding a number: a read of it neither converts nor is compatible (a container store, a return), so its value keeps JS semantics for every kind the host may pass.
       numericDenied: name => { const key = keyOfAnywhere(name), denied = k => numeric.get(k) === false; return key !== null && (typeof key === 'number' ? denied(key) : key.some(denied)) },
       // Incoming arguments/defaults before any reassignment in the body.

@@ -13,7 +13,7 @@ import { core, isNullable, K, tagOf } from '../summary/kind.js'
 import { restoreActiveFunction, publishLoopRewinds } from './active-function.js'
 import { installFunctionPlan } from './function-plan.js'
 import { makeMapOverlay } from './map-overlay.js'
-import { emit, emitBlockBody, emitIdentitySafe, emitVoid, toBool } from './emit.js'
+import { emit, emitBlockBody, emitIdentitySafe, emitVoid, toBool, bindingStore } from './emit.js'
 import { emitCharDecompPrologue } from '../abi/string.js'
 import { representationReturnAction } from './representation-plan.js'
 import { recordParamClosureDefault, recordDirectReturnClosure } from './dyn-closure-tables.js'
@@ -194,7 +194,8 @@ export function emitFunc(func, functionPlan, programFacts) {
     const t = p?.type || 'f64'
     // emit(defVal) ONCE, before branching on t — same self-compile miscompile class as
     // emit.js's 'return' handler. See .work/archive/todo.md (groundtruth archive).
-    const emittedDefVal = emit(defVal)
+    // A parameter the callers give a number beside a Boolean default takes its atom.
+    const emittedDefVal = bindingStore(pname, defVal)
     // dyn-closure-tables.js: a default value that's provably a closure literal
     // (e.g. subscript's `dispatch(ops, tail, fn = (a, …) => {…})`) is the fact
     // proveClosureFactory needs to see through `dispatch`'s forwarded return.

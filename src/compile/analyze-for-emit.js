@@ -495,7 +495,6 @@ export function analyzeFuncForEmit(func, programFacts) {
     block,
     locals: ctx.func.locals,
     boxed: ctx.func.boxed,
-    capturedNames: ctx.func.capturedNames,
     cellTypes,
     flatObjects: ctx.func.flatObjects,
     sliceViews: ctx.func.sliceViews,

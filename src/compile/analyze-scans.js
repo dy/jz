@@ -130,14 +130,6 @@ export function boxedCaptures(body, params = NO_NAMES, captures = NO_NAMES) {
   const markArrowCaptures = (node, assignTarget) => {
     const captures = []
     findFreeVars(node, new Set(), captures, outerScope)
-    // Record EVERY captured name (mutated or not) — src/compile/emit.js's
-    // emitDecl consults this to decide whether a captured, ambiguous
-    // BOOL∪NUMBER-merge init (kind.js hasAmbiguousBoolMerge) needs an
-    // identity-safe shadow for the closure's env-slot store (module/
-    // function.js ctx.closure.make, the 'value'-mode capture copy). Broader
-    // than `boxed` below (mutation-gated, cell storage) by design — this is
-    // capture-status ALONE, independent of mutation.
-    for (const v of captures) (ctx.func.capturedNames ??= new Set()).add(v)
     if (captures.length === 0) return
     const captureSet = new Set(captures)
     const boxed = new Set()

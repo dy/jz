@@ -3,7 +3,7 @@ import { DBG_INVARIANTS } from '../../debug.js'
 import { OPTF, ctx } from '../../ctx.js'
 import { ASSIGN_OPS, MUTATE_OPS, walkAst, collectAssignedNames } from '../../ast.js'
 import { VAL, repOf, updateRep } from '../../reps.js'
-import { valTypeOf, shapeOf } from '../../kind.js'
+import { valTypeOf, shapeOf, boolTagged } from '../../kind.js'
 import { intExprRange, objLiteralSchemaId } from '../../static.js'
 import { isCondExpr, intCertainMap } from '../../type.js'
 import { makeTypedTracker, joinReassignedTypedLens, dropDisagreeingTypedDefs } from './trackers.js'
@@ -504,7 +504,8 @@ export function analyzeIntCertain(body) {
     : undefined
   const nested = new Set()
   walkAst(body, { enter: n => { if (n[0] === '=>') { collectAssignedNames(n[2], nested); return false } } })
+  // A tagged binding (kind.js boolTagged) holds a Boolean as its atom: no integer.
   for (const [name, intC] of intCertainMap(body, nested.size ? nested : undefined, slotIntOf)) {
-    if (intC) updateRep(name, { intCertain: true })
+    if (intC && !boolTagged(name)) updateRep(name, { intCertain: true })
   }
 }

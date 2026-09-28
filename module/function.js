@@ -261,20 +261,9 @@ export default (ctx) => {
         const cell = ['local.get', `$${ctx.func.boxed.get(envCaptures[i])}`]
         block.push(walked ? ['i64.store', addr, ['i64.extend_i32_u', cell]] : ['i32.store', addr, cell])
       }
-      else {
-        // Identity-safe capture shadow (src/compile/emit.js's emitDecl,
-        // ctx.func.identityShadow — see its own comment there): a captured,
-        // ambiguous BOOL∪NUMBER-merge decl (`let v = cond && 1`) already
-        // computed and teed its boxed TRUE/FALSE-atom-or-number form once,
-        // at declaration time — read it back here instead of a fresh
-        // `emit(name)`, which would only ever see the collapsed raw bits
-        // (the merge's own valTypeOf reads NUMBER post-collapse, so a bare
-        // name reference carries no ambiguity signal of its own by this
-        // point — kind.js hasAmbiguousBoolMerge only recognizes the ORIGINAL
-        // expression shape, never a name that merely holds its result).
-        const shadow = ctx.func.identityShadow?.get(envCaptures[i])
-        block.push(['f64.store', addr, shadow ? ['local.get', `$${shadow}`] : asF64(emit(envCaptures[i]))])
-      }
+      // A Boolean-or-Number binding the closure observes holds its atoms
+      // itself (kind.js boolTagged): the capture copies the value.
+      else block.push(['f64.store', addr, asF64(emit(envCaptures[i]))])
     }
     block.push(mkPtrIR(PTR.CLOSURE, tableIdx, ['local.get', `$${t}`]))
 

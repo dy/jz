@@ -39,8 +39,6 @@ export function createActiveFunction({
     typedLen: null,
     lenBoundOf: null,
     boxed: new Map(),
-    capturedNames: null,
-    identityShadow: null,
     cellTypes: null,
     flatObjects: null,
     sliceViews: null,
@@ -145,7 +143,7 @@ export function isInactiveFunction(ctx) {
     frame.atModuleScope === false && emptyMap(frame.locals) && frame.localReps === null &&
     frame.typedElem === null && frame.typedLen === null &&
     frame.lenBoundOf === null &&
-    emptyMap(frame.boxed) && unallocated(frame.capturedNames) && unallocated(frame.identityShadow) &&
+    emptyMap(frame.boxed) &&
     unallocated(frame.cellTypes) && unallocated(frame.flatObjects) &&
     unallocated(frame.sliceViews) && unallocated(frame.arrayViews) && frame.restView === null && unallocated(frame.leanHashLocals) && unallocated(frame.i32HashLocals) &&
     unallocated(frame.leanHashDomains) && unallocated(frame.preboxed) && frame.preboxInits === null &&

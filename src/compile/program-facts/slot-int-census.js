@@ -12,6 +12,7 @@ import { collectSlotWriteHazards, applySlotWriteHazards } from './slot-write-haz
 import { collectBodyElemSids } from './shared.js'
 import { effectiveWriteValue } from '../../ast.js'
 import { frameNode } from '../../function.js'
+import { mixedBoolKind } from '../../kind.js'
 
 /** Whole-program slot intCertain observation.
  *
@@ -150,10 +151,19 @@ export function analyzeSchemaSlotIntCertain(ast, opts) {
     }
   } })
 
+  // A slot holding a Boolean beside a number holds the Boolean's atom (a store
+  // boxes it, ir/sentinels.js carrierF64): its bits are no integer, whatever
+  // the integer a Boolean converts to.
+  const boolSlots = []
+  if (ctx.summary) for (let sid = 0; sid < ctx.schema.list.length; sid++) {
+    const props = ctx.schema.list[sid]
+    for (let i = 0; i < props.length; i++) if (mixedBoolKind(ctx.summary.fieldKind(sid, props[i]))) boolSlots.push(sid, i)
+  }
   const sweep = (fresh) => {
     // Hazard poison FIRST: the optimistic slotIntOf resolver must never count a
     // hazarded slot int mid-fixpoint (it would infect other slots' certainty).
     applySlotWriteHazards(hazards, poisonSlot)
+    for (let j = 0; j < boolSlots.length; j += 2) poisonSlot(boolSlots[j], boolSlots[j + 1])
     flipped = false
     curSids = null
     if (ast) visit(ast, bodyIntCertainOf(ast, fresh))

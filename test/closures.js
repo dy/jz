@@ -511,11 +511,9 @@ test('closure: captured ambiguous BOOL∪NUMBER merge preserves identity (kernel
   // {coerced false, real number 1} — never a genuine 0. Capturing `v` by a
   // closure reads a bare name, no expression shape left for
   // hasAmbiguousBoolMerge to see, so the false arm's identity used to be
-  // unrecoverable by the time module/function.js's env-slot store ran —
-  // fixed by emit.js's emitDecl minting a one-time identity-safe shadow
-  // local for a captured, ambiguous-merge decl (ctx.func.identityShadow),
-  // read back at the env-slot store instead of re-deriving from `v`'s
-  // already-collapsed bits.
+  // unrecoverable by the time module/function.js's env-slot store ran. `v`
+  // is a tagged binding now (kind.js boolTagged: the closure's read observes
+  // it): its own storage holds the atom, and the capture copies it.
   const src = `
     export let f = (x) => { let v = x > 0 && 1; const g = () => v; let arr = [g]; return arr[0]() }
     export let t = (x) => { let v = x > 0 && 1; const g = () => typeof v; let arr = [g]; return arr[0]() }

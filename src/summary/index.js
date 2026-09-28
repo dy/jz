@@ -281,11 +281,16 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   // member the join to ANY erases (`n = BigInt(n)` on one path of a parameter
   // of every kind), kept for the result contract's certain-return walk.
   const certainKeys = new Set()
+  // A binding a Boolean reaches beside the unknown kind, which names every tag
+  // and so cannot say it: the emitter keeps its Booleans as atoms (the kind of
+  // a union of named tags says so itself).
+  const boolKeys = new Set()
   const raise = (values, key, k, quiet = false) => {
     const old = values[key] ?? K.NONE; let nk = merge(old, k, quiet)
     if ((values[key] ?? K.NONE) !== old) nk = merge(values[key], nk, true)   // the join raised the binding itself (an escaped closure's parameter)
     if (nk !== (values[key] ?? K.NONE)) { values[key] = nk; changed = true }
     if (values === kinds && hasTag(k, K.BIGINT) && !unbounded(k)) certainKeys.add(key)
+    if (values === kinds && hasTag(k, K.BOOL) && (k & TAGS) !== TAGS) boolKeys.add(key)
     // The base key joins the contexts quietly while no walk reads it (the
     // emitter of the one function does); an initializer walked under the
     // join as well raises it as the walk does, so the two agree on one form.
@@ -2873,6 +2878,23 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   const MODULE = ''
   const nameKeys = new Map()         // name → binding ids (one, or a function and its specialized variants)
   const writes = []                 // collected beside declarations; one initializer proves a fixed extent
+  // The stores of a binding by their syntax, in every body, walked or not: a
+  // body no walk reaches keeps no kind, and its bindings answer by these
+  // (`storeBits`): 1 a store that may be a Boolean, 2 one that may be another
+  // value (a declaration without one holds undefined; a parameter what a call passes).
+  const storeWrites = []            // [scope, name, bits]
+  // A Boolean by its syntax: a literal, a comparison, a predicate builtin (`Array.isArray`).
+  const bool = (e) => e[0] === 'bool' || (e[0] == null && typeof e[1] === 'boolean') || BOOL_OPS.has(e[0]) ||
+    (e[0] === '()' && e.length === 3 && typeof e[1] === 'string' && builtinCalleeVal(e[1]) === VAL.BOOL)
+  // May be a Boolean: one, or a merge with one for an arm.
+  const boolish = (e) => Array.isArray(e) && (bool(e) ||
+    ((e[0] === '&&' || e[0] === '||' || e[0] === '??' || e[0] === '=') && (boolish(e[1]) || boolish(e[2]))) ||
+    (e[0] === '?:' && (boolish(e[2]) || boolish(e[3]))) || ((e[0] === ',' || e[0] === '()' && e.length === 2) && boolish(e[e.length - 1])))
+  // Only a Boolean: one, or a merge of them.
+  const onlyBool = (e) => Array.isArray(e) && (bool(e) ||
+    ((e[0] === '&&' || e[0] === '||' || e[0] === '??') && onlyBool(e[1]) && onlyBool(e[2])) || (e[0] === '=' && onlyBool(e[2])) ||
+    (e[0] === '?:' && onlyBool(e[2]) && onlyBool(e[3])) || ((e[0] === ',' || e[0] === '()' && e.length === 2) && onlyBool(e[e.length - 1])))
+  const storeBitsOf = (e) => e === undefined ? 2 : (boolish(e) ? 1 : 0) | (onlyBool(e) ? 0 : 2)
   const declareIn = (scope, name) => {
     let d = declared.get(scope)
     if (!d) declared.set(scope, d = new Map())
@@ -2898,7 +2920,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     if (op === 'let' || op === 'const') {
       for (let i = 1; i < n.length; i++) {
         const d = n[i], name = typeof d === 'string' ? d : d?.[0] === '=' ? d[1] : null
-        if (typeof name === 'string') { declareIn(scope, name); writes.push(typeof d === 'string' ? [scope, name, null, true] : [scope, name, d[2]]) }
+        if (typeof name === 'string') { declareIn(scope, name); writes.push(typeof d === 'string' ? [scope, name, null, true] : [scope, name, d[2]]); storeWrites.push([scope, name, storeBitsOf(typeof d === 'string' ? undefined : d[2])]) }
         if (Array.isArray(d)) collect(d[2], scope)
       }
       return
@@ -2915,7 +2937,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       return
     }
     else if (op === 'catch' && typeof n[2] === 'string') declareIn(scope, n[2])
-    if (MUTATE_OPS.has(op) && typeof n[1] === 'string') writes.push([scope, n[1], straight && scope === MODULE && op === '=' ? n[2] : null])
+    if (MUTATE_OPS.has(op) && typeof n[1] === 'string') { writes.push([scope, n[1], straight && scope === MODULE && op === '=' ? n[2] : null]); storeWrites.push([scope, n[1], op === '=' || op === '||=' || op === '&&=' || op === '??=' ? storeBitsOf(n[2]) : 2]) }
     // Writes make an empty literal a dictionary unless it has a materialized schema.
     if (MUTATE_OPS.has(op) && Array.isArray(n[1]) && (n[1][0] === '[]' || n[1][0] === '.')) { let root = n[1][1]; while (Array.isArray(root) && root[0] === '[]') root = root[1]; if (typeof root === 'string') dictUses.push([scope, root]) }
     if (op === '()' && n[1] === 'Object.assign') { const t = args(n[2])[0]; if (typeof t === 'string') dictUses.push([scope, t]) }
@@ -2978,6 +3000,9 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       if (!initWrites.has(name)) raise(kinds, key, NULLISH)
     }
   current = null
+  const storeBits = new Map()        // binding id → the bits of its stores by syntax
+  for (const key of paramKeys) storeBits.set(key, 2)
+  for (const [scope, name, bits] of storeWrites) { const key = keyOf(name, scope); if (key !== null) storeBits.set(key, (storeBits.get(key) ?? 0) | bits) }
   // A binding's one definition: its declaration's value, or the one value a
   // statement of the module assigns it where no read sees it unassigned
   // (`let HIGH` then `HIGH = 1`: the bare declaration writes nothing a read finds).
@@ -3455,6 +3480,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     numeric, strung, dynamicProps, builtinOwnProps, escaped, typedReadPresent, typedProps, typedPropsByAux, openSchemas, indexedSchemas, hostSchemas, opaqueSchemas, deletable, deleteReach,
     sideProps, sideWild, wildProps, wildValues, pendingAll, keyedCells, cellShapes, cellLostObject, closureProps, iterSites, reached, defaultRuns,
     held,
+    boolKeys, storeBits, paramKeys,
     contracts: null,   // the result contracts, built at the freeze below
   }
   const queries = summaryQueries(queryFacts, true)
@@ -3773,7 +3799,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   })
   const seeded = [...seedable].filter(p => (entryNumeric.has(p) || isCompatible(p)) && tagOf(kinds[p] ?? K.NONE) === K.ANY)
   if (seeded.length) {
-    kinds.length = 0; incoming.length = 0; fields.length = 0; objectKinds.clear(); opaqueSchemas.clear(); hostSchemas.clear(); hostArrays.clear(); retainedArrays.clear(); hostClosures.clear(); results.clear(); escaped.clear(); certainKeys.clear(); for (let i = 0; i < elems.length; i++) { elems[i] = K.NONE; cellUp[i] = i }
+    kinds.length = 0; incoming.length = 0; fields.length = 0; objectKinds.clear(); opaqueSchemas.clear(); hostSchemas.clear(); hostArrays.clear(); retainedArrays.clear(); hostClosures.clear(); results.clear(); escaped.clear(); certainKeys.clear(); boolKeys.clear(); for (let i = 0; i < elems.length; i++) { elems[i] = K.NONE; cellUp[i] = i }
     tuples.clear(); lens.clear(); stores.clear(); built.clear(); grown.clear(); unknown.clear(); presentReads.clear(); argRanges.clear(); roundArgs.clear(); moved.clear(); openArgs.clear()
     pendingAll = false; pendingIndexed = false; wildValues = K.NONE; wildProps.clear(); sideProps.clear(); sideWild.clear(); closureProps.clear(); sideByProp.clear(); foreignObjects = false; foreignProps.clear(); deletable.clear(); deleteReach.unknown = false
     seed(seeded)

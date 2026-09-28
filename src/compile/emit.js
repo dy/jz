@@ -44,6 +44,6 @@
  * @module emit
  */
 
-export { emit, toBool, emitIdentitySafe, emitVoid, emitBlockBody, emitBoolStr, emitIndex, resolveClosureTableParamLattice } from './emit/dispatch.js'
+export { emit, toBool, emitIdentitySafe, emitVoid, emitBlockBody, emitBoolStr, emitIndex, resolveClosureTableParamLattice, bindingStore } from './emit/dispatch.js'
 export { buildArrayWithSpreads } from './emit/call-args.js'
 export { emitter } from './emit/index.js'

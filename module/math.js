@@ -136,7 +136,8 @@ export default (ctx) => {
     if (op === '.' && src.length === 3) return isIntCertain(src)
     return false
   }
-  const fInt = (op, a) => isIntCertain(a) ? asF64(emit(a)) : f(op, a)
+  // An integer rounds to itself, as a Number: a Boolean (integer-certain) converts.
+  const fInt = (op, a) => isIntCertain(a) ? toNumF64(a, emit(a)) : f(op, a)
   // ECMA Math methods perform ToNumber on each argument. toNumF64 short-circuits
   // for known-number nodes, and routes everything else through __to_num so null→0,
   // undefined→NaN, and strings get parsed. Without this, raw NaN-boxed pointers

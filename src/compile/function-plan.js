@@ -87,7 +87,6 @@ export function installFunctionPlan(ctx, plan) {
   ctx.plans.functionData.delete(plan)
   ctx.func.locals = data.locals
   ctx.func.boxed = data.boxed
-  ctx.func.capturedNames = data.capturedNames
   ctx.func.cellTypes = data.cellTypes
   ctx.func.flatObjects = data.flatObjects
   ctx.func.sliceViews = data.sliceViews

@@ -188,6 +188,7 @@ const TESTS = [
   'eager-stdlib-parity',
   'jsstring',
   'booleans',
+  'bool-number',
   'warnings',
   'deopt',
   'minimal-output',

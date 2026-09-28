@@ -705,7 +705,9 @@ export let f = (s) => g(s) === false`
 // name regardless of mutation (capturedNames — broader than the cell-boxed
 // ctx.func.boxed set it already built), and emit.js's emitDecl mints a
 // one-time identity-safe shadow local (ctx.func.identityShadow) for a
-// captured name whose declaring init is hasAmbiguousBoolMerge — gated on
+// captured name whose declaring init is hasAmbiguousBoolMerge (since
+// replaced: the binding is tagged, kind.js boolTagged, and holds the atom
+// itself; capturedNames and the shadow are gone) — gated on
 // BOTH facts, so every other decl (captured-only, ambiguous-only, or
 // neither — including every decl in scripts/self.js's own source, verified
 // by the self-build gate) takes the exact same `emit(init)` path as before.

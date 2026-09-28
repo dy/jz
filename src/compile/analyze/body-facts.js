@@ -14,7 +14,7 @@ import { makeMapOverlay } from '../map-overlay.js'
 import { VAL, updateRep } from '../../reps.js'
 import { intExprRange, staticPropertyKey, staticArrayElems, exprSchemaId } from '../../static.js'
 import { exprType, intLevelMap } from '../../type.js'
-import { K, tagOf, paramOf, hasTag, valOf, core, UNKNOWN, kind } from '../../summary/index.js'
+import { K, tagOf, paramOf, hasTag, valOf, core, UNKNOWN } from '../../summary/index.js'
 import { ctorFromElemAux, typedElemAux } from '../../../layout.js'
 import {
   findMutations, collectI32SafeIndexVars, collectF64StridedIndexVars, collectBareEscapes, narrowUint32,
@@ -25,7 +25,7 @@ import {
 import { makeTypedTracker, joinReassignedTypedLens } from './trackers.js'
 import { typedStorageNameCtor } from '../../typed-context.js'
 import { typedElementKey } from '../../typed-provenance.js'
-import { isPresentNumber } from '../../kind.js'
+import { isPresentNumber, boolTagged } from '../../kind.js'
 import { scanIntervalIdx, invalidateIntervalProof } from '../../type/interval-proof.js'
 import { idxKey, scanBoundedArrIdx } from '../../type/canonical-bounds.js'
 
@@ -736,23 +736,11 @@ function widenLocalTypes(body, locals, readPresent, unsignedLocals) {
     for (const [name, level] of intLevels)
       if (level === 1 && locals.get(name) === 'i32' && bareEscapes.has(name)) locals.set(name, 'f64')
   }
-  // Pass E: a binding that holds a Boolean beside another kind and whose
-  // reads observe its identity (the numeric demand pass denied it a number)
-  // carries the Boolean as its atom (emit/assignment.js boolCarrier), so its
-  // storage is the tagged f64, never the raw i32 the stores alone suggest.
+  // Pass E: a binding that carries its Booleans as atoms (kind.js boolTagged,
+  // emit/dispatch.js boolCarrier) is stored as the tagged f64, never the raw
+  // i32 the stores alone suggest.
   const view = ctx.summary?.at(body)
-  if (view) for (const [name, t] of locals) {
-    if (t !== 'i32') continue
-    if (mixedBoolKind(view.kindOfExpr(name)) && !view.numericDemand(name)) locals.set(name, 'f64')
-  }
-}
-
-/** A known kind holding a Boolean beside another kind: a union of named
- *  tags, never the unknown kind (which carries every tag). */
-export const mixedBoolKind = k => {
-  const c = core(k) & ~UNKNOWN
-  return hasTag(c, K.BOOL) && (tagOf(c) === K.ANY || hasTag(k, K.NULLISH) || hasTag(k, K.ABSENT)) &&
-    c !== (core(kind(K.ANY)) & ~UNKNOWN)
+  if (view) for (const [name, t] of locals) if (t === 'i32' && boolTagged(name, view)) locals.set(name, 'f64')
 }
 
 /** Drop the cached analyzeBody entry for this body. Used by emitFunc after

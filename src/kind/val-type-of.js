@@ -31,7 +31,7 @@ import { literalTruthiness, nullishArm } from './lattice.js'
 import { censusMaybeUndefinedKind } from './dict-census.js'
 import { valOf as summaryVal, contractVal } from '../summary/index.js'
 import { typedIndexKnown } from '../type/canonical-bounds.js'
-import { K, NUMBER, TAGS, NULL_BITS, bitOf, tagsOf, isPostfixRecovery } from '../summary/kind.js'
+import { K, NUMBER, TAGS, NULL_BITS, UNKNOWN, bitOf, tagsOf, isPostfixRecovery } from '../summary/kind.js'
 import { shapeOf, jsonConstString, spreadMergeResolves } from './shape.js'
 
 /**
@@ -181,11 +181,12 @@ VT['&&'] = VT['||'] = VT['??'] = (args) => {
 // satisfies `ta === VAL.BOOL`/`tb === VAL.BOOL` here, so it's excluded for free,
 // not by special-casing.
 //
-// Recursive through nested merges: when this node's own arms collapse via the
-// ordinary same-kind branch (`ta === tb`, e.g. both resolve NUMBER) rather than
-// the coercion branch itself, the join is STILL ambiguous if either arm is
-// itself an ambiguous merge — the outer NUMBER kind may carry a nested coerced
-// bool's bits. A statically-resolved `?:` condition (VT['?:'] line 143-144)
+// Recursive through nested merges: when this node's own arms do not take the
+// coercion branch themselves, the join is STILL ambiguous if either arm is
+// itself an ambiguous merge — an outer NUMBER kind may carry a nested coerced
+// bool's bits, and an outer open kind (`k ? (b || 5) : x`, an arm of no single
+// kind) yields that arm's value, whose Boolean an identity-observing consumer
+// must see as itself. A statically-resolved `?:` condition (VT['?:'])
 // only ever evaluates its own live arm, so this mirrors that: recurse into the
 // live arm instead of returning early.
 // Narrowing supplies its scoped summary resolver before local representations exist.
@@ -205,16 +206,14 @@ export function hasAmbiguousBoolMerge(node, vt = valTypeOf) {
     const ta = vt(a), tb = vt(b)
     if (ta === VAL.BOOL && tb === VAL.NUMBER) return true
     if (tb === VAL.BOOL && ta === VAL.NUMBER) return true
-    if (ta && ta === tb) return hasAmbiguousBoolMerge(a, vt) || hasAmbiguousBoolMerge(b, vt)
-    return false
+    return hasAmbiguousBoolMerge(a, vt) || hasAmbiguousBoolMerge(b, vt)
   }
   if (op === '&&' || op === '||' || op === '??') {
     const a = node[1], b = node[2]
     const ta = vt(a), tb = vt(b)
     if (ta === VAL.BOOL && tb === VAL.NUMBER) return true
     if (tb === VAL.BOOL && ta === VAL.NUMBER) return true
-    if (ta && ta === tb) return hasAmbiguousBoolMerge(a, vt) || hasAmbiguousBoolMerge(b, vt)
-    return false
+    return hasAmbiguousBoolMerge(a, vt) || hasAmbiguousBoolMerge(b, vt)
   }
   return false
 }
@@ -229,6 +228,10 @@ const typedReceiverCtor = recv =>
   typedStorageCtorFromContext(ctx, recv, {
     resolveName: name => typedCtorRawOf(name) ?? repOf(name)?.typedCtor ?? null,
   }) ?? summaryTypedCtor(ctx, recv)
+
+// A dissolved slot's kind is its initializer's, but a Boolean-or-Number merge
+// lands there as its identity (emit/dispatch.js storedValueNarrow): no NUMBER.
+const flatSlotVal = (value) => hasAmbiguousBoolMerge(value) ? null : valTypeOf(value)
 
 // `[]` op covers both array literals (1 arg) and index access (2 args).
 // Array literal: `[]` → ['[]', null]; `[1,2]` → ['[]', [',', ...]]; `[x]` → ['[]', x].
@@ -265,7 +268,7 @@ VT['[]'] = (args) => {
       const k = staticIndexKey(args[1])
       if (k != null && (!flat.written?.has(k) || flat.selfPreserving?.has(k))) {
         const i = flat.names.indexOf(k)
-        if (i >= 0 && flat.values[i] !== undefined) return valTypeOf(flat.values[i])
+        if (i >= 0 && flat.values[i] !== undefined) return flatSlotVal(flat.values[i])
       }
     }
   }
@@ -351,7 +354,7 @@ VT['.'] = (args) => {
     const flat = ctx.func.flatObjects?.get(args[0])
     if (flat && (!flat.written?.has(args[1]) || flat.selfPreserving?.has(args[1]))) {
       const i = flat.names.indexOf(args[1])
-      if (i >= 0 && flat.values[i] !== undefined) return valTypeOf(flat.values[i])
+      if (i >= 0 && flat.values[i] !== undefined) return flatSlotVal(flat.values[i])
     }
   }
   // Schema slot read: when `varName` has a bound schemaId and `.prop` resolves
@@ -513,6 +516,30 @@ const addsAsNumber = k => tagsOf(k) === TAGS || (tagsOf(k) & ~ADDEND_BITS) === 0
 /** A bare name the numeric demand pass denied a number. */
 export const numericDenied = (node, view = ctx.summary?.at(ctx.func.current)) =>
   typeof node === 'string' && view != null && view.numericDenied(node)
+
+/** A known kind holding a Boolean beside another kind: a union of named
+ *  tags, never the unknown kind (which carries every tag). */
+export const mixedBoolKind = k => {
+  const c = k & ~UNKNOWN & ~NULL_BITS
+  return (c & bitOf(K.BOOL)) !== 0 && (c !== bitOf(K.BOOL) || (k & NULL_BITS) !== 0) && c !== (TAGS & ~NULL_BITS)
+}
+
+/** A binding whose Booleans are atoms, the carrier that keeps their identity:
+ *  it holds a Boolean beside another kind and a read may observe which (the
+ *  numeric demand pass did not prove every read a conversion; a parameter
+ *  takes its callers' atoms, whatever its reads). The kind answers where it
+ *  names its tags. The unknown kind names them all: the binding is tagged when
+ *  a Boolean reaches it. A body no walk reached keeps no kind: its stores
+ *  answer by their syntax, a Boolean beside another value. Flow facts do not
+ *  enter: the storage is one for every path. */
+export const boolTagged = (name, view = ctx.summary?.at(ctx.func.current)) => {
+  if (typeof name !== 'string' || view == null) return false
+  if (ctx.func.localReps?.get(name)?.val || ctx.scope.globalValTypes?.get(name)) return false
+  const k = view.bindingKindOf(name)
+  if (!mixedBoolKind(k) && !(k === K.NONE ? view.boolStores(name) === 3
+    : (k & TAGS & ~NULL_BITS) === (TAGS & ~NULL_BITS) && (view.boolStores(name) & 1) !== 0)) return false
+  return view.isParam(name) || !view.numericDemand(name)
+}
 
 // A sequence forwards its final value, including presence. The settled
 // summary declines nullable/mixed kinds; do not fall back from that answer

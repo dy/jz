@@ -419,7 +419,7 @@ test('error: strict mode dynamic property access message', () => {
 // compile time (`Binding '…' can be both Boolean and Number…`), and a plain
 // reassignment once skipped even that and read the Boolean as a raw
 // number. The binding is now a tagged carrier: every Boolean store lands
-// as its atom (src/compile/emit/dispatch.js boolTaggedBinding, boolCarrier)
+// as its atom (src/kind/val-type-of.js boolTagged, emit/dispatch.js boolCarrier)
 // and the reads take the dynamic forms a mixed kind takes. Reference:
 // ECMA-262 13.15.2 (the value of `??`/`&&` is one operand, unconverted),
 // 13.5.3 typeof (a Boolean reads "boolean"), 7.2.15 IsStrictlyEqual.

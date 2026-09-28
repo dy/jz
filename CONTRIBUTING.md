@@ -1881,19 +1881,31 @@ its fallback arm's generic call, and a direct call through a receiver the
 readers cannot type (an optional chain's temp) carries the atom too.
 
 A binding that holds a Boolean beside another kind (`let v; if (k) v = true;
-else v = 1`, `let x = c && 1`) and whose reads observe its identity (a
-return, a `typeof`, a strict compare, a store: the summary's numeric demand
-pass denied it a number) is a tagged carrier (`boolTaggedBinding`,
-`src/compile/emit/dispatch.js`): every Boolean store lands as its atom, a
-merge keeps its Boolean arm boxed (`emitIdentitySafe`), its storage is the
-tagged f64 (`analyze/body-facts.js` Pass E, over a known union only, never
-the unknown kind), and no flow fact of one store's kind is recorded for it.
-A binding read only for truthiness or arithmetic keeps the raw carrier. The
-compile-time rejection remains for the one case a plan typed such a binding
-as one concrete non-Boolean kind.
-An integer-certain binding counts the writes a nested closure makes to it,
-and a reassigned parameter its caller's value (`intLevelMap` seeds the
-analyzed body's own parameters, the slot census's included).
+else v = 1`, `let x = c && 1`) and some read of which may observe its
+identity (a return, a `typeof`, a strict compare, a string, a store: the
+summary's numeric demand pass did not prove every read a conversion) is a
+tagged carrier (`boolTagged`, `src/kind/val-type-of.js`): every Boolean store
+lands as its atom (`boolCarrier`, `src/compile/emit/dispatch.js`: a
+declaration, an assignment, a logical assignment, a parameter default), a
+merge keeps its Boolean arm boxed (`emitIdentitySafe`, a merge nested in a
+merge of open kind included), its storage is the tagged f64
+(`analyze/body-facts.js` Pass E), a store that may be a Boolean records no
+flow fact (a store of an array or a number still does), and a numeric read
+converts the atoms (`toNumF64`, as for a slot or a result of such a kind; a
+slot holding a Boolean beside a number is no integer to the slot census).
+The summary's kind decides where it names its tags; where it is the unknown
+kind, the binding is tagged when a Boolean reaches it (`boolStores`: a
+store, a definition or an argument of a kind naming BOOL, or one Boolean by
+its syntax), and in a body no walk reached, which keeps no kind, when its
+stores are a Boolean and another value by their syntax. A parameter holds
+its callers' atoms whatever its reads (`coerceArg` boxes a Boolean for an
+untyped parameter). A binding every read of which converts keeps the raw
+carrier and holds numbers: a store of a value that may carry an atom (a
+field, an element, a result) lands as its ToNumber. No such binding rejects;
+`test/bool-number.js` pins each operation in each place. An integer-certain
+binding counts the writes a nested closure makes to it, and a reassigned
+parameter its caller's value (`intLevelMap` seeds the analyzed body's own
+parameters, the slot census's included).
 
 A typed array's `fill` converts its value once for a numeric array (`fill('12')`
 stores 12), writes the first element through the element writer and doubles
@@ -2736,8 +2748,6 @@ conversions, pointer/tag accessors, NaN constants, `toModule`, `wrapVal`,
 
 - DataView indexed own properties are unsupported; indexed writes reject.
   Unextended views have no `.length` or indexed elements.
-- Ambiguous Boolean/Number locals whose stored identity escapes reject;
-  truthiness-only uses compile.
 - Rest-parameter BigInt elements lack boundary evidence and reject.
 - Array patterns share lazy pulls, undefined-only defaults and IteratorClose on
   early completion or binding errors. Native Map/Set views are snapshots.

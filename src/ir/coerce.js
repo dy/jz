@@ -13,7 +13,7 @@ import { ctx, inc, PTR, LAYOUT, OPTF } from '../ctx.js'
 import { ERR_CLASS_NAMES, ERR, errorCodeLiteral } from '../../err-codes.js'
 import { ptrBits, i64Hex, OBJECT_SCHEMA_HI_MASK, objectSchemaGuardHex } from '../../layout.js'
 import { VAL, repOf, numericStorage, mayBeUndefined } from '../reps.js'
-import { valTypeOf, censusMaybeUndefined, censusMaybeUndefinedKind, numericDenied } from '../kind.js'
+import { valTypeOf, censusMaybeUndefined, censusMaybeUndefinedKind, numericDenied, boolTagged, mixedBoolKind } from '../kind.js'
 import { intExprRange } from '../static.js'
 import { K, bitOf, hasTag, tagOf, NULL_BITS, TAGS, NUMBER_OPS } from '../summary/kind.js'
 import { COMPOUND_NUMERIC_OPS } from '../kind-traits.js'
@@ -427,13 +427,17 @@ export function toNumF64(node, v) {
   // A bare name the numeric demand pass denied a number (a read of it
   // neither converts nor is compatible) keeps JS semantics for every kind
   // the host may pass through an `any` parameter (a string, a boolean,
-  // null): the summary's kind decides between the full ToNumber, the number
+  // null), and so does a value that may carry a Boolean's atom (a tagged
+  // binding, kind.js boolTagged; a slot or a result a Boolean beside a number
+  // reaches): the summary's kind decides between the full ToNumber, the number
   // module included, and an inline fold of the nullish and boolean atoms.
-  if (!ctx.core.stdlib['__to_num'] && ctx.summary && numericDenied(node)) {
+  const atoms = !ctx.core.stdlib['__to_num'] && ctx.summary != null &&
+    (typeof node === 'string' ? boolTagged(node) : mixedBoolKind(ctx.summary.at(ctx.func.current).kindOfExpr(node)))
+  if (!ctx.core.stdlib['__to_num'] && ctx.summary && (atoms || numericDenied(node))) {
     const k = ctx.summary.at(ctx.func.current).kindOfExpr(node)
     const nonNumeric = k & ~(bitOf(K.NUMBER) | bitOf(K.BOOL) | NULL_BITS) & TAGS
     if (nonNumeric !== 0) ctx.module.include('number')
-    else if ((k & (bitOf(K.BOOL) | NULL_BITS)) !== 0) {
+    else if (atoms || (k & (bitOf(K.BOOL) | NULL_BITS)) !== 0) {
       const t = temp('atom')
       return typed(['block', ['result', 'f64'], ['local.set', `$${t}`, asF64(v)], coerceAtomsToNum(typed(['local.get', `$${t}`], 'f64'))], 'f64')
     }

@@ -12,17 +12,16 @@ import { PTR, ctx, err, inc, emitArity, setLinkDemand } from '../../ctx.js'
 import {
   callWithArgs, FALSE_NAN, MAX_CLOSURE_ARITY, TRUE_NAN, WASM_OPS, applyBigintRepresentationAction, asF64, asI32, asI64, asParamType, asPtrOffset, block64, boolBoxIR, boxBigInt, carrierF64, carrierF64Narrow, emitNum, extractF64Bits, flat, freshId, fromI64, isBoolAtom, isBoundName, isGlobal, boxedAddr, isLit, isNullish, isNullishLit, litVal, materializeDeferredBigint, mayYieldUndefOf, maybeUnboxBigInt, mkPtrIR, nullExpr, nullableBoolBoxIR, ptrOffsetIR, readVar, resolveValType, temp, tempI32, tempI64, toI32, toNumF64, toStrI64, truthyIR, typed, unboxBoolIR, undefExpr, valKindToPtr, UNDEF_NAN,
 } from '../../ir.js'
-import { BIGINT_JOINT_BINARY_OPS, isPresentNumber, hasAmbiguousBoolMerge, nullishArm, valTypeOf } from '../../kind.js'
+import { BIGINT_JOINT_BINARY_OPS, isPresentNumber, hasAmbiguousBoolMerge, nullishArm, valTypeOf, boolTagged, mixedBoolKind } from '../../kind.js'
 import { VAL, lookupValType, repOf, repOfGlobal, numericStorage, mayBeUndefined } from '../../reps.js'
 import { nonNegIntLiteral } from '../../static.js'
 import { functionLength } from '../../function.js'
 import { exprType, isTerminator } from '../../type.js'
 import {
-  BINDING_USE_COMPUTED, BINDING_USE_DECLS, BINDING_USE_KEY, BINDING_USE_KIND, BINDING_USE_OP, BINDING_USE_OPTIONAL, BINDING_USE_USES, USE, scanBindingUses,
+  BINDING_USE_COMPUTED, BINDING_USE_DECLS, BINDING_USE_KEY, BINDING_USE_KIND, BINDING_USE_OPTIONAL, BINDING_USE_USES, USE, scanBindingUses,
 } from '../analyze-scans.js'
 import { withArrayLiteralEscape } from '../flow-state.js'
 import { arrayView, emitArrayViewDef, materializeArrayView } from '../array-view.js'
-import { mixedBoolKind } from '../analyze/body-facts.js'
 import { extractRefinements, withRefinements } from '../flow-types.js'
 import {
   JOIN_OPS, REP_EDGE_BOX, REP_EDGE_REJECT, REP_EDGE_UNBOX, representationBindingWriteAction, representationCallArgAction,
@@ -606,67 +605,29 @@ function tryConcatBufferDecl(name, init) {
  *  same inlining emitSchemaSlotGuarded does for OBJECT. */
 export const TYPED_HI_MASK = '0xFFFFFFFF00000000'
 
-// Loud identity-escape REJECT for a BOOL∪NUMBER-ambiguous merge landing in a
-// plain (non-boxed) local — README.md "Known limitations": "Ambiguous
-// boolean∪number locals whose stored identity would escape reject at compile
-// time (truthiness-only uses compile fine); full support needs a tagged
-// Boolean carrier plan." `expr`'s own VT rule (kind.js hasAmbiguousBoolMerge)
-// took the BOOL-vs-NUMBER benign-coercion branch — sound for arithmetic
-// (`cond && 1` used as a number), unsound the moment `name`'s STORED value is
-// later read back for its own identity (typeof, strict-eq): the raw 0/1
-// carrier can't be told apart from a genuine coerced-false/true. Scans EVERY
-// use of `name` in the enclosing function body, not just the ones downstream
-// of this one assignment — the ambiguity lives in the BINDING's storage, so a
-// later `typeof name` sees exactly the same collapsed bits regardless of
-// which assignment produced them. A plain truthiness test (`if(name)`,
-// `!name`, `name ? : `) stays exempt — only typeof and other identity-
-// observing uses are unsupported; a captured (closure) use is handled by its
-// own identity-shadow box, not this reject. Shared by emitDecl (the original
-// call site, decl-with-init) and the plain-assignment '=' handler below (the
-// audit's BOOL_CARRIER family — `let x; x = false ?? 1`/`x = b && 1` skipped
-// this REJECT entirely, silently keeping the wrong raw NUMBER carrier).
-//
-// USE.REASSIGN is ALSO exempt, same as CAPTURE — a WRITE to `name` (this
-// very assignment included: scanBindingUses records every `x = …` target as
-// a REASSIGN "use" of x) is never itself an identity-OBSERVING read. Without
-// this exemption the plain-assignment call site below always saw its own
-// assignment statement as a disqualifying "use" and rejected UNCONDITIONALLY
-// — even `let x; x = false ?? 1; return x ? 1 : 0` (pure truthiness
-// downstream, which the decl-path's `let x = false ?? 1; return x ? 1 : 0`
-// correctly accepts) — a real over-rejection caught by this fix's own test
-// suite (test/errors.js "does NOT reject … truthiness"), not by the audit.
-export function rejectAmbiguousBoolIdentity(name, expr) {
-  if (typeof name !== 'string' || !hasAmbiguousBoolMerge(expr) || boolTaggedBinding(name)) return
-  const summary = scanBindingUses(ctx.func.body).get(name)
-  const uses = summary ? summary[BINDING_USE_USES] : []
-  const unsupported = uses.some(use =>
-    use[BINDING_USE_KIND] !== USE.CAPTURE && use[BINDING_USE_KIND] !== USE.REASSIGN &&
-    !(use[BINDING_USE_KIND] === USE.BOOL_TEST && use[BINDING_USE_OP] !== 'typeof'))
-  if (unsupported)
-    err(`Binding '${name}' can be both Boolean and Number, but its stored carrier erases that identity — use the merge expression directly or normalize with Boolean()/Number()`)
-}
-
-/** A binding that holds a Boolean beside another kind (`let v; if (k) v =
- *  true; else v = 1`, `let x = c && 1`) and whose reads observe its identity
- *  (a return, a `typeof`, a strict compare, a store: the numeric demand pass
- *  denied it a number) carries the Boolean as its atom: every store boxes it
- *  (boolCarrier), the storage is the tagged f64 (analyze/body-facts.js Pass
- *  E), and the reads take the dynamic forms a mixed kind already takes. A
- *  binding some plan typed as one concrete non-Boolean kind is not tagged;
- *  rejectAmbiguousBoolIdentity keeps the correct-or-reject contract there. */
-export function boolTaggedBinding(name) {
-  if (typeof name !== 'string') return false
-  const view = ctx.summary?.at(ctx.func.current)
-  if (!view) return false
-  return mixedBoolKind(view.kindOfExpr(name)) && !view.numericDemand(name) && lookupValType(name) == null
-}
-
-/** The value a store into `name` lands: a Boolean's atom for a tagged binding. */
+/** The value a store into `name` lands. A binding that holds a Boolean beside
+ *  another kind (`let v; if (k) v = true; else v = 1`, `let x = c && 1`)
+ *  carries its Booleans as atoms where a read may observe which (kind.js
+ *  boolTagged): every store boxes a Boolean, a merge keeps its Boolean arm
+ *  boxed (emitIdentitySafe), the storage is the tagged f64
+ *  (analyze/body-facts.js Pass E), a Boolean store records no flow fact
+ *  (setFlowVal), and the reads take the forms a mixed kind takes, a numeric
+ *  one converting the atoms (ir/coerce.js toNumF64). A binding every read of
+ *  which converts keeps the raw carrier and holds numbers: a value that may
+ *  carry an atom (a field, an element, a result) lands as its ToNumber. */
 export function boolCarrier(name, node, ir) {
-  if (!boolTaggedBinding(name) || valTypeOf(node) !== VAL.BOOL) return ir
+  if (typeof name !== 'string') return ir
+  if (!boolTagged(name)) {
+    const view = ctx.summary?.at(ctx.func.current)
+    return view && ir.type === 'f64' && mixedBoolKind(view.bindingKindOf(name)) && view.numericDemand(name) && valTypeOf(node) !== VAL.NUMBER
+      ? toNumF64(node, ir) : ir
+  }
+  if (valTypeOf(node) !== VAL.BOOL) return ir
   const k = ctx.summary.at(ctx.func.current).kindOfExpr(node)
   return k & SUMMARY_NULL_BITS ? nullableBoolBoxIR(ir) : boolBoxIR(ir)
 }
+/** `node` emitted as the value a store into the binding `name` lands (boolCarrier). */
+export const bindingStore = (name, node) => boolCarrier(name, node, boolTagged(name) && hasAmbiguousBoolMerge(node) ? emitIdentitySafe(node) : emit(node))
 
 /** Emit let/const initializations as typed local.set instructions. */
 // A typed element the emitter loaded bare (its index proven inside the array),
@@ -871,66 +832,18 @@ export function emitDecl(...inits) {
     if (!viewInit && typeof name === 'string' && Array.isArray(init) && init[0] === '?:' &&
         ((valTypeOf(init[2]) === VAL.BIGINT && nullishArm(init[3])) || (valTypeOf(init[3]) === VAL.BIGINT && nullishArm(init[2]))))
       (ctx.func.taggedLocals ??= new Set()).add(name)
-    // Closure-capture identity shadow (kind.js hasAmbiguousBoolMerge; extends
-    // 756ae10f's formatter box-at-consumer pattern to the closure-capture
-    // consumer — test/kernel-oracle.js's PENDING-FIX 'captured-then-read'
-    // row). A captured `let v = cond && 1`-shaped local's OWN value collapses
-    // to a raw NUMBER the instant it's stored (valTypeOf(init) already reads
-    // NUMBER post-merge, per hasAmbiguousBoolMerge's own doc) — by the time
-    // module/function.js's env-slot-store loop reads `v` (a bare name, no
-    // expression shape left to inspect), the boolean identity is
-    // unrecoverable from the bits alone (0 is bit-identical whether it came
-    // from coerced-false or a genuine number arm — emitIdentitySafe's doc
-    // explains why only re-deriving via the ORIGINAL control flow is sound).
-    // So the box has to happen HERE, at the one point `init` is safely
-    // evaluated once — gated on capturedNames (analyze-scans.js's
-    // boxedCaptures pre-scan: captured-anywhere, broader than the mutation-
-    // gated ctx.func.boxed) so the branch below is DEAD for every decl that
-    // isn't both captured AND ambiguous — provably byte-identical to today's
-    // plain `emit(init)` for everything else, including (verified live, not
-    // assumed — see the self-build gate) every decl in scripts/self.js's own
-    // source, keeping this clear of the decl-init WALL a few lines up
-    // (storedValue/argIR swapped in HERE, unconditionally, reshaped the
-    // self-compiled kernel's own codegen enough to miscompile — research.md
-    // §Carrier invariant). identityShadowName, once set, publishes to
-    // ctx.func.identityShadow for module/function.js's ctx.closure.make to
-    // read back at the env-slot store — see that file's own comment there.
-    const ambiguousIdentity = typeof name === 'string' && hasAmbiguousBoolMerge(init)
-    if (ambiguousIdentity && !neverEscapes) rejectAmbiguousBoolIdentity(name, init)
-    const identityCapture = ambiguousIdentity && ctx.func.capturedNames?.has(name)
-    // A tagged Boolean binding (boolTaggedBinding): a merge keeps its Boolean
-    // arm boxed (emitIdentitySafe), a Boolean initializer boxes below.
-    const tagged = !identityCapture && !neverEscapes && boolTaggedBinding(name)
-    let identityShadowName = null
+    // A tagged Boolean binding (boolTagged): a merge keeps its Boolean arm
+    // boxed (emitIdentitySafe), a Boolean initializer boxes below. A closure
+    // capturing it copies the atom; an untagged one every read of which
+    // converts holds the numeric image, in the closure as well.
+    const tagged = !neverEscapes && boolTagged(name)
     let val = viewInit || withArrayLiteralEscape(neverEscapes, () => {
-      if (!identityCapture) {
-        if (ctx.func.localReps?.get(name)?.arrayCap != null && Array.isArray(init) && init[0] === '[')
-          return ctx.core.emit['[capacity'](name, init.slice(1))
-        return tagged && ambiguousIdentity ? emitIdentitySafe(init) : emit(init)
-      }
-      identityShadowName = `${T}idbox_${name}`
-      ctx.func.locals.set(identityShadowName, 'f64')
-      // Single evaluation: emitIdentitySafe(init) runs exactly once, teed
-      // into the shadow local. Every further use below is a cheap,
-      // repeatable local.get — no re-emission of `init`, so a side effect in
-      // `init` (a call, say) fires once, matching plain emit(init)'s own
-      // contract.
-      const setShadow = ['local.set', `$${identityShadowName}`, asF64(emitIdentitySafe(init))]
-      const shadowRef = typed(['local.get', `$${identityShadowName}`], 'f64')
-      // Derive the plain-number form this decl's OWN local (and every other
-      // consumer of `val` below) needs, from that SAME single evaluation:
-      // isBoolAtom/unboxBoolIR recognize the boxed TRUE/FALSE atom and
-      // extract its bit; anything else is already the correct number
-      // (emitIdentitySafe's own invariant — see its doc comment).
-      const unboxed = typed(['select',
-        ['f64.convert_i32_s', unboxBoolIR(shadowRef)],
-        shadowRef,
-        isBoolAtom(shadowRef)], 'f64')
-      return typed(['block', ['result', 'f64'], setShadow, unboxed], 'f64')
+      if (ctx.func.localReps?.get(name)?.arrayCap != null && Array.isArray(init) && init[0] === '[')
+        return ctx.core.emit['[capacity'](name, init.slice(1))
+      return tagged && hasAmbiguousBoolMerge(init) ? emitIdentitySafe(init) : emit(init)
     })
-    if (identityShadowName) (ctx.func.identityShadow ??= new Map()).set(name, identityShadowName)
     val = applyBigintRepresentationAction(val, init, representationBindingWriteAction(ctx, name, init))
-    if (tagged && !viewInit) val = boolCarrier(name, init, val)
+    if (!viewInit) val = boolCarrier(name, init, val)
     if (isObjLit) ctx.schema.targetStack.pop()
     // Record the declared name's valTypeOf(init) into the flow overlay right after
     // emitting init — not just for sibling `let`s in the same block (emitBlockBody used
@@ -1141,9 +1054,11 @@ function setFlowVal(name, vt, expr, value) {
   // nestedWritesOf's doc comment for why those invalidate position-sensitively
   // instead, in emitBlockBody's own per-statement loop.
   if (ctx.func.flowValBlocked?.has(name)) return
-  // A tagged Boolean binding reads through its mixed kind at every use: a
-  // flow fact of one store's kind would read its atom as a raw number.
-  if (boolTaggedBinding(name)) { ctx.func.localValTypesOverlay?.delete(name); return }
+  // A tagged Boolean binding (boolTagged) holds a Boolean as its atom: a flow
+  // fact that the value is a Boolean, or a number where a Boolean merge's
+  // arm may be its atom, would read the atom as a raw number. A store of
+  // another kind (an array, a number) is that kind until the next.
+  if (boolTagged(name) && (vt === VAL.BOOL || hasAmbiguousBoolMerge(expr))) { ctx.func.localValTypesOverlay?.delete(name); return }
   const k = value?.checkedNumRead || vt === VAL.NUMBER && mayYieldUndefOf(expr, value) ? orAbsent(NUMBER)
     : value?.presentNumRead || vt === VAL.NUMBER && isPresentNumber(ctx, expr) ? NUMBER : ctx.summary?.at(ctx.func.current).kindOfExpr(expr)
   // A nullable BigInt operation also produces Number on its absent arm.

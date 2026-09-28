@@ -18,7 +18,7 @@ import {
   mintRepresentationPlan, representationProgramHasBigint, representationReturnAction,
 } from './representation-plan.js'
 import { mintTypedStoragePlan } from './typed-storage-plan.js'
-import { emit, emitBlockBody, emitIdentitySafe } from './emit.js'
+import { emit, emitBlockBody, emitIdentitySafe, bindingStore } from './emit.js'
 import { enterFunc, emitPreboxedLocalInits, placePreboxedLocalInits, seedSummaryParam, seedSummaryLocals } from './func-entry.js'
 import { paramAllUsesNumeric } from './param-numeric.js'
 import { unbounded } from '../summary/index.js'
@@ -307,12 +307,14 @@ export function emitClosureBody(cb, functionPlan) {
   const defaultParamInits = []
   if (cb.defaults) {
     for (const [pname, defVal] of Object.entries(cb.defaults)) {
+      // A parameter the callers give a number beside a Boolean default takes its atom.
+      const value = asF64(bindingStore(pname, defVal))
       if (boxedParamNames.has(pname)) {
         defaultParamInits.push(['if', isUndef(['f64.load', boxedAddr(pname)]),
-          ['then', ['f64.store', boxedAddr(pname), asF64(emit(defVal))]]])
+          ['then', ['f64.store', boxedAddr(pname), value]]])
       } else {
         defaultParamInits.push(['if', isUndef(['local.get', `$${pname}`]),
-          ['then', ['local.set', `$${pname}`, asF64(emit(defVal))]]])
+          ['then', ['local.set', `$${pname}`, value]]])
       }
     }
   }
