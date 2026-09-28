@@ -1486,7 +1486,15 @@ holds the final pointer, so reads through it follow no forward. An element
 read whose index the walk finds inside a fixed length is present by node
 (`presentReads`), and a never-nullish expression of one layout reads its slot
 directly. A bare `let` assigned before every read declares empty, not absent
-(`summary/definite.js`). The block emitter holds a name a checked read or
+(`summary/definite.js`). The module's own bare declarations take the same
+proof over its statements: a function runs where a statement names it or,
+called by the host, after they end, so a name a function reads is assigned on
+every path to the end (`var HIGH; if (le) HIGH = 1; else HIGH = 0` holds a
+number, and so does the slot `{ HIGH: HIGH }` copies it into). A module
+binding a read can find unassigned or nullish, where some read observes that
+(a presence test, a copy into another binding), keeps the f64 carrier: the
+integer-global inference (`inferModuleIntGlobals`) leaves it, since an i32
+reads 0 where the program reads `undefined`. The block emitter holds a name a checked read or
 store dereferenced present for the rest of its block. `why` reports the first
 cause an array built at a fixed count keeps its checks by (`array-open`).
 The summary also keeps the hull of the arguments each parameter receives over

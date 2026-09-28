@@ -2693,8 +2693,23 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   // the program does not mean to make), unless its function assigns it before
   // every read (definite.js): that one never shows what it was declared with.
   const assignedFirst = new Map()   // function or closure → its bare declarations assigned before every read
+  // The module's own: its statements run once, in order, and a function runs
+  // where one names it or, called by the host, after they end, so a name a
+  // function reads is assigned on every path to the end (`var HIGH; if (le)
+  // HIGH = 1; else HIGH = 0` then `{ HIGH: HIGH }` holds a number).
+  let assignedModule = null
+  const moduleAssigned = () => {
+    if (assignedModule) return assignedModule
+    const mentioned = new Map()   // function name → the names its frame mentions, through the functions it names
+    const scan = (n, out) => { if (typeof n === 'string') out.add(n); else if (Array.isArray(n) && n[0] !== 'str') for (let i = 1; i < n.length; i++) scan(n[i], out) }
+    for (const f of funcs) { const s = new Set(); scan(f.body, s); if (f.defaults) for (const d of Object.values(f.defaults)) scan(d, s); mentioned.set(f.name, s) }
+    for (let grew = true; grew;) { grew = false; for (const s of mentioned.values()) for (const x of [...s]) { const t = mentioned.get(x); if (t && t !== s) for (const y of t) if (!s.has(y)) { s.add(y); grew = true } } }
+    const later = new Set()
+    for (const s of mentioned.values()) for (const x of s) later.add(x)
+    return assignedModule = definitelyAssigned([';', ...tops], name => mentioned.get(name), later)
+  }
   const bare = (name) => {
-    if (current === null) return ABSENT
+    if (current === null) return moduleAssigned().has(name) ? K.NONE : ABSENT
     let names = assignedFirst.get(current)
     if (!names) assignedFirst.set(current, names = definitelyAssigned(typeof current === 'string' ? funcByName.get(current).body : closureBodies[current]))
     return names.has(name) ? K.NONE : ABSENT

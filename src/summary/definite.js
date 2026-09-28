@@ -20,8 +20,13 @@ import { MUTATE_OPS } from '../ast.js'
 
 const LOGICAL_ASSIGN = new Set(['||=', '&&=', '??='])
 
-/** The names `body` declares bare and assigns before every read, nested closures' own aside. */
-export function definitelyAssigned(body) {
+/** The names `body` declares bare and assigns before every read, nested closures' own aside.
+ *  For the module's statements: `reach` gives the names a function's frame
+ *  mentions (through the functions it names), since a function named where a
+ *  binding is not yet assigned may run from there on, and what it reads is
+ *  read there; `later` are the names read once the statements have ended (a
+ *  function the host calls), which every path to the end must have assigned. */
+export function definitelyAssigned(body, reach = null, later = null) {
   const bare = new Set()
   const declared = (n) => {
     if (!Array.isArray(n) || n[0] === '=>') return
@@ -36,7 +41,12 @@ export function definitelyAssigned(body) {
   const join = (a, b) => { if (a === null) return b; if (b === null) return a; const out = new Set(); for (const x of a) if (b.has(x)) out.add(x); return out }
   const fork = (a) => a === null ? null : new Set(a)
   const assign = (name, a) => { if (a !== null && bare.has(name)) a.add(name); return a }
-  const read = (name, a) => { if (a !== null && bare.has(name) && !a.has(name)) bare.delete(name) }
+  const read = (name, a) => {
+    if (a === null) return
+    if (bare.has(name) && !a.has(name)) bare.delete(name)
+    const via = reach?.(name)
+    if (via) for (const x of via) if (bare.has(x) && !a.has(x)) bare.delete(x)
+  }
   const mentions = (n, a) => {
     if (typeof n === 'string') read(n, a)
     else if (Array.isArray(n)) for (let i = 1; i < n.length; i++) mentions(n[i], a)
@@ -83,6 +93,7 @@ export function definitelyAssigned(body) {
     if (op === 'label') return walk(n[2], a)
     return seq(n, a)
   }
-  walk(body, new Set())
+  const end = walk(body, new Set())
+  if (later && end !== null) for (const x of later) if (bare.has(x) && !end.has(x)) bare.delete(x)
   return bare
 }

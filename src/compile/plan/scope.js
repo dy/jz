@@ -215,11 +215,20 @@ export const inferModuleIntGlobals = (ast) => {
   // evidence and not a function. (const-folded / typed-pointer globals already
   // carry a non-`(mut f64)` decl, so they're excluded.)
   const candidates = new Set()
+  // A binding a read may find unassigned or nullish, where some read observes
+  // that (a presence test, a copy into another binding) and is no numeric
+  // coercion: its `undefined` needs the f64 carrier, an i32 would read 0.
+  const view = ctx.summary?.at(null)
+  const observedMissing = (name) => {
+    const k = view?.kindOf(name)
+    return k != null && (hasTag(k, K.ABSENT) || hasTag(k, K.NULLISH)) && !view.numericDemand(name)
+  }
   for (const name of ctx.scope.userGlobals) {
     const decl = ctx.scope.globals.get(name)
     if (!(decl?.mut && decl.type === 'f64')) continue
     if (ctx.scope.globalValTypes?.get(name) !== VAL.NUMBER) continue
     if (ctx.funcs.names?.has(name)) continue
+    if (observedMissing(name)) continue
     candidates.add(name)
   }
   if (!candidates.size) return
