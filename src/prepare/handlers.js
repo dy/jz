@@ -2101,7 +2101,9 @@ function prepDecl(op, ...inits) {
       // `export { f as g }` would. A stored closure pointer made every such
       // call an indirect one. Module level only: a function's own alias of a
       // function is a closure value its scope already handles.
-      if (prepState.depth === 0 && typeof normed === 'string' && normed !== name && hasFunc(normed) && !bindingWritten(name)) {
+      // A `const` only: a hoisted function prepped before a `let` alias reads
+      // the name as a variable, and the variable then needs its storage.
+      if (op === 'const' && prepState.depth === 0 && typeof normed === 'string' && normed !== name && hasFunc(normed)) {
         if (name in ctx.funcs.exports) ctx.funcs.exports[name] = normed
         registerFnAlias(name, normed); continue
       }
