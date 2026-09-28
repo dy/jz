@@ -1511,12 +1511,20 @@ a ToInt32 of `floor(y) + gy` inside a sampler needs no infinity guard. A typed
 element read inside the array's count is a number, never undefined
 (`typedReadPresent`): the index's span within a count the walk knows (an
 allocation of one bounded length, a name of one definition, a helper whose
-every return is such an array), a mask, or a counter the loop bounds by the
-array's own length (`i < x.length`). An integer literal a name is written to
-once is known from the first round (`ints`): the functions of a round walk
-ahead of the module's statements, and an absent joined in the first round is
-never lost. A callee taking such a read takes a number, with no per-use
-conversion. A loop that writes no array header
+every return is such an array, a view of the whole buffer of such an array:
+`new Uint32Array(f64.buffer)`), a mask, or a counter the loop bounds by the
+array's own length (`i < x.length`). An integer a name holds for good is known
+from the first round (`ints`): its one definition's value, through the names
+it copies and the fields of a literal nothing stores to (`heldLiteral`: every
+mention reads a field by name or declares an alias read the same way), since
+the functions of a round walk ahead of the module's statements and an absent
+joined in the first round is never lost. A callee taking such a read takes a
+number, with no per-use conversion, and the emitter takes the verdict as an
+index proof of its own (`presentTypedRead`, `typedIdxProven` class 8): the
+read loads with no bounds test and no miss arm. preEval decides a test that
+reads a module constant (`const DEBUG = false`, a `var` written once) and
+drops the dead arm; only the test reads the constant, a reference in the code
+that stays keeps its name. A loop that writes no array header
 (element stores only, calls to functions the module-wide census finds header
 safe, `collectHeaderSafeFuncs`) reads a present array's forwarding word and
 length once before the loop (`presentArrays`, optimize/licm.js); a durable

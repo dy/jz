@@ -49,7 +49,7 @@
  * @module summary
  */
 import { MUTATE_OPS, extractParams, isBrand, returnExprs, ACCESSOR_GET, ACCESSOR_SET, CLASS_T, TYPEOF, typeofPredicate, canonicalKeyOrder, schemaKey, isArrayIndexKey, layoutView, ENUM_DATA } from '../ast.js'
-import { encodeTypedElemAux } from '../../layout.js'
+import { encodeTypedElemAux, TYPED_ELEM_CODE } from '../../layout.js'
 import { ITER_RECORD_KEYS } from '../std/iter-helpers.js'
 import { VAL } from '../reps.js'
 import { typedElementKey } from '../typed-provenance.js'
@@ -2376,7 +2376,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       const ik = expr(idx)
       if (t === K.NONE || t === K.NULLISH || t === K.ABSENT) return K.NONE
       if (t === K.TYPED) return ik === K.NONE ? K.NONE : !typedElementKey(idx, ik === NUMBER) ? core(ik) === NUMBER ? orAbsent(merge(typedElemKind(recv), typedPropsOf(recv))) : ANY
-        : typedReadPresent(current ?? MODULE, n) ? typedElemKind(recv) : orAbsent(typedElemKind(recv))
+        : typedPresentAt(n) ? typedElemKind(recv) : orAbsent(typedElemKind(recv))
       if (t === K.HASH) return orAbsent(elemOf(recv))
       if (t === K.ARRAY) {
         const row = paramOf(recv) === UNKNOWN ? null : tuples.get(cell(paramOf(recv)))
@@ -2706,7 +2706,15 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     for (let grew = true; grew;) { grew = false; for (const s of mentioned.values()) for (const x of [...s]) { const t = mentioned.get(x); if (t && t !== s) for (const y of t) if (!s.has(y)) { s.add(y); grew = true } } }
     const later = new Set()
     for (const s of mentioned.values()) for (const x of s) later.add(x)
-    return assignedModule = definitelyAssigned([';', ...tops], name => mentioned.get(name), later)
+    assignedModule = definitelyAssigned([';', ...tops], name => mentioned.get(name), later)
+    // A class member or an accessor runs where a member is read, stored or
+    // called, and that names no function (`a.k` before `V.prototype.k = v`
+    // reads the member's binding through its getter): what such a function
+    // reads, through the functions it names, keeps its absence.
+    const unnamed = (fn) => { for (const x of mentioned.get(fn) ?? []) assignedModule.delete(x) }
+    for (const f of funcs) if (f.name.includes(CLASS_T) || f.name.endsWith(ACCESSOR_GET) || f.name.endsWith(ACCESSOR_SET)) unnamed(f.name)
+    if (classes) for (const e of classes.values()) for (const fn of e.methods.values()) unnamed(fn)
+    return assignedModule
   }
   const bare = (name) => {
     if (current === null) return moduleAssigned().has(name) ? K.NONE : ABSENT
@@ -2797,7 +2805,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     if (op === 'let' || op === 'const') {
       for (let i = 1; i < n.length; i++) {
         const d = n[i], name = typeof d === 'string' ? d : d?.[0] === '=' ? d[1] : null
-        if (typeof name === 'string') { declareIn(scope, name); writes.push([scope, name, typeof d === 'string' ? null : d[2]]) }
+        if (typeof name === 'string') { declareIn(scope, name); writes.push(typeof d === 'string' ? [scope, name, null, true] : [scope, name, d[2]]) }
         if (Array.isArray(d)) collect(d[2], scope)
       }
       return
@@ -2814,7 +2822,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       return
     }
     else if (op === 'catch' && typeof n[2] === 'string') declareIn(scope, n[2])
-    if (MUTATE_OPS.has(op) && typeof n[1] === 'string') writes.push([scope, n[1], null])
+    if (MUTATE_OPS.has(op) && typeof n[1] === 'string') writes.push([scope, n[1], straight && scope === MODULE && op === '=' ? n[2] : null])
     // Writes make an empty literal a dictionary unless it has a materialized schema.
     if (MUTATE_OPS.has(op) && Array.isArray(n[1]) && (n[1][0] === '[]' || n[1][0] === '.')) { let root = n[1][1]; while (Array.isArray(root) && root[0] === '[]') root = root[1]; if (typeof root === 'string') dictUses.push([scope, root]) }
     if (op === '()' && n[1] === 'Object.assign') { const t = args(n[2])[0]; if (typeof t === 'string') dictUses.push([scope, t]) }
@@ -2877,16 +2885,59 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       if (!initWrites.has(name)) raise(kinds, key, NULLISH)
     }
   current = null
+  // A binding's one definition: its declaration's value, or the one value a
+  // statement of the module assigns it where no read sees it unassigned
+  // (`let HIGH` then `HIGH = 1`: the bare declaration writes nothing a read finds).
   const definitions = new Map()
-  for (const [scope, name, value] of writes) {
+  const unseen = (scope, name, bare) => bare === true && scope === MODULE && moduleAssigned().has(name)
+  for (const [scope, name, value, bare] of writes) {
     const key = keyOf(name, scope)
-    if (key !== null) definitions.set(key, definitions.has(key) || value == null ? null : [scope, value])
+    if (key !== null && !unseen(scope, name, bare)) definitions.set(key, definitions.has(key) || value == null ? null : [scope, value])
   }
-  // An integer literal a name is written to once is its value from the first
-  // round on: the functions of a round walk ahead of the module's statements
-  // (whose declarations record `ints`), and a first round that cannot bound a
-  // loop or a call's argument by the name joins an absent that never leaves.
-  { const byName = new Map(); for (const [, name, value] of writes) byName.set(name, byName.has(name) ? null : value); for (const [name, v] of byName) if (Array.isArray(v) && v[0] == null && Number.isInteger(v[1])) ints.set(name, v[1]) }
+  // Every mention of a name in the program: the node that holds it, its place there, and that node's holder.
+  const nameSites = new Map()
+  const mention = (n, up) => {
+    if (!Array.isArray(n) || n[0] === 'str') return
+    for (let i = 1; i < n.length; i++) {
+      const c = n[i]
+      if (typeof c === 'string') { let l = nameSites.get(c); if (!l) nameSites.set(c, l = []); l.push([n, i, up]) }
+      else mention(c, n)
+    }
+  }
+  for (const f of funcs) { mention(f.body, null); if (f.defaults) for (const d of Object.values(f.defaults)) mention(d, null) }
+  for (const top of tops) mention(top, null)
+  // The object literal a name holds for good, its fields never stored to: a
+  // name of one definition whose every mention reads a field by name
+  // (`idx.HIGH`) or declares an alias held the same way. Any other mention
+  // (an argument, a store, a computed key, a value handed on) may write it.
+  const soleKey = (name) => { const keys = nameKeys.get(name); return keys?.length === 1 ? keys[0] : null }
+  const onlyRead = (name, seen) => {
+    const key = soleKey(name), def = key === null ? null : definitions.get(key)
+    if (!def || seen.has(key)) return false
+    seen.add(key)
+    for (const [n, i, up] of nameSites.get(name) ?? []) {
+      if (n[0] === '=' && i === 1 && n[2] === def[1]) continue                                                               // its own definition
+      if (n[0] === '.' && i === 1 && typeof n[2] === 'string' && !(up && MUTATE_OPS.has(up[0]) && up[1] === n)) continue   // a field read
+      if (n[0] === '=' && i === 2 && typeof n[1] === 'string' && up && (up[0] === 'let' || up[0] === 'const') && onlyRead(n[1], seen)) continue   // an alias, read the same way
+      return false
+    }
+    return true
+  }
+  const heldLiteral = (name) => {
+    let root = name, def = null
+    for (const seen = new Set(); ;) {
+      const key = soleKey(root)
+      def = key === null || seen.has(key) ? null : definitions.get(key)
+      if (!def) return null
+      seen.add(key)
+      if (typeof def[1] !== 'string') break
+      root = def[1]
+    }
+    return Array.isArray(def[1]) && def[1][0] === '{}' && objectLiteral(def[1]) && onlyRead(root, new Set()) ? def[1] : null
+  }
+  // `{ k: v, … }` of plain keys: no spread, no computed key, no accessor.
+  const objectLiteral = (n) => { for (let i = 1; i < n.length; i++) { const p = n[i]; if (typeof p !== 'string' && !(Array.isArray(p) && p[0] === ':' && typeof p[1] === 'string')) return false } return n.length > 1 }
+  const fieldOf = (lit, prop) => { for (let i = 1; i < lit.length; i++) { const p = lit[i]; if (Array.isArray(p) && p[0] === ':' && p[1] === prop) return p[2]; if (p === prop) return p } return undefined }
   const staticValue = (scope, node, seen = new Set()) => {
     if (typeof node === 'string') {
       const key = keyOf(node, scope), def = definitions.get(key)
@@ -2894,34 +2945,55 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       seen.add(key)
       return staticValue(def[0], def[1], seen)
     }
+    // a field of a literal held for good is what the literal wrote there
+    if (Array.isArray(node) && node[0] === '.' && typeof node[1] === 'string' && typeof node[2] === 'string') {
+      const lit = heldLiteral(node[1]), field = lit === null ? undefined : fieldOf(lit, node[2])
+      return field === undefined ? null : staticValue(MODULE, field, seen)
+    }
     return Array.isArray(node) && node[0] == null ? node[1] : typeof node === 'number' ? node : null
   }
+  // An integer a name holds for good is known from the first round on: the
+  // functions of a round walk ahead of the module's statements (whose
+  // declarations record `ints`), and a first round that cannot bound a loop, an
+  // index or a call's argument by the name joins an absent that never leaves.
+  for (const [name, keys] of nameKeys) { const def = keys.length === 1 ? definitions.get(keys[0]) : null; if (def) { const v = staticValue(def[0], def[1]); if (Number.isInteger(v)) ints.set(name, v) } }
   // A function's return expressions (an expression body is its own), not a nested closure's.
   const returnsOf = new Map()
   const returnsOfFn = (name) => { let list = returnsOf.get(name); if (!list) returnsOf.set(name, list = funcByName.get(name)?.body == null ? [] : returnExprs(funcByName.get(name).body)); return list }
-  // The count of a typed array expression, fixed for its life: an allocation
-  // of one length the walk bounds to a single integer (a literal, an integer
-  // name, a parameter's hull), a name of one definition, a call of a function
-  // whose every return is such an array (`x = uniform(N)`). null where unknown.
-  const typedLenOf = (scope, e, seen = new Set()) => {
+  // The count of a typed array expression and the bytes of the buffer under
+  // it, fixed for its life: an allocation of one length the walk bounds to a
+  // single integer (a literal, an integer name, a parameter's hull), a view of
+  // the whole buffer of such an array (`new Uint32Array(f64.buffer)`), a name
+  // of one definition, a call of a function whose every return is such an
+  // array (`x = uniform(N)`). null where unknown.
+  const TYPED_BYTES = [1, 1, 2, 2, 4, 4, 4, 8]   // by TYPED_ELEM_CODE
+  const typedShapeOf = (scope, e, seen = new Set()) => {
     if (typeof e === 'string') {
       const key = keyOf(e, scope), def = key === null ? undefined : definitions.get(key)
       if (!def || seen.has(key)) return null
       seen.add(key)
-      return typedLenOf(def[0], def[1], seen)
+      return typedShapeOf(def[0], def[1], seen)
     }
     if (!Array.isArray(e) || e[0] !== '()' || typeof e[1] !== 'string') return null
-    if (e[1].startsWith('new.') && TYPED_CTOR.test(e[1])) {
-      const args = argList(e[2])
-      if (args.length !== 1) return null
-      const r = spanOf(args[0], scope === MODULE ? null : scope)
-      return r && r[0] === r[1] && r[0] >= 0 ? r[0] : null
+    const m = e[1].startsWith('new.') ? TYPED_CTOR.exec(e[1]) : null
+    if (m) {
+      const args = argList(e[2]), size = TYPED_BYTES[TYPED_ELEM_CODE[m[1]]]
+      if (args.length !== 1 || !size) return null
+      const a = args[0]
+      if (Array.isArray(a) && a[0] === '.' && a[2] === 'buffer' && typeof a[1] === 'string') {
+        const under = typedShapeOf(scope, a[1], seen)
+        return under && under.bytes % size === 0 ? { len: under.bytes / size, bytes: under.bytes } : null
+      }
+      if (m[2]) return null   // a view of a buffer the walk cannot size
+      const r = spanOf(a, scope === MODULE ? null : scope)
+      return r && r[0] === r[1] && r[0] >= 0 ? { len: r[0], bytes: r[0] * size } : null
     }
     if (!funcByName.has(e[1])) return null
-    let len = null
-    for (const r of returnsOfFn(e[1])) { const l = r == null ? null : typedLenOf(e[1], r, seen); if (l === null || (len !== null && l !== len)) return null; len = l }
-    return len
+    let shape = null
+    for (const r of returnsOfFn(e[1])) { const s = r == null ? null : typedShapeOf(e[1], r, seen); if (s === null || (shape !== null && (s.len !== shape.len || s.bytes !== shape.bytes))) return null; shape = s }
+    return shape
   }
+  const typedLenOf = (scope, e) => typedShapeOf(scope, e)?.len ?? null
   // A binding that holds one value for its life: a parameter or a declaration
   // never assigned again (`definitions`: one write with a value, or none).
   const stable = (name, scope) => {
@@ -2935,6 +3007,9 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   const lenBounds = new Map()
   // A typed element read inside the count: the index's span within the length
   // the walk knows, or a counter the loop bounds by that array's length.
+  // The walk's verdict for a read is kept by node (`presentReads`): a counter's
+  // span and a length-bounded loop hold only while their loop is walked.
+  const typedPresentAt = (node) => { const present = typedReadPresent(current ?? MODULE, node); if (present) presentReads.add(node); else presentReads.delete(node); return present }
   const typedReadPresent = (scope, node) => {
     if (typeof node[1] !== 'string') return false
     const idx = node[2]

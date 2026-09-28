@@ -288,3 +288,49 @@ test('constant facts: module, local and capture folds preserve boundaries and bi
     } else is(f(), 2)
   }
 })
+
+// A test that reads a module constant (`const DEBUG = false`, a `var` written
+// once) is decided at compile time and its dead arm goes. Only the test reads
+// the constant: a reference in the code that stays keeps its name. A binding
+// the program writes again, or one a runtime value initializes, decides nothing.
+test('constant test: a module constant decides a branch, the dead arm goes', () => {
+  const folds = {
+    'an if on a false flag': [`const DEBUG = false
+      let n = 0
+      function log(v) { n += v; return v }
+      export let f = (x) => { if (DEBUG) log(x); return x + n }`, 'log'],
+    'a conditional expression on a true flag': [`const FAST = true
+      function slow(v) { let s = 0; for (let i = 0; i < 9; i++) s += v; return s }
+      export let f = (x) => FAST ? x * 9 : slow(x)`, 'slow'],
+    'a comparison with the constant': [`var le = true
+      var HIGH
+      function probe(v) { return v ? 1 : 0 }
+      if (le === true) { HIGH = 1 } else { HIGH = probe(0) }
+      export let f = (x) => x + HIGH`, 'probe'],
+    'a constant naming a constant': [`const A = 0
+      const B = A
+      function other(v) { return v * 3 }
+      export let f = (x) => { if (B) return other(x); return x + 1 }`, 'other'],
+  }
+  for (const [name, [src, dead]] of Object.entries(folds)) {
+    const want = oracle(src).f(1.5)
+    for (const optimize of levels(0, 2, 3)) is(run(src, { optimize }).f(1.5), want, `${name} at ${optimize}`)
+    if (onKernel()) continue
+    ok(!new RegExp('\\$' + dead + '\\b').test(compile(src, { wat: true, optimize: 0 })), `${name}: the dead arm's callee is gone`)
+  }
+  const stays = {
+    'a flag a function writes later': [`let FLAG = true
+      function on(v) { return v + 100 }
+      export let set = (v) => { FLAG = v }
+      export let f = (x) => { set(false); return FLAG ? on(x) : x + 1 }`, 'on'],
+    'a flag a runtime value sets': [`const FLAG = Math.random() < 2
+      function on(v) { return v + 100 }
+      export let f = (x) => FLAG ? on(x) : x + 1`, 'on'],
+  }
+  for (const [name, [src, live]] of Object.entries(stays)) {
+    const want = oracle(src).f(1.5)
+    for (const optimize of levels(0, 2, 3)) is(run(src, { optimize }).f(1.5), want, `${name} at ${optimize}`)
+    if (onKernel()) continue
+    ok(/f64\.const 100\b/.test(compile(src, { wat: true, optimize: 0 })), `${name}: the arm stays`)
+  }
+})

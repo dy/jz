@@ -539,6 +539,23 @@ function typeofName(name, state, seen) {
   return value == null ? null : value.t === 'num' ? 'number' : value.t === 'str' ? 'string' : value.t === 'bool' ? 'boolean' : value.t === 'undef' ? 'undefined' : value.t === 'null' ? 'object' : null
 }
 
+/** A module constant's value (`const DEBUG = false`, a `var` written once that
+ *  prepare declares `const`), through the constants it names; undefined for
+ *  any other name. */
+const NO_ENV = new Map()
+function constValue(name, state, seen = new Set()) {
+  if (state.written.has(name) || !state.consts.has(name) || seen.has(name)) return undefined
+  seen.add(name)
+  const init = state.consts.get(name)
+  if (typeof init === 'string') return constValue(init, state, seen)
+  return evalConst(init, NO_ENV, state) ?? undefined
+}
+/** The environment a test is decided in: the constants above beside `env`.
+ *  Only a test reads them, so its dead arm goes; a reference in the code that
+ *  stays is the name it was, which the shape-sensitive passes downstream read
+ *  (see foldStmts). */
+const testEnv = (env, state) => ({ get: name => env.get(name) ?? constValue(name, state), has: name => env.has(name) })
+
 function evalConst(node, env, state) {
   if (typeof node === 'string') {
     const b = env.get(node)
@@ -754,7 +771,7 @@ function foldNode(node, env, state) {
   }
   if ((op === '?:' || op === '?') && node.length === 4) {
     // a settled test leaves the arm it selects, whatever the other arm is
-    const test = evalConst(node[1], env, state)
+    const test = evalConst(node[1], testEnv(env, state), state)
     if (test) return foldNode(node[toBoolean(test) ? 2 : 3], env, state)
     const c = foldNode(node[1], env, state)
     const t = foldNode(node[2], env, state)
@@ -884,7 +901,7 @@ function foldStmts(stmts, env, state) {
     }
 
     if (op === 'if') {
-      const condVal = evalConst(s0[1], env, state)
+      const condVal = evalConst(s0[1], testEnv(env, state), state)
       if (condVal) {
         const takeThen = toBoolean(condVal)
         const branch = takeThen ? s0[2] : s0[3]
@@ -901,7 +918,7 @@ function foldStmts(stmts, env, state) {
     }
 
     if (op === 'while') {
-      const condVal = evalConst(s0[1], env, state)
+      const condVal = evalConst(s0[1], testEnv(env, state), state)
       if (condVal && !toBoolean(condVal)) continue
       const cond = foldNode(s0[1], env, state)
       const bodyF = s0[2] != null ? foldBlockLike(s0[2], new Map(env), state) : s0[2]

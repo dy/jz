@@ -60,3 +60,37 @@ test('typed presence: a read the walk cannot place inside the count stays number
     for (const optimize of levels(0, 2, 3)) agree(src, 'run', name.includes('helper of two') ? [0] : name.includes('unknown') ? [32] : [], { optimize }, `${name} at ${optimize}`)
   }
 })
+
+// stdlib's word helpers: `F64[0] = x; hi = U32[HIGH]`, the two views over one
+// buffer, the index a module constant behind a decided test, an alias and a
+// field of a literal nothing stores to. The view's count is the buffer's bytes
+// over its element size; the read is inside it, so the emitter loads the word
+// with no bounds test and the value is never the undefined of a miss.
+const VIEWS = 'var F = new Float64Array(1)\nvar U = new Uint32Array(F.buffer)\n'
+const WORD = 'function hw(x) { F[0] = x; return U[HIGH2] }\nexport let f = (x) => hw(x) + hw(x * 2)'
+const loadsUnchecked = (src) => { const body = funcWat(wat(src, { optimize: 3 }), 'hw') || funcWat(wat(src, { optimize: 3 }), 'f$exp') || funcWat(wat(src, { optimize: 3 }), 'f') || ''; return /i32\.load/.test(body) && !/i32\.lt_u|nan:0x7FF8000200000000/.test(body) }
+
+test('typed presence: a word of a float through a view of its buffer', () => {
+  const present = {
+    'an index a decided test assigns': `var le = true\nvar HIGH\nif (le === true) { HIGH = 1 } else { HIGH = 0 }\nvar HIGH2 = HIGH\n` + VIEWS + WORD,
+    'an index read from a held literal\'s field': `var le = true\nvar indices\nvar HIGH\nvar LOW\nif (le === true) { HIGH = 1; LOW = 0 } else { HIGH = 0; LOW = 1 }\nindices = { "HIGH": HIGH, "LOW": LOW }\nvar idx = indices\nvar HIGH2 = idx.HIGH\n` + VIEWS + WORD,
+    'a literal index': `var HIGH2 = 1\n` + VIEWS + WORD,
+    'a view of another element size': `var HIGH2 = 7\nvar F = new Float64Array(1)\nvar U = new Uint8Array(F.buffer)\n` + WORD,
+  }
+  for (const [name, src] of Object.entries(present)) {
+    for (const optimize of levels(0, 2, 3)) agree(src, 'f', [1.5], { optimize }, `${name} at ${optimize}`)
+    is(paramKind(src.replace('export let f = (x) => hw(x) + hw(x * 2)', G + 'export let f = (x) => g(hw(x)) + g(hw(x * 2))')), 'number', `${name}: the word is a number`)
+    if (!belowOpt(3)) ok(loadsUnchecked(src), `${name}: the word loads with no bounds test`)
+  }
+  const absent = {
+    'an index past the view\'s count': `var HIGH2 = 2\n` + VIEWS + WORD,
+    'an index a runtime test assigns': `var le = Math.random() < 2\nvar HIGH2\nif (le === true) { HIGH2 = 1 } else { HIGH2 = 5 }\n` + VIEWS + WORD,
+    'a literal something stores to': `var indices = { HIGH: 1 }\nexport let set = (v) => { indices.HIGH = v }\nvar HIGH2 = indices.HIGH\n` + VIEWS + WORD,
+    'a literal handed on': `var indices = { HIGH: 1 }\nfunction keep(o) { o.HIGH = 9; return o }\nvar kept = keep(indices)\nvar HIGH2 = indices.HIGH\n` + VIEWS + WORD,
+    'a view of a buffer of a runtime size': `var HIGH2 = 1\nvar n = (Math.random() < 2 ? 1 : 0)\nvar F = new Float64Array(n)\nvar U = new Uint32Array(F.buffer)\n` + WORD.replace('F[0] = x', 'F[0] = x'),
+  }
+  for (const [name, src] of Object.entries(absent)) {
+    for (const optimize of levels(0, 2, 3)) agree(src, 'f', [1.5], { optimize }, `${name} at ${optimize}`)
+    ok(paramKind(src.replace('export let f = (x) => hw(x) + hw(x * 2)', G + 'export let f = (x) => g(hw(x)) + g(hw(x * 2))')) !== 'number', `${name}: the word is not proven a number`)
+  }
+})

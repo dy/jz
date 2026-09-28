@@ -113,6 +113,13 @@ const modules = [
   ['a loop that may not run', `var H
     for (let i = 0; i < Math.random() * 2 - 5; i++) H = 1
     export let f = (x) => x + (H === undefined ? 5 : H)`, 'H', true],
+  // The member's binding is read through its getter, which no statement names.
+  ['a prototype member read before its store', `let n = 4
+    class V { constructor() { this.x = 1 } }
+    const a = new V()
+    const before = a.k === undefined ? 1 : 0
+    V.prototype.k = n * 2
+    export let f = (x) => before * 100 + a.k + x`, null, true],
   ['a typeof test of the unassigned', `var H
     var G = H
     H = 1
@@ -121,6 +128,7 @@ const modules = [
 
 test('definite assignment: a module declaration assigned on every path holds what was assigned', () => {
   for (const [name, src, binding, absent] of modules) {
+    if (binding === null) continue   // a binding the lowering names: the host's answer below is its pin
     compile(src, { optimize: 0 })
     const k = ctx.summary.at(null).kindOf(binding)
     is(hasTag(k, K.ABSENT) || hasTag(k, K.NULLISH), absent, name)

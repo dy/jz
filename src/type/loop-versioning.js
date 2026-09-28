@@ -105,6 +105,10 @@ export function typedIdxProven(recv, idx, node = null) {
   if (typeof recv !== 'string') return false
   const ownNode = node != null && node[1] === recv && node[2] === idx
   if (ownNode && getFactStore().guardProven.has(node)) return true
+  // 8. the program summary holds this read inside the count (src/summary
+  //    `typedReadPresent`: a view of a sized buffer, an index a module constant
+  //    fixes, a counter its loop bounds by the array's own length).
+  if (ownNode && ctx.summary?.at(ctx.func.current)?.presentTypedRead?.(node)) return true
   // Most literal and canonical-loop accesses need no whole-body interval walk.
   if (typedIndexKnown(ctx, recv, idx)) return true
   const ip = intervalProvenIdx(ctx)

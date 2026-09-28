@@ -244,7 +244,7 @@ export function summaryQueries(facts, internal = false) {
         }
         if (t === K.OBJECT && paramOf(r) !== UNKNOWN) { let k = K.NONE; for (const sid of shapesOf(paramOf(r))) { for (const s of slots(sid)) k = merge(k, s); k = merge(k, anySideOf(sid)) } return orAbsent(k) }
         if (t === K.TYPED) return !typedElementKey(n[2], kindOfExpr(n[2]) === NUMBER) ? core(kindOfExpr(n[2])) === NUMBER ? orAbsent(merge(typedElemKind(r), typedPropsOf(r))) : ANY
-          : typedReadPresent(scope, n) ? typedElemKind(r) : orAbsent(typedElemKind(r))
+          : typedReadPresent(scope, n) || presentReads.has(n) ? typedElemKind(r) : orAbsent(typedElemKind(r))
         return t === K.HASH ? orAbsent(elemOf(r)) : t === K.ARRAY ? orAbsent(entryOf(r, kindOfExpr(n[2]))) : t === K.STRING ? orAbsent(STRING) : ANY
       }
       if (op === '()' && typeof n[1] === 'string') {
@@ -456,6 +456,9 @@ export function summaryQueries(facts, internal = false) {
       // call the walk binds (index.js `argRanges`), null per position a call
       // leaves unbounded; null for a function the host or a dispatcher may call.
       paramRangesOf,
+      // A typed element read the summary holds inside the array's count: its
+      // index needs no bounds test and its value is never the undefined of a miss.
+      presentTypedRead: n => Array.isArray(n) && n[0] === '[]' && tagOf(kindOfExpr(n[1])) === K.TYPED && typedElementKey(n[2], kindOfExpr(n[2]) === NUMBER) && (typedReadPresent(scope, n) || presentReads.has(n)),
       // The element cell's own kind: presence included, no absent member for a read past the end.
       elemKindOf: name => { const k = readKind(name); return celled(k) ? pub(elemOf(k)) : null },
       arrayElemSidOf: name => { const k = readKind(name); if (tagOf(k) !== K.ARRAY || paramOf(k) === UNKNOWN) return null; const e = elemOf(k); return tagOf(e) === K.OBJECT && !isNullable(e) && publicSid(e) !== UNKNOWN ? publicSid(e) : null },
