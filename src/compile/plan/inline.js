@@ -181,6 +181,10 @@ const inlinedBody = (func, args) => {
     // may be undefined would need the test at runtime: this site keeps the call.
     const dflt = func.defaults?.[params[i].name]
     if (i < args.length && dflt != null && callerView?.mayBeNullishExpr(args[i]) !== false) return null
+    // An arrow in a left-out default closes over the parameters' scope, which
+    // its clone leaves behind (cloneWithSubst keeps `=>` bodies whole, as a
+    // body with an arrow is never spliced): this site keeps the call.
+    if (i >= args.length && dflt != null && some(dflt, n => n[0] === '=>')) return null
     const arg = i < args.length ? args[i] : dflt != null ? cloneWithSubst(dflt, subst, new Map()) : [null, undefined]
     const atom = typeof arg === 'string' || typeof arg === 'number' || (Array.isArray(arg) && (arg[0] == null || arg[0] === 'str'))
     // A closure holds the parameter as the call bound it: a name of the caller read
