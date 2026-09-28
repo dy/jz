@@ -1019,6 +1019,66 @@ test('inline: a small leaf called from many straight-line sites still splices in
   is(callsInLoop(SRC, '$leaf'), 0, 'the loop\'s calls are spliced whatever the count of straight-line sites')
 })
 
+test('inline: a leaf past the everywhere budget splices at its loop sites, the straight-line sites keep the call', () => {
+  // ~90 nodes, three straight-line callers and one loop call: over the two-site rule, under the loop budget
+  const SRC = `
+    let leaf = (a, o) => {
+      const p = a[o] * 2 + a[o + 1] * 3, q = a[o + 2] * 5 + a[o + 3] * 7, r = a[o + 4] * 11 + a[o + 5] * 13
+      const s = p * q + r, t = p - q * r, u = s * t + p * 3 - q * 5 + r * 7
+      return u * 2 + s - t + a[o + 6] * 17 + a[o + 7] * 19 }
+    let c0 = (a) => leaf(a, 0)
+    let c1 = (a) => leaf(a, 1)
+    let c2 = (a) => leaf(a, 2)
+    export let f = (n) => { const a = new Float64Array(n + 20); for (let i = 0; i < n; i++) a[i] = i * 0.5
+      let s = 0.0
+      for (let i = 0; i < n; i++) { const v = leaf(a, i); s = s + v }
+      return s + c0(a) + c1(a) + c2(a) }`
+  is(jz(SRC, { optimize: 2 }).exports.f(16), jz(SRC, { optimize: 0 }).exports.f(16), 'bit-exact')
+  if (onKernel()) return
+  is(callsInLoop(SRC, '$leaf'), 0, 'the loop call is spliced')
+  ok(count(parse(SRC, preWatr(2)), n => (n[0] === 'call' || n[0] === 'return_call') && n[1] === '$leaf') >= 1, 'the straight-line sites keep the call')
+})
+
+test('inline: a method\'s synthesized dispatcher and binder are no sites of it', () => {
+  // ~90 nodes at one loop site: over the everywhere budget only if the dispatcher's arm and the binder's closure count
+  const SRC = `
+    class W { constructor(a) { this.a = a }
+      mix(o) { const a = this.a
+        const p = a[o] * 2 + a[o + 1] * 3, q = a[o + 2] * 5 + a[o + 3] * 7, r = a[o + 4] * 11 + a[o + 5] * 13
+        const s = p * q + r, t = p - q * r, u = s * t + p * 3 - q * 5 + r * 7
+        return u * 2 + s - t + a[o + 6] * 17 + a[o + 7] * 19 } }
+    export let f = (n) => { const a = new Float64Array(n + 20); for (let i = 0; i < n; i++) a[i] = i * 0.5
+      const w = new W(a)
+      let s = 0.0
+      for (let i = 0; i < n; i++) { const v = w.mix(i); s = s + v }
+      return s }`
+  is(jz(SRC, { optimize: 2 }).exports.f(16), jz(SRC, { optimize: 0 }).exports.f(16), 'bit-exact')
+  if (onKernel()) return
+  is(loopCount(findFunc(parse(SRC, preWatr(2)), '$f'), n => n[0] === 'call' && /mix$/.test(n[1])), 0, 'the method splices into the loop')
+})
+
+test('inline: returns inside a loop and in nested arms lower to one exit, and the body splices', () => {
+  const SRC = `
+    let planes = new Float64Array([1, 2, 3, -4, 5, 6])
+    let inside = (limit) => { for (let i = 0; i < 6; i++) { if (planes[i] < limit) return false } return true }
+    let hit = (u, v, w, cull) => {
+      if (cull) { if (u < 0 || v < 0 || w < 0) return -1 } else { if ((u < 0 || v < 0 || w < 0) && (u > 0 || v > 0 || w > 0)) return -2 }
+      const det = u + v + w
+      if (det === 0) return -3
+      const t = u * 2 - v
+      if (det > 0 ? t < 0 : t > 0) return -4
+      return t / det }
+    let first = (limit) => { let n = 0; for (let i = 0; i < 6; i++) { n++; if (planes[i] < limit) return i * 10 + n } n += 100; return n }
+    export let f = (n) => { let s = 0.0
+      for (let k = 0; k < n; k++) { const h = hit(k % 5 - 2, k % 7 - 3, k % 3 - 1, k % 2 === 0); s = s + h + first(k - 3); if (inside(k - 8)) s = s + 1 }
+      return s }`
+  const o0 = jz(SRC, { optimize: 0 }).exports.f(37)
+  almost(o0, -47.9 + 202 + 5, 1e-9, 'the reference value (Node: 159.1)')
+  is(jz(SRC, { optimize: 3 }).exports.f(37), o0, 'bit-exact at speed')
+  if (onKernel()) return
+  for (const name of ['$hit', '$first', '$inside']) is(callsInLoop(SRC, name, 3), 0, `${name} is spliced into the loop`)
+})
+
 test('inline: expression-position hoist preserves evaluation order of side effects', () => {
   // The hoist lifts a candidate call to a `const __h = call` temp at the statement top. That
   // is sound ONLY when no side effect precedes it: here `a()` (a non-candidate — it has a loop)

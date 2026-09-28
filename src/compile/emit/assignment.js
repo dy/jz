@@ -51,7 +51,8 @@ function stagedReference(name, update = true, rhs) {
     const ctor = vt === VAL.TYPED ? plannedTypedStorageCtor(ctx, node) : null
     if (ctor) (ctx.func.localTypedElemsOverlay ||= new Map()).set(h, ctor)
     const sid = vt === VAL.OBJECT ? ctx.summary?.at(ctx.func.current).objectSidOfExpr(node) : null
-    if (sid != null) (ctx.func.refinements ??= new Map()).set(h, { schemaId: sid })   // the transient channel ctx.schema.idOf reads first
+    // the transient channel ctx.schema.idOf and class dispatch read first: a class instance held here keeps its class
+    if (sid != null) (ctx.func.refinements ??= new Map()).set(h, { schemaId: sid, notNullish: ctx.summary.at(ctx.func.current).mayBeNullishExpr(node) === false })
     const value = emit(node)
     pre.push(['local.set', `$${h}`, asF64(value)])
     // GetValue rejects a nullish base after evaluating the key expression,

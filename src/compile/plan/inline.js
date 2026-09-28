@@ -30,7 +30,7 @@
 
 import { ctx } from '../../ctx.js'
 import {
-  callArgs, setCallArgs, some, walkAst, blockStmts, T, refsName, refsAny, REFS_IN_EXPR, MUTATE_OPS,
+  callArgs, setCallArgs, some, walkAst, blockStmts, stmtList, T, CLASS_T, refsName, refsAny, REFS_IN_EXPR, MUTATE_OPS,
   extractParams,
 } from '../../ast.js'
 import { freshId } from '../../ir.js'
@@ -79,6 +79,11 @@ const eagerCallFreeBooleans = n => walkAst(n, { enter: n => {
 } })
 
 const bodyHasCall = body => some(body, n => n[0] === '()' || n[0] === 'new')
+const BIND = CLASS_T + 'bind'
+
+/** Candidates spliced at their sites in loops only; a straight-line site keeps
+ *  the call (`inlineHotInternalCalls` fills it, `isCandidateCall` consults it). */
+let hotOnly = new Set()
 
 /** An element or length read of a typed array over simple operands: no effect,
  *  one value until a write. The receiver's kind is the caller's (`callerView`):
@@ -156,31 +161,100 @@ const inlinedBody = (func, args) => {
   return { prefix: argPrefix.length ? [...argPrefix, ...prefix] : prefix, value }
 }
 
-// Fold one early return into a guard, leaving at most one trailing return.
-const foldEarlyReturn = (func) => {
-  const body = func.body
-  if (!Array.isArray(body) || body[0] !== '{}' || !Array.isArray(body[1]) || body[1][0] !== ';') return false
-  const seq = body[1]
-  for (let i = 1; i < seq.length; i++) {
-    const s = seq[i]
-    if (!Array.isArray(s) || s[0] !== 'if' || s.length !== 3 || !Array.isArray(s[2]) || s[2][0] !== 'return') continue
-    const rest = seq.slice(i + 1)
-    const last = rest[rest.length - 1]
-    if (s[2].length === 2) {
-      if (!Array.isArray(last) || last[0] !== 'return' || last.length !== 2) return false
-      rest.pop()
-      if (rest.some(r => some(r, n => n[0] === 'return'))) return false
-      const result = `${T}inret${freshId(ctx)}`
-      seq.splice(i, seq.length - i, ['let', result],
-        ['if', s[1], ['=', result, s[2][1]], ['{}', [';', ...rest, ['=', result, last[1]]]]],
-        ['return', result])
-      return true
+const hasReturn = (n) => some(n, x => x[0] === 'return')
+// Returns other than one that ends the body: what `lowerReturns` removes.
+const strayReturns = (func) => {
+  let n = 0
+  some(func.body, x => { if (x[0] === 'return') n++; return false })
+  const stmts = blockStmts(func.body)
+  const last = stmts?.[stmts.length - 1]
+  return Array.isArray(last) && last[0] === 'return' ? n - 1 : n
+}
+const block = (stmts) => ['{}', [';', ...stmts]]
+const isLiteral = (e) => typeof e === 'number' || (Array.isArray(e) && (e[0] == null || e[0] === 'bool' || e[0] === 'str'))
+
+// Every return leaves through one trailing `return r`. A `return X` becomes
+// `r = X`; inside a loop `done = true; break` follows, and a loop that may
+// return ends the loop around it the same way (`if (done) break`). Statements
+// after one that may return go in the else arm when its then arm always
+// returns (`if (c) return X; rest` → `if (c) r = X; else rest`, and down an
+// else-if ladder whose every arm returns: the ladder keeps its shape, which
+// the union carrier's exclusion stacking reads), under `if (!done)`
+// otherwise; `done` exists only where a guard reads it, and a final
+// `return <literal>` initializes r instead. Frustum's intersectsSphere
+// (false out of its plane loop, true after it) and Ray's intersectTriangle
+// (null from either arm of a test, then from three more) both splice.
+// A return in a switch, try or another statement is left alone (false).
+const lowerReturns = (func) => {
+  const stmts = blockStmts(func.body)
+  if (!stmts) return false
+  const valued = some(func.body, n => n[0] === 'return' && n.length === 2)
+  const r = `${T}inret${freshId(ctx)}`, done = `${T}indone${freshId(ctx)}`
+  let usesDone = false, emitDone = true, init = null, bail = false
+  const exit = (s, depth) => [...(valued ? [['=', r, s.length === 2 ? s[1] : []]] : []),
+    ...(emitDone ? [['=', done, ['bool', 1]]] : []), ...(depth ? [['break']] : [])]
+  // An `if` → { node, always, sunk }: `sunk` when `rest`, the statements after
+  // it, went into the else arm of the first `if` without one down its ladder.
+  const lowerIf = (s, depth, rest, top) => {
+    const then = list(stmtList(s[2]), depth, false)
+    const arm = (els) => then.out.length ? ['if', s[1], block(then.out), els] : ['if', ['!', s[1]], els]
+    if (s.length > 3) {
+      if (!depth && then.always && Array.isArray(s[3]) && s[3][0] === 'if') {
+        const r = lowerIf(s[3], depth, rest, top)
+        return { node: arm(r.node), always: r.always, sunk: r.sunk }
+      }
+      const els = list(stmtList(s[3]), depth, false)
+      return { node: ['if', s[1], block(then.out), block(els.out)], always: then.always && els.always, sunk: false }
     }
-    if (!rest.length || rest.some(r => some(r, n => n[0] === 'return'))) return false
-    seq.splice(i, seq.length - i, ['if', ['!', s[1]], ['{}', [';', ...rest]]])
-    return true
+    if (!depth && then.always && rest.length) {
+      const tail = list(rest, 0, top)
+      return { node: arm(block(tail.out)), always: tail.always, sunk: true }
+    }
+    return { node: ['if', s[1], block(then.out)], always: false, sunk: false }
   }
-  return false
+  // A statement list → { out, always }: the lowered statements, and whether
+  // every path through them returns. `top`: a tail of the function body.
+  const list = (stmts, depth, top) => {
+    const out = []
+    for (let i = 0; i < stmts.length; i++) {
+      const s = stmts[i]
+      if (Array.isArray(s) && s[0] === 'return') { out.push(...exit(s, depth)); return { out, always: true } }
+      if (!Array.isArray(s) || !hasReturn(s)) { out.push(s); continue }
+      const rest = stmts.slice(i + 1)
+      let always = false
+      if (s[0] === 'if') {
+        const r = lowerIf(s, depth, rest, top)
+        out.push(r.node)
+        if (r.sunk) return { out, always: r.always }
+        always = r.always
+      } else if (LOOP_OPS.has(s[0])) {
+        const bi = s[0] === 'for' ? forLoopBodyIndex(s) : 2
+        const body = list(stmtList(s[bi]), depth + 1, false)
+        out.push(s[0] === 'for' ? withForLoopBody(s, block(body.out)) : ['while', s[1], block(body.out)])
+        if (depth) { usesDone = true; out.push(['if', done, ['break']]) }
+      } else { bail = true; return { out, always: false } }
+      if (always) return { out, always: true }
+      if (depth || !rest.length) continue
+      if (top && rest.length === 1 && Array.isArray(rest[0]) && rest[0][0] === 'return' && (!valued || isLiteral(rest[0][1]))) {
+        if (valued) init = rest[0][1]
+        return { out, always: true }
+      }
+      usesDone = true
+      const tail = list(rest, 0, top)
+      out.push(['if', ['!', done], block(tail.out)])
+      return { out, always: tail.always }
+    }
+    return { out, always: false }
+  }
+  let { out } = list(stmts, 0, true)
+  if (bail) return false
+  if (!usesDone) { emitDone = false; init = null; ({ out } = list(stmts, 0, true)) }
+  func.body = block([
+    ...(valued ? [['let', init != null ? ['=', r, init] : r]] : []),
+    ...(usesDone ? [['let', ['=', done, ['bool', 0]]]] : []),
+    ...out,
+    ...(valued ? [['return', r]] : [])])
+  return true
 }
 
 const stmtDeclName = (stmt) => {
@@ -237,8 +311,9 @@ const spliceInlinedShape = (prefix, valueStmt, loopVariantNames) => {
   return { node: ['{}', [';', ...splice]], splice, hoisted, changed: true }
 }
 
-const isCandidateCall = (node, candidates) =>
-  Array.isArray(node) && node[0] === '()' && typeof node[1] === 'string' && candidates.has(node[1])
+// `hot`: the call sits in a loop, where a loop-only candidate splices too.
+const isCandidateCall = (node, candidates, hot = false) =>
+  Array.isArray(node) && node[0] === '()' && typeof node[1] === 'string' && candidates.has(node[1]) && (hot || !hotOnly.has(node[1]))
 
 // Prefix flattening for expression-position inlining. A helper like
 //   let distance = (x1,y1,x2,y2) => { let dx=x1-x2; let dy=y1-y2; return Math.sqrt(dx*dx+dy*dy) }
@@ -296,16 +371,17 @@ const flattenPrefix = (shape) => {
 // Used for tiny pure-expression helpers (`isAlpha(c) => …`) that get called
 // from expression contexts (if-conditions, ternary tests). For these the
 // inlined body is value-only (zero prefix), so a pure substitution is safe.
-const inlineInExpr = (node, candidates) => {
+const inlineInExpr = (node, candidates, hot = false) => {
   if (!Array.isArray(node) || node[0] === '=>') return node
+  const inner = hot || LOOP_OPS.has(node[0])
   let next = null
   for (let i = 1; i < node.length; i++) {
-    const child = inlineInExpr(node[i], candidates)
+    const child = inlineInExpr(node[i], candidates, inner)
     if (child !== node[i] && !next) next = node.slice(0, i)
     if (next) next.push(child)
   }
   const out = next || node
-  if (isCandidateCall(out, candidates)) {
+  if (isCandidateCall(out, candidates, hot)) {
     const args = callArgs(out)
     const shape = flattenPrefix(args && inlinedBody(candidates.get(out[1]), args))
     if (shape && shape.value !== null && shape.prefix.length === 0) return shape.value
@@ -327,7 +403,7 @@ const inlineInStmt = (stmt, candidates, loopVariantNames = null, hot = false) =>
   // A name or a literal is dropped here: it runs nothing, and left as a statement
   // it reads as a use of the name to every scan ahead of emission (`return y`
   // of an in-place kernel made `y` escape, and its receiver dynamic).
-  if (isCandidateCall(stmt, candidates)) {
+  if (isCandidateCall(stmt, candidates, hot)) {
     const args = callArgs(stmt)
     const shape = args && inlinedBody(candidates.get(stmt[1]), args)
     if (shape) {
@@ -358,7 +434,7 @@ const inlineInStmt = (stmt, candidates, loopVariantNames = null, hot = false) =>
     let any = false
     for (let d = 1; d < stmt.length; d++) {
       const decl = stmt[d]
-      if (Array.isArray(decl) && decl[0] === '=' && typeof decl[1] === 'string' && isCandidateCall(decl[2], candidates)
+      if (Array.isArray(decl) && decl[0] === '=' && typeof decl[1] === 'string' && isCandidateCall(decl[2], candidates, hot)
           && (stmt.length === 2 || hot)) {
         const args = callArgs(decl[2])
         const shape = args && inlinedBody(candidates.get(decl[2][1]), args)
@@ -384,7 +460,7 @@ const inlineInStmt = (stmt, candidates, loopVariantNames = null, hot = false) =>
   // The LHS reference is evaluated before the call, so an effect in it
   // (`out[w++] = draw()`) admits the splice only when the callee's prefix
   // commutes with it: no calls, no memory writes, no name the LHS wrote.
-  if (stmt[0] === '=' && isCandidateCall(stmt[2], candidates)) {
+  if (stmt[0] === '=' && isCandidateCall(stmt[2], candidates, hot)) {
     const args = callArgs(stmt[2])
     const shape = args && inlinedBody(candidates.get(stmt[2][1]), args)
     if (shape && shape.value !== null && prefixCommutesWithLhs(shape.prefix, stmt[1])) {
@@ -471,7 +547,7 @@ const OPTIONAL_CHAIN = new Set(['?.', '?.[]', '?.()'])
 // + count. Statement HEADERS that are expression positions (for-init/update, while/if test)
 // are left untouched: there's no sound place for a hoisted decl there, so those calls just
 // stay outlined. Conservatively leaves unrecognized statement shapes alone.
-const hoistNestedCalls = (body, bodies) => {
+const hoistNestedCalls = (body, bodies, anywhere = bodies) => {
   if (!bodies.size || !Array.isArray(body)) return { node: body, changed: false }
   let changed = false
   const seq = (stmts) => stmts.length === 1 ? stmts[0] : [';', ...stmts]
@@ -509,6 +585,9 @@ const hoistNestedCalls = (body, bodies) => {
   // `m = m + 1` over ONE node) is one evaluation: it rewrites once, and both
   // positions keep the same rewritten node, so a hoisted call in it runs once.
   const rewritten = new Map()
+  // The statement's loop, as the splicer sees it: a body outside `anywhere`
+  // hoists (and then splices) in an innermost loop only.
+  let inLoop = false
   const hExpr = (n, pre, cond, eff) => {
     if (typeof n === 'string') { eff.reads.add(n); return n }
     if (!Array.isArray(n) || n[0] === '=>') return n
@@ -519,7 +598,7 @@ const hoistNestedCalls = (body, bodies) => {
     return out
   }
   const hNode = (n, pre, cond, eff) => {
-    if (!cond && n[0] === '()' && typeof n[1] === 'string' && bodies.has(n[1]) && commutes(n[1], eff)) {
+    if (!cond && n[0] === '()' && typeof n[1] === 'string' && bodies.has(n[1]) && (inLoop || anywhere.has(n[1])) && commutes(n[1], eff)) {
       const call = [n[0], n[1], ...n.slice(2).map(a => hExpr(a, pre, false, effState()))]
       const tmp = `${T}inl${freshId(ctx)}_h`
       pre.push(['const', ['=', tmp, call]])
@@ -550,16 +629,20 @@ const hoistNestedCalls = (body, bodies) => {
   // object/array-literal `{}`-bodied factory) would break the post-inline alias chain.
   // Only hoist NESTED calls; leave a top-level direct call to those paths.
   const directCall = (e) => Array.isArray(e) && e[0] === '()' && typeof e[1] === 'string' && bodies.has(e[1])
+  const hLoopBody = (body) => { const was = inLoop; inLoop = innermost(body); const out = seq(hStmt(body)); inLoop = was; return out }
   const hStmt = (s) => {  // → array of statements (hoisted decls prepended)
     if (!Array.isArray(s)) return [s]
     switch (s[0]) {
       case ';': return [[';', ...s.slice(1).flatMap(hStmt)]]
       case '{}': return [['{}', seq(hStmt(s[1]))]]
-      case 'if': return [s.length > 3
-        ? ['if', s[1], seq(hStmt(s[2])), seq(hStmt(s[3]))]
-        : ['if', s[1], seq(hStmt(s[2]))]]
-      case 'for': { const i = forLoopBodyIndex(s); return [withForLoopBody(s, seq(hStmt(s[i])))] }
-      case 'while': return [['while', s[1], seq(hStmt(s[2]))]]
+      // The test is the statement's first evaluation, so a decl before the
+      // `if` is its place; an `else if` test hoists into the else arm.
+      case 'if': {
+        const pre = []; const test = hExpr(s[1], pre, false, effState())
+        return [...pre, s.length > 3 ? ['if', test, seq(hStmt(s[2])), seq(hStmt(s[3]))] : ['if', test, seq(hStmt(s[2]))]]
+      }
+      case 'for': { const i = forLoopBodyIndex(s); return [withForLoopBody(s, hLoopBody(s[i]))] }
+      case 'while': return [['while', s[1], hLoopBody(s[2])]]
       case 'let': case 'const': {
         if (s.length === 2 && Array.isArray(s[1]) && s[1][0] === '=' && typeof s[1][1] === 'string' && !directCall(s[1][2])) {
           const pre = []; const rhs = hExpr(s[1][2], pre, false, effState())
@@ -598,11 +681,17 @@ export const inlineHotInternalCalls = (programFacts, ast) => {
   // the lower tiers prefer to keep multi-caller helpers outlined for V8 tier-up). Gate
   // both on the speed tier so levels ≤2 keep their conservative inlining policy.
   const speedTier = !!(cfg && cfg.inlineFns)
+  hotOnly = new Set()
 
   const fixedByFunc = new Map(ctx.funcs.list.map(func => [func, fixedTypedArraysInBody(func.body)]))
   const typedByFunc = new Map(ctx.funcs.list.map(func => [func, analyzeBody(func.body).typedElems]))
+  // A dispatcher's arm and a binder's closure call the member for a receiver
+  // the summary cannot name (class-dispatch.js): the function stays for them
+  // whatever the splice does, so they are no sites of it.
+  const synthesized = (f) => !!f && (f.sig?.dispatcher === true || f.name.endsWith(BIND))
   const sitesByCallee = new Map()
   for (const cs of programFacts.callSites) {
+    if (synthesized(cs.callerFunc)) continue
     const list = sitesByCallee.get(cs.callee)
     if (list) list.push(cs); else sitesByCallee.set(cs.callee, [cs])
   }
@@ -723,14 +812,32 @@ export const inlineHotInternalCalls = (programFacts, ast) => {
     // (or in a caller only loops reach) is the call the splice exists to remove,
     // and three's `fromArray`, `subVectors` and `normalize` reach it from a dozen.
     const coldSites = sites ? sites.filter(site => !transitiveHotSite(site)).length : 0
+    const hotSites = sites ? sites.length - coldSites : 0
     const leafSiteCap = (isTinyLeaf || isSmallLeaf || isSmallKernel) ? Math.max(8, Math.floor(360 / Math.max(1, size))) : 8
-    if (!sites || sites.length < 1 || (!isTinyLeaf && !isSmallLeaf && !isSmallKernel && !fixedTypedArraySite && sites.length > 2) || coldSites > leafSiteCap) continue
+    // Spliced at every site: a small body within its cap of cold sites, or a
+    // larger one at two sites. A leaf's second copy is bounded: 200 nodes when
+    // every site is hot (cloth's relax, ~160 nodes × 2 sites, fired per link
+    // every relaxation pass), 48 when a site is not (noise's grad, called
+    // from perlin: straight-line, but the per-pixel kernel itself). A sole
+    // site copies nothing, whatever the size (Ray's intersectTriangle).
+    if (!sites?.length) continue
+    const small = isTinyLeaf || isSmallLeaf || isSmallKernel
+    const everywhere = (small || fixedTypedArraySite ? coldSites <= leafSiteCap : sites.length <= 2)
+      && (small || hasLoop || (sites.length - 1) * size <= (coldSites ? 48 : 200))
+    // Past that budget a body still splices at its sites in loops, where the
+    // call is the per-iteration cost the splice removes; its straight-line
+    // sites keep the call and the body. three's `applyMatrix4` (~80 nodes,
+    // a dozen sites) and `intersectsSphere` (a loop, three sites) reach the
+    // kernels' loops this way. The duplication a hot site adds is bounded the
+    // way the everywhere splice's is: two bodies of 200 nodes.
+    const loopOnly = !everywhere && hotSites >= 1 && hotSites * size <= 400
+    if (!everywhere && !loopOnly) continue
     // Expression-bodied arrow funcs (`(c) => expr`) have no block — body IS the
     // return value. Treat as a "tiny leaf" branch handled below; force hasLoop=false.
     if (some(func.body, n => n[0] === '=>')) continue
-    // throw/break/continue are unsupported; return is OK if it's a single
-    // trailing return (rewritten to a value at inlining time).
-    if (some(func.body, n => n[0] === 'throw' || n[0] === 'break' || n[0] === 'continue')) continue
+    // A `break` or `continue` targets a loop or switch of this body and moves
+    // with it; only a `throw` leaves the spliced body unsupported.
+    if (some(func.body, n => n[0] === 'throw')) continue
     // Either a kernel (has a loop) or a tiny leaf (no loop, no calls, small body).
     // The leaf branch catches helpers like `isAlpha(c) => (c>=65 && c<=90) || …`
     // that get hammered from a hot caller's loop — replacing the call with its
@@ -744,19 +851,6 @@ export const inlineHotInternalCalls = (programFacts, ast) => {
       // callers cost the flagship 6 KB).
       const inlinesAway = (callee) => candidates.has(callee) && (speedTier || sitesByCallee.get(callee)?.length === 1)
       if (some(func.body, n => n[0] === '()' && typeof n[1] === 'string' && ctx.funcs.names.has(n[1]) && !inlinesAway(n[1]))) continue
-      // Per-iteration call overhead dwarfs body-size bloat when EVERY site sits
-      // inside a caller's loop (game-of-life's rot: ~40 nodes × 2 sites, fired
-      // for most of 260k cells/frame; cloth's relax: ~160 nodes × 2 sites, fired
-      // per link every relaxation pass). V8's pre-Turboshaft wasm tiers never
-      // inline cross-function, so an out-of-line leaf in a hot loop is a hard
-      // per-cell tax on Node ≤ 22 — and still saves call setup on newer tiers.
-      // The in-loop cap is generous because the gate above bounds non-tiny leaves
-      // to ≤2 sites, so the spliced duplication is at most ~2× a bounded body.
-      const allSitesInLoop = sites.every(site => transitiveHotSite(site))
-      // Non-in-loop cap is 40 (not 30) so a small leaf called from a straight-line but
-      // transitively-hot caller still inlines (noise's grad is called from perlin, which has
-      // no loop of its own but is itself the per-pixel kernel). Still tightly bounded.
-      if (size > (allSitesInLoop ? 200 : 48)) continue
     }
     if (some(func.body, n => n[0] === '()' && n[1] === func.name)) continue
     // Kernels with nested loops (depth ≥ 2) are typically large and the inner
@@ -778,17 +872,12 @@ export const inlineHotInternalCalls = (programFacts, ast) => {
         !sites.some(site => site.callerFunc?.body && containsNode(site.callerFunc.body, site.node))) continue
     // Normalize only after the other eligibility checks: an outlined function
     // gains nothing from an extra result binding and branch.
-    let stmts = blockStmts(func.body), returnCount = 0
-    some(func.body, n => { if (n[0] === 'return') returnCount++; return false })
-    if (returnCount >= 1 && returnCount <= 2 && stmts && foldEarlyReturn(func)) { changed = true; returnCount--; stmts = blockStmts(func.body) }
-    if (returnCount > 1) continue
-    if (returnCount === 1 && stmts) {
-      const last = stmts[stmts.length - 1]
-      if (!Array.isArray(last) || last[0] !== 'return') continue
-    }
+    if (strayReturns(func) > 0 && lowerReturns(func)) changed = true
+    if (strayReturns(func) > 0) continue
     if (paramNames.size && some(func.body, n => n[0] === '()' && typeof n[1] === 'string' && paramNames.has(n[1])))
       forwarders.add(func.name)
     if (!hasLoop) leaves.add(func.name)
+    if (loopOnly) hotOnly.add(func.name)
     candidates.set(func.name, func)
     recollect = true  // a function this one blocked (a caller of it) may qualify now
   }
@@ -830,13 +919,14 @@ export const inlineHotInternalCalls = (programFacts, ast) => {
     const hotKernelExport = speedTier && !bodyHasCall(func.body) && nodeSize(func.body) <= 48 &&
       sites.some(site => isExported(site.callerFunc)) &&
       sites.every(site => !isExported(site.callerFunc) || containsNode(site.callerFunc.body, site.node))
-    if (hotKernelExport || fixedSiteExported || forwarders.has(name) || leaves.has(name) || sites?.length === 1) {
+    // A loop-only candidate joins an export's loop by construction.
+    if (hotKernelExport || fixedSiteExported || forwarders.has(name) || leaves.has(name) || hotOnly.has(name) || sites?.length === 1) {
       exportedCandidates.set(name, func)
       if (exprOnlyCandidates.has(name)) exportedExprCandidates.set(name, func)
     }
   }
   for (const func of ctx.funcs.list) {
-    if (!func.body || func.raw) continue
+    if (!func.body || func.raw || synthesized(func)) continue
     // Skip exports: they're entry points usually invoked once. Inlining a
     // hot kernel here would put the loop into a function V8's wasm tier-up
     // never warms (kernel stays in baseline). Keeping the kernel as its own
@@ -861,20 +951,24 @@ export const inlineHotInternalCalls = (programFacts, ast) => {
     // binds those args to temps (`t0 = grad(a)`); the next pass folds the candidate into the temp
     // decl. Depth is bounded by call nesting (a small constant), capped here so a pathological
     // chain can't loop unbounded.
-    // Loop-free block-body LEAVES: the stmt path folds them only at a DIRECT `const X =
-    // call`, never nested in an expression. Hoisting such a call to a temp (in the iter
+    // Block bodies: the stmt path folds them only at a DIRECT `const X = call`,
+    // never nested in an expression. Hoisting such a call to a temp (in the iter
     // fixpoint below) lets inlineInStmt then fold it — the noise `sum + amp*perlin(x)`
-    // shape. Restricted to LEAVES (no own loop): a loop kernel called in expression
-    // position (e.g. a 2-site `reduce`) was deliberately staying outlined for V8 tier-up,
-    // and hoisting it would pull the loop into a cold caller.
-    const blockBodies = new Map()
-    if (speedTier && !isExprBody) for (const f of activeCandidates.values())
-      if (leaves.has(f.name) && !exprActive.has(f.name)) blockBodies.set(f.name, f.body)
+    // shape. A loop-free leaf hoists anywhere; a kernel (a loop of its own) and a
+    // loop-only candidate hoist inside a loop only (`if (fr.intersectsSphere(s))`):
+    // a kernel called in a cold expression position (a 2-site `reduce`) stays
+    // outlined for V8 tier-up, and hoisting it would pull the loop into the caller.
+    const blockBodies = new Map(), anywhere = new Set()
+    if (speedTier && !isExprBody) for (const f of activeCandidates.values()) {
+      if (exprActive.has(f.name)) continue
+      blockBodies.set(f.name, f.body)
+      if (leaves.has(f.name) && !hotOnly.has(f.name)) anywhere.add(f.name)
+    }
     let body = func.body, bodyChanged = false
     for (let iter = 0; iter < 4; iter++) {
       let iterChanged = false
       if (blockBodies.size) {
-        const h = hoistNestedCalls(body, blockBodies)
+        const h = hoistNestedCalls(body, blockBodies, anywhere)
         if (h.changed) { body = h.node; iterChanged = true }
       }
       if (isExprBody) {

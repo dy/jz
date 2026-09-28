@@ -131,6 +131,24 @@ test('class members: a field stored under another class\'s accessor name keeps i
   is((body.match(/__hash_set/g) || []).length, 0, 'every store of f is a slot store')
 })
 
+test('class members: a compound store through a spliced receiver keeps its class', () => {
+  // `target.copy(o).addScaledVector(d, t)` splices into the loop; addScaledVector's `this.x += …`
+  // stages its receiver in a temp, and the temp keeps the class: no accessor probe, no hash store
+  const src = `class V { constructor(x = 0, y = 0, z = 0) { this.x = x; this.y = y; this.z = z }
+      copy(v) { this.x = v.x; this.y = v.y; this.z = v.z; return this }
+      addScaledVector(v, s) { this.x += v.x * s; this.y += v.y * s; this.z += v.z * s; return this } }
+    class Q { constructor() { this._x = 0 } get x() { return this._x } set x(v) { this._x = v } }
+    class R { constructor() { this.origin = new V(1, 2, 3); this.direction = new V(0, 0, 1) }
+      at(t, target) { return target.copy(this.origin).addScaledVector(this.direction, t) }
+      hitAt(t, target) { if (t < 0) return null; return this.at(t, target) } }
+    export const f = (n) => { const r = new R(), hit = new V(), q = new Q(); q.x = 2; let acc = q.x
+      for (let i = 0; i < n; i++) { if (r.hitAt(i - 2, hit) !== null) acc += hit.z }
+      return acc }`
+  agree(src, 'f', [7], undefined, 'the compound stores land')
+  const w = jz.compile(src, { wat: true, optimize: 2 }), at = w.indexOf('(func $f\n'), body = w.slice(at, w.indexOf('\n  )\n', at))
+  is((body.match(/dispatch|__hash_set|__dyn_set|__add_slow/g) || []).length, 0, 'the stores of f are slot stores, the adds numeric')
+})
+
 test('class members: a prototype store the class cannot take is rejected at compile time', () => {
   rejects(`class V {}\nconst patch = () => { V.prototype.k = 1 }\nexport const f = () => { patch(); return new V().k }`, /prototype/, 'inside a function')
   rejects(`class V {}\nV.prototype.k = function () { return 1 }\nV.prototype.k = 5\nexport const f = () => new V().k`, /prototype/, 'a function and a value under one name')

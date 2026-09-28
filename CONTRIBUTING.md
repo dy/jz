@@ -964,11 +964,29 @@ f(c)`, each its own statement in order); more than one declarator splices only
 in an innermost loop, where the call it removes is what kept the lane
 vectorizer out. Nested-call
 hoisting uses its body map for membership too, and reuses that map through the
-current function's rounds, before the function record's body is replaced.
-An eligible callee's single early return folds into a guard. When it returns a
-value, both paths assign one fresh result binding before the trailing return;
-only the chosen path runs. Eligibility is checked before normalization so an
-outlined function does not acquire unnecessary control flow or locals.
+current function's rounds, before the function record's body is replaced; it
+lifts a call out of an `if` test to a declaration before the `if` (an `else
+if` test into the else arm), and lifts a kernel or a loop-only candidate
+inside an innermost loop only. The budget a callee is held to is the
+duplication its splice adds: a small body within its cap of sites outside
+loops, a larger one at two sites (a leaf's second copy under 200 nodes when
+every site is in a loop, 48 otherwise; a sole site copies nothing). A body
+past that budget still splices at its sites in innermost loops, where the
+call is the per-iteration cost, while its straight-line sites keep the call
+and the body (`Vector3.applyMatrix4` from a dozen sites, `intersectsSphere`
+with a loop of its own); those copies are bounded together (400 nodes). A
+dispatcher's arm and a binder's closure are no sites: they call the member
+for a receiver the summary cannot name, and the function stays for them.
+An eligible callee's returns lower to one trailing `return r`: `return X`
+assigns `r`, inside a loop `done = true; break` follows (and a loop that may
+return ends the loop around it the same way); statements after one that may
+return go in the else arm when its then arm always returns (down an else-if
+ladder whose every arm returns, so the ladder keeps the shape the union
+carrier's exclusion stacking reads), under `if (!done)` otherwise. `done` exists only where a guard reads it, and a final
+`return <literal>` initializes `r` instead. A `break` or `continue` targets
+a loop or switch of the body and splices with it; a return in a switch or
+try, and a `throw`, keep the callee outlined. Eligibility is checked before
+normalization so an outlined function does not acquire control flow or locals.
 The summary's boolean-operator table also serves value typing and integer
 certainty; internal eager boolean expressions keep their identity in locals.
 Integer certainty does not erase boolean identity: a mixed boolean/number

@@ -422,7 +422,9 @@ test('union inline: cursor param crosses the call — packed, i32 ladder, exact'
   // the three-way differential leg (off / on / plain JS above).
   is(run(SRC, { optimize: { level: 'speed', unionInline: false } }).main(), host, 'JS-exact (unionInline:false)')
   is([...(ctx.schema.inlineUnion?.keys() || [])].join(';'), '', 'reference mode registers no union')
-  const wat = String(compile(SRC, { optimize: { level: 'speed', watr: false }, wat: true }))
+  // The source inliner splices `measure` into the loop (its ladder keeps its
+  // shape, and the reads stay packed); the clone is the call crossing's form.
+  const wat = String(compile(SRC, { optimize: { level: 'speed', watr: false, sourceInline: false }, wat: true }))
   // The carrier-specialized CLONE (audit decision 2): raw-i32 cell-address
   // param, packed loads, no NaN-box anywhere in the callee.
   const m0 = wat.indexOf('(func $measure$union')
