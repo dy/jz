@@ -1,7 +1,6 @@
 /**
  * BindingId renaming and call purity predicates: `mintLocal` (the
- * function-local rename minter), `scanReassignedTopLevel`, `\u` escape decoding
- * (IDESC/decodeIdent).
+ * function-local rename minter), `scanReassignedTopLevel`.
  *
  * @module prepare/ident-purity
  */
@@ -105,22 +104,4 @@ export const scanReassignedTopLevel = (root) => {
   // a top-level `g = …` after `let g = …` is exactly the reassignment case.
   walk(root, new Set())
   return out
-}
-
-// ES spec: identifier with \uHHHH or \u{...} escape is equivalent to the decoded
-// form. subscript preserves raw spelling in the AST; normalize once before prep.
-const IDESC = /\\u\{([0-9a-fA-F]+)\}|\\u([0-9a-fA-F]{4})/g
-const decodeIdent = s => s.includes('\\u')
-  ? s.replace(IDESC, (_, b, p) => String.fromCodePoint(parseInt(b || p, 16)))
-  : s
-
-export const normalizeIdents = node => {
-  if (!Array.isArray(node)) return
-  // Literal-value wrapper [null, X] / [undefined, X]: X is a value, not an identifier
-  if (node.length === 2 && node[0] == null) return
-  for (let i = 1; i < node.length; i++) {
-    const v = node[i]
-    if (typeof v === 'string') node[i] = decodeIdent(v)
-    else if (Array.isArray(v)) normalizeIdents(v)
-  }
 }

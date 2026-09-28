@@ -110,7 +110,7 @@ export function resolveModuleGraph(entryFile, { resolveNode = false, external = 
     const rel = spec.startsWith('./') || spec.startsWith('../')
     if (isExternal(spec) || (rel && isExternal(spec, resolve(fromDir, spec)) || (rel && isExternal(spec, resolve(fromDir, spec) + '.js')))) {
       const names = externals[spec] ??= new Set()
-      const m = /^import\s+(?:(\w+)\s*,?\s*)?(?:\{([^}]*)\})?/.exec(match)
+      const m = /^import\s+(?:([\p{ID_Start}$_][\p{ID_Continue}$\u200c\u200d]*)\s*,?\s*)?(?:\{([^}]*)\})?/u.exec(match)
       if (m?.[1]) names.add('default')
       for (const part of (m?.[2] ?? '').split(',')) { const nm = part.trim().split(/\s+as\s+/)[0]; if (nm) names.add(nm) }
       return match

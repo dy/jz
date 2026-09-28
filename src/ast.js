@@ -17,7 +17,8 @@ export const rewriteChildren = (node, visit, state) => {
   return out || node
 }
 
-/** Template placeholder in prepared AST (prepare.js). */
+/** The prefix of every name the compiler mints. A private-use character is
+ *  no identifier character (src/parse.js), so no source name can take it. */
 export const T = '\uE000'
 
 /** What the parser noted on a node beside its children (its position) goes to
@@ -26,9 +27,8 @@ export const noted = (from, to) => { for (const k of Object.keys(from)) if (!(k 
 export const copyNode = (n) => noted(n, n.slice())
 
 // jzify's class namespace (jzify/names.js): the names a class lowers to
-// (`P\uE003len`, the receiver `\uE003self0`) may appear in lowered source
-// (the source-level lowering), so they take a private-use character the parser accepts
-// rather than the reserved prefix T.
+// (`P\uE003len`, the receiver `\uE003self0`) take a private-use character of
+// their own, apart from T's names and, like them, from any source name.
 export const CLASS_T = '\uE003'
 // A class instance's literal carries its class as a property named with the
 // class namespace (`{ x, y, [BRAND + id]: undefined }`): every pass sees one

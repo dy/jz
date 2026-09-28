@@ -13,51 +13,109 @@
  * literal and needs no override.
  */
 import { parse as jessieParse, token } from 'subscript/feature/jessie'
-import { lookup, idx, cur, skip, err, prec } from 'subscript/parse'
+import { lookup, idx, cur, skip, err, prec, seek } from 'subscript/parse'
 import { fromRadixDigits, toDecimalString, truncateLimbs } from './bignum.js'
 import { validateEarlyErrors } from './early-errors.js'
+import { asciiPart, idStart, idPart, lineEnd, isSpace } from './unicode.js'
 
-// Strip a leading `#!` shebang line before subscript sees it. subscript registers the
-// shebang via `parse.comment['#!']='\n'` (feature/shebang.js) on a literal-seeded object,
-// then enumerates it — a cross-module dynamic-extension of a fixed-schema object that the
-// self-compile kernel doesn't surface (the added key is stored but unenumerated). An explicit
-// strip is the conventional parser responsibility anyway (Node, V8 do the same), is
-// host/kernel-identical, and is independent of object-model internals.
-// subscript's ASI layer (feature/asi.js) tracks the "no LineTerminator here"
-// restricted-production flag (`parse.newline`, consulted by break/continue/
-// return/yield/postfix-++/--'s own keyword handlers) by rescanning each
-// whitespace run parse.space() just skipped for LF (`\n`) only. ES2026's
-// LineTerminator production (§12.4) is LF | CR | LS | PS: a lone CR (`\r`
-// U+000D, not part of a CRLF pair) is skipped as ordinary whitespace WITHOUT
-// setting parse.newline, so e.g. `break\rLABEL` parses as a labeled break
-// instead of ASI-splitting into an unlabeled break followed by a new
-// statement (confirmed live — test262 language/statements/break+continue
-// line-terminators.js: LF/LS/PS already flip parse.newline correctly, only a
-// bare CR is missed; LS/PS reach the right outcome by a different route —
-// their codepoint sits above subscript's core whitespace ceiling, so the
-// base skip loop halts there and the stalled identifier match falls through
-// to the same unlabeled-break result by construction, not via the newline
-// flag). Compose one more wrapper on top of asi.js's parse.space — same
-// "layer another override onto subscript's shared mutable parser state"
-// pattern as the NaN/true/false/BigInt token overrides below — to also flag
-// CR. jessieParse (imported above) and subscript/parse.js's own `parse` are
-// the same shared singleton object (feature/jessie re-exports it verbatim),
-// so no separate import is needed; `idx`/`cur` (imported above) are live
-// bindings that already reflect the position parse.space() just advanced to.
-// No rest/spread here (`(...args) => … asiSpace(...args)`): jz's own
-// self-compile kernel rejects a spread call into a function it proves
-// non-variadic ("Spread not supported in calls to non-variadic function"),
-// and asi.js's parse.space is exactly that (fixed 2-param `(cc, from)`,
-// both immediately overwritten on entry — see its own body — so it is
-// ALWAYS called with zero arguments in practice; every real call site in
-// this codebase, subscript's own included, calls it as `parse.space()`).
-// Zero-arg wrapper matches that actual calling convention exactly.
+// IdentifierName (§12.7). subscript takes every code unit from U+00C0 but ×
+// and ÷ for a name character: it missed ª µ º (ID_Start) and · (ID_Continue),
+// and took whitespace, line terminators, symbols and punctuation for letters.
+// parse.id answers the length of the name character at idx, 0 when there is
+// none: an ASCII letter, digit, `$` or `_`; a `\uXXXX` or `\u{X…}` escape; a
+// code point of ID_Start, or of ID_Continue where a name continues; an astral
+// one as its surrogate pair. Asked about another position (the character
+// after a keyword), it answers whether that code unit can continue a name.
+const hex = c => c >= 48 && c <= 57 ? c - 48 : (c |= 32) >= 97 && c <= 102 ? c - 87 : -1
+const high = c => c >= 0xd800 && c <= 0xdbff, low = c => c >= 0xdc00 && c <= 0xdfff
+const pair = (h, l) => (h - 0xd800) * 1024 + l - 0xdc00 + 0x10000
+// The escape at i: its length, its code point left in escCp; 0 when it is none.
+let escCp = 0
+const escapeAt = (i) => {
+  if (cur.charCodeAt(i + 1) !== 117) return 0
+  let n = i + 2, cp = 0, h
+  if (cur.charCodeAt(n) === 123) {
+    while ((h = hex(cur.charCodeAt(++n))) >= 0) if ((cp = cp * 16 + h) > 0x10ffff) return 0
+    if (n === i + 3 || cur.charCodeAt(n) !== 125) return 0
+    escCp = cp
+    return n - i + 1
+  }
+  for (let k = 0; k < 4; k++) { if ((h = hex(cur.charCodeAt(n + k))) < 0) return 0; cp = cp * 16 + h }
+  escCp = cp
+  return 6
+}
+// Whether the code unit before i ends a name character: a name continues at i.
+const continues = (i) => {
+  const c = cur.charCodeAt(i - 1)
+  if (c === 125) {   // `}` closing a `\u{X…}` escape
+    let j = i - 2
+    while (hex(cur.charCodeAt(j)) >= 0) j--
+    return cur.charCodeAt(j) === 123 && cur.charCodeAt(j - 1) === 117 && cur.charCodeAt(j - 2) === 92
+  }
+  if (low(c)) return high(cur.charCodeAt(i - 2)) && idPart(pair(cur.charCodeAt(i - 2), c))
+  return i > 0 && idPart(c)
+}
+// A character that cannot begin a name (a digit, a combining mark) stands only where one continues.
+const nameChar = (cp, i, len) => idStart(cp) || idPart(cp) && continues(i) ? len : 0
+const escapedChar = (i) => { const len = escapeAt(i); return len ? nameChar(escCp, i, len) : 0 }
+jessieParse.id = c => {
+  if (c < 128) return asciiPart(c) ? 1 : c !== 92 ? 0 : cur.charCodeAt(idx) === 92 ? escapedChar(idx) : 1
+  if (c !== cur.charCodeAt(idx)) return high(c) || idPart(c) ? 1 : 0
+  if (high(c)) return low(cur.charCodeAt(idx + 1)) ? nameChar(pair(c, cur.charCodeAt(idx + 1)), idx, 2) : 0
+  return nameChar(c, idx, 1)
+}
+
+// WhiteSpace, LineTerminator and comments (§12.2–12.4). subscript's core skips
+// every code unit up to U+0020 (controls too), comment.js ends a `//` comment
+// at LF alone, and the ASI layer (feature/asi.js) flags a line break for LF
+// alone. The layer on top owns the comments (comment.js keeps none), skips the
+// space separators, NBSP, ZWNBSP, LS and PS, refuses a control character, and
+// flags `parse.newline` for a CR, LS or PS, and for a line terminator inside a
+// block comment, for the restricted productions (`break\rL` is two
+// statements). A zero-argument wrapper: the kernel rejects a spread into
+// asi.js's fixed-arity space.
+jessieParse.comment = {}
 const asiSpace = jessieParse.space
 jessieParse.space = () => {
-  const from = idx
-  const cc = asiSpace()
-  for (let i = from; i < idx; i++) if (cur.charCodeAt(i) === 13) { jessieParse.newline = true; break }
-  return cc
+  for (;;) {
+    const from = idx
+    const cc = asiSpace()
+    for (let i = from; i < idx; i++) {
+      const c = cur.charCodeAt(i)
+      if (c === 13) jessieParse.newline = true
+      else if (c !== 59 && !isSpace(c)) err('Unexpected character', i)
+    }
+    if (cc === 47 && cur.charCodeAt(idx + 1) === 47) {
+      let i = idx + 2
+      while (i < cur.length && !lineEnd(cur.charCodeAt(i))) i++
+      seek(i)
+    } else if (cc === 47 && cur.charCodeAt(idx + 1) === 42) {
+      // an unterminated one runs to the end; the early errors name it
+      const close = cur.indexOf('*/', idx + 2), end = close < 0 ? cur.length : close
+      for (let i = idx + 2; i < end; i++) if (lineEnd(cur.charCodeAt(i))) { jessieParse.newline = true; break }
+      seek(close < 0 ? end : end + 2)
+    } else if (cc >= 0xa0 && isSpace(cc)) {
+      if (cc === 0x2028 || cc === 0x2029) jessieParse.newline = true
+      skip()
+    } else return cc
+  }
+}
+
+// An escaped name means its decoded one (§12.7.1): `\u0061` and `a` are one
+// binding, `o.\u{62}` reads `b`. Early errors read the raw spelling first (an
+// escaped keyword is no keyword); every later stage sees the decoded name.
+// Literal values `[, v]` and regular expressions keep their text.
+const IDESC = /\\u\{([0-9a-fA-F]+)\}|\\u([0-9a-fA-F]{4})/g
+const decodeIdent = s => s.includes('\\u')
+  ? s.replace(IDESC, (_, b, p) => String.fromCodePoint(parseInt(b || p, 16)))
+  : s
+const decodeNames = node => {
+  if (!Array.isArray(node) || node[0] == null || node[0] === '//') return
+  for (let i = 1; i < node.length; i++) {
+    const v = node[i]
+    if (typeof v === 'string') node[i] = decodeIdent(v)
+    else decodeNames(v)
+  }
 }
 
 // A statement list is read by one call, a statement per pass. subscript's
@@ -117,17 +175,20 @@ jessieParse.step = (a, p, cc, expr) => {
 }
 
 const parse = (src, sourceType = 'jz') => {
+  // A leading `#!` line is a comment (Node, V8), cut before subscript reads
+  // the source: subscript's own shebang.js registration went with
+  // parse.comment's entries.
   if (typeof src === 'string' && src.charCodeAt(0) === 35 && src.charCodeAt(1) === 33) {
     const nl = src.indexOf('\n')
     src = nl < 0 ? '' : src.slice(nl)
   }
-  // subscript's line-comment terminator is hard-coded to LF. ECMAScript gives
-  // a lone CR the same line-terminator meaning; normalize only lone CR (CRLF
-  // already reaches subscript's LF) and preserve string length/AST offsets.
-  // The original spelling still goes to lexical validation below.
+  // A lone CR ends a line as LF does; a template reads it as LF (§12.9.6).
+  // Same length, so AST offsets stand. The original spelling still goes to
+  // lexical validation below.
   const parseSource = typeof src === 'string' && src.includes('\r') ? src.replace(/\r(?!\n)/g, '\n') : src
   const ast = jessieParse(parseSource)
   validateEarlyErrors(ast, src, sourceType)
+  decodeNames(ast)
   return ast
 }
 

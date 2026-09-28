@@ -36,7 +36,7 @@ import { TIMER_NAMES, includeForCallableValue, includeForTimerRuntime, includeMo
 import { T, walkAst } from '../ast.js'
 import { MUTATING_ARRAY_METHODS } from './const-fold.js'
 import { prep } from './handlers.js'
-import { normalizeIdents, scanReassignedTopLevel } from './ident-purity.js'
+import { scanReassignedTopLevel } from './ident-purity.js'
 import { hoistIndexedConstLiterals, seedStaticGlobalAssignments } from './literals.js'
 import { validateCoalesceMixing } from './module-resolve.js'
 import { fuseSparseMapReads } from './sparse-map.js'
@@ -115,7 +115,6 @@ export default function prepare(node) {
   if (node === '') node = [';']
   ctx.module.ast = node
   validateCoalesceMixing(node)  // ES2020: reject unparenthesized `??` mixed with `||`/`&&`
-  normalizeIdents(node)
   fuseSparseMapReads(node)  // AST-level fusion; needs pre-resolution shape — defined at end of file
   seedStaticGlobalAssignments(node)
   node = hoistIndexedConstLiterals(node)

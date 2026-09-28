@@ -477,7 +477,7 @@ const compilePipeline = (code, opts = {}) => {
 
   setupCtx(code, opts)   // post-reset invariants assert inside beginSession
 
-  // The canonical front half (src/front.js): parse → reserved-prefix guard →
+  // The canonical front half (src/front.js): parse →
   // liftIIFEs → jzify → prepare → preEval — ONE function shared verbatim with
   // every self-compile kernel entry, so the two pipelines cannot drift (they did:
   // the kernel skipped preEval — audit P0 2026-07-25).

@@ -1,5 +1,6 @@
 import { ASSIGN_OPS, some } from './ast.js'
 import { err } from './ctx.js'
+import { asciiPart, isSpace } from './unicode.js'
 
 /**
  * ECMAScript early errors that a permissive subset parser cannot enforce while
@@ -26,10 +27,10 @@ const statements = n => n == null ? [] : isSeq(n) ? n.slice(1).filter(x => x != 
 
 const isDigitCode = c => c >= 48 && c <= 57
 const isHexCode = c => isDigitCode(c) || (c | 32) >= 97 && (c | 32) <= 102
-const isIdentCode = c => isDigitCode(c) || c >= 65 && c <= 90 || c >= 97 && c <= 122 || c === 36 || c === 95 || c > 127
-const isWhitespaceCode = c => c <= 32 || c === 0xa0 || c === 0x1680 ||
-  c >= 0x2000 && c <= 0x200a || c === 0x2028 || c === 0x2029 || c === 0x202f ||
-  c === 0x205f || c === 0x3000 || c === 0xfeff
+// The source parsed: outside strings, templates, comments and regular
+// expressions, a code unit above ASCII is a name's or whitespace.
+const isIdentCode = c => asciiPart(c) || c > 127 && !isSpace(c)
+const isWhitespaceCode = isSpace
 
 const lexicalNumber = (src, start, strict) => {
   let i = start, c = src.charCodeAt(i)
@@ -350,7 +351,7 @@ const methodSourceInfo = (src, parenAt) => {
 }
 
 const sourceHasLexicalRisk = (src, strict) => typeof src === 'string' && (
-  src.includes('\\') || src.includes('#!') || src.includes('\u180e') || src.includes('\u2e2f') ||
+  src.includes('\\') || src.includes('#!') ||
   src.includes('\u2028') || src.includes('\u2029') || src.includes('=>') || /\b(for|do|else)\b/.test(src) ||
   src.includes('?.') && src.includes('`') ||
   src.includes('_') && /(^|[^A-Za-z0-9_$])(?:[0-9][0-9]*_|0[xXoObB]_)/m.test(src) ||
@@ -436,45 +437,20 @@ const validateLexicalSource = (src, strict) => {
       i = lexicalTemplate(src, i, strict, !canRegex)
       canRegex = false; optionalDepth = -1; continue
     }
+    // An identifier escape: the parser took it only where it names a name character.
     if (ch === '\\' && src[i + 1] === 'u') {
-      const escapeStart = i
       i += 2
-      let digits
-      if (src[i] === '{') {
-        i++
-        const begin = i
-        while (isHexCode(src.charCodeAt(i))) i++
-        if (i === begin || src[i] !== '}') fail('invalid Unicode identifier escape')
-        digits = src.slice(begin, i)
-        i++
-      } else {
-        for (let k = 0; k < 4; k++) if (!isHexCode(src.charCodeAt(i + k))) fail('invalid Unicode identifier escape')
-        digits = src.slice(i, i + 4)
-        i += 4
-      }
-      const cp = parseInt(digits, 16)
-      const prev = src.charCodeAt(escapeStart - 1)
-      const continuation = isIdentCode(prev)
-      const asciiStart = cp === 36 || cp === 95 || cp >= 65 && cp <= 90 || cp >= 97 && cp <= 122
-      const asciiPart = asciiStart || isDigitCode(cp)
-      const valid = continuation ? asciiPart || cp > 127
-        : asciiStart || cp > 127 && cp !== 0x200c && cp !== 0x200d
-      if (cp === 35 || cp === 0x2e2f || isWhitespaceCode(cp) || !valid)
-        fail('Unicode escape does not encode a valid identifier character')
+      if (src[i] === '{') { const close = src.indexOf('}', i); i = close < 0 ? src.length : close + 1 }
+      else i += 4
       canRegex = false
       continue
     }
     if (isDigitCode(c) || ch === '.' && isDigitCode(src.charCodeAt(i + 1))) {
       i = lexicalNumber(src, i, strict); canRegex = false; continue
     }
-    if (c === 0x2e2f || c === 0x180e) fail('character is not valid in an identifier or whitespace')
     if (isIdentCode(c)) {
       const start = i++
-      while (isIdentCode(src.charCodeAt(i))) {
-        const part = src.charCodeAt(i)
-        if (part === 0x2e2f || part === 0x180e) fail('character is not valid in an identifier')
-        i++
-      }
+      while (isIdentCode(src.charCodeAt(i))) i++
       const word = src.slice(start, i)
       pendingDo = false
       if (word === 'else') {
