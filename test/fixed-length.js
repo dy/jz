@@ -140,7 +140,8 @@ test('fixed length: reads and stores inside the count call no helper', () => {
   for (const optimize of levels(2, 3)) {
     const body = funcWat(wat(src, { optimize }), 'f')
     ok(!/__arr_set_idx_ptr|__ptr_offset|__arr_idx/.test(body), `no store, forward or index helper at ${optimize}`)
-    is((body.match(/f64\.store/g) || []).length, 3, 'three stores')
+    // Three element stores: two of them pack into one v128 store at the speed tiers (SLP).
+    is((body.match(/f64\.store/g) || []).length + 2 * (body.match(/v128\.store/g) || []).length, 3, 'three stores, scalar or packed')
   }
 })
 

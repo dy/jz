@@ -997,8 +997,11 @@ test('closure-unbox: codegen — local declared as i32', () => {
   const w = jz.compile(src, { wat: true, optimize: { watr: false, coalesceLocals: false, sourceInline: false, valueNumber: false } })
   const body = fnBody(w, 'f')
   ok(body, '$f present')
-  // multi-use closure so the slot survives propagateLocals (the single-use def would be forwarded)
-  ok(/\(local \$g i32\)/.test(body), '$g declared as i32 (closure unboxed)')
+  // The unboxed closure is an i32 local the calls box on the way in: `$g`, or its
+  // environment temp once the vectorizer's normalizer has lowered the closure's value
+  // block to statements and propagation has dissolved the copy `$g = env` that leaves.
+  const ptr = body.match(/i64\.extend_i32_u \(local\.get (\$[^\s)]+)\)/)?.[1]
+  ok(ptr && body.includes(`(local ${ptr} i32)`), '$g declared as i32 (closure unboxed)')
   ok(!/\(local \$g f64\)/.test(body), '$g not f64')
   const { f } = jz(src, { optimize: { watr: false } }).exports
   const js = oracle(src).f

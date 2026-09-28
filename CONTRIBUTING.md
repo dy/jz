@@ -1965,6 +1965,15 @@ data-dependent gathers and scatters (dla/sand/voronoi) are not: WASM-SIMD has ne
 scalar. A read strided by a secondary counter (`k += step`) gathers lane by lane in the general map
 when the cost model finds enough work per element (the radix-2 butterfly's twiddles).
 
+Straight-line code has its own packer, SLP (`src/optimize/vectorize/dot-slp.js`): two element
+stores one f64 apart with isomorphic values become one `v128.store` when every leaf pair is
+overhead-free: adjacent loads (one `v128.load`), the same pure scalar (a splat), or two locals a
+kernel loaded once from consecutive slots (`ax = a[0], ay = a[1]`, the field-first idiom of
+vector and matrix libraries) which become one `v128` loaded beside them. The pack reads both
+lanes before either store, so the high value may not load the low store's slot through any
+name (two parameters can be one array); a store's base resolves through jz's staging temps,
+never through a load. `test/slp.js` pins the shapes and the bails.
+
 ## Principles
 
 - **Don't contort compiler source for microbenchmarks.** Readability wins in `src/`; optimize compiler time and retained memory only from measured, general evidence. Output speed and size remain the primary product budgets.
