@@ -26,7 +26,7 @@ function i16(ch, nch, len, buf) { let out = new Int16Array(buf.buffer, 0, len * 
 let X = new Float32Array(${N}), Y = new Float32Array(${N})
 for (let i = 0; i < ${N}; i++) { X[i] = Math.sin(i * 0.3) * 1.2; Y[i] = Math.cos(i * 0.2) * 0.9 }
 let enc = null
-export let run = () => { let b = enc.encode([X, Y]), h = 0; for (let i = 0; i < b.length; i++) h = (h * 31 + b[i]) | 0; return h }
+export let hash = () => { let b = enc.encode([X, Y]), h = 0; for (let i = 0; i < b.length; i++) h = (h * 31 + b[i]) | 0; return h }
 `
 const body = `let { bitDepth = 16 } = opts, bps = bitDepth >> 3, nch = 0`
 const encode = `function encode(ch) { if (!nch) nch = ch.length; let len = ch[0].length, buf = new Uint8Array(len * nch * bps); (bitDepth === 24 ? i24 : i16)(ch, nch, len, buf); return buf }`
@@ -62,12 +62,12 @@ test('async factory: the closures it makes agree with JavaScript', async () => {
     if (asyncShape(name) && (onWasi() || onKernel())) continue
     const src = kernel + factory, host = oracle(src)
     await host.open()
-    const want = host.run()
+    const want = host.hash()
     for (const optimize of levels(0, 2, 3)) {
       const m = jz(src, { optimize }).exports
       await m.open()
-      is(m.run(), want, `${name} factory at ${optimize}`)
-      is(m.run(), want, `${name} factory at ${optimize}, again`)
+      is(m.hash(), want, `${name} factory at ${optimize}`)
+      is(m.hash(), want, `${name} factory at ${optimize}, again`)
     }
   }
 })
