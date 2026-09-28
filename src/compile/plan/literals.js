@@ -350,7 +350,7 @@ const scalarizeTypedArrayLiteralSeq = (seq) => {
     const fixed = fixedScalarTypedArray(decl[2])
     if (fixed == null) continue
     const { len, coerce } = fixed
-    let hasSafeUse = false, hasUnsafeUse = false, hasAliasUse = false, captured = false
+    let hasSafeUse = false, hasUnsafeUse = false, hasAliasUse = false, captured = false, rebound = false
     for (let j = 0; j < stmts.length; j++) {
       if (j === i) continue
       // a use inside a nested function is a use: the rewrite reaches it
@@ -360,7 +360,12 @@ const scalarizeTypedArrayLiteralSeq = (seq) => {
       hasSafeUse ||= safe
       hasUnsafeUse ||= !safe
       hasAliasUse ||= createsTypedArrayAlias(stmts[j], decl[1])
+      rebound ||= isReassigned(stmts[j], decl[1])
     }
+    // A write to the binding itself makes it denote another array: the slots and
+    // the literal length describe only the first (`let buf = new Float64Array(0);
+    // … buf = new Float64Array(n); buf.length`), so neither form applies.
+    if (rebound) continue
     if (hasAliasUse) continue   // persistent aliasing view (subarray) — keep memory-backed
     if (hasUnsafeUse && captured) continue   // a closure beside a mirrored array — keep memory-backed
     if (hasUnsafeUse && (!hasSafeUse || coerce)) continue

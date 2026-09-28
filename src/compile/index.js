@@ -238,9 +238,6 @@ export function assemble(ast, profiler) {
   settleViews([ast, ...(ctx.module.moduleInits ?? []),
     ...ctx.funcs.list.filter(f => !f.raw && programFacts.programIndex.reachableForLowering(f)).flatMap(frameRoots)])
 
-  // A module global's declaration-time literal length holds only while nothing
-  // rewrites the binding (the element kind is an all-writers fact already).
-  for (const name of programFacts.typedRedefs) ctx.scope.globalTypedLen?.delete(name)
   // Frame effects (analyze/frame-effects.js): which functions write storage
   // that exists before the call, and which let an allocation escape their
   // frame. Load CSE reads the first across calls (analyze-for-emit.js); the

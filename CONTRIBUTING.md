@@ -890,8 +890,10 @@ object shapes ride on the cell and its reads join both. A parameter used only
 in tests, identity compares and `typeof` keeps the shapes of a join it
 cannot name. A conditional on a parameter no call has bound waits for a later
 round; one the kinds decide walks only its live arm (`x == null` of a kind
-without the nullish tags; `x.p` of a number, a boolean or a BigInt outside
-their few methods, which is undefined). `if (x.p)` proves `x` non-nullish
+without the nullish tags; `x === undefined` of a parameter no call passes an
+argument for, forwarded as it is or not, `argBound`: three's `Matrix4(n11, …)`
+forwards to `set` only when given values; `x.p` of a number, a boolean or a
+BigInt outside their few methods, which is undefined). `if (x.p)` proves `x` non-nullish
 where true and, where false and every object `x` may hold answers `p` with a
 class flag (`static { C.prototype.isC = true }`, a getter of the literal), no
 object at all; with the per-kind clones narrow/specialize.js gives a function
@@ -960,13 +962,41 @@ const); `optimize: { sourceInline: false }` keeps every closure form. A
 declaration splices each of its declarators (`const r = f(a), g = f(b), b =
 f(c)`, each its own statement in order); more than one declarator splices only
 in an innermost loop, where the call it removes is what kept the lane
-vectorizer out. Nested-call
+vectorizer out, except a factory's: a body whose value is a fresh literal of
+its own (`let self = {…}; …; return self`) splices at every declarator, since
+the name then binds the literal and scalarizes where it never escapes
+(`const a = new Vector3(), b = new Vector3()` before a loop). A factory's
+splice is an allocation site the size of the literal it makes: no site cap
+counts it, and the `constructor` binder that takes its address keeps the
+body. A default is decided at the site: an argument the call leaves out is
+its parameter's default, evaluated in its turn in the parameters' scope, or
+undefined; one the call passes runs no default where the caller's summary
+proves it not nullish, and a value that may be undefined keeps the call at
+that site. Nested-call
 hoisting uses its body map for membership too, and reuses that map through the
-current function's rounds, before the function record's body is replaced.
-An eligible callee's single early return folds into a guard. When it returns a
-value, both paths assign one fresh result binding before the trailing return;
-only the chosen path runs. Eligibility is checked before normalization so an
-outlined function does not acquire unnecessary control flow or locals.
+current function's rounds, before the function record's body is replaced; it
+lifts a call out of an `if` test to a declaration before the `if` (an `else
+if` test into the else arm), and lifts a kernel or a loop-only candidate
+inside an innermost loop only. The budget a callee is held to is the
+duplication its splice adds: a small body within its cap of sites outside
+loops, a larger one at two sites (a leaf's second copy under 200 nodes when
+every site is in a loop, 48 otherwise; a sole site copies nothing). A body
+past that budget still splices at its sites in innermost loops, where the
+call is the per-iteration cost, while its straight-line sites keep the call
+and the body (`Vector3.applyMatrix4` from a dozen sites, `intersectsSphere`
+with a loop of its own); those copies are bounded together (400 nodes). A
+dispatcher's arm and a binder's closure are no sites: they call the member
+for a receiver the summary cannot name, and the function stays for them.
+An eligible callee's returns lower to one trailing `return r`: `return X`
+assigns `r`, inside a loop `done = true; break` follows (and a loop that may
+return ends the loop around it the same way); statements after one that may
+return go in the else arm when its then arm always returns (down an else-if
+ladder whose every arm returns, so the ladder keeps the shape the union
+carrier's exclusion stacking reads), under `if (!done)` otherwise. `done` exists only where a guard reads it, and a final
+`return <literal>` initializes `r` instead. A `break` or `continue` targets
+a loop or switch of the body and splices with it; a return in a switch or
+try, and a `throw`, keep the callee outlined. Eligibility is checked before
+normalization so an outlined function does not acquire control flow or locals.
 The summary's boolean-operator table also serves value typing and integer
 certainty; internal eager boolean expressions keep their identity in locals.
 Integer certainty does not erase boolean identity: a mixed boolean/number
@@ -1745,7 +1775,10 @@ arguments, and only when the callee writes no outer storage (the frame census
 above), or the copies could go stale while it runs. One opaque site keeps the
 record form at every site; with all sites retargeted the original is dead.
 `optimize: { laneRecords: false }` keeps every record form (the summary tests
-pin the source's own functions).
+pin the source's own functions), as `optimize: { valKindClones: false }` keeps
+a function whose parameter's call sites disagree on its kind one function
+(narrow/specialize.js `specializeValKindDichotomy` otherwise clones it per
+kind and routes each site to its own).
 
 Generic reads in the self-compiled kernel cost helper entries, and the warm
 self-compile gate is paid in them. Five rules keep the common shapes inline:

@@ -8,12 +8,15 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 // transaction is scripts/private-build.mjs's; failure is sticky for this run:
 // later consumers must neither retry nor consume an older artifact after the
 // build fails, whatever failed.
+// The build's time limit (ms) is private-build.mjs's 20 minutes unless
+// JZ_SELF_BUILD_TIMEOUT says otherwise: a machine under load takes longer.
+const timeout = +process.env.JZ_SELF_BUILD_TIMEOUT || undefined
 function sticky(root, script, args, label, prefix) {
   let bytes, failure
   return () => {
     if (failure) throw failure
     if (bytes) return bytes
-    try { return bytes = privateBuild(root, script, args, { label, prefix }).bytes }
+    try { return bytes = privateBuild(root, script, args, { label, prefix, timeout }).bytes }
     catch (e) { failure = e; throw e }
   }
 }

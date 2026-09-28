@@ -16,7 +16,7 @@ import { REP_EDGE_BOX, REP_EDGE_REJECT, representationJoinArmAction } from '../r
 import { tagFnArrayDispatch } from './call.js'
 import { numericVal } from './comparisons.js'
 import { emit, toBool } from './dispatch.js'
-import { REF_EQ_KINDS, boolEagerBody, eagerSelectOK, isCanonicalBoolExpr, isNumArm, selectCondOK } from './shared.js'
+import { REF_EQ_KINDS, boolEagerBody, eagerSelectOK, i32JoinRep, isCanonicalBoolExpr, isNumArm, selectOK } from './shared.js'
 
 
 // f64 arithmetic that can MINT a sign-nondeterministic NaN (0/0, ∞−∞, 0·∞, x%0): on x86
@@ -266,7 +266,7 @@ export const logicalOps = {
         const fb = vtbM === VAL.BOOL ? boolBoxIR(vb) : asF64(vb)
         const fc = vtcM === VAL.BOOL ? boolBoxIR(vc) : asF64(vc)
         const ib = ['i64.reinterpret_f64', fb], ic = ['i64.reinterpret_f64', fc]
-        const bits = eagerSelectOK(fb, fc) && selectCondOK(cond)
+        const bits = selectOK(cond, fb, fc)
           ? ['select', ib, ic, cond]
           : ['if', ['result', 'i64'], cond, ['then', ib], ['else', ic]]
         return typed(['f64.reinterpret_i64', bits], 'f64')
@@ -321,7 +321,7 @@ export const logicalOps = {
           if (bothPlain && vb.unsigned && vc.unsigned) n.unsigned = true
           return n
         }
-        if (eagerSelectOK(vb, vc) && selectCondOK(cond))
+        if (selectOK(cond, vb, vc))
           return tagPtr(typed(['select', vb, vc, cond], 'i32'))
         return tagPtr(typed(['if', ['result', 'i32'], cond, ['then', vb], ['else', vc]], 'i32'))
       }
@@ -359,12 +359,12 @@ export const logicalOps = {
     if (refPayload) {
       const ib = ['i64.reinterpret_f64', branchB]
       const ic = ['i64.reinterpret_f64', branchC]
-      const bits = eagerSelectOK(branchB, branchC) && selectCondOK(cond)
+      const bits = selectOK(cond, branchB, branchC)
         ? ['select', ib, ic, cond]
         : ['if', ['result', 'i64'], cond, ['then', ib], ['else', ic]]
       return typed(['f64.reinterpret_i64', bits], 'f64')
     }
-    if (!refPayload && eagerSelectOK(branchB, branchC) && selectCondOK(cond))
+    if (!refPayload && selectOK(cond, branchB, branchC))
       return markNumeric(typed(['select', branchB, branchC, cond], 'f64'))
     return markNumeric(typed(['if', ['result', 'f64'], cond, ['then', branchB], ['else', branchC]], 'f64'))
   },
@@ -459,27 +459,32 @@ export const logicalOps = {
       // value while removing the nested if/tee ladder in scalar predicates.
       if (vb.type === 'i32' && boolEagerBody() && isCanonicalBoolExpr(a) && isCanonicalBoolExpr(b) && eagerSelectOK(vb))
         return typed(['i32.and', va, vb], 'i32')
-      const t = tempI32()
-      if (vb.type === 'i32') {
-        // This if-join's else-arm (a falsy) is PROVABLY `local.get $t` === 0: the
-        // wasm `if` cond IS va's own bits tested nonzero, so the only bit pattern
-        // that ever reaches the else-arm is all-zero — and 0 means the same thing
-        // signed or unsigned. So va's OWN `.unsigned` can never affect this join's
-        // value; only vb (returned verbatim when a is truthy) can surface a real
-        // magnitude. Unlike '?:' (9c313e58) and '||' below, there is no second arm
-        // for vb to disagree WITH — the joined node just inherits vb's sign outright,
-        // no agreement gate needed.
-        const node = typed(['if', ['result', 'i32'],
+      // An unboxed pointer arm beside a plain one (`ok && typedArr`) takes the
+      // boxed path below, where each arm boxes by its own kind (see '||').
+      const join = i32JoinRep(va, vb)
+      if (join) {
+        const t = tempI32()
+        if (vb.type === 'i32') {
+          // This if-join's else-arm (a falsy) is PROVABLY `local.get $t` === 0: the
+          // wasm `if` cond IS va's own bits tested nonzero, so the only bit pattern
+          // that ever reaches the else-arm is all-zero — and 0 means the same thing
+          // signed or unsigned. So va's OWN `.unsigned` can never affect this join's
+          // value; only vb (returned verbatim when a is truthy) can surface a real
+          // magnitude. Unlike '?:' (9c313e58) and '||' below, there is no second arm
+          // for vb to disagree WITH — the joined node just inherits vb's sign outright,
+          // no agreement gate needed.
+          const node = join(typed(['if', ['result', 'i32'],
+            ['local.tee', `$${t}`, va],
+            ['then', vb],
+            ['else', ['local.get', `$${t}`]]], 'i32'))
+          if (vb.unsigned) node.unsigned = true
+          return node
+        }
+        return typed(['if', ['result', 'f64'],
           ['local.tee', `$${t}`, va],
-          ['then', vb],
-          ['else', ['local.get', `$${t}`]]], 'i32')
-        if (vb.unsigned) node.unsigned = true
-        return node
+          ['then', asF64(vb)],
+          ['else', typed(['f64.convert_i32_s', ['local.get', `$${t}`]], 'f64')]], 'f64')
       }
-      return typed(['if', ['result', 'f64'],
-        ['local.tee', `$${t}`, va],
-        ['then', asF64(vb)],
-        ['else', typed(['f64.convert_i32_s', ['local.get', `$${t}`]], 'f64')]], 'f64')
     }
     const t = temp()
     const vtA = resolveValType(a, valTypeOf, lookupValType), vtB = resolveValType(b, valTypeOf, lookupValType)
@@ -559,29 +564,36 @@ export const logicalOps = {
       // bitwise OR exactly equivalent to short-circuit OR.
       if (vb.type === 'i32' && boolEagerBody() && isCanonicalBoolExpr(a) && isCanonicalBoolExpr(b) && eagerSelectOK(vb))
         return typed(['i32.or', va, vb], 'i32')
-      const t = tempI32()
-      // Unlike `&&` above, this if-join's THEN-arm (a truthy) returns va's own
-      // value verbatim — so, like '?:' (9c313e58), BOTH arms can surface an
-      // independent real magnitude here (the else-arm returns vb whenever a was
-      // falsy, unconstrained). A single downstream asF64 can only apply ONE sign
-      // to whichever branch fires at runtime, so the single-i32-if fast path is
-      // sound only when the two arms AGREE; disagreement (or a non-i32 vb) widens
-      // each arm with its OWN sign inside the if instead (still one branch, no
-      // extra control flow) — asF64(vb) already respects vb.unsigned, the va side
-      // just needs the same sign-aware conversion instead of a hardcoded signed one.
-      const signOK = vb.type === 'i32' && !!va.unsigned === !!vb.unsigned
-      if (signOK) {
-        const node = typed(['if', ['result', 'i32'],
+      // An unboxed pointer arm (a typed-array parameter: `output || scratch`) is
+      // no i32 number. A single i32 join would widen it numerically downstream
+      // (the '?:' hazard above), so unless both arms are one pointer kind the
+      // join takes the boxed path below, where each arm boxes by its own kind.
+      const join = i32JoinRep(va, vb)
+      if (join) {
+        const t = tempI32()
+        // Unlike `&&` above, this if-join's THEN-arm (a truthy) returns va's own
+        // value verbatim — so, like '?:' (9c313e58), BOTH arms can surface an
+        // independent real magnitude here (the else-arm returns vb whenever a was
+        // falsy, unconstrained). A single downstream asF64 can only apply ONE sign
+        // to whichever branch fires at runtime, so the single-i32-if fast path is
+        // sound only when the two arms AGREE; disagreement (or a non-i32 vb) widens
+        // each arm with its OWN sign inside the if instead (still one branch, no
+        // extra control flow) — asF64(vb) already respects vb.unsigned, the va side
+        // just needs the same sign-aware conversion instead of a hardcoded signed one.
+        const signOK = vb.type === 'i32' && !!va.unsigned === !!vb.unsigned
+        if (signOK) {
+          const node = join(typed(['if', ['result', 'i32'],
+            ['local.tee', `$${t}`, va],
+            ['then', ['local.get', `$${t}`]],
+            ['else', vb]], 'i32'))
+          if (va.unsigned && vb.unsigned) node.unsigned = true
+          return node
+        }
+        return typed(['if', ['result', 'f64'],
           ['local.tee', `$${t}`, va],
-          ['then', ['local.get', `$${t}`]],
-          ['else', vb]], 'i32')
-        if (va.unsigned && vb.unsigned) node.unsigned = true
-        return node
+          ['then', typed([va.unsigned ? 'f64.convert_i32_u' : 'f64.convert_i32_s', ['local.get', `$${t}`]], 'f64')],
+          ['else', asF64(vb)]], 'f64')
       }
-      return typed(['if', ['result', 'f64'],
-        ['local.tee', `$${t}`, va],
-        ['then', typed([va.unsigned ? 'f64.convert_i32_u' : 'f64.convert_i32_s', ['local.get', `$${t}`]], 'f64')],
-        ['else', asF64(vb)]], 'f64')
     }
     const t = temp()
     const vtA = resolveValType(a, valTypeOf, lookupValType), vtB = resolveValType(b, valTypeOf, lookupValType)

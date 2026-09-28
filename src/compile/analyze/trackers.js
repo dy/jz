@@ -76,6 +76,42 @@ export const makeTypedTracker = (get, set, del, getLen, setLen, delLen, body) =>
   }
 }
 
+/** A typed binding's constructor holds only if every value the binding can hold
+ *  has it: each definition in the body (a declaration's initializer, an
+ *  assignment, and for a parameter its entry value as the callers proved it)
+ *  resolves to that one constructor. The tracker above records the first
+ *  constructor it sees and only a *different* one invalidates, so a definition
+ *  of unknown provenance beside it (a parameter no caller typed, a host view,
+ *  a plain object on one path) would leave the binding typed as the array of
+ *  the other path: `if (flag) data = new Float32Array(4)` folded
+ *  `data instanceof Float32Array` to true, `src = b.subarray(44); if (…) src =
+ *  new Uint8Array(8)` read the view's byteOffset as 0. Such a binding drops
+ *  here, on the settled map and to a fixpoint (an alias of a dropped binding
+ *  drops with it). Module globals are program-wide, all-writers facts already;
+ *  a declaration without a value is no definition (the binding is assigned
+ *  before it is read, or the read is a fault in any case). */
+export function dropDisagreeingTypedDefs(body, get, del, delLen, seedOf) {
+  const defs = new Map()
+  const add = (name, rhs) => (defs.get(name) ?? defs.set(name, []).get(name)).push(rhs)
+  walkAst(body, { enter: n => { if (MUTATE_OPS.has(n[0]) && typeof n[1] === 'string') add(n[1], n[0] === '=' ? n[2] : null) } })
+  if (!defs.size) return
+  const ENTRY = {}
+  for (const p of ctx.func.current?.params || []) if (defs.has(p.name)) add(p.name, ENTRY)
+  const resolveName = n => get(n) ?? ctx.scope?.globalTypedElem?.get(n) ?? null
+  const ctorOf = (name, rhs) => rhs === ENTRY ? seedOf(name) : rhs == null ? null : typedStorageFactFromName(ctx, rhs, resolveName)
+  for (let changed = true; changed;) {
+    changed = false
+    for (const [name, list] of defs) {
+      const have = get(name)
+      if (have == null || isGlobal(name)) continue
+      if (list.every(rhs => ctorOf(name, rhs) === have)) continue
+      del(name)
+      if (delLen) delLen(name)
+      changed = true
+    }
+  }
+}
+
 /** A local typed binding assigned only arrays of one length keeps that length:
  *  typed arrays never resize, so every value it holds is that long — the
  *  ping-pong `const t = a; a = b; b = t` of two equal buffers. Solved

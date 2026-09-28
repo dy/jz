@@ -43,6 +43,8 @@ What this implies for HOW we optimize:
   serial locally; CI parallelizes them).
 - `npm run test:self` — self-compile gate: builds `dist/jz.wasm` and round-trips real
   programs through the wasm-hosted compiler. Codegen changes can break the bootstrap.
+  The build has 20 minutes; on a loaded machine `JZ_SELF_BUILD_TIMEOUT=3600000` gives it
+  an hour (a `SIGTERM` build exit is the limit, not a failure).
 - `npm run test:262` / `test:262:builtins` — conformance subset.
 - `npm run test:three` — three.js's math layer (the `three` devDependency, unmodified):
   every module compiles, `test/three/api.js` and `test/three/kernels.js` answer what

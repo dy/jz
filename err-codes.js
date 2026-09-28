@@ -74,6 +74,7 @@ export const ERR = {
   DATAVIEW_OFFSET_OOB: 211,    // DataView get/set (dynamic offset) — outside view bounds
   TYPED_WITH_INDEX: 212,       // TypedArray.prototype.with — index out of range
   ARRAY_FROM_LENGTH: 213,      // Array.from array-like length exceeds wasm32 array range
+  TYPED_SET_OFFSET: 214,       // TypedArray.prototype.set: offset negative or source past the receiver's end
 
   // ── 3xx SyntaxError/URIError-class ───────────────────────────────────────
   JSON_PARSE_SYNTAX: 300,      // JSON.parse — malformed input
@@ -145,6 +146,7 @@ export const ERR_INFO = {
   [ERR.DATAVIEW_OFFSET_OOB]: { name: 'RangeError', message: 'Offset is outside the bounds of the DataView' },
   [ERR.TYPED_WITH_INDEX]: { name: 'RangeError', message: 'Invalid typed array index' },
   [ERR.ARRAY_FROM_LENGTH]: { name: 'RangeError', message: 'Array.from length exceeds the supported array range' },
+  [ERR.TYPED_SET_OFFSET]: { name: 'RangeError', message: 'offset is out of bounds' },
 
   [ERR.JSON_PARSE_SYNTAX]: { name: 'SyntaxError', message: 'Unexpected token in JSON' },
   [ERR.BIGINT_PARSE_DIGIT]: { name: 'SyntaxError', message: 'Cannot convert string to a BigInt' },

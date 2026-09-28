@@ -115,7 +115,18 @@ export default (ctx) => {
       // crash on an unregistered id 0 (table left uninitialized when list empty).
       const schemaId = merged ? ctx.schema.idOf(target) : ctx.schema.register([])
       const cap = ctx.abi.object.ops.allocSlots(merged ? merged.length : 0)
-      return mkPtrIR(PTR.OBJECT, schemaId, ['call', '$__alloc_hdr', ['i32.const', 0], ['i32.const', cap]])
+      const alloc = ['call', '$__alloc_hdr', ['i32.const', 0], ['i32.const', cap]]
+      if (!merged?.length) return mkPtrIR(PTR.OBJECT, schemaId, alloc)
+      // The merged fields exist before anything assigns them, and a field that
+      // was never assigned reads `undefined` (`if (!st.history) st.history = []`
+      // on a module `let st = {}`): the fresh slots hold the sentinel, not the
+      // allocator's zero, which a test for presence would take for a number.
+      // An auto-box's inner slot keeps its value.
+      const t = tempI32('ob')
+      return typed(['block', ['result', 'f64'],
+        ['local.set', `$${t}`, alloc],
+        ...merged.map((name, i) => name === '__inner__' ? null : ctx.abi.object.ops.store(['local.get', `$${t}`], i, undefExpr())).filter(Boolean),
+        mkPtrIR(PTR.OBJECT, schemaId, ['local.get', `$${t}`])], 'f64')
     }
 
     // Flatten comma-grouped props: [',', p1, p2] → [p1, p2]

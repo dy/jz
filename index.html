@@ -235,7 +235,7 @@
 
       /* the label line: a 24px band whose caps hang from its 8px line — the half-unit line under the figure — so
    the label touches the cell's corner there; led by the cell's class (JS · WASM · native), the bench's own glyphs
-   in one quiet tone, a solid square with its mark knocked out, centred on the label's caps */
+   in their class colours, a solid square with its mark knocked out, centred on the label's caps */
       .metrics .under {
         display: flex;
         align-items: flex-start;
@@ -252,44 +252,9 @@
         height: 1cap;
       }
 
-      .metrics .cico {
-        width: 12px;
-        height: 12px;
-        color: var(--dim);
-      }
-
-      .metrics .cico .term-bg {
-        fill: currentColor;
-      }
-
-      .metrics .cico.cls-native path {
-        stroke: var(--paper);
-      }
-
-      /* hovered or focused, the cell's icon takes its class colour — the bench page's own (JS gold · WASM violet · terminal) */
-      .metrics .cico,
-      .metrics .cico * {
-        transition: color .18s, fill .18s, stroke .18s;
-      }
-
-      .metrics .stat:is(:hover, :focus-visible) .cls-js {
-        color: var(--cls-js);
-      }
-
-      .metrics .stat:is(:hover, :focus-visible) .cls-wasm {
-        color: var(--cls-wasm);
-      }
-
-      .metrics .stat:is(:hover, :focus-visible) .cls-native {
-        color: var(--cls-native);
-      }
-
-      .metrics .stat:is(:hover, :focus-visible) .cls-native .term-bg {
-        fill: var(--cls-native-bg);
-      }
-
-      .metrics .stat:is(:hover, :focus-visible) .cls-native path {
-        stroke: currentColor;
+      /* the class glyph (muted, from site.css) takes its full colour when its cell is hovered or focused */
+      .metrics .stat:is(:hover, :focus-visible) .cico {
+        filter: none;
       }
 
       .metrics .stat b {

@@ -6,7 +6,7 @@ import { VAL, repOf, updateRep } from '../../reps.js'
 import { valTypeOf, shapeOf } from '../../kind.js'
 import { intExprRange, objLiteralSchemaId } from '../../static.js'
 import { isCondExpr, intCertainMap } from '../../type.js'
-import { makeTypedTracker, joinReassignedTypedLens } from './trackers.js'
+import { makeTypedTracker, joinReassignedTypedLens, dropDisagreeingTypedDefs } from './trackers.js'
 import { analyzeBody } from './body-facts.js'
 import { K, tagOf, hasTag, valOf, core, ANY } from '../../summary/kind.js'
 
@@ -221,6 +221,10 @@ export function analyzeValTypes(body) {
     (n, l) => (ctx.func.typedLen ??= new Map()).set(n, l),
     (n) => ctx.func.typedLen?.delete(n), body,
   )
+  // A parameter's entry constructor, as its callers proved it, before the body's
+  // own writes reach the tracker (dropDisagreeingTypedDefs reads it as the
+  // parameter's first definition).
+  const paramSeeds = new Map((ctx.func.current?.params || []).map(p => [p.name, ctx.func.typedElem?.get(p.name) ?? null]))
   // Total write count for `name` across the whole body, recursing into nested
   // closures so a closure that reassigns the var is also counted. Capped at 2 —
   // callers only need the "exactly one write" verdict.
@@ -461,6 +465,8 @@ export function analyzeValTypes(body) {
   }
   const objAssignSites = []
   walk(body)
+  dropDisagreeingTypedDefs(body, n => ctx.func.typedElem?.get(n), n => ctx.func.typedElem?.delete(n),
+    n => ctx.func.typedLen?.delete(n), n => paramSeeds.get(n) ?? null)
   joinReassignedTypedLens(body, n => ctx.func.typedElem?.has(n) ?? false,
     n => ctx.func.typedLen?.get(n) ?? ctx.scope.globalTypedLen?.get(n) ?? null,
     (n, l) => (ctx.func.typedLen ??= new Map()).set(n, l))

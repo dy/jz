@@ -1055,15 +1055,28 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   // A spread argument (`f(...xs)`, `a.push(...xs)`) is one slot holding the
   // source's element kind; the slots from it on have no position of their own.
   const kspread = []
+  // A slot holding a value certainly undefined: the literal, or a parameter
+  // no call passes an argument for (`argBound`), forwarded as it is (a class
+  // factory hands its own to the initializer). To `x !== undefined` in the
+  // callee such an argument is no argument (`decided`).
+  const kundef = []
+  const argBound = new Set()   // the parameters some call passes an argument for
+  const bindArg = (key) => { if (!argBound.has(key)) { argBound.add(key); changed = true } }
+  const certainlyUndefined = (a) => {
+    if (isUndefinedLiteral(a)) return true
+    if (typeof a !== 'string') return false
+    const key = keyOf(a)
+    return key !== null && paramKeys.has(ctxBase[key] ?? key) && !argBound.has(key) && tagOf(kinds[key] ?? K.NONE) === K.NULLISH
+  }
   let sp = 0
-  const pushK = (k, spread = false) => { ks[sp] = k; kspread[sp] = spread; sp++ }
+  const pushK = (k, spread = false) => { ks[sp] = k; kspread[sp] = spread; kundef[sp] = false; sp++ }
   const isSpread = (a) => Array.isArray(a) && a[0] === '...'
   /** The kinds of a call's arguments (`a`: the argument node, a `,` list or none): the frame's base. */
   const pushArgs = (a) => {
     const base = sp
     if (a == null) return base
-    if (Array.isArray(a) && a[0] === ',') for (let i = 1; i < a.length; i++) { const k = expr(a[i]); pushK(k, isSpread(a[i])) }
-    else { const k = expr(a); pushK(k, isSpread(a)) }
+    if (Array.isArray(a) && a[0] === ',') for (let i = 1; i < a.length; i++) { const k = expr(a[i]); pushK(k, isSpread(a[i])); kundef[sp - 1] = certainlyUndefined(a[i]) }
+    else { const k = expr(a); pushK(k, isSpread(a)); kundef[sp - 1] = certainlyUndefined(a) }
     return base
   }
   /** The frame's first spread slot, or `n`. */
@@ -1155,6 +1168,8 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       if (names[i] == null) continue
       const quiet = passive.has(names[i]), base_ = keyIn(scope, names[i]), key = ctx === null ? base_ : ctxKey(ctx, base_)
       const dflt = defaults?.[names[i]]
+      // an argument of no kind yet (a dispatcher no call reaches forwards its own) is none
+      if ((i < s && !kundef[base + i] && tagOf(ks[base + i]) !== K.NONE) || s < n) { bindArg(key); bindArg(base_) }
       if (i < s) { bindParam(key, ks[base + i], quiet); if (!dflt || !mayBeMissing(ks[base + i])) continue }
       else if (s < n) { bindParam(key, dflt ? core(tail) : tail, quiet); if (!dflt) continue }
       else if (!dflt) { bindParam(key, NULLISH, quiet); continue }
@@ -1587,6 +1602,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   // that can never be nullish, or (loosely) only nullish. The arm the decision
   // excludes is not walked; a later round that widens the binding walks it.
   const isNullishLiteral = (e) => Array.isArray(e) && e[0] == null && e[1] == null
+  const isUndefinedLiteral = (e) => Array.isArray(e) && e[0] == null && e[1] === undefined
   // A parameter no call has bound yet decides nothing: the conditional waits
   // for a later round rather than walking a default arm its arguments exclude.
   const paramKeys = new Set()
@@ -1617,6 +1633,10 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     let eq
     if (!hasTag(k, K.NULLISH) && !hasTag(k, K.ABSENT)) eq = false
     else if ((t === K.NULLISH || t === K.ABSENT) && (op === '==' || op === '!=')) eq = true
+    // a parameter no call passes an argument for is undefined itself: equal
+    // to undefined, unequal to null (`if (n11 !== undefined) this.set(n11, …)`
+    // in Matrix4's constructor forwards nothing when every `new Matrix4()` gives none)
+    else if ((t === K.NULLISH || t === K.ABSENT) && paramKeys.has(ctxBase[key] ?? key) && !argBound.has(key)) eq = isUndefinedLiteral(isNullishLiteral(c[2]) ? c[2] : c[1])
     else return undefined
     return op === '===' || op === '==' ? eq : !eq
   }

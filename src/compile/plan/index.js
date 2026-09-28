@@ -149,6 +149,10 @@ export default function plan(ast, profiler, summarize) {
     sweep('scalarizeTypedArrays', () => scalarizeFunctionTypedArrays(facts()))
   }
   const programFacts = facts()
+  // A module global's declaration-time literal length holds only while nothing
+  // rewrites the binding (the element kind is an all-writers fact already).
+  // Dropped here, before narrowing reads the lengths into parameter facts.
+  for (const name of programFacts.typedRedefs) ctx.scope.globalTypedLen?.delete(name)
   ctx.types.dynKeyVars = programFacts.dynVars
   ctx.types.dynWriteVars = programFacts.dynWriteVars
   ctx.types.anyDynKey = programFacts.anyDyn
@@ -235,7 +239,7 @@ export default function plan(ast, profiler, summarize) {
     }))
     // Cross-function neverGrown for read-only array PARAMS (growth-free callee
     // closure + arrayUsesSafe) — the raw-base element read skips __ptr_offset.
-    if (optimizing()) t('analyzeParamNeverGrown', () => analyzeParamNeverGrown(programFacts.paramReps))
+    if (optimizing()) t('analyzeParamNeverGrown', () => analyzeParamNeverGrown(programFacts.paramReps, programFacts.callSites, programFacts.programIndex.addressTaken))
     // Whole-program alias sweep for in-place replace-stores (`arr[i] = {lit}` →
     // overwrite the old element's slots) — needs the settled arrayElemSchema
     // facts, so it runs after the signature fixpoint.
@@ -244,7 +248,8 @@ export default function plan(ast, profiler, summarize) {
 
   // VAL-kind landslide specialization (.work/archive/context-sensitivity-survey.md §3-4): a
     // pure precision/perf slice, sized/gated the same as speculateTypedParams.
-    if (optimizing()) t('specializeValKindDichotomy', () => specializeValKindDichotomy(programFacts))
+    // `optimize: { valKindClones: false }` keeps a parameter's kind the join of every call site (test/summary.js reads it so)
+    if (optimizing() && ctx.transform.optimize?.valKindClones !== false) t('specializeValKindDichotomy', () => specializeValKindDichotomy(programFacts))
     if (optimizing()) t('speculateTypedParams', () => speculateTypedParams(programFacts, ast))
     t('refineDynKeys', () => refineDynKeys(programFacts))
   // Freeze point (.work/archive/program-facts-split.md §7): paramReps/callSites' true last

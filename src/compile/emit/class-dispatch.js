@@ -36,7 +36,14 @@ const sidOf = (entry) => ctx.schema.sidOfBrand(entry.brand)
  *  a class's (a method inherited by several classes sees each): `{ entries,
  *  nullable }`, else null. An element read the interval prover puts in bounds
  *  is exactly the element's kind. */
+/** A name the emitter refined to one schema: a receiver staged in a temp for a
+ *  compound member write (assignment.js `stage`), a local under an instanceof
+ *  guard. Its class resolution and its layouts come from there, not the summary. */
+const refinedOf = (obj) => typeof obj === 'string' ? ctx.func.refinements?.get(obj) : null
+const layoutsOf = (view, obj) => { const sid = refinedOf(obj)?.schemaId; return sid != null ? [sid] : view?.shapesOfExpr(obj) }
 const receiverClass = (obj) => {
+  const refined = refinedOf(obj)
+  if (refined?.schemaId != null) { const e = classOfSid(refined.schemaId); return e ? { entries: [e], nullable: !refined.notNullish } : null }
   const view = ctx.summary?.at(ctx.func.current), k = view?.kindOfExpr(obj)
   if (k == null || tagOf(k) !== K.OBJECT) return null
   const entries = view.shapesOfExpr(obj)?.map(classOfSid)
@@ -46,7 +53,7 @@ const receiverClass = (obj) => {
 }
 /** Whether the summary lists the receiver's member layouts and no class owns any of them. */
 const knownNonInstance = (obj) => {
-  const layouts = ctx.summary?.at(ctx.func.current).shapesOfExpr(obj)
+  const layouts = layoutsOf(ctx.summary?.at(ctx.func.current), obj)
   return !!layouts?.length && layouts.every(sid => classOfSid(sid) == null)
 }
 /** Whether the summary rules the receiver out as a class instance: a kind other than an object. */
@@ -58,7 +65,7 @@ const notAnObject = (obj) => { const k = ctx.summary?.at(ctx.func.current).kindO
  *  instance dynamically (jzify/classes.js recordAccessor): where the summary
  *  admits such a store the slot may be present. */
 export const lacksSlot = (obj, slot) => {
-  const view = ctx.summary?.at(ctx.func.current), layouts = view?.shapesOfExpr(obj)
+  const view = ctx.summary?.at(ctx.func.current), layouts = layoutsOf(view, obj)
   if (!layouts?.length) return false
   const prop = slot.endsWith(ACCESSOR_GET) ? slot.slice(0, -ACCESSOR_GET.length) : slot.slice(0, -ACCESSOR_SET.length)
   if (ctx.transform.dynamicAccessorNames?.has(prop)) { const k = view.kindOfExpr(['.', obj, slot]); if (k == null || tagOf(k) !== K.NONE) return false }

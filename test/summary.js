@@ -26,7 +26,8 @@ const sidOf = (props) => ctx.schema.list.findIndex(s => s.join() === props.join(
 // The summary read after a compile is of the program the plan rewrote; these tests
 // pin the source's own functions, so the inliner is off (the speed tier splices callees)
 // and so is the record-parameter lane pass (it replaces a field-reading callee).
-const summarize = (src) => { _compileInProcess(src, { optimize: { level: OPT_LEVEL, sourceInline: false, inlineFns: false, laneRecords: false } }); return ctx.summary }
+// The kinds read here are the summary's own: no source inlining, no clone per argument kind (a parameter is the join of every call site's argument)
+const summarize = (src) => { _compileInProcess(src, { optimize: { level: OPT_LEVEL, sourceInline: false, inlineFns: false, laneRecords: false, valKindClones: false } }); return ctx.summary }
 
 test('summary: callbacks passed to escaped callees contribute their calls', () => {
   for (const declaration of ['function invoke(cb) { return cb() }', 'const invoke = cb => cb()']) {

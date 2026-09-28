@@ -11,11 +11,16 @@ import { isLiteralStr, MUTATE_OPS, walkAst } from '../../ast.js'
 import { ctx } from '../../ctx.js'
 import { VAL, repOf } from '../../reps.js'
 import { valTypeOf } from '../../kind.js'
+import { typedElemCtor } from '../../type.js'
 import { analyzeBody } from '../analyze.js'
 import { withValueOverlay } from '../flow-state.js'
-import { arrayUsesSafe, scanBindingUses } from '../analyze-scans.js'
+import {
+  arrayUsesSafe, scanBindingUses, USE, BINDING_USE_DECLS, BINDING_USE_INIT, BINDING_USE_USES, BINDING_USE_KIND,
+  BINDING_USE_KEY, BINDING_USE_OP, BINDING_USE_COMPOUND, BINDING_USE_CALLEE, BINDING_USE_ARG_INDEX,
+} from '../analyze-scans.js'
 import { ARR_RESIZE_METHODS } from './shared.js'
 import { frameNode, frameRoots } from '../../function.js'
+import { isExported } from '../func-exports.js'
 
 // ————————————————————————— param neverGrown (cross-function) —————————————————————————
 // neverGrownCandidate proves never-relocation for fresh-literal LOCALS only; a
@@ -33,6 +38,17 @@ import { frameNode, frameRoots } from '../../function.js'
 // Name-keyed caller facts (arrResized/nameEscapes) can't express this — the
 // builder's `words.push` (its own local) would collide with the kernel's
 // read-only param of the same name; the activation-scoped argument doesn't.
+// (c) The pointer must arrive live: a caller whose binding went stale before
+// the call (`a.toArray(arr)` grew `arr` in the callee, the caller's local
+// still boxes the pre-relocation block) passes a box only a forwarding
+// follow can read. Liveness is a fixpoint over the program: a value is live
+// when it is a fresh array expression, a call whose every return is live, or
+// a binding that starts live (so, or as a never-grown param) and whose every
+// use reads it, grows it through its own name (the pointer written back,
+// own-name-current), returns it, or passes it where the callee only reads
+// it. Every visible site must pass a live value; a host caller passes a copy;
+// a function some emitted or unknown caller reaches (a dispatcher, an escaped
+// name, no visible site) has no proof.
 // MEMORY-SAFETY CRITICAL (same class as neverGrownCandidate): default-deny —
 // nested arrows are walked as part of the enclosing body (builtin-invoked
 // callbacks run within the activation), unknown callees poison.
@@ -56,13 +72,14 @@ const _NG_SAFE_METHODS = new Set([
 /** Compute per-function array-growth-freedom (poison fixpoint over the direct
  *  call graph) and stamp `paramReps[f][k].neverGrown` for safe-read params.
  *  Consumed at emit via localReps (module/array.js's raw-base fast path). */
-export function analyzeParamNeverGrown(paramReps) {
+export function analyzeParamNeverGrown(paramReps, callSites = [], addressTaken = null) {
   if (!ctx.funcs.list.length) return
-  const poisoned = new Set(), edges = new Map()
+  const poisoned = new Set(), edges = new Map(), factsOf = new Map()
   withValueOverlay(null, () => {
   for (const func of ctx.funcs.list) {
     if (!func.body || func.raw) continue
     const facts = analyzeBody(func.body)
+    factsOf.set(func.name, facts)
     // Receiver kinds the body facts miss: narrowed param kinds (post-
     // narrowSignatures paramReps) and `{}`-literal decl locals — the
     // dictionary idiom's `const counts = {}` carries no valTypes entry, but
@@ -136,19 +153,83 @@ export function analyzeParamNeverGrown(paramReps) {
         if (poisoned.has(callee) || !edges.has(callee)) { poisoned.add(name); changed = true; break }
     }
   }
+  // The params a body only reads, by function and position.
+  const safe = new Map()
   for (const func of ctx.funcs.list) {
     if (!func.body || func.raw || poisoned.has(func.name) || !edges.has(func.name)) continue
     const params = func.sig?.params || []
     if (!params.length) continue
     const uses = scanBindingUses(frameNode(func), new Set(params.map(p => p.name)))
+    const ks = new Set()
     for (let k = 0; k < params.length; k++) {
       if (func.rest && k === params.length - 1) continue
-      if (!arrayUsesSafe(uses.get(params[k].name))) continue
-      let reps = paramReps.get(func.name)
-      if (!reps) paramReps.set(func.name, reps = new Map())
-      const r = reps.get(k)
-      if (r) r.neverGrown = true
-      else reps.set(k, { neverGrown: true })
+      if (arrayUsesSafe(uses.get(params[k].name))) ks.add(k)
     }
+    if (ks.size) safe.set(func.name, ks)
+  }
+  // (c): the pointer arrives live at every site (the liveness fixpoint above).
+  const sitesOf = new Map()
+  for (const site of callSites) {
+    if (site.synthetic || !safe.has(site.callee)) continue
+    let l = sitesOf.get(site.callee); if (!l) sitesOf.set(site.callee, l = []); l.push(site)
+  }
+  const byName = new Map(ctx.funcs.list.map(f => [f.name, f]))
+  const usesOf = new Map()
+  const bindingUses = (f) => { let u = usesOf.get(f.name); if (!u) usesOf.set(f.name, u = scanBindingUses(frameNode(f))); return u }
+  const fresh = (a) => Array.isArray(a) && (a[0] === '[' || (a[0] === '()' && (a[1] === 'new.Array' || a[1] === 'Array.from' || a[1] === 'Array.of')))
+  // A typed array never relocates: its pointer is live wherever it is.
+  const typed = (f, a) => typedElemCtor(a) != null || (typeof a === 'string' && !!f && (factsOf.get(f.name)?.valTypes?.get(a) === VAL.TYPED ||
+    paramReps.get(f.name)?.get((f.sig?.params || []).findIndex(p => p.name === a))?.val === VAL.TYPED))
+  let liveBindings, liveResults   // memos of one round; a cycle answers no
+  const liveValue = (f, a) => fresh(a) || typed(f, a) || (typeof a === 'string' ? !!f && liveBinding(f, a)
+    : Array.isArray(a) && a[0] === '()' && typeof a[1] === 'string' && byName.has(a[1]) && liveResult(byName.get(a[1])))
+  const liveBinding = (f, name) => {
+    const key = f.name + '\0' + name
+    if (liveBindings.has(key)) return liveBindings.get(key)
+    liveBindings.set(key, false)
+    const k = (f.sig?.params || []).findIndex(p => p.name === name)
+    let ok
+    if (k >= 0) ok = safe.get(f.name)?.has(k) === true
+    else {
+      const s = f.body && !f.raw ? bindingUses(f).get(name) : null
+      ok = !!s && s[BINDING_USE_DECLS] === 1 && liveValue(f, s[BINDING_USE_INIT]) && s[BINDING_USE_USES].every(u => {
+        const kind = u[BINDING_USE_KIND], key = u[BINDING_USE_KEY], op = u[BINDING_USE_OP]
+        if (kind === USE.MEMBER_R) return key === 'length' || op === '[]'
+        if (kind === USE.RETURN) return true
+        if (kind === USE.MEMBER_CALL) return op === '.' && key === 'push'
+        if (kind === USE.MEMBER_W) return !u[BINDING_USE_COMPOUND] && (key === 'length' || op === '[]')
+        if (kind === USE.CALL_ARG) return typeof u[BINDING_USE_CALLEE] === 'string' && safe.get(u[BINDING_USE_CALLEE])?.has(u[BINDING_USE_ARG_INDEX]) === true
+        return false
+      })
+    }
+    liveBindings.set(key, ok)
+    return ok
+  }
+  const liveResult = (f) => {
+    if (liveResults.has(f.name)) return liveResults.get(f.name)
+    liveResults.set(f.name, false)
+    let ok = !!f.body && !f.raw
+    if (ok) walkAst(f.body, { enter: n => { if (n[0] === '=>') return false; if (n[0] === 'return' && n.length > 1 && !liveValue(f, n[1])) ok = false } })
+    liveResults.set(f.name, ok)
+    return ok
+  }
+  for (let changed = true; changed;) {
+    changed = false
+    liveBindings = new Map(); liveResults = new Map()
+    for (const [name, ks] of safe) {
+      const func = byName.get(name), sites = sitesOf.get(name) ?? []
+      const exported = isExported(func)
+      const unknownCaller = func.sig?.dispatcher === true || addressTaken?.has(name) || (!exported && !sites.length)
+      for (const k of ks) {
+        if (!unknownCaller && sites.every(site => liveValue(site.callerFunc, site.argList[k]))) continue
+        ks.delete(k); changed = true
+      }
+      if (!ks.size) { safe.delete(name); changed = true }
+    }
+  }
+  for (const [name, ks] of safe) {
+    let reps = paramReps.get(name)
+    if (!reps) paramReps.set(name, reps = new Map())
+    for (const k of ks) { const r = reps.get(k); if (r) r.neverGrown = true; else reps.set(k, { neverGrown: true }) }
   }
 }

@@ -100,6 +100,46 @@ test('never-grown: read-only array param reads raw base (no __ptr_offset per rea
   is(run(src, { optimize: 'speed' }).main(), oracle(src).main(), 'bit-matches plain JS')
 })
 
+test('never-grown: a parameter whose caller passes a pointer another callee relocated reads through forwarding', () => {
+  // `a.toArray(arr)` grows `arr` inside V.toArray; run's binding still boxes
+  // the old block, and V.fromArray receives that box: a read-only param, an
+  // array-growth-free body, and a stale pointer (the proof's condition (c)).
+  const src = `
+class V { constructor(x = 0, y = 0, z = 0) { this.x = x; this.y = y; this.z = z }
+  set(x, y, z) { this.x = x; this.y = y; this.z = z; return this }
+  fromArray(a, o = 0) { this.x = a[o]; this.y = a[o + 1]; this.z = a[o + 2]; return this }
+  toArray(a = [], o = 0) { a[o] = this.x; a[o + 1] = this.y; a[o + 2] = this.z; return a } }
+class SH { constructor() { this.coefficients = []; for (let i = 0; i < 9; i++) this.coefficients.push(new V()) }
+  fromArray(array, offset = 0) { const c = this.coefficients; for (let i = 0; i < 9; i++) c[i].fromArray(array, offset + (i * 3)); return this }
+  toArray(array = [], offset = 0) { const c = this.coefficients; for (let i = 0; i < 9; i++) c[i].toArray(array, offset + (i * 3)); return array }
+  static fill9(normal, shBasis) { for (let i = 0; i < 9; i++) shBasis[i] = normal.x + i } }
+const s3 = v => v.x + v.y * 3 + v.z * 7
+export let main = () => { const a = new SH(), basis = [0, 0, 0, 0, 0, 0, 0, 0, 0], arr = []
+  for (let i = 0; i < 9; i++) a.coefficients[i].set(i, i * 0.5, -i)
+  SH.fill9(new V(0, 0.6, 0.8), basis); a.toArray(arr)
+  return s3(new SH().fromArray(arr).coefficients[8]) }`
+  for (const optimize of [1, 2, 'speed']) is(run(src, { optimize }).main(), oracle(src).main(), `value exact (optimize:${optimize})`)
+  const wat = jz.compile(src, { wat: true, optimize: { level: 2, sourceInline: false, watr: false } })
+  const body = wat.split('(func ').find(c => /^\$V\S*fromArray\b/.test(c)) || ''
+  ok(body, 'V.fromArray emitted outlined (no source or WAT inlining)')
+  ok(/__ptr_offset_fwd|call \$__ptr_offset\b/.test(body), 'its reads of the parameter follow forwarding')
+})
+
+test('never-grown: a builder\'s result and an own-name-current local arrive live', () => {
+  // condition (c)'s positive side: a call whose every return is its own literal, and a
+  // local grown only through its own name, both pass a live pointer, so the kernel's
+  // read-only param keeps the raw base
+  const src = `
+const build = (n) => { const a = []; for (let i = 0; i < n; i++) a.push(i * 3); return a }
+const kernel = (xs, ys) => { let s = 0; for (let i = 0; i < 8; i++) s = (s + xs[i] * ys[i]) | 0; return s }
+export let main = () => { const xs = build(8), ys = []; for (let i = 0; i < 8; i++) ys.push(i + 1); return kernel(xs, ys) }`
+  const wat = jz.compile(src, { wat: true, optimize: { level: 'speed', sourceInline: false, watr: false } })
+  const body = wat.split('(func ').find(c => /^\$kernel\b/.test(c)) || ''
+  ok(body, 'kernel emitted outlined')
+  ok(!/__ptr_offset/.test(body.slice(body.indexOf('(loop'))), 'the loop resolves no array base')
+  is(run(src, { optimize: 'speed' }).main(), oracle(src).main(), 'value exact')
+})
+
 test('never-grown: fail-closed when the body grows any possibly-array receiver', () => {
   // an indexed write on an untyped (possibly-ARRAY) second param — could grow
   const src = `

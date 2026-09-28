@@ -6,7 +6,7 @@
 import test from 'tst'
 import { is } from 'tst/assert.js'
 import jz from '../index.js'
-import { levels } from './_matrix.js'
+import { levels, belowOpt } from './_matrix.js'
 import { oracle } from './util.js'
 
 const agree = (cases) => {
@@ -88,4 +88,57 @@ test('param defaults: a constructor argument left out arrives as the default, no
   agree([['left out', src, []]])
   const w = jz.compile(src, { wat: true, optimize: 2 })
   is((w.match(/__throw_property_nullish/g) || []).length, 0, 'the fields are read as objects, never tested for a nullish value')
+})
+
+// A parameter no call passes an argument for is undefined itself, forwarded
+// or not (a class factory hands its own to the initializer, a wrapper its
+// caller's): `x !== undefined` decides false and `x === undefined` true, so
+// the arm it guards is never walked (summary `decided`, `argBound`). three's
+// `Matrix4(n11, …)` constructor forwards to `set` only when given values.
+test('param defaults: a parameter no call passes decides its undefined test', () => {
+  agree([
+    ['a constructor forwarding to set', `class M { constructor(n11, n12) { this.e = [1, 0]; if (n11 !== undefined) this.set(n11, n12) } set(a, b) { const te = this.e; te[0] = a; te[1] = b; return this } }
+      export const run = () => { const m = new M(); m.set(3, 4); return m.e[0] + m.e[1] * 10 + new M().e[0] * 100 }`, []],
+    ['a wrapper forwarding', `const f = (a, b) => b !== undefined ? b : -1\nconst g = (a, b) => f(a, b)\nexport const run = () => g(1)`, []],
+    ['a wrapper forwarding null', `const f = (a, b) => b !== undefined ? b : -1\nconst g = (a, b) => f(a, b)\nexport const run = () => g(1, null) === null ? 5 : 6`, []],
+    ['passed by one caller', `const f = (a, b) => b !== undefined ? b : -1\nconst g = (a, b) => f(a, b)\nexport const run = () => g(1) * 10 + g(1, 2)`, []],
+    ['the undefined literal forwarded', `const f = (a, b) => b === undefined ? 1 : 2\nexport const run = () => f(1, undefined)`, []],
+    ['never passed, against null', `const f = (a, b) => (b === null ? 1 : 2) + (b == null ? 10 : 20)\nexport const run = () => f(1)`, []],
+    ['the dead arm reads a member', `const f = (a, b) => { if (b !== undefined) return b.length; return a }\nexport const run = () => f(7)`, []],
+  ])
+  const w = jz.compile(`class M { constructor(n11, n12) { this.e = [1, 0]; if (n11 !== undefined) this.set(n11, n12) } set(a, b) { const te = this.e; te[0] = a; te[1] = b; return this } }
+    export const run = () => { const m = new M(); m.set(3, 4); return m.e[0] + m.e[1] * 10 }`, { wat: true, optimize: 2 })
+  is((w.match(/__to_num/g) || []).length, 0, 'the elements hold numbers alone: the guarded set never runs with the constructor\'s missing parameters')
+})
+
+// A default no call lets run is no default to the inliner either
+// (plan/inline.js): three's `fromArray(array, offset = 0)` and
+// `toArray(array = [], offset = 0)`, given both arguments by every caller,
+// splice into the loop that calls them per element.
+test('param defaults: a call that leaves an argument out splices with the default bound, one that may pass undefined keeps the call', () => {
+  const src = `class V { constructor(x = 0, y = 0, z = 0) { this.x = x; this.y = y; this.z = z }
+      set(x, y, z) { this.x = x; this.y = y; this.z = z; return this }
+      fromArray(a, o = 0) { this.x = a[o]; this.y = a[o + 1]; this.z = a[o + 2]; return this }
+      dot(v) { return this.x * v.x + this.y * v.y + this.z * v.z } }
+    export const run = (n) => { const p = new Float32Array(n * 3); for (let i = 0; i < p.length; i++) p[i] = i * 0.5
+      const a = new V(), b = new V(); let s = 0
+      for (let i = 0; i < n; i++) { a.fromArray(p, i * 3); b.set(a.z, a.x, a.y); const t = new V(1, 2, i > 2 ? undefined : 3); s += a.dot(b) + t.z }
+      return s }`
+  agree([['defaults bound at the site', src, [5]],
+    ['a default reading an earlier parameter, left out', `const f = (a, b = a * 2, c = b + 1) => a + b + c\nexport const run = () => f(1) + f(1, 5) * 100 + f(1, 5, 0) * 10000`, []],
+    ['more arguments than parameters keep the call', `const f = (a, b = 1) => a + b\nexport const run = () => f(1, 2, 3)`, []]])
+  if (belowOpt(2)) return
+  const w = jz.compile(src, { wat: true, optimize: 2 })
+  const run = w.slice(w.indexOf('(func $run'), w.indexOf('\n  (func $', w.indexOf('(func $run') + 10))
+  is((run.match(/f64\.store/g) || []).length, 0, 'a and b are locals: their factories spliced with x, y, z bound to 0, and nothing of them escapes')
+  is(/call \$[^\s)]*V[^\s)]*\s/.test(run), true, 'the site passing a value that may be undefined for a defaulted parameter keeps the factory call')
+})
+
+test('param defaults: a function whose defaults never run inlines', () => {
+  const src = `class V { constructor() { this.x = 0; this.y = 0 } fromArray(a, o = 0) { this.x = a[o]; this.y = a[o + 1]; return this } toArray(a = [], o = 0) { a[o] = this.x; a[o + 1] = this.y; return a } }
+    export const run = (n) => { const a = new Float32Array(n * 2), b = new Float32Array(n * 2), v = new V(); for (let i = 0; i < n; i++) v.fromArray(a, i * 2).toArray(b, i * 2); let s = 0; for (let i = 0; i < b.length; i++) s += b[i]; return s }`
+  agree([['every call passes both', src, [4]]])
+  if (belowOpt(2)) return
+  const w = jz.compile(src, { wat: true, optimize: 2 })
+  is((w.match(/call \$[^\s)]*(fromArray|toArray)/g) || []).length, 0, 'no call to either remains: both are spliced into the loop')
 })

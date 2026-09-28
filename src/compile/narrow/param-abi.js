@@ -242,6 +242,7 @@ export function applyPointerParamAbi(paramReps, addressTaken) {
       // The summary's kind: every argument at every site proves the same pointer kind.
       const hv = r.val
       if (!PTR_ABI_KINDS.has(hv)) continue
+      if (r.mayBeUndefined) continue   // an i32 offset has no `undefined` (see applyTypedPointerParamAbi)
       if (k === restIdx) continue
       if (k >= func.sig.params.length) continue
       const p = func.sig.params[k]
@@ -299,6 +300,11 @@ export function applyTypedPointerParamAbi(paramReps, addressTaken) {
     for (const [k, r] of reps) {
       const ctor = r.typedCtor
       if (ctor == null) continue
+      // An argument absent on some path (an uninitialized `let` returned, a
+      // record field assigned on the other path) keeps its constructor for the
+      // body's reads, but an i32 offset has no `undefined`: the boxed carrier
+      // stays, so `o instanceof Float32Array` and `o == null` can see it.
+      if (r.mayBeUndefined) continue
       if (exported && !func.sig.params[k]?.boundaryTyped) continue
       if (k === restIdx) continue
       if (k >= func.sig.params.length) continue
