@@ -13,16 +13,23 @@ import { agree } from './util.js'
 
 // [name, source, args, the bare declarations assigned before every read]
 const programs = [
+  // A `let` assigned once, in the one arm that reads it, is a `const` of that
+  // arm after prepare: nothing is left for the walk to prove.
   ['assigned in one arm and read there', `const o = [0, 0], q = [3, 4]
     const t = (out, a) => { let a0, a1; if (a === out) { out[1] = a[0] } else { a0 = a[0]; a1 = a[1]; out[0] = a0; out[1] = a1 } return out }
+    export const f = () => { t(o, q); return o[0] + o[1] }`, [], []],
+  ['assigned in one arm, read there and after', `const o = [0, 0], q = [3, 4]
+    const t = (out, a) => { let a0, a1; if (a === out) { out[1] = a[0] } else { a0 = a[0]; a1 = a[1]; out[0] = a0 + a1 } if (a[0] > 1) { a0 = 7; a1 = 8; out[1] = a0 * a1 } return out }
     export const f = () => { t(o, q); return o[0] + o[1] }`, [], ['a0', 'a1']],
   ['assigned in both arms, read after', `export const f = (c) => { let t; if (c > 0) { t = 1 } else { t = 2 } return t * 10 }`, [1], ['t']],
   ['assigned in one arm, read after', `export const f = (c) => { let t; if (c > 0) { t = 1 } return t === undefined ? -1 : t }`, [0], []],
   ['read before the assignment', `export const f = (c) => { let t; const r = t === undefined ? 7 : 0; t = c; return r + t }`, [1], []],
   ['a loop body that may not run', `export const f = (n) => { let t; for (let i = 0; i < n; i++) { t = i } return t === undefined ? -1 : t }`, [0], []],
-  ['assigned then read inside a loop', `export const f = (n) => { let t, s = 0; for (let i = 0; i < n; i++) { t = i * 2; s += t } return s }`, [4], ['t']],
+  // Assigned in the body and read only there: prepare declares it in the body, with its value.
+  ['assigned then read inside a loop', `export const f = (n) => { let t, s = 0; for (let i = 0; i < n; i++) { t = i * 2; s += t } return s }`, [4], []],
   ['a closure made before the assignment', `export const f = (n) => { let t; const g = () => t === undefined ? -1 : t; const r = g(); t = n; return r + g() }`, [5], []],
-  ['a closure made after the assignment', `export const f = (n) => { let t; t = n; const g = () => t + 1; return g() }`, [5], ['t']],
+  // The one assignment makes it a `const` after prepare: nothing is left to prove.
+  ['a closure made after the assignment', `export const f = (n) => { let t; t = n; const g = () => t + 1; return g() }`, [5], []],
   ['an arm that returns', `export const f = (c) => { let t; if (c > 0) return 0; else t = 5; return t }`, [0], ['t']],
   ['a conditional assigning in both arms', `export const f = (c) => { let t; c > 0 ? (t = 1) : (t = 2); return t }`, [0], ['t']],
   ['a right side that may not run', `export const f = (c) => { let t; c > 0 && (t = 1); return t === undefined ? -1 : t }`, [0], []],
