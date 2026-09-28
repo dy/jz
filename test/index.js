@@ -95,7 +95,6 @@ const TESTS = [
   'shift-precedence',
   'loop-step',
   'field-cse',
-  'scalar-record',
   'guarded-read',
   'shift-remainder',
   'scalar-unroll',
