@@ -910,7 +910,8 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   const lostReadPrecise = (prop) => !(foreignObjects || foreignProps.has(prop) || memberMayBeOwn(prop) || membersByName.has(prop) || membersByName.has(getterOf(prop)))
   const loseShape = (sid) => {
     if (opaqueSchemas.has(sid)) return
-    if (onLose) onLose(sid, losing ?? 'escaped', current, site)
+    // The advisory names the layout: a site past a layout's first has no schema id of its own.
+    if (onLose) onLose(layouts[sid], losing ?? 'escaped', current, site)
     opaqueSchemas.add(sid); changed = true
     poisonLost(sid)
     schemas[sid].forEach((p, i) => { if (!lostReadPrecise(p)) escape(slots(sid)[i]) })
@@ -983,7 +984,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     }
     else if (t === K.OBJECT) for (const sid of shapesOf(p)) {
       if (seen.has(sid) || hostSchemas.has(sid)) continue
-      if (onLose && !opaqueSchemas.has(sid)) onLose(sid, 'handed to the host', current, site)
+      if (onLose && !opaqueSchemas.has(sid)) onLose(layouts[sid], 'handed to the host', current, site)
       seen.add(sid); hostSchemas.add(sid); changed = true
       forFolded(sid, s => escapeToHost(kind(K.OBJECT, s), seen))
       poisonLost(sid)

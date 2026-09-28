@@ -289,6 +289,12 @@ test('warnings: shape-lost names the first cause an object shape is lost by', ()
   ok(/\{a\}/.test(ws[0].message) && /joined with an unknown value/.test(ws[0].why) && ws[0].fn === 'f', `${ws[0].message} in ${ws[0].fn}`)
 })
 
+test('warnings: shape-lost names the layout of each construction site', () => {
+  // two literals of one layout are two sites; the second has no schema id of its own
+  const ws = warningsFor('export let f = (x, k) => { const o = k ? { a: 1 } : { a: 2 }; const p = x || o; return p.a }').filter(e => e.code === 'shape-lost')
+  ok(ws.length && ws.every(w => /\{a\}/.test(w.message)), ws.map(w => w.message).join('; '))
+})
+
 test('warnings: shape-loss diagnostics leave emitted code unchanged across compilations', () => {
   const joined = 'export let f = (x) => { const o = { a: 1 }; const p = x || o; return p.a }'
   const hosted = 'const o = { items: [1], call: x => x, next: null }; o.next = o; export const f = () => o'
