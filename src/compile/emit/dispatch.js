@@ -10,7 +10,7 @@ import { STR_HCACHE_BIT, HEAP } from '../../../layout.js'
 import { ASSIGN_OPS, MUTATE_OPS, T, commaList, firstRefKind, isBlockBody, isReassigned } from '../../ast.js'
 import { PTR, ctx, err, inc, emitArity, setLinkDemand } from '../../ctx.js'
 import {
-  callWithArgs, FALSE_NAN, MAX_CLOSURE_ARITY, TRUE_NAN, WASM_OPS, applyBigintRepresentationAction, asF64, asI32, asI64, asParamType, asPtrOffset, block64, boolBoxIR, boxBigInt, carrierF64, carrierF64Narrow, emitNum, extractF64Bits, flat, freshId, fromI64, isBoolAtom, isBoundName, isGlobal, boxedAddr, isLit, isNullish, isNullishLit, litVal, materializeDeferredBigint, mayYieldUndefOf, maybeUnboxBigInt, mkPtrIR, nullExpr, nullableBoolBoxIR, ptrOffsetIR, readVar, resolveValType, temp, tempI32, tempI64, toI32, toNumF64, toStrI64, truthyIR, typed, unboxBoolIR, undefExpr, valKindToPtr,
+  callWithArgs, FALSE_NAN, MAX_CLOSURE_ARITY, TRUE_NAN, WASM_OPS, applyBigintRepresentationAction, asF64, asI32, asI64, asParamType, asPtrOffset, block64, boolBoxIR, boxBigInt, carrierF64, carrierF64Narrow, emitNum, extractF64Bits, flat, freshId, fromI64, isBoolAtom, isBoundName, isGlobal, boxedAddr, isLit, isNullish, isNullishLit, litVal, materializeDeferredBigint, mayYieldUndefOf, maybeUnboxBigInt, mkPtrIR, nullExpr, nullableBoolBoxIR, ptrOffsetIR, readVar, resolveValType, temp, tempI32, tempI64, toI32, toNumF64, toStrI64, truthyIR, typed, unboxBoolIR, undefExpr, valKindToPtr, UNDEF_NAN,
 } from '../../ir.js'
 import { BIGINT_JOINT_BINARY_OPS, isPresentNumber, hasAmbiguousBoolMerge, nullishArm, valTypeOf } from '../../kind.js'
 import { VAL, lookupValType, repOf, repOfGlobal, numericStorage, mayBeUndefined } from '../../reps.js'
@@ -113,6 +113,19 @@ export const emitIndex = (index, whole = false) => {
   return keyIndex(value)
 }
 
+// IR whose value is an integer when it is not the undefined of a miss.
+const wholeOrMiss = (v) => {
+  if (!Array.isArray(v)) return false
+  const op = v[0]
+  if (op === 'f64.convert_i32_s' || op === 'f64.convert_i32_u') return true
+  if (op === 'f64.const') return Number.isInteger(v[1]) || v[1] === `nan:${UNDEF_NAN}`
+  if (op === 'local.tee') return wholeOrMiss(v[2])
+  if (op === 'block' || op === 'then' || op === 'else') return v.length > 1 && wholeOrMiss(v[v.length - 1])
+  if (op === 'if') return v.every(c => !Array.isArray(c) || (c[0] !== 'then' && c[0] !== 'else') || wholeOrMiss(c))
+  if (op === 'select') return wholeOrMiss(v[1]) && wholeOrMiss(v[2])
+  return false
+}
+
 /**
  * The element index a number key names, as i32. A number names an element
  * only as an integer the i32 index holds exactly (an array index, a typed
@@ -125,6 +138,20 @@ export const emitIndex = (index, whole = false) => {
 export const keyIndex = (key) => {
   if (key?.type === 'i32') return key
   if (Array.isArray(key) && key[0] === 'f64.convert_i32_s') return typed(key[1], 'i32')
+  // An integer or a miss (an integer array's checked element, `perm[i]`):
+  // only the miss names no element, and its own bit or a NaN test finds it.
+  if (wholeOrMiss(key)) {
+    if (key.indexValid) {
+      const out = typed(['select', asI32(key), ['i32.const', -1], key.indexValid], 'i32')
+      out.indexValid = key.indexValid
+      return out
+    }
+    const t = temp('ix'), get = ['local.get', `$${t}`]
+    const out = typed(['block', ['result', 'i32'], ['local.set', `$${t}`, asF64(key)],
+      ['select', ['i32.trunc_sat_f64_s', get], ['i32.const', -1], ['f64.eq', get, get]]], 'i32')
+    out.indexValid = ['f64.eq', get, get]
+    return out
+  }
   if (Array.isArray(key) && key[0] === 'f64.const' && typeof key[1] === 'number') {
     const v = key[1], ok = (v | 0) === v
     const out = typed(['i32.const', ok ? v | 0 : -1], 'i32')
