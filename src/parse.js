@@ -13,7 +13,7 @@
  * literal and needs no override.
  */
 import { parse as jessieParse, token } from 'subscript/feature/jessie'
-import { lookup, idx, cur, skip, err, prec, seek } from 'subscript/parse'
+import { lookup, idx, cur, skip, err, prec, seek, expr, word } from 'subscript/parse'
 import { fromRadixDigits, toDecimalString, truncateLimbs } from './bignum.js'
 import { validateEarlyErrors } from './early-errors.js'
 import { here, where } from './ctx.js'
@@ -206,21 +206,36 @@ const prefixOnly = (st, at, cc) => {
 // statement or the `while` of a do-while. The first place two meet unseparated
 // is kept, and reported once the early errors had their say: theirs name the
 // fault more precisely where they apply (`if (a) x = 1 else …`).
-const body = (prec.asi ?? prec[';']) + .5
+// A statement that begins at the statement-list level (`lvl`) owes nothing to
+// the `;` before it: the ASI layer's `;`-then-line-break flag, left up by an
+// empty statement, would end its operands (`;` LF `return 1` returned nothing).
+// A template after a tag reads the layer's line flag, which stays up past the
+// line that raised it: a tag on any later line lost its template (`f` then
+// `` `x` `` read as two statements). There the flag answers for the gap before
+// the template: a line terminator, or the `}` of the group closed last. Other
+// splits the stale flag makes stay, for the early errors to name first.
+const lvl = prec.asi ?? prec[';'], body = lvl + .5
 let joinedAt = -1
 const asiStep = jessieParse.step
 jessieParse.step = (a, p, cc, expr) => {
-  if (!Array.isArray(a) && typeof a !== 'string') return asiStep(a, p, cc, expr)
+  if (!Array.isArray(a) && typeof a !== 'string') { if (p < lvl) jessieParse.semi = false; return asiStep(a, p, cc, expr) }
   const list = a[0] === ';' && Array.isArray(a), n = list ? a.length : 0, last = list ? a[n - 1] : a, at = idx
   if ((cc === 43 || cc === 45) && prefixOnly(last, at, cc)) return jessieParse.asi(a, p, expr) ?? null
   // the gap before this token, read before a split parses on past it
   const end = endBefore(at), closed = closedAt, open = closedOpen
+  if (cc === 96 && end !== -2) jessieParse.newline = end === -1 || end === closed && cur.charCodeAt(end) === 125
   const r = asiStep(a, p, cc, expr)
   // the ASI layer split `a` off (a new list headed by it, or the list grown), or a body ended
   if (joinedAt < 0 && cc !== 59 && cc !== 125 && (r ? list ? r === a && a.length > n : r !== a && Array.isArray(r) && r[0] === ';' && r[1] === a : p === body) &&
       !separated(last, end, closed, open)) joinedAt = at
   return r
 }
+
+// A label heads any statement (§14.13). subscript's handler takes the control
+// keywords, and the property `:` reads the rest as an expression, where a
+// statement keyword is a name: `L: var x = 1` read `L: var` then `x = 1`.
+const LABELED = ['var', 'return', 'throw', 'break', 'continue', 'debugger', 'with']
+token(':', 19, a => typeof a === 'string' && (jessieParse.space(), LABELED.some(w => word(w))) && [':', a, expr(lvl)])   // the property `:`'s precedence
 
 // An escaped name means its decoded one (§12.7.1): `\u0061` and `a` are one
 // binding, `o.\u{62}` reads `b`. Early errors read the raw spelling first (an

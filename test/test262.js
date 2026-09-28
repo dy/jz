@@ -434,6 +434,9 @@ function shouldSkipBase(content, rel = '') {
   // BigInt detection: check raw content for `BigInt` (frontmatter `features: [BigInt]`)
   // and stripped content for numeric BigInt literals (123n).
   if (/\bBigInt\b/.test(content) || /\b\d+n\b/.test(codeContent)) return 'BigInt unsupported'
+  // Proposals jz does not implement: decorators (`accessor` fields) and
+  // deferred imports. A test of one passed only where the parser misread it.
+  if (/^features:[^\n]*\b(decorators|import-defer)\b/m.test(content)) return 'proposal outside jz scope'
   if (rel.includes('language/expressions/object/cpn-obj-lit-computed-property-name-from-') && !isComputedPropertyNameObjectTest(rel))
     return 'computed property name outside fixed-shape subset'
   // Getter/setter accessors aren't supported in jz's fixed-shape object model

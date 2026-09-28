@@ -913,6 +913,19 @@ test('an update after a line break or a block is a prefix one (asi-and-line-term
     is(jz('export let f = () => { let x = 1; x++; return x }').exports.f(), 2)
 })
 
+// The ASI layer's flags outlived the tokens they were raised for: an empty
+// statement's `;` and line break ended the next statement's operand (`return 1`
+// returned nothing), and a line break kept a tag on a later line from its
+// template. A label heads any statement, not only a loop's.
+test('an empty statement, a tagged template and a label end where they are written (asi-and-line-terminator-context)', () => {
+    is(jz('export let f = () => {\n  ;\n  return 1\n}').exports.f(), 1)
+    is(jz('export let f = () => {\n  ;;\n  return 2\n}').exports.f(), 2)
+    is(jz('let n = 0\nfunction t() { n++; return n }\n\nt``;\nexport let f = () => n').exports.f(), 1)
+    is(JSON.stringify(parse('L: var y = 2')), '[":","L",["var",["=","y",[null,2]]]]')
+    is(JSON.stringify(parse('L: debugger')), '[":","L",["debugger"]]')
+    ok(Array.isArray(parse('let o = { var: 1, return: 2, x: c ? d : e }')), 'a keyword-named property is no label')
+})
+
 test('adjacent string literals require a real statement boundary (other-jessie-context-loss)', () => {
     rejects("0;\nvar s = '''';", 'adjacent string literals')
     rejects('0;\nvar s = """";', 'adjacent string literals')
