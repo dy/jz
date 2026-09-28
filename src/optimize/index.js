@@ -43,6 +43,7 @@ export {
 } from './globals.js'
 
 export { specializeMkptr } from './specialize-mkptr.js'
+export { scalarizeStaticScratch } from './static-scratch.js'
 export { buildPureFuncMap } from './pure-funcs.js'
 
 // The pass driver: the fixed per-function apply order.

@@ -425,6 +425,17 @@ export function hoistConstGlobalInits(sec) {
   const constInit = (c, type) => {
     if (!Array.isArray(c)) return null
     if (c[0] === `${type}.const`) return c
+    // Another binding's value, once that one is declared with its constant (a
+    // view of a static typed array's whole buffer has the array's address).
+    if (c[0] === 'global.get' && typeof c[1] === 'string') {
+      const src = c[1].slice(1), g = ctx.scope.globals.get(src)
+      if (!g || g.mut || (ctx.scope.globalTypes.get(src) ?? g.type) !== type) return null
+      if (!Array.isArray(g.init)) return typeof g.init === 'number' ? [`${type}.const`, g.init] : null
+      if (g.init[0] !== `${type}.const`) return null
+      const init = g.init.slice()
+      if (g.init.schemaSid != null) init.schemaSid = g.init.schemaSid
+      return init
+    }
     if (type === 'i32' && c[0] === 'i32.wrap_i64' && Array.isArray(c[1]) && c[1][0] === 'i64.reinterpret_f64'
         && Array.isArray(c[1][1]) && c[1][1][0] === 'f64.const'
         && typeof c[1][1][1] === 'string' && c[1][1][1].startsWith('nan:0x')) {
@@ -439,17 +450,22 @@ export function hoistConstGlobalInits(sec) {
     if (node[0] === 'global.set' && typeof node[1] === 'string') writes.set(node[1], (writes.get(node[1]) || 0) + 1)
   }
   for (const arr of [sec.funcs, sec.stdlib, sec.start]) for (const fn of arr) walkAst(fn, { enter: scan })
-  for (let i = startFn.length - 1; i >= findBodyStart(startFn); i--) {
-    const stmt = startFn[i]
-    if (!Array.isArray(stmt) || stmt[0] !== 'global.set' || writes.get(stmt[1]) !== 1) continue
-    const name = typeof stmt[1] === 'string' && stmt[1][0] === '$' ? stmt[1].slice(1) : null
-    const g = name && ctx.scope.globals.get(name)
-    const c = stmt[2]
-    if (!g || !g.mut || !ctx.scope.consts?.has(name) || !ctx.scope.userGlobals?.has(name)) continue
-    const init = constInit(c, g.type)
-    if (init == null) continue
-    ctx.scope.globals.set(name, { ...g, mut: false, init })
-    startFn.splice(i, 1)
+  // Until nothing moves: a binding that reads another's constant follows it.
+  for (let moved = true; moved;) {
+    moved = false
+    for (let i = startFn.length - 1; i >= findBodyStart(startFn); i--) {
+      const stmt = startFn[i]
+      if (!Array.isArray(stmt) || stmt[0] !== 'global.set' || writes.get(stmt[1]) !== 1) continue
+      const name = typeof stmt[1] === 'string' && stmt[1][0] === '$' ? stmt[1].slice(1) : null
+      const g = name && ctx.scope.globals.get(name)
+      const c = stmt[2]
+      if (!g || !g.mut || !ctx.scope.consts?.has(name) || !ctx.scope.userGlobals?.has(name)) continue
+      const init = constInit(c, g.type)
+      if (init == null) continue
+      ctx.scope.globals.set(name, { ...g, mut: false, init })
+      startFn.splice(i, 1)
+      moved = true
+    }
   }
   // Hoisting can empty `__start`. The O2 watr pass prunes a bodyless start, but at
   // O0/O1 nothing else does — drop it (func + directive) here so a const-only module

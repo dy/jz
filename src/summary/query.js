@@ -544,6 +544,8 @@ export function summaryQueries(facts, internal = false) {
     // Whether any binding of the program holds a value of this tag: a
     // runtime arm for a kind no binding can hold is dead weight.
     holdsKind: tag => hasTag(kindUnion, tag),
+    // The names that hold one number for good: name → the number.
+    held: facts.held,
     opaqueSchema: sid => opaqueLayouts.has(sid),
     // A layout a `delete` can reach: a deleted receiver's, or any lost layout
     // once a delete went through a receiver of unknown shape.

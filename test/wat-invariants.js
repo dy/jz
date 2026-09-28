@@ -144,8 +144,9 @@ test('ablation: hoistInvariantLoop snaps an invariant cell read to a pre-header 
 })
 
 test('ablation: promoteGlobals snapshots a repeatedly-read global to one function-entry local', () => {
-  // `g` read 5×, never written → one `global.get` + cheap local.gets, not five 5-byte loads.
-  const src = `let g = 5.5; export let f = () => { return g + g + g + g + g }`
+  // `g` read 5×, never written on f's path → one `global.get` + cheap local.gets, not five 5-byte loads.
+  // Another export writes it: a name that holds one number for good reads as the number (test/held-number.js).
+  const src = `let g = 5.5; export let set = (v) => { g = v }; export let f = () => { return g + g + g + g + g }`
   const gGet = (n) => n[0] === 'global.get' && n[1] === '$g'
   ok(count(parse(src, { promoteGlobals: false }), gGet) > 1, 'control: multiple global.get $g with pass OFF')
   ok(count(parse(src, 2), gGet) <= 1, 'INVARIANT: global read once, snapshotted to a local, with pass ON')

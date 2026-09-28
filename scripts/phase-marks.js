@@ -42,7 +42,7 @@ export const PHASE_NAMES = [
   'plan:speculateTypedParams', 'plan:refineDynKeys', 'plan:refineSlotIntCensus',
   'optMod:specializeMkptr', 'optMod:volatileGlobals', 'optMod:reachableWrites', 'optMod:hoistGlobalPtr',
   'optMod:hoistLoopGlobalPtr', 'optMod:inlinePureFns', 'optMod:optimizeFuncs', 'optMod:hoistGlobalConstLoads', 'optMod:appendLateStdlib',
-  'frameEffects', 'frameEffectsRefresh', 'optMod:loopRewinds',
+  'frameEffects', 'frameEffectsRefresh', 'optMod:loopRewinds', 'optMod:staticScratch',
 ]
 const PHASE_IDS = new Map(PHASE_NAMES.map((name, id) => [name, id]))
 export const PHASE_RECORDS = 256

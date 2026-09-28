@@ -1030,16 +1030,21 @@ test('module global kinds: an exported let keeps its kind; the host stores a num
 // to f64 (tryI32Index rejected the Array-shaped literal before its int-literal
 // check), dragging marble's hot bilinear sample ~1.6× behind JS.
 test('typed-array index with a literal term stays pure i32 (marble regression)', () => {
-  const wat = jz.compile(`
+  // `resize` writes the width, so it stays a global the gather reads; a width that
+  // holds one number for good reads as the number, below.
+  const gather = (width) => {
+    const wat = jz.compile(`
     let arr = new Float64Array(64)
-    let W = 8
+    ${width}
     export let gather = (fx, fy) => {
       let i = fx | 0, j = fy | 0
       return arr[j*W + i] + arr[j*W + i + 1] + arr[(j+1)*W + i] + arr[(j+1)*W + i + 1]
     }
   `, { wat: true })
-  const at = wat.indexOf('(func $gather')
-  const fn = wat.slice(at, wat.indexOf('(func', at + 6))
+    const at = wat.indexOf('(func $gather')
+    return wat.slice(at, wat.indexOf('(func', at + 6))
+  }
+  const fn = gather('let W = 8\n    export let resize = (w) => { W = w | 0 }')
   is(count(fn, /i32\.trunc_sat_f64_s/g), 0, 'no f64→i32 index truncation in the gather')
   is(count(fn, /f64\.convert_i32_s/g), 0, 'index terms stay i32 — no i32→f64 widening')
   // Row offsets are i32 muls, never the guarded f64.mul ToInt32 round-trip.
@@ -1048,6 +1053,10 @@ test('typed-array index with a literal term stays pure i32 (marble regression)',
   // (`arr[j*W+i]` + `arr[j*W+i+1]` collapse to one base + offset=8), so the two
   // distinct row offsets need ≥2 i32.muls — fewer than the un-CSE'd 4, still all i32.
   ok(count(fn, /i32\.mul\b/g) >= 2, 'each distinct row offset (j*W, (j+1)*W) computed with i32.mul')
+  const held = gather('let W = 8')
+  is(count(held, /i32\.trunc_sat_f64_s|f64\.convert_i32_s|f64\.mul\b/g), 0, 'a width of one number: the index stays i32')
+  is(count(held, /global\.get \$W\b/g), 0, 'a width of one number: the width is not read')
+  if (!belowOpt(2)) is(count(held, /i32\.mul\b/g), 0, 'a width of one number: a row offset is a shift')
 })
 
 test('plain-array index with a literal term stays pure i32 (sibling of marble)', () => {

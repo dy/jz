@@ -2956,7 +2956,15 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   // functions of a round walk ahead of the module's statements (whose
   // declarations record `ints`), and a first round that cannot bound a loop, an
   // index or a call's argument by the name joins an absent that never leaves.
-  for (const [name, keys] of nameKeys) { const def = keys.length === 1 ? definitions.get(keys[0]) : null; if (def) { const v = staticValue(def[0], def[1]); if (Number.isInteger(v)) ints.set(name, v) } }
+  // Any number a name holds for good is what a module name's reads fold to (compile/plan/scope.js).
+  const held = new Map()
+  for (const [name, keys] of nameKeys) {
+    const def = keys.length === 1 ? definitions.get(keys[0]) : null
+    if (!def) continue
+    const v = staticValue(def[0], def[1])
+    if (Number.isInteger(v)) ints.set(name, v)
+    if (typeof v === 'number') held.set(name, v)
+  }
   // A function's return expressions (an expression body is its own), not a nested closure's.
   const returnsOf = new Map()
   const returnsOfFn = (name) => { let list = returnsOf.get(name); if (!list) returnsOf.set(name, list = funcByName.get(name)?.body == null ? [] : returnExprs(funcByName.get(name).body)); return list }
@@ -3340,6 +3348,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     funcNames: new Set(funcByName.keys()), imports: new Map(imports),
     numeric, dynamicProps, builtinOwnProps, escaped, typedReadPresent, typedProps, typedPropsByAux, openSchemas, indexedSchemas, hostSchemas, opaqueSchemas, deletable, deleteReach,
     sideProps, sideWild, wildProps, wildValues, pendingAll, keyedCells, cellShapes, cellLostObject, closureProps, iterSites, reached, defaultRuns,
+    held,
     contracts: null,   // the result contracts, built at the freeze below
   }
   const queries = summaryQueries(queryFacts, true)

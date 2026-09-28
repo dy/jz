@@ -16,7 +16,7 @@ import { walkAst } from '../../ast.js'
 import {
   optimizeFunc, collectReachableGlobalWrites, collectReachableMemoryWrites,
   hoistGlobalPtrOffset, hoistLoopGlobalPtrOffset, hoistStableGlobalConstLoads, guardMaskedVectorSuffix, hasIROp, stablePtrGlobalNames,
-  specializeMkptr, buildPureFuncMap, inlinePureFnsInFn,
+  specializeMkptr, scalarizeStaticScratch, buildPureFuncMap, inlinePureFnsInFn,
 } from '../../optimize/index.js'
 import { dataLen } from '../../static-data.js'
 import { appendLateStdlib } from './stdlib-pull.js'
@@ -28,6 +28,9 @@ import { collectHeaderSafeFuncs } from '../../optimize/licm.js'
 export function optimizeModule(sec, profiler) {
   const t = profiler?.time ? (name, fn) => profiler.time(`optMod:${name}`, fn) : (_, fn) => fn()
   const cfg = ctx.transform.optimize
+  // First: it reads the accesses as emitted, before a pass stages their bases in locals.
+  if (!cfg || cfg.staticScratch !== false) t('staticScratch', () =>
+    scalarizeStaticScratch([...sec.funcs, ...sec.stdlib, ...sec.start]))
   if (!cfg || cfg.specializeMkptr !== false) t('specializeMkptr', () =>
     specializeMkptr([...sec.funcs, ...sec.stdlib, ...sec.start], wat => sec.stdlib.push(parseWat(wat, { loc: false }))))
   // (specializePtrBase and sortStrPoolByFreq deleted: byte-identical output with

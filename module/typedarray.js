@@ -291,6 +291,12 @@ export default (ctx) => {
       const elem = { et: elemType, name, isBigInt: name === 'BigInt64Array' || name === 'BigUint64Array',
         isF16: name === 'Float16Array', isClamped: name === 'Uint8ClampedArray' }
       const srcType = typeof lenExpr === 'string' ? lookupValType(lenExpr) : valTypeOf(lenExpr)
+      // `x.buffer` of an owned typed array shares x's data offset: read it from
+      // x directly (an unboxed typed binding is its offset) instead of boxing a
+      // BUFFER pointer and chasing forwarding it can never carry.
+      const ownedBufferBase = (buf) => Array.isArray(buf) && buf[0] === '.' && buf[2] === 'buffer'
+        && (c => c?.startsWith('new.') && !c.endsWith('.view') && TYPED_ELEM_CODE[c.slice(4)] != null)(plannedTypedStorageCtor(ctx, buf[1]))
+        ? ptrOffsetIR(emit(buf[1]), VAL.TYPED) : null
       // Subview: new TypedArray(buffer, byteOffset, length) — true JS-parity view.
       // Allocates a 16-byte descriptor [byteLen:i32][dataOff:i32][parentOff:i32][pad]
       // and tags the TYPED ptr with aux=elemType|8. Reads/writes alias the parent,
@@ -312,12 +318,7 @@ export default (ctx) => {
         // Eager construction pins this closure's own kind (byte-neutral natively).
         const strideConst = ['i32.const', stride]
         const tagIR = mkPtrIR(PTR.TYPED, typedAux(name, true), ['local.get', `$${dst}`])
-        // `x.buffer` of an owned typed array shares x's data offset: read it from
-        // x directly (an unboxed typed local is its offset) instead of boxing a
-        // BUFFER pointer and chasing forwarding it can never carry.
-        const ownedBase = Array.isArray(lenExpr) && lenExpr[0] === '.' && lenExpr[2] === 'buffer'
-          && (c => c?.startsWith('new.') && !c.endsWith('.view') && TYPED_ELEM_CODE[c.slice(4)] != null)(plannedTypedStorageCtor(ctx, lenExpr[1]))
-          ? ptrOffsetIR(emit(lenExpr[1]), VAL.TYPED) : null
+        const ownedBase = ownedBufferBase(lenExpr)
         return typed(['block', ['result', 'f64'],
           ...(ownedBase ? [['local.set', `$${parentOff}`, ownedBase]] : [
             ['local.set', `$${src}`, asF64(emit(lenExpr))],
@@ -407,7 +408,7 @@ export default (ctx) => {
       // computes elemCount for this view's elemType.
       if (srcType === VAL.BUFFER) {
         setLinkDemand('typedView')  // zero-copy reinterpret aliases the source — SLP must not pack across it
-        return mkPtrIR(PTR.TYPED, aux, ['call', '$__ptr_offset', ['i64.reinterpret_f64', asF64(emit(lenExpr))]])
+        return mkPtrIR(PTR.TYPED, aux, ownedBufferBase(lenExpr) ?? ['call', '$__ptr_offset', ['i64.reinterpret_f64', asF64(emit(lenExpr))]])
       }
       // A Set or a Map iterates, any other object is an array-like (23.2.5.1
       // steps 6-8); both land in a fresh array the copy takes from there.

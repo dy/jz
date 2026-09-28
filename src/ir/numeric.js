@@ -144,6 +144,9 @@ export const asI32Sat = n => {
 export const asPtrOffset = (n, ptrKind) => {
   if (n.ptrKind === ptrKind) return n
   const f = asF64(n)
+  // A box built here from constant tags holds its offset operand in that word.
+  if (Array.isArray(f) && f[0] === 'call' && f[1] === '$__mkptr' && f[2]?.[0] === 'i32.const' && f[3]?.[0] === 'i32.const' && Array.isArray(f[4]))
+    return typed(f[4].slice(), 'i32')
   // Peel the inner reinterpret round-trip before wrapping: i64.reinterpret_f64(f64.reinterpret_i64(Y)) === Y.
   const bits = Array.isArray(f) && f[0] === 'f64.reinterpret_i64' && Array.isArray(f[1]) ? f[1] : ['i64.reinterpret_f64', f]
   return typed(['i32.wrap_i64', bits], 'i32')

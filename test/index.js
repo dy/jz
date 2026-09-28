@@ -110,6 +110,8 @@ const TESTS = [
   'typed-present',
   'fn-alias',
   'forward-store',
+  'static-scratch',
+  'held-number',
   'unroll-cost',
   'sentinel-guard',
   'twin-locals',

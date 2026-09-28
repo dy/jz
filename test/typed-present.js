@@ -68,7 +68,10 @@ test('typed presence: a read the walk cannot place inside the count stays number
 // with no bounds test and the value is never the undefined of a miss.
 const VIEWS = 'var F = new Float64Array(1)\nvar U = new Uint32Array(F.buffer)\n'
 const WORD = 'function hw(x) { F[0] = x; return U[HIGH2] }\nexport let f = (x) => hw(x) + hw(x * 2)'
-const loadsUnchecked = (src) => { const body = funcWat(wat(src, { optimize: 3 }), 'hw') || funcWat(wat(src, { optimize: 3 }), 'f$exp') || funcWat(wat(src, { optimize: 3 }), 'f') || ''; return /i32\.load/.test(body) && !/i32\.lt_u|nan:0x7FF8000200000000/.test(body) }
+// The load as the emitter leaves it: the views stay in memory here (a static array only
+// constants index is registers, test/static-scratch.js, and then no word is loaded at all).
+const IN_MEMORY = { optimize: { level: 3, staticScratch: false } }
+const loadsUnchecked = (src) => { const body = funcWat(wat(src, IN_MEMORY), 'hw') || funcWat(wat(src, IN_MEMORY), 'f$exp') || funcWat(wat(src, IN_MEMORY), 'f') || ''; return /i32\.load/.test(body) && !/i32\.lt_u|nan:0x7FF8000200000000/.test(body) }
 
 test('typed presence: a word of a float through a view of its buffer', () => {
   const present = {

@@ -1521,7 +1521,11 @@ the functions of a round walk ahead of the module's statements and an absent
 joined in the first round is never lost. A callee taking such a read takes a
 number, with no per-use conversion, and the emitter takes the verdict as an
 index proof of its own (`presentTypedRead`, `typedIdxProven` class 8): the
-read loads with no bounds test and no miss arm. preEval decides a test that
+read loads with no bounds test and no miss arm. Any number a name holds for
+good (`held`, the same definitions) is what a module name's reads fold to
+(`foldModuleConstants`): `HIGH = idx.HIGH` indexes by a constant. The global
+stays with the statement that assigns it, and an exported name keeps its read,
+since the host can store to it (`test/held-number.js`). preEval decides a test that
 reads a module constant (`const DEBUG = false`, a `var` written once) and
 drops the dead arm; only the test reads the constant, a reference in the code
 that stays keeps its name. A loop that writes no array header
@@ -2076,6 +2080,24 @@ drives `src/optimize/forward-store.js`, which runs before the packer: in straigh
 load of a slot the list just stored (or loaded into a local) reads that local instead, and a
 store the list overwrites unread goes; a store through another name, a call, a branch or a
 nested block forgets everything (`test/forward-store.js`).
+
+A static typed array the program only indexes by constants is registers
+(`src/optimize/static-scratch.js`, first in the module optimizer). The shape is the scratch a
+numeric library reads a float's words through: `F[0] = x; hi = U[1]` over
+`U = new Uint32Array(F.buffer)`. A view of a static array's whole buffer has the array's address
+(module/typedarray.js), a constant its declaration holds (`hoistConstGlobalInits` follows one
+constant binding to the next). When every read of such a binding in the module is the base of
+a load or store at a constant offset inside the array, no other access reaches those bytes: a
+store through any other pointer lands in another object. A load whose every byte the stores
+before it on its path wrote is then those values' bits, shifted and joined, whatever the widths
+and types on either side (a word of a float, a float from two words or eight bytes, a signed
+piece), and a store no load left in the module reads a byte of goes. A path forgets what it
+knows at a loop's entry, at the end of a block a branch leaves, and at a call to a function
+that stores to such an array, calls one that does, or is not the module's; the arms of an `if`
+keep what both hold. Any other use of a binding (an argument, a return, an export, an element
+of another object, an index that is not constant, a view made in a function or of a part)
+keeps its array in memory, with every binding that shares the buffer. `test/static-scratch.js`
+pins the shapes, the joins and the bails.
 
 ## Principles
 
