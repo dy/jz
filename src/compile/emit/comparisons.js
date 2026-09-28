@@ -18,6 +18,7 @@ import { nonNegIntLiteral } from '../../static.js'
 import { typedIdxProven } from '../../type.js'
 import { numLiteralNode } from './bigint.js'
 import { emit, emitIdentitySafe, emitIdentitySafeArms } from './dispatch.js'
+import { numberOrMissing } from './arithmetic.js'
 import { emitInstanceof } from './instanceof.js'
 import { REF_EQ_KINDS, foldOperandPure, stringOps } from './shared.js'
 
@@ -472,7 +473,11 @@ function emitLooseEq(a, b, negate, strict) {
   // reserved sentinel bit patterns, not "any matching NaN" — loose folds
   // null/undefined together (`null == undefined` is JS-true); strict needs
   // the same exact atom on both sides (`null === undefined` is JS-false).
-  if (vta === VAL.NUMBER && vtb === VAL.NUMBER) {
+  // An operand of no static kind that the summary holds to a number or a
+  // missing value (an element read past a parameter array's end) is the same
+  // two shapes: `vertices[k] === vertices[j]` in a scan compares inline too.
+  const numLike = (vt, raw, n) => vt === VAL.NUMBER || raw == null && numberOrMissing(n)
+  if (numLike(vta, rawA, a) && numLike(vtb, rawB, b)) {
     const fa = temp('numeq'), fb = temp('numeq')
     const faG = ['local.get', `$${fa}`], fbG = ['local.get', `$${fb}`]
     const numEq = typed(['f64.eq', faG, fbG], 'i32')

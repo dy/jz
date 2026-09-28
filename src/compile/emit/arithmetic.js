@@ -207,7 +207,7 @@ const mayBeMissing = (node) => {
 // the end of a number array. A call's result keeps the generic sum: its kind
 // is the callee's, which a closure table's call sites pin as open
 // (test/closures.js, the fail-open pins of the parameter lattice).
-const numberOrMissing = (node) => {
+export const numberOrMissing = (node) => {
   if (Array.isArray(node) && (node[0] === '()' || node[0] === '?.()')) return false
   const k = ctx.summary?.at(ctx.func.current)?.kindOfExpr(node)
   return k != null && tagOf(core(k)) === K.NUMBER
