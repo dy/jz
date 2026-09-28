@@ -85,6 +85,14 @@ export function typedStaticLen(rhs) {
 // intLiteralValue chain). Consumers here (typedStaticLen above, typedIdxProven
 // below) import the shared static.js version — see its doc comment there.
 
+/** `recv[idx]` proven by the interval walk (typedIdxProven class 5), which
+ *  models integer values only: the key names an element, it needs no test. */
+export function typedIdxWhole(recv, idx, node = null) {
+  if (typeof recv !== 'string') return false
+  const ip = intervalProvenIdx(ctx)
+  return node != null && node[1] === recv && node[2] === idx && ip.has(node) || ip.has(idxKey(recv, idx))
+}
+
 /** `recv[idx]` provably within [0, recv.length) for a typed receiver — the gate the
  *  checked `.typed:[]` forms and the identity folds share. Proof classes:
  *  1. the canonical-loop structural pair (inBoundsArrIdx);

@@ -99,7 +99,7 @@ function tryI32Index(e) {
   }
   return exprType(e, ctx.func.locals) === 'i32' ? asI32(emit(e)) : null
 }
-export const emitIndex = (index) => {
+export const emitIndex = (index, whole = false) => {
   const direct = tryI32Index(index)
   if (direct) return direct
   const nested = Array.isArray(index) && index[0] === '[]'
@@ -107,6 +107,9 @@ export const emitIndex = (index) => {
   let value
   try { value = emit(index) } finally { if (nested) ctx.types.indexConsumer-- }
   if (value?.type === 'i32' && !value.indexValid) return value
+  // `whole`: a proof already holds the key to a present integer (the interval
+  // walk models integer values only).
+  if (whole) return asI32(value)
   return keyIndex(value)
 }
 

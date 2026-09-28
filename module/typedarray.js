@@ -15,7 +15,7 @@ import { emit, idx, deps, call, positionArgs } from '../src/bridge.js'
 import { strHashLiteral } from './collection.js'
 import { valTypeOf } from '../src/kind.js'
 import { K, TAGS, NULL_BITS, NUMBER, STRING, hasTag, tagOf, tagsOf, bitOf } from '../src/summary/kind.js'
-import { typedIdxProven, idxKey } from '../src/type.js'
+import { typedIdxProven, typedIdxWhole, idxKey } from '../src/type.js'
 import { constIntExpr } from '../src/static.js'
 import { VAL, lookupValType, repOf } from '../src/reps.js'
 import { nanPrefixHex, TYPED_ELEM_NAMES, TYPED_ELEM_CODE, TYPED_ELEM_VIEW_FLAG, TYPED_ELEM_BIGINT_FLAG, TYPED_ELEM_F16_FLAG, TYPED_ELEM_CLAMPED_FLAG, DATA_VIEW_AUX, DATA_VIEW_FLAG, encodeTypedElemAux } from '../layout.js'
@@ -1985,7 +1985,7 @@ export default (ctx) => {
     const objIR = emit(arr), post = postIncI32Index(i)
     // A proven range still reads undefined for a key that names no element
     // (emitIndex's bit): a nested read's miss, a fraction, NaN.
-    let vi = post?.value ?? idx(i), indexPre = null, indexValid = vi.indexValid ?? null
+    let vi = post?.value ?? idx(i, typedIdxWhole(arr, i, node)), indexPre = null, indexValid = vi.indexValid ?? null
     if (!post && indexValid) {
       const ti = tempI32('tbi')
       indexPre = ['local.set', `$${ti}`, vi]
@@ -2117,7 +2117,7 @@ export default (ctx) => {
     else if (proven) {
       // A proven range still needs the key to name an element (emitIndex):
       // the store runs behind the key's own bit, read after the index.
-      vi = idx(i)
+      vi = idx(i, typedIdxWhole(arr, i, node))
       if (vi.indexValid) {
         const ti = tempI32('tbi'), valid = vi.indexValid
         pre.push(['local.set', `$${ti}`, vi])

@@ -64,6 +64,6 @@ export { intLevelMap, intCertainMap, intLevelChecker } from './type/int-certain.
 export { exprType } from './type/expr-type.js'
 export { cloneWithSubst } from './type/clone.js'
 export {
-  typedStaticLen, typedIdxProven, SLOT_OPS, isCondExpr,
+  typedStaticLen, typedIdxProven, typedIdxWhole, SLOT_OPS, isCondExpr,
 } from './type/loop-versioning.js'
 export { versionableTypedNest } from './type/loop-versioning-nest.js'
