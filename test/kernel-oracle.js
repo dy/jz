@@ -705,9 +705,7 @@ export let f = (s) => g(s) === false`
 // name regardless of mutation (capturedNames — broader than the cell-boxed
 // ctx.func.boxed set it already built), and emit.js's emitDecl mints a
 // one-time identity-safe shadow local (ctx.func.identityShadow) for a
-// captured name whose declaring init is hasAmbiguousBoolMerge (since
-// replaced: the binding is tagged, kind.js boolTagged, and holds the atom
-// itself; capturedNames and the shadow are gone) — gated on
+// captured name whose declaring init is hasAmbiguousBoolMerge — gated on
 // BOTH facts, so every other decl (captured-only, ambiguous-only, or
 // neither — including every decl in scripts/self.js's own source, verified
 // by the self-build gate) takes the exact same `emit(init)` path as before.
@@ -717,7 +715,9 @@ export let f = (s) => g(s) === false`
 // from `v`'s already-spent bits. A captured-name consumer OTHER than the
 // closure env-slot (e.g. a bare name hitting a container store) is a
 // different, still-open instance of the same root and out of this row's
-// scope.
+// scope. Since replaced: such a binding is tagged (kind.js boolTagged) and
+// holds the atom itself, for every consumer; the shadow and its
+// capturedNames census are gone.
 //
 // DIRECT/INLINED BARE RETURN, a WALL sibling — NOT the CLOSURE CAPTURE
 // consumer above, and NOT a native/kernel divergence (PROBED 2026-08-21,

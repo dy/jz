@@ -183,7 +183,7 @@ VT['&&'] = VT['||'] = VT['??'] = (args) => {
 //
 // Recursive through nested merges: when this node's own arms do not take the
 // coercion branch themselves, the join is STILL ambiguous if either arm is
-// itself an ambiguous merge — an outer NUMBER kind may carry a nested coerced
+// itself an ambiguous merge: an outer NUMBER kind may carry a nested coerced
 // bool's bits, and an outer open kind (`k ? (b || 5) : x`, an arm of no single
 // kind) yields that arm's value, whose Boolean an identity-observing consumer
 // must see as itself. A statically-resolved `?:` condition (VT['?:'])
