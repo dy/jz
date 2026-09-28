@@ -88,7 +88,7 @@ const PRIMITIVE_METHODS = new Set([...STRING_METHODS, ...STRING_NUMBER_METHODS, 
  *  string (`JSON.parse(SRC)` parses it). An exported global keeps its kind: the host
  *  can store only a number through its f64 export, which a number global takes and no other
  *  kind could take; a closure the host can reach through it may be called with anything. */
-export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchema = () => undefined, classes, accessors = null, hidden = null, exported, imports, hostGlobals = [], moduleGlobals = new Map(), constString = () => null, constStrings = () => null, onLose = null, onOpen = null, liftedProp = () => null }) {
+export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchema = () => undefined, classes, accessors = null, hidden = null, exported, imports, hostGlobals = [], moduleGlobals = new Map(), constString = () => null, constStrings = () => null, onLose = null, onOpen = null, liftedProp = () => null, guardedClone = () => null }) {
   // Layouts determine storage; construction sites determine aliasing. Keep
   // separate slot facts for unrelated objects with identical property names.
   schemas = schemas.map(props => props.slice())
@@ -1133,6 +1133,26 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   }
   const escapeArgValues = (base, n) => { for (let i = 0; i < n; i++) escape(ks[base + i]) }
   const escapeArgs = (base, n) => losingAs('passed to a call the summary cannot see through', escapeArgValues, base, n)
+  // A typed-guard clone (narrow/specialize.js) runs where a call's guarded
+  // arguments are typed arrays of its constructor, and nowhere else (no static
+  // call names it): it receives the call's arguments, each guarded one as that
+  // typed array. A call whose guarded argument cannot be one never reaches it.
+  const bindGuarded = (spec, base, n) => {
+    const g = funcByName.get(spec.clone)
+    if (!g) return
+    const b = sp
+    for (let i = 0; i < n; i++) {
+      let k = ks[base + i]
+      const guard = spec.guards.find(x => x.k === i)
+      if (guard) {
+        if (tagOf(k) !== K.ANY && !hasTag(k, K.TYPED)) { sp = b; return }
+        k = kind(K.TYPED, guard.aux)
+      }
+      pushK(k, kspread[base + i])
+    }
+    bind(spec.clone, paramNamesOf(g), b, n, g.defaults)
+    sp = b
+  }
   /** `callee(k0, …frame)`: the frame's kinds behind a receiver, in a frame of their own. */
   const callWith = (callee, k0, base = 0, n = 0) => {
     const b = sp
@@ -1443,6 +1463,8 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       const f = funcByName.get(callee)
       if (f) {
         bind(callee, paramNamesOf(f), base, n, f.defaults, f.rest || !n || escaped.has(callee) ? null : initContextFor(callee, ks[base]), node ? node[2] : null)
+        const spec = guardedClone(callee)
+        if (spec) bindGuarded(spec, base, n)
         return resultAt(callee, base, n, node)
       }
       const key = keyOf(callee), k = key === null ? undefined : kinds[key]

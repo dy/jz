@@ -96,6 +96,7 @@ const TESTS = [
   'index-key',
   'primitive-store',
   'num-shadow',
+  'guarded-clone',
   'variant-result',
   'call-boundary',
   'call-release',

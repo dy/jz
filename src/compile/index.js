@@ -173,6 +173,8 @@ export function assemble(ast, profiler) {
     hostGlobals: Object.entries(ctx.funcs.exports).map(([name, v]) => v === true ? name : v).filter(v => typeof v === 'string'),
     // a function's property prepare lifted to a function of its own (`f.prop = arrow` at top level), unless the property is reassigned
     liftedProp: (fn, prop) => { const lifted = `${fn}$${prop}`; return ctx.funcs.names.has(lifted) && !ctx.funcs.multiProp.has(`${fn}.${prop}`) ? lifted : null },
+    // a function's typed-guard clone, which its direct calls reach at run time (narrow/specialize.js)
+    guardedClone: (fn) => ctx.types.specFns?.get(fn) ?? null,
     // `why`: the first cause the summary loses an object shape by (its reads and stores are dynamic from then on)
     onLose: ctx.warnings ? (sid, why, fn, site) => warn('shape-lost', `schema ${sid} {${ctx.schema.list[sid]?.slice(0, 6).join(', ')}${ctx.schema.list[sid]?.length > 6 ? ', …' : ''}} is lost: ${why}`, { fn: typeof fn === 'string' ? fn : fn == null ? undefined : `closure ${fn}`, sid, why, site: site == null ? undefined : JSON.stringify(site).slice(0, 160) }) : null,
     // `why` only (a sink alone reports the shape and read advisories): the first cause an array built at a fixed count keeps its guards by
