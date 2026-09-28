@@ -156,14 +156,14 @@ const loopBodyOps = (wat) => {
 // from a host array stored into a[trunc(o + i)] for a fractional o, where
 // JavaScript drops the store. The key's own test (emit/dispatch.js keyIndex) is
 // what the checked arm pays; the versioned arm takes the key whole (its guard
-// tests o integral), and so do integer-valued keys: slice 68806 → 69462, the
+// tests o integral), and so do integer-valued keys: slice 68598 → 68974, the
 // other categories unchanged.
 // A sum with a side of unknown kind (2026-09-28) is a number only where the
 // program cannot concatenate (kind/val-type-of.js addsAsNumber): the corpus's
 // slice programs index `a[o + i]` with `o` an element of a host array, which
 // may be a string ('1' + 0 is '10'), so the store keeps its general key path
 // behind the integer-key fast path and links its helpers, whose loops this
-// count includes: slice 69462 -> 110464, every other category unchanged. The
+// count includes: slice 68974 -> 109288, every other category unchanged. The
 // optimistic NUMBER it replaces sent `o.name + 1 + 2` through f64 arithmetic
 // on the string's box ('x1', not 'x12').
 
