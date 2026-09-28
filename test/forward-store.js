@@ -19,8 +19,10 @@ test('store forwarding: a chain through an out parameter reloads nothing and kee
   const text = wat(chain, { optimize: 3 })
   const body = funcWat(text, 'f$exp') || funcWat(text, 'f')
   const count = re => (body.match(re) || []).length
-  is(count(/f64\.load/g), 6, 'the six loads of a and b; the scaled and summed values come from locals')
-  is(count(/f64\.store/g) + 2 * count(/v128\.store/g), 4, 'the three scaled stores and a[0]; the added stores are overwritten unread')
+  is(count(/f64\.load/g) + 2 * count(/v128\.load/g), 6, 'the six loads of a and b; the scaled and summed values come from locals')
+  // The added out[2] is overwritten unread and goes; out[0] and out[1] are followed by
+  // loads of a and b, which may name the same array, so they stay.
+  is(count(/f64\.store/g) + 2 * count(/v128\.store/g), 6, 'the three scaled stores, a[0], and the two added stores a later load may read')
 })
 
 const cases = [

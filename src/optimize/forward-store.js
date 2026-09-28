@@ -8,11 +8,12 @@
 // list has defined so far — and
 //   • replaces a later load of that slot by the stored value (a local or a constant),
 //     or by the local an earlier load of the slot filled (`ax = a[0]` read twice),
-//   • drops a store whose slot the list overwrites before anything could read it.
+//   • drops a store whose slot the list overwrites before anything could read it: no
+//     load between them but the forwarded ones and loads of the base's other slots.
 // Whatever could touch memory or leave the straight line forgets what is known: a
-// store through another base (two names can be one array), a non-f64 access it cannot
-// place, a call other than the durable-array snapshot and a throw guard, a branch, a
-// nested block or loop. A local rewritten between a store and a load gives its
+// store through another base (two names can be one array or object), a call other than
+// the header reads, the durable-array snapshot and a throw guard, a branch, a nested
+// block or loop. A local rewritten between a store and a load gives its
 // addresses a new identity, so the two no longer match; a rewrite of a forwarded
 // value's local forgets that value.
 import { walkAst } from '../ast.js'
@@ -66,7 +67,9 @@ const forwardIn = (list, from, counts) => {
     const access = isStore ? accessOf(s) : null
     const parts = isStore ? [access.addr, access.val] : [s]
     if (!parts.every(p => inertFor(p, NONE))) { if (set) w.defs.set(set, { e: null, at: i }); entries.clear(); continue }
-    // Its loads: a tracked slot's value, or a read that keeps the slot's store alive.
+    // Its loads: a tracked slot's value, or a read that keeps a store alive — the slot's
+    // own, or every tracked one when it reads through another name (which may be the
+    // same array or object as a tracked base) or another width.
     walkAst(s, { enter: (n, parent, idx) => {
       if (n === s || !isArr(n) || typeof n[0] !== 'string') return
       if (n[0] === 'f64.load') {
@@ -74,10 +77,10 @@ const forwardIn = (list, from, counts) => {
         const e = key && entries.get(`${key}|${a.off}`)
         if (e && e.value) parent[idx] = clone(e.value)
         else if (e) e.read = true
-        else if (!key) markRead(null)
+        else if (!key || ![...entries.keys()].some(k => k.startsWith(key + '|'))) markRead(null)
         return false
       }
-      if (n[0].includes('.load')) { const a = accessOf(n); markRead(a && keyOf(a.base, i)) }
+      if (n[0].includes('.load')) markRead(null)
     } })
     if (set) w.defs.set(set, { e: s[2], at: i })
     if (set && whole && isArr(s[2]) && s[2][0] === 'f64.load') {
