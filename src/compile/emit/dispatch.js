@@ -29,6 +29,7 @@ import {
 import { CARRIER } from '../../summary/contract.js'
 import { SITE, allocatesNothing } from '../analyze/frame-effects.js'
 import { reachOn } from '../../../module/core/reach.js'
+import { GLOBAL_TYPEOF, builtinGlobalOf } from '../../prepare/state.js'
 import { CMP_SET, boolEagerBody, eagerSelectOK, isCanonicalBoolExpr, isCmp, selectOK } from './shared.js'
 import { K, NUMBER, hasTag, orAbsent, valOf, core as summaryCore, tagOf as summaryTagOf, tagsOf as summaryTagsOf, bitOf as summaryBitOf, NULL_BITS as SUMMARY_NULL_BITS } from '../../summary/kind.js'
 
@@ -1935,6 +1936,11 @@ function emitNode(node, expect) {
     // consistent error family and the test262 runner's existing
     // 'is not in scope' skip-message allowlist keeps classifying it as a
     // clean structural reject, not a miscompile.
+    // A builtin global jz resolves at compile time holds no value to pass.
+    const builtin = builtinGlobalOf(node)
+    if (builtin) err(GLOBAL_TYPEOF[builtin] === 'object'
+      ? `'${builtin}' as a value is not supported: jz resolves a builtin namespace at compile time and holds no object for it; call or read its members in place`
+      : `'${builtin}' as a value is not supported: jz resolves a builtin function or constructor where it is called and holds no function object for it; wrap the call in an arrow`)
     err(`'${node}' is not in scope — jz has no runtime identifier resolution, so an undeclared reference must be rejected at compile time (JS would throw ReferenceError here); declare '${node}', fix the spelling, or import it`)
   }
   if (!Array.isArray(node)) return typed(['f64.const', 0], 'f64')

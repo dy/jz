@@ -37,6 +37,7 @@ const TESTS = [
   'member-targets',
   'number',
   'unknown-sum',
+  'builtin-globals',
   'json',
   'date',
   'wasi',

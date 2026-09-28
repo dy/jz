@@ -10,7 +10,7 @@ import { ctx } from '../ctx.js'
 import { hasModule } from '../autoload.js'
 import { REJECT_IDENTS } from '../op-policy.js'
 import { isDeclared, resolveScope } from './scope.js'
-import { CONSTANTS, F64_CONSTANTS, GLOBALS, NS_CTORS, builtinMemberKey, funcLocalNames, funcValueNames, scopes } from './state.js'
+import { CONSTANTS, F64_CONSTANTS, GLOBAL_TYPEOF, builtinMemberKey, funcLocalNames, funcValueNames, scopes } from './state.js'
 
 
 
@@ -52,11 +52,12 @@ export const renameFunc = (func, nextName) => {
 export function isUnresolvableBareIdent(name) {
   if (typeof name !== 'string') return false
   if (name in CONSTANTS || name in F64_CONSTANTS) return false
-  if (name === 'Boolean' || name === 'Number') return false
+  // A builtin global jz provides is a real, spec-defined binding, whether or
+  // not jz holds a value for it (GLOBAL_TYPEOF answers its `typeof`).
+  if (GLOBAL_TYPEOF[name]) return false
   if (REJECT_IDENTS[name]) return false
   if (scopes.length && isDeclared(name)) return false
   if (ctx.scope.chain[name]) return false
-  if (GLOBALS[name]) return false
   if (ctx.funcs.names.has(name)) return false
   if (ctx.func?.locals?.has?.(name)) return false
   // Top-level decls live in ctx.scope.globals / userGlobals (set by prepDecl at
@@ -65,15 +66,5 @@ export function isUnresolvableBareIdent(name) {
   if (ctx.scope.userGlobals?.has?.(name)) return false
   const fnNames = funcLocalNames[funcLocalNames.length - 1]
   if (fnNames?.has(name)) return false
-  // A builtin-namespace constructor name (NS_CTORS, declared below — safe to
-  // forward-reference: this function only ever runs after module init) or
-  // `Iterator` is NOT a spec §13.5.3 unresolvable reference — it's a real,
-  // spec-defined global, just one jz has no first-class VALUE for (no
-  // general function/builtin reflection — see the emit-time "not in scope"
-  // reject this falls through to instead). Folding `typeof Promise` straight
-  // to the string 'undefined' here would ship a confident wrong answer
-  // (confirmed live: real JS says 'function') that never even reaches that
-  // reject, since a folded literal never emits the identifier at all.
-  if (NS_CTORS.has(name) || name === 'Iterator') return false
   return true
 }

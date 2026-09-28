@@ -37,7 +37,7 @@ import { INTRINSIC_CALLEES, addHostImport, builtinAliasKeyOf, bundledSource, fol
 import { bindSchema, censusUnknownInitDecl, inferAssignSchema, objLiteralSid } from './schema.js'
 import { importEdge, namespaceValue } from './module-eval.js'
 import { bindingNames, bodyCapturesName, collectLoopDeclNames, declareGlobal, inlineArrayLen, isDeclared, markLoopLocal, mintForScope, popScope, prescanBlockDecls, pushScope, resolveScope, substIdents, withLoopLocalNames } from './scope.js'
-import { CONSTANTS, ERR_CLASS_SET, F64_CONSTANTS, GLOBALS, INSTANCEOF_ALLOW, NS_CTORS, SIMD_NS, STATIC_CONSTS, arrowWrites, assignedStaticGlobals, builtinMemberKey, freshPrepareId, funcLocalNames, funcValueNames, loopLocalNames, mutatedArrayNames, ownerStack, prepState, promiseRecvNames, renameSerial, scopes, staticConstScopes, withResolversRecvNames } from './state.js'
+import { CONSTANTS, ERR_CLASS_SET, F64_CONSTANTS, GLOBALS, INSTANCEOF_ALLOW, NS_CTORS, SIMD_NS, STATIC_CONSTS, arrowWrites, assignedStaticGlobals, builtinMemberKey, freshPrepareId, funcLocalNames, funcValueNames, loopLocalNames, mutatedArrayNames, ownerStack, prepState, promiseRecvNames, renameSerial, scopes, staticConstScopes, withResolversRecvNames, BUILTIN_FNS, GLOBAL_TYPEOF, builtinGlobalOf } from './state.js'
 
 
 // Avoid materializing `node.slice(1)` at every recursive dispatch. Nearly all
@@ -221,9 +221,6 @@ function prepNode(node) {
       // A bare #name ident outside its class body: the `#field in obj` brand check
       // (or a leaked private name). Reject with intent, not "not in scope".
       if (node[0] === '#') err(`private name '${node}' not supported — jz has no class-based private fields (no #field declarations, no #field in obj brand checks); use a plain property with a naming convention instead, e.g. this._${node.slice(1)}`)
-      // Boolean/Number as a value (`.filter(Boolean)`, `.map(Number)`): an arrow applying the conversion.
-      if (node === 'Boolean') { includeForCallableValue(); return prep(['=>', 'x', ['!', ['!', 'x']]]) }
-      if (node === 'Number') { includeForCallableValue(); return prep(['=>', 'x', ['()', 'Number', 'x']]) }
       // Block locals shadow module imports/globals, even when the local keeps the same name.
       if (scopes.length && isDeclared(node)) return resolveScope(node)
       // A user top-level binding (`let Math = …`) shadows a same-named builtin
@@ -239,6 +236,17 @@ function prepNode(node) {
       if (ctx.module.namespaces?.[node]) return namespaceValue(ctx.module.namespaces[node])
       const resolved = ctx.scope.chain[node]
       if (resolved?.includes('.')) return resolved
+      // A builtin global, when the chain holds its own entry: a user function
+      // of its name (`let parseInt = (s) => …`) takes it; Boolean/Number as a
+      // value (`.filter(Boolean)`, `.map(Number)`) is an arrow applying the
+      // conversion; any other function stays itself, not the module its entry
+      // names.
+      if (resolved === GLOBALS[node] && GLOBAL_TYPEOF[node]) {
+        if (hasFunc(node)) return node
+        if (node === 'Boolean') { includeForCallableValue(); return prep(['=>', 'x', ['!', ['!', 'x']]]) }
+        if (node === 'Number') { includeForCallableValue(); return prep(['=>', 'x', ['()', 'Number', 'x']]) }
+        if (BUILTIN_FNS.has(node)) return node
+      }
       // Cross-module import: mangled name (e.g. __util_js$clone)
       if (resolved && resolved !== node) return resolved
       // Block scope: resolve renames
@@ -1672,12 +1680,23 @@ const handlers = {
     return ['instanceof', prep(lhs), name]
   }
 }
-// Constant fold typeof for known builtin namespaces (e.g. Math.exp). prep(x) resolves Math.exp → 'math.exp'.
+// The builtin global a bare name denotes, or null: the global itself when no
+// binding took its name, or the one a namespace alias (`const M = Math`) names.
+// Resolves as prep()'s bare-identifier branch does.
+function builtinGlobalNamed(x) {
+  if (typeof x !== 'string') return null
+  const local = scopes.length && isDeclared(x)
+  if (!local && (ctx.scope.userGlobals?.has?.(x) || ctx.module.namespaces?.[x])) return null
+  const key = local ? resolveScope(x) : ctx.scope.chain[x]
+  if (!local && key === GLOBALS[x] && GLOBAL_TYPEOF[x]) return shadowsBuiltin(x) ? null : x
+  return typeof key === 'string' && key !== x && hasModule(key) ? builtinGlobalOf(key) : null
+}
+// Constant fold typeof for builtin globals and their members (e.g. Math.exp). prep(x) resolves Math.exp → 'math.exp'.
 function staticTypeofString(x) {
+  const builtin = builtinGlobalNamed(x)
+  if (builtin) return GLOBAL_TYPEOF[builtin]
   // Spec §13.5.3: unresolvable bare ref → 'undefined'.
   if (isUnresolvableBareIdent(x)) return 'undefined'
-  // Bare callable global: parseInt, parseFloat, isNaN, isFinite, Error, BigInt, etc.
-  if (typeof x === 'string' && !ctx.func?.locals?.has(x) && GLOBALS[x] && emitArity(ctx.core.emit?.[x], x) > 0) return 'function'
   const px = prep(x)
   if (typeof px === 'string' && px.includes('.') && emitArity(ctx.core.emit?.[px], px) > 0) return 'function'
   return null

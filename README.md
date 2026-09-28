@@ -103,6 +103,7 @@ See [all examples](https://jz.js.org/examples/).
 - **Reflection:** `Proxy`, `Reflect`, property descriptors, prototype chains and `__proto__`.
 - **Module dynamics:** top-level `await` other than `await import('./x.js')`, and `import()` of a specifier computed at run time. A literal `import('./x.js')` bundles `x.js`, which evaluates at the first `import()` unless a static import loaded it.
 - **Platform:** DOM, Node modules, `Intl`, `Temporal`.
+- **Builtins as values:** `f(Math)`, `[Map]`, `xs.map(parseInt)`. `typeof Math` answers; members (`xs.map(Math.sqrt)`), `Number`, `Boolean` and the typed-array constructors are values.
 
 Modern JavaScript is supported: classes, generators, async/await, destructuring,
 BigInt, typed arrays, Map/Set, RegExp, Date, JSON, timers and the Web codecs.
