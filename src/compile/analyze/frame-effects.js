@@ -45,6 +45,31 @@
  *                  a receiver the summary cannot type, a callback the
  *                  census cannot see).
  *
+ * An escape that happens at one node (a heap value stored into outer storage,
+ * a growth of an outer container, a call the census cannot name) and may
+ * not run on a call is, for a function's or a closure's frame, a site
+ * rather than a verdict (`sites`, `conditional`): the emitter sets the
+ * escape flag where the site runs (emit/dispatch.js), and the frame restores
+ * the heap at return only when no site ran during the call (optimize/
+ * arena-rewind.js). An escape may not run when it sits in a branch (an `if`
+ * or `?:` arm, the right side of `&&`, `||`, `??`, a logical assignment's
+ * store, a `catch` handler), after a statement that may return, or behind
+ * its own test (an element store that grows only a receiver no typed array
+ * is; in a loop the test stands before the outermost loop the receiver stays
+ * the same through, inside the named arrow it may be in). A state made on the
+ * first call, `if (!buf) buf = new Float64Array(n)`,
+ * keeps that call's memory and releases every later call's. Any other escape
+ * runs on every call that reaches it, a loop's body included: it stays a
+ * verdict, as does a frame that suspends (`yield`, `await`) and a loop's own
+ * census, whose per-iteration restore reads no flag.
+ *
+ * A call through a binding the summary resolves to closures (`calleeOf`: the
+ * closures the binding may hold, the audio atom's `proc(…)`) runs those
+ * closures: each is censused on its own, through its own view, and its arena
+ * facts join the caller's (`closures`, transitiveFrameEffects). The call stays
+ * an unknown for `writesOuter` and `callsUnknown`, whose readers look into a
+ * callee by function name, which a closure has none of.
+ *
  * Both function facts are transitive over direct calls to same-module
  * functions (`transitiveFrameEffects`, an iterative fixpoint over the call
  * graph); a call whose target is not a known function is unknown and counts
@@ -58,7 +83,7 @@
  *
  * @module compile/analyze/frame-effects
  */
-import { ASSIGN_OPS, ACCESSOR_GET, ACCESSOR_SET, RELATIONAL_OPS, isFunctionNode } from '../../ast.js'
+import { ASSIGN_OPS, ACCESSOR_GET, ACCESSOR_SET, RELATIONAL_OPS, isFunctionNode, extractParams } from '../../ast.js'
 import { K, tagOf, hasTag, tagsOf, bitOf, valOf, core, NUMBER_OPS } from '../../summary/kind.js'
 import { COMPOUND_NUMERIC_OPS } from '../../kind-traits.js'
 import { TO_PRIMITIVE } from '../../ir.js'
@@ -69,6 +94,27 @@ import { TO_JSON } from '../emit/to-json.js'
 
 const isArr = Array.isArray
 const isName = (x) => typeof x === 'string'
+
+// A branch's first operand that may not run: an `if` or `?:` arm, the right
+// side of a short-circuit, a `catch` handler (`['catch', body, name, handler]`).
+const BRANCH_ARM = { 'if': 2, '?:': 2, '&&': 2, '||': 2, '??': 2, 'catch': 3 }
+/** Whether a statement may return from the function it runs in. */
+function mayReturn(n) {
+  if (!isArr(n) || isFunctionNode(n)) return false
+  if (n[0] === 'return') return true
+  for (let i = 1; i < n.length; i++) if (mayReturn(n[i])) return true
+  return false
+}
+/** Whether `name` is assigned or bound (declared, a parameter) anywhere inside `n`. */
+function rebinds(n, name) {
+  if (!isArr(n)) return false
+  const op = n[0]
+  if ((ASSIGN_OPS.has(op) || op === '++' || op === '--') && n[1] === name) return true
+  if (op === 'let' || op === 'const') for (let i = 1; i < n.length; i++) { const d = n[i]; if (d === name || isArr(d) && d[0] === '=' && patternNames(d[1]).includes(name)) return true }
+  if (isFunctionNode(n) && patternNames(n[1]).includes(name)) return true
+  for (let i = 1; i < n.length; i++) if (rebinds(n[i], name)) return true
+  return false
+}
 
 // Callees that read their arguments and receivers only, apart from a callback
 // callbackArg names. Mirrors the summary's PURE_BUILTINS (src/summary/index.js)
@@ -316,12 +362,26 @@ const argList = (args) => args == null ? [] : isArr(args) && args[0] === ',' ? a
  * Nested function bodies are entered only for the callbacks CALLBACK_METHODS
  * and callbackArg run synchronously and for local arrows called from this scope.
  */
-function census(view, roots, declRoots, params, typedParams = NO_NAMES) {
+function census(view, roots, declRoots, params, typedParams = NO_NAMES, conditional = false) {
   // A parameter the export boundary types (narrow/param-abi.js `boundaryTyped`)
   // is a typed array the summary, built before the narrowing, still holds as
   // any value: element stores into it are numbers into fixed storage.
   const typedRecv = (recv) => typedReceiver(view, recv) || (isName(recv) && typedParams.has(recv))
-  const out = { writesOuter: false, arenaUnsafe: false, allocates: false, callsUnknown: false, runsAccessor: false, why: null, callees: new Set() }
+  const out = { writesOuter: false, arenaUnsafe: false, allocates: false, callsUnknown: false, runsAccessor: false, why: null, callees: new Set(), closures: new Set(), sites: new Set(), siteWhy: null, siteGuards: new Map() }
+  // The node the walk stands on: an escape found there is a site of it.
+  let at = null
+  // Branches and early returns around it: nonzero where it may not run on a call.
+  let guarded = 0
+  // The loops around it, outermost first: a statement, or a call running a
+  // callback per element (`opaque` when the walk has no node for it: no test hoists past it).
+  const loops = [], rebound = new Map(), opaque = []
+  const loopOf = (node) => isArr(node) ? node : opaque
+  const rebindsIn = (loop, name) => {
+    let names = rebound.get(loop)
+    if (!names) rebound.set(loop, names = new Map())
+    if (!names.has(name)) names.set(name, rebinds(loop, name))
+    return names.get(name)
+  }
 
   // 1. Fresh locals: declared here, every write a fresh initializer, no write
   //    from any nested function. Arrows bound to a const are scanned inline
@@ -359,7 +419,8 @@ function census(view, roots, declRoots, params, typedParams = NO_NAMES) {
     }
     if (ASSIGN_OPS.has(op)) {
       if (isName(n[1])) note(n[1], op === '=' ? n[2] : null, nested, false)
-      else if (isArr(n[1]) && (n[1][0] === '[]' || n[1][0] === '{}')) for (const nm of patternNames(n[1])) note(nm, null, nested, false)
+      // an element store (`[]` indexes in the prepared spelling) writes no binding
+      else if (isArr(n[1]) && n[1][0] === '{}') for (const nm of patternNames(n[1])) note(nm, null, nested, false)
     }
     if (op === '++' || op === '--') { if (isName(n[1])) note(n[1], null, nested, false) }
     const inner = isFunctionNode(n)
@@ -372,7 +433,31 @@ function census(view, roots, declRoots, params, typedParams = NO_NAMES) {
 
   // 2. Effects.
   const outer = () => { out.writesOuter = true }
-  const unsafe = (why) => { out.writesOuter = true; if (!out.arenaUnsafe) { out.arenaUnsafe = true; out.why = why } }
+  // An escape that may not run on a call: a site of the current node for a
+  // frame (`conditional`); any other, a verdict. `guard`: the escape happens
+  // only where the named receiver is no typed array (an element store that
+  // may grow a plain array). A site raises the flag where any of its guards'
+  // receivers is no typed array (`siteGuards`), or, with an escape of any
+  // other reason, whenever it runs (null). A receiver's test runs no iteration:
+  // in a loop it stands before the outermost loop the receiver is the same
+  // through, or, the receiver changing within the innermost, there is none.
+  const unsafe = (why, suspends = false, guard = null) => {
+    out.writesOuter = true
+    let site = at
+    if (guard !== null && loops.length) {
+      let outer = null
+      for (let k = loops.length - 1; k >= 0 && loops[k] !== opaque && !rebindsIn(loops[k], guard); k--) outer = loops[k]
+      if (outer !== null) site = outer; else guard = null
+    }
+    if (conditional && !suspends && site !== null && (guarded > 0 || guard !== null)) {
+      const had = out.sites.has(site), prev = out.siteGuards.get(site)
+      out.sites.add(site)
+      out.siteGuards.set(site, guard === null || had && prev === null ? null : had ? (prev.includes(guard) ? prev : [...prev, guard]) : [guard])
+      out.siteWhy ??= why
+      return
+    }
+    if (!out.arenaUnsafe) { out.arenaUnsafe = true; out.why = why }
+  }
   const unknownCall = (why) => { out.callsUnknown = true; unsafe(why) }
   const allocates = () => { out.allocates = true }
   // A read or store of a property named like an accessor: the class getters
@@ -401,14 +486,22 @@ function census(view, roots, declRoots, params, typedParams = NO_NAMES) {
   // path below a fresh local (`o.a.b = v`) reaches storage the local's own
   // stores placed there — possibly outer values it aliases — so only the
   // direct receiver counts.
-  const store = (recv, val, grows) => {
+  const store = (recv, val, grows, elem = false) => {
     if (freshLocal(recv)) return
-    if (grows) return unsafe('grows ' + (isName(recv) ? recv : '<expr>'))
+    // a receiver that may be a typed array grows only where it is none: the test is the store's own
+    if (grows) return unsafe('grows ' + (isName(recv) ? recv : '<expr>'), false, elem && isName(recv) && mayBeTyped(view, recv) ? recv : null)
     outer()
     if (typedRecv(recv)) return
     if (mayCarryFreshHeap(view, val)) unsafe('heap value into ' + (isName(recv) ? recv : '<expr>'))
   }
-  const scanArrow = (arrow) => { if (!scanned.has(arrow)) { scanned.add(arrow); walkExpr(arrow[arrow.length - 1]) } }
+  // A named arrow's body runs from every call to it: no test hoists out of it (`opaque`).
+  const scanArrow = (arrow, named = false) => {
+    if (scanned.has(arrow)) return
+    scanned.add(arrow)
+    if (named) loops.push(opaque)
+    walkExpr(arrow[arrow.length - 1])
+    if (named) loops.pop()
+  }
   // The arrow a name holds wherever it is called: bound once in this scope,
   // never rebound by a nested function, no parameter.
   const localArrow = (name) => isName(name) && arrows.has(name) && !writtenNested.has(name) && !params.has(name)
@@ -417,21 +510,21 @@ function census(view, roots, declRoots, params, typedParams = NO_NAMES) {
   // a closure the census cannot see (true: the call is unknown).
   const callback = (a, what) => {
     if (isFunctionNode(a)) scanArrow(a)
-    else if (localArrow(a)) scanArrow(arrows.get(a))
+    else if (localArrow(a)) scanArrow(arrows.get(a), true)
     else if ((isArr(a) || isName(a)) && !scalarKind(view, a)) { unknownCall('callback value for ' + what); return true }
     return false
   }
   // A pure callee allocates unless its result is a scalar, and runs the
   // callback callbackArg names.
-  const pure = (name, args) => {
+  const pure = (name, args, node = null) => {
     if (runsGetters(name)) return unknownCall('accessor ' + name)
     if (!SCALAR_CALLEES.test(name)) allocates()
     const i = callbackArg(name), list = argList(args)
-    if (i != null && list[i] !== undefined) callback(list[i], name)
+    if (i != null && list[i] !== undefined) { loops.push(loopOf(node)); callback(list[i], name); loops.pop() }
     if (TYPED_FROM.test(name)) { if (list[0] !== undefined) convertElements(list[0]) }
     else if (!NON_CONVERTING.test(name)) list.forEach((a, j) => { if (j !== i) convert(a) })
   }
-  const call = (callee, args) => {
+  const call = (callee, args, node) => {
     if (isName(callee)) {
       const c = ctorOf(callee)
       if (c !== null) {
@@ -442,15 +535,36 @@ function census(view, roots, declRoots, params, typedParams = NO_NAMES) {
         return
       }
       if (knownFunc(callee)) { out.callees.add(callee); return }
-      if (localArrow(callee)) { scanArrow(arrows.get(callee)); return }
-      if (PURE_CALLEES.test(callee)) return pure(callee, args)
+      if (localArrow(callee)) { scanArrow(arrows.get(callee), true); return }
+      // for…of's source (prepare/handlers.js): an array, a typed array or a
+      // string passes through, a Set or a Map is copied into a fresh array;
+      // any other iterable runs its own iterator. for…in's key list reads keys.
+      if (callee === '__iter_arr') {
+        const k = view?.kindOfExpr(argList(args)[0]), t = k == null ? K.ANY : tagOf(k)
+        if (t === K.ARRAY || t === K.TYPED || t === K.STRING || t === K.SET || t === K.MAP) { allocates(); return }
+        return unknownCall('call __iter_arr')
+      }
+      if (callee === '__keys_ro' || callee === '__keys_dyn') { allocates(); return }
+      if (PURE_CALLEES.test(callee)) return pure(callee, args, node)
       if (FRESH_CTORS.test(callee)) { allocates(); return }   // a constructor called plainly (`throw TypeError(m)`): fresh storage, no user code
+      // A binding holding closures the summary names: they run here.
+      const family = node && !params.has(callee) ? view?.calleeOf(node) : null
+      if (typeof family === 'number' && ctx.summary?.closureMembers) {
+        out.writesOuter = true; out.callsUnknown = true
+        // A member is a closure id, or the name of a function held as a value.
+        for (const id of ctx.summary.closureMembers(family)) {
+          if (typeof id === 'number') out.closures.add(id)
+          else if (knownFunc(id)) out.callees.add(id)
+          else return unknownCall('call ' + callee)
+        }
+        return
+      }
       return unknownCall('call ' + callee)
     }
     if (isArr(callee) && callee[0] === '.' && isName(callee[2])) {
       const [, recv, method] = callee
       const key = isName(recv) ? `${recv}.${method}` : null
-      if (key && PURE_CALLEES.test(key)) return pure(key, args)
+      if (key && PURE_CALLEES.test(key)) return pure(key, args, node)
       if (key && /^(Object|Reflect|Atomics|Array\.prototype|Function|Promise)\./.test(key) || method === 'call' || method === 'apply' || method === 'bind') return unknownCall('call ' + (key ?? method))
       const resolved = resolveMember(recv, method)
       if (resolved) { out.callees.add(resolved.name); return }
@@ -467,7 +581,10 @@ function census(view, roots, declRoots, params, typedParams = NO_NAMES) {
       const hasClosureArg = argList(args).some(isFunctionNode)
       if (CALLBACK_METHODS.has(method)) {
         allocates()
-        for (const a of argList(args)) if (callback(a, method)) return
+        loops.push(loopOf(node))
+        const unknown = argList(args).some(a => callback(a, method))
+        loops.pop()
+        if (unknown) return
         if (method === 'sort') { if (!argList(args).length) convert(recv); store(recv, null, false) }
         return
       }
@@ -494,16 +611,24 @@ function census(view, roots, declRoots, params, typedParams = NO_NAMES) {
 
   const walkExpr = (n) => {
     if (!isArr(n)) return
+    const outerAt = at
+    at = n
+    try { walkNode(n) } finally { at = outerAt }
+  }
+  const walkNode = (n) => {
     const op = n[0]
     if (op == null || op === 'bool' || op === 'str') return
     if (isFunctionNode(n)) { allocates(); return }   // its own frame; a call to it is counted at the call
     if (isObjectLiteral(n) || op === '[' || op === 'strcat') allocates()
     if (op === '+' && !scalarKind(view, n)) allocates()   // a concatenation
-    if (op === 'yield' || op === 'await') unsafe(op)   // the frame is suspended: what runs meanwhile allocates too
+    if (op === 'yield' || op === 'await') unsafe(op, true)   // the frame is suspended: what runs meanwhile allocates too
     if (op === '__tp_call') unknownCall('conversion method')   // an own toString/valueOf closure (emit/to-primitive.js)
     if (runsConversion(view, n)) conversion()
     if (ASSIGN_OPS.has(op) || op === '++' || op === '--') {
       const target = n[1], val = n[2]
+      // A logical assignment evaluates its value and stores only when its test passes.
+      const lazy = op === '||=' || op === '&&=' || op === '??='
+      if (lazy) guarded++
       if (isName(target)) {
         // A binding the scope does not declare (a module or enclosing-scope
         // binding, a parameter) or one a nested function writes: outer storage.
@@ -526,17 +651,19 @@ function census(view, roots, declRoots, params, typedParams = NO_NAMES) {
         const lit = isArr(target[2]) && target[2][0] == null && typeof target[2][1] === 'string'
         const fns = lit ? accessorFunctions(target[2][1], recv, target[2][1] + ACCESSOR_SET) : NO_FUNCTIONS
         if (fns === null) unsafe('accessor ' + target[2][1])
-        else { reaches(fns); store(recv, val, !typedRecv(recv) && !(lit && view?.objectSidOfExpr?.(recv) != null)) }
+        else { reaches(fns); store(recv, val, !typedRecv(recv) && !(lit && view?.objectSidOfExpr?.(recv) != null), true) }
         if (op === '=' && mayBeTyped(view, recv)) convert(val)   // a typed element store converts its value
       } else if (isArr(target) && target[0] === '{}') {
         unsafe('destructuring assignment')   // targets may be member paths
       } else unsafe('assignment target')
-      for (let i = 1; i < n.length; i++) walkExpr(n[i])
+      for (let i = 2; i < n.length; i++) walkExpr(n[i])
+      if (lazy) guarded--
+      walkExpr(target)
       return
     }
     if (op === 'delete') { const t = n[1]; if (isArr(t) && (t[0] === '.' || t[0] === '[]')) { if (!freshLocal(t[1])) unsafe('delete') } else unsafe('delete'); return }
     if (op === '()') {
-      call(n[1], n[2])
+      call(n[1], n[2], n)
       walkExpr(n[1]); walkExpr(n[2])
       return
     }
@@ -559,7 +686,18 @@ function census(view, roots, declRoots, params, typedParams = NO_NAMES) {
     }
     if (op === '.') { const fns = accessorFunctions(n[2], n[1], n[2] + ACCESSOR_GET); if (fns === null) unsafe('accessor ' + n[2]); else reaches(fns) }
     if (runsAccessor(view, n)) { out.runsAccessor = true; unknownCall('accessor') }
-    for (let i = 1; i < n.length; i++) walkExpr(n[i])
+    // From a branch's first arm on, and past a statement that may return, the rest may not run.
+    const arm = BRANCH_ARM[op] ?? n.length, loop = op === 'for' || op === 'while'
+    let rest = false
+    if (loop) loops.push(n)
+    for (let i = 1; i < n.length; i++) {
+      if (i === arm) guarded++
+      walkExpr(n[i])
+      if (op === ';' && !rest && mayReturn(n[i])) { rest = true; guarded++ }
+    }
+    if (arm < n.length) guarded--
+    if (rest) guarded--
+    if (loop) loops.pop()
   }
   for (const r of roots) walkExpr(r)
   return out
@@ -590,11 +728,27 @@ function frameEffectsOf(func) {
   for (const p of func.sig?.params ?? []) if (p?.name) { params.add(p.name); if (p.boundaryTyped) typedParams.add(p.name) }
   if (func.rest) params.add(func.rest)
   // a parameter default runs in the frame, before the body
-  const out = census(view, frameRoots(func), [body], params, typedParams)
+  const out = census(view, frameRoots(func), [body], params, typedParams, true)
   // a loop's scope declares nothing of the function's: its parameters are
   // outer storage there (a block kept in one outlives the iteration)
   out.loops = loopsOf(body).map(({ body: loopBody, roots }) => ({ body: loopBody, own: census(view, roots, [loopBody], NO_NAMES, typedParams) }))
   return out
+}
+
+/** A closure's own facts: its arrow's body censused through its own view,
+ *  its parameters as the function's are (outer storage), its captures as
+ *  outer bindings. Unknown when the summary has no arrow for it. */
+function closureEffectsOf(id) {
+  const arrow = ctx.summary?.closureArrow?.(id)
+  if (!isArr(arrow) || arrow[0] !== '=>') return { writesOuter: true, arenaUnsafe: true, allocates: true, callsUnknown: true, runsAccessor: false, why: 'closure ' + id + ' unknown', callees: new Set(), closures: new Set(), sites: new Set(), siteWhy: null, siteGuards: new Map() }
+  const body = arrow[2], params = new Set()
+  let defaults = null
+  for (const p of extractParams(arrow[1])) {
+    if (isName(p)) params.add(p)
+    else if (isArr(p) && (p[0] === '...' || p[0] === '=') && isName(p[1])) { params.add(p[1]); if (p[0] === '=') (defaults ??= {})[p[1]] = p[2] }
+    else for (const nm of patternNames(p)) params.add(nm)
+  }
+  return census(ctx.summary.at(body), frameRoots({ body, defaults }), [body], params, NO_NAMES, true)
 }
 
 function patternNames(p, out = []) {
@@ -615,32 +769,57 @@ function patternNames(p, out = []) {
  * `callees` every known function a call reaches, `allocates` whether the
  * function or a callee allocates, `loops` the body nodes of the loops whose
  * iteration lets no allocation escape and that allocate, themselves or
- * through a callee.
+ * through a callee, `closures` the closures its own resolved calls run. The
+ * map's `closureCalls` names, per closure, the closures its own calls run:
+ * link reads both as the targets of the indirect calls they compile to.
  */
 export function transitiveFrameEffects(funcs) {
   const own = new Map()
   for (const f of funcs) if (!f.raw && f.body != null) own.set(f.name, frameEffectsOf(f))
+  // The closures resolved calls run, each censused once, keyed apart from
+  // function names; a closure's own calls may name more.
+  const closureOwn = new Map(), closureKey = (id) => '\0closure' + id
+  const pending = []
+  const need = (o) => { for (const id of o.closures ?? []) if (!closureOwn.has(id)) { closureOwn.set(id, null); pending.push(id) } }
+  for (const o of own.values()) { need(o); for (const l of o.loops ?? []) need(l.own) }
+  while (pending.length) { const id = pending.pop(), o = closureEffectsOf(id); closureOwn.set(id, o); need(o) }
+  const nodes = new Map(own)
+  for (const [id, o] of closureOwn) nodes.set(closureKey(id), o)
   const facts = new Map()
-  for (const [name, o] of own) facts.set(name, { writesOuter: o.writesOuter, arenaUnsafe: o.arenaUnsafe, callsUnknown: o.callsUnknown, runsAccessor: o.runsAccessor, allocates: o.allocates, why: o.why, callees: new Set(o.callees), loops: new Set() })
+  for (const [name, o] of nodes) facts.set(name, { writesOuter: o.writesOuter, arenaUnsafe: o.arenaUnsafe, callsUnknown: o.callsUnknown, runsAccessor: o.runsAccessor, allocates: o.allocates, why: o.why, callees: new Set(o.callees), loops: new Set(), flagged: (o.sites?.size ?? 0) > 0, siteWhy: o.siteWhy })
+  // The arena facts of a callee (a function by name, a closure by its key).
+  const joinArena = (f, c, g) => {
+    let changed = false
+    if ((g ? g.arenaUnsafe : true) && !f.arenaUnsafe) { f.arenaUnsafe = true; f.why = 'calls ' + (c.startsWith('\0') ? c.slice(1) : c) + (g ? ': ' + g.why : ' (unknown)'); changed = true }
+    if (g?.allocates && !f.allocates) { f.allocates = true; changed = true }
+    // A callee's sites run in this frame: its restore reads the flag too.
+    if (g?.flagged && !f.flagged) { f.flagged = true; f.siteWhy ??= 'calls ' + (c.startsWith('\0') ? c.slice(1) : c) + ': ' + g.siteWhy; changed = true }
+    return changed
+  }
   for (let changed = true; changed;) {
     changed = false
-    for (const [name, o] of own) {
+    for (const [name, o] of nodes) {
       const f = facts.get(name)
       for (const c of o.callees) {
         const g = facts.get(c)
-        const w = g ? g.writesOuter : true, u = g ? g.arenaUnsafe : true, k = g ? g.callsUnknown : true
+        const w = g ? g.writesOuter : true, k = g ? g.callsUnknown : true
         if (w && !f.writesOuter) { f.writesOuter = true; changed = true }
-        if (u && !f.arenaUnsafe) { f.arenaUnsafe = true; f.why = 'calls ' + c + (g ? ': ' + g.why : ' (unknown)'); changed = true }
+        if (joinArena(f, c, g)) changed = true
         if (k && !f.callsUnknown) { f.callsUnknown = true; changed = true }
-        if (g?.allocates && !f.allocates) { f.allocates = true; changed = true }
         if (g) for (const cc of g.callees) if (!f.callees.has(cc)) { f.callees.add(cc); changed = true }
       }
+      for (const id of o.closures ?? []) if (joinArena(f, closureKey(id), facts.get(closureKey(id)))) changed = true
     }
   }
+  for (const key of closureOwn.keys()) facts.delete(closureKey(key))
+  for (const [name, o] of own) { const f = facts.get(name); f.closures = o.closures; f.sites = o.sites; f.siteGuards = o.siteGuards }
+  facts.closureCalls = new Map([...closureOwn].map(([id, o]) => [id, o.closures]))
+  facts.closureSites = new Map([...closureOwn].map(([id, o]) => [id, o.sites]))
+  facts.closureSiteGuards = new Map([...closureOwn].map(([id, o]) => [id, o.siteGuards]))
   for (const [name, o] of own) {
     const f = facts.get(name)
     for (const { body, own: l } of o.loops)
-      if (!l.arenaUnsafe && (l.allocates || [...l.callees].some(c => facts.get(c)?.allocates)) && [...l.callees].every(c => facts.get(c)?.arenaUnsafe === false)) f.loops.add(body)
+      if (!l.arenaUnsafe && !l.closures?.size && (l.allocates || [...l.callees].some(c => facts.get(c)?.allocates)) && [...l.callees].every(c => facts.get(c)?.arenaUnsafe === false && !facts.get(c).flagged)) f.loops.add(body)
   }
   return facts
 }

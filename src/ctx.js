@@ -481,6 +481,7 @@ export function reset(proto, globals, bridge) {
                         // Consulted by prepareModule before falling back to ctx.transform.parse(source).
     hostImports: null,
     hostImportValTypes: new Map(),
+    keepsNothing: new Set(),   // `$name`s of runtime imports that keep nothing they are handed (bridge.js hostImport)
     ast: null,          // the module being prepared (root or bundled); host-import arity reads its call sites
     resolvedModules: new Map(),
     moduleStack: [],
@@ -686,6 +687,7 @@ export function reset(proto, globals, bridge) {
     spread: null,         // the program holds a spread call, so a closure's argc may exceed the width
                           // (plan/scope sets; a rest slot view reads the spill past the inline slots). null ⇒ true.
     owner: null,          // Map<closureBodyName, enclosing function name> — the wasm name section only.
+    summaryId: null,      // Map<closureBodyName, summary closure id | undefined>: link's targets of a resolved call.
     emitting: null,       // the closure body being emitted (closure-emit.js): the owner of closures minted inside it
   }
 
@@ -970,11 +972,23 @@ export function flushWarnings() {
   if (typeof w.sink.onWarning === 'function') for (const entry of entries) w.sink.onWarning(entry)
 }
 
+/** Whether an advisory's function name (`$name`, or `name#N` for a loop in it)
+ *  is a kind variant of an export. */
+const variantOf = (fn) => {
+  let name = fn[0] === '$' ? fn.slice(1) : fn
+  const hash = name.lastIndexOf('#')
+  if (hash > 0 && hash < name.length - 1 && [...name.slice(hash + 1)].every(c => c >= '0' && c <= '9')) name = name.slice(0, hash)
+  return !!ctx.funcs.map?.get(name)?.boundaryOrigin
+}
+
 /** Record one advisory; `loc` is a source byte offset used only to derive
  *  line/column — it is never persisted on the entry. No-op unless
  *  `initWarnings` wired a sink. */
 export function warn(code, message, meta = {}, loc = null) {
   if (!ctx.warnings) return
+  // A kind variant of an export (narrow/param-abi.js) is its origin's body
+  // again: the origin's advisories speak for it.
+  if (meta.fn != null && variantOf(String(meta.fn))) return
   // One advisory per site: the source offset when the node kept one, else
   // the message (a prepared node's rewrite drops `loc`).
   const key = `${code}:${meta.fn || ''}:${loc ?? meta.line ?? message}`

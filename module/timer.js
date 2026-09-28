@@ -333,7 +333,7 @@ const setupJsHost = (ctx) => {
   // see module/console.js header). delay is a real numeric f64 (no NaN-box
   // hazard), repeat is i32, return is the timer id (numeric int).
   const needSetTimeout = () => hostImport('env', 'setTimeout',
-    ['func', '$__set_timeout', ['param', 'i64'], ['param', 'f64'], ['param', 'i32'], ['result', 'f64']])
+    ['func', '$__set_timeout', ['param', 'i64'], ['param', 'f64'], ['param', 'i32'], ['result', 'f64']], true)
   const needClearTimeout = () => hostImport('env', 'clearTimeout',
     ['func', '$__clear_timeout', ['param', 'f64'], ['result', 'f64']])
 
@@ -362,7 +362,7 @@ const setupJsHost = (ctx) => {
   // timer fallback elsewhere — interop.js) and fires the callback through the
   // exported __invoke_closure1 trampoline with the frame timestamp.
   const needRaf = () => hostImport('env', 'requestAnimationFrame',
-    ['func', '$__raf', ['param', 'i64'], ['result', 'f64']])
+    ['func', '$__raf', ['param', 'i64'], ['result', 'f64']], true)
   const needCancelRaf = () => hostImport('env', 'cancelAnimationFrame',
     ['func', '$__craf', ['param', 'f64'], ['result', 'f64']])
   ctx.core.stdlib['__invoke_closure1'] = () => invokeClosure1Fn(true, ctx.closure.receiver)

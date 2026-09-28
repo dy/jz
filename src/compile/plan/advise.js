@@ -51,22 +51,6 @@ function heapLoopAllocSites(body) {
   return sites
 }
 
-function bodyHeapAllocates(body) {
-  return body != null && containsHeapAlloc(body)
-}
-
-/** Mirrors `applyArenaRewind` eligibility in src/assemble.js (AST-level). */
-function isArenaRewindable(func) {
-  if (func.raw) return false
-  if (func.sig.params.length !== 0) return false
-  if (func.sig.results.length !== 1) return false
-  if (func.sig.ptrKind != null) return false
-  if (returnsHeap(func)) return false
-  if (func.sig.results[0] === 'f64' && func.valResult !== VAL.NUMBER && func.valResult != null)
-    return false
-  if (func.sig.results[0] !== 'f64' && func.sig.results[0] !== 'i32') return false
-  return bodyHeapAllocates(func.body)
-}
 
 function exportedFuncNames() {
   const names = new Set()
@@ -77,7 +61,9 @@ function exportedFuncNames() {
   return names
 }
 
-/** Bump-allocator growth advisories — no-op without an `opts.warnings` sink. */
+/** Bump-allocator growth advisories — no-op without an `opts.warnings` sink.
+ *  An export that keeps memory on every call is reported after the rewind has
+ *  decided (heap-per-call, compile/index.js), not guessed here. */
 function adviseHeapGrowth() {
   if (!ctx.warnings) return
   if (ctx.transform.alloc === false) return
@@ -102,17 +88,6 @@ function adviseHeapGrowth() {
       warn('heap-loop',
         `${isExport ? `export '${fn}'` : `'${fn}'`} allocates heap values inside a loop — peak memory grows with trip count; call memory.reset() between batches from the host`,
         { fn }, site.loc)
-    }
-
-    if (isExport && !returnsHeap(func) && bodyHeapAllocates(func.body)
-        && !isArenaRewindable(func) && loopSites.length === 0) {
-      const code = func.sig.params.length > 0 ? 'arena-rewind-skipped' : 'heap-per-call'
-      const detail = func.sig.params.length > 0
-        ? `export '${fn}' allocates heap values but cannot rewind per call (parameters or returned pointers prevent arena rewind)`
-        : `export '${fn}' allocates heap values — jz does not reclaim between calls`
-      warn(code,
-        `${detail}; call memory.reset() between batches from the host`,
-        { fn }, func.body.loc)
     }
   }
 }

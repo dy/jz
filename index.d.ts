@@ -113,6 +113,8 @@ export interface JzMemory extends WebAssembly.Memory {
   write(pointer: JzPointer, value: ArrayLike<unknown> | Record<string, unknown>): void
   /** Drop every allocation made since instantiation; invalidates earlier pointers. */
   reset(): void
+  /** Bytes the heap holds above the mark `reset()` returns to: what calls kept and the host allocated. */
+  readonly used: number
 }
 
 /** Reader returned by `memory(instance)` for a module without linear memory. */

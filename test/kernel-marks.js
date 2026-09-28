@@ -15,7 +15,8 @@ import { levels } from './_matrix.js'
 
 const RECORDER = readFileSync(new URL('../scripts/phase-marks.js', import.meta.url), 'utf8')
 // The driver: records like compileAst's profiler hook does, and measures the
-// heap around what it drives. `grow` allocates, so the program has an arena.
+// heap around what it drives. `grow` allocates and keeps it (a call that
+// keeps nothing releases what it made), so the program has an arena that grows.
 const DRIVER = `
 import { recordPhase, resetMarks, markStage, markTape, phasesDone, phaseCapacity, setPhaseCapacity, phaseNameAt, phaseHeapAt, stageHeap, tapeNodes, tapeCapacity } from './phase-marks.js'
 export { resetMarks, phasesDone, phaseCapacity, setPhaseCapacity, phaseNameAt, phaseHeapAt, stageHeap, tapeNodes, tapeCapacity }
@@ -23,7 +24,8 @@ const NAMES = ['summary', 'plan:collectFacts', 'link', 'not-a-phase']
 export let record = (k, cycle) => { const h0 = __heap_mark(); for (let i = 0; i < k; i++) recordPhase(NAMES[i % cycle]); return __heap_mark() - h0 }
 export let stage = (s) => { const h0 = __heap_mark(); markStage(s); markTape(11, 16); return __heap_mark() - h0 }
 export let readback = () => { const h0 = __heap_mark(); let n = 0; const done = phasesDone(); for (let i = 0; i < done; i++) { if (phaseNameAt(i).length > 0 && phaseHeapAt(i) > 0) n++ } stageHeap(0); tapeNodes(); return (__heap_mark() - h0) * 1000000 + n }
-export let grow = (n) => { const a = new Array(n); for (let i = 0; i < n; i++) a[i] = 'x' + i; return a.length }
+let kept = null
+export let grow = (n) => { const a = new Array(n); for (let i = 0; i < n; i++) a[i] = 'x' + i; kept = a; return a.length }
 export let heap = () => __heap_mark() >>> 0
 let stamp = 0
 export const writeStamp = v => { stamp = v }

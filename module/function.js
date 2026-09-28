@@ -89,6 +89,9 @@ export default (ctx) => {
     const fnName = `${T}closure${ctx.closure.table.length}`
     const owner = ctx.func.current?.name ?? ctx.closure.emitting
     if (owner) (ctx.closure.owner ??= new Map()).set(fnName, owner)
+    // The summary's closure this body is (undefined for a body it never saw:
+    // one cloned after it ran): link reads a resolved call's targets by it.
+    ;(ctx.closure.summaryId ??= new Map()).set(fnName, ctx.summary?.closureIdOfBody?.(body))
 
     const localIntConsts = ctx.func.body ? topLevelIntConsts(ctx.func.body) : new Map()
     const captureIntConsts = new Map()

@@ -1383,12 +1383,13 @@ test('arena: a loop rewinds around a method of a class receiver that may be null
 })
 
 // A dropped loop marker names its reason: the loop's own tape reaches a
-// write to a module global (the census passes a number into a module
-// binding; the tape pass keeps the heap's globals and the property caches
-// alone).
+// write to a module global (the census passes a number into a module binding
+// that may also hold a string; the tape pass keeps the heap's globals, the
+// property caches and bindings that only ever hold numbers alone).
 test('arena: a loop marker dropped at link reports the loop\'s reason', () => {
   const warnings = { entries: [] }
   compile(`let count = 0
+    export const label = () => { count = 'n/a' }
     const tick = () => ++count
     export function each(n) {
       let s = 0

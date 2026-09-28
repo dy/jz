@@ -17,7 +17,7 @@ import {
 } from '../representation-plan.js'
 import { plannedTypedStorageCtor } from '../typed-storage-plan.js'
 import { I64_ARITH_OP, bigIntDivIR, bigIntDomainsCanMix, bigIntOperand, bigintMixReject } from './bigint.js'
-import { emit, emitIdentitySafe, rejectAmbiguousBoolIdentity, boolTaggedBinding, boolCarrier, toBool } from './dispatch.js'
+import { emit, emitIdentitySafe, rejectAmbiguousBoolIdentity, boolTaggedBinding, boolCarrier, toBool, markInstrumented, withEscapeFlag } from './dispatch.js'
 import { emitArrayViewDef } from '../array-view.js'
 import { privateStringBuilder } from '../analyze-scans.js'
 import { isSideEffectFree } from './shared.js'
@@ -310,10 +310,17 @@ export const assignmentOps = {
   // Logical/nullish compound assignments: read → check → conditionally write
   // For complex LHS (obj.prop, arr[i]): emit as check(read(lhs)) ? write(lhs, val) : read(lhs)
   ...Object.fromEntries(['||=', '&&=', '??='].map(op => [op, (name, val) => {
+    // An escape site (emit/dispatch.js) raises its flag in the arm that assigns.
+    const site = ctx.plans.escapeFlag && ctx.plans.escapeSites?.has(ctx.error.node) ? ctx.error.node : null
+    if (site) markInstrumented(site)
     // A member: read, test, and write through the reference, evaluated once.
     if (typeof name !== 'string') {
       const baseOp = op.slice(0, -1) // '||', '&&', '??'
-      return throughReference(name, val, ref => emit([baseOp, ref, ['=', ref, val]]))
+      return throughReference(name, val, ref => {
+        const assign = ['=', ref, val]
+        if (site) { ctx.plans.escapeSites.add(assign); (ctx.plans.siteOrigin ??= new WeakMap()).set(assign, ctx.plans.siteOrigin?.get(site) ?? site) }
+        return emit([baseOp, ref, assign])
+      })
     }
     if (isConst(name)) err(`Assignment to const '${name}' — const bindings can't be reassigned after initialization; declare it with let instead`)
     const void_ = ctx.func._expect === 'void'
@@ -324,7 +331,8 @@ export const assignmentOps = {
     const cond = op === '??=' ? isNullish(lhs) : truthyIR(lhs)
     // &&= and ??= assign when cond is true (truthy / nullish); ||= assigns when cond is false
     const repAction = representationBindingWriteAction(ctx, name, val)
-    const assigned = asF64(applyBigintRepresentationAction(emit(val), val, repAction))
+    const assigned0 = asF64(applyBigintRepresentationAction(emit(val), val, repAction))
+    const assigned = site ? withEscapeFlag(assigned0) : assigned0
     const [thenExpr, elseExpr] = op === '||='
       ? [['local.get', `$${t}`], assigned]
       : [assigned, ['local.get', `$${t}`]]

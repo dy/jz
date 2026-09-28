@@ -3,7 +3,10 @@
 // pointer at return; it is sound only when no allocation made during the
 // call outlives the frame. The census proves that from the source, the tape
 // pass proves the rest from the emitted body, and `whyNotRewind` names the
-// reason a candidate was declined.
+// reason a candidate was declined. An escape that may not run on a call (in a
+// branch, past a statement that may return, behind its own receiver test) is
+// a site: the frame restores the heap only on a call that ran none, and
+// `whyNotRewind` names the first site (`kept on a call that runs an escape`).
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import jz, { compile } from '../index.js'
@@ -15,6 +18,8 @@ import { oracle } from './util.js'
 const TAPE = { optimize: { watr: false } }   // the pass's own output, before watr folds dead allocations away
 const bodyOf = (wat, name) => { const i = wat.indexOf(`(func $${name}\n`); if (i < 0) return ''; const j = wat.indexOf('\n  (func ', i + 10); return wat.slice(i, j < 0 ? undefined : j) }
 const rewinds = (src, opts = {}) => /heap_save/.test(bodyOf(compile(src, { wat: true, ...TAPE, ...opts }), 'f'))
+// A frame that restores the heap only on a call no escape site ran in.
+const flagged = (src, opts = {}) => /esc_save/.test(bodyOf(compile(src, { wat: true, ...TAPE, ...opts }), 'f'))
 const whyNot = (src, opts = {}) => { const why = []; compile(src, { ...TAPE, ...opts, whyNotRewind: (n, r) => why.push([n, r]) }); return why.find(([n]) => n === '$f')?.[1] ?? null }
 
 test('frame effects: own builtin-named methods retain their call effects', () => {
@@ -68,6 +73,99 @@ test('frame effects: an allocation escaping through a parameter, a callee, or a 
   ok(!rewinds('export function f(o, n) { o.x = { y: n }; const t = new Array(n).fill(0); return t.length }'), 'no rewind emitted')
   // a parameter default runs in the frame: its growth of a parameter array escapes
   is(whyNot('export function f(o, n, x = o.push([n])) { const t = new Array(n).fill(0); return t.length }'), 'escape: method push', 'through an unproven parameter default receiver')
+})
+
+test('frame effects: an escape that may not run on a call is a site, one that runs on every call vetoes', () => {
+  for (const [src, where] of [
+    ['export function f(o, n) { if (n > 3) o.x = { y: n }; const t = new Array(n).fill(0); return t.length }', 'an if arm'],
+    ['let cache = null; export function f(n) { const t = new Array(n).fill(0); if (cache !== null) return t.length + cache[0]; cache = new Float64Array(2); return t.length }', 'past an early return'],
+    ['let st = null; export function f(n) { st ??= new Float64Array(2); const t = new Array(n).fill(0); return t.length + st[0] }', 'a logical assignment\'s store'],
+  ]) {
+    ok(/^kept on a call that runs an escape: /.test(whyNot(src)), `${where}: ${whyNot(src)}`)
+    ok(flagged(src), `${where}: the frame restores on the escape flag`)
+  }
+  const loop = 'const cache = []; export function f(n) { const t = new Array(n).fill(0); for (let i = 0; i < n; i++) cache.push(i); return t.length }'
+  is(whyNot(loop), 'escape: grows cache', 'a loop body runs on every call that reaches it')
+  ok(!rewinds(loop), 'no rewind emitted')
+  // a receiver that is no typed array grows on every store: its test would always pass
+  is(whyNot('const W = [0, 0]; export function f(n) { const t = new Array(n).fill(0); W[n] = n; return t.length }'), 'escape: grows W', 'a plain array\'s growth has no test of its own')
+})
+
+test('frame effects: a receiver\'s test stands before the loop it stays the same through', () => {
+  // `t` may be an array the store grows: the frame is conditional, its test runs once per call
+  const once = 'export function f(a, b, k, n) { const s = new Array(4).fill(0); const t = k === 1 ? a : b; for (let i = 0; i < n; i = i + 1) t[i] = i + s[0]; return s.length }'
+  const body = bodyOf(compile(once, { wat: true, ...TAPE }), 'f')
+  // each `(loop …)` span, by its parentheses
+  const loops = [...body.matchAll(/\(loop/g)].map(({ index }) => { let d = 0, j = index; do { d += body[j] === '(' ? 1 : body[j] === ')' ? -1 : 0; j++ } while (d > 0); return body.slice(index, j) })
+  ok(flagged(once) && /\$__esc/.test(body) && loops.length && !loops.some(l => /\$__esc/.test(l)), 'the test is outside every loop')
+  const want = oracle(once), m = jz(once).exports
+  for (const [a, b] of [[[1, 2], [3]], [new Float64Array(4), [0]]]) is(m.f(a, b, 1, 6), want.f([...a], [...b], 1, 6), 'a growing array and a typed one')
+  // a receiver each iteration binds anew has no test that runs once
+  ok(/^escape: grows row/.test(whyNot('export function f(rows, n) { const s = new Array(4).fill(0); for (let i = 0; i < n; i++) { const row = rows[i]; row[5] = s[0] } return s.length }')), 'the test would run every iteration')
+})
+
+test('frame effects: receivers whose tests stand before one loop each keep theirs', () => {
+  // an FDN's stereo block: `L[i] = …` and `R[i] = …`, both tested before the loop
+  const src = `let A = [], B = [], TA = new Float64Array(64), TB = new Float64Array(64)
+    export function f(k, n) { const s = new Array(4).fill(0); const a = k === 1 ? A : TA, b = k === 1 ? B : TB; for (let i = 0; i < n; i++) { a[i] = i + s[0]; b[i] = i * 2 } return s.length }
+    export function churn(n) { const x = []; for (let i = 0; i < n; i++) x.push([i, i]); return x.length }
+    export let read = () => A.length * 1000 + A[7] * 10 + B[7]`
+  const want = oracle(src)
+  for (const optimize of levels(2, 'size')) {
+    const { exports: m, memory } = jz(src, { optimize })
+    m.f(0, 8); const used = memory.used
+    for (let i = 0; i < 100; i++) m.f(0, 8)
+    is(memory.used, used, `two typed receivers: every call released at ${optimize}`)
+    is(m.f(1, 8), want.f(1, 8)); m.churn(64); want.churn(64)
+    is(m.read(), want.read(), `two growing arrays read back at ${optimize}`)
+  }
+})
+
+test('frame effects: a receiver\'s test stands before a callback run per element and before an inner loop', () => {
+  const spans = (wat) => [...wat.matchAll(/\(loop/g)].map(({ index }) => { let d = 0, j = index; do { d += wat[j] === '(' ? 1 : wat[j] === ')' ? -1 : 0; j++ } while (d > 0); return wat.slice(index, j) })
+  const raise = /global\.set \$__esc \(i32\.const 1\)/
+  // forEach runs its callback per element: the test stands before the call
+  const each = 'export function f(a, b, k) { const s = new Array(4).fill(0); const t = k === 1 ? a : b; const xs = [k, k + 1, k + 2]; xs.forEach((x, i) => { t[i] = x + s[0] }); return s.length }'
+  const wat = compile(each, { wat: true, ...TAPE })
+  ok(flagged(each) && raise.test(bodyOf(wat, 'f')) && !spans(wat).some(l => raise.test(l)) && !/\(func \$closure[^]*?global\.set \$__esc \(i32\.const 1\)/.test(wat.slice(wat.indexOf('(func $closure'))), 'no element pays the test')
+  // a row the outer loop binds anew is the same through the inner loop: its test runs once per row
+  const rows = 'export function f(rows, n) { const s = new Array(4).fill(0); for (let i = 0; i < n; i++) { const row = rows[i]; for (let j = 0; j < n; j++) row[j] = j + s[0] } return s.length }'
+  const loops = spans(bodyOf(compile(rows, { wat: true, ...TAPE }), 'f')), innermost = loops.filter(l => l.indexOf('(loop', 5) < 0)
+  ok(flagged(rows) && loops.some(l => raise.test(l)) && !innermost.some(l => raise.test(l)), 'the test runs per row, outside the inner loop')
+  // an optional call's callback, a return from inside the loop: what escaped stays
+  const kept = `let store = [], typed = new Float64Array(8)
+    export function f(k, n) { const s = new Array(4).fill(0); const t = k === 1 ? store : typed; for (let i = 0; i < n; i++) { t[i] = i + s[0]; if (i === 2) return s.length } return s.length }
+    export function g(k, xs) { const s = new Array(4).fill(0); const t = k === 1 ? store : typed; xs?.forEach((x, i) => { t[i + 4] = x + s[0] }); return s.length }
+    export function h(k, n) { const s = new Array(4).fill(0); const pick = (node) => { for (let j = 0; j < 3; j++) node[j + 8] = j + s[0] }; for (let i = 0; i < n; i++) pick(k === 1 ? store : typed); return s.length }
+    export function g2(c, k) { const s = new Array(4).fill(0); const t = k === 1 ? store : typed; const put = (i) => { for (let j = 0; j < 2; j++) t[i + j] = j + s[0] }; if (c) { for (let i = 0; i < 3; i++) put(i) } put(20); return s.length }
+    export function churn(n) { const a = []; for (let i = 0; i < n; i++) a.push([i, i]); return a.length }
+    export let read = () => store.length * 1000 + store[2] * 100 + (store[5] ?? 0) + (store[21] ?? 0) * 10`
+  // a named arrow runs from each call to it: its receiver's test never leaves its body
+  // (`pick`'s own parameter, out of scope in `h`; `put`, called in a loop a branch
+  // guards and after it). Kept out of line, the arrows stay arrows.
+  const want = oracle(kept)
+  for (const optimize of [...levels(2, 'size'), { level: 2, inlineFns: false, sourceInline: false }]) {
+    const m = jz(kept, { optimize }).exports
+    for (const [fn, args] of [['f', [1, 6]], ['g', [1, [7, 8]]], ['f', [0, 6]], ['h', [1, 2]], ['g2', [0, 1]]]) is(m[fn](...args), want[fn](...args), `${fn} at ${optimize}`)
+    m.churn(64); is(m.read(), want.read(), `the grown array reads back after other allocations at ${optimize}`)
+  }
+})
+
+test('frame effects: an element store writes no binding, and a runtime import keeps nothing it is handed', () => {
+  const fill = 'export function f(n) { const a = []; for (let i = 0; i < n; i++) a[i] = i * 2; let s = 0; for (let i = 0; i < n; i++) s += a[i]; return s }'
+  ok(rewinds(fill) && !flagged(fill), 'the local array stays fresh: a plain rewind')
+  const log = 'export function f(n) { const t = new Array(n).fill(0); console.log(t.length); return t.length }'
+  ok(rewinds(log) && !flagged(log), 'console.log decodes its arguments: a plain rewind')
+})
+
+test('frame effects: a result the summary saw no value of proves no scalar', () => {
+  // `clone` is never called, only named by its own `node.map(clone)`: the
+  // summary's kind of its result is empty, which is no proof it holds no heap value.
+  const why = []
+  compile(`import { twice } from './util.js'
+    export let f = (x) => { const t = [x, x]; return twice(t[0] + t[1]) }`, { ...TAPE, whyNotRewind: (n, r) => why.push([n, r]), modules: {
+    './util.js': 'export const clone = (node) => Array.isArray(node) ? node.map(clone) : node; export const twice = (x) => x * 2' } })
+  is(why.find(([n]) => n === '$__util_js$clone')?.[1], 'result: may hold a heap value')
 })
 
 test('frame effects: arrays a parameter default pushes into the caller keep their values', () => {
@@ -152,6 +250,8 @@ test('frame effects: whyNotRewind reports no allocation and the vetoing callee',
 
 const onTape = (m, fn) => { resetTape(); const root = fromWat(m); fn(root); return toWat(root) }
 const src = (n) => JSON.stringify(n)
+// What the pass made of `$f`: a restore on the escape flag, a plain restore, or none.
+const mode = (s) => /esc_save/.test(s) ? 'flag' : /heap_save/.test(s) ? 'rewind' : 'none'
 const alloc = ['call', '$__alloc', ['i32.const', 8]]
 
 test('arena rewind on the tape: the unsafe set vetoes a candidate and every caller of an unsafe function', () => {
@@ -194,6 +294,44 @@ test('arena rewind on the tape: a kernel storing through a module-wide table vet
   ok(run([['local.set', '$t', alloc], ['i32.store', ['local.get', '$t'], ['i32.const', 1]], ['local.get', '$t']]), 'a store into its own allocation is fresh memory')
   ok(run([['local.set', '$t', ['i32.trunc_f64_s', ['global.get', '$__fc0']]], ['i32.store', ['local.get', '$t'], ['i32.const', 1]], ['i32.const', 0]]), 'an immutable global is a constant, not a table')
   ok(run([['local.set', '$t', ['global.get', '$__heap']], ['i32.store', ['local.get', '$t'], ['i32.const', 1]], ['global.set', '$__heap', ['i32.add', ['local.get', '$t'], ['i32.const', 8]]], ['local.get', '$t']]), 'a bump at the heap pointer is an allocation')
+})
+
+test('arena rewind on the tape: an escape in a branch of user code raises the flag, one on every call vetoes, a kernel\'s rare path alone keeps the frame', () => {
+  const m = (body) => ['module',
+    ['import', '"env"', '"x"', ['func', '$env.x', ['param', 'f64'], ['result', 'f64']]],
+    ['import', '"env"', '"print"', ['func', '$__print', ['param', 'f64'], ['result', 'f64']]],
+    ['global', '$__tab', ['mut', 'i32'], ['i32.const', 0]],
+    ['func', '$__k', ['param', '$p', 'i32'], ['result', 'i32'], ['if', ['local.get', '$p'], ['then', ['global.set', '$__tab', ['local.get', '$p']]]], ['i32.const', 0]],
+    ['func', '$f', ['param', '$c', 'i32'], ['result', 'i32'], body, alloc],
+  ]
+  const call = (callee) => ['drop', ['call', callee, callee === '$__k' ? ['local.get', '$c'] : ['f64.const', 1]]]
+  const branch = (x) => ['if', ['local.get', '$c'], ['then', x]]
+  const run = (body, opts = {}) => mode(src(onTape(m(body), root => arenaRewind(root, { rewindable: new Map([['$f', 'i32']]), heapAddr: null, censused: new Set(['$f']), ...opts }))))
+  is(run(branch(call('$env.x'))), 'flag', 'a user import called in a branch raises the flag where it runs')
+  is(run(['block', branch(['return', ['i32.const', 0]]), call('$env.x')]), 'flag', 'past a return it may not run either')
+  is(run(call('$env.x')), 'none', 'one called on every call keeps the frame')
+  is(run(call('$__print'), { keepsNothing: new Set(['$__print']) }), 'rewind', 'a runtime import that keeps nothing it is handed is no escape')
+  is(run(call('$__k')), 'none', 'a kernel escaping on a rare path: the frame keeps, and no call pays the protocol')
+  is(run(call('$__k'), { conditional: new Map([['$f', 'outer binding x']]) }), 'flag', 'a frame with a site of its own restores on the flag the kernel raises')
+  // the raise is a statement of its own: a pass rewriting the store reads its one operand
+  const store = src(onTape(m(branch(['global.set', '$__tab', ['local.get', '$c']])), root => arenaRewind(root, { rewindable: new Map([['$f', 'i32']]), heapAddr: null, censused: new Set(['$f']) })))
+  ok(store.includes('["global.set","$__esc",["i32.const",1]],["global.set","$__tab",["local.get","$c"]]'), 'the flag rises before the store: ' + store.slice(store.indexOf('"then"'), store.indexOf('"then"') + 120))
+})
+
+test('arena rewind on the tape: a guard no conditional frame reaches goes, its test staying where it sets a local', () => {
+  // optimize/cse-address.js may hoist the receiver's type into the guard's test: later reads share the local.
+  const m = ['module',
+    ['global', '$__esc', ['mut', 'i32'], ['i32.const', 0]],
+    ['func', '$__ptr_type', ['param', '$p', 'i64'], ['result', 'i32'], ['i32.wrap_i64', ['i64.shr_u', ['local.get', '$p'], ['i64.const', 47]]]],
+    ['func', '$g', ['param', '$x', 'f64'], ['result', 'i32'], ['local', '$pt', 'i32'],
+      ['if', ['i32.ne', ['local.tee', '$pt', ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', '$x']]]], ['i32.const', 3]], ['then', ['global.set', '$__esc', ['i32.const', 1]]]],
+      ['if', ['i32.ne', ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', '$x']]], ['i32.const', 3]], ['then', ['global.set', '$__esc', ['i32.const', 1]]]],
+      ['local.get', '$pt']],
+  ]
+  const out = src(onTape(m, root => arenaRewind(root, { rewindable: new Map(), heapAddr: null })))
+  ok(!/"\$__esc",\["i32.const",1\]/.test(out), 'no raise is left')
+  ok(/"local.tee","\$pt"/.test(out), 'the test that sets $pt stays')
+  is((out.match(/"call","\$__ptr_type"/g) ?? []).length, 1, 'the test that sets nothing goes')
 })
 
 test('arena rewind on the tape: a tail call to a safe kernel becomes a plain call inside the rewind; other tail calls veto', () => {
