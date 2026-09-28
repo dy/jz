@@ -271,6 +271,8 @@ JavaScript's bounds checks.
 <details>
 <summary><strong>How do I inspect or debug the output?</strong></summary>
 
+- A rejected program names the construct that faulted: its module (when there
+  are several), line and column, and the source line.
 - `jz kernel.js --wat` or `compile(src, { wat: true })` prints the WAT. Search
   for `v128` to confirm vectorization and for `__dyn_get` or `__ext_call` to find
   dynamic fallbacks.

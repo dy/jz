@@ -1566,6 +1566,29 @@ subscript's `lvl - .5` admits), and the boundary after it only notes that
 another follows. The trees are subscript's, node for node (`test/parse-list.js`).
 The change belongs in subscript's `feature/asi.js`; this layer goes when it is there.
 
+It also reads source text the way ECMAScript does where subscript takes a
+shortcut. A name is ID_Start then ID_Continue, `$`, `_`, ZWNJ and ZWJ, written
+raw, as a surrogate pair or escaped (`src/unicode.js`; the range tables are
+generated from Node's Unicode data by `scripts/gen-unicode-id.mjs`, since the
+compiled compiler has no `\p{…}`), and every stage after the early errors sees
+an escaped name decoded. Between tokens stand the WhiteSpace and
+LineTerminator characters and no others; the space layer owns the comments and
+ends a line at LF, CR, LS and PS (`test/identifiers.js`).
+
+A parsed node's `loc` indexes the compile's sources laid end to end: the
+program's text from 0, then each bundled module's after the one before
+(`ctx.js addSource`, `prepare/handlers.js parseModule`). The compiler's own
+`jz:` modules and the text it writes carry none. A rewrite gives the node it
+builds the position of the node it replaces (`ast.js withLoc`,
+`rewriteChildren`, jzify's recursive rewriters, `prep`), and a function record
+keeps its body's position when a pass rebuilds the body. The walks that reject
+(the early errors, jzify, prepare, emit) hold a located node's position current
+while inside it and restore the enclosing one after: a fault at a node the
+compiler built reports the nearest written one around it, and outside any walk
+the active function's body stands in (`ctx.js here`). `locate` maps a position
+to its module, line and column, and a message shows the names the source wrote
+(`test/error-location.js`).
+
 **One shared optimizer, owned by watr (`~/projects/watr`).** Generic optimizer changes belong there, with tests in both projects. JZ supplies language-specific analysis, representation contracts, and lowering. The existing generic passes in `src/optimize/` are migration work: consolidate them into watr and delete JZ copies, rather than building a competing optimizer. Never patch only `node_modules`.
 
 The tape (`src/ir/tape.js`) transports WAT through link. Settled program summaries own semantic facts; watr owns generic optimization. [PLAN.md](PLAN.md) prioritizes reliable builds and stateful audio DSP. Further IR or state refactors need a demonstrated defect, bottleneck, or deletion. Each migration slice deletes the authority it replaces.
