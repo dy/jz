@@ -100,6 +100,7 @@ export function materializeVariant({
       // under whatever the caller's `sig` states (its params, an ABI change)
       { ...origin.sig, params: origin.sig.params.map(p => ({ ...p })), results: [...origin.sig.results], ...sig },
       false, origin.defaults, rest)
+    clone.loc ??= origin.loc   // a variant stands where its source does
     clone.valResult = origin.valResult
     clone.valResultMayBeUndefined = origin.valResultMayBeUndefined
     clone.arrayElemSchema = origin.arrayElemSchema
