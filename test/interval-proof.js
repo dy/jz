@@ -181,7 +181,9 @@ const assertCompileHistoryIndependent = (src, predecessors, opts, label) => {
     ok(sameOutput(cold, warm), `${label}: matches cold output after a sibling compile`)
   }
 }
-const hasTypedBoundsTemp = wat => /\$[^\s)]*tb[in]\d*/.test(wat)
+// A number key that may name no element carries its own test (emit/dispatch.js
+// keyIndex, the `ixvN` bit) beside the typed access's `tbiN`/`tbnN` temps.
+const hasTypedBoundsTemp = wat => /\$[^\s)]*(tb[in]|ixv)\d*/.test(wat)
 // A checked typed access is marked by the `tbiN` index or `tbnN` in-bounds temp jz emits for it, or,
 // when propagation merges that temp into the index local, by the guard itself:
 // an unsigned compare against the constant length around the store.

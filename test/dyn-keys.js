@@ -100,7 +100,8 @@ test('exported typed-array index parameters take the numeric boundary; internal 
   ]) {
     const src = `const a = new Float64Array([3, 5]); ${exports}`
     const ref = new Float64Array([3, 5])
-    const at = (key) => { const i = +key | 0; return i >= 0 && i < ref.length ? ref[i] : undefined }
+    // the boundary converts the key to a number; one that is no index reads undefined
+    const at = (key) => { const i = +key; return Number.isInteger(i) && i >= 0 && i < ref.length ? ref[i] : undefined }
     const expected = { get: at, mixed: (key) => at(key) + (key | 0) }
     for (const optimize of [...levels(0, 2, 3), 'size']) {
       const wasm = jz(src, { optimize }).exports
@@ -122,11 +123,12 @@ test('exported typed-array stores take the numeric boundary for key and value; i
     export function get(key) { return a[key]; }`
   for (const optimize of [...levels(0, 2, 3), 'size']) {
     const wasm = jz(src, { optimize }).exports, ref = new Float64Array([3, 5])
-    const at = (key) => { const i = +key | 0; return i >= 0 && i < ref.length ? ref[i] : undefined }
+    // the boundary converts the key to a number; one that is no index reads undefined, stores nothing
+    const index = (key) => { const i = +key; return Number.isInteger(i) && i >= 0 && i < ref.length ? i : -1 }
+    const at = (key) => index(key) < 0 ? undefined : ref[index(key)]
     for (const [key, value] of [['note', 'text'], ['note', undefined], ['01', 9], [0, '11'], ['1', 13], ['', false]]) {
       wasm.put(key, value)
-      const i = +key | 0
-      if (i >= 0 && i < ref.length) ref[i] = +value
+      if (index(key) >= 0) ref[index(key)] = +value
       for (const key of ['note', '01', 0, 1, '', 'length'])
         is(wasm.get(key), at(key), `O${optimize}: stored ${key}`)
     }
@@ -984,11 +986,9 @@ test('dictionary slot updates hash every string representation after key normali
 })
 
 test('dyn-keys: atom-vs-NaN key split (index contract preserved)', () => {
-  // Real NaN keeps the documented i32-truncating index contract (a[NaN] → a[0]);
-  // only ATOM boxes (undefined/null) stringify. The first ToPropertyKey arm
-  // used f64.eq(k,k), which lumped real NaN in with the atoms and broke the
-  // contract pin in array-methods.
-  is(run(`const a = [11, 22]; const k = 0/0; return a[k]`), 11)
+  // A real NaN names no element (a[NaN] is undefined); only ATOM boxes
+  // (undefined/null) stringify to a property key.
+  is(run(`const a = [11, 22]; const k = 0/0; return a[k]`), undefined)
   is(run(`const d = {}; d['undefined'] = 7; const u = [, 1][0]; return d[u]`), 7)
 })
 

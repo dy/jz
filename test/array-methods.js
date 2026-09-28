@@ -618,16 +618,16 @@ test('Regression: dynamic property access on string returns undefined', () => {
   is(test(), undefined, 'missing property on string returns undefined')
 })
 
-test('Regression: dynamic property assignment on string fails gracefully', () => {
-  // JS semantics (ES2023 §13.15.2, non-strict PutValue on a primitive base):
-  // the write is silently DISCARDED — `s.prop` reads back undefined. The old
-  // pin asserted 42 (jz used to store string expandos in the global dyn-props
-  // table), diverging from every engine; strings are primitives and now end
-  // the dyn read/write paths immediately (module/collection.js STRING arms).
+test('Regression: dynamic property assignment on string throws', () => {
+  // Every jz module is strict code: PutValue on a primitive base throws
+  // TypeError (ES2023 §10.1.9.2 OrdinarySetWithOwnDescriptor returns false for a
+  // primitive receiver, §6.2.5.6 throws in strict code). The old pins asserted
+  // 42 (a string expando in the global dyn-props table), then undefined (the
+  // sloppy-mode drop).
   const { test } = runHost(`
-    export let test = () => { let s = "foo"; s.prop = 42; return s.prop }
+    export let test = () => { let s = "foo"; try { s.prop = 42; return s.prop } catch (e) { return e.name } }
   `)
-  is(test(), undefined, 'property write on a string primitive is dropped (JS semantics)')
+  is(test(), 'TypeError', 'property write on a string primitive throws (strict code)')
 })
 
 test('Regression: external method returning typed array spreads into array', () => {
@@ -1302,14 +1302,14 @@ test('.subarray: chained methods + sub-of-sub + Uint8 kind-aware', () => {
 // makes the hot loops competitive; plain `[]` arrays stay bounds-checked. This pins the
 // contract so it stays intentional (and distinct from the object numeric-KEY path, which
 // IS JS-correct via __i32_to_str). NOT a JS-parity claim — a documented divergence.
-test('array index contract: i32-truncating, typed raw, plain bounds-checked', () => {
-  // Fractional/NaN index TRUNCATES to a valid in-bounds element (the contract), not JS's undefined.
-  is(run(`export let f = () => { const a=[11,22]; return a[1.5] }`).f(), 22)   // →a[1]; JS: undefined
-  is(run(`export let f = () => { const a=[11,22]; return a[NaN] }`).f(), 11)   // →a[0]; JS: undefined
-  is(run(`export let f = () => { const a=new Float64Array(2); a[0]=11; a[1]=22; return a[1.5] }`).f(), 22)
-  is(run(`export let f = () => { const a=new Float64Array(2); a[0]=11; a[1]=22; return a[NaN] }`).f(), 11)
-  // Plain `[]` arrays ARE bounds-checked: OOB / negative → undefined (surfaces as NaN at the f64
-  // return boundary), NOT a raw read. (A typed array would read raw memory — the speed primitive.)
+test('array index contract: a key that names no element reads undefined', () => {
+  // A fractional or NaN key names no element: undefined, as JavaScript reads it
+  // (emit/dispatch.js keyIndex), NaN at this helper's f64 return boundary.
+  ok(Number.isNaN(run(`export let f = () => { const a=[11,22]; return a[1.5] }`).f()), 'plain fraction → undefined')
+  ok(Number.isNaN(run(`export let f = () => { const a=[11,22]; return a[NaN] }`).f()), 'plain NaN → undefined')
+  ok(Number.isNaN(run(`export let f = () => { const a=new Float64Array(2); a[0]=11; a[1]=22; return a[1.5] }`).f()), 'typed fraction → undefined')
+  ok(Number.isNaN(run(`export let f = () => { const a=new Float64Array(2); a[0]=11; a[1]=22; return a[NaN] }`).f()), 'typed NaN → undefined')
+  // Out of bounds or negative: undefined too.
   ok(Number.isNaN(run(`export let f = () => { const a=[11,22]; return a[5] }`).f()), 'plain OOB → undefined')
   ok(Number.isNaN(run(`export let f = () => { const a=[11,22]; return a[-1] }`).f()), 'plain negative → undefined')
 })
