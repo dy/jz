@@ -84,6 +84,17 @@ export let block = () => { let x = 1 /* ${LS} */ x = 3
   both(`export let restricted = () => { return${LS}1 }`, [['restricted']])
 })
 
+// An escaped name is the name it spells from the parse on: jzify sees one
+// function declared twice in a function body, and the later declaration is the
+// binding (§10.2.11); at a module's top level the second is an early error.
+test('identifiers: an escaped name declares the name it spells', () => {
+  both('export let f = () => { function g() { return "a" } function \\u0067() { return "b" } return g() }', [['f']])
+  both('export let f = () => { function h() { return 1 } let a = h(); function h() { return 2 } return a * 10 + h() }', [['f']])
+  let error
+  try { compile('function g() {}\nfunction \\u0067() {}\nexport let f = () => g()') } catch (e) { error = e }
+  ok(error?.message.includes("duplicate lexical declaration 'g'"), error?.message)
+})
+
 test('identifiers: characters that are no name character, and misplaced ones', () => {
   const REJECT = [
     ['middle dot first', 'let ·a = 1'],

@@ -72,6 +72,16 @@ function dedupeRedecls(stmts) {
   return out
 }
 
+// A name declared by several functions of one scope is bound to the last of
+// them before any code runs (§10.2.11 FunctionDeclarationInstantiation): the
+// earlier ones never become its value.
+function lastDeclared(decls) {
+  const nameOf = d => Array.isArray(d) && d[0] === 'const' && Array.isArray(d[1]) && d[1][0] === '=' && typeof d[1][1] === 'string' ? d[1][1] : null
+  const last = new Map()
+  decls.forEach((d, i) => { const n = nameOf(d); if (n != null) last.set(n, i) })
+  return last.size === decls.length ? decls : decls.filter((d, i) => { const n = nameOf(d); return n == null || last.get(n) === i })
+}
+
 function functionBodyBlock(body) {
   if (Array.isArray(body) && body[0] === '{}') return body
   if (Array.isArray(body) && body[0] === ';') return withLoc(['{}', body], body)
@@ -298,7 +308,7 @@ export function createTransform(opts) {
         (s[0] === 'import' || (s[0] === ',' && Array.isArray(s[1]) && s[1][0] === 'import'))
       const imports = rest.filter(isImportStmt)
       const nonImports = rest.filter(s => !isImportStmt(s))
-      const all = dedupeRedecls([...imports, ...hoisted, ...nonImports])
+      const all = dedupeRedecls([...imports, ...lastDeclared(hoisted), ...nonImports])
       return all.length === 0 ? null : all.length === 1 ? all[0] : [';', ...all]
     }
 

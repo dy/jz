@@ -1022,7 +1022,7 @@ const validateScopeNames = (body, cx, scopeKind, paramNames = []) => {
   // only, to check that narrow case without disturbing the shared bucketing
   // every other scopeKind (and sloppy scripts) already relies on.
   const moduleTop = scopeKind === 'global' && cx.module
-  const topVarNames = [], topFuncNames = []
+  const topVarNames = [], topFuncNames = [], topFuncAt = []
   for (const stmt of list) {
     const d = declaration(stmt)
     if (!d) continue
@@ -1031,17 +1031,19 @@ const validateScopeNames = (body, cx, scopeKind, paramNames = []) => {
       for (const name of d[D_NAMES]) lexical.push(name), lexicalAt.push(stmt.loc)
     else if (d[D_TYPE] === 'var' || d[D_TYPE] === 'function') {
       directVar.push(...d[D_NAMES])
-      if (moduleTop) (d[D_TYPE] === 'var' ? topVarNames : topFuncNames).push(...d[D_NAMES])
+      if (moduleTop && d[D_TYPE] === 'var') topVarNames.push(...d[D_NAMES])
+      else if (moduleTop) for (const name of d[D_NAMES]) topFuncNames.push(name), topFuncAt.push(stmt.loc)
     }
   }
   if (moduleTop) for (const name of topFuncNames) if (topVarNames.includes(name))
     fail(`function declaration '${name}' conflicts with a var declaration at module top level`)
-  // At the top level of a module a function declaration is a lexical one
-  // (ES2026 §16.2.1.1 static semantics): a second declaration of the name is
-  // an early error, where a script hoists the last.
-  if (moduleTop) { const dupFn = duplicateName(topFuncNames); if (dupFn) fail(`duplicate function declaration '${dupFn}' at module top level`) }
-  const dup = duplicateAt(lexical)
-  if (dup >= 0) { at = lexicalAt[dup] ?? at; fail(`duplicate lexical declaration '${decodeIdentifier(lexical[dup])}'`) }
+  // Module code binds its top-level functions lexically (ES2026 §16.2.1.1): each
+  // name once, where a script hoists the last.
+  const dupFn = moduleTop ? duplicateAt(topFuncNames) : -1
+  if (dupFn >= 0) { at = topFuncAt[dupFn] ?? at; fail(`duplicate function declaration '${decodeIdentifier(topFuncNames[dupFn])}' at module top level`) }
+  const bound = moduleTop ? [...lexical, ...topFuncNames] : lexical, boundAt = moduleTop ? [...lexicalAt, ...topFuncAt] : lexicalAt
+  const dup = duplicateAt(bound)
+  if (dup >= 0) { at = boundAt[dup] ?? at; fail(`duplicate lexical declaration '${decodeIdentifier(bound[dup])}'`) }
   const vars = []
   for (const stmt of list) collectVarNames(stmt, vars, scopeKind, true)
   const varSet = new Set(vars.length ? vars : directVar)
