@@ -603,8 +603,10 @@ test('summary shapes: bounded joins and their overflow keep BigInt fields readab
     const src = `function pick(k){${cases};return {field0:0,value:0n}}
       function read(k){return pick(k).value} export function f(k){return read(k)}`
     for (const optimize of levels(0, 1, 2, 3)) {
-      const binary = _compileInProcess(src, { optimize })
+      // `read` answers as a function where the plan keeps it one: from O1 up it splices into `f`
+      _compileInProcess(src, { optimize: { level: optimize, sourceInline: false, inlineFns: false } })
       if (count <= 16) is(ctx.summary.resultOf('read'), kind(K.BIGINT), 'retained shapes agree on the field kind')
+      const binary = _compileInProcess(src, { optimize })
       const f = instantiate(onKernel() ? compile(src, { optimize }) : binary).exports.f
       for (const k of [0, 0, count - 1, 1, -1, 0])
         is(f(k), BigInt(k < 0 ? 0 : k), `${count} shapes, O${optimize}, input ${k}`)
