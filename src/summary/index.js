@@ -2247,6 +2247,13 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     }
     // A static literal has its own shape even when the registry has not named it.
     if (sid === NO_SID) return kind(K.OBJECT)
+    // A binding's schema may hold fields the program adds later (`let st = {}`,
+    // then `st.history = []`): the literal leaves them undefined until then.
+    if (schemas[sid].length > n.length - 1) {
+      const named = new Set()
+      for (let i = 1; i < n.length; i++) named.add(typeof n[i] === 'string' ? n[i] : n[i][1])
+      schemas[sid].forEach((name, i) => { if (!named.has(name)) raiseSlot(sid, i, ABSENT) })
+    }
     return objectKind(n, sid)
   }
   /** A member read `recv.prop` (`op`: `.` or `?.`). */
