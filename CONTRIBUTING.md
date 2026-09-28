@@ -1785,6 +1785,20 @@ instance's class as it would through a prototype (`classMemberIn`); a static
 call `C.s(…)` reaches the lifted function `C$s` in the summary as in the
 emitter (`liftedProp`, method-dispatch.js `tryFnPropCall`).
 
+A bundled module's statements run at start-up, before its importers', in the
+order ES evaluates them (`ctx.module.moduleInits`). `import('x')` of a
+literal hoists a namespace import of `x` (jzify `hoistDynamicImports`):
+awaited at module level it is a static import; anywhere else the call is
+`Promise.resolve().then(() => ns)` and the import is lazy. Once every module
+is prepared (`src/prepare/module-eval.js`), a module no static import
+reaches from the entry moves its statements into a loader that runs once,
+after the loaders of the lazy modules it imports, and keeps an evaluation
+error for every later import; a declaration of one of its globals becomes
+the assignment it makes. A namespace read as a value is one object per
+module, keys in code-unit order, a getter for a binding a function assigns.
+The loader's bindings are spelled without `T`: a `T`-named declaration in a
+module initializer is a temp of the start function.
+
 A member is a function of its own: `arguments` in a method, an accessor or
 a constructor is the member's (`ownArguments`, lowered as a function's before
 the arrow), and a default parameter may read `this` (`rewrite(mparams)` on

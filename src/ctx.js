@@ -485,6 +485,8 @@ export function reset(proto, globals, bridge) {
     keepsNothing: new Set(),   // `$name`s of runtime imports that keep nothing they are handed (bridge.js hostImport)
     ast: null,          // the module being prepared (root or bundled); host-import arity reads its call sites
     resolvedModules: new Map(),
+    importEdges: null,  // [importer spec (null: the entry), imported spec, lazy] (prepare/module-eval.js)
+    nsValues: null,     // modules whose namespace a program reads as a value
     moduleStack: [],
     moduleInits: [],
     entryInit: null,    // the entry module's prepared statements (compile/index.js), beside moduleInits

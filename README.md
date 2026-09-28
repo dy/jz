@@ -101,7 +101,7 @@ See [all examples](https://jz.js.org/examples/).
 
 - **Runtime code:** `eval`, `Function`, `with`.
 - **Reflection:** `Proxy`, `Reflect`, property descriptors, prototype chains and `__proto__`.
-- **Module dynamics:** top-level `await`, `import()`.
+- **Module dynamics:** top-level `await` other than `await import('./x.js')`, and `import()` of a specifier computed at run time. A literal `import('./x.js')` bundles `x.js`, which evaluates at the first `import()` unless a static import loaded it.
 - **Platform:** DOM, Node modules, `Intl`, `Temporal`.
 
 Modern JavaScript is supported: classes, generators, async/await, destructuring,

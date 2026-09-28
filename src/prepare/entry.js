@@ -42,6 +42,7 @@ import { validateCoalesceMixing } from './module-resolve.js'
 import { fuseSparseMapReads } from './sparse-map.js'
 import { prepState, resetPrepState } from './state.js'
 import { splitReassigned } from './split-bindings.js'
+import { settleModules } from './module-eval.js'
 import { frameNode } from '../function.js'
 
 
@@ -120,6 +121,7 @@ export default function prepare(node) {
   node = hoistIndexedConstLiterals(node)
   prepState.reassignedTopLevel = scanReassignedTopLevel(node)
   let ast = prep(node)
+  settleModules(prep)
   ast = wrapBuiltinValues(ast)
   // Top-level functions referenced as first-class values (e.g. `let o = { fn: g }`,
   // `arr.push(g)`, `return g`) need trampoline emission, which depends on the fn

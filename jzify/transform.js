@@ -369,10 +369,10 @@ export function createTransform(opts) {
     },
 
     '()'(callee, ...rest) {
-      // a dynamic import inside a function body has no static graph position
-      // (the module-level `await import('x')` hoists, index.js)
+      // an `import()` of a literal specifier hoisted (index.js hoistDynamicImports);
+      // a specifier computed at run time names no module of the graph
       if (callee === 'import' && !shadowsBuiltin('import'))
-        err('jzify: dynamic import() inside a function body is not supported – jz resolves the module graph at compile time; use a static import, or a module-level `await import(\'x\')` with a literal specifier')
+        err('jzify: import() takes one string literal – jz resolves the module graph at compile time, so a specifier computed at run time names no module (and import options are unsupported); write `import(\'./x.js\')`')
       // Promise API rides the async runtime (`jz:async`): new Promise(fn)
       // arrives here as a plain call (the `new` handler unwraps unknown
       // ctors), statics by name.

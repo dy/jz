@@ -35,6 +35,7 @@ import { mintLocal, scanReassignedTopLevel, writtenNames } from './ident-purity.
 import { bindStaticConst, bindStaticGlobal, deleteStaticGlobal, hoistIndexedConstLiterals, invalidateMutatedArray, staticString, staticStringArrayValues, staticStringExpr, stringArrayValues } from './literals.js'
 import { INTRINSIC_CALLEES, addHostImport, builtinAliasKeyOf, bundledSource, foldImportMetaResolve, foldNamespaceIntrospection, importMetaUrl, isBundledModule, isImportMeta, isImportMetaProp, moduleAstFor, namespaceMemberAliases, namespaceMemberAssigns, namespaceModOf, recordModuleInitFacts, resolveImportMeta } from './module-resolve.js'
 import { bindSchema, censusUnknownInitDecl, inferAssignSchema, objLiteralSid } from './schema.js'
+import { importEdge, namespaceValue } from './module-eval.js'
 import { bindingNames, bodyCapturesName, collectLoopDeclNames, declareGlobal, inlineArrayLen, isDeclared, markLoopLocal, mintForScope, popScope, prescanBlockDecls, pushScope, resolveScope, substIdents, withLoopLocalNames } from './scope.js'
 import { CONSTANTS, ERR_CLASS_SET, F64_CONSTANTS, GLOBALS, INSTANCEOF_ALLOW, NS_CTORS, SIMD_NS, STATIC_CONSTS, arrowWrites, assignedStaticGlobals, builtinMemberKey, freshPrepareId, funcLocalNames, funcValueNames, loopLocalNames, mutatedArrayNames, ownerStack, prepState, promiseRecvNames, renameSerial, scopes, staticConstScopes, withResolversRecvNames } from './state.js'
 
@@ -233,6 +234,9 @@ function prepNode(node) {
       // Host numeric constant (`Math.PI` etc.) → fold to its f64 literal. Placed after the
       // local/user-global checks above so a same-named binding still shadows it.
       if (ctx.scope.hostConsts && node in ctx.scope.hostConsts) return [, ctx.scope.hostConsts[node]]
+      // A source module's namespace as a value (`import()`'s result, an
+      // `import * as ns` passed on): its namespace object (module-eval.js).
+      if (ctx.module.namespaces?.[node]) return namespaceValue(ctx.module.namespaces[node])
       const resolved = ctx.scope.chain[node]
       if (resolved?.includes('.')) return resolved
       // Cross-module import: mangled name (e.g. __util_js$clone)
@@ -561,13 +565,15 @@ const handlers = {
   },
 
   // Import
-  'import'(fromNode) {
+  // `lazy`: the namespace an `import()` reads (jzify hoistDynamicImports), its
+  // module evaluated on that read unless a static import reaches it (module-eval.js).
+  'import'(fromNode, lazy) {
     // Bare side-effect: `import './sub.js'` → AST is ['import', [null, 'path']]
     if (Array.isArray(fromNode) && fromNode[0] == null && typeof fromNode[1] === 'string')
       return handlers['from'](null, fromNode)
     if (!Array.isArray(fromNode) || fromNode[0] !== 'from')
       return err('Dynamic import() not supported: jz resolves the module graph at compile time — use a static top-level import statement instead')
-    return handlers['from'](fromNode[1], fromNode[2])
+    return handlers['from'](fromNode[1], fromNode[2], lazy === 'lazy')
   },
 
   // Mixed default+named import `import d, { n } from 'm'` — jessie emits it as a
@@ -588,9 +594,12 @@ const handlers = {
     return [',', ...items.map(prep)]
   },
 
-  'from'(specifiers, source) {
+  'from'(specifiers, source, lazy = false) {
     const mod = source?.[1]
     if (!mod || typeof mod !== 'string') return err(`Invalid import source ${JSON.stringify(source)} — the module specifier after \`from\` must be a string literal`)
+    if (lazy && !isBundledModule(mod)) err(ctx.module.hostImports?.[mod] || hasModule(mod)
+      ? `import('${mod}'): only a source module (the \`modules\` option, or a file) can be imported dynamically`
+      : `import('${mod}'): unknown module; provide it via { modules: { '${mod}': source } }`)
 
     // Host imports override built-ins for named imports
     const hostMod = ctx.module.hostImports?.[mod]
@@ -648,6 +657,7 @@ const handlers = {
     // Tier 2: Source module (bundling)
     if (isBundledModule(mod)) {
       const resolved = prepareModule(mod, bundledSource(mod))
+      importEdge(mod, lazy)
       // Default import: import name from 'mod' → bind to default export
       if (typeof specifiers === 'string') {
         const mangled = resolved.exports.get('default')
@@ -806,6 +816,7 @@ const handlers = {
       // Source module re-export
       if (isBundledModule(mod)) {
         const resolved = prepareModule(mod, bundledSource(mod))
+        importEdge(mod)
         if (decl[1] === '*') {
           // export * from './mod' → register all exports. A local export of the
           // same name shadows the star's (ES: star exports never override local
@@ -2712,7 +2723,8 @@ export function prepareImports(ast) {
 export function programModuleAsts(ast) {
   const out = [ast], seen = new Set()
   for (let i = 0; i < out.length; i++) {
-    for (const { spec } of ctx.transform.jzify?.imports?.(out[i]) ?? []) {
+    const specs = [...(ctx.transform.jzify?.imports?.(out[i]) ?? []).map(({ spec }) => spec), ...ctx.transform.jzify?.dynamicImports?.(out[i]) ?? []]
+    for (const spec of specs) {
       if (seen.has(spec) || spec.startsWith('jz:') || !isBundledModule(spec)) continue
       seen.add(spec)
       let m = moduleAstFor(spec)
@@ -2973,7 +2985,8 @@ function prepareModule(specifier, source) {
     recordModuleInitFacts(moduleInit)
   }
 
-  const result = { exports: moduleExports }
+  // what module-eval.js reads: the namespace, the mangling prefix, the statements
+  const result = { exports: moduleExports, spec: specifier, prefix, init: moduleInit }
   ctx.module.resolvedModules.set(specifier, result)
   // a std module's host-boundary contract (`__mt_drain`, `__p_state`, …)
   // is read off the instance by plain name: re-export it from the program

@@ -14,6 +14,7 @@ const TESTS = [
   'simd-intrinsics',
   'bytebeat',
   'imports',
+  'dynamic-import',
   'statements',
   'multi-return',
   'types',
