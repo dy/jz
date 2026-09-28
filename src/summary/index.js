@@ -506,6 +506,100 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     else return null
     return Number.isSafeInteger(lo) && Number.isSafeInteger(hi) ? [lo, hi] : null
   }
+  // The finite interval a numeric expression stays in: a literal, an integer
+  // name or a counter (spanOf), arithmetic on those, a rounding or `Math`
+  // bound of one, the hull of a conditional. null where the walk cannot bound it.
+  const rangeOf = (e) => {
+    if (typeof e === 'number') return Number.isFinite(e) ? [e, e] : null
+    if (typeof e === 'string') return spanOf(e) ?? (typeof current === 'string' ? paramRangeOf(current, e) : null)
+    if (!Array.isArray(e)) return null
+    const op = e[0]
+    if (op == null) return typeof e[1] === 'number' && Number.isFinite(e[1]) ? [e[1], e[1]] : null
+    if (op === '()' && e.length === 2) return rangeOf(e[1])
+    if (op === 'u-' && e.length === 2) { const a = rangeOf(e[1]); return a && [-a[1], -a[0]] }
+    if (op === '?:' && e.length === 4) { const a = rangeOf(e[2]), b = rangeOf(e[3]); return a && b && [Math.min(a[0], b[0]), Math.max(a[1], b[1])] }
+    if (op === '()' && typeof e[1] === 'string' && e[1].startsWith('Math.')) {
+      const args = e[2] == null ? [] : Array.isArray(e[2]) && e[2][0] === ',' ? e[2].slice(1) : [e[2]]
+      const a = args.length ? rangeOf(args[0]) : null
+      if (!a) return null
+      switch (e[1]) {
+        case 'Math.floor': return [Math.floor(a[0]), Math.floor(a[1])]
+        case 'Math.ceil': return [Math.ceil(a[0]), Math.ceil(a[1])]
+        case 'Math.round': return [Math.round(a[0]), Math.round(a[1])]
+        case 'Math.trunc': return [Math.trunc(a[0]), Math.trunc(a[1])]
+        case 'Math.abs': return [a[0] > 0 ? a[0] : a[1] < 0 ? -a[1] : 0, Math.max(-a[0], a[1])]
+        case 'Math.sqrt': return a[0] >= 0 ? [Math.sqrt(a[0]), Math.sqrt(a[1])] : null
+        case 'Math.min': case 'Math.max': {
+          if (args.length !== 2) return null
+          const b = rangeOf(args[1]); if (!b) return null
+          return e[1] === 'Math.min' ? [Math.min(a[0], b[0]), Math.min(a[1], b[1])] : [Math.max(a[0], b[0]), Math.max(a[1], b[1])]
+        }
+        default: return null
+      }
+    }
+    if (e.length !== 3) return null
+    const a = rangeOf(e[1]), b = rangeOf(e[2])
+    if (!a || !b) return null
+    let lo, hi
+    if (op === '+') { lo = a[0] + b[0]; hi = a[1] + b[1] }
+    else if (op === '-') { lo = a[0] - b[1]; hi = a[1] - b[0] }
+    else if (op === '*') { const p = [a[0] * b[0], a[0] * b[1], a[1] * b[0], a[1] * b[1]]; lo = Math.min(...p); hi = Math.max(...p) }
+    else if (op === '/' && (b[0] > 0 || b[1] < 0)) { const p = [a[0] / b[0], a[0] / b[1], a[1] / b[0], a[1] / b[1]]; lo = Math.min(...p); hi = Math.max(...p) }
+    else return null
+    return Number.isFinite(lo) && Number.isFinite(hi) ? [lo, hi] : null
+  }
+  // The hull of the arguments each parameter of a function receives, over
+  // every direct call the walk meets: null for a position no call bounds. Each
+  // round records afresh (the loop bounds and constants a round learns bound
+  // the next round's calls) and reads a parameter's own hull from the round
+  // before, so a bound flows through a chain of calls; a hull still changing
+  // after four rounds (a recursion feeding its own argument, two functions
+  // trading bounds) opens for good, so the fixpoint ends. A function the host
+  // or a closure table may call takes anything: its hull is never asked for
+  // (query.js paramRangesOf).
+  const argRanges = new Map()   // function name → { ranges: ([lo, hi] | null)[] }, the settled hulls of the last round
+  const roundArgs = new Map()    // this round's, recorded afresh
+  const moved = new Map()        // `${fn}#${i}` → rounds its hull changed in
+  const openArgs = new Set()     // positions that changed four rounds over
+  const paramRangeOf = (fn, name) => {
+    const f = funcByName.get(fn)
+    if (!f) return null
+    const i = paramNamesOf(f).indexOf(name)
+    return i < 0 ? null : argRanges.get(fn)?.ranges[i] ?? null
+  }
+  const noteArgs = (name, f, node, n, base) => {
+    const params = paramNamesOf(f)
+    let entry = roundArgs.get(name)
+    if (!entry) roundArgs.set(name, entry = { ranges: params.map(() => undefined) })
+    let spread = false
+    for (let i = 0; i < params.length; i++) {
+      if (i < n && kspread[base + i]) spread = true
+      const r = spread || i >= n || !node || openArgs.has(`${name}#${i}`) ? null : rangeOf(argAt(node[2], i))
+      const prev = entry.ranges[i]
+      if (prev === null) continue
+      entry.ranges[i] = prev === undefined || r === null ? r : [Math.min(prev[0], r[0]), Math.max(prev[1], r[1])]
+    }
+  }
+  // At a round's end: a hull that changed changes the summary; one that has
+  // changed four rounds over opens. The round's hulls are then the settled ones.
+  const settleArgs = () => {
+    for (const [name, entry] of roundArgs) {
+      const prev = argRanges.get(name)?.ranges
+      entry.ranges.forEach((r, i) => {
+        if (r === undefined) r = entry.ranges[i] = null
+        const p = prev?.[i] ?? null
+        if (r === p || (r && p && r[0] === p[0] && r[1] === p[1])) return
+        changed = true
+        const k = `${name}#${i}`, m = (moved.get(k) ?? 0) + 1
+        moved.set(k, m)
+        if (m >= 4) { openArgs.add(k); entry.ranges[i] = null }
+      })
+    }
+    for (const name of argRanges.keys()) if (!roundArgs.has(name)) changed = true
+    argRanges.clear()
+    for (const [name, entry] of roundArgs) argRanges.set(name, entry)
+    roundArgs.clear()
+  }
   /** A loop `for (let i = a; i < b; i += c)` whose body leaves `i` alone: the
    *  counter and the integers it takes in the body; null for any other loop. */
   const countedLoop = (n) => {
@@ -1276,6 +1370,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       const f = funcByName.get(callee)
       if (f) {
         bind(callee, paramNamesOf(f), base, n, f.defaults, f.rest || !n || escaped.has(callee) ? null : initContextFor(callee, ks[base]))
+        noteArgs(callee, f, node, n, base)
         return resultAt(callee, base, n, node)
       }
       const key = keyOf(callee), k = key === null ? undefined : kinds[key]
@@ -2912,7 +3007,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   }
   const queryFacts = {
     kinds, incoming, fields, results, closures, declared, parent, nameKeys, forwards, siteResults, receivers,
-    scopeOfSig, scopeOfBody, scopeOfParams, cellUp, elems, tuples, lens, stores, built, grown, unknown, presentReads, cellProps, cellWild, closureSets, closureSetIds, cells, jsonKinds, closuresByBody, unions, shapeUnions,
+    scopeOfSig, scopeOfBody, scopeOfParams, cellUp, elems, tuples, lens, stores, built, grown, unknown, presentReads, argRanges, cellProps, cellWild, closureSets, closureSetIds, cells, jsonKinds, closuresByBody, unions, shapeUnions,
     schemas, layouts, sitesByLayout, objectKinds, methods, sidByKey,
     funcNames: new Set(funcByName.keys()), imports: new Map(imports),
     numeric, dynamicProps, builtinOwnProps, escaped, typedReadPresent, typedProps, typedPropsByAux, openSchemas, indexedSchemas, hostSchemas, opaqueSchemas, deletable, deleteReach,
@@ -3140,6 +3235,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     const seen = new Set()
     for (const key of declared.get(MODULE)?.values() ?? []) retain(kinds[key] ?? K.NONE, seen)
     for (const id of hostClosures) for (const key of captures.get(id) ?? []) retain(kinds[key] ?? K.NONE, seen)
+    settleArgs()
     return changed
   })
   // What the host may pass: an exported function's parameters; one the export
@@ -3167,7 +3263,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   const seeded = [...seedable].filter(p => (entryNumeric.has(p) || isCompatible(p)) && tagOf(kinds[p] ?? K.NONE) === K.ANY)
   if (seeded.length) {
     kinds.length = 0; incoming.length = 0; fields.length = 0; objectKinds.clear(); opaqueSchemas.clear(); hostSchemas.clear(); hostArrays.clear(); retainedArrays.clear(); hostClosures.clear(); results.clear(); escaped.clear(); certainKeys.clear(); for (let i = 0; i < elems.length; i++) { elems[i] = K.NONE; cellUp[i] = i }
-    tuples.clear(); lens.clear(); stores.clear(); built.clear(); grown.clear(); unknown.clear(); presentReads.clear()
+    tuples.clear(); lens.clear(); stores.clear(); built.clear(); grown.clear(); unknown.clear(); presentReads.clear(); argRanges.clear(); roundArgs.clear(); moved.clear(); openArgs.clear()
     pendingAll = false; pendingIndexed = false; wildValues = K.NONE; wildProps.clear(); sideProps.clear(); sideWild.clear(); closureProps.clear(); sideByProp.clear(); foreignObjects = false; foreignProps.clear(); deletable.clear(); deleteReach.unknown = false
     seed(seeded)
     fixpoint()

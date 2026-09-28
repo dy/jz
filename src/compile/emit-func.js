@@ -126,6 +126,14 @@ export function emitFunc(func, functionPlan, programFacts) {
     if (installedPlan.localReps) for (const nm of installedPlan.localReps.keys()) if (presentArray(nm)) presentArrays.add(`$${nm}`)
     if (ctx.scope.consts) for (const nm of ctx.scope.consts) if (isGlobal(nm) && presentArray(nm)) presentArrays.add(`$${nm}`)
   }
+  // The interval each numeric parameter receives over the function's calls
+  // (summary `paramRangesOf`): the flow ranges start from it, so a ToInt32 of
+  // `floor(y) + gy` inside knows the sum finite (optimize/flow-range.js).
+  const paramRanges = new Map()
+  if (!isExported(func)) {
+    const ranges = ctx.summary?.paramRangesOf?.(name)
+    if (ranges) sig.params.forEach((p, i) => { const r = ranges[i]; if (r && p.type === 'f64' && !p.rest) paramRanges.set(`$${p.name}`, { lo: r[0], hi: r[1] }) })
+  }
   // Global-table fallback for a plan published before global typed lengths
   // settled. The active record owns the resulting overlay.
   if (!ctx.func.typedLen && ctx.scope.globalTypedLen) ctx.func.typedLen = makeMapOverlay(ctx.scope.globalTypedLen)
@@ -147,6 +155,7 @@ export function emitFunc(func, functionPlan, programFacts) {
   if (plannedDistinctParams) fn.distinctParams = plannedDistinctParams
   if (plannedStableHeaderNames) fn.stableHeaderNames = plannedStableHeaderNames
   if (presentArrays.size) fn.presentArrays = presentArrays
+  if (paramRanges.size) fn.paramRanges = paramRanges
   // Inline `(export ...)` attribute only for the syntactic inline-export
   // form (`export function foo`, snapshot in `func.exported` at defFunc
   // time). Re-exports (`function foo; export { foo }`) and aliases (`export

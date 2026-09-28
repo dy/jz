@@ -278,6 +278,8 @@ const fin = (lo, hi) => (Number.isFinite(lo) && Number.isFinite(hi) && lo <= hi)
 const convRange = (child, signed) => {
   if (Array.isArray(child)) {
     const o = child[0]
+    // A counter read carries the hull its loop proves (ir/vars.js readVar).
+    if (child.irange) return { lo: child.irange[0], hi: child.irange[1] }
     if (o === 'i32.load8_u') return { lo: 0, hi: 255 }
     if (o === 'i32.load8_s') return { lo: -128, hi: 127 }
     if (o === 'i32.load16_u') return { lo: 0, hi: 65535 }

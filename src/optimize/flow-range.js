@@ -30,6 +30,10 @@ const LEAVES = new Set(['return', 'unreachable', 'throw', 'throw_ref', 'rethrow'
 
 /** Tag the reads of `fn`'s f64 locals (`floatLocals`) with their flow interval. */
 export function tagFlowRanges(fn, bodyStart, floatLocals) {
+  // A parameter with a known entry interval (compile/emit-func.js
+  // `paramRanges`) is tracked like a local: the interval is what every call
+  // hands it, so its reads before a write are bounded too.
+  if (fn.paramRanges) floatLocals = new Set([...floatLocals, ...fn.paramRanges.keys()])
   if (!floatLocals.size) return
   const labels = []
   let abort = false
@@ -116,7 +120,8 @@ export function tagFlowRanges(fn, bodyStart, floatLocals) {
     for (let i = 1; i < n.length; i++) { env = walk(n[i], env); if (!env) return null }
     return LEAVES.has(op) ? null : env
   }
-  seq(fn.slice(bodyStart), new Map())
+  // The parameters start in the interval their calls give them (compile/emit-func.js `paramRanges`).
+  seq(fn.slice(bodyStart), new Map(fn.paramRanges ?? []))
   if (abort) clearFlowRanges(fn)
 }
 

@@ -10,6 +10,7 @@
 import { ctx } from '../ctx.js'
 import { isI32 } from '../ast.js'
 import { VAL, lookupValType, repOf, repOfGlobal, numericStorage } from '../reps.js'
+import { intExprRange } from '../static.js'
 import { numberStorageValue, toNumF64 } from './coerce.js'
 import { typed } from './tag.js'
 import { temp, tempI32 } from './locals.js'
@@ -161,6 +162,9 @@ export function readVar(name) {
   }
   const node = typed(['local.get', dollar(name)], t)
   if (t === 'f64' && (lookupValType(name) === VAL.NUMBER || rep?.val === VAL.NUMBER)) node.valKind = VAL.NUMBER
+  // A counter's hull rides its read: a ToInt32 of `floor(y) + gy` then knows
+  // the sum finite and drops its guard (ir/numeric.js f64Range).
+  if (t === 'i32') { const range = intExprRange(name); if (range) node.irange = range }
   // Proven uint32 accumulator local (narrowUint32): a later asF64 must widen with
   // convert_i32_u (the i32 bit pattern is an unsigned value), not _s. `.wrapSafe`
   // marks it as the always-ToUint32-sunk kind so the arithmetic widening guards
