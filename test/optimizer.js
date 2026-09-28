@@ -1075,8 +1075,24 @@ test('inline: returns inside a loop and in nested arms lower to one exit, and th
   const o0 = jz(SRC, { optimize: 0 }).exports.f(37)
   almost(o0, -47.9 + 202 + 5, 1e-9, 'the reference value (Node: 159.1)')
   is(jz(SRC, { optimize: 3 }).exports.f(37), o0, 'bit-exact at speed')
+  // a bare `return` beside a valued one: the exit assigns undefined
+  const MIXED = `let f0 = (a) => { if (a > 1) return; return a }
+    export let f = (n) => { let s = 0.0; for (let k = 0; k < n; k++) { const v = f0(k); if (v === undefined) s = s + 10; else s = s + v } return s }`
+  is(jz(MIXED, { optimize: 3 }).exports.f(5), 0 + 1 + 30, 'a bare return exits with undefined')
   if (onKernel()) return
   for (const name of ['$hit', '$first', '$inside']) is(callsInLoop(SRC, name, 3), 0, `${name} is spliced into the loop`)
+})
+
+test('inline: a tuple result keeps a value per lane at every return', () => {
+  // prepare types `return [x, y]` at every exit as two results; one lowered
+  // exit returning a binding pushed one (the STFT's spectrum(), stretch-pvoc-lock)
+  const SRC = `function sp(c, a, b) { if (c) { const r = { re: a, im: b }; return [r.re, r.im] } let s = 0; for (let k = 0; k < 3; k++) s += k; return [a + s, b] }
+    function lp(n, a, b) { for (let k = 0; k < n; k++) if (k === 2) return [k, a]; return [a, b] }
+    export let f = (c) => { const [x, y] = sp(c, 1, 2), [u, v] = lp(c, 1, 2); return x * 1000 + y * 100 + u * 10 + v }`
+  for (const optimize of levels(0, 2, 3)) {
+    const { f } = jz(SRC, { optimize }).exports
+    is([f(0), f(5)].join(), '4212,1221', `tuple returns at ${optimize}`)
+  }
 })
 
 test('inline: expression-position hoist preserves evaluation order of side effects', () => {

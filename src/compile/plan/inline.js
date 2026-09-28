@@ -100,7 +100,7 @@ const inlinedBody = (func, args) => {
   if (some(func.body, n => n[0] === 'this')) return null
   const params = func.sig.params
   // A spread supplies a runtime number of values, not one positional argument.
-  if (args.length !== params.length || args.some(a => Array.isArray(a) && a[0] === '...')) return null
+  if (args.length > params.length || args.some(a => Array.isArray(a) && a[0] === '...')) return null
   const paramNames = new Set(params.map(p => p.name))
   const writesParams = mutatesAny(func.body, paramNames)
 
@@ -131,7 +131,14 @@ const inlinedBody = (func, args) => {
   // the form every later pass knows, instead of a temp ahead of the statement.
   const still = !writesParams && !some(func.body, n => MUTATE_OPS.has(n[0]) || n[0] === 'new' || (n[0] === '()' && !isPureCallee(n[1])))
   for (let i = 0; i < params.length; i++) {
-    const arg = args[i]
+    // A default is decided at the site: an argument the call leaves out is the
+    // parameter's default, evaluated in its turn in the parameters' scope
+    // (`new Vector3()`: x, y, z are 0), or undefined; one the call passes runs
+    // no default when the caller's summary proves it not nullish, and one that
+    // may be undefined would need the test at runtime: this site keeps the call.
+    const dflt = func.defaults?.[params[i].name]
+    if (i < args.length && dflt != null && callerView?.mayBeNullishExpr(args[i]) !== false) return null
+    const arg = i < args.length ? args[i] : dflt != null ? cloneWithSubst(dflt, subst, new Map()) : [null, undefined]
     const atom = typeof arg === 'string' || typeof arg === 'number' || (Array.isArray(arg) && (arg[0] == null || arg[0] === 'str'))
     if (!writesParams && isSimpleArg(arg) && (atom || uses(params[i].name) <= 1)) { subst.set(params[i].name, arg); continue }
     if (still && isRead(arg) && uses(params[i].name) === 1) { subst.set(params[i].name, arg); continue }
@@ -187,11 +194,13 @@ const isLiteral = (e) => typeof e === 'number' || (Array.isArray(e) && (e[0] == 
 // A return in a switch, try or another statement is left alone (false).
 const lowerReturns = (func) => {
   const stmts = blockStmts(func.body)
-  if (!stmts) return false
+  // A tuple result (prepare's multi-value signature) is one value per lane at
+  // every return: a single result binding would return one lane.
+  if (!stmts || func.sig?.results?.length > 1) return false
   const valued = some(func.body, n => n[0] === 'return' && n.length === 2)
   const r = `${T}inret${freshId(ctx)}`, done = `${T}indone${freshId(ctx)}`
   let usesDone = false, emitDone = true, init = null, bail = false
-  const exit = (s, depth) => [...(valued ? [['=', r, s.length === 2 ? s[1] : []]] : []),
+  const exit = (s, depth) => [...(valued ? [['=', r, s.length === 2 ? s[1] : [null, undefined]]] : []),
     ...(emitDone ? [['=', done, ['bool', 1]]] : []), ...(depth ? [['break']] : [])]
   // An `if` → { node, always, sunk }: `sunk` when `rest`, the statements after
   // it, went into the else arm of the first `if` without one down its ladder.
@@ -257,6 +266,12 @@ const lowerReturns = (func) => {
   return true
 }
 
+// A body that returns a fresh literal it declared: a class factory, an object builder.
+const madeLiteral = (func) => {
+  const stmts = blockStmts(func.body), last = stmts?.[stmts.length - 1]
+  if (!Array.isArray(last) || last[0] !== 'return' || typeof last[1] !== 'string') return false
+  return stmts.some(s => stmtDeclName(s) === last[1] && Array.isArray(s[1][2]) && (s[1][2][0] === '{}' || s[1][2][0] === '['))
+}
 const stmtDeclName = (stmt) => {
   if (!Array.isArray(stmt) || (stmt[0] !== 'let' && stmt[0] !== 'const') || stmt.length !== 2) return null
   const decl = stmt[1]
@@ -434,21 +449,23 @@ const inlineInStmt = (stmt, candidates, loopVariantNames = null, hot = false) =>
     let any = false
     for (let d = 1; d < stmt.length; d++) {
       const decl = stmt[d]
-      if (Array.isArray(decl) && decl[0] === '=' && typeof decl[1] === 'string' && isCandidateCall(decl[2], candidates, hot)
-          && (stmt.length === 2 || hot)) {
+      if (Array.isArray(decl) && decl[0] === '=' && typeof decl[1] === 'string' && isCandidateCall(decl[2], candidates, hot)) {
         const args = callArgs(decl[2])
         const shape = args && inlinedBody(candidates.get(decl[2][1]), args)
         if (shape && shape.value !== null) {
           const part = partitionInvariantPrefix(shape.prefix, loopVariantNames)
-          hoisted.push(...part.hoisted)
           // The callee returns one of its own locals (`let self = {…}; …; return self`,
           // a class factory): the caller's name takes the local's place, so the
-          // literal has no alias to escape into and scalar replacement sees it.
-          if (typeof shape.value === 'string' && part.rest.some(st => stmtDeclName(st) === shape.value))
-            splice.push(...part.rest.map(st => substIdents(st, new Map([[shape.value, decl[1]]]))))
-          else splice.push(...part.rest, [stmt[0], ['=', decl[1], shape.value]])
-          any = true
-          continue
+          // literal has no alias to escape into and scalar replacement sees it,
+          // wherever the name is bound (`const a = new Vector3(), b = new Vector3()`).
+          const own = typeof shape.value === 'string' && part.rest.some(st => stmtDeclName(st) === shape.value)
+          if (stmt.length === 2 || hot || own) {
+            hoisted.push(...part.hoisted)
+            if (own) splice.push(...part.rest.map(st => substIdents(st, new Map([[shape.value, decl[1]]]))))
+            else splice.push(...part.rest, [stmt[0], ['=', decl[1], shape.value]])
+            any = true
+            continue
+          }
         }
       }
       splice.push([stmt[0], decl])
@@ -759,12 +776,14 @@ export const inlineHotInternalCalls = (programFacts, ast) => {
     if (cfg?.sourceInlineDup === false && (isExported(func) || sites?.length !== 1)) continue
     if (func.raw || !func.body || func.rest) continue
     if (isExported(func) && !soleCallerExport) continue
-    if (programFacts.addressTakenNames.has(func.name) && !soleCallerExport) continue
-    // A default some call lets run has no place in a spliced body; one no call
-    // does (the summary's defaultRuns, emit-func.js drops its check too) is
-    // no default: three's `toArray(array = [], offset = 0)` and
-    // `fromArray(array, offset = 0)` inline where every caller passes both.
-    if (func.defaults && Object.keys(func.defaults).some(p => ctx.summary?.at(func.name)?.defaultMayRun(p) !== false)) continue
+    // A factory's value is a fresh literal of its own (`let self = {…}; …;
+    // return self`, jzify/classes.js). Its splice is an allocation site the
+    // size of the literal it makes, so no site cap counts it, and the binder
+    // that takes its address (`obj.constructor`) keeps the body. The name the
+    // literal is bound to then scalarizes where it never escapes
+    // (plan/literals.js): three's `const v = new Vector3()` before a loop.
+    const factory = madeLiteral(func)
+    if (programFacts.addressTakenNames.has(func.name) && !soleCallerExport && !factory) continue
     const paramNames = new Set((func.sig?.params || []).map(p => p.name))
     if (paramNames.size && some(func.body, n => {
       if (n[0] !== '()' || !Array.isArray(n[1]) || n[1][0] !== '.') return false
@@ -822,7 +841,7 @@ export const inlineHotInternalCalls = (programFacts, ast) => {
     // site copies nothing, whatever the size (Ray's intersectTriangle).
     if (!sites?.length) continue
     const small = isTinyLeaf || isSmallLeaf || isSmallKernel
-    const everywhere = (small || fixedTypedArraySite ? coldSites <= leafSiteCap : sites.length <= 2)
+    const everywhere = factory || (small || fixedTypedArraySite ? coldSites <= leafSiteCap : sites.length <= 2)
       && (small || hasLoop || (sites.length - 1) * size <= (coldSites ? 48 : 200))
     // Past that budget a body still splices at its sites in loops, where the
     // call is the per-iteration cost the splice removes; its straight-line

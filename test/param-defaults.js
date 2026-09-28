@@ -115,6 +115,25 @@ test('param defaults: a parameter no call passes decides its undefined test', ()
 // (plan/inline.js): three's `fromArray(array, offset = 0)` and
 // `toArray(array = [], offset = 0)`, given both arguments by every caller,
 // splice into the loop that calls them per element.
+test('param defaults: a call that leaves an argument out splices with the default bound, one that may pass undefined keeps the call', () => {
+  const src = `class V { constructor(x = 0, y = 0, z = 0) { this.x = x; this.y = y; this.z = z }
+      set(x, y, z) { this.x = x; this.y = y; this.z = z; return this }
+      fromArray(a, o = 0) { this.x = a[o]; this.y = a[o + 1]; this.z = a[o + 2]; return this }
+      dot(v) { return this.x * v.x + this.y * v.y + this.z * v.z } }
+    export const run = (n) => { const p = new Float32Array(n * 3); for (let i = 0; i < p.length; i++) p[i] = i * 0.5
+      const a = new V(), b = new V(); let s = 0
+      for (let i = 0; i < n; i++) { a.fromArray(p, i * 3); b.set(a.z, a.x, a.y); const t = new V(1, 2, i > 2 ? undefined : 3); s += a.dot(b) + t.z }
+      return s }`
+  agree([['defaults bound at the site', src, [5]],
+    ['a default reading an earlier parameter, left out', `const f = (a, b = a * 2, c = b + 1) => a + b + c\nexport const run = () => f(1) + f(1, 5) * 100 + f(1, 5, 0) * 10000`, []],
+    ['more arguments than parameters keep the call', `const f = (a, b = 1) => a + b\nexport const run = () => f(1, 2, 3)`, []]])
+  if (belowOpt(2)) return
+  const w = jz.compile(src, { wat: true, optimize: 2 })
+  const run = w.slice(w.indexOf('(func $run'), w.indexOf('\n  (func $', w.indexOf('(func $run') + 10))
+  is((run.match(/f64\.store/g) || []).length, 0, 'a and b are locals: their factories spliced with x, y, z bound to 0, and nothing of them escapes')
+  is(/call \$[^\s)]*V[^\s)]*\s/.test(run), true, 'the site passing a value that may be undefined for a defaulted parameter keeps the factory call')
+})
+
 test('param defaults: a function whose defaults never run inlines', () => {
   const src = `class V { constructor() { this.x = 0; this.y = 0 } fromArray(a, o = 0) { this.x = a[o]; this.y = a[o + 1]; return this } toArray(a = [], o = 0) { a[o] = this.x; a[o + 1] = this.y; return a } }
     export const run = (n) => { const a = new Float32Array(n * 2), b = new Float32Array(n * 2), v = new V(); for (let i = 0; i < n; i++) v.fromArray(a, i * 2).toArray(b, i * 2); let s = 0; for (let i = 0; i < b.length; i++) s += b[i]; return s }`

@@ -962,7 +962,17 @@ const); `optimize: { sourceInline: false }` keeps every closure form. A
 declaration splices each of its declarators (`const r = f(a), g = f(b), b =
 f(c)`, each its own statement in order); more than one declarator splices only
 in an innermost loop, where the call it removes is what kept the lane
-vectorizer out. Nested-call
+vectorizer out, except a factory's: a body whose value is a fresh literal of
+its own (`let self = {…}; …; return self`) splices at every declarator, since
+the name then binds the literal and scalarizes where it never escapes
+(`const a = new Vector3(), b = new Vector3()` before a loop). A factory's
+splice is an allocation site the size of the literal it makes: no site cap
+counts it, and the `constructor` binder that takes its address keeps the
+body. A default is decided at the site: an argument the call leaves out is
+its parameter's default, evaluated in its turn in the parameters' scope, or
+undefined; one the call passes runs no default where the caller's summary
+proves it not nullish, and a value that may be undefined keeps the call at
+that site. Nested-call
 hoisting uses its body map for membership too, and reuses that map through the
 current function's rounds, before the function record's body is replaced; it
 lifts a call out of an `if` test to a declaration before the `if` (an `else
