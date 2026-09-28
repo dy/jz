@@ -97,6 +97,9 @@ export default function plan(ast, profiler, summarize) {
   sweep('inferModuleIntGlobals', () => inferModuleIntGlobals(ast))
 
   facts()
+  // A call the sweeps below inline leaves no site for the boundary check after
+  // narrowing; the sources' own call sites are checked here too.
+  t('strictBoundaryTypeCheck', () => strictBoundaryTypeCheck(facts()))
   // Receiver-HASH global classification (.work/archive/todo.md §deletion-sweep):
   // fill `ctx.scope.globalValTypes` with VAL.HASH for module-level `{}`-decl
   // dict globals module/object.js's allocator already tags HASH at the
