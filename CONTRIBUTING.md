@@ -1577,7 +1577,10 @@ ends a line at LF, CR, LS and PS (`test/identifiers.js`). Two statements on one
 line need `;` between them unless the first ended in a block of its own, and a
 postfix `++`/`--` takes no line break before it: the step layer checks every
 place the ASI layer splits a statement off, and every statement body end,
-against the gap the space layer saw (`test/parser-bugs.js`).
+against the gap the space layer saw (`test/parser-bugs.js`). The ASI layer's
+flags outlive the tokens that raised them; the step layer keeps an empty
+statement's `;` out of the next statement and reads the gap before a template
+for its tag, and a label heads any statement, not only a loop.
 
 A parsed node's `loc` indexes the compile's sources laid end to end: the
 program's text from 0, then each bundled module's after the one before
