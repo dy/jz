@@ -35,7 +35,6 @@ export function createActiveFunction({
 
     locals: new Map(),
     localReps: null,
-    localProps: null,
     typedElem: null,
     typedLen: null,
     lenBoundOf: null,
@@ -143,7 +142,7 @@ export function isInactiveFunction(ctx) {
   const unallocated = value => value === null
   return frame.current === null && frame.body === null && frame.exported === false &&
     frame.atModuleScope === false && emptyMap(frame.locals) && frame.localReps === null &&
-    frame.localProps === null && frame.typedElem === null && frame.typedLen === null &&
+    frame.typedElem === null && frame.typedLen === null &&
     frame.lenBoundOf === null &&
     emptyMap(frame.boxed) && unallocated(frame.capturedNames) && unallocated(frame.identityShadow) &&
     unallocated(frame.cellTypes) && unallocated(frame.flatObjects) &&

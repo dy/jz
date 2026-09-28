@@ -1043,26 +1043,6 @@ export function emitDecl(...inits) {
       // hoist-temp lookup (see isHoistTemp above) can mutate it in place later.
       if (localType === 'f64' && isHoistTemp(name)) (ctx.func.hoistTempDefs ??= new Map()).set(name, coerced)
     } else (ctx.func.zeroInitSeen ??= new Set()).add(name)
-
-    const schemaId = ctx.schema.idOf?.(name)
-    if (ctx.func.localProps?.has(name) && schemaId != null) {
-      const schema = ctx.schema.resolve(name)
-      if (schema?.[0] === '__inner__') {
-        inc('__alloc_hdr', '__mkptr')
-        const bt = `${T}bx${freshId(ctx)}`
-        ctx.func.locals.set(bt, 'i32')
-        const innerName = `${name}${T}inner`
-        ctx.func.locals.set(innerName, 'f64')
-        result.push(
-          ['local.set', `$${innerName}`, ['local.get', `$${name}`]],
-          ['local.set', `$${bt}`, ['call', '$__alloc_hdr', ['i32.const', 0], ['i32.const', Math.max(1, schema.length)]]],
-          ['f64.store', ['local.get', `$${bt}`], ['local.get', `$${name}`]],
-          // A property the program adds later reads `undefined` until it does.
-          ...schema.slice(1).map((_, j) =>
-            ['f64.store', ['i32.add', ['local.get', `$${bt}`], ['i32.const', (j + 1) * 8]], undefExpr()]),
-          ['local.set', `$${name}`, mkPtrIR(PTR.OBJECT, schemaId, ['local.get', `$${bt}`])])
-      }
-    }
   }
   return result.length === 0 ? null : result.length === 1 ? result[0] : result
 }

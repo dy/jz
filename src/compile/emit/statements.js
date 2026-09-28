@@ -8,7 +8,8 @@ import { ctx, err } from '../../ctx.js'
 import {
   materializeErrorIR, applyBigintRepresentationAction, asParamType, asPtrOffset, block64, carrierF64Narrow, freshId, nullableBoolBoxIR, tcoTailRewrite, temp, tempI32, tempI64, typed, undefExpr,
 } from '../../ir.js'
-import { REFS_THROUGH_ARROWS, refsName } from '../../ast.js'
+import { ASSIGN_OPS, REFS_THROUGH_ARROWS, refsName } from '../../ast.js'
+import { K, bitOf, tagOf, tagsOf } from '../../summary/kind.js'
 import { hasAmbiguousBoolMerge, valTypeOf } from '../../kind.js'
 import { VAL } from '../../reps.js'
 import { isTerminator } from '../../type.js'
@@ -21,6 +22,11 @@ import { storedValue } from '../../bridge.js'
 const BIGINT_THROWING_OPS = new Set(['+', '-', '*', '/', '%', '**', '&', '|', '^', '<<', '>>', '>>>', 'u+',
   '+=', '-=', '*=', '/=', '%=', '**=', '&=', '|=', '^=', '<<=', '>>=', '>>>=', '++', '--'])
 const COERCING_OPS = new Set([...BIGINT_THROWING_OPS, 'u-', '~', '<', '<=', '>', '>=', '==', '!='])
+const PRIMITIVE_TAGS = bitOf(K.NUMBER) | bitOf(K.STRING) | bitOf(K.BOOL) | bitOf(K.BIGINT)
+const mayBePrimitive = (recv) => {
+  const k = ctx.summary?.at(ctx.func.current).kindOfExpr(recv)
+  return k == null || tagOf(k) === K.ANY || (tagsOf(k) & PRIMITIVE_TAGS) !== 0
+}
 function canThrow(body, seen = new Set()) {
   if (!Array.isArray(body)) return false
   const op = body[0]
@@ -41,6 +47,9 @@ function canThrow(body, seen = new Set()) {
   // OOB index. Keep a surrounding catch visible; the typed emitter either
   // emits the supported runtime throw or rejects an unrepresentable catch.
   if (op === '=' && Array.isArray(body[1]) && body[1][0] === '[]' && valTypeOf(body[1][1]) === VAL.TYPED) return true
+  // A store on a primitive throws (emit-assign.js primitiveStore, __dyn_set).
+  if ((ASSIGN_OPS.has(op) || op === '++' || op === '--') && Array.isArray(body[1]) &&
+      (body[1][0] === '.' || body[1][0] === '[]') && mayBePrimitive(body[1][1])) return true
   if (op === '=>') return false
   if (op === '()') {
     const callee = body[1]

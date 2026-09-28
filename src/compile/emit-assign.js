@@ -19,7 +19,8 @@ import { packedI32, structInline } from '../abi/index.js'
 import { i64Hex, encodePtrHi, OBJECT_SCHEMA_HI_MASK, objectSchemaGuardHex } from '../../layout.js'
 import { recordDynFnTableWrite, recordImperativeClosureTableWrite } from './dyn-closure-tables.js'
 import { isPresentNumber, valTypeOf, shapeOf } from '../kind.js'
-import { NUMBER } from '../summary/kind.js'
+import { K, NUMBER, bitOf as summaryBitOf, tagOf as summaryTagOf, tagsOf as summaryTagsOf, NULL_BITS as SUMMARY_NULL_BITS } from '../summary/kind.js'
+import { errorCodeLiteral, ERR } from '../../err-codes.js'
 import { VAL, lookupValType, repOf } from '../reps.js'
 import {
   typed, asF64, asI32, asI64, temp, tempI32, withTemp, block64,
@@ -436,8 +437,30 @@ function tryStructInlineReplaceStore(arr, idx, val) {
       ['else', undefExpr()]]], 'f64'))
 }
 
+// A store on a primitive throws in strict code (every jz module is strict):
+// the receiver, the key and the value evaluate, then the TypeError. A receiver
+// the summary proves a Number, String, Boolean or BigInt (or nullish) throws
+// here; a receiver that may also be an object decides in __dyn_set.
+const PRIMITIVE_TAGS = summaryBitOf(K.NUMBER) | summaryBitOf(K.STRING) | summaryBitOf(K.BOOL) | summaryBitOf(K.BIGINT)
+function primitiveStore(obj, key, val) {
+  const k = ctx.summary?.at(ctx.func.current).kindOfExpr(obj)
+  if (k == null || k === 0 || summaryTagOf(k) === K.ANY) return null
+  const tags = summaryTagsOf(k) & ~SUMMARY_NULL_BITS
+  if (!tags || (tags & ~PRIMITIVE_TAGS)) return null
+  ctx.runtime.throws = true
+  const code = errorCodeLiteral(ERR.PRIMITIVE_PROPERTY)
+  return typed(['block', ['result', 'f64'],
+    ['drop', asF64(emit(obj))],
+    ...(key == null ? [] : [['drop', asF64(emit(key))]]),
+    ['drop', storedValue(val)],
+    ['global.set', '$__jz_last_err_bits', ['i64.reinterpret_f64', ['f64.const', code]]],
+    ['throw', '$__jz_err', ['f64.const', code]]], 'f64')
+}
+
 export function emitElementAssign(arr, idx, val, node = null) {
   const dangles = mayDangle(node ?? ctx.error.node, val)
+  const prim = primitiveStore(arr, idx, val)
+  if (prim) return prim
   // A static object key is a field write, with the same carrier and setter
   // semantics as dot syntax. Keep expression receivers on that one path too.
   if (isLiteralStr(idx) && ctx.summary?.at(ctx.func.current).objectSidOfExpr(arr) != null)
@@ -833,6 +856,8 @@ function accessorStore(obj, prop, val) {
 
 export function emitPropertyAssign(obj, prop, val, raw = false) {
   const dangles = mayDangle(ctx.error.node, val)
+  const prim = primitiveStore(obj, null, val)
+  if (prim) return prim
   if (!raw && ctx.transform.accessorNames?.has(prop)) {
     // a class's setter is a function of the receiver (class-dispatch.js);
     // any other receiver keeps the slot paths of accessorStore

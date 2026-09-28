@@ -23,7 +23,7 @@ import { stringHash } from '../src/string-data.js'
 import { OBJECT_SCHEMA_HI_MASK, STR_INTERN_BIT, STR_HCACHE_BIT, ssoBitI64Hex, encodePtrHi, i64Hex, deletedMaskWat, deletedSlotWat, markDeletedSlotWat, DATA_VIEW_FLAG, HIDDEN_PROPERTY_SEQ, DYN_CACHE_EMPTY } from '../layout.js'
 import { ssoEncode } from './string.js'
 import { errorCodeLiteral, ERR } from '../err-codes.js'
-import { requireReceiverWat } from './core/error-object.js'
+import { requireReceiverWat, requireObjectWat } from './core/error-object.js'
 import { sameValueZeroIdentityChain, mapHashStringArm, mapHashBigintArm } from '../layout-kinds.js'
 import { trySlotUpdate } from '../src/compile/slot-update.js'
 import { captureCallback } from './array/callback.js'
@@ -2090,13 +2090,7 @@ export default (ctx) => {
     ${requireReceiverWat('(local.get $obj)')}
     (local.set $off (i32.wrap_i64 (i64.and (local.get $obj) (i64.const ${LAYOUT.OFFSET_MASK}))))
     (local.set $type (i32.wrap_i64 (i64.and (i64.shr_u (local.get $obj) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK}))))
-    ;; STRING receiver: primitives drop property writes (JS non-strict
-    ;; semantics) — the read path above guarantees UNDEF for them, so
-    ;; storing would only create unreadable entries. NaN guard: a real
-    ;; number's garbage tag may alias STRING; those keep today's path.
-    (if (i32.and (i32.eq (local.get $type) (i32.const ${PTR.STRING}))
-                 (f64.ne (f64.reinterpret_i64 (local.get $obj)) (f64.reinterpret_i64 (local.get $obj))))
-      (then (return (local.get $val))))
+    ${requireObjectWat('(local.get $obj)', '(local.get $type)')}
     ;; ARRAY + integer key → ELEMENT store (grow + hole-fill via the same
     ;; helper the statically-proven \`a[i]=v\` path uses), matching JS index
     ;; semantics and the element arms in the dyn read entries. Guard real-

@@ -451,16 +451,6 @@ export function analyzeValTypes(body) {
       if (vt === VAL.OBJECT) bindObjSchema(node[1], node[2])
       return
     }
-    // Track property assignments for auto-boxing: x.prop = val
-    if (op === '=' && Array.isArray(node[1]) && node[1][0] === '.' && typeof node[1][1] === 'string') {
-      const [, obj, prop] = node[1]
-      const vt = getVal(obj)
-      if ((vt === VAL.NUMBER || vt === VAL.BIGINT) && ctx.func.locals?.has(obj) && ctx.schema.register) {
-        if (!ctx.func.localProps) ctx.func.localProps = new Map()
-        if (!ctx.func.localProps.has(obj)) ctx.func.localProps.set(obj, new Set())
-        ctx.func.localProps.get(obj).add(prop)
-      }
-    }
     for (let i = 1; i < node.length; i++) walk(node[i])
   }
   const objAssignSites = []
@@ -492,16 +482,6 @@ export function analyzeValTypes(body) {
     // Extern-write belt: source slot values copied in at emit, unseen by censuses.
     ctx.schema.externSlotSids?.add(sid)
     updateRep(target, { schemaId: sid })
-  }
-
-  // Register boxed schemas for local variables with property assignments
-  if (ctx.func.localProps) {
-    for (const [name, props] of ctx.func.localProps) {
-      if (ctx.schema.idOf(name) != null) continue
-      const schema = ['__inner__', ...props]
-      const sid = ctx.schema.register(schema)
-      updateRep(name, { schemaId: sid })
-    }
   }
 }
 

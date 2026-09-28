@@ -94,6 +94,7 @@ const TESTS = [
   'typed-rebound',
   'late-field',
   'index-key',
+  'primitive-store',
   'variant-result',
   'call-boundary',
   'call-release',

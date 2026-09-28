@@ -58,6 +58,7 @@ export const ERR = {
   BIGINT_UNSIGNED_SHIFT: 121,  // `>>>` — a BigInt operand at runtime (ES2020 §6.1.6.2.11: no BigInt::unsignedRightShift)
   DATAVIEW_INDEX_WRITE: 122,   // indexed own properties on DataView are unsupported
   BIGINT_TO_NUMBER: 123,      // implicit ToNumber(BigInt)
+  PRIMITIVE_PROPERTY: 124,     // a property store on a Number, String, Boolean or BigInt (strict code)
 
   // ── 2xx RangeError-class ─────────────────────────────────────────────────
   ARRAY_WITH_INDEX: 200,       // Array.prototype.with — index out of range
@@ -122,6 +123,7 @@ export const ERR_INFO = {
   [ERR.ACCESSOR_DESCRIPTOR]: { name: 'TypeError', message: 'Accessor descriptors are declared on classes; Object.defineProperty defines data properties' },
   [ERR.SYMBOL_TO_NUMBER]: { name: 'TypeError', message: 'Cannot convert a Symbol value to a number' },
   [ERR.BIGINT_TO_NUMBER]: { name: 'TypeError', message: 'Cannot convert a BigInt value to a number' },
+  [ERR.PRIMITIVE_PROPERTY]: { name: 'TypeError', message: 'Cannot create a property on a primitive' },
   [ERR.STRING_SEARCH_REGEX]: { name: 'TypeError', message: 'First argument must not be a regular expression' },
   [ERR.ENCODE_INTO_RECEIVER]: { name: 'TypeError', message: 'encodeInto: destination must be a Uint8Array' },
   [ERR.ARRAY_FROM_ITERABLE]: { name: 'TypeError', message: 'Array.from iterable sources are unsupported; pass an array-like value' },

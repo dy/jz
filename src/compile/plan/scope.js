@@ -1275,6 +1275,9 @@ export const materializeAutoBoxSchemas = (programFacts) => {
     // made `if (x) o.b = 2` declare `b` on every object of the literal: `in`,
     // hasOwnProperty, Object.keys and for-in all reported it before the store.
     if (ctx.schema.vars.has(name)) continue
+    // A primitive takes no property: its stores throw (emit-assign.js primitiveStore).
+    const vt = ctx.scope.globalValTypes?.get(name)
+    if (vt === VAL.NUMBER || vt === VAL.STRING || vt === VAL.BOOL || vt === VAL.BIGINT) continue
     const valueProps = [...props].filter(prop => !ctx.funcs.names.has(`${name}$${prop}`))
     if (!valueProps.length) continue
     const allProps = [...props]
