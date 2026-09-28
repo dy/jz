@@ -166,7 +166,7 @@ export function assemble(ast, profiler) {
   // seam: compile/analyze/body-facts.js, plan's sweeps), the registries beside it
   // by content, which is cheap. A summary built under the current key is still the
   // program's; JZ_DEBUG_INVARIANTS checks each reuse against its full inputs.
-  const summaryOf = () => summarize(ast, {
+  const summaryOf = (losses = ctx.warnings ? [] : null) => Object.assign(summarize(ast, {
     inits: ctx.module.moduleInits, funcs: ctx.funcs.list, schemas: ctx.schema.list, brandOf: ctx.schema.brandOf, classes: ctx.transform.classes, accessors: ctx.transform.literalAccessorNames, hidden: ctx.schema.hidden, exported: isExported,
     boundSchema: (name) => ctx.schema.poisoned?.has(name) ? undefined : ctx.schema.vars.get(name),   // the binding's schema a declared literal is allocated with (module/object.js `{}`)
     imports: new Map(ctx.module.imports.filter(imp => imp[3]?.[0] === 'func').map(imp => imp[3][1].replace(/^\$/, '')).map(name => [name, ctx.module.hostImportValTypes.get(name) ?? null])),
@@ -175,14 +175,14 @@ export function assemble(ast, profiler) {
     liftedProp: (fn, prop) => { const lifted = `${fn}$${prop}`; return ctx.funcs.names.has(lifted) && !ctx.funcs.multiProp.has(`${fn}.${prop}`) ? lifted : null },
     // a function's typed-guard clone, which its direct calls reach at run time (narrow/specialize.js)
     guardedClone: (fn) => ctx.types.specFns?.get(fn) ?? null,
-    // `why`: the first cause the summary loses an object shape by (its reads and stores are dynamic from then on)
-    onLose: ctx.warnings ? (sid, why, fn, site) => warn('shape-lost', `schema ${sid} {${ctx.schema.list[sid]?.slice(0, 6).join(', ')}${ctx.schema.list[sid]?.length > 6 ? ', …' : ''}} is lost: ${why}`, { fn: typeof fn === 'string' ? fn : fn == null ? undefined : `closure ${fn}`, sid, why, site: site == null ? undefined : JSON.stringify(site).slice(0, 160) }) : null,
+    // `losses`: the first cause the summary loses each object shape by (its reads and stores are dynamic from then on)
+    onLose: losses && ((...loss) => losses.push(loss)),
     // `why` only (a sink alone reports the shape and read advisories): the first cause an array built at a fixed count keeps its guards by
     onOpen: ctx.warnings && (ctx.transform.whyNotRewind || ctx.transform.optimize?.whyNotSimd) ? (count, why, fn, site) => warn('array-open', `an array of ${count} elements keeps its length checks: ${why}`, { fn: typeof fn === 'string' ? fn : fn == null ? undefined : `closure ${fn}`, why, site: site == null ? undefined : JSON.stringify(site).slice(0, 120) }) : null,
     moduleGlobals: ctx.scope.globals,
     constStrings: jsonShapeStrings,
     constString: (name) => ctx.scope.shapeStrs?.get(name) ?? ctx.scope.constStrs?.get(name) ?? null,   // a module const's folded string (kind/shape.js jsonConstString)
-  })
+  }), { losses })
   let built = null
   const nodeIds = DBG_INVARIANTS ? { of: new WeakMap(), next: 0 } : null
   const summaryKey = () => {
@@ -252,6 +252,10 @@ export function assemble(ast, profiler) {
   // The plan rewrote the program (inlined calls, scalar-replaced literals,
   // specialized variants with their own scopes): summarize what emission sees.
   ctx.summary = summarizeProgram()
+  // The advisory reports what this summary loses: an earlier one, taken before
+  // the plan dropped an arm a test never takes, may lose a shape the program keeps.
+  for (const [sid, why, fn, site] of ctx.summary.losses ?? [])
+    warn('shape-lost', `schema ${sid} {${ctx.schema.list[sid]?.slice(0, 6).join(', ')}${ctx.schema.list[sid]?.length > 6 ? ', …' : ''}} is lost: ${why}`, { fn: typeof fn === 'string' ? fn : fn == null ? undefined : `closure ${fn}`, sid, why, site: site == null ? undefined : JSON.stringify(site).slice(0, 160) })
   // A layout's view runs only where the code the program lowers builds an
   // object literal with an accessor (module/schema.js viewsOn).
   settleViews([ast, ...(ctx.module.moduleInits ?? []),
