@@ -14,6 +14,9 @@
  *   - compound statements WITHOUT yield stay atomic (later passes handle them)
  *   - yield* E — delegates to ANY iterator-protocol value (sent values thread,
  *     the completion value lands in `x = yield* E`)
+ *   - an async body's `await E` (jzify/async.js) suspends as a yield does; the
+ *     value it resumes with is `__awaited(a, sent)`, `a` holding E, which the
+ *     program summary types as the settled value of E
  * Out (v1): yield inside arbitrary expressions, try across yield,
  * for-of/for-in bodies containing yield (except known-generator for-of, which
  * desugars), labeled break/continue across states.
@@ -23,7 +26,7 @@
 
 import { walkAst, some, isBlockBody } from '../src/ast.js'
 
-const isYield = (n) => Array.isArray(n) && (n[0] === 'yield' || n[0] === 'yield*')
+const isYield = (n) => Array.isArray(n) && (n[0] === 'yield' || n[0] === 'yield*' || n[0] === 'await')
 /** A desugar's own call of a well-known member it has probed (`v['@@iterator']()`
  *  after `v['@@iterator'] != null`): a member call the iterator rewrite
  *  (transform.js) leaves alone, where a program's call is `__it_from(v)`. */
@@ -294,13 +297,20 @@ export function createGeneratorLowering({ transform, transformParams, err, gener
 
     // `yield E` at a resume boundary: park the resume id, emit the {value,done:false}
     // return. The resume state optionally starts by binding `target = __sent`.
+    // An await's operand is kept in a local of its own: the target binds
+    // `__awaited(a, __sent)`, the sent value typed as the settled value of `a`.
     const emitYield = (cur, yexpr, target) => {
       const resume = newState()
-      const value = yexpr[1] === undefined ? [null, undefined] : transform(yexpr[1])
+      let value = yexpr[1] === undefined ? [null, undefined] : transform(yexpr[1]), sent = S.SENT
+      if (target && yexpr[0] === 'await') {
+        const a = genTemp('av'); locals.add(a)
+        stmtsOf(cur).push(['=', a, value])
+        value = a; sent = ['()', '__awaited', [',', a, S.SENT]]
+      }
       stmtsOf(cur).push(
         [';;set', resume],
         ['return', ['{}', [',', [':', 'value', value], [':', 'done', [null, false]]]]])
-      if (target) stmtsOf(resume).push(['=', target, S.SENT])
+      if (target) stmtsOf(resume).push(['=', target, sent])
       return resume
     }
 
@@ -358,7 +368,7 @@ export function createGeneratorLowering({ transform, transformParams, err, gener
 
       // --- yield forms ---
       if (op === 'yield*') return flattenStmt(desugarYieldStar(st[1], null), cur, loopCtx)
-      if (op === 'yield') return emitYield(cur, st, null)
+      if (op === 'yield' || op === 'await') return emitYield(cur, st, null)
       if ((op === 'let' || op === 'const') && st.length === 2 && Array.isArray(st[1]) &&
           st[1][0] === '=' && isYield(st[1][2])) {
         if (st[1][2][0] === 'yield*') return flattenStmt(desugarYieldStar(st[1][2][1], st[1][1]), cur, loopCtx)
@@ -371,7 +381,7 @@ export function createGeneratorLowering({ transform, transformParams, err, gener
       // `name.prop = yield E` (a field set from an await): the value lands in a
       // temp at the resume, then the store – the receiver is a plain name, so
       // evaluating it after the yield changes nothing observable
-      if (op === '=' && Array.isArray(st[1]) && st[1][0] === '.' && typeof st[1][1] === 'string' && isYield(st[2]) && st[2][0] === 'yield') {
+      if (op === '=' && Array.isArray(st[1]) && st[1][0] === '.' && typeof st[1][1] === 'string' && isYield(st[2]) && st[2][0] !== 'yield*') {
         const t = genTemp('ya'); locals.add(t)
         const resume = emitYield(cur, st[2], t)
         stmtsOf(resume).push(['=', st[1], t])

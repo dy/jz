@@ -51,6 +51,7 @@
 import { MUTATE_OPS, EXACT_MATH, extractParams, isBrand, returnExprs, ACCESSOR_GET, ACCESSOR_SET, CLASS_T, TYPEOF, typeofPredicate, canonicalKeyOrder, schemaKey, isArrayIndexKey, layoutView, ENUM_DATA } from '../ast.js'
 import { encodeTypedElemAux, TYPED_ELEM_CODE, TYPED_ELEM_VIEW_FLAG, TYPED_ELEM_ANY_VIEW_FLAG, ctorFromElemAux, TYPED_ELEM_BIGINT_FLAG } from '../../layout.js'
 import { ITER_RECORD_KEYS } from '../std/iter-helpers.js'
+import { PROMISE_KEYS } from '../std/async.js'
 import { VAL } from '../reps.js'
 import { typedElementKey, typedCtorName } from '../typed-provenance.js'
 import { ATOMICS_VALUE_OPS, builtinCalleeVal, methodValType } from '../kind-traits.js'
@@ -326,6 +327,8 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       const fi = iterSites.get(site)
       if (fi) { const fl = iterSites.get(l); iterSites.set(l, fl ? { src: merge(fl.src, fi.src), elem: merge(fl.elem, fi.elem) } : { src: fi.src, elem: fi.elem }) }
     }
+    // A folded promise layout holds every promise, the runtime's own among them: none answers for its value.
+    if (l === PROMISE_LAYOUT) for (const site of promiseSites.keys()) promiseSites.set(site, ANY)
   }
   const NO_SLOTS = []
   const openSchemas = new Set()
@@ -914,6 +917,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     for (const [p, k] of sideProps.get(sid) ?? []) if (!lostReadPrecise(p)) escape(k)
     escape(sideWild.get(sid) ?? K.NONE)
     if (iterFacts(sid)) escape(iterElem(sid))
+    if (promiseSites.has(sid)) escape(promiseSites.get(sid))
     forFolded(sid, loseShape)
   }
   // A typed array's named properties come from stores the walk sees, or from
@@ -984,6 +988,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       forFolded(sid, s => escapeToHost(kind(K.OBJECT, s), seen))
       poisonLost(sid)
       if (iterFacts(sid)) escapeToHost(iterElem(sid), seen)
+      if (promiseSites.has(sid)) { retain(promiseSites.get(sid)); escapeToHost(promiseSites.get(sid), seen) }
       const row = slots(sid)
       for (let i = 0; i < row.length; i++) { retain(row[i]); escapeToHost(row[i], seen) }
       const side = anySideOf(sid); retain(side); escapeToHost(side, seen)
@@ -1412,6 +1417,72 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     siteResults.set(node, r)
     return r
   }
+  // An async function is `(…) => __async_run(M(…))` (jzify/async.js): the
+  // runtime's promise, which it settles with what the machine M completes
+  // with (a `{ value, done: true }` step), adopting a promise or a thenable;
+  // one whose parameters throw returns `__p_reject(e)`, which never fulfills.
+  // Every promise is the runtime's one literal, whose `val` slot joins every
+  // settlement in the program: the summary names each such promise by its
+  // call node, a site of that layout (std/async PROMISE_KEYS) with the
+  // runtime literal's slots, and keeps beside it the value it fulfills with.
+  // An await resumes its machine with its operand's settled value,
+  // `__awaited(a, v)` (jzify/generators.js): the operand itself when it is no
+  // thenable, a named promise's value, anything for a promise the program
+  // made another way or a thenable. The runtime stores into a promise only
+  // through its own references, never through one the summary names here.
+  const ASYNC_RUN = /\$__async_run$/, AWAITED = /\$__awaited$/, REJECT = /\$__p_reject$/
+  const PROMISE_LAYOUT = sidByKey.get(schemaKey(PROMISE_KEYS, null))
+  const promiseSites = new Map()   // promise site → the value it fulfills with
+  const doneSites = new Set()      // `{ value, done: true }` literal sites: the completions of a machine
+  const slotOf = (sid, prop) => { const i = schemas[sid].indexOf(prop); return i < 0 ? K.NONE : slots(sid)[i] }
+  // An object whose `then` the runtime may call, or that it takes for one of its promises.
+  const thenable = (sid) => layouts[sid] === PROMISE_LAYOUT || schemas[sid].includes('then') || schemas[sid].includes('__p') ||
+    schemas[sid].includes(getterOf('then')) || classMember(kind(K.OBJECT, sid), 'then') !== null || memberMayBeOwn('then') ||
+    tagOf(sideOf(sid, 'then')) !== K.NONE || lostSchema(sid) && (wildProps.has('then') || pendingAll)
+  /** The value an await of a value of kind `k` resumes with (std/async `__await`, which takes a function for a value). */
+  const awaited = (k) => {
+    const t = tagOf(k)
+    if (t === K.NONE || t === K.NULLISH || t === K.ABSENT || t === K.NUMBER || t === K.STRING || t === K.BOOL || t === K.BIGINT || t === K.CLOSURE || t === K.DATE || t === K.BUFFER) return k
+    if ((t === K.ARRAY || t === K.TYPED || t === K.MAP || t === K.SET || t === K.REGEX) && !builtinReceiverMayHaveOwn(t, 'then') && !builtinReceiverMayHaveOwn(t, '__p')) return k
+    if (t !== K.OBJECT || paramOf(k) === UNKNOWN) return ANY
+    let r = k & NULL_BITS ? (k & NULL_BITS) | UNKNOWN : K.NONE
+    for (const sid of shapesOf(paramOf(k))) {
+      const f = promiseSites.get(canonSid(sid))
+      if (f !== undefined) r = merge(r, f)
+      else if (thenable(sid)) return ANY
+      else r = merge(r, kind(K.OBJECT, sid))
+    }
+    return r
+  }
+  /** What a machine completes with: the `value` of its `next` and `throw` steps' `{ value, done: true }` results. */
+  const completion = (m) => {
+    if (tagOf(m) === K.NONE) return K.NONE   // no kind yet: a round before the machine's factory ran
+    if (tagOf(m) !== K.OBJECT || paramOf(m) === UNKNOWN) return ANY
+    let steps = K.NONE
+    for (const sid of shapesOf(paramOf(m))) {
+      const f = iterFacts(sid)
+      for (const c of f ? [f.next, f.thr] : [slotOf(sid, 'next'), slotOf(sid, 'throw')]) {
+        if (tagOf(c) === K.NONE) continue
+        if (!knownClosure(c)) return ANY
+        steps = merge(steps, closureResult(paramOf(c)))
+      }
+    }
+    if (tagOf(steps) === K.NONE) return K.NONE
+    if (tagOf(steps) !== K.OBJECT || paramOf(steps) === UNKNOWN) return ANY
+    let r = K.NONE
+    for (const sid of shapesOf(paramOf(steps))) if (doneSites.has(sid)) r = merge(r, slotOf(sid, 'value'))
+    return r
+  }
+  /** The promise named at `node`, fulfilled with `v`; `own` is the runtime's own (its literal's slots). */
+  const promiseAt = (node, v, own) => {
+    if (PROMISE_LAYOUT === undefined || foldedLayouts.has(PROMISE_LAYOUT) || tagOf(own) !== K.OBJECT || paramOf(own) === UNKNOWN) return own
+    const sid = objectSite(node, PROMISE_LAYOUT)
+    if (sid < 0 || shapesOf(paramOf(own)).includes(sid)) return own
+    for (const s of shapesOf(paramOf(own))) slots(s).forEach((k, i) => raiseSlot(sid, i, k))
+    const f = promiseSites.get(sid), nf = f === undefined ? v : merge(f, v)
+    if (nf !== f) { promiseSites.set(sid, nf); changed = true }
+    return kind(K.OBJECT, sid)
+  }
   const call = (callee, base, n, node = null) => {
     if (typeof callee === 'string') {
       if (callee.startsWith('new.')) {
@@ -1462,6 +1533,23 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
         const f = funcByName.get(callee)
         if (f && escaped.has(callee)) escapeArgs(base, n)
         else if (f) { const b = sp; for (let i = 0; i < n; i++) pushK(ks[base + i] | UNKNOWN, kspread[base + i]); bind(callee, paramNamesOf(f), b, n, f.defaults); sp = b }
+        return r
+      }
+      // The async runtime's answers at its call nodes (promiseAt, awaited): the
+      // driver runs over the machine itself, `__awaited` over kinds without identity.
+      if (node && (ASYNC_RUN.test(callee) || REJECT.test(callee) || AWAITED.test(callee)) && funcByName.has(callee)) {
+        const f = funcByName.get(callee)
+        let r
+        if (AWAITED.test(callee)) {
+          r = awaited(n ? ks[base] : NULLISH)
+          if (escaped.has(callee)) escapeArgs(base, n)
+          else { const b = sp; for (let i = 0; i < n; i++) pushK(ks[base + i] | UNKNOWN, kspread[base + i]); bind(callee, paramNamesOf(f), b, n, f.defaults); sp = b }
+        } else {
+          bind(callee, paramNamesOf(f), base, n, f.defaults)
+          const own = resultAt(callee, base, n, node)
+          r = escaped.has(callee) ? own : promiseAt(node, REJECT.test(callee) ? K.NONE : awaited(completion(n ? ks[base] : K.NONE)), own)
+        }
+        siteResults.set(node, r)
         return r
       }
       if (callee === '__keys_ro' || callee === '__keys_dyn') return kind(K.ARRAY)
@@ -2310,6 +2398,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   /** A static literal: each value into its slot, or escaped when the registry has not named the shape. */
   const staticLiteral = (n, sid) => {
     sid = objectSite(n, sid)
+    if (sid >= 0 && layouts[sid] === RESULT_LAYOUT && !doneSites.has(sid) && n.some(p => Array.isArray(p) && p[0] === ':' && p[1] === 'done' && Array.isArray(p[2]) && p[2][0] == null && p[2][1] === true)) doneSites.add(sid)
     const init = definite.get(n)
     for (let i = 1; i < n.length; i++) {
       const p = n[i]

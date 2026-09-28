@@ -2,9 +2,9 @@
  * async/await lowering – the generator machinery driving the plain-jz promise
  * runtime `jz:async` (src/std/async.js). No engine event loop, no stdlib/WAT
  * additions: an async function body lowers to the SAME state machine as
- * function* (await ≡ yield), and the runtime's driver (__async_run) steps
- * it, parking on awaited promises; the runtime is imported implicitly by
- * every module that awaits, one copy per program.
+ * function* (an await suspends as a yield does), and the runtime's driver
+ * (__async_run) steps it, parking on awaited promises; the runtime is
+ * imported implicitly by every module that awaits, one copy per program.
  *
  * v1 surface (precise rejects elsewhere): try/catch across an await routes
  * the rejection to the catch (the machine's try regions, generators.js); a
@@ -27,7 +27,7 @@ import { some, ASSIGN_OPS, extractParams } from '../src/ast.js'
 
 export function createAsyncLowering({ genTemp, err }) {
 
-  // await → yield inside THIS function body only (nested function forms keep
+  // The awaits of THIS function body only (nested function forms keep
   // their own await/this rules; a stray await inside a nested sync fn falls
   // through to prepare's clean reject). The boundary set is the layer-wide
   // canonical one (generators.js FN_BOUNDARY_OPS) — one definition for every
@@ -78,12 +78,13 @@ export function createAsyncLowering({ genTemp, err }) {
     ]]
   }
 
+  // `for await` → plain awaits. An await stays an await: the machine suspends
+  // at it as at a yield and types the value it resumes with (generators.js).
   function mapAwait(node) {
     if (!Array.isArray(node)) return node
     if (FN_OPS.has(node[0])) return node
     if (node[0] === 'for await' && Array.isArray(node[1]) && node[1][0] === 'of')
       return mapAwait(desugarForAwait(node[1], node[2]))
-    if (node[0] === 'await') return ['yield', mapAwait(node[1])]
     return node.map((n, i) => i === 0 ? n : mapAwait(n))
   }
   function fnBoundary(n) { return FN_OPS.has(n[0]) }
@@ -259,7 +260,7 @@ export function createAsyncLowering({ genTemp, err }) {
 
   // async (params) => body / async function (params) { body } →
   //   (...aa) => __async_run(MACHINE_FACTORY(...aa))
-  // The factory is the standard generator lowering of the await-mapped body.
+  // The factory is the standard generator lowering of the body.
   function lowerAsync(params, body) {
     // Source-level desugar: (...aa) => __async_run((function* (params) { mappedBody })(...aa))
     // The function* expression rides the standard generator lowering; the body

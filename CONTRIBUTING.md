@@ -1713,8 +1713,15 @@ awaited value lands in a temp declared before the statement; what the
 statement evaluates before that await lands in temps ahead of it, a callee and
 an assignment target staying in place; a short-circuit or conditional whose
 later arm awaits becomes an if statement assigning a temp; a loop whose test
-awaits tests at the top of `while (true)`. Class lowering (`jzify/classes.js`)
-takes `static async` methods on both of its paths and a bare `super()`, and the
+awaits tests at the top of `while (true)`. An await suspends the machine as a
+yield does, and the value it resumes with is `__awaited(a, v)`, `a` holding
+the operand: the summary types it as the operand's settled value, the operand
+itself when it is no thenable, the value an async call's promise fulfills with
+(the promise is named at its `__async_run` call node, as the iterator runtime's
+records are, beside what the machine completes with, a promise or thenable it
+completes with adopted), anything for a promise made another way.
+Class lowering (`jzify/classes.js`) takes `static async` methods on both of
+its paths and a bare `super()`, and the
 member census counts an optional method call (`o.m?.()`) as a read, since the
 call binds the method as a value first (`src/compile/emit/class-dispatch.js`).
 A derived constructor's statements before `super(…)` run before the base's

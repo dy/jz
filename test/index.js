@@ -53,6 +53,7 @@ const TESTS = [
   'generators',
   'iterator-params',
   'async',
+  'async-factory',
   'regex',
   'simd',
   'cli',
