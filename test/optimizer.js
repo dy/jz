@@ -2900,11 +2900,22 @@ test('promoteIntArrayLiterals: .push disqualifies (length mutation)', () => {
   is(main(), 4)
 })
 
+// A test the summary decides folds before promotion (plan/fold-kind-tests.js):
+// the promoted literal never meets it. One an inlined helper brings in after
+// the fold is still there to see a typed array, so it disqualifies.
 test('promoteIntArrayLiterals: Array.isArray disqualifies (typed arrays return false)', () => {
-  const src = `
+  const decided = `
     export const main = () => {
       const xs = [1, 2, 3]
       return Array.isArray(xs) ? xs.length : -1
+    }
+  `
+  is(run(decided).main(), 3, 'a decided test folds, its answer kept')
+  const src = `
+    const isArr = (v) => Array.isArray(v)
+    export const main = () => {
+      const xs = [1, 2, 3]
+      return (isArr(xs) ? xs.length : -1) + (isArr(7) ? 100 : 0)
     }
   `
   const body = compileMain(src, { propagateLocals: false })
