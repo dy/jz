@@ -84,3 +84,22 @@ export let g = () => f(1) * 1000 + f(1, 2)`,
     for (const optimize of levels(0, 2)) is(jz(src, { optimize }).exports.g(), want, `${src.split('\n')[1]} at ${optimize}`)
   }
 })
+
+// A decided test still runs where evaluating it may do something: a call its
+// `||` evaluates before the operand that decided it, a member read that throws
+// on a missing receiver. Only the arm it never takes goes.
+test('kind tests: a decided test keeps its effects', () => {
+  const cases = [
+    `let n = 0
+let bump = () => { n++; return 0 }
+export let f = (k) => { const o = { a: k }; if (bump() || o) return n * 10 + o.a; return -1 }`,
+    `let n = 0
+let bump = () => { n++; return 1 }
+export let f = (k) => { const s = 'x'; const r = (bump() && typeof s === 'number') ? 1 : 2; return n * 10 + r }`,
+    `export let f = (k) => { const x = k > 0 ? 5 : null; try { if (x.foo) return 1; return 2 } catch (e) { return 3 } }`,
+  ]
+  for (const src of cases) for (const optimize of levels(0, 2)) {
+    const js = oracle(src), mod = jz(src, { optimize }).exports
+    is([mod.f(0), mod.f(1)], [js.f(0), js.f(1)], `${src.split('\n').pop()} at ${optimize}`)
+  }
+})
