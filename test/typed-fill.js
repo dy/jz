@@ -19,8 +19,12 @@ export let missing = (k) => { const a = pick(k, 9); a.fill(undefined); return su
 export let text = (k) => { const a = pick(k, 9); a.fill('12'); return sum(a) }
 export let flag = (k) => { const a = pick(k, 9); a.fill(true, 2); return sum(a) }
 export let returned = (k) => { const a = pick(k, 5); const b = a.fill(2); b[0] = 9; return sum(a) }
-export let known = (k) => { const a = new Float64Array(k + 20); a.fill(1.25, 3); const b = new Uint8Array(k + 20); b.fill(257); const c = new Float32Array(33); c.fill(0.1); return sum(a) + sum(b) + sum(c) }`
-const names = ['all', 'range', 'fromEnd', 'empty', 'last', 'missing', 'text', 'flag', 'returned', 'known']
+export let known = (k) => { const a = new Float64Array(k + 20); a.fill(1.25, 3); const b = new Uint8Array(k + 20); b.fill(257); const c = new Float32Array(33); c.fill(0.1); return sum(a) + sum(b) + sum(c) }
+export let zero = (k) => { const a = pick(k, 37); a.fill(9); a.fill(0, 3, 30); return sum(a) }
+export let ones = (k) => { const a = pick(k, 37); a.fill(-1, 1); return sum(a) }
+export let nan = (k) => { const a = pick(k, 37); a.fill(1); a.fill(NaN, 2, 36); return a[3] !== a[3] ? -1 : sum(a) }
+export let negZero = (k) => { const a = pick(k, 37); a.fill(-0, 0, 20); return 1 / a[1] < 0 ? -1 : sum(a) }`
+const names = ['all', 'range', 'fromEnd', 'empty', 'last', 'missing', 'text', 'flag', 'returned', 'known', 'zero', 'ones', 'nan', 'negZero']
 
 for (const optimize of levels(0, 2, 3, 'size'))
   test(`typed fill: every element kind at ${optimize}`, () => {

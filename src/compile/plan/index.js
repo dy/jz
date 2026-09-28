@@ -149,6 +149,10 @@ export default function plan(ast, profiler, summarize) {
     sweep('scalarizeTypedArrays', () => scalarizeFunctionTypedArrays(facts()))
   }
   const programFacts = facts()
+  // A module global's declaration-time literal length holds only while nothing
+  // rewrites the binding (the element kind is an all-writers fact already).
+  // Dropped here, before narrowing reads the lengths into parameter facts.
+  for (const name of programFacts.typedRedefs) ctx.scope.globalTypedLen?.delete(name)
   ctx.types.dynKeyVars = programFacts.dynVars
   ctx.types.dynWriteVars = programFacts.dynWriteVars
   ctx.types.anyDynKey = programFacts.anyDyn

@@ -66,9 +66,14 @@ export function exprType(expr, locals, valTypes, strict, bodyRoot, readPresent) 
   if (typeof expr === 'number')
     return isI32(expr) ? 'i32' : 'f64'
   if (typeof expr === 'string') {
+    // An unboxed pointer (a typed-array parameter, a raw OBJECT local) lives in
+    // an i32 but is an offset, not an integer value: a local assigned from it
+    // (`let target = cond ? left : right`) must not narrow to an integer i32,
+    // whose reads would widen the offset numerically.
+    if (repOf(expr)?.ptrKind != null) return 'f64'
     if (locals?.has?.(expr)) return readPresent && repOf(expr)?.unsigned ? 'f64' : locals.get(expr)
-    const paramType = ctx.func.current?.params?.find(p => p.name === expr)?.type
-    if (paramType) return paramType
+    const param = ctx.func.current?.params?.find(p => p.name === expr)
+    if (param) return param.ptrKind != null ? 'f64' : param.type
     // A module-level INTEGER const (`const N = 16384`) is an integer compile-time
     // constant — type it i32 when it fits, regardless of the global's f64 (NaN-box)
     // storage. Otherwise a counter bounded by it (`for (i=0; i<N; i++)`) widens to

@@ -11,6 +11,7 @@ import {
 import { PTR, ctx, inc } from '../../ctx.js'
 import { asF64, emitNum, isPureIR, ptrTypeEq, temp, tempI32, typed } from '../../ir.js'
 import { valTypeOf } from '../../kind.js'
+import { K, hasTag } from '../../summary/kind.js'
 import { VAL, repOf } from '../../reps.js'
 import { plannedTypedStorageInfo } from '../typed-storage-plan.js'
 import { emit } from './dispatch.js'
@@ -43,10 +44,23 @@ const foldInstanceof = (va, bool) =>
 // valTypeOf-driven instanceof fold", not a new inference.
 const INSTANCEOF_TAG = { Array: [VAL.ARRAY, PTR.ARRAY], Map: [VAL.MAP, PTR.MAP], Set: [VAL.SET, PTR.SET], ArrayBuffer: [VAL.BUFFER, PTR.BUFFER] }
 
+/** The value may be undefined or null: the summary's kind carries NULLISH, or
+ *  ABSENT (an uninitialized `let` returned on one path, a record field assigned
+ *  on the other). The reads that would fault on such a value keep the other
+ *  path's constructor fact; `instanceof` IS the test for that presence, so it
+ *  stays a runtime test. */
+const mayBeMissing = (a) => {
+  // A parameter's presence rides its representation (narrow/index.js: the
+  // callers' kinds, the absent one included), not the body's kind of the name.
+  if (typeof a === 'string') { const r = repOf(a); if (r?.nullable || r?.mayBeUndefined) return true }
+  const k = ctx.summary?.at(ctx.func.current).kindOfExpr(a)
+  return k != null && (hasTag(k, K.NULLISH) || hasTag(k, K.ABSENT))
+}
+
 function emitTagInstanceof(a, rhs) {
   const [wantVal, wantPtr] = INSTANCEOF_TAG[rhs]
   const vt = valTypeOf(a)
-  if (vt != null) return foldInstanceof(emit(a), vt === wantVal)
+  if (vt != null && !mayBeMissing(a)) return foldInstanceof(emit(a), vt === wantVal)
   return ptrTypeEq(asF64(emit(a)), wantPtr)
 }
 
@@ -63,9 +77,9 @@ function typedCtorNameOf(a) {
 
 function emitTypedInstanceof(a, rhs) {
   const provenName = typedCtorNameOf(a)
-  if (provenName != null) return foldInstanceof(emit(a), provenName === rhs)
+  if (provenName != null && !mayBeMissing(a)) return foldInstanceof(emit(a), provenName === rhs)
   const vt = valTypeOf(a)
-  if (vt != null && vt !== VAL.TYPED) return foldInstanceof(emit(a), false)
+  if (vt != null && vt !== VAL.TYPED && !mayBeMissing(a)) return foldInstanceof(emit(a), false)
   // Runtime: PTR.TYPED tag AND element-code match. Mask off TYPED_ELEM_VIEW_FLAG before
   // comparing — a VIEW typed array (`new Int32Array(buffer)`) and an OWNED one
   // (`new Int32Array(4)`) are both really `instanceof Int32Array` in JS; only the

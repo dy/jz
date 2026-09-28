@@ -18,7 +18,7 @@ import { K, TAGS, NULL_BITS, NUMBER, STRING, hasTag, tagOf, tagsOf, bitOf } from
 import { typedIdxProven, idxKey } from '../src/type.js'
 import { constIntExpr } from '../src/static.js'
 import { VAL, lookupValType, repOf } from '../src/reps.js'
-import { nanPrefixHex, TYPED_ELEM_NAMES, TYPED_ELEM_CODE, TYPED_ELEM_BIGINT_FLAG, DATA_VIEW_AUX, DATA_VIEW_FLAG, encodeTypedElemAux } from '../layout.js'
+import { nanPrefixHex, TYPED_ELEM_NAMES, TYPED_ELEM_CODE, TYPED_ELEM_VIEW_FLAG, TYPED_ELEM_BIGINT_FLAG, TYPED_ELEM_F16_FLAG, TYPED_ELEM_CLAMPED_FLAG, DATA_VIEW_AUX, DATA_VIEW_FLAG, encodeTypedElemAux } from '../layout.js'
 import { err, inc, PTR, LAYOUT, registerGetter, setLinkDemand, getFactStore } from '../src/ctx.js'
 import { errorCodeLiteral, ERR } from '../err-codes.js'
 import { representationProgramHasBigint } from '../src/compile/representation-plan.js'
@@ -33,6 +33,9 @@ const _NAN_BITS = nanPrefixHex()
 
 
 const typedAux = (name, isView = false) => encodeTypedElemAux(name, isView)
+// The element kind of an aux: every bit but the view bit (the DataView bit stays,
+// a DataView is no element kind).
+const TYPED_KIND_MASK = 0x7FFF & ~TYPED_ELEM_VIEW_FLAG
 // Per constructor: copy an Array's elements into a fresh typed array.
 const fromArrayOf = new Map()
 import { STRIDE, SHIFT, LOAD, STORE } from './typedarray/elem-tables.js'
@@ -95,7 +98,8 @@ export default (ctx) => {
     // reliable dep path includes it. Pinned by test/self-compile-includes.js.
     __typed_fill: ['__len', '__typed_set_idx', '__clamp_idx', '__typed_shift', '__typed_data', '__ptr_aux'],
     __typed_reverse: ['__len', '__typed_get_idx', '__typed_set_idx'],
-    __typed_copyWithin: ['__len', '__typed_get_idx', '__typed_set_idx', '__clamp_idx'],
+    __typed_copyWithin: ['__len', '__clamp_idx', '__ptr_aux', '__typed_shift', '__typed_data'],
+    __typed_set_rt: ['__len', '__ptr_type', '__ptr_aux', '__typed_same_bytes', '__typed_shift', '__typed_data', '__typed_idx', '__typed_set_idx'],
     __typed_sort: ['__len', '__typed_get_idx', '__typed_set_idx'],
     __subarray: ['__ptr_aux', '__ptr_offset', '__typed_shift', '__typed_data', '__len', '__mkptr', '__alloc', '__clamp_idx'],
     __typed_slice_rt: ['__ptr_aux', '__typed_shift', '__typed_data', '__len', '__mkptr', '__alloc_hdr_n', '__clamp_idx'],
@@ -282,6 +286,10 @@ export default (ctx) => {
       setLinkDemand('typedarray')
       if (name === 'Float16Array') setLinkDemand('f16')
       if (name === 'Uint8ClampedArray') setLinkDemand('clamped')
+      // This constructor's element kind, in resolveElem's shape, read from the
+      // loop's captures before any nested emit (the closure-capture hazard below).
+      const elem = { et: elemType, name, isBigInt: name === 'BigInt64Array' || name === 'BigUint64Array',
+        isF16: name === 'Float16Array', isClamped: name === 'Uint8ClampedArray' }
       const srcType = typeof lenExpr === 'string' ? lookupValType(lenExpr) : valTypeOf(lenExpr)
       // Subview: new TypedArray(buffer, byteOffset, length) — true JS-parity view.
       // Allocates a 16-byte descriptor [byteLen:i32][dataOff:i32][parentOff:i32][pad]
@@ -326,30 +334,51 @@ export default (ctx) => {
           tagIR], 'f64')
       }
       // TypedArray(typedArray) COPIES into fresh storage with element conversion —
-      // spec: only (buffer[, off, len]) constructs a view. Element reads go through
-      // __typed_idx (the source's elemType lives in its aux at runtime), stores
-      // convert to THIS view's elemType — `new Float64Array(int32Arr)` converts.
-      const copyFromTyped = (srcTemp) => {
-        inc('__typed_idx', '__len')
+      // spec: only (buffer[, off, len]) constructs a view. A source of the same
+      // byte layout (sameBytes) is one memory.copy; a source of another static
+      // kind converts through inline loads; a typed source of unknown kind (`s`
+      // null) asks its aux byte at runtime, then copies, or converts through
+      // __typed_idx. An argument whose kind is open altogether (`probe` false:
+      // the runtime dispatch below, one arm of four) only converts: the probe
+      // would weigh on every `new Float64Array(n)` sized by a parameter. Stores
+      // convert to THIS constructor's kind: `new Float64Array(int32Arr)` converts.
+      const copyFromTyped = (srcTemp, s, probe = true) => {
+        inc('__len')
+        const k = SHIFT[elemType]
         const cl = tempI32('tcl'), ci = tempI32('tci')
-        const out = allocPtr({ type: PTR.TYPED, aux,
-          len: ['i32.mul', ['local.get', `$${cl}`], ['i32.const', stride]], stride: 1, tag: 'tc' })
-        const srcElem = ['call', '$__typed_idx', ['i64.reinterpret_f64', ['local.get', `$${srcTemp}`]], ['local.get', `$${ci}`]]
-        const cid = freshId(ctx)
-        const dstOff = ['i32.add', ['local.get', `$${out.local}`], ['i32.mul', ['local.get', `$${ci}`], ['i32.const', stride]]]
-        const special = name === 'Float16Array' || name === 'Uint8ClampedArray'
-        const storeIRs = special
-          ? [elemStoreIR({ et: elemType, isF16: name === 'Float16Array', isClamped: name === 'Uint8ClampedArray' }, dstOff, srcElem)]
-          : [[STORE[elemType], dstOff, elemType <= 5 ? toInt32(srcElem) : elemType === 6 ? ['f32.demote_f64', srcElem] : srcElem]]
+        const out = allocPtr({ type: PTR.TYPED, aux, len: ['i32.shl', ['local.get', `$${cl}`], ['i32.const', k]], stride: 1, tag: 'tc' })
+        const srcIR = typed(['local.get', `$${srcTemp}`], 'f64'), srcPtr = ['i64.reinterpret_f64', srcIR]
+        const at = (base, shift) => ['i32.add', ['local.get', `$${base}`], ['i32.shl', ['local.get', `$${ci}`], ['i32.const', shift]]]
+        const copy = (srcData) => ['memory.copy', ['local.get', `$${out.local}`], srcData, ['i32.shl', ['local.get', `$${cl}`], ['i32.const', k]]]
+        const loop = (srcElem) => {
+          const cid = freshId(ctx)
+          return [['local.set', `$${ci}`, ['i32.const', 0]],
+            ['block', `$tcb${cid}`, ['loop', `$tclp${cid}`,
+              ['br_if', `$tcb${cid}`, ['i32.ge_s', ['local.get', `$${ci}`], ['local.get', `$${cl}`]]],
+              elemStoreIR(elem, at(out.local, k), srcElem),
+              ['local.set', `$${ci}`, ['i32.add', ['local.get', `$${ci}`], ['i32.const', 1]]],
+              ['br', `$tclp${cid}`]]]]
+        }
+        let body
+        if (s && sameBytes(elem, s)) body = [copy(typedDataAddr(srcIR, s.isView))]
+        else if (s) {
+          const sp = tempI32('tcp')
+          body = [['local.set', `$${sp}`, typedDataAddr(srcIR, s.isView)], ...loop(typed(elemLoadIR(s, at(sp, SHIFT[s.et])), 'f64'))]
+        } else {
+          inc('__typed_idx')
+          const convert = loop(typed(['call', '$__typed_idx', srcPtr, ['local.get', `$${ci}`]], 'f64'))
+          if (!probe) body = convert
+          else {
+            inc('__typed_same_bytes', '__ptr_aux', '__typed_data')
+            body = [['if', ['call', '$__typed_same_bytes', ['i32.const', aux], ['call', '$__ptr_aux', srcPtr]],
+              ['then', copy(['call', '$__typed_data', srcPtr])],
+              ['else', ...convert]]]
+          }
+        }
         return ['block', ['result', 'f64'],
-          ['local.set', `$${cl}`, ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${srcTemp}`]]]],
+          ['local.set', `$${cl}`, ['call', '$__len', srcPtr]],
           out.init,
-          ['local.set', `$${ci}`, ['i32.const', 0]],
-          ['block', `$tcb${cid}`, ['loop', `$tclp${cid}`,
-            ['br_if', `$tcb${cid}`, ['i32.ge_s', ['local.get', `$${ci}`], ['local.get', `$${cl}`]]],
-            ...storeIRs,
-            ['local.set', `$${ci}`, ['i32.add', ['local.get', `$${ci}`], ['i32.const', 1]]],
-            ['br', `$tclp${cid}`]]],
+          ...body,
           out.ptr]
       }
       // Single arg array-like source: copy elements instead of treating the pointer as a length.
@@ -368,7 +397,7 @@ export default (ctx) => {
         // (interpreted) execution never exposes it. copyFromTyped(src) only
         // needs src's temp NAME (already allocated), not its emitted value, so
         // building it first is behavior-identical — same IR tree, reassembled.
-        const copyIR = copyFromTyped(src)
+        const copyIR = copyFromTyped(src, resolveElem(lenExpr))
         return typed(['block', ['result', 'f64'],
           ['local.set', `$${src}`, asF64(emit(lenExpr))],
           copyIR], 'f64')
@@ -405,7 +434,7 @@ export default (ctx) => {
         // changes nothing about which compile-time calls happen — only their
         // order relative to emit(lenExpr).
         const fromArrIR = fromArrayOf.get(name)(src)
-        const copyTypedIR = copyFromTyped(src)
+        const copyTypedIR = copyFromTyped(src, null, false)
         // The argument's kind decides (23.2.5.1): a number, or any primitive
         // (a string, a boolean, a nullish atom) sizes a fresh array through
         // ToIndex, whose ToNumber converts a string and rejects a BigInt or a
@@ -1293,6 +1322,53 @@ export default (ctx) => {
     return [STORE[r.et], off, toInt32(valF64)]
   }
 
+  // Two element kinds store the same bytes for every element the source holds:
+  // the same kind, or two plain integer kinds of one width (ToIntN and ToUintN
+  // agree on the low N bits of an integer). A copy between them is a byte copy.
+  // The kind is the aux without its view bit; $__typed_same_bytes is the twin
+  // on runtime aux bytes.
+  const kindOf = (r) => r.et | (r.isBigInt ? TYPED_ELEM_BIGINT_FLAG : 0) | (r.isF16 ? TYPED_ELEM_F16_FLAG : 0) | (r.isClamped ? TYPED_ELEM_CLAMPED_FLAG : 0)
+  const sameBytes = (a, b) => (a = kindOf(a), b = kindOf(b), a === b || ((a | b) < 6 && (a >> 1) === (b >> 1)))
+  ctx.core.stdlib['__typed_same_bytes'] = `(func $__typed_same_bytes (param $a i32) (param $b i32) (result i32)
+    (local.set $a (i32.and (local.get $a) (i32.const ${TYPED_KIND_MASK})))
+    (local.set $b (i32.and (local.get $b) (i32.const ${TYPED_KIND_MASK})))
+    (i32.or (i32.eq (local.get $a) (local.get $b))
+      (i32.and (i32.lt_u (i32.or (local.get $a) (local.get $b)) (i32.const 6))
+        (i32.eq (i32.shr_u (local.get $a) (i32.const 1)) (i32.shr_u (local.get $b) (i32.const 1))))))`
+
+  // The two statements of a runtime throw by code: record it, raise $__jz_err.
+  const throwCodeIR = (code) => [
+    ['global.set', '$__jz_last_err_bits', ['i64.reinterpret_f64', ['f64.const', errorCodeLiteral(code)]]],
+    ['throw', '$__jz_err', ['f64.const', errorCodeLiteral(code)]]]
+
+  // .set(source, offset) for a receiver or a source of unknown kind: the aux
+  // bytes decide at runtime. A typed source of the same byte layout is one
+  // memory.copy (memmove, so a view of the receiver copies right); a typed
+  // source of another kind or a plain array converts element by element.
+  // A negative offset or a source past the receiver's end throws the
+  // RangeError of 23.2.3.26.
+  ctx.core.stdlib['__typed_set_rt'] = `(func $__typed_set_rt (param $dst i64) (param $src i64) (param $off i32)
+    (local $n i32) (local $i i32) (local $k i32)
+    (local.set $n (call $__len (local.get $src)))
+    (if (i32.or (i32.lt_s (local.get $off) (i32.const 0))
+          (i32.gt_u (i32.add (local.get $off) (local.get $n)) (call $__len (local.get $dst))))
+      (then
+        (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${errorCodeLiteral(ERR.TYPED_SET_OFFSET)})))
+        (throw $__jz_err (f64.const ${errorCodeLiteral(ERR.TYPED_SET_OFFSET)}))))
+    (if (i32.and (i32.eq (call $__ptr_type (local.get $src)) (i32.const ${PTR.TYPED}))
+          (call $__typed_same_bytes (call $__ptr_aux (local.get $dst)) (call $__ptr_aux (local.get $src))))
+      (then
+        (local.set $k (call $__typed_shift (i32.and (call $__ptr_aux (local.get $dst)) (i32.const 7))))
+        (memory.copy (i32.add (call $__typed_data (local.get $dst)) (i32.shl (local.get $off) (local.get $k)))
+          (call $__typed_data (local.get $src)) (i32.shl (local.get $n) (local.get $k)))
+        (return)))
+    (block $done (loop $more
+      (br_if $done (i32.ge_u (local.get $i) (local.get $n)))
+      (drop (call $__typed_set_idx (local.get $dst) (i32.add (local.get $off) (local.get $i))
+        (call $__typed_idx (local.get $src) (local.get $i))))
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (br $more))))`
+
   /** Emit the real data byte-address for a typed array IR node.
    *  Owned: low 32 bits of the NaN-box (or the unboxed local directly).
    *  View: load descriptor[4]. Uses ptrOffsetIR so unboxed-TYPED locals pass through
@@ -1421,11 +1497,12 @@ export default (ctx) => {
   // on PTR.ARRAY and silently no-ops a typed receiver (the storage layout and
   // element width differ). The first element goes through the element-width-
   // aware __typed_set_idx (its conversion, its kind, its throw); the rest are
-  // its bytes, and each copy doubles the filled run: one body for every element
-  // kind (u8…f64, BigInt), log2(n) copies for n elements.
+  // its bytes: one memory.fill when they are all one byte (0, -1, NaN of an
+  // integer kind, any byte element), else each copy doubles the filled run,
+  // log2(n) copies for n elements. One body for every element kind (u8…f64, BigInt).
   // start/end default 0/length, accept negatives, and clamp to [0, length].
   ctx.core.stdlib['__typed_fill'] = `(func $__typed_fill (param $ptr i64) (param $val f64) (param $start i32) (param $end i32) (result f64)
-    (local $len i32) (local $a i32) (local $n i32) (local $k i32) (local $rest i32)
+    (local $len i32) (local $a i32) (local $n i32) (local $k i32) (local $rest i32) (local $w i32) (local $q i64)
     (local.set $len (call $__len (local.get $ptr)))
     (local.set $start (call $__clamp_idx (local.get $start) (local.get $len)))
     (local.set $end (call $__clamp_idx (local.get $end) (local.get $len)))
@@ -1436,13 +1513,23 @@ export default (ctx) => {
         (local.set $a (i32.add (call $__typed_data (local.get $ptr)) (i32.shl (local.get $start) (local.get $k))))
         (local.set $n (i32.shl (i32.sub (local.get $end) (local.get $start)) (local.get $k)))
         (local.set $k (i32.shl (i32.const 1) (local.get $k)))
-        (block $done (loop $more
-          (br_if $done (i32.ge_u (local.get $k) (local.get $n)))
-          (local.set $rest (i32.sub (local.get $n) (local.get $k)))
-          (memory.copy (i32.add (local.get $a) (local.get $k)) (local.get $a)
-            (select (local.get $k) (local.get $rest) (i32.le_u (local.get $k) (local.get $rest))))
-          (local.set $k (i32.shl (local.get $k) (i32.const 1)))
-          (br $more)))))
+        (if (if (result i32) (i32.eq (local.get $k) (i32.const 1)) (then (i32.const 1))
+              (else (if (result i32) (i32.eq (local.get $k) (i32.const 2))
+                (then (local.set $w (i32.load16_u (local.get $a)))
+                  (i32.eq (i32.and (local.get $w) (i32.const 255)) (i32.shr_u (local.get $w) (i32.const 8))))
+                (else (if (result i32) (i32.eq (local.get $k) (i32.const 4))
+                  (then (local.set $w (i32.load (local.get $a)))
+                    (i32.eq (local.get $w) (i32.rotl (local.get $w) (i32.const 8))))
+                  (else (local.set $q (i64.load (local.get $a)))
+                    (i64.eq (local.get $q) (i64.rotl (local.get $q) (i64.const 8)))))))))
+          (then (memory.fill (local.get $a) (i32.load8_u (local.get $a)) (local.get $n)))
+          (else (block $done (loop $more
+            (br_if $done (i32.ge_u (local.get $k) (local.get $n)))
+            (local.set $rest (i32.sub (local.get $n) (local.get $k)))
+            (memory.copy (i32.add (local.get $a) (local.get $k)) (local.get $a)
+              (select (local.get $k) (local.get $rest) (i32.le_u (local.get $k) (local.get $rest))))
+            (local.set $k (i32.shl (local.get $k) (i32.const 1)))
+            (br $more)))))))
     (f64.reinterpret_i64 (local.get $ptr)))`
 
   // Element-width/-kind-aware read: arr[i] → f64, the read mirror of __typed_set_idx.
@@ -1492,11 +1579,12 @@ export default (ctx) => {
       (br $rev)))
     (f64.reinterpret_i64 (local.get $ptr)))`
 
-  // .copyWithin(target, start, end) — in-place overlap-safe move. Indices accept
-  // negatives (from end) and clamp to [0, len]; count = min(end-start, len-target).
-  // Direction picked so overlapping ranges don't clobber unread source elements.
+  // .copyWithin(target, start, end): an in-place move. Indices accept negatives
+  // (from end) and clamp to [0, len]; count = min(end-start, len-target). One
+  // memory.copy of the bytes: it moves as memmove, so overlapping ranges keep
+  // every unread source element, and every element kind moves alike.
   ctx.core.stdlib['__typed_copyWithin'] = `(func $__typed_copyWithin (param $ptr i64) (param $target i32) (param $start i32) (param $end i32) (result f64)
-    (local $len i32) (local $count i32) (local $k i32)
+    (local $len i32) (local $count i32) (local $k i32) (local $a i32)
     (local.set $len (call $__len (local.get $ptr)))
     (local.set $target (call $__clamp_idx (local.get $target) (local.get $len)))
     (local.set $start (call $__clamp_idx (local.get $start) (local.get $len)))
@@ -1504,23 +1592,13 @@ export default (ctx) => {
     (local.set $count (i32.sub (local.get $end) (local.get $start)))
     (if (i32.gt_s (local.get $count) (i32.sub (local.get $len) (local.get $target)))
       (then (local.set $count (i32.sub (local.get $len) (local.get $target)))))
-    (if (i32.lt_s (local.get $target) (local.get $start))
+    (if (i32.gt_s (local.get $count) (i32.const 0))
       (then
-        (local.set $k (i32.const 0))
-        (block $fd (loop $fl
-          (br_if $fd (i32.ge_s (local.get $k) (local.get $count)))
-          (drop (call $__typed_set_idx (local.get $ptr) (i32.add (local.get $target) (local.get $k))
-            (call $__typed_get_idx (local.get $ptr) (i32.add (local.get $start) (local.get $k)))))
-          (local.set $k (i32.add (local.get $k) (i32.const 1)))
-          (br $fl))))
-      (else
-        (local.set $k (local.get $count))
-        (block $bd (loop $bl
-          (br_if $bd (i32.le_s (local.get $k) (i32.const 0)))
-          (local.set $k (i32.sub (local.get $k) (i32.const 1)))
-          (drop (call $__typed_set_idx (local.get $ptr) (i32.add (local.get $target) (local.get $k))
-            (call $__typed_get_idx (local.get $ptr) (i32.add (local.get $start) (local.get $k)))))
-          (br $bl)))))
+        (local.set $k (call $__typed_shift (i32.and (call $__ptr_aux (local.get $ptr)) (i32.const 7))))
+        (local.set $a (call $__typed_data (local.get $ptr)))
+        (memory.copy (i32.add (local.get $a) (i32.shl (local.get $target) (local.get $k)))
+          (i32.add (local.get $a) (i32.shl (local.get $start) (local.get $k)))
+          (i32.shl (local.get $count) (local.get $k)))))
     (f64.reinterpret_i64 (local.get $ptr)))`
 
   // .sort() — default numeric order (insertion sort, stable). NaN sorts to the end,
@@ -2296,39 +2374,63 @@ export default (ctx) => {
       ['local.get', `$${vt}`]], void_ ? 'void' : 'f64')
   }
 
-  // TypedArray.prototype.set(source, offset = 0). Copies array-like numeric
-  // values into the receiver. Falls back to runtime aux-byte dispatch via
-  // __typed_set_idx when sibling-scope decls poison the dst's typedElem (e.g.
-  // v128const's i-branch ternary `num===16 ? Uint8Array : Uint32Array`
-  // hoisted alongside the f-branch's plain `new Uint8Array(16)`).
+  // TypedArray.prototype.set(source, offset = 0). A typed source of the same byte
+  // layout (sameBytes) is one memory.copy, which moves as memmove and so serves
+  // a source view of the receiver itself. A typed source of another kind
+  // converts element by element through inline loads and stores; a plain-array
+  // source reads through __typed_idx. When the receiver's or the source's kind
+  // is not static (a channel array's element; sibling-scope decls poisoning the
+  // typedElem, as v128const's hoisted `num===16 ? Uint8Array : Uint32Array`
+  // beside a plain `new Uint8Array(16)`), the aux bytes decide at runtime in
+  // __typed_set_rt. Every path throws the RangeError of a negative offset or a
+  // source past the receiver's end (23.2.3.26).
   ctx.core.emit['.typed:set'] = (arr, src, offset) => {
-    const r = resolveElem(arr)
-    inc('__len', '__typed_idx')
-    if (r == null) inc('__typed_set_idx')
-    const srcVal = src === undefined ? undefExpr() : asF64(emit(src))
-    const offVal = offset === undefined ? typed(['i32.const', 0], 'i32') : asI32(emit(offset))
-    const dst = r ? tempI32('tsd') : temp('tsd')
-    const srcTmp = temp('tss'), len = tempI32('tsl'), off = tempI32('tso'), i = tempI32('tsi')
-    const idx = ['i32.add', ['local.get', `$${off}`], ['local.get', `$${i}`]]
-    const val = typed(['call', '$__typed_idx', ['i64.reinterpret_f64', ['local.get', `$${srcTmp}`]], ['local.get', `$${i}`]], 'f64')
-    let store
-    if (r) {
-      const { et } = r
-      const addr = ['i32.add', ['local.get', `$${dst}`], ['i32.shl', idx, ['i32.const', SHIFT[et]]]]
-      store = elemStoreIR(r, addr, val)
+    ctx.runtime.throws = true
+    const r = resolveElem(arr), s = src === undefined ? null : resolveElem(src)
+    const srcKind = src === undefined ? null : typeof src === 'string' ? lookupValType(src) : valTypeOf(src)
+    const arrT = temp('tsa'), srcT = temp('tss'), off = tempI32('tso')
+    const arrIR = typed(['local.get', `$${arrT}`], 'f64'), srcIR = typed(['local.get', `$${srcT}`], 'f64')
+    const arrPtr = ['i64.reinterpret_f64', arrIR], srcPtr = ['i64.reinterpret_f64', srcIR]
+    const setup = [
+      ['local.set', `$${arrT}`, asF64(emit(arr))],
+      ['local.set', `$${srcT}`, src === undefined ? undefExpr() : asF64(emit(src))],
+      // ToIntegerOrInfinity offset (step 4): saturated, so ±Infinity fails the range check.
+      ['local.set', `$${off}`, offset === undefined ? ['i32.const', 0] : asI32Sat(emit(offset))]]
+    if (!r || (!s && srcKind !== VAL.ARRAY)) {
+      inc('__typed_set_rt')
+      return typed(['block', ['result', 'f64'], ...setup,
+        ['call', '$__typed_set_rt', arrPtr, srcPtr, ['local.get', `$${off}`]],
+        undefExpr()], 'f64')
+    }
+    inc('__len')
+    const n = tempI32('tsn'), dst = tempI32('tsd'), i = tempI32('tsi')
+    const shift = SHIFT[r.et]
+    const guard = [
+      ['local.set', `$${n}`, ['call', '$__len', srcPtr]],
+      ['if', ['i32.or', ['i32.lt_s', ['local.get', `$${off}`], ['i32.const', 0]],
+          ['i32.gt_u', ['i32.add', ['local.get', `$${off}`], ['local.get', `$${n}`]], ['call', '$__len', arrPtr]]],
+        ['then', ...throwCodeIR(ERR.TYPED_SET_OFFSET)]],
+      ['local.set', `$${dst}`, ['i32.add', typedDataAddr(arrIR, r.isView), ['i32.shl', ['local.get', `$${off}`], ['i32.const', shift]]]]]
+    if (s && sameBytes(r, s))
+      return typed(['block', ['result', 'f64'], ...setup, ...guard,
+        ['memory.copy', ['local.get', `$${dst}`], typedDataAddr(srcIR, s.isView), ['i32.shl', ['local.get', `$${n}`], ['i32.const', shift]]],
+        undefExpr()], 'f64')
+    const at = (base, k) => ['i32.add', ['local.get', `$${base}`], ['i32.shl', ['local.get', `$${i}`], ['i32.const', k]]]
+    let val, srcBase = []
+    if (s) {
+      const sp = tempI32('tsp')
+      srcBase = [['local.set', `$${sp}`, typedDataAddr(srcIR, s.isView)]]
+      val = typed(elemLoadIR(s, at(sp, SHIFT[s.et])), 'f64')
     } else {
-      store = ['drop', ['call', '$__typed_set_idx', ['i64.reinterpret_f64', ['local.get', `$${dst}`]], idx, val]]
+      inc('__typed_idx')
+      val = typed(['call', '$__typed_idx', srcPtr, ['local.get', `$${i}`]], 'f64')
     }
     const id = freshId(ctx)
-    return typed(['block', ['result', 'f64'],
-      ['local.set', `$${dst}`, r ? typedDataAddr(emit(arr), r.isView) : asF64(emit(arr))],
-      ['local.set', `$${srcTmp}`, srcVal],
-      ['local.set', `$${len}`, ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${srcTmp}`]]]],
-      ['local.set', `$${off}`, offVal],
+    return typed(['block', ['result', 'f64'], ...setup, ...guard, ...srcBase,
       ['local.set', `$${i}`, ['i32.const', 0]],
       ['block', `$brk${id}`, ['loop', `$loop${id}`,
-        ['br_if', `$brk${id}`, ['i32.ge_u', ['local.get', `$${i}`], ['local.get', `$${len}`]]],
-        store,
+        ['br_if', `$brk${id}`, ['i32.ge_u', ['local.get', `$${i}`], ['local.get', `$${n}`]]],
+        elemStoreIR(r, at(dst, shift), val),
         ['local.set', `$${i}`, ['i32.add', ['local.get', `$${i}`], ['i32.const', 1]]],
         ['br', `$loop${id}`]]],
       undefExpr()], 'f64')

@@ -28,7 +28,7 @@ import {
   JOIN_OPS, REP_EDGE_BOX, REP_EDGE_REJECT, REP_EDGE_UNBOX, representationBindingWriteAction, representationCallArgAction,
 } from '../representation-plan.js'
 import { CARRIER } from '../../summary/contract.js'
-import { CMP_SET, boolEagerBody, eagerSelectOK, isCanonicalBoolExpr, isCmp, selectCondOK } from './shared.js'
+import { CMP_SET, boolEagerBody, eagerSelectOK, isCanonicalBoolExpr, isCmp, selectOK } from './shared.js'
 import { K, NUMBER, hasTag, orAbsent, valOf, core as summaryCore, tagOf as summaryTagOf, tagsOf as summaryTagsOf, bitOf as summaryBitOf, NULL_BITS as SUMMARY_NULL_BITS } from '../../summary/kind.js'
 
 
@@ -1040,8 +1040,9 @@ export function emitDecl(...inits) {
           ['local.set', `$${innerName}`, ['local.get', `$${name}`]],
           ['local.set', `$${bt}`, ['call', '$__alloc_hdr', ['i32.const', 0], ['i32.const', Math.max(1, schema.length)]]],
           ['f64.store', ['local.get', `$${bt}`], ['local.get', `$${name}`]],
+          // A property the program adds later reads `undefined` until it does.
           ...schema.slice(1).map((_, j) =>
-            ['f64.store', ['i32.add', ['local.get', `$${bt}`], ['i32.const', (j + 1) * 8]], ['f64.const', 0]]),
+            ['f64.store', ['i32.add', ['local.get', `$${bt}`], ['i32.const', (j + 1) * 8]], undefExpr()]),
           ['local.set', `$${name}`, mkPtrIR(PTR.OBJECT, schemaId, ['local.get', `$${bt}`])])
       }
     }
@@ -1332,7 +1333,7 @@ export function emitIdentitySafeArms(node) {
     const fb = vtbM === VAL.BOOL ? boolBoxIR(vb) : asF64(vb)
     const fc = vtcM === VAL.BOOL ? boolBoxIR(vc) : asF64(vc)
     const ib = ['i64.reinterpret_f64', fb], ic = ['i64.reinterpret_f64', fc]
-    const bits = eagerSelectOK(fb, fc) && selectCondOK(cond)
+    const bits = selectOK(cond, fb, fc)
       ? ['select', ib, ic, cond]
       : ['if', ['result', 'i64'], cond, ['then', ib], ['else', ic]]
     return typed(['f64.reinterpret_i64', bits], 'f64')

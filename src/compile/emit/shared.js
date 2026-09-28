@@ -1,10 +1,10 @@
 /**
- * Cross-family emitter helpers with ≥2 real consumers (verified by the property-level dependency scan in .work/emit-split.md, not proximity): stringOps/isI32Num/isNumArm (Arithmetic + Bitwise + Logical), CMP_SET/isCmp/BOOL_EXPR_OPS/isCanonicalBoolExpr (dispatch's toBool + Logical's &&/||), eagerSelectOK/selectCondOK/boolEagerBody (same dual use), REF_EQ_KINDS (Comparisons' emitLooseEq + Logical's ?:), isLit1/foldOperandPure (Arithmetic's % + Comparisons' emitTypeofCmp/effectFoldSeq).
+ * Cross-family emitter helpers with ≥2 real consumers (verified by the property-level dependency scan in .work/emit-split.md, not proximity): stringOps/isI32Num/isNumArm (Arithmetic + Bitwise + Logical), CMP_SET/isCmp/BOOL_EXPR_OPS/isCanonicalBoolExpr (dispatch's toBool + Logical's &&/||), eagerSelectOK/selectOK/boolEagerBody (same dual use), REF_EQ_KINDS (Comparisons' emitLooseEq + Logical's ?:), isLit1/foldOperandPure (Arithmetic's % + Comparisons' emitTypeofCmp/effectFoldSeq).
  *
  * @module compile/emit/shared
  */
 
-import { MUTATE_OPS, walkAst } from '../../ast.js'
+import { MUTATE_OPS, REFS_THROUGH_ARROWS, some, walkAst } from '../../ast.js'
 import { jsstring } from '../../abi/string.js'
 import { ctx, getFactStore } from '../../ctx.js'
 import { dataDependentFlag, hasExpensiveOp, isPureIR, resolveValType } from '../../ir.js'
@@ -64,14 +64,47 @@ export const isCanonicalBoolExpr = n => Array.isArray(n) &&
 // select-gate call site (below, and the post-watr if→select fold in optimize/index.js)
 // uses this instead of a bare isPureIR check.
 export const eagerSelectOK = (...ns) => ns.every(n => isPureIR(n) && !hasExpensiveOp(n))
-// Separate cost axis from eagerSelectOK: that gate gauges the select's ARMS
-// (vb/vc — the values chosen between); this gauges the select's CONDITION. A cond
-// that lowers to a nested value-`if` over a memory load (dataDependentFlag, ir.js —
-// the short-circuit `&&`/`||` shape) pays load latency unconditionally when fed
-// eagerly into `select`, where the lazy if/else it came from would only pay it when
-// the fast clause passed. Every `?:` select site below composes this with
-// eagerSelectOK(arms) before choosing `select` over `if`.
-export const selectCondOK = (cond) => !dataDependentFlag(cond)
+// May two i32 operands share one i32 `if`/`select` join? Both plain (numbers,
+// bools), or both one pointer kind and aux. A pointer beside a plain value, or
+// two pointer kinds, must box each arm by its own kind instead: the single
+// widening downstream of a joined i32 converts a pointer's offset numerically
+// (`typeof` → "number", a store through it traps). Returns the tagger that
+// carries the shared pointer kind onto the joined node, or null.
+export const i32JoinRep = (a, b) => {
+  const bothPlain = a.ptrKind == null && b.ptrKind == null
+  const samePtr = a.type === 'i32' && b.type === 'i32' && a.ptrKind != null && a.ptrKind === b.ptrKind && (a.ptrAux ?? null) === (b.ptrAux ?? null)
+  if (!bothPlain && !samePtr) return null
+  return (n) => {
+    if (samePtr) { n.ptrKind = a.ptrKind; if (a.ptrAux != null) n.ptrAux = a.ptrAux }
+    return n
+  }
+}
+// A `select` evaluates BOTH ARMS BEFORE its condition (wasm operand order), so a
+// condition that writes what an arm reads would hand that arm the old value:
+// `(t = h + n - 1) >= D ? t - D : t`. Arms admitted by eagerSelectOK read only
+// locals and globals (no loads, no calls), so those writes are the ones that
+// matter; a call in the condition may write any global.
+export const condWritesArmReads = (cond, ...arms) => {
+  const written = new Set()
+  let calls = false
+  some(cond, n => {
+    const op = n[0]
+    if (op === 'local.set' || op === 'local.tee' || op === 'global.set') written.add(n[1])
+    else if (op === 'call' || op === 'call_indirect' || op === 'return_call') calls = true
+    return false
+  }, REFS_THROUGH_ARROWS)
+  if (!written.size && !calls) return false
+  return arms.some(arm => some(arm, n => (n[0] === 'local.get' && written.has(n[1]))
+    || (n[0] === 'global.get' && (calls || written.has(n[1]))), REFS_THROUGH_ARROWS))
+}
+// May `cond ? b : c` be a `select`? Its arms must be eager-safe (eagerSelectOK),
+// the condition must write nothing they read (above), and the condition is a cost
+// axis of its own: one that lowers to a nested value-`if` over a memory load
+// (dataDependentFlag, ir.js: the short-circuit `&&`/`||` shape) pays load latency
+// unconditionally when fed eagerly into `select`, where the lazy if/else it came
+// from would only pay it when the fast clause passed. Every `?:` select site
+// goes through this gate before choosing `select` over `if`.
+export const selectOK = (cond, ...arms) => eagerSelectOK(...arms) && !dataDependentFlag(cond) && !condWritesArmReads(cond, ...arms)
 // Eager boolean chains win in leaf numeric kernels but regress orchestration/
 // compiler code whose first guard usually rejects before a costly RHS. Keep
 // the latency trade in call-free bodies; nested closures are separate bodies.

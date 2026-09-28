@@ -21,7 +21,7 @@ import { enterPreparedFunction, functionPlanOf, publishPreparedFunctionPlan, ret
 import { mintRepresentationPlan, representationProgramHasBigint } from '../../compile/representation-plan.js'
 import { mintTypedStoragePlan } from '../../compile/typed-storage-plan.js'
 import { emit, emitVoid } from '../../compile/emit.js'
-import { mkPtrIR, findBodyStart, extractF64Bits, asF64 } from '../../ir.js'
+import { mkPtrIR, findBodyStart, extractF64Bits, asF64, undefExpr } from '../../ir.js'
 import { staticArrayPtr } from '../../../module/array.js'
 import { enumView, enumViewsOn } from '../../../module/schema.js'
 import { strHashLiteral } from '../../../module/collection.js'
@@ -96,8 +96,9 @@ function buildBoxInit() {
         ['local.set', `$${bt}`, ['call', '$__alloc_hdr', ['i32.const', 0], ['i32.const', Math.max(1, schema.length)]]],
         ['f64.store', ['local.get', `$${bt}`],
           ctx.funcs.names.has(name) ? ['f64.const', 0] : ['global.get', `$${name}`]],
+        // A property the program adds later reads `undefined` until it does.
         ...schema.slice(1).map((_, i) =>
-          ['f64.store', ['i32.add', ['local.get', `$${bt}`], ['i32.const', (i + 1) * 8]], ['f64.const', 0]]),
+          ['f64.store', ['i32.add', ['local.get', `$${bt}`], ['i32.const', (i + 1) * 8]], undefExpr()]),
         ['global.set', `$${name}`, mkPtrIR(PTR.OBJECT, schemaId, ['local.get', `$${bt}`])])
     }
   }
