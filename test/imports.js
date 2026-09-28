@@ -1234,7 +1234,8 @@ test('imports: an error in a bundled module names the module and its line', () =
   const modules = { './e.js': `const k = 1\nexport const f = (o) => {\n  delete o.k\n  return k\n}\n` }
   let msg = null
   try { jz(main, { modules }) } catch (e) { msg = e.message }
-  ok(msg != null && /at \.\/e\.js:3:11\n\s+delete o\.k/.test(msg), `names the module: ${JSON.stringify(msg?.slice(0, 160))}`)
+  // the `delete` expression that faulted, not the member read inside it
+  ok(msg != null && /at \.\/e\.js:3:3\n\s+delete o\.k/.test(msg), `names the module: ${JSON.stringify(msg?.slice(0, 160))}`)
   try { jz(`export let r = () => {\n  delete r.k\n}`) } catch (e) { msg = e.message }
   ok(/at line 2:\d+\n/.test(msg), `the program's own error keeps its plain line: ${JSON.stringify(msg?.slice(0, 160))}`)
 })
