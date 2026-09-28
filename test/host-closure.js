@@ -69,3 +69,15 @@ test('host closure: a host object holds a closure and calls it', () => {
   e.attach(el, 3)
   is([typeof el.onclick, el.onclick(5), el.l.length, el.l[0](5)], ['function', 15, 1, 8])
 })
+
+// A module with no heap (its values all numbers, its closures capturing
+// nothing) holds closures too: one it returns reaches the host as a function.
+test('host closure: a module with no heap returns a closure the host calls', () => {
+  const src = `export let make = () => { const g = (x) => x > 1 ? x * 2 : -x; g(1); return g }
+export let pick = (k) => k > 0 ? (x) => x + 1 : (x) => x - 1`
+  const want = oracle(src)
+  for (const optimize of levels(0, 2)) {
+    const e = run(src, { optimize }), g = e.make()
+    is([typeof g, g(3), g(0.5), e.pick(1)(10), e.pick(-1)(10)], ['function', want.make()(3), want.make()(0.5), want.pick(1)(10), want.pick(-1)(10)], `at ${optimize}`)
+  }
+})

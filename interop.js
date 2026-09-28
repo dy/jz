@@ -200,12 +200,15 @@ const decodeSSO = (b) => {
 // Memory-free decode of an i64-bits boundary value: numbers pass through, a box becomes
 // its atom / SSO string. Exactly the forms a *memoryless* module can carry (no linear
 // memory → no heap string/array/object). Heap-carrying modules route through `mem.read`.
-const decode = v => {
-  if (Array.isArray(v)) return v.map(decode)   // multi-value tuple — each lane is an i64-carrier (memoryless)
+// `fnOf` reads a closure as a JS function (wrap's reader): a module with no
+// heap holds closures too, one that captures nothing needs none.
+const decode = (v, fnOf = null) => {
+  if (Array.isArray(v)) return v.map(x => decode(x, fnOf))   // multi-value tuple, each lane an i64-carrier (memoryless)
   if (typeof v === 'number') { if (v === v) return v; v = f64ToI64(v) }  // f64 NaN-box (intact on V8) → bits
   else if (typeof v !== 'bigint') return v     // already-decoded JS value
   if (!isBox(v)) return i64ToF64(v)            // non-NaN bits → number
   if (type(v) === 4 && (aux(v) & LAYOUT.SSO_BIT)) return decodeSSO(v)
+  if (type(v) === 10 && fnOf) return fnOf(v)
   if (offset(v) === 0) {
     if (v === NULL_NAN) return null
     if (v === UNDEF_NAN) return undefined
@@ -1161,7 +1164,7 @@ export const wrap = (memSrc, inst, state) => {
   // reads the whole argument list from an array.
   const callClosure = mem ? realInst.exports.__call_closure : null
   const lanes = callClosure ? callClosure.length - 4 : 0
-  const closureArg = (v) => typeof v === 'bigint' && !isBox(v) ? mem.BigInt(v) : v
+  const closureArg = (v) => typeof v === 'bigint' && !isBox(v) && mem.BigInt ? mem.BigInt(v) : v
   // The call keeps its heap as an export that releases nothing does (a closure
   // has no `jz:release` of its own), and what it kept holds the heap of the
   // call around it (`enter`/`leave` below); a module with no heap has neither.
@@ -1171,7 +1174,7 @@ export const wrap = (memSrc, inst, state) => {
     try {
       const n = args.length, a = new Array(lanes)
       for (let i = 0; i < lanes; i++) a[i] = i < n ? bits(mem.wrapVal(closureArg(args[i]))) : UNDEF_NAN
-      const spill = n > lanes ? offset(mem.Array(args.map((v, i) => i < lanes ? undefined : closureArg(v)))) : 0
+      const spill = n > lanes && mem.Array ? offset(mem.Array(args.map((v, i) => i < lanes ? undefined : closureArg(v)))) : 0
       if (lastErrBitsWritable) lastErrBits.value = 0n
       const ret = callClosure(clos, n, spill, fnOf.owners.get(this) ?? UNDEF_NAN, ...a)
       returned = true
@@ -1484,7 +1487,7 @@ export const wrap = (memSrc, inst, state) => {
           // A proven raw-BigInt result stays raw; tagged results set `r` and
           // take the generic decoder.
           if (typeof ret === 'bigint' && !(ie && ie.r)) return ret
-          return decode(ret)
+          return decode(ret, fnOf)
         } catch (e) { decodeThrown(e) }
       }
       exports[name] = plainLanes(ie, ext, hostAbi) && !asyncMod
@@ -1766,7 +1769,7 @@ const installDefaultEnvImports = (mod, imports, state) => {
     if (imports.env[name] || !WEB_GLOBALS.has(name)) continue
     const host = globalThis[name]
     if (typeof host !== 'function') continue
-    imports.env[name] = (...args) => hostRet(state, host(...args.map(a => state.mem ? state.mem.read(a, state.fnOf) : decode(a))))
+    imports.env[name] = (...args) => hostRet(state, host(...args.map(a => state.mem ? state.mem.read(a, state.fnOf) : decode(a, state.fnOf))))
   }
   if (envFns.has('print') && !imports.env.print) {
     const buf = ['', '', '']  // fd 0/1/2 line buffers
@@ -1956,7 +1959,7 @@ const buildImports = (mod, opts, state) => {
         imports[modName][name] = (...args) => {
           // i64 carrier: args arrive as BigInt bits (box) or number; decode with integer
           // ops — never materialize a box as f64. Return the i64 bits of the wrapped result.
-          const decoded = args.map(a => state.mem ? state.mem.read(a, state.fnOf) : decode(a))
+          const decoded = args.map(a => state.mem ? state.mem.read(a, state.fnOf) : decode(a, state.fnOf))
           return hostRet(state, fn.call(fns, ...decoded))
         }
     }
