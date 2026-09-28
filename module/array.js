@@ -9,7 +9,7 @@
  */
 
 import { dataAlign, dataPush, dataLen, pushStaticSlots } from '../src/static-data.js'
-import { throwErrorIR, numberNanIR, typed, asF64, asI64, asI32, UNDEF_NAN, temp, tempI32, allocPtr, arrayLoop, deferBigintBox, elemStore, throwTypeErrorIR, truthyIR, extractF64Bits, mkPtrIR, slotAddr, isLiteralStr, resolveValType, undefExpr, ptrTypeEq, isPureIR, freshId, isNullish, toStrI64, fwdOffsetIR } from '../src/ir.js'
+import { throwErrorIR, numberNanIR, typed, asF64, asI64, asI32, UNDEF_NAN, temp, tempI32, allocPtr, arrayLoop, deferBigintBox, elemStore, throwTypeErrorIR, truthyIR, extractF64Bits, mkPtrIR, slotAddr, isLiteralStr, resolveValType, undefExpr, ptrTypeEq, isPureIR, freshId, isNullish, isUndef, toStrI64, fwdOffsetIR } from '../src/ir.js'
 import { inBoundsArrIdx, typedIdxProven } from '../src/type.js'
 import { emit, spread, deps, idx as emitIndex, storedValue, storedValueNarrow, storedValuePlanned, positionArgs } from '../src/bridge.js'
 import { censusMaybeUndefinedKind, isPresentNumber, valTypeOf } from '../src/kind.js'
@@ -31,7 +31,7 @@ import { REP_EDGE_REJECT, representationProgramHasBigint, representationStorageW
 import { plannedTypedStorageCtor } from '../src/compile/typed-storage-plan.js'
 import { scanBindingUses, USE, BINDING_USE_USES, BINDING_USE_KIND, BINDING_USE_KEY } from '../src/compile/analyze-scans.js'
 import { restViewRead } from '../src/compile/rest-view.js'
-import { core, isNullable, K, NUMBER, tagOf, valOf } from '../src/summary/kind.js'
+import { core, hasTag, isNullable, K, NUMBER, tagOf, valOf } from '../src/summary/kind.js'
 import { activeBoundsAssumption } from '../src/type/canonical-bounds.js'
 import { hasExternalIngress } from '../src/compile/func-exports.js'
 import { hoistArrayValue, makeCallback, callbackElem, callbackArgReps, idxArg, arrArg, callbackReadsArray } from './array/callback.js'
@@ -759,7 +759,16 @@ export default (ctx) => {
       const scope = ctx.summary?.at(ctx.func.current)
       const view = nullable ? scope : null
       const vtArr = valTypeOf(arr) ?? (view ? valOf(core(view.kindOfExpr(arr))) : null)
-      const source = asF64(emit(arr))
+      // A receiver that is itself an element read whose one missing value is
+      // absence (`a[i][0]`, `a` an array of arrays) throws from that read's own
+      // bounds test (the keyed read below, `throwAbsent`): the check after it
+      // would test what the test already decided.
+      const absentOnly = nullable && Array.isArray(arr) && arr[0] === '[]' && arr.length === 3 && view && !hasTag(view.kindOfExpr(arr), K.NULLISH)
+      const prevThrow = ctx.func.throwAbsent
+      if (absentOnly) ctx.func.throwAbsent = arr
+      let source
+      try { source = asF64(emit(arr)) } finally { ctx.func.throwAbsent = prevThrow }
+      const present = absentOnly && source.presentRead === true
       // A numeric name/literal key cannot change a direct local receiver.
       // Keep its identity visible to loop proofs instead of capturing it.
       const direct = nullable && typeof arr === 'string' && source[0] === 'local.get' &&
@@ -790,8 +799,10 @@ export default (ctx) => {
         }
         // A name a statement of this block already checked is present (dispatch.js
         // emitBlockBody); the block emitter holds a name checked here present past it.
-        if (!(typeof arr === 'string' && ctx.func.refinements?.get(arr)?.notNullish)) {
-          setup.push(['if', isNullish(typed(['local.get', `$${h}`], 'f64')), ['then', ['drop', throwTypeErrorIR()]]])
+        if (!present && !(typeof arr === 'string' && ctx.func.refinements?.get(arr)?.notNullish)) {
+          // A receiver whose only missing value is absence tests for undefined alone.
+          const missing = hasTag(view.kindOfExpr(arr), K.NULLISH) ? isNullish : isUndef
+          setup.push(['if', missing(typed(['local.get', `$${h}`], 'f64')), ['then', ['drop', throwTypeErrorIR()]]])
           if (typeof arr === 'string') (ctx.func.checkedRecv ??= []).push(arr)
         }
       }
@@ -806,6 +817,7 @@ export default (ctx) => {
       } finally { if (!direct) scope?.unalias(h) }
       const wrapped = typed(['block', ['result', 'f64'], ...setup, asF64(result)], 'f64')
       if (result?.checkedNumRead) wrapped.checkedNumRead = true
+      if (result?.presentRead) wrapped.presentRead = true
       if (result?.indexValid) wrapped.indexValid = result.indexValid
       if (result && typeof result.bigintBox === 'function')
         deferBigintBox(wrapped, () => typed(['block', ['result', 'f64'], ...setup, asF64(result.bigintBox())], 'f64'))
@@ -1250,15 +1262,22 @@ export default (ctx) => {
       // residual cost is a single (predictable) compare per access, not a call. Skipping
       // the check would read raw memory for OOB indices (e.g. `a[1]` on a length-1 array).
       if (keyIsNum) {
-        const baseI32 = tempI32('ab'), idxI32 = tempI32('ai')
+        const idxI32 = tempI32('ai')
+        // The read is a receiver whose consumer throws on a missing value
+        // (the nullable paths above): the miss arm throws here instead.
+        const throwing = node != null && node === ctx.func.throwAbsent
+        // The receiver is a variable read here (an expression was captured
+        // above), so its base is spelled out at both the length and the cell:
+        // a loop that writes no header hoists each as an invariant of its own
+        // (optimize/licm.js), where a temp shared between them would keep the
+        // length load inside; watr's value numbering merges what stays.
         const rd = typed(saTag(['if', ['result', 'f64'],
           ['i32.lt_u',
             ['local.tee', `$${idxI32}`, vi],
-            fixedLen != null ? ['i32.const', fixedLen] : ['i32.load', ['i32.sub',
-              ['local.tee', `$${baseI32}`, arrBase()],
-              ['i32.const', 8]]]],
-          ['then', ctx.abi.array.ops.load(fixedLen != null ? arrBase() : ['local.get', `$${baseI32}`], ['local.get', `$${idxI32}`])],
-          ['else', undefExpr()]]), 'f64')
+            fixedLen != null ? ['i32.const', fixedLen] : ['i32.load', ['i32.sub', arrBase(), ['i32.const', 8]]]],
+          ['then', ctx.abi.array.ops.load(arrBase(), ['local.get', `$${idxI32}`])],
+          ['else', throwing ? throwTypeErrorIR() : undefExpr()]]), 'f64')
+        if (throwing) rd.presentRead = true
         // Same number|undefined contract as the typed checked read — but ONLY
         // when the elements are PROVEN numeric (arrayElemValType): a plain
         // array is heterogeneous, and tagging a string-element read would make

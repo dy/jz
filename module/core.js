@@ -11,7 +11,7 @@ import print from 'watr/print'
  * @module core
  */
 
-import { typed, asF64, asI32, asI64, NULL_NAN, UNDEF_NAN, TOMB_NAN, FALSE_NAN, TRUE_NAN, temp, tempI32, usesDynProps, ptrOffsetIR, ptrTypeEq, isNullish, valKindToPtr, sidecarOverride, undefExpr, cloneIR, boxBigInt, unboxBigInt, isPlanTaggedBigint, throwTypeErrorIR, valueTruthyIR } from '../src/ir.js'
+import { typed, asF64, asI32, asI64, NULL_NAN, UNDEF_NAN, TOMB_NAN, FALSE_NAN, TRUE_NAN, temp, tempI32, usesDynProps, ptrOffsetIR, ptrTypeEq, isNullish, isUndef, valKindToPtr, sidecarOverride, undefExpr, cloneIR, boxBigInt, unboxBigInt, isPlanTaggedBigint, throwTypeErrorIR, valueTruthyIR } from '../src/ir.js'
 import { emit, emitIdentitySafe, spread, deps, wat } from '../src/bridge.js'
 import { reconstructArgsWithSpreads } from '../src/ir.js'
 import { valTypeOf, shapeOf, hasAmbiguousBoolMerge } from '../src/kind.js'
@@ -35,7 +35,7 @@ import { registerDurableLog } from './core/durable-log.js'
 import { hasExternalIngress } from '../src/compile/func-exports.js'
 import { representationProgramHasBigint } from '../src/compile/representation-plan.js'
 import { errorCodeLiteral, ERR } from '../err-codes.js'
-import { bitOf, isNullable, K, tagOf as summaryTagOf, core as summaryCore } from '../src/summary/kind.js'
+import { bitOf, hasTag, isNullable, K, tagOf as summaryTagOf, core as summaryCore } from '../src/summary/kind.js'
 import { inBoundsArrIdx } from '../src/type/canonical-bounds.js'
 
 const NAN_BITS = nanPrefixHex()
@@ -2195,19 +2195,32 @@ export default (ctx) => {
         !(typeof obj === 'string' && (repOf(obj)?.ptrKind != null || ctx.func.refinements?.get(obj)?.val != null || ctx.func.refinements?.get(obj)?.notNullish))) {
       // A dot read has no key expression between its receiver check and use.
       // Keep a plain local's identity so schema dispatch and load reuse share it.
-      const receiver = emit(obj)
+      // An element read whose one missing value is absence (`bones[i].start`)
+      // throws from its own bounds test (module/array.js `throwAbsent`).
+      const absentOnly = Array.isArray(obj) && obj[0] === '[]' && obj.length === 3 && !hasTag(receiverKind, K.NULLISH)
+      const prevThrow = ctx.func.throwAbsent
+      if (absentOnly) ctx.func.throwAbsent = obj
+      let receiver
+      try { receiver = emit(obj) } finally { ctx.func.throwAbsent = prevThrow }
       // An admitted inline cell is a raw address, with its own packed layout.
       // It cannot pass through the boxed receiver path without losing that layout.
       if (receiver.ptrKind == null) {
         const value = asF64(receiver)
+        const t = temp()
+        if (absentOnly && value.presentRead === true)
+          return typed(['block', ['result', 'f64'], ['local.set', `$${t}`, value], asF64(readHoistedProp(obj, prop, t, raw))], 'f64')
         // The block emitter holds a name checked here present past this statement.
         if (typeof obj === 'string') (ctx.func.checkedRecv ??= []).push(obj)
+        // A receiver whose only missing value is absence tests for undefined alone.
+        const missing = hasTag(receiverKind, K.NULLISH) ? isNullish : isUndef
         if (typeof obj === 'string' && value[0] === 'local.get' && value[1] === `$${obj}`)
           return typed(['block', ['result', 'f64'],
-            ['if', isNullish(value), ['then', ['drop', throwTypeErrorIR()]]],
+            ['if', missing(value), ['then', ['drop', throwTypeErrorIR()]]],
             asF64(readHoistedProp(obj, prop, obj, raw))], 'f64')
-        const t = temp()
-        return optionalGuard(t, value, readHoistedProp(obj, prop, t, raw), throwTypeErrorIR())
+        return typed(['block', ['result', 'f64'],
+          ['local.set', `$${t}`, value],
+          ['if', missing(typed(['local.get', `$${t}`], 'f64')), ['then', ['drop', throwTypeErrorIR()]]],
+          asF64(readHoistedProp(obj, prop, t, raw))], 'f64')
       }
     }
     // `C.prototype` of a class (a factory closure): jz classes have no
