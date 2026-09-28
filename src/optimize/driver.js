@@ -13,6 +13,7 @@ import { DBG_INVARIANTS } from '../debug.js'
 import { ctx } from '../ctx.js'
 import { verifyFn } from '../ir.js'
 import { recursionUnroll } from './recurse.js'
+import { forwardStores } from './forward-store.js'
 import { vectorizeLaneLocal } from './vectorize/index.js'
 import { hoistPtrType, hoistAddrBase } from './cse-address.js'
 import {
@@ -91,6 +92,9 @@ export function optimizeFunc(fn, cfg, globalTypes, reachableWrites) {
   if (!cfg || cfg.hoistAddrBase !== false) hoistAddrBase(fn)
   if (!cfg || cfg.hoistInvariantLoop !== false) hoistInvariantLoop(fn)
   if (!cfg || cfg.cseScalarLoad !== false) cseScalarLoad(fn)
+  // After the address hoists: a chained kernel's out-parameter results stay in the locals
+  // that staged them, and the stores the chain overwrites go.
+  if (!cfg || cfg.forwardStores !== false) forwardStores(fn)
   // After the peephole walk: it matches the ToInt32 sinks in their final shape.
   if (cfg && cfg.wideAccumulator === true) wideAccumulator(fn)
   if (!cfg || cfg.promoteGlobals !== false) promoteGlobals(fn, globalTypes, reachableWrites)

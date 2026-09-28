@@ -111,8 +111,10 @@ test('slp: bails on a within-iteration read-after-write (forward shift)', () => 
   // `o[k+1]=o[k]; o[k+2]=o[k+1]` — the second store's value reads o[k+1], which the
   // FIRST store just wrote. SLP materializes both lane values before either store, so a
   // pack would read o[k+1]'s PRE-store value → o[k+2] gets the wrong element. The RAW
-  // guard (slpReadsOffset) must bail. This is NOT a view (single owned array), so the
+  // guard (slpReadsSlot) must bail. This is NOT a view (single owned array), so the
   // typedView gate can't see it — it's the same-base read-after-write hazard class.
+  // Store forwarding resolves the second value to the first store's local before the
+  // packer runs, so the guard is pinned with it off.
   const src = `
     let o = new Float64Array(99)
     export let run = () => {
@@ -120,7 +122,8 @@ test('slp: bails on a within-iteration read-after-write (forward shift)', () => 
       for (let k = 0; k < 96; k += 3) { o[k+1] = o[k]; o[k+2] = o[k+1] }
       let s = 0.0; for (let i = 0; i < 99; i++) s = s + o[i]; return s
     }`
-  is(fires(src), 0, 'forward-shift RAW → SLP bails (no v128 store)')
+  const unforwarded = jz.compile(src, { wat: true, optimize: { ...speed, forwardStores: false } })
+  is((unforwarded.match(/v128\.store/g) || []).length, 0, 'forward-shift RAW → SLP bails (no v128 store)')
   bitExact('forward shift', src)
   // ground-truth: a regressed guard would re-pack and diverge from plain JS
   const js = (() => { let o = new Float64Array(99); for (let i=0;i<99;i++) o[i]=i+1; for (let k=0;k<96;k+=3){o[k+1]=o[k];o[k+2]=o[k+1]} let s=0; for (let i=0;i<99;i++) s+=o[i]; return s })()

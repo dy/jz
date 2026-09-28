@@ -104,6 +104,7 @@ const TESTS = [
   'header-hoist',
   'param-range',
   'fn-alias',
+  'forward-store',
   'unroll-cost',
   'sentinel-guard',
   'twin-locals',

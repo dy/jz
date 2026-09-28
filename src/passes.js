@@ -61,6 +61,7 @@ export const PASS_NAMES = [
   'hoistAddrBase',
   'boolConvertToSelect',      // f64 ± (cond?1:0) → branchless select (kills i32↔f64 domain cross on recurrences)
   'cseScalarLoad',
+  'forwardStores',            // straight-line store-to-load forwarding + dead-store elimination
   'valueNumber',              // value numbering over straight-line regions: one computation per value, through locals (watr's valueNumber)
   'scheduleStatements',       // straight-line statements in order of the work depending on them: independent kernel calls start together (watr's schedule)
   'unswitchTypedParamLoop',   // Float64Array param loop-unswitch → base-hoisted f64.load/store fast path (vectorizes)

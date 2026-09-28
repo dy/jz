@@ -1,6 +1,7 @@
 import { ctx } from '../../ctx.js'
 import { nodeEqual as exprEq, walkAst } from '../../ast.js'
 import { collectWrites } from './addr-model.js'
+import { accessOf, deadTees, hasOp, inertFor, localGetCounts, localReads, memarg, resolveAddr, sameBase, windowDefs, clone, TEE } from './access.js'
 import { f64Zero, forEachLocalDef, isArr, localGetName } from './node-utils.js'
 
 const matchF64MulLocals = n => {
@@ -257,145 +258,12 @@ const slpSplatSafe = (n) => {
   return !unsafe
 }
 
-// ---- Address model -----------------------------------------------------------
-// Decompose a load/store node, normalizing the optional `offset=K` attribute jz
-// folds adjacent accesses into: `(op addr …)` → off 0, `(op offset=K addr …)` → K.
-const slpMem = (n) => {
-  if (typeof n[1] === 'string' && n[1].startsWith('offset=')) return { off: +n[1].slice(7), addr: n[2], val: n[3] }
-  return { off: 0, addr: n[1], val: n[2] }
-}
-// A constant i32 subtree's value, folding the arithmetic jz leaves in a constant index
-// (`(i32.shl (i32.const 3) (i32.const 3))`); NaN when it is not constant.
-const slpConst = (n) => {
-  if (!isArr(n)) return NaN
-  if (n[0] === 'i32.const') return Number(n[1])
-  if (n.length !== 3) return NaN
-  const a = slpConst(n[1]), b = slpConst(n[2])
-  if (Number.isNaN(a) || Number.isNaN(b)) return NaN
-  switch (n[0]) {
-    case 'i32.add': return (a + b) | 0
-    case 'i32.sub': return (a - b) | 0
-    case 'i32.mul': return Math.imul(a, b)
-    case 'i32.shl': return a << (b & 31)
-  }
-  return NaN
-}
-// An access as `base ⊕ off`: the memarg plus every constant the address adds. `base`
-// is the remaining address subtree, kept as emitted (its tee included) for reuse.
-const slpAddr = (n) => {
-  const m = slpMem(n)
-  let base = m.addr, off = m.off
-  while (isArr(base) && base[0] === 'i32.add' && base.length === 3) {
-    const k = slpConst(base[2]), j = slpConst(base[1])
-    if (!Number.isNaN(k)) { off += k; base = base[1] }
-    else if (!Number.isNaN(j)) { off += j; base = base[2] }
-    else break
-  }
-  return { base, off, addr: m.addr, val: m.val }
-}
-const slpMemarg = (op, off, base, ...rest) => off ? [op, `offset=${off}`, base, ...rest] : [op, base, ...rest]
-const clone = n => isArr(n) ? n.map(clone) : n
-
-const hasOp = (n, ops) => { let hit = false; walkAst(n, { enter: x => { if (hit) return false; if (ops.has(x[0])) hit = true } }); return hit }
-const BRANCH_OPS = new Set(['br', 'br_if', 'br_table', 'return', 'return_call', 'unreachable', 'throw', 'try_table', 'loop', 'block', 'call_indirect'])
-const CONTROL_OPS = new Set([...BRANCH_OPS, 'if'])
-const TEE = new Set(['local.tee'])
-
-// The locals a window of statements defines, by statement index: a top-level
-// `local.set`, or a `local.tee` inside a statement with no control op (it runs whenever
-// the statement does). A name defined twice resolves to nothing; `writes` has every
-// name the window writes, defined or not. The window opens a few statements before the
-// accesses compared, where jz stages their receivers.
-const slpWindow = (stmts, from, to) => {
-  const defs = new Map(), writes = new Set()
-  for (let at = from; at <= to; at++) {
-    const s = stmts[at]
-    if (!isArr(s)) continue
-    const whole = !hasOp(s, CONTROL_OPS)
-    walkAst(s, { enter: n => {
-      if ((n[0] !== 'local.set' && n[0] !== 'local.tee') || typeof n[1] !== 'string') return
-      writes.add(n[1])
-      if (n === s || n[0] === 'local.tee' && whole) defs.set(n[1], defs.has(n[1]) ? null : { e: n[2], at })
-    } })
-  }
-  return { defs, writes }
-}
-// Pure register arithmetic an address is made of. No load: memory may change between
-// the two accesses compared.
-const ADDR_OPS = new Set(['i32.add', 'i32.sub', 'i32.mul', 'i32.shl', 'i32.shr_u', 'i32.shr_s', 'i32.and', 'i32.or', 'i32.xor', 'i32.wrap_i64', 'i32.const',
-  'i64.and', 'i64.or', 'i64.shl', 'i64.shr_u', 'i64.const', 'i64.reinterpret_f64', 'i64.extend_i32_u', 'f64.const'])
-// What an address subtree computes at statement `at` of the window, over locals the
-// window never writes: a tee dissolves into its body, a local the window defined
-// EARLIER into its definition, and a definition that is no register arithmetic (an
-// allocation call) stands as the local it defines — its one value in the window. null
-// when a load, a call or a local written in the window stands in the way — the value
-// could differ between the two accesses.
-const slpResolve = (n, w, at, depth = 0) => {
-  if (!isArr(n) || depth > 16) return null
-  const op = n[0]
-  if (op === 'local.tee' || op === 'local.get') {
-    if (typeof n[1] !== 'string') return null
-    const d = w.defs.get(n[1])
-    if (op === 'local.get' && d === undefined) return w.writes.has(n[1]) ? null : n
-    if (!d || op === 'local.get' && d.at >= at || op === 'local.tee' && d.e !== n[2]) return null
-    return slpResolve(d.e, w, d.at, depth + 1) ?? ['local.get', n[1]]
-  }
-  if (!ADDR_OPS.has(op)) return null
-  const out = [op]
-  for (let i = 1; i < n.length; i++) {
-    if (!isArr(n[i])) { out.push(n[i]); continue }
-    const r = slpResolve(n[i], w, at, depth)
-    if (!r) return null
-    out.push(r)
-  }
-  return out
-}
-// The two accesses, at statements `atX` and `atY` of the window, address the same base.
-const slpSameBase = (x, atX, y, atY, w) => {
-  const a = slpResolve(x, w, atX), b = a && slpResolve(y, w, atY)
-  return !!b && exprEq(a, b)
-}
-// The locals a value reads.
-const slpReads = (n) => {
-  const r = new Set()
-  walkAst(n, { enter: x => { if (x[0] === 'local.get' && typeof x[1] === 'string') r.add(x[1]) } })
-  return r
-}
-// A statement a value (or a load) may be evaluated across: it writes none of the value's
-// locals or any global, stores nothing, branches nowhere, and calls only the durable-array
-// snapshot (which records an array and writes none) or a throw guard (which either does
-// nothing or ends the activation, whose locals then no one reads). A store crossing it
-// (`strict`) needs more: no load could see the store's slot, no call could, and a guard
-// that throws would leave the store made.
-const INERT_CALLS = new Set(['$__durable_arr_snap'])
-const slpInert = (stmt, reads, strict = false) => {
-  if (!isArr(stmt)) return typeof stmt === 'string'
-  let ok = true
-  walkAst(stmt, { enter: n => {
-    if (!ok) return false
-    const op = n[0]
-    if (typeof op !== 'string') { ok = false; return false }
-    if (op === 'local.set' || op === 'local.tee') { if (reads.has(n[1])) ok = false; return }
-    if (op === 'call') { if (strict || !INERT_CALLS.has(n[1]) && !n[1].startsWith('$__throw_')) ok = false; return }
-    if (op === 'unreachable') { if (strict) ok = false; return }
-    if (op === 'global.set' || op.includes('.store') || op.startsWith('memory.') || op.includes('.atomic.') || op.startsWith('call') || BRANCH_OPS.has(op)
-        || strict && op.includes('.load')) ok = false
-  } })
-  return ok
-}
-// Every tee in `n` defines a local nothing reads: the subtree can dissolve (jz stages
-// each access's base in a fresh temp) without leaving a read of an unset local.
-const slpDeadTees = (n, counts) => {
-  let ok = true
-  walkAst(n, { enter: x => { if (x[0] === 'local.tee' && counts.has(x[1])) ok = false } })
-  return ok
-}
 // Does `value` load the slot at offset `off` — through any base (obligation 2)?
 const slpReadsSlot = (value, off) => {
   let hit = false
   walkAst(value, { enter: n => {
     if (hit || !isArr(n)) return false
-    if (n[0] === 'f64.load' && slpAddr(n).off === off) hit = true
+    if (n[0] === 'f64.load' && accessOf(n).off === off) hit = true
   } })
   return hit
 }
@@ -413,7 +281,7 @@ const slpFieldPairs = (fn) => {
   const sets = new Map()
   forEachLocalDef([fn], name => sets.set(name, (sets.get(name) || 0) + 1))
   const loadDef = s => isArr(s) && s[0] === 'local.set' && typeof s[1] === 'string' && sets.get(s[1]) === 1
-    && isArr(s[2]) && s[2][0] === 'f64.load' ? { name: s[1], ...slpAddr(s[2]) } : null
+    && isArr(s[2]) && s[2][0] === 'f64.load' ? { name: s[1], ...accessOf(s[2]) } : null
   const none = new Set()
   const pairs = new Map()
   walkAst(fn, { enter: list => {
@@ -422,13 +290,13 @@ const slpFieldPairs = (fn) => {
       if (!x || x.off < 0) continue
       for (let k = j + 1; k < list.length && k - j <= SLP_WINDOW; k++) {
         const y = loadDef(list[k])
-        if (y && y.off - x.off === 8 && slpSameBase(x.base, j, y.base, k, slpWindow(list, Math.max(1, j - SLP_WINDOW), k))) {
+        if (y && y.off - x.off === 8 && sameBase(x.base, j, y.base, k, windowDefs(list, Math.max(1, j - SLP_WINDOW), k))) {
           // The v128 reads through the second scalar's base: its tee, or a copy of a tee-free expression.
           const base = y.base[0] === 'local.tee' ? ['local.get', y.base[1]] : hasOp(y.base, TEE) ? null : clone(y.base)
           if (base) pairs.set(x.name + '\0' + y.name, { off: x.off, base, x: list[j], y: list[k], list })
           break
         }
-        if (!slpInert(list[k], none)) break
+        if (!inertFor(list[k], none)) break
       }
     }
   } })
@@ -443,10 +311,10 @@ const slpPlaceFieldPairs = (fn, sp) => {
   for (const p of used) {
     const k = p.list.indexOf(p.y)
     if (k < 0) throw new Error('slp: a field pair lost its definition')
-    p.list.splice(k + 1, 0, ['local.set', p.name, slpMemarg('v128.load', p.off, p.base)])
+    p.list.splice(k + 1, 0, ['local.set', p.name, memarg('v128.load', p.off, p.base)])
   }
-  const counts = slpGetCounts(fn)
-  const dead = s => !counts.has(s[1]) && slpDeadTees(s[2], counts)
+  const counts = localGetCounts(fn)
+  const dead = s => !counts.has(s[1]) && deadTees(s[2], counts)
   for (const p of used) for (const s of [p.x, p.y]) {
     if (!dead(s)) continue
     const k = p.list.indexOf(s)
@@ -462,10 +330,10 @@ const slpPlaceFieldPairs = (fn, sp) => {
 const slpPackF64x2 = (lo, hi, sp) => {
   if (!isArr(lo) || !isArr(hi)) return null
   if (lo[0] === 'f64.load' && hi[0] === 'f64.load') {
-    const a = slpAddr(lo), b = slpAddr(hi)
+    const a = accessOf(lo), b = accessOf(hi)
     // The high address dissolves into the pack: a tee there must define a local nothing reads.
-    if (a.off < 0 || b.off - a.off !== 8 || !slpDeadTees(b.addr, sp.getCounts) || !slpSameBase(a.base, 0, b.base, 1, slpWindow([lo, hi], 0, 1))) return null
-    return slpMemarg('v128.load', a.off, a.base)
+    if (a.off < 0 || b.off - a.off !== 8 || !deadTees(b.addr, sp.getCounts) || !sameBase(a.base, 0, b.base, 1, windowDefs([lo, hi], 0, 1))) return null
+    return memarg('v128.load', a.off, a.base)
   }
   const x = localGetName(lo), y = localGetName(hi)
   if (x && y && x !== y) {
@@ -491,35 +359,26 @@ const slpPackF64x2 = (lo, hi, sp) => {
 
 // The element store at `stmts[i]`: its slot, its value and the statement that stages the
 // value. jz stages a store's value and base in temps — `(local.set $v V) (local.set $b B)
-// … (f64.store (local.get $b) (local.get $v))` — so a single-use value temp resolves to V
-// when every statement between its definition and the store is inert for V: the pack
-// evaluates V at the store.
+// … (f64.store (local.get $b) (local.get $v))` — so the value temp resolves to V when
+// every statement between its definition and the store is inert for V and reads no
+// `$v`: the pack evaluates V at the store. A temp read elsewhere too (a forwarded
+// load) is `keep`: the pack refills it from its lane.
 const slpUnitAt = (stmts, i, getCounts) => {
   const s = stmts[i]
   if (!isArr(s) || s[0] !== 'f64.store') return null
-  const a = slpAddr(s)
-  const u = { at: i, off: a.off, base: a.base, addr: a.addr, value: a.val, def: -1 }
+  const a = accessOf(s)
+  const u = { at: i, off: a.off, base: a.base, addr: a.addr, value: a.val, def: -1, keep: null }
   const t = localGetName(a.val)
-  if (t && getCounts.get(t) === 1) for (let j = i - 1; j >= 1 && i - j <= SLP_WINDOW; j--) {
+  if (t && getCounts.has(t)) for (let j = i - 1; j >= 1 && i - j <= SLP_WINDOW; j--) {
     const d = stmts[j]
     if (!isArr(d) || d[0] !== 'local.set' || d[1] !== t) continue
-    const reads = slpReads(d[2])
+    const reads = localReads(d[2])
     let inert = true
-    for (let k = j + 1; k < i && inert; k++) inert = slpInert(stmts[k], reads)
-    if (inert) { u.value = d[2]; u.def = j }
+    for (let k = j + 1; k < i && inert; k++) inert = inertFor(stmts[k], reads) && !localReads(stmts[k]).has(t)
+    if (inert) { u.value = d[2]; u.def = j; u.keep = getCounts.get(t) > 1 ? t : null }
     break
   }
   return u
-}
-
-// Count `(local.get NAME)` occurrences across the function, so a store value's temp is
-// confirmed single-use before its definition is folded into the pack.
-const slpGetCounts = (fn) => {
-  const counts = new Map()
-  walkAst(fn, { enter: n => {
-    if (isArr(n) && n[0] === 'local.get' && typeof n[1] === 'string') counts.set(n[1], (counts.get(n[1]) || 0) + 1)
-  } })
-  return counts
 }
 
 // Rewrite two element stores one f64 apart with isomorphic values into a single v128
@@ -538,13 +397,13 @@ const slpStorePairsIn = (node, sp) => {
     let k = i + 1
     while (k < node.length && k - i <= SLP_WINDOW && !(isArr(node[k]) && node[k][0] === 'f64.store')) k++
     const u1 = k < node.length ? slpUnitAt(node, k, sp.getCounts) : null
-    if (!u1 || u1.off - u0.off !== 8 || u1.def >= 0 && u1.def <= i || !slpDeadTees(u1.addr, sp.getCounts)) continue
+    if (!u1 || u1.off - u0.off !== 8 || u1.def >= 0 && u1.def <= i || !deadTees(u1.addr, sp.getCounts)) continue
     const lo = u0.def >= 0 ? u0.def : i
-    if (!slpSameBase(u0.base, i, u1.base, k, slpWindow(node, Math.max(1, lo - SLP_WINDOW), k))) continue
+    if (!sameBase(u0.base, i, u1.base, k, windowDefs(node, Math.max(1, lo - SLP_WINDOW), k))) continue
     // Between the stores: the high value moves up, the high store moves up to the low one.
-    const reads = new Set([...slpReads(u0.value), ...slpReads(u1.value)])
+    const reads = new Set([...localReads(u0.value), ...localReads(u1.value)])
     let inert = true
-    for (let j = i + 1; j < k && inert; j++) inert = j === u1.def || slpInert(node[j], reads, true)
+    for (let j = i + 1; j < k && inert; j++) inert = j === u1.def || inertFor(node[j], reads, true) && !(u1.keep && localReads(node[j]).has(u1.keep))
     if (!inert || slpReadsSlot(u1.value, u0.off)) continue
     sp.touched = []
     const packed = slpPackF64x2(u0.value, u1.value, sp)
@@ -553,16 +412,17 @@ const slpStorePairsIn = (node, sp) => {
     for (const p of sp.touched) { sp.newLocalDecls.push(['local', p.name, 'v128']); sp.fnLocals.set(p.name, 'v128') }
     const t = `$__slp${sp.freshIdRef.next++}`
     sp.newLocalDecls.push(['local', t, 'v128']); sp.fnLocals.set(t, 'v128')
-    const baseReads = slpReads(u1.addr)
+    const baseReads = localReads(u1.addr)
     // High index first, so the lower indices stay valid.
     node.splice(k, 1)
     for (let j = k - 1; j > i; j--) {
       const d = node[j]
       if (j === u1.def || isArr(d) && d[0] === 'local.set' && baseReads.has(d[1]) && sp.getCounts.get(d[1]) === 1) node.splice(j, 1)
     }
-    node.splice(i, 1, ['local.set', t, packed], slpMemarg('v128.store', u0.off, u0.base, ['local.get', t]))
+    const refill = [u0, u1].flatMap((u, lane) => u.keep ? [['local.set', u.keep, ['f64x2.extract_lane', lane, ['local.get', t]]]] : [])
+    node.splice(i, 1, ['local.set', t, packed], ...refill, memarg('v128.store', u0.off, u0.base, ['local.get', t]))
     if (u0.def >= 0) { node.splice(u0.def, 1); i-- }
-    i++
+    i += 1 + refill.length
   }
 }
 
@@ -590,7 +450,7 @@ export function slpPairsIn(fn, fnLocals, freshIdRef, newLocalDeclsAll, relaxedFm
   // SLP walkers. They only reject functions that cannot contain either seed.
   if (hasF64Mul) vectorizeStraightLineF64DotPairsIn(fn, fnLocals, freshIdRef, newLocalDeclsAll, relaxedFma)
   if (f64Stores >= 2 && slp && !ctx.linkDemand.typedView) {
-    const sp = { fnLocals, freshIdRef, newLocalDecls: newLocalDeclsAll, getCounts: slpGetCounts(fn), pairs: slpFieldPairs(fn), touched: [] }
+    const sp = { fnLocals, freshIdRef, newLocalDecls: newLocalDeclsAll, getCounts: localGetCounts(fn), pairs: slpFieldPairs(fn), touched: [] }
     slpStorePairsIn(fn, sp)
     slpPlaceFieldPairs(fn, sp)
   }

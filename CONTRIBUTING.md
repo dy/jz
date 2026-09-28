@@ -1972,7 +1972,11 @@ kernel loaded once from consecutive slots (`ax = a[0], ay = a[1]`, the field-fir
 vector and matrix libraries) which become one `v128` loaded beside them. The pack reads both
 lanes before either store, so the high value may not load the low store's slot through any
 name (two parameters can be one array); a store's base resolves through jz's staging temps,
-never through a load. `test/slp.js` pins the shapes and the bails.
+never through a load. `test/slp.js` pins the shapes and the bails. The same address model
+drives `src/optimize/forward-store.js`, which runs before the packer: in straight-line code a
+load of a slot the list just stored (or loaded into a local) reads that local instead, and a
+store the list overwrites unread goes; a store through another name, a call, a branch or a
+nested block forgets everything (`test/forward-store.js`).
 
 ## Principles
 
