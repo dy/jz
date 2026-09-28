@@ -611,8 +611,8 @@ test('example: game-of-life output natively matches WASM', () => {
 });
 
 // Transcendental mirror + convert-splat perf wins. domain-color's per-pixel field is atan2/hypot/sin
-// of a complex map; the 2-wide $math.atan2_2 + $math.hypot_2 mirrors (extract-repack, bit-exact like
-// pow2) let tryPerPixelColor lift it to f64x2. rfft's cepstrum `cep[i]=x[i]/N` (N an i32 global) maps
+// of a complex map; the 2-wide $math.atan2_2 + $math.hypot_2 mirrors (fdlibm two-wide and extract-repack,
+// bit-exact like pow2) let tryPerPixelColor lift it to f64x2. rfft's cepstrum `cep[i]=x[i]/N` (N an i32 global) maps
 // once f64.convert_i32_s(invariant) splats. Both are bit-exact by construction.
 test('example: domain-color atan2/hypot mirrors vectorize and stay bit-exact', () => {
     const src = fs.readFileSync(new URL('../examples/domain-color/domain-color.js', import.meta.url), 'utf8');

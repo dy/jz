@@ -1,11 +1,11 @@
 /**
  * f64x2 twins of the scalar math kernels, for the vectorizer's lifts (src/optimize/vectorize,
  * PPC_CALL2) and the f64x2.* intrinsics (module/simd.js). Every lane is bit for bit its
- * scalar kernel's: sin2/cos2/log_v/exp_v/pow2 take both lanes through one evaluation of the
- * scalar's operations where both lanes are on its common path, choosing per lane where the
- * scalar branches, and hand anything else to the scalar kernel lane by lane; the rest are
- * lane-by-lane scalar calls. Consumers reach them by name, never a JS symbol, so this file
- * is a one-way leaf off math/trig-tables.js.
+ * scalar kernel's: sin2/cos2/atan2_2/log_v/exp_v/pow2/pow_c_v take both lanes through one
+ * evaluation of the scalar's operations where both lanes are on its common path, choosing
+ * per lane where the scalar branches, and hand anything else to the scalar kernel lane by
+ * lane; the rest are lane-by-lane scalar calls. Consumers reach them by name, never a JS
+ * symbol, so this file is a one-way leaf off math/trig-tables.js.
  *
  * @module math/simd
  */
@@ -14,6 +14,7 @@ import { ctx } from '../../src/ctx.js'
 import {
   EXP_Q, EXP_L1, EXP_L2, POW_LN2HI, POW_LN2LO, POW_LOG_A, polyTree,
   INVPIO2, PIO2_1, PIO2_1T, PIO2_2, PIO2_2T, KSIN, KCOS, LG, LN2_HI, LN2_LO, INVLN2, EXP_P, EXP_E,
+  ATAN_T, ATAN_HI, ATAN_LO, PI_D, PI_LO,
 } from './trig-tables.js'
 
 export const registerMathSimd = () => {
@@ -261,10 +262,60 @@ ${powExp2(lanes('math.pow_c', ['y', 'x', 'lhi', 'llo']))})
         (f64x2.extract_lane 1 (local.get $c)))))`, ['math.pow_fold'])
   }
 
-  // atan2, hypot, cbrt, fifthroot: lane by lane through the scalar kernel. The vectorizer lifts
-  // them only where a truly two-wide op (sin2/cos2/sqrt) already carries the loop, so the
-  // extract and repack never make a kernel slower. (Names avoid $math.log2, which is log base 2.)
-  repack('math.atan2_2', 'math.atan2', ['y', 'x'])
+  // atan2 (module/math/ieee754.js): both lanes where x and y are normal and finite, x ≠ 1, and
+  // their exponents at most 60 apart (x < 0 no more than 60 below): atan(|y/x|) two-wide, the
+  // interval fdlibm's atan branches on picked per lane (the argument's numerator and
+  // denominator, then one division; atanhi and atanlo), then the quadrant from the signs.
+  // Anything else, both lanes through the scalar kernel.
+  const [a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10] = ATAN_T
+  const pick = (m, a, b) => `(v128.bitselect ${a} ${b} ${wide(m)})`   // a where the i32-lane mask m holds
+  const below = (v) => `(i32x4.lt_s (local.get $it) ${i32s(v)})`
+  const byId = (cs) => pick(below(0x3fe60000), cs[0], pick(below(0x3ff30000), cs[1], pick(below(0x40038000), cs[2], cs[3])))
+  wat('math.atan2_2', `(func $math.atan2_2 (param $y v128) (param $x v128) (result v128)
+    (local $hx v128) (local $hy v128) (local $ix v128) (local $iy v128) (local $kk v128) (local $t v128) (local $it v128)
+    (local $u v128) (local $z v128) (local $w v128) (local $p v128) (local $r v128) (local $q v128)
+    (local.set $hx ${hi2('(local.get $x)')})
+    (local.set $hy ${hi2('(local.get $y)')})
+    (local.set $ix (v128.and (local.get $hx) ${i32s(0x7fffffff)}))
+    (local.set $iy (v128.and (local.get $hy) ${i32s(0x7fffffff)}))
+    (local.set $kk (i32x4.shr_s (i32x4.sub (local.get $iy) (local.get $ix)) (i32.const 20)))
+    (if (i32.eqz (i32.and (i64x2.all_true (f64x2.ne (local.get $x) ${splat(1)}))
+        (i32x4.all_true (v128.andnot (v128.and (v128.and
+            (i32x4.lt_u (i32x4.sub (local.get $ix) ${i32s(0x00100000)}) ${i32s(0x7fe00000)})
+            (i32x4.lt_u (i32x4.sub (local.get $iy) ${i32s(0x00100000)}) ${i32s(0x7fe00000)}))
+            (i32x4.le_s (local.get $kk) ${i32s(60)}))
+          (v128.and (i32x4.lt_s (local.get $hx) (v128.const i32x4 0 0 0 0)) (i32x4.lt_s (local.get $kk) ${i32s(-60)}))))))
+      (then (return ${lanes('math.atan2', ['y', 'x'])})))
+    ;; atan(t), t = |y/x| < 2^62: t itself below 2^-27, t − t·(s1 + s2) below 0.4375, else
+    ;; atanhi − ((u·(s1 + s2) − atanlo) − u) on u = (2t − 1)/(2 + t), (t − 1)/(t + 1),
+    ;; (t − 1.5)/(1 + 1.5t) or −1/t
+    (local.set $t (f64x2.abs (f64x2.div (local.get $y) (local.get $x))))
+    (local.set $it ${hi2('(local.get $t)')})
+    (local.set $u (v128.bitselect (local.get $t)
+      (f64x2.div
+        ${byId([`(f64x2.sub (f64x2.mul ${splat(2)} (local.get $t)) ${splat(1)})`, `(f64x2.sub (local.get $t) ${splat(1)})`,
+          `(f64x2.sub (local.get $t) ${splat(1.5)})`, splat(-1)])}
+        ${byId([`(f64x2.add ${splat(2)} (local.get $t))`, `(f64x2.add (local.get $t) ${splat(1)})`,
+          `(f64x2.add ${splat(1)} (f64x2.mul ${splat(1.5)} (local.get $t)))`, '(local.get $t)'])})
+      ${wide(below(0x3fdc0000))}))
+    (local.set $z (f64x2.mul (local.get $u) (local.get $u)))
+    (local.set $w (f64x2.mul (local.get $z) (local.get $z)))
+    (local.set $p (f64x2.add (f64x2.mul (local.get $z) ${poly2('$w', [a0, a2, a4, a6, a8, a10])})
+      (f64x2.mul (local.get $w) ${poly2('$w', [a1, a3, a5, a7, a9])})))
+    (local.set $r (v128.bitselect
+      (v128.bitselect (local.get $t) (f64x2.sub (local.get $u) (f64x2.mul (local.get $u) (local.get $p))) ${wide(below(0x3e400000))})
+      (f64x2.sub ${byId(ATAN_HI.map(splat))}
+        (f64x2.sub (f64x2.sub (f64x2.mul (local.get $u) (local.get $p)) ${byId(ATAN_LO.map(splat))}) (local.get $u)))
+      ${wide(below(0x3fdc0000))}))
+    ;; by the signs: r, −r, π − (r − π_lo), (r − π_lo) − π
+    (local.set $q (f64x2.sub (local.get $r) ${splat(PI_LO)}))
+    (v128.bitselect
+      ${pick('(i32x4.lt_s (local.get $hy) (v128.const i32x4 0 0 0 0))', `(f64x2.sub (local.get $q) ${splat(PI_D)})`, `(f64x2.sub ${splat(PI_D)} (local.get $q))`)}
+      ${pick('(i32x4.lt_s (local.get $hy) (v128.const i32x4 0 0 0 0))', '(f64x2.neg (local.get $r))', '(local.get $r)')}
+      ${wide('(i32x4.lt_s (local.get $hx) (v128.const i32x4 0 0 0 0))')}))`, ['math.atan2'])
+
+  // hypot, cbrt, fifthroot: lane by lane through the scalar kernel, which keeps the rest of a
+  // loop around them two-wide. (Names avoid $math.log2, which is log base 2.)
   repack('math.hypot_2', 'math.hypot', ['x', 'y'])
   repack('math.cbrt_v', 'math.cbrt', ['x'])
   repack('math.fifthroot_v', 'math.fifthroot', ['x'])
