@@ -695,10 +695,10 @@ export const devirtGlobalCalls = (ast) => {
 
   // Module-init statement stream, in execution order: moduleInits run first in
   // `$__start`, then the main module's top-level.
-  const initStmts = []
-  const flatten = (n) => {
-    if (Array.isArray(n) && n[0] === ';') for (let i = 1; i < n.length; i++) flatten(n[i])
-    else if (n != null) initStmts.push(n)
+  const initStmts = [], initSlots = []   // each statement, and the `;` list and index it sits at (null for a lone statement)
+  const flatten = (n, list = null, at = 0) => {
+    if (Array.isArray(n) && n[0] === ';') for (let i = 1; i < n.length; i++) flatten(n[i], n, i)
+    else if (n != null) { initStmts.push(n); initSlots.push([list, at]) }
   }
   for (const mi of ctx.module.moduleInits || []) flatten(mi)
   flatten(ast)
@@ -913,8 +913,72 @@ export const devirtGlobalCalls = (ast) => {
   initStmts.forEach((s, at) => collectCalled(s, at))
   for (const [f, at] of reachedAt) { const fn = ctx.funcs.map.get(f); if (fn?.body) collectCalled(fn.body, at) }
   for (const g of calledEarly) devirt.delete(g)
+  if (!devirt.size) return false
+
+  // Every call through a qualifying G is F's own call: the site rewrites to F,
+  // so the call census, the inliner and the parameter proofs read it as one.
+  // A G no read survives (every read of it was a call) holds a value nothing
+  // reads: its init drops and it leaves the map, so F is no longer a value
+  // the program takes the address of. A G the host reads keeps its init.
+  let changed = false
+  // A function's frame rebuilds where it changes: the fact census caches a
+  // body's facts by the body's identity (walk-facts.js `walkFactsRoot`), so a
+  // body edited in place would keep its stale sites. The module's statement
+  // list is never cached and edits in place.
+  const rewriteCalls = (n) => {
+    if (!Array.isArray(n) || n[0] === 'str') return n
+    let out = n
+    for (let i = 1; i < n.length; i++) { const c = rewriteCalls(n[i]); if (c !== n[i]) { if (out === n) out = n.slice(); out[i] = c } }
+    if (out[0] === '()' && out.length > 2 && typeof out[1] === 'string' && devirt.has(out[1])) { if (out === n) out = n.slice(); out[1] = devirt.get(out[1]); changed = true }
+    return out
+  }
+  for (const fn of ctx.funcs.map.values()) {
+    if (!fn.body || fn.raw) continue
+    fn.body = rewriteCalls(fn.body)
+    if (fn.defaults) for (const name of Object.keys(fn.defaults)) fn.defaults[name] = rewriteCalls(fn.defaults[name])
+  }
+  initStmts.forEach((s, i) => { const r = rewriteCalls(s); if (r !== s) { const [list, at] = initSlots[i]; if (list) { list[at] = r; initStmts[i] = r } else { s.length = 0; s.push(...r) } } })
+  const named = new Set(devirt.keys())
+  const reads = new Set()   // the globals read other than by their own init writes (a shadowing local counts: over-counting keeps the init)
+  const countReads = (n) => {
+    if (typeof n === 'string') { if (named.has(n)) reads.add(n); return }
+    if (!Array.isArray(n) || n[0] === 'str') return
+    if (n[0] === '.' || n[0] === '?.') { countReads(n[1]); return }
+    if (n[0] === ':') { countReads(n[2]); return }
+    for (let i = 1; i < n.length; i++) countReads(n[i])
+  }
+  // `G = X` as a statement or a declarator, X a function this module's list
+  // declares or another such global (`nrm = massign`): an init a drop removes
+  // whole. An import binding (`let p = r`) is no such name: its read is what
+  // links the imported function, and the rewritten call alone would not.
+  const aliasInit = (s) => {
+    const w = Array.isArray(s) && s[0] === '=' ? s : Array.isArray(s) && (s[0] === 'let' || s[0] === 'const') && s.length === 2 && Array.isArray(s[1]) && s[1][0] === '=' ? s[1] : null
+    return w && named.has(w[1]) && typeof w[2] === 'string' && (ctx.funcs.map.has(w[2]) || named.has(w[2])) ? w : null
+  }
+  // An alias drops ahead of the global it reads: rounds, until no init drops.
+  const hostRead = new Set(Object.entries(ctx.funcs.exports).map(([name, local]) => local === true ? name : local))
+  const dropped = new Set()
+  for (let progress = true; progress;) {
+    progress = false
+    reads.clear()
+    for (const fn of ctx.funcs.map.values()) if (fn.body && !fn.raw) for (const r of frameRoots(fn)) countReads(r)
+    initStmts.forEach((s, i) => { if (dropped.has(i)) return; const w = aliasInit(s); if (!w) countReads(s); else if (named.has(w[2])) reads.add(w[2]) })
+    for (const g of devirt.keys()) {
+      if (reads.has(g) || hostRead.has(g)) continue
+      const at = initStmts.map((s, i) => !dropped.has(i) && aliasInit(s)?.[1] === g ? i : -1).filter(i => i >= 0)
+      if (!at.length || at.some(i => initSlots[i][0] === null)) continue
+      for (const i of at) { dropped.add(i); const [list, k] = initSlots[i]; list[k] = [';'] }
+      devirt.delete(g)
+      progress = changed = true
+    }
+  }
+  const roots = [...(ctx.module.moduleInits || []), ast]
+  // A dropped statement is an empty sequence: filtered out of its list, as flattenFuncNamespaces filters its dead writes.
+  const compact = (list) => { for (let i = list.length - 1; i > 0; i--) { const c = list[i]; if (Array.isArray(c) && c[0] === ';') { compact(c); if (c.length === 1) list.splice(i, 1) } } }
+  for (const r of roots) if (Array.isArray(r) && r[0] === ';') compact(r)
 
   if (devirt.size) ctx.funcs.globalDevirt = devirt
+  return changed
 }
 
 export const materializeAutoBoxSchemas = (programFacts) => {

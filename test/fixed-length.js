@@ -7,7 +7,7 @@ import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import jz, { compile } from '../index.js'
 import { ctx } from '../src/ctx.js'
-import { levels } from './_matrix.js'
+import { belowOpt, levels } from './_matrix.js'
 import { agree, wat, funcWat } from './util.js'
 
 // The fact as the summary holds it after a compile: `fixedLenOf` of a module
@@ -249,4 +249,28 @@ test('fixed length: the advisory names the first cause an array keeps its checks
   compile(`const out = [0, 0, 0]\nexport const f = (k) => { out.push(k); return out[0] }`, { warnings, why: true })
   const entry = warnings.entries.find(e => e.code === 'array-open')
   ok(entry && /3 elements/.test(entry.message) && /push/.test(entry.message), entry?.message)
+})
+
+// A call through a function's property (`m.assign = nz`, stdlib's out-buffer
+// variants) or an alias of it is the function's own call (plan/scope.js
+// devirtGlobalCalls rewrites the site; the summary reads the property's
+// closure): the array passed keeps its count, the callee inlines, and the
+// stores are the cell's own, as through the direct call.
+test('fixed length: an out-buffer through a function property keeps its count', () => {
+  const nz = `function nz(v, out, s, o) { out[o] = v; out[o + s] = 0; return out }
+    function m(v) { return nz(v, [0, 0], 1, 0) }
+    m.assign = nz
+    const W = [0, 0]`
+  const direct = nz + `\nexport const f = (x) => { nz(x * 2, W, 1, 0); return W[0] * 2 + W[1] }`
+  const prop = nz + `\nexport const f = (x) => { m.assign(x * 2, W, 1, 0); return W[0] * 2 + W[1] }`
+  const alias = nz + `\nconst nrm = m.assign\nexport const f = (x) => { nrm(x * 2, W, 1, 0); return W[0] * 2 + W[1] }`
+  const held = nz + `\nconst keep = [m.assign]\nexport const f = (x) => { m.assign(x * 2, W, 1, 0); return W[0] * 2 + W[1] + keep.length }`
+  is(fixedLen(prop, null, 'W'), 2, 'the property call passes W to nz')
+  is(fixedLen(alias, null, 'W'), 2, 'the alias passes W to nz')
+  for (const optimize of levels(0, 2, 3)) for (const [name, src] of Object.entries({ direct, prop, alias, held })) agree(src, 'f', [0.5], { optimize }, `${name} at ${optimize}`)
+  if (belowOpt(2)) return
+  const stores = (src) => (funcWat(wat(src, { optimize: 3 }), 'f') || '').match(/__arr_set_idx/g)?.length ?? 0
+  is(stores(prop), stores(direct), 'the property call stores as the direct call does')
+  is(stores(alias), stores(direct), 'the alias stores as the direct call does')
+  is(stores(direct), 0, 'the direct call stores into the cell')
 })

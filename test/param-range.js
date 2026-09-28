@@ -33,16 +33,57 @@ test('parameter hull: an unbounded call, a widening recursion, an escaped functi
     export const w = (v) => f(v, 2) + f(1, 3)`, 'f')), JSON.stringify([null, [2, 3]]), 'a host value leaves x open, y keeps its hull')
   is(JSON.stringify(ranges(`function r(k) { return k > 5 ? 0 : r(k + 1) }
     export const t = () => r(0)`, 'r')), JSON.stringify([null]), 'a recursion widening its own argument opens')
-  is(ranges(`function esc(a) { return a * 2 }
-    const fs = [esc]
-    export const u = (i) => fs[i](3)`, 'esc'), null, 'a function a table may call takes anything')
   is(JSON.stringify(ranges(`function f(x) { return x }
     export const s = () => f(1) + f(...[2, 3])`, 'f')), JSON.stringify([null]), 'a spread argument leaves the position open')
   is(JSON.stringify(ranges(`function nz(v, out, o) { out[o] = v; return out }
     function m(v) { return nz(v, [0, 0], 0) }
     m.assign = nz
     const W = [0, 0]
-    export const p = (v) => { m.assign(v, W, 5); return W.length + m(v)[0] }`, 'nz')), JSON.stringify([null, null, null]), 'a function also called through a property receives what no direct call shows')
+    export const p = (v) => { m.assign(v, W, 5); return W.length + m(v)[0] }`, 'nz')), JSON.stringify([null, null, [0, 5]]), 'a call through a property joins the hull with the direct call\'s')
+})
+
+// Every channel that binds a function's parameters notes the call's arguments
+// (summary `bind`): a call through a table or a function's property joins the
+// hull like a direct call; one that cannot align them (`.call`, `.apply`, a
+// callback) opens the position; a function the host or a dispatcher may call
+// has no hull. A channel that noted nothing would leave the hull to the direct
+// calls, and a store the hull bounds would land past what the other channel's
+// arguments reach (`out[o + s]` with `o` from the property call alone).
+test('parameter hull: every call channel joins the hull, the host opens it', () => {
+  is(JSON.stringify(ranges(`function esc(a) { return a * 2 }
+    const fs = [esc]
+    export const u = (i) => fs[i](3) + esc(1)`, 'esc')), JSON.stringify([[1, 3]]), 'a table call joins the hull')
+  is(JSON.stringify(ranges(`function nz(v, out, s, o) { out[o] = v; out[o + s] = 0; return out }
+    function m(v) { return nz(v, [0, 0], 1, 0) }
+    m.assign = nz
+    const W = [0, 0]
+    export const u = (x) => { m.assign(x, W, 1, 1); return m(x)[0] + W[1] }`, 'nz')), JSON.stringify([null, null, [1, 1], [0, 1]]), 'a call through a function\'s property joins the hull')
+  is(JSON.stringify(ranges(`function f(a, b) { return a + b }
+    export const u = (x) => f(1, 2) + f.call(null, x, 3)`, 'f')), JSON.stringify([null, [2, 3]]), '`f.call` on the function itself is its direct call (prepare folds it)')
+  is(JSON.stringify(ranges(`function f(a, b) { return a + b }
+    const fs = [f]
+    export const u = (x) => f(1, 2) + fs[0].call(null, x, 3)`, 'f')), JSON.stringify([null, null]), '`.call` on a closure value cannot align its arguments: the positions open')
+  is(JSON.stringify(ranges(`function f(a, b) { return a + b }
+    const fs = [f]
+    export const u = (x) => f(1, 2) + fs[0].apply(null, [x, 3])`, 'f')), JSON.stringify([null, null]), '`.apply` opens the positions')
+  is(JSON.stringify(ranges(`function f(a) { return a * 2 }
+    export const u = () => [1, 2].map(f)[0] + f(1)`, 'f')), JSON.stringify([null]), 'a callback opens the positions')
+  is(ranges(`export function nz(v, out, s, o) { out[o] = v; out[o + s] = 0; return out }
+    const W = [0, 0]
+    export const u = (x) => { nz(x, W, 1, 0); return W[0] }`, 'nz'), null, 'an exported function is called by the host with anything')
+  is(ranges(`function esc(a) { return a * 2 }
+    export const fs = [esc]
+    export const u = (i) => fs[i](3)`, 'esc'), null, 'a function the host holds takes anything')
+  // The stores the hull bounds agree with the host through every channel.
+  const src = `function nz(v, out, s, o) { out[o] = v; out[o + s] = 0; return out }
+    function m(v) { return nz(v, [0, 0], 1, 0) }
+    m.assign = nz
+    const T = [nz]
+    const W = [0, 0], X = [0, 0], Y = [0, 0]
+    export const prop = (x) => { m.assign(x, W, 1, 1); return W.length * 100 + W[0] * 2 + W[1] + (W[2] ?? -1) + m(x)[0] }
+    export const table = (x) => { T[0](x, X, 1, 1); return X.length * 100 + X[0] * 2 + X[1] + (X[2] ?? -1) + m(x)[0] }
+    export const called = (x) => { nz.call(null, x, Y, 1, 1); return Y.length * 100 + Y[0] * 2 + Y[1] + (Y[2] ?? -1) + m(x)[0] }`
+  for (const optimize of levels(0, 2, 3)) for (const name of ['prop', 'table', 'called']) agree(src, name, [3], { optimize }, `${name} at ${optimize}`)
 })
 
 test('parameter hull: const arguments capture bounded arithmetic at their initializer', () => {

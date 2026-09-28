@@ -112,7 +112,7 @@ export default function plan(ast, profiler, summarize) {
   sweep('declareWrittenKeys', () => declareWrittenKeys(ast))
   // Devirtualize calls through init-constant function globals (closure
   // devirtualization) — must follow the SROA above, which creates the globals.
-  t('devirtGlobalCalls', () => devirtGlobalCalls(ast))
+  sweep('devirtGlobalCalls', () => devirtGlobalCalls(ast))
   // A method call on a receiver the summary names calls the class's function directly.
   sweep('devirtClassCalls', devirtClassCalls)
   // An array pattern over a proven array reads it by index, no cursor.

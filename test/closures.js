@@ -3,6 +3,7 @@ import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { belowOpt, onWasi, onKernel, levels } from './_matrix.js'
 import jz, { compile } from '../index.js'
+import { ctx } from '../src/ctx.js'
 import { oracle, run, wat } from './util.js'
 import { MAX_CLOSURE_ARITY } from '../src/ir.js'
 import { T } from '../src/ast.js'
@@ -2187,4 +2188,30 @@ test('closures: a concise body naming a function returns it as a value', () => {
   const modules = { './v.js': `const V = (x) => x + 1\nexport const get = () => V\nexport { V }` }
   const main = `import { get, V } from './v.js'\nexport let f = () => get()(3) * 10 + (get() === V ? 1 : 0)`
   for (const optimize of levels(0, 2)) is(jz(main, { optimize, modules }).exports.f(), 41, `imported, O${optimize}`)
+})
+
+// A call through a global bound once to a function is that function's own
+// call: devirtGlobalCalls rewrites the site, so the call census, the inliner
+// and the parameter proofs read it as a direct call (stdlib's out-buffer
+// variants: `frexp.assign = assign`, called as `frexp.assign(x, out, 1, 0)`).
+// A global nothing reads once its calls are rewritten, or an alias of one,
+// drops its init and leaves the map: the function's address is no longer
+// taken by it. One read as a value, or one the host holds, keeps both.
+test('devirtGlobalCalls: the site calls the function; a global nothing reads drops its init', () => {
+  const nz = `function nz(v, out, s, o) { out[o] = v; out[o + s] = 0; return out }
+    function m(v) { return nz(v, [0, 0], 1, 0) }
+    m.assign = nz
+    const W = [0, 0]`
+  const shapes = {
+    called: [nz + `\nexport let go = (x) => { m.assign(x, W, 1, 0); return W[0] * 2 + W[1] }`, 6, []],
+    alias: [nz + `\nconst nrm = m.assign\nexport let go = (x) => { nrm(x, W, 1, 0); return W[0] * 2 + W[1] }`, 6, []],
+    held: [nz + `\nconst keep = [m.assign]\nexport let go = (x) => { m.assign(x, W, 1, 0); return W[0] * 2 + W[1] + keep.length }`, 7, [`m${T}assign`]],
+    exported: [nz + `\nconst out = m.assign\nexport { out }\nexport let go = (x) => { m.assign(x, W, 1, 0); return W[0] * 2 + W[1] }`, 6, [`m${T}assign`, 'out']],   // `out` reads it, the host reads `out`
+  }
+  for (const [name, [src, want, kept]] of Object.entries(shapes)) {
+    for (const optimize of levels(0, 2, 3)) is(runHost(src, { optimize }).go(3), want, `${name} at ${optimize}`)
+    const text = wat(src, { optimize: 0 })
+    ok(/\(call \$nz/.test(text) && !/call_indirect/.test(text), `${name}: the site calls nz directly`)
+    is(JSON.stringify([...(ctx.funcs.globalDevirt?.keys() ?? [])]), JSON.stringify(kept), `${name}: the globals still holding nz`)
+  }
 })

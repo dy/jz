@@ -14,7 +14,7 @@ import { OPTF } from '../ctx.js'
 import { ctx, err, inc, warnDeopt, PTR, LAYOUT, setLinkDemand } from '../ctx.js'
 import { T, ACCESSOR_SET } from '../ast.js'
 import { classAccessor, classesWith, lacksSlot } from './emit/class-dispatch.js'
-import { staticPropertyKey, staticIndexKey, staticObjectProps, inlineArraySid, structLiteralFields, inplaceKey } from '../static.js'
+import { staticPropertyKey, staticIndexKey, staticObjectProps, inlineArraySid, structLiteralFields, inplaceKey, intExprRange } from '../static.js'
 import { packedI32, structInline } from '../abi/index.js'
 import { i64Hex, encodePtrHi, OBJECT_SCHEMA_HI_MASK, objectSchemaGuardHex } from '../../layout.js'
 import { recordDynFnTableWrite, recordImperativeClosureTableWrite } from './dyn-closure-tables.js'
@@ -599,6 +599,12 @@ export function emitElementAssign(arr, idx, val, node = null) {
   if (litIndex != null) {
     const view = ctx.summary?.at(ctx.func.current)
     if (litIndex < view?.fixedLenOfExpr(arr)) return storeFixedElement(arr, litIndex, valueExpr, view.mayBeNullishExpr(arr))
+  } else if (numericKey && typeof arr === 'string') {
+    // 3a. An index the range solver holds inside the fixed length (a callee's
+    //     `out[offset + stride]` once its arguments' constants flow in): the
+    //     cell's own store at the computed offset, no length test.
+    const view = ctx.summary?.at(ctx.func.current), len = view?.fixedLenOfExpr(arr)
+    if (len > 0) { const r = intExprRange(idx); if (r && r[0] >= 0 && r[1] < len) return storeFixedElement(arr, asI32(emit(idx)), valueExpr, view.mayBeNullishExpr(arr)) }
   }
   // 3b. Known-ARRAY receiver + literal numeric key → __arr_set_idx_ptr.
   if (arrIndex != null && typeof arr === 'string' && valTypeOf(arr) === VAL.ARRAY)

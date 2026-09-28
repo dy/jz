@@ -830,7 +830,14 @@ follow, and a key declared after a computed store would sit ahead of it in
 the layout. A namespace of plain values (`parse.comment ??= {…}` with no
 arrow property) flattens like one with arrows (`plan/scope.js`
 `flattenFuncNamespaces` witnesses it by a top-level property store on a
-function), so the pass sees the flattened global as a literal-bound name. A conditional store keeps
+function), so the pass sees the flattened global as a literal-bound name. A
+call through a global bound once to a function (`devirtGlobalCalls`: a
+flattened `m.assign = nz` called as `m.assign(…)`, an alias `nrm = m.assign`)
+rewrites to the function's own call, so the call census, the inliner and the
+parameter proofs read it as one; a global nothing reads once its calls are
+rewritten, or an alias of one, drops its init and leaves `ctx.funcs.globalDevirt`,
+so the function's address is no longer taken by it. One read as a value, or
+one the host holds, keeps both. A conditional store keeps
 its key out of the literal and in the sidecar, because a declared slot is an
 own property from the literal on and `in`, hasOwnProperty, for-in and
 Object.keys would all report it before the store. This is the one place a
@@ -1483,13 +1490,25 @@ directly. A bare `let` assigned before every read declares empty, not absent
 store dereferenced present for the rest of its block. `why` reports the first
 cause an array built at a fixed count keeps its checks by (`array-open`).
 The summary also keeps the hull of the arguments each parameter receives over
-a function's direct calls (`paramRangesOf`: a counter's span, arithmetic on
-it, a const's captured initializer interval, a caller's own hull through a chain
-of calls; open where a call is unbounded, exported, escaped, or a recursion
-keeps widening it). A parameter assigned anywhere, including by a closure,
-cannot supply its incoming hull to another call. The emitter
-starts a parameter's flow interval from it, so a ToInt32 of `floor(y) + gy`
-inside a sampler needs no infinity guard. A loop that writes no array header
+every call the walk binds (`paramRangesOf`: a counter's span, arithmetic on
+it, a const's captured initializer interval, a caller's own hull through a
+chain of calls). A parameter assigned anywhere, including by a closure, cannot
+supply its incoming hull to another call. Every channel that binds a
+function's parameters notes its arguments (`bind`): a call through a table or
+a function's property joins the hull like a direct call, one that cannot align
+them (`.call`, `.apply`, a callback) opens the position, a function the host
+or a dispatcher may call has no hull, and a recursion that keeps widening a
+position opens it. The emitter starts a parameter's flow interval from it, so
+a ToInt32 of `floor(y) + gy` inside a sampler needs no infinity guard. A typed
+element read inside the array's count is a number, never undefined
+(`typedReadPresent`): the index's span within a count the walk knows (an
+allocation of one bounded length, a name of one definition, a helper whose
+every return is such an array), a mask, or a counter the loop bounds by the
+array's own length (`i < x.length`). An integer literal a name is written to
+once is known from the first round (`ints`): the functions of a round walk
+ahead of the module's statements, and an absent joined in the first round is
+never lost. A callee taking such a read takes a number, with no per-use
+conversion. A loop that writes no array header
 (element stores only, calls to functions the module-wide census finds header
 safe, `collectHeaderSafeFuncs`) reads a present array's forwarding word and
 length once before the loop (`presentArrays`, optimize/licm.js); a durable

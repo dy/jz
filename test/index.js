@@ -107,6 +107,7 @@ const TESTS = [
   'present-receiver',
   'header-hoist',
   'param-range',
+  'typed-present',
   'fn-alias',
   'forward-store',
   'unroll-cost',

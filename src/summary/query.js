@@ -14,7 +14,7 @@ import {
 
 export function summaryQueries(facts, internal = false) {
   const { kinds, incoming, fields, results, receivers, closures, closuresByBody, declared, parent, nameKeys, forwards, siteResults,
-    scopeOfSig, scopeOfBody, scopeOfParams, cellUp, elems, tuples, lens, stores, built, grown, unknown, presentReads, argRanges, cellProps, cellWild, closureSets, closureSetIds, cells, jsonKinds, unions, shapeUnions,
+    scopeOfSig, scopeOfBody, scopeOfParams, cellUp, elems, tuples, lens, stores, built, grown, unknown, presentReads, paramRangesOf, cellProps, cellWild, closureSets, closureSetIds, cells, jsonKinds, unions, shapeUnions,
     schemas, layouts, sitesByLayout, objectKinds, methods, sidByKey, funcNames, imports, numeric, dynamicProps, builtinOwnProps, typedReadPresent, typedProps, typedPropsByAux, openSchemas, indexedSchemas,
     sideProps, sideWild, wildProps, wildValues, pendingAll, keyedCells, cellShapes, cellLostObject, closureProps, escaped, iterSites, reached, defaultRuns } = facts
   // The solver owns union-find compression; querying a root never writes it.
@@ -452,10 +452,10 @@ export function summaryQueries(facts, internal = false) {
         const len = n + (g?.n ?? 0)
         return stores.get(c) >= len ? null : len
       },
-      // The finite interval each parameter of a function receives over its
-      // direct calls (index.js `argRanges`), null per position no call bounds;
-      // null for a function the host or a closure table may call.
-      paramRangesOf: name => escaped.has(name) ? null : argRanges.get(name)?.ranges.map(r => r ?? null) ?? null,
+      // The finite interval each parameter of a function receives over every
+      // call the walk binds (index.js `argRanges`), null per position a call
+      // leaves unbounded; null for a function the host or a dispatcher may call.
+      paramRangesOf,
       // The element cell's own kind: presence included, no absent member for a read past the end.
       elemKindOf: name => { const k = readKind(name); return celled(k) ? pub(elemOf(k)) : null },
       arrayElemSidOf: name => { const k = readKind(name); if (tagOf(k) !== K.ARRAY || paramOf(k) === UNKNOWN) return null; const e = elemOf(k); return tagOf(e) === K.OBJECT && !isNullable(e) && publicSid(e) !== UNKNOWN ? publicSid(e) : null },

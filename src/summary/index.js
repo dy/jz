@@ -488,22 +488,39 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   const ints = new Map()         // a name declared once as an integer literal → its value
   const spans = new Map()        // the counters of the loops being walked → [lo, hi]
   const constRanges = new Map()  // binding id → the interval captured by this frame's const initializer
-  const spanOf = (e) => {
+  // `scope`: the function the expression is read in; the counters are the
+  // walk's own, so another scope's expression reads its hull alone.
+  const spanOf = (e, scope = current) => {
     if (typeof e === 'number') return Number.isInteger(e) ? [e, e] : null
-    if (typeof e === 'string') { const v = ints.get(e); return v !== undefined ? [v, v] : spans.get(e) ?? null }
+    if (typeof e === 'string') {
+      const v = ints.get(e)
+      if (v !== undefined) return [v, v]
+      const span = scope === current ? spans.get(e) : undefined
+      if (span) return span
+      // A parameter's hull, the round before's (`out[offset + stride]` in an
+      // out-buffer callee every call passes literals to): integral bounds only.
+      const hull = typeof scope === 'string' ? paramRangeOf(scope, e) : null
+      return hull && Number.isInteger(hull[0]) && Number.isInteger(hull[1]) ? hull : null
+    }
     if (!Array.isArray(e)) return null
     const op = e[0]
     if (op == null) return Number.isInteger(e[1]) ? [e[1], e[1]] : null
-    if (op === '()' && e.length === 2) return spanOf(e[1])
+    if (op === '()' && e.length === 2) return spanOf(e[1], scope)
     if (e.length !== 3) return null
-    const a = spanOf(e[1]), b = spanOf(e[2])
+    // A typed array's length is its count for good.
+    if (op === '.' && e[2] === 'length' && typeof e[1] === 'string') { const len = typedLenOf(scope ?? MODULE, e[1]); return len === null ? null : [len, len] }
+    const a = spanOf(e[1], scope), b = spanOf(e[2], scope)
+    // A mask keeps any value inside it: ToInt32 of the other operand, whatever it is, then the bits.
+    const mask = (m) => m && m[0] === m[1] && m[0] >= 0 && m[0] <= 0x7fffffff ? [0, m[0]] : null
+    if (op === '&') return mask(b) ?? mask(a)
     if (!a || !b) return null
     let lo, hi
     if (op === '+') { lo = a[0] + b[0]; hi = a[1] + b[1] }
     else if (op === '-') { lo = a[0] - b[1]; hi = a[1] - b[0] }
     else if (op === '*') { const p = [a[0] * b[0], a[0] * b[1], a[1] * b[0], a[1] * b[1]]; lo = Math.min(...p); hi = Math.max(...p) }
     else if (op === '%' && a[0] >= 0 && b[0] > 0) { lo = 0; hi = Math.min(a[1], b[1] - 1) }
-    else if (op === '&' && b[0] === b[1] && b[0] >= 0) { lo = 0; hi = b[0] }
+    else if (op === '|' && b[0] === 0 && b[1] === 0 && a[0] >= -0x80000000 && a[1] <= 0x7fffffff) { lo = a[0]; hi = a[1] }   // `e | 0` of an i32 interval (prepare's typed `.length | 0`)
+    else if (op === '<<' && a[0] === a[1] && b[0] === b[1]) { lo = hi = a[0] << b[0] }   // a constant size (`1 << 20`)
     else return null
     return Number.isSafeInteger(lo) && Number.isSafeInteger(hi) ? [lo, hi] : null
   }
@@ -561,13 +578,10 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   const argRanges = new Map()   // function name → { ranges: ([lo, hi] | null)[] }, the settled hulls of the last round
   const roundArgs = new Map()    // this round's, recorded afresh
   const moved = new Map()        // `${fn}#${i}` → rounds its hull changed in
-  const openArgs = new Set()     // positions that changed four rounds over, or reached by another channel
-  let directArgs = false         // `bind` runs for a direct call: the one channel `noteArgs` sees
-  // A function bound through any other channel (a property or table call, an
-  // iterator helper, `.call`/`.apply`) receives arguments no direct call shows:
-  // every position opens.
-  const openAllArgs = (name) => { const f = funcByName.get(name); if (f) paramNamesOf(f).forEach((_, i) => openArgs.add(`${name}#${i}`)) }
-  const openCaller = (name, f) => exported(f) || hostClosures.has(name) || escaped.has(name) || f.sig.dispatcher
+  const openArgs = new Set()     // positions that changed four rounds over
+  // A function the host, a dispatcher or a caller the walk never sees may
+  // call receives anything: it has no hull.
+  const openCaller = (name, f) => exported(f) || hostClosures.has(name) || escaped.has(name) || !!f.sig.dispatcher
   const paramRangeOf = (fn, name) => {
     const f = funcByName.get(fn)
     if (!f || openCaller(fn, f)) return null
@@ -577,15 +591,22 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     const i = paramNamesOf(f).indexOf(name)
     return i < 0 ? null : argRanges.get(fn)?.ranges[i] ?? null
   }
-  const noteArgs = (name, f, node, n, base) => {
-    if (openCaller(name, f)) return
-    const params = paramNamesOf(f)
+  const paramRangesOf = (fn) => { const f = funcByName.get(fn); return !f || openCaller(fn, f) ? null : argRanges.get(fn)?.ranges.map(r => r ?? null) ?? null }
+  // Every bind of a named function's parameters notes the call's arguments
+  // (`bind`): the argument list aligned with the parameters, or null where
+  // the channel cannot name them (a callback, `.call`/`.apply`, a member
+  // called with its receiver), which opens each position. A channel that
+  // skipped this would leave the hull to the direct calls alone, and a store
+  // the hull bounds would land past the count the other channel's arguments reach.
+  const noteArgs = (name, names, args, n, base) => {
+    const f = funcByName.get(name)
+    if (!f || openCaller(name, f)) return
     let entry = roundArgs.get(name)
-    if (!entry) roundArgs.set(name, entry = { ranges: params.map(() => undefined) })
+    if (!entry) roundArgs.set(name, entry = { ranges: names.map(() => undefined) })
     let spread = false
-    for (let i = 0; i < params.length; i++) {
+    for (let i = 0; i < names.length; i++) {
       if (i < n && kspread[base + i]) spread = true
-      const r = spread || i >= n || !node || openArgs.has(`${name}#${i}`) ? null : rangeOf(argAt(node[2], i))
+      const r = spread || i >= n || args === null || openArgs.has(`${name}#${i}`) ? null : rangeOf(argAt(args, i))
       const prev = entry.ranges[i]
       if (prev === null) continue
       entry.ranges[i] = prev === undefined || r === null ? r : [Math.min(prev[0], r[0]), Math.max(prev[1], r[1])]
@@ -613,16 +634,30 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   }
   /** A loop `for (let i = a; i < b; i += c)` whose body leaves `i` alone: the
    *  counter and the integers it takes in the body; null for any other loop. */
-  const countedLoop = (n) => {
+  const loopCounter = (n) => {
     const init = n[1], test = n[2], step = n[3]
     if (!Array.isArray(init) || init[0] !== 'let' || init.length !== 2 || !Array.isArray(init[1]) || init[1][0] !== '=' || typeof init[1][1] !== 'string') return null
     const name = init[1][1], from = spanOf(init[1][2])
     if (!from || !Array.isArray(test) || (test[0] !== '<' && test[0] !== '<=') || test[1] !== name) return null
-    const to = spanOf(test[2])
-    if (!to || !Array.isArray(step) || step[1] !== name) return null
+    if (!Array.isArray(step) || step[1] !== name) return null
     const by = step[0] === '++' ? 1 : step[0] === '+=' ? spanOf(step[2])?.[0] : null
     if (!(by > 0) || assignedIn(n[4]).includes(name)) return null
-    return [name, from[0], test[0] === '<' ? to[1] - 1 : to[1]]
+    return { name, from, test }
+  }
+  const countedLoop = (n) => {
+    const c = loopCounter(n)
+    if (!c) return null
+    const to = spanOf(c.test[2])
+    return to ? [c.name, c.from[0], c.test[0] === '<' ? to[1] - 1 : to[1]] : null
+  }
+  /** A loop `for (let i = a; i < x.length; i += c)`, `a` at least 0, whose body leaves
+   *  `i` and `x` alone: the counter and the array whose count bounds it. */
+  const lengthBoundedLoop = (n) => {
+    const c = loopCounter(n)
+    let b = c?.test[2]
+    if (Array.isArray(b) && b[0] === '|' && Array.isArray(b[2]) && b[2][0] == null && b[2][1] === 0) b = b[1]   // prepare's `x.length | 0`
+    if (!c || c.from[0] < 0 || c.test[0] !== '<' || !Array.isArray(b) || b[0] !== '.' || b[2] !== 'length' || typeof b[1] !== 'string') return null
+    return assignedIn(n[4]).includes(b[1]) ? null : [c.name, b[1]]
   }
   /** A store at `idx`: an index the count holds leaves the length alone; any other may extend it. */
   const storeAt = (arr, idx) => {
@@ -1160,9 +1195,9 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   const runDefault = (key) => { if (key != null && !defaultRuns.has(key)) { defaultRuns.add(key); changed = true } }
   const mayBeMissing = (k) => tagOf(k) === K.ANY || hasTag(k, K.NULLISH) || hasTag(k, K.ABSENT)
   const runDefaults = (scope, defaults) => { if (defaults) for (const p in defaults) runDefault(keyIn(scope, p)) }
-  const bind = (scope, names, base, n, defaults, ctx = null) => {
+  const bind = (scope, names, base, n, defaults, ctx = null, args = null) => {
     reach(scope)
-    if (!directArgs && typeof scope === 'string') openAllArgs(scope)
+    if (typeof scope === 'string') noteArgs(scope, names, args, n, base)
     // Unknown callers make the parameters ANY. Arguments from known callers
     // still flow through those parameters, including callbacks and their effects.
     if (escaped.has(scope)) { escapeArgs(base, n); runDefaults(scope, defaults); return }
@@ -1407,9 +1442,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       if (callee === '__hide_member') return NUMBER // metadata only; the preceding assignment owns the value write
       const f = funcByName.get(callee)
       if (f) {
-        directArgs = true
-        try { bind(callee, paramNamesOf(f), base, n, f.defaults, f.rest || !n || escaped.has(callee) ? null : initContextFor(callee, ks[base])) } finally { directArgs = false }
-        noteArgs(callee, f, node, n, base)
+        bind(callee, paramNamesOf(f), base, n, f.defaults, f.rest || !n || escaped.has(callee) ? null : initContextFor(callee, ks[base]), node ? node[2] : null)
         return resultAt(callee, base, n, node)
       }
       const key = keyOf(callee), k = key === null ? undefined : kinds[key]
@@ -1577,14 +1610,16 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   }
   const bindClosure = (param, base, n) => { for (const id of membersOf(param)) bind(id, callableParams(id), base, n, callableDefaults(id)) }
   /** Call a closure or each member of a closure set; the result is the join of theirs. */
-  const callClosure = (param, base, n, node = null, recv = NULLISH) => {
+  // `args`: the call's argument list where it aligns with the parameters (the
+  // call node's own), null where it does not (`.call`, `.apply`, a callback).
+  const callClosure = (param, base, n, node = null, recv = NULLISH, args = node ? node[2] : null) => {
     let r = K.NONE
     for (const id of membersOf(param)) {
       if (receiverScopes.has(id)) {
         const prev = receivers.get(id) ?? K.NONE, next = merge(prev, recv)
         if (prev !== next) { receivers.set(id, next); changed = true }
       }
-      bind(id, callableParams(id), base, n, callableDefaults(id))
+      bind(id, callableParams(id), base, n, callableDefaults(id), null, args)
       r = merge(r, resultAt(id, base, n, node))
     }
     return r
@@ -1840,10 +1875,10 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     }
     // Explicit receivers reach method closures; lexical arrows ignore them.
     if (t === K.CLOSURE && paramOf(recv) !== UNKNOWN && (name === 'call' || name === 'apply')) {
-      if (name === 'call') return callClosure(paramOf(recv), n ? base + 1 : base, n ? n - 1 : 0, node, n ? ks[base] : NULLISH)
+      if (name === 'call') return callClosure(paramOf(recv), n ? base + 1 : base, n ? n - 1 : 0, node, n ? ks[base] : NULLISH, null)
       const b = sp
       if (n >= 2) { const a = ks[base + 1]; pushK(tagOf(a) === K.ARRAY ? elemOf(a) : tagOf(a) === K.NULLISH ? K.NONE : ANY, true) }
-      const r = callClosure(paramOf(recv), b, sp - b, node, n ? ks[base] : NULLISH)
+      const r = callClosure(paramOf(recv), b, sp - b, node, n ? ks[base] : NULLISH, null)
       sp = b
       return r
     }
@@ -2832,6 +2867,11 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     const key = keyOf(name, scope)
     if (key !== null) definitions.set(key, definitions.has(key) || value == null ? null : [scope, value])
   }
+  // An integer literal a name is written to once is its value from the first
+  // round on: the functions of a round walk ahead of the module's statements
+  // (whose declarations record `ints`), and a first round that cannot bound a
+  // loop or a call's argument by the name joins an absent that never leaves.
+  { const byName = new Map(); for (const [, name, value] of writes) byName.set(name, byName.has(name) ? null : value); for (const [name, v] of byName) if (Array.isArray(v) && v[0] == null && Number.isInteger(v[1])) ints.set(name, v[1]) }
   const staticValue = (scope, node, seen = new Set()) => {
     if (typeof node === 'string') {
       const key = keyOf(node, scope), def = definitions.get(key)
@@ -2841,14 +2881,54 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     }
     return Array.isArray(node) && node[0] == null ? node[1] : typeof node === 'number' ? node : null
   }
+  // A function's return expressions (an expression body is its own), not a nested closure's.
+  const returnsOf = new Map()
+  const returnsOfFn = (name) => { let list = returnsOf.get(name); if (!list) returnsOf.set(name, list = funcByName.get(name)?.body == null ? [] : returnExprs(funcByName.get(name).body)); return list }
+  // The count of a typed array expression, fixed for its life: an allocation
+  // of one length the walk bounds to a single integer (a literal, an integer
+  // name, a parameter's hull), a name of one definition, a call of a function
+  // whose every return is such an array (`x = uniform(N)`). null where unknown.
+  const typedLenOf = (scope, e, seen = new Set()) => {
+    if (typeof e === 'string') {
+      const key = keyOf(e, scope), def = key === null ? undefined : definitions.get(key)
+      if (!def || seen.has(key)) return null
+      seen.add(key)
+      return typedLenOf(def[0], def[1], seen)
+    }
+    if (!Array.isArray(e) || e[0] !== '()' || typeof e[1] !== 'string') return null
+    if (e[1].startsWith('new.') && TYPED_CTOR.test(e[1])) {
+      const args = argList(e[2])
+      if (args.length !== 1) return null
+      const r = spanOf(args[0], scope === MODULE ? null : scope)
+      return r && r[0] === r[1] && r[0] >= 0 ? r[0] : null
+    }
+    if (!funcByName.has(e[1])) return null
+    let len = null
+    for (const r of returnsOfFn(e[1])) { const l = r == null ? null : typedLenOf(e[1], r, seen); if (l === null || (len !== null && l !== len)) return null; len = l }
+    return len
+  }
+  // A binding that holds one value for its life: a parameter or a declaration
+  // never assigned again (`definitions`: one write with a value, or none).
+  const stable = (name, scope) => {
+    for (let s = scope; ; s = parent.get(s) ?? MODULE) {   // the binding's own key (`definitions` is keyed without an init context)
+      const key = keyIn(s, name)
+      if (key !== undefined) { const def = definitions.get(key); return def === undefined || def !== null }
+      if (s === MODULE) return false
+    }
+  }
+  // The counters of the loops being walked that their array's own length bounds (`i < x.length`) → the array's key.
+  const lenBounds = new Map()
+  // A typed element read inside the count: the index's span within the length
+  // the walk knows, or a counter the loop bounds by that array's length.
   const typedReadPresent = (scope, node) => {
     if (typeof node[1] !== 'string') return false
-    const def = definitions.get(keyOf(node[1], scope))
-    if (!def) return false
-    const init = def[1]
-    if (!Array.isArray(init) || init[0] !== '()' || typeof init[1] !== 'string' || !init[1].startsWith('new.') || !TYPED_CTOR.test(init[1])) return false
-    const len = staticValue(def[0], init[2]), i = staticValue(scope, node[2])
-    return Number.isInteger(len) && Number.isInteger(i) && i >= 0 && i < len
+    const idx = node[2]
+    if (typeof idx === 'string' && lenBounds.get(idx) === keyOf(node[1], scope) && stable(node[1], scope)) return true
+    const len = typedLenOf(scope, node[1])
+    if (len === null) return false
+    const i = staticValue(scope, idx)
+    const span = spanOf(idx) ?? (Number.isInteger(i) ? [i, i] : null)
+    return span !== null && span[0] >= 0 && span[1] < len
   }
   const stmt = (n) => {
     site = n
@@ -2872,11 +2952,13 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     // A loop's test guards its body the way an `if` guards its branch.
     if (op === 'for') {
       loopAssigns(n); stmt(n[1]); branch++; selectedExpr(n[2], 0)
-      const mark = rtop, counted = countedLoop(n)
+      const mark = rtop, counted = countedLoop(n), bounded = counted ? null : lengthBoundedLoop(n)
       if (n[2] != null) proves(n[2], true)
       if (counted) { spans.set(counted[0], [counted[1], counted[2]]); trips.push(Math.max(0, counted[2] - counted[1] + 1)); countedDepth++ }
+      if (bounded) lenBounds.set(bounded[0], keyOf(bounded[1]))
       stmt(n[4])
       if (counted) { spans.delete(counted[0]); trips.pop(); countedDepth-- }
+      if (bounded) lenBounds.delete(bounded[0])
       unwind(mark); selectedExpr(n[3], 0); branch--
       return
     }
@@ -3163,7 +3245,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   }
   const queryFacts = {
     kinds, incoming, fields, results, closures, declared, parent, nameKeys, forwards, siteResults, receivers,
-    scopeOfSig, scopeOfBody, scopeOfParams, cellUp, elems, tuples, lens, stores, built, grown, unknown, presentReads, argRanges, cellProps, cellWild, closureSets, closureSetIds, cells, jsonKinds, closuresByBody, unions, shapeUnions,
+    scopeOfSig, scopeOfBody, scopeOfParams, cellUp, elems, tuples, lens, stores, built, grown, unknown, presentReads, paramRangesOf, cellProps, cellWild, closureSets, closureSetIds, cells, jsonKinds, closuresByBody, unions, shapeUnions,
     schemas, layouts, sitesByLayout, objectKinds, methods, sidByKey,
     funcNames: new Set(funcByName.keys()), imports: new Map(imports),
     numeric, dynamicProps, builtinOwnProps, escaped, typedReadPresent, typedProps, typedPropsByAux, openSchemas, indexedSchemas, hostSchemas, opaqueSchemas, deletable, deleteReach,
