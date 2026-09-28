@@ -320,7 +320,7 @@ export function createTransform(opts) {
   const wrapArg = (a) => (Array.isArray(a) && a[0] === '...' && wrapSpreadDrain(a)) || transform(a)
 
   const handlers = {
-    // async function/arrow → (...aa) => __async_run((function* …)(...aa))
+    // async function/arrow → (a, b) => __async_run((function* (a, b) …)(a, b))
     'async'(inner) {
       if (!_gen?.lowerAsync || !Array.isArray(inner)) return
       if (inner[0] === 'function*' || inner[0] === 'function') {

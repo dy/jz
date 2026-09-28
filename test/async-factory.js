@@ -1,9 +1,10 @@
-// A closure made inside an async function or a generator is typed as the
-// same closure made inside a plain function. An await resumes with the settled
-// value of its operand (`__awaited`, jzify/generators.js), which the summary
-// reads off a promise it names at each async call (src/summary/index.js
-// promiseAt, awaited); the machine's locals hold no value before the statement
-// that initializes them (src/ast.js TDZ). The kernel is
+// A closure made inside an async function, an async arrow or a generator is
+// typed as the same closure made inside a plain function. An await resumes
+// with the settled value of its operand (`__awaited`, jzify/generators.js),
+// which the summary reads off a promise it names at each async call
+// (src/summary/index.js promiseAt, awaited); the machine's locals hold no
+// value before the statement that initializes them (src/ast.js TDZ); an async
+// function passes its plain parameters straight to its machine. The kernel is
 // the encoder of @audio/encode-wav, made by an async factory (bench/_audiojs
 // shapes.mjs, S8): its loop called `__add_slow`, `__is_str_key` and
 // `__dyn_set` per sample, 0.03× of V8 where the plain factory ran 0.3×.
@@ -33,6 +34,9 @@ const FACTORIES = {
   plain: `function wav(opts) { ${body}; return { encode }; ${encode} }
 export let open = () => { enc = wav({ bitDepth: 24 }); return 1 }`,
   async: `async function wav(opts) { ${body}; return { encode }; ${encode} }
+export let open = async () => { enc = await wav({ bitDepth: 24 }); return 1 }`,
+  // an arrow whose options are a destructured default, a closure made before an await
+  'async arrow': `const wav = async ({ bitDepth = 16 } = {}) => { let bps = bitDepth >> 3, nch = 0; const encode = ${encode.replace('function encode(ch)', '(ch) =>')}; await null; return { encode } }
 export let open = async () => { enc = await wav({ bitDepth: 24 }); return 1 }`,
   generator: `function* wav(opts) { ${body}; yield { encode }; ${encode} }
 export let open = () => { enc = wav({ bitDepth: 24 }).next().value; return 1 }`,
@@ -109,6 +113,15 @@ export let f = async (n) => {
 }`
   const want = await oracle(src).f(2)
   for (const optimize of levels(0, 2, 3)) is(await jz(src, { optimize }).exports.f(2), want, `at ${optimize}`)
+})
+
+test('async factory: plain parameters reach the machine as the call passed them', async () => {
+  if (onWasi() || onKernel()) return
+  const src = `async function h(a, b) { return arguments.length * 10 + (b === undefined ? 1 : 2) + a }
+async function k(a, b) { return (b === undefined ? 1 : 2) + a }
+export let f = async (n) => (await h(n)) + (await h(n, n)) + (await k(n)) * 100 + (await k(n, 1)) * 1000`
+  const want = await oracle(src).f(3)
+  for (const optimize of levels(0, 2, 3)) is(await jz(src, { optimize }).exports.f(3), want, `at ${optimize}`)
 })
 
 test('generator: a declaration without a value is undefined each time it runs', () => {

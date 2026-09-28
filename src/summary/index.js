@@ -1792,16 +1792,24 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     }
     if (op !== '===' && op !== '!==' && op !== '==' && op !== '!=') return undefined
     const x = isNullishLiteral(c[2]) ? c[1] : isNullishLiteral(c[1]) ? c[2] : null
-    if (typeof x !== 'string') return undefined
-    const key = keyOf(x)
+    // An argument read by position out of a rest parameter (`arg[0] === undefined`,
+    // the default of a parameter the lowering packed: jzify/arguments.js) is
+    // decided by what every call passes there, the parameter's tuple: missing
+    // past the fewest arguments a call passes.
+    const at = Array.isArray(x) && x[0] === '[]' && typeof x[1] === 'string' && Array.isArray(x[2]) && x[2][0] == null && Number.isInteger(x[2][1]) && x[2][1] >= 0 ? x[2][1] : -1
+    if (typeof x !== 'string' && at < 0) return undefined
+    const key = keyOf(at < 0 ? x : x[1])
     if (key === null) return undefined
-    const k = kinds[key]
+    const row = at < 0 ? null : rowOf(kinds[key] ?? K.NONE)
+    if (at >= 0 && (!row || row.min === undefined)) return row && paramKeys.has(key) ? 'pending' : undefined
+    const k = at < 0 ? kinds[key] : at < row.length ? row[at] : ABSENT
     if (k == null || tagOf(k) === K.NONE) return paramKeys.has(key) ? 'pending' : undefined
     const t = tagOf(k)
     if (t === K.ANY) return undefined
     let eq
     if (!hasTag(k, K.NULLISH) && !hasTag(k, K.ABSENT)) eq = false
     else if ((t === K.NULLISH || t === K.ABSENT) && (op === '==' || op === '!=')) eq = true
+    else if (t === K.ABSENT && at >= 0) eq = isUndefinedLiteral(isNullishLiteral(c[2]) ? c[2] : c[1])
     // a parameter no call passes an argument for is undefined itself: equal
     // to undefined, unequal to null (`if (n11 !== undefined) this.set(n11, …)`
     // in Matrix4's constructor forwards nothing when every `new Matrix4()` gives none)

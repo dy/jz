@@ -23,6 +23,7 @@
  */
 
 import { FN_BOUNDARY_OPS, probe } from './generators.js'
+import { usesArguments } from './arguments.js'
 import { some, ASSIGN_OPS, extractParams } from '../src/ast.js'
 
 export function createAsyncLowering({ genTemp, err }) {
@@ -258,20 +259,27 @@ export function createAsyncLowering({ genTemp, err }) {
     ]]
   }
 
-  // async (params) => body / async function (params) { body } →
-  //   (...aa) => __async_run(MACHINE_FACTORY(...aa))
+  // async (a, b) => body / async function (a, b) { body } →
+  //   (a, b) => __async_run(MACHINE_FACTORY(a, b))
   // The factory is the standard generator lowering of the body.
   function lowerAsync(params, body) {
-    // Source-level desugar: (...aa) => __async_run((function* (params) { mappedBody })(...aa))
+    // Source-level desugar: (a, b) => __async_run((function* (a, b) { mappedBody })(a, b))
     // The function* expression rides the standard generator lowering; the body
     // runs synchronously to the first await (spec), then parks on the promise.
-    const aa = genTemp('aa')
-    const run = ['()', '__async_run', ['()', ['function*', null, params, mapAwait(hoistAwaits(body))], ['...', aa]]]
-    if (extractParams(params).every(p => typeof p === 'string')) return ['=>', ['()', ['...', aa]], run]
+    // The wrapper passes each argument on as it took it, a pattern's or a
+    // default's in a name of its own, a rest by spreading it: the machine's
+    // parameters are then its callers' arguments, as a plain function's are. A
+    // function reading `arguments` takes them all, `(...aa)`, keeping their count.
+    const machine = ['function*', null, params, mapAwait(hoistAwaits(body))], list = extractParams(params)
+    const own = usesArguments(body) || usesArguments(params) ? [['...', genTemp('aa')]]
+      : list.map(p => typeof p === 'string' ? p : Array.isArray(p) && p[0] === '...' ? ['...', genTemp('aa')] : genTemp('ap'))
+    const seq = (l) => l.length === 0 ? null : l.length === 1 ? l[0] : [',', ...l]
+    const run = ['()', '__async_run', ['()', machine, seq(own.map(p => Array.isArray(p) ? p.slice() : p))]]
+    if (list.every(p => typeof p === 'string')) return ['=>', ['()', seq(own)], run]
     // Defaults and destructuring run in the factory, before the driver can
     // catch body exceptions. An async call rejects for either kind of failure.
     const error = genTemp('ae')
-    return ['=>', ['()', ['...', aa]], ['{}', [';',
+    return ['=>', ['()', seq(own)], ['{}', [';',
       ['try', ['{}', ['return', run]], ['catch', error, ['{}', ['return', ['()', '__p_reject', error]]]]]]]]
   }
 

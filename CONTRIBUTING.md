@@ -1722,7 +1722,11 @@ records are, beside what the machine completes with, a promise or thenable it
 completes with adopted), anything for a promise made another way. The
 machine's locals are declared ahead of the steps that initialize them behind
 the TDZ mark (`src/ast.js`), a declaration that defines no value; a bare
-`let x` in the body defines its undefined where it stands.
+`let x` in the body defines its undefined where it stands. An async function
+passes its arguments straight to its machine, `(a, b) =>
+__async_run(M(a, b))`, all of them packed only when it reads `arguments`. A
+closure made inside an async function or a generator reads the kinds the same
+closure made inside a plain function does (`test/async-factory.js`).
 Class lowering (`jzify/classes.js`) takes `static async` methods on both of
 its paths and a bare `super()`, and the
 member census counts an optional method call (`o.m?.()`) as a read, since the
