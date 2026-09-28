@@ -6,7 +6,7 @@
 // when each module evaluates.
 import test from 'tst'
 import { is, throws } from 'tst/assert.js'
-import { mkdtempSync, writeFileSync } from 'fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { pathToFileURL } from 'url'
@@ -15,8 +15,13 @@ import { resolveModuleGraph } from '../src/resolve.js'
 import { levels, onWasi, onKernel } from './_matrix.js'
 
 const show = (v) => JSON.stringify(v, (k, x) => x === undefined ? '<undefined>' : x)
+// each program's files in a directory of their own: Node caches a module by its path
+const scratch = mkdtempSync(join(tmpdir(), 'jz-import-'))
+process.on('exit', () => rmSync(scratch, { recursive: true, force: true }))
+let programs = 0
 const files = (modules, entry) => {
-  const dir = mkdtempSync(join(tmpdir(), 'jz-import-'))
+  const dir = join(scratch, String(programs++))
+  mkdirSync(dir)
   for (const [name, src] of Object.entries({ ...modules, 'main.js': entry })) writeFileSync(join(dir, name), src)
   return join(dir, 'main.js')
 }
