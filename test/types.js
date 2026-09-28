@@ -914,14 +914,15 @@ test('typed-narrow: receiver unbox after .map on TYPED', () => {
 })
 
 test('typed-narrow: codegen — .map receiver is i32 + static load', () => {
-  const w = wat(`
+  // coalescing off: a slot shared with a temp would name the receiver otherwise
+  const w = jz.compile(`
     let mk = () => new Float64Array([1.5, 2.5, 3.5])
     export let f = (i) => {
       let a = mk()
       let b = a.map(x => x + 10)
       return b[i] + b[0]
     }
-  `)
+  `, { wat: true, optimize: { watr: false, coalesceLocals: false } })
   const body = fnBody(w, 'f')
   ok(body, '$f present')
   // multi-use receiver so the local survives propagateLocals — exercises the unbox decision on the surviving slot
