@@ -418,9 +418,9 @@ test('host:js timers import only the requested host functions', () => {
   is(clearOnly.exports.f(), 1)
 })
 
-// === Auto-boxing: property assignment ===
+// === Property assignment on functions and arrays ===
 
-test('fn.prop: auto-box write + read', () => {
+test('fn.prop: write + read', () => {
   const { g } = run(`
     export let f = (x) => x
     f.loc = 42
@@ -429,7 +429,7 @@ test('fn.prop: auto-box write + read', () => {
   is(g(), 42)
 })
 
-test('fn.prop: auto-box write/read from functions', () => {
+test('fn.prop: write/read from functions', () => {
   const { set, get } = run(`
     export let err = (msg) => { throw msg }
     err.loc = 0
@@ -441,7 +441,7 @@ test('fn.prop: auto-box write/read from functions', () => {
   is(get(), 42)
 })
 
-test('fn.prop: function still callable after boxing', () => {
+test('fn.prop: function still callable after a property store', () => {
   is(run(`
     export let f = (x) => x + 1
     f.tag = 0
@@ -477,11 +477,11 @@ test('fn.prop: reassignment is a mutable slot, not a static direct call', () => 
   `).exports.f(), 11)
 })
 
-test('auto-box: local array property/length/index/method', () => {
+test('local array property/length/index/method', () => {
   cases([
     ['local array property', '() => { let a = [1, 2, 3]; a.x = 99; return a.x }', 99],
-    ['local array .length after boxing', '() => { let a = [10, 20, 30]; a.tag = 1; return a.length }', 3],
-    ['local array indexing after boxing', '() => { let a = [10, 20, 30]; a.tag = 1; return a[0] + a[1] + a[2] }', 60],
+    ['local array .length after a property store', '() => { let a = [10, 20, 30]; a.tag = 1; return a.length }', 3],
+    ['local array indexing after a property store', '() => { let a = [10, 20, 30]; a.tag = 1; return a[0] + a[1] + a[2] }', 60],
     ['arrow property call (valueOf pattern)', '() => { let a = [1,2]; a.myFn = () => 99; return a.myFn() }', 99],
   ])
 })

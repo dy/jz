@@ -12,7 +12,7 @@
  *      themselves are seeded by prepare via `infer.recordGlobalRep`.)
  *   2. collectProgramFacts — sweep arrow bodies for typed-elem usage, key sets,
  *      loop depth, control-transfer shapes; rerun if hot inlining changes the AST.
- *   3. materializeAutoBoxSchemas / resolveClosureWidth — settle layout decisions.
+ *   3. resolveClosureWidth — settle layout decisions.
  *   4. Whole-program narrowing (skipped on simple programs):
  *        - narrowSignatures — pick a specialization per function from call sites
  *        - specializeBimorphicTyped — split typed-elem hot paths into two variants
@@ -47,7 +47,7 @@ import { solveRepresentationBoundaries } from '../representation-plan.js'
 import {
   moduleGlobalKinds, unboxConstTypedGlobals, inferModuleIntGlobals, dropUnreadGlobals,
   flattenFuncNamespaces, devirtGlobalCalls, devirtClassCalls, classifyHashDictGlobals,
-  materializeAutoBoxSchemas, resolveClosureWidth, canSkipWholeProgramNarrowing,
+  resolveClosureWidth, canSkipWholeProgramNarrowing,
   holdModuleNumbers, resolveHeldMethods, holdModuleRegexes,
 } from './scope.js'
 import { declareWrittenKeys } from './declare-written-keys.js'
@@ -103,8 +103,8 @@ export default function plan(ast, profiler, summarize) {
   // Receiver-HASH global classification (.work/archive/todo.md §deletion-sweep):
   // fill `ctx.scope.globalValTypes` with VAL.HASH for module-level `{}`-decl
   // dict globals module/object.js's allocator already tags HASH at the
-  // pointer level (identical predicate — target's merged schema empty +
-  // dynWriteVars membership) — a pure FILL (`.has()`-guarded, see
+  // pointer level (identical predicate: target's merged schema empty +
+  // dynWriteVars or literal-key write membership) — a pure FILL (`.has()`-guarded, see
   // classifyHashDictGlobals doc), so it can run this early: before
   // flattenFuncNamespaces/devirtGlobalCalls, using the just-collected
   // programFacts.dynWriteVars directly (`ctx.types.dynWriteVars` isn't
@@ -213,7 +213,6 @@ export default function plan(ast, profiler, summarize) {
   // Always-on (core-simplification-audit.md §4(ii) slice 7 — measured <0.03 ms/compile,
   // see assertProgramFactsShape's own doc for the numbers).
   assertProgramFactsShape(programFacts, 'post-programIndex')
-  t('materializeAutoBoxSchemas', () => materializeAutoBoxSchemas(programFacts))
   t('resolveClosureWidth', () => resolveClosureWidth(programFacts))
   if (canSkipWholeProgramNarrowing(programFacts)) {
     // Freeze point (.work/archive/program-facts-split.md §7): narrowSignatures never runs

@@ -1,11 +1,10 @@
 // A property the program adds to an object after its creation reads `undefined`
 // until it is assigned: a module `let st = {}` grown by a function, a function's
-// own properties, an auto-boxed binding. The slots such a binding gains hold the
-// undefined sentinel, not the allocator's zero (module/object.js's empty literal,
-// the auto-box preambles in start-fn.js and emit/dispatch.js), so a test for the
-// property fires and the array kept there grows in place; the summary holds them
-// absent at the literal (summary/index.js staticLiteral), so `=== undefined`
-// stays a runtime test.
+// own properties. The slots a literal's declared keys gain hold the undefined
+// sentinel, not the allocator's zero (module/object.js's empty literal), so a
+// test for the property fires and the array kept there grows in place; the
+// summary holds them absent at the literal (summary/index.js staticLiteral), so
+// `=== undefined` stays a runtime test.
 import test from 'tst'
 import { levels } from './_matrix.js'
 import { agree } from './util.js'
@@ -33,4 +32,28 @@ const calls = [['grown', []], ['twoProps', []], ['before', []], ['fnProps', []],
 for (const optimize of levels(0, 2, 3, 'size'))
   test(`late field: a property added after creation reads undefined until assigned at ${optimize}`, () => {
     for (const [name, args] of calls) agree(src, name, args, { optimize }, `${name}(${args}) at ${optimize}`)
+  })
+
+// A module binding whose keys a function adds later is the object itself, its
+// added keys where any object's go (its own property table): a box standing in
+// for it listed `__inner__` among its keys, answered `in` before the store,
+// serialized the box and gave an alias taken before the box its bare object.
+const grownSrc = `let st = {}
+let alias = st
+let touch = () => { st.history = [1]; return 1 }
+let seen = () => [Object.keys(st).join(), 'history' in st, JSON.stringify(st), st.hasOwnProperty('history'), alias === st, JSON.stringify(alias)].join('|')
+export let f = () => [seen(), touch(), seen()].join('/')
+let cfg = { a: 1 }
+let cfgAlias = cfg
+let setCfg = () => { cfg.b = 2; return 1 }
+let cfgSeen = () => [Object.keys(cfg).join(), 'b' in cfg, JSON.stringify(cfg), cfg.hasOwnProperty('b'), cfgAlias === cfg].join('|')
+export let g = () => [cfgSeen(), setCfg(), cfgSeen()].join('/')
+let arr = [1, 2]
+export let h = () => [Object.assign(arr, { x: 3 }) === arr, arr.length, arr.x, 'x' in arr, JSON.stringify(arr)].join('|')
+let reg = {}
+let fill = () => { reg.get = (k) => k * 2; reg.has = (k) => k > 1; reg.keys = () => 'own'; return 1 }
+export let m = () => [fill(), reg.get(2), reg.has(3), reg.keys(), Object.keys(reg).join()].join('|')`
+for (const optimize of levels(0, 2, 3))
+  test(`late field: a module binding grown later keeps its identity and its keys at ${optimize}`, () => {
+    for (const name of ['f', 'g', 'h', 'm']) agree(grownSrc, name, [], { optimize }, `${name} at ${optimize}`)
   })

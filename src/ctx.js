@@ -580,16 +580,15 @@ export function reset(proto, globals, bridge) {
     unknownInit: new Set(), // names with replacements or objects minted elsewhere (a parameter,
                            //   a non-literal initializer, a catch or destructure
                            //   binding — prepare's censusUnknownInitDecl). No plan
-                           //   step may give such a name a merged or auto-boxed
-                           //   layout: its objects carry their own sid, and a slot
-                           //   store by a layout they do not have lands past their
-                           //   fields (materializeAutoBoxSchemas, inferAssignSchema).
+                           //   step may give such a name a merged layout: its
+                           //   objects carry their own sid, and a slot store by a
+                           //   layout they do not have lands past their fields
+                           //   (inferAssignSchema).
     register: null,
     find: null,
     dateSid: null,
     ensureDateSid: null,
     targetStack: [],
-    autoBox: null,
     arrayVars: new Map(), // synthetic destructure-temp name → prepped array-literal
                           // element AST nodes (the array sibling of `vars` above).
                           // NOT content-deduped like the object schema list: arrays

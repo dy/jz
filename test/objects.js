@@ -418,9 +418,9 @@ test('schema writes through aliases keep an existing dynamic sidecar coherent', 
   is(f(), 2)
 })
 
-// A name whose objects are minted elsewhere takes no merged or auto-boxed
-// layout (ctx.schema.unknownInit: materializeAutoBoxSchemas, prepare's
-// inferAssignSchema): `const alias = ns.inner` replaced its box with the
+// A name whose objects are minted elsewhere takes no merged layout
+// (ctx.schema.unknownInit: prepare's inferAssignSchema; a box once took it
+// too): `const alias = ns.inner` replaced its box with the
 // inner object's pointer and `alias.f = b` then stored at the box's slot
 // offset into a 1-slot object; `Object.assign(o, {b, c})` on a parameter
 // slot-copied by the merged {b, c} into the caller's {a} object (`p.a` read

@@ -1,7 +1,7 @@
 import { DBG_INVARIANTS, assertCtxInvariants } from '../../debug.js'
 /**
- * Synthetic `$__start` function — building it (module-init IR, boxed
- * autoBox/schema-table/string-pool/typeof/closure-env-side-table setup) and
+ * Synthetic `$__start` function — building it (module-init IR,
+ * schema-table/string-pool/typeof/closure-env-side-table setup) and
  * later simplifying it (hoisting single-assignment const globals out of it,
  * possibly deleting the whole start func once emptied).
  *
@@ -21,7 +21,7 @@ import { enterPreparedFunction, functionPlanOf, publishPreparedFunctionPlan, ret
 import { mintRepresentationPlan, representationProgramHasBigint } from '../../compile/representation-plan.js'
 import { mintTypedStoragePlan } from '../../compile/typed-storage-plan.js'
 import { emit, emitVoid } from '../../compile/emit.js'
-import { mkPtrIR, findBodyStart, extractF64Bits, asF64, undefExpr } from '../../ir.js'
+import { mkPtrIR, findBodyStart, extractF64Bits, asF64 } from '../../ir.js'
 import { staticArrayPtr } from '../../../module/array.js'
 import { enumView, enumViewsOn } from '../../../module/schema.js'
 import { strHashLiteral } from '../../../module/collection.js'
@@ -78,30 +78,6 @@ function analyzeStartForEmit(ast) {
   } finally {
     restoreActiveFunction(ctx, previousFrame)
   }
-}
-
-/** Auto-box init: schema.autoBox entries (`let` globals whose schema was
- *  minted after their declaration) — alloc+init+ptr-box each hoisted global.
- *  Collect step (buildStartFn splices the returned IR at a fixed position —
- *  pipeline-minimality slice, `.work/archive/assemble-outliers.md` §5).
- */
-function buildBoxInit() {
-  const boxInit = []
-  if (ctx.schema.autoBox) {
-    const bt = `${T}box`
-    ctx.func.locals.set(bt, 'i32')
-    for (const [name, { schemaId, schema }] of ctx.schema.autoBox) {
-      inc('__alloc_hdr', '__mkptr')
-      boxInit.push(
-        ['local.set', `$${bt}`, ['call', '$__alloc_hdr', ['i32.const', 0], ['i32.const', Math.max(1, schema.length)]]],
-        ['f64.store', ['local.get', `$${bt}`], ['global.get', `$${name}`]],
-        // A property the program adds later reads `undefined` until it does.
-        ...schema.slice(1).map((_, i) =>
-          ['f64.store', ['i32.add', ['local.get', `$${bt}`], ['i32.const', (i + 1) * 8]], undefExpr()]),
-        ['global.set', `$${name}`, mkPtrIR(PTR.OBJECT, schemaId, ['local.get', `$${bt}`])])
-    }
-  }
-  return boxInit
 }
 
 /** A view entry as one exact number: its slot, kind and setter slot + 1. */
@@ -366,7 +342,6 @@ export function buildStartFn(ast, sec, closureFuncs, compilePendingClosures) {
   const beforeLateClosures = closureFuncs.length
   compilePendingClosures()
 
-  const boxInit = buildBoxInit()
   // An object literal's accessor: the host decodes such an object through the
   // data copy the module exports (collection.js __view_data), which reads the
   // schema and view tables.
@@ -385,11 +360,11 @@ export function buildStartFn(ast, sec, closureFuncs, compilePendingClosures) {
   }
 
   const wasiTimers = ctx.core.includes.has('__timer_init')
-  if (moduleInits.length || init?.length || boxInit.length || schemaInit.length || typeofInit.length || wasiTimers) {
+  if (moduleInits.length || init?.length || schemaInit.length || typeofInit.length || wasiTimers) {
     const initIR = normalizeEmittedIR(init)
     const startFn = ['func', '$__start']
     for (const [l, t] of ctx.func.locals) startFn.push(['local', `$${l}`, t])
-    startFn.push(...typeofInit, ...boxInit, ...schemaInit,
+    startFn.push(...typeofInit, ...schemaInit,
       ...(wasiTimers ? [['call', '$__timer_init']] : []),
       ...moduleInits, ...initIR,
       ...(ctx.features.blockingTimers ? [['call', '$__timer_loop']] : []),

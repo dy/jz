@@ -10,10 +10,8 @@
  * sidecar back in. Declaring the key in the literal (`{ a: 1, b: undefined }`)
  * gives it a slot, so the whole program — summary, layout censuses, emitters —
  * sees one closed layout. jz reads a declared slot as an own property before
- * its first store (the auto-boxed `let` merge, scope.js
- * materializeAutoBoxSchemas, has done so for dot writes on declared globals);
- * this pass applies that model to every literal-bound name, bracket-string
- * keys and module initializers included.
+ * its first store; this pass applies that model to every literal-bound name,
+ * bracket-string keys and module initializers included.
  *
  * Left alone, by design: an empty literal (`{}` is the dictionary idiom,
  * module/object.js), a literal with a spread, computed key or class brand,
@@ -221,10 +219,7 @@ export const declareWrittenKeys = (ast) => {
     }
     // One layout for every value of the name: the bound schema the per-name
     // slot paths read (ctx.schema.idOf), as prepare binds a declared literal
-    // (a binding prepare made keeps its order and gains the declared keys). A
-    // flattened function property was never a bare name to prepare; unbound,
-    // materializeAutoBoxSchemas would box it like a function namespace and its
-    // dot writes would land in the box's slots over the object's own.
+    // (a binding prepare made keeps its order and gains the declared keys).
     const layouts = new Set(d.lits.map(([, own]) => ctx.schema.register(own)))
     if (layouts.size !== 1) continue
     const bound = ctx.schema.vars.has(name) ? ctx.schema.list[ctx.schema.vars.get(name)] : null

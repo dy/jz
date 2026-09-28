@@ -808,8 +808,7 @@ whenever the summary knows the layout and does not certify it closed
 a literal-bound name's layout is no sidecar entry: the plan declares the key
 in the literal (`plan/declare-written-keys.js`: `{ a: 1, b: undefined }` for
 `o.b = 2` or `o['b'] = 2`), so it is a slot of one closed layout; the name's
-layout is bound for the per-name slot paths, which keeps a flattened object
-property from being boxed (`materializeAutoBoxSchemas`). Definite means the store runs
+layout is bound for the per-name slot paths. Definite means the store runs
 before anything can observe the object: a statement of the same list as the
 binding, with nothing between them that could run other code or ask about
 keys (`in`, a spread, a deletion, a branch, a loop, an unresolved call);

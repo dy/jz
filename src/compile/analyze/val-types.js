@@ -281,15 +281,6 @@ export function analyzeValTypes(body) {
     if (!Array.isArray(node)) return
     const op = node[0]
     if (op === '=>') return  // don't leak inner-closure val types
-    // Collect Object.assign(name, …) sites for the post-walk boxed-schema
-    // predictor (slice-4 P3) — decided AFTER the walk so the target's FINAL
-    // val kind matches what emit reads.
-    if (op === '()' && node[1] === 'Object.assign') {
-      let aa = node.slice(2)
-      if (aa.length === 1 && Array.isArray(aa[0]) && aa[0][0] === ',') aa = aa[0].slice(1)
-      if (typeof aa[0] === 'string' && aa.length > 1)
-        objAssignSites.push({ target: aa[0], sources: aa.slice(1) })
-    }
     if (op === 'let' || op === 'const') {
       for (let i = 1; i < node.length; i++) {
         const a = node[i]
@@ -453,36 +444,12 @@ export function analyzeValTypes(body) {
     }
     for (let i = 1; i < node.length; i++) walk(node[i])
   }
-  const objAssignSites = []
   walk(body)
   dropDisagreeingTypedDefs(body, n => ctx.func.typedElem?.get(n), n => ctx.func.typedElem?.delete(n),
     n => ctx.func.typedLen?.delete(n), n => paramSeeds.get(n) ?? null)
   joinReassignedTypedLens(body, n => ctx.func.typedElem?.has(n) ?? false,
     n => ctx.func.typedLen?.get(n) ?? ctx.scope.globalTypedLen?.get(n) ?? null,
     (n, l) => (ctx.func.typedLen ??= new Map()).set(n, l))
-
-  // Slice-4 P3 predictor: `Object.assign(x, …)` onto a non-OBJECT binding
-  // (boxed primitive / array carrier) allocates an `__inner__` record at emit;
-  // the schema BINDING is plan state — register + bind here, mirroring
-  // module/object.js's emit site (which now asserts instead of writing).
-  // Post-walk so the target's FINAL val kind matches what emit reads; the
-  // shared ctx.schema.resolveExpr keeps source resolution identical to emit's.
-  for (const { target, sources } of objAssignSites) {
-    const vt = repOf(target)?.val
-    if (!vt || vt === VAL.OBJECT || !ctx.schema.resolveExpr) continue
-    const allProps = []
-    let known = true
-    for (const src of sources) {
-      const s = ctx.schema.resolveExpr(src)
-      if (!s) { known = false; break }
-      for (const p of s) if (!allProps.includes(p)) allProps.push(p)
-    }
-    if (!known) continue   // emit errs on unknown-source schemas — nothing to bind
-    const sid = ctx.schema.register(['__inner__', ...allProps])
-    // Extern-write belt: source slot values copied in at emit, unseen by censuses.
-    ctx.schema.externSlotSids?.add(sid)
-    updateRep(target, { schemaId: sid })
-  }
 }
 
 /** Forward-propagate `intCertain` on local bindings. Fixpoint lives in type.js.

@@ -58,11 +58,6 @@ const heapResetIR = () => ctx.scope.globals.has('__heap_reset') ? ['global.get',
 
 export default (ctx) => {
   inc('__mkptr', '__alloc', '__alloc_hdr', '__ptr_offset', '__len', '__ptr_type')
-  // Pure schema resolver for expressions (name → bound schema, literal → keys,
-  // spread literal → merged) — exposed as a ctx hook so plan-time passes
-  // (analyze's Object.assign predictor, slice-4 P3) mirror emit's resolution
-  // exactly instead of duplicating it.
-  ctx.schema.resolveExpr = resolveSchema
 
   // Object literal: {x: 1, y: 2} → allocate, fill, return pointer with schemaId.
   // OBJECT alloc uses __alloc_hdr (16-byte header at off-16) to enable per-object
@@ -72,10 +67,10 @@ export default (ctx) => {
   // global-hash path (their off-16 belongs to neighboring static slots).
   ctx.core.emit['{}'] = (...rawProps) => {
     if (rawProps.length === 0) {
-      // Honor the literal target's autobox/merged schema so `let ctx = {}` followed
-      // by `ctx.meta = ...` allocates with the right cap. Otherwise the default
-      // cap=1 alloc overwrites the autobox preamble's wrapper, and subsequent
-      // schema-slot writes to offsets >= 8 land out-of-bounds.
+      // Honor the literal target's merged schema (the keys the plan declares,
+      // declare-written-keys.js) so `let ctx = {}` followed by `ctx.meta = ...`
+      // allocates with the right cap: schema-slot writes past a default-cap
+      // alloc land out of bounds.
       const target = takeLiteralTarget()
       const merged = target ? ctx.schema.resolve(target) : null
       // Dictionary mode: a direct `{}` initializer with property writes but no
@@ -122,11 +117,10 @@ export default (ctx) => {
       // was never assigned reads `undefined` (`if (!st.history) st.history = []`
       // on a module `let st = {}`): the fresh slots hold the sentinel, not the
       // allocator's zero, which a test for presence would take for a number.
-      // An auto-box's inner slot keeps its value.
       const t = tempI32('ob')
       return typed(['block', ['result', 'f64'],
         ['local.set', `$${t}`, alloc],
-        ...merged.map((name, i) => name === '__inner__' ? null : ctx.abi.object.ops.store(['local.get', `$${t}`], i, undefExpr())).filter(Boolean),
+        ...merged.map((_, i) => ctx.abi.object.ops.store(['local.get', `$${t}`], i, undefExpr())),
         mkPtrIR(PTR.OBJECT, schemaId, ['local.get', `$${t}`])], 'f64')
     }
 
@@ -716,45 +710,12 @@ export default (ctx) => {
     // object; JS gives `{a:1}`).
     if (Array.isArray(target) && target[0] === '{}' && !enumView(literalProps(target).filter(p => Array.isArray(p) && p[0] === ':').map(p => p[1])))
       return emitObjectSpread([...literalProps(target), ...sources.map(s => ['...', s])])
-    const knownSchema = resolveSchema
+    // A target that is no plain object (an array, a function, a collection,
+    // a dictionary) keeps its identity: the copied keys are its own
+    // properties, beside its elements or entries (the computed-key store).
     if (typeof target === 'string') {
       const vt = repOf(target)?.val
-      if (vt && vt !== VAL.OBJECT) {
-        const allProps = []
-        for (const src of sources) {
-          const s = knownSchema(src)
-          if (!s) err('Object.assign: source\'s shape isn\'t known at compile time — pass an object literal, or a variable with one consistent shape')
-          for (const p of s) if (!allProps.includes(p)) allProps.push(p)
-        }
-        const boxedSchema = ['__inner__', ...allProps]
-        // register() dedupes by shape, so this returns the id the plan-time
-        // predictor (analyze's Object.assign post-walk pass) already bound to
-        // the target — the binding + externSlotSids belt are plan state now.
-        // Assert-only tripwire (slice-4 P3 flip).
-        const schemaId = ctx.schema.register(boxedSchema)
-        if (DBG_INVARIANTS && ctx.schema.idOf(target) !== schemaId)
-          throw new Error(`P3 Object.assign drift: ${target} plan-bound sid=${ctx.schema.idOf(target)}, emit computes sid=${schemaId}`)
-        const t = tempI32('bx'), s = temp('bs')
-        const body = [
-          ['local.set', `$${t}`, ['call', '$__alloc_hdr', ['i32.const', 0], ['i32.const', ctx.abi.object.ops.allocSlots(boxedSchema.length)]]],
-          ctx.abi.object.ops.store(['local.get', `$${t}`], 0, asF64(emit(target))),
-        ]
-        const sBase = tempI32('sb')
-        for (const source of sources) {
-          const sSchema = resolveSchema(source)
-          body.push(['local.set', `$${s}`, asF64(emit(source))])
-          body.push(['local.set', `$${sBase}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${s}`]]]])
-          for (let si = 0; si < sSchema.length; si++) {
-            const ti = boxedSchema.indexOf(sSchema[si])
-            if (ti < 0) continue
-            body.push(ctx.abi.object.ops.store(['local.get', `$${t}`], ti, ctx.abi.object.ops.load(['local.get', `$${sBase}`], si)))
-          }
-        }
-        body.push(['local.set', `$${target}`,
-          mkPtrIR(PTR.OBJECT, schemaId, ['local.get', `$${t}`])])
-        body.push(['local.get', `$${target}`])
-        return typed(['block', ['result', 'f64'], ...body], 'f64')
-      }
+      if (vt && vt !== VAL.OBJECT) return emitObjectAssignDynamic(target, sources)
     }
     const tSchema = resolveSchema(target)
     const resolveSchemas = sources.map(copiedSchema)

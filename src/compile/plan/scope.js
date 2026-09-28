@@ -12,7 +12,6 @@
  *   - `inferModuleIntGlobals`      — purpose-focused f64→i32 numeric demotion
  *   - `flattenFuncNamespaces`      — `f.prop` slot SROA + dead-write drop
  *   - `devirtGlobalCalls`          — `call_indirect $global` → direct `call`
- *   - `materializeAutoBoxSchemas`  — schema registration for object propMap
  *   - `resolveClosureWidth`        — uniform closure ABI width
  *   - `canSkipWholeProgramNarrowing` — fast-path gate for monomorphic programs
  *
@@ -104,9 +103,8 @@ export function foldModuleConstants(ast) {
  *  global assigned nowhere keeps the declaration's claim. A typed-array kind
  *  names its constructor (`let mem; init = n => { mem = new Float64Array(n) }`);
  *  a const bound to an object of one schema names the schema. A hash kind is
- *  not claimed: this runs on the entry summary, before materializeAutoBoxSchemas
- *  gives a dot-written `{}` its schema (classifyHashDictGlobals decides the
- *  dictionaries). An exported global keeps its kind: the host can
+ *  not claimed: classifyHashDictGlobals decides the dictionaries. An exported
+ *  global keeps its kind: the host can
  *  store only a number through its export (src/summary). An array global's
  *  element facts are its cell's, the join of every store in the program (a
  *  table `const T = [1.5, …]` reads numbers; `C[i][j]` one level down): the
@@ -155,16 +153,16 @@ export const moduleGlobalKinds = (summary) => {
   }
 }
 
+// A module `{}` the program writes keys into is the dictionary the literal
+// allocates (module/object.js `{}`: a computed or a literal key write).
 export const classifyHashDictGlobals = (ast, programFacts) => {
-  const dynWriteVars = programFacts?.dynWriteVars
-  if (!dynWriteVars?.size || !ctx.scope.userGlobals?.size) return
-  const propMap = programFacts.propMap
+  const dynWriteVars = programFacts?.dynWriteVars, literalWriteKeys = programFacts?.literalWriteKeys
+  if ((!dynWriteVars?.size && !literalWriteKeys?.size) || !ctx.scope.userGlobals?.size) return
   const mark = (name, init) => {
     if (typeof name !== 'string' || !ctx.scope.userGlobals.has(name)) return
     if (ctx.scope.globalValTypes?.has(name)) return                 // fill only — never overwrite
     if (!Array.isArray(init) || init[0] !== '{}' || init.length !== 1) return
-    if (!dynWriteVars.has(name)) return
-    if (propMap?.get(name)?.size) return                            // dot-write elsewhere → materializeAutoBoxSchemas binds a real schema later
+    if (!dynWriteVars?.has(name) && !literalWriteKeys?.get(name)?.size) return
     if (ctx.schema.resolve?.(name)?.length) return                  // non-empty merged schema — not dict-mode
     ;(ctx.scope.globalValTypes ||= new Map()).set(name, VAL.HASH)
   }
@@ -1259,41 +1257,6 @@ export const dropUnreadGlobals = (ast, programFacts) => {
     }
   }
   return changed
-}
-
-export const materializeAutoBoxSchemas = (programFacts) => {
-  if (!ctx.schema.register) return
-  for (const [name, props] of programFacts.propMap) {
-    // A function's properties are the function value's own, in the table its
-    // pointer keys (flattenFuncNamespaces dissolves them where the function
-    // never escapes): a box would stand in for the function wherever its name
-    // is read as a value, a callable no more.
-    if (ctx.funcs.names.has(name)) continue
-    // A name whose objects are minted elsewhere (`const alias = ns.inner`, a
-    // parameter) or whose sources disagree keeps no merged or boxed layout:
-    // the declaration's value replaces a box, and a slot store by a layout
-    // the object does not carry lands past its fields. Its dot writes take
-    // the dynamic path (ctx.schema.unknownInit's doc, ctx.js).
-    if (ctx.schema.unknownInit?.has(name) || ctx.schema.poisoned?.has(name)) continue
-    // A name already bound to a literal's layout keeps it. Widening that layout
-    // with the keys the program writes is declareWrittenKeys' job, and it does
-    // so only for a DEFINITE store — one that runs before anything can observe
-    // the object. Merging every written key here, conditional ones included,
-    // made `if (x) o.b = 2` declare `b` on every object of the literal: `in`,
-    // hasOwnProperty, Object.keys and for-in all reported it before the store.
-    if (ctx.schema.vars.has(name)) continue
-    // A primitive takes no property: its stores throw (emit-assign.js primitiveStore).
-    const vt = ctx.scope.globalValTypes?.get(name)
-    if (vt === VAL.NUMBER || vt === VAL.STRING || vt === VAL.BOOL || vt === VAL.BIGINT) continue
-    const valueProps = [...props].filter(prop => !ctx.funcs.names.has(`${name}$${prop}`))
-    if (!valueProps.length) continue
-    const allProps = [...props]
-    const schema = ['__inner__', ...allProps]
-    const schemaId = ctx.schema.register(schema)
-    ctx.schema.vars.set(name, schemaId)
-    if (!ctx.schema.autoBox) ctx.schema.autoBox = new Map()
-    ctx.schema.autoBox.set(name, { schemaId, schema })
-  }
 }
 
 export const resolveClosureWidth = (programFacts) => {
