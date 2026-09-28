@@ -588,5 +588,7 @@ export function summaryQueries(facts, internal = false) {
     typedPropertiesAbsent: () => elems[typedProps] === K.NONE && [...typedPropsByAux.values()].every(c => elems[c] === K.NONE),
     hasTypedFields: fields.some(a => a?.some(k => tagOf(k) === K.TYPED && typedAux(k) !== UNKNOWN && !isNullable(k))),
     escaped: facts.escaped,
+    /** The truth an `if` or `?:` test has on every run, or null. */
+    decisionOf: n => facts.decisions?.get(n) ?? null,
   }
 }

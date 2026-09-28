@@ -1767,6 +1767,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   // The properties a number, a boolean or a BigInt has: `x.p` of one outside them is undefined.
   const PRIMITIVE_METHODS = new Set(['toString', 'toFixed', 'toExponential', 'toPrecision', 'valueOf', 'toLocaleString', 'constructor'])
   const decided = (c) => {
+    if (typeof c === 'string') return truthyTest(c)
     if (!Array.isArray(c)) return undefined
     const op = c[0]
     if (op === '()' && c.length === 2) return decided(c[1])   // grouping
@@ -1780,6 +1781,8 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       return a === !stop && b === !stop ? !stop : undefined
     }
     if (op === 'instanceof' && typeof c[1] === 'string' && typeof c[2] === 'string') return instanceTest(c[1], c[2])
+    const tp = typeofPredicateOf(c)
+    if (tp) { const t = typeofTest(tp.name, typeof tp.code === 'string' ? tp.code : TYPEOF_NAME[tp.code]); return typeof t === 'boolean' && !tp.eq ? !t : t }
     if (op === '()' && c.length === 3 && c[1] === 'Array.isArray' && typeof c[2] === 'string') return instanceTest(c[2], 'Array')
     // `x.p` of a value that is a number, a boolean or a BigInt (a missing one
     // throws) is undefined: false, so `if (x.isVector3)` given a number walks
@@ -1838,6 +1841,41 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     if (aux === UNKNOWN || aux & TYPED_ELEM_BIGINT_FLAG) return undefined
     const own = typedCtorName(ctorFromElemAux(aux))
     return own == null ? undefined : own === cls
+  }
+  // A name as a test: false where it only ever holds null or undefined, true
+  // where it only holds objects of any kind (a number, a string, a Boolean
+  // or a BigInt may be falsy).
+  const TRUTHY_TAGS = TAGS & ~(NULL_BITS | bitOf(K.NUMBER) | bitOf(K.STRING) | bitOf(K.BOOL) | bitOf(K.BIGINT))
+  const truthyTest = (name) => {
+    const key = keyOf(name)
+    if (key === null) return undefined
+    const k = kinds[key]
+    if (k == null || tagOf(k) === K.NONE) return paramKeys.has(key) ? 'pending' : undefined
+    const tags = k & TAGS
+    return (tags & ~NULL_BITS) === 0 ? false : (tags & ~TRUTHY_TAGS) === 0 ? true : undefined
+  }
+  // What each `if` and `?:` test decided on every walk: its truth where all
+  // agree, null where one leaves it open (the plan drops a decided test's
+  // other arm, plan/fold-kind-tests.js).
+  const decisions = new Map()
+  const decide = (n, truth) => {
+    if (truth === 'pending') return   // no call has bound the test's parameter yet: a later round decides
+    const t = typeof truth === 'boolean' ? truth : null
+    if (!decisions.has(n)) decisions.set(n, t)
+    else if (decisions.get(n) !== t) decisions.set(n, null)
+  }
+  // `typeof x === t`: false where no value of x has a tag answering t, true
+  // where every value's does. The nullish tag holds null ('object') and
+  // undefined ('undefined') alike, so it decides neither of those two.
+  const typeofTest = (name, t) => {
+    const may = TYPEOF_TAGS[t]
+    if (may === undefined) return undefined
+    const key = keyOf(name)
+    if (key === null) return undefined
+    const k = kinds[key]
+    if (k == null || tagOf(k) === K.NONE) return paramKeys.has(key) ? 'pending' : undefined
+    const tags = k & TAGS, sure = t === 'object' || t === 'undefined' ? may & ~bitOf(K.NULLISH) : may
+    return (tags & may) === 0 ? false : (tags & ~sure) === 0 ? true : undefined
   }
   const OBJECT_PROTO_METHODS = new Set(['hasOwnProperty', 'isPrototypeOf', 'propertyIsEnumerable', 'toString', 'toLocaleString', 'valueOf'])
   // What a method of `Object.prototype` answers on an object that holds no member of the
@@ -2685,6 +2723,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     if (op === '?' || op === '?:') {
       selectedExpr(n[1], 0)
       const truth = decided(n[1])
+      decide(n, truth)
       if (truth === 'pending') return K.NONE
       branch++
       const mark = rtop
@@ -3308,6 +3347,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     if (op === 'if') {
       selectedExpr(n[1], 0)
       const truth = decided(n[1])
+      decide(n, truth)
       if (truth === 'pending') return
       branch++
       const mark = rtop
@@ -3598,7 +3638,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     schemas, layouts, sitesByLayout, objectKinds, methods, sidByKey,
     funcNames: new Set(funcByName.keys()), imports: new Map(imports),
     numeric, strung, dynamicProps, builtinOwnProps, escaped, typedReadPresent, typedProps, typedPropsByAux, openSchemas, indexedSchemas, hostSchemas, opaqueSchemas, deletable, deleteReach,
-    sideProps, sideWild, wildProps, wildValues, pendingAll, keyedCells, cellShapes, cellLostObject, closureProps, iterSites, reached, defaultRuns,
+    sideProps, sideWild, wildProps, wildValues, pendingAll, keyedCells, cellShapes, cellLostObject, closureProps, iterSites, reached, defaultRuns, decisions,
     held,
     boolKeys, storeBits, paramKeys,
     contracts: null,   // the result contracts, built at the freeze below
@@ -3919,7 +3959,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   })
   const seeded = [...seedable].filter(p => (entryNumeric.has(p) || isCompatible(p)) && tagOf(kinds[p] ?? K.NONE) === K.ANY)
   if (seeded.length) {
-    kinds.length = 0; incoming.length = 0; fields.length = 0; objectKinds.clear(); opaqueSchemas.clear(); hostSchemas.clear(); hostArrays.clear(); retainedArrays.clear(); hostClosures.clear(); results.clear(); escaped.clear(); certainKeys.clear(); boolKeys.clear(); for (let i = 0; i < elems.length; i++) { elems[i] = K.NONE; cellUp[i] = i }
+    kinds.length = 0; incoming.length = 0; fields.length = 0; objectKinds.clear(); decisions.clear(); opaqueSchemas.clear(); hostSchemas.clear(); hostArrays.clear(); retainedArrays.clear(); hostClosures.clear(); results.clear(); escaped.clear(); certainKeys.clear(); boolKeys.clear(); for (let i = 0; i < elems.length; i++) { elems[i] = K.NONE; cellUp[i] = i }
     tuples.clear(); lens.clear(); stores.clear(); built.clear(); grown.clear(); unknown.clear(); presentReads.clear(); argRanges.clear(); roundArgs.clear(); moved.clear(); openArgs.clear()
     pendingAll = false; pendingIndexed = false; wildValues = K.NONE; wildProps.clear(); sideProps.clear(); sideWild.clear(); closureProps.clear(); sideByProp.clear(); foreignObjects = false; foreignProps.clear(); deletable.clear(); deleteReach.unknown = false
     seed(seeded)
