@@ -140,3 +140,72 @@ test('slp: bails on a buffer-backed view (the watr self-compile class)', () => {
   is(fires(src), 0, 'buffer-backed view → SLP bails (no v128 store)')
   bitExact('buffer-backed view', src)
 })
+
+// === Field pairs: the field-first idiom (`a00 = a[0], a01 = a[1]`) packs through one v128 per adjacent pair ===
+
+// mat4 multiply the way vector libraries write it: every lane leaf is a local loaded
+// once from consecutive slots, no load in the values themselves (alias-safe by construction).
+const mat4 = (call) => `
+  const out = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  const a = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0.5, 0.25, 0.125, 1]
+  const b = [0.9, 0.1, 0, 0, -0.1, 0.9, 0, 0, 0, 0, 1, 0, 1, 2, 3, 1]
+  function mul(out, a, b) {
+    const a00 = a[0], a01 = a[1], a02 = a[2], a03 = a[3]
+    const a10 = a[4], a11 = a[5], a12 = a[6], a13 = a[7]
+    const a20 = a[8], a21 = a[9], a22 = a[10], a23 = a[11]
+    const a30 = a[12], a31 = a[13], a32 = a[14], a33 = a[15]
+    let b0 = b[0], b1 = b[1], b2 = b[2], b3 = b[3]
+    out[0] = b0 * a00 + b1 * a10 + b2 * a20 + b3 * a30
+    out[1] = b0 * a01 + b1 * a11 + b2 * a21 + b3 * a31
+    out[2] = b0 * a02 + b1 * a12 + b2 * a22 + b3 * a32
+    out[3] = b0 * a03 + b1 * a13 + b2 * a23 + b3 * a33
+    b0 = b[4]; b1 = b[5]; b2 = b[6]; b3 = b[7]
+    out[4] = b0 * a00 + b1 * a10 + b2 * a20 + b3 * a30
+    out[5] = b0 * a01 + b1 * a11 + b2 * a21 + b3 * a31
+    out[6] = b0 * a02 + b1 * a12 + b2 * a22 + b3 * a32
+    out[7] = b0 * a03 + b1 * a13 + b2 * a23 + b3 * a33
+    b0 = b[8]; b1 = b[9]; b2 = b[10]; b3 = b[11]
+    out[8] = b0 * a00 + b1 * a10 + b2 * a20 + b3 * a30
+    out[9] = b0 * a01 + b1 * a11 + b2 * a21 + b3 * a31
+    out[10] = b0 * a02 + b1 * a12 + b2 * a22 + b3 * a32
+    out[11] = b0 * a03 + b1 * a13 + b2 * a23 + b3 * a33
+    b0 = b[12]; b1 = b[13]; b2 = b[14]; b3 = b[15]
+    out[12] = b0 * a00 + b1 * a10 + b2 * a20 + b3 * a30
+    out[13] = b0 * a01 + b1 * a11 + b2 * a21 + b3 * a31
+    out[14] = b0 * a02 + b1 * a12 + b2 * a22 + b3 * a32
+    out[15] = b0 * a03 + b1 * a13 + b2 * a23 + b3 * a33
+    return out
+  }
+  ${call}
+  export let run = () => { let s = 0; for (let i = 0; i < 64; i++) { s += step(i); a[12] = out[12] * 0.001 } return s }`
+const groundTruth = (src) => new Function(src.replace(/export let run/, 'return () => { const run') + '; return run() }')()()
+
+test('slp: field pairs pack a kernel that loads its fields into locals first', () => {
+  const src = mat4('const step = (i) => { mul(out, a, b); return out[0] + out[15] }')
+  ok(fires(src) >= 8, 'every row packs: (a0k,a1k) and (a2k,a3k) are one v128 each')
+  bitExact('field pairs', src)
+  if (!onWasi()) is(jz(src, { optimize: speed }).exports.run(), groundTruth(src), 'jz speed == JS ground truth')
+})
+
+test('slp: field pairs through a staged receiver (a parameter that may be absent)', () => {
+  // `as[i & 3]` may be absent to the summary: each field read stages its receiver and the
+  // first one throws when absent; the loads still pair through the staging.
+  const src = mat4(`const as = []
+    for (let i = 0; i < 4; i++) as.push([1 + i, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0.5, 0.25, 0.125, 4 - i])
+    const step = (i) => { mul(out, as[i & 3], b); return out[0] + out[15] }`)
+  ok(fires(src) >= 8, 'the staged reads pair')
+  bitExact('staged field pairs', src)
+  if (!onWasi()) is(jz(src, { optimize: speed }).exports.run(), groundTruth(src), 'jz speed == JS ground truth')
+})
+
+test('slp: bails when the high value loads the low store\'s slot through another name', () => {
+  // `shift(x, x)`: `o` and `a` are one array, so `a[1]` is the slot `o[1]` just wrote. A pack
+  // would read it before the write (the aliased-parameter forward shift); the RAW guard
+  // rejects a load at the low slot's offset whatever its base.
+  const src = `
+    const x = [3, 5, 0, 0], y = [1, 1, 0, 0]
+    function shift(o, a) { o[1] = a[0] * 2.0; o[2] = a[1] * 2.0; return o }
+    export let run = () => { let s = 0; for (let i = 0; i < 4; i++) { x[0] = 3; x[1] = 5; shift(x, x); s += x[2]; shift(y, x); s += y[2] } return s }`
+  is(fires(src), 0, 'aliased forward shift → SLP bails')
+  if (!onWasi()) is(jz(src, { optimize: speed }).exports.run(), 96, 'jz speed == JS ground truth (x[2] = 2 * (2 * x[0]))')
+})

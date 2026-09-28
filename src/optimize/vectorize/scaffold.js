@@ -78,9 +78,17 @@ export function normalizeTransparentBlocks(node) {
   for (let i = 1; i < node.length; i++) normalizeTransparentBlocks(node[i])
   for (let i = node.length - 1; i >= 1; i--) {
     const c = node[i]
-    if (isArr(c) && c[0] === 'block' &&
-        !(typeof c[1] === 'string' && c[1].startsWith('$')) &&
-        !(isArr(c[1]) && c[1][0] === 'result'))
+    if (!isArr(c)) continue
+    // A statement's value block — `(block (result T) S… V)` dropped, jz's element store
+    // with the assigned value, or set into a local, its staged element read — is the
+    // statements S… followed by what consumes V: nothing for a dropped plain read.
+    const b = c[0] === 'drop' || c[0] === 'local.set' ? c[c.length - 1] : c[0] === 'block' && node[i + 1] === 'drop' ? c : null
+    if (isArr(b) && b[0] === 'block' && isArr(b[1]) && b[1][0] === 'result') {
+      const body = b.slice(2), last = body[body.length - 1]
+      const read = isArr(last) && (last[0] === 'local.get' || last[0] === 'global.get' || last[0].endsWith('.const'))
+      const use = c[0] === 'local.set' ? [['local.set', c[1], last]] : read ? [] : [['drop', last]]
+      node.splice(i, c === b ? 2 : 1, ...body.slice(0, -1), ...use)
+    } else if (c[0] === 'block' && !(typeof c[1] === 'string' && c[1].startsWith('$')) && !(isArr(c[1]) && c[1][0] === 'result'))
       node.splice(i, 1, ...c.slice(1))
   }
 }
