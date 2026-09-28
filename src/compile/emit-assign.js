@@ -23,7 +23,7 @@ import { NUMBER } from '../summary/kind.js'
 import { VAL, lookupValType, repOf } from '../reps.js'
 import {
   typed, asF64, asI32, asI64, temp, tempI32, withTemp, block64,
-  ptrOffsetIR, ptrTypeEq, boxedAddr, writeVar, isGlobal, isBoundName, isLiteralStr,
+  ptrOffsetIR, fwdOffsetIR, ptrTypeEq, boxedAddr, writeVar, isGlobal, isBoundName, isLiteralStr,
   usesDynProps, needsDynShadow, mkPtrIR, undefExpr,
   freshId, boxBigInt, isNullish, throwTypeErrorIR,
 } from '../ir.js'
@@ -64,7 +64,10 @@ const persistBinding = name => ptr => persistBindingPtr(name, ptr)
 
 /** Emit an ARRAY element write via `__arr_set_idx_ptr`. The helper may relocate
  *  the array header (capacity grow); `persist` writes the new pointer back to
- *  the receiver binding. Returns the stored value as the block result. */
+ *  the receiver binding. Returns the stored value as the block result.
+ *  In the speed tiers an index inside the length stores in place first: the
+ *  header is left alone and the pointer stays, so the call is only for an index
+ *  at or past the end (`out[dst++] = v` filling an array it grew last round). */
 function storeArrayPayload(arrExpr, idxNode, valueExpr, persist) {
   const arrTmp = `${T}asi${freshId(ctx)}`
   const idxTmp = `${T}asj${freshId(ctx)}`
@@ -73,12 +76,23 @@ function storeArrayPayload(arrExpr, idxNode, valueExpr, persist) {
   ctx.func.locals.set(idxTmp, 'i32')
   ctx.func.locals.set(valTmp, 'f64')
   inc('__arr_set_idx_ptr')
+  const arrG = ['local.get', `$${arrTmp}`], idxG = ['local.get', `$${idxTmp}`], valG = ['local.get', `$${valTmp}`]
+  const helper = ['local.set', `$${arrTmp}`, ['call', '$__arr_set_idx_ptr', ['i64.reinterpret_f64', arrG], idxG, valG]]
   const body = [
     ['local.set', `$${arrTmp}`, arrExpr],
     ['local.set', `$${idxTmp}`, asI32(typed(idxNode, 'f64'))],
     ['local.set', `$${valTmp}`, valueExpr],
-    ['local.set', `$${arrTmp}`, ['call', '$__arr_set_idx_ptr', ['i64.reinterpret_f64', ['local.get', `$${arrTmp}`]], ['local.get', `$${idxTmp}`], ['local.get', `$${valTmp}`]]],
   ]
+  if (ctx.transform.optimize?.leanRuntime) body.push(helper)
+  else {
+    const base = tempI32('asb'), baseG = ['local.get', `$${base}`]
+    const saved = hasDurableReset() ? [durableArrSnapNode(base)] : []
+    if (saved.length) inc('__durable_arr_snap')
+    body.push(['local.set', `$${base}`, fwdOffsetIR(typed(arrG, 'f64'))],
+      ['if', ['i32.lt_u', idxG, ['i32.load', ['i32.sub', baseG, ['i32.const', 8]]]],
+        ['then', ...saved, ctx.abi.array.ops.store(baseG, idxG, valG)],
+        ['else', helper]])
+  }
   if (persist) body.push(persist(['local.get', `$${arrTmp}`]))
   body.push(['local.get', `$${valTmp}`])
   return block64(...body)
