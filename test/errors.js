@@ -1282,6 +1282,25 @@ test('instanceof: unsupported RHS rejects loudly at compile time (jz has no prot
   is((() => { try { compile(`export let g = () => 1; export let f = (x) => x instanceof g`, { strict: true }); return false } catch (e) { return e.message.includes('instanceof') } })(), true, 'a user function binding as RHS rejects with the instanceof message')
 })
 
+// A binding that holds a constructor (`var OBJECT = Object`, `const Q = K`)
+// names none by its spelling: `({}) instanceof OBJECT` folded to false.
+// Default mode folds only what holds for any constructor and hands the rest
+// to prepare, which rejects it (test262 instanceof/S11.8.6_A2.1_T1).
+test('instanceof: a binding holding a constructor is not told apart by its spelling', () => {
+  for (const [src, want] of [
+    [`const E = TypeError\nexport let f = () => new E('x') instanceof E`, true],
+    [`const E = TypeError\nexport let f = () => 1 instanceof E`, false],
+    [`export let f = () => { const O = Object; return 'o' instanceof O }`, false],
+  ]) for (const optimize of levels(0, 2, 3)) is(jz(src, { optimize }).exports.f(), want, `${src.split('\n').pop()} O${optimize}`)
+  for (const src of [
+    `var OBJECT = Object\nexport let f = () => ({}) instanceof OBJECT`,
+    `export let f = () => { var OBJECT = Object; var OBJECT = Object; return ({}) instanceof OBJECT }`,
+    `const A = Array\nexport let f = () => [1] instanceof A`,
+    `const E = TypeError\nexport let f = () => new TypeError('x') instanceof E`,
+    `class K { constructor() { this.a = 1 } }\nconst Q = K\nexport let f = () => new K() instanceof Q`,
+  ]) throws(src, 'instanceof: unsupported right-hand side', src.split('\n').pop())
+})
+
 // Side effects in the LHS still run even when the boolean answer is folded to
 // a compile-time constant — dropping a value the language still requires to
 // be computed would be unsound (`[bump()] instanceof Array` must call bump()).

@@ -35,9 +35,20 @@ let activeBuiltinScope = null
 const addBuiltinName = (scope, name) => {
   if (typeof name === 'string') scope.names.add(name)
 }
+// A variable or parameter binds a value; a class, function or import names itself.
 const addPatternNames = (scope, pattern) => {
   const bound = collectParamNames([pattern])
-  for (const name of bound) addBuiltinName(scope, name)
+  for (const name of bound) { addBuiltinName(scope, name); scope.values.add(name) }
+}
+// A declarator whose value is a class or function literal names it, as a
+// declaration does (`const g = function* () {}`; a `var` is hoisted apart
+// from its value by then).
+const addDeclarator = (scope, d) => {
+  if (!Array.isArray(d) || d[0] !== '=') return addPatternNames(scope, d)
+  addPatternNames(scope, d[1])
+  if (typeof d[1] !== 'string' || !Array.isArray(d[2])) return
+  const lit = d[2][0] === 'async' && Array.isArray(d[2][1]) ? d[2][1][0] : d[2][0]
+  if (lit === 'class' || lit === 'function' || lit === 'function*' || lit === '=>') scope.values.delete(d[1])
 }
 const addImportBindings = (scope, node) => {
   if (typeof node === 'string') { addBuiltinName(scope, node); return }
@@ -63,6 +74,12 @@ const declaredClass = (name) => {
   for (let s = activeBuiltinScope; s; s = s.parent) if (s.names.has(name)) return s.classes.has(name)
   return false
 }
+// The nearest declaration of `name` binds a value (`var OBJECT = Object`, a
+// parameter): its spelling names no constructor.
+const declaredValue = (name) => {
+  for (let s = activeBuiltinScope; s; s = s.parent) if (s.names.has(name)) return s.values.has(name) && !s.classes.has(name)
+  return false
+}
 // A node's builtin scope is entered around its own rewrite and left after
 // it: a pair, not a wrapper taking a closure, so a walk allocates nothing
 // per node (the self-compile makes a closure record for each).
@@ -80,7 +97,7 @@ const functionNameWrite = name => {
 // every other function.
 const buildBuiltinScopes = root => {
   const map = new WeakMap()
-  const childScope = parent => ({ parent, names: new Set(), classes: new Set(), strict: parent?.strict ?? false, self: null })
+  const childScope = parent => ({ parent, names: new Set(), values: new Set(), classes: new Set(), strict: parent?.strict ?? false, self: null })
   const functionDecls = new WeakSet()
   const strictBody = body => {
     if (Array.isArray(body) && body[0] === '{}') body = body[1]
@@ -103,7 +120,7 @@ const buildBuiltinScopes = root => {
       if (op === 'let' || op === 'const' || op === 'var' || op === 'using') {
         for (let i = 1; i < stmt.length; i++) {
           const d = stmt[i]
-          addPatternNames(scope, Array.isArray(d) && d[0] === '=' ? d[1] : d)
+          addDeclarator(scope, d)
           // a class expression's binding names a class too (`const C = class {}`)
           if (Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string' && Array.isArray(d[2]) && d[2][0] === 'class') scope.classes.add(d[1])
         }
@@ -223,6 +240,7 @@ let transform, transformScope, transformParams
   classBrand: (name) => declaredAtModuleScope(name) ? classBrand(name) : null,
   classStaticAccessor: (name, slot) => declaredAtModuleScope(name) && classStaticAccessor(name, slot),
   isClass: declaredClass,
+  isValue: declaredValue,
   lowerObjectLiteralThis: () => lowerObjectLiteralThis,
   lowerObjectLiteralAccessors: () => lowerObjectLiteralAccessors,
   shadowsBuiltin: shadowsJzifyBuiltin,

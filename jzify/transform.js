@@ -31,25 +31,30 @@ const isProto = n => Array.isArray(n) && n[0] === '.' && Array.isArray(n[1]) && 
 const groupedName = node => typeof node === 'string' ? node
   : Array.isArray(node) && node[0] === '()' && node.length === 2 ? groupedName(node[1]) : null
 
-function staticInstanceofFold(val, ctor) {
+// `spelled`: `ctor` names the constructor itself (a builtin, class, function
+// or import), so its spelling tells it apart from another. Otherwise it is a
+// variable holding one, and only what holds for any constructor folds.
+function staticInstanceofFold(val, ctor, spelled) {
   if (typeof ctor !== 'string' || !Array.isArray(val)) return null
-  if (val[0] === '()' && val.length === 2) return staticInstanceofFold(val[1], ctor)
+  if (val[0] === '()' && val.length === 2) return staticInstanceofFold(val[1], ctor, spelled)
+  if (val[0] === 'new') {
+    const inner = val[1]
+    const cname = Array.isArray(inner) && inner[0] === '()' && inner.length > 2
+      ? groupedName(inner[1]) : groupedName(inner)
+    if (cname === ctor) return true
+    if (cname && spelled) return cname !== 'Object' && ctor === 'Object'
+  }
+  if (val[0] == null && val.length === 2) {
+    const v = val[1]
+    if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean' || v == null) return false
+  }
+  if (!spelled) return null
   // ctor === 'Array' never reaches here — CORE_INSTANCEOF_ALLOW routes it to the
   // core (which folds `[] instanceof Array` itself, via valTypeOf) before the
   // 'instanceof' handler below ever calls this function.
   if (val[0] === '[]' && val.length <= 2) return ctor === 'Object'
   if (val[0] === '{}') return ctor === 'Object'
   if (val[0] === '//') return ctor === 'RegExp' || ctor === 'Object'
-  if (val[0] === 'new') {
-    const inner = val[1]
-    const cname = Array.isArray(inner) && inner[0] === '()' && inner.length > 2
-      ? groupedName(inner[1]) : groupedName(inner)
-    if (cname) return cname === ctor || (cname !== 'Object' && ctor === 'Object')
-  }
-  if (val[0] == null && val.length === 2) {
-    const v = val[1]
-    if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean' || v == null) return false
-  }
   return null
 }
 
@@ -100,6 +105,7 @@ const arrowParams = params => Array.isArray(params) && params[0] === '()' ? para
  * @param {() => Function} opts.lowerClass
  * @param {() => Function} opts.lowerObjectLiteralThis
  * @param {(name:string) => boolean} opts.shadowsBuiltin
+ * @param {(name:string) => boolean} opts.isValue  its nearest declaration binds a value
  * @param {(node:Array) => any} opts.enterBuiltinScope  enter the node's builtin scope; returns the prior
  * @param {(prior:any) => void} opts.leaveBuiltinScope
  */
@@ -628,8 +634,13 @@ export function createTransform(opts) {
       // — same op, same RHS, same answer as strict mode.
       if (name === 'SharedArrayBuffer' || typeof name === 'string' && CORE_INSTANCEOF_ALLOW.has(name))
         return ['instanceof', t, name]
-      const fold = staticInstanceofFold(val, name)
+      // A variable or parameter holds a constructor this pass cannot see
+      // (`var OBJECT = Object` folded `({}) instanceof OBJECT` to false): what
+      // holds for any constructor folds, prepare answers the rest or rejects it.
+      const spelled = !(typeof name === 'string' && opts.isValue(name))
+      const fold = staticInstanceofFold(val, name, spelled)
       if (fold != null) return [null, fold]
+      if (!spelled) return ['instanceof', t, transform(ctor)]
       return ['===', ['typeof', t], [null, 'object']]
     },
 

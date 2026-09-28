@@ -1102,14 +1102,13 @@ const WV = '[WRONG-VALUE, pinned — audit-#12 classification pass, not fixed th
 //    that point, so the guess was NEVER valid. Now rejects "is not in scope"
 //    → skip.
 //  - instanceof/S11.8.6_A2.1_T1.js: `var OBJECT = Object; ({}) instanceof
-//    OBJECT` — reading the bare builtin-constructor VALUE `Object` (jz has no
-//    first-class value for it, only the syntactic instanceof/new positions)
-//    used to silently vanish via the SAME dead-code-elimination gap as the
-//    comma case above (the `OBJECT` binding was never read anywhere emit()
-//    would actually reach, since instanceof's sound RHS handler reads the
-//    identifier's SPELLING, not its value). The same emit.js root fix makes
-//    `Object`'s read reject instead — the whole file now fails to compile at
-//    the `var OBJECT = Object` line, "is not in scope" → skip.
+//    OBJECT`: jzify's default-mode shape fold named the constructor by the
+//    RHS's SPELLING, so `OBJECT` read as "not Object" and the check folded
+//    to false (the unread `OBJECT = Object` store then vanished before emit
+//    could reject `Object` as a value). A binding the program declares now
+//    folds only what holds for any constructor (jzify/transform.js
+//    staticInstanceofFold `spelled`); prepare rejects the rest: "instanceof:
+//    unsupported right-hand side" → skip.
 //  - break+continue/line-terminators.js: root cause isolated to bare CR
 //    (U+000D) specifically — LF/LS/PS already correctly flip subscript's
 //    restricted-production `parse.newline` flag (feature/asi.js), only a
