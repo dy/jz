@@ -100,6 +100,18 @@ export let f = async (n) => {
   for (const optimize of levels(0, 2, 3)) is(await jz(src, { optimize }).exports.f(5), want, `at ${optimize}`)
 })
 
+test('async factory: a closure an await hands out is also called through a value of several kinds', async () => {
+  if (onWasi() || onKernel()) return
+  // `o.go` is typed from the await (a Float64Array); `keep` joins the record
+  // with an array, and the call through it passes an array: both reach `go`
+  // (src/summary/index.js method, a lost shape's member through such a value)
+  const src = `const mk = async () => ({ go: (a) => a[0] + a.length })
+let keep = null
+export let f = async (n) => { const o = await mk(); keep = n > 0 ? o : [1]; return o.go(new Float64Array([n])) + keep.go([n, 2, 3]) }`
+  const want = await oracle(src).f(5)
+  for (const optimize of levels(0, 2, 3)) is(await jz(src, { optimize }).exports.f(5), want, `at ${optimize}`)
+})
+
 test('async factory: a promise made another way, a thenable and a rejection keep their values', async () => {
   if (onWasi() || onKernel()) return
   const src = `const bad = async (n) => { if (n > 0) throw new Error('boom ' + n); return n }
