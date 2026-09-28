@@ -7,12 +7,13 @@
 import { encodePtrHi, i64Hex } from '../../../layout.js'
 import { enumKeys } from '../../../module/schema.js'
 import {
-  T, constLiteralHoistable, hasLabeledContinueTo, hasOwnBreakOrContinue, hasOwnContinue, isConstLiteral, isReassigned, some, walkAst,
+  T, MUTATE_OPS, constLiteralHoistable, hasLabeledContinueTo, hasOwnBreakOrContinue, hasOwnContinue, isConstLiteral, isReassigned, some, walkAst,
 isArrayIndexKey, RELATIONAL_OPS } from '../../ast.js'
 import { LAYOUT, PTR, ctx, err, inc, getFactStore } from '../../ctx.js'
 import {
-  asF64, asI32, freshId, isBoundName, isLit, isNullish, litVal, loopTop, readVar, temp, tempI32, tempI64, truthyIR, typed, undefExpr,
+  asF64, asI32, freshId, isBoundName, isGlobal, isLit, isNullish, litVal, loopTop, readVar, temp, tempI32, tempI64, truthyIR, typed, undefExpr,
 } from '../../ir.js'
+import { durableArrSnapNode, hasDurableReset } from '../../../module/collection/durable.js'
 import { VAL, lookupValType, repOf } from '../../reps.js'
 import { constIntExpr, constNumExpr, intExprRange, intLiteralValue } from '../../static.js'
 import { loopFacts, counterRefinements, testRefinements } from '../loop-model.js'
@@ -410,6 +411,32 @@ function emitLoopFreshBoxed(body, frame) {
   }
   return inits
 }
+// The names of fixed-length arrays a loop's body stores an element into and no
+// part of the loop reassigns, boxes or lets be missing: a module `const` or a
+// binding of the frame. Their snapshot for the reset moves before the loop.
+function durableLoopArrays(init, cond, step, body) {
+  const names = new Set()
+  const walk = (n) => {
+    if (!Array.isArray(n) || n[0] === '=>') return
+    if (MUTATE_OPS.has(n[0]) && Array.isArray(n[1]) && n[1][0] === '[]' && n[1].length === 3 && typeof n[1][1] === 'string') names.add(n[1][1])
+    for (let i = 1; i < n.length; i++) walk(n[i])
+  }
+  walk(body)
+  const view = ctx.summary?.at(ctx.func.current)
+  const out = []
+  for (const name of names) {
+    // A binding the body or the head declares does not exist before the loop.
+    if (ctx.func.boxed?.has(name) || containsDeclOf(body, name) || (init != null && containsDeclOf(init, name)) ||
+        isReassigned(body, name) || (init != null && isReassigned(init, name)) ||
+        (cond != null && isReassigned(cond, name)) || (step != null && isReassigned(step, name))) continue
+    if (isGlobal(name) && !ctx.scope.consts?.has(name)) continue
+    if (!view || view.fixedLenOf(name) == null || isNullable(view.kindOfExpr(name))) continue
+    if (ctx.func.refinements?.get(name)?.saved) continue
+    out.push(name)
+  }
+  return out
+}
+
 export const controlFlowOps = {
   // === Control flow ===
 
@@ -980,6 +1007,19 @@ export const controlFlowOps = {
     const result = []
     if (init != null && !entered) result.push(...emitVoid(init))
     for (const lit of preLoopLits) result.push(...emitVoid(lit))   // allocate hoisted literals once
+    // A durable array the body stores into by a name the loop never reassigns
+    // is saved for the reset before the loop (module/collection/durable.js):
+    // its stores inside then skip the round's snapshot test, which only the
+    // first of them could have needed.
+    const savedArrays = hasDurableReset() ? durableLoopArrays(init, cond, step, body) : []
+    const savedRefs = new Map()
+    for (const name of savedArrays) {
+      const b = tempI32('lsb')
+      result.push(['local.set', `$${b}`, ['i32.wrap_i64', ['i64.reinterpret_f64', asF64(emit(name))]]], durableArrSnapNode(b))
+      inc('__durable_arr_snap')
+      ;(ctx.func.savedStores ??= []).push(name)
+      savedRefs.set(name, { ...ctx.func.refinements?.get(name), saved: true })
+    }
     // Hoist a loop-invariant immutable-length bound out of the condition. A typed
     // array's `.length` is fixed, so `i < arr.length` otherwise reloads the header
     // (`i32.load (base-8) >> 2`) every iteration for nothing (V8's JIT hoists it).
@@ -1023,7 +1063,7 @@ export const controlFlowOps = {
     // own hull (a second map for the same name would replace its lower bound).
     const bodyRefs = counterRefinements(facts)
     if (condForLoop) extractRefinements(condForLoop, bodyRefs, true)
-    const emitLoopBody = () => withRefinements(bodyRefs, body, () => emitVoid(body))
+    const emitLoopBody = () => withRefinements(bodyRefs, body, () => withRefinements(savedRefs, body, () => emitVoid(body)))
     const loopBody = []
     if (condForLoop) loopBody.push(['br_if', brk, ['i32.eqz',
       withRefinements(testRefinements(facts), condForLoop, () => toBool(condForLoop))]])

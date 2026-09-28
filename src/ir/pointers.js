@@ -145,15 +145,29 @@ export function ptrOffsetIR(valIR, valType) {
  *  paid a `__ptr_offset` call frame for this one test; the size tier keeps
  *  the call (ptrOffsetIR, module/array.js arrBase). */
 export function fwdOffsetIR(valIR) {
-  const off = tempI32('fo')
   const raw = valIR.type === 'i32' ? valIR
     : ['i32.wrap_i64', valIR.type === 'i64' ? valIR : ['i64.reinterpret_f64', valIR]]
   inc('__ptr_offset_fwd')
+  // A box read from a local or a global repeats for free, and the value form
+  // keeps the hop one pure `if`: a loop that writes no header hoists it
+  // (optimize/licm.js) where a block with its own set would stay put.
+  const leaf = variableRead(valIR)
+  if (leaf) return typed(['if', ['result', 'i32'],
+    ['i32.eq', ['i32.load', ['i32.sub', raw, ['i32.const', 4]]], ['i32.const', -1]],
+    ['then', ['call', '$__ptr_offset_fwd', raw]],
+    ['else', raw]], 'i32')
+  const off = tempI32('fo')
   return typed(['block', ['result', 'i32'],
     ['local.set', `$${off}`, raw],
     ['if', ['i32.eq', ['i32.load', ['i32.sub', ['local.get', `$${off}`], ['i32.const', 4]]], ['i32.const', -1]],
       ['then', ['local.set', `$${off}`, ['call', '$__ptr_offset_fwd', ['local.get', `$${off}`]]]]],
     ['local.get', `$${off}`]], 'i32')
+}
+
+// Whether `n` is a variable read, bare or under reinterpret/wrap coercions.
+const variableRead = (n) => {
+  while (Array.isArray(n) && n.length === 2 && (n[0] === 'i64.reinterpret_f64' || n[0] === 'i32.wrap_i64' || n[0] === 'f64.reinterpret_i64')) n = n[1]
+  return Array.isArray(n) && n.length === 2 && (n[0] === 'local.get' || n[0] === 'global.get') && typeof n[1] === 'string'
 }
 
 /** Map VAL.* → PTR.* when unambiguous. STRING is ambiguous (heap vs SSO). ARRAY maps

@@ -21,6 +21,7 @@ import {
 import { dataLen } from '../../static-data.js'
 import { appendLateStdlib } from './stdlib-pull.js'
 import { insertLoopRewinds } from '../../optimize/loop-rewind.js'
+import { collectHeaderSafeFuncs } from '../../optimize/licm.js'
 /**
  * Phase: whole-module + per-function optimization passes.
  */
@@ -98,7 +99,10 @@ export function optimizeModule(sec, profiler) {
   }
   t('optimizeFuncs', () => {
     const writes = cfg?.promoteGlobals !== false ? globalWrites() : null
+    // The user functions a loop may call without a header changing (optimize/licm.js).
+    ctx.scope.headerSafeFuncs = collectHeaderSafeFuncs(allFuncs)
     for (const func of allFuncs) optimizeFunc(func, cfg, globalTypesMap, writes)
+    ctx.scope.headerSafeFuncs = null
   })
   // Per-iteration arena rewinds go in once the vectorizer has matched its loop
   // shapes (optimize/loop-rewind.js); a loop it lifted is a new node this never sees.

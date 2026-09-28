@@ -7,8 +7,9 @@ import { VAL } from '../reps.js'
 import { i64Hex } from '../../layout.js'
 import {
   typed, asF64, asI32, asPtrOffset, asParamType, nullableBoolBoxIR, ptrTypeEq, undefExpr,
-  isUndef, dollar, tcoTailRewrite, applyBigintRepresentationAction,
+  isUndef, isGlobal, dollar, tcoTailRewrite, applyBigintRepresentationAction,
 } from '../ir.js'
+import { core, isNullable, K, tagOf } from '../summary/kind.js'
 import { restoreActiveFunction, publishLoopRewinds } from './active-function.js'
 import { installFunctionPlan } from './function-plan.js'
 import { makeMapOverlay } from './map-overlay.js'
@@ -113,6 +114,18 @@ export function emitFunc(func, functionPlan, programFacts) {
       if (r && (r.val === VAL.TYPED || r.neverGrown === true)) names.add(`$${nm}`)
     if (names.size) plannedStableHeaderNames = names
   }
+  // The array bindings that are present wherever the function reads them (a
+  // local or parameter the summary never lets be missing, a module `const`):
+  // their header words may be read ahead of a loop that writes no header
+  // (optimize/licm.js), where a receiver that might be missing could not be.
+  const presentArrays = new Set()
+  const view = ctx.summary?.at(body)
+  const presentArray = (nm) => { const k = view?.kindOfExpr(nm); return k != null && tagOf(core(k)) === K.ARRAY && !isNullable(k) }
+  if (view) {
+    for (const p of sig.params) if (presentArray(p.name)) presentArrays.add(`$${p.name}`)
+    if (installedPlan.localReps) for (const nm of installedPlan.localReps.keys()) if (presentArray(nm)) presentArrays.add(`$${nm}`)
+    if (ctx.scope.consts) for (const nm of ctx.scope.consts) if (isGlobal(nm) && presentArray(nm)) presentArrays.add(`$${nm}`)
+  }
   // Global-table fallback for a plan published before global typed lengths
   // settled. The active record owns the resulting overlay.
   if (!ctx.func.typedLen && ctx.scope.globalTypedLen) ctx.func.typedLen = makeMapOverlay(ctx.scope.globalTypedLen)
@@ -133,6 +146,7 @@ export function emitFunc(func, functionPlan, programFacts) {
   if (plannedCseLoadBases) fn.cseLoadBases = plannedCseLoadBases
   if (plannedDistinctParams) fn.distinctParams = plannedDistinctParams
   if (plannedStableHeaderNames) fn.stableHeaderNames = plannedStableHeaderNames
+  if (presentArrays.size) fn.presentArrays = presentArrays
   // Inline `(export ...)` attribute only for the syntactic inline-export
   // form (`export function foo`, snapshot in `func.exported` at defFunc
   // time). Re-exports (`function foo; export { foo }`) and aliases (`export

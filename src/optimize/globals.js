@@ -948,6 +948,9 @@ export function promoteGlobals(fn, globalTypes, reachableWrites) {
   for (const [gName, { lName }] of replacements) {
     fn.splice(insertIdx, 0, ['local.set', lName, ['global.get', gName]])
     insertIdx++
+    // The copy holds what the global holds: the header facts follow it (optimize/licm.js).
+    if (fn.presentArrays?.has(gName)) fn.presentArrays.add(lName)
+    if (fn.stableHeaderNames?.has(gName)) fn.stableHeaderNames.add(lName)
   }
 
   // Replace all global.get with local.get (only for promoted globals)

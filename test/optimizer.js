@@ -206,15 +206,15 @@ test('LICM effects: string indexing may allocate and must not run on a zero-trip
 })
 
 test('LICM effects: non-mutating allocation still changes allocator globals', () => {
-  const ast = parseWat(`(module (global $heap (mut i32) (i32.const 0))
+  const ast = parseWat(`(module (global $__heap (mut i32) (i32.const 0))
     (func $__str_concat (param f64) (param f64) (result f64)
-      (global.set $heap (i32.add (global.get $heap) (i32.const 1)))
+      (global.set $__heap (i32.add (global.get $__heap) (i32.const 1)))
       (f64.const 0))
     (func $f (export "f") (result i32) (local $i i32) (local $sum i32)
       (loop $loop
         (drop (call $__str_concat (f64.const 0) (f64.const 0)))
         (local.set $sum (i32.add (local.get $sum)
-          (i32.trunc_sat_f64_s (f64.convert_i32_s (global.get $heap)))))
+          (i32.trunc_sat_f64_s (f64.convert_i32_s (global.get $__heap)))))
         (local.set $i (i32.add (local.get $i) (i32.const 1)))
         (br_if $loop (i32.lt_u (local.get $i) (i32.const 2))))
       (local.get $sum)))`)
