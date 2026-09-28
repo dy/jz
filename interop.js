@@ -1164,9 +1164,9 @@ export const wrap = (memSrc, inst, state) => {
   const closureArg = (v) => typeof v === 'bigint' && !isBox(v) ? mem.BigInt(v) : v
   // The call keeps its heap as an export that releases nothing does (a closure
   // has no `jz:release` of its own), and what it kept holds the heap of the
-  // call around it (`enter`/`leave` below).
+  // call around it (`enter`/`leave` below); a module with no heap has neither.
   const fnOf = callClosure ? Object.assign((clos) => function (...args) {
-    const mark = enter(false)
+    const mark = mem.scalar ? null : enter(false)
     let returned = false
     try {
       const n = args.length, a = new Array(lanes)
@@ -1178,7 +1178,7 @@ export const wrap = (memSrc, inst, state) => {
       return finishRet(ret, readRet)
     } catch (error) {
       decodeThrown(error)
-    } finally { leave(mark, false, false, returned) }
+    } finally { if (mark) leave(mark, false, false, returned) }
   }, { owners: new WeakMap() }) : null
   if (state) state.fnOf = fnOf
   const exports = {}
