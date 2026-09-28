@@ -838,7 +838,9 @@ export const controlFlowOps = {
           // A monotone cursor spans entry..entry+K*trips. Like affine groups,
           // all offsets on one receiver need only the lowest and highest check.
           for (const g of cursorGroups.values()) {
-            const entry = slotI64(g.cursor, 'i32'), info = levelInfo.get(vs)
+            // an f64 cursor takes the slot's integral and magnitude conjuncts: a
+            // fractional entry advanced by whole steps names no element
+            const entry = slotI64(g.cursor, exprType(g.cursor, ctx.func.locals) === 'i32' ? 'i32' : 'f64'), info = levelInfo.get(vs)
             const trips = ['i64.add', ['i64.sub', ['local.get', `$${info.maxIv}`], info.entryIR()], i64c(1)]
             const lo = g.minC < 0 ? ['i64.add', entry, i64c(g.minC)] : entry
             let hi = ['i64.add', entry, ['i64.mul', i64c(g.K), trips]]

@@ -86,9 +86,12 @@ export function typedStaticLen(rhs) {
 // below) import the shared static.js version — see its doc comment there.
 
 /** `recv[idx]` proven by the interval walk (typedIdxProven class 5), which
- *  models integer values only: the key names an element, it needs no test. */
+ *  models integer values only, or by a versioning guard (class 4), which tests
+ *  every f64 term of the index integral and within ±2^31: the key names an
+ *  element, it needs no test of its own. */
 export function typedIdxWhole(recv, idx, node = null) {
   if (typeof recv !== 'string') return false
+  if (activeBoundsAssumption(ctx, recv, idx)) return true
   const ip = intervalProvenIdx(ctx)
   return node != null && node[1] === recv && node[2] === idx && ip.has(node) || ip.has(idxKey(recv, idx))
 }

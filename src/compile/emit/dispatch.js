@@ -99,9 +99,38 @@ function tryI32Index(e) {
   }
   return exprType(e, ctx.func.locals) === 'i32' ? asI32(emit(e)) : null
 }
+// An integer-valued key: an integer literal, an i32 or integer-certain name,
+// and + - * over them. No fraction, no NaN: it truncates to its index exactly,
+// and one past the i32 range saturates past every length.
+const WHOLE_OPS = new Set(['+', '-', '*'])
+const wholeKey = (e) => {
+  if (typeof e === 'string') return exprType(e, ctx.func.locals) === 'i32' || repOf(e)?.intCertain === true
+  if (!Array.isArray(e)) return false
+  if (e[0] == null) return Number.isInteger(e[1])
+  return WHOLE_OPS.has(e[0]) && e.length === 3 && wholeKey(e[1]) && wholeKey(e[2])
+}
 export const emitIndex = (index, whole = false) => {
   const direct = tryI32Index(index)
   if (direct) return direct
+  whole ||= wholeKey(index)
+  // `x ± k` with k an i32 and x a name: the key is an integer exactly when x
+  // is (a boxed x makes both NaN), so the test reads x alone, where a loop
+  // over k leaves it invariant (`a[o + i]`, o read from an offsets table).
+  // An x past the i32 range names no element either: with |k| < 2^31 the sum
+  // could come back only for an array of 2^31 elements.
+  if (!whole && Array.isArray(index) && (index[0] === '+' || index[0] === '-') && index.length === 3) {
+    const [, l, r] = index, i32 = e => exprType(e, ctx.func.locals) === 'i32' || Array.isArray(e) && e[0] == null && (e[1] | 0) === e[1]
+    const x = i32(r) ? l : i32(l) && index[0] === '+' ? r : null
+    if (typeof x === 'string') {
+      const t = temp('ix'), ok = tempI32('ixv'), xs = asF64(emit(x)), get = ['local.get', `$${t}`]
+      const out = typed(['block', ['result', 'i32'],
+        ['local.set', `$${ok}`, ['f64.eq', ['f64.convert_i32_s', ['i32.trunc_sat_f64_s', xs]], xs]],
+        ['local.set', `$${t}`, asF64(emit(index))],
+        ['select', ['i32.trunc_sat_f64_s', get], ['i32.const', -1], ['local.get', `$${ok}`]]], 'i32')
+      out.indexValid = ['local.get', `$${ok}`]
+      return out
+    }
+  }
   const nested = Array.isArray(index) && index[0] === '[]'
   if (nested) ctx.types.indexConsumer = (ctx.types.indexConsumer || 0) + 1
   let value
@@ -109,7 +138,9 @@ export const emitIndex = (index, whole = false) => {
   if (value?.type === 'i32' && !value.indexValid) return value
   // `whole`: a proof already holds the key to a present integer (the interval
   // walk models integer values only).
-  if (whole) return asI32(value)
+  // A constant folds exactly in keyIndex; a runtime value saturates (asI32's
+  // ToInt32 would wrap 2^32 + 1 to 1).
+  if (whole && !(Array.isArray(value) && value[0] === 'f64.const')) return typed(['i32.trunc_sat_f64_s', asF64(value)], 'i32')
   return keyIndex(value)
 }
 
