@@ -295,6 +295,19 @@ test('warnings: shape-lost names the layout of each construction site', () => {
   ok(ws.length && ws.every(w => /\{a\}/.test(w.message)), ws.map(w => w.message).join('; '))
 })
 
+// A summary the compile supersedes may lose a shape the program keeps: here
+// the first, taken before the spread of a spread has a layout, reads `opts.hop`
+// as a value of any kind and loses `ctx` to the hook its test would call. The
+// advisory reports the summary emission reads (compile/index.js), where the
+// layout is named and the test decided.
+test('warnings: shape-lost reports what the emitted program loses, not an earlier summary', () => {
+  const src = `let settings = (o) => ({ ...o, size: 2048 })
+let run = (opts) => { const hop = opts.hop, fn = typeof hop === 'function' ? hop : null; const ctx = { a: 1, b: 2 }; let s = 0; for (let i = 0; i < 4; i++) { if (fn) ctx.a = fn(i, ctx); s += ctx.a * ctx.b + (fn ? 0 : hop) } return s }
+export let f = () => run({ ...settings({ hop: 512 }), complex: true })`
+  is(warningsFor(src).filter(e => e.code === 'shape-lost').map(e => e.message), [])
+  is(jz(src).exports.f(), 2056)
+})
+
 test('warnings: shape-loss diagnostics leave emitted code unchanged across compilations', () => {
   const joined = 'export let f = (x) => { const o = { a: 1 }; const p = x || o; return p.a }'
   const hosted = 'const o = { items: [1], call: x => x, next: null }; o.next = o; export const f = () => o'
