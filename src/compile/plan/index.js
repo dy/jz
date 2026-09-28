@@ -244,7 +244,8 @@ export default function plan(ast, profiler, summarize) {
 
   // VAL-kind landslide specialization (.work/archive/context-sensitivity-survey.md §3-4): a
     // pure precision/perf slice, sized/gated the same as speculateTypedParams.
-    if (optimizing()) t('specializeValKindDichotomy', () => specializeValKindDichotomy(programFacts))
+    // `optimize: { valKindClones: false }` keeps a parameter's kind the join of every call site (test/summary.js reads it so)
+    if (optimizing() && ctx.transform.optimize?.valKindClones !== false) t('specializeValKindDichotomy', () => specializeValKindDichotomy(programFacts))
     if (optimizing()) t('speculateTypedParams', () => speculateTypedParams(programFacts, ast))
     t('refineDynKeys', () => refineDynKeys(programFacts))
   // Freeze point (.work/archive/program-facts-split.md §7): paramReps/callSites' true last

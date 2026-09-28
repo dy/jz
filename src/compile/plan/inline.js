@@ -702,8 +702,29 @@ export const inlineHotInternalCalls = (programFacts, ast) => {
     // 48-node body keeps the old 8-site bound (360/48 → 8). Full inlining also
     // restores shape identity for downstream CSE — a PARTIAL split (some sites
     // inlined, some calls) makes duplicate pure subtrees structurally unequal.
+    const transitiveHotSite = (site, seen = new Set()) => {
+      if (site.callerFunc?.body && containsNode(site.callerFunc.body, site.node, false)) return true
+      const callerFunc = site.callerFunc
+      const caller = callerFunc?.name
+      // A tiny non-escaping wrapper may not be a candidate *yet* because it
+      // calls the leaf currently being considered (sdRep ← sdf). Looking
+      // through it breaks that harmless caller/callee collection cycle and
+      // recognizes the same transitive hot path the next fixpoint would.
+      const prospectiveLeaf = callerFunc && !isExported(callerFunc) &&
+        !programFacts.addressTakenNames.has(caller) && loopDepth(callerFunc.body, 0) === 0 &&
+        nodeSize(callerFunc.body) <= 48
+      if (!caller || (!candidates.has(caller) && !prospectiveLeaf) || seen.has(caller)) return false
+      const callerSites = sitesByCallee.get(caller)
+      if (!callerSites?.length) return false
+      const next = new Set(seen); next.add(caller)
+      return callerSites.every(parent => transitiveHotSite(parent, next))
+    }
+    // The cap bounds duplication at sites outside loops: a site inside a loop
+    // (or in a caller only loops reach) is the call the splice exists to remove,
+    // and three's `fromArray`, `subVectors` and `normalize` reach it from a dozen.
+    const coldSites = sites ? sites.filter(site => !transitiveHotSite(site)).length : 0
     const leafSiteCap = (isTinyLeaf || isSmallLeaf || isSmallKernel) ? Math.max(8, Math.floor(360 / Math.max(1, size))) : 8
-    if (!sites || sites.length < 1 || (!isTinyLeaf && !isSmallLeaf && !isSmallKernel && !fixedTypedArraySite && sites.length > 2) || sites.length > leafSiteCap) continue
+    if (!sites || sites.length < 1 || (!isTinyLeaf && !isSmallLeaf && !isSmallKernel && !fixedTypedArraySite && sites.length > 2) || coldSites > leafSiteCap) continue
     // Expression-bodied arrow funcs (`(c) => expr`) have no block — body IS the
     // return value. Treat as a "tiny leaf" branch handled below; force hasLoop=false.
     if (some(func.body, n => n[0] === '=>')) continue
@@ -731,23 +752,6 @@ export const inlineHotInternalCalls = (programFacts, ast) => {
       // per-cell tax on Node ≤ 22 — and still saves call setup on newer tiers.
       // The in-loop cap is generous because the gate above bounds non-tiny leaves
       // to ≤2 sites, so the spliced duplication is at most ~2× a bounded body.
-      const transitiveHotSite = (site, seen = new Set()) => {
-        if (site.callerFunc?.body && containsNode(site.callerFunc.body, site.node, false)) return true
-        const callerFunc = site.callerFunc
-        const caller = callerFunc?.name
-        // A tiny non-escaping wrapper may not be a candidate *yet* because it
-        // calls the leaf currently being considered (sdRep ← sdf). Looking
-        // through it breaks that harmless caller/callee collection cycle and
-        // recognizes the same transitive hot path the next fixpoint would.
-        const prospectiveLeaf = callerFunc && !isExported(callerFunc) &&
-          !programFacts.addressTakenNames.has(caller) && loopDepth(callerFunc.body, 0) === 0 &&
-          nodeSize(callerFunc.body) <= 48
-        if (!caller || (!candidates.has(caller) && !prospectiveLeaf) || seen.has(caller)) return false
-        const callerSites = sitesByCallee.get(caller)
-        if (!callerSites?.length) return false
-        const next = new Set(seen); next.add(caller)
-        return callerSites.every(parent => transitiveHotSite(parent, next))
-      }
       const allSitesInLoop = sites.every(site => transitiveHotSite(site))
       // Non-in-loop cap is 40 (not 30) so a small leaf called from a straight-line but
       // transitively-hot caller still inlines (noise's grad is called from perlin, which has

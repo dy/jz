@@ -1000,6 +1000,25 @@ test('inline: large multi-caller leaf folds at speed (transitive candidacy + exp
   ok(calls(2) >= 1, 'level 2: strict policy keeps the multi-caller leaf outlined for tier-up')
 })
 
+// The leaf site cap bounds duplication at sites outside loops; a site inside a
+// loop is the call the splice exists to remove. three's Vector3.fromArray has a
+// dozen callers in the library and a handful per element in a frame's kernels:
+// the library's straight-line callers no longer keep the kernels' calls.
+test('inline: a small leaf called from many straight-line sites still splices into the loops that call it', () => {
+  // seven straight-line callers and four calls in the loop: over the leaf's site cap together, under it apart
+  const cold = Array.from({ length: 7 }, (_, i) => `let c${i} = (a) => leaf(a, ${i})`).join('\n')
+  const SRC = `
+    let leaf = (a, o) => a[o] * 2 + a[o + 1] * 3 + a[o + 2] * 5 + a[o + 3] * 7
+    ${cold}
+    export let f = (n) => { const a = new Float64Array(n + 20); for (let i = 0; i < n; i++) a[i] = i
+      let s = 0.0
+      for (let i = 0; i < n; i++) s = s + ${Array.from({ length: 4 }, (_, i) => `leaf(a, i + ${i})`).join(' + ')}
+      return s + ${Array.from({ length: 7 }, (_, i) => `c${i}(a)`).join(' + ')} }`
+  is(jz(SRC, { optimize: 2 }).exports.f(16), jz(SRC, { optimize: 0 }).exports.f(16), 'bit-exact')
+  if (onKernel()) return
+  is(callsInLoop(SRC, '$leaf'), 0, 'the loop\'s calls are spliced whatever the count of straight-line sites')
+})
+
 test('inline: expression-position hoist preserves evaluation order of side effects', () => {
   // The hoist lifts a candidate call to a `const __h = call` temp at the statement top. That
   // is sound ONLY when no side effect precedes it: here `a()` (a non-candidate — it has a loop)

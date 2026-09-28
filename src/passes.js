@@ -73,6 +73,7 @@ export const PASS_NAMES = [
   'internStrings',            // slice/substring results probe the static-literal pool: equal-content → canonical bits (bit-eq fast paths)
   'hoistConstantPool',
   'sourceInline',
+  'valKindClones',            // a function whose parameter's call sites disagree on its kind is cloned per kind (narrow/specialize.js)
   'laneRecords',              // record parameters read field by field become scalar lanes (plan/lanes.js)
   'sourceInlineDup',          // allow source-body duplication across calls or beside an export (speed-for-size)
   'smallConstForUnroll',

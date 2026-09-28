@@ -1716,7 +1716,10 @@ arguments, and only when the callee writes no outer storage (the frame census
 above), or the copies could go stale while it runs. One opaque site keeps the
 record form at every site; with all sites retargeted the original is dead.
 `optimize: { laneRecords: false }` keeps every record form (the summary tests
-pin the source's own functions).
+pin the source's own functions), as `optimize: { valKindClones: false }` keeps
+a function whose parameter's call sites disagree on its kind one function
+(narrow/specialize.js `specializeValKindDichotomy` otherwise clones it per
+kind and routes each site to its own).
 
 Generic reads in the self-compiled kernel cost helper entries, and the warm
 self-compile gate is paid in them. Five rules keep the common shapes inline:
