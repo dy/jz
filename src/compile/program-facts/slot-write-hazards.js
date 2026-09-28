@@ -7,7 +7,7 @@
  * `../program-facts.js` for the full module map and build order.
  * @module program-facts/slot-write-hazards
  */
-import { commaList, isLiteralStr, MUTATE_OPS, walkAst } from '../../ast.js'
+import { commaList, isLiteralStr, MUTATE_OPS, spreadExclusions, walkAst } from '../../ast.js'
 import { ctx, getFactStore } from '../../ctx.js'
 import { VAL, repOf } from '../../reps.js'
 import { valTypeOf } from '../../kind.js'
@@ -327,7 +327,9 @@ export function collectSlotWriteHazards(ast, opts) {
           if (p[0] === '...') {
             const sid = sidOf(p[1])
             const src = sid != null ? ctx.schema.list[sid] : null
-            if (src) { for (const n of src) if (!names.includes(n)) names.push(n) }
+            // an object rest skips its pattern's keys; a computed one is known at run time only
+            const skip = spreadExclusions(p)
+            if (src && !skip?.exprs.length) { for (const n of src) if (!names.includes(n) && !skip?.names.includes(n)) names.push(n) }
             else known = false
           } else if (p[0] === ':' && (typeof p[1] === 'string' || typeof p[1] === 'number')) {
             if (!names.includes(String(p[1]))) names.push(String(p[1]))

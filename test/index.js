@@ -31,6 +31,7 @@ const TESTS = [
   'symbols',
   'rest-params',
   'spread',
+  'object-rest',
   'number',
   'json',
   'date',

@@ -15,7 +15,7 @@ import { staticArrayPtr } from './array.js'
 import { valTypeOf, shapeOf } from '../src/kind.js'
 import { VAL, lookupValType, repOf } from '../src/reps.js'
 import { ctx, err, inc, PTR, LAYOUT, declGlobal } from '../src/ctx.js'
-import { isReassigned, MUTATE_OPS, some, isBrand, canonicalKeyOrder } from '../src/ast.js'
+import { isReassigned, MUTATE_OPS, some, isBrand, canonicalKeyOrder, spreadExclusions } from '../src/ast.js'
 import { staticObjectProps, dictCapacity } from '../src/static.js'
 import { errorCodeLiteral, ERR, ERR_CLASS_NAMES, ERR_SCHEMA_PROPS } from '../err-codes.js'
 import { deletedMaskIR, deletedSlotIR, HEAP, DATA_VIEW_FLAG, nanPrefixHex } from '../layout.js'
@@ -1208,9 +1208,11 @@ function mergeSpreadNames(props) {
       // distinguish absent from present-with-undefined.
       if (conditionalSpreadGroup(p[1])) return null
       const s = spreadSourceSchema(p[1])
-      if (!s) return null
+      // an object rest skips its pattern's keys; a computed one is known at run time only
+      const skip = spreadExclusions(p)
+      if (!s || skip?.exprs.length) return null
       // a spread copies values: an accessor is the data key it defines (module/schema.js enumView)
-      for (const n of enumKeys(s)) if (!seen.has(n)) { seen.add(n); names.push(n) }
+      for (const n of enumKeys(s)) if (!seen.has(n) && !skip?.names.includes(n)) { seen.add(n); names.push(n) }
     } else if (Array.isArray(p) && p[0] === ':' && !seen.has(p[1])) {
       seen.add(p[1]); names.push(p[1])
     }
@@ -1244,7 +1246,7 @@ function emitObjectSpread(props, _target = takeLiteralTarget()) {
   // (jz's own narrow.js had to hand-route around it). __obj_clone keys off the
   // box's runtime schemaId, so it copies static-segment sources too; the schema
   // table it reads must exist, so declare + force it (assemble.js).
-  if (!allKnown && props.length === 1 && Array.isArray(props[0]) && props[0][0] === '...') {
+  if (!allKnown && props.length === 1 && Array.isArray(props[0]) && props[0][0] === '...' && !spreadExclusions(props[0])) {
     const sourceKind = ctx.summary?.at(ctx.func.current).valOfExpr(props[0][1])
     // Clone preserves primitive values; spread must instead enumerate them
     // into a new object, including an empty object for nullish sources.
@@ -1309,21 +1311,21 @@ function emitObjectSpread(props, _target = takeLiteralTarget()) {
             ['else', ...absent]])
         continue
       }
-      const sSchema = spreadSourceSchema(p[1]), view = enumView(sSchema)
+      const sSchema = spreadSourceSchema(p[1]), view = enumView(sSchema), skip = spreadExclusions(p)?.names
       if (view) {
         // each key's value, once: an accessor through its getter (enumValue)
         const sv = temp('ospv')
         body.push(['local.set', `$${sv}`, asF64(emit(p[1]))],
           ['local.set', `$${src}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${sv}`]]]])
         for (const e of view) {
-          const ti = schema.indexOf(e.key)
+          const ti = skip?.includes(e.key) ? -1 : schema.indexOf(e.key)
           if (ti >= 0) body.push(ctx.abi.object.ops.store(['local.get', `$${t}`], ti, enumValue(e, ['local.get', `$${src}`], ['local.get', `$${sv}`])))
         }
         continue
       }
       body.push(['local.set', `$${src}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', asF64(emit(p[1]))]]])
       for (let si = 0; si < sSchema.length; si++) {
-        const ti = schema.indexOf(sSchema[si])
+        const ti = skip?.includes(sSchema[si]) ? -1 : schema.indexOf(sSchema[si])
         if (ti < 0) continue
         body.push(ctx.abi.object.ops.store(['local.get', `$${t}`], ti, ctx.abi.object.ops.load(['local.get', `$${src}`], si)))
       }
@@ -1360,6 +1362,16 @@ function emitDynamicSpread(props) {
   const setKey = (keyBits, valBits) =>
     ['local.set', `$${t}`, ['f64.reinterpret_i64',
       ['call', '$__hash_set_local', ['i64.reinterpret_f64', ['local.get', `$${t}`]], keyBits, valBits]]]
+  // An object rest skips the keys its pattern named (ast.js spreadExclusions):
+  // a store runs unless its key equals one of `keys`, the ones left to compare
+  // at run time (a computed key, or any key of a source listed at run time).
+  const unless = (keyBits, keys, store) => {
+    if (!keys.length) return store
+    ctx.module.include('string')
+    inc('__str_eq')
+    const hit = keys.map(k => ['call', '$__str_eq', keyBits, asI64(emit(k))]).reduce((a, b) => ['i32.or', a, b])
+    return ['if', ['i32.eqz', hit], ['then', store]]
+  }
   const body = [['local.set', `$${t}`, ['call', '$__hash_new']]]
 
   for (let pi = 0; pi < props.length; pi++) {
@@ -1391,12 +1403,15 @@ function emitDynamicSpread(props) {
         ['then', ['local.set', `$${sBase}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${s}`]]]], ...setKeys]])
       continue
     }
-    const sSchema = spreadSourceSchema(p[1])
+    const sSchema = spreadSourceSchema(p[1]), skip = spreadExclusions(p)
     body.push(['local.set', `$${s}`, asF64(emit(p[1]))])
     if (sSchema) {
       body.push(['local.set', `$${sBase}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${s}`]]]])
-      for (let si = 0; si < sSchema.length; si++)
-        body.push(setKey(asI64(emit(['str', String(sSchema[si])])), ctx.abi.object.ops.loadBits(['local.get', `$${sBase}`], si)))
+      for (let si = 0; si < sSchema.length; si++) {
+        if (skip?.names.includes(sSchema[si])) continue
+        const k = asI64(emit(['str', String(sSchema[si])]))
+        body.push(unless(k, skip?.exprs ?? [], setKey(k, ctx.abi.object.ops.loadBits(['local.get', `$${sBase}`], si))))
+      }
       continue
     }
     body.push(
@@ -1409,7 +1424,8 @@ function emitDynamicSpread(props) {
         ['br_if', `$dsbrk${id}_${pi}`, ['i32.ge_s', ['local.get', `$${i}`], ['local.get', `$${len}`]]],
         ['local.set', `$${key}`, ['f64.load',
           ['i32.add', ['local.get', `$${keysBase}`], ['i32.shl', ['local.get', `$${i}`], ['i32.const', 3]]]]],
-        setKey(['i64.reinterpret_f64', ['local.get', `$${key}`]], copiedValue(s, valsBase, i, key)),
+        unless(['i64.reinterpret_f64', ['local.get', `$${key}`]], skip ? [...skip.names.map(n => ['str', n]), ...skip.exprs] : [],
+          setKey(['i64.reinterpret_f64', ['local.get', `$${key}`]], copiedValue(s, valsBase, i, key))),
         ['local.set', `$${i}`, ['i32.add', ['local.get', `$${i}`], ['i32.const', 1]]],
         ['br', `$dsloop${id}_${pi}`]]])
   }

@@ -16,6 +16,7 @@
  */
 
 import { ctx } from '../ctx.js'
+import { spreadExclusions } from '../ast.js'
 import { VAL } from '../reps.js'
 import { ERR_CLASS_NAMES, ERR_SCHEMA_PROPS } from '../../err-codes.js'
 
@@ -217,7 +218,8 @@ export function spreadMergeResolves(props) {
       // Conditional presence requires the HASH representation; a fixed slot
       // cannot distinguish absent from present-with-undefined.
       if (group) return false
-      if (!spreadSchema(p[1])) return false
+      // an object rest skipping a computed key copies at run time (mergeSpreadNames)
+      if (!spreadSchema(p[1]) || spreadExclusions(p)?.exprs.length) return false
     }
   }
   return true

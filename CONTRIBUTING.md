@@ -1736,6 +1736,15 @@ stores no pointer, so a call that destructures keeps nothing, and the frame
 census counts no store into a record for an escape (`SCRATCH`): the iterator
 it holds is lent from its opening to its close.
 
+An object rest `{a, ...r} = o` is the spread of `o` without the keys the
+pattern names (`expandDestruct`, `src/prepare/handlers.js`): the spread item
+carries them (`spreadExclusions`, `src/ast.js`), a computed one as the temp
+holding its property key, and every reader of a literal's spreads (the
+summary, the emitter, the layout census) skips them. A source whose layout
+the summary proves copies its slots; any other copies its own keys at run
+time. A pattern that begins with a rest, a computed key or nothing tests its
+source for null and undefined first; a named key's read throws by itself.
+
 An async body suspends only at statements (`jzify/generators.js`: a yield as a
 statement, or the right side of `let x = yield E` / `x = yield E` /
 `x.f = yield E`), so `jzify/async.js` hoists every other `await` first: the

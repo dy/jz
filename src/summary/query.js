@@ -1,5 +1,5 @@
 /** Read-only summary queries. This module has no access to solver transfers. */
-import { ACCESSOR_GET, ACCESSOR_SET, CLASS_T, isBrand, schemaKey, isArrayIndexKey } from '../ast.js'
+import { ACCESSOR_GET, ACCESSOR_SET, CLASS_T, isBrand, schemaKey, isArrayIndexKey, spreadExclusions } from '../ast.js'
 import { encodeTypedElemAux, ctorFromElemAux, TYPED_ELEM_VIEW_FLAG, TYPED_ELEM_ANY_VIEW_FLAG } from '../../layout.js'
 import { ATOMICS_VALUE_OPS, builtinCalleeVal, methodValType } from '../kind-traits.js'
 import { VAL } from '../reps.js'
@@ -191,7 +191,7 @@ export function summaryQueries(facts, internal = false) {
       if (op === 'bool') return BOOL
       if (op === 'bigint') return BIGINT
       if (op === '//') return kind(K.REGEX)
-      if (op === '{}' && n.length === 2 && n[1]?.[0] === '...') {
+      if (op === '{}' && n.length === 2 && n[1]?.[0] === '...' && !spreadExclusions(n[1])) {
         const source = kindOfExpr(n[1][1]), t = tagOf(source)
         if (t === K.NONE) return K.NONE
         if (!isNullable(source) && (t === K.OBJECT || t === K.HASH)) return source
@@ -211,9 +211,9 @@ export function summaryQueries(facts, internal = false) {
           if (typeof p === 'string') add(p)
           else if (Array.isArray(p) && p[0] === ':' && typeof p[1] === 'string') { if (isBrand(p[1])) brand = p[1]; else add(p[1]) }
           else if (Array.isArray(p) && p[0] === '...') {
-            const source = kindOfExpr(p[1]), sid = layoutOf(source)
-            if (p[1]?.[0] === '&&' || isNullable(source) || sid === UNKNOWN || shapesOf(paramOf(source)).some(site => openSchemas.has(site)) || !schemas[sid]) return kind(K.HASH)
-            for (const name of schemas[sid]) add(name)
+            const source = kindOfExpr(p[1]), sid = layoutOf(source), skip = spreadExclusions(p)
+            if (p[1]?.[0] === '&&' || isNullable(source) || sid === UNKNOWN || shapesOf(paramOf(source)).some(site => openSchemas.has(site)) || !schemas[sid] || skip?.exprs.length) return kind(K.HASH)
+            for (const name of schemas[sid]) if (!skip?.names.includes(name)) add(name)
           } else return kind(K.HASH)
         }
         const sid = sidByKey.get(schemaKey(names, brand))

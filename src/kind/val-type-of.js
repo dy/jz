@@ -33,6 +33,7 @@ import { valOf as summaryVal, contractVal } from '../summary/index.js'
 import { typedIndexKnown } from '../type/canonical-bounds.js'
 import { K, NUMBER, TAGS, NULL_BITS, UNKNOWN, bitOf, tagsOf, isPostfixRecovery } from '../summary/kind.js'
 import { shapeOf, jsonConstString, spreadMergeResolves } from './shape.js'
+import { spreadExclusions } from '../ast.js'
 
 /**
  * Per-op val-type rules — the dispatch table behind `valTypeOf`. Each entry
@@ -95,8 +96,9 @@ VT['{}'] = (args) => {
   // silently misdispatch (fixed-slot / array index) and return undefined —
   // the bug this fixes.
   if (!spreadMergeResolves(args)) {
-    // `{ ...src }` with a single unresolvable spread aliases src — carry its type.
-    return args.length === 1 && Array.isArray(args[0]) && args[0][0] === '...' ? valTypeOf(args[0][1]) : VAL.HASH
+    // `{ ...src }` with a single unresolvable spread aliases src: carry its
+    // type; an object rest (a spread skipping keys) copies into a HASH.
+    return args.length === 1 && Array.isArray(args[0]) && args[0][0] === '...' && !spreadExclusions(args[0]) ? valTypeOf(args[0][1]) : VAL.HASH
   }
   return null
 }

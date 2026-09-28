@@ -19,7 +19,7 @@
 import { lowerIteratorPattern, hasArrayPattern } from '../iterator-pattern.js'
 import { addSource, ctx, declGlobal, derive, emitArity, err, setFeature } from '../ctx.js'
 import { createFunction } from '../function.js'
-import { MUTATE_OPS, PARAM_DEFAULT, PARAM_KIND, PARAM_NAME, PARAM_PATTERN, REFS_THROUGH_ARROWS, STMT_OPS, T, TYPEOF, alwaysReturns, classifyParam, cloneNode, collectParamNames, extractParams, handlerArgs, isBrand, refsName, walkAst, withLoc } from '../ast.js'
+import { MUTATE_OPS, PARAM_DEFAULT, PARAM_KIND, PARAM_NAME, PARAM_PATTERN, REFS_THROUGH_ARROWS, STMT_OPS, T, TYPEOF, alwaysReturns, classifyParam, cloneNode, collectParamNames, extractParams, handlerArgs, isBrand, refsName, walkAst, withLoc, isArrayIndexKey } from '../ast.js'
 import { COLLECTION_CTORS, CTORS, hasModule, includeForArrayAccess, includeForArrayLiteral, includeForCallableValue, includeForGenericMethod, includeForNamedCall, includeForNumericCoercion, includeForObjectLiteral, includeForObjectPattern, includeForOp, includeForProperty, includeForRuntimeCtor, includeForStringOnly, includeForStringValue, includeMods, includeModule } from '../autoload.js'
 import { censusShapedNode } from '../kind.js'
 import { REJECT_IDENTS, rejectHandlers } from '../op-policy.js'
@@ -304,9 +304,10 @@ function renestSoleCommaArg(args) {
 const handlers = {
   ...rejectHandlers(err),
   // Spread operator: [...expr] in arrays, f(...args) in calls, {...obj} in objects
-  '...'(expr) {
+  // An object rest's spread carries the keys it skips (ast.js spreadExclusions).
+  '...'(expr, ...excluded) {
     includeForArrayLiteral()
-    return ['...', prep(expr)]
+    return ['...', prep(expr), ...excluded.map(prep)]
   },
 
   'debugger': () => null,
@@ -1826,74 +1827,70 @@ function expandDestruct(pattern, source, out, decls = null, srcLen = null) {
   }
 
   includeForObjectPattern()
-  const items = patternItems(pattern[1])
-
-  // Collect explicit keys and detect rest pattern
-  let restTarget = null
-  const explicitKeys = []
-  for (const item of items) {
-    if (item == null) continue
-    if (Array.isArray(item) && item[0] === '...') { restTarget = item[1]; continue }
-    if (typeof item === 'string') explicitKeys.push(item)
-    else if (Array.isArray(item) && item[0] === '=') { if (typeof item[1] === 'string') explicitKeys.push(item[1]) }
-    else if (Array.isArray(item) && item[0] === ':') explicitKeys.push(item[1])
+  const items = patternItems(pattern[1]).filter(item => item != null)
+  const rest = items.at(-1)?.[0] === '...' ? items.pop()[1] : null
+  // A declaration's nodes are final here, prepped as they are made; the
+  // assignment form preps its whole lowering afterwards.
+  const prepped = (node) => decls ? node : prep(node)
+  const temp = () => { const t = `${T}d${freshPrepareId()}`; if (decls) decls.push(t); return t }
+  // A computed key `[e]: target`, unless it folds to a constant.
+  const computedOf = (item) => {
+    const key = Array.isArray(item) && item[0] === ':' ? item[1] : null
+    return Array.isArray(key) && key[0] === '[]' && key.length === 2 && staticPropertyKey(key) == null ? key[1] : null
   }
+  // RequireObjectCoercible (ES BindingInitialization of an object pattern):
+  // the read of a named key throws on a nullish source by itself; a pattern
+  // that begins otherwise (a rest, a computed key, nothing) tests the source
+  // before anything runs.
+  if (!items.length || computedOf(items[0]) != null)
+    out.push(prepped(['if', ['||', ['===', source, [null, null]], ['===', source, [null, undefined]]],
+      ['throw', ['new', ['()', 'TypeError', [null, 'Cannot destructure null or undefined']]]]]))
 
+  // The rest skips the keys the pattern names (CopyDataProperties' excluded
+  // names): a static key as its string, a computed one as the temp holding
+  // the property key it evaluated to.
+  const excluded = []
   for (const item of items) {
-    if (item == null) continue
-    if (Array.isArray(item) && item[0] === '...') continue  // handled below
-
-    if (typeof item === 'string') {
-      pushPatternAssign(item, ['.', source, item], out, decls)
+    // `a` and `a = dflt` (pushPatternAssign's `=` case: undefined-only default) read `a`.
+    if (typeof item === 'string' || item[0] === '=' && typeof item[1] === 'string') {
+      const key = typeof item === 'string' ? item : item[1]
+      excluded.push([null, key])
+      pushPatternAssign(item, ['.', source, key], out, decls)
       continue
     }
-
-    if (Array.isArray(item) && item[0] === '=') {
-      // Route through pushPatternAssign's `=` case: undefined-only default.
-      if (typeof item[1] === 'string')
-        pushPatternAssign(item, ['.', source, item[1]], out, decls)
-      continue
-    }
-
-    if (Array.isArray(item) && item[0] === ':') {
-      const key = item[1]
-      const computedKey = Array.isArray(key) && key[0] === '[]' && key.length === 2 ? key[1] : null
-      if (computedKey) includeForArrayAccess()
-      // Numeric key (`{ 0: v, length: z } = arr`) — an index read, not a dot-key:
-      // the static-key path hashes STRING keys only (and arrays index natively).
-      // The parser yields the key as a literal node `[null, 0]` (raw number in
-      // synthesized shapes).
-      const numKey = typeof key === 'number' ? key
-        : Array.isArray(key) && key.length === 2 && key[0] == null && typeof key[1] === 'number' ? key[1]
-        : null
-      const read = computedKey ? ['[]', source, computedKey]
-        : numKey != null ? (includeForArrayAccess(), ['[]', source, [, numKey]])
-        : ['.', source, key]
-      pushPatternAssign(item[2], read, out, decls)
-      continue
-    }
-  }
-
-  // Object rest: {x, ...rest} = obj → rest = {remaining props from source schema}
-  if (restTarget) {
-    const srcSchema = typeof source === 'string' && ctx.schema.resolve(source)
-    if (srcSchema) {
-      const remaining = srcSchema.filter(k => !explicitKeys.includes(k))
-      if (remaining.length) {
-        const restProps = remaining.map(k => [':', k, ['.', source, k]])
-        const restObj = ['{}', remaining.length === 1 ? restProps[0] : [',', ...restProps]]
-        // Register schema for the rest variable so property access works
-        // (poisoned names stay out of the shared channel).
-        if (typeof restTarget === 'string' && !ctx.schema.poisoned?.has(restTarget))
-          ctx.schema.vars.set(restTarget, ctx.schema.register(remaining))
-        pushPatternAssign(restTarget, restObj, out, decls)
-      } else {
-        pushPatternAssign(restTarget, ['{}'], out, decls)
+    if (item[0] !== ':') continue
+    const key = item[1]
+    let computed = computedOf(item), read
+    if (computed != null) {
+      includeForArrayAccess()
+      // With a rest, the key is evaluated once, to the property key the read
+      // and the rest share (ToPropertyKey).
+      if (rest != null) {
+        const raw = temp(), k = temp()
+        out.push(['=', raw, computed], ['=', k, prepped(['()', 'String', raw])])
+        excluded.push(computed = k)
       }
+      read = ['[]', source, computed]
+    } else if (Array.isArray(key) && key[0] === '[]') {
+      includeForArrayAccess()
+      excluded.push([null, staticPropertyKey(key)])
+      read = ['[]', source, key[1]]
     } else {
-      err('Object rest (...) requires source with known schema — destructure the object before passing to function, or use explicit property access')
+      // A quoted or numeric key is a literal node `[null, k]` (a raw number in
+      // synthesized shapes). A number or an array index reads by index
+      // (`{ 0: v, length: z } = arr`): the static-key path hashes STRING keys
+      // only, and arrays index natively.
+      const lit = Array.isArray(key) && key.length === 2 && key[0] == null ? key[1] : key
+      excluded.push([null, String(lit)])
+      read = typeof lit === 'number' || isArrayIndexKey(lit) ? (includeForArrayAccess(), ['[]', source, [, +lit]]) : ['.', source, lit]
     }
+    pushPatternAssign(item[2], read, out, decls)
   }
+
+  // Object rest: `{a, ...r} = o` binds `r` to the spread of `o` without `a`,
+  // whatever `o` is: a known layout copies its slots, anything else its own
+  // enumerable keys at run time (module/object.js emitObjectSpread).
+  if (rest != null) pushPatternAssign(rest, prepped(['{}', ['...', source, ...excluded]]), out, decls)
 }
 
 /** Something writes the binding `name` being declared here: the module's
@@ -2390,6 +2387,18 @@ function prepDecl(op, ...inits) {
       }
       rest.push(['=', declName, normed])
     }
+  }
+  // A pattern's coercibility test (expandDestruct) is a statement between
+  // its declarators: the declaration splits around it.
+  const isTest = (d) => Array.isArray(d) && d[0] === 'if'
+  if (rest.some(isTest)) {
+    const stmts = []
+    for (const d of rest) {
+      if (isTest(d)) stmts.push(d)
+      else if (stmts.at(-1)?.[0] === op) stmts.at(-1).push(d)
+      else stmts.push([op, d])
+    }
+    return [';', ...stmts]
   }
   return rest.length ? [op, ...rest] : null
 }

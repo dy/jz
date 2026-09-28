@@ -48,7 +48,7 @@
  *
  * @module summary
  */
-import { MUTATE_OPS, EXACT_MATH, extractParams, isBrand, returnExprs, ACCESSOR_GET, ACCESSOR_SET, CLASS_T, TYPEOF, typeofPredicate, canonicalKeyOrder, schemaKey, isArrayIndexKey, layoutView, ENUM_DATA, isTdzDecl } from '../ast.js'
+import { MUTATE_OPS, EXACT_MATH, extractParams, isBrand, returnExprs, ACCESSOR_GET, ACCESSOR_SET, CLASS_T, TYPEOF, typeofPredicate, canonicalKeyOrder, schemaKey, isArrayIndexKey, layoutView, ENUM_DATA, isTdzDecl, spreadExclusions } from '../ast.js'
 import { encodeTypedElemAux, TYPED_ELEM_CODE, TYPED_ELEM_VIEW_FLAG, TYPED_ELEM_ANY_VIEW_FLAG, ctorFromElemAux, TYPED_ELEM_BIGINT_FLAG } from '../../layout.js'
 import { ITER_RECORD_KEYS } from '../std/iter-helpers.js'
 import { PROMISE_KEYS } from '../std/async.js'
@@ -2317,8 +2317,9 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   const dynamicLiteral = (n) => {
     // The single-source lowering clones its runtime representation. A clone
     // may share conservative content facts without sharing runtime storage;
-    // a source with an accessor copies its values instead (below).
-    if (n.length === 2 && n[1]?.[0] === '...') {
+    // a source with an accessor copies its values instead (below), and so
+    // does an object rest, which skips its pattern's keys.
+    if (n.length === 2 && n[1]?.[0] === '...' && !spreadExclusions(n[1])) {
       const source = expr(n[1][1]), t = tagOf(source)
       if (t === K.NONE) return K.NONE
       if (!viewed(source)) return !isNullable(source) && (t === K.OBJECT || t === K.HASH) ? source : cellOf(n, K.HASH, ANY)
@@ -2334,6 +2335,11 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       } else if (typeof p === 'string') add(p, expr(p))
       else if (Array.isArray(p) && p[0] === '...') {
         const source = expr(p[1]), ids = tagOf(source) === K.OBJECT && paramOf(source) !== UNKNOWN ? shapesOf(paramOf(source)) : [], sourceSid = ids[0]
+        // An object rest skips the keys its pattern named; one known only at
+        // run time leaves the copy a dictionary (module/object.js mergeSpreadNames).
+        const skip = spreadExclusions(p)
+        if (skip) for (const e of skip.exprs) expr(e)
+        const put = (name, value) => { if (!skip?.names.includes(name)) add(name, value) }
         // An unsolved source is not an open dictionary. Still visit every
         // initializer, but defer the layout instead of irreversibly escaping
         // its known sibling values during an early solver round.
@@ -2343,9 +2349,9 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
         if (p[1]?.[0] !== '&&' && !isNullable(source) && isDict(source) && !cellLostObject.has(cell(paramOf(source)))) {
           const c = cell(paramOf(source))
           dynamic = true
-          if (keyedCells.has(c)) { for (const [name, k] of cellProps.get(c) ?? []) add(name, k); wildKind = merge(wildKind, cellWild.get(c) ?? K.NONE) }
+          if (keyedCells.has(c)) { for (const [name, k] of cellProps.get(c) ?? []) put(name, k); wildKind = merge(wildKind, cellWild.get(c) ?? K.NONE) }
           else wildKind = merge(wildKind, elemOf(source))
-          for (const sid of shapesInCell(c)) { if (openSchemas.has(sid) || lostSchema(sid)) { wildKind = ANY; continue } for (const [key, k] of ownEntries(sid)) add(key, k) }
+          for (const sid of shapesInCell(c)) { if (openSchemas.has(sid) || lostSchema(sid)) { wildKind = ANY; continue } for (const [key, k] of ownEntries(sid)) put(key, k) }
           continue
         }
         // Conditional insertion uses a dictionary even when every present
@@ -2360,23 +2366,23 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
         if (isNullable(source) || ids.some(sid => openSchemas.has(sid))) {
           dynamic = true
           for (const sid of ids) {
-            for (const [key, k] of ownEntries(sid)) add(key, k)
-            for (const [name, k] of sideProps.get(sid) ?? []) add(name, k)
+            for (const [key, k] of ownEntries(sid)) put(key, k)
+            for (const [name, k] of sideProps.get(sid) ?? []) put(name, k)
             if (sideWild.has(sid)) wildKind = merge(wildKind, sideWild.get(sid))
           }
           continue
         }
         // Sources of different layouts fill a dictionary: the entry under a
         // name is what the sources holding it store, absent for the others.
-        if (ids.some(sid => layouts[sid] !== layouts[sourceSid])) {
+        if (ids.some(sid => layouts[sid] !== layouts[sourceSid]) || skip?.exprs.length) {
           dynamic = true
           const own = ids.map(sid => new Map(ownEntries(sid)))
           const keys = new Set(); for (const m of own) for (const key of m.keys()) keys.add(key)
-          for (const key of keys) { let value = K.NONE; for (const m of own) value = merge(value, m.has(key) ? m.get(key) : ABSENT); add(key, value) }
+          for (const key of keys) { let value = K.NONE; for (const m of own) value = merge(value, m.has(key) ? m.get(key) : ABSENT); put(key, value) }
           continue
         }
         const own = ids.map(ownEntries)
-        own[0].forEach(([key], j) => { let value = K.NONE; for (const entries of own) value = merge(value, entries[j][1]); add(key, value) })
+        own[0].forEach(([key], j) => { let value = K.NONE; for (const entries of own) value = merge(value, entries[j][1]); put(key, value) })
       } else {
         if (Array.isArray(p)) for (let j = 1; j < p.length; j++) escape(expr(p[j]))
         dynamic = true; wildKind = ANY

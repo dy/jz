@@ -125,6 +125,24 @@ export const isBlockBody = (body) =>
 
 export const isLiteralStr = idx => Array.isArray(idx) && idx[0] === 'str' && typeof idx[1] === 'string'
 
+/** The keys an object literal's spread item skips. An object rest is the
+ *  spread of its source without the keys its pattern named (the excluded
+ *  names ES RestBindingInitialization hands CopyDataProperties):
+ *  `{a, [k]: b, ...r} = o` binds `r` to `['{}', ['...', o, ['str', 'a'], kTemp]]`,
+ *  `kTemp` holding the key `k` evaluated to, as a string. Static keys come
+ *  back in `names`, runtime ones as the expressions in `exprs`; null for a
+ *  plain spread. */
+export const spreadExclusions = (p) => {
+  if (p.length < 3) return null
+  const names = [], exprs = []
+  for (let i = 2; i < p.length; i++) {
+    const k = p[i]
+    if (Array.isArray(k) && (k[0] === 'str' || k[0] == null) && typeof k[1] === 'string') names.push(k[1])
+    else exprs.push(k)
+  }
+  return { names, exprs }
+}
+
 /** A canonical array-index property key: `"0"`, `"1"`, … below 2^32 - 1 (ES 6.1.7). */
 const ARRAY_INDEX_KEY = /^(?:0|[1-9]\d*)$/
 export const isArrayIndexKey = (k) => typeof k === 'string' && k.length <= 10 && ARRAY_INDEX_KEY.test(k) && Number(k) < 4294967295
