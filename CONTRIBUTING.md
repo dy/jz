@@ -1347,7 +1347,7 @@ cli.js          command-line driver (`jz` binary): flags → compile opts, file 
 **Folder policy:** one folder per pipeline *stage*, not per arbitrary concern. `jzify/` lives at repo root (pre-compiler transform, like `layout.js` / `cli.js`). Shared cycle-free leaves stay at `src/` root so `module/` imports stay short.
 
 **Stdlib registration — two dialects, by design:** raw `ctx.core.stdlib[name] = body` / `ctx.core.emit[name] = fn` (or the `bind(name, fn)` sugar) is the DEFAULT for dep-free, arity-irrelevant handlers — the overwhelming majority of the stdlib (~580 sites vs ~35 `reg()` calls; this is real, not legacy-to-migrate). Call `inc('__dep', …)` inline in the handler body for any stdlib kernel it needs. `reg(name, deps, fn)` (→ `emitter()`, `src/ctx.js`), paired with `wat(name, body)` for any WAT-kernel half, is REQUIRED whenever either mechanical property matters:
-  - **deps must be auto-included, not hand-called.** `emitter()`'s wrapper runs `inc(...deps)` before every invocation of `fn`; anything that wraps/aliases the handler (`dual`, `.deps` propagation, a second name bound to the same function) inherits the guarantee for free. A raw handler's `inc()` call lives only in its own body — copy or wrap it and the dep silently drops.
+  - **deps must be auto-included, not hand-called.** `emitter()`'s wrapper runs `inc(...deps)` before every invocation of `fn`; anything that wraps/aliases the handler (`tag`, `.deps` propagation, a second name bound to the same function) inherits the guarantee for free. A raw handler's `inc()` call lives only in its own body — copy or wrap it and the dep silently drops.
   - **logical arity diverges from `fn.length`.** `emitter()`/`call()`/`method()` set `.argc` explicitly, which `emitArity()`'s fallback (`h?.argc ?? h?.length`) needs whenever a handler is built through a rest-param wrapper or otherwise doesn't report its true arity via `Function.length`. Plain raw handlers work fine on the `.length` fallback *only when the two agree* — that's the common case, hence still the default.
 
   The one hard, mechanical rule for either dialect: **never introduce a second write for a FLAT name already registered** — it used to silently overwrite the earlier handler (dropping `emitter()`'s auto-inc/argc guarantee when the earlier write was a `reg()`) with no error. It no longer can: `reg()`/`wat()`/`registerGetter()`/`bind()` (`src/ctx.js` `registerName`) refuse to register a FLAT name (no `:`) that's already occupied — by an earlier raw/`bind()` write *or* an earlier `reg()`/`wat()`/`registerGetter()` call, in either order, through either dialect — and throw immediately, naming both the module registering now and the module that got there first. A guarded `ctx.core.emit` handler clobbered by a *later, genuinely raw* (non-`bind()`) assignment — undetectable at the moment of that write, no Proxy in the self-compilable subset — is caught right after the clobbering module's `init()` returns (`verifyEmitIntegrity`, wired from `src/autoload.js` `includeModule`), by comparing the live table entry against the exact value reference `registerName` stored at registration time. **Type-qualified keys** (`.date:valueOf`, `.string:padStart`, …) are the one exemption: namespaced by design, one physical owner (the type's own module) per key, so `bind()` leaves them on the old unguarded raw write — cross-module collision there was never the hazard. What used to read as a legitimate "generic default, specific override" chain on FLAT names (e.g. `date.js`'s raw `.valueOf` over `string.js`'s `bind('.valueOf', …)`) was never actually that: it was this exact silent-collision class, and it corrupted `.valueOf()` on every unresolved-type receiver for as long as it shipped (`.work/archive/printer-trio.md`). All throw paths are exercised by `test/passes.js`'s stdlib duplicate-registration tests.
@@ -1851,6 +1851,17 @@ condition that branches itself alone: heapsort's child pick `if (child + 1 <
 n && a[child] < a[child + 1]) child++` as a select over the lowered `&&` ran
 35% slower than the branch.
 
+The Math functions are V8's own: `module/math/ieee754.js` transliterates V8's
+`src/base/ieee754.cc` (fdlibm) and its Torque `MathHypot` operation for operation,
+`module/math/simd.js` takes both lanes of a vector through the same operations
+(choosing per lane where the scalar branches, the scalar itself for rare lanes),
+and `src/prepare/math-kernel.js` folds constants with the same C in JS.
+`test/math-v8.js` holds all three to V8 bit for bit: ±0, subnormals, arguments
+past 2^19·π/2 (Payne–Hanek, `__kernel_rem_pio2`), NaN, ±∞. The reference is the C
+as written, which x64 builds of V8 compute; arm64 builds of Node and Chrome let the
+C compiler fuse `a*b + c` and differ in the last bit on a fraction of a percent of
+arguments, and run those kernels up to 1.4× faster than the unfused wasm.
+
 `x ** c` with a constant non-integer exponent is the `$math.pow` kernel, one
 implementation for constant and runtime exponents within an ulp of the host:
 Arm's optimized-routines pow, a double-double log from a 128-entry table
@@ -1862,14 +1873,12 @@ in `src/prepare/math-kernel.js` is the kernel's twin, bit for bit.
 The k/5 fifthroot fold runs four Newton steps (the last a correction) and
 measures a worst case of ~40 ulp across its exponents against the exact
 rational power, which `test/pow.js` pins under a 96 ulp ceiling. The lane vectorizer lifts a constant-exponent pow per lane through the
-same kernel, bit-exact with the scalar loop. A second algorithm (exp∘log, or
-the three-step fifthroot) is never the default: a meaningful result keeps its
-f64 accuracy. `Math.exp` and `2 ** x` are one table kernel (`math/trig-tables.js`
-EXP2_TAB: 2^(j/64) as the nearest double and the tail its rounding dropped;
-`scripts/exp-table.mjs`): reduce to |f| ≤ 1/128 (exp on its own ln2/64 split,
-head and tail), T + T·(q + tail) with q the exact-coefficient remainder
-series, one exponent build; 0.52 ulp against a 200-bit reference for both,
-scalar, 2-wide and the constant folder bit-identical (`test/math.js`).
+same kernel, bit-exact with the scalar loop. `2 ** x` is a table kernel
+(`math/trig-tables.js` EXP2_TAB: 2^(j/64) as the nearest double and the tail its
+rounding dropped; `scripts/exp-table.mjs`): reduce to |f| ≤ 1/128, T + T·(q + tail)
+with q the exact-coefficient remainder series, one exponent build; 0.52 ulp against
+a 200-bit reference, scalar, 2-wide and the constant folder bit-identical
+(`test/math.js`).
 
 Values use proven raw lanes or tagged carriers; heap values use NaN-boxing (see README). The legacy `ctx` store still carries compilation state. Consult its lifecycle ownership table in [`src/ctx.js`](src/ctx.js) before changing state; new persistent facts belong in ProgramIndex and frozen summaries, not another ambient store.
 

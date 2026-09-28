@@ -3,6 +3,7 @@ const TESTS = [
   'to-primitive',
   'property-order',
   'math',
+  'math-v8',
   'simd-intrinsics',
   'bytebeat',
   'imports',

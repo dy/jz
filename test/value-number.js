@@ -36,13 +36,13 @@ test('value numbering: a helper inlined twice with one argument runs once', () =
 
 test('value numbering: a reassigned operand keeps both calls', () => {
   const src = `export let g = (x) => { let a = Math.sin(x); x = x + 1; return a + Math.sin(x) }`
-  is(calls(funcWat(wat(src, ON), 'g'), 'math.sin_core'), 2)
+  is(calls(funcWat(wat(src, ON), 'g'), 'math.sin'), 2)
   is(run(src, ON).g(0.7), run(src, OFF).g(0.7))
 })
 
 test('value numbering: an if arm feeds neither the other arm nor what follows', () => {
   const src = `export let h = (x, c) => { let a = 0; if (c) a = Math.sin(x) * 2; else a = Math.sin(x) * 3; return a + Math.sin(x) }`
-  is(calls(funcWat(wat(src, ON), 'h'), 'math.sin_core'), 3)
+  is(calls(funcWat(wat(src, ON), 'h'), 'math.sin'), 3)
   for (const c of [0, 1]) is(run(src, ON).h(0.7, c), run(src, OFF).h(0.7, c))
 })
 
@@ -50,8 +50,8 @@ test('value numbering: a loop body shares within an iteration, never across', ()
   const src = `export let k = (n) => { let x = 0.5, s = 0; for (let i = 0; i < n; i++) { s += Math.sin(x); x = Math.sin(x) } return s }
 export let k2 = (n) => { let x = 0.5, s = 0; for (let i = 0; i < n; i++) { s += Math.sin(x); x = x * 2; s += Math.sin(x) } return s }`
   const w = wat(src, ON)
-  is(calls(funcWat(w, 'k'), 'math.sin_core'), 1, 'both reads of x precede its write: one call')
-  is(calls(funcWat(w, 'k2'), 'math.sin_core'), 2, 'x changes between the calls: two')
+  is(calls(funcWat(w, 'k'), 'math.sin'), 1, 'both reads of x precede its write: one call')
+  is(calls(funcWat(w, 'k2'), 'math.sin'), 2, 'x changes between the calls: two')
   const on = run(src, ON), off = run(src, OFF)
   is(on.k(20), off.k(20))
   is(on.k2(20), off.k2(20))

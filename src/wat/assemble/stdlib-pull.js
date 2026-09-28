@@ -37,7 +37,7 @@ function reachableStdlib(sec) {
   const stdlib = ctx.core.stdlib
   const reach = new Set(), stack = []
   // Track every reached name (module-namespace `math.sin` included), but only follow
-  // those with a stdlib template. Names match `$foo`, `$__foo`, `$math.sin_core` — the
+  // those with a stdlib template. Names match `$foo`, `$__foo`, `$math.sin` — the
   // dotted module funcs are the ones the `$__`-only regex used to miss, pruning live code.
   const add = (name) => { if (!reach.has(name)) { reach.add(name); if (stdlib[name] != null) stack.push(name) } }
   const scanIR = (node) => {
@@ -236,9 +236,10 @@ export function pullStdlib(sec) {
   // the SAME owning function since the shared kernel always needs both tables together.
   if (injectTable('math.pow_transcend', 'math.pow_log2_tbl', ctx.runtime.powLog2Table)) ctx.runtime.powLog2Table = null
   if (injectTable('math.pow_transcend', 'math.pow_exp2_tbl', ctx.runtime.powExp2Table)) ctx.runtime.powExp2Table = null
-  // The 2^(j/64) table both exponentials and pow reduce to (module/math/trig-tables.js EXP2_TAB): whichever is in injects it once.
+  // The 2^(j/64) table exp2 and pow reduce to (module/math/trig-tables.js EXP2_TAB): whichever is in injects it once.
   if (injectTable('math.exp2', 'math.exp2_tbl', ctx.runtime.exp2Table)) ctx.runtime.exp2Table = null
-  if (injectTable('math.exp', 'math.exp2_tbl', ctx.runtime.exp2Table)) ctx.runtime.exp2Table = null
+  // Payne–Hanek's 2/π and π/2 chunks plus its working array (module/math/ieee754.js), for trig past 2^19·π/2
+  if (injectTable('math.rem_pio2_large', 'math.pio2_tbl', ctx.runtime.remPio2Table)) ctx.runtime.remPio2Table = null
   // pow's runtime kernel (the default one; crPow's has tables of its own) reads both
   if (ctx.runtime.powLogTable) {
     if (injectTable('math.pow_core', 'math.exp2_tbl', ctx.runtime.exp2Table)) ctx.runtime.exp2Table = null

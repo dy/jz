@@ -339,7 +339,7 @@ test('SIMD gather - a secondary counter strides a read, bit-exact across strides
   }`
   const von = runVec(src, SIMD_OPT).main, voff = runVec(src, NOVEC).main
   for (const s of [0, 1, 2, 3, 7, 12]) is(von(s), voff(s), `stride ${(s & 7) + 1} bit-exact`)
-  const w = wat(src, SIMD_OPT)
+  const w = funcWat(wat(src, SIMD_OPT), 'main') || funcWat(wat(src, SIMD_OPT), 'main$exp')
   is((w.match(/f64x2\.replace_lane/g) || []).length, 1, 'src[k] gathers two lanes')
   is((w.match(/i32\.lt_u/g) || []).length, 0, 'no checked read: the counter range bounds k')
   is((w.match(/\(loop/g) || []).length, 5, 'two fills, the strip and its scalar tail, the hash: no versioned twin')

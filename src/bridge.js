@@ -185,14 +185,6 @@ export const tag = (handler, deps) => {
   return handler
 }
 
-/** `fast(firstArg)` → `core`, else `wrap`. Keeps wrap `.deps`. */
-export const dual = (wrap, core, fast) => {
-  const h = (a, ...rest) => (fast(a) ? core(a, ...rest) : wrap(a, ...rest))
-  h.deps = wrap.deps
-  h.argc = wrap.argc ?? wrap.length
-  return h
-}
-
 const cast = { I: asI64, F: asF64, i: asI32 }
 
 // 'I' is the boxed-value slot (receivers, collection keys/values) — a boolean

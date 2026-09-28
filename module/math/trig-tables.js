@@ -1,23 +1,12 @@
-/** Shared coefficients and reduction constants for scalar/f64x2 math and folding.
- *  Trig coefficients are fitted by scripts/minimax-trig.mjs; each consumer
- *  evaluates the same table in the same order. */
+/** Shared coefficients, tables and reduction constants for the scalar and f64x2 math
+ *  kernels and the constant folder: each consumer evaluates the same data in the same
+ *  order. */
 
-// Reduced-interval absolute-error target: < 1e-11.
-// sin(r)/r and cos(r) on the reduced range |r| <= pi/2, as their Maclaurin
-// series with EXACT 1/n! coefficients — ten terms for sin and eleven for cos,
-// the lengths that land within a few ulp (4.4e-16 and 1.8e-15 relative where
-// the result is not cancelling toward a zero). The seven-term minimax pair
-// they replace stopped at 1.2e-12 and 2.2e-11. Near a zero of the function
-// the argument reduction, not the series, sets the error.
-export const SIN_C = [1, -0.16666666666666666, 0.008333333333333333, -0.0001984126984126984, 0.0000027557319223985893, -2.505210838544172e-8, 1.6059043836821613e-10, -7.647163731819816e-13, 2.8114572543455206e-15, -8.22063524662433e-18]
-export const COS_C = [1, -0.5, 0.041666666666666664, -0.001388888888888889, 0.0000248015873015873, -2.755731922398589e-7, 2.08767569878681e-9, -1.1470745597729725e-11, 4.779477332387385e-14, -1.5619206968586225e-16, 4.110317623312165e-19]
-// 2^f over the reduced range f ∈ [-0.5, 0.5] for $math.exp2 (rel. err ≤ 6e-9). Lets the
-// base-2 power `2**y` skip the ×ln2 / ÷ln2 round-trip exp(y·ln2) pays — see $math.exp2.
 /**
  * The polynomial evaluation tree THREE evaluators share — the scalar WAT builder
  * (module/math.js), the two-wide one (module/math/simd.js) and the JS constant
  * folder (src/prepare/math-kernel.js). They must agree bit for bit: a folded
- * `Math.cos(0.7)` is compared against the compiled kernel's own answer, and a
+ * `Math.pow(1.5, 2.4)` is compared against the compiled kernel's own answer, and a
  * vectorized loop against its scalar tail. Sharing the tree makes that agreement
  * structural instead of three copies that have to be kept in step by hand.
  *
@@ -48,29 +37,11 @@ export const polyTree = (cs, ops, x) => {
   return terms[0]
 }
 
-// atanh's series for log: log((1+s)/(1-s)) = 2s * (1 + s^2/3 + s^4/5 + …), the
-// coefficients 1/(2k+1) EXACTLY, k = 0..9. log reduces to |s| <= 0.1716, where
-// ten terms land within 2 ulp (measured against log1p(s) - log1p(-s), which has
-// no cancellation to hide behind). The five-term minimax this replaces stopped
-// at 1.7e-11 and set the accuracy of log2, log1p, asinh, acosh and atanh with it.
-export const LOG_C = [1, 0.3333333333333333, 0.2, 0.14285714285714285, 0.1111111111111111, 0.09090909090909091, 0.07692307692307693, 0.06666666666666667, 0.058823529411764705, 0.05263157894736842]
-
-// (e^x - 1)/x on |x| < 0.5 as the Maclaurin series 1/n!, n = 1..14 — the length
-// that lands within 2 ulp (measured against the host over 200k points; the
-// 8-term series this replaces stopped at 1.3e-8 relative, the one function that
-// sat outside jz's own ~1e-9 transcendental budget). expm1 keeps its own series
-// rather than `exp(x) - 1` because that subtraction cancels away the answer near
-// zero, which is the whole reason the function exists.
-export const EXPM1_C = [1, 0.5, 0.16666666666666666, 0.041666666666666664, 0.008333333333333333, 0.001388888888888889, 0.0001984126984126984, 0.0000248015873015873, 0.0000027557319223985893, 2.755731922398589e-7, 2.505210838544172e-8, 2.08767569878681e-9, 1.6059043836821613e-10, 1.1470745597729725e-11]
-
-// The table $math.exp2 and $math.exp reduce to: 2^(j/64), j = 0..63, as the
+// The table $math.exp2 and pow's exponential tail reduce to: 2^(j/64), j = 0..63, as the
 // double nearest the exact power and the relative tail its rounding dropped
 // ((exact − T)/T), interleaved. scripts/exp-table.mjs derives both from
-// 2^(1/64) at 200 bits; test/math.js re-derives them. With the tail, the
-// kernels' T + T·(q + tail) – q the small remainder 2^f − 1 or e^r − 1 –
-// rounds once: 0.52 ulp over the whole range for both functions against the
-// 200-bit reference (the 14-term series over |f| ≤ ½ this replaces reached
-// 2 ulp at twice the flops, and exp through 2^(x·log2 e) lost |x| ulp on top).
+// 2^(1/64) at 200 bits; test/math.js re-derives them. With the tail,
+// T + T·(q + tail) – q the small remainder 2^f − 1 or e^r − 1 – rounds once.
 export const EXP2_TAB = [
   1, 0,
   1.0108892860517005, -1.5070669769260386e-17,
@@ -148,12 +119,6 @@ export const EXP_Q = [1, 0.5, 0.16666666666666666, 0.041666666666666664, 0.00833
 // ln2/64 split for exp's reduction r = (x − k·L1) − k·L2: L1 keeps 36 bits, so
 // k·L1 is exact for every |k| < 2^17 (every finite result), L2 the rest.
 export const EXP_L1 = 0.010830424696223417, EXP_L2 = 2.572804622327669e-14
-// Range-reduction constants via plain number interpolation: `${number}` now formats
-// through the Ryū shortest-round-trip __ftoa in BOTH legs (host and self-compiled
-// kernel), so the full-precision f64 bakes into the WAT verbatim — the former
-// string-literal workaround for the kernel's 9-digit dtoa is obsolete.
-export const PI = Math.PI, INV_PI = 1 / Math.PI, HALF_PI = Math.PI / 2
-
 // The pow kernel's log table (scripts/pow-log-table.mjs): for z ∈ [0x1.69555p-1, 0x1.69555p0)
 // split into 128 subintervals by the top mantissa bits of z − OFF, an entry holds 1/c
 // (c near the subinterval's center, 1/c = j/128 or j/256 so z/c − 1 is exact), log(c)
@@ -296,3 +261,80 @@ export const POW_LN2HI = 0.6931471805598903, POW_LN2LO = 5.497923018708371e-14
 // log1p(r) − r + r²/2 on |r| < 2^-7 (relative error 2^-70), the coefficients scaled to
 // the evaluation's own tree (Arm's pow_log_data.c, POW_LOG_POLY_ORDER 8).
 export const POW_LOG_A = [-0.5, -0.6666666666666679, 0.5000000000000007, 0.7999999995323976, -0.6666666663487739, -1.142909628459501, 1.0000415263675542]   // −0x1p-1, 0x1.555555555556p-2·−2, −0x1.0000000000006p-2·−2, 0x1.999999959554ep-3·4, −0x1.555555529a47ap-3·4, 0x1.2495b9b4845e9p-3·−8, −0x1.0002b8b263fc3p-3·−8
+
+// ---- V8's Math constants: src/base/ieee754.cc (fdlibm), as Node v25.9.0 ships it
+// (deps/v8/src/base/ieee754.cc). The WAT ports (module/math/ieee754.js) and their JS
+// twins (src/prepare/math-kernel.js) both read these; the hex words in the source
+// comments are the doubles the decimal literals parse to. ----
+
+// __ieee754_rem_pio2 / __kernel_rem_pio2: 2/π in 24-bit chunks, π/2 in 24-bit chunks
+// (only the first five, jk = 4 at the double precision V8 asks for), and the splits of π/2
+export const TWO_OVER_PI = [
+  0xA2F983, 0x6E4E44, 0x1529FC, 0x2757D1, 0xF534DD, 0xC0DB62, 0x95993C,
+  0x439041, 0xFE5163, 0xABDEBB, 0xC561B7, 0x246E3A, 0x424DD2, 0xE00649,
+  0x2EEA09, 0xD1921C, 0xFE1DEB, 0x1CB129, 0xA73EE8, 0x8235F5, 0x2EBB44,
+  0x84E99C, 0x7026B4, 0x5F7E41, 0x3991D6, 0x398353, 0x39F49C, 0x845F8B,
+  0xBDF928, 0x3B1FF8, 0x97FFDE, 0x05980F, 0xEF2F11, 0x8B5A0A, 0x6D1F6D,
+  0x367ECF, 0x27CB09, 0xB74F46, 0x3F669E, 0x5FEA2D, 0x7527BA, 0xC7EBE5,
+  0xF17B3D, 0x0739F7, 0x8A5292, 0xEA6BFB, 0x5FB11F, 0x8D5D08, 0x560330,
+  0x46FC7B, 0x6BABF0, 0xCFBC20, 0x9AF436, 0x1DA9E3, 0x91615E, 0xE61B08,
+  0x659985, 0x5F14A0, 0x68408D, 0xFFD880, 0x4D7327, 0x310606, 0x1556CA,
+  0x73A8C9, 0x60E27B, 0xC08C6B]
+export const PIO2_CHUNKS = [1.57079625129699707031e+00, 7.54978941586159635335e-08, 5.39030252995776476554e-15,
+  3.28200341580791294123e-22, 1.27065575308067607349e-29]
+export const INVPIO2 = 6.36619772367581382433e-01, PIO2_1 = 1.57079632673412561417e+00,
+  PIO2_1T = 6.07710050650619224932e-11, PIO2_2 = 6.07710050630396597660e-11,
+  PIO2_2T = 2.02226624879595063154e-21, PIO2_3 = 2.02226624871116645580e-21,
+  PIO2_3T = 8.47842766036889956997e-32
+// __kernel_sin S1..S6, __kernel_cos C1..C6, __kernel_tan T[0..12] and π/4 as hi + lo
+export const KSIN = [-1.66666666666666324348e-01, 8.33333333332248946124e-03, -1.98412698298579493134e-04,
+  2.75573137070700676789e-06, -2.50507602534068634195e-08, 1.58969099521155010221e-10]
+export const KCOS = [4.16666666666666019037e-02, -1.38888888888741095749e-03, 2.48015872894767294178e-05,
+  -2.75573143513906633035e-07, 2.08757232129817482790e-09, -1.13596475577881948265e-11]
+export const KTAN = [3.33333333333334091986e-01, 1.33333333333201242699e-01, 5.39682539762260521377e-02,
+  2.18694882948595424599e-02, 8.86323982359930005737e-03, 3.59207910759131235356e-03,
+  1.45620945432529025516e-03, 5.88041240820264096874e-04, 2.46463134818469906812e-04,
+  7.81794442939557092300e-05, 7.14072491382608190305e-05, -1.85586374855275456654e-05,
+  2.59073051863633712884e-05]
+export const PIO4 = 7.85398163397448278999e-01, PIO4LO = 3.06161699786838301793e-17
+// asin/acos: R(x²) = P/Q with pS0..pS5, qS1..qS4; π/2 as hi + lo
+export const ASIN_P = [1.66666666666666657415e-01, -3.25565818622400915405e-01, 2.01212532134862925881e-01,
+  -4.00555345006794114027e-02, 7.91534994289814532176e-04, 3.47933107596021167570e-05]
+export const ASIN_Q = [-2.40339491173441421878e+00, 2.02094576023350569471e+00, -6.88283971605453293030e-01,
+  7.70381505559019352791e-02]
+export const PIO2_HI = 1.57079632679489655800e+00, PIO2_LO = 6.12323399573676603587e-17
+// atan: atan(0.5), atan(1), atan(1.5), atan(∞) as hi + lo, and aT[0..10]
+export const ATAN_HI = [4.63647609000806093515e-01, 7.85398163397448278999e-01, 9.82793723247329054082e-01, 1.57079632679489655800e+00]
+export const ATAN_LO = [2.26987774529616870924e-17, 3.06161699786838301793e-17, 1.39033110312309984516e-17, 6.12323399573676603587e-17]
+export const ATAN_T = [3.33333333333329318027e-01, -1.99999999998764832476e-01, 1.42857142725034663711e-01,
+  -1.11111104054623557880e-01, 9.09088713343650656196e-02, -7.69187620504482999495e-02,
+  6.66107313738753120669e-02, -5.83357013379057348645e-02, 4.97687799461593236017e-02,
+  -3.65315727442169155270e-02, 1.62858201153657823623e-02]
+// atan2: π/4, π/2, π, and π's tail
+export const PI_O_4 = 7.8539816339744827900E-01, PI_O_2 = 1.5707963267948965580E+00,
+  PI_D = 3.1415926535897931160E+00, PI_LO = 1.2246467991473531772E-16
+// exp / expm1 / log / log1p share the split of ln2 (n·LN2_HI exact for |n| < 2000) and 1/ln2
+export const LN2_HI = 6.93147180369123816490e-01, LN2_LO = 1.90821492927058770002e-10,
+  INVLN2 = 1.44269504088896338700e+00, LN2 = 6.93147180559945286227e-01
+// exp: P1..P5, the overflow and underflow thresholds, e, 2^-1000, 2^1023
+export const EXP_P = [1.66666666666666019037e-01, -2.77777777770155933842e-03, 6.61375632143793436117e-05,
+  -1.65339022054652515390e-06, 4.13813679705723846039e-08]
+export const EXP_OVER = 7.09782712893383973096e+02, EXP_UNDER = -7.45133219101941108420e+02,
+  EXP_E = 2.718281828459045, TWOM1000 = 9.33263618503218878990e-302, TWO1023 = 8.988465674311579539e307
+// expm1: Q1..Q5 (scaled for hxs = x²/2). V8 writes 2^1023 there as the decimal
+// 8.98846567431158e+307, which parses to a double two ulp above it; kept as written.
+export const EXPM1_Q = [-3.33333333333331316428e-02, 1.58730158725481460165e-03, -7.93650757867487942473e-05,
+  4.00821782732936239552e-06, -2.01099218183624371326e-07]
+export const EXPM1_TWO1023 = 8.98846567431158e+307
+// log, log1p, log2 (k_log1p): Lg1..Lg7; 2^54; log2's 1/ln2 and log10's 1/ln10, log10(2) as hi + lo
+export const LG = [6.666666666666735130e-01, 3.999999999940941908e-01, 2.857142874366239149e-01,
+  2.222219843214978396e-01, 1.818357216161805012e-01, 1.531383769920937332e-01, 1.479819860511658591e-01]
+export const TWO54 = 1.80143985094819840000e+16
+export const IVLN2HI = 1.44269504072144627571e+00, IVLN2LO = 1.67517131648865118353e-10
+export const IVLN10 = 4.34294481903251816668e-01, LOG10_2HI = 3.01029995663611771306e-01, LOG10_2LO = 3.69423907715893078616e-13
+// cbrt: the exponent biases B1, B2 and P0..P4
+export const CBRT_B1 = 715094163, CBRT_B2 = 696219795
+export const CBRT_P = [1.87595182427177009643, -1.88497979543377169875, 1.621429720105354466140,
+  -0.758397934778766047437, 0.145996192886612446982]
+// sinh / cosh overflow thresholds; sinh's 2^-28 and log(DBL_MAX) with an empty low word
+export const SINH_OVER = 710.4758600739439, TWO_M28 = 3.725290298461914e-9, LOG_MAXD = 709.7822265625

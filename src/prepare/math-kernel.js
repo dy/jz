@@ -1,188 +1,664 @@
 /**
- * Host-side JS mirrors of module/math.js's WAT transcendentals, op-for-op, so
- * `preEval` (pre-eval.js) can fold `Math.sin(1.5)` etc. at COMPILE time to the
- * exact bits the RUNTIME wasm would compute — bit-exact vs jz's own kernel,
- * deliberately NOT vs host `Math.sin`/`Math.cos`/… (whose libm differs in the
- * last ulp from jz's minimax/Newton approximations by design; see module/math.js
- * header comments on each algorithm).
+ * Host-side JS twins of module/math/ieee754.js and module/math.js's pow, so `preEval`
+ * (pre-eval.js) folds `Math.sin(1.5)` etc. at COMPILE time to the exact bits the
+ * RUNTIME wasm computes, on any host.
  *
- * Every function below transliterates its `wat('math.X', ...)` twin literally:
- * same operand order, same parenthesization (float ops are NOT associative —
- * reordering would silently change the fold). f64 arithmetic in JS (+,-,*,/,
- * Math.sqrt/abs) is IEEE754 binary64 exactly like wasm's f64 ops, so the port
- * is bit-identical wherever the JS expression shape matches the WAT shape.
+ * Both are V8's own Math: src/base/ieee754.cc (fdlibm as V8 adapted it) as Node v25.9.0
+ * ships it, transliterated here from the C in its own order (float operations are not
+ * associative: a reordering would change the fold). JS's +, -, *, / and Math.sqrt/abs are
+ * IEEE binary64 exactly like wasm's f64 ops, so these return what x64 V8 returns. The host
+ * `Math` is no reference: arm64 builds of V8 fuse `a*b + c` in the C and differ in the last
+ * bit, and other engines use other libraries.
  *
- * A handful of ops are genuinely host-exact already (no algorithmic mirror
- * needed) because either jz's WAT wraps the SAME host-computed constant
- * (Math.PI et al — emitted via `f64.const ${Math.PI}` using the compiler's own
- * host Math), or the op is IEEE754-mandated correctly-rounded in both JS and
- * wasm (sqrt/abs/floor/ceil/trunc), or jz's WAT was deliberately engineered to
- * reproduce host JS Math semantics exactly (round, sign, imul, clz32, fround,
- * min/max — see module/math.js comments on each). Those are folded directly
- * via host Math in pre-eval.js's MATH_HOST_EXACT table; this module only ports
- * the ones with a genuinely bespoke algorithm.
+ * Ops that are exact everywhere (sqrt/abs/floor/ceil/trunc, and round/sign/fround/min/max,
+ * which jz's WAT reproduces exactly) fold through host Math in pre-eval.js's
+ * HOST_EXACT_UNARY; this module holds the ones with an algorithm.
  *
  * @module prepare/math-kernel
  */
 
-import { PI, INV_PI, HALF_PI, SIN_C, COS_C, EXPM1_C, LOG_C, EXP2_TAB, EXP2_Q, EXP_Q, EXP_L1, EXP_L2, POW_LOG_TAB, POW_LOG_A, POW_LN2HI, POW_LN2LO, polyTree } from '../../module/math/trig-tables.js'
+import {
+  EXP2_TAB, EXP_Q, EXP_L1, EXP_L2, POW_LOG_TAB, POW_LOG_A, POW_LN2HI, POW_LN2LO, polyTree,
+  TWO_OVER_PI, PIO2_CHUNKS, INVPIO2, PIO2_1, PIO2_1T, PIO2_2, PIO2_2T, PIO2_3, PIO2_3T,
+  KSIN, KCOS, KTAN, PIO4, PIO4LO, ASIN_P, ASIN_Q, PIO2_HI, PIO2_LO, ATAN_HI, ATAN_LO, ATAN_T,
+  PI_O_4, PI_O_2, PI_D, PI_LO, LN2_HI, LN2_LO, INVLN2, LN2, EXP_P, EXP_OVER, EXP_UNDER, EXP_E,
+  TWOM1000, TWO1023, EXPM1_Q, EXPM1_TWO1023, LG, TWO54, IVLN2HI, IVLN2LO, IVLN10, LOG10_2HI,
+  LOG10_2LO, CBRT_B1, CBRT_B2, CBRT_P, SINH_OVER, TWO_M28, LOG_MAXD,
+} from '../../module/math/trig-tables.js'
 
-// ---- bit-level helpers (i64.reinterpret_f64 / f64.reinterpret_i64) ----
-const _buf = new ArrayBuffer(8)
-const _dv = new DataView(_buf)
-/** f64 → its IEEE754 bit pattern, as an unsigned 64-bit BigInt (big-endian: bit 63 = sign). */
-function f64Bits(x) { _dv.setFloat64(0, x, false); return _dv.getBigUint64(0, false) }
-/** Unsigned 64-bit BigInt bit pattern → f64. */
-function bitsF64(bits) { _dv.setBigUint64(0, BigInt.asUintN(64, bits), false); return _dv.getFloat64(0, false) }
+// ---- fdlibm's word access: the two 32-bit halves of a double (little-endian host) ----
+const _buf = new ArrayBuffer(8), _f = new Float64Array(_buf), _w = new Int32Array(_buf)
+const hiw = (x) => { _f[0] = x; return _w[1] }
+const low = (x) => { _f[0] = x; return _w[0] >>> 0 }
+const words = (h, l) => { _w[1] = h; _w[0] = l; return _f[0] }
+const setLow = (x, l) => { _f[0] = x; _w[0] = l; return _f[0] }
+const setHigh = (x, h) => { _f[0] = x; _w[1] = h; return _f[0] }
 
-/** `f64.copysign`: magnitude of `mag`, sign of `sign` (handles ±0 correctly). */
-function copysign(mag, sign) {
-  const sNeg = sign < 0 || Object.is(sign, -0)
-  const mNeg = mag < 0 || Object.is(mag, -0)
-  return sNeg === mNeg ? mag : -mag
-}
-
-/** `f64.nearest`: round-to-nearest, ties-to-even (NOT JS `Math.round`, which
- *  ties away from zero toward +Infinity). Preserves sign of a zero result. */
-function nearest(x) {
-  if (!Number.isFinite(x) || x === 0) return x
-  const floor = Math.floor(x)
-  const diff = x - floor
-  let r
-  if (diff < 0.5) r = floor
-  else if (diff > 0.5) r = floor + 1
-  else r = (floor % 2 === 0) ? floor : floor + 1
-  return r === 0 ? copysign(0, x) : r
-}
-
-/** The shared evaluation tree (module/math/trig-tables.js `polyTree`) over plain
- *  numbers — the same tree the scalar and 2-wide WAT builders emit, so a folded
- *  `Math.cos(0.7)` and the compiled kernel's own answer agree bit for bit. */
-const horner = (cs, v) => polyTree(cs, { konst: (c) => c, mul: (a, b) => a * b, add: (a, b) => a + b }, v)
-
-
-function sinCore(x) {
-  if (Number.isNaN(x)) return x
-  if (Math.abs(x) === Infinity) return NaN
-  if (Math.abs(x) < 2 ** -27) return x
-  let q = nearest(x * INV_PI)
-  let r = x - q * PI
-  if (Math.abs(r) > HALF_PI) {
-    const q2 = nearest(r * INV_PI)
-    r = r - q2 * PI
-    q = q + q2
+// ---- argument reduction: __ieee754_rem_pio2 / __kernel_rem_pio2 (prec 2) ----
+// Results in RP[0] + RP[1]; returns n.
+const RP = new Float64Array(2)
+const kf = new Float64Array(20), kq = new Float64Array(20), kfq = new Float64Array(20), kiq = new Int32Array(20)
+const TWO24 = 16777216, TWON24 = 5.96046447753906250000e-08
+function kernelRemPio2(x, e0, nx) {
+  const jk = 4, jp = jk, jx = nx - 1
+  let jv = ((e0 - 3) / 24) | 0
+  if (jv < 0) jv = 0
+  let q0 = e0 - 24 * (jv + 1)
+  let j = jv - jx
+  for (let i = 0; i <= jx + jk; i++, j++) kf[i] = j < 0 ? 0 : TWO_OVER_PI[j]
+  for (let i = 0; i <= jk; i++) { let fw = 0; for (j = 0; j <= jx; j++) fw += x[j] * kf[jx + i - j]; kq[i] = fw }
+  let jz = jk, z = 0, n = 0, ih = 0, fw = 0
+  for (;;) {
+    let i = 0
+    for (j = jz, z = kq[jz]; j > 0; i++, j--) {
+      fw = (TWON24 * z) | 0
+      kiq[i] = (z - TWO24 * fw) | 0
+      z = kq[j - 1] + fw
+    }
+    z = z * 2 ** q0
+    z -= 8.0 * Math.floor(z * 0.125)
+    n = z | 0
+    z -= n
+    ih = 0
+    if (q0 > 0) {
+      i = kiq[jz - 1] >> (24 - q0)
+      n += i
+      kiq[jz - 1] -= i << (24 - q0)
+      ih = kiq[jz - 1] >> (23 - q0)
+    } else if (q0 === 0) ih = kiq[jz - 1] >> 23
+    else if (z >= 0.5) ih = 2
+    if (ih > 0) {
+      n += 1
+      let carry = 0
+      for (i = 0; i < jz; i++) {
+        j = kiq[i]
+        if (carry === 0) { if (j !== 0) { carry = 1; kiq[i] = 0x1000000 - j } }
+        else kiq[i] = 0xFFFFFF - j
+      }
+      if (q0 === 1) kiq[jz - 1] &= 0x7FFFFF
+      else if (q0 === 2) kiq[jz - 1] &= 0x3FFFFF
+      if (ih === 2) { z = 1 - z; if (carry !== 0) z -= 2 ** q0 }
+    }
+    if (z !== 0) break
+    j = 0
+    for (i = jz - 1; i >= jk; i--) j |= kiq[i]
+    if (j !== 0) break
+    let k = 1
+    while (jk >= k && kiq[jk - k] === 0) k++
+    for (i = jz + 1; i <= jz + k; i++) {
+      kf[jx + i] = TWO_OVER_PI[jv + i]
+      fw = 0
+      for (j = 0; j <= jx; j++) fw += x[j] * kf[jx + i - j]
+      kq[i] = fw
+    }
+    jz += k
   }
-  q = q - 2 * nearest(q * 0.5)
-  const r2 = r * r
-  r = r * horner(SIN_C, r2)
-  if (Math.abs(q) > 0.5) r = -r
-  return Math.min(Math.max(r, -1), 1)
-}
-
-function cosCore(x) {
-  if (Number.isNaN(x)) return x
-  if (Math.abs(x) === Infinity) return NaN
-  let q = nearest(x * INV_PI)
-  let r = x - q * PI
-  if (Math.abs(r) > HALF_PI) {
-    const q2 = nearest(r * INV_PI)
-    r = r - q2 * PI
-    q = q + q2
+  if (z === 0) {
+    jz -= 1; q0 -= 24
+    while (kiq[jz] === 0) { jz--; q0 -= 24 }
+  } else {
+    z = z * 2 ** -q0
+    if (z >= TWO24) {
+      fw = (TWON24 * z) | 0
+      kiq[jz] = z - TWO24 * fw
+      jz += 1; q0 += 24
+      kiq[jz] = fw
+    } else kiq[jz] = z
   }
-  q = q - 2 * nearest(q * 0.5)
-  const r2 = r * r
-  r = horner(COS_C, r2)
-  if (Math.abs(q) > 0.5) r = -r
-  return Math.min(Math.max(r, -1), 1)
+  fw = 2 ** q0
+  for (let i = jz; i >= 0; i--) { kq[i] = fw * kiq[i]; fw *= TWON24 }
+  for (let i = jz; i >= 0; i--) {
+    fw = 0
+    for (let k = 0; k <= jp && k <= jz - i; k++) fw += PIO2_CHUNKS[k] * kq[i + k]
+    kfq[jz - i] = fw
+  }
+  fw = 0
+  for (let i = jz; i >= 0; i--) fw += kfq[i]
+  RP[0] = ih === 0 ? fw : -fw
+  fw = kfq[0] - fw
+  for (let i = 1; i <= jz; i++) fw += kfq[i]
+  RP[1] = ih === 0 ? fw : -fw
+  return n & 7
+}
+const tx = new Float64Array(3)
+function remPio2(x) {
+  const hx = hiw(x), ix = hx & 0x7FFFFFFF
+  if (ix < 0x4002D97C) {
+    if (hx > 0) {
+      let z = x - PIO2_1
+      if (ix !== 0x3FF921FB) { RP[0] = z - PIO2_1T; RP[1] = (z - RP[0]) - PIO2_1T }
+      else { z -= PIO2_2; RP[0] = z - PIO2_2T; RP[1] = (z - RP[0]) - PIO2_2T }
+      return 1
+    }
+    let z = x + PIO2_1
+    if (ix !== 0x3FF921FB) { RP[0] = z + PIO2_1T; RP[1] = (z - RP[0]) + PIO2_1T }
+    else { z += PIO2_2; RP[0] = z + PIO2_2T; RP[1] = (z - RP[0]) + PIO2_2T }
+    return -1
+  }
+  if (ix <= 0x413921FB) {
+    let t = Math.abs(x)
+    const n = (t * INVPIO2 + 0.5) | 0, fn = n
+    let r = t - fn * PIO2_1, w = fn * PIO2_1T, y0 = r - w
+    // npio2_hw[n − 1] is the high word of n·PIO2_1 for every n < 32
+    if (!(n < 32 && ix !== hiw(fn * PIO2_1))) {
+      const j = ix >> 20
+      if (j - ((hiw(y0) >> 20) & 0x7FF) > 16) {
+        t = r; w = fn * PIO2_2; r = t - w; w = fn * PIO2_2T - ((t - r) - w); y0 = r - w
+        if (j - ((hiw(y0) >> 20) & 0x7FF) > 49) { t = r; w = fn * PIO2_3; r = t - w; w = fn * PIO2_3T - ((t - r) - w); y0 = r - w }
+      }
+    }
+    const y1 = (r - y0) - w
+    if (hx < 0) { RP[0] = -y0; RP[1] = -y1; return -n }
+    RP[0] = y0; RP[1] = y1
+    return n
+  }
+  const e0 = (ix >> 20) - 1046
+  let z = words(ix - (e0 << 20), low(x))
+  for (let i = 0; i < 2; i++) { tx[i] = z | 0; z = (z - tx[i]) * TWO24 }
+  tx[2] = z
+  let nx = 3
+  while (tx[nx - 1] === 0) nx--
+  const n = kernelRemPio2(tx, e0, nx)
+  if (hx < 0) { RP[0] = -RP[0]; RP[1] = -RP[1]; return -n }
+  return n
 }
 
-function tan(x) { return sinCore(x) / cosCore(x) }
+// ---- __kernel_sin, __kernel_cos, __kernel_tan ----
+const [S1, S2, S3, S4, S5, S6] = KSIN
+const [C1, C2, C3, C4, C5, C6] = KCOS
+function kSin(x, y, iy) {
+  if ((hiw(x) & 0x7FFFFFFF) < 0x3E400000) return x
+  const z = x * x, v = z * x
+  const r = S2 + z * (S3 + z * (S4 + z * (S5 + z * S6)))
+  if (iy === 0) return x + v * (S1 + z * r)
+  return x - ((z * (0.5 * y - v * r) - y) - v * S1)
+}
+function kCos(x, y) {
+  const ix = hiw(x) & 0x7FFFFFFF
+  if (ix < 0x3E400000) return 1
+  const z = x * x
+  const r = z * (C1 + z * (C2 + z * (C3 + z * (C4 + z * (C5 + z * C6)))))
+  if (ix < 0x3FD33333) return 1 - (0.5 * z - (z * r - x * y))
+  const qx = ix > 0x3FE90000 ? 0.28125 : words(ix - 0x00200000, 0)
+  return (1 - qx) - ((0.5 * z - qx) - (z * r - x * y))
+}
+const T = KTAN
+function kTan(x, y, iy) {
+  const hx = hiw(x), ix = hx & 0x7FFFFFFF
+  let z, r, v, w, s
+  if (ix < 0x3E300000) {
+    if (((ix | low(x)) | (iy + 1)) === 0) return 1 / Math.abs(x)
+    if (iy === 1) return x
+    w = x + y; z = setLow(w, 0); v = y - (z - x)
+    const a = -1 / w, t = setLow(a, 0)
+    s = 1 + t * z
+    return t + a * (s + t * v)
+  }
+  if (ix >= 0x3FE59428) {
+    if (hx < 0) { x = -x; y = -y }
+    z = PIO4 - x; w = PIO4LO - y; x = z + w; y = 0
+  }
+  z = x * x; w = z * z
+  r = T[1] + w * (T[3] + w * (T[5] + w * (T[7] + w * (T[9] + w * T[11]))))
+  v = z * (T[2] + w * (T[4] + w * (T[6] + w * (T[8] + w * (T[10] + w * T[12])))))
+  s = z * x
+  r = y + z * (s * (r + v) + y)
+  r += T[0] * s
+  w = x + r
+  if (ix >= 0x3FE59428) { v = iy; return (1 - ((hx >> 30) & 2)) * (v - 2 * (x - (w * w / (w + v) - r))) }
+  if (iy === 1) return w
+  z = setLow(w, 0); v = r - (z - x)
+  const a = -1 / w, t = setLow(a, 0)
+  s = 1 + t * z
+  return t + a * (s + t * v)
+}
 
-// 2^e for the table kernels: one exponent build for a normal e, two factors at the edges.
-function expScale(p, e) {
-  if (e > -1023 && e < 1024) return p * bitsF64(BigInt(e + 1023) << 52n)
-  const k2 = e >> 1
-  return p * bitsF64(BigInt(k2 + 1023) << 52n) * bitsF64(BigInt(e - k2 + 1023) << 52n)
+// ---- sin, cos, tan ----
+function sin(x) {
+  const ix = hiw(x) & 0x7FFFFFFF
+  if (ix <= 0x3FE921FB) return kSin(x, 0, 0)
+  if (ix >= 0x7FF00000) return NaN
+  const n = remPio2(x) & 3
+  if (n === 0) return kSin(RP[0], RP[1], 1)
+  if (n === 1) return kCos(RP[0], RP[1])
+  if (n === 2) return -kSin(RP[0], RP[1], 1)
+  return -kCos(RP[0], RP[1])
 }
-// $math.exp2 / $math.exp op for op (module/math.js): the 2^(j/64) table with tails.
-function exp2(y) {
-  if (Number.isNaN(y)) return y
-  if (y > 1024) return Infinity
-  if (y < -1075) return 0
-  const k = Math.trunc(nearest(y * 64))  // i32.trunc_f64_s(f64.nearest(64y)) – integral already
-  const f = y - k * 0.015625
-  const t = EXP2_TAB[2 * (k & 63)], tail = EXP2_TAB[2 * (k & 63) + 1]
-  return expScale(t + t * (f * horner(EXP2_Q, f) + tail), k >> 6)
+function cos(x) {
+  const ix = hiw(x) & 0x7FFFFFFF
+  if (ix <= 0x3FE921FB) return kCos(x, 0)
+  if (ix >= 0x7FF00000) return NaN
+  const n = remPio2(x) & 3
+  if (n === 0) return kCos(RP[0], RP[1])
+  if (n === 1) return -kSin(RP[0], RP[1], 1)
+  if (n === 2) return -kCos(RP[0], RP[1])
+  return kSin(RP[0], RP[1], 1)
 }
+function tan(x) {
+  const ix = hiw(x) & 0x7FFFFFFF
+  if (ix <= 0x3FE921FB) return kTan(x, 0, 1)
+  if (ix >= 0x7FF00000) return NaN
+  const n = remPio2(x)
+  return kTan(RP[0], RP[1], 1 - ((n & 1) << 1))
+}
+
+// ---- asin, acos, atan, atan2 ----
+const [pS0, pS1, pS2, pS3, pS4, pS5] = ASIN_P
+const [qS1, qS2, qS3, qS4] = ASIN_Q
+const asinP = (z) => z * (pS0 + z * (pS1 + z * (pS2 + z * (pS3 + z * (pS4 + z * pS5)))))
+const asinQ = (z) => 1 + z * (qS1 + z * (qS2 + z * (qS3 + z * qS4)))
+function acos(x) {
+  const hx = hiw(x), ix = hx & 0x7FFFFFFF
+  if (ix >= 0x3FF00000) {
+    if (((ix - 0x3FF00000) | low(x)) === 0) return hx > 0 ? 0 : PI_D + 2 * PIO2_LO
+    return NaN
+  }
+  if (ix < 0x3FE00000) {
+    if (ix <= 0x3C600000) return PIO2_HI + PIO2_LO
+    const z = x * x, r = asinP(z) / asinQ(z)
+    return PIO2_HI - (x - (PIO2_LO - x * r))
+  }
+  if (hx < 0) {
+    const z = (1 + x) * 0.5, p = asinP(z), q = asinQ(z), s = Math.sqrt(z), r = p / q
+    const w = r * s - PIO2_LO
+    return PI_D - 2 * (s + w)
+  }
+  const z = (1 - x) * 0.5, s = Math.sqrt(z), df = setLow(s, 0)
+  const c = (z - df * df) / (s + df)
+  const r = asinP(z) / asinQ(z)
+  const w = r * s + c
+  return 2 * (df + w)
+}
+function asin(x) {
+  const hx = hiw(x), ix = hx & 0x7FFFFFFF
+  let t, w, p, q
+  if (ix >= 0x3FF00000) {
+    if (((ix - 0x3FF00000) | low(x)) === 0) return x * PIO2_HI + x * PIO2_LO
+    return NaN
+  }
+  if (ix < 0x3FE00000) {
+    if (ix < 0x3E400000) return x
+    t = x * x
+    w = asinP(t) / asinQ(t)
+    return x + x * w
+  }
+  w = 1 - Math.abs(x)
+  t = w * 0.5
+  p = asinP(t); q = asinQ(t)
+  const s = Math.sqrt(t)
+  if (ix >= 0x3FEF3333) {
+    w = p / q
+    t = PIO2_HI - (2 * (s + s * w) - PIO2_LO)
+  } else {
+    w = setLow(s, 0)
+    const c = (t - w * w) / (s + w), r = p / q
+    p = 2 * s * r - (PIO2_LO - 2 * c)
+    q = PIO4 - 2 * w
+    t = PIO4 - (p - q)
+  }
+  return hx > 0 ? t : -t
+}
+const [aT0, aT1, aT2, aT3, aT4, aT5, aT6, aT7, aT8, aT9, aT10] = ATAN_T
+function atan(x) {
+  const hx = hiw(x), ix = hx & 0x7FFFFFFF
+  let id = -1
+  if (ix >= 0x44100000) {
+    if (x !== x) return x
+    return hx > 0 ? ATAN_HI[3] + ATAN_LO[3] : -ATAN_HI[3] - ATAN_LO[3]
+  }
+  if (ix < 0x3FDC0000) {
+    if (ix < 0x3E400000) return x
+  } else {
+    x = Math.abs(x)
+    if (ix < 0x3FF30000) {
+      if (ix < 0x3FE60000) { id = 0; x = (2 * x - 1) / (2 + x) }
+      else { id = 1; x = (x - 1) / (x + 1) }
+    } else if (ix < 0x40038000) { id = 2; x = (x - 1.5) / (1 + 1.5 * x) }
+    else { id = 3; x = -1 / x }
+  }
+  const z = x * x, w = z * z
+  const s1 = z * (aT0 + w * (aT2 + w * (aT4 + w * (aT6 + w * (aT8 + w * aT10)))))
+  const s2 = w * (aT1 + w * (aT3 + w * (aT5 + w * (aT7 + w * aT9))))
+  if (id < 0) return x - x * (s1 + s2)
+  const r = ATAN_HI[id] - ((x * (s1 + s2) - ATAN_LO[id]) - x)
+  return hx < 0 ? -r : r
+}
+function atan2(y, x) {
+  if (x !== x) return x
+  if (y !== y) return y
+  if (x === 1) return atan(y)
+  const hx = hiw(x), hy = hiw(y), ix = hx & 0x7FFFFFFF, iy = hy & 0x7FFFFFFF
+  let m = ((hy >> 31) & 1) | ((hx >> 30) & 2)
+  if (y === 0) return m < 2 ? y : m === 3 ? -PI_D : PI_D
+  if (x === 0) return hy < 0 ? -PI_O_2 : PI_O_2
+  if (ix === 0x7FF00000) {
+    if (iy === 0x7FF00000) return m === 0 ? PI_O_4 : m === 1 ? -PI_O_4 : m === 2 ? 3 * PI_O_4 : -3 * PI_O_4
+    return m === 0 ? 0 : m === 1 ? -0 : m === 2 ? PI_D : -PI_D
+  }
+  if (iy === 0x7FF00000) return hy < 0 ? -PI_O_2 : PI_O_2
+  const k = (iy - ix) >> 20
+  let z
+  if (k > 60) { z = PI_O_2 + 0.5 * PI_LO; m &= 1 }
+  else if (hx < 0 && k < -60) z = 0
+  else z = atan(Math.abs(y / x))
+  if (m === 0) return z
+  if (m === 1) return -z
+  if (m === 2) return PI_D - (z - PI_LO)
+  return (z - PI_LO) - PI_D
+}
+
+// ---- exp, expm1 ----
+const [P1, P2, P3, P4, P5] = EXP_P
 function exp(x) {
-  if (Number.isNaN(x)) return x
-  if (x > 709.782712893384) return Infinity
-  if (x < -745.1332191019412) return 0
-  const k = Math.trunc(nearest(x * (64 / Math.LN2)))
-  const r = (x - k * EXP_L1) - k * EXP_L2
-  const t = EXP2_TAB[2 * (k & 63)], tail = EXP2_TAB[2 * (k & 63) + 1]
-  return expScale(t + t * (r * horner(EXP_Q, r) + tail), k >> 6)
+  let hx = hiw(x)
+  const xsb = hx >>> 31
+  hx &= 0x7FFFFFFF
+  let hi = 0, lo = 0, k = 0
+  if (hx >= 0x40862E42) {
+    if (hx >= 0x7FF00000) return x === -Infinity ? 0 : x
+    if (x > EXP_OVER) return Infinity
+    if (x < EXP_UNDER) return 0
+  }
+  if (hx > 0x3FD62E42) {
+    if (hx < 0x3FF0A2B2) {
+      if (x === 1) return EXP_E
+      hi = x - (xsb ? -LN2_HI : LN2_HI); lo = xsb ? -LN2_LO : LN2_LO; k = 1 - xsb - xsb
+    } else {
+      k = (INVLN2 * x + (xsb ? -0.5 : 0.5)) | 0
+      const t = k
+      hi = x - t * LN2_HI; lo = t * LN2_LO
+    }
+    x = hi - lo
+  } else if (hx < 0x3E300000) return 1 + x
+  const t = x * x
+  const c = x - t * (P1 + t * (P2 + t * (P3 + t * (P4 + t * P5))))
+  if (k === 0) return 1 - ((x * c) / (c - 2) - x)
+  const y = 1 - ((lo - (x * c) / (2 - c)) - hi)
+  if (k >= -1021) {
+    if (k === 1024) return y * 2 * TWO1023
+    return y * words(0x3FF00000 + (k << 20), 0)
+  }
+  return y * words(0x3FF00000 + ((k + 1000) << 20), 0) * TWOM1000
 }
-
+const [Q1, Q2, Q3, Q4, Q5] = EXPM1_Q
 function expm1(x) {
-  if (Math.abs(x) < 0.5) return x * horner(EXPM1_C, x)
-  return exp(x) - 1
+  let hx = hiw(x)
+  const xsb = hx & 0x80000000
+  hx &= 0x7FFFFFFF
+  let hi = 0, lo = 0, c = 0, k = 0, t, y
+  if (hx >= 0x4043687A) {
+    if (hx >= 0x40862E42) {
+      if (hx >= 0x7FF00000) return x === -Infinity ? -1 : x
+      if (x > EXP_OVER) return Infinity
+    }
+    if (xsb !== 0) return -1
+  }
+  if (hx > 0x3FD62E42) {
+    if (hx < 0x3FF0A2B2) {
+      if (xsb === 0) { hi = x - LN2_HI; lo = LN2_LO; k = 1 }
+      else { hi = x + LN2_HI; lo = -LN2_LO; k = -1 }
+    } else {
+      k = (INVLN2 * x + (xsb === 0 ? 0.5 : -0.5)) | 0
+      t = k
+      hi = x - t * LN2_HI; lo = t * LN2_LO
+    }
+    x = hi - lo
+    c = (hi - x) - lo
+  } else if (hx < 0x3C900000) return x
+  const hfx = 0.5 * x, hxs = x * hfx
+  const r1 = 1 + hxs * (Q1 + hxs * (Q2 + hxs * (Q3 + hxs * (Q4 + hxs * Q5))))
+  t = 3 - r1 * hfx
+  let e = hxs * ((r1 - t) / (6 - x * t))
+  if (k === 0) return x - (x * e - hxs)
+  const twopk = words(0x3FF00000 + (k << 20), 0)
+  e = (x * (e - c) - c)
+  e -= hxs
+  if (k === -1) return 0.5 * (x - e) - 0.5
+  if (k === 1) return x < -0.25 ? -2 * (e - (x + 0.5)) : 1 + 2 * (x - e)
+  if (k <= -2 || k > 56) {
+    y = 1 - (e - x)
+    y = k === 1024 ? y * 2 * EXPM1_TWO1023 : y * twopk
+    return y - 1
+  }
+  if (k < 20) {
+    t = words(0x3FF00000 - (0x200000 >> k), 0)
+    return (t - (e - x)) * twopk
+  }
+  t = words((0x3FF - k) << 20, 0)
+  y = x - (e + t)
+  y += 1
+  return y * twopk
 }
 
+// ---- log, log1p, log2, log10 ----
+const [Lg1, Lg2, Lg3, Lg4, Lg5, Lg6, Lg7] = LG
 function log(x) {
-  if (Number.isNaN(x)) return x
-  if (x <= 0) return x === 0 ? -Infinity : NaN
-  if (x === Infinity) return x
-  let k = 0
-  if (x < 2.2250738585072014e-308) { x = x * 18014398509481984; k = -54 }
-  const bits = f64Bits(x)
-  k += Number((bits >> 52n) & 0x7ffn) - 1023
-  let m = bitsF64((bits & 0x000fffffffffffffn) | 0x3ff0000000000000n)
-  if (m >= 1.4142135623730951) { m = m * 0.5; k += 1 }
-  const s = (m - 1) / (m + 1)
-  const z = s * s
-  return k * Math.LN2 + 2 * s * horner(LOG_C, z)
-}
-
-function log2_(x) { return log(x) / Math.LN2 }
-
-function log10_(x) {
-  if (Number.isNaN(x)) return x
-  if (x <= 0) return x === 0 ? -Infinity : NaN
-  if (x === Infinity) return x
-  let k = 0
-  if (x < 2.2250738585072014e-308) { x = x * 18014398509481984; k = -54 }
-  const bits = f64Bits(x)
-  k += Number((bits >> 52n) & 0x7ffn) - 1023
-  let m = bitsF64((bits & 0x000fffffffffffffn) | 0x3ff0000000000000n)
-  if (m >= 1.4142135623730951) { m = m * 0.5; k += 1 }
-  const f = m - 1
-  const hfsq = 0.5 * (f * f)
-  const s = f / (2 + f)
-  const z = s * s
-  const w = z * z
-  const t1 = w * (0.3999999999940942 + w * (0.22222198432149792 + w * 0.15313837699209373))
-  const t2 = z * (0.6666666666666735 + w * (0.2857142874366239 + w * (0.1818357216161805 + w * 0.14798198605116586)))
+  let hx = hiw(x), k = 0
+  if (hx < 0x00100000) {
+    if (x === 0) return -Infinity
+    if (hx < 0) return NaN
+    k -= 54; x *= TWO54; hx = hiw(x)
+  }
+  if (hx >= 0x7FF00000) return x
+  k += (hx >> 20) - 1023
+  hx &= 0x000FFFFF
+  const i = (hx + 0x95F64) & 0x100000
+  x = setHigh(x, hx | (i ^ 0x3FF00000))
+  k += i >> 20
+  const f = x - 1, dk = k
+  if ((0x000FFFFF & (2 + hx)) < 3) {
+    if (f === 0) return k === 0 ? 0 : dk * LN2_HI + dk * LN2_LO
+    const R = f * f * (0.5 - 0.3333333333333333 * f)
+    if (k === 0) return f - R
+    return dk * LN2_HI - ((R - dk * LN2_LO) - f)
+  }
+  const s = f / (2 + f), z = s * s, w = z * z
+  const t1 = w * (Lg2 + w * (Lg4 + w * Lg6))
+  const t2 = z * (Lg1 + w * (Lg3 + w * (Lg5 + w * Lg7)))
   const R = t2 + t1
-  let hi = f - hfsq
-  hi = bitsF64(f64Bits(hi) & 0xffffffff00000000n)
-  const lo = ((f - hi) - hfsq) + s * (hfsq + R)
-  const valhi = hi * 0.4342944818781689
-  const dk = k
-  const y = dk * 0.30102999566361177
-  const vallo = ((dk * 3.694239077158931e-13) + ((lo + hi) * 2.5082946711645275e-11)) + (lo * 0.4342944818781689)
-  const w2 = y + valhi
-  const vallo2 = vallo + ((y - w2) + valhi)
-  return vallo2 + w2
+  if (((hx - 0x6147A) | (0x6B851 - hx)) > 0) {
+    const hfsq = 0.5 * f * f
+    if (k === 0) return f - (hfsq - s * (hfsq + R))
+    return dk * LN2_HI - ((hfsq - (s * (hfsq + R) + dk * LN2_LO)) - f)
+  }
+  if (k === 0) return f - s * (f - R)
+  return dk * LN2_HI - ((s * (f - R) - dk * LN2_LO) - f)
 }
-
 function log1p(x) {
-  if (x === Infinity) return Infinity
-  const u = 1 + x
-  if (u === 1) return x
-  return (log(u) * x) / (u - 1)
+  const hx = hiw(x), ax = hx & 0x7FFFFFFF
+  let k = 1, f = 0, hu = 0, c = 0, u
+  if (hx < 0x3FDA827A) {
+    if (ax >= 0x3FF00000) return x === -1 ? -Infinity : NaN
+    if (ax < 0x3E200000) return ax < 0x3C900000 ? x : x - x * x * 0.5
+    if (hx > 0 || hx <= (0xBFD2BEC4 | 0)) { k = 0; f = x; hu = 1 }
+  }
+  if (hx >= 0x7FF00000) return x
+  if (k !== 0) {
+    if (hx < 0x43400000) {
+      u = 1 + x
+      hu = hiw(u)
+      k = (hu >> 20) - 1023
+      c = k > 0 ? 1 - (u - x) : x - (u - 1)
+      c /= u
+    } else { u = x; hu = hiw(u); k = (hu >> 20) - 1023; c = 0 }
+    hu &= 0x000FFFFF
+    if (hu < 0x6A09E) u = setHigh(u, hu | 0x3FF00000)
+    else { k += 1; u = setHigh(u, hu | 0x3FE00000); hu = (0x00100000 - hu) >> 2 }
+    f = u - 1
+  }
+  const hfsq = 0.5 * f * f
+  if (hu === 0) {
+    if (f === 0) {
+      if (k === 0) return 0
+      c += k * LN2_LO
+      return k * LN2_HI + c
+    }
+    const R = hfsq * (1 - 0.6666666666666666 * f)
+    if (k === 0) return f - R
+    return k * LN2_HI - ((R - (k * LN2_LO + c)) - f)
+  }
+  const s = f / (2 + f), z = s * s
+  const R = z * (Lg1 + z * (Lg2 + z * (Lg3 + z * (Lg4 + z * (Lg5 + z * (Lg6 + z * Lg7))))))
+  if (k === 0) return f - (hfsq - s * (hfsq + R))
+  return k * LN2_HI - ((hfsq - (s * (hfsq + R) + (k * LN2_LO + c))) - f)
+}
+function kLog1p(f) {
+  const s = f / (2 + f), z = s * s, w = z * z
+  const t1 = w * (Lg2 + w * (Lg4 + w * Lg6))
+  const t2 = z * (Lg1 + w * (Lg3 + w * (Lg5 + w * Lg7)))
+  return s * (0.5 * f * f + (t2 + t1))
+}
+function log2(x) {
+  let hx = hiw(x), k = 0
+  if (hx < 0x00100000) {
+    if (x === 0) return -Infinity
+    if (hx < 0) return NaN
+    k -= 54; x *= TWO54; hx = hiw(x)
+  }
+  if (hx >= 0x7FF00000) return x
+  if (x === 1) return 0
+  k += (hx >> 20) - 1023
+  hx &= 0x000FFFFF
+  const i = (hx + 0x95F64) & 0x100000
+  x = setHigh(x, hx | (i ^ 0x3FF00000))
+  k += i >> 20
+  const y = k, f = x - 1, hfsq = 0.5 * f * f, r = kLog1p(f)
+  const hi = setLow(f - hfsq, 0)
+  const lo = (f - hi) - hfsq + r
+  let vhi = hi * IVLN2HI, vlo = (lo + hi) * IVLN2LO + lo * IVLN2HI
+  const w = y + vhi
+  vlo += (y - w) + vhi
+  vhi = w
+  return vlo + vhi
+}
+function log10(x) {
+  let hx = hiw(x), k = 0
+  if (hx < 0x00100000) {
+    if (x === 0) return -Infinity
+    if (hx < 0) return NaN
+    k -= 54; x *= TWO54; hx = hiw(x)
+  }
+  if (hx >= 0x7FF00000) return x
+  if (x === 1) return 0
+  const lx = low(x)
+  k += (hx >> 20) - 1023
+  const i = k >>> 31
+  const y = k + i
+  x = words((hx & 0x000FFFFF) | ((0x3FF - i) << 20), lx)
+  return (y * LOG10_2LO + IVLN10 * log(x)) + y * LOG10_2HI
 }
 
+// ---- sinh, cosh, tanh, asinh, acosh, atanh ----
+function sinh(x) {
+  const h = x < 0 ? -0.5 : 0.5, ax = Math.abs(x)
+  if (ax < 22) {
+    if (ax < TWO_M28) return x
+    const t = expm1(ax)
+    if (ax < 1) return h * (2 * t - t * t / (t + 1))
+    return h * (t + t / (t + 1))
+  }
+  if (ax < LOG_MAXD) return h * exp(ax)
+  if (ax <= SINH_OVER) { const w = exp(0.5 * ax), t = h * w; return t * w }
+  return x * 1.0e307
+}
+function cosh(x) {
+  const ix = hiw(x) & 0x7FFFFFFF, ax = Math.abs(x)
+  if (ix < 0x3FD62E43) {
+    const t = expm1(ax), w = 1 + t
+    if (ix < 0x3C800000) return w
+    return 1 + (t * t) / (w + w)
+  }
+  if (ix < 0x40360000) { const t = exp(ax); return 0.5 * t + 0.5 / t }
+  if (ix < 0x40862E42) return 0.5 * exp(ax)
+  if (ax <= SINH_OVER) { const w = exp(0.5 * ax), t = 0.5 * w; return t * w }
+  return ix >= 0x7FF00000 ? x * x : Infinity
+}
+function tanh(x) {
+  const jx = hiw(x), ix = jx & 0x7FFFFFFF
+  let z
+  if (ix >= 0x7FF00000) return x !== x ? x : jx >= 0 ? 1 : -1
+  if (ix < 0x40360000) {
+    if (ix < 0x3E300000) return x
+    if (ix >= 0x3FF00000) { const t = expm1(2 * Math.abs(x)); z = 1 - 2 / (t + 2) }
+    else { const t = expm1(-2 * Math.abs(x)); z = -t / (t + 2) }
+  } else z = 1
+  return jx >= 0 ? z : -z
+}
+function asinh(x) {
+  const hx = hiw(x), ix = hx & 0x7FFFFFFF
+  let w
+  if (ix >= 0x7FF00000) return x
+  if (ix < 0x3E300000) return x
+  if (ix > 0x41B00000) w = log(Math.abs(x)) + LN2
+  else if (ix > 0x40000000) { const t = Math.abs(x); w = log(2 * t + 1 / (Math.sqrt(x * x + 1) + t)) }
+  else { const t = x * x; w = log1p(Math.abs(x) + t / (1 + Math.sqrt(1 + t))) }
+  return hx > 0 ? w : -w
+}
+function acosh(x) {
+  const hx = hiw(x)
+  if (hx < 0x3FF00000) return NaN
+  if (hx >= 0x41B00000) return hx >= 0x7FF00000 ? x : log(x) + LN2
+  if (x === 1) return 0
+  if (hx > 0x40000000) { const t = x * x; return log(2 * x - 1 / (x + Math.sqrt(t - 1))) }
+  const t = x - 1
+  return log1p(t + Math.sqrt(2 * t + t * t))
+}
+function atanh(x) {
+  const hx = hiw(x), ix = hx & 0x7FFFFFFF
+  let t
+  if (Math.abs(x) > 1) return NaN
+  if (x !== x) return x
+  if (ix === 0x3FF00000) return x > 0 ? Infinity : -Infinity
+  if (ix < 0x3E300000) return x
+  x = Math.abs(x)
+  if (ix < 0x3FE00000) { t = x + x; t = 0.5 * log1p(t + t * x / (1 - x)) }
+  else t = 0.5 * log1p((x + x) / (1 - x))
+  return hx >= 0 ? t : -t
+}
+
+// ---- cbrt ----
+const [cP0, cP1, cP2, cP3, cP4] = CBRT_P
+function cbrt(x) {
+  let hx = hiw(x)
+  const sign = hx & 0x80000000
+  hx ^= sign
+  if (hx >= 0x7FF00000) return x
+  let t
+  if (hx < 0x00100000) {
+    if (x === 0) return x
+    t = words(0x43500000, 0) * x
+    t = words(sign | (((hiw(t) & 0x7FFFFFFF) / 3 | 0) + CBRT_B2), 0)
+  } else t = words(sign | ((hx / 3 | 0) + CBRT_B1), 0)
+  let r = (t * t) * (t / x)
+  t = t * ((cP0 + r * (cP1 + r * cP2)) + ((r * r) * r) * (cP3 + r * cP4))
+  // round t away from zero to 23 bits: bits = (bits + 0x80000000) & 0xFFFFFFFFC0000000
+  const l = low(t)
+  t = words(hiw(t) + (l >= 0x80000000 ? 1 : 0), ((l + 0x80000000) >>> 0) & 0xC0000000)
+  const s = t * t
+  r = x / s
+  const w = t + t
+  r = (r - t) / (w + r)
+  return t + t * r
+}
+
+// ---- hypot: V8's MathHypot (builtins/math.tq), the Kahan-compensated general form ----
+function hypot(...vs) {
+  const n = vs.length, abs = new Float64Array(n)
+  let inf = false, max = 0
+  for (let i = 0; i < n; i++) { const a = Math.abs(vs[i]); abs[i] = a; if (a === Infinity) inf = true; max = Math.max(max, a) }
+  if (inf) return Infinity
+  if (max !== max) return NaN
+  if (max === 0) return 0
+  let sum = 0, comp = 0
+  for (let i = 0; i < n; i++) {
+    const m = abs[i] / max, summand = m * m - comp, pre = sum + summand
+    comp = (pre - sum) - summand
+    sum = pre
+  }
+  return Math.sqrt(sum) * max
+}
+
+// ---- pow: module/math.js's $math.pow and emitPow's constant folds ----
 /** Fully-constant `Math.pow`/`**` fold, mirroring emitPow's own constant-arg
  *  branches exactly (module/math.js `emitPow`) — NOT the general runtime
  *  `$math.pow`, because emit.js already special-cases fully-literal operands
@@ -276,136 +752,12 @@ function powInt(a, n) {
   return n < 0 ? 1 / res : res
 }
 
-function atan(x) {
-  if (Number.isNaN(x)) return x
-  if (x === 0) return x
-  let t = Math.abs(x)
-  let off = 0
-  let flip = false
-  if (t > 1) { t = 1 / t; flip = true }
-  if (t > 0.41421356237309503) {
-    t = (t - 0.41421356237309503) / (1 + 0.41421356237309503 * t)
-    off = 0.39269908169872414
-  }
-  const u = t * t
-  let r = off + t * (0.99999999939667072 + u * (-0.33333307625846248 + u * (0.19998216947828790 + u * (-0.14240083011830104 + u * (0.10573479828448784 + u * (-0.060347904072425573))))))
-  if (flip) r = HALF_PI - r
-  return copysign(r, x)
-}
-
-function asin(x) {
-  if (Math.abs(x) > 1) return NaN
-  const ax = Math.abs(x)
-  const a = ax <= 0.5 ? ax : Math.sqrt(0.5 * (1 - ax))
-  const u = a * a
-  let r = a + (a * u) * (0.16666666715486264 + u * (0.074999892151409259 + u * (0.044648555271317079 + u * (0.030259196387355945 + u * (0.023661273034955098 + u * (0.010472588920432560 + u * 0.031028862087420162))))))
-  if (ax > 0.5) r = HALF_PI - 2 * r
-  return copysign(r, x)
-}
-
-function acos(x) { return HALF_PI - asin(x) }
-
-function atan2(y, x) {
-  if (Number.isNaN(x)) return x
-  if (Number.isNaN(y)) return y
-  if (x === 0) {
-    if (y === 0) return copysign((x < 0 || Object.is(x, -0)) ? PI : 0, y)
-    return y > 0 ? HALF_PI : -HALF_PI
-  }
-  if (x >= 0) return atan(y / x)
-  return y >= 0 ? atan(y / x) + PI : atan(y / x) - PI
-}
-
-function sinh(x) {
-  if (x === 0) return x
-  let ex = exp(Math.abs(x))
-  ex = 0.5 * (ex - 1 / ex)
-  return x < 0 ? -ex : ex
-}
-
-function cosh(x) {
-  const ex = exp(Math.abs(x))
-  return 0.5 * (ex + 1 / ex)
-}
-
-function tanh(x) {
-  if (x === 0) return x
-  if (Math.abs(x) > 22) return x < 0 ? -1 : 1
-  let e2x = exp(2 * Math.abs(x))
-  e2x = (e2x - 1) / (e2x + 1)
-  return x < 0 ? -e2x : e2x
-}
-
-function asinh(x) {
-  if (!Number.isFinite(x)) return x
-  if (x === 0) return x
-  return log(x + Math.sqrt(x * x + 1))
-}
-
-function acosh(x) {
-  if (x === Infinity) return Infinity
-  if (x < 1) return NaN
-  return log(x + Math.sqrt(x * x - 1))
-}
-
-function atanh(x) {
-  if (x === 0) return x
-  if (Math.abs(x) === Infinity) return NaN
-  return 0.5 * log((1 + x) / (1 - x))
-}
-
-// fdlibm s_cbrt.c, the twin of module/math.js's `math.cbrt` kernel.
-function cbrt(x) {
-  if (!Number.isFinite(x)) return x
-  if (x === 0) return x
-  let hx = Number(f64Bits(x) >> 32n)
-  const sign = hx & 0x80000000
-  hx = (hx ^ sign) >>> 0
-  let t
-  if (hx < 0x00100000) {
-    t = x * 18014398509481984   // 2^54
-    const high = Number(f64Bits(t) >> 32n) & 0x7fffffff
-    t = bitsF64(BigInt(((sign | (Math.floor(high / 3) + 696219795)) >>> 0)) << 32n)
-  } else {
-    t = bitsF64(BigInt(((sign | (Math.floor(hx / 3) + 715094163)) >>> 0)) << 32n)
-  }
-  let r = (t * t) * (t / x)
-  t = t * ((1.87595182427177009643 + r * (-1.88497979543377169875 + r * 1.621429720105354466140)) + ((r * r) * r) * (-0.758397934778766047437 + r * 0.145996192886612446982))
-  t = bitsF64((f64Bits(t) + 0x80000000n) & 0xffffffffc0000000n)
-  const s = t * t
-  r = x / s
-  const w = t + t
-  r = (r - t) / (w + r)
-  return t + t * r
-}
-
-// N-ary like Math.hypot, folded as the SAME left-chained 2-ary calls the runtime
-// emitter builds (module/math.js `math.hypot`) so constant folds stay bit-equal to
-// the compiled chain: () → +0, (x) → abs(x), (a,b,…) → hypot2(hypot2(a,b),…).
-function hypot2(x, y) {
-  if (Math.abs(x) === Infinity) return Infinity
-  if (Math.abs(y) === Infinity) return Infinity
-  return Math.sqrt(x * x + y * y)
-}
-function hypot(...vs) {
-  if (vs.length === 0) return 0
-  if (vs.length === 1) return Math.abs(vs[0])
-  let r = hypot2(vs[0], vs[1])
-  for (let i = 2; i < vs.length; i++) r = hypot2(r, vs[i])
-  return r
-}
-
-/** Pure bit-exact-vs-kernel transcendentals — dispatched by `math.<name>` key
- *  (matches the resolved callee jz's prepare already produces for `Math.foo`). */
+/** V8's Math functions, dispatched by the `math.<name>` key prepare resolves `Math.foo` to. */
 export const MATH_KERNEL = {
-  'math.sin': sinCore, 'math.sin_core': sinCore,
-  'math.cos': cosCore, 'math.cos_core': cosCore,
-  'math.tan': tan,
-  'math.exp2': exp2, 'math.exp': exp, 'math.expm1': expm1,
-  'math.log': log, 'math.log2': log2_, 'math.log10': log10_, 'math.log1p': log1p,
-  'math.atan': atan, 'math.asin': asin, 'math.acos': acos, 'math.atan2': atan2,
-  'math.sinh': sinh, 'math.cosh': cosh, 'math.tanh': tanh,
-  'math.asinh': asinh, 'math.acosh': acosh, 'math.atanh': atanh,
+  'math.sin': sin, 'math.cos': cos, 'math.tan': tan,
+  'math.asin': asin, 'math.acos': acos, 'math.atan': atan, 'math.atan2': atan2,
+  'math.exp': exp, 'math.expm1': expm1, 'math.log': log, 'math.log1p': log1p, 'math.log2': log2, 'math.log10': log10,
+  'math.sinh': sinh, 'math.cosh': cosh, 'math.tanh': tanh, 'math.asinh': asinh, 'math.acosh': acosh, 'math.atanh': atanh,
   'math.cbrt': cbrt, 'math.hypot': hypot,
 }
 /** `Math.pow`/`**` — special-cased 3-way split (see `pow` doc above), not a plain unary kernel entry. */

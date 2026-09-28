@@ -1,5 +1,6 @@
 /**
- * Math module - Math.sin, Math.cos, Math.sqrt, Math.PI, etc.
+ * Math module - Math.sin, Math.cos, Math.sqrt, Math.PI, etc. The transcendentals are V8's
+ * own algorithms (module/math/ieee754.js), so compiled Math returns what V8 returns.
  *
  * Module API:
  * - reg('math.X', deps, args => WasmNode) — emit handler + declarative stdlib deps
@@ -12,15 +13,16 @@
  * @module math
  */
 
-import { typed, asF64, toI32, toNumF64, temp, arrayLoop, isLit, litVal, isPureIR } from '../src/ir.js'
-import { emit, emitter, reg, deps, dual, tag, wat } from '../src/bridge.js'
+import { typed, asF64, toI32, toNumF64, temp, tempI32, arrayLoop, isLit, litVal, isPureIR } from '../src/ir.js'
+import { emit, emitter, reg, deps, tag, wat } from '../src/bridge.js'
 import { inc, err } from '../src/ctx.js'
 import { repOf, VAL } from '../src/reps.js'
 import { valTypeOf } from '../src/kind.js'
 import { registerPowTranscend } from './math/pow-transcend.js'
-import { PI, INV_PI, HALF_PI, SIN_C, COS_C, EXPM1_C, LOG_C, EXP2_TAB_HEX, EXP2_Q, EXP_Q, EXP_L1, EXP_L2, POW_LOG_TAB_HEX, POW_LOG_A, POW_LN2HI, POW_LN2LO, polyTree } from './math/trig-tables.js'
+import { EXP2_TAB_HEX, EXP2_Q, EXP_Q, EXP_L1, EXP_L2, POW_LOG_TAB_HEX, POW_LOG_A, POW_LN2HI, POW_LN2LO, polyTree } from './math/trig-tables.js'
 import { hexBytes } from '../src/static-data.js'
 import { registerMathSimd } from './math/simd.js'
+import { registerIeee754 } from './math/ieee754.js'
 import { registerSumPrecise } from './math/sum-precise.js'
 import { registerMathRandom } from './math/random.js'
 
@@ -30,15 +32,6 @@ export default (ctx) => {
   // (deps table, pow_core/pow_fold/pow_fold_v dual bodies) just branches on this.
   const crPow = !!ctx.transform.optimize?.crPow
   deps({
-    'math.sin': ['math.sin_core'],
-    'math.cos': ['math.cos_core'],
-    'math.sin_core': [],
-    'math.cos_core': [],
-    'math.tan': ['math.sin', 'math.cos'],
-    'math.exp': [],
-    'math.expm1': ['math.exp'],
-    'math.log2': ['math.log'],
-    'math.log1p': ['math.log'],
     'math.pow': ['math.pow_core'],
     'math.pow_core': crPow ? ['math.pow_transcend'] : [],
     'math.pow_scalbn': [],
@@ -49,16 +42,6 @@ export default (ctx) => {
     // is simply never traversed.
     'math.pow_transcend': ['math.pow_scalbn'],
     'math.pow_fold': ['math.pow_transcend'],
-    'math.asin': [],
-    'math.acos': ['math.asin'],
-    'math.atan2': ['math.atan'],
-    'math.sinh': ['math.exp', 'math.expm1'],
-    'math.cosh': ['math.exp'],
-    'math.tanh': ['math.expm1'],
-    'math.asinh': ['math.isFinite', 'math.log'],
-    'math.acosh': ['math.log'],
-    'math.atanh': ['math.log'],
-    'math.cbrt': ['math.isFinite'],
     'math.fifthroot': ['math.isFinite'],
     'math.sumPrecise': ['__ptr_offset', '__len', '__alloc'],
   })
@@ -75,65 +58,6 @@ export default (ctx) => {
     if (Array.isArray(a) && a[0] === '.' && typeof a[1] === 'string' && typeof a[2] === 'string') {
       return ctx.schema.slotIntCertainAt?.(a[1], a[2]) === true
     }
-    return false
-  }
-  // Emit-time fast path: call $math.sin_core/$math.cos_core directly instead of
-  // the $math.sin/$math.cos wrappers. sin_core still runs the isFinite guard
-  // (finite operands can overflow to ±Inf); this only saves a call indirection.
-  const isBoundName = (name) =>
-    typeof name === 'string' && (
-      repOf(name) != null ||
-      ctx.func.locals?.has(name) ||
-      ctx.func.current?.params?.some(p => p.name === name)
-    )
-  const isSinCoreFastPath = (src) => {
-    if (src == null) return false
-    if (typeof src === 'number') return Number.isFinite(src)
-    if (typeof src === 'string') return isIntCertain(src) || isBoundName(src)
-    if (!Array.isArray(src)) return false
-    const op = src[0]
-    // jz source literals: [null, n], [, bool], [null, null]
-    if (op == null && src.length === 2) {
-      const v = src[1]
-      if (typeof v === 'number') return Number.isFinite(v)
-      if (typeof v === 'boolean') return true
-      if (v == null) return true
-    }
-    if (op === 'literal') {
-      const v = src[1]
-      return typeof v === 'number' && Number.isFinite(v)
-    }
-    if (op === 'global' || op === 'param') return true
-    if (op === '()') {
-      const fn = src[1]
-      if (fn === 'math.PI' || fn === 'math.E' || fn === 'math.LN2' || fn === 'math.SQRT2') return true
-      if (typeof fn === 'string' && fn.startsWith('math.')) {
-        const finiteOps = new Set([
-          'math.abs', 'math.floor', 'math.ceil', 'math.trunc', 'math.round', 'math.sqrt',
-          'math.sin', 'math.cos', 'math.tan', 'math.imul', 'math.clz32',
-        ])
-        if (finiteOps.has(fn)) return src.slice(2).every(isSinCoreFastPath)
-      }
-    }
-    if (op === '|' && src.length === 3) return isSinCoreFastPath(src[1]) && isSinCoreFastPath(src[2])
-    if (op === '%' || op === '&' || op === '^' || op === '<<' || op === '>>' || op === '>>>') {
-      return src.slice(1).every(isSinCoreFastPath)
-    }
-    if (op === '+' || op === '-' || op === '*' || op === '**') {
-      return src.slice(1).every(isSinCoreFastPath)
-    }
-    if (op === '/') return isSinCoreFastPath(src[1]) && isSinCoreFastPath(src[2])
-    if (op === '?:' && src.length === 4) return isSinCoreFastPath(src[2]) && isSinCoreFastPath(src[3])
-    if ((op === '&&' || op === '||') && src.length === 3) return isSinCoreFastPath(src[1]) && isSinCoreFastPath(src[2])
-    if (op === '!' && src.length === 2) return isSinCoreFastPath(src[1])
-    if (op === '[]' && src.length === 3) {
-      // Chord tables / semitone indices — index is int-shaped, element is a small int.
-      return isSinCoreFastPath(src[2]) || isIntCertain(src[2])
-    }
-    if (op === '.' && src.length === 3 && src[2] === 'length') {
-      return typeof src[1] === 'string' || isSinCoreFastPath(src[1])
-    }
-    if (op === '.' && src.length === 3) return isIntCertain(src)
     return false
   }
   const fInt = (op, a) => isIntCertain(a) ? asF64(emit(a)) : f(op, a)
@@ -281,15 +205,9 @@ export default (ctx) => {
   // Sign
   reg('math.sign', ['math.sign'], a => fn('math.sign', a))
 
-  // Trig — isSinCoreFastPath skips the $math.sin/$math.cos wrapper call.
-  ctx.core.emit['math.sin'] = dual(
-    emitter(['math.sin'], a => fn('math.sin', a)),
-    emitter(['math.sin_core'], a => fn('math.sin_core', a)),
-    isSinCoreFastPath)
-  ctx.core.emit['math.cos'] = dual(
-    emitter(['math.cos'], a => fn('math.cos', a)),
-    emitter(['math.cos_core'], a => fn('math.cos_core', a)),
-    isSinCoreFastPath)
+  // Trig and the rest of V8's ieee754.cc: module/math/ieee754.js
+  reg('math.sin', ['math.sin'], a => fn('math.sin', a))
+  reg('math.cos', ['math.cos'], a => fn('math.cos', a))
   reg('math.tan', ['math.tan'], a => fn('math.tan', a))
 
   // Inverse trig
@@ -476,26 +394,48 @@ export default (ctx) => {
   ctx.core.emit['math.pow'] = tag((a, b) => emitPow(a, b, true), powCall.deps)
   ctx.core.emit['**'] = tag((a, b) => emitPow(a, b, true), powCall.deps)
   reg('math.cbrt', ['math.cbrt'], a => fn('math.cbrt', a))
+  // Math.hypot as V8's MathHypot (builtins/math.tq): the arguments made absolute; an
+  // infinity wins, then a NaN, a zero max is +0, else √(Σ (|v|/max)²)·max with the sum
+  // Kahan-compensated in argument order. V8's two- and three-argument fast paths are this
+  // same sum; two arguments call $math.hypot, more unroll it here, a spread loops twice.
+  const kahan = (sum, comp, n) => {
+    const s = temp('hy'), p = temp('hy')
+    return [['local.set', `$${s}`, ['f64.sub', ['f64.mul', get(n), get(n)], get(comp)]],
+      ['local.set', `$${p}`, ['f64.add', get(sum), get(s)]],
+      ['local.set', `$${comp}`, ['f64.sub', ['f64.sub', get(p), get(sum)], get(s)]],
+      ['local.set', `$${sum}`, get(p)]]
+  }
+  const hypotEnd = (inf, max, body) => typed(['if', ['result', 'f64'], get(inf), ['then', ['f64.const', 'inf']],
+    ['else', ['if', ['result', 'f64'], ['f64.ne', get(max), get(max)], ['then', ['f64.const', 'nan']],
+      ['else', ['if', ['result', 'f64'], ['f64.eq', get(max), ['f64.const', 0]], ['then', ['f64.const', 0]],
+        ['else', typed(['block', ['result', 'f64'], ...body], 'f64')]]]]]], 'f64')
   reg('math.hypot', ['math.hypot'], (a, b, ...rest) => {
     if (a === undefined) return typed(['f64.const', 0], 'f64')
-    // Spread: Math.hypot(...arr) folds the kernel pairwise over the elements
-    // (hypot(hypot(a, b), c) is the same overflow-safe magnitude).
+    const inf = tempI32('hy'), max = temp('hy'), sum = temp('hy'), comp = temp('hy'), n = temp('hy')
+    const sqrtMax = ['f64.mul', ['f64.sqrt', get(sum)], get(max)]
     if (!b && Array.isArray(a) && a[0] === '...') {
-      const acc = temp('hy')
-      const loop = arrayLoop(emit(a[1]), (_ptr, _len, _i, item) => [
-        ['local.set', `$${acc}`, ['call', '$math.hypot', ['local.get', `$${acc}`], asF64(item)]]
-      ])
+      const arr = temp('hy'), abs = (item) => ['f64.abs', asF64(item)]
+      const scan = arrayLoop(typed(get(arr), 'f64'), (_ptr, _len, _i, item) => [
+        ['local.set', `$${n}`, abs(item)],
+        ['local.set', `$${inf}`, ['i32.or', get(inf), ['f64.eq', get(n), ['f64.const', 'inf']]]],
+        ['local.set', `$${max}`, ['f64.max', get(max), get(n)]]])
+      const add = arrayLoop(typed(get(arr), 'f64'), (_ptr, _len, _i, item) => [
+        ['local.set', `$${n}`, ['f64.div', abs(item), get(max)]], ...kahan(sum, comp, n)])
       return typed(['block', ['result', 'f64'],
-        ['local.set', `$${acc}`, ['f64.const', 0]],
-        ...loop,
-        ['local.get', `$${acc}`]], 'f64')
+        ['local.set', `$${arr}`, asF64(emit(a[1]))],
+        ['local.set', `$${inf}`, ['i32.const', 0]], ['local.set', `$${max}`, ['f64.const', 0]], ...scan,
+        hypotEnd(inf, max, [['local.set', `$${sum}`, ['f64.const', 0]], ['local.set', `$${comp}`, ['f64.const', 0]], ...add, sqrtMax])], 'f64')
     }
     if (b === undefined) return f('f64.abs', a)
-    let r = fn('math.hypot', a, b)
-    // ToNumber every rest arg too (matches min/max) — an object arg's valueOf
-    // must run and may throw, which Math.hypot propagates.
-    for (const x of rest) r = typed(['call', '$math.hypot', r, toNumF64(x, emit(x))], 'f64')
-    return r
+    if (!rest.length) return fn('math.hypot', a, b)
+    // ToNumber every argument, in order, before any test (an object's valueOf may throw)
+    const vs = [a, b, ...rest].map(x => { const t = temp('hy'); return [t, ['local.set', `$${t}`, ['f64.abs', toNumF64(x, emit(x))]]] })
+    const eqInf = (t) => ['f64.eq', get(t), ['f64.const', 'inf']]
+    return typed(['block', ['result', 'f64'], ...vs.map(v => v[1]),
+      ['local.set', `$${inf}`, vs.slice(1).reduce((acc, v) => ['i32.or', acc, eqInf(v[0])], eqInf(vs[0][0]))],
+      ['local.set', `$${max}`, vs.slice(1).reduce((acc, v) => ['f64.max', acc, get(v[0])], get(vs[0][0]))],
+      hypotEnd(inf, max, [['local.set', `$${sum}`, ['f64.const', 0]], ['local.set', `$${comp}`, ['f64.const', 0]],
+        ...vs.flatMap(v => [['local.set', `$${n}`, ['f64.div', get(v[0]), get(max)]], ...kahan(sum, comp, n)]), sqrtMax])], 'f64')
   })
 
   registerSumPrecise()
@@ -546,101 +486,22 @@ export default (ctx) => {
       (then (f64.const 1.0))
       (else (f64.const -1.0))))`)
 
-  // sin/cos over the folded range [0, π/2] use a 5-term MINIMAX polynomial in x² (Horner
-  // form, generated below). It beats the prior 6-term Taylor on both counts: one fewer
-  // multiply (faster — the floatbeat synth is sin-bound), and lower error (sin ≤ 1.9e-8,
-  // cos ≤ 1.3e-7 vs Taylor's ~6e-8 / ~5e-7) — minimax spreads error evenly across the range
-  // instead of piling unused precision near 0. Coeffs fit by scripts/minimax-trig.mjs.
-  // The shared evaluation tree (module/math/trig-tables.js polyTree) in scalar
-  // WAT — the same tree the 2-wide builder and the JS constant folder use, so
-  // all three agree bit for bit.
+  // The shared evaluation tree (module/math/trig-tables.js polyTree) in scalar WAT: the
+  // same tree the 2-wide builder and the JS constant folder use, so all three agree bit for bit.
   const horner = (cs, v) => polyTree(cs, {
     konst: (c) => `(f64.const ${c})`,
     mul: (a, b) => `(f64.mul ${a} ${b})`,
     add: (a, b) => `(f64.add ${a} ${b})`,
   }, `(local.get ${v})`)
 
-  // Round-to-nearest reduction r = x − q·π ∈ [−π/2, π/2], in pure f64 — no int conversion,
-  // so it never traps and never saturates. A SECOND pass folds the q·π rounding error back
-  // in, keeping r bounded even for astronomically large x where the first pass loses all
-  // precision: Math.sin must return a value in [−1,1] for every finite input, not Inf/garbage.
-  // For |x| ≲ 1e15 the second pass is a no-op (q2 = 0) and the result is bit-identical to a
-  // single reduction. The odd poly r·P(r²) handles r<0 on its own (sin is odd); the sign is the
-  // parity of the total quotient, taken in f64 as q − 2·round(q/2). ×(1/π) avoids a divide.
-  // ±Infinity and NaN must return NaN. Guard before reduction instead of relying on
-  // Inf−Inf·π to mint one: that arithmetic NaN has platform-dependent bits and can
-  // escape as a non-canonical NaN-box on x86/Linux.
-  // The second reduction pass only corrects an r that the first pass left outside
-  // [−π/2, π/2]; for in-range r, q2 is 0 and the pass is a no-op, so gating it on
-  // |r| > π/2 is bit-identical for all finite inputs while sparing the common case
-  // ~6 ops. Both are generic wins for every sin/cos/tan/exp-via-trig call site.
-  wat('math.sin_core', `(func $math.sin_core (param $x f64) (result f64)
-    (local $q f64) (local $q2 f64) (local $r f64) (local $r2 f64)
-    (if (f64.ne (local.get $x) (local.get $x)) (then (return (f64.const nan))))
-    (if (f64.eq (f64.abs (local.get $x)) (f64.const inf)) (then (return (f64.const nan))))
-    ;; |x| ≤ 2⁻²⁷: sin(x) = x to within a fraction of an ulp, and returning x preserves the
-    ;; sign of ±0 (the range reduction below would turn -0 into +0: -0 − (-0·π) = +0).
-    (if (f64.lt (f64.abs (local.get $x)) (f64.const ${2 ** -27})) (then (return (local.get $x))))
-    (local.set $q (f64.nearest (f64.mul (local.get $x) (f64.const ${INV_PI}))))
-    (local.set $r (f64.sub (local.get $x) (f64.mul (local.get $q) (f64.const ${PI}))))
-    (if (f64.gt (f64.abs (local.get $r)) (f64.const ${HALF_PI}))
-      (then
-        (local.set $q2 (f64.nearest (f64.mul (local.get $r) (f64.const ${INV_PI}))))
-        (local.set $r (f64.sub (local.get $r) (f64.mul (local.get $q2) (f64.const ${PI}))))
-        (local.set $q (f64.add (local.get $q) (local.get $q2)))))
-    (local.set $q (f64.sub (local.get $q) (f64.mul (f64.const 2) (f64.nearest (f64.mul (local.get $q) (f64.const 0.5))))))
-    (local.set $r2 (f64.mul (local.get $r) (local.get $r)))
-    (local.set $r (f64.mul (local.get $r) ${horner(SIN_C, '$r2')}))
-    ;; Negate for odd quasiperiods
-    (if (f64.gt (f64.abs (local.get $q)) (f64.const 0.5)) (then (local.set $r (f64.neg (local.get $r)))))
-    ;; Clamp to [-1, 1]: polynomial approximation can overshoot by ~1e-8 near peaks.
-    ;; Branchless (f64.min/f64.max) avoids branch misprediction near peaks.
-    (f64.min (f64.max (local.get $r) (f64.const -1.0)) (f64.const 1.0)))`)
-
-  wat('math.sin', `(func $math.sin (param $x f64) (result f64)
-    (call $math.sin_core (local.get $x)))`)
-
-  wat('math.cos_core', `(func $math.cos_core (param $x f64) (result f64)
-    (local $q f64) (local $q2 f64) (local $r f64) (local $r2 f64)
-    (if (f64.ne (local.get $x) (local.get $x)) (then (return (f64.const nan))))
-    (if (f64.eq (f64.abs (local.get $x)) (f64.const inf)) (then (return (f64.const nan))))
-    (local.set $q (f64.nearest (f64.mul (local.get $x) (f64.const ${INV_PI}))))
-    (local.set $r (f64.sub (local.get $x) (f64.mul (local.get $q) (f64.const ${PI}))))
-    (if (f64.gt (f64.abs (local.get $r)) (f64.const ${HALF_PI}))
-      (then
-        (local.set $q2 (f64.nearest (f64.mul (local.get $r) (f64.const ${INV_PI}))))
-        (local.set $r (f64.sub (local.get $r) (f64.mul (local.get $q2) (f64.const ${PI}))))
-        (local.set $q (f64.add (local.get $q) (local.get $q2)))))
-    (local.set $q (f64.sub (local.get $q) (f64.mul (f64.const 2) (f64.nearest (f64.mul (local.get $q) (f64.const 0.5))))))
-    (local.set $r2 (f64.mul (local.get $r) (local.get $r)))
-    (local.set $r ${horner(COS_C, '$r2')})
-    ;; Negate for odd quasiperiods
-    (if (f64.gt (f64.abs (local.get $q)) (f64.const 0.5)) (then (local.set $r (f64.neg (local.get $r)))))
-    ;; Clamp to [-1, 1]: polynomial approximation can overshoot by ~1e-8 near peaks.
-    ;; Branchless (f64.min/f64.max) avoids branch misprediction near peaks.
-    (f64.min (f64.max (local.get $r) (f64.const -1.0)) (f64.const 1.0)))`)
-
-  wat('math.cos', `(func $math.cos (param $x f64) (result f64)
-    (call $math.cos_core (local.get $x)))`)
-
-  wat('math.tan', `(func $math.tan (param $x f64) (result f64)
-    (if (f64.ne (local.get $x) (local.get $x)) (then (return (f64.const nan))))
-    (if (f64.eq (f64.abs (local.get $x)) (f64.const inf)) (then (return (f64.const nan))))
-    (f64.div (call $math.sin (local.get $x)) (call $math.cos (local.get $x))))`)
-
+  registerIeee754()
   registerMathSimd()
 
-  // The table kernels (module/math/trig-tables.js EXP2_TAB): 2^y = 2^e · T[j] · 2^f
-  // with k = round(64y), j = k mod 64, e = ⌊k/64⌋ and |f| ≤ 1/128 – f = y − k/64 is
-  // exact, the two being within a factor of two. T[j] is the double nearest 2^(j/64)
-  // and tail[j] the relative remainder its rounding dropped, so T + T·(q + tail) with
-  // q = 2^f − 1 = f·(ln2 + f·ln2²/2 + … ) rounds once: 0.52 ulp against a 200-bit
-  // reference over the whole range, at half the flops of the 14-term series over
-  // |f| ≤ ½ this replaces (2 ulp). `Math.exp`, `Math.pow(2, x)`, sinh/cosh/tanh and
-  // the colour cases' decode ride on these. e^x reduces on its own: k = round(64x/ln2),
-  // r = (x − k·L1) − k·L2 (L1 the 36-bit head of ln2/64, so k·L1 is exact), then the
-  // same table with q = e^r − 1 = r·(1 + r/2 + …) – 2^(x·log2 e) lost |x| ulp to the
-  // rounding of the product (26 ulp at |x| = 40).
+  // The table kernel (module/math/trig-tables.js EXP2_TAB) behind `2 ** y` and pow's
+  // exponential tail: 2^y = 2^e · T[j] · 2^f with k = round(64y), j = k mod 64, e = ⌊k/64⌋ and
+  // |f| ≤ 1/128 – f = y − k/64 is exact, the two being within a factor of two. T[j] is the double
+  // nearest 2^(j/64) and tail[j] the relative remainder its rounding dropped, so T + T·(q + tail)
+  // with q = 2^f − 1 = f·(ln2 + f·ln2²/2 + … ) rounds once: 0.52 ulp against a 200-bit reference.
   ctx.runtime.exp2Table = hexBytes(EXP2_TAB_HEX)
   if (!crPow) ctx.runtime.powLogTable = hexBytes(POW_LOG_TAB_HEX)
   wat('math.exp2', `(func $math.exp2 (param $y f64) (result f64)
@@ -667,185 +528,6 @@ export default (ctx) => {
             (f64.mul (f64.mul (local.get $p)
               (f64.reinterpret_i64 (i64.shl (i64.extend_i32_s (i32.add (local.get $k2) (i32.const 1023))) (i64.const 52))))
               (f64.reinterpret_i64 (i64.shl (i64.extend_i32_s (i32.add (i32.sub (local.get $e) (local.get $k2)) (i32.const 1023))) (i64.const 52)))))))))))`)
-
-  wat('math.exp', `(func $math.exp (param $x f64) (result f64)
-    (local $k i32) (local $e i32) (local $k2 i32) (local $tb i32) (local $f f64) (local $t f64) (local $p f64)
-    (if (f64.ne (local.get $x) (local.get $x)) (then (return (local.get $x))))
-    (if (result f64) (f64.gt (local.get $x) (f64.const 709.782712893384)) (then (f64.const inf)) (else
-      (if (result f64) (f64.lt (local.get $x) (f64.const -745.1332191019412)) (then (f64.const 0.0)) (else
-        (local.set $k (i32.trunc_f64_s (f64.nearest (f64.mul (local.get $x) (f64.const ${64 / Math.LN2})))))
-        (local.set $t (f64.convert_i32_s (local.get $k)))
-        (local.set $f (f64.sub (f64.sub (local.get $x) (f64.mul (local.get $t) (f64.const ${EXP_L1}))) (f64.mul (local.get $t) (f64.const ${EXP_L2}))))
-        (local.set $tb (i32.add (global.get $math.exp2_tbl) (i32.shl (i32.and (local.get $k) (i32.const 63)) (i32.const 4))))
-        (local.set $t (f64.load (local.get $tb)))
-        (local.set $p (f64.add (local.get $t) (f64.mul (local.get $t)
-          (f64.add (f64.mul (local.get $f) ${horner(EXP_Q, '$f')}) (f64.load offset=8 (local.get $tb))))))
-        (local.set $e (i32.shr_s (local.get $k) (i32.const 6)))
-        ;; 2^e: one IEEE-exponent build for a normal result (the hot path); the two-factor
-        ;; split (2^k2 · 2^(e−k2)) only at the denormal and overflow edges. Bit-identical
-        ;; for a normal e – powers of two multiply exactly.
-        (if (result f64)
-          (i32.and (i32.gt_s (local.get $e) (i32.const -1023)) (i32.lt_s (local.get $e) (i32.const 1024)))
-          (then (f64.mul (local.get $p)
-            (f64.reinterpret_i64 (i64.shl (i64.extend_i32_s (i32.add (local.get $e) (i32.const 1023))) (i64.const 52)))))
-          (else
-            (local.set $k2 (i32.shr_s (local.get $e) (i32.const 1)))
-            (f64.mul (f64.mul (local.get $p)
-              (f64.reinterpret_i64 (i64.shl (i64.extend_i32_s (i32.add (local.get $k2) (i32.const 1023))) (i64.const 52))))
-              (f64.reinterpret_i64 (i64.shl (i64.extend_i32_s (i32.add (i32.sub (local.get $e) (local.get $k2)) (i32.const 1023))) (i64.const 52)))))))))))`)
-
-  // The shared series and the shared evaluation tree — the JS constant folder
-  // walks the same ones, so a folded `Math.expm1(0.3)` and the compiled kernel
-  // agree bit for bit. `$x` carries the leading factor, so the tree evaluates
-  // (e^x − 1)/x and the caller multiplies once.
-  const expm1Series = horner(EXPM1_C, '$x')
-
-  wat('math.expm1', `(func $math.expm1 (param $x f64) (result f64)
-    ;; expm1(x) = e^x − 1. For |x| < 0.5 sum the series directly: there e^x is within ~1.6
-    ;; of 1, so exp(x)−1 cancels the leading digits (the prior naive form lost up to ~11%
-    ;; near 0); the series doesn't, and the leading x·(…) preserves the sign of ±0. Larger
-    ;; |x| has no cancellation, so exp(x)−1 is accurate.
-    (if (result f64) (f64.lt (f64.abs (local.get $x)) (f64.const 0.5))
-      (then (f64.mul (local.get $x) ${expm1Series}))
-      (else (f64.sub (call $math.exp (local.get $x)) (f64.const 1.0)))))`)
-
-  // log(x) via bit-level frexp + sqrt(2)-centered split + atanh series.
-  //   x = m * 2^k   with bits-extracted k (no loop)
-  //   if m >= sqrt(2): m /= 2, k += 1     so m ∈ [sqrt(2)/2, sqrt(2)) ≈ [0.707, 1.414)
-  //   s = (m-1)/(m+1)                     |s| ≤ 0.172
-  //   log(x) = k·ln(2) + 2s·(1 + s²/3 + s⁴/5 + ... + s¹⁶/17)
-  // With 9 polynomial terms and |s|≤0.172, truncation error ≈ 2|s|·z⁹/19 ≈ 4e-17,
-  // close to f64 ulp. The whole routine is branchless after edge cases.
-  // Edge cases: NaN→NaN, ≤0 distinguishes 0→-Inf, <0→NaN; +Inf passes through.
-  wat('math.log', `(func $math.log (param $x f64) (result f64)
-    (local $bits i64) (local $k i32) (local $m f64) (local $s f64) (local $z f64)
-    (if (f64.ne (local.get $x) (local.get $x))
-      (then (return (local.get $x))))
-    (if (f64.le (local.get $x) (f64.const 0.0))
-      (then
-        (if (f64.eq (local.get $x) (f64.const 0.0))
-          (then (return (f64.const -inf))))
-        (return (f64.const nan))))
-    (if (f64.eq (local.get $x) (f64.const inf))
-      (then (return (local.get $x))))
-    (local.set $k (i32.const 0))
-    ;; Normalize denormals (exponent=0): scale by 2^54 and remember the shift,
-    ;; so the bit-extracted exponent below is meaningful for every finite x > 0.
-    (if (f64.lt (local.get $x) (f64.const 0x1p-1022))
-      (then
-        (local.set $x (f64.mul (local.get $x) (f64.const 0x1p54)))
-        (local.set $k (i32.const -54))))
-    ;; frexp via bit twiddling: k = ((bits >> 52) & 0x7ff) - 1023, then force exp=1023 so m ∈ [1,2).
-    (local.set $bits (i64.reinterpret_f64 (local.get $x)))
-    (local.set $k (i32.add (local.get $k) (i32.sub
-                    (i32.wrap_i64 (i64.and (i64.shr_u (local.get $bits) (i64.const 52)) (i64.const 0x7ff)))
-                    (i32.const 1023))))
-    (local.set $m (f64.reinterpret_i64
-                    (i64.or
-                      (i64.and (local.get $bits) (i64.const 0x000fffffffffffff))
-                      (i64.const 0x3ff0000000000000))))
-    ;; Center on sqrt(2) to shrink |s| from 1/3 down to ~0.172.
-    (if (f64.ge (local.get $m) (f64.const 1.4142135623730951))
-      (then
-        (local.set $m (f64.mul (local.get $m) (f64.const 0.5)))
-        (local.set $k (i32.add (local.get $k) (i32.const 1)))))
-    ;; s = (m−1)/(m+1)  (|s| ≤ 3−2√2 ≈ 0.172); log(m) = 2s·(1 + z·G(z)), z = s², G a degree-3
-    ;; minimax in z (Remez, equioscillation 5.8e-10). One short Horner replaces fdlibm's 7-term
-    ;; even/odd split — ~40% fewer ops, max rel err 1.7e-11 (jz transcendentals target ~1e-9).
-    (local.set $s (f64.div (f64.sub (local.get $m) (f64.const 1.0)) (f64.add (local.get $m) (f64.const 1.0))))
-    (local.set $z (f64.mul (local.get $s) (local.get $s)))
-    (f64.add
-      (f64.mul (f64.convert_i32_s (local.get $k)) (f64.const ${Math.LN2}))
-      (f64.mul (f64.mul (f64.const 2.0) (local.get $s)) ${horner(LOG_C, '$z')})))`)
-
-  wat('math.log2', `(func $math.log2 (param $x f64) (result f64)
-    (f64.div (call $math.log (local.get $x)) (f64.const ${Math.LN2})))`)
-
-  // log10 via fdlibm's two-term decomposition: log10(x) = k*log10(2) + log10(m).
-  // A plain log(x)/ln(10) double-rounds (rounding of log itself, then of the
-  // divide), so exact powers of ten drift — log10(1000) lands on 2.9999…996.
-  // Reducing x = m·2^k, splitting log10(2) and 1/ln(10) into hi/lo halves, and
-  // keeping the bulk term (k·log10_2hi, hi·ivln10hi) carry-free recovers the
-  // last ulps, so log10(10/100/1000/…) round-trips to exact integers.
-  wat('math.log10', `(func $math.log10 (param $x f64) (result f64)
-    (local $bits i64) (local $k i32) (local $m f64) (local $f f64)
-    (local $hfsq f64) (local $s f64) (local $z f64) (local $w f64)
-    (local $t1 f64) (local $t2 f64) (local $R f64)
-    (local $hi f64) (local $lo f64) (local $dk f64)
-    (local $valhi f64) (local $vallo f64) (local $y f64)
-    ;; Special values: NaN→NaN, x≤0 → (-inf for 0, NaN for negative), +inf→+inf.
-    (if (f64.ne (local.get $x) (local.get $x)) (then (return (local.get $x))))
-    (if (f64.le (local.get $x) (f64.const 0.0))
-      (then
-        (if (f64.eq (local.get $x) (f64.const 0.0)) (then (return (f64.const -inf))))
-        (return (f64.const nan))))
-    (if (f64.eq (local.get $x) (f64.const inf)) (then (return (local.get $x))))
-    ;; Normalize subnormals so the bit-extracted exponent is meaningful.
-    (local.set $k (i32.const 0))
-    (if (f64.lt (local.get $x) (f64.const 0x1p-1022))
-      (then
-        (local.set $x (f64.mul (local.get $x) (f64.const 0x1p54)))
-        (local.set $k (i32.const -54))))
-    ;; frexp: k += exponent, m = mantissa forced into [1,2).
-    (local.set $bits (i64.reinterpret_f64 (local.get $x)))
-    (local.set $k (i32.add (local.get $k) (i32.sub
-                    (i32.wrap_i64 (i64.and (i64.shr_u (local.get $bits) (i64.const 52)) (i64.const 0x7ff)))
-                    (i32.const 1023))))
-    (local.set $m (f64.reinterpret_i64
-                    (i64.or (i64.and (local.get $bits) (i64.const 0x000fffffffffffff))
-                            (i64.const 0x3ff0000000000000))))
-    ;; Center on sqrt(2): m ∈ [sqrt2/2, sqrt2) keeps the kernel argument small.
-    (if (f64.ge (local.get $m) (f64.const 1.4142135623730951))
-      (then
-        (local.set $m (f64.mul (local.get $m) (f64.const 0.5)))
-        (local.set $k (i32.add (local.get $k) (i32.const 1)))))
-    ;; log(m) kernel: f - hfsq + s*(hfsq+R), s = f/(2+f), polynomial in s².
-    (local.set $f (f64.sub (local.get $m) (f64.const 1.0)))
-    (local.set $hfsq (f64.mul (f64.const 0.5) (f64.mul (local.get $f) (local.get $f))))
-    (local.set $s (f64.div (local.get $f) (f64.add (f64.const 2.0) (local.get $f))))
-    (local.set $z (f64.mul (local.get $s) (local.get $s)))
-    (local.set $w (f64.mul (local.get $z) (local.get $z)))
-    (local.set $t1 (f64.mul (local.get $w) (f64.add (f64.const 0.3999999999940942)
-      (f64.mul (local.get $w) (f64.add (f64.const 0.22222198432149792)
-        (f64.mul (local.get $w) (f64.const 0.15313837699209373)))))))
-    (local.set $t2 (f64.mul (local.get $z) (f64.add (f64.const 0.6666666666666735)
-      (f64.mul (local.get $w) (f64.add (f64.const 0.2857142874366239)
-        (f64.mul (local.get $w) (f64.add (f64.const 0.1818357216161805)
-          (f64.mul (local.get $w) (f64.const 0.14798198605116586)))))))))
-    (local.set $R (f64.add (local.get $t2) (local.get $t1)))
-    ;; hi = high 32 bits of (f - hfsq); lo = the carry-free remainder.
-    (local.set $hi (f64.sub (local.get $f) (local.get $hfsq)))
-    (local.set $hi (f64.reinterpret_i64
-      (i64.and (i64.reinterpret_f64 (local.get $hi)) (i64.const 0xffffffff00000000))))
-    (local.set $lo (f64.add
-      (f64.sub (f64.sub (local.get $f) (local.get $hi)) (local.get $hfsq))
-      (f64.mul (local.get $s) (f64.add (local.get $hfsq) (local.get $R)))))
-    ;; Combine with k·log10(2): bulk in val_hi, corrections in val_lo.
-    (local.set $valhi (f64.mul (local.get $hi) (f64.const 0.4342944818781689)))
-    (local.set $dk (f64.convert_i32_s (local.get $k)))
-    (local.set $y (f64.mul (local.get $dk) (f64.const 0.30102999566361177)))
-    (local.set $vallo (f64.add (f64.add
-      (f64.mul (local.get $dk) (f64.const 3.694239077158931e-13))
-      (f64.mul (f64.add (local.get $lo) (local.get $hi)) (f64.const 2.5082946711645275e-11)))
-      (f64.mul (local.get $lo) (f64.const 0.4342944818781689))))
-    (local.set $w (f64.add (local.get $y) (local.get $valhi)))
-    (local.set $vallo (f64.add (local.get $vallo)
-      (f64.add (f64.sub (local.get $y) (local.get $w)) (local.get $valhi))))
-    (f64.add (local.get $vallo) (local.get $w)))`)
-
-  // log1p(x) via Kahan's compensated trick: with u = 1+x, log(u) loses bits when x is
-  // small (because u rounds to ~1), but the ratio x/(u-1) is exactly the missing factor.
-  // For u==1 (x below ulp), result is just x; preserves -0 from x=-0 path.
-  wat('math.log1p', `(func $math.log1p (param $x f64) (result f64)
-    (local $u f64)
-    ;; log1p(+Inf) = +Inf — the ratio trick below would compute Inf/Inf = NaN.
-    (if (f64.eq (local.get $x) (f64.const inf)) (then (return (f64.const inf))))
-    (local.set $u (f64.add (f64.const 1.0) (local.get $x)))
-    (if (f64.eq (local.get $u) (f64.const 1.0))
-      (then (return (local.get $x))))
-    (f64.div
-      (f64.mul (call $math.log (local.get $u)) (local.get $x))
-      (f64.sub (local.get $u) (f64.const 1.0))))`)
 
 
   // The entire correctly-rounded kernel below (codegen helpers, breakpoint tables, and the
@@ -1150,212 +832,6 @@ export default (ctx) => {
     (call $math.pow_transcend (local.get $x) (local.get $c)))`, ['math.pow_transcend'])
   } // if (crPow)
 
-  // fdlibm atan: 4-region argument reduction onto |r| ≤ tan(π/16), then an
-  // 11-term odd polynomial split into even/odd parts. Accurate to <1 ulp —
-  // the old Taylor series was ~2e-6 off near |x|=0.5. Drives asin/acos/atan2.
-  // Fast atan: sign symmetry (work on |x|), two-stage reduction onto [0, tan(π/8)] — |x|>1 →
-  // π/2−atan(1/x), then t>tan(π/8) → π/8+atan((t−C)/(1+Ct)) — then a degree-5 minimax t·P(t²).
-  // Replaces the fdlibm 4-way / 11-term / extended-precision form (correctly-rounded but ~3× the
-  // ops). Max rel err 6e-10 over all of ℝ — well within jz's ~1e-9 transcendental budget. asin =
-  // atan(x/√(1−x²)) and acos = π/2−asin inherit it, so all three drop from ~1.6–2.3× to under V8.
-  wat('math.atan', `(func $math.atan (param $x f64) (result f64)
-    (local $t f64) (local $u f64) (local $r f64) (local $off f64) (local $flip i32)
-    ;; NaN passes through; ±0 returns x (preserves sign of zero); ±Inf flows through (1/Inf=0 → π/2).
-    (if (f64.ne (local.get $x) (local.get $x)) (then (return (local.get $x))))
-    (if (f64.eq (local.get $x) (f64.const 0.0)) (then (return (local.get $x))))
-    (local.set $t (f64.abs (local.get $x)))
-    (local.set $off (f64.const 0.0))
-    (local.set $flip (i32.const 0))
-    (if (f64.gt (local.get $t) (f64.const 1.0))
-      (then (local.set $t (f64.div (f64.const 1.0) (local.get $t))) (local.set $flip (i32.const 1))))
-    (if (f64.gt (local.get $t) (f64.const 0.41421356237309503))
-      (then
-        (local.set $t (f64.div (f64.sub (local.get $t) (f64.const 0.41421356237309503))
-                               (f64.add (f64.const 1.0) (f64.mul (f64.const 0.41421356237309503) (local.get $t)))))
-        (local.set $off (f64.const 0.39269908169872414))))
-    (local.set $u (f64.mul (local.get $t) (local.get $t)))
-    (local.set $r (f64.add (local.get $off)
-      (f64.mul (local.get $t)
-        (f64.add (f64.const 0.99999999939667072)
-          (f64.mul (local.get $u)
-            (f64.add (f64.const -0.33333307625846248)
-              (f64.mul (local.get $u)
-                (f64.add (f64.const 0.19998216947828790)
-                  (f64.mul (local.get $u)
-                    (f64.add (f64.const -0.14240083011830104)
-                      (f64.mul (local.get $u)
-                        (f64.add (f64.const 0.10573479828448784)
-                          (f64.mul (local.get $u) (f64.const -0.060347904072425573))))))))))))))
-    (if (local.get $flip) (then (local.set $r (f64.sub (f64.const 1.5707963267948966) (local.get $r)))))
-    (f64.copysign (local.get $r) (local.get $x)))`)
-
-  // Fast asin: small-argument poly a + a·u·R(u) (u=a²) with the standard half-angle reduction for
-  // |x|>0.5 — a = sqrt((1−|x|)/2) maps the singular end to the smooth domain, asin = π/2 − 2·poly.
-  // One sqrt only on the upper half, no atan/div. R is a degree-6 minimax on [0,0.25]; max rel err
-  // ~2.6e-10. Replaces asin = atan(x/√(1−x²)) (which paid a div + atan's own reductions).
-  wat('math.asin', `(func $math.asin (param $x f64) (result f64)
-    (local $ax f64) (local $a f64) (local $u f64) (local $r f64)
-    ;; |x|>1 → NaN (covers ±Inf); NaN propagates (the >1 test is false, poly carries NaN through).
-    (if (f64.gt (f64.abs (local.get $x)) (f64.const 1.0)) (then (return (f64.const nan))))
-    (local.set $ax (f64.abs (local.get $x)))
-    (if (f64.le (local.get $ax) (f64.const 0.5))
-      (then (local.set $a (local.get $ax)))
-      (else (local.set $a (f64.sqrt (f64.mul (f64.const 0.5) (f64.sub (f64.const 1.0) (local.get $ax)))))))
-    (local.set $u (f64.mul (local.get $a) (local.get $a)))
-    (local.set $r (f64.add (local.get $a) (f64.mul (f64.mul (local.get $a) (local.get $u))
-      (f64.add (f64.const 0.16666666715486264)
-        (f64.mul (local.get $u)
-          (f64.add (f64.const 0.074999892151409259)
-            (f64.mul (local.get $u)
-              (f64.add (f64.const 0.044648555271317079)
-                (f64.mul (local.get $u)
-                  (f64.add (f64.const 0.030259196387355945)
-                    (f64.mul (local.get $u)
-                      (f64.add (f64.const 0.023661273034955098)
-                        (f64.mul (local.get $u)
-                          (f64.add (f64.const 0.010472588920432560)
-                            (f64.mul (local.get $u) (f64.const 0.031028862087420162))))))))))))))))
-    (if (f64.gt (local.get $ax) (f64.const 0.5))
-      (then (local.set $r (f64.sub (f64.const 1.5707963267948966) (f64.mul (f64.const 2.0) (local.get $r))))))
-    (f64.copysign (local.get $r) (local.get $x)))`)
-
-  wat('math.acos', `(func $math.acos (param $x f64) (result f64)
-    (f64.sub (f64.const ${HALF_PI}) (call $math.asin (local.get $x))))`)
-
-  wat('math.atan2', `(func $math.atan2 (param $y f64) (param $x f64) (result f64)
-    ;; If either argument is NaN, the result is NaN (ECMA-262 21.3.2.5).
-    (if (f64.ne (local.get $x) (local.get $x)) (then (return (local.get $x))))
-    (if (f64.ne (local.get $y) (local.get $y)) (then (return (local.get $y))))
-    ;; ±∞/±∞ quadrant table (spec): ±π/4 when x is +∞, ±3π/4 when x is −∞, sign
-    ;; from y — the atan(y/x) fallback would see ∞/∞ = NaN.
-    (if (i32.and (f64.eq (f64.abs (local.get $y)) (f64.const inf))
-                 (f64.eq (f64.abs (local.get $x)) (f64.const inf)))
-      (then (return (f64.copysign
-        (select (f64.const ${PI / 4}) (f64.const ${3 * PI / 4})
-                (f64.gt (local.get $x) (f64.const 0.0)))
-        (local.get $y)))))
-    (if (result f64) (f64.eq (local.get $x) (f64.const 0.0)) (then
-      ;; y is ±0 too: result is ±0 when x is +0, ±π when x is -0; sign taken from y.
-      (if (result f64) (f64.eq (local.get $y) (f64.const 0.0))
-        (then (f64.copysign
-          (select (f64.const ${PI}) (f64.const 0.0)
-                  (f64.lt (f64.copysign (f64.const 1.0) (local.get $x)) (f64.const 0.0)))
-          (local.get $y)))
-        (else
-          (if (result f64) (f64.gt (local.get $y) (f64.const 0.0)) (then (f64.const ${HALF_PI})) (else (f64.neg (f64.const ${HALF_PI})))))))
-      (else (if (result f64) (f64.ge (local.get $x) (f64.const 0.0))
-        (then (call $math.atan (f64.div (local.get $y) (local.get $x))))
-        ;; x < 0: shift by ±π with the sign of y INCLUDING -0 (copysign probe —
-        ;; a plain y ≥ 0 reads -0 as nonnegative, turning atan2(-0,-1) into +π).
-        (else (if (result f64) (f64.gt (f64.copysign (f64.const 1.0) (local.get $y)) (f64.const 0.0))
-          (then (f64.add (call $math.atan (f64.div (local.get $y) (local.get $x))) (f64.const ${PI})))
-          (else (f64.sub (call $math.atan (f64.div (local.get $y) (local.get $x))) (f64.const ${PI})))))))))`)
-
-  // sinh through expm1 for small |x|: with t = e^|x| − 1, sinh|x| = t(t+2) / 2(t+1)
-  // exactly, and that form never subtracts two nearly equal numbers. The plain
-  // (e^x − e^−x)/2 does, and near zero it cancelled the answer away — 3.3e-13
-  // relative at |x| ≈ 8e-4, against 3e-16 here. Past |x| = 1 the two exponentials
-  // are far apart, nothing cancels, and the direct form avoids expm1's own range.
-  wat('math.sinh', `(func $math.sinh (param $x f64) (result f64)
-    (local $ex f64) (local $t f64)
-    ;; Preserve sign of zero: sinh(±0) = ±0 (the f64.lt sign test below is false for -0).
-    (if (f64.eq (local.get $x) (f64.const 0.0)) (then (return (local.get $x))))
-    (if (f64.lt (f64.abs (local.get $x)) (f64.const 1.0))
-      (then
-        (local.set $t (call $math.expm1 (f64.abs (local.get $x))))
-        (local.set $ex (f64.div
-          (f64.mul (local.get $t) (f64.add (local.get $t) (f64.const 2.0)))
-          (f64.mul (f64.const 2.0) (f64.add (local.get $t) (f64.const 1.0))))))
-      (else
-        (local.set $ex (call $math.exp (f64.abs (local.get $x))))
-        (local.set $ex (f64.mul (f64.const 0.5) (f64.sub (local.get $ex) (f64.div (f64.const 1.0) (local.get $ex)))))))
-    (if (result f64) (f64.lt (local.get $x) (f64.const 0.0)) (then (f64.neg (local.get $ex))) (else (local.get $ex))))`)
-
-  wat('math.cosh', `(func $math.cosh (param $x f64) (result f64)
-    (local $ex f64) (local.set $ex (call $math.exp (f64.abs (local.get $x))))
-    (f64.mul (f64.const 0.5) (f64.add (local.get $ex) (f64.div (f64.const 1.0) (local.get $ex)))))`)
-
-  wat('math.tanh', `(func $math.tanh (param $x f64) (result f64)
-    (local $e2x f64)
-    ;; Preserve sign of zero: tanh(±0) = ±0 (the f64.lt sign test below is false for -0).
-    (if (f64.eq (local.get $x) (f64.const 0.0)) (then (return (local.get $x))))
-    (if (result f64) (f64.gt (f64.abs (local.get $x)) (f64.const 22.0))
-      (then (if (result f64) (f64.lt (local.get $x) (f64.const 0.0)) (then (f64.const -1.0)) (else (f64.const 1.0))))
-      ;; t = e^2|x| − 1 through expm1, then tanh|x| = t / (t + 2). The subtraction
-      ;; the direct form does (e^2x − 1) cancels near zero and cost 4.1e-13
-      ;; relative there; this form has nothing to cancel. |x| > 22 already
-      ;; returned ±1 above, so t stays finite here.
-      (else (local.set $e2x (call $math.expm1 (f64.mul (f64.const 2.0) (f64.abs (local.get $x)))))
-        (local.set $e2x (f64.div (local.get $e2x) (f64.add (local.get $e2x) (f64.const 2.0))))
-        (if (result f64) (f64.lt (local.get $x) (f64.const 0.0)) (then (f64.neg (local.get $e2x))) (else (local.get $e2x))))))`)
-
-  wat('math.asinh', `(func $math.asinh (param $x f64) (result f64)
-    ;; ±Infinity and NaN pass through unchanged. (log(±Inf + sqrt(Inf²+1)) → NaN otherwise.)
-    (if (i32.eqz (call $math.isFinite (local.get $x))) (then (return (local.get $x))))
-    ;; Preserve sign of zero: asinh(±0) = ±0.
-    (if (f64.eq (local.get $x) (f64.const 0.0)) (then (return (local.get $x))))
-    ;; |x| ≥ 2^500: x² overflows to Inf (asinh(1e300) must be ~691.47, not Inf);
-    ;; asinh(x) → ±(log|x| + ln 2) — the O(x⁻²) tail is far beneath ulp here.
-    (if (f64.ge (f64.abs (local.get $x)) (f64.const ${2 ** 500}))
-      (then (return (f64.copysign
-        (f64.add (call $math.log (f64.abs (local.get $x))) (f64.const ${Math.LN2}))
-        (local.get $x)))))
-    (call $math.log (f64.add (local.get $x) (f64.sqrt (f64.add (f64.mul (local.get $x) (local.get $x)) (f64.const 1.0))))))`)
-
-  wat('math.acosh', `(func $math.acosh (param $x f64) (result f64)
-    (if (f64.eq (local.get $x) (f64.const inf)) (then (return (f64.const inf))))
-    ;; acosh is defined only for x >= 1; everything below (incl. -Inf) is NaN.
-    (if (result f64) (f64.lt (local.get $x) (f64.const 1.0)) (then (f64.const nan)) (else
-      ;; x ≥ 2^500: x² overflows; acosh(x) → log(x) + ln 2 (same tail bound as asinh).
-      (if (result f64) (f64.ge (local.get $x) (f64.const ${2 ** 500}))
-        (then (f64.add (call $math.log (local.get $x)) (f64.const ${Math.LN2})))
-        (else (call $math.log (f64.add (local.get $x) (f64.sqrt (f64.sub (f64.mul (local.get $x) (local.get $x)) (f64.const 1.0)))))))))))`)
-
-  wat('math.atanh', `(func $math.atanh (param $x f64) (result f64)
-    ;; Preserve sign of zero: atanh(±0) = ±0.
-    (if (f64.eq (local.get $x) (f64.const 0.0)) (then (return (local.get $x))))
-    ;; ±Infinity → NaN. Without this the (1+x)/(1-x) ratio is Inf/Inf, whose
-    ;; sign-nondeterministic arithmetic NaN would escape non-canonical on x86.
-    (if (f64.eq (f64.abs (local.get $x)) (f64.const inf)) (then (return (f64.const nan))))
-    (f64.mul (f64.const 0.5) (call $math.log (f64.div (f64.add (f64.const 1.0) (local.get $x)) (f64.sub (f64.const 1.0) (local.get $x))))))`)
-
-  // fdlibm s_cbrt.c (Sun, as shipped by FreeBSD/musl/V8's ieee754): a 5-bit
-  // bit-hack seed, a polynomial to 23 bits, one Newton step to 53 bits with an
-  // error under 0.667 ulp — exact on every perfect cube.
-  wat('math.cbrt', `(func $math.cbrt (param $x f64) (result f64)
-    (local $hx i32) (local $sign i32) (local $high i32) (local $t f64) (local $r f64) (local $s f64) (local $w f64)
-    (if (i32.eqz (call $math.isFinite (local.get $x))) (then (return (local.get $x))))
-    (if (f64.eq (local.get $x) (f64.const 0.0)) (then (return (local.get $x))))
-    (local.set $hx (i32.wrap_i64 (i64.shr_u (i64.reinterpret_f64 (local.get $x)) (i64.const 32))))
-    (local.set $sign (i32.and (local.get $hx) (i32.const 0x80000000)))
-    (local.set $hx (i32.xor (local.get $hx) (local.get $sign)))
-    (if (i32.lt_u (local.get $hx) (i32.const 0x00100000))
-      (then
-        ;; subnormal: scale by 2^54 before splitting the exponent
-        (local.set $t (f64.mul (local.get $x) (f64.const 18014398509481984.0)))
-        (local.set $high (i32.and (i32.wrap_i64 (i64.shr_u (i64.reinterpret_f64 (local.get $t)) (i64.const 32))) (i32.const 0x7fffffff)))
-        (local.set $t (f64.reinterpret_i64 (i64.shl (i64.extend_i32_u
-          (i32.or (local.get $sign) (i32.add (i32.div_u (local.get $high) (i32.const 3)) (i32.const 696219795)))) (i64.const 32)))))
-      (else
-        (local.set $t (f64.reinterpret_i64 (i64.shl (i64.extend_i32_u
-          (i32.or (local.get $sign) (i32.add (i32.div_u (local.get $hx) (i32.const 3)) (i32.const 715094163)))) (i64.const 32))))))
-    ;; cbrt(x) = t*cbrt(x/t^3) ~= t*P(t^3/x), to 23 bits
-    (local.set $r (f64.mul (f64.mul (local.get $t) (local.get $t)) (f64.div (local.get $t) (local.get $x))))
-    (local.set $t (f64.mul (local.get $t)
-      (f64.add
-        (f64.add (f64.const 1.87595182427177009643)
-          (f64.mul (local.get $r) (f64.add (f64.const -1.88497979543377169875) (f64.mul (local.get $r) (f64.const 1.621429720105354466140)))))
-        (f64.mul (f64.mul (f64.mul (local.get $r) (local.get $r)) (local.get $r))
-          (f64.add (f64.const -0.758397934778766047437) (f64.mul (local.get $r) (f64.const 0.145996192886612446982)))))))
-    ;; round t away from zero to 23 bits
-    (local.set $t (f64.reinterpret_i64 (i64.and (i64.add (i64.reinterpret_f64 (local.get $t)) (i64.const 0x80000000)) (i64.const -1073741824))))
-    ;; one Newton step to 53 bits
-    (local.set $s (f64.mul (local.get $t) (local.get $t)))
-    (local.set $r (f64.div (local.get $x) (local.get $s)))
-    (local.set $w (f64.add (local.get $t) (local.get $t)))
-    (local.set $r (f64.div (f64.sub (local.get $r) (local.get $t)) (f64.add (local.get $w) (local.get $r))))
-    (f64.add (local.get $t) (f64.mul (local.get $t) (local.get $r))))`)
-
   // Fifth root of v ≥ 0 — same bit-hack seed (÷5 of the raw bits, within ~4%) + 4 Newton
   // steps t=(4t+v/t⁴)/5, the last one as a correction t + (v/t⁴ − t)/5. Newton squares
   // the relative error each step (×2 for a fifth root): 4e-2 → 3e-3 → 2e-5 → 6e-10 →
@@ -1392,30 +868,4 @@ export default (ctx) => {
     (i32.and
       (f64.eq (local.get $x) (local.get $x))
       (f64.lt (f64.abs (local.get $x)) (f64.const inf))))`)
-
-  wat('math.hypot', `(func $math.hypot (param $x f64) (param $y f64) (result f64)
-    (local $ax f64) (local $ay f64) (local $big f64) (local $s f64)
-    ;; Any ±Infinity argument ⇒ +Infinity, even when the other is NaN (ECMA-262 21.3.2.18).
-    (if (f64.eq (f64.abs (local.get $x)) (f64.const inf)) (then (return (f64.const inf))))
-    (if (f64.eq (f64.abs (local.get $y)) (f64.const inf)) (then (return (f64.const inf))))
-    (local.set $ax (f64.abs (local.get $x)))
-    (local.set $ay (f64.abs (local.get $y)))
-    (local.set $big (f64.max (local.get $ax) (local.get $ay)))
-    ;; Scale by a power of two (exact) so the squares can neither overflow
-    ;; (hypot(1e300,1e300) is ~1.414e300, not Inf) nor flush to zero. The runt
-    ;; arm may underflow in the big-scale branch — its relative contribution is
-    ;; < 2^-200, beneath rounding. A NaN big (no Inf partner) skips both scale
-    ;; branches and propagates through the square-sum as the result.
-    (local.set $s (f64.const 1.0))
-    (if (f64.ge (local.get $big) (f64.const ${2 ** 500}))
-      (then (local.set $s (f64.const ${2 ** 600}))
-        (local.set $ax (f64.mul (local.get $ax) (f64.const ${2 ** -600})))
-        (local.set $ay (f64.mul (local.get $ay) (f64.const ${2 ** -600}))))
-      (else (if (f64.le (local.get $big) (f64.const ${2 ** -500}))
-        (then (local.set $s (f64.const ${2 ** -600}))
-          (local.set $ax (f64.mul (local.get $ax) (f64.const ${2 ** 600})))
-          (local.set $ay (f64.mul (local.get $ay) (f64.const ${2 ** 600})))))))
-    (f64.mul (local.get $s)
-      (f64.sqrt (f64.add (f64.mul (local.get $ax) (local.get $ax)) (f64.mul (local.get $ay) (local.get $ay))))))`)
-
 }

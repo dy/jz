@@ -1,40 +1,26 @@
 /**
- * f64x2 SIMD transcendentals: sin2/cos2/pow2/pow_fold_v/atan2_2/hypot_2/
- * cbrt_v/fifthroot_v/log_v/exp2_v/exp_v. pow2 is a true two-wide kernel
- * (both lanes through one pass of the scalar kernel's operations); the
- * others were a pure move from module/math.js
- * (pipeline-minimality) — delimited by the original author's own comment
- * banner ("f64x2 SIMD sin/cos — both lanes through one polynomial"). No
- * back-reference from math.js: every consumer of these WAT functions
- * reaches them by name (src/optimize/vectorize.js's PPC_CALL2 lifts), never
- * a JS symbol, so this file is a pure one-way leaf off math/trig-tables.js
- * (needs its own local helpers splat/horner2/reduce2/signClamp — used only
- * here – plus the shared SIN_C/COS_C/EXP2_Q/EXP_Q/PI/INV_PI coefficients math.js's
- * scalar kernels also use).
+ * f64x2 twins of the scalar math kernels, for the vectorizer's lifts (src/optimize/vectorize,
+ * PPC_CALL2) and the f64x2.* intrinsics (module/simd.js). Every lane is bit for bit its
+ * scalar kernel's: sin2/cos2/log_v/exp_v/pow2 take both lanes through one evaluation of the
+ * scalar's operations where both lanes are on its common path, choosing per lane where the
+ * scalar branches, and hand anything else to the scalar kernel lane by lane; the rest are
+ * lane-by-lane scalar calls. Consumers reach them by name, never a JS symbol, so this file
+ * is a one-way leaf off math/trig-tables.js.
  *
  * @module math/simd
  */
 import { wat } from '../../src/bridge.js'
 import { ctx } from '../../src/ctx.js'
-import { PI, INV_PI, SIN_C, COS_C, LOG_C, EXP2_Q, EXP_Q, EXP_L1, EXP_L2, POW_LN2HI, POW_LN2LO, POW_LOG_A, polyTree } from './trig-tables.js'
+import {
+  EXP2_Q, EXP_Q, EXP_L1, EXP_L2, POW_LN2HI, POW_LN2LO, POW_LOG_A, polyTree,
+  INVPIO2, PIO2_1, PIO2_1T, KSIN, KCOS, LG, LN2_HI, LN2_LO, INVLN2, EXP_P, EXP_E,
+} from './trig-tables.js'
 
 export const registerMathSimd = () => {
   const crPow = !!ctx.transform.optimize?.crPow
-
-  // ── f64x2 SIMD sin/cos — both lanes through one polynomial ───────────────────
-  // The scalar sin_core/cos_core algorithm lifted to two f64 lanes: same
-  // round-to-nearest π reduction, same minimax poly (SIN_C/COS_C), same quadrant
-  // parity — but every branch becomes branchless so two independent angles cost one
-  // evaluation. A kernel computing sin and cos of distinct args (rotations, de Jong /
-  // Clifford maps, oscillator banks) packs them two-per-vector and ≈halves trig cost.
-  //   • Both reduction passes run unconditionally: for an in-range r the second pass'
-  //     q2 = nearest(r/π) = 0, so it's an exact no-op — no per-lane branch needed, and
-  //     it still rescues |x| up to ~1e15 just like the scalar's gated pass.
-  //   • NaN and ±∞ fall out as NaN through the arithmetic (∞ − ∞·π = NaN); a v128 lane
-  //     is raw f64, not a NaN-box, so the canonical-NaN guard the scalar needs is moot.
-  //   • Sign flip for odd quadrants is `r XOR (mask & −0.0)` (mask = |q|>0.5); final
-  //     min/max clamps the ~1e-8 poly overshoot to [−1,1], same as scalar.
   const splat = (c) => `(f64x2.splat (f64.const ${c}))`
+  const i32s = (v) => `(i32x4.splat (i32.const ${v}))`
+  const i64s = (v) => `(i64x2.splat (i64.const ${v}))`
   // The shared evaluation tree in 2-wide WAT — bit-exact with the scalar builder
   // and the JS folder because all three walk the same tree (trig-tables.js).
   const horner2 = (cs, v = '$r2') => polyTree(cs, {
@@ -42,26 +28,88 @@ export const registerMathSimd = () => {
     mul: (a, b) => `(f64x2.mul ${a} ${b})`,
     add: (a, b) => `(f64x2.add ${a} ${b})`,
   }, `(local.get ${v})`)
-  // Shared reduce → r ∈ [−π/2,π/2] in $r, quadrant parity in $q (branchless, 2 passes).
-  const reduce2 = `
-    (local.set $q (f64x2.nearest (f64x2.mul (local.get $x) ${splat(INV_PI)})))
-    (local.set $r (f64x2.sub (local.get $x) (f64x2.mul (local.get $q) ${splat(PI)})))
-    (local.set $q2 (f64x2.nearest (f64x2.mul (local.get $r) ${splat(INV_PI)})))
-    (local.set $r (f64x2.sub (local.get $r) (f64x2.mul (local.get $q2) ${splat(PI)})))
-    (local.set $q (f64x2.add (local.get $q) (local.get $q2)))
-    (local.set $q (f64x2.sub (local.get $q) (f64x2.mul ${splat(2)} (f64x2.nearest (f64x2.mul (local.get $q) ${splat(0.5)})))))
-    (local.set $r2 (f64x2.mul (local.get $r) (local.get $r)))`
-  // r XOR (|q|>0.5 ? −0.0 : 0), then clamp to [−1,1].
-  const signClamp = `
-    (local.set $r (v128.xor (local.get $r)
-      (v128.and (f64x2.gt (f64x2.abs (local.get $q)) ${splat(0.5)}) ${splat('-0.0')})))
-    (f64x2.min (f64x2.max (local.get $r) ${splat(-1)}) ${splat(1)})`
-  wat('math.sin2', `(func $math.sin2 (param $x v128) (result v128)
-    (local $q v128) (local $q2 v128) (local $r v128) (local $r2 v128)${reduce2}
-    (local.set $r (f64x2.mul (local.get $r) ${horner2(SIN_C)}))${signClamp})`)
-  wat('math.cos2', `(func $math.cos2 (param $x v128) (result v128)
-    (local $q v128) (local $q2 v128) (local $r v128) (local $r2 v128)${reduce2}
-    (local.set $r ${horner2(COS_C)})${signClamp})`)
+  // c0 + z*(c1 + z*(c2 + …)) as the fdlibm C nests it (module/math/ieee754.js's poly)
+  const poly2 = (z, cs) => cs.length === 1 ? splat(cs[0]) : `(f64x2.add ${splat(cs[0])} (f64x2.mul (local.get ${z}) ${poly2(z, cs.slice(1))}))`
+  // the two lanes' high words as i32 lanes [h0 h1 h0 h1]; a double from high words [h0 h1 . .] and zero low words
+  const hi2 = (v) => `(i8x16.shuffle 4 5 6 7 12 13 14 15 4 5 6 7 12 13 14 15 ${v} ${v})`
+  const fromHi2 = (h) => `(i8x16.shuffle 16 16 16 16 0 1 2 3 16 16 16 16 4 5 6 7 ${h} (v128.const i32x4 0 0 0 0))`
+  const wide = (m) => `(i64x2.extend_low_i32x4_s ${m})`   // an i32-lane mask over the two f64 lanes
+  // both lanes through the scalar kernel
+  const lanes = (fn, args) => `(f64x2.replace_lane 1
+      (f64x2.splat (call $${fn} ${args.map(a => `(f64x2.extract_lane 0 (local.get $${a}))`).join(' ')}))
+      (call $${fn} ${args.map(a => `(f64x2.extract_lane 1 (local.get $${a}))`).join(' ')}))`
+  const repack = (name, fn, args) => wat(name, `(func $${name} ${args.map(a => `(param $${a} v128)`).join(' ')} (result v128)
+    ${lanes(fn, args)})`, [fn])
+
+  // sin and cos (module/math/ieee754.js): both lanes below 2^19·π/2, reduced by n·π/2 as
+  // __ieee754_rem_pio2 does (n = 0 up to π/4, 1 up to 3π/4, ⌊|x|·2/π + ½⌋ past it, one
+  // subtraction of n·pio2_1 and n·pio2_1t while it cancels at most 16 bits), then both
+  // kernels on both lanes and the one n mod 4 picks. A lane past 2^19·π/2, at the high word
+  // 0x3ff921fb (which subtracts π/2 in three pieces), cancelling more, or not finite: scalar.
+  // At n = 0, __kernel_sin's iy = 0 form; __kernel_cos's qx is 0 below 0.3, which is its
+  // plain form.
+  const [S1, S2, S3, S4, S5, S6] = KSIN
+  const trig2 = (name, cos) => wat(`math.${name}2`, `(func $math.${name}2 (param $x v128) (result v128)
+    (local $hw v128) (local $ix v128) (local $small v128) (local $mid v128) (local $n v128) (local $t v128) (local $fn v128)
+    (local $r v128) (local $w v128) (local $y0 v128) (local $y1 v128) (local $neg v128) (local $iy v128) (local $tiny v128)
+    (local $z v128) (local $v v128) (local $rs v128) (local $ks v128) (local $kc v128) (local $qx v128) (local $q v128)
+    (local.set $hw ${hi2('(local.get $x)')})
+    (local.set $ix (v128.and (local.get $hw) ${i32s(0x7fffffff)}))
+    (if (i32.eqz (i32x4.all_true (v128.and (i32x4.le_s (local.get $ix) ${i32s(0x413921fb)}) (i32x4.ne (local.get $ix) ${i32s(0x3ff921fb)}))))
+      (then (return ${lanes(`math.${name}`, ['x'])})))
+    (local.set $small (i32x4.le_s (local.get $ix) ${i32s(0x3fe921fb)}))
+    (local.set $mid (i32x4.lt_s (local.get $ix) ${i32s(0x4002d97c)}))
+    (local.set $t (f64x2.abs (local.get $x)))
+    (local.set $n (v128.bitselect (v128.const i32x4 0 0 0 0)
+      (v128.bitselect (v128.const i32x4 1 1 1 1)
+        (i32x4.trunc_sat_f64x2_s_zero (f64x2.add (f64x2.mul (local.get $t) ${splat(INVPIO2)}) ${splat(0.5)}))
+        (local.get $mid))
+      (local.get $small)))
+    (local.set $fn (f64x2.convert_low_i32x4_s (local.get $n)))
+    (local.set $r (f64x2.sub (local.get $t) (f64x2.mul (local.get $fn) ${splat(PIO2_1)})))
+    (local.set $w (f64x2.mul (local.get $fn) ${splat(PIO2_1T)}))
+    (local.set $y0 (f64x2.sub (local.get $r) (local.get $w)))
+    (if (i32.eqz (i32x4.all_true (v128.or (local.get $mid)
+          (i32x4.le_s (i32x4.sub (i32x4.shr_s (local.get $ix) (i32.const 20))
+            (v128.and (i32x4.shr_u ${hi2('(local.get $y0)')} (i32.const 20)) ${i32s(0x7ff)})) ${i32s(16)}))))
+      (then (return ${lanes(`math.${name}`, ['x'])})))
+    (local.set $y1 (f64x2.sub (f64x2.sub (local.get $r) (local.get $y0)) (local.get $w)))
+    ;; a negative x: −y0, −y1, −n
+    (local.set $neg (i32x4.lt_s (local.get $hw) (v128.const i32x4 0 0 0 0)))
+    (local.set $y0 (v128.xor (local.get $y0) (v128.and ${wide('(local.get $neg)')} ${splat('-0')})))
+    (local.set $y1 (v128.xor (local.get $y1) (v128.and ${wide('(local.get $neg)')} ${splat('-0')})))
+    (local.set $n (v128.bitselect (i32x4.neg (local.get $n)) (local.get $n) (local.get $neg)))
+    ;; __kernel_sin and __kernel_cos on y0 + y1: x itself and 1 below 2^-27
+    (local.set $iy (v128.and ${hi2('(local.get $y0)')} ${i32s(0x7fffffff)}))
+    (local.set $tiny ${wide(`(i32x4.lt_s (local.get $iy) ${i32s(0x3e400000)})`)})
+    (local.set $z (f64x2.mul (local.get $y0) (local.get $y0)))
+    (local.set $v (f64x2.mul (local.get $z) (local.get $y0)))
+    (local.set $rs ${poly2('$z', [S2, S3, S4, S5, S6])})
+    (local.set $ks (v128.bitselect (local.get $y0)
+      (v128.bitselect
+        (f64x2.add (local.get $y0) (f64x2.mul (local.get $v) (f64x2.add ${splat(S1)} (f64x2.mul (local.get $z) (local.get $rs)))))
+        (f64x2.sub (local.get $y0) (f64x2.sub (f64x2.sub (f64x2.mul (local.get $z)
+          (f64x2.sub (f64x2.mul ${splat(0.5)} (local.get $y1)) (f64x2.mul (local.get $v) (local.get $rs)))) (local.get $y1))
+          (f64x2.mul (local.get $v) ${splat(S1)})))
+        ${wide('(local.get $small)')})
+      (local.get $tiny)))
+    (local.set $qx (v128.bitselect ${splat(0)}
+      (v128.bitselect ${splat(0.28125)} ${fromHi2(`(i32x4.sub (local.get $iy) ${i32s(0x00200000)})`)}
+        ${wide(`(i32x4.gt_s (local.get $iy) ${i32s(0x3fe90000)})`)})
+      ${wide(`(i32x4.lt_s (local.get $iy) ${i32s(0x3fd33333)})`)}))
+    (local.set $kc (v128.bitselect ${splat(1)}
+      (f64x2.sub (f64x2.sub ${splat(1)} (local.get $qx))
+        (f64x2.sub (f64x2.sub (f64x2.mul ${splat(0.5)} (local.get $z)) (local.get $qx))
+          (f64x2.sub (f64x2.mul (local.get $z) (f64x2.mul (local.get $z) ${poly2('$z', KCOS)})) (f64x2.mul (local.get $y0) (local.get $y1)))))
+      (local.get $tiny)))
+    ;; n mod 4: an odd n takes the other kernel; sin negates at 2 and 3, cos at 1 and 2
+    (local.set $q ${wide('(local.get $n)')})
+    (v128.xor
+      (v128.bitselect (local.get $${cos ? 'ks' : 'kc'}) (local.get $${cos ? 'kc' : 'ks'}) (i64x2.ne (v128.and (local.get $q) ${i64s(1)}) (v128.const i64x2 0 0)))
+      (v128.and (i64x2.ne (v128.and ${cos ? `(i64x2.add (local.get $q) ${i64s(1)})` : '(local.get $q)'} ${i64s(2)}) (v128.const i64x2 0 0)) ${splat('-0')})))`, [`math.${name}`])
+  trig2('sin', false)
+  trig2('cos', true)
+
   // True f64x2 pow: both lanes through one pass of $math.pow_core's kernel (module/math.js,
   // Arm's optimized-routines pow), op for op in the same order, so every lane is BIT-EXACT
   // with the scalar path. The HOT path takes both lanes in the common case ($math.pow's own
@@ -70,10 +118,7 @@ export const registerMathSimd = () => {
   // < 512). The log table rows and the exp table entries come from two scalar loads per lane;
   // everything else runs 2-wide. Any other lane routes BOTH lanes to the scalar $math.pow
   // (its ladder and the kernel's own edge paths), bit-exact by construction.
-  const powLanes = `(f64x2.replace_lane 1
-          (f64x2.splat (call $math.pow (f64x2.extract_lane 0 (local.get $x)) (f64x2.extract_lane 0 (local.get $y))))
-          (call $math.pow (f64x2.extract_lane 1 (local.get $x)) (f64x2.extract_lane 1 (local.get $y))))`
-  const i64s = (v) => `(i64x2.splat (i64.const ${v}))`
+  const powLanes = lanes('math.pow', ['x', 'y'])
   wat('math.pow2', `(func $math.pow2 (param $x v128) (param $y v128) (result v128)
     (local $tmp v128) (local $z v128) (local $kd v128) (local $ix v128) (local $invc v128) (local $logc v128) (local $logctail v128)
     (local $zhi v128) (local $zlo v128) (local $rhi v128) (local $rlo v128) (local $r v128)
@@ -172,66 +217,53 @@ export const registerMathSimd = () => {
         (f64x2.extract_lane 1 (local.get $c)))))`, ['math.pow_fold'])
   }
 
-  // atan2/hypot/log have no cheap 2-lane polynomial (multi-`return` fdlibm bodies), so — like pow2 —
-  // each f64x2 mirror computes both lanes with the SCALAR helper and repacks: BIT-EXACT by
-  // construction. The per-pixel-color pass only emits these when a truly-2-wide op (sin2/cos2/sqrt)
-  // already justifies the f64x2 pair, so the extract/repack never makes a kernel slower.
-  // NOTE: names avoid the $math.log2/$math.exp2 collision (those are log-/exp-BASE-2).
-  wat('math.atan2_2', `(func $math.atan2_2 (param $y v128) (param $x v128) (result v128)
-    (f64x2.replace_lane 1
-      (f64x2.splat (call $math.atan2 (f64x2.extract_lane 0 (local.get $y)) (f64x2.extract_lane 0 (local.get $x))))
-      (call $math.atan2 (f64x2.extract_lane 1 (local.get $y)) (f64x2.extract_lane 1 (local.get $x)))))`, ['math.atan2'])
-  wat('math.hypot_2', `(func $math.hypot_2 (param $x v128) (param $y v128) (result v128)
-    (f64x2.replace_lane 1
-      (f64x2.splat (call $math.hypot (f64x2.extract_lane 0 (local.get $x)) (f64x2.extract_lane 0 (local.get $y))))
-      (call $math.hypot (f64x2.extract_lane 1 (local.get $x)) (f64x2.extract_lane 1 (local.get $y)))))`, ['math.hypot'])
-  // cbrt/fifthroot: same per-lane scalar repack (their scalar bodies are branchy exponent-split +
-  // Newton, no cheap 2-lane poly). BIT-EXACT by construction. Unlocks the Oklab/OkLCh path (3 cbrt
-  // per pixel) and the sRGB/Rec.709 `x**(k/5)` gamma so their surrounding f64x2 arithmetic vectorizes.
-  wat('math.cbrt_v', `(func $math.cbrt_v (param $x v128) (result v128)
-    (f64x2.replace_lane 1
-      (f64x2.splat (call $math.cbrt (f64x2.extract_lane 0 (local.get $x))))
-      (call $math.cbrt (f64x2.extract_lane 1 (local.get $x)))))`, ['math.cbrt'])
-  wat('math.fifthroot_v', `(func $math.fifthroot_v (param $x v128) (result v128)
-    (f64x2.replace_lane 1
-      (f64x2.splat (call $math.fifthroot (f64x2.extract_lane 0 (local.get $x))))
-      (call $math.fifthroot (f64x2.extract_lane 1 (local.get $x)))))`, ['math.fifthroot'])
-  // True f64x2 log — both lanes through one fdlibm poly (≈2× over two scalar calls). The HOT path
-  // (both lanes a normal finite x>0) mirrors $math.log's normal branch op-for-op: bit-exact (the
-  // sqrt2-center conditional becomes a per-lane bitselect; the i32 exponent k becomes an f64 via the
-  // 2^52 magic-add, identical to convert_i32_s for |k|≤1075). Any other lane (≤0/∞/NaN/denormal)
-  // routes BOTH lanes to the scalar fallback → bit-exact by construction, edges never lose precision.
-  wat('math.log_v', `(func $math.log_v (param $x v128) (result v128)
-    (local $k v128) (local $m v128) (local $mask v128) (local $s v128) (local $z v128)
-    (if (result v128)
-      (i64x2.all_true (v128.and
-        (f64x2.ge (local.get $x) (f64x2.splat (f64.const 0x1p-1022)))
-        (f64x2.lt (local.get $x) (f64x2.splat (f64.const inf)))))
-      (then
-        (local.set $k (f64x2.sub
-          (v128.or (v128.and (i64x2.shr_u (local.get $x) (i32.const 52)) (i64x2.splat (i64.const 0x7ff)))
-                   (i64x2.splat (i64.const 0x4330000000000000)))
-          (f64x2.splat (f64.const 4503599627371519))))
-        (local.set $m (v128.or (v128.and (local.get $x) (i64x2.splat (i64.const 0x000fffffffffffff))) (i64x2.splat (i64.const 0x3ff0000000000000))))
-        (local.set $mask (f64x2.ge (local.get $m) (f64x2.splat (f64.const 1.4142135623730951))))
-        (local.set $m (v128.bitselect (f64x2.mul (local.get $m) (f64x2.splat (f64.const 0.5))) (local.get $m) (local.get $mask)))
-        (local.set $k (f64x2.add (local.get $k) (v128.and (local.get $mask) (f64x2.splat (f64.const 1.0)))))
-        ;; mirrors scalar $math.log op-for-op (same constants/order) → bit-exact lanes
-        (local.set $s (f64x2.div (f64x2.sub (local.get $m) (f64x2.splat (f64.const 1.0))) (f64x2.add (local.get $m) (f64x2.splat (f64.const 1.0)))))
-        (local.set $z (f64x2.mul (local.get $s) (local.get $s)))
-        (f64x2.add
-          (f64x2.mul (local.get $k) (f64x2.splat (f64.const ${Math.LN2})))
-          (f64x2.mul (f64x2.mul (f64x2.splat (f64.const 2.0)) (local.get $s)) ${horner2(LOG_C, '$z')})))
-      (else
-        (f64x2.replace_lane 1
-          (f64x2.splat (call $math.log (f64x2.extract_lane 0 (local.get $x))))
-          (call $math.log (f64x2.extract_lane 1 (local.get $x)))))))`, ['math.log'])
+  // atan2, hypot, cbrt, fifthroot: lane by lane through the scalar kernel. The vectorizer lifts
+  // them only where a truly two-wide op (sin2/cos2/sqrt) already carries the loop, so the
+  // extract and repack never make a kernel slower. (Names avoid $math.log2, which is log base 2.)
+  repack('math.atan2_2', 'math.atan2', ['y', 'x'])
+  repack('math.hypot_2', 'math.hypot', ['x', 'y'])
+  repack('math.cbrt_v', 'math.cbrt', ['x'])
+  repack('math.fifthroot_v', 'math.fifthroot', ['x'])
 
-  // True f64x2 exp2 and exp – the hot path (every lane's k = round(64y) in [−65408, 65535],
-  // i.e. a normal result) mirrors the scalar table kernels op for op: the two lanes' T and
-  // tail come from two scalar loads, the polynomial and T + T·(q + tail) run 2-wide, 2^e is
-  // the one exponent build. Any other lane (NaN, overflow, a denormal result) routes both
-  // lanes to the scalar kernel → bit-exact.
+  // log (module/math/ieee754.js): both lanes a normal finite x > 0 off the |f| < 2^-20 path
+  // (the mantissa's high word 0, 0xffffe or 0xfffff), else scalar lane by lane. Reduced as the
+  // scalar does, k from the exponent field through the 2^52 magic-add; of the four returns,
+  // the two k ≠ 0 forms, which equal the k = 0 ones at k = 0, chosen per lane by (i | j) > 0.
+  const [Lg1, Lg2, Lg3, Lg4, Lg5, Lg6, Lg7] = LG
+  wat('math.log_v', `(func $math.log_v (param $x v128) (result v128)
+    (local $hx v128) (local $m v128) (local $i v128) (local $f v128) (local $dk v128) (local $s v128) (local $z v128) (local $w v128)
+    (local $R v128) (local $hfsq v128)
+    (local.set $hx (i64x2.shr_u (local.get $x) (i32.const 32)))
+    (local.set $m (v128.and (local.get $hx) ${i64s(0xfffff)}))
+    (if (i32.eqz (i64x2.all_true (v128.and
+          (v128.and (i64x2.ge_s (local.get $hx) ${i64s(0x00100000)}) (i64x2.lt_s (local.get $hx) ${i64s(0x7ff00000)}))
+          (i64x2.ge_s (v128.and (i64x2.add (local.get $m) ${i64s(2)}) ${i64s(0xfffff)}) ${i64s(3)}))))
+      (then (return ${lanes('math.log', ['x'])})))
+    (local.set $i (v128.and (i64x2.add (local.get $m) ${i64s(0x95f64)}) ${i64s(0x100000)}))
+    (local.set $f (f64x2.sub
+      (v128.or (i64x2.shl (v128.or (local.get $m) (v128.xor (local.get $i) ${i64s(0x3ff00000)})) (i32.const 32))
+        (v128.and (local.get $x) ${i64s(0xffffffff)}))
+      ${splat(1)}))
+    (local.set $dk (f64x2.sub
+      (v128.or (i64x2.add (i64x2.shr_u (local.get $hx) (i32.const 20)) (i64x2.shr_u (local.get $i) (i32.const 20))) ${i64s('0x4330000000000000')})
+      ${splat(4503599627371519)}))
+    (local.set $s (f64x2.div (local.get $f) (f64x2.add ${splat(2)} (local.get $f))))
+    (local.set $z (f64x2.mul (local.get $s) (local.get $s)))
+    (local.set $w (f64x2.mul (local.get $z) (local.get $z)))
+    (local.set $R (f64x2.add (f64x2.mul (local.get $z) ${poly2('$w', [Lg1, Lg3, Lg5, Lg7])}) (f64x2.mul (local.get $w) ${poly2('$w', [Lg2, Lg4, Lg6])})))
+    (local.set $hfsq (f64x2.mul (f64x2.mul ${splat(0.5)} (local.get $f)) (local.get $f)))
+    (v128.bitselect
+      (f64x2.sub (f64x2.mul (local.get $dk) ${splat(LN2_HI)}) (f64x2.sub (f64x2.sub (local.get $hfsq)
+        (f64x2.add (f64x2.mul (local.get $s) (f64x2.add (local.get $hfsq) (local.get $R))) (f64x2.mul (local.get $dk) ${splat(LN2_LO)}))) (local.get $f)))
+      (f64x2.sub (f64x2.mul (local.get $dk) ${splat(LN2_HI)}) (f64x2.sub (f64x2.sub (f64x2.mul (local.get $s) (f64x2.sub (local.get $f) (local.get $R)))
+        (f64x2.mul (local.get $dk) ${splat(LN2_LO)})) (local.get $f)))
+      (i64x2.gt_s (v128.or (i64x2.sub (local.get $m) ${i64s(0x6147a)}) (i64x2.sub ${i64s(0x6b851)} (local.get $m))) (v128.const i64x2 0 0))))`, ['math.log'])
+
+  // f64x2 exp2 – the hot path (every lane's k = round(64y) in [−65408, 65535], i.e. a normal
+  // result) mirrors the scalar table kernel op for op: the two lanes' T and tail come from two
+  // scalar loads, the polynomial and T + T·(q + tail) run 2-wide, 2^e is the one exponent
+  // build. Any other lane (NaN, overflow, a denormal result) routes both lanes to the scalar
+  // kernel → bit-exact.
   wat('math.exp2_v', `(func $math.exp2_v (param $y v128) (result v128)
     (local $k v128) (local $ki v128) (local $f v128) (local $t v128) (local $a0 i32) (local $a1 i32)
     (local.set $k (f64x2.nearest (f64x2.mul (local.get $y) (f64x2.splat (f64.const 64.0)))))
@@ -257,29 +289,29 @@ export const registerMathSimd = () => {
           (f64x2.splat (call $math.exp2 (f64x2.extract_lane 0 (local.get $y))))
           (call $math.exp2 (f64x2.extract_lane 1 (local.get $y)))))))`, ['math.exp2'])
 
+  // exp (module/math/ieee754.js): both lanes with 2^-28 ≤ |x| < 708 (k within ±1021), else
+  // scalar lane by lane. k per lane as the scalar picks it: 0 up to ½·ln2, ±1 up to 1.5·ln2,
+  // ⌊x/ln2 ± ½⌋ past it; hi = x − k·ln2hi and lo = k·ln2lo are then the scalar's in all three
+  // (x and 0 at k = 0), and its k ≠ 0 return equals its k = 0 one there; x = 1 is e.
   wat('math.exp_v', `(func $math.exp_v (param $x v128) (result v128)
-    (local $k v128) (local $ki v128) (local $f v128) (local $t v128) (local $a0 i32) (local $a1 i32)
-    (local.set $k (f64x2.nearest (f64x2.mul (local.get $x) (f64x2.splat (f64.const ${64 / Math.LN2})))))
-    (if (result v128)
-      (i64x2.all_true (v128.and
-        (f64x2.ge (local.get $k) (f64x2.splat (f64.const -65408)))
-        (f64x2.le (local.get $k) (f64x2.splat (f64.const 65535)))))
-      (then
-        (local.set $ki (i32x4.trunc_sat_f64x2_s_zero (local.get $k)))
-        (local.set $t (f64x2.convert_low_i32x4_s (local.get $ki)))
-        (local.set $f (f64x2.sub (f64x2.sub (local.get $x) (f64x2.mul (local.get $t) (f64x2.splat (f64.const ${EXP_L1})))) (f64x2.mul (local.get $t) (f64x2.splat (f64.const ${EXP_L2})))))
-        (local.set $a0 (i32.add (global.get $math.exp2_tbl) (i32.shl (i32.and (i32x4.extract_lane 0 (local.get $ki)) (i32.const 63)) (i32.const 4))))
-        (local.set $a1 (i32.add (global.get $math.exp2_tbl) (i32.shl (i32.and (i32x4.extract_lane 1 (local.get $ki)) (i32.const 63)) (i32.const 4))))
-        (local.set $t (f64x2.replace_lane 1 (f64x2.splat (f64.load (local.get $a0))) (f64.load (local.get $a1))))
-        (f64x2.mul
-          (f64x2.add (local.get $t) (f64x2.mul (local.get $t)
-            (f64x2.add (f64x2.mul (local.get $f) ${horner2(EXP_Q, '$f')})
-              (f64x2.replace_lane 1 (f64x2.splat (f64.load offset=8 (local.get $a0))) (f64.load offset=8 (local.get $a1))))))
-          (i64x2.shl (i64x2.add
-            (i64x2.extend_low_i32x4_s (i32x4.shr_s (local.get $ki) (i32.const 6)))
-            (i64x2.splat (i64.const 1023))) (i32.const 52))))
-      (else
-        (f64x2.replace_lane 1
-          (f64x2.splat (call $math.exp (f64x2.extract_lane 0 (local.get $x))))
-          (call $math.exp (f64x2.extract_lane 1 (local.get $x)))))))`, ['math.exp'])
+    (local $hx v128) (local $kd v128) (local $hi v128) (local $lo v128) (local $r v128) (local $t v128) (local $c v128)
+    (local.set $hx (v128.and (i64x2.shr_u (local.get $x) (i32.const 32)) ${i64s(0x7fffffff)}))
+    (if (i32.eqz (i64x2.all_true (v128.and (i64x2.ge_s (local.get $hx) ${i64s(0x3e300000)}) (i64x2.lt_s (local.get $hx) ${i64s(0x40862000)}))))
+      (then (return ${lanes('math.exp', ['x'])})))
+    (local.set $kd (v128.bitselect
+      (f64x2.convert_low_i32x4_s (i32x4.trunc_sat_f64x2_s_zero (f64x2.add (f64x2.mul ${splat(INVLN2)} (local.get $x))
+        (v128.bitselect ${splat(-0.5)} ${splat(0.5)} (f64x2.lt (local.get $x) ${splat(0)})))))
+      (v128.bitselect (v128.bitselect ${splat(-1)} ${splat(1)} (f64x2.lt (local.get $x) ${splat(0)})) ${splat(0)}
+        (i64x2.gt_s (local.get $hx) ${i64s(0x3fd62e42)}))
+      (i64x2.ge_s (local.get $hx) ${i64s(0x3ff0a2b2)})))
+    (local.set $hi (f64x2.sub (local.get $x) (f64x2.mul (local.get $kd) ${splat(LN2_HI)})))
+    (local.set $lo (f64x2.mul (local.get $kd) ${splat(LN2_LO)}))
+    (local.set $r (f64x2.sub (local.get $hi) (local.get $lo)))
+    (local.set $t (f64x2.mul (local.get $r) (local.get $r)))
+    (local.set $c (f64x2.sub (local.get $r) (f64x2.mul (local.get $t) ${poly2('$t', EXP_P)})))
+    (v128.bitselect ${splat(EXP_E)}
+      (f64x2.mul
+        (f64x2.sub ${splat(1)} (f64x2.sub (f64x2.sub (local.get $lo) (f64x2.div (f64x2.mul (local.get $r) (local.get $c)) (f64x2.sub ${splat(2)} (local.get $c)))) (local.get $hi)))
+        (i64x2.shl (i64x2.add (i64x2.extend_low_i32x4_s (i32x4.trunc_sat_f64x2_s_zero (local.get $kd))) ${i64s(1023)}) (i32.const 52)))
+      (f64x2.eq (local.get $x) ${splat(1)})))`, ['math.exp'])
 }
