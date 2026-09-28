@@ -23,7 +23,9 @@ test('array load cse: plain numeric elements survive writes to typed storage', (
     const text = wat(kernel, { optimize: { level: 2, loadCSE, forwardStores: false, vectorizeLaneLocal: false } })
     return (funcWat(text, 'f$exp') || funcWat(text, 'f')).match(/f64\.load/g)?.length || 0
   }
-  ok(loads(true) < loads(false), 'the shared plain-array reads are eliminated before lowering')
+  const cached = loads(true)
+  ok(cached <= 6, `${cached} loads: the three shared plain-array reads stay eliminated`)
+  ok(cached < loads(false), 'the shared plain-array reads are eliminated before lowering')
 })
 
 test('array load cse: aliases, resizing, misses, effects and branches retain JS answers', () => {
@@ -69,5 +71,7 @@ test('array load cse: nested receivers survive distinct scratch stores and scala
     const text = wat(src, { optimize: { level: 2, loadCSE, forwardStores: false } })
     return (funcWat(text, 'f$exp') || funcWat(text, 'f')).match(/f64\.load/g)?.length || 0
   }
-  ok(loads(true) < loads(false), 'the two names for one element reuse its loaded value')
+  const cached = loads(true)
+  ok(cached <= 6, `${cached} loads: the containing slot and its element stay shared`)
+  ok(cached < loads(false), 'the two names for one element reuse its loaded value')
 })

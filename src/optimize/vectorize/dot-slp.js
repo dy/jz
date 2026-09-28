@@ -1,7 +1,7 @@
 import { ctx } from '../../ctx.js'
 import { nodeEqual as exprEq, walkAst } from '../../ast.js'
 import { collectWrites } from './addr-model.js'
-import { accessOf, deadTees, hasOp, inertFor, localGetCounts, localReads, memarg, resolveAddr, sameBase, windowDefs, clone, TEE } from './access.js'
+import { accessOf, deadTees, hasOp, inertFor, localGetCounts, localReads, memarg, sameBase, windowDefs, clone, TEE } from './access.js'
 import { f64Zero, forEachLocalDef, isArr, localGetName } from './node-utils.js'
 
 const matchF64MulLocals = n => {
@@ -457,4 +457,3 @@ export function slpPairsIn(fn, fnLocals, freshIdRef, newLocalDeclsAll, relaxedFm
 }
 
 // ---- Lane type tables ------------------------------------------------------
-

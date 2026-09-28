@@ -6,7 +6,7 @@
 // call has none. The emitter starts a parameter's flow interval from it, so a
 // ToInt32 of `floor(y) + gy` inside a sampler needs no infinity guard.
 import test from 'tst'
-import { is, ok } from 'tst/assert.js'
+import { is } from 'tst/assert.js'
 import { compile } from '../index.js'
 import { ctx } from '../src/ctx.js'
 import { belowOpt, levels } from './_matrix.js'

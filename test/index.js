@@ -3,6 +3,7 @@ const TESTS = [
   'to-primitive',
   'property-order',
   'math',
+  'pmath',
   'simd-intrinsics',
   'bytebeat',
   'imports',
@@ -261,6 +262,7 @@ const KERNEL_EXCLUDE = new Set(['imports', 'external', 'cli', 'options', 'web-sm
 // owns them and the opt0/opt3/wasi legs skip them (about 6 minutes a leg). Naming
 // a file on the command line runs it on any leg.
 const LEG_INVARIANT = new Set([
+  'pmath', // the benchmark's fixed JS host and speed build on every leg
   'self-checkpoint', 'self-build', 'self-compile-source', 'kernel-marks', 'eager-stdlib-parity',
   'reachability-mutants', 'bench-c', 'bench-porffor', 'bench-perry', 'bench-memory', 'bench-svg', 'cli', 'native-lowering',
   'headline', 'site', 'guide', 'web-smoke',
