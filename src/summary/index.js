@@ -49,7 +49,7 @@
  * @module summary
  */
 import { MUTATE_OPS, EXACT_MATH, extractParams, isBrand, returnExprs, ACCESSOR_GET, ACCESSOR_SET, CLASS_T, TYPEOF, typeofPredicate, canonicalKeyOrder, schemaKey, isArrayIndexKey, layoutView, ENUM_DATA } from '../ast.js'
-import { encodeTypedElemAux, TYPED_ELEM_CODE } from '../../layout.js'
+import { encodeTypedElemAux, TYPED_ELEM_CODE, TYPED_ELEM_VIEW_FLAG, TYPED_ELEM_ANY_VIEW_FLAG } from '../../layout.js'
 import { ITER_RECORD_KEYS } from '../std/iter-helpers.js'
 import { VAL } from '../reps.js'
 import { typedElementKey } from '../typed-provenance.js'
@@ -685,7 +685,8 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   elems.push(K.NONE); cellUp.push(typedProps)
   const typedPropsByAux = new Map()
   const typedPropsCell = (aux) => { let c = typedPropsByAux.get(aux); if (c === undefined) { c = elems.length; elems.push(K.NONE); cellUp.push(c); typedPropsByAux.set(aux, c) } return c }
-  const typedAuxOf = (k) => tagOf(k) === K.TYPED ? typedAux(k) : UNKNOWN
+  // one cell per element kind: a view and an owned array of it share their properties' kinds
+  const typedAuxOf = (k) => tagOf(k) === K.TYPED && typedAux(k) !== UNKNOWN ? typedAux(k) & ~(TYPED_ELEM_VIEW_FLAG | TYPED_ELEM_ANY_VIEW_FLAG) : UNKNOWN
   const typedPropsCellOf = (k) => typedAuxOf(k) === UNKNOWN ? typedProps : typedPropsCell(typedAuxOf(k))
   const typedPropsOf = (k) => {
     let out = elems[typedProps]

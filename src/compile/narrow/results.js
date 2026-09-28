@@ -12,12 +12,13 @@ import { withCurrentFunction, withTypedElems } from '../flow-state.js'
 import { isBlockBody, alwaysReturns, hasBareReturn, returnExprs, walkAst, isReassigned } from '../../ast.js'
 import { analyzeBody, reanalyzeBody, clearBodyFacts } from '../analyze.js'
 import { exprType, typedStaticLen } from '../../type.js'
-import { ctorFromElemAux } from '../../../layout.js'
+import { ctorFromElemAux, TYPED_ELEM_ANY_VIEW_FLAG } from '../../../layout.js'
 import { hasAmbiguousBoolMerge } from '../../kind.js'
 import { VAL, KIND_UNIVERSE } from '../../reps.js'
 import { paramFactsOf } from '../../param-reps.js'
 import { isExported } from '../func-exports.js'
 import { K, tagOf, paramOf, isNullable, valOf, valsOf, hasTag, core, UNKNOWN, PRESENCE } from '../../summary/index.js'
+import { typedAux } from '../../summary/kind.js'
 
 /**
  * Phase E: numeric result narrowing.
@@ -317,10 +318,13 @@ export function narrowPointerResults(funcs, paramReps, calledInside) {
       func.sig.ptrKind = VAL.OBJECT
       func.sig.ptrAux = paramOf(k)
     } else if (func.valResult === VAL.TYPED) {
-      if (paramOf(k) === UNKNOWN) continue
+      // an unboxed pointer keeps one aux: a join of several widths or of an
+      // owned array and a view (their view bit read at run time) stays boxed
+      const aux = typedAux(k)
+      if (aux === UNKNOWN || aux & TYPED_ELEM_ANY_VIEW_FLAG) continue
       func.sig.results = ['i32']
       func.sig.ptrKind = VAL.TYPED
-      func.sig.ptrAux = paramOf(k)
+      func.sig.ptrAux = aux
       // A factory returning one local of static length (`const out = new
       // Float64Array(n)` with `n` a call-site constant) publishes that length:
       // the caller's binding (`const sig = mkSignal(N)`) then proves its

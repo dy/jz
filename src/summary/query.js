@@ -1,6 +1,6 @@
 /** Read-only summary queries. This module has no access to solver transfers. */
 import { ACCESSOR_GET, ACCESSOR_SET, CLASS_T, isBrand, schemaKey, isArrayIndexKey } from '../ast.js'
-import { encodeTypedElemAux, ctorFromElemAux } from '../../layout.js'
+import { encodeTypedElemAux, ctorFromElemAux, TYPED_ELEM_VIEW_FLAG, TYPED_ELEM_ANY_VIEW_FLAG } from '../../layout.js'
 import { ATOMICS_VALUE_OPS, builtinCalleeVal, methodValType } from '../kind-traits.js'
 import { VAL } from '../reps.js'
 import { typedElementKey } from '../typed-provenance.js'
@@ -98,7 +98,7 @@ export function summaryQueries(facts, internal = false) {
   const typedPropsOf = recv => {
     let out = elems[typedProps]
     if (typedAux(recv) === UNKNOWN) { for (const c of typedPropsByAux.values()) out = join(out, elems[c]) }
-    else { const c = typedPropsByAux.get(typedAux(recv)); if (c !== undefined) out = join(out, elems[c]) }
+    else { const c = typedPropsByAux.get(typedAux(recv) & ~(TYPED_ELEM_VIEW_FLAG | TYPED_ELEM_ANY_VIEW_FLAG)); if (c !== undefined) out = join(out, elems[c]) }
     return out
   }
   const builtinMethodResult = (recv, name) => {

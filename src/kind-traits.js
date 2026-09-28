@@ -5,6 +5,7 @@
 
 import { VAL } from './reps.js'
 import { TYPED_ELEM_CODE } from '../layout.js'
+import { typedCtorName } from './typed-provenance.js'
 import { summaryTypedCtor, typedStorageCtorFromContext } from './typed-context.js'
 import { contractVal } from './summary/contract.js'
 import { valOf } from './summary/kind.js'
@@ -268,8 +269,7 @@ export function propValType(prop, objType, ctor) {
 
 export function typedCtorElemValType(ctor) {
   if (!ctor) return null
-  const isView = ctor.endsWith('.view')
-  const name = isView ? ctor.slice(4, -5) : ctor.slice(4)
+  const name = typedCtorName(ctor)
   if (TYPED_ELEM_CODE[name] == null) return null
   return name === 'BigInt64Array' || name === 'BigUint64Array' ? VAL.BIGINT : VAL.NUMBER
 }

@@ -17,6 +17,7 @@ import { valTypeOf } from '../src/kind.js'
 import { emit, deps } from '../src/bridge.js'
 import { inc, err, PTR } from '../src/ctx.js'
 import { VAL } from '../src/reps.js'
+import { typedCtorName } from '../src/typed-provenance.js'
 import { errorCodeLiteral, ERR } from '../err-codes.js'
 
 export default (ctx) => {
@@ -60,8 +61,9 @@ export default (ctx) => {
       ctor = ctx.func.localTypedElemsOverlay?.get(arr) ?? ctx.func.typedElem?.get(arr)
         ?? ctx.func.localReps?.get(arr)?.typedCtor          // narrowed param facts (typed default-arg seed)
         ?? ctx.scope?.globalTypedElem?.get(arr)
-    if (ctor === 'new.Int32Array' || ctor === 'new.Int32Array.view') return 'i32'
-    if (ctor === 'new.BigInt64Array' || ctor === 'new.BigInt64Array.view') return 'i64'
+    // the address helper reads a view's descriptor at run time: owned or a view alike
+    if (typedCtorName(ctor) === 'Int32Array') return 'i32'
+    if (typedCtorName(ctor) === 'BigInt64Array') return 'i64'
     err(`Atomics: receiver must be a proven Int32Array or BigInt64Array (shared-memory v1 contract) — got ${typeof arr === 'string' ? `'${arr}' (${ctor ?? 'unproven'})` : 'an expression'}`)
   }
 

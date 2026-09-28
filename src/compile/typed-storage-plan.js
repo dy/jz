@@ -1,9 +1,9 @@
-import { ctorFromElemAux, typedElemAux } from '../../layout.js'
+import { ctorFromElemAux, typedElemAux, TYPED_ELEM_VIEW_FLAG, TYPED_ELEM_ANY_VIEW_FLAG } from '../../layout.js'
 import { VAL } from '../reps.js'
 import { summaryTypedCtor } from '../typed-context.js'
 import {
   TYPED_SOURCE_NAME, TYPED_SOURCE_CALL, TYPED_SOURCE_FIELD, TYPED_SOURCE_INDEX,
-  typedCtorName, typedStorageCtor,
+  typedCtorName, typedCtorBase, typedCtorView, typedStorageCtor,
 } from '../typed-provenance.js'
 
 /**
@@ -45,16 +45,20 @@ const resolvePlanSource = (kind, a, b, _node, data) => {
   return null
 }
 
+// `isView` null: owned or a view, its accesses read the view bit off the
+// pointer; `aux` then carries TYPED_ELEM_ANY_VIEW_FLAG, a static fact only.
 const ctorInfo = ctor => {
   const name = typedCtorName(ctor)
   if (!name) return null
-  const aux = typedElemAux(ctor)
-  if (aux == null) return null
+  const isView = typedCtorView(ctor)
+  const base = typedElemAux(typedCtorBase(ctor))
+  if (base == null) return null
+  const aux = isView === null ? base | TYPED_ELEM_VIEW_FLAG | TYPED_ELEM_ANY_VIEW_FLAG : isView ? base | TYPED_ELEM_VIEW_FLAG : base
   return Object.freeze({
     ctor,
     name,
     aux,
-    isView: ctor.endsWith('.view'),
+    isView,
     isBigInt: name === 'BigInt64Array' || name === 'BigUint64Array',
     isF16: name === 'Float16Array',
     isClamped: name === 'Uint8ClampedArray',

@@ -46,6 +46,7 @@ import { NUMERIC_BINARY_OPS, NUMERIC_UNARY_OPS } from '../kind-traits.js'
 import { scanBindingUses, USE, BINDING_USE_DECLS, BINDING_USE_INIT, BINDING_USE_USES, BINDING_USE_KIND } from './analyze-scans.js'
 import { unitIncVar } from './loop-model.js'
 import { counterInit, intExprRange } from '../static.js'
+import { typedCtorView } from '../typed-provenance.js'
 
 /** Receiver storage families; typed receivers use their constructor name. */
 export const UNTYPED = 'untyped'
@@ -208,7 +209,7 @@ export function cseLoads(body, storageOf, freshName, isNumeric, isReadonlyCall =
   const survives = (e, recv, idx2, scope) => isName(recv) && (storageOf(recv) === UNTYPED ||
     disjointArrays?.(e.arr, recv) ||
     (typedCtor(recv) != null && (typedCtor(recv) === ARRAY) !== (e.ctor === ARRAY)) ||
-    (recv === e.arr || !e.ctor.endsWith('.view') && typedCtor(recv) === e.ctor) && provablyDiffer(e.idxNode, idx2, F, scope))
+    (recv === e.arr || typedCtorView(e.ctor) === false && typedCtor(recv) === e.ctor) && provablyDiffer(e.idxNode, idx2, F, scope))
 
   // A branch arm that leaves the sequence and stores nothing: the statements
   // after an `if (C) break` run only when C ran and fell through.

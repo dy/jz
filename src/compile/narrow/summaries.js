@@ -26,7 +26,7 @@ import { isExported } from '../func-exports.js'
 import { analyzeBody } from '../analyze.js'
 import { VAL } from '../../reps.js'
 import { K, kind } from '../../summary/index.js'
-import { typedElementKey } from '../../typed-provenance.js'
+import { typedElementKey, typedCtorBase } from '../../typed-provenance.js'
 import { scanBindingUses, USE, BINDING_USE_DECLS, BINDING_USE_INIT, BINDING_USE_USES, BINDING_USE_KIND } from '../analyze-scans.js'
 import { frameNode } from '../../function.js'
 
@@ -365,7 +365,7 @@ export function inferTypedValueRanges(storeRanges) {
     ['new.Int32Array', [-2147483648, 2147483647]], ['new.Uint32Array', [0, 4294967295]],
   ])
   const storedRange = (ctor, r) => {
-    const base = ctor?.endsWith('.view') ? ctor.slice(0, -5) : ctor
+    const base = typedCtorBase(ctor)
     const lim = elemBounds.get(base)
     if (!lim || !r || !Number.isFinite(r[0]) || !Number.isFinite(r[1])) return null
     return r[0] >= lim[0] && r[1] <= lim[1] ? [...r] : [...lim]

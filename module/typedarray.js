@@ -1384,9 +1384,28 @@ export default (ctx) => {
   const typedBase = (objIR) => objIR.ptrKind != null && objIR.ptrKind !== VAL.ARRAY
     ? objIR
     : ['i32.wrap_i64', ['i64.and', ['i64.reinterpret_f64', asF64(objIR)], ['i64.const', LAYOUT.OFFSET_MASK]]]
-  const typedDataAddr = (objIR, isView) => isView
-    ? ['i32.load', ['i32.add', typedBase(objIR), ['i32.const', 4]]]
+  // A receiver that may be owned or a view (isView null) reads its view bit
+  // off the pointer, which such a receiver always keeps boxed (layout.js
+  // TYPED_ELEM_ANY_VIEW_FLAG): `pick(base, view)` builds from the offset and
+  // that bit, the pointer read once.
+  const anyView = (objIR, pick) => {
+    const once = Array.isArray(objIR) && (objIR[0] === 'local.get' || objIR[0] === 'global.get') && objIR.length === 2
+    const t = once ? null : tempI64('tav')
+    const bits = () => once ? ['i64.reinterpret_f64', asF64(typed([objIR[0], objIR[1]], objIR.type ?? 'f64'))] : ['local.get', `$${t}`]
+    const ir = pick(() => ['i32.wrap_i64', ['i64.and', bits(), ['i64.const', LAYOUT.OFFSET_MASK]]],
+      () => ['i32.and', ['i32.wrap_i64', ['i64.shr_u', bits(), ['i64.const', 32]]], ['i32.const', TYPED_ELEM_VIEW_FLAG]])
+    return once ? ir : ['block', ['result', 'i32'], ['local.set', `$${t}`, ['i64.reinterpret_f64', asF64(objIR)]], ir]
+  }
+  // The data: at the offset, or at a view descriptor's word at 4 (an owned
+  // array's select loads from address 0, its value dropped).
+  const typedDataAddr = (objIR, isView) => isView == null
+    ? anyView(objIR, (base, view) => ['select', ['i32.load', ['select', ['i32.add', base(), ['i32.const', 4]], ['i32.const', 0], view()]], base(), view()])
+    : isView ? ['i32.load', ['i32.add', typedBase(objIR), ['i32.const', 4]]]
     : typedBase(objIR)
+  // The byte length's word: 8 below the data, or a view descriptor's first.
+  const byteLenAddr = (objIR, isView) => isView == null
+    ? anyView(objIR, (base, view) => ['select', base(), ['i32.sub', base(), ['i32.const', 8]], view()])
+    : isView ? typedBase(objIR) : ['i32.sub', typedBase(objIR), ['i32.const', 8]]
 
   // A typed receiver never relocates: decode its offset directly, then use
   // aux for element width and view indirection in both raw readers and writers.
@@ -1749,15 +1768,13 @@ export default (ctx) => {
   const leanLen = (arr, et, isView) => {
     const staticLen = staticTypedLen(arr)
     if (staticLen != null) return ['i32.const', staticLen]
-    const lenIR = () => ['i32.shr_u',
-      ['i32.load', isView ? typedBase(emit(arr)) : ['i32.sub', typedBase(emit(arr)), ['i32.const', 8]]],
-      ['i32.const', SHIFT[et]]]
+    const lenIR = () => ['i32.shr_u', ['i32.load', byteLenAddr(emit(arr), isView)], ['i32.const', SHIFT[et]]]
     if (!(ctx.transform.optFlags & OPTF.leanCheckedIdx) ||
         typeof arr !== 'string' ||
         !ctx.func.current?.params?.some(p => p.name === arr) ||
         !ctx.func.body || isReassigned(ctx.func.body, arr)) return lenIR()
     const memo = (ctx.func.lenHoist ??= new Map())
-    const key = `${arr} ${SHIFT[et]}${isView ? 'v' : ''}`
+    const key = `${arr} ${SHIFT[et]}${isView == null ? 'a' : isView ? 'v' : ''}`
     let h = memo.get(key)
     if (!h) {
       h = { t: tempI32('tlen'), init: lenIR() }
@@ -1958,8 +1975,7 @@ export default (ctx) => {
       const ti = tempI32('tbi'), tin = tempI32('tbn')
       const staticLen = staticTypedLen(arr)
       const lenIR = staticLen != null ? ['i32.const', staticLen] : ['i32.shr_u',
-        ['i32.load', isView ? typedBase(emit(arr)) : ['i32.sub', typedBase(emit(arr)), ['i32.const', 8]]],
-        ['i32.const', SHIFT[et]]]
+        ['i32.load', byteLenAddr(emit(arr), isView)], ['i32.const', SHIFT[et]]]
       const off = ['i32.add', typedDataAddr(emit(arr), isView),
         ['i32.shl', ['select', ['local.get', `$${ti}`], ['i32.const', 0], ['local.get', `$${tin}`]],
           ['i32.const', SHIFT[et]]]]
@@ -2210,8 +2226,7 @@ export default (ctx) => {
         const receiver = temp('tref')
         pre.unshift(['local.set', `$${receiver}`, asF64(objIR)])
         objIR = typed(['local.get', `$${receiver}`], 'f64')
-        savedLength = ['i32.shr_u', ['i32.load', isView ? typedBase(objIR)
-          : ['i32.sub', typedBase(objIR), ['i32.const', 8]]], ['i32.const', SHIFT[et]]]
+        savedLength = ['i32.shr_u', ['i32.load', byteLenAddr(objIR, isView)], ['i32.const', SHIFT[et]]]
       }
     }
     if (nullable) {
@@ -3177,8 +3192,10 @@ export default (ctx) => {
       ['local.set', `$${arrL}`, receiver],
       ...positions.setup,
       ['local.set', `$${srcOff}`, typedBase(typed(['local.get', `$${arrL}`], 'f64'))],
-      ['local.set', `$${data}`, isView ? off4(4) : ['local.get', `$${srcOff}`]],
-      ['local.set', `$${root}`, isView ? off4(8) : ['local.get', `$${srcOff}`]],
+      ['local.set', `$${data}`, typedDataAddr(typed(['local.get', `$${arrL}`], 'f64'), isView)],
+      ['local.set', `$${root}`, isView == null
+        ? anyView(typed(['local.get', `$${arrL}`], 'f64'), (base, view) => ['select', ['i32.load', ['select', ['i32.add', base(), ['i32.const', 8]], ['i32.const', 0], view()]], base(), view()])
+        : isView ? off4(8) : ['local.get', `$${srcOff}`]],
       ['local.set', `$${len}`, ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${arrL}`]]]],
       ['local.set', `$${lo}`, ['call', '$__clamp_idx', positions.index(0), ['local.get', `$${len}`]]],
       ['local.set', `$${hi}`, ['call', '$__clamp_idx', positions.index(1, ['local.get', `$${len}`]), ['local.get', `$${len}`]]],

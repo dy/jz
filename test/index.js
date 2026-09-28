@@ -98,6 +98,7 @@ const TESTS = [
   'num-shadow',
   'guarded-clone',
   'host-closure',
+  'typed-any-view',
   'variant-result',
   'call-boundary',
   'call-release',

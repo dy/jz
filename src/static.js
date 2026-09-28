@@ -6,6 +6,7 @@ import { I32_MIN, I32_MAX, RELATIONAL_OPS, isBrand, isReassigned } from './ast.j
 import { ctx } from './ctx.js'
 import { repOf, VAL } from './reps.js'
 import { TYPED_ELEM_CODE } from '../layout.js'
+import { typedCtorName } from './typed-provenance.js'
 
 // A loop guard's relational operators.
 
@@ -159,7 +160,7 @@ export function intExprRange(n) {
     if (len != null) return [len, len]
     const raw = typedCtorRawOf(n[1])
     if (raw != null) {
-      const bare = raw.endsWith('.view') ? raw.slice(4, -5) : raw.slice(4)
+      const bare = typedCtorName(raw)
       const code = TYPED_ELEM_CODE[bare]
       const width = code != null ? TYPED_ELEM_BYTE_WIDTH[code] : null
       if (width != null) {

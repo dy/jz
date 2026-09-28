@@ -4,7 +4,7 @@
  * @module compile/emit/control-flow
  */
 
-import { encodePtrHi, i64Hex } from '../../../layout.js'
+import { encodePtrHi, i64Hex, TYPED_ELEM_VIEW_FLAG, TYPED_ELEM_ANY_VIEW_FLAG } from '../../../layout.js'
 import { enumKeys } from '../../../module/schema.js'
 import {
   T, MUTATE_OPS, constLiteralHoistable, hasLabeledContinueTo, hasOwnBreakOrContinue, hasOwnContinue, isConstLiteral, isReassigned, some, walkAst,
@@ -657,11 +657,12 @@ export const controlFlowOps = {
           const checked = len => absent ? ['if', ['result', 'i64'], isNullish(asF64(emit(recv))),
             ['then', ['i64.const', 0]], ['else', len]] : len
           const aux = plannedTypedStorageInfo(ctx, recv)?.aux
-          if (aux == null) {
+          // owned or a view, read off a named pointer below; any other form asks __len
+          if (aux == null || aux & TYPED_ELEM_ANY_VIEW_FLAG && typeof recv !== 'string') {
             inc('__len')
             return checked(['i64.extend_i32_u', ['call', '$__len', ['i64.reinterpret_f64', asF64(emit(recv))]]])
           }
-          const et = aux & 7, isView = (aux & 8) !== 0
+          const et = aux & 7, isView = (aux & 8) !== 0, anyView = (aux & TYPED_ELEM_ANY_VIEW_FLAG) !== 0
           const shift = (aux & 16) ? 3 : et <= 1 ? 0 : et <= 3 ? 1 : et <= 6 ? 2 : 3
           // A ptr-NARROWED receiver (typed param/local carried as a raw i32
           // offset) IS the base — asF64 on it would coerce the offset
@@ -677,8 +678,14 @@ export const controlFlowOps = {
           const base = narrowed
             ? recvIR
             : ['i32.wrap_i64', ['i64.and', ['i64.reinterpret_f64', asF64(recvIR)], ['i64.const', LAYOUT.OFFSET_MASK]]]
-          return checked(['i64.extend_i32_u', ['i32.shr_u',
-            ['i32.load', isView ? base : ['i32.sub', base, ['i32.const', 8]]], ['i32.const', shift]]])
+          // Owned or a view (a name, never narrowed: layout.js): the view bit off
+          // the pointer picks the descriptor's word or the one below the data.
+          if (anyView && narrowed) { inc('__len'); return checked(['i64.extend_i32_u', ['call', '$__len', ['i64.reinterpret_f64', asF64(emit(recv))]]]) }
+          const lenAt = anyView
+            ? ['select', base, ['i32.sub', ['i32.wrap_i64', ['i64.and', ['i64.reinterpret_f64', asF64(emit(recv))], ['i64.const', LAYOUT.OFFSET_MASK]]], ['i32.const', 8]],
+              ['i32.and', ['i32.wrap_i64', ['i64.shr_u', ['i64.reinterpret_f64', asF64(emit(recv))], ['i64.const', 32]]], ['i32.const', TYPED_ELEM_VIEW_FLAG]]]
+            : isView ? base : ['i32.sub', base, ['i32.const', 8]]
+          return checked(['i64.extend_i32_u', ['i32.shr_u', ['i32.load', lenAt], ['i32.const', shift]]])
         }
         // one guard covers the whole NEST — each level contributes its own max-iv
         // and extent conjuncts (nested recognizers need the BARE nest in the fast
