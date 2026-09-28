@@ -482,7 +482,7 @@ pointer kind tests as a Boolean carrier or as presence (`kindTruthyIR`). A
 Boolean rides either carrier, the raw 0/1 or the atom box: a test of a
 BOOL-typed f64 is the number test then the atom compare, never the atom's aux
 bit alone (the kernel found the first form: the compiler's own `bool && expr`
-miscompiled).
+miscompiled), and a relational compare of one takes its number (`cmpOp`).
 Unknown-receiver stores propagate only when their pending effect grows. A
 newly exposed construction replays both indexed and arbitrary-key effects;
 numeric reseeding clears these pending facts before solving again. Cache-hit
@@ -1899,7 +1899,9 @@ store, a definition or an argument of a kind naming BOOL, or one Boolean by
 its syntax), and in a body no walk reached, which keeps no kind, when its
 stores are a Boolean and another value by their syntax. A parameter holds
 its callers' atoms whatever its reads (`coerceArg` boxes a Boolean for an
-untyped parameter). A binding every read of which converts keeps the raw
+untyped parameter), and calls passing a comparison beside an integer leave it
+the tagged f64 unless every read converts (`narrow/param-abi.js` narrows no
+other one to i32). A binding every read of which converts keeps the raw
 carrier and holds numbers: a store of a value that may carry an atom (a
 field, an element, a result) lands as its ToNumber. No such binding rejects;
 `test/bool-number.js` pins each operation in each place. An integer-certain

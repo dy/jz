@@ -47,6 +47,8 @@ const AT = {
   destructured: v => ({ fn: `(k, n) => { let { v } = { v: ${E} }; return ${v('v')} }` }),
   moduleField: (v, i) => ({ pre: `let t${i} = { v: 0 }`, fn: `(k, n) => { t${i}.v = ${E}; return ${v(`t${i}.v`)} }` }),
   paramField: (v, i) => ({ pre: `let p${i} = (v, k) => { if (k > 0) v = k > 1; let q = { w: v }; return ${v('q.w')} }`, fn: `(k, n) => p${i}(n, k)` }),
+  // every call passes an integer carrier (a comparison, a literal): no i32 parameter
+  paramInt: (v, i) => ({ pre: `let q${i} = (v) => { let s = 0; for (let j = 0; j < 3; j++) s += v; return [s, ${v('v')}] }`, fn: `(k, n) => k > 0 ? q${i}(k > 1) : q${i}(7)` }),
 }
 const ARGS = [[2, 5], [1, 5], [0, 5], [0, 0], [0, 1], [2, 0], [1, 1], [0, NaN], [0, 2.5]]
 

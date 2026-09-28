@@ -19,6 +19,7 @@ import { paramNumericArrayLike } from '../param-numeric.js'
 import { ensureParamRep } from '../../param-reps.js'
 import { scanBindingUses, USE, BINDING_USE_KIND, BINDING_USE_USES } from '../analyze-scans.js'
 import { K, tagOf, core } from '../../summary/kind.js'
+import { holdsBoolBeside } from '../../kind.js'
 import { frameNode } from '../../function.js'
 import { materializeVariant } from '../variant.js'
 
@@ -108,10 +109,14 @@ export function applyI32ParamSpecialization(paramReps, addressTaken, sitesByCall
     // pointer identity) that a value-preserving int mutation can still break,
     // so they are not int-safety questions this lever answers.
     let mutated = null, uses = null
+    const view = ctx.summary?.at(func.sig)
     for (const [k, r] of reps) {
       if (k === restIdx || k >= func.sig.params.length) continue
       const p = func.sig.params[k]
       if (func.defaults?.[p.name] != null) continue
+      // A Boolean beside a number, a read observing which, keeps the tagged
+      // f64 (kind.js boolTagged): the integer carrier reads a Boolean as 0 or 1.
+      if (view && holdsBoolBeside(p.name, view) && !view.numericDemand(p.name)) continue
       // Admit f64 evidence when mutations preserve integer values, or every
       // read applies a word conversion at the boundary below.
       if (r.wasm !== 'v128' && r.wasm !== 'i32' && r.wasm !== 'f64') continue

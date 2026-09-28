@@ -524,21 +524,29 @@ export const mixedBoolKind = k => {
   return (c & bitOf(K.BOOL)) !== 0 && (c !== bitOf(K.BOOL) || (k & NULL_BITS) !== 0) && c !== (TAGS & ~NULL_BITS)
 }
 
-/** A binding whose Booleans are atoms, the carrier that keeps their identity:
- *  it holds a Boolean beside another kind and a read may observe which (the
- *  numeric demand pass did not prove every read a conversion; a parameter
- *  takes its callers' atoms, whatever its reads). The kind answers where it
- *  names its tags. The unknown kind names them all: the binding is tagged when
- *  a Boolean reaches it. A body no walk reached keeps no kind: its stores
+/** A binding that holds a Boolean beside another value. The kind answers
+ *  where it names its tags. The unknown kind names them all: a Boolean reaching
+ *  the binding says so. A body no walk reached keeps no kind: its stores
  *  answer by their syntax, a Boolean beside another value. Flow facts do not
  *  enter: the storage is one for every path. */
+export const holdsBoolBeside = (name, view) => {
+  const k = view.bindingKindOf(name)
+  return mixedBoolKind(k) || (k === K.NONE ? view.boolStores(name) === 3
+    : (k & TAGS & ~NULL_BITS) === (TAGS & ~NULL_BITS) && (view.boolStores(name) & 1) !== 0)
+}
+
+/** A binding whose Booleans are atoms, the carrier that keeps their identity:
+ *  it holds a Boolean beside another value (holdsBoolBeside) and a read may
+ *  observe which (the numeric demand pass did not prove every read a
+ *  conversion). A parameter takes its callers' atoms whatever its reads,
+ *  unless its carrier is the integer one (narrow/param-abi.js narrows only
+ *  one every read of which converts). */
 export const boolTagged = (name, view = ctx.summary?.at(ctx.func.current)) => {
   if (typeof name !== 'string' || view == null) return false
   if (ctx.func.localReps?.get(name)?.val || ctx.scope.globalValTypes?.get(name)) return false
-  const k = view.bindingKindOf(name)
-  if (!mixedBoolKind(k) && !(k === K.NONE ? view.boolStores(name) === 3
-    : (k & TAGS & ~NULL_BITS) === (TAGS & ~NULL_BITS) && (view.boolStores(name) & 1) !== 0)) return false
-  return view.isParam(name) || !view.numericDemand(name)
+  if (!holdsBoolBeside(name, view)) return false
+  if (!view.isParam(name)) return !view.numericDemand(name)
+  return ctx.func.current?.params?.find(p => p.name === name)?.type !== 'i32'
 }
 
 // A sequence forwards its final value, including presence. The settled
