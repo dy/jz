@@ -268,6 +268,52 @@ export function bodyAffineEnv(body, iv) {
   return env
 }
 
+/** The affine environment at each top-level statement of a sequential body,
+ *  for the lets it declares at top level and advances by a step:
+ *  `let i1 = i0, i3 = i1 + 2*n4 … i1 += n8; i3 += n8 …` (the split-radix
+ *  butterfly). A statement `name += e` / `name -= e` of an invariant affine `e`
+ *  moves the name's form; any other write leaves it unresolvable from that
+ *  statement on. Returns { envs (statement index → env), advanced } or null
+ *  when no top-level let is advanced. */
+export function positionalAffineEnvs(body, iv) {
+  const flat = bodyAffineEnv(body, iv)
+  const declaredName = d => typeof d === 'string' ? d : Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string' ? d[1] : null
+  const advanced = new Set()
+  for (let s = 1; s < body.length; s++) {
+    const st = body[s]
+    if (Array.isArray(st) && st[0] === 'let') for (let k = 1; k < st.length; k++) {
+      const name = declaredName(st[k])
+      if (name != null && flat.get(name) === null && isReassigned(body, name)) advanced.add(name)
+    }
+  }
+  if (!advanced.size) return null
+  const env = new Map(flat)
+  const envs = []
+  for (let s = 1; s < body.length; s++) {
+    const st = body[s]
+    const written = new Set()
+    walkAst(st, { enter: n => {
+      if (n[0] === '=>') return false
+      if ((WRITE_OPS.has(n[0]) || n[0] === '++' || n[0] === '--') && advanced.has(n[1])) written.add(n[1])
+      if (n[0] === 'let' || n[0] === 'const') for (let k = 1; k < n.length; k++) { const name = declaredName(n[k]); if (advanced.has(name)) written.add(name) }
+    } })
+    const mentions = e => typeof e === 'string' ? advanced.has(e) : Array.isArray(e) && e.some((c, i) => i > 0 && mentions(c))
+    const stepped = Array.isArray(st) && (st[0] === '+=' || st[0] === '-=') && advanced.has(st[1]) && !mentions(st[2])
+    const at = new Map(env)
+    if (!stepped) for (const name of written) at.set(name, null)
+    envs[s] = at
+    if (stepped) env.set(st[1], affineIdxOfIV([st[0] === '+=' ? '+' : '-', st[1], st[2]], iv, body, env))
+    else if (Array.isArray(st) && st[0] === 'let' && st.length > 1) {
+      for (let k = 1; k < st.length; k++) {
+        const d = st[k], name = declaredName(d)
+        if (advanced.has(name)) env.set(name, Array.isArray(d) && d[0] === '=' ? affineIdxOfIV(d[2], iv, body, env) : null)
+      }
+      for (const name of written) if (!st.slice(1).some(d => declaredName(d) === name)) env.set(name, null)
+    } else for (const name of written) env.set(name, null)
+  }
+  return { envs, advanced }
+}
+
 /** Whether a typed access's receiver may be absent at run time: nullable, with
  *  no pointer representation, refinement or active bounds assumption. An extent
  *  test reads the receiver's length, so it must establish presence first. */
@@ -509,11 +555,29 @@ export function versionableTypedFor(init, cond, step, body, locals, entryHint = 
   // they evaluate only when `iv < bound` already held this iteration
   let forcePre = false
   const isPost = () => !forcePre && bump > 0 && (ivWriteAt === -1 || scanTop === -1 || scanTop >= ivWriteAt)
+  // Indices over a let the body advances (`i3 += n8`): each occurrence takes
+  // its form at its own statement, collected per key; the key is guarded at
+  // every form, or at none when one occurrence has no form (the fast arm's
+  // proof is keyed by the index text, so it must cover each place it names).
+  const pos = seqBody && bump === 0 ? positionalAffineEnvs(body, iv) : null
+  const mentionsAdvanced = e => typeof e === 'string' ? pos.advanced.has(e) : Array.isArray(e) && e.some((c, i) => i > 0 && mentionsAdvanced(c))
+  const advancedKeys = new Map()   // key → { recv, idx, forms: Map(signature → affine), bad, absent }
   const scan = (n) => {
     if (sourceVersionedLoop(n)) return false
     if (n[0] === '[]' && n.length === 3 && typeof n[1] === 'string' && n[1] !== iv
         && typedRecv(n[1]) && stable(n[1])) {
       const key = idxKey(n[1], n[2])
+      if (pos && mentionsAdvanced(n[2])) {
+        let o = advancedKeys.get(key)
+        if (!o) advancedKeys.set(key, o = { recv: n[1], idx: n[2], forms: new Map(), bad: false, absent: false })
+        if (receiverMayBeAbsent(n[1], n[2])) o.absent = true
+        if (!typedIdxProven(n[1], n[2], n)) {
+          const aff = scanTop >= 0 ? affineIdxOfIV(n[2], iv, body, pos.envs[scanTop] ?? env) : null
+          if (!aff || !aff.slots.every(t => stableExpr(t.e)) || aff.slots.length === 0 && startC != null && aff.a * startC + aff.bConst < 0) o.bad = true
+          else o.forms.set(JSON.stringify([aff.a, aff.bConst, aff.slots.map(t => [t.k, t.e])]), aff)
+        }
+        return
+      }
       // Stored length bounds do not prove the receiver exists. Versioning can
       // establish both facts once, keeping nullable globals out of hot reads.
       const absent = receiverMayBeAbsent(n[1], n[2])
@@ -571,6 +635,13 @@ export function versionableTypedFor(init, cond, step, body, locals, entryHint = 
     for (let s = 1; s < body.length; s++) { scanTop = s; walkAst(body[s], { enter: scan }) }
     scanTop = -1
   } else walkAst(body, { enter: scan })
+  for (const o of advancedKeys.values()) {
+    if (o.absent) cands.push({ recv: o.recv, idx: o.idx, presence: true })
+    if (o.bad) continue
+    for (const aff of o.forms.values())
+      cands.push({ recv: o.recv, idx: o.idx, a: aff.a, bConst: aff.bConst, post: false,
+        slots: aff.slots.map(t => ({ ...t, kind: exprType(t.e, locals) === 'i32' ? 'i32' : 'f64' })) })
+  }
   // `&&`-cond rest conjuncts — scanned AFTER the body so a shared-key body
   // access (potentially post-increment, wider extent) wins the seen-set
   if (condRest != null) { forcePre = true; walkAst(condRest, { enter: scan }); forcePre = false }

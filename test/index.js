@@ -100,6 +100,7 @@ const TESTS = [
   'host-closure',
   'typed-any-view',
   'kind-tests',
+  'advanced-index',
   'variant-result',
   'call-boundary',
   'call-release',
