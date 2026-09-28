@@ -88,6 +88,8 @@ const TESTS = [
   'typed-rebound',
   'late-field',
   'variant-result',
+  'call-boundary',
+  'call-release',
   'typed-payload',
   'typed-decode',
   'shift-precedence',

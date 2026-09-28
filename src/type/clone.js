@@ -19,6 +19,7 @@ export function cloneWithSubst(node, subst, rename = null) {
     if (node[0] === '=>') return node
     const out = node.map(x => cloneWithSubst(x, name, value))
     stampClonedIdxProof(node, out)
+    carrySite(node, out)
     return out
   }
   const ren = rename instanceof Map ? rename : new Map()
@@ -34,7 +35,17 @@ export function cloneWithSubst(node, subst, rename = null) {
   if (op === ':') return [op, node[1], cloneWithSubst(node[2], subst, ren)]
   const out = node.map((part, i) => i === 0 ? part : cloneWithSubst(part, subst, ren))
   stampClonedIdxProof(node, out)
+  carrySite(node, out)
   return out
+}
+
+/** An escape site's clone (a loop unrolled at emission) is a site of the same
+ *  origin: whichever copy is emitted flags it (emit/dispatch.js). */
+function carrySite(node, out) {
+  const sites = ctx.plans?.escapeSites
+  if (!sites?.has(node)) return
+  sites.add(out)
+  ;(ctx.plans.siteOrigin ??= new WeakMap()).set(out, ctx.plans.siteOrigin.get(node) ?? node)
 }
 
 /** Proof carry-over for clones: substitution only SHRINKS an index's value set (an

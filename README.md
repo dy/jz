@@ -44,7 +44,7 @@ const { exports, memory } = jz`
   export const sum = a => { let n = 0; for (const x of a) n += x; return n }
 `
 exports.sum(new Float64Array([1, 2, 3])) // 6
-memory.reset()                            // drop what the call allocated
+memory.used                               // 0: the call kept nothing it allocated
 ```
 
 <details>
@@ -109,7 +109,9 @@ BigInt, typed arrays, Map/Set, RegExp, Date, JSON, timers and the Web codecs.
 
 Where behaviour differs from JS:
 
-- **No GC.** Heap values live until `memory.reset()`. `WeakMap`, `WeakSet` and `WeakRef` hold strongly.
+- **No GC.** A call that keeps nothing it allocates releases it on return; what a call keeps lives until `memory.reset()`. `WeakMap`, `WeakSet` and `WeakRef` hold strongly.
+- **In-place array arguments.** An exported function that stores into an array argument and reads it back takes a Float64Array, a Float32Array or an Array there, which round as JS rounds them; another kind throws a TypeError.
+- **Float sums in lanes.** From optimize level 2, a loop that sums floats may add in two lanes: the last digits of the sum can differ.
 - **BigInt is 64-bit.** It wraps past its range and has no `**`.
 - **No holes.** `[1, , 3]` and a write past the end fill the gap with `undefined` elements: `1 in a`, `Object.keys` and `forEach` see them.
 - **32-bit element indices.** Use finite integer array indices. Numeric index expressions can truncate to i32; `a[NaN]` can read `a[0]` instead of `undefined`.
@@ -136,11 +138,16 @@ slower dynamic path, and `why` shows where.
 
 Numbers pass directly. Strings, arrays and typed arrays are copied in and
 decoded on the way out; numeric writes to an array argument are copied back
-after the call, other changes to it (length, non-numeric elements) are not. A
-plain object passes by reference: the module reads, writes, lists and
-serializes it through the host, so the caller sees its changes. A JZ buffer
-(`memory.Float64Array(n)`) is the storage itself, so hand hot loops one of
-those instead of copying per call.
+after the call at the length the function left it, its non-numeric elements are
+not. A
+typed array keeps its element kind: a Float32Array block runs as one. The copies
+are released after the call unless the function keeps them. A plain object
+passes by reference: the module reads, writes, lists and serializes it through
+the host, so the caller sees its changes; a typed array the module stores on it
+is a view of the module's memory, read back as the same array (the host's view
+detaches if the memory grows). A JZ buffer (`memory.Float64Array(n)`,
+`memory.Float32Array(n)`) is the storage itself, so hand hot loops one of those
+instead of copying per call.
 
 ```js
 const { exports } = jz`
@@ -176,16 +183,26 @@ the build.
 <details>
 <summary><strong>How does memory work?</strong></summary>
 
-Heap modules use a bump allocator: no free list, no garbage collector.
-Allocations are dropped in batches with `memory.reset()`, which invalidates
-every earlier pointer.
+Heap modules use a bump allocator: no free list, no garbage collector. A call
+whose function keeps nothing it allocates (no heap value stored where it
+outlives the call, no heap value returned) rewinds the heap on return, and the
+copies of its arguments go with it; a loop whose iterations keep nothing does
+the same per iteration. What a call keeps stays until `memory.reset()`, which
+returns the module to its state after instantiation and invalidates every
+earlier pointer. `memory.used` reads the bytes held, so a host can see a call
+that keeps memory; the `warnings` sink names each such export and why at
+compile time (`heap-per-call`).
 
 ```js
 for (let i = 0; i < 1000; i++) {
-  exports.process(100)   // allocates on the WASM heap
+  exports.process(100)   // allocates on the WASM heap and keeps some
   memory.reset()         // drop the batch
 }
 ```
+
+Memory that cannot grow, past `memory: { maximum }`, the 4 GiB of wasm32 or
+the engine's limit, throws the RangeError of an allocation, which the program
+can catch; after a `memory.reset()` the module runs again.
 
 `jz.memory()` creates one memory for several modules, so one can read what
 another allocated:

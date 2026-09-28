@@ -512,6 +512,8 @@ export function summaryQueries(facts, internal = false) {
     for (let i = 0; i < values.length; i++) row[i] = pub(join(row[i], pub(values[i])))
   }
   const fieldKind = (sid, prop) => storage[sid]?.[schemas[sid]?.indexOf(prop)] ?? K.NONE
+  let arrowOfClosure = null
+  const arrowsById = () => { const a = []; for (const [node, id] of closures) a[id] = node; return a }
   let deletableLayouts = null
   const hostLayouts = new Set([...facts.hostSchemas].map(sid => layouts[sid]))
   const opaqueLayouts = new Set([...facts.opaqueSchemas].map(sid => layouts[sid]))
@@ -548,6 +550,11 @@ export function summaryQueries(facts, internal = false) {
     fieldSid: (sid, prop) => { const k = fieldKind(sid, prop); return tagOf(k) === K.OBJECT && paramOf(k) !== UNKNOWN && !isNullable(k) ? paramOf(k) : null },
     resultOf: name => pub(resultOfId(name)),
     resultVal: name => valOf(resultOfId(name)),
+    // The closures a closure or closure-set id (calleeOf) names, and a
+    // closure's arrow: what a call through a resolved binding runs.
+    closureMembers: id => membersOf(id),
+    closureIdOfBody: body => closuresByBody.get(body),
+    closureArrow: id => (arrowOfClosure ??= arrowsById())[id] ?? null,
     memberMayBeOwn,
     memberMayBeOwnOn: (prop, valueKind) => builtinReceiverMayHaveOwn(tagOf(kindOfVal(valueKind)), prop),
     builtinMemberMayBeOwn: prop => builtinOwnProps.has(prop),

@@ -689,46 +689,55 @@ test('host decode: trap-lowered radix throw resolves to a real RangeError', () =
 })
 
 test('host decode: a genuine unmarked trap still surfaces as RuntimeError', () => {
-  // A tiny `maxMemory` ceiling turns __memgrow's OOM path (module/core.js) into a
-  // real, deterministic, unmarked `unreachable` — no throw site precedes it, so
-  // __jz_last_err_bits stays 0 and decodeThrown must rethrow it undecoded. The
-  // function branches through Number(v) first so the module still carries the
-  // last-err marker (pulled by __to_num) — this pins the "marker present but
-  // zero" branch, not just the "no marker at all" one.
-  // kernel leg: `maxMemory` is a host-side compile OPTION (ctx.memory.max, baked
-  // into the module's memory limits at compile time) — kernel-target.js's own
-  // docstring lists this class of opt ("host-side opts that shape compilation")
-  // as not marshaled across the wasm compile-ABI (audit-#8 P1-1 differential:
-  // confirmed the growth silently SUCCEEDS in-kernel instead of trapping — the
-  // ceiling never reached the self-compiled compile at all). Orthogonal to the
-  // marker-consume fix this test pins; native (the leg that actually respects
-  // maxMemory) stays the witness.
-  if (onKernel()) return
+  // padStart's string-length guard (module/string.js) is a real, deterministic,
+  // unmarked `unreachable` that allocates nothing first: no throw site precedes
+  // it, so __jz_last_err_bits stays 0 and decodeThrown must rethrow it
+  // undecoded. The function branches through Number(v) first so the module
+  // still carries the last-err marker (pulled by __to_num) — this pins the
+  // "marker present but zero" branch, not just the "no marker at all" one.
   const src = `export let f=(v)=>{
-    if (typeof v === 'number') { let s = 'a'; for (let i = 0; i < 30; i++) s = s + s; return s.length }
+    if (typeof v === 'number') return 'a'.padStart(v).length
     return Number(v)
   }`
   let error
-  try { jz(src, { maxMemory: 1 }).exports.f(1) }
+  try { jz(src).exports.f(2 ** 31) }
   catch (e) { error = e }
   ok(error instanceof WebAssembly.RuntimeError, `expected an undecoded RuntimeError, got ${error?.constructor?.name}`)
+})
+
+test('host decode: memory that cannot grow is the RangeError of an allocation', () => {
+  // __memgrow (module/core.js) throws HEAP_EXHAUSTED through the marker when the
+  // declared maximum refuses the growth; the heap pointer has not moved, so the
+  // instance runs again after memory.reset(), and a try in the program catches it.
+  // kernel leg: `maxMemory` is a host-side compile option the self-compiled
+  // compiler does not marshal (see the tests below); native is the witness.
+  if (onKernel()) return
+  const src = `export let grow = (n) => { let a = []; for (let i = 0; i < n; i++) a.push(new Float64Array(1024)); return a.length }
+    export let tryGrow = (n) => { try { return grow(n) } catch (e) { return e instanceof RangeError ? -1 : -2 } }`
+  const { exports, memory } = jz(src, { memory: { initial: 1, maximum: 16 } })
+  let error
+  try { exports.grow(1e6) } catch (e) { error = e }
+  ok(error instanceof RangeError, `expected RangeError, got ${error?.constructor?.name}`)
+  is(error.message, 'Out of memory: the heap cannot grow')
+  is(memory.buffer.byteLength, 16 * 65536, 'grew to its maximum, no further')
+  memory.reset()
+  is(exports.grow(4), 4, 'the instance runs again after a reset')
+  is(exports.tryGrow(1e6), -1, 'the program catches it as a RangeError')
 })
 
 test('host decode: a decoded escape does not leave a stale marker for the next trap', () => {
   // A real userThrows escape (WebAssembly.Exception path) writes the SAME marker
   // global a trap-lowered throw does — decodeThrown must consume it there too, or
   // a later genuine trap on the SAME instance reads the stale nonzero value and
-  // misdecodes as the earlier, already-handled error.
-  // kernel leg: same `maxMemory` non-marshaling gap as the pin above — see its
-  // comment. The in-wasm-catch/finally marker-consume mechanism this session
-  // added (src/compile/emit.js 'catch'/'finally') is exercised directly by the
-  // audit-#8 P1-1 repro in this file's own catch/finally section instead.
-  if (onKernel()) return
+  // misdecodes as the earlier, already-handled error. The later trap is
+  // padStart's unmarked string-length guard (the pin above). The in-wasm
+  // catch/finally marker consume (src/compile/emit.js 'catch'/'finally') is
+  // exercised by the audit-#8 P1-1 repro in this file's catch/finally section.
   const src = `export let f = (mode) => {
     if (mode === 1) throw 300
-    let s = 'a'; for (let i = 0; i < 30; i++) s = s + s; return s.length
+    return 'a'.padStart(2 ** 31).length
   }`
-  const inst = jz(src, { maxMemory: 1 })
+  const inst = jz(src)
   let first
   try { inst.exports.f(1) } catch (e) { first = e }
   ok(first instanceof Error && !(first instanceof SyntaxError), 'a user-thrown code remains a number')

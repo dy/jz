@@ -1558,7 +1558,45 @@ function liftOptionalChain(node) {
  * @param {import('../../prepare/module-resolve.js').ASTNode} node
  * @returns {Array} typed WASM S-expression
  */
+// Escape sites (compile/analyze/frame-effects.js): where one runs, the escape
+// flag goes up before its store, so the frame around it keeps the heap at its
+// return (optimize/arena-rewind.js). A logical assignment raises it in the arm
+// that assigns (emit/assignment.js), so an initialization made once flags once.
+const LOGICAL_ASSIGN = new Set(['??=', '||=', '&&='])
 export function emit(node, expect) {
+  const ir = emitNode(node, expect)
+  if (!ctx.plans.escapeFlag || !Array.isArray(node) || !ctx.plans.escapeSites?.has(node) || LOGICAL_ASSIGN.has(node[0])) return ir
+  markInstrumented(node)
+  return withEscapeFlag(ir, ctx.plans.siteGuards?.get(ctx.plans.siteOrigin?.get(node) ?? node))
+}
+/** The site (or the site a clone of it copies) is flagged where it is emitted. */
+export const markInstrumented = (node) => ctx.plans.instrumented.add(ctx.plans.siteOrigin?.get(node) ?? node)
+/** `ir` with the escape flag raised before it (a loop's site may return from
+ *  inside). With `guards`, receiver names, it rises only when one of those
+ *  receivers is no typed array: an element store into one never grows it. A
+ *  value keeps its value: an i32 is boxed first by its
+ *  own facts (a pointer's offset, an unsigned word); an f64 or i64 keeps the
+ *  facts that say what its bits are (REP_FACTS). Named, not enumerated: the
+ *  self-hosted compiler lists no named property of an array. */
+const REP_FACTS = ['ptrKind', 'ptrAux', 'srcPtrKind', 'schemaSid', 'valKind', 'bigintRaw', 'bigintBox']
+export const withEscapeFlag = (ir, guards = null) => {
+  const raise = ['global.set', '$__esc', ['i32.const', 1]]
+  let flag = raise
+  if (guards?.length) {
+    inc('__ptr_type')
+    const untyped = guards.map(name => ['i32.ne', ['call', '$__ptr_type', ['i64.reinterpret_f64', asF64(readVar(name))]], ['i32.const', PTR.TYPED]])
+    flag = ['if', untyped.reduce((a, b) => ['i32.or', a, b]), ['then', raise]]
+  }
+  if (ir == null) return typed(flag, 'void')
+  const t = Array.isArray(ir) ? ir.type : undefined
+  if (!t || t === 'void') return typed(['block', flag, ...flat(ir)], 'void')
+  if (t === 'i32') return typed(['block', ['result', 'f64'], flag, asF64(ir)], 'f64')
+  const out = typed(['block', ['result', t], flag, ir], t)
+  for (const k of REP_FACTS) if (ir[k] !== undefined) out[k] = ir[k]
+  return out
+}
+
+function emitNode(node, expect) {
   ctx.func._expect = expect || null
   if (Array.isArray(node)) {
     ctx.error.node = node

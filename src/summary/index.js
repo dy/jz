@@ -3444,9 +3444,10 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     return changed
   })
   // What the host may pass: an exported function's parameters; one the export
-  // contract normalizes at entry (`boundaryTyped`, narrow/param-abi.js) arrives as that typed array.
+  // contract normalizes at entry (`boundaryTyped`, narrow/param-abi.js: its
+  // constructor, then `+` when written) arrives as that typed array.
   const seed = (numeric) => {
-    for (const f of funcs) if (exported(f)) for (const p of f.sig.params) { const key = keyIn(f.name, p.name); bindParam(key, p.boundaryTyped ? kind(K.TYPED, encodeTypedElemAux('Float64Array', false)) : numeric.includes(key) ? NUMBER : ANY) }
+    for (const f of funcs) if (exported(f)) for (const p of f.sig.params) { const key = keyIn(f.name, p.name); bindParam(key, p.boundaryTyped ? kind(K.TYPED, encodeTypedElemAux(p.boundaryTyped.replace('+', ''), false)) : numeric.includes(key) ? NUMBER : ANY) }
   }
   seed([])
   fixpoint()
