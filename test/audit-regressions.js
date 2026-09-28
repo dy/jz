@@ -1307,6 +1307,36 @@ test('audit: bounded numeric conversions retain missing and nonfinite values', (
   }
 })
 
+// An integer element store converts its value by ToInt32. Over checked reads
+// of integer elements (a length the compiler does not know: the adaptive
+// filter taps of a TTA decoder, `qm[i] -= dx[i]`) the value is a bounded
+// integer or the NaN of a miss, and the inline wrap is exact; the helper that
+// recovers the low word past 2^63 stays for values of no known range.
+test('audit: an integer element store over checked integer reads converts inline', () => {
+  const src=`let a=new Int32Array(4),b=new Int32Array(4),u=new Uint32Array(4),f=new Float64Array(4)
+    a[0]=2147483647;b[0]=-2147483648;a[1]=-2147483648;b[1]=2147483647;a[2]=5;b[2]=9
+    u[0]=4294967295;u[1]=4294967294;f[0]=1e19;f[1]=-3.9e19;f[2]=2.5e300
+    export let g=(k)=>{
+      let q=new Int32Array(8),r=new Uint8Array(8),s=new Int16Array(8)
+      for(let i=0;i<4;i++)q[i]=a[i]-b[i]
+      q[4]=a[k+5]-b[0];q[5]=u[0]+u[1];q[6]=f[0]+f[1];q[7]=f[2]*2
+      for(let i=0;i<4;i++){r[i]=a[i]+b[i]*3;s[i]=u[i]-a[i]}
+      r[4]=f[k]-1;s[4]=f[1]-f[0]
+      return [...q,...r,...s].join()
+    }`
+  const js=oracle(src)
+  for(const optimize of TIERS){
+    const wasm=jz(src,{optimize}).exports
+    for(const k of [0,1])is(wasm.g(k),js.g(k),`${optimize}: k=${k}`)
+  }
+  const taps=`let mk=()=>({qm:new Int32Array(8),dx:new Int32Array(8)})
+    let st=[mk(),mk()]
+    let step=(ch,v)=>{let {qm,dx}=ch;for(let i=0;i<8;i++){dx[i]=(v+i)|0;qm[i]-=dx[i]}return qm[3]}
+    export let t=(v)=>[step(st[v&1],v),step(st[v&1],v)].join()`
+  ok(!compile(taps,{optimize:2,wat:true}).includes('$__to_int32'),'a difference of integer elements converts inline')
+  for(const v of [3,2147483647,-2147483648])is(jz(taps).exports.t(v),oracle(taps).t(v),`and wraps as JavaScript does: ${v}`)
+})
+
 test('audit: range folding includes a local\'s implicit zero value', () => {
   const src='export function f(p){let x=0;if(p)x=0.5;return (4294967297*(1-2*x))|0}'
   const js=oracle(src)

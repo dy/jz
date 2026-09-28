@@ -9,7 +9,7 @@ import print from 'watr/print'
  * @module typed
  */
 
-import { typed, asF64, asI32, asI32Sat, asI64, toInt32, toNumF64, coerceNullishToNum, coerceAtomsToNum, NULL_NAN, TRUE_NAN, FALSE_NAN, allocPtr, boxBigInt, rawBigInt, deferBigintBox, isBigIntBox, mkPtrIR, ptrOffsetIR, ptrTypeEq, temp, tempI32, tempI64, undefExpr, throwTypeErrorIR, truthyIR, isLit, isConst, isPureIR, litVal, freshId, readI64MayUnbox, readI64, unboxBigInt, maybeUnboxBigInt, fromI64, isNullish } from '../src/ir.js'
+import { typed, asF64, asI32, asI32Sat, asI64, toInt32, f64Range, toNumF64, coerceNullishToNum, coerceAtomsToNum, NULL_NAN, TRUE_NAN, FALSE_NAN, allocPtr, boxBigInt, rawBigInt, deferBigintBox, isBigIntBox, mkPtrIR, ptrOffsetIR, ptrTypeEq, temp, tempI32, tempI64, undefExpr, throwTypeErrorIR, truthyIR, isLit, isConst, isPureIR, litVal, freshId, readI64MayUnbox, readI64, unboxBigInt, maybeUnboxBigInt, fromI64, isNullish } from '../src/ir.js'
 import { isReassigned, T, ASSIGN_OPS, walkAst, some, every, REFS_THROUGH_ARROWS } from '../src/ast.js'
 import { emit, idx, deps, call, positionArgs } from '../src/bridge.js'
 import { strHashLiteral } from './collection.js'
@@ -2403,8 +2403,12 @@ export default (ctx) => {
         guard([STORE[et], off, ['local.get', `$${v32}`]]),
         [(et & 1) ? 'f64.convert_i32_u' : 'f64.convert_i32_s', ['local.get', `$${v32}`]]], void_ ? 'void' : 'f64')
     }
-    const vt = temp('tw')
-    const i32val = toInt32(['local.get', `$${vt}`])
+    // The conversion reads the value's temp, which knows no range; the value
+    // itself may (an integer element's difference, a miss arm's NaN): within
+    // ±2^63 the inline wrap is exact ToInt32 (ir/numeric.js toInt32).
+    const vt = temp('tw'), get = ['local.get', `$${vt}`], range = f64Range(asF64(valIR), null, true)
+    if (range) get.range = range
+    const i32val = toInt32(get)
     return typed(void_ ? ['block', ...pre,
       ['local.set', `$${vt}`, asF64(valIR)],
       guard([STORE[et], off, i32val])]

@@ -405,6 +405,14 @@ export const f64Range = (n, get, allowNaN = false) => {
       const a = arm(n[1], env, t), b = arm(n[2], env, f)
       return a && b && fin(Math.min(a.lo, b.lo), Math.max(a.hi, b.hi))
     }
+    // A block's value is its tail's (a checked read: the index staged, then
+    // the element or the miss), read after the statements, which may write a
+    // local an enclosing test bounded.
+    if (op === 'block' && n[1]?.[0] === 'result' && n[1][1] === 'f64' && n.length > 2) {
+      let e = env
+      for (let f = env; f && e; f = f.next) for (let i = 2; i < n.length - 1; i++) if (writes(n[i], f.name)) { e = null; break }
+      return r(n[n.length - 1], e)
+    }
     if (op === 'f64.min') { const a = r(n[1], env), b = r(n[2], env); return a && b && fin(Math.min(a.lo, b.lo), Math.min(a.hi, b.hi)) }
     if (op === 'f64.max') { const a = r(n[1], env), b = r(n[2], env); return a && b && fin(Math.max(a.lo, b.lo), Math.max(a.hi, b.hi)) }
     return null
