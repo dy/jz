@@ -1960,6 +1960,13 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     const classFn = classMember(recv, name)
     if (classFn) { const r = callWith(classFn, core(recv), base, n); if (memberMayBeOwn(name)) escapeArgs(base, n); return memberResult(recv, name, r) }
     const candidates = callCandidates(recv, name, base, n)
+    // A shape beside primitives (`merge`'s mixed cell: a factory's object in a
+    // promise's value beside the numbers other promises settle with) calls the
+    // closure its shapes hold under the name, as a read of it answers (`member`).
+    if (dictOrObject(recv)) {
+      const fk = member('.', recv, name)
+      if (tagOf(fk) === K.CLOSURE && paramOf(fk) !== UNKNOWN) return merge(candidates, callClosure(paramOf(fk), base, n, node, recv))
+    }
     // A proven builtin receiver still permits an own data property to shadow
     // its prototype method. The packed summary does not retain per-instance
     // sidecar values, so decline to ANY rather than assert the builtin result.
@@ -2011,6 +2018,13 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       const fk = lostObjectRead(name, false)
       if (tagOf(fk) === K.CLOSURE && paramOf(fk) !== UNKNOWN) return merge(candidates, callClosure(paramOf(fk), base, n, node, recv))
       if (tagOf(core(fk)) === K.NONE) return candidates
+    }
+    // A receiver of unknown kind may be such an object too (an awaited value:
+    // every promise's value slot holds what the host settles): the closure a
+    // shape holds under the name runs, and the call keeps its unknown result.
+    if (t === K.ANY) {
+      const fk = lostObjectRead(name, false)
+      if (tagOf(fk) === K.CLOSURE && paramOf(fk) !== UNKNOWN) callClosure(paramOf(fk), base, n, node, recv)
     }
     if (t === K.TYPED) {
       const same = typedMethodKind(name, recv)

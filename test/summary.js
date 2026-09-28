@@ -973,3 +973,29 @@ test('specialization: forwarding alone does not earn a kind clone', () => {
     for (const n of [0, 3, 3, -1]) is(f(n), expected(n), body)
   }
 })
+
+// A method call through a receiver the summary joined (an object beside a
+// number: a mixed cell) or lost (the unknown kind: every promise's value slot
+// holds what the other promises settle with too) runs the closure the shapes
+// hold under the name. It ran none: the string `set` stores into the captured
+// binding went unseen, and `inc` added it as a number ('x' + 1 read 'x').
+test('summary: a method call through a joined or an awaited receiver runs its closure', async () => {
+  const body = `{ let s = 0; let o = { set: () => { s = 'x' }, get: () => s, inc: () => { s = s + 1; return s } }; return c ? o : 1 }`
+  const tail = `let inst = null
+export let set = () => inst.set()
+export let get = () => inst.get()
+export let inc = () => inst.inc()`
+  for (const src of [
+    `let mk = (c) => ${body}\n${tail}\nexport let init = async () => { inst = mk(1); return 1 }`,
+    `let mk = async (c) => ${body}\n${tail}\nexport let init = async () => { inst = await mk(1); return 1 }`,
+  ]) {
+    const want = oracle(src)
+    await want.init()
+    const expect = [want.inc(), want.set(), want.get(), want.inc(), want.get()]
+    for (const optimize of levels(0, 2, 3)) {
+      const got = jz(src, { optimize }).exports
+      await got.init()
+      is([got.inc(), got.set(), got.get(), got.inc(), got.get()], expect, `${src.slice(9, 14)} at ${optimize}`)
+    }
+  }
+})
