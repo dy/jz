@@ -2285,6 +2285,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   // or a computed key is shaped by its sources, each round.
   const NO_SID = -1, DYNAMIC_LITERAL = -2
   const literalSids = new Map()   // `{}` node → sid, NO_SID (its own shape, unregistered) or DYNAMIC_LITERAL
+  const unnamed = new Map()       // schema key → the names of a spread's layout no literal registers
   const literalSid = (n) => {
     let sid = literalSids.get(n)
     if (sid === undefined) {
@@ -2403,6 +2404,10 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     }
     const layout = sidByKey.get(schemaKey(names, brand)), sid = layout === undefined ? -1 : objectSite(n, layout)
     if (sid < 0) {
+      // A layout no literal names (its sources' shapes known here only): the
+      // compile names it for the next summary (compile/index.js), the layout
+      // the emitter builds (module/object.js mergeSpreadNames).
+      if (layout === undefined && !brand) unnamed.set(schemaKey(names, null), names)
       for (const [, v] of writes) escape(v)
       // A spread's representation still depends on its sources.
       return kind(K.OBJECT) | bitOf(K.HASH)
@@ -3955,6 +3960,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   })
   const dispatcher = new Set(funcs.filter(f => f.sig?.dispatcher === true).map(f => f.name))
   const published = summaryQueries(queryFacts)
+  published.unnamedLayouts = [...unnamed.values()]
   queryFacts.contracts = buildResultContracts({
     results: new Map([...results.keys()].map(key => [key, published.resultOf(key)])), funcs, closureCount: closureBodies.length, closureSets, setBase: SET_BASE, membersOf, certain, returns,
     direct: name => !exportedNames.has(name) && !escaped.has(name) && !closureSetIds.has(name) && !dispatcher.has(name),

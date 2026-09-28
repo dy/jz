@@ -860,3 +860,14 @@ test('spread into console: the arguments print as the values they spread to', ()
   const want = ['THREE.Vector3: bad 1 x true', 'THREE.alone', '1.5 b', 'm 1.5 b z', '', '1.5 b 2']
   is(lines.slice(0, want.length), want)
 })
+
+// A spread of sources whose layouts only the summary proves (a parameter every
+// caller passes one shape) makes a layout no literal names: the compile names
+// it after the plan, and the literal's fields read as slots (compile/index.js).
+test('spread: a layout the summary derives types the literal\'s fields', () => {
+  const src = `let g = (o) => { let r = {...o, z: 1}; return r.b * 2 + r.z }\nexport let f = (n) => g({a: 1, b: n})`
+  for (const optimize of levels(0, 2, 3)) {
+    is(jz(src, { optimize }).exports.f(4), oracle(src).f(4), `O${optimize}`)
+    ok(!/\$__dyn_get/.test(compile(src, { optimize, wat: true })), `read as slots O${optimize}`)
+  }
+})

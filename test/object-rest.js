@@ -111,3 +111,11 @@ test('object rest: a known layout copies its slots', () => {
   ok(!/\$__hash_new/.test(wat), 'no dictionary: the rest is a layout of its own')
   ok(!/\$__str_eq/.test(wat), 'no key compares at run time')
 })
+
+test('object rest: the fields of a rest whose source layout only the summary knows read as slots', () => {
+  const src = `let g = ({a, ...r}) => r.b * 2 + r.c\nexport let f = (n) => g({a: 1, b: n, c: 3}) + g({a: 2, b: 5, c: n})`
+  for (const optimize of levels(0, 2, 3)) {
+    is(jz(src, { optimize }).exports.f(4), oracle(src).f(4), `O${optimize}`)
+    ok(!/\$__dyn_get/.test(compile(src, { optimize, wat: true })), `a layout of its own O${optimize}`)
+  }
+})

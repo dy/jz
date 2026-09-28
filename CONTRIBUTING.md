@@ -1859,7 +1859,10 @@ closures where the summary cannot follow them; `includes`, `indexOf` and
 `lastIndexOf` keep nothing of their argument, `slice` yields a copy with a
 cell of its own whose elements are the row's positions from a literal start,
 and any other name on an array is a property beside the elements; shape sets
-of up to 64 layouts. A class
+of up to 64 layouts. A spread of sources whose layouts the summary knows makes
+a layout no literal may name: the summary lists it (`unnamedLayouts`), the
+compile registers it after the plan, and the summary the emitter reads types
+the literal's fields in the layout `emitObjectSpread` builds. A class
 initializer (`C⟨init⟩`) called on one layout is walked for that layout under
 bindings of its own (initializer contexts): a derived class's `super(…)` no
 longer joins its arguments into the base's parameters, so each layout's

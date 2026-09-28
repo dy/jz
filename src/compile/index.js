@@ -234,6 +234,9 @@ export function assemble(ast, profiler) {
   timePhase(profiler, 'foldAggregates', () => foldStaticConstAggregates(ast))
 
   const programFacts = timePhase(profiler, 'plan', () => plan(ast, profiler, summarizeProgram))
+  // A spread of sources whose layouts the summary knows makes a layout no
+  // literal names: named, the summary below types its fields.
+  for (const names of ctx.summary.unnamedLayouts) ctx.schema.register(names)
   // The plan rewrote the program (inlined calls, scalar-replaced literals,
   // specialized variants with their own scopes): summarize what emission sees.
   ctx.summary = summarizeProgram()
