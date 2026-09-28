@@ -35,7 +35,7 @@ import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
 import { belowOpt, onKernel, onWasi, withBigintStrict, levels } from './_matrix.js'
 import jz from '../index.js'
-import { run } from './util.js'
+import { run, oracle } from './util.js'
 import { parse as watTree, callsOutside } from '../scripts/wat-probe.mjs'
 import { dictValueKindOf, mapValueKindOf } from '../src/kind.js'
 import { ctx } from '../src/ctx.js'
@@ -1404,6 +1404,32 @@ test('safe control: index-use counters with no unresolved bare escape keep i32 s
   // `f` is export-wrapper-inlined ($__inlNN_s), same mangling as the other
   // inlined-name tests in this file — match either the plain or mangled form.
   ok(fnAcc.includes('$s i32)') || fnAcc.includes('_s i32)'), 'ToInt32-rooted accumulator `s` stays i32 storage despite a bare, uncompared return')
+})
+
+// A loop's test on its counter compares it with a constant (`while (--i)` with
+// 0, `while (i--)`, prepared as `(--i) + 1`, with -1): the counter it governs
+// keeps i32 storage as a `for (; i < n; )` counter does (fourier-transform's
+// magnitude loop, `let i = N >>> 1; while (--i)`), and a `>>> 0` counter above
+// 2^31 still reads its unsigned value.
+test('safe control: a counter a loop tests keeps i32 storage', () => {
+  const loops = {
+    pre: 'let i = N >>> 1; while (--i)',
+    post: 'let i = N >>> 1; while (i--)',
+    for: 'for (let i = N >> 1; i--;)',
+    do: 'let i = N >>> 1; do',
+  }
+  for (const [k, head] of Object.entries(loops)) {
+    const body = '{ const r = a[i], m = a[N - i]; o[i] = Math.sqrt(r * r + m * m) }'
+    const src = `let x = new Float64Array(64).map((_, i) => (i * 37) % 11 - 5), out = new Float64Array(32)
+      let mag = (a, o) => { const N = a.length; ${k === 'do' ? `${head} ${body} while (--i)` : `${head} ${body}`}; return o }
+      export let f = () => mag(x, out).join()`
+    const wat = jz.compile(src, { wat: true, optimize: 2 })
+    const fn = wat.slice(wat.indexOf('(func $f'), wat.indexOf('(func', wat.indexOf('(func $f') + 6))
+    ok(/[$_]i i32\)/.test(fn) && !/[$_]i f64\)/.test(fn), `${k}: the counter is an i32 local`)
+    for (const optimize of levels(0, 2)) is(run(src, { optimize }).f(), oracle(src).f(), `${k}: agrees with JavaScript at ${optimize}`)
+  }
+  const unsigned = `export let f = (x) => { let i = x >>> 0, s = 0, k = 0; while (i-- && k++ < 3) s += i; return s }`
+  is(run(unsigned).f(-1), 4294967294 + 4294967293 + 4294967292, 'a >>> 0 counter above 2^31 reads its unsigned value')
 })
 
 // FALSE-POSITIVE PRECISION FIX (2026-08-03, the reference-refresh top-priority

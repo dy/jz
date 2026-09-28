@@ -1119,14 +1119,27 @@ const mathFnName = (callee) =>
 // entry at prepare time (only named function/arrow bindings are), so it stays
 // an inline `=>` node in the enclosing body and would be invisible to a scan
 // that stops there. See collectBareEscapes' own crossClosure doc.
+// A loop's test on its counter (`while (--i)`, `for (; n; n--)`, `while (i--)`,
+// which prepare spells `(--i) + 1`, a do-while's `while (flag || --i)`)
+// compares it with a constant: the same governing comparison as `i < n`.
+function testedCounters(test, add) {
+  if (typeof test === 'string') return add(test)
+  if (!Array.isArray(test)) return
+  if ((test[0] === '--' || test[0] === '++') && typeof test[1] === 'string') return add(test[1])
+  if ((test[0] === '+' || test[0] === '-') && test.length === 3 && constIntExpr(test[2]) != null) return testedCounters(test[1], add)
+  if (test[0] === '&&' || test[0] === '||' || test[0] === '!') for (let i = 1; i < test.length; i++) testedCounters(test[i], add)
+}
 function collectComparedNames(body, crossClosure) {
   let names = null
+  const add = (name) => { (names ||= new Set()).add(name) }
   const enter = (node) => {
     if (node[0] === '=>') { if (crossClosure) walkAst(node[2], { enter }); return false }
     if (COMPARE_OPS.has(node[0])) {
-      if (typeof node[1] === 'string') (names ||= new Set()).add(node[1])
-      if (typeof node[2] === 'string') (names ||= new Set()).add(node[2])
+      if (typeof node[1] === 'string') add(node[1])
+      if (typeof node[2] === 'string') add(node[2])
     }
+    if (node[0] === 'while') testedCounters(node[1], add)
+    else if (node[0] === 'for') testedCounters(node[2], add)
   }
   walkAst(body, { enter })
   return names || EMPTY_SCAN_SET
