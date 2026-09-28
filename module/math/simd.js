@@ -13,7 +13,7 @@ import { wat } from '../../src/bridge.js'
 import { ctx } from '../../src/ctx.js'
 import {
   EXP_Q, EXP_L1, EXP_L2, POW_LN2HI, POW_LN2LO, POW_LOG_A, polyTree,
-  INVPIO2, PIO2_1, PIO2_1T, KSIN, KCOS, LG, LN2_HI, LN2_LO, INVLN2, EXP_P, EXP_E,
+  INVPIO2, PIO2_1, PIO2_1T, PIO2_2, PIO2_2T, KSIN, KCOS, LG, LN2_HI, LN2_LO, INVLN2, EXP_P, EXP_E,
 } from './trig-tables.js'
 
 export const registerMathSimd = () => {
@@ -34,6 +34,8 @@ export const registerMathSimd = () => {
   const hi2 = (v) => `(i8x16.shuffle 4 5 6 7 12 13 14 15 4 5 6 7 12 13 14 15 ${v} ${v})`
   const fromHi2 = (h) => `(i8x16.shuffle 16 16 16 16 0 1 2 3 16 16 16 16 4 5 6 7 ${h} (v128.const i32x4 0 0 0 0))`
   const wide = (m) => `(i64x2.extend_low_i32x4_s ${m})`   // an i32-lane mask over the two f64 lanes
+  // the bits |x|'s exponent exceeds y's by (i32 lanes), __ieee754_rem_pio2's cancellation measure
+  const dropw = (y) => `(i32x4.sub (i32x4.shr_s (local.get $ix) (i32.const 20)) (v128.and (i32x4.shr_u ${hi2(`(local.get ${y})`)} (i32.const 20)) ${i32s(0x7ff)}))`
   // both lanes through the scalar kernel
   const lanes = (fn, args) => `(f64x2.replace_lane 1
       (f64x2.splat (call $${fn} ${args.map(a => `(f64x2.extract_lane 0 (local.get $${a}))`).join(' ')}))
@@ -43,16 +45,19 @@ export const registerMathSimd = () => {
 
   // sin and cos (module/math/ieee754.js): both lanes below 2^19·π/2, reduced by n·π/2 as
   // __ieee754_rem_pio2 does (n = 0 up to π/4, 1 up to 3π/4, ⌊|x|·2/π + ½⌋ past it, one
-  // subtraction of n·pio2_1 and n·pio2_1t while it cancels at most 16 bits), then both
-  // kernels on both lanes and the one n mod 4 picks. A lane past 2^19·π/2, at the high word
-  // 0x3ff921fb (which subtracts π/2 in three pieces), cancelling more, or not finite: scalar.
+  // subtraction of n·pio2_1 and n·pio2_1t, a second of n·pio2_2 where fdlibm takes one), then
+  // each kernel a lane takes (one, when both lanes' n share a parity, as a slow phase's do)
+  // and the one n mod 4 picks. A lane past 2^19·π/2, at the high word 0x3ff921fb (which
+  // subtracts π/2 in three pieces), needing a third step, or not finite: scalar.
   // At n = 0, __kernel_sin's iy = 0 form; __kernel_cos's qx is 0 below 0.3, which is its
   // plain form.
   const [S1, S2, S3, S4, S5, S6] = KSIN
+  const anyOdd = '(v128.any_true (local.get $odd))', anyEven = '(i32.eqz (i64x2.all_true (local.get $odd)))'
   const trig2 = (name, cos) => wat(`math.${name}2`, `(func $math.${name}2 (param $x v128) (result v128)
     (local $hw v128) (local $ix v128) (local $small v128) (local $mid v128) (local $n v128) (local $t v128) (local $fn v128)
     (local $r v128) (local $w v128) (local $y0 v128) (local $y1 v128) (local $neg v128) (local $iy v128) (local $tiny v128)
     (local $z v128) (local $v v128) (local $rs v128) (local $ks v128) (local $kc v128) (local $qx v128) (local $q v128)
+    (local $two v128) (local $t2 v128) (local $r2 v128) (local $y2 v128) (local $odd v128)
     (local.set $hw ${hi2('(local.get $x)')})
     (local.set $ix (v128.and (local.get $hw) ${i32s(0x7fffffff)}))
     (if (i32.eqz (i32x4.all_true (v128.and (i32x4.le_s (local.get $ix) ${i32s(0x413921fb)}) (i32x4.ne (local.get $ix) ${i32s(0x3ff921fb)}))))
@@ -69,43 +74,61 @@ export const registerMathSimd = () => {
     (local.set $r (f64x2.sub (local.get $t) (f64x2.mul (local.get $fn) ${splat(PIO2_1)})))
     (local.set $w (f64x2.mul (local.get $fn) ${splat(PIO2_1T)}))
     (local.set $y0 (f64x2.sub (local.get $r) (local.get $w)))
-    (if (i32.eqz (i32x4.all_true (v128.or (local.get $mid)
-          (i32x4.le_s (i32x4.sub (i32x4.shr_s (local.get $ix) (i32.const 20))
-            (v128.and (i32x4.shr_u ${hi2('(local.get $y0)')} (i32.const 20)) ${i32s(0x7ff)})) ${i32s(16)}))))
-      (then (return ${lanes(`math.${name}`, ['x'])})))
+    ;; the second step, on the lanes fdlibm takes it on: past 3π/4, n ≥ 32 or |x| on n·π/2's
+    ;; high word (npio2_hw), more than 16 bits cancelling; a lane needing a third: scalar
+    (local.set $two (v128.andnot (v128.andnot
+        (i32x4.gt_s ${dropw('$y0')} ${i32s(16)})
+        (v128.and (i32x4.lt_s (local.get $n) ${i32s(32)}) (i32x4.ne (local.get $ix) ${hi2(`(f64x2.mul (local.get $fn) ${splat(PIO2_1)})`)})))
+      (local.get $mid)))
+    (if (v128.any_true ${wide('(local.get $two)')})
+      (then
+        (local.set $t2 (f64x2.mul (local.get $fn) ${splat(PIO2_2)}))
+        (local.set $r2 (f64x2.sub (local.get $r) (local.get $t2)))
+        (local.set $t2 (f64x2.sub (f64x2.mul (local.get $fn) ${splat(PIO2_2T)}) (f64x2.sub (f64x2.sub (local.get $r) (local.get $r2)) (local.get $t2))))
+        (local.set $y2 (f64x2.sub (local.get $r2) (local.get $t2)))
+        (if (v128.any_true ${wide(`(v128.and (local.get $two) (i32x4.gt_s ${dropw('$y2')} ${i32s(49)}))`)})
+          (then (return ${lanes(`math.${name}`, ['x'])})))
+        (local.set $r (v128.bitselect (local.get $r2) (local.get $r) ${wide('(local.get $two)')}))
+        (local.set $w (v128.bitselect (local.get $t2) (local.get $w) ${wide('(local.get $two)')}))
+        (local.set $y0 (v128.bitselect (local.get $y2) (local.get $y0) ${wide('(local.get $two)')}))))
     (local.set $y1 (f64x2.sub (f64x2.sub (local.get $r) (local.get $y0)) (local.get $w)))
     ;; a negative x: −y0, −y1, −n
     (local.set $neg (i32x4.lt_s (local.get $hw) (v128.const i32x4 0 0 0 0)))
     (local.set $y0 (v128.xor (local.get $y0) (v128.and ${wide('(local.get $neg)')} ${splat('-0')})))
     (local.set $y1 (v128.xor (local.get $y1) (v128.and ${wide('(local.get $neg)')} ${splat('-0')})))
     (local.set $n (v128.bitselect (i32x4.neg (local.get $n)) (local.get $n) (local.get $neg)))
-    ;; __kernel_sin and __kernel_cos on y0 + y1: x itself and 1 below 2^-27
+    ;; __kernel_sin and __kernel_cos on y0 + y1 (x itself and 1 below 2^-27), each only if a lane
+    ;; takes it: an odd n takes the other kernel; sin negates at 2 and 3, cos at 1 and 2
     (local.set $iy (v128.and ${hi2('(local.get $y0)')} ${i32s(0x7fffffff)}))
     (local.set $tiny ${wide(`(i32x4.lt_s (local.get $iy) ${i32s(0x3e400000)})`)})
     (local.set $z (f64x2.mul (local.get $y0) (local.get $y0)))
-    (local.set $v (f64x2.mul (local.get $z) (local.get $y0)))
-    (local.set $rs ${poly2('$z', [S2, S3, S4, S5, S6])})
-    (local.set $ks (v128.bitselect (local.get $y0)
-      (v128.bitselect
-        (f64x2.add (local.get $y0) (f64x2.mul (local.get $v) (f64x2.add ${splat(S1)} (f64x2.mul (local.get $z) (local.get $rs)))))
-        (f64x2.sub (local.get $y0) (f64x2.sub (f64x2.sub (f64x2.mul (local.get $z)
-          (f64x2.sub (f64x2.mul ${splat(0.5)} (local.get $y1)) (f64x2.mul (local.get $v) (local.get $rs)))) (local.get $y1))
-          (f64x2.mul (local.get $v) ${splat(S1)})))
-        ${wide('(local.get $small)')})
-      (local.get $tiny)))
-    (local.set $qx (v128.bitselect ${splat(0)}
-      (v128.bitselect ${splat(0.28125)} ${fromHi2(`(i32x4.sub (local.get $iy) ${i32s(0x00200000)})`)}
-        ${wide(`(i32x4.gt_s (local.get $iy) ${i32s(0x3fe90000)})`)})
-      ${wide(`(i32x4.lt_s (local.get $iy) ${i32s(0x3fd33333)})`)}))
-    (local.set $kc (v128.bitselect ${splat(1)}
-      (f64x2.sub (f64x2.sub ${splat(1)} (local.get $qx))
-        (f64x2.sub (f64x2.sub (f64x2.mul ${splat(0.5)} (local.get $z)) (local.get $qx))
-          (f64x2.sub (f64x2.mul (local.get $z) (f64x2.mul (local.get $z) ${poly2('$z', KCOS)})) (f64x2.mul (local.get $y0) (local.get $y1)))))
-      (local.get $tiny)))
-    ;; n mod 4: an odd n takes the other kernel; sin negates at 2 and 3, cos at 1 and 2
     (local.set $q ${wide('(local.get $n)')})
+    (local.set $odd (i64x2.ne (v128.and (local.get $q) ${i64s(1)}) (v128.const i64x2 0 0)))
+    (if ${cos ? anyOdd : anyEven}
+      (then
+        (local.set $v (f64x2.mul (local.get $z) (local.get $y0)))
+        (local.set $rs ${poly2('$z', [S2, S3, S4, S5, S6])})
+        (local.set $ks (v128.bitselect (local.get $y0)
+          (v128.bitselect
+            (f64x2.add (local.get $y0) (f64x2.mul (local.get $v) (f64x2.add ${splat(S1)} (f64x2.mul (local.get $z) (local.get $rs)))))
+            (f64x2.sub (local.get $y0) (f64x2.sub (f64x2.sub (f64x2.mul (local.get $z)
+              (f64x2.sub (f64x2.mul ${splat(0.5)} (local.get $y1)) (f64x2.mul (local.get $v) (local.get $rs)))) (local.get $y1))
+              (f64x2.mul (local.get $v) ${splat(S1)})))
+            ${wide('(local.get $small)')})
+          (local.get $tiny)))))
+    (if ${cos ? anyEven : anyOdd}
+      (then
+        (local.set $qx (v128.bitselect ${splat(0)}
+          (v128.bitselect ${splat(0.28125)} ${fromHi2(`(i32x4.sub (local.get $iy) ${i32s(0x00200000)})`)}
+            ${wide(`(i32x4.gt_s (local.get $iy) ${i32s(0x3fe90000)})`)})
+          ${wide(`(i32x4.lt_s (local.get $iy) ${i32s(0x3fd33333)})`)}))
+        (local.set $kc (v128.bitselect ${splat(1)}
+          (f64x2.sub (f64x2.sub ${splat(1)} (local.get $qx))
+            (f64x2.sub (f64x2.sub (f64x2.mul ${splat(0.5)} (local.get $z)) (local.get $qx))
+              (f64x2.sub (f64x2.mul (local.get $z) (f64x2.mul (local.get $z) ${poly2('$z', KCOS)})) (f64x2.mul (local.get $y0) (local.get $y1)))))
+          (local.get $tiny)))))
     (v128.xor
-      (v128.bitselect (local.get $${cos ? 'ks' : 'kc'}) (local.get $${cos ? 'kc' : 'ks'}) (i64x2.ne (v128.and (local.get $q) ${i64s(1)}) (v128.const i64x2 0 0)))
+      (v128.bitselect (local.get $${cos ? 'ks' : 'kc'}) (local.get $${cos ? 'kc' : 'ks'}) (local.get $odd))
       (v128.and (i64x2.ne (v128.and ${cos ? `(i64x2.add (local.get $q) ${i64s(1)})` : '(local.get $q)'} ${i64s(2)}) (v128.const i64x2 0 0)) ${splat('-0')})))`, [`math.${name}`])
   trig2('sin', false)
   trig2('cos', true)

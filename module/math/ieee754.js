@@ -67,8 +67,8 @@ export const registerIeee754 = () => {
   const T = KTAN
 
   deps({
-    'math.sin': ['math.k_sin', 'math.k_cos', 'math.rem_pio2'],
-    'math.cos': ['math.k_sin', 'math.k_cos', 'math.rem_pio2'],
+    'math.sin': ['math.rem_pio2'],
+    'math.cos': ['math.rem_pio2'],
     'math.tan': ['math.k_tan', 'math.rem_pio2'],
     'math.rem_pio2': ['math.rem_pio2_large'],
     'math.acos': [], 'math.asin': [], 'math.atan': [], 'math.atan2': ['math.atan'],
@@ -302,35 +302,33 @@ export const registerIeee754 = () => {
       (br $each)))
     (local.get $fw))`)
 
-  // __kernel_sin (ieee754.cc): sin(x + y) on |x| ≤ π/4, y the tail (iy = 0: y is 0)
-  wat('math.k_sin', `(func $math.k_sin (param $x f64) (param $y f64) (param $iy i32) (result f64)
-    (local $z f64) (local $v f64) (local $r f64)
-    (if (i32.lt_s (i32.and ${hi($('x'))} (i32.const 0x7fffffff)) (i32.const 0x3e400000)) (then (return (local.get $x))))
-    (local.set $z (f64.mul (local.get $x) (local.get $x)))
-    (local.set $v (f64.mul (local.get $z) (local.get $x)))
-    (local.set $r ${poly($('z'), [S2, S3, S4, S5, S6])})
-    (if (i32.eqz (local.get $iy))
-      (then (return (f64.add (local.get $x) (f64.mul (local.get $v) (f64.add ${k(S1)} (f64.mul (local.get $z) (local.get $r))))))))
-    (f64.sub (local.get $x) (f64.sub (f64.sub (f64.mul (local.get $z)
-      (f64.sub (f64.mul (f64.const 0.5) (local.get $y)) (f64.mul (local.get $v) (local.get $r)))) (local.get $y))
-      (f64.mul (local.get $v) ${k(S1)}))))`)
-
-  // __kernel_cos (ieee754.cc): cos(x + y) on |x| ≤ π/4; past 0.3 the 1 − x²/2 subtraction
-  // is split through qx (x/4 with its low word cleared, or 0.28125) so both parts are exact
-  wat('math.k_cos', `(func $math.k_cos (param $x f64) (param $y f64) (result f64)
-    (local $ix i32) (local $z f64) (local $r f64) (local $qx f64)
-    (local.set $ix (i32.and ${hi($('x'))} (i32.const 0x7fffffff)))
-    (if (i32.lt_s (local.get $ix) (i32.const 0x3e400000)) (then (return (f64.const 1))))
-    (local.set $z (f64.mul (local.get $x) (local.get $x)))
-    (local.set $r (f64.mul (local.get $z) ${poly($('z'), KCOS)}))
-    (if (i32.lt_s (local.get $ix) (i32.const 0x3fd33333))
-      (then (return (f64.sub (f64.const 1) (f64.sub (f64.mul (f64.const 0.5) (local.get $z))
-        (f64.sub (f64.mul (local.get $z) (local.get $r)) (f64.mul (local.get $x) (local.get $y))))))))
-    (local.set $qx (select (f64.const 0.28125) ${fromHi(`(i32.sub (local.get $ix) (i32.const 0x00200000))`)}
-      (i32.gt_s (local.get $ix) (i32.const 0x3fe90000))))
-    (f64.sub (f64.sub (f64.const 1) (local.get $qx))
-      (f64.sub (f64.sub (f64.mul (f64.const 0.5) (local.get $z)) (local.get $qx))
-        (f64.sub (f64.mul (local.get $z) (local.get $r)) (f64.mul (local.get $x) (local.get $y))))))`)
+  // __kernel_sin and __kernel_cos (ieee754.cc) as expressions over the caller's locals $kz
+  // $kv $kr $kq $ki, a label each, so sin and cos run their kernels without a call.
+  // __kernel_sin: sin(x + y) on |x| ≤ π/4, y the tail (iy = 0: y is 0), x itself below 2^-27
+  const kSin = (label, x, y, iy) => `(block ${label} (result f64)
+      (drop (br_if ${label} ${x} (i32.lt_s (i32.and ${hi(x)} (i32.const 0x7fffffff)) (i32.const 0x3e400000))))
+      (local.set $kz (f64.mul ${x} ${x}))
+      (local.set $kv (f64.mul (local.get $kz) ${x}))
+      (local.set $kr ${poly($('kz'), [S2, S3, S4, S5, S6])})
+      ${iy === 0 ? `(f64.add ${x} (f64.mul (local.get $kv) (f64.add ${k(S1)} (f64.mul (local.get $kz) (local.get $kr)))))`
+        : `(f64.sub ${x} (f64.sub (f64.sub (f64.mul (local.get $kz)
+          (f64.sub (f64.mul (f64.const 0.5) ${y}) (f64.mul (local.get $kv) (local.get $kr)))) ${y})
+          (f64.mul (local.get $kv) ${k(S1)})))`})`
+  // __kernel_cos: cos(x + y) on |x| ≤ π/4, 1 below 2^-27; past 0.3 the 1 − x²/2 subtraction is
+  // split through qx (x/4 with its low word cleared, or 0.28125) so both parts are exact
+  const kCos = (label, x, y) => `(block ${label} (result f64)
+      (local.set $ki (i32.and ${hi(x)} (i32.const 0x7fffffff)))
+      (drop (br_if ${label} (f64.const 1) (i32.lt_s (local.get $ki) (i32.const 0x3e400000))))
+      (local.set $kz (f64.mul ${x} ${x}))
+      (local.set $kr (f64.mul (local.get $kz) ${poly($('kz'), KCOS)}))
+      (drop (br_if ${label} (f64.sub (f64.const 1) (f64.sub (f64.mul (f64.const 0.5) (local.get $kz))
+          (f64.sub (f64.mul (local.get $kz) (local.get $kr)) (f64.mul ${x} ${y}))))
+        (i32.lt_s (local.get $ki) (i32.const 0x3fd33333))))
+      (local.set $kq (select (f64.const 0.28125) ${fromHi(`(i32.sub (local.get $ki) (i32.const 0x00200000))`)}
+        (i32.gt_s (local.get $ki) (i32.const 0x3fe90000))))
+      (f64.sub (f64.sub (f64.const 1) (local.get $kq))
+        (f64.sub (f64.sub (f64.mul (f64.const 0.5) (local.get $kz)) (local.get $kq))
+          (f64.sub (f64.mul (local.get $kz) (local.get $kr)) (f64.mul ${x} ${y})))))`
 
   // __kernel_tan (ieee754.cc): tan(x + y) (iy = 1) or −1/tan(x + y) (iy = −1) on |x| ≤ π/4,
   // above 0.6744 through tan(π/4 − x); the −1/w division carried with its low word split off
@@ -377,25 +375,78 @@ export const registerIeee754 = () => {
     (if (i32.eq (local.get $iy) (i32.const 1)) (then (return (local.get $w))))
     ${negRecip($('w'), $('r'))})`)
 
-  // sin, cos, tan (ieee754.cc): the kernels on |x| ≤ π/4, else the reduced y0 + y1 by n mod 4
-  const trig = (name, small, quad) => wat(`math.${name}`, `(func $math.${name} (param $x f64) (result f64)
-    (local $ix i32) (local $n i32) (local $y0 f64) (local $y1 f64)
-    (local.set $ix (i32.and ${hi($('x'))} (i32.const 0x7fffffff)))
-    (if (i32.le_s (local.get $ix) (i32.const 0x3fe921fb)) (then (return ${small})))
+  // __ieee754_rem_pio2 (ieee754.cc) up to 2^19·π/2, inline: y0 + y1 = x − n·π/2 over the
+  // caller's locals ($hx $ix $t $fn $r $w; $y0 $y1 $n out). n = 0 up to π/4, 1 up to 3π/4 (the
+  // high word 0x3ff921fb aside, which subtracts π/2 in three pieces), else ⌊|x|·2/π + ½⌋, n·π/2
+  // subtracted in two pieces, and in two more where fdlibm takes a second step (n ≥ 32 or |x|
+  // on n·π/2's high word, and more than 16 bits cancelling). A third step, and everything past
+  // 2^19·π/2, is $math.rem_pio2's.
+  // the bits x's exponent exceeds y's by, as __ieee754_rem_pio2 measures a cancellation
+  const drop = (y) => `(i32.sub (i32.shr_s (local.get $ix) (i32.const 20)) (i32.and (i32.shr_u ${hi($(y))} (i32.const 20)) (i32.const 0x7ff)))`
+  const reduceLocals = '(local $hx i32) (local $ix i32) (local $n i32) (local $t f64) (local $fn f64) (local $r f64) (local $w f64) (local $y0 f64) (local $y1 f64)'
+  const reduce = `(block $reduced (block $signed
+      (if (i32.le_s (local.get $ix) (i32.const 0x3fe921fb))
+        (then (local.set $y0 (local.get $x)) (local.set $y1 (f64.const 0)) (local.set $n (i32.const 0)) (br $reduced)))
+      (block $general
+        (br_if $general (i32.or (i32.gt_s (local.get $ix) (i32.const 0x413921fb)) (i32.eq (local.get $ix) (i32.const 0x3ff921fb))))
+        (local.set $t (f64.abs (local.get $x)))
+        (local.set $n (select (i32.const 1) (i32.trunc_f64_s (f64.add (f64.mul (local.get $t) ${k(INVPIO2)}) (f64.const 0.5)))
+          (i32.lt_s (local.get $ix) (i32.const 0x4002d97c))))
+        (local.set $fn (f64.convert_i32_s (local.get $n)))
+        (local.set $r (f64.sub (local.get $t) (f64.mul (local.get $fn) ${k(PIO2_1)})))
+        (local.set $w (f64.mul (local.get $fn) ${k(PIO2_1T)}))
+        (local.set $y0 (f64.sub (local.get $r) (local.get $w)))
+        (br_if $general (i32.and (i32.ge_s (local.get $ix) (i32.const 0x4002d97c))
+          (i32.and (i32.eqz (i32.and (i32.lt_s (local.get $n) (i32.const 32))
+              (i32.ne (local.get $ix) ${hi(`(f64.mul (local.get $fn) ${k(PIO2_1)})`)})))
+            (i32.gt_s ${drop('y0')} (i32.const 16)))))
+        (br $signed))
+      ;; the second step, for an argument the first left cancelling (t, fn, r, w as it left them);
+      ;; a third, and everything else, is $math.rem_pio2's
+      (if (i32.and (i32.le_s (local.get $ix) (i32.const 0x413921fb)) (i32.ne (local.get $ix) (i32.const 0x3ff921fb)))
+        (then
+          (local.set $t (local.get $r))
+          (local.set $w (f64.mul (local.get $fn) ${k(PIO2_2)}))
+          (local.set $r (f64.sub (local.get $t) (local.get $w)))
+          (local.set $w (f64.sub (f64.mul (local.get $fn) ${k(PIO2_2T)}) (f64.sub (f64.sub (local.get $t) (local.get $r)) (local.get $w))))
+          (local.set $y0 (f64.sub (local.get $r) (local.get $w)))
+          (br_if $signed (i32.le_s ${drop('y0')} (i32.const 49)))))
+      (local.set $n (local.set $y0 (local.set $y1 (call $math.rem_pio2 (local.get $x)))))
+      (br $reduced))
+      (local.set $y1 (f64.sub (f64.sub (local.get $r) (local.get $y0)) (local.get $w)))
+      (if (i32.lt_s (local.get $hx) (i32.const 0))
+        (then
+          (local.set $y0 (f64.neg (local.get $y0)))
+          (local.set $y1 (f64.neg (local.get $y1)))
+          (local.set $n (i32.sub (i32.const 0) (local.get $n))))))`
+
+  // sin and cos (ieee754.cc): x reduced, then __kernel_sin for an even n and __kernel_cos for
+  // an odd one, negated by n mod 4. The kernel is a branch on n's parity, as in C: a phase
+  // advancing less than π/2 a step keeps it predictable, and even on random arguments both
+  // kernels and a select cost more than the mispredictions. `small` is sin's |x| ≤ π/4,
+  // __kernel_sin(x, 0, 0); cos takes n = 0, y1 = 0 there, which __kernel_cos answers the same.
+  const trig = (name, small, odd, negate) => wat(`math.${name}`, `(func $math.${name} (param $x f64) (result f64)
+    ${reduceLocals} (local $ki i32) (local $kz f64) (local $kv f64) (local $kr f64) (local $kq f64)
+    (local.set $hx ${hi($('x'))})
+    (local.set $ix (i32.and (local.get $hx) (i32.const 0x7fffffff)))
+    ${small}
     (if (i32.ge_s (local.get $ix) (i32.const 0x7ff00000)) (then (return (f64.const nan))))
-    (local.set $n (local.set $y0 (local.set $y1 (call $math.rem_pio2 (local.get $x)))))
-    ${quad})`)
-  const byQuadrant = (c0, c1, c2, c3) => `(block $q3 (block $q2 (block $q1 (block $q0
-      (br_table $q0 $q1 $q2 $q3 (i32.and (local.get $n) (i32.const 3))))
-      (return ${c0}))
-      (return ${c1}))
-      (return ${c2}))
-    ${c3}`
-  const ks = '(call $math.k_sin (local.get $y0) (local.get $y1) (i32.const 1))', kc = '(call $math.k_cos (local.get $y0) (local.get $y1))'
-  trig('sin', '(call $math.k_sin (local.get $x) (f64.const 0) (i32.const 0))', byQuadrant(ks, kc, `(f64.neg ${ks})`, `(f64.neg ${kc})`))
-  trig('cos', '(call $math.k_cos (local.get $x) (f64.const 0))', byQuadrant(kc, `(f64.neg ${ks})`, `(f64.neg ${kc})`, ks))
-  trig('tan', '(call $math.k_tan (local.get $x) (f64.const 0) (i32.const 1))',
-    '(call $math.k_tan (local.get $y0) (local.get $y1) (i32.sub (i32.const 1) (i32.shl (i32.and (local.get $n) (i32.const 1)) (i32.const 1))))')
+    ${reduce}
+    (if (i32.and (local.get $n) (i32.const 1))
+      (then (local.set $r ${odd === 'cos' ? kCos('$kc', $('y0'), $('y1')) : kSin('$ks', $('y0'), $('y1'), 1)}))
+      (else (local.set $r ${odd === 'cos' ? kSin('$ks', $('y0'), $('y1'), 1) : kCos('$kc', $('y0'), $('y1'))})))
+    (select (f64.neg (local.get $r)) (local.get $r) (i32.and ${negate} (i32.const 2))))`)
+  trig('sin', `(if (i32.le_s (local.get $ix) (i32.const 0x3fe921fb)) (then (return ${kSin('$ks0', $('x'), '(f64.const 0)', 0)})))`,
+    'cos', '(local.get $n)')
+  trig('cos', '', 'sin', '(i32.add (local.get $n) (i32.const 1))')
+  // tan (ieee754.cc): __kernel_tan on the reduced y0 + y1 (x itself up to π/4), −1/tan for an odd n
+  wat('math.tan', `(func $math.tan (param $x f64) (result f64)
+    ${reduceLocals}
+    (local.set $hx ${hi($('x'))})
+    (local.set $ix (i32.and (local.get $hx) (i32.const 0x7fffffff)))
+    (if (i32.ge_s (local.get $ix) (i32.const 0x7ff00000)) (then (return (f64.const nan))))
+    ${reduce}
+    (call $math.k_tan (local.get $y0) (local.get $y1) (i32.sub (i32.const 1) (i32.shl (i32.and (local.get $n) (i32.const 1)) (i32.const 1)))))`)
 
   // R(z) = z·P(z)/Q(z) of asin and acos, P and Q as the C evaluates them
   const asinP = (z) => `(f64.mul ${z} ${poly(z, ASIN_P)})`

@@ -1860,7 +1860,11 @@ and `src/prepare/math-kernel.js` folds constants with the same C in JS.
 past 2^19·π/2 (Payne–Hanek, `__kernel_rem_pio2`), NaN, ±∞. The reference is the C
 as written, which x64 builds of V8 compute; arm64 builds of Node and Chrome let the
 C compiler fuse `a*b + c` and differ in the last bit on a fraction of a percent of
-arguments, and run those kernels up to 1.4× faster than the unfused wasm.
+arguments. There V8 runs exp, log1p and atanh up to 1.5× faster than jz: its C
+fuses, and V8's arm64 wasm code builds each f64 constant in five instructions where
+the C loads it. sin, cos and tan run level with it or ahead: the reduction is
+inline, sin and cos run one kernel, picked by a branch on n's parity as in C, and a
+vector takes one kernel where both lanes' parities agree, as an audio phase's do.
 
 `Math.pow` and `**` follow V8's `math::pow`: y = 2 is x·x, y = ½ is √(x + 0) with
 +∞ at x = −∞, and every other pair, integer exponents included, is the platform C
