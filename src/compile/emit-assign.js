@@ -1014,9 +1014,14 @@ export function emitPropertyAssign(obj, prop, val, raw = false) {
   // propsPtr) while `a.b.c` reads the schema slot — different memory, so the
   // value was lost (read returned the stale slot). This is what corrupted the
   // self-compile `ctx.func.X = …` writes (e.g. finallyStack), dropping try/finally.
-  if (typeof obj !== 'string') {
-    const sid = ctx.summary?.at(ctx.func.current).objectSidOfExpr(obj)
-    const sh = shapeOf(obj)
+  // A binding the summary shapes but that may be nullish (an element of a
+  // holey array) holds no layout of its own; its reads take the summary's
+  // with a nullish test, and so does its write.
+  const nameSid = typeof obj === 'string' && ctx.schema.idOf(obj) == null && !ctx.schema.poisoned?.has(obj)
+    ? ctx.summary?.at(ctx.func.current).objectSidOfExpr(obj) : null
+  if (typeof obj !== 'string' || nameSid != null) {
+    const sid = typeof obj === 'string' ? nameSid : ctx.summary?.at(ctx.func.current).objectSidOfExpr(obj)
+    const sh = typeof obj === 'string' ? null : shapeOf(obj)
     const names = sid != null ? ctx.schema.list[sid] : sh?.val === VAL.OBJECT ? sh.names : null
     if (names) {
       const i = names.indexOf(prop)
@@ -1025,9 +1030,11 @@ export function emitPropertyAssign(obj, prop, val, raw = false) {
       if (i >= 0) {
         const receiver = temp('ref'), value = temp()
         const get = () => typed(['local.get', `$${receiver}`], 'f64')
+        // a binding's carrier stays wide where a dynamic reader may meet it, as the layout's own path above keeps it
+        const wide = typeof obj === 'string' && (needsDynShadow(obj, sid) || ctx.core.includes.has('__dyn_set')) ? true : undefined
         return block64(
           ['local.set', `$${receiver}`, asF64(emit(obj))],
-          ['local.set', `$${value}`, sid != null ? storedFieldValue(val, sid, prop) : storedValue(val)],
+          ['local.set', `$${value}`, sid != null ? storedFieldValue(val, sid, prop, wide) : storedValue(val)],
           ...(ctx.summary?.at(ctx.func.current).mayBeNullishExpr(obj) !== false
             ? [['if', isNullish(get()), ['then', ['drop', throwTypeErrorIR()]]]] : []),
           ...fieldStore(ptrOffsetIR(get(), VAL.OBJECT), i, ['local.get', `$${value}`], dangles),

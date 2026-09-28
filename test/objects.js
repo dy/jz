@@ -2559,3 +2559,26 @@ test('Object.defineProperties: a literal map of descriptors defines each propert
   try { compile(`export let f = () => { const d = { a: { value: 1 } }; return Object.defineProperties({}, d).a }`) } catch (e) { msg = e.message }
   ok(msg != null && /defineProperties.*literal/.test(msg), `a non-literal map is rejected: ${JSON.stringify(msg?.slice(0, 100))}`)
 })
+
+// A binding that may be nullish holds no layout of its own (summary sidOf):
+// an element of a holey array (`new Array(n)` filled by a loop, a TTA
+// decoder's channel states). Its reads take the summary's layout with a
+// nullish test; its stores, `ch.k--` among them, write the same slot, not a
+// dynamic property beside it, and throw where the receiver is missing.
+test('a store through an element of a holey array writes its layout\'s slot', () => {
+  const src = `let mk = (s) => ({ a: 1, b: s, k: 10 })
+let chans = new Array(3)
+for (let c = 0; c < 2; c++) chans[c] = mk(c)
+let upd = (ch, v) => { ch.a = (ch.a + v) >>> 0; if (ch.k > 0 && ch.a < 5) ch.k--; else ch.k++; return ch.b + ch.k }
+let put = (ch, v) => { ch.k = v; return ch }
+export let f = (v) => { let s = 0; for (let c = 0; c < 2; c++) s += upd(chans[c], v); return s }
+export let g = (v) => { let s = 0; for (let r = 0; r < 4; r++) s += f(v + r); return s + chans[0].k * 100 + chans[1].a }
+export let h = (i) => { try { put(chans[i], 7); return chans[i].k } catch (e) { return e instanceof TypeError ? 'TypeError' : 'other' } }`
+  for (const optimize of levels(0, 2, 'speed')) {
+    const js = oracle(src), mod = jz(src, { optimize }).exports
+    is(mod.g(1), js.g(1), `the slots hold what JavaScript holds at ${optimize}`)
+    is(mod.h(0), js.h(0), `a store through a present element at ${optimize}`)
+    is(mod.h(2), 'TypeError', `a store through a hole throws at ${optimize}`)
+  }
+  ok(!compile(src, { optimize: 2, wat: true }).includes('$__dyn_set'), 'every store takes the slot')
+})
