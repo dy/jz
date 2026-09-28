@@ -1887,6 +1887,9 @@ function bindingWritten(name) {
  *  variable seeded with the member. */
 const registerMemberAlias = (name, key) => !bindingWritten(name) && registerBuiltinAlias(name, key)
 
+// `name` reads as the function `fn` from here on, through the chain every import alias resolves through.
+const registerFnAlias = (name, fn) => { ctx.scope.chain[name] = fn }
+
 /** Bind `name` to builtin emit key `key` at the current scope (module
  *  `scope.chain` at depth 0, block scope otherwise) instead of declaring a
  *  real global/local — mirrors the `const alias = fn` function-alias fast
@@ -2030,22 +2033,6 @@ function prepDecl(op, ...inits) {
       continue
     }
     let [, name, init] = i
-    // `const alias = fn` whose RHS is a bare identifier naming a known function
-    // is a compile-time function alias — the ES `export { fn as alias }` written
-    // in declaration form (`const alias = fn`). Resolve `alias` straight to the function
-    // so calls compile to a direct call and the export table re-exports the same
-    // mangled func. Otherwise it would box a closure into a module global that a
-    // cross-module callee resolves to the bare, unmangled name → "not in scope".
-    // Module scope + `const` only: depth>0 aliases already work as closure values,
-    // and a reassignable `let` is a genuine value binding, not an alias.
-    if (op === 'const' && prepState.depth === 0 && typeof name === 'string' && typeof init === 'string') {
-      const fn = hasFunc(init) ? init : (hasFunc(ctx.scope.chain[init]) ? ctx.scope.chain[init] : null)
-      if (fn) {
-        ctx.scope.chain[name] = fn
-        if (name in ctx.funcs.exports) ctx.funcs.exports[name] = fn
-        continue
-      }
-    }
     const staticStr = op === 'const' ? staticStringExpr(init) : null
     const staticArr = op === 'const' ? staticStringArrayValues(init) : null
     const normed = prep(init)
@@ -2057,6 +2044,18 @@ function prepDecl(op, ...inits) {
     if (!isDestructPattern(name) && typeof name === 'string') {
       const memberKey = builtinMemberKey(normed)
       if (memberKey && registerMemberAlias(name, memberKey)) continue
+      // `const g = f`, `f` a function the module holds (a name, or a member of
+      // an imported namespace, `vec4.normalize`) and `g` never written: `g`
+      // reads as `f` through the import alias's own table (`scope.chain`), so
+      // a call through it is a direct call and a value use of it is the
+      // function itself; an export of it re-exports the function, as
+      // `export { f as g }` would. A stored closure pointer made every such
+      // call an indirect one. Module level only: a function's own alias of a
+      // function is a closure value its scope already handles.
+      if (prepState.depth === 0 && typeof normed === 'string' && normed !== name && hasFunc(normed) && !bindingWritten(name)) {
+        if (name in ctx.funcs.exports) ctx.funcs.exports[name] = normed
+        registerFnAlias(name, normed); continue
+      }
       // `const M = Math` at module top level — a bare reference to a whole
       // builtin namespace (no member, no dot). Same reasoning as above: there's
       // no runtime namespace object to box, so alias `name` straight to the
