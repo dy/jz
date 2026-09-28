@@ -862,12 +862,32 @@ test('spread into console: the arguments print as the values they spread to', ()
 })
 
 // A spread of sources whose layouts only the summary proves (a parameter every
-// caller passes one shape) makes a layout no literal names: the compile names
-// it after the plan, and the literal's fields read as slots (compile/index.js).
+// caller passes one shape) makes a layout no literal names: every summary names
+// it, and the literal's fields read as slots (compile/index.js summarizeProgram).
 test('spread: a layout the summary derives types the literal\'s fields', () => {
   const src = `let g = (o) => { let r = {...o, z: 1}; return r.b * 2 + r.z }\nexport let f = (n) => g({a: 1, b: n})`
   for (const optimize of levels(0, 2, 3)) {
     is(jz(src, { optimize }).exports.f(4), oracle(src).f(4), `O${optimize}`)
     ok(!/\$__dyn_get/.test(compile(src, { optimize, wat: true })), `read as slots O${optimize}`)
+  }
+})
+
+// A spread of such a literal makes another layout, known only once the first
+// is named. Named after the plan alone, the outer one stayed unnamed while the
+// emitter built it as a layout, and a parameter the plan had typed a
+// dictionary read it as one: NaN. Each summary names layouts until a spread
+// of one makes none new, before the plan decides anything from it.
+test('spread: a spread of a spread\'s result reads its fields as slots', () => {
+  const cases = [
+    `let inner = (o) => ({ ...o, y: 2 })\nlet outer = (o) => ({ ...inner(o), z: 3 })\nlet use = (o) => o.x + o.y * 10 + o.z * 100\nexport let f = (n) => use(outer({ x: n }))`,
+    `let stretch = (opts) => ({ ...opts, frameSize: opts.frameSize * 2, hopSize: 4 })\nlet batch = (data, opts) => (opts?.frameSize ?? 0) + (opts?.hopSize ?? 0) + (opts?.complex ? 1000 : 0) + data\nexport let f = (n) => batch(n, { ...stretch({ frameSize: 8 }), complex: true })`,
+    `let inner = (o) => ({ ...o, y: 2 })\nlet outer = (o) => ({ ...inner(o), z: 3 })\nlet outer2 = (o) => ({ ...inner(o), q: 5, z: 4 })\nlet use = (o) => o.x + o.y * 10 + o.z * 100\nexport let f = (n) => use(outer({ x: n })) + use(outer2({ x: n }))`,
+  ]
+  let deep = `let l0 = (o) => ({ ...o, f0: 1 })\n`
+  for (let i = 1; i < 12; i++) deep += `let l${i} = (o) => ({ ...l${i - 1}(o), f${i}: ${i + 1} })\n`
+  cases.push(deep + `let use = (o) => o.x + o.f0 * 10 + o.f11 * 100\nexport let f = (n) => use(l11({ x: n }))`)
+  for (const src of cases) for (const optimize of levels(0, 2, 3)) {
+    is(jz(src, { optimize }).exports.f(4), oracle(src).f(4), `${src.split('\n').pop().slice(18, 60)} O${optimize}`)
+    if (!belowOpt(2) && optimize >= 2) ok(!/call \$__dyn_get/.test(compile(src, { optimize, wat: true })), `read as slots O${optimize}`)
   }
 })

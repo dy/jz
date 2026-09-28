@@ -191,7 +191,7 @@ export function assemble(ast, profiler) {
     for (const [name, sid] of ctx.schema.vars) key += `|${name}=${sid}`
     return key
   }
-  const summarizeProgram = () => {
+  const summaryNow = () => {
     const key = summaryKey()
     if (built?.key !== key) built = { key, summary: timePhase(profiler, 'summary', summaryOf), inputs: nodeIds && summaryInputs(ast, nodeIds) }
     else if (nodeIds) {
@@ -200,6 +200,21 @@ export function assemble(ast, profiler) {
       if (at >= 0 || now.length !== was.length) throw new Error(`[summary] its inputs changed under an unchanged key, a rewrite that bypassed the mutation seams (compile/analyze/body-facts.js): ${(now[at] ?? '').slice(0, 160)}`)
     }
     return built.summary
+  }
+  // A spread of sources whose layouts the summary knows makes a layout no
+  // literal names: named, the next summary types the literal's fields, and a
+  // spread of that literal makes another (`{...stretch(o), complex: true}`).
+  // Every summary names them all, so what the plan decides from one agrees
+  // with the layout the emitter builds (module/object.js emitObjectSpread).
+  const summarizeProgram = () => {
+    let summary = summaryNow()
+    for (let round = 0; round < 64 && summary.unnamedLayouts.length; round++) {
+      const named = ctx.schema.list.length
+      for (const names of summary.unnamedLayouts) ctx.schema.register(names)
+      if (ctx.schema.list.length === named) break
+      summary = summaryNow()
+    }
+    return summary
   }
   ctx.summary = summarizeProgram()
   // Include imported functions for call resolution (e.g. template interpolations).
@@ -234,9 +249,6 @@ export function assemble(ast, profiler) {
   timePhase(profiler, 'foldAggregates', () => foldStaticConstAggregates(ast))
 
   const programFacts = timePhase(profiler, 'plan', () => plan(ast, profiler, summarizeProgram))
-  // A spread of sources whose layouts the summary knows makes a layout no
-  // literal names: named, the summary below types its fields.
-  for (const names of ctx.summary.unnamedLayouts) ctx.schema.register(names)
   // The plan rewrote the program (inlined calls, scalar-replaced literals,
   // specialized variants with their own scopes): summarize what emission sees.
   ctx.summary = summarizeProgram()
