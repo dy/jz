@@ -3068,38 +3068,30 @@ test('receiver-HASH: consumer wiring — the classified receiver reads through t
   ok(!/\$__dyn_get\b/.test(wat), 'expected no generic __dyn_get/__dyn_get_t chain — the receiver kind is already proven')
 })
 
-test('receiver-HASH: does NOT fire when a schema-slot write exists (dot-write literal creates a merged schema)', () => {
-  // `rec.x = 5` is a dot-write to the SAME global elsewhere in the program —
-  // materializeAutoBoxSchemas (plan/index.js, later than this pass) binds a
-  // real schema onto `rec` from that fact (programFacts.propMap), so the
-  // allocator's OWN merged-schema check is non-empty by emission time even
-  // though it read empty at this pass's (earlier) point — the propMap guard
-  // must exclude `rec` here to stay consistent with that later state.
-  const src = `
-    export let rec = {}
+// A module `{}` whose keys functions add is the dictionary its literal
+// allocates (plan/scope.js classifyHashDictGlobals): no box binds a schema onto
+// it from the keys the program writes, so a dot-write beside a computed-key
+// write, or a dot-write alone, keeps it a dictionary, and its keys, `in` and
+// JSON are the ones JavaScript reports.
+test('receiver-HASH: a module literal whose keys functions add is a dictionary, dot-written or not', () => {
+  const cases = [
+    [`export let rec = {}
     export let put = (k, v) => { rec[k] = v }
     export let touch = () => { rec.x = 5 }
-    put('a', 1)
-  `
-  jz.compile(src, { wat: true })
-  is(ctx.scope.globalValTypes?.get('rec'), undefined,
-    'a dot-write anywhere disqualifies — the allocator will bind a real schema, not HASH')
-})
-
-test('receiver-HASH: does NOT fire when the name is absent from dynWriteVars (no computed-key write anywhere)', () => {
-  // `bag` is only ever dot-written (`bag.x = 5`) — never through a computed
-  // key — so it never enters dynWriteVars at all; the allocator's own
-  // predicate requires dynWriteVars membership, and this pass must agree.
-  // Nor does moduleGlobalKinds claim it: a payload-less object (the summary
-  // names no schema for an empty literal) is the schema plan's to bind once
-  // the dot-write gives it one (plan/scope.js, `894764cd`).
-  const src = `
-    export let bag = {}
+    export let view = () => JSON.stringify(rec) + Object.keys(rec).join() + ('x' in rec)
+    put('a', 1)`, 'rec'],
+    [`export let bag = {}
     export let touch = () => { bag.x = 5 }
-  `
-  jz.compile(src, { wat: true })
-  is(ctx.scope.globalValTypes?.get('bag'), undefined,
-    'no computed-key write anywhere — dynWriteVars never gains the name, so no HASH claim, and no object claim before its schema')
+    export let view = () => JSON.stringify(bag) + Object.keys(bag).join() + ('x' in bag)`, 'bag'],
+  ]
+  for (const [src, name] of cases) {
+    jz.compile(src, { wat: true })
+    is(ctx.scope.globalValTypes?.get(name), VAL.HASH, `${name} allocates a dictionary`)
+    const want = oracle(src), got = run(src)
+    const before = [want.view(), got.view()]
+    want.touch(); got.touch()
+    is([before[1], got.view()], [before[0], want.view()], `${name} reads as JavaScript's object before and after the dot-write`)
+  }
 })
 
 // ───────────────────────────────────────────────────────────── constIntExpr: i32 boundary clamp
