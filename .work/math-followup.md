@@ -52,8 +52,8 @@ add public options or dependencies.
 - Presence/conversion regressions: 6 tests / 127 assertions pass across
   levels 0, 2, 3 and size.
 - Codegen ratchet: 10/10 pass, no baseline edits.
-- three.js: the earlier run passed 3 tests / 90 assertions; final rerun is
-  `/private/tmp/jz-math-three-final.log`.
+- three.js: final rerun passes 3 tests / 90 assertions, including repeated
+  calls after `memory.reset()`: `/private/tmp/jz-math-three-final.log`.
 - `git diff --check` passes. Import lint reports the baseline's unused
   `resolveAddr` import in `src/optimize/vectorize/dot-slp.js`; no changed file
   has a lint error.
@@ -66,13 +66,19 @@ add public options or dependencies.
   results: `/private/tmp/jz-math-verification.json`; logs:
   `/private/tmp/jz-math-final-*.log`. Source hashes:
   `/private/tmp/jz-math-verification-source.json`.
-- Self-compile passed 79 tests / 2,790 assertions before the final carrier,
-  conversion and open-caller guards (`/private/tmp/jz-math-self-final.log`).
-  The final source's bootstrap is `/private/tmp/jz-math-final-test-self.log`.
+- Final self-compile passes 79 tests / 2,790 assertions (750 seconds under
+  shared load): `/private/tmp/jz-math-final-test-self.log`. The runner has
+  advanced to `npm test`; the remaining matrix/conformance results are pending.
 - Pristine-base checks for the reported existing failures:
-  `/private/tmp/jz-math-baseline-tests.log`.
+  `/private/tmp/jz-math-baseline-tests.log`: 172/175 tests pass. The three
+  failures are strict-mode parameter rejection, bounded shape joins, and the
+  field-CSE structural pin. All reproduce on frozen `6f37e16f`.
+- Lint on all five changed compiler files passes.
 
 All four math checksums match Node, including repeated stateful FABRIK runs.
+The final committed compiler was checked again against Node for all four:
+`/private/tmp/jz-math-final-checksums.json`, produced by
+`/private/tmp/jz-math-verify-kernels.mjs`.
 Timing is not release evidence: the shared machine's load ranged from 60 to
 over 200, and even same-process ABBA rounds varied several-fold. The diagnostic run
 against the frozen base is `/private/tmp/jz-math-paired.json`; the earlier
@@ -120,3 +126,9 @@ export const f = n => {
 
 The deletion regression in this change observes `=== undefined` directly so it
 tests cache invalidation independently of the existing missing-value arithmetic.
+
+An unrelated wide ToInt32 boundary also reproduces at levels 0/2/3 on both
+base and current: `1e30 | 0` gives -1 instead of Node's 0. Reproducer:
+`/private/tmp/jz-math-range-repro.mjs`; results:
+`/private/tmp/jz-math-range-repro.log`. The exported-parameter regression uses
+±Infinity to test the argument-hull boundary independently of this defect.
