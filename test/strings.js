@@ -1270,6 +1270,20 @@ test('static array fold: mutation before the fold site ends the fact', () => {
   is(m4.t(), '=ab=')
 })
 
+// The base fold (optimize/devirt.js foldStaticConstArrayReads) replaces the
+// inline forwarding hop by the array's base. It took any block holding a base
+// tee and a forwarding call for the hop: an index computed in a block over the
+// array's own length (a key test around `i % words.length`) became the base.
+test('static array fold: an index that reads the array stays the index', () => {
+  const src = `const words = ['a', 'b', 'c', 'd', 'e', 'f', 'g']
+    export let f = (n) => { let s = ''; for (let i = 0; i < n; i++) s += words[i % words.length]; return s }
+    export let g = (n) => { const counts = {}; for (let i = 0; i < n; i++) { const w = words[i % words.length]; counts[w] = (counts[w] | 0) + 1 } return counts.a * 10 + counts.b }`
+  for (const optimize of levels(0, 2, 3)) {
+    agree(src, 'f', [9], { optimize }, `f at ${optimize}`)
+    agree(src, 'g', [9], { optimize }, `g at ${optimize}`)
+  }
+})
+
 test('startsWith/endsWith position argument rejects loudly (was silently dropped)', () => {
   // Compiled as position 0 before — silent wrong results (the self-compile
   // resolver classified nothing). Reject until an offset is threaded.
