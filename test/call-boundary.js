@@ -113,6 +113,28 @@ test('call boundary: a variant is minted where its kinds differ', () => {
   }
 })
 
+test('call boundary: a slot that may be a written plain array takes any value and selects no variant', () => {
+  // The compiler marks a parameter the body may store into as a plain array `Array+`
+  // (boundary-wrap.js), and says so of more than it must: `n`, handed to subarray,
+  // carries the mark beside the typed slot. Such a slot takes whatever arrives, as
+  // itself; only the typed slots choose the variant (interop.js slotsOf).
+  const code = `export let head = (data, n) => { let h = data.subarray(0, n); let s = 0; for (let i = 0; i < h.length; i++) s += h[i]; return s }
+    export let damp = (buf, n) => { const h = buf.subarray(0, n); for (let i = 0; i < buf.length; i++) buf[i] = buf[i] * 0.1; return buf[0] + buf[1] + h.length }`
+  const slots = Object.fromEntries(JSON.parse(new TextDecoder().decode(
+    WebAssembly.Module.customSections(new WebAssembly.Module(compile(code)), 'jz:i64exp')[0])).map(e => [e.name, e.t]))
+  is(slots.head['1'], 'Array+', 'head: the number parameter carries the mark')
+  is(slots.damp['1'], 'Array+', 'damp: beside an in-place typed slot')
+  const want = oracle(code), { exports } = jz(code)
+  is(exports.head([1, 2, 3, 4], 2), 3, 'head(Array, number): 1 + 2')
+  is(exports.head(Float32Array.of(1, 2, 3, 4), 3), want.head(Float32Array.of(1, 2, 3, 4), 3), 'head(Float32Array, number)')
+  // 0.1 stored into a Float32Array reads back 0.10000000149011612: the sum tells the variant that ran.
+  for (const K of [Float32Array, Float64Array]) {
+    const a = K.of(1, 2, 3), b = K.of(1, 2, 3)
+    is(exports.damp(b, 2), want.damp(a, 2), `damp(${K.name}, number): the variant of its kind`)
+    ok(same(a, b), `damp(${K.name}, number): the argument after the call`)
+  }
+})
+
 test('call boundary: the variants stay hidden, their advisories speak once', () => {
   const warnings = []
   const { exports } = jz(src, { warnings: w => warnings.push(w) })
