@@ -2024,13 +2024,11 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       if (tagOf(fk) === K.CLOSURE && paramOf(fk) !== UNKNOWN) return merge(candidates, callClosure(paramOf(fk), base, n, node, recv))
       if (tagOf(core(fk)) === K.NONE) return candidates
     }
-    // A receiver of unknown kind may be such an object too (an awaited value:
-    // every promise's value slot holds what the host settles): the closure a
-    // shape holds under the name runs, and the call keeps its unknown result.
-    if (t === K.ANY) {
-      const fk = lostObjectRead(name, false)
-      if (tagOf(fk) === K.CLOSURE && paramOf(fk) !== UNKNOWN) callClosure(paramOf(fk), base, n, node, recv)
-    }
+    // A value of unknown or several kinds may be such an object too (an
+    // awaited value: every promise's value slot holds what the host settles):
+    // the closure a shape holds under the name runs, and the arguments still
+    // reach whatever else the value may be (below).
+    if (t === K.ANY && hasTag(recv, K.OBJECT)) { const fk = lostObjectRead(name, false); if (tagOf(fk) === K.CLOSURE && paramOf(fk) !== UNKNOWN) callClosure(paramOf(fk), base, n, node, recv) }
     if (t === K.TYPED) {
       const same = typedMethodKind(name, recv)
       if (same !== null) { if (name === 'map' || name === 'filter' || name === 'sort') escapeArgs(base, n); return same }
@@ -2344,6 +2342,13 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     for (const [sid, i] of byProp.get(prop) ?? NO_SLOTS) k = merge(k, slots(sid)[i])
     return k
   }
+  // A read that answers with no kind a later use can follow: the value a lost
+  // shape holds under the name is used where the summary cannot see (the
+  // escape `loseShape` spares a name `lostObjectRead` answers).
+  const escapeLostReads = (prop) => {
+    for (const [sid, i] of byProp.get(prop) ?? NO_SLOTS) if (lostSchema(sid)) escape(slots(sid)[i])
+    escape(sideByProp.get(prop) ?? K.NONE)
+  }
   const member = (op, recv, prop) => {
     const t = tagOf(recv)
     // A read through a nullish receiver throws (the optional form answers undefined).
@@ -2392,6 +2397,9 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       return optionalResult(op, recv, k)
     }
     if (t === K.OBJECT) return optionalResult(op, recv, lostObjectRead(prop))
+    // A value of several kinds may be an object of a shape the join lost: a
+    // lost shape's value of the name read through it leaves the summary.
+    if (t === K.ANY && hasTag(recv, K.OBJECT)) escapeLostReads(prop)
     if (t === K.HASH) return optionalResult(op, recv, orAbsent(hashPropOf(recv, prop)))
     if (isCount(prop, recv)) return optionalResult(op, recv, NUMBER)
     if (prop === 'buffer' && t === K.TYPED) return optionalResult(op, recv, kind(K.BUFFER))

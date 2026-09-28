@@ -1782,12 +1782,13 @@ a class member on an unknown receiver as called with the family of classes
 whose member of that name is that function (`familyOf`), and a member call
 on a jz object of lost shape as the join of those members' results and of
 the closures the shapes hold under the name; a member call through a shape
-beside primitives (`merge`'s mixed cell) or through a receiver of unknown kind
-as a call of the closure the shapes hold under the name, the unknown one's
-result unknown (an async factory's object sits in every promise's value slot
-beside what the other promises settle with, and its methods run through that
-join: left uncalled, their writes to captured and module bindings went
-unseen); `includes`, `indexOf` and
+beside primitives (`merge`'s mixed cell) or through a value of unknown or
+several kinds as a call of the closure the shapes hold under the name, the
+unknown one's result unknown (an async factory's object sits in every
+promise's value slot beside what the other promises settle with, and its
+methods run through that join: left uncalled, their writes to captured and
+module bindings went unseen), and a read through such a value hands those
+closures where the summary cannot follow them; `includes`, `indexOf` and
 `lastIndexOf` keep nothing of their argument, `slice` yields a copy with a
 cell of its own whose elements are the row's positions from a literal start,
 and any other name on an array is a property beside the elements; shape sets

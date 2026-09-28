@@ -824,6 +824,24 @@ test('summary: a wrapper hands back what its closure argument returns', () => {
   for (const level of levels(0, 2)) is(jz(src, { optimize: level }).exports.f(), oracle(src).f(), `O${level}`)
 })
 
+test('summary: a lost shape\'s member reached through a value of several kinds is called there', () => {
+  // `any` joins the record with an array: the record's shape is lost, yet its
+  // member stays the one closure `rec.f` holds. A call through `any` binds it,
+  // and a read through `any` hands it where the summary cannot follow: either
+  // way the array `b` passes reaches `f` beside the typed array `a` passes.
+  for (const use of ['any.f([10, 20, 30])', '{ let g = any.f; return g([10, 20, 30]) }']) {
+    const src = `let rec = { f: (x) => x[0] + x.length }
+export let a = () => rec.f(new Float64Array([1, 2]))
+let any = null
+export let set = (v) => { any = v ? rec : [1]; return 1 }
+export let b = () => ${use}`
+    for (const optimize of levels(0, 2, 3)) {
+      const m = jz(src, { optimize }).exports
+      is([m.a(), m.set(1), m.b()], [3, 1, 13], `${use} at ${optimize}`)
+    }
+  }
+})
+
 test('summary: Object.assign onto a shape stores each source slot; a shape beside primitives keeps its identity', () => {
   const src = `export const f = (flag) => {
     const target = { a: 1, b: 2 }, extra = flag ? { a: 3, c: 4 } : { a: 5, d: 6 }
