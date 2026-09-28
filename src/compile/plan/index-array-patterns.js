@@ -10,8 +10,10 @@
  * record, no calls, no unwinding, and the frame it is in keeps its
  * allocations to its own (the protocol's record pool is module state, which
  * no rewound frame may touch). The summary reads the positions of a tuple
- * row through both spellings alike. A source that may be nullish keeps the
- * protocol, which throws for it, as does one of any other kind (a string is
+ * row through both spellings alike. A source that may be nullish reads the
+ * same way behind a test that hands a missing one to the protocol's open, which
+ * throws the TypeError the protocol would (`let [c, d] = opts.coefs` of a field
+ * set on first use). A source of any other kind keeps the protocol (a string is
  * iterated by code point, a collection by its snapshot view).
  *
  * The array iterator is live and finishes once: a default or a nested
@@ -28,7 +30,7 @@
  * @module compile/plan/index-array-patterns
  */
 import { ctx } from '../../ctx.js'
-import { K, tagOf, hasTag } from '../../summary/kind.js'
+import { K, tagOf, hasTag, core } from '../../summary/kind.js'
 import { VAL } from '../../reps.js'
 
 const OPEN = /\$__it_open$/, STEP = /\$__it_step$/, SKIP = /\$__it_skip$/, REST = /\$__it_rest$/, CLOSE = /\$__it_close$/
@@ -41,6 +43,13 @@ const provenArray = (view, e) => {
   let k
   try { k = view.kindOfExpr(e) } catch { return false }
   return k != null && tagOf(k) === K.ARRAY && !hasTag(k, K.NULLISH) && !hasTag(k, K.ABSENT)
+}
+
+/** The summary proves the expression an array or a missing value. */
+const arrayOrMissing = (view, e) => {
+  let k
+  try { k = view.kindOfExpr(e) } catch { return false }
+  return k != null && tagOf(core(k)) === K.ARRAY
 }
 
 const PURE_OPS = new Set(['===', '!==', '!', 'typeof', '??', '||', '&&', '?:'])
@@ -116,8 +125,8 @@ const indexPulls = (stmts, it, src, view) => {
 const indexPattern = (list, at, view) => {
   const open = list[at], init = isArr(open) && open[0] === 'let' && isArr(open[1]) && open[1][0] === '=' && typeof open[1][1] === 'string' ? open[1][2] : null
   const opener = calleeOf(init)
-  if (opener === null || !OPEN.test(opener) || !provenArray(view, init[2])) return false
-  const it = open[1][1], src = init[2]
+  if (opener === null || !OPEN.test(opener) || !arrayOrMissing(view, init[2])) return false
+  const it = open[1][1], src = init[2], missing = !provenArray(view, src)
   // the pulls guarded by the close on a throw: prepare's `catch` spelling of the lowering's `try`
   const guard = list[at + 1], pulls = isArr(guard) && guard[0] === 'catch' && isArr(guard[1]) && guard[1][0] === '{}' && isArr(guard[1][1]) && guard[1][1][0] === ';' ? guard[1][1] : null
   const closeAt = pulls ? at + 2 : at + 1, close = list[closeAt], closer = calleeOf(close)
@@ -128,6 +137,8 @@ const indexPattern = (list, at, view) => {
     list.splice(at + 1, 2, ...copy.slice(1))
   } else list.splice(at + 1, 1)
   open[1][2] = src
+  // a missing source still meets the open, which throws for it
+  if (missing) list.splice(at + 1, 0, ['if', ['==', it, [null, null]], ['()', opener, it]])
   return true
 }
 

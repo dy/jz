@@ -760,8 +760,10 @@ test('for-in destructuring head: key string destructures with per-iteration bind
 // ============================================
 
 // An array pattern over a value the summary proves an array reads it by
-// index: no cursor record, no protocol calls, no unwinding. Any other source
-// (a collection, a string, a value that may be nullish) keeps the protocol.
+// index: no cursor record, no protocol calls, no unwinding. An array that may
+// be missing reads the same way behind a test that hands the missing value to
+// the protocol's open, which throws. Any other source (a collection, a string)
+// keeps the protocol.
 test('destruct: a pattern over a proven array reads by index', () => {
   const opener = (src) => (compile(src, { wat: true, optimize: 'speed' }).match(/__it_(open|pull|step)/g) || []).length
   ok(opener(`export let f = (p) => { const [a, b, ...r] = p; return a + b + r.length }`) > 0, 'an export\'s untyped parameter keeps the protocol')
@@ -794,7 +796,8 @@ test('destruct: a pattern over a proven array reads by index', () => {
   is(jz(set, { optimize: 'speed' }).exports.f(), 45)
   const maybe = `let src = (w) => w ? [1, 2] : null
     export let f = (w) => { const [a, b] = src(w); return a + b }`
-  ok(opener(maybe) > 0, 'a source that may be nullish keeps the protocol (it throws)')
+  const steps = (src) => (compile(src, { wat: true, optimize: 'speed' }).match(/__it_(pull|step)/g) || []).length
+  is(steps(maybe), 0, 'an array that may be nullish reads by index behind the open\'s test')
   const inst = jz(maybe, { optimize: 'speed' })
   is(inst.exports.f(1), 3)
   let threw = null
