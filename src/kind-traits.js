@@ -220,6 +220,8 @@ export function methodValType(method, obj, objType, ctx) {
     if (objType === VAL.DATE) return VAL.NUMBER
     return objType ?? null
   }
+  // an array's or typed array's text (the summary's solver rule for `join`, summary/index.js)
+  if ((method === 'join' || method === 'toString' || method === 'toLocaleString') && (objType === VAL.ARRAY || objType === VAL.TYPED)) return VAL.STRING
   if (BOOL_METHODS.has(method)) return VAL.BOOL
   if ((method === 'has' || method === 'delete') && (objType === VAL.MAP || objType === VAL.SET)) return VAL.BOOL
   if (STRING_METHODS.has(method)) return VAL.STRING

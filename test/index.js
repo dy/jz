@@ -36,6 +36,7 @@ const TESTS = [
   'object-rest',
   'member-targets',
   'number',
+  'unknown-sum',
   'json',
   'date',
   'wasi',

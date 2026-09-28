@@ -495,10 +495,9 @@ VT['+'] = (args) => {
   // it neither converts nor is compatible: a container store, a return)
   // keeps JS semantics for every kind the host may pass through an `any`
   // parameter (`null + 3` and `'a' + 3` through such a local were added as
-  // raw f64, the box's bits coming back as the result). Any other unknown
-  // side takes the guarded ABI's numeric contract, the optimistic NUMBER:
-  // load-bearing for local numeric inference (demoting it doubled the
-  // slice/nest loop-body op counts).
+  // raw f64, the box's bits coming back as the result). A side the summary
+  // cannot name leaves the sum to the run where the program concatenates
+  // (addsAsNumber below).
   if (ctx.summary && (ta == null || tb == null)) {
     const view = ctx.summary.at(ctx.func.current)
     const v = view.valOfExpr(['+', args[0], args[1]])
@@ -511,10 +510,14 @@ VT['+'] = (args) => {
   return VAL.NUMBER
 }
 /** A kind whose every value adds as a number: numbers, booleans and missing
- *  values, or the kind that names no tag at all (ANY keeps the optimistic
- *  contract above). */
+ *  values. A kind the summary cannot name (a host value, a dynamic read, a
+ *  method's result) may be a string, which the `+` emitter concatenates at run
+ *  time wherever the program can (compile/emit/arithmetic.js): calling that
+ *  sum a number sent the next `+` or `*` through f64 arithmetic on the string's
+ *  box (`o.name + 1 + 2` gave 'x1'). Only a program that cannot concatenate
+ *  adds it as a number. */
 const ADDEND_BITS = bitOf(K.NUMBER) | bitOf(K.BOOL) | NULL_BITS
-const addsAsNumber = k => tagsOf(k) === TAGS || (tagsOf(k) & ~ADDEND_BITS) === 0
+const addsAsNumber = k => (tagsOf(k) & ~ADDEND_BITS) === 0 || tagsOf(k) === TAGS && !ctx.core.stdlib['__str_concat']
 /** A bare name the numeric demand pass denied a number. */
 export const numericDenied = (node, view = ctx.summary?.at(ctx.func.current)) =>
   typeof node === 'string' && view != null && view.numericDenied(node)

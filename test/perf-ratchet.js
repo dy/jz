@@ -158,6 +158,14 @@ const loopBodyOps = (wat) => {
 // what the checked arm pays; the versioned arm takes the key whole (its guard
 // tests o integral), and so do integer-valued keys: slice 64828 → 65228, the
 // other categories unchanged.
+// A sum with a side of unknown kind (2026-09-28) is a number only where the
+// program cannot concatenate (kind/val-type-of.js addsAsNumber): the corpus's
+// slice programs index `a[o + i]` with `o` an element of a host array, which
+// may be a string ('1' + 0 is '10'), so the store keeps its general key path
+// behind the integer-key fast path and links its helpers, whose loops this
+// count includes: slice 65228 -> 106960, every other category unchanged. The
+// optimistic NUMBER it replaces sent `o.name + 1 + 2` through f64 arithmetic
+// on the string's box ('x1', not 'x12').
 
 // An object made at start is saved before the round's first store into it
 // of a value that names memory of the round (2026-09-29, module/core/
