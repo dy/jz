@@ -1874,12 +1874,19 @@ function expandDestruct(pattern, source, out, decls = null, srcLen = null) {
     let computed = computedOf(item), read
     if (computed != null) {
       includeForArrayAccess()
-      // With a rest, the key is evaluated once, to the property key the read
-      // and the rest share (ToPropertyKey).
-      if (rest != null) {
-        const raw = temp(), k = temp()
-        out.push(['=', raw, computed], ['=', k, prepped(['()', 'String', raw])])
-        excluded.push(computed = k)
+      // The key evaluates first: before a member target's reference, which
+      // pushPatternAssign snapshots ahead of the read, and with a rest once,
+      // to the property key the read and the rest share (ToPropertyKey).
+      const target = Array.isArray(item[2]) && item[2][0] === '=' ? item[2][1] : item[2]
+      if (rest != null || Array.isArray(target) && (target[0] === '.' || target[0] === '[]' && target.length === 3)) {
+        const raw = temp()
+        out.push(['=', raw, computed])
+        computed = raw
+        if (rest != null) {
+          const k = temp()
+          out.push(['=', k, prepped(['()', 'String', raw])])
+          excluded.push(computed = k)
+        }
       }
       read = ['[]', source, computed]
     } else if (Array.isArray(key) && key[0] === '[]') {

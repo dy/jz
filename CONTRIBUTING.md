@@ -1903,7 +1903,15 @@ slots (`__view_find`, `__view_get`, `__view_set`, `__view_del`) and the data
 copy a spread or a clone makes (`__view_data`), which the module exports: the
 host decodes such an object through it (`jz:views` lists the layouts). After a
 `delete` of an accessor, a read or store of its name through a binding takes
-the dynamic path. A slot the layout
+the dynamic path. A property stored outside a layout (through an alias, a
+destructuring target, a helper's parameter) lives in the object's
+dictionary: its header's, or for a durable or static object the one
+`__dyn_props` keys by its offset. The module exports both lookups
+(`__obj_props`, beside `__dyn_set`) and the deleted-slot mask
+(`__obj_deleted`, beside `__dyn_del`), and the host decodes an object as
+enumeration does: the layout's slots less the deleted ones, then the
+dictionaries, a later value replacing an earlier one in place. The copy
+`__view_data` makes reads the same dictionaries. A slot the layout
 marks hidden (`ctx.schema.hidden`: an Error's `message` and `name`, a
 closure-lowered class's members, named by the brand on its instance literal)
 drops out of the view but keeps its slot, so reads, stores and calls go

@@ -232,7 +232,7 @@ export default (ctx) => {
     __view_set: ['__view_find'],
     __view_del: ['__view_find'],
     __view_has: [],
-    __view_data: ['__hash_new', '__hash_set_local', '__ptr_type', '__ptr_offset', '__prop_order'],
+    __view_data: ['__hash_new', '__hash_set_local', '__ptr_type', '__ptr_offset', '__prop_order', '__obj_props'],
     __same_value_zero: ['__str_eq'],
     __map_hash: ['__hash', '__str_hash'],
     // '__durable_fwd_log' on __set_add/__map_set/__hash_set/__hash_set_local: an
@@ -316,10 +316,13 @@ export default (ctx) => {
       '__dyn_get_t_h', '__hash_get_local_h', ...(ctx.linkDemand.external ? ['__ext_prop'] : []),
     ],
     __dyn_get_or: ['__dyn_get'],
-    __dyn_set: () => [...viewDeps('__view_set'), ...(hasDurableReset() ? ['__durable_obj_snap', '__is_eph_bits'] : []), '__schema_slot', '__hash_new', '__hash_new_small', '__ihash_get_local', '__ihash_set_local', '__hash_set_local', '__ptr_offset', '__ptr_offset_fwd', '__is_nullish', '__str_eq', '__is_str_key', '__to_str', '__arr_set_idx_ptr', '__str_arr_idx', '__ptr_aux', ...(ctx.linkDemand.typedProperties ? ['__typed_key_idx', '__typed_set_idx_tagged'] : [])],
+    // an object given a property outside its layout: the host reads that property through __obj_props
+    __dyn_set: () => [...viewDeps('__view_set'), ...(hasDurableReset() ? ['__durable_obj_snap', '__is_eph_bits'] : []), '__schema_slot', '__hash_new', '__hash_new_small', '__ihash_get_local', '__ihash_set_local', '__hash_set_local', '__ptr_offset', '__ptr_offset_fwd', '__is_nullish', '__str_eq', '__is_str_key', '__to_str', '__arr_set_idx_ptr', '__str_arr_idx', '__ptr_aux', '__obj_props', ...(ctx.linkDemand.typedProperties ? ['__typed_key_idx', '__typed_set_idx_tagged'] : [])],
+    __obj_props: ['__ihash_get_local', '__is_nullish', '__ptr_type'],
     __dyn_move: ['__ihash_get_local', '__ihash_set_local', '__is_nullish'],
     __hash_del_local: () => ['__str_hash', '__str_eq', '__ptr_type', ...relogDeps()],
-    __dyn_del: () => [...viewDeps('__view_del'), '__schema_slot', '__hash_del_local', '__ihash_get_local', '__is_nullish', '__is_str_key', '__to_str', '__str_arr_idx', '__ptr_aux', '__str_eq'],
+    // a deleted slot is gone for the host too: it reads the mask through __obj_deleted
+    __dyn_del: () => [...viewDeps('__view_del'), '__schema_slot', '__hash_del_local', '__ihash_get_local', '__is_nullish', '__is_str_key', '__to_str', '__str_arr_idx', '__ptr_aux', '__str_eq', '__obj_deleted'],
     __str_arr_idx: ['__str_length', '__char_at'],
     __typed_str_idx: ['__str_length', '__char_at'],
     __typed_key_idx: ['__typed_str_idx', '__str_eq', '__to_num', '__ftoa', '__str_length', '__char_at'],
@@ -1556,9 +1559,13 @@ export default (ctx) => {
           (i64.load (i32.add (local.get $keys) (i32.shl (local.get $i) (i32.const 3)))) (local.get $val)))))
       (local.set $i (i32.add (local.get $i) (i32.const 1)))
       (br $vl)))
-    (if (i32.ge_u (local.get $off) (global.get $__heap_start)) (then
-      (local.set $props (i64.and (i64.load (i32.sub (local.get $off) (i32.const 16))) (i64.const -2)))
-      (if (i32.eq (call $__ptr_type (local.get $props)) (i32.const ${PTR.HASH})) (then
+    ;; then the properties outside the layout: the header's, then the table's
+    ;; (__obj_props), a later value replacing an earlier one in place
+    (local.set $w (i32.const 0))
+    (block $pd (loop $pl
+      (br_if $pd (i32.gt_u (local.get $w) (i32.const 1)))
+      (local.set $props (call $__obj_props (local.get $bits) (local.get $w)))
+      (if (i64.ne (local.get $props) (i64.const 0)) (then
         (local.set $poff (call $__ptr_offset (local.get $props)))
         (local.set $map (call $__prop_order (local.get $poff) (i32.load (i32.sub (local.get $poff) (i32.const 4))) (i32.const 24)))
         (local.set $n (global.get $__coll_order_n))
@@ -1568,7 +1575,9 @@ export default (ctx) => {
           (local.set $slot (i32.load (i32.add (local.get $map) (i32.shl (local.get $i) (i32.const 2)))))
           (local.set $h (call $__hash_set_local (local.get $h) (i64.load offset=8 (local.get $slot)) (i64.load offset=16 (local.get $slot))))
           (local.set $i (i32.add (local.get $i) (i32.const 1)))
-          (br $sl)))))))
+          (br $sl)))))
+      (local.set $w (i32.add (local.get $w) (i32.const 1)))
+      (br $pl)))
     (local.get $h))`
   // The schema arm of a dynamic read, FIRST for an OBJECT receiver: a schema
   // field lives in its slot only (buildObjectSchemaSetArm's invariant), so a
@@ -2084,6 +2093,32 @@ export default (ctx) => {
   // Defer the root insert to the end and gate it on props-ptr change: most calls hit
   // the no-grow case where the ptr is unchanged and the root slot already points to it.
   // __ptr_offset inlined (forwarding-aware) — only ARRAY ever has forwarding.
+  // The dictionaries of an OBJECT's properties outside its layout, as
+  // __dyn_set keeps them and enumeration reads them (module/object.js
+  // runtimeKeys): `$global` 0, the one a heap object's header holds at off-16
+  // (bit0 marks a durable object's); 1, the one the table __dyn_props keys by
+  // offset holds for a durable or static object. 0 when there is none. The
+  // host decodes an object through it (interop.js mem.read).
+  ctx.core.stdlib['__obj_props'] = () => `(func $__obj_props (export "__obj_props") (param $bits i64) (param $global i32) (result i64)
+    (local $off i32) (local $props i64)
+    (local.set $off (i32.wrap_i64 (i64.and (local.get $bits) (i64.const ${LAYOUT.OFFSET_MASK}))))
+    (if (local.get $global)
+      (then
+        (if (i32.or (i32.ge_u (local.get $off) ${heapResetWat()}) (f64.eq (global.get $__dyn_props) (f64.const 0)))
+          (then (return (i64.const 0))))
+        (local.set $props (call $__ihash_get_local (i64.reinterpret_f64 (global.get $__dyn_props))
+          (i64.reinterpret_f64 (f64.convert_i32_s (local.get $off)))))
+        (return (select (i64.const 0) (local.get $props) (call $__is_nullish (local.get $props))))))
+    (if (i32.lt_u (local.get $off) (global.get $__heap_start)) (then (return (i64.const 0))))
+    (local.set $props (i64.and (i64.load (i32.sub (local.get $off) (i32.const 16))) (i64.const -2)))
+    (select (local.get $props) (i64.const 0) (i32.eq (call $__ptr_type (local.get $props)) (i32.const ${PTR.HASH}))))`
+
+  // An OBJECT's deleted-slot mask (layout.js deletedMaskWat), for the host.
+  ctx.core.stdlib['__obj_deleted'] = () => `(func $__obj_deleted (export "__obj_deleted") (param $bits i64) (result i32)
+    (local $off i32)
+    (local.set $off (i32.wrap_i64 (i64.and (local.get $bits) (i64.const ${LAYOUT.OFFSET_MASK}))))
+    ${deletedMaskWat('$off')})`
+
   ctx.core.stdlib['__dyn_set'] = () => `(func $__dyn_set (param $obj i64) (param $key i64) (param $val i64) (result i64)
     (local $root i64) (local $props i64) (local $oldProps i64) (local $objKey i64)
     (local $off i32) (local $type i32) (local $kf f64) (local $kidx i32) ${buildObjectSchemaSetLocals()}

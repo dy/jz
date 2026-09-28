@@ -34,6 +34,7 @@ const TESTS = [
   'rest-params',
   'spread',
   'object-rest',
+  'member-targets',
   'number',
   'json',
   'date',

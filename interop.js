@@ -407,6 +407,8 @@ export const memory = (src) => {
   // changes when the module compiled with other ids), committed as a whole
   Object.assign(mem, mergeTables(mem, mod ? moduleTables(mod) : NO_TABLES))
   if (wasmExports?.__view_data) mem.viewData = wasmExports.__view_data
+  if (wasmExports?.__obj_props) mem.objProps = wasmExports.__obj_props
+  if (wasmExports?.__obj_deleted) mem.objDeleted = wasmExports.__obj_deleted
 
   // If already enhanced, just update bindings (new module compiled into same memory)
   if (_enhanced.has(mem)) {
@@ -648,6 +650,25 @@ export const memory = (src) => {
     return ptr(6, sid, raw)
   }
 
+  // The live entries of a HASH (7), SET (8) or MAP (9) at `off` in insertion
+  // order, as __coll_order walks them: a durable-heap tombstone is no key.
+  const liveSlots = (off, t) => {
+    const m = dv(), cap = m.getInt32(off - 4, true), stride = t === 8 ? 16 : 24, slots = []
+    for (let i = 0; i < cap; i++) {
+      const slot = off + i * stride, hash = m.getBigUint64(slot, true)
+      if (hash && (t !== 7 || Number(hash >> 32n) !== HIDDEN_PROPERTY_SEQ) && m.getBigUint64(slot + 8, true) !== 0x7FF87FFFFFFFFFFFn)
+        slots.push([Number(hash >> 32n), slot])
+    }
+    return slots.sort((a, b) => a[0] - b[0]).map(([, slot]) => slot)
+  }
+  // A dictionary's [key, value] pairs, the box followed past a grow.
+  const hashEntries = (bits, fnOf = null) => {
+    const m = dv()
+    let off = offset(bits)
+    while (m.getInt32(off - 4, true) === -1) off = m.getUint32(off - 8, true)
+    return liveSlots(off, 7).map(slot => [mem.read(m.getBigInt64(slot + 8, true), fnOf), mem.read(m.getBigInt64(slot + 16, true), fnOf)])
+  }
+
   // `fnOf` reads a closure as a JS function that calls it (wrap's per-instance
   // reader: a closure's table index names a function of the module that made it).
   mem.read = function(p, fnOf = null) {
@@ -725,36 +746,34 @@ export const memory = (src) => {
       const keys = mem.schemas[a]
       if (!keys) { if (off >= mem._above) mem._held = true; return p }
       const obj = {}
+      // A deleted slot keeps undefined and a bit of the mask (layout.js
+      // deletedSlotWat): from slot 31 on one sticky bit covers the undefined ones.
+      const mask = mem.objDeleted ? mem.objDeleted(p) : 0
       for (let i = 0; i < keys.length; i++) {
         const rule = mem.fieldContracts[a]?.[i], raw = m.getBigInt64(off + i * 8, true)
+        if (mask && (i < 31 ? (mask >>> i) & 1 : (mask >>> 31) & 1 && raw === UNDEF_NAN)) continue
         if (rule?.[2] === 8) throw new TypeError('jz: field ' + keys[i] + ' has ambiguous raw BigInt storage; use distinct object shapes')
         let value = rule?.[2] === 4 ? raw : mem.read(raw, fnOf)
         if (value != null && rule && (rule[0] & ~FIELD.NULLISH) === FIELD.BOOL) value = !!value
         obj[keys[i]] = value
       }
+      // A property stored outside the layout (through an alias, a destructuring
+      // target, a helper's parameter) is in the object's dictionaries: its
+      // header's, then the one a durable object's offset keys (module
+      // __obj_props). A later one's value replaces an earlier one's in place.
+      if (mem.objProps) for (const which of [0, 1]) {
+        const d = mem.objProps(p, which)
+        if (d) for (const [key, value] of hashEntries(d, fnOf)) obj[key] = value
+      }
       fnOf?.owners.set(obj, p)
       return obj
     }
     if (t >= 7 && t <= 9) {  // HASH / SET / MAP share the insertion sequence.
-      const cap = m.getInt32(off - 4, true), stride = t === 8 ? 16 : 24, slots = []
-      for (let i = 0; i < cap; i++) {
-        const slot = off + i * stride, hash = m.getBigUint64(slot, true)
-        // Match __coll_order: a durable-heap tombstone is not a live key.
-        if (hash && (t !== 7 || Number(hash >> 32n) !== HIDDEN_PROPERTY_SEQ) && m.getBigUint64(slot + 8, true) !== 0x7FF87FFFFFFFFFFFn)
-          slots.push([Number(hash >> 32n), slot])
-      }
-      slots.sort((a, b) => a[0] - b[0])
-      const out = t === 7 ? {} : t === 8 ? new Set() : new Map()
-      for (const [, slot] of slots) {
-        const key = mem.read(m.getBigInt64(slot + 8, true), fnOf)
-        if (t === 8) out.add(key)
-        else {
-          const value = mem.read(m.getBigInt64(slot + 16, true), fnOf)
-          if (t === 7) out[key] = value
-          else out.set(key, value)
-        }
-      }
-      if (t === 7) fnOf?.owners.set(out, p)
+      if (t === 8) return new Set(liveSlots(off, t).map(slot => mem.read(m.getBigInt64(slot + 8, true), fnOf)))
+      const entries = liveSlots(off, t).map(slot => [mem.read(m.getBigInt64(slot + 8, true), fnOf), mem.read(m.getBigInt64(slot + 16, true), fnOf)])
+      if (t !== 7) return new Map(entries)
+      const out = Object.fromEntries(entries)
+      fnOf?.owners.set(out, p)
       return out
     }
     // a handle on the module's memory, held as the view of a typed array is

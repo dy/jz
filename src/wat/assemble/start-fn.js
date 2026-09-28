@@ -181,7 +181,10 @@ function buildSchemaInit() {
     // later static `o.x` read returns the stale slot. That mirror is gated on
     // `$__schema_tbl != 0`, so a write-only module (no `__dyn_get*`) must still
     // build the table. (needsSchemaTbl below skips it when every schema is empty.)
-    ctx.core.includes.has('__dyn_set')
+    ctx.core.includes.has('__dyn_set') ||
+    // `delete o[k]` finds a schema field's slot through the table the same way:
+    // without it the delete missed the field and left its value.
+    ctx.core.includes.has('__dyn_del')
   const needsSchemaTbl = (ctx.schema.list.length && tblConsumed &&
     (hasStringify || ctx.schema.list.some(s => s.length > 0))) ||
     hasJpObj
