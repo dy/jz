@@ -1,11 +1,11 @@
 /**
  * f64x2 twins of the scalar math kernels, for the vectorizer's lifts (src/optimize/vectorize,
  * PPC_CALL2) and the f64x2.* intrinsics (module/simd.js). Every lane is bit for bit its
- * scalar kernel's: sin2/cos2/atan2_2/log_v/exp_v/pow2/pow_c_v take both lanes through one
- * evaluation of the scalar's operations where both lanes are on its common path, choosing
- * per lane where the scalar branches, and hand anything else to the scalar kernel lane by
- * lane; the rest are lane-by-lane scalar calls. Consumers reach them by name, never a JS
- * symbol, so this file is a one-way leaf off math/trig-tables.js.
+ * scalar kernel's: sin2/cos2/atan2_2/cbrt_v/log_v/exp_v/pow2/pow_c_v take both lanes through
+ * one evaluation of the scalar's operations where both lanes are on its common path,
+ * choosing per lane where the scalar branches, and hand anything else to the scalar kernel
+ * lane by lane; the rest are lane-by-lane scalar calls. Consumers reach them by name, never a
+ * JS symbol, so this file is a one-way leaf off math/trig-tables.js.
  *
  * @module math/simd
  */
@@ -14,7 +14,7 @@ import { ctx } from '../../src/ctx.js'
 import {
   EXP_Q, EXP_L1, EXP_L2, POW_LN2HI, POW_LN2LO, POW_LOG_A, polyTree,
   INVPIO2, PIO2_1, PIO2_1T, PIO2_2, PIO2_2T, KSIN, KCOS, LG, LN2_HI, LN2_LO, INVLN2, EXP_P, EXP_E,
-  ATAN_T, ATAN_HI, ATAN_LO, PI_D, PI_LO,
+  ATAN_T, ATAN_HI, ATAN_LO, PI_D, PI_LO, CBRT_P, CBRT_B1,
 } from './trig-tables.js'
 
 export const registerMathSimd = () => {
@@ -314,10 +314,29 @@ ${powExp2(lanes('math.pow_c', ['y', 'x', 'lhi', 'llo']))})
       ${pick('(i32x4.lt_s (local.get $hy) (v128.const i32x4 0 0 0 0))', '(f64x2.neg (local.get $r))', '(local.get $r)')}
       ${wide('(i32x4.lt_s (local.get $hx) (v128.const i32x4 0 0 0 0))')}))`, ['math.atan2'])
 
-  // hypot, cbrt, fifthroot: lane by lane through the scalar kernel, which keeps the rest of a
-  // loop around them two-wide. (Names avoid $math.log2, which is log base 2.)
+  // cbrt (module/math/ieee754.js): both lanes normal and finite, the seed's high word
+  // sign | (|hx|/3 + B1) with the division by 3 as ·0xaaaaaaab >> 33 (exact below 2^32), then
+  // the polynomial, the rounding to 23 bits and the Newton step two-wide. Else scalar.
+  const [C0, C1, C2, C3, C4] = CBRT_P
+  wat('math.cbrt_v', `(func $math.cbrt_v (param $x v128) (result v128)
+    (local $t v128) (local $r v128) (local $s v128)
+    (if (i32.eqz (i32x4.all_true (i32x4.lt_u (i32x4.sub (v128.and ${hi2('(local.get $x)')} ${i32s(0x7fffffff)}) ${i32s(0x00100000)}) ${i32s(0x7fe00000)})))
+      (then (return ${lanes('math.cbrt', ['x'])})))
+    (local.set $t (v128.or (v128.and (local.get $x) ${i64s('0x8000000000000000')})
+      (i64x2.shl (i64x2.add (i64x2.shr_u (i64x2.mul (v128.and (i64x2.shr_u (local.get $x) (i32.const 32)) ${i64s(0x7fffffff)}) ${i64s(0xaaaaaaab)}) (i32.const 33))
+        ${i64s(CBRT_B1)}) (i32.const 32))))
+    (local.set $r (f64x2.mul (f64x2.mul (local.get $t) (local.get $t)) (f64x2.div (local.get $t) (local.get $x))))
+    (local.set $t (f64x2.mul (local.get $t) (f64x2.add ${poly2('$r', [C0, C1, C2])}
+      (f64x2.mul (f64x2.mul (f64x2.mul (local.get $r) (local.get $r)) (local.get $r)) ${poly2('$r', [C3, C4])}))))
+    (local.set $t (v128.and (i64x2.add (local.get $t) ${i64s(0x80000000)}) ${i64s('0xffffffffc0000000')}))
+    (local.set $s (f64x2.mul (local.get $t) (local.get $t)))
+    (local.set $r (f64x2.div (local.get $x) (local.get $s)))
+    (local.set $r (f64x2.div (f64x2.sub (local.get $r) (local.get $t)) (f64x2.add (f64x2.add (local.get $t) (local.get $t)) (local.get $r))))
+    (f64x2.add (local.get $t) (f64x2.mul (local.get $t) (local.get $r))))`, ['math.cbrt'])
+
+  // hypot, fifthroot: lane by lane through the scalar kernel, which keeps the rest of a loop
+  // around them two-wide. (Names avoid $math.log2, which is log base 2.)
   repack('math.hypot_2', 'math.hypot', ['x', 'y'])
-  repack('math.cbrt_v', 'math.cbrt', ['x'])
   repack('math.fifthroot_v', 'math.fifthroot', ['x'])
 
   // log (module/math/ieee754.js): both lanes a normal finite x > 0 off the |f| < 2^-20 path
