@@ -1,7 +1,7 @@
 /** Project settled value and presence facts; derive physical storage constraints. */
 import { DBG_INVARIANTS } from '../../debug.js'
 import { OPTF, ctx } from '../../ctx.js'
-import { ASSIGN_OPS, MUTATE_OPS } from '../../ast.js'
+import { ASSIGN_OPS, MUTATE_OPS, walkAst, collectAssignedNames } from '../../ast.js'
 import { VAL, repOf, updateRep } from '../../reps.js'
 import { valTypeOf, shapeOf } from '../../kind.js'
 import { intExprRange, objLiteralSchemaId } from '../../static.js'
@@ -488,7 +488,10 @@ export function analyzeValTypes(body) {
 /** Forward-propagate `intCertain` on local bindings. Fixpoint lives in type.js.
  *  Threads the settled slot census as the `.prop`-read resolver — without it a
  *  binding built from an int-certain slot (`const x = hitX ? p.x : nx`) stayed
- *  uncertain and every consumer re-paid the ToNumber guard. */
+ *  uncertain and every consumer re-paid the ToNumber guard. A binding a
+ *  nested closure assigns has that write among its definitions: a read after
+ *  the closure ran sees what it stored (a Boolean, a string), not the integer
+ *  the body's own definitions give it. */
 export function analyzeIntCertain(body) {
   const slotIntOf = ctx.schema?.slotIntCertainAt
     ? (obj, prop) => {
@@ -499,7 +502,9 @@ export function analyzeIntCertain(body) {
       return ctx.schema.slotIntCertainAt(obj, prop)
     }
     : undefined
-  for (const [name, intC] of intCertainMap(body, undefined, slotIntOf)) {
+  const nested = new Set()
+  walkAst(body, { enter: n => { if (n[0] === '=>') { collectAssignedNames(n[2], nested); return false } } })
+  for (const [name, intC] of intCertainMap(body, nested.size ? nested : undefined, slotIntOf)) {
     if (intC) updateRep(name, { intCertain: true })
   }
 }

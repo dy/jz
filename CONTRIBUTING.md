@@ -1891,6 +1891,9 @@ the unknown kind), and no flow fact of one store's kind is recorded for it.
 A binding read only for truthiness or arithmetic keeps the raw carrier. The
 compile-time rejection remains for the one case a plan typed such a binding
 as one concrete non-Boolean kind.
+An integer-certain binding counts the writes a nested closure makes to it,
+and a reassigned parameter its caller's value (`intLevelMap` seeds the
+analyzed body's own parameters, the slot census's included).
 
 A typed array's `fill` converts its value once for a numeric array (`fill('12')`
 stores 12), writes the first element through the element writer and doubles

@@ -100,13 +100,16 @@ export function analyzeSchemaSlotIntCertain(ast, opts) {
   // Round 1 may reuse gen-cached checkers (they close over the LIVE census, so
   // later poisoning flows through); after any flip the LOCAL binding fixpoints
   // baked into those checkers may be stale-optimistic, so rebuild fresh.
-  const bodyIntCertainOf = (body, fresh) => {
-    if (fresh) return intLevelChecker(body, slotLevelOf)
+  // A body's levels take its own function's parameters as entry values: a
+  // parameter the body reassigns (to a Boolean, say) still holds the caller's
+  // value on the other path.
+  const bodyIntCertainOf = (body, fresh, params) => {
+    if (fresh) return intLevelChecker(body, slotLevelOf, params)
     if (body != null && typeof body === 'object') {
       const hit = pf.bodyIntCertain.get(body)
       if (hit?.gen === pf.gen) return hit.isInt
     }
-    const isInt = intLevelChecker(body, slotLevelOf)
+    const isInt = intLevelChecker(body, slotLevelOf, params)
     if (body != null && typeof body === 'object')
       pf.bodyIntCertain.set(body, { gen: pf.gen, isInt })
     return isInt
@@ -158,7 +161,7 @@ export function analyzeSchemaSlotIntCertain(ast, opts) {
       if (!func.body || func.raw) continue
       curSids = bodySidsOf(func)
       const frame = frameNode(func)   // a parameter default runs in the frame
-      visit(frame, bodyIntCertainOf(frame, fresh))
+      visit(frame, bodyIntCertainOf(frame, fresh, func.sig.params))
       curSids = null
     }
     if (ctx.module.initFacts?.hasSchemaLiterals && ctx.module.moduleInits) {

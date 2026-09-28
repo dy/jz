@@ -2252,3 +2252,16 @@ test('devirtGlobalCalls: a call through a global that holds a builtin is the bui
     if (!belowOpt(2)) ok(!/"_alloc"|\(start /.test(compile(src, { modules, jzify: true, optimize: 2, wat: true })), `${name}: no allocator and no start function`)
   }
 })
+
+// The same blind spot in a binding's own integer certainty (analyze/val-types.js
+// analyzeIntCertain): an integer-initialized binding a closure reassigns read
+// back raw, so `v * 2` skipped ToNumber on the string or Boolean the closure
+// stored ('x' came back as itself, true as the atom).
+test('closure: a value a closure writes into an integer binding converts at a numeric read', () => {
+  const src = `export let f = (k) => { let v = 0; let set = () => { v = k > 1 ? 'x' : k > 0 ? true : 3 }; set(); return v * 2 }`
+  const want = oracle(src).f
+  for (const optimize of levels(0, 2, 3)) {
+    const { f } = run(src, { optimize })
+    for (const k of [0, 1, 2]) is(f(k), want(k), `f(${k}) at ${optimize}`)
+  }
+})

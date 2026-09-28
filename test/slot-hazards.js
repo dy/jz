@@ -486,3 +486,17 @@ export let supplied = () => f({ y: 9, x: 6 })`
     is(e.supplied(), 6, `O${optimize}: supplied arg reads its OWN layout`)
   }
 })
+
+test('slot-hazards: a parameter the body reassigns keeps its caller\'s value in the census', () => {
+  // The census read each body's definitions against the current function's
+  // parameters, not the body's own: `v`, given 1 or 2 on a path, was an
+  // integer, and `q.w` truncated the caller's 7.5 to 7 (at O0, where the
+  // census reads a function the emitter has not entered).
+  const src = `
+const one = (v, k) => { if (k > 0) v = 1; let q = { w: v }; return q.w }
+const two = (v, k) => { if (k > 1) v = 2; let q = { w: v }; return q.w * 2 }
+export let main = (k, n) => [one(n, k), two(n, k)]`
+  const want = oracle(src).main
+  for (const optimize of LEVELS) for (const args of [[0, 7.5], [1, 7.5], [2, 7.5]])
+    is(run(src, { optimize }).main(...args), want(...args), `O${optimize}: main(${args})`)
+})
