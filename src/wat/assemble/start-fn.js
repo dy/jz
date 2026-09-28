@@ -1,6 +1,6 @@
 import { DBG_INVARIANTS, assertCtxInvariants } from '../../debug.js'
 /**
- * Synthetic `$__start` function — building it (module-init IR,
+ * Synthetic `$__start` function: building it (module-init IR,
  * schema-table/string-pool/typeof/closure-env-side-table setup) and
  * later simplifying it (hoisting single-assignment const globals out of it,
  * possibly deleting the whole start func once emptied).

@@ -49,7 +49,7 @@ function staticInstanceofFold(val, ctor, spelled) {
     if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean' || v == null) return false
   }
   if (!spelled) return null
-  // ctor === 'Array' never reaches here — CORE_INSTANCEOF_ALLOW routes it to the
+  // ctor === 'Array' never reaches here: CORE_INSTANCEOF_ALLOW routes it to the
   // core (which folds `[] instanceof Array` itself, via valTypeOf) before the
   // 'instanceof' handler below ever calls this function.
   if (val[0] === '[]' && val.length <= 2) return ctor === 'Object'

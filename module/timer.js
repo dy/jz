@@ -7,7 +7,7 @@
  *     and `env.clearTimeout(id: f64) -> f64`. The JS host (interop.js) drives both
  *     via global setTimeout/setInterval and calls back into wasm through the
  *     exported `__call_closure` trampoline (module/function.js), the host's call
- *     of any closure it holds. No queue, no polling — the host's event loop does
+ *     of any closure it holds. No queue, no polling: the host's event loop does
  *     the scheduling.
  *
  *   `host: 'wasi'`: pure-WASM timer queue using WASI clock_time_get for
@@ -319,7 +319,7 @@ const setupJsHost = (ctx) => {
 
   // requestAnimationFrame(cb) / cancelAnimationFrame(id) — the same env-service
   // shape as setTimeout: the host schedules (real rAF in browsers, a 16 ms
-  // timer fallback elsewhere — interop.js) and calls the callback through
+  // timer fallback elsewhere, interop.js) and calls the callback through
   // __call_closure with the frame timestamp.
   const needRaf = () => hostImport('env', 'requestAnimationFrame',
     ['func', '$__raf', ['param', 'i64'], ['result', 'f64']], true)

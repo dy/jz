@@ -778,7 +778,7 @@ export const memory = (src) => {
     }
     // a handle on the module's memory, held as the view of a typed array is
     if (t !== 0 && off >= mem._above) mem._held = true
-    return i64ToF64(p)  // canonical NaN-number / CLOSURE without a reader / unknown — reinterpret to f64
+    return i64ToF64(p)  // canonical NaN-number, a CLOSURE without a reader, unknown: reinterpret to f64
   }
 
   mem.write = function(p, data) {
@@ -1837,7 +1837,7 @@ const installDefaultEnvImports = (mod, imports, state) => {
   // the callback back as any closure the host holds (state.fnOf, read at the
   // first fire: a timer armed by the module's init runs before wrap sets it).
   // Each id maps to a cancel thunk so set/clear share state without tagging.
-  // env.setTimeout receives cbPtr as i64 bits (BigInt) — see module/timer.js.
+  // env.setTimeout receives cbPtr as i64 bits (BigInt), see module/timer.js.
   if (envFns.has('setTimeout') || envFns.has('clearTimeout')) {
     const cancel = new Map()
     let nextId = 1

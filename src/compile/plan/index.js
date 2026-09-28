@@ -12,7 +12,7 @@
  *      themselves are seeded by prepare via `infer.recordGlobalRep`.)
  *   2. collectProgramFacts — sweep arrow bodies for typed-elem usage, key sets,
  *      loop depth, control-transfer shapes; rerun if hot inlining changes the AST.
- *   3. resolveClosureWidth — settle layout decisions.
+ *   3. resolveClosureWidth: settle layout decisions.
  *   4. Whole-program narrowing (skipped on simple programs):
  *        - narrowSignatures — pick a specialization per function from call sites
  *        - specializeBimorphicTyped — split typed-elem hot paths into two variants
@@ -112,7 +112,7 @@ export default function plan(ast, profiler, summarize) {
   // fill `ctx.scope.globalValTypes` with VAL.HASH for module-level `{}`-decl
   // dict globals module/object.js's allocator already tags HASH at the
   // pointer level (identical predicate: target's merged schema empty +
-  // dynWriteVars or literal-key write membership) — a pure FILL (`.has()`-guarded, see
+  // dynWriteVars or literal-key write membership), a pure FILL (`.has()`-guarded, see
   // classifyHashDictGlobals doc), so it can run this early: before
   // flattenFuncNamespaces/devirtGlobalCalls, using the just-collected
   // programFacts.dynWriteVars directly (`ctx.types.dynWriteVars` isn't
