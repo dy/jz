@@ -336,19 +336,26 @@ test('setInterval: returns timer ID', () => {
   ok(typeof id === 'number' && id > 0)
 })
 
+// How many ticks run before the clear depends on when the host runs its
+// timers (a loaded machine runs them late): what clearInterval promises is
+// that none runs after it.
 test('clearInterval: stops interval', async () => {
   const result = jz(`
     export let count = 0
+    export let cleared = -1
     export let start = () => {
       let id = setInterval(() => { count = count + 1 }, 20)
-      setTimeout(() => { clearInterval(id) }, 70)
+      setTimeout(() => { clearInterval(id); cleared = count }, 70)
       return 1
     }
   `)
   is(result.exports.start(), 1)
-  await new Promise(r => setTimeout(r, 120))
-  // Interval fires at ~20, 40, 60ms; cleared at 70ms → 3 ticks
-  is(result.exports.count.value, 3)
+  const t0 = Date.now()
+  while (result.exports.cleared.value < 0 && Date.now() - t0 < 10000) await new Promise(r => setTimeout(r, 10))
+  const at = result.exports.cleared.value
+  await new Promise(r => setTimeout(r, 100))
+  ok(at >= 0, 'the clearing timeout ran')
+  is(result.exports.count.value, at, 'no tick after the clear')
 })
 
 test('timer callback captures outer scope', async () => {
