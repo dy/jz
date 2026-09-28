@@ -38,6 +38,14 @@ export const CLASS_T = '\uE003'
 export const BRAND = CLASS_T + 'class'
 export const isBrand = (name) => typeof name === 'string' && name.startsWith(BRAND)
 
+// A declaration a lowering moved ahead of the statement that initializes it
+// (a generator's locals, hoisted out of its steps: jzify/generators.js) leads
+// with a binding of this name: the bindings after it hold no value until that
+// statement runs, as a `let` in its temporal dead zone, so the declaration
+// defines none (the program summary's `decl`).
+export const TDZ = '\uE005'
+export const isTdzDecl = (n) => Array.isArray(n) && n[0] === 'let' && typeof n[1] === 'string' && n[1].startsWith(TDZ)
+
 /** Prepared undefined literal, including the empty literal form. */
 export const isUndefinedLiteral = node =>
   Array.isArray(node) && node[0] == null && node[1] === undefined

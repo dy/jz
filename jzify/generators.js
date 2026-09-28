@@ -24,7 +24,7 @@
  * @module jzify/generators
  */
 
-import { walkAst, some, isBlockBody } from '../src/ast.js'
+import { walkAst, some, isBlockBody, TDZ } from '../src/ast.js'
 
 const isYield = (n) => Array.isArray(n) && (n[0] === 'yield' || n[0] === 'yield*' || n[0] === 'await')
 /** A desugar's own call of a well-known member it has probed (`v['@@iterator']()`
@@ -423,11 +423,13 @@ export function createGeneratorLowering({ transform, transformParams, err, gener
       // break/continue that binds a DECOMPOSED loop (the raw op would bind the
       // dispatch while(1) instead — an infinite next()) ---
       if (!hasYield(st) && !hasReturn(st) && !(loopCtx && hasFreeJump(st))) {
-        // let/const initializers become assignments (names are hoisted)
+        // let/const initializers become assignments (names are hoisted), a
+        // declaration without one the undefined it declares
         if (op === 'let' || op === 'const') {
           for (let i = 1; i < st.length; i++) {
             const d = st[i]
             if (Array.isArray(d) && d[0] === '=') stmtsOf(cur).push(['=', d[1], transform(d[2])])
+            else if (typeof d === 'string') stmtsOf(cur).push(['=', d, [null, undefined]])
           }
           return cur
         }
@@ -582,10 +584,12 @@ export function createGeneratorLowering({ transform, transformParams, err, gener
       ['while', [null, true], ['{}', [';', loopBody]]],
     ]]
 
+    // The locals are declared ahead of the steps that initialize them, each
+    // where its declaration stood: they hold no value before (TDZ, src/ast.js).
     const decls = [
       ['let', ['=', S.NEXT, [null, 0]], ['=', S.SENT, [null, undefined]],
-        ...(guarded ? [['=', S.ERR, [null, undefined]], ['=', S.THR, [null, undefined]], ['=', S.THRSET, [null, false]]] : []),
-        ...[...locals].map(n => ['=', n, [null, undefined]])],
+        ...(guarded ? [['=', S.ERR, [null, undefined]], ['=', S.THR, [null, undefined]], ['=', S.THRSET, [null, false]]] : [])],
+      ...(locals.size ? [['let', TDZ, ...locals]] : []),
       ['const', ['=', '__next', ['=>', '__in', nextBody]]],
     ]
 

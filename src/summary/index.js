@@ -48,7 +48,7 @@
  *
  * @module summary
  */
-import { MUTATE_OPS, EXACT_MATH, extractParams, isBrand, returnExprs, ACCESSOR_GET, ACCESSOR_SET, CLASS_T, TYPEOF, typeofPredicate, canonicalKeyOrder, schemaKey, isArrayIndexKey, layoutView, ENUM_DATA } from '../ast.js'
+import { MUTATE_OPS, EXACT_MATH, extractParams, isBrand, returnExprs, ACCESSOR_GET, ACCESSOR_SET, CLASS_T, TYPEOF, typeofPredicate, canonicalKeyOrder, schemaKey, isArrayIndexKey, layoutView, ENUM_DATA, isTdzDecl } from '../ast.js'
 import { encodeTypedElemAux, TYPED_ELEM_CODE, TYPED_ELEM_VIEW_FLAG, TYPED_ELEM_ANY_VIEW_FLAG, ctorFromElemAux, TYPED_ELEM_BIGINT_FLAG } from '../../layout.js'
 import { ITER_RECORD_KEYS } from '../std/iter-helpers.js'
 import { PROMISE_KEYS } from '../std/async.js'
@@ -2886,7 +2886,9 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   // A declaration without a value is absent until assigned (`let buf; export
   // const setup = () => buf = new Float64Array(n)`: a read before `setup` is one
   // the program does not mean to make), unless its function assigns it before
-  // every read (definite.js): that one never shows what it was declared with.
+  // every read (definite.js): that one never shows what it was declared with,
+  // nor does one a lowering moved ahead of the statements initializing its
+  // bindings (src/ast.js TDZ).
   const assignedFirst = new Map()   // function or closure → its bare declarations assigned before every read
   // The module's own: its statements run once, in order, and a function runs
   // where one names it or, called by the host, after they end, so a name a
@@ -2918,9 +2920,10 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     return names.has(name) ? K.NONE : ABSENT
   }
   const decl = (n) => {
+    const tdz = isTdzDecl(n)
     for (let i = 1; i < n.length; i++) {
       const d = n[i]
-      if (typeof d === 'string') declare(d, bare(d))
+      if (typeof d === 'string') declare(d, tdz ? K.NONE : bare(d))
       else if (Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string') {
         if (n[0] === 'const') {
           if (Array.isArray(d[2]) && d[2][0] == null && Number.isInteger(d[2][1])) ints.set(d[1], d[2][1])

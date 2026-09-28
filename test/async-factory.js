@@ -1,16 +1,17 @@
-// A closure made inside an async function or a generator agrees with the
+// A closure made inside an async function or a generator is typed as the
 // same closure made inside a plain function. An await resumes with the settled
 // value of its operand (`__awaited`, jzify/generators.js), which the summary
 // reads off a promise it names at each async call (src/summary/index.js
-// promiseAt, awaited). The kernel is
+// promiseAt, awaited); the machine's locals hold no value before the statement
+// that initializes them (src/ast.js TDZ). The kernel is
 // the encoder of @audio/encode-wav, made by an async factory (bench/_audiojs
 // shapes.mjs, S8): its loop called `__add_slow`, `__is_str_key` and
 // `__dyn_set` per sample, 0.03× of V8 where the plain factory ran 0.3×.
 import test from 'tst'
-import { is } from 'tst/assert.js'
+import { is, ok } from 'tst/assert.js'
 import jz from '../index.js'
-import { levels, onKernel, onWasi } from './_matrix.js'
-import { oracle } from './util.js'
+import { belowOpt, levels, onKernel, onWasi } from './_matrix.js'
+import { oracle, wat } from './util.js'
 
 const N = 64
 const kernel = `
@@ -37,6 +38,21 @@ export let open = async () => { enc = await wav({ bitDepth: 24 }); return 1 }`,
 export let open = () => { enc = wav({ bitDepth: 24 }).next().value; return 1 }`,
 }
 const asyncShape = (name) => name.startsWith('async')
+// What a loop pays per sample when an index, a store target or a number has
+// lost its kind: a generic sum, a key test, a generic store, a conversion.
+const SLOW = /call \$(__add_slow|__dyn_set|__is_str_key|__str_concat_fresh|__to_num)\b/g
+const span = (text, at) => { let d = 0; for (let i = at; i < text.length; i++) { if (text[i] === '(') d++; else if (text[i] === ')' && --d === 0) return text.slice(at, i + 1) } return text.slice(at) }
+// Those calls inside the loops of the program's own functions (the runtime's are `__…`, `jz_…$…`).
+const slowLoops = (text) => {
+  const out = new Set()
+  for (const m of text.matchAll(/\n {2}\(func \$\uE000?([^\s)]+)/g)) {
+    if (/^(__|jz_)/.test(m[1])) continue
+    const fn = span(text, m.index + 3)
+    for (const l of fn.matchAll(/\(loop\b/g)) for (const c of span(fn, l.index).match(SLOW) ?? []) out.add(`${m[1]}: ${c}`)
+  }
+  return [...out]
+}
+
 test('async factory: the closures it makes agree with JavaScript', async () => {
   for (const [name, factory] of Object.entries(FACTORIES)) {
     if (asyncShape(name) && (onWasi() || onKernel())) continue
@@ -49,6 +65,14 @@ test('async factory: the closures it makes agree with JavaScript', async () => {
       is(m.run(), want, `${name} factory at ${optimize}`)
       is(m.run(), want, `${name} factory at ${optimize}, again`)
     }
+  }
+})
+
+test('async factory: the kernel loop compiles as the plain factory\'s', () => {
+  if (belowOpt(2) || onWasi()) return
+  for (const [name, factory] of Object.entries(FACTORIES)) {
+    const slow = slowLoops(wat(kernel + factory, { optimize: 2 }))
+    ok(!slow.length, `${name} factory: no generic sum, key test, store or conversion per sample: ${slow.join('; ')}`)
   }
 })
 
@@ -85,4 +109,12 @@ export let f = async (n) => {
 }`
   const want = await oracle(src).f(2)
   for (const optimize of levels(0, 2, 3)) is(await jz(src, { optimize }).exports.f(2), want, `at ${optimize}`)
+})
+
+test('generator: a declaration without a value is undefined each time it runs', () => {
+  // the loop suspends, so its body's `let x` is one of the machine's locals
+  const src = `function* g(n) { for (let i = 0; i < 3; i++) { let x; if (i === n) x = i; yield String(x) } }
+export let f = (n) => [...g(n)].join(',')`
+  const want = oracle(src).f(0)
+  for (const optimize of levels(0, 2, 3)) is(jz(src, { optimize }).exports.f(0), want, `at ${optimize}`)
 })

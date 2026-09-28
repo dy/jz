@@ -1719,7 +1719,10 @@ the operand: the summary types it as the operand's settled value, the operand
 itself when it is no thenable, the value an async call's promise fulfills with
 (the promise is named at its `__async_run` call node, as the iterator runtime's
 records are, beside what the machine completes with, a promise or thenable it
-completes with adopted), anything for a promise made another way.
+completes with adopted), anything for a promise made another way. The
+machine's locals are declared ahead of the steps that initialize them behind
+the TDZ mark (`src/ast.js`), a declaration that defines no value; a bare
+`let x` in the body defines its undefined where it stands.
 Class lowering (`jzify/classes.js`) takes `static async` methods on both of
 its paths and a bare `super()`, and the
 member census counts an optional method call (`o.m?.()`) as a read, since the
