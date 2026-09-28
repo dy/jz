@@ -27,7 +27,8 @@ import {
   usesDynProps, needsDynShadow, mkPtrIR, undefExpr,
   freshId, boxBigInt, isNullish, throwTypeErrorIR,
 } from '../ir.js'
-import { emit, storedValue, storedValueNarrow, storedFieldValue } from '../bridge.js'
+import { emit, idx as emitIndex, storedValue, storedValueNarrow, storedFieldValue } from '../bridge.js'
+import { keyIndex } from './emit/dispatch.js'
 import { REP_EDGE_BOX, representationProgramHasBigint, representationStorageWriteAction } from './representation-plan.js'
 import { plannedTypedStorageInfo } from './typed-storage-plan.js'
 import { typedIdxProven, inBoundsArrIdx } from '../type.js'
@@ -105,7 +106,7 @@ function storeArrayPayload(arrExpr, idxNode, valueExpr, persist) {
   const helper = ['local.set', `$${arrTmp}`, ['call', '$__arr_set_idx_ptr', ['i64.reinterpret_f64', arrG], idxG, valG]]
   const body = [
     ['local.set', `$${arrTmp}`, arrExpr],
-    ['local.set', `$${idxTmp}`, asI32(typed(idxNode, 'f64'))],
+    ['local.set', `$${idxTmp}`, keyIndex(typed(idxNode, 'f64'))],
     ['local.set', `$${valTmp}`, valueExpr],
   ]
   if (ctx.transform.optimize?.leanRuntime) body.push(helper)
@@ -298,7 +299,7 @@ function tryInplaceReplaceStore(arr, idx, val) {
     const hT = tempI32('iph'), kT = tempI32('ipk'), aTb = temp('ipa')
     const miss = ['block', ['result', 'f64'],
       ['local.set', `$${aTb}`, asF64(emit(arr))],
-      ['local.set', `$${kT}`, asI32(emit(idx))],
+      ['local.set', `$${kT}`, emitIndex(idx)],
       ['local.set', `$${hT}`, ['call', '$__alloc_hdr', ['i32.const', 0], ['i32.const', ops.allocSlots(schema.length)]]],
       ...slots.map((slot, i) => ops.store(['local.get', `$${hT}`], slot, ['local.get', `$${vTs[i]}`])),
       storeArrayPayload(typed(['local.get', `$${aTb}`], 'f64'), ['f64.convert_i32_s', ['local.get', `$${kT}`]],
@@ -328,7 +329,7 @@ function tryInplaceReplaceStore(arr, idx, val) {
   // first order shipped that divergence at every optimize level).
   return typed(['block', ['result', 'f64'],
     ['local.set', `$${aTb}`, asF64(emit(arr))],
-    ['local.set', `$${kT}`, asI32(emit(idx))],
+    ['local.set', `$${kT}`, emitIndex(idx)],
     ...parsed.values.map((v, i) => ['local.set', `$${vTs[i]}`, storedValue(v)]),
     ['local.set', `$${eT}`, reuse ?? ['call', '$__arr_idx', ['i64.reinterpret_f64', ['local.get', `$${aTb}`]], ['local.get', `$${kT}`]]],
     ['if', ['result', 'f64'],
@@ -393,7 +394,7 @@ function tryStructInlineReplaceStore(arr, idx, val) {
   if (!alias) inc('__ptr_offset')
   const cellIdx = cpe === 1 ? ['local.get', `$${kT}`] : ['i32.mul', ['local.get', `$${kT}`], ['i32.const', cpe]]
   const body = [
-    ['local.set', `$${kT}`, asI32(emit(idx))],
+    ['local.set', `$${kT}`, emitIndex(idx)],
     ...(boxT ? [['local.set', `$${boxT}`, asF64(emit(arr))]] : []),
     // packed values are int32-exact by the slotI32Certain census. Non-packed
     // cells: CARRIER PROGRAM §15/§16 — the same per-schema slotBigintBoxedBySid
@@ -677,7 +678,7 @@ export function emitElementAssign(arr, idx, val, node = null) {
     // guessing from raw payload magnitude.
     inc('__typed_set_idx_tagged')
     return typed(['call', '$__typed_set_idx_tagged',
-      asI64(emit(arr)), asI32(emit(idx)), runtimeTypedValueExpr(), ['i32.const', valueDomain]], 'f64')
+      asI64(emit(arr)), emitIndex(idx), runtimeTypedValueExpr(), ['i32.const', valueDomain]], 'f64')
   }
 
   // 6. Boxed schema array — payload pointer is stored at the receiver's payload offset.
@@ -750,15 +751,15 @@ export function emitElementAssign(arr, idx, val, node = null) {
     inc('__dyn_set', '__is_str_key')
     const persist = typeof arr === 'string' ? persistBinding(arr) : null
     return dispatchByKeyKind(arr, keyExpr, valueExpr, keyNode =>
-      emitPolymorphicElementStore(emit(arr), asI32(typed(keyNode, 'f64')), runtimeTypedValueExpr(), valueDomain, persist, mayBeObject))
+      emitPolymorphicElementStore(emit(arr), keyIndex(typed(keyNode, 'f64')), runtimeTypedValueExpr(), valueDomain, persist, mayBeObject))
   }
 
   // 9. Opaque receiver (non-string expr) or string-named with unknown VT — pure
   //    __ptr_type dispatch (no key-kind fork: key is provably numeric here).
   if (typeof arr !== 'string')
-    return emitPolymorphicElementStore(emit(arr), asI32(emit(idx)), runtimeTypedValueExpr(), valueDomain, null, mayBeObject)
+    return emitPolymorphicElementStore(emit(arr), emitIndex(idx), runtimeTypedValueExpr(), valueDomain, null, mayBeObject)
   if (knownArrVT == null)
-    return emitPolymorphicElementStore(emit(arr), asI32(emit(idx)), runtimeTypedValueExpr(), valueDomain, persistBinding(arr), mayBeObject)
+    return emitPolymorphicElementStore(emit(arr), emitIndex(idx), runtimeTypedValueExpr(), valueDomain, persistBinding(arr), mayBeObject)
 
   // Default: known-VT receiver that isn't ARRAY/TYPED/OBJECT special — raw f64.store.
   return withTemp(valueExpr, t => [

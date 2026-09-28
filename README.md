@@ -115,7 +115,7 @@ Where behaviour differs from JS:
 - **Bitwise operands under 2^63.** `|`, `&`, `^`, `~`, the shifts and `Math.imul` convert an operand of magnitude under 2^63 as JS does. A larger one reads as -1, or as 0 when negative, where JS takes it modulo 2^32: `1e300 | 0` is -1. A store to an integer typed array converts exactly at any magnitude.
 - **BigInt is 64-bit.** It wraps past its range and has no `**`.
 - **No holes.** `[1, , 3]` and a write past the end fill the gap with `undefined` elements: `1 in a`, `Object.keys` and `forEach` see them.
-- **32-bit element indices.** Use finite integer array indices. Numeric index expressions can truncate to i32; `a[NaN]` can read `a[0]` instead of `undefined`.
+- **32-bit element indices.** An array holds up to 2³¹−1 elements. A store under a number that is not an index (`a[1.5] = v`, `a[-1] = v`) is dropped, where JavaScript gives the array a named property.
 - **Regexes compile at build time.** `new RegExp(pattern)` needs a literal; `\p{…}`, `d` and `v` flags are unsupported.
 - **ASCII case, UTC dates.** No locale or timezone tables: case conversion is ASCII, `normalize` returns its input, Date getters use UTC.
 - **Fixed shapes.** Object fields are slots resolved at compile time; `Object.freeze` does nothing and errors carry `name` and `message` only.

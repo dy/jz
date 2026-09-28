@@ -93,6 +93,7 @@ const TESTS = [
   'pointer-join',
   'typed-rebound',
   'late-field',
+  'index-key',
   'variant-result',
   'call-boundary',
   'call-release',

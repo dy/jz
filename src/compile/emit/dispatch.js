@@ -10,7 +10,7 @@ import { STR_HCACHE_BIT, HEAP } from '../../../layout.js'
 import { ASSIGN_OPS, MUTATE_OPS, T, commaList, firstRefKind, isBlockBody, isReassigned } from '../../ast.js'
 import { PTR, ctx, err, inc, emitArity, setLinkDemand } from '../../ctx.js'
 import {
-  callWithArgs, FALSE_NAN, MAX_CLOSURE_ARITY, TRUE_NAN, UNDEF_NAN, WASM_OPS, applyBigintRepresentationAction, asF64, asI32, asI64, asParamType, asPtrOffset, block64, boolBoxIR, boxBigInt, carrierF64, carrierF64Narrow, emitNum, extractF64Bits, flat, freshId, fromI64, isBoolAtom, isBoundName, isGlobal, boxedAddr, isLit, isNullish, isNullishLit, litVal, materializeDeferredBigint, mayYieldUndefOf, maybeUnboxBigInt, mkPtrIR, nullExpr, nullableBoolBoxIR, ptrOffsetIR, readVar, resolveValType, temp, tempI32, tempI64, toI32, toNumF64, toStrI64, truthyIR, typed, unboxBoolIR, undefExpr, valKindToPtr,
+  callWithArgs, FALSE_NAN, MAX_CLOSURE_ARITY, TRUE_NAN, WASM_OPS, applyBigintRepresentationAction, asF64, asI32, asI64, asParamType, asPtrOffset, block64, boolBoxIR, boxBigInt, carrierF64, carrierF64Narrow, emitNum, extractF64Bits, flat, freshId, fromI64, isBoolAtom, isBoundName, isGlobal, boxedAddr, isLit, isNullish, isNullishLit, litVal, materializeDeferredBigint, mayYieldUndefOf, maybeUnboxBigInt, mkPtrIR, nullExpr, nullableBoolBoxIR, ptrOffsetIR, readVar, resolveValType, temp, tempI32, tempI64, toI32, toNumF64, toStrI64, truthyIR, typed, unboxBoolIR, undefExpr, valKindToPtr,
 } from '../../ir.js'
 import { BIGINT_JOINT_BINARY_OPS, isPresentNumber, hasAmbiguousBoolMerge, nullishArm, valTypeOf } from '../../kind.js'
 import { VAL, lookupValType, repOf, repOfGlobal, numericStorage, mayBeUndefined } from '../../reps.js'
@@ -102,27 +102,39 @@ function tryI32Index(e) {
 export const emitIndex = (index) => {
   const direct = tryI32Index(index)
   if (direct) return direct
-  // Direct nested reads can pass their check bit without reboxing. Stored
-  // reads take the same fallback below: a missing value is no index,
-  // even though the machine's saturating conversion would yield zero.
   const nested = Array.isArray(index) && index[0] === '[]'
-  if (!nested && typeof index !== 'string') return asI32(emit(index))
   if (nested) ctx.types.indexConsumer = (ctx.types.indexConsumer || 0) + 1
   let value
   try { value = emit(index) } finally { if (nested) ctx.types.indexConsumer-- }
-  if (value?.indexValid) {
-    // The checked typed read's own miss bit, materialized after the read: the
-    // same -1 for every consumer, and the bit itself for the typed read's guard.
-    const out = typed(['select', asI32(value), ['i32.const', -1], value.indexValid], 'i32')
-    out.indexValid = value.indexValid
+  if (value?.type === 'i32' && !value.indexValid) return value
+  return keyIndex(value)
+}
+
+/**
+ * The element index a number key names, as i32. A number names an element
+ * only as an integer the i32 index holds exactly (an array index, a typed
+ * array's integer index): a fraction, NaN, ±Infinity, a value past 2^31 or a
+ * missing value (a nested read's miss included) names none. It becomes -1,
+ * which every bounds test rejects like an index past the length: a read is
+ * undefined, a store drops. `indexValid` carries the bit to a consumer whose
+ * bounds are proven.
+ */
+export const keyIndex = (key) => {
+  if (key?.type === 'i32') return key
+  if (Array.isArray(key) && key[0] === 'f64.convert_i32_s') return typed(key[1], 'i32')
+  if (Array.isArray(key) && key[0] === 'f64.const' && typeof key[1] === 'number') {
+    const v = key[1], ok = (v | 0) === v
+    const out = typed(['i32.const', ok ? v | 0 : -1], 'i32')
+    if (!ok) out.indexValid = ['i32.const', 0]
     return out
   }
-  // Preserve absence; real NaN retains the documented i32-index coercion.
-  if (value?.type === 'i32') return asI32(value)
-  const t = temp('ix')
-  return typed(['block', ['result', 'i32'], ['local.set', `$${t}`, asF64(value)],
-    ['select', asI32(typed(['local.get', `$${t}`], 'f64')), ['i32.const', -1],
-      ['i64.ne', ['i64.reinterpret_f64', ['local.get', `$${t}`]], ['i64.const', UNDEF_NAN]]]], 'i32')
+  const t = temp('ix'), i = tempI32('ixi'), ok = tempI32('ixv')
+  const out = typed(['block', ['result', 'i32'],
+    ['local.set', `$${t}`, asF64(key)],
+    ['local.set', `$${ok}`, ['f64.eq', ['f64.convert_i32_s', ['local.tee', `$${i}`, ['i32.trunc_sat_f64_s', ['local.get', `$${t}`]]]], ['local.get', `$${t}`]]],
+    ['select', ['local.get', `$${i}`], ['i32.const', -1], ['local.get', `$${ok}`]]], 'i32')
+  out.indexValid = ['local.get', `$${ok}`]
+  return out
 }
 
 /**

@@ -1983,8 +1983,9 @@ export default (ctx) => {
       return rd
     }
     const objIR = emit(arr), post = postIncI32Index(i)
-    const nestedIndex = Array.isArray(i) && i[0] === '[]'
-    let vi = post?.value ?? idx(i), indexPre = null, indexValid = nestedIndex ? vi.indexValid : null
+    // A proven range still reads undefined for a key that names no element
+    // (emitIndex's bit): a nested read's miss, a fraction, NaN.
+    let vi = post?.value ?? idx(i), indexPre = null, indexValid = vi.indexValid ?? null
     if (!post && indexValid) {
       const ti = tempI32('tbi')
       indexPre = ['local.set', `$${ti}`, vi]
@@ -2113,7 +2114,17 @@ export default (ctx) => {
     let vi, indexEffects = false
     if (!proven) inc('__len')
     if (post) { pre.push(...post.pre); vi = post.value }
-    else if (proven) vi = idx(i)
+    else if (proven) {
+      // A proven range still needs the key to name an element (emitIndex):
+      // the store runs behind the key's own bit, read after the index.
+      vi = idx(i)
+      if (vi.indexValid) {
+        const ti = tempI32('tbi'), valid = vi.indexValid
+        pre.push(['local.set', `$${ti}`, vi])
+        vi = ['local.get', `$${ti}`]
+        vi.indexValid = valid
+      }
+    }
     else {
       const ti = tempI32('tbi'), emittedIdx = idx(i)
       indexEffects = !pureStorable(emittedIdx)
