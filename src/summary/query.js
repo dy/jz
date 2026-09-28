@@ -549,6 +549,11 @@ export function summaryQueries(facts, internal = false) {
     // The names that hold one number for good: name → the number.
     held: facts.held,
     opaqueSchema: sid => opaqueLayouts.has(sid),
+    // Whether an object of the layout may gain a property beyond its slots: a
+    // key stored beside them, a computed store, or a hand-off to code the
+    // summary cannot see (a lost shape).
+    grownSchema: sid => (sitesByLayout.get(sid) ?? [sid]).some(site => (sideProps.get(site)?.size ?? 0) > 0 ||
+      (sideWild.get(site) ?? K.NONE) !== K.NONE || openSchemas.has(site) || facts.opaqueSchemas.has(site)),
     // A layout a `delete` can reach: a deleted receiver's, or any lost layout
     // once a delete went through a receiver of unknown shape.
     deletableSchema: sid => { deletableLayouts ??= new Set([...facts.deletable ?? []].map(s => layouts[s])); return deletableLayouts.has(sid) || (facts.deleteReach?.unknown === true && (opaqueLayouts.has(sid) || hostLayouts.has(sid))) },

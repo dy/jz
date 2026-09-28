@@ -183,7 +183,9 @@ export default (ctx) => {
     // written through ANY receiver — including expression receivers like
     // `map.get(k).n++` that no alias analysis could attribute — so a literal
     // whose schema intersects it allocates per-evaluation instead.
-    const neverWritten = names.every(n => !ctx.module.writtenProps?.has(n))
+    // Nor may one gain a key: a store of a new key on one instance
+    // (`a = mk(); a.extra = 5`) would show on every evaluation of the literal.
+    const neverWritten = names.every(n => !ctx.module.writtenProps?.has(n)) && !ctx.summary?.grownSchema?.(schemaId)
     // `!shadow`: a computed-key write on the target (`o[k]=v`) mutates the object —
     // a shared static instance would leak call N's writes into call N+1, so a
     // literal a computed key can reach allocates fresh per evaluation (the

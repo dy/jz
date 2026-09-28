@@ -1593,6 +1593,19 @@ test('static literal: mutation through Map storage (use-count record shape)', ()
   is(f(), 201)  // a: gets 2 sets 0 · b: sets 1
 })
 
+// A key added to one instance is a mutation too: the literal's own names are
+// never written, but the summary sees a key stored beside its slots
+// (summary/query.js grownSchema), and each evaluation allocates.
+test('static literal: a key added to one instance does not show on the next', () => {
+  const { f, g } = run(`
+    let mk = () => ({ fs: 1, k: 2 })
+    export let f = () => { let a = mk(); a.extra = 5; let b = mk(); return [a === b, b.extra, a.extra].join() }
+    let seen = (o) => o
+    export let g = () => { let a = seen(mk()); a['late'] = 3; return mk().late === undefined }`)
+  is(f(), 'false,,5')
+  is(g(), true)
+})
+
 test('static literal: read-only literals keep the shared static instance', () => {
   const { f } = run(`
     let mk = () => ({ x: 7, y: 9 })
