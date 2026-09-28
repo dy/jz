@@ -28,7 +28,6 @@
 import { typed, asF64, asI32 } from '../src/ir.js'
 import { emit, emitter } from '../src/bridge.js'
 import { err } from '../src/ctx.js'
-import { powLogSplit } from '../src/prepare/math-kernel.js'
 
 export default (ctx) => {
   const e = ctx.core.emit
@@ -108,12 +107,10 @@ export default (ctx) => {
     e[`f64x2.${o}`] = (a, b) => V([`f64x2.${o}`, op(a), op(b)])
   e['f64x2.sin'] = emitter(['math.sin2'], (a) => V(['call', '$math.sin2', op(a)]))
   e['f64x2.cos'] = emitter(['math.cos2'], (a) => V(['call', '$math.cos2', op(a)]))
-  // f64x2.log/exp lower to $math.log_v/$math.exp_v, both lanes through one evaluation of the
-  // scalar kernel's operations (module/math/simd.js); f64x2.exp2 is 2 ** y, pow's constant-base
-  // kernel with the log of 2 folded.
+  // f64x2.log/exp/exp2 lower to $math.log_v/$math.exp_v/$math.exp2_v, both lanes through one
+  // evaluation of the scalar kernel's operations (module/math/simd.js); exp2 is 2 ** y.
   e['f64x2.log'] = emitter(['math.log_v'], (a) => V(['call', '$math.log_v', op(a)]))
   e['f64x2.exp'] = emitter(['math.exp_v'], (a) => V(['call', '$math.exp_v', op(a)]))
-  const LOG2_SPLIT = powLogSplit(2), splat = (c) => ['f64x2.splat', ['f64.const', c]]
-  e['f64x2.exp2'] = emitter(['math.pow_c_v'], (a) => V(['call', '$math.pow_c_v', op(a), splat(2), splat(LOG2_SPLIT[0]), splat(LOG2_SPLIT[1])]))
+  e['f64x2.exp2'] = emitter(['math.exp2_v'], (a) => V(['call', '$math.exp2_v', op(a)]))
   e['f64x2.lane'] = (v, k) => F(['f64x2.extract_lane', lane2(k), op(v)])
 }

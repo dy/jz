@@ -13,6 +13,11 @@ import { isMemWrite } from 'watr/optimize'
  *  cannot trap: jz vouches for it to watr's value numbering and scheduling (watr-tail.js). */
 export const pureKernel = name => typeof name === 'string' && name.startsWith('$math.') && !name.startsWith('$math.random')
 
+/** The math runtime's cold paths, kept out of line: inlined into their one caller, their
+ *  loops would crowd its hot path's registers. $math.powi_x decides an integer power's
+ *  rounding on the exact power, a call in about 2^40 (module/math/powi.js). */
+export const MATH_COLD = ['$math.powi_x']
+
 /** Build private candidates for call sites whose substituted SIMD arguments are
  *  proven numeric. A bare f64 parameter can carry a NaN box, so ordinary calls
  *  retain their coercion and string dispatch (`param-hop` in dyn-keys.js). */

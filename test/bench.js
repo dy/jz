@@ -166,11 +166,11 @@ const SPEED = {
 //                       values differ, by 1 ulp (1.2e-16 relative). Their three
 //                       `Math.cbrt` calls are bit-exact with V8 (0 ulp): jz runs
 //                       V8's own fdlibm.
-//   colorlog            `Math.pow(2, x)` takes the same kernel with the log of 2
-//                       folded ($math.pow_c): 0.25% differ, by 1 ulp; the bench
-//                       checksum is bitwise, so one ulp is still a different sum.
+//   colorlog            `Math.pow(2, x)` takes $math.exp2, jz's power at base 2:
+//                       0.24% differ, by 1 ulp; the bench checksum is bitwise, so
+//                       one ulp is still a different sum.
 const LAB_SPEED = {
-  colorlog:  { v8: 'win', jz: 552360023, why: 'Math.pow(2, x) through the jz pow kernel, V8 through libm – 1 ulp on 0.25%' },
+  colorlog:  { v8: 'win', jz: 297103274, why: 'Math.pow(2, x) through jz exp2, V8 through libm – 1 ulp on 0.24%' },
   colorlch:  { v8: 'win', jz: 131843097, why: '** 2.4 through the jz pow kernel, V8 through libm – 1 ulp on 0.3%; cbrt bit-exact' },
   colorconv: { v8: 'tie', jz: 134618619, why: '** 2.4 through the jz pow kernel, V8 through libm – 1 ulp on 0.3%; cbrt bit-exact' },
 }

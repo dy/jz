@@ -12,9 +12,9 @@
 import { wat } from '../../src/bridge.js'
 import { ctx } from '../../src/ctx.js'
 import {
-  EXP_Q, EXP_L1, EXP_L2, POW_LN2HI, POW_LN2LO, POW_LOG_A, polyTree,
+  EXP2_Q, EXP_Q, EXP_L1, EXP_L2, POW_LN2HI, POW_LN2LO, POW_LOG_A, polyTree,
   INVPIO2, PIO2_1, PIO2_1T, PIO2_2, PIO2_2T, KSIN, KCOS, LG, LN2_HI, LN2_LO, INVLN2, EXP_P, EXP_E,
-  ATAN_T, ATAN_HI, ATAN_LO, PI_D, PI_LO, CBRT_P, CBRT_B1,
+  ATAN_T, ATAN_HI, ATAN_LO, PI_D, PI_LO, CBRT_P, CBRT_B1, POWI_MAX,
 } from './trig-tables.js'
 
 export const registerMathSimd = () => {
@@ -137,8 +137,9 @@ export const registerMathSimd = () => {
   // True f64x2 pow: both lanes through one pass of $math.pow_core's kernel (module/math.js,
   // Arm's optimized-routines pow), op for op in the same order, so every lane is BIT-EXACT
   // with the scalar path. The HOT path takes both lanes in the common case ($math.pow's own
-  // fast entry: a normal finite x > 0, a finite y with 2^-65 ≤ |y| < 2^63 other than 2, which
-  // $math.pow squares, and ½, which the kernel takes to sqrt) whose exponent product lands
+  // fast entry: a normal finite x > 0 other than 2, which $math.pow takes to $math.exp2, a
+  // finite y with 2^-65 ≤ |y| < 2^63 other than an integer up to POWI_MAX, which it takes to
+  // $math.powi, and ½, which the kernel takes to sqrt) whose exponent product lands
   // where the scale needs one rounding (2^-54 ≤ |y·log x| < 512). The log table rows and the
   // exp table entries come from two scalar loads per lane; everything else runs 2-wide. Any
   // other lane routes BOTH lanes to the scalar $math.pow (its ladder and the kernel's own
@@ -173,10 +174,11 @@ export const registerMathSimd = () => {
     (local.set $ax (f64x2.abs (local.get $y)))
     (if (result v128)
       (i64x2.all_true (v128.and
-        (v128.and (f64x2.ge (local.get $x) ${splat(2 ** -1022)}) (f64x2.lt (local.get $x) ${splat('inf')}))
+        (v128.and (v128.and (f64x2.ge (local.get $x) ${splat(2 ** -1022)}) (f64x2.lt (local.get $x) ${splat('inf')})) (f64x2.ne (local.get $x) ${splat(2)}))
         (v128.and
           (v128.and (f64x2.ge (local.get $ax) ${splat(2 ** -65)}) (f64x2.lt (local.get $ax) ${splat(2 ** 63)}))
-          (v128.and (f64x2.ne (local.get $y) ${splat(2)}) (f64x2.ne (local.get $y) ${splat(0.5)})))))
+          (v128.and (v128.or (f64x2.ne (f64x2.nearest (local.get $y)) (local.get $y)) (f64x2.gt (local.get $ax) ${splat(POWI_MAX)}))
+            (f64x2.ne (local.get $y) ${splat(0.5)})))))
       (then
         ;; log(x) = k·ln2 + log(c) + log1p(z/c − 1), as hi + lo (see $math.pow_core)
         (local.set $tmp (i64x2.sub (local.get $x) ${i64s('0x3fe6955500000000')}))
@@ -241,6 +243,13 @@ ${powExp2(powLanes)})
         (local.set $elo (f64x2.add (f64x2.mul (local.get $ylo) (local.get $lhi)) (f64x2.mul (local.get $y) (local.get $llo))))
 ${powExp2(lanes('math.pow_c', ['y', 'x', 'lhi', 'llo']))})
       (else ${lanes('math.pow_c', ['y', 'x', 'lhi', 'llo'])})))`, ['math.pow_c'])
+
+  // $math.pow_ci's twin: a pair with an integer y up to POWI_MAX lane by lane through
+  // $math.pow_ci, any other through $math.pow_c_v
+  wat('math.pow_ci_v', `(func $math.pow_ci_v (param $y v128) (param $x v128) (param $lhi v128) (param $llo v128) (result v128)
+    (if (v128.any_true (v128.and (f64x2.eq (f64x2.nearest (local.get $y)) (local.get $y)) (f64x2.le (f64x2.abs (local.get $y)) ${splat(POWI_MAX)})))
+      (then (return ${lanes('math.pow_ci', ['y', 'x', 'lhi', 'llo'])})))
+    (call $math.pow_c_v (local.get $y) (local.get $x) (local.get $lhi) (local.get $llo)))`, ['math.pow_ci', 'math.pow_c_v'])
 
   // $math.pow_fold_v — SIMD twin of $math.pow_fold, ONLY registered under optimize.crPow (that
   // fold itself only exists then — see the authoritative comment above emitPow). Per-lane scalar
@@ -372,6 +381,25 @@ ${powExp2(lanes('math.pow_c', ['y', 'x', 'lhi', 'llo']))})
       (f64x2.sub (f64x2.mul (local.get $dk) ${splat(LN2_HI)}) (f64x2.sub (f64x2.sub (f64x2.mul (local.get $s) (f64x2.sub (local.get $f) (local.get $R)))
         (f64x2.mul (local.get $dk) ${splat(LN2_LO)})) (local.get $f)))
       (i64x2.gt_s (v128.or (i64x2.sub (local.get $m) ${i64s(0x6147a)}) (i64x2.sub ${i64s(0x6b851)} (local.get $m))) (v128.const i64x2 0 0))))`, ['math.log'])
+
+  // exp2 (module/math.js): both lanes with k = round(64y) in [−65408, 65535] (a normal
+  // result) through the scalar's operations, the two lanes' T and tail from two scalar loads;
+  // any other lane (NaN, an overflow, a subnormal result) both lanes through the scalar kernel.
+  wat('math.exp2_v', `(func $math.exp2_v (param $y v128) (result v128)
+    (local $k v128) (local $ki v128) (local $f v128) (local $t v128) (local $a0 i32) (local $a1 i32)
+    (local.set $k (f64x2.nearest (f64x2.mul (local.get $y) ${splat(64)})))
+    (if (i32.eqz (i64x2.all_true (v128.and (f64x2.ge (local.get $k) ${splat(-65408)}) (f64x2.le (local.get $k) ${splat(65535)}))))
+      (then (return ${lanes('math.exp2', ['y'])})))
+    (local.set $ki (i32x4.trunc_sat_f64x2_s_zero (local.get $k)))
+    (local.set $f (f64x2.sub (local.get $y) (f64x2.mul (f64x2.convert_low_i32x4_s (local.get $ki)) ${splat(0.015625)})))
+    (local.set $a0 (i32.add (global.get $math.exp2_tbl) (i32.shl (i32.and (i32x4.extract_lane 0 (local.get $ki)) (i32.const 63)) (i32.const 4))))
+    (local.set $a1 (i32.add (global.get $math.exp2_tbl) (i32.shl (i32.and (i32x4.extract_lane 1 (local.get $ki)) (i32.const 63)) (i32.const 4))))
+    (local.set $t (f64x2.replace_lane 1 (f64x2.splat (f64.load (local.get $a0))) (f64.load (local.get $a1))))
+    (f64x2.mul
+      (f64x2.add (local.get $t) (f64x2.mul (local.get $t)
+        (f64x2.add (f64x2.mul (local.get $f) ${horner2(EXP2_Q, '$f')})
+          (f64x2.replace_lane 1 (f64x2.splat (f64.load offset=8 (local.get $a0))) (f64.load offset=8 (local.get $a1))))))
+      (i64x2.shl (i64x2.add (i64x2.extend_low_i32x4_s (i32x4.shr_s (local.get $ki) (i32.const 6))) ${i64s(1023)}) (i32.const 52))))`, ['math.exp2'])
 
   // exp (module/math/ieee754.js): both lanes with 2^-28 ≤ |x| < 708 (k within ±1021), else
   // scalar lane by lane. k per lane as the scalar picks it: 0 up to ½·ln2, ±1 up to 1.5·ln2,

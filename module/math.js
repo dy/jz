@@ -1,7 +1,8 @@
 /**
  * Math module - Math.sin, Math.cos, Math.sqrt, Math.PI, etc. The transcendentals are V8's
- * own algorithms (module/math/ieee754.js), Math.pow is V8's math::pow around the kernel
- * below, so compiled Math returns what V8 returns.
+ * own algorithms (module/math/ieee754.js), Math.pow is V8's math::pow around the kernels
+ * below and module/math/powi.js's correctly rounded integer powers, so compiled Math
+ * returns what V8 returns.
  *
  * Module API:
  * - reg('math.X', deps, args => WasmNode) — emit handler + declarative stdlib deps
@@ -20,10 +21,11 @@ import { inc, err } from '../src/ctx.js'
 import { repOf, VAL } from '../src/reps.js'
 import { valTypeOf } from '../src/kind.js'
 import { registerPowTranscend } from './math/pow-transcend.js'
-import { EXP2_TAB_HEX, EXP_Q, EXP_L1, EXP_L2, POW_LOG_TAB_HEX, POW_LOG_A, POW_LN2HI, POW_LN2LO, polyTree } from './math/trig-tables.js'
+import { EXP2_TAB_HEX, EXP2_Q, EXP_Q, EXP_L1, EXP_L2, POW_LOG_TAB_HEX, POW_LOG_A, POW_LN2HI, POW_LN2LO, POWI_MAX, polyTree } from './math/trig-tables.js'
 import { hexBytes } from '../src/static-data.js'
 import { registerMathSimd } from './math/simd.js'
 import { registerIeee754 } from './math/ieee754.js'
+import { registerPowi } from './math/powi.js'
 import { powFold, powLogSplit } from '../src/prepare/math-kernel.js'
 import { registerSumPrecise } from './math/sum-precise.js'
 import { registerMathRandom } from './math/random.js'
@@ -34,7 +36,8 @@ export default (ctx) => {
   // pow_fold_v bodies) just branches on this.
   const crPow = !!ctx.transform.optimize?.crPow
   deps({
-    'math.pow': ['math.pow_core'],
+    'math.pow': crPow ? ['math.pow_core', 'math.powi'] : ['math.pow_core', 'math.powi', 'math.exp2'],
+    'math.pow_ci': ['math.pow_c', 'math.powi'],
     'math.pow_core': crPow ? ['math.pow_transcend'] : [],
     'math.pow_scalbn': [],
     // math.pow_transcend/math.pow_fold only exist (are registered as wat() templates below) when
@@ -238,10 +241,12 @@ export default (ctx) => {
 
   // Power, as V8's math::pow (src/numbers/ieee754.cc): a NaN exponent is NaN, ±1 to ±∞
   // is NaN, y = 2 is x·x and y = ½ is √(x + 0) (+∞ at x = −∞), the two its optimizing tiers
-  // also lower without a call; every other pair is the C library's pow, which $math.pow
-  // stands in for. So `x ** 3` is pow(x, 3), not x·x·x: the two differ on a quarter of
-  // arguments, in V8 as here. A constant exponent folds only where V8's answer is an
-  // expression: 0 (1), 1 (x), 2 (x·x), ½; `**`'s exponent is parsed as a bare number.
+  // also lower without a call; every other pair is the C library's pow. jz stands in the
+  // correctly rounded power for an integer y up to POWI_MAX ($math.powi,
+  // module/math/powi.js) and $math.pow's kernel for the rest. So `x ** 3` is x³ rounded
+  // once, not x·x·x, which differs on a quarter of arguments. A constant exponent folds to
+  // an expression only where the answer is one: 0 (1), 1 (x), 2 (x·x), ½, −1 (1/x); `**`'s
+  // exponent is parsed as a bare number.
   const get = name => ['local.get', `$${name}`]
   const constNum = b => typeof b === 'number' ? b
     : (Array.isArray(b) && b.length === 2 && b[0] == null && typeof b[1] === 'number') ? b[1]
@@ -285,14 +290,22 @@ export default (ctx) => {
     if (ca !== null && n !== null) return typed(['f64.const', powFold(ca, n)], 'f64')
     const irA = toNumF64(a, emit(a))
     if (n === 0.5) return halfPow(irA)
+    if (n === -1) { const q = typed(['f64.div', ['f64.const', 1], irA], 'f64'); return neverNaN(a, irA) ? q : canon(q) }
+    if (n !== null && Number.isInteger(n) && Math.abs(n) <= POWI_MAX)
+      return (inc('math.powi'), typed(['call', '$math.powi', irA, ['f64.const', n]], 'f64'))
     const irB = toNumF64(b, emit(b))
     if (isLit(irA) && isLit(irB)) return typed(['f64.const', powFold(litVal(irA), litVal(irB))], 'f64')
     // A constant base x > 0: its log is a constant, so the kernel's first half folds away and
     // $math.pow_c runs the second on y, bit for bit $math.pow(x, y) (crPow swaps the kernel).
+    // $math.pow_ci takes an integer y to $math.powi first; a power of two within 2^±15 needs
+    // not, its integer powers up to POWI_MAX being exact, which the kernel returns. Base 2
+    // is $math.exp2, as $math.pow takes it.
     const cx = isLit(irA) ? litVal(irA) : null
+    if (!crPow && cx === 2 && !isLit(irB)) return (inc('math.exp2'), typed(['call', '$math.exp2', irB], 'f64'))
     if (!crPow && cx !== null && cx > 0 && cx < Infinity && cx !== 1 && !isLit(irB)) {
-      const [lhi, llo] = powLogSplit(cx)
-      return (inc('math.pow_c'), typed(['call', '$math.pow_c', irB, ['f64.const', cx], ['f64.const', lhi], ['f64.const', llo]], 'f64'))
+      const [lhi, llo] = powLogSplit(cx), e2 = Math.round(Math.log2(cx))
+      const f = Math.abs(e2) <= 15 && 2 ** e2 === cx ? 'math.pow_c' : 'math.pow_ci'
+      return (inc(f), typed(['call', `$${f}`, irB, ['f64.const', cx], ['f64.const', lhi], ['f64.const', llo]], 'f64'))
     }
     // A constant non-integer exponent takes $math.pow like a runtime one, so `x ** 2.4` and
     // `Math.pow(x, y)` at y = 2.4 agree bit for bit. Two opt-in kernels replace it:
@@ -434,12 +447,38 @@ export default (ctx) => {
   }, `(local.get ${v})`)
 
   registerIeee754()
+  registerPowi()
   registerMathSimd()
 
   // pow's exponential tail (module/math/trig-tables.js EXP2_TAB): 2^(j/64) as the double
   // nearest and the relative tail its rounding dropped, so T + T·(q + tail) rounds once.
   ctx.runtime.exp2Table = hexBytes(EXP2_TAB_HEX)
   if (!crPow) ctx.runtime.powLogTable = hexBytes(POW_LOG_TAB_HEX)
+
+  // 2^y, the power $math.pow takes at x = 2: k = round(64y), f = y − k/64 (both exact), then
+  // T + T·(f·(2^f − 1)/f + tail) from the table, 0.52 ulp; one exponent build for a normal
+  // result, two factors at the edges. Exact at an integer y.
+  wat('math.exp2', `(func $math.exp2 (param $y f64) (result f64)
+    (local $k i32) (local $e i32) (local $k2 i32) (local $tb i32) (local $f f64) (local $t f64) (local $p f64)
+    (if (f64.ne (local.get $y) (local.get $y)) (then (return (local.get $y))))
+    (if (result f64) (f64.gt (local.get $y) (f64.const 1024.0)) (then (f64.const inf)) (else
+      (if (result f64) (f64.lt (local.get $y) (f64.const -1075.0)) (then (f64.const 0.0)) (else
+        (local.set $k (i32.trunc_f64_s (f64.nearest (f64.mul (local.get $y) (f64.const 64.0)))))
+        (local.set $f (f64.sub (local.get $y) (f64.mul (f64.convert_i32_s (local.get $k)) (f64.const 0.015625))))
+        (local.set $tb (i32.add (global.get $math.exp2_tbl) (i32.shl (i32.and (local.get $k) (i32.const 63)) (i32.const 4))))
+        (local.set $t (f64.load (local.get $tb)))
+        (local.set $p (f64.add (local.get $t) (f64.mul (local.get $t)
+          (f64.add (f64.mul (local.get $f) ${horner(EXP2_Q, '$f')}) (f64.load offset=8 (local.get $tb))))))
+        (local.set $e (i32.shr_s (local.get $k) (i32.const 6)))
+        (if (result f64)
+          (i32.and (i32.gt_s (local.get $e) (i32.const -1023)) (i32.lt_s (local.get $e) (i32.const 1024)))
+          (then (f64.mul (local.get $p)
+            (f64.reinterpret_i64 (i64.shl (i64.extend_i32_s (i32.add (local.get $e) (i32.const 1023))) (i64.const 52)))))
+          (else
+            (local.set $k2 (i32.shr_s (local.get $e) (i32.const 1)))
+            (f64.mul (f64.mul (local.get $p)
+              (f64.reinterpret_i64 (i64.shl (i64.extend_i32_s (i32.add (local.get $k2) (i32.const 1023))) (i64.const 52))))
+              (f64.reinterpret_i64 (i64.shl (i64.extend_i32_s (i32.add (i32.sub (local.get $e) (local.get $k2)) (i32.const 1023))) (i64.const 52)))))))))))`)
 
   // The entire correctly-rounded kernel below (codegen helpers, breakpoint tables, and the
   // $math.pow_transcend registration itself) is built and registered ONLY when `optimize.crPow`
@@ -453,12 +492,17 @@ export default (ctx) => {
   } // if (crPow)
 
   // $math.pow is V8's math::pow (src/numbers/ieee754.cc, `--use-std-math-pow`, the default)
-  // around the kernel standing in for the C library's pow: a NaN y is NaN, ±1 to ±∞ is NaN,
-  // a NaN x is NaN (1 at y = ±0), y = 2 is x·x, y = ½ is √(x + 0) with +∞ at x = −∞; the C
-  // library's special values (C99 F.9.4.4) for the rest; $math.pow_core for a finite x > 0.
+  // around the kernels standing in for the C library's pow: an integer y up to POWI_MAX is
+  // $math.powi's correctly rounded power, x = 2 is $math.exp2; else a NaN y is NaN, ±1 to ±∞
+  // is NaN, a NaN x is NaN (1 at y = ±0), y = 2 is x·x, y = ½ is √(x + 0) with +∞ at x = −∞;
+  // the C library's special values (C99 F.9.4.4) for the rest; $math.pow_core for a finite x > 0.
   const odd = (y) => `(i32.and (f64.eq (f64.nearest ${y}) ${y}) (f64.ne (f64.nearest (f64.mul ${y} (f64.const 0.5))) (f64.mul ${y} (f64.const 0.5))))`
+  const intY = `(i32.and (f64.eq (f64.nearest (local.get $y)) (local.get $y)) (f64.le (f64.abs (local.get $y)) (f64.const ${POWI_MAX})))`
   wat('math.pow', `(func $math.pow (param $x f64) (param $y f64) (result f64)
     (local $r f64)
+    ;; an integer y up to POWI_MAX, for every x: the correctly rounded power; x = 2: 2^y
+    (if ${intY} (then (return (call $math.powi (local.get $x) (local.get $y)))))${crPow ? '' : `
+    (if (f64.eq (local.get $x) (f64.const 2)) (then (return (call $math.exp2 (local.get $y)))))`}
     ;; the common case first: x > 0 finite, y finite and not 2 (a NaN fails every compare)
     (if (i32.and (i32.and (f64.gt (local.get $x) (f64.const 0)) (f64.lt (local.get $x) (f64.const inf)))
                  (i32.and (f64.lt (f64.abs (local.get $y)) (f64.const inf)) (f64.ne (local.get $y) (f64.const 2))))
@@ -684,6 +728,12 @@ ${powExp})`,
     (local.set $ehi (f64.mul (local.get $yhi) (local.get $lhi)))
     (local.set $elo (f64.add (f64.mul (local.get $ylo) (local.get $lhi)) (f64.mul (local.get $y) (local.get $llo))))
 ${powExp})`)
+
+  // $math.pow_ci: $math.pow_c for a base whose integer powers are not all exact, an integer y
+  // up to POWI_MAX through $math.powi as $math.pow takes it
+  wat('math.pow_ci', `(func $math.pow_ci (param $y f64) (param $x f64) (param $lhi f64) (param $llo f64) (result f64)
+    (if ${intY} (then (return (call $math.powi (local.get $x) (local.get $y)))))
+    (call $math.pow_c (local.get $y) (local.get $x) (local.get $lhi) (local.get $llo)))`)
 
   // $math.pow_fold — Math.pow(x, C) for a COMPILE-TIME-CONSTANT non-integer exponent C under
   // optimize.crPow (module/math.js's emitPow const-exponent fold, and its SIMD twin

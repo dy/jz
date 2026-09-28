@@ -1868,22 +1868,30 @@ in C, and a vector takes one kernel where both lanes' parities agree, as an audi
 phase's do.
 
 `Math.pow` and `**` follow V8's `math::pow`: y = 2 is x·x, y = ½ is √(x + 0) with
-+∞ at x = −∞, and every other pair, integer exponents included, is the platform C
-library's pow in V8 (Apple's libm on macOS, glibc on Linux, different again between
-Node's own arm64 and x64 builds). jz stands in Arm's optimized-routines pow: a
-double-double log from a 128-entry table (`scripts/pow-log-table.mjs` derives and
-checks it) and the 2^(j/64) exp table with tails (`math/trig-tables.js` EXP2_TAB,
-`scripts/exp-table.mjs`), 0.54 ulp, V8's bits on 99.7% of arguments against Node
-25.9's arm64 and x64 builds on macOS, 10 ns a call where Apple's libm takes 6.6. So
-`x ** 3` calls the kernel as V8 calls pow (x·x·x rounds twice and differs on a quarter
-of arguments), a constant exponent folds only to 1,
-x, x·x or the square root, and the constant folder is the kernel's twin. A constant
-base x > 0 folds the kernel's first half instead: log x is a compile-time
-double-double (`powLogSplit`), and `$math.pow_c` runs the exponential half on y, bit
-for bit `Math.pow(x, y)` (`2 ** y`, `10 ** (dB / 20)`). The k/5
-fifthroot fold (four Newton steps, ~40 ulp, pinned under 96 by `test/pow.js`) is
-opt-in as `optimize.approxPow`; `optimize.crPow` takes the correctly rounded
-kernel.
++∞ at x = −∞, and every other pair is the platform C library's pow in V8 (Apple's libm
+on macOS, glibc on Linux, different again between Node's own arm64 and x64 builds). jz
+stands in three kernels for it, each with its constant-folding twin:
+
+- an integer exponent up to 10 (`POWI_MAX`) is the correctly rounded power
+  (`module/math/powi.js`): Kornerup, Lefèvre and Muller's double-double ladder,
+  returned where a rounding test proves it, decided on the exact power (24-bit limbs)
+  where not. The libraries miss it on 0.1–0.2% of arguments, so it is V8's bits on
+  99.86% (arm64) and 99.83% (x64), 3.7–9.3 ns a call against V8's 6–7; a negative
+  exponent adds a correctly rounded reciprocal, 2–4 ns;
+- base 2 is `$math.exp2`, the 2^(j/64) table with tails (`math/trig-tables.js`
+  EXP2_TAB, `scripts/exp-table.mjs`), 0.52 ulp, 2.7 ns;
+- everything else is Arm's optimized-routines pow: a double-double log from a 128-entry
+  table (`scripts/pow-log-table.mjs` derives and checks it) and the same exp table,
+  0.54 ulp, V8's bits on 99.7% of arguments against Node 25.9's arm64 and x64 builds on
+  macOS, 10 ns a call where Apple's libm takes 6.6.
+
+So `x ** 3` is x³ rounded once (x·x·x rounds twice and differs on a quarter of
+arguments), and a constant exponent folds to an expression only at 0, 1, 2, ½ and −1. A
+constant base x > 0 folds the kernel's first half instead: log x is a compile-time
+double-double (`powLogSplit`), and `$math.pow_c` runs the exponential half on y, bit for
+bit `Math.pow(x, y)` (`10 ** (dB / 20)`), taking an integer y to the ladder first. The
+k/5 fifthroot fold (four Newton steps, ~40 ulp, pinned under 96 by `test/pow.js`) is
+opt-in as `optimize.approxPow`; `optimize.crPow` takes the correctly rounded kernel.
 
 Values use proven raw lanes or tagged carriers; heap values use NaN-boxing (see README). The legacy `ctx` store still carries compilation state. Consult its lifecycle ownership table in [`src/ctx.js`](src/ctx.js) before changing state; new persistent facts belong in ProgramIndex and frozen summaries, not another ambient store.
 

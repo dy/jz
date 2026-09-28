@@ -17,7 +17,7 @@ import { ctx } from '../ctx.js'
 import {
   SIMD_PINNED, collectReachableGlobalWrites, hoistGlobalPtrOffset,
 } from './index.js'
-import { pureKernel } from './pure-funcs.js'
+import { pureKernel, MATH_COLD } from './pure-funcs.js'
 
 /**
  * Compute the watr optimizer options for a resolved jz `optimize` config (see
@@ -118,10 +118,11 @@ export function resolveWatrOpts(cfg, { funcCount = 0, boundaryPins = [] } = {}) 
   // where the user didn't opt into speed-for-size.
   if (watrOpts.guard === undefined && cfg.watrGuard === false) watrOpts.guard = false
   // Pin jz's scalar transcendentals (the PPC_CALL2 keys the auto-vectorizer rewrites to f64x2
-  // mirrors) so watr's inline passes don't dissolve the call nodes the lift needs. The protection
-  // policy lives here in jz — watr just honours the `pin` list (no jz names hardcoded in watr).
+  // mirrors) so watr's inline passes don't dissolve the call nodes the lift needs, and the math
+  // runtime's cold paths (MATH_COLD). The protection policy lives here in jz; watr just
+  // honours the `pin` list (no jz names hardcoded in watr).
   if (watrOpts === true) watrOpts = {}
-  watrOpts.pin = watrOpts.pin ? [...watrOpts.pin, ...SIMD_PINNED] : SIMD_PINNED
+  watrOpts.pin = [...(watrOpts.pin || []), ...SIMD_PINNED, ...MATH_COLD]
   // Partial unrolling overlaps branch latency in compact codecs, but duplicates
   // too many cold compiler/parser loops in large module graphs and loses the
   // warm self-compile I-cache race. Users may still opt in explicitly.

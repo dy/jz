@@ -422,10 +422,11 @@ test('Math.pow / ** — a constant non-integer exponent takes the pow kernel, bi
   ok(/\(func \$math\.pow/.test(wat), 'the pow kernel is the one implementation')
 })
 
-test('Math.pow / **: a constant base 2 is Math.pow(2, y), exact at integers', () => {
+test('Math.pow / **: base 2 is $math.exp2, a constant base as a runtime one, exact at integers', () => {
   const m = run(`export let f = (n) => 2 ** (n / 12)
     export let g = (y) => 2 ** y
     export let ref = (x, y) => Math.pow(x, y)`)
+  ok(/call \$math\.exp2\b/.test(compile('export let g = (y) => 2 ** y', { wat: true })), '2 ** y is $math.exp2')
   for (const n of [0, 5, -7, 12, 13.5, 1e3, -1e3]) is(m.f(n), m.ref(2, n / 12), `2 ** (${n}/12)`)
   for (let k = -1074; k <= 1023; k += 7) is(m.g(k), 2 ** k, `2 ** ${k}`)
   is(m.g(1024), Infinity); is(m.g(-1075), 0); is(m.g(NaN), NaN); ok(Object.is(m.g(-Infinity), 0))

@@ -71,7 +71,7 @@ function reachableStdlib(sec) {
 // (PPC_CALL2). These are the ONLY helpers appendLateStdlib may add; restricting to them avoids
 // touching helpers that live in other module sections (ext-stdlib, imports) where a blind
 // referenced-but-absent scan would wrongly re-append and duplicate them.
-const LATE_VEC_HELPERS = new Set(['math.sin2', 'math.cos2', 'math.pow2', 'math.atan2_2', 'math.hypot_2', 'math.log_v', 'math.exp_v', 'math.pow_c_v', 'math.cbrt_v', 'math.fifthroot_v',
+const LATE_VEC_HELPERS = new Set(['math.sin2', 'math.cos2', 'math.pow2', 'math.atan2_2', 'math.hypot_2', 'math.log_v', 'math.exp_v', 'math.exp2_v', 'math.pow_c_v', 'math.pow_ci_v', 'math.powi_v', 'math.cbrt_v', 'math.fifthroot_v',
   // math.pow_fold (scalar) is normally eager-included by emitPow's own const-exponent fold (which
   // always `inc()`s it before the vectorizer ever runs, under optimize.crPow — see module/math.js).
   // It's ALSO listed here for the one path where that eager inc doesn't fire: a genuine runtime
@@ -238,13 +238,14 @@ export function pullStdlib(sec) {
   if (injectTable('math.pow_transcend', 'math.pow_exp2_tbl', ctx.runtime.powExp2Table)) ctx.runtime.powExp2Table = null
   // Payne–Hanek's 2/π and π/2 chunks plus its working array (module/math/ieee754.js), for trig past 2^19·π/2
   if (injectTable('math.rem_pio2_large', 'math.pio2_tbl', ctx.runtime.remPio2Table)) ctx.runtime.remPio2Table = null
-  // pow's default kernels (crPow's has tables of its own): the exp table for $math.pow_core
-  // and the constant-base $math.pow_c, whichever is in first, the log table for $math.pow_core
-  if (ctx.runtime.powLogTable) {
-    for (const fn of ['math.pow_core', 'math.pow_c'])
-      if (injectTable(fn, 'math.exp2_tbl', ctx.runtime.exp2Table)) ctx.runtime.exp2Table = null
-    if (injectTable('math.pow_core', 'math.pow_log_tbl', ctx.runtime.powLogTable)) ctx.runtime.powLogTable = null
-  }
+  // The 2^(j/64) table: $math.exp2, the default pow kernel and the constant-base $math.pow_c,
+  // whichever is in first (crPow's kernel has tables of its own); the log table for $math.pow_core
+  for (const fn of ctx.runtime.powLogTable ? ['math.exp2', 'math.pow_core', 'math.pow_c'] : ['math.exp2'])
+    if (injectTable(fn, 'math.exp2_tbl', ctx.runtime.exp2Table)) ctx.runtime.exp2Table = null
+  if (ctx.runtime.powLogTable && injectTable('math.pow_core', 'math.pow_log_tbl', ctx.runtime.powLogTable)) ctx.runtime.powLogTable = null
+  // $math.powi_cmp's limbs (module/math/powi.js), zeros: last, so the data segment's
+  // trailing-zero trim drops them from the binary
+  if (injectTable('math.powi_cmp', 'math.powi_tbl', ctx.runtime.powiTable)) ctx.runtime.powiTable = null
   if (!needsAlloc) { ctx.scope.globals.delete('__heap'); ctx.scope.globals.delete('__heap_reset') }
   if (needsMemory && ctx.module.modules.core) {
     if (needsAlloc) {

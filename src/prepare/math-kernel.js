@@ -18,12 +18,12 @@
  */
 
 import {
-  EXP2_TAB, EXP_Q, EXP_L1, EXP_L2, POW_LOG_TAB, POW_LOG_A, POW_LN2HI, POW_LN2LO, polyTree,
+  EXP2_TAB, EXP2_Q, EXP_Q, EXP_L1, EXP_L2, POW_LOG_TAB, POW_LOG_A, POW_LN2HI, POW_LN2LO, polyTree,
   TWO_OVER_PI, PIO2_CHUNKS, INVPIO2, PIO2_1, PIO2_1T, PIO2_2, PIO2_2T, PIO2_3, PIO2_3T,
   KSIN, KCOS, KTAN, PIO4, PIO4LO, ASIN_P, ASIN_Q, PIO2_HI, PIO2_LO, ATAN_HI, ATAN_LO, ATAN_T,
   PI_O_4, PI_O_2, PI_D, PI_LO, LN2_HI, LN2_LO, INVLN2, LN2, EXP_P, EXP_OVER, EXP_UNDER, EXP_E,
   TWOM1000, TWO1023, EXPM1_Q, EXPM1_TWO1023, LG, TWO54, IVLN2HI, IVLN2LO, IVLN10, LOG10_2HI,
-  LOG10_2LO, CBRT_B1, CBRT_B2, CBRT_P, SINH_OVER, TWO_M28, LOG_MAXD,
+  LOG10_2LO, CBRT_B1, CBRT_B2, CBRT_P, SINH_OVER, TWO_M28, LOG_MAXD, POWI_MAX, POWI_TOL,
 } from '../../module/math/trig-tables.js'
 
 // ---- fdlibm's word access: the two 32-bit halves of a double (little-endian host) ----
@@ -658,15 +658,18 @@ function hypot(...vs) {
   return Math.sqrt(sum) * max
 }
 
-// ---- pow: V8's math::pow around module/math.js's $math.pow_core, op for op ----
-// The ladder is $math.pow's; the kernel (Arm's optimized-routines pow on jz's exp table)
-// runs on BigInt bit patterns where the WAT uses i64.
+// ---- pow: V8's math::pow around module/math.js's kernels, op for op ----
+// The ladder is $math.pow's: an integer y up to POWI_MAX to powi (module/math/powi.js), x = 2
+// to exp2, else the kernel (Arm's optimized-routines pow on jz's exp table), which runs on
+// BigInt bit patterns where the WAT uses i64.
 const F64 = new Float64Array(1), U64 = new BigUint64Array(F64.buffer)
 const bitsOf = (d) => { F64[0] = d; return U64[0] }
 const ofBits = (b) => { U64[0] = BigInt.asUintN(64, b); return F64[0] }
 const nearestEven = (v) => { const r = Math.round(v); return Math.abs(v % 1) === 0.5 && r % 2 !== 0 ? r - 1 : r }
 const oddInteger = (y) => Number.isInteger(y) && Math.abs(y) < 2 ** 53 && Math.abs(y) % 2 === 1
 function pow(x, y) {
+  if (Math.abs(y) <= POWI_MAX && Math.trunc(y) === y) return powi(x, y)
+  if (x === 2) return exp2(y)
   if (x > 0 && x < Infinity && Math.abs(y) < Infinity && y !== 2) return powCore(x, y)
   if (y !== y) return y
   if (x !== x) return y === 0 ? 1 : x
@@ -713,6 +716,19 @@ export function powLogSplit(x) {
   const lhi = ofBits(bitsOf(lg) & 0xfffffffff8000000n)
   return [lhi, lg - lhi + tail]
 }
+// $math.exp2, the power at x = 2: 2^(k/64) from the table times 2^f, f = y − k/64
+const exp2Q = (f) => polyTree(EXP2_Q, { konst: c => c, mul: (a, b) => a * b, add: (a, b) => a + b }, f)
+function exp2(y) {
+  if (y !== y) return y
+  if (y > 1024) return Infinity
+  if (y < -1075) return 0
+  const k = nearestEven(y * 64), f = y - k * 0.015625
+  const t = EXP2_TAB[2 * (k & 63)], p = t + t * (f * exp2Q(f) + EXP2_TAB[2 * (k & 63) + 1])
+  const e = k >> 6
+  if (e > -1023 && e < 1024) return p * ofBits(BigInt(e + 1023) << 52n)
+  const k2 = e >> 1
+  return p * ofBits(BigInt(k2 + 1023) << 52n) * ofBits(BigInt(e - k2 + 1023) << 52n)
+}
 // the kernel's second half: exp(ehi + elo)
 function powExp(ehi, elo) {
   const ax = Math.abs(ehi)
@@ -729,6 +745,136 @@ function powExp(ehi, elo) {
   let res = scale + scale * q
   if (Math.abs(res) < 1) { const one = res < 0 ? -1 : 1; let lo = scale - res + scale * q; const hi = one + res; lo = one - hi + res + lo; res = hi + lo - one }
   return res * 2 ** -1022
+}
+
+// ---- the correctly rounded integer power: module/math/powi.js's $math.powi ----
+// The ladder's double-double products in the same order (each exact product any exact way:
+// it is unique), the same rounding test, the exact decision on 24-bit limbs (every partial
+// sum below 2^51); correctly rounded either way, so the fold is the runtime's bits.
+const SPLIT = 134217729
+let DD0 = 0, DD1 = 0
+function twoProd(a, b) {
+  const p = a * b
+  let c = SPLIT * a; const ah = c - (c - a), al = a - ah
+  c = SPLIT * b; const bh = c - (c - b), bl = b - bh
+  DD0 = p; DD1 = ((ah * bh - p) + ah * bl + al * bh) + al * bl
+}
+function dblMult(ah, al, bh, bl) {
+  const t = al * bh, s = ah * bl + t
+  twoProd(ah, bh)
+  const x2 = DD0 + s, v = s - (x2 - DD0), y1 = DD1 + v, x = x2 + y1
+  DD0 = x; DD1 = y1 - (x - x2)
+}
+const expOf = (d) => Number((bitsOf(d) >> 52n) & 0x7ffn) - 1023
+const pow2 = (e) => ofBits(BigInt(e + 1023) << 52n)
+function powi(x, y) {
+  const n = y
+  if (n === 0) return 1
+  if (x !== x) return x
+  if (n === 1) return x
+  if (n === 2) return x * x
+  if (n === -1) return 1 / x
+  const neg = (n & 1) !== 0 && bitsOf(x) >> 63n === 1n
+  let ax = Math.abs(x)
+  if (ax === Infinity) return neg ? (n > 0 ? -Infinity : -0) : (n > 0 ? Infinity : 0)
+  if (ax === 0) return neg ? (n > 0 ? -0 : -Infinity) : (n > 0 ? 0 : Infinity)
+  let e = 0
+  if (ax < 2 ** -1022) { ax *= 2 ** 64; e = -64 }
+  e += expOf(ax)
+  const m = ofBits((bitsOf(ax) & 0x000fffffffffffffn) | 0x3ff0000000000000n)
+  let uh = m, ul = 0, hh = 0, hl = 0, first = true
+  for (let i = Math.abs(n); ; ) {
+    if (i & 1) { if (first) { hh = uh; hl = ul; first = false } else { dblMult(hh, hl, uh, ul); hh = DD0; hl = DD1 } }
+    i >>= 1
+    if (i === 0) break
+    dblMult(uh, ul, uh, ul); uh = DD0; ul = DD1
+  }
+  if (n < 0) {
+    const qa = 1 / hh
+    twoProd(qa, hh)
+    const r = ((1 - DD0) - DD1) - qa * hl, qq = qa * r
+    hh = qa + qq; hl = qq - (hh - qa)
+  }
+  const k = e * n, eh = expOf(hh), hb = bitsOf(hh)
+  if (eh + k >= -1021 && eh + k <= 1023) {
+    const half = pow2(eh - 53)
+    const d = hl >= 0 ? half - hl : ((hb & 0x000fffffffffffffn) === 0n ? half * 0.5 : half) + hl
+    if (d > POWI_TOL * hh) { const r = ofBits(hb + (BigInt(k) << 52n)); return neg ? -r : r }
+  }
+  return powiX(x, n, hh, hl)
+}
+function powiX(x, n, hh, hl) {
+  const neg = (n & 1) !== 0 && bitsOf(x) >> 63n === 1n
+  let ax = Math.abs(x), e = 0
+  if (ax < 2 ** -1022) { ax *= 2 ** 64; e = -64 }
+  e += expOf(ax)
+  const mant = Number(bitsOf(ax) & 0x000fffffffffffffn) + 2 ** 52
+  const k = e * n, eh = expOf(hh)
+  const ev = eh - ((bitsOf(hh) & 0x000fffffffffffffn) === 0n && hl < 0 ? 1 : 0)
+  if (ev + k >= 1024) return neg ? -Infinity : Infinity
+  const gexp = Math.max(ev - 52, -1074 - k)
+  if (gexp >= ev + 3) return neg ? -0 : 0
+  const g = pow2(gexp)
+  let kk = 0, hr = hh
+  if (gexp <= eh) { kk = Math.trunc(hh / g); hr = hh - kk * g }
+  let c = kk
+  if (hl < -hr) c = kk - 1
+  else if (gexp <= eh && hl >= g - hr) c = kk + 1
+  const d = ((hr - (c - kk) * g) - g * 0.5) + hl
+  if (Math.abs(d) > POWI_TOL * hh) c += d > 0 ? 1 : 0
+  else {
+    const cmp = powiCmp(mant, n, c, gexp - 1)
+    c += cmp > 0 || (cmp === 0 && c % 2 !== 0) ? 1 : 0
+  }
+  const t = gexp + k, r = c * pow2(t >> 1) * pow2(t - (t >> 1))
+  return neg ? -r : r
+}
+const B24 = 16777216, LIMBS = new Float64Array(Math.ceil((53 * POWI_MAX + 56) / 24) + 3)
+let nLimbs = 0
+// the limbs times c = c0 + c1·2^24 + c2·2^48, in place
+function limbsMul(c0, c1, c2) {
+  let carry = 0, p1 = 0, p2 = 0
+  const end = nLimbs + 3
+  for (let i = 0; i < end; i++) {
+    const cur = i < nLimbs ? LIMBS[i] : 0
+    const t = cur * c0 + p1 * c1 + p2 * c2 + carry
+    carry = Math.floor(t / B24)
+    LIMBS[i] = t - carry * B24
+    p2 = p1; p1 = cur
+  }
+  nLimbs = end
+  while (nLimbs > 1 && LIMBS[nLimbs - 1] === 0) nLimbs--
+}
+const limbBit = (i) => i < 0 ? 0 : Math.floor(LIMBS[Math.floor(i / 24)] / 2 ** (i % 24)) % 2
+const bitLength = (t) => { let b = 0; for (; t >= 1; t = Math.floor(t / 2)) b++; return b }
+// sign(L·2^sa − c·2^sc), c = cHi·2^28 + cLo
+function limbsCmp(sa, cHi, cLo, sc) {
+  const la = 24 * (nLimbs - 1) + bitLength(LIMBS[nLimbs - 1]) + sa
+  const wc = cHi > 0 ? 28 + bitLength(cHi) : bitLength(cLo)
+  if (la !== wc + sc) return la > wc + sc ? 1 : -1
+  const base = sc - sa
+  for (let j = wc - 1; j >= 0; j--) {
+    const cb = j >= 28 ? Math.floor(cHi / 2 ** (j - 28)) % 2 : Math.floor(cLo / 2 ** j) % 2
+    const ab = limbBit(base + j)
+    if (ab !== cb) return ab > cb ? 1 : -1
+  }
+  for (let i = base - 1; i >= 0; i--) if (limbBit(i)) return 1
+  return 0
+}
+// sign(m^n − (2c + 1)·2^b), m = mant·2^-52
+function powiCmp(mant, n, c, b) {
+  const a = Math.abs(n)
+  LIMBS[0] = 1; nLimbs = 1
+  const m1 = Math.floor(mant / B24)
+  for (let i = 0; i < a; i++) limbsMul(mant - m1 * B24, m1 % B24, Math.floor(m1 / B24))
+  const cH = Math.floor(c / 134217728), cL = 2 * (c - cH * 134217728) + 1      // 2c + 1 = cH·2^28 + cL
+  if (n > 0) {
+    const s = b + 52 * a
+    return s >= 0 ? limbsCmp(0, cH, cL, s) : limbsCmp(-s, cH, cL, 0)
+  }
+  const mid = cH * 16 + Math.floor(cL / B24)
+  limbsMul(cL % B24, mid % B24, Math.floor(mid / B24))
+  return -limbsCmp(0, 0, 1, 52 * a - b)
 }
 
 /** V8's Math functions, dispatched by the `math.<name>` key prepare resolves `Math.foo` to. */

@@ -4,8 +4,8 @@
 //
 //   1. $math.pow_core — Arm's optimized-routines pow (table-driven double-double log,
 //      exact split product, jz's exp table; module/math.js), the kernel $math.pow takes
-//      for every positive finite base and finite exponent but 2 (x·x, as V8 answers it),
-//      integers included. Documented worst case 0.54 ulp: bit-exact against the host on
+//      for every positive finite base but 2 ($math.exp2) and finite exponent but an
+//      integer up to POWI_MAX (section 5). Documented worst case 0.54 ulp: bit-exact against the host on
 //      nearly every input, one ulp off on the rest: V8 25.9 calls the platform's libm
 //      pow, itself not correctly rounded and different between Node's own arm64 and x64
 //      builds, so an occasional last-ulp difference between two sub-ulp kernels is
@@ -41,10 +41,15 @@
 //      194/827 (23.5%). The gate demands ZERO on both jz paths — correctly rounded is
 //      unique, so this also pins fold==runtime consistency (self-compile byte-parity
 //      depends on it).
+//   5. $math.powi: an integer exponent |y| ≤ POWI_MAX, correctly rounded by default
+//      (module/math/powi.js): constant and runtime exponents, lanes and the constant fold
+//      against the exact power over BigInt, exact midpoints included.
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { readFileSync } from 'node:fs'
 import { funcWat, run, ulpDiff, wat } from './util.js'
+import { POWI_MAX } from '../module/math/trig-tables.js'
+import { powFold } from '../src/prepare/math-kernel.js'
 
 const CR_POW = { optimize: { crPow: true } }
 const CR_POW_APPROX = { optimize: { crPow: true, approxPow: true } }
@@ -297,12 +302,11 @@ test('pow: correctly rounded on the authoritative vector set (runtime + fold pat
   is(foldMis, 0, `const-exponent fold misrounds of ${foldTotal} (first: ${firstFold})`)
 })
 
-// The runtime ladder past the square-and-multiply fast path (|y| ≤ 16): a long
-// integer exponent takes the kernel and stays within an ulp of the host
-// (square-and-multiply drifted x^1000 by 49 ulp); a negative base with an
-// integer exponent beyond i32 keeps the sign rule; a signed zero base keeps its
-// sign for an odd exponent.
-test('Math.pow runtime — integer exponents past the fast path and signed zeros match the host', () => {
+// Past the correctly rounded integer powers (|y| ≤ POWI_MAX, section 5): a long integer
+// exponent takes the kernel and stays within an ulp of the host (square-and-multiply
+// drifted x^1000 by 49 ulp); a negative base with an integer exponent beyond i32 keeps the
+// sign rule; a signed zero base keeps its sign for an odd exponent.
+test('Math.pow runtime: integer exponents past the ladder and signed zeros match the host', () => {
   tally('long integers', [[0.7, 1000], [0.9999, -1000], [1.0000001, 1000], [1.5, 33], [10, 20], [2, 100], [0.5, -60], [-0.7, 1001], [-1.5, 34]], pow, TAIL_LIMIT)
   for (const [x, y] of [[-2, 2147483648], [-2, 2147483649], [-0.5, 2147483649], [-2, 2 ** 53 + 2], [-0, 5], [-0, -5], [0, -5], [-0, 6], [-Infinity, 5], [-Infinity, -5], [-2, 2.5], [-8, 1 / 3]])
     ok(Object.is(pow(x, y), Math.pow(x, y)), `pow(${x}, ${y}) = ${pow(x, y)}, host ${Math.pow(x, y)}`)
@@ -333,4 +337,84 @@ export let scalar = (x, y) => Math.pow(x, y)`
     if (!Object.is(got[i], s) && ++bad < 6) ok(false, `pow(${xs[i]}, ${ys[i]}): lanes ${got[i]} scalar ${s} host ${Math.pow(xs[i], ys[i])}`)
   }
   is(bad, 0, `${bad} of ${xs.length} lanes differ from the scalar path`)
+})
+
+// === 5. Integer exponents: the correctly rounded power ===
+// $math.powi (module/math/powi.js) answers every integer |y| ≤ POWI_MAX with x^y rounded
+// once, the constant exponent, the runtime one, the two-wide lanes and the constant fold
+// alike. The reference is the exact power over BigInt, rounded to nearest, ties to even.
+// The bases: random ones over the whole range, short significands whose powers land on or
+// beside a midpoint (m odd with m^|y| of 54 bits is exactly one, decided by the exact
+// comparison), results that overflow or land among the subnormals, and the special values.
+const F64 = new Float64Array(1), U64 = new BigUint64Array(F64.buffer)
+const blen = (b) => b.toString(2).length
+function roundQ(num, den, e2) {   // num/den·2^e2 to the nearest double, ties to even
+  let k = 53 - (blen(num) - blen(den))
+  const q = (k) => k >= 0 ? (num << BigInt(k)) / den : num / (den << BigInt(-k))
+  while (q(k) >= 1n << 53n) k--
+  while (q(k) < 1n << 52n) k++
+  let e = e2 - k
+  if (e < -1074) { k -= -1074 - e; e = -1074 }
+  const [a, b] = k >= 0 ? [num << BigInt(k), den] : [num, den << BigInt(-k)]
+  let m = a / b; const r = a - m * b
+  if (2n * r > b || (2n * r === b && (m & 1n))) m++
+  if (m === 1n << 53n) { m >>= 1n; e++ }
+  return e > 971 ? Infinity : Number(m) * 2 ** Math.trunc(e / 2) * 2 ** (e - Math.trunc(e / 2))
+}
+function exactPow(x, n) {
+  if (n === 0) return 1
+  if (x !== x) return NaN
+  const neg = (n & 1) !== 0 && (x < 0 || Object.is(x, -0)), ax = Math.abs(x)
+  let r
+  if (ax === Infinity) r = n > 0 ? Infinity : 0
+  else if (ax === 0) r = n > 0 ? 0 : Infinity
+  else {
+    F64[0] = ax
+    const e = Number(U64[0] >> 52n), f = U64[0] & 0xfffffffffffffn
+    const [m, E] = e ? [f | 1n << 52n, e - 1075] : [f, -1074], P = m ** BigInt(Math.abs(n))
+    r = n > 0 ? roundQ(P, 1n, E * n) : roundQ(1n, P, E * n)
+  }
+  return neg ? -r : r
+}
+
+test('integer exponents up to POWI_MAX are correctly rounded: constant, runtime, lanes and fold agree with the exact power', () => {
+  const ns = []
+  for (let n = -POWI_MAX; n <= POWI_MAX; n++) ns.push(n)
+  const name = (n) => n < 0 ? `m${-n}` : `p${n}`
+  const exports = run(ns.map(n => `export let ${name(n)} = (x) => x ** ${n}`).join('\n') + `
+export let rt = (x, y) => Math.pow(x, y)
+export let v3 = (xs, n) => { const o = new Float64Array(n); for (let i = 0; i < n; i++) o[i] = xs[i] ** 3; return o }
+export let vm7 = (xs, n) => { const o = new Float64Array(n); for (let i = 0; i < n; i++) o[i] = xs[i] ** -7; return o }
+export let v10 = (xs, n) => { const o = new Float64Array(n); for (let i = 0; i < n; i++) o[i] = xs[i] ** 10; return o }`, { optimize: 'speed' })
+  const rng = mkRng(0x2545f491)
+  const xs = [0, -0, 1, -1, 2, -2, 0.5, 3, 0.1, 0.3, Infinity, -Infinity, NaN, 5e-324, -5e-324, 2.2250738585072014e-308, 1.7976931348623157e308,
+    1e-80, 1e80, -1e-80, 2 ** 255.99, 2 ** -256.1, 1e-40 * 3.3, 1.0000000000000002, 0.9999999999999999]
+  for (let i = 0; i < 160; i++) xs.push((rng() < 0.5 ? -1 : 1) * 2 ** ((rng() - 0.5) * 200))
+  for (let i = 0; i < 80; i++) xs.push((rng() < 0.5 ? -1 : 1) * (0.5 + rng()))
+  for (let i = 0; i < 80; i++) xs.push((rng() < 0.5 ? -1 : 1) * Math.floor(rng() * 2 ** (1 + Math.floor(rng() * 26))) * 2 ** Math.floor((rng() - 0.5) * 40))
+  for (const n of [3, 4, 5, 7, 10]) {   // odd m with m^n of 54 bits: exact midpoints
+    const lo = Math.ceil(2 ** (53 / n)) | 1
+    for (let m = lo, j = 0; j < 12; m += 2, j++) xs.push(m, -m * 0.25)
+  }
+  let bad = 0, checks = 0
+  const see = (what, got, want) => { checks++; if (!Object.is(got, want) && !(got !== got && want !== want) && ++bad <= 6) ok(false, `${what}: ${got}, exact ${want}`) }
+  for (const n of ns) for (const x of xs) {
+    const want = exactPow(x, n)
+    see(`${x} ** ${n}`, exports[name(n)](x), want)
+    see(`Math.pow(${x}, ${n})`, exports.rt(x, n), want)
+    see(`fold ${x} ** ${n}`, powFold(x, n), want)
+  }
+  const arr = new Float64Array(xs)
+  for (const [f, n] of [[exports.v3, 3], [exports.vm7, -7], [exports.v10, 10]]) {
+    const o = f(arr, arr.length)
+    for (let i = 0; i < xs.length; i++) see(`lanes ${xs[i]} ** ${n}`, o[i], exactPow(xs[i], n))
+  }
+  is(bad, 0, `${bad} of ${checks} integer powers differ from the exact power`)
+})
+
+test('integer powers pull neither the pow kernel nor its tables, and lift through $math.powi_v', () => {
+  const w = wat('export let f = (x) => x ** 3 + x ** -2')
+  ok(/call \$math\.powi\b/.test(w) && !/\(func \$math\.pow_core/.test(w), 'x ** 3 is $math.powi, no kernel')
+  const v = wat('export let f = (xs, n) => { const o = new Float64Array(n); for (let i = 0; i < n; i++) o[i] = xs[i] ** 8; return o }', { optimize: 'speed' })
+  ok(/call \$math\.powi_v\b/.test(funcWat(v, 'f')), 'the loop lifts through $math.powi_v')
 })
