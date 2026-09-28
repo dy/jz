@@ -30,7 +30,7 @@ import { dataLen, dataBytes, strPoolLen, strPoolBytes } from '../static-data.js'
  * @module compile
  */
 
-import { ctx, err, PTR, HEAP, getFactStore, declGlobal } from '../ctx.js'
+import { ctx, err, PTR, HEAP, getFactStore, declGlobal, inc } from '../ctx.js'
 import { createFunction, frameNode, frameRoots } from '../function.js'
 import { functionPlanOf, publishFunctionPlan, retireFunctionPlan } from './function-plan.js'
 import { FIELD } from '../../layout.js'
@@ -540,6 +540,10 @@ export function assemble(ast, profiler) {
     stdlib: [],     // stdlib functions
     customs: [],    // custom sections + exports
   }
+  // A closure whose callers are unknown may be held by the host (an export's
+  // result, a host object's property or argument): the host calls it through
+  // the exported trampoline.
+  if (ctx.summary?.escaped?.size && ctx.core.stdlib.__call_closure) inc('__call_closure')
   // Uniform closure convention: (env f64, argc i32, a0..a{MAX-1} f64) → f64.
   // argc = actual arg count passed; missing slots padded with UNDEF_NAN at caller.
   // Rest-param bodies pack slots a[fixedParams..argc-1] into their rest array.

@@ -148,17 +148,21 @@ the host, so the caller sees its changes; a typed array the module stores on it
 is a view of the module's memory, read back as the same array (the host's view
 detaches if the memory grows). A JZ buffer (`memory.Float64Array(n)`,
 `memory.Float32Array(n)`) is the storage itself, so hand hot loops one of those
-instead of copying per call.
+instead of copying per call. A function the module returns, or stores on a host
+object, reaches the host as a function that calls back into it.
 
 ```js
 const { exports } = jz`
   export const greet = s => s.length
   export const point = (x, y) => ({ x, y })
   export const rgb = c => [c, c * 0.5, c * 0.2]
+  export const counter = () => { let n = 0; return { next: () => ++n } }
 `
 exports.greet('hello')   // 5
 exports.point(3, 4)      // { x: 3, y: 4 }
 exports.rgb(100)         // [100, 50, 20]
+const c = exports.counter()
+c.next(); c.next()       // 2
 ```
 
 Host functions come in through `imports`; a tagged template inlines values and

@@ -648,8 +648,10 @@ export const memory = (src) => {
     return ptr(6, sid, raw)
   }
 
-  mem.read = function(p) {
-    if (Array.isArray(p)) return p.map(v => mem.read(v))  // multi-value tuple
+  // `fnOf` reads a closure as a JS function that calls it (wrap's per-instance
+  // reader: a closure's table index names a function of the module that made it).
+  mem.read = function(p, fnOf = null) {
+    if (Array.isArray(p)) return p.map(v => mem.read(v, fnOf))  // multi-value tuple
     if (typeof p === 'number') {
       if (p === p) return p              // genuine number passthrough (NaN fails ===)
       p = f64ToI64(p)                    // f64 NaN-box (intact on V8) → bits; decode below
@@ -671,9 +673,10 @@ export const memory = (src) => {
       if (a === 5) return true
     }
     if (t === 11 && mem._extMap) return mem._extMap[off]
+    if (t === 10 && fnOf) return fnOf(p)
     if (t === 1) {  // ARRAY
       const len = m.getInt32(off - 8, true), out = new Array(len)
-      for (let i = 0; i < len; i++) out[i] = mem.read(m.getBigInt64(off + i * 8, true))
+      for (let i = 0; i < len; i++) out[i] = mem.read(m.getBigInt64(off + i * 8, true), fnOf)
       return out
     }
     if (t === 3) {  // TYPED
@@ -718,17 +721,18 @@ export const memory = (src) => {
       // An object literal's accessor reads through its getter: the module
       // copies such an object's data into a dictionary, decoded below.
       // Error transport reads its stored message before constructing the host Error.
-      if (mem.views?.has(a) && mem.viewData && !mem.errorSidToClass?.has(a)) return mem.read(mem.viewData(p))
+      if (mem.views?.has(a) && mem.viewData && !mem.errorSidToClass?.has(a)) return mem.read(mem.viewData(p), fnOf)
       const keys = mem.schemas[a]
       if (!keys) { if (off >= mem._above) mem._held = true; return p }
       const obj = {}
       for (let i = 0; i < keys.length; i++) {
         const rule = mem.fieldContracts[a]?.[i], raw = m.getBigInt64(off + i * 8, true)
         if (rule?.[2] === 8) throw new TypeError('jz: field ' + keys[i] + ' has ambiguous raw BigInt storage; use distinct object shapes')
-        let value = rule?.[2] === 4 ? raw : mem.read(raw)
+        let value = rule?.[2] === 4 ? raw : mem.read(raw, fnOf)
         if (value != null && rule && (rule[0] & ~FIELD.NULLISH) === FIELD.BOOL) value = !!value
         obj[keys[i]] = value
       }
+      fnOf?.owners.set(obj, p)
       return obj
     }
     if (t >= 7 && t <= 9) {  // HASH / SET / MAP share the insertion sequence.
@@ -742,19 +746,20 @@ export const memory = (src) => {
       slots.sort((a, b) => a[0] - b[0])
       const out = t === 7 ? {} : t === 8 ? new Set() : new Map()
       for (const [, slot] of slots) {
-        const key = mem.read(m.getBigInt64(slot + 8, true))
+        const key = mem.read(m.getBigInt64(slot + 8, true), fnOf)
         if (t === 8) out.add(key)
         else {
-          const value = mem.read(m.getBigInt64(slot + 16, true))
+          const value = mem.read(m.getBigInt64(slot + 16, true), fnOf)
           if (t === 7) out[key] = value
           else out.set(key, value)
         }
       }
+      if (t === 7) fnOf?.owners.set(out, p)
       return out
     }
     // a handle on the module's memory, held as the view of a typed array is
     if (t !== 0 && off >= mem._above) mem._held = true
-    return i64ToF64(p)  // canonical NaN-number / CLOSURE / unknown — reinterpret to f64
+    return i64ToF64(p)  // canonical NaN-number / CLOSURE without a reader / unknown — reinterpret to f64
   }
 
   mem.write = function(p, data) {
@@ -1043,7 +1048,7 @@ export const wrap = (memSrc, inst, state) => {
   // this fix (not the named repro, not chased here).
   const readRet = (r) => {
     if (Array.isArray(r)) return r.map(readRet)
-    const decoded = mem.read(r)
+    const decoded = mem.read(r, fnOf)
     const errClassName = errorSidClassOf(r)
     return errClassName != null ? new (globalThis[errClassName] ?? Error)(decoded.message) : decoded
   }
@@ -1129,6 +1134,34 @@ export const wrap = (memSrc, inst, state) => {
     wrapped.thrown = value
     throw wrapped
   }
+  // A closure the host holds (an export's result, a host call's argument)
+  // reads as a JS function calling it through the module's trampoline, as an
+  // export call runs: arguments wrapped, the result read, a throw decoded, a
+  // promise adopted. Called as a method of an object read from the module,
+  // it takes that object as `this`. Past the inline lanes a rest parameter
+  // reads the whole argument list from an array.
+  const callClosure = mem ? realInst.exports.__call_closure : null
+  const lanes = callClosure ? callClosure.length - 4 : 0
+  const closureArg = (v) => typeof v === 'bigint' && !isBox(v) ? mem.BigInt(v) : v
+  // The call keeps its heap as an export that releases nothing does (a closure
+  // has no `jz:release` of its own), and what it kept holds the heap of the
+  // call around it (`enter`/`leave` below).
+  const fnOf = callClosure ? Object.assign((clos) => function (...args) {
+    const mark = enter(false)
+    let returned = false
+    try {
+      const n = args.length, a = new Array(lanes)
+      for (let i = 0; i < lanes; i++) a[i] = i < n ? bits(mem.wrapVal(closureArg(args[i]))) : UNDEF_NAN
+      const spill = n > lanes ? offset(mem.Array(args.map((v, i) => i < lanes ? undefined : closureArg(v)))) : 0
+      if (lastErrBitsWritable) lastErrBits.value = 0n
+      const ret = callClosure(clos, n, spill, fnOf.owners.get(this) ?? UNDEF_NAN, ...a)
+      returned = true
+      return finishRet(ret, readRet)
+    } catch (error) {
+      decodeThrown(error)
+    } finally { leave(mark, false, false, returned) }
+  }, { owners: new WeakMap() }) : null
+  if (state) state.fnOf = fnOf
   const exports = {}
   // A call that crosses as it is. Every parameter is a number on its own lane
   // (no slot of the i64, externref or host-BigInt lanes, no typed slot, no
@@ -1667,7 +1700,7 @@ const prepareInterop = (opts) => {
     return (prop in extRecv(objBig, prop, 'membership test')) ? 1 : 0
   }
   opts._interp.__ext_set = (objBig, propBig, valBig) => {
-    const v = state.mem.read(valBig)
+    const v = state.mem.read(valBig, state.fnOf)
     // A typed array (or DataView) the module stores on a host object keeps its
     // identity: the property holds a live view of the module's storage, and a
     // read of it back into the module (wrapVal) is that storage again, so
@@ -1684,7 +1717,7 @@ const prepareInterop = (opts) => {
   opts._interp.__ext_call = (objBig, propBig, argsBig) => {
     const prop = state.mem.read(propBig)
     const obj = extRecv(objBig, prop, 'method call')
-    const args = state.mem.read(argsBig)
+    const args = state.mem.read(argsBig, state.fnOf)
     // Method keys are normalized before this boundary; undefined marks a direct call.
     if (prop === undefined) {
       if (typeof obj !== 'function') throw new TypeError('Host value is not callable')
@@ -1714,7 +1747,7 @@ const installDefaultEnvImports = (mod, imports, state) => {
     if (imports.env[name] || !WEB_GLOBALS.has(name)) continue
     const host = globalThis[name]
     if (typeof host !== 'function') continue
-    imports.env[name] = (...args) => hostRet(state, host(...args.map(a => state.mem ? state.mem.read(a) : decode(a))))
+    imports.env[name] = (...args) => hostRet(state, host(...args.map(a => state.mem ? state.mem.read(a, state.fnOf) : decode(a))))
   }
   if (envFns.has('print') && !imports.env.print) {
     const buf = ['', '', '']  // fd 0/1/2 line buffers
@@ -1781,11 +1814,11 @@ const installDefaultEnvImports = (mod, imports, state) => {
       return parseInt(s, radix || undefined)
     }
   }
-  // host: 'js' timer wiring. Wasm calls env.setTimeout/clearTimeout; we drive
-  // callbacks back via the exported __invoke_closure trampoline (state.invoke).
+  // host: 'js' timer wiring. Wasm calls env.setTimeout/clearTimeout; we call
+  // the callback back as any closure the host holds (state.fnOf, read at the
+  // first fire: a timer armed by the module's init runs before wrap sets it).
   // Each id maps to a cancel thunk so set/clear share state without tagging.
-  // env.setTimeout receives cbPtr as i64 bits (BigInt) — see module/timer.js;
-  // __invoke_closure also takes i64 now, so the BigInt feeds it directly.
+  // env.setTimeout receives cbPtr as i64 bits (BigInt) — see module/timer.js.
   if (envFns.has('setTimeout') || envFns.has('clearTimeout')) {
     const cancel = new Map()
     let nextId = 1
@@ -1793,7 +1826,8 @@ const installDefaultEnvImports = (mod, imports, state) => {
       const id = nextId++
       // after each timer callback: drain microtasks + settle host promises
       // parked on async exports (state.afterTick set by wrap for async modules)
-      const fire = () => { state.invoke?.(cbBig); state.afterTick?.() }
+      let cb
+      const fire = () => { (cb ??= state.fnOf?.(cbBig))?.(); state.afterTick?.() }
       if (repeat) {
         const h = setInterval(fire, delayMs)
         cancel.set(id, () => clearInterval(h))
@@ -1811,13 +1845,13 @@ const installDefaultEnvImports = (mod, imports, state) => {
   }
   // requestAnimationFrame wiring: real rAF where the host has one; a 16 ms
   // timer elsewhere (Node) so frame-driven modules still run — the callback
-  // receives a real timestamp either way via __invoke_closure1.
+  // receives a real timestamp either way.
   if (envFns.has('requestAnimationFrame') || envFns.has('cancelAnimationFrame')) {
     const cancel = new Map()
     let nextId = 1
     if (envFns.has('requestAnimationFrame') && !imports.env.requestAnimationFrame) imports.env.requestAnimationFrame = (cbBig) => {
       const id = nextId++
-      const fire = (t) => { cancel.delete(id); state.invoke1?.(cbBig, t); state.afterTick?.() }
+      const fire = (t) => { cancel.delete(id); state.fnOf?.(cbBig)(t); state.afterTick?.() }
       const raf = globalThis.requestAnimationFrame
       if (typeof raf === 'function') {
         const h = raf(fire)
@@ -1903,7 +1937,7 @@ const buildImports = (mod, opts, state) => {
         imports[modName][name] = (...args) => {
           // i64 carrier: args arrive as BigInt bits (box) or number; decode with integer
           // ops — never materialize a box as f64. Return the i64 bits of the wrapped result.
-          const decoded = args.map(a => state.mem ? state.mem.read(a) : decode(a))
+          const decoded = args.map(a => state.mem ? state.mem.read(a, state.fnOf) : decode(a))
           return hostRet(state, fn.call(fns, ...decoded))
         }
     }
@@ -1944,11 +1978,6 @@ const finishInstantiation = (mod, inst, imports, needsWasi, opts, state) => {
   // before _setMemory above). Called for ANY module exporting it, imports or not:
   // a hostless wasi module (no console/Date use) still needs its init run.
   inst.exports._initialize?.()
-
-  // Trampoline used by env.setTimeout/clearTimeout to fire scheduled closures.
-  state.invoke = inst.exports.__invoke_closure || null
-  // One-arg variant — env.requestAnimationFrame passes the frame timestamp.
-  state.invoke1 = inst.exports.__invoke_closure1 || null
 
   // Drive WASM timer queue via JS scheduling (non-blocking, no-op if absent).
   attachTimers(inst)

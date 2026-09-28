@@ -380,9 +380,10 @@ test('multiple simultaneous timers', async () => {
   is(result.exports.b.value, 2)
 })
 
-// host: 'js' setTimeout/setInterval lower to env imports + __invoke_closure
-// trampoline (no in-wasm queue). Lock the surface in.
-test('host:js timers: env.setTimeout/clearTimeout imports, __invoke_closure export', () => {
+// host: 'js' setTimeout/setInterval lower to env imports + the __call_closure
+// trampoline, the host's call of any closure it holds (no in-wasm queue). Lock
+// the surface in.
+test('host:js timers: env.setTimeout/clearTimeout imports, __call_closure export', () => {
   if (onWasi()) return  // wasi: host timer imports
   const wasm = compile(`
     setTimeout(() => {}, 10)
@@ -397,7 +398,7 @@ test('host:js timers: env.setTimeout/clearTimeout imports, __invoke_closure expo
   ok(imports.includes('env.setTimeout'), `expected env.setTimeout: ${imports}`)
   ok(imports.includes('env.clearTimeout'), `expected env.clearTimeout: ${imports}`)
   ok(!imports.some(i => i.includes('clock_time_get')), `should not import clock_time_get: ${imports}`)
-  ok(exports.includes('__invoke_closure'), `expected __invoke_closure export: ${exports}`)
+  ok(exports.includes('__call_closure'), `expected __call_closure export: ${exports}`)
   ok(!exports.includes('__timer_tick'), `should not export __timer_tick: ${exports}`)
 })
 

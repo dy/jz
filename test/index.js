@@ -97,6 +97,7 @@ const TESTS = [
   'primitive-store',
   'num-shadow',
   'guarded-clone',
+  'host-closure',
   'variant-result',
   'call-boundary',
   'call-release',

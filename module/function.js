@@ -72,6 +72,23 @@ export default (ctx) => {
       (i32.load8_u (i32.add ${base}
         (i32.wrap_i64 (i64.and (i64.shr_u (local.get $fn) (i64.const ${LAYOUT.AUX_SHIFT})) (i64.const ${LAYOUT.AUX_MASK}))))))`
   }
+  // The host's call of a closure it holds (interop.js reads one as a JS
+  // function). Values cross as i64 bits, as every boxed boundary value does.
+  // `argc` counts the host's arguments; past the inline lanes a rest
+  // parameter reads them from `spill`, the host's array of all of them (a
+  // spread call's $__closure_spill).
+  ctx.core.stdlib.__call_closure = () => {
+    const lanes = Array.from({ length: ctx.closure.width ?? MAX_CLOSURE_ARITY }, (_, i) => i)
+    return `(func $__call_closure (export "__call_closure") (param $clos i64) (param $argc i32) (param $spill i32) (param $this i64)${lanes.map(i => ` (param $a${i} i64)`).join('')} (result i64)
+      ${ctx.scope.globals.has('__closure_spill') ? '(global.set $__closure_spill (local.get $spill))' : ''}
+      (i64.reinterpret_f64 (call_indirect (type $ftN)
+        (f64.reinterpret_i64 (local.get $clos))
+        (local.get $argc)
+        ${lanes.map(i => `(f64.reinterpret_i64 (local.get $a${i}))`).join(' ')}
+        ${ctx.closure.receiver ? '(f64.reinterpret_i64 (local.get $this))' : ''}
+        (i32.wrap_i64 (i64.and (i64.shr_u (local.get $clos) (i64.const ${LAYOUT.AUX_SHIFT})) (i64.const ${LAYOUT.AUX_MASK}))))))`
+  }
+
   registerGetter('.closure:length', fn => {
     inc('__closure_length')
     return typed(['call', '$__closure_length', asI64(emit(fn))], 'i32')
