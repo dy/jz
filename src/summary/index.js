@@ -487,6 +487,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   // remainders and masks of those. null where the walk cannot bound it.
   const ints = new Map()         // a name declared once as an integer literal → its value
   const spans = new Map()        // the counters of the loops being walked → [lo, hi]
+  const constRanges = new Map()  // binding id → the interval captured by this frame's const initializer
   const spanOf = (e) => {
     if (typeof e === 'number') return Number.isInteger(e) ? [e, e] : null
     if (typeof e === 'string') { const v = ints.get(e); return v !== undefined ? [v, v] : spans.get(e) ?? null }
@@ -511,7 +512,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   // bound of one, the hull of a conditional. null where the walk cannot bound it.
   const rangeOf = (e) => {
     if (typeof e === 'number') return Number.isFinite(e) ? [e, e] : null
-    if (typeof e === 'string') return spanOf(e) ?? (typeof current === 'string' ? paramRangeOf(current, e) : null)
+    if (typeof e === 'string') return spanOf(e) ?? constRanges.get(keyOf(e)) ?? (typeof current === 'string' ? paramRangeOf(current, e) : null)
     if (!Array.isArray(e)) return null
     const op = e[0]
     if (op == null) return typeof e[1] === 'number' && Number.isFinite(e[1]) ? [e[1], e[1]] : null
@@ -566,13 +567,18 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   // iterator helper, `.call`/`.apply`) receives arguments no direct call shows:
   // every position opens.
   const openAllArgs = (name) => { const f = funcByName.get(name); if (f) paramNamesOf(f).forEach((_, i) => openArgs.add(`${name}#${i}`)) }
+  const openCaller = (name, f) => exported(f) || hostClosures.has(name) || escaped.has(name) || f.sig.dispatcher
   const paramRangeOf = (fn, name) => {
     const f = funcByName.get(fn)
-    if (!f) return null
+    if (!f || openCaller(fn, f)) return null
+    // A closure can rewrite the parameter between reads. Its incoming hull
+    // describes the binding throughout the body only when nobody assigns it.
+    if (reassignedIn(f.body, paramNamesOf(f), f.defaults).includes(name)) return null
     const i = paramNamesOf(f).indexOf(name)
     return i < 0 ? null : argRanges.get(fn)?.ranges[i] ?? null
   }
   const noteArgs = (name, f, node, n, base) => {
+    if (openCaller(name, f)) return
     const params = paramNamesOf(f)
     let entry = roundArgs.get(name)
     if (!entry) roundArgs.set(name, entry = { ranges: params.map(() => undefined) })
@@ -2658,7 +2664,21 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     if (!names) assignedFirst.set(current, names = definitelyAssigned(typeof current === 'string' ? funcByName.get(current).body : closureBodies[current]))
     return names.has(name) ? K.NONE : ABSENT
   }
-  const decl = (n) => { for (let i = 1; i < n.length; i++) { const d = n[i]; if (typeof d === 'string') declare(d, bare(d)); else if (Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string') { if (n[0] === 'const' && Array.isArray(d[2]) && d[2][0] == null && Number.isInteger(d[2][1])) ints.set(d[1], d[2][1]); declare(d[1], cursorOpen(d[1], d[2]) ?? literalInto(d[1], d[2])) } } }
+  const decl = (n) => {
+    for (let i = 1; i < n.length; i++) {
+      const d = n[i]
+      if (typeof d === 'string') declare(d, bare(d))
+      else if (Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string') {
+        if (n[0] === 'const') {
+          if (Array.isArray(d[2]) && d[2][0] == null && Number.isInteger(d[2][1])) ints.set(d[1], d[2][1])
+          const r = rangeOf(d[2]), key = keyOf(d[1])
+          if (r) constRanges.set(key, r)
+          else constRanges.delete(key)
+        }
+        declare(d[1], cursorOpen(d[1], d[2]) ?? literalInto(d[1], d[2]))
+      }
+    }
+  }
   // A `{}` declared into a name is allocated as the runtime allocates it
   // (module/object.js's `{}`): with the binding's schema when that holds every
   // literal key (`let o = {}` then `o.a = 1` merges `a` into it), an empty one
@@ -3091,7 +3111,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   }
   const defaultNames = new Map()   // a defaults record → its parameter names, listed once
   const defaultNamesOf = (defaults) => { let l = defaultNames.get(defaults); if (!l) defaultNames.set(defaults, l = Object.keys(defaults)); return l }
-  const reset = () => { pre.clear(); refined.clear(); post.clear(); branch = 0; rtop = 0 }
+  const reset = () => { pre.clear(); refined.clear(); post.clear(); constRanges.clear(); branch = 0; rtop = 0 }
   const walkFunction = (key, body, params, defaults) => {
     current = key
     reset()

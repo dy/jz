@@ -15,7 +15,7 @@ import { ptrBits, i64Hex, OBJECT_SCHEMA_HI_MASK, objectSchemaGuardHex } from '..
 import { VAL, repOf, numericStorage, mayBeUndefined } from '../reps.js'
 import { valTypeOf, censusMaybeUndefined, censusMaybeUndefinedKind, numericDenied } from '../kind.js'
 import { intExprRange } from '../static.js'
-import { K, bitOf, hasTag, NULL_BITS, TAGS, NUMBER_OPS } from '../summary/kind.js'
+import { K, bitOf, hasTag, tagOf, NULL_BITS, TAGS, NUMBER_OPS } from '../summary/kind.js'
 import { COMPOUND_NUMERIC_OPS } from '../kind-traits.js'
 import { COMPARE_OPS } from '../ast.js'
 import { typed } from './tag.js'
@@ -327,8 +327,10 @@ export function toNumF64(node, v) {
           ['local.set', `$${t}`, asF64(v)],
           coerceNullishToNum(typed(['local.get', `$${t}`], 'f64'))], 'f64')
       }
-      const flow = ctx.func.localValTypesOverlay?.get(node)
-      if (typeof flow === 'number' && !hasTag(flow, K.NULLISH))
+      // An array miss adds undefined, not null. The settled parameter kind
+      // keeps that distinction across calls even without a local flow guard.
+      const flow = ctx.func.localValTypesOverlay?.get(node) ?? ctx.summary?.at(ctx.func.current)?.kindOfExpr(node)
+      if (typeof flow === 'number' && tagOf(flow) === K.NUMBER && !hasTag(flow, K.NULLISH))
         return typed(['select', ['f64.const', 'nan'], asF64(v),
           ['i64.eq', ['i64.reinterpret_f64', asF64(v)], ['i64.const', UNDEF_NAN]]], 'f64')
       return coerceNullishToNum(asF64(v))

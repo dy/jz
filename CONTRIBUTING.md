@@ -134,8 +134,15 @@ See [PLAN.md](PLAN.md) for remaining gates and DSP evidence.
 
 Load reuse visits reads and writes in evaluation order. A shared load executes
 at its first occurrence, never before preceding operands; identity-observing
-uses retain undefined, while numeric-only uses normalize it. Mutable scalars
-retain their complete integer hull through scratch storage only when
+uses retain undefined, while numeric-only uses normalize it. The same cache
+serves numbers and nested array pointers read from plain arrays:
+disjoint summary cells preserve reads across scratch-array
+writes, and bound-once aliases of a shared element retain that pointer's identity.
+Conditional arms keep only prior reads that neither arm invalidates. Numeric
+Math calls preserve them; deletion, named-property writes and unknown effects
+invalidate them. At a numeric use, a settled Number|undefined kind needs only
+missing-value normalization; the null-to-zero branch remains when null is possible.
+Mutable scalars retain their complete integer hull through scratch storage only when
 every writer is bounded. Missing reads, closure writes and unknown updates
 decline that proof. Unary numeric conversion preserves a known hull, and
 bounded products multiply before converting to floating point. Numeric
@@ -1422,8 +1429,10 @@ store dereferenced present for the rest of its block. `why` reports the first
 cause an array built at a fixed count keeps its checks by (`array-open`).
 The summary also keeps the hull of the arguments each parameter receives over
 a function's direct calls (`paramRangesOf`: a counter's span, arithmetic on
-it, a caller's own hull through a chain of calls; open where a call is
-unbounded, exported, escaped, or a recursion keeps widening it); the emitter
+it, a const's captured initializer interval, a caller's own hull through a chain
+of calls; open where a call is unbounded, exported, escaped, or a recursion
+keeps widening it). A parameter assigned anywhere, including by a closure,
+cannot supply its incoming hull to another call. The emitter
 starts a parameter's flow interval from it, so a ToInt32 of `floor(y) + gy`
 inside a sampler needs no infinity guard. A loop that writes no array header
 (element stores only, calls to functions the module-wide census finds header

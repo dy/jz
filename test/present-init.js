@@ -5,13 +5,34 @@
 import test from 'tst'
 import { is } from 'tst/assert.js'
 import { levels } from './_matrix.js'
-import { agree, wat } from './util.js'
+import { agree, funcWat, wat } from './util.js'
 
 const check = (src, args, name) => {
   for (const optimize of levels(0, 2, 3, 'size')) agree(src, 'f', args, { optimize }, `${name} at ${optimize}`)
 }
 // The conversions of the swap temp `tr` to a number: select(NaN, tr, tr is undefined).
 const conversions = text => (text.match(/\(select\s*\(f64\.const nan\)\s*\(local\.get \$[^\s()]*_tr\)/g) || []).length
+
+test('numeric conversion: a parameter fed by numeric elements retains only the undefined arm', () => {
+  const src = `function calc(x) { return [x, x - 1] }
+    const a = [2, -0, NaN, Infinity]; export function f(i) { return calc(a[i]) }`
+  for (const i of [-1, 0, 1, 2, 3, 4]) check(src, [i], `numeric element ${i}`)
+  const body = funcWat(wat(src, { optimize: 0 }), 'calc')
+  is(body.includes('0x7FF8000100000000'), false, 'a closed Number|undefined parameter has no null-to-zero branch')
+  is(body.includes('0x7FF8000200000000'), true, 'a missing element still becomes NaN at its numeric use')
+})
+
+test('numeric conversion: possible nulls from elements, callers and captured writes still become zero', () => {
+  const rows = [
+    `function calc(x) { return [x, x - 1] }
+      const a = [2, null]; export function f(i) { return calc(a[i]) }`,
+    `export function f(x) { return [x, x - 1] }`,
+    `function calc(x, i) { const change = () => { x = null }; if (i) change(); return [x, x - 1] }
+      const a = [2, 3]; export function f(i) { return calc(a[i], i) }`,
+  ]
+  for (let r = 0; r < rows.length; r++) for (const v of r === 1 ? [2, null, undefined] : [0, 1, 2])
+    check(rows[r], [v], `nullable source ${r}, ${v}`)
+})
 
 const swap = `const swap = (re, perm, n) => {
   for (let i = 0; i < n; i++) {

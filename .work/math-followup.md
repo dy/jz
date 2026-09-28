@@ -1,0 +1,122 @@
+# Math follow-up
+
+Worktree: `/private/tmp/jz-math-followup`, branch `math-followup`.
+Base: `6f37e16f` (the reported math-target head).
+Frozen comparison checkout: `/private/tmp/jz-math-base`.
+The original math-target worktree is being modified by another agent; it must
+not be used as a reference for later measurements.
+
+## Changes
+
+- Reuse plain-array reads using the existing load cache. The settled summary's
+  array cells distinguish storage; aliases joined into one cell stay conservative.
+  A missing receiver retains its first throwing access. Named stores and deletion
+  invalidate the cache, and writes through typed views retain the existing rules.
+  Eligible values are Numbers and nested array pointers; missing BigInt and
+  boolean elements cannot be reused through a scalar carrier that erases absence.
+- Bound-once receivers loaded from the same available array element share its
+  pointer identity. Reassignment and changes to the containing slot invalidate
+  the relevant proof. Scalar conditional arms preserve only prior reads that
+  both arms leave intact. Numeric Math calls preserve reads.
+- Preserve a const initializer's finite interval when forming a callee's argument
+  hull. These facts belong to the current summary frame. A parameter assigned
+  anywhere, including by a closure, does not supply a stable incoming interval.
+  Exported, escaped and dispatcher entries have no closed argument hull, even
+  when an internal call happens to pass a constant.
+- Use the settled Number|undefined kind at numeric conversion sites. This removes
+  a null-to-zero branch while retaining undefined-to-NaN conversion. A caller or
+  captured writer that can introduce null retains its conversion.
+
+The benchmark and vendored library sources are unchanged. These changes do not
+add public options or dependencies.
+
+## Structural evidence
+
+- Quaternion workload's `run`: 28 → 18 scalar loads, 22 stores unchanged.
+- Worley module: 36 → 16 selects after retaining the bounded x/y coordinate
+  initializers and removing impossible null conversions.
+- Polygon's `between` and `intersectProp`: 24 → 2 null-sentinel comparisons.
+  A named binary of the polygon workload shrank 27,620 → 26,992 bytes between
+  the array-cache/range change and the conversion change.
+- Final structural comparison: `/private/tmp/jz-math-structure.json`, generated
+  by `/private/tmp/jz-math-structure.mjs` against frozen `6f37e16f`.
+- Minimal regression kernels live in `test/array-load-cse.js` and
+  `test/param-range.js`.
+
+## Validation
+
+- Array regressions: 4 tests / 62 assertions pass with `JZ_TEST_SWEEP=1`
+  (levels 0, 2, 3).
+- Parameter-range regressions: 4 tests / 30 assertions pass with
+  `JZ_TEST_SWEEP=1`, including captured writers and open host callers.
+- Presence/conversion regressions: 6 tests / 127 assertions pass across
+  levels 0, 2, 3 and size.
+- Codegen ratchet: 10/10 pass, no baseline edits.
+- three.js: the earlier run passed 3 tests / 90 assertions; final rerun is
+  `/private/tmp/jz-math-three-final.log`.
+- `git diff --check` passes. Import lint reports the baseline's unused
+  `resolveAddr` import in `src/optimize/vectorize/dot-slp.js`; no changed file
+  has a lint error.
+- The first full suite stopped at the sandbox's local-server restriction in
+  `test/async.js`. Intermediate runs were replaced as correctness guards were
+  added. The final runner has local-server access and runs self-compile, default,
+  opt0, opt3, WASI, language conformance and builtins conformance serially, even
+  when a preceding leg fails. It limits conformance to two workers and permits
+  a one-hour self build under machine load. Runner: `/private/tmp/jz-math-verify.mjs`;
+  results: `/private/tmp/jz-math-verification.json`; logs:
+  `/private/tmp/jz-math-final-*.log`. Source hashes:
+  `/private/tmp/jz-math-verification-source.json`.
+- Self-compile passed 79 tests / 2,790 assertions before the final carrier,
+  conversion and open-caller guards (`/private/tmp/jz-math-self-final.log`).
+  The final source's bootstrap is `/private/tmp/jz-math-final-test-self.log`.
+- Pristine-base checks for the reported existing failures:
+  `/private/tmp/jz-math-baseline-tests.log`.
+
+All four math checksums match Node, including repeated stateful FABRIK runs.
+Timing is not release evidence: the shared machine's load ranged from 60 to
+over 200, and even same-process ABBA rounds varied several-fold. The diagnostic run
+against the frozen base is `/private/tmp/jz-math-paired.json`; the earlier
+`jz-math-current.json` used a reference worktree being edited concurrently and
+must not be used for a speed claim. No PENDING claim has been promoted.
+The final conversion's polygon checksums also match Node in every round of
+`/private/tmp/jz-math-poly-paired.json`; its timings have the same limitation.
+
+## Remaining work before an upstream PR
+
+1. Prove separate calls to fresh-array factories produce distinct module scratch
+   arrays. Summary cells currently merge factory results (for example `out` and
+   `inv`), which limits store elimination and load reuse.
+2. Forward stores across conditional joins without moving effects or removing
+   stores observable through an alias or exceptional exit. The inverse kernel's
+   early return is still a barrier.
+3. Reduce the remaining numeric conversion and bounds work in polygon and IK
+   kernels, using general proofs and minimal kernels, not benchmark edits.
+   The named polygon profile puts most samples in `between`, `intersectProp`
+   and `diagonalie`; allocation helpers are a small share. Profile artifacts:
+   `/private/tmp/jz-math-profile-named.log` and `jz-math-*-named.cpuprofile`.
+4. Rerun all four against V8-family engines on stable hardware; promote claims
+   only with reproducible wins. Finish v1's release gates before proposing the
+   library integration upstream. No upstream PR has been opened.
+
+## Existing semantics defects discovered during regression design
+
+Both reproduce on the unchanged base with load CSE disabled:
+
+```js
+export const f = () => {
+  const a = [2, 3], b = a, x = a[0]
+  b['length'] = 0
+  return x + a[0] // Node: NaN; base jz: 4
+}
+```
+
+```js
+export const f = n => {
+  const a = [2, 3], b = a, x = a[0]
+  delete b[n - 1]
+  return x + a[0] // f(1): Node: NaN; base jz: undefined
+}
+```
+
+The deletion regression in this change observes `=== undefined` directly so it
+tests cache invalidation independently of the existing missing-value arithmetic.

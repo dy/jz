@@ -93,6 +93,7 @@ const TESTS = [
   'shift-precedence',
   'loop-step',
   'field-cse',
+  'array-load-cse',
   'guarded-read',
   'shift-remainder',
   'scalar-unroll',

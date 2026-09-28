@@ -45,6 +45,31 @@ test('parameter hull: an unbounded call, a widening recursion, an escaped functi
     export const p = (v) => { m.assign(v, W, 5); return W.length + m(v)[0] }`, 'nz')), JSON.stringify([null, null, null]), 'a function also called through a property receives what no direct call shows')
 })
 
+test('parameter hull: const arguments capture bounded arithmetic at their initializer', () => {
+  const src = `function f(x, y) { return x + y }
+    export const h = () => { let s = 0; for (let i = 0; i < 10; i++) {
+      const x = i * 0.25, y = x + 0.5; s += f(x, y)
+    } return s }`
+  is(JSON.stringify(ranges(src, 'f')), JSON.stringify([[0, 2.25], [0.5, 2.75]]))
+  for (const optimize of levels(0, 2, 3)) agree(src, 'h', [], { optimize })
+  is(JSON.stringify(ranges(`function f(x) { return x }
+    export const h = n => { const x = n * 0.25; return f(x) }`, 'f')), '[null]', 'an unbounded initializer remains unbounded')
+  is(JSON.stringify(ranges(`function f(x) { return x }
+    function g(x) { x = Infinity; const y = x; return f(y) }
+    export const h = () => g(1)`, 'f')), '[null]', 'a rewritten parameter no longer holds its incoming hull')
+  const captured = `function f(x) { return x | 0 }
+    function g(x) { const change = () => { x = Infinity }; change(); const y = x; return f(y) }
+    export const h = () => g(1)`
+  is(JSON.stringify(ranges(captured, 'f')), '[null]', 'a captured writer also invalidates the incoming hull')
+  for (const optimize of levels(0, 2, 3)) agree(captured, 'h', [], { optimize })
+  const boundary = `function calc(x) { return x | 0 }
+    export function f(x) { const y = x; return calc(y) }
+    export function g() { return f(1) }`
+  is(ranges(boundary, 'f'), null, 'a bounded internal call does not close an exported entry')
+  is(JSON.stringify(ranges(boundary, 'calc')), '[null]', 'an exported caller cannot supply a closed hull through its const')
+  for (const optimize of levels(0, 2, 3)) for (const x of [Infinity, -Infinity]) agree(boundary, 'f', [x], { optimize })
+})
+
 const sampler = `const perm = new Uint8Array(512)
   for (let i = 0; i < 512; i++) perm[i] = (i * 7) & 255
   function sample(y) { const iy = Math.floor(y); let s = 0; for (let gy = -1; gy <= 1; gy++) s += perm[(iy + gy) & 255]; return s }

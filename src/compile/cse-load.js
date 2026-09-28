@@ -1,20 +1,22 @@
 /**
- * Sound CSE of repeated pure typed-array element loads and object field loads within a
- * straight-line region.
+ * Reuse pure array-element and object-field loads while no intervening write
+ * can reach their storage.
  *
  * `re[b] = re[a] - tr;  …;  re[a] = re[a] + tr`  — the fft butterfly loads `re[a]` twice.
  * Cache the first load in a temp and reuse it (eliminating the redundant load) when no
  * intervening store can reach the cached element.
  *
- * Soundness (no non-aliasing assumption): a cached `arr[idx]` survives a store `recv[idx2]` iff
- *   - `recv` never holds typed elements (a plain array or object: separate storage), or
+ * A cached `arr[idx]` survives a store `recv[idx2]` only when
+ *   - the receiver families have separate storage (plain vs typed arrays, or objects), or
+ *   - the settled summary proves two plain arrays belong to disjoint allocation cells, or
  *   - `recv` addresses the same element grid as `arr` and `idx2 ≠ idx` is PROVABLE. The same grid:
- *     the same binding, or two non-view typed arrays of one constructor. Aliasing non-view typed
+ *     the same binding, two plain arrays, or two non-view typed arrays of one constructor. Aliasing non-view typed
  *     arrays share base and element width (`new T(buf)` reinterprets in place); a view
  *     (`subarray`, `new T(buf, off)`) may start mid-buffer, and another element type
  *     (`new Uint8Array(f.buffer)`) splits the bytes differently, so index reasoning fails there.
  *   Any other store invalidates. Reassigning `arr` / any var in `idx`, an impure call, or a
- *   control-flow edge also flushes. So `re[a]` (intervening stores to `re`/`im`, both owned
+ *   loop or abrupt exit also flushes. A conditional retains only prior entries
+ *   that both arms leave intact. So `re[a]` (intervening stores to `re`/`im`, both owned
  *   Float64Arrays, at index `b = a+half ≠ a`) is CSE'd, while `im[a]` (the `re[a]` store is at the
  *   same index `a`) correctly is NOT.
  *
@@ -45,8 +47,9 @@ import { scanBindingUses, USE, BINDING_USE_DECLS, BINDING_USE_INIT, BINDING_USE_
 import { unitIncVar } from './loop-model.js'
 import { counterInit, intExprRange } from '../static.js'
 
-/** The storage class a receiver oracle reports for storage that never holds typed elements. */
+/** Receiver storage families; typed receivers use their constructor name. */
 export const UNTYPED = 'untyped'
+export const ARRAY = 'array'
 
 const isArr = (x) => Array.isArray(x)   // arrow, not a bare builtin alias — jz can't self-compile a builtin as a first-class value
 const isName = (x) => typeof x === 'string'
@@ -177,8 +180,9 @@ const headOf = (stmt) => {
 
 /**
  * @param body        function-body AST (mutated in place)
- * @param storageOf   (name) => the receiver's typed constructor (`new.Float64Array`, a
- *                    `….view` suffix for a view), UNTYPED, or null when unknown
+ * @param storageOf   (name, read?) => the receiver's typed constructor (`new.Float64Array`, a
+ *                    `….view` suffix for a view), ARRAY, UNTYPED, or null when unknown.
+ *                    With a read node, null also rejects a value its temp cannot represent.
  * @param freshName   (value) => string — unique temp local name for the cached value
  * @param isNumeric   (node) => boolean — payload is Number, possibly absent
  * @param isReadonlyCall (callNode) => boolean — the callee writes no storage that exists before
@@ -192,15 +196,18 @@ const headOf = (stmt) => {
  *                    first read is the one its statement evaluates first (headOf), so the
  *                    cache is a `const` declared before that statement.
  * @param mayStoreField (recv) => boolean: a computed-key store into `recv` may write a field
+ * @param disjointArrays (a, b) => boolean: the summary proves the arrays cannot alias
  * @returns number of loads eliminated
  */
-export function cseLoads(body, storageOf, freshName, isNumeric, isReadonlyCall = null, runsUserCode = null, fieldOf = null, mayStoreField = null) {
+export function cseLoads(body, storageOf, freshName, isNumeric, isReadonlyCall = null, runsUserCode = null, fieldOf = null, mayStoreField = null, disjointArrays = null) {
   if (!isArr(body)) return 0
   const F = indexFacts(body)
   let eliminated = 0
-  const typedCtor = (name) => { const s = storageOf(name); return s != null && s !== UNTYPED ? s : null }
+  const typedCtor = (name, read) => { const s = storageOf(name, read); return s != null && s !== UNTYPED ? s : null }
   // Whether a store `recv[idx2]` leaves the cached element `e` intact (see the soundness note).
   const survives = (e, recv, idx2, scope) => isName(recv) && (storageOf(recv) === UNTYPED ||
+    disjointArrays?.(e.arr, recv) ||
+    (typedCtor(recv) != null && (typedCtor(recv) === ARRAY) !== (e.ctor === ARRAY)) ||
     (recv === e.arr || !e.ctor.endsWith('.view') && typedCtor(recv) === e.ctor) && provablyDiffer(e.idxNode, idx2, F, scope))
 
   // A branch arm that leaves the sequence and stores nothing: the statements
@@ -220,6 +227,11 @@ export function cseLoads(body, storageOf, freshName, isNumeric, isReadonlyCall =
   const runSeq = (seq) => {
     // key → { arr, ctor, idxNode, idxVars, firstStmt, occ: [{ parent, idx, numeric }] }
     const avail = new Map()
+    // A bound-once receiver can hold an already available array element.
+    // Two such bindings read the same pointer, even if later writes change
+    // the containing slot. Keep that snapshot's identity on their reads.
+    const receivers = new Map()
+    const slotKey = (arr, idx) => `${receivers.get(arr) ?? arr}|${idxKey(idx)}`
     const shared = []   // entries a second read joined: one load at the first occurrence
     const inserts = []   // { at: stmtIdx, binding }
 
@@ -229,9 +241,35 @@ export function cseLoads(body, storageOf, freshName, isNumeric, isReadonlyCall =
     // A store of a field `prop` reaches that field of every object; one under a
     // computed key (`prop` null) reaches any field.
     const invalidateField = (prop) => { for (const [k, e] of avail) if (e.field != null && (prop == null || e.field === prop)) avail.delete(k) }
+    // A named store can truncate a plain array through .length (or write a
+    // numeric property). Typed-array elements have no corresponding alias.
+    const invalidateArrays = () => { for (const [k, e] of avail) if (e.ctor === ARRAY) avail.delete(k) }
 
     const reads = (node, parent, pi, si, noCseKey = null) => {
       if (!isArr(node) || node[0] === 'str') return
+      if (node[0] === 'delete') {
+        for (let i = 1; i < node.length; i++) reads(node[i], node, i, si)
+        flush()
+        return
+      }
+      if (node[0] === 'const' || node[0] === 'let') {
+        for (let i = 1; i < node.length; i++) {
+          const d = node[i]
+          if (!isArr(d) || d[0] !== '=' || !isName(d[1])) { reads(d, node, i, si); continue }
+          reads(d[2], d, 2, si)
+          invalidateVar(d[1])
+          receivers.delete(d[1])
+          const b = F.bindings.get(d[1])
+          if (b?.[BINDING_USE_DECLS] !== 1 || !stableBinding(b) || storageOf(d[1]) !== ARRAY) continue
+          const rhs = d[2]
+          if (isName(rhs) && stableBinding(F.bindings.get(rhs))) receivers.set(d[1], receivers.get(rhs) ?? rhs)
+          else if (rhs?.[0] === '[]' && isName(rhs[1])) {
+            const e = avail.get(slotKey(rhs[1], rhs[2]))
+            if (e) receivers.set(d[1], e.receiver ??= d[1])
+          }
+        }
+        return
+      }
       // A CONTROL boundary nested INSIDE a statement (a while inside a `{}`
       // block, an if arm): its body re-executes / conditionally executes, so an
       // element read in there is NOT the same value as a textual twin outside —
@@ -245,7 +283,7 @@ export function cseLoads(body, storageOf, freshName, isNumeric, isReadonlyCall =
       // read what was available before them. A load first read in an operand
       // that may not run is that operand's own; what an operand invalidated is
       // gone after the expression whichever operand ran.
-      if ((node[0] === '||' || node[0] === '&&' || node[0] === '??' || node[0] === '?:') && node.length >= 3) {
+      if ((node[0] === '||' || node[0] === '&&' || node[0] === '??' || node[0] === '?:' || node[0] === 'if') && node.length >= 3) {
         reads(node[1], node, 1, si, noCseKey)
         const before = new Map(avail)
         for (let i = 2; i < node.length; i++) {
@@ -274,20 +312,20 @@ export function cseLoads(body, storageOf, freshName, isNumeric, isReadonlyCall =
           (BIT_OPS.has(rhs[0]) ||
            (rhs[0] === '()' && rhs.length > 2 && (rhs[1] === 'math.imul' ||
              (isArr(rhs[1]) && rhs[1][0] === '.' && rhs[1][1] === 'Math' && rhs[1][2] === 'imul'))))
-        const ownKey = i32Rmw ? `${lhs[1]}|${idxKey(lhs[2])}` : null
+        const ownKey = i32Rmw ? slotKey(lhs[1], lhs[2]) : null
         for (let i = 2; i < node.length; i++) reads(node[i], node, i, si, ownKey)    // rhs value
         if (runsUserCode?.(node)) flush()
         if (lhs[0] === '[]') {
           for (const [k, e] of avail) if (e.field == null && !survives(e, lhs[1], lhs[2], seq)) avail.delete(k)
           if (!mayStoreField || mayStoreField(lhs[1])) invalidateField(isArr(lhs[2]) && lhs[2][0] === 'str' ? lhs[2][1] : null)
-        } else invalidateField(isName(lhs[2]) ? lhs[2] : null)
+        } else { invalidateField(isName(lhs[2]) ? lhs[2] : null); invalidateArrays() }
         return
       }
       if ((node[0] === '++' || node[0] === '--' || node[0] === 'delete') && isArr(node[1]) && (node[1][0] === '.' || node[1][0] === '?.' || node[1][0] === '[]')) {
         const lhs = node[1]
         reads(lhs[1], lhs, 1, si)
         if (lhs[0] === '[]') { reads(lhs[2], lhs, 2, si); flush() }
-        else invalidateField(isName(lhs[2]) ? lhs[2] : null)
+        else { invalidateField(isName(lhs[2]) ? lhs[2] : null); invalidateArrays() }
         return
       }
       // A field of an object: cached like an element, its receiver the binding.
@@ -305,9 +343,9 @@ export function cseLoads(body, storageOf, freshName, isNumeric, isReadonlyCall =
         if (node === head) avail.set(key, { arr: node[1], field: node[2], read: node, idxVars: new Set(), firstStmt: si, occ: [{ parent, idx: pi, numeric }] })
         return
       }
-      const ctor = node[0] === '[]' && isName(node[1]) && stableIdx(node[2], runsUserCode) && !runsUserCode?.(node) ? typedCtor(node[1]) : null
-      if (ctor) {
-        const arr = node[1], key = `${arr}|${idxKey(node[2])}`
+      const ctor = node[0] === '[]' && isName(node[1]) && stableIdx(node[2], runsUserCode) && !runsUserCode?.(node) ? typedCtor(node[1], node) : null
+      if (ctor && (ctor !== ARRAY || isNumeric(node[2]))) {
+        const arr = node[1], key = slotKey(arr, node[2])
         if (key === noCseKey) return
         // A Number|undefined read consumed arithmetically normalizes its miss
         // (`u+`); an identity-observing use keeps the value. One load serves
@@ -347,6 +385,7 @@ export function cseLoads(body, storageOf, freshName, isNumeric, isReadonlyCall =
         // arm stores nothing, so C's loads stay available (the sift loop's
         // `if (a[i] >= a[child]) break` then swaps without reloading either).
         if (s[0] === 'if' && s.length === 3 && exitsOnly(s[2])) { reads(s[1], s, 1, si); continue }
+        if (s[0] === 'if') { reads(s, seq, si, si); continue }
         flush(); continue   // nesting handled by the outer `descend`
       }
       reads(s, seq, si, si)

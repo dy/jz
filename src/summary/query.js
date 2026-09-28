@@ -436,6 +436,10 @@ export function summaryQueries(facts, internal = false) {
       // The fixed length of the array a name or an expression holds; null when it may change or differ.
       fixedLenOf: name => fixedLen(readKind(name)),
       fixedLenOfExpr: e => fixedLen(kindOfExpr(e)),
+      // Distinct array cells cannot hold the same allocation. Assignment,
+      // arguments and container stores unify aliases in the solver; an open
+      // receiver keeps UNKNOWN and proves nothing. Typed views do not use cells.
+      arrayCellOf: e => { const k = kindOfExpr(e); return tagOf(k) === K.ARRAY && paramOf(k) !== UNKNOWN ? cell(paramOf(k)) : null },
       // The length a module binding's array has after module init and keeps
       // (index.js `built`, `grown`, `unknown`): what it was built with plus the
       // elements the top level pushed through this very name in counted loops;

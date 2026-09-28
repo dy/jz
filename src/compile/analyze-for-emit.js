@@ -1,5 +1,5 @@
 import { ctx } from '../ctx.js'
-import { T, isBlockBody, isReassigned, walkAst, MUTATE_OPS, ACCESSOR_GET } from '../ast.js'
+import { T, isBlockBody, isReassigned, walkAst, MUTATE_OPS, ACCESSOR_GET, callArgs } from '../ast.js'
 import { constIntExpr } from '../static.js'
 import { intCertainMap } from '../type.js'
 import { typedElemAux } from '../../layout.js'
@@ -24,7 +24,7 @@ import { mintTypedStoragePlan } from './typed-storage-plan.js'
 import { narrowBoundedSquare } from './loop-square.js'
 import { unrollRecurrence, unrollScalarChains, selectArmUpdatesIn } from './loop-recurrence.js'
 import { peelClampedStencil } from './peel-stencil.js'
-import { cseLoads, UNTYPED } from './cse-load.js'
+import { cseLoads, UNTYPED, ARRAY } from './cse-load.js'
 import { guardSentinels } from './sentinel-guard.js'
 import { splitTwins } from './twin-locals.js'
 import { carryElements } from './carry-elements.js'
@@ -254,10 +254,9 @@ export function analyzeFuncForEmit(func, programFacts) {
         updateRep(p.name, { val: VAL.NUMBER, nullable: false })
     }
   }
-  // Sound load-CSE: cache a repeated pure typed-array load `arr[idx]` when no intervening
-  // store can reach it (cse-load.js: same element grid and idx2 ≠ idx, or storage that never
-  // holds typed elements). Recovers the fft butterfly's redundant
-  // `re[a]` load. Before analyze so the introduced temp is typed/narrowed like any local.
+  // Cache repeated element reads when no intervening store reaches them:
+  // distinct storage families, disjoint array cells, or unequal indices on
+  // the same element grid. Before analyze so new temps get ordinary storage.
   // mapOrOverlaySize (not `.size` directly): ctx.func.typedElem is now a MapOverlay
   // when globalTypedElem exists (the clone-elimination fix above) — see its own doc.
   // The pass mutates the body in place; a shared load binds a new local, so a
@@ -283,16 +282,30 @@ export function analyzeFuncForEmit(func, programFacts) {
   // A BigInt element read that may miss keeps its own load: the shared temp
   // is an i64, which has no room for the miss (a number's temp carries it).
   const bigintFree = (ctor) => ctor == null || /^(?:new\.)?Big/.test(ctor) ? null : ctor
+  const loadStorage = (n, read) => {
+    const ctor = typedLoads ? bigintFree(ctx.func.typedElem.get(n)) : null
+    if (ctor) return ctor
+    const vt = valTypeOf(n)
+    if (vt === VAL.ARRAY || summary?.arrayCellOf(n) != null) {
+      // Scalar i64/i32 temps cannot represent a missing BigInt/boolean.
+      // Cache Number values and nested array pointers, whose temps retain misses.
+      if (read && valTypeOf(read) !== VAL.NUMBER && summary?.arrayCellOf(read) == null) return null
+      return ARRAY
+    }
+    return UNTYPED_KINDS.has(vt) ? UNTYPED : null
+  }
   if (_o && _o.loadCSE !== false && block && (typedLoads || fieldRead) && !(func.frame ? func.frame.runsAccessor : viewsOn())
-      && cseLoads(body, n => (typedLoads ? bigintFree(ctx.func.typedElem.get(n)) : null) ?? (UNTYPED_KINDS.has(valTypeOf(n)) ? UNTYPED : null), read => {
+      && cseLoads(body, loadStorage, read => {
         const name = freshCseName()
         summary?.alias(name, read, false)
         if (read[0] === '[]') cseReads.push([name, read])
         return name
       }, n => valTypeOf(n) === VAL.NUMBER,
-        n => n[0] === '()' && typeof n[1] === 'string' && ctx.funcs.map.get(n[1])?.frame?.writesOuter === false,
+        n => n[0] === '()' && typeof n[1] === 'string' && (ctx.funcs.map.get(n[1])?.frame?.writesOuter === false ||
+          n[1].startsWith('math.') && callArgs(n).every(a => valTypeOf(a) === VAL.NUMBER)),
         n => runsConversion(summary, n), fieldRead,
-        recv => { const vt = typeof recv === 'string' ? valTypeOf(recv) : null; return vt !== VAL.ARRAY && vt !== VAL.TYPED && vt !== VAL.STRING }) > 0)
+        recv => { const vt = typeof recv === 'string' ? valTypeOf(recv) : null; return vt !== VAL.ARRAY && vt !== VAL.TYPED && vt !== VAL.STRING },
+        summary ? (a, b) => { const ca = summary.arrayCellOf(a), cb = summary.arrayCellOf(b); return ca != null && cb != null && ca !== cb } : null) > 0)
     invalidateLocalsCache(body)
 
   if (block) {
