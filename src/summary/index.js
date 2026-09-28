@@ -49,10 +49,10 @@
  * @module summary
  */
 import { MUTATE_OPS, EXACT_MATH, extractParams, isBrand, returnExprs, ACCESSOR_GET, ACCESSOR_SET, CLASS_T, TYPEOF, typeofPredicate, canonicalKeyOrder, schemaKey, isArrayIndexKey, layoutView, ENUM_DATA } from '../ast.js'
-import { encodeTypedElemAux, TYPED_ELEM_CODE, TYPED_ELEM_VIEW_FLAG, TYPED_ELEM_ANY_VIEW_FLAG } from '../../layout.js'
+import { encodeTypedElemAux, TYPED_ELEM_CODE, TYPED_ELEM_VIEW_FLAG, TYPED_ELEM_ANY_VIEW_FLAG, ctorFromElemAux, TYPED_ELEM_BIGINT_FLAG } from '../../layout.js'
 import { ITER_RECORD_KEYS } from '../std/iter-helpers.js'
 import { VAL } from '../reps.js'
-import { typedElementKey } from '../typed-provenance.js'
+import { typedElementKey, typedCtorName } from '../typed-provenance.js'
 import { ATOMICS_VALUE_OPS, builtinCalleeVal, methodValType } from '../kind-traits.js'
 import { summaryQueries } from './query.js'
 import { buildResultContracts, unbounded } from './contract.js'
@@ -1675,6 +1675,18 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   const decided = (c) => {
     if (!Array.isArray(c)) return undefined
     const op = c[0]
+    if (op === '()' && c.length === 2) return decided(c[1])   // grouping
+    if (op === '!') { const t = decided(c[1]); return typeof t === 'boolean' ? !t : t }
+    // `&&` false where either operand is, `||` true where either is: the other
+    // operand only decides which falsy (truthy) value the test sees
+    if (op === '&&' || op === '||') {
+      const a = decided(c[1]), b = decided(c[2]), stop = op === '||'
+      if (a === stop || b === stop) return stop
+      if (a === 'pending' || b === 'pending') return 'pending'
+      return a === !stop && b === !stop ? !stop : undefined
+    }
+    if (op === 'instanceof' && typeof c[1] === 'string' && typeof c[2] === 'string') return instanceTest(c[1], c[2])
+    if (op === '()' && c.length === 3 && c[1] === 'Array.isArray' && typeof c[2] === 'string') return instanceTest(c[2], 'Array')
     // `x.p` of a value that is a number, a boolean or a BigInt (a missing one
     // throws) is undefined: false, so `if (x.isVector3)` given a number walks
     // its else arm alone (the clone narrow/specialize.js gives the method).
@@ -1703,6 +1715,27 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     else if ((t === K.NULLISH || t === K.ABSENT) && paramKeys.has(ctxBase[key] ?? key) && !argBound.has(key)) eq = isUndefinedLiteral(isNullishLiteral(c[2]) ? c[2] : c[1])
     else return undefined
     return op === '===' || op === '==' ? eq : !eq
+  }
+  // `x instanceof C` of a built-in class C, `Array.isArray(x)`: false where no
+  // value of x has C's tag, true where every value is one (a typed array of C's
+  // element kind, owned or a view). BigInt64Array and BigUint64Array share an aux.
+  const INSTANCE_TAGS = new Map([['Array', K.ARRAY], ['Map', K.MAP], ['Set', K.SET], ['ArrayBuffer', K.BUFFER],
+    ...['Int8Array', 'Uint8Array', 'Uint8ClampedArray', 'Int16Array', 'Uint16Array', 'Int32Array', 'Uint32Array',
+      'Float16Array', 'Float32Array', 'Float64Array', 'BigInt64Array', 'BigUint64Array'].map(c => [c, K.TYPED])])
+  const instanceTest = (name, cls) => {
+    const tag = INSTANCE_TAGS.get(cls)
+    if (tag == null) return undefined
+    const key = keyOf(name)
+    if (key === null) return undefined
+    const k = kinds[key]
+    if (k == null || tagOf(k) === K.NONE) return paramKeys.has(key) ? 'pending' : undefined
+    if (!hasTag(k, tag)) return false
+    if (isNullable(k) || tagOf(core(k)) !== tag) return undefined
+    if (tag !== K.TYPED) return true
+    const aux = typedAux(k)
+    if (aux === UNKNOWN || aux & TYPED_ELEM_BIGINT_FLAG) return undefined
+    const own = typedCtorName(ctorFromElemAux(aux))
+    return own == null ? undefined : own === cls
   }
   const OBJECT_PROTO_METHODS = new Set(['hasOwnProperty', 'isPrototypeOf', 'propertyIsEnumerable', 'toString', 'toLocaleString', 'valueOf'])
   // What a method of `Object.prototype` answers on an object that holds no member of the

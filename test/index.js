@@ -99,6 +99,7 @@ const TESTS = [
   'guarded-clone',
   'host-closure',
   'typed-any-view',
+  'kind-tests',
   'variant-result',
   'call-boundary',
   'call-release',

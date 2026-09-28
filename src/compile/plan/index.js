@@ -51,6 +51,7 @@ import {
   holdModuleNumbers, resolveHeldMethods, holdModuleRegexes,
 } from './scope.js'
 import { declareWrittenKeys } from './declare-written-keys.js'
+import { foldKindTests } from './fold-kind-tests.js'
 import { indexArrayPatterns } from './index-array-patterns.js'
 import { inlineHotInternalCalls, inlineLocalLambdas, specializeFixedRestCalls } from './inline.js'
 import { laneRecordParams } from './lanes.js'
@@ -95,6 +96,13 @@ export default function plan(ast, profiler, summarize) {
   t('moduleGlobalKinds', () => moduleGlobalKinds(ctx.summary))
   t('unboxConstTypedGlobals', unboxConstTypedGlobals)
   sweep('inferModuleIntGlobals', () => inferModuleIntGlobals(ast))
+  // A test the summary decides folds with the arm it never takes. What that arm
+  // passed on then joins no kind, which may decide further tests.
+  for (let round = 0; round < 4; round++) {
+    if (!t('foldKindTests', foldKindTests)) break
+    _dirty = true; getFactStore().revision++
+    ctx.summary = summarize()
+  }
 
   facts()
   // Receiver-HASH global classification (.work/archive/todo.md §deletion-sweep):
