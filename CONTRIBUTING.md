@@ -1905,7 +1905,9 @@ field, an element, a result) lands as its ToNumber. No such binding rejects;
 `test/bool-number.js` pins each operation in each place. An integer-certain
 binding counts the writes a nested closure makes to it, and a reassigned
 parameter its caller's value (`intLevelMap` seeds the analyzed body's own
-parameters, the slot census's included).
+parameters, the slot census's included). A Boolean answers its own
+`toString` ("true", not "1": `.boolean:toString` for a Boolean receiver, an
+atom arm in the runtime method dispatch).
 
 A typed array's `fill` converts its value once for a numeric array (`fill('12')`
 stores 12), writes the first element through the element writer and doubles

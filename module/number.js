@@ -2126,6 +2126,9 @@ export default (ctx) => {
         ['else', ['call', '$__num_radix', ['local.get', `$${vt}`], ['local.get', `$${rt}`]]]]], 'f64')
   })
 
+  // Boolean.prototype.toString (20.3.3.3): "true" or "false", never the 0/1 carrier.
+  ctx.core.emit['.boolean:toString'] = (b) => bool(b)
+
   // BigInt.prototype.toString(radix) — i64-exact, default radix 10.
   reg('.bigint:toString', ['__radix_str'], (n, radix) =>
     typed(['call', '$__radix_str', readI64(n, emit(n)), radix == null ? ['i32.const', 10] : asI32(emit(radix))], 'f64'))

@@ -24,6 +24,7 @@ const OPS = {
   add: v => `${v} + 1`, mul: v => `${v} * 2`, neg: v => `-${v}`, int: v => `${v} | 0`, lt: v => `${v} < 1`, ge: v => `${v} >= 1`,
   floor: v => `Math.floor(${v})`, typed: v => `new Float64Array([${v}])[0]`,
   str: v => `String(${v})`, tpl: v => '`<${' + v + '}>`', cat: v => `'x' + ${v}`, json: v => `JSON.stringify([${v}, { v: ${v} }])`,
+  method: v => `(${v}).toString()`, search: v => `[true, false, 1, 0].includes(${v})`,
   truth: v => `${v} ? 'y' : 'n'`, not: v => `!${v}`, or: v => `${v} || 5`, nullish: v => `${v} ?? 5`,
   inArray: v => `typeof [${v}][0]`, inObject: v => `({ w: ${v} }).w`, ret: v => v, arg: v => `(x => typeof x)(${v})`,
 }
@@ -86,6 +87,19 @@ for (const optimize of levels(0, 2, 3))
         is(got[name](...args), want[name](...args), `async ${at} ${name}(${args}) at ${optimize}`)
     }
   })
+
+// A Boolean alone: its own `toString`, and its number where rounding or a
+// slot's arithmetic asks for one (the slot holds its atom); `includes`
+// compares by SameValueZero (`[false].includes(0)` finds nothing).
+test('bool or number: a Boolean alone prints its name, rounds to its number and is found only as itself', () => {
+  const src = `let keep = []
+export let f = (x) => { let b = x > 1, o = { a: b }; keep.push(o)
+  return [b.toString(), Math.floor(b), Math.floor(o.a), o.a * 2, [x > 1 ? 1 : 0].includes(b), [false].includes(0)] }`
+  for (const optimize of levels(0, 2, 3)) {
+    const want = oracle(src).f, { f } = run(src, { optimize })
+    for (const x of [0, 2]) is(f(x), want(x), `f(${x}) at ${optimize}`)
+  }
+})
 
 // The binding stays a number where every read converts, and a Boolean where
 // every store is one: the atoms cost nothing there.

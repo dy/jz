@@ -13,7 +13,7 @@ import { T, isLeaf, isReassigned } from '../../ast.js'
 import { includeForRuntimeKeyIteration, includeModule } from '../../autoload.js'
 import { LAYOUT, PTR, ctx, emitArity, err, inc, setLinkDemand, warnDeopt } from '../../ctx.js'
 import {
-  BOXED_MUTATORS, allocPtr, asF64, asI32, asI64, block64, boolBoxIR, cloneIR, deferBigintBox, dispatchByPtrType, freshId, isGlobal, isNullish, materializeDeferredBigint, ptrOffsetIR, ptrTypeEq, reconstructArgsWithSpreads, sidecarOverride, temp, tempI32, throwTypeErrorIR, typed, undefExpr, usesDynProps,
+  BOXED_MUTATORS, TRUE_NAN, allocPtr, asF64, asI32, asI64, block64, boolBoxIR, cloneIR, deferBigintBox, dispatchByPtrType, freshId, isBoolAtom, isGlobal, isNullish, materializeDeferredBigint, ptrOffsetIR, ptrTypeEq, reconstructArgsWithSpreads, sidecarOverride, temp, tempI32, throwTypeErrorIR, typed, undefExpr, usesDynProps,
 } from '../../ir.js'
 import { censusMaybeUndefined, valTypeOf } from '../../kind.js'
 import { methodValType } from '../../kind-traits.js'
@@ -511,7 +511,13 @@ function tryRuntimePtrTypeFork({ obj, method, parsed, vt, callMethod, optional }
     // `$__ptr_type` call.
     const fallback = mayBe(K.DATE) ? dateAuxFallback(t, method, callMethod, generic, tt) : generic
     const primitive = numEmitter ? asF64(callMethod(t, numEmitter)) : objectMethod ? generic : missing
-    if (mayBe(K.NUMBER) || mayBe(K.BOOL) || mayBeUndef) cases.push([PTR.ATOM, primitive])
+    // A Boolean is an atom as well: its own methods (Boolean.prototype's
+    // toString and valueOf), never a number's (`true.toString()` is "true").
+    const own = () => typed(['local.get', `$${t}`], 'f64')
+    const boolean = method === 'toString' ? typed(['select', asF64(emit(['str', 'true'])), asF64(emit(['str', 'false'])),
+      ['i64.eq', ['i64.reinterpret_f64', own()], ['i64.const', TRUE_NAN]]], 'f64') : method === 'valueOf' ? own() : missing
+    const atom = numEmitter && mayBe(K.BOOL) ? typed(['if', ['result', 'f64'], isBoolAtom(own()), ['then', boolean], ['else', primitive]], 'f64') : primitive
+    if (mayBe(K.NUMBER) || mayBe(K.BOOL) || mayBeUndef) cases.push([PTR.ATOM, atom])
     if (!bigintEmitter && mayBe(K.BIGINT)) cases.push([PTR.BIGINT, objectMethod ? generic : missing])
     let boxed = dispatchByPtrType(tt, cases, fallback)
     if (mayBeUndef) boxed = typed(['if', ['result', 'f64'],
