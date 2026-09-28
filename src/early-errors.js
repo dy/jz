@@ -1,5 +1,5 @@
 import { ASSIGN_OPS, some } from './ast.js'
-import { err } from './ctx.js'
+import { ctx, err } from './ctx.js'
 import { asciiPart, isSpace } from './unicode.js'
 
 /**
@@ -20,7 +20,13 @@ const ALWAYS_RESERVED = new Set([
   'switch', 'this', 'throw', 'true', 'try', 'typeof', 'var', 'void', 'while', 'with',
 ])
 
-const fail = message => err(`Early error: ${message}`)
+// The position under validation, in the parsed source, and where that source
+// starts among the compile's (ctx.js addSource; null for text the compiler wrote).
+let at = null, base = 0
+const fail = message => {
+  if (base != null && at != null) ctx.error.loc = base + at
+  err(`Early error: ${message}`)
+}
 const isNode = n => Array.isArray(n)
 const isSeq = n => isNode(n) && n[0] === ';'
 const statements = n => n == null ? [] : isSeq(n) ? n.slice(1).filter(x => x != null) : [n]
@@ -382,6 +388,7 @@ const validateLexicalSource = (src, strict) => {
   const parens = [], doBlocks = [], doBlockEnds = new Set()
   while (i < src.length) {
     const c = src.charCodeAt(i), ch = src[i]
+    at = i
     if (isWhitespaceCode(c)) {
       if (c === 10 || c === 13 || c === 0x2028 || c === 0x2029) sawNewline = true
       i++; continue
@@ -780,15 +787,17 @@ const boundNames = (pattern, out = []) => {
 const decodeIdentifier = name => typeof name === 'string' ? name.replace(/\\u(?:\{([0-9A-Fa-f]+)\}|([0-9A-Fa-f]{4}))/g,
   (_m, braced, fixed) => String.fromCodePoint(parseInt(braced || fixed, 16))) : name
 
-const duplicateName = names => {
+// The index of the first name that repeats an earlier one, -1 when none does.
+const duplicateAt = names => {
   // Binding lists are tiny; a nested comparison avoids allocating a Set (and
   // its 8-slot table) for every declaration/parameter list.
   for (let i = 0; i < names.length; i++) {
     const name = decodeIdentifier(names[i])
-    for (let k = 0; k < i; k++) if (decodeIdentifier(names[k]) === name) return name
+    for (let k = 0; k < i; k++) if (decodeIdentifier(names[k]) === name) return i
   }
-  return null
+  return -1
 }
+const duplicateName = names => { const i = duplicateAt(names); return i < 0 ? null : decodeIdentifier(names[i]) }
 
 const checkBindingName = (name, cx) => {
   name = decodeIdentifier(name)
@@ -1003,7 +1012,7 @@ const collectVarNames = (node, out, scopeKind, direct = true) => {
 
 const validateScopeNames = (body, cx, scopeKind, paramNames = []) => {
   const list = statements(body)
-  const lexical = []
+  const lexical = [], lexicalAt = []
   const directVar = []
   // Annex B's "a top-level FunctionDeclaration also counts as VarDeclaredNames"
   // leniency (which is why 'function' joins 'var' in directVar below, at
@@ -1019,7 +1028,7 @@ const validateScopeNames = (body, cx, scopeKind, paramNames = []) => {
     if (!d) continue
     if (d[D_TYPE] === 'let' || d[D_TYPE] === 'const' || d[D_TYPE] === 'class' ||
         (d[D_TYPE] === 'function' && scopeKind !== 'global' && scopeKind !== 'function'))
-      lexical.push(...d[D_NAMES])
+      for (const name of d[D_NAMES]) lexical.push(name), lexicalAt.push(stmt.loc)
     else if (d[D_TYPE] === 'var' || d[D_TYPE] === 'function') {
       directVar.push(...d[D_NAMES])
       if (moduleTop) (d[D_TYPE] === 'var' ? topVarNames : topFuncNames).push(...d[D_NAMES])
@@ -1031,12 +1040,14 @@ const validateScopeNames = (body, cx, scopeKind, paramNames = []) => {
   // (ES2026 §16.2.1.1 static semantics): a second declaration of the name is
   // an early error, where a script hoists the last.
   if (moduleTop) { const dupFn = duplicateName(topFuncNames); if (dupFn) fail(`duplicate function declaration '${dupFn}' at module top level`) }
-  const dup = duplicateName(lexical)
-  if (dup) fail(`duplicate lexical declaration '${dup}'`)
+  const dup = duplicateAt(lexical)
+  if (dup >= 0) { at = lexicalAt[dup] ?? at; fail(`duplicate lexical declaration '${decodeIdentifier(lexical[dup])}'`) }
   const vars = []
   for (const stmt of list) collectVarNames(stmt, vars, scopeKind, true)
   const varSet = new Set(vars.length ? vars : directVar)
-  for (const name of lexical) {
+  for (let i = 0; i < lexical.length; i++) {
+    const name = lexical[i]
+    if (varSet.has(name) || paramNames.includes(name)) at = lexicalAt[i] ?? at
     if (varSet.has(name)) fail(`lexical declaration '${name}' conflicts with var/function declaration`)
     if (paramNames.includes(name)) fail(`lexical declaration '${name}' conflicts with a parameter`)
   }
@@ -1313,13 +1324,14 @@ const validateModuleStatementBoundaries = (ast, source) => {
     // split it into a sibling despite there being no legal insertion point.
     if (!isNode(next) || next[0] != null || typeof next.loc !== 'number') continue
     const boundary = previousSourceToken(source, next.loc)
+    at = next.loc
     if (!boundary[1] && source[boundary[0]] !== ';')
       fail('export declaration and following literal require a semicolon or LineTerminator')
   }
 }
 
 const validateExports = ast => {
-  const names = new Set(), locals = new Set(), localExports = new Set()
+  const names = new Set(), locals = new Set(), localExports = new Map()
   const add = name => {
     if (name == null) return
     name = decodeIdentifier(name)
@@ -1333,14 +1345,14 @@ const validateExports = ast => {
     if (op === 'from') return exported(node[1], true)
     if (op === 'as') {
       add(node[2])
-      if (!reexport && node[1] !== '*') localExports.add(decodeIdentifier(node[1]))
+      if (!reexport && node[1] !== '*') localExports.set(decodeIdentifier(node[1]), at)
       return
     }
     if (op === '{}') {
       for (const item of patternItems(node)) {
-        if (typeof item === 'string') { add(item); if (!reexport) localExports.add(decodeIdentifier(item)) }
+        if (typeof item === 'string') { add(item); if (!reexport) localExports.set(decodeIdentifier(item), at) }
         else if (isNode(item) && item[0] === 'as') {
-          add(item[2]); if (!reexport && item[1] !== '*') localExports.add(decodeIdentifier(item[1]))
+          add(item[2]); if (!reexport && item[1] !== '*') localExports.set(decodeIdentifier(item[1]), at)
         }
       }
       return
@@ -1350,6 +1362,7 @@ const validateExports = ast => {
   }
   const scan = (node, depth = 0) => {
     if (!isNode(node)) return
+    if (typeof node.loc === 'number') at = node.loc
     if (node[0] === ';') {
       for (let i = 1; i < node.length; i++) {
         if (i > 1 && isNode(node[i - 1]) && node[i - 1][0] === 'export' &&
@@ -1389,10 +1402,13 @@ const validateExports = ast => {
     collectImports(stmt)
   }
   scan(ast)
-  for (const name of localExports) if (!locals.has(name)) fail(`export '${name}' has no local binding`)
+  for (const [name, loc] of localExports) if (!locals.has(name)) { at = loc; fail(`export '${name}' has no local binding`) }
+  at = null
 }
 
-export function validateEarlyErrors(ast, source, sourceType = 'jz') {
+export function validateEarlyErrors(ast, source, sourceType = 'jz', sourceBase = 0) {
+  at = null
+  base = sourceBase
   // `jz` preserves the historical dialect: export declarations form the ABI
   // while the surrounding source keeps Script strictness rules. Callers that
   // need ECMAScript parse-goal fidelity can select an explicit Script or Module
@@ -1425,6 +1441,12 @@ export function validateEarlyErrors(ast, source, sourceType = 'jz') {
   // legal only when soleStmt is false (top-level, block contents, and for-
   // header init all reach walk() with soleStmt left at its default).
   const walk = (node, cx, statementPosition = false, soleStmt = false) => {
+    const outer = at
+    if (isNode(node) && typeof node.loc === 'number') at = node.loc
+    walkNode(node, cx, statementPosition, soleStmt)
+    at = outer
+  }
+  const walkNode = (node, cx, statementPosition, soleStmt) => {
     if (!isNode(node)) return
     const op = node[0]
     if (op == null) return

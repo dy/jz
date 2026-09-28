@@ -73,7 +73,7 @@ export function analyzeFuncForEmit(func, programFacts) {
   }
 
   const { name, body, sig } = func
-  const previousFrame = enterFunc(sig, body, { exported: isExported(func) })
+  const previousFrame = enterFunc(sig, body, { exported: isExported(func), loc: func.loc })
   try {
 
   const block = isBlockBody(body)

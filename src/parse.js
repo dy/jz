@@ -16,6 +16,7 @@ import { parse as jessieParse, token } from 'subscript/feature/jessie'
 import { lookup, idx, cur, skip, err, prec, seek } from 'subscript/parse'
 import { fromRadixDigits, toDecimalString, truncateLimbs } from './bignum.js'
 import { validateEarlyErrors } from './early-errors.js'
+import { here, where } from './ctx.js'
 import { asciiPart, idStart, idPart, lineEnd, isSpace } from './unicode.js'
 
 // IdentifierName (§12.7). subscript takes every code unit from U+00C0 but ×
@@ -174,21 +175,46 @@ jessieParse.step = (a, p, cc, expr) => {
   return baseStep(a, p, cc, expr) ?? (isNode(a) && nl ? asi(a, p, expr) ?? null : null)
 }
 
-const parse = (src, sourceType = 'jz') => {
-  // A leading `#!` line is a comment (Node, V8), cut before subscript reads
-  // the source: subscript's own shebang.js registration went with
-  // parse.comment's entries.
+// Positions (ctx.js): a bundled module's shift past the sources before it;
+// a source the compiler writes (base null) keeps none.
+const place = (node, base) => {
+  if (!Array.isArray(node)) return
+  if (typeof node.loc === 'number') node.loc = base == null ? undefined : node.loc + base
+  for (let i = 1; i < node.length; i++) place(node[i], base)
+}
+// subscript reports where it stopped as `line:column` in its message.
+const stoppedAt = (message, src) => {
+  const m = / at ([0-9]+):([0-9]+)\n/.exec(message)
+  if (!m) return { message, at: idx }
+  let at = 0
+  for (let line = +m[1]; line > 1; line--) at = src.indexOf('\n', at) + 1
+  return { message: message.slice(0, m.index), at: at + +m[2] - 1 }
+}
+
+/** Source text to its AST. `base` places the source among the compile's
+ *  (ctx.js addSource): 0 for the program, null for text the compiler wrote. */
+const parse = (src, sourceType = 'jz', base = 0) => {
+  // A leading `#!` line is a comment (Node, V8). Blanked, not cut, so every
+  // offset still indexes the source as written. subscript's own shebang.js
+  // registration went with parse.comment's entries.
   if (typeof src === 'string' && src.charCodeAt(0) === 35 && src.charCodeAt(1) === 33) {
     const nl = src.indexOf('\n')
-    src = nl < 0 ? '' : src.slice(nl)
+    src = ' '.repeat(nl < 0 ? src.length : nl) + (nl < 0 ? '' : src.slice(nl))
   }
   // A lone CR ends a line as LF does; a template reads it as LF (§12.9.6).
   // Same length, so AST offsets stand. The original spelling still goes to
   // lexical validation below.
   const parseSource = typeof src === 'string' && src.includes('\r') ? src.replace(/\r(?!\n)/g, '\n') : src
-  const ast = jessieParse(parseSource)
-  validateEarlyErrors(ast, src, sourceType)
+  let ast
+  try { ast = jessieParse(parseSource) }
+  catch (e) {
+    if (!(e instanceof SyntaxError)) throw e
+    const stop = stoppedAt(e.message, parseSource), at = where(base == null ? here() : base + stop.at)
+    throw SyntaxError(at ? stop.message + at : e.message)
+  }
+  validateEarlyErrors(ast, src, sourceType, base)
   decodeNames(ast)
+  if (base !== 0) place(ast, base)
   return ast
 }
 

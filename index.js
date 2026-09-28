@@ -96,8 +96,9 @@ const serialize = (v) => {
 }
 
 // opts.define → a one-line `let K = V; …` prelude prepended to source. Kept on a
-// single line (no trailing newline) so user line numbers past line 1 stay exact —
-// same convention the template tag uses for hoisted literals.
+// single line (no trailing newline) so user line numbers stay exact; positions
+// skip it (ctx.js locate), so line 1's columns stay exact too. The template tag
+// hoists its literals through the same prelude.
 const defineBindings = (define) => {
   const parts = []
   for (const [k, v] of Object.entries(define)) {
@@ -471,11 +472,13 @@ const jzCompileInner = (code, opts = {}) => {
   finally { compiling = false; flushWarnings() }
 }
 const compilePipeline = (code, opts = {}) => {
-  if (opts.define) code = defineBindings(opts.define) + code
+  const prelude = opts.define ? defineBindings(opts.define) : ''
+  code = prelude + code
   const profiler = compileProfiler(opts.profile)
   const time = (name, fn) => profiler ? profiler.time(name, fn) : fn()
 
   setupCtx(code, opts)   // post-reset invariants assert inside beginSession
+  ctx.error.lead = prelude.length
 
   // The canonical front half (src/front.js): parse →
   // liftIIFEs → jzify → prepare → preEval — ONE function shared verbatim with
@@ -595,7 +598,7 @@ const compilePipeline = (code, opts = {}) => {
 export default function jz(code, ...args) {
   // Template tag: jz`code ${val}` — numbers, functions, strings, arrays, objects
   if (Array.isArray(code)) {
-    const interp = {}, data = {}, hoisted = []
+    const interp = {}, data = {}, define = {}
 
     let src = code[0]
     for (let i = 0; i < args.length; i++) {
@@ -610,7 +613,7 @@ export default function jz(code, ...args) {
         } else if (s !== null) {
           // Strings, arrays, objects — hoist as compile-time literal
           const key = `$$${i}`
-          hoisted.push(`let ${key} = ${s}`)
+          define[key] = v
           src += key
         } else {
           // Non-serializable (host objects, etc.) — post-instantiation getter
@@ -621,9 +624,8 @@ export default function jz(code, ...args) {
       }
       src += code[i + 1]
     }
-    if (hoisted.length) src = hoisted.join('; ') + '; ' + src
     const hasInterp = Object.keys(interp).length
-    const tplOpts = { _interp: hasInterp ? interp : null }
+    const tplOpts = { _interp: hasInterp ? interp : null, ...(Object.keys(define).length && { define }) }
     const result = instantiateRuntime(jz.compile(src, tplOpts), tplOpts)
     // Patch data getters: allocate values in WASM memory, update closure refs
     for (const [, { val, ref }] of Object.entries(data)) {

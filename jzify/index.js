@@ -20,7 +20,8 @@ import { settleVars } from './settle-vars.js'
 import { createArgumentsLowering } from './arguments.js'
 import { createTransform, bindGenerators } from './transform.js'
 import { createGeneratorLowering } from './generators.js'
-import { collectParamNames, extractParams, isBlockBody, JZ_BLOCK_OPS, MUTATE_OPS } from '../src/ast.js'
+import { collectParamNames, extractParams, isBlockBody, JZ_BLOCK_OPS, MUTATE_OPS, withLoc } from '../src/ast.js'
+import { err } from '../src/ctx.js'
 
 const names = createNames()
 const SHADOW_SENSITIVE = new Set([
@@ -243,7 +244,7 @@ const iterProto = { on: false, helpers: false, program: false, programHelpers: f
 // Whether the program reads a `constructor` member (`new this.constructor(…)`,
 // `a.constructor === C`): its classes then carry the member (classes.js).
 const ctorUse = { on: false, program: false }
-const genErr = (msg) => { throw new Error('jzify: ' + msg) }
+const genErr = (msg) => err('jzify: ' + msg)
 const { lowerGenerator, desugarForOfGenerator, desugarForOfProtocol, unwindChain, fuseTerminal, fusedLoop, isTerminal } = createGeneratorLowering({ transform, transformParams, err: genErr, generatorNames, genTemp: (t) => names.genTemp(t), iterProto, lowerArguments })
 const { lowerAsync, lowerAsyncGen } = createAsyncLowering({ genTemp: (t) => names.genTemp(t), err: genErr })
 bindGenerators({ lowerGenerator, desugarForOfGenerator, desugarForOfProtocol, lowerAsync, lowerAsyncGen, generatorNames, iterProto, unwindChain, fuseTerminal, fusedLoop, isTerminal })
@@ -370,7 +371,7 @@ function hoistModuleDynamicImports(ast) {
       hoisted.push(['import', ['from', ['as', '*', ns], [null, dyn[1][2][1]]]])
       return ns
     }
-    return n.map((c, i) => i === 0 ? c : walk(c))
+    return withLoc(n.map((c, i) => i === 0 ? c : walk(c)), n)
   }
   const out = walk(ast)
   if (!hoisted.length) return ast

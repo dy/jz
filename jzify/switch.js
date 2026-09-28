@@ -3,6 +3,8 @@
  * @module jzify/switch
  */
 
+import { withLoc } from '../src/ast.js'
+
 /** Flatten a switch clause body to a single node, dropping ASI position markers.
  * Unlike a plain statement list this keeps any `break` intact — transformSwitch
  * needs the breaks to gate fall-through; it rewrites them to a sticky flag. */
@@ -22,7 +24,9 @@ function hasOwnSwitchBreak(node) {
   return false
 }
 
-function rewriteSwitchBreaks(node, flag) {
+// What a node rewrites to stands at its source position (ast.js withLoc).
+function rewriteSwitchBreaks(node, flag) { return withLoc(rewriteSwitchBreaksNode(node, flag), node) }
+function rewriteSwitchBreaksNode(node, flag) {
   if (!Array.isArray(node)) return node
   const op = node[0]
   if (op === 'break') return ['=', flag, [null, true]]

@@ -24,7 +24,8 @@
  * @module jzify/generators
  */
 
-import { walkAst, some, isBlockBody, TDZ } from '../src/ast.js'
+import { walkAst, some, isBlockBody, TDZ, withLoc } from '../src/ast.js'
+import { ctx } from '../src/ctx.js'
 
 const isYield = (n) => Array.isArray(n) && (n[0] === 'yield' || n[0] === 'yield*' || n[0] === 'await')
 /** A desugar's own call of a well-known member it has probed (`v['@@iterator']()`
@@ -136,9 +137,9 @@ export function createGeneratorLowering({ transform, transformParams, err, gener
           const t = genTemp('pv'); out.push(['=', t, desugarPatternDecls(d[2])]); patternDecls(d[1], t, out)
         } else out.push(Array.isArray(d) ? ['=', d[1], desugarPatternDecls(d[2])] : d)
       }
-      return [';', ...out.map(d => ['let', d])]
+      return withLoc([';', ...out.map(d => withLoc(['let', d], node))], node)
     }
-    return node.map((n, i) => i === 0 ? n : desugarPatternDecls(n))
+    return withLoc(node.map((n, i) => i === 0 ? n : desugarPatternDecls(n)), node)
   }
   // Hoisting flattens block scopes into the factory scope: a name declared in
   // two blocks (`for (let i …)` twice, an `i` in each `if` arm) would be one
@@ -165,7 +166,9 @@ export function createGeneratorLowering({ transform, transformParams, err, gener
       }
     }
     const paramNames = (params) => { const out = []; walkAst(Array.isArray(params) ? params : [null, params], { enter: n => { for (const c of n) if (typeof c === 'string' && c !== '()' && c !== ',' && c !== '...' && c !== '=') out.push(c) } }); return out }
-    const walk = (n, env, hoisted) => {
+    // what a node renames to stands at its source position
+    const walk = (n, env, hoisted) => withLoc(walkNode(n, env, hoisted), n)
+    const walkNode = (n, env, hoisted) => {
       if (typeof n === 'string') return env.get(n) ?? n
       if (!Array.isArray(n) || n[0] == null || n[0] === 'str') return n
       const op = n[0]
@@ -215,7 +218,7 @@ export function createGeneratorLowering({ transform, transformParams, err, gener
       if (op === 'let' || op === 'const') {
         // the declarator's own initializer sees the new name (`let go = () => go()`)
         declare(n, env, hoisted)
-        return n.map((d, i) => i === 0 ? d : typeof d === 'string' ? (env.get(d) ?? d) : ['=', walk(d[1], env, hoisted), walk(d[2], env, hoisted)])
+        return n.map((d, i) => i === 0 ? d : typeof d === 'string' ? (env.get(d) ?? d) : withLoc(['=', walk(d[1], env, hoisted), walk(d[2], env, hoisted)], d))
       }
       return n.map((c, i) => i === 0 ? c : walk(c, env, hoisted))
     }
@@ -225,7 +228,7 @@ export function createGeneratorLowering({ transform, transformParams, err, gener
       if (Array.isArray(n) && n[0] === '{}' && isBlockBody(n)) {
         const stmts = n.length === 1 ? [] : Array.isArray(n[1]) && n[1][0] === ';' ? n[1].slice(1) : [n[1]]
         const out = list(stmts, inner, hoisted, ';')
-        return ['{}', out]
+        return withLoc(['{}', out], n)
       }
       return walk(n, inner, hoisted)
     }
@@ -242,6 +245,8 @@ export function createGeneratorLowering({ transform, transformParams, err, gener
       for (let i = 1; i < n.length; i++) {
         const d = n[i]
         const name = Array.isArray(d) && d[0] === '=' ? d[1] : d
+        // a rejection names this declaration
+        if ((typeof name !== 'string' || out.has(name)) && n.loc != null) ctx.error.loc = n.loc
         if (typeof name !== 'string')
           err('generators v1: this destructuring shape inside a generator body is not supported yet – bind names first')
         if (out.has(name)) err(`generators v1: '${name}' is declared twice in the generator body — hoisted locals must be unique`)
@@ -362,7 +367,15 @@ export function createGeneratorLowering({ transform, transformParams, err, gener
       return cur
     }
 
+    // a statement is the current position while it flattens (ctx.js)
     const flattenStmt = (st, cur, loopCtx) => {
+      const outer = ctx.error.loc
+      if (Array.isArray(st) && st.loc != null) ctx.error.loc = st.loc
+      const next = flattenStmtAt(st, cur, loopCtx)
+      ctx.error.loc = outer
+      return next
+    }
+    const flattenStmtAt = (st, cur, loopCtx) => {
       if (!Array.isArray(st)) { if (st != null) stmtsOf(cur).push(transform(st)); return cur }
       const op = st[0]
 
@@ -428,7 +441,7 @@ export function createGeneratorLowering({ transform, transformParams, err, gener
         if (op === 'let' || op === 'const') {
           for (let i = 1; i < st.length; i++) {
             const d = st[i]
-            if (Array.isArray(d) && d[0] === '=') stmtsOf(cur).push(['=', d[1], transform(d[2])])
+            if (Array.isArray(d) && d[0] === '=') stmtsOf(cur).push(withLoc(['=', d[1], transform(d[2])], d))
             else if (typeof d === 'string') stmtsOf(cur).push(['=', d, [null, undefined]])
           }
           return cur
@@ -557,7 +570,7 @@ export function createGeneratorLowering({ transform, transformParams, err, gener
       if (!Array.isArray(n)) return n
       if (n[0] === ';;set') return ['=', S.NEXT, [null, n[1]]]
       if (n[0] === ';;continue') return ['continue']
-      return n.map(resolve)
+      return withLoc(n.map(resolve), n)
     }
     // if-chain over states (highest → the shape jz compiles tightly)
     let dispatch = ['return', ['{}', [',', [':', 'value', [null, undefined]], [':', 'done', [null, true]]]]]

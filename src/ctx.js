@@ -12,6 +12,7 @@
  */
 
 import abi from './abi/index.js'
+import { T } from './ast.js'
 import { createActiveFunction } from './compile/active-function.js'
 import { DBG_INVARIANTS, resetInvariants, assertFeatureWrite, assertLinkDemandWrite } from './debug.js'
 import { HOT_PASSES } from './passes.js'
@@ -729,6 +730,7 @@ export function reset(proto, globals, bridge) {
 
   ctx.error = {
     src: '',
+    lead: 0,        // the length of a prelude the compiler put before the program (opts.define)
     loc: null,
     node: null,
   }
@@ -1005,22 +1007,46 @@ export function warn(code, message, meta = {}, loc = null) {
 /** Advise that an emit site fell back to generic runtime dispatch (the slow,
  *  un-inferred path). Called from the actual emission point so it fires only when
  *  inference/optimization truly couldn't fold it — never a false positive on a
- *  case that vectorized/unrolled/slot-folded. `ctx.error.loc` is the current AST
- *  node's byte offset (kept up to date by the emit walk), giving line/column. */
+ *  case that vectorized/unrolled/slot-folded. The site is the node being
+ *  emitted (`here()`), giving line/column. */
 export function warnDeopt(code, message, meta = {}) {
   if (!ctx.warnings) return
   // the active frame names the function by its signature record
   const cur = ctx.func.current, fn = typeof cur === 'string' ? cur : cur?.name ?? ctx.funcs.list.find(f => f.sig === cur)?.name
-  warn(code, message, { fn, ...meta }, ctx.error.loc)
+  warn(code, message, { fn, ...meta }, here())
 }
 
-/** Throw with source location context. */
-/** The source a position falls in: the program's, or a bundled module's, whose
- *  positions follow it (prepare/handlers.js prepareModule); null without a source. */
+// Source positions. A node's `loc` indexes the text of every source of the
+// compile laid end to end: the program's from 0, then each bundled module's
+// past the one before (addSource). The compiler's own `jz:` modules and the
+// code it synthesizes carry none. The walks that can fault (jzify, prepare,
+// emit, the early errors) make a located node's position current while they
+// are inside it and restore the enclosing one after: a fault at a synthesized
+// node names the nearest written one around it, and between walks the active
+// function's body stands in.
+
+/** Register a bundled module's source: the base its positions start from;
+ *  null when there is no program source to place it after. */
+export function addSource(file, src) {
+  if (!ctx.error.src) return null
+  const parts = ctx.error.parts ??= []
+  const base = (parts.length ? parts[parts.length - 1].end : ctx.error.src.length) + 1
+  parts.push({ file, base, end: base + src.length, src })
+  return base
+}
+
+/** The position a fault reports: the node the walk stands in, else the active function's body. */
+export const here = () => ctx.error.loc ?? ctx.func.body?.loc ?? null
+
+/** The source a position falls in: the program's, or a bundled module's; null
+ *  without a source or past every one. */
 export function locate(loc) {
-  if (loc == null || !ctx.error.src) return null
-  const part = ctx.error.parts?.find(p => loc >= p.base && loc < p.end)
-  const src = part ? part.src : ctx.error.src, at = part ? loc - part.base : loc
+  const e = ctx.error
+  if (loc == null || !e.src) return null
+  const part = e.parts?.find(p => loc >= p.base && loc <= p.end)
+  // the program's text starts past a prelude the compiler wrote: a position in it names no source
+  if (!part && (loc < e.lead || loc > e.src.length)) return null
+  const src = part ? part.src : e.lead ? e.src.slice(e.lead) : e.src, at = part ? loc - part.base : loc - e.lead
   const before = src.slice(0, at)
   const line = before.split('\n').length
   const col = at - before.lastIndexOf('\n')
@@ -1032,18 +1058,34 @@ export function locate(loc) {
  *  sharpens may route a runtime function through a path strict mode rejects. */
 export const strictCode = () => ctx.transform.strict && !ctx.func.current?.std
 
-export function err(msg, cause) {
-  let detail = msg
+// A minted name reads as written: a local's (`rf64` + T + `f61_9`,
+// prepare/ident-purity.js), a bundled module's binding (`m0_util$clamp`,
+// prepare/handlers.js prepareModule).
+const shown = (msg) => {
+  const parts = msg.split(T)
+  for (let i = 1; i < parts.length; i++) parts[i] = /^f[0-9]+_[0-9]+/.test(parts[i]) ? parts[i].replace(/^f[0-9]+_[0-9]+/, '') : T + parts[i]
+  msg = parts.join('')
+  if (ctx.module.prefixes) for (const p of ctx.module.prefixes) msg = msg.split(p + '$').join('')
+  return msg
+}
 
-  const at = locate(ctx.error.loc)
-  if (at) detail += `\n  at ${at.file ? at.file + ':' : 'line '}${at.line}:${at.col}\n  ${at.text}\n  ${' '.repeat(at.col - 1)}^`
+/** A position as the lines a message ends with: source, line and column, the
+ *  line, a caret under the column (a tab above stays a tab below). */
+export function where(loc) {
+  const at = locate(loc)
+  return at ? `\n  at ${at.file ? at.file + ':' : 'line '}${at.line}:${at.col}\n  ${at.text}\n  ${at.text.slice(0, at.col - 1).replace(/[^\t]/g, ' ')}^` : ''
+}
+
+/** Throw with source location context. */
+export function err(msg, cause) {
+  let detail = shown(msg) + where(here())
 
   if (ctx.func.current?.name) {
     detail += `\n  in function: ${ctx.func.current.name}`
   }
 
   if (ctx.error.node != null) {
-    detail += `\n  current AST: ${formatErrorNode(ctx.error.node)}`
+    detail += `\n  current AST: ${shown(formatErrorNode(ctx.error.node))}`
   }
 
   // Preserve the triggering error (if any) as the cause: when an internal jz bug

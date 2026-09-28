@@ -38,8 +38,11 @@ export function seedSummaryParam(name, summary) {
 
 // Replace the complete active-function authority at a real function boundary.
 // Top-level funcs start `uniq` at 0; closures pass a higher base so their
-// synthetic labels cannot collide with the displaced parent frame.
+// synthetic labels cannot collide with the displaced parent frame. A body a
+// pass rebuilt takes the function's position back (`options.loc`): a fault
+// outside any located node reports the function (ctx.js here).
 export function enterFunc(sig, body, options = {}) {
+  if (options.loc != null && Array.isArray(body) && body.loc == null) body.loc = options.loc
   return enterActiveFunction(ctx, { sig, body, ...options })
 }
 

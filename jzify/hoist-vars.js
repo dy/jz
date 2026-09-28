@@ -3,7 +3,7 @@
  * @module jzify/hoist-vars
  */
 
-import { JZ_BLOCK_OPS, rewriteChildren } from '../src/ast.js'
+import { JZ_BLOCK_OPS, rewriteChildren, withLoc } from '../src/ast.js'
 
 // A `'[]'`-tagged node is ambiguous pre-prepare(): an array literal/destructure
 // pattern (`[a, b]` → `['[]', commaSeqOrSingleElem]`, length ≤ 2 — empty `[]`
@@ -21,7 +21,9 @@ import { JZ_BLOCK_OPS, rewriteChildren } from '../src/ast.js'
 export const isDestructurePat = p =>
   Array.isArray(p) && ((p[0] === '[]' && p.length !== 3) || p[0] === '{}' || (p[0] === '=' && isDestructurePat(p[1])))
 
-export function hoistVars(node, names) {
+// What a node rewrites to stands at its source position (ast.js withLoc).
+export function hoistVars(node, names) { return withLoc(hoistVarsNode(node, names), node) }
+function hoistVarsNode(node, names) {
   if (node == null || !Array.isArray(node)) return node
   const op = node[0]
   if (op === 'function' || op === 'function*') {
@@ -173,7 +175,8 @@ export function hoistVars(node, names) {
   return rewriteChildren(node, hoistVars, names)
 }
 
-function hoistPattern(node, names) {
+function hoistPattern(node, names) { return withLoc(hoistPatternNode(node, names), node) }
+function hoistPatternNode(node, names) {
   if (node == null || !Array.isArray(node)) return node
   const op = node[0]
   if (op === '=') return ['=', hoistPattern(node[1], names), hoistVars(node[2], names)]
@@ -187,7 +190,8 @@ function hoistPattern(node, names) {
 // name (the declarator itself becomes a plain assignment). let/const patterns
 // keep hoistPattern above — their names are declared by the surviving `let`,
 // so collecting them here would predeclare duplicates.
-function hoistVarPattern(node, names) {
+function hoistVarPattern(node, names) { return withLoc(hoistVarPatternNode(node, names), node) }
+function hoistVarPatternNode(node, names) {
   if (typeof node === 'string') { names.add(node); return node }
   if (node == null || !Array.isArray(node)) return node
   const op = node[0]
@@ -198,7 +202,8 @@ function hoistVarPattern(node, names) {
   return hoistVars(node, names)
 }
 
-export function prependDecls(body, names) {
+export function prependDecls(body, names) { return withLoc(prependDeclsTo(body, names), body) }
+function prependDeclsTo(body, names) {
   const decl = ['let', ...names]
   if (Array.isArray(body) && body[0] === ';') return [';', decl, ...body.slice(1)]
   if (Array.isArray(body) && body[0] === '{}') {

@@ -1532,6 +1532,8 @@ function liftOptionalChain(node) {
 /**
  * Emit single AST node to typed WASM IR.
  * Every returned node has .type = 'i32' | 'f64'.
+ * A node is the current one while it emits (ctx.js), its position the current
+ * position when it has one; the enclosing ones are current again after.
  * @param {import('../../prepare/module-resolve.js').ASTNode} node
  * @returns {Array} typed WASM S-expression
  */
@@ -1545,6 +1547,16 @@ function liftOptionalChain(node) {
 // the emitter made in place (emit-assign.js `inPlace`) lowers nothing.
 const LOGICAL_ASSIGN = new Set(['??=', '||=', '&&='])
 export function emit(node, expect) {
+  if (!Array.isArray(node)) return emitNode(node, expect)
+  const at = ctx.error, outerNode = at.node, outerLoc = at.loc
+  at.node = node
+  if (node.loc != null) at.loc = node.loc
+  const ir = emitSite(node, expect)
+  at.node = outerNode
+  at.loc = outerLoc
+  return ir
+}
+function emitSite(node, expect) {
   if (remarking > 0 && Array.isArray(node)) { const mark = REMARKS.get(node); if (mark !== undefined) return remarked(node, expect, mark) }
   if (!ctx.plans.escapeFlag || !Array.isArray(node) || !ctx.plans.escapeSites?.has(node) || LOGICAL_ASSIGN.has(node[0])) return emitNode(node, expect)
   markInstrumented(node)
@@ -1762,10 +1774,6 @@ export const withEscapeFlag = (ir, flag = flagToZero()) => {
 
 function emitNode(node, expect) {
   ctx.func._expect = expect || null
-  if (Array.isArray(node)) {
-    ctx.error.node = node
-    if (node.loc != null) ctx.error.loc = node.loc
-  }
   if (node == null) return null
   // Boolean literals carry VAL.BOOL for type observation (valTypeOf reads the
   // AST), but their working representation is the plain number 0/1 — identical

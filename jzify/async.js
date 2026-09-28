@@ -24,7 +24,7 @@
 
 import { FN_BOUNDARY_OPS, probe } from './generators.js'
 import { usesArguments } from './arguments.js'
-import { some, ASSIGN_OPS, extractParams } from '../src/ast.js'
+import { some, ASSIGN_OPS, extractParams, withLoc } from '../src/ast.js'
 
 export function createAsyncLowering({ genTemp, err }) {
 
@@ -86,7 +86,7 @@ export function createAsyncLowering({ genTemp, err }) {
     if (FN_OPS.has(node[0])) return node
     if (node[0] === 'for await' && Array.isArray(node[1]) && node[1][0] === 'of')
       return mapAwait(desugarForAwait(node[1], node[2]))
-    return node.map((n, i) => i === 0 ? n : mapAwait(n))
+    return withLoc(node.map((n, i) => i === 0 ? n : mapAwait(n)), node)
   }
   function fnBoundary(n) { return FN_OPS.has(n[0]) }
   function isAwait(n) { return n[0] === 'await' || n[0] === 'for await' }
@@ -116,7 +116,14 @@ export function createAsyncLowering({ genTemp, err }) {
   const blockOf = (b) => { if (b == null) return b; const list = hoistList(b); return list.length === 1 && !(Array.isArray(b) && b[0] === '{}') ? list[0] : block(list) }
   const hasContinue = (b) => some(b, n => n[0] === 'continue', { boundary: fnBoundary })
   const keepsPlace = (op, i) => i === 1 && (op === '()' || op === '?.()' || ASSIGN_OPS.has(op) || op === '++' || op === '--')
+  // What an expression or a statement lowers to stands where it stood.
   function hoistExpr(e) {
+    const h = hoistExprNode(e)
+    for (const s of h.pre) withLoc(s, e)
+    withLoc(h.expr, e)
+    return h
+  }
+  function hoistExprNode(e) {
     if (!Array.isArray(e) || FN_OPS.has(e[0]) || !refsAwait(e)) return { pre: [], expr: e }
     const op = e[0]
     if (op === 'await') {
@@ -153,6 +160,11 @@ export function createAsyncLowering({ genTemp, err }) {
     return { pre, expr: out }
   }
   function hoistStmt(st) {
+    const out = hoistStmtNode(st)
+    for (const s of out) withLoc(s, st)
+    return out
+  }
+  function hoistStmtNode(st) {
     if (!Array.isArray(st) || !refsAwait(st)) return [st]
     const op = st[0]
     if (op === ';') return st.slice(1).flatMap(hoistStmt)
@@ -221,11 +233,11 @@ export function createAsyncLowering({ genTemp, err }) {
     if (node[0] === 'for await' && Array.isArray(node[1]) && node[1][0] === 'of')
       return mapAgen(desugarForAwait(node[1], node[2]))
     if (node[0] === 'yield*') return mapAgen(desugarYieldStarAsync(node[1], null))
-    if (node[0] === 'await') return tag(1, mapAgen(node[1]))
-    if (node[0] === 'yield') return node[1] === undefined ? tag(0, [null, undefined]) : tag(0, mapAgen(node[1]))
+    if (node[0] === 'await') return withLoc(tag(1, mapAgen(node[1])), node)
+    if (node[0] === 'yield') return withLoc(node[1] === undefined ? tag(0, [null, undefined]) : tag(0, mapAgen(node[1])), node)
     if (node[0] === 'try' && refsSuspend(node))
       err('try/catch across `await`/`yield` is outside the v1 async-generator surface — let the rejection reject, or move the try into a sync helper')
-    return node.map((n, i) => i === 0 ? n : mapAgen(n))
+    return withLoc(node.map((n, i) => i === 0 ? n : mapAgen(n)), node)
   }
 
   // `yield* E` inside an async generator: delegate through await'd next()

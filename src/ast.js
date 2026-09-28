@@ -6,15 +6,22 @@
  * @module ast
  */
 
-/** Rebuild only the spine above changed children; unchanged nodes keep their identity. */
+/** Rebuild only the spine above changed children; unchanged nodes keep their
+ *  identity, a rebuilt one its source position. */
 export const rewriteChildren = (node, visit, state) => {
   let out = null
   for (let i = 1; i < node.length; i++) {
     const child = visit(node[i], state)
-    if (child !== node[i] && !out) out = node.slice(0, i)
+    if (child !== node[i] && !out) { out = node.slice(0, i); if (node.loc != null) out.loc = node.loc }
     if (out) out.push(child)
   }
   return out || node
+}
+
+/** A node written in place of `from` stands at its source position; returns `node`. */
+export const withLoc = (node, from) => {
+  if (Array.isArray(node) && node.loc == null && Array.isArray(from) && from.loc != null) node.loc = from.loc
+  return node
 }
 
 /** The prefix of every name the compiler mints. A private-use character is

@@ -30,7 +30,7 @@
  * @module jzify/settle-vars
  */
 
-import { MUTATE_OPS } from '../src/ast.js'
+import { MUTATE_OPS, withLoc } from '../src/ast.js'
 
 const isFn = n => Array.isArray(n) && (n[0] === 'function' || n[0] === 'function*' || n[0] === '=>' || n[0] === 'class')
 const isFnDecl = n => Array.isArray(n) && (n[0] === 'function' || n[0] === 'function*') && typeof n[1] === 'string' && n[1] !== ''
@@ -58,13 +58,13 @@ function splitVars(node) {
   }
   let out = null
   const push = (i, items) => {
-    if (!out) out = node.slice(0, i)
+    if (!out) out = withLoc(node.slice(0, i), node)
     for (const item of items) out.push(item)
   }
   for (let i = 1; i < node.length; i++) {
     const child = node[i]
     if (node[0] === ';' && Array.isArray(child) && child[0] === 'var' && child.length > 2) {
-      push(i, child.slice(1).map(d => ['var', d]))
+      push(i, child.slice(1).map(d => withLoc(['var', d], child)))
       continue
     }
     const next = splitVars(child)
@@ -314,7 +314,9 @@ function analyze(body, scope) {
 
 // ── rewrite ─────────────────────────────────────────────────────────────────
 
-function rewrite(node, cands, heads) {
+// What a node rewrites to stands at its source position (ast.js withLoc).
+function rewrite(node, cands, heads) { return withLoc(rewriteNode(node, cands, heads), node) }
+function rewriteNode(node, cands, heads) {
   if (!Array.isArray(node) || node[0] == null) return node
   const op = node[0]
   if (op === 'function' || op === 'function*') {

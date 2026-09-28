@@ -1,6 +1,6 @@
 import { DBG_INVARIANTS, assertCtxInvariants } from '../debug.js'
 import { ctx, inc, PTR, declGlobal } from '../ctx.js'
-import { T, isBlockBody, isReassigned } from '../ast.js'
+import { T, isBlockBody, isReassigned, withLoc } from '../ast.js'
 import { hasAmbiguousBoolMerge } from '../kind.js'
 import { typedElemAux } from '../../layout.js'
 import { VAL, updateRep } from '../reps.js'
@@ -26,7 +26,7 @@ import { arraySliceViews } from './array-view.js'
 import { frameNode } from '../function.js'
 
 const normalizeClosureBody = cb => {
-  if (Array.isArray(cb.body) && cb.body[0] === ';') cb.body = ['{}', cb.body]
+  if (Array.isArray(cb.body) && cb.body[0] === ';') cb.body = withLoc(['{}', cb.body], cb.body)
 }
 
 // A closure that captures no cell: read-only, shared by every such closure.

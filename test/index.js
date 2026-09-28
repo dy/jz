@@ -4,6 +4,7 @@ const TESTS = [
   'runner',
   'test-infrastructure',
   'errors',
+  'error-location',
   'identifiers',
   'to-primitive',
   'property-order',

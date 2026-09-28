@@ -17,9 +17,9 @@
  */
 
 import { lowerIteratorPattern, hasArrayPattern } from '../iterator-pattern.js'
-import { ctx, declGlobal, derive, emitArity, err, setFeature } from '../ctx.js'
+import { addSource, ctx, declGlobal, derive, emitArity, err, setFeature } from '../ctx.js'
 import { createFunction } from '../function.js'
-import { MUTATE_OPS, PARAM_DEFAULT, PARAM_KIND, PARAM_NAME, PARAM_PATTERN, REFS_THROUGH_ARROWS, STMT_OPS, T, TYPEOF, alwaysReturns, classifyParam, cloneNode, collectParamNames, extractParams, handlerArgs, isBrand, refsName, walkAst } from '../ast.js'
+import { MUTATE_OPS, PARAM_DEFAULT, PARAM_KIND, PARAM_NAME, PARAM_PATTERN, REFS_THROUGH_ARROWS, STMT_OPS, T, TYPEOF, alwaysReturns, classifyParam, cloneNode, collectParamNames, extractParams, handlerArgs, isBrand, refsName, walkAst, withLoc } from '../ast.js'
 import { COLLECTION_CTORS, CTORS, hasModule, includeForArrayAccess, includeForArrayLiteral, includeForCallableValue, includeForGenericMethod, includeForNamedCall, includeForNumericCoercion, includeForObjectLiteral, includeForObjectPattern, includeForOp, includeForProperty, includeForRuntimeCtor, includeForStringOnly, includeForStringValue, includeMods, includeModule } from '../autoload.js'
 import { censusShapedNode } from '../kind.js'
 import { REJECT_IDENTS, rejectHandlers } from '../op-policy.js'
@@ -59,7 +59,18 @@ const hasHostImport = (mod, name) => {
   return typeof spec === 'number' || !!spec
 }
 
+/** Lower one node. A written node is the current position while it lowers
+ *  (ctx.js), and what it lowers to stands at its place. */
 export function prep(node) {
+  if (!Array.isArray(node) || node.loc == null) return prepNode(node)
+  const outer = ctx.error.loc
+  ctx.error.loc = node.loc
+  const out = withLoc(prepNode(node), node)
+  ctx.error.loc = outer
+  return out
+}
+
+function prepNode(node) {
   if (Array.isArray(node) && node[0] === 'this') { ctx.closure.receiver = true; return node }
   if (Array.isArray(node)) includeForOp(node[0])
   // Whole-program "does a BigInt value ever get constructed" flag — the ONLY two
@@ -195,7 +206,6 @@ export function prep(node) {
       } })
     }
   }
-  if (Array.isArray(node) && node.loc != null) ctx.error.loc = node.loc
   if (node == null) return [, 0] // null/undefined → 0 literal
   // Keep boolean identity (was folded to 1/0). The working representation is
   // still i32/f64 0/1 — emit lowers the raw boolean — but valTypeOf now reads
@@ -928,6 +938,9 @@ const handlers = {
       else
         preparedBody = ['{}', [';', ...prefix, ['return', preparedBody]]]
     }
+    // A function body always has a position, its own or else the nearest
+    // written one around the arrow: a fault anywhere in the function falls back to it (ctx.js here).
+    if (Array.isArray(preparedBody) && preparedBody.loc == null) preparedBody.loc = Array.isArray(body) && body.loc != null ? body.loc : ctx.error.loc
     const inner = nextParams.length === 0 ? null : nextParams.length === 1 ? nextParams[0] : [',', ...nextParams]
     const result = ['=>', Array.isArray(params) && params[0] === '()' ? ['()', inner] : inner, preparedBody]
     popScope()
@@ -2043,8 +2056,10 @@ function prepDecl(op, ...inits) {
     return prep([';', ...inits.flatMap(i => Array.isArray(i) && i[0] === '=' && hasArrayPattern(i[1])
       ? [['let', ...collectParamNames([i[1]])], ['=', i[1], i[2]]]
       : [[op, i]])])
-  const rest = []
+  const rest = [], declLoc = ctx.error.loc
   for (const i of inits) {
+    // each declarator is the current position while it lowers (the statement's prep restores the outer one)
+    ctx.error.loc = Array.isArray(i) && i.loc != null ? i.loc : declLoc
     if (Array.isArray(i) && i[0] === '()' && typeof i[1] === 'string' && Array.isArray(i[2]) && i[2][0] === '=' && isDestructPattern(i[2][1])) {
       if (rest.length === 0 && inits.length === 1) return [';', [op, i[1]], prep(i[2])]
       err('destructuring assignment after declaration must be a separate statement — e.g. write `let x = f(); ({a, b} = x)` as two statements, not one declarator')
@@ -2490,7 +2505,7 @@ function foldJsonReviver(callee, args) {
       return val
     }
     return r("", walk(JSON.parse(s)))
-  })`)
+  })`, 'jz', null)
   // Fresh structural copy per site — prep mutates/renames in place.
   // (cloneNode, not structuredClone: the self-compile kernel compiles this file
   // and structuredClone is not a jz builtin.)
@@ -2611,13 +2626,14 @@ function defFunc(name, node) {
 
   // Prepend destructuring to body (body is already prepped, so prefix needs prep too)
   if (bodyPrefix.length) {
-    const preppedPrefix = bodyPrefix.map(prep).filter(x => x != null)
+    const preppedPrefix = bodyPrefix.map(prep).filter(x => x != null), written = body
     if (Array.isArray(body) && body[0] === '{}' && Array.isArray(body[1]) && body[1][0] === ';')
       body = ['{}', [';', ...preppedPrefix, ...body[1].slice(1)]]
     else if (Array.isArray(body) && body[0] === '{}')
       body = ['{}', [';', ...preppedPrefix, body[1]]]
     else
       body = ['{}', [';', ...preppedPrefix, ['return', body]]]
+    withLoc(body, written)
   }
 
   const sig = { params, results: detectResults(body) }
@@ -2693,7 +2709,7 @@ export function programModuleAsts(ast) {
       let m = moduleAstFor(spec)
       if (m === undefined) {
         if (!ctx.transform.parse) continue
-        m = ctx.transform.parse(bundledSource(spec))
+        m = parseModule(spec, bundledSource(spec))
         ;(ctx.module.importAsts ??= []).push([spec, m])
       }
       out.push(m)
@@ -2701,6 +2717,12 @@ export function programModuleAsts(ast) {
   }
   return out
 }
+/** A bundled module's source parsed with its positions placed after the
+ *  sources before it (ctx.js addSource), so an error or advisory at any node
+ *  the lowering keeps (an inlined body's, a clone's) names this module and its
+ *  line. The compiler's own `jz:` modules keep none: a fault inside one names
+ *  the program's construct that brought it in. */
+const parseModule = (spec, source) => ctx.transform.parse(source, 'jz', spec.startsWith('jz:') ? null : addSource(spec, source))
 /** The mangled name an import of `name` from an already prepared `spec` binds;
  *  null for a host import, a built-in module, a missing export or a module not
  *  prepared yet (the lowering then declines). */
@@ -2737,6 +2759,7 @@ function prepareModule(specifier, source) {
     const base = sanitized.replace(/_(js|mjs|jz)$/, '').match(/[a-zA-Z0-9]+$/)?.[0] ?? ''
     prefix = `m${id}_${base.slice(-16)}`
   }
+  ;(ctx.module.prefixes ??= new Set()).add(prefix)   // a message shows `m0_x$name` as written (ctx.js shown)
 
   // Save caller state
   const savedScope = ctx.scope.chain, savedExports = ctx.funcs.exports, savedNamespaces = ctx.module.namespaces
@@ -2771,19 +2794,7 @@ function prepareModule(specifier, source) {
   let ast = moduleAstFor(specifier)
   if (ast === undefined) {
     if (!ctx.transform.parse) err('compile-time module bundling requires ctx.transform.parse (injected by the jz pipeline)')
-    ast = ctx.transform.parse(source)
-  }
-  // The module's source positions follow the program's: every `loc` of its
-  // AST is shifted past the sources before it, so an error or advisory at
-  // any node the lowering keeps (an inlined body's, a clone's) names this
-  // module and its line (ctx.js locate).
-  if (typeof source === 'string' && ctx.error.src != null && Array.isArray(ast) && !ctx.module.locBases?.has(ast)) {
-    const parts = ctx.error.parts ??= []
-    const base = (parts.length ? parts[parts.length - 1].end : ctx.error.src.length) + 1
-    parts.push({ file: specifier, base, end: base + source.length, src: source })
-    ;(ctx.module.locBases ??= new WeakSet()).add(ast)
-    const shift = (n) => { if (!Array.isArray(n)) return; if (typeof n.loc === 'number') n.loc += base; for (let i = 1; i < n.length; i++) shift(n[i]) }
-    shift(ast)
+    ast = parseModule(specifier, source)
   }
   if (ctx.transform.jzify) { prepareImports(ast); ast = ctx.transform.jzify(ast, { importedBinding, std: ctx.module.inStd }) }
   ast = hoistIndexedConstLiterals(ast)

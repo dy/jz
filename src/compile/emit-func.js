@@ -37,7 +37,7 @@ export function emitFunc(func, functionPlan, programFacts) {
   const multi = sig.results.length > 1
   const _reps = programFacts.programIndex.parameterAbiOf(func)
 
-  const previousFrame = enterFunc(sig, body, { exported: isExported(func) })
+  const previousFrame = enterFunc(sig, body, { exported: isExported(func), loc: func.loc })
   const prevEmitting = ctx.closure.emitting
   ctx.closure.emitting = name   // the owner of closures minted in this body (wasm name section only)
   try {

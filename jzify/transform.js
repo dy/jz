@@ -3,7 +3,8 @@
  * @module jzify/transform
  */
 
-import { rewriteChildren, JZ_BLOCK_OPS, LABEL_BODY_OPS, ACCESSOR_GET, ACCESSOR_SET, objectLiteralEntries } from '../src/ast.js'
+import { rewriteChildren, withLoc, JZ_BLOCK_OPS, LABEL_BODY_OPS, ACCESSOR_GET, ACCESSOR_SET, objectLiteralEntries } from '../src/ast.js'
+import { ctx, err } from '../src/ctx.js'
 import { isDestructurePat } from './hoist-vars.js'
 import { foldPrototypeStores } from './classes.js'
 import { ERR_CLASS_NAMES } from '../err-codes.js'
@@ -65,7 +66,7 @@ function dedupeRedecls(stmts) {
       if (seen.has(n)) { if (Array.isArray(d) && d[0] === '=') reassign.push(['=', d[1], d[2]]) }
       else { seen.add(n); keep.push(d) }
     }
-    if (keep.length > 1) out.push(keep)
+    if (keep.length > 1) out.push(withLoc(keep, s))
     for (const r of reassign) out.push(r)
   }
   return out
@@ -73,8 +74,8 @@ function dedupeRedecls(stmts) {
 
 function functionBodyBlock(body) {
   if (Array.isArray(body) && body[0] === '{}') return body
-  if (Array.isArray(body) && body[0] === ';') return ['{}', body]
-  return ['{}', [';', body]]
+  if (Array.isArray(body) && body[0] === ';') return withLoc(['{}', body], body)
+  return withLoc(['{}', [';', body]], body)
 }
 
 const arrowParams = params => Array.isArray(params) && params[0] === '()' ? params : ['()', params]
@@ -147,7 +148,9 @@ export function createTransform(opts) {
   // as one in the body does. Pattern targets stay as they are.
   const transformParams = (params) => inFunction(() =>
     Array.isArray(params) && params[0] === '()' ? ['()', transformPattern(params[1])] : transformPattern(params))
-  function wrapArrowBody(body) {
+  // A function body stands where its source did: the position a fault in the function falls back to (ctx.js here).
+  function wrapArrowBody(body) { return withLoc(arrowBodyBlock(body), body) }
+  function arrowBodyBlock(body) {
     const t = inFunction(() => transformScope(body))
     if (!Array.isArray(t)) return ['{}', [';', t]]
     if (t[0] === ';') return ['{}', t]
@@ -171,9 +174,11 @@ export function createTransform(opts) {
     ['let', name], ['=', name, value], ['return', name]
   ]]]], null]
 
-  function hoistFnDecl(name, params, body) {
+  // A declared function's binding (`const name = value`) stands where the declaration `fn` does.
+  const bindFn = (name, value, fn) => withLoc(['const', withLoc(['=', name, withLoc(value, fn)], fn)], fn)
+  function hoistFnDecl(name, params, body, fn) {
     const [p2, b2] = lowerArguments(params, functionBodyBlock(body))
-    const decl = ['const', ['=', name, ['=>', transformParams(p2), wrapArrowBody(b2)]]]
+    const decl = bindFn(name, ['=>', transformParams(p2), withLoc(wrapArrowBody(b2), fn)], fn)
     decl._hoisted = true
     return decl
   }
@@ -200,9 +205,11 @@ export function createTransform(opts) {
     return inner
   }
 
+  // A node is the current position while it lowers (ctx.js), and what it lowers to stands at its place.
   function transformScope(node) {
-    const prior = enterBuiltinScope(node)
-    try { return transformScopeInner(node) } finally { leaveBuiltinScope(prior) }
+    const prior = enterBuiltinScope(node), outer = ctx.error.loc
+    if (Array.isArray(node) && node.loc != null) ctx.error.loc = node.loc
+    try { return withLoc(transformScopeInner(node), node) } finally { leaveBuiltinScope(prior); ctx.error.loc = outer }
   }
 
   function transformScopeInner(node) {
@@ -211,13 +218,13 @@ export function createTransform(opts) {
     const op = node[0]
     const args = takeScopeArgs(node)
     try {
-    if (op === 'function' && args[0]) return hoistFnDecl(...args)
+    if (op === 'function' && args[0]) return hoistFnDecl(args[0], args[1], args[2], node)
     if (op === 'function*' && args[0] && _gen)
-      return ['const', ['=', args[0], _gen.lowerGenerator(args[1], args[2])]]
+      return bindFn(args[0], _gen.lowerGenerator(args[1], args[2]), node)
     if (op === 'async' && Array.isArray(args[0]) && args[0][0] === 'function' && args[0][1] && _gen?.lowerAsync)
-      return ['const', ['=', args[0][1], transform(_gen.lowerAsync(args[0][2], args[0][3]))]]
+      return bindFn(args[0][1], transform(_gen.lowerAsync(args[0][2], args[0][3])), node)
     if (op === 'async' && Array.isArray(args[0]) && args[0][0] === 'function*' && args[0][1] && _gen?.lowerAsyncGen)
-      return ['const', ['=', args[0][1], transform(_gen.lowerAsyncGen(args[0][2], args[0][3]))]]
+      return bindFn(args[0][1], transform(_gen.lowerAsyncGen(args[0][2], args[0][3])), node)
     if (op === 'class' && args[0]) return lowerClassDecl(...args)
     if (op === 'using') return lowerUsing(args, [])
 
@@ -228,23 +235,23 @@ export function createTransform(opts) {
       for (let i = 0; i < stmts.length; i++) {
         const stmt = stmts[i]
         if (Array.isArray(stmt) && stmt[0] === 'function' && stmt[1]) {
-          hoisted.push(hoistFnDecl(stmt[1], stmt[2], stmt[3]))
+          hoisted.push(hoistFnDecl(stmt[1], stmt[2], stmt[3], stmt))
           continue
         }
         if (Array.isArray(stmt) && stmt[0] === 'function*' && stmt[1] && _gen) {
-          hoisted.push(['const', ['=', stmt[1], _gen.lowerGenerator(stmt[2], stmt[3])]])
+          hoisted.push(bindFn(stmt[1], _gen.lowerGenerator(stmt[2], stmt[3]), stmt))
           continue
         }
         // async function DECLARATION — hoists like any function declaration.
         if (Array.isArray(stmt) && stmt[0] === 'async' && Array.isArray(stmt[1]) &&
             stmt[1][0] === 'function' && stmt[1][1] && _gen?.lowerAsync) {
-          hoisted.push(['const', ['=', stmt[1][1], transform(_gen.lowerAsync(stmt[1][2], stmt[1][3]))]])
+          hoisted.push(bindFn(stmt[1][1], transform(_gen.lowerAsync(stmt[1][2], stmt[1][3])), stmt))
           continue
         }
         // async GENERATOR declaration — same hoisting, tagged-yield machine.
         if (Array.isArray(stmt) && stmt[0] === 'async' && Array.isArray(stmt[1]) &&
             stmt[1][0] === 'function*' && stmt[1][1] && _gen?.lowerAsyncGen) {
-          hoisted.push(['const', ['=', stmt[1][1], transform(_gen.lowerAsyncGen(stmt[1][2], stmt[1][3]))]])
+          hoisted.push(bindFn(stmt[1][1], transform(_gen.lowerAsyncGen(stmt[1][2], stmt[1][3])), stmt))
           continue
         }
         if (Array.isArray(stmt) && stmt[0] === 'class' && stmt[1]) {
@@ -355,7 +362,7 @@ export function createTransform(opts) {
       // a dynamic import inside a function body has no static graph position
       // (the module-level `await import('x')` hoists, index.js)
       if (callee === 'import' && !shadowsBuiltin('import'))
-        throw new Error('jzify: dynamic import() inside a function body is not supported – jz resolves the module graph at compile time; use a static import, or a module-level `await import(\'x\')` with a literal specifier')
+        err('jzify: dynamic import() inside a function body is not supported – jz resolves the module graph at compile time; use a static import, or a module-level `await import(\'x\')` with a literal specifier')
       // Promise API rides the async runtime (`jz:async`): new Promise(fn)
       // arrives here as a plain call (the `new` handler unwraps unknown
       // ctors), statics by name.
@@ -385,7 +392,7 @@ export function createTransform(opts) {
             ...entries.map(e => ['()', ['.', 'Object', 'defineProperty'], [',', t, [null, e[1]], e[2]]]),
             ['return', t]]]], a[0]])
         }
-        throw new Error('jzify: `Object.defineProperties(o, map)` lowers to one `Object.defineProperty` per key, so `map` must be an object literal with literal keys – spell the calls out otherwise')
+        err('jzify: `Object.defineProperties(o, map)` lowers to one `Object.defineProperty` per key, so `map` must be an object literal with literal keys – spell the calls out otherwise')
       }
       // URLSearchParams rides the jz-source std module `jz:usp` (src/std/usp.js);
       // `new URLSearchParams(x)` unwraps to this same call via the `new` handler.
@@ -528,7 +535,7 @@ export function createTransform(opts) {
       // a store the prototype fold left (classes.js foldPrototypeStores): a class, lowered either way, has no prototype to take it
       if (Array.isArray(lhs) && (lhs[0] === '.' || lhs[0] === '[]') && Array.isArray(lhs[1]) && lhs[1][0] === '.' && lhs[1][2] === 'prototype'
           && typeof lhs[1][1] === 'string' && opts.isClass(lhs[1][1]))
-        throw new Error('jzify: ' + JC.prototypeStore)
+        err('jzify: ' + JC.prototypeStore)
       // a static accessor of a class of this module: the slot function on the class (classes.js)
       if (Array.isArray(lhs) && lhs[0] === '.' && typeof lhs[1] === 'string' && typeof lhs[2] === 'string' && opts.classStaticAccessor(lhs[1], lhs[2] + ACCESSOR_SET))
         return ['()', ['.', lhs[1], lhs[2] + ACCESSOR_SET], transform(rhs)]
@@ -708,18 +715,18 @@ export function createTransform(opts) {
 
     'export'(inner) {
       if (Array.isArray(inner) && inner[0] === 'function' && inner[1]) {
-        return ['export', hoistFnDecl(inner[1], inner[2], inner[3])]
+        return ['export', hoistFnDecl(inner[1], inner[2], inner[3], inner)]
       }
       // `export function* g` / `export async function f` / `export async function* g`:
       // the same const bindings the statement-level hoist makes, exported
       if (Array.isArray(inner) && inner[0] === 'function*' && inner[1] && _gen)
-        return ['export', ['const', ['=', inner[1], _gen.lowerGenerator(inner[2], inner[3])]]]
+        return ['export', bindFn(inner[1], _gen.lowerGenerator(inner[2], inner[3]), inner)]
       if (Array.isArray(inner) && inner[0] === 'async' && Array.isArray(inner[1]) && inner[1][1]) {
         const fn = inner[1]
         if (fn[0] === 'function' && _gen?.lowerAsync)
-          return ['export', ['const', ['=', fn[1], transform(_gen.lowerAsync(fn[2], fn[3]))]]]
+          return ['export', bindFn(fn[1], transform(_gen.lowerAsync(fn[2], fn[3])), inner)]
         if (fn[0] === 'function*' && _gen?.lowerAsyncGen)
-          return ['export', ['const', ['=', fn[1], transform(_gen.lowerAsyncGen(fn[2], fn[3]))]]]
+          return ['export', bindFn(fn[1], transform(_gen.lowerAsyncGen(fn[2], fn[3])), inner)]
       }
       if (Array.isArray(inner) && inner[0] === 'class' && inner[1]) {
         const decl = lowerClassDecl(inner[1], inner[2], inner[3])
@@ -731,7 +738,7 @@ export function createTransform(opts) {
         // (the default-alias resolver renames the func but not in-body call sites),
         // so the function is dropped. Exporting NAME as a named binding makes prepare
         // mangle it and resolve self-calls correctly; alias `default` to it.
-        const decl = hoistFnDecl(inner[1][1], inner[1][2], inner[1][3])
+        const decl = hoistFnDecl(inner[1][1], inner[1][2], inner[1][3], inner[1])
         return [';', ['export', decl], ['export', ['{}', ['as', inner[1][1], 'default']]]]
       }
       if (Array.isArray(inner) && inner[0] === 'default' && Array.isArray(inner[1]) && inner[1][0] === 'class' && inner[1][1]) {
@@ -742,8 +749,9 @@ export function createTransform(opts) {
   }
 
   function transform(node) {
-    const prior = enterBuiltinScope(node)
-    try { return transformInner(node) } finally { leaveBuiltinScope(prior) }
+    const prior = enterBuiltinScope(node), outer = ctx.error.loc
+    if (Array.isArray(node) && node.loc != null) ctx.error.loc = node.loc
+    try { return withLoc(transformInner(node), node) } finally { leaveBuiltinScope(prior); ctx.error.loc = outer }
   }
 
   function transformInner(node) {
