@@ -730,6 +730,17 @@ const hoistNestedCalls = (body, bodies, anywhere = bodies) => {
     for (const x of eff.reads) if (assigns(b, x)) return false
     return true
   }
+  // A hoisted call relocates with its arguments: a candidate among them (itself
+  // hoisted ahead of the call) must commute with what ran before as the callee
+  // must, and any other effect there may only move past nothing.
+  const clean = (eff) => eff.seen === false && !eff.mem && !eff.reads.size
+  const unitCommutes = (n, eff) => commutes(n[1], eff) && n.slice(2).every(a => argCommutes(a, eff))
+  const argCommutes = (a, eff) => {
+    if (!Array.isArray(a) || a[0] === '=>' || a[0] === 'str') return true
+    if (a[0] === '()' && typeof a[1] === 'string' && bodies.has(a[1])) return unitCommutes(a, eff)
+    if ((a[0] === '()' && !pureSIMDCall(a)) || a[0] === 'new' || MUTATE_OPS.has(a[0])) return clean(eff)
+    return a.slice(1).every(c => argCommutes(c, eff))
+  }
   const effState = (seen = false) => ({ seen, mem: false, reads: new Set() })
   const note = (eff, w) => { eff.seen = eff.seen === true || w === true ? true : w === false ? eff.seen : eff.seen === false ? w : new Set([...eff.seen, ...w]) }
   // A member reference prepare shares between a read and its write (`m++` is
@@ -753,7 +764,7 @@ const hoistNestedCalls = (body, bodies, anywhere = bodies) => {
     return out
   }
   const hNode = (n, pre, cond, eff) => {
-    if (!cond && n[0] === '()' && typeof n[1] === 'string' && lifts(n[1]) && commutes(n[1], eff)) {
+    if (!cond && n[0] === '()' && typeof n[1] === 'string' && lifts(n[1]) && unitCommutes(n, eff)) {
       const call = [n[0], n[1], ...n.slice(2).map(a => hExpr(a, pre, false, effState()))]
       const tmp = `${T}inl${freshId(ctx)}_h`
       pre.push(['const', ['=', tmp, call]])
