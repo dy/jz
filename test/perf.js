@@ -1329,9 +1329,11 @@ test('codegen: ping-pong double-buffer base decode hoists per-loop (volatile glo
   const step = wat.match(/\(func \$step[\s\S]*?\n  \)/)?.[0] || ''
   // No per-element pointer decode survives inside either loop — both are hoisted to
   // their own pre-header (the first reads pre-swap `a`, the second the post-swap `a`).
+  // The decode is the masked low word of the box; the nullish test a `let`
+  // global keeps reads the box too, once per iteration, and is not a decode.
   let inLoop = 0
-  walkWat(parseWat(step), (n, inside) => { if (inside && n[0] === 'i64.reinterpret_f64' &&
-    n[1]?.[0] === 'global.get' && (n[1][1] === '$a' || n[1][1] === '$b')) inLoop++ })
+  walkWat(parseWat(step), (n, inside) => { if (inside && n[0] === 'i64.and' && n[1]?.[0] === 'i64.reinterpret_f64' &&
+    n[1][1]?.[0] === 'global.get' && (n[1][1][1] === '$a' || n[1][1][1] === '$b')) inLoop++ })
   is(inLoop, 0, 'volatile double-buffer base decode is hoisted out of every loop')
   // Correctness floor: identical to the same source as plain JS, across a swap.
   const { exports } = jz(`
