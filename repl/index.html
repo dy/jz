@@ -305,10 +305,11 @@ html.embed .tabs { position: absolute; top: 0; left: 0; right: 0; z-index: 4; he
 .tab:hover { color: #bdbdbd; }
 /* the active tab is lit: a lighter face that runs into nothing (the bar's rule stops under it), white label */
 .tab[aria-selected="true"] { background: #1c1c1c; color: #fff; box-shadow: inset 0 -1px #1c1c1c; }
-/* icons by tone only: dim at rest, the label's own tone on the active tab */
-.tab svg { width: 15px; height: 15px; flex: none; color: #4a4a4a; transition: color .15s; }
+/* the class marks (assets/headline.js) at the site's size and muting; the Run glyph follows the label's tone */
+.tab svg { width: 12px; height: 12px; flex: none; color: #4a4a4a; transition: color .15s; }
 .tab:hover svg { color: #7a7a7a; }
 .tab[aria-selected="true"] svg { color: #bdbdbd; }
+.tab svg.cico { filter: saturate(.4); }
 .tab:focus-visible { outline: 2px solid #e6e6e6; outline-offset: -2px; }
 html.embed .watbar { left: auto; height: var(--tabh); gap: 2px; padding: 0 10px 0 0; background: none; border: 0; color: #8c8c8c; }
 html.embed .embed-only { display: inline-flex; }
@@ -844,7 +845,7 @@ const decodeHash = (h) => {
 //    again) and, when the prompt hint is a concrete call like orbit(100000), evaluates it. ──
 const EMBED = document.documentElement.classList.contains('embed')
 const tabs = [...document.querySelectorAll('.tab')]
-for (const t of tabs) if (t.dataset.ico) t.insertAdjacentHTML('afterbegin', CLS_ICO[t.dataset.ico].replace(/ class="[^"]*"|<title>.*?<\/title>/g, ''))
+for (const t of tabs) if (t.dataset.ico) t.insertAdjacentHTML('afterbegin', CLS_ICO[t.dataset.ico].replace(/<title>.*?<\/title>/, ''))
 const showTab = (name) => {
   mainEl.dataset.tab = name
   for (const t of tabs) { const on = t.dataset.tab === name; t.setAttribute('aria-selected', on); t.tabIndex = on ? 0 : -1 }

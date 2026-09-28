@@ -36,12 +36,6 @@
   --line:  light-dark(#dedfe1, #1c1c25);   /* hairline */
   --rule:  light-dark(#d2d2d4, #4a4a54);   /* rulers — above every grid line and crossing (80px × 80px included) */
 
-  /* substrate-class brand colours (JS gold · WASM violet · native terminal) — themed light-dark
-     pairs so the class glyphs on the bench chart and the strip track the theme. */
-  --cls-js:     light-dark(#caa10a, #f0db4f);
-  --cls-wasm:   light-dark(#654ff0, #9a8bf5);
-  --cls-native: light-dark(#b7b7c1, #8a8a93);          /* the >_ prompt — light, since it now sits inside the dark terminal square below */
-  --cls-native-bg: light-dark(#232428, transparent);   /* terminal square behind the prompt; transparent in dark so the glyph stays a bare >_ as before */
 
   /* ── Blueprint grid: 80px major lines (= half the logo) · 40px mid lines · 8px unit lines — all translucent,
      so where they cross the ink adds up into dots. A line of a coarser level also carries the finer ones, so
@@ -136,14 +130,10 @@ h1, h2, h3, h4, h5, h6 { font-family: var(--font); }
   .title, .prose p { text-box: trim-both cap alphabetic; padding-top: var(--bl); }   /* prose: baselines on the 8px grid */
 }
 
-/* substrate-class glyphs (JS / WASM / native), shared by the bench chart and the strip. Markup
-   comes from CLS_ICO in assets/headline.js; colour via currentColor + the themed --cls-* tokens.
-   Default size fits the dense bench rows; the strip bumps it locally. */
-.cico { width: 11px; height: 11px; flex: none; }
-.cico.cls-js     { color: var(--cls-js); }
-.cico.cls-wasm   { color: var(--cls-wasm); }
-.cico.cls-native { color: var(--cls-native); }
-.cico.cls-native .term-bg { fill: var(--cls-native-bg); }   /* dark terminal block behind the >_ (see --cls-native-bg) */
+/* substrate-class glyphs (JS / WASM / native): the marks from CLS_ICO in assets/headline.js, which carry their own
+   colours. One 12px size on every page, centred on the caps, muted to 40% saturation (a page may bring it to full
+   on hover). */
+.cico { width: 12px; height: 12px; flex: none; vertical-align: calc((1cap - 12px) / 2); filter: saturate(.4); transition: filter .18s; }
 
 /* One selection highlight site-wide (else pages without their own fall back to the browser blue):
    ink-on-white in light, white-on-black in dark. */
