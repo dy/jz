@@ -16,6 +16,7 @@ import { foldStaticExportHelpers, foldStaticBundlerHelpers, canonicalizeObjectId
 import { createSwitchLowering, normalizeCaseBody } from './switch.js'
 import { createClassLowering, foldPseudoClassical, foldPrototypeStores } from './classes.js'
 import { hoistVars, prependDecls } from './hoist-vars.js'
+import { settleVars } from './settle-vars.js'
 import { createArgumentsLowering } from './arguments.js'
 import { createTransform, bindGenerators } from './transform.js'
 import { createGeneratorLowering } from './generators.js'
@@ -491,6 +492,7 @@ export default function jzify(ast, { structs = true, importedBinding = null, std
     }
   }
   const hoisted = new Set()
+  ast = settleVars(ast)
   ast = hoistVars(ast, hoisted)
   if (hoisted.size) ast = prependDecls(ast, hoisted)
   if (Array.isArray(ast) && ast[0] === ';') ast = [';', ...foldPseudoClassical(ast.slice(1))]

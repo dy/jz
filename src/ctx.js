@@ -105,6 +105,7 @@ function createFunctions() {
     multiProp: new Map(), // obj.prop → lifted implementations, including reassignments
     exports: Object.create(null), // export names may shadow Object.prototype
     globalDevirt: null,
+    builtinWrapped: null,   // a builtin's value wrapper (prepare/entry.js) → the builtin key it forwards to
     runtimeRoots: new Set(), // prepared functions called by runtime kernels
     // Fixed-rest variants precede ProgramIndex: { variant, origin, kind }.
     // ProgramIndex consumes this queue once; later variants register directly.

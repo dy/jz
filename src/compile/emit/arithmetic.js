@@ -461,8 +461,10 @@ export const arithmeticOps = {
     if (_f) return _f
     // Neither side is a string here (string paths handled above), but either may
     // still be null/undefined/pointer — numeric `+` performs ToNumber like `-`/`*`.
-    if (isLit(vb) && litVal(vb) === 0) return toNumF64(a, va)
-    if (isLit(va) && litVal(va) === 0) return toNumF64(b, vb)
+    // `x + 0` is x for an integer x alone: a float -0 gives +0 (`0.0 + x*(…)`,
+    // the constant term of a Horner sum whose product came out -0).
+    if (isLit(vb) && litVal(vb) === 0 && isI32Num(va)) return toNumF64(a, va)
+    if (isLit(va) && litVal(va) === 0 && isI32Num(vb)) return toNumF64(b, vb)
     // An `.unsigned` operand is a uint32 (range [0, 2^32)); JS `+` is a float
     // op whose result can exceed i32, so `i32.add` would wrap (4294967295+1→0).
     // Widen to f64 — never wrap — matching spec. Only `>>>0`/`|0`/imul wrap.
@@ -653,12 +655,14 @@ export const arithmeticOps = {
         return r
       }
     }
-    // Fast path: positive literal divisor → inline a - trunc(a/b) * b.
+    // Fast path: positive literal divisor → inline a - trunc(a/b) * b, signed
+    // like the dividend: `%` gives a zero remainder the dividend's sign
+    // (`-4 % 2` is -0), which the subtraction alone loses.
     // Exact when |a| < 2^53 × |b| (all practical audio/control-range values).
     // The full __rem handles NaN/±Inf/0 edges exactly; this avoids the call overhead.
     if (isLit(vb) && litVal(vb) > 0) {
       const fa = toNumF64(a, va), fb = toNumF64(b, vb)
-      const rem = ta => typed(['f64.sub', ta, ['f64.mul', ['f64.trunc', ['f64.div', ta, fb]], fb]], 'f64')
+      const rem = ta => typed(['f64.copysign', ['f64.sub', ta, ['f64.mul', ['f64.trunc', ['f64.div', ta, fb]], fb]], ta], 'f64')
       if (isPureIR(fa)) return rem(fa)
       return withTemp(fa, t => rem(['local.get', `$${t}`]), 'rem')
     }

@@ -5156,7 +5156,8 @@ test('typed value hulls fail closed on wraparound, aliases, and closure writes',
   }
   for (const [name, src] of Object.entries(cases)) {
     const wat = jz.compile(src, { wat: true, optimize: { level: 'speed', watr: false } })
-    const getWat = wat.split('(func $get')[1]?.split('(func ')[0] || ''
+    // the read stands in `get`, or in `f` once the element argument substitutes into `get`'s pure body
+    const getWat = wat.split('(func $get')[1]?.split('(func ')[0] || wat.split('(func $f')[1]?.split('(func ')[0] || ''
     ok(/i32\.lt_u/.test(getWat), `${name}: unproven element hull keeps the bounds check`)
     is(run(src, { optimize: 'speed' }).f(), 0, `${name}: OOB reads retain JS ToInt32 semantics`)
   }

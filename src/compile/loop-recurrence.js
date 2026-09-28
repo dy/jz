@@ -207,11 +207,24 @@ function tryUnrollScalarChain(stmt, cm) {
   } })
   if (!carried.size) return null
 
+  // A scalar the body only steps by a constant (`ix += 1`, the strided kernels'
+  // cursor) is a counter beside the loop's own, an affine address the lane
+  // vectorizer rewrites over the counter (optimize/vectorize/counter-run.js):
+  // no chain runs through it.
+  const stepOf = (n, name) => n[1] === name && ((n[0] === '+=' || n[0] === '-=') ? loopLitVal(n[2]) != null
+    : n[0] === '=' ? isArr(n[2]) && (n[2][0] === '+' || n[2][0] === '-') && n[2][1] === name && loopLitVal(n[2][2]) != null : false)
+  const stepped = new Set()
+  for (const s of carried) {
+    let steps = 0, writes = 0
+    walkAst(body, { enter: n => { if (n[1] === s && (n[0] === '=' || (typeof n[0] === 'string' && n[0].endsWith('=') && n[0].length > 1 && !['==', '!=', '<=', '>=', '===', '!=='].includes(n[0])) || n[0] === '++' || n[0] === '--')) { writes++; if (stepOf(n, s)) steps++ } } })
+    if (writes && writes === steps) stepped.add(s)
+  }
+
   // the chain proof: some element read's INDEX mentions a carried scalar
   const mentions = (n, name) => n === name || (isArr(n) && n.some(c => mentions(c, name)))
   const chained = some(body, (n) => {
     if (n[0] !== '[]' || n.length !== 3) return false
-    for (const s of carried) if (mentions(n[2], s)) return true
+    for (const s of carried) if (!stepped.has(s) && mentions(n[2], s)) return true
     return false
   }, { skipArrow: false })
   if (!chained) { if (DBG) console.error('[usc] no-chain, carried:', [...carried]); return null }

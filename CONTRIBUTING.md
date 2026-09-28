@@ -589,7 +589,20 @@ boxed values independently of the element width. Presence is part of that
 proof: a missing numeric payload addresses the property `"undefined"`.
 Numeric demand owns typed-store coercion proofs. Usage-only parameter scans
 must not classify a typed receiver's unknown key or stored value as numeric:
-the key may name a property, which stores the value unchanged.
+the key may name a property, which stores the value unchanged. In the demand
+pass a typed array's index is a read that is no evidence (`index()`): a
+parameter read only there keeps its key as it is, one also stepped or added is
+a number by the boundary contract.
+A parameter returned as itself reaches the host with its identity (`fib('1')`
+is `'1'`), so its export boxes it. A return, or the assignment an early return
+lowers to, under a guard only a number passes (`x !== x`, `x === 0.0`, a
+predicate whose body is such a test of its parameter: `isnan( x )`,
+`isInfinite( x )`, through `&&`, `||`, `!`) gives back a number: both the
+demand pass (`numericProofs`) and the parameter proofs (`numericGuard`,
+param-numeric.js) read it as a numeric-compatible use, and libm's
+`if ( isnan( x ) ) { return x; }` keeps the f64 export. An equality against
+a number reads the parameter as a number would be read; against anything else
+it tells the value's own type apart and the parameter stays as it is.
 Dispatch reuses the later lossless i32 local-storage proof even when the
 summary's earlier kind still admits absence. The same bounds query reuses a
 settled i32 index's range when it fits the receiver length.
@@ -1284,11 +1297,13 @@ jzify/          pre-compile desugar (index.js orchestrator + phase modules)
   switch.js     switch fall-through lowering
   generators.js function*/yield state machines + iterator-helper loop fusion
   hoist-vars.js var hoisting; arguments.js — arguments/rest lowering
+  settle-vars.js a `var`, or a bare `let`, declared at the assignment that dominates its uses (`const` when written once); a counter declared by its loop
 src/
   prepare/      validate, normalize, extract exports/imports (index.js)
   compile/      analyze → infer → plan → narrow → emit; ProgramIndex; program facts; driver (index.js)
                 analyze/frame-effects.js: per-function and per-loop escape census (what outlives a frame or an iteration)
                 plan/lanes.js: record parameters as scalar lanes (a parameter read only field by field, at literal or known-shape sites)
+                plan/counted-loops.js: a counted loop over its trip number (computed start, unrolled body rolled back, unit stride versioned); literal-start cursors are the lane vectorizer's (optimize/vectorize/counter-run.js)
   optimize/     WAT-array passes + vectorize.js + loop-rewind.js (per-iteration heap restore, after the vectorizer);
                 arena-rewind, sort-locals, low-word-mask are tape passes run by link
   link/         whole-module passes on the tape: treeshake, custom sections, throw-runtime prune, function order, local names (index.js)

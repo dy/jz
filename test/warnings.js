@@ -224,14 +224,25 @@ test('warnings: simd-why-not is off by default (noisy — opt-in only)', () => {
 
 test('warnings: int-global-truncation when a scalar global is i32-narrowed from a param', () => {
   // jz infers integer module globals to i32 (the size/index/stride perf win). A
-  // scalar global fed from a parameter may hold a fractional Number (DSP state) that
-  // the i32 carrier truncates — surfaced as an opt-in advisory (not demoted: the
-  // integer default is load-bearing; structurally identical to the rfft `N = n` win).
-  const ws = warningsFor(`let x1 = 0, y1 = 0
-    export let process = (inp, b0) => { let out = b0 * inp + x1; x1 = inp; y1 = out; return out }`)
+  // scalar global fed from a parameter may hold a fractional Number that the i32
+  // carrier truncates — surfaced as an opt-in advisory (not demoted: the integer
+  // default is load-bearing; this is the rfft `N = n` shape, a bound only compared).
+  const ws = warningsFor(`let N = 0
+    export let init = (n) => { N = n; return 0 }
+    export let inside = (i) => i < N ? 1 : 0`)
   const trunc = ws.filter(w => w.code === 'int-global-truncation')
   ok(trunc.length >= 1, 'fires for a param-fed i32-narrowed global')
   ok(/Float64Array/.test(trunc[0].message), 'points to Float64Array for fractional state')
+})
+
+test('warnings: filter state read back as a value stays f64 and draws no advisory', () => {
+  // `x1` reaches the result through `out`: a copy is a read, so the state is exact.
+  const src = `let x1 = 0, y1 = 0
+    export let process = (inp, b0) => { let out = b0 * inp + x1; x1 = inp; y1 = out; return out }`
+  is(warningsFor(src).filter(w => w.code === 'int-global-truncation' && /'x1'/.test(w.message)).length, 0)
+  const { process } = jz(src).exports
+  process(0.75, 0.5)
+  is(process(0.25, 0.5), 0.5 * 0.25 + 0.75)
 })
 
 test('warnings: no int-global-truncation for a self-contained integer counter', () => {

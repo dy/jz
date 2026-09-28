@@ -337,7 +337,7 @@ export function applyExportTypedArrayAbi(paramReps, callSites, addressTaken) {
     const restIdx = func.rest ? func.sig.params.length - 1 : -1
     func.sig.params.forEach((p, k) => {
       if (k === restIdx || p.boundaryTyped || p.type !== 'f64' || p.ptrKind != null || p.jsstring || func.defaults?.[p.name] != null) return
-      const use = paramNumericArrayLike(frameNode(func), p.name)
+      const use = paramNumericArrayLike(frameNode(func), p.name, new Set(), func.sig.params.map(q => q.name))
       if (!use) return
       const rep = ensureParamRep(paramReps, func.name, k)
       rep.val = VAL.TYPED

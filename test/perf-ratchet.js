@@ -104,6 +104,13 @@ const loopBodyOps = (wat) => {
   return count
 }
 
+// Signed zero of `x + 0` (2026-09-27): the fold `x + 0.0 → x` held only for an
+// integer x (−0 + 0 is +0; stdlib's gamma-lanczos-sum divided by that zero), so
+// the corpus's f64 `+ 0` sites keep their add: mixed 1137 → 1148, the other
+// categories unchanged by that fold. The same update lowered buf, nest, slice,
+// ring and condref (a typed array's index is no longer demanded boxed, so their
+// element paths left the dynamic-key helpers), locking those gains in.
+
 // Total loop-body ops across the fixed corpus, per category. Deterministic.
 const measure = () => {
   const totals = {}

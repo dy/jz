@@ -105,7 +105,7 @@ export function foldV128Memargs(node) {
         let base, offset
         if (Array.isArray(b) && b[0] === 'i32.const' && typeof b[1] === 'number' && b[1] >= 0 && b[1] < 0x100000000) { base = a; offset = b[1] }
         else if (Array.isArray(a) && a[0] === 'i32.const' && typeof a[1] === 'number' && a[1] >= 0 && a[1] < 0x100000000) { base = b; offset = a[1] }
-        if (base != null) { n[1] = `offset=${offset}`; n.splice(2, 0, base) }
+        if (base != null) { if (offset === 0) n[1] = base; else { n[1] = `offset=${offset}`; n.splice(2, 0, base) } }
       }
     }
   } })
@@ -793,9 +793,10 @@ function walkRewrite(node, doInline, freshI64, freshF64, get, bigint, inlineTrut
         let base, offset
         if (Array.isArray(b) && b[0] === 'i32.const' && typeof b[1] === 'number' && b[1] >= 0 && b[1] < 0x100000000) { base = a; offset = b[1] }
         else if (Array.isArray(a) && a[0] === 'i32.const' && typeof a[1] === 'number' && a[1] >= 0 && a[1] < 0x100000000) { base = b; offset = a[1] }
+        // offset 0 is the address itself: no memarg to carry, none for a recognizer to read past
         if (base != null) {
-          node[1] = `offset=${offset}`
-          node.splice(2, 0, base)
+          if (offset === 0) node[1] = base
+          else { node[1] = `offset=${offset}`; node.splice(2, 0, base) }
         }
       }
     }

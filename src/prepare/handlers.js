@@ -725,8 +725,12 @@ const handlers = {
 
   // Statements
   ';': (...stmts) => {
-    preRegisterBuiltinAliases(stmts)
-    return [';', ...truncateUnreachable(stmts.map(prepStatement).filter(x => x != null).map(dropDeadPostfix).map(foldConstIf).filter(x => x != null))]
+    // Imports bind ahead of the rest of the list, as ES hoists them: a
+    // constant aliasing an imported function then pre-binds to the function.
+    const isImport = (s) => Array.isArray(s) && (s[0] === 'import' || (s[0] === ',' && Array.isArray(s[1]) && s[1][0] === 'import'))
+    const imports = stmts.filter(isImport).map(prepStatement), rest = stmts.filter(s => !isImport(s))
+    preRegisterBuiltinAliases(rest)
+    return [';', ...truncateUnreachable([...imports, ...rest.map(prepStatement)].filter(x => x != null).map(dropDeadPostfix).map(foldConstIf).filter(x => x != null))]
   },
   'let': (...inits) => prepDecl('let', ...inits),
   'const': (...inits) => prepDecl('const', ...inits),
@@ -838,9 +842,14 @@ const handlers = {
     // export default expr → declare its captured value
     if (Array.isArray(decl) && decl[0] === 'default') {
       const val = decl[1]
-      // export default name → export existing name as 'default'
-      if (typeof val === 'string' && (hasFunc(val) || ctx.scope.globals.has(val))) {
-        ctx.funcs.exports['default'] = val  // alias
+      // export default name → export existing name as 'default'. An imported
+      // binding names what it was imported as (`import main from './main.js';
+      // export default main`, the index.js of a CommonJS package): the export
+      // is that function or global itself, not a global holding its value.
+      const bound = typeof val === 'string' ? ctx.scope.chain[val] : null
+      const target = typeof bound === 'string' && bound !== val ? bound : val
+      if (typeof target === 'string' && (hasFunc(target) || ctx.scope.globals.has(target))) {
+        ctx.funcs.exports['default'] = target  // alias
         return null
       }
       // export default arrow → create function named 'default'
@@ -1930,14 +1939,30 @@ function preRegisterBuiltinAliases(stmts) {
   // prepped yet (so `shadowsBuiltin`/`userGlobals` don't know about it yet
   // either). Collect every name this block itself declares up front so the
   // scan below can treat it exactly like an outer-scope shadow.
-  const blockDeclared = new Set()
+  const blockDeclared = new Set(), declaredTwice = new Set()
   for (const stmt of stmts) {
     if (!Array.isArray(stmt) || (stmt[0] !== 'let' && stmt[0] !== 'const')) continue
     for (const i of stmt.slice(1)) {
       const target = Array.isArray(i) && i[0] === '=' ? i[1] : i
+      const before = blockDeclared.size
       bindingNames(target, blockDeclared)
+      if (typeof target === 'string' && blockDeclared.size === before) declaredTwice.add(target)
     }
   }
+  const blockDeclaredTwice = (name) => declaredTwice.has(name)
+  // The functions this list declares (`function f` arrives as `const f = arrow`):
+  // lifted at their own statement, later than this scan, so an alias of one
+  // (`const a = f; const b = a`, esbuild's `var main_default = f`) binds to the
+  // name the lift will register.
+  const blockFuncs = new Set()
+  for (const stmt of stmts) {
+    const decl = Array.isArray(stmt) && stmt[0] === 'export' ? stmt[1] : stmt
+    if (!Array.isArray(decl)) continue
+    if ((decl[0] === 'function' || decl[0] === 'function*') && typeof decl[1] === 'string') blockFuncs.add(decl[1])
+    if (decl[0] === 'const') for (const i of decl.slice(1))
+      if (Array.isArray(i) && i[0] === '=' && typeof i[1] === 'string' && Array.isArray(i[2]) && (i[2][0] === '=>' || i[2][0] === 'function')) blockFuncs.add(i[1])
+  }
+  const namesFunc = (name) => typeof name === 'string' && (hasFunc(name) || blockFuncs.has(name))
   // Bare identifier `name` names an as-yet-unshadowed builtin module — null
   // when `name` is shadowed (by this block, an outer scope, a function, or a
   // user global) or simply isn't a known module name.
@@ -1951,6 +1976,30 @@ function preRegisterBuiltinAliases(stmts) {
     for (const i of stmt.slice(1)) {
       if (!Array.isArray(i) || i[0] !== '=') continue
       const [, name, init] = i
+      // A module constant's string is known before any sibling function body
+      // reads it: a hoisted function's template or RegExp folds over it as it
+      // does over a `var` assigned ahead (`const left = "cat"`, `var left` once).
+      if (stmt[0] === 'const' && prepState.depth === 0 && typeof name === 'string' && !blockDeclaredTwice(name)) {
+        const str = staticStringExpr(init)
+        if (str != null) {
+          bindStaticGlobal(name, str, null)
+          if (ctx.module.currentPrefix) bindStaticGlobal(`${ctx.module.currentPrefix}$${name}`, str, null)
+        }
+        // A function alias (`const alias = fn`, `fn` a top-level or imported
+        // function; prepDecl's fast path) binds here, ahead of the sibling
+        // function bodies that call it: jzify lists those bodies first.
+        const fn = typeof init === 'string' ? (namesFunc(init) ? init : namesFunc(ctx.scope.chain[init]) ? ctx.scope.chain[init] : null) : null
+        if (fn) ctx.scope.chain[name] = fn
+        // A builtin namespace bound to a name (`const N = Number`, stdlib's
+        // number/ctor) is the namespace: `N.NEGATIVE_INFINITY`, `new N(1)`; a
+        // constant bound to a builtin alias (`const fl = floor` after
+        // `const floor = Math.floor`, esbuild's `var main_default = floor`) is
+        // that alias.
+        const mod = fn ? null : builtinModOf(init)
+        if (mod) ctx.scope.chain[name] = mod
+        const key = fn || mod || typeof init !== 'string' ? null : ctx.scope.chain[init]
+        if (typeof key === 'string' && key.includes('.') && ctx.core.emit[key] != null) registerBuiltinAlias(name, key)
+      }
       if (isDestructPattern(name) && typeof init === 'string') {
         const mod = builtinModOf(init)
         if (mod) {
@@ -2360,9 +2409,11 @@ function foldFnCallApplyBind(callee, args) {
   if (!Array.isArray(callee) || callee[0] !== '.') return undefined
   let [, name, meth] = callee
   if (typeof name !== 'string' || (meth !== 'call' && meth !== 'apply' && meth !== 'bind')) return undefined
-  // funcValueNames holds POST-RENAME keys — resolve the receiver spelling first
+  // funcValueNames holds POST-RENAME keys — resolve the receiver spelling first;
+  // an imported function's binding reaches its function through the chain.
   const key = scopes.length && isDeclared(name) ? resolveScope(name) : name
-  if (!hasFunc(key) && !isFuncValueLocal(key)) return undefined
+  const fnName = hasFunc(key) ? key : hasFunc(ctx.scope.chain[key]) ? ctx.scope.chain[key] : null
+  if (fnName == null && !isFuncValueLocal(key)) return undefined
   const [thisArg, ...rest] = handlerArgs(args)
   const trivialThis = thisArg == null || typeof thisArg === 'string' ||
     (Array.isArray(thisArg) && thisArg[0] == null)
@@ -2383,7 +2434,7 @@ function foldFnCallApplyBind(callee, args) {
   // bind(thisArg, ...pre) → an arrow closing over the pre-bound args. When the
   // callee's arity is known (a lifted top-level fn), mint EXPLICIT remaining
   // params — a rest+spread arrow would hit the non-variadic spread-call limit.
-  const f = ctx.funcs.list.find(fn => fn.name === name)
+  const f = fnName != null ? ctx.funcs.map.get(fnName) : null
   if (f && !f.rest) {
     const remaining = Math.max(0, f.sig.params.length - rest.length)
     const ps = Array.from({ length: remaining }, () => `${T}b${freshPrepareId()}`)
@@ -2673,6 +2724,7 @@ function prepareModule(specifier, source) {
   // rules apply to what the user wrote, never to the lowering they invoke.
   const savedStd = ctx.module.inStd
   ctx.module.inStd = savedStd || specifier.startsWith('jz:')
+
   // A module's scope holds the builtins, its own declarations and its own
   // imports (its namespace aliases included): derived from the root, not from
   // the importing module, whose bindings would otherwise leak in (`import core
@@ -2784,6 +2836,11 @@ function prepareModule(specifier, source) {
     if (moduleExports.has(alias)) {
       // Already renamed as a named export
       moduleExports.set('default', moduleExports.get(alias))
+    } else if (alias.startsWith(prefix + '$') || (alias.includes('$') &&
+        (ctx.funcs.list.some(f => f.name === alias) || ctx.scope.globals.has(alias)))) {
+      // A module-level binding is declared under this module's prefix already, and
+      // one imported from another module carries that module's: pass it through.
+      moduleExports.set('default', alias)
     } else {
       // Not a named export — rename the function/global. `export default helper`
       // is itself an aliased export (exportName 'default' vs localName `alias`),

@@ -102,7 +102,16 @@ test('example: watercolor fluid stencils vectorize f64x2 and stay bit-exact', ()
     // native i32.sub inside the guarded fast arm, boundPureInv accepts it, and
     // the stencil lifts under the proof the guard just checked. Scalar stays
     // the fallback whenever the guard's magnitude/integrality conjuncts fail.
-    is(sten, 49, `watercolor sweeps: stencil pass recovers under the Root-F magnitude guard (${base} → ${sten} f64x2)`);
+    // 49 → 39 (2026-09-27): `W`/`H` are set from resize(w, h)'s host parameters
+    // and read back as values (`x1 > W - 2`, passed to samp), so the integer-global
+    // inference keeps them f64 (a host may pass 64.5; an i32 global truncated it
+    // silently). The bleed sweep's `w2 = W`, `r = y2 * w2`, `c = r + x2` then type
+    // f64 at analysis and neither vectorizer sees an integer model; the guard's
+    // per-name integral conjunct cannot retype locals fixed before emit. The
+    // velocity sweeps (`w = WV`, `WV = w >> 1`) still lift. Recovering the ink
+    // sweeps needs a source-level integer versioning of an f64 width:
+    // `if (W === (W | 0)) <nest with W | 0> else <nest>`, typed per copy.
+    is(sten, 39, `watercolor sweeps: velocity stencils lift, ink sweeps wait on an f64 width (${base} → ${sten} f64x2)`);
     const run = (opts) => {
         const { exports } = jz(src, opts);
         const px = exports.resize(64, 48);

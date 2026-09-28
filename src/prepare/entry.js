@@ -65,6 +65,7 @@ const wrapBuiltinValues = (ast) => {
     const decl = prep(['const', ['=', w, ['=>', ['()', args], ['()', name, args]]]])
     if (decl != null) inits.push(decl)
     wrappers.set(name, w)
+    ;(ctx.funcs.builtinWrapped ||= new Map()).set(w, name)
     return w
   }
   const visit = (n) => {

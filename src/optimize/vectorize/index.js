@@ -305,6 +305,9 @@ export function vectorizeLaneLocal(fn, opts = {}) {
           const lifted = tryMemCopyFill(cbl, fnLocals, freshIdRef)
             ?? tryVectorize(cbl, fnLocals, freshIdRef, pureFuncMap, constLocals)
             ?? tryGeneralMap(canon.node, fnLocals, freshIdRef, cbl, { aliasVersion })
+            // a cursor beside a reduction (`s += x[ix]; ix += 1`, dasum's shape)
+            ?? tryReduce(cbl, fnLocals, freshIdRef, multiAcc)
+            ?? tryGeneralReduce(cbl, fnLocals, freshIdRef, multiAcc)
           if (lifted) r = { wrapper: ['block', ...canon.setup, lifted.wrapper, ...canon.landing], newLocalDecls: [...canon.decls, ...lifted.newLocalDecls] }
         }
       }

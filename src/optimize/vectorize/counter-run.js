@@ -67,6 +67,27 @@ export function canonicalizeCounters(node, fnLocals, freshIdRef) {
 
   const copy = cloneNode(node)
   const loop = copy.find(c => isArr(c) && c[0] === 'loop')
+  // A scaled cursor shared by two addresses arrives as one temp, `(local.tee $t
+  // (i32.shl (local.get op) k))` at the first and `(local.get $t)` at the
+  // next. Each address takes the expression back, so it reads as the cursor's.
+  for (const { name: op } of ivs) {
+    const temps = new Map()
+    for (let j = 3; j < loop.length; j++) walkAst(loop[j], { enter: c => {
+      if (c[0] === 'local.tee' && isArr(c[2]) && c[2][0] === 'i32.shl' && isLocalGet(c[2][1], op) && isI32Const(c[2][2])) temps.set(c[1], c[2])
+    } })
+    for (const [t] of temps) for (let j = 3; j < loop.length; j++) walkAst(loop[j], { enter: c => {
+      if ((c[0] === 'local.set' || c[0] === 'local.tee') && c[1] === t && !(c[0] === 'local.tee' && c[2] === temps.get(t))) temps.delete(t)
+    } })
+    if (!temps.size) continue
+    const untee = (n) => {
+      if (!isArr(n)) return n
+      if (n[0] === 'local.tee' && temps.has(n[1]) && n[2] === temps.get(n[1])) return cloneNode(n[2])
+      if (n[0] === 'local.get' && temps.has(n[1])) return cloneNode(temps.get(n[1]))
+      for (let j = 1; j < n.length; j++) n[j] = untee(n[j])
+      return n
+    }
+    for (let j = 3; j < loop.length; j++) loop[j] = untee(loop[j])
+  }
   const setup = [], landing = [], decls = []
   const fresh = (tag) => { const name = `$__c${tag}${freshIdRef.next++}`; decls.push(['local', name, 'i32']); return name }
   const i = () => ['local.get', incVar]
@@ -88,7 +109,10 @@ export function canonicalizeCounters(node, fnLocals, freshIdRef) {
       if (LOAD_STORE.test(n[0])) {
         let a = 1
         while (typeof n[a] === 'string') a++
-        const m = cursorAddr(n[a], op, writes)
+        // an address shared through a tee (`(f64.load (local.tee $ab addr))`) rewrites inside it
+        const tee = isArr(n[a]) && n[a][0] === 'local.tee' ? n[a] : null
+        const holder = tee || n, slot = tee ? 2 : a
+        const m = cursorAddr(holder[slot], op, writes)
         const stride = m && Math.imul(c, 1 << m.s)
         if (m && stride > 0 && (stride & (stride - 1)) === 0) {
           const key = JSON.stringify([m.base, m.k, m.s])
@@ -100,7 +124,7 @@ export function canonicalizeCounters(node, fnLocals, freshIdRef) {
             setup.push(['local.set', P, ['i32.add', cloneNode(m.base), m.s ? ['i32.shl', lead, ['i32.const', m.s]] : lead]])
           }
           const k = 31 - Math.clz32(stride)
-          n[a] = ['i32.add', ['local.get', P], k ? ['i32.shl', i(), ['i32.const', k]] : i()]
+          holder[slot] = ['i32.add', ['local.get', P], k ? ['i32.shl', i(), ['i32.const', k]] : i()]
           for (let j = a + 1; j < n.length; j++) visit(n[j])
           return
         }
