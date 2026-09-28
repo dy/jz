@@ -1,5 +1,42 @@
 # Math follow-up
 
+## Main landing, 2026-09-28
+
+The full math-target lineage (through `7104c8c4`) and this follow-up landed on
+main at `7d99a984`, after merge `97a4a68b`. The landing retained concurrent
+uncommitted edits in eleven overlapping files; unrelated work was not staged.
+The object-field CSE work and plain-array CSE share the resolved working tree.
+
+`7d99a984` adds `npm run test:math` (`test/pmath.js`) to the default core suite:
+all four fixed library workloads must match their first-call checksum and Node
+across three successive calls, including FABRIK's evolving state. The command
+prints diagnostic timing ratios; `JZ_MATH_PIN=1` requires every case to beat V8.
+The claims gate still lists all four as pending. No speed win is inferred from
+the overloaded shared machine.
+
+The minimal plain-array kernels now have six-load ceilings, alongside their
+pass-on/pass-off comparisons (uncached counts nine and ten). Existing numeric
+conversion, parameter hull, forwarding and SLP pins remain enabled. The unused
+SLP import was removed; full compiler import lint passes.
+
+The new math gate passes on main: 4 tests / 44 assertions. Focused kernel
+sweep: 14 tests / 221 assertions pass. The resolved working-tree
+snapshot passes 74/75 tests / 854 assertions, including array CSE, field CSE,
+SLP and scalar records. Its sole failure is the pre-existing BigInt shape-join
+result: at O2, a selected `{value: 1n}` can return the number `5e-324`. The same
+minimal source fails on frozen `6f37e16f`, the committed integration and the
+pre-landing main workspace. The object-field patch's updated assertion exposes
+the value failure previously hidden by its earlier summary-kind assertion.
+
+The earlier self gate below passed before the merge from newer main. Its
+remaining serial checks were superseded by the landing validation runner:
+`/private/tmp/jz-math-verify-landed.mjs`. It runs core, opt0, opt3, WASI, self,
+language/builtins conformance and three.js, retaining every leg's exit status
+even after a failure. Logs: `/private/tmp/jz-math-landed-*.log`; completed-leg
+results: `/private/tmp/jz-math-landed-verification.json`. The core rerun has
+already reproduced the baseline strict-mode failure. Full matrix results are
+still pending; this is not a v1 release certification.
+
 Worktree: `/private/tmp/jz-math-followup`, branch `math-followup`.
 Base: `6f37e16f` (the reported math-target head).
 Frozen comparison checkout: `/private/tmp/jz-math-base`.
