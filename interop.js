@@ -1494,7 +1494,7 @@ export const wrap = (memSrc, inst, state) => {
         } catch (e) { decodeThrown(e) }
       }
       exports[name] = plainLanes(ie, ext, hostAbi) && !asyncMod
-        ? crossing(fn, general, (ret) => typeof ret === 'bigint' && !(ie && ie.r) ? ret : decode(ret), always, idle) : general
+        ? crossing(fn, general, (ret) => typeof ret === 'bigint' && !(ie && ie.r) ? ret : decode(ret, fnOf), always, idle) : general
     }
     return exports
   }
