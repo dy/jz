@@ -154,9 +154,9 @@ test('param defaults: an argument forwarded into a defaulted parameter arrives a
 test('param defaults: a Math constant is a number to the summary: a default of one converts nothing', () => {
   const src = `function h (d, q = Math.PI) { let s = 0; for (let i = 0; i < d.length; i++) { s += d[i] / q; d[i] = s * q } return s }
     const a = new Float64Array(8).fill(1), b = new Float64Array(8).fill(2)
-    export let run = () => h(a) + h(b, 2) + h(a, undefined)`
+    export let f = () => h(a) + h(b, 2) + h(a, undefined)`
   const js = oracle(src)
-  for (const optimize of levels(0, 2, 3)) is(jz(src, { optimize }).exports.run(), js.run(), `run() at ${optimize}`)
+  for (const optimize of levels(0, 2, 3)) is(jz(src, { optimize }).exports.f(), js.f(), `f() at ${optimize}`)
   if (belowOpt(2)) return
   ok(!/__to_num/.test(wat(src, { optimize: 2 })), 'no conversion of the defaulted parameter')
 })

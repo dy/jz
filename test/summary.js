@@ -10,7 +10,7 @@ import { ctx } from '../src/ctx.js'
 import { K, kind, join, orNull, tagOf, paramOf, isNullable, hasTag, UNKNOWN } from '../src/summary/index.js'
 import { T as MARK } from '../src/ast.js'
 import { onKernel, OPT_LEVEL, levels, belowOpt } from './_matrix.js'
-import { oracle } from './util.js'
+import { funcWat, oracle } from './util.js'
 
 // Bindings carry prepare's scope suffix; find one by function and bare name.
 const binding = (fn, bare) => {
@@ -1085,8 +1085,15 @@ test('summary: instanceof narrows a name on both sides of its test', () => {
   const warnings = []
   const text = compile(src, { optimize: 2, wat: true, warnings: w => warnings.push(w) })
   ok(!warnings.some(w => w.code === 'shape-lost'), 'the options record keeps its shape')
-  const batch = text.slice(text.indexOf('(func $batch'), text.indexOf('\n  (func', text.indexOf('(func $batch') + 1))
-  ok(batch.length > 20 && !/call \$__(dyn_set|dyn_get\b|is_str_key|add_slow)/.test(batch), 'the overlap-add stores by a numeric index')
+  // the loops of batch, wherever the inliner put them
+  const holder = funcWat(text, 'batch') || funcWat(text, 'f$exp')
+  const loops = []
+  for (let at = holder.indexOf('(loop'); at >= 0; at = holder.indexOf('(loop', at + 1)) {
+    let depth = 0, end = at
+    do { const c = holder[end++]; if (c === '(') depth++; else if (c === ')') depth-- } while (depth && end < holder.length)
+    loops.push(holder.slice(at, end))
+  }
+  ok(loops.some(l => /f64\.store/.test(l)) && loops.every(l => !/call \$__(dyn_set|dyn_get\b|is_str_key|add_slow)/.test(l)), 'the overlap-add stores by a numeric index')
 })
 
 // Where `x instanceof Float32Array` holds, x is a Float32Array, owned or a

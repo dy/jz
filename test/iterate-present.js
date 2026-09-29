@@ -5,7 +5,7 @@
 // receiver test inside the loop; a missing source still throws.
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
-import { belowOpt, levels } from './_matrix.js'
+import { belowOpt, levels, onWasi } from './_matrix.js'
 import { funcWat, oracle, run, wat } from './util.js'
 
 const src = `const comb = (data, st) => {
@@ -27,6 +27,7 @@ test('iterate present: a list set on first use iterates as the host does, a miss
   for (const optimize of levels(0, 2, 3)) {
     const host = oracle(src), m = run(src, { optimize })
     for (const [k, n] of [[0, 0], [0, 5], [1, 3], [0, 40], [1, 2]]) is(m.run(k, n), host.run(k, n), `run(${k}, ${n}) at ${optimize}`)
+    if (onWasi()) continue  // wasi: js-object arg
     is(m.sum({ list: [1, 2, 3.5] }), host.sum({ list: [1, 2, 3.5] }), `sum at ${optimize}`)
     throws(() => m.sum({}), `a missing list throws at ${optimize}`)
     throws(() => host.sum({}))
