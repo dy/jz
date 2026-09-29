@@ -402,6 +402,7 @@ export function summaryQueries(facts, internal = false) {
       /** The name is present on the path being emitted (a guard proved it): its reads drop the nullish part. */
       present: (name) => { present.add(name) },
       unpresent: (name) => { present.delete(name) },
+      isPresent: (name) => present.has(name),
       // The result contract of the callable a call reaches, or null (contract.js).
       calleeContract: n => { const c = calleeOf(n); return c === null ? null : resultContract(c) },
       sidOf: name => { const k = readKind(name); return tagOf(k) === K.OBJECT && !isNullable(k) && publicSid(k) !== UNKNOWN ? publicSid(k) : null },

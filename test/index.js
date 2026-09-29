@@ -135,6 +135,7 @@ const TESTS = [
   'number-eq',
   'index-store',
   'present-receiver',
+  'block-present',
   'header-hoist',
   'iterate-present',
   'param-range',

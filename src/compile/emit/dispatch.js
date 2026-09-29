@@ -1195,6 +1195,10 @@ export function emitBlockBody(node) {
   const loopBlocked = new Set()
   const flatWrites = stmts.map(s => nestedWritesOf(s, loopBlocked))
   frame.flowValBlocked = loopBlocked
+  // A name this block proves present reads so to the summary's consumers too
+  // (the query layer's `present` mark, as flow-types.js withRefinements sets it).
+  const view = ctx.summary?.at(frame.current), presented = []
+  const markPresent = (name) => { if (view?.present && !view.isPresent(name)) { view.present(name); presented.push(name) } }
   try {
     for (let i = 0; i < stmts.length; i++) {
       const s = stmts[i]
@@ -1220,6 +1224,7 @@ export function emitBlockBody(node) {
         if (!bound) continue
         accumulated.push([name, cur])
         ;(ctx.func.refinements ??= new Map()).set(name, { ...cur, notNullish: true, ...(keep ? { saved: true } : null) })
+        markPresent(name)
       }
       // A declaration initialized from a present element (emitDecl) holds a
       // number for the rest of this block, while nothing below assigns it.
@@ -1299,6 +1304,7 @@ export function emitBlockBody(node) {
   } finally {
     frame.localValTypesOverlay = prevValOverlay
     frame.flowValBlocked = prevFlowBlocked
+    for (const name of presented) view.unpresent(name)
     // Restore prior refinements on block exit.
     for (let i = accumulated.length - 1; i >= 0; i--) {
       const [name, prev] = accumulated[i]
