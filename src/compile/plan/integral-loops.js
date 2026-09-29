@@ -54,30 +54,42 @@ const integral = (e, out) => {
   return all
 }
 
-/** The value each write of `name` in `node` stores (`++`'s is integral), or null for a value it cannot name. */
-const writesOf = (node, name) => {
-  const out = []
+/** The values the writes in `node` store, by name (`++`'s is integral), null
+ *  for a value it cannot name: one walk answers every name's question. */
+const writesIn = (node) => {
+  const out = new Map()
+  const add = (name, v) => { const l = out.get(name); if (l) l.push(v); else out.set(name, [v]) }
   walkAst(node, { enter: (n) => {
     if (n[0] === '=>') return false
-    if (n[0] === 'let' || n[0] === 'const') { for (let i = 1; i < n.length; i++) { const d = n[i]; if (Array.isArray(d) && d[0] === '=' && d[1] === name) out.push(d[2]) } return }
-    if (typeof n[1] !== 'string' || n[1] !== name || !MUTATE_OPS.has(n[0])) return
-    out.push(n[0] === '=' ? n[2] : STEPS.has(n[0]) ? n[2] : n[0] === '++' || n[0] === '--' || n[0] === '+1' || n[0] === '-1' ? [null, 1] : BITWISE.has(n[0].slice(0, -1)) ? [null, 0] : null)
+    if (n[0] === 'let' || n[0] === 'const') { for (let i = 1; i < n.length; i++) { const d = n[i]; if (Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string') add(d[1], d[2]) } return }
+    if (typeof n[1] !== 'string' || !MUTATE_OPS.has(n[0])) return
+    add(n[1], n[0] === '=' ? n[2] : STEPS.has(n[0]) ? n[2] : n[0] === '++' || n[0] === '--' || n[0] === '+1' || n[0] === '-1' ? [null, 1] : BITWISE.has(n[0].slice(0, -1)) ? [null, 0] : null)
   } })
   return out
 }
+const NO_WRITES = []
 
 /** The names whose values reach an element index in `loop` as integers:
- *  read in an index directly, or through a name the loop writes only with
- *  integral values of them. */
-const indexNames = (loop) => {
-  const names = new Set()
+ *  read in an index directly, or through a name the loop writes (`writes`,
+ *  its writesIn) only with integral values of such names. The names an
+ *  index reads, and those their writes read, are gathered first; then a
+ *  name with a write that is no integer of the names left goes, until none
+ *  does (a name leaving can take its readers with it, never bring one back). */
+const indexNames = (loop, writes) => {
+  const names = new Set(), reads = new Map()   // name → the names its writes read, or null for a write no integer
   walkAst(loop, { enter: (n) => { if (n[0] === '[]' && n.length === 3) { const found = new Set(); if (integral(n[2], found)) for (const x of found) names.add(x) } } })
-  for (let grew = true; grew;) {
-    grew = false
-    for (const name of [...names]) {
-      const found = new Set()
-      if (!writesOf(loop, name).every(v => v !== null && integral(v, found))) { names.delete(name); grew = true; continue }
-      for (const x of found) if (!names.has(x)) { names.add(x); grew = true }
+  const work = [...names]
+  while (work.length) {
+    const name = work.pop(), found = new Set()
+    const all = (writes.get(name) ?? NO_WRITES).every(v => v !== null && integral(v, found))
+    reads.set(name, all ? found : null)
+    if (all) for (const x of found) if (!names.has(x)) { names.add(x); work.push(x) }
+  }
+  for (let left = true; left;) {
+    left = false
+    for (const name of names) {
+      const r = reads.get(name)
+      if (r === null || [...r].some(x => !names.has(x))) { names.delete(name); left = true }
     }
   }
   return names
@@ -102,38 +114,42 @@ export const versionIntegralLoops = () => {
       if (node[0] === '=>') return false
       if (LOOPS.has(node[0]) && parent) { loops.push([node, parent, idx]); return false }
     } })
+    const params = new Set((func.sig?.params ?? []).map(p => p.name))
+    let bodyWrites = null   // the function's writes, indexed once; a copy adds its own
     for (const [loop, parent, idx] of loops) {
       if (parent[idx] !== loop || nodeSize(loop) > MAX_SIZE) continue
       if (some(loop, n => n[0] === '=>' || n[0] === 'label' || n[0] === 'yield' || n[0] === 'await')) continue
       const inner = new Set()
       collectBindings(loop, inner)
+      const loopWrites = writesIn(loop)
+      bodyWrites ??= writesIn(func.body)
       // a name every write of which, anywhere, is an integer of such names is one already
       const already = (n, seen = new Set()) => {
         if (seen.has(n)) return true
         seen.add(n)
-        const values = writesOf(func.body, n), found = new Set()
-        return values.length > 0 && !(func.sig?.params ?? []).some(p => p.name === n) &&
+        const values = bodyWrites.get(n) ?? NO_WRITES, found = new Set()
+        return values.length > 0 && !params.has(n) &&
           values.every(v => v !== null && integral(v, found)) && [...found].every(x => already(x, seen))
       }
-      const names = [...indexNames(loop)].filter(n => locals.has(n) && !inner.has(n) && !captured.has(n) && !ctx.funcs.names.has(n) && !already(n))
+      const names = [...indexNames(loop, loopWrites)].filter(n => locals.has(n) && !inner.has(n) && !captured.has(n) && !ctx.funcs.names.has(n) && !already(n))
       if (!names.length) continue
       // Every local the copy writes gets a name of its own too, from its
       // value: a local is one representation, and the loop's keep the float
       // values the copy's do not. So do the copy's own declarations. A
       // number (every write an integer) is read by `+`: a plain read would
       // count as an integer use of the loop's own name.
-      const written = [...locals].filter(n => !inner.has(n) && !captured.has(n) && !ctx.funcs.names.has(n) && writesOf(loop, n).length)
+      const written = [...locals].filter(n => loopWrites.has(n) && !inner.has(n) && !captured.has(n) && !ctx.funcs.names.has(n))
       const outer = [...new Set([...names, ...written])]
       const own = new Map([...outer, ...inner].map(n => [n, `${n}${T}int${freshId(ctx)}`]))
       const copy = cloneWithSubst(loop, new Map(), own)
       // an int32 and not -0: `x === (x | 0) && (x !== 0 || 1 / x > 0)`
       const test = names.map(n => ['&&', ['===', n, ['|', n, [null, 0]]], ['||', ['!==', n, [null, 0]], ['>', ['/', [null, 1], n], [null, 0]]]])
         .reduce((a, b) => ['&&', a, b])
-      parent[idx] = ['if', test,
-        ['{}', [';', ['let', ...outer.map(n => ['=', own.get(n), names.includes(n) ? ['|', n, [null, 0]] : already(n) ? ['u+', n] : n])], copy,
-          // what the copy wrote, where the function reads it after the loop
-          ...written.filter(n => occursOutside(func.body, loop, n)).map(n => ['=', n, own.get(n)])]],
-        ['{}', [';', loop]]]
+      const version = ['{}', [';', ['let', ...outer.map(n => ['=', own.get(n), names.includes(n) ? ['|', n, [null, 0]] : already(n) ? ['u+', n] : n])], copy,
+        // what the copy wrote, where the function reads it after the loop
+        ...written.filter(n => occursOutside(func.body, loop, n)).map(n => ['=', n, own.get(n)])]]
+      parent[idx] = ['if', test, version, ['{}', [';', loop]]]
+      for (const [n, values] of writesIn(version)) { const l = bodyWrites.get(n); if (l) l.push(...values); else bodyWrites.set(n, values) }
       changed = true
     }
   }
