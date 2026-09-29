@@ -192,8 +192,7 @@ it; a loop whose iterations keep nothing does the same per iteration. A value
 the call returns is the caller's: the host takes a copy of a string, an
 array, an object or a collection, and the call's memory goes; a typed array
 is a view of the module's memory, and a call that returns one it made keeps
-what it allocated (`heap-return` in the `warnings` sink). So does a call in
-which a `catch` ran. A call that does keep a value keeps what the value reaches
+what it allocated (`heap-return` in the `warnings` sink). A call that does keep a value keeps what the value reaches
 and whatever it allocated before it: the heap goes back to the end of the
 highest block kept, so state made first and temporaries after it cost the
 state alone (at `optimize: 'size'` such a call keeps all it allocated).

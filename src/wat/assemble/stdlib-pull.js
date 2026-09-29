@@ -305,7 +305,7 @@ export function pullStdlib(sec) {
         const startFn = sec.start.find(n => Array.isArray(n) && n[0] === 'func' && n[1] === '$__start')
         const SNAP_PROTOCOL = new Set(['__heap', '__heap_reset', '__heap_start',
           '__dyn_get_cache_off', '__dyn_get_cache_props', '__durable_fwd_buf', '__durable_fwd_n',
-          '__durable_arr_seen', '__durable_arr_log', '__gsnap_base', '__esc', '__base', '__rootn', '__rootl'])
+          '__durable_arr_seen', '__durable_arr_log', '__gsnap_base', '__esc', '__base', '__esc_low', '__rootn', '__rootl'])
         const runtimeWritten = new Set()
         const scanSet = (node) => {
           if (node[0] === 'global.set' && typeof node[1] === 'string' && node[1][0] === '$') runtimeWritten.add(node[1].slice(1))

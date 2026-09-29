@@ -123,11 +123,13 @@ export function releaseSection(root, { releasable, flagged: conditional, rewound
     push(push(f, node(intern('result'))), str('i32'))
     const l = push(f, node(intern('local'))); push(l, str('$was')); push(l, str('i32'))
     push(f, set('local.set', '$was', get('global.get', '$__base')))
-    if (declared.has('$__root_reset')) {
-      // no frame read the flag: the log of what the escapes write into starts empty
+    if (declared.has('$__root_reset') || declared.has('$__esc_low')) {
+      // no frame read the flag: the log of what the escapes write into starts empty, the lowest flag clear
       const none = node(intern('i32.eq')); push(none, get('local.get', '$was')); push(push(none, node(intern('i32.const'))), num(-1))
       const iff = push(f, node(intern('if'))); push(iff, none)
-      push(push(iff, node(intern('then'))), get('call', '$__root_reset'))
+      const then = push(iff, node(intern('then')))
+      if (declared.has('$__root_reset')) push(then, get('call', '$__root_reset'))
+      if (declared.has('$__esc_low')) { const clear = node(intern('i32.const')); push(clear, num(-1)); push(then, set('global.set', '$__esc_low', clear)) }
     }
     push(f, set('global.set', '$__base', get('local.get', '$mark')))
     push(f, get('local.get', '$was'))

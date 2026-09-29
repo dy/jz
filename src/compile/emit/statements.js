@@ -85,6 +85,17 @@ export const spreadOp = {
   '...': () => err('Spread (...) can only be used in function/method calls or array literals'),
 
 }
+// The escape flag in a handler. A frame the exception left skipped its
+// epilogue, and with it the flag it held for the frames around it: the
+// handler takes the lowest the flag stood at since the outermost frame that
+// reads it was entered (`$__esc_low`, which every such frame hands its flag
+// to as it clears it, optimize/arena-rewind.js). What no frame wrote below
+// its mark stays released; with no such global the flag goes to zero, an
+// escape with no address.
+const flagCaught = () => !ctx.plans.escapeFlag ? []
+  : !ctx.scope.globals.has('__esc_low') ? [['global.set', '$__esc', ['i32.const', 0]]]
+  : [['if', ['i32.lt_u', ['global.get', '$__esc_low'], ['global.get', '$__esc']], ['then', ['global.set', '$__esc', ['global.get', '$__esc_low']]]]]
+
 // The mark of the outermost frame reading the escape flag (`$__base`,
 // optimize/arena-rewind.js), as it stood where a `try` began and as a handler
 // puts it back: a frame the exception left skipped the epilogue that would
@@ -200,10 +211,7 @@ export const statementOps = {
       // marker again via the 'throw' emitter above, so escaping-throw decode is
       // unaffected.
       ['global.set', '$__jz_last_err_bits', ['i64.const', 0]],
-      // A frame the exception left skipped its epilogue, and with it the escape
-      // flag it held for this frame (optimize/arena-rewind.js): assume an
-      // escape with no address ran.
-      ...(ctx.plans.escapeFlag ? [['global.set', '$__esc', ['i32.const', 0]]] : []),
+      ...flagCaught(),
       ...(caughtIR ? [['local.set', `$${errName}`, caughtIR]] : []),
       ...handlerIR,
       ['f64.const', 0]], 'f64')
@@ -249,7 +257,7 @@ export const statementOps = {
       // so a later genuine trap in this instance decodes as RuntimeError, not
       // the swallowed error.
       ['global.set', '$__jz_last_err_bits', ['i64.const', 0]],
-      ...(ctx.plans.escapeFlag ? [['global.set', '$__esc', ['i32.const', 0]]] : []),
+      ...flagCaught(),
       ...throwCleanup,
       ['global.set', '$__jz_last_err_bits', ['i64.reinterpret_f64', ['local.get', `$${errLocal}`]]],
       ['throw', '$__jz_err', ['local.get', `$${errLocal}`]]]

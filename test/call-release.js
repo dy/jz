@@ -259,12 +259,10 @@ for (const optimize of levels(2, 3))
       n = 0
       is(growth(memory, () => exports[name](n++)), 0, `${name} keeps nothing at ${optimize}`)
     }
-    // a catch that ran keeps the call: the frames the exception left did not say what they stored
+    // a catch that ran keeps nothing by itself: the frames the exception left stored nothing
     for (let i = 0; i < 12; i++) { is(exports.caught(i), want.caught(i), `caught(${i})`); exports.churn(6) }
     n = 0
-    is(growth(memory, () => exports.caught(n += 2)), 0, `a call no catch ran in keeps nothing at ${optimize}`)
-    n = 1
-    ok(growth(memory, () => exports.caught(n += 2)) > 0, `one a catch ran in keeps what it allocated at ${optimize}`)
+    is(growth(memory, () => exports.caught(n++)), 0, `a call a catch ran in keeps nothing at ${optimize}`)
   })
 
 for (const optimize of levels(2, 3))
@@ -312,4 +310,35 @@ for (const optimize of levels(2, 3))
     for (let i = 0; i < 20; i++) { got.push(exports.view(i)); exports.churn(6) }
     for (let i = 0; i < 20; i++) is(plain(got[i]), plain(want.view(i)), `view(${i}) reads back`)
     ok(memory.used - used >= 20 * 32, `a view among them holds the call's memory: ${memory.used - used}`)
+  })
+
+// A handler takes for the escape flag the lowest it stood at since the
+// outermost frame was entered: the frames an exception left did not hand
+// theirs back. What they stored stays; a call whose frames stored nothing
+// keeps nothing, whether a catch ran in it or not.
+for (const optimize of levels(2, 3, 'size'))
+  test(`call release: a call in which a catch ran keeps what its frames stored, at ${optimize}`, () => {
+    const src = `const st = { cur: null, n: 0 }
+      const fail = (n) => { const t = [n, n, n]; throw new RangeError('no ' + n + ' ' + t.length) }
+      const deep = (n) => { st.cur = [n, n + 1]; return fail(n) }
+      const mid = (n) => { const t = new Float64Array(32); t[0] = n; st.n = t[0]; if (n & 1) st.cur = ['odd', n]; return fail(n) + t[0] }
+      export const none = (n) => { const t = new Float64Array(64); t[1] = n; try { return fail(n) } catch (e) { return t[1] + e.message.length } }
+      export const stored = (n) => { const t = new Float64Array(64); t[1] = n; try { return deep(n) } catch (e) { return t[1] } }
+      export const between = (n) => { const t = [n]; try { return mid(n) } catch (e) { return t[0] } }
+      export const after = (n) => { let r = 0; try { r = fail(n) } catch (e) { r = -1 } st.cur = [n, r]; return r }
+      export const last = (n) => { let r = 0; try { r = deep(n) } catch (e) { r = -2 } finally { st.n = n + r } return r }
+      export const read = () => st.cur === null ? 'null' : st.cur.join() + ':' + st.n
+      export const churn = (n) => { const a = []; for (let i = 0; i < n; i++) a.push('c' + i + 'yyyyyyyyyyyyyyyy'); return a.length }`
+    const want = oracle(src), { exports, memory } = jz(src, { optimize })
+    for (const name of ['none', 'stored', 'between', 'after', 'last']) for (let i = 0; i < 10; i++) {
+      is(exports[name](i), want[name](i), `${name}(${i})`)
+      exports.churn(8)
+      is(exports.read(), want.read(), `${name}(${i}): what the frames stored reads back`)
+    }
+    if (optimize === 'size') return   // no walk and no asked result there: a call that stored keeps whole
+    let n = 0
+    is(growth(memory, () => exports.none(n++)), 0, `a call whose frames stored nothing keeps nothing at ${optimize}`)
+    const used = memory.used
+    for (let i = 0; i < 50; i++) exports.stored(i)
+    ok(memory.used - used <= 50 * 96, `one that stored a pair keeps the pair, not the 0.5 KB beside it, at ${optimize}: ${(memory.used - used) / 50} a call`)
   })

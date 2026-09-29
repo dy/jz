@@ -293,6 +293,11 @@ export function assemble(ast, profiler) {
     // while none runs): a value below it was made before every such frame,
     // and a store of it is no escape (module/core.js `__esc_new`).
     declGlobal('__base', 'i32', -1)
+    // The lowest the flag stood at since the outermost such frame was
+    // entered, as each frame that clears the flag hands it over: what a
+    // handler takes for the flag, since the frames an exception left did not
+    // hand theirs back (emit/statements.js, optimize/arena-rewind.js).
+    declGlobal('__esc_low', 'i32', -1)
     // The log of what the escapes of one outermost frame wrote into, its
     // buffer and its count, and the state of the walk that reads it as the
     // frame returns (module/core/reach.js): the frame's mark and the heap's

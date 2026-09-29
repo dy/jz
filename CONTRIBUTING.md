@@ -1139,10 +1139,15 @@ that read hand it nothing; the runtime's own imports keep nothing but a
 callback they schedule, bridge.js hostImport), a `call_ref`, and in a runtime
 kernel a store whose base address a global reaches (an index read off a
 table addresses the receiver it indexes). A tail call is a call to link:
-what its callee lowers or keeps, the frames above it read. A catch lowers the flag to zero,
-since the frames an exception left skipped their epilogues, and puts the
+what its callee lowers or keeps, the frames above it read. A handler takes
+for the flag the lowest it stood at since the outermost reading frame was
+entered (`$__esc_low`, emit/statements.js `flagCaught`): the frames an
+exception left skipped their epilogues and did not hand back the flag they
+held, so every frame that clears the flag hands it to the lowest first, and
+the outermost clears that as it is entered. What no frame wrote below a
+mark stays released, a call in which a catch ran included. The handler puts the
 mark of the outermost reading frame back as it stood where its `try` began
-(emit/statements.js `baseHeld`): a mark left standing past its frame would
+(`baseHeld`): a mark left standing past its frame would
 make every later frame one inside another. A site the
 emitter never flagged and a body the census never walked lower it as the
 frame is entered (compile/index.js checks each). The protocol is paid by a

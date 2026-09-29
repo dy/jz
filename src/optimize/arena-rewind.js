@@ -113,7 +113,7 @@ const DECLS = ['export', 'import', 'type', 'param', 'result', 'local']
 // (`__closure_spill`, module/function.js). Numbers the runtime keeps: the
 // random generator's state, a regex's last index and its groups' bounds.
 const HEAP_GLOBALS = new Set(['$__heap', '$__heap_end', '$__heap_end64', '$__heap_start', '$__heap_reset', '$__jz_last_err_bits', '$__seq',
-  '$__ic_found_slot', '$__ic_found_hi', '$__dyn_get_cache_off', '$__dyn_get_cache_props', '$__enumc_epoch', '$__coll_order_n', '$__esc', '$__base',
+  '$__ic_found_slot', '$__ic_found_hi', '$__dyn_get_cache_off', '$__dyn_get_cache_props', '$__enumc_epoch', '$__coll_order_n', '$__esc', '$__base', '$__esc_low',
   '$__jbuf', '$__jpos', '$__jcap', '$__jgap', '$__jgaplen', '$__jdepth', '$__jsp', '$__jpstr', '$__jplen', '$__jppos', '$__jp_err',
   '$__closure_spill', '$math.rng_state', '$math.rng_seeded',
   '$__roots', '$__rootn', '$__rootl', '$__r_mark', '$__r_top', '$__r_bits', '$__r_sp', '$__r_lim', '$__r_end',
@@ -144,6 +144,9 @@ const LOWERS = new Set(['$__esc_at', '$__esc_val', '$__esc_elem', '$__esc_cell',
 // stores go into the log and into scratch above the heap.
 const REACH = /^\$__(root|root_reset|survive|reach_\w+)$/
 const SURVIVE = '$__survive', ROOTN = '$__rootn', ROOTS = '$__roots', ROOT_RESET = '$__root_reset'
+// The lowest the flag stood at since the outermost reading frame was entered:
+// a handler's flag (compile/emit/statements.js).
+const ESC_LOW = '$__esc_low'
 // What asks of a stored value whether a running call made it: no lowering itself.
 const ASKS = '$__esc_new'
 // What asks of a frame's result whether the frame made it (module/core.js).
@@ -183,7 +186,9 @@ export function arenaRewind(root, { rewindable, asked = NO_NAMES, heapAddr, unsa
   // module binding that never holds a heap value (a counter, a clock).
   const strandsNothing = (name) => heapScratch(name) || scalarGlobals.has(name)
   const FUNC = intern('func'), CALL = intern('call'), RETURN = intern('return'), RETURN_CALL = intern('return_call'), IMPORT = intern('import'), GLOBAL = intern('global'), MUT = intern('mut')
-  const GLOBAL_SET = intern('global.set'), CALL_INDIRECT = intern('call_indirect'), CALL_REF = intern('call_ref')
+  const GLOBAL_SET = intern('global.set'), GLOBAL_GET = intern('global.get'), CALL_INDIRECT = intern('call_indirect'), CALL_REF = intern('call_ref')
+  // Whether a handler of the module takes the lowest flag for its own: the frames hand theirs over then.
+  let folds = false
   // A tail call is a call: what its callee runs reaches whoever called the
   // function, as what the function runs itself does.
   const RETURN_CALL_INDIRECT = intern('return_call_indirect'), RETURN_CALL_REF = intern('return_call_ref')
@@ -370,6 +375,7 @@ export function arenaRewind(root, { rewindable, asked = NO_NAMES, heapAddr, unsa
       allocs: false, indirect: false, refs: false, lowers: false, f, up: null, censused: censused.has(name), flagAt: [], flagWhy: null, indirectAt: [], ownFlag: false }
     eachBody(f, (id) => {
       const op = T.op[id]
+      if (op === GLOBAL_GET && text(T.a[id]) === ESC_LOW) folds = true
       if (op === GLOBAL_SET) {
         const g = text(T.a[id])
         // the emitter's own lowering (a census site, a catch handler)
@@ -656,11 +662,22 @@ export function arenaRewind(root, { rewindable, asked = NO_NAMES, heapAddr, unsa
     const joined = node(intern('then')); push(joined, escSet(localGet(esave))); push(join, joined)
     return [...unlessMade(ask, save, [iff]), join, baseSet(localGet(bsave))]
   }
-  // The log starts empty with the outermost frame.
+  // The log starts empty with the outermost frame, and the lowest flag clear.
+  const lowSet = (value) => { const s = node(GLOBAL_SET); push(s, str(ESC_LOW)); push(s, value); return s }
+  const lowGet = () => { const g = node(intern('global.get')); push(g, str(ESC_LOW)); return g }
   const logFrom = (bsave) => {
-    const empty = node(CALL); push(empty, str(ROOT_RESET))
     const iff = node(intern('if')); push(iff, outermost(bsave))
-    push(push(iff, node(intern('then'))), empty)
+    const then = push(iff, node(intern('then')))
+    if (reach) { const empty = node(CALL); push(empty, str(ROOT_RESET)); push(then, empty) }
+    if (folds) push(then, lowSet(i32c(-1)))
+    return iff
+  }
+  // A frame that clears the flag hands what it held to the lowest: a handler
+  // reads there what the frames an exception left did not hand back.
+  const handOver = (esave) => {
+    const lower = node(intern('i32.lt_u')); push(lower, localGet(esave)); push(lower, lowGet())
+    const iff = node(intern('if')); push(iff, lower)
+    push(push(iff, node(intern('then'))), lowSet(localGet(esave)))
     return iff
   }
   const baseGet = () => { const g = node(intern('global.get')); push(g, str('$__base')); return g }
@@ -774,8 +791,9 @@ export function arenaRewind(root, { rewindable, asked = NO_NAMES, heapAddr, unsa
     while (T.next[at] !== NONE && isHeader(T.next[at])) at = T.next[at]
     const results = rets.map((r, i) => local(r, types[i]))
     const entry = esave == null ? [local(save, 'i32'), ...results, localSet(save, heapGet())]
-      : [local(save, 'i32'), local(esave, 'i32'), local(bsave, 'i32'), ...results, localSet(save, heapGet()), localSet(esave, escGet()), escSet(i32c(-1)),
-        localSet(bsave, baseGet()), ...(reach ? [logFrom(bsave)] : []), baseEnter(save)]
+      : [local(save, 'i32'), local(esave, 'i32'), local(bsave, 'i32'), ...results, localSet(save, heapGet()), localSet(esave, escGet()),
+        ...(folds ? [handOver(esave)] : []), escSet(i32c(-1)),
+        localSet(bsave, baseGet()), ...(reach || folds ? [logFrom(bsave)] : []), baseEnter(save)]
     for (const n of entry) { insertAfter(f, at, n); at = n }
     rewound.add(name)
     if (esave != null) { flagged.add(name); readers.add(name); report?.(name, 'kept on a call that runs an escape: ' + (conditional.get?.(name) ?? rec.tapeFlagWhy)) }
