@@ -128,6 +128,8 @@ function makeIntLevelExpr(intLevels, slotLevelOf, readPresent) {
     }
     if (op === 'u-') return levelOf(expr[1]) ? 1 : 0 // -(0) is -0; -(-2^31) exceeds int32
     if (op === 'u+') return levelOf(expr[1])         // ToNumber identity on an int
+    // prepare's `++o.k` / `o.k++` step (`o.k = +1 o.k`): the sum with 1, integral-closed, range-open
+    if (op === '+1' || op === '-1') return levelOf(expr[1]) ? 1 : 0
     if (op === '?:') return Math.min(levelOf(expr[2]), levelOf(expr[3]))
     if (op === '&&' || op === '||') return Math.min(levelOf(expr[1]), levelOf(expr[2]))
     if (op === '()') {

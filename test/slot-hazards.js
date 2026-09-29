@@ -19,7 +19,7 @@
  */
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import jz from '../index.js'
+import jz, { _compileInProcess } from '../index.js'
 import { ctx } from '../src/ctx.js'
 import { run, oracle } from './util.js'
 import { initSchema } from '../module/schema.js'
@@ -123,6 +123,18 @@ export let main = () => {
   return Math.floor(o.n / 2)
 }`
   for (const optimize of LEVELS) is(run(int, { optimize }).main(), 3, `O${optimize}: int compound exact`)
+})
+
+// `++o.k` and `o.k++` reach the census as prepare's step `o.k = +1 o.k`: the
+// sum with 1, so a counter slot stays integral (a ring index `if (++c.i >= c.n) c.i = 0`).
+test('slot-hazards: an increment of a slot keeps it integral', () => {
+  const src = `const c = { i: 0, n: 7, buf: new Float64Array(7) }
+export let run = (reps) => { let s = 0; for (let r = 0; r < reps; r++) { s += c.buf[c.i]; c.buf[c.i] = r * 0.5; if (++c.i >= c.n) c.i = 0 } return s + c.i++ }`
+  const js = oracle(src)
+  for (const optimize of LEVELS) is(run(src, { optimize }).run(40), js.run(40), `O${optimize}`)
+  _compileInProcess(src, { optimize: 2 })
+  const sid = ctx.schema.list.findIndex(l => l.join() === 'i,n,buf')
+  ok(ctx.schema.slotIntLevels.get(sid)?.[0] >= 1, 'the counter slot is integral')
 })
 
 test('slot-hazards: plain string write clashes the literal NUMBER kind', () => {
