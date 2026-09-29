@@ -2215,3 +2215,40 @@ test('devirtGlobalCalls: the site calls the function; a global nothing reads dro
     is(JSON.stringify([...(ctx.funcs.globalDevirt?.keys() ?? [])]), JSON.stringify(kept), `${name}: the globals still holding nz`)
   }
 })
+
+// A global bound once to a builtin holds the builtin's value wrapper
+// (prepare/entry.js). A call through it is the builtin's own call, typed
+// arguments and all, however many sites there are; the wrapper is a value
+// nothing calls, and a global nothing reads drops its init, whether a statement
+// of a list or a module's whole init. stdlib selects its float32 conversion this
+// way: `fround = typeof Math.fround === 'function' ? Math.fround : null`, then
+// `if (typeof builtin === 'function') { f32 = builtin } else { f32 = polyfill }`.
+test('devirtGlobalCalls: a call through a global that holds a builtin is the builtin\'s call', () => {
+  const modules = {
+    '/main.js': `var fround = (typeof Math.fround === 'function') ? Math.fround : null\nexport default fround`,
+    '/polyfill.js': `var VIEW = new Float32Array(1)\nfunction toFloat32(x) { VIEW[0] = x; return VIEW[0] }\nexport default toFloat32`,
+    '/index.js': `import builtin from '/main.js'\nimport polyfill from '/polyfill.js'\nvar toFloat32\nif (typeof builtin === 'function') { toFloat32 = builtin } else { toFloat32 = polyfill }\nexport default toFloat32`,
+  }
+  // more sites than any inliner's budget takes
+  const sites = Array.from({ length: 48 }, (_, k) => `s = f32(s * ${1 + k / 64} - x)`).join('; ')
+  const shapes = {
+    'two sites': [`import f32 from '/index.js'\nexport let f = (x) => f32(x) * f32(x + 1.1)`, x => Math.fround(x) * Math.fround(x + 1.1), true],
+    'many sites': [`import f32 from '/index.js'\nexport let f = (x) => { let s = x * 0.5; ${sites}; return s }`, x => { let s = x * 0.5; for (let k = 0; k < 48; k++) s = Math.fround(s * (1 + k / 64) - x); return s }, true],
+    'a site in a loop': [`import f32 from '/index.js'\nexport let f = (x) => { let s = 0; for (let i = 0; i < 9; i++) s += f32(x * i); return s }`, x => { let s = 0; for (let i = 0; i < 9; i++) s += Math.fround(x * i); return s }, true],
+    'held as a value too': [`import f32 from '/index.js'\nconst apply = (g, v) => g(v)\nexport let f = (x) => f32(x) + apply(f32, x + 1.1)`, x => Math.fround(x) + Math.fround(x + 1.1), false],
+  }
+  for (const [name, [src, host, dropped]] of Object.entries(shapes)) {
+    for (const optimize of levels(0, 2, 3)) {
+      const f = jz(src, { modules, jzify: true, optimize }).exports.f
+      for (const x of [1.3, -2.75, 1e20, 0]) is(f(x), host(x), `${name} at ${optimize}: f(${x})`)
+    }
+    const text = compile(src, { modules, jzify: true, optimize: 0, wat: true })
+    const f = text.slice(text.indexOf('(func $f'))
+    ok(/f32\.demote_f64/.test(f.slice(0, f.indexOf('\n  (func ', 1) >>> 0)) , `${name}: the site converts inline`)
+    // a value handed on is the wrapper, and a call of that value is the wrapper's
+    if (!dropped) continue
+    is(JSON.stringify([...(ctx.funcs.globalDevirt?.keys() ?? [])]), '[]', `${name}: no global holds the wrapper`)
+    ok(!/bw\d+_math_fround/.test(text), `${name}: the wrapper is not compiled`)
+    if (!belowOpt(2)) ok(!/"_alloc"|\(start /.test(compile(src, { modules, jzify: true, optimize: 2, wat: true })), `${name}: no allocator and no start function`)
+  }
+})

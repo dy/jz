@@ -937,6 +937,9 @@ export const devirtGlobalCalls = (ast) => {
 
   // Every call through a qualifying G is F's own call: the site rewrites to F,
   // so the call census, the inliner and the parameter proofs read it as one.
+  // F a builtin's value wrapper (prepare/entry.js): the site calls the builtin,
+  // which takes its arguments typed where the wrapper would box them, and the
+  // wrapper stays a value nothing calls.
   // A G no read survives (every read of it was a call) holds a value nothing
   // reads: its init drops and it leaves the map, so F is no longer a value
   // the program takes the address of. A G the host reads keeps its init.
@@ -949,7 +952,7 @@ export const devirtGlobalCalls = (ast) => {
     if (!Array.isArray(n) || n[0] === 'str') return n
     let out = n
     for (let i = 1; i < n.length; i++) { const c = rewriteCalls(n[i]); if (c !== n[i]) { if (out === n) out = n.slice(); out[i] = c } }
-    if (out[0] === '()' && out.length > 2 && typeof out[1] === 'string' && devirt.has(out[1])) { if (out === n) out = n.slice(); out[1] = devirt.get(out[1]); changed = true }
+    if (out[0] === '()' && out.length > 2 && typeof out[1] === 'string' && devirt.has(out[1])) { if (out === n) out = n.slice(); const fn = devirt.get(out[1]); out[1] = ctx.funcs.builtinWrapped?.get(fn) ?? fn; changed = true }
     return out
   }
   for (const fn of ctx.funcs.map.values()) {
@@ -965,7 +968,9 @@ export const devirtGlobalCalls = (ast) => {
     if (!Array.isArray(n) || n[0] === 'str') return
     if (n[0] === '.' || n[0] === '?.') { countReads(n[1]); return }
     if (n[0] === ':') { countReads(n[2]); return }
-    for (let i = 1; i < n.length; i++) countReads(n[i])
+    // a bare declaration (`let G`) names its binding, it reads nothing
+    const decl = n[0] === 'let' || n[0] === 'const'
+    for (let i = 1; i < n.length; i++) if (!(decl && typeof n[i] === 'string')) countReads(n[i])
   }
   // `G = X` as a statement or a declarator, X a function this module's list
   // declares or another such global (`nrm = massign`): an init a drop removes
@@ -986,8 +991,9 @@ export const devirtGlobalCalls = (ast) => {
     for (const g of devirt.keys()) {
       if (reads.has(g) || hostRead.has(g)) continue
       const at = initStmts.map((s, i) => !dropped.has(i) && aliasInit(s)?.[1] === g ? i : -1).filter(i => i >= 0)
-      if (!at.length || at.some(i => initSlots[i][0] === null)) continue
-      for (const i of at) { dropped.add(i); const [list, k] = initSlots[i]; list[k] = [';'] }
+      if (!at.length) continue
+      // a statement of a list leaves it; a lone one (a module's whole init) empties in place
+      for (const i of at) { dropped.add(i); const [list, k] = initSlots[i], s = initStmts[i]; if (list) list[k] = [';']; else { s.length = 0; s.push(';') } }
       devirt.delete(g)
       progress = changed = true
     }
