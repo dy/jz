@@ -500,3 +500,18 @@ export let main = (k, n) => [one(n, k), two(n, k)]`
   for (const optimize of LEVELS) for (const args of [[0, 7.5], [1, 7.5], [2, 7.5]])
     is(run(src, { optimize }).main(...args), want(...args), `O${optimize}: main(${args})`)
 })
+
+// A store in a closure writes the slot its maker's literal made: a callback a
+// factory returns sets `p.o = 0.25` on `{ g: 0.5, o: 0 }`, and a function it
+// hands `p` to read the slot as an integer, truncated to 0.
+test('slot-hazards: a closure store poisons the integer census of its maker literal', () => {
+  const src = `function gain (d, p) { for (let i = 0; i < d.length; i++) d[i] = d[i] * p.g + p.o; return d }
+    const make = () => { const p = { g: 0.5, o: 0 }; return (d, g) => { p.g = g; p.o = 0.25; gain(d, p); return d[0] } }
+    const cb = make()
+    export let f = (n, g) => { const d = new Float64Array(n).fill(2); const r = cb(d, g); return r * 1000 + d[n - 1] }`
+  const js = oracle(src)
+  for (const optimize of levels(0, 2, 3)) {
+    const { f } = run(src, { optimize })
+    for (const [n, g] of [[1, 0.5], [3, -2]]) is(f(n, g), js.f(n, g), `f(${n}, ${g}) at ${optimize}`)
+  }
+})

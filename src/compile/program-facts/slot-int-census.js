@@ -119,9 +119,13 @@ export function analyzeSchemaSlotIntCertain(ast, opts) {
   // Body walker: for each `{}` literal observe per-slot intCertain; for each
   // `obj.prop = expr` write, poison-or-confirm the slot resolved via the
   // schema attached to `obj` (ValueRep `schemaId` or `ctx.schema.vars`).
+  // A closure's stores count like its maker's: `p.o = 0.25` in a callback a
+  // factory returns writes the slot the factory's literal made. Its body's own
+  // bindings answer its values; a name it captures is no integer to it.
+  let freshRound = false
   const visit = (node, isInt) => walkAst(node, { enter: node => {
     const op = node[0]
-    if (op === '=>') return false
+    if (op === '=>') { if (node[2] != null) visit(node[2], bodyIntCertainOf(node[2], freshRound)); return false }
     if (op === '{}') {
       const parsed = staticObjectProps(node.slice(1))
       if (parsed) {
@@ -160,6 +164,7 @@ export function analyzeSchemaSlotIntCertain(ast, opts) {
     for (let i = 0; i < props.length; i++) if (mixedBoolKind(ctx.summary.fieldKind(sid, props[i]))) boolSlots.push(sid, i)
   }
   const sweep = (fresh) => {
+    freshRound = fresh
     // Hazard poison FIRST: the optimistic slotIntOf resolver must never count a
     // hazarded slot int mid-fixpoint (it would infect other slots' certainty).
     applySlotWriteHazards(hazards, poisonSlot)
