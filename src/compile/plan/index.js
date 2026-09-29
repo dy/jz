@@ -54,6 +54,7 @@ import { declareWrittenKeys } from './declare-written-keys.js'
 import { declareUnseenKeys } from './declare-unseen-keys.js'
 import { versionIntegralLoops } from './integral-loops.js'
 import { unswitchLoops } from './unswitch-loops.js'
+import { splitLoopKinds } from './kind-split.js'
 import { callChosenFunctions } from './chosen-calls.js'
 import { specializeCalledArgs } from './called-args.js'
 import { hoistObjectReads } from './object-reads.js'
@@ -201,6 +202,8 @@ export default function plan(ast, profiler, summarize) {
     sweep('scalarizeTypedArrays', () => scalarizeFunctionTypedArrays(facts()))
     // A loop testing a name it never writes: a copy for each answer.
     sweep('unswitchLoops', unswitchLoops)
+    // A loop reading a name of several kinds, a typed array among them: a copy where it holds that array.
+    sweep('splitLoopKinds', () => splitLoopKinds(facts()))
     // A loop indexing by numbers of unknown integrality: a copy over their int32s, where they are ones.
     sweep('versionIntegralLoops', () => versionIntegralLoops(facts()))
   }

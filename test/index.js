@@ -110,6 +110,7 @@ const TESTS = [
   'absent-member',
   'called-args',
   'object-reads',
+  'kind-split',
   'remainder',
   'select-order',
   'pointer-join',
