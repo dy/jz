@@ -58,6 +58,55 @@ test('integral loops: an index read through a name the loop writes a fraction to
   }
 })
 
+// A filter state read back from storage of mixed kinds (a Float64Array by
+// default, a plain list where the caller keeps one): `z1 = s[0]` is of no
+// known kind, and each `+` of it asks for a string. Where the state holds
+// Numbers the loop runs as a copy whose sums add.
+const biquad = `function state() { return new Float64Array(2) }
+function section(fc) { const a = Math.exp(-fc); return { b0: 1 - a, b1: 0.1, b2: 0, a1: -a, a2: 0.05 } }
+function biquad(data, c, s = state()) {
+  let z1 = s[0], z2 = s[1]
+  for (let i = 0, l = data.length; i < l; i++) {
+    let x = data[i]
+    let y = c.b0 * x + z1
+    z1 = c.b1 * x - c.a1 * y + z2
+    z2 = c.b2 * x - c.a2 * y
+    data[i] = y
+  }
+  s[0] = z1; s[1] = z2
+  return data
+}
+const lp = section(0.3), hp = section(0.1), st = [0, 0], odd = ['1', 0]
+const buf = new Float32Array(64)
+export let run = (k) => {
+  for (let i = 0; i < 64; i++) buf[i] = ((i * 13 + k) % 17) / 8 - 1
+  biquad(buf, lp, st)
+  const t = biquad(new Float32Array(buf), hp)
+  const u = biquad(new Float32Array(3), hp, odd)
+  return buf[7] + buf[63] + t[9] + st[0] + ':' + u[0] + u[2] + odd[0]
+}`
+
+test('integral loops: a state of unknown kind agrees with JS, a number or not', () => {
+  const js = oracle(biquad)
+  for (const optimize of levels(0, 2, 3)) {
+    const { run } = jz(biquad, { optimize }).exports
+    for (const k of [0, 1, 2, 5]) is(run(k), js.run(k), `run(${k}) at ${optimize}`)
+  }
+})
+
+test('integral loops: where the state holds Numbers the loop adds them', () => {
+  if (belowOpt(2)) return
+  const text = wat(biquad, { optimize: 2 })
+  const loops = []
+  for (let at = text.indexOf('(loop'); at >= 0; at = text.indexOf('(loop', at + 1)) {
+    let depth = 0, end = at
+    do { const c = text[end++]; if (c === '(') depth++; else if (c === ')') depth-- } while (depth && end < text.length)
+    loops.push(text.slice(at, end))
+  }
+  // the filter loop: five coefficient reads, a sample in and out, no string test
+  ok(loops.some(l => (l.match(/f64\.load/g) || []).length >= 5 && /f32\.store/.test(l) && !/call \$__(is_str_key|add_slow|to_num)/.test(l)), 'a copy of the filter loop adds Numbers')
+})
+
 test('integral loops: the integral copy reads by an i32 index', () => {
   if (belowOpt(2)) return
   const text = wat(fir, { optimize: 2 })

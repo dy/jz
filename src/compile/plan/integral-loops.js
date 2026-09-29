@@ -22,10 +22,20 @@
  * A loop with a closure, a label or a suspension in it is left alone, and one
  * too large to copy twice.
  *
+ * A number of unknown kind is the same case one step earlier: a filter state
+ * read back from storage of mixed kinds (`let z1 = s[0]`, `s` a Float64Array
+ * or a plain list), a field of a record the summary lost. Every `+` of it
+ * asks whether it is a string, and every name it reaches through the loop's
+ * writes asks too. Where the loop carries such a name and reads it as a
+ * number (an operand of arithmetic or a comparison), writing it only with
+ * numbers where its names are numbers, the copy runs where each holds a
+ * Number (`typeof x === 'number'`) over fresh names read from the originals,
+ * which the guard holds to Numbers: its sums add.
+ *
  * @module compile/plan/integral-loops
  */
 import { ctx } from '../../ctx.js'
-import { T, MUTATE_OPS, some, walkAst } from '../../ast.js'
+import { T, MUTATE_OPS, TYPEOF, some, walkAst } from '../../ast.js'
 import { freshId } from '../../ir.js'
 import { cloneWithSubst } from '../../type.js'
 import { collectBindings, nodeSize } from './common.js'
@@ -108,6 +118,56 @@ const indexNames = (loop, writes, intArray) => {
   return names
 }
 
+const ARITH = new Set(['-', '*', '/', '%', '**', '|', '&', '^', '<<', '>>', '>>>'])
+const OPERANDS = new Set([...ARITH, '+', '<', '>', '<=', '>=', 'u-', 'u+', '~'])
+// The kinds a `+` or a conversion takes as a Number: no string, no object, no BigInt.
+const NOT_NUMERIC = [K.STRING, K.BIGINT, K.TYPED, K.ARRAY, K.OBJECT, K.CLOSURE, K.MAP, K.SET, K.DATE, K.REGEX, K.HASH, K.BUFFER]
+const numberish = (k) => k !== 0 && !NOT_NUMERIC.some(t => hasTag(k, t))
+
+/** Whether `e` is a Number wherever `num` holds for the names it reads (a
+ *  Math result, a unary plus, an arithmetic result one Number operand keeps
+ *  from being a BigInt, a sum of two Numbers, a conditional of them, a read
+ *  the summary holds to a Number: `kindOfExpr`). */
+const numeric = (e, num, kindOfExpr) => {
+  if (typeof e === 'string') return num(e)
+  if (!Array.isArray(e)) return false
+  const op = e[0]
+  if (op == null) return typeof e[1] === 'number'
+  if (op === 'u+') return true
+  if (op === '()') return e.length === 2 ? numeric(e[1], num, kindOfExpr) : typeof e[1] === 'string' && e[1].startsWith('math.')
+  if (op === '?:') return numeric(e[2], num, kindOfExpr) && numeric(e[3], num, kindOfExpr)
+  if (op === '+') return numeric(e[1], num, kindOfExpr) && numeric(e[2], num, kindOfExpr)
+  if (op === 'u-' || op === '~') return numeric(e[1], num, kindOfExpr)
+  if (ARITH.has(op)) return numeric(e[1], num, kindOfExpr) || numeric(e[2], num, kindOfExpr)
+  if (op === '[]' || op === '.') return numberish(kindOfExpr(e))
+  return false
+}
+
+/** The names the loop reads as numbers (an arithmetic or relational operand)
+ *  whose kind the summary cannot hold to a Number, and whose writes in the
+ *  loop are Numbers where they are: a state read back from storage of mixed
+ *  kinds (`let z1 = s[0]` of a Float64Array or a plain list), a field of a
+ *  record the summary lost. Where each holds a Number, a copy of the loop
+ *  over fresh names adds and compares them as Numbers. `kindOf` reads the
+ *  summary's kind of a name; `outerOk` admits a name the copy can rename. */
+const numberNames = (loop, writes, inner, kindOf, kindOfExpr, outerOk) => {
+  const used = new Set()
+  walkAst(loop, { enter: (n) => { if (n[0] === '=>') return false; if (OPERANDS.has(n[0]) || n[0] === '+=' || n[0] === '-=') for (let i = 1; i < n.length; i++) if (typeof n[i] === 'string') used.add(n[i]) } })
+  const names = new Set([...used].filter(n => outerOk(n) && !numberish(kindOf(n)) && hasTag(kindOf(n), K.NUMBER)))
+  if (!names.size) return names
+  const numbers = new Set([...names, ...inner])   // assumed Numbers until a write shows otherwise
+  const num = (n) => numbers.has(n) || (!inner.has(n) && numberish(kindOf(n)))
+  for (let left = true; left;) {
+    left = false
+    for (const n of numbers) {
+      const values = writes.get(n) ?? NO_WRITES
+      if (values.every(v => v !== null && numeric(v, num, kindOfExpr))) continue
+      numbers.delete(n); left = true
+    }
+  }
+  return new Set([...names].filter(n => numbers.has(n)))
+}
+
 export const versionIntegralLoops = (programFacts) => {
   if (ctx.transform.optimize?.versionIntegralLoops === false) return false
   let changed = false
@@ -139,6 +199,7 @@ export const versionIntegralLoops = (programFacts) => {
     }
     // an element of an integer typed array is an integer (undefined past its end reads NaN, which the copy computes alike)
     const intArray = (e) => typeof e === 'string' && INT_ELEMENTS.test(view?.typedPayloadCtorOfExpr(e) ?? '')
+    const kindOf = (n) => view?.kindOf(n) ?? 0, kindOfExpr = (e) => view?.kindOfExpr(e) ?? 0
     let bodyWrites = null   // the function's writes, indexed once; a copy adds its own
     let rewrote = false
     for (const [loop, parent, idx] of loops) {
@@ -159,27 +220,35 @@ export const versionIntegralLoops = (programFacts) => {
       }
       // a name the summary knows holds no number (an object key) is never an int32
       const mayBeNumber = (n) => { const k = view?.kindOfExpr(n); return k == null || hasTag(k, K.NUMBER) || tagOf(core(k)) === K.ANY }
-      const names = [...indexNames(loop, loopWrites, intArray)].filter(n => locals.has(n) && !inner.has(n) && !captured.has(n) && !ctx.funcs.names.has(n) && !already(n) && mayBeNumber(n))
+      const outerOk = (n) => locals.has(n) && !inner.has(n) && !captured.has(n) && !ctx.funcs.names.has(n)
+      let names = [...indexNames(loop, loopWrites, intArray)].filter(n => outerOk(n) && !already(n) && mayBeNumber(n))
       // a cursor the loop moves other than by a constant step (`p = (p + 1) % N`): an index
       // made of names the loop only reads or counts is affine over its counters, which the
       // typed-bounds versioning already proves
-      if (!names.some(n => loopWrites.has(n) && !counted(loop, n))) continue
+      if (!names.some(n => loopWrites.has(n) && !counted(loop, n))) names = []
+      let numbers = [...numberNames(loop, loopWrites, inner, kindOf, kindOfExpr, outerOk)].filter(n => !names.includes(n))
+      // a Number the loop carries (`z1 = x - a1 * y`): what it only reads converts once per use, as it would
+      if (!numbers.some(n => loopWrites.has(n))) numbers = []
+      if (!names.length && !numbers.length) continue
       // Every local the copy writes gets a name of its own too, from its
       // value: a local is one representation, and the loop's keep the float
       // values the copy's do not. So do the copy's own declarations. A
       // number (every write an integer) is read by `+`: a plain read would
       // count as an integer use of the loop's own name.
       const written = [...locals].filter(n => loopWrites.has(n) && !inner.has(n) && !captured.has(n) && !ctx.funcs.names.has(n) && !already(n))
-      const outer = [...new Set([...names, ...written])]
+      const outer = [...new Set([...names, ...numbers, ...written])]
       const own = new Map([...outer, ...inner].map(n => [n, `${n}${T}int${freshId(ctx)}`]))
       const copy = cloneWithSubst(loop, new Map(), own)
       // a number, an int32 and not -0: `typeof x === 'number' && x === (x | 0) && (x !== 0 || 1 / x > 0)`;
-      // the type first, so the test converts no object (a key's valueOf runs where the loop reads it)
-      const test = names.map(n => ['&&', ['&&', ['===', ['typeof', n], ['str', 'number']], ['===', n, ['|', n, [null, 0]]]], ['||', ['!==', n, [null, 0]], ['>', ['/', [null, 1], n], [null, 0]]]])
+      // the type first, so the test converts no object (a key's valueOf runs where the loop reads it);
+      // a Number alone: `typeof x === 'number'`, the form whose arm the summary reads as a Number
+      const test = [...names.map(n => ['&&', ['&&', ['===', ['typeof', n], ['str', 'number']], ['===', n, ['|', n, [null, 0]]]], ['||', ['!==', n, [null, 0]], ['>', ['/', [null, 1], n], [null, 0]]]]),
+        ...numbers.map(n => ['===', ['typeof', n], [null, TYPEOF.number]])]
         .reduce((a, b) => ['&&', a, b])
       const version = ['{}', [';', ['let', ...outer.map(n => ['=', own.get(n), names.includes(n) ? ['|', n, [null, 0]] : already(n) ? ['u+', n] : n])], copy,
-        // what the copy wrote, where the function reads it after the loop
-        ...written.filter(n => occursOutside(func.body, loop, n)).map(n => ['=', n, own.get(n)])]]
+        // what the copy wrote under a name of its own, where the function reads it after the loop
+        // (a Number every write keeps an integer is renamed too: its sum is the copy's)
+        ...outer.filter(n => loopWrites.has(n) && occursOutside(func.body, loop, n)).map(n => ['=', n, own.get(n)])]]
       parent[idx] = ['if', test, version, ['{}', [';', loop]]]
       for (const [n, values] of writesIn(version)) { const l = bodyWrites.get(n); if (l) l.push(...values); else bodyWrites.set(n, values) }
       rewrote = true
