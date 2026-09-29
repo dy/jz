@@ -2022,7 +2022,11 @@ golden('known-shape object', 'export let f = (x) => { let p = { x: x, y: x * 2, 
 // Computed keys retain dynamic-property storage and schema-aware lookup.
 // The escape sites of a dynamic store (optimize/arena-rewind.js) and the reset's log of an object made at start
 // (module/core/durable-log.js `__durable_obj_snap`, its heal) ride with the store: 13689 -> 14273 -> 14382.
-golden('unknown/dynamic object', 'export let f = (k) => { let p = {}; p[k] = 1; p.b = 2; return p[k] + p.b }', 14382)
+// An object given a property outside its layout exports `__obj_props`, so the
+// host reads that property, with its store path (+137 bytes); an integer below
+// 2^53 prints its digits without Ryū (+35); an index key read in its own form
+// leaves `__char_at` out of this program (-72).
+golden('unknown/dynamic object', 'export let f = (k) => { let p = {}; p[k] = 1; p.b = 2; return p[k] + p.b }', 14482)
 // Parsing and formatting now share the power generator and unsigned product.
 // Keep this closure/string-dispatch fixture's behavior beside its tighter size pin.
 const parserFixture = `export let f = (s) => {
