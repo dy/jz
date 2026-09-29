@@ -107,6 +107,43 @@ test('integral loops: where the state holds Numbers the loop adds them', () => {
   ok(loops.some(l => (l.match(/f64\.load/g) || []).length >= 5 && /f32\.store/.test(l) && !/call \$__(is_str_key|add_slow|to_num)/.test(l)), 'a copy of the filter loop adds Numbers')
 })
 
+// A callback a factory returns keeps its state on a record, fields added on
+// first use: `let keys = state.keys` may be undefined as far as the summary
+// knows, and each access in the loop tests it. Where all are present the
+// loop, a closure's own, runs as a copy that reads them as the typed arrays
+// and the record (read only by its fields) they are.
+const stateful = `function makeProcess(tol) {
+  return function (mag, state) {
+    if (!state.keys) { state.keys = new Float64Array(mag.length); state.acc = new Float64Array(mag.length); state.coef = { g: tol, h: 0.5 } }
+    let keys = state.keys, acc = state.acc, coef = state.coef, s = 0, m = mag.length - 1
+    while (m > 0) { keys[m] = mag[m] * coef.g + acc[m - 1]; acc[m] = keys[m] * coef.h; s += keys[m]; m -= 1 + (m & 1) }
+    return s
+  }
+}
+const p = makeProcess(0.3), st = {}, mag = new Float64Array(16)
+export let f = (k) => { for (let i = 0; i < 16; i++) mag[i] = (i * k) % 5; return p(mag, st) }
+export let g = (k) => makeProcess(k)(mag, {})`
+
+test('integral loops: a state field that may be missing agrees with JS', () => {
+  const js = oracle(stateful)
+  for (const optimize of levels(0, 2, 3)) {
+    const { f, g } = jz(stateful, { optimize }).exports
+    for (const k of [1, 2, 3]) { is(f(k), js.f(k), `f(${k}) at ${optimize}`); is(g(k), js.g(k), `g(${k}) at ${optimize}`) }
+  }
+})
+
+test('integral loops: where the state is present a copy of the closure loop reads it untested', () => {
+  if (belowOpt(2)) return
+  const text = wat(stateful, { optimize: 2 })
+  const loops = []
+  for (let at = text.indexOf('(loop'); at >= 0; at = text.indexOf('(loop', at + 1)) {
+    let depth = 0, end = at
+    do { const c = text[end++]; if (c === '(') depth++; else if (c === ')') depth-- } while (depth && end < text.length)
+    loops.push(text.slice(at, end))
+  }
+  ok(loops.some(l => (l.match(/f64\.store/g) || []).length >= 2 && !/call \$__throw_property_nullish/.test(l)), 'a copy of the loop tests none of them')
+})
+
 test('integral loops: the integral copy reads by an i32 index', () => {
   if (belowOpt(2)) return
   const text = wat(fir, { optimize: 2 })
