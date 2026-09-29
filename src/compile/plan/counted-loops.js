@@ -431,7 +431,7 @@ export const canonicalizeCountedLoops = () => {
 }
 
 /** `name` is read or written in `root` outside `loop`, its bare declaration aside. */
-function occursOutside(root, loop, name) {
+export function occursOutside(root, loop, name) {
   let seen = 0
   const visit = (n, declared) => {
     if (n === loop) return

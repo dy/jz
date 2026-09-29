@@ -1,0 +1,141 @@
+/**
+ * A loop indexing by numbers the program cannot prove integers runs, when
+ * they are integers, as a copy that names each of them afresh from its int32.
+ *
+ * A ring buffer's cursor read back from its state record (`let p = st.p`), a
+ * tap count from a parameter (`N = params.taps || 65`): a number of unknown
+ * integrality, so every `buf[idx]` converts it and tests the conversion,
+ * `idx - 1` and `(p + 1) % N` stay float arithmetic, and `%` a call. The
+ * same loop over names written from `x | 0` gets what a counter written from
+ * literals gets: i32 arithmetic and a whole index. Where each such name holds
+ * an int32 (`x === (x | 0)`, and not -0: no NaN, fraction or value past 2^31), a
+ * copy of the loop runs over fresh names `let x$ = x | 0`, equal to the
+ * originals, and the originals take what the copy wrote after it; the loop
+ * itself is the other arm. The values, and so what the program does, are
+ * the same in both.
+ *
+ * The names: those whose values reach an element index in the loop through
+ * sums, differences, products, remainders, conditionals and bitwise operators, directly
+ * (`buf[p]`) or through a name the loop writes (`idx = p`, `idx = idx === 0 ?
+ * N - 1 : idx - 1`), and that the loop reads from before it: locals of the
+ * function (a parameter or a declaration outside the loop) no closure names.
+ * A loop with a closure, a label or a suspension in it is left alone, and one
+ * too large to copy twice.
+ *
+ * @module compile/plan/integral-loops
+ */
+import { ctx } from '../../ctx.js'
+import { T, MUTATE_OPS, some, walkAst } from '../../ast.js'
+import { freshId } from '../../ir.js'
+import { cloneWithSubst } from '../../type.js'
+import { collectBindings, nodeSize } from './common.js'
+import { occursOutside } from './counted-loops.js'
+
+const LOOPS = new Set(['for', 'while'])
+const CLOSED = new Set(['+', '-', '*', '%', 'u-'])
+const BITWISE = new Set(['|', '&', '^', '<<', '>>', '>>>', '~'])
+const STEPS = new Set(['+=', '-=', '*=', '%='])
+const MAX_SIZE = 800
+
+/** Whether `e` is an integer wherever the names in it are (an int32 result, an
+ *  integer literal, a length, and sums, differences, products, remainders and
+ *  conditionals of them); its names go to `out`. */
+const integral = (e, out) => {
+  if (typeof e === 'string') { out.add(e); return true }
+  if (!Array.isArray(e)) return false
+  const op = e[0]
+  if (op == null) return typeof e[1] === 'number' && Number.isInteger(e[1])
+  if (BITWISE.has(op) || (op === '.' && e[2] === 'length')) return true
+  if (op === '()' && e.length === 2) return integral(e[1], out)
+  if (op === '?:') { const a = integral(e[2], out), b = integral(e[3], out); return a && b }
+  if (!CLOSED.has(op)) return false
+  let all = true
+  for (let i = 1; i < e.length; i++) if (!integral(e[i], out)) all = false
+  return all
+}
+
+/** The value each write of `name` in `node` stores (`++`'s is integral), or null for a value it cannot name. */
+const writesOf = (node, name) => {
+  const out = []
+  walkAst(node, { enter: (n) => {
+    if (n[0] === '=>') return false
+    if (n[0] === 'let' || n[0] === 'const') { for (let i = 1; i < n.length; i++) { const d = n[i]; if (Array.isArray(d) && d[0] === '=' && d[1] === name) out.push(d[2]) } return }
+    if (typeof n[1] !== 'string' || n[1] !== name || !MUTATE_OPS.has(n[0])) return
+    out.push(n[0] === '=' ? n[2] : STEPS.has(n[0]) ? n[2] : n[0] === '++' || n[0] === '--' || n[0] === '+1' || n[0] === '-1' ? [null, 1] : BITWISE.has(n[0].slice(0, -1)) ? [null, 0] : null)
+  } })
+  return out
+}
+
+/** The names whose values reach an element index in `loop` as integers:
+ *  read in an index directly, or through a name the loop writes only with
+ *  integral values of them. */
+const indexNames = (loop) => {
+  const names = new Set()
+  walkAst(loop, { enter: (n) => { if (n[0] === '[]' && n.length === 3) { const found = new Set(); if (integral(n[2], found)) for (const x of found) names.add(x) } } })
+  for (let grew = true; grew;) {
+    grew = false
+    for (const name of [...names]) {
+      const found = new Set()
+      if (!writesOf(loop, name).every(v => v !== null && integral(v, found))) { names.delete(name); grew = true; continue }
+      for (const x of found) if (!names.has(x)) { names.add(x); grew = true }
+    }
+  }
+  return names
+}
+
+export const versionIntegralLoops = () => {
+  if (ctx.transform.optimize?.versionIntegralLoops === false) return false
+  let changed = false
+  for (const func of ctx.funcs.list) {
+    if (func.raw || !func.body) continue
+    // what a closure of the function names, it reads or writes where the copy cannot see
+    const captured = new Set()
+    walkAst(func.body, { enter: (n) => {
+      if (n[0] !== '=>') return
+      walkAst(n, { enter: (m) => { for (let i = 1; i < m.length; i++) if (typeof m[i] === 'string') captured.add(m[i]) } })
+      return false
+    } })
+    const locals = new Set((func.sig?.params ?? []).map(p => p.name))
+    collectBindings(func.body, locals)
+    const loops = []
+    walkAst(func.body, { enter: (node, parent, idx) => {
+      if (node[0] === '=>') return false
+      if (LOOPS.has(node[0]) && parent) { loops.push([node, parent, idx]); return false }
+    } })
+    for (const [loop, parent, idx] of loops) {
+      if (parent[idx] !== loop || nodeSize(loop) > MAX_SIZE) continue
+      if (some(loop, n => n[0] === '=>' || n[0] === 'label' || n[0] === 'yield' || n[0] === 'await')) continue
+      const inner = new Set()
+      collectBindings(loop, inner)
+      // a name every write of which, anywhere, is an integer of such names is one already
+      const already = (n, seen = new Set()) => {
+        if (seen.has(n)) return true
+        seen.add(n)
+        const values = writesOf(func.body, n), found = new Set()
+        return values.length > 0 && !(func.sig?.params ?? []).some(p => p.name === n) &&
+          values.every(v => v !== null && integral(v, found)) && [...found].every(x => already(x, seen))
+      }
+      const names = [...indexNames(loop)].filter(n => locals.has(n) && !inner.has(n) && !captured.has(n) && !ctx.funcs.names.has(n) && !already(n))
+      if (!names.length) continue
+      // Every local the copy writes gets a name of its own too, from its
+      // value: a local is one representation, and the loop's keep the float
+      // values the copy's do not. So do the copy's own declarations. A
+      // number (every write an integer) is read by `+`: a plain read would
+      // count as an integer use of the loop's own name.
+      const written = [...locals].filter(n => !inner.has(n) && !captured.has(n) && !ctx.funcs.names.has(n) && writesOf(loop, n).length)
+      const outer = [...new Set([...names, ...written])]
+      const own = new Map([...outer, ...inner].map(n => [n, `${n}${T}int${freshId(ctx)}`]))
+      const copy = cloneWithSubst(loop, new Map(), own)
+      // an int32 and not -0: `x === (x | 0) && (x !== 0 || 1 / x > 0)`
+      const test = names.map(n => ['&&', ['===', n, ['|', n, [null, 0]]], ['||', ['!==', n, [null, 0]], ['>', ['/', [null, 1], n], [null, 0]]]])
+        .reduce((a, b) => ['&&', a, b])
+      parent[idx] = ['if', test,
+        ['{}', [';', ['let', ...outer.map(n => ['=', own.get(n), names.includes(n) ? ['|', n, [null, 0]] : already(n) ? ['u+', n] : n])], copy,
+          // what the copy wrote, where the function reads it after the loop
+          ...written.filter(n => occursOutside(func.body, loop, n)).map(n => ['=', n, own.get(n)])]],
+        ['{}', [';', loop]]]
+      changed = true
+    }
+  }
+  return changed
+}

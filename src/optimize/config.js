@@ -122,6 +122,7 @@ const LEVEL_PRESETS = Object.freeze({
     wideAccumulator: false,   // i64-carried accumulator versions the loop (guarded fast clone + the f64 original) — speed-only
     sourceInlineDup: false,   // shared/exported source bodies stay outlined; single-use internal bodies still inline
     arenaReach: false,        // the walk from what a call's escapes wrote into is ~2 KB of runtime: a call that ran an escape keeps all it allocated — memory-for-size
+    versionIntegralLoops: false, // an integral copy of a loop beside it — speed-for-size
     leanCheckedIdx: true,     // unproven typed reads emit the if-form (guard → direct load, else undefined) — ~6 ops/site smaller than the select-clamp form, which exists only so SPEED-tier kernel bodies stay branch-free for the SIMD lift (off here)
     leanRuntime: true,        // `__str_eq`/`__str_hash` link their plain byte walks (the hot/cold split, the 4-byte chunking and the per-probe hash fast arms are speed-for-size)
 

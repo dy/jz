@@ -102,6 +102,7 @@ const TESTS = [
   'typed-sort',
   'typed-length',
   'declare-unseen-keys',
+  'integral-loops',
   'select-order',
   'pointer-join',
   'typed-rebound',
