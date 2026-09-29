@@ -87,3 +87,19 @@ test('flow range: the arm that writes a local after its test gets no fact', () =
   ok(guards(wat(src, { optimize: 3 })) > 0, 'the rewritten local is bounded above only')
   check(src, 'rewritten arm')
 })
+
+// A ring counter `j = (j + 1) % K` is bounded by its divisor alone: every write
+// has a hull with no seed from j itself, so j is an i32 and its remainder the
+// integer one (analyze-scans.js stampBodyRanges).
+test('flow range: a remainder by a literal bounds the counter it writes', () => {
+  const src = `export let ring = (n, k) => { let t = 0, j = 0, q = -3
+    for (let i = 0; i < n; i++) { j = (j + 1) % 256; q = (q - k) % 7; t += j * 3 + q }
+    return t + j + q }`
+  for (const optimize of levels(0, 2, 3)) {
+    for (const [n, k] of [[0, 1], [1, 2], [300, 5], [1000, -3], [513, 1e9]]) agree(src, 'ring', [n, k], { optimize }, `ring(${n}, ${k}) at ${optimize}`)
+    if (optimize) ok(/\(local \$j i32\)/.test(wat(src, { optimize })) && /i32\.rem_s/.test(wat(src, { optimize })), `j is an i32 at ${optimize}`)
+  }
+  // a dividend that can overflow to Infinity leaves a NaN: no bound
+  const wide = `export let w = (n) => { let j = 0, t = 0; for (let i = 0; i < n; i++) { j = (j * 1e300 * 1e300 + 1) % 7; t += j | 0 } return [j, t] }`
+  for (const optimize of levels(0, 2, 3)) for (const n of [0, 1, 2, 5]) agree(wide, 'w', [n], { optimize }, `w(${n}) at ${optimize}`)
+})

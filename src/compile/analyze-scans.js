@@ -1496,6 +1496,32 @@ export function stampBodyRanges(body, readPresent, typedLens) {
     }
     return intExprRange(n)
   }
+  // A write `j = (j + 1) % K` by a positive literal K: taking j within the
+  // remainder's own bound, its dividend (sums and products of j, literals and
+  // names of finite hulls) stays finite, so from j's finite first value on
+  // every value it takes is below K.
+  const hullOver = (n, self, bound) => {
+    if (typeof n === 'string') return n === self ? bound : repOf(n)?.range ?? null
+    const c = constNumExpr(n)
+    if (Number.isFinite(c)) return [c, c]
+    if (!Array.isArray(n)) return null
+    const a = hullOver(n[1], self, bound), b = n.length > 2 ? hullOver(n[2], self, bound) : null
+    if (!a || (n.length > 2 && !b)) return null
+    if (n[0] === 'u+' && n.length === 2) return a
+    if (n[0] === 'u-' || (n[0] === '-' && n.length === 2)) return [-a[1], -a[0]]
+    if (n[0] === '+') return [a[0] + b[0], a[1] + b[1]]
+    if (n[0] === '-') return [a[0] - b[1], a[1] - b[0]]
+    if (n[0] === '*') { const p = [a[0] * b[0], a[0] * b[1], a[1] * b[0], a[1] * b[1]]; return [Math.min(...p), Math.max(...p)] }
+    return null
+  }
+  const defRangeOf = (name, n) => {
+    const r = rangeOf(n)
+    if (r || !Array.isArray(n) || n[0] !== '%' || n.length !== 3) return r
+    const k = constIntExpr(n[2])
+    if (k == null || k <= 0) return null
+    const h = hullOver(n[1], name, [1 - k, k - 1])
+    return h && Math.abs(h[0]) <= 2 ** 53 && Math.abs(h[1]) <= 2 ** 53 ? [1 - k, k - 1] : null
+  }
   const regions = [body], proofs = new Map(), defs = new Map(), declared = new Set(), bad = new Set()
   const addDef = (name, rhs) => {
     if (typeof name !== 'string') return
@@ -1582,7 +1608,7 @@ export function stampBodyRanges(body, readPresent, typedLens) {
       if (!declared.has(name) || bad.has(name) || repOf(name)?.range) continue
       let lo = Infinity, hi = -Infinity, known = true
       for (const rhs of values) {
-        const r = rangeOf(rhs)
+        const r = defRangeOf(name, rhs)
         if (!r) { known = false; break }
         lo = Math.min(lo, r[0]); hi = Math.max(hi, r[1])
       }
