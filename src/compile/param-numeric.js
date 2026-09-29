@@ -54,6 +54,14 @@ const NUM_BIN_OPS = new Set(['*', '/', '%', '**', '&', '|', '^', '<<', '>>', '>>
 // signals string intent and is rejected (handled in the walk below).
 // A string literal/template operand poisons relational numeric inference.
 const isStrLiteral = (n) => Array.isArray(n) && (n[0] === 'str' || n[0] === 'template')
+// An operand that is a string: a literal, or one the summary knows as a string in
+// the function under analysis (`let s = ''; let t = s + a`: `t + b` concatenates).
+const isStr = (n) => {
+  if (isStrLiteral(n)) return true
+  if (n == null || typeof n === 'number') return false
+  const k = ctx.summary?.at(ctx.func.current)?.kindOfExpr(n)
+  return k != null && tagOf(core(k)) === K.STRING
+}
 
 // The names (of `names`) a condition proves numbers when it is `when`: `x !== x`
 // holds for NaN alone, `x === 0.0` (a strict test against a number: a literal, or
@@ -265,7 +273,7 @@ export function paramAllUsesNumeric(body, name, _seen = new Set(), requireProof 
       // false), folding i64.lt_s(-1, 0) to 0 in-kernel — the -1n<0n row and
       // the shaped-parser family. Unproven params stay boxed and take
       // cmpOp's runtime string/number dispatch.
-      if (isStrLiteral(node[1]) || isStrLiteral(node[2])) { ok = false; return }
+      if (isStr(node[1]) || isStr(node[2])) { ok = false; return }
       const numericPartner = (e) => typeof e === 'number' ||
         (typeof e === 'string' && numericLocals.has(e)) ||
         (Array.isArray(e) && (e[0] == null ? typeof e[1] === 'number' :
@@ -346,7 +354,7 @@ export function paramAllUsesNumeric(body, name, _seen = new Set(), requireProof 
     // paramNeverString. The numeric proof must still come from a ToNumber-forcing use
     // (`*`, `Math.*`, …); a param used ONLY in `+` stays unproven (sound).
     if (op === '+' && node.length === 3) {
-      if (isStrLiteral(node[1]) || isStrLiteral(node[2])) { ok = false; return }
+      if (isStr(node[1]) || isStr(node[2])) { ok = false; return }
       if (!names.has(node[1])) walk(node[1])
       if (!names.has(node[2])) walk(node[2])
       return
@@ -443,7 +451,7 @@ export function paramNeverString(body, name, _seen = new Set()) {
     // `+` (binary): a string-literal/template operand makes it concat → reject.
     // Otherwise the param is in an arithmetic add; recurse the non-name operand.
     if (op === '+' && node.length === 3) {
-      if (isStrLiteral(node[1]) || isStrLiteral(node[2])) { ok = false; return }
+      if (isStr(node[1]) || isStr(node[2])) { ok = false; return }
       for (let i = 1; i <= 2; i++) if (node[i] !== name) walk(node[i])
       return
     }
@@ -454,7 +462,7 @@ export function paramNeverString(body, name, _seen = new Set()) {
     // same as concat: JS compares two strings lexicographically, so the param must
     // keep its runtime string/number dispatch.
     if ((NUM_BIN_OPS.has(op) || RELATIONAL_OPS.has(op)) && node.length === 3) {
-      if (RELATIONAL_OPS.has(op) && (isStrLiteral(node[1]) || isStrLiteral(node[2]))) { ok = false; return }
+      if (RELATIONAL_OPS.has(op) && (isStr(node[1]) || isStr(node[2]))) { ok = false; return }
       for (let i = 1; i <= 2; i++) if (node[i] !== name) walk(node[i])
       return
     }
@@ -667,7 +675,7 @@ export function countingNames(body, params) {
     }
     if (op === '[]' && n.length === 3) { visit(n[1], false); visit(n[2], true); return }
     if (op === '.' || op === '?.') { visit(n[1], false); return }
-    if (op === '+' && n.length === 3 && (isStrLiteral(n[1]) || isStrLiteral(n[2]))) { visit(n[1], false); visit(n[2], false); return }
+    if (op === '+' && n.length === 3 && (isStr(n[1]) || isStr(n[2]))) { visit(n[1], false); visit(n[2], false); return }
     if ((NUM_BIN_OPS.has(op) || RELATIONAL_OPS.has(op) || op === '+' || op === '-') && n.length === 3) { operand(n[1]); operand(n[2]); return }
     if (EQUALITY_OPS.has(op) && n.length === 3) { visit(n[1], true); visit(n[2], true); return }
     if ((op === 'u-' || op === 'u+' || op === '~' || op === '-' || op === '!') && n.length === 2) { visit(n[1], true); return }
@@ -797,7 +805,7 @@ export function paramNumericArrayLike(body, name, _seen = new Set(), params = nu
       if (names.has(t) || (Array.isArray(t) && t[0] === '.' && names.has(t[1]))) { ok = false; return }
       if (Array.isArray(t) && t[0] === '[]' && names.has(t[1])) {
         const v = node[2]
-        if (!numericIndex(t[2]) || (Array.isArray(v) && (v[0] === 'str' || v[0] === 'template' || (v[0] === '+' && v.length === 3 && (isStrLiteral(v[1]) || isStrLiteral(v[2])))))) { ok = false; return }
+        if (!numericIndex(t[2]) || (Array.isArray(v) && (v[0] === 'str' || v[0] === 'template' || (v[0] === '+' && v.length === 3 && (isStr(v[1]) || isStr(v[2])))))) { ok = false; return }
         writes = true; used = true
         if (op !== '=') reads = true   // `y[i] += v`, `y[i]++` read the element they store
         // A numeric output buffer may have no element reads to supply the

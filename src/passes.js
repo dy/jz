@@ -63,6 +63,7 @@ export const PASS_NAMES = [
   'cseScalarLoad',
   'forwardStores',            // straight-line store-to-load forwarding + dead-store elimination
   'staticScratch',            // a static typed array only constant indices reach: stores forward to loads of any width, unread stores go (optimize/static-scratch.js)
+  'moduleScratch',            // a module array of numbers only constant indices reach is locals of each function that uses it (plan/scratch.js)
   'valueNumber',              // value numbering over straight-line regions: one computation per value, through locals (watr's valueNumber)
   'scheduleStatements',       // straight-line statements in order of the work depending on them: independent kernel calls start together (watr's schedule)
   'unswitchTypedParamLoop',   // Float64Array param loop-unswitch → base-hoisted f64.load/store fast path (vectorizes)
@@ -132,6 +133,11 @@ export const TUNING_KEYS = [
   'rationalConst',            // SEMANTIC precision lowering (rational constant carry — pinned
                               // by the precision suite at EVERY tier incl. O0), opt-out only:
                               // not a level-gated optimization, so not in PASS_NAMES/ALL_OFF
+  'splitBindings',            // an assignment of a function's own statement list declares its value as a
+                              // binding of its own (prepare/split-bindings.js). A normal form of the
+                              // source, at EVERY tier: what a parameter is used as (README, "Numeric
+                              // export parameters") is read off it, and may not differ by level.
+                              // Opt-out only, for a test of what a second write does to a binding.
   'whyNotSimd',               // diagnostic: print vectorizer rejection reasons
   'crPow',                    // opt-in experimental pow vectorization
   'inlinePureFns',            // opt-in pure-function WAT inlining (assemble)

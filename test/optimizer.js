@@ -4192,13 +4192,15 @@ test('co-induction accumulator fact: base64 op-counter recovers i32 storage (IND
     for (const O of levels(0, 'size', 'speed')) is(jz(condStep, { optimize: O }).exports.f(src3, new Uint8Array(4)), expect, `budgeted counter O${O}`)
   }
 
-  // Negative control 2: a write to `op` OUTSIDE the loop body — no fact.
+  // Negative control 2: a write to `op` OUTSIDE the loop body — no fact. The
+  // write sits in an arm: one in the function's own statement list declares a
+  // binding of its own (prepare/split-bindings.js), and `op` keeps its fact.
   const outsideWrite = `
     const N = ${N}
     const encode = (src, out) => {
       let op = 0
       for (let i = 0; i < N; i++) { out[op] = src[i]; op += 1 }
-      op += 1
+      if (src[0] > 0) op += 1
       return op
     }
     export let f = (src, out) => encode(src, out)

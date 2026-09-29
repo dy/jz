@@ -1926,7 +1926,15 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       // No slot holds the name. A closure stored beside the fields or behind
       // an accessor sees the arguments; an Object.prototype method sees them
       // and retains none; any other name is a call of undefined, which throws.
-      if (memberMayBeOwn(name)) { escapeArgs(base, n); return ANY }
+      // The closure the summary holds beside the fields runs (its body is
+      // reached, its parameters bound): `ns.inner.parse = f` on a literal
+      // that declared no `parse`, then `ns.inner.parse(v)`.
+      if (memberMayBeOwn(name)) {
+        const own = core(sideOf(sid, name))
+        if (knownClosure(own)) callClosure(paramOf(own), base, n, node, recv)
+        escapeArgs(base, n)
+        return ANY
+      }
       return OBJECT_PROTO_METHODS.has(name) ? ANY : K.NONE
     }
     // A member of an object of a shape the summary lost is one of the
@@ -3333,7 +3341,13 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   // resting where the host may read it back. A slot read through a receiver
   // of unknown shape may be any slot of that name.
   const numeric = new Map()   // binding id or `sid\0prop` → NUM: every read converts; COMPAT: or is a `+` operand; false: one read is neither
+  const strung = new Set()    // the keys read as a string (STR below)
   const OTHER = 0, COMPAT = 1, NUM = 2, FLOW = 3, NEUTRAL = 4   // NEUTRAL: a read that is no evidence
+  // A read as a string: of a member a number has not (`x.slice( 1 )`). It denies like OTHER, and
+  // flows back through what made the value: a copy, a call's argument, the operands of a `+`
+  // (`x = s + s; x.slice( 1 )` concatenates, so `s` is used as a string).
+  const STR = 5
+  const NUMBER_MEMBERS = new Set(['toFixed', 'toPrecision', 'toExponential', 'toString', 'toLocaleString', 'valueOf', 'constructor'])
   // Capture structural metadata once. A retained reader must not consult
   // a subsequent compilation's registry through brandOf/classes.
   const methods = new Map()
@@ -3346,7 +3360,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     scopeOfSig, scopeOfBody, scopeOfParams, cellUp, elems, tuples, lens, stores, built, grown, unknown, presentReads, paramRangesOf, cellProps, cellWild, closureSets, closureSetIds, cells, jsonKinds, closuresByBody, unions, shapeUnions,
     schemas, layouts, sitesByLayout, objectKinds, methods, sidByKey,
     funcNames: new Set(funcByName.keys()), imports: new Map(imports),
-    numeric, dynamicProps, builtinOwnProps, escaped, typedReadPresent, typedProps, typedPropsByAux, openSchemas, indexedSchemas, hostSchemas, opaqueSchemas, deletable, deleteReach,
+    numeric, strung, dynamicProps, builtinOwnProps, escaped, typedReadPresent, typedProps, typedPropsByAux, openSchemas, indexedSchemas, hostSchemas, opaqueSchemas, deletable, deleteReach,
     sideProps, sideWild, wildProps, wildValues, pendingAll, keyedCells, cellShapes, cellLostObject, closureProps, iterSites, reached, defaultRuns,
     held,
     contracts: null,   // the result contracts, built at the freeze below
@@ -3394,6 +3408,8 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   }
   let demandChanged = false
   const deny = (key) => { if (numeric.get(key) !== false) { numeric.set(key, false); demandChanged = true } }
+  const string = (key) => { deny(key); if (!strung.has(key)) { strung.add(key); demandChanged = true } }
+  const strungInto = (into) => into !== null && (typeof into === 'string' || typeof into === 'number' ? strung.has(into) : into.some(k => strung.has(k)))
   /** A read at `level` (NUM or COMPAT): the key holds the weakest level of its reads. */
   const mark = (key, level) => { const cur = numeric.get(key); if (cur === false) return; const next = cur === undefined ? level : Math.min(cur, level); if (next !== cur) { numeric.set(key, next); demandChanged = true } }
   /** What a flow into `into` (a key, or every key of a list) demands: false once any is denied, the weakest level when all are marked. */
@@ -3405,19 +3421,19 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     return level
   }
   /** The context `cx` (FLOW resolved through `into`), no stronger than `level`. */
-  const atMost = (level, cx, into) => { const l = cx === FLOW ? demandOf(into) : cx; return l === undefined || l === false ? l : Math.min(l, level) }
-  const useKey = (key, level) => { if (level === OTHER || level === false) deny(key); else if (level !== undefined) mark(key, level) }
+  const atMost = (level, cx, into) => { const l = cx === FLOW ? (strungInto(into) ? STR : demandOf(into)) : cx; return l === undefined || l === false || l === STR ? l : Math.min(l, level) }
+  const useKey = (key, level) => { if (level === STR) string(key); else if (level === OTHER || level === false) deny(key); else if (level !== undefined) mark(key, level) }
   const useOf = (n, cx, into) => {
     // `n` is read in context `cx`; `into` names the key(s) it flows into under FLOW.
     if (typeof n === 'string') {
       const key = keyOf(n)
       if (key === null) return
-      const level = cx === FLOW ? demandOf(into) : cx
+      const level = cx === FLOW ? (strungInto(into) ? STR : demandOf(into)) : cx
       if (level !== NEUTRAL) useKey(key, level)
       return
     }
     if (!(Array.isArray(n) && (n[0] === '.' || n[0] === '?.') && typeof n[2] === 'string')) { demand(n, cx, into); return }
-    demand(n[1], OTHER)
+    demand(n[1], NUMBER_MEMBERS.has(n[2]) ? OTHER : STR)
     const keys = slotKeysOf(n[1], n[2])
     if (!keys.length) return
     const level = cx === FLOW ? demandOf(into) : cx
@@ -3428,7 +3444,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   const resultKeys = new Map()
   const resultKey = (scope) => { let key = resultKeys.get(scope); if (key === undefined) resultKeys.set(scope, key = 'ret\0' + scope); return key }
   /** The result of `callee` read in context `cx`. */
-  const readResult = (callee, cx, into) => { const level = cx === FLOW ? demandOf(into) : cx; if (level !== NEUTRAL) useKey(resultKey(callee), level) }
+  const readResult = (callee, cx, into) => { const level = cx === FLOW ? (strungInto(into) ? STR : demandOf(into)) : cx; if (level !== NEUTRAL) useKey(resultKey(callee), level) }
   /** The key of an element access. A typed array has elements and nothing
    *  else to name, so its key is no property key; nor is the read a conversion
    *  (`a[NaN]` is no element): no evidence either way. Any other receiver
@@ -3497,6 +3513,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       demand(t); demand(n[2]); return
     }
     // `+` and `+=` convert a number, a boolean or a nullish operand and concatenate a string; against a string operand the other is a string.
+    if (op === '+=' && typeof n[1] === 'string' && keyOf(n[1]) !== null && strung.has(keyOf(n[1]))) { useOf(n[1], STR); useOf(n[2], STR); return }
     if (op === '+=') { const str = isStringExpr(n[1]) || isStringExpr(n[2]), num = tagOf(core(kindOfExpr(n[1]))) === K.NUMBER && tagOf(core(kindOfExpr(n[2]))) === K.NUMBER; useOf(n[1], str ? OTHER : num ? NUM : COMPAT); useOf(n[2], str ? OTHER : num ? NUM : COMPAT); return }
     // Beside a BigInt operand ToNumeric completes only for a BigInt (kind.js
     // arith): a Number there throws, so the read converts nothing.
@@ -3504,6 +3521,8 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     if (op === '??=' || op === '||=' || op === '&&=') { useOf(n[1], OTHER); if (typeof n[1] === 'string') useOf(n[2], FLOW, keyOf(n[1])); else demand(n[2]); return }
     if (MUTATE_OPS.has(op)) { const cx = n[2] !== undefined && isBigintExpr(n[2]) ? OTHER : NUM; useOf(n[1], cx); if (n[2] !== undefined) useOf(n[2], cx); return }
     if (NUMBER_OPS.has(op) || op === 'u-' || op === 'u+' || op === '+1' || op === '-1') { const cx = n.length === 3 && (isBigintExpr(n[1]) || isBigintExpr(n[2])) ? OTHER : NUM; for (let i = 1; i < n.length; i++) useOf(n[i], cx); return }
+    // the sum read as a string is a concatenation: its operands are read as strings
+    if (op === '+' && n.length === 3 && (cx === STR || (cx === FLOW && strungInto(into)))) { useOf(n[1], STR); useOf(n[2], STR); return }
     if (op === '+') { const num = tagOf(core(kindOfExpr(n[1]))) === K.NUMBER && tagOf(core(kindOfExpr(n[2]))) === K.NUMBER; useOf(n[1], isStringExpr(n[2]) || isBigintExpr(n[2]) ? OTHER : num ? NUM : COMPAT); useOf(n[2], isStringExpr(n[1]) || isBigintExpr(n[1]) ? OTHER : num ? NUM : COMPAT); return }
     // A relational compare converts against a number; two strings compare as strings, so an unknown pair is compatible.
     if (op === '<' || op === '<=' || op === '>' || op === '>=') { useOf(n[1], relCx(n[2])); useOf(n[2], relCx(n[1])); return }

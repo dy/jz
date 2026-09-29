@@ -457,6 +457,101 @@ test('audit: compile-time integer conversion wraps beyond i64 during self-hostin
   }
 })
 
+// The README's "bitwise operands under 2^63": a bitwise operator converts its
+// operand through a saturating i64 truncation (src/ir/numeric.js toI32), exact
+// under 2^63 and for every nonfinite; past it the operand reads as -1, or as 0
+// when negative. No compare per conversion pays for the wrap modulo 2^32.
+test('audit: a bitwise operand converts as JS under 2^63 and saturates past it', () => {
+  const src = `export let or0 = (x) => x | 0
+    export let shr0 = (x) => x >>> 0
+    export let and = (x) => x & 0xffff
+    export let not = (x) => ~x
+    export let shl = (x) => x << 1
+    export let xor = (x) => x ^ 5
+    export let imul = (x) => Math.imul(x, 3)`
+  const want = oracle(src), ops = ['or0', 'shr0', 'and', 'not', 'shl', 'xor', 'imul']
+  const exact = [0, -0, 1.5, -1.5, 2 ** 31, 2 ** 32 - 1, 2 ** 32, 4e9, -4e9, 2 ** 53 + 2, 1e18, -1e18, 2 ** 62, 2 ** 63 - 1024, -(2 ** 63), Infinity, -Infinity, NaN]
+  const past = [2 ** 63, 2 ** 63 + 2048, 2 ** 64 + 8192, 1e20, 1e300, -(2 ** 63 + 2048), -1e20, -1e300]
+  for (const optimize of TIERS) {
+    const got = jz(src, { optimize }).exports
+    for (const x of exact) for (const op of ops) is(got[op](x), want[op](x), `${op}(${x}) at ${optimize}`)
+    for (const x of past) for (const op of ops) is(got[op](x), want[op](x > 0 ? -1 : 0), `${op}(${x}) at ${optimize} is ${op}(${x > 0 ? -1 : 0})`)
+  }
+})
+
+// A string operand need not be a literal: a local that holds one makes `+` a
+// concatenation and `<` a comparison of strings, whatever the other operand's
+// kind (src/compile/param-numeric.js isStr). A parameter beside it keeps its
+// runtime dispatch: read as a number, 'b' was NaN and 'a' < 'm' was false.
+test('audit: a local that holds a string concatenates and compares as one', () => {
+  const src = `export let acc = (a, b, c) => { const s = ""; const s1 = s + a; const s2 = s1 + b; const s3 = s2 + c; return s3 }
+    export let pre = (a, b) => { const p = "p:"; return p + a + b }
+    export let post = (a, b) => { const p = ":p"; const q = a + p; return q + b }
+    export let lt = (x) => { const m = "m"; return x < m ? 1 : 0 }
+    export let ge = (x) => { const m = "m"; return m >= x ? 1 : 0 }
+    export let built = (x, y) => { const m = "m" + y; return x > m ? 1 : 0 }`
+  const want = oracle(src)
+  const values = [1, -0.5, 'a', 'z', '-', '10', '9', true, null, undefined]
+  for (const optimize of TIERS) {
+    const got = jz(src, { optimize }).exports
+    for (const a of values) for (const b of values) {
+      is(got.acc(a, b, 2), want.acc(a, b, 2), `acc(${String(a)}, ${String(b)}, 2) at ${optimize}`)
+      is(got.pre(a, b), want.pre(a, b), `pre(${String(a)}, ${String(b)}) at ${optimize}`)
+      is(got.post(a, b), want.post(a, b), `post(${String(a)}, ${String(b)}) at ${optimize}`)
+      is(got.built(a, b), want.built(a, b), `built(${String(a)}, ${String(b)}) at ${optimize}`)
+    }
+    for (const x of values) for (const f of ['lt', 'ge']) is(got[f](x), want[f](x), `${f}(${String(x)}) at ${optimize}`)
+  }
+})
+
+// A sum whose value is read as a string is a concatenation: its operands are read as
+// strings, and a parameter among them is no number at the boundary (src/summary
+// demand, `STR`). Read as a number, `s + s` was NaN and `.slice` read it as an address.
+test('audit: a parameter summed and then read as a string is a string', () => {
+  const src = `export let twice = (s) => { const x = s + s; return x.slice(1) }
+    export let inline = (s, t) => (s + t).slice(1)
+    export let chain = (s, t) => { const a = s + '-'; const b = a + t; const c = b + b; return c.length }
+    export let helper = (s) => { const x = s + s; return cut(x) }
+    const cut = (v) => v.charCodeAt(0) + v.length
+    export let fixed = (a, b) => (a + b).toFixed(1)`
+  const want = oracle(src)
+  for (const optimize of TIERS) {
+    const got = jz(src, { optimize }).exports
+    for (const [s, t] of [['ab', 'cd'], ['', 'x'], ['+1', '0']]) {
+      is(got.twice(s), want.twice(s), `twice('${s}') at ${optimize}`)
+      is(got.inline(s, t), want.inline(s, t), `inline('${s}', '${t}') at ${optimize}`)
+      is(got.chain(s, t), want.chain(s, t), `chain('${s}', '${t}') at ${optimize}`)
+      is(got.helper(s + 'q'), want.helper(s + 'q'), `helper('${s}q') at ${optimize}`)
+    }
+    // a member a number has is no read as a string: the operands stay numbers
+    is(got.fixed(1.25, 2), want.fixed(1.25, 2), `fixed(1.25, 2) at ${optimize}`)
+  }
+})
+
+// A closure stored beside the fields of an object a literal nested (`ns.inner.parse = f`
+// where the literal declared no `parse`) runs when the member is called
+// (src/summary/index.js): its body is reached and its parameter bound. Unreached, a
+// binding of its body had no kind and a BigInt shifted as an i32.
+test('audit: a closure stored beside a nested object\'s fields is reached by its call', () => {
+  const src = `function parseNum(n) {
+      const b = typeof n === 'string' ? BigInt(n) : n
+      const m = b >> 7n
+      return m
+    }
+    function scale(v) { const half = v * 0.5; const s = "v" + half; return s }
+    const ns = { inner: {}, deep: { er: {} } }
+    ns.inner.parse = parseNum
+    ns.deep.er.scale = scale
+    export let f = (s) => { const nodes = []; nodes.push(s); return ns.inner.parse(nodes.shift()) }
+    export let g = (v) => ns.deep.er.scale(v)`
+  const want = oracle(src)
+  for (const optimize of TIERS) {
+    const got = jz(src, { optimize }).exports
+    for (const s of ['900', '-129', '0', '9223372036854775807']) is(got.f(s), want.f(s), `f('${s}') at ${optimize}`)
+    for (const v of [3, -0.5, 1e21]) is(got.g(v), want.g(v), `g(${v}) at ${optimize}`)
+  }
+})
+
 test('audit: runtime integer conversion is exact for every element store', () => {
   // The exact ToInt32 kernel's regions: |x| < 2⁶³ (saturating i64 truncation is
   // exact), the shifted-significand band up to 2⁸⁴, multiples of 2³² beyond,

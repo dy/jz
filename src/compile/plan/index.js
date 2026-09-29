@@ -45,7 +45,7 @@ import { adviseProgram } from './advise.js'
 import { scanInplaceStores } from '../inplace-store.js'
 import { solveRepresentationBoundaries } from '../representation-plan.js'
 import {
-  moduleGlobalKinds, unboxConstTypedGlobals, inferModuleIntGlobals,
+  moduleGlobalKinds, unboxConstTypedGlobals, inferModuleIntGlobals, dropUnreadGlobals,
   flattenFuncNamespaces, devirtGlobalCalls, devirtClassCalls, classifyHashDictGlobals,
   materializeAutoBoxSchemas, resolveClosureWidth, canSkipWholeProgramNarrowing,
 } from './scope.js'
@@ -55,6 +55,7 @@ import { inlineHotInternalCalls, inlineLocalLambdas, specializeFixedRestCalls } 
 import { laneRecordParams } from './lanes.js'
 import { bindNestedRowLengths, unrollRowLenPadLoops, splitCharScanLoops } from './loops.js'
 import { guardConstants, canonicalizeCountedLoops } from './counted-loops.js'
+import { scalarizeModuleScratch } from './scratch.js'
 import {
   scalarizeFunctionTypedArrays, scalarizeFunctionArrayLiterals,
   promoteIntArrayLiterals, scalarizeFunctionObjectLiterals, analyzeParamDistinctness,
@@ -138,6 +139,9 @@ export default function plan(ast, profiler, summarize) {
     // Record parameters read field by field become lanes before the object
     // scalarizer looks: a literal passed to such a callee has no reader left.
     sweep('laneRecordParams', () => laneRecordParams(facts()))
+    // After inlining: a helper that fills an array of the module for its caller
+    // is part of the caller, and the array's elements are values of the call.
+    if (ctx.transform.optimize.moduleScratch === true) sweep('scalarizeModuleScratch', () => scalarizeModuleScratch(facts(), ast))
     sweep('scalarizeArrayLiterals', scalarizeFunctionArrayLiterals)
     sweep('scalarizeObjectLiterals', scalarizeFunctionObjectLiterals)
     // Promotion runs AFTER literal scalarization (those that fully reduce to scalars
@@ -176,6 +180,10 @@ export default function plan(ast, profiler, summarize) {
     }))
   programFacts.programIndex = programIndex
   ctx.plans.programIndex = programIndex
+  // A binding no reached function reads computes nothing at init. The graph is
+  // frozen: the values dropped hold no call. At every level, like the functions
+  // nothing reaches: what a program may name does not depend on the optimizer.
+  if (t('dropUnreadGlobals', () => dropUnreadGlobals(ast, programFacts))) getFactStore().revision++
   // Shape check (.work/archive/program-facts-split.md §7.1): this is the ONLY staple-on
   // site anywhere in src/compile/ that adds a top-level key to `programFacts`
   // after `collectProgramFacts` publishes it — the moment it lands is the

@@ -44,6 +44,7 @@ import {
 } from './common.js'
 import { materializeVariant } from '../variant.js'
 import { isExported } from '../func-exports.js'
+import { liveFunctions } from './scratch.js'
 
 // Returns { prefix, value } where prefix is the substituted body statements
 // (excluding any trailing `return X`), and value is the substituted return
@@ -706,9 +707,16 @@ export const inlineHotInternalCalls = (programFacts, ast) => {
   // the summary cannot name (class-dispatch.js): the function stays for them
   // whatever the splice does, so they are no sites of it.
   const synthesized = (f) => !!f && (f.sig?.dispatcher === true || f.name.endsWith(BIND))
+  // A site in a function nothing runs is no site: a library's allocating
+  // variant (`normalize( x )` over `assign( x, [ 0, 0 ], 1, 0 )`) beside the one
+  // the program calls would count against the body's budget and keep the call.
+  // A function runs when the host holds it, a value names it, the module's own
+  // statements call it, or one that runs calls it.
+  const { live } = liveFunctions(programFacts)
   const sitesByCallee = new Map()
   for (const cs of programFacts.callSites) {
     if (synthesized(cs.callerFunc)) continue
+    if (cs.callerFunc != null && !live.has(cs.callerFunc.name)) continue
     const list = sitesByCallee.get(cs.callee)
     if (list) list.push(cs); else sitesByCallee.set(cs.callee, [cs])
   }

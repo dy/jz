@@ -972,6 +972,8 @@ function runAnalyze(code, paramVals) {
   // reset() alone (unlike beginSession) leaves targetProfile at its null default —
   // modules the analyzer pulls in (e.g. module/math.js) read it unconditionally.
   ctx.transform.targetProfile = targetProfileFor(ctx.transform.host)
+  // these read what a second write does to a binding: the source's bindings stay whole
+  ctx.transform.optimize = { splitBindings: false }
   prepare(parse(code))
   const fn = ctx.funcs.list.find(f => !f.raw && !f.exported && f.body && Array.isArray(f.body))
     || ctx.funcs.list[0]
@@ -1125,6 +1127,8 @@ test('intCertain: transitive — j = i + 1 follows i', () => {
 function runAnalyzeMayBeUndefined(code, dynWriteVarNames) {
   reset(emitter, GLOBALS, { emit, bool, idx, spread, emitIdentitySafe })
   ctx.transform.targetProfile = targetProfileFor(ctx.transform.host)
+  // these read what a second write does to a binding: the source's bindings stay whole
+  ctx.transform.optimize = { splitBindings: false }
   prepare(parse(code))
   const fn = ctx.funcs.list.find(f => !f.raw && !f.exported && f.body && Array.isArray(f.body))
     || ctx.funcs.list[0]
@@ -1225,6 +1229,8 @@ test('censusMaybeUndefinedKind: bare-name REP fallback answers only when BOTH ma
 function runAnalyzePresentVal(code, dynWriteVarNames) {
   reset(emitter, GLOBALS, { emit, bool, idx, spread, emitIdentitySafe })
   ctx.transform.targetProfile = targetProfileFor(ctx.transform.host)
+  // these read what a second write does to a binding: the source's bindings stay whole
+  ctx.transform.optimize = { splitBindings: false }
   prepare(parse(code))
   const fn = ctx.funcs.list.find(f => !f.raw && !f.exported && f.body && Array.isArray(f.body))
     || ctx.funcs.list[0]

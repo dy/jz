@@ -644,19 +644,17 @@ test('slice-view: escaping slice copies — passed as argument', () => {
 })
 
 test('slice-view: escaping slice copies — reassigned binding', () => {
-  const wat = compile(`export let f = () => {
+  // the write sits in an arm: one in the function's own statement list declares
+  // a binding of its own (prepare/split-bindings.js), and `t` would hold one value
+  const src = `export let f = () => {
     let s = 'abcdefg'
     let t = s.slice(1, 4)
-    t = 'x'
+    if (s.length > 3) t = 'x'
     return t === 'x' ? 1 : 0
-  }`, { wat: true })
+  }`
+  const wat = compile(src, { wat: true })
   ok(!wat.includes('__str_slice_view'), 'a reassigned binding is not a stable view')
-  is(run(`export let f = () => {
-    let s = 'abcdefg'
-    let t = s.slice(1, 4)
-    t = 'x'
-    return t === 'x' ? 1 : 0
-  }`).f(), 1)
+  is(run(src).f(), 1)
 })
 
 test('slice-view: fires for a provably-string function parameter', () => {

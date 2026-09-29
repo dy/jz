@@ -41,6 +41,7 @@ import { hoistIndexedConstLiterals, seedStaticGlobalAssignments } from './litera
 import { validateCoalesceMixing } from './module-resolve.js'
 import { fuseSparseMapReads } from './sparse-map.js'
 import { prepState, resetPrepState } from './state.js'
+import { splitReassigned } from './split-bindings.js'
 import { frameNode } from '../function.js'
 
 
@@ -223,6 +224,10 @@ export default function prepare(node) {
       ctx.scope.shapeStrArrays?.delete(name)
     }
   }
+
+  // Last: every scan above reads the bindings as the source wrote them.
+  if (ctx.transform.optimize?.splitBindings !== false)
+    for (const f of ctx.funcs.list) if (f.body && !f.raw) f.body = splitReassigned(f)
 
   return ast
 }

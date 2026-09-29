@@ -387,9 +387,11 @@ test('intConst: caller disagreement keeps local.get', () => {
 
 test('intConst: body write to param clears intConst (validateIntConstParams)', () => {
   // Even with unanimous callers, if the body writes to k (`k++`), the
-  // const-substitution is unsound. validateIntConstParams clears it.
+  // const-substitution is unsound. validateIntConstParams clears it. The write
+  // sits in an arm: one in the function's own statement list is a binding of
+  // its own (prepare/split-bindings.js) and leaves k unwritten.
   const wat = jz.compile(`
-    const step = (x, k) => { k = k + 1; return x * k }
+    const step = (x, k) => { if (x > 0) k = k + 1; return x * k }
     export const a = (x) => step(x, 7)
     export const b = (x) => step(x, 7)
   `, { wat: true })

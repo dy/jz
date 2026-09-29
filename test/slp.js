@@ -8,8 +8,10 @@ import { is, ok } from 'tst/assert.js'
 import jz from '../index.js'
 import { onWasi } from './_matrix.js'
 
-const speed = { level: 'speed' }
-const speedNoSimd = { level: 'speed', noSimd: true }
+// The arrays stay in memory: a module array only constant indices reach would be
+// locals of the kernel (plan/scratch.js), with no store left to pack.
+const speed = { level: 'speed', moduleScratch: false }
+const speedNoSimd = { level: 'speed', noSimd: true, moduleScratch: false }
 const fires = (src) => (jz.compile(src, { wat: true, optimize: speed }).match(/v128\.store/g) || []).length
 
 // Run the same source SIMD vs scalar; assert byte-identical numeric result.

@@ -33,16 +33,16 @@ export const PHASE_NAMES = [
   'plan:moduleGlobalKinds', 'plan:unboxConstTypedGlobals', 'plan:inferModuleIntGlobals', 'plan:collectFacts',
   'plan:classifyHashDictGlobals', 'plan:flattenFuncNamespaces', 'plan:declareWrittenKeys', 'plan:devirtGlobalCalls', 'plan:devirtClassCalls', 'plan:indexArrayPatterns',
   'plan:bindNestedRowLengths', 'plan:unrollRowLenPadLoops', 'plan:inlineHotInternalCalls', 'plan:inlineLocalLambdas',
-  'plan:specializeFixedRestCalls', 'plan:guardConstants', 'plan:canonicalizeCountedLoops', 'plan:splitCharScan', 'plan:laneRecordParams', 'plan:scalarizeArrayLiterals', 'plan:scalarizeObjectLiterals',
+  'plan:specializeFixedRestCalls', 'plan:guardConstants', 'plan:canonicalizeCountedLoops', 'plan:splitCharScan', 'plan:laneRecordParams', 'plan:scalarizeModuleScratch', 'plan:scalarizeArrayLiterals', 'plan:scalarizeObjectLiterals',
   'plan:promoteIntArrayLiterals', 'plan:scalarizeTypedArrays', 'plan:synthesizeComputedDispatchCallSites',
-  'plan:synthesizeMemberDispatchCallSites', 'plan:releaseLiftedAddressTakenNames', 'plan:buildProgramIndex',
+  'plan:synthesizeMemberDispatchCallSites', 'plan:releaseLiftedAddressTakenNames', 'plan:buildProgramIndex', 'plan:dropUnreadGlobals',
   'plan:materializeAutoBoxSchemas', 'plan:resolveClosureWidth', 'plan:applyExportTypedArrayAbi',
   'plan:collectSlotConstants', 'plan:narrowSignatures', 'plan:analyzeParamDistinctness', 'plan:refineSlotWriteHazards',
   'plan:analyzeParamNeverGrown', 'plan:scanInplaceStores', 'plan:specializeBimorphicTyped', 'plan:specializeValKindDichotomy',
   'plan:speculateTypedParams', 'plan:refineDynKeys', 'plan:refineSlotIntCensus',
   'optMod:specializeMkptr', 'optMod:volatileGlobals', 'optMod:reachableWrites', 'optMod:hoistGlobalPtr',
   'optMod:hoistLoopGlobalPtr', 'optMod:inlinePureFns', 'optMod:optimizeFuncs', 'optMod:hoistGlobalConstLoads', 'optMod:appendLateStdlib',
-  'frameEffects', 'frameEffectsRefresh', 'optMod:loopRewinds', 'optMod:staticScratch',
+  'frameEffects', 'frameEffectsRefresh', 'optMod:loopRewinds', 'optMod:staticScratch', 'shareSplitSlots',
 ]
 const PHASE_IDS = new Map(PHASE_NAMES.map((name, id) => [name, id]))
 export const PHASE_RECORDS = 256

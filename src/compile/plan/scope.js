@@ -1007,6 +1007,93 @@ export const devirtGlobalCalls = (ast) => {
   return changed
 }
 
+// The operators that evaluate their operands and nothing else, whatever the operands hold.
+const PLAIN_OPS = new Set(['!', 'typeof', 'void', '?:', '?', '&&', '||', '??', '===', '!==', ','])
+// The operators that convert an operand: an object's conversion calls its
+// `valueOf`, a BigInt's can throw. Over numbers, strings and booleans they run nothing.
+const CONVERTING_OPS = new Set(['+', '-', '*', '/', '%', '**', 'u-', 'u+', '~', '==', '!=', '<', '<=', '>', '>=',
+  '&', '|', '^', '<<', '>>', '>>>'])
+const SCALAR_TAGS = new Set([K.NUMBER, K.STRING, K.BOOL])
+// An expression whose evaluation has no effect, `view` the summary of the module's own statements.
+const inert = (e, view) => {
+  if (e == null || typeof e === 'string' || typeof e === 'number') return true
+  if (!Array.isArray(e)) return false
+  if (e[0] == null || e[0] === 'str' || e[0] === 'bool' || e[0] === '=>') return true
+  if (PLAIN_OPS.has(e[0])) return e.slice(1).every(o => inert(o, view))
+  if (!CONVERTING_OPS.has(e[0]) || !view) return false
+  return e.slice(1).every(o => inert(o, view) && SCALAR_TAGS.has(tagOf(core(view.kindOfExpr(o)))))
+}
+
+/**
+ * A module binding nothing the program runs reads keeps no initializer, where
+ * evaluating it has no effect: `var Fcn = Function` behind a code generator
+ * nothing calls, beside the evaluator the program does call (a library's
+ * `evalpoly` and `evalpoly.factory`). The value would be computed for no reader,
+ * and a value the target has no form of would stop the compile for code that
+ * never runs. A read is a name in the body of a function the call graph
+ * reaches, or in a statement of the module other than the binding's own
+ * declaration; a binding read only by one that drops goes after it. An exported
+ * binding stays: the host reads it.
+ */
+export const dropUnreadGlobals = (ast, programFacts) => {
+  const globals = ctx.scope.userGlobals
+  if (!globals?.size) return false
+  const roots = [...(ctx.module.moduleInits || []), ast]
+  const stmts = []   // each statement of the module with the list it sits in (null for a lone one)
+  const flatten = (n, list = null, at = 0) => {
+    if (Array.isArray(n) && n[0] === ';') for (let i = 1; i < n.length; i++) flatten(n[i], n, i)
+    else if (n != null) stmts.push([n, list, at])
+  }
+  for (const r of roots) flatten(r)
+  const hostRead = new Set(Object.entries(ctx.funcs.exports).map(([name, local]) => local === true ? name : local))
+  const bodies = ctx.funcs.list.filter(f => !f.raw && f.body && programFacts.programIndex.reachableForLowering(f)).flatMap(frameRoots)
+  const view = ctx.summary?.at(null)
+  const read = new Set()
+  const reads = (n) => {
+    if (typeof n === 'string') { if (globals.has(n)) read.add(n); return }
+    if (!Array.isArray(n) || n[0] === 'str') return
+    if (n[0] === '.' || n[0] === '?.') { reads(n[1]); return }
+    if (n[0] === ':') { reads(n[2]); return }
+    for (let i = 1; i < n.length; i++) reads(n[i])
+  }
+  // The declarators of a statement that bind a global to an inert value: [name, holder, index].
+  const inits = (s) => {
+    if (!Array.isArray(s)) return []
+    if (s[0] === '=' && typeof s[1] === 'string' && globals.has(s[1]) && inert(s[2], view)) return [[s[1], null, 0]]
+    if (s[0] !== 'let' && s[0] !== 'const') return []
+    const out = []
+    for (let i = 1; i < s.length; i++) { const d = s[i]; if (Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string' && globals.has(d[1]) && inert(d[2], view)) out.push([d[1], s, i]) }
+    return out
+  }
+  let changed = false
+  for (let progress = true; progress;) {
+    progress = false
+    read.clear()
+    for (const b of bodies) reads(b)
+    for (const [s] of stmts) {
+      const own = inits(s)
+      if (!own.length) { reads(s); continue }
+      // its own names are bound here, not read; the values and any other declarator are
+      if (s[0] === '=') reads(s[2])
+      else for (let i = 1; i < s.length; i++) { const d = s[i]; if (Array.isArray(d) && d[0] === '=') { if (!own.some(o => o[2] === i)) reads(d[1]); reads(d[2]) } else if (typeof d !== 'string') reads(d) }
+    }
+    for (const entry of stmts) {
+      const [s, list, at] = entry
+      const dead = inits(s).filter(([name]) => !read.has(name) && !hostRead.has(name))
+      if (!dead.length) continue
+      // The declarator goes whole: the global is declared by its name (prepare), and a
+      // bare `let G` would store the undefined nothing reads. A statement left with no
+      // declarator is an empty one.
+      const rest = dead[0][1] ? s.filter((d, i) => i === 0 || !dead.some(o => o[2] === i)) : null
+      if (rest && rest.length > 1) { s.length = 0; s.push(...rest) }
+      else if (list) { list[at] = [';']; entry[0] = list[at] }
+      else { s.length = 0; s.push(';') }
+      progress = changed = true
+    }
+  }
+  return changed
+}
+
 export const materializeAutoBoxSchemas = (programFacts) => {
   if (!ctx.schema.register) return
   for (const [name, props] of programFacts.propMap) {

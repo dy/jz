@@ -112,6 +112,7 @@ Where behaviour differs from JS:
 - **No GC.** A call releases what it allocated on return, except what it stored into something older than itself and what lies below that in the heap; what a call keeps lives until `memory.reset()`, and what it replaces is not freed. `WeakMap`, `WeakSet` and `WeakRef` hold strongly.
 - **In-place array arguments.** An exported function that stores into an array argument and reads it back takes a Float64Array, a Float32Array or an Array there, which round as JS rounds them; another kind throws a TypeError.
 - **Float sums in lanes.** From optimize level 2, a loop that sums floats may add in two lanes: the last digits of the sum can differ.
+- **Bitwise operands under 2^63.** `|`, `&`, `^`, `~`, the shifts and `Math.imul` convert an operand of magnitude under 2^63 as JS does. A larger one reads as -1, or as 0 when negative, where JS takes it modulo 2^32: `1e300 | 0` is -1. A store to an integer typed array converts exactly at any magnitude.
 - **BigInt is 64-bit.** It wraps past its range and has no `**`.
 - **No holes.** `[1, , 3]` and a write past the end fill the gap with `undefined` elements: `1 in a`, `Object.keys` and `forEach` see them.
 - **32-bit element indices.** Use finite integer array indices. Numeric index expressions can truncate to i32; `a[NaN]` can read `a[0]` instead of `undefined`.
@@ -119,7 +120,7 @@ Where behaviour differs from JS:
 - **ASCII case, UTC dates.** No locale or timezone tables: case conversion is ASCII, `normalize` returns its input, Date getters use UTC.
 - **Fixed shapes.** Object fields are slots resolved at compile time; `Object.freeze` does nothing and errors carry `name` and `message` only.
 - **Class methods stay bound.** An extracted class method retains its instance. Object-literal methods use the call receiver.
-- **Numeric export parameters.** A parameter an exported function never uses as a string is compiled as a number and converted at the boundary: `export let add = (a, b) => a + b` gives `add(1, '2')` as 3, where JavaScript concatenates.
+- **Numeric export parameters.** A parameter an exported function never uses as a string is compiled as a number and converted at the boundary: `export let add = (a, b) => a + b` gives `add(1, '2')` as 3, where JavaScript concatenates. A use as a string counts through a copy, a call and a sum: `(s) => (s + s).slice(1)` takes a string.
 
 </details>
 

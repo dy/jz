@@ -1557,6 +1557,14 @@ first whose text matches, and a one-character operator matches any text it
 begins: `>`, registered after `>>`, took the first character of a shift
 standing right of a comparison, so `a < b >> c` read `(a < b) >> c`
 (subscript 10.8.1; `test/shift-precedence.js`).
+It reads a statement list by one call, a statement per pass: subscript's
+`feature/asi.js` reads the statements after a boundary by a call inside the
+call that read the one before and declines past 2000, where a block no longer
+closes (`Unclosed {`), so a library bundled into one file did not parse. Each
+statement is read at a precedence of its own (`ONE`, which admits what
+subscript's `lvl - .5` admits), and the boundary after it only notes that
+another follows. The trees are subscript's, node for node (`test/parse-list.js`).
+The change belongs in subscript's `feature/asi.js`; this layer goes when it is there.
 
 **One shared optimizer, owned by watr (`~/projects/watr`).** Generic optimizer changes belong there, with tests in both projects. JZ supplies language-specific analysis, representation contracts, and lowering. The existing generic passes in `src/optimize/` are migration work: consolidate them into watr and delete JZ copies, rather than building a competing optimizer. Never patch only `node_modules`.
 
@@ -1792,7 +1800,10 @@ reaches the summary. A raise folds in a value the join's own effects moved
 calls a member directly when every layout of the receiver resolves it to one
 function, and reads a field every member layout holds in one slot as that
 slot (`commonSlot`), so a method inherited by a class family runs on prefix
-layouts without a guard. An accessor is a function of its class (a derived
+layouts without a guard. A call of a name no slot holds runs the closure the
+summary holds beside the fields (`ns.inner.parse = f` on a literal that
+declared no `parse`): its body is reached and its parameters bound, as for a
+slot. An accessor is a function of its class (a derived
 class's too: its instances carry their own schema), a slot of an object
 literal's schema, or a static pair on the class value (the
 `dynamicAccessorNames`); an unknown receiver dispatches on its schema id and
@@ -2089,7 +2100,11 @@ a loop's head and after any construct a branch may leave, and each arm of an
 The export boundary is numeric for a parameter used only as a typed-array
 index or stored into a typed array (README, "Host boundary"): the usage scan
 (`src/compile/param-numeric.js`) counts those uses as numeric, reading the
-receiver's typed kind from the summary as well as its declaration. A program
+receiver's typed kind from the summary as well as its declaration. A string
+operand of `+` or of a relational operator is a literal or any expression the
+summary knows as a string (`isStr`: `const m = 'm'; x < m` compares strings,
+`s1 + b` after `s1 = '' + a` concatenates), and the parameter beside it keeps
+its runtime dispatch. A program
 that wants the host's property keys takes them as strings (`key = '' + key`,
 JS's own ToPropertyKey); inside the program the summary knows a string key and
 the typed-array property semantics hold.
@@ -2238,6 +2253,51 @@ keep what both hold. Any other use of a binding (an argument, a return, an expor
 of another object, an index that is not constant, a view made in a function or of a part)
 keeps its array in memory, with every binding that shares the buffer. `test/static-scratch.js`
 pins the shapes, the joins and the bails.
+
+An assignment that is a statement of a function's own list declares its value as a binding of
+its own (`src/prepare/split-bindings.js`, last in prepare, at every level; `splitBindings: false` opts out): `x -= n; xx =
+x * x` reads as `let x1 = x - n; xx = x1 * x1`. The list runs once, top to bottom, so what
+precedes the assignment read the old value and what follows reads the new. Each binding then
+holds one value and has its kind: an integer assigned after a float is an i32, a parameter of
+any kind reassigned from arithmetic is a number from there on, and a parameter only the list
+assigned is never written, so its constant argument reads as the constant. A write nested in
+the list (an arm, a loop) assigns the binding of its place, and a binding a closure names is
+one cell its calls share and stays whole. It is a normal form of the source, not a pass of a
+level: what an exported parameter is used as is read off it, and the answer may not differ by
+level. A read as a string flows back through what made the value (summary demand, `STR`): a
+copy, a call's argument, the operands of a `+`, so `x = s + s; x.slice( 1 )` uses `s` as a
+string. A test of the analyzers' rule for a second write puts the write in an arm, or opts out. `test/split-bindings.js` pins the statements it leaves and the
+agreement of both forms with the host.
+
+A split binding of the type of the one it continues takes its slot
+(`src/optimize/split-slots.js`, last before the generic optimizer): the one before is dead
+once the next is written, so `x = +x` on a parameter that is a number costs no local and the
+function is the one the source wrote. It shares when every access of the slot comes before
+the binding's first write in evaluation order and no loop holds both an access of the slot
+and a write of the binding.
+
+A module array of numbers the program only uses as scratch is locals
+(`src/compile/plan/scratch.js`, pass `moduleScratch`, after the inliner): `normalize( frac,
+FRAC, 1, 0 ); frac = FRAC[ 0 ]; exp += FRAC[ 1 ]`, a library's way to return two values. The
+array is a module constant bound to a literal of numbers, not exported; in every function that
+runs each mention is an element at a constant index inside the literal's count, outside any
+closure; each read follows a store of that element on every path to it
+(`summary/definite.js`); and no call between them reaches another function that names the
+array or a callee the program cannot name. Each function then holds the elements in locals of
+its own, and the array, its stores and the reset's snapshot of it are gone. A function runs
+when the host holds it, a value names it, a statement of the module calls it, or one that runs
+calls it (`liveFunctions`); the inliner counts a callee's sites among those only, so a
+library's allocating variant nothing calls (`normalize( x )` over `assign( x, [ 0, 0 ], 1, 0
+)`) takes nothing from the body's budget. `test/module-scratch.js` pins the shapes, the bails
+and that a caller nothing runs changes no byte.
+
+A module binding nothing that runs reads is not declared, where its value runs nothing
+(`dropUnreadGlobals`, plan/scope.js, at every level): a name, a literal, a closure, an
+operator that converts nothing (`typeof`, `===`, `&&`), or one that converts numbers, strings
+and booleans only, since an object's conversion calls its `valueOf` and a BigInt's can throw.
+`var Fcn = Function` behind a code generator nothing calls then stops no compile. A read is a
+name in a function the call graph reaches or in another statement of the module; a binding
+read only by one that goes, goes after it; an exported binding stays (`test/unread-globals.js`).
 
 ## Principles
 

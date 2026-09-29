@@ -13,7 +13,7 @@
  * literal and needs no override.
  */
 import { parse as jessieParse, token } from 'subscript/feature/jessie'
-import { lookup, idx, cur, skip, err } from 'subscript/parse'
+import { lookup, idx, cur, skip, err, prec } from 'subscript/parse'
 import { fromRadixDigits, toDecimalString, truncateLimbs } from './bignum.js'
 import { validateEarlyErrors } from './early-errors.js'
 
@@ -58,6 +58,62 @@ jessieParse.space = () => {
   const cc = asiSpace()
   for (let i = from; i < idx; i++) if (cur.charCodeAt(i) === 13) { jessieParse.newline = true; break }
   return cc
+}
+
+// A statement list is read by one call, a statement per pass. subscript's
+// (feature/asi.js) reads the statements after a boundary by a call inside the
+// call that read the statement before, so its depth is the count of statements,
+// which it caps at 2000: a block met at that depth does not close (`Unclosed {`),
+// and a library bundled into one file does not parse. Here the call reads each
+// statement at a precedence of its own (`ONE`: between a block's and `;`, so it
+// admits what subscript's `lvl - .5` admits), and the boundary after the
+// statement, reached from that expr, only notes that another follows (`more`).
+// The depth of a parse is then the nesting of its source. The step is
+// subscript's, over this list; the trees are the same, node for node.
+const LVL = prec.asi ?? prec[';'], ONE = LVL - .25, STMT = (prec[';'] ?? 5) + 1
+const baseStep = jessieParse._baseStep
+const isNode = a => Array.isArray(a) || typeof a === 'string'
+const isStmt = n => Array.isArray(n) && (prec[n[0]] <= STMT || (n[0] === '{}' && isStmt(n[1])))
+// A line terminator right before idx, only whitespace between.
+const lineBreak = () => {
+  for (let i = idx - 1; i >= 0; i--) {
+    const c = cur.charCodeAt(i)
+    if (c > 32) return false
+    if (c === 10) return true
+  }
+  return false
+}
+let more = false
+const asi = (a, p, expr) => {
+  if (p >= LVL) return
+  if (p === ONE) { more = true; return }
+  let list = Array.isArray(a) && a[0] === ';' ? a : null
+  const was = list ? list.length : 0
+  do {
+    more = jessieParse.semi = false
+    // a handler that answers without consuming (switch's `case` inside its body) ends the list
+    const from = idx
+    const b = expr(ONE)
+    if (!b || idx === from) break
+    if (!list) list = [';', a]
+    if (Array.isArray(b) && b[0] === ';') for (let i = 1; i < b.length; i++) list.push(b[i])
+    else list.push(b)
+  } while (more)
+  if (list && list.length > was) return list
+}
+jessieParse.asi = asi
+jessieParse.step = (a, p, cc, expr) => {
+  if (jessieParse.semi && p >= LVL) return false
+  if (a && !isNode(a)) return null
+  if (isNode(a)) {
+    const brk = (cc === 91 || cc === 40) && lineBreak()
+    if (jessieParse.semi ||
+      (cc === 91 && (brk || isStmt(a))) ||
+      (cc === 40 && (isStmt(a) || (brk && p >= LVL))))
+      return asi(a, p, expr) ?? null
+  }
+  const nl = jessieParse.newline
+  return baseStep(a, p, cc, expr) ?? (isNode(a) && nl ? asi(a, p, expr) ?? null : null)
 }
 
 const parse = (src, sourceType = 'jz') => {

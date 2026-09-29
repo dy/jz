@@ -246,7 +246,9 @@ export function analyzeFuncForEmit(func, programFacts) {
           // or by the export boundary contract (never used as a string →
           // wrapVal guarantees a number). The latter catches `acc + cre` float
           // kernels whose `+` would otherwise pull a per-iteration
-          // string-concat fork (julia, floatbeats).
+          // string-concat fork (julia, floatbeats). A sum read as a string
+          // somewhere it flows is a use as a string (the summary's demand).
+          && !summary?.stringDemand(p.name)
           && (summary?.numericDemand(p.name) || paramAllUsesNumeric(frameNode(func), p.name) || paramNeverString(frameNode(func), p.name)))
         // An f64 slot holds a genuine number (the JS API's ToNumber made
         // `undefined` NaN), and neither proof admits a nullish test, so the

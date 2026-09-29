@@ -12,6 +12,7 @@
  *
  * @module optimize/watr-tail
  */
+import { shareSplitSlots } from './split-slots.js'
 import watOptimize, { vacuum, mergeBlocks, propagate, mergeLocals, coalesceLocals, localReuse, bool, conditions, poolConstants } from 'watr/optimize'
 import { ctx } from '../ctx.js'
 import {
@@ -467,6 +468,9 @@ export function watrTail(module, cfg, {
   lazyDataSpans = [], staticDataSpan = null, stableGlobals = null,
 } = {}) {
   const legalized = legalizeForTarget(module, targetProfile)
+  // A split binding of its predecessor's type takes that slot: the generic optimizer
+  // then reads the function the source wrote.
+  if (cfg.splitBindings !== false) time('shareSplitSlots', () => { for (const n of legalized) shareSplitSlots(n) })
   const watrOpts = resolveWatrOpts(cfg, { funcCount, boundaryPins })
   // The math runtime depends only on its operands and cannot trap (its loads read constant
   // tables, its truncations are guarded): value numbering and scheduling treat its calls

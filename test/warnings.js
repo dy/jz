@@ -186,7 +186,8 @@ test('warnings: jsstring-declined when concat blocks externref carrier', () => {
 test('warnings: jsstring-declined when param is reassigned', () => {
   if (onWasi()) return  // wasi: jsstring externref interop
   if (belowOpt(2)) return  // jsstring ABI (and its decline advisory) is engaged at optimize >= 2
-  const ws = warningsFor(`export let f = (s = '') => { s = s; return s.length }`)
+  // in an arm: a store in the function's own list is a binding of its own (prepare/split-bindings.js)
+  const ws = warningsFor(`export let f = (s = '', c) => { if (c) s = s + s; return s.length }`)
   is(ws.length, 1)
   is(ws[0].code, 'jsstring-declined')
   ok(/reassign/.test(ws[0].message))
