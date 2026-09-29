@@ -1325,27 +1325,12 @@ test('devirtGlobalCalls: raw arrow literal lifted through a bare ??=; value-use 
   is((w.match(/call_indirect/g) || []).length, 1, 'only keep() generic dispatch remains indirect')
 })
 
-// === call_indirect devirtualization (watr/optimize devirt) ===
-// `let f = c ? a : b; f(x)` — the candidate set is two closure constants, so
-// each call site becomes a guarded direct-call chain with the original
-// call_indirect kept as the fallback arm (zero-init/unknown flows unchanged).
-//
-// UPDATED (audit #10, this task): `f(i)`'s callee kind is unproven at jz's
-// own emission level (a ternary-bound closure local, not tracked as a
-// closure PROOF by valTypeOf) — it now gets the SAME nullish-receiver
-// TypeError guard as every other unresolved closure call (real JS: calling
-// undefined throws). That guard interposes an `if(isNullish)…else
-// call_indirect(…)` between reading `f`'s value and dispatching through it,
-// which breaks watr/optimize's own `devirt` pass's pattern match (a DIRECT
-// "closure-const select feeds a call_indirect" AST shape, node_modules/watr
-// src/optimize.js's `devirt` collector) — found live, not assumed: this
-// exact repro was checked with `git worktree` at pre-task HEAD, where the
-// pattern DOES match and devirt fires. A correctness fix and a speculative
-// devirt optimization on a specific unproven-callee shape are in genuine
-// tension here; correctness wins — devirt no longer fires for this shape,
-// call_indirect (now guarded for nullish) stays the only dispatch, and the
-// pin below shifts from "shape assertion" to "still runtime-correct".
-test('devirt: two-candidate closure local — no longer devirtualized (nullish-receiver guard interposes on the call_indirect operand), still runtime-correct', () => {
+// === call_indirect devirtualization ===
+// `let f = c ? a : b; f(x)`: a local holding one of two functions and only
+// called holds the chosen one's number instead, and each call is the choice
+// of direct calls (plan/chosen-calls.js): no table entry, no nullish guard on
+// a function value, and each callee inlinable.
+test('devirt: two-candidate closure local calls each candidate directly, runtime-correct', () => {
   const src = `
     let dbl = (x) => x * 2
     let sqr = (x) => x * x
@@ -1356,14 +1341,14 @@ test('devirt: two-candidate closure local — no longer devirtualized (nullish-r
       return s
     }`
   const w = jz.compile(src, { wat: true, optimize: 3 })
-  ok(/call_indirect/.test(w), 'call_indirect (now nullish-guarded) is the dispatch')
+  ok(!/call_indirect/.test(w), 'no indirect call: the chosen function is called directly')
   const { main } = run(src, { optimize: 3 })
   is(main(100, 1), 9900)   // 2*Σ0..99
   is(main(100, -1), 328350) // Σi²
   is(main(0, 1), 0)
 })
 
-test('devirt: size preset stays indirect (no byte growth)', () => {
+test('devirt: size preset calls the chosen function directly too, in fewer bytes than a table', () => {
   const src = `
     let dbl = (x) => x * 2
     let sqr = (x) => x * x
@@ -1372,7 +1357,8 @@ test('devirt: size preset stays indirect (no byte growth)', () => {
       return f(x)
     }`
   const w = jz.compile(src, { wat: true, optimize: 'size' })
-  ok(!/\(call \$\S*tramp/.test(w), 'size preset keeps the indirect call')
+  ok(!/\(call \$\S*tramp/.test(w) && !/call_indirect/.test(w), 'no trampoline, no indirect call')
+  ok(jz.compile(src, { optimize: 'size' }).length < jz.compile(src, { optimize: { level: 'size', callChosenFunctions: false } }).length, 'smaller than the table and its trampolines')
   const { main } = run(src, { optimize: 'size' })
   is(main(1, 21), 42)
   is(main(-1, 5), 25)

@@ -31,7 +31,7 @@
 import { ctx } from '../../ctx.js'
 import {
   callArgs, setCallArgs, some, walkAst, blockStmts, stmtList, T, CLASS_T, refsName, refsAny, REFS_IN_EXPR, MUTATE_OPS,
-  extractParams,
+  extractParams, isBlockBody,
 } from '../../ast.js'
 import { freshId } from '../../ir.js'
 import { cloneWithSubst } from '../../type.js'
@@ -135,6 +135,15 @@ const mixesKinds = (func, args) => {
   })
 }
 
+// A function body's statements, or null for an expression body: `(…) => ({ b0, a1 })`
+// is a literal, however its node reads like a block.
+const funcStmts = (body) => isBlockBody(body) ? blockStmts(body) : null
+
+/** A default that reads the same wherever it is evaluated: a literal, a Math
+ *  constant, or a parameter before the one it belongs to. */
+const steadyDefault = (d, params, i) => typeof d === 'number' || (Array.isArray(d) && (d[0] == null || d[0] === 'str')) ||
+  (typeof d === 'string' && (/^math\.[A-Z0-9_]+$/.test(d) || params.slice(0, i).some(p => p.name === d)))
+
 const inlinedBody = (func, args) => {
   if (some(func.body, n => n[0] === 'this')) return null
   if (args.some(a => operandKind(a) === K.BIGINT) && mixesKinds(func, args)) return null
@@ -180,7 +189,17 @@ const inlinedBody = (func, args) => {
     // no default when the caller's summary proves it not nullish, and one that
     // may be undefined would need the test at runtime: this site keeps the call.
     const dflt = func.defaults?.[params[i].name]
-    if (i < args.length && dflt != null && callerView?.mayBeNullishExpr(args[i]) !== false) return null
+    // An argument that may be undefined takes a default that reads the same
+    // wherever it is evaluated (a literal, a Math constant, a parameter before
+    // it) by a test at the site: `Q = Math.SQRT1_2` given `params._qCur`.
+    if (i < args.length && dflt != null && callerView?.mayBeNullishExpr(args[i]) !== false) {
+      if (!steadyDefault(dflt, params, i)) return null
+      const given = `${T}inarg${freshId(ctx)}`, tmp = `${T}inarg${freshId(ctx)}`
+      argPrefix.push(['const', ['=', given, args[i]]],
+        [writesParams ? 'let' : 'const', ['=', tmp, ['?:', ['===', given, [, undefined]], cloneWithSubst(dflt, subst, new Map()), given]]])
+      subst.set(params[i].name, tmp)
+      continue
+    }
     // An arrow in a left-out default closes over the parameters' scope, which
     // its clone leaves behind (cloneWithSubst keeps `=>` bodies whole, as a
     // body with an arrow is never spliced): this site keeps the call.
@@ -208,7 +227,7 @@ const inlinedBody = (func, args) => {
   // a body that makes closures is spliced with them: their bindings are named anew with the body's
   const clone = closures ? (n, sub, ren) => cloneWithSubst(n, sub, ren, true) : cloneWithSubst
 
-  const stmts = blockStmts(func.body)
+  const stmts = funcStmts(func.body)
   const mark = bodyHasCall(func.body) ? n => n : eagerCallFreeBooleans
   // Expression-bodied arrow `(c) => expr`: no statement block; the whole body
   // *is* the return value. Treat as zero-prefix + value.
@@ -227,7 +246,7 @@ const hasReturn = (n) => some(n, x => x[0] === 'return')
 const strayReturns = (func) => {
   let n = 0
   some(func.body, x => { if (x[0] === 'return') n++; return false })
-  const stmts = blockStmts(func.body)
+  const stmts = funcStmts(func.body)
   const last = stmts?.[stmts.length - 1]
   return Array.isArray(last) && last[0] === 'return' ? n - 1 : n
 }
@@ -247,7 +266,7 @@ const isLiteral = (e) => typeof e === 'number' || (Array.isArray(e) && (e[0] == 
 // (null from either arm of a test, then from three more) both splice.
 // A return in a switch, try or another statement is left alone (false).
 const lowerReturns = (func) => {
-  const stmts = blockStmts(func.body)
+  const stmts = funcStmts(func.body)
   // A tuple result (prepare's multi-value signature) is one value per lane at
   // every return: a single result binding would return one lane.
   if (!stmts || func.sig?.results?.length > 1) return false
@@ -322,7 +341,7 @@ const lowerReturns = (func) => {
 
 // A body that returns a fresh literal it declared: a class factory, an object builder.
 const madeLiteral = (func) => {
-  const stmts = blockStmts(func.body), last = stmts?.[stmts.length - 1]
+  const stmts = funcStmts(func.body), last = stmts?.[stmts.length - 1]
   if (!Array.isArray(last) || last[0] !== 'return' || typeof last[1] !== 'string') return false
   return stmts.some(s => stmtDeclName(s) === last[1] && Array.isArray(s[1][2]) && (s[1][2][0] === '{}' || s[1][2][0] === '['))
 }
@@ -1112,10 +1131,13 @@ export const inlineHotInternalCalls = (programFacts, ast) => {
       // a class factory calls its initializer, a candidate leaf, and is one itself).
       // Below speed, the callee must have this one site, so that splicing the caller
       // duplicates nothing a call kept shared (a guard's string compares into four
-      // callers cost the flagship 6 KB).
+      // callers cost the flagship 6 KB), or be a leaf spliced at every site while
+      // the caller has one: the caller's copy of it then moves, and nothing is added
+      // (a filter's `lowpass`, calling the `base` and `norm` its siblings call too).
       // At speed a body of a loop's size takes the calls it keeps along (`lcm`
       // over `gcd`, whose loops stay a function), outside a cycle of calls.
-      const inlinesAway = (callee) => candidates.has(callee) && (speedTier || sitesByCallee.get(callee)?.length === 1)
+      const inlinesAway = (callee) => candidates.has(callee) && (speedTier || sitesByCallee.get(callee)?.length === 1 ||
+        (sites.length === 1 && leaves.has(callee) && !hotOnly.has(callee)))
       if (some(func.body, n => n[0] === '()' && typeof n[1] === 'string' && ctx.funcs.names.has(n[1]) && !inlinesAway(n[1])) &&
           !(speedTier && size <= WARM_BODY && !cyclic(func.name))) continue
     }
@@ -1159,7 +1181,7 @@ export const inlineHotInternalCalls = (programFacts, ast) => {
   // block bodies (pure-arith let decls + trailing return, e.g. distance's
   // dx/dy), which inlineInExpr turns into zero-prefix expressions per site.
   const flattenableBody = (func) => {
-    const stmts = blockStmts(func.body)
+    const stmts = funcStmts(func.body)
     if (!stmts) return false
     return stmts.every((s, i) => i === stmts.length - 1
       ? Array.isArray(s) && s[0] === 'return'
@@ -1169,7 +1191,7 @@ export const inlineHotInternalCalls = (programFacts, ast) => {
   const exprOnlyCandidates = new Map()
   for (const func of candidates.values()) {
     const name = func.name
-    if (!Array.isArray(func.body) || func.body[0] !== '{}' || flattenableBody(func)) exprOnlyCandidates.set(name, func)
+    if (!isBlockBody(func.body) || flattenableBody(func)) exprOnlyCandidates.set(name, func)
   }
 
   const exportedCandidates = new Map(), exportedExprCandidates = new Map()
@@ -1213,7 +1235,7 @@ export const inlineHotInternalCalls = (programFacts, ast) => {
     // which would turn `() => x()` into an empty block and lose the result.
     // Route those through inlineInExpr so the call is replaced by the inlined
     // value expression instead.
-    const isExprBody = !Array.isArray(func.body) || func.body[0] !== '{}'
+    const isExprBody = !isBlockBody(func.body)
     // Expression-position pass takes the leaf-safe subset for exports — the same tier-up
     // rationale as the statement path (leaves into exports are fine; relocated kernels are not).
     const exprActive = isExported(func) ? exportedExprCandidates : exprOnlyCandidates
@@ -1372,12 +1394,12 @@ const inlineLocalLambdasInBody = (getBody, setBody) => {
   // f64 return) costs more than the spliced body at every site. Kept only
   // when EVERY site folds: a surviving site would leave the closure alive
   // beside the copies, so the pass reruns without that candidate.
-  const hoistable = (info) => Array.isArray(info.arrow[2]) && info.arrow[2][0] === '{}'
+  const hoistable = (info) => isBlockBody(info.arrow[2])
     && !some(info.arrow[2], n => LOOP_OPS.has(n[0])) && nodeSize(info.arrow[2]) <= 48
   for (;;) {
     const stmtCands = new Map(), exprCands = new Map(), bodies = new Map()
     for (const [name, info] of decls) {
-      (Array.isArray(info.arrow[2]) && info.arrow[2][0] === '{}' ? stmtCands : exprCands).set(name, asFunc(info))
+      (isBlockBody(info.arrow[2]) ? stmtCands : exprCands).set(name, asFunc(info))
       if (hoistable(info)) bodies.set(name, info.arrow[2])
     }
     let out = body, didChange = false

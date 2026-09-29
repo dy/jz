@@ -757,6 +757,31 @@ const scalarizeArrayLiteralSeq = (seq) => {
   return [';', ...out]
 }
 
+/** The literal every path through `st` assigns to `name` before reading it
+ *  (`name = {…}`, a block ending so, an `if` whose two arms both do, with the
+ *  same keys), or null. */
+const assignsLiteral = (st, name) => {
+  if (!Array.isArray(st)) return null
+  if (st[0] === '=' && st[1] === name) {
+    const props = scalarObjectProps(st[2], false)
+    return props && !refsName(st[2], name, REFS_THROUGH_ARROWS) ? props : null
+  }
+  if (st[0] === '{}' && st.length === 2) return assignsLiteral(st[1], name)
+  if (st[0] === ';') {
+    for (let i = 1; i < st.length; i++) {
+      const props = assignsLiteral(st[i], name)
+      if (props) return props
+      if (refsName(st[i], name, REFS_THROUGH_ARROWS) || hasControlTransfer(st[i])) return null
+    }
+    return null
+  }
+  if (st[0] === 'if' && st.length === 4 && !refsName(st[1], name, REFS_THROUGH_ARROWS)) {
+    const a = assignsLiteral(st[2], name), b = a && assignsLiteral(st[3], name)
+    return b && a.names.length === b.names.length && a.names.every(k => b.names.includes(k)) ? a : null
+  }
+  return null
+}
+
 const scalarizeObjectLiteralSeq = (seq) => {
   if (!Array.isArray(seq) || seq[0] !== ';') return seq
   let changed = false
@@ -771,6 +796,16 @@ const scalarizeObjectLiteralSeq = (seq) => {
   for (let i = 0; i < stmts.length; i++) {
     const stmt = stmts[i]
     if (!Array.isArray(stmt) || (stmt[0] !== 'let' && stmt[0] !== 'const') || stmt.length !== 2) continue
+    // `let c` the next statement assigns a literal on every path: `if (…) c = {…}
+    // else c = {…}`, each arm's literal of the same keys. Nothing reads it before.
+    if (typeof stmt[1] === 'string') {
+      const props = assignsLiteral(stmts[i + 1], stmt[1])
+      if (!props) continue
+      const keys = new Set(props.names)
+      if (stmts.every((st, j) => j === i || safeScalarObjectUse(st, stmt[1], keys, true)))
+        candidates.set(stmt[1], { index: i, op: 'let', props, bare: true })
+      continue
+    }
     const decl = stmt[1]
     if (!Array.isArray(decl) || decl[0] !== '=' || typeof decl[1] !== 'string') continue
     const props = scalarObjectProps(decl[2])
@@ -802,7 +837,8 @@ const scalarizeObjectLiteralSeq = (seq) => {
     if (entry) {
       const [, c] = entry
       const fields = objects.get(entry[0])
-      if (c.props.names.length) {
+      if (c.bare) out.push(['let', ...fields.values()])
+      else if (c.props.names.length) {
         out.push([c.op, ...c.props.names.map((prop, k) =>
           ['=', fields.get(prop), rewriteScalarObjectUses(c.props.values[k], objects)])])
       }

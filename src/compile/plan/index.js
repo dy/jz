@@ -53,6 +53,7 @@ import {
 import { declareWrittenKeys } from './declare-written-keys.js'
 import { declareUnseenKeys } from './declare-unseen-keys.js'
 import { versionIntegralLoops } from './integral-loops.js'
+import { callChosenFunctions } from './chosen-calls.js'
 import { foldKindTests } from './fold-kind-tests.js'
 import { indexArrayPatterns } from './index-array-patterns.js'
 import { inlineHotInternalCalls, inlineLocalLambdas, specializeFixedRestCalls } from './inline.js'
@@ -153,6 +154,8 @@ export default function plan(ast, profiler, summarize) {
   // its own (`generator = arguments[ 0 ]`) is a parameter called, ahead of the splices.
   const aliases = optimizing() && ctx.transform.optimize.aliases === true
   if (aliases) sweep('resolveAliases', resolveAliases)
+  // A local holding one of several functions and only called: a choice of direct calls.
+  sweep('callChosenFunctions', () => callChosenFunctions(ast))
   sweep('inlineHotInternalCalls', () => inlineHotInternalCalls(facts(), ast))
   // A spliced call's statements are statements of its caller's lists, and its seams
   // are names for one value: the bindings split, then each alias reads what it stands for.

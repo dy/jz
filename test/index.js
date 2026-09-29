@@ -103,6 +103,7 @@ const TESTS = [
   'typed-length',
   'declare-unseen-keys',
   'integral-loops',
+  'chosen-calls',
   'select-order',
   'pointer-join',
   'typed-rebound',

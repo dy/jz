@@ -2305,11 +2305,12 @@ test('val-kind dichotomy: a number-or-object parameter is cloned per kind, and a
     export const run = () => g() + h() * 10 + (te[0] + 1) * 100`
   is(jz(src, { optimize: 2 }).exports.run(), 875)
   if (belowOpt(2)) return
-  const w = jz.compile(src, { optimize: 2, wat: true })
-  // pre-watr: `h` releases what it made as it returns, so its call of the clone is one watr inlines
-  const clones = jz.compile(src, { optimize: { level: 2, watr: false }, wat: true })
+  // the calls kept whole (spliced, each copy reads its own argument's kind); pre-watr,
+  // since `h` releases what it made as it returns, so its call of the clone is one watr inlines
+  const clones = jz.compile(src, { optimize: { level: 2, sourceInline: false, watr: false }, wat: true })
   ok(/\(func \$f\$number\b/.test(clones) && /\(func \$f\$object\b/.test(clones), 'one clone per argument kind')
-  is((w.match(/__to_num|__add_slow|__is_str_key/g) || []).length, 0, 'the array element stays a number: no conversion or string dispatch')
+  for (const text of [jz.compile(src, { optimize: { level: 2, sourceInline: false }, wat: true }), jz.compile(src, { optimize: 2, wat: true })])
+    is((text.match(/__to_num|__add_slow|__is_str_key/g) || []).length, 0, 'the array element stays a number: no conversion or string dispatch')
 })
 
 test('narrowMutatedParams: monotone int-mutated param promotes to i32 param+result (cursor-through-helper)', () => {
