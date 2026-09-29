@@ -299,7 +299,7 @@ export default (ctx) => {
   declGlobal('__jsp', 'i32')
 
   // __jput(byte: i32) — append one byte to output buffer
-  // __jreserve(n: i32) — room for n more units, the capacity doubling past it.
+  // __jreserve(n: i32): room for n more units, the capacity doubling past it.
   ctx.core.stdlib['__jreserve'] = `(func $__jreserve (param $n i32)
     (local $new i32)
     (if (i32.gt_s (i32.add (global.get $__jpos) (local.get $n)) (global.get $__jcap))
