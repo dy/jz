@@ -98,3 +98,36 @@ export let c = (n) => { const m = new Int16Array(n).fill(3); const at = mk(m, 8)
   ok(loops.some(l => /f32\.load/.test(l) && !/call \$__typed_idx/.test(l)), 'a copy reads Float32 loads')
   ok(loops.some(l => !/f32\.load/.test(l) && /f64\.load[\s\S]*f64\.load/.test(l) && !/call \$__typed_idx/.test(l)), 'a copy reads Float64 loads')
 })
+
+// A name that holds one of several functions (a namespace read by a key the
+// host picks) returns what each of them returns: the loop over the result is
+// copied for each constructor, also where the callback that runs it was spliced
+// into the function that called its factory (the summary looks at the splice).
+test('kind split: the result of a call through a choice of functions reads by the kind each returns', () => {
+  const c = `export function white (n, seed) { const d = new Float32Array(n); for (let i = 0; i < n; i++) d[i] = (i * seed) % 7; return d }
+export function pink (n, seed) { const d = new Float64Array(n); for (let i = 0; i < n; i++) d[i] = (i + seed) % 5; return d }`
+  const direct = `import * as colors from './c.js'
+export let run = (color, n) => { const fn = colors[color]; const d = fn(n, 3); const out = new Float32Array(n); for (let i = 0; i < n; i++) out[i] = d[i] * 0.5; return out[n - 1] }`
+  const factory = `import * as colors from './c.js'
+const make = (seed) => (color, n, out) => { const fn = colors[color]; const d = fn(n, seed); for (let i = 0; i < n; i++) out[i] = d[i] * 0.5 }
+let proc = null
+export let start = (seed) => { proc = make(seed); return 1 }
+export let run = (color, n) => { const out = new Float32Array(n); proc(color, n, out); return out[n - 1] }`
+  const host = new Function(c.replace(/export /g, '') + '; return { white, pink }')()
+  const want = (color, n, seed = 3) => host[color](n, seed)[n - 1] * 0.5
+  for (const optimize of levels(0, 2, 3)) {
+    const d = jz(direct, { modules: { './c.js': c }, optimize }).exports
+    const f = jz(factory, { modules: { './c.js': c }, optimize }).exports
+    f.start(3)
+    for (const [color, n] of [['white', 9], ['pink', 9], ['white', 2], ['pink', 40]]) {
+      ok(Object.is(d.run(color, n), want(color, n)), `${color}(${n}) at ${optimize}`)
+      ok(Object.is(f.run(color, n), Math.fround(want(color, n))), `${color}(${n}) through the callback at ${optimize}`)
+    }
+  }
+  if (belowOpt(2)) return
+  for (const src of [direct, factory]) {
+    const text = wat(src, { modules: { './c.js': c }, optimize: 2 })
+    const loops = loopsOf(text).filter(l => /f32\.store/.test(l) && !/\(loop[\s\S]*\(loop/.test(l.slice(5)))
+    ok(loops.some(l => /f32\.load/.test(l) && !/call \$__typed_idx/.test(l)) && loops.some(l => /f64\.load/.test(l) && !/call \$__typed_idx/.test(l)), 'a copy reads each kind')
+  }
+})

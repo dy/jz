@@ -163,7 +163,8 @@ export default function plan(ast, profiler, summarize) {
   sweep('callChosenFunctions', () => callChosenFunctions(ast))
   // A parameter only called, given a named function: a copy that calls it by name.
   sweep('specializeCalledArgs', () => specializeCalledArgs(facts(), ast))
-  sweep('inlineHotInternalCalls', () => inlineHotInternalCalls(facts(), ast))
+  let spliced = false
+  sweep('inlineHotInternalCalls', () => (spliced = inlineHotInternalCalls(facts(), ast)))
   // A spliced call's statements are statements of its caller's lists, and its seams
   // are names for one value: the bindings split, then each alias reads what it stands for.
   // A parameter the spliced body writes is bound to the literal the site passed:
@@ -200,6 +201,10 @@ export default function plan(ast, profiler, summarize) {
     // form rather than `new Int32Array(N)`, but the ordering keeps the door open).
     sweep('promoteIntArrayLiterals', promoteIntArrayLiterals)
     sweep('scalarizeTypedArrays', () => scalarizeFunctionTypedArrays(facts()))
+    // The loops versioned below read the summary; a closure a splice copied (a
+    // factory's callback in the function that called the factory) has no view
+    // in the one taken before the splice, so it looks again.
+    if (spliced) ctx.summary = summarize()
     // A loop testing a name it never writes: a copy for each answer.
     sweep('unswitchLoops', unswitchLoops)
     // A loop reading a name of several kinds, a typed array among them: a copy where it holds that array.

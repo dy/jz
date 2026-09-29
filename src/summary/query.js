@@ -532,6 +532,14 @@ export function summaryQueries(facts, internal = false) {
       mayBeNullishExpr: e => { const k = kindOfExpr(e); return hasTag(k, K.NULLISH) || hasTag(k, K.ABSENT) },
       typedCtorOfExpr: e => { const k = kindOfExpr(e); return tagOf(k) === K.TYPED && typedAux(k) !== UNKNOWN && !isNullable(k) ? ctorFromElemAux(typedAux(k)) : null },
       typedPayloadCtorOfExpr: e => { const k = kindOfExpr(e); return tagOf(core(k)) === K.TYPED && typedAux(k) !== UNKNOWN ? ctorFromElemAux(typedAux(k)) : null },
+      // A call of a name that holds one of several functions (`colors[c](n)`): the
+      // typed array constructor each of them returns, null for one that returns another kind.
+      callResultCtors: e => {
+        if (!Array.isArray(e) || e[0] !== '()') return null
+        const k = kindOfExpr(e[1])
+        if (tagOf(k) !== K.CLOSURE || paramOf(k) === UNKNOWN) return null
+        return membersOf(paramOf(k)).map(id => { const r = resultOfId(id); return tagOf(core(r)) === K.TYPED && typedAux(r) !== UNKNOWN ? ctorFromElemAux(typedAux(r)) : null })
+      },
     }
     views.set(scope, cached)
     return cached

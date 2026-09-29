@@ -80,6 +80,9 @@ const ctorsOf = (e, cx, out, depth = 0) => {
   for (const [view, x, site] of sources(e, cx, new Set())) {
     const c = ctorName(view.typedPayloadCtorOfExpr(x))
     if (c) { out.add(c); continue }
+    // a call of one of several functions: what each returns
+    const called = view.callResultCtors(x)
+    if (called) { for (const r of called) { const n = ctorName(r); if (n) out.add(n) } continue }
     const f = site?.callerFunc
     const at = depth < 2 && typeof x === 'string' && f?.sig && f.body && cx.programFacts ? f.sig.params.findIndex(p => p.name === x) : -1
     if (at < 0 || f.rest === x || valuesOf(f.body, x).length) continue
