@@ -13,7 +13,7 @@ const build = (...args) => spawnSync(process.execPath, [join(root, 'scripts/buil
 
 // Exercise the shipped pointer controller with a deterministic frame clock. SVG rendering
 // is browser-checked; these ports record its paint attributes without a DOM dependency.
-async function glint({ count = 1, reduced = false, fine = true, failure = 'http', paper = false, textNodes = [], scroll = 0 } = {}) {
+async function glint({ count = 1, reduced = false, fine = true, paper = false, textNodes = [], scroll = 0 } = {}) {
   const events = new Map(), frames = new Map(), requests = [], clicks = [], selection = { isCollapsed: true }
   const listen = (name, fn) => events.set(name, fn)
   const node = () => ({ attrs: {}, children: [], style: { setProperty(k, v) { this[k] = v } },
@@ -23,7 +23,7 @@ async function glint({ count = 1, reduced = false, fine = true, failure = 'http'
   const els = Array.from({ length: count }, () => ({
     rect: { left: 20, top: 40, width: 160, height: 160, bottom: 200 }, children: [],
     append(el) { this.children.push(el) }, getBoundingClientRect() { return this.rect },
-    querySelector() { throw new Error('A failed enhancement must not replace the image') },
+    querySelector() { throw new Error('The white logo image must not be replaced') },
   }))
   const motion = { matches: reduced, addEventListener: (_, fn) => listen('motion', fn) }
   const mouse = { matches: fine, addEventListener: (_, fn) => listen('mouse', fn) }
@@ -34,13 +34,13 @@ async function glint({ count = 1, reduced = false, fine = true, failure = 'http'
   const sides = { left: '20px', width: '161px' }
   const rules = [{ left: 0, right: 1000, top: 320, width: 1000 }], tables = [], controls = []
   let id = 0, measurements = 0, clickLoads = 0
-  const src = readFileSync(join(root, 'assets/glint.js'), 'utf8').replace('import.meta.url', JSON.stringify('https://jz.test/assets/glint.js'))
+  const src = readFileSync(join(root, 'assets/glint.js'), 'utf8')
     .replace("import('./grid-click.js')", 'loadClicks()')
   const { light } = await runInNewContext(`(async () => {${src}\nreturn { light }})()`, {
     document: { querySelector: () => paper ? doc : null, addEventListener: listen, getSelection: () => selection,
       querySelectorAll: selector => selector === '.logo, footer .wordmark' ? els : selector.startsWith('.report') ? controls :
         selector.startsWith('.ruled') ? [...rules.map(rect => ({ getBoundingClientRect: () => rect })), ...(selector.includes('table') ? tables : [])] :
-        selector.includes('table') ? tables : selector.startsWith('h1') ? textNodes : [],
+        selector.includes('table') ? tables : selector.startsWith('h1') ? textNodes.filter(el => el.matches(selector)) : [],
       createElement: node, createElementNS: (_, tag) => tag === 'svg' ? ruler : node(), documentElement: doc,
       body: { append() {}, getBoundingClientRect: () => ({ left: 0 }) } },
     matchMedia: query => query.includes('reduced-motion') ? motion : mouse,
@@ -52,10 +52,8 @@ async function glint({ count = 1, reduced = false, fine = true, failure = 'http'
     requestAnimationFrame: fn => { frames.set(++id, fn); return id },
     fetch: async url => {
       requests.push(String(url))
-      if (failure === 'network') throw new Error('offline')
-      return { ok: failure !== 'http', text: async () => '<broken' }
+      throw new Error('Lighting needs no network requests')
     },
-    DOMParser: class { parseFromString() { return { documentElement: { localName: 'parsererror' } } } },
   })
   const drain = () => {
     let n = 0
@@ -126,16 +124,13 @@ test('site: logo respects touch and live reduced-motion changes', async () => {
   is(g.frames.size, 0, 'a device without a fine pointer stays still')
 })
 
-test('site: absent logos and failed enhancements preserve the page', async () => {
+test('site: logo lighting preserves the white image without fetching or replacing it', async () => {
   const empty = await glint({ count: 0 })
   is(empty.requests.length, 0, 'no logo means no asset request')
   is(empty.frames.size, 0, 'no logo means no frame work')
-  for (const failure of ['http', 'network', 'parse']) {
-    const g = await glint({ failure })
-    is(g.requests, ['https://jz.test/jz.svg'], `${failure}: asset resolves from the module, not the page`)
-    g.drain()
-    ok(g.paint().startsWith('conic-gradient('), `${failure}: square lighting still works with the original image`)
-  }
+  const g = await glint(); g.drain()
+  is(g.requests, [], 'the canonical white logo needs no enhancement fetch')
+  ok(g.paint().startsWith('conic-gradient('), 'only the surrounding square reflects the cursor')
 })
 
 test('site: ruler reflection follows the pointer and remeasures only after layout changes', async () => {
@@ -213,51 +208,47 @@ test('site: buttons use the logo bevel and tables remain matte', async () => {
   ok(button.children[0].style.background.includes('rgb(0 0 0 /'), 'light mode uses the same bevel in black')
 })
 
-test('site: header and logo cutouts share a one-pixel bevel; stats retain their fill and FAQ stays plain', async () => {
+test('site: title reflection tracks CSS coordinates, clears and leaves other glyphs solid', async () => {
   const text = (kind, width = 100, height = 16) => {
     const classes = new Set(), rect = { left: 20, top: 40, width, height, bottom: 40 + height }
-    return { textContent: 'Examples', isConnected: true, rect,
+    return { textContent: 'Examples', rect,
       matches: selector => selector.split(', ').includes(kind),
-      classList: { add: name => classes.add(name), contains: name => classes.has(name) },
+      classList: { add: name => classes.add(name), remove: name => classes.delete(name), contains: name => classes.has(name),
+        toggle: (name, on) => on ? classes.add(name) : classes.delete(name) },
+      querySelector: () => ({ getBoundingClientRect: () => rect }),
       style: { setProperty(name, value) { this[name] = value } }, getBoundingClientRect: () => rect }
   }
-  const title = text('h1.title'), stat = text('.metrics b'), faq = text('h2'), textNodes = [title, stat, faq]
+  const title = text('h1.title'), stat = text('.metrics b'), faq = text('h2'), logo = text('.logo-letters'), textNodes = [title, stat, faq, logo]
   const g = await glint({ paper: true, count: 0, textNodes }); g.drain()
-  const [filter, number] = g.defs.children, mask = filter.parts.feImage
-  ok(title.classList.contains('reflect-surface'), 'page header uses the glyph filter')
-  ok(!faq.classList.contains('reflect-surface'), 'FAQ and section headings never acquire a cutout')
-  is(g.defs.children.length, 2, 'only the header and stat need filters')
-  is([filter.attrs.x, filter.attrs.y, filter.attrs.width, filter.attrs.height], ['-20%', '-125%', '140%', '350%'], 'filter preserves descenders beyond the trimmed box')
-  is(filter.attrs.primitiveUnits, 'objectBoundingBox', 'coordinates are relative to the glyph box')
-  is(mask.attrs, { width: '6.4', height: '40', x: '1.6', y: '-32.5' }, 'cutout is a broad 640px field')
-  ok(decodeURIComponent(filter.innerHTML).includes('linearGradient'), 'cutout uses a diagonal band rather than a radial hole')
-  ok(!number.innerHTML.includes('feImage'), 'stat filter cannot erase the number interior')
-  is(title.style['--ink-filter'], '', 'resting header retains native fill')
-  is(stat.style['--ink-filter'], 'url(#ink-1)', 'stat has its bevel at rest')
+  const lit = () => title.classList.contains('title-lit')
+  const at = (x, y) => Math.abs(parseFloat(title.style['--light-x']) - x) + Math.abs(parseFloat(title.style['--light-y']) - y) < .15
+  ok(!lit(), 'resting title retains its native fill')
   g.move(20, 40); g.drain()
-  is(title.style['--ink-filter'], 'url(#ink-0)', 'nearby pointer enables header cutout')
-  for (const [width, height] of [[24, 24], [40, 40], [80, 80], [160, 160], [100, 16]]) {
-    title.rect.width = width; title.rect.height = height
-    g.emit('resize'); g.drain()
-    const [a, b] = filter.parts.feOffset.map(n => n.attrs)
-    ok(Math.abs(Math.hypot(+a.dx * width, +a.dy * height) - 1) < 1e-12, `${width}×${height}: one CSS pixel of bevel`)
-    is([+a.dx, +a.dy], [-b.dx, -b.dy], 'lit and back edges face opposite directions')
-  }
+  ok(lit(), 'nearby pointer reveals the outline')
   g.move(70, 48); g.drain()
-  ok(Math.abs(+mask.attrs.x + 2.7) + Math.abs(+mask.attrs.y + 19.5) < .01, 'diagonal cutout follows the settled pointer')
-  g.emit('mutate'); g.drain(); is(g.defs.children.length, 2, 'repeated layout reuses filters')
-  const letters = text('.logo-letters'); textNodes.push(letters); g.emit('mutate'); g.drain()
-  ok(g.defs.children[2].innerHTML.includes('feImage'), 'JZ letters share the same cutout and bevel')
-  letters.isConnected = false; textNodes.pop(); g.emit('mutate'); g.drain()
-  ok(g.defs.children[2].removed, 'detached surfaces release their filter')
-  g.emit('pointerleave'); g.drain(); is(title.style['--ink-filter'], '', 'leaving restores native header fill')
+  ok(at(50, 8), 'reflection uses local CSS pixels')
+  const measured = g.measurements()
+  g.move(70, 48); is(g.drain(), 1, 'repeated pointer position settles in one frame')
+  is(g.measurements(), measured, 'pointer movement reuses measured geometry')
+  title.rect.left = 40; title.rect.top = 20; g.emit('scroll'); g.drain()
+  ok(at(30, 28), 'scroll remeasures the paint box')
+  for (const el of [stat, faq, logo]) {
+    ok(!el.classList.contains('title-lit'), 'stats, FAQ and JZ stay solid')
+    is(Object.keys(el.style), ['setProperty'], 'unrelated glyphs receive no paint updates')
+  }
+  g.emit('mutate'); g.drain(); is(g.defs.children.length, 0, 'no per-glyph SVG filters are allocated')
+  g.emit('pointerleave'); g.drain(); ok(!lit(), 'leaving restores the title fill')
   g.move(70, 48); g.drain(); g.move(900, 600); g.drain()
-  is(title.style['--ink-filter'], '', 'moving elsewhere clears the cutout')
+  ok(!lit(), 'moving elsewhere clears the cutout')
   g.move(70, 48); g.drain(); g.motion.matches = true; g.emit('motion'); g.drain()
-  is(title.style['--ink-filter'], '', 'live reduced motion restores the fill')
+  ok(!lit(), 'live reduced motion restores the fill')
   g.move(70, 48); is(g.frames.size, 0, 'reduced motion does not animate')
+  g.motion.matches = false; g.emit('motion'); g.move(70, 48); g.drain()
   title.rect.width = 0; title.rect.height = 0; g.emit('resize'); g.drain()
-  ok(!JSON.stringify(filter.parts).match(/NaN|Infinity/), 'collapsed glyph boxes never generate invalid filter coordinates')
+  ok(!lit(), 'collapsed titles shed their cutout')
+  ok(!JSON.stringify(title.style).match(/NaN|Infinity/), 'zero-size paint boxes retain finite coordinates')
+  title.rect.width = 100; title.rect.height = 16; title.rect.top = 900; title.rect.bottom = 916
+  g.emit('scroll'); g.drain(); ok(!lit(), 'offscreen titles stay unmasked')
 })
 
 test('site: selection outlines merge inline fragments, follow scroll, clear, and leave editors native', () => {
