@@ -375,6 +375,8 @@ const partitionInvariantPrefix = (prefix, variantNames) => {
 
 // Names an lvalue's evaluation writes (`out[w++]` → {w}), `true` for an opaque
 // effect (a call, a member write), `false` for none.
+const plainTarget = (lhs) => Array.isArray(lhs) && typeof lhs[1] === 'string' &&
+  (lhs[0] === '.' ? typeof lhs[2] === 'string' : lhs[0] === '[]' && lhs.length === 3 && (typeof lhs[2] === 'string' || isLiteral(lhs[2])))
 const lhsWrites = (n) => {
   if (some(n, x => x[0] === '()' || x[0] === '?.()' || x[0] === 'new' || (MUTATE_OPS.has(x[0]) && typeof x[1] !== 'string'))) return true
   const w = new Set()
@@ -401,6 +403,14 @@ const prefixCommutesWithLhs = (prefix, lhs) => {
     let stable = true
     walkAst(['()', lhs], { enter: x => { for (let i = 1; i < x.length; i++) if (typeof x[i] === 'string' && !((x[0] === '.' || x[0] === '?.') && i === 2) && (!callerStable(x[i]) || stored.has(x[i]))) stable = false } })
     if (stable) return true
+  }
+  // A target that names its receiver and its key (`out[i] = f(x)`, `o.k = f(x)`)
+  // reads no memory: a store in the prefix changes neither, a name it writes does.
+  if (plainTarget(lhs)) {
+    if (some(body, x => (x[0] === '()' && !isPureCallee(x[1])) || x[0] === '?.()' || x[0] === 'new')) return false
+    const w = new Set()
+    walkAst(body, { enter: x => { if (MUTATE_OPS.has(x[0]) && typeof x[1] === 'string') w.add(x[1]) } })
+    return !refsAny(lhs, w, REFS_IN_EXPR)
   }
   const written = lhsWrites(body)
   if (written === true || written && refsAny(lhs, written, REFS_IN_EXPR)) return false

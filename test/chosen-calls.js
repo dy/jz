@@ -118,3 +118,13 @@ test('chosen calls: a local each arm assigns a literal of the same keys is its f
   const loop = loopsOf(wat(src, { optimize: 2 })).find(l => /f64\.mul/.test(l)) ?? ''
   ok(loop && !/__alloc/.test(loop), 'no literal allocated per iteration')
 })
+
+test('chosen calls: a call whose body stores splices into a target naming its receiver and key', () => {
+  const src = `function step (c, s, x) { let y = c.b0 * x + s[0]; s[0] = c.b1 * x - c.a1 * y + s[1]; s[1] = c.b2 * x - c.a2 * y; return y }
+    const sec = { b0: 0.2, b1: 0.4, b2: 0.2, a1: -0.3, a2: 0.1 }, st = new Float64Array(2)
+    export let run = (n) => { const b = new Float32Array(n).fill(1); for (let i = 0; i < b.length; i++) b[i] = step(sec, st, b[i]); return b[n - 1] + st[0] }
+    export let alias = (n) => { const b = new Float64Array(n).fill(1); for (let i = 0; i < n; i++) b[i] = step(sec, b, b[i]); return b[0] + b[n - 1] }`
+  agrees(src, [['run', 8], ['alias', 6]])
+  if (belowOpt(2)) return
+  ok(!/call \$step/.test(wat(src, { optimize: 2 })), 'step spliced into the loop')
+})
