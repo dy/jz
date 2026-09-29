@@ -26,9 +26,12 @@ export const TWO_OVER_PI_HEX = '00000000000000002915444e6e83f9a2c0dd34f5d15727fc
 // (scripts/minimax-trig.mjs; each degree the lowest whose error stays well inside
 // the 100 ulp jz's Math keeps against V8). sin(r) = r·(1 + t·P(t)), t = r², on
 // |r| ≤ π/4: 45 ulp minimax, 38 measured as evaluated. cos(r) = 1 − t/2 + t²·Q(t):
-// 0.8 minimax, 2.2 measured.
+// 0.8 minimax, 2.2 measured. atan(r) = r·(1 + t·A(t)) on |r| ≤ tan(π/8): 8.8 and
+// 10.4. asin(r) = r·(1 + t·S(t)) on |r| ≤ 1/2: 33 and 36.
 export const SIN_C = [1, -0.1666666666663035, 0.008333333325077711, -0.0001984126372859909, 0.0000027555339648890704, -2.4760454010150433e-8]
 export const COS_C = [1, -0.5, 0.04166666666659654, -0.001388888887761173, 0.000024801580707294864, -2.7555523105456954e-7, 2.064511860388919e-9]
+export const ATAN_C = [1, -0.33333333333260085, 0.199999999826836, -0.14285712872906356, 0.11111054409758879, -0.0908961506872619, 0.07674318783147892, -0.06510249112422438, 0.050374261173853706, -0.025474359253691407]
+export const ASIN_C = [1, 0.16666666666442698, 0.07500000042744114, 0.04464282895555874, 0.03038286176642274, 0.022355091962177043, 0.0175476591215996, 0.012559582861367399, 0.01790417208354125, -0.007287967791960627, 0.03149493444227181]
 /**
  * The polynomial evaluation tree THREE evaluators share — the scalar WAT builder
  * (module/math.js), the two-wide one (module/math/simd.js) and the JS constant
@@ -164,7 +167,7 @@ export const EXP_Q = [1, 0.5, 0.16666666666666666, 0.041666666666666664, 0.00833
 // ln2/64 split for exp's reduction r = (x − k·L1) − k·L2: L1 keeps 36 bits, so
 // k·L1 is exact for every |k| < 2^17 (every finite result), L2 the rest.
 export const EXP_L1 = 0.010830424696223417, EXP_L2 = 2.572804622327669e-14
-// π and π/2 as doubles, for the offsets atan and atan2 add. `${number}`
+// π and π/2 as doubles, for the offsets atan, asin, acos and atan2 add. `${number}`
 // formats through the Ryū shortest-round-trip __ftoa in both legs (host and
 // self-compiled kernel), so the full-precision f64 bakes into the WAT verbatim.
 export const PI = Math.PI, HALF_PI = Math.PI / 2

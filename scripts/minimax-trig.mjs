@@ -1,4 +1,4 @@
-// The kernels' polynomials (module/math/trig-tables.js SIN_C, COS_C):
+// The kernels' polynomials (module/math/trig-tables.js SIN_C, COS_C, ATAN_C, ASIN_C):
 // minimax fits of the function's relative error on the reduced interval, by the Remez
 // exchange in 256-bit fixed point, the coefficients rounded to the nearest double. Each is
 // then measured as the kernels evaluate it (polyTree, binary64) against the same
@@ -8,10 +8,12 @@
 //
 //   sin(r) = r·(1 + t·P(t))           t = r², |r| ≤ π/4   (the quadrant reduction's remainder)
 //   cos(r) = 1 − t/2 + t²·Q(t)        |r| ≤ π/4
+//   atan(r) = r·(1 + t·A(t))          |r| ≤ tan(π/8)       (after atan's three-interval reduction)
+//   asin(r) = r·(1 + t·S(t))          |r| ≤ 1/2            (after asin's half-angle step)
 //
 // The degree of each is the lowest whose measured error stays well inside the 100-ulp
-// budget jz's Math keeps against V8: one degree less costs sin 46000 ulp, cos 1071
-// (the minimax bound, 2^53 × the relative error).
+// budget jz's Math keeps against V8: one degree less costs sin 46000 ulp, cos 1071, atan
+// 248, asin 537 (the minimax bound, 2^53 × the relative error).
 import { polyTree as tree } from '../module/math/trig-tables.js'
 
 const P = 256n, ONE = 1n << P
@@ -40,6 +42,12 @@ const div = (a, b) => (a << P) / b
 const pw = (x, n) => { let r = ONE; for (let i = 0; i < n; i++) r = mul(r, x); return r }
 const SIN = (x) => { let t = x, s = 0n; const x2 = mul(x, x); for (let k = 1; t !== 0n; k += 2) { s += t; t = -mul(t, x2) / BigInt((k + 1) * (k + 2)) } return s }
 const COS = (x) => { let t = ONE, s = 0n; const x2 = mul(x, x); for (let k = 0; t !== 0n; k += 2) { s += t; t = -mul(t, x2) / BigInt((k + 1) * (k + 2)) } return s }
+const ATAN = (x) => { let t = x, s = 0n; const x2 = mul(x, x); for (let k = 1; t !== 0n; k += 2) { s += t / BigInt(k) * (((k - 1) / 2) % 2 ? -1n : 1n); t = mul(t, x2) } return s }
+const ASIN = (x) => {   // Σ (2k)!/(4^k (k!)² (2k+1)) x^(2k+1)
+  let c = ONE, t = x, s = 0n; const x2 = mul(x, x)
+  for (let k = 0; t !== 0n; k++) { s += mul(c, t) / BigInt(2 * k + 1); c = c * BigInt((2 * k + 1) * (2 * k + 2)) / BigInt(4 * (k + 1) * (k + 1)); t = mul(t, x2) }
+  return s
+}
 // linear solve, Gaussian elimination with partial pivoting, in fixed point
 const solve = (A, b) => {
   const n = b.length
@@ -113,10 +121,12 @@ const measure = (kernel, F, X) => {
   return worst
 }
 
-const PIO4 = Math.PI / 4 * (1 + 2 ** -20)   // a hair past the reduction's bound
+const PIO4 = Math.PI / 4 * (1 + 2 ** -20), TPIO8 = (Math.SQRT2 - 1) * (1 + 2 ** -30)   // a hair past the reduction's bound
 const fits = [
   ['SIN_C', SIN, (x) => x, 3, 4, PIO4, (c) => [1, ...c], (cs, r) => r * polyTree(cs, r * r)],
   ['COS_C', COS, (x) => ONE - mul(x, x) / 2n, 4, 4, PIO4, (c) => [1, -0.5, ...c], (cs, r) => polyTree(cs, r * r)],
+  ['ATAN_C', ATAN, (x) => x, 3, 8, TPIO8, (c) => [1, ...c], (cs, r) => r * polyTree(cs, r * r)],
+  ['ASIN_C', ASIN, (x) => x, 3, 9, 0.5, (c) => [1, ...c], (cs, r) => r * polyTree(cs, r * r)],
 ]
 for (const [name, F, lead, base, deg, X, coef, kernel] of fits) {
   const { c, bound } = remez(F, lead, base, deg, X)

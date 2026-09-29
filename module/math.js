@@ -18,7 +18,7 @@ import { inc, err } from '../src/ctx.js'
 import { repOf, VAL } from '../src/reps.js'
 import { valTypeOf } from '../src/kind.js'
 import { registerPowTranscend } from './math/pow-transcend.js'
-import { PI, HALF_PI, PIO2_CW, INV_PIO2, ROUND_MAGIC, CW_LIMIT, PIO2_LO, TWO_OVER_PI_HEX, SIN_C, COS_C, EXPM1_C, LOG_C, EXP2_TAB_HEX, EXP2_Q, EXP_Q, EXP_L1, EXP_L2, POW_LOG_TAB_HEX, POW_LOG_A, POW_LN2HI, POW_LN2LO, polyTree } from './math/trig-tables.js'
+import { PI, HALF_PI, PIO2_CW, INV_PIO2, ROUND_MAGIC, CW_LIMIT, PIO2_LO, TWO_OVER_PI_HEX, SIN_C, COS_C, ATAN_C, ASIN_C, EXPM1_C, LOG_C, EXP2_TAB_HEX, EXP2_Q, EXP_Q, EXP_L1, EXP_L2, POW_LOG_TAB_HEX, POW_LOG_A, POW_LN2HI, POW_LN2LO, polyTree } from './math/trig-tables.js'
 import { hexBytes } from '../src/static-data.js'
 import { registerMathSimd } from './math/simd.js'
 import { registerSumPrecise } from './math/sum-precise.js'
@@ -49,7 +49,7 @@ export default (ctx) => {
     'math.pow_transcend': ['math.pow_scalbn'],
     'math.pow_fold': ['math.pow_transcend'],
     'math.asin': [],
-    'math.acos': ['math.asin'],
+    'math.acos': [],
     'math.atan2': ['math.atan'],
     'math.sinh': ['math.exp', 'math.expm1'],
     'math.cosh': ['math.exp'],
@@ -1125,77 +1125,54 @@ export default (ctx) => {
     (call $math.pow_transcend (local.get $x) (local.get $c)))`, ['math.pow_transcend'])
   } // if (crPow)
 
-  // fdlibm atan: 4-region argument reduction onto |r| ≤ tan(π/16), then an
-  // 11-term odd polynomial split into even/odd parts. Accurate to <1 ulp —
-  // the old Taylor series was ~2e-6 off near |x|=0.5. Drives asin/acos/atan2.
-  // Fast atan: sign symmetry (work on |x|), two-stage reduction onto [0, tan(π/8)] — |x|>1 →
-  // π/2−atan(1/x), then t>tan(π/8) → π/8+atan((t−C)/(1+Ct)) — then a degree-5 minimax t·P(t²).
-  // Replaces the fdlibm 4-way / 11-term / extended-precision form (correctly-rounded but ~3× the
-  // ops). Max rel err 6e-10 over all of ℝ — well within jz's ~1e-9 transcendental budget. asin =
-  // atan(x/√(1−x²)) and acos = π/2−asin inherit it, so all three drop from ~1.6–2.3× to under V8.
+  // atan: on |x|, three intervals and at most one division: |x| ≤ tan(π/8) as it is,
+  // up to tan(3π/8) as π/4 + atan((|x| − 1)/(|x| + 1)), past it as π/2 + atan(−1/|x|),
+  // each argument within tan(π/8); then r·(1 + t·A(t)) (trig-tables.js ATAN_C, 8.8 ulp
+  // minimax), and x's sign. ±0 stays itself, ±Infinity takes −1/∞ = −0 to ±π/2.
   wat('math.atan', `(func $math.atan (param $x f64) (result f64)
-    (local $t f64) (local $u f64) (local $r f64) (local $off f64) (local $flip i32)
-    ;; NaN passes through; ±0 returns x (preserves sign of zero); ±Inf flows through (1/Inf=0 → π/2).
+    (local $a f64) (local $t f64) (local $o f64) (local $z f64)
     (if (f64.ne (local.get $x) (local.get $x)) (then (return (local.get $x))))
-    (if (f64.eq (local.get $x) (f64.const 0.0)) (then (return (local.get $x))))
-    (local.set $t (f64.abs (local.get $x)))
-    (local.set $off (f64.const 0.0))
-    (local.set $flip (i32.const 0))
-    (if (f64.gt (local.get $t) (f64.const 1.0))
-      (then (local.set $t (f64.div (f64.const 1.0) (local.get $t))) (local.set $flip (i32.const 1))))
-    (if (f64.gt (local.get $t) (f64.const 0.41421356237309503))
-      (then
-        (local.set $t (f64.div (f64.sub (local.get $t) (f64.const 0.41421356237309503))
-                               (f64.add (f64.const 1.0) (f64.mul (f64.const 0.41421356237309503) (local.get $t)))))
-        (local.set $off (f64.const 0.39269908169872414))))
-    (local.set $u (f64.mul (local.get $t) (local.get $t)))
-    (local.set $r (f64.add (local.get $off)
-      (f64.mul (local.get $t)
-        (f64.add (f64.const 0.99999999939667072)
-          (f64.mul (local.get $u)
-            (f64.add (f64.const -0.33333307625846248)
-              (f64.mul (local.get $u)
-                (f64.add (f64.const 0.19998216947828790)
-                  (f64.mul (local.get $u)
-                    (f64.add (f64.const -0.14240083011830104)
-                      (f64.mul (local.get $u)
-                        (f64.add (f64.const 0.10573479828448784)
-                          (f64.mul (local.get $u) (f64.const -0.060347904072425573))))))))))))))
-    (if (local.get $flip) (then (local.set $r (f64.sub (f64.const 1.5707963267948966) (local.get $r)))))
-    (f64.copysign (local.get $r) (local.get $x)))`)
+    (local.set $a (f64.abs (local.get $x)))
+    (if (f64.le (local.get $a) (f64.const ${Math.SQRT2 - 1}))
+      (then (local.set $t (local.get $a)))
+      (else (if (f64.le (local.get $a) (f64.const ${Math.SQRT2 + 1}))
+        (then
+          (local.set $t (f64.div (f64.sub (local.get $a) (f64.const 1)) (f64.add (local.get $a) (f64.const 1))))
+          (local.set $o (f64.const ${PI / 4})))
+        (else
+          (local.set $t (f64.div (f64.const -1) (local.get $a)))
+          (local.set $o (f64.const ${HALF_PI}))))))
+    (local.set $z (f64.mul (local.get $t) (local.get $t)))
+    (f64.copysign (f64.add (local.get $o) (f64.mul (local.get $t) ${horner(ATAN_C, '$z')})) (local.get $x)))`)
 
-  // Fast asin: small-argument poly a + a·u·R(u) (u=a²) with the standard half-angle reduction for
-  // |x|>0.5 — a = sqrt((1−|x|)/2) maps the singular end to the smooth domain, asin = π/2 − 2·poly.
-  // One sqrt only on the upper half, no atan/div. R is a degree-6 minimax on [0,0.25]; max rel err
-  // ~2.6e-10. Replaces asin = atan(x/√(1−x²)) (which paid a div + atan's own reductions).
+  // asin and acos on |x| ≤ ½ take asin(a) = a·(1 + t·S(t)) (trig-tables.js ASIN_C, 33 ulp
+  // minimax) at a = x; past ½ at a = √((1 − |x|)/2) (1 − |x| exact there), with
+  // asin(|x|) = π/2 − 2·asin(a) and acos(x) = 2·asin(a), or π − 2·asin(a) below −½: no
+  // cancellation near ±1, where acos(x) = π/2 − asin(x) lost every digit of a small
+  // result. Both halves select rather than branch (the root is cheap beside a miss on
+  // arguments that straddle ½). |x| > 1 and NaN give the canonical NaN.
+  const asinK = (a) => `
+    (local.set $z (f64.mul (local.get ${a}) (local.get ${a})))
+    (local.set $s (f64.mul (local.get ${a}) ${horner(ASIN_C, '$z')}))`
+  const halfAngle = `
+    (local.set $h (f64.gt (local.get $a) (f64.const 0.5)))
+    (local.set $a (select (f64.sqrt (f64.mul (f64.const 0.5) (f64.sub (f64.const 1) (local.get $a)))) (local.get $a) (local.get $h)))`
   wat('math.asin', `(func $math.asin (param $x f64) (result f64)
-    (local $ax f64) (local $a f64) (local $u f64) (local $r f64)
-    ;; |x|>1 → NaN (covers ±Inf); NaN propagates (the >1 test is false, poly carries NaN through).
-    (if (f64.gt (f64.abs (local.get $x)) (f64.const 1.0)) (then (return (f64.const nan))))
-    (local.set $ax (f64.abs (local.get $x)))
-    (if (f64.le (local.get $ax) (f64.const 0.5))
-      (then (local.set $a (local.get $ax)))
-      (else (local.set $a (f64.sqrt (f64.mul (f64.const 0.5) (f64.sub (f64.const 1.0) (local.get $ax)))))))
-    (local.set $u (f64.mul (local.get $a) (local.get $a)))
-    (local.set $r (f64.add (local.get $a) (f64.mul (f64.mul (local.get $a) (local.get $u))
-      (f64.add (f64.const 0.16666666715486264)
-        (f64.mul (local.get $u)
-          (f64.add (f64.const 0.074999892151409259)
-            (f64.mul (local.get $u)
-              (f64.add (f64.const 0.044648555271317079)
-                (f64.mul (local.get $u)
-                  (f64.add (f64.const 0.030259196387355945)
-                    (f64.mul (local.get $u)
-                      (f64.add (f64.const 0.023661273034955098)
-                        (f64.mul (local.get $u)
-                          (f64.add (f64.const 0.010472588920432560)
-                            (f64.mul (local.get $u) (f64.const 0.031028862087420162))))))))))))))))
-    (if (f64.gt (local.get $ax) (f64.const 0.5))
-      (then (local.set $r (f64.sub (f64.const 1.5707963267948966) (f64.mul (f64.const 2.0) (local.get $r))))))
-    (f64.copysign (local.get $r) (local.get $x)))`)
+    (local $a f64) (local $z f64) (local $s f64) (local $h i32)
+    (local.set $a (f64.abs (local.get $x)))
+    (if (i32.eqz (f64.le (local.get $a) (f64.const 1))) (then (return (f64.const nan))))${halfAngle}${asinK('$a')}
+    (f64.copysign (select (f64.sub (f64.const ${HALF_PI}) (f64.mul (f64.const 2) (local.get $s))) (local.get $s) (local.get $h)) (local.get $x)))`)
 
   wat('math.acos', `(func $math.acos (param $x f64) (result f64)
-    (f64.sub (f64.const ${HALF_PI}) (call $math.asin (local.get $x))))`)
+    (local $a f64) (local $z f64) (local $s f64) (local $h i32)
+    (local.set $a (f64.abs (local.get $x)))
+    (if (i32.eqz (f64.le (local.get $a) (f64.const 1))) (then (return (f64.const nan))))${halfAngle}
+    ;; the kernel's argument: x itself up to ½ (asin is odd), the half angle past it
+    (local.set $a (select (local.get $a) (local.get $x) (local.get $h)))${asinK('$a')}
+    (select
+      (select (f64.mul (f64.const 2) (local.get $s)) (f64.sub (f64.const ${PI}) (f64.mul (f64.const 2) (local.get $s))) (f64.gt (local.get $x) (f64.const 0)))
+      (f64.sub (f64.const ${HALF_PI}) (local.get $s))
+      (local.get $h)))`)
 
   wat('math.atan2', `(func $math.atan2 (param $y f64) (param $x f64) (result f64)
     ;; If either argument is NaN, the result is NaN (ECMA-262 21.3.2.5).

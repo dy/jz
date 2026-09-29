@@ -182,6 +182,10 @@ const SPEED = {
 //                       (module/math.js, the k/5 constant-exponent path): 4 ulp,
 //                       4.9e-16 relative. Their three `Math.cbrt` calls are
 //                       bit-exact with V8 (0 ulp) — jz runs the same fdlibm.
+//                       colorlch's `Math.atan2` takes jz's atan (the degree-19
+//                       polynomial after a three-interval reduction): 11 ulp,
+//                       1.2e-15 relative over its 200k pixels (the atan it
+//                       replaced was 5.4M ulp, 6e-10 relative).
 //   colorlog            `Math.pow(2, x)` takes jz's exp2, within 1 ulp of V8's
 //                       (the 2^(j/64) table kernel, module/math/trig-tables.js
 //                       EXP2_TAB: 0.52 ulp against a 200-bit reference, V8's
@@ -189,7 +193,7 @@ const SPEED = {
 //                       ulp is still a different sum.
 const LAB_SPEED = {
   colorlog:  { v8: 'win', jz: 297103274, why: 'Math.pow(2, x) through jz exp2 – 1 ulp' },
-  colorlch:  { v8: 'win', jz: 615123418,  why: '** 2.4 through jz fifthroot fold — 4 ulp, 4.9e-16 relative; cbrt bit-exact' },
+  colorlch:  { v8: 'win', jz: 278287575,  why: '** 2.4 through jz fifthroot fold — 4 ulp, 4.9e-16 relative; atan2 11 ulp; cbrt bit-exact' },
   colorconv: { v8: 'tie', jz: 3731035495, why: '** 2.4 through jz fifthroot fold — 4 ulp, 4.9e-16 relative; cbrt bit-exact' },
 }
 const SPEED_TOL = { win: 1.0, tie: 1.05, near: 1.10, trail: 1.25 }

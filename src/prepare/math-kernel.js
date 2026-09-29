@@ -25,7 +25,7 @@
  * @module prepare/math-kernel
  */
 
-import { PI, HALF_PI, PIO2_CW, INV_PIO2, ROUND_MAGIC, CW_LIMIT, SIN_C, COS_C, EXPM1_C, LOG_C, EXP2_TAB, EXP2_Q, EXP_Q, EXP_L1, EXP_L2, POW_LOG_TAB, POW_LOG_A, POW_LN2HI, POW_LN2LO, polyTree } from '../../module/math/trig-tables.js'
+import { PI, HALF_PI, PIO2_CW, INV_PIO2, ROUND_MAGIC, CW_LIMIT, SIN_C, COS_C, ATAN_C, ASIN_C, EXPM1_C, LOG_C, EXP2_TAB, EXP2_Q, EXP_Q, EXP_L1, EXP_L2, POW_LOG_TAB, POW_LOG_A, POW_LN2HI, POW_LN2LO, polyTree } from '../../module/math/trig-tables.js'
 
 // ---- bit-level helpers (i64.reinterpret_f64 / f64.reinterpret_i64) ----
 const _buf = new ArrayBuffer(8)
@@ -273,44 +273,45 @@ function powInt(a, n) {
   return n < 0 ? 1 / res : res
 }
 
+// $math.atan: three intervals on |x|, at most one division, the polynomial, x's sign
 function atan(x) {
   if (Number.isNaN(x)) return x
-  if (x === 0) return x
-  let t = Math.abs(x)
-  let off = 0
-  let flip = false
-  if (t > 1) { t = 1 / t; flip = true }
-  if (t > 0.41421356237309503) {
-    t = (t - 0.41421356237309503) / (1 + 0.41421356237309503 * t)
-    off = 0.39269908169872414
+  const a = Math.abs(x)
+  let t = a, o = 0
+  if (a > Math.SQRT2 - 1) {
+    if (a <= Math.SQRT2 + 1) { t = (a - 1) / (a + 1); o = PI / 4 }
+    else { t = -1 / a; o = HALF_PI }
   }
-  const u = t * t
-  let r = off + t * (0.99999999939667072 + u * (-0.33333307625846248 + u * (0.19998216947828790 + u * (-0.14240083011830104 + u * (0.10573479828448784 + u * (-0.060347904072425573))))))
-  if (flip) r = HALF_PI - r
-  return copysign(r, x)
+  return copysign(o + t * horner(ATAN_C, t * t), x)
 }
 
+// $math.asin / $math.acos: the kernel at x up to ½, at √((1 − |x|)/2) past it
+const asinK = (a) => a * horner(ASIN_C, a * a)
 function asin(x) {
-  if (Math.abs(x) > 1) return NaN
-  const ax = Math.abs(x)
-  const a = ax <= 0.5 ? ax : Math.sqrt(0.5 * (1 - ax))
-  const u = a * a
-  let r = a + (a * u) * (0.16666666715486264 + u * (0.074999892151409259 + u * (0.044648555271317079 + u * (0.030259196387355945 + u * (0.023661273034955098 + u * (0.010472588920432560 + u * 0.031028862087420162))))))
-  if (ax > 0.5) r = HALF_PI - 2 * r
-  return copysign(r, x)
+  const a = Math.abs(x)
+  if (!(a <= 1)) return NaN
+  if (a <= 0.5) return copysign(asinK(a), x)
+  return copysign(HALF_PI - 2 * asinK(Math.sqrt(0.5 * (1 - a))), x)
+}
+function acos(x) {
+  const a = Math.abs(x)
+  if (!(a <= 1)) return NaN
+  if (a <= 0.5) return HALF_PI - asinK(x)
+  const r = 2 * asinK(Math.sqrt(0.5 * (1 - a)))
+  return x > 0 ? r : PI - r
 }
 
-function acos(x) { return HALF_PI - asin(x) }
-
+// $math.atan2: NaN, the infinite quadrant table and the zero cases, then atan(y/x) ± π
 function atan2(y, x) {
   if (Number.isNaN(x)) return x
   if (Number.isNaN(y)) return y
+  if (Math.abs(y) === Infinity && Math.abs(x) === Infinity) return copysign(x > 0 ? PI / 4 : 3 * PI / 4, y)
   if (x === 0) {
-    if (y === 0) return copysign((x < 0 || Object.is(x, -0)) ? PI : 0, y)
+    if (y === 0) return copysign(copysign(1, x) < 0 ? PI : 0, y)
     return y > 0 ? HALF_PI : -HALF_PI
   }
   if (x >= 0) return atan(y / x)
-  return y >= 0 ? atan(y / x) + PI : atan(y / x) - PI
+  return copysign(1, y) > 0 ? atan(y / x) + PI : atan(y / x) - PI
 }
 
 function sinh(x) {
