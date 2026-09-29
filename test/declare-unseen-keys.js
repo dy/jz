@@ -68,6 +68,7 @@ const seen = {
   spread: 'Object.keys({ ...o, ...{ z: 1 } }).join()',
   names: 'Object.getOwnPropertyNames(o).join()',
   alias: '((x) => Object.keys(x).length)(o)',
+  assign: 'Object.keys(Object.assign({ z: 0 }, o)).join()',
 }
 for (const [name, ask] of Object.entries(seen)) test(`declared keys: ${name} sees only the keys stored so far`, () => {
   agree(`let o = { a: 1 }

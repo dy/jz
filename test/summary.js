@@ -631,7 +631,8 @@ test('summary: a literal is allocated as the runtime allocates it; emission read
 })
 
 test('summary: an absent tag joins a union without widening it; a callback drops its surplus arguments', () => {
-  summarize(`export const f = () => { const a = [4611686018427387903n]; a[0]++; return a[0] }`)
+  // (read once at a position only the run knows, the list stays a list)
+  summarize(`export const f = () => { const a = [4611686018427387903n]; a[0]++; return a[0] + a[a.length - 1] }`)
   const held = ctx.summary.at('f').kindOfExpr(['[]', binding('f', 'a'), 0])
   ok(hasTag(held, K.BIGINT) && !hasTag(held, K.NUMBER) && !hasTag(held, K.ABSENT), 'inside the literal\'s count the element is there, and stays a BigInt')
   summarize(`export const f = (i) => { const a = [4611686018427387903n]; a[i]++; const b = [1n, 2n]; const m = b.map(x => x + 1n); return a[i] + m[i] }`)

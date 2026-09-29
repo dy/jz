@@ -75,8 +75,10 @@ const PURE_BUILTINS = /^(Object\.(keys|values|entries|freeze|isFrozen|getOwnProp
 // A builtin that neither stores its arguments nor runs a method of theirs:
 // they keep their shapes. `Object.freeze` is the identity (module/object.js).
 const KEEPING_BUILTINS = /^(Object\.(keys|freeze|isFrozen|getOwnPropertyNames|getPrototypeOf|hasOwn|is)|Array\.isArray|Boolean|Symbol(\.\w+)?)$/
-// The calls that read an object's own key set without handing it on (the rest escape it).
-const KEY_READERS = new Set(['Object.keys', 'Object.values', 'Object.getOwnPropertyNames', 'Object.hasOwn', 'Object.freeze', 'Object.isFrozen', 'Object.isSealed', 'Object.isExtensible', '__keys_ro', '__keys_dyn'])
+// The calls that read an object's own key set, or make it another's (a copy's
+// keys, a prototype's), without handing it on (the rest escape it).
+const KEY_READERS = new Set(['Object.keys', 'Object.values', 'Object.getOwnPropertyNames', 'Object.hasOwn', 'Object.freeze', 'Object.isFrozen', 'Object.isSealed', 'Object.isExtensible',
+  'Object.assign', 'Object.defineProperty', 'Object.defineProperties', 'Object.setPrototypeOf', 'Object.create', '__keys_ro', '__keys_dyn'])
 
 const BIND = CLASS_T + 'bind'
 const STRING_METHODS = new Set(['slice', 'substring', 'substr', 'trim', 'trimStart', 'trimEnd', 'toUpperCase', 'toLowerCase', 'padStart', 'padEnd', 'repeat', 'replace', 'replaceAll', 'concat', 'normalize', 'at', 'charAt'])
