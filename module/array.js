@@ -2381,7 +2381,7 @@ export default (ctx) => {
     const shift = fn == null ? 4 : 3
     let cmpSetup = ['nop'], after
     if (fn == null) {
-      // default comparator is ToString + code unit compare — both live in the string
+      // default comparator is ToString + code unit compare: both live in the string
       // module, which an all-numeric program hasn't loaded (dangling inc otherwise)
       ctx.module.include('string')
       inc('__to_str', '__str_cmp')

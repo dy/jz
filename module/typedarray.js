@@ -1632,7 +1632,7 @@ export default (ctx) => {
           (i32.shl (local.get $count) (local.get $k)))))
     (f64.reinterpret_i64 (local.get $ptr)))`
 
-  // .sort() — default numeric order, stable: NaN sorts to the end, -0 before +0,
+  // .sort(): default numeric order, stable: NaN sorts to the end, -0 before +0,
   // BigInt arrays compare as signed i64 on their exact bits. A user comparator is
   // handled inline by the .typed:sort emitter (this helper is the no-argument path).
   // A short array takes the insertion sort below. A longer one sorts by a byte-wise
