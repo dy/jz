@@ -1049,3 +1049,42 @@ test('summary: Array.isArray narrows a name, and a member path in an arm that ca
     ok(!warnings.some(w => w.code === 'shape-lost'), `${name}: the records keep their shape`)
   }
 })
+
+// `if (!(data instanceof Float32Array)) return stream(opts(data))` beside
+// `batch(data, opts(o))`, `data` a channel read from a list (a Float32Array or
+// missing): where the test fails `data` is no Float32Array, so the options
+// record never joins a typed array, keeps its shape, and the batch's cursor
+// stays a number (an element store, no string key). A typed array of another
+// kind, a buffer (a SharedArrayBuffer is no ArrayBuffer) and an unknown class
+// keep their kinds on the failing side.
+test('summary: instanceof narrows a name on both sides of its test', () => {
+  const src = `function opts(o) { let n = o?.size ?? 8; let h = o?.hop ?? (n >> 2); return { ...o, n, h } }
+    function stream(o) { return o.n * 1000 + o.h }
+    function batch(d, o) {
+      const out = new Float64Array(d.length + 4 * o.n); let pos = 0
+      for (let f = 0; f < 3; f++) { for (let i = 0; i < o.n; i++) out[pos + i] += d[i]; pos += o.h }
+      let s = 0; for (let i = 0; i < out.length; i++) s += out[i] * (i + 1); return s }
+    function run(data, o) {
+      if (!(data instanceof Float32Array)) return stream(opts(data))
+      return batch(data, opts(o))
+    }
+    const chans = [new Float32Array(16).map((_, i) => i % 5), new Float32Array(16).fill(0.5)]
+    export let f = (c, size) => run(chans[c], { size, rate: 48000 })
+    const other = [new Float64Array([3, 4]), new Uint8Array([5]), new ArrayBuffer(8), [6, 7], new Map([[1, 2]])]
+    const kindOf = (x) => { if (!(x instanceof Float32Array)) { if (x instanceof Float64Array) return x[1]; if (x instanceof Array) return x[0] * 10; if (x instanceof Map) return x.get(1) * 100; if (x instanceof ArrayBuffer) return x.byteLength * 1000; return x === undefined ? -1 : x.length * 10000 } return -2 }
+    export let g = (i) => kindOf(other[i])`
+  const js = oracle(src)
+  for (const optimize of levels(0, 2, 3)) {
+    const { f, g } = jz(src, { optimize }).exports
+    for (const [c, size] of [[0, 8], [1, 4], [2, 8], [0, 6]]) is(f(c, size), js.f(c, size), `f(${c}, ${size}) at ${optimize}`)
+    for (const i of [0, 1, 2, 3, 4, 5]) is(g(i), js.g(i), `g(${i}) at ${optimize}`)
+  }
+  summarize(src)
+  ok(tagOf(kindOf('opts', 'o') & ~(hasTag(kindOf('opts', 'o'), K.ABSENT) ? kind(K.ABSENT) : 0)) === K.OBJECT, 'the options record keeps its object kind')
+  if (belowOpt(2)) return
+  const warnings = []
+  const text = compile(src, { optimize: 2, wat: true, warnings: w => warnings.push(w) })
+  ok(!warnings.some(w => w.code === 'shape-lost'), 'the options record keeps its shape')
+  const batch = text.slice(text.indexOf('(func $batch'), text.indexOf('\n  (func', text.indexOf('(func $batch') + 1))
+  ok(batch.length > 20 && !/call \$__(dyn_set|dyn_get\b|is_str_key|add_slow)/.test(batch), 'the overlap-add stores by a numeric index')
+})

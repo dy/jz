@@ -3582,6 +3582,22 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       else if (pathProofs) refineKey(pathKey(c[2]), mask)
       return
     }
+    // `x instanceof C` of a built-in class C: a value of C's kind where it
+    // holds; where it fails, none of that kind when every value of it is a C
+    // (an Array, a Map, a Set, a typed array of C's own element kind). A
+    // SharedArrayBuffer shares the buffer kind, so a buffer stays.
+    if (op === 'instanceof' && typeof c[1] === 'string' && typeof c[2] === 'string') {
+      const tag = INSTANCE_TAGS.get(c[2])
+      if (tag == null) return
+      if (when) { refineName(c[1], bitOf(tag)); return }
+      if (tag === K.BUFFER) return
+      if (tag === K.TYPED) {
+        const key = keyOf(c[1]), aux = key === null || kinds[key] == null ? UNKNOWN : typedAux(kinds[key])
+        if (aux === UNKNOWN || aux & TYPED_ELEM_BIGINT_FLAG || typedCtorName(ctorFromElemAux(aux)) !== c[2]) return
+      }
+      refineName(c[1], TAGS & ~bitOf(tag))
+      return
+    }
     const tp = typeofPredicateOf(c)
     if (tp) {
       const bits = TYPEOF_TAGS[typeof tp.code === 'string' ? tp.code : TYPEOF_NAME[tp.code]]
