@@ -425,8 +425,9 @@ function durableLoopArrays(init, cond, step, body) {
   const view = ctx.summary?.at(ctx.func.current)
   const out = []
   for (const name of names) {
-    // A binding the body or the head declares does not exist before the loop.
-    if (ctx.func.boxed?.has(name) || containsDeclOf(body, name) || (init != null && containsDeclOf(init, name)) ||
+    // A binding the body or the head declares does not exist before the loop,
+    // and one held as its elements' locals (ctx.func.flatObjects) has no array.
+    if (ctx.func.boxed?.has(name) || ctx.func.flatObjects?.has(name) || containsDeclOf(body, name) || (init != null && containsDeclOf(init, name)) ||
         isReassigned(body, name) || (init != null && isReassigned(init, name)) ||
         (cond != null && isReassigned(cond, name)) || (step != null && isReassigned(step, name))) continue
     if (isGlobal(name) && !ctx.scope.consts?.has(name)) continue
