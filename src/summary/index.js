@@ -2414,6 +2414,10 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
         // initializer, but defer the layout instead of irreversibly escaping
         // its known sibling values during an early solver round.
         if (tagOf(source) === K.NONE) { pending = true; continue }
+        // A source that only ever holds null or undefined spreads no key: the
+        // copy stays a dictionary (its keys are known at run time), its named
+        // entries the other sources' and the literal's own.
+        if (tagOf(source) === K.NULLISH || tagOf(source) === K.ABSENT) { dynamic = true; continue }
         // A dictionary source fills a dictionary: its named entries, its
         // entries under unknown names, and the fields of the shapes it carries.
         if (p[1]?.[0] !== '&&' && !isNullable(source) && isDict(source) && !cellLostObject.has(cell(paramOf(source)))) {

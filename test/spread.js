@@ -891,3 +891,43 @@ test('spread: a spread of a spread\'s result reads its fields as slots', () => {
     if (!belowOpt(2) && optimize >= 2) ok(!/call \$__dyn_get/.test(compile(src, { optimize, wat: true })), `read as slots O${optimize}`)
   }
 })
+
+// An option never set, spread into the options a helper takes
+// (`tracker(8, { D: …, ...opts.estimator })`), copies no key: the helper's
+// `opts.D` is the number the literal stores, not a value of any kind, and the
+// per-bin stride `o += D` adds.
+test('spread: a source that is only ever undefined or null copies no key', () => {
+  const src = `function tracker(half, opts = {}) {
+      let D = opts.D || 96, alpha = opts.alpha ?? 0.7
+      const val = new Float64Array((half + 1) * D)
+      let frame = 0
+      return (mag) => {
+        let s = 0
+        for (let k = 0, o = 0; k <= half; k++, o += D) { val[o + frame % D] = alpha * mag[k]; s += val[o] }
+        frame++
+        return s
+      }
+    }
+    function make(opts) { return tracker(8, { D: Math.round(1.5 * opts.fs / opts.hop), ...opts.estimator }) }
+    const t = make({ fs: 480, hop: 60 })
+    const u = tracker(4, { D: 3, ...(null), ...undefined })
+    const m = new Float64Array(9).fill(0.5)
+    export let f = (k) => { m[k & 7] = k; return t(m) + u(m) + Object.keys({ a: 1, ...null, ...undefined }).length }
+    export let g = (x) => { const o = { a: 1, ...(x > 0 ? { b: x } : undefined) }; return Object.keys(o).join() + (o.b ?? -1) }`
+  const js = oracle(src)
+  for (const optimize of levels(0, 2, 3)) {
+    const { f, g } = jz(src, { optimize }).exports
+    for (const k of [1, 2, 3]) is(f(k), js.f(k), `f(${k}) at ${optimize}`)
+    for (const x of [0, 2]) is(g(x), js.g(x), `g(${x}) at ${optimize}`)
+  }
+  if (belowOpt(2)) return
+  // the program's own functions (not the runtime's): no loop asks for a string or a dictionary
+  const own = compile(src, { optimize: 2, wat: true }).split('\n  (func ').filter(b => !/^\$\W?(__|math\.)/.test(b))
+  const loops = []
+  for (const text of own) for (let at = text.indexOf('(loop'); at >= 0; at = text.indexOf('(loop', at + 1)) {
+    let depth = 0, end = at
+    do { const c = text[end++]; if (c === '(') depth++; else if (c === ')') depth-- } while (depth && end < text.length)
+    loops.push(text.slice(at, end))
+  }
+  ok(loops.length && loops.every(l => !/call \$__(is_str_key|add_slow|dyn_set)/.test(l)), 'the stride adds as a number')
+})
