@@ -2318,7 +2318,10 @@ past 2^24 sends both to it. The constant folder mirrors the kernels below
 by itself has 64-bit BigInt, which cannot mirror the 192-bit product).
 `atan` reduces |x| by three intervals and at most one division (as is, π/4 +
 atan((|x| − 1)/(|x| + 1)), π/2 + atan(−1/|x|)) to |t| ≤ tan(π/8) and a
-degree-19 odd polynomial (8.8 ulp minimax); `atan2` divides and calls it.
+degree-19 odd polynomial (8.8 ulp minimax); `atan2` divides and calls it, and
+`atan2_2` runs the same operations two lanes wide, the interval picked per lane
+by bitselect, where both lanes have a finite y and a finite nonzero x (3.3 ns
+an element in a lifted loop against 5.9 lane by lane, V8 7.8).
 `asin` and `acos` take a degree-21 odd polynomial on |a| ≤ ½ (33 ulp
 minimax), at a = √((1 − |x|)/2) past ½, and acos near ±1 as 2·asin(a) or π −
 2·asin(a), where π/2 − asin(x) had cancelled a small result away. `sinh` and

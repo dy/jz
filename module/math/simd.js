@@ -15,7 +15,7 @@
  */
 import { wat } from '../../src/bridge.js'
 import { ctx } from '../../src/ctx.js'
-import { PIO2_CW, INV_PIO2, ROUND_MAGIC, CW_LIMIT, SIN_C, COS_C, LOG_C, EXP2_Q, EXP_Q, EXP_L1, EXP_L2, POW_LN2HI, POW_LN2LO, POW_LOG_A, polyTree } from './trig-tables.js'
+import { PI, HALF_PI, PIO2_CW, INV_PIO2, ROUND_MAGIC, CW_LIMIT, SIN_C, COS_C, ATAN_C, LOG_C, EXP2_Q, EXP_Q, EXP_L1, EXP_L2, POW_LN2HI, POW_LN2LO, POW_LOG_A, polyTree } from './trig-tables.js'
 
 export const registerMathSimd = () => {
   const crPow = !!ctx.transform.optimize?.crPow
@@ -173,15 +173,43 @@ export const registerMathSimd = () => {
         (f64x2.extract_lane 1 (local.get $c)))))`, ['math.pow_fold'])
   }
 
-  // atan2/hypot/log have no cheap 2-lane polynomial (multi-`return` fdlibm bodies), so — like pow2 —
-  // each f64x2 mirror computes both lanes with the SCALAR helper and repacks: BIT-EXACT by
+  // $math.atan2 two lanes wide where both lanes have a finite y and a finite nonzero x: y/x,
+  // atan's interval picked per lane (numerator, denominator and offset by bitselect, the
+  // smallest as u/1 = u), one division, the polynomial, t's sign, then π added or taken
+  // for a negative x by y's sign: the scalar kernel's operations, so its bits. Any other
+  // pair of lanes (a zero or an infinite x, a NaN) takes the scalar kernel.
+  const [ATAN_LO, ATAN_HI] = [Math.SQRT2 - 1, Math.SQRT2 + 1]
+  wat('math.atan2_2', `(func $math.atan2_2 (param $y v128) (param $x v128) (result v128)
+    (local $t v128) (local $a v128) (local $m1 v128) (local $m2 v128) (local $u v128) (local $z v128) (local $r v128)
+    (if (result v128) (i64x2.all_true (v128.and
+        (v128.and (f64x2.lt (f64x2.abs (local.get $x)) ${splat('inf')}) (f64x2.ne (local.get $x) ${splat(0)}))
+        (f64x2.lt (f64x2.abs (local.get $y)) ${splat('inf')})))
+      (then
+        (local.set $t (f64x2.div (local.get $y) (local.get $x)))
+        (local.set $a (f64x2.abs (local.get $t)))
+        (local.set $m1 (f64x2.gt (local.get $a) ${splat(ATAN_LO)}))
+        (local.set $m2 (f64x2.gt (local.get $a) ${splat(ATAN_HI)}))
+        (local.set $u (f64x2.div
+          (v128.bitselect (v128.bitselect ${splat(-1)} (f64x2.sub (local.get $a) ${splat(1)}) (local.get $m2)) (local.get $a) (local.get $m1))
+          (v128.bitselect (v128.bitselect (local.get $a) (f64x2.add (local.get $a) ${splat(1)}) (local.get $m2)) ${splat(1)} (local.get $m1))))
+        (local.set $z (f64x2.mul (local.get $u) (local.get $u)))
+        (local.set $r (f64x2.add
+          (v128.bitselect (v128.bitselect ${splat(HALF_PI)} ${splat(PI / 4)} (local.get $m2)) ${splat(0)} (local.get $m1))
+          (f64x2.mul (local.get $u) ${horner2(ATAN_C)})))
+        (local.set $r (v128.bitselect (local.get $t) (local.get $r) ${splat('-0.0')}))
+        (v128.bitselect
+          (v128.bitselect (f64x2.sub (local.get $r) ${splat(PI)}) (f64x2.add (local.get $r) ${splat(PI)}) (i64x2.lt_s (local.get $y) ${i64s(0)}))
+          (local.get $r)
+          (f64x2.lt (local.get $x) ${splat(0)})))
+      (else
+        (f64x2.replace_lane 1
+          (f64x2.splat (call $math.atan2 (f64x2.extract_lane 0 (local.get $y)) (f64x2.extract_lane 0 (local.get $x))))
+          (call $math.atan2 (f64x2.extract_lane 1 (local.get $y)) (f64x2.extract_lane 1 (local.get $x)))))))`, ['math.atan2'])
+  // hypot has no cheap 2-lane form (its scaling branches), so its f64x2 mirror computes
+  // both lanes with the SCALAR helper and repacks, as the other kernels' edge lanes do: BIT-EXACT by
   // construction. The per-pixel-color pass only emits these when a truly-2-wide op (sin2/cos2/sqrt)
   // already justifies the f64x2 pair, so the extract/repack never makes a kernel slower.
   // NOTE: names avoid the $math.log2/$math.exp2 collision (those are log-/exp-BASE-2).
-  wat('math.atan2_2', `(func $math.atan2_2 (param $y v128) (param $x v128) (result v128)
-    (f64x2.replace_lane 1
-      (f64x2.splat (call $math.atan2 (f64x2.extract_lane 0 (local.get $y)) (f64x2.extract_lane 0 (local.get $x))))
-      (call $math.atan2 (f64x2.extract_lane 1 (local.get $y)) (f64x2.extract_lane 1 (local.get $x)))))`, ['math.atan2'])
   wat('math.hypot_2', `(func $math.hypot_2 (param $x v128) (param $y v128) (result v128)
     (f64x2.replace_lane 1
       (f64x2.splat (call $math.hypot (f64x2.extract_lane 0 (local.get $x)) (f64x2.extract_lane 0 (local.get $y))))
