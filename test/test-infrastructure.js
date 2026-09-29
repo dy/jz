@@ -3,7 +3,7 @@ import { is, ok, throws } from 'tst/assert.js'
 import { spawnSync } from 'node:child_process'
 import { mkdtempSync, readFileSync, writeFileSync, rmSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, dirname } from 'node:path'
 import { suiteArgs, suiteOf, SUITES } from './_suites.js'
 import { testJobs } from './_jobs.js'
 import { sharedKernel, kernelHash } from './_shared-kernel.js'
@@ -82,8 +82,24 @@ test('shared test kernel: one fresh fallback, validated explicit bytes, sticky f
     is(own(), bytes); is(own(), bytes); is(builds, 1)
     writeFileSync(path, bytes)
     const env = { JZ_SELF_TEST_KERNEL: path, JZ_SELF_TEST_KERNEL_SHA256: kernelHash(bytes) }
-    is(sharedKernel(fresh, env)(), bytes); is(builds, 1, 'sharing does not rebuild')
-    throws(() => sharedKernel(fresh, { JZ_SELF_TEST_KERNEL: path })(), /both/)
+    const shared = sharedKernel(fresh, env)
+    is(Object.keys(new WebAssembly.Instance(new WebAssembly.Module(shared())).exports), [], 'minimal valid module has no exports')
+    ok(shared() === shared(), 'A → A reads the artifact once')
+    // A second valid artifact exports value() = 22; a loader owns its first
+    // artifact, not later writes to the same path or another loader's result.
+    const other = Buffer.from([0,97,115,109,1,0,0,0,1,5,1,96,0,1,127,3,2,1,0,7,9,1,5,118,97,108,117,101,0,0,10,6,1,4,0,65,22,11])
+    writeFileSync(path, other)
+    const second = sharedKernel(fresh, { ...env, JZ_SELF_TEST_KERNEL_SHA256: kernelHash(other) })
+    is(new WebAssembly.Instance(new WebAssembly.Module(second())).exports.value(), 22)
+    is(shared(), bytes, 'A → B → A: existing loader keeps A, new loader executes B')
+    for (const invalid of [Buffer.alloc(0), bytes.subarray(0, -1), other.subarray(0, -1)]) {
+      writeFileSync(path, invalid)
+      throws(sharedKernel(fresh, { ...env, JZ_SELF_TEST_KERNEL_SHA256: kernelHash(invalid) }), WebAssembly.CompileError)
+    }
+    writeFileSync(path, bytes)
+    is(builds, 1, 'sharing does not rebuild')
+    for (const partial of [{ JZ_SELF_TEST_KERNEL: path }, { JZ_SELF_TEST_KERNEL_SHA256: kernelHash(bytes) }])
+      throws(sharedKernel(fresh, partial), /both/)
     const bad = sharedKernel(fresh, { ...env, JZ_SELF_TEST_KERNEL_SHA256: 'wrong' })
     throws(bad, /SHA256/); throws(bad, /SHA256/)
     rmSync(path)
@@ -94,6 +110,96 @@ test('shared test kernel: one fresh fallback, validated explicit bytes, sticky f
     writeFileSync(path, 'not wasm')
     throws(sharedKernel(fresh, { ...env, JZ_SELF_TEST_KERNEL_SHA256: kernelHash(Buffer.from('not wasm')) }))
     is(builds, 1, 'invalid shared bytes never fall back to an old dist or another build')
+    const failure = new Error('fresh build failed')
+    let attempts = 0
+    const failed = sharedKernel(() => { attempts++; throw failure }, {})
+    for (let i = 0; i < 2; i++) {
+      let caught
+      try { failed() } catch (e) { caught = e }
+      ok(caught === failure, 'a fresh-build failure remains the same error')
+    }
+    is(attempts, 1, 'failed fresh builds are not retried')
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('bootstrap: one private artifact, isolated child environments, cleanup on success and failure', () => {
+  // Stub the expensive build and task execution, not bootstrap's orchestration
+  // or legEnv. This is transaction evidence, not self-compiler codegen evidence.
+  const dir = mkdtempSync(join(tmpdir(), 'jz-bootstrap-test-')), preload = join(dir, 'preload.mjs')
+  const tasksUrl = new URL('../scripts/test-tasks.mjs', import.meta.url).href
+  try {
+    writeFileSync(preload, `
+      import { registerHooks } from 'node:module'
+      registerHooks({ load(url, context, next) {
+        if (url === ${JSON.stringify(new URL('../scripts/private-build.mjs', import.meta.url).href)}) return {
+          format: 'module', shortCircuit: true,
+          source: "import fs from 'node:fs'; export function privateBuild() { fs.appendFileSync(process.env.RECORD + '.builds', 'build'); return {bytes: Buffer.from([0,97,115,109,1,0,0,0]), ms: 0} }"
+        }
+        if (url === ${JSON.stringify(tasksUrl)}) return {
+          format: 'module', shortCircuit: true,
+          source: ${JSON.stringify(`
+            export { legEnv } from '${tasksUrl}?actual'
+            import fs from 'node:fs'
+            export async function runTasks(tasks, options) {
+              const path = tasks[0].env.JZ_SELF_TEST_KERNEL
+              new WebAssembly.Module(fs.readFileSync(path))
+              fs.writeFileSync(process.env.RECORD, JSON.stringify({tasks, options, path}))
+              if (process.env.OUTCOME === 'throw') throw new Error('task fixture failed')
+              return tasks.map(() => ({code: process.env.OUTCOME === 'fail' ? 7 : 0}))
+            }
+          `)}
+        }
+        return next(url, context)
+      } })
+    `)
+    for (const [name, args, outcome] of [
+      ['normal', [], 'pass'], ['recursive', ['--recursive'], 'pass'], ['full', ['--full'], 'pass'],
+      ['fail', ['--full'], 'fail'], ['throw', ['--full'], 'throw'], ['invalid', ['--unknown'], 'fail'],
+    ]) {
+      const record = join(dir, name + '.json')
+      const r = spawnSync(process.execPath, ['--import', preload, 'test/bootstrap.mjs', ...args], {
+        cwd: root, encoding: 'utf8', timeout: 30000, env: clean({ RECORD: record, OUTCOME: outcome,
+          JZ_KERNEL: 'stale-kernel', JZ_SELF_TEST_KERNEL: 'stale-shared', JZ_SELF_TEST_KERNEL_SHA256: 'stale-hash' }),
+      })
+      is(r.status, outcome === 'pass' ? 0 : 1, r.stderr)
+      if (name === 'invalid') { is(existsSync(record + '.builds'), false, 'invalid arguments do not build'); continue }
+      is(readFileSync(record + '.builds', 'utf8'), 'build', 'exactly one fresh normal build')
+      const { tasks, options, path } = JSON.parse(readFileSync(record, 'utf8'))
+      is(options.jobs, 1)
+      is(tasks.map(t => t.name), ['self-roundtrip', 'kernel-parity', 'checkpoint',
+        ...(args.includes('--full') ? ['hosted-suite'] : []), ...(args.length ? ['recursive'] : [])])
+      for (const { env } of tasks.slice(0, 3)) {
+        is(env.JZ_SELF_TEST_KERNEL, path)
+        is(env.JZ_SELF_TEST_KERNEL_SHA256, kernelHash(Buffer.from([0,97,115,109,1,0,0,0])))
+        is(env.JZ_KERNEL, undefined, 'stale external kernel cannot override the fresh artifact')
+      }
+      for (const { name, env } of tasks.slice(3)) {
+        is(env.JZ_SELF_TEST_KERNEL, undefined, 'hosted build-failure fixtures must not inherit the shared-build override')
+        is(env.JZ_SELF_TEST_KERNEL_SHA256, undefined)
+        is(env.JZ_KERNEL, name === 'hosted-suite' ? path : undefined)
+      }
+      is(existsSync(dirname(path)), false, 'private directory removed after success, nonzero exit or task exception')
+    }
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('compile counts: filtered populations do no work; argument tables reuse their fixture', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'jz-count-test-'))
+  try {
+    for (const [file, grep, calls, assertions] of [
+      ['perf-ratchet', '^nothing selected$', 0, 0], ['perf-ratchet', '^perf-ratchet: int ', 40, 1],
+      ['pow', '^nothing selected$', 0, 0], ['pow', '^Math.pow runtime', 1, null],
+      ['dyn-keys', 'an index key reads a string', 5, 72],
+    ]) {
+      const path = join(dir, 'calls.json')
+      const r = spawnSync(process.execPath, ['--import', './test/_hashes.mjs', 'test/index.js', file], {
+        cwd: root, encoding: 'utf8', timeout: 60000,
+        env: clean({ JZ_HASHES: path, TST_GREP: grep, TST_FORMAT: 'tap' }),
+      })
+      is(r.status, 0, r.stderr || r.stdout)
+      is(JSON.parse(readFileSync(path, 'utf8')).meta.calls, calls, `${file}, ${grep}: actual compile calls`)
+      if (assertions != null) ok(r.stdout.includes(`# assertions ${assertions}\n`), 'semantic assertions still execute')
+    }
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 

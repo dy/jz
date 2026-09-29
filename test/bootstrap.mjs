@@ -27,7 +27,7 @@ try {
     { name: 'checkpoint', args: ['test/index.js', 'self-checkpoint'], env: legEnv(shared) },
   ]
   if (args.includes('--full')) tasks.push(
-    { name: 'hosted-suite', args: ['test/index.js', '--suite=all'], env: legEnv({ ...shared, JZ_KERNEL: path, JZ_TEST_TARGET: 'jz.wasm' }) },
+    { name: 'hosted-suite', args: ['test/index.js', '--suite=all'], env: legEnv({ JZ_KERNEL: path, JZ_TEST_TARGET: 'jz.wasm' }) },
   )
   if (args.length) tasks.push(
     { name: 'recursive', args: ['scripts/kernel-gate.mjs', '--kernel', path, '--gate', 'recursive'], env: legEnv() },

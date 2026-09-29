@@ -90,7 +90,8 @@ function tally(label, pairs, pow, limit = 1) {
 
 // === 1. $math.pow_core — the runtime non-integer tail ===
 
-const { f: pow } = run('export let f = (x, y) => Math.pow(x, y)')
+let runtimePow
+const pow = (x, y) => (runtimePow ??= run('export let f = (x, y) => Math.pow(x, y)').f)(x, y)
 const TAIL_BASES = [...LOG_BASES, 0.18, 0.5, 1.0000001, 2.2, 255.7]
 // The pinned values from the colorpq regression (±0.1593017578125 — a PQ-curve exponent —
 // and ±78.84375, its far end) plus common non-integer shapes: ±0.5 (sqrt fast path),

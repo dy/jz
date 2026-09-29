@@ -1103,7 +1103,7 @@ export const run = ${body}`, want = oracle(src).run
   const edgeWant = oracle(edges).run
   for (const optimize of levels(0, 2, 3)) {
     const got = jz(edges, { optimize }).exports.run
-    for (const k of [0, 1]) for (let i = 0; i < 9; i++)
+    for (const k of [0, 0, 1, 0]) for (let i = 0; i < 9; i++)
       is(got(k, i), edgeWant(k, i), `edge key ${k} ${i} O${optimize}`)
   }
   // a runtime 'length' key read an array's as undefined and absent (a typed
@@ -1113,7 +1113,7 @@ export const run = ${body}`, want = oracle(src).run
   const want = oracle(src).run
   for (const optimize of levels(0, 2, 3)) {
     const got = jz(src, { optimize }).exports.run
-    for (const k of [0, 1]) for (const i of [0, 1, 2])
+    for (const k of [0, 0, 1, 0]) for (const i of [0, 1, 2])
       is(got(k, i), want(k, i), `length key ${k} ${i} O${optimize}`)
   }
 })
