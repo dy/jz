@@ -458,7 +458,7 @@ const spliceInlinedShape = (prefix, valueStmt, loopVariantNames) => {
 const CALLER_FULL = 3000
 // The largest straight-line body the speed tier splices at a site in a loop past the site budgets.
 const WARM_BODY = 200
-let callerSize = 0, callerBound = true, kernels = new Set()
+let callerSize = 0, callerBound = true, kernels = new Set(), inClosure = false
 // The candidates that splice only where an argument they call is a function: name → the positions of those parameters.
 let fnSites = new Map()
 // The positions of the parameters `func` calls inside a loop.
@@ -495,6 +495,8 @@ const isCandidateCall = (node, candidates, hot = false) => {
   if (warm.has(node[1])) { if (loopsDeep === 0 && !hot || callerSize > CALLER_FULL) return false }
   else if (!hot && hotOnly.has(node[1])) return false
   if (!hot && callerBound && callerSize > CALLER_FULL && kernels.has(node[1])) { ctx.plans.keptKernels.add(node[1]); return false }
+  // in a callback a factory returns, a kernel splices at a site in the callback's own loop only
+  if (inClosure && !hot && kernels.has(node[1])) return false
   const called = fnSites.get(node[1])
   if (called === undefined) return true
   const args = callArgs(node)
@@ -1307,7 +1309,7 @@ export const inlineHotInternalCalls = (programFacts, ast) => {
   // a function of its own, where the engine's tier-up warms it, rather than in
   // a callback that holds everything else a block runs (a host's process()
   // wrapping a filter ran its loop at half speed spliced there).
-  const closureLeaves = new Map([...candidates].filter(([name]) => leaves.has(name)))
+  const closureLeaves = new Map([...candidates].filter(([name]) => leaves.has(name) || kernels.has(name)))
   const closureExprLeaves = new Map([...exprOnlyCandidates].filter(([name]) => leaves.has(name)))
   const spliceClosures = (node) => {
     let changed = false
@@ -1315,7 +1317,9 @@ export const inlineHotInternalCalls = (programFacts, ast) => {
       if (n[0] !== '=>' || n[2] == null) return
       const view = callerView
       callerView = ctx.summary?.at(n[1]) ?? null
+      inClosure = true
       const next = splice(n[2], !isBlockBody(n[2]), closureLeaves, closureExprLeaves)
+      inClosure = false
       callerView = view
       if (next != null) { n[2] = next; changed = true }
     } })

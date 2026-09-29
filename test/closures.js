@@ -2315,6 +2315,20 @@ test('closure: a kernel a returned callback calls keeps its own function', () =>
   ok(/\(func \$gain\b/.test(text) && text.split('\n  (func ').filter(b => /^\$\W?closure/.test(b)).every(b => !/\(loop/.test(b)), 'the loop stays in gain')
 })
 
+// Called in the callback's own loop (a kernel per channel, a heap push per bin),
+// the kernel splices there: the call is the per-iteration cost the splice removes.
+test('closure: a kernel a returned callback calls in its loop splices there', () => {
+  const src = `function gain (d, p) { for (let i = 0; i < d.length; i++) d[i] = d[i] * p.g + p.o; return d }
+    const make = () => { const p = { g: 0.5, o: 0 }; return (chs, g) => { p.g = g; p.o = 0.25; for (let c = 0; c < chs.length; c++) gain(chs[c], p); return chs[0][0] + chs[chs.length - 1][0] } }
+    const cb = make()
+    export let f = (n, g) => { const a = new Float64Array(n).fill(2), b = new Float64Array(n).fill(-1); return cb([a, b], g) + a[n - 1] + b[0] }`
+  const js = oracle(src)
+  for (const optimize of levels(0, 2, 3)) for (const [n, g] of [[1, 0.5], [7, -2]]) is(jz(src, { optimize }).exports.f(n, g), js.f(n, g), `f(${n}, ${g}) at ${optimize}`)
+  if (belowOpt(2)) return
+  const text = wat(src, { optimize: { level: 2, watr: false } })
+  ok(!/call \$gain\b/.test(text), 'no call of gain is left')
+})
+
 // A helper whose expression body reads its one parameter before anything but
 // literals (`lin2db(env(x))`, env a closure call with effects) splices with the
 // argument standing where the parameter is read: it runs where the call ran it.
