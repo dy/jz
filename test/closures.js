@@ -2314,3 +2314,31 @@ test('closure: a kernel a returned callback calls keeps its own function', () =>
   const text = wat(src, { optimize: { level: 2, watr: false } })
   ok(/\(func \$gain\b/.test(text) && text.split('\n  (func ').filter(b => /^\$\W?closure/.test(b)).every(b => !/\(loop/.test(b)), 'the loop stays in gain')
 })
+
+// A helper whose expression body reads its one parameter before anything but
+// literals (`lin2db(env(x))`, env a closure call with effects) splices with the
+// argument standing where the parameter is read: it runs where the call ran it.
+// A body that reads anything else first keeps the call, and so the order. The
+// order is the plan's, read without watr (whose macro pass had its own order bug,
+// fixed in watr's own tests).
+test('closure: a helper reading its parameter first splices with a call for its argument', () => {
+  const src = `let k = 1
+    const lin2db = (lin) => 20 * Math.log10(Math.max(Math.abs(lin), 1e-10))
+    const late = (a) => k * 10 + a
+    const bump = () => { k = 5; return 1 }
+    const env = (a) => { let e = 0; return (x) => { e += a * (Math.abs(x) - e); return e } }
+    const make = () => { const en = env(0.5); return (x, y) => { for (let i = 0; i < x.length; i++) y[i] = lin2db(en(x[i])); return y[x.length - 1] } }
+    const p = make()
+    export let f = (n) => { const x = new Float64Array(n).fill(0.25), y = new Float64Array(n); return p(x, y) }
+    export let g = () => { k = 1; return late(bump()) + lin2db(0.1) }`
+  for (const optimize of levels(0, 2, 3)) {
+    // p's envelope keeps its state across calls: a fresh host module per level
+    const js = oracle(src), m = jz(src, { optimize }).exports
+    for (const n of [1, 5]) is(m.f(n), js.f(n), `f(${n}) at ${optimize}`)
+    is(jz(src, { optimize: { level: optimize, watr: false } }).exports.g(), js.g(), `g at ${optimize}: bump runs before k is read`)
+  }
+  if (belowOpt(2)) return
+  // watr splices a one-caller function itself: the plan's own choice is read without it
+  const text = wat(src, { optimize: { level: 2, watr: false } })
+  ok(text.split('\n  (func ').filter(b => /^\$\W?closure/.test(b)).every(b => !/call \$\W?lin2db\b/.test(b)), 'no closure calls lin2db')
+})

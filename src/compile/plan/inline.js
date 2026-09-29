@@ -135,6 +135,24 @@ const mixesKinds = (func, args) => {
   })
 }
 
+const ARITH_PATH = new Set(['+', '-', '*', '/', '%', '**', 'u-', 'u+', '<', '<=', '>', '>=', '===', '!==', '==', '!=', '&', '|', '^', '<<', '>>', '>>>', '~', '!'])
+/** Whether evaluating `expr` reaches `name` before anything but literals runs:
+ *  the path to it is arithmetic and pure calls (`20 * Math.log10(Math.max(
+ *  Math.abs(lin), 1e-10))`), each operand ahead of it a literal. An argument of
+ *  effects substituted there runs where the call ran it, after nothing else. */
+const firstEvaluated = (expr, name) => {
+  if (expr === name) return true
+  if (!Array.isArray(expr)) return false
+  const op = expr[0]
+  const operands = op === '()' ? (isPureCallee(expr[1]) ? callArgs(expr) : null) : ARITH_PATH.has(op) ? expr.slice(1) : null
+  if (!operands) return false
+  for (const x of operands) {
+    if (firstEvaluated(x, name)) return true
+    if (!isLiteral(x)) return false
+  }
+  return false
+}
+
 // A function body's statements, or null for an expression body: `(…) => ({ b0, a1 })`
 // is a literal, however its node reads like a block.
 const funcStmts = (body) => isBlockBody(body) ? blockStmts(body) : null
@@ -211,6 +229,12 @@ const inlinedBody = (func, args) => {
     const held = closures?.mentions.has(params[i].name) && !(Array.isArray(arg) && (arg[0] == null || arg[0] === 'str'))
     if (!held && !writes(params[i].name) && isSimpleArg(arg) && (atom || uses(params[i].name) <= 1)) { subst.set(params[i].name, arg); continue }
     if (!held && still && isRead(arg) && uses(params[i].name) === 1) { subst.set(params[i].name, arg); continue }
+    // An expression body reading a lone parameter first (`lin2db(env(x))`): the
+    // argument, calls and all, stands where the parameter is read, and the call
+    // splices into any expression. Every other argument is a literal, so no
+    // order among them changes.
+    if (!held && !writes(params[i].name) && !funcStmts(func.body) && uses(params[i].name) === 1 && firstEvaluated(func.body, params[i].name) &&
+        args.every((a, j) => j === i || isLiteral(a))) { subst.set(params[i].name, arg); continue }
     const tmp = `${T}inarg${freshId(ctx)}`
     // Parameter writes belong to the call's storage, never its caller's binding.
     argPrefix.push([writes(params[i].name) ? 'let' : 'const', ['=', tmp, arg]])
