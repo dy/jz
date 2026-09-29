@@ -2004,6 +2004,10 @@ export default (ctx) => {
         return emitSchemaSlotRead(base, common.slot, common.i32Certain, common.bigintProven)
       }
     }
+    // No object the receiver may be ever holds the name: undefined, the
+    // receiver still evaluated for what it does.
+    if (schemaIdx < 0 && ctx.summary?.at(ctx.func.current)?.absentMember?.(obj, prop))
+      return typeof obj === 'string' ? undefExpr() : typed(['block', ['result', 'f64'], ['drop', va], undefExpr()], 'f64')
     if (schemaIdx >= 0) {
       // A precise schema id proves this is a fixed-size OBJECT allocation, not
       // an ARRAY value that may have relocated. Extract the payload offset from

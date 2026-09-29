@@ -12,6 +12,10 @@ import {
   ANY, NUMBER, STRING, BOOL, BIGINT, NULLISH, orAbsent, plus, arith, typedStore, typedAux, typedElemKind, typedMethodKind, isPostfixRecovery, logicalMask, selectKind,
   TYPED_CTOR, isCount, ARRAY_METHODS, NUMBER_OPS, BOOL_OPS, bitOf, TAGS, NULL_BITS, outsideKind } from './kind.js'
 
+// Names every object has from its prototype: a read of one is never undefined.
+const INHERITED = new Set(['constructor', 'hasOwnProperty', 'isPrototypeOf', 'propertyIsEnumerable', 'toString', 'toLocaleString', 'valueOf',
+  '__defineGetter__', '__defineSetter__', '__lookupGetter__', '__lookupSetter__', '__proto__', 'length'])
+
 export function summaryQueries(facts, internal = false) {
   const { kinds, incoming, fields, results, receivers, closures, closuresByBody, declared, parent, nameKeys, forwards, siteResults,
     scopeOfSig, scopeOfBody, scopeOfParams, cellUp, elems, tuples, lens, stores, built, grown, unknown, presentReads, paramRangesOf, cellProps, cellWild, closureSets, closureSetIds, cells, jsonKinds, unions, shapeUnions,
@@ -434,6 +438,19 @@ export function summaryQueries(facts, internal = false) {
           for (const key of sideProps.get(site)?.keys() ?? []) keys.add(key)
         }
         return [...keys]
+      },
+      // A member no object the receiver may be ever holds: every construction
+      // site is a plain literal (no class, no accessor, no iterator record) the
+      // summary keeps whole, whose layout lacks the name and which no store
+      // under it, under a computed name or from code the summary cannot see
+      // reaches, and the name is none an object inherits. The read is undefined.
+      absentMember: (e, prop) => {
+        if (typeof prop !== 'string' || INHERITED.has(prop) || memberMayBeOwn(prop)) return false
+        const k = kindOfExpr(e)
+        if (tagOf(k) !== K.OBJECT || paramOf(k) === UNKNOWN || isNullable(k)) return false
+        return shapesOf(paramOf(k)).every(site => !schemas[site].includes(prop) && !schemas[site].includes(getterOf(prop)) &&
+          !methods.get(site)?.size && !methods.get(layouts[site])?.size && !iterRecord(site) && !lostSchema(site) &&
+          !indexedSchemas?.has(site) && !openSchemas.has(site) && tagOf(sideOf(site, prop)) === K.NONE && !facts.foldedLayouts.has(layouts[site]))
       },
       openSidOfExpr: e => { const k = kindOfExpr(e), sid = publicSid(k); return tagOf(core(k)) === K.OBJECT && sid !== UNKNOWN && (isNullable(k) || shapesOf(paramOf(k)).some(site => openSchemas.has(site))) ? sid : null },
       typedCtorOf: name => { const k = readKind(name); return tagOf(k) === K.TYPED && typedAux(k) !== UNKNOWN && !isNullable(k) ? ctorFromElemAux(typedAux(k)) : null },
