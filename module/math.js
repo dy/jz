@@ -549,18 +549,22 @@ export default (ctx) => {
   // returns the canonical NaN. One kernel runs, chosen by a branch on n's parity: a
   // phase advancing less than π/2 a step keeps it predicted.
   const [H1, H2, H3, H4] = PIO2_CW
+  // |x| ≤ π/4 (the double below it, where x·2/π rounds to ½ and ties to n = 0) is its own
+  // remainder: n = 0, r = x, k = 0, what the reduction gives, without it
   const reduceTrig = `
-    (if (f64.lt (f64.abs (local.get $x)) (f64.const ${CW_LIMIT}))
-      (then
-        (local.set $t (f64.add (f64.mul (local.get $x) (f64.const ${INV_PIO2})) (f64.const ${ROUND_MAGIC})))
-        (local.set $n (f64.sub (local.get $t) (f64.const ${ROUND_MAGIC})))
-        (local.set $r (f64.sub (f64.sub (f64.sub (f64.sub (local.get $x)
-          (f64.mul (local.get $n) (f64.const ${H1}))) (f64.mul (local.get $n) (f64.const ${H2})))
-          (f64.mul (local.get $n) (f64.const ${H3}))) (f64.mul (local.get $n) (f64.const ${H4}))))
-        (local.set $k (i32.wrap_i64 (i64.reinterpret_f64 (local.get $t)))))
-      (else
-        (if (f64.ne (f64.sub (local.get $x) (local.get $x)) (f64.const 0)) (then (return (f64.const nan))))
-        (local.set $k (local.set $r (call $math.rem_pio2 (local.get $x))))))`
+    (if (f64.le (f64.abs (local.get $x)) (f64.const ${PI / 4}))
+      (then (local.set $r (local.get $x)))
+      (else (if (f64.lt (f64.abs (local.get $x)) (f64.const ${CW_LIMIT}))
+        (then
+          (local.set $t (f64.add (f64.mul (local.get $x) (f64.const ${INV_PIO2})) (f64.const ${ROUND_MAGIC})))
+          (local.set $n (f64.sub (local.get $t) (f64.const ${ROUND_MAGIC})))
+          (local.set $r (f64.sub (f64.sub (f64.sub (f64.sub (local.get $x)
+            (f64.mul (local.get $n) (f64.const ${H1}))) (f64.mul (local.get $n) (f64.const ${H2})))
+            (f64.mul (local.get $n) (f64.const ${H3}))) (f64.mul (local.get $n) (f64.const ${H4}))))
+          (local.set $k (i32.wrap_i64 (i64.reinterpret_f64 (local.get $t)))))
+        (else
+          (if (f64.ne (f64.sub (local.get $x) (local.get $x)) (f64.const 0)) (then (return (f64.const nan))))
+          (local.set $k (local.set $r (call $math.rem_pio2 (local.get $x))))))))`
   const trigLocals = '(local $t f64) (local $n f64) (local $r f64) (local $z f64) (local $k i32)'
   // sin(r) for an even quadrant, cos(r) for an odd one, then the sign by the second bit
   const quadrant = `

@@ -2325,6 +2325,10 @@ V8's fdlibm exactly (branch `audiojs-math`) took 75% more. The budget is spent
 on the polynomials, never on the argument reduction. `sin`, `cos` and
 `tan` reduce x to n·π/2 + r, |r| ≤ π/4, and take sin(r) or cos(r) by n's
 parity (a branch; a phase keeps it predicted), negated by n's second bit.
+An |x| ≤ π/4 (the double below it; x·2/π rounds to ½ and ties to n = 0) is its
+own remainder and skips the reduction, the same bits: an LFO or a pan angle in
+[0, 0.7] ran at 0.73 (sin) and 0.57 (cos) of V8's speed and now 1.26 and 1.21,
+where an argument across [−30, 44] pays the test (2.2 to 1.9 times V8).
 Below 2^24 the reduction is inline Cody–Waite: n from x·2/π rounded by adding
 and removing 1.5·2^52 (whose low word is then n), r = x − n·H1 − n·H2 − n·H3 −
 n·H4 with π/2 in 29, 29, 29 and 53-bit parts, each truncated so −0 stays −0.
