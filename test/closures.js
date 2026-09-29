@@ -2298,3 +2298,19 @@ test('closure: a small function a returned callback calls in its loop is spliced
   const closures = text.split('\n  (func ').filter(b => /^\$\W?closure/.test(b))
   ok(closures.length && closures.every(b => !/call \$\W?wrap\b/.test(b)), 'no closure calls wrap')
 })
+
+// A kernel (a loop of its own) the callback calls stays a function of its own:
+// the engine warms it there, where spliced into a host's process() callback it
+// ran its loop inside everything else a block does, at half the speed.
+test('closure: a kernel a returned callback calls keeps its own function', () => {
+  const src = `function gain (d, p) { for (let i = 0; i < d.length; i++) d[i] = d[i] * p.g + p.o; return d }
+    const make = () => { const p = { g: 0.5, o: 0 }; return (d, g) => { p.g = g; p.o = 0.25; gain(d, p); return d[0] } }
+    const cb = make()
+    export let f = (n, g) => { const d = new Float64Array(n).fill(2); return cb(d, g) + d[n - 1] }`
+  const js = oracle(src)
+  for (const optimize of levels(0, 2, 3)) for (const [n, g] of [[1, 0.5], [7, -2]]) is(jz(src, { optimize }).exports.f(n, g), js.f(n, g), `f(${n}, ${g}) at ${optimize}`)
+  if (belowOpt(2)) return
+  // watr splices a one-caller function itself: the plan's own choice is read without it
+  const text = wat(src, { optimize: { level: 2, watr: false } })
+  ok(/\(func \$gain\b/.test(text) && text.split('\n  (func ').filter(b => /^\$\W?closure/.test(b)).every(b => !/\(loop/.test(b)), 'the loop stays in gain')
+})

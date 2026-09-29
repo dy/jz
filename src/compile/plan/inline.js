@@ -1279,14 +1279,19 @@ export const inlineHotInternalCalls = (programFacts, ast) => {
   }
   // Each closure's body, innermost first, spliced in place (the literal keeps
   // its identity and its parameter node, which name its scope): the body, or
-  // null where no closure changed.
+  // null where no closure changed. Leaves only: a kernel keeps its own loop in
+  // a function of its own, where the engine's tier-up warms it, rather than in
+  // a callback that holds everything else a block runs (a host's process()
+  // wrapping a filter ran its loop at half speed spliced there).
+  const closureLeaves = new Map([...candidates].filter(([name]) => leaves.has(name)))
+  const closureExprLeaves = new Map([...exprOnlyCandidates].filter(([name]) => leaves.has(name)))
   const spliceClosures = (node) => {
     let changed = false
     walkAst(node, { exit: (n) => {
       if (n[0] !== '=>' || n[2] == null) return
       const view = callerView
       callerView = ctx.summary?.at(n[1]) ?? null
-      const next = splice(n[2], !isBlockBody(n[2]), candidates, exprOnlyCandidates)
+      const next = splice(n[2], !isBlockBody(n[2]), closureLeaves, closureExprLeaves)
       callerView = view
       if (next != null) { n[2] = next; changed = true }
     } })
