@@ -36,7 +36,7 @@ import {
 import { freshId } from '../../ir.js'
 import { cloneWithSubst } from '../../type.js'
 import { constIntExpr, constNumExpr } from '../../static.js'
-import { K, core, tagOf } from '../../summary/index.js'
+import { K, core, tagOf, answeredAtCall } from '../../summary/index.js'
 import { analyzeBody } from '../analyze.js'
 import {
   LOOP_OPS, isSimpleArg, mutatesAny, loopDepth, nodeSize, clonePlain, collectBindings,
@@ -1030,6 +1030,8 @@ export const inlineHotInternalCalls = (programFacts, ast) => {
     // still inline to expose their types without duplicating source.
     if (cfg?.sourceInlineDup === false && (isExported(func) || sites?.length !== 1)) continue
     if (func.raw || !func.body || func.rest) continue
+    // a runtime helper the summary reads at its call (an await's settled value) keeps the call
+    if (answeredAtCall(func.name)) continue
     if (isExported(func) && !soleCallerExport) continue
     // A factory's value is a fresh literal of its own (`let self = {…}; …;
     // return self`, jzify/classes.js). Its splice is an allocation site the

@@ -85,6 +85,14 @@ const KEY_READERS = new Set(['Object.keys', 'Object.values', 'Object.getOwnPrope
 const KEY_TARGETS = new Set(['Object.assign', 'Object.defineProperty', 'Object.defineProperties'])
 
 const BIND = CLASS_T + 'bind'
+// The runtime's helpers the summary answers at their call nodes: an iterator
+// minted or drained (iterFrom, iterMk, iterDrain), a machine driven, a
+// promise rejected, an await's settled value (promiseAt, awaited). What one
+// returns is read off its call, never its body, so a call of one stays one.
+const ITER_FROM = /\$__it_from$/, ITER_MK = /\$__it_mk$/, ITER_DRAIN = /\$__it_drain$/, ITER_ARR = /\$__it_arr$/
+const ASYNC_RUN = /\$__async_run$/, AWAITED = /\$__awaited$/, REJECT = /\$__p_reject$/
+const AT_CALL = [ITER_FROM, ITER_MK, ITER_DRAIN, ITER_ARR, ASYNC_RUN, AWAITED, REJECT]
+export const answeredAtCall = (name) => AT_CALL.some(r => r.test(name))
 const STRING_METHODS = new Set(['slice', 'substring', 'substr', 'trim', 'trimStart', 'trimEnd', 'toUpperCase', 'toLowerCase', 'padStart', 'padEnd', 'repeat', 'replace', 'replaceAll', 'concat', 'normalize', 'at', 'charAt'])
 const STRING_NUMBER_METHODS = new Set(['charCodeAt', 'codePointAt', 'indexOf', 'lastIndexOf', 'search', 'localeCompare'])
 const STRING_BOOL_METHODS = new Set(['includes', 'startsWith', 'endsWith'])
@@ -1337,7 +1345,6 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   // A generator object is the same record, minted by `__it_mk(next, return,
   // throw)` (jzify/generators.js) with the machine's own closures: a site per
   // mint keeps each generator's results its own.
-  const ITER_FROM = /\$__it_from$/, ITER_MK = /\$__it_mk$/
   const ITER_LAYOUT = sidByKey.get(schemaKey(ITER_RECORD_KEYS, null))
   const RESULT_LAYOUT = sidByKey.get(schemaKey(['value', 'done'], null))
   const iterSites = new Map()   // record site → { src, elem, next, ret, thr }: the source read by position, elements of no source, a machine's closures
@@ -1421,7 +1428,6 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   // array of its elements. `__it_drain` passes any other value through to the
   // spread; `__it_arr` copies an indexed value or a collection's snapshot
   // view, and an array-like by its length.
-  const ITER_DRAIN = /\$__it_drain$/, ITER_ARR = /\$__it_arr$/
   const drainedOf = (node, w, base) => {
     const out = arrayOf(node, K.NONE)
     raiseElem(out, iterFacts(sidOf(w)) ? iterElem(sidOf(w)) : member('.', method(w, 'next', base, 0, null), 'value'))
@@ -1457,7 +1463,6 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   // thenable, a named promise's value, anything for a promise the program
   // made another way or a thenable. The runtime stores into a promise only
   // through its own references, never through one the summary names here.
-  const ASYNC_RUN = /\$__async_run$/, AWAITED = /\$__awaited$/, REJECT = /\$__p_reject$/
   const PROMISE_LAYOUT = sidByKey.get(schemaKey(PROMISE_KEYS, null))
   const promiseSites = new Map()   // promise site → the value it fulfills with
   const doneSites = new Set()      // `{ value, done: true }` literal sites: the completions of a machine
