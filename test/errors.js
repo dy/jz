@@ -19,6 +19,8 @@ const throws = (code, match, msg, opts) => {
 test('prohibited: this', () => throws('export let f = () => this.x', 'this', 'this should error'))
 test('prohibited: super', () => throws('export let f = () => super.x', 'super', 'super should error'))
 test('strict rejects: arguments', () => throws('export let f = () => arguments[0]', 'arguments', 'arguments should error', { strict: true }))
+// At a module's top level a function declaration is lexical (ES2026 §16.2.1.1): a second one is an early error, not a hoist.
+test('module: a second function declaration of a name is an early error', () => throws('function f() { return 1 }\nfunction f() { return 2 }\nexport let g = () => f()', 'duplicate function declaration', 'a duplicate top-level function should error'))
 test('prohibited: eval', () => throws('eval("1")', 'eval', 'eval should error'))
 
 // A SIMD (v128) value can't be NaN-boxed into the uniform f64 closure ABI. An IIFE is

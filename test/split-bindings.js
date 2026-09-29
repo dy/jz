@@ -9,6 +9,7 @@ import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { T } from '../src/ast.js'
 import { splitReassigned } from '../src/prepare/split-bindings.js'
+import { parse } from '../src/parse.js'
 import { belowOpt, levels } from './_matrix.js'
 import { compile } from '../index.js'
 import { oracle, run, wat } from './util.js'
@@ -216,3 +217,17 @@ test('split bindings: the lists inside a body', () => {
   const lone = inside['a body that is a loop alone'][1]
   is(splitReassigned({ body: lone, sig: { params: [{ name: 'n' }, { name: 'y' }] } }), lone, 'the function\'s own list alone: a body of one statement has none to split')
 })
+
+// A statement the pass rewrites (the declaration it makes, the ones it renames the binding in) keeps the position the parser noted (`loc`): a source map reads it.
+test('split bindings: a rewritten statement keeps its source position', () => {
+  const fn = parse('function f(x) { let y = x + 2; y = y * x; if (y > 5) { y = y - 1 } return y }')
+  const before = fn[3].slice(1).map(st => st.loc)
+  const out = splitReassigned({ body: ['{}', fn[3]], sig: { params: [{ name: 'x' }] } })
+  const list = out[1]
+  is(list.length, fn[3].length, 'one statement per statement')
+  ok(list[2][0] === 'let' && list[2][1][1].startsWith('y'), 'the reassignment became a declaration')
+  is(list.slice(1).map(st => st.loc), before, 'every statement, the declaration too, at the position of the one it stands for')
+  const positioned = (n) => !Array.isArray(n) || n[0] == null || (typeof n.loc === 'number' && n.slice(1).every(positioned))
+  ok(list.slice(3).every(positioned), 'the statements renamed inside keep every node\'s position')
+})
+
