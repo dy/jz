@@ -118,6 +118,7 @@ const wholeKey = (e) => {
 export const emitIndex = (index, whole = false) => {
   const direct = tryI32Index(index)
   if (direct) return direct
+  const proven = whole
   whole ||= wholeKey(index)
   // `x ± k` with k an i32 and x a name: the key is an integer exactly when x
   // is (a boxed x makes both NaN), so the test reads x alone, where a loop
@@ -146,7 +147,16 @@ export const emitIndex = (index, whole = false) => {
   // walk models integer values only).
   // A constant folds exactly in keyIndex; a runtime value saturates (asI32's
   // ToInt32 would wrap 2^32 + 1 to 1).
-  if (whole && !(Array.isArray(value) && value[0] === 'f64.const')) return typed(['i32.trunc_sat_f64_s', asF64(value)], 'i32')
+  if (whole && !(Array.isArray(value) && value[0] === 'f64.const')) {
+    if (proven) return typed(['i32.trunc_sat_f64_s', asF64(value)], 'i32')
+    // An integer-certain name may hold NaN (`Math.floor` of one, `Infinity -
+    // Infinity`), which names no element, where the truncation reads index 0.
+    const t = temp('ix'), get = ['local.get', `$${t}`]
+    const out = typed(['block', ['result', 'i32'], ['local.set', `$${t}`, asF64(value)],
+      ['select', ['i32.trunc_sat_f64_s', get], ['i32.const', -1], ['f64.eq', get, get]]], 'i32')
+    out.indexValid = ['f64.eq', get, get]
+    return out
+  }
   return keyIndex(value)
 }
 
