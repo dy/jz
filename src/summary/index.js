@@ -75,6 +75,8 @@ const PURE_BUILTINS = /^(Object\.(keys|values|entries|freeze|isFrozen|getOwnProp
 // A builtin that neither stores its arguments nor runs a method of theirs:
 // they keep their shapes. `Object.freeze` is the identity (module/object.js).
 const KEEPING_BUILTINS = /^(Object\.(keys|freeze|isFrozen|getOwnPropertyNames|getPrototypeOf|hasOwn|is)|Array\.isArray|Boolean|Symbol(\.\w+)?)$/
+// The calls that read an object's own key set without handing it on (the rest escape it).
+const KEY_READERS = new Set(['Object.keys', 'Object.values', 'Object.getOwnPropertyNames', 'Object.hasOwn', 'Object.freeze', 'Object.isFrozen', 'Object.isSealed', 'Object.isExtensible', '__keys_ro', '__keys_dyn'])
 
 const BIND = CLASS_T + 'bind'
 const STRING_METHODS = new Set(['slice', 'substring', 'substr', 'trim', 'trimStart', 'trimEnd', 'toUpperCase', 'toLowerCase', 'padStart', 'padEnd', 'repeat', 'replace', 'replaceAll', 'concat', 'normalize', 'at', 'charAt'])
@@ -355,6 +357,12 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   // any other shape needs no presence-mask update (emit-assign.js).
   const deletable = new Set()
   const deleteReach = { unknown: false }
+  // The shapes whose own key set an operation reads: Object.keys and its kin,
+  // for-in's key list, `in`, hasOwnProperty, a spread of several sources. On
+  // any other shape a key that holds undefined reads as a missing one does
+  // (plan/declare-unseen-keys.js). A lost shape's key set is read by code
+  // the summary cannot see (lostSchema).
+  const keysSeen = new Set()
   const wildProps = new Map()   // literal name → the values stored under it through a receiver of unknown shape
   const lostSchema = (sid) => opaqueSchemas.has(sid) || hostSchemas.has(sid)
   /** An object kind whose every shape the summary can enumerate. */
@@ -438,6 +446,10 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   const cellLostObject = new Set()    // cell roots holding objects of unknown shape
   const NO_SHAPES = new Set()
   const shapesInCell = (c) => cellShapes.get(c) ?? NO_SHAPES
+  const seeKeys = (k) => {
+    if (tagOf(core(k)) === K.OBJECT && paramOf(k) !== UNKNOWN) for (const sid of shapesOf(paramOf(k))) keysSeen.add(sid)
+    else if (celled(k)) for (const sid of shapesInCell(cell(paramOf(k)))) keysSeen.add(sid)
+  }
   const addCellShapes = (c, sids) => { let s = cellShapes.get(c); if (!s) cellShapes.set(c, s = new Set()); for (const sid of sids) if (!s.has(sid)) { s.add(sid); changed = true } }
   const addCellLost = (c) => { if (!cellLostObject.has(c)) { cellLostObject.add(c); changed = true } }
   const elems = []               // cell root → element kind
@@ -2061,6 +2073,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   }
   const method = (recv, name, base, n, node = null) => {
     const t = tagOf(recv)
+    if (name === 'hasOwnProperty' || name === 'propertyIsEnumerable') seeKeys(recv)
     // `f.m(…)` on a function `f` whose property `m` prepare lifted to the
     // function `f$m` (a class's static, a parser's table): that function is
     // called, as the emitter calls it (method-dispatch.js tryFnPropCall).
@@ -2383,6 +2396,8 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       } else if (typeof p === 'string') add(p, expr(p))
       else if (Array.isArray(p) && p[0] === '...') {
         const source = expr(p[1]), ids = tagOf(source) === K.OBJECT && paramOf(source) !== UNKNOWN ? shapesOf(paramOf(source)) : [], sourceSid = ids[0]
+        // the copy holds the keys the source has (a lone source's copy is its kind: its readers mark it)
+        seeKeys(source)
         // An object rest skips the keys its pattern named; one known only at
         // run time leaves the copy a dictionary (module/object.js mergeSpreadNames).
         const skip = spreadExclusions(p)
@@ -2666,6 +2681,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     if (op === '()' || op === '?.()') {
       if (n.length === 2 && op === '()') return expr(n[1])  // a grouping `(e)`: a call always carries its argument slot
       const callee = n[1], base = pushArgs(op === '?.()' ? [',', ...n.slice(2)] : n[2]), count = sp - base
+      if (KEY_READERS.has(callee)) for (let i = 0; i < count; i++) seeKeys(ks[base + i])
       let r
       // An optional call: a callee of no kind yet calls nothing, a nullish one answers undefined.
       let optional = null
@@ -2716,7 +2732,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     if (BOOL_OPS.has(op)) {
       // Loose equality, ordering and property-key tests may coerce their values.
       const passive = op === '!' || op === '===' || op === '!=='
-      for (let i = 1; i < n.length; i++) passive ? selectedExpr(n[i], 0) : expr(n[i])
+      for (let i = 1; i < n.length; i++) { const k = passive ? selectedExpr(n[i], 0) : expr(n[i]); if (op === 'in' && i === 2) seeKeys(k) }
       return BOOL
     }
     if (logical) {
@@ -3646,7 +3662,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     scopeOfSig, scopeOfBody, scopeOfParams, cellUp, elems, tuples, lens, stores, built, grown, unknown, presentReads, paramRangesOf, cellProps, cellWild, closureSets, closureSetIds, cells, jsonKinds, closuresByBody, unions, shapeUnions,
     schemas, layouts, sitesByLayout, objectKinds, methods, sidByKey,
     funcNames: new Set(funcByName.keys()), imports: new Map(imports),
-    numeric, strung, dynamicProps, builtinOwnProps, escaped, typedReadPresent, typedProps, typedPropsByAux, openSchemas, indexedSchemas, hostSchemas, opaqueSchemas, deletable, deleteReach,
+    numeric, strung, dynamicProps, builtinOwnProps, escaped, typedReadPresent, typedProps, typedPropsByAux, openSchemas, indexedSchemas, hostSchemas, opaqueSchemas, deletable, deleteReach, keysSeen, foldedLayouts,
     sideProps, sideWild, wildProps, wildValues, pendingAll, keyedCells, cellShapes, cellLostObject, closureProps, iterSites, reached, defaultRuns, decisions,
     held,
     boolKeys, storeBits, paramKeys,
@@ -3970,7 +3986,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   if (seeded.length) {
     kinds.length = 0; incoming.length = 0; fields.length = 0; objectKinds.clear(); decisions.clear(); opaqueSchemas.clear(); hostSchemas.clear(); retainedSchemas.clear(); hostArrays.clear(); retainedArrays.clear(); hostClosures.clear(); results.clear(); escaped.clear(); certainKeys.clear(); boolKeys.clear(); for (let i = 0; i < elems.length; i++) { elems[i] = K.NONE; cellUp[i] = i }
     tuples.clear(); lens.clear(); stores.clear(); built.clear(); grown.clear(); unknown.clear(); presentReads.clear(); argRanges.clear(); roundArgs.clear(); moved.clear(); openArgs.clear()
-    pendingAll = false; pendingIndexed = false; wildValues = K.NONE; wildProps.clear(); sideProps.clear(); sideWild.clear(); closureProps.clear(); sideByProp.clear(); foreignObjects = false; foreignProps.clear(); deletable.clear(); deleteReach.unknown = false
+    pendingAll = false; pendingIndexed = false; wildValues = K.NONE; wildProps.clear(); sideProps.clear(); sideWild.clear(); closureProps.clear(); sideByProp.clear(); foreignObjects = false; foreignProps.clear(); deletable.clear(); deleteReach.unknown = false; keysSeen.clear()
     seed(seeded)
     fixpoint()
   }

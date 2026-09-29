@@ -94,6 +94,7 @@ export const PASS_NAMES = [
   // reads MUST be listed here — an unlisted name is `undefined !== false` and
   // silently runs at O0, breaking the representation-free reference tier.
   // test/passes.js greps every gate read against this list + TUNING_KEYS.
+  'declareUnseenKeys',        // a key stored on objects nothing asks for their keys: a slot of their literals (plan/declare-unseen-keys.js)
   'loadCSE',                  // straight-line typed element-load CSE (compile-level, pre-analyze)
   'intDivLower',              // i32/i32 constant-divisor strength lowering
   'forInUnroll',              // for-in over a static schema → key-literal-substituted body copies

@@ -101,6 +101,7 @@ const TESTS = [
   'typed-copy',
   'typed-sort',
   'typed-length',
+  'declare-unseen-keys',
   'select-order',
   'pointer-join',
   'typed-rebound',

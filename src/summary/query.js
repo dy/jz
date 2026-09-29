@@ -572,6 +572,23 @@ export function summaryQueries(facts, internal = false) {
     // A layout a `delete` can reach: a deleted receiver's, or any lost layout
     // once a delete went through a receiver of unknown shape.
     deletableSchema: sid => { deletableLayouts ??= new Set([...facts.deletable ?? []].map(s => layouts[s])); return deletableLayouts.has(sid) || (facts.deleteReach?.unknown === true && (opaqueLayouts.has(sid) || hostLayouts.has(sid))) },
+    // Construction sites (plan/declare-unseen-keys.js): the ones a literal
+    // node makes, whether an object of one can hold a key before its first
+    // store unseen (every holder is one the summary names, nothing asks it
+    // for its keys or deletes one, no store under a computed name reaches it),
+    // the names stored beside its layout in the order the walk met them, and
+    // the sets of sites values join (a shape set, a cell's shapes).
+    literalSites: node => { const k = objectKinds.get(node); return k !== undefined && tagOf(core(k)) === K.OBJECT && paramOf(k) !== UNKNOWN ? shapesOf(paramOf(k)) : [] },
+    keysUnseen: sid => !facts.keysSeen.has(sid) && !facts.opaqueSchemas.has(sid) && !facts.hostSchemas.has(sid) && !facts.deletable.has(sid) &&
+      !indexedSchemas.has(sid) && (sideWild.get(sid) ?? K.NONE) === K.NONE && !facts.foldedLayouts.has(layouts[sid]),
+    sideKeys: sid => [...(sideProps.get(sid)?.keys() ?? [])],
+    siteLayout: sid => layouts[sid],
+    joinedSites: () => {
+      const out = []
+      for (const id of shapeUnions.values()) if (id >= SET_BASE && id !== UNKNOWN) out.push(shapesOf(id))
+      for (const s of cellShapes.values()) out.push([...s])
+      return out
+    },
     fieldVal: (sid, prop) => valOf(fieldKind(sid, prop)),
     fieldTypedCtor: (sid, prop) => { const k = fieldKind(sid, prop); return tagOf(k) === K.TYPED && typedAux(k) !== UNKNOWN && !isNullable(k) ? ctorFromElemAux(typedAux(k)) : null },
     fieldSid: (sid, prop) => { const k = fieldKind(sid, prop); return tagOf(k) === K.OBJECT && paramOf(k) !== UNKNOWN && !isNullable(k) ? paramOf(k) : null },

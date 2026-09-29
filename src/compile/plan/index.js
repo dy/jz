@@ -51,6 +51,7 @@ import {
   holdModuleNumbers, resolveHeldMethods, holdModuleRegexes,
 } from './scope.js'
 import { declareWrittenKeys } from './declare-written-keys.js'
+import { declareUnseenKeys } from './declare-unseen-keys.js'
 import { foldKindTests } from './fold-kind-tests.js'
 import { indexArrayPatterns } from './index-array-patterns.js'
 import { inlineHotInternalCalls, inlineLocalLambdas, specializeFixedRestCalls } from './inline.js'
@@ -127,6 +128,10 @@ export default function plan(ast, profiler, summarize) {
   sweep('declareWrittenKeys', () => declareWrittenKeys(ast))
   // A name that holds a method of `Object.prototype` is the method where it is called.
   sweep('resolveHeldMethods', () => resolveHeldMethods(ast))
+  // A key stored on objects nothing asks for their keys becomes a declared
+  // slot of their literals too, the literals their values join sharing one layout.
+  ctx.summary = summarize()
+  if (t('declareUnseenKeys', () => declareUnseenKeys(ast))) { _dirty = true; getFactStore().revision++; ctx.summary = summarize() }
   // Devirtualize calls through init-constant function globals (closure
   // devirtualization) — must follow the SROA above, which creates the globals.
   sweep('devirtGlobalCalls', () => devirtGlobalCalls(ast))
