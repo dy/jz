@@ -2270,3 +2270,31 @@ test('closure: a call through a choice of functions calls the chosen one directl
     ok(!/call_indirect/.test(compile(src, { wat: true })), 'no indirect call')
   }
 })
+
+// A callback a factory returns (`makeProcess(t)` → `(a, b) => …`) is a caller
+// of its own: a small function it calls in its loops is spliced into its body
+// as into a named function's, so the per-element call goes.
+test('closure: a small function a returned callback calls in its loop is spliced into it', () => {
+  const src = `function wrap(p) { return p - Math.floor(p / (2 * Math.PI) + 0.5) * (2 * Math.PI) }
+    function make(t) {
+      return function proc(a, b) {
+        let s = 0
+        for (let i = 0; i < a.length; i++) { b[i] = wrap(a[i] * t); let d = wrap(b[i] - a[i]); s += d }
+        return s
+      }
+    }
+    const p = make(3)
+    const a = new Float64Array(64), b = new Float64Array(64)
+    export let f = (k) => { for (let i = 0; i < 64; i++) a[i] = i * k; return p(a, b) + b[5] + wrap(k) }
+    export const g = (k) => { const q = make(k); return (x) => { let s = 0; for (let i = 0; i < 4; i++) { let w = wrap(x * i); s += w } return s + q(a, b) } }
+    export let h = (k, x) => g(k)(x)`
+  const js = oracle(src)
+  for (const optimize of levels(0, 2, 3)) {
+    const { f, h } = jz(src, { optimize }).exports
+    for (const k of [0, 0.7, 3, -2.5]) { is(f(k), js.f(k), `f(${k}) at ${optimize}`); is(h(k, k + 1), js.h(k, k + 1), `h(${k}) at ${optimize}`) }
+  }
+  if (belowOpt(2)) return
+  const text = wat(src, { optimize: 2 })
+  const closures = text.split('\n  (func ').filter(b => /^\$\W?closure/.test(b))
+  ok(closures.length && closures.every(b => !/call \$\W?wrap\b/.test(b)), 'no closure calls wrap')
+})

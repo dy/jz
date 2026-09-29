@@ -965,9 +965,12 @@ export const inlineHotInternalCalls = (programFacts, ast) => {
     return false
   }
 
+  // A closure's body counts its own loops: a callback a factory returns runs
+  // them whenever it is called, whatever surrounds its literal.
   const containsNode = (root, needle, inLoop = false) => {
     if (root === needle) return inLoop
-    if (!Array.isArray(root) || root[0] === '=>') return false
+    if (!Array.isArray(root)) return false
+    if (root[0] === '=>') return containsNode(root[2], needle, false)
     const nextInLoop = inLoop || LOOP_OPS.has(root[0])
     for (let i = 1; i < root.length; i++) if (containsNode(root[i], needle, nextInLoop)) return true
     return false
@@ -1226,6 +1229,67 @@ export const inlineHotInternalCalls = (programFacts, ast) => {
       if (exprOnlyCandidates.has(name)) exportedExprCandidates.set(name, func)
     }
   }
+  // Iterate to a (bounded) fixpoint: inlining a call whose args are themselves candidate calls
+  // binds those args to temps (`t0 = grad(a)`); the next pass folds the candidate into the temp
+  // decl. Depth is bounded by call nesting (a small constant), capped here so a pathological
+  // chain can't loop unbounded.
+  // Block bodies: the stmt path folds them only at a DIRECT `const X = call`,
+  // never nested in an expression. Hoisting such a call to a temp (in the iter
+  // fixpoint below) lets inlineInStmt then fold it — the noise `sum + amp*perlin(x)`
+  // shape. A loop-free leaf hoists anywhere; a kernel (a loop of its own) and a
+  // loop-only candidate hoist inside a loop only (`if (fr.intersectsSphere(s))`):
+  // a kernel called in a cold expression position (a 2-site `reduce`) stays
+  // outlined for V8 tier-up, and hoisting it would pull the loop into the caller.
+  // The body with its candidate calls spliced, or null where none was.
+  const splice = (body, isExprBody, activeCandidates, exprActive) => {
+    const blockBodies = new Map(), anywhere = new Set()
+    if (speedTier && !isExprBody) for (const f of activeCandidates.values()) {
+      if (exprActive.has(f.name)) continue
+      blockBodies.set(f.name, f.body)
+      if (leaves.has(f.name) && !hotOnly.has(f.name)) anywhere.add(f.name)
+      // a loop that calls its argument lifts wherever it is called: the splice there is the argument's body
+      if (fnSites.has(f.name)) anywhere.add(f.name)
+    }
+    let bodyChanged = false
+    for (let iter = 0; iter < 4; iter++) {
+      let iterChanged = false
+      callerSize = nodeSize(body)
+      if (fnSites.size) boundFunctions(body)
+      if (blockBodies.size) {
+        const h = hoistNestedCalls(body, blockBodies, anywhere)
+        if (h.changed) { body = h.node; iterChanged = true }
+      }
+      if (isExprBody) {
+        const next = inlineInExpr(body, activeCandidates)
+        if (next !== body) { body = next; iterChanged = true }
+      } else {
+        const r = inlineInStmt(body, activeCandidates)
+        if (r) { body = r.node; iterChanged = true }
+      }
+      if (exprActive.size) {
+        const next = inlineInExpr(body, exprActive)
+        if (next !== body) { body = next; iterChanged = true }
+      }
+      if (!iterChanged) break
+      bodyChanged = true
+    }
+    return bodyChanged ? body : null
+  }
+  // Each closure's body, innermost first, spliced in place (the literal keeps
+  // its identity and its parameter node, which name its scope): the body, or
+  // null where no closure changed.
+  const spliceClosures = (node) => {
+    let changed = false
+    walkAst(node, { exit: (n) => {
+      if (n[0] !== '=>' || n[2] == null) return
+      const view = callerView
+      callerView = ctx.summary?.at(n[1]) ?? null
+      const next = splice(n[2], !isBlockBody(n[2]), candidates, exprOnlyCandidates)
+      callerView = view
+      if (next != null) { n[2] = next; changed = true }
+    } })
+    return changed ? node : null
+  }
   for (const func of ctx.funcs.list) {
     if (!func.body || func.raw || synthesized(func)) continue
     // Skip exports: they're entry points usually invoked once. Inlining a
@@ -1236,7 +1300,6 @@ export const inlineHotInternalCalls = (programFacts, ast) => {
     // caller so scalar replacement can cross the call boundary and remove the
     // caller's heap arrays.
     const activeCandidates = isExported(func) ? exportedCandidates : candidates
-    if (isExported(func) && !activeCandidates.size) continue
     callerView = ctx.summary?.at(func.sig) ?? null
     callerStable = stableNames(func)
     // Expression-bodied arrows (`() => expr`) have func.body as the return
@@ -1260,37 +1323,13 @@ export const inlineHotInternalCalls = (programFacts, ast) => {
     // loop-only candidate hoist inside a loop only (`if (fr.intersectsSphere(s))`):
     // a kernel called in a cold expression position (a 2-site `reduce`) stays
     // outlined for V8 tier-up, and hoisting it would pull the loop into the caller.
-    const blockBodies = new Map(), anywhere = new Set()
-    if (speedTier && !isExprBody) for (const f of activeCandidates.values()) {
-      if (exprActive.has(f.name)) continue
-      blockBodies.set(f.name, f.body)
-      if (leaves.has(f.name) && !hotOnly.has(f.name)) anywhere.add(f.name)
-      // a loop that calls its argument lifts wherever it is called: the splice there is the argument's body
-      if (fnSites.has(f.name)) anywhere.add(f.name)
-    }
-    let body = func.body, bodyChanged = false
-    for (let iter = 0; iter < 4; iter++) {
-      let iterChanged = false
-      callerSize = nodeSize(body)
-      if (fnSites.size) boundFunctions(body)
-      if (blockBodies.size) {
-        const h = hoistNestedCalls(body, blockBodies, anywhere)
-        if (h.changed) { body = h.node; iterChanged = true }
-      }
-      if (isExprBody) {
-        const next = inlineInExpr(body, activeCandidates)
-        if (next !== body) { body = next; iterChanged = true }
-      } else {
-        const r = inlineInStmt(body, activeCandidates)
-        if (r) { body = r.node; iterChanged = true }
-      }
-      if (exprActive.size) {
-        const next = inlineInExpr(body, exprActive)
-        if (next !== body) { body = next; iterChanged = true }
-      }
-      if (!iterChanged) break
-      bodyChanged = true
-    }
+    const spliced = isExported(func) && !activeCandidates.size ? null : splice(func.body, isExprBody, activeCandidates, exprActive)
+    // A closure is a caller of its own: the callback a factory returns
+    // (`makeProcess(t)` → `(mag, phase, state) => …`) runs the per-frame loops
+    // a leaf it calls sits in. Its body takes the splices a function's does.
+    const inner = spliceClosures(spliced ?? func.body)
+    const body = inner ?? spliced
+    const bodyChanged = body != null
     if (bodyChanged) { func.body = body; changed = true }
   }
   if (ast) {
