@@ -2266,10 +2266,20 @@ table, 10 ns a call against V8's 6; the ladder in front of it takes the
 common case (a positive finite base, a non-integer exponent) straight to
 the kernel and walks the edge cases only for the rest. The constant fold
 in `src/prepare/math-kernel.js` is the kernel's twin, bit for bit.
-The k/5 fifthroot fold runs four Newton steps (the last a correction) and
-measures a worst case of ~40 ulp across its exponents against the exact
-rational power, which `test/pow.js` pins under a 96 ulp ceiling. The lane vectorizer lifts a constant-exponent pow per lane through the
-same kernel, bit-exact with the scalar loop. A second algorithm (exp∘log, or
+The k/5 fifthroot fold (`$math.pow_fifths`) runs four Newton steps (the last a
+correction) and measures 3 ulp against the exact rational power x^(k/5), which
+`test/pow.js` pins under a 96 ulp ceiling. `x ** 2.2` means the double 2.2,
+though, and x^(c − k/5) − 1 ≈ (c − k/5)·ln x grows with |ln x| (513 ulp at
+x = 7e-140 for 2.2), and x^r leaves the doubles near 2^±(1022/r): the fold runs
+on x itself only on [2^-L, 2^L] (`trig-tables.js` fifthFold, L keeping that
+term within 40 ulp, 72 for 2.4), and every other x is written 2^(5j)·x' with
+the fold on x', 2^(jk) applied in two factors and the 2^(5j) part of the
+exponent's rounding multiplied back in: within 40 ulp of the host everywhere,
+with no pow kernel or table pulled in. The lane vectorizer lifts a constant-exponent pow per lane through the
+same kernel, bit-exact with the scalar loop. A negative integer exponent
+squares the reciprocal (1/x^n overflowed to 0 where x^-n was still a double,
+5.67e102 ** -3), and the kernel's |y| ≥ 2^63 shortcut answers 1 at x = 1,
+where the ladder sends x = −1. A second algorithm (exp∘log, or
 the three-step fifthroot) is never the default: a meaningful result keeps its
 f64 accuracy. `Math.exp` and `2 ** x` are one table kernel (`math/trig-tables.js`
 EXP2_TAB: 2^(j/64) as the nearest double and the tail its rounding dropped;
@@ -2277,6 +2287,58 @@ EXP2_TAB: 2^(j/64) as the nearest double and the tail its rounding dropped;
 head and tail), T + T·(q + tail) with q the exact-coefficient remainder
 series, one exponent build; 0.52 ulp against a 200-bit reference for both,
 scalar, 2-wide and the constant folder bit-identical (`test/math.js`).
+
+jz's Math is not V8's bit for bit: it keeps within 50 ulp of it, for 9% more
+time on the floatbeat corpus than the fast kernels it replaced, where porting
+V8's fdlibm exactly (branch `audiojs-math`) took 75% more. The budget is spent
+on the polynomials, never on the argument reduction. `sin`, `cos` and
+`tan` reduce x to n·π/2 + r, |r| ≤ π/4, and take sin(r) or cos(r) by n's
+parity (a branch; a phase keeps it predicted), negated by n's second bit.
+Below 2^24 the reduction is inline Cody–Waite: n from x·2/π rounded by adding
+and removing 1.5·2^52 (whose low word is then n), r = x − n·H1 − n·H2 − n·H3 −
+n·H4 with π/2 in 29, 29, 29 and 53-bit parts, each truncated so −0 stays −0.
+Every n·Hk but the last is exact and every subtraction that cancels is exact,
+so r is within an ulp of the true remainder even at the double nearest a
+multiple of π/2 (an exhaustive search of k < 2^24 finds the worst at k =
+9206271, |r| = 2^-59), where three parts (111 bits) would err by 6e6 ulp.
+Past 2^24 `$math.rem_pio2` is Payne–Hanek in integer arithmetic: x's 53-bit
+significand times the 192 bits of 2/π its exponent selects (a read-only
+table, fdlibm's ipio2 bits in 64-bit words), the product mod 2^192 giving n
+mod 4 and a 128-bit fraction, within 1.3 ulp of the true remainder, the
+worst double of all (6381956970095103·2^797, |r| = 2^-61) included; no loop
+and no scratch memory, where fdlibm's version keeps a working array in
+linear memory. The kernels (`trig-tables.js`, fitted by
+`scripts/minimax-trig.mjs`'s Remez exchange in 256-bit fixed point) are the
+lowest degree the budget allows: sin(r) = r·(1 + t·P(t)) of degree 11 (45 ulp
+minimax, 38 as evaluated; degree 9 is 46000) and cos(r) of degree 12 (0.8 and
+2.2; degree 10 is 1071). `sin2`/`cos2` do the same two lanes wide, one
+kernel when both lanes' parities agree, bit-identical with the scalar; a lane
+past 2^24 sends both to it. The constant folder mirrors the kernels below
+2^24 and leaves a larger literal argument for run time (the compiler compiled
+by itself has 64-bit BigInt, which cannot mirror the 192-bit product).
+`atan` reduces |x| by three intervals and at most one division (as is, π/4 +
+atan((|x| − 1)/(|x| + 1)), π/2 + atan(−1/|x|)) to |t| ≤ tan(π/8) and a
+degree-19 odd polynomial (8.8 ulp minimax); `atan2` divides and calls it.
+`asin` and `acos` take a degree-21 odd polynomial on |a| ≤ ½ (33 ulp
+minimax), at a = √((1 − |x|)/2) past ½, and acos near ±1 as 2·asin(a) or π −
+2·asin(a), where π/2 − asin(x) had cancelled a small result away. `sinh` and
+`cosh` split e^|x| as (½e^(|x|/2))·e^(|x|/2) past 709.78, where the result is
+still finite; `asinh`, `acosh` and `atanh` take fdlibm's forms over jz's log
+and log1p, each the one that cancels nothing in its range; `log1p` takes the
+ratio x/(u − 1) before the product that overflowed past 2.5e305. Measured
+against V8 (`node scripts/math-ulp.mjs`: the floatbeat corpus's arguments,
+the doubles nearest k·π/2 to k = 1e6 with their ±4-ulp neighbours, 200k
+log-uniform arguments a function, the edges): sin 40, cos 39, tan 49, asin
+38, acos 35, atan and atan2 10, sinh 5, cosh 3, tanh 5, asinh 4, acosh 5,
+atanh 4, exp 1, expm1 3, log 4, log1p 4, log2 4, log10 2, cbrt 0, hypot 2,
+pow 21, a k/5 exponent 40; sin(π) is 1.2246467991473532e-16 and the kπ/2
+set stays within 2 ulp. `test/math-ulp.js` pins each bound with the lanes and
+the folder bit-identical. On arm64 against Node 25.9, ns a call scalar and
+two lanes wide on an audio phase: sin 5.0 and 2.7 (the kernels this replaced
+4.6 and 2.6, the fdlibm port 6.0 and 5.6, V8 13); atan 3.7 (3.9, 4.4, V8 7.5);
+asin 3.6, where its degree costs what fdlibm's rational kernel does (2.4
+before, V8 7.4). The floatbeat corpus runs at 0.49 of V8's time (0.45 before,
+0.78 with the fdlibm port).
 
 Values use proven raw lanes or tagged carriers; heap values use NaN-boxing (see README). The legacy `ctx` store still carries compilation state. Consult its lifecycle ownership table in [`src/ctx.js`](src/ctx.js) before changing state; new persistent facts belong in ProgramIndex and frozen summaries, not another ambient store.
 
