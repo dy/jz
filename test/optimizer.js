@@ -5131,10 +5131,15 @@ test('fixed global typed cells cache across loops but reachable mutation fails c
     let cfg=new Float64Array(1);cfg[0]=2
     const bump=()=>{cfg[0]=cfg[0]+1}
     export let f=n=>{let s=0;for(let i=0;i<n;i++){s+=cfg[0];bump()}return s}`
-  const mutTree = parse(mutating, { level: 'speed' })
+  // the write stays behind a call: source inlining would splice `bump` into the
+  // loop, whose cell then lives in a local for the loop (plan/loop-fields.js)
+  const mutTree = parse(mutating, { level: 'speed', sourceInline: false })
   ok(loopCount(findFunc(mutTree, '$f'), n => n[0] === 'f64.load') >= 1,
     'a reachable element write keeps the load in the loop')
-  is(run(mutating, { optimize: 'speed' }).f(4), 14, 'mutating fallback exact')
+  is(run(mutating, { optimize: { level: 'speed', sourceInline: false } }).f(4), 14, 'mutating fallback exact')
+  is(loopCount(findFunc(parse(mutating, { level: 'speed' }), '$f'), n => n[0] === 'f64.load'), 0,
+    'the spliced write carries the cell in a local')
+  is(run(mutating, { optimize: 'speed' }).f(4), 14, 'the carried cell exact')
 
   // Replacing a first-load local.tee must not leave cache initializers reading
   // the wasm local's default zero before the typed-array base is decoded.
