@@ -1606,6 +1606,23 @@ test('static literal: a key added to one instance does not show on the next', ()
   is(g(), true)
 })
 
+// A key Object.assign or Object.defineProperty copies in is a store of that
+// name: a literal holding it is written, and each evaluation allocates
+// (summary assignedProps, merged into writtenProps).
+test('static literal: a key a builtin stores into does not show on the next evaluation', () => {
+  for (const body of ['let p={x:1,y:5};const before=p.y;Object.assign(p,{y:2});return before',
+    'let p={x:1,y:5};const before=p.y;const s={y:2};Object.assign(p,s);return before',
+    'let p={x:1};p={x:3};const before=p.y;Object.assign(p,{y:2});return before',
+    "let p={x:1,y:5};const before=p.y;Object.defineProperty(p,'y',{value:2});return before"])
+    for (const optimize of levels(0, 2, 3)) {
+      const { f } = run(`export let f = () => { ${body} }`, { optimize })
+      is(String(f()) + String(f()), body.includes('p={x:3}') ? 'undefinedundefined' : '55', `${body} at ${optimize}`)
+    }
+  const { f } = run(`const mk = () => ({ x: 1, y: 5 })
+    export let f = () => { const p = mk(); const before = p.y; Object.assign(p, { y: 2 }); return before }`)
+  is(f() + f(), 10)
+})
+
 test('static literal: read-only literals keep the shared static instance', () => {
   const { f } = run(`
     let mk = () => ({ x: 7, y: 9 })

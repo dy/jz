@@ -371,6 +371,9 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   // any other shape needs no presence-mask update (emit-assign.js).
   const deletable = new Set()
   const deleteReach = { unknown: false }
+  // The names a builtin stores into its target (`Object.assign(p, { y })`, a
+  // literal-keyed `Object.defineProperty`): member stores no `p.y =` spells.
+  const assignedProps = new Set()
   // The shapes whose own key set an operation reads: Object.keys and its kin,
   // for-in's key list, `in`, hasOwnProperty, a spread of several sources. On
   // any other shape a key that holds undefined reads as a missing one does
@@ -1647,8 +1650,8 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
           if (knownShapes(s) && !kspread[base + i]) for (const sid of shapesOf(paramOf(s))) {
             const sl = slots(sid)
             for (const tsid of shapesOf(paramOf(target))) {
-              schemas[sid].forEach((p, j) => storeMember(tsid, p, sl[j]))
-              for (const [p, k] of sideProps.get(sid) ?? []) storeMember(tsid, p, k)
+              schemas[sid].forEach((p, j) => { assignedProps.add(p); storeMember(tsid, p, sl[j]) })
+              for (const [p, k] of sideProps.get(sid) ?? []) { assignedProps.add(p); storeMember(tsid, p, k) }
               const w = sideWild.get(sid) ?? K.NONE; if (w !== K.NONE) { openSchema(tsid); raiseAllSlots(tsid, w); raiseSideWild(tsid, w) }
             }
           }
@@ -1665,6 +1668,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
         if (tagOf(d) === K.NONE) return target
         const v = tagOf(d) === K.OBJECT && paramOf(d) !== UNKNOWN ? core(member('.', d, 'value')) : ANY
         const kn = args(node[2])[1], k = Array.isArray(kn) && (kn[0] === 'str' || kn[0] == null) && typeof kn[1] === 'string' ? kn[1] : null
+        if (k != null) assignedProps.add(k)
         if (k != null && knownShapes(target)) for (const sid of shapesOf(paramOf(target))) storeMember(sid, k, v)
         else if (tagOf(target) === K.OBJECT) poisonAll(target, k != null ? STRING : key, v)
         else escapeObject(target)
@@ -3733,7 +3737,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     scopeOfSig, scopeOfBody, scopeOfParams, cellUp, elems, tuples, lens, stores, built, grown, unknown, presentReads, paramRangesOf, cellProps, cellWild, closureSets, closureSetIds, cells, jsonKinds, closuresByBody, unions, shapeUnions,
     schemas, layouts, sitesByLayout, objectKinds, methods, sidByKey,
     funcNames: new Set(funcByName.keys()), imports: new Map(imports),
-    numeric, strung, dynamicProps, builtinOwnProps, escaped, typedReadPresent, typedProps, typedPropsByAux, openSchemas, indexedSchemas, hostSchemas, opaqueSchemas, deletable, deleteReach, keysSeen, foldedLayouts,
+    numeric, strung, dynamicProps, builtinOwnProps, escaped, typedReadPresent, typedProps, typedPropsByAux, openSchemas, indexedSchemas, hostSchemas, opaqueSchemas, deletable, deleteReach, assignedProps, keysSeen, foldedLayouts,
     sideProps, sideWild, wildProps, wildValues, pendingAll, keyedCells, cellShapes, cellLostObject, closureProps, iterSites, reached, defaultRuns, decisions,
     held,
     boolKeys, storeBits, paramKeys,

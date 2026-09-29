@@ -609,6 +609,8 @@ export function collectProgramFacts(ast) {
   for (const [name, direct] of f.objectLiteralDefs)
     if (direct) literalObjectVars.add(name)
 
+  // A key Object.assign copies is a store of it, on whatever holds the target.
+  for (const p of ctx.summary?.assignedProps ?? []) f.writtenProps.add(p)
   ctx.module.writtenProps = f.writtenProps
   return {
     dynVars: f.dynVars, dynWriteVars: f.dynWriteVars, anyDyn: f.anyDyn, propMap, addressTakenNames, callSites,

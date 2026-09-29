@@ -585,6 +585,8 @@ export function summaryQueries(facts, internal = false) {
     holdsKind: tag => hasTag(kindUnion, tag),
     // The names that hold one number for good: name → the number.
     held: facts.held,
+    // The names a builtin stores into its target object (`Object.assign`).
+    assignedProps: facts.assignedProps,
     opaqueSchema: sid => opaqueLayouts.has(sid),
     // Whether an object of the layout may gain a property beyond its slots: a
     // key stored beside them, a computed store, or a hand-off to code the
