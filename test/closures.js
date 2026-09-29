@@ -1315,7 +1315,9 @@ test('devirtGlobalCalls: raw arrow literal lifted through a bare ??=; value-use 
   const { go, value } = runHost(src)
   is(go(), 15)     // Σ(i+1), i=0..4 = 1+2+3+4+5
   is(value(), 10)  // g(9) through the generic closure param — g is still a real callable value
-  const w = wat(src)
+  // the host's closure trampoline (module/function.js __call_closure) calls
+  // through the table by design; the count is of the program's own calls
+  const w = wat(src).replace(/\(func \$__call_closure[\s\S]*?\n  \)/, '')
   // Exactly one call_indirect survives — keep()'s generic `h(9)` dispatch (h's
   // identity is a runtime parameter, genuinely unknowable). None come from
   // run()'s g(i): fnBody's fixed-window slice would bleed into keep()'s body
@@ -2208,7 +2210,8 @@ test('devirtGlobalCalls: the site calls the function; a global nothing reads dro
   }
   for (const [name, [src, want, kept]] of Object.entries(shapes)) {
     for (const optimize of levels(0, 2, 3)) is(runHost(src, { optimize }).go(3), want, `${name} at ${optimize}`)
-    const text = wat(src, { optimize: 0 })
+    // the host's closure trampoline (__call_closure, a function the host holds) calls through the table by design
+    const text = wat(src, { optimize: 0 }).replace(/\(func \$__call_closure[\s\S]*?\n  \)/, '')
     ok(/\(call \$nz/.test(text) && !/call_indirect/.test(text), `${name}: the site calls nz directly`)
     is(JSON.stringify([...(ctx.funcs.globalDevirt?.keys() ?? [])]), JSON.stringify(kept), `${name}: the globals still holding nz`)
   }
