@@ -513,14 +513,14 @@ export let main = () => {
 // function jz does not compile yet. Listed in the case's header; an entry goes the
 // commit its package compiles.
 const SYMBOL = 'a read of `Symbol` as a value, through `@stdlib/symbol/ctor`'
-const REGEX = 'a regular expression a function returns, held by a name and a member (`@stdlib/regexp/function-name`)'
+const STRING = 'methods of `String.prototype` and `String.fromCharCode` held by names (`@stdlib/string/base/format-interpolate`)'
 const PENDING = {
   '@stdlib/math/base/special/hyp2f1': SYMBOL,
   '@stdlib/stats/base/dists/studentized-range/cdf': SYMBOL,
   '@stdlib/stats/base/dists/studentized-range/quantile': SYMBOL,
-  '@stdlib/stats/base/dists/signrank/cdf': REGEX,
-  '@stdlib/stats/base/dists/signrank/pdf': REGEX,
-  '@stdlib/stats/base/dists/signrank/quantile': REGEX,
+  '@stdlib/stats/base/dists/signrank/cdf': STRING,
+  '@stdlib/stats/base/dists/signrank/pdf': STRING,
+  '@stdlib/stats/base/dists/signrank/quantile': STRING,
 }
 
 // A bench case (bench/<case>/<case>.js) of a whole namespace: every package whose

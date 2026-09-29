@@ -2416,6 +2416,18 @@ is declared once with the method, or with a name that holds it, and nothing stor
 declaration goes with its last mention. Any other use of it is a value the target has no
 form of and stops the compile, as before (`test/held-method.js`).
 
+A module name that holds one regular expression for good is that expression where a method
+of it is called (`holdModuleRegexes`, plan/scope.js). jz compiles a regular expression where
+its literal is known (module/regex.js); a library hands its patterns on through a function
+that returns the literal, a name, and a member of the function (stdlib's
+`regexp/function-name`, read by `utils/constructor-name`). The name is written once, at the
+module's level, with a literal, a name that holds one, or a call of a function of no
+parameters whose body returns one; a pattern with a cursor of its own (`g`, `y`) is followed
+through names only, since each call of the function makes another expression with another
+cursor. A name stored a second, other literal holds no one expression (`regex.hold`): the
+compile says so where a method of it is called, where it used to run the literal registered
+last, whatever the name held (`test/held-regex.js`).
+
 A module binding nothing that runs reads is not declared, where its value runs nothing
 (`dropUnreadGlobals`, plan/scope.js, at every level): a name, a literal, a closure, an
 operator that converts nothing (`typeof`, `===`, `&&`), or one that converts numbers, strings

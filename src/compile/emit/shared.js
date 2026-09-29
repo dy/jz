@@ -21,7 +21,7 @@ export function copyReceiverFacts(source, target) {
   if (ctor) (ctx.func.localTypedElemsOverlay ||= new Map()).set(target, ctor)
   const regex = typeof source === 'string' ? ctx.runtime.regex?.vars.get(source)
     : Array.isArray(source) && source[0] === '//' ? source : null
-  if (regex) ctx.runtime.regex.vars.set(target, regex)
+  if (regex) ctx.runtime.regex.hold(target, regex)
 }
 
 export const stringOps = (node) => {

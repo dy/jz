@@ -1097,6 +1097,80 @@ export const resolveHeldMethods = (ast) => {
   return changed
 }
 
+/**
+ * A module name that holds one regular expression for good is that expression
+ * where a method of it is called. jz compiles a regular expression where its
+ * literal is known (module/regex.js): a literal, or a name assigned one. A
+ * library hands its patterns on:
+ *
+ *   function reFunctionName() { return /^\s*function\s*([^(]*)/i }
+ *   var RE_FUNCTION_NAME = reFunctionName()       // regexp.js
+ *   main.REGEXP = RE_FUNCTION_NAME                 // index.js
+ *   var RE = main.REGEXP; … RE.exec( s )           // its user
+ *
+ * The name is written once, at the module's level, with a literal, a name that
+ * holds one, or a call of a function of no parameters whose body returns one. A
+ * pattern with a cursor of its own (`g`, `y`) is followed through names only:
+ * each call of a function that returns the literal makes another expression,
+ * with another cursor.
+ */
+export const holdModuleRegexes = (ast) => {
+  const vars = ctx.runtime.regex?.vars, globals = ctx.scope.globals
+  if (!vars || !globals?.size) return false
+  const roots = [...(ctx.module.moduleInits || []), ast]
+  const defs = new Map(), open = new Set()   // name → the value written to it; the names written more than once
+  const write = (name, value) => { if (defs.has(name)) open.add(name); else defs.set(name, value) }
+  const top = (s) => {
+    if (!Array.isArray(s)) return
+    if (s[0] === ';') { for (let i = 1; i < s.length; i++) top(s[i]); return }
+    if (s[0] === '=' && typeof s[1] === 'string' && globals.has(s[1])) { write(s[1], s[2]); return }
+    if (s[0] !== 'let' && s[0] !== 'const') return
+    for (let i = 1; i < s.length; i++) { const d = s[i]; if (Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string' && globals.has(d[1])) write(d[1], d[2]) }
+  }
+  for (const r of roots) top(r)
+  if (!defs.size) return false
+  // any other store: in a function, or below the module's level
+  const stores = (n, level) => {
+    if (!Array.isArray(n) || n[0] === 'str') return
+    if (n[0] === ';' && level) { for (let i = 1; i < n.length; i++) stores(n[i], true); return }
+    if (level && (n[0] === 'let' || n[0] === 'const')) { for (let i = 1; i < n.length; i++) stores(Array.isArray(n[i]) && n[i][0] === '=' ? n[i][2] : n[i], false); return }
+    if (level && n[0] === '=' && typeof n[1] === 'string') { stores(n[2], false); return }
+    if (MUTATE_OPS.has(n[0]) && typeof n[1] === 'string' && defs.has(n[1])) open.add(n[1])
+    for (let i = 1; i < n.length; i++) stores(n[i], false)
+  }
+  for (const r of roots) stores(r, true)
+  for (const f of ctx.funcs.list) if (!f.raw && f.body) stores(f.body, false)
+  // what a function of no parameters answers: the value of its one statement, a `return`
+  const answer = (name) => {
+    const f = ctx.funcs.map?.get(name)
+    if (!f || f.raw || f.body == null || f.sig?.params?.length) return undefined
+    const b = f.body
+    if (!Array.isArray(b) || b[0] !== '{}') return b
+    const list = Array.isArray(b[1]) && b[1][0] === ';' ? b[1].slice(1) : [b[1]]
+    return list.length === 1 && Array.isArray(list[0]) && list[0][0] === 'return' && list[0].length === 2 ? list[0][1] : undefined
+  }
+  const literal = (v, seen, made) => {
+    if (typeof v === 'string') {
+      if (seen.has(v) || open.has(v) || !defs.has(v)) return null
+      seen.add(v)
+      return literal(defs.get(v), seen, made)
+    }
+    if (!Array.isArray(v)) return null
+    if (v[0] === '//') return made && /[gy]/.test(v[2] ?? '') ? null : v
+    if (v[0] === '()' && typeof v[1] === 'string' && v[2] == null && v.length <= 3) { const a = answer(v[1]); return a === undefined ? null : literal(a, seen, true) }
+    return null
+  }
+  let any = false
+  // a name with a second store holds no one expression, whatever a store of it registers
+  for (const name of open) { if (vars.delete(name)) any = true; ctx.runtime.regex.open.add(name) }
+  for (const name of defs.keys()) {
+    if (open.has(name) || vars.has(name)) continue
+    const re = literal(name, new Set(), false)
+    if (re) { ctx.runtime.regex.hold(name, re); any = true }
+  }
+  return any
+}
+
 // The operators that evaluate their operands and nothing else, whatever the operands hold.
 const PLAIN_OPS = new Set(['!', 'typeof', 'void', '?:', '?', '&&', '||', '??', '===', '!==', ','])
 // The operators that convert an operand: an object's conversion calls its

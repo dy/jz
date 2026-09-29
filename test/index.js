@@ -126,6 +126,7 @@ const TESTS = [
   'constants',
   'splice',
   'held-method',
+  'held-regex',
   'unroll-cost',
   'sentinel-guard',
   'twin-locals',

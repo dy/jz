@@ -1007,7 +1007,19 @@ export default (ctx) => {
       value === undefined ? ['i64.const', UNDEF_NAN] : asI64(emit(value))], 'f64')
   }
 
-  ctx.runtime.regex = { count: 0, vars: new Map(), compiled: new Map(), groups: new Map(), groupNames: new Map() }
+  ctx.runtime.regex = { count: 0, vars: new Map(), open: new Set(), compiled: new Map(), groups: new Map(), groupNames: new Map() }
+  // `name` holds the literal `re`. A name stored a second, other literal holds neither for
+  // good (`open`): its methods have no expression to compile, and the compile says so
+  // where one is called, where it used to run the literal registered last.
+  ctx.runtime.regex.hold = (name, re) => {
+    const r = ctx.runtime.regex
+    if (r.open.has(name)) return
+    const was = r.vars.get(name)
+    if (was === undefined) { r.vars.set(name, re); return }
+    if (was[1] === re[1] && (was[2] ?? '') === (re[2] ?? '')) return
+    r.vars.delete(name)
+    r.open.add(name)
+  }
 
   // SSO → heap normalizer: returns data offset (i32) for direct byte access.
   // Heap STRING: aux bit SSO_BIT is 0 → offset already points at bytes.

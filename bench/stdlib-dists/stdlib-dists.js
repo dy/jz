@@ -7,9 +7,9 @@
 // Left out until jz compiles them:
 //   dists/studentized-range/cdf: a read of `Symbol` as a value, through `@stdlib/symbol/ctor`
 //   dists/studentized-range/quantile: a read of `Symbol` as a value, through `@stdlib/symbol/ctor`
-//   dists/signrank/cdf: a regular expression a function returns, held by a name and a member (`@stdlib/regexp/function-name`)
-//   dists/signrank/pdf: a regular expression a function returns, held by a name and a member (`@stdlib/regexp/function-name`)
-//   dists/signrank/quantile: a regular expression a function returns, held by a name and a member (`@stdlib/regexp/function-name`)
+//   dists/signrank/cdf: methods of `String.prototype` and `String.fromCharCode` held by names (`@stdlib/string/base/format-interpolate`)
+//   dists/signrank/pdf: methods of `String.prototype` and `String.fromCharCode` held by names (`@stdlib/string/base/format-interpolate`)
+//   dists/signrank/quantile: methods of `String.prototype` and `String.fromCharCode` held by names (`@stdlib/string/base/format-interpolate`)
 // Copyright (c) The Stdlib Authors. Licensed under the Apache License, Version 2.0
 // (http://www.apache.org/licenses/LICENSE-2.0); the notices of the bundled files
 // are retained by reference to the package.

@@ -261,7 +261,11 @@ export function recordGlobalRep(name, expr) {
   const vt = valTypeOf(expr)
   if (vt) {
     ;(ctx.scope.globalValTypes ||= new Map()).set(name, vt)
-    if (vt === VAL.REGEX && ctx.runtime.regex) ctx.runtime.regex.vars.set(name, expr)
+    // the literal itself: a name declared with another's holds what that one was registered with
+    if (vt === VAL.REGEX && ctx.runtime.regex) {
+      const re = typeof expr === 'string' ? ctx.runtime.regex.vars.get(expr) : expr
+      if (Array.isArray(re) && re[0] === '//') ctx.runtime.regex.hold(name, re)
+    }
   }
   const ctor = typedStorageCtorFromContext(ctx, expr, {
     resolveName: n => ctx.scope.globalTypedElem?.get(n) ?? null,

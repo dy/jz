@@ -48,7 +48,7 @@ import {
   moduleGlobalKinds, unboxConstTypedGlobals, inferModuleIntGlobals, dropUnreadGlobals,
   flattenFuncNamespaces, devirtGlobalCalls, devirtClassCalls, classifyHashDictGlobals,
   materializeAutoBoxSchemas, resolveClosureWidth, canSkipWholeProgramNarrowing,
-  holdModuleNumbers, resolveHeldMethods,
+  holdModuleNumbers, resolveHeldMethods, holdModuleRegexes,
 } from './scope.js'
 import { declareWrittenKeys } from './declare-written-keys.js'
 import { indexArrayPatterns } from './index-array-patterns.js'
@@ -249,6 +249,8 @@ export default function plan(ast, profiler, summarize) {
   ctx.summary = summarize()
   // the numbers the rewritten program's names hold for good: a call through a name that holds a builtin is the builtin's now
   holdModuleNumbers()
+  // and the regular expressions, which the emitter compiles where it knows the literal
+  holdModuleRegexes(ast)
   // Normalizing an input can prove the values stored into an output buffer.
   // Close that dependency before narrowing. Each round fixes at least one
   // previously untyped boundary parameter; established contracts are skipped.
