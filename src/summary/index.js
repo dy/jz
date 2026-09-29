@@ -1440,6 +1440,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       }
       if (callee === '__keys_ro' || callee === '__keys_dyn') return kind(K.ARRAY)
       if (callee === '__hide_member') return NUMBER // metadata only; the preceding assignment owns the value write
+      if (callee === '__object_toString') return STRING // the class of a value, `[object X]` (module/object.js)
       const f = funcByName.get(callee)
       if (f) {
         bind(callee, paramNamesOf(f), base, n, f.defaults, f.rest || !n || escaped.has(callee) ? null : initContextFor(callee, ks[base]), node ? node[2] : null)

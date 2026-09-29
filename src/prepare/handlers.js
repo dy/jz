@@ -20,7 +20,7 @@ import { lowerIteratorPattern, hasArrayPattern } from '../iterator-pattern.js'
 import { ctx, declGlobal, derive, emitArity, err, setFeature } from '../ctx.js'
 import { createFunction } from '../function.js'
 import { MUTATE_OPS, PARAM_DEFAULT, PARAM_KIND, PARAM_NAME, PARAM_PATTERN, REFS_THROUGH_ARROWS, STMT_OPS, T, TYPEOF, alwaysReturns, classifyParam, cloneNode, collectParamNames, extractParams, handlerArgs, isBrand, refsName, walkAst } from '../ast.js'
-import { COLLECTION_CTORS, CTORS, hasModule, includeForArrayAccess, includeForArrayLiteral, includeForCallableValue, includeForGenericMethod, includeForNamedCall, includeForNumericCoercion, includeForObjectLiteral, includeForObjectPattern, includeForOp, includeForProperty, includeForRuntimeCtor, includeForStringOnly, includeForStringValue, includeMods, includeModule } from '../autoload.js'
+import { isNamedCallee, COLLECTION_CTORS, CTORS, hasModule, includeForArrayAccess, includeForArrayLiteral, includeForCallableValue, includeForGenericMethod, includeForNamedCall, includeForNumericCoercion, includeForObjectLiteral, includeForObjectPattern, includeForOp, includeForProperty, includeForRuntimeCtor, includeForStringOnly, includeForStringValue, includeMods, includeModule } from '../autoload.js'
 import { censusShapedNode } from '../kind.js'
 import { REJECT_IDENTS, rejectHandlers } from '../op-policy.js'
 import { recordGlobalRep } from '../compile/infer.js'
@@ -1510,9 +1510,18 @@ const handlers = {
     if (mod) {
       includeModule(mod)
       const key = mod + '.' + prop
+      // A member the target does not serve of a namespace it does (`Symbol.toStringTag`,
+      // a well-known symbol; `Math.frund`) reads as undefined, as a missing property of an
+      // object does; a call of it still errs (the call handler names its key itself).
+      if (prop !== 'prototype' && ctx.core.emit[key] === undefined && !includeForNamedCall(key) && ctx.core.emit[key] === undefined) return [, undefined]
       if (emitArity(ctx.core.emit[key], key) > 0) includeForCallableValue()
       return key
     }
+    // The prototype of a builtin constructor no module serves as a namespace
+    // (`Boolean.prototype`, where the bare name is the conversion): the dotted
+    // name, as `Number.prototype` is, for a method of it a name holds (plan/scope.js
+    // resolveHeldMethods) or `.call( recv )` takes in place.
+    if (prop === 'prototype' && typeof obj === 'string' && NS_CTORS.has(obj) && !shadowsBuiltin(obj) && !(scopes.length && isDeclared(obj))) return `${obj}.prototype`
     // Resolve plain namespaces and their aliases as well as constructors.
     // Constants such as Math.PI are values, so their properties remain ordinary reads.
     if ((prop === 'length' || prop === 'name') && Array.isArray(obj) && obj[0] === '.' &&
@@ -1649,6 +1658,12 @@ const handlers = {
 }
 // Constant fold typeof for known builtin namespaces (e.g. Math.exp). prep(x) resolves Math.exp → 'math.exp'.
 function staticTypeofString(x) {
+  // The globals every host has (`globalThis`, `WebAssembly`): objects, imported where a program
+  // names them. `window`, `self`, `global`, `process` are one host's or another's: the run answers.
+  if ((x === 'globalThis' || x === 'WebAssembly') && !(scopes.length && isDeclared(x)) && !ctx.scope.userGlobals?.has?.(x)) return 'object'
+  // A function of the target the program never declares (`Symbol`, `parseInt`: a feature a library tests
+  // for), whether or not its module is in yet.
+  if (typeof x === 'string' && isNamedCallee(x) && !(scopes.length && isDeclared(x)) && !ctx.scope.userGlobals?.has?.(x)) { includeForNamedCall(x); return 'function' }
   // Spec §13.5.3: unresolvable bare ref → 'undefined'.
   if (isUnresolvableBareIdent(x)) return 'undefined'
   // Bare callable global: parseInt, parseFloat, isNaN, isFinite, Error, BigInt, etc.
@@ -2412,7 +2427,10 @@ function dispatchConstructorCall(callee, args) {
 // or an Array method applied to a copy (`Array.prototype.slice.call(typed)`
 // returns a plain array, so the receiver copies through Array.from first).
 // Mutating Array methods on a copy would lose the write; they keep the reject.
-const BORROW_CTORS = new Set(['Array', ...TYPED_ELEM_NAMES])
+// A primitive's prototype method borrowed onto a value of its kind (`Number.prototype.toString.call( n, 16 )`,
+// `String.prototype.slice.call( s, 1 )`, `Boolean.prototype.toString.call( b )`) is the method on the receiver.
+const PRIMITIVE_CTORS = new Set(['String', 'Number', 'Boolean'])
+const BORROW_CTORS = new Set(['Array', ...TYPED_ELEM_NAMES, ...PRIMITIVE_CTORS])
 const ARRAY_COPY_SAFE = new Set(['slice', 'map', 'filter', 'join', 'indexOf', 'lastIndexOf', 'includes',
   'reduce', 'reduceRight', 'forEach', 'some', 'every', 'find', 'findIndex', 'findLast', 'findLastIndex', 'concat', 'at', 'flat', 'flatMap', 'entries', 'keys', 'values', 'toString'])
 function foldPrototypeBorrow(callee, args) {
@@ -2426,6 +2444,7 @@ function foldPrototypeBorrow(callee, args) {
   const [recv, ...rest] = handlerArgs(args)
   if (recv == null) return undefined
   if (ctor === 'Array' && !ARRAY_COPY_SAFE.has(method[2])) return undefined
+  if (PRIMITIVE_CTORS.has(ctor)) includeForGenericMethod(method[2])
   const base = ctor === 'Array' ? ['()', ['.', 'Array', 'from'], recv] : recv
   return prep(['()', ['.', base, method[2]], rest.length === 0 ? null : rest.length === 1 ? rest[0] : [',', ...rest]])
 }

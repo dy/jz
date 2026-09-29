@@ -2546,3 +2546,16 @@ test('Object.defineProperties: a literal map of descriptors defines each propert
   try { compile(`export let f = () => { const d = { a: { value: 1 } }; return Object.defineProperties({}, d).a }`) } catch (e) { msg = e.message }
   ok(msg != null && /defineProperties.*literal/.test(msg), `a non-literal map is rejected: ${JSON.stringify(msg?.slice(0, 100))}`)
 })
+
+// `Object.defineProperty(o, k, d)` from a descriptor without `value` (`{}`, `{ enumerable:
+// false }`: ValidateAndApplyPropertyDescriptor, ES2026 §10.1.6.3) defines an absent key as
+// undefined and leaves a present one as it is; a library asks its environment this way
+// (`defineProperty({}, 'x', {})` in a try, stdlib's utils/define-property).
+test('defineProperty: a descriptor without value defines the key as undefined', () => {
+  const src = `var defineProperty = Object.defineProperty
+    function has() { try { defineProperty({}, 'x', {}); return true } catch (err) { return false } }
+    export let f = (k) => { const o = { a: 1 }; defineProperty(o, 'x', {}); defineProperty(o, 'a', { enumerable: false }); const d = { writable: true }; defineProperty(o, k, d)
+      return [has(), 'x' in o, o.x === undefined, o.a, k in o, o[k] === undefined].join(' ') }`
+  for (const optimize of [0, 2, 3, 'size']) is(jz(src, { optimize }).exports.f('z'), 'true true true 1 true true', `at ${optimize}`)
+})
+

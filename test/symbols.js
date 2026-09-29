@@ -83,3 +83,18 @@ test('Nullish coalescing: regular value vs symbol', () => {
   }`)
   is(f(), 1)  // symbols are truthy, so ?? returns first
 })
+
+// `typeof Symbol` is 'function' (a function of the target, src/prepare/pre-eval.js
+// typeofName), a member of it the target does not serve reads as undefined
+// (`Symbol.toStringTag`, `Symbol.iterator`: no well-known symbols; a missing property of
+// an object is undefined too), and a call of such a member is still refused.
+test('Symbol: the constructor by typeof, its well-known symbols undefined', () => {
+  const src = `export let f = () => [typeof Symbol, typeof Symbol('x'), typeof Symbol.toStringTag, typeof Symbol.iterator, Symbol.iterator === undefined, typeof Symbol.for].join(' ')`
+  is(jz(src).exports.f(), 'function symbol undefined undefined true function')
+  // a feature test of them selects the arm the target has, and the other arm is gone
+  const feature = `const hasToStringTag = typeof Symbol === 'function' && typeof Symbol.toStringTag === 'symbol'
+    export let f = () => hasToStringTag ? 'tagged' : 'plain'`
+  is(jz(feature).exports.f(), 'plain')
+  ok(!/toStringTag/.test(compile(feature, { wat: true })), 'the arm of the missing feature is gone')
+})
+

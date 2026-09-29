@@ -90,7 +90,8 @@ function toESM(src, file, resolve, diag) {
   const imports = [], deps = new Set(), hoisted = new Map(), renames = [], defprops = []
   src = src.replace(DECL, (m, name, q, spec, at) => {
     if (BUILTIN[spec]) { if (name !== BUILTIN[spec]) renames.push([name, BUILTIN[spec]]); return '' }
-    if (DEFPROP.has(spec)) { defprops.push(name); return '' }
+    // a sibling package required by a relative path (`./../../define-nonenumerable-read-only-property`) is the package
+    if (DEFPROP.has(spec) || (spec.startsWith('.') && DEFPROP.has(/node_modules\/(@stdlib\/.+?)\/lib\/index\.js$/.exec(resolve(spec, file))?.[1] ?? ''))) { defprops.push(name); return '' }
     if (!once(src, name, at, m.length)) return m
     const key = resolve(spec, file)
     deps.add(key); imports.push(`import ${name} from '${key}'`)

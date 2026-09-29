@@ -78,6 +78,8 @@ const CALLEE_VAL = {
   'Object.groupBy': VAL.HASH,
   'Map.groupBy': VAL.MAP,
   'RegExp.escape': VAL.STRING,
+  // the class of a value, `[object X]` (module/object.js; a held `Object.prototype.toString` calls it)
+  __object_toString: VAL.STRING,
   // Predicate builtins return booleans (raw 0/1 carrier) — same classification
   // BOOL_METHODS gives includes/some/every: without it `isFinite(x) === false`
   // falls to the unknown-identity path and bit-compares 0.0 against the FALSE

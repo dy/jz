@@ -4,6 +4,7 @@
  * @module compile/emit/dispatch
  */
 
+import { HOST_GLOBALS } from '../../autoload.js'
 import { DBG_INVARIANTS } from '../../debug.js'
 import print from 'watr/print'
 import { STR_HCACHE_BIT, HEAP } from '../../../layout.js'
@@ -48,7 +49,6 @@ const SELF_AWARE_OPS = new Set(['u-', '~', '[]', ...BIGINT_JOINT_BINARY_OPS, ...
 
 // Host globals auto-imported as `(import "env" "name" (global … i64))` when
 // referenced as a value. Drained from ctx.core.hostGlobals at assembly.
-const HOST_GLOBALS = new Set(['WebAssembly', 'globalThis', 'self', 'window', 'global', 'process'])
 
 // hoistNestedCalls (plan/inline.js hExpr) names its hoisted `const __h = call(...)`
 // temps `${T}inl${uniq}_h` — a single-def, single-use compiler binding by construction

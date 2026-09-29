@@ -676,14 +676,18 @@ test('host override: string return value', () => {
 
 test('host global behind a dead guard arm never imports', () => {
   // Guard chains with a leading dynamic operand: `x || typeof g === 'undefined' || g.member`.
-  // resolveTypeof folds the middle arm to `true`; prep's dead-arm fold must then drop the
-  // g.member read even though the literal sits nested one level deep (left-associativity) —
-  // so typeof-guarded debug hooks compile with a clean import section and self-compile builds
-  // (whose runner provides no env.globalThis / env.process) still instantiate.
+  // resolveTypeof folds the middle arm to `true` for a global one host has and another lacks
+  // (`process`); prep's dead-arm fold must then drop the g.member read even though the literal
+  // sits nested one level deep (left-associativity) — so typeof-guarded debug hooks compile
+  // with a clean import section and self-compile builds (whose runner provides no env.process)
+  // still instantiate. `globalThis` every host has: its typeof is 'object' at compile time, the
+  // arm behind `typeof globalThis === "undefined"` is the dead one, and the read imports the
+  // host global (a library resolves its global object by that test).
   const wasm = compile(
     'let f = (c) => { if (!c || typeof globalThis === "undefined" || !globalThis.__DBG) return 0; return 1 }; export let g = () => f(1)')
   const names = WebAssembly.Module.imports(new WebAssembly.Module(wasm)).map(i => `${i.module}.${i.name}`)
-  ok(!names.includes('env.globalThis'), 'no env.globalThis import')
+  ok(names.includes('env.globalThis'), 'the read of globalThis is live: env.globalThis imported')
+  is(jz('let f = (c) => { if (!c || typeof globalThis === "undefined" || !globalThis.__DBG) return 0; return 1 }; export let g = () => f(1)').exports.g(), 0, 'and the hook reads the host: no __DBG there')
   const pw = compile(
     'const D = typeof process !== "undefined" && !!process.env; let h = (c) => { if (c && typeof process !== "undefined" && process.env.X) return 1; return 0 }; export let g = () => h(1) + (D ? 10 : 0)')
   const names2 = WebAssembly.Module.imports(new WebAssembly.Module(pw)).map(i => `${i.module}.${i.name}`)

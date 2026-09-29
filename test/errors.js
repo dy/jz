@@ -20,6 +20,12 @@ test('prohibited: this', () => throws('export let f = () => this.x', 'this', 'th
 test('prohibited: super', () => throws('export let f = () => super.x', 'super', 'super should error'))
 test('strict rejects: arguments', () => throws('export let f = () => arguments[0]', 'arguments', 'arguments should error', { strict: true }))
 // At a module's top level a function declaration is lexical (ES2026 §16.2.1.1): a second one is an early error, not a hoist.
+// A member the target does not serve of a namespace it does (`Math.frund`) reads as
+// undefined, as a missing property of an object does; a call of it is still refused.
+test('namespace: a member the target does not serve reads as undefined, its call is refused', () => {
+  is(jz('export let f = () => [typeof Math.frund, Math.frund === undefined, typeof Math.fround].join(" ")').exports.f(), 'undefined true function')
+  throws('export let f = (x) => Math.frund(x)', 'math.frund', 'a call of an unserved member should error')
+})
 test('module: a second function declaration of a name is an early error', () => throws('function f() { return 1 }\nfunction f() { return 2 }\nexport let g = () => f()', 'duplicate function declaration', 'a duplicate top-level function should error'))
 test('prohibited: eval', () => throws('eval("1")', 'eval', 'eval should error'))
 

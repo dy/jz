@@ -200,6 +200,8 @@ const CALL_MODULES = dict({
   'fetch': ['core', 'web'],
   'fs.write': ['core', 'string', 'fs'],
   'String.fromCharCode': ['core', 'string'],
+  Symbol: ['core', 'symbol'],
+  'Symbol.for': ['core', 'symbol'],
   'String.fromCodePoint': ['core', 'string'],
   'Uint8Array.fromBase64': ['core', 'typedarray', 'string'],
   'Uint8Array.fromHex': ['core', 'typedarray', 'string'],
@@ -232,6 +234,8 @@ export const CTORS = ['Float64Array','Float32Array','Float16Array','Int32Array',
 // caches / cycle-detection sets and never observe the missing weak semantics.
 export const COLLECTION_CTORS = ['Set', 'Map', 'WeakSet', 'WeakMap']
 export const TIMER_NAMES = new Set(['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'requestAnimationFrame', 'cancelAnimationFrame'])
+// The host's own globals, imported where a program names one (emit/dispatch.js): objects of the host, `typeof` them 'object'.
+export const HOST_GLOBALS = new Set(['WebAssembly', 'globalThis', 'self', 'window', 'global', 'process'])
 
 const MOD_DEPS = {
   number: ['core', 'string'],
@@ -363,6 +367,8 @@ export const includeForTimerRuntime = () => {
   includeModule('fn')
 }
 
+/** Whether a name (bare or dotted, `Symbol`, `String.fromCharCode`) is a callee a module serves: a function of the target. */
+export const isNamedCallee = callee => callee in CALL_MODULES
 export const includeForNamedCall = callee => {
   const modules = CALL_MODULES[callee]
   if (!modules) return false

@@ -11,6 +11,7 @@ import { DBG_INVARIANTS } from '../src/debug.js'
 import { dataAlign, dataPush, dataLen, pushStaticSlots } from '../src/static-data.js'
 import { typed, asF64, asI64, asI32, NULL_NAN, UNDEF_NAN, TRUE_NAN, FALSE_NAN, temp, tempI32, tempI64, block64, ptrTypeEq, dispatchByPtrType, allocPtr, needsDynShadow, mkPtrIR, extractF64Bits, slotAddr, elemLoad, elemStore, freshId, undefExpr } from '../src/ir.js'
 import { emit, storedValue, storedFieldValue, deps } from '../src/bridge.js'
+import { includeForOp, includeForArrayAccess } from '../src/autoload.js'
 import { staticArrayPtr } from './array.js'
 import { valTypeOf, shapeOf } from '../src/kind.js'
 import { VAL, lookupValType, repOf } from '../src/reps.js'
@@ -802,10 +803,22 @@ export default (ctx) => {
       err('Object.defineProperty with an accessor descriptor is outside jz scope; declare `get`/`set` on the class instead')
     const t = temp('dp')
     const vi = props ? props.names.indexOf('value') : -1
+    // the store and the `in` below are the emitter's own, on a temp: their helpers are not prepare's to include
+    includeForArrayAccess(); includeForOp('in')
     if (k != null && props && vi >= 0) return typed(['block', ['result', 'f64'],
       ['local.set', `$${t}`, asF64(emit(obj))],
       ['drop', asF64(emit(['=', ['.', t, k], props.values[vi]]))],
       ['local.get', `$${t}`]], 'f64')
+    // A static descriptor without `value` (`{}`, `{ enumerable: false }`: ValidateAndApplyPropertyDescriptor,
+    // ES2026 §10.1.6.3) defines an absent key as undefined and leaves a present one as it is.
+    if (k != null && props) {
+      includeForOp('in')
+      return typed(['block', ['result', 'f64'],
+        ['local.set', `$${t}`, asF64(emit(obj))],
+        ['if', asI32(emit(['!', ['in', ['str', k], t]])),
+          ['then', ['drop', asF64(emit(['=', ['.', t, k], [, undefined]]))]]],
+        ['local.get', `$${t}`]], 'f64')
+    }
     const kt = temp('dk'), d = temp('dd')
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${t}`, asF64(emit(obj))],
@@ -813,9 +826,11 @@ export default (ctx) => {
       ['local.set', `$${d}`, asF64(emit(desc))],
       ['if', emit(['||', ['!==', ['.', d, 'get'], [, undefined]], ['!==', ['.', d, 'set'], [, undefined]]]),
         ['then', ['global.set', '$__jz_last_err_bits', ['i64.reinterpret_f64', ['f64.const', errorCodeLiteral(ERR.ACCESSOR_DESCRIPTOR)]]], ['throw', '$__jz_err', ['f64.const', errorCodeLiteral(ERR.ACCESSOR_DESCRIPTOR)]]]],
-      // a descriptor without `value` leaves the property as it is
+      // a descriptor with `value` stores it; one without defines an absent key as undefined
       ['if', asI32(emit(['in', ['str', 'value'], d])),
-        ['then', ['drop', asF64(emit(['=', ['[]', t, kt], ['.', d, 'value']]))]]],
+        ['then', ['drop', asF64(emit(['=', ['[]', t, kt], ['.', d, 'value']]))]],
+        ['else', ['if', asI32(emit(['!', ['in', kt, t]])),
+          ['then', ['drop', asF64(emit(['=', ['[]', t, kt], [, undefined]]))]]]]],
       ['local.get', `$${t}`]], 'f64')
   }
 

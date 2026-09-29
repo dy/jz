@@ -340,8 +340,21 @@ function legalizeReactorInit(module) {
  * alias/parametric/mixed-export/fs/optimize-tier variants) before and after this
  * function grew real behavior — all hashes match. `test:wasi` (40/40) stays green.
  */
+// A module that reaches into the host from its initializer: a host global it names
+// (`globalThis`, `self`), a member read or a call on a host value (`__ext_*`). No
+// host can serve those before `new WebAssembly.Instance` returns (its memory is
+// not wired), so such a module ships its init as `_initialize` too (the reactor
+// convention above), which the interop calls once the memory is; a pure module
+// keeps its `start` section and instantiates bare.
+const HOST_ENV_GLOBALS = new Set(['WebAssembly', 'globalThis', 'self', 'window', 'global', 'process'])
+const initTouchesHost = (module) => module.some(n => Array.isArray(n) && n[0] === 'import' && n[1] === '"env"' &&
+  typeof n[2] === 'string' && (HOST_ENV_GLOBALS.has(n[2].slice(1, -1)) || n[2].startsWith('"__ext_')))
+
 export function legalizeForTarget(module, targetProfile) {
-  if (!targetProfile?.commandEntry) return module
+  if (!targetProfile?.commandEntry) {
+    if (initTouchesHost(module)) legalizeReactorInit(module)
+    return module
+  }
   legalizeCommandEntries(module)
   legalizeReactorInit(module)
   return module
