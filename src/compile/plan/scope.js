@@ -31,6 +31,7 @@ import { MAX_CLOSURE_ARITY, UNDEF_NAN, freshId } from '../../ir.js'
 import { analyzeFuncNamespaces } from '../analyze.js'
 import { collectGlobalBareEscapes } from '../analyze-scans.js'
 import { invalidateProgramFactsCache } from '../program-facts.js'
+import { includeForNamedCall, includeForGenericMethod } from '../../autoload.js'
 
 const isConstInt = value => Number.isInteger(value) && !Object.is(value, -0) && value >= I32_MIN && value <= I32_MAX
 
@@ -1018,6 +1019,84 @@ export const devirtGlobalCalls = (ast) => {
   return changed
 }
 
+// The methods of `Object.prototype` a program holds in a name, to call on a value of its choice.
+const HELD_METHODS = new Set(['toString', 'hasOwnProperty'])
+const heldMethod = (e) => Array.isArray(e) && e.length === 3 && e[0] === '.' && e[1] === 'Object.prototype' && HELD_METHODS.has(e[2]) ? e[2] : null
+
+/**
+ * A module name that holds a method of `Object.prototype` for good is that
+ * method where it is called through `call`:
+ *
+ *   var toStr = Object.prototype.toString        nativeClass = v => __object_toString( v )
+ *   nativeClass = v => toStr.call( v )      →
+ *   var has = Object.prototype.hasOwnProperty    own = ( o, k ) => o.hasOwnProperty( k )
+ *   own = ( o, k ) => has.call( o, k )
+ *
+ * the forms the call has where the method is named in place (jzify/bundler.js).
+ * A library tests a value's class this way, from a module of its own that
+ * another imports, so the name is resolved here, where the modules are one
+ * program. The name is declared once with the method, or with a name that
+ * holds it, and nothing stores to it. Its declaration goes with its last
+ * mention (`dropUnreadGlobals`); any other use of it is a value the target has
+ * no form of, reported as before.
+ */
+export const resolveHeldMethods = (ast) => {
+  const globals = ctx.scope.userGlobals
+  if (!globals?.size) return false
+  const roots = [...(ctx.module.moduleInits || []), ast]
+  const defs = new Map(), open = new Set()   // name → the value it is declared with; the names with more than one write
+  const declare = (s) => {
+    if (!Array.isArray(s)) return
+    if (s[0] === ';') { for (let i = 1; i < s.length; i++) declare(s[i]); return }
+    if (s[0] !== 'let' && s[0] !== 'const') return
+    for (let i = 1; i < s.length; i++) {
+      const d = s[i]
+      if (!Array.isArray(d) || d[0] !== '=' || typeof d[1] !== 'string' || !globals.has(d[1])) continue
+      if (defs.has(d[1])) open.add(d[1]); else defs.set(d[1], d[2])
+    }
+  }
+  for (const r of roots) declare(r)
+  const held = new Map()
+  const methodOf = (name, seen = new Set()) => {
+    if (seen.has(name) || open.has(name)) return null
+    seen.add(name)
+    const v = defs.get(name)
+    return v === undefined ? null : typeof v === 'string' ? methodOf(v, seen) : heldMethod(v)
+  }
+  for (const name of defs.keys()) { const m = methodOf(name); if (m) held.set(name, m) }
+  if (!held.size) return false
+  const bodies = ctx.funcs.list.filter(f => !f.raw && f.body)
+  // a store to the name anywhere: it holds what was stored
+  const stores = (n) => {
+    if (!Array.isArray(n) || n[0] === 'str') return
+    // a declarator binds: its value is scanned, and a second declaration of the name was counted above
+    if (n[0] === 'let' || n[0] === 'const') { for (let i = 1; i < n.length; i++) stores(Array.isArray(n[i]) && n[i][0] === '=' ? n[i][2] : n[i]); return }
+    if (MUTATE_OPS.has(n[0]) && typeof n[1] === 'string' && held.has(n[1])) held.delete(n[1])
+    for (let i = 1; i < n.length; i++) stores(n[i])
+  }
+  for (const r of roots) stores(r)
+  for (const f of bodies) { stores(f.body); if (f.defaults) for (const d of Object.values(f.defaults)) stores(d) }
+  // a name declared with one that a store opened holds nothing for good either
+  for (const name of [...held.keys()]) { for (let v = defs.get(name); typeof v === 'string'; v = defs.get(v)) if (!held.has(v)) { held.delete(name); break } }
+  if (!held.size) return false
+
+  let changed = false
+  const rewrite = (n) => {
+    if (!Array.isArray(n) || n[0] === 'str' || n[0] == null) return n
+    let out = n
+    for (let i = 1; i < n.length; i++) { const c = rewrite(n[i]); if (c !== n[i]) { if (out === n) out = n.slice(); out[i] = c } }
+    if (out[0] !== '()' || out.length !== 3 || !Array.isArray(out[1]) || out[1][0] !== '.' || out[1][2] !== 'call' || !held.has(out[1][1])) return out
+    const args = Array.isArray(out[2]) && out[2][0] === ',' ? out[2].slice(1) : out[2] == null ? [] : [out[2]]
+    const method = held.get(out[1][1])
+    if (method === 'toString' && args.length === 1) { includeForNamedCall('__object_toString'); changed = true; return ['()', '__object_toString', args[0]] }
+    if (method === 'hasOwnProperty' && args.length === 2) { includeForGenericMethod('hasOwnProperty'); changed = true; return ['()', ['.', args[0], 'hasOwnProperty'], args[1]] }
+    return out
+  }
+  for (const f of bodies) f.body = rewrite(f.body)
+  for (const r of roots) if (Array.isArray(r)) for (let i = 1; i < r.length; i++) r[i] = rewrite(r[i])
+  return changed
+}
+
 // The operators that evaluate their operands and nothing else, whatever the operands hold.
 const PLAIN_OPS = new Set(['!', 'typeof', 'void', '?:', '?', '&&', '||', '??', '===', '!==', ','])
 // The operators that convert an operand: an object's conversion calls its
@@ -1030,6 +1109,7 @@ const inert = (e, view) => {
   if (e == null || typeof e === 'string' || typeof e === 'number') return true
   if (!Array.isArray(e)) return false
   if (e[0] == null || e[0] === 'str' || e[0] === 'bool' || e[0] === '=>') return true
+  if (heldMethod(e)) return true
   if (PLAIN_OPS.has(e[0])) return e.slice(1).every(o => inert(o, view))
   if (!CONVERTING_OPS.has(e[0]) || !view) return false
   return e.slice(1).every(o => inert(o, view) && SCALAR_TAGS.has(tagOf(core(view.kindOfExpr(o)))))

@@ -48,7 +48,7 @@ import {
   moduleGlobalKinds, unboxConstTypedGlobals, inferModuleIntGlobals, dropUnreadGlobals,
   flattenFuncNamespaces, devirtGlobalCalls, devirtClassCalls, classifyHashDictGlobals,
   materializeAutoBoxSchemas, resolveClosureWidth, canSkipWholeProgramNarrowing,
-  holdModuleNumbers,
+  holdModuleNumbers, resolveHeldMethods,
 } from './scope.js'
 import { declareWrittenKeys } from './declare-written-keys.js'
 import { indexArrayPatterns } from './index-array-patterns.js'
@@ -114,6 +114,8 @@ export default function plan(ast, profiler, summarize) {
   // A literal-key write outside a literal-bound name's layout becomes a
   // declared slot of that literal (flattened function properties included).
   sweep('declareWrittenKeys', () => declareWrittenKeys(ast))
+  // A name that holds a method of `Object.prototype` is the method where it is called.
+  sweep('resolveHeldMethods', () => resolveHeldMethods(ast))
   // Devirtualize calls through init-constant function globals (closure
   // devirtualization) — must follow the SROA above, which creates the globals.
   sweep('devirtGlobalCalls', () => devirtGlobalCalls(ast))

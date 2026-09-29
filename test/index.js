@@ -125,6 +125,7 @@ const TESTS = [
   'float32',
   'constants',
   'splice',
+  'held-method',
   'unroll-cost',
   'sentinel-guard',
   'twin-locals',

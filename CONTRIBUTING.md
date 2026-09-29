@@ -2406,6 +2406,16 @@ A typed store reads its key before its value, as PutValue does (`module/typedarr
 key that reads what the value's effects may store to (a global or an element a call changes,
 a local the value assigns) is taken into a temp first.
 
+A module name that holds a method of `Object.prototype` for good is the method where it is
+called through `call` (`resolveHeldMethods`, plan/scope.js, at every level): `var toStr =
+Object.prototype.toString; … toStr.call( v )` is `__object_toString( v )`, `has.call( o, k )`
+is `o.hasOwnProperty( k )`, the forms jzify gives the method named in place. A library tests
+a value's class this way from a module of its own that another imports (stdlib's
+`utils/native-class`), so the name is resolved where the modules are one program. The name
+is declared once with the method, or with a name that holds it, and nothing stores to it; its
+declaration goes with its last mention. Any other use of it is a value the target has no
+form of and stops the compile, as before (`test/held-method.js`).
+
 A module binding nothing that runs reads is not declared, where its value runs nothing
 (`dropUnreadGlobals`, plan/scope.js, at every level): a name, a literal, a closure, an
 operator that converts nothing (`typeof`, `===`, `&&`), or one that converts numbers, strings
