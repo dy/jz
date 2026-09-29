@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<script>(()=>{try{document.documentElement.dataset.theme=localStorage.getItem('theme')||'light'}catch(e){document.documentElement.dataset.theme='light'}})()</script>
+<script>(()=>{try{document.documentElement.dataset.theme=localStorage.getItem('theme')==='light'?'light':'dark'}catch(e){document.documentElement.dataset.theme='dark'}})()</script>
 <title>JavaScript and WebAssembly Benchmarks | JZ</title>
 <meta name="description" content="jz against V8, Porffor, AssemblyScript, C, Rust and Zig: speed, memory and wasm size, measured across a corpus of numeric kernels.">
 <link rel="canonical" href="https://jz.js.org/bench/">
@@ -24,8 +24,6 @@
   --mid: light-dark(#6c6c78, #8a8a93);     /* secondary text */
   --faint: light-dark(#e3e3e9, #1c1c25);   /* hairlines / bar tracks */
   --red: light-dark(#d61f1f, #ff5a5a);
-  /* --cls-js / --cls-wasm / --cls-native (the class-glyph brand colours) come themed from
-     assets/site.css, shared with the landing hero. */
 }
 html { scroll-behavior: smooth; }
 body { background: var(--paper); color: var(--ink); font-family: var(--sans);
@@ -37,23 +35,20 @@ body { background: var(--paper); color: var(--ink); font-family: var(--sans);
 
 main { max-width: var(--colw); margin-inline: calc(var(--gx-pad) - var(--padx)) auto; padding: 0 var(--padx) 90px; }
 .intro + section { margin-top: var(--u2); }
-/* each titled section opens with a ruler across the page (as on the landing), its top grown by the script
-   (assets/rhythm.js) onto the next major grid line. The line is an absolute box at its static place (the
-   section's top), spanning the page, not the column. The heading sits right under it: a half-unit band, its
-   caps between the ruler and the band's foot (baseline 24 down); controls in a heading row (.shead) take the
-   band's right end, the rulers' corner. What follows hangs from the next half-unit line. */
+/* each titled section starts on a major grid line, aligned by assets/rhythm.js. The heading fills a half-unit
+   band, its caps centred in it; a heading row (.shead) centres its chips in the same band at the
+   right, so heading and chip labels share one line.
+   What follows starts on the band's foot, the next mid line, and keeps its baselines on unit lines: text
+   blocks are trimmed and padded (--bl); chart rows are 24px, their text on the row's 16px line and the bar
+   filling the caps' unit cell above it. */
 section { margin-top: var(--U); }
-section:has(> h2, > .shead)::before { content: ''; position: absolute; left: 0; right: 0; border-top: 1px solid var(--rule); pointer-events: none; }
-h2 { height: var(--u2); padding-top: calc(24px - 1cap); margin: 0; font-size: var(--fs-caps); font-weight: 700; text-transform: uppercase; letter-spacing: var(--ls-caps); }
-.shead { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
-/* the run control: a one-unit × half-unit box in the rulers' corner — left/top borders inside, right/bottom drawn
-   just past it (as the landing's boxes), so its top and right edges ARE the section and column rulers */
-#runAll { width: var(--U); height: var(--u2); padding: 0; border-width: 1px 0 0 1px; box-shadow: 1px 1px var(--ink); }
-@supports (text-box: trim-both cap alphabetic) { h2, #outro, p { text-box: trim-both cap alphabetic; } #outro, p { padding-top: var(--bl); } }
+h2 { height: var(--u2); padding-top: calc(20px - 1cap / 2); margin: 0; font-size: var(--fs-caps); font-weight: 700; text-transform: uppercase; letter-spacing: var(--ls-caps); }
+.shead { display: flex; align-items: flex-start; justify-content: space-between; gap: 0 24px; flex-wrap: wrap; }
+.shead h2 { flex: none; }
+@supports (text-box: trim-both cap alphabetic) { h2, .bandlab, #outro, p { text-box: trim-both cap alphabetic; } #outro, p { padding-top: var(--bl); } }
 p { font-size: var(--fs-body); line-height: 24px; max-width: 70ch; }
 p + p { margin-top: 16px; }
 #speed > p { margin: 0 0 24px; }   /* corpus note, sits under the heading above the bars */
-#cases > p { margin: 0 0 24px; }   /* cases note (wasm scope), above the filter chips */
 a { color: var(--ink); }
 .dim { color: var(--mid); }
 code, .mono { font-family: var(--mono); font-size: var(--fs-mono); }
@@ -82,16 +77,18 @@ code, .mono { font-family: var(--mono); font-size: var(--fs-mono); }
   opacity: 1; visibility: visible; transform: translateY(0); transition-delay: .4s; }
 
 /* intro */
-/* intro: the page title (display size, as the landing's), the CI badge and the run control on its line; the
-   selected machine's provenance under it */
+/* intro: the page title (display size, as the landing's) and the CI badge, the run control at the line's right
+   end, all standing on the title's baseline; the selected machine's provenance under it */
 .intro { display: flex; flex-direction: column; gap: 16px; }
 .introtop { display: flex; align-items: flex-end; gap: 24px; flex-wrap: wrap; }
+.introtop .runall { margin-left: auto; }
+#runAll { height: 32px; padding: 0 16px; }
 .ci { display: flex; line-height: 0; }
 .ci[aria-current] img { outline: 1px solid var(--ink); outline-offset: 2px; }   /* the CI view is on */
 #outro { font-size: var(--fs-small); line-height: 24px; max-width: none; }
 button {
   font-family: var(--sans); font-size: var(--fs-caps); background: var(--paper); color: var(--ink);
-  border: 1px solid var(--ink); border-radius: 0; padding: 6px 14px; cursor: pointer;
+  border: 1px solid light-dark(var(--ink), var(--rule)); border-radius: 0; padding: 6px 14px; cursor: pointer;
   text-transform: uppercase; letter-spacing: var(--ls-caps);
 }
 button:hover { background: var(--ink); color: var(--paper); }
@@ -106,22 +103,20 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--ink); outline-o
 #globalstat { color: var(--mid); }
 
 /* bar rows */
-.row { display: grid; grid-template-columns: 220px 1fr 56px; gap: 0 14px; align-items: center; padding: 3.5px 0; font-size: var(--fs-small); }
+.row { display: grid; gap: 0 16px; align-items: baseline; height: 24px; line-height: 16px; font-size: var(--fs-small); }
 .row .lab { text-align: right; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 /* label doubling as the source / tracker link — the shared .lnk content-link fashion (assets/site.css) */
-.row .lab .cico { vertical-align: -1.5px; margin-right: 4px; }   /* sits just before the label */
+.row .lab .cico { margin-right: 6px; }   /* sits just before the label */
 .row .lab .sub { color: var(--mid); margin-left: 6px; }
 .row .val { font-family: var(--mono); font-size: var(--fs-mono); white-space: nowrap; }
-/* corpus: three fixed value slots per row (speed · mem · size multipliers) under a
-   clickable column header — right-pinned so the columns align down the chart */
-#geomean .row { grid-template-columns: 220px 1fr 240px; }   /* three 72px value slots + two 12px gaps: a caps heading (MEMORY) fits its slot */
-#geomean .val { text-align: right; }
-#geomean .val .m { display: inline-block; width: 72px; text-align: left; }
-#geomean .val .m + .m, #geomean .mh + .mh { margin-left: 12px; }   /* breathing room between columns */
-#geomean .row.cols { padding: 0 0 4px; }
+/* corpus: three value slots per row (speed · mem · size multipliers) under a clickable column header. On the
+   grid: the labels end a gap before the third major line, where the bars start; each slot is a major unit, so
+   every column's figures start on a major line down the chart */
+#geomean .row { grid-template-columns: 224px 1fr 240px; }
+#geomean .val .m { display: inline-block; width: var(--U); text-align: left; }
 /* title and values share one clear LEFT line per column; the active sort column
    is inked — colour alone marks it, no link-like underline */
-#geomean .mh { display: inline-block; width: 72px; text-align: left; background: none; border: 0; padding: 0;
+#geomean .mh { display: inline-block; width: var(--U); text-align: left; background: none; border: 0; padding: 0;
   font: 700 var(--fs-caps)/1.4 var(--sans); text-transform: uppercase; letter-spacing: var(--ls-caps); color: var(--mid); cursor: pointer; }
 #geomean .mh:hover { background: none; color: var(--ink); }
 #geomean .mh.on { color: var(--ink); }
@@ -129,13 +124,13 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--ink); outline-o
 #geomean .mh { position: static; cursor: pointer; }
 #geomean .mh::after { left: auto; right: 0; width: 240px; max-width: calc(100vw - 40px); }
 #geomean .mh::before { content: none; }
-.bar { height: 15px; position: relative; background: transparent; }
-.bar i { position: absolute; inset: 0 auto 0 0; border: 1px solid var(--mid); background: var(--paper); min-width: 2px; }   /* competitors: paper fill (hides the grid under it) + mid-gray border; the solid-ink JZ bar stays dominant */
+.bar { height: 16px; position: relative; background: transparent; }   /* no text: its foot is its baseline, so it sets the row's baseline 16 down, on a unit line */
+.bar i { position: absolute; inset: 8px auto 0 0; border: 1px solid var(--mid); background: var(--paper); min-width: 2px; }   /* competitors: paper fill (hides the grid under it) + mid-gray border; the solid-ink JZ bar stays dominant */
 .bar i.solid { background: var(--ink); }
-/* class glyph (.cico base + themed cls-* colours live in assets/site.css) — here just its
-   placement before each per-row label and on the corpus group headers (.bandlab). */
-.bandlab .cico { vertical-align: -1.5px; margin-right: 6px; }
-.bar .cut { position: absolute; right: 8px; top: 0; bottom: 0; width: 7px; background: var(--paper);
+/* class glyph (.cico in assets/site.css) — here just its placement before each per-row label and on the
+   corpus group headers (.bandlab). */
+.bandlab .cico { margin-right: 6px; }
+.bar .cut { position: absolute; right: 8px; top: 8px; bottom: 0; width: 7px; background: var(--paper);
   border-left: 1px solid var(--ink); border-right: 1px solid var(--ink); transform: skewX(-20deg); }
 .row.strong .lab, .row.strong .val { font-weight: 700; }
 .row .par { font-family: var(--mono); font-size: var(--fs-mono); color: var(--red); margin-left: 6px; }
@@ -143,20 +138,23 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--ink); outline-o
 /* attempted-but-failed target — muted, no bar; the reason rides a hover tooltip */
 .row.fail { opacity: .5; }
 .row.fail .val { color: var(--mid); font-style: italic; cursor: help; }
-.row.fail .bar::after { content: ''; position: absolute; inset: 50% 0 auto 0; border-top: 1px dotted var(--mid); }
-.bandlab { font-size: var(--fs-caps); text-transform: uppercase; letter-spacing: var(--ls-caps); color: var(--mid); margin: 14px 0 4px; }
-.subdiv { font-size: var(--fs-caps); text-transform: uppercase; letter-spacing: var(--ls-caps); color: var(--mid); margin: 12px 0 4px; }
+.row.fail .bar::after { content: ''; position: absolute; inset: 12px 0 auto 0; border-top: 1px dotted var(--mid); }
+.bandlab { height: 24px; padding-top: calc(16px - 1cap); margin-top: 8px; font-size: var(--fs-caps); text-transform: uppercase; letter-spacing: var(--ls-caps); color: var(--mid); }
 
-/* per-case cards */
-.chips { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 18px; }
-.chips button { padding: 4px 10px; }
+/* per-case cards; the family filter: outlined chips, three units tall, centred in the heading band
+   (wrapped on a phone, the rows stay a unit apart) */
+.chips { display: flex; gap: 8px; flex-wrap: wrap; margin-block: var(--u); }
+#cards { margin-top: calc(var(--u2) - var(--u)); }   /* the chips' foot to the first card: the gap between cards */
+.chips button { height: 24px; padding: 0 10px; line-height: 22px; }
 .chips button.on { background: var(--ink); color: var(--paper); }
 .chips button[disabled] { opacity: .4; pointer-events: none; }
 .chips button .n { margin-left: 5px; opacity: .55; font-variant-numeric: tabular-nums; }
 h2 .cnt { font-weight: 400; letter-spacing: 0; color: var(--mid); font-variant-numeric: tabular-nums; }
-.cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(430px, 1fr)); gap: 40px 38px; }
-.card { display: grid; grid-template-columns: 110px minmax(24px, 1fr) max-content; column-gap: 14px; align-content: start; }
-.card h3 { grid-column: 1 / -1; position: relative; font-size: var(--fs-small); font-weight: 700; display: flex; flex-wrap: wrap; align-items: baseline; gap: 10px; margin-bottom: 14px; }
+/* cards on the grid: columns a major unit apart, so each starts on a mid line (the column is whole major units);
+   inside, the labels end a unit before the third mid line, where the bars start */
+.cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(400px, 1fr)); gap: var(--u2) var(--U); }
+.card { display: grid; grid-template-columns: 112px minmax(24px, 1fr) max-content; column-gap: 8px; align-content: start; }
+.card h3 { grid-column: 1 / -1; position: relative; font-size: var(--fs-small); font-weight: 700; display: flex; flex-wrap: wrap; align-items: baseline; gap: 10px; line-height: 16px; min-height: 24px; padding-top: 3px; margin-bottom: 8px; }   /* a 16px line's baseline sits 13 down: 3 more puts it 16 down, on a unit line, as the rows' */
 .card h3 .fam { font-weight: 400; font-size: var(--fs-caps); text-transform: uppercase; letter-spacing: var(--ls-caps); color: var(--mid); }
 .card h3 .fam[data-tip] { position: static; text-decoration: underline dotted var(--faint); text-underline-offset: 3px; }
 .card h3 .size { font-family: var(--mono); font-weight: 400; font-size: var(--fs-mono); color: var(--mid); }
@@ -167,9 +165,8 @@ h2 .cnt { font-weight: 400; letter-spacing: 0; color: var(--mid); font-variant-n
 .card h3 .play .ico { display: block; }
 .card h3 .actions { margin-left: auto; display: inline-flex; align-items: baseline; padding-left: 18px; }   /* repl/src right-aligned in each card */
 .card h3 .play:hover { background: none; color: var(--ink); }
-.card .row { grid-column: 1 / -1; grid-template-columns: subgrid; padding: 2.5px 0; }
+.card .row { grid-column: 1 / -1; grid-template-columns: subgrid; }
 .card .val { text-align: right; }
-.card .bar { height: 12px; }
 
 @media (max-width: 640px) {
   .row, .card, #geomean .row { grid-template-columns: minmax(0, 1fr) minmax(24px, 1fr) max-content; gap: 0 8px; }
@@ -177,6 +174,7 @@ h2 .cnt { font-weight: 400; letter-spacing: 0; color: var(--mid); font-variant-n
   #geomean .val .m, #geomean .mh { width: 64px; }
   #geomean .mh { letter-spacing: .04em; }   /* MEMORY in a phone's slot */
   .cards { grid-template-columns: minmax(0, 1fr); }
+  .card .val { max-width: calc(var(--cw) / 2); overflow: hidden; text-overflow: ellipsis; }
 }
 </style>
 </head>
@@ -207,26 +205,26 @@ h2 .cnt { font-weight: 400; letter-spacing: 0; color: var(--mid); font-variant-n
     <h1 class="title">Benchmark</h1>
     <!-- the CI run's status; it switches the page to the CI runner's results (and back) -->
     <a class="ci" id="machine-ci" href="?machine=ci" title="Show the CI runner's results"><img src="https://github.com/dy/jz/actions/workflows/bench.yml/badge.svg" alt="bench CI" height="20"></a>
+    <!-- re-run every case in this browser -->
+    <div class="runall">
+      <span id="globalstat"></span>
+      <button id="runAll">▶ Run on this machine</button>
+    </div>
   </div>
   <p class="dim" id="outro">loading…</p>
 </div>
 
 <section id="speed">
-  <!-- the corpus heading carries the run control: re-run every case in this browser -->
-  <div class="shead">
-    <h2>Corpus</h2>
-    <div class="runall">
-      <span id="globalstat"></span>
-      <button id="runAll">▶ run</button>
-    </div>
-  </div>
+  <h2>Corpus</h2>
   <p class="dim">Target ÷ JZ, geometric mean over matched, correct cases. JZ = 1×; lower is better. Click a heading to sort within each runtime group; the bars follow that column. Hover or focus a heading for measurement details.</p>
   <div id="geomean"></div>
 </section>
 
 <section id="cases">
-  <h2>Cases <span class="cnt" id="casecount"></span></h2>
-  <div class="chips" id="chips"></div>
+  <div class="shead">
+    <h2>Cases <span class="cnt" id="casecount"></span></h2>
+    <div class="chips" id="chips"></div>
+  </div>
   <div class="cards" id="cards"></div>
 </section>
 
@@ -251,7 +249,6 @@ h2 .cnt { font-weight: 400; letter-spacing: 0; color: var(--mid); font-variant-n
       <a href="https://github.com/dy/jz/issues">issues</a>
     </nav>
     <div class="legal">
-      <p class="about">JZ compiles JavaScript to WebAssembly<br>for audio, graphics, simulations and compute</p>
       <span class="credit">made with <a href="https://github.com/dy/watr">watr</a> and <a href="https://github.com/dy/subscript">jessie</a></span>
       <span class="lic"><a href="https://github.com/dy/jz/blob/main/LICENSE">MIT</a><span class="dot">,</span> <a href="https://github.com/krishnized/license/" aria-label="krishnized license"><span class="om">ॐ</span></a></span>
     </div>
@@ -675,7 +672,7 @@ const famCount = f => f === 'all' ? CASES.length : CASES.filter(c => FAMILY[c.id
 const renderChips = () => {
   $('chips').innerHTML = CHIPS.map(f => {
     const n = famCount(f)
-    return `<button data-f="${f}" class="${filter === f ? 'on' : ''}"${n ? '' : ' disabled'}>${f}<span class="n">${n}</span></button>`
+    return `<button data-f="${f}" class="${filter === f ? 'on' : ''}" aria-pressed="${filter === f}"${n ? '' : ' disabled'}>${f}<span class="n">${n}</span></button>`
   }).join('')
 }
 

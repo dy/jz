@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<script>(()=>{try{document.documentElement.dataset.theme=localStorage.getItem('theme')||'light'}catch(e){document.documentElement.dataset.theme='light'}})()</script>
+<script>(()=>{try{document.documentElement.dataset.theme=localStorage.getItem('theme')==='light'?'light':'dark'}catch(e){document.documentElement.dataset.theme='dark'}})()</script>
 <title>Guide | JZ</title>
 <meta name="description" content="Compile JavaScript to WebAssembly with JZ. Install, run your first WASM function, pass typed arrays, and keep the same JavaScript as a fallback.">
 <link rel="canonical" href="https://jz.js.org/guide/">
@@ -47,8 +47,8 @@ h2 code { font-size: .9em; background: none; padding: 0; }
 .prose .cap + .terminal, .prose .cap + table { margin-top: 16px; }
 
 /* tables — rows of 40, the text's caps centred between rules on grid lines */
-.prose table { width: 100%; margin: 24px 0; box-shadow: 1px 1px var(--rule); border-collapse: separate; border-spacing: 0; font-size: var(--fs-body); line-height: 24px; }
-.prose th, .prose td { text-align: left; vertical-align: top; border: 0 solid var(--rule); border-width: 1px 0 0 1px; padding: calc((39px - 1cap) / 2) 16px; }
+.prose table { width: 100%; margin: 24px 0; box-shadow: 0 1px var(--rule); border-collapse: separate; border-spacing: 0; font-size: var(--fs-body); line-height: 24px; }
+.prose th, .prose td { text-align: left; vertical-align: top; border: 0 solid var(--rule); border-width: 1px 0 0; padding: calc((39px - 1cap) / 2) 16px; }
 .prose th { font-size: var(--fs-caps); font-weight: 500; text-transform: uppercase; letter-spacing: var(--ls-caps); color: var(--dim); }
 .prose td { color: var(--soft); }
 .prose td:first-child { width: calc(3 * var(--U)); color: var(--ink); }
@@ -233,7 +233,6 @@ const { exports } = instantiate(wasm)</code></pre>
       <a href="https://github.com/dy/jz/issues">issues</a>
     </nav>
     <div class="legal">
-      <p class="about">JZ compiles JavaScript to WebAssembly<br>for audio, graphics, simulations and compute</p>
       <span class="credit">made with <a href="https://github.com/dy/watr">watr</a> and <a href="https://github.com/dy/subscript">jessie</a></span>
       <span class="lic"><a href="https://github.com/dy/jz/blob/main/LICENSE">MIT</a> <span class="dot">·</span> <a href="https://github.com/krishnized/license/" aria-label="krishnized license"><span class="om">ॐ</span></a></span>
     </div>
