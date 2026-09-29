@@ -175,3 +175,62 @@ for (const optimize of levels(2, 3, 'size'))
     is(exports.sum(), want.sum(), `every record a callback kept reads back at ${optimize}`)
     is(exports.treeHead(), want.treeHead(), `the array a recursive call kept reads back at ${optimize}`)
   })
+
+// A call whose arguments are all numbers leaves the host nothing to marshal
+// and, where the frame releases by itself, nothing to release: it crosses as
+// it is (interop.js `crossing`), with the general path's results.
+for (const optimize of levels(2, 3, 'size'))
+  test(`call release: a call of numbers crosses as it is, with the general path's results, at ${optimize}`, () => {
+    const src = `const st = new Float64Array(8), cache = { cur: null }
+      export let mix = (a, b) => { const t = new Float64Array(16); t[0] = a; t[1] = b; st[0] = t[0] * 2 + t[1]; return st[0] }
+      export let none = () => { st[1]++ }
+      export let count = () => st[1]
+      export let pick = (n) => n > 2 ? 'three and more, a string too long to pack' : n > 1 ? [n, n] : n > 0 ? null : n < 0 ? undefined : NaN
+      export let keep = (n) => { if (n > 0) cache.cur = [n, n + 1]; const t = [n, n, n]; return t.length }
+      export let kept = () => cache.cur === null ? -1 : cache.cur[1]
+      export let fail = (n) => { const t = [n]; if (n < 0) throw new RangeError('below zero: ' + n); return t.length }
+      export let churn = (n) => { const a = []; for (let i = 0; i < n; i++) a.push('c' + i + 'yyyyyyyyyyyyyyyy'); return a.length }`
+    const want = oracle(src), { exports, memory } = jz(src, { optimize })
+    // whatever is handed is a number as JS makes it one
+    for (const [a, b] of [[2, 3], ['2', 3], [undefined, 1], [null, 1], [true, '0x10'], [{ valueOf: () => 7 }, [4]], [2], [2, 3, 4]])
+      is(exports.mix(a, b), want.mix(a, b), `mix(${String(a)}, ${String(b)})`)
+    let named = null
+    try { exports.mix(1n, 2) } catch (e) { named = e }
+    ok(named instanceof TypeError && /BigInt argument at param 0 of mix\(\)/.test(named.message), 'a BigInt is refused by name: ' + named?.message)
+    is(growth(memory, () => exports.mix(1, 2)), 0, `a temporary of the call goes with it at ${optimize}`)
+    is(exports.none(), undefined, 'no result'); is(exports.count(), 1)
+    // a result that is no number takes the general decoding
+    for (const n of [3, 2, 1, 0, -1]) is(exports.pick(n), want.pick(n), `pick(${n})`)
+    // a throw is the error the module threw, and leaves no call half entered
+    for (let i = 0; i < 3; i++) {
+      let thrown = null
+      try { exports.fail(-1 - i) } catch (e) { thrown = e }
+      ok(thrown instanceof RangeError && thrown.message === 'below zero: ' + (-1 - i), 'the error the module threw: ' + thrown?.message)
+      is(exports.fail(i), 1, 'the call after it returns')
+    }
+    const held = memory.used
+    is(growth(memory, () => exports.mix(1, 2)), 0, `calls after a throw release as before at ${optimize}`)
+    // what a call stored stays, what it made beside goes
+    is(exports.keep(5), 3); is(exports.churn(30), 30); is(exports.kept(), 6, 'the stored pair reads back')
+    is(growth(memory, () => exports.keep(0)), 0, `a call that stored nothing keeps nothing at ${optimize}`)
+    is(exports.kept(), 6)
+    ok(memory.used - held < 4096, `and the one that stored keeps the pair, or the call at the size tier: ${memory.used - held}`)
+  })
+
+test('call release: a call of numbers made while another runs tells it what it kept', () => {
+  // `keep` crosses as it is when the host calls it, and by the general path
+  // from inside `outer`'s call, whose release has to know what it kept.
+  let inst
+  const src = `import { poke } from 'host'
+    let kept = []
+    export let keep = (n) => { kept.push([n, 7]); return kept.length }
+    export let outer = (buf) => { poke(); return buf.length }
+    export let check = () => { let s = 0; for (let i = 0; i < kept.length; i++) s += kept[i][0] * 10 + kept[i][1]; return s }
+    export let churn = (n) => { const a = []; for (let i = 0; i < n; i++) a.push('c' + i + 'yyyyyyyyyyyyyyyy'); return a.length }`
+  let n = 0
+  inst = jz(src, { imports: { host: { poke: () => inst.exports.keep(n) } } })
+  let want = 0
+  for (n = 0; n < 100; n++) { inst.exports.outer(new Float64Array(64).fill(n)); want += n * 10 + 7; inst.exports.churn(8) }
+  for (n = 100; n < 200; n++) { inst.exports.keep(n); want += n * 10 + 7; inst.exports.churn(8) }
+  is(inst.exports.check(), want, 'the arrays the calls kept read back intact')
+})

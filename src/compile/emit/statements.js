@@ -85,6 +85,17 @@ export const spreadOp = {
   '...': () => err('Spread (...) can only be used in function/method calls or array literals'),
 
 }
+// The mark of the outermost frame reading the escape flag (`$__base`,
+// optimize/arena-rewind.js), as it stood where a `try` began and as a handler
+// puts it back: a frame the exception left skipped the epilogue that would
+// have, and a mark left standing past its frame makes every later frame one
+// inside another, which keeps whole what it would give back in part.
+const baseHeld = () => {
+  if (!ctx.plans.escapeFlag || !ctx.scope.globals.has('__base')) return { save: [], back: [] }
+  const held = tempI32('tb')
+  return { save: [['local.set', `$${held}`, ['global.get', '$__base']]], back: [['global.set', '$__base', ['local.get', `$${held}`]]] }
+}
+
 export const statementOps = {
   // === Statements ===
 
@@ -167,13 +178,16 @@ export const statementOps = {
     const caughtIR = errName != null && refsName(handler, errName, REFS_THROUGH_ARROWS)
       ? materializeErrorIR(typed(['local.get', `$${errName}`], 'f64')) : null
     const handlerIR = emitVoid(handler)
+    const base = baseHeld()
     return typed(['block', `$outer${id}`, ['result', 'f64'],
+      ...base.save,
       ['block', `$catch${id}`, ['result', 'f64'],
         ['try_table', ['catch', '$__jz_err', `$catch${id}`],
           ...bodyIR],
         ['f64.const', 0],
         ['br', `$outer${id}`]],
       ['local.set', `$${errName}`],
+      ...base.back,
       // This catch fully HANDLES the error — nothing downstream
       // rethrows it — so $__jz_last_err_bits must not keep pointing at it. Left
       // set, a LATER genuine trap (OOB, stack overflow, …) unrelated to this
@@ -213,14 +227,17 @@ export const statementOps = {
     const bodyIR = withTryState(true, () => withFinallyStack(activeStack, () => emitVoid(body)))
     const normalCleanup = withFinallyStack(parentStack, () => emitVoid(cleanup))
     const throwCleanup = withFinallyStack(parentStack, () => emitVoid(cleanup))
+    const base = baseHeld()
 
     return ['block', `$fin_done${id}`,
+      ...base.save,
       ['block', `$fin_catch${id}`, ['result', 'f64'],
         ['try_table', ['catch', '$__jz_err', `$fin_catch${id}`],
           ...bodyIR],
         ...normalCleanup,
         ['br', `$fin_done${id}`]],
       ['local.set', `$${errLocal}`],
+      ...base.back,
       // Mirrors 'catch' above: zero BEFORE throwCleanup runs, not
       // after. Two outcomes, both correct: (1) throwCleanup falls through
       // normally → the rethrow below unconditionally re-sets the marker to

@@ -93,7 +93,9 @@ export function schemaSections(root, { schemas, fieldContracts, namedUses, error
  *  it stood before it copied their arguments in (interop.js); `flag` names
  *  those whose frames may run an escape, released only when the call left
  *  the escape flag at or above that mark: the module then exports the flag
- *  as `__esc`. A module that asks stored values whether a running call made
+ *  as `__esc`; `host` those that allocate and release nothing by themselves.
+ *  A call of any other whose arguments are all numbers leaves the host
+ *  nothing to release, and crosses as it is. A module that asks stored values whether a running call made
  *  them exports `__base`, which sets the outermost frame's mark: the host
  *  clears it where a call begins (a call an exception left did not restore
  *  it) and sets it to its own mark around a flagged one. A function, not the
@@ -106,7 +108,7 @@ export function schemaSections(root, { schemas, fieldContracts, namedUses, error
  *  starts empty (module/core/reach.js; the walk from it, `__survive`, is
  *  exported by optimize/arena-rewind.js).
  *  `exportInner` maps each export name to the function its wrapper calls. */
-export function releaseSection(root, releasable, exportInner, conditional) {
+export function releaseSection(root, { releasable, flagged: conditional, rewound, allocates }, exportInner) {
   const GLOBAL = intern('global'), FUNC = intern('func'), declared = new Set()
   for (let c = T.a[root]; c !== NONE; c = T.next[c]) if (T.op[c] === GLOBAL || T.op[c] === FUNC) declared.add(text(T.a[c]))
   if (declared.has('$__base')) {
@@ -130,12 +132,18 @@ export function releaseSection(root, releasable, exportInner, conditional) {
     push(f, set('global.set', '$__base', get('local.get', '$mark')))
     push(f, get('local.get', '$was'))
   }
-  const release = [], flag = []
-  for (const [name, inner] of exportInner) if (releasable.has(inner)) { release.push(name); if (conditional?.has(inner)) flag.push(name) }
+  // `host`: those of them whose frame gives back nothing by itself (no rewind
+  // at this level) though it allocates: the host's release is the only one.
+  const release = [], flag = [], host = []
+  for (const [name, inner] of exportInner) if (releasable.has(inner)) {
+    release.push(name)
+    if (conditional?.has(inner)) flag.push(name)
+    if (allocates(inner) && !rewound.has(inner)) host.push(name)
+  }
   if (!release.length) return
   const c = push(root, node(intern('@custom')))
   push(c, str('"jz:release"'))
-  push(c, bytes([...utf8.encode(JSON.stringify(flag.length ? { release, flag } : { release }))]))
+  push(c, bytes([...utf8.encode(JSON.stringify({ release, ...(flag.length && { flag }), ...(host.length && { host }) }))]))
   if (flag.length && declared.has('$__esc')) {
     const e = push(root, node(intern('export')))
     push(e, str('"__esc"'))

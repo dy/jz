@@ -911,11 +911,17 @@ export const wrap = (memSrc, inst, state) => {
   // (optimize/arena-rewind.js): the wrapper rewinds the heap to where it stood
   // before the arguments were copied in. `flag`: those whose frames run escape
   // sites, released only when the call left the exported escape flag down.
-  const releases = new Set(), flagged = new Set()
+  // `host`: those of them whose frame releases nothing by itself: the
+  // wrapper's rewind is the only one.
+  const releases = new Set(), flagged = new Set(), hostReleased = new Set()
   const releaseBytes = customSection(mod, 'jz:release')
   if (releaseBytes) {
-    try { const r = JSON.parse(td.decode(releaseBytes)); for (const n of r.release) releases.add(n); for (const n of r.flag ?? []) flagged.add(n) }
-    catch { /* ignore */ }
+    try {
+      const r = JSON.parse(td.decode(releaseBytes))
+      for (const n of r.release) releases.add(n)
+      for (const n of r.flag ?? []) flagged.add(n)
+      for (const n of r.host ?? []) hostReleased.add(n)
+    } catch { /* ignore */ }
   }
   const esc = realInst.exports.__esc, setBase = realInst.exports.__base, survive = realInst.exports.__survive
   const hostAbiExp = new Map()
@@ -1114,6 +1120,44 @@ export const wrap = (memSrc, inst, state) => {
     throw wrapped
   }
   const exports = {}
+  // A call that crosses as it is. Every parameter is a number on its own lane
+  // (no slot of the i64, externref or host-BigInt lanes, no typed slot, no
+  // rest), so the engine's ToNumber is the whole marshalling, as it is on the
+  // general path. A BigInt argument, which a number lane refuses by name or
+  // reads as a handle, takes the general path; a result that is no number
+  // takes its decoding (`settle`). Written out by arity: the call allocates
+  // nothing. `begin` answers whether the call may cross so (a call made while
+  // another runs tells it what it kept: the general path), `end` runs after
+  // it, a throw included.
+  const plainLanes = (ie, ext, hostAbi) => !ext && !hostAbi && !(ie && (ie.p.size || ie.t || ie.v))
+  const crossing = (fn, general, settle, begin, end) => {
+    const big = (x) => typeof x === 'bigint'
+    const out = (r) => (typeof r === 'number' && r === r) || r === undefined ? r : settle(r)
+    switch (fn.length) {
+      case 0: return () => {
+        if (!begin()) return general()
+        let threw = false
+        try { return out(fn()) } catch (e) { threw = true; decodeThrown(e) } finally { end(threw) }
+      }
+      case 1: return (a) => {
+        if (big(a) || !begin()) return general(a)
+        let threw = false
+        try { return out(fn(a)) } catch (e) { threw = true; decodeThrown(e) } finally { end(threw) }
+      }
+      case 2: return (a, b) => {
+        if (big(a) || big(b) || !begin()) return general(a, b)
+        let threw = false
+        try { return out(fn(a, b)) } catch (e) { threw = true; decodeThrown(e) } finally { end(threw) }
+      }
+      case 3: return (a, b, c) => {
+        if (big(a) || big(b) || big(c) || !begin()) return general(a, b, c)
+        let threw = false
+        try { return out(fn(a, b, c)) } catch (e) { threw = true; decodeThrown(e) } finally { end(threw) }
+      }
+      default: return general
+    }
+  }
+  const always = () => true, idle = () => {}
   // Per-position arg marshaller. Externref slots (jsstring carrier) pass the JS
   // value straight through, substituting a jsstring literal default for a missing
   // arg. An i64-carrier param (per jz:i64exp) gets the box bits: `coerce` for
@@ -1313,6 +1357,8 @@ export const wrap = (memSrc, inst, state) => {
   // this call (a host function it called calls back), or all ones.
   const NO_MARK = -1 >>> 0
   let depth = 0
+  const running = () => depth === 0 && (depth = 1) === 1
+  const ran = (threw) => { depth = 0; if (threw && setBase) setBase(-1) }
   const enter = (flag) => {
     // no frame of the module runs around the first call: a mark a call that threw left behind goes
     if (setBase && depth === 0) setBase(-1)
@@ -1338,7 +1384,8 @@ export const wrap = (memSrc, inst, state) => {
     mem._kept = mark.kept || !release || escaped || mem._kept
     if (flag && esc && mark.esc < (esc.value >>> 0)) esc.value = mark.esc | 0
     if (setBase && mark.base !== null) setBase(mark.base | 0)
-    depth--
+    // a call that threw left the frames of the module without their epilogues: no mark stays past the outermost
+    if (--depth === 0 && !returned && setBase) setBase(-1)
   }
 
   // Pure scalar module (no memory): pass f64 values directly, no marshaling
@@ -1349,7 +1396,7 @@ export const wrap = (memSrc, inst, state) => {
       const ie = i64Exp.get(name)
       const hostAbi = hostAbiExp.get(name)
       const len = fn.length
-      exports[name] = (...args) => {
+      const general = (...args) => {
         while (args.length < len) args.push(undefined)
         // audit-#8 P1-1 belt-and-braces: decodeThrown already consumes the marker
         // on every decode, and every in-wasm catch/finally now consumes it too
@@ -1365,6 +1412,8 @@ export const wrap = (memSrc, inst, state) => {
           return decode(ret)
         } catch (e) { decodeThrown(e) }
       }
+      exports[name] = plainLanes(ie, ext, hostAbi) && !asyncMod
+        ? crossing(fn, general, (ret) => typeof ret === 'bigint' && !(ie && ie.r) ? ret : decode(ret), always, idle) : general
     }
     return exports
   }
@@ -1419,7 +1468,7 @@ export const wrap = (memSrc, inst, state) => {
       const hostAbi = hostAbiExp.get(name)
       const len = fn.length
       const release = releases.has(name), flag = flagged.has(name)
-      exports[name] = (...args) => {
+      const general = (...args) => {
         while (args.length < len) args.push(undefined)
         const writeBack = [], mark = enter(flag)
         let returned = false
@@ -1438,6 +1487,13 @@ export const wrap = (memSrc, inst, state) => {
           decodeThrown(error)
         } finally { leave(mark, release, flag, returned) }
       }
+      // Numbers only, and nothing for the host to release: no copy of an
+      // argument, and a frame that gives back what it allocated by itself, or
+      // keeps it by the module's own verdict. No call runs around it, which
+      // would have to know what it kept; it counts as one that runs (a host
+      // function it calls may call back), and one that threw leaves no mark.
+      exports[name] = plainLanes(ie, ext, hostAbi) && !asyncMod && !(release && hostReleased.has(name))
+        ? crossing(fn, general, (ret) => typeof ret === 'bigint' && !(ie && ie.r) ? ret : readRet(ret), running, ran) : general
     } else {
       exports[name] = fn
     }

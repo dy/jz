@@ -1140,7 +1140,10 @@ callback they schedule, bridge.js hostImport), a `call_ref`, and in a runtime
 kernel a store whose base address a global reaches (an index read off a
 table addresses the receiver it indexes). A tail call is a call to link:
 what its callee lowers or keeps, the frames above it read. A catch lowers the flag to zero,
-since the frames an exception left skipped their epilogues. A site the
+since the frames an exception left skipped their epilogues, and puts the
+mark of the outermost reading frame back as it stood where its `try` began
+(emit/statements.js `baseHeld`): a mark left standing past its frame would
+make every later frame one inside another. A site the
 emitter never flagged and a body the census never walked lower it as the
 frame is entered (compile/index.js checks each). The protocol is paid by a
 frame with a reason of its own and by every exported frame, the one a host
@@ -1213,7 +1216,16 @@ instead of going generic.
 `jz:release` names the exports whose calls keep nothing, `flag` those that keep
 nothing when the escape flag stands at or above the host's mark: the host
 rewinds the heap to where it stood before it copied the arguments in, and
-sets `$__base` to that mark around the call.
+sets `$__base` to that mark around the call. `host` names those whose frame
+releases nothing by itself though it allocates (no rewind at the level).
+A call of any other export whose parameters are all numbers on their own lane
+(no slot of the i64, externref or host-BigInt lanes, no typed slot, no rest)
+leaves the host nothing to marshal and nothing to release: it crosses as it
+is (interop.js `crossing`), written out by arity so that it allocates nothing,
+with a BigInt argument, a result that is no number, a throw and a call made
+while another runs handed to the general path or its decoding. Measured on a
+module with heap state, a call costs 6 ns raw, 16 ns so, 150 to 250 ns by
+the general path.
 
 `E[Symbol.iterator]()` is `__it_from(E)` for every receiver (jzify): an
 indexed value's own iterator, a collection's snapshot view, a provider's
