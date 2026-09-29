@@ -3571,6 +3571,10 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     // A strict comparison excludes only one sentinel. NULLISH includes both,
     // so its other member must survive (as with the typeof inverse above).
     if (op === '!=' && when || op === '==' && !when) refineName(c[1], NOT_NULLISH)
+    // Equal to a nullish value, loosely or strictly, the name is one: what the
+    // path does with it (a missing source handed to the protocol that throws
+    // for it) reaches none of its other kinds.
+    if ((op === '==' || op === '===') && when || (op === '!=' || op === '!==') && !when) refineName(c[1], NULL_BITS)
   }
   /** The statement leaves its list: a return, throw, break or continue; a block ending in one; an
    *  `if` both of whose branches do; a `try` whose block and every catch do (or whose finally does). */

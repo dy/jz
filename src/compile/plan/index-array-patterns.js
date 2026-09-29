@@ -145,8 +145,10 @@ const indexPattern = (list, at, view) => {
   } else list.splice(at + 1, 1)
   if (own) { list.splice(at, 1); return true }
   open[1][2] = src
-  // a missing source still meets the open, which throws for it
-  if (missing) list.splice(at + 1, 0, ['if', ['==', it, [null, null]], ['()', opener, it]])
+  // a missing source still meets the open, which throws for it; as a test
+  // the summary narrows (a statement list can sit in an expression), only a
+  // missing value reaches the protocol
+  if (missing) list.splice(at + 1, 0, ['&&', ['==', it, [null, null]], ['()', opener, it]])
   return true
 }
 

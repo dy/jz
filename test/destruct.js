@@ -2,7 +2,8 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import jz, { compile } from '../index.js'
-import { run } from './util.js'
+import { run, oracle } from './util.js'
+import { belowOpt, levels } from './_matrix.js'
 
 // ============================================
 // Array destructuring
@@ -842,4 +843,20 @@ test('destruct: rejecting an indexed rest preserves every preceding pull', () =>
     const inst = jz(src, { optimize: 'speed' })
     for (let i = 0; i < 2; i++) is(inst.memory.read(inst.exports.f()), expected, `${pattern} = ${input}, call ${i}`)
   }
+})
+
+// A pattern over a field that may be missing hands only a missing value to the
+// protocol's open (which throws for it): the lists it holds keep their records'
+// shapes, and the reads through them take the slots.
+test('destruct: a pattern over a maybe-missing field keeps what the lists hold', () => {
+  const src = `const mk = (n, k) => { const r = []; for (let i = 0; i < n; i++) r.push({ b0: i * k, a1: k }); return r }
+    const bands = (n) => { const b = []; b.push(mk(n, 1)); b.push(mk(n, 2).concat(mk(n, 3).map(s => ({ ...s })))); return b }
+    const params = { fs: 1 }
+    export let run = (n) => { if (!params._s) params._s = bands(n); let [lo, hi] = params._s; let y = 0; for (let i = 0; i < lo.length; i++) y += lo[i].b0 + hi[i].a1 + hi[i + n].b0; return y }`
+  const js = oracle(src)
+  for (const optimize of levels(0, 2, 3)) is(jz(src, { optimize }).exports.run(3), js.run(3), `O${optimize}`)
+  if (belowOpt(2)) return
+  const warnings = []
+  compile(src, { optimize: 2, warnings: w => warnings.push(w) })
+  ok(!warnings.some(w => w.code === 'shape-lost'), 'no shape is lost')
 })
