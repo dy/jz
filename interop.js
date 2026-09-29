@@ -128,11 +128,14 @@ const sectionReader = (bytes) => {
 const MASK32 = 0xffffffffn
 // Reinterpret for GENUINE numbers (and freshly-built boxes leaving JS): `_f64` only ever
 // holds a real number here, never a live NaN-box, so there is nothing for JSC to purify.
-const _buf = new ArrayBuffer(8), _u32 = new Uint32Array(_buf), _f64 = new Float64Array(_buf)
-export const f64ToI64 = (n) => { _f64[0] = n; return (BigInt(_u32[1]) << 32n) | BigInt(_u32[0] >>> 0) }
-export const i64ToF64 = (b) => { _u32[0] = Number(b & MASK32); _u32[1] = Number((b >> 32n) & MASK32); return _f64[0] }
+// The bits cross through one 8-byte cell (a BigInt stored takes its value mod 2^64):
+// shifting and masking a BigInt allocates at every step, several per argument.
+const _buf = new ArrayBuffer(8), _u32 = new Uint32Array(_buf), _f64 = new Float64Array(_buf), _u64 = new BigUint64Array(_buf)
+export const f64ToI64 = (n) => { _f64[0] = n; return _u64[0] }
+export const i64ToF64 = (b) => { _u64[0] = b; return _f64[0] }
 
-const hi32 = (b) => Number((b >> 32n) & MASK32)
+const hi32 = (b) => { _u64[0] = b; return _u32[1] }
+const lo32 = (b) => { _u64[0] = b; return _u32[0] }
 // A NaN-box is a sign-0 quiet NaN — high u32 carries jz's 0x7FF8 prefix. The
 // mask MUST include the sign bit (0xFFF80000, not 0x7FF80000): a plain host
 // BigInt's 64-bit two's-complement sign-extension sets hi32's top 12 prefix
@@ -183,8 +186,8 @@ const encodeSSO = (s) => {
 // Accept either the i64 carrier (BigInt, canonical) or a legacy f64 NaN-box (intact on V8 —
 // e.g. an adaptI64 result, or user code holding a pre-i64 pointer) — normalize before decode.
 const asBits = (p) => typeof p === 'bigint' ? p : f64ToI64(p)
-export const ptr = (type, aux, offset) => (BigInt(encodePtrHi(type, aux)) << 32n) | BigInt(offset >>> 0)
-export const offset = (p) => Number(asBits(p) & MASK32)
+export const ptr = (type, aux, offset) => { _u32[1] = encodePtrHi(type, aux); _u32[0] = offset; return _u64[0] }
+export const offset = (p) => lo32(asBits(p))
 export const type = (p) => decodePtrType(hi32(asBits(p)))
 export const aux = (p) => decodePtrAux(hi32(asBits(p)))
 
@@ -1297,8 +1300,8 @@ export const wrap = (memSrc, inst, state) => {
       // any host array, and what the call writes goes back into that buffer.
       // A box is an i64 carrier or the legacy f64 NaN carrier (a NaN number).
       if (jzBuffer) {
-        const view = mem.read(x)
-        if (!(view instanceof Ctor) || (aux(x) & TYPED_ELEM_VIEW_FLAG)) { if (writes) back = { box: x }; x = Ctor.from(view) }
+        // its kind is in its box: a view is made only to convert it
+        if (argKind(x) !== key || (aux(x) & TYPED_ELEM_VIEW_FLAG)) { if (writes) back = { box: x }; x = Ctor.from(mem.read(x)) }
       } else {
         if (writes && x != null && typeof x === 'object') back = hostBack(x)
         x = x instanceof Ctor ? x : Ctor.from(x)

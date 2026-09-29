@@ -653,3 +653,18 @@ test('interop: numeric host imports preserve zero, NaN, infinities and hidden co
   }
   is(jz('export let f = () => 7', {imports: {}}).exports.f(), 7, 'empty imports after numeric modules')
 })
+
+// The box codec moves bits through one 8-byte cell: every tag, aux and offset
+// comes back as built, a number's bits survive both ways, and a BigInt takes
+// its value mod 2^64 (a negative one sign-extended, as the i64 lane carries it).
+test('interop: the NaN-box codec keeps every bit', () => {
+  const { ptr, type, aux, offset, f64ToI64, i64ToF64 } = interop
+  for (const [t, a, o] of [[0, 0, 0], [3, 7, 16], [15, 0x7fff, 0xffffffff], [6, 0x4000, 0x80000000], [1, 1, 1]]) {
+    const p = ptr(t, a, o)
+    is([type(p), aux(p), offset(p)], [t, a, o], `ptr(${t}, ${a}, ${o})`)
+    ok(p >= 0n && p < 2n ** 64n, 'an unsigned 64-bit value')
+  }
+  for (const n of [0, -0, 1.5, -2.25, 1e308, 5e-324, Infinity, -Infinity, Math.PI]) ok(Object.is(i64ToF64(f64ToI64(n)), n), `${n} round trips`)
+  is(f64ToI64(1), 0x3ff0000000000000n)
+  is([offset(-5n), type(-5n), aux(-5n)], [2 ** 32 - 5, 15, 0x7fff], 'a negative BigInt reads as its two\'s complement bits')
+})
