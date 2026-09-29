@@ -132,7 +132,7 @@ test('call boundary: host arrays a kernel reads inside a list literal run typed 
     let B = new Int16Array(64)
     export let run = (l, r) => { q16([l, r], l.length, B); let h = 0; for (let i = 0; i < 2 * l.length; i++) h = (h * 31 + B[i]) | 0; return h }`
   is(hiddenOf(src, 'run'), 'run:Float32Array', 'the list\'s elements take the typed slots')
-  ok(!byKind(compile(src, { wat: true })), 'no element read by kind')
+  if (!belowOpt(2)) ok(!byKind(compile(src, { wat: true })), 'no element read by kind')
   const want = oracle(src), { exports } = jz(src)
   for (const K of [Float64Array, Float32Array, Array]) is(exports.run(fill(K, 16, wave), fill(K, 16, i => -wave(i))), want.run(fill(K, 16, wave), fill(K, 16, i => -wave(i))), `run(${K.name})`)
 })
@@ -143,7 +143,7 @@ test('call boundary: a kernel callers feed lists of different kinds runs one cop
     for (let i = 0; i < 8; i++) { X[i] = i * 0.25; Y[i] = i * 0.5 }
     export let own = () => ms([X, X]) + ms([Y, Y])
     export let host = (l, r) => ms([l, r])`
-  ok(!byKind(compile(src, { wat: true })), 'no element read by kind')
+  if (!belowOpt(2)) ok(!byKind(compile(src, { wat: true })), 'no element read by kind')
   const want = oracle(src), { exports } = jz(src)
   is(exports.own(), want.own(), 'own lists')
   for (const K of [Float64Array, Float32Array, Array]) is(exports.host(fill(K, 5, i => i * 3 - 5), fill(K, 3, i => i)), want.host(fill(K, 5, i => i * 3 - 5), fill(K, 3, i => i)), `host(${K.name})`)
@@ -156,7 +156,7 @@ test('call boundary: a list reaches a function\'s property the program defines o
     let o = new Float64Array(2)
     export let run = (l, r) => kw.ms([l, r], o)[0] + o[1]`
   is(hiddenOf(src, 'run'), 'run:Float32Array')
-  ok(!byKind(compile(src, { wat: true })), 'no element read by kind')
+  if (!belowOpt(2)) ok(!byKind(compile(src, { wat: true })), 'no element read by kind')
   const want = oracle(src), { exports } = jz(src)
   for (const K of [Float64Array, Float32Array, Array]) is(exports.run(fill(K, 6, wave), fill(K, 4, i => i)), want.run(fill(K, 6, wave), fill(K, 4, i => i)), `run(${K.name})`)
 })
