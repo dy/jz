@@ -25,7 +25,11 @@ const staticSet = [...KINDS.map(K => [K, K]), ...PAIRS].map(([D, S]) =>
   `export let set_${D}_${S} = () => { const a = new ${D}(37), b = seed(new ${S}(37)); a.set(b); a.set(b.subarray(3, 9), 31); return sum(a) }`).join('\n')
 const staticCtor = [...KINDS.map(K => [K, K]), ...PAIRS].map(([D, S]) =>
   `export let ctor_${D}_${S} = () => sum(new ${D}(seed(new ${S}(37))))`).join('\n')
-const src = `${pre}${staticSet}\n${staticCtor}
+// `T.from` of a typed array lists its elements: the constructor's copy.
+const staticFrom = [...KINDS.map(K => [K, K]), ...PAIRS].map(([D, S]) =>
+  `export let from_${D}_${S} = () => sum(${D}.from(seed(new ${S}(37))))`).join('\n')
+const src = `${pre}${staticSet}\n${staticCtor}\n${staticFrom}
+export let fromView = () => sum(Float64Array.from(seed(new Float32Array(50)).subarray(13, 50))) + sum(Int16Array.from(seed(new Float64Array(9)).subarray(2)))
 export let views = () => { const a = new Float32Array(80).subarray(20, 57), b = seed(new Float32Array(50).subarray(13, 50)); a.set(b); return sum(a) }
 export let overlapUp = () => { const a = seed(new Int32Array(37)); a.set(a.subarray(0, 30), 7); return sum(a) }
 export let overlapDown = () => { const a = seed(new Int32Array(37)); a.set(a.subarray(7), 0); return sum(a) }
@@ -77,6 +81,13 @@ test('typed copy: .set throws the RangeError of an offset outside the receiver',
       throws(() => dyn(0, off), e => e instanceof RangeError, `offset ${off}, runtime kind at ${optimize}`)
     }
   }
+})
+
+test('typed copy: from of a typed array is the constructor\'s copy, no list between', () => {
+  const text = wat(`export let f = (v) => { const a = new Float32Array(64); a[3] = v; const b = Float64Array.from(a), c = Float32Array.from(a), d = Int16Array.from(b); return b[3] + c[3] + d[3] }`)
+  const f = funcWat(text, 'f$exp') || funcWat(text, 'f')
+  is((f.match(/memory\.copy/g) || []).length, 1, 'the same-bytes copy is a byte copy')
+  ok(!/call \$__(arr_from|typed_idx)/.test(f), 'no list and no element helper')
 })
 
 test('typed copy: a same-bytes copy is one memory.copy, no element loop', () => {

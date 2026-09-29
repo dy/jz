@@ -14,7 +14,7 @@ import { isReassigned, T, ASSIGN_OPS, walkAst, some, every, REFS_THROUGH_ARROWS 
 import { emit, idx, deps, call, positionArgs } from '../src/bridge.js'
 import { strHashLiteral } from './collection.js'
 import { valTypeOf } from '../src/kind.js'
-import { K, TAGS, NULL_BITS, NUMBER, STRING, hasTag, tagOf, tagsOf, bitOf } from '../src/summary/kind.js'
+import { K, TAGS, NULL_BITS, NUMBER, STRING, hasTag, tagOf, tagsOf, bitOf, typedElemKind } from '../src/summary/kind.js'
 import { typedIdxProven, typedIdxWhole, idxKey } from '../src/type.js'
 import { constIntExpr } from '../src/static.js'
 import { VAL, lookupValType, repOf } from '../src/reps.js'
@@ -1279,6 +1279,9 @@ export default (ctx) => {
       // a typed array's elements, a string's characters, an iterable's values.
       const view = ctx.summary.at(ctx.func.current), kind = view.kindOfExpr(src)
       if (bigint || tagOf(kind) === K.ARRAY && !isNullable(kind)) return fromArray(src, fl)
+      // A typed array of numbers lists its elements: the constructor's copy of
+      // it, one memory.copy or one conversion loop, with no list between.
+      if (tagOf(kind) === K.TYPED && !isNullable(kind) && typedElemKind(kind) === NUMBER) return ctx.core.emit[`new.${name}`](src)
       ctx.module.include('array')
       const t = tagOf(kind)
       return fromArray(['()', 'Array.from', src], fl, t === K.STRING ? STRING : t === K.TYPED ? view.elemOfKind(kind) : null)
