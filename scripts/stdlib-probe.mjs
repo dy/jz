@@ -513,16 +513,10 @@ export let main = () => {
 // The packages of a namespace the corpus case leaves out, each with the reason: a
 // function jz does not compile yet. Listed in the case's header; an entry goes the
 // commit its package compiles.
-const SYMBOL = 'a read of `Symbol` as a value, through `@stdlib/symbol/ctor`'
-const STRING = 'methods of `String.prototype` and `String.fromCharCode` held by names (`@stdlib/string/base/format-interpolate`)'
-const PENDING = {
-  '@stdlib/math/base/special/hyp2f1': SYMBOL,
-  '@stdlib/stats/base/dists/studentized-range/cdf': SYMBOL,
-  '@stdlib/stats/base/dists/studentized-range/quantile': SYMBOL,
-  '@stdlib/stats/base/dists/signrank/cdf': STRING,
-  '@stdlib/stats/base/dists/signrank/pdf': STRING,
-  '@stdlib/stats/base/dists/signrank/quantile': STRING,
-}
+// none pending: hyp2f1 and studentized-range read `Symbol` (held builtins, typeof of a
+// function of the target), signrank holds methods of `String.prototype` and
+// `String.fromCharCode` by names (plan/scope.js resolveHeldMethods)
+const PENDING = {}
 
 // A bench case (bench/<case>/<case>.js) of a whole namespace: every package whose
 // function Node evaluates to finite numbers over one of the probe's domains

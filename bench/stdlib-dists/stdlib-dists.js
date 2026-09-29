@@ -1,15 +1,9 @@
 // stdlib-dists.js — every function of @stdlib/stats/base/dists (stdlib 0.4.1, Apache-2.0) that takes
-// numbers and returns one, or a list of them: 426 packages, bundled from their CommonJS sources by
+// numbers and returns one, or a list of them: 431 packages, bundled from their CommonJS sources by
 // scripts/stdlib-probe.mjs (`bench-all stats/base/dists stdlib-dists`): the packages' own code with the
 // module seams gone, nothing rewritten. Each function is swept over a domain where
 // it is finite (the probe's `domain`: of reals, or of integers for a function of
 // counts), the arguments after the first held; a list is stored as its sum.
-// Left out until jz compiles them:
-//   dists/studentized-range/cdf: a read of `Symbol` as a value, through `@stdlib/symbol/ctor`
-//   dists/studentized-range/quantile: a read of `Symbol` as a value, through `@stdlib/symbol/ctor`
-//   dists/signrank/cdf: methods of `String.prototype` and `String.fromCharCode` held by names (`@stdlib/string/base/format-interpolate`)
-//   dists/signrank/pdf: methods of `String.prototype` and `String.fromCharCode` held by names (`@stdlib/string/base/format-interpolate`)
-//   dists/signrank/quantile: methods of `String.prototype` and `String.fromCharCode` held by names (`@stdlib/string/base/format-interpolate`)
 // Copyright (c) The Stdlib Authors. Licensed under the Apache License, Version 2.0
 // (http://www.apache.org/licenses/LICENSE-2.0); the notices of the bundled files
 // are retained by reference to the package.
@@ -152,8 +146,8 @@ function factory(a, b) {
   if (lib_default(a) || lib_default(b) || a >= b) {
     return lib_default6(NaN);
   }
-  return cdf34;
-  function cdf34(x) {
+  return cdf36;
+  function cdf36(x) {
     if (lib_default(x)) {
       return NaN;
     }
@@ -247,7 +241,7 @@ function ln(x) {
   var t1;
   var k;
   var R;
-  var f;
+  var f8;
   var i;
   var j;
   var s;
@@ -274,21 +268,21 @@ function ln(x) {
   i = hx + 614244 & 1048576 | 0;
   x = lib_default9(x, hx | i ^ HIGH_BIASED_EXP_0);
   k += i >> 20 | 0;
-  f = x - 1;
+  f8 = x - 1;
   if ((HIGH_SIGNIFICAND_MASK & 2 + hx) < 3) {
-    if (f === 0) {
+    if (f8 === 0) {
       if (k === 0) {
         return 0;
       }
       return k * LN2_HI + k * LN2_LO;
     }
-    R = f * f * (0.5 - ONE_THIRD * f);
+    R = f8 * f8 * (0.5 - ONE_THIRD * f8);
     if (k === 0) {
-      return f - R;
+      return f8 - R;
     }
-    return k * LN2_HI - (R - k * LN2_LO - f);
+    return k * LN2_HI - (R - k * LN2_LO - f8);
   }
-  s = f / (2 + f);
+  s = f8 / (2 + f8);
   z = s * s;
   i = hx - 398458 | 0;
   w = z * z;
@@ -298,16 +292,16 @@ function ln(x) {
   i |= j;
   R = t2 + t1;
   if (i > 0) {
-    hfsq = 0.5 * f * f;
+    hfsq = 0.5 * f8 * f8;
     if (k === 0) {
-      return f - (hfsq - s * (hfsq + R));
+      return f8 - (hfsq - s * (hfsq + R));
     }
-    return k * LN2_HI - (hfsq - (s * (hfsq + R) + k * LN2_LO) - f);
+    return k * LN2_HI - (hfsq - (s * (hfsq + R) + k * LN2_LO) - f8);
   }
   if (k === 0) {
-    return f - s * (f - R);
+    return f8 - s * (f8 - R);
   }
-  return k * LN2_HI - (s * (f - R) - k * LN2_LO - f);
+  return k * LN2_HI - (s * (f8 - R) - k * LN2_LO - f8);
 }
 var main_default8 = ln;
 
@@ -453,8 +447,8 @@ function factory4(a, b) {
   if (lib_default(a) || lib_default(b) || a >= b) {
     return lib_default6(NaN);
   }
-  return pdf29;
-  function pdf29(x) {
+  return pdf30;
+  function pdf30(x) {
     if (lib_default(x)) {
       return NaN;
     }
@@ -1317,7 +1311,7 @@ var F = lib_default52(20);
 var Q = lib_default52(20);
 var FQ = lib_default52(20);
 var IQ = lib_default52(20);
-function compute(x, y, jz, q, q0, jk, jv, jx, f) {
+function compute(x, y, jz, q, q02, jk, jv, jx, f8) {
   var carry;
   var fw;
   var ih;
@@ -1336,17 +1330,17 @@ function compute(x, y, jz, q, q0, jk, jv, jx, f) {
     z = q[j - 1] + fw;
     j -= 1;
   }
-  z = lib_default45(z, q0);
+  z = lib_default45(z, q02);
   z -= 8 * lib_default23(z * 0.125);
   n = z | 0;
   z -= n;
   ih = 0;
-  if (q0 > 0) {
-    i = IQ[jz - 1] >> 24 - q0;
+  if (q02 > 0) {
+    i = IQ[jz - 1] >> 24 - q02;
     n += i;
-    IQ[jz - 1] -= i << 24 - q0;
-    ih = IQ[jz - 1] >> 23 - q0;
-  } else if (q0 === 0) {
+    IQ[jz - 1] -= i << 24 - q02;
+    ih = IQ[jz - 1] >> 23 - q02;
+  } else if (q02 === 0) {
     ih = IQ[jz - 1] >> 23;
   } else if (z >= 0.5) {
     ih = 2;
@@ -1365,8 +1359,8 @@ function compute(x, y, jz, q, q0, jk, jv, jx, f) {
         IQ[i] = 16777215 - j;
       }
     }
-    if (q0 > 0) {
-      switch (q0) {
+    if (q02 > 0) {
+      switch (q02) {
         // eslint-disable-line default-case
         case 1:
           IQ[jz - 1] &= 8388607;
@@ -1379,7 +1373,7 @@ function compute(x, y, jz, q, q0, jk, jv, jx, f) {
     if (ih === 2) {
       z = 1 - z;
       if (carry !== 0) {
-        z -= lib_default45(1, q0);
+        z -= lib_default45(1, q02);
       }
     }
   }
@@ -1392,35 +1386,35 @@ function compute(x, y, jz, q, q0, jk, jv, jx, f) {
       for (k = 1; IQ[jk - k] === 0; k++) {
       }
       for (i = jz + 1; i <= jz + k; i++) {
-        f[jx + i] = IPIO2[jv + i];
+        f8[jx + i] = IPIO2[jv + i];
         fw = 0;
         for (j = 0; j <= jx; j++) {
-          fw += x[j] * f[jx + (i - j)];
+          fw += x[j] * f8[jx + (i - j)];
         }
         q[i] = fw;
       }
       jz += k;
-      return compute(x, y, jz, q, q0, jk, jv, jx, f);
+      return compute(x, y, jz, q, q02, jk, jv, jx, f8);
     }
     jz -= 1;
-    q0 -= 24;
+    q02 -= 24;
     while (IQ[jz] === 0) {
       jz -= 1;
-      q0 -= 24;
+      q02 -= 24;
     }
   } else {
-    z = lib_default45(z, -q0);
+    z = lib_default45(z, -q02);
     if (z >= TWO24) {
       fw = TWON24 * z | 0;
       IQ[jz] = z - TWO24 * fw | 0;
       jz += 1;
-      q0 += 24;
+      q02 += 24;
       IQ[jz] = fw;
     } else {
       IQ[jz] = z | 0;
     }
   }
-  fw = lib_default45(1, q0);
+  fw = lib_default45(1, q02);
   for (i = jz; i >= 0; i--) {
     q[i] = fw * IQ[i];
     fw *= TWON24;
@@ -1452,23 +1446,23 @@ function compute(x, y, jz, q, q0, jk, jv, jx, f) {
   }
   return n & 7;
 }
-function kernelRempio2(x, y, e0, nx) {
+function kernelRempio2(x, y, e02, nx) {
   var fw;
   var jk;
   var jv;
   var jx;
   var jz;
-  var q0;
+  var q02;
   var i;
   var j;
   var m;
   jk = 4;
   jx = nx - 1;
-  jv = (e0 - 3) / 24 | 0;
+  jv = (e02 - 3) / 24 | 0;
   if (jv < 0) {
     jv = 0;
   }
-  q0 = e0 - 24 * (jv + 1);
+  q02 = e02 - 24 * (jv + 1);
   j = jv - jx;
   m = jx + jk;
   for (i = 0; i <= m; i++) {
@@ -1487,7 +1481,7 @@ function kernelRempio2(x, y, e0, nx) {
     Q[i] = fw;
   }
   jz = jk;
-  return compute(x, y, jz, Q, q0, jk, jv, jx, F);
+  return compute(x, y, jz, Q, q02, jk, jv, jx, F);
 }
 var kernel_rempio2_default = kernelRempio2;
 
@@ -1560,7 +1554,7 @@ var TX = [0, 0, 0];
 var TY = [0, 0];
 function rempio2(x, y) {
   var low;
-  var e0;
+  var e02;
   var hx;
   var ix;
   var nx;
@@ -1640,8 +1634,8 @@ function rempio2(x, y) {
     return 0;
   }
   low = lib_default50(x);
-  e0 = (ix >> 20) - 1046;
-  z = lib_default35(ix - (e0 << 20 | 0), low);
+  e02 = (ix >> 20) - 1046;
+  z = lib_default35(ix - (e02 << 20 | 0), low);
   for (i = 0; i < 2; i++) {
     TX[i] = z | 0;
     z = (z - TX[i]) * TWO242;
@@ -1651,7 +1645,7 @@ function rempio2(x, y) {
   while (TX[nx - 1] === ZERO) {
     nx -= 1;
   }
-  n = kernel_rempio2_default(TX, TY, e0, nx, 1);
+  n = kernel_rempio2_default(TX, TY, e02, nx, 1);
   if (hx < 0) {
     y[0] = -TY[0];
     y[1] = -TY[1];
@@ -1716,8 +1710,8 @@ function factory5(a, b) {
   if (lib_default(a) || lib_default(b) || a >= b) {
     return lib_default6(NaN);
   }
-  return quantile34;
-  function quantile34(p101) {
+  return quantile35;
+  function quantile35(p101) {
     if (lib_default(p101) || p101 < 0 || p101 > 1) {
       return NaN;
     }
@@ -1778,8 +1772,8 @@ function factory6(p101) {
   if (lib_default(p101) || p101 < 0 || p101 > 1) {
     return lib_default6(NaN);
   }
-  return cdf34;
-  function cdf34(x) {
+  return cdf36;
+  function cdf36(x) {
     if (lib_default(x)) {
       return NaN;
     }
@@ -1870,12 +1864,12 @@ var polyval_p_default3 = evalpoly8;
 function expmulti(hi, lo, k) {
   var r;
   var t;
-  var c2;
+  var c8;
   var y;
   r = hi - lo;
   t = r * r;
-  c2 = r - t * polyval_p_default3(t);
-  y = 1 - (lo - r * c2 / (2 - c2) - hi);
+  c8 = r - t * polyval_p_default3(t);
+  y = 1 - (lo - r * c8 / (2 - c8) - hi);
   return lib_default45(y, k);
 }
 var expmulti_default = expmulti;
@@ -2006,8 +2000,8 @@ function factory9(p101) {
   if (lib_default(p101) || p101 < 0 || p101 > 1) {
     return lib_default6(NaN);
   }
-  return quantile34;
-  function quantile34(r) {
+  return quantile35;
+  function quantile35(r) {
     if (lib_default(r) || r < 0 || r > 1) {
       return NaN;
     }
@@ -2082,7 +2076,7 @@ function expm1(x) {
   var r1;
   var y;
   var z;
-  var c2;
+  var c8;
   var t;
   var e;
   var k;
@@ -2134,7 +2128,7 @@ function expm1(x) {
       lo = t * LN2_LO4;
     }
     x = hi - lo;
-    c2 = hi - x - lo;
+    c8 = hi - x - lo;
   } else if (hx < 1016070144) {
     return x;
   } else {
@@ -2149,7 +2143,7 @@ function expm1(x) {
     return x - (x * e - z);
   }
   twopk = lib_default35(lib_default10 + k << 20, 0);
-  e = x * (e - c2) - c2;
+  e = x * (e - c8) - c8;
   e -= z;
   if (k === -1) {
     return 0.5 * (x - e) - 0.5;
@@ -2208,8 +2202,8 @@ function log1p(x) {
   var hfsq;
   var hu;
   var y;
-  var f;
-  var c2;
+  var f8;
+  var c8;
   var s;
   var z;
   var R;
@@ -2242,7 +2236,7 @@ function log1p(x) {
     }
     if (x > SQRT2HALFM1) {
       k = 0;
-      f = x;
+      f8 = x;
       hu = 1;
     }
   }
@@ -2252,16 +2246,16 @@ function log1p(x) {
       hu = lib_default8(u);
       k = (hu >> 20) - lib_default10;
       if (k > 0) {
-        c2 = 1 - (u - x);
+        c8 = 1 - (u - x);
       } else {
-        c2 = x - (u - 1);
+        c8 = x - (u - 1);
       }
-      c2 /= u;
+      c8 /= u;
     } else {
       u = x;
       hu = lib_default8(u);
       k = (hu >> 20) - lib_default10;
-      c2 = 0;
+      c8 = 0;
     }
     hu &= 1048575;
     if (hu < 434334) {
@@ -2271,24 +2265,24 @@ function log1p(x) {
       u = lib_default9(u, hu | 1071644672);
       hu = 1048576 - hu >> 2;
     }
-    f = u - 1;
+    f8 = u - 1;
   }
-  hfsq = 0.5 * f * f;
+  hfsq = 0.5 * f8 * f8;
   if (hu === 0) {
-    if (f === 0) {
-      c2 += k * LN2_LO5;
-      return k * LN2_HI5 + c2;
+    if (f8 === 0) {
+      c8 += k * LN2_LO5;
+      return k * LN2_HI5 + c8;
     }
-    R = hfsq * (1 - TWO_THIRDS * f);
-    return k * LN2_HI5 - (R - (k * LN2_LO5 + c2) - f);
+    R = hfsq * (1 - TWO_THIRDS * f8);
+    return k * LN2_HI5 - (R - (k * LN2_LO5 + c8) - f8);
   }
-  s = f / (2 + f);
+  s = f8 / (2 + f8);
   z = s * s;
   R = z * polyval_lp_default(z);
   if (k === 0) {
-    return f - (hfsq - s * (hfsq + R));
+    return f8 - (hfsq - s * (hfsq + R));
   }
-  return k * LN2_HI5 - (hfsq - (s * (hfsq + R) + (k * LN2_LO5 + c2)) - f);
+  return k * LN2_HI5 - (hfsq - (s * (hfsq + R) + (k * LN2_LO5 + c8)) - f8);
 }
 var main_default60 = log1p;
 
@@ -2333,7 +2327,7 @@ function beta(a, b) {
   var cgh;
   var res;
   var tmp;
-  var c2;
+  var c8;
   if (lib_default(a) || lib_default(b)) {
     return NaN;
   }
@@ -2346,16 +2340,16 @@ function beta(a, b) {
   if (a === 1) {
     return 1 / b;
   }
-  c2 = a + b;
-  if (c2 < lib_default80) {
-    res = c2 / a;
+  c8 = a + b;
+  if (c8 < lib_default80) {
+    res = c8 / a;
     res /= b;
     return res;
   }
-  if (c2 === a && b < lib_default80) {
+  if (c8 === a && b < lib_default80) {
     return 1 / b;
   }
-  if (c2 === b && a < lib_default80) {
+  if (c8 === b && a < lib_default80) {
     return 1 / a;
   }
   if (a < b) {
@@ -2365,8 +2359,8 @@ function beta(a, b) {
   }
   agh = a + G - 0.5;
   bgh = b + G - 0.5;
-  cgh = c2 + G - 0.5;
-  res = lanczosSumExpGScaled(a) * (lanczosSumExpGScaled(b) / lanczosSumExpGScaled(c2));
+  cgh = c8 + G - 0.5;
+  res = lanczosSumExpGScaled(a) * (lanczosSumExpGScaled(b) / lanczosSumExpGScaled(c8));
   ambh = a - 0.5 - b;
   if (lib_default29(b * ambh) < cgh * 100 && a > 100) {
     res *= lib_default68(ambh * lib_default78(-b / cgh));
@@ -3055,9 +3049,9 @@ function gammaln(x) {
   var isNegative;
   var nadj;
   var flg;
-  var p310;
-  var p210;
-  var p110;
+  var p311;
+  var p211;
+  var p111;
   var p101;
   var q;
   var t;
@@ -3123,24 +3117,24 @@ function gammaln(x) {
       // eslint-disable-line default-case
       case 0:
         z = y * y;
-        p110 = A1C + z * polyval_a1_default(z);
-        p210 = z * (A2C + z * polyval_a2_default(z));
-        p101 = y * p110 + p210;
+        p111 = A1C + z * polyval_a1_default(z);
+        p211 = z * (A2C + z * polyval_a2_default(z));
+        p101 = y * p111 + p211;
         r += p101 - 0.5 * y;
         break;
       case 1:
         z = y * y;
         w = z * y;
-        p110 = T1C + w * polyval_t1_default(w);
-        p210 = T2C + w * polyval_t2_default(w);
-        p310 = T3C + w * polyval_t3_default(w);
-        p101 = z * p110 - (TT - w * (p210 + y * p310));
+        p111 = T1C + w * polyval_t1_default(w);
+        p211 = T2C + w * polyval_t2_default(w);
+        p311 = T3C + w * polyval_t3_default(w);
+        p101 = z * p111 - (TT - w * (p211 + y * p311));
         r += TF + p101;
         break;
       case 2:
-        p110 = y * (UC + y * polyval_u_default(y));
-        p210 = VC + y * polyval_v_default(y);
-        r += -0.5 * y + p110 / p210;
+        p111 = y * (UC + y * polyval_u_default(y));
+        p211 = VC + y * polyval_v_default(y);
+        r += -0.5 * y + p111 / p211;
         break;
     }
   } else if (x < 8) {
@@ -3253,9 +3247,9 @@ if (has_generator_support_default()) {
 }
 var lib_default101 = sumSeries3;
 
-function tgammaILargeXSeries(a1, x1) {
+function tgammaILargeXSeries(a12, x1) {
   var result = 1;
-  var a = a1;
+  var a = a12;
   var x = x1;
   return next;
   function next() {
@@ -3502,21 +3496,21 @@ function fullIGammaPrefix(a, z) {
 }
 var full_igamma_prefix_default = fullIGammaPrefix;
 
-function evalpoly30(c2, x) {
+function evalpoly30(c8, x) {
   var p101;
   var i;
-  i = c2.length;
+  i = c8.length;
   if (i < 2 || x === 0) {
     if (i === 0) {
       return 0;
     }
-    return c2[0];
+    return c8[0];
   }
   i -= 1;
-  p101 = c2[i] * x + c2[i - 1];
+  p101 = c8[i] * x + c8[i - 1];
   i -= 2;
   while (i >= 0) {
-    p101 = p101 * x + c2[i];
+    p101 = p101 * x + c8[i];
     i -= 1;
   }
   return p101;
@@ -3528,41 +3522,41 @@ var main_default75 = Fcn;
 
 var lib_default104 = main_default75;
 
-function factory10(c2) {
-  var f;
+function factory10(c8) {
+  var f8;
   var n;
   var m;
   var i;
-  if (c2.length > 500) {
+  if (c8.length > 500) {
     return polyval;
   }
-  f = "return function evalpoly(x){";
-  n = c2.length;
+  f8 = "return function evalpoly(x){";
+  n = c8.length;
   if (n === 0) {
-    f += "return 0.0;";
+    f8 += "return 0.0;";
   } else if (n === 1) {
-    f += "return " + c2[0] + ";";
+    f8 += "return " + c8[0] + ";";
   } else {
-    f += "if(x===0.0){return " + c2[0] + ";}";
-    f += "return " + c2[0];
+    f8 += "if(x===0.0){return " + c8[0] + ";}";
+    f8 += "return " + c8[0];
     m = n - 1;
     for (i = 1; i < n; i++) {
-      f += "+x*";
+      f8 += "+x*";
       if (i < m) {
-        f += "(";
+        f8 += "(";
       }
-      f += c2[i];
+      f8 += c8[i];
     }
     for (i = 0; i < m - 1; i++) {
-      f += ")";
+      f8 += ")";
     }
-    f += ";";
+    f8 += ";";
   }
-  f += "}";
-  f += "//# sourceURL=evalpoly.factory.js";
-  return new lib_default104(f)();
+  f8 += "}";
+  f8 += "//# sourceURL=evalpoly.factory.js";
+  return new lib_default104(f8)();
   function polyval(x) {
-    return main_default74(c2, x);
+    return main_default74(c8, x);
   }
 }
 var factory_default10 = factory10;
@@ -3714,9 +3708,9 @@ function igammaTemmeLarge(a, x) {
 }
 var igamma_temme_large_default = igammaTemmeLarge;
 
-function lowerIncompleteGammaSeries(a1, z1) {
+function lowerIncompleteGammaSeries(a12, z1) {
   var result = 1;
-  var a = a1;
+  var a = a12;
   var z = z1;
   return next;
   function next() {
@@ -3775,17 +3769,17 @@ function regularisedGammaPrefix(a, z) {
   var alz;
   var amz;
   var sq;
-  var d2;
+  var d8;
   agh = a + lib_default94 - 0.5;
-  d2 = (z - a - lib_default94 + 0.5) / agh;
+  d8 = (z - a - lib_default94 + 0.5) / agh;
   if (a < 1) {
     if (z <= lib_default103 || a < 1 / lib_default86) {
       return lib_default68(a * lib_default12(z) - z - lib_default98(a));
     }
     return lib_default47(z, a) * lib_default68(-z) / lib_default90(a);
   }
-  if (lib_default29(d2 * d2 * a) <= 100 && a > 150) {
-    prefix = a * lib_default106(d2) + z * (0.5 - lib_default94) / agh;
+  if (lib_default29(d8 * d8 * a) <= 100 && a > 150) {
+    prefix = a * lib_default106(d8) + z * (0.5 - lib_default94) / agh;
     prefix = lib_default68(prefix);
   } else {
     alz = a * lib_default12(z / agh);
@@ -4039,19 +4033,19 @@ var MAX_ITER = 1e6;
 function continuedFractionA(gen, factor, maxIter) {
   var isgenerator;
   var delta;
-  var a0;
-  var f;
+  var a02;
+  var f8;
   var C4;
   var D;
   var v;
   isgenerator = typeof gen.next === "function";
   v = isgenerator ? gen.next().value : gen();
-  f = v[1];
-  a0 = v[0];
-  if (f === 0) {
-    f = lib_default111;
+  f8 = v[1];
+  a02 = v[0];
+  if (f8 === 0) {
+    f8 = lib_default111;
   }
-  C4 = f;
+  C4 = f8;
   D = 0;
   if (isgenerator === true) {
     do {
@@ -4067,7 +4061,7 @@ function continuedFractionA(gen, factor, maxIter) {
         }
         D = 1 / D;
         delta = C4 * D;
-        f *= delta;
+        f8 *= delta;
       }
     } while (lib_default29(delta - 1) > factor && --maxIter);
   } else {
@@ -4084,26 +4078,26 @@ function continuedFractionA(gen, factor, maxIter) {
         }
         D = 1 / D;
         delta = C4 * D;
-        f *= delta;
+        f8 *= delta;
       }
     } while (v && lib_default29(delta - 1) > factor && --maxIter);
   }
-  return a0 / f;
+  return a02 / f8;
 }
 function continuedFractionB(gen, factor, maxIter) {
   var isgenerator;
   var delta;
-  var f;
+  var f8;
   var C4;
   var D;
   var v;
   isgenerator = typeof gen.next === "function";
   v = isgenerator ? gen.next().value : gen();
-  f = v[1];
-  if (f === 0) {
-    f = lib_default111;
+  f8 = v[1];
+  if (f8 === 0) {
+    f8 = lib_default111;
   }
-  C4 = f;
+  C4 = f8;
   D = 0;
   if (isgenerator === true) {
     do {
@@ -4119,7 +4113,7 @@ function continuedFractionB(gen, factor, maxIter) {
         }
         D = 1 / D;
         delta = C4 * D;
-        f *= delta;
+        f8 *= delta;
       }
     } while (v && lib_default29(delta - 1) > factor && --maxIter);
   } else {
@@ -4136,11 +4130,11 @@ function continuedFractionB(gen, factor, maxIter) {
         }
         D = 1 / D;
         delta = C4 * D;
-        f *= delta;
+        f8 *= delta;
       }
     } while (v && lib_default29(delta - 1) > factor && --maxIter);
   }
-  return f;
+  return f8;
 }
 function continuedFraction(generator, options) {
   var maxIter;
@@ -4162,18 +4156,18 @@ var generators_default2 = continuedFraction;
 var MAX_ITER2 = 1e6;
 function continuedFractionA2(gen, factor, maxIter) {
   var delta;
-  var a0;
+  var a02;
   var C4;
   var D;
-  var f;
+  var f8;
   var v;
   v = gen();
-  f = v[1];
-  a0 = v[0];
-  if (f === 0) {
-    f = lib_default111;
+  f8 = v[1];
+  a02 = v[0];
+  if (f8 === 0) {
+    f8 = lib_default111;
   }
-  C4 = f;
+  C4 = f8;
   D = 0;
   do {
     v = gen();
@@ -4188,23 +4182,23 @@ function continuedFractionA2(gen, factor, maxIter) {
       }
       D = 1 / D;
       delta = C4 * D;
-      f *= delta;
+      f8 *= delta;
     }
   } while (v && lib_default29(delta - 1) > factor && --maxIter);
-  return a0 / f;
+  return a02 / f8;
 }
 function continuedFractionB2(gen, factor, maxIter) {
   var delta;
   var C4;
   var D;
-  var f;
+  var f8;
   var v;
   v = gen();
-  f = v[1];
-  if (f === 0) {
-    f = lib_default111;
+  f8 = v[1];
+  if (f8 === 0) {
+    f8 = lib_default111;
   }
-  C4 = f;
+  C4 = f8;
   D = 0;
   do {
     v = gen();
@@ -4219,10 +4213,10 @@ function continuedFractionB2(gen, factor, maxIter) {
       }
       D = 1 / D;
       delta = C4 * D;
-      f *= delta;
+      f8 *= delta;
     }
   } while (v && lib_default29(delta - 1) > factor && --maxIter);
-  return f;
+  return f8;
 }
 function continuedFraction2(generator, options) {
   var maxIter;
@@ -4249,9 +4243,9 @@ if (has_generator_support_default()) {
 }
 var lib_default112 = continuedFraction3;
 
-function upperIncompleteGammaFract(a1, z1) {
-  var z = z1 - a1 + 1;
-  var a = a1;
+function upperIncompleteGammaFract(a12, z1) {
+  var z = z1 - a12 + 1;
+  var a = a12;
   var k = 0;
   return next;
   function next() {
@@ -4266,8 +4260,8 @@ function upperIncompleteGammaFract(a1, z1) {
 var upper_incomplete_gamma_fract_default = upperIncompleteGammaFract;
 
 function upperGammaFraction(a, z) {
-  var f = upper_incomplete_gamma_fract_default(a, z);
-  return 1 / (z - a + 1 + lib_default112(f));
+  var f8 = upper_incomplete_gamma_fract_default(a, z);
+  return 1 / (z - a + 1 + lib_default112(f8));
 }
 var upper_gamma_fraction_default = upperGammaFraction;
 
@@ -4500,17 +4494,17 @@ function regularizedGammaPrefix(a, z) {
   var alz;
   var amz;
   var sq;
-  var d2;
+  var d8;
   agh = a + lib_default94 - 0.5;
-  d2 = (z - a - lib_default94 + 0.5) / agh;
+  d8 = (z - a - lib_default94 + 0.5) / agh;
   if (a < 1) {
     if (z <= lib_default103) {
       return lib_default68(a * lib_default12(z) - z - lib_default98(a));
     }
     return lib_default47(z, a) * lib_default68(-z) / lib_default90(a);
   }
-  if (lib_default29(d2 * d2 * a) <= 100 && a > 150) {
-    prefix = a * (lib_default78(d2) - d2) + z * (0.5 - lib_default94) / agh;
+  if (lib_default29(d8 * d8 * a) <= 100 && a > 150) {
+    prefix = a * (lib_default78(d8) - d8) + z * (0.5 - lib_default94) / agh;
     prefix = lib_default68(prefix);
   } else {
     alz = a * lib_default12(z / agh);
@@ -4654,19 +4648,19 @@ function ibetaPowerTerms(a, b, x, y, normalized) {
   var l1;
   var l2;
   var l3;
-  var p110;
-  var b1;
-  var b2;
-  var c2;
+  var p111;
+  var b12;
+  var b22;
+  var c8;
   var l;
   if (!normalized) {
     return lib_default47(x, a) * lib_default47(y, b);
   }
-  c2 = a + b;
+  c8 = a + b;
   agh = a + lib_default94 - 0.5;
   bgh = b + lib_default94 - 0.5;
-  cgh = c2 + lib_default94 - 0.5;
-  result = lib_default108(c2);
+  cgh = c8 + lib_default94 - 0.5;
+  result = lib_default108(c8);
   result /= lib_default108(a) * lib_default108(b);
   result *= lib_default2(bgh / lib_default79);
   result *= lib_default2(agh / cgh);
@@ -4722,16 +4716,16 @@ function ibetaPowerTerms(a, b, x, y, normalized) {
       }
     }
   } else {
-    b1 = x * cgh / agh;
-    b2 = y * cgh / bgh;
-    l1 = a * lib_default12(b1);
-    l2 = b * lib_default12(b2);
+    b12 = x * cgh / agh;
+    b22 = y * cgh / bgh;
+    l1 = a * lib_default12(b12);
+    l2 = b * lib_default12(b22);
     if (l1 >= lib_default99 || l1 <= lib_default103 || l2 >= lib_default99 || l2 <= lib_default103) {
       if (a < b) {
-        p110 = lib_default47(b2, b / a);
-        l3 = a * (lib_default12(b1) + lib_default12(p110));
+        p111 = lib_default47(b22, b / a);
+        l3 = a * (lib_default12(b12) + lib_default12(p111));
         if (l3 < lib_default99 && l3 > lib_default103) {
-          result *= lib_default47(p110 * b1, a);
+          result *= lib_default47(p111 * b12, a);
         } else {
           l2 += l1 + lib_default12(result);
           if (l2 >= lib_default99) {
@@ -4740,10 +4734,10 @@ function ibetaPowerTerms(a, b, x, y, normalized) {
           result = lib_default68(l2);
         }
       } else {
-        p110 = lib_default47(b1, a / b);
-        l3 = (lib_default12(p110) + lib_default12(b2)) * b;
+        p111 = lib_default47(b12, a / b);
+        l3 = (lib_default12(p111) + lib_default12(b22)) * b;
         if (l3 < lib_default99 && l3 > lib_default103) {
-          result *= lib_default47(p110 * b2, b);
+          result *= lib_default47(p111 * b22, b);
         } else {
           l2 += l1 + lib_default12(result);
           if (l2 >= lib_default99) {
@@ -4753,7 +4747,7 @@ function ibetaPowerTerms(a, b, x, y, normalized) {
         }
       }
     } else {
-      result *= lib_default47(b1, a) * lib_default47(b2, b);
+      result *= lib_default47(b12, a) * lib_default47(b22, b);
     }
   }
   return result;
@@ -4784,7 +4778,7 @@ function ibetaFraction2t(a, b, x, y) {
 function ibetaFraction2(a, b, x, y, normalized, out) {
   var result;
   var fract;
-  var f;
+  var f8;
   result = ibeta_power_terms_default(a, b, x, y, normalized);
   if (out) {
     out[1] = result;
@@ -4792,8 +4786,8 @@ function ibetaFraction2(a, b, x, y, normalized, out) {
   if (result === 0) {
     return result;
   }
-  f = ibetaFraction2t(a, b, x, y);
-  fract = lib_default112(f, OPTS);
+  f8 = ibetaFraction2t(a, b, x, y);
+  fract = lib_default112(f8, OPTS);
   return result / fract;
 }
 var ibeta_fraction2_default = ibetaFraction2;
@@ -4894,8 +4888,8 @@ function binomcoef(n, k) {
   var res;
   var sgn;
   var b;
-  var c2;
-  var d2;
+  var c8;
+  var d8;
   var g;
   var s;
   if (lib_default(n) || lib_default(k)) {
@@ -4928,26 +4922,26 @@ function binomcoef(n, k) {
   }
   s = lib_default23(lib_default116 / n);
   res = 1;
-  for (d2 = 1; d2 <= k; d2++) {
+  for (d8 = 1; d8 <= k; d8++) {
     if (res > s) {
       break;
     }
     res *= n;
-    res /= d2;
+    res /= d8;
     n -= 1;
   }
-  if (d2 > k) {
+  if (d8 > k) {
     return sgn * res;
   }
-  b = binomcoef(n, k - d2 + 1);
+  b = binomcoef(n, k - d8 + 1);
   if (b === lib_default27) {
     return sgn * b;
   }
-  c2 = binomcoef(k, k - d2 + 1);
-  g = lib_default117(b, c2);
+  c8 = binomcoef(k, k - d8 + 1);
+  g = lib_default117(b, c8);
   b /= g;
-  c2 /= g;
-  res /= c2;
+  c8 /= g;
+  res /= c8;
   return sgn * res * b;
 }
 var main_default84 = binomcoef;
@@ -5044,14 +5038,14 @@ function ibetaSeries(a, b, x, s0, normalized, out, y) {
   var cgh;
   var l1;
   var l2;
-  var c2;
+  var c8;
   var s;
   if (normalized) {
-    c2 = a + b;
+    c8 = a + b;
     agh = a + lib_default94 - 0.5;
     bgh = b + lib_default94 - 0.5;
-    cgh = c2 + lib_default94 - 0.5;
-    result = lib_default108(c2) / (lib_default108(a) * lib_default108(b));
+    cgh = c8 + lib_default94 - 0.5;
+    result = lib_default108(c8) / (lib_default108(a) * lib_default108(b));
     l1 = lib_default12(cgh / bgh) * (b - 0.5);
     l2 = lib_default12(x * cgh / agh) * a;
     if (l1 > lib_default103 && l1 < lib_default99 && l2 > lib_default103 && l2 < lib_default99) {
@@ -5419,8 +5413,8 @@ function factory11(alpha, beta2) {
   if (lib_default(alpha) || lib_default(beta2) || alpha <= 0 || beta2 <= 0) {
     return lib_default6(NaN);
   }
-  return cdf34;
-  function cdf34(x) {
+  return cdf36;
+  function cdf36(x) {
     if (lib_default(x)) {
       return NaN;
     }
@@ -5649,22 +5643,22 @@ var ALGMCS = [
 var LEN = ALGMCS.length;
 function dcseval(x) {
   var twox;
-  var b2;
-  var b1;
+  var b22;
+  var b12;
   var b0;
   var i;
   if (x < -1.1 || x > 1.1) {
     return NaN;
   }
-  b1 = 0;
+  b12 = 0;
   b0 = 0;
   twox = 2 * x;
   for (i = 0; i < LEN; i++) {
-    b2 = b1;
-    b1 = b0;
-    b0 = twox * b1 - b2 + ALGMCS[i];
+    b22 = b12;
+    b12 = b0;
+    b0 = twox * b12 - b22 + ALGMCS[i];
   }
-  return (b0 - b2) * 0.5;
+  return (b0 - b22) * 0.5;
 }
 var dceval_default = dcseval;
 
@@ -6214,8 +6208,8 @@ var inverse_students_t_tail_series_default = inverseStudentsTTailSeries;
 function inverseStudentsTHill(ndf, u) {
   var a;
   var b;
-  var c2;
-  var d2;
+  var c8;
+  var d8;
   var q;
   var x;
   var y;
@@ -6224,20 +6218,20 @@ function inverseStudentsTHill(ndf, u) {
   }
   a = 1 / (ndf - 0.5);
   b = 48 / (a * a);
-  c2 = ((20700 * a / b - 98) * a - 16) * a + 96.36;
-  d2 = ((94.5 / (b + c2) - 3) / b + 1) * lib_default2(a * lib_default56) * ndf;
-  y = lib_default47(d2 * 2 * u, 2 / ndf);
+  c8 = ((20700 * a / b - 98) * a - 16) * a + 96.36;
+  d8 = ((94.5 / (b + c8) - 3) / b + 1) * lib_default2(a * lib_default56) * ndf;
+  y = lib_default47(d8 * 2 * u, 2 / ndf);
   if (y > 0.05 + a) {
     x = -lib_default132(2 * u) * lib_default134;
     y = x * x;
     if (ndf < 5) {
-      c2 += 0.3 * (ndf - 4.5) * (x + 0.6);
+      c8 += 0.3 * (ndf - 4.5) * (x + 0.6);
     }
-    c2 += (((0.05 * d2 * x - 5) * x - 7) * x - 2) * x + b;
-    y = (((((0.4 * y + 6.3) * y + 36) * y + 94.5) / c2 - y - 3) / b + 1) * x;
+    c8 += (((0.05 * d8 * x - 5) * x - 7) * x - 2) * x + b;
+    y = (((((0.4 * y + 6.3) * y + 36) * y + 94.5) / c8 - y - 3) / b + 1) * x;
     y = lib_default77(a * y * y);
   } else {
-    y = ((1 / (((ndf + 6) / (ndf * y) - 0.089 * d2 - 0.822) * (ndf + 2) * 3) + 0.5 / (ndf + 4)) * y - 1) * (ndf + 1) / (ndf + 2) + 1 / y;
+    y = ((1 / (((ndf + 6) / (ndf * y) - 0.089 * d8 - 0.822) * (ndf + 2) * 3) + 0.5 / (ndf + 4)) * y - 1) * (ndf + 1) / (ndf + 2) + 1 / y;
   }
   q = lib_default2(ndf * y);
   return -q;
@@ -6256,10 +6250,10 @@ function inverseStudentsT(df, u, v) {
   var result;
   var alpha;
   var tmp;
-  var p02;
-  var p210;
-  var p410;
-  var p510;
+  var p03;
+  var p211;
+  var p411;
+  var p511;
   var p101;
   var r;
   var x;
@@ -6302,12 +6296,12 @@ function inverseStudentsT(df, u, v) {
         b = lib_default47(a, ONE_THIRD2);
         p101 = 6 * (1 + C * (1 / b - 1));
         do {
-          p210 = p101 * p101;
-          p410 = p210 * p210;
-          p510 = p101 * p410;
-          p02 = p101;
-          p101 = 2 * (8 * a * p510 - 270 * p210 + 2187) / (5 * (4 * a * p410 - 216 * p101 - 243));
-        } while (lib_default29((p101 - p02) / p101) > tolerance);
+          p211 = p101 * p101;
+          p411 = p211 * p211;
+          p511 = p101 * p411;
+          p03 = p101;
+          p101 = 2 * (8 * a * p511 - 270 * p211 + 2187) / (5 * (4 * a * p411 - 216 * p101 - 243));
+        } while (lib_default29((p101 - p03) / p101) > tolerance);
         p101 = lib_default2(p101 - df);
         result = u - 0.5 < 0 ? -p101 : p101;
         break;
@@ -6376,7 +6370,7 @@ function temme1(a, b, z) {
   var B2;
   var B3;
   var B;
-  var c2;
+  var c8;
   eta0 = lib_default132(2 * z);
   eta0 /= -lib_default2(a / 2);
   terms[0] = eta0;
@@ -6409,11 +6403,11 @@ function temme1(a, b, z) {
   terms[3] = lib_default105(workspace2, eta0);
   eta = lib_default105(terms, 1 / a);
   eta2 = eta * eta;
-  c2 = -lib_default68(-eta2 / 2);
+  c8 = -lib_default68(-eta2 / 2);
   if (eta2 === 0) {
     return 0.5;
   }
-  return (1 + eta * lib_default2((1 + c2) / eta2)) / 2;
+  return (1 + eta * lib_default2((1 + c8) / eta2)) / 2;
 }
 var temme1_default = temme1;
 
@@ -6421,8 +6415,8 @@ var BIG = lib_default86 / 4;
 function temmeRootFinder(t, a) {
   return roots;
   function roots(x) {
-    var f1;
-    var f;
+    var f12;
+    var f8;
     var y;
     y = 1 - x;
     if (y === 0) {
@@ -6431,9 +6425,9 @@ function temmeRootFinder(t, a) {
     if (x === 0) {
       return [-BIG, -BIG];
     }
-    f = lib_default12(x) + a * lib_default12(y) + t;
-    f1 = 1 / x - a / y;
-    return [f, f1];
+    f8 = lib_default12(x) + a * lib_default12(y) + t;
+    f12 = 1 / x - a / y;
+    return [f8, f12];
   }
 }
 var root_finder_default = temmeRootFinder;
@@ -6458,7 +6452,7 @@ function newtonRaphsonIterate(fun, guess, min2, max2, digits, maxIter) {
   var delta;
   var res;
   var f0;
-  var f1;
+  var f12;
   f0 = 0;
   f0last = 0;
   result = guess;
@@ -6473,12 +6467,12 @@ function newtonRaphsonIterate(fun, guess, min2, max2, digits, maxIter) {
     delta1 = delta;
     res = fun(result);
     f0 = res[0];
-    f1 = res[1];
+    f12 = res[1];
     count -= 1;
     if (f0 === 0) {
       break;
     }
-    if (f1 === 0) {
+    if (f12 === 0) {
       if (f0last === 0) {
         if (result === min2) {
           guess = max2;
@@ -6500,7 +6494,7 @@ function newtonRaphsonIterate(fun, guess, min2, max2, digits, maxIter) {
         delta = (result - min2) / 2;
       }
     } else {
-      delta = f0 / f1;
+      delta = f0 / f12;
     }
     if (lib_default29(delta * 2) > lib_default29(delta2)) {
       delta = delta > 0 ? (result - min2) / 2 : (result - max2) / 2;
@@ -6652,18 +6646,18 @@ function temme2(z, r, theta) {
   var sc;
   var lu;
   var s2;
-  var c2;
-  var c3;
+  var c23;
+  var c8;
   var s;
   var u;
   var x;
   eta0 = lib_default132(2 * z) / -lib_default2(r / 2);
   s = lib_default55(theta);
-  c3 = lib_default96(theta);
+  c8 = lib_default96(theta);
   terms2[0] = eta0;
   s2 = s * s;
-  c2 = c3 * c3;
-  sc = s * c3;
+  c23 = c8 * c8;
+  sc = s * c8;
   sc2 = sc * sc;
   sc3 = sc2 * sc;
   sc4 = sc2 * sc2;
@@ -6692,9 +6686,9 @@ function temme2(z, r, theta) {
   workspace3[5] = 0;
   terms2[3] = lib_default105(workspace3, eta0);
   eta = lib_default105(terms2, 1 / r);
-  alpha = c3 / s;
+  alpha = c8 / s;
   alpha *= alpha;
-  lu = -(eta * eta) / (2 * s2) + lib_default12(s2) + c2 * lib_default12(c2) / s2;
+  lu = -(eta * eta) / (2 * s2) + lib_default12(s2) + c23 * lib_default12(c23) / s2;
   if (lib_default29(eta) < 0.7) {
     workspace3[0] = s2;
     workspace3[1] = sc;
@@ -6732,7 +6726,7 @@ function temme2(z, r, theta) {
 }
 var temme2_default = temme2;
 
-var alias_debug_default = (name) => (a, b, c2, d2, e) => {
+var alias_debug_default = (name) => (a, b, c8, d8, e) => {
 };
 
 var FLOAT32_MAX = 34028234663852886e22;
@@ -6745,7 +6739,7 @@ function higherNewton(x0, a, m, p101, q, lgama, invfp, pcase) {
   var ck0;
   var ck1;
   var ck2;
-  var a2;
+  var a22;
   var x2;
   var px;
   var qx;
@@ -6757,7 +6751,7 @@ function higherNewton(x0, a, m, p101, q, lgama, invfp, pcase) {
   x = x0;
   t = 1;
   n = 1;
-  a2 = a * a;
+  a22 = a * a;
   xini = x0;
   do {
     x = x0;
@@ -6782,7 +6776,7 @@ function higherNewton(x0, a, m, p101, q, lgama, invfp, pcase) {
     r = ck0;
     if (p101 > 1e-120 || n > 1) {
       ck1 = 0.5 * (x - a + 1) / x;
-      ck2 = (2 * x2 - 4 * x * a + 4 * x + 2 * a2 - 3 * a + 1) / x2;
+      ck2 = (2 * x2 - 4 * x * a + 4 * x + 2 * a22 - 3 * a + 1) / x2;
       ck2 /= 6;
       x0 = x + r * (1 + r * (ck1 + r * ck2));
     } else {
@@ -7272,21 +7266,21 @@ function compute2(a, p101, q) {
   var ap2;
   var ap3;
   var eta;
-  var p610;
-  var p510;
+  var p611;
+  var p511;
   var x0;
-  var a2;
+  var a22;
   var L2;
   var L3;
   var L4;
-  var b2;
-  var b3;
-  var p310;
-  var a4;
+  var b22;
+  var b32;
+  var p311;
+  var a42;
   var fp;
-  var p410;
-  var p210;
-  var a3;
+  var p411;
+  var p211;
+  var a32;
   var xr;
   var ck;
   var b;
@@ -7312,12 +7306,12 @@ function compute2(a, p101, q) {
     m = 0;
     if (pcase) {
       if (p101 < 1e-3) {
-        p210 = p101 * p101;
-        p310 = p210 * p101;
-        p410 = p310 * p101;
-        p510 = p410 * p101;
-        p610 = p510 * p101;
-        x0 = p101 + p210 * HALF + p310 * ONEO3 + p410 * ONEO4 + p510 * ONEO5 + p610 * ONEO6;
+        p211 = p101 * p101;
+        p311 = p211 * p101;
+        p411 = p311 * p101;
+        p511 = p411 * p101;
+        p611 = p511 * p101;
+        x0 = p101 + p211 * HALF + p311 * ONEO3 + p411 * ONEO4 + p511 * ONEO5 + p611 * ONEO6;
       } else {
         x0 = -lib_default12(1 - p101);
       }
@@ -7355,9 +7349,9 @@ function compute2(a, p101, q) {
   if (logr < lib_default12(ONEO5 * (1 + a)) && k === 0) {
     r = lib_default68(logr);
     m = 0;
-    a2 = a * a;
-    a3 = a2 * a;
-    a4 = a3 * a;
+    a22 = a * a;
+    a32 = a22 * a;
+    a42 = a32 * a;
     ap1 = a + 1;
     ap12 = ap1 * ap1;
     ap13 = ap1 * ap12;
@@ -7368,8 +7362,8 @@ function compute2(a, p101, q) {
     CK[0] = 1;
     CK[1] = 1 / ap1;
     CK[2] = HALF * (3 * a + 5) / (ap12 * ap2);
-    CK[3] = ONEO3 * (31 + 8 * a2 + 33 * a) / (ap13 * ap2 * ap3);
-    CK[4] = ONEO24 * (2888 + 1179 * a3 + 125 * a4 + 3971 * a2 + 5661 * a) / (ap14 * ap22 * ap3 * (a + 4));
+    CK[3] = ONEO3 * (31 + 8 * a22 + 33 * a) / (ap13 * ap2 * ap3);
+    CK[4] = ONEO24 * (2888 + 1179 * a32 + 125 * a42 + 3971 * a22 + 5661 * a) / (ap14 * ap22 * ap3 * (a + 4));
     x0 = r * lib_default105(CK, r);
     lgama = lib_default98(a);
     k = 1;
@@ -7380,8 +7374,8 @@ function compute2(a, p101, q) {
     if (q < vmin) {
       m = 0;
       b = 1 - a;
-      b2 = b * b;
-      b3 = b2 * b;
+      b22 = b * b;
+      b32 = b22 * b;
       eta = lib_default2(-2 / a * lib_default12(q / vgam));
       x0 = a * lambdaeta_default(eta);
       L = lib_default12(x0);
@@ -7392,8 +7386,8 @@ function compute2(a, p101, q) {
         r = 1 / x0;
         CK[0] = L - 1;
         CK[1] = (3 * b - 2 * b * L + L2 - 2 * L + 2) * HALF;
-        CK[2] = (24 * b * L - 11 * b2 - 24 * b - 6 * L2 + 12 * L - 12 - 9 * b * L2 + 6 * b2 * L + 2 * L3) * ONEO6;
-        CK[3] = (-12 * b3 * L + 8.04 * b * L2 - 114 * b2 * L + (72 + 36 * L2) + (3 * L4 - 72 * L + 162) * (b - 168 * b * L) - (12 * L3 + 25 * b3) - (22 * b * L3 + 36 * b2 * L2 + 120 * b2)) * ONEO122;
+        CK[2] = (24 * b * L - 11 * b22 - 24 * b - 6 * L2 + 12 * L - 12 - 9 * b * L2 + 6 * b22 * L + 2 * L3) * ONEO6;
+        CK[3] = (-12 * b32 * L + 8.04 * b * L2 - 114 * b22 * L + (72 + 36 * L2) + (3 * L4 - 72 * L + 162) * (b - 168 * b * L) - (12 * L3 + 25 * b32) - (22 * b * L3 + 36 * b22 * L2 + 120 * b22)) * ONEO122;
         CK[4] = 0;
         x0 = x0 - L + b * r * lib_default105(CK, r);
       } else {
@@ -7494,13 +7488,13 @@ function temme3(a, b, p101, q) {
   var w12;
   var w13;
   var w14;
-  var e1;
-  var e2;
-  var e3;
+  var e12;
+  var e22;
+  var e32;
   var mu;
-  var d2;
-  var d3;
-  var d4;
+  var d22;
+  var d32;
+  var d42;
   var w2;
   var w3;
   var w4;
@@ -7510,7 +7504,7 @@ function temme3(a, b, p101, q) {
   var w8;
   var w9;
   var w1;
-  var d5;
+  var d8;
   var w;
   var u;
   var x;
@@ -7531,27 +7525,27 @@ function temme3(a, b, p101, q) {
   w8 = w4 * w4;
   w9 = w5 * w4;
   w10 = w5 * w5;
-  d5 = eta0 - mu;
-  d2 = d5 * d5;
-  d3 = d2 * d5;
-  d4 = d2 * d2;
+  d8 = eta0 - mu;
+  d22 = d8 * d8;
+  d32 = d22 * d8;
+  d42 = d22 * d22;
   w1 = w + 1;
   w12 = w1 * w1;
   w13 = w1 * w12;
   w14 = w12 * w12;
-  e1 = (w + 2) * (w - 1) / (3 * w);
-  e1 += (w3 + 9 * w2 + 21 * w + 5) * d5 / (36 * w2 * w1);
-  e1 -= (w4 - 13 * w3 + 69 * w2 + 167 * w + 46) * d2 / (1620 * w12 * w3);
-  e1 -= (7 * w5 + 21 * w4 + 70 * w3 + 26 * w2 - 93 * w - 31) * d3 / (6480 * w13 * w4);
-  e1 -= (75 * w6 + 202 * w5 + 188 * w4 - 888 * w3 - 1345 * w2 + 118 * w + 138) * d4 / (272160 * w14 * w5);
-  e2 = (28 * w4 + 131 * w3 + 402 * w2 + 581 * w + 208) * (w - 1) / (1620 * w1 * w3);
-  e2 -= (35 * w6 - 154 * w5 - 623 * w4 - 1636 * w3 - 3983 * w2 - 3514 * w - 925) * d5 / (12960 * w12 * w4);
-  e2 -= (2132 * w7 + 7915 * w6 + 16821 * w5 + 35066 * w4 + 87490 * w3 + 141183 * w2 + 95993 * w + 21640) * d2 / (816480 * w5 * w13);
-  e2 -= (11053 * w8 + 53308 * w7 + 117010 * w6 + 163924 * w5 + 116188 * w4 - 258428 * w3 - 677042 * w2 - 481940 * w - 105497) * d3 / (14696640 * w14 * w6);
-  e3 = -((3592 * w7 + 8375 * w6 - 1323 * w5 - 29198 * w4 - 89578 * w3 - 154413 * w2 - 116063 * w - 29632) * (w - 1)) / (816480 * w5 * w12);
-  e3 -= (442043 * w9 + 2054169 * w8 + 3803094 * w7 + 3470754 * w6 + 2141568 * w5 - 2393568 * w4 - 19904934 * w3 - 34714674 * w2 - 23128299 * w - 5253353) * d5 / (146966400 * w6 * w13);
-  e3 -= (116932 * w10 + 819281 * w9 + 2378172 * w8 + 4341330 * w7 + 6806004 * w6 + 10622748 * w5 + 18739500 * w4 + 30651894 * w3 + 30869976 * w2 + 15431867 * w + 2919016) * d2 / (146966400 * w14 * w7);
-  eta = eta0 + e1 / a + e2 / (a * a) + e3 / (a * a * a);
+  e12 = (w + 2) * (w - 1) / (3 * w);
+  e12 += (w3 + 9 * w2 + 21 * w + 5) * d8 / (36 * w2 * w1);
+  e12 -= (w4 - 13 * w3 + 69 * w2 + 167 * w + 46) * d22 / (1620 * w12 * w3);
+  e12 -= (7 * w5 + 21 * w4 + 70 * w3 + 26 * w2 - 93 * w - 31) * d32 / (6480 * w13 * w4);
+  e12 -= (75 * w6 + 202 * w5 + 188 * w4 - 888 * w3 - 1345 * w2 + 118 * w + 138) * d42 / (272160 * w14 * w5);
+  e22 = (28 * w4 + 131 * w3 + 402 * w2 + 581 * w + 208) * (w - 1) / (1620 * w1 * w3);
+  e22 -= (35 * w6 - 154 * w5 - 623 * w4 - 1636 * w3 - 3983 * w2 - 3514 * w - 925) * d8 / (12960 * w12 * w4);
+  e22 -= (2132 * w7 + 7915 * w6 + 16821 * w5 + 35066 * w4 + 87490 * w3 + 141183 * w2 + 95993 * w + 21640) * d22 / (816480 * w5 * w13);
+  e22 -= (11053 * w8 + 53308 * w7 + 117010 * w6 + 163924 * w5 + 116188 * w4 - 258428 * w3 - 677042 * w2 - 481940 * w - 105497) * d32 / (14696640 * w14 * w6);
+  e32 = -((3592 * w7 + 8375 * w6 - 1323 * w5 - 29198 * w4 - 89578 * w3 - 154413 * w2 - 116063 * w - 29632) * (w - 1)) / (816480 * w5 * w12);
+  e32 -= (442043 * w9 + 2054169 * w8 + 3803094 * w7 + 3470754 * w6 + 2141568 * w5 - 2393568 * w4 - 19904934 * w3 - 34714674 * w2 - 23128299 * w - 5253353) * d8 / (146966400 * w6 * w13);
+  e32 -= (116932 * w10 + 819281 * w9 + 2378172 * w8 + 4341330 * w7 + 6806004 * w6 + 10622748 * w5 + 18739500 * w4 + 30651894 * w3 + 30869976 * w2 + 15431867 * w + 2919016) * d22 / (146966400 * w14 * w7);
+  eta = eta0 + e12 / a + e22 / (a * a) + e32 / (a * a * a);
   if (eta <= 0) {
     eta = lib_default138;
   }
@@ -7580,8 +7574,8 @@ function halleyIterate(fun, guess, minimum, maximum, digits, maxIter) {
   var num;
   var res;
   var f0;
-  var f1;
-  var f2;
+  var f12;
+  var f22;
   f0 = 0;
   outOfBounds = false;
   result = guess;
@@ -7597,13 +7591,13 @@ function halleyIterate(fun, guess, minimum, maximum, digits, maxIter) {
     delta1 = delta;
     res = fun(result);
     f0 = res[0];
-    f1 = res[1];
-    f2 = res[2];
+    f12 = res[1];
+    f22 = res[2];
     count -= 1;
     if (f0 === 0) {
       break;
     }
-    if (f1 === 0) {
+    if (f12 === 0) {
       if (f0Last === 0) {
         if (result === minimum) {
           guess = maximum;
@@ -7624,18 +7618,18 @@ function halleyIterate(fun, guess, minimum, maximum, digits, maxIter) {
       } else {
         delta = (result - minimum) / 2;
       }
-    } else if (f2 === 0) {
-      delta = f0 / f1;
+    } else if (f22 === 0) {
+      delta = f0 / f12;
     } else {
       denom = 2 * f0;
-      num = 2 * f1 - f0 * (f2 / f1);
+      num = 2 * f12 - f0 * (f22 / f12);
       if (lib_default29(num) < 1 && lib_default29(denom) >= lib_default29(num) * lib_default86) {
-        delta = f0 / f1;
+        delta = f0 / f12;
       } else {
         delta = denom / num;
       }
-      if (delta * f1 / f0 < 0) {
-        delta = f0 / f1;
+      if (delta * f12 / f0 < 0) {
+        delta = f0 / f12;
         if (lib_default29(delta) > 2 * lib_default29(guess)) {
           delta = (delta < 0 ? -1 : 1) * 2 * lib_default29(guess);
         }
@@ -7707,17 +7701,17 @@ function ibetaRoots(a, b, target, invert) {
   return roots;
   function roots(x) {
     var buf;
-    var f1;
-    var f2;
-    var f;
+    var f12;
+    var f22;
+    var f8;
     var y;
     y = 1 - x;
     buf = [0, 0];
     kernelBetainc3(x, a, b, true, invert, buf, 1, 0);
-    f = buf[0] - target;
-    f1 = buf[1];
+    f8 = buf[0] - target;
+    f12 = buf[1];
     if (invert) {
-      f1 = -f1;
+      f12 = -f12;
     }
     if (y === 0) {
       y = lib_default43 * 64;
@@ -7725,17 +7719,17 @@ function ibetaRoots(a, b, target, invert) {
     if (x === 0) {
       x = lib_default43 * 64;
     }
-    f2 = f1 * (-(y * a) + (b - 2) * x + 1);
-    if (lib_default29(f2) < y * x * lib_default86) {
-      f2 /= y * x;
+    f22 = f12 * (-(y * a) + (b - 2) * x + 1);
+    if (lib_default29(f22) < y * x * lib_default86) {
+      f22 /= y * x;
     }
     if (invert) {
-      f2 = -f2;
+      f22 = -f22;
     }
-    if (f1 === 0) {
-      f1 = (invert ? -1 : 1) * lib_default43 * 64;
+    if (f12 === 0) {
+      f12 = (invert ? -1 : 1) * lib_default43 * 64;
     }
-    return [f, f1, f2];
+    return [f8, f12, f22];
   }
 }
 var ibeta_roots_default = ibetaRoots;
@@ -7765,9 +7759,9 @@ function ibetaInvImp(a, b, p101, q) {
   var xg;
   var xs;
   var yp;
-  var a2;
-  var a3;
-  var b2;
+  var a22;
+  var a32;
+  var b22;
   var r;
   var l;
   var u;
@@ -7937,16 +7931,16 @@ function ibetaInvImp(a, b, p101, q) {
     if (b < a && x < 0.2) {
       ap1 = a - 1;
       bm1 = b - 1;
-      a2 = a * a;
-      a3 = a * a2;
-      b2 = b * b;
+      a22 = a * a;
+      a32 = a * a22;
+      b22 = b * b;
       terms3[0] = 0;
       terms3[1] = 1;
       terms3[2] = bm1 / ap1;
       ap1 *= ap1;
-      terms3[3] = bm1 * (3 * a * b + 5 * b + a2 - a - 4) / (2 * (a + 2) * ap1);
+      terms3[3] = bm1 * (3 * a * b + 5 * b + a22 - a - 4) / (2 * (a + 2) * ap1);
       ap1 *= a + 1;
-      terms3[4] = bm1 * (33 * a * b2 + 31 * b2 + 8 * a2 * b2 - 30 * a * b - 47 * b + 11 * a2 * b + 6 * a3 * b + 18 + 4 * a - a3 + a2 * a2 - 10 * a2);
+      terms3[4] = bm1 * (33 * a * b22 + 31 * b22 + 8 * a22 * b22 - 30 * a * b - 47 * b + 11 * a22 * b + 6 * a32 * b + 18 + 4 * a - a32 + a22 * a22 - 10 * a22);
       terms3[4] /= 3 * (a + 3) * (a + 2) * ap1;
       x = lib_default105(terms3, x);
     }
@@ -8059,15 +8053,15 @@ function mgf2(t, alpha, beta2) {
   var summand;
   var denom;
   var sum2;
-  var c2;
+  var c8;
   var k;
   denom = lib_default81(alpha, beta2);
   sum2 = 1;
-  c2 = 1;
+  c8 = 1;
   k = 1;
   do {
-    c2 *= t / k;
-    summand = lib_default81(alpha + k, beta2) / denom * c2;
+    c8 *= t / k;
+    summand = lib_default81(alpha + k, beta2) / denom * c8;
     sum2 += summand;
     k += 1;
   } while (lib_default29(summand / sum2) >= lib_default80);
@@ -8149,8 +8143,8 @@ function factory15(alpha, beta2) {
     return lib_default6(NaN);
   }
   betalnAB = lib_default126(alpha, beta2);
-  return pdf29;
-  function pdf29(x) {
+  return pdf30;
+  function pdf30(x) {
     var out;
     if (lib_default(x)) {
       return NaN;
@@ -8199,8 +8193,8 @@ function factory16(alpha, beta2) {
   if (lib_default(alpha) || lib_default(beta2) || alpha <= 0 || beta2 <= 0) {
     return lib_default6(NaN);
   }
-  return quantile34;
-  function quantile34(p101) {
+  return quantile35;
+  function quantile35(p101) {
     if (lib_default(p101) || p101 < 0 || p101 > 1) {
       return NaN;
     }
@@ -8278,8 +8272,8 @@ function factory17(alpha, beta2) {
     return lib_default6(NaN);
   }
   betaCDF = betaFactory(alpha, beta2);
-  return cdf34;
-  function cdf34(x) {
+  return cdf36;
+  function cdf36(x) {
     if (lib_default(x)) {
       return NaN;
     }
@@ -8416,8 +8410,8 @@ function factory20(alpha, beta2) {
     return lib_default6(NaN);
   }
   logpdf27 = logpdfFactory(alpha, beta2);
-  return pdf29;
-  function pdf29(x) {
+  return pdf30;
+  function pdf30(x) {
     if (lib_default(x)) {
       return NaN;
     }
@@ -8443,8 +8437,8 @@ function factory21(alpha, beta2) {
   if (lib_default(alpha) || lib_default(beta2) || alpha <= 0 || beta2 <= 0) {
     return lib_default6(NaN);
   }
-  return quantile34;
-  function quantile34(p101) {
+  return quantile35;
+  function quantile35(p101) {
     var x;
     if (lib_default(p101) || p101 < 0 || p101 > 1) {
       return NaN;
@@ -8477,8 +8471,8 @@ var main_default119 = stdev4;
 
 var lib_default157 = main_default119;
 
-function cdf5(x, c2) {
-  if (lib_default(c2) || lib_default(x) || c2 <= 0) {
+function cdf5(x, c8) {
+  if (lib_default(c8) || lib_default(x) || c8 <= 0) {
     return NaN;
   }
   if (x <= 0) {
@@ -8487,16 +8481,16 @@ function cdf5(x, c2) {
   if (x >= 1) {
     return 1;
   }
-  return lib_default78(c2 * x) / lib_default78(c2);
+  return lib_default78(c8 * x) / lib_default78(c8);
 }
 var main_default120 = cdf5;
 
-function factory22(c2) {
-  if (lib_default(c2) || c2 <= 0) {
+function factory22(c8) {
+  if (lib_default(c8) || c8 <= 0) {
     return lib_default6(NaN);
   }
-  return cdf34;
-  function cdf34(x) {
+  return cdf36;
+  function cdf36(x) {
     if (lib_default(x)) {
       return NaN;
     }
@@ -8506,7 +8500,7 @@ function factory22(c2) {
     if (x >= 1) {
       return 1;
     }
-    return lib_default78(c2 * x) / lib_default78(c2);
+    return lib_default78(c8 * x) / lib_default78(c8);
   }
 }
 var factory_default22 = factory22;
@@ -8514,42 +8508,42 @@ var factory_default22 = factory22;
 main_default120.factory = factory_default22;
 var lib_default158 = main_default120;
 
-function entropy4(c2) {
+function entropy4(c8) {
   var k;
-  if (lib_default(c2) || c2 <= 0) {
+  if (lib_default(c8) || c8 <= 0) {
     return NaN;
   }
-  k = lib_default12(1 + c2);
-  return k / 2 - lib_default12(c2 / k);
+  k = lib_default12(1 + c8);
+  return k / 2 - lib_default12(c8 / k);
 }
 var main_default121 = entropy4;
 
 var lib_default159 = main_default121;
 
-function mean5(c2) {
+function mean5(c8) {
   var k;
-  if (lib_default(c2) || c2 <= 0) {
+  if (lib_default(c8) || c8 <= 0) {
     return NaN;
   }
-  k = lib_default12(1 + c2);
-  return (c2 - k) / (c2 * k);
+  k = lib_default12(1 + c8);
+  return (c8 - k) / (c8 * k);
 }
 var main_default122 = mean5;
 
 var lib_default160 = main_default122;
 
-function median4(c2) {
-  if (lib_default(c2) || c2 <= 0) {
+function median4(c8) {
+  if (lib_default(c8) || c8 <= 0) {
     return NaN;
   }
-  return (lib_default2(1 + c2) - 1) / c2;
+  return (lib_default2(1 + c8) - 1) / c8;
 }
 var main_default123 = median4;
 
 var lib_default161 = main_default123;
 
-function mode5(c2) {
-  if (lib_default(c2) || c2 <= 0) {
+function mode5(c8) {
+  if (lib_default(c8) || c8 <= 0) {
     return NaN;
   }
   return 0;
@@ -8558,34 +8552,34 @@ var main_default124 = mode5;
 
 var lib_default162 = main_default124;
 
-function pdf4(x, c2) {
+function pdf4(x, c8) {
   var k;
-  if (lib_default(c2) || lib_default(x) || c2 <= 0) {
+  if (lib_default(c8) || lib_default(x) || c8 <= 0) {
     return NaN;
   }
   if (x < 0 || x > 1) {
     return 0;
   }
-  k = lib_default78(c2);
-  return c2 / ((1 + c2 * x) * k);
+  k = lib_default78(c8);
+  return c8 / ((1 + c8 * x) * k);
 }
 var main_default125 = pdf4;
 
-function factory23(c2) {
+function factory23(c8) {
   var k;
-  if (lib_default(c2) || c2 <= 0) {
+  if (lib_default(c8) || c8 <= 0) {
     return lib_default6(NaN);
   }
-  k = lib_default78(c2);
-  return pdf29;
-  function pdf29(x) {
+  k = lib_default78(c8);
+  return pdf30;
+  function pdf30(x) {
     if (lib_default(x)) {
       return NaN;
     }
     if (x < 0 || x > 1) {
       return 0;
     }
-    return c2 / ((1 + c2 * x) * k);
+    return c8 / ((1 + c8 * x) * k);
   }
 }
 var factory_default23 = factory23;
@@ -8593,24 +8587,24 @@ var factory_default23 = factory23;
 main_default125.factory = factory_default23;
 var lib_default163 = main_default125;
 
-function quantile5(p101, c2) {
-  if (lib_default(c2) || lib_default(p101) || c2 <= 0 || p101 < 0 || p101 > 1) {
+function quantile5(p101, c8) {
+  if (lib_default(c8) || lib_default(p101) || c8 <= 0 || p101 < 0 || p101 > 1) {
     return NaN;
   }
-  return lib_default77(p101 * lib_default78(c2)) / c2;
+  return lib_default77(p101 * lib_default78(c8)) / c8;
 }
 var main_default126 = quantile5;
 
-function factory24(c2) {
-  if (lib_default(c2) || c2 <= 0) {
+function factory24(c8) {
+  if (lib_default(c8) || c8 <= 0) {
     return lib_default6(NaN);
   }
-  return quantile34;
-  function quantile34(p101) {
+  return quantile35;
+  function quantile35(p101) {
     if (lib_default(p101) || p101 < 0 || p101 > 1) {
       return NaN;
     }
-    return lib_default77(p101 * lib_default78(c2)) / c2;
+    return lib_default77(p101 * lib_default78(c8)) / c8;
   }
 }
 var factory_default24 = factory24;
@@ -8618,22 +8612,22 @@ var factory_default24 = factory24;
 main_default126.factory = factory_default24;
 var lib_default164 = main_default126;
 
-function skewness4(c2) {
+function skewness4(c8) {
   var ans;
   var t1;
   var t2;
   var t3;
   var p101;
-  if (lib_default(c2) || c2 <= 0) {
+  if (lib_default(c8) || c8 <= 0) {
     return NaN;
   }
-  p101 = lib_default12(1 + c2);
-  t1 = 12 * (c2 * c2);
-  t2 = 9 * c2 * p101 * (c2 + 2);
-  t3 = 2 * (p101 * p101) * (c2 * (c2 + 3) + 3);
+  p101 = lib_default12(1 + c8);
+  t1 = 12 * (c8 * c8);
+  t2 = 9 * c8 * p101 * (c8 + 2);
+  t3 = 2 * (p101 * p101) * (c8 * (c8 + 3) + 3);
   ans = lib_default134 * (t1 - t2 + t3);
-  t1 = c2 * (c2 * (p101 - 2) + 2 * p101);
-  t2 = 3 * c2 * (p101 - 2) + 6 * p101;
+  t1 = c8 * (c8 * (p101 - 2) + 2 * p101);
+  t2 = 3 * c8 * (p101 - 2) + 6 * p101;
   ans /= lib_default2(t1) * t2;
   return ans;
 }
@@ -8641,20 +8635,20 @@ var main_default127 = skewness4;
 
 var lib_default165 = main_default127;
 
-function variance5(c2) {
+function variance5(c8) {
   var k;
-  if (lib_default(c2) || c2 <= 0) {
+  if (lib_default(c8) || c8 <= 0) {
     return NaN;
   }
-  k = lib_default12(1 + c2);
-  return ((2 + c2) * k - 2 * c2) / (2 * c2 * k * k);
+  k = lib_default12(1 + c8);
+  return ((2 + c8) * k - 2 * c8) / (2 * c8 * k * k);
 }
 var main_default128 = variance5;
 
 var lib_default166 = main_default128;
 
-function stdev5(c2) {
-  return lib_default2(lib_default166(c2));
+function stdev5(c8) {
+  return lib_default2(lib_default166(c8));
 }
 var main_default129 = stdev5;
 
@@ -8787,8 +8781,8 @@ function factory25(x0, gamma4) {
   if (lib_default(x0) || lib_default(gamma4) || gamma4 <= 0) {
     return lib_default6(NaN);
   }
-  return cdf34;
-  function cdf34(x) {
+  return cdf36;
+  function cdf36(x) {
     if (lib_default(x)) {
       return NaN;
     }
@@ -8899,8 +8893,8 @@ function factory28(x0, gamma4) {
     return lib_default6(NaN);
   }
   gpi = gamma4 * lib_default5;
-  return pdf29;
-  function pdf29(x) {
+  return pdf30;
+  function pdf30(x) {
     if (lib_default(x)) {
       return NaN;
     }
@@ -8924,8 +8918,8 @@ function factory29(x0, gamma4) {
   if (lib_default(x0) || lib_default(gamma4) || gamma4 <= 0) {
     return lib_default6(NaN);
   }
-  return quantile34;
-  function quantile34(p101) {
+  return quantile35;
+  function quantile35(p101) {
     if (lib_default(p101) || p101 < 0 || p101 > 1) {
       return NaN;
     }
@@ -8966,8 +8960,8 @@ function factory30(mu) {
   if (lib_default(mu)) {
     return lib_default6(NaN);
   }
-  return cdf34;
-  function cdf34(x) {
+  return cdf36;
+  function cdf36(x) {
     if (lib_default(x)) {
       return NaN;
     }
@@ -8987,8 +8981,8 @@ function factory31(alpha, beta2) {
   if (alpha === 0) {
     return degenerate(0);
   }
-  return cdf34;
-  function cdf34(x) {
+  return cdf36;
+  function cdf36(x) {
     if (x <= 0) {
       return 0;
     }
@@ -9025,8 +9019,8 @@ function factory32(k) {
     return degenerate2(0);
   }
   gamma4 = gammaFactory(k / 2, 0.5);
-  return cdf34;
-  function cdf34(x) {
+  return cdf36;
+  function cdf36(x) {
     if (lib_default(x)) {
       return NaN;
     }
@@ -9227,8 +9221,8 @@ function factory35(mu) {
   if (lib_default(mu)) {
     return lib_default6(NaN);
   }
-  return pdf29;
-  function pdf29(x) {
+  return pdf30;
+  function pdf30(x) {
     if (lib_default(x)) {
       return NaN;
     }
@@ -9252,8 +9246,8 @@ function factory36(k) {
   }
   kh = k / 2;
   km1 = k - 1;
-  return pdf29;
-  function pdf29(x) {
+  return pdf30;
+  function pdf30(x) {
     var out;
     if (lib_default(x)) {
       return NaN;
@@ -9294,8 +9288,8 @@ function factory37(mu) {
   if (lib_default(mu)) {
     return lib_default6(NaN);
   }
-  return quantile34;
-  function quantile34(p101) {
+  return quantile35;
+  function quantile35(p101) {
     if (lib_default(p101) || p101 < 0 || p101 > 1) {
       return NaN;
     }
@@ -9315,8 +9309,8 @@ function factory38(alpha, beta2) {
   if (alpha === 0) {
     return degenerate5(0);
   }
-  return quantile34;
-  function quantile34(p101) {
+  return quantile35;
+  function quantile35(p101) {
     if (lib_default(p101) || p101 < 0 || p101 > 1) {
       return NaN;
     }
@@ -9336,8 +9330,8 @@ var main_default156 = quantile9;
 var gammaFactory2 = lib_default193.factory;
 function factory39(k) {
   var gamma4 = gammaFactory2(k / 2, 0.5);
-  return quantile34;
-  function quantile34(p101) {
+  return quantile35;
+  function quantile35(p101) {
     return lib_default2(gamma4(p101));
   }
 }
@@ -9396,17 +9390,17 @@ function regularisedGammaPrefix2(a, z) {
   var alz;
   var amz;
   var sq;
-  var d2;
+  var d8;
   agh = a + lib_default94 - 0.5;
-  d2 = (z - a - lib_default94 + 0.5) / agh;
+  d8 = (z - a - lib_default94 + 0.5) / agh;
   if (a < 1) {
     if (z <= lib_default103) {
       return lib_default68(a * lib_default12(z) - z - lib_default98(a));
     }
     return lib_default47(z, a) * lib_default68(-z) / lib_default90(a);
   }
-  if (lib_default29(d2 * d2 * a) <= 100 && a > 150) {
-    prefix = a * (lib_default78(d2) - d2) + z * (0.5 - lib_default94) / agh;
+  if (lib_default29(d8 * d8 * a) <= 100 && a > 150) {
+    prefix = a * (lib_default78(d8) - d8) + z * (0.5 - lib_default94) / agh;
     prefix = lib_default68(prefix);
   } else {
     alz = a * lib_default12(z / agh);
@@ -9435,7 +9429,7 @@ function regularisedGammaPrefix2(a, z) {
 var regularised_gamma_prefix_default2 = regularisedGammaPrefix2;
 
 function gammaPDerivative(a, x) {
-  var f1;
+  var f12;
   if (a <= 0) {
     return NaN;
   }
@@ -9448,17 +9442,17 @@ function gammaPDerivative(a, x) {
     }
     return a === 1 ? 1 : lib_default27;
   }
-  f1 = regularised_gamma_prefix_default2(a, x);
-  if (x < 1 && lib_default86 * x < f1) {
+  f12 = regularised_gamma_prefix_default2(a, x);
+  if (x < 1 && lib_default86 * x < f12) {
     return lib_default27;
   }
-  if (f1 === 0) {
-    f1 = a * lib_default12(x) - x - lib_default98(a) - lib_default12(x);
-    f1 = lib_default68(f1);
+  if (f12 === 0) {
+    f12 = a * lib_default12(x) - x - lib_default98(a) - lib_default12(x);
+    f12 = lib_default68(f12);
   } else {
-    f1 /= x;
+    f12 /= x;
   }
-  return f1;
+  return f12;
 }
 var gamma_p_derivative_default = gammaPDerivative;
 
@@ -9587,17 +9581,17 @@ function regularisedGammaPrefix3(a, z) {
   var alz;
   var amz;
   var sq;
-  var d2;
+  var d8;
   agh = a + lib_default94 - 0.5;
-  d2 = (z - a - lib_default94 + 0.5) / agh;
+  d8 = (z - a - lib_default94 + 0.5) / agh;
   if (a < 1) {
     if (z <= lib_default103) {
       return lib_default68(a * lib_default12(z) - z - lib_default98(a));
     }
     return lib_default47(z, a) * lib_default68(-z) / lib_default90(a);
   }
-  if (lib_default29(d2 * d2 * a) <= 100 && a > 150) {
-    prefix = a * (lib_default78(d2) - d2) + z * (0.5 - lib_default94) / agh;
+  if (lib_default29(d8 * d8 * a) <= 100 && a > 150) {
+    prefix = a * (lib_default78(d8) - d8) + z * (0.5 - lib_default94) / agh;
     prefix = lib_default68(prefix);
   } else {
     alz = a * lib_default12(z / agh);
@@ -9626,7 +9620,7 @@ function regularisedGammaPrefix3(a, z) {
 var regularised_gamma_prefix_default3 = regularisedGammaPrefix3;
 
 function gammaPDerivative2(a, x) {
-  var f1;
+  var f12;
   if (a <= 0) {
     return NaN;
   }
@@ -9639,17 +9633,17 @@ function gammaPDerivative2(a, x) {
     }
     return a === 1 ? 1 : lib_default27;
   }
-  f1 = regularised_gamma_prefix_default3(a, x);
-  if (x < 1 && lib_default86 * x < f1) {
+  f12 = regularised_gamma_prefix_default3(a, x);
+  if (x < 1 && lib_default86 * x < f12) {
     return lib_default27;
   }
-  if (f1 === 0) {
-    f1 = a * lib_default12(x) - x - lib_default98(a) - lib_default12(x);
-    f1 = lib_default68(f1);
+  if (f12 === 0) {
+    f12 = a * lib_default12(x) - x - lib_default98(a) - lib_default12(x);
+    f12 = lib_default68(f12);
   } else {
-    f1 /= x;
+    f12 /= x;
   }
-  return f1;
+  return f12;
 }
 var gamma_p_derivative_default2 = gammaPDerivative2;
 
@@ -9675,8 +9669,8 @@ function factory45(alpha, beta2) {
   if (alpha === 0) {
     return degenerate7(0);
   }
-  return pdf29;
-  function pdf29(x) {
+  return pdf30;
+  function pdf30(x) {
     if (lib_default(x)) {
       return NaN;
     }
@@ -9759,8 +9753,8 @@ function factory47(mu, s) {
   if (s === 0) {
     return degenerate8(mu);
   }
-  return cdf34;
-  function cdf34(x) {
+  return cdf36;
+  function cdf36(x) {
     var z;
     if (lib_default(x)) {
       return NaN;
@@ -10097,8 +10091,8 @@ function factory52(mu, s) {
   if (s === 0) {
     return degenerate11(mu);
   }
-  return pdf29;
-  function pdf29(x) {
+  return pdf30;
+  function pdf30(x) {
     var z;
     if (lib_default(x)) {
       return NaN;
@@ -10120,7 +10114,7 @@ var TOLERANCE = 1e-12;
 function bisect(p101, mu, s) {
   var a;
   var b;
-  var c2;
+  var c8;
   var m;
   var n;
   n = 1;
@@ -10131,8 +10125,8 @@ function bisect(p101, mu, s) {
     if (b - a < TOLERANCE) {
       return m;
     }
-    c2 = lib_default211(m, mu, s);
-    if (p101 > c2) {
+    c8 = lib_default211(m, mu, s);
+    if (p101 > c8) {
       a = m;
     } else {
       b = m;
@@ -10162,8 +10156,8 @@ function factory53(mu, s) {
   if (s === 0) {
     return degenerate12(mu);
   }
-  return quantile34;
-  function quantile34(p101) {
+  return quantile35;
+  function quantile35(p101) {
     if (lib_default(p101) || p101 < 0 || p101 > 1) {
       return NaN;
     }
@@ -10585,8 +10579,8 @@ function factory61(lambda) {
   if (lib_default(lambda) || lambda < 0 || lambda === lib_default27) {
     return lib_default6(NaN);
   }
-  return cdf34;
-  function cdf34(x) {
+  return cdf36;
+  function cdf36(x) {
     if (x < 0) {
       return 0;
     }
@@ -10751,8 +10745,8 @@ function factory65(lambda) {
     return lib_default6(NaN);
   }
   scale = 1 / lambda;
-  return pdf29;
-  function pdf29(x) {
+  return pdf30;
+  function pdf30(x) {
     if (lib_default(x)) {
       return NaN;
     }
@@ -10779,8 +10773,8 @@ function factory66(lambda) {
   if (lambda < 0 || lambda === lib_default27 || lib_default(lambda)) {
     return lib_default6(NaN);
   }
-  return quantile34;
-  function quantile34(p101) {
+  return quantile35;
+  function quantile35(p101) {
     if (lib_default(p101) || p101 < 0 || p101 > 1) {
       return NaN;
     }
@@ -10822,8 +10816,8 @@ var main_default231 = variance12;
 
 var lib_default270 = main_default231;
 
-function cdf14(x, d1, d2) {
-  if (lib_default(x) || lib_default(d1) || lib_default(d2) || d1 <= 0 || d2 <= 0) {
+function cdf14(x, d12, d22) {
+  if (lib_default(x) || lib_default(d12) || lib_default(d22) || d12 <= 0 || d22 <= 0) {
     return NaN;
   }
   if (x <= 0) {
@@ -10832,19 +10826,19 @@ function cdf14(x, d1, d2) {
   if (x === lib_default27) {
     return 1;
   }
-  if (d1 * x > d2) {
-    return lib_default120(d1 * x / (d2 + d1 * x), d1 / 2, d2 / 2, true, false);
+  if (d12 * x > d22) {
+    return lib_default120(d12 * x / (d22 + d12 * x), d12 / 2, d22 / 2, true, false);
   }
-  return lib_default120(d2 / (d2 + d1 * x), d2 / 2, d1 / 2, true, true);
+  return lib_default120(d22 / (d22 + d12 * x), d22 / 2, d12 / 2, true, true);
 }
 var main_default232 = cdf14;
 
-function factory67(d1, d2) {
-  if (lib_default(d1) || lib_default(d2) || d1 <= 0 || d2 <= 0) {
+function factory67(d12, d22) {
+  if (lib_default(d12) || lib_default(d22) || d12 <= 0 || d22 <= 0) {
     return lib_default6(NaN);
   }
-  return cdf34;
-  function cdf34(x) {
+  return cdf36;
+  function cdf36(x) {
     if (lib_default(x)) {
       return NaN;
     }
@@ -10854,10 +10848,10 @@ function factory67(d1, d2) {
     if (x === lib_default27) {
       return 1;
     }
-    if (d1 * x > d2) {
-      return lib_default120(d1 * x / (d2 + d1 * x), d1 / 2, d2 / 2, true, false);
+    if (d12 * x > d22) {
+      return lib_default120(d12 * x / (d22 + d12 * x), d12 / 2, d22 / 2, true, false);
     }
-    return lib_default120(d2 / (d2 + d1 * x), d2 / 2, d1 / 2, true, true);
+    return lib_default120(d22 / (d22 + d12 * x), d22 / 2, d12 / 2, true, true);
   }
 }
 var factory_default67 = factory67;
@@ -10865,18 +10859,18 @@ var factory_default67 = factory67;
 main_default232.factory = factory_default67;
 var lib_default271 = main_default232;
 
-function entropy12(d1, d2) {
+function entropy12(d12, d22) {
   var half;
   var hd1;
   var hd2;
   var out;
-  if (lib_default(d1) || lib_default(d2) || d1 <= 0 || d2 <= 0) {
+  if (lib_default(d12) || lib_default(d22) || d12 <= 0 || d22 <= 0) {
     return NaN;
   }
-  half = (d1 + d2) / 2;
-  hd1 = d1 / 2;
-  hd2 = d2 / 2;
-  out = lib_default12(d2 / d1) + lib_default98(hd1) + lib_default98(hd2) - lib_default98(half);
+  half = (d12 + d22) / 2;
+  hd1 = d12 / 2;
+  hd2 = d22 / 2;
+  out = lib_default12(d22 / d12) + lib_default98(hd1) + lib_default98(hd2) - lib_default98(half);
   out += (1 - hd1) * lib_default124(hd1);
   out += (-1 - hd2) * lib_default124(hd2);
   out += half * lib_default124(half);
@@ -10886,21 +10880,21 @@ var main_default233 = entropy12;
 
 var lib_default272 = main_default233;
 
-function mean13(d1, d2) {
-  if (lib_default(d1) || lib_default(d2) || d1 <= 0 || d2 <= 2) {
+function mean13(d12, d22) {
+  if (lib_default(d12) || lib_default(d22) || d12 <= 0 || d22 <= 2) {
     return NaN;
   }
-  return d2 / (d2 - 2);
+  return d22 / (d22 - 2);
 }
 var main_default234 = mean13;
 
 var lib_default273 = main_default234;
 
-function mode13(d1, d2) {
-  if (d1 <= 2 || d2 <= 0) {
+function mode13(d12, d22) {
+  if (d12 <= 2 || d22 <= 0) {
     return NaN;
   }
-  return (d1 - 2) / d1 * (d2 / (d2 + 2));
+  return (d12 - 2) / d12 * (d22 / (d22 + 2));
 }
 var main_default235 = mode13;
 
@@ -10916,19 +10910,19 @@ function ibetaPowerTerms2(a, b, x, y, normalized) {
   var l1;
   var l2;
   var l3;
-  var p110;
-  var b1;
-  var b2;
-  var c2;
+  var p111;
+  var b12;
+  var b22;
+  var c8;
   var l;
   if (!normalized) {
     return lib_default47(x, a) * lib_default47(y, b);
   }
-  c2 = a + b;
+  c8 = a + b;
   agh = a + lib_default94 - 0.5;
   bgh = b + lib_default94 - 0.5;
-  cgh = c2 + lib_default94 - 0.5;
-  result = lib_default108(c2);
+  cgh = c8 + lib_default94 - 0.5;
+  result = lib_default108(c8);
   result /= lib_default108(a) * lib_default108(b);
   result *= lib_default2(bgh / lib_default79);
   result *= lib_default2(agh / cgh);
@@ -10984,16 +10978,16 @@ function ibetaPowerTerms2(a, b, x, y, normalized) {
       }
     }
   } else {
-    b1 = x * cgh / agh;
-    b2 = y * cgh / bgh;
-    l1 = a * lib_default12(b1);
-    l2 = b * lib_default12(b2);
+    b12 = x * cgh / agh;
+    b22 = y * cgh / bgh;
+    l1 = a * lib_default12(b12);
+    l2 = b * lib_default12(b22);
     if (l1 >= lib_default99 || l1 <= lib_default103 || l2 >= lib_default99 || l2 <= lib_default103) {
       if (a < b) {
-        p110 = lib_default47(b2, b / a);
-        l3 = a * (lib_default12(b1) + lib_default12(p110));
+        p111 = lib_default47(b22, b / a);
+        l3 = a * (lib_default12(b12) + lib_default12(p111));
         if (l3 < lib_default99 && l3 > lib_default103) {
-          result *= lib_default47(p110 * b1, a);
+          result *= lib_default47(p111 * b12, a);
         } else {
           l2 += l1 + lib_default12(result);
           if (l2 >= lib_default99) {
@@ -11002,10 +10996,10 @@ function ibetaPowerTerms2(a, b, x, y, normalized) {
           result = lib_default68(l2);
         }
       } else {
-        p110 = lib_default47(b1, a / b);
-        l3 = (lib_default12(p110) + lib_default12(b2)) * b;
+        p111 = lib_default47(b12, a / b);
+        l3 = (lib_default12(p111) + lib_default12(b22)) * b;
         if (l3 < lib_default99 && l3 > lib_default103) {
-          result *= lib_default47(p110 * b2, b);
+          result *= lib_default47(p111 * b22, b);
         } else {
           l2 += l1 + lib_default12(result);
           if (l2 >= lib_default99) {
@@ -11015,7 +11009,7 @@ function ibetaPowerTerms2(a, b, x, y, normalized) {
         }
       }
     } else {
-      result *= lib_default47(b1, a) * lib_default47(b2, b);
+      result *= lib_default47(b12, a) * lib_default47(b22, b);
     }
   }
   return result;
@@ -11023,64 +11017,64 @@ function ibetaPowerTerms2(a, b, x, y, normalized) {
 var ibeta_power_terms_default2 = ibetaPowerTerms2;
 
 function ibetaDerivative(x, a, b) {
-  var f1;
+  var f12;
   var y;
-  f1 = ibeta_power_terms_default2(a, b, x, 1 - x, true);
+  f12 = ibeta_power_terms_default2(a, b, x, 1 - x, true);
   y = (1 - x) * x;
-  f1 /= y;
-  return f1;
+  f12 /= y;
+  return f12;
 }
 var ibeta_derivative_default = ibetaDerivative;
 
-function pdf13(x, d1, d2) {
+function pdf13(x, d12, d22) {
   var v1x;
   var y;
   var z;
-  if (lib_default(x) || lib_default(d1) || lib_default(d2) || d1 <= 0 || d2 <= 0) {
+  if (lib_default(x) || lib_default(d12) || lib_default(d22) || d12 <= 0 || d22 <= 0) {
     return NaN;
   }
   if (x < 0 || x === lib_default27) {
     return 0;
   }
   if (x === 0) {
-    if (d1 < 2) {
+    if (d12 < 2) {
       return lib_default27;
     }
-    if (d1 === 2) {
+    if (d12 === 2) {
       return 1;
     }
     return 0;
   }
-  v1x = d1 * x;
-  if (v1x > d2) {
-    y = d2 * d1 / ((d2 + v1x) * (d2 + v1x));
-    return y * ibeta_derivative_default(d2 / (d2 + v1x), d2 / 2, d1 / 2);
+  v1x = d12 * x;
+  if (v1x > d22) {
+    y = d22 * d12 / ((d22 + v1x) * (d22 + v1x));
+    return y * ibeta_derivative_default(d22 / (d22 + v1x), d22 / 2, d12 / 2);
   }
-  z = d2 + v1x;
-  y = (z * d1 - x * d1 * d1) / (z * z);
-  return y * ibeta_derivative_default(v1x / (d2 + v1x), d1 / 2, d2 / 2);
+  z = d22 + v1x;
+  y = (z * d12 - x * d12 * d12) / (z * z);
+  return y * ibeta_derivative_default(v1x / (d22 + v1x), d12 / 2, d22 / 2);
 }
 var main_default236 = pdf13;
 
-function factory68(d1, d2) {
+function factory68(d12, d22) {
   var zeroVal;
   var d1by2;
   var d2by2;
   var d1d2;
-  if (lib_default(d1) || lib_default(d2) || d1 <= 0 || d2 <= 0) {
+  if (lib_default(d12) || lib_default(d22) || d12 <= 0 || d22 <= 0) {
     return lib_default6(NaN);
   }
-  d1d2 = d1 * d2;
-  d1by2 = d1 / 2;
-  d2by2 = d2 / 2;
+  d1d2 = d12 * d22;
+  d1by2 = d12 / 2;
+  d2by2 = d22 / 2;
   zeroVal = 0;
-  if (d1 < 2) {
+  if (d12 < 2) {
     zeroVal = lib_default27;
-  } else if (d1 === 2) {
+  } else if (d12 === 2) {
     zeroVal = 1;
   }
-  return pdf29;
-  function pdf29(x) {
+  return pdf30;
+  function pdf30(x) {
     var v1x;
     var y;
     var z;
@@ -11093,14 +11087,14 @@ function factory68(d1, d2) {
     if (x === 0) {
       return zeroVal;
     }
-    v1x = d1 * x;
-    if (v1x > d2) {
-      y = d1d2 / ((d2 + v1x) * (d2 + v1x));
-      return y * ibeta_derivative_default(d2 / (d2 + v1x), d2by2, d1by2);
+    v1x = d12 * x;
+    if (v1x > d22) {
+      y = d1d2 / ((d22 + v1x) * (d22 + v1x));
+      return y * ibeta_derivative_default(d22 / (d22 + v1x), d2by2, d1by2);
     }
-    z = d2 + v1x;
-    y = (z * d1 - x * d1 * d1) / (z * z);
-    return y * ibeta_derivative_default(d1 * x / (d2 + v1x), d1by2, d2by2);
+    z = d22 + v1x;
+    y = (z * d12 - x * d12 * d12) / (z * z);
+    return y * ibeta_derivative_default(d12 * x / (d22 + v1x), d1by2, d2by2);
   }
 }
 var factory_default68 = factory68;
@@ -11108,28 +11102,28 @@ var factory_default68 = factory68;
 main_default236.factory = factory_default68;
 var lib_default275 = main_default236;
 
-function quantile14(p101, d1, d2) {
+function quantile14(p101, d12, d22) {
   var xs;
-  if (lib_default(p101) || lib_default(d1) || lib_default(d2) || d1 <= 0 || d2 <= 0 || p101 < 0 || p101 > 1) {
+  if (lib_default(p101) || lib_default(d12) || lib_default(d22) || d12 <= 0 || d22 <= 0 || p101 < 0 || p101 > 1) {
     return NaN;
   }
-  xs = lib_default139(d1 / 2, d2 / 2, p101, 1 - p101);
-  return d2 * xs[0] / (d1 * xs[1]);
+  xs = lib_default139(d12 / 2, d22 / 2, p101, 1 - p101);
+  return d22 * xs[0] / (d12 * xs[1]);
 }
 var main_default237 = quantile14;
 
-function factory69(d1, d2) {
-  if (lib_default(d1) || lib_default(d2) || d1 <= 0 || d2 <= 0) {
+function factory69(d12, d22) {
+  if (lib_default(d12) || lib_default(d22) || d12 <= 0 || d22 <= 0) {
     return lib_default6(NaN);
   }
-  return quantile34;
-  function quantile34(p101) {
+  return quantile35;
+  function quantile35(p101) {
     var xs;
     if (lib_default(p101) || p101 < 0 || p101 > 1) {
       return NaN;
     }
-    xs = lib_default139(d1 / 2, d2 / 2, p101, 1 - p101);
-    return d2 * xs[0] / (d1 * xs[1]);
+    xs = lib_default139(d12 / 2, d22 / 2, p101, 1 - p101);
+    return d22 * xs[0] / (d12 * xs[1]);
   }
 }
 var factory_default69 = factory69;
@@ -11154,8 +11148,8 @@ function factory70(alpha, s, m) {
   if (lib_default(alpha) || lib_default(s) || lib_default(m) || alpha <= 0 || s <= 0) {
     return lib_default6(NaN);
   }
-  return cdf34;
-  function cdf34(x) {
+  return cdf36;
+  function cdf36(x) {
     var z;
     if (lib_default(x)) {
       return NaN;
@@ -11326,8 +11320,8 @@ function factory73(alpha, s, m) {
     return lib_default6(NaN);
   }
   logpdf27 = ldfrechet(alpha, s, m);
-  return pdf29;
-  function pdf29(x) {
+  return pdf30;
+  function pdf30(x) {
     if (lib_default(x)) {
       return NaN;
     }
@@ -11351,8 +11345,8 @@ function factory74(alpha, s, m) {
   if (lib_default(alpha) || lib_default(s) || lib_default(m) || alpha <= 0 || s <= 0) {
     return lib_default6(NaN);
   }
-  return quantile34;
-  function quantile34(p101) {
+  return quantile35;
+  function quantile35(p101) {
     if (lib_default(p101) || p101 < 0 || p101 > 1) {
       return NaN;
     }
@@ -11570,8 +11564,8 @@ function factory77(p101) {
   if (lib_default(p101) || p101 < 0 || p101 > 1) {
     return lib_default6(NaN);
   }
-  return cdf34;
-  function cdf34(x) {
+  return cdf36;
+  function cdf36(x) {
     if (lib_default(x)) {
       return NaN;
     }
@@ -11677,7 +11671,7 @@ function evalpoly72(x) {
 }
 var polyval_q_default4 = evalpoly72;
 
-function kernelLog1p(f) {
+function kernelLog1p(f8) {
   var hfsq;
   var t1;
   var t2;
@@ -11685,13 +11679,13 @@ function kernelLog1p(f) {
   var z;
   var R;
   var w;
-  s = f / (2 + f);
+  s = f8 / (2 + f8);
   z = s * s;
   w = z * z;
   t1 = w * polyval_p_default6(w);
   t2 = z * polyval_q_default4(w);
   R = t2 + t1;
-  hfsq = 0.5 * f * f;
+  hfsq = 0.5 * f8 * f8;
   return s * (hfsq + R);
 }
 var main_default265 = kernelLog1p;
@@ -11713,7 +11707,7 @@ function log2(x) {
   var lx;
   var hi;
   var lo;
-  var f;
+  var f8;
   var R;
   var w;
   var y;
@@ -11746,12 +11740,12 @@ function log2(x) {
   x = lib_default9(x, hx | i ^ HIGH_BIASED_EXP_04);
   k += i >> 20 | 0;
   y = k;
-  f = x - 1;
-  hfsq = 0.5 * f * f;
-  R = lib_default304(f);
-  hi = f - hfsq;
+  f8 = x - 1;
+  hfsq = 0.5 * f8 * f8;
+  R = lib_default304(f8);
+  hi = f8 - hfsq;
   hi = lib_default31(hi, 0);
-  lo = f - hi - hfsq + R;
+  lo = f8 - hi - hfsq + R;
   valHi = hi * IVLN2HI;
   valLo = (lo + hi) * IVLN2LO + lo * IVLN2HI;
   w = y + valHi;
@@ -11879,8 +11873,8 @@ function factory81(p101) {
   if (lib_default(p101) || p101 < 0 || p101 > 1) {
     return lib_default6(NaN);
   }
-  return quantile34;
-  function quantile34(r) {
+  return quantile35;
+  function quantile35(r) {
     if (lib_default(r) || r < 0 || r > 1) {
       return NaN;
     }
@@ -11939,8 +11933,8 @@ function factory82(mu, beta2) {
   if (lib_default(mu) || lib_default(beta2) || beta2 <= 0) {
     return lib_default6(NaN);
   }
-  return cdf34;
-  function cdf34(x) {
+  return cdf36;
+  function cdf36(x) {
     var z;
     if (lib_default(x)) {
       return NaN;
@@ -12113,8 +12107,8 @@ function factory86(mu, beta2) {
   if (lib_default(mu) || lib_default(beta2) || beta2 <= 0) {
     return lib_default6(NaN);
   }
-  return pdf29;
-  function pdf29(x) {
+  return pdf30;
+  function pdf30(x) {
     var z;
     if (lib_default(x)) {
       return NaN;
@@ -12143,8 +12137,8 @@ function factory87(mu, beta2) {
   if (lib_default(mu) || lib_default(beta2) || beta2 <= 0) {
     return lib_default6(NaN);
   }
-  return quantile34;
-  function quantile34(p101) {
+  return quantile35;
+  function quantile35(p101) {
     if (lib_default(p101) || p101 < 0 || p101 > 1) {
       return NaN;
     }
@@ -12394,8 +12388,8 @@ function factory90(N, K, n) {
   if (lib_default(N) || lib_default(K) || lib_default(n) || !lib_default243(N) || !lib_default243(K) || !lib_default243(n) || N === lib_default27 || K === lib_default27 || K > N || n > N) {
     return lib_default6(NaN);
   }
-  return cdf34;
-  function cdf34(x) {
+  return cdf36;
+  function cdf36(x) {
     var denom;
     var probs;
     var num;
@@ -12490,8 +12484,8 @@ function factory91(N, K, n) {
   if (lib_default(N) || lib_default(K) || lib_default(n) || !lib_default243(N) || !lib_default243(K) || !lib_default243(n) || N === lib_default27 || K === lib_default27 || K > N || n > N) {
     return lib_default6(NaN);
   }
-  return quantile34;
-  function quantile34(p101) {
+  return quantile35;
+  function quantile35(p101) {
     var prob;
     var x;
     if (lib_default(p101) || p101 < 0 || p101 > 1) {
@@ -12565,8 +12559,8 @@ function factory92(alpha, beta2) {
   if (lib_default(alpha) || lib_default(beta2) || alpha <= 0 || beta2 <= 0) {
     return lib_default6(NaN);
   }
-  return cdf34;
-  function cdf34(x) {
+  return cdf36;
+  function cdf36(x) {
     if (lib_default(x)) {
       return NaN;
     }
@@ -12684,8 +12678,8 @@ function factory94(alpha, beta2) {
     return lib_default6(NaN);
   }
   firstTerm = alpha * lib_default12(beta2) - lib_default98(alpha);
-  return pdf29;
-  function pdf29(x) {
+  return pdf30;
+  function pdf30(x) {
     var lnl;
     if (lib_default(x)) {
       return NaN;
@@ -12714,8 +12708,8 @@ function factory95(alpha, beta2) {
   if (lib_default(alpha) || lib_default(beta2) || alpha <= 0 || beta2 <= 0) {
     return lib_default6(NaN);
   }
-  return quantile34;
-  function quantile34(p101) {
+  return quantile35;
+  function quantile35(p101) {
     if (lib_default(p101) || p101 < 0 || p101 > 1) {
       return NaN;
     }
@@ -12775,8 +12769,8 @@ function factory96(a, b) {
   if (lib_default(a) || lib_default(b) || a <= 0 || b <= 0) {
     return lib_default6(NaN);
   }
-  return cdf34;
-  function cdf34(x) {
+  return cdf36;
+  function cdf36(x) {
     if (lib_default(x)) {
       return NaN;
     }
@@ -12940,8 +12934,8 @@ function factory99(a, b) {
   if (lib_default(a) || lib_default(b) || a <= 0 || b <= 0) {
     return lib_default6(NaN);
   }
-  return pdf29;
-  function pdf29(x) {
+  return pdf30;
+  function pdf30(x) {
     if (lib_default(x)) {
       return NaN;
     }
@@ -12968,8 +12962,8 @@ function factory100(a, b) {
   if (lib_default(a) || lib_default(b) || a <= 0 || b <= 0) {
     return lib_default6(NaN);
   }
-  return quantile34;
-  function quantile34(p101) {
+  return quantile35;
+  function quantile35(p101) {
     if (lib_default(p101) || p101 < 0 || p101 > 1) {
       return NaN;
     }
@@ -13037,8 +13031,8 @@ function factory101(mu, b) {
   if (lib_default(mu) || lib_default(b) || b <= 0) {
     return lib_default6(NaN);
   }
-  return cdf34;
-  function cdf34(x) {
+  return cdf36;
+  function cdf36(x) {
     var z;
     if (lib_default(x)) {
       return NaN;
@@ -13215,8 +13209,8 @@ function factory105(mu, b) {
   if (lib_default(mu) || lib_default(b) || b <= 0) {
     return lib_default6(NaN);
   }
-  return pdf29;
-  function pdf29(x) {
+  return pdf30;
+  function pdf30(x) {
     var z;
     if (lib_default(x)) {
       return NaN;
@@ -13242,8 +13236,8 @@ function factory106(mu, b) {
   if (lib_default(mu) || lib_default(b) || b <= 0) {
     return lib_default6(NaN);
   }
-  return quantile34;
-  function quantile34(p101) {
+  return quantile35;
+  function quantile35(p101) {
     if (lib_default(p101) || p101 < 0 || p101 > 1) {
       return NaN;
     }
@@ -13285,25 +13279,25 @@ var main_default343 = variance20;
 
 var lib_default383 = main_default343;
 
-function cdf22(x, mu, c2) {
+function cdf22(x, mu, c8) {
   var z;
-  if (lib_default(x) || lib_default(mu) || lib_default(c2) || c2 <= 0) {
+  if (lib_default(x) || lib_default(mu) || lib_default(c8) || c8 <= 0) {
     return NaN;
   }
   if (x < mu) {
     return 0;
   }
-  z = lib_default2(c2 / (2 * (x - mu)));
+  z = lib_default2(c8 / (2 * (x - mu)));
   return lib_default102(z);
 }
 var main_default344 = cdf22;
 
-function factory107(mu, c2) {
-  if (lib_default(mu) || lib_default(c2) || c2 <= 0) {
+function factory107(mu, c8) {
+  if (lib_default(mu) || lib_default(c8) || c8 <= 0) {
     return lib_default6(NaN);
   }
-  return cdf34;
-  function cdf34(x) {
+  return cdf36;
+  function cdf36(x) {
     var z;
     if (lib_default(x)) {
       return NaN;
@@ -13311,7 +13305,7 @@ function factory107(mu, c2) {
     if (x < mu) {
       return 0;
     }
-    z = lib_default2(c2 / (2 * (x - mu)));
+    z = lib_default2(c8 / (2 * (x - mu)));
     return lib_default102(z);
   }
 }
@@ -13322,31 +13316,31 @@ var lib_default384 = main_default344;
 
 var ONE_PLUS_THREE_GAMMA = 1 + 3 * lib_default89;
 var PI_TIMES_SIXTEEN = 16 * lib_default5;
-function entropy20(mu, c2) {
-  if (lib_default(mu) || lib_default(c2) || c2 <= 0) {
+function entropy20(mu, c8) {
+  if (lib_default(mu) || lib_default(c8) || c8 <= 0) {
     return NaN;
   }
-  return (ONE_PLUS_THREE_GAMMA + lib_default12(c2 * c2 * PI_TIMES_SIXTEEN)) / 2;
+  return (ONE_PLUS_THREE_GAMMA + lib_default12(c8 * c8 * PI_TIMES_SIXTEEN)) / 2;
 }
 var main_default345 = entropy20;
 
 var lib_default385 = main_default345;
 
-function logcdf14(x, mu, c2) {
+function logcdf14(x, mu, c8) {
   var z;
-  if (lib_default(x) || lib_default(mu) || lib_default(c2) || c2 <= 0) {
+  if (lib_default(x) || lib_default(mu) || lib_default(c8) || c8 <= 0) {
     return NaN;
   }
   if (x < mu) {
     return lib_default11;
   }
-  z = lib_default2(c2 / (2 * (x - mu)));
+  z = lib_default2(c8 / (2 * (x - mu)));
   return lib_default12(lib_default102(z));
 }
 var main_default346 = logcdf14;
 
-function factory108(mu, c2) {
-  if (lib_default(mu) || lib_default(c2) || c2 <= 0) {
+function factory108(mu, c8) {
+  if (lib_default(mu) || lib_default(c8) || c8 <= 0) {
     return lib_default6(NaN);
   }
   return logcdf24;
@@ -13358,7 +13352,7 @@ function factory108(mu, c2) {
     if (x < mu) {
       return lib_default11;
     }
-    z = lib_default2(c2 / (2 * (x - mu)));
+    z = lib_default2(c8 / (2 * (x - mu)));
     return lib_default12(lib_default102(z));
   }
 }
@@ -13370,21 +13364,21 @@ var lib_default386 = main_default346;
 var LN_TWO_PI = 1.8378770664093456;
 var lib_default387 = LN_TWO_PI;
 
-function logpdf18(x, mu, c2) {
+function logpdf18(x, mu, c8) {
   var z;
-  if (lib_default(x) || lib_default(mu) || lib_default(c2) || c2 <= 0) {
+  if (lib_default(x) || lib_default(mu) || lib_default(c8) || c8 <= 0) {
     return NaN;
   }
   if (x <= mu) {
     return lib_default11;
   }
   z = x - mu;
-  return 0.5 * (lib_default12(c2) - lib_default387 - c2 / z - 3 * lib_default12(z));
+  return 0.5 * (lib_default12(c8) - lib_default387 - c8 / z - 3 * lib_default12(z));
 }
 var main_default347 = logpdf18;
 
-function factory109(mu, c2) {
-  if (lib_default(mu) || lib_default(c2) || c2 <= 0) {
+function factory109(mu, c8) {
+  if (lib_default(mu) || lib_default(c8) || c8 <= 0) {
     return lib_default6(NaN);
   }
   return logpdf27;
@@ -13397,7 +13391,7 @@ function factory109(mu, c2) {
       return lib_default11;
     }
     z = x - mu;
-    return 0.5 * (lib_default12(c2) - lib_default387 - c2 / z - 3 * lib_default12(z));
+    return 0.5 * (lib_default12(c8) - lib_default387 - c8 / z - 3 * lib_default12(z));
   }
 }
 var factory_default109 = factory109;
@@ -13406,50 +13400,50 @@ main_default347.factory = factory_default109;
 var lib_default388 = main_default347;
 
 var DENOM = 2 * lib_default47(lib_default132(0.5), 2);
-function median16(mu, c2) {
-  if (lib_default(mu) || lib_default(c2) || c2 <= 0) {
+function median16(mu, c8) {
+  if (lib_default(mu) || lib_default(c8) || c8 <= 0) {
     return NaN;
   }
-  return mu + c2 / DENOM;
+  return mu + c8 / DENOM;
 }
 var main_default348 = median16;
 
 var lib_default389 = main_default348;
 
-function mode23(mu, c2) {
-  if (lib_default(mu) || lib_default(c2) || c2 <= 0) {
+function mode23(mu, c8) {
+  if (lib_default(mu) || lib_default(c8) || c8 <= 0) {
     return NaN;
   }
-  return mu + c2 / 3;
+  return mu + c8 / 3;
 }
 var main_default349 = mode23;
 
 var lib_default390 = main_default349;
 
-function pdf19(x, mu, c2) {
-  if (lib_default(x) || lib_default(mu) || lib_default(c2) || c2 <= 0) {
+function pdf19(x, mu, c8) {
+  if (lib_default(x) || lib_default(mu) || lib_default(c8) || c8 <= 0) {
     return NaN;
   }
   if (x <= mu) {
     return 0;
   }
-  return lib_default2(c2 / lib_default107) * lib_default68(-c2 / (2 * (x - mu))) / lib_default47(x - mu, 1.5);
+  return lib_default2(c8 / lib_default107) * lib_default68(-c8 / (2 * (x - mu))) / lib_default47(x - mu, 1.5);
 }
 var main_default350 = pdf19;
 
-function factory110(mu, c2) {
-  if (lib_default(mu) || lib_default(c2) || c2 <= 0) {
+function factory110(mu, c8) {
+  if (lib_default(mu) || lib_default(c8) || c8 <= 0) {
     return lib_default6(NaN);
   }
-  return pdf29;
-  function pdf29(x) {
+  return pdf30;
+  function pdf30(x) {
     if (lib_default(x)) {
       return NaN;
     }
     if (x <= mu) {
       return 0;
     }
-    return lib_default2(c2 / lib_default107) * lib_default68(-c2 / (2 * (x - mu))) / lib_default47(x - mu, 1.5);
+    return lib_default2(c8 / lib_default107) * lib_default68(-c8 / (2 * (x - mu))) / lib_default47(x - mu, 1.5);
   }
 }
 var factory_default110 = factory110;
@@ -13457,28 +13451,28 @@ var factory_default110 = factory110;
 main_default350.factory = factory_default110;
 var lib_default391 = main_default350;
 
-function quantile22(p101, mu, c2) {
+function quantile22(p101, mu, c8) {
   var fval;
-  if (lib_default(mu) || lib_default(c2) || lib_default(p101) || c2 <= 0 || p101 < 0 || p101 > 1) {
+  if (lib_default(mu) || lib_default(c8) || lib_default(p101) || c8 <= 0 || p101 < 0 || p101 > 1) {
     return NaN;
   }
   fval = lib_default132(p101);
-  return mu + c2 / (2 * fval * fval);
+  return mu + c8 / (2 * fval * fval);
 }
 var main_default351 = quantile22;
 
-function factory111(mu, c2) {
-  if (lib_default(mu) || lib_default(c2) || c2 <= 0) {
+function factory111(mu, c8) {
+  if (lib_default(mu) || lib_default(c8) || c8 <= 0) {
     return lib_default6(NaN);
   }
-  return quantile34;
-  function quantile34(p101) {
+  return quantile35;
+  function quantile35(p101) {
     var fval;
     if (lib_default(p101) || p101 < 0 || p101 > 1) {
       return NaN;
     }
     fval = lib_default132(p101);
-    return mu + c2 / (2 * fval * fval);
+    return mu + c8 / (2 * fval * fval);
   }
 }
 var factory_default111 = factory111;
@@ -13507,8 +13501,8 @@ function factory112(mu, s) {
   if (s === 0) {
     return degenerate14(mu);
   }
-  return cdf34;
-  function cdf34(x) {
+  return cdf36;
+  function cdf36(x) {
     var z;
     if (lib_default(x)) {
       return NaN;
@@ -13741,8 +13735,8 @@ function factory116(mu, s) {
   if (s === 0) {
     return degenerate18(mu);
   }
-  return pdf29;
-  function pdf29(x) {
+  return pdf30;
+  function pdf30(x) {
     var ez;
     var z;
     if (lib_default(x)) {
@@ -13780,8 +13774,8 @@ function factory117(mu, s) {
   if (s === 0) {
     return degenerate19(mu);
   }
-  return quantile34;
-  function quantile34(p101) {
+  return quantile35;
+  function quantile35(p101) {
     if (lib_default(p101) || p101 < 0 || p101 > 1) {
       return NaN;
     }
@@ -13849,8 +13843,8 @@ function factory118(mu, sigma) {
     return degenerate20(mu);
   }
   denom = sigma * lib_default2(2);
-  return cdf34;
-  function cdf34(x) {
+  return cdf36;
+  function cdf36(x) {
     var xc;
     if (lib_default(x)) {
       return NaN;
@@ -13879,8 +13873,8 @@ function factory119(mu, sigma) {
   if (lib_default(mu) || lib_default(sigma) || sigma <= 0) {
     return lib_default6(NaN);
   }
-  return cdf34;
-  function cdf34(x) {
+  return cdf36;
+  function cdf36(x) {
     if (lib_default(x)) {
       return NaN;
     }
@@ -14235,8 +14229,8 @@ function p100() {
 }
 function erfcxY100(y100) {
   var t = lib_default23(y100);
-  var f = table[t];
-  return f(2 * y100 - (2 * t + 1));
+  var f8 = table[t];
+  return f8(2 * y100 - (2 * t + 1));
 }
 var erfcx_y100_default = erfcxY100;
 
@@ -14434,8 +14428,8 @@ function factory123(mu, sigma) {
   s2 = lib_default47(sigma, 2);
   A2 = 1 / lib_default2(2 * s2 * lib_default5);
   B = -1 / (2 * s2);
-  return pdf29;
-  function pdf29(x) {
+  return pdf30;
+  function pdf30(x) {
     if (lib_default(x)) {
       return NaN;
     }
@@ -14662,8 +14656,8 @@ function factory124(mu, sigma) {
   }
   A2 = mu;
   B = sigma * lib_default2(2);
-  return quantile34;
-  function quantile34(p101) {
+  return quantile35;
+  function quantile35(p101) {
     if (lib_default(p101) || p101 < 0 || p101 > 1) {
       return NaN;
     }
@@ -14687,8 +14681,8 @@ function factory125(mu, sigma) {
   if (lib_default(mu) || lib_default(sigma) || sigma <= 0) {
     return lib_default6(NaN);
   }
-  return quantile34;
-  function quantile34(p101) {
+  return quantile35;
+  function quantile35(p101) {
     if (lib_default(p101) || p101 < 0 || p101 > 1) {
       return NaN;
     }
@@ -14751,8 +14745,8 @@ function factory126(r, p101) {
   if (lib_default(r) || lib_default(p101) || r <= 0 || p101 < 0 || p101 > 1) {
     return lib_default6(NaN);
   }
-  return cdf34;
-  function cdf34(x) {
+  return cdf36;
+  function cdf36(x) {
     var xint;
     if (lib_default(x)) {
       return NaN;
@@ -14837,19 +14831,19 @@ function ibetaPowerTerms3(a, b, x, y, normalized) {
   var l1;
   var l2;
   var l3;
-  var p110;
-  var b1;
-  var b2;
-  var c2;
+  var p111;
+  var b12;
+  var b22;
+  var c8;
   var l;
   if (!normalized) {
     return lib_default47(x, a) * lib_default47(y, b);
   }
-  c2 = a + b;
+  c8 = a + b;
   agh = a + lib_default94 - 0.5;
   bgh = b + lib_default94 - 0.5;
-  cgh = c2 + lib_default94 - 0.5;
-  result = lib_default108(c2);
+  cgh = c8 + lib_default94 - 0.5;
+  result = lib_default108(c8);
   result /= lib_default108(a) * lib_default108(b);
   result *= lib_default2(bgh / lib_default79);
   result *= lib_default2(agh / cgh);
@@ -14905,16 +14899,16 @@ function ibetaPowerTerms3(a, b, x, y, normalized) {
       }
     }
   } else {
-    b1 = x * cgh / agh;
-    b2 = y * cgh / bgh;
-    l1 = a * lib_default12(b1);
-    l2 = b * lib_default12(b2);
+    b12 = x * cgh / agh;
+    b22 = y * cgh / bgh;
+    l1 = a * lib_default12(b12);
+    l2 = b * lib_default12(b22);
     if (l1 >= lib_default99 || l1 <= lib_default103 || l2 >= lib_default99 || l2 <= lib_default103) {
       if (a < b) {
-        p110 = lib_default47(b2, b / a);
-        l3 = a * (lib_default12(b1) + lib_default12(p110));
+        p111 = lib_default47(b22, b / a);
+        l3 = a * (lib_default12(b12) + lib_default12(p111));
         if (l3 < lib_default99 && l3 > lib_default103) {
-          result *= lib_default47(p110 * b1, a);
+          result *= lib_default47(p111 * b12, a);
         } else {
           l2 += l1 + lib_default12(result);
           if (l2 >= lib_default99) {
@@ -14923,10 +14917,10 @@ function ibetaPowerTerms3(a, b, x, y, normalized) {
           result = lib_default68(l2);
         }
       } else {
-        p110 = lib_default47(b1, a / b);
-        l3 = (lib_default12(p110) + lib_default12(b2)) * b;
+        p111 = lib_default47(b12, a / b);
+        l3 = (lib_default12(p111) + lib_default12(b22)) * b;
         if (l3 < lib_default99 && l3 > lib_default103) {
-          result *= lib_default47(p110 * b2, b);
+          result *= lib_default47(p111 * b22, b);
         } else {
           l2 += l1 + lib_default12(result);
           if (l2 >= lib_default99) {
@@ -14936,7 +14930,7 @@ function ibetaPowerTerms3(a, b, x, y, normalized) {
         }
       }
     } else {
-      result *= lib_default47(b1, a) * lib_default47(b2, b);
+      result *= lib_default47(b12, a) * lib_default47(b22, b);
     }
   }
   return result;
@@ -14944,15 +14938,15 @@ function ibetaPowerTerms3(a, b, x, y, normalized) {
 var ibeta_power_terms_default3 = ibetaPowerTerms3;
 
 function ibetaDerivative2(x, a, b) {
-  var f1;
+  var f12;
   var y;
   if (x === 1) {
     return 0;
   }
-  f1 = ibeta_power_terms_default3(a, b, x, 1 - x, true);
+  f12 = ibeta_power_terms_default3(a, b, x, 1 - x, true);
   y = (1 - x) * x;
-  f1 /= y;
-  return f1;
+  f12 /= y;
+  return f12;
 }
 var ibeta_derivative_default2 = ibetaDerivative2;
 
@@ -15056,8 +15050,8 @@ function factory129(r, p101) {
   mu = r * q / p101;
   sigma = lib_default2(r * q) / p101;
   sigmaInv = (2 / p101 - 1) / sigma;
-  return quantile34;
-  function quantile34(k) {
+  return quantile35;
+  function quantile35(k) {
     var guess;
     var corr;
     var x2;
@@ -15264,8 +15258,8 @@ function factory132(mu, sigma) {
   s2 = lib_default47(sigma, 2);
   A2 = 1 / lib_default2(s2 * lib_default107);
   B = -1 / (2 * s2);
-  return pdf29;
-  function pdf29(x) {
+  return pdf30;
+  function pdf30(x) {
     if (lib_default(x)) {
       return NaN;
     }
@@ -15322,8 +15316,8 @@ function factory133(alpha, beta2) {
   if (lib_default(alpha) || lib_default(beta2) || alpha <= 0 || beta2 <= 0) {
     return lib_default6(NaN);
   }
-  return cdf34;
-  function cdf34(x) {
+  return cdf36;
+  function cdf36(x) {
     if (lib_default(x)) {
       return NaN;
     }
@@ -15483,8 +15477,8 @@ function factory136(alpha, beta2) {
     return lib_default6(NaN);
   }
   num = alpha * lib_default47(beta2, alpha);
-  return pdf29;
-  function pdf29(x) {
+  return pdf30;
+  function pdf30(x) {
     var denom;
     if (lib_default(x)) {
       return NaN;
@@ -15515,8 +15509,8 @@ function factory137(alpha, beta2) {
     return lib_default6(NaN);
   }
   alphaInv = 1 / alpha;
-  return quantile34;
-  function quantile34(p101) {
+  return quantile35;
+  function quantile35(p101) {
     if (lib_default(p101) || p101 < 0 || p101 > 1) {
       return NaN;
     }
@@ -15576,8 +15570,8 @@ function factory138(lambda) {
   if (lib_default(lambda) || lambda <= 0) {
     return lib_default6(NaN);
   }
-  return cdf34;
-  function cdf34(x) {
+  return cdf36;
+  function cdf36(x) {
     if (lib_default(x)) {
       return NaN;
     }
@@ -15596,12 +15590,12 @@ main_default420.factory = factory_default138;
 var lib_default461 = main_default420;
 
 function entropy25(lambda) {
-  var c2;
+  var c8;
   if (lib_default(lambda) || lambda <= 0) {
     return NaN;
   }
-  c2 = -lib_default77(-lambda);
-  return lambda * lib_default68(-lambda) / c2 - lib_default12(c2);
+  c8 = -lib_default77(-lambda);
+  return lambda * lib_default68(-lambda) / c8 - lib_default12(c8);
 }
 var main_default421 = entropy25;
 
@@ -15802,8 +15796,8 @@ function factory143(lambda) {
   if (lib_default(lambda) || lambda <= 0) {
     return lib_default6(NaN);
   }
-  return quantile34;
-  function quantile34(p101) {
+  return quantile35;
+  function quantile35(p101) {
     if (lib_default(p101) || p101 < 0 || p101 > 1) {
       return NaN;
     }
@@ -15872,8 +15866,8 @@ function factory144(lambda) {
   if (lambda === 0) {
     return degenerate26(0);
   }
-  return cdf34;
-  function cdf34(x) {
+  return cdf36;
+  function cdf36(x) {
     if (lib_default(x)) {
       return NaN;
     }
@@ -16162,8 +16156,8 @@ function factory149(lambda) {
   }
   sigma = lib_default2(lambda);
   sigmaInv = 1 / sigma;
-  return quantile34;
-  function quantile34(p101) {
+  return quantile35;
+  function quantile35(p101) {
     var guess;
     var corr;
     var x2;
@@ -16246,8 +16240,8 @@ function factory150(sigma) {
     return degenerate30(0);
   }
   s2 = lib_default47(sigma, 2);
-  return cdf34;
-  function cdf34(x) {
+  return cdf36;
+  function cdf36(x) {
     if (lib_default(x)) {
       return NaN;
     }
@@ -16627,8 +16621,8 @@ function factory154(sigma) {
   }
   s2 = lib_default47(sigma, 2);
   s2i = 1 / s2;
-  return pdf29;
-  function pdf29(x) {
+  return pdf30;
+  function pdf30(x) {
     if (lib_default(x)) {
       return NaN;
     }
@@ -16669,8 +16663,8 @@ function factory155(sigma) {
     return degenerate34(0);
   }
   s2 = sigma * sigma;
-  return quantile34;
-  function quantile34(p101) {
+  return quantile35;
+  function quantile35(p101) {
     if (lib_default(p101) || p101 < 0 || p101 > 1) {
       return NaN;
     }
@@ -16717,7 +16711,1662 @@ var main_default463 = variance28;
 
 var lib_default506 = main_default463;
 
-function cdf31(x, v) {
+function isfinite(x) {
+  return x === x && x > lib_default11 && x < lib_default27;
+}
+var main_default464 = isfinite;
+
+var lib_default507 = main_default464;
+
+var RE = /./;
+var re_default = RE;
+
+function isNumber(value) {
+  return typeof value === "number";
+}
+var is_number_default = isNumber;
+
+function startsWithMinus(str) {
+  return str[0] === "-";
+}
+function zeros2(n) {
+  var out = "";
+  var i;
+  for (i = 0; i < n; i++) {
+    out += "0";
+  }
+  return out;
+}
+function zeroPad(str, width, right) {
+  var negative = false;
+  var pad = width - str.length;
+  if (pad < 0) {
+    return str;
+  }
+  if (startsWithMinus(str)) {
+    negative = true;
+    str = str.substr(1);
+  }
+  str = right ? str + zeros2(pad) : zeros2(pad) + str;
+  if (negative) {
+    str = "-" + str;
+  }
+  return str;
+}
+var zero_pad_default = zeroPad;
+
+var lowercase = String.prototype.toLowerCase;
+var uppercase = String.prototype.toUpperCase;
+function formatInteger(token) {
+  var base;
+  var out;
+  var i;
+  switch (token.specifier) {
+    case "b":
+      base = 2;
+      break;
+    case "o":
+      base = 8;
+      break;
+    case "x":
+    case "X":
+      base = 16;
+      break;
+    case "d":
+    case "i":
+    case "u":
+    default:
+      base = 10;
+      break;
+  }
+  out = token.arg;
+  i = parseInt(out, 10);
+  if (!isFinite(i)) {
+    if (!is_number_default(out)) {
+      throw new Error("invalid integer. Value: " + out);
+    }
+    i = 0;
+  }
+  if (i < 0 && (token.specifier === "u" || base !== 10)) {
+    i = 4294967295 + i + 1;
+  }
+  if (i < 0) {
+    out = (-i).toString(base);
+    if (token.precision) {
+      out = zero_pad_default(out, token.precision, token.padRight);
+    }
+    out = "-" + out;
+  } else {
+    out = i.toString(base);
+    if (!i && !token.precision) {
+      out = "";
+    } else if (token.precision) {
+      out = zero_pad_default(out, token.precision, token.padRight);
+    }
+    if (token.sign) {
+      out = token.sign + out;
+    }
+  }
+  if (base === 16) {
+    if (token.alternate) {
+      out = "0x" + out;
+    }
+    out = token.specifier === uppercase.call(token.specifier) ? uppercase.call(out) : lowercase.call(out);
+  }
+  if (base === 8) {
+    if (token.alternate && out.charAt(0) !== "0") {
+      out = "0" + out;
+    }
+  }
+  return out;
+}
+var format_integer_default = formatInteger;
+
+function isString(value) {
+  return typeof value === "string";
+}
+var is_string_default = isString;
+
+var abs3 = Math.abs;
+var lowercase2 = String.prototype.toLowerCase;
+var uppercase2 = String.prototype.toUpperCase;
+var replace = String.prototype.replace;
+var RE_EXP_POS_DIGITS = /e\+(\d)$/;
+var RE_EXP_NEG_DIGITS = /e-(\d)$/;
+var RE_ONLY_DIGITS = /^(\d+)$/;
+var RE_DIGITS_BEFORE_EXP = /^(\d+)e/;
+var RE_TRAILING_PERIOD_ZERO = /\.0$/;
+var RE_PERIOD_ZERO_EXP = /\.0*e/;
+var RE_ZERO_BEFORE_EXP = /(\..*[^0])0*e/;
+function formatDouble(f8, token) {
+  var digits;
+  var out;
+  switch (token.specifier) {
+    case "e":
+    case "E":
+      out = f8.toExponential(token.precision);
+      break;
+    case "f":
+    case "F":
+      out = f8.toFixed(token.precision);
+      break;
+    case "g":
+    case "G":
+      if (abs3(f8) < 1e-4) {
+        digits = token.precision;
+        if (digits > 0) {
+          digits -= 1;
+        }
+        out = f8.toExponential(digits);
+      } else {
+        out = f8.toPrecision(token.precision);
+      }
+      if (!token.alternate) {
+        out = replace.call(out, RE_ZERO_BEFORE_EXP, "$1e");
+        out = replace.call(out, RE_PERIOD_ZERO_EXP, "e");
+        out = replace.call(out, RE_TRAILING_PERIOD_ZERO, "");
+      }
+      break;
+    default:
+      throw new Error("invalid double notation. Value: " + token.specifier);
+  }
+  out = replace.call(out, RE_EXP_POS_DIGITS, "e+0$1");
+  out = replace.call(out, RE_EXP_NEG_DIGITS, "e-0$1");
+  if (token.alternate) {
+    out = replace.call(out, RE_ONLY_DIGITS, "$1.");
+    out = replace.call(out, RE_DIGITS_BEFORE_EXP, "$1.e");
+  }
+  if (f8 >= 0 && token.sign) {
+    out = token.sign + out;
+  }
+  out = token.specifier === uppercase2.call(token.specifier) ? uppercase2.call(out) : lowercase2.call(out);
+  return out;
+}
+var format_double_default = formatDouble;
+
+function spaces(n) {
+  var out = "";
+  var i;
+  for (i = 0; i < n; i++) {
+    out += " ";
+  }
+  return out;
+}
+function spacePad(str, width, right) {
+  var pad = width - str.length;
+  if (pad < 0) {
+    return str;
+  }
+  str = right ? str + spaces(pad) : spaces(pad) + str;
+  return str;
+}
+var space_pad_default = spacePad;
+
+var fromCharCode = String.fromCharCode;
+var isArray = Array.isArray;
+function isnan2(value) {
+  return value !== value;
+}
+function initialize(token) {
+  var out = {};
+  out.specifier = token.specifier;
+  out.precision = token.precision === void 0 ? 1 : token.precision;
+  out.width = token.width;
+  out.flags = token.flags || "";
+  out.mapping = token.mapping;
+  return out;
+}
+function formatInterpolate(tokens) {
+  var hasPeriod;
+  var flags;
+  var token;
+  var flag;
+  var num;
+  var out;
+  var pos;
+  var f8;
+  var i;
+  var j;
+  if (!isArray(tokens)) {
+    throw new TypeError("invalid argument. First argument must be an array. Value: `" + tokens + "`.");
+  }
+  out = "";
+  pos = 1;
+  for (i = 0; i < tokens.length; i++) {
+    token = tokens[i];
+    if (is_string_default(token)) {
+      out += token;
+    } else {
+      hasPeriod = token.precision !== void 0;
+      token = initialize(token);
+      if (!token.specifier) {
+        throw new TypeError("invalid argument. Token is missing `specifier` property. Index: `" + i + "`. Value: `" + token + "`.");
+      }
+      if (token.mapping) {
+        pos = token.mapping;
+      }
+      flags = token.flags;
+      for (j = 0; j < flags.length; j++) {
+        flag = flags.charAt(j);
+        switch (flag) {
+          case " ":
+            token.sign = " ";
+            break;
+          case "+":
+            token.sign = "+";
+            break;
+          case "-":
+            token.padRight = true;
+            token.padZeros = false;
+            break;
+          case "0":
+            token.padZeros = flags.indexOf("-") < 0;
+            break;
+          case "#":
+            token.alternate = true;
+            break;
+          default:
+            throw new Error("invalid flag: " + flag);
+        }
+      }
+      if (token.width === "*") {
+        token.width = parseInt(arguments[pos], 10);
+        pos += 1;
+        if (isnan2(token.width)) {
+          throw new TypeError("the argument for * width at position " + pos + " is not a number. Value: `" + token.width + "`.");
+        }
+        if (token.width < 0) {
+          token.padRight = true;
+          token.width = -token.width;
+        }
+      }
+      if (hasPeriod) {
+        if (token.precision === "*") {
+          token.precision = parseInt(arguments[pos], 10);
+          pos += 1;
+          if (isnan2(token.precision)) {
+            throw new TypeError("the argument for * precision at position " + pos + " is not a number. Value: `" + token.precision + "`.");
+          }
+          if (token.precision < 0) {
+            token.precision = 1;
+            hasPeriod = false;
+          }
+        }
+      }
+      token.arg = arguments[pos];
+      switch (token.specifier) {
+        case "b":
+        case "o":
+        case "x":
+        case "X":
+        case "d":
+        case "i":
+        case "u":
+          if (hasPeriod) {
+            token.padZeros = false;
+          }
+          token.arg = format_integer_default(token);
+          break;
+        case "s":
+          token.maxWidth = hasPeriod ? token.precision : -1;
+          token.arg = String(token.arg);
+          break;
+        case "c":
+          if (!isnan2(token.arg)) {
+            num = parseInt(token.arg, 10);
+            if (num < 0 || num > 127) {
+              throw new Error("invalid character code. Value: " + token.arg);
+            }
+            token.arg = isnan2(num) ? String(token.arg) : fromCharCode(num);
+          }
+          break;
+        case "e":
+        case "E":
+        case "f":
+        case "F":
+        case "g":
+        case "G":
+          if (!hasPeriod) {
+            token.precision = 6;
+          }
+          f8 = parseFloat(token.arg);
+          if (!isFinite(f8)) {
+            if (!is_number_default(token.arg)) {
+              throw new Error("invalid floating-point number. Value: " + out);
+            }
+            f8 = token.arg;
+            token.padZeros = false;
+          }
+          token.arg = format_double_default(f8, token);
+          break;
+        default:
+          throw new Error("invalid specifier: " + token.specifier);
+      }
+      if (token.maxWidth >= 0 && token.arg.length > token.maxWidth) {
+        token.arg = token.arg.substring(0, token.maxWidth);
+      }
+      if (token.padZeros) {
+        token.arg = zero_pad_default(token.arg, token.width || token.precision, token.padRight);
+      } else if (token.width) {
+        token.arg = space_pad_default(token.arg, token.width, token.padRight);
+      }
+      out += token.arg || "";
+      pos += 1;
+    }
+  }
+  return out;
+}
+var main_default465 = formatInterpolate;
+
+var lib_default508 = main_default465;
+
+var RE2 = /%(?:([1-9]\d*)\$)?([0 +\-#]*)(\*|\d+)?(?:(\.)(\*|\d+)?)?[hlL]?([%A-Za-z])/g;
+function parse(match) {
+  var token = {
+    "mapping": match[1] ? parseInt(match[1], 10) : void 0,
+    "flags": match[2],
+    "width": match[3],
+    "precision": match[5],
+    "specifier": match[6]
+  };
+  if (match[4] === "." && match[5] === void 0) {
+    token.precision = "1";
+  }
+  return token;
+}
+function formatTokenize(str) {
+  var content;
+  var tokens;
+  var match;
+  var prev;
+  tokens = [];
+  prev = 0;
+  match = RE2.exec(str);
+  while (match) {
+    content = str.slice(prev, RE2.lastIndex - match[0].length);
+    if (content.length) {
+      tokens.push(content);
+    }
+    if (match[6] === "%") {
+      tokens.push("%");
+    } else {
+      tokens.push(parse(match));
+    }
+    prev = RE2.lastIndex;
+    match = RE2.exec(str);
+  }
+  content = str.slice(prev);
+  if (content.length) {
+    tokens.push(content);
+  }
+  return tokens;
+}
+var main_default466 = formatTokenize;
+
+var lib_default509 = main_default466;
+
+function isString2(value) {
+  return typeof value === "string";
+}
+var is_string_default2 = isString2;
+
+function format(str) {
+  var args;
+  var i;
+  if (!is_string_default2(str)) {
+    throw new TypeError(format("invalid argument. First argument must be a string. Value: `%s`.", str));
+  }
+  args = [lib_default509(str)];
+  for (i = 1; i < arguments.length; i++) {
+    args.push(arguments[i]);
+  }
+  return lib_default508.apply(null, args);
+}
+var main_default467 = format;
+
+var lib_default510 = main_default467;
+
+function getGlobal() {
+  return new Function("return this;")();
+}
+var codegen_default = getGlobal;
+
+var obj = typeof self === "object" ? self : null;
+var self_default = obj;
+
+var obj2 = typeof window === "object" ? window : null;
+var window_default = obj2;
+
+var obj3 = typeof global === "object" ? global : null;
+var global_default = obj3;
+
+var obj4 = typeof globalThis === "object" ? globalThis : null;
+var global_this_default = obj4;
+
+function isBoolean(value) {
+  return typeof value === "boolean";
+}
+var primitive_default = isBoolean;
+
+var has_tostringtag_support_default = () => true;
+
+var toStr = Object.prototype.toString;
+var tostring_default = toStr;
+
+function nativeClass(v) {
+  return tostring_default.call(v);
+}
+var main_default468 = nativeClass;
+
+var has = Object.prototype.hasOwnProperty;
+function hasOwnProp(value, property) {
+  if (value === void 0 || value === null) {
+    return false;
+  }
+  return has.call(value, property);
+}
+var main_default469 = hasOwnProp;
+
+var lib_default511 = main_default469;
+
+var Sym = typeof Symbol === "function" ? Symbol : void 0;
+var main_default470 = Sym;
+
+var lib_default512 = main_default470;
+
+var toStrTag = typeof lib_default512 === "function" ? lib_default512.toStringTag : "";
+var tostringtag_default = toStrTag;
+
+function nativeClass2(v) {
+  var isOwn;
+  var tag;
+  var out;
+  if (v === null || v === void 0) {
+    return tostring_default.call(v);
+  }
+  tag = v[tostringtag_default];
+  isOwn = lib_default511(v, tostringtag_default);
+  try {
+    v[tostringtag_default] = void 0;
+  } catch (err) {
+    return tostring_default.call(v);
+  }
+  out = tostring_default.call(v);
+  if (isOwn) {
+    v[tostringtag_default] = tag;
+  } else {
+    delete v[tostringtag_default];
+  }
+  return out;
+}
+var polyfill_default = nativeClass2;
+
+var main;
+if (has_tostringtag_support_default()) {
+  main = polyfill_default;
+} else {
+  main = main_default468;
+}
+var lib_default513 = main;
+
+var Bool = Boolean;
+var main_default471 = Bool;
+
+var lib_default514 = main_default471;
+
+var toString = Boolean.prototype.toString;
+var tostring_default2 = toString;
+
+var toString2 = tostring_default2;
+function test(value) {
+  try {
+    toString2.call(value);
+    return true;
+  } catch (err) {
+    return false;
+  }
+}
+var try2serialize_default = test;
+
+var FLG = has_tostringtag_support_default();
+function isBoolean2(value) {
+  if (typeof value === "object") {
+    if (value instanceof lib_default514) {
+      return true;
+    }
+    if (FLG) {
+      return try2serialize_default(value);
+    }
+    return lib_default513(value) === "[object Boolean]";
+  }
+  return false;
+}
+var object_default = isBoolean2;
+
+function isBoolean3(value) {
+  return primitive_default(value) || object_default(value);
+}
+var main_default472 = isBoolean3;
+
+main_default472.isPrimitive = primitive_default;
+main_default472.isObject = object_default;
+var lib_default515 = main_default472;
+
+var isBoolean4 = lib_default515.isPrimitive;
+function getGlobal2(codegen) {
+  if (arguments.length) {
+    if (!isBoolean4(codegen)) {
+      throw new TypeError(lib_default510("invalid argument. Must provide a boolean. Value: `%s`.", codegen));
+    }
+    if (codegen) {
+      return codegen_default();
+    }
+  }
+  if (global_this_default) {
+    return global_this_default;
+  }
+  if (self_default) {
+    return self_default;
+  }
+  if (window_default) {
+    return window_default;
+  }
+  if (global_default) {
+    return global_default;
+  }
+  throw new Error("unexpected error. Unable to resolve global object.");
+}
+var main_default473 = getGlobal2;
+
+var lib_default516 = main_default473;
+
+var root = lib_default516();
+var nodeList = root.document && root.document.childNodes;
+var nodelist_default = nodeList;
+
+var typedarray = Int8Array;
+var typedarray_default = typedarray;
+
+function check() {
+  if (typeof re_default === "function" || typeof typedarray_default === "object" || typeof nodelist_default === "function") {
+    return true;
+  }
+  return false;
+}
+var check_default = check;
+
+var f;
+function isArray2(value) {
+  return lib_default513(value) === "[object Array]";
+}
+if (Array.isArray) {
+  f = Array.isArray;
+} else {
+  f = isArray2;
+}
+var main_default474 = f;
+
+var lib_default517 = main_default474;
+
+function arrayfcn(predicate) {
+  if (typeof predicate !== "function") {
+    throw new TypeError(lib_default510("invalid argument. Must provide a function. Value: `%s`.", predicate));
+  }
+  return every;
+  function every(value) {
+    var len;
+    var i;
+    if (!lib_default517(value)) {
+      return false;
+    }
+    len = value.length;
+    if (len === 0) {
+      return false;
+    }
+    for (i = 0; i < len; i++) {
+      if (predicate(value[i]) === false) {
+        return false;
+      }
+    }
+    return true;
+  }
+}
+var main_default475 = arrayfcn;
+
+var lib_default518 = main_default475;
+
+function isObjectLike(value) {
+  return value !== null && typeof value === "object";
+}
+var main_default476 = isObjectLike;
+
+var isObjectLikeArray = lib_default518(main_default476);
+main_default476.isObjectLikeArray = isObjectLikeArray;
+var lib_default519 = main_default476;
+
+function isBuffer(value) {
+  return lib_default519(value) && (value._isBuffer || // for envs missing Object.prototype.constructor (e.g., Safari 5-7)
+  value.constructor && typeof value.constructor.isBuffer === "function" && value.constructor.isBuffer(value));
+}
+var main_default477 = isBuffer;
+
+var lib_default520 = main_default477;
+
+function reFunctionName() {
+  return /^\s*function\s*([^(]*)/i;
+}
+var main_default478 = reFunctionName;
+
+var RE_FUNCTION_NAME = main_default478();
+var regexp_default = RE_FUNCTION_NAME;
+
+main_default478.REGEXP = regexp_default;
+var lib_default521 = main_default478;
+
+var RE3 = lib_default521.REGEXP;
+function constructorName(v) {
+  var match;
+  var name;
+  var ctor;
+  name = lib_default513(v).slice(8, -1);
+  if ((name === "Object" || name === "Error") && v.constructor) {
+    ctor = v.constructor;
+    if (typeof ctor.name === "string") {
+      return ctor.name;
+    }
+    match = RE3.exec(ctor.toString());
+    if (match) {
+      return match[1];
+    }
+  }
+  if (lib_default520(v)) {
+    return "Buffer";
+  }
+  return name;
+}
+var main_default479 = constructorName;
+
+var lib_default522 = main_default479;
+
+function typeOf(v) {
+  var type;
+  if (v === null) {
+    return "null";
+  }
+  type = typeof v;
+  if (type === "object") {
+    return lib_default522(v).toLowerCase();
+  }
+  return type;
+}
+var main_default480 = typeOf;
+
+function typeOf2(v) {
+  return lib_default522(v).toLowerCase();
+}
+var polyfill_default2 = typeOf2;
+
+var main2 = check_default() ? polyfill_default2 : main_default480;
+var lib_default523 = main2;
+
+function isFunction(value) {
+  return lib_default523(value) === "function";
+}
+var main_default481 = isFunction;
+
+var lib_default524 = main_default481;
+
+function identity(x) {
+  return x;
+}
+var main_default482 = identity;
+
+var lib_default525 = main_default482;
+
+function memoize(fcn, hashFunction) {
+  var toKey;
+  var cache;
+  if (!lib_default524(fcn)) {
+    throw new TypeError(lib_default510("invalid argument. First argument must be a function. Value: `%s`.", fcn));
+  }
+  if (arguments.length < 2) {
+    toKey = lib_default525;
+  } else {
+    toKey = hashFunction;
+    if (!lib_default524(toKey)) {
+      throw new TypeError(lib_default510("invalid argument. Hash function argument must be a function. Value: `%s`.", toKey));
+    }
+  }
+  cache = {};
+  memoized4.cache = cache;
+  return memoized4;
+  function memoized4() {
+    var args;
+    var out;
+    var key;
+    var i;
+    args = [];
+    for (i = 0; i < arguments.length; i++) {
+      args.push(arguments[i]);
+    }
+    key = toKey(args).toString();
+    if (lib_default511(cache, key)) {
+      return cache[key];
+    }
+    out = fcn.apply(null, args);
+    cache[key] = out;
+    return out;
+  }
+}
+var main_default483 = memoize;
+
+var lib_default526 = main_default483;
+
+var memoized;
+function weights(x, n) {
+  var mlim;
+  if (n === 0) {
+    return x === 0 ? 1 : 0;
+  }
+  mlim = n * (n + 1) / 2;
+  if (x < 0 || x > mlim) {
+    return 0;
+  }
+  if (x > mlim / 2) {
+    x = mlim - x;
+  }
+  return memoized(x - n, n - 1) + memoized(x, n - 1);
+}
+memoized = lib_default526(weights);
+var weights_default = memoized;
+
+function cdf31(x, n) {
+  var mlim;
+  var pui;
+  var i;
+  var p101;
+  if (lib_default(x) || !lib_default245(n) || !lib_default507(n)) {
+    return NaN;
+  }
+  if (x < 0) {
+    return 0;
+  }
+  x = lib_default53(x);
+  mlim = n * (n + 1) / 2;
+  if (x >= mlim) {
+    return 1;
+  }
+  pui = lib_default68(-n * lib_default16);
+  p101 = 0;
+  for (i = 0; i <= x; i++) {
+    p101 += weights_default(i, n) * pui;
+  }
+  return p101;
+}
+var main_default484 = cdf31;
+
+function factory156(n) {
+  var mlim;
+  var pui;
+  if (!lib_default245(n) || !lib_default507(n)) {
+    return lib_default6(NaN);
+  }
+  pui = lib_default68(-n * lib_default16);
+  mlim = n * (n + 1) / 2;
+  return cdf36;
+  function cdf36(x) {
+    var i;
+    var p101;
+    if (lib_default(x)) {
+      return NaN;
+    }
+    if (x < 0) {
+      return 0;
+    }
+    x = lib_default53(x);
+    if (x >= mlim) {
+      return 1;
+    }
+    p101 = 0;
+    for (i = 0; i <= x; i++) {
+      p101 += weights_default(i, n) * pui;
+    }
+    return p101;
+  }
+}
+var factory_default156 = factory156;
+
+main_default484.factory = factory_default156;
+var lib_default527 = main_default484;
+
+var memoized2;
+function weights2(x, n) {
+  var mlim;
+  if (n === 0) {
+    return x === 0 ? 1 : 0;
+  }
+  mlim = n * (n + 1) / 2;
+  if (x < 0 || x > mlim) {
+    return 0;
+  }
+  if (x > mlim / 2) {
+    x = mlim - x;
+  }
+  return memoized2(x - n, n - 1) + memoized2(x, n - 1);
+}
+memoized2 = lib_default526(weights2);
+var weights_default2 = memoized2;
+
+function pdf25(x, n) {
+  var mlim;
+  if (lib_default(x) || !lib_default245(n) || !lib_default507(n)) {
+    return NaN;
+  }
+  if (!lib_default24(x)) {
+    return 0;
+  }
+  mlim = n * (n + 1) / 2;
+  if (x < 0 || x > mlim) {
+    return 0;
+  }
+  return lib_default68(lib_default12(weights_default2(x, n)) - n * lib_default16);
+}
+var main_default485 = pdf25;
+
+function factory157(n) {
+  var mlim;
+  if (!lib_default245(n) || !lib_default507(n)) {
+    return lib_default6(NaN);
+  }
+  mlim = n * (n + 1) / 2;
+  return pdf30;
+  function pdf30(x) {
+    if (lib_default(x)) {
+      return NaN;
+    }
+    if (!lib_default24(x)) {
+      return 0;
+    }
+    if (x < 0 || x > mlim) {
+      return 0;
+    }
+    return lib_default68(lib_default12(weights_default2(x, n)) - n * lib_default16);
+  }
+}
+var factory_default157 = factory157;
+
+main_default485.factory = factory_default157;
+var lib_default528 = main_default485;
+
+var memoized3;
+function weights3(x, n) {
+  var mlim;
+  if (n === 0) {
+    return x === 0 ? 1 : 0;
+  }
+  mlim = n * (n + 1) / 2;
+  if (x < 0 || x > mlim) {
+    return 0;
+  }
+  if (x > mlim / 2) {
+    x = mlim - x;
+  }
+  return memoized3(x - n, n - 1) + memoized3(x, n - 1);
+}
+memoized3 = lib_default526(weights3);
+var weights_default3 = memoized3;
+
+function quantile31(p101, n) {
+  var pui;
+  var q;
+  var r;
+  if (lib_default(n) || !lib_default245(n) || !lib_default507(n)) {
+    return NaN;
+  }
+  if (lib_default(p101) || p101 < 0 || p101 > 1) {
+    return NaN;
+  }
+  if (p101 === 0) {
+    return 0;
+  }
+  if (p101 === 1) {
+    return n * (n + 1) / 2;
+  }
+  pui = lib_default68(-n * lib_default16);
+  r = 0;
+  q = -1;
+  while (r < p101) {
+    q += 1;
+    r += pui * weights_default3(q, n);
+  }
+  return q;
+}
+var main_default486 = quantile31;
+
+function factory158(n) {
+  var pui;
+  if (lib_default(n) || !lib_default245(n) || !lib_default507(n)) {
+    return lib_default6(NaN);
+  }
+  pui = lib_default68(-n * lib_default16);
+  return quantile35;
+  function quantile35(p101) {
+    var r;
+    var q;
+    if (lib_default(p101) || p101 < 0 || p101 > 1) {
+      return NaN;
+    }
+    if (p101 === 0) {
+      return 0;
+    }
+    if (p101 === 1) {
+      return n * (n + 1) / 2;
+    }
+    r = 0;
+    q = -1;
+    while (r < p101) {
+      q += 1;
+      r += pui * weights_default3(q, n);
+    }
+    return q;
+  }
+}
+var factory_default158 = factory158;
+
+main_default486.factory = factory_default158;
+var lib_default529 = main_default486;
+
+var weight_default = [
+  0.0176140071391521,
+  0.0406014298003869,
+  0.0626720483341091,
+  0.0832767415767048,
+  0.10193011981724,
+  0.118194531961518,
+  0.131688638449177,
+  0.142096109318382,
+  0.149172986472604,
+  0.152753387130726,
+  0.152753387130726,
+  0.149172986472604,
+  0.142096109318382,
+  0.131688638449177,
+  0.118194531961518,
+  0.10193011981724,
+  0.0832767415767048,
+  0.0626720483341091,
+  0.0406014298003869,
+  0.0176140071391521
+];
+
+var root_default = [
+  0.993128599185095,
+  0.963971927277914,
+  0.912234428251326,
+  0.839116971822219,
+  0.746331906460151,
+  0.636053680726515,
+  0.510867001950827,
+  0.37370608871542,
+  0.227785851141645,
+  0.0765265211334973,
+  -0.0765265211334973,
+  -0.227785851141645,
+  -0.37370608871542,
+  -0.510867001950827,
+  -0.636053680726515,
+  -0.746331906460151,
+  -0.839116971822219,
+  -0.912234428251326,
+  -0.963971927277914,
+  -0.993128599185095
+];
+
+var CUTOFF = 7.071;
+var p02 = 220.2068679123761;
+var p110 = 221.2135961699311;
+var p210 = 112.0792914978709;
+var p310 = 33.912866078383;
+var p410 = 6.37396220353165;
+var p510 = 0.7003830644436881;
+var p610 = 0.03526249659989109;
+var q0 = 440.4137358247522;
+var q1 = 793.8265125199484;
+var q2 = 637.3336333788311;
+var q3 = 296.5642487796737;
+var q4 = 86.78073220294608;
+var q5 = 16.06417757920695;
+var q6 = 1.755667163182642;
+var q7 = 0.08838834764831845;
+function apnorm(z) {
+  var expntl;
+  var zabs;
+  var pdf30;
+  var p101;
+  var q;
+  zabs = lib_default29(z);
+  if (zabs > 37) {
+    if (z > 0) {
+      p101 = 1;
+    } else {
+      p101 = 0;
+    }
+  } else {
+    expntl = lib_default68(-0.5 * zabs * zabs);
+    pdf30 = expntl / lib_default88;
+    if (zabs < CUTOFF) {
+      p101 = expntl * ((((((p610 * zabs + p510) * zabs + p410) * zabs + p310) * zabs + p210) * zabs + p110) * zabs + p02) / (((((((q7 * zabs + q6) * zabs + q5) * zabs + q4) * zabs + q3) * zabs + q2) * zabs + q1) * zabs + q0);
+    } else {
+      p101 = pdf30 / (zabs + 1 / (zabs + 2 / (zabs + 3 / (zabs + 4 / (zabs + 0.65)))));
+    }
+    if (z >= 0) {
+      q = p101;
+      p101 = 1 - q;
+    }
+  }
+  return p101;
+}
+var apnorm_default = apnorm;
+
+function fint(ww, yii, aii, bii, r) {
+  var yyi = (bii - aii) * yii + bii + aii;
+  var out = lib_default68(-yyi * yyi * 0.125);
+  out *= lib_default47(apnorm_default(yyi * 0.5) - apnorm_default((yyi - 2 * ww) * 0.5), r - 1);
+  return out;
+}
+function gaussLegreQuadrature(ww, aii, bii, r, a, b, n) {
+  var wsum = 0;
+  var c8 = (b - a) * 0.5;
+  var d8 = (b + a) * 0.5;
+  var j;
+  for (j = 0; j < n; j++) {
+    if (root_default[j] === 0) {
+      wsum += weight_default[j] * fint(ww, d8, aii, bii, r);
+    } else {
+      wsum += weight_default[j] * fint(ww, root_default[j] * c8 + d8, aii, bii, r);
+    }
+  }
+  return c8 * wsum;
+}
+function prangeVInf(w, r) {
+  var soma;
+  var ai;
+  var ii;
+  var bi;
+  var i;
+  var k;
+  if (w <= 0) {
+    return 0;
+  }
+  if (w <= 3) {
+    k = 3;
+  } else {
+    k = 2;
+  }
+  ai = w / 2;
+  ii = 1;
+  bi = ((k - ii) * (w / 2) + 8 * ii) / k;
+  soma = 0;
+  for (i = 1; i < lib_default53(k) + 1; i++) {
+    ii = i;
+    soma += (bi - ai) / 2 * gaussLegreQuadrature(w, ai, bi, r, -1, 1, 20);
+    ai = bi;
+    if (i + 1 === lib_default53(k)) {
+      bi = 8;
+    } else {
+      bi = ((k - ii - 1) * (w / 2) + 8 * (ii + 1)) / k;
+    }
+  }
+  soma *= 2 * r / lib_default2(2 * lib_default5);
+  soma += lib_default47(lib_default68(1), r * lib_default12(2 * apnorm_default(w / 2) - 1));
+  return soma;
+}
+var prange_v_inf_default = prangeVInf;
+
+function f26(q, za, aii, c8, r, v, l) {
+  var aux1;
+  var yyi;
+  var aux;
+  yyi = za * l + 2 * aii * l + l;
+  aux1 = prange_v_inf_default(lib_default2(yyi / 2) * q, r);
+  if (aux1 === 0) {
+    aux1 = 1e-37;
+  }
+  aux = c8 * lib_default12(aux1) + lib_default12(l) + v / 2 * lib_default12(v) + -yyi * v / 4 + (v / 2 - 1) * lib_default12(yyi) - (v * lib_default16 + lib_default98(v / 2));
+  if (lib_default29(aux) >= 1e30) {
+    return 0;
+  }
+  return lib_default68(aux);
+}
+var f26_default = f26;
+
+function gausslegdquad(q, aii, r, ci, a, b, n, v, l) {
+  var wsum = 0;
+  var cmm = (b - a) / 2;
+  var d8 = (b + a) / 2;
+  var j;
+  for (j = 0; j < n; j++) {
+    if (root_default[j] === 0) {
+      wsum += weight_default[j] * f26_default(q, d8, aii, ci, r, v, l);
+    } else {
+      wsum += weight_default[j] * f26_default(q, root_default[j] * cmm + d8, aii, ci, r, v, l);
+    }
+  }
+  return cmm * wsum;
+}
+var gausslegdquad_default = gausslegdquad;
+
+function isInteger2(value) {
+  return value < lib_default27 && value > lib_default11 && lib_default24(value);
+}
+var integer_default = isInteger2;
+
+function isNumber2(value) {
+  return typeof value === "number";
+}
+var primitive_default2 = isNumber2;
+
+var toString3 = Number.prototype.toString;
+var tostring_default3 = toString3;
+
+var toString4 = tostring_default3;
+function test2(value) {
+  try {
+    toString4.call(value);
+    return true;
+  } catch (err) {
+    return false;
+  }
+}
+var try2serialize_default2 = test2;
+
+var FLG2 = has_tostringtag_support_default();
+function isNumber3(value) {
+  if (typeof value === "object") {
+    if (value instanceof Number) {
+      return true;
+    }
+    if (FLG2) {
+      return try2serialize_default2(value);
+    }
+    return lib_default513(value) === "[object Number]";
+  }
+  return false;
+}
+var object_default2 = isNumber3;
+
+function isNumber4(value) {
+  return primitive_default2(value) || object_default2(value);
+}
+var main_default487 = isNumber4;
+
+main_default487.isPrimitive = primitive_default2;
+main_default487.isObject = object_default2;
+var lib_default530 = main_default487;
+
+var isNumber5 = lib_default530.isPrimitive;
+function isInteger3(value) {
+  return isNumber5(value) && integer_default(value);
+}
+var primitive_default3 = isInteger3;
+
+var isNumber6 = lib_default530.isObject;
+function isInteger4(value) {
+  return isNumber6(value) && integer_default(value.valueOf());
+}
+var object_default3 = isInteger4;
+
+function isInteger5(value) {
+  return primitive_default3(value) || object_default3(value);
+}
+var main_default488 = isInteger5;
+
+main_default488.isPrimitive = primitive_default3;
+main_default488.isObject = object_default3;
+var lib_default531 = main_default488;
+
+var isInteger6 = lib_default531.isPrimitive;
+function isPositiveInteger2(value) {
+  return isInteger6(value) && value > 0;
+}
+var primitive_default4 = isPositiveInteger2;
+
+var isInteger7 = lib_default531.isObject;
+function isPositiveInteger3(value) {
+  return isInteger7(value) && value.valueOf() > 0;
+}
+var object_default4 = isPositiveInteger3;
+
+function isPositiveInteger4(value) {
+  return primitive_default4(value) || object_default4(value);
+}
+var main_default489 = isPositiveInteger4;
+
+main_default489.isPrimitive = primitive_default4;
+main_default489.isObject = object_default4;
+var lib_default532 = main_default489;
+
+var isPositiveInteger5 = lib_default532.isPrimitive;
+var PRECISION = 1e-10;
+function cdf32(q, r, v, nranges) {
+  var probinic;
+  var auxprob;
+  var found;
+  var ll;
+  var a;
+  if (lib_default(q) || lib_default(r) || lib_default(v)) {
+    return NaN;
+  }
+  if (r < 2 || v < 2) {
+    return NaN;
+  }
+  if (nranges === void 0) {
+    nranges = 1;
+  } else if (!isPositiveInteger5(nranges)) {
+    return NaN;
+  }
+  if (v === 1) {
+    if (r < 10) {
+      ll = 1 + 1 / (2 * r + 3);
+    } else if (r <= 100) {
+      ll = 1.0844 + (1.119 - 1.0844) / 90 * (r - 10);
+    } else {
+      ll = 1.119 + 1 / r;
+    }
+  } else if (v === 2) {
+    ll = 0.968;
+  } else if (v <= 100) {
+    ll = 1;
+  } else if (v <= 800) {
+    ll = 1 / 2;
+  } else if (v <= 5e3) {
+    ll = 1 / 4;
+  } else {
+    ll = 1 / 8;
+  }
+  if (q < 0) {
+    return 0;
+  }
+  if (q === lib_default27) {
+    return 1;
+  }
+  if (v > 25e3 || gausslegdquad_default(q, 0, r, nranges, -1, 1, 20, v, ll) === 0) {
+    return lib_default47(prange_v_inf_default(q, r), nranges);
+  }
+  auxprob = 0;
+  found = false;
+  a = 0;
+  probinic = 0;
+  while (!found) {
+    auxprob += gausslegdquad_default(q, a, r, nranges, -1, 1, 20, v, ll);
+    if (auxprob > 1) {
+      return 1;
+    }
+    if (lib_default29(auxprob - probinic) / auxprob <= PRECISION) {
+      found = true;
+    } else {
+      probinic = auxprob;
+    }
+    a += 1;
+  }
+  return auxprob;
+}
+var main_default490 = cdf32;
+
+var isPositiveInteger6 = lib_default532.isPrimitive;
+var PRECISION2 = 1e-10;
+function factory159(r, v, nranges) {
+  var ll;
+  if (lib_default(v) || lib_default(r) || r < 2 || v < 2) {
+    return lib_default6(NaN);
+  }
+  if (nranges === void 0) {
+    nranges = 1;
+  } else if (!isPositiveInteger6(nranges)) {
+    return lib_default6(NaN);
+  }
+  if (v === 1) {
+    if (r < 10) {
+      ll = 1 + 1 / (2 * r + 3);
+    } else if (r <= 100) {
+      ll = 1.0844 + (1.119 - 1.0844) / 90 * (r - 10);
+    } else {
+      ll = 1.119 + 1 / r;
+    }
+  } else if (v === 2) {
+    ll = 0.968;
+  } else if (v <= 100) {
+    ll = 1;
+  } else if (v <= 800) {
+    ll = 1 / 2;
+  } else if (v <= 5e3) {
+    ll = 1 / 4;
+  } else {
+    ll = 1 / 8;
+  }
+  return cdf36;
+  function cdf36(q) {
+    var probinic;
+    var auxprob;
+    var found;
+    var a;
+    if (lib_default(q)) {
+      return NaN;
+    }
+    if (q < 0) {
+      return 0;
+    }
+    if (q === lib_default27) {
+      return 1;
+    }
+    if (v > 25e3 || gausslegdquad_default(q, 0, r, nranges, -1, 1, 20, v, ll) === 0) {
+      return lib_default47(prange_v_inf_default(q, r), nranges);
+    }
+    auxprob = 0;
+    found = false;
+    a = 0;
+    probinic = 0;
+    while (!found) {
+      auxprob += gausslegdquad_default(q, a, r, nranges, -1, 1, 20, v, ll);
+      if (auxprob > 1) {
+        return 1;
+      }
+      if (lib_default29(auxprob - probinic) / auxprob <= PRECISION2) {
+        found = true;
+      } else {
+        probinic = auxprob;
+      }
+      a += 1;
+    }
+    return auxprob;
+  }
+}
+var factory_default159 = factory159;
+
+main_default490.factory = factory_default159;
+var lib_default533 = main_default490;
+
+var a0 = 3.3871328727963665;
+var a1 = 133.14166789178438;
+var a2 = 1971.5909503065513;
+var a3 = 13731.69376550946;
+var a4 = 45921.95393154987;
+var a5 = 67265.7709270087;
+var a6 = 33430.57558358813;
+var a7 = 2509.0809287301227;
+var b1 = 42.31333070160091;
+var b2 = 687.1870074920579;
+var b3 = 5394.196021424751;
+var b4 = 21213.794301586597;
+var b5 = 39307.89580009271;
+var b6 = 28729.085735721943;
+var b7 = 5226.495278852854;
+var c02 = 1.4234371107496835;
+var c1 = 4.630337846156546;
+var c2 = 5.769497221460691;
+var c3 = 3.6478483247632045;
+var c4 = 1.2704582524523684;
+var c5 = 0.2417807251774506;
+var c6 = 0.022723844989269184;
+var c7 = 7745450142783414e-19;
+var d1 = 2.053191626637759;
+var d2 = 1.6763848301838038;
+var d3 = 0.6897673349851;
+var d4 = 0.14810397642748008;
+var d5 = 0.015198666563616457;
+var d6 = 5475938084995345e-19;
+var d7 = 10507500716444169e-25;
+var e0 = 6.657904643501103;
+var e1 = 5.463784911164114;
+var e2 = 1.7848265399172913;
+var e3 = 0.29656057182850487;
+var e4 = 0.026532189526576124;
+var e5 = 0.0012426609473880784;
+var e6 = 27115555687434876e-21;
+var e7 = 20103343992922881e-23;
+var f1 = 0.599832206555888;
+var f2 = 0.1369298809227358;
+var f3 = 0.014875361290850615;
+var f4 = 7868691311456133e-19;
+var f5 = 18463183175100548e-21;
+var f6 = 1421511758316446e-22;
+var f7 = 20442631033899397e-31;
+function apnorminv(p101) {
+  var ppnd;
+  var q;
+  var r;
+  q = p101 - 0.5;
+  if (lib_default29(q) <= 0.425) {
+    r = 0.180625 - q * q;
+    ppnd = q * (((((((a7 * r + a6) * r + a5) * r + a4) * r + a3) * r + a2) * r + a1) * r + a0) / (((((((b7 * r + b6) * r + b5) * r + b4) * r + b3) * r + b2) * r + b1) * r + 1);
+  } else {
+    if (q < 0) {
+      r = p101;
+    } else {
+      r = 1 - p101;
+    }
+    if (r <= 0) {
+      ppnd = 0;
+    } else {
+      r = lib_default2(-lib_default12(r));
+      if (r <= 5) {
+        r -= 1.6;
+        ppnd = (((((((c7 * r + c6) * r + c5) * r + c4) * r + c3) * r + c2) * r + c1) * r + c02) / (((((((d7 * r + d6) * r + d5) * r + d4) * r + d3) * r + d2) * r + d1) * r + 1);
+      } else {
+        r -= 5;
+        ppnd = (((((((e7 * r + e6) * r + e5) * r + e4) * r + e3) * r + e2) * r + e1) * r + e0) / (((((((f7 * r + f6) * r + f5) * r + f4) * r + f3) * r + f2) * r + f1) * r + 1);
+      }
+      if (q < 0) {
+        ppnd = -ppnd;
+      }
+    }
+  }
+  return ppnd;
+}
+var apnorminv_default = apnorminv;
+
+var VMAX = 120;
+var c12 = 0.8843;
+var c22 = 0.2368;
+var c32 = 1.214;
+var c42 = 1.208;
+var c52 = 1.4142;
+function qtrngo(p101, v, r) {
+  var q;
+  var t;
+  t = apnorminv_default(0.5 + 0.5 * p101);
+  if (v < VMAX) {
+    t += (t * t * t + t) / v / 4;
+  }
+  q = c12 - c22 * t;
+  if (v < VMAX) {
+    q -= c32 / v + c42 * t / v;
+  }
+  return t * (q * lib_default12(r - 1) + c52);
+}
+var qtrngo_default = qtrngo;
+
+var isPositiveInteger7 = lib_default532.isPrimitive;
+var PCUT = 1e-8;
+var JMAX = 28;
+function qrange(p101, r, v, nranges) {
+  var aux;
+  var e12;
+  var e22;
+  var q12;
+  var q22;
+  var p111;
+  var p211;
+  var j;
+  if (lib_default(r) || lib_default(v) || r < 2 || v < 2) {
+    return NaN;
+  }
+  if (lib_default(p101) || p101 < 0 || p101 > 1) {
+    return NaN;
+  }
+  if (p101 === 0) {
+    return 0;
+  }
+  if (p101 === 1) {
+    return lib_default27;
+  }
+  if (arguments.length < 4) {
+    nranges = 1;
+  } else if (!isPositiveInteger7(nranges)) {
+    return NaN;
+  }
+  q12 = qtrngo_default(p101, v, r);
+  while (true) {
+    p111 = lib_default533(q12, r, v, nranges);
+    if (p111 > p101) {
+      q12 -= 0.4;
+    }
+    if (q12 < 0) {
+      q12 = 0.1;
+    }
+    if (p111 < p101) {
+      break;
+    }
+  }
+  aux = q12;
+  if (lib_default29(p111 - p101) < PCUT) {
+    return NaN;
+  }
+  q22 = q12 + 0.5;
+  while (true) {
+    p211 = lib_default533(q22, r, v, nranges);
+    if (p211 < p101) {
+      q22 += 0.4;
+    }
+    if (q22 < 0) {
+      q22 = 1;
+    }
+    if (p211 > p101) {
+      break;
+    }
+  }
+  if (q22 < q12) {
+    q22 = q12 + 0.01;
+  }
+  j = 2;
+  while (j <= JMAX) {
+    p211 = lib_default533(q22, r, v, nranges);
+    e12 = p111 - p101;
+    e22 = p211 - p101;
+    if (e22 - e12 !== 0) {
+      aux = (e22 * q12 - e12 * q22) / (e22 - e12);
+    }
+    if (lib_default29(e12) < lib_default29(e22)) {
+      if (lib_default29(p111 - p101) < PCUT * 5) {
+        j = JMAX + 2;
+      }
+      q12 = aux;
+      p111 = lib_default533(q12, r, v, nranges);
+    } else {
+      q12 = q22;
+      p111 = p211;
+      q22 = aux;
+    }
+    j += 1;
+  }
+  return aux;
+}
+var main_default491 = qrange;
+
+var isPositiveInteger8 = lib_default532.isPrimitive;
+var PCUT2 = 1e-8;
+var JMAX2 = 28;
+function factory160(r, v, nranges) {
+  if (lib_default(r) || lib_default(v) || r < 2 || v < 2) {
+    return lib_default6(NaN);
+  }
+  if (arguments.length < 3) {
+    nranges = 1;
+  } else if (!isPositiveInteger8(nranges)) {
+    return lib_default6(NaN);
+  }
+  return quantile35;
+  function quantile35(p101) {
+    var aux;
+    var e12;
+    var e22;
+    var q12;
+    var q22;
+    var p111;
+    var p211;
+    var j;
+    if (lib_default(p101) || p101 < 0 || p101 > 1) {
+      return NaN;
+    }
+    if (p101 === 0) {
+      return 0;
+    }
+    if (p101 === 1) {
+      return lib_default27;
+    }
+    q12 = qtrngo_default(p101, v, r);
+    while (true) {
+      p111 = lib_default533(q12, r, v, nranges);
+      if (p111 > p101) {
+        q12 -= 0.4;
+      }
+      if (q12 < 0) {
+        q12 = 0.1;
+      }
+      if (p111 < p101) {
+        break;
+      }
+    }
+    aux = q12;
+    if (lib_default29(p111 - p101) < PCUT2) {
+      return NaN;
+    }
+    q22 = q12 + 0.5;
+    while (true) {
+      p211 = lib_default533(q22, r, v, nranges);
+      if (p211 < p101) {
+        q22 += 0.4;
+      }
+      if (q22 < 0) {
+        q22 = 1;
+      }
+      if (p211 > p101) {
+        break;
+      }
+    }
+    if (q22 < q12) {
+      q22 = q12 + 0.01;
+    }
+    j = 2;
+    while (j <= JMAX2) {
+      p211 = lib_default533(q22, r, v, nranges);
+      e12 = p111 - p101;
+      e22 = p211 - p101;
+      if (e22 - e12 !== 0) {
+        aux = (e22 * q12 - e12 * q22) / (e22 - e12);
+      }
+      if (lib_default29(e12) < lib_default29(e22)) {
+        if (lib_default29(p111 - p101) < PCUT2 * 5) {
+          j = JMAX2 + 2;
+        }
+        q12 = aux;
+        p111 = lib_default533(q12, r, v, nranges);
+      } else {
+        q12 = q22;
+        p111 = p211;
+        q22 = aux;
+      }
+      j += 1;
+    }
+    return aux;
+  }
+}
+var factory_default160 = factory160;
+
+main_default491.factory = factory_default160;
+var lib_default534 = main_default491;
+
+function cdf33(x, v) {
   var x2;
   var p101;
   var z;
@@ -16737,14 +18386,14 @@ function cdf31(x, v) {
   }
   return x > 0 ? 1 - p101 : p101;
 }
-var main_default464 = cdf31;
+var main_default492 = cdf33;
 
-function factory156(v) {
+function factory161(v) {
   if (lib_default(v) || v <= 0) {
     return lib_default6(NaN);
   }
-  return cdf34;
-  function cdf34(x) {
+  return cdf36;
+  function cdf36(x) {
     var x2;
     var p101;
     var z;
@@ -16765,10 +18414,10 @@ function factory156(v) {
     return x > 0 ? 1 - p101 : p101;
   }
 }
-var factory_default156 = factory156;
+var factory_default161 = factory161;
 
-main_default464.factory = factory_default156;
-var lib_default507 = main_default464;
+main_default492.factory = factory_default161;
+var lib_default535 = main_default492;
 
 function entropy28(v) {
   var out;
@@ -16782,9 +18431,9 @@ function entropy28(v) {
   out += lib_default12(lib_default2(v) * lib_default81(vh, 0.5));
   return out;
 }
-var main_default465 = entropy28;
+var main_default493 = entropy28;
 
-var lib_default508 = main_default465;
+var lib_default536 = main_default493;
 
 function kurtosis27(v) {
   if (lib_default(v) || v <= 2) {
@@ -16795,9 +18444,9 @@ function kurtosis27(v) {
   }
   return 6 / (v - 4);
 }
-var main_default466 = kurtosis27;
+var main_default494 = kurtosis27;
 
-var lib_default509 = main_default466;
+var lib_default537 = main_default494;
 
 function logcdf21(x, v) {
   var x2;
@@ -16819,9 +18468,9 @@ function logcdf21(x, v) {
   }
   return x > 0 ? lib_default78(-p101) : lib_default12(p101);
 }
-var main_default467 = logcdf21;
+var main_default495 = logcdf21;
 
-function factory157(v) {
+function factory162(v) {
   if (lib_default(v) || v <= 0) {
     return lib_default6(NaN);
   }
@@ -16847,10 +18496,10 @@ function factory157(v) {
     return x > 0 ? lib_default78(-p101) : lib_default12(p101);
   }
 }
-var factory_default157 = factory157;
+var factory_default162 = factory162;
 
-main_default467.factory = factory_default157;
-var lib_default510 = main_default467;
+main_default495.factory = factory_default162;
+var lib_default538 = main_default495;
 
 function logpdf24(x, v) {
   var betaTerm;
@@ -16860,9 +18509,9 @@ function logpdf24(x, v) {
   betaTerm = lib_default12(lib_default2(v)) + lib_default126(v / 2, 0.5);
   return (1 + v) / 2 * lib_default12(v / (v + lib_default47(x, 2))) - betaTerm;
 }
-var main_default468 = logpdf24;
+var main_default496 = logpdf24;
 
-function factory158(v) {
+function factory163(v) {
   var exponent2;
   var betaTerm;
   if (lib_default(v) || v <= 0) {
@@ -16878,10 +18527,10 @@ function factory158(v) {
     return exponent2 * lib_default12(v / (v + lib_default47(x, 2))) - betaTerm;
   }
 }
-var factory_default158 = factory158;
+var factory_default163 = factory163;
 
-main_default468.factory = factory_default158;
-var lib_default511 = main_default468;
+main_default496.factory = factory_default163;
+var lib_default539 = main_default496;
 
 function mean31(v) {
   if (lib_default(v) || v <= 1) {
@@ -16889,9 +18538,9 @@ function mean31(v) {
   }
   return 0;
 }
-var main_default469 = mean31;
+var main_default497 = mean31;
 
-var lib_default512 = main_default469;
+var lib_default540 = main_default497;
 
 function median24(v) {
   if (lib_default(v) || v < 0) {
@@ -16899,9 +18548,9 @@ function median24(v) {
   }
   return 0;
 }
-var main_default470 = median24;
+var main_default498 = median24;
 
-var lib_default513 = main_default470;
+var lib_default541 = main_default498;
 
 function mode32(v) {
   if (lib_default(v) || v < 0) {
@@ -16909,11 +18558,11 @@ function mode32(v) {
   }
   return 0;
 }
-var main_default471 = mode32;
+var main_default499 = mode32;
 
-var lib_default514 = main_default471;
+var lib_default542 = main_default499;
 
-function pdf25(x, v) {
+function pdf26(x, v) {
   var betaTerm;
   if (lib_default(x) || lib_default(v) || v <= 0) {
     return NaN;
@@ -16921,9 +18570,9 @@ function pdf25(x, v) {
   betaTerm = lib_default2(v) * lib_default81(v / 2, 0.5);
   return lib_default47(v / (v + lib_default47(x, 2)), (1 + v) / 2) / betaTerm;
 }
-var main_default472 = pdf25;
+var main_default500 = pdf26;
 
-function factory159(v) {
+function factory164(v) {
   var exponent2;
   var betaTerm;
   if (lib_default(v) || v <= 0) {
@@ -16931,20 +18580,20 @@ function factory159(v) {
   }
   betaTerm = lib_default2(v) * lib_default81(v / 2, 0.5);
   exponent2 = (1 + v) / 2;
-  return pdf29;
-  function pdf29(x) {
+  return pdf30;
+  function pdf30(x) {
     if (lib_default(x)) {
       return NaN;
     }
     return lib_default47(v / (v + lib_default47(x, 2)), exponent2) / betaTerm;
   }
 }
-var factory_default159 = factory159;
+var factory_default164 = factory164;
 
-main_default472.factory = factory_default159;
-var lib_default515 = main_default472;
+main_default500.factory = factory_default164;
+var lib_default543 = main_default500;
 
-function quantile31(p101, v) {
+function quantile32(p101, v) {
   var prob;
   var xs;
   if (lib_default(v) || lib_default(p101) || v <= 0 || p101 < 0 || p101 > 1) {
@@ -16954,14 +18603,14 @@ function quantile31(p101, v) {
   xs = lib_default139(v / 2, 0.5, 2 * prob, 1 - 2 * prob);
   return lib_default135(p101 - 0.5) * lib_default2(v * xs[1] / xs[0]);
 }
-var main_default473 = quantile31;
+var main_default501 = quantile32;
 
-function factory160(v) {
+function factory165(v) {
   if (lib_default(v) || v <= 0) {
     return lib_default6(NaN);
   }
-  return quantile34;
-  function quantile34(p101) {
+  return quantile35;
+  function quantile35(p101) {
     var prob;
     var xs;
     if (lib_default(p101) || p101 < 0 || p101 > 1) {
@@ -16972,10 +18621,10 @@ function factory160(v) {
     return lib_default135(p101 - 0.5) * lib_default2(v * xs[1] / xs[0]);
   }
 }
-var factory_default160 = factory160;
+var factory_default165 = factory165;
 
-main_default473.factory = factory_default160;
-var lib_default516 = main_default473;
+main_default501.factory = factory_default165;
+var lib_default544 = main_default501;
 
 function skewness27(v) {
   if (lib_default(v) || v <= 3) {
@@ -16983,9 +18632,9 @@ function skewness27(v) {
   }
   return 0;
 }
-var main_default474 = skewness27;
+var main_default502 = skewness27;
 
-var lib_default517 = main_default474;
+var lib_default545 = main_default502;
 
 function variance29(v) {
   if (lib_default(v) || v <= 1) {
@@ -16996,101 +18645,101 @@ function variance29(v) {
   }
   return v / (v - 2);
 }
-var main_default475 = variance29;
+var main_default503 = variance29;
 
-var lib_default518 = main_default475;
+var lib_default546 = main_default503;
 
 function stdev30(v) {
-  return lib_default2(lib_default518(v));
+  return lib_default2(lib_default546(v));
 }
-var main_default476 = stdev30;
+var main_default504 = stdev30;
 
-var lib_default519 = main_default476;
+var lib_default547 = main_default504;
 
-function entropy29(a, b, c2) {
-  if (lib_default(a) || lib_default(b) || lib_default(c2) || !(a <= c2 && c2 <= b)) {
+function entropy29(a, b, c8) {
+  if (lib_default(a) || lib_default(b) || lib_default(c8) || !(a <= c8 && c8 <= b)) {
     return NaN;
   }
   return 0.5 + lib_default12(0.5 * (b - a));
 }
-var main_default477 = entropy29;
+var main_default505 = entropy29;
 
-var lib_default520 = main_default477;
+var lib_default548 = main_default505;
 
-function kurtosis28(a, b, c2) {
-  if (lib_default(a) || lib_default(b) || lib_default(c2) || !(a <= c2 && c2 <= b)) {
+function kurtosis28(a, b, c8) {
+  if (lib_default(a) || lib_default(b) || lib_default(c8) || !(a <= c8 && c8 <= b)) {
     return NaN;
   }
   return -0.6;
 }
-var main_default478 = kurtosis28;
+var main_default506 = kurtosis28;
 
-var lib_default521 = main_default478;
+var lib_default549 = main_default506;
 
-function mean32(a, b, c2) {
-  if (lib_default(a) || lib_default(b) || lib_default(c2) || !(a <= c2 && c2 <= b)) {
+function mean32(a, b, c8) {
+  if (lib_default(a) || lib_default(b) || lib_default(c8) || !(a <= c8 && c8 <= b)) {
     return NaN;
   }
-  return (a + b + c2) / 3;
+  return (a + b + c8) / 3;
 }
-var main_default479 = mean32;
+var main_default507 = mean32;
 
-var lib_default522 = main_default479;
+var lib_default550 = main_default507;
 
-function median25(a, b, c2) {
-  if (lib_default(a) || lib_default(b) || lib_default(c2) || !(a <= c2 && c2 <= b)) {
+function median25(a, b, c8) {
+  if (lib_default(a) || lib_default(b) || lib_default(c8) || !(a <= c8 && c8 <= b)) {
     return NaN;
   }
-  if (c2 >= (a + b) / 2) {
-    return a + lib_default2(0.5 * (b - a) * (c2 - a));
+  if (c8 >= (a + b) / 2) {
+    return a + lib_default2(0.5 * (b - a) * (c8 - a));
   }
-  return b - lib_default2(0.5 * (b - a) * (b - c2));
+  return b - lib_default2(0.5 * (b - a) * (b - c8));
 }
-var main_default480 = median25;
+var main_default508 = median25;
 
-var lib_default523 = main_default480;
+var lib_default551 = main_default508;
 
-function mode33(a, b, c2) {
-  if (lib_default(a) || lib_default(b) || lib_default(c2) || !(a <= c2 && c2 <= b)) {
+function mode33(a, b, c8) {
+  if (lib_default(a) || lib_default(b) || lib_default(c8) || !(a <= c8 && c8 <= b)) {
     return NaN;
   }
-  return c2;
+  return c8;
 }
-var main_default481 = mode33;
+var main_default509 = mode33;
 
-var lib_default524 = main_default481;
+var lib_default552 = main_default509;
 
-function skewness28(a, b, c2) {
+function skewness28(a, b, c8) {
   var out;
-  if (lib_default(a) || lib_default(b) || lib_default(c2) || !(a <= c2 && c2 <= b)) {
+  if (lib_default(a) || lib_default(b) || lib_default(c8) || !(a <= c8 && c8 <= b)) {
     return NaN;
   }
-  out = lib_default134 * (a + b - 2 * c2) * (2 * a - b - c2) * (a - 2 * b + c2);
-  out /= 5 * lib_default47(a * a + b * b + c2 * c2 - a * b - a * c2 - b * c2, 1.5);
+  out = lib_default134 * (a + b - 2 * c8) * (2 * a - b - c8) * (a - 2 * b + c8);
+  out /= 5 * lib_default47(a * a + b * b + c8 * c8 - a * b - a * c8 - b * c8, 1.5);
   return out;
 }
-var main_default482 = skewness28;
+var main_default510 = skewness28;
 
-var lib_default525 = main_default482;
+var lib_default553 = main_default510;
 
-function variance30(a, b, c2) {
-  if (lib_default(a) || lib_default(b) || lib_default(c2) || !(a <= c2 && c2 <= b)) {
+function variance30(a, b, c8) {
+  if (lib_default(a) || lib_default(b) || lib_default(c8) || !(a <= c8 && c8 <= b)) {
     return NaN;
   }
-  return (a * a + b * b + c2 * c2 - a * b - a * c2 - b * c2) / 18;
+  return (a * a + b * b + c8 * c8 - a * b - a * c8 - b * c8) / 18;
 }
-var main_default483 = variance30;
+var main_default511 = variance30;
 
-var lib_default526 = main_default483;
+var lib_default554 = main_default511;
 
-function stdev31(a, b, c2) {
-  return lib_default2(lib_default526(a, b, c2));
+function stdev31(a, b, c8) {
+  return lib_default2(lib_default554(a, b, c8));
 }
-var main_default484 = stdev31;
+var main_default512 = stdev31;
 
-var lib_default527 = main_default484;
+var lib_default555 = main_default512;
 
-function cdf32(x, a, b) {
+function cdf34(x, a, b) {
   if (lib_default(x) || lib_default(a) || lib_default(b) || a >= b) {
     return NaN;
   }
@@ -17102,14 +18751,14 @@ function cdf32(x, a, b) {
   }
   return (x - a) / (b - a);
 }
-var main_default485 = cdf32;
+var main_default513 = cdf34;
 
-function factory161(a, b) {
+function factory166(a, b) {
   if (lib_default(a) || lib_default(b) || a >= b) {
     return lib_default6(NaN);
   }
-  return cdf34;
-  function cdf34(x) {
+  return cdf36;
+  function cdf36(x) {
     if (lib_default(x)) {
       return NaN;
     }
@@ -17122,10 +18771,10 @@ function factory161(a, b) {
     return (x - a) / (b - a);
   }
 }
-var factory_default161 = factory161;
+var factory_default166 = factory166;
 
-main_default485.factory = factory_default161;
-var lib_default528 = main_default485;
+main_default513.factory = factory_default166;
+var lib_default556 = main_default513;
 
 function entropy30(a, b) {
   if (a >= b) {
@@ -17133,9 +18782,9 @@ function entropy30(a, b) {
   }
   return lib_default12(b - a);
 }
-var main_default486 = entropy30;
+var main_default514 = entropy30;
 
-var lib_default529 = main_default486;
+var lib_default557 = main_default514;
 
 function kurtosis29(a, b) {
   if (lib_default(a) || lib_default(b) || a >= b) {
@@ -17143,9 +18792,9 @@ function kurtosis29(a, b) {
   }
   return -1.2;
 }
-var main_default487 = kurtosis29;
+var main_default515 = kurtosis29;
 
-var lib_default530 = main_default487;
+var lib_default558 = main_default515;
 
 function logcdf22(x, a, b) {
   if (lib_default(x) || lib_default(a) || lib_default(b) || a >= b) {
@@ -17159,9 +18808,9 @@ function logcdf22(x, a, b) {
   }
   return lib_default12((x - a) / (b - a));
 }
-var main_default488 = logcdf22;
+var main_default516 = logcdf22;
 
-function factory162(a, b) {
+function factory167(a, b) {
   if (lib_default(a) || lib_default(b) || a >= b) {
     return lib_default6(NaN);
   }
@@ -17179,10 +18828,10 @@ function factory162(a, b) {
     return lib_default12((x - a) / (b - a));
   }
 }
-var factory_default162 = factory162;
+var factory_default167 = factory167;
 
-main_default488.factory = factory_default162;
-var lib_default531 = main_default488;
+main_default516.factory = factory_default167;
+var lib_default559 = main_default516;
 
 function logpdf25(x, a, b) {
   if (lib_default(x) || lib_default(a) || lib_default(b) || a >= b) {
@@ -17193,9 +18842,9 @@ function logpdf25(x, a, b) {
   }
   return -lib_default12(b - a);
 }
-var main_default489 = logpdf25;
+var main_default517 = logpdf25;
 
-function factory163(a, b) {
+function factory168(a, b) {
   if (lib_default(a) || lib_default(b) || a >= b) {
     return lib_default6(NaN);
   }
@@ -17210,10 +18859,10 @@ function factory163(a, b) {
     return -lib_default12(b - a);
   }
 }
-var factory_default163 = factory163;
+var factory_default168 = factory168;
 
-main_default489.factory = factory_default163;
-var lib_default532 = main_default489;
+main_default517.factory = factory_default168;
+var lib_default560 = main_default517;
 
 function mean33(a, b) {
   if (a >= b) {
@@ -17221,9 +18870,9 @@ function mean33(a, b) {
   }
   return 0.5 * (a + b);
 }
-var main_default490 = mean33;
+var main_default518 = mean33;
 
-var lib_default533 = main_default490;
+var lib_default561 = main_default518;
 
 function median26(a, b) {
   if (a >= b) {
@@ -17231,9 +18880,9 @@ function median26(a, b) {
   }
   return 0.5 * (a + b);
 }
-var main_default491 = median26;
+var main_default519 = median26;
 
-var lib_default534 = main_default491;
+var lib_default562 = main_default519;
 
 function mgf19(t, a, b) {
   var ret;
@@ -17247,9 +18896,9 @@ function mgf19(t, a, b) {
   ret /= t * (b - a);
   return ret;
 }
-var main_default492 = mgf19;
+var main_default520 = mgf19;
 
-function factory164(a, b) {
+function factory169(a, b) {
   if (lib_default(a) || lib_default(b) || a >= b) {
     return lib_default6(NaN);
   }
@@ -17267,12 +18916,12 @@ function factory164(a, b) {
     return ret;
   }
 }
-var factory_default164 = factory164;
+var factory_default169 = factory169;
 
-main_default492.factory = factory_default164;
-var lib_default535 = main_default492;
+main_default520.factory = factory_default169;
+var lib_default563 = main_default520;
 
-function pdf26(x, a, b) {
+function pdf27(x, a, b) {
   if (lib_default(x) || lib_default(a) || lib_default(b) || a >= b) {
     return NaN;
   }
@@ -17281,14 +18930,14 @@ function pdf26(x, a, b) {
   }
   return 1 / (b - a);
 }
-var main_default493 = pdf26;
+var main_default521 = pdf27;
 
-function factory165(a, b) {
+function factory170(a, b) {
   if (lib_default(a) || lib_default(b) || a >= b) {
     return lib_default6(NaN);
   }
-  return pdf29;
-  function pdf29(x) {
+  return pdf30;
+  function pdf30(x) {
     if (lib_default(x)) {
       return NaN;
     }
@@ -17298,12 +18947,12 @@ function factory165(a, b) {
     return 1 / (b - a);
   }
 }
-var factory_default165 = factory165;
+var factory_default170 = factory170;
 
-main_default493.factory = factory_default165;
-var lib_default536 = main_default493;
+main_default521.factory = factory_default170;
+var lib_default564 = main_default521;
 
-function quantile32(p101, a, b) {
+function quantile33(p101, a, b) {
   if (lib_default(a) || lib_default(b) || a >= b) {
     return NaN;
   }
@@ -17312,24 +18961,24 @@ function quantile32(p101, a, b) {
   }
   return a + p101 * (b - a);
 }
-var main_default494 = quantile32;
+var main_default522 = quantile33;
 
-function factory166(a, b) {
+function factory171(a, b) {
   if (lib_default(a) || lib_default(b) || a >= b) {
     return lib_default6(NaN);
   }
-  return quantile34;
-  function quantile34(p101) {
+  return quantile35;
+  function quantile35(p101) {
     if (lib_default(p101) || p101 < 0 || p101 > 1) {
       return NaN;
     }
     return a + p101 * (b - a);
   }
 }
-var factory_default166 = factory166;
+var factory_default171 = factory171;
 
-main_default494.factory = factory_default166;
-var lib_default537 = main_default494;
+main_default522.factory = factory_default171;
+var lib_default565 = main_default522;
 
 function skewness29(a, b) {
   if (lib_default(a) || lib_default(b) || a >= b) {
@@ -17337,9 +18986,9 @@ function skewness29(a, b) {
   }
   return 0;
 }
-var main_default495 = skewness29;
+var main_default523 = skewness29;
 
-var lib_default538 = main_default495;
+var lib_default566 = main_default523;
 
 var SQRT1O122 = 0.28867513459481287;
 function stdev32(a, b) {
@@ -17348,9 +18997,9 @@ function stdev32(a, b) {
   }
   return SQRT1O122 * (b - a);
 }
-var main_default496 = stdev32;
+var main_default524 = stdev32;
 
-var lib_default539 = main_default496;
+var lib_default567 = main_default524;
 
 function variance31(a, b) {
   if (a >= b) {
@@ -17358,9 +19007,9 @@ function variance31(a, b) {
   }
   return 1 / 12 * lib_default47(b - a, 2);
 }
-var main_default497 = variance31;
+var main_default525 = variance31;
 
-var lib_default540 = main_default497;
+var lib_default568 = main_default525;
 
 function kurtosis30(mu, lambda) {
   if (lib_default(mu) || lib_default(lambda) || mu <= 0 || lambda <= 0) {
@@ -17368,9 +19017,9 @@ function kurtosis30(mu, lambda) {
   }
   return 15 * mu / lambda;
 }
-var main_default498 = kurtosis30;
+var main_default526 = kurtosis30;
 
-var lib_default541 = main_default498;
+var lib_default569 = main_default526;
 
 function mean34(mu, lambda) {
   if (lib_default(mu) || lib_default(lambda) || lambda <= 0 || mu <= 0) {
@@ -17378,9 +19027,9 @@ function mean34(mu, lambda) {
   }
   return mu;
 }
-var main_default499 = mean34;
+var main_default527 = mean34;
 
-var lib_default542 = main_default499;
+var lib_default570 = main_default527;
 
 function mode34(mu, lambda) {
   var r;
@@ -17392,11 +19041,11 @@ function mode34(mu, lambda) {
   v = 1.5 * r;
   return mu * (lib_default2(1 + v * v) - v);
 }
-var main_default500 = mode34;
+var main_default528 = mode34;
 
-var lib_default543 = main_default500;
+var lib_default571 = main_default528;
 
-function pdf27(x, mu, lambda) {
+function pdf28(x, mu, lambda) {
   var A2;
   var B;
   var v;
@@ -17414,10 +19063,10 @@ function pdf27(x, mu, lambda) {
   v = x - mu;
   return A2 / (x * lib_default2(x)) * lib_default68(B * v * v / x);
 }
-var main_default501 = pdf27;
+var main_default529 = pdf28;
 
 var degenerate35 = lib_default190.factory;
-function factory167(mu, lambda) {
+function factory172(mu, lambda) {
   var A2;
   var B;
   if (lib_default(mu) || lib_default(lambda) || mu <= 0 || lambda < 0) {
@@ -17428,8 +19077,8 @@ function factory167(mu, lambda) {
   }
   A2 = lib_default2(lambda / lib_default107);
   B = -lambda / (2 * mu * mu);
-  return pdf29;
-  function pdf29(x) {
+  return pdf30;
+  function pdf30(x) {
     var v;
     if (lib_default(x)) {
       return NaN;
@@ -17441,10 +19090,10 @@ function factory167(mu, lambda) {
     return A2 / (x * lib_default2(x)) * lib_default68(B * v * v / x);
   }
 }
-var factory_default167 = factory167;
+var factory_default172 = factory172;
 
-main_default501.factory = factory_default167;
-var lib_default544 = main_default501;
+main_default529.factory = factory_default172;
+var lib_default572 = main_default529;
 
 function skewness30(mu, lambda) {
   if (lib_default(mu) || lib_default(lambda) || mu <= 0 || lambda <= 0) {
@@ -17452,9 +19101,9 @@ function skewness30(mu, lambda) {
   }
   return 3 * lib_default2(mu / lambda);
 }
-var main_default502 = skewness30;
+var main_default530 = skewness30;
 
-var lib_default545 = main_default502;
+var lib_default573 = main_default530;
 
 function variance32(mu, lambda) {
   if (lib_default(mu) || lib_default(lambda) || mu <= 0 || lambda <= 0) {
@@ -17462,11 +19111,11 @@ function variance32(mu, lambda) {
   }
   return mu * mu * mu / lambda;
 }
-var main_default503 = variance32;
+var main_default531 = variance32;
 
-var lib_default546 = main_default503;
+var lib_default574 = main_default531;
 
-function cdf33(x, k, lambda) {
+function cdf35(x, k, lambda) {
   if (lib_default(x) || lib_default(k) || lib_default(lambda) || k <= 0 || lambda <= 0) {
     return NaN;
   }
@@ -17475,14 +19124,14 @@ function cdf33(x, k, lambda) {
   }
   return -lib_default77(-lib_default47(x / lambda, k));
 }
-var main_default504 = cdf33;
+var main_default532 = cdf35;
 
-function factory168(k, lambda) {
+function factory173(k, lambda) {
   if (lib_default(k) || lib_default(lambda) || k <= 0 || lambda <= 0) {
     return lib_default6(NaN);
   }
-  return cdf34;
-  function cdf34(x) {
+  return cdf36;
+  function cdf36(x) {
     if (lib_default(x)) {
       return NaN;
     }
@@ -17492,10 +19141,10 @@ function factory168(k, lambda) {
     return -lib_default77(-lib_default47(x / lambda, k));
   }
 }
-var factory_default168 = factory168;
+var factory_default173 = factory173;
 
-main_default504.factory = factory_default168;
-var lib_default547 = main_default504;
+main_default532.factory = factory_default173;
+var lib_default575 = main_default532;
 
 function entropy31(k, lambda) {
   if (lib_default(k) || lib_default(lambda) || k <= 0 || lambda <= 0) {
@@ -17503,9 +19152,9 @@ function entropy31(k, lambda) {
   }
   return lib_default89 * (1 - 1 / k) + lib_default12(lambda / k) + 1;
 }
-var main_default505 = entropy31;
+var main_default533 = entropy31;
 
-var lib_default548 = main_default505;
+var lib_default576 = main_default533;
 
 function kurtosis31(k, lambda) {
   var out;
@@ -17524,9 +19173,9 @@ function kurtosis31(k, lambda) {
   out /= lib_default47(g2 - g1 * g1, 2);
   return out;
 }
-var main_default506 = kurtosis31;
+var main_default534 = kurtosis31;
 
-var lib_default549 = main_default506;
+var lib_default577 = main_default534;
 
 function logcdf23(x, k, lambda) {
   var p101;
@@ -17539,9 +19188,9 @@ function logcdf23(x, k, lambda) {
   p101 = -lib_default47(x / lambda, k);
   return p101 < lib_default372 ? lib_default78(-lib_default68(p101)) : lib_default12(-lib_default77(p101));
 }
-var main_default507 = logcdf23;
+var main_default535 = logcdf23;
 
-function factory169(k, lambda) {
+function factory174(k, lambda) {
   if (lib_default(k) || lib_default(lambda) || k <= 0 || lambda <= 0) {
     return lib_default6(NaN);
   }
@@ -17558,10 +19207,10 @@ function factory169(k, lambda) {
     return p101 < lib_default372 ? lib_default78(-lib_default68(p101)) : lib_default12(-lib_default77(p101));
   }
 }
-var factory_default169 = factory169;
+var factory_default174 = factory174;
 
-main_default507.factory = factory_default169;
-var lib_default550 = main_default507;
+main_default535.factory = factory_default174;
+var lib_default578 = main_default535;
 
 function logpdf26(x, k, lambda) {
   var xol;
@@ -17580,9 +19229,9 @@ function logpdf26(x, k, lambda) {
   xol = x / lambda;
   return lib_default12(k / lambda) + (k - 1) * lib_default12(xol) - lib_default47(xol, k);
 }
-var main_default508 = logpdf26;
+var main_default536 = logpdf26;
 
-function factory170(k, lambda) {
+function factory175(k, lambda) {
   var lnkl;
   if (lib_default(k) || lib_default(lambda) || k <= 0 || lambda <= 0) {
     return lib_default6(NaN);
@@ -17604,10 +19253,10 @@ function factory170(k, lambda) {
     return lnkl + (k - 1) * lib_default12(xol) - lib_default47(xol, k);
   }
 }
-var factory_default170 = factory170;
+var factory_default175 = factory175;
 
-main_default508.factory = factory_default170;
-var lib_default551 = main_default508;
+main_default536.factory = factory_default175;
+var lib_default579 = main_default536;
 
 function mean35(k, lambda) {
   if (lib_default(k) || lib_default(lambda) || k <= 0 || lambda <= 0) {
@@ -17615,9 +19264,9 @@ function mean35(k, lambda) {
   }
   return lambda * lib_default90(1 + 1 / k);
 }
-var main_default509 = mean35;
+var main_default537 = mean35;
 
-var lib_default552 = main_default509;
+var lib_default580 = main_default537;
 
 function median27(k, lambda) {
   if (lib_default(k) || lib_default(lambda) || k <= 0 || lambda <= 0) {
@@ -17625,36 +19274,36 @@ function median27(k, lambda) {
   }
   return lambda * lib_default47(lib_default16, 1 / k);
 }
-var main_default510 = median27;
+var main_default538 = median27;
 
-var lib_default553 = main_default510;
+var lib_default581 = main_default538;
 
 function mgf20(t, k, lambda) {
   var summand;
   var sum2;
-  var c2;
+  var c8;
   var n;
   if (lib_default(t) || lib_default(k) || lib_default(lambda) || k <= 0 || lambda <= 0) {
     return NaN;
   }
   sum2 = 1;
-  c2 = 1;
+  c8 = 1;
   n = 0;
   do {
     n += 1;
-    c2 *= t * lambda / n;
-    if (c2 === 0) {
+    c8 *= t * lambda / n;
+    if (c8 === 0) {
       summand = 0;
     } else {
-      summand = c2 * lib_default90(1 + n / k);
+      summand = c8 * lib_default90(1 + n / k);
     }
     sum2 += summand;
   } while (summand / sum2 > lib_default80);
   return sum2;
 }
-var main_default511 = mgf20;
+var main_default539 = mgf20;
 
-function factory171(k, lambda) {
+function factory176(k, lambda) {
   if (lib_default(k) || lib_default(lambda) || k <= 0 || lambda <= 0) {
     return lib_default6(NaN);
   }
@@ -17662,31 +19311,31 @@ function factory171(k, lambda) {
   function mgf21(t) {
     var summand;
     var sum2;
-    var c2;
+    var c8;
     var n;
     if (lib_default(t)) {
       return NaN;
     }
     sum2 = 1;
-    c2 = 1;
+    c8 = 1;
     n = 0;
     do {
       n += 1;
-      c2 *= t * lambda / n;
-      if (c2 === 0) {
+      c8 *= t * lambda / n;
+      if (c8 === 0) {
         summand = 0;
       } else {
-        summand = c2 * lib_default90(1 + n / k);
+        summand = c8 * lib_default90(1 + n / k);
       }
       sum2 += summand;
     } while (summand / sum2 > lib_default80);
     return sum2;
   }
 }
-var factory_default171 = factory171;
+var factory_default176 = factory176;
 
-main_default511.factory = factory_default171;
-var lib_default554 = main_default511;
+main_default539.factory = factory_default176;
+var lib_default582 = main_default539;
 
 function mode35(k, lambda) {
   if (lib_default(k) || lib_default(lambda) || k <= 0 || lambda <= 0) {
@@ -17697,11 +19346,11 @@ function mode35(k, lambda) {
   }
   return lambda * lib_default47((k - 1) / k, 1 / k);
 }
-var main_default512 = mode35;
+var main_default540 = mode35;
 
-var lib_default555 = main_default512;
+var lib_default583 = main_default540;
 
-function pdf28(x, k, lambda) {
+function pdf29(x, k, lambda) {
   var xol;
   var z;
   if (lib_default(k) || lib_default(lambda) || k <= 0 || lambda <= 0) {
@@ -17720,14 +19369,14 @@ function pdf28(x, k, lambda) {
   z = lib_default47(xol, k - 1);
   return k / lambda * z * lib_default68(-lib_default47(xol, k));
 }
-var main_default513 = pdf28;
+var main_default541 = pdf29;
 
-function factory172(k, lambda) {
+function factory177(k, lambda) {
   if (lib_default(k) || lib_default(lambda) || k <= 0 || lambda <= 0) {
     return lib_default6(NaN);
   }
-  return pdf29;
-  function pdf29(x) {
+  return pdf30;
+  function pdf30(x) {
     var xol;
     var z;
     if (x < 0) {
@@ -17744,47 +19393,47 @@ function factory172(k, lambda) {
     return k / lambda * z * lib_default68(-lib_default47(xol, k));
   }
 }
-var factory_default172 = factory172;
+var factory_default177 = factory177;
 
-main_default513.factory = factory_default172;
-var lib_default556 = main_default513;
+main_default541.factory = factory_default177;
+var lib_default584 = main_default541;
 
-function quantile33(p101, k, lambda) {
+function quantile34(p101, k, lambda) {
   if (lib_default(k) || lib_default(lambda) || lib_default(p101) || k <= 0 || lambda <= 0 || p101 < 0 || p101 > 1) {
     return NaN;
   }
   return lambda * lib_default47(-lib_default12(1 - p101), 1 / k);
 }
-var main_default514 = quantile33;
+var main_default542 = quantile34;
 
-function factory173(k, lambda) {
+function factory178(k, lambda) {
   if (lib_default(k) || lib_default(lambda) || k <= 0 || lambda <= 0) {
     return lib_default6(NaN);
   }
-  return quantile34;
-  function quantile34(p101) {
+  return quantile35;
+  function quantile35(p101) {
     if (lib_default(p101) || p101 < 0 || p101 > 1) {
       return NaN;
     }
     return lambda * lib_default47(-lib_default12(1 - p101), 1 / k);
   }
 }
-var factory_default173 = factory173;
+var factory_default178 = factory178;
 
-main_default514.factory = factory_default173;
-var lib_default557 = main_default514;
+main_default542.factory = factory_default178;
+var lib_default585 = main_default542;
 
 function variance33(k, lambda) {
   var mu;
   if (lib_default(k) || lib_default(lambda) || k <= 0 || lambda <= 0) {
     return NaN;
   }
-  mu = lib_default552(k, lambda);
+  mu = lib_default580(k, lambda);
   return lambda * lambda * lib_default90(1 + 2 / k) - mu * mu;
 }
-var main_default515 = variance33;
+var main_default543 = variance33;
 
-var lib_default558 = main_default515;
+var lib_default586 = main_default543;
 
 function skewness31(k, lambda) {
   var sigma2;
@@ -17794,17 +19443,17 @@ function skewness31(k, lambda) {
   if (lib_default(k) || lib_default(lambda) || k <= 0 || lambda <= 0) {
     return NaN;
   }
-  mu = lib_default552(k, lambda);
-  sigma2 = lib_default558(k, lambda);
+  mu = lib_default580(k, lambda);
+  sigma2 = lib_default586(k, lambda);
   sigma = lib_default2(sigma2);
   out = lib_default90(1 + 3 / k) * lib_default47(lambda, 3);
   out -= 3 * mu * sigma2 + lib_default47(mu, 3);
   out /= lib_default47(sigma, 3);
   return out;
 }
-var main_default516 = skewness31;
+var main_default544 = skewness31;
 
-var lib_default559 = main_default516;
+var lib_default587 = main_default544;
 
 function stdev33(k, lambda) {
   var g1k;
@@ -17814,11 +19463,11 @@ function stdev33(k, lambda) {
   g1k = lib_default90(1 + 1 / k);
   return lambda * lib_default2(lib_default90(1 + 2 / k) - g1k * g1k);
 }
-var main_default517 = stdev33;
+var main_default545 = stdev33;
 
-var lib_default560 = main_default517;
+var lib_default588 = main_default545;
 
-const N_FN = 426
+const N_FN = 431
 const N_EVAL = 1 << 12
 const N_RUNS = 21
 const N_WARMUP = 5
@@ -18567,114 +20216,124 @@ const k369 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = li
 const k370 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default505(0.05 + u[i] * (0.95 - 0.05)) }
 // dists/rayleigh/variance
 const k371 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default506(0.05 + u[i] * (0.95 - 0.05)) }
+// dists/signrank/cdf
+const k372 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default527(0.05 + u[i] * (0.95 - 0.05), 3) }
+// dists/signrank/pdf
+const k373 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default528(0.05 + u[i] * (0.95 - 0.05), 3) }
+// dists/signrank/quantile
+const k374 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default529(0.05 + u[i] * (0.95 - 0.05), 3) }
+// dists/studentized-range/cdf
+const k375 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default533(0.05 + u[i] * (0.95 - 0.05), 20, 10, 5) }
+// dists/studentized-range/quantile
+const k376 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default534(0.05 + u[i] * (0.95 - 0.05), 20, 10, 5) }
 // dists/t/cdf
-const k372 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default507(0.05 + u[i] * (0.95 - 0.05), 2.5) }
+const k377 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default535(0.05 + u[i] * (0.95 - 0.05), 2.5) }
 // dists/t/entropy
-const k373 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default508(0.05 + u[i] * (0.95 - 0.05)) }
+const k378 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default536(0.05 + u[i] * (0.95 - 0.05)) }
 // dists/t/kurtosis
-const k374 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default509(1 + u[i] * (100 - 1)) }
+const k379 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default537(1 + u[i] * (100 - 1)) }
 // dists/t/logcdf
-const k375 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default510(0.05 + u[i] * (0.95 - 0.05), 2.5) }
+const k380 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default538(0.05 + u[i] * (0.95 - 0.05), 2.5) }
 // dists/t/logpdf
-const k376 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default511(0.05 + u[i] * (0.95 - 0.05), 2.5) }
+const k381 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default539(0.05 + u[i] * (0.95 - 0.05), 2.5) }
 // dists/t/mean
-const k377 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default512(1.5 + u[i] * (20 - 1.5)) }
+const k382 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default540(1.5 + u[i] * (20 - 1.5)) }
 // dists/t/median
-const k378 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default513(0.05 + u[i] * (0.95 - 0.05)) }
+const k383 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default541(0.05 + u[i] * (0.95 - 0.05)) }
 // dists/t/mode
-const k379 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default514(0.05 + u[i] * (0.95 - 0.05)) }
+const k384 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default542(0.05 + u[i] * (0.95 - 0.05)) }
 // dists/t/pdf
-const k380 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default515(0.05 + u[i] * (0.95 - 0.05), 2.5) }
+const k385 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default543(0.05 + u[i] * (0.95 - 0.05), 2.5) }
 // dists/t/quantile
-const k381 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default516(0.05 + u[i] * (0.95 - 0.05), 2.5) }
+const k386 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default544(0.05 + u[i] * (0.95 - 0.05), 2.5) }
 // dists/t/skewness
-const k382 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default517(1.5 + u[i] * (20 - 1.5)) }
+const k387 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default545(1.5 + u[i] * (20 - 1.5)) }
 // dists/t/stdev
-const k383 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default519(1.5 + u[i] * (20 - 1.5)) }
+const k388 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default547(1.5 + u[i] * (20 - 1.5)) }
 // dists/t/variance
-const k384 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default518(1.5 + u[i] * (20 - 1.5)) }
+const k389 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default546(1.5 + u[i] * (20 - 1.5)) }
 // dists/triangular/entropy
-const k385 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default520(0.05 + u[i] * (0.95 - 0.05), 2.5, 1.5) }
+const k390 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default548(0.05 + u[i] * (0.95 - 0.05), 2.5, 1.5) }
 // dists/triangular/kurtosis
-const k386 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default521(0.05 + u[i] * (0.95 - 0.05), 2.5, 1.5) }
+const k391 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default549(0.05 + u[i] * (0.95 - 0.05), 2.5, 1.5) }
 // dists/triangular/mean
-const k387 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default522(0.05 + u[i] * (0.95 - 0.05), 2.5, 1.5) }
+const k392 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default550(0.05 + u[i] * (0.95 - 0.05), 2.5, 1.5) }
 // dists/triangular/median
-const k388 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default523(0.05 + u[i] * (0.95 - 0.05), 2.5, 1.5) }
+const k393 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default551(0.05 + u[i] * (0.95 - 0.05), 2.5, 1.5) }
 // dists/triangular/mode
-const k389 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default524(0.05 + u[i] * (0.95 - 0.05), 2.5, 1.5) }
+const k394 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default552(0.05 + u[i] * (0.95 - 0.05), 2.5, 1.5) }
 // dists/triangular/skewness
-const k390 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default525(0.05 + u[i] * (0.95 - 0.05), 2.5, 1.5) }
+const k395 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default553(0.05 + u[i] * (0.95 - 0.05), 2.5, 1.5) }
 // dists/triangular/stdev
-const k391 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default527(0.05 + u[i] * (0.95 - 0.05), 2.5, 1.5) }
+const k396 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default555(0.05 + u[i] * (0.95 - 0.05), 2.5, 1.5) }
 // dists/triangular/variance
-const k392 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default526(0.05 + u[i] * (0.95 - 0.05), 2.5, 1.5) }
+const k397 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default554(0.05 + u[i] * (0.95 - 0.05), 2.5, 1.5) }
 // dists/uniform/cdf
-const k393 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default528(0.05 + u[i] * (0.95 - 0.05), -1.5, 2.5) }
+const k398 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default556(0.05 + u[i] * (0.95 - 0.05), -1.5, 2.5) }
 // dists/uniform/entropy
-const k394 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default529(0.05 + u[i] * (0.95 - 0.05), 2.5) }
+const k399 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default557(0.05 + u[i] * (0.95 - 0.05), 2.5) }
 // dists/uniform/kurtosis
-const k395 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default530(0.05 + u[i] * (0.95 - 0.05), 2.5) }
+const k400 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default558(0.05 + u[i] * (0.95 - 0.05), 2.5) }
 // dists/uniform/logcdf
-const k396 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default531(0.05 + u[i] * (0.95 - 0.05), -1.5, 2.5) }
+const k401 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default559(0.05 + u[i] * (0.95 - 0.05), -1.5, 2.5) }
 // dists/uniform/logpdf
-const k397 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default532(0.05 + u[i] * (0.95 - 0.05), -1.5, 2.5) }
+const k402 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default560(0.05 + u[i] * (0.95 - 0.05), -1.5, 2.5) }
 // dists/uniform/mean
-const k398 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default533(0.05 + u[i] * (0.95 - 0.05), 2.5) }
+const k403 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default561(0.05 + u[i] * (0.95 - 0.05), 2.5) }
 // dists/uniform/median
-const k399 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default534(0.05 + u[i] * (0.95 - 0.05), 2.5) }
+const k404 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default562(0.05 + u[i] * (0.95 - 0.05), 2.5) }
 // dists/uniform/mgf
-const k400 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default535(0.05 + u[i] * (0.95 - 0.05), -1.5, 2.5) }
+const k405 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default563(0.05 + u[i] * (0.95 - 0.05), -1.5, 2.5) }
 // dists/uniform/pdf
-const k401 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default536(0.05 + u[i] * (0.95 - 0.05), -1.5, 2.5) }
+const k406 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default564(0.05 + u[i] * (0.95 - 0.05), -1.5, 2.5) }
 // dists/uniform/quantile
-const k402 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default537(0.05 + u[i] * (0.95 - 0.05), -1.5, 2.5) }
+const k407 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default565(0.05 + u[i] * (0.95 - 0.05), -1.5, 2.5) }
 // dists/uniform/skewness
-const k403 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default538(0.05 + u[i] * (0.95 - 0.05), 2.5) }
+const k408 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default566(0.05 + u[i] * (0.95 - 0.05), 2.5) }
 // dists/uniform/stdev
-const k404 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default539(0.05 + u[i] * (0.95 - 0.05), 2.5) }
+const k409 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default567(0.05 + u[i] * (0.95 - 0.05), 2.5) }
 // dists/uniform/variance
-const k405 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default540(0.05 + u[i] * (0.95 - 0.05), 2.5) }
+const k410 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default568(0.05 + u[i] * (0.95 - 0.05), 2.5) }
 // dists/wald/kurtosis
-const k406 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default541(0.05 + u[i] * (0.95 - 0.05), 2.5) }
+const k411 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default569(0.05 + u[i] * (0.95 - 0.05), 2.5) }
 // dists/wald/mean
-const k407 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default542(0.05 + u[i] * (0.95 - 0.05), 2.5) }
+const k412 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default570(0.05 + u[i] * (0.95 - 0.05), 2.5) }
 // dists/wald/mode
-const k408 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default543(0.05 + u[i] * (0.95 - 0.05), 2.5) }
+const k413 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default571(0.05 + u[i] * (0.95 - 0.05), 2.5) }
 // dists/wald/pdf
-const k409 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default544(0.05 + u[i] * (0.95 - 0.05), 2.5, 1.5) }
+const k414 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default572(0.05 + u[i] * (0.95 - 0.05), 2.5, 1.5) }
 // dists/wald/skewness
-const k410 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default545(0.05 + u[i] * (0.95 - 0.05), 2.5) }
+const k415 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default573(0.05 + u[i] * (0.95 - 0.05), 2.5) }
 // dists/wald/variance
-const k411 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default546(0.05 + u[i] * (0.95 - 0.05), 2.5) }
+const k416 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default574(0.05 + u[i] * (0.95 - 0.05), 2.5) }
 // dists/weibull/cdf
-const k412 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default547(0.05 + u[i] * (0.95 - 0.05), 2.5, 1.5) }
+const k417 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default575(0.05 + u[i] * (0.95 - 0.05), 2.5, 1.5) }
 // dists/weibull/entropy
-const k413 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default548(0.05 + u[i] * (0.95 - 0.05), 2.5) }
+const k418 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default576(0.05 + u[i] * (0.95 - 0.05), 2.5) }
 // dists/weibull/kurtosis
-const k414 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default549(0.05 + u[i] * (0.95 - 0.05), 2.5) }
+const k419 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default577(0.05 + u[i] * (0.95 - 0.05), 2.5) }
 // dists/weibull/logcdf
-const k415 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default550(0.05 + u[i] * (0.95 - 0.05), 2.5, 1.5) }
+const k420 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default578(0.05 + u[i] * (0.95 - 0.05), 2.5, 1.5) }
 // dists/weibull/logpdf
-const k416 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default551(0.05 + u[i] * (0.95 - 0.05), 2.5, 1.5) }
+const k421 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default579(0.05 + u[i] * (0.95 - 0.05), 2.5, 1.5) }
 // dists/weibull/mean
-const k417 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default552(0.05 + u[i] * (0.95 - 0.05), 2.5) }
+const k422 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default580(0.05 + u[i] * (0.95 - 0.05), 2.5) }
 // dists/weibull/median
-const k418 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default553(0.05 + u[i] * (0.95 - 0.05), 2.5) }
+const k423 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default581(0.05 + u[i] * (0.95 - 0.05), 2.5) }
 // dists/weibull/mgf
-const k419 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default554(0.05 + u[i] * (0.95 - 0.05), 2.5, 1.5) }
+const k424 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default582(0.05 + u[i] * (0.95 - 0.05), 2.5, 1.5) }
 // dists/weibull/mode
-const k420 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default555(0.05 + u[i] * (0.95 - 0.05), 2.5) }
+const k425 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default583(0.05 + u[i] * (0.95 - 0.05), 2.5) }
 // dists/weibull/pdf
-const k421 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default556(0.05 + u[i] * (0.95 - 0.05), 2.5, 1.5) }
+const k426 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default584(0.05 + u[i] * (0.95 - 0.05), 2.5, 1.5) }
 // dists/weibull/quantile
-const k422 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default557(0.05 + u[i] * (0.95 - 0.05), 2.5, 1.5) }
+const k427 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default585(0.05 + u[i] * (0.95 - 0.05), 2.5, 1.5) }
 // dists/weibull/skewness
-const k423 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default559(0.05 + u[i] * (0.95 - 0.05), 2.5) }
+const k428 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default587(0.05 + u[i] * (0.95 - 0.05), 2.5) }
 // dists/weibull/stdev
-const k424 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default560(0.05 + u[i] * (0.95 - 0.05), 2.5) }
+const k429 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default588(0.05 + u[i] * (0.95 - 0.05), 2.5) }
 // dists/weibull/variance
-const k425 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default558(0.05 + u[i] * (0.95 - 0.05), 2.5) }
+const k430 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default586(0.05 + u[i] * (0.95 - 0.05), 2.5) }
 
 const sweep = (u, out) => {
   k0(u, out, 0 * N_EVAL)
@@ -19103,6 +20762,11 @@ const sweep = (u, out) => {
   k423(u, out, 423 * N_EVAL)
   k424(u, out, 424 * N_EVAL)
   k425(u, out, 425 * N_EVAL)
+  k426(u, out, 426 * N_EVAL)
+  k427(u, out, 427 * N_EVAL)
+  k428(u, out, 428 * N_EVAL)
+  k429(u, out, 429 * N_EVAL)
+  k430(u, out, 430 * N_EVAL)
 }
 
 // XorShift32, uniform in [0, 1): deterministic per target.
