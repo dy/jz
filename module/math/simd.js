@@ -8,60 +8,62 @@
  * back-reference from math.js: every consumer of these WAT functions
  * reaches them by name (src/optimize/vectorize.js's PPC_CALL2 lifts), never
  * a JS symbol, so this file is a pure one-way leaf off math/trig-tables.js
- * (needs its own local helpers splat/horner2/reduce2/signClamp — used only
- * here – plus the shared SIN_C/COS_C/EXP2_Q/EXP_Q/PI/INV_PI coefficients math.js's
- * scalar kernels also use).
+ * (its own local helpers splat/i64s/horner2 – used only here – plus the
+ * shared reduction constants and coefficients math.js's scalar kernels use).
  *
  * @module math/simd
  */
 import { wat } from '../../src/bridge.js'
 import { ctx } from '../../src/ctx.js'
-import { PI, INV_PI, SIN_C, COS_C, LOG_C, EXP2_Q, EXP_Q, EXP_L1, EXP_L2, POW_LN2HI, POW_LN2LO, POW_LOG_A, polyTree } from './trig-tables.js'
+import { PIO2_CW, INV_PIO2, ROUND_MAGIC, CW_LIMIT, SIN_C, COS_C, LOG_C, EXP2_Q, EXP_Q, EXP_L1, EXP_L2, POW_LN2HI, POW_LN2LO, POW_LOG_A, polyTree } from './trig-tables.js'
 
 export const registerMathSimd = () => {
   const crPow = !!ctx.transform.optimize?.crPow
 
-  // ── f64x2 SIMD sin/cos — both lanes through one polynomial ───────────────────
-  // The scalar sin_core/cos_core algorithm lifted to two f64 lanes: same
-  // round-to-nearest π reduction, same minimax poly (SIN_C/COS_C), same quadrant
-  // parity — but every branch becomes branchless so two independent angles cost one
-  // evaluation. A kernel computing sin and cos of distinct args (rotations, de Jong /
-  // Clifford maps, oscillator banks) packs them two-per-vector and ≈halves trig cost.
-  //   • Both reduction passes run unconditionally: for an in-range r the second pass'
-  //     q2 = nearest(r/π) = 0, so it's an exact no-op — no per-lane branch needed, and
-  //     it still rescues |x| up to ~1e15 just like the scalar's gated pass.
-  //   • NaN and ±∞ fall out as NaN through the arithmetic (∞ − ∞·π = NaN); a v128 lane
-  //     is raw f64, not a NaN-box, so the canonical-NaN guard the scalar needs is moot.
-  //   • Sign flip for odd quadrants is `r XOR (mask & −0.0)` (mask = |q|>0.5); final
-  //     min/max clamps the ~1e-8 poly overshoot to [−1,1], same as scalar.
+  // ── f64x2 sin/cos: both lanes through the scalar kernel's operations ─────────
+  // $math.sin/$math.cos (module/math.js) two lanes wide: the same Cody–Waite reduction,
+  // each lane taking sin(r) or cos(r) by its quadrant's parity and the sign by its
+  // second bit (an xor into the sign bit).
+  // Every lane is bit-identical with the scalar kernel. A lane past 2^24, NaN or
+  // infinite sends both lanes to the scalar kernel (Payne–Hanek, the NaN).
   const splat = (c) => `(f64x2.splat (f64.const ${c}))`
-  // The shared evaluation tree in 2-wide WAT — bit-exact with the scalar builder
+  const i64s = (v) => `(i64x2.splat (i64.const ${v}))`
+  // The shared evaluation tree in 2-wide WAT: bit-exact with the scalar builder
   // and the JS folder because all three walk the same tree (trig-tables.js).
-  const horner2 = (cs, v = '$r2') => polyTree(cs, {
+  const horner2 = (cs, v = '$z') => polyTree(cs, {
     konst: splat,
     mul: (a, b) => `(f64x2.mul ${a} ${b})`,
     add: (a, b) => `(f64x2.add ${a} ${b})`,
   }, `(local.get ${v})`)
-  // Shared reduce → r ∈ [−π/2,π/2] in $r, quadrant parity in $q (branchless, 2 passes).
-  const reduce2 = `
-    (local.set $q (f64x2.nearest (f64x2.mul (local.get $x) ${splat(INV_PI)})))
-    (local.set $r (f64x2.sub (local.get $x) (f64x2.mul (local.get $q) ${splat(PI)})))
-    (local.set $q2 (f64x2.nearest (f64x2.mul (local.get $r) ${splat(INV_PI)})))
-    (local.set $r (f64x2.sub (local.get $r) (f64x2.mul (local.get $q2) ${splat(PI)})))
-    (local.set $q (f64x2.add (local.get $q) (local.get $q2)))
-    (local.set $q (f64x2.sub (local.get $q) (f64x2.mul ${splat(2)} (f64x2.nearest (f64x2.mul (local.get $q) ${splat(0.5)})))))
-    (local.set $r2 (f64x2.mul (local.get $r) (local.get $r)))`
-  // r XOR (|q|>0.5 ? −0.0 : 0), then clamp to [−1,1].
-  const signClamp = `
-    (local.set $r (v128.xor (local.get $r)
-      (v128.and (f64x2.gt (f64x2.abs (local.get $q)) ${splat(0.5)}) ${splat('-0.0')})))
-    (f64x2.min (f64x2.max (local.get $r) ${splat(-1)}) ${splat(1)})`
-  wat('math.sin2', `(func $math.sin2 (param $x v128) (result v128)
-    (local $q v128) (local $q2 v128) (local $r v128) (local $r2 v128)${reduce2}
-    (local.set $r (f64x2.mul (local.get $r) ${horner2(SIN_C)}))${signClamp})`)
-  wat('math.cos2', `(func $math.cos2 (param $x v128) (result v128)
-    (local $q v128) (local $q2 v128) (local $r v128) (local $r2 v128)${reduce2}
-    (local.set $r ${horner2(COS_C)})${signClamp})`)
+  const [H1, H2, H3, H4] = PIO2_CW
+  // $t holds x·2/π + ROUND_MAGIC, whose low bits are each lane's quadrant; cos is the next quadrant
+  const trig2 = (name, next) => wat(`math.${name}2`, `(func $math.${name}2 (param $x v128) (result v128)
+    (local $t v128) (local $n v128) (local $r v128) (local $z v128) (local $odd v128)
+    (if (result v128) (i64x2.all_true (f64x2.lt (f64x2.abs (local.get $x)) ${splat(CW_LIMIT)}))
+      (then
+        (local.set $t (f64x2.add (f64x2.mul (local.get $x) ${splat(INV_PIO2)}) ${splat(ROUND_MAGIC)}))
+        (local.set $n (f64x2.sub (local.get $t) ${splat(ROUND_MAGIC)}))
+        (local.set $r (f64x2.sub (f64x2.sub (f64x2.sub (f64x2.sub (local.get $x)
+          (f64x2.mul (local.get $n) ${splat(H1)})) (f64x2.mul (local.get $n) ${splat(H2)}))
+          (f64x2.mul (local.get $n) ${splat(H3)})) (f64x2.mul (local.get $n) ${splat(H4)})))${next ? `
+        (local.set $t (i64x2.add (local.get $t) ${i64s(1)}))` : ''}
+        (local.set $z (f64x2.mul (local.get $r) (local.get $r)))
+        ;; odd lanes take the cosine: one kernel where the lanes' parities agree (a phase's
+        ;; neighbouring samples mostly share a quadrant), both and a bitselect where not
+        (local.set $odd (i64x2.ne (v128.and (local.get $t) ${i64s(1)}) ${i64s(0)}))
+        (v128.xor
+          (if (result v128) (i64x2.all_true (local.get $odd))
+            (then ${horner2(COS_C)})
+            (else (if (result v128) (v128.any_true (local.get $odd))
+              (then (v128.bitselect ${horner2(COS_C)} (f64x2.mul (local.get $r) ${horner2(SIN_C)}) (local.get $odd)))
+              (else (f64x2.mul (local.get $r) ${horner2(SIN_C)})))))
+          (i64x2.shl (v128.and (local.get $t) ${i64s(2)}) (i32.const 62))))
+      (else
+        (f64x2.replace_lane 1
+          (f64x2.splat (call $math.${name} (f64x2.extract_lane 0 (local.get $x))))
+          (call $math.${name} (f64x2.extract_lane 1 (local.get $x)))))))`, [`math.${name}`])
+  trig2('sin', false)
+  trig2('cos', true)
   // True f64x2 pow: both lanes through one pass of $math.pow_core's kernel (module/math.js,
   // Arm's optimized-routines pow), op for op in the same order, so every lane is BIT-EXACT
   // with the scalar path. The HOT path takes both lanes in the common case ($math.pow's own
@@ -73,7 +75,6 @@ export const registerMathSimd = () => {
   const powLanes = `(f64x2.replace_lane 1
           (f64x2.splat (call $math.pow (f64x2.extract_lane 0 (local.get $x)) (f64x2.extract_lane 0 (local.get $y))))
           (call $math.pow (f64x2.extract_lane 1 (local.get $x)) (f64x2.extract_lane 1 (local.get $y))))`
-  const i64s = (v) => `(i64x2.splat (i64.const ${v}))`
   wat('math.pow2', `(func $math.pow2 (param $x v128) (param $y v128) (result v128)
     (local $tmp v128) (local $z v128) (local $kd v128) (local $ix v128) (local $invc v128) (local $logc v128) (local $logctail v128)
     (local $zhi v128) (local $zlo v128) (local $rhi v128) (local $rlo v128) (local $r v128)

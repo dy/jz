@@ -13,7 +13,7 @@ const OFF = { optimize: { level: 'speed', scheduleStatements: false } }
 /** The function's WAT, under its own name or its export wrapper's. */
 const funcWat = (text, name) => funcWatOf(text, name) || funcWatOf(text, `${name}$exp`)
 /** Kernel calls whose argument is itself a kernel call: a dependent pair issued back to back. */
-const nested = (text) => (text.match(/sin_core\s*\(call \$math\.sin_core/g) || []).length
+const nested = (text) => (text.match(/\$math\.sin\s*\(call \$math\.sin\b/g) || []).length
 
 test('scheduling: independent chains start together', () => {
   const src = `export let f = (a, b) => { const p = Math.sin(a); const q = Math.sin(p) + 1; const r = Math.sin(b); const s = Math.sin(r) + 1; return q * s }`

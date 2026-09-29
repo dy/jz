@@ -2,17 +2,33 @@
  *  Trig coefficients are fitted by scripts/minimax-trig.mjs; each consumer
  *  evaluates the same table in the same order. */
 
-// Reduced-interval absolute-error target: < 1e-11.
-// sin(r)/r and cos(r) on the reduced range |r| <= pi/2, as their Maclaurin
-// series with EXACT 1/n! coefficients — ten terms for sin and eleven for cos,
-// the lengths that land within a few ulp (4.4e-16 and 1.8e-15 relative where
-// the result is not cancelling toward a zero). The seven-term minimax pair
-// they replace stopped at 1.2e-12 and 2.2e-11. Near a zero of the function
-// the argument reduction, not the series, sets the error.
-export const SIN_C = [1, -0.16666666666666666, 0.008333333333333333, -0.0001984126984126984, 0.0000027557319223985893, -2.505210838544172e-8, 1.6059043836821613e-10, -7.647163731819816e-13, 2.8114572543455206e-15, -8.22063524662433e-18]
-export const COS_C = [1, -0.5, 0.041666666666666664, -0.001388888888888889, 0.0000248015873015873, -2.755731922398589e-7, 2.08767569878681e-9, -1.1470745597729725e-11, 4.779477332387385e-14, -1.5619206968586225e-16, 4.110317623312165e-19]
-// 2^f over the reduced range f ∈ [-0.5, 0.5] for $math.exp2 (rel. err ≤ 6e-9). Lets the
-// base-2 power `2**y` skip the ×ln2 / ÷ln2 round-trip exp(y·ln2) pays — see $math.exp2.
+// sin, cos and tan reduce x to x = n·π/2 + r, |r| ≤ π/4, and take sin(r) or cos(r)
+// by n's parity, negated by its second bit. Up to CW_LIMIT = 2^24 the reduction is
+// Cody–Waite: n = the integer nearest x·2/π (ROUND_MAGIC = 1.5·2^52 added and taken
+// away rounds it in the last place, and leaves n mod 2^32 in the low word), then
+// r = x − n·H1 − n·H2 − n·H3 − n·H4 with PIO2_CW = H1..H4 the leading 29, 29, 29 and
+// 53 bits of π/2 (each truncated, so each is positive and −0 stays −0). |n| < 2^24,
+// so every n·Hk but the last is exact and every subtraction that cancels is exact;
+// the parts hold π/2 to 2^-141, which keeps r within an ulp of the true remainder
+// even for the double closest to a multiple of π/2 below 2^24 (x = 1.446e7, k/|r|
+// = 2^82 at k = 9206271, found by exhaustive search).
+export const PIO2_CW = [1.570796325802803, 9.920935774287987e-10, 2.2517417706346578e-18, 3.5215598651832e-27]
+export const INV_PIO2 = 0.6366197723675814, ROUND_MAGIC = 6755399441055744, CW_LIMIT = 16777216
+// Past 2^24, Payne–Hanek ($math.rem_pio2): x·2/π mod 4 as an integer product of
+// x's 53-bit significand with the 192 bits of 2/π its exponent selects, the 128
+// fraction bits scaled back by π/2 = HALF_PI + PIO2_LO. TWO_OVER_PI_HEX is 2/π's
+// bits in 64-bit words as the data table's little-endian bytes, a zero word first,
+// then 0xa2f9836e4e441529 and on: the 1216 bits fdlibm's ipio2 table (e_rem_pio2.c)
+// holds in 24-bit pieces, which test/math-ulp.js re-derives.
+export const PIO2_LO = 6.123233995736766e-17
+export const TWO_OVER_PI_HEX = '00000000000000002915444e6e83f9a2c0dd34f5d15727fc4190433c999562db61c5bbdeab6351fee0d24d423a6e24b71c92d109ea2e49063ea729b11ceb1dfe8444bb2ef53582e8417e5fb426709ce9f439538339d691393b28f9bd8b5f849c0f9805deff97f81f1f6d0a5a8b112fefb709cb27cf7e366d2dea5f9e663f464f7bf1e5ebc7ba2775ea92528af739073d085d8d1fb15ffb6bab6b7bfc46300356'
+// The kernels on the reduced argument, minimax in the relative error
+// (scripts/minimax-trig.mjs; each degree the lowest whose error stays well inside
+// the 100 ulp jz's Math keeps against V8). sin(r) = r·(1 + t·P(t)), t = r², on
+// |r| ≤ π/4: 45 ulp minimax, 38 measured as evaluated. cos(r) = 1 − t/2 + t²·Q(t):
+// 0.8 minimax, 2.2 measured.
+export const SIN_C = [1, -0.1666666666663035, 0.008333333325077711, -0.0001984126372859909, 0.0000027555339648890704, -2.4760454010150433e-8]
+export const COS_C = [1, -0.5, 0.04166666666659654, -0.001388888887761173, 0.000024801580707294864, -2.7555523105456954e-7, 2.064511860388919e-9]
 /**
  * The polynomial evaluation tree THREE evaluators share — the scalar WAT builder
  * (module/math.js), the two-wide one (module/math/simd.js) and the JS constant
@@ -148,11 +164,10 @@ export const EXP_Q = [1, 0.5, 0.16666666666666666, 0.041666666666666664, 0.00833
 // ln2/64 split for exp's reduction r = (x − k·L1) − k·L2: L1 keeps 36 bits, so
 // k·L1 is exact for every |k| < 2^17 (every finite result), L2 the rest.
 export const EXP_L1 = 0.010830424696223417, EXP_L2 = 2.572804622327669e-14
-// Range-reduction constants via plain number interpolation: `${number}` now formats
-// through the Ryū shortest-round-trip __ftoa in BOTH legs (host and self-compiled
-// kernel), so the full-precision f64 bakes into the WAT verbatim — the former
-// string-literal workaround for the kernel's 9-digit dtoa is obsolete.
-export const PI = Math.PI, INV_PI = 1 / Math.PI, HALF_PI = Math.PI / 2
+// π and π/2 as doubles, for the offsets atan and atan2 add. `${number}`
+// formats through the Ryū shortest-round-trip __ftoa in both legs (host and
+// self-compiled kernel), so the full-precision f64 bakes into the WAT verbatim.
+export const PI = Math.PI, HALF_PI = Math.PI / 2
 
 // The pow kernel's log table (scripts/pow-log-table.mjs): for z ∈ [0x1.69555p-1, 0x1.69555p0)
 // split into 128 subintervals by the top mantissa bits of z − OFF, an entry holds 1/c

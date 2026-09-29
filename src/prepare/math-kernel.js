@@ -25,7 +25,7 @@
  * @module prepare/math-kernel
  */
 
-import { PI, INV_PI, HALF_PI, SIN_C, COS_C, EXPM1_C, LOG_C, EXP2_TAB, EXP2_Q, EXP_Q, EXP_L1, EXP_L2, POW_LOG_TAB, POW_LOG_A, POW_LN2HI, POW_LN2LO, polyTree } from '../../module/math/trig-tables.js'
+import { PI, HALF_PI, PIO2_CW, INV_PIO2, ROUND_MAGIC, CW_LIMIT, SIN_C, COS_C, EXPM1_C, LOG_C, EXP2_TAB, EXP2_Q, EXP_Q, EXP_L1, EXP_L2, POW_LOG_TAB, POW_LOG_A, POW_LN2HI, POW_LN2LO, polyTree } from '../../module/math/trig-tables.js'
 
 // ---- bit-level helpers (i64.reinterpret_f64 / f64.reinterpret_i64) ----
 const _buf = new ArrayBuffer(8)
@@ -61,42 +61,39 @@ function nearest(x) {
 const horner = (cs, v) => polyTree(cs, { konst: (c) => c, mul: (a, b) => a * b, add: (a, b) => a + b }, v)
 
 
-function sinCore(x) {
-  if (Number.isNaN(x)) return x
-  if (Math.abs(x) === Infinity) return NaN
-  if (Math.abs(x) < 2 ** -27) return x
-  let q = nearest(x * INV_PI)
-  let r = x - q * PI
-  if (Math.abs(r) > HALF_PI) {
-    const q2 = nearest(r * INV_PI)
-    r = r - q2 * PI
-    q = q + q2
-  }
-  q = q - 2 * nearest(q * 0.5)
-  const r2 = r * r
-  r = r * horner(SIN_C, r2)
-  if (Math.abs(q) > 0.5) r = -r
-  return Math.min(Math.max(r, -1), 1)
+// $math.sin, $math.cos and $math.tan: x = n·π/2 + r by the four-part Cody–Waite
+// reduction, then sin(r) or cos(r) by n's parity, negated by its second bit. Past 2^24
+// the runtime reduces by Payne–Hanek in 64-bit integer arithmetic, which the compiler
+// compiled by itself (its BigInt is 64-bit) could not mirror: a call there is left
+// for run time (undefined), as is any argument that is no number.
+const [H1, H2, H3, H4] = PIO2_CW
+let RK = 0, RR = 0
+function reduceTrig(x) {
+  const t = x * INV_PIO2 + ROUND_MAGIC, n = t - ROUND_MAGIC
+  RR = x - n * H1 - n * H2 - n * H3 - n * H4
+  RK = n & 3
 }
-
-function cosCore(x) {
-  if (Number.isNaN(x)) return x
-  if (Math.abs(x) === Infinity) return NaN
-  let q = nearest(x * INV_PI)
-  let r = x - q * PI
-  if (Math.abs(r) > HALF_PI) {
-    const q2 = nearest(r * INV_PI)
-    r = r - q2 * PI
-    q = q + q2
-  }
-  q = q - 2 * nearest(q * 0.5)
-  const r2 = r * r
-  r = horner(COS_C, r2)
-  if (Math.abs(q) > 0.5) r = -r
-  return Math.min(Math.max(r, -1), 1)
+function quadrant(k, r) {
+  const z = r * r
+  const v = k & 1 ? horner(COS_C, z) : r * horner(SIN_C, z)
+  return k & 2 ? -v : v
 }
-
-function tan(x) { return sinCore(x) / cosCore(x) }
+function sin(x) {
+  if (!(Math.abs(x) < CW_LIMIT)) return x - x === 0 ? undefined : NaN
+  reduceTrig(x)
+  return quadrant(RK, RR)
+}
+function cos(x) {
+  if (!(Math.abs(x) < CW_LIMIT)) return x - x === 0 ? undefined : NaN
+  reduceTrig(x)
+  return quadrant(RK + 1, RR)
+}
+function tan(x) {
+  if (!(Math.abs(x) < CW_LIMIT)) return x - x === 0 ? undefined : NaN
+  reduceTrig(x)
+  const z = RR * RR, s = RR * horner(SIN_C, z), c = horner(COS_C, z)
+  return RK & 1 ? -c / s : s / c
+}
 
 // 2^e for the table kernels: one exponent build for a normal e, two factors at the edges.
 function expScale(p, e) {
@@ -398,9 +395,7 @@ function hypot(...vs) {
 /** Pure bit-exact-vs-kernel transcendentals — dispatched by `math.<name>` key
  *  (matches the resolved callee jz's prepare already produces for `Math.foo`). */
 export const MATH_KERNEL = {
-  'math.sin': sinCore, 'math.sin_core': sinCore,
-  'math.cos': cosCore, 'math.cos_core': cosCore,
-  'math.tan': tan,
+  'math.sin': sin, 'math.cos': cos, 'math.tan': tan,
   'math.exp2': exp2, 'math.exp': exp, 'math.expm1': expm1,
   'math.log': log, 'math.log2': log2_, 'math.log10': log10_, 'math.log1p': log1p,
   'math.atan': atan, 'math.asin': asin, 'math.acos': acos, 'math.atan2': atan2,

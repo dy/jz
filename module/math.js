@@ -13,12 +13,12 @@
  */
 
 import { typed, asF64, toI32, toNumF64, temp, arrayLoop, isLit, litVal, isPureIR } from '../src/ir.js'
-import { emit, emitter, reg, deps, dual, tag, wat } from '../src/bridge.js'
+import { emit, emitter, reg, deps, tag, wat } from '../src/bridge.js'
 import { inc, err } from '../src/ctx.js'
 import { repOf, VAL } from '../src/reps.js'
 import { valTypeOf } from '../src/kind.js'
 import { registerPowTranscend } from './math/pow-transcend.js'
-import { PI, INV_PI, HALF_PI, SIN_C, COS_C, EXPM1_C, LOG_C, EXP2_TAB_HEX, EXP2_Q, EXP_Q, EXP_L1, EXP_L2, POW_LOG_TAB_HEX, POW_LOG_A, POW_LN2HI, POW_LN2LO, polyTree } from './math/trig-tables.js'
+import { PI, HALF_PI, PIO2_CW, INV_PIO2, ROUND_MAGIC, CW_LIMIT, PIO2_LO, TWO_OVER_PI_HEX, SIN_C, COS_C, EXPM1_C, LOG_C, EXP2_TAB_HEX, EXP2_Q, EXP_Q, EXP_L1, EXP_L2, POW_LOG_TAB_HEX, POW_LOG_A, POW_LN2HI, POW_LN2LO, polyTree } from './math/trig-tables.js'
 import { hexBytes } from '../src/static-data.js'
 import { registerMathSimd } from './math/simd.js'
 import { registerSumPrecise } from './math/sum-precise.js'
@@ -30,11 +30,10 @@ export default (ctx) => {
   // (deps table, pow_core/pow_fold/pow_fold_v dual bodies) just branches on this.
   const crPow = !!ctx.transform.optimize?.crPow
   deps({
-    'math.sin': ['math.sin_core'],
-    'math.cos': ['math.cos_core'],
-    'math.sin_core': [],
-    'math.cos_core': [],
-    'math.tan': ['math.sin', 'math.cos'],
+    'math.sin': ['math.rem_pio2'],
+    'math.cos': ['math.rem_pio2'],
+    'math.tan': ['math.rem_pio2'],
+    'math.rem_pio2': [],
     'math.exp': [],
     'math.expm1': ['math.exp'],
     'math.log2': ['math.log'],
@@ -75,65 +74,6 @@ export default (ctx) => {
     if (Array.isArray(a) && a[0] === '.' && typeof a[1] === 'string' && typeof a[2] === 'string') {
       return ctx.schema.slotIntCertainAt?.(a[1], a[2]) === true
     }
-    return false
-  }
-  // Emit-time fast path: call $math.sin_core/$math.cos_core directly instead of
-  // the $math.sin/$math.cos wrappers. sin_core still runs the isFinite guard
-  // (finite operands can overflow to ±Inf); this only saves a call indirection.
-  const isBoundName = (name) =>
-    typeof name === 'string' && (
-      repOf(name) != null ||
-      ctx.func.locals?.has(name) ||
-      ctx.func.current?.params?.some(p => p.name === name)
-    )
-  const isSinCoreFastPath = (src) => {
-    if (src == null) return false
-    if (typeof src === 'number') return Number.isFinite(src)
-    if (typeof src === 'string') return isIntCertain(src) || isBoundName(src)
-    if (!Array.isArray(src)) return false
-    const op = src[0]
-    // jz source literals: [null, n], [, bool], [null, null]
-    if (op == null && src.length === 2) {
-      const v = src[1]
-      if (typeof v === 'number') return Number.isFinite(v)
-      if (typeof v === 'boolean') return true
-      if (v == null) return true
-    }
-    if (op === 'literal') {
-      const v = src[1]
-      return typeof v === 'number' && Number.isFinite(v)
-    }
-    if (op === 'global' || op === 'param') return true
-    if (op === '()') {
-      const fn = src[1]
-      if (fn === 'math.PI' || fn === 'math.E' || fn === 'math.LN2' || fn === 'math.SQRT2') return true
-      if (typeof fn === 'string' && fn.startsWith('math.')) {
-        const finiteOps = new Set([
-          'math.abs', 'math.floor', 'math.ceil', 'math.trunc', 'math.round', 'math.sqrt',
-          'math.sin', 'math.cos', 'math.tan', 'math.imul', 'math.clz32',
-        ])
-        if (finiteOps.has(fn)) return src.slice(2).every(isSinCoreFastPath)
-      }
-    }
-    if (op === '|' && src.length === 3) return isSinCoreFastPath(src[1]) && isSinCoreFastPath(src[2])
-    if (op === '%' || op === '&' || op === '^' || op === '<<' || op === '>>' || op === '>>>') {
-      return src.slice(1).every(isSinCoreFastPath)
-    }
-    if (op === '+' || op === '-' || op === '*' || op === '**') {
-      return src.slice(1).every(isSinCoreFastPath)
-    }
-    if (op === '/') return isSinCoreFastPath(src[1]) && isSinCoreFastPath(src[2])
-    if (op === '?:' && src.length === 4) return isSinCoreFastPath(src[2]) && isSinCoreFastPath(src[3])
-    if ((op === '&&' || op === '||') && src.length === 3) return isSinCoreFastPath(src[1]) && isSinCoreFastPath(src[2])
-    if (op === '!' && src.length === 2) return isSinCoreFastPath(src[1])
-    if (op === '[]' && src.length === 3) {
-      // Chord tables / semitone indices — index is int-shaped, element is a small int.
-      return isSinCoreFastPath(src[2]) || isIntCertain(src[2])
-    }
-    if (op === '.' && src.length === 3 && src[2] === 'length') {
-      return typeof src[1] === 'string' || isSinCoreFastPath(src[1])
-    }
-    if (op === '.' && src.length === 3) return isIntCertain(src)
     return false
   }
   // An integer rounds to itself, as a Number: a Boolean (integer-certain) converts.
@@ -282,15 +222,9 @@ export default (ctx) => {
   // Sign
   reg('math.sign', ['math.sign'], a => fn('math.sign', a))
 
-  // Trig — isSinCoreFastPath skips the $math.sin/$math.cos wrapper call.
-  ctx.core.emit['math.sin'] = dual(
-    emitter(['math.sin'], a => fn('math.sin', a)),
-    emitter(['math.sin_core'], a => fn('math.sin_core', a)),
-    isSinCoreFastPath)
-  ctx.core.emit['math.cos'] = dual(
-    emitter(['math.cos'], a => fn('math.cos', a)),
-    emitter(['math.cos_core'], a => fn('math.cos_core', a)),
-    isSinCoreFastPath)
+  // Trig
+  reg('math.sin', ['math.sin'], a => fn('math.sin', a))
+  reg('math.cos', ['math.cos'], a => fn('math.cos', a))
   reg('math.tan', ['math.tan'], a => fn('math.tan', a))
 
   // Inverse trig
@@ -547,13 +481,8 @@ export default (ctx) => {
       (then (f64.const 1.0))
       (else (f64.const -1.0))))`)
 
-  // sin/cos over the folded range [0, π/2] use a 5-term MINIMAX polynomial in x² (Horner
-  // form, generated below). It beats the prior 6-term Taylor on both counts: one fewer
-  // multiply (faster — the floatbeat synth is sin-bound), and lower error (sin ≤ 1.9e-8,
-  // cos ≤ 1.3e-7 vs Taylor's ~6e-8 / ~5e-7) — minimax spreads error evenly across the range
-  // instead of piling unused precision near 0. Coeffs fit by scripts/minimax-trig.mjs.
   // The shared evaluation tree (module/math/trig-tables.js polyTree) in scalar
-  // WAT — the same tree the 2-wide builder and the JS constant folder use, so
+  // WAT: the same tree the 2-wide builder and the JS constant folder use, so
   // all three agree bit for bit.
   const horner = (cs, v) => polyTree(cs, {
     konst: (c) => `(f64.const ${c})`,
@@ -561,73 +490,118 @@ export default (ctx) => {
     add: (a, b) => `(f64.add ${a} ${b})`,
   }, `(local.get ${v})`)
 
-  // Round-to-nearest reduction r = x − q·π ∈ [−π/2, π/2], in pure f64 — no int conversion,
-  // so it never traps and never saturates. A SECOND pass folds the q·π rounding error back
-  // in, keeping r bounded even for astronomically large x where the first pass loses all
-  // precision: Math.sin must return a value in [−1,1] for every finite input, not Inf/garbage.
-  // For |x| ≲ 1e15 the second pass is a no-op (q2 = 0) and the result is bit-identical to a
-  // single reduction. The odd poly r·P(r²) handles r<0 on its own (sin is odd); the sign is the
-  // parity of the total quotient, taken in f64 as q − 2·round(q/2). ×(1/π) avoids a divide.
-  // ±Infinity and NaN must return NaN. Guard before reduction instead of relying on
-  // Inf−Inf·π to mint one: that arithmetic NaN has platform-dependent bits and can
-  // escape as a non-canonical NaN-box on x86/Linux.
-  // The second reduction pass only corrects an r that the first pass left outside
-  // [−π/2, π/2]; for in-range r, q2 is 0 and the pass is a no-op, so gating it on
-  // |r| > π/2 is bit-identical for all finite inputs while sparing the common case
-  // ~6 ops. Both are generic wins for every sin/cos/tan/exp-via-trig call site.
-  wat('math.sin_core', `(func $math.sin_core (param $x f64) (result f64)
-    (local $q f64) (local $q2 f64) (local $r f64) (local $r2 f64)
-    (if (f64.ne (local.get $x) (local.get $x)) (then (return (f64.const nan))))
-    (if (f64.eq (f64.abs (local.get $x)) (f64.const inf)) (then (return (f64.const nan))))
-    ;; |x| ≤ 2⁻²⁷: sin(x) = x to within a fraction of an ulp, and returning x preserves the
-    ;; sign of ±0 (the range reduction below would turn -0 into +0: -0 − (-0·π) = +0).
-    (if (f64.lt (f64.abs (local.get $x)) (f64.const ${2 ** -27})) (then (return (local.get $x))))
-    (local.set $q (f64.nearest (f64.mul (local.get $x) (f64.const ${INV_PI}))))
-    (local.set $r (f64.sub (local.get $x) (f64.mul (local.get $q) (f64.const ${PI}))))
-    (if (f64.gt (f64.abs (local.get $r)) (f64.const ${HALF_PI}))
+  // sin, cos and tan: x = n·π/2 + r with |r| ≤ π/4 (the constants and their bounds are
+  // module/math/trig-tables.js's), then sin(r) or cos(r) by n's parity, negated by its
+  // second bit. Below 2^24 the reduction is inline Cody–Waite: n from x·2/π rounded by
+  // ROUND_MAGIC, whose low word then holds n, and r = x − n·π/2 in four parts, every
+  // cancelling step exact, so r stays within an ulp of the true remainder at the
+  // doubles closest to a multiple of π/2 (sin(π) is 1.2246467991473532e-16, as in V8).
+  // Past 2^24 $math.rem_pio2 does Payne–Hanek. A NaN or an infinity (x − x is NaN)
+  // returns the canonical NaN. One kernel runs, chosen by a branch on n's parity: a
+  // phase advancing less than π/2 a step keeps it predicted.
+  const [H1, H2, H3, H4] = PIO2_CW
+  const reduceTrig = `
+    (if (f64.lt (f64.abs (local.get $x)) (f64.const ${CW_LIMIT}))
       (then
-        (local.set $q2 (f64.nearest (f64.mul (local.get $r) (f64.const ${INV_PI}))))
-        (local.set $r (f64.sub (local.get $r) (f64.mul (local.get $q2) (f64.const ${PI}))))
-        (local.set $q (f64.add (local.get $q) (local.get $q2)))))
-    (local.set $q (f64.sub (local.get $q) (f64.mul (f64.const 2) (f64.nearest (f64.mul (local.get $q) (f64.const 0.5))))))
-    (local.set $r2 (f64.mul (local.get $r) (local.get $r)))
-    (local.set $r (f64.mul (local.get $r) ${horner(SIN_C, '$r2')}))
-    ;; Negate for odd quasiperiods
-    (if (f64.gt (f64.abs (local.get $q)) (f64.const 0.5)) (then (local.set $r (f64.neg (local.get $r)))))
-    ;; Clamp to [-1, 1]: polynomial approximation can overshoot by ~1e-8 near peaks.
-    ;; Branchless (f64.min/f64.max) avoids branch misprediction near peaks.
-    (f64.min (f64.max (local.get $r) (f64.const -1.0)) (f64.const 1.0)))`)
-
+        (local.set $t (f64.add (f64.mul (local.get $x) (f64.const ${INV_PIO2})) (f64.const ${ROUND_MAGIC})))
+        (local.set $n (f64.sub (local.get $t) (f64.const ${ROUND_MAGIC})))
+        (local.set $r (f64.sub (f64.sub (f64.sub (f64.sub (local.get $x)
+          (f64.mul (local.get $n) (f64.const ${H1}))) (f64.mul (local.get $n) (f64.const ${H2})))
+          (f64.mul (local.get $n) (f64.const ${H3}))) (f64.mul (local.get $n) (f64.const ${H4}))))
+        (local.set $k (i32.wrap_i64 (i64.reinterpret_f64 (local.get $t)))))
+      (else
+        (if (f64.ne (f64.sub (local.get $x) (local.get $x)) (f64.const 0)) (then (return (f64.const nan))))
+        (local.set $k (local.set $r (call $math.rem_pio2 (local.get $x))))))`
+  const trigLocals = '(local $t f64) (local $n f64) (local $r f64) (local $z f64) (local $k i32)'
+  // sin(r) for an even quadrant, cos(r) for an odd one, then the sign by the second bit
+  const quadrant = `
+    (local.set $z (f64.mul (local.get $r) (local.get $r)))
+    (local.set $r (if (result f64) (i32.and (local.get $k) (i32.const 1))
+      (then ${horner(COS_C, '$z')})
+      (else (f64.mul (local.get $r) ${horner(SIN_C, '$z')}))))
+    (select (f64.neg (local.get $r)) (local.get $r) (i32.and (local.get $k) (i32.const 2)))`
   wat('math.sin', `(func $math.sin (param $x f64) (result f64)
-    (call $math.sin_core (local.get $x)))`)
-
-  wat('math.cos_core', `(func $math.cos_core (param $x f64) (result f64)
-    (local $q f64) (local $q2 f64) (local $r f64) (local $r2 f64)
-    (if (f64.ne (local.get $x) (local.get $x)) (then (return (f64.const nan))))
-    (if (f64.eq (f64.abs (local.get $x)) (f64.const inf)) (then (return (f64.const nan))))
-    (local.set $q (f64.nearest (f64.mul (local.get $x) (f64.const ${INV_PI}))))
-    (local.set $r (f64.sub (local.get $x) (f64.mul (local.get $q) (f64.const ${PI}))))
-    (if (f64.gt (f64.abs (local.get $r)) (f64.const ${HALF_PI}))
-      (then
-        (local.set $q2 (f64.nearest (f64.mul (local.get $r) (f64.const ${INV_PI}))))
-        (local.set $r (f64.sub (local.get $r) (f64.mul (local.get $q2) (f64.const ${PI}))))
-        (local.set $q (f64.add (local.get $q) (local.get $q2)))))
-    (local.set $q (f64.sub (local.get $q) (f64.mul (f64.const 2) (f64.nearest (f64.mul (local.get $q) (f64.const 0.5))))))
-    (local.set $r2 (f64.mul (local.get $r) (local.get $r)))
-    (local.set $r ${horner(COS_C, '$r2')})
-    ;; Negate for odd quasiperiods
-    (if (f64.gt (f64.abs (local.get $q)) (f64.const 0.5)) (then (local.set $r (f64.neg (local.get $r)))))
-    ;; Clamp to [-1, 1]: polynomial approximation can overshoot by ~1e-8 near peaks.
-    ;; Branchless (f64.min/f64.max) avoids branch misprediction near peaks.
-    (f64.min (f64.max (local.get $r) (f64.const -1.0)) (f64.const 1.0)))`)
-
+    ${trigLocals}${reduceTrig}${quadrant})`)
+  // cos(x) = sin(x + π/2): the next quadrant
   wat('math.cos', `(func $math.cos (param $x f64) (result f64)
-    (call $math.cos_core (local.get $x)))`)
-
+    ${trigLocals}${reduceTrig}
+    (local.set $k (i32.add (local.get $k) (i32.const 1)))${quadrant})`)
+  // tan(x) = sin(r)/cos(r) for an even quadrant, −cos(r)/sin(r) for an odd one
   wat('math.tan', `(func $math.tan (param $x f64) (result f64)
-    (if (f64.ne (local.get $x) (local.get $x)) (then (return (f64.const nan))))
-    (if (f64.eq (f64.abs (local.get $x)) (f64.const inf)) (then (return (f64.const nan))))
-    (f64.div (call $math.sin (local.get $x)) (call $math.cos (local.get $x))))`)
+    ${trigLocals} (local $s f64) (local $c f64)${reduceTrig}
+    (local.set $z (f64.mul (local.get $r) (local.get $r)))
+    (local.set $s (f64.mul (local.get $r) ${horner(SIN_C, '$z')}))
+    (local.set $c ${horner(COS_C, '$z')})
+    (if (result f64) (i32.and (local.get $k) (i32.const 1))
+      (then (f64.div (f64.neg (local.get $c)) (local.get $s)))
+      (else (f64.div (local.get $s) (local.get $c)))))`)
+
+  // Payne–Hanek for a finite |x| ≥ 2^24: the quadrant (in the low bits of the i32) and
+  // r = x − n·π/2, |r| ≤ π/4. x = m·2^E with m its 53-bit significand; x·2/π mod 4 is
+  // m times the 2/π bits from 2^1 down, the bits of higher weight contributing multiples
+  // of 4. The 192 of them from bit E − 1 (module/math/trig-tables.js TWO_OVER_PI, a
+  // word pad first so E ≥ −28 never indexes before the table) multiply m in 64-bit
+  // pieces, the product kept mod 2^192: its top two bits are n mod 4, the next 128 the
+  // fraction, rounded to the nearest quadrant and scaled back by π/2. Every step is
+  // integer and exact up to the fraction's conversion; r lands within 1.3 ulp of the
+  // true remainder (the smallest any double has, 2^-61 at x = 6381956970095103·2^797,
+  // leaves the fraction's high word at least 5, so the normalization below never
+  // sees it zero). No loop and no scratch memory: the table is read-only.
+  const M32 = '(i64.const 0xffffffff)'
+  // hi:lo = m·w for m < 2^53 (split in $mh:$ml), w < 2^64, from four 32×32 products
+  const mul128 = (w, hi, lo) => `
+    (local.set $ll (i64.mul (local.get $ml) (i64.and ${w} ${M32})))
+    (local.set $lh (i64.mul (local.get $ml) (i64.shr_u ${w} (i64.const 32))))
+    (local.set $hl (i64.mul (local.get $mh) (i64.and ${w} ${M32})))
+    (local.set $mid (i64.add (i64.add (i64.shr_u (local.get $ll) (i64.const 32)) (i64.and (local.get $lh) ${M32})) (i64.and (local.get $hl) ${M32})))
+    (local.set ${lo} (i64.or (i64.shl (local.get $mid) (i64.const 32)) (i64.and (local.get $ll) ${M32})))
+    (local.set ${hi} (i64.add (i64.add (i64.add (i64.mul (local.get $mh) (i64.shr_u ${w} (i64.const 32)))
+      (i64.shr_u (local.get $lh) (i64.const 32))) (i64.shr_u (local.get $hl) (i64.const 32))) (i64.shr_u (local.get $mid) (i64.const 32))))`
+  // the 64 bits of 2/π from the window's word `off`, shifted by $sh ((v >> 1) >> (63 − sh)
+  // is v >> (64 − sh) that also holds at sh = 0, where a shift by 64 would be by 0)
+  const window = (off) => `(i64.or (i64.shl (i64.load offset=${off} (local.get $tb)) (local.get $sh))
+      (i64.shr_u (i64.shr_u (i64.load offset=${off + 8} (local.get $tb)) (i64.const 1)) (i64.sub (i64.const 63) (local.get $sh))))`
+  ctx.runtime.pio2Table = hexBytes(TWO_OVER_PI_HEX)
+  wat('math.rem_pio2', `(func $math.rem_pio2 (param $x f64) (result i32 f64)
+    (local $b i64) (local $e i32) (local $tb i32) (local $sh i64) (local $ml i64) (local $mh i64) (local $w i64)
+    (local $ll i64) (local $lh i64) (local $hl i64) (local $mid i64) (local $a1 i64) (local $a0 i64) (local $b1 i64) (local $b0 i64)
+    (local $p1 i64) (local $p2 i64) (local $fh i64) (local $fl i64) (local $s i64) (local $k i32) (local $neg i32) (local $f f64)
+    (local.set $b (i64.reinterpret_f64 (local.get $x)))
+    (local.set $ml (i64.or (i64.and (local.get $b) (i64.const 0xfffffffffffff)) (i64.const 0x10000000000000)))
+    (local.set $mh (i64.shr_u (local.get $ml) (i64.const 32)))
+    (local.set $ml (i64.and (local.get $ml) ${M32}))
+    ;; E + 62, E the exponent less 1075: the window starts at word (E + 62) >> 6, bit (E + 62) & 63
+    (local.set $e (i32.sub (i32.and (i32.wrap_i64 (i64.shr_u (local.get $b) (i64.const 52))) (i32.const 0x7ff)) (i32.const 1013)))
+    (local.set $tb (i32.add (global.get $math.pio2_tbl) (i32.shl (i32.shr_u (local.get $e) (i32.const 6)) (i32.const 3))))
+    (local.set $sh (i64.extend_i32_u (i32.and (local.get $e) (i32.const 63))))
+    ;; m·(w2:w1:w0) mod 2^192 = p2:p1:a0
+    (local.set $w ${window(16)})${mul128('(local.get $w)', '$a1', '$a0')}
+    (local.set $w ${window(8)})${mul128('(local.get $w)', '$b1', '$b0')}
+    (local.set $p1 (i64.add (local.get $a1) (local.get $b0)))
+    (local.set $p2 (i64.add (i64.add (local.get $b1) (i64.mul (i64.or (i64.shl (local.get $mh) (i64.const 32)) (local.get $ml)) ${window(0)}))
+      (i64.extend_i32_u (i64.lt_u (local.get $p1) (local.get $a1)))))
+    ;; n mod 4 and the fraction's top 128 bits; a fraction of ½ or more takes the next quadrant
+    (local.set $k (i32.wrap_i64 (i64.shr_u (local.get $p2) (i64.const 62))))
+    (local.set $fh (i64.or (i64.shl (local.get $p2) (i64.const 2)) (i64.shr_u (local.get $p1) (i64.const 62))))
+    (local.set $fl (i64.or (i64.shl (local.get $p1) (i64.const 2)) (i64.shr_u (local.get $a0) (i64.const 62))))
+    (local.set $neg (i32.wrap_i64 (i64.shr_u (local.get $fh) (i64.const 63))))
+    (if (local.get $neg)
+      (then
+        (local.set $k (i32.add (local.get $k) (i32.const 1)))
+        (local.set $fh (i64.add (i64.xor (local.get $fh) (i64.const -1)) (i64.extend_i32_u (i64.eqz (local.get $fl)))))
+        (local.set $fl (i64.sub (i64.const 0) (local.get $fl)))))
+    ;; |fraction| to a double: its top 64 bits normalized, scaled by 2^-(64 + s)
+    (local.set $s (i64.clz (local.get $fh)))
+    (local.set $f (f64.mul
+      (f64.convert_i64_u (i64.or (i64.shl (local.get $fh) (local.get $s))
+        (i64.shr_u (i64.shr_u (local.get $fl) (i64.const 1)) (i64.sub (i64.const 63) (local.get $s)))))
+      (f64.reinterpret_i64 (i64.shl (i64.sub (i64.const 959) (local.get $s)) (i64.const 52)))))
+    (local.set $f (f64.add (f64.mul (local.get $f) (f64.const ${HALF_PI})) (f64.mul (local.get $f) (f64.const ${PIO2_LO}))))
+    ;; the sign: the rounding's and x's
+    (if (i32.ne (local.get $neg) (i32.wrap_i64 (i64.shr_u (local.get $b) (i64.const 63))))
+      (then (local.set $f (f64.neg (local.get $f)))))
+    (if (i64.lt_s (local.get $b) (i64.const 0)) (then (local.set $k (i32.sub (i32.const 0) (local.get $k)))))
+    (local.get $k) (local.get $f))`)
 
   registerMathSimd()
 

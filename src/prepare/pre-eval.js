@@ -456,7 +456,10 @@ function evalMathCall(name, vs) {
   const uf = HOST_EXACT_UNARY[name]
   if (uf) return vs.length === 1 ? numResult(uf(vs[0])) : null
   const kfn = MATH_KERNEL['math.' + name]
-  return kfn ? numResult(kfn(...vs)) : null
+  if (!kfn) return null
+  // a kernel that answers undefined leaves the call for run time
+  const v = kfn(...vs)
+  return v === undefined ? null : numResult(v)
 }
 
 /** args: EvalResult[] (some entries may be null — the method itself validates types/arity).
