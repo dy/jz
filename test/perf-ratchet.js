@@ -190,6 +190,9 @@ const loopBodyOps = (wat) => {
 // truncation is a rounding, a round trip and an out-of-line saturation arm.
 // Eight slice programs test one such key in a loop: 109880 -> 109888, every
 // other category unchanged.
+// The changes above, on main's tree of 2026-09-29 (1bda9575): main's own
+// counts plus the same deltas they made on the tree they were measured on,
+// buf +285, slice +43418, condref +2280; every other category is main's.
 
 // An object made at start is saved before the round's first store into it
 // of a value that names memory of the round (2026-09-29, module/core/
