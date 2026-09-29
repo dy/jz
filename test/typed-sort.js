@@ -26,3 +26,19 @@ for (const K of KINDS) test(`typed sort: ${K} agrees with JS, special values and
     }
   }
 })
+
+test('typed sort: a comparator orders stably, BigInt elements compared as BigInts', () => {
+  const lcg = 's = (Math.imul(s, 1664525) + 1013904223) >>> 0'
+  const srcs = [
+    `export let f = (n, s) => { const a = new Float32Array(n); for (let i = 0; i < n; i++) { ${lcg}; a[i] = s % 400 - 200 } a.sort((x, y) => y - x); return [...a] }`,
+    `export let f = (n, s) => { const a = new BigInt64Array(n); for (let i = 0; i < n; i++) { ${lcg}; a[i] = BigInt(s % 400) - 200n } a.sort((x, y) => (y > x ? 1 : y < x ? -1 : 0)); return [...a].map(Number) }`,
+    `export let f = (n, s) => { const a = new Int16Array(n); for (let i = 0; i < n; i++) { ${lcg}; a[i] = s % 400 - 200 } const b = a.toSorted((x, y) => x - y); return [...b, a[0]] }`,
+  ]
+  for (const src of srcs) {
+    const want = oracle(src).f
+    for (const optimize of levels(0, 2)) {
+      const { f } = jz(src, { optimize }).exports
+      for (const n of [0, 1, 2, 17, 257]) for (const s of [1, 9]) ok(JSON.stringify(f(n, s)) === JSON.stringify(want(n, s)), `n=${n} s=${s} at ${optimize}: ${src.slice(40, 90)}`)
+    }
+  }
+})

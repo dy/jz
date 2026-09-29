@@ -2352,3 +2352,24 @@ test('.push: its result is the new length, a number', () => {
     for (const optimize of levels(0, 2, 3)) is(jz(src, { optimize }).exports.f(5), want, `${body} at ${optimize}`)
   }
 })
+
+// Array#sort and #toSorted as the spec's SortIndexedProperties: stable, undefined
+// last without a comparator call, a default order by each element's string. The
+// merge sort behind them (module/array/sort.js) against JS's answers.
+test('.sort: stable, undefined last, default order by strings, as JS sorts', () => {
+  const lcg = 's = (Math.imul(s, 1664525) + 1013904223) >>> 0'
+  const srcs = [
+    `export let f = (n, s) => { const a = []; for (let i = 0; i < n; i++) { ${lcg}; a.push(s % 7 === 0 ? undefined : s % 11 === 0 ? NaN : (s % 2000) - 1000) } a.sort(); return a }`,
+    `export let f = (n, s) => { const a = []; for (let i = 0; i < n; i++) { ${lcg}; a.push(s % 9 === 0 ? undefined : s % 5 === 0 ? 'x' + (s % 30) : s % 3 === 0 ? 'U' + (s % 7) : 'ab' + (s % 50)) } a.sort(); return a }`,
+    `export let f = (n, s) => { const a = []; for (let i = 0; i < n; i++) { ${lcg}; a.push({ k: s % 10, i }) } a.sort((x, y) => x.k - y.k); return a.map(o => o.k * 10000 + o.i) }`,
+    `export let f = (n, s) => { const a = []; let seen = 0; for (let i = 0; i < n; i++) { ${lcg}; a.push(s % 6 === 0 ? undefined : s % 100) } a.sort((x, y) => { if (x === undefined || y === undefined) seen++; return y - x }); a.push(seen); return a }`,
+    `export let f = (n, s) => { const a = []; for (let i = 0; i < n; i++) { ${lcg}; a.push(s % 300 - 150) } const b = a.toSorted((x, y) => x - y); return [...b, ...a.slice(0, 3)] }`,
+  ]
+  for (const src of srcs) {
+    const want = oracle(src).f
+    for (const optimize of levels(0, 2)) {
+      const { f } = jz(src, { optimize }).exports
+      for (const n of [0, 1, 2, 17, 257]) for (const s of [1, 9]) is(JSON.stringify(f(n, s)), JSON.stringify(want(n, s)), `n=${n} s=${s} at ${optimize}: ${src.slice(40, 90)}`)
+    }
+  }
+})

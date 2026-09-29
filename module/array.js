@@ -37,6 +37,7 @@ import { hasExternalIngress } from '../src/compile/func-exports.js'
 import { hoistArrayValue, makeCallback, callbackElem, callbackArgReps, idxArg, arrArg, callbackReadsArray } from './array/callback.js'
 import { arrayFromEmit } from './array/from.js'
 import { registerEarlyExit } from './array/early-exit.js'
+import { heapScratch, mergeSortIR } from './array/sort.js'
 
 
 // Complement of {ARRAY, TYPED} in the VAL domain — the kindSet argument
@@ -2364,88 +2365,74 @@ export default (ctx) => {
     return emitArrayReverseInPlace(['nop'], typed(['call', '$__arr_from', asI64(emit(arr))], 'f64'))
   }
 
-  // Insertion sort — stable, in-place, O(n²). The comparator is called per
-  // shift; positive return → swap. NaN returns become "no swap" via f64.gt's
-  // IEEE 754 semantics (NaN compares false), matching the spec's NaN-as-0
-  // behavior. When fn is omitted, elements are compared as strings via
-  // __to_str → __str_cmp (byte-wise; NOT locale-aware).
-  // Insertion-sort an array VALUE in place, returning it. `.sort` mutates the
-  // receiver; `.toSorted` (ES2023) sorts a fresh __arr_from copy. Default (no
-  // comparator) is lexicographic-string order per spec — NOT the numeric
-  // default typed arrays use (see .typed:sort).
+  // Sort an array VALUE in place, returning it: `.sort` sorts the receiver,
+  // `.toSorted` (ES2023) a fresh __arr_from copy. As the spec's
+  // SortIndexedProperties: the elements are read out once, undefined set aside
+  // for the end (a comparator never sees it), the rest merge sorted stably
+  // (module/array/sort.js) and written back, the array re-read after the
+  // comparator ran (it may have grown the array). A comparator's positive
+  // result puts a after b; NaN is no order. The default order compares each
+  // element's string once made (__to_str → __str_cmp, code unit order, not
+  // locale-aware): records of a key and its value.
   function emitArraySortInPlace(setup, value, fn) {
-    const arrTmp = temp('sr')
-    const base = tempI32('sb')
-    const len = tempI32('sl')
-    const i = tempI32('si')
-    const j = tempI32('sj')
-    const cur = temp('sc')
-    const neighbor = temp('sn')
+    const arrTmp = temp('sr'), base = tempI32('sb'), len = tempI32('sl'), m = tempI32('sm'), i = tempI32('si')
+    const buf = tempI32('sbf'), tmp = tempI32('stp'), v = temp('sv')
     const id = freshId(ctx)
-    const outerExit = `$sortexit${id}`, innerExit = `$sortinnerexit${id}`
-    const outerLoop = `$sortouter${id}`, innerLoop = `$sortinner${id}`
-
-    let cmpExpr, cmpSetup
+    const shift = fn == null ? 4 : 3
+    let cmpSetup = ['nop'], after
     if (fn == null) {
-      // default comparator is ToString + byte compare — both live in the string
+      // default comparator is ToString + code unit compare — both live in the string
       // module, which an all-numeric program hasn't loaded (dangling inc otherwise)
       ctx.module.include('string')
       inc('__to_str', '__str_cmp')
-      cmpExpr = (aIR, bIR) => typed(['f64.convert_i32_s',
-        ['call', '$__str_cmp',
-          ['call', '$__to_str', ['i64.reinterpret_f64', aIR]],
-          ['call', '$__to_str', ['i64.reinterpret_f64', bIR]]
-        ]
-      ], 'f64')
-      cmpSetup = ['nop']
+      after = (a, b) => ['i32.gt_s', ['call', '$__str_cmp', ['i64.load', a], ['i64.load', b]], ['i32.const', 0]]
     } else {
       const cb = makeCallback(fn, [])
       cmpSetup = cb.setup
-      cmpExpr = (aIR, bIR) => asF64(cb.call([
-        typed(aIR, 'f64'),
-        typed(bIR, 'f64')
-      ]))
+      after = (a, b) => ['f64.gt', asF64(cb.call([typed(['f64.load', a], 'f64'), typed(['f64.load', b], 'f64')])), ['f64.const', 0]]
     }
-
     inc('__ptr_offset')
     if (needsDurableFwdLog()) inc('__durable_arr_snap')  // explicit edge — see durableArrSnapIR's comment
-
-    const addr = (idxIR) => ['i32.add', ['local.get', `$${base}`], ['i32.shl', idxIR, ['i32.const', 3]]]
-    const jPlus1 = ['i32.add', ['local.get', `$${j}`], ['i32.const', 1]]
-
+    const get = (n) => ['local.get', `$${n}`]
+    const slot = (b, k) => ['i32.add', get(b), ['i32.shl', get(k), ['i32.const', 3]]]
+    const rec = (k) => ['i32.add', get(buf), ['i32.shl', get(k), ['i32.const', shift]]]
+    const scratch = heapScratch(buf, ['i32.shl', get(len), ['i32.const', shift + 1]])
     return typed(['block', ['result', 'f64'],
       setup,
       cmpSetup,
       ['local.set', `$${arrTmp}`, value],
-      ['local.set', `$${base}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${arrTmp}`]]]],
-      durableArrSnapNode(base),
-      ['local.set', `$${len}`, ['i32.load', ['i32.sub', ['local.get', `$${base}`], ['i32.const', 8]]]],
-
-      ['local.set', `$${i}`, ['i32.const', 1]],
-      ['block', outerExit,
-        ['loop', outerLoop,
-          ['br_if', outerExit, ['i32.ge_s', ['local.get', `$${i}`], ['local.get', `$${len}`]]],
-          ['local.set', `$${cur}`, ['f64.load', addr(['local.get', `$${i}`])]],
-          ['local.set', `$${j}`, ['i32.sub', ['local.get', `$${i}`], ['i32.const', 1]]],
-
-          ['block', innerExit,
-            ['loop', innerLoop,
-              ['br_if', innerExit, ['i32.lt_s', ['local.get', `$${j}`], ['i32.const', 0]]],
-              ['local.set', `$${neighbor}`, ['f64.load', addr(['local.get', `$${j}`])]],
-              // Break unless cmp(neighbor, cur) > 0. f64.gt is false for NaN.
-              ['br_if', innerExit, ['i32.eqz',
-                ['f64.gt',
-                  cmpExpr(['local.get', `$${neighbor}`], ['local.get', `$${cur}`]),
-                  ['f64.const', 0]]]],
-              ['f64.store', addr(jPlus1), ['local.get', `$${neighbor}`]],
-              ['local.set', `$${j}`, ['i32.sub', ['local.get', `$${j}`], ['i32.const', 1]]],
-              ['br', innerLoop]]],
-
-          ['f64.store', addr(jPlus1), ['local.get', `$${cur}`]],
-          ['local.set', `$${i}`, ['i32.add', ['local.get', `$${i}`], ['i32.const', 1]]],
-          ['br', outerLoop]]],
-
-      ['local.get', `$${arrTmp}`]
+      ['local.set', `$${base}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', get(arrTmp)]]],
+      ['local.set', `$${len}`, ['i32.load', ['i32.sub', get(base), ['i32.const', 8]]]],
+      ['if', ['i32.gt_s', get(len), ['i32.const', 1]], ['then',
+        ...scratch.take,
+        ['local.set', `$${tmp}`, ['i32.add', get(buf), ['i32.shl', get(len), ['i32.const', shift]]]],
+        // the elements out, undefined set aside
+        ['local.set', `$${m}`, ['i32.const', 0]], ['local.set', `$${i}`, ['i32.const', 0]],
+        ['block', `$sortgd${id}`, ['loop', `$sortg${id}`,
+          ['br_if', `$sortgd${id}`, ['i32.ge_s', get(i), get(len)]],
+          ['local.set', `$${v}`, ['f64.load', slot(base, i)]],
+          ['if', ['i32.eqz', isUndef(get(v))], ['then',
+            ...(fn == null
+              ? [['i64.store', rec(m), ['call', '$__to_str', ['i64.reinterpret_f64', get(v)]]],
+                 ['f64.store', ['i32.add', rec(m), ['i32.const', 8]], get(v)]]
+              : [['f64.store', rec(m), get(v)]]),
+            ['local.set', `$${m}`, ['i32.add', get(m), ['i32.const', 1]]]]],
+          ['local.set', `$${i}`, ['i32.add', get(i), ['i32.const', 1]]],
+          ['br', `$sortg${id}`]]],
+        mergeSortIR(buf, tmp, m, shift, after),
+        // back into the array, as it stands now, undefined last
+        ['local.set', `$${base}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', get(arrTmp)]]],
+        durableArrSnapNode(base),
+        ['local.set', `$${i}`, ['i32.const', 0]],
+        ['block', `$sortwd${id}`, ['loop', `$sortw${id}`,
+          ['br_if', `$sortwd${id}`, ['i32.ge_s', get(i), get(len)]],
+          ['f64.store', slot(base, i), ['if', ['result', 'f64'], ['i32.lt_s', get(i), get(m)],
+            ['then', ['f64.load', fn == null ? ['i32.add', rec(i), ['i32.const', 8]] : rec(i)]],
+            ['else', undefExpr()]]],
+          ['local.set', `$${i}`, ['i32.add', get(i), ['i32.const', 1]]],
+          ['br', `$sortw${id}`]]],
+        scratch.release]],
+      get(arrTmp)
     ], 'f64')
   }
   ctx.core.emit['.sort'] = (arr, fn) => {

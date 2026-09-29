@@ -27,6 +27,7 @@ import { isNullable } from '../src/summary/kind.js'
 import { activeBoundsAssumption } from '../src/type/canonical-bounds.js'
 import { requireReceiverWat } from './core/error-object.js'
 import { captureCallback, makeCallback, idxArg } from './array/callback.js'
+import { heapScratch, mergeSortIR } from './array/sort.js'
 import { callbackSetup, isUndefinedNode } from './array/from.js'
 
 const _NAN_BITS = nanPrefixHex()
@@ -1804,40 +1805,39 @@ export default (ctx) => {
       inc('__typed_sort')
       return typed(['call', '$__typed_sort', asI64(arrValIR)], 'f64')
     }
+    // With a comparator: the elements out into a scratch of doubles, merge
+    // sorted stably by the comparator (module/array/sort.js), and written back.
     inc('__len', '__typed_get_idx', '__typed_elem_arg', '__typed_set_idx')
     const arrL = temp('tsa'), cbL = temp('tsf')
-    const len = tempI32('tsn'), i = tempI32('tsi'), j = tempI32('tsj')
-    const cur = temp('tsc'), nb = temp('tsb')
+    const len = tempI32('tsn'), i = tempI32('tsi'), buf = tempI32('tsb'), tmp = tempI32('tst')
     const id = freshId(ctx)
-    const oE = `$tsoe${id}`, oL = `$tsol${id}`, iE = `$tsie${id}`, iL = `$tsil${id}`
-    const ptr = () => ['i64.reinterpret_f64', ['local.get', `$${arrL}`]]
+    const get = (n) => ['local.get', `$${n}`]
+    const ptr = () => ['i64.reinterpret_f64', get(arrL)]
     // The comparator's operands enter its slots as closure arguments (a BigInt boxed).
     const argOf = v => typedElemArg(ptr(), v)
-    const jp1 = ['i32.add', ['local.get', `$${j}`], ['i32.const', 1]]
+    const at = (k) => ['i32.add', get(buf), ['i32.shl', get(k), ['i32.const', 3]]]
+    const scratch = heapScratch(buf, ['i32.shl', get(len), ['i32.const', 4]])
+    const each = (tag, body) => [['local.set', `$${i}`, ['i32.const', 0]],
+      ['block', `$${tag}d${id}`, ['loop', `$${tag}${id}`,
+        ['br_if', `$${tag}d${id}`, ['i32.ge_s', get(i), get(len)]],
+        ...body,
+        ['local.set', `$${i}`, ['i32.add', get(i), ['i32.const', 1]]],
+        ['br', `$${tag}${id}`]]]]
+    const after = (a, b) => ['f64.gt',
+      asF64(ctx.closure.call(typed(get(cbL), 'f64'), [argOf(typed(['f64.load', a], 'f64')), argOf(typed(['f64.load', b], 'f64'))])),
+      ['f64.const', 0]]
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${arrL}`, asF64(arrValIR)],
       ['local.set', `$${cbL}`, asF64(emit(fn))],
       ['local.set', `$${len}`, ['call', '$__len', ptr()]],
-      ['local.set', `$${i}`, ['i32.const', 1]],
-      ['block', oE, ['loop', oL,
-        ['br_if', oE, ['i32.ge_s', ['local.get', `$${i}`], ['local.get', `$${len}`]]],
-        ['local.set', `$${cur}`, ['call', '$__typed_get_idx', ptr(), ['local.get', `$${i}`]]],
-        ['local.set', `$${j}`, ['i32.sub', ['local.get', `$${i}`], ['i32.const', 1]]],
-        ['block', iE, ['loop', iL,
-          ['br_if', iE, ['i32.lt_s', ['local.get', `$${j}`], ['i32.const', 0]]],
-          ['local.set', `$${nb}`, ['call', '$__typed_get_idx', ptr(), ['local.get', `$${j}`]]],
-          // Break unless cmp(neighbor, cur) > 0. f64.gt is false for NaN (spec NaN-as-0).
-          ['br_if', iE, ['i32.eqz', ['f64.gt',
-            asF64(ctx.closure.call(typed(['local.get', `$${cbL}`], 'f64'),
-              [argOf(typed(['local.get', `$${nb}`], 'f64')), argOf(typed(['local.get', `$${cur}`], 'f64'))])),
-            ['f64.const', 0]]]],
-          ['drop', ['call', '$__typed_set_idx', ptr(), jp1, ['local.get', `$${nb}`]]],
-          ['local.set', `$${j}`, ['i32.sub', ['local.get', `$${j}`], ['i32.const', 1]]],
-          ['br', iL]]],
-        ['drop', ['call', '$__typed_set_idx', ptr(), jp1, ['local.get', `$${cur}`]]],
-        ['local.set', `$${i}`, ['i32.add', ['local.get', `$${i}`], ['i32.const', 1]]],
-        ['br', oL]]],
-      ['local.get', `$${arrL}`]], 'f64')
+      ['if', ['i32.gt_s', get(len), ['i32.const', 1]], ['then',
+        ...scratch.take,
+        ['local.set', `$${tmp}`, ['i32.add', get(buf), ['i32.shl', get(len), ['i32.const', 3]]]],
+        ...each('tsg', [['f64.store', at(i), ['call', '$__typed_get_idx', ptr(), get(i)]]]),
+        mergeSortIR(buf, tmp, len, 3, after),
+        ...each('tsw', [['drop', ['call', '$__typed_set_idx', ptr(), get(i), ['f64.load', at(i)]]]]),
+        scratch.release]],
+      get(arrL)], 'f64')
   }
   ctx.core.emit['.typed:sort'] = (arr, fn) => emitTypedSort(emit(arr), fn)
 
