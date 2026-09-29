@@ -1,6 +1,6 @@
 import test from 'tst'
 import { is, ok, almost } from 'tst/assert.js'
-import { evaluate, run } from './util.js'
+import { evaluate, run, funcWat } from './util.js'
 import jz, { compile } from '../index.js'
 import { onKernel } from './_matrix.js'
 import { scalarCase } from './_scalar-core-cases.js'
@@ -51,7 +51,7 @@ test('canon-strip: sqrt/min/max feeding f64 arithmetic sheds the NaN-canon selec
   const selects = (wat.match(/select/g) || []).length
   is(selects, 0, 'no NaN-canon select when the sqrt result feeds f64.add')
   // log(log(x)): inner log canon also stripped (math-call arg is ToNumber'd + NaN-safe).
-  const wlog = jz.compile(`export const f = (x) => Math.log(Math.log(x))`, { wat: true })
+  const wlog = funcWat(jz.compile(`export const f = (x) => Math.log(Math.log(x))`, { wat: true }), 'f')
   is((wlog.match(/select/g) || []).length, 0, 'no canon select for log feeding log')
 })
 

@@ -233,8 +233,12 @@ export function pullStdlib(sec) {
   // reachability is exact. Base globals register in staticI32GlobalInits so a
   // later static-prefix strip shifts them like every other static offset.
   ctx.runtime.lazySpans = []
+  // `fn` owns the table, or a list of functions that each read it: it lands when one is in,
+  // and stays while any is live
   const injectTable = (fn, global, bytes) => {
-    if (!ctx.core.includes.has(fn) || !bytes) return false
+    const fns = Array.isArray(fn) ? fn : [fn]
+    const owner = fns.find(f => ctx.core.includes.has(f))
+    if (!owner || !bytes) return false
     const start = dataLen()
     dataAlign(8)
     // Shared memory: the table lands via memory.init at a runtime base, so the
@@ -245,7 +249,7 @@ export function pullStdlib(sec) {
     if (ctx.memory.shared && !ctx.scope.globals.has('__staticBase')) declGlobal('__staticBase', 'i32')
     dataPush(bytes)
     ;(ctx.runtime.staticI32GlobalInits ??= []).push(global)
-    ctx.runtime.lazySpans.push({ fn: '$' + fn, global, start, base, bytes })
+    ctx.runtime.lazySpans.push({ fn: '$' + owner, fns: fns.map(f => '$' + f), global, start, base, bytes })
     return true
   }
   // prevent double-injection on re-entry (null-sentinel; jz forbids delete)
@@ -257,14 +261,14 @@ export function pullStdlib(sec) {
   if (injectTable('math.pow_transcend', 'math.pow_exp2_tbl', ctx.runtime.powExp2Table)) ctx.runtime.powExp2Table = null
   // 2/π's bits for sin, cos and tan past 2^24 (module/math.js $math.rem_pio2, Payne–Hanek)
   if (injectTable('math.rem_pio2', 'math.pio2_tbl', ctx.runtime.pio2Table)) ctx.runtime.pio2Table = null
-  // The 2^(j/64) table both exponentials and pow reduce to (module/math/trig-tables.js EXP2_TAB): whichever is in injects it once.
-  if (injectTable('math.exp2', 'math.exp2_tbl', ctx.runtime.exp2Table)) ctx.runtime.exp2Table = null
-  if (injectTable('math.exp', 'math.exp2_tbl', ctx.runtime.exp2Table)) ctx.runtime.exp2Table = null
-  // pow's runtime kernel (the default one; crPow's has tables of its own) reads both
-  if (ctx.runtime.powLogTable) {
-    if (injectTable('math.pow_core', 'math.exp2_tbl', ctx.runtime.exp2Table)) ctx.runtime.exp2Table = null
-    if (injectTable('math.pow_core', 'math.pow_log_tbl', ctx.runtime.powLogTable)) ctx.runtime.powLogTable = null
-  }
+  // The 2^(j/64) table both exponentials and pow reduce to (module/math/trig-tables.js
+  // EXP2_TAB), and pow's log table: pow's runtime kernel (the default one; crPow's has
+  // tables of its own) reads both.
+  const powKernel = !!ctx.runtime.powLogTable
+  if (injectTable(powKernel ? ['math.exp2', 'math.exp', 'math.pow_core'] : ['math.exp2', 'math.exp'], 'math.exp2_tbl', ctx.runtime.exp2Table)) ctx.runtime.exp2Table = null
+  if (powKernel && injectTable('math.pow_core', 'math.pow_log_tbl', ctx.runtime.powLogTable)) ctx.runtime.powLogTable = null
+  // the math kernels' constants (module/math.js kc), for any of the kernels that read them
+  if (injectTable(ctx.runtime.mathKcUsers || [], 'math.kc', ctx.runtime.mathKc)) ctx.runtime.mathKc = null
   if (!needsAlloc) { ctx.scope.globals.delete('__heap'); ctx.scope.globals.delete('__heap_reset') }
   if (needsMemory && ctx.module.modules.core) {
     if (needsAlloc) {

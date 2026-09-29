@@ -2290,6 +2290,18 @@ EXP2_TAB: 2^(j/64) as the nearest double and the tail its rounding dropped;
 head and tail), T + T·(q + tail) with q the exact-coefficient remainder
 series, one exponent build; 0.52 ulp against a 200-bit reference for both,
 scalar, 2-wide and the constant folder bit-identical (`test/math.js`).
+The scalar kernels read their f64 literals from memory (`$math.kc`, module/math.js
+`kc`), 0, ±Infinity and NaN aside: V8's arm64 code builds a literal from up to
+four 16-bit moves and a register transfer at every use, where a load at a
+constant offset is one instruction. `exp` and `2 ** x` let every argument in
+range past their NaN, overflow and underflow tests with one comparison and take
+k = round(64x/ln2) from the low word of x·64/ln2 + 1.5·2^52, with no
+float-to-integer conversion (a range check in wasm); `log` and `log10` pass
+every normal x > 0 by one comparison and centre m on √2 by a select, where the
+branch went as the argument's low bits went. None of it changes a bit
+(`test/math-entry.js`); ns a call on arm64 against Node 25.9, loop subtracted,
+before and after, V8 last: exp 3.3 and 2.1 (2.4), `2 ** x` 3.1 and 2.0 (4.1),
+log 4.1 and 3.0 (3.1), sin 4.2 and 2.4 (6.3), atan 2.9 and 2.2 (2.6).
 
 jz's Math is not V8's bit for bit: it keeps within 50 ulp of it, for 9% more
 time on the floatbeat corpus than the fast kernels it replaced, where porting

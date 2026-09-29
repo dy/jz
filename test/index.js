@@ -12,6 +12,7 @@ const TESTS = [
   'pmath',
   'stdlib-kernels',
   'math-ulp',
+  'math-entry',
   'simd-intrinsics',
   'bytebeat',
   'imports',
