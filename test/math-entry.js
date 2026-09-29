@@ -10,7 +10,7 @@
 // logarithms.
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import jz from '../index.js'
+import jz, { compile } from '../index.js'
 import { levels, belowOpt } from './_matrix.js'
 import { ulpDiff, wat, funcWat } from './util.js'
 import { MATH_KERNEL } from '../src/prepare/math-kernel.js'
@@ -80,4 +80,18 @@ test('exp and exp2 round k without a float-to-integer conversion', () => {
     const k = funcWat(wat(`export let f = (x) => ${expr}`), fn)
     ok(k.length > 0 && !/i32\.trunc_f64_s/.test(k) && !/f64\.nearest/.test(k), `${fn}: k from the magic addition`)
   }
+})
+
+test('A program carries the constants of its own kernels only', () => {
+  // the data section's size: the table $math.kc is all of it for Math.atan alone
+  const dataBytes = (bin) => {
+    let at = 8, total = 0
+    const leb = () => { let v = 0, s = 0, b; do { b = bin[at++]; v |= (b & 127) << s; s += 7 } while (b & 128); return v }
+    while (at < bin.length) { const id = bin[at++], size = leb(); if (id === 11) total += size; at += size }
+    return total
+  }
+  const atan = dataBytes(compile('export let f = (x) => Math.atan(x)'))
+  const all = dataBytes(compile('export let f = (x) => Math.atan(x) + Math.log(x) + Math.sin(x) + Math.cbrt(x) + Math.expm1(x) + Math.asin(x)'))
+  ok(atan > 0 && atan < 200, `Math.atan's constants alone (${atan} B)`)
+  ok(all > atan, `more kernels, more constants (${all} B)`)
 })

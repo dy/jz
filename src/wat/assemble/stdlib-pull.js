@@ -267,8 +267,19 @@ export function pullStdlib(sec) {
   const powKernel = !!ctx.runtime.powLogTable
   if (injectTable(powKernel ? ['math.exp2', 'math.exp', 'math.pow', 'math.pow_b'] : ['math.exp2', 'math.exp'], 'math.exp2_tbl', ctx.runtime.exp2Table)) ctx.runtime.exp2Table = null
   if (powKernel && injectTable('math.pow', 'math.pow_log_tbl', ctx.runtime.powLogTable)) ctx.runtime.powLogTable = null
-  // the math kernels' constants (module/math.js kc), for any of the kernels that read them
-  if (injectTable(ctx.runtime.mathKcUsers || [], 'math.kc', ctx.runtime.mathKc)) ctx.runtime.mathKc = null
+  // The math kernels' constants (module/math.js kc): the words the kernels in the program
+  // read, renumbered in the order they first name them, so a program carries its own
+  // kernels' constants and no others (a late mirror, LATE_VEC_HELPERS, counts as in)
+  if (ctx.runtime.mathKc) {
+    const users = ctx.runtime.mathKcUsers.filter(f => ctx.core.includes.has(f) || LATE_VEC_HELPERS.has(f))
+    const word = /offset=(\d+) \(global\.get \$math\.kc\)/g, at = new Map()
+    for (const f of users) ctx.core.stdlib[f].replace(word, (m, k) => { if (!at.has(k)) at.set(k, at.size * 8); return m })
+    const bytes = new Uint8Array(at.size * 8)
+    for (const [k, to] of at) bytes.set(ctx.runtime.mathKc.subarray(+k, +k + 8), to)
+    for (const f of users) ctx.core.stdlib[f] = ctx.core.stdlib[f].replace(word, (m, k) => `offset=${at.get(k)} (global.get $math.kc)`)
+    if (at.size) injectTable(users, 'math.kc', bytes)
+    ctx.runtime.mathKc = null
+  }
   if (!needsAlloc) { ctx.scope.globals.delete('__heap'); ctx.scope.globals.delete('__heap_reset') }
   if (needsMemory && ctx.module.modules.core) {
     if (needsAlloc) {
