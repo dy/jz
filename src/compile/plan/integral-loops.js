@@ -30,6 +30,8 @@ import { freshId } from '../../ir.js'
 import { cloneWithSubst } from '../../type.js'
 import { collectBindings, nodeSize } from './common.js'
 import { occursOutside } from './counted-loops.js'
+import { invalidateBodies } from '../analyze.js'
+import { invalidateProgramFactsCache } from '../program-facts.js'
 
 const LOOPS = new Set(['for', 'while'])
 const CLOSED = new Set(['+', '-', '*', '%', 'u-'])
@@ -116,6 +118,7 @@ export const versionIntegralLoops = () => {
     } })
     const params = new Set((func.sig?.params ?? []).map(p => p.name))
     let bodyWrites = null   // the function's writes, indexed once; a copy adds its own
+    let rewrote = false
     for (const [loop, parent, idx] of loops) {
       if (parent[idx] !== loop || nodeSize(loop) > MAX_SIZE) continue
       if (some(loop, n => n[0] === '=>' || n[0] === 'label' || n[0] === 'yield' || n[0] === 'await')) continue
@@ -150,8 +153,10 @@ export const versionIntegralLoops = () => {
         ...written.filter(n => occursOutside(func.body, loop, n)).map(n => ['=', n, own.get(n)])]]
       parent[idx] = ['if', test, version, ['{}', [';', loop]]]
       for (const [n, values] of writesIn(version)) { const l = bodyWrites.get(n); if (l) l.push(...values); else bodyWrites.set(n, values) }
-      changed = true
+      rewrote = true
     }
+    // rewritten in place: the facts cached for the body describe what it was
+    if (rewrote) { invalidateProgramFactsCache(func.body); invalidateBodies([func.body]); changed = true }
   }
   return changed
 }
