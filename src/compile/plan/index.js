@@ -55,6 +55,7 @@ import { declareUnseenKeys } from './declare-unseen-keys.js'
 import { versionIntegralLoops } from './integral-loops.js'
 import { unswitchLoops } from './unswitch-loops.js'
 import { callChosenFunctions } from './chosen-calls.js'
+import { specializeCalledArgs } from './called-args.js'
 import { promoteLoopFields, loopFieldCandidates } from './loop-fields.js'
 import { foldKindTests } from './fold-kind-tests.js'
 import { indexArrayPatterns } from './index-array-patterns.js'
@@ -158,6 +159,8 @@ export default function plan(ast, profiler, summarize) {
   if (aliases) sweep('resolveAliases', resolveAliases)
   // A local holding one of several functions and only called: a choice of direct calls.
   sweep('callChosenFunctions', () => callChosenFunctions(ast))
+  // A parameter only called, given a named function: a copy that calls it by name.
+  sweep('specializeCalledArgs', () => specializeCalledArgs(facts(), ast))
   sweep('inlineHotInternalCalls', () => inlineHotInternalCalls(facts(), ast))
   // A spliced call's statements are statements of its caller's lists, and its seams
   // are names for one value: the bindings split, then each alias reads what it stands for.

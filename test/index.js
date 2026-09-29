@@ -108,6 +108,7 @@ const TESTS = [
   'chosen-calls',
   'loop-fields',
   'absent-member',
+  'called-args',
   'remainder',
   'select-order',
   'pointer-join',
