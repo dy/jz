@@ -56,6 +56,7 @@ import { versionIntegralLoops } from './integral-loops.js'
 import { unswitchLoops } from './unswitch-loops.js'
 import { callChosenFunctions } from './chosen-calls.js'
 import { specializeCalledArgs } from './called-args.js'
+import { hoistObjectReads } from './object-reads.js'
 import { promoteLoopFields, loopFieldCandidates } from './loop-fields.js'
 import { foldKindTests } from './fold-kind-tests.js'
 import { indexArrayPatterns } from './index-array-patterns.js'
@@ -172,6 +173,8 @@ export default function plan(ast, profiler, summarize) {
   sweep('unrollRowLenPadLoops', unrollRowLenPadLoops)
   sweep('inlineLocalLambdas', inlineLocalLambdas)
   sweep('specializeFixedRestCalls', () => specializeFixedRestCalls(facts()))
+  // A key a loop reads of an object the function made and only reads: read once where it is made.
+  sweep('hoistObjectReads', hoistObjectReads)
   if (optimizing()) {
     // A field a loop reads and writes through one receiver, in a local for the
     // loop; the loops inlining left name what it spliced, so the summary looks again.

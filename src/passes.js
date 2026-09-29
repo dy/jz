@@ -98,6 +98,7 @@ export const PASS_NAMES = [
   'promoteLoopFields',        // a field a loop reads and writes through one receiver: a local for the loop (plan/loop-fields.js)
   'callChosenFunctions',      // a local holding one of several functions and only called: the choice of direct calls (plan/chosen-calls.js)
   'specializeCalledArgs',     // a parameter only called, given a named function: a copy calling it by name (plan/called-args.js)
+  'hoistObjectReads',         // a key a loop reads of an object the function made and only reads: one read where it is made (plan/object-reads.js)
   'versionIntegralLoops',     // a loop indexing by numbers of unknown integrality: a copy over their int32s where they are ones (plan/integral-loops.js), speed-for-size
   'unswitchLoops',            // a loop testing a name it never writes: a copy for each answer (plan/unswitch-loops.js), speed-for-size
   'loadCSE',                  // straight-line typed element-load CSE (compile-level, pre-analyze)

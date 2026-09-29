@@ -109,6 +109,7 @@ const TESTS = [
   'loop-fields',
   'absent-member',
   'called-args',
+  'object-reads',
   'remainder',
   'select-order',
   'pointer-join',
