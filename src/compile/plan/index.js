@@ -37,7 +37,7 @@ import { buildProgramIndex, releaseLiftedAddressTakenNames } from '../program-in
 import narrowSignatures, {
   specializeBimorphicTyped, specializeValKindDichotomy, speculateTypedParams, refineDynKeys,
   applyJsstringBoundaryCarrierStandalone, seedResultKinds,
-  strictBoundaryTypeCheck, applyExportTypedArrayAbi,
+  strictBoundaryTypeCheck, applyExportTypedArrayAbi, splitByListKinds,
 } from '../narrow.js'
 
 import { optimizing } from './common.js'
@@ -266,6 +266,8 @@ export default function plan(ast, profiler, summarize) {
   // previously untyped boundary parameter; established contracts are skipped.
   while (t('applyExportTypedArrayAbi', () => applyExportTypedArrayAbi(programFacts.paramReps, programFacts.callSites, programFacts.programIndex.addressTaken)))
     ctx.summary = summarize()
+  // A list of typed arrays reaching one function in several kinds: a copy per kind.
+  while (t('splitByListKinds', () => splitByListKinds(programFacts))) ctx.summary = summarize()
   t('narrowSignatures', () => narrowSignatures(programFacts, ast))
 
     // After narrowSignatures (params now carry ptrKind): mark typed-array params that every call

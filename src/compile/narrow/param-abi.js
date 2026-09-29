@@ -15,7 +15,7 @@ import { typedElemAux } from '../../../layout.js'
 import { VAL } from '../../reps.js'
 import { PTR_ABI_KINDS } from './caller-ctx.js'
 import { isExported } from '../func-exports.js'
-import { paramNumericArrayLike } from '../param-numeric.js'
+import { paramNumericArrayLike, paramArrayLikeList, isListLit } from '../param-numeric.js'
 import { ensureParamRep } from '../../param-reps.js'
 import { scanBindingUses, USE, BINDING_USE_KIND, BINDING_USE_USES } from '../analyze-scans.js'
 import { K, tagOf, core } from '../../summary/kind.js'
@@ -406,6 +406,69 @@ function mintKindVariants(func, slots, paramReps, callSites) {
     ctx.funcs.exports[exportName] = clone.name
     func.boundaryVariants.push({ exportName, func: clone })
   }
+}
+
+/** A function whose parameter is a list of numeric array-likes (a kernel's
+ *  channels), called with lists of different typed kinds (`ms([X, Y])` over
+ *  Float32Arrays beside `ms([P, Q])` over Float64Arrays, a Float32Array kind
+ *  variant's `ms([l, r])` beside its origin's), takes a copy per kind: a call
+ *  whose list literal holds one constructor calls the copy for it, the other
+ *  calls keep the original. The solver joins every list a parameter receives
+ *  into one cell, so one body would read each element behind a run-time kind
+ *  test. A copy calls what its original calls, from its own body: those calls
+ *  join the census, where a helper fed both kinds splits in turn. */
+const MAX_LIST_KINDS = 4
+export function splitByListKinds(programFacts) {
+  const { callSites, paramReps } = programFacts, addressTaken = programFacts.programIndex.addressTaken
+  const sitesOf = new Map()
+  for (const cs of callSites) {
+    const list = sitesOf.get(cs.callee)
+    if (list) list.push(cs); else sitesOf.set(cs.callee, [cs])
+  }
+  // The constructor every element of a call's list literal holds, or null.
+  const listCtor = (cs, k) => {
+    const a = cs.argList[k]
+    if (!isListLit(a)) return null
+    const q = ctx.summary.at(cs.callerFunc?.sig)
+    let ctor = null
+    for (let j = 1; j < a.length; j++) {
+      const c = q.typedCtorOfExpr(a[j])
+      if (c == null || (ctor != null && c !== ctor)) return null
+      ctor = c
+    }
+    return ctor
+  }
+  let split = false
+  for (const func of ctx.funcs.list.slice()) {
+    if (isExported(func) || func.raw || !func.body || func.rest || addressTaken.has(func.name)) continue
+    const sites = sitesOf.get(func.name)
+    if (!sites) continue
+    const ks = []
+    func.sig.params.forEach((p, k) => {
+      if (p.type === 'f64' && func.defaults?.[p.name] == null && paramArrayLikeList(func.body, p.name, new Set(), func.sig.params.map(q => q.name))) ks.push(k)
+    })
+    if (!ks.length) continue
+    const combos = sites.map(cs => { const c = ks.map(k => listCtor(cs, k)); return c.every(Boolean) ? c.join('|') : null })
+    const kinds = new Set(combos.filter(Boolean))
+    if (!kinds.size || kinds.size > MAX_LIST_KINDS || (kinds.size === 1 && !combos.includes(null))) continue
+    const own = callSites.filter(cs => cs.callerFunc === func)
+    for (const kind of kinds) {
+      const ctors = kind.split('|')
+      const clone = materializeVariant({
+        origin: func, name: `${func.name}$${ctors.map(c => c.replace(/^new\./, '')).join('$')}`, kind: 'list-kind', paramReps,
+        factOverrides: ks.map((k, i) => ({ k, patch: r => { r.arrayElemTypedCtor = ctors[i] } })),
+        eligibleSites: sites.filter((_, i) => combos[i] === kind), fallback: func,
+      })
+      const twin = twinNodes(func.body, clone.body), at = n => twin.get(n) ?? n
+      for (const cs of own) {
+        if (!twin.has(cs.node)) continue
+        const argList = cs.argList.map(at), node = at(cs.node)
+        callSites.push(cs.synthetic ? { callee: cs.callee, argList, callerFunc: clone, node, synthetic: true } : { callee: cs.callee, argList, callerFunc: clone, node })
+      }
+    }
+    split = true
+  }
+  return split
 }
 
 /** Exported parameters used only as numeric array-likes (paramNumericArrayLike)

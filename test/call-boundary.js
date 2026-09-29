@@ -113,6 +113,54 @@ test('call boundary: a variant is minted where its kinds differ', () => {
   }
 })
 
+// The channels idiom: an export gathers its host blocks into a list literal a
+// kernel reads element by element. The slots take the typed ABI through the
+// list (param-numeric.js paramArrayLikeList), and the kernel runs one copy per
+// list kind (narrow/param-abi.js splitByListKinds): no element read by kind.
+const hiddenOf = (code, fn) => WebAssembly.Module.exports(new WebAssembly.Module(compile(code))).map(e => e.name).filter(n => n.startsWith(fn + ':')).sort().join()
+// An element the program's own functions read or store by its kind at run time.
+const byKind = (wat) => {
+  let fn = ''
+  for (const line of wat.split('\n')) {
+    fn = line.match(/^  \(func \$(\S+)/)?.[1] ?? fn
+    if (!fn.startsWith('__') && /call \$(__typed_idx|__dyn_get|__arr_typed_obj_set_idx)/.test(line)) return true
+  }
+  return false
+}
+test('call boundary: host arrays a kernel reads inside a list literal run typed in each kind', () => {
+  const src = `let q16 = (ch, n, out) => { for (let c = 0; c < ch.length; c++) for (let x = ch[c], i = 0, o = c; i < n; i++, o += ch.length) { let s = x[i]; out[o] = Math.floor((s < -1 ? -1 : s > 1 ? 1 : s) * 0x7FFF + 0.5) } }
+    let B = new Int16Array(64)
+    export let run = (l, r) => { q16([l, r], l.length, B); let h = 0; for (let i = 0; i < 2 * l.length; i++) h = (h * 31 + B[i]) | 0; return h }`
+  is(hiddenOf(src, 'run'), 'run:Float32Array', 'the list\'s elements take the typed slots')
+  ok(!byKind(compile(src, { wat: true })), 'no element read by kind')
+  const want = oracle(src), { exports } = jz(src)
+  for (const K of [Float64Array, Float32Array, Array]) is(exports.run(fill(K, 16, wave), fill(K, 16, i => -wave(i))), want.run(fill(K, 16, wave), fill(K, 16, i => -wave(i))), `run(${K.name})`)
+})
+
+test('call boundary: a kernel callers feed lists of different kinds runs one copy per kind', () => {
+  const src = `let ms = (chs) => { let q = 0; for (let c = 0; c < chs.length; c++) { let x = chs[c]; for (let i = 0; i < x.length; i++) q += x[i] * x[i] } return q }
+    let X = new Float32Array(8), Y = new Float64Array(8)
+    for (let i = 0; i < 8; i++) { X[i] = i * 0.25; Y[i] = i * 0.5 }
+    export let own = () => ms([X, X]) + ms([Y, Y])
+    export let host = (l, r) => ms([l, r])`
+  ok(!byKind(compile(src, { wat: true })), 'no element read by kind')
+  const want = oracle(src), { exports } = jz(src)
+  is(exports.own(), want.own(), 'own lists')
+  for (const K of [Float64Array, Float32Array, Array]) is(exports.host(fill(K, 5, i => i * 3 - 5), fill(K, 3, i => i)), want.host(fill(K, 5, i => i * 3 - 5), fill(K, 3, i => i)), `host(${K.name})`)
+})
+
+test('call boundary: a list reaches a function\'s property the program defines once', () => {
+  // `kw.ms = function` at top level is the lifted `kw$ms`: its calls are direct calls of it
+  const src = `let kw = function (d) { return d }
+    kw.ms = function (chs, out) { for (let c = 0; c < chs.length; c++) { let x = chs[c], q = 0; for (let i = 0; i < x.length; i++) q += x[i] * x[i]; out[c] = q } return out }
+    let o = new Float64Array(2)
+    export let run = (l, r) => kw.ms([l, r], o)[0] + o[1]`
+  is(hiddenOf(src, 'run'), 'run:Float32Array')
+  ok(!byKind(compile(src, { wat: true })), 'no element read by kind')
+  const want = oracle(src), { exports } = jz(src)
+  for (const K of [Float64Array, Float32Array, Array]) is(exports.run(fill(K, 6, wave), fill(K, 4, i => i)), want.run(fill(K, 6, wave), fill(K, 4, i => i)), `run(${K.name})`)
+})
+
 test('call boundary: a slot that may be a written plain array takes any value and selects no variant', () => {
   // The compiler marks a parameter the body may store into as a plain array `Array+`
   // (boundary-wrap.js), and says so of more than it must: `n`, handed to subarray,
