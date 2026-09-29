@@ -1103,3 +1103,38 @@ test('summary: a typed array class test proves the element kind', () => {
   for (const optimize of levels(0, 2)) is(jz(`export let f = (k) => { let x = k ? new Float32Array([1, 2]) : k === 0 ? 'ab' : [3, 4]
     if (x instanceof Float32Array) { const y = x; return y[1] + y.length } return -1 }`, { optimize }).exports.f(1), 4, `O${optimize}`)
 })
+
+// A statement that always leaves ends its list: what follows never runs. The
+// dispatch `if (data instanceof Float32Array) return fn(data, opts)`, decided
+// for a Float32Array and folded to its arm, leaves the channel-list and
+// stream arms after a return; walked, their callbacks would hand `fn` values
+// of any kind, and the kernel it wraps would read its samples by a generic
+// element lookup.
+test('summary: nothing after a statement that always leaves reaches a kind', () => {
+  const src = `function energy(data, opts) {
+      let s = 0, w = opts.w
+      for (let i = 0; i + w <= data.length; i++) { let c = 0; for (let j = 0; j < w; j++) c += data[i + j] * data[i + j]; s += c }
+      return s }
+    function wrap(fn) {
+      return function run(data, opts) {
+        if (data instanceof Float32Array) return fn(data, opts)
+        if (Array.isArray(data)) return data.map((ch) => fn(ch, opts))
+        return (chunk) => fn(chunk, data) } }
+    const shift = wrap(energy)
+    const buf = new Float32Array(64)
+    export let f = (k, w) => { for (let i = 0; i < 64; i++) buf[i] = ((i * 7 + k) % 11) / 4 - 1; return shift(buf, { w }) }
+    function tail(x) { return inner(x) + k; function inner(y) { return y * 2 } var k = 3 }
+    function sw(v) { switch (v) { case 1: return 'a'; case 2: v = 5; case 3: return 'c' + v; default: break } return 'd' }
+    function loop(a) { for (let i = 0; i < 3; i++) { if (i === a) break; continue; a = 'x' } return a }
+    export let g = (x) => tail(x) + sw(x) + loop(x)`
+  const js = oracle(src)
+  for (const optimize of levels(0, 2, 3)) {
+    const { f, g } = jz(src, { optimize }).exports
+    for (const [k, w] of [[0, 4], [3, 8], [5, 1]]) is(f(k, w), js.f(k, w), `f(${k}, ${w}) at ${optimize}`)
+    for (const x of [0, 1, 2, 3, 5]) is(g(x), js.g(x), `g(${x}) at ${optimize}`)
+  }
+  if (belowOpt(2)) return
+  const text = compile(src, { optimize: 2, wat: true })
+  const fns = text.split('\n  (func ').filter(b => b.split('\n')[0].endsWith('energy'))
+  ok(fns.length && fns.every(b => !/call \$__(typed_idx|dyn_get|str_idx|is_str_key|add_slow)/.test(b)), 'the kernel reads its samples as a Float32Array')
+})

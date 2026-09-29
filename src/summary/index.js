@@ -3354,11 +3354,14 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     if (op === 'let' || op === 'const') return decl(n)
     if (op === 'return') { if (current != null) raiseResult(current, n.length > 1 ? expr(n[1]) : NULLISH); return }
     if (op === ';' || op === '{}') {
-      // A guard that leaves (`if (x == null) return`) proves its names for the statements after it.
+      // A guard that leaves (`if (x == null) return`) proves its names for the
+      // statements after it; a statement that always leaves ends the list:
+      // what follows it never runs, so none of its values reach anything.
       const mark = rtop
       for (let i = 1; i < n.length; i++) {
         noteDefinite(n, i); stmt(n[i])
         const st = n[i]
+        if (exits(st)) break
         if (Array.isArray(st) && st[0] === 'if' && st[3] == null && exits(st[2])) proves(st[1], false)
       }
       unwind(mark)
