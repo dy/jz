@@ -1,5 +1,5 @@
 import { ctx } from '../ctx.js'
-import { EQUALITY_OPS, MUTATE_OPS, RELATIONAL_OPS, T, walkAst } from '../ast.js'
+import { EQUALITY_OPS, MUTATE_OPS, RELATIONAL_OPS, T, isNumberGuard, walkAst } from '../ast.js'
 import { typedCtorRawOf } from '../static.js'
 import { VAL } from '../reps.js'
 import { K, tagOf, paramOf, hasTag, core } from '../summary/kind.js'
@@ -663,6 +663,9 @@ export function countingNames(body, params) {
     const op = n[0]
     if (op == null || op === 'str') return
     if (op === '=>') { walkAst(n, { enter: (m) => { for (let i = 1; i < m.length; i++) if (typeof m[i] === 'string') reject(m[i]) } }); return }
+    // a loop copy's guard (`typeof ix === 'number'`) is the compiler asking for
+    // the type, not the program reading the value: its cursor still counts
+    if (isNumberGuard(n)) return
     if (op === 'let' || op === 'const') {
       for (let i = 1; i < n.length; i++) { const d = n[i]; if (Array.isArray(d) && d[0] === '=') { if (typeof d[1] === 'string') visit(d[2], cands.has(d[1])); else visit(d, false) } }
       return

@@ -63,6 +63,14 @@ export const isUndefinedLiteral = node =>
  *  emit's emitTypeofCmp and flow-types' refinements dispatch on the codes).
  *  Null-proto: prepare indexes it with arbitrary user strings — a plain literal
  *  would leak `constructor`/`toString` through the lookup. */
+/** An int32 loop copy's guard `typeof x === 'number'` (plan/integral-loops.js),
+ *  in the string form prepare folds every source typeof test out of (to its
+ *  TYPEOF code), so a clone of the loop keeps it recognizable: the compiler
+ *  asks, the program does not, and a numeric reading of x is no less numeric
+ *  for it (summary demand, counting names). */
+export const numberGuard = (name) => ['===', ['typeof', name], ['str', 'number']]
+export const isNumberGuard = (n) => Array.isArray(n) && n[0] === '===' && Array.isArray(n[1]) && n[1][0] === 'typeof' &&
+  typeof n[1][1] === 'string' && Array.isArray(n[2]) && n[2][0] === 'str' && n[2][1] === 'number'
 export const TYPEOF = Object.freeze(Object.assign(Object.create(null), {
   number: -1, string: -2, undefined: -3, boolean: -4, object: -5, 'function': -6, bigint: -7,
 }))

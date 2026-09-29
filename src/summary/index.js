@@ -48,7 +48,7 @@
  *
  * @module summary
  */
-import { MUTATE_OPS, EXACT_MATH, extractParams, isBrand, returnExprs, ACCESSOR_GET, ACCESSOR_SET, CLASS_T, TYPEOF, typeofPredicate, canonicalKeyOrder, schemaKey, isArrayIndexKey, layoutView, ENUM_DATA, isTdzDecl, spreadExclusions } from '../ast.js'
+import { MUTATE_OPS, EXACT_MATH, extractParams, isBrand, returnExprs, ACCESSOR_GET, ACCESSOR_SET, CLASS_T, TYPEOF, isNumberGuard, typeofPredicate, canonicalKeyOrder, schemaKey, isArrayIndexKey, layoutView, ENUM_DATA, isTdzDecl, spreadExclusions } from '../ast.js'
 import { encodeTypedElemAux, TYPED_ELEM_CODE, TYPED_ELEM_VIEW_FLAG, TYPED_ELEM_ANY_VIEW_FLAG, ctorFromElemAux, TYPED_ELEM_BIGINT_FLAG } from '../../layout.js'
 import { ITER_RECORD_KEYS } from '../std/iter-helpers.js'
 import { PROMISE_KEYS } from '../std/async.js'
@@ -3923,6 +3923,8 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     // For number|undefined locals, equality with a definite number cannot
     // distinguish undefined from numeric NaN. Other kinds still require the
     // compatible (non-coercing) contract: null/boolean identity must survive.
+    // a loop copy's guard asks the type for the compiler: no read of the program's
+    if (isNumberGuard(n)) { useOf(n[1][1], NEUTRAL); return }
     if (op === '==' || op === '!=' || op === '===' || op === '!==') {
       // `x !== x` holds for NaN alone: of a number it reads the number, of any other kind nothing.
       if (typeof n[1] === 'string' && n[1] === n[2]) { useOf(n[1], COMPAT); return }
@@ -3935,6 +3937,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     }
     if (op === ',') { for (let i = 1; i < n.length - 1; i++) demand(n[i]); useOf(n[n.length - 1], cx, into); return }
     if (op === '()' && n.length === 2) { useOf(n[1], cx, into); return }
+
     if (op === '()') {
       const callee = n[1], as = n[2], count = argCount(as)
       if (typeof callee === 'string') {

@@ -46,7 +46,7 @@
  * @module compile/plan/integral-loops
  */
 import { ctx } from '../../ctx.js'
-import { T, MUTATE_OPS, TYPEOF, some, walkAst, extractParams, collectParamName } from '../../ast.js'
+import { T, MUTATE_OPS, TYPEOF, numberGuard, some, walkAst, extractParams, collectParamName } from '../../ast.js'
 import { freshId } from '../../ir.js'
 import { cloneWithSubst } from '../../type.js'
 import { collectBindings, nodeSize } from './common.js'
@@ -265,12 +265,12 @@ const versionBody = (body, params, view, func, programFacts) => {
     // a name the summary knows holds no number (an object key) is never an int32
     const mayBeNumber = (n) => { const k = view?.kindOfExpr(n); return k == null || hasTag(k, K.NUMBER) || tagOf(core(k)) === K.ANY }
     const outerOk = (n) => locals.has(n) && !inner.has(n) && !captured.has(n) && !ctx.funcs.names.has(n)
-    let names = [...indexNames(loop, loopWrites, intArray)].filter(n => outerOk(n) && !already(n) && mayBeNumber(n))
+    const indexed = [...indexNames(loop, loopWrites, intArray)].filter(n => outerOk(n) && !already(n) && mayBeNumber(n))
     // a cursor the loop moves other than by a constant step (`p = (p + 1) % N`): an index
     // made of names the loop only reads or counts is affine over its counters, which the
-    // typed-bounds versioning already proves
-    if (!names.some(n => loopWrites.has(n) && !counted(loop, n))) names = []
-    let numbers = [...numberNames(loop, loopWrites, inner, kindOf, kindOfExpr, outerOk)].filter(n => !names.includes(n))
+    // typed-bounds versioning already proves; nor is such an index a Number to copy for
+    const names = indexed.some(n => loopWrites.has(n) && !counted(loop, n)) ? indexed : []
+    let numbers = [...numberNames(loop, loopWrites, inner, kindOf, kindOfExpr, outerOk)].filter(n => !indexed.includes(n))
     // a Number the loop carries (`z1 = x - a1 * y`): what it only reads converts once per use, as it would
     if (!numbers.some(n => loopWrites.has(n))) numbers = []
     const present = [...presentNames(loop, loopWrites, kindOf, outerOk)]
@@ -288,7 +288,7 @@ const versionBody = (body, params, view, func, programFacts) => {
     // the type first, so the test converts no object (a key's valueOf runs where the loop reads it);
     // a Number alone: `typeof x === 'number'`, the form whose arm the summary reads as a Number;
     // present: `x != null`
-    const test = [...names.map(n => ['&&', ['&&', ['===', ['typeof', n], ['str', 'number']], ['===', n, ['|', n, [null, 0]]]], ['||', ['!==', n, [null, 0]], ['>', ['/', [null, 1], n], [null, 0]]]]),
+    const test = [...names.map(n => ['&&', ['&&', numberGuard(n), ['===', n, ['|', n, [null, 0]]]], ['||', ['!==', n, [null, 0]], ['>', ['/', [null, 1], n], [null, 0]]]]),
       ...numbers.map(n => ['===', ['typeof', n], [null, TYPEOF.number]]),
       ...present.map(n => ['!=', n, [null, null]])]
       .reduce((a, b) => ['&&', a, b])
