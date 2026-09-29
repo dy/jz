@@ -5,7 +5,7 @@
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
 import jz from '../index.js'
-import { belowOpt, levels } from './_matrix.js'
+import { belowOpt, levels, onWasi } from './_matrix.js'
 import { oracle, wat } from './util.js'
 
 const loopsOf = (text) => {
@@ -83,7 +83,8 @@ test('chosen calls: a string, a property or a key spelling a function leaves it 
   const body = `function sq (x, y) { let a = x * x + y, b = a * 3 - x; return { p: a + b, q: b - a } }`
   const loop = (extra) => `${body} export let f = (o) => { let s = 0; for (let i = 0; i < 9; i++) { let r = sq(i, s % 7); s += r.p - r.q } return s ${extra} }`
   const srcs = [loop(''), loop(`+ (o.name || 'sq').length`), loop(`+ (o.sq ?? 1)`), loop(`+ ({ sq: 2 }).sq`)]
-  for (const src of srcs) agrees(src, [['f', { name: 'abc', sq: 4 }], ['f', {}]])
+  // a host object reaches only the js host's module (the wasi host passes none)
+  if (!onWasi()) for (const src of srcs) agrees(src, [['f', { name: 'abc', sq: 4 }], ['f', {}]])
   if (belowOpt(2)) return
   for (const src of srcs) ok(!/call \$sq\b/.test(wat(src, { optimize: 2 })), `sq spliced: ${src.slice(src.indexOf('return s'))}`)
 })
@@ -91,7 +92,7 @@ test('chosen calls: a string, a property or a key spelling a function leaves it 
 test('chosen calls: an argument that may be undefined takes its default at the site', () => {
   const src = `function scale (x, k = 3, b = k) { return x * k + b }
     export let run = (o, n) => { let s = 0; for (let i = 0; i < n; i++) { let v = scale(i, o.k, o.b); s += v } return s }`
-  agrees(src, [['run', {}, 4], ['run', { k: 2 }, 4], ['run', { k: 2, b: 1 }, 4], ['run', { k: null }, 4], ['run', { b: null }, 4], ['run', { k: 0.5, b: -1 }, 3]])
+  if (!onWasi()) agrees(src, [['run', {}, 4], ['run', { k: 2 }, 4], ['run', { k: 2, b: 1 }, 4], ['run', { k: null }, 4], ['run', { b: null }, 4], ['run', { k: 0.5, b: -1 }, 3]])
   if (belowOpt(2)) return
   ok(!/call \$scale\b/.test(wat(src, { optimize: 2 })), 'scale spliced, its defaults tested in place')
 })
