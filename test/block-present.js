@@ -7,7 +7,7 @@
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
 import { belowOpt, levels } from './_matrix.js'
-import { oracle, run, wat } from './util.js'
+import { funcWat, oracle, run, wat } from './util.js'
 
 const src = `const bufs = [new Float32Array([1.5, 2.5, -3]), new Float32Array([4, 5])]
 const scale = (d) => { const n = d.length; const c = Float64Array.from(d); let s = 0
@@ -60,3 +60,12 @@ test('block present: the loop tests its receiver once, before it', () => {
   for (const l of inner) ok(!/__throw_property_nullish|call \$__throw/.test(l), 'no missing-receiver test inside the loop')
 })
 
+// Past its own check a receiver is present (module/core.js dotRead): the
+// length of a typed array that may be missing is its header's word, with no
+// runtime dispatch over every kind a length can come from.
+test('block present: a length read past the receiver\'s check reads the header', () => {
+  if (belowOpt(2)) return
+  const text = wat(loop, { optimize: 2 })
+  const g = funcWat(text, 'g$exp') || funcWat(text, 'g')
+  ok(g.length > 0 && !/call \$__(length|str_eq|str_length|ptr_offset_fwd)/.test(g), 'no length dispatch')
+})

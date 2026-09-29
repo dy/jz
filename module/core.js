@@ -2337,14 +2337,20 @@ export default (ctx) => {
         if (typeof obj === 'string') (ctx.func.checkedRecv ??= []).push(obj)
         // A receiver whose only missing value is absence tests for undefined alone.
         const missing = hasTag(receiverKind, K.NULLISH) ? isNullish : isUndef
-        if (typeof obj === 'string' && value[0] === 'local.get' && value[1] === `$${obj}`)
+        // Past the test a name is present: the read takes its present kind
+        // (`d.length` of a typed array that may be missing reads the header).
+        const same = typeof obj === 'string' && value[0] === 'local.get' && value[1] === `$${obj}`
+        const view = typeof obj === 'string' ? ctx.summary?.at(ctx.func.current) : null, mark = view?.present && !view.isPresent(obj)
+        if (mark) view.present(obj)
+        let read
+        try { read = asF64(readHoistedProp(obj, prop, same ? obj : t, raw)) } finally { if (mark) view.unpresent(obj) }
+        if (same)
           return typed(['block', ['result', 'f64'],
-            ['if', missing(value), ['then', ['drop', throwTypeErrorIR()]]],
-            asF64(readHoistedProp(obj, prop, obj, raw))], 'f64')
+            ['if', missing(value), ['then', ['drop', throwTypeErrorIR()]]], read], 'f64')
         return typed(['block', ['result', 'f64'],
           ['local.set', `$${t}`, value],
           ['if', missing(typed(['local.get', `$${t}`], 'f64')), ['then', ['drop', throwTypeErrorIR()]]],
-          asF64(readHoistedProp(obj, prop, t, raw))], 'f64')
+          read], 'f64')
       }
     }
     // `C.prototype` of a class (a factory closure): jz classes have no
@@ -2584,8 +2590,11 @@ export default (ctx) => {
     if (obj !== t) copyReceiverFacts(obj, t)
     const rep = typeof obj === 'string' ? repOf(obj) : null
     const vt = typeof obj === 'string' ? lookupValType(obj) : valTypeOf(obj)
-    if (prop === 'length')
-      return emitLengthAccess(['local.get', `$${t}`], vt, vt == null && rep?.recvArrTyped === true)
+    if (prop === 'length') {
+      // A typed array whose element kind the plan knows reads its header's length word.
+      const n = vt === VAL.TYPED && obj === t ? ctx.core.emit['__typed_len']?.(obj) : null
+      return n ?? emitLengthAccess(['local.get', `$${t}`], vt, vt == null && rep?.recvArrTyped === true)
+    }
     // Type-specific + module-registered property getters (`.size`, `.byteLength`,
     // `.regex:source`, …) — the SAME getter dispatch the plain `.` emitter runs
     // (only entries tagged via `getter()` fire; untagged `.values`/`.pop` stay a
