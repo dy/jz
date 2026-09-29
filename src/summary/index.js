@@ -996,7 +996,8 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       // opens its elements; one only this result holds keeps its proofs.
       const row = slots(sid)
       for (let i = 0; i < row.length; i++) escapeToHost(row[i], seen)
-      escapeToHost(anySideOf(sid), seen)
+      for (const k of sideProps.get(sid)?.values() ?? []) escapeToHost(k, seen)
+      escapeToHost(sideWild.get(sid) ?? K.NONE, seen)
     }
   }
   // Returning a fresh local array cannot change its earlier reads. Only a
@@ -1030,7 +1031,9 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       if (seen.has(sid)) continue
       seen.add(sid); retainedSchemas.add(sid)
       for (const s of slots(sid)) retain(s, seen)
-      retain(anySideOf(sid), seen)
+      // each value stored beside the slots on its own: joined, two arrays would share one cell
+      for (const k of sideProps.get(sid)?.values() ?? []) retain(k, seen)
+      retain(sideWild.get(sid) ?? K.NONE, seen)
     }
   }
   // A parameter's incoming kind, the join of its arguments alone: a read of

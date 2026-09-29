@@ -1201,6 +1201,20 @@ test('host array handles: a fresh result\'s arrays keep their element proofs, a 
   }
 })
 
+// The retention walk takes each value a retained object holds beside its slots
+// on its own: the parameter object of K-weighting keeps its coefficient pair and
+// its state list side by side, and joined they would share one element kind.
+test('host array handles: a retained object\'s side properties keep their own kinds', () => {
+  const src = `let k = { fs: 44100 }, out = new Float64Array(1)
+    let design = (p) => { if (!p._sos) p._sos = [{ b0: 0.5, a1: 0.25 }, { b0: 0.75, a1: 0.125 }]; return p }
+    let step = (x) => { let [c, d] = design(k)._sos, st = k.states ??= [], s = st[0] ??= new Float64Array(2), y = 0
+      for (let i = 0; i < x.length; i++) { y = c.b0 * x[i] - c.a1 * s[0] + d.b0; s[0] = y }
+      out[0] = y; return out }
+    export let f = () => step(new Float64Array([1, 2, 3]))[0]`
+  for (const optimize of levels(0, 2, 3)) is(jz(src, { optimize }).exports.f(), 1.890625, `O${optimize}`)
+  ok(!/call \$__add_slow/.test(compile(src, { wat: true })), 'the coefficients stay numbers')
+})
+
 test('host allocator: alignment preserves unsigned addresses above 2 GiB', () => {
   const memory = new WebAssembly.Memory({ initial: 32769, maximum: 32769 })
   const mem = jz.memory(memory)
