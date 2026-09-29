@@ -820,10 +820,10 @@ test('destruct: a default that runs code between two steps keeps the protocol', 
 test('destruct: a rest never calls an array\'s own slice', () => {
   const own = `export let f = () => { const a = [1, 2]; a.slice = () => [9]; const [...r] = a; return r[0] * 10 + r.length }`
   // pre-watr: the records' functions release what they made as they return, so watr inlines them into `f`
-  ok(/__it_(open|pull|step)/.test(compile(own, { wat: true, optimize: { level: 'speed', watr: false } })), 'the protocol stays where slice may be the array\'s own')
+  ok(/__it_(open|pull|step|rest|close)/.test(compile(own, { wat: true, optimize: { level: 'speed', watr: false } })), 'the protocol stays where slice may be the array\'s own')
   is(jz(own, { optimize: 'speed' }).exports.f(), 12)
   const plain = `export let f = () => { const a = [1, 2, 3]; const [, ...r] = a; return r[0] * 10 + r.length }`
-  ok(!/__it_(open|pull|step)/.test(compile(plain, { wat: true, optimize: 'speed' })), 'a program without an own slice reads the rest by index')
+  ok(!/__it_(open|pull|step|rest|close)/.test(compile(plain, { wat: true, optimize: 'speed' })), 'a program without an own slice reads the rest by index')
   is(jz(plain, { optimize: 'speed' }).exports.f(), 22)
 })
 

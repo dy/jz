@@ -378,10 +378,16 @@ export function collectSlotWriteHazards(ast, opts) {
   // resolution must see local kinds — `ps[i] = {…}` with ps a local ARRAY and
   // i an int counter is an ELEMENT write, not a slot hazard; without the
   // overlay both fall to unknown and the scan poisons the world.
+  // A function nothing reaches is not lowered (compile/index.js): its stores run
+  // nowhere. A library's helper every site of which took its body (`medianUs`
+  // spliced into the one caller) stores through a parameter no call types, and
+  // walked here it made every field of every record a value of any kind.
+  const reached = late ? ctx.plans.programIndex?.reachableForLowering : null
   withValueOverlay(null, () => {
   if (ast) { curSids = null; visit(ast) }
   for (const func of ctx.funcs.list) {
     if (!func.body || func.raw) continue
+    if (reached && !reached(func)) continue
     withValueOverlay(analyzeBody(func.body).valTypes, () => {
       curSids = late ? collectBodyElemSids(func, opts.paramReps) : null
       // Late mode: narrowed param reps type this body's params (the early pass

@@ -6,7 +6,10 @@
  * a local every definition of which is finite) compared against a NaN or
  * an infinity (`f64.ne` is 1, `f64.eq` 0: the guard jz's integer arithmetic
  * carries on a value it converted itself, `select(v, 0, ne(x, inf))`, is
- * `v`), `i32.eqz` of a constant, `select` on a constant.
+ * `v`), a comparison of two `f64` constants (a test of an argument a spliced
+ * call was passed as a literal: `floor(3) === 3`), `i32.and` and `i32.or`
+ * with a constant that decides or passes the other operand, `i32.eqz` of a
+ * constant, `select` on a constant.
  *
  * @module optimize/fold
  */
@@ -37,6 +40,9 @@ export function fold(f) {
   const O = ops(), body = bodyOf(f)
   if (body === NONE) return
   const F64_CONST = intern('f64.const'), F64_NE = intern('f64.ne'), F64_EQ = intern('f64.eq'), CONV_S = intern('f64.convert_i32_s'), CONV_U = intern('f64.convert_i32_u')
+  const F64_LT = intern('f64.lt'), F64_GT = intern('f64.gt'), F64_LE = intern('f64.le'), F64_GE = intern('f64.ge'), I32_AND = intern('i32.and'), I32_OR = intern('i32.or')
+  // an instruction whose value is 0 or 1
+  const TRUTH = new Set([F64_NE, F64_EQ, F64_LT, F64_GT, F64_LE, F64_GE, O.I32_EQZ, O.I32_NE, ...['i32.eq', 'i32.lt_s', 'i32.lt_u', 'i32.gt_s', 'i32.gt_u', 'i32.le_s', 'i32.le_u', 'i32.ge_s', 'i32.ge_u', 'i64.eq', 'i64.ne', 'i64.eqz'].map(intern)])
   // the atom first: a store evaluates its array ahead of its value, and a node may grow the tape to a new one
   const i32 = (k) => { const v = num(k), n = node(O.I32_CONST); T.a[n] = v; return n }
   const second = (n) => T.a[n] === NONE ? NONE : T.next[T.a[n]]
@@ -68,12 +74,29 @@ export function fold(f) {
   // The folded form of `n`, or NONE.
   const folded = (n) => {
     const op = T.op[n]
-    if (op === F64_NE || op === F64_EQ) {
+    if (op === F64_NE || op === F64_EQ || op === F64_LT || op === F64_GT || op === F64_LE || op === F64_GE) {
       const a = T.a[n], b = second(n)
       if (b === NONE || T.next[b] !== NONE) return NONE
       const ka = f64Const(a, F64_CONST), kb = f64Const(b, F64_CONST)
+      // two constants: a NaN of any payload compares as a NaN does
+      if (ka !== null && kb !== null)
+        return i32(+(op === F64_EQ ? ka === kb : op === F64_NE ? ka !== kb : op === F64_LT ? ka < kb : op === F64_GT ? ka > kb : op === F64_LE ? ka <= kb : ka >= kb))
+      if (op !== F64_NE && op !== F64_EQ) return NONE
       const decided = (ka !== null && !Number.isFinite(ka) && finite(b) && inert(b)) || (kb !== null && !Number.isFinite(kb) && finite(a) && inert(a))
       return decided ? i32(op === F64_NE ? 1 : 0) : NONE
+    }
+    if (op === I32_AND || op === I32_OR) {
+      const a = T.a[n], b = second(n)
+      if (b === NONE || T.next[b] !== NONE) return NONE
+      const ka = i32Const(a), kb = i32Const(b)
+      if (ka !== null && kb !== null) return i32(op === I32_AND ? ka & kb : ka | kb)
+      const k = kb !== null ? kb : ka, x = kb !== null ? a : b
+      if (k === null) return NONE
+      // the constant decides: `x & 0`, `x | -1`, where `x` runs nothing
+      if (k === (op === I32_AND ? 0 : -1)) return inert(x) ? i32(k) : NONE
+      // the constant passes `x`: `x & -1`, `x | 0`, and `x & 1` over a truth value
+      if (k === (op === I32_AND ? -1 : 0) || (op === I32_AND && k === 1 && TRUTH.has(T.op[x]))) { T.next[x] = NONE; return x }
+      return NONE
     }
     if (op === O.I32_EQZ) { const k = i32Const(T.a[n]); return k === null || T.next[T.a[n]] !== NONE ? NONE : i32(k === 0 ? 1 : 0) }
     if (op === O.SELECT) {

@@ -48,6 +48,7 @@ import {
   moduleGlobalKinds, unboxConstTypedGlobals, inferModuleIntGlobals, dropUnreadGlobals,
   flattenFuncNamespaces, devirtGlobalCalls, devirtClassCalls, classifyHashDictGlobals,
   materializeAutoBoxSchemas, resolveClosureWidth, canSkipWholeProgramNarrowing,
+  holdModuleNumbers,
 } from './scope.js'
 import { declareWrittenKeys } from './declare-written-keys.js'
 import { indexArrayPatterns } from './index-array-patterns.js'
@@ -57,6 +58,7 @@ import { bindNestedRowLengths, unrollRowLenPadLoops, splitCharScanLoops } from '
 import { guardConstants, canonicalizeCountedLoops } from './counted-loops.js'
 import { scalarizeModuleScratch } from './scratch.js'
 import { resolveAliases, splitSplicedBindings } from './alias.js'
+import { propagateConstants } from './constants.js'
 import {
   scalarizeFunctionTypedArrays, scalarizeFunctionArrayLiterals,
   promoteIntArrayLiterals, scalarizeFunctionObjectLiterals, analyzeParamDistinctness,
@@ -135,6 +137,9 @@ export default function plan(ast, profiler, summarize) {
   sweep('inlineHotInternalCalls', () => inlineHotInternalCalls(facts(), ast))
   // A spliced call's statements are statements of its caller's lists, and its seams
   // are names for one value: the bindings split, then each alias reads what it stands for.
+  // A parameter the spliced body writes is bound to the literal the site passed:
+  // read where it still holds it, the body's tests of it are decided.
+  if (optimizing() && ctx.transform.optimize.constants === true) sweep('propagateConstants', propagateConstants)
   if (aliases) { sweep('splitSplicedBindings', splitSplicedBindings); sweep('resolveAliases', resolveAliases) }
   sweep('bindNestedRowLengths', bindNestedRowLengths)
   sweep('unrollRowLenPadLoops', unrollRowLenPadLoops)
@@ -240,6 +245,8 @@ export default function plan(ast, profiler, summarize) {
   // with the export contract: narrowing reads the parameter kinds from it.
   t('collectSlotConstants', () => collectSlotConstants(ast))
   ctx.summary = summarize()
+  // the numbers the rewritten program's names hold for good: a call through a name that holds a builtin is the builtin's now
+  holdModuleNumbers()
   // Normalizing an input can prove the values stored into an output buffer.
   // Close that dependency before narrowing. Each round fixes at least one
   // previously untyped boundary parameter; established contracts are skipped.

@@ -68,6 +68,8 @@ const kernels = {
     'function a(x) { return sumSeries(series(x), { initialValue: -x }) }\nfunction b(x) { return 2 * sumSeries(series(x * 0.5)) }\nfunction c(x) { var s = series(x * 0.25); return sumSeries(s, { initialValue: 1, maxTerms: 5 }) + 1 }\n' +
     DRIVER('a(X[i] * 0.9) + b(X[i] * 0.9) * c(X[i] * 0.9)'),
   'two results through an array, two helpers deep': PAIR + DRIVER('frexp(X[i])', 'r[0] + r[1]'),
+  // the body's own names, declared ahead of returns a splice lowers to arms
+  'a series behind the returns of its caller': EPS + SUM + SERIES + 'function log1pmx(x) { var opts, ax; if (x <= -1) { return NaN } ax = Math.abs(x); if (ax > 0.95) { return Math.sqrt(1 + x) - x } if (ax < 1e-8) { return -x * x / 2 } opts = { initialValue: -x }; return sumSeries(series(x), opts) }\n' + DRIVER('log1pmx(X[i] * 0.9)'),
   'a closure over a parameter the caller stores to after': 'function make(v) { return get\n  function get() { return v * 2 } }\n' + DRIVER('twice(X[i])') +
     'function twice(x) { var y = x; var g = make(y); y = y + 100; return g() + y }\n',
   'a closure that counts across its calls': 'function counter(step) { var n = 0; return next\n  function next() { n += step; return n } }\n' +
@@ -105,6 +107,8 @@ test('alias: the kernel is a loop over locals', () => {
       ok(body.length > 0, `${name}: ${fn}`)
       ok(!/call_indirect/.test(body), `${name}: ${fn} calls through no table`)
       ok(!/\(call \$__alloc|\(call \$__mkptr|\(call \$__dyn_get/.test(body), `${name}: ${fn} makes no object and reads no key`)
+      // a read the literal does not declare is `undefined`, and `undefined || d` is `d`: no value is tested for what kind it is
+      ok(!/\(call \$__ptr_offset|\(call \$__is_truthy|i64\.const 47\b/.test(body), `${name}: ${fn} tests no value for its kind`)
     }
     ok(!/\(func \$closure\d/.test(text), `${name}: no closure is left`)
   }
@@ -140,6 +144,12 @@ const names = {
     [[3]]],
   'a name an object literal does not declare': ['export let f = (x) => { const o = { a: x, b: 2 }; return (o.c === undefined ? 100 : 0) + (o.c || 7) + o.a + o.b }',
     [[3], [0]]],
+  'a literal of no members': ['export let f = (x) => { const o = {}; return (o.t || x) + (o.u ?? 3) * 10 + (o.t === undefined ? 100 : 0) }',
+    [[3], [0]]],
+  'a literal of no members a store adds one to': ['export let f = (x) => { const o = {}; o.k = x; const p = {}; const q = p; q.z = x + 1; return o.k + (o.t || 1) * 10 + p.z * 100 }',
+    [[3], [0]]],
+  'a literal of no members or one of one': ['export let f = (x) => { let o = {}; if (x > 0) o = { t: 5 }; return o.t || x }',
+    [[3], [-3]]],
   'a name every object inherits': ['export let f = (x) => { const o = { a: x }; return (o.hasOwnProperty("a") ? 10 : 0) + (o.hasOwnProperty("c") ? 1 : 0) + o.a + o.toString().length }',
     [[3]]],
   'a decided test keeps its effects': ['export let f = (x) => { let n = 0; const t = true; if (t === true) n += x; else n -= x; const u = undefined; n += (u || 5); return (t && n) + (false || x) }',
@@ -169,6 +179,13 @@ const lists = {
   'a binding of the body assigned in a loop': 'export let f = (n, y) => { let v = y; for (let i = 0; i < n; i++) { v = v + i; v = v * 2 } return v }',
   'a binding of an arm': 'export let f = (n, y) => { let s = 0; if (n > 2) { let v = y * 2; v = v + 1; v += n; s = v } else { let w = y; w = w - 1; s = w } return s }',
   'a binding a closure of the list reads': 'export let f = (n, y) => { let s = 0; for (let i = 0; i < n; i++) { let v = i; const g = () => v; v = v + y; s += g() } return s }',
+  // declared bare outside the list, mentioned in it alone
+  'a binding declared ahead of the arm that holds it': 'export let f = (n, y) => { let o, s = 0; if (n > 2) { o = { a: y, b: n }; o = { a: o.b, b: o.a + 1 }; s = o.a * 10 + o.b } return s }',
+  'a binding of a loop body declared ahead of the loop': 'export let f = (n, y) => { let v, s = 0; for (let i = 0; i < n; i++) { v = i * y; v = v + 1; s += v } return s }',
+  'a binding a later pass of the loop reads first': 'export let f = (n, y) => { let v, s = 0; for (let i = 0; i < n; i++) { if (i > 0) s += v; v = i * y; s += v } return s }',
+  'a binding assigned from itself in a loop': 'export let f = (n, y) => { let v, s = 0; for (let i = 0; i < n; i++) { v = (v || 0) + y; s += v } return s }',
+  'a binding read after the list': 'export let f = (n, y) => { let v, s = 0; for (let i = 0; i < n; i++) { v = i * y; s += v } return s * 100 + (v === undefined ? -1 : v) }',
+  'a binding two lists assign': 'export let f = (n, y) => { let v, s = 0; if (n > 2) { v = y; s += v } else { v = -y; s -= v } return s }',
 }
 
 test('alias: a list inside a body splits over its own bindings', () => {
@@ -179,6 +196,27 @@ test('alias: a list inside a body splits over its own bindings', () => {
       for (const a of [[0, 1], [3, 2.5], [5, -1]]) is(m.f(...a), host.f(...a), `${name} at ${optimize}: f(${a.join(', ')})`)
     }
   }
+})
+
+test('alias: a series with its options and one with none are loops over locals', () => {
+  // kernels as a bench writes them, through the names a library's bundle gives its functions
+  const src = EPS + 'var MAX_TERMS = 1000000\n' + SUM.replace('1000000', 'MAX_TERMS') + 'var sum_default = sumSeries\n' + SERIES + 'var series_default = series\n' +
+    'function log1pmx(x) { var opts, ax; if (x <= -1) { return NaN } ax = Math.abs(x); if (ax > 0.95) { return Math.sqrt(1 + x) - x } if (ax < EPS) { return -x * x / 2 } opts = { initialValue: -x }; return sum_default(series_default(x), opts) }\n' +
+    'var main_default = log1pmx\nvar lib_default = main_default\n' +
+    'const X = new Float64Array(64), OUT = new Float64Array(64)\nexport let xs = () => X\nexport let outs = () => OUT\n' +
+    'const k0 = (u, out, at, n) => { for (let i = 0; i < n; i++) out[at + i] = lib_default(u[i] * 0.9) }\n' +
+    'const k1 = (u, out, at, n) => { for (let i = 0; i < n; i++) out[at + i] += sum_default(series_default(u[i] * 0.5)) }\n' +
+    'export let each = (n) => { k0(X, OUT, 0, n); k1(X, OUT, 0, n) }\n'
+  const host = oracle(src)
+  host.xs().set(INPUTS); host.each(64)
+  for (const optimize of levels(0, 2, 3)) {
+    const m = run(src, { jzify: true, optimize })
+    m.xs().set(INPUTS); m.each(64)
+    for (let i = 0; i < 64; i++) is(m.outs()[i], host.outs()[i], `at ${optimize}: element ${i} (${INPUTS[i]})`)
+  }
+  if (belowOpt(3)) return
+  const text = wat(src, { jzify: true, optimize: 3 })
+  ok(!/\(call \$__alloc|\(call \$__mkptr|\(call \$__dyn_get|call_indirect/.test(text), 'the module makes no object, reads no key and calls through no table')
 })
 
 test('alias: a driver of many loops is not one function', () => {

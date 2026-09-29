@@ -315,6 +315,32 @@ test('fold on the tape: a finite value against an infinity or a NaN decides, a s
   ok(same(body(effect, fold), effect), 'an arm with an effect is kept')
 })
 
+test('fold on the tape: a comparison of two constants is its answer, a mask by a constant its operand or the constant', () => {
+  const k = (v) => ['f64.const', v], one = (b) => fn(['i32.const', b ? 1 : 0])
+  for (const [op, a, b] of [['f64.eq', 3, 3], ['f64.ne', 3, 3], ['f64.lt', 2.5, 3], ['f64.le', 3, 3], ['f64.gt', 2.5, 3], ['f64.ge', -0, 0], ['f64.eq', 0, -0], ['f64.lt', -Infinity, 1], ['f64.ne', 1e300, 1e-300]]) {
+    const want = op === 'f64.eq' ? a === b : op === 'f64.ne' ? a !== b : op === 'f64.lt' ? a < b : op === 'f64.le' ? a <= b : op === 'f64.gt' ? a > b : a >= b
+    ok(same(body(fn([op, k(a), k(b)]), fold), one(want)), `${op} of ${a} and ${b}`)
+  }
+  // a NaN of any payload compares as a NaN does
+  for (const op of ['f64.eq', 'f64.lt', 'f64.le', 'f64.gt', 'f64.ge']) ok(same(body(fn([op, k('nan'), k('nan:0x7FF8000200000000')]), fold), one(false)), `${op} of two NaNs`)
+  ok(same(body(fn(['f64.ne', k('nan'), k('nan')]), fold), one(true)), 'ne of two NaNs')
+  const open = fn(['f64.lt', ['local.get', '$d'], k(3)])
+  ok(same(body(open, fold), open), 'a comparison of a local stays')
+  const test = ['f64.le', ['local.get', '$d'], k(2147483647)], x = ['local.get', '$x']
+  ok(same(body(fn(['i32.and', test, ['i32.const', 1]]), fold), fn(test)), 'a truth value masked by 1 is itself')
+  ok(same(body(fn(['i32.and', ['i32.const', 1], test]), fold), fn(test)), 'on either side')
+  const word = fn(['i32.and', x, ['i32.const', 1]])
+  ok(same(body(word, fold), word), 'a word masked by 1 is its low bit')
+  ok(same(body(fn(['i32.and', x, ['i32.const', -1]]), fold), fn(x)), 'a full mask passes the word')
+  ok(same(body(fn(['i32.or', x, ['i32.const', 0]]), fold), fn(x)), 'so does an or with nothing')
+  ok(same(body(fn(['i32.and', x, ['i32.const', 0]]), fold), fn(['i32.const', 0])), 'a mask of nothing is 0')
+  ok(same(body(fn(['i32.or', x, ['i32.const', -1]]), fold), fn(['i32.const', -1])), 'an or with every bit is every bit')
+  const effect = fn(['i32.and', ['call', '$g'], ['i32.const', 0]])
+  ok(same(body(effect, fold), effect), 'an operand with an effect is kept')
+  // the comparison a spliced call leaves of its literal argument, with the mask around it
+  ok(same(body(fn(['select', x, ['i32.const', 7], ['i32.and', ['f64.eq', k(3), k(3)], ['i32.const', 1]]]), fold), fn(x)), 'a decided test takes its arm')
+})
+
 test('rotate loops on the tape: the top test becomes a guard and a fused back edge', () => {
   const loop = (cond) => ['block', '$brk', ['local.set', '$t', ['f64.const', 1]], ['loop', '$l', ['br_if', '$brk', cond], ['local.set', '$x', ['i32.add', ['local.get', '$x'], ['i32.const', 1]]], ['br', '$l']]]
   const cond = ['i32.ge_s', ['local.get', '$x'], ['i32.const', 10]]

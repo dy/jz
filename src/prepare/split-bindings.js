@@ -70,18 +70,25 @@ const mentions = (n, name) => {
  * itself where there is none. `nested` splits the lists inside it too (a loop's
  * body, an arm: where a spliced call left its statements), each over the
  * bindings it declares and nothing outside it mentions: the list runs top to
- * bottom each time it runs, and such a binding is new each time.
+ * bottom each time it runs, and such a binding is new each time. So is one
+ * declared bare outside the list that only the list mentions, from an
+ * assignment nothing in the list precedes (`var opts` of a spliced body whose
+ * statements the lowered returns put in an arm): each run of the list assigns
+ * it before it reads it.
  */
 export function splitReassigned(fn, nested = false) {
   const body = fn.body
-  if (!Array.isArray(body) || body[0] !== '{}' || body.length !== 2 || !Array.isArray(body[1]) || body[1][0] !== ';') return body
+  if (!Array.isArray(body) || body[0] !== '{}' || body.length !== 2 || !Array.isArray(body[1])) return body
+  // a body of one statement (a loop alone) is a list of it: the lists inside it split
+  const top = body[1][0] === ';' ? body[1] : nested ? [';', body[1]] : null
+  if (top === null) return body
   let any = false
   const has = (n) => {
     if (any || !Array.isArray(n) || n[0] === '=>' || n[0] === 'str') return
     if (n[0] === ';') for (let k = 1; k < n.length; k++) if (isAssign(n[k])) any = true
     if (nested) for (let k = 1; k < n.length; k++) has(n[k])
   }
-  has(body[1])
+  has(top)
   if (!any) return body
   const own = new Set(), captured = new Set()
   for (const p of fn.sig.params) if (p.name !== fn.rest) own.add(p.name)
@@ -100,7 +107,7 @@ export function splitReassigned(fn, nested = false) {
     for (let k = 1; k < list.length; k++) {
       const s = (out ?? list)[k]
       declares(s, declared)
-      if (isAssign(s) && !captured.has(s[1]) && mine(s[1], declared, out ?? list)) {
+      if (isAssign(s) && !captured.has(s[1]) && mine(s[1], declared, out ?? list, k)) {
         const name = s[1], root = roots.get(name) ?? name, next = `${root}${T}s${serial++}`
         if (!out) out = list.slice()
         out[k] = ['let', ['=', next, s[0] === '=' ? s[2] : [COMPOUND.get(s[0]), name, s[2]]]]
@@ -114,8 +121,25 @@ export function splitReassigned(fn, nested = false) {
     }
     return out ?? list
   }
-  // a list inside: over what it declared ahead of the assignment and nothing outside it mentions
-  const within = (name, declared, list) => declared.has(name) && mentions(list, name) === mentions(body, name)
+  // the names the body declares with no value
+  const bare = new Set()
+  const bares = (n) => {
+    if (!Array.isArray(n) || n[0] === '=>' || n[0] === 'str') return
+    if (n[0] === 'let') for (let i = 1; i < n.length; i++) if (typeof n[i] === 'string') bare.add(n[i])
+    for (let i = 1; i < n.length; i++) bares(n[i])
+  }
+  if (nested) bares(body)
+  // a list inside: over what it declared ahead of the assignment and nothing outside it mentions,
+  // and over what is declared bare outside it, mentioned there alone and first by this assignment
+  const within = (name, declared, list, k) => {
+    // a binding this pass declared in the list is mentioned after it, in the list, alone
+    if (roots.has(name)) return declared.has(name)
+    const outside = mentions(body, name) - mentions(list, name)
+    if (declared.has(name)) return outside === 0
+    if (outside !== 1 || !bare.has(name) || list[k][0] !== '=' || mentions(list[k][2], name) !== 0) return false
+    for (let j = 1; j < k; j++) if (mentions(list[j], name) !== 0) return false
+    return true
+  }
   const inner = (n) => {
     if (!Array.isArray(n) || n[0] === '=>' || n[0] === 'str') return n
     if (n[0] === ';') return split(n, within)
@@ -123,6 +147,6 @@ export function splitReassigned(fn, nested = false) {
     for (let i = 1; i < n.length; i++) { const c = inner(n[i]); if (c !== n[i]) { if (out === n) out = n.slice(); out[i] = c } }
     return out
   }
-  const list = split(body[1], (name) => own.has(name))
-  return list === body[1] ? body : ['{}', list]
+  const list = split(top, (name) => own.has(name))
+  return list === top ? body : ['{}', list]
 }

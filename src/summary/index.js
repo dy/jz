@@ -48,7 +48,7 @@
  *
  * @module summary
  */
-import { MUTATE_OPS, extractParams, isBrand, returnExprs, ACCESSOR_GET, ACCESSOR_SET, CLASS_T, TYPEOF, typeofPredicate, canonicalKeyOrder, schemaKey, isArrayIndexKey, layoutView, ENUM_DATA } from '../ast.js'
+import { MUTATE_OPS, EXACT_MATH, extractParams, isBrand, returnExprs, ACCESSOR_GET, ACCESSOR_SET, CLASS_T, TYPEOF, typeofPredicate, canonicalKeyOrder, schemaKey, isArrayIndexKey, layoutView, ENUM_DATA } from '../ast.js'
 import { encodeTypedElemAux, TYPED_ELEM_CODE } from '../../layout.js'
 import { ITER_RECORD_KEYS } from '../std/iter-helpers.js'
 import { VAL } from '../reps.js'
@@ -2965,6 +2965,13 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     if (Array.isArray(node) && node[0] === '.' && typeof node[1] === 'string' && typeof node[2] === 'string') {
       const lit = heldLiteral(node[1]), field = lit === null ? undefined : fieldOf(lit, node[2])
       return field === undefined ? null : staticValue(MODULE, field, seen)
+    }
+    // an exact function of `Math` over numbers held for good (`PI32 = Math.fround(3.14…)`)
+    if (Array.isArray(node) && node[0] === '()' && node.length === 3 && EXACT_MATH.has(node[1])) {
+      const args = Array.isArray(node[2]) && node[2][0] === ',' ? node[2].slice(1) : [node[2]]
+      const vals = args.map(a => staticValue(scope, a, new Set(seen)))
+      const v = vals.every(x => typeof x === 'number') ? EXACT_MATH.get(node[1])(...vals) : NaN
+      return v === v ? v : null
     }
     return Array.isArray(node) && node[0] == null ? node[1] : typeof node === 'number' ? node : null
   }

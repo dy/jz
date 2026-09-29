@@ -73,7 +73,8 @@ const scalarArrayElems = (expr) => {
 
 const scalarObjectProps = (expr, simple = true) => {
   if (!Array.isArray(expr) || expr[0] !== '{}') return null
-  const props = staticObjectProps(expr.slice(1))
+  // a literal of no members declares nothing: every read of it finds nothing (`opts = {}`, the default of an options parameter)
+  const props = expr.length === 1 ? { names: [], values: [], brand: null } : staticObjectProps(expr.slice(1))
   if (!props) return null
   const seen = new Set()
   for (let i = 0; i < props.names.length; i++) {

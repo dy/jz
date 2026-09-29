@@ -199,6 +199,11 @@ export function walkAst(node, { enter, boundary, exit } = {}) {
 /** Assignment operators — shared across analyze, plan, emit, abi. */
 export const ASSIGN_OPS = new Set(['=', '+=', '-=', '*=', '/=', '%=', '**=', '&=', '|=', '^=', '>>=', '<<=', '>>>=', '||=', '&&=', '??='])
 
+/** The functions of `Math` whose value is exact, so the compiler's host answers as the
+ *  module would: name → the function. The others round as their implementation does. */
+export const EXACT_MATH = new Map([['math.floor', Math.floor], ['math.ceil', Math.ceil], ['math.trunc', Math.trunc], ['math.round', Math.round],
+  ['math.abs', Math.abs], ['math.sign', Math.sign], ['math.sqrt', Math.sqrt], ['math.fround', Math.fround], ['math.min', Math.min], ['math.max', Math.max]])
+
 /** Every op that writes its first operand: assignments plus ++/--. */
 export const MUTATE_OPS = new Set([...ASSIGN_OPS, '++', '--'])
 

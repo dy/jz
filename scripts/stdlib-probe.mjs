@@ -629,8 +629,11 @@ export let main = () => {
 // itself inside the one module a program that uses the library links: a helper a
 // hundred functions share is compiled once for them all there, which a module per
 // function never shows. The case's own kernels are kept and its sweep replaced by
-// `run( k )`. Samples are as many sweeps as take a millisecond, the two engines
-// alternate, and the least of nine is kept.
+// `run( k )`. Samples are as many sweeps as take a quarter of a millisecond, the two
+// engines alternate, and the least is kept of eight in each of PASSES passes over the
+// functions: a short sample is the one a loaded machine leaves whole, a pass apart
+// outlasts a burst of load, and the late ones run what both engines tiered up.
+const PASSES = +(process.env.PASSES ?? 4)
 async function kernels(id, list) {
   const file = join(dirname(SELF), '..', 'bench', id, `${id}.js`)
   let src = readFileSync(file, 'utf8')
@@ -655,19 +658,19 @@ ${names.map(([k]) => `  if (k === ${k}) { k${k}(U, OUT, 0); return 1 }`).join('\
   fill(inst.exports.us()); fill(host.us())
   const bodies = new Map()
   for (const m of text.matchAll(/\n  \(func \$([^\s()]+)/g)) { const at = m.index + 1, nx = text.indexOf('\n  (func ', at + 10); bodies.set(m[1], text.slice(at, nx > 0 ? nx : undefined)) }
-  const rows = []
-  for (const [k, name] of names) {
+  const rows = names.map(([k, name]) => {
     for (let w = 0; w < 3; w++) { host.run(k); inst.exports.run(k) }
     const heap = inst.exports.__heap?.value ?? 0
     const t = performance.now(); host.run(k); const one = Math.max(performance.now() - t, 1e-3)
     inst.exports.run(k)
     const kept = (inst.exports.__heap?.value ?? 0) - heap
-    const reps = Math.max(1, Math.min(400, Math.ceil(1 / one)))
-    const sample = (f) => { const t = performance.now(); for (let r = 0; r < reps; r++) f(k); return (performance.now() - t) / reps }
-    let js = Infinity, jz = Infinity
-    for (let r = 0; r < 9; r++) { js = Math.min(js, sample(host.run)); jz = Math.min(jz, sample(inst.exports.run)) }
     const calls = [...new Set([...(bodies.get(`k${k}`) ?? '').matchAll(/\((?:return_)?call(_indirect)? ?\$?([^\s()]*)/g)].map(m => m[1] ? 'indirect' : m[2]))]
-    rows.push({ name: short('@stdlib/math/base/' + name), js, jz, kept, calls, own: bodies.has(`k${k}`) })
+    return { k, name: short('@stdlib/math/base/' + name), js: Infinity, jz: Infinity, reps: Math.max(1, Math.min(400, Math.ceil(0.25 / one))), kept, calls, own: bodies.has(`k${k}`) }
+  })
+  const sample = (f, k, reps) => { const t = performance.now(); for (let r = 0; r < reps; r++) f(k); return (performance.now() - t) / reps }
+  for (let pass = 0; pass < PASSES; pass++) for (const row of rows) for (let r = 0; r < 8; r++) {
+    row.js = Math.min(row.js, sample(host.run, row.k, row.reps))
+    row.jz = Math.min(row.jz, sample(inst.exports.run, row.k, row.reps))
   }
   const gm = (a) => Math.exp(a.reduce((s, x) => s + Math.log(x), 0) / a.length)
   const ratio = (r) => r.jz / r.js, sum = (f) => rows.reduce((a, r) => a + f(r), 0)

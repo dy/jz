@@ -32,6 +32,26 @@ import { analyzeFuncNamespaces } from '../analyze.js'
 import { collectGlobalBareEscapes } from '../analyze-scans.js'
 import { invalidateProgramFactsCache } from '../program-facts.js'
 
+const isConstInt = value => Number.isInteger(value) && !Object.is(value, -0) && value >= I32_MIN && value <= I32_MAX
+
+/** A binding the summary proves holds one number for good reads as that number
+ *  (a name assigned once where no read finds it unassigned, a field of an object
+ *  literal only read: `HIGH = idx.HIGH`). Its global stays with the statement
+ *  that assigns it; the host can store to an exported one. Once ahead of the
+ *  plan and once behind it: a call through a name that holds a builtin is the
+ *  builtin's only there (`PI32 = f32( 3.14… )` over `f32 = Math.fround`). */
+export function holdModuleNumbers() {
+  let any = false
+  for (const [name, value] of ctx.summary?.held ?? []) {
+    if (!Number.isFinite(value) || !ctx.scope.userGlobals?.has(name) || ctx.funcs.exports?.[name] != null) continue
+    if (ctx.scope.constNums?.has(name) || !ctx.scope.globals.get(name)?.mut) continue
+    if (isConstInt(value)) (ctx.scope.constInts ||= new Map()).set(name, value)
+    ;(ctx.scope.constNums ||= new Map()).set(name, value)
+    any = true
+  }
+  return any
+}
+
 /** Publish immutable numeric globals before representation planning. */
 export function foldModuleConstants(ast) {
   const pending = []
@@ -44,17 +64,8 @@ export function foldModuleConstants(ast) {
             ctx.scope.globals.has(decl[1]) && ctx.scope.consts?.has(decl[1])) pending.push(decl)
     }
   }
-  // A binding the summary proves holds one number for good reads as that number
-  // (a name assigned once where no read finds it unassigned, a field of an object
-  // literal only read: `HIGH = idx.HIGH`). Its global stays with the statement
-  // that assigns it; the host can store to an exported one.
-  const isInt = value => Number.isInteger(value) && !Object.is(value, -0) && value >= I32_MIN && value <= I32_MAX
-  for (const [name, value] of ctx.summary?.held ?? []) {
-    if (!Number.isFinite(value) || !ctx.scope.userGlobals?.has(name) || ctx.funcs.exports?.[name] != null) continue
-    if (ctx.scope.constNums?.has(name) || !ctx.scope.globals.get(name)?.mut) continue
-    if (isInt(value)) (ctx.scope.constInts ||= new Map()).set(name, value)
-    ;(ctx.scope.constNums ||= new Map()).set(name, value)
-  }
+  holdModuleNumbers()
+  const isInt = isConstInt
   // Cross-module dependencies may arrive out of order. Only unresolved
   // declarations remain in the next sweep; fractional constants resolve too.
   const lookup = name => ctx.scope.constNums?.get(name) ?? ctx.scope.constInts?.get(name) ?? null

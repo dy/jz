@@ -627,9 +627,12 @@ export function emitDecl(...inits) {
       // evaluation order is an UNCONDITIONAL write (`let ixSq; while ((ixSq =
       // …) …)` — the fractal-kernel shape): definitely-assigned-before-read
       // needs no coercion, and the per-read canon would break the SIMD
-      // recognizers' body shapes. i32-narrowed locals are exempt either way:
-      // the narrowing proof is assigned-before-read, and they zero-init.
-      if (ctx.func.locals.get(i) !== 'i32' && firstRefKind(ctx.func.body, i) !== 'write')
+      // recognizers' body shapes. So does a binding the summary finds assigned
+      // on every path to each read (summary/definite.js: `let r; if (c) r = a;
+      // else r = b`, the result of a spliced body that returns from an arm),
+      // whose kind then holds no absence. i32-narrowed locals are exempt either
+      // way: the narrowing proof is assigned-before-read, and they zero-init.
+      if (ctx.func.locals.get(i) !== 'i32' && firstRefKind(ctx.func.body, i) !== 'write' && repOf(i)?.presence !== 'present')
         (ctx.func.maybeNullish ??= new Set()).add(i)
       if (ctx.func.boxed.has(i)) {
         const cell = ctx.func.boxed.get(i)

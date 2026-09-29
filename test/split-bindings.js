@@ -170,3 +170,49 @@ test('split bindings: the statements it leaves', () => {
     else is(JSON.stringify(out), JSON.stringify(['{}', [';', ...want]]), name)
   }
 })
+
+// The lists inside a body (`nested`, after the splices): [the parameters, the body, the body wanted or null for the body itself]
+const s = (name, k) => `${name}${T}s${k}`
+const loop = (...stmts) => ['for', ['let', ['=', 'i', lit(0)]], ['<', 'i', 'n'], ['++', 'i'], ['{}', [';', ...stmts]]]
+const inside = {
+  'a body that is a loop alone': [['n', 'y'],
+    ['{}', loop(['let', ['=', 'v', 'i']], ['=', 'v', ['+', 'v', 'y']], ['=', ['[]', 'out', 'i'], 'v'])],
+    ['{}', [';', loop(['let', ['=', 'v', 'i']], ['let', ['=', s('v', 0), ['+', 'v', 'y']]], ['=', ['[]', 'out', 'i'], s('v', 0)])]]],
+  'a binding declared bare ahead of the list that alone mentions it': [['n', 'y'],
+    ['{}', [';', ['let', 'o'], loop(['=', 'o', ['*', 'i', 'y']], ['=', ['[]', 'out', 'i'], 'o'])]],
+    ['{}', [';', ['let', 'o'], loop(['let', ['=', s('o', 0), ['*', 'i', 'y']]], ['=', ['[]', 'out', 'i'], s('o', 0)])]]],
+  'assigned twice in the list': [['n', 'y'],
+    ['{}', [';', ['let', 'o'], loop(['=', 'o', 'y'], ['=', 'o', ['+', 'o', 'i']], ['=', ['[]', 'out', 'i'], 'o'])]],
+    ['{}', [';', ['let', 'o'], loop(['let', ['=', s('o', 0), 'y']], ['let', ['=', s('o', 1), ['+', s('o', 0), 'i']]], ['=', ['[]', 'out', 'i'], s('o', 1)])]]],
+  'read in the list ahead of its assignment': [['n', 'y'],
+    ['{}', [';', ['let', 'o'], loop(['=', ['[]', 'out', 'i'], 'o'], ['=', 'o', ['*', 'i', 'y']])]],
+    null],
+  'assigned from itself': [['n', 'y'],
+    ['{}', [';', ['let', 'o'], loop(['=', 'o', ['+', 'o', 'y']], ['=', ['[]', 'out', 'i'], 'o'])]],
+    null],
+  'assigned by a compound': [['n', 'y'],
+    ['{}', [';', ['let', 'o'], loop(['+=', 'o', 'y'], ['=', ['[]', 'out', 'i'], 'o'])]],
+    null],
+  'read after the list': [['n', 'y'],
+    ['{}', [';', ['let', 'o'], loop(['=', 'o', ['*', 'i', 'y']], ['=', ['[]', 'out', 'i'], 'o']), ['return', 'o']]],
+    null],
+  'declared with a value': [['n', 'y'],
+    ['{}', [';', ['let', ['=', 'o', lit(1)]], loop(['=', 'o', ['*', 'i', 'y']], ['=', ['[]', 'out', 'i'], 'o'])]],
+    null],
+  'a parameter': [['n', 'y'],
+    ['{}', [';', loop(['=', 'y', ['*', 'i', lit(2)]], ['=', ['[]', 'out', 'i'], 'y'])]],
+    null],
+  'a closure mentions it': [['n', 'y'],
+    ['{}', [';', ['let', 'o'], loop(['=', 'o', ['*', 'i', 'y']], ['=', ['[]', 'out', 'i'], ['()', ['=>', [], 'o']]])]],
+    null],
+}
+
+test('split bindings: the lists inside a body', () => {
+  for (const [name, [params, body, want]] of Object.entries(inside)) {
+    const out = splitReassigned({ body, sig: { params: params.map(p => ({ name: p })) } }, true)
+    if (want === null) is(out, body, `${name}: the body itself`)
+    else is(JSON.stringify(out), JSON.stringify(want), name)
+  }
+  const lone = inside['a body that is a loop alone'][1]
+  is(splitReassigned({ body: lone, sig: { params: [{ name: 'n' }, { name: 'y' }] } }), lone, 'the function\'s own list alone: a body of one statement has none to split')
+})

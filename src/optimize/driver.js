@@ -27,6 +27,7 @@ import { hoistTypedDecode } from './typed-decode.js'
 import { foldShiftRemainder } from './shift-remainder.js'
 import { wideAccumulator } from './wide-accumulator.js'
 import { devirtSchemaReads, foldStaticConstArrayReads, devirtConstFnArrayCalls } from './devirt.js'
+import { narrowFloat32 } from './float32.js'
 
 /**
  * Run all per-function IR optimizations on a single function node.
@@ -154,6 +155,8 @@ export function optimizeFunc(fn, cfg, globalTypes, reachableWrites) {
   // `$__ptr_offset`, unswitch and devirt recognize it. Its inline fast path is lowering
   // (speed tier), so it runs last. Value numbering and statement scheduling are watr's
   // (optimize/watr-tail.js).
+  // After the lane vectorizer, whose recognizers read float arithmetic in its double form.
+  if (cfg && cfg.narrowFloat32 === true) narrowFloat32(fn)
   if (cfg && cfg.inlinePtrOffsetFast === true) inlinePtrOffsetFastPass(fn)
   // The fold, loop rotation, the condition chains and the boolean
   // canonicalization follow on the tape (src/link).

@@ -7,6 +7,7 @@
 import { OPTF, ctx } from '../../ctx.js'
 import {
   applyBigintRepresentationAction, asF64, bigintEraseErr, bigintStrict, block64, boolBoxIR, flat, isLit, isNullish, litVal, resolveValType, temp, tempI32, truthyIR, typed, undefExpr,
+  NULL_NAN, UNDEF_NAN,
 } from '../../ir.js'
 import { valTypeOf } from '../../kind.js'
 import { VAL, lookupValType } from '../../reps.js'
@@ -51,6 +52,16 @@ const canonNum = (node) => {
 // non-canonical NaN here would be misread by __is_truthy — fold it. A pointer arm
 // (isNum=false) is never touched (canon would destroy its NaN-box).
 const canonArm = (f, isNum, otherNum) => isNum && !otherNum ? canonNum(f) : f
+
+// A literal `undefined` or `null`, as emitted: never the value of `||` or `??`, whose right
+// side is then the value (`opts.tolerance || EPS` over a literal that declares no tolerance,
+// its read `undefined` once the literal is scalarized).
+const nullishConst = (v) => Array.isArray(v) && v[0] === 'f64.const' && (v[1] === `nan:${UNDEF_NAN}` || v[1] === `nan:${NULL_NAN}`)
+// the right side where the left is such a literal: a truth value carries its atom, as beside any value of another kind
+const rightOf = (a, b, sense) => {
+  const vb = withRefinements(extractRefinements(a, new Map(), sense), b, () => emit(b))
+  return resolveValType(b, valTypeOf, lookupValType) === VAL.BOOL ? boolBoxIR(vb) : vb
+}
 
 // One arm of a plan-materialized join, a tagged carrier: the plan's action
 // normalized its BigInt member; a boolean arm still carries its atom, the
@@ -538,6 +549,7 @@ export const logicalOps = {
       const vb = withRefinements(refs, b, () => emit(b))
       return resolveValType(b, valTypeOf, lookupValType) === VAL.BOOL && resolveValType(a, valTypeOf, lookupValType) === VAL.NUMBER ? numericBoolArm(vb) : vb
     }
+    if (nullishConst(va)) return rightOf(a, b, false)
     // a is falsy in the right-arm — `x == null || ...` proves x is null/undefined in b;
     // De Morgan'd via the sense=false branch of extractRefinements (mirrors the ?: else-arm).
     const rightRefs = extractRefinements(a, new Map(), false)
@@ -631,7 +643,9 @@ export const logicalOps = {
           ['then', ['i64.reinterpret_f64', faBoxed]],
           ['else', ['i64.reinterpret_f64', fb0]]]], 'f64')
     }
-    let va = emit(a), vb = emit(b)
+    let va = emit(a)
+    if (nullishConst(va)) return rightOf(a, b, false)
+    let vb = emit(b)
     const t = temp()
     const vtA = resolveValType(a, valTypeOf, lookupValType)
     const vtB = resolveValType(b, valTypeOf, lookupValType)

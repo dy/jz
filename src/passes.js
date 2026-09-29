@@ -65,6 +65,7 @@ export const PASS_NAMES = [
   'staticScratch',            // a static typed array only constant indices reach: stores forward to loads of any width, unread stores go (optimize/static-scratch.js)
   'moduleScratch',            // a module array of numbers only constant indices reach is locals of each function that uses it (plan/scratch.js)
   'aliases',                  // a binding that only ever holds another binding's value is that binding; a local nothing reads is not declared (plan/alias.js)
+  'constants',                // a binding read where it holds a literal is the literal, a test of literals its answer (plan/constants.js)
   'valueNumber',              // value numbering over straight-line regions: one computation per value, through locals (watr's valueNumber)
   'scheduleStatements',       // straight-line statements in order of the work depending on them: independent kernel calls start together (watr's schedule)
   'unswitchTypedParamLoop',   // Float64Array param loop-unswitch → base-hoisted f64.load/store fast path (vectorizes)
@@ -107,6 +108,7 @@ export const PASS_NAMES = [
   'guardedUpdate',            // a data-dependent last conjunct folds into the update it guards (optimize/guarded-update.js) — speed-only
   'typedDecode',              // a typed receiver of open kind decodes once per loop (optimize/typed-decode.js)
   'shiftRemainder',           // a remainder rebuilt from its shifted quotient is a mask (optimize/shift-remainder.js)
+  'narrowFloat32',            // `fround` of an operator over `fround`s runs in single precision (optimize/float32.js)
   // WAT-pipeline passes previously gated only by `undefined !== false` inside
   // optimizeFunc (found by the registry-coverage gate on its first run):
   'foldStaticArrReads',       // const-index reads of static-data arrays → immediates

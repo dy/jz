@@ -2306,7 +2306,10 @@ logical operator read as a value keeps its form: the kinds of what it yields wer
 A local nothing reads, declared with a value that runs nothing (a name, a literal, a fresh
 object or array of such), is not declared. After the splices each list inside a body splits
 as the body's own list does (`splitReassigned( fn, true )`), over the bindings the list
-declares ahead of the assignment and nothing outside the list mentions.
+declares ahead of the assignment and nothing outside the list mentions, and over a binding
+declared bare outside the list that the list alone mentions, from an assignment nothing in
+the list precedes: the `var opts` of a spliced body whose statements the lowered returns put
+in an arm. A body that is one statement (a loop alone) is a list of it.
 
 The inliner (`plan/inline.js`) splices with these in view. A function that reads `arguments`
 is one of a fixed count at each site before the splices run, and a test of the count is
@@ -2329,6 +2332,75 @@ read of a name an object literal does not declare is undefined in the scalarized
 unless every object inherits the name or the literal is an instance of a class, whose members
 are the class's to answer (`plan/literals.js`). `test/alias.js` pins the kernels, the bails
 and the driver.
+
+At the speed tier a loop's time is the loop's and its callees'. The budgets that count a
+callee's sites across the program (a small leaf within its cap of sites outside loops, a body
+at its sites in loops while sites times size stays under 400) make it depend on how many other
+loops call the same function, so past them the speed tier decides by the caller: a tiny leaf
+(15 nodes) splices at every site whatever their count, since its body is the size of the call
+and the call is what joins the kinds of every site's argument into one parameter (`isnan` at
+two hundred sites, tested for `undefined` and `null` at each because one passed a value of no
+known kind); a straight-line body of up to 200 nodes splices at a site in a loop of any depth
+(`warm`) while the caller is under 3000 nodes; a body takes the calls it keeps along (`lcm`
+over `gcd`, whose loops stay a function), outside a cycle of calls, whose copy would hold the
+cycle's call again; and a function a value names is still the body of its direct calls
+(`modf( x )` beside `modf.assign = assign`). A call in an arm of a conditional runs only
+where the arm does, so the conditional itself moves ahead of its statement, as a statement:
+`c ? a : f( x )` is `let t; if ( c ) t = a; else t = f( x )` and then `t`, `a && f( x )` is
+`let t = a; if ( t ) t = f( x )`, past what it commutes with only, as a lifted call moves. A
+parameter the body only reads is what the site passed; one it writes is a binding of the
+call's own. `test/splice.js` pins each rule on a kernel that shows it and the agreement with
+the host. The cost is bytes: stdlib's special functions as one module (`bench/stdlib-special`)
+are 23% larger at the speed tier, and 8% smaller at level 2 and at the size tier.
+
+A binding of a spliced call read where it holds a literal is the literal
+(`src/compile/plan/constants.js`, pass `constants`, after the splices). A spliced call binds
+each argument its body writes to a name of its own, and the body's tests of that parameter are
+tests of the literal the site passed:
+`if ( min === 0 ) min = 0`, `max <= min`. The walk carries what each binding holds along the
+statements in the order they run. A read of a binding that holds one literal on every path
+to it is that literal; an operator over literals is its answer (a comparison, `!`,
+arithmetic on numbers, a function of `Math` whose value is exact: `EXACT_MATH`, src/ast.js);
+the arm a decided test rules out is no code, so what it would have written is not written.
+Paths that meet keep what both hold the same; a loop, a labeled statement and a `try` start
+and end without the bindings written anywhere in them; a binding a closure mentions and a
+name of the module are not followed. A logical operator is decided where it is read as a test
+only. The bindings followed are the ones the splices made (the names that begin with the
+compiler's mark): a binding the function's own source declared keeps its name, which the
+passes that read a loop by its shape match (a clamp against `w - 1`, a window of `2 * r + 1`:
+the blur recognizers stopped firing on a literal), and the emitter folds a constant of the
+source where it is read. `test/constants.js` pins the flows and the folds.
+
+A literal of no members declares nothing, so it scalarizes to nothing and every read of it
+is `undefined` (`opts = {}`, the default of an options parameter), and `||` or `??` over a
+literal `undefined` or `null` is its right side (`emit/logical.js`): `opts.tolerance || EPS`
+is `EPS` with no value tested for what kind it is.
+
+A binding assigned on every path to each of its reads holds no `undefined` to test for. The
+summary proves it (`summary/definite.js`) and declares the binding empty; the emitter reads
+the same proof where it declares the local (`emitDecl`), where it used to ask for an
+unconditional first write. `let r; if ( c ) r = a; else r = b` is the result of every spliced
+body that returns from an arm: a polynomial with a test for zero cost a compare and a select
+per evaluation, and a loop over it was no lane loop. A labeled block ends with what held at
+each `break` to it, so a binding the block assigns past a `break` is not assigned after it.
+
+Float arithmetic written as `Math.fround` of an operator over `Math.fround`s runs in single
+precision (`src/optimize/float32.js`, pass `narrowFloat32`, after the lane vectorizer, whose
+recognizers read the double form). Rounding the double result of `+`, `-`, `*`, `/` or `sqrt`
+over two singles gives what the single operator gives (Figueroa, "When is double rounding
+innocuous?", SIGNUM Newsletter 30(3), 1995: the wide format holds at least 2p + 2 bits, 53 ≥
+2·24 + 2), and `abs`, `neg`, `floor`, `ceil`, `trunc`, `nearest`, `min`, `max` and `copysign`
+answer a value a single holds. An operand is a single where it is a `promote`, a constant a
+single holds, or a local every definition of which is one; a local read only through
+`demote` is declared a single. A NaN made canonical under the conversion is made canonical
+over it. A module name defined by an exact function of `Math` over numbers held for good
+holds its number (`PI32 = Math.fround( 3.14… )`), published once more after the plan, where
+a call through a name that holds a builtin is the builtin's (`holdModuleNumbers`).
+`test/float32.js` compares every form with the host to the bit.
+
+The tape's fold (`src/optimize/fold.js`) answers a comparison of two `f64` constants and a
+mask by a constant that decides or passes its other operand: what a literal argument leaves
+of a test after the generic optimizer has brought the constant to it.
 
 A typed store reads its key before its value, as PutValue does (`module/typedarray.js`): a
 key that reads what the value's effects may store to (a global or an element a call changes,

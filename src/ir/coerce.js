@@ -111,7 +111,7 @@ export const coerceNullishToNum = (valIR) => typed(
   'f64')
 
 // Runtime helpers whose result is a number whatever they read.
-const NUMERIC_HELPERS = new Set(['$__time_ms', '$__len', '$__str_len', '$__length', '$__to_num', '$__ptr_type', '$__ptr_offset', '$__to_int32'])
+const NUMERIC_HELPERS = new Set(['$__time_ms', '$__len', '$__str_len', '$__length', '$__to_num', '$__ptr_type', '$__ptr_offset', '$__to_int32', '$__rem'])
 
 /** Whether the value `v` yields may be the undefined a read answers for a miss:
  *  a constant arm (an index past the end of an array), or a runtime reader's

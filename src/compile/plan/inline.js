@@ -85,6 +85,11 @@ const BIND = CLASS_T + 'bind'
 /** Candidates spliced at their sites in loops only; a straight-line site keeps
  *  the call (`inlineHotInternalCalls` fills it, `isCandidateCall` consults it). */
 let hotOnly = new Set()
+/** Candidates the speed tier splices in a loop at any depth, while the caller has
+ *  room (`CALLER_FULL`): a body of its size at a site the loop runs. */
+let warm = new Set()
+/** The loops around the statement being spliced. */
+let loopsDeep = 0
 
 /** An element or length read of a typed array over simple operands: no effect,
  *  one value until a write. The receiver's kind is the caller's (`callerView`):
@@ -139,6 +144,8 @@ const inlinedBody = (func, args) => {
   if (args.length > params.length || args.some(a => Array.isArray(a) && a[0] === '...')) return null
   const paramNames = new Set(params.map(p => p.name))
   const writesParams = mutatesAny(func.body, paramNames)
+  // the parameters the body writes: each is the call's own storage; one it only reads is what the site passed
+  const writes = (name) => writesParams && mutatesAny(func.body, new Set([name]))
 
   // A simple arg (ident / literal / arithmetic) is cheap to substitute directly, even when its
   // param is used several times. A NON-simple arg (a call, `?:`, indexed load) is bound to a fresh
@@ -179,11 +186,11 @@ const inlinedBody = (func, args) => {
     // A closure holds the parameter as the call bound it: a name of the caller read
     // in its place would read what the caller stores later. A literal is itself.
     const held = closures?.mentions.has(params[i].name) && !(Array.isArray(arg) && (arg[0] == null || arg[0] === 'str'))
-    if (!held && !writesParams && isSimpleArg(arg) && (atom || uses(params[i].name) <= 1)) { subst.set(params[i].name, arg); continue }
+    if (!held && !writes(params[i].name) && isSimpleArg(arg) && (atom || uses(params[i].name) <= 1)) { subst.set(params[i].name, arg); continue }
     if (!held && still && isRead(arg) && uses(params[i].name) === 1) { subst.set(params[i].name, arg); continue }
     const tmp = `${T}inarg${freshId(ctx)}`
     // Parameter writes belong to the call's storage, never its caller's binding.
-    argPrefix.push([writesParams ? 'let' : 'const', ['=', tmp, arg]])
+    argPrefix.push([writes(params[i].name) ? 'let' : 'const', ['=', tmp, arg]])
     subst.set(params[i].name, tmp)
   }
 
@@ -392,6 +399,8 @@ const spliceInlinedShape = (prefix, valueStmt, loopVariantNames) => {
 // compiles as one (a driver of three hundred kernels, each called once, spliced
 // into one function of thirty thousand lines that never left the baseline tier).
 const CALLER_FULL = 3000
+// The largest straight-line body the speed tier splices at a site in a loop past the site budgets.
+const WARM_BODY = 200
 let callerSize = 0, callerBound = true, kernels = new Set()
 // The candidates that splice only where an argument they call is a function: name → the positions of those parameters.
 let fnSites = new Map()
@@ -426,7 +435,8 @@ const isFunctionArg = isFunctionValue
 // `hot`: the call sits in a loop, where a loop-only candidate splices too.
 const isCandidateCall = (node, candidates, hot = false) => {
   if (!Array.isArray(node) || node[0] !== '()' || typeof node[1] !== 'string' || !candidates.has(node[1])) return false
-  if (!hot && hotOnly.has(node[1])) return false
+  if (warm.has(node[1])) { if (loopsDeep === 0 && !hot || callerSize > CALLER_FULL) return false }
+  else if (!hot && hotOnly.has(node[1])) return false
   if (!hot && callerBound && callerSize > CALLER_FULL && kernels.has(node[1])) { ctx.plans.keptKernels.add(node[1]); return false }
   const called = fnSites.get(node[1])
   if (called === undefined) return true
@@ -620,7 +630,9 @@ const inlineInStmt = (stmt, candidates, loopVariantNames = null, hot = false) =>
   if (op === 'for') {
     const idx = forLoopBodyIndex(stmt)
     const vars = loopVariantNames ? new Set(loopVariantNames) : new Set()
+    loopsDeep++
     const r = inlineInStmt(stmt[idx], candidates, vars.size ? vars : null, innermost(stmt[idx]))
+    loopsDeep--
     if (!r) return null
     return { node: withForLoopBody(stmt, r.node), changed: true, hoisted: r.hoisted }
   }
@@ -628,7 +640,9 @@ const inlineInStmt = (stmt, candidates, loopVariantNames = null, hot = false) =>
     const vars = loopVariantNames ? new Set(loopVariantNames) : new Set()
     const ind = whileInductionVar(stmt[1])
     if (ind) vars.add(ind)
+    loopsDeep++
     const r = inlineInStmt(stmt[2], candidates, vars.size ? vars : null, innermost(stmt[2]))
+    loopsDeep--
     if (!r) return null
     return { node: ['while', stmt[1], r.node], changed: true, hoisted: r.hoisted }
   }
@@ -675,6 +689,12 @@ const OPTIONAL_CHAIN = new Set(['?.', '?.[]', '?.()'])
 // + count. Statement HEADERS that are expression positions (for-init/update, while/if test)
 // are left untouched: there's no sound place for a hoisted decl there, so those calls just
 // stay outlined. Conservatively leaves unrecognized statement shapes alone.
+//
+// A call in an arm of a conditional runs only where the arm does, so it cannot move
+// ahead of the test. The conditional itself can, as a statement: `c ? a : f(x)` is
+// `let t; if (c) t = a; else t = f(x)` and then `t`, `a && f(x)` is `let t = a; if (t)
+// t = f(x)`, and the call is a statement's whole value, which splices. The conditional
+// moves as a call does: only past what it commutes with.
 const hoistNestedCalls = (body, bodies, anywhere = bodies) => {
   if (!bodies.size || !Array.isArray(body)) return { node: body, changed: false }
   let changed = false
@@ -697,10 +717,9 @@ const hoistNestedCalls = (body, bodies, anywhere = bodies) => {
     || (n[0] === '()' && (typeof n[1] !== 'string' || !bodies?.has(n[1]) || (!seen.has(n[1]) && touchesMemory(bodies.get(n[1]), seen.add(n[1]))))))
   const assigns = (b, x, seen = new Set()) => some(b, n => (MUTATE_OPS.has(n[0]) && n[1] === x)
     || (n[0] === '()' && typeof n[1] === 'string' && bodies?.has(n[1]) && !seen.has(n[1]) && assigns(bodies.get(n[1]), x, seen.add(n[1]))))
-  const commutes = (name, eff) => {
+  const commutes = (name, eff, b = bodies?.get(name)) => {
     if (eff.seen === true) return false
     if (eff.seen === false && !eff.mem && !eff.reads.size) return true
-    const b = bodies?.get(name)
     if (!b) return false
     if ((eff.seen !== false || eff.mem) && touchesMemory(b)) return false
     if (eff.seen !== false) for (const x of eff.seen) if (refsName(b, x, REFS_IN_EXPR)) return false
@@ -714,8 +733,12 @@ const hoistNestedCalls = (body, bodies, anywhere = bodies) => {
   // positions keep the same rewritten node, so a hoisted call in it runs once.
   const rewritten = new Map()
   // The statement's loop, as the splicer sees it: a body outside `anywhere`
-  // hoists (and then splices) in an innermost loop only.
-  let inLoop = false
+  // hoists (and then splices) in an innermost loop only, a warm one in any loop.
+  let inLoop = false, deep = 0
+  const lifts = (name) => bodies.has(name) && (inLoop || anywhere.has(name) || (deep > 0 && warm.has(name) && callerSize <= CALLER_FULL))
+  // a call this pass would lift, in a position the expression may not reach
+  const holdsLift = (n) => Array.isArray(n) && n[0] !== '=>' && n[0] !== 'str' &&
+    ((n[0] === '()' && typeof n[1] === 'string' && lifts(n[1])) || n.some((c, i) => i > 0 && holdsLift(c)))
   const hExpr = (n, pre, cond, eff) => {
     if (typeof n === 'string') { eff.reads.add(n); return n }
     if (!Array.isArray(n) || n[0] === '=>') return n
@@ -726,7 +749,7 @@ const hoistNestedCalls = (body, bodies, anywhere = bodies) => {
     return out
   }
   const hNode = (n, pre, cond, eff) => {
-    if (!cond && n[0] === '()' && typeof n[1] === 'string' && bodies.has(n[1]) && (inLoop || anywhere.has(n[1])) && commutes(n[1], eff)) {
+    if (!cond && n[0] === '()' && typeof n[1] === 'string' && lifts(n[1]) && commutes(n[1], eff)) {
       const call = [n[0], n[1], ...n.slice(2).map(a => hExpr(a, pre, false, effState()))]
       const tmp = `${T}inl${freshId(ctx)}_h`
       pre.push(['const', ['=', tmp, call]])
@@ -744,8 +767,18 @@ const hoistNestedCalls = (body, bodies, anywhere = bodies) => {
       if (n[0] === '?.()') eff.seen = true  // optional CALL may run
       return out
     }
-    if (SHORT_CIRCUIT.has(n[0]))
+    if (SHORT_CIRCUIT.has(n[0])) {
+      if (!cond && n[0] !== '??' && n.length === (n[0] === '?:' ? 4 : 3) && n.slice(2).some(holdsLift) && commutes(null, eff, n)) {
+        const tmp = `${T}inl${freshId(ctx)}_c`
+        const test = hExpr(n[1], pre, false, effState())
+        const arm = (e) => seq(hStmt(['=', tmp, e]))
+        if (n[0] === '?:') pre.push(['let', tmp], ['if', test, arm(n[2]), arm(n[3])])
+        else pre.push(['let', ['=', tmp, test]], ['if', n[0] === '&&' ? tmp : ['!', tmp], arm(n[2])])
+        changed = true
+        return tmp
+      }
       return [n[0], hExpr(n[1], pre, cond, eff), ...n.slice(2).map(c => hExpr(c, pre, true, eff))]
+    }
     const out = [n[0], ...n.slice(1).map(c => hExpr(c, pre, cond, eff))]
     if (n[0] === '()' && !pureSIMDCall(n)) eff.seen = true  // an effectful call left in place is an opaque effect
     else if (MUTATE_OPS.has(n[0])) note(eff, typeof n[1] === 'string' ? new Set([n[1]]) : true)
@@ -757,7 +790,7 @@ const hoistNestedCalls = (body, bodies, anywhere = bodies) => {
   // object/array-literal `{}`-bodied factory) would break the post-inline alias chain.
   // Only hoist NESTED calls; leave a top-level direct call to those paths.
   const directCall = (e) => Array.isArray(e) && e[0] === '()' && typeof e[1] === 'string' && bodies.has(e[1])
-  const hLoopBody = (body) => { const was = inLoop; inLoop = innermost(body); const out = seq(hStmt(body)); inLoop = was; return out }
+  const hLoopBody = (body) => { const was = inLoop; inLoop = innermost(body); deep++; const out = seq(hStmt(body)); deep--; inLoop = was; return out }
   const hStmt = (s) => {  // → array of statements (hoisted decls prepended)
     if (!Array.isArray(s)) return [s]
     switch (s[0]) {
@@ -824,6 +857,8 @@ export const inlineHotInternalCalls = (programFacts, ast) => {
   // both on the speed tier so levels ≤2 keep their conservative inlining policy.
   const speedTier = !!(cfg && cfg.inlineFns)
   hotOnly = new Set()
+  warm = new Set()
+  loopsDeep = 0
   kernels = new Set()
   fnSites = new Map()
   callerSize = 0
@@ -848,6 +883,26 @@ export const inlineHotInternalCalls = (programFacts, ast) => {
     if (cs.callerFunc != null && !live.has(cs.callerFunc.name)) continue
     const list = sitesByCallee.get(cs.callee)
     if (list) list.push(cs); else sitesByCallee.set(cs.callee, [cs])
+  }
+
+  // The functions that reach themselves through the calls they make. One that
+  // calls itself never splices; one of a longer cycle splices as a leaf only
+  // (the bodies it calls spliced first), or its copy would hold the cycle's call.
+  const calls = new Map(ctx.funcs.list.map(f => {
+    const out = new Set()
+    if (f.body) walkAst(f.body, { enter: n => { if (n[0] === '()' && typeof n[1] === 'string' && ctx.funcs.names.has(n[1])) out.add(n[1]) } })
+    return [f.name, out]
+  }))
+  const cyclic = (name) => {
+    const seen = new Set(), todo = [...calls.get(name) ?? []]
+    while (todo.length) {
+      const x = todo.pop()
+      if (x === name) return true
+      if (seen.has(x)) continue
+      seen.add(x)
+      for (const y of calls.get(x) ?? []) todo.push(y)
+    }
+    return false
   }
 
   const containsNode = (root, needle, inLoop = false) => {
@@ -920,7 +975,10 @@ export const inlineHotInternalCalls = (programFacts, ast) => {
     // literal is bound to then scalarizes where it never escapes
     // (plan/literals.js): three's `const v = new Vector3()` before a loop.
     const factory = madeLiteral(func)
-    if (programFacts.addressTakenNames.has(func.name) && !soleCallerExport && !factory) continue
+    // A function a value names stays for the value. At the speed tier its body
+    // still is what a direct call of it runs (`modf( x )` beside `modf.assign =
+    // assign`, the library's form of a second entry).
+    if (programFacts.addressTakenNames.has(func.name) && !soleCallerExport && !factory && !speedTier) continue
     const paramNames = new Set((func.sig?.params || []).map(p => p.name))
     if (paramNames.size && some(func.body, n => {
       if (n[0] !== '()' || !Array.isArray(n[1]) || n[1][0] !== '.') return false
@@ -976,9 +1034,14 @@ export const inlineHotInternalCalls = (programFacts, ast) => {
     // every relaxation pass), 48 when a site is not (noise's grad, called
     // from perlin: straight-line, but the per-pixel kernel itself). A sole
     // site copies nothing, whatever the size (Ray's intersectTriangle).
+    // A tiny leaf has no cap at the speed tier: its body is the size of the
+    // call it replaces, and the call is what joins the kinds of every site's
+    // argument into one parameter (a library's `isnan`, `x !== x` at two
+    // hundred sites, one of which passes a value of no known kind, tested each
+    // for `undefined` and `null` besides).
     if (!sites?.length) continue
     const small = isTinyLeaf || isSmallLeaf || isSmallKernel
-    const everywhere = factory || (small || fixedTypedArraySite ? coldSites <= leafSiteCap : sites.length <= 2)
+    const everywhere = factory || (small || fixedTypedArraySite ? coldSites <= leafSiteCap || (speedTier && isTinyLeaf) : sites.length <= 2)
       && (small || hasLoop || (sites.length - 1) * size <= (coldSites ? 48 : 200))
     // Past that budget a body still splices at its sites in loops, where the
     // call is the per-iteration cost the splice removes; its straight-line
@@ -987,14 +1050,20 @@ export const inlineHotInternalCalls = (programFacts, ast) => {
     // kernels' loops this way. The duplication a hot site adds is bounded the
     // way the everywhere splice's is: two bodies of 200 nodes.
     const loopOnly = !everywhere && hotSites >= 1 && hotSites * size <= 400
+    // Past both budgets the speed tier splices a straight-line body in a loop
+    // while the caller has room (`CALLER_FULL`). The budgets above count a
+    // callee's sites across the program, so a loop's time would depend on how
+    // many other loops call the same function: a library's `sin` is as much
+    // the body of the seventh loop that calls it as of the first.
+    const warmBody = speedTier && !everywhere && !loopOnly && !hasLoop && hotSites >= 1 && size <= WARM_BODY
     // A loop that calls a parameter (a series summed from a generator, a continued
     // fraction from its terms) runs the argument once per pass: spliced where the
     // argument is a function the caller names or makes, the call is that function's
     // body. Such a site splices whatever the count of sites, at the speed tier: the
     // copy is what removes a call through a table from a loop.
     const called = speedTier && hasLoop && size <= 200 ? calledParams(func) : null
-    const fnOnly = !everywhere && !loopOnly && called != null && called.length > 0
-    if (!everywhere && !loopOnly && !fnOnly) continue
+    const fnOnly = !everywhere && !loopOnly && !warmBody && called != null && called.length > 0
+    if (!everywhere && !loopOnly && !warmBody && !fnOnly) continue
     // Expression-bodied arrow funcs (`(c) => expr`) have no block — body IS the
     // return value. Treat as a "tiny leaf" branch handled below; force hasLoop=false.
     // a closure's own `return` is no return of the body
@@ -1013,8 +1082,11 @@ export const inlineHotInternalCalls = (programFacts, ast) => {
       // Below speed, the callee must have this one site, so that splicing the caller
       // duplicates nothing a call kept shared (a guard's string compares into four
       // callers cost the flagship 6 KB).
+      // At speed a body of a loop's size takes the calls it keeps along (`lcm`
+      // over `gcd`, whose loops stay a function), outside a cycle of calls.
       const inlinesAway = (callee) => candidates.has(callee) && (speedTier || sitesByCallee.get(callee)?.length === 1)
-      if (some(func.body, n => n[0] === '()' && typeof n[1] === 'string' && ctx.funcs.names.has(n[1]) && !inlinesAway(n[1]))) continue
+      if (some(func.body, n => n[0] === '()' && typeof n[1] === 'string' && ctx.funcs.names.has(n[1]) && !inlinesAway(n[1])) &&
+          !(speedTier && size <= WARM_BODY && !cyclic(func.name))) continue
     }
     if (some(func.body, n => n[0] === '()' && n[1] === func.name)) continue
     // Kernels with nested loops (depth ≥ 2) are typically large and the inner
@@ -1041,7 +1113,8 @@ export const inlineHotInternalCalls = (programFacts, ast) => {
     if (paramNames.size && some(func.body, n => n[0] === '()' && typeof n[1] === 'string' && paramNames.has(n[1])))
       forwarders.add(func.name)
     if (!hasLoop) leaves.add(func.name); else kernels.add(func.name)
-    if (loopOnly) hotOnly.add(func.name)
+    if (loopOnly || warmBody) hotOnly.add(func.name)
+    if (warmBody) warm.add(func.name)
     if (fnOnly) fnSites.set(func.name, called)
     candidates.set(func.name, func)
     recollect = true  // a function this one blocked (a caller of it) may qualify now

@@ -39,6 +39,10 @@ const held = {
   'beside a local of its name': ['let K\nK = 4\nconst g = (v) => { let K = v * 2; K += 1; return K }\nexport let f = (x) => g(x) * 100 + K', 'K', 4],
   'beside a loop counter of its name': ['let K\nK = 4\nconst g = (v) => { let s = 0; for (let K = 0; K < v; K++) s += K; return s }\nexport let f = (x) => g(x) * 100 + K', 'K', 4],
   'beside a closure\'s parameter of its name': ['let K\nK = 4\nexport let f = (x) => { const g = (K) => K * 2; return g(x) * 100 + K }', 'K', 4],
+  // an exact function of `Math`: the single nearest a literal, as a library declares its float constants
+  'a single of a literal': ['const PI32 = Math.fround(3.141592653589793)\nexport let f = (x) => x * PI32', 'PI32', Math.fround(3.141592653589793)],
+  'through a name that holds the function': ['var fround = typeof Math.fround === "function" ? Math.fround : null\nvar f32 = fround\nvar PI32 = f32(3.141592653589793)\nvar HALF = PI32\nexport let f = (x) => f32(f32(x) * HALF)', 'HALF', Math.fround(3.141592653589793)],
+  'a floor, a root and a greater of held numbers': ['const A = 10.75, B = Math.floor(A), C = Math.sqrt(16), D = Math.max(B, C, 3)\nexport let f = (x) => x * B + C + D', 'D', 10],
 }
 
 test('held number: a name that holds one number for good reads as it', () => {

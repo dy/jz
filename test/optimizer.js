@@ -5077,7 +5077,7 @@ test('pure boolean chains lower eagerly while effectful RHS stays short-circuite
 test('source-inlined call-free boolean leaves stay eager inside call-bearing callers', () => {
   const src = `
     const leaf=(r,g,b,a)=>{return r===g&&g===b&&b===a&&a>0}
-    export let f=m=>{let r=2|0,g=2|0,b=m|0,a=2|0;const z=Math.sin(m)
+    export let f=(m,k)=>{let r=k|0,g=k|0,b=m|0,a=k|0;const z=Math.sin(m)
       let s=0,i=0;while(i<2){s+=leaf(r,g,b,a)|0;i++}return s+(z>2?1:0)}`
   const tree = parse(src, { level: 'speed', watr: false })
   const f = findFunc(tree, '$f')
@@ -5086,8 +5086,8 @@ test('source-inlined call-free boolean leaves stay eager inside call-bearing cal
   is(leafCalls, 0, 'leaf is source-inlined')
   ok(ands >= 3, 'its pure comparison chain remains branchless after entering a call-bearing body')
   const ex = run(src, { optimize: 'speed' }).f
-  is(ex(2), 2, 'true chain exact')
-  is(ex(3), 0, 'false chain exact')
+  is(ex(2, 2), 2, 'true chain exact')
+  is(ex(3, 2), 0, 'false chain exact')
 })
 
 test('reachable-global-write SCC bitsets close cycles and indirect calls', () => {
