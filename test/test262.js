@@ -5,7 +5,7 @@
  *   node test/test262.js                  # run all applicable tests
  *   node test/test262.js --quick          # run first 100 per category
  *   node test/test262.js --filter=String  # only run String tests
- *   node test/test262.js --jobs=32        # worker count (default: CPU count)
+ *   node test/test262.js --jobs=2         # override the memory-bounded worker count
  *
  * Requires: test262 checkout at ./test262 (auto-cloned if missing).
  *
@@ -15,14 +15,15 @@
  *
  * Execution is parallel: the main thread collects the work list, then fans it
  * out round-robin to a pool of worker_threads (each with its own jz instance).
- * Worker count: --jobs=N or JZ_TEST262_JOBS env, default availableParallelism().
+ * Worker count: --jobs=N or JZ_TEST262_JOBS; otherwise at most two, memory-bounded.
  */
 import { readdirSync, statSync, readFileSync, writeFileSync, existsSync } from 'fs'
 import { AUDITED_OUT } from './test262-out.js'
 import { join, relative } from 'path'
 import { execSync } from 'child_process'
 import { Worker, isMainThread, workerData, parentPort } from 'worker_threads'
-import { availableParallelism } from 'os'
+import { testJobs } from './_jobs.js'
+import { collect } from './_gc.js'
 
 const ROOT = join(import.meta.dirname, '..')
 const TEST262 = join(import.meta.dirname, 'test262')
@@ -234,7 +235,7 @@ const isGeneratorTest = (rel) => /\/(expressions|statements)\/generators\//.test
 // Quick mode: limit tests per subdirectory
 const QUICK = process.argv.includes('--quick')
 const FILTER = process.argv.find(a => a.startsWith('--filter='))?.split('=')[1]
-const JOBS_ARG = Number(process.argv.find(a => a.startsWith('--jobs='))?.split('=')[1])
+const JOBS_ARG = process.argv.find(a => a.startsWith('--jobs='))?.slice(7)
 const MAX_PER_DIR = QUICK ? 50 : Infinity
 
 // Collect test files
@@ -1246,7 +1247,7 @@ async function runChunk(items) {
       }
     } catch {
       d.skip++
-    }
+    } finally { collect() }
   }
   return { perDir, fails, xfails, xpasses, negaccepts, skipruns }
 }
@@ -1260,10 +1261,7 @@ if (!isMainThread) {
   const allTest262Files = countJs(join(TEST262, 'test'))
   const { work, dirSkip } = collectWork()
 
-  // One worker per core by default; override with --jobs=N or JZ_TEST262_JOBS.
-  const jobs = Math.max(1, Math.min(
-    JOBS_ARG || Number(process.env.JZ_TEST262_JOBS) || availableParallelism(),
-    work.length || 1))
+  const jobs = testJobs(JOBS_ARG ?? process.env.JZ_TEST262_JOBS, work.length)
 
   // Round-robin split: spreads heavy dirs (class/, expressions/) evenly so no
   // single worker draws the whole slow tail.

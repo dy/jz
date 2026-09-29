@@ -22,6 +22,7 @@
 import jz from '../index.js'
 import { onKernel } from './_matrix.js'
 import { oracle } from './util.js'
+import { collect } from './_gc.js'
 
 // KERNEL-ONLY hang exclusion (region-hooks-on kernel investigation,
 // .work/archive/region-release-notes.md "goal (2)", 2026-08-28) — seed=84 at opt=3
@@ -385,7 +386,7 @@ export const check = (prog, opts) => {
 // fails the SAME way (mismatch / jz-compile / wasm-threw). A dropped `let` that
 // leaves an undeclared read makes JS throw (a different kind) → rejected →
 // restored, so shrinking can never drift into a spurious scope error.
-const failsKind = (prog, opts, kind) => { const r = check(prog, opts); return r && r.kind === kind ? r : null }
+const failsKind = (prog, opts, kind) => { const r = check(prog, opts); collect(); return r && r.kind === kind ? r : null }
 
 // All expression children of a node (for "replace node with a subterm").
 const kids = (e) => e.k === 'bin' ? [e.l, e.r] : e.k === 'un' ? [e.x] : e.k === 'cond' ? [e.c, e.t, e.e] : e.k === 'call' ? e.a : []
@@ -461,6 +462,7 @@ export const fuzz = (opts) => {
     if (onKernel() && KERNEL_HANG_SEEDS.has(seed)) continue   // see KERNEL_HANG_SEEDS's own doc above
     const prog = genProgram(seed, opts.cfg)
     const r = check(prog, opts)
+    collect()
     if (r && r.kind === 'invalid') { invalid++; continue }
     if (r) findings.push({ seed, ...r, src: r.src || toSource(prog), prog })
     if (findings.length >= (opts.maxFindings || Infinity)) break
@@ -588,6 +590,7 @@ export const fuzzTyped = (opts) => {
   for (let i = 0; i < opts.count; i++) {
     const seed = opts.seedStart + i
     const r = checkTyped(seed, opts)
+    collect()
     if (r && r.kind !== 'invalid') findings.push({ seed, ...r })
     if (findings.length >= (opts.maxFindings || Infinity)) break
   }
@@ -646,6 +649,7 @@ export const fuzzTypedMap = (opts) => {
   for (let i = 0; i < opts.count; i++) {
     const seed = opts.seedStart + i
     const r = checkTypedMap(seed, opts)
+    collect()
     if (r && r.kind !== 'invalid') findings.push({ seed, ...r })
     if (findings.length >= (opts.maxFindings || Infinity)) break
   }
@@ -708,6 +712,7 @@ export const fuzzTypedInt = (opts) => {
   for (let i = 0; i < opts.count; i++) {
     const seed = opts.seedStart + i
     const r = checkTypedInt(seed, opts)
+    collect()
     if (r && r.kind !== 'invalid') findings.push({ seed, ...r })
     if (findings.length >= (opts.maxFindings || Infinity)) break
   }
@@ -754,6 +759,7 @@ export const fuzzTypedIntMinMax = (opts) => {
   for (let i = 0; i < opts.count; i++) {
     const seed = opts.seedStart + i
     const r = checkTypedIntMinMax(seed, opts)
+    collect()
     if (r && r.kind !== 'invalid') findings.push({ seed, ...r })
     if (findings.length >= (opts.maxFindings || Infinity)) break
   }
@@ -797,6 +803,7 @@ export const fuzzTypedIVSR = (opts) => {
   for (let i = 0; i < opts.count; i++) {
     const seed = opts.seedStart + i
     const r = checkTypedIVSR(seed, opts)
+    collect()
     if (r && r.kind !== 'invalid') findings.push({ seed, ...r })
     if (findings.length >= (opts.maxFindings || Infinity)) break
   }
@@ -836,6 +843,7 @@ export const fuzzTypedByteScan = (opts) => {
   for (let i = 0; i < opts.count; i++) {
     const seed = opts.seedStart + i
     const r = checkTypedByteScan(seed, opts)
+    collect()
     if (r && r.kind !== 'invalid') findings.push({ seed, ...r })
     if (findings.length >= (opts.maxFindings || Infinity)) break
   }
@@ -889,6 +897,7 @@ export const fuzzLoopBound = (opts) => {
   for (let i = 0; i < opts.count; i++) {
     const seed = opts.seedStart + i
     const r = checkLoopBound(seed, opts)
+    collect()
     if (r && r.kind !== 'invalid') findings.push({ seed, ...r })
     if (findings.length >= (opts.maxFindings || Infinity)) break
   }

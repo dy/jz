@@ -2227,38 +2227,82 @@ cleanup; an unused binding alone does not prove its module has no side effects.
 
 ### Test suites
 
-Tests use [tst](https://github.com/dy/tst). Each file in `test/` is self-contained. Run all:
+Tests use [tst](https://github.com/dy/tst). Choose the owner of the work you need:
 
-```sh
-npm test
-```
+| Command | Work |
+| --- | --- |
+| `npm test` | Core semantic/structural regressions, one process; **no bootstrap or generated population sweeps** |
+| `npm test -- strings dyn-keys` | Named files, regardless of owner; keeps completed-test GC and warm compile-state checks |
+| `npm run test:matrix` | Core default/O0/O3/WASI legs |
+| `npm run test:integration` | Libraries, tools, examples, site/package smoke for the current leg |
+| `npm run test:generated` | Fuzz correctness, WAT populations, deterministic codegen ratchet for the current leg |
+| `npm run test:extended` | Integration matrix plus native/WASI generated owners |
+| `npm run test:bootstrap` | Fresh self compiler: round-trip, O0/O2/O3 parity/oracles, separate checkpoint overlay |
+| `npm run test:bootstrap -- --full` | Above, plus the full hosted suite and recursive compilation |
+| `npm run test:battery -- fast` | Core matrix plus the distinct armed O3 invariant leg |
+| `npm run test:battery` | Above, extended checks, armed integration/fuzz, fixpoint, then exclusive full bootstrap |
+| `npm run test:all` | Core + extended + conformance + benchmark + full bootstrap + self performance |
 
-Run one file:
+`node test/index.js --suite=all --list` lists every registered file without compiling.
+`--suite=core|integration|generated|bootstrap` selects an owner; `--suite=all`
+explicitly requests the old single-process collection (including heavy builds).
+`test/_suites.js` gives each file exactly one owner; `test/test-infrastructure.js`
+checks that the union is complete. CI runs the core and integration on all four
+legs, generated checks on native/WASI, and bootstrap in its own workflow.
+No seeds, oracle comparisons, or optimization profiles are removed.
 
-```sh
-node test/strings.js
-```
+Matrix/extended/battery subprocesses default to **one job**. Set `JZ_TEST_JOBS=2`
+(or battery `--jobs=2`) deliberately; do not start several batteries on one
+machine. Logs go to printed temporary-directory paths, not parent-process
+strings. `JZ_TEST_TIMEOUT` bounds an ordinary task in milliseconds (default one
+hour); bootstrap has a four-hour task budget and always runs alone in the battery.
+Timeouts terminate the task's process group, including nested builders. GC runs
+after completed tests and generated programs, also checking external-memory
+and RSS growth; it does not clear compiler state between test files.
 
-The suite runs once per compiler configuration (`npm run test:matrix`: default,
-opt0, opt3, wasi; CI runs the four legs in parallel). A test that must hold at
-several optimize levels writes `for (const optimize of levels(false, 2, 3))`
-(`test/_matrix.js`): each leg runs its own level and the plain default leg also
-runs O1, which no leg carries, so the matrix supplies the sweep instead of every
-test compiling at every level on every leg. `JZ_TEST_SWEEP=1` runs the whole
-list in one process. Files that build the kernel, spawn tooling, or pass every
-option themselves are listed in `LEG_INVARIANT` / `OPT_INVARIANT` in
-`test/index.js` and run on the default leg only; naming a file on the command
-line runs it on any leg.
+A test that must hold at several optimize levels writes
+`for (const optimize of levels(false, 2, 3))` (`test/_matrix.js`): each leg runs
+its own level; the default leg also owns O1. `JZ_TEST_SWEEP=1` runs the whole
+list in one process. For a formerly explicit all-profile loop, `ownedLevels`
+also preserves its complete WASI/hosted-compiler cross-product. Do not split a
+pass-on/pass-off comparison that needs both results in the same assertion.
+`LEG_INVARIANT` / `OPT_INVARIANT` in `test/index.js` skip redundant legs;
+explicitly naming a file overrides those skips.
+
+Bootstrap sharing is invocation-local: a private fresh build is SHA256-checked
+by each consuming process, never loaded from a stale `dist/` or mtime cache.
+The forced-checkpoint build stays independent, and checkpoint instances leave
+memory when their process ends. `test:self` still makes a fresh standalone build.
+CI installs with `npm ci --ignore-scripts` plus `npm rebuild esbuild`.
+`prepare` builds only the site/JavaScript assets (`build:web`), the files the npm
+package actually ships; installation no longer bootstraps an unused compiler.
+`npm run build` remains the explicit full distribution build including `jz.wasm`.
 
 Shared helpers live in `test/util.js`: `run` (exports), `wat` (text),
 `oracle(src)` (the same program evaluated by Node), `agree` (jz equals Node for
 one call), `funcWat` (one function's WAT), and `cases(rows)`, which compiles a
 table of `[label, arrowSource, want, ...args]` rows as one module. A compile is
 almost all of a test's cost, so a family of one-assertion programs belongs in one
-`cases` table, not one compile per assertion.
+`cases` table, not one compile per assertion. Reuse compiled exports **within a
+fixture** for its argument table, not through a global compiler cache (which
+would hide state leaks). Keep population compilation inside test callbacks so
+`TST_GREP` cannot accidentally run an entire corpus during imports.
+
+To count and time real compiles, including duplicates:
+
+```sh
+JZ_HASHES=/tmp/strings.json node --import ./test/_hashes.mjs test/index.js strings
+```
+
+The recorder's `meta.calls` and per-key `measurements` complement its outcome
+hashes; keys include effective host/optimization defaults. This is opt-in
+instrumentation, not a production compilation cache.
 
 Release semantics also run `npm run test:262` and
-`npm run test:262:builtins`. Negative-parse acceptance is an exact path set,
+`npm run test:262:builtins`. Workers default to at most two, further bounded by
+available memory and CPUs; `--jobs=N` / `JZ_TEST262_JOBS=N` explicitly overrides
+that choice. The npm commands expose GC to worker isolates. Negative-parse
+acceptance is an exact path set,
 not a count ceiling: any change must update and explain
 `test/test262-neg-accepts.json`; residual entries are blockers/inventory, not
 language extensions.

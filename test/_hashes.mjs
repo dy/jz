@@ -15,7 +15,7 @@
 // memories by size, and `profile` by presence (it collects timings).
 import { register } from 'node:module'
 import { createHash } from 'node:crypto'
-import { readFileSync, writeFileSync } from 'node:fs'
+import { readFileSync, writeFileSync, existsSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { isMainThread } from 'node:worker_threads'
 
@@ -49,25 +49,41 @@ const compare = (beforePath, afterPath) => {
 }
 
 const record = (out) => {
-  const index = fileURLToPath(new URL('../index.js', import.meta.url))
-  const find = 'export function _compileInProcess(code, opts = {}) {'
-  const wrap = `${find} return globalThis.__jzHash ? globalThis.__jzHash(code, opts, () => compileInProcess(code, opts)) : compileInProcess(code, opts) }\nfunction compileInProcess(code, opts = {}) {`
+  // Support the split compiler entry as well as checkouts predating that move.
+  const split = fileURLToPath(new URL('../src/compiler.js', import.meta.url))
+  const index = existsSync(split) ? split : fileURLToPath(new URL('../index.js', import.meta.url))
+  const params = existsSync(split) ? 'code, opts = {}, jzify = null' : 'code, opts = {}'
+  const args = existsSync(split) ? 'code, opts, jzify' : 'code, opts'
+  const name = existsSync(split) ? 'compileInProcess' : '_compileInProcess'
+  const find = `export function ${name}(${params}) {`
+  const wrap = `${find} return globalThis.__jzHash ? globalThis.__jzHash(code, opts, () => __recordedCompile(${args})) : __recordedCompile(${args}) }\nfunction __recordedCompile(${params}) {`
   // One hook registration: JZ_MUTANT_EDITS (test/_mutant.mjs's format) rides along, so a
   // knockout's outputs can be recorded against the unedited run's.
   const mutant = process.env.JZ_MUTANT_EDITS ? JSON.parse(process.env.JZ_MUTANT_EDITS) : {}
   register('./_mutant-hooks.mjs', import.meta.url, { data: { edits: { ...mutant, [index]: [[find, wrap]] } } })
-  const entries = new Map()
+  const entries = new Map(), measurements = new Map()
+  const rawOpt = process.env.JZ_TEST_OPTIMIZE
+  const defaults = { host: process.env.JZ_TEST_HOST || 'js', optimize: rawOpt == null ? 2 : /^-?\d+$/.test(rawOpt) ? Number(rawOpt) : rawOpt === 'false' ? false : rawOpt }
+  if (process.env.JZ_TEST_STRICT) defaults.strict = process.env.JZ_TEST_STRICT === '1'
   globalThis.__jzHash = (code, opts, run) => {
-    const key = sha(`${typeof code === 'string' ? code : canon(code)}\0${canon(opts)}`)
+    const effective = { ...opts }
+    for (const [k, v] of Object.entries(defaults)) if (effective[k] == null) effective[k] = v
+    const key = sha(`${typeof code === 'string' ? code : canon(code)}\0${canon(effective)}`)
     let e = entries.get(key)
     if (!e) entries.set(key, e = [String(code).slice(0, 160), new Set()])
+    const started = performance.now()
     try { const r = run(); e[1].add(outcome(r)); return r }
     catch (err) { e[1].add(`error:${sha(`${err?.name}:${err?.message}`)}`); throw err }
+    finally {
+      const m = measurements.get(key) || { calls: 0, ms: 0 }
+      m.calls++; m.ms += performance.now() - started
+      measurements.set(key, m)
+    }
   }
   process.on('exit', () => {
     const sorted = [...entries.keys()].sort().map(k => [k, [entries.get(k)[0], [...entries.get(k)[1]].sort()]])
     const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => k.startsWith('JZ_TEST_')))
-    writeFileSync(out, JSON.stringify({ meta: { env, keys: sorted.length }, entries: Object.fromEntries(sorted) }) + '\n')
+    writeFileSync(out, JSON.stringify({ meta: { env, keys: sorted.length, calls: [...measurements.values()].reduce((n, m) => n + m.calls, 0) }, entries: Object.fromEntries(sorted), measurements: Object.fromEntries(measurements) }) + '\n')
   })
 }
 

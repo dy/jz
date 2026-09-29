@@ -1,9 +1,14 @@
+import { runFiles } from './_run.js'
+
 const TESTS = [
+  'runner',
+  'test-infrastructure',
   'errors',
   'to-primitive',
   'property-order',
   'math',
   'pmath',
+  'stdlib-kernels',
   'simd-intrinsics',
   'bytebeat',
   'imports',
@@ -159,6 +164,7 @@ const TESTS = [
   'kernel-gate',
   'kernel-marks',
   'self-checkpoint',
+  'self-compile',
   'self-compile-source',
   'self-compile-includes',
   'eager-stdlib-parity',
@@ -179,9 +185,8 @@ const TESTS = [
   'examples',
 ]
 
-const argFilters = process.argv.slice(2)
-  .filter(arg => !arg.startsWith('-'))
-  .map(arg => arg.replace(/^test\//, '').replace(/\.js$/, ''))
+import { suiteArgs, suiteOf } from './_suites.js'
+const { suite, list, files: argFilters } = suiteArgs(process.argv.slice(2), process.env.JZ_TEST_TARGET === 'jz.wasm')
 
 // Files that are wholly host-bridge / host-runtime: their compile inputs depend
 // on host options (imports/host globals, external js objects, CLI argv, host
@@ -223,6 +228,7 @@ const argFilters = process.argv.slice(2)
 //   json shaped-parser asserts cleared with the elemOrigin fix; what's left
 //   above is hang-bisection debt and leg-mismatch classes, not value bugs.)
 const KERNEL_EXCLUDE = new Set(['imports', 'external', 'cli', 'options', 'web-smoke', 'snapshot', 'timers', 'wasi', 'watr', 'warnings', 'perf-ratchet', 'unswitch-typed-param', 'bench-c', 'native-lowering', 'kernel-parity', 'kernel-oracle',
+  'runner', // host test-runner lifecycle; no compiler inputs
   // never-grown: value-correct in-kernel; ONE structural assert (raw-base WAT
   // shape) is an optimization-parity gap like unswitch — re-excluded 2026-07-22
   'never-grown',
@@ -265,6 +271,7 @@ const KERNEL_EXCLUDE = new Set(['imports', 'external', 'cli', 'options', 'web-sm
 // owns them and the opt0/opt3/wasi legs skip them (about 6 minutes a leg). Naming
 // a file on the command line runs it on any leg.
 const LEG_INVARIANT = new Set([
+  'runner', 'test-infrastructure', // host test-runner lifecycle; no compiler inputs
   'pmath', // the benchmark's fixed JS host and speed build on every leg
   'self-checkpoint', 'self-build', 'self-compile-source', 'kernel-marks', 'eager-stdlib-parity',
   'reachability-mutants', 'bench-c', 'bench-porffor', 'bench-perry', 'bench-memory', 'bench-svg', 'cli', 'native-lowering',
@@ -283,14 +290,17 @@ const onKernelTarget = target === 'jz.wasm'
 
 const selected = (argFilters.length
   ? TESTS.filter(name => argFilters.includes(name))
-  : TESTS
-).filter(name => argFilters.includes(name) || !((onKernelTarget && KERNEL_EXCLUDE.has(name)) || legSkips(name)))
+  : TESTS.filter(name => suite === 'all' || suiteOf(name) === suite)
+).filter(name => argFilters.includes(name) || !((onKernelTarget && (KERNEL_EXCLUDE.has(name) || suiteOf(name) === 'bootstrap' || name === 'test-infrastructure')) || legSkips(name)))
 
 if (argFilters.length && selected.length !== argFilters.length) {
   const known = new Set(TESTS)
   const missing = argFilters.filter(name => !known.has(name))
   throw new Error(`Unknown test file(s): ${missing.join(', ')}`)
 }
+
+// Listing is side-effect free: do not load the compiler or any test fixtures.
+if (list) { console.log(selected.join('\n')); process.exit(0) }
 
 // JZ_TEST_TARGET=jz.wasm — run the whole suite against the self-compiled jz.wasm
 // kernel instead of the in-process compiler. Set the target BEFORE importing any
@@ -302,17 +312,5 @@ if (onKernelTarget) {
   _setCompileTarget(compileViaKernel)
 }
 
-// Full GC between test files. Every test instantiates fresh wasm modules whose
-// Memory lives OUTSIDE the JS heap — thousands of dead instances add ~zero GC
-// pressure (the JS heap stays small, major GC never fires) and the suite's RSS
-// balloons to tens of GB before the process exits. A forced collection after
-// each file frees the previous file's instances and returns their memories to
-// the OS, bounding RSS to roughly one file's working set. --expose-gc is
-// enabled from inside (v8 flag + a scratch context) so npm scripts stay flag-free.
-import v8 from 'node:v8'
-import vm from 'node:vm'
-v8.setFlagsFromString('--expose-gc')
-const gc = vm.runInNewContext('gc')
-v8.setFlagsFromString('--no-expose-gc')
-
-for (const name of selected) { await import(`./${name}.js`); gc() }
+const result = await runFiles(selected.map(name => new URL(`./${name}.js`, import.meta.url).href))
+process.exit(result.failed.length ? 1 : 0)

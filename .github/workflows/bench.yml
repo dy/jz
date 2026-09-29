@@ -35,6 +35,10 @@ on:
       - 'CONTRIBUTING.md'
       - 'bench/results.json'
       - 'bench/results-ci.json'
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  # Publishing a main-branch snapshot must not be interrupted mid-transaction.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   bench:
     runs-on: ubuntu-latest
@@ -50,7 +54,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ inputs.reference && '24' || '22' }}
-      - run: npm ci
+      - run: npm ci --ignore-scripts
+      - run: npm rebuild esbuild
       # Extra "Run as JS" runtimes (Deno, Bun). bench.mjs gates every target on
       # `available`, so a missing tool just drops its row — additive, never fails.
       - uses: denoland/setup-deno@v2
@@ -104,7 +109,7 @@ jobs:
       - name: rust wasm target
         run: rustup target add wasm32-wasip1 || true
       # Competitor toolchains + binaryen (provides wasm-opt).
-      - run: npm install --no-save assemblyscript@~0.27.0 binaryen
+      - run: npm install --ignore-scripts --no-save assemblyscript@~0.27.0 binaryen
       # Porffor's npm 0.61.x is the frozen pre-rewrite engine. The author's
       # install is the release binary (porffor.dev/install.sh); pin the tested
       # release, alpha 4 (a415d19, 2026-08-29), by its tag so the comparison is

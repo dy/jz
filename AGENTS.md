@@ -38,10 +38,21 @@ What this implies for HOW we optimize:
 
 ## Verify before claiming done
 
-- `npm test` — core suite (in-process compiler). Run it before reporting any change.
-- `npm run test:matrix` — the full opt0/opt2/opt3/wasi matrix CI runs (legs are
-  serial locally; CI parallelizes them).
-- `npm run test:self` — self-compile gate: builds `dist/jz.wasm` and round-trips real
+- `npm test` — core suite (in-process compiler), without hidden bootstrap builds
+  or generated population sweeps. Run it before reporting any change. Focus with
+  `npm test -- dyn-keys strings`; inspect ownership with `node test/index.js --suite=all --list`.
+- `npm run test:matrix` — core opt0/opt2/opt3/wasi matrix. Jobs default to one;
+  `JZ_TEST_JOBS=N` opts into concurrency. Do not launch overlapping batteries.
+- `npm run test:extended` — integration matrix plus generated correctness/WAT/
+  codegen populations on native and WASI. These checks moved out of core, not out
+  of CI. `test:integration` / `test:generated` run just the current leg.
+- `npm run test:bootstrap -- --full` — one fresh ordinary build shared across
+  round-trip, O0/O2/O3 parity/oracles, checkpoint tests, the hosted suite and
+  recursive compilation. The checkpoint overlay still has its own build.
+  No stale `dist/` reuse. `test:battery -- fast` excludes bootstrap; the full
+  battery runs it alone after native checks. Subprocess logs are disk-backed.
+- `npm run test:self` — standalone self-compile gate: builds a fresh compiler in a temporary
+  directory and round-trips real
   programs through the wasm-hosted compiler. Codegen changes can break the bootstrap.
   The build has 20 minutes; on a loaded machine `JZ_SELF_BUILD_TIMEOUT=3600000` gives it
   an hour (a `SIGTERM` build exit is the limit, not a failure).
@@ -77,8 +88,9 @@ smoke test and `test:self` for the bundle. Edit source, not output.
 
 `dist/` and example `.wasm` are **gitignored build output**:
 
-- **Local dev** — `npm install` runs `prepare`, which builds `dist/` (the repl needs
-  only that). For examples, run `npm run build:examples` once. The repl/examples
+- **Local dev** — `npm install` runs `prepare` → `build:web`, which builds the
+  JavaScript `dist/` assets (all the repl needs), not the self compiler. Use
+  `npm run build` explicitly when you need `dist/jz.wasm`. For examples, run `npm run build:examples` once. The repl/examples
   import these by relative path, so they must exist *on disk* — they do after a build,
   they're just untracked. A fresh clone needs a build before they run locally; nothing
   is served "from master."
@@ -92,7 +104,7 @@ smoke test and `test:self` for the bundle. Edit source, not output.
   before deployment.
   Full-suite, self-compile and benchmark failures belong to their separate gates;
   they do not block static site updates. Example compilation still must succeed.
-- **npm** — `prepare` builds `dist/` before pack, so the published tarball ships
+- **npm** — `prepare` builds the JavaScript `dist/` before pack, so the published tarball ships
   `dist/jz.js` + `dist/interop.js` (in `package.json` "files"). `dist/jz.wasm` is the
   self-compile artifact — never served, never published.
 

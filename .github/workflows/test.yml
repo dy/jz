@@ -16,6 +16,9 @@ on:
       - '.work/**'
       - 'LICENSE'
       - 'CONTRIBUTING.md'
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -36,17 +39,23 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-      - run: npm install
+      - run: npm ci --ignore-scripts
+      - run: npm rebuild esbuild
       - name: check source cleanup
         if: matrix.variant == 'default'
         run: npm run lint:imports && npm run audit:files
       - name: test (${{ matrix.variant }})
         run: |
           case "${{ matrix.variant }}" in
-            default) npm test ;;
-            opt0)    npm run test:opt0 ;;
-            opt3)    npm run test:opt3 ;;
-            wasi)    npm run test:wasi ;;
+            opt0) export JZ_TEST_OPTIMIZE=0 ;;
+            opt3) export JZ_TEST_OPTIMIZE=3 ;;
+            wasi) export JZ_TEST_HOST=wasi ;;
+          esac
+          npm test
+          npm run test:integration
+          # These files own their optimize sweeps; preserve both host variants.
+          case "${{ matrix.variant }}" in
+            default|wasi) npm run test:generated ;;
           esac
       # Smoke test: every example still compiles. Output wasm is built + deployed by
       # pages.yml (not committed), so there's no drift gate — just confirm they build.
@@ -55,6 +64,8 @@ jobs:
       # Public declarations are release code: type-check every exported subpath.
       - run: npm run test:types
         if: matrix.variant == 'default'
+      # The default integration leg's web-smoke builds the browser dist; no
+      # bootstrap compiler is needed to pack the published JavaScript package.
       - name: verify the published package installs and runs
         if: matrix.variant == 'default'
         run: |
@@ -76,7 +87,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-      - run: npm install
+      - run: npm ci --ignore-scripts
+      - run: npm rebuild esbuild
       # JZ_DEBUG_INVARIANTS=1 turns on the per-phase structural checks (ctx
       # invariants + verifyFn on optimizer output) so a malformed-IR bug surfaces
       # as a localized "[ir verify] … in $fn: duplicate local $x" here instead of
@@ -99,5 +111,5 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-      - run: npm install
+      - run: npm ci --ignore-scripts
       - run: node test/bench-claims.js

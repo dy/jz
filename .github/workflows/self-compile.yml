@@ -21,6 +21,9 @@ on:
       - '.work/**'
       - 'LICENSE'
       - 'CONTRIBUTING.md'
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 jobs:
   self-compile:
     runs-on: ubuntu-latest
@@ -30,19 +33,12 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-      - run: npm install
-      - name: build dist/jz.wasm
-        run: npm run build
-      # A fresh private compiler round-trips real programs through the in-wasm pipeline.
-      - name: self-compile round-trip
-        run: npm run test:self
-      # The whole host test suite, every program compiled by dist/jz.wasm: any
-      # divergence from the native run is a self-compile bug. JZ_FUZZ_GATE shrinks
-      # the fuzz seed counts (the full gate exceeds the runner's job limit).
-      - name: full suite via dist/jz.wasm
-        run: npm run test:wasm
+      - run: npm ci --ignore-scripts
+      - run: npm rebuild esbuild
+      # One invocation owns one fresh ordinary kernel and a separate checkpoint
+      # overlay. Round-trip, O0/O2/O3 parity/oracles, the hosted suite and recursive
+      # compilation consume that ordinary artifact, in memory-bounded processes.
+      - name: bootstrap, parity, hosted suite and recursive jz × jz
+        run: npm run test:bootstrap -- --full
         env:
           JZ_FUZZ_GATE: '0.15'
-      # The complete compiler graph through the kernel, and the result made to compile a probe.
-      - name: recursive jz × jz
-        run: node scripts/recursive-self-check.mjs

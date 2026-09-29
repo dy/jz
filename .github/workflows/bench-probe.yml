@@ -31,7 +31,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-      - run: npm install
+      - run: npm ci --ignore-scripts
+      - run: npm rebuild esbuild
       # The base compiler runs from its own checkout against this tree's
       # installed dependencies; both builds are timed in alternating rounds.
       - name: check out the A/B base
@@ -51,7 +52,7 @@ jobs:
         with:
           version: 0.16.0
       - run: rustup target add wasm32-wasip1
-      - run: npm install --no-save assemblyscript@~0.27.0 binaryen
+      - run: npm install --ignore-scripts --no-save assemblyscript@~0.27.0 binaryen
       - run: echo "$PWD/node_modules/.bin" >> "$GITHUB_PATH"
       - name: machine
         run: |

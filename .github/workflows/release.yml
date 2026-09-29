@@ -17,7 +17,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - run: npm install
+      - run: npm ci --ignore-scripts
+      - run: npm rebuild esbuild
       - name: build dist/jz.wasm
         run: npm run build
       - name: attach jz.wasm to release

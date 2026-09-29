@@ -10,7 +10,7 @@
  * descriptor/prototype/runtime-shape tests until those semantics are in scope.
  *
  * Execution: the work list is split round-robin across a pool of worker
- * threads (one per core by default; override with --jobs=N or JZ_TEST262_JOBS).
+ * threads (at most two by default, memory-bounded; override with --jobs=N or JZ_TEST262_JOBS).
  * Each worker has its own module registry, and jz resets all state per call,
  * so a worker's tallies are identical to running the same files sequentially.
  */
@@ -18,7 +18,8 @@ import { readdirSync, readFileSync, existsSync } from 'fs'
 import { join, relative } from 'path'
 import { execSync } from 'child_process'
 import { Worker, isMainThread, workerData, parentPort } from 'worker_threads'
-import { availableParallelism } from 'os'
+import { testJobs } from './_jobs.js'
+import { collect } from './_gc.js'
 
 const ROOT = join(import.meta.dirname, '..')
 const TEST262 = join(import.meta.dirname, 'test262')
@@ -696,7 +697,7 @@ const FUNCTIONAL_TESTS = new Set([
 ])
 
 const FILTER = process.argv.find(a => a.startsWith('--filter='))?.split('=')[1]
-const JOBS_ARG = Number(process.argv.find(a => a.startsWith('--jobs='))?.split('=')[1])
+const JOBS_ARG = process.argv.find(a => a.startsWith('--jobs='))?.slice(7)
 
 const NUMBER_CONSTANT_TESTS = new Set([
   'built-ins/Number/MAX_VALUE/value.js',
@@ -1356,7 +1357,7 @@ async function runChunk(items) {
     } catch {
       results.skip++
       skips.set('read/runner error', (skips.get('read/runner error') || 0) + 1)
-    }
+    } finally { collect() }
   }
   return { perPath, results, fails, skips, xfails, xpasses }
 }
@@ -1369,10 +1370,7 @@ if (!isMainThread) {
   const allBuiltinsFiles = countJs(builtinsDir)
   const work = collectWork()
 
-  // One worker per core by default; override with --jobs=N or JZ_TEST262_JOBS.
-  const jobs = Math.max(1, Math.min(
-    JOBS_ARG || Number(process.env.JZ_TEST262_JOBS) || availableParallelism(),
-    work.length || 1))
+  const jobs = testJobs(JOBS_ARG ?? process.env.JZ_TEST262_JOBS, work.length)
 
   // Round-robin split: spreads heavy paths (Math/, DataView/) evenly so no
   // single worker draws the whole slow tail.

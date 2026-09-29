@@ -8,6 +8,7 @@ import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import jz from '../index.js'
 import { agree, wat, oracle, run } from './util.js'
+import { ownedLevels } from './_matrix.js'
 
 const SPEED = { optimize: { level: 'speed' } }
 const graph = (src, modules, ...args) => jz(src, { modules }).exports.f(...args)
@@ -172,7 +173,8 @@ test('stdlib: a parameter returned under a numeric guard keeps the f64 export', 
   ok(!takesF64(`export let f = (x) => { if (x < 2) { return x } return x * 2 }`), 'a relational guard passes a string: the identity stays')
   ok(!takesF64(`export let f = (x) => { if (x === true) { return 1 } return x * 2 }`), 'an equality against a boolean tells the type apart: boxed')
   const src = isnan + isinf + `export let f = (x) => { if (isnan(x) || isinf(x)) { return x } return x * 2 }`
-  for (const x of [NaN, Infinity, -0, 0.5]) ok(Object.is(run(src).f(x), oracle(src).f(x)), `f(${x})`)
+  const got = run(src).f, expected = oracle(src).f
+  for (const x of [NaN, Infinity, -0, 0.5]) ok(Object.is(got(x), expected(x)), `f(${x})`)
 })
 
 // Three uses that are numeric-compatible and prove nothing on their own drop a
@@ -420,7 +422,7 @@ const COUNTED = [
 ]
 for (const [label, body, inputs] of COUNTED) test(`stdlib: counted loop, ${label}`, () => {
   const src = FIELD + body, host = oracle(src)
-  for (const optimize of [0, 2, 'speed', 'size']) {
+  for (const optimize of ownedLevels(0, 2, 'speed', 'size')) {
     const mod = run(src, { optimize })
     for (const args of inputs) {
       host.init(); mod.init()

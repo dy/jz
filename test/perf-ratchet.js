@@ -154,9 +154,9 @@ const loopBodyOps = (wat) => {
 // that stores into 64 receivers in turn 5.1 -> 5.3.
 
 // Total loop-body ops across the fixed corpus, per category. Deterministic.
-const measure = () => {
+const measure = (categories = Object.keys(CATEGORIES)) => {
   const totals = {}
-  for (const cat of Object.keys(CATEGORIES)) {
+  for (const cat of categories) {
     let sum = 0
     for (let s = 1; s <= SEEDS; s++) {
       try { sum += loopBodyOps(jz.compile(genProgram(cat, s), { optimize: 2, wat: true })) }
@@ -177,12 +177,12 @@ if (process.argv.includes('--update')) {
   // (condref's `$f$exp`: 838 loop-body ops against 358), so the counts are
   // host-specific there and the gate holds on the JS host alone.
   const base = JSON.parse(readFileSync(BASELINE, 'utf8'))
-  const cur = onWasi() ? null : measure()
   for (const cat of Object.keys(base)) {
     test(`perf-ratchet: ${cat} loop-body op count ≤ baseline (machine-independent codegen gate)`, () => {
       if (onWasi()) return
-      ok(cur[cat] <= base[cat],
-        `${cat}: ${cur[cat]} loop-body ops > baseline ${base[cat]} (+${cur[cat] - base[cat]}) — a codegen regression ` +
+      const count = measure([cat])[cat]
+      ok(count <= base[cat],
+        `${cat}: ${count} loop-body ops > baseline ${base[cat]} (+${count - base[cat]}) — a codegen regression ` +
         `(a hot-loop optimization stopped firing?). If intentional, justify and re-baseline: node test/perf-ratchet.js --update`)
     })
   }

@@ -159,3 +159,9 @@ const LEG_LEVELS = new Set(env == null ? (HOST === 'js' ? [2, 1] : [2]) : [OPT_L
  *  every level on every leg. JZ_TEST_SWEEP=1 runs the whole list in one process.
  *  A leg whose level is not wanted runs nothing, like a belowOpt() guard. */
 export const levels = (...wanted) => SWEEP ? wanted : wanted.filter(o => LEG_LEVELS.has(levelOf(o)))
+
+/** Migrate an explicit all-profile sweep without losing its host × profile
+ * combinations: JS matrix legs divide the work; WASI and the hosted compiler
+ * retain the complete sweep they previously ran. Pass-off comparisons whose
+ * assertions need both results together must NOT use this helper. */
+export const ownedLevels = (...wanted) => HOST !== 'js' || onKernel() ? wanted : levels(...wanted)

@@ -1,6 +1,7 @@
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { privateBuild } from '../scripts/private-build.mjs'
+import { sharedKernel } from './_shared-kernel.js'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -28,4 +29,4 @@ export const selfBuild = (root = ROOT) => sticky(root, 'scripts/self-compile-bui
 export const selfBuildWith = (overlays, root = ROOT) =>
   sticky(root, 'test/_self-overlay-build.mjs', [JSON.stringify(overlays)], 'self-compile overlay build', 'jz-self-overlay-')
 
-export const selfBytes = selfBuild()
+export const selfBytes = sharedKernel(selfBuild())
