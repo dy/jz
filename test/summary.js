@@ -1096,6 +1096,34 @@ test('summary: instanceof narrows a name on both sides of its test', () => {
   ok(loops.some(l => /f64\.store/.test(l)) && loops.every(l => !/call \$__(dyn_set|dyn_get\b|is_str_key|add_slow)/.test(l)), 'the overlap-add stores by a numeric index')
 })
 
+// A member path tested against null in a conditional whose arm neither calls
+// nor stores reads what the test read: `params.x1 != null ? params.x1 : 0` is a
+// Number, the filter state a kernel reads back from its record, which a loop
+// then carries without converting. A getter runs again on the second read, so
+// an accessor's name keeps its kind.
+test('summary: a member tested against null reads as present in the arm', () => {
+  const src = `function k (d, q) {
+      let a = q.x1 != null ? q.x1 : 0, b = null != q.y1 ? q.y1 : 0, c = q.z1 == null ? 0 : q.z1
+      for (let i = 0; i < d.length; i++) { const y = d[i] - a + 0.5 * b + c; a = d[i]; b = y; d[i] = y }
+      q.x1 = a; q.y1 = b; q.z1 = c; return d[d.length - 1] }
+    const p = { fs: 1 }
+    let n = 0
+    const o = { get v() { n++; return n % 2 ? 5 : null } }
+    export let f = () => { const d = new Float64Array([1, 3, 6]); return k(d, p) + k(d, p) * 100 + (p.x1 ?? -1) * 10000 }
+    export let g = () => { let s = 0; for (let i = 0; i < 6; i++) { const v = o.v != null ? o.v : 7; s = s * 10 + (v === null ? 9 : v) } return s }`
+  summarize(src)
+  for (const name of ['a', 'b', 'c']) {
+    const kd = kindOf('k', name)
+    ok(tagOf(kd) === K.NUMBER && !hasTag(kd, K.NULLISH), `${name} is a Number`)
+  }
+  const js = oracle(src)
+  for (const optimize of levels(0, 2, 3)) {
+    const m = jz(src, { optimize }).exports
+    is(m.f(), js.f(), `f at ${optimize}`)
+    is(m.g(), js.g(), `the getter's second read at ${optimize}`)
+  }
+})
+
 // Where `x instanceof Float32Array` holds, x is a Float32Array, owned or a
 // view: a binding made from it there reads its elements as Float32, whatever
 // else x may hold elsewhere (a string, a list).

@@ -3496,10 +3496,11 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   // A member path (`params.coefs`: a binding and literal keys) a test refines
   // inside an arm of a conditional that neither calls nor stores, so nothing
   // can change what the path holds before the arm reads it.
+  // a data property's: a getter runs on each read, so two reads of its name need not agree
   const pathKey = (n) => {
     const keys = []
     while (Array.isArray(n) && n[0] === '.' && typeof n[2] === 'string') { keys.push(n[2]); n = n[1] }
-    if (typeof n !== 'string' || !keys.length) return null
+    if (typeof n !== 'string' || !keys.length || !keys.every(dataProperty)) return null
     const key = keyOf(n)
     return key === null ? null : '\0' + key + '\0' + keys.reverse().join('\0')
   }
@@ -3636,14 +3637,20 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       }
       return
     }
-    if (typeof c[1] !== 'string' || !isNullishRef(c[2])) return
+    // a name, or a member path in an arm that neither calls nor stores
+    // (`params.x1 != null ? params.x1 : 0`: the arm reads what the test read)
+    const [subject, other] = isNullishRef(c[2]) ? [c[1], c[2]] : isNullishRef(c[1]) ? [c[2], c[1]] : [null, null]
+    if (other == null) return
+    const refineSubject = typeof subject === 'string' ? (mask) => refineName(subject, mask)
+      : pathProofs ? (mask) => refineKey(pathKey(subject), mask) : null
+    if (!refineSubject) return
     // A strict comparison excludes only one sentinel. NULLISH includes both,
     // so its other member must survive (as with the typeof inverse above).
-    if (op === '!=' && when || op === '==' && !when) refineName(c[1], NOT_NULLISH)
+    if (op === '!=' && when || op === '==' && !when) refineSubject(NOT_NULLISH)
     // Equal to a nullish value, loosely or strictly, the name is one: what the
     // path does with it (a missing source handed to the protocol that throws
     // for it) reaches none of its other kinds.
-    if ((op === '==' || op === '===') && when || (op === '!=' || op === '!==') && !when) refineName(c[1], NULL_BITS)
+    if ((op === '==' || op === '===') && when || (op === '!=' || op === '!==') && !when) refineSubject(NULL_BITS)
   }
   /** The statement leaves its list: a return, throw, break or continue; a block ending in one; an
    *  `if` both of whose branches do; a `try` whose block and every catch do (or whose finally does). */
