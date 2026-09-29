@@ -7,8 +7,9 @@
 // fractional center, found every sample undefined under V8 and a truncated
 // neighbour here.
 import test from 'tst'
-import { levels } from './_matrix.js'
-import { agree } from './util.js'
+import { ok } from 'tst/assert.js'
+import { belowOpt, levels } from './_matrix.js'
+import { agree, funcWat, wat } from './util.js'
 
 const src = `let t = new Float32Array(4); t[0] = 1; t[1] = 2; t[2] = 3; t[3] = 4
 let b = [1, 2, 3, 4]
@@ -29,3 +30,16 @@ for (const optimize of levels(0, 2, 3, 'size'))
   test(`index key: a number that names no element reads undefined and stores nothing at ${optimize}`, () => {
     for (const [name, args] of calls) agree(src, name, args, { optimize }, `${name}(${args}) at ${optimize}`)
   })
+
+// The key's int32 test truncates through i64: V8's arm64 code for the
+// saturating i32 truncation rounds, converts, compares and branches out of
+// line; the i64 one is a single instruction, and its low word converted back
+// equals the key exactly when the key is an int32, as the i32 one's does.
+test('index key: a key of unknown integrality tests its int32 through the i64 truncation', () => {
+  if (belowOpt(2)) return
+  const text = wat(`const t = new Float64Array(8); export let get = (i) => t[i]; export let put = (i, v) => { t[i] = v }`, { optimize: 2 })
+  for (const name of ['get', 'put']) {
+    const f = funcWat(text, name + '$exp') || funcWat(text, name)
+    ok(/i64\.trunc_sat_f64_s/.test(f) && !/i32\.trunc_sat_f64_s/.test(f), `${name}: the i64 truncation, no saturating i32 one`)
+  }
+})

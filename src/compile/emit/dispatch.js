@@ -99,6 +99,12 @@ function tryI32Index(e) {
   }
   return exprType(e, ctx.func.locals) === 'i32' ? asI32(emit(e)) : null
 }
+// The low 32 bits of a number's truncation, for a test that converts them
+// back and compares: equal exactly when the number is an int32, as with the
+// saturating i32 truncation. V8 lowers that one on arm64 to a rounding, a
+// conversion, a round trip and an out-of-line saturation arm; the i64
+// truncation is one instruction.
+const int32Bits = (x) => ['i32.wrap_i64', ['i64.trunc_sat_f64_s', x]]
 // An integer-valued key: an integer literal, an i32 or integer-certain name,
 // and + - * over them. No fraction, no NaN: it truncates to its index exactly,
 // and one past the i32 range saturates past every length.
@@ -124,7 +130,7 @@ export const emitIndex = (index, whole = false) => {
     if (typeof x === 'string') {
       const t = temp('ix'), ok = tempI32('ixv'), xs = asF64(emit(x)), get = ['local.get', `$${t}`]
       const out = typed(['block', ['result', 'i32'],
-        ['local.set', `$${ok}`, ['f64.eq', ['f64.convert_i32_s', ['i32.trunc_sat_f64_s', xs]], xs]],
+        ['local.set', `$${ok}`, ['f64.eq', ['f64.convert_i32_s', int32Bits(xs)], xs]],
         ['local.set', `$${t}`, asF64(emit(index))],
         ['select', ['i32.trunc_sat_f64_s', get], ['i32.const', -1], ['local.get', `$${ok}`]]], 'i32')
       out.indexValid = ['local.get', `$${ok}`]
@@ -200,7 +206,7 @@ export const keyIndex = (key) => {
   const t = temp('ix'), i = tempI32('ixi'), ok = tempI32('ixv')
   const out = typed(['block', ['result', 'i32'],
     ['local.set', `$${t}`, asF64(key)],
-    ['local.set', `$${ok}`, ['f64.eq', ['f64.convert_i32_s', ['local.tee', `$${i}`, ['i32.trunc_sat_f64_s', ['local.get', `$${t}`]]]], ['local.get', `$${t}`]]],
+    ['local.set', `$${ok}`, ['f64.eq', ['f64.convert_i32_s', ['local.tee', `$${i}`, int32Bits(['local.get', `$${t}`])]], ['local.get', `$${t}`]]],
     ['select', ['local.get', `$${i}`], ['i32.const', -1], ['local.get', `$${ok}`]]], 'i32')
   out.indexValid = ['local.get', `$${ok}`]
   return out
