@@ -186,3 +186,34 @@ test('integral loops: the guard converts no object, and a parameter every call b
     is(m.g(2), js.g(2), `g at ${optimize}`)
   }
 })
+
+// A counter tested against a name of unknown integrality (`i < n`, n a lag bound
+// a caller passes as a float): the counter is an int32 only in a copy where the
+// bound is one, the correlation's reads then whole indices (stretch-psola's
+// period search ran twice as slow without it).
+test('integral loops: a counter bounded by a float of unknown integrality counts in an int32 copy', () => {
+  const src = `const d = new Float32Array(96)
+    for (let i = 0; i < 96; i++) d[i] = Math.sin(i * 0.37) + (i % 5) * 0.1
+    function corr (data, pos, lo, hi) { let best = -1, at = 0
+      for (let lag = lo; lag <= hi; lag++) { let s = 0, e = 0, n = hi
+        for (let i = 0; i < n; i++) { const b = data[pos + i + lag]; s += data[pos + i] * b; e += b * b }
+        const r = e > 0 ? s / Math.sqrt(e) : 0
+        if (r > best) { best = r; at = lag } }
+      return at * 1000 + best }
+    export let f = (pos, lo, hi) => corr(d, pos * 0.5, lo * 0.5, hi * 0.5)`
+  const js = oracle(src)
+  for (const optimize of levels(0, 2, 3)) {
+    const m = jz(src, { optimize }).exports
+    for (const a of [[0, 4, 20], [6, 2, 30], [1, 3, 21], [80, 4, 40], [3, 7, 7]]) is(m.f(...a), js.f(...a), `f(${a}) at ${optimize}`)
+  }
+  if (belowOpt(2)) return
+  const text = wat(src, { optimize: 2 })
+  const loops = []
+  for (let at = text.indexOf('(loop'); at >= 0; at = text.indexOf('(loop', at + 1)) {
+    let depth = 0, end = at
+    do { const c = text[end++]; if (c === '(') depth++; else if (c === ')') depth-- } while (depth && end < text.length)
+    loops.push(text.slice(at, end))
+  }
+  const inner = loops.filter(l => !/\(loop/.test(l.slice(5)) && /f32\.load/.test(l))
+  ok(inner.some(l => !/trunc_sat/.test(l) && !/f64\.convert_i32_s/.test(l)), 'a copy of the correlation indexes by an int32 counter')
+})

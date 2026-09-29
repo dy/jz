@@ -51,6 +51,7 @@ import { freshId } from '../../ir.js'
 import { cloneWithSubst } from '../../type.js'
 import { collectBindings, nodeSize } from './common.js'
 import { occursOutside } from './counted-loops.js'
+import { includeModule } from '../../autoload.js'
 import { isExported } from '../func-exports.js'
 import { K, core, hasTag, tagOf } from '../../summary/kind.js'
 import { invalidateBodies } from '../analyze.js'
@@ -100,6 +101,23 @@ const writesIn = (node) => {
 const NO_WRITES = []
 
 const COUNTS = new Set(['++', '--', '+1', '-1'])
+const BOUND_TESTS = new Set(['<', '<=', '>', '>='])
+/** The names a `for` loop tests its counter against (`i < n`, `k + i <= n`: every
+ *  name of the side the counter is not on), where the counter is its init's
+ *  name stepped by a constant. */
+const boundNames = (loop) => {
+  const out = new Set()
+  if (loop[0] !== 'for' || loop.length !== 5) return out
+  const [, init, test, step] = loop
+  const i = Array.isArray(init) && (init[0] === 'let' || init[0] === 'var') && Array.isArray(init[1]) && init[1][0] === '=' ? init[1][1] : null
+  if (typeof i !== 'string' || !Array.isArray(step) || step[1] !== i || !(COUNTS.has(step[0]) || step[0] === '+=' || step[0] === '-=')) return out
+  if (!Array.isArray(test) || !BOUND_TESTS.has(test[0])) return out
+  const names = (e) => { const found = new Set(); integral(e, found); return found }
+  const left = names(test[1]), right = names(test[2])
+  const side = left.has(i) && !right.has(i) ? right : right.has(i) && !left.has(i) ? left : null
+  if (side) for (const n of side) out.add(n)
+  return out
+}
 /** Whether every write of `name` in `loop` steps it by a constant (`x++`, `x += 2`). */
 const counted = (loop, name) => !some(loop, n => MUTATE_OPS.has(n[0]) && n[1] === name &&
   !(COUNTS.has(n[0]) || ((n[0] === '+=' || n[0] === '-=') && Array.isArray(n[2]) && n[2][0] == null && Number.isInteger(n[2][1]))))
@@ -266,10 +284,16 @@ const versionBody = (body, params, view, func, programFacts) => {
     const mayBeNumber = (n) => { const k = view?.kindOfExpr(n); return k == null || hasTag(k, K.NUMBER) || tagOf(core(k)) === K.ANY }
     const outerOk = (n) => locals.has(n) && !inner.has(n) && !captured.has(n) && !ctx.funcs.names.has(n)
     const indexed = [...indexNames(loop, loopWrites, intArray)].filter(n => outerOk(n) && !already(n) && mayBeNumber(n))
-    // a cursor the loop moves other than by a constant step (`p = (p + 1) % N`): an index
-    // made of names the loop only reads or counts is affine over its counters, which the
+    // the names a counter is tested against (`i < n`, n read from a parameter): the
+    // counter is an int32 only where they are
+    // (not an export's own parameter: the host's value there keeps the boundary's representation)
+    const bounds = [...boundNames(loop)].filter(n => outerOk(n) && !loopWrites.has(n) && !already(n) && mayBeNumber(n) &&
+      !(func && isExported(func) && params.has(n)))
+    // a cursor the loop moves other than by a constant step (`p = (p + 1) % N`), or a
+    // counter's bound of unknown integrality: an index made of names the loop only reads
+    // or counts, under a bound that is an integer, is affine over its counters, which the
     // typed-bounds versioning already proves; nor is such an index a Number to copy for
-    const names = indexed.some(n => loopWrites.has(n) && !counted(loop, n)) ? indexed : []
+    const names = bounds.length || indexed.some(n => loopWrites.has(n) && !counted(loop, n)) ? [...new Set([...indexed, ...bounds])] : []
     let numbers = [...numberNames(loop, loopWrites, inner, kindOf, kindOfExpr, outerOk)].filter(n => !indexed.includes(n))
     // a Number the loop carries (`z1 = x - a1 * y`): what it only reads converts once per use, as it would
     if (!numbers.some(n => loopWrites.has(n))) numbers = []
@@ -288,6 +312,8 @@ const versionBody = (body, params, view, func, programFacts) => {
     // the type first, so the test converts no object (a key's valueOf runs where the loop reads it);
     // a Number alone: `typeof x === 'number'`, the form whose arm the summary reads as a Number;
     // present: `x != null`
+    // the guard's string literal reads through the string module, which a program of numbers alone never loaded
+    if (names.length) includeModule('string')
     const test = [...names.map(n => ['&&', ['&&', numberGuard(n), ['===', n, ['|', n, [null, 0]]]], ['||', ['!==', n, [null, 0]], ['>', ['/', [null, 1], n], [null, 0]]]]),
       ...numbers.map(n => ['===', ['typeof', n], [null, TYPEOF.number]]),
       ...present.map(n => ['!=', n, [null, null]])]
