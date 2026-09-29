@@ -21,7 +21,9 @@
  *     constant step at the top of the body, holds `c + K·k` in trip `k`. Its
  *     reads become that expression and its step leaves the loop; it lands on
  *     `c + K·T` after T trips. A counter starting at a computed value is the
- *     trip number scaled and shifted the same way.
+ *     trip number scaled and shifted the same way. A test of the counter
+ *     plus an offset against a length (`i + k < n`, a lag or a tap) is the
+ *     counter against the length less the offset (`offsetTest`).
  *
  * A cursor is read as an element index only, where a number is an integer
  * (README, 32-bit element indices). A computed start is an integer by test:
@@ -37,6 +39,8 @@ import { T, MUTATE_OPS, some, walkAst, stmtList, cloneNode } from '../../ast.js'
 import { freshId } from '../../ir.js'
 import { includeModule } from '../../autoload.js'
 import { optimizing } from './common.js'
+import { intLevelMap } from '../../type.js'
+import { K, core, tagOf } from '../../summary/kind.js'
 
 const lit = (v) => [null, v]
 const isInt = (n) => Array.isArray(n) && n[0] == null && typeof n[1] === 'number' && Number.isInteger(n[1]) && Math.abs(n[1]) <= 0x7fffffff
@@ -417,6 +421,8 @@ export const canonicalizeCountedLoops = () => {
       if (node[0] === '=>') return false
       if (node[0] === 'for' && node.length === 5 && parent) loops.push([node, parent, idx])
     } })
+    let levels = null
+    for (const [node] of loops) if (offsetTest(node, func, () => levels ??= intLevelMap(func.body))) changed = true
     // innermost first: an outer loop is matched over its rewritten body
     for (let n = loops.length - 1; n >= 0; n--) {
       const [node, parent, idx] = loops[n]
@@ -428,6 +434,57 @@ export const canonicalizeCountedLoops = () => {
     }
   }
   return changed
+}
+
+/**
+ * `for (let i = a; i + c < n; i++)`, a an integer literal at least 0, c an
+ * integer, n a length (a typed array's, or a name only ever given one; or
+ * `<=`, or `c + i`): the test is `i < n − c`, the
+ * difference taken once as the loop begins. Then the counter's own bound
+ * is a length less a loop constant, the form the extent proofs and the lane
+ * recognizers read, where the sum was a new value each trip. Exact: while
+ * the loop runs i + c is at most n, a length below 2^53, so neither side
+ * rounds; where it never runs (c at least n − a) both fail the first test,
+ * and a NaN or an infinite c decides both alike. Neither c nor n is written
+ * in the loop, by a closure, or anywhere a call reaches (a global), so the
+ * difference is what every trip computed.
+ */
+function offsetTest(node, func, levels) {
+  const [, init, test, step, body] = node
+  if (!Array.isArray(init) || init[0] !== 'let' || !Array.isArray(init[1]) || init[1][0] !== '=' || typeof init[1][1] !== 'string') return false
+  const i = init[1][1], a = init[1][2]
+  if (!isInt(a) || a[1] < 0) return false
+  if (!Array.isArray(step) || step[1] !== i || !(step[0] === '++' || (step[0] === '+=' && isInt(step[2]) && step[2][1] === 1))) return false
+  if (!Array.isArray(test) || (test[0] !== '<' && test[0] !== '<=') || !Array.isArray(test[1]) || test[1][0] !== '+' || test[1].length !== 3) return false
+  const c = test[1][1] === i ? test[1][2] : test[1][2] === i ? test[1][1] : null, n = test[2]
+  if (c == null || writes(body, i)) return false
+  // loop constants: a local no write in the loop, no closure and no call reaches
+  const steady = (name) => typeof name === 'string' && name !== i && !ctx.scope.globals.has(name) && !writes(body, name) &&
+    !some(func.body, m => m[0] === '=>' && writes(m, name), { skipArrow: false })
+  if (!(isInt(c) || (steady(c) && levels().get(c) >= 1))) return false
+  // a length: a name every write of which is one, or a typed array's (a list's grows)
+  const isLength = (e) => Array.isArray(e) && e[0] === '.' && e[2] === 'length' && typeof e[1] === 'string'
+  if (isLength(n)) {
+    const k = ctx.summary?.at(func.sig)?.kindOf(n[1])
+    if (!steady(n[1]) || k == null || tagOf(core(k)) !== K.TYPED) return false
+  } else {
+    if (!steady(n)) return false
+    let defs = 0, lengths = 0
+    const declared = new Set()
+    walkAst(func.body, { enter: (m) => {
+      if (m[0] === 'let' || m[0] === 'const') for (let j = 1; j < m.length; j++) {
+        const d = m[j]
+        if (d === n) defs++
+        else if (Array.isArray(d) && d[0] === '=' && d[1] === n) { declared.add(d); defs++; if (isLength(d[2])) lengths++ }
+      }
+      else if (MUTATE_OPS.has(m[0]) && m[1] === n && !declared.has(m)) defs++
+    } })
+    if (defs === 0 || defs !== lengths) return false
+  }
+  const lim = fresh('clb')
+  node[1] = like(init, [...init, ['=', lim, ['-', cloneNode(n), cloneNode(c)]]])
+  node[2] = like(test, [test[0], i, lim])
+  return true
 }
 
 /** `name` is read or written in `root` outside `loop`, its bare declaration aside. */
