@@ -100,6 +100,7 @@ const TESTS = [
   'typed-fill',
   'typed-copy',
   'typed-sort',
+  'typed-length',
   'select-order',
   'pointer-join',
   'typed-rebound',

@@ -2443,6 +2443,9 @@ export default (ctx) => {
       // off the raw offset (no forwarding follow).
       if (vt === VAL.ARRAY && typeof obj === 'string' && liveArrayBinding(obj))
         return typed(['f64.convert_i32_s', ['i32.load', ['i32.sub', arrayBaseIR(obj), ['i32.const', 8]]]], 'f64')
+      // A typed array whose element kind the plan knows, whatever the receiver
+      // expression (`c.b.length` of a field): the byte length's word, shifted.
+      if (vt === VAL.TYPED || vt == null) { const n = ctx.core.emit['.typed:length']?.(obj); if (n) return n }
       const arrayOrTyped = vt == null && rep?.recvArrTyped === true
       // jsstring carrier: keep the externref-typed IR so emitLengthAccess can
       // dispatch to `wasm:js-string.length` instead of forcing through f64.

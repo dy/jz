@@ -1409,6 +1409,15 @@ export default (ctx) => {
     ? anyView(objIR, (base, view) => ['select', base(), ['i32.sub', base(), ['i32.const', 8]], view()])
     : isView ? typedBase(objIR) : ['i32.sub', typedBase(objIR), ['i32.const', 8]]
 
+  // A typed array's length where its element kind is known (resolveElem: a
+  // name or any expression the plan types, present): the byte length's word,
+  // shifted by the element width. A DataView or an open kind keeps __length.
+  ctx.core.emit['.typed:length'] = (arr) => {
+    const r = resolveElem(arr)
+    if (!r) return null
+    return typed(['f64.convert_i32_s', ['i32.shr_u', ['i32.load', byteLenAddr(emit(arr), r.isView)], ['i32.const', SHIFT[r.et]]]], 'f64')
+  }
+
   // A typed receiver never relocates: decode its offset directly, then use
   // aux for element width and view indirection in both raw readers and writers.
   // For TYPED views (aux bit 3), $off indirects through descriptor[4] to real data.
