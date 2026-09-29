@@ -174,10 +174,11 @@ function log10_(x) {
 }
 
 function log1p(x) {
+  if (!(x > -1)) return x === -1 ? -Infinity : NaN
   if (x === Infinity) return Infinity
   const u = 1 + x
   if (u === 1) return x
-  return (log(u) * x) / (u - 1)
+  return log(u) * (x / (u - 1))
 }
 
 /** Fully-constant `Math.pow`/`**` fold, mirroring emitPow's own constant-arg
@@ -314,42 +315,61 @@ function atan2(y, x) {
   return copysign(1, y) > 0 ? atan(y / x) + PI : atan(y / x) - PI
 }
 
+// $math.sinh, $math.cosh, $math.tanh: expm1 near 0, e^|x| past 1, and past e^|x|'s
+// overflow (½e^(|x|/2))·e^(|x|/2)
+const EXP_MAX = 709.782712893384
 function sinh(x) {
-  if (x === 0) return x
-  let ex = exp(Math.abs(x))
-  ex = 0.5 * (ex - 1 / ex)
-  return x < 0 ? -ex : ex
+  if (x === 0 || Number.isNaN(x)) return x
+  const a = Math.abs(x)
+  let ex
+  if (a < 1) { const t = expm1(a); ex = (t * (t + 2)) / (2 * (t + 1)) }
+  else if (a > EXP_MAX) { const t = exp(0.5 * a); ex = (0.5 * t) * t }
+  else { ex = exp(a); ex = 0.5 * (ex - 1 / ex) }
+  return copysign(ex, x)
 }
 
 function cosh(x) {
-  const ex = exp(Math.abs(x))
+  if (Number.isNaN(x)) return x
+  const a = Math.abs(x)
+  if (a > EXP_MAX) { const t = exp(0.5 * a); return (0.5 * t) * t }
+  const ex = exp(a)
   return 0.5 * (ex + 1 / ex)
 }
 
 function tanh(x) {
   if (x === 0) return x
   if (Math.abs(x) > 22) return x < 0 ? -1 : 1
-  let e2x = exp(2 * Math.abs(x))
-  e2x = (e2x - 1) / (e2x + 1)
-  return x < 0 ? -e2x : e2x
+  let e = expm1(2 * Math.abs(x))
+  e = e / (e + 2)
+  return x < 0 ? -e : e
 }
 
+// $math.asinh, $math.acosh, $math.atanh: fdlibm's forms on jz's log, log1p and sqrt
 function asinh(x) {
-  if (!Number.isFinite(x)) return x
-  if (x === 0) return x
-  return log(x + Math.sqrt(x * x + 1))
+  let a = Math.abs(x)
+  if (!(a < Infinity) || a < 2 ** -28) return x
+  if (a > 2 ** 28) a = log(a) + Math.LN2
+  else if (a > 2) a = log(2 * a + 1 / (Math.sqrt(a * a + 1) + a))
+  else { const t = a * a; a = log1p(a + t / (1 + Math.sqrt(1 + t))) }
+  return copysign(a, x)
 }
 
 function acosh(x) {
-  if (x === Infinity) return Infinity
-  if (x < 1) return NaN
-  return log(x + Math.sqrt(x * x - 1))
+  if (!(x >= 1)) return NaN
+  if (x >= 2 ** 28) return log(x) + Math.LN2
+  if (x > 2) return log(2 * x - 1 / (x + Math.sqrt(x * x - 1)))
+  const t = x - 1
+  return log1p(t + Math.sqrt(2 * t + t * t))
 }
 
 function atanh(x) {
-  if (x === 0) return x
-  if (Math.abs(x) === Infinity) return NaN
-  return 0.5 * log((1 + x) / (1 - x))
+  const a = Math.abs(x)
+  if (!(a < 1)) return a === 1 ? copysign(Infinity, x) : NaN
+  if (a < 2 ** -28) return x
+  let t
+  if (a < 0.5) { t = a + a; t = 0.5 * log1p(t + (t * a) / (1 - a)) }
+  else t = 0.5 * log1p((a + a) / (1 - a))
+  return copysign(t, x)
 }
 
 // fdlibm s_cbrt.c, the twin of module/math.js's `math.cbrt` kernel.
@@ -380,10 +400,15 @@ function cbrt(x) {
 // N-ary like Math.hypot, folded as the SAME left-chained 2-ary calls the runtime
 // emitter builds (module/math.js `math.hypot`) so constant folds stay bit-equal to
 // the compiled chain: () → +0, (x) → abs(x), (a,b,…) → hypot2(hypot2(a,b),…).
+// hypot2 is $math.hypot: an infinity first, then the squares scaled by 2^±600 when
+// the larger magnitude is past 2^±500.
 function hypot2(x, y) {
-  if (Math.abs(x) === Infinity) return Infinity
-  if (Math.abs(y) === Infinity) return Infinity
-  return Math.sqrt(x * x + y * y)
+  if (Math.abs(x) === Infinity || Math.abs(y) === Infinity) return Infinity
+  let ax = Math.abs(x), ay = Math.abs(y), s = 1
+  const big = Math.max(ax, ay)
+  if (big >= 2 ** 500) { s = 2 ** 600; ax = ax * 2 ** -600; ay = ay * 2 ** -600 }
+  else if (big <= 2 ** -500) { s = 2 ** -600; ax = ax * 2 ** 600; ay = ay * 2 ** 600 }
+  return s * Math.sqrt(ax * ax + ay * ay)
 }
 function hypot(...vs) {
   if (vs.length === 0) return 0
