@@ -154,6 +154,8 @@ const SPEED = {
   // (polygamma, betaincinv and its kernel, 45 ms of 97), the geomean over its
   // 338 functions 0.47; rechecked below, the margin being what it is.
   'stdlib-special': { v8: 'win', as: 'na' },
+  // every function of stats/base/dists that takes numbers, 426 packages, the same way
+  'stdlib-dists':   { v8: 'win', as: 'na' },
   'stdlib-exp':     { v8: 'win', as: 'na' },
   'stdlib-gamma':   { v8: 'win', as: 'na' },
   'stdlib-erf':     { v8: 'win', as: 'na' },
@@ -524,7 +526,7 @@ const speedCases = Object.keys(runs)
 // happened to land on the single bench.mjs invocation above.
 const median = xs => [...xs].sort((a, b) => a - b)[xs.length >> 1]
 const recheckTargets = `v8,jz${natAvailable ? ',nat' : ''}`
-for (const id of ['watr', 'sort', 'crc32', 'callback', 'json', 'aos', 'hash', 'base64', 'hashjoin', 'stdlib-special']) {
+for (const id of ['watr', 'sort', 'crc32', 'callback', 'json', 'aos', 'hash', 'base64', 'hashjoin', 'stdlib-special', 'stdlib-dists']) {
   if (!speedCases.includes(id) || !runs[id]?.v8 || !runs[id]?.jz) continue
   const s = { v8: [runs[id].v8.medianUs], jz: [runs[id].jz.medianUs] }
   if (runs[id].nat) s.nat = [runs[id].nat.medianUs]

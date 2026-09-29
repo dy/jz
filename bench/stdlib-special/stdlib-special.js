@@ -5,7 +5,7 @@
 // it is finite (the probe's `domain`: of reals, or of integers for a function of
 // counts), the arguments after the first held; a list is stored as its sum.
 // Left out until jz compiles them:
-//   special/hyp2f1: `Object.prototype.toString` as a value, through `@stdlib/assert/is-nan`
+//   special/hyp2f1: a read of `Symbol` as a value, through `@stdlib/symbol/ctor`
 // Copyright (c) The Stdlib Authors. Licensed under the Apache License, Version 2.0
 // (http://www.apache.org/licenses/LICENSE-2.0); the notices of the bundled files
 // are retained by reference to the package.

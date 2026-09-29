@@ -512,8 +512,15 @@ export let main = () => {
 // The packages of a namespace the corpus case leaves out, each with the reason: a
 // function jz does not compile yet. Listed in the case's header; an entry goes the
 // commit its package compiles.
+const SYMBOL = 'a read of `Symbol` as a value, through `@stdlib/symbol/ctor`'
+const REGEX = 'a regular expression a function returns, held by a name and a member (`@stdlib/regexp/function-name`)'
 const PENDING = {
-  '@stdlib/math/base/special/hyp2f1': '`Object.prototype.toString` as a value, through `@stdlib/assert/is-nan`',
+  '@stdlib/math/base/special/hyp2f1': SYMBOL,
+  '@stdlib/stats/base/dists/studentized-range/cdf': SYMBOL,
+  '@stdlib/stats/base/dists/studentized-range/quantile': SYMBOL,
+  '@stdlib/stats/base/dists/signrank/cdf': REGEX,
+  '@stdlib/stats/base/dists/signrank/pdf': REGEX,
+  '@stdlib/stats/base/dists/signrank/quantile': REGEX,
 }
 
 // A bench case (bench/<case>/<case>.js) of a whole namespace: every package whose
@@ -632,7 +639,9 @@ export let main = () => {
 // `run( k )`. Samples are as many sweeps as take a quarter of a millisecond, the two
 // engines alternate, and the least is kept of eight in each of PASSES passes over the
 // functions: a short sample is the one a loaded machine leaves whole, a pass apart
-// outlasts a burst of load, and the late ones run what both engines tiered up.
+// outlasts a burst of load, and the late ones run what both engines tiered up. A
+// sample is the process's CPU time (CLOCK=wall for the wall clock): the time another
+// process held the core is none of the function's.
 const PASSES = +(process.env.PASSES ?? 4)
 async function kernels(id, list) {
   const file = join(dirname(SELF), '..', 'bench', id, `${id}.js`)
@@ -667,7 +676,14 @@ ${names.map(([k]) => `  if (k === ${k}) { k${k}(U, OUT, 0); return 1 }`).join('\
     const calls = [...new Set([...(bodies.get(`k${k}`) ?? '').matchAll(/\((?:return_)?call(_indirect)? ?\$?([^\s()]*)/g)].map(m => m[1] ? 'indirect' : m[2]))]
     return { k, name: short('@stdlib/math/base/' + name), js: Infinity, jz: Infinity, reps: Math.max(1, Math.min(400, Math.ceil(0.25 / one))), kept, calls, own: bodies.has(`k${k}`) }
   })
-  const sample = (f, k, reps) => { const t = performance.now(); for (let r = 0; r < reps; r++) f(k); return (performance.now() - t) / reps }
+  const wall = process.env.CLOCK === 'wall'
+  const sample = (f, k, reps) => {
+    if (wall) { const t = performance.now(); for (let r = 0; r < reps; r++) f(k); return (performance.now() - t) / reps }
+    const t = process.cpuUsage()
+    for (let r = 0; r < reps; r++) f(k)
+    const d = process.cpuUsage(t)
+    return (d.user + d.system) / 1000 / reps
+  }
   for (let pass = 0; pass < PASSES; pass++) for (const row of rows) for (let r = 0; r < 8; r++) {
     row.js = Math.min(row.js, sample(host.run, row.k, row.reps))
     row.jz = Math.min(row.jz, sample(inst.exports.run, row.k, row.reps))

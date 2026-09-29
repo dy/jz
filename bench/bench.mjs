@@ -96,6 +96,7 @@ mkdirSync(BUILD, { recursive: true })
 
 const CASE_NAMES = {
   'stdlib-special': 'stdlib special functions',
+  'stdlib-dists': 'stdlib distributions',
   'stdlib-exp': 'stdlib exp', 'stdlib-gamma': 'stdlib gamma', 'stdlib-erf': 'stdlib erf', 'stdlib-pow': 'stdlib pow', 'stdlib-ddot': 'stdlib ddot',
   biquad: 'biquad filter cascade',
   mat4: 'mat4 multiply',
