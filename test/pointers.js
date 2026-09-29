@@ -228,7 +228,8 @@ test("carrier: boxPtrIR's re-box template (asF64 via applyPointerParamAbi devirt
     const chaseFromBuf = (n) => chase(new ArrayBuffer(8), n)
     export const roundTrip = (n) => chaseFromBuf(n)
   `
-  const tree = parseWat(compile(src, { optimize: 2, wat: true }))
+  // pre-watr: a frame that releases what it made as it returns leaves a call watr inlines; the pin reads the body before watr
+  const tree = parseWat(compile(src, { optimize: { level: 2, watr: false }, wat: true }))
   const fn = findFunc(tree, '$chase')
   ok(fn, "applyPointerParamAbi must devirtualize chase's BUFFER param to a raw i32 offset")
   const oParam = fn.find(n => Array.isArray(n) && n[0] === 'param' && n[1] === '$o')
@@ -236,7 +237,8 @@ test("carrier: boxPtrIR's re-box template (asF64 via applyPointerParamAbi devirt
   const result = fn.find(n => Array.isArray(n) && n[0] === 'result')
   is(result[1], 'i32', "chase's result is the raw pointer (the summary proves every return a BUFFER)")
   is(i64ConstsOf(fn).length, 0, 'no box crosses the recursion')
-  is(i64ConstsOf(findFunc(tree, '$roundTrip$exp')).join(','), i64Hex(ptrBits(PTR.BUFFER, 0)),
+  // the re-box stands in `roundTrip`, a frame of its own (its result is asked as it returns); watr inlined it into the wrapper before
+  is(i64ConstsOf(findFunc(tree, '$roundTrip') ?? findFunc(tree, '$roundTrip$exp')).join(','), i64Hex(ptrBits(PTR.BUFFER, 0)),
     "boxPtrIR's re-box template at the export must be byte-identical to i64Hex(ptrBits(PTR.BUFFER,0))")
 })
 

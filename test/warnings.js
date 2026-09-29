@@ -14,11 +14,14 @@ test('warnings: no sink → no advisories emitted', () => {
   is(warningsFor('export let f = () => [1, 2, 3]').length, 0)
 })
 
-test('warnings: heap-return on exported pointer result', () => {
-  const ws = warningsFor('export let f = () => { let a = [1, 2, 3]; return a }')
+test('warnings: heap-return on an exported result the host holds in the module\'s memory', () => {
+  const ws = warningsFor('export let f = () => { let a = new Float64Array(3); return a }')
   is(ws.length, 1)
   is(ws[0].code, 'heap-return')
   ok(/memory\.reset\(\)/.test(ws[0].message))
+  // the host takes a copy of an array, a string, an object: the call's memory goes
+  is(warningsFor('export let f = () => { let a = [1, 2, 3]; return a }').length, 0)
+  is(warningsFor('export let f = (n) => "value " + n + " of a string too long to pack"').filter(w => w.code.startsWith('heap-')).length, 0)
 })
 
 test('warnings: small inline array return is scalarized — no heap advisory', () => {
@@ -148,7 +151,7 @@ test('warnings: alloc:false modules stay quiet', () => {
 
 test('warnings: jz() surfaces advisories on the runtime result', () => {
   const warnings = { entries: [] }
-  const { warnings: surfaced } = jz('export let f = () => { let a = [1]; return a }', { warnings })
+  const { warnings: surfaced } = jz('export let f = () => { let a = new Float64Array(1); return a }', { warnings })
   is(surfaced.length, 1)
   is(surfaced[0].code, 'heap-return')
 })
@@ -175,8 +178,8 @@ test('warnings: jsstring-declined when concat blocks externref carrier', () => {
   if (onWasi()) return  // wasi: jsstring externref interop
   if (belowOpt(2)) return  // jsstring ABI (and its decline advisory) is engaged at optimize >= 2
   const ws = warningsFor(`export let f = (s = '') => s + '!'`)
-  // The export also returns a fresh string, a heap value: the heap-return advisory rides along.
-  is(ws.map(w => w.code).sort().join(), 'heap-return,jsstring-declined')
+  // The fresh string it returns is copied out by the host: no heap advisory rides along.
+  is(ws.map(w => w.code).sort().join(), 'jsstring-declined')
   ok(/concatenation/.test(ws.find(w => w.code === 'jsstring-declined').message))
 })
 

@@ -55,7 +55,7 @@ export function link(module, facts) {
   if (rewind) facts.adviseKept?.(arena)
   const callCount = treeshake(root, { removeDead: !cfg || cfg.treeshake !== false, userFuncs: facts.userFuncs, userGlobals: facts.userGlobals })
   schemaSections(root, facts)
-  if (facts.exportInner) releaseSection(root, arena, facts.exportInner)
+  if (facts.exportInner) releaseSection(root, arena, facts.exportInner, facts.asked)
   pruneUnusedThrowRuntime(root, facts)
   // watr's `sortLocals` orders the final body's declarations; the tape orders them only when watr does not run
   if ((!cfg || cfg.sortLocalsByUse !== false) && !(cfg && cfg.watr)) sortLocalsByUse(root)

@@ -272,8 +272,10 @@ test('.join: decimal formatting uses linear arena space', () => {
   for (const optimize of levels(0, 2, 3, 'size')) {
     const m = jz(src, { optimize }), raw = m.instance.exports, used = []
     for (const n of [512, 1024]) {
-      raw._clear(); const start = raw.__heap.value;
-      is(m.exports.f(n), expected(n)); used.push(raw.__heap.value - start)
+      is(m.exports.f(n), expected(n))
+      // the wrapper releases the call once it holds a copy of the string: the raw export shows what the call used
+      raw._clear(); const start = raw.__heap.value
+      raw.f(n); used.push(raw.__heap.value - start)
     }
     ok(used[1] < used[0] * 3, `O${optimize}: doubling input uses ${used[0]} → ${used[1]} bytes`)
   }

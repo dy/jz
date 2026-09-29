@@ -1269,11 +1269,12 @@ test('unknown coercions still use __to_num', () => {
 test('dynamic prop reads reuse receiver type tag', () => {
   if (onWasi()) return  // wasi: external object WAT name differs
   if (belowOpt(2)) return  // receiver-tag CSE/hoisting runs at optimize >= 2
+  // pre-watr: a frame that releases what it made as it returns leaves a call watr inlines; the pin reads the body before watr
   const wat = jz.compile(`
     export const main = (o) => {
       return o.a + o.b + o.c
     }
-  `, { wat: true })
+  `, { wat: true, optimize: { watr: false } })
   ok(/\(call \$__dyn_get_any_t_h\b/.test(wat))
   ok(/\$__pt\d+/.test(wat), 'expected repeated receiver tag to be hoisted')
 })
@@ -5751,8 +5752,10 @@ test('select-gate FLAG veto: nested-if load-bearing cond stays if/else, plain-co
   // here). Scope the check to the function's own top-level return expression — that's the
   // one node the select-gate veto actually governs (outer ternary → if/else, not select).
   const topExpr = (fn) => { const last = fn[fn.length - 1]; return Array.isArray(last) && last[0] === 'return' ? last[1] : last }
+  // pre-watr: a frame that releases what it made as it returns leaves a call watr inlines; the pin reads the body before watr
+  // no frame around the body either: its result, which may be a string, would be asked as it returns (optimize/arena-rewind.js)
   for (const optimize of levels(2, 3, 'speed')) {
-    const tree = parse(pickChild, optimize)
+    const tree = parse(pickChild, { ...preWatr(optimize), arenaRewind: false })
     const fn = findFunc(tree, '$f') || findFunc(tree, '$f$exp')
     const top = topExpr(fn)
     // if/else, or its jump-chain form (chainConditions lowers the value-if

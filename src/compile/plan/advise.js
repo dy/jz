@@ -6,14 +6,14 @@ import { adviseJsstringCarrier } from '../narrow.js'
 
 /** Compile-time advisories — heap growth, SIMD hints. */
 const HEAP_LOOP_OPS = new Set(['for', 'while'])
-const HEAP_VALS = new Set([
-  VAL.ARRAY, VAL.STRING, VAL.OBJECT, VAL.HASH, VAL.SET, VAL.MAP,
-  VAL.CLOSURE, VAL.TYPED, VAL.REGEX, VAL.BUFFER,
-])
+// What the host holds of a result: a typed array is a view of the module's
+// memory, a closure and a regex are handles on it. A string, an array, an
+// object and a collection it takes a copy of, and the call's memory goes
+// (interop.js `settled`).
+const HELD_VALS = new Set([VAL.CLOSURE, VAL.TYPED, VAL.REGEX])
 
 function returnsHeap(func) {
-  if (func.sig.ptrKind != null) return true
-  return func.valResult != null && HEAP_VALS.has(func.valResult)
+  return HELD_VALS.has(func.sig.ptrKind ?? func.valResult)
 }
 
 function isHeapAlloc(node) {
@@ -78,7 +78,7 @@ function adviseHeapGrowth() {
 
     if (isExport && returnsHeap(func)) {
       warn('heap-return',
-        `export '${fn}' returns a heap value — repeated calls grow linear memory; call memory.reset() between batches from the host`,
+        `export '${fn}' returns a value the host holds in the module's memory — repeated calls grow linear memory; call memory.reset() between batches from the host`,
         { fn }, func.body.loc)
       continue
     }

@@ -47,6 +47,7 @@ const count = (wat, re) => (wat.match(re) || []).length
 
 // ───────────────────────────────────────────────────────────── body-walk evidence
 
+// A frame that releases what it made as it returns leaves a call watr inlines: the `__length` pins read the body before watr.
 test('notStringEvidence: index-write does not erase ordinary object .length', () => {
   // An index write excludes primitive String, but not OBJECT/HASH/EXTERNAL
   // array-likes. The general property Get must remain.
@@ -55,7 +56,7 @@ test('notStringEvidence: index-write does not erase ordinary object .length', ()
       for (let i = 0; i < xs.length; i++) xs[i] = v
       return xs.length
     }
-  `, { wat: true })
+  `, { wat: true, optimize: { watr: false } })
   ok(count(wat, /\$__length\b/g) >= 1, 'expected general __length property dispatch')
 })
 
@@ -64,7 +65,7 @@ test('notStringEvidence: pure-read (no write) keeps __length poly', () => {
   // read must stay polymorphic (xs could be a string).
   const wat = jz.compile(`
     export const readlen = (xs) => xs.length
-  `, { wat: true })
+  `, { wat: true, optimize: { watr: false } })
   ok(count(wat, /\$__length\b/g) >= 1, 'expected __length on pure read')
 })
 
@@ -78,7 +79,7 @@ test('notStringEvidence: stringy-evidence (typeof) disqualifies even with write'
       xs[0] = v
       return xs.length
     }
-  `, { wat: true })
+  `, { wat: true, optimize: { watr: false } })
   ok(count(wat, /\$__length\b/g) >= 1, 'expected __length when stringy disqualifies')
 })
 
@@ -161,7 +162,7 @@ test('extractRefinements: post-typeof-string still permits object .length', () =
       if (typeof xs === 'string') return 0
       return xs.length
     }
-  `, { wat: true })
+  `, { wat: true, optimize: { watr: false } })
   if (!onKernel()) ok(count(wat, /\$__length\b/g) >= 1, 'flow narrowing keeps general property dispatch')
 })
 
@@ -253,7 +254,7 @@ test('paramReps val: caller disagreement forces __length poly', () => {
     export const a = () => lenOf([1, 2, 3])
     export const b = () => lenOf('foo')
     export const c = (v) => lenOf(v)
-  `, { wat: true, optimize: { sourceInline: false } })
+  `, { wat: true, optimize: { sourceInline: false, watr: false } })
   ok(count(wat, /\$__length\b/g) >= 1, 'sticky-null val should keep __length')
 })
 
@@ -279,7 +280,7 @@ test('paramReps val: an untyped forwarded arg keeps a default param polymorphic'
   const wat = jz.compile(`
     const g = (a = []) => a.length
     export const f = (x) => g(x)
-  `, { wat: true })
+  `, { wat: true, optimize: { watr: false } })
   ok(count(wat, /\$__length\b/g) >= 1, 'untyped forwarded arg must keep __length poly')
 })
 

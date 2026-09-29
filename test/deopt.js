@@ -114,7 +114,8 @@ test('deopt D1: SOUNDNESS — object .length slot overrides the built-in type', 
   // NOT the built-in NUMBER — schema slotVT runs earlier in VT['.'] and wins.
   // `o.length + o.x` must dispatch via __str_concat because o.length is a string.
   if (belowOpt(1)) return
-  const wat = compile('export let f=()=>{let o={length:"hi",x:1};return o.length+o.x}', { wat: true })
+  // pre-watr: `f` releases what it made as it returns, so watr inlines it and its concatenation into the export
+  const wat = compile('export let f=()=>{let o={length:"hi",x:1};return o.length+o.x}', { wat: true, optimize: { watr: false } })
   ok(count(wat, /\$__str_concat/g) >= 1, 'object .length slot keeps its string type over the built-in NUMBER')
 })
 

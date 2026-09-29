@@ -93,9 +93,9 @@ test('array views: the view skips the copy', () => {
   ok(!/avs\d+/.test(off), 'views off: no view locals')
   for (const [name, src] of Object.entries(MATERIALIZED))
     ok(/avs\d+/.test(compile(src, { optimize: 'speed', wat: true })), `${name}: the binding is a view`)
-  // allocation volume of one run: the heap pointer after it, from a fresh instance each
+  // allocation volume of one run: the heap pointer after it, from a fresh instance each, with no frame giving back what it allocated
   const heapAfter = (optimize) => {
-    const { exports } = jz(src, { optimize })
+    const { exports } = jz(src, { optimize: { ...(typeof optimize === 'string' ? { level: optimize } : optimize), arenaRewind: false } })
     exports.run(200)
     return exports.__heap?.value ?? new Uint8Array(exports.memory.buffer).length
   }

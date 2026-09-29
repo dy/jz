@@ -538,6 +538,19 @@ export default (ctx) => {
           (i64.ne (i64.and (local.get $b) (i64.const ${ssoBitI64Hex()})) (i64.const 0)))
       (then (return (i32.const 0))))
     (i32.ge_u (i32.wrap_i64 (local.get $b)) (global.get $__base)))`
+  // Whether a frame's result names memory the frame made, at or above its
+  // mark: the caller's then, and the frame gives back nothing
+  // (optimize/arena-rewind.js). What `__esc_new` asks, of one frame.
+  ctx.core.stdlib['__made'] = `(func $__made (param $v f64) (param $mark i32) (result i32)
+    (local $b i64) (local $t i32)
+    (if (f64.eq (local.get $v) (local.get $v)) (then (return (i32.const 0))))
+    (local.set $b (i64.reinterpret_f64 (local.get $v)))
+    (local.set $t (i32.wrap_i64 (i64.and (i64.shr_u (local.get $b) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK}))))
+    (if (i32.and (i32.shl (i32.const 1) (local.get $t)) (i32.const ${(1 << PTR.ATOM) | (1 << PTR.EXTERNAL)})) (then (return (i32.const 0))))
+    (if (i32.and (i32.eq (local.get $t) (i32.const ${PTR.STRING}))
+          (i64.ne (i64.and (local.get $b) (i64.const ${ssoBitI64Hex()})) (i64.const 0)))
+      (then (return (i32.const 0))))
+    (i32.ge_u (i32.wrap_i64 (local.get $b)) (local.get $mark)))`
   registerReach()
 
   // True iff a NaN-boxed value is a non-primitive (heap object) — tag is neither

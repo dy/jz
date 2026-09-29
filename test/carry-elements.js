@@ -58,8 +58,9 @@ test('carried elements: the next pass reads the stored element from a local', ()
   }
   const loads = (w) => (loopText(w).match(/\(i32\.load(?!8|16)/g) || []).length
   const src = CASES.int32
-  const carried = funcWat(compile(src, { optimize: 'speed', wat: true }), 'f')
-  const reloaded = funcWat(compile(src, { optimize: CARRY_OFF, wat: true }), 'f')
+  // pre-watr: `run` releases what it made as it returns, so its call of `f` is one watr inlines
+  const carried = funcWat(compile(src, { optimize: { level: 'speed', watr: false }, wat: true }), 'f')
+  const reloaded = funcWat(compile(src, { optimize: { ...CARRY_OFF, watr: false }, wat: true }), 'f')
   ok(/\(local \$[^\s)]*ce\d+_v i32\)/.test(carried), 'the carried element is an i32 local')
   is(loads(carried), loads(reloaded) - 1, 'the loop no longer loads v[k]')
 })

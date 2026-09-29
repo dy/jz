@@ -422,6 +422,9 @@ export const memory = (src) => {
   // allocated and kept, and what the host allocated. A host that sees it climb
   // call after call has a leak to fix; a reset returns it to 0.
   Object.defineProperty(mem, 'used', { get: () => top() - base, configurable: true })
+  // What a decoded value names above this address holds the memory of the call that returned it (mem.read).
+  mem._above = Infinity
+  mem._held = false
   mem._top = top
   mem._setTop = setTop
 
@@ -674,7 +677,10 @@ export const memory = (src) => {
       return out
     }
     if (t === 3) {  // TYPED
-      if (a & DATA_VIEW_FLAG) return new DataView(mem.buffer, m.getInt32(off + 4, true), m.getInt32(off, true))
+      // A view of the module's memory: the bytes it shows stay while the host
+      // holds it (`held`, for the call that returned it, interop `settled`).
+      const held = (at) => { if (at >= mem._above) mem._held = true; return at }
+      if (a & DATA_VIEW_FLAG) return new DataView(mem.buffer, held(m.getInt32(off + 4, true)), m.getInt32(off, true))
       const elem = a & 7
       const [, stride] = ELEM_BY_ID[elem]
       const Ctor = (a & 16) ? BigInt64Array
@@ -684,10 +690,10 @@ export const memory = (src) => {
           : [Int8Array, Uint8Array, Int16Array, Uint16Array, Int32Array, Uint32Array, Float32Array, Float64Array][elem]
       if (a & 8) {
         const byteLen = m.getInt32(off, true), dataOff = m.getInt32(off + 4, true)
-        return new Ctor(mem.buffer, dataOff, byteLen / stride)
+        return new Ctor(mem.buffer, held(dataOff), byteLen / stride)
       }
       const byteLen = m.getInt32(off - 8, true)
-      return new Ctor(mem.buffer, off, byteLen / stride)
+      return new Ctor(mem.buffer, held(off), byteLen / stride)
     }
     if (t === 2) {  // BUFFER
       const byteLen = m.getInt32(off - 8, true)
@@ -714,7 +720,7 @@ export const memory = (src) => {
       // Error transport reads its stored message before constructing the host Error.
       if (mem.views?.has(a) && mem.viewData && !mem.errorSidToClass?.has(a)) return mem.read(mem.viewData(p))
       const keys = mem.schemas[a]
-      if (!keys) return p
+      if (!keys) { if (off >= mem._above) mem._held = true; return p }
       const obj = {}
       for (let i = 0; i < keys.length; i++) {
         const rule = mem.fieldContracts[a]?.[i], raw = m.getBigInt64(off + i * 8, true)
@@ -746,6 +752,8 @@ export const memory = (src) => {
       }
       return out
     }
+    // a handle on the module's memory, held as the view of a typed array is
+    if (t !== 0 && off >= mem._above) mem._held = true
     return i64ToF64(p)  // canonical NaN-number / CLOSURE / unknown — reinterpret to f64
   }
 
@@ -913,6 +921,8 @@ export const wrap = (memSrc, inst, state) => {
   // sites, released only when the call left the exported escape flag down.
   // `host`: those of them whose frame releases nothing by itself: the
   // wrapper's rewind is the only one.
+  // `ask`: those whose result may be a heap value, which the frame keeps and
+  // the wrapper releases once it holds a copy.
   const releases = new Set(), flagged = new Set(), hostReleased = new Set()
   const releaseBytes = customSection(mod, 'jz:release')
   if (releaseBytes) {
@@ -920,7 +930,7 @@ export const wrap = (memSrc, inst, state) => {
       const r = JSON.parse(td.decode(releaseBytes))
       for (const n of r.release) releases.add(n)
       for (const n of r.flag ?? []) flagged.add(n)
-      for (const n of r.host ?? []) hostReleased.add(n)
+      for (const n of [...r.host ?? [], ...r.ask ?? []]) hostReleased.add(n)
     } catch { /* ignore */ }
   }
   const esc = realInst.exports.__esc, setBase = realInst.exports.__base, survive = realInst.exports.__survive
@@ -1373,15 +1383,28 @@ export const wrap = (memSrc, inst, state) => {
     }
     return mark
   }
+  // The result as the host takes it: a copy (a string, an array, an object,
+  // a collection), or a value that names the module's memory (a typed array's
+  // view, a closure's handle, a promise read as it settles). One that names
+  // memory above the call's mark holds what the call allocated (`mark.held`).
+  const settled = (mark, ret) => {
+    const above = mem._above, held = mem._held
+    mem._above = mark.top; mem._held = false
+    try {
+      const out = finishRet(ret, readRet)
+      mark.held = mem._held || (asyncMod && out instanceof Promise)
+      return out
+    } finally { mem._above = above; mem._held = held }
+  }
   const leave = (mark, release, flag, returned) => {
-    const escaped = flag && (!esc || (esc.value >>> 0) < mark.top || !returned)
-    if (release && !mem._kept && !escaped) {
+    const escaped = flag && (!esc || (esc.value >>> 0) < mark.top || !returned), held = mark.held === true
+    if (release && !mem._kept && !escaped && !held) {
       if (POISON && mem._top() > mark.top) new Uint8Array(mem.buffer, mark.top, mem._top() - mark.top).fill(255)
       mem._setTop(mark.top)
     }
     // a call that ran an escape keeps what the escape reaches: the module walks from what it wrote into
-    else if (release && !mem._kept && returned && survive && mark.base === NO_MARK) mem._setTop(survive(mark.top) >>> 0)
-    mem._kept = mark.kept || !release || escaped || mem._kept
+    else if (release && !mem._kept && !held && returned && survive && mark.base === NO_MARK) mem._setTop(survive(mark.top) >>> 0)
+    mem._kept = mark.kept || !release || escaped || held || mem._kept
     if (flag && esc && mark.esc < (esc.value >>> 0)) esc.value = mark.esc | 0
     if (setBase && mark.base !== null) setBase(mark.base | 0)
     // a call that threw left the frames of the module without their epilogues: no mark stays past the outermost
@@ -1457,7 +1480,7 @@ export const wrap = (memSrc, inst, state) => {
           const host = hostOf(writeBack, ret)
           if (host) return host
           if (typeof ret === 'bigint' && !(ie && ie.r)) return ret
-          return finishRet(ret, readRet)
+          return settled(mark, ret)
         } catch (error) {
           decodeThrown(error)
         } finally { leave(mark, release, flag, returned) }
@@ -1482,7 +1505,7 @@ export const wrap = (memSrc, inst, state) => {
           const host = hostOf(writeBack, ret)
           if (host) return host
           if (typeof ret === 'bigint' && !(ie && ie.r)) return ret
-          return finishRet(ret, readRet)
+          return settled(mark, ret)
         } catch (error) {
           decodeThrown(error)
         } finally { leave(mark, release, flag, returned) }

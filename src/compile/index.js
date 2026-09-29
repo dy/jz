@@ -925,7 +925,19 @@ export function assemble(ast, profiler) {
   // and the first reason; `entry`: those with an escape the emitter flagged at
   // no node (a site it never emitted through its dispatch, a body the census
   // never walked), where link lowers the flag as the frame is entered.
-  const rewindable = new Map(), unsafe = new Set(), keeps = new Map(), conditional = new Map(), entry = new Set()
+  // `asked`: those of the candidates whose result may be a heap value: the
+  // frame asks it as it returns, and restores unless the result names memory
+  // of its own making, which is the caller's then. Off with the walk
+  // (`arenaReach`), at the size tier: the frame and its question cost bytes.
+  const rewindable = new Map(), asked = new Set(), unsafe = new Set(), keeps = new Map(), conditional = new Map(), entry = new Set()
+  // The exports whose arguments the host copies in, as prepare listed them; an
+  // export whose result is asked joins the released ones beside them: the
+  // host releases its call once it holds a copy of the result.
+  const boxed = new Set(lateFacts.exportInner.keys())
+  const ask = (f) => {
+    asked.add(`$${f.name}`)
+    if (isExported(f)) for (const exportName of exportNamesOf(f.name)) if (!lateFacts.exportInner.has(exportName)) lateFacts.exportInner.set(exportName, `$${f.name}`)
+  }
   const unflagged = (sites) => sites != null && [...sites].some(n => !ctx.plans.instrumented?.has(n))
   for (const [name, id] of ctx.closure.summaryId ?? [])
     if (id === undefined || !ctx.plans.closureSites?.has(id) || ctx.plans.closureUnsited?.has(id) || unflagged(ctx.plans.closureSites.get(id))) { unsafe.add(`$${name}`); entry.add(`$${name}`) }
@@ -944,13 +956,16 @@ export function assemble(ast, profiler) {
     if (frame.keeps && !(reachOn() && isExported(f))) { keeps.set(`$${f.name}`, frame.keepsWhy); ctx.transform.whyNotRewind?.(`$${f.name}`, 'escape: ' + frame.keepsWhy); continue }
     if (frame.keeps) conditional.set(`$${f.name}`, frame.keepsWhy)
     else if (frame.flagged) conditional.set(`$${f.name}`, frame.siteWhy ?? 'an escape')
-    // A rewound frame returns a scalar: a heap result (a pointer kind, a
-    // tagged f64 the summary cannot hold to numbers, booleans and nullish
-    // values) lives in the arena it would free; a multi-value result has no
-    // place for the saved pointer.
-    if (f.sig.results.length !== 1 || f.sig.ptrKind != null) { ctx.transform.whyNotRewind?.(`$${f.name}`, f.sig.ptrKind != null ? 'result: heap value' : 'result: not one scalar'); continue }
+    // A rewound frame returns one value, a scalar or a value it asks: a heap
+    // result (a pointer kind, a tagged f64 the summary cannot hold to numbers,
+    // booleans and nullish values) lives in the arena the frame would free
+    // where the frame made it, and is older than the frame's mark where it
+    // did not (optimize/arena-rewind.js). A multi-value result has no place
+    // for the saved pointer.
+    if (f.sig.results.length !== 1) { ctx.transform.whyNotRewind?.(`$${f.name}`, 'result: not one scalar'); continue }
     const ty = f.sig.results[0]
-    if (ty === 'i32' || (ty === 'f64' && (f.valResult === VAL.NUMBER || holdsNoHeap(ctx.summary?.resultOf(f.name))))) rewindable.set(`$${f.name}`, ty)
+    if (f.sig.ptrKind == null && (ty === 'i32' || (ty === 'f64' && (f.valResult === VAL.NUMBER || holdsNoHeap(ctx.summary?.resultOf(f.name)))))) rewindable.set(`$${f.name}`, ty)
+    else if (reachOn() && (ty === 'f64' || (ty === 'i32' && f.sig.ptrKind != null))) { rewindable.set(`$${f.name}`, ty); ask(f) }
     else ctx.transform.whyNotRewind?.(`$${f.name}`, 'result: may hold a heap value')
   }
   // An export that keeps memory on every call, read off the rewind's verdict
@@ -1013,10 +1028,10 @@ export function assemble(ast, profiler) {
   return { module, link: {
     optimize: ctx.transform.optimize,
     userFuncs: lateFacts.userFuncs, userGlobals: ctx.scope.userGlobals,
-    rewindable, unsafe, heapAddr: ctx.memory.shared ? HEAP.PTR_ADDR : null, exportInner: lateFacts.exportInner,
+    rewindable, asked, unsafe, heapAddr: ctx.memory.shared ? HEAP.PTR_ADDR : null, exportInner: lateFacts.exportInner,
     // Module bindings that never hold a heap value: a write to one strands nothing.
     scalarGlobals: new Set([...(ctx.scope.userGlobals ?? [])].filter(g => holdsNoHeap(ctx.summary?.kindOfExpr(g))).map(g => `$${g}`)),
-    adviseKept: ctx.warnings && ctx.transform.alloc !== false ? adviseKept(rewindable, lateFacts.exportInner) : null,
+    adviseKept: ctx.warnings && ctx.transform.alloc !== false ? adviseKept(rewindable, boxed) : null,
     closureTargets, closureNames, conditional, keeps, entry, keepsNothing: ctx.module.keepsNothing,
     exported: new Set(ctx.funcs.list.filter(f => isExported(f)).map(f => `$${f.name}`)),
     censused: new Set([...ctx.funcs.list.filter(f => f.frame).map(f => `$${f.name}`),

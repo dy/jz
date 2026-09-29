@@ -591,9 +591,9 @@ test('memory.reset(): module-global heap values survive a reset (rewind to post-
 })
 
 test('memory.reset(): own memory grows without reset', () => {
-  // The array escapes (it is returned), so the frame cannot rewind it away.
+  // The typed array is returned as a view of the module's memory: the host holds it, so the call keeps it.
   const { exports, memory } = jz`
-    export let f = (n) => { let xs = []; for (let i = 0; i < n; i++) xs.push(i); return xs }
+    export let f = (n) => { let xs = new Float64Array(n); for (let i = 0; i < n; i++) xs[i] = i; return xs }
   `
   const before = memory.buffer.byteLength
   for (let i = 0; i < 500; i++) exports.f(100)
@@ -603,7 +603,8 @@ test('memory.reset(): own memory grows without reset', () => {
 test('memory.reset(): shared memory rewinds heap pointer to 1024', () => {
   if (onKernel()) return  // kernel: host shared {memory} option doesn't reach the single-source self-compile
   const memory = jz.memory()
-  const { exports } = jz('export let f = (n) => { let xs = []; for (let i = 0; i < n; i++) xs.push(i); return xs }', { memory })
+  // a typed array returned is a view the host holds: the call keeps it
+  const { exports } = jz('export let f = (n) => { let xs = new Float64Array(n); for (let i = 0; i < n; i++) xs[i] = i; return xs }', { memory })
   exports.f(100)
   const dv = () => new DataView(memory.buffer)
   ok(dv().getInt32(1020, true) > 1024, 'heap advanced after allocations')

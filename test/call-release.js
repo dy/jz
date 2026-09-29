@@ -234,3 +234,55 @@ test('call release: a call of numbers made while another runs tells it what it k
   for (n = 100; n < 200; n++) { inst.exports.keep(n); want += n * 10 + 7; inst.exports.churn(8) }
   is(inst.exports.check(), want, 'the arrays the calls kept read back intact')
 })
+
+// A frame whose result may be a heap value asks it as it returns: one the
+// frame did not make (a number, a value older than the call) lets the frame
+// give back what it allocated; one it made is the caller's, and the host, which
+// takes a copy of a string, an array, an object or a collection, releases it
+// then. A typed array is a view of the module's memory: it holds the call's.
+// Off at the size tier, with the walk.
+for (const optimize of levels(2, 3))
+  test(`call release: a call whose result may be a heap value releases unless the result is of its making, at ${optimize}`, () => {
+    const src = `const kept = ['a string the module holds, too long to pack', [7, 8, 9]]
+      const risky = (n) => { if (n & 1) throw new Error('odd'); return n }
+      export const first = (n) => { const a = [n, 3, 1, 2]; a.sort((x, y) => x - y); return a[0] }
+      export const caught = (n) => { const t = new Float64Array(64); t[1] = n; try { return risky(n) } catch (e) { return t[1] + 0.5 } }
+      export const round = (n) => JSON.parse(JSON.stringify({ a: [n, n + 1], b: 'x' })).a[1]
+      export const pair = (n) => { const [a, b] = [n, n + 1]; const { x, y } = { x: a, y: b }; return x + y }
+      export const pick = (n) => { const made = ['made ' + n + ' zzzzzzzzzzzzzzzzzzzzzz', [n, n]]; return n % 3 ? made[n % 3 - 1] : kept[n % 2] }
+      export const held = (n) => kept[n & 1]
+      export const churn = (n) => { const a = []; for (let i = 0; i < n; i++) a.push('c' + i + 'yyyyyyyyyyyyyyyy'); return a.length }`
+    const want = oracle(src), { exports, memory } = jz(src, { optimize })
+    let n = 0
+    for (const name of ['first', 'round', 'pair', 'held', 'pick']) {
+      for (let i = 0; i < 12; i++) { is(exports[name](i), want[name](i), `${name}(${i})`); exports.churn(6) }
+      n = 0
+      is(growth(memory, () => exports[name](n++)), 0, `${name} keeps nothing at ${optimize}`)
+    }
+    // a catch that ran keeps the call: the frames the exception left did not say what they stored
+    for (let i = 0; i < 12; i++) { is(exports.caught(i), want.caught(i), `caught(${i})`); exports.churn(6) }
+    n = 0
+    is(growth(memory, () => exports.caught(n += 2)), 0, `a call no catch ran in keeps nothing at ${optimize}`)
+    n = 1
+    ok(growth(memory, () => exports.caught(n += 2)) > 0, `one a catch ran in keeps what it allocated at ${optimize}`)
+  })
+
+for (const optimize of levels(2, 3))
+  test(`call release: a result the host takes a copy of goes with the call, a view of the module's memory stays, at ${optimize}`, () => {
+    const src = `export const str = (n) => 'value ' + n + ' of a string too long to pack'
+      export const obj = (n) => ({ a: n, b: [n, n], s: 'field ' + n + ' zzzzzzzzzzzzzzzzzz' })
+      export const map = (n) => new Map([[n, 'v' + n + ' zzzzzzzzzzzzzzzzzzzzzz'], ['k', n]])
+      export const typed = (n) => { const a = new Float64Array(4); a[0] = n; return a }
+      export const holds = (n) => ({ a: n, t: new Float64Array([n, n + 1]) })
+      export const churn = (n) => { const a = []; for (let i = 0; i < n; i++) a.push('c' + i + 'yyyyyyyyyyyyyyyy'); return a.length }`
+    const want = oracle(src), { exports, memory } = jz(src, { optimize })
+    const plain = (v) => v instanceof Map ? [...v] : ArrayBuffer.isView(v) ? [...v] : v && typeof v === 'object' ? Object.fromEntries(Object.entries(v).map(([k, x]) => [k, plain(x)])) : v
+    for (const [name, copied] of [['str', true], ['obj', true], ['map', true], ['typed', false], ['holds', false]]) {
+      const got = [], used = memory.used
+      for (let i = 0; i < 40; i++) { got.push(exports[name](i)); exports.churn(8) }
+      // read after the heap was written over forty times
+      for (let i = 0; i < 40; i++) is(plain(got[i]), plain(want[name](i)), `${name}(${i}) reads back`)
+      if (copied) is(memory.used - used, 0, `${name}: the host holds a copy, the call's memory went at ${optimize}`)
+      else ok(memory.used - used >= 40 * 32, `${name}: the host holds a view, the call's memory stays at ${optimize}: ${memory.used - used}`)
+    }
+  })

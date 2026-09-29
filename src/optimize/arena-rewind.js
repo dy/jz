@@ -146,11 +146,14 @@ const REACH = /^\$__(root|root_reset|survive|reach_\w+)$/
 const SURVIVE = '$__survive', ROOTN = '$__rootn', ROOTS = '$__roots', ROOT_RESET = '$__root_reset'
 // What asks of a stored value whether a running call made it: no lowering itself.
 const ASKS = '$__esc_new'
+// What asks of a frame's result whether the frame made it (module/core.js).
+const MADE = '$__made'
 const ESC_MARK = 'esch'
 // jz's interop imports that hand the host nothing it could keep: they read.
 const EXT_READS = new Set(['$__ext_prop', '$__ext_has', '$__ext_has_iterator', '$__ext_enum', '$__ext_json', '$__ext_json_omits'])
 
 /** @param rewindable  Map `$name` → result type of the functions whose records allow a rewind
+ *  @param asked       Set of `$name`: those of them whose result may be a heap value
  *  @param unsafe      Set of `$name`: functions every call of which escapes with no address
  *  @param keeps       Map `$name` → reason: functions whose own frame never restores, a caller's may
  *  @param entry       Set of `$name`: functions with an escape at no instruction: the flag goes to zero at entry
@@ -170,7 +173,7 @@ const EXT_READS = new Set(['$__ext_prop', '$__ext_has', '$__ext_has_iterator', '
  *  @param keepsNothing Set of `$name`: runtime imports that keep nothing they are handed
  *  @returns `releasable` (the rewindable functions whose frames keep nothing, allocating or
  *    not), `rewound` (those rewritten), and per function whether it allocates and why not */
-export function arenaRewind(root, { rewindable, heapAddr, unsafe = NO_NAMES, keeps = NO_NAMES, entry = NO_NAMES, exported = NO_NAMES, exportInner = null, report = null, rewrite = true, scalarGlobals = NO_NAMES, closureTargets = null, closureNames = NO_NAMES, conditional = NO_NAMES, censused = NO_NAMES, userGlobals = NO_NAMES, keepsNothing = NO_NAMES }) {
+export function arenaRewind(root, { rewindable, asked = NO_NAMES, heapAddr, unsafe = NO_NAMES, keeps = NO_NAMES, entry = NO_NAMES, exported = NO_NAMES, exportInner = null, report = null, rewrite = true, scalarGlobals = NO_NAMES, closureTargets = null, closureNames = NO_NAMES, conditional = NO_NAMES, censused = NO_NAMES, userGlobals = NO_NAMES, keepsNothing = NO_NAMES }) {
   const releasable = new Set(), rewound = new Set(), flagged = new Set()
   // The conditional functions whose flag something reads: the frames rewound
   // here, and those the host releases by it.
@@ -379,7 +382,7 @@ export function arenaRewind(root, { rewindable, heapAddr, unsafe = NO_NAMES, kee
         if (callee === '$__alloc' || callee === '$__alloc_hdr' || callee === '$__alloc_hdr_n') rec.allocs = true
         if (LOWERS.has(callee)) { if (!LOWERS.has(name)) { rec.lowers = true; if (rec.censused) rec.ownFlag = true } return }
         if (callee !== null && REACH.test(callee)) return
-        if (callee === null || callee === ASKS || ARENA_SAFE.includes(callee) || CENSUS_GUARDED.test(callee)) return
+        if (callee === null || callee === ASKS || callee === MADE || ARENA_SAFE.includes(callee) || CENSUS_GUARDED.test(callee)) return
         // jz's own interop imports (`$__ext_*`, interop.js) that read hand the
         // host nothing; one that calls the host or sets a property of its
         // object hands it values it may keep (a typed array is a view of the
@@ -506,7 +509,7 @@ export function arenaRewind(root, { rewindable, heapAddr, unsafe = NO_NAMES, kee
       else if (callsDirect(op)) {
         const callee = text(T.a[n])
         if (LOWERS.has(callee)) { why = 'lowers the flag'; return }
-        if (callee === null || callee === ASKS || callee === '$__alloc' || callee === '$__alloc_hdr' || callee === '$__alloc_hdr_n' || ARENA_SAFE.includes(callee) || CENSUS_GUARDED.test(callee)) return
+        if (callee === null || callee === ASKS || callee === MADE || callee === '$__alloc' || callee === '$__alloc_hdr' || callee === '$__alloc_hdr_n' || ARENA_SAFE.includes(callee) || CENSUS_GUARDED.test(callee)) return
         if (imports.has(callee)) { if (T.next[T.a[n]] !== NONE && !EXT_READS.has(callee) && !keepsNothing.has(callee)) why = 'calls ' + callee.slice(1) + ", the host's"; return }
         const g = info.get(callee)
         if (g === undefined) why = 'calls ' + callee + ' (undefined)'
@@ -616,8 +619,23 @@ export function arenaRewind(root, { rewindable, heapAddr, unsafe = NO_NAMES, kee
   // frame inside another keeps all, the outer one deciding for both.
   const reach = globals.has(ROOTN) && info.has(SURVIVE) && info.has(ROOT_RESET)
   const outermost = (bsave) => { const t = node(intern('i32.eq')); push(t, localGet(bsave)); push(t, i32c(-1)); return t }
-  const restore = (save, esave, bsave) => {
-    if (esave == null) return back(save)
+  // A frame whose result may be a heap value (`ask`: the local it stands in,
+  // and its type) gives back nothing where the result names memory above its
+  // mark: what it made is the caller's. An address is asked as it is, a
+  // tagged value by `__made`.
+  const unlessMade = (ask, save, nodes) => {
+    if (ask == null) return nodes
+    const made = ask.type === 'i32' ? node(intern('i32.ge_u')) : node(CALL)
+    if (ask.type !== 'i32') push(made, str(MADE))
+    push(made, localGet(ask.ret)); push(made, localGet(save))
+    const iff = node(intern('if')); push(iff, made)
+    push(iff, node(intern('then')))
+    const not = push(iff, node(intern('else')))
+    for (const n of nodes) push(not, n)
+    return [iff]
+  }
+  const restore = (save, esave, bsave, ask = null) => {
+    if (esave == null) return unlessMade(ask, save, back(save))
     const test = node(intern('i32.ge_u')); push(test, escGet()); push(test, localGet(save))
     const iff = node(intern('if')); push(iff, test)
     const then = node(intern('then')); for (const n of back(save)) push(then, n); push(iff, then)
@@ -630,7 +648,7 @@ export function arenaRewind(root, { rewindable, heapAddr, unsafe = NO_NAMES, kee
     const lower = node(intern('i32.lt_u')); push(lower, localGet(esave)); push(lower, escGet())
     const join = node(intern('if')); push(join, lower)
     const joined = node(intern('then')); push(joined, escSet(localGet(esave))); push(join, joined)
-    return [iff, join, baseSet(localGet(bsave))]
+    return [...unlessMade(ask, save, [iff]), join, baseSet(localGet(bsave))]
   }
   // The log starts empty with the outermost frame.
   const logFrom = (bsave) => {
@@ -657,6 +675,8 @@ export function arenaRewind(root, { rewindable, heapAddr, unsafe = NO_NAMES, kee
     if (resultType === undefined) continue
     const rec = info.get(name)
     if (rec == null) continue
+    // a tagged result is asked by a kernel the module has to hold
+    if (asked.has(name) && resultType !== 'i32' && !info.has(MADE)) { if (rewrite) report?.(name, 'result: may hold a heap value'); continue }
     if (rec.unsafe) { if (rewrite) report?.(name, rec.why); continue }
     let unsafe = false
     const hasAlloc = rec.allocs, tails = []
@@ -697,6 +717,7 @@ export function arenaRewind(root, { rewindable, heapAddr, unsafe = NO_NAMES, kee
     while (declared.has(`$${MARK}heap_save${id}`) || declared.has(`$${MARK}arena_ret${id}`) || declared.has(`$${MARK}esc_save${id}`)) id++
     const save = `$${MARK}heap_save${id}`, ret = `$${MARK}arena_ret${id}`
     const esave = cond ? `$${MARK}esc_save${id}` : null, bsave = cond ? `$${MARK}esc_base${id}` : null
+    const ask = asked.has(name) ? { ret, type: resultType } : null
 
     // The last instruction (a trailing comment atom is not it).
     let last = NONE, beforeLast = NONE
@@ -711,7 +732,7 @@ export function arenaRewind(root, { rewindable, heapAddr, unsafe = NO_NAMES, kee
       push(push(block, node(RESULT)), str(resultType))
       T.next[value] = NONE
       push(block, localSet(ret, value))
-      for (const n of restore(save, esave, bsave)) push(block, n)
+      for (const n of restore(save, esave, bsave, ask)) push(block, n)
       push(block, localGet(ret))
       T.a[id] = block
       return false
@@ -721,7 +742,7 @@ export function arenaRewind(root, { rewindable, heapAddr, unsafe = NO_NAMES, kee
       T.next[beforeLast] = NONE
       T.next[last] = NONE
       push(f, localSet(ret, last))
-      for (const n of restore(save, esave, bsave)) push(f, n)
+      for (const n of restore(save, esave, bsave, ask)) push(f, n)
       push(f, localGet(ret))
     }
     // Declarations and the save at the top of the body.

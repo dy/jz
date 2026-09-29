@@ -1225,7 +1225,9 @@ is (interop.js `crossing`), written out by arity so that it allocates nothing,
 with a BigInt argument, a result that is no number, a throw and a call made
 while another runs handed to the general path or its decoding. Measured on a
 module with heap state, a call costs 6 ns raw, 16 ns so, 150 to 250 ns by
-the general path.
+the general path. `ask` names
+those that allocate and whose result may be a heap value: their calls take
+the general path, which releases once the host holds a copy of the result.
 
 `E[Symbol.iterator]()` is `__it_from(E)` for every receiver (jzify): an
 indexed value's own iterator, a collection's snapshot view, a provider's
@@ -1923,9 +1925,20 @@ callback name resolves to its arrow only while no nested function rebinds it. In
 `toString` or `valueOf`, converting a value the summary cannot prove primitive (an operator's
 operand, a property key, a builtin's argument, a typed element store) is a call to the
 ToPrimitive function it lowers to (`runsConversion`). The arena rewind (`src/optimize/arena-rewind.js`) restores the
-heap pointer at return for any function with a scalar non-pointer result,
-parameters included, outright where nothing its frame may reach lowers the
-escape flag and by the flag otherwise (above); a tail call leaves the frame
+heap pointer at return for any function with one result, parameters
+included, outright where nothing its frame may reach lowers the escape flag
+and by the flag otherwise (above). A result that may be a heap value (a
+pointer kind, a tagged value the summary cannot hold to numbers) is asked as
+the frame returns (`asked`, module/core.js `__made`; an address as it is): one
+that names memory at or above the frame's mark is of the frame's making and
+the caller's to keep, so the frame gives back nothing; a number, or a value
+older than the call, lets it restore. The host asks the same of what an export
+returns as it decodes it (interop.js `settled`): it takes a copy of a string,
+an array, an object and a collection, and releases the call then; a typed
+array's view and a closure's handle above its mark hold the call's memory.
+An export whose result is asked is one the host releases (`jz:release`),
+whether or not it copies an argument in.
+Asked frames come and go with the walk (`arenaReach`). A tail call leaves the frame
 before its epilogue, so one whose callee never runs the function again
 becomes a plain call under the restore, at the price of one frame, and one
 that may (a recursion written as tail calls) stays, the function keeping its

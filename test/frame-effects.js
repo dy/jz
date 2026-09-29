@@ -627,12 +627,13 @@ test('frame effects: an element store writes no binding, and a runtime import ke
 
 test('frame effects: a result the summary saw no value of proves no scalar', () => {
   // `clone` is never called, only named by its own `node.map(clone)`: the
-  // summary's kind of its result is empty, which is no proof it holds no heap value.
-  const why = []
-  compile(`import { twice } from './util.js'
-    export let f = (x) => { const t = [x, x]; return twice(t[0] + t[1]) }`, { ...TAPE, whyNotRewind: (n, r) => why.push([n, r]), modules: {
+  // summary's kind of its result is empty, which is no proof it holds no heap
+  // value. Its frame asks the result as it returns.
+  const wat = compile(`import { twice } from './util.js'
+    export let f = (x) => { const t = [x, x]; return twice(t[0] + t[1]) }`, { ...TAPE, wat: true, modules: {
     './util.js': 'export const clone = (node) => Array.isArray(node) ? node.map(clone) : node; export const twice = (x) => x * 2' } })
-  is(why.find(([n]) => n === '$__util_js$clone')?.[1], 'result: may hold a heap value')
+  const clone = bodyOf(wat, '__util_js$clone')
+  ok(/heap_save/.test(clone) && /call \$__made/.test(clone), 'the frame restores unless the result is of its making')
 })
 
 test('frame effects: arrays a parameter default pushes into the caller keep their values', () => {
@@ -990,6 +991,29 @@ test('frame effects: what a callee reached by a tail call stored into a module b
     for (let i = 0; i < 4; i++) is(m.go(40), js.go(40), `${optimize}, call ${i}: the array the first call made holds what every call added`)
     is(m.h(40), js.h(40), `${optimize}: and by a call of its own`)
   }
+})
+
+test('arena rewind on the tape: a frame whose result may be a heap value restores unless the result is of its making', () => {
+  const made = ['func', '$__made', ['param', '$v', 'f64'], ['param', '$mark', 'i32'], ['result', 'i32'], ['i32.const', 0]]
+  const m = (kernel, type, value) => ['module', HEAP,
+    ['global', '$__esc', ['mut', 'i32'], ['i32.const', -1]], ['global', '$__base', ['mut', 'i32'], ['i32.const', -1]],
+    ['global', '$__tab', ['mut', 'i32'], ['i32.const', 0]],
+    ...(kernel ? [made] : []),
+    ['func', '$f', ['param', '$c', 'i32'], ['result', type],
+      ['if', ['local.get', '$c'], ['then', ['global.set', '$__esc', ['i32.const', 0]], ['global.set', '$__tab', ['local.get', '$c']]]], ['drop', alloc], value],
+  ]
+  const run = (kernel, type, value, opts = {}) => { const why = []; return [src(onTape(m(kernel, type, value), root => arenaRewind(root, { rewindable: new Map([['$f', type]]), asked: new Set(['$f']), heapAddr: null,
+    censused: new Set(['$f']), userGlobals: new Set(['__tab']), report: (n, r) => why.push(`${n}: ${r}`), ...opts })).at(-1)), why.join(' | ')] }
+  const [boxed] = run(true, 'f64', ['f64.const', 1])
+  ok(/\["if",\["call","\$__made",\["local.get","\$[^"]*arena_ret0"\],\["local.get","\$[^"]*heap_save0"\]\],\["then"\],\["else",/.test(boxed), 'a tagged result is asked by the kernel, and the heap goes back in the other arm: ' + boxed.slice(0, 300))
+  const [address] = run(false, 'i32', ['i32.const', 8])
+  ok(/\["if",\["i32.ge_u",\["local.get","\$[^"]*arena_ret0"\],\["local.get","\$[^"]*heap_save0"\]\],\["then"\],\["else",/.test(address), 'an address is asked as it is')
+  const [cond] = run(true, 'f64', ['f64.const', 1], { conditional: new Map([['$f', 'outer binding tab']]) })
+  ok(/"\$__made"/.test(cond) && /esc_save/.test(cond), 'a frame that restores by the flag asks its result first')
+  ok(cond.indexOf('"$__made"') < cond.lastIndexOf('"global.set","$__base"'), 'and puts the flag and the mark back whatever the result')
+  const [none, why] = run(false, 'f64', ['f64.const', 1])
+  ok(!/heap_save/.test(none), 'with no kernel to ask a tagged result the frame keeps its heap')
+  is(why, '$f: result: may hold a heap value', 'by name')
 })
 
 test('arena rewind on the tape: mutually recursive clean kernels are safe callees, and allocation counts through them', () => {

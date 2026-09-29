@@ -1015,6 +1015,9 @@ function frameEffectsOf(func) {
   if (func.rest) params.add(func.rest)
   // a parameter default runs in the frame, before the body
   const out = census(view, frameRoots(func), [body], params, typedParams, true, SCRATCH.has(func.name))
+  // A frame that lends a value it made to a record older than itself keeps
+  // it, though the census counts no site there: the frame restores nothing.
+  if (SCRATCH.has(func.name) && !out.keeps) { out.keeps = true; out.keepsWhy = 'lends what it made to a record' }
   // a loop's scope declares nothing of the function's: its parameters are
   // outer storage there (a block kept in one outlives the iteration)
   out.loops = loopsOf(body).map(({ body: loopBody, roots }) => ({ body: loopBody, own: census(view, roots, [loopBody], NO_NAMES, typedParams) }))
