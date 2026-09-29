@@ -606,14 +606,17 @@ test('slot-types: codegen — unrelated allocations sharing a layout keep precis
 // same mechanism test/types.js's runAnalyze harness exercises internally.
 // ============================================================================
 
-function inspectLocals(src, fnName = 'f') {
-  return compile(src, { wat: true, inspect: true }).inspect.functions[fnName]?.locals || {}
+function inspectLocals(src, fnName = 'f', optimize) {
+  return compile(src, { wat: true, inspect: true, ...(optimize ? { optimize } : {}) }).inspect.functions[fnName]?.locals || {}
 }
 // BindingId totality renames locals to `name<T>f<id>_<n>` — resolve a test's
 // source spelling to the actual key (mirrors runAnalyze's resolveLocal).
+// A binding a statement list reassigns is a chain of bindings, one per value
+// (prepare/split-bindings.js, `name<T>f…<T>s<n>`): the last holds what the list left.
 function localVal(locals, name) {
-  const keys = Object.keys(locals)
-  const key = keys.find(k => k === name) ?? keys.find(k => k.startsWith(name + T))
+  const serial = k => { const m = new RegExp(`${T}s(\\d+)$`).exec(k); return m ? +m[1] : -1 }
+  const keys = Object.keys(locals).filter(k => k === name || k.startsWith(name + T)).sort((a, b) => serial(b) - serial(a))
+  const key = keys[0]
   return locals[key]?.val ?? locals[key]?.presentVal
 }
 
@@ -666,7 +669,8 @@ test('array-destructure kind: assignment-form (no `let`) already preserved it �
   // `[a, b] = [1, BigInt(v)]` goes through prepare's scalarArrayDestruct, a
   // different (already-correct) path — pinned so a future refactor can't
   // regress it while "fixing" the decl form.
-  const locals = inspectLocals('export let f = (v) => { let a, b; [a, b] = [1, BigInt(v)]; return b }')
+  // the names stay: `b` stands for the temp the element was read into, and would be read as it (plan/alias.js)
+  const locals = inspectLocals('export let f = (v) => { let a, b; [a, b] = [1, BigInt(v)]; return b }', 'f', { level: 2, aliases: false })
   is(localVal(locals, 'b'), VAL.BIGINT)
 })
 

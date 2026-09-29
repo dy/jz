@@ -45,6 +45,9 @@ export function programPins(cfg) {
     // into the hot arithmetic loops that reach it, it costs size for a path a
     // numeric program never takes.
     ...(ctx.core.includes.has('__add_slow') ? ['$__add_slow'] : []),
+    // A loop its caller had no room for stays a function (plan/inline.js): the
+    // single-caller inliner has no bound of its own.
+    ...[...ctx.plans.keptKernels ?? []].map(name => `$${name}`),
     ...(cfg._vectorizedFnNames?.size
       ? [...cfg._vectorizedFnNames].filter(name => ctx.funcs.map.get(name.slice(1))?.exported)
       : []),

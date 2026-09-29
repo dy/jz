@@ -528,6 +528,43 @@ test('audit: a parameter summed and then read as a string is a string', () => {
   }
 })
 
+// A store reads its key before its value (PutValue): a value whose call moves what the
+// key reads stores where the key was (module/typedarray.js). The typed store took the
+// value first and read the key after it.
+test('audit: a typed store reads its key before a value that moves it', () => {
+  const src = `const OUT = new Float64Array(4), AT = new Int32Array(1)
+    let at = 0
+    const step = (v) => { at += 1; AT[0] += 1; let s = 0; for (let i = 0; i < 3; i++) s += v; return s }
+    export let global = (x) => { at = 0; OUT.fill(0); OUT[at] = step(x); return OUT[0] * 100 + OUT[1] + at }
+    export let element = (x) => { AT[0] = 0; OUT.fill(0); OUT[AT[0]] = step(x); return OUT[0] * 100 + OUT[1] + AT[0] }
+    export let local = (x) => { let k = 0; OUT.fill(0); OUT[k] = (k = 2, x * 3); return OUT[0] * 100 + OUT[2] + k }
+    export let twice = (x) => { at = 0; OUT.fill(0); OUT[at] = step(x); OUT[at] = step(x + 1); return OUT[0] * 10000 + OUT[1] * 100 + OUT[2] + at }`
+  const want = oracle(src)
+  for (const optimize of TIERS) {
+    const got = jz(src, { optimize }).exports
+    for (const x of [3, 0.5, -2]) for (const f of ['global', 'element', 'local', 'twice']) is(got[f](x), want[f](x), `${f}(${x}) at ${optimize}`)
+  }
+})
+
+// A call that passes a BigInt and a Number to one operator throws when it runs, at every
+// level: spliced into its caller the operator was one the compiler rejects (plan/inline.js).
+test('audit: a call that mixes a BigInt and a Number throws when it runs', () => {
+  const src = `function sub(a, b) { return a - b }
+    function scale(a, k) { const d = a * 2n; return d << k }
+    export function mixed(c) { return c ? sub(3n, 1n) : sub(3, 1) }
+    export function returned() { return sub(3n, 1) }
+    export function declared() { const r = sub(3n, 1); return r }
+    export function stored(o) { let r = 0n; r = sub(1, 3n); return r }
+    export function shifted() { return scale(5n, 2n) }`
+  for (const optimize of TIERS) {
+    const e = jz(src, { optimize }).exports
+    is(e.mixed(1), 2n, `a BigInt pair at ${optimize}`)
+    is(e.mixed(0), 2, `a Number pair at ${optimize}`)
+    is(e.shifted(), 40n, `a BigInt body at ${optimize}`)
+    for (const f of ['returned', 'declared', 'stored']) throws(() => e[f](), /Cannot mix BigInt/, `${f} at ${optimize}`)
+  }
+})
+
 // A closure stored beside the fields of an object a literal nested (`ns.inner.parse = f`
 // where the literal declared no `parse`) runs when the member is called
 // (src/summary/index.js): its body is reached and its parameter bound. Unreached, a

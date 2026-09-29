@@ -6,6 +6,8 @@
 //   dump <spec> <out.json>     the lowered { code, modules } graph, a plain compile() input
 //   bench <spec> <case> <kind> <lo> <hi> [lo2 hi2]   a bench/<case> from the package (see benchCase)
 //   bench-all <namespace> <case>   a bench/<case> of every numeric function of a namespace (see benchAll)
+//   kernels <case> [list]      each function of such a case by itself, in the one module: V8 against jz,
+//                              the heap it keeps, the calls left in its loop (needs no STDLIB_ROOT)
 //   one <spec>                 one scalar function: compile, diff against Node, time
 //   sweep <namespace> <out>    every package of a namespace, one process each → JSON lines
 //   report <out> [list]        summarize a sweep
@@ -24,8 +26,9 @@ import { dirname, join } from 'node:path'
 
 const SELF = fileURLToPath(import.meta.url)
 const JZ = process.env.JZ || join(dirname(SELF), '..')
-const ROOT = process.env.STDLIB_ROOT
-if (!ROOT || !existsSync(join(ROOT, 'node_modules/@stdlib'))) {
+// `kernels` reads a committed case and needs no install; every other command reads the library
+const ROOT = process.env.STDLIB_ROOT ?? (process.argv[2] === 'kernels' ? dirname(SELF) : null)
+if (process.argv[2] !== 'kernels' && (!ROOT || !existsSync(join(ROOT, 'node_modules/@stdlib')))) {
   console.error('STDLIB_ROOT must name a directory holding node_modules/@stdlib'); process.exit(1)
 }
 const { compile } = await import(join(JZ, 'index.js'))
@@ -622,12 +625,69 @@ export let main = () => {
   console.log(`${dir}/${id}.js: ${fns.length} functions, ${source.length} B, ${Object.keys(g.modules).length} modules`)
 }
 
+// Each function of a namespace case (bench/<case>/<case>.js, see benchAll) measured by
+// itself inside the one module a program that uses the library links: a helper a
+// hundred functions share is compiled once for them all there, which a module per
+// function never shows. The case's own kernels are kept and its sweep replaced by
+// `run( k )`. Samples are as many sweeps as take a millisecond, the two engines
+// alternate, and the least of nine is kept.
+async function kernels(id, list) {
+  const file = join(dirname(SELF), '..', 'bench', id, `${id}.js`)
+  let src = readFileSync(file, 'utf8')
+  const names = [...src.matchAll(/^\/\/ (\S+)\nconst k(\d+) = /gm)].map(m => [+m[2], m[1]])
+  if (!names.length) throw new Error(`${file} holds no kernels: a case of bench-all is expected`)
+  src = src.replace(/^import [^\n]*benchlib[^\n]*\n/m, '')
+  src = src.slice(0, src.indexOf('const sweep = (u, out) =>')) + `
+const U = new Float64Array(N_EVAL), OUT = new Float64Array(N_EVAL)
+export let us = () => U
+export let run = (k) => {
+${names.map(([k]) => `  if (k === ${k}) { k${k}(U, OUT, 0); return 1 }`).join('\n')}
+  return 0
+}
+`
+  const t0 = performance.now()
+  const wasm = compile(src, { jzify: true, optimize: 'speed', memory: 4096 })
+  const text = compile(src, { jzify: true, optimize: 'speed', memory: 4096, wat: true })
+  console.log(`${names.length} functions, ${wasm.byteLength} B, compiled in ${Math.round((performance.now() - t0) / 2)} ms`)
+  const inst = instantiate(wasm, { memory: 4096 })
+  const host = await import('data:text/javascript;base64,' + Buffer.from(src).toString('base64'))
+  const fill = (u) => { let s = 0x1234abcd | 0; for (let i = 0; i < u.length; i++) { s ^= s << 13; s ^= s >>> 17; s ^= s << 5; u[i] = (s >>> 0) / 4294967296 } }
+  fill(inst.exports.us()); fill(host.us())
+  const bodies = new Map()
+  for (const m of text.matchAll(/\n  \(func \$([^\s()]+)/g)) { const at = m.index + 1, nx = text.indexOf('\n  (func ', at + 10); bodies.set(m[1], text.slice(at, nx > 0 ? nx : undefined)) }
+  const rows = []
+  for (const [k, name] of names) {
+    for (let w = 0; w < 3; w++) { host.run(k); inst.exports.run(k) }
+    const heap = inst.exports.__heap?.value ?? 0
+    const t = performance.now(); host.run(k); const one = Math.max(performance.now() - t, 1e-3)
+    inst.exports.run(k)
+    const kept = (inst.exports.__heap?.value ?? 0) - heap
+    const reps = Math.max(1, Math.min(400, Math.ceil(1 / one)))
+    const sample = (f) => { const t = performance.now(); for (let r = 0; r < reps; r++) f(k); return (performance.now() - t) / reps }
+    let js = Infinity, jz = Infinity
+    for (let r = 0; r < 9; r++) { js = Math.min(js, sample(host.run)); jz = Math.min(jz, sample(inst.exports.run)) }
+    const calls = [...new Set([...(bodies.get(`k${k}`) ?? '').matchAll(/\((?:return_)?call(_indirect)? ?\$?([^\s()]*)/g)].map(m => m[1] ? 'indirect' : m[2]))]
+    rows.push({ name: short('@stdlib/math/base/' + name), js, jz, kept, calls, own: bodies.has(`k${k}`) })
+  }
+  const gm = (a) => Math.exp(a.reduce((s, x) => s + Math.log(x), 0) / a.length)
+  const ratio = (r) => r.jz / r.js, sum = (f) => rows.reduce((a, r) => a + f(r), 0)
+  console.log(`jz/V8 per function: geomean ${gm(rows.map(ratio)).toFixed(3)}× | faster ${rows.filter(r => ratio(r) < 0.95).length}, par ${rows.filter(r => ratio(r) >= 0.95 && ratio(r) <= 1.05).length}, slower ${rows.filter(r => ratio(r) > 1.05).length}`)
+  console.log(`one sweep of all: V8 ${sum(r => r.js).toFixed(1)} ms, jz ${sum(r => r.jz).toFixed(1)} ms, ${(sum(r => r.jz) / sum(r => r.js)).toFixed(3)}×`)
+  console.log(`heap kept per sweep: ${sum(r => r.kept)} B in ${rows.filter(r => r.kept > 0).length} functions | loops that call nothing: ${rows.filter(r => r.own && !r.calls.length).length}`)
+  const slow = rows.filter(r => ratio(r) > 1.05).sort((a, b) => ratio(b) - ratio(a))
+  if (slow.length) console.log('slower than V8: ' + slow.map(r => `${r.name} ${ratio(r).toFixed(2)}`).join(', '))
+  if (!list) return
+  for (const r of [...rows].sort((a, b) => ratio(a) - ratio(b)))
+    console.log(r.name.padEnd(34), `${ratio(r).toFixed(3)}×`.padEnd(10), `V8 ${(r.js * 1e6 / 4096).toFixed(1)} ns`.padEnd(14), r.kept ? `keeps ${r.kept} B` : '', r.calls.filter(c => !c.startsWith('__')).join(' '))
+}
+
 const [cmd, ...args] = process.argv.slice(2)
 if (cmd === 'one') { const r = one(args[0]); console.log(args.includes('--json') ? '@@' + JSON.stringify(r) : r); process.exit(0) }
 else if (cmd === 'dump') dump(args[0], args[1])
 else if (cmd === 'bench') await benchCase(args[0], args[1], args[2], ...args.slice(3))
 else if (cmd === 'bench-all') await benchAll(args[0], args[1])
+else if (cmd === 'kernels') await kernels(args[0], args[1] === 'list')
 else if (cmd === 'sweep') sweep(args[0], args[1], +(args[2] || 4))
 else if (cmd === 'report') report(args[0], args[1] === 'list')
 else if (cmd === 'blas') blas(args)
-else console.log('usage: stdlib-probe.mjs one <spec> | sweep <namespace> <out.jsonl> [concurrency] | report <out.jsonl> [list] | blas [names…] | bench <spec> <case> <kind> <lo> <hi> [lo2 hi2] | bench-all <namespace> <case> | dump <spec> <out.json>')
+else console.log('usage: stdlib-probe.mjs one <spec> | sweep <namespace> <out.jsonl> [concurrency] | report <out.jsonl> [list] | blas [names…] | bench <spec> <case> <kind> <lo> <hi> [lo2 hi2] | bench-all <namespace> <case> | kernels <case> [list] | dump <spec> <out.json>')

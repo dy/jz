@@ -35,7 +35,7 @@ import {
 } from '../../ast.js'
 import { freshId } from '../../ir.js'
 import { cloneWithSubst } from '../../type.js'
-import { constIntExpr } from '../../static.js'
+import { constIntExpr, constNumExpr } from '../../static.js'
 import { K, core, tagOf } from '../../summary/index.js'
 import { analyzeBody } from '../analyze.js'
 import {
@@ -97,8 +97,43 @@ const isRead = (n) => Array.isArray(n) && typeof n[1] === 'string' && tagOf(core
 const isPureCallee = (c) => (typeof c === 'string' && c.startsWith('math.') && c !== 'math.random') ||
   (Array.isArray(c) && c[0] === '.' && c[1] === 'Math' && c[2] !== 'random')
 
+// The names the closures of `body` bind, and the names they mention.
+const closureNames = (body) => {
+  const binds = new Set(), mentions = new Set()
+  const inside = (n) => {
+    if (typeof n === 'string') { mentions.add(n); return }
+    if (!Array.isArray(n) || n[0] === 'str' || n[0] == null) return
+    if (n[0] === '.' || n[0] === '?.') { inside(n[1]); return }
+    if (n[0] === ':') { inside(n[2]); return }
+    if (n[0] === '=>') for (const p of extractParams(n[1])) if (typeof p === 'string') binds.add(p)
+    if (n[0] === 'let' || n[0] === 'const') collectBindings(n, binds)
+    for (let i = 1; i < n.length; i++) inside(n[i])
+  }
+  walkAst(body, { enter: n => { if (n[0] === '=>') { inside(n); return false } } })
+  return { binds, mentions }
+}
+
+// The operators that throw on a BigInt beside a Number (a comparison takes both).
+const UNMIXED_OPS = new Set(['+', '-', '*', '/', '%', '**', '&', '|', '^', '<<', '>>'])
+const operandKind = (e) => Array.isArray(e) && e[0] === 'bigint' ? K.BIGINT
+  : typeof e === 'number' || (Array.isArray(e) && e[0] == null && typeof e[1] === 'number') ? K.NUMBER
+  : e == null ? K.NONE : tagOf(core(callerView?.kindOfExpr(e) ?? K.NONE))
+// A site that passes a BigInt and a Number to one operator of the body is a TypeError
+// when the call runs, and no sooner: spliced, the operator would be one the compiler rejects.
+const mixesKinds = (func, args) => {
+  const at = new Map(func.sig.params.map((p, i) => [p.name, i]))
+  const kindOf = (e) => typeof e === 'string' && at.has(e) ? operandKind(args[at.get(e)]) : typeof e === 'string' ? K.NONE : operandKind(e)
+  return some(func.body, n => {
+    if (!UNMIXED_OPS.has(n[0]) || n.length !== 3) return false
+    const a = kindOf(n[1]), b = kindOf(n[2])
+    return (a === K.BIGINT && b === K.NUMBER) || (a === K.NUMBER && b === K.BIGINT)
+  })
+}
+
 const inlinedBody = (func, args) => {
   if (some(func.body, n => n[0] === 'this')) return null
+  if (args.some(a => operandKind(a) === K.BIGINT) && mixesKinds(func, args)) return null
+  const closures = some(func.body, n => n[0] === '=>') ? closureNames(func.body) : null
   const params = func.sig.params
   // A spread supplies a runtime number of values, not one positional argument.
   if (args.length > params.length || args.some(a => Array.isArray(a) && a[0] === '...')) return null
@@ -141,8 +176,11 @@ const inlinedBody = (func, args) => {
     if (i < args.length && dflt != null && callerView?.mayBeNullishExpr(args[i]) !== false) return null
     const arg = i < args.length ? args[i] : dflt != null ? cloneWithSubst(dflt, subst, new Map()) : [null, undefined]
     const atom = typeof arg === 'string' || typeof arg === 'number' || (Array.isArray(arg) && (arg[0] == null || arg[0] === 'str'))
-    if (!writesParams && isSimpleArg(arg) && (atom || uses(params[i].name) <= 1)) { subst.set(params[i].name, arg); continue }
-    if (still && isRead(arg) && uses(params[i].name) === 1) { subst.set(params[i].name, arg); continue }
+    // A closure holds the parameter as the call bound it: a name of the caller read
+    // in its place would read what the caller stores later. A literal is itself.
+    const held = closures?.mentions.has(params[i].name) && !(Array.isArray(arg) && (arg[0] == null || arg[0] === 'str'))
+    if (!held && !writesParams && isSimpleArg(arg) && (atom || uses(params[i].name) <= 1)) { subst.set(params[i].name, arg); continue }
+    if (!held && still && isRead(arg) && uses(params[i].name) === 1) { subst.set(params[i].name, arg); continue }
     const tmp = `${T}inarg${freshId(ctx)}`
     // Parameter writes belong to the call's storage, never its caller's binding.
     argPrefix.push([writesParams ? 'let' : 'const', ['=', tmp, arg]])
@@ -151,21 +189,25 @@ const inlinedBody = (func, args) => {
 
   const locals = new Set()
   collectBindings(func.body, locals)
+  if (closures) for (const name of closures.binds) locals.add(name)
   for (const p of params) locals.delete(p.name)
 
   const rename = new Map()
   for (const name of locals) rename.set(name, `${T}inl${freshId(ctx)}_${name}`)
+  // a body that makes closures is spliced with them: their bindings are named anew with the body's
+  const clone = closures ? (n, sub, ren) => cloneWithSubst(n, sub, ren, true) : cloneWithSubst
 
   const stmts = blockStmts(func.body)
   const mark = bodyHasCall(func.body) ? n => n : eagerCallFreeBooleans
   // Expression-bodied arrow `(c) => expr`: no statement block; the whole body
   // *is* the return value. Treat as zero-prefix + value.
-  if (!stmts) return { prefix: argPrefix, value: mark(cloneWithSubst(func.body, subst, rename)) }
+  if (!stmts) return { prefix: argPrefix, value: mark(clone(func.body, subst, rename)) }
   const last = stmts.length ? stmts[stmts.length - 1] : null
   const isTrailingReturn = Array.isArray(last) && last[0] === 'return'
   const prefixSrc = isTrailingReturn ? stmts.slice(0, -1) : stmts
-  const prefix = prefixSrc.map(stmt => mark(cloneWithSubst(stmt, subst, rename)))
-  const value = isTrailingReturn && last.length > 1 ? mark(cloneWithSubst(last[1], subst, rename)) : null
+  const prefix = prefixSrc.map(stmt => mark(clone(stmt, subst, rename)))
+  const value = isTrailingReturn && last.length > 1 ? mark(clone(last[1], subst, rename)) : null
+  callerSize += nodeSize(func.body)
   return { prefix: argPrefix.length ? [...argPrefix, ...prefix] : prefix, value }
 }
 
@@ -309,9 +351,27 @@ const lhsWrites = (n) => {
   walkAst(n, { enter: x => { if (MUTATE_OPS.has(x[0]) && typeof x[1] === 'string') w.add(x[1]) } })
   return w.size ? w : false
 }
+// The names of the function being spliced into that nothing but its own statements
+// can store to: a local or a parameter no closure mentions, a constant of the module.
+let callerStable = null
+const stableNames = (func) => {
+  const own = new Set((func.sig?.params || []).map(p => p.name)), captured = new Set()
+  collectBindings(func.body, own)
+  walkAst(func.body, { enter: n => { if (n[0] === '=>') { walkAst(n, { enter: x => { for (let i = 1; i < x.length; i++) if (typeof x[i] === 'string') captured.add(x[i]) } }); return false } } })
+  return (name) => own.has(name) ? !captured.has(name) : !!ctx.scope.consts?.has(name)
+}
 const prefixCommutesWithLhs = (prefix, lhs) => {
   if (typeof lhs === 'string' || !prefix.length) return true
   const body = [';', ...prefix]
+  // A target that runs nothing, over names the splice cannot store to, names the same
+  // element before the splice and after it, whatever the splice calls (`OUT[i] = f(x)`).
+  if (callerStable && lhsWrites(lhs) === false) {
+    const stored = new Set()
+    walkAst(body, { enter: x => { if (MUTATE_OPS.has(x[0]) && typeof x[1] === 'string') stored.add(x[1]) } })
+    let stable = true
+    walkAst(['()', lhs], { enter: x => { for (let i = 1; i < x.length; i++) if (typeof x[i] === 'string' && !((x[0] === '.' || x[0] === '?.') && i === 2) && (!callerStable(x[i]) || stored.has(x[i]))) stable = false } })
+    if (stable) return true
+  }
   const written = lhsWrites(body)
   if (written === true || written && refsAny(lhs, written, REFS_IN_EXPR)) return false
   const seen = lhsWrites(lhs)
@@ -327,9 +387,52 @@ const spliceInlinedShape = (prefix, valueStmt, loopVariantNames) => {
   return { node: ['{}', [';', ...splice]], splice, hoisted, changed: true }
 }
 
+// A caller past this size takes no more loops at sites outside its own: the splice
+// of a kernel there saves one call and adds its body to a function the engine
+// compiles as one (a driver of three hundred kernels, each called once, spliced
+// into one function of thirty thousand lines that never left the baseline tier).
+const CALLER_FULL = 3000
+let callerSize = 0, callerBound = true, kernels = new Set()
+// The candidates that splice only where an argument they call is a function: name → the positions of those parameters.
+let fnSites = new Map()
+// The positions of the parameters `func` calls inside a loop.
+const calledParams = (func) => {
+  const at = new Map((func.sig?.params || []).map((p, i) => [p.name, i])), out = new Set()
+  const walk = (n, inLoop) => {
+    if (!Array.isArray(n) || n[0] === '=>' || n[0] === 'str') return
+    if (inLoop && n[0] === '()' && typeof n[1] === 'string' && at.has(n[1])) out.add(at.get(n[1]))
+    const loop = inLoop || LOOP_OPS.has(n[0])
+    for (let i = 1; i < n.length; i++) walk(n[i], loop)
+  }
+  walk(func.body, false)
+  return [...out]
+}
+// An argument that is a function: one the program names, a value the summary knows as a
+// closure, or a name the caller binds to either (the temp a splice bound the argument to).
+let callerFunctions = new Set()
+const isFunctionValue = (v) => (typeof v === 'string' && (ctx.funcs.names.has(v) || callerFunctions.has(v))) ||
+  (Array.isArray(v) && v[0] === '=>') || tagOf(core(callerView?.kindOfExpr(v) ?? K.NONE)) === K.CLOSURE
+const boundFunctions = (body) => {
+  const out = new Set()
+  callerFunctions = out
+  walkAst(body, { enter: n => {
+    if (n[0] === '=>') return false
+    if (n[0] === 'const') for (let i = 1; i < n.length; i++) { const d = n[i]; if (Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string' && isFunctionValue(d[2])) out.add(d[1]) }
+  } })
+  return out
+}
+const isFunctionArg = isFunctionValue
+
 // `hot`: the call sits in a loop, where a loop-only candidate splices too.
-const isCandidateCall = (node, candidates, hot = false) =>
-  Array.isArray(node) && node[0] === '()' && typeof node[1] === 'string' && candidates.has(node[1]) && (hot || !hotOnly.has(node[1]))
+const isCandidateCall = (node, candidates, hot = false) => {
+  if (!Array.isArray(node) || node[0] !== '()' || typeof node[1] !== 'string' || !candidates.has(node[1])) return false
+  if (!hot && hotOnly.has(node[1])) return false
+  if (!hot && callerBound && callerSize > CALLER_FULL && kernels.has(node[1])) { ctx.plans.keptKernels.add(node[1]); return false }
+  const called = fnSites.get(node[1])
+  if (called === undefined) return true
+  const args = callArgs(node)
+  return args != null && called.every(i => i < args.length && isFunctionArg(args[i]))
+}
 
 // Prefix flattening for expression-position inlining. A helper like
 //   let distance = (x1,y1,x2,y2) => { let dx=x1-x2; let dy=y1-y2; return Math.sqrt(dx*dx+dy*dy) }
@@ -472,6 +575,13 @@ const inlineInStmt = (stmt, candidates, loopVariantNames = null, hot = false) =>
       splice.push([stmt[0], decl])
     }
     if (any) return { node: ['{}', [';', ...splice]], changed: true, splice, hoisted }
+  }
+  // `return call(...)`: the prefix, then the value returned. A loop of its own stays a
+  // call there unless it calls its argument: the splice of a loop saves one call.
+  if (stmt[0] === 'return' && stmt.length === 2 && isCandidateCall(stmt[1], candidates, hot) && (hot || !kernels.has(stmt[1][1]) || fnSites.has(stmt[1][1]))) {
+    const args = callArgs(stmt[1])
+    const shape = args && inlinedBody(candidates.get(stmt[1][1]), args)
+    if (shape && shape.value !== null) return spliceInlinedShape(shape.prefix, ['return', shape.value], loopVariantNames)
   }
   // `X = call(...)` at statement position: inline as prefix + assign(value).
   // LHS may be a name or an indexed lvalue (`out[i] = beat(...)` in fill loops).
@@ -690,6 +800,20 @@ const hoistNestedCalls = (body, bodies, anywhere = bodies) => {
   return { node: changed ? seq(out) : body, changed }
 }
 
+// A body that makes closures splices where its own control is a list with one
+// trailing return: the passes that lower returns and loops read a closure's
+// statements as the body's.
+const closureSpliceable = (func) => {
+  const stmts = blockStmts(func.body)
+  if (!stmts || !stmts.length) return false
+  const outside = (n, f) => { let hit = false; walkAst(n, { enter: x => { if (x[0] === '=>') return false; if (f(x)) hit = true } }); return hit }
+  const last = stmts[stmts.length - 1]
+  if (!Array.isArray(last) || last[0] !== 'return') return false
+  for (let i = 0; i < stmts.length - 1; i++) if (outside(stmts[i], x => x[0] === 'return' || LOOP_OPS.has(x[0]))) return false
+  // a closure's parameters are named anew with the body's bindings: plain names only
+  return !some(func.body, x => x[0] === '=>' && !extractParams(x[1]).every(p => typeof p === 'string'))
+}
+
 export const inlineHotInternalCalls = (programFacts, ast) => {
   let changed = false
   const cfg = ctx.transform.optimize
@@ -700,6 +824,11 @@ export const inlineHotInternalCalls = (programFacts, ast) => {
   // both on the speed tier so levels ≤2 keep their conservative inlining policy.
   const speedTier = !!(cfg && cfg.inlineFns)
   hotOnly = new Set()
+  kernels = new Set()
+  fnSites = new Map()
+  callerSize = 0
+  // the size tier keeps one copy of what is called once, wherever: a function of its own costs its frame
+  callerBound = cfg?.sourceInlineDup !== false
 
   const fixedByFunc = new Map(ctx.funcs.list.map(func => [func, fixedTypedArraysInBody(func.body)]))
   const typedByFunc = new Map(ctx.funcs.list.map(func => [func, analyzeBody(func.body).typedElems]))
@@ -858,10 +987,18 @@ export const inlineHotInternalCalls = (programFacts, ast) => {
     // kernels' loops this way. The duplication a hot site adds is bounded the
     // way the everywhere splice's is: two bodies of 200 nodes.
     const loopOnly = !everywhere && hotSites >= 1 && hotSites * size <= 400
-    if (!everywhere && !loopOnly) continue
+    // A loop that calls a parameter (a series summed from a generator, a continued
+    // fraction from its terms) runs the argument once per pass: spliced where the
+    // argument is a function the caller names or makes, the call is that function's
+    // body. Such a site splices whatever the count of sites, at the speed tier: the
+    // copy is what removes a call through a table from a loop.
+    const called = speedTier && hasLoop && size <= 200 ? calledParams(func) : null
+    const fnOnly = !everywhere && !loopOnly && called != null && called.length > 0
+    if (!everywhere && !loopOnly && !fnOnly) continue
     // Expression-bodied arrow funcs (`(c) => expr`) have no block — body IS the
     // return value. Treat as a "tiny leaf" branch handled below; force hasLoop=false.
-    if (some(func.body, n => n[0] === '=>')) continue
+    // a closure's own `return` is no return of the body
+    if (some(func.body, n => n[0] === '=>') && !closureSpliceable(func)) continue
     // A `break` or `continue` targets a loop or switch of this body and moves
     // with it; only a `throw` leaves the spliced body unsupported.
     if (some(func.body, n => n[0] === 'throw')) continue
@@ -903,8 +1040,9 @@ export const inlineHotInternalCalls = (programFacts, ast) => {
     if (strayReturns(func) > 0) continue
     if (paramNames.size && some(func.body, n => n[0] === '()' && typeof n[1] === 'string' && paramNames.has(n[1])))
       forwarders.add(func.name)
-    if (!hasLoop) leaves.add(func.name)
+    if (!hasLoop) leaves.add(func.name); else kernels.add(func.name)
     if (loopOnly) hotOnly.add(func.name)
+    if (fnOnly) fnSites.set(func.name, called)
     candidates.set(func.name, func)
     recollect = true  // a function this one blocked (a caller of it) may qualify now
   }
@@ -964,6 +1102,7 @@ export const inlineHotInternalCalls = (programFacts, ast) => {
     const activeCandidates = isExported(func) ? exportedCandidates : candidates
     if (isExported(func) && !activeCandidates.size) continue
     callerView = ctx.summary?.at(func.sig) ?? null
+    callerStable = stableNames(func)
     // Expression-bodied arrows (`() => expr`) have func.body as the return
     // value itself — never a `{}` block. inlineInStmt treats its argument as a
     // statement (discards the return value of any top-level candidate call),
@@ -990,10 +1129,14 @@ export const inlineHotInternalCalls = (programFacts, ast) => {
       if (exprActive.has(f.name)) continue
       blockBodies.set(f.name, f.body)
       if (leaves.has(f.name) && !hotOnly.has(f.name)) anywhere.add(f.name)
+      // a loop that calls its argument lifts wherever it is called: the splice there is the argument's body
+      if (fnSites.has(f.name)) anywhere.add(f.name)
     }
     let body = func.body, bodyChanged = false
     for (let iter = 0; iter < 4; iter++) {
       let iterChanged = false
+      callerSize = nodeSize(body)
+      if (fnSites.size) boundFunctions(body)
       if (blockBodies.size) {
         const h = hoistNestedCalls(body, blockBodies, anywhere)
         if (h.changed) { body = h.node; iterChanged = true }
@@ -1158,6 +1301,37 @@ const inlineLocalLambdasInBody = (getBody, setBody) => {
   }
 }
 
+// the mentions of `name` in `n`: a property name and a key mention no binding
+const mentionCount = (n, name) => {
+  if (n === name) return 1
+  if (!Array.isArray(n) || n[0] === 'str') return 0
+  if (n[0] === '.' || n[0] === '?.') return mentionCount(n[1], name)
+  if (n[0] === ':') return mentionCount(n[2], name)
+  let c = 0
+  for (let i = 1; i < n.length; i++) c += mentionCount(n[i], name)
+  return c
+}
+const lambdaDecl = (s) => Array.isArray(s) && (s[0] === 'const' || s[0] === 'let') && s.length === 2 &&
+  Array.isArray(s[1]) && s[1][0] === '=' && typeof s[1][1] === 'string' && Array.isArray(s[1][2]) && s[1][2][0] === '=>' ? s[1][1] : null
+
+// A lambda declared in a list of its own (a loop's body, an arm: where a spliced
+// call left it) is local to that list where nothing outside it mentions the
+// name: the same splice, the list as the body.
+const inlineLambdasInLists = (node, root) => {
+  if (!Array.isArray(node) || node[0] === '=>' || node[0] === 'str') return false
+  let changed = false
+  for (let i = 1; i < node.length; i++) {
+    const c = node[i]
+    if (!Array.isArray(c)) continue
+    if (inlineLambdasInLists(c, root)) changed = true
+    if (c[0] !== ';') continue
+    const names = c.map(lambdaDecl).filter(n => n != null)
+    if (!names.length || !names.every(name => mentionCount(c, name) === mentionCount(root, name))) continue
+    if (inlineLocalLambdasInBody(() => node[i], b => { node[i] = Array.isArray(b) && b[0] === ';' ? b : [';', b] })) changed = true
+  }
+  return changed
+}
+
 export const inlineLocalLambdas = () => {
   // `optimize: { sourceInline: false }` asks for no source-level inlining at
   // all: the closure form stays (the tests of closure lowering read it).
@@ -1166,6 +1340,7 @@ export const inlineLocalLambdas = () => {
   for (const func of ctx.funcs.list) {
     if (!func.body || func.raw) continue
     if (inlineLocalLambdasInBody(() => func.body, b => { func.body = b })) changed = true
+    if (Array.isArray(func.body) && func.body[0] === '{}' && Array.isArray(func.body[1]) && inlineLambdasInLists(func.body[1], func.body)) changed = true
   }
   return changed
 }
@@ -1187,6 +1362,10 @@ const restIndexExpr = (idx, restParams) => {
 const isIterAlias = (d, rest) => Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string'
   && Array.isArray(d[2]) && d[2][0] === '()' && d[2][1] === '__iter_arr' && d[2][2] === rest
 
+const COMPARE_OPS = new Set(['<', '<=', '>', '>=', '===', '!==', '==', '!='])
+const compare = (op, a, b) => op === '<' ? a < b : op === '<=' ? a <= b : op === '>' ? a > b : op === '>=' ? a >= b : op === '===' || op === '==' ? a === b : a !== b
+const isArr = Array.isArray
+
 const rewriteRestBody = (body, restName, restParams) => {
   const names = new Set([restName])
   walkAst(body, { enter: n => {
@@ -1203,7 +1382,7 @@ const rewriteRestBody = (body, restName, restParams) => {
         (node[1][0] === '[]' || node[1][0] === '.') && names.has(node[1][1])) return { ok: false }
 
     if ((node[0] === '.' || node[0] === '?.') && names.has(node[1])) {
-      return node[2] === 'length' ? { ok: true, node: [, restParams.length] } : { ok: false }
+      return node[2] === 'length' ? { ok: true, node: [, restParams.length], count: true } : { ok: false }
     }
 
     if (node[0] === '[]' && names.has(node[1])) {
@@ -1212,13 +1391,23 @@ const rewriteRestBody = (body, restName, restParams) => {
     }
 
     const out = [node[0]]
+    let count = false
     for (let i = 1; i < node.length; i++) {
       if ((node[0] === 'let' || node[0] === 'const') && isIterAlias(node[i], restName)) continue
       const r = rewrite(node[i])
       if (!r.ok) return r
+      if (r.count) count = true
       out.push(r.node)
     }
     if ((node[0] === 'let' || node[0] === 'const') && out.length === 1) return { ok: false }   // the alias alone
+    // The count of arguments is a number here: a test of it is decided, and the
+    // arm it rules out is no code of this variant (`if ( arguments.length > 1 )`).
+    if (count && COMPARE_OPS.has(out[0]) && out.length === 3) {
+      const a = constNumExpr(out[1]), b = constNumExpr(out[2])
+      if (a != null && b != null) return { ok: true, node: [, compare(out[0], a, b)] }
+    }
+    if ((out[0] === 'if' || out[0] === '?:' || out[0] === '?') && isArr(out[1]) && out[1].length === 2 && out[1][0] == null && typeof out[1][1] === 'boolean')
+      return { ok: true, node: out[1][1] ? out[2] : out[3] ?? (out[0] === 'if' ? [';'] : [, undefined]) }
     return { ok: true, node: out }
   }
   return rewrite(body)

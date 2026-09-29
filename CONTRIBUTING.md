@@ -2291,6 +2291,49 @@ library's allocating variant nothing calls (`normalize( x )` over `assign( x, [ 
 )`) takes nothing from the body's budget. `test/module-scratch.js` pins the shapes, the bails
 and that a caller nothing runs changes no byte.
 
+A spliced call leaves names for one value and statements in its caller's lists; the alias
+pass reads them away (`src/compile/plan/alias.js`, pass `aliases`, ahead of the splices and
+after them). A binding whose every definition is one other binding, itself a parameter nothing
+writes or a binding of one definition, is that binding: the result every return assigned the
+same array to, the local the caller read it through, a parameter called through a local of its
+own. It must be declared with the value or assigned before every read on every path
+(`summary/definite.js`), and no closure may mention it. A binding whose every definition is
+one truth value or `undefined` is that value. What the names decided is then decided: a member
+no function has, read off a lambda the body made and nothing stores a member to or takes as a
+value, is undefined; `typeof undefined` against a type, an equality of two truth values, a
+`||` or `&&` read as a test, and the `if` or `?:` of a decided test are their answers. A
+logical operator read as a value keeps its form: the kinds of what it yields were read off it.
+A local nothing reads, declared with a value that runs nothing (a name, a literal, a fresh
+object or array of such), is not declared. After the splices each list inside a body splits
+as the body's own list does (`splitReassigned( fn, true )`), over the bindings the list
+declares ahead of the assignment and nothing outside the list mentions.
+
+The inliner (`plan/inline.js`) splices with these in view. A function that reads `arguments`
+is one of a fixed count at each site before the splices run, and a test of the count is
+decided in the variant (`if ( arguments.length > 1 )`). A body that makes closures splices
+with them where its own control is a list with one trailing return: a closure's parameters
+and locals are named anew with the body's, and a parameter a closure mentions is bound to a
+temp, never read as the caller's name. A lambda declared in a list of its own splices where it
+is called, where nothing outside the list mentions it. A loop that calls its parameter (a
+series summed from a generator, a continued fraction from its terms) splices at the speed
+tier wherever the argument is a function the caller names or makes, whatever the count of
+sites, and lifts out of an expression there; a returned call splices as an assigned one does.
+An assignment's target that runs nothing, over names the splice cannot store to (a local no
+closure mentions, a constant of the module), commutes with any splice: `OUT[ i ] = f( x )`.
+A caller past 3000 nodes takes no more loops at sites outside its own loops, and the loops it
+left are pinned for watr's single-caller inliner, which has no bound: a driver of three
+hundred kernels was one function that never left the baseline tier. The size tier has no
+such bound: a function of its own costs its frame. A site that passes a
+BigInt and a Number to one operator of the body keeps the call, which throws when it runs. A
+read of a name an object literal does not declare is undefined in the scalarized literal,
+unless every object inherits the name or the literal is an instance of a class, whose members
+are the class's to answer (`plan/literals.js`). `test/alias.js` pins the kernels, the bails
+and the driver.
+
+A typed store reads its key before its value, as PutValue does (`module/typedarray.js`): a
+key that reads what the value's effects may store to (a global or an element a call changes,
+a local the value assigns) is taken into a temp first.
+
 A module binding nothing that runs reads is not declared, where its value runs nothing
 (`dropUnreadGlobals`, plan/scope.js, at every level): a name, a literal, a closure, an
 operator that converts nothing (`typeof`, `===`, `&&`), or one that converts numbers, strings

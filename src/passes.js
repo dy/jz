@@ -64,6 +64,7 @@ export const PASS_NAMES = [
   'forwardStores',            // straight-line store-to-load forwarding + dead-store elimination
   'staticScratch',            // a static typed array only constant indices reach: stores forward to loads of any width, unread stores go (optimize/static-scratch.js)
   'moduleScratch',            // a module array of numbers only constant indices reach is locals of each function that uses it (plan/scratch.js)
+  'aliases',                  // a binding that only ever holds another binding's value is that binding; a local nothing reads is not declared (plan/alias.js)
   'valueNumber',              // value numbering over straight-line regions: one computation per value, through locals (watr's valueNumber)
   'scheduleStatements',       // straight-line statements in order of the work depending on them: independent kernel calls start together (watr's schedule)
   'unswitchTypedParamLoop',   // Float64Array param loop-unswitch → base-hoisted f64.load/store fast path (vectorizes)

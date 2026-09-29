@@ -121,6 +121,7 @@ const TESTS = [
   'module-scratch',
   'unread-globals',
   'parse-list',
+  'alias',
   'unroll-cost',
   'sentinel-guard',
   'twin-locals',

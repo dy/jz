@@ -2173,6 +2173,17 @@ export default (ctx) => {
       reads.set(rmwKey, rmwValue)
       try { valIR = emit(val) } finally { forced.delete(rmwKey); reads.delete(rmwKey) }
     } else valIR = emit(val)
+    // PutValue reads the key before the value. A key that reads what the value's
+    // effects may store to (a global or an element a call changes, a local the
+    // value assigns) is taken first: `OUT[ at ] = step()` stores where `at` was.
+    if (some(vi, read => read[0] === 'local.get' && some(valIR, w => (w[0] === 'local.set' || w[0] === 'local.tee') && w[1] === read[1]) ||
+        (read[0] === 'global.get' || typeof read[0] === 'string' && read[0].includes('.load')) &&
+          some(valIR, w => typeof w[0] === 'string' && (w[0].startsWith('call') || w[0] === 'global.set' || w[0].includes('.store'))))) {
+      const key = tempI32('tkey'), valid = vi.indexValid
+      pre.push(['local.set', `$${key}`, vi])
+      vi = ['local.get', `$${key}`]
+      if (valid) vi.indexValid = valid
+    }
     // PutValue uses the receiver evaluated before the index and RHS. Calls or
     // assignments in the RHS may replace its binding, but not that reference.
     if (nullable || !isConst(arr) && (indexEffects || !pureStorable(vi) || !pureStorable(valIR))) {

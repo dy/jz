@@ -56,6 +56,7 @@ import { laneRecordParams } from './lanes.js'
 import { bindNestedRowLengths, unrollRowLenPadLoops, splitCharScanLoops } from './loops.js'
 import { guardConstants, canonicalizeCountedLoops } from './counted-loops.js'
 import { scalarizeModuleScratch } from './scratch.js'
+import { resolveAliases, splitSplicedBindings } from './alias.js'
 import {
   scalarizeFunctionTypedArrays, scalarizeFunctionArrayLiterals,
   promoteIntArrayLiterals, scalarizeFunctionObjectLiterals, analyzeParamDistinctness,
@@ -125,7 +126,16 @@ export default function plan(ast, profiler, summarize) {
   // replacement (`scalarize*`) and array promotion gate on `optimizing()`: off only
   // under a fully-disabled optimizer, on for every enabled preset (incl. the
   // `optimize:{sourceInline:false}` heap-elision-test form, which is level-2 based).
+  // Ahead of the splices: a function that reads `arguments` is one of a fixed count at each site.
+  sweep('specializeFixedRestCalls', () => specializeFixedRestCalls(facts()))
+  // A name that stands for another reads it: a parameter called through a local of
+  // its own (`generator = arguments[ 0 ]`) is a parameter called, ahead of the splices.
+  const aliases = optimizing() && ctx.transform.optimize.aliases === true
+  if (aliases) sweep('resolveAliases', resolveAliases)
   sweep('inlineHotInternalCalls', () => inlineHotInternalCalls(facts(), ast))
+  // A spliced call's statements are statements of its caller's lists, and its seams
+  // are names for one value: the bindings split, then each alias reads what it stands for.
+  if (aliases) { sweep('splitSplicedBindings', splitSplicedBindings); sweep('resolveAliases', resolveAliases) }
   sweep('bindNestedRowLengths', bindNestedRowLengths)
   sweep('unrollRowLenPadLoops', unrollRowLenPadLoops)
   sweep('inlineLocalLambdas', inlineLocalLambdas)

@@ -905,6 +905,7 @@ export function reset(proto, globals, bridge) {
     start: null,                  // synthetic __start identity, planned before body emission
     loweringLinks: new WeakMap(), // src/ir/control.js, keyed on the WAT loop-block node: { plan, lowering }
     compoundOf: new WeakMap(),    // an emitter-rebuilt node → the slot it lands in: a binding name, a member reference, or true for a tagged slot (emit/assignment.js, module/array/callback.js)
+    keptKernels: new Set(),       // the loops a full caller took no splice of (plan/inline.js): functions of their own through the generic optimizer too
   }
 
   // Fact-store slices (see createFactStore's own doc above) are built here,

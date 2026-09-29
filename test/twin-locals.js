@@ -59,7 +59,8 @@ test('twin locals: the size tier copies nothing', () => {
 
 // Loops the pass leaves to the emitter: an accumulator live after the loop
 // (the twin shares it, so no local narrows), a counter that starts at a
-// variable, float reads (a miss is NaN either way) and a closure in the body.
+// variable, float reads (a miss is NaN either way) and a closure in the body (one
+// with two returns: a lambda of one is spliced where it is called, plan/inline.js).
 // Each compiles exactly as without the pass, and matches the host.
 test('twin locals: a live accumulator, a variable start, float reads and a closure keep the emitted versioning', () => {
   const cases = {
@@ -76,7 +77,7 @@ test('twin locals: a live accumulator, a variable start, float reads and a closu
         return h }
       export let run = (n) => { const a = new Float64Array(16); for (let i = 0; i < 16; i++) a[i] = i * 1.5; return f(a, n | 0) }`,
     closure: `const f = (a, n) => { let h = 0
-        for (let i = 0; i < n; i++) { const v = a[i]; const g = () => v * 2; h = h * 31 + g() | 0 }
+        for (let i = 0; i < n; i++) { const v = a[i]; const g = () => { if (v > 60) return v; return v * 2 }; h = h * 31 + g() | 0 }
         return h }
       export let run = (n) => { const a = new Uint8Array(16); for (let i = 0; i < 16; i++) a[i] = i * 9; return f(a, n | 0) }`,
   }

@@ -684,8 +684,10 @@ test('summary objects: testing or discarding a callable does not open its argume
     }
     export function f(flag){return read(flag)}`
   for (const optimize of levels(0, 1, 2, 3)) {
-    const binary = _compileInProcess(src, {optimize})
+    // the summary read is of the program the plan rewrote: with the inliner on, `read` is spliced into `f` and reached no more
+    _compileInProcess(src, { optimize: { level: optimize, sourceInline: false, inlineFns: false } })
     is(ctx.summary.resultOf('read'), kind(K.NUMBER), 'a discarded join creates no unknown caller')
+    const binary = _compileInProcess(src, {optimize})
     const f = instantiate(onKernel() ? compile(src, {optimize}) : binary).exports.f
     for (const flag of [0, 0, 1, 0]) is(f(flag), 7)
   }

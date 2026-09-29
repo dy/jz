@@ -4261,7 +4261,9 @@ test('clamp-peel: stencil edge-peel fires + bit-exact + soundness guards bail', 
     closBound: `${A}export let f=(w,r)=>{let s=0,x=0;let dec=()=>{w=w-1};while(x<w){let a=0,k=-r;while(k<=r){let xi=x+k;if(xi<0)xi=0;else if(xi>=w)xi=w-1;a+=A[xi&4095];k++}s=(s+a)|0;if((x&7)===0)dec();x++}return s|0}`,
     ciDec: `${A}export let f=(w,r)=>{let s=0,x=0;while(x<w){let a=0,k=-r;while(k<=r){let xi=x+k;xi=xi-1;if(xi<0)xi=0;else if(xi>=w)xi=w-1;a+=A[xi&4095];k++}s=(s+a)|0;x++}return s|0}`,
     ciNeg: `${A}export let f=(w,r)=>{let s=0,x=0;while(x<w){let a=0,k=-r;while(k<=r){let xi=x+k;xi=0-xi;if(xi<0)xi=0;else if(xi>=w)xi=w-1;a+=A[xi&4095];k++}s=(s+a)|0;x++}return s|0}`,
-    twoTaps: `${A}export let f=(w,r)=>{let s=0,x=0,r2=r-1;while(x<w){let a=0,k=-r;while(k<=r){let xi=x+k;if(xi<0)xi=0;else if(xi>=w)xi=w-1;a+=A[xi&4095];k++}k=-r2;while(k<=r2){let xi=x+k;if(xi<0)xi=0;else if(xi>=w)xi=w-1;a+=A[xi&4095];k++}s=(s+a)|0;x++}return s|0}`,
+    // the tap var is the function's, shared by both loops: one the loop body declares
+    // is two bindings once the body's list splits (prepare/split-bindings.js), and peels
+    twoTaps: `${A}export let f=(w,r)=>{let s=0,x=0,r2=r-1,k=0;while(x<w){let a=0;k=-r;while(k<=r){let xi=x+k;if(xi<0)xi=0;else if(xi>=w)xi=w-1;a+=A[xi&4095];k++}k=-r2;while(k<=r2){let xi=x+k;if(xi<0)xi=0;else if(xi>=w)xi=w-1;a+=A[xi&4095];k++}s=(s+a)|0;x++}return s|0}`,
     ivInTap: `${A}export let f=(w,r)=>{let s=0,x=0;while(x<w){let a=0,k=0-r;while(k<=r){let xi=x+k;if(xi<0)xi=0;else if(xi>=w)xi=w-1;a+=A[xi&4095];k++;x++}s=(s+a)|0}return s|0}`,
   }
   for (const [name, s] of Object.entries(danger)) {

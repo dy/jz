@@ -48,30 +48,81 @@ const rename = (n, from, to) => {
   return out
 }
 
-/** The body of `fn` with each assignment of its own list a declaration; the body itself where there is none. */
-export function splitReassigned(fn) {
+const isAssign = (s) => Array.isArray(s) && s.length === 3 && typeof s[1] === 'string' && (s[0] === '=' || COMPOUND.has(s[0]))
+// the names a statement of a list declares
+const declares = (s, out) => {
+  if (!Array.isArray(s) || (s[0] !== 'let' && s[0] !== 'const')) return
+  for (let i = 1; i < s.length; i++) { const d = s[i]; if (typeof d === 'string') out.add(d); else if (Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string') out.add(d[1]) }
+}
+// the mentions of `name` in `n`: a property name and a key mention no binding
+const mentions = (n, name) => {
+  if (n === name) return 1
+  if (!Array.isArray(n) || n[0] === 'str') return 0
+  if (n[0] === '.' || n[0] === '?.') return mentions(n[1], name)
+  if (n[0] === ':') return mentions(n[2], name)
+  let c = 0
+  for (let i = 1; i < n.length; i++) c += mentions(n[i], name)
+  return c
+}
+
+/**
+ * The body of `fn` with each assignment of its own list a declaration; the body
+ * itself where there is none. `nested` splits the lists inside it too (a loop's
+ * body, an arm: where a spliced call left its statements), each over the
+ * bindings it declares and nothing outside it mentions: the list runs top to
+ * bottom each time it runs, and such a binding is new each time.
+ */
+export function splitReassigned(fn, nested = false) {
   const body = fn.body
   if (!Array.isArray(body) || body[0] !== '{}' || body.length !== 2 || !Array.isArray(body[1]) || body[1][0] !== ';') return body
-  const list = body[1]
-  let first = -1
-  for (let k = 1; k < list.length && first < 0; k++) { const s = list[k]; if (Array.isArray(s) && s.length === 3 && typeof s[1] === 'string' && (s[0] === '=' || COMPOUND.has(s[0]))) first = k }
-  if (first < 0) return body
+  let any = false
+  const has = (n) => {
+    if (any || !Array.isArray(n) || n[0] === '=>' || n[0] === 'str') return
+    if (n[0] === ';') for (let k = 1; k < n.length; k++) if (isAssign(n[k])) any = true
+    if (nested) for (let k = 1; k < n.length; k++) has(n[k])
+  }
+  has(body[1])
+  if (!any) return body
   const own = new Set(), captured = new Set()
   for (const p of fn.sig.params) if (p.name !== fn.rest) own.add(p.name)
   census(body, own, captured, false)
   if (fn.defaults) for (const d of Object.values(fn.defaults)) census(d, new Set(), captured, false)
-  let out = null, serial = 0
+  // the names an earlier pass over this body made keep theirs
+  let serial = 0
+  const made = new RegExp(`${T}s(\\d+)$`)
+  for (const name of own) { const m = made.exec(name); if (m) serial = Math.max(serial, +m[1] + 1) }
   const roots = new Map()   // a binding this pass declared → the source binding it continues
-  for (let k = first; k < list.length; k++) {
-    const s = (out ?? list)[k]
-    if (!Array.isArray(s) || s.length !== 3 || typeof s[1] !== 'string' || (s[0] !== '=' && !COMPOUND.has(s[0]))) continue
-    const name = s[1]
-    if (!own.has(name) || captured.has(name)) continue
-    const root = roots.get(name) ?? name, next = `${root}${T}s${serial++}`
-    if (!out) out = list.slice()
-    out[k] = ['let', ['=', next, s[0] === '=' ? s[2] : [COMPOUND.get(s[0]), name, s[2]]]]
-    for (let j = k + 1; j < out.length; j++) out[j] = rename(out[j], name, next)
-    own.add(next); roots.set(next, root)
+
+  // `list` split over the bindings `mine(name)` admits
+  const split = (list, mine) => {
+    let out = null
+    const declared = new Set()
+    for (let k = 1; k < list.length; k++) {
+      const s = (out ?? list)[k]
+      declares(s, declared)
+      if (isAssign(s) && !captured.has(s[1]) && mine(s[1], declared, out ?? list)) {
+        const name = s[1], root = roots.get(name) ?? name, next = `${root}${T}s${serial++}`
+        if (!out) out = list.slice()
+        out[k] = ['let', ['=', next, s[0] === '=' ? s[2] : [COMPOUND.get(s[0]), name, s[2]]]]
+        for (let j = k + 1; j < out.length; j++) out[j] = rename(out[j], name, next)
+        declared.add(next); own.add(next); roots.set(next, root)
+        continue
+      }
+      if (!nested) continue
+      const c = inner(s)
+      if (c !== s) { if (!out) out = list.slice(); out[k] = c }
+    }
+    return out ?? list
   }
-  return out ? ['{}', out] : body
+  // a list inside: over what it declared ahead of the assignment and nothing outside it mentions
+  const within = (name, declared, list) => declared.has(name) && mentions(list, name) === mentions(body, name)
+  const inner = (n) => {
+    if (!Array.isArray(n) || n[0] === '=>' || n[0] === 'str') return n
+    if (n[0] === ';') return split(n, within)
+    let out = n
+    for (let i = 1; i < n.length; i++) { const c = inner(n[i]); if (c !== n[i]) { if (out === n) out = n.slice(); out[i] = c } }
+    return out
+  }
+  const list = split(body[1], (name) => own.has(name))
+  return list === body[1] ? body : ['{}', list]
 }

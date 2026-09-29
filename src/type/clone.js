@@ -11,7 +11,7 @@ import { idxKey } from './canonical-bounds.js'
 import { intervalProvenIdx } from './interval-proof.js'
 
 /** Clone AST with substitutions/renames. Skips into `=>` bodies. */
-export function cloneWithSubst(node, subst, rename = null) {
+export function cloneWithSubst(node, subst, rename = null, closures = false) {
   if (!(subst instanceof Map)) {
     const name = subst, value = rename
     if (node === name) return [null, value]
@@ -30,10 +30,12 @@ export function cloneWithSubst(node, subst, rename = null) {
   if (!Array.isArray(node)) return node
   const op = node[0]
   if (op === 'str') return node.slice()
-  if (op === '=>') return node
-  if (op === '.' || op === '?.') return [op, cloneWithSubst(node[1], subst, ren), node[2]]
-  if (op === ':') return [op, node[1], cloneWithSubst(node[2], subst, ren)]
-  const out = node.map((part, i) => i === 0 ? part : cloneWithSubst(part, subst, ren))
+  // A closure is cloned where the caller names its bindings anew with the body's
+  // (a spliced body that makes closures, plan/inline.js); else it is the node itself.
+  if (op === '=>' && !closures) return node
+  if (op === '.' || op === '?.') return [op, cloneWithSubst(node[1], subst, ren, closures), node[2]]
+  if (op === ':') return [op, node[1], cloneWithSubst(node[2], subst, ren, closures)]
+  const out = node.map((part, i) => i === 0 ? part : cloneWithSubst(part, subst, ren, closures))
   stampClonedIdxProof(node, out)
   carrySite(node, out)
   return out

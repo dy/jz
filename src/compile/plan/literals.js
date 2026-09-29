@@ -147,11 +147,25 @@ const rewriteScalarArrayUses = (node, arrays) => {
   return rewriteChildren(node, rewriteScalarArrayUses, arrays)
 }
 
+// What every object inherits: a read of one of these names finds it, whatever the literal declares.
+const INHERITED = new Set(['constructor', '__proto__', 'hasOwnProperty', 'isPrototypeOf', 'propertyIsEnumerable',
+  'toString', 'toLocaleString', 'valueOf', '__defineGetter__', '__defineSetter__', '__lookupGetter__', '__lookupSetter__'])
+// A read of a name the literal declares, or of one nothing declares: that read is undefined
+// (`opts.tolerance || EPS` over `{ initialValue: v }`). An instance of a class has the
+// members of the class beside its own (`keys.branded`: its literal holds the class's
+// brand): a name it does not declare is the class's to answer.
+const readable = (key, keys) => keys.has(key) || !(INHERITED.has(key) || keys.branded)
+
 const safeScalarObjectUse = (node, name, keys, statement = false) => {
   if (typeof node === 'string') return node !== name
   if (!Array.isArray(node)) return true
   const op = node[0]
   if (op === '=>' && refsName(node, name, REFS_IN_EXPR)) return false
+  // a call of a name nothing declares throws: the call stays with its object
+  if ((op === '()' || op === '?.()') && Array.isArray(node[1]) && (node[1][0] === '.' || node[1][0] === '?.' || node[1][0] === '[]') && node[1][1] === name) {
+    const key = node[1][0] === '[]' ? staticPropertyKey(node[1][2]) : node[1][2]
+    if (key == null || !keys.has(key)) return false
+  }
   if (ASSIGN_OPS.has(op) && node[1] === name) {
     if (op !== '=' || !statement) return false
     const props = scalarObjectProps(node[2], false)
@@ -159,10 +173,14 @@ const safeScalarObjectUse = (node, name, keys, statement = false) => {
       && props.values.every(v => safeScalarObjectUse(v, name, keys))
   }
   if (declaresName(node, name)) return false
-  if ((op === '.' || op === '?.') && node[1] === name) return keys.has(node[2])
+  if (MUTATE_OPS.has(op) && Array.isArray(node[1]) && (node[1][0] === '.' || node[1][0] === '?.' || node[1][0] === '[]') && node[1][1] === name) {
+    const key = node[1][0] === '[]' ? staticPropertyKey(node[1][2]) : node[1][2]
+    if (key == null || !keys.has(key)) return false   // a store of a name nothing declares adds it
+  }
+  if ((op === '.' || op === '?.') && node[1] === name) return readable(node[2], keys)
   if (op === '[]' && node[1] === name) {
     const key = staticPropertyKey(node[2])
-    return key != null && keys.has(key)
+    return key != null && readable(key, keys)
   }
   if (op === '...' && node[1] === name) return false
   for (let i = 1; i < node.length; i++) {
@@ -746,6 +764,7 @@ const scalarizeObjectLiteralSeq = (seq) => {
     const props = scalarObjectProps(decl[2])
     if (!props) continue
     const keys = new Set(props.names)
+    keys.branded = props.brand != null
     let ok = true
     for (let j = 0; j < stmts.length && ok; j++) {
       if (j === i) continue

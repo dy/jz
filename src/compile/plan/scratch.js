@@ -37,7 +37,9 @@ import { isExported } from '../func-exports.js'
 
 const isArr = Array.isArray
 const numLit = (e) => isArr(e) && e[0] == null && typeof e[1] === 'number'
-const inertValue = (e) => typeof e === 'string' || (isArr(e) && (e[0] == null || e[0] === 'str' || e[0] === 'bool'))
+// a value that runs nothing to be made: a name, a literal, a fresh object or array of such
+const inertValue = (e) => typeof e === 'string' || e == null || (isArr(e) && (e[0] == null || e[0] === 'str' || e[0] === 'bool' ||
+  ((e[0] === '{}' || e[0] === '[') && e.slice(1).every(p => isArr(p) && p[0] === ':' ? typeof p[1] === 'string' && inertValue(p[2]) : isArr(p) && p[0] === ',' ? p.slice(1).every(inertValue) : inertValue(p)))))
 
 /** The functions that run: the host holds them, a value names them, a statement of the module calls them, or one that runs does. */
 export const liveFunctions = (programFacts) => {
@@ -73,7 +75,7 @@ const mapStatements = (n, visit) => {
 }
 
 /** `body` without the locals nothing reads, where all that is stored to them is names and literals. */
-const dropUnreadLocals = (body) => {
+export const dropUnreadLocals = (body) => {
   const declared = new Set(), read = new Set(), kept = new Set()
   const scan = (n, stmt) => {
     if (typeof n === 'string') { read.add(n); return }
