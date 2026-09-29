@@ -244,16 +244,17 @@ test('frame effects: the log of escapes holds through resets and through more re
   const src = `const slots = []; for (let i = 0; i < 300; i++) slots.push({ v: null })
     export function f(from, n) { for (let i = 0; i < n; i++) slots[(from + i) % 300].v = [from, i]; const t = []; for (let i = 0; i < 200; i++) t.push([i]); return t.length }
     export let read = (i) => { const v = slots[i].v; return v === null ? 'null' : v.join() }`
+  const js = oracle(src)
   for (const optimize of levels(2, 3)) {
     const { exports: m, memory } = jz(src, { optimize })
     for (let round = 0; round < 12; round++) {
       const fresh = oracle(src)
       for (const [from, n] of [[round * 37, 90], [round * 11, 5], [round * 53, 200], [round, 1]]) {
         is(m.f(from, n), fresh.f(from, n))
-        // what an earlier round stored names memory its reset freed: only what this call stored is read
-        for (const i of [from % 300, (from + n - 1) % 300]) is(m.read(i), fresh.read(i), `round ${round}: slot ${i} after ${n} stores from ${from} at ${optimize}`)
+        for (const i of [from % 300, (from + n - 1) % 300, (from + n) % 300]) is(m.read(i), fresh.read(i), `round ${round}: slot ${i} after ${n} stores from ${from} at ${optimize}`)
       }
       memory.reset()
+      is(m.read(round), js.read(round), `round ${round}: as the module started, past the reset`)
     }
   }
 })
@@ -469,8 +470,9 @@ test('frame effects: a builtin called by name is listed by what it keeps', () =>
   }
 })
 
-test('frame effects: a call that opens the runtime\'s iterator records keeps nothing, the first included', () => {
+test('frame effects: a call that opens the runtime\'s iterator records keeps nothing past the first of a round', () => {
   // The records are made as the module starts (src/std/iter.js): a call that made one kept all it allocated beside it.
+  // The round's first store of an iterator into a record saves the record for the reset, once.
   const first = (src, args, optimize) => {
     const { exports: m, memory } = jz(src, { optimize }), js = oracle(src), kept = [], reset = []
     for (let i = 0; i < 3; i++) { const used = memory.used; is(m.f(...args, i), js.f(...args, i), `call ${i} at ${optimize}`); kept.push(memory.used - used) }
@@ -482,9 +484,11 @@ test('frame effects: a call that opens the runtime\'s iterator records keeps not
   const set = 'export function f(x, n) { const t = [n, n + 1]; const [a, b] = new Set([n, n + 5]); return (a | 0) + (b | 0) + t.length }'
   // five patterns open at once: one record more than the module made
   const deep = 'export function f(x, n) { const t = [n, n + 1]; const [[[[[a]]]], b] = x; return (a | 0) + (b | 0) + t.length }'
+  const once = ([kept, reset]) => kept[0] > 0 && kept[0] < 512 && kept[1] === 0 && kept[2] === 0 && reset[0] > 0 && reset[0] < 512 && reset[1] === 0
   for (const optimize of levels(0, 2, 3)) {
-    is(first(pair, [[3, 4]], optimize).flat().join(), '0,0,0,0,0', `a pattern over an argument keeps nothing at ${optimize}`)
-    is(first(set, [0], optimize).flat().join(), '0,0,0,0,0', `a pattern over a Set keeps nothing at ${optimize}`)
+    const over = first(pair, [[3, 4]], optimize), set2 = first(set, [0], optimize)
+    ok(once(over), `a pattern over an argument keeps the record it saved, once a round, at ${optimize}: ${over.join(' | ')}`)
+    ok(once(set2), `a pattern over a Set at ${optimize}: ${set2.join(' | ')}`)
     const [kept, reset] = first(deep, [[[[[[7]]]], 2]], optimize)
     ok(kept[0] > 0 && kept[1] === 0 && kept[2] === 0, `a record past the module's is made once at ${optimize}: ${kept}`)
     ok(reset[0] > 0 && reset[1] === 0, `and once more past a reset, which took it: ${reset}`)

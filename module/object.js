@@ -22,6 +22,7 @@ import { deletedMaskIR, deletedSlotIR, HEAP, DATA_VIEW_FLAG } from '../layout.js
 import { enumView, enumKeys, viewsOn, enumViewsOn, ENUM_DATA, ENUM_GET } from './schema.js'
 import { ACCESSOR_CALL } from '../src/compile/emit/accessor-call.js'
 import { demandHostReceiver } from '../src/compile/func-exports.js'
+import { durableObjSnapNode, hasDurableReset } from './collection/durable.js'
 
 // Object.prototype.toString tag per value category. Matches what JS engines
 // return for primitive/built-in types; canonicalized from
@@ -770,6 +771,8 @@ export default (ctx) => {
     // schema arm reads the same slot (the field's only home).
     const body = [['local.set', `$${t}`, asF64(emit(target))],
       ['local.set', `$${tBase}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]]]
+    // a target the module made as it started is saved before the round's first copy into it
+    if (hasDurableReset()) { inc('__durable_obj_snap'); body.push(durableObjSnapNode(tBase)) }
     for (let i = 0; i < sources.length; i++) {
       const source = sources[i]
       const sSchema = resolveSchemas[i]

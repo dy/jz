@@ -94,7 +94,7 @@ export const dynPropsFilterSetIR = (offExpr) =>
 const dynPropsFilterMissIR = (offExpr) =>
   `(i64.eqz (i64.and (global.get $__dyn_props_filter) ${dynPropsFilterBitIR(offExpr)}))`
 
-import { hasDurableReset, heapResetWat, durableFwdLogIR, durableLenLogIR, durableArrSnapIR, durableArrSnapNode } from './collection/durable.js'
+import { hasDurableReset, heapResetWat, durableFwdLogIR, durableLenLogIR, durableArrSnapIR, durableArrSnapNode, durableObjSnapIR } from './collection/durable.js'
 // Re-exported from their new home (module/collection/durable.js — the
 // durable-heap logging primitives, pure-moved out of this file) so
 // module/core.js's/module/json.js's `heapResetWat` imports, module/core.js's
@@ -316,7 +316,7 @@ export default (ctx) => {
       '__dyn_get_t_h', '__hash_get_local_h', ...(ctx.linkDemand.external ? ['__ext_prop'] : []),
     ],
     __dyn_get_or: ['__dyn_get'],
-    __dyn_set: () => [...viewDeps('__view_set'), '__schema_slot', '__hash_new', '__hash_new_small', '__ihash_get_local', '__ihash_set_local', '__hash_set_local', '__ptr_offset', '__ptr_offset_fwd', '__is_nullish', '__str_eq', '__is_str_key', '__to_str', '__arr_set_idx_ptr', '__str_arr_idx', '__ptr_aux', ...(ctx.linkDemand.typedProperties ? ['__typed_key_idx', '__typed_set_idx_tagged'] : [])],
+    __dyn_set: () => [...viewDeps('__view_set'), ...(hasDurableReset() ? ['__durable_obj_snap', '__is_eph_bits'] : []), '__schema_slot', '__hash_new', '__hash_new_small', '__ihash_get_local', '__ihash_set_local', '__hash_set_local', '__ptr_offset', '__ptr_offset_fwd', '__is_nullish', '__str_eq', '__is_str_key', '__to_str', '__arr_set_idx_ptr', '__str_arr_idx', '__ptr_aux', ...(ctx.linkDemand.typedProperties ? ['__typed_key_idx', '__typed_set_idx_tagged'] : [])],
     __dyn_move: ['__ihash_get_local', '__ihash_set_local', '__is_nullish'],
     __hash_del_local: () => ['__str_hash', '__str_eq', '__ptr_type', ...relogDeps()],
     __dyn_del: () => [...viewDeps('__view_del'), '__schema_slot', '__hash_del_local', '__ihash_get_local', '__is_nullish', '__is_str_key', '__to_str', '__str_arr_idx', '__ptr_aux', '__str_eq'],
@@ -1620,6 +1620,8 @@ export default (ctx) => {
             ${ctx.types.anyDelete ? `(local.set $dmask ${deletedMaskWat('$off')})
             (local.set $oldval (i64.load (i32.add (local.get $off) (i32.shl (local.get $idx) (i32.const 3)))))
             (local.set $reinsert ${deletedSlotWat('$dmask', '$idx', '$oldval')})` : ''}
+            ;; an object made as the module started is saved before the round's first store into it
+            ${durableObjSnapIR('off', 'val')}
             (i64.store (i32.add (local.get $off) (i32.shl (local.get $idx) (i32.const 3))) (local.get $val))
             ${markDeletedSlotWat('$off', '$idx', false)}
             ${ctx.types.anyDelete ? `(if (i32.eqz (local.get $reinsert)) (then (return (local.get $val))))

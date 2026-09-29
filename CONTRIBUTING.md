@@ -1920,7 +1920,19 @@ that may (a recursion written as tail calls) stays, the function keeping its
 heap. Allocation counts through callees. The durable-heap logs
 record only mutations of containers made before the reset mark, each a store
 the census counts: its site lowers the flag to the durable receiver, so no
-frame restores over a logging path. `whyNotRewind` names the reason
+frame restores over a logging path. An object is logged as an array is, whole
+and once a round (`__durable_obj_snap`; its record's address is odd, its
+cells as many as its capacity), by the first store into it of a value that
+names memory of the round (`__is_eph_bits`, asked as the store runs): a
+field, a key the runtime resolves to a slot, a copy by `Object.assign`. The
+store may stand at no site (a kernel's arm, a store the census takes for a
+loan), so the snapshot lowers the flag itself, to the object, where it
+allocates its record: link reads its call like any other. A reset puts back
+the slots that name memory of the round as it runs, each as the record holds
+it, so a field a call pointed at what it made, or at an argument, names no
+freed memory after it and reads as before the store. A store of a number logs
+nothing, and a field that holds one as the reset runs keeps it, in whatever
+object. `whyNotRewind` names the reason
 for every candidate that keeps its heap. Load CSE (`src/compile/cse-load.js`) keeps a
 cached typed-array load across a call whose callee does not `writesOuter`; any other
 call or user conversion invalidates after its operands, which run first. A store keeps

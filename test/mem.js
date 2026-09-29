@@ -4,6 +4,7 @@ import { is, ok, almost, throws } from 'tst/assert.js'
 import jz, { compile } from '../index.js'
 import { i64ToF64, instantiate } from '../interop.js'
 import { onWasi, onKernel, adaptI64, levels } from './_matrix.js'
+import { oracle } from './util.js'
 
 // interop's instantiate (not raw WebAssembly.instantiate): a module whose
 // unproven-receiver reads pull the env external machinery declares imports —
@@ -1541,6 +1542,125 @@ test('reset: a function\'s init-time properties survive it, in a bundled module 
     for (const optimize of levels(0, 2)) {
       const m = jz(src, { ...opts, optimize })
       for (let round = 0; round < 3; round++) { is(m.exports.r(), want, `${label}, O${optimize}, round ${round}`); m.memory.reset() }
+    }
+  }
+})
+
+// A field of an object the module made as it started, overwritten by a call
+// with a value the call made, named after a reset memory the reset had freed:
+// it read the next allocations, or trapped. The round's first such store
+// saves the object's slots (module/core/durable-log.js `__durable_obj_snap`),
+// and the reset reads them back.
+test('reset: an object made at start reads as it started, whatever a call stored into it', () => {
+  if (onWasi()) return  // memory.reset is the js host's
+  const show = `v => v === null ? 'null' : v === undefined ? 'undefined' : typeof v === 'object' ? 'object v=' + v.v + ' s=' + v.s : typeof v + ' ' + v`
+  const made = `{ v: n, s: 'kept-' + n + '-zzzzzzzzzzzzzzzz' }`
+  const cases = {
+    'a slot by name': `const st = { cur: null, n: 1 }
+      export function f(n) { st.cur = ${made}; st.n = n; return 1 }
+      export let read = () => (${show})(st.cur)`,
+    'a slot by a literal key': `const st = { cur: null }
+      export function f(n) { st['cur'] = ${made}; return 1 }
+      export let read = () => (${show})(st.cur)`,
+    'a slot by a computed key': `const st = { cur: null }, k = ['cur']
+      export function f(n) { st[k[0]] = ${made}; return 1 }
+      export let read = () => (${show})(st.cur)`,
+    'a slot of an object held in another': `const st = { in: { cur: 'start' } }
+      export function f(n) { st.in.cur = ${made}; return 1 }
+      export let read = () => (${show})(st.in.cur)`,
+    'slots copied by Object.assign': `const st = { cur: null, other: 'start' }
+      export function f(n) { Object.assign(st, { cur: ${made}, other: 'o' + n + 'zzzzzzzzzzzzzzzzzzz' }); return 1 }
+      export let read = () => (${show})(st.cur) + ' ' + st.other`,
+    'a field a method of its class stores': `class S { constructor() { this.cur = null } set(n) { this.cur = ${made} } }
+      const st = new S()
+      export function f(n) { st.set(n); return 1 }
+      export let read = () => (${show})(st.cur)`,
+    'a slot stored through a parameter': `const st = { cur: null }
+      const put = (o, n) => { o.cur = ${made} }
+      export function f(n) { put(st, n); return 1 }
+      export let read = () => (${show})(st.cur)`,
+    'a string a field accumulates': `const st = { s: 'start-of-a-string-too-long-to-pack' }
+      export function f(n) { st.s += '-more-' + n; return 1 }
+      export let read = () => st.s`,
+  }
+  const churn = `\nexport function churn(n) { const a = []; for (let i = 0; i < n; i++) a.push('c' + i + 'yyyyyyyyyyyyyyyy'); return a.length }`
+  for (const [what, src] of Object.entries(cases)) for (const optimize of levels(0, 2, 3)) {
+    const { exports: m, memory } = jz(src + churn, { optimize })
+    const start = m.read()
+    for (let round = 0; round < 3; round++) {
+      m.f(7 + round); m.f(8 + round)
+      ok(m.read() !== start, `${what}: round ${round} stored at O${optimize}`)
+      memory.reset()
+      m.churn(30)   // what the reset freed is taken again
+      is(m.read(), start, `${what}: round ${round} reads as the module started at O${optimize}`)
+    }
+  }
+})
+
+// The record a store saves is the round's, whatever frame the store ran in:
+// one that allocates and restores, a store a kernel makes (a key read as it
+// runs, a receiver of no one layout), a value older than the call.
+test('reset: what a store saved for it outlives the frame that stored', () => {
+  if (onWasi()) return  // memory.reset is the js host's
+  const show = `v => v === null ? 'null' : v === undefined ? 'undefined' : typeof v === 'object' ? 'object ' + v.length + ':' + v[0] : typeof v + ' ' + v`
+  const cases = {
+    'an argument': `const st = { cur: null, n: 1 }
+      export function f(x, n) { const t = [n, n + 1, n + 2]; st.cur = x; return t.length }
+      export let read = () => (${show})(st.cur)`,
+    'a value an earlier call kept': `const st = { cur: null }
+      let held = null
+      export function f(x, n) { const t = [n, n + 1, n + 2]; if (n & 1) held = [n, n + 1, n + 2]; else st.cur = held; return t.length }
+      export let read = () => (${show})(st.cur)`,
+    'a key read as the store runs': `const st = { cur: null, n: 1 }, keys = ['cur', 'n']
+      export function f(x, n) { const t = [n, n + 1, n + 2]; st[keys[0]] = x; return t.length }
+      export let read = () => (${show})(st.cur)`,
+    'a receiver of two layouts': `const a = { cur: null }, b = { cur: null, other: 2 }
+      const put = (o, v) => { o.cur = v }
+      export function f(x, n) { const t = [n, n + 1, n + 2]; put(n & 1 ? a : b, x); return t.length }
+      export let read = () => (${show})(a.cur) + '|' + (${show})(b.cur)`,
+    'a pattern over an argument': `const st = { cur: null }
+      export function f(x, n) { const t = [n, n + 1, n + 2]; const [a, b] = x; st.cur = x; return (a | 0) + (b | 0) + t.length }
+      export let read = () => (${show})(st.cur)`,
+  }
+  const churn = `\nexport function churn(n) { const a = []; for (let i = 0; i < n; i++) a.push('c' + i + 'yyyyyyyyyyyyyyyy'); return a.length }`
+  for (const [what, src] of Object.entries(cases)) for (const optimize of levels(0, 2, 3)) {
+    const { exports: m, memory } = jz(src + churn, { optimize })
+    const start = m.read()
+    for (let round = 0; round < 3; round++) {
+      const js = oracle(src)   // a module back at its start
+      for (let i = 1; i <= 4; i++) { is(m.f([i, round], i), js.f([i, round], i)); m.churn(10); is(m.read(), js.read(), `${what}: call ${i} of round ${round} at O${optimize}`) }
+      memory.reset()
+      m.churn(30)   // what the reset freed is taken again
+      is(m.read(), start, `${what}: round ${round} reads as the module started at O${optimize}`)
+    }
+  }
+})
+
+// A number names no memory, and a store of one saves nothing: the call keeps
+// nothing, and the field keeps the last it took through a reset, in an object
+// the reset puts a field of back as well.
+test('reset: a store of a number into an object made at start saves nothing', () => {
+  if (onWasi()) return
+  const src = `const st = { cur: 5, s: 'start' }, keys = ['cur', 's']
+    export function f(x, n) { const t = [n, n + 1, n + 2]; st[keys[0]] = x; st.cur = n; return t.length }
+    export let read = () => st.cur + st.s`
+  const mixed = `const st = { count: 0, cur: null }
+    export function f(x, n) { const t = [n, n + 1, n + 2]; st.count++; st.cur = x; st.count++; return t.length }
+    export let read = () => st.count + ':' + (st.cur === null ? 'null' : st.cur.length)`
+  for (const optimize of levels(0, 2, 3)) {
+    const { exports: m, memory } = jz(src, { optimize })
+    const kept = []
+    for (let i = 0; i < 3; i++) { const used = memory.used; m.f(i, i); kept.push(memory.used - used) }
+    is(kept.join(), '0,0,0', `O${optimize}`)
+    is(m.read(), '2start')
+    memory.reset()
+    is(m.read(), '2start', `O${optimize}: the number stays through a reset`)
+    const x = jz(mixed, { optimize })
+    for (let round = 1; round <= 3; round++) {
+      x.exports.f([1, 2, 3], 0); x.exports.f([1, 2], 0)
+      is(x.exports.read(), round * 4 + ':2', `O${optimize}, round ${round}: both fields as the calls left them`)
+      x.memory.reset()
+      is(x.exports.read(), round * 4 + ':null', `O${optimize}, round ${round}: the count stays, the field that named the round's memory reads as before`)
     }
   }
 })

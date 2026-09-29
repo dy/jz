@@ -134,16 +134,63 @@ export const registerDurableLog = () => {
     (i32.store offset=12 (local.get $rec) (i32.load (i32.sub (local.get $off) (i32.const 4))))
     (memory.copy (i32.add (local.get $rec) (i32.const 16)) (local.get $off) (i32.shl (local.get $len) (i32.const 3)))
     (global.set $__durable_arr_log (local.get $rec)))`
-  ctx.core.stdlib['__durable_arr_heal'] = `(func $__durable_arr_heal
-    (local $rec i32) (local $off i32) (local $len i32)
+  // An object's record, its address marked odd (\`__durable_obj_snap\`), holds
+  // as many cells as its header's capacity.
+  // The object twin of the array's snapshot: a field of an object the module
+  // made as it started, overwritten by a call with a value of the round,
+  // names memory the reset frees. The round's first such store saves the
+  // object's slots, all its capacity holds, and the heal below puts back those
+  // that name memory of the round as the reset runs: a field a call pointed at
+  // what it made reads as before the store, one that holds a number keeps it.
+  // The bit is the array's own, one per address.
+  // What it allocates is the round's, whatever frame the store ran in: the
+  // escape flag goes down to the object, older than every frame, so none
+  // restores over the record, its site a census one or a kernel's arm.
+  ctx.core.stdlib['__durable_obj_snap'] = () => `(func $__durable_obj_snap (param $off i32)
+    (local $cell i32) (local $bit i32) (local $cap i32) (local $rec i32)
+    (if (i32.eqz (global.get $__durable_arr_seen))
+      (then
+        (local.set $cap (i32.add (i32.shr_u (global.get $__heap_reset) (i32.const 6)) (i32.const 1)))
+        (global.set $__durable_arr_seen (call $__alloc (local.get $cap)))
+        (memory.fill (global.get $__durable_arr_seen) (i32.const 0) (local.get $cap))))
+    (local.set $cell (i32.add (global.get $__durable_arr_seen) (i32.shr_u (local.get $off) (i32.const 6))))
+    (local.set $bit (i32.shl (i32.const 1) (i32.and (i32.shr_u (local.get $off) (i32.const 3)) (i32.const 7))))
+    (if (i32.and (i32.load8_u (local.get $cell)) (local.get $bit)) (then (return)))
+    (i32.store8 (local.get $cell) (i32.or (i32.load8_u (local.get $cell)) (local.get $bit)))
+    (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))
+    (local.set $rec (call $__alloc (i32.add (i32.const 16) (i32.shl (local.get $cap) (i32.const 3)))))
+    (i32.store (local.get $rec) (global.get $__durable_arr_log))
+    (i32.store offset=4 (local.get $rec) (i32.or (local.get $off) (i32.const 1)))
+    (i32.store offset=8 (local.get $rec) (i32.load (i32.sub (local.get $off) (i32.const 8))))
+    (i32.store offset=12 (local.get $rec) (local.get $cap))
+    (memory.copy (i32.add (local.get $rec) (i32.const 16)) (local.get $off) (i32.shl (local.get $cap) (i32.const 3)))
+    (global.set $__durable_arr_log (local.get $rec))${ctx.scope.globals.has('__esc') ? `
+    (call $__esc_at (local.get $off))` : ''})`
+  ctx.core.stdlib['__durable_arr_heal'] = () => `(func $__durable_arr_heal
+    (local $rec i32) (local $off i32) (local $len i32) (local $i i32) (local $was i64)
     (local.set $rec (global.get $__durable_arr_log))
     (block $done (loop $l
       (br_if $done (i32.eqz (local.get $rec)))
       (local.set $off (i32.load offset=4 (local.get $rec)))
       (local.set $len (i32.load offset=8 (local.get $rec)))
-      (i32.store (i32.sub (local.get $off) (i32.const 8)) (local.get $len))
-      (i32.store (i32.sub (local.get $off) (i32.const 4)) (i32.load offset=12 (local.get $rec)))
-      (memory.copy (local.get $off) (i32.add (local.get $rec) (i32.const 16)) (i32.shl (local.get $len) (i32.const 3)))
+      (if (i32.and (local.get $off) (i32.const 1))
+        (then${ctx.core.includes.has('__durable_obj_snap') ? `
+          ;; an object: the slots that name memory of the round, each as the record holds it
+          (local.set $off (i32.and (local.get $off) (i32.const -2)))
+          (local.set $i (i32.shl (i32.load offset=12 (local.get $rec)) (i32.const 3)))
+          (block $slots (loop $slot
+            (br_if $slots (i32.eqz (local.get $i)))
+            (local.set $i (i32.sub (local.get $i) (i32.const 8)))
+            (if (call $__is_eph_bits (i64.load (i32.add (local.get $off) (local.get $i))))
+              (then
+                (local.set $was (i64.load (i32.add (i32.add (local.get $rec) (i32.const 16)) (local.get $i))))
+                (i64.store (i32.add (local.get $off) (local.get $i))
+                  (select (i64.const ${UNDEF_NAN}) (local.get $was) (call $__is_eph_bits (local.get $was))))))
+            (br $slot)))` : ''})
+        (else
+          (i32.store (i32.sub (local.get $off) (i32.const 8)) (local.get $len))
+          (i32.store (i32.sub (local.get $off) (i32.const 4)) (i32.load offset=12 (local.get $rec)))
+          (memory.copy (local.get $off) (i32.add (local.get $rec) (i32.const 16)) (i32.shl (local.get $len) (i32.const 3)))))
       (local.set $rec (i32.load (local.get $rec)))
       (br $l)))
     (global.set $__durable_arr_log (i32.const 0))
@@ -170,8 +217,8 @@ export const registerDurableLog = () => {
     (if (i64.ne (i64.and (local.get $b) (i64.const ${nanPrefixMaskHex()})) (i64.const ${nanPrefixHex()}))
       (then (return (i32.const 0))))
     (local.set $t (i32.wrap_i64 (i64.and (i64.shr_u (local.get $b) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK}))))
-    ;; heap kinds {ARRAY,BUFFER,TYPED,STRING,OBJECT,HASH,SET,MAP,CLOSURE} = bits 1-4,6-10 → 0x7DE
-    (if (i32.eqz (i32.and (i32.shl (i32.const 1) (local.get $t)) (i32.const 0x7DE)))
+    ;; heap kinds {ARRAY,BUFFER,TYPED,STRING,BIGINT,OBJECT,HASH,SET,MAP,CLOSURE} = bits 1-10 → 0x7FE
+    (if (i32.eqz (i32.and (i32.shl (i32.const 1) (local.get $t)) (i32.const 0x7FE)))
       (then (return (i32.const 0))))
     (if (i32.and (i32.eq (local.get $t) (i32.const ${PTR.STRING}))
                  (i64.ne (i64.and (local.get $b) (i64.const ${ssoBitI64Hex()})) (i64.const 0)))

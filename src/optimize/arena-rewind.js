@@ -116,7 +116,9 @@ const HEAP_GLOBALS = new Set(['$__heap', '$__heap_end', '$__heap_end64', '$__hea
   '$__ic_found_slot', '$__ic_found_hi', '$__dyn_get_cache_off', '$__dyn_get_cache_props', '$__enumc_epoch', '$__coll_order_n', '$__esc', '$__base',
   '$__jbuf', '$__jpos', '$__jcap', '$__jgap', '$__jgaplen', '$__jdepth', '$__jsp', '$__jpstr', '$__jplen', '$__jppos', '$__jp_err',
   '$__closure_spill', '$math.rng_state', '$math.rng_seeded',
-  '$__roots', '$__rootn', '$__rootl', '$__r_mark', '$__r_top', '$__r_bits', '$__r_sp', '$__r_lim', '$__r_end'])
+  '$__roots', '$__rootn', '$__rootl', '$__r_mark', '$__r_top', '$__r_bits', '$__r_sp', '$__r_lim', '$__r_end',
+  // the reset's log of an object (module/core/durable-log.js `__durable_obj_snap`), which lowers the flag itself
+  '$__durable_arr_seen', '$__durable_arr_log'])
 const IC_SITE = /^\$__ic_(hi|slot)\d+$/, REGEX_STATE = /^\$__re_(lastIndex_\d+|g\d+_(start|end))$/
 const heapScratch = (name) => HEAP_GLOBALS.has(name) || IC_SITE.test(name) || REGEX_STATE.test(name)
 const NO_NAMES = new Set()
@@ -126,8 +128,10 @@ const NO_NAMES = new Set()
 // counts (compile/analyze/frame-effects.js), whose site lowers the flag to
 // the durable receiver, older than every frame, before a value that may hold
 // a heap pointer goes in, or after the store when it allocated, as the log's
-// first touch does. No frame restores over a logging path.
-const CENSUS_GUARDED = /^\$__durable_/
+// first touch does. No frame restores over a logging path. An object's
+// snapshot lowers the flag itself where it allocates (module/core/
+// durable-log.js): a kernel's arm calls it for a store no site stands at.
+const CENSUS_GUARDED = /^\$__durable_(?!obj_snap$)/
 // The runtime's own lowering of the flag (module/core.js), and the tag of the
 // local a growth site keeps the heap's top in (emit/dispatch.js, same tag).
 // A kernel whose store through a global lends a value for a time the runtime

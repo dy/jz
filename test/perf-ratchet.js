@@ -153,6 +153,16 @@ const loopBodyOps = (wat) => {
 // array into one receiver made at start runs 2.6 -> 3.2 ns an iteration, one
 // that stores into 64 receivers in turn 5.1 -> 5.3.
 
+// An object made at start is saved before the round's first store into it
+// of a value that names memory of the round (2026-09-29, module/core/
+// durable-log.js `__durable_obj_snap`): a field a call pointed at what it
+// made named freed memory after `memory.reset()`. The reset asks each slot
+// of a saved object whether it names memory of the round, a loop of its
+// own in `_clear`, and the walk reads a record's size by its kind: buf
+// 16728 -> 17003 (`_clear$exp` +240, `__survive` +35), slice 71158 -> 71598
+// (+384, +56), condref 92125 -> 94325 (+1920, +280). No loop of a program
+// changed; the numeric categories are unchanged.
+
 // Total loop-body ops across the fixed corpus, per category. Deterministic.
 const measure = (categories = Object.keys(CATEGORIES)) => {
   const totals = {}

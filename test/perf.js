@@ -2019,7 +2019,9 @@ const golden = (name, src, expected) => test(`golden size: ${name}`, () => {
 // Numeric-compatible fields stay in scalar lanes without linking string coercion.
 golden('known-shape object', 'export let f = (x) => { let p = { x: x, y: x * 2, z: x + 1 }; return p.x + p.y + p.z }', 55)
 // Computed keys retain dynamic-property storage and schema-aware lookup.
-golden('unknown/dynamic object', 'export let f = (k) => { let p = {}; p[k] = 1; p.b = 2; return p[k] + p.b }', 13689)
+// The escape sites of a dynamic store (optimize/arena-rewind.js) and the reset's log of an object made at start
+// (module/core/durable-log.js `__durable_obj_snap`, its heal) ride with the store: 13689 -> 14273 -> 14382.
+golden('unknown/dynamic object', 'export let f = (k) => { let p = {}; p[k] = 1; p.b = 2; return p[k] + p.b }', 14382)
 // Parsing and formatting now share the power generator and unsigned product.
 // Keep this closure/string-dispatch fixture's behavior beside its tighter size pin.
 const parserFixture = `export let f = (s) => {

@@ -197,7 +197,9 @@ State replaced on every call (`buf = new Float64Array(n)` each block) costs
 an array a call, and the arrays it replaced are never freed. Keep such state
 in storage made once and written in place. What a call keeps stays until `memory.reset()`, which
 returns the module to its state after instantiation and invalidates every
-earlier pointer. `memory.used` reads the bytes held, so a host can see a call
+earlier pointer: a binding, an array, a collection and an object the module
+made as it started read as they started (an object's field that holds a number
+keeps it). `memory.used` reads the bytes held, so a host can see a call
 that keeps memory; the `warnings` sink names each export that keeps memory on
 every call and why at compile time (`heap-per-call`).
 

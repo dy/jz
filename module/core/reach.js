@@ -324,7 +324,12 @@ export const registerReach = () => {
     const records = has('__durable_arr_log') ? `(local.set $p (global.get $__durable_arr_log))
     (block $done (loop $rec
       (br_if $done (i32.or (i32.lt_u (local.get $p) (local.get $mark)) (i32.ge_u (local.get $p) (local.get $top))))
-      (call $__reach_end (i32.add (i32.add (local.get $p) (i32.const 16)) (i32.shl (call $__reach_fit (local.get $p) (i32.load offset=8 (local.get $p)) (i32.const 8)) (i32.const 3))))
+      ;; an array's record holds its length in cells, an object's (its address odd) its capacity
+      (call $__reach_end (i32.add (i32.add (local.get $p) (i32.const 16)) (i32.shl
+        (call $__reach_fit (local.get $p)
+          (select (i32.load offset=12 (local.get $p)) (i32.load offset=8 (local.get $p)) (i32.and (i32.load offset=4 (local.get $p)) (i32.const 1)))
+          (i32.const 8))
+        (i32.const 3))))
       (local.set $p (i32.load (local.get $p)))
       (br $rec)))` : ''
     return `(func $__survive (param $mark i32) (result i32)

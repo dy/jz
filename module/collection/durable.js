@@ -208,6 +208,26 @@ export const durableArrSnapNode = (base) => {
     ['then', ['if', unsaved, ['then', ['call', '$__durable_arr_snap', b]]]]]
 }
 
+// The object twins of durableArrSnapIR and durableArrSnapNode, for the store
+// of a field into an object the module made as it started: the round's first
+// saves the object's slots (core/durable-log.js `__durable_obj_snap`), and a
+// reset reads them back. A number names no memory: an emitted store asks only
+// for a value that may be a heap pointer (compile/emit-assign.js), and saves,
+// as a kernel's arm does, only for one that is and names memory of the round
+// (`val` its bits, `value` a local read of it).
+export const durableObjSnapIR = (base, val) => {
+  if (!hasDurableReset()) return ''
+  return `
+    (if (i32.lt_u (local.get $${base}) ${heapResetWat()})
+      (then (if (call $__is_eph_bits (local.get $${val})) (then (call $__durable_obj_snap (local.get $${base}))))))`
+}
+export const durableObjSnapNode = (base, value = null) => {
+  if (!hasDurableReset()) return ['nop']
+  const b = ['local.get', `$${base}`], snap = ['call', '$__durable_obj_snap', b]
+  return ['if', ['i32.lt_u', b, ['global.get', '$__heap_reset']],
+    ['then', value === null ? snap : ['if', ['call', '$__is_eph_bits', ['i64.reinterpret_f64', value]], ['then', snap]]]]
+}
+
 // Value-write sibling of durableFwdLogIR: an EPHEMERAL boxed value stored into a
 // DURABLE collection slot dangles across `_clear` (the corpus-wide warm trap — a
 // durable memo dict handing round-1 node arrays into round-2's tree). Log the slot

@@ -32,7 +32,32 @@ import { REP_EDGE_BOX, representationProgramHasBigint, representationStorageWrit
 import { plannedTypedStorageInfo } from './typed-storage-plan.js'
 import { typedIdxProven, inBoundsArrIdx } from '../type.js'
 import { trySlotUpdate } from './slot-update.js'
-import { durableArrSnapNode, hasDurableReset } from '../../module/collection/durable.js'
+import { durableArrSnapNode, durableObjSnapNode, hasDurableReset } from '../../module/collection/durable.js'
+
+// A field stored into an object the module made as it started names, after
+// a reset, memory the reset freed, where the value is one a call made: the
+// round's first such store saves the object's slots (module/collection/
+// durable.js durableObjSnapNode), and the reset reads them back. A number
+// names no memory. A store into the frame's own fresh object is none of
+// these: the frame census (analyze/frame-effects.js) lists the stores that
+// may leave a heap value in storage not the frame's own, `node` among them
+// or not; with no census every store may.
+const mayDangle = (node, val) => {
+  if (!hasDurableReset()) return false
+  const vt = valTypeOf(val)
+  if (vt === VAL.NUMBER || vt === VAL.BOOL) return false
+  const sites = ctx.plans.escapeSites
+  return sites == null || !Array.isArray(node) || sites.has(ctx.plans.siteOrigin?.get(node) ?? node)
+}
+/** The store of slot `slot` of the object at `base` (an i32 expression, read
+ *  once), saved first where `dangles` and the value, a local's read, names
+ *  memory of the round as the store runs. */
+const fieldStore = (base, slot, value, dangles) => {
+  if (!dangles) return [ctx.abi.object.ops.store(base, slot, value)]
+  inc('__durable_obj_snap', '__is_eph_bits')
+  const b = tempI32('dob')
+  return [['local.set', `$${b}`, base], durableObjSnapNode(b, value), ctx.abi.object.ops.store(['local.get', `$${b}`], slot, value)]
+}
 
 // Boxed-bool-aware store value: booleans persist as their tagged atom. Now
 // THE chokepoint, promoted to bridge.js (research.md §Carrier invariant) — every
@@ -411,6 +436,7 @@ function tryStructInlineReplaceStore(arr, idx, val) {
 }
 
 export function emitElementAssign(arr, idx, val, node = null) {
+  const dangles = mayDangle(node ?? ctx.error.node, val)
   // A static object key is a field write, with the same carrier and setter
   // semantics as dot syntax. Keep expression receivers on that one path too.
   if (isLiteralStr(idx) && ctx.summary?.at(ctx.func.current).objectSidOfExpr(arr) != null)
@@ -572,7 +598,7 @@ export function emitElementAssign(arr, idx, val, node = null) {
     const slot = ctx.schema.slotOf(arr, litKey)
     if (slot >= 0 && !(ctx.types.anyDelete && mayBeDeleted(arr)))
       return withTemp(valueExpr, t => [
-        ctx.abi.object.ops.store(ptrOffsetIR(asF64(emit(arr)), lookupValType(arr) || VAL.OBJECT), slot, ['local.get', `$${t}`]),
+        ...fieldStore(ptrOffsetIR(asF64(emit(arr)), lookupValType(arr) || VAL.OBJECT), slot, ['local.get', `$${t}`], dangles),
         ['local.get', `$${t}`]])
   }
   // 2b. A receiver of a few possible shapes (the summary's shape set, module/
@@ -593,7 +619,7 @@ export function emitElementAssign(arr, idx, val, node = null) {
           const off = ['i32.wrap_i64', ['i64.and', bits(), ['i64.const', LAYOUT.OFFSET_MASK]]]
           chain = ['if',
             ['i64.eq', ['i64.and', bits(), ['i64.const', OBJECT_SCHEMA_HI_MASK]], ['i64.const', objectSchemaGuardHex(sid)]],
-            ['then', ctx.abi.object.ops.store(off, slot, val())],
+            ['then', ...fieldStore(off, slot, val(), dangles)],
             ['else', chain]]
         }
         return [chain, val()]
@@ -805,6 +831,7 @@ function accessorStore(obj, prop, val) {
 }
 
 export function emitPropertyAssign(obj, prop, val, raw = false) {
+  const dangles = mayDangle(ctx.error.node, val)
   if (!raw && ctx.transform.accessorNames?.has(prop)) {
     // a class's setter is a function of the receiver (class-dispatch.js);
     // any other receiver keeps the slot paths of accessorStore
@@ -921,7 +948,7 @@ export function emitPropertyAssign(obj, prop, val, raw = false) {
         // byte-identical then).
         const boxed = ctx.schema.slotBigintBoxedBySid?.(vaProbe.ptrAux, prop)
         return withTemp(storedFieldValue(val, vaProbe.ptrAux, prop, boxed), t => [
-          ctx.abi.object.ops.store(ptrOffsetIR(asF64(emit(obj)), VAL.OBJECT), si, ['local.get', `$${t}`]),
+          ...fieldStore(ptrOffsetIR(asF64(emit(obj)), VAL.OBJECT), si, ['local.get', `$${t}`], dangles),
           ['local.get', `$${t}`]])
       }
     }
@@ -951,7 +978,7 @@ export function emitPropertyAssign(obj, prop, val, raw = false) {
       const va = emit(obj), vv = storedFieldValue(val, sid, prop, boxed), t = temp()
       return block64(
         ['local.set', `$${t}`, vv],
-        ctx.abi.object.ops.store(ptrOffsetIR(asF64(va), lookupValType(obj) || VAL.OBJECT), idx, ['local.get', `$${t}`]),
+        ...fieldStore(ptrOffsetIR(asF64(va), lookupValType(obj) || VAL.OBJECT), idx, ['local.get', `$${t}`], dangles),
         ['local.get', `$${t}`])
     }
   }
@@ -977,7 +1004,7 @@ export function emitPropertyAssign(obj, prop, val, raw = false) {
           ['local.set', `$${value}`, sid != null ? storedFieldValue(val, sid, prop) : storedValue(val)],
           ...(ctx.summary?.at(ctx.func.current).mayBeNullishExpr(obj) !== false
             ? [['if', isNullish(get()), ['then', ['drop', throwTypeErrorIR()]]]] : []),
-          ctx.abi.object.ops.store(ptrOffsetIR(get(), VAL.OBJECT), i, ['local.get', `$${value}`]),
+          ...fieldStore(ptrOffsetIR(get(), VAL.OBJECT), i, ['local.get', `$${value}`], dangles),
           ['local.get', `$${value}`])
       }
     }

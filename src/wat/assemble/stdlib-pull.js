@@ -461,8 +461,10 @@ export function pullStdlib(sec) {
       // helper's doc comment for the full rationale). Same explicit-include
       // reasoning as __durable_fwd_heal just above (its only call site is this
       // injected text).
-      if (ctx.core.includes.has('__durable_arr_snap')) {
+      if (ctx.core.includes.has('__durable_arr_snap') || ctx.core.includes.has('__durable_obj_snap')) {
         inc('__durable_arr_heal')
+        // an object's heal asks each slot whether it names memory of the round
+        if (ctx.core.includes.has('__durable_obj_snap')) inc('__is_eph_bits')
         resets.push(`(call $__durable_arr_heal)`)
       }
       // Durable SLOT heal (core.js __durable_slot_log/__durable_slot_heal — the
