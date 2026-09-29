@@ -217,3 +217,16 @@ test('integral loops: a counter bounded by a float of unknown integrality counts
   const inner = loops.filter(l => !/\(loop/.test(l.slice(5)) && /f32\.load/.test(l))
   ok(inner.some(l => !/trunc_sat/.test(l) && !/f64\.convert_i32_s/.test(l)), 'a copy of the correlation indexes by an int32 counter')
 })
+
+// A copy writes back what it wrote under names of its own after the loop: a jump
+// to a label outside (`continue out`, `break out`) would leave past that, so a
+// loop with one keeps its own names.
+test('integral loops: a loop that jumps to a label outside it agrees with JS', () => {
+  const src = `export let f = (x) => { let s = 0; s = x; out: for (let i = 0; i < 5; i++) { for (let j = 0; j < 5; j++) { if (j > x) continue out; s += 1 } } s = s * 2; return s }
+    export let g = (x, n) => { let s = x, p = 0; out: for (let k = 0; k < 3; k++) { for (let i = 0; i < n; i++) { p = (p + 3) % 7; if (p > x) break out; s += p } } return s * 10 + p }`
+  const js = oracle(src)
+  for (const optimize of levels(0, 2, 3)) for (const splitBindings of [true, false]) {
+    const m = jz(src, { optimize: typeof optimize === 'number' ? { level: optimize, splitBindings } : optimize }).exports
+    for (const x of [0, 1, 3, 7, 2.5]) is([m.f(x), m.g(x, 6)], [js.f(x), js.g(x, 6)], `x = ${x} at ${optimize}${splitBindings ? '' : ', bindings whole'}`)
+  }
+})

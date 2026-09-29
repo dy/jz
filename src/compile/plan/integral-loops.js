@@ -51,7 +51,6 @@ import { freshId } from '../../ir.js'
 import { cloneWithSubst } from '../../type.js'
 import { collectBindings, nodeSize } from './common.js'
 import { occursOutside } from './counted-loops.js'
-import { includeModule } from '../../autoload.js'
 import { isExported } from '../func-exports.js'
 import { K, core, hasTag, tagOf } from '../../summary/kind.js'
 import { invalidateBodies } from '../analyze.js'
@@ -154,6 +153,8 @@ const OPERANDS = new Set([...ARITH, '+', '<', '>', '<=', '>=', 'u-', 'u+', '~'])
 const NOT_NUMERIC = [K.STRING, K.BIGINT, K.TYPED, K.ARRAY, K.OBJECT, K.CLOSURE, K.MAP, K.SET, K.DATE, K.REGEX, K.HASH, K.BUFFER]
 const numberish = (k) => k !== 0 && !NOT_NUMERIC.some(t => hasTag(k, t))
 
+const bigintOperand = (e, kindOfExpr) => (Array.isArray(e) && e[0] === 'bigint') || tagOf(core(kindOfExpr(e) ?? 0)) === K.BIGINT
+
 /** Whether `e` is a Number wherever `num` holds for the names it reads (a
  *  Math result, a unary plus, an arithmetic result one Number operand keeps
  *  from being a BigInt, a sum of two Numbers, a conditional of them, a read
@@ -168,7 +169,9 @@ const numeric = (e, num, kindOfExpr) => {
   if (op === '?:') return numeric(e[2], num, kindOfExpr) && numeric(e[3], num, kindOfExpr)
   if (op === '+') return numeric(e[1], num, kindOfExpr) && numeric(e[2], num, kindOfExpr)
   if (op === 'u-' || op === '~') return numeric(e[1], num, kindOfExpr)
-  if (ARITH.has(op)) return numeric(e[1], num, kindOfExpr) || numeric(e[2], num, kindOfExpr)
+  // beside a BigInt (`n >> 7n`) a Number throws: the loop is a BigInt's, no Number's to copy
+  if (ARITH.has(op)) return !bigintOperand(e[1], kindOfExpr) && !bigintOperand(e[2], kindOfExpr) &&
+    (numeric(e[1], num, kindOfExpr) || numeric(e[2], num, kindOfExpr))
   if (op === '[]' || op === '.') return numberish(kindOfExpr(e))
   return false
 }
@@ -266,7 +269,9 @@ const versionBody = (body, params, view, func, programFacts) => {
   let rewrote = false
   for (const [loop, parent, idx] of loops) {
     if (parent[idx] !== loop || nodeSize(loop) > MAX_SIZE) continue
-    if (some(loop, n => n[0] === '=>' || n[0] === 'label' || n[0] === 'yield' || n[0] === 'await')) continue
+    // a jump to a label outside (`continue out`) leaves the copy past what it writes back
+    if (some(loop, n => n[0] === '=>' || n[0] === 'label' || n[0] === 'yield' || n[0] === 'await' ||
+      ((n[0] === 'break' || n[0] === 'continue') && typeof n[1] === 'string'))) continue
     const inner = new Set()
     collectBindings(loop, inner)
     const loopWrites = writesIn(loop)
@@ -312,8 +317,6 @@ const versionBody = (body, params, view, func, programFacts) => {
     // the type first, so the test converts no object (a key's valueOf runs where the loop reads it);
     // a Number alone: `typeof x === 'number'`, the form whose arm the summary reads as a Number;
     // present: `x != null`
-    // the guard's string literal reads through the string module, which a program of numbers alone never loaded
-    if (names.length) includeModule('string')
     const test = [...names.map(n => ['&&', ['&&', numberGuard(n), ['===', n, ['|', n, [null, 0]]]], ['||', ['!==', n, [null, 0]], ['>', ['/', [null, 1], n], [null, 0]]]]),
       ...numbers.map(n => ['===', ['typeof', n], [null, TYPEOF.number]]),
       ...present.map(n => ['!=', n, [null, null]])]
