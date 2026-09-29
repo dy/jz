@@ -179,7 +179,7 @@ export default function plan(ast, profiler, summarize) {
   if (optimizing()) {
     // A field a loop reads and writes through one receiver, in a local for the
     // loop; the loops inlining left name what it spliced, so the summary looks again.
-    if (loopFieldCandidates()) { ctx.summary = summarize(); sweep('promoteLoopFields', promoteLoopFields) }
+    if (loopFieldCandidates()) { ctx.summary = summarize(); sweep('promoteLoopFields', () => promoteLoopFields(ast)) }
     // After inlining, so a stride passed as a literal is one: the loops then
     // read over their trip number, the form every later pass takes.
     sweep('guardConstants', guardConstants)

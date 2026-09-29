@@ -24,9 +24,11 @@
  *
  * So does an element at a constant index of an owned Float64Array the loop
  * stores numbers into (`s[0]`, `s[1]` of a filter section's state): no other
- * receiver of the loop may share its buffer (an array, or a typed array of
- * another element kind that is no view, is another buffer), and the copy
- * runs where every index is within the array's length.
+ * receiver of the loop may share its buffer (an array is another buffer, and
+ * so is a typed array of another element kind that is no view, where nothing
+ * in the program makes a typed array over existing memory: no `.buffer` read,
+ * no buffer made, no typed array made from a value that may be a buffer), and
+ * the copy runs where every index is within the array's length.
  *
  * A receiver that may be null or undefined throws where the loop first
  * reads it: the loop runs as the copy using locals where every receiver is
@@ -37,7 +39,8 @@
  * @module compile/plan/loop-fields
  */
 import { ctx } from '../../ctx.js'
-import { MUTATE_OPS, T, isBlockBody, some } from '../../ast.js'
+import { MUTATE_OPS, T, isBlockBody, some, someDeep } from '../../ast.js'
+import { frameRoots } from '../../function.js'
 import { freshId } from '../../ir.js'
 import { K, core, tagOf, paramOf, isNullable, hasTag } from '../../summary/kind.js'
 import { TYPED_ELEM_VIEW_FLAG, TYPED_ELEM_ANY_VIEW_FLAG } from '../../../layout.js'
@@ -76,6 +79,25 @@ const ctorName = (c) => c?.replace(/^new\./, '') ?? null
 const accessor = (p) => ctx.transform.accessorNames?.has(p) || ctx.transform.literalAccessorNames?.has(p) || p === '__proto__'
 const mayBeMissing = (k) => k == null || isNullable(k) || hasTag(k, K.NULLISH) || hasTag(k, K.ABSENT)
 const isObject = (k) => tagOf(core(k ?? 0)) === K.OBJECT
+
+const TYPED_NEW = /^new\.(Big)?\w*\d+(Clamped)?Array$/
+const BUFFER_NEW = new Set(['new.ArrayBuffer', 'new.SharedArrayBuffer', 'new.DataView'])
+const SIZE_OPS = new Set(['+', '-', '*', '/', '%', '|', '&', '^', '<<', '>>', '>>>', '['])
+/** Whether a typed array made from `a` (its first argument) may be made over a buffer. */
+const mayBeBuffer = (view, a) => {
+  if (Array.isArray(a) && a[0] === ',') a = a[1]
+  if (a == null || typeof a === 'number' || (Array.isArray(a) && (a[0] == null || SIZE_OPS.has(a[0]) || (a[0] === '.' && a[2] === 'length')))) return false
+  const k = view?.kindOfExpr(a)
+  return k == null || tagOf(core(k)) === K.ANY || hasTag(k, K.BUFFER)
+}
+/** Whether some typed array of the program may be made over another's memory
+ *  (`new Uint32Array(F.buffer)`: its stores write F's elements). */
+const sharesMemory = (ast) => {
+  const roots = [[ast, ctx.summary.at('')], ...(ctx.module.moduleInits ?? []).map(m => [m, ctx.summary.at('')]),
+    ...ctx.funcs.list.filter(f => f.body && !f.raw).flatMap(f => frameRoots(f).map(r => [r, ctx.summary.at(f.sig)]))]
+  return roots.some(([root, view]) => someDeep(root, n => Array.isArray(n) && (((n[0] === '.' || n[0] === '?.') && n[2] === 'buffer') ||
+    (n[0] === '()' && typeof n[1] === 'string' && (BUFFER_NEW.has(n[1]) || (TYPED_NEW.test(n[1]) && mayBeBuffer(view, n[2])))))))
+}
 
 /** What `loop` does with fields, or null where it does anything that could reach them unseen. */
 const censusOf = (loop, view) => {
@@ -144,7 +166,7 @@ const censusOf = (loop, view) => {
 }
 
 /** The fields `loop` holds in locals, by receiver, and the receivers the copy must find present; null for none. */
-const planLoop = (loop, view) => {
+const planLoop = (loop, view, shared) => {
   const c = censusOf(loop, view)
   if (!c) return null
   const { declared, written, stored, bare, accesses, elements, slots, indexed, aliases, computedRead } = c
@@ -206,7 +228,7 @@ const planLoop = (loop, view) => {
   const apartFrom = (r) => [...elements].every(r2 => {
     if (r2 === r) return true
     const k2 = view.kindOfExpr(r2), t2 = tagOf(core(k2 ?? 0))
-    return t2 === K.ARRAY || (t2 === K.TYPED && ctorName(view.typedPayloadCtorOfExpr(r2)) != null && ctorName(view.typedPayloadCtorOfExpr(r2)) !== 'Float64Array' && !(paramOf(k2) & VIEW_FLAGS))
+    return t2 === K.ARRAY || (t2 === K.TYPED && ctorName(view.typedPayloadCtorOfExpr(r2)) != null && ctorName(view.typedPayloadCtorOfExpr(r2)) !== 'Float64Array' && !(paramOf(k2) & VIEW_FLAGS) && !shared())
   })
   const elems = []
   for (const [r, e] of slotsOf) {
@@ -265,9 +287,10 @@ export const loopFieldCandidates = () => ctx.transform.optimize?.promoteLoopFiel
   some(f.body, n => LOOP_OPS.has(n[0]) && !some(n, m => m !== n && LOOP_OPS.has(m[0])) &&
     some(n, m => MUTATE_OPS.has(m[0]) && (isField(m[1]) || Array.isArray(m[1]) && m[1][0] === '[]' && slotIndex(m[1][2]) != null))))
 
-export const promoteLoopFields = () => {
+export const promoteLoopFields = (ast) => {
   if (ctx.transform.optimize?.promoteLoopFields === false) return false
-  let changed = false
+  let changed = false, memo
+  const shared = () => memo ??= sharesMemory(ast)
   for (const func of ctx.funcs.list) {
     if (!func.body || func.raw) continue
     const view = ctx.summary?.at(func.sig)
@@ -275,7 +298,7 @@ export const promoteLoopFields = () => {
     let rewrote = false
     statements(func.body, (st) => {
       if (!LOOP_OPS.has(st[0]) || some(st, n => n !== st && LOOP_OPS.has(n[0])) || nodeSize(st) > MAX_SIZE) return
-      const plan = planLoop(st, view)
+      const plan = planLoop(st, view, shared)
       if (!plan) return
       // a record the loop reads through a field: one local, loaded after its base is found present
       const records = new Map(plan.chains.map(r => [r.key, { ...r, local: `${r.base}${T}${r.field}${freshId(ctx)}` }]))

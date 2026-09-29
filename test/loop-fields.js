@@ -96,6 +96,17 @@ export let shared = (n) => { const b = new Float64Array(n).fill(1); return kern(
 export let apart = (n) => { const b = new Float64Array(n).fill(1), st = new Float64Array(2); return kern(b, sec, st) + b[0] }`, [['shared', 6], ['apart', 6]])
 })
 
+// A typed array made over another's buffer writes its elements: `U[0] = i`
+// changes the bits `F[0]` reads back, so F's element stays in memory where the
+// program makes one, whatever element kind it has.
+test('loop fields: a state array another kind of array views stays in memory', () => {
+  agrees(`const F = new Float64Array(1), U = new Uint32Array(F.buffer)
+export let f = (x, n) => { let acc = 0; for (let i = 0; i < n; i++) { F[0] = x * i; acc += (U[1] ^ U[0]) >>> 0; U[0] = i; acc += F[0] } return acc }`,
+    [['f', 1.5, 9], ['f', -0, 9], ['f', 4503599627370497, 9]])
+  agrees(`export let f = (x, n) => { const m = new ArrayBuffer(16), F = new Float64Array(m), B = new Uint8Array(m); let acc = 0
+      for (let i = 0; i < n; i++) { F[1] = x + i; B[15] = i; acc += F[1] } return acc }`, [['f', 1.5, 5], ['f', -2, 3]])
+})
+
 // A value that may be missing (`a[k]` past a typed array's end) stored into a
 // Float64Array element reads back NaN: the store converts it, a local would not,
 // so such an element stays in memory.
