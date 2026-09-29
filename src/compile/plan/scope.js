@@ -584,11 +584,12 @@ export const flattenFuncNamespaces = (ast, propMap = null) => {
       if (ctx.funcs.multiProp.has(`${f}.${prop}`)) { plan(prop, { global: `${f}${T}${prop}` }); continue }
       const w = info.writes.get(prop)
       // Single top-level write of the lifted `$f$prop` (the `f.prop = arrow`
-      // definition shape): calls to it already lower to a direct `call $f$prop`,
-      // which a global would demote to call_indirect — leave it alone; when it's
-      // additionally never read as a value, the write itself is dead → drop it.
+      // definition shape): a call of it is a direct call of `$f$prop`, which a
+      // global would demote to call_indirect, and it becomes one here, so every
+      // later pass sees the call edge; when the property is additionally never
+      // read as a value, the write itself is dead → drop it.
       if (w && w.length === 1 && w[0].atInit && w[0].rhs === `${f}$${prop}`) {
-        if (!info.valRead.has(prop)) plan(prop, { drop: true })
+        plan(prop, { direct: `${f}$${prop}`, drop: !info.valRead.has(prop) })
         continue
       }
       // Everything else dissolves into a module global — the namespace is
@@ -618,6 +619,10 @@ export const flattenFuncNamespaces = (ast, propMap = null) => {
   const rewrite = (node, stmt = false) => {
     if (!Array.isArray(node)) return node
     const op = node[0]
+    if (op === '()' && Array.isArray(node[1]) && node[1][0] === '.') {
+      const d = decisionFor(node[1][1], node[1][2])
+      if (d?.direct) return ['()', d.direct, ...node.slice(2).map(a => rewrite(a))]
+    }
     if (op === '.' || op === '?.') {
       const d = decisionFor(node[1], node[2])
       if (d?.global) return d.global  // drop-decisions leave reads/calls alone

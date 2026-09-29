@@ -50,3 +50,18 @@ test('function properties: a lazily imported module sets a property on its own f
     is(await f(), [15, 10], `O${optimize}`)
   }
 })
+
+// A property written once at top level with a function (`kw.scale = function`)
+// is the function prepare lifted (`kw$scale`): a call of it is a direct call
+// from the plan on, so its parameters take their callers' kinds.
+test('function properties: a call of a property defined once is a call of its function', () => {
+  const src = `const kw = function (d) { return d }
+    kw.scale = function (a, k) { let s = 0; for (let i = 0; i < a.length; i++) { s += a[i] * k; if (s > 1e9) s = 0 } return s }
+    let A = new Float32Array(16)
+    for (let i = 0; i < 16; i++) A[i] = i * 0.25
+    export let f = (k) => kw.scale(A, k) + kw.scale(A, 2)`
+  const want = oracle(src).f(3)
+  for (const optimize of levels(0, 2, 3)) is(jz(src, { optimize }).exports.f(3), want, `O${optimize}`)
+  if (belowOpt(2)) return
+  ok(!/\$__typed_idx/.test(compile(src, { wat: true, optimize: { sourceInline: false, inlineFns: false } })), 'the element reads take the callers\' Float32Array')
+})
