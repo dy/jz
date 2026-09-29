@@ -122,7 +122,6 @@ const LEVEL_PRESETS = Object.freeze({
     wideAccumulator: false,   // i64-carried accumulator versions the loop (guarded fast clone + the f64 original) — speed-only
     sourceInlineDup: false,   // shared/exported source bodies stay outlined; single-use internal bodies still inline
     arenaReach: false,        // the walk from what a call's escapes wrote into is ~2 KB of runtime: a call that ran an escape keeps all it allocated — memory-for-size
-    versionIntegralLoops: false, // an integral copy of a loop beside it — speed-for-size
     versionIntegralLoops: false, // an integral copy of a loop beside it: speed-for-size
     unswitchLoops: false,     // a copy of a loop for each answer of a test it reads: speed-for-size
     splitLoopKinds: false,    // a copy of a loop where a name of several kinds holds a typed array: speed-for-size

@@ -92,7 +92,7 @@ test('identifiers: an escaped name declares the name it spells', () => {
   both('export let f = () => { function h() { return 1 } let a = h(); function h() { return 2 } return a * 10 + h() }', [['f']])
   let error
   try { compile('function g() {}\nfunction \\u0067() {}\nexport let f = () => g()') } catch (e) { error = e }
-  ok(error?.message.includes("duplicate lexical declaration 'g'"), error?.message)
+  ok(error?.message.includes("duplicate function declaration 'g'"), error?.message)
 })
 
 test('identifiers: characters that are no name character, and misplaced ones', () => {
