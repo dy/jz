@@ -158,16 +158,36 @@ const litKeyHash = (key) => {
   return null
 }
 
-// A proven string uses the same content hash without generic key dispatch.
-const probeKeyHash = key => litKeyHash(key) ?? (valTypeOf(key) === VAL.STRING &&
-  ctx.summary?.at(ctx.func.current).mayBeNullishExpr(key) === false ? '__str_hash' : null)
+// A number key's probe hash inline: $__map_hash's arms for a Number (a NaN
+// hashes 3, a zero 2, any other its mix of the bits), no call and no tag test.
+const NUM_HASH = Symbol('number')
+const numKeyHashIR = (k) => {
+  const bits = ['local.get', `$${k}`], f = ['f64.reinterpret_i64', bits], h = tempI32('nkh'), hv = ['local.get', `$${h}`]
+  return ['if', ['result', 'i32'], ['f64.ne', f, f], ['then', ['i32.const', 3]],
+    ['else', ['if', ['result', 'i32'], ['f64.eq', f, ['f64.const', 0]], ['then', ['i32.const', 2]],
+      ['else', ['block', ['result', 'i32'],
+        ['local.set', `$${h}`, ['i32.wrap_i64', ['i64.xor', bits, ['i64.shr_u', bits, ['i64.const', 32]]]]],
+        ['local.set', `$${h}`, ['i32.mul', ['i32.xor', hv, ['i32.shr_u', hv, ['i32.const', 16]]], ['i32.const', 0x85EBCA6B | 0]]],
+        ['local.set', `$${h}`, ['i32.xor', hv, ['i32.shr_u', hv, ['i32.const', 13]]]],
+        ['select', ['i32.add', hv, ['i32.const', 2]], hv, ['i32.le_u', hv, ['i32.const', 1]]]]]]]]
+}
+const keyHashIR = (h, k) => typeof h === 'number' ? ['i32.const', h] : h === NUM_HASH ? numKeyHashIR(k) : ['call', `$${h}`, ['local.get', `$${k}`]]
+// A proven string uses the same content hash without generic key dispatch; a proven Number its bits' mix.
+const probeKeyHash = key => {
+  const lit = litKeyHash(key)
+  if (lit != null) return lit
+  const vt = valTypeOf(key)
+  if ((vt !== VAL.STRING && vt !== VAL.NUMBER) || ctx.summary?.at(ctx.func.current).mayBeNullishExpr(key) !== false) return null
+  return vt === VAL.STRING ? '__str_hash' : NUM_HASH
+}
 const collectionProbe = (name, fmt) => (recv, key, ...ignored) => {
   const h = probeKeyHash(key)
   if (h == null) return call(name, 'II', fmt)(recv, key, ...ignored)
   if (typeof h === 'number') return call(name + '_h', 'IIi', fmt)(recv, key, [null, h], ...ignored)
-  inc(name + '_h', h)
+  inc(name + '_h')
+  if (typeof h === 'string') inc(h)
   const r = asI64(storedValue(recv)), k = asI64(storedValue(key)), local = tempI64('probeKey')
-  const args = [r, ['local.tee', `$${local}`, k], ['call', `$${h}`, ['local.get', `$${local}`]]]
+  const args = [r, ['local.tee', `$${local}`, k], keyHashIR(h, local)]
   const c = ignored.length ? callWithArgs(name + '_h', [...args, ...ignored.map(node => emit(node))], {
     params: [{ type: 'i64' }, { type: 'i64' }, { type: 'i32' }], results: [fmt],
   }) : ['call', `$${name}_h`, ...args]
@@ -548,7 +568,7 @@ export default (ctx) => {
     inc(mapFn, setFn, '__ptr_type')
     const o = temp('cp'), k = tempI64('cpk')
     if (typeof h === 'string') inc(h)
-    const extra = h == null ? [] : [typeof h === 'number' ? ['i32.const', h] : ['call', `$${h}`, ['local.get', `$${k}`]]]
+    const extra = h == null ? [] : [keyHashIR(h, k)]
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${o}`, asF64(emit(collExpr))],
       // storedValue-family, NOT raw emit: .set stores keys through the same

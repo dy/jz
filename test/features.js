@@ -2,7 +2,7 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import jz, { compile } from '../index.js'
-import { adaptI64, levels } from './_matrix.js'
+import { adaptI64, levels, belowOpt } from './_matrix.js'
 import { run, oracle } from './util.js'
 
 
@@ -260,6 +260,29 @@ test('collection: nullable string keys keep generic hashing across growth and de
     const f=run(src,{optimize}).f
     for(const n of [0,0,1,2,100,1,0])is(f(n),js(n),`O${optimize}, index ${n}`)
   }
+})
+
+// A key proven a Number hashes inline, by $__map_hash's own number arms: the
+// probe finds what the store hashed, NaN, both zeros and fractions included.
+test('collection: number keys probe by the hash their store took', () => {
+  const src = `export function f(k, kind) {
+    const m=new Map(),s=new Set(),zero=k*0,keys=[k,k+0.5,-zero,zero,0/zero,1/zero,-1/zero,k*1e300,2**53+k,-k-3]
+    for(let i=0;i<keys.length;i++){m.set(keys[i],i);s.add(keys[i])}
+    for(let i=0;i<64;i++){m.set(i*3+k,i);s.add(i*3+k)}
+    const coll=kind?m:s
+    let out=''
+    for(let i=0;i<keys.length;i++){const x=keys[i]*1;out+=m.get(x)+','+m.has(x)+','+s.has(x)+','+coll.has(x)+';'}
+    for(let i=0;i<200;i++){const x=i*0.5+k;out+=(s.has(x)?1:0)+(m.has(x)?2:0)}
+    return out
+  }`
+  const js=oracle(src).f
+  for(const optimize of levels(0,1,2,3,'size')) {
+    const f=run(src,{optimize}).f
+    for(const [k,kind] of [[0,0],[1,1],[2.5,0],[-4,1],[0,1]]) is(f(k,kind),js(k,kind),`O${optimize}, k ${k}, receiver ${kind}`)
+  }
+  if (belowOpt(2)) return
+  const wat = compile(`export let f = (n) => { const s = new Set(); for (let i = 0; i < n; i += 3) s.add(i); let c = 0; for (let i = 0; i < n; i++) if (s.has(i)) c++; return c }`, { wat: true, optimize: { level: 2, watr: false } })
+  ok(/call \$__set_has_h\b/.test(wat) && !/call \$__set_has\s/.test(wat), 'a counter probes prehashed')
 })
 
 test('Map: get missing returns nullish', () => {
