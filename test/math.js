@@ -986,3 +986,16 @@ test('exp2 and exp within 0.75 ulp of a 200-bit reference across their range', (
   is(e(NaN), NaN); is(e(710), Infinity); is(e(-746), 0); is(e(0), 1)
   ok(Number.isFinite(e(709.782712893384)) && e(709.782712893384) > 1.79e308, 'largest finite exp')
 })
+
+// An argument left out is undefined, as JS passes it: NaN to a function of fixed
+// arity, whether the call runs or folds, and nothing to max, min and hypot.
+test('Math: every function called with its arguments left out agrees with JS', () => {
+  // one argument given: only where the one left out decides the result (a unary one is its kernel's)
+  const names = Object.getOwnPropertyNames(Math).filter(k => typeof Math[k] === 'function' && k !== 'random')
+  for (const k of names) for (const call of [`Math.${k}()`, ...(Math[k].length > 1 ? [`Math.${k}(y)`] : [])]) {
+    const src = `export let f = (y) => ${call}`
+    let got
+    try { got = jz(src).exports.f(2) } catch (e) { got = 'throws: ' + e.message.split('\n')[0] }
+    ok(Object.is(got, new Function('y', 'return ' + call)(2)), `${call}: ${got}`)
+  }
+})

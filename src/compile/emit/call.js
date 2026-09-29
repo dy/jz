@@ -9,7 +9,7 @@ import { encodePtrHi, i64Hex } from '../../../layout.js'
 import {
   PARAM_DEFAULT, PARAM_KIND, PARAM_NAME, PARAM_PATTERN, T, classifyParam, commaList, extractParams, walkAst,
 } from '../../ast.js'
-import { LAYOUT, OPTF, PTR, ctx, err, inc, setLinkDemand } from '../../ctx.js'
+import { LAYOUT, OPTF, PTR, ctx, err, inc, setLinkDemand, emitArity } from '../../ctx.js'
 import { includeForArrayAccess } from '../../autoload.js'
 import {
   MAX_CLOSURE_ARITY, allocPtr, asF64, carrierF64, freshId, isBoundName, ptrTypeEq, reconstructArgsWithSpreads, temp, tempI32, typed, undefExpr,
@@ -72,6 +72,7 @@ function emitSpeculativeCall(callee, spec, argNodes, func) {
 /** Builtin / module-emitter call: `Math.max(...)`, `JSON.parse(...)`, etc. The
  *  emitter accepts the same `...args` flat shape as the AST (with `['...', x]`
  *  spread markers re-inserted in original position). */
+const VARIADIC_MATH = new Set(['math.max', 'math.min', 'math.hypot'])
 function emitBuiltinCall(callee, parsed) {
   if (parsed.hasSpread) {
     const allArgs = []
@@ -83,7 +84,10 @@ function emitBuiltinCall(callee, parsed) {
     while (ni < parsed.normal.length) allArgs.push(parsed.normal[ni++])
     return ctx.core.emit[callee](...allArgs)
   }
-  return ctx.core.emit[callee](...parsed.normal)
+  // Math reads an argument left out as undefined, as JS passes it: `Math.atan2(y)` is
+  // atan2(y, NaN). max, min and hypot take any number of them.
+  const n = callee.startsWith('math.') && !VARIADIC_MATH.has(callee) ? emitArity(ctx.core.emit[callee], callee) ?? 0 : 0
+  return ctx.core.emit[callee](...parsed.normal, ...Array.from({ length: n - parsed.normal.length }, () => [, undefined]))
 }
 
 /** Direct call to a known top-level user function — emits `(call $callee args)`.

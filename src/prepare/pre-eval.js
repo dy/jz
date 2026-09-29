@@ -457,8 +457,11 @@ function evalMathCall(name, vs) {
   if (uf) return vs.length === 1 ? numResult(uf(vs[0])) : null
   const kfn = MATH_KERNEL['math.' + name]
   if (!kfn) return null
+  // an argument left out is undefined, NaN as the number the kernel reads
+  const args = vs.slice()
+  while (args.length < kfn.length) args.push(NaN)
   // a kernel that answers undefined leaves the call for run time
-  const v = kfn(...vs)
+  const v = kfn(...args)
   return v === undefined ? null : numResult(v)
 }
 
