@@ -306,7 +306,7 @@ export function analyzeFuncForEmit(func, programFacts) {
         n => n[0] === '()' && typeof n[1] === 'string' && (ctx.funcs.map.get(n[1])?.frame?.writesOuter === false ||
           n[1].startsWith('math.') && callArgs(n).every(a => valTypeOf(a) === VAL.NUMBER)),
         n => runsConversion(summary, n), fieldRead,
-        recv => { const vt = typeof recv === 'string' ? valTypeOf(recv) : null; return vt !== VAL.ARRAY && vt !== VAL.TYPED && vt !== VAL.STRING },
+        recv => { const vt = valTypeOf(recv); return vt !== VAL.ARRAY && vt !== VAL.TYPED && vt !== VAL.STRING },
         summary ? (a, b) => { const ca = summary.arrayCellOf(a), cb = summary.arrayCellOf(b); return ca != null && cb != null && ca !== cb } : null) > 0)
     invalidateLocalsCache(body)
 

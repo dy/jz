@@ -73,3 +73,40 @@ test('field cse: the guards of one event read its type once', () => {
   const on = wat(guards, { optimize: 2 }), off = wat(guards, { optimize: { level: 2, loadCSE: false } })
   ok(count(on) < count(off), `fewer reads with the cache (${count(on)} against ${count(off)})`)
 })
+
+// A ring buffer's cursor record: `c.b` and `c.p` are read by the declaration's
+// element read and again by the element store and the cursor's own step, with
+// only `c.f` stored between. Each field read the statement evaluates before any
+// store, call or condition is one read; an element store through `c.b`, a
+// typed array, writes no field.
+const ring = `const mkBank = () => [7, 5].map(n => ({ b: new Float64Array(n), p: 0, f: 0.5 }))
+const get = (c) => c.p
+export let run = (n) => { const bank = mkBank(); let out = 0
+  for (let i = 0; i < n; i++) for (let c of bank) {
+    let y = c.b[c.p]
+    c.f = y * 0.25 + c.f * 0.75
+    c.b[c.p] = i * 0.5 + 0.8 * c.f
+    c.p = (c.p + 1) % c.b.length
+    out += y }
+  return out }
+export let ends = (n) => { const c = mkBank()[n & 1], d = { self: null, p: 3 }; d.self = d
+  const a = get(c) + c.p, b = n > 1 && c.p > 0 ? c.p : -1
+  c.b[c.p] = (c.p = 0) + c.p
+  const e = d.p; d.self['p'] = 9
+  return a * 1000 + b * 100 + c.p * 10 + e + d.p }`
+
+test('field cse: a cursor record read by a statement before any change', () => agrees(ring, [[0], [3], [11]], 'ring'))
+
+test('field cse: the cursor and the buffer are read once an iteration', () => {
+  if (belowOpt(2)) return
+  const text = wat(ring, { optimize: 2 })
+  const loops = []
+  for (let at = text.indexOf('(loop'); at >= 0; at = text.indexOf('(loop', at + 1)) {
+    let depth = 0, end = at
+    do { const c = text[end++]; if (c === '(') depth++; else if (c === ')') depth-- } while (depth && end < text.length)
+    loops.push(text.slice(at, end))
+  }
+  const inner = loops.filter(l => !/\(loop/.test(l.slice(5)) && /f64\.store offset=16/.test(l))
+  ok(inner.length > 0, 'found the loop over the bank')
+  for (const l of inner) ok((l.match(/f64\.load offset=8/g) || []).length === 1, `one read of the cursor, not ${(l.match(/f64\.load offset=8/g) || []).length}`)
+})

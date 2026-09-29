@@ -2099,13 +2099,15 @@ a load read there is available after the expression and in its later operands, a
 first read in a later operand is that operand's own, and what any operand invalidated
 is gone after it. A field of an object is cached like an element (`fieldOf`): the
 receiver a binding, the field a slot of every layout the summary lists for it, with no
-accessor of the name on any of them, and the first read the expression its statement
-evaluates first, so the cache is a `const` declared before that statement (an
-assignment inside an expression the emitter folds would be lost with it). A store of a field of that name through any
+accessor of the name on any of them, and the first read one its statement makes
+before it applies any operation (`let y = c.b[c.p]` reads `c.b` and `c.p` first),
+so the cache is a `const` declared before that statement, in the order of the reads
+(an assignment inside an expression the emitter folds would be lost with it). A store of a field of that name through any
 receiver ends it (two bindings may hold one object), a computed-key store into a
 receiver that may be an object ends every field, and a call that may write outer
 storage, a user conversion or a reassignment of the receiver flushes as for elements;
-an element store into an array or a typed array leaves fields alone.
+an element store into an array or a typed array leaves fields alone, whatever
+expression names the array (`c.b[c.p] = v`).
 A function whose fresh allocation is stored into module state used to rewind
 and hand out a dangling pointer; the census is what makes the rewind sound.
 The same census runs per loop with the loop body as its scope: an iteration
