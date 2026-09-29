@@ -1067,44 +1067,97 @@ under the function's WAT name once its body is emitted, and inserted after
 the peephole walk, which copies the spine of every loop it changes inside
 (optimize/loop-rewind.js).
 
-An escape the census finds at one node of a function's or a closure's frame
-(a heap value stored where it outlives the call, a growth of an outer
-container, a call it cannot name) is a site, not a verdict, when it may not
-run on a call: in a branch (an `if` or `?:` arm, the right side of `&&`, `||`
-or `??`, a logical assignment's store, a `catch` handler), past a statement
-that may return, or behind its own test (an element store grows only a
-receiver that is no typed array, tested where the receiver may be one; the
-tests meeting at one site raise the flag where any receiver is none). A
-test runs no iteration: in a loop, or a callback run per element, it stands
-before the outermost loop the receiver stays the same through, never outside
-a named arrow's body (it runs from each of its calls), and a receiver that
-changes within the innermost leaves no test. Any other escape
-runs on every call that reaches it, a loop's body included, and stays a
-verdict: a flag every call raises would buy nothing. The emitter
-raises the escape flag `$__esc` where a site runs (emit/dispatch.js), and
-link restores a conditional frame's heap at return only when the flag stayed
-down: it saves and clears the flag at entry and joins it back at exit
-(optimize/arena-rewind.js). What link itself would veto at one instruction (a
-store of a table's global, a call that hands a host import a value, an
-indirect call into a table holding unsafe code) raises the flag there under
-the same rule. A frame restores on the flag for a reason of its own (a census
-site, or a flag raised in user code); one a runtime kernel's rare path alone
-flags keeps its heap, so no call pays the protocol for it. The runtime's own
-host imports (bridge.js hostImport) keep nothing they are handed but a
-callback they schedule, so a call to one is no escape. A catch raises the
-flag, since the frames an exception left skipped their epilogues. A frame
-that suspends, a kernel filing into a module-wide table and a tail call out
-of a frame stay vetoed; a loop's per-iteration rewind reads no flag, so a
-loop with a site or a flagging callee is not rewound; a site the emitter never
-flagged (compile/index.js checks each) leaves its frame whole. Flag writes no
-conditional frame can reach are dropped; a guard whose test sets a local a
-later read shares (optimize/cse-address.js) keeps the test.
+Whether a value a call allocated outlives a frame is a question of age: what
+it was written into is older than the frame, or is the frame's own and goes
+with it. So an escape is decided as it runs. The escape flag `$__esc` holds
+the lowest address an escape wrote into since it was cleared (all ones while
+none ran, zero for an escape with no address: a module binding, a host that
+may keep what it is handed, a module-wide table). Every escape the census
+finds in a function's or a closure's frame is a site (`sites`): a heap value
+stored where it is no fresh local of the scope, a captured or module binding
+assigned one, a store that may make its receiver grow. The emitter lowers
+the flag there (emit/dispatch.js) to what the site's kind says it writes into
+(`SITE`: the node's receiver, the cell of the binding it assigns, its first
+argument, read off the node as it is emitted), and link restores a frame's
+heap at return when the flag stands at or above the frame's own mark: it
+saves and clears the flag at entry and leaves the lower of the two at exit
+(optimize/arena-rewind.js). A temporary built of closures, cells and objects
+within a call goes with the call; a state made on the first call keeps that
+call's memory and releases every later one's.
 
-A call through a binding the summary resolves to closures (`calleeOf`) runs
-those closures: each is censused through its own view and its arena facts join
-the caller's. Link takes the closures they were emitted as, every closure the
-summary never saw, and every table entry that is no closure as the targets of
-the indirect call.
+Three refinements keep a site from lowering the flag for nothing. A store of
+a value that holds no heap pointer escapes only by making its receiver grow
+(a relocation, a property's first storage, a key made a string, a durable
+array's log): its site checks after the store whether the heap moved
+(`siteGrows`), by the receiver as it stood before the store, which rebinds a
+grown receiver to its new storage. The mark it compares with stands past the
+store's operands: a value or an argument that may allocate as it is
+evaluated (`allocatesNothing` says which cannot) moves the mark to the
+heap's top as it ends, unless the heap had moved before it began, so a
+temporary the value is computed of keeps no call, and the order the store is
+emitted in decides nothing. In a loop that allocates nothing else,
+calls nothing and that neither a `return` nor a jump to a label leaves, one
+check stands around the outermost such loop the receiver's binding stays the
+same through (`siteNames`). An assignment yields what it stored, so its site asks the
+value whether a running call made it (`siteAsked`, module/core.js
+`__esc_new`): a number, a buffer swapped for another, a string of the
+module's own lie below `$__base`, the mark of the outermost frame reading
+the flag, and lower nothing. A value read off the receiver it is stored
+into (`a[i] = a[j]`, a swap through a local written once) is no escape: the
+store that first put it there lowered the flag to the same receiver. A
+receiver the expression itself makes (`xs.slice().sort()`,
+`Float64Array.from(xs)`) is fresh memory.
+
+A call the census cannot name is no escape: it runs code of the module,
+whose own sites lower the flag (every closure is censused, its sites its
+own; a function literal a builtin calls in place is walked with the scope
+around it), or the host's, which link flags where the import is called.
+What a builtin of the called name would store into a receiver of unknown
+kind (`push`, `set`, `fill`) is a store into it. A call through a binding
+the summary resolves to closures (`calleeOf`) joins their facts to the
+caller's; link takes the closures they were emitted as, every closure the
+summary never saw, and every table entry that is no closure as the targets
+of the indirect call.
+
+What is known before the call spares it the protocol. An escape with no
+address that no branch, no loop and no earlier return stands before runs on
+every call (link takes a branch for one only where its label lies around
+the escape too: a loop branching to its own head leaves nothing): the frame
+never restores (`arenaUnsafe`), nor does a caller that
+calls it on every call; one into storage older than the frame (a
+parameter's, a captured binding's) keeps the function's own frame (`keeps`),
+a caller's may restore. An assignment decides so only where the call surely
+made its value (a literal, a `new`). A frame that suspends never restores. A
+loop's per-iteration rewind reads no flag: its census takes every escape and
+every call it cannot name for a verdict. Link adds what the source cannot
+show, each lowering the flag to zero where it runs: a write of a global that
+is no scratch, a call handing a host import a value (jz's interop imports
+that read hand it nothing; the runtime's own imports keep nothing but a
+callback they schedule, bridge.js hostImport), a `call_ref`, and in a runtime
+kernel a store whose base address a global reaches (an index read off a
+table addresses the receiver it indexes). A catch lowers the flag to zero,
+since the frames an exception left skipped their epilogues. A site the
+emitter never flagged and a body the census never walked lower it as the
+frame is entered (compile/index.js checks each). The protocol is paid by a
+frame with a reason of its own and by every exported frame, the one a host
+calls block after block; an inner frame only a kernel's rare path flags keeps
+its heap until the frame around it returns. The flag has two readers: a
+frame link rewrote to restore by it, and the host, for an export whose calls
+it releases (`jz:release`). Lowerings no reader can reach are dropped, with
+what their checks kept unless a pass before link made later code read it (a
+receiver read twice is read once into the site's local); a module with no
+reader carries no flag.
+
+`JZ_DEBUG_POISON=1` makes every restore, a frame's, an iteration's and the
+host's, overwrite what it frees: a pointer kept into freed memory reads all
+ones instead of what the block held until the next allocation. The suite and
+the audiojs atoms run under it as a check of the proof: every test of a
+computed value passes; the tests that pin the emitted shape or its size (the
+restore of a frame and of a loop, golden sizes, the loop ratchet, the
+kernel's byte parity) see the fill and differ. `JZ_DEBUG_ESC=1`
+makes every site tell the host which one lowered the flag
+(`env.__esc_note(id)`, the ids listed on stderr), to find what keeps a
+call's memory.
 
 An exported parameter used as a numeric array (paramNumericArrayLike) is
 Float64Array in the export and has kind variants under hidden export names
@@ -1119,8 +1172,9 @@ calls what its origin calls, from its own body: those calls join the call-site
 census, so a callee fed both kinds splits per kind (specializeBimorphicTyped)
 instead of going generic.
 `jz:release` names the exports whose calls keep nothing, `flag` those that keep
-nothing when the escape flag stays down: the host rewinds the heap to where it
-stood before it copied the arguments in.
+nothing when the escape flag stands at or above the host's mark: the host
+rewinds the heap to where it stood before it copied the arguments in, and
+sets `$__base` to that mark around the call.
 
 `E[Symbol.iterator]()` is `__it_from(E)` for every receiver (jzify): an
 indexed value's own iterator, a collection's snapshot view, a provider's
@@ -1580,7 +1634,11 @@ its record once, after any user `return()` call; nested and reentrant patterns
 therefore retain independent cursors. Recycled records clear user references.
 The pool is lazy because module initializers can use binding helpers before
 stdlib initialization. Its array uses ordinary arena snapshot/restore; linking
-through record fields would leave stale links after a reset.
+through record fields would leave stale links after a reset. The records
+stay in the pool, each marked while it is open: opening and closing one
+stores no pointer, so a call that destructures keeps nothing, and the frame
+census counts no store into a record for an escape (`SCRATCH`): the iterator
+it holds is lent from its opening to its close.
 
 An async body suspends only at statements (`jzify/generators.js`: a yield as a
 statement, or the right side of `let x = yield E` / `x = yield E` /
@@ -1814,18 +1872,15 @@ callback name resolves to its arrow only while no nested function rebinds it. In
 `toString` or `valueOf`, converting a value the summary cannot prove primitive (an operator's
 operand, a property key, a builtin's argument, a typed element store) is a call to the
 ToPrimitive function it lowers to (`runsConversion`). The arena rewind (`src/optimize/arena-rewind.js`) restores the
-heap pointer at return for any function with a scalar non-pointer result whose
-frame is not `arenaUnsafe`, parameters included; the link pass adds what the
-source cannot show: a `global.set` of anything but the heap pointers, the error
-transport and the insertion stamp; a `call_indirect`/`call_ref`; a host import
-that takes arguments (the interop `$__ext_*` imports copy what they receive); a
-runtime kernel that stores through an address a mutable global reaches (a
-durable log, a property cache); a tail call, except one into a safe kernel,
-which becomes a plain call under the restore. Vetoes propagate to callers, so a
-cycle of clean kernels stays safe; allocation counts through callees. The
-durable-heap logs are census-guarded: they record only outer-container
-mutations, which no rewind candidate performs. `whyNotRewind` names the reason
-for every declined candidate. Load CSE (`src/compile/cse-load.js`) keeps a
+heap pointer at return for any function with a scalar non-pointer result,
+parameters included, outright where nothing its frame may reach lowers the
+escape flag and by the flag otherwise (above); a tail call leaves the frame
+before its epilogue, except one into a safe kernel, which becomes a plain call
+under the restore. Allocation counts through callees. The durable-heap logs
+record only mutations of containers made before the reset mark, each a store
+the census counts: its site lowers the flag to the durable receiver, so no
+frame restores over a logging path. `whyNotRewind` names the reason
+for every candidate that keeps its heap. Load CSE (`src/compile/cse-load.js`) keeps a
 cached typed-array load across a call whose callee does not `writesOuter`; any other
 call or user conversion invalidates after its operands, which run first. A store keeps
 a cached load only when it cannot reach the element: storage that never holds typed
@@ -1858,10 +1913,10 @@ the loop's own tape and callees, not the function's, so a dispatch through a
 table before the loop leaves it, and strips the rest, reporting `loop: …`
 with the tape's reason through `whyNotRewind`), so a loop building a
 temporary per row runs in constant memory. The property caches a rewind
-leaves valid are no veto: the inline caches key on the schema id in a
+leaves valid lower no flag: the inline caches key on the schema id in a
 pointer's high word, and the dynamic-get cache is kept coherent by every
-writer of the table it mirrors, which no rewound frame reaches; the for-in
-key cache holds an array a rewind may free and stays vetoed. Truly shared memory (`sharedMemory`) rewinds
+writer of the table it mirrors, whose store keeps every frame; the for-in
+key cache holds an array a rewind may free, and its write keeps them too. Truly shared memory (`sharedMemory`) rewinds
 nothing: one thread's restore would discard every other thread's allocations.
 
 Record parameters become lanes (`src/compile/plan/lanes.js`, a plan sweep

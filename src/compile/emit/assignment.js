@@ -17,7 +17,7 @@ import {
 } from '../representation-plan.js'
 import { plannedTypedStorageCtor } from '../typed-storage-plan.js'
 import { I64_ARITH_OP, bigIntDivIR, bigIntDomainsCanMix, bigIntOperand, bigintMixReject } from './bigint.js'
-import { emit, emitIdentitySafe, rejectAmbiguousBoolIdentity, boolTaggedBinding, boolCarrier, toBool, markInstrumented, withEscapeFlag } from './dispatch.js'
+import { emit, emitIdentitySafe, rejectAmbiguousBoolIdentity, boolTaggedBinding, boolCarrier, toBool, markInstrumented, whereNew, withEscapeFlag, siteFlag } from './dispatch.js'
 import { emitArrayViewDef } from '../array-view.js'
 import { privateStringBuilder } from '../analyze-scans.js'
 import { isSideEffectFree } from './shared.js'
@@ -332,7 +332,8 @@ export const assignmentOps = {
     // &&= and ??= assign when cond is true (truthy / nullish); ||= assigns when cond is false
     const repAction = representationBindingWriteAction(ctx, name, val)
     const assigned0 = asF64(applyBigintRepresentationAction(emit(val), val, repAction))
-    const assigned = site ? withEscapeFlag(assigned0) : assigned0
+    const asked = site && ctx.plans.siteAsked?.has(ctx.plans.siteOrigin?.get(site) ?? site)
+    const assigned = !site ? assigned0 : asked ? whereNew(assigned0, siteFlag(site, name)) : withEscapeFlag(assigned0, siteFlag(site, name))
     const [thenExpr, elseExpr] = op === '||='
       ? [['local.get', `$${t}`], assigned]
       : [assigned, ['local.get', `$${t}`]]

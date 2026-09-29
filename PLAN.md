@@ -442,18 +442,22 @@ Architecture
   (`writesOuter`, `arenaUnsafe`, `callsUnknown`, transitive callees). No source-plan pass
   keeps a private call or effect analyzer; where the shared evidence is
   silent, the optimization declines.
-- Frame effects gate the arena rewind: an escape that may not run on a call
-  (in a branch, past a return, behind its own test) is a site that raises the
-  escape flag where it runs, and the frame restores the heap only on a call
-  that raised none (a state made on the first call is kept once); an escape
-  every call reaching it runs, and a frame that suspends, keep the frame
-  whole; a loop whose iteration lets nothing escape restores the heap pointer
-  per iteration, and `whyNotRewind` names each declined candidate and each
-  conditional frame's first site. A store into a parameter the export
-  boundary types is a number into fixed storage, not a growth; the loop to
-  rewind is found by its label, which the peephole walk keeps where
-  it copies the loop's node. A render loop with a block per iteration holds
-  the memory flat (`test/mem.js`).
+- Frame effects gate the arena rewind by age: an escape lowers the escape
+  flag, where it runs, to the address it wrote into, and a frame restores the
+  heap when the flag stands at or above its own mark. A temporary a call
+  builds of closures, cells and objects goes with the call; a state made on
+  the first call is kept once; a call the census cannot name is no escape,
+  since what it runs lowers the flag itself. A store of no heap value lowers
+  it only where the store allocated, an assignment only for a value a running
+  call made. An escape with no address that every call runs, and a frame
+  that suspends, keep the frame whole; a loop whose iteration lets nothing
+  escape restores the heap pointer per iteration, and `whyNotRewind` names
+  each candidate that keeps its heap and each flagged frame's first site. A
+  store into a parameter the export boundary types is a number into fixed
+  storage, not a growth; the loop to rewind is found by its label, which the
+  peephole walk keeps where it copies the loop's node. A render loop with a
+  block per iteration holds the memory flat (`test/mem.js`). What a call
+  replaces in older storage is never freed: that needs a collector.
 - Only a DEFINITE store declares a key in a literal's layout. Static
   enumeration stands down whenever the layout is open; the open-layout for-in
   unrolls the closed keys only when neither the layout nor the keys added at

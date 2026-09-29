@@ -5,8 +5,8 @@
   "cond": 581,
   "buf": 15658,
   "nest": 3571,
-  "slice": 68598,
+  "slice": 69086,
   "ring": 18720,
-  "condref": 83015,
+  "condref": 83565,
   "fgather": 12560
 }

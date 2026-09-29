@@ -122,6 +122,23 @@ const loopBodyOps = (wat) => {
 // ring and condref (a typed array's index is no longer demanded boxed, so their
 // element paths left the dynamic-key helpers), locking those gains in.
 
+// Release by age (2026-09-28): a frame restores its heap unless an escape
+// wrote below its mark (optimize/arena-rewind.js), so a store that may hand
+// older storage a value a running call made is a site (compile/analyze/
+// frame-effects.js). Two shapes pay per iteration, both in the export
+// wrapper's variant for receivers of unknown kind. condref's `t[i] = u[i]`
+// asks the value it copied out of another array whether a running call made
+// it (`__esc_new`, a number leaving at its first compare): 11 programs, 50
+// nodes each, 83015 -> 83565. slice's `a[o + i] = a[o + i]` stores what its
+// receiver held already and asks nothing, but `o + i` over an `o` of unknown
+// kind may concatenate, so the loop allocates besides the store and the
+// growth check stays after the store instead of around the loop (45 nodes),
+// its mark moved past the value read, which a host's receiver answers with
+// a copy (16 nodes): 8 programs, 61 nodes each, 68598 -> 69086. Measured
+// over scripts/perf-corpus.mjs against 6f069d30, every other program's count
+// unchanged, buf's `buf[i] = buf[i]` included. The bench corpus sizes and
+// timings are gated on their own.
+
 // Total loop-body ops across the fixed corpus, per category. Deterministic.
 const measure = () => {
   const totals = {}

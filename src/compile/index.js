@@ -80,7 +80,7 @@ import { captureFuncInspect } from './func-inspect.js'
 import { isBoundaryWrapped, synthesizeBoundaryWrappers } from './boundary-wrap.js'
 import { analyzeFuncForEmit } from './analyze-for-emit.js'
 import { emitFunc } from './emit-func.js'
-import { transitiveFrameEffects } from './analyze/frame-effects.js'
+import { transitiveFrameEffects, SITE } from './analyze/frame-effects.js'
 import { analyzeClosureBodyForEmit, emitClosureBody } from './closure-emit.js'
 
 // Optional profiling; pass behavior is identical without a profiler.
@@ -246,31 +246,52 @@ export function assemble(ast, profiler) {
   const censusFrames = () => {
     const loops = ctx.plans.rewindLoops = new WeakSet()
     ctx.plans.rewindLoopLabels = null
-    const facts = transitiveFrameEffects(ctx.funcs.list)
+    const facts = transitiveFrameEffects(ctx.funcs.list, [ast, ...(ctx.module.moduleInits ?? [])])
     ctx.plans.closureCalls = facts.closureCalls
     ctx.plans.closureSites = facts.closureSites
-    // The escape sites the emitter flags (emit/dispatch.js): every function's
-    // and every resolved closure's own.
-    const sites = ctx.plans.escapeSites = new WeakSet(), guards = ctx.plans.siteGuards = new WeakMap()
-    // A site two censuses name (a named arrow's body, also a closure's) raises
-    // outright if either says so, else where any receiver either names is untyped.
-    const guard = (n, g) => { const prev = guards.get(n); guards.set(n, g === null || prev === null ? null : prev ? [...new Set([...prev, ...g])] : g) }
+    ctx.plans.closureUnsited = facts.closureUnsited
+    // The escape sites the emitter flags (emit/dispatch.js), every function's
+    // and every closure's own, each with what it writes into (`siteKinds`;
+    // for a loop the receivers its stores may grow, `siteNames`) and whether
+    // it escapes only where its store allocates (`siteGrown`).
+    const sites = ctx.plans.escapeSites = new WeakSet(), kinds = ctx.plans.siteKinds = new WeakMap()
+    const grown = ctx.plans.siteGrown = new WeakSet(), names = ctx.plans.siteNames = new WeakMap(), whys = ctx.plans.siteWhys = new WeakMap()
+    const grows = ctx.plans.siteGrows = new WeakSet(), asked = ctx.plans.siteAsked = new WeakSet()
     let any = false
+    // A site two censuses name (a named arrow's body, also a closure's): read
+    // differently it has no one address and lowers the flag to zero; it waits
+    // for an allocation, or asks its value, only where both do.
+    const join = (o) => {
+      for (const n of o.sites ?? []) {
+        const seen = sites.has(n), k = o.siteKinds.get(n), prev = kinds.get(n)
+        if (o.siteGrown.has(n) ? !seen : true) { if (o.siteGrown.has(n)) grown.add(n); else grown.delete(n) }
+        if (o.siteGrows.has(n)) grows.add(n)
+        if (!o.siteGrown.has(n)) { if (o.siteAsked.has(n) && (!seen || asked.has(n) || grown.has(n))) asked.add(n); else asked.delete(n) }
+        if (k !== undefined) kinds.set(n, prev === undefined || prev === k ? k : SITE.ZERO)
+        if (!whys.has(n)) whys.set(n, o.siteWhys.get(n))
+        const held = o.siteNames.get(n)
+        if (held) { const all = names.get(n) ?? names.set(n, new Map()).get(n); for (const [r, rk] of held) all.set(r, all.has(r) && all.get(r) !== rk ? SITE.RECV : rk) }
+        sites.add(n); any = true
+      }
+    }
     for (const [name, frame] of facts) {
       const f = ctx.funcs.map.get(name)
       if (!f) continue
       f.frame = frame
       for (const body of frame.loops) loops.add(body)
-      for (const n of frame.sites ?? []) { sites.add(n); any = true }
-      for (const [n, g] of frame.siteGuards ?? []) guard(n, g)
+      join(frame)
     }
-    for (const set of facts.closureSites.values()) for (const n of set) { sites.add(n); any = true }
-    for (const m of facts.closureSiteGuards.values()) for (const [n, g] of m) guard(n, g)
-    // The escape flag: census sites raise it, and link raises it where its own
-    // vetoes run (optimize/arena-rewind.js), so it is declared for every
-    // program; link drops the writes no conditional frame reads, and with them
-    // the global.
-    declGlobal('__esc', 'i32', 0)
+    for (const o of facts.closureSiteFacts.values()) join(o)
+    // The escape flag, the lowest address an escape wrote into (all ones while
+    // none ran): census sites lower it, and link lowers it where its own vetoes
+    // run (optimize/arena-rewind.js), so it is declared for every program;
+    // link drops the writes no conditional frame reads, and with them the
+    // global.
+    declGlobal('__esc', 'i32', -1)
+    // The heap mark of the outermost frame that reads the flag (all ones
+    // while none runs): a value below it was made before every such frame,
+    // and a store of it is no escape (module/core.js `__esc_new`).
+    declGlobal('__base', 'i32', -1)
     ctx.plans.escapeFlag = true
     ctx.plans.hasSites = any
     ctx.plans.instrumented = new WeakSet()
@@ -890,19 +911,26 @@ export function assemble(ast, profiler) {
   // proof: the summary saw no value reach it (a function it only met as a value).
   const SCALAR_TAGS = bitOf(K.NUMBER) | bitOf(K.BOOL) | NULL_BITS
   const holdsNoHeap = (k) => k != null && tagsOf(k) !== 0 && (tagsOf(k) & ~SCALAR_TAGS) === 0
-  // `conditional`: the frames that run escape sites, and the first site's reason.
-  const rewindable = new Map(), unsafe = new Set(), conditional = new Map()
-  // An escape site the emitter never flagged (emit/dispatch.js) runs unseen:
-  // its frame stays whole, a function's own or a closure's (each body it was
-  // emitted as).
+  // `unsafe`: the frames no call of which restores, nor a caller's that calls
+  // them on every call; `keeps`: those whose own frame never restores, a
+  // caller's may; `conditional`: those that run code lowering the escape flag,
+  // and the first reason; `entry`: those with an escape the emitter flagged at
+  // no node (a site it never emitted through its dispatch, a body the census
+  // never walked), where link lowers the flag as the frame is entered.
+  const rewindable = new Map(), unsafe = new Set(), keeps = new Map(), conditional = new Map(), entry = new Set()
   const unflagged = (sites) => sites != null && [...sites].some(n => !ctx.plans.instrumented?.has(n))
-  for (const [id, sites] of ctx.plans.closureSites ?? []) if (unflagged(sites))
-    for (const [name, sid] of ctx.closure.summaryId ?? []) if (sid === id) unsafe.add(`$${name}`)
+  for (const [name, id] of ctx.closure.summaryId ?? [])
+    if (id === undefined || !ctx.plans.closureSites?.has(id) || ctx.plans.closureUnsited?.has(id) || unflagged(ctx.plans.closureSites.get(id))) { unsafe.add(`$${name}`); entry.add(`$${name}`) }
   for (const f of ctx.funcs.list) {
     if (f.raw || ctx.memory.atomic) continue
     const frame = f.frame
-    if (frame == null || frame.arenaUnsafe) { unsafe.add(`$${f.name}`); ctx.transform.whyNotRewind?.(`$${f.name}`, 'escape: ' + (frame?.why ?? 'no census')); continue }
-    if (unflagged(frame.sites)) { unsafe.add(`$${f.name}`); ctx.transform.whyNotRewind?.(`$${f.name}`, 'escape: a site left unflagged'); continue }
+    if (frame == null || frame.unsited || unflagged(frame.sites)) {
+      unsafe.add(`$${f.name}`); entry.add(`$${f.name}`)
+      ctx.transform.whyNotRewind?.(`$${f.name}`, 'escape: ' + (frame == null ? 'no census' : frame.unsited ? frame.why : 'a site left unflagged'))
+      continue
+    }
+    if (frame.arenaUnsafe) { unsafe.add(`$${f.name}`); ctx.transform.whyNotRewind?.(`$${f.name}`, 'escape: ' + frame.why); continue }
+    if (frame.keeps) { keeps.set(`$${f.name}`, frame.keepsWhy); ctx.transform.whyNotRewind?.(`$${f.name}`, 'escape: ' + frame.keepsWhy); continue }
     if (frame.flagged) conditional.set(`$${f.name}`, frame.siteWhy ?? 'an escape')
     // A rewound frame returns a scalar: a heap result (a pointer kind, a
     // tagged f64 the summary cannot hold to numbers, booleans and nullish
@@ -922,11 +950,12 @@ export function assemble(ast, profiler) {
       for (const f of programFacts.programIndex.concreteFunctionOrder()) {
         if (!isExported(f) || f.raw || f.boundaryOrigin) continue
         const inner = `$${f.name}`
-        if (!rewindable.has(inner) && !f.frame?.arenaUnsafe) continue   // a heap result
-        const keeps = allocates(inner) && !rewound.has(inner), copies = boxed.has(exportNamesOf(f.name)[0]) && !releasable.has(inner)
-        if (!keeps && !copies) continue
-        const reason = f.frame?.arenaUnsafe ? f.frame.why : why(inner) ?? 'its result may hold a heap value'
-        const what = keeps && copies ? 'what it allocates and the copies the host makes of its arguments' : keeps ? 'what it allocates' : 'the copies the host makes of its arguments'
+        const escapes = f.frame?.arenaUnsafe || f.frame?.keeps
+        if (!rewindable.has(inner) && !escapes) continue   // a heap result
+        const held = allocates(inner) && !rewound.has(inner), copies = boxed.has(exportNamesOf(f.name)[0]) && !releasable.has(inner)
+        if (!held && !copies) continue
+        const reason = f.frame?.arenaUnsafe ? f.frame.why : f.frame?.keeps ? f.frame.keepsWhy : why(inner) ?? 'its result may hold a heap value'
+        const what = held && copies ? 'what it allocates and the copies the host makes of its arguments' : held ? 'what it allocates' : 'the copies the host makes of its arguments'
         for (const name of exportNamesOf(f.name))
           warn('heap-per-call', `export '${name}' keeps ${what} on every call (${reason}): memory grows with each call; call memory.reset() between batches from the host`, { fn: f.name, reason }, f.body?.loc)
       }
@@ -973,7 +1002,8 @@ export function assemble(ast, profiler) {
     // Module bindings that never hold a heap value: a write to one strands nothing.
     scalarGlobals: new Set([...(ctx.scope.userGlobals ?? [])].filter(g => holdsNoHeap(ctx.summary?.kindOfExpr(g))).map(g => `$${g}`)),
     adviseKept: ctx.warnings && ctx.transform.alloc !== false ? adviseKept(rewindable, lateFacts.exportInner) : null,
-    closureTargets, closureNames, conditional, keepsNothing: ctx.module.keepsNothing,
+    closureTargets, closureNames, conditional, keeps, entry, keepsNothing: ctx.module.keepsNothing,
+    exported: new Set(ctx.funcs.list.filter(f => isExported(f)).map(f => `$${f.name}`)),
     censused: new Set([...ctx.funcs.list.filter(f => f.frame).map(f => `$${f.name}`),
       ...[...ctx.closure.summaryId ?? []].filter(([, id]) => id !== undefined && ctx.plans.closureSites?.has(id)).map(([name]) => `$${name}`)]),
     report: ctx.transform.whyNotRewind ?? null,

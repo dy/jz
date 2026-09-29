@@ -168,7 +168,7 @@ memory.reset()</code></pre>
           <tr><td>string, array, typed array</td><td>copied in, decoded out; numeric writes copied back</td></tr>
           <tr><td>plain object</td><td>by reference, through the host</td></tr>
           <tr><td><code>memory.Float64Array(n)</code></td><td>shared storage, no copy</td></tr>
-          <tr><td>heap allocations</td><td>released on return by a call that keeps none, else kept until <code>memory.reset()</code>, which invalidates earlier pointers</td></tr>
+          <tr><td>heap allocations</td><td>released on return by a call that stored nothing it made into older storage, else kept until <code>memory.reset()</code>, which invalidates earlier pointers</td></tr>
         </tbody>
       </table>
     </li>

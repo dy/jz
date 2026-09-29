@@ -45,7 +45,7 @@ test('warnings: an export whose calls keep nothing stays quiet, parameters and a
 test('warnings: heap-per-call names what an export keeps and why', () => {
   const ws = warningsFor('import { log } from "env"\nexport let f = (n) => { const o = { x: n }; log(o); return 1 }', { imports: { env: { log() {} } } }).filter(w => w.code === 'heap-per-call')
   is(ws.length, 1)
-  ok(/export 'f' keeps what it allocates/.test(ws[0].message) && /calls log/.test(ws[0].message), ws[0].message)
+  ok(/export 'f' keeps what it allocates/.test(ws[0].message) && /calls log, the host's/.test(ws[0].message), ws[0].message)
   ok(/memory\.reset\(\)/.test(ws[0].message))
 })
 

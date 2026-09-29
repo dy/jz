@@ -6,11 +6,11 @@
 
 import { DBG_INVARIANTS } from '../../debug.js'
 import print from 'watr/print'
-import { STR_HCACHE_BIT } from '../../../layout.js'
+import { STR_HCACHE_BIT, HEAP } from '../../../layout.js'
 import { ASSIGN_OPS, MUTATE_OPS, T, commaList, firstRefKind, isBlockBody, isReassigned } from '../../ast.js'
 import { PTR, ctx, err, inc, emitArity, setLinkDemand } from '../../ctx.js'
 import {
-  callWithArgs, FALSE_NAN, MAX_CLOSURE_ARITY, TRUE_NAN, UNDEF_NAN, WASM_OPS, applyBigintRepresentationAction, asF64, asI32, asI64, asParamType, asPtrOffset, block64, boolBoxIR, boxBigInt, carrierF64, carrierF64Narrow, emitNum, extractF64Bits, flat, freshId, fromI64, isBoolAtom, isBoundName, isGlobal, isLit, isNullish, isNullishLit, litVal, materializeDeferredBigint, mayYieldUndefOf, maybeUnboxBigInt, mkPtrIR, nullExpr, nullableBoolBoxIR, ptrOffsetIR, readVar, resolveValType, temp, tempI32, tempI64, toI32, toNumF64, toStrI64, truthyIR, typed, unboxBoolIR, undefExpr, valKindToPtr,
+  callWithArgs, FALSE_NAN, MAX_CLOSURE_ARITY, TRUE_NAN, UNDEF_NAN, WASM_OPS, applyBigintRepresentationAction, asF64, asI32, asI64, asParamType, asPtrOffset, block64, boolBoxIR, boxBigInt, carrierF64, carrierF64Narrow, emitNum, extractF64Bits, flat, freshId, fromI64, isBoolAtom, isBoundName, isGlobal, boxedAddr, isLit, isNullish, isNullishLit, litVal, materializeDeferredBigint, mayYieldUndefOf, maybeUnboxBigInt, mkPtrIR, nullExpr, nullableBoolBoxIR, ptrOffsetIR, readVar, resolveValType, temp, tempI32, tempI64, toI32, toNumF64, toStrI64, truthyIR, typed, unboxBoolIR, undefExpr, valKindToPtr,
 } from '../../ir.js'
 import { BIGINT_JOINT_BINARY_OPS, isPresentNumber, hasAmbiguousBoolMerge, nullishArm, valTypeOf } from '../../kind.js'
 import { VAL, lookupValType, repOf, repOfGlobal, numericStorage, mayBeUndefined } from '../../reps.js'
@@ -28,6 +28,7 @@ import {
   JOIN_OPS, REP_EDGE_BOX, REP_EDGE_REJECT, REP_EDGE_UNBOX, representationBindingWriteAction, representationCallArgAction,
 } from '../representation-plan.js'
 import { CARRIER } from '../../summary/contract.js'
+import { SITE, allocatesNothing } from '../analyze/frame-effects.js'
 import { CMP_SET, boolEagerBody, eagerSelectOK, isCanonicalBoolExpr, isCmp, selectOK } from './shared.js'
 import { K, NUMBER, hasTag, orAbsent, valOf, core as summaryCore, tagOf as summaryTagOf, tagsOf as summaryTagsOf, bitOf as summaryBitOf, NULL_BITS as SUMMARY_NULL_BITS } from '../../summary/kind.js'
 
@@ -1559,34 +1560,183 @@ function liftOptionalChain(node) {
  * @returns {Array} typed WASM S-expression
  */
 // Escape sites (compile/analyze/frame-effects.js): where one runs, the escape
-// flag goes up before its store, so the frame around it keeps the heap at its
-// return (optimize/arena-rewind.js). A logical assignment raises it in the arm
-// that assigns (emit/assignment.js), so an initialization made once flags once.
+// flag goes down to the address it writes into, so a frame older than that
+// address keeps the heap at its return (optimize/arena-rewind.js): before the
+// node where it stores a value that may hold a heap pointer, after it where it
+// escapes only by making its receiver grow, and then only if it allocated. A
+// logical assignment lowers the flag in the arm that assigns
+// (emit/assignment.js), so an initialization made once flags once.
 const LOGICAL_ASSIGN = new Set(['??=', '||=', '&&='])
 export function emit(node, expect) {
-  const ir = emitNode(node, expect)
-  if (!ctx.plans.escapeFlag || !Array.isArray(node) || !ctx.plans.escapeSites?.has(node) || LOGICAL_ASSIGN.has(node[0])) return ir
+  if (remarking > 0 && Array.isArray(node)) { const mark = REMARKS.get(node); if (mark !== undefined) return remarked(node, expect, mark) }
+  if (!ctx.plans.escapeFlag || !Array.isArray(node) || !ctx.plans.escapeSites?.has(node) || LOGICAL_ASSIGN.has(node[0])) return emitNode(node, expect)
   markInstrumented(node)
-  return withEscapeFlag(ir, ctx.plans.siteGuards?.get(ctx.plans.siteOrigin?.get(node) ?? node))
+  const origin = ctx.plans.siteOrigin?.get(node) ?? node
+  const heap = ctx.memory.shared || ctx.scope.globals.has('__heap')
+  if (ctx.plans.siteGrown?.has(origin) && heap) return whereGrown(node, origin, expect)
+  // an assignment yields what it stored: the flag goes down only for a value a
+  // running call made, or where the store allocated
+  if (ctx.plans.siteAsked?.has(origin) && heap && (ASSIGN_OPS.has(node[0]) || node[0] === '++' || node[0] === '--')) {
+    const held = { pre: [] }, flag = siteFlag(node, undefined, held)
+    if (flag === null) return emitNode(node, expect)
+    const mark = ctx.plans.siteGrows?.has(origin) ? escLocal('i32', ESC_MARK) : null
+    if (mark !== null) held.pre.push(['local.set', mark, heapTop()])
+    const ir = mark === null ? emitNode(node, null) : pastOperands(node, mark, () => emitNode(node, null)), t = Array.isArray(ir) ? ir.type : undefined
+    if (t === 'f64' || t === 'i32') {
+      const out = whereNew(ir, flag, held.pre, mark)
+      return expect === 'void' ? typed(['drop', out], 'void') : out
+    }
+    return withEscapeFlag(ir, ['block', ...held.pre, flag])
+  }
+  // the address is read before the node runs
+  const flag = siteFlag(node)
+  return withEscapeFlag(emitNode(node, expect), flag)
+}
+/** A value about to be stored, with the flag lowered by `flag` after it is
+ *  made when a running call may have allocated it (`__esc_new`), or when the
+ *  heap moved since `mark` kept its top; `pre`: what `flag` reads, taken
+ *  before the value is made. */
+export function whereNew(ir, flag, pre = [], mark = null) {
+  if (flag === null) return ir
+  // a number is no pointer: only the store's own allocation is left to ask
+  const number = ir.valKind === VAL.NUMBER || (ir.type === 'i32' && ir.ptrKind == null)
+  if (number && mark === null) return ir
+  if (!number) inc('__esc_new')
+  const kept = escLocal('f64', ESC_VALUE)
+  const made = ['call', '$__esc_new', ['local.get', kept]], moved = mark === null ? null : ['i32.ne', heapTop(), ['local.get', mark]]
+  const out = typed(['block', ['result', 'f64'], ...pre, ['local.set', kept, asF64(ir)],
+    ['if', number ? moved : moved === null ? made : ['i32.or', moved, made], ['then', flag]], ['local.get', kept]], 'f64')
+  if (ir.type === 'f64') for (const k of REP_FACTS) if (ir[k] !== undefined) out[k] = ir[k]
+  return out
+}
+// JZ_DEBUG_ESC=1: every site that lowers the flag tells the host which one it
+// was (`env.__esc_note(id)`, the ids listed on stderr as they are emitted), to
+// find what keeps a call's memory. A tool for this file's work, off in use.
+const DBG_ESC = typeof process !== 'undefined' && process.env?.JZ_DEBUG_ESC === '1'
+let escNotes = 0
+const spelled = (n) => Array.isArray(n) ? '[' + n.map(spelled).join(' ') + ']' : String(n)
+const noted = (flag, node) => {
+  if (!DBG_ESC || flag === null) return flag
+  const id = ++escNotes
+  if (!ctx.module.imports.some(i => i[2] === '"__esc_note"')) { ctx.module.imports.push(['import', '"env"', '"__esc_note"', ['func', '$__esc_note', ['param', 'i32']]]); ctx.module.keepsNothing.add('$__esc_note') }
+  console.error(`esc-note ${id}: ${ctx.func.current?.name ?? ctx.func.name ?? '?'}: ${ctx.plans.siteWhys?.get(ctx.plans.siteOrigin?.get(node) ?? node) ?? 'site'}: ${spelled(node).slice(0, 160)}`)
+  return ['block', flag, ['call', '$__esc_note', ['i32.const', id]]]
 }
 /** The site (or the site a clone of it copies) is flagged where it is emitted. */
 export const markInstrumented = (node) => ctx.plans.instrumented.add(ctx.plans.siteOrigin?.get(node) ?? node)
-/** `ir` with the escape flag raised before it (a loop's site may return from
- *  inside). With `guards`, receiver names, it rises only when one of those
- *  receivers is no typed array: an element store into one never grows it. A
- *  value keeps its value: an i32 is boxed first by its
- *  own facts (a pointer's offset, an unsigned word); an f64 or i64 keeps the
- *  facts that say what its bits are (REP_FACTS). Named, not enumerated: the
- *  self-hosted compiler lists no named property of an array. */
-const REP_FACTS = ['ptrKind', 'ptrAux', 'srcPtrKind', 'schemaSid', 'valKind', 'bigintRaw', 'bigintBox']
-export const withEscapeFlag = (ir, guards = null) => {
-  const raise = ['global.set', '$__esc', ['i32.const', 1]]
-  let flag = raise
-  if (guards?.length) {
-    inc('__ptr_type')
-    const untyped = guards.map(name => ['i32.ne', ['call', '$__ptr_type', ['i64.reinterpret_f64', asF64(readVar(name))]], ['i32.const', PTR.TYPED]])
-    flag = ['if', untyped.reduce((a, b) => ['i32.or', a, b]), ['then', raise]]
+const flagToZero = () => ['global.set', '$__esc', ['i32.const', 0]]
+// The tag of the locals a growth site keeps in: link drops their writes with
+// the check no frame reads (optimize/arena-rewind.js, same tag). Numbered
+// apart from the frame's other names: a site changes no label and no temp
+// of the code around it.
+const ESC_MARK = 'esch', ESC_VALUE = 'escv'
+const escLocal = (type, tag) => {
+  let name, n = 0
+  do { name = `${T}${tag}${n++}` } while (ctx.func.locals.has(name))
+  ctx.func.locals.set(name, type)
+  return '$' + name
+}
+/** The flag lowered to the storage of `target` (a binding's name, a path
+ *  below one), by the site's kind (frame-effects.js SITE): the container the
+ *  target holds (`__esc_val`; `__esc_elem` for a store a typed array turns
+ *  into numbers), the cell a binding lives in, zero for a module binding.
+ *  Null for a binding of this frame's own: no memory is written. `held`: the
+ *  target's value is read now into a local and the flag lowered by it later
+ *  (`held.pre` takes the read): a store that grows its receiver rebinds it
+ *  to the new storage, and it is the old one that was written. */
+function holderFlag(target, kind, held = null) {
+  if (kind === SITE.CELL) {
+    if (typeof target !== 'string') return flagToZero()
+    if (ctx.func.boxed?.has(target)) { inc('__esc_at'); return ['call', '$__esc_at', boxedAddr(target)] }
+    return isGlobal(target) ? flagToZero() : null
   }
+  if (target == null || kind === SITE.ZERO) return flagToZero()
+  const fn = kind === SITE.ELEM ? '__esc_elem' : '__esc_val'
+  inc(fn)
+  const value = asF64(emit(target))
+  if (held === null) return ['call', '$' + fn, value]
+  const was = escLocal('f64', ESC_MARK)
+  held.pre.push(['local.set', was, value])
+  return ['call', '$' + fn, ['local.get', was]]
+}
+/** The flag lowered for the site `node`: what it writes into is read off the
+ *  node as it is emitted (a clone of the site the census saw carries its own
+ *  names): its receiver, its first argument, the binding it assigns
+ *  (`target`, where the caller names it). */
+export function siteFlag(node, target = undefined, held = null) {
+  const kind = ctx.plans.siteKinds?.get(ctx.plans.siteOrigin?.get(node) ?? node) ?? SITE.ZERO
+  if (kind === SITE.CELL) return noted(holderFlag(target ?? node[1], kind), node)
+  if (kind === SITE.ARG) { const a = node[2]; target = a == null ? null : Array.isArray(a) && a[0] === ',' ? a[1] : a }
+  else if (kind !== SITE.ZERO) { const t = node[1]; target = Array.isArray(t) && (t[0] === '.' || t[0] === '[]') ? t[1] : null }
+  return noted(holderFlag(target, kind, held), node)
+}
+const heapTop = () => typed(ctx.memory.shared ? ['i32.load', ['i32.const', HEAP.PTR_ADDR]] : ['global.get', '$__heap'], 'i32')
+/** The node of a site that escapes only where it allocates, with the flag
+ *  lowered after it when the heap moved while it ran: to what the node
+ *  writes into, or, for a loop, to each receiver its stores may grow
+ *  (`siteNames`), as each stood before the node ran. */
+function whereGrown(node, origin, expect) {
+  const names = ctx.plans.siteNames?.get(origin), held = { pre: [] }
+  const flags = (names ? [...names].map(([name, kind]) => noted(holderFlag(name, kind, held), node)) : [siteFlag(node, undefined, held)]).filter(f => f !== null)
+  if (!flags.length) return emitNode(node, expect)
+  const mark = escLocal('i32', ESC_MARK)
+  const save = [...held.pre, ['local.set', mark, heapTop()]]
+  const check = ['if', ['i32.ne', heapTop(), ['local.get', mark]], ['then', ...flags]]
+  const ir = names ? emitNode(node, expect) : pastOperands(node, mark, () => emitNode(node, expect))
+  if (ir == null) return typed(['block', ...save, check], 'void')
+  const t = Array.isArray(ir) ? ir.type : undefined
+  if (!t || t === 'void') return typed(['block', ...save, ...flat(ir), check], 'void')
+  const value = t === 'i32' ? asF64(ir) : ir, vt = t === 'i32' ? 'f64' : t
+  const kept = escLocal(vt, ESC_VALUE)
+  const out = typed(['block', ['result', vt], ...save, ['local.set', kept, value], check, ['local.get', kept]], vt)
+  if (t !== 'i32') for (const k of REP_FACTS) if (ir[k] !== undefined) out[k] = ir[k]
+  return out
+}
+// The mark of a site that waits for an allocation stands past its operands:
+// what a store's value or a call's argument allocates as it is evaluated (a
+// literal, a host's copy, a temporary string) is no growth of the receiver.
+// An operand that may allocate (frame-effects.js allocatesNothing) moves the
+// mark to the heap's top as it ends, unless the heap had moved before it
+// began: whatever allocated there, a key made a string or the store itself
+// where a kernel makes room first, stays counted (the mark goes to all ones,
+// which the heap's top never is). So the order the node is emitted in
+// decides nothing.
+const REMARKS = new WeakMap()
+let remarking = 0
+const NO_MARK = ['i32.const', -1]
+const operandsOf = (node) => ASSIGN_OPS.has(node[0]) ? [node[2]] : node[0] === '()' ? commaList(node[2]) : []
+function pastOperands(node, mark, run) {
+  const view = ctx.summary?.at(ctx.func.current)
+  const list = operandsOf(node).filter(e => Array.isArray(e) && !allocatesNothing(view, e))
+  if (!list.length) return run()
+  for (const e of list) REMARKS.set(e, mark)
+  remarking++
+  try { return run() } finally { remarking--; for (const e of list) REMARKS.delete(e) }
+}
+function remarked(node, expect, mark) {
+  REMARKS.delete(node)
+  let ir
+  try { ir = emit(node, expect) } finally { REMARKS.set(node, mark) }
+  const began = ['if', ['i32.ne', heapTop(), ['local.get', mark]], ['then', ['local.set', mark, NO_MARK]]]
+  const ended = ['if', ['i32.ne', ['local.get', mark], NO_MARK], ['then', ['local.set', mark, heapTop()]]]
+  if (ir == null) return typed(['block', began, ended], 'void')
+  const t = Array.isArray(ir) ? ir.type : undefined
+  if (!t || t === 'void') return typed(['block', began, ...flat(ir), ended], 'void')
+  const value = t === 'i32' ? asF64(ir) : ir, vt = t === 'i32' ? 'f64' : t
+  const kept = escLocal(vt, ESC_VALUE)
+  const out = typed(['block', ['result', vt], began, ['local.set', kept, value], ended, ['local.get', kept]], vt)
+  if (t !== 'i32') for (const k of REP_FACTS) if (ir[k] !== undefined) out[k] = ir[k]
+  return out
+}
+/** `ir` with the escape flag lowered before it by `flag` (siteFlag; to zero
+ *  when none is given), `ir` alone where there is nothing to lower. A value
+ *  keeps its value: an i32 is boxed first by its own facts (a pointer's
+ *  offset, an unsigned word); an f64 or i64 keeps the facts that say what its
+ *  bits are (REP_FACTS). Named, not enumerated: the self-hosted compiler
+ *  lists no named property of an array. */
+const REP_FACTS = ['ptrKind', 'ptrAux', 'srcPtrKind', 'schemaSid', 'valKind', 'bigintRaw', 'bigintBox']
+export const withEscapeFlag = (ir, flag = flagToZero()) => {
+  if (flag === null) return ir
   if (ir == null) return typed(flag, 'void')
   const t = Array.isArray(ir) ? ir.type : undefined
   if (!t || t === 'void') return typed(['block', flag, ...flat(ir)], 'void')

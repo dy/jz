@@ -109,7 +109,7 @@ BigInt, typed arrays, Map/Set, RegExp, Date, JSON, timers and the Web codecs.
 
 Where behaviour differs from JS:
 
-- **No GC.** A call that keeps nothing it allocates releases it on return; what a call keeps lives until `memory.reset()`. `WeakMap`, `WeakSet` and `WeakRef` hold strongly.
+- **No GC.** A call releases what it allocated on return unless it stored a value it made into something older than itself; what a call keeps lives until `memory.reset()`, and what it replaces is not freed. `WeakMap`, `WeakSet` and `WeakRef` hold strongly.
 - **In-place array arguments.** An exported function that stores into an array argument and reads it back takes a Float64Array, a Float32Array or an Array there, which round as JS rounds them; another kind throws a TypeError.
 - **Float sums in lanes.** From optimize level 2, a loop that sums floats may add in two lanes: the last digits of the sum can differ.
 - **BigInt is 64-bit.** It wraps past its range and has no `**`.
@@ -184,14 +184,20 @@ the build.
 <summary><strong>How does memory work?</strong></summary>
 
 Heap modules use a bump allocator: no free list, no garbage collector. A call
-whose function keeps nothing it allocates (no heap value stored where it
-outlives the call, no heap value returned) rewinds the heap on return, and the
-copies of its arguments go with it; a loop whose iterations keep nothing does
-the same per iteration. What a call keeps stays until `memory.reset()`, which
+that returns no heap value gives back what it allocated when it returns,
+unless it wrote a value it made into something older than itself: a module
+binding, state an earlier call made, an argument. Whatever the call built and
+dropped goes, closures, objects and growing buffers included, and the copies
+of its arguments with it; a loop whose iterations keep nothing does the same
+per iteration. A call that does keep a value keeps all it allocated: state
+made on the first call costs that call's memory once, state replaced on every
+call (`buf = new Float64Array(n)` each block) costs every call's, and the
+arrays it replaced are never freed. Keep such state in storage made once and
+written in place. What a call keeps stays until `memory.reset()`, which
 returns the module to its state after instantiation and invalidates every
 earlier pointer. `memory.used` reads the bytes held, so a host can see a call
-that keeps memory; the `warnings` sink names each such export and why at
-compile time (`heap-per-call`).
+that keeps memory; the `warnings` sink names each export that keeps memory on
+every call and why at compile time (`heap-per-call`).
 
 ```js
 for (let i = 0; i < 1000; i++) {

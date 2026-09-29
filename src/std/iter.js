@@ -3,10 +3,18 @@
  */
 
 export default `
-// Binding records are private and closed exactly once. Retain only as many
-// as the deepest overlapping pattern needs; never retain a user's iterator.
-let spare = null
-const recycle = r => { r.iterator = undefined; r.next = undefined; spare.push(r) }
+// Binding records are private and closed exactly once; never retain a user's
+// iterator. The records stay in \`pool\` for good, each marked while it is
+// open: opening and closing one stores no pointer, so a call that uses
+// records made before it keeps nothing, and a reset leaves no chain to mend.
+// The module makes the first records as it starts: a call that made one
+// would keep all it allocated beside it. A pattern nested deeper than they
+// reach makes the next one, once. The iterator a record holds from its
+// opening to its close is no value kept: the frame census counts no store
+// into it (compile/analyze/frame-effects.js SCRATCH).
+const record = () => ({ iterator: undefined, next: undefined, index: 0, done: false, busy: false })
+const pool = [record(), record(), record(), record()]
+const recycle = r => { r.iterator = undefined; r.next = undefined; r.busy = false }
 export let __it_open = (v) => {
   if (v == null) throw new TypeError('value is not iterable')
   // Native collection methods expose snapshot views (see README.md).
@@ -22,8 +30,10 @@ export let __it_open = (v) => {
   } else if (!indexed && typeof w.next !== 'function') throw new TypeError('value is not iterable')
   // Read next before borrowing: a throwing getter must not lose a record.
   const next = indexed ? undefined : w.next
-  if (!spare) spare = []
-  const r = spare.pop() || { iterator: undefined, next: undefined, index: 0, done: false }
+  let r = null
+  for (let i = 0; i < pool.length && r === null; i++) if (!pool[i].busy) r = pool[i]
+  if (r === null) { r = record(); pool.push(r) }
+  r.busy = true
   // A nonnegative index is an indexed cursor; -1 is a protocol iterator.
   r.iterator = w; r.next = next; r.index = indexed ? 0 : -1; r.done = false
   return r

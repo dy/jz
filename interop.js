@@ -917,7 +917,7 @@ export const wrap = (memSrc, inst, state) => {
     try { const r = JSON.parse(td.decode(releaseBytes)); for (const n of r.release) releases.add(n); for (const n of r.flag ?? []) flagged.add(n) }
     catch { /* ignore */ }
   }
-  const esc = realInst.exports.__esc
+  const esc = realInst.exports.__esc, setBase = realInst.exports.__base
   const hostAbiExp = new Map()
   const hostAbiBytes = customSection(mod, 'jz:hostabi')
   if (hostAbiBytes) {
@@ -1302,20 +1302,38 @@ export const wrap = (memSrc, inst, state) => {
   // (`jz:release`) and no call made inside it (a host import calling back into
   // the module) kept anything either. `mem._kept` carries that, per nesting.
   // An export whose frame runs escape sites (`flag`) releases only a call that
-  // returned with the escape flag down; the flag is saved and cleared around
-  // the call as a conditional frame does it (optimize/arena-rewind.js), and a
-  // call that threw releases nothing.
+  // returned with no escape written below the mark: the escape flag holds the
+  // lowest address one wrote into (all ones while none ran), saved and cleared
+  // around the call as a conditional frame does it (optimize/arena-rewind.js).
+  // A call that threw releases nothing.
+  // JZ_DEBUG_POISON=1: a release overwrites what it frees, as a rewound frame does.
+  const POISON = typeof process !== 'undefined' && process.env?.JZ_DEBUG_POISON === '1'
+  // `based`: the mark of the outermost frame reading the flag, as the host
+  // last set it (`__base`; the module's own frames leave it as they found it).
+  const NO_MARK = -1 >>> 0
+  let depth = 0, based = NO_MARK
+  const rebase = (mark) => { based = mark; setBase(mark | 0) }
   const enter = (flag) => {
-    const mark = { top: mem._top(), kept: mem._kept, esc: flag && esc ? esc.value : 0 }
+    // no frame of the module runs around the first call: a mark a call that threw left behind goes
+    if (setBase && depth === 0) rebase(NO_MARK)
+    depth++
+    const mark = { top: mem._top(), kept: mem._kept, esc: flag && esc ? esc.value >>> 0 : 0, base: based }
     mem._kept = false
-    if (flag && esc) esc.value = 0
+    if (flag && esc) esc.value = -1
+    // the outermost frame's mark: this call's, where no frame of the module runs around it
+    if (flag && setBase && mark.top < based) rebase(mark.top)
     return mark
   }
   const leave = (mark, release, flag, returned) => {
-    const escaped = flag && (!esc || esc.value !== 0 || !returned)
-    if (release && !mem._kept && !escaped) mem._setTop(mark.top)
+    const escaped = flag && (!esc || (esc.value >>> 0) < mark.top || !returned)
+    if (release && !mem._kept && !escaped) {
+      if (POISON && mem._top() > mark.top) new Uint8Array(mem.buffer, mark.top, mem._top() - mark.top).fill(255)
+      mem._setTop(mark.top)
+    }
     mem._kept = mark.kept || !release || escaped || mem._kept
-    if (flag && esc) esc.value |= mark.esc
+    if (flag && esc && mark.esc < (esc.value >>> 0)) esc.value = mark.esc | 0
+    if (setBase && mark.base !== based) rebase(mark.base)
+    depth--
   }
 
   // Pure scalar module (no memory): pass f64 values directly, no marshaling
@@ -1362,6 +1380,7 @@ export const wrap = (memSrc, inst, state) => {
     throw new TypeError(`jz: BigInt argument in the rest arguments of ${name}() has no BigInt evidence in the compiled program — give the rest parameter a provable BigInt path (it then takes the tagged ingress), or pass a decimal string`)
   }
   for (const [name, fn] of Object.entries(realInst.exports)) {
+    if (fn === setBase) continue   // the host's own handle on the module, no export of the program
     if (restFuncs.has(name) && typeof fn === 'function') {
       const fixed = restFuncs.get(name)
       const ext = extExp.get(name)

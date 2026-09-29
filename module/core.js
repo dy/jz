@@ -23,7 +23,7 @@ import { inlineArraySid, inlineArrayUnion } from '../src/static.js'
 import { packedI32, structInline } from '../src/abi/index.js'
 import { VAL, lookupValType, repOf } from '../src/reps.js'
 import { ctx, err, inc, warnDeopt, PTR, LAYOUT, HEAP, FORWARDING_MASK, emitArity, followForwardingWat, declGlobal, setLinkDemand } from '../src/ctx.js'
-import { ptrOffsetFwdWat, deletedMaskWat, HIDDEN_PROPERTY_SEQ } from '../layout.js'
+import { ptrOffsetFwdWat, deletedMaskWat, HIDDEN_PROPERTY_SEQ, ssoBitI64Hex } from '../layout.js'
 import { nanPrefixHex, OBJECT_SCHEMA_HI_MASK, objectSchemaGuardHex, TYPED_ELEM_BIGINT_FLAG, DATA_VIEW_FLAG, i64Hex } from '../layout.js'
 import { initSchema } from './schema.js'
 import { strHashLiteral, heapResetWat, durableLenLogIR, durableArrSnapIR, LENGTH_SSO_I64, MAP_ENTRY, collectionLaneBytes, stringIndexWat } from './collection.js'
@@ -83,6 +83,8 @@ export default (ctx) => {
     __typed_idx_tagged: ['__typed_idx', '__typed_data', '__len', '__ptr_type', '__ptr_aux', '__alloc', '__mkptr'],
     __box_bigint: ['__alloc', '__mkptr'],
     __ptr_offset: ['__ptr_offset_fwd'],
+    __esc_val: ['__esc_at'],
+    __esc_elem: ['__esc_at'],
     __ptr_offset_fwd: [],
     __is_str_key: ['__ptr_type'],
     __is_truthy: () => representationProgramHasBigint(ctx) ? ['__ptr_type', '__ptr_offset'] : [],
@@ -485,6 +487,46 @@ export default (ctx) => {
 
   ctx.core.stdlib['__ptr_type'] = `(func $__ptr_type (param $ptr i64) (result i32)
     (i32.wrap_i64 (i64.and (i64.shr_u (local.get $ptr) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK}))))`
+
+  // The escape flag lowered to an address (optimize/arena-rewind.js): memory
+  // at it was handed a value that may have been allocated after it. `__esc_at`
+  // takes the address. `__esc_val` takes the value written into: the address
+  // its pointer names where it is a heap value, zero where it is the host's
+  // (the host keeps what it is handed), nothing where it holds none (a number,
+  // a string, null). `__esc_elem` is the same for a store a typed array or a
+  // buffer turns into numbers: they hold none either. The pointer's own
+  // address, not the one a relocation forwards it to: storage is never older
+  // than the pointer that first named it, and the forwarding word a growth
+  // writes lands in the block the pointer names.
+  ctx.core.stdlib['__esc_at'] = `(func $__esc_at (param $a i32)
+    (if (i32.lt_u (local.get $a) (global.get $__esc)) (then (global.set $__esc (local.get $a)))))`
+  const escOf = (name, holdsNone) => `(func $${name} (param $v f64)
+    (local $b i64) (local $t i32)
+    (if (f64.eq (local.get $v) (local.get $v)) (then (return)))
+    (local.set $b (i64.reinterpret_f64 (local.get $v)))
+    (local.set $t (i32.wrap_i64 (i64.and (i64.shr_u (local.get $b) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK}))))
+    (if (i32.and (i32.shl (i32.const 1) (local.get $t)) (i32.const ${holdsNone})) (then (return)))
+    (if (i32.eq (local.get $t) (i32.const ${PTR.EXTERNAL})) (then (global.set $__esc (i32.const 0)) (return)))
+    (call $__esc_at (i32.wrap_i64 (local.get $b))))`
+  const HOLDS_NONE = (1 << PTR.ATOM) | (1 << PTR.STRING) | (1 << PTR.BIGINT)
+  ctx.core.stdlib['__esc_val'] = escOf('__esc_val', HOLDS_NONE)
+  ctx.core.stdlib['__esc_elem'] = escOf('__esc_elem', HOLDS_NONE | (1 << PTR.TYPED) | (1 << PTR.BUFFER))
+  // Whether a stored value may have been allocated by a call still running: a
+  // pointer into the heap at or above `__base`, the mark of the outermost
+  // frame that reads the flag. A value made before that frame outlives every
+  // frame whatever holds it: a buffer swapped for another, a string of the
+  // module's own. A number, an atom, a host's value and a string held in the
+  // pointer itself name no heap storage.
+  ctx.core.stdlib['__esc_new'] = `(func $__esc_new (param $v f64) (result i32)
+    (local $b i64) (local $t i32)
+    (if (f64.eq (local.get $v) (local.get $v)) (then (return (i32.const 0))))
+    (local.set $b (i64.reinterpret_f64 (local.get $v)))
+    (local.set $t (i32.wrap_i64 (i64.and (i64.shr_u (local.get $b) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK}))))
+    (if (i32.and (i32.shl (i32.const 1) (local.get $t)) (i32.const ${(1 << PTR.ATOM) | (1 << PTR.EXTERNAL)})) (then (return (i32.const 0))))
+    (if (i32.and (i32.eq (local.get $t) (i32.const ${PTR.STRING}))
+          (i64.ne (i64.and (local.get $b) (i64.const ${ssoBitI64Hex()})) (i64.const 0)))
+      (then (return (i32.const 0))))
+    (i32.ge_u (i32.wrap_i64 (local.get $b)) (global.get $__base)))`
 
   // True iff a NaN-boxed value is a non-primitive (heap object) — tag is neither
   // ATOM (null/undefined/boolean/symbol), STRING or BIGINT. A genuine f64 Number is

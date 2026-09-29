@@ -91,19 +91,35 @@ export function schemaSections(root, { schemas, fieldContracts, namedUses, error
 /** `jz:release`: the exports whose calls keep nothing they allocate or are
  *  handed (optimize/arena-rewind.js), so the host may rewind the heap to where
  *  it stood before it copied their arguments in (interop.js); `flag` names
- *  those whose frames run escape sites, released only when the call left the
- *  escape flag down, which the module then exports as `__esc`. `exportInner`
- *  maps each export name to the function its wrapper calls. */
+ *  those whose frames may run an escape, released only when the call left
+ *  the escape flag at or above that mark: the module then exports the flag
+ *  as `__esc`. A module that asks stored values whether a running call made
+ *  them exports `__base`, which sets the outermost frame's mark: the host
+ *  clears it where a call begins (a call an exception left did not restore
+ *  it) and sets it to its own mark around a flagged one. A function, not the
+ *  global: its write keeps the global mutable where no frame of the module
+ *  writes it (watr takes a global nothing writes for a constant).
+ *  `exportInner` maps each export name to the function its wrapper calls. */
 export function releaseSection(root, releasable, exportInner, conditional) {
+  const GLOBAL = intern('global'), declared = new Set()
+  for (let c = T.a[root]; c !== NONE; c = T.next[c]) if (T.op[c] === GLOBAL) declared.add(text(T.a[c]))
+  if (declared.has('$__base')) {
+    const f = push(root, node(intern('func')))
+    push(f, str('$__base$set'))
+    push(push(f, node(intern('export'))), str('"__base"'))
+    const p = push(f, node(intern('param'))); push(p, str('$mark')); push(p, str('i32'))
+    const set = push(f, node(intern('global.set'))); push(set, str('$__base'))
+    push(push(set, node(intern('local.get'))), str('$mark'))
+  }
   const release = [], flag = []
   for (const [name, inner] of exportInner) if (releasable.has(inner)) { release.push(name); if (conditional?.has(inner)) flag.push(name) }
   if (!release.length) return
   const c = push(root, node(intern('@custom')))
   push(c, str('"jz:release"'))
   push(c, bytes([...utf8.encode(JSON.stringify(flag.length ? { release, flag } : { release }))]))
-  if (flag.length) {
+  if (flag.length && declared.has('$__esc')) {
     const e = push(root, node(intern('export')))
     push(e, str('"__esc"'))
-    push(push(e, node(intern('global'))), str('$__esc'))
+    push(push(e, node(GLOBAL)), str('$__esc'))
   }
 }
