@@ -37,7 +37,8 @@ export function fold(f) {
   const O = ops(), body = bodyOf(f)
   if (body === NONE) return
   const F64_CONST = intern('f64.const'), F64_NE = intern('f64.ne'), F64_EQ = intern('f64.eq'), CONV_S = intern('f64.convert_i32_s'), CONV_U = intern('f64.convert_i32_u')
-  const i32 = (k) => { const n = node(O.I32_CONST); T.a[n] = num(k); return n }
+  // the atom first: a store evaluates its array ahead of its value, and a node may grow the tape to a new one
+  const i32 = (k) => { const v = num(k), n = node(O.I32_CONST); T.a[n] = v; return n }
   const second = (n) => T.a[n] === NONE ? NONE : T.next[T.a[n]]
   const third = (n) => second(n) === NONE ? NONE : T.next[second(n)]
   // A finite f64: a converted i32, a finite constant, or a local every definition of

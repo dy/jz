@@ -1315,3 +1315,55 @@ test('audit: range folding includes a local\'s implicit zero value', () => {
     for(const p of [0,0,1,0,1])is(wasm.f(p),js.f(p),`${optimize}: conditional assignment ${p}`)
   }
 })
+
+test('audit: a break to a labeled block leaves with what was assigned by then', () => {
+  // The binding read past the block is assigned on the path that falls through it, not on
+  // the one the `break` takes: the read finds undefined there, and its sum is no number.
+  const src = `export let past = (c) => { let r; lab: { if (c) break lab; r = 1 } return r + 1 }
+    export let each = (c) => { let r; lab: { if (c) { r = 5; break lab } r = 1 } return r + 1 }
+    export let loop = (c) => { let r; out: { for (let i = 0; i < 3; i++) { if (i === c) break out; r = i } r = 9 } return r + 1 }
+    export let bare = (c) => { let r; lab: { if (c) break lab; r = 1 } return r }`
+  const js = oracle(src)
+  for (const optimize of TIERS) {
+    const wasm = jz(src, { optimize }).exports
+    for (const name of ['past', 'each', 'loop', 'bare']) for (const c of [0, 1, 2, 7])
+      is(wasm[name](c), js[name](c), `${optimize}: ${name}(${c})`)
+  }
+})
+
+test('audit: a truth value prints as its name', () => {
+  // Boolean.prototype.toString (ES2024 20.3.3.2)
+  const src = `export let of = (x) => (x > 0).toString()
+    export let held = (x) => { const b = x > 0; return b.toString().length * 10 + String(b).length }
+    export let lit = () => true.toString() + false.toString()
+    export let maybe = (x) => { const o = x > 0 ? true : undefined; try { return o.toString() } catch (e) { return 'thrown' } }`
+  const js = oracle(src)
+  for (const optimize of TIERS) {
+    const wasm = jz(src, { optimize }).exports
+    for (const name of ['of', 'held', 'lit', 'maybe']) for (const x of [1, -1])
+      is(wasm[name](x), js[name](x), `${optimize}: ${name}(${x})`)
+  }
+})
+
+test('audit: a test of Object.prototype answers a truth value beside a literal one', () => {
+  // `o.hasOwnProperty( k )` on an object of a known shape was a value of no known kind to
+  // the summary and a 0 or 1 to the emitter: joined with `false` it surfaced as a number.
+  const src = `const own = (o, k) => (o === void 0 || o === null) ? false : o.hasOwnProperty(k)
+    export let arm = () => { const o = { a: 1 }; return [own(o, 'a'), own(o, 'c'), own(null, 'a')] }
+    function own2(value, property) { if (value === void 0 || value === null) { return false } return value.hasOwnProperty(property) }
+    export let ret = () => { const o = { a: 1 }; return [own2(o, 'a'), own2(o, 'c'), own2(null, 'a')] }
+    export let held = (x) => { const o = { a: x }; const t = o.hasOwnProperty('a'); const u = x > 0 ? t : o.hasOwnProperty('b'); return [t, u, typeof t, t === true ? 1 : 0, o.toString(), typeof o.valueOf()] }`
+  const js = oracle(src)
+  for (const optimize of TIERS) {
+    const wasm = jz(src, { optimize }).exports
+    for (const name of ['arm', 'ret']) is(wasm[name](), js[name](), `${optimize}: ${name}`)
+    for (const x of [1, -1]) is(wasm.held(x), js.held(x), `${optimize}: held(${x})`)
+  }
+})
+
+test('audit: the class of a value that is no number or a truth value', () => {
+  // Object.prototype.toString.call( v ) over a value of no known kind: NaN is a Number, true a Boolean
+  const src = `export let f = () => [1, 's', [1, 2], { a: 1 }, null, undefined, true, false, 2.5, NaN, 0].map((v) => Object.prototype.toString.call(v)).join(' ')`
+  const want = oracle(src).f()
+  for (const optimize of TIERS) is(jz(src, { optimize }).exports.f(), want, `${optimize}`)
+})

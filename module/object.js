@@ -9,7 +9,7 @@
 
 import { DBG_INVARIANTS } from '../src/debug.js'
 import { dataAlign, dataPush, dataLen, pushStaticSlots } from '../src/static-data.js'
-import { typed, asF64, asI64, asI32, NULL_NAN, UNDEF_NAN, temp, tempI32, tempI64, block64, ptrTypeEq, dispatchByPtrType, allocPtr, needsDynShadow, mkPtrIR, extractF64Bits, slotAddr, elemLoad, elemStore, freshId, undefExpr } from '../src/ir.js'
+import { typed, asF64, asI64, asI32, NULL_NAN, UNDEF_NAN, TRUE_NAN, FALSE_NAN, temp, tempI32, tempI64, block64, ptrTypeEq, dispatchByPtrType, allocPtr, needsDynShadow, mkPtrIR, extractF64Bits, slotAddr, elemLoad, elemStore, freshId, undefExpr } from '../src/ir.js'
 import { emit, storedValue, storedFieldValue, deps } from '../src/bridge.js'
 import { staticArrayPtr } from './array.js'
 import { valTypeOf, shapeOf } from '../src/kind.js'
@@ -18,7 +18,7 @@ import { ctx, err, inc, PTR, LAYOUT, declGlobal } from '../src/ctx.js'
 import { isReassigned, MUTATE_OPS, some, isBrand, canonicalKeyOrder } from '../src/ast.js'
 import { staticObjectProps, dictCapacity } from '../src/static.js'
 import { errorCodeLiteral, ERR, ERR_CLASS_NAMES, ERR_SCHEMA_PROPS } from '../err-codes.js'
-import { deletedMaskIR, deletedSlotIR, HEAP, DATA_VIEW_FLAG } from '../layout.js'
+import { deletedMaskIR, deletedSlotIR, HEAP, DATA_VIEW_FLAG, nanPrefixHex } from '../layout.js'
 import { enumView, enumKeys, viewsOn, enumViewsOn, ENUM_DATA, ENUM_GET } from './schema.js'
 import { ACCESSOR_CALL } from '../src/compile/emit/accessor-call.js'
 import { demandHostReceiver } from '../src/compile/func-exports.js'
@@ -536,7 +536,8 @@ export default (ctx) => {
   // __object_toString(value) — canonicalized from `Object.prototype.toString.call(value)`
   // by jzify. Returns the spec-defined "[object Tag]" string. When the value's category
   // is known at compile time the tag folds to a static string load; otherwise the
-  // runtime path dispatches on NaN-box bits (NaN→Number, NULL/UNDEF, then PTR type).
+  // runtime path dispatches on NaN-box bits: a number that is one, the number NaN,
+  // null and undefined, a truth value's atom, then the pointer's type.
   ctx.core.emit['__object_toString'] = (obj) => {
     const emitTag = value => asF64(emit(['str', value]))
     const tag = objectToStringTagForVal(obj)
@@ -553,13 +554,16 @@ export default (ctx) => {
       [PTR.MAP,     emitTag('[object Map]')],
     ], emitTag('[object Object]'))
     const pointerTag = block64(['local.set', `$${type}`, ['call', '$__ptr_type', bits]], byType)
-    const nonNumericTag = ['if', ['result', 'f64'],
-      ['i64.eq', bits, ['i64.const', NULL_NAN]],
+    const is = (k) => ['i64.eq', bits, ['i64.const', k]]
+    const nonNumericTag = ['if', ['result', 'f64'], is(NULL_NAN),
       ['then', emitTag('[object Null]')],
-      ['else', ['if', ['result', 'f64'],
-        ['i64.eq', bits, ['i64.const', UNDEF_NAN]],
+      ['else', ['if', ['result', 'f64'], is(UNDEF_NAN),
         ['then', emitTag('[object Undefined]')],
-        ['else', pointerTag]]]]
+        ['else', ['if', ['result', 'f64'], is(nanPrefixHex()),
+          ['then', emitTag('[object Number]')],
+          ['else', ['if', ['result', 'f64'], ['i32.or', is(TRUE_NAN), is(FALSE_NAN)],
+            ['then', emitTag('[object Boolean]')],
+            ['else', pointerTag]]]]]]]]
     return block64(
       ['local.set', `$${value}`, asF64(emit(obj))],
       ['if', ['result', 'f64'],

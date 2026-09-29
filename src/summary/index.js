@@ -1682,6 +1682,10 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     return op === '===' || op === '==' ? eq : !eq
   }
   const OBJECT_PROTO_METHODS = new Set(['hasOwnProperty', 'isPrototypeOf', 'propertyIsEnumerable', 'toString', 'toLocaleString', 'valueOf'])
+  // What a method of `Object.prototype` answers on an object that holds no member of the
+  // name: a truth value from the three tests, the receiver from `valueOf`, a string.
+  const OBJECT_PROTO_TESTS = new Set(['hasOwnProperty', 'propertyIsEnumerable', 'isPrototypeOf'])
+  const protoResult = (name, recv) => OBJECT_PROTO_TESTS.has(name) ? BOOL : name === 'valueOf' ? recv : STRING
   const builtinReceiverTag = t => t === K.ARRAY || t === K.TYPED ||
     t === K.MAP || t === K.SET || t === K.REGEX || t === K.CLOSURE
   const markBuiltinOwn = (t, prop) => {
@@ -1866,7 +1870,10 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     // An Object.prototype method on a dictionary, a mixed value or an object
     // of unknown shape sees its arguments and retains nothing.
     if ((t === K.HASH || dictOrObject(recv) || (t === K.OBJECT && paramOf(recv) === UNKNOWN)) && OBJECT_PROTO_METHODS.has(name) && !memberMayBeOwn(name))
-      return name === 'hasOwnProperty' || name === 'propertyIsEnumerable' || name === 'isPrototypeOf' ? BOOL : name === 'valueOf' ? recv : STRING
+      return protoResult(name, recv)
+    // One of its tests on a value of several kinds answers a truth value whatever the kind
+    // (`own( o, k )` called with an object, an array and a string), as the emitter types it.
+    if (t === K.ANY && OBJECT_PROTO_TESTS.has(name) && !memberMayBeOwn(name)) return BOOL
     // A shape set: each member shape's method, joined.
     if (t === K.OBJECT && paramOf(recv) !== UNKNOWN && paramOf(recv) >= SET_BASE) {
       let r = K.NONE
@@ -1935,7 +1942,8 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
         escapeArgs(base, n)
         return ANY
       }
-      return OBJECT_PROTO_METHODS.has(name) ? ANY : K.NONE
+      // an object of a known shape answers as one of an unknown shape does
+      return OBJECT_PROTO_METHODS.has(name) ? protoResult(name, recv) : K.NONE
     }
     // A member of an object of a shape the summary lost is one of the
     // program's own: a class member of the name (the candidates above) or a

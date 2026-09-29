@@ -8,7 +8,8 @@
  *
  * The walk carries the set of names assigned so far and joins it where paths
  * meet: both arms of a branch must assign, a loop body may not run, a handler
- * starts from what held before the `try`. A closure runs at a time the walk
+ * starts from what held before the `try`, a labeled block ends with what held
+ * at each `break` to it. A closure runs at a time the walk
  * does not know, so a name it mentions must be assigned where the closure is
  * made. The answer may leave out a binding that is always assigned; it never
  * includes one a read can find unassigned. It walks prepared bodies: patterns,
@@ -52,6 +53,9 @@ export function definitelyAssigned(body, reach = null, later = null) {
     else if (Array.isArray(n)) for (let i = 1; i < n.length; i++) mentions(n[i], a)
   }
   const seq = (n, a, from = 1) => { for (let i = from; i < n.length; i++) a = walk(n[i], a); return a }
+  // label of a block → the states its breaks left with; a loop's label has none
+  // (what follows a loop starts from what held before it)
+  const exits = new Map()
 
   const walk = (n, a) => {
     if (typeof n === 'string') { read(n, a); return a }
@@ -87,10 +91,18 @@ export function definitelyAssigned(body, reach = null, later = null) {
     }
     if (op === 'while') { a = walk(n[1], a); walk(n[2], fork(a)); return a }
     if (op === 'return' || op === 'throw') { seq(n, a); return null }
-    if (op === 'break' || op === 'continue') return null
+    if (op === 'break' || op === 'continue') { if (op === 'break' && a !== null) exits.get(n[1])?.push(fork(a)); return null }
     if (op === 'catch') { walk(n[1], fork(a)); walk(n[3], fork(a)); return a }
     if (op === 'finally') { walk(n[1], fork(a)); return walk(n[2], a) }
-    if (op === 'label') return walk(n[2], a)
+    if (op === 'label') {
+      if (Array.isArray(n[2]) && (n[2][0] === 'for' || n[2][0] === 'while')) return walk(n[2], a)
+      const left = [], shadowed = exits.get(n[1])
+      exits.set(n[1], left)
+      let end = walk(n[2], a)
+      if (shadowed) exits.set(n[1], shadowed); else exits.delete(n[1])
+      for (const x of left) end = join(end, x)
+      return end
+    }
     return seq(n, a)
   }
   const end = walk(body, new Set())

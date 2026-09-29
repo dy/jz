@@ -1768,6 +1768,8 @@ export default (ctx) => {
   // the receiver type can't be statically inferred (e.g. a callback param).
   bind('.string:toString', (str) => asF64(emit(str)))
   bind('.string:valueOf', (str) => asF64(emit(str)))
+  // Boolean.prototype.toString (ES2024 20.3.3.2): the truth value's name, as `String( b )` answers
+  bind('.boolean:toString', (b) => bool(b))
   // Normalization is an identity operation; Unicode normalization tables are not shipped.
   bind('.string:normalize', (str) => asF64(emit(str)))
   bind('.normalize', (val) => {
