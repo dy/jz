@@ -43,6 +43,7 @@ test('warnings: an export whose calls keep nothing stays quiet, parameters and a
 })
 
 test('warnings: heap-per-call names what an export keeps and why', () => {
+  if (belowOpt(2)) return  // read off the rewind's verdict, which a level without the rewind does not reach
   const ws = warningsFor('import { log } from "env"\nexport let f = (n) => { const o = { x: n }; log(o); return 1 }', { imports: { env: { log() {} } } }).filter(w => w.code === 'heap-per-call')
   is(ws.length, 1)
   ok(/export 'f' keeps what it allocates/.test(ws[0].message) && /calls log, the host's/.test(ws[0].message), ws[0].message)

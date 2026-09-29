@@ -1085,7 +1085,7 @@ saves and clears the flag at entry and leaves the lower of the two at exit
 within a call goes with the call; a state made on the first call keeps that
 call's memory and releases every later one's.
 
-Three refinements keep a site from lowering the flag for nothing. A store of
+Four refinements keep a site from lowering the flag for nothing. A store of
 a value that holds no heap pointer escapes only by making its receiver grow
 (a relocation, a property's first storage, a key made a string, a durable
 array's log): its site checks after the store whether the heap moved
@@ -1105,6 +1105,9 @@ module's own lie below `$__base`, the mark of the outermost frame reading
 the flag, and lower nothing. A value read off the receiver it is stored
 into (`a[i] = a[j]`, a swap through a local written once) is no escape: the
 store that first put it there lowered the flag to the same receiver. A
+record replaced by a literal of numbers that the emitter writes into the
+cells its element had (emit-assign.js `inPlace`) hands its receiver nothing
+and allocates nothing: its site lowers nothing. A
 receiver the expression itself makes (`xs.slice().sort()`,
 `Float64Array.from(xs)`) is fresh memory.
 
@@ -1135,7 +1138,8 @@ is no scratch, a call handing a host import a value (jz's interop imports
 that read hand it nothing; the runtime's own imports keep nothing but a
 callback they schedule, bridge.js hostImport), a `call_ref`, and in a runtime
 kernel a store whose base address a global reaches (an index read off a
-table addresses the receiver it indexes). A catch lowers the flag to zero,
+table addresses the receiver it indexes). A tail call is a call to link:
+what its callee lowers or keeps, the frames above it read. A catch lowers the flag to zero,
 since the frames an exception left skipped their epilogues. A site the
 emitter never flagged and a body the census never walked lower it as the
 frame is entered (compile/index.js checks each). The protocol is paid by a
@@ -1875,8 +1879,10 @@ ToPrimitive function it lowers to (`runsConversion`). The arena rewind (`src/opt
 heap pointer at return for any function with a scalar non-pointer result,
 parameters included, outright where nothing its frame may reach lowers the
 escape flag and by the flag otherwise (above); a tail call leaves the frame
-before its epilogue, except one into a safe kernel, which becomes a plain call
-under the restore. Allocation counts through callees. The durable-heap logs
+before its epilogue, so one whose callee never runs the function again
+becomes a plain call under the restore, at the price of one frame, and one
+that may (a recursion written as tail calls) stays, the function keeping its
+heap. Allocation counts through callees. The durable-heap logs
 record only mutations of containers made before the reset mark, each a store
 the census counts: its site lowers the flag to the durable receiver, so no
 frame restores over a logging path. `whyNotRewind` names the reason

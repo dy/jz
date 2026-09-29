@@ -311,11 +311,12 @@ test('LICM: checked-access length HEADER decode hoists once per function (neverG
     Array.isArray(n[1][1]) && n[1][1][0] === 'local.get' &&
     Array.isArray(n[1][2]) && n[1][2][0] === 'i32.const' && Number(n[1][2][1]) === 8
 
-  const fnOn = findFunc(parse(src, 'speed'), '$scan')
+  // pre-watr: `f` releases what it made as it returns, so its call of `scan` is one watr inlines
+  const fnOn = findFunc(parse(src, preWatr('speed')), '$scan')
   is(loopCount(fnOn, isHeaderDecode), 0, 'length header decode fully hoisted out of both loops')
   ok(count(fnOn, isHeaderDecode) <= 2, 'at most one decode per array (v, z) survives, at function scope')
 
-  const fnOff = findFunc(parse(src, { level: 'speed', hoistInvariantLoop: false }), '$scan')
+  const fnOff = findFunc(parse(src, preWatr({ level: 'speed', hoistInvariantLoop: false })), '$scan')
   ok(loopCount(fnOff, isHeaderDecode) >= 1, 'sanity: without hoistInvariantLoop the decode DOES recur in-loop')
 
   // Bit-exact vs a plain-JS reference across the hull cursor's edge cases (n=0/1, cursor
@@ -5015,7 +5016,8 @@ export let main = () => {
   code[6] = 2; code[7] = 0; code[8] = 0
   return exec(code, reg)
 }`
-  const wat = jz.compile(src, { wat: true, optimize: 'speed' })
+  // pre-watr: `main` releases what it made as it returns, so its call of `exec` is one watr inlines
+  const wat = jz.compile(src, { wat: true, optimize: preWatr('speed') })
   const execWat = wat.split('(func ').find(c => /^\$exec\b/.test(c)) || wat
   ok(!/\$[^ )]*tbg/.test(execWat), 'known length and pc hull retire the fetch guard entirely')
   ok(/i32\.load offset=4 \(local\.get \$__ab\d+\)/.test(execWat) &&
@@ -5520,7 +5522,8 @@ export let run = (n, len) => {
   }
   // Structural: the guarded fast arm's cursor reads are bare loads (no bounds
   // check idiom); the checked twin keeps its guarded reads.
-  const wat = jz.compile(src, { wat: true, optimize: 'speed' })
+  // pre-watr: `run` releases what it made as it returns, so its call of `cursorScan` is one watr inlines
+  const wat = jz.compile(src, { wat: true, optimize: preWatr('speed') })
   const fn = wat.split('(func ').find(f => f.startsWith('$cursorScan')) || ''
   const guardAt = fn.indexOf('i64.lt_s')
   ok(guardAt > 0, 'cursor guard present')

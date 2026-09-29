@@ -248,7 +248,8 @@ const init = () => {
   return ps
 }
 export let main = () => step(init())`
-  const wat = jz.compile(src, { wat: true, optimize: 'speed' })
+  // `main` releases what it made as it returns, so its call of `step` is one watr inlines: the kernel is read before watr
+  const wat = jz.compile(src, { wat: true, optimize: { level: 'speed', watr: false } })
   const stepBody = wat.split('(func ').find(c => /^\$step\b/.test(c)) || ''
   ok(stepBody && !/\(local \S+ f64\)/.test(stepBody), 'all kernel locals stay integral after local-slot reuse')
   const loop = stepBody.slice(stepBody.indexOf('(loop'))

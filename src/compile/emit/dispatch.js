@@ -1565,7 +1565,8 @@ function liftOptionalChain(node) {
 // node where it stores a value that may hold a heap pointer, after it where it
 // escapes only by making its receiver grow, and then only if it allocated. A
 // logical assignment lowers the flag in the arm that assigns
-// (emit/assignment.js), so an initialization made once flags once.
+// (emit/assignment.js), so an initialization made once flags once. A store
+// the emitter made in place (emit-assign.js `inPlace`) lowers nothing.
 const LOGICAL_ASSIGN = new Set(['??=', '||=', '&&='])
 export function emit(node, expect) {
   if (remarking > 0 && Array.isArray(node)) { const mark = REMARKS.get(node); if (mark !== undefined) return remarked(node, expect, mark) }
@@ -1582,6 +1583,7 @@ export function emit(node, expect) {
     const mark = ctx.plans.siteGrows?.has(origin) ? escLocal('i32', ESC_MARK) : null
     if (mark !== null) held.pre.push(['local.set', mark, heapTop()])
     const ir = mark === null ? emitNode(node, null) : pastOperands(node, mark, () => emitNode(node, null)), t = Array.isArray(ir) ? ir.type : undefined
+    if (ir?.inPlace) return expect === 'void' && t !== 'void' ? typed(['drop', ir], 'void') : ir
     if (t === 'f64' || t === 'i32') {
       const out = whereNew(ir, flag, held.pre, mark)
       return expect === 'void' ? typed(['drop', out], 'void') : out
@@ -1589,8 +1591,8 @@ export function emit(node, expect) {
     return withEscapeFlag(ir, ['block', ...held.pre, flag])
   }
   // the address is read before the node runs
-  const flag = siteFlag(node)
-  return withEscapeFlag(emitNode(node, expect), flag)
+  const flag = siteFlag(node), ir = emitNode(node, expect)
+  return ir?.inPlace ? ir : withEscapeFlag(ir, flag)
 }
 /** A value about to be stored, with the flag lowered by `flag` after it is
  *  made when a running call may have allocated it (`__esc_new`), or when the
@@ -1683,6 +1685,7 @@ function whereGrown(node, origin, expect) {
   const save = [...held.pre, ['local.set', mark, heapTop()]]
   const check = ['if', ['i32.ne', heapTop(), ['local.get', mark]], ['then', ...flags]]
   const ir = names ? emitNode(node, expect) : pastOperands(node, mark, () => emitNode(node, expect))
+  if (ir?.inPlace) return ir
   if (ir == null) return typed(['block', ...save, check], 'void')
   const t = Array.isArray(ir) ? ir.type : undefined
   if (!t || t === 'void') return typed(['block', ...save, ...flat(ir), check], 'void')

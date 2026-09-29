@@ -210,6 +210,11 @@ function emitPolymorphicElementStore(arrExpr, idxI32, valueExpr, valueDomain, pe
  *  schema; typed-array element write before generic f64.store. */
 export { persistBindingPtr }
 
+/** A store that wrote numbers into cells its receiver had already: it hands the
+ *  receiver nothing a call made and allocates nothing, so its site lowers no
+ *  escape flag (emit/dispatch.js). */
+const inPlace = (ir) => { ir.inPlace = true; return ir }
+
 /** In-place replace-store: `arr[i] = {lit}` at a site the whole-program alias
  *  sweep proved safe (src/compile/inplace-store.js) overwrites the OLD
  *  element's payload slots instead of allocating a fresh object — the
@@ -263,7 +268,7 @@ function tryInplaceReplaceStore(arr, idx, val) {
     const spill = parsed.values.map((v, i) => ['local.set', `$${vTs[i]}`, storedValue(v)])
     const stores = slots.map((slot, i) => ops.store(['local.get', `$${entry.alias}`], slot, ['local.get', `$${vTs[i]}`]))
     const ptr = mkPtrIR(PTR.OBJECT, sid, ['local.get', `$${entry.alias}`])
-    if (provenRead) return typed(['block', ['result', 'f64'], ...spill, ...stores, ptr], 'f64')
+    if (provenRead) return inPlace(typed(['block', ['result', 'f64'], ...spill, ...stores, ptr], 'f64'))
     inc('__alloc_hdr')
     const hT = tempI32('iph'), kT = tempI32('ipk'), aTb = temp('ipa')
     const miss = ['block', ['result', 'f64'],
@@ -390,17 +395,19 @@ function tryStructInlineReplaceStore(arr, idx, val) {
     ['local.set', `$${aT}`, ['i32.add', ['local.get', `$${bT}`], ['i32.shl', ['local.get', `$${cT}`], ['i32.const', 3]]]],
     ...fields.map((v, i) => ops.store(['local.get', `$${aT}`], i, ['local.get', `$${vTs[i]}`])),
   ]
-  if (void_) return typed(['block', ...body, ['if', inBounds, ['then', ...stores]]], 'void')
+  const numbers = packed || fields.every(v => valTypeOf(v) === VAL.NUMBER)
+  const stored = (ir) => numbers ? inPlace(ir) : ir
+  if (void_) return stored(typed(['block', ...body, ['if', inBounds, ['then', ...stores]]], 'void'))
   // Value position is analyzer-poisoned (sweep candidates are statement-only);
   // belt for exotic statement shapes: yield the element as a boxed pointer —
   // under the inline carrier the cell address IS the object identity. A
   // PACKED cell address cannot be boxed (slot reads through a box assume f64
   // cells), so the phases disagreeing there is a compile error, not bytes.
   if (packed) err('structInline packed replace-store in value position — structInlinePass must poison this shape')
-  return typed(['block', ['result', 'f64'], ...body,
+  return stored(typed(['block', ['result', 'f64'], ...body,
     ['if', ['result', 'f64'], inBounds,
       ['then', ...stores, mkPtrIR(PTR.OBJECT, sid, ['local.get', `$${aT}`])],
-      ['else', undefExpr()]]], 'f64')
+      ['else', undefExpr()]]], 'f64'))
 }
 
 export function emitElementAssign(arr, idx, val, node = null) {

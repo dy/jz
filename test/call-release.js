@@ -9,7 +9,7 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import jz from '../index.js'
-import { levels } from './_matrix.js'
+import { levels, onWasi } from './_matrix.js'
 import { oracle } from './util.js'
 
 const CALLS = 2000
@@ -84,6 +84,7 @@ for (const optimize of levels(0, 2, 3, 'size'))
   })
 
 test('call release: a call back into the module keeps what the inner call kept', () => {
+  if (onWasi()) return  // a host function calls back: the js host's
   // A zero-argument host import calls an export that keeps an array: the call
   // around it must not release what the inner call kept. Today the census counts
   // any import call as unknown, so the outer frame is not released at all; the

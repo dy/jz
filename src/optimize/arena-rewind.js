@@ -170,6 +170,13 @@ export function arenaRewind(root, { rewindable, heapAddr, unsafe = NO_NAMES, kee
   const strandsNothing = (name) => heapScratch(name) || scalarGlobals.has(name)
   const FUNC = intern('func'), CALL = intern('call'), RETURN = intern('return'), RETURN_CALL = intern('return_call'), IMPORT = intern('import'), GLOBAL = intern('global'), MUT = intern('mut')
   const GLOBAL_SET = intern('global.set'), CALL_INDIRECT = intern('call_indirect'), CALL_REF = intern('call_ref')
+  // A tail call is a call: what its callee runs reaches whoever called the
+  // function, as what the function runs itself does.
+  const RETURN_CALL_INDIRECT = intern('return_call_indirect'), RETURN_CALL_REF = intern('return_call_ref')
+  const TAILS = new Set([RETURN_CALL, RETURN_CALL_INDIRECT, RETURN_CALL_REF])
+  const callsDirect = (op) => op === CALL || op === RETURN_CALL
+  const callsTable = (op) => op === CALL_INDIRECT || op === RETURN_CALL_INDIRECT
+  const callsRef = (op) => op === CALL_REF || op === RETURN_CALL_REF
   const LOCAL = intern('local'), LOCAL_SET = intern('local.set'), LOCAL_GET = intern('local.get'), LOCAL_TEE = intern('local.tee'), BLOCK = intern('block'), RESULT = intern('result'), DROP = intern('drop')
   const IF = intern('if'), THEN = intern('then'), ELSE = intern('else')
   const decl = new Set(DECLS.map(intern))
@@ -346,7 +353,7 @@ export function arenaRewind(root, { rewindable, heapAddr, unsafe = NO_NAMES, kee
     if (name === null) continue
     const verdict = unsafe.has(name)
     const rec = { unsafe: verdict, why: verdict ? 'escape' : null, keeps: keeps.has(name), entry: entry.has(name), tapeUnsafe: false, tapeWhy: null, calls: new Set(), every: new Map(),
-      allocs: false, indirect: false, lowers: false, f, up: null, censused: censused.has(name), flagAt: [], flagWhy: null, indirectAt: [], ownFlag: false }
+      allocs: false, indirect: false, refs: false, lowers: false, f, up: null, censused: censused.has(name), flagAt: [], flagWhy: null, indirectAt: [], ownFlag: false }
     eachBody(f, (id) => {
       const op = T.op[id]
       if (op === GLOBAL_SET) {
@@ -355,9 +362,9 @@ export function arenaRewind(root, { rewindable, heapAddr, unsafe = NO_NAMES, kee
         if (g === '$__esc') { rec.lowers = true; if (rec.censused) rec.ownFlag = true }
         else if (!strandsNothing(g) && !(censused.has(name) && userGlobals.has(g?.slice(1)))) escapeAt(rec, id, 'global.set ' + g)
       }
-      else if (op === CALL_INDIRECT) { rec.indirect = true; rec.indirectAt.push(id) }
-      else if (op === CALL_REF) escapeAt(rec, id, opText(id))
-      else if (op === CALL) {
+      else if (callsTable(op)) { rec.indirect = true; rec.indirectAt.push(id) }
+      else if (callsRef(op)) { rec.refs = true; escapeAt(rec, id, opText(id)) }
+      else if (callsDirect(op)) {
         const callee = text(T.a[id])
         if (callee === '$__alloc' || callee === '$__alloc_hdr' || callee === '$__alloc_hdr_n') rec.allocs = true
         if (LOWERS.has(callee)) { if (!LOWERS.has(name)) { rec.lowers = true; if (rec.censused) rec.ownFlag = true } return }
@@ -388,7 +395,7 @@ export function arenaRewind(root, { rewindable, heapAddr, unsafe = NO_NAMES, kee
     let every = rec.every.get(callee)
     if (every === undefined) {
       every = false
-      eachBody(rec.f, (id) => { if (every) return false; if (T.op[id] === CALL && text(T.a[id]) === callee && !guarded(rec, id)) every = true })
+      eachBody(rec.f, (id) => { if (every) return false; if (callsDirect(T.op[id]) && text(T.a[id]) === callee && !guarded(rec, id)) every = true })
       rec.every.set(callee, every)
     }
     return every
@@ -438,9 +445,23 @@ export function arenaRewind(root, { rewindable, heapAddr, unsafe = NO_NAMES, kee
       if (via !== undefined) { rec.tapeFlag = true; rec.tapeFlagWhy = 'calls ' + via + ': ' + info.get(via).tapeFlagWhy; changed = true }
     }
   }
-  // A tail call leaves before the epilogue: its callee must neither escape nor raise the flag.
-  const safe = new Set(ARENA_SAFE)
-  for (const [name, rec] of info) if (!rec.unsafe && !rec.tapeFlag) safe.add(name)
+  // Whether what `from` runs may run `name` again: by a call, a tail call, a
+  // closure a resolved call runs, or the table.
+  const runsAgain = (from, name) => {
+    const seen = new Set(), work = [from]
+    while (work.length) {
+      const n = work.pop()
+      if (n === name) return true
+      if (seen.has(n)) continue
+      seen.add(n)
+      const r = info.get(n)
+      if (!r) continue
+      for (const c of r.calls) work.push(c)
+      if (r.refs || r.indirect && !r.resolved) { if (r.refs || table.has(name)) return true; for (const t of table) work.push(t) }
+      else if (r.indirect) for (const t of r.targets) work.push(t)
+    }
+    return false
+  }
   // Allocation is transitive: a string concatenation allocates inside its
   // kernel, and an indirect call allocates when a function the table holds does.
   for (let changed = true; changed;) {
@@ -469,9 +490,9 @@ export function arenaRewind(root, { rewindable, heapAddr, unsafe = NO_NAMES, kee
       if (why !== null) return false
       const op = T.op[n]
       if (op === GLOBAL_SET) { const g = text(T.a[n]); if (g === '$__esc') why = 'lowers the flag'; else if (!strandsNothing(g)) why = 'global.set ' + g }
-      else if (op === CALL_REF) why = opText(n)
-      else if (op === CALL_INDIRECT) { if (rec.resolved ? rec.targets.some(t => info.get(t).tapeFlag) : tableFlags) why = opText(n) }
-      else if (op === CALL) {
+      else if (callsRef(op)) why = opText(n)
+      else if (callsTable(op)) { if (rec.resolved ? rec.targets.some(t => info.get(t).tapeFlag) : tableFlags) why = opText(n) }
+      else if (callsDirect(op)) {
         const callee = text(T.a[n])
         if (LOWERS.has(callee)) { why = 'lowers the flag'; return }
         if (callee === null || callee === ASKS || callee === '$__alloc' || callee === '$__alloc_hdr' || callee === '$__alloc_hdr_n' || ARENA_SAFE.includes(callee) || CENSUS_GUARDED.test(callee)) return
@@ -607,27 +628,21 @@ export function arenaRewind(root, { rewindable, heapAddr, unsafe = NO_NAMES, kee
     const rec = info.get(name)
     if (rec == null) continue
     if (rec.unsafe) { if (rewrite) report?.(name, rec.why); continue }
-    let unsafe = false, hasAlloc = rec.allocs
-    const tails = []
+    let unsafe = false
+    const hasAlloc = rec.allocs, tails = []
     eachBody(f, (id) => {
       if (unsafe) return false
-      if (T.op[id] !== RETURN_CALL) return
-      // A tail call to a safe runtime kernel (never the function itself, never
-      // user code whose own tail calls may recurse) can be a plain call: the
-      // frame then survives the callee and can restore the heap after it.
-      const callee = text(T.a[id])
-      if (callee !== null && callee !== name && callee.startsWith('$__') && safe.has(callee)) { tails.push(id); if (info.get(callee)?.allocs) hasAlloc = true; return }
+      const op = T.op[id]
+      if (!TAILS.has(op)) return
+      // A tail call leaves before the epilogue. One whose callee never runs the
+      // function again can be a plain call: the frame then outlives the callee
+      // and restores the heap after it, at the price of one frame. One that
+      // may run it again keeps the frame elision a recursion written as a
+      // tail call counts on, and the function keeps its heap.
+      const callee = op === RETURN_CALL ? text(T.a[id]) : null
+      if (callee !== null && !runsAgain(callee, name)) { tails.push(id); return }
       unsafe = true; return false
     })
-    if (rewrite && !unsafe && hasAlloc) for (const id of tails) {
-      // `(return_call $k args…)` → `(return (call $k args…))`: the children move
-      // under a new call node, and the return wrapping below treats it like any
-      // other `return X`.
-      const call = node(CALL)
-      T.a[call] = T.a[id]
-      T.a[id] = call
-      T.op[id] = RETURN
-    }
     // What the frame may reach lowers the flag: it restores by it, where that
     // may free something (its own reason, or a host calling it again and again).
     const cond = rec.tapeFlag === true
@@ -636,6 +651,15 @@ export function arenaRewind(root, { rewindable, heapAddr, unsafe = NO_NAMES, kee
     if (!rewrite) continue
     if (unsafe || !hasAlloc) { report?.(name, unsafe ? 'return_call' : 'no allocation'); continue }
     if (heapless) continue
+    // `(return_call $k args…)` → `(return (call $k args…))`: the children move
+    // under a new call node, and the return wrapping below treats it like any
+    // other `return X`.
+    for (const id of tails) {
+      const call = node(CALL)
+      T.a[call] = T.a[id]
+      T.a[id] = call
+      T.op[id] = RETURN
+    }
 
     const declared = new Set()
     for (let c = T.next[T.a[f]]; c !== NONE; c = T.next[c]) if (T.op[c] === LOCAL) declared.add(text(T.a[c]))

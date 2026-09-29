@@ -10,7 +10,7 @@
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
 import jz, { compile } from '../index.js'
-import { levels } from './_matrix.js'
+import { levels, belowOpt, onWasi } from './_matrix.js'
 import { oracle } from './util.js'
 
 const src = `
@@ -90,7 +90,7 @@ test('call boundary: a helper the variants call runs typed in each kind', () => 
   // Each variant's call joins the census: the helper splits per kind rather than reading any array.
   const src = `function dot(w, t) { let s = 0; for (let i = 0; i < t.length; i++) s += w[i] * t[i]; return s }
     export let fit = (target) => { const w = new Float64Array(target.length); for (let i = 0; i < w.length; i++) w[i] = i; return dot(w, target) }`
-  ok(!/\$__typed_idx|\$__to_num/.test(compile(src, { wat: true })), 'no generic element read')
+  if (!belowOpt(2)) ok(!/\$__typed_idx|\$__to_num/.test(compile(src, { wat: true })), 'no generic element read')
   const want = oracle(src), { exports } = jz(src)
   // whole numbers: a float sum may add in lanes (README), these add exactly
   for (const K of [Float64Array, Float32Array, Array]) is(exports.fit(fill(K, 7, i => i * 3 - 5)), want.fit(fill(K, 7, i => i * 3 - 5)), `fit(${K.name})`)
@@ -143,6 +143,7 @@ test('call boundary: the variants stay hidden, their advisories speak once', () 
 })
 
 test('call boundary: a typed array the module keeps on a host object stays its storage', () => {
+  if (onWasi()) return  // an object of the host's
   // interop.js __ext_set files a live view and wrapVal reads it back as the
   // module's own storage: state carried on a caller's options object accumulates.
   const src = `export let bag = (p, x) => { const s = p.state ??= new Float64Array(2); s[0] = s[0] * 0.5 + x; return s[0] }`

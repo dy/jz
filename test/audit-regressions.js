@@ -171,7 +171,8 @@ test('audit: cursor guards join offsets and retain negative-offset checks', () =
       is(wasm.run(...args), js.run(...args), `${optimize}: ${args}`)
   }
   if (!onKernel()) {
-    const wat = funcWat(compile(src, { optimize: 'speed', wat: true }), 'scan')
+    // pre-watr: `run` releases what it made as it returns, so its call of `scan` is one watr inlines
+    const wat = funcWat(compile(src, { optimize: { level: 'speed', watr: false }, wat: true }), 'scan')
     is((wat.match(/i64\.lt_s/g) || []).length, 1, 'one upper extent for all cursor offsets')
     is((wat.match(/i64\.ge_s/g) || []).length, 1, 'one lower extent for all cursor offsets')
   }

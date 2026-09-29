@@ -2277,7 +2277,9 @@ test('val-kind dichotomy: a number-or-object parameter is cloned per kind, and a
   is(jz(src, { optimize: 2 }).exports.run(), 875)
   if (belowOpt(2)) return
   const w = jz.compile(src, { optimize: 2, wat: true })
-  ok(/\(func \$f\$number\b/.test(w) && /\(func \$f\$object\b/.test(w), 'one clone per argument kind')
+  // pre-watr: `h` releases what it made as it returns, so its call of the clone is one watr inlines
+  const clones = jz.compile(src, { optimize: { level: 2, watr: false }, wat: true })
+  ok(/\(func \$f\$number\b/.test(clones) && /\(func \$f\$object\b/.test(clones), 'one clone per argument kind')
   is((w.match(/__to_num|__add_slow|__is_str_key/g) || []).length, 0, 'the array element stays a number: no conversion or string dispatch')
 })
 
