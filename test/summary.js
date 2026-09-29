@@ -465,6 +465,9 @@ test('summary codegen: a method called through an array of instances, an exporte
     export const run = (n, gain) => { const g = new Gain(n, gain); g.buf[0] = 2; g.process(); return g.process() }`
   if (OPT_LEVEL === 2) ok(!/__to_str/.test(compile(cls, { wat: true })), 'no string machinery: the gain slot is read only as a number')
   is(jz(cls).exports.run(8, 0.5), 0.5)
+  // The speed tier splices the constructor into `run`, so the instance literal has
+  // a site there beside the one in the constructor nothing calls any more: the
+  // slot of that dead site is never read, and is no evidence against the demand.
   is(jz(cls).exports.run(8, '0.5'), 0.5, 'the host string converts at the boundary')
   // The same required receiver check adds 72 B to the exported-class case.
   // The `jz:brand` custom section names the exported class for interop: 2072 → 2084 B.

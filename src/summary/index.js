@@ -3427,12 +3427,15 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   const strungInto = (into) => into !== null && (typeof into === 'string' || typeof into === 'number' ? strung.has(into) : into.some(k => strung.has(k)))
   /** A read at `level` (NUM or COMPAT): the key holds the weakest level of its reads. */
   const mark = (key, level) => { const cur = numeric.get(key); if (cur === false) return; const next = cur === undefined ? level : Math.min(cur, level); if (next !== cur) { numeric.set(key, next); demandChanged = true } }
-  /** What a flow into `into` (a key, or every key of a list) demands: false once any is denied, the weakest level when all are marked. */
+  /** What a flow into `into` (a key, or every key of a list) demands: false once
+   *  any is denied, else the weakest level among the marked. A key nothing reads
+   *  is no evidence: the slot of a literal in a function nothing calls (the one
+   *  every site spliced) is stored beside the live one and never read. */
   const demandOf = (into) => {
     if (into === null) return false
     if (typeof into === 'string' || typeof into === 'number') return numeric.get(into)
-    let level = NUM
-    for (const k of into) { const v = numeric.get(k); if (v === false) return false; if (v === undefined) return undefined; if (v < level) level = v }
+    let level
+    for (const k of into) { const v = numeric.get(k); if (v === false) return false; if (v !== undefined && (level === undefined || v < level)) level = v }
     return level
   }
   /** The context `cx` (FLOW resolved through `into`), no stronger than `level`. */

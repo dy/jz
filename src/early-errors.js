@@ -1051,6 +1051,10 @@ const validateScopeNames = (body, cx, scopeKind, paramNames = []) => {
   }
   if (moduleTop) for (const name of topFuncNames) if (topVarNames.includes(name))
     fail(`function declaration '${name}' conflicts with a var declaration at module top level`)
+  // At the top level of a module a function declaration is a lexical one
+  // (ES2026 §16.2.1.1 static semantics): a second declaration of the name is
+  // an early error, where a script hoists the last.
+  if (moduleTop) { const dupFn = duplicateName(topFuncNames); if (dupFn) fail(`duplicate function declaration '${dupFn}' at module top level`) }
   const dup = duplicateName(lexical)
   if (dup) fail(`duplicate lexical declaration '${dup}'`)
   const vars = []
