@@ -1181,6 +1181,26 @@ test('host array handles: element writes invalidate closed element proofs', () =
 })
 
 
+// The host may write into what a result holds. An array the program reads
+// again after the call, through an object a module binding or a capture keeps,
+// opens its elements; one that only the fresh result holds keeps its proofs
+// (a decoder's `{ channelData, sampleRate }` stores typed).
+test('host array handles: a fresh result\'s arrays keep their element proofs, a retained one\'s open', () => {
+  const src = `export const decode = (n) => {
+    const ch = Array.from({ length: 2 }, () => new Float32Array(n))
+    for (let c = 0; c < 2; c++) for (let x = ch[c], i = 0; i < n; i++) x[i] = i * 0.5 + c
+    return { channelData: ch, sampleRate: 44100 }
+  }`
+  ok(!/call \$__arr_typed_obj_set_idx/.test(compile(src, { wat: true })), 'the channel stores are typed')
+  for (const optimize of levels(0, 2, 3)) {
+    const m = jz(src, { optimize }), got = m.exports.decode(3)
+    is([...got.channelData[0]], [0, 0.5, 1]); is([...got.channelData[1]], [1, 1.5, 2]); is(got.sampleRate, 44100)
+    const r = jz('let last=null;export const make=()=>{const o={a:[1,2]};last=o;return o};export const value=()=>last.a[0]+1', { optimize })
+    r.memory.write(r.instance.exports.make(), { a: ['late'] })
+    is(r.exports.value(), 'late1', 'an object a module binding keeps opens its arrays')
+  }
+})
+
 test('host allocator: alignment preserves unsigned addresses above 2 GiB', () => {
   const memory = new WebAssembly.Memory({ initial: 32769, maximum: 32769 })
   const mem = jz.memory(memory)

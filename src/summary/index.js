@@ -306,7 +306,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     const old = results.get(key) ?? K.NONE, nk = merge(old, k)
     if (nk !== old) { results.set(key, nk); changed = true }
   }
-  const raiseSlot = (sid, i, k) => { if (hostSchemas.has(sid)) { retain(k); escapeToHost(k) } if ((opaqueSchemas.has(sid) || hostSchemas.has(sid)) && !lostReadPrecise(schemas[sid][i])) losingAs('stored into an object whose shape is lost', escape, k); const a = slots(sid), old = a[i]; let nk = merge(old, k); if (a[i] !== old) nk = merge(a[i], nk, true); if (nk !== a[i]) { a[i] = nk; changed = true; forFolded(sid, s => raiseSlot(s, i, nk)) } }
+  const raiseSlot = (sid, i, k) => { if (hostSchemas.has(sid)) { if (retainedSchemas.has(sid)) retain(k); escapeToHost(k) } if ((opaqueSchemas.has(sid) || hostSchemas.has(sid)) && !lostReadPrecise(schemas[sid][i])) losingAs('stored into an object whose shape is lost', escape, k); const a = slots(sid), old = a[i]; let nk = merge(old, k); if (a[i] !== old) nk = merge(a[i], nk, true); if (nk !== a[i]) { a[i] = nk; changed = true; forFolded(sid, s => raiseSlot(s, i, nk)) } }
   // A layout with more construction sites than a shape set holds is one shape:
   // its sites fold into it, and a fact raised on any of them reaches them all.
   const foldedLayouts = new Set()
@@ -368,7 +368,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   const sideByProp = new Map()   // name → kind stored beside any shape's slots
   const sideOf = (sid, prop) => merge(sideProps.get(sid)?.get(prop) ?? K.NONE, sideWild.get(sid) ?? K.NONE)
   const anySideOf = (sid) => { let k = sideWild.get(sid) ?? K.NONE; for (const pk of sideProps.get(sid)?.values() ?? []) k = merge(k, pk); return k }
-  const sideLost = (sid, k) => { if (hostSchemas.has(sid)) { retain(k); escapeToHost(k) } if (lostSchema(sid)) losingAs('stored into an object whose shape is lost', escape, k) }
+  const sideLost = (sid, k) => { if (hostSchemas.has(sid)) { if (retainedSchemas.has(sid)) retain(k); escapeToHost(k) } if (lostSchema(sid)) losingAs('stored into an object whose shape is lost', escape, k) }
   const raiseSide = (sid, prop, k) => {
     sideLost(sid, k)
     let m = sideProps.get(sid); if (!m) sideProps.set(sid, m = new Map())
@@ -442,6 +442,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   const addCellLost = (c) => { if (!cellLostObject.has(c)) { cellLostObject.add(c); changed = true } }
   const elems = []               // cell root → element kind
   const hostSchemas = new Set() // host-visible objects store tagged fields
+  const retainedSchemas = new Set() // objects reachable across calls, through globals or captures
   const hostArrays = new Set()   // arrays exposed to host writes
   const retainedArrays = new Set() // arrays reachable across calls, through globals or captures
   const hostClosures = new Set() // callable results the host can receive
@@ -990,9 +991,12 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       poisonLost(sid)
       if (iterFacts(sid)) escapeToHost(iterElem(sid), seen)
       if (promiseSites.has(sid)) { retain(promiseSites.get(sid)); escapeToHost(promiseSites.get(sid), seen) }
+      // The host may write into what the object holds: an array the program
+      // reads again after the call (one a retained object holds, retain below)
+      // opens its elements; one only this result holds keeps its proofs.
       const row = slots(sid)
-      for (let i = 0; i < row.length; i++) { retain(row[i]); escapeToHost(row[i], seen) }
-      const side = anySideOf(sid); retain(side); escapeToHost(side, seen)
+      for (let i = 0; i < row.length; i++) escapeToHost(row[i], seen)
+      escapeToHost(anySideOf(sid), seen)
     }
   }
   // Returning a fresh local array cannot change its earlier reads. Only a
@@ -1024,8 +1028,9 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       if (hostArrays.has(c)) raiseElem(k, ANY)
     } else if (t === K.OBJECT) for (const sid of shapesOf(p)) {
       if (seen.has(sid)) continue
-      seen.add(sid)
+      seen.add(sid); retainedSchemas.add(sid)
       for (const s of slots(sid)) retain(s, seen)
+      retain(anySideOf(sid), seen)
     }
   }
   // A parameter's incoming kind, the join of its arguments alone: a read of
@@ -3960,7 +3965,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   })
   const seeded = [...seedable].filter(p => (entryNumeric.has(p) || isCompatible(p)) && tagOf(kinds[p] ?? K.NONE) === K.ANY)
   if (seeded.length) {
-    kinds.length = 0; incoming.length = 0; fields.length = 0; objectKinds.clear(); decisions.clear(); opaqueSchemas.clear(); hostSchemas.clear(); hostArrays.clear(); retainedArrays.clear(); hostClosures.clear(); results.clear(); escaped.clear(); certainKeys.clear(); boolKeys.clear(); for (let i = 0; i < elems.length; i++) { elems[i] = K.NONE; cellUp[i] = i }
+    kinds.length = 0; incoming.length = 0; fields.length = 0; objectKinds.clear(); decisions.clear(); opaqueSchemas.clear(); hostSchemas.clear(); retainedSchemas.clear(); hostArrays.clear(); retainedArrays.clear(); hostClosures.clear(); results.clear(); escaped.clear(); certainKeys.clear(); boolKeys.clear(); for (let i = 0; i < elems.length; i++) { elems[i] = K.NONE; cellUp[i] = i }
     tuples.clear(); lens.clear(); stores.clear(); built.clear(); grown.clear(); unknown.clear(); presentReads.clear(); argRanges.clear(); roundArgs.clear(); moved.clear(); openArgs.clear()
     pendingAll = false; pendingIndexed = false; wildValues = K.NONE; wildProps.clear(); sideProps.clear(); sideWild.clear(); closureProps.clear(); sideByProp.clear(); foreignObjects = false; foreignProps.clear(); deletable.clear(); deleteReach.unknown = false
     seed(seeded)
