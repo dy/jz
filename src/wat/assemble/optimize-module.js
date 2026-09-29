@@ -19,6 +19,7 @@ import {
   specializeMkptr, scalarizeStaticScratch, buildPureFuncMap, inlinePureFnsInFn,
 } from '../../optimize/index.js'
 import { dataLen } from '../../static-data.js'
+import { HEAP } from '../../../layout.js'
 import { appendLateStdlib } from './stdlib-pull.js'
 import { insertLoopRewinds } from '../../optimize/loop-rewind.js'
 import { collectHeaderSafeFuncs } from '../../optimize/licm.js'
@@ -133,7 +134,11 @@ export function optimizeModule(sec, profiler) {
   // body to sec.stdlib — the pre-watr analogue of index.js's post-watr appendLateStdlib.
   if (cfg && cfg.vectorizeLaneLocal === true) t('appendLateStdlib', () => appendLateStdlib(allFuncs, sec.stdlib))
   const dataBytes = dataLen()
-  if (dataBytes > 1024 && !ctx.memory.shared) {
+  // Past HEAP.PTR_ADDR the static data covers the cell the host's allocator keeps its
+  // pointer in when the module exports no heap of its own (interop.js), and a host
+  // allocation overwrites the data's last word: 1024 bytes of it, the exponentials'
+  // table alone, lost its last entry's tail to the first memory.Float64Array.
+  if (dataBytes > HEAP.PTR_ADDR && !ctx.memory.shared) {
     // 64-byte heap-base alignment: the compiler's own vectorizer emits v128
     // stream loads/stores, and a heap base that isn't 64-byte aligned makes
     // every such access straddle cache lines on memory-bound kernels — a real,

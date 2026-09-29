@@ -1685,3 +1685,23 @@ test('reset: a store of a number into an object made at start saves nothing', ()
     }
   }
 })
+
+// A module whose static data ends between the host allocator's pointer cell
+// (HEAP.PTR_ADDR, layout.js) and HEAP.START (the exponentials' 1024-byte table,
+// module/math/trig-tables.js EXP2_TAB, is the one such table) exports a heap of its
+// own, so a host allocation leaves the data intact: it wrote its pointer over the
+// table's last tail, and Math.exp moved by an ulp on 71 of these 400 arguments.
+test('mem: a host allocation leaves static data up to HEAP.START intact', async () => {
+  const { exports, memory, module } = instantiate(compile(`export let f = (a, o, n) => { for (let i = 0; i < n; i++) o[i] = Math.exp(a[i]) }
+export let g = (x) => Math.exp(x)`))
+  // the arguments that read the table's last entry, 2^(63/64)
+  const xs = Array.from({ length: 400 }, (_, i) => (62.5 + i / 400) * Math.LN2 / 64)
+  const before = xs.map(x => exports.g(x))
+  const n = 4096, a = memory.Float64Array(new Float64Array(n).fill(0.5)), o = memory.Float64Array(new Float64Array(n))
+  exports.f(a, o, n)
+  memory.reset()
+  memory.Float64Array(new Float64Array(n))
+  const moved = xs.filter((x, i) => !Object.is(exports.g(x), before[i]))
+  is(moved.length, 0, `exp after a host allocation differs at ${moved.slice(0, 3).join(', ')}`)
+  ok(WebAssembly.Module.exports(module).some(e => e.name === '__heap'), 'the module keeps its heap pointer in a global of its own')
+})
