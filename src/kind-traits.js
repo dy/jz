@@ -188,7 +188,8 @@ export function methodValType(method, obj, objType, ctx) {
     if (objType === VAL.ARRAY) return VAL.ARRAY
     return null
   }
-  if (method === 'push') return VAL.ARRAY
+  // push answers the array's new length
+  if (method === 'push') return objType === VAL.ARRAY ? VAL.NUMBER : null
   if ((method === 'shift' || method === 'pop') && typeof obj === 'string') {
     const elemVt = ctx.func.localReps?.get(obj)?.arrayElemValType
     if (elemVt) return elemVt

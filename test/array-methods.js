@@ -2343,3 +2343,12 @@ test('TypedArray.from and construction: mapfn runs, every value converts with To
       for (const x of [9, -3.5]) is(jz(src, { optimize }).exports.f(x), native(x), `${body.slice(10, 60)}…, O${optimize}, x=${x}`)
   }
 })
+
+// push answers the array's new length: a number every consumer reads as one.
+test('.push: its result is the new length, a number', () => {
+  const bodies = ['let a = [1]; return a.push(x) + 1', 'let a = [x]; let n = a.push(3); return n + 1', 'let a = [1]; return a.push(2) === 2', 'let a = []; return a.push(x, x) * 2']
+  for (const body of bodies) {
+    const src = `export let f = (x) => { ${body} }`, want = new Function('x', body)(5)
+    for (const optimize of levels(0, 2, 3)) is(jz(src, { optimize }).exports.f(5), want, `${body} at ${optimize}`)
+  }
+})
