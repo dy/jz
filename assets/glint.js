@@ -8,7 +8,8 @@ const edge = el => {
   return { el, ring }
 }
 const logos = [...document.querySelectorAll('.logo, footer .wordmark')].map(edge)
-const boxes = new Map()
+const boxes = new Map(), masks = new Map()
+let maskId = 0
 const motion = matchMedia('(prefers-reduced-motion: reduce)')
 const mouse = matchMedia('(hover: hover) and (pointer: fine)')
 const field = { x: innerWidth / 2, y: -160 }
@@ -28,7 +29,23 @@ if (document.querySelector('html.paper')) {
   grid.className = 'grid-light'
   grid.setAttribute('aria-hidden', 'true')
   document.body.append(grid)
-  ruler = { el, grid, gradient: el.querySelector('radialGradient'), path: el.querySelector('path') }
+  ruler = { el, grid, gradient: el.querySelector('radialGradient'), path: el.querySelector('path'), defs: el.querySelector('defs') }
+}
+
+// Erode once and subtract: a true inside edge, without lighting, offsets or displaced glyphs.
+const inset = (el, rect) => {
+  if (!masks.has(el)) {
+    const filter = document.createElementNS('http://www.w3.org/2000/svg', 'filter'), id = `ink-outline-${maskId++}`
+    filter.setAttribute('id', id)
+    filter.setAttribute('primitiveUnits', 'objectBoundingBox')
+    filter.setAttribute('x', '-10%'); filter.setAttribute('y', '-50%')
+    filter.setAttribute('width', '120%'); filter.setAttribute('height', '200%')
+    filter.innerHTML = '<feMorphology in="SourceAlpha" operator="erode" result="inside"/><feComposite in="SourceGraphic" in2="inside" operator="out"/>'
+    ruler.defs.append(filter)
+    el.style.filter = `url(#${id})`
+    masks.set(el, { filter, erosion: filter.querySelector('feMorphology') })
+  }
+  masks.get(el).erosion.setAttribute('radius', `${1.1 / (rect.width || 1)} ${1.1 / (rect.height || 1)}`)
 }
 
 // Keep the real text selectable; its inert twin paints only the reflected outline.
@@ -38,18 +55,33 @@ const title = el => {
     fill = document.createElement('span')
     fill.className = 'title-fill'
     fill.append(...el.childNodes)
+    el.append(fill)
+  }
+  if (!el.querySelector('.title-outline')) {
     const outline = fill.cloneNode(true)
     outline.className = 'title-outline'
     outline.setAttribute('aria-hidden', 'true')
     outline.setAttribute('inert', '')
     for (const node of outline.querySelectorAll('[id]')) node.removeAttribute('id')
-    el.append(fill, outline)
+    el.append(outline)
     el.classList.add('reflect-title')
+  }
+  if (el.matches('.metrics b')) {
+    const outline = el.querySelector('.title-outline')
+    if (outline.textContent !== fill.textContent) outline.textContent = fill.textContent
   }
   return fill
 }
 const glare = el => {
-  if (el.classList.contains('glare-link') || el.matches('.logo, .wordmark, .gh, .report, .install')) return
+  if (el.classList.contains('glare-link') || el.matches('.logo, .wordmark, .report, .install')) return
+  if (el.matches('.gh')) {
+    const icon = el.querySelector('svg')?.cloneNode(true)
+    if (!icon) return
+    icon.setAttribute('xmlns', 'http://www.w3.org/2000/svg')
+    el.style.setProperty('--icon-mask', `url("data:image/svg+xml,${encodeURIComponent(icon.outerHTML)}")`)
+    el.classList.add('glare-link', 'glare-icon')
+    return
+  }
   const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT), nodes = []
   while (walker.nextNode()) if (walker.currentNode.textContent.trim() && !walker.currentNode.parentElement.closest('svg'))
     nodes.push(walker.currentNode)
@@ -62,6 +94,8 @@ const glare = el => {
 }
 const layout = () => {
   if (ruler) {
+    for (const [el, { filter }] of masks) if (!el.isConnected) { filter.remove(); masks.delete(el) }
+    for (const logo of logos) if (logo.outline) inset(logo.outline, logo.outline.getBoundingClientRect())
     const { clientWidth: width, clientHeight: height } = root
     const sides = getComputedStyle(document.body, '::before')
     const left = document.body.getBoundingClientRect().left + parseFloat(sides.left)
@@ -82,12 +116,14 @@ const layout = () => {
       boxes.get(el).rect = el.getBoundingClientRect()
     }
     for (const el of document.querySelectorAll('a')) glare(el)
-    ink = [...document.querySelectorAll('h1.title, footer .legal > :not(a)')]
+    ink = [...document.querySelectorAll('h1.title, .metrics b, footer .legal > :not(a)')]
       .filter(el => el.textContent.trim()).map(el => {
-        const heading = el.matches('h1.title')
+        const heading = el.matches('h1.title, .metrics b')
         const paint = heading ? title(el) : el
         if (!heading) el.classList.add('reflect-text')
-        return { el, heading, rect: paint.getBoundingClientRect() }
+        const rect = paint.getBoundingClientRect()
+        if (heading) inset(el.querySelector('.title-outline'), rect)
+        return { el, heading, rect }
       })
   }
   dirty = false
@@ -126,6 +162,11 @@ const frame = () => {
     const { x, y, power } = illumination(rect)
     item.ring.style.opacity = .3 + .7 * power
     light(item, x, y)
+    if (item.shine) {
+      item.shine.setAttribute('cx', (field.x - rect.left) * 630 / rect.width)
+      item.shine.setAttribute('cy', (field.y - rect.top) * 630 / rect.height)
+      item.shine.setAttribute('r', radius * 630 / rect.width)
+    }
   }
   for (const { el, heading, rect } of ink) {
     if (!rect.width || !rect.height || rect.bottom < 0 || rect.top >= innerHeight) {
@@ -135,7 +176,7 @@ const frame = () => {
     if (heading) {
       const dx = field.x - rect.left, dy = field.y - rect.top
       const distance = Math.hypot(Math.max(-dx, 0, dx - rect.width), Math.max(-dy, 0, dy - rect.height))
-      const nearby = !!pointer && mouse.matches && !motion.matches && distance < 200
+      const nearby = !!pointer && mouse.matches && !motion.matches && distance < 230
       el.classList.toggle('title-lit', nearby)
       if (nearby) {
         el.style.setProperty('--light-x', `${dx.toFixed(1)}px`)
@@ -175,3 +216,37 @@ if (ruler) {
   })
 }
 schedule()
+
+// The mark stays filled: a fixed silver face with a subtle reflection confined to its inner edge.
+if (logos.length) try {
+  const response = await fetch(new URL('../jz.svg', import.meta.url))
+  if (!response.ok) throw new Error('Logo unavailable')
+  const source = new DOMParser().parseFromString(await response.text(), 'image/svg+xml').documentElement
+  if (source.localName !== 'svg') throw new Error('Invalid logo')
+  for (const [i, logo] of logos.entries()) {
+    const img = logo.el.querySelector('img')
+    if (!img) continue
+    const svg = document.importNode(source, true), ns = svg.namespaceURI
+    svg.setAttribute('role', 'img'); svg.setAttribute('aria-label', img.alt || 'JZ')
+    svg.setAttribute('focusable', 'false')
+    const defs = document.createElementNS(ns, 'defs'), face = `logo-face-${i}`, shine = `logo-shine-${i}`
+    defs.innerHTML = `<linearGradient id="${face}" x2=".65" y2="1"><stop stop-color="#fff"/>
+      <stop offset=".5" stop-color="#e7eaee"/><stop offset="1" stop-color="#cbd2dc"/></linearGradient>
+      <radialGradient id="${shine}" gradientUnits="userSpaceOnUse"><stop stop-color="white"/>
+      <stop offset="1" stop-color="white" stop-opacity="0"/></radialGradient>`
+    const edge = document.createElementNS(ns, 'g')
+    edge.setAttribute('class', 'logo-ink-edge')
+    for (const path of [...svg.querySelectorAll('path')]) {
+      const paint = path.getAttribute('fill') === 'white' ? 'fill' : path.getAttribute('stroke') === 'white' ? 'stroke' : null
+      if (!paint) continue
+      const outline = path.cloneNode(true)
+      outline.setAttribute(paint, `url(#${shine})`); edge.append(outline)
+      path.setAttribute(paint, `url(#${face})`)
+    }
+    svg.prepend(defs)
+    if (ruler) { svg.append(edge); logo.outline = edge }
+    img.replaceWith(svg)
+    logo.shine = defs.querySelector('radialGradient')
+  }
+  invalidate()
+} catch { /* Keep the canonical image if its silver enhancement cannot load. */ }

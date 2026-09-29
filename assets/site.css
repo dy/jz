@@ -128,28 +128,33 @@ html.paper:not(.jz-saver):not(.jz-embed) :is(.ruler-refl, .grid-light) { display
 
 /* Futura (the brand face) for every title, site-wide. */
 h1, h2, h3, h4, h5, h6 { font-family: var(--font); }
-/* Two paint layers, no filters or shadows. Padding preserves descenders under the masks. */
+/* A two-step mask keeps the edge inside each glyph. Padding preserves descenders. */
 .reflect-title { display: grid; }
 .reflect-title > span { grid-area: 1 / 1; text-box: inherit; padding-block: .25em; margin-block: -.25em; }
 .title-outline { visibility: hidden; pointer-events: none; user-select: none;
-  -webkit-text-fill-color: transparent; -webkit-text-stroke: 1px currentColor; }
+  color: light-dark(#000, #fff); }
 .title-lit > .title-fill {
-  mask-image: radial-gradient(ellipse 200px 140px at var(--light-x) var(--light-y), transparent 18%, #000 85%); }
+  mask-image: radial-gradient(ellipse 150px 100px at var(--light-x) var(--light-y), transparent 22%, #000 85%); }
 .title-lit > .title-outline { visibility: visible;
-  mask-image: radial-gradient(ellipse 200px 140px at var(--light-x) var(--light-y), #000, rgb(0 0 0 / .3) 55%, transparent); }
+  mask-image: radial-gradient(ellipse 230px 170px at var(--light-x) var(--light-y), #000 45%, rgb(0 0 0 / .8) 65%, transparent); }
 .reflect-text { -webkit-text-fill-color: color-mix(in srgb, currentColor,
   light-dark(#000, #fff) calc(var(--light-power, 0) * 35%)); }
 /* A quick wipe reaches the normal hover color and holds it until the pointer leaves. */
-.glare-ink, .metrics .lab {
+.glare-ink, .metrics .lab, .glare-icon::before {
   background: linear-gradient(110deg, light-dark(#000, #fff) 45%, currentColor 55%) 100% 0 / 230% 100%;
-  -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
   transition: background-position .18s ease-out; }
+.glare-ink, .metrics .lab { -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; }
+.glare-icon { position: relative; }
+.glare-icon svg { visibility: hidden; }
+.glare-icon::before { content: ""; position: absolute; width: 20px; height: 20px;
+  mask: var(--icon-mask) center / contain no-repeat; }
 /* Inline padding gives the paint room for descenders without changing line metrics. */
 .glare-ink { padding-block: .25em; -webkit-box-decoration-break: clone; box-decoration-break: clone; }
 .glare-link:is(:hover, :focus-visible) .glare-ink,
+.glare-icon:is(:hover, :focus-visible)::before,
 .metrics .stat:is(:hover, :focus-visible) .lab { background-position: 0% 0; }
 @media (prefers-reduced-motion: reduce) {
-  .glare-ink, .metrics .lab { transition: none; }
+  .glare-ink, .metrics .lab, .glare-icon::before { transition: none; }
   .title-lit > .title-fill { mask-image: none; }
   .title-lit > .title-outline { visibility: hidden; }
 }
@@ -178,6 +183,8 @@ h1, h2, h3, h4, h5, h6 { font-family: var(--font); }
   .title-lit > .title-fill { mask-image: none; }
   .title-lit > .title-outline { visibility: hidden; }
   .glare-ink, .metrics .lab { background: none; -webkit-text-fill-color: currentColor; }
+  .glare-icon::before { display: none; }
+  .glare-icon svg { visibility: visible; }
 }
 
 /* One themed keyboard-focus ring everywhere (else links/buttons fall back to the inconsistent browser
@@ -193,7 +200,8 @@ h1, h2, h3, h4, h5, h6 { font-family: var(--font); }
 .masthead.fixed { position: fixed; top: 0; left: 0; right: 0; z-index: 200; margin-top: 0; padding-top: 20px; }
 .masthead .logo { display: flex; align-items: center; line-height: 0; flex: 0 0 auto; }
 
-/* The canonical white JZ stays unchanged; only its square reflects the pointer. */
+/* A fixed silver face; the square and inner letter edge share the cursor light. */
+.logo-ink-edge { mix-blend-mode: screen; }
 :is(.logo, footer .wordmark), .reflect-box { position: relative; isolation: isolate; }
 .logo { align-self: flex-start; }
 :is(.logo, footer .wordmark) > :is(img, svg) { position: relative; z-index: 1; }
@@ -220,7 +228,8 @@ footer .wordmark > .edge-refl { inset: 1px -1px -1px 1px; }
    meets its neighbour flush (the negative margin cancels the menu's gap) and fills on hover. */
 .site-nav > :is(.theme-toggle, .gh) { flex: none; width: var(--u2); height: var(--u2); margin-left: calc(-1 * var(--nav-gap));
   display: inline-flex; align-items: center; justify-content: center; opacity: .7; transition: opacity .18s, background-color .18s; }
-.site-nav > :is(.theme-toggle, .gh):hover { opacity: 1; background: light-dark(rgba(0,0,0,.06), rgba(255,255,255,.1)); }
+.site-nav > .theme-toggle:hover { opacity: 1; background: light-dark(rgba(0,0,0,.06), rgba(255,255,255,.1)); }
+.site-nav > .gh { opacity: 1; transition: none; }
 .site-nav > .theme-toggle { margin-left: 0; }   /* the first icon keeps the menu's gap from the words (the version) before it */
 
 /* ── Theme toggle — an icon-only button after the version; one sun/moon glyph that swaps via the
@@ -235,19 +244,15 @@ footer .wordmark > .edge-refl { inset: 1px -1px -1px 1px; }
 :root[data-theme="light"] .theme-toggle .i-sun  { display: none; }
 :root[data-theme="light"] .theme-toggle .i-moon { display: block; }   /* light theme → show the moon */
 
-/* ─── Content link — the ONE prose-link fashion on every page (bench labels, the landing's hero-demo
-   line and FAQ answers): colour from context, quiet 1px underline in --mute, underline inks to
-   currentColor on hover/focus. Nav, chips and tile links stay underline-free — that's the other,
-   equally deliberate fashion. ─── */
-.lnk { color: inherit; cursor: pointer; text-decoration: underline; text-decoration-color: var(--mute); text-underline-offset: 2px; text-decoration-thickness: 1px; transition: text-decoration-color .16s; }
-.lnk:hover, .lnk:focus-visible { text-decoration-color: currentColor; }
+/* Prose links are brighter ink; the shared glare supplies their hover and focus state. */
+.lnk { color: var(--ink); cursor: pointer; text-decoration: none; }
 
 /* Shared reading style: FAQ answers and the getting-started guide. */
-.prose { max-width: 720px; font-size: var(--fs-body); line-height: 24px; color: var(--ink); }
+.prose { max-width: 720px; font-size: var(--fs-body); line-height: 24px; color: var(--soft); }
+.prose :is(h1, h2, h3, h4, h5, h6) { color: var(--ink); }
 .prose p { margin: 0; }
 .prose p+p { margin-top: 16px; }
-.prose a { color: inherit; text-decoration: underline; text-decoration-color: var(--mute); text-decoration-thickness: 1px; text-underline-offset: 2px; transition: text-decoration-color .16s; }
-.prose a:hover, .prose a:focus-visible { text-decoration-color: currentColor; }
+.prose a { color: var(--ink); text-decoration: none; }
 .prose :not(pre)>code { font-family: var(--font-mono); font-size: var(--fs-mono); line-height: 0; color: var(--ink); background: light-dark(rgba(0,0,0,.06), rgba(255,255,255,.08)); padding: .1em .4em; white-space: nowrap; }   /* line-height 0: a second font must not grow the line box off the 24px rhythm */
 
 /* ─── CTA chip — the ONE call-to-action button, shared: the bench page's "Report a slow case" and the
@@ -265,7 +270,7 @@ html.paper footer { background: none; box-shadow: inset 0 1px var(--rule); }   /
 footer .fwrap { max-width: var(--cw); margin-inline: calc(var(--gx-pad) - var(--padx)) auto; display: flex; align-items: flex-start; gap: var(--u2); }
 footer .wordmark { display: inline-flex; width: 40px; height: 40px; padding: 1px 0 0 1px; box-sizing: border-box; line-height: 0; text-decoration: none; }
 footer .wordmark > :is(img, svg) { width: 39px; height: 39px; display: block; }
-footer .fcol { display: flex; flex-direction: column; gap: var(--u); width: var(--U); padding-top: calc(2 * var(--u)); }
+footer .fcol { display: flex; flex-direction: column; gap: var(--u); width: var(--U); padding-top: calc(1.5 * var(--u)); }
 footer .fcol a { text-decoration: none; color: var(--soft); font-size: var(--fs-small); transition: color .16s; }
 footer .legal { margin-left: auto; align-self: flex-end; display: flex; flex-direction: column; align-items: flex-end; gap: var(--u); font-size: var(--fs-small); line-height: 24px; text-align: right; color: var(--dim); }
 footer .legal .credit { color: var(--mute); }   /* "made with watr and jessie" — muted lead, soft links (jz's parser + assembler) */

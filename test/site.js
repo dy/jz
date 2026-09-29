@@ -13,7 +13,7 @@ const build = (...args) => spawnSync(process.execPath, [join(root, 'scripts/buil
 
 // Exercise the shipped pointer controller with a deterministic frame clock. SVG rendering
 // is browser-checked; these ports record its paint attributes without a DOM dependency.
-async function glint({ count = 1, reduced = false, fine = true, paper = false, textNodes = [], scroll = 0 } = {}) {
+async function glint({ count = 1, reduced = false, fine = true, failure = 'http', paper = false, textNodes = [], scroll = 0 } = {}) {
   const events = new Map(), frames = new Map(), requests = [], clicks = [], selection = { isCollapsed: true }
   const listen = (name, fn) => events.set(name, fn)
   const node = () => ({ attrs: {}, children: [], style: { setProperty(k, v) { this[k] = v } },
@@ -23,7 +23,7 @@ async function glint({ count = 1, reduced = false, fine = true, paper = false, t
   const els = Array.from({ length: count }, () => ({
     rect: { left: 20, top: 40, width: 160, height: 160, bottom: 200 }, children: [],
     append(el) { this.children.push(el) }, getBoundingClientRect() { return this.rect },
-    querySelector() { throw new Error('The white logo image must not be replaced') },
+    querySelector() { throw new Error('A failed enhancement must preserve the original image') },
   }))
   const motion = { matches: reduced, addEventListener: (_, fn) => listen('motion', fn) }
   const mouse = { matches: fine, addEventListener: (_, fn) => listen('mouse', fn) }
@@ -35,6 +35,7 @@ async function glint({ count = 1, reduced = false, fine = true, paper = false, t
   const rules = [{ left: 0, right: 1000, top: 320, width: 1000 }], tables = [], controls = []
   let id = 0, measurements = 0, clickLoads = 0
   const src = readFileSync(join(root, 'assets/glint.js'), 'utf8')
+    .replace('import.meta.url', JSON.stringify('https://jz.test/assets/glint.js'))
     .replace("import('./grid-click.js')", 'loadClicks()')
   const { light } = await runInNewContext(`(async () => {${src}\nreturn { light }})()`, {
     document: { querySelector: () => paper ? doc : null, addEventListener: listen, getSelection: () => selection,
@@ -52,8 +53,10 @@ async function glint({ count = 1, reduced = false, fine = true, paper = false, t
     requestAnimationFrame: fn => { frames.set(++id, fn); return id },
     fetch: async url => {
       requests.push(String(url))
-      throw new Error('Lighting needs no network requests')
+      if (failure === 'network') throw new Error('offline')
+      return { ok: failure !== 'http', text: async () => '<broken' }
     },
+    DOMParser: class { parseFromString() { return { documentElement: { localName: 'parsererror' } } } },
   })
   const drain = () => {
     let n = 0
@@ -124,13 +127,15 @@ test('site: logo respects touch and live reduced-motion changes', async () => {
   is(g.frames.size, 0, 'a device without a fine pointer stays still')
 })
 
-test('site: logo lighting preserves the white image without fetching or replacing it', async () => {
+test('site: failed silver enhancements preserve the original logo and its square lighting', async () => {
   const empty = await glint({ count: 0 })
   is(empty.requests.length, 0, 'no logo means no asset request')
   is(empty.frames.size, 0, 'no logo means no frame work')
-  const g = await glint(); g.drain()
-  is(g.requests, [], 'the canonical white logo needs no enhancement fetch')
-  ok(g.paint().startsWith('conic-gradient('), 'only the surrounding square reflects the cursor')
+  for (const failure of ['http', 'network', 'parse']) {
+    const g = await glint({ failure }); g.drain()
+    is(g.requests, ['https://jz.test/jz.svg'], 'the canonical asset resolves relative to the module')
+    ok(g.paint().startsWith('conic-gradient('), `${failure}: the fallback image keeps its square reflection`)
+  }
 })
 
 test('site: ruler reflection follows the pointer and remeasures only after layout changes', async () => {
@@ -208,14 +213,16 @@ test('site: buttons use the logo bevel and tables remain matte', async () => {
   ok(button.children[0].style.background.includes('rgb(0 0 0 /'), 'light mode uses the same bevel in black')
 })
 
-test('site: title reflection tracks CSS coordinates, clears and leaves other glyphs solid', async () => {
+test('site: title and stat inner outlines track the light and live values without changing FAQ or JZ', async () => {
   const text = (kind, width = 100, height = 16) => {
     const classes = new Set(), rect = { left: 20, top: 40, width, height, bottom: 40 + height }
-    return { textContent: 'Examples', rect,
+    const fill = { textContent: 'Examples', getBoundingClientRect: () => rect }
+    const outline = { textContent: 'Examples', isConnected: true, style: {} }
+    return { textContent: 'Examples', rect, fill, outline,
       matches: selector => selector.split(', ').includes(kind),
       classList: { add: name => classes.add(name), remove: name => classes.delete(name), contains: name => classes.has(name),
         toggle: (name, on) => on ? classes.add(name) : classes.delete(name) },
-      querySelector: () => ({ getBoundingClientRect: () => rect }),
+      querySelector: selector => selector === '.title-fill' ? fill : outline,
       style: { setProperty(name, value) { this[name] = value } }, getBoundingClientRect: () => rect }
   }
   const title = text('h1.title'), stat = text('.metrics b'), faq = text('h2'), logo = text('.logo-letters'), textNodes = [title, stat, faq, logo]
@@ -232,11 +239,20 @@ test('site: title reflection tracks CSS coordinates, clears and leaves other gly
   is(g.measurements(), measured, 'pointer movement reuses measured geometry')
   title.rect.left = 40; title.rect.top = 20; g.emit('scroll'); g.drain()
   ok(at(30, 28), 'scroll remeasures the paint box')
-  for (const el of [stat, faq, logo]) {
-    ok(!el.classList.contains('title-lit'), 'stats, FAQ and JZ stay solid')
+  ok(stat.classList.contains('title-lit'), 'stat figures share the title x-ray')
+  for (const el of [faq, logo]) {
+    ok(!el.classList.contains('title-lit'), 'FAQ and JZ stay solid')
     is(Object.keys(el.style), ['setProperty'], 'unrelated glyphs receive no paint updates')
   }
-  g.emit('mutate'); g.drain(); is(g.defs.children.length, 0, 'no per-glyph SVG filters are allocated')
+  const filter = g.defs.children[1]
+  is(filter.attrs.primitiveUnits, 'objectBoundingBox', 'inner-edge dimensions work across browser coordinate systems')
+  const [rx, ry] = filter.parts.feMorphology.attrs.radius.split(' ').map(Number)
+  ok(Math.abs(rx * 100 - 1.1) + Math.abs(ry * 16 - 1.1) < 1e-12, 'erosion stays just over one CSS pixel to survive WebKit rounding')
+  for (const value of ['2.36×', '2.36×', '1.04×']) {
+    stat.fill.textContent = value; g.emit('mutate'); g.drain()
+    is(stat.outline.textContent, value, 'the decorative outline follows the real stat value')
+    is(g.defs.children.length, 2, 'value changes reuse existing masks')
+  }
   g.emit('pointerleave'); g.drain(); ok(!lit(), 'leaving restores the title fill')
   g.move(70, 48); g.drain(); g.move(900, 600); g.drain()
   ok(!lit(), 'moving elsewhere clears the cutout')
