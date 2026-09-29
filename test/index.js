@@ -135,6 +135,7 @@ const TESTS = [
   'index-store',
   'present-receiver',
   'header-hoist',
+  'iterate-present',
   'param-range',
   'typed-present',
   'fn-alias',

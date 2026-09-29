@@ -1542,8 +1542,9 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
         // number, a boolean, a closure, a dictionary), yields nothing: the
         // kinds are monotone, so answering ANY here would stand forever.
         if (t === K.NONE || !iterable(src) || t === K.OBJECT) return K.NONE
+        // The iteration throws on a missing source, so what it iterates is present.
         const arr = node ? iterArray(node, src) : null
-        if (arr !== null) return arr
+        if (arr !== null) return core(arr)
         if (t === K.MAP) { escape(keysOf(src)); escape(elemOf(src)) }
         return t === K.MAP || t === K.SET || t === K.STRING ? kind(K.ARRAY) : ANY
       }
