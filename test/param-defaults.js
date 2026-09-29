@@ -142,3 +142,11 @@ test('param defaults: a function whose defaults never run inlines', () => {
   const w = jz.compile(src, { wat: true, optimize: 2 })
   is((w.match(/call \$[^\s)]*(fromArray|toArray)/g) || []).length, 0, 'no call to either remains: both are spliced into the loop')
 })
+
+test('param defaults: an argument forwarded into a defaulted parameter arrives as undefined', () => agree([
+  // the host's ToNumber made undefined NaN at a numeric export boundary, and the callee's default never ran
+  ['forwarded', `function g (q = 1) { return q * 2 }\nexport const run = (q) => g(q)`, [undefined]],
+  ['forwarded, given', `function g (q = 1) { return q * 2 }\nexport const run = (q) => g(q)`, [4]],
+  ['in a loop', `function g (w, q = 1) { return w / (2 * q) }\nexport const run = (q) => { let s = 0; for (let i = 0; i < 3; i++) { let k = g(0.5 + i, q); s += k } return s }`, [undefined]],
+  ['closure', `export const run = (q) => { const g = (x = 5) => x * 2; return g(q) + g(q + 1) }`, [undefined]],
+]))

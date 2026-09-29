@@ -3887,7 +3887,8 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
         // Math takes numbers, except sumPrecise, which takes an iterable.
         if ((callee.startsWith('Math.') || callee.startsWith('math.')) && !callee.endsWith('.sumPrecise')) { for (let i = 0; i < count; i++) useOf(argAt(as, i), NUM); return }
         const f = funcByName.get(callee)
-        if (f && !escaped.has(callee)) { readResult(callee, cx, into); for (let i = 0; i < count; i++) { const p = f.sig.params[i]; if (p && !p.rest) useOf(argAt(as, i), FLOW, keyIn(callee, p.name)); else demand(argAt(as, i)) } return }
+        // A parameter with a default tells undefined from the NaN ToNumber makes of it: a plain read.
+        if (f && !escaped.has(callee)) { readResult(callee, cx, into); for (let i = 0; i < count; i++) { const p = f.sig.params[i]; if (p && !p.rest && f.defaults?.[p.name] == null) useOf(argAt(as, i), FLOW, keyIn(callee, p.name)); else demand(argAt(as, i)) } return }
       }
       // A closure binding by name, or the closure set a callee expression
       // reads (`TABLE[k](…)`): each member's parameter is a flow target; a
@@ -3899,13 +3900,13 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
         if (members.length === 1) {
           const id = members[0], names = callableParams(id)
           if (!escaped.has(id)) readResult(id, cx, into)
-          for (let i = 0; i < count; i++) { const name = i < names.length ? names[i] : null; if (!escaped.has(id) && name != null) useOf(argAt(as, i), FLOW, keyIn(id, name)); else demand(argAt(as, i)) }
+          for (let i = 0; i < count; i++) { const name = i < names.length ? names[i] : null; if (!escaped.has(id) && name != null && callableDefaults(id)?.[name] == null) useOf(argAt(as, i), FLOW, keyIn(id, name)); else demand(argAt(as, i)) }
           return
         }
         const ids = members.filter(id => !escaped.has(id))
         for (const id of ids) readResult(id, cx, into)
         for (let i = 0; i < count; i++) {
-          const keys = ids.map(id => callableParams(id)[i] != null ? keyIn(id, callableParams(id)[i]) : null)
+          const keys = ids.map(id => callableParams(id)[i] != null && callableDefaults(id)?.[callableParams(id)[i]] == null ? keyIn(id, callableParams(id)[i]) : null)
           if (ids.length && keys.every(k => k !== null)) useOf(argAt(as, i), FLOW, keys); else demand(argAt(as, i))
         }
         return

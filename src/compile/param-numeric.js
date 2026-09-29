@@ -329,7 +329,8 @@ export function paramAllUsesNumeric(body, name, _seen = new Set(), requireProof 
         for (let i = 0; i < args.length; i++) {
           if (!names.has(args[i])) { walk(args[i]); continue }
           const p = fn.sig.params[i]
-          if (!p || !paramAllUsesNumeric(fn.body, p.name, new Set([..._seen, node[1]]), false)) { ok = false; return }
+          // a default tells undefined from the NaN ToNumber makes of it
+          if (!p || fn.defaults?.[p.name] != null || !paramAllUsesNumeric(fn.body, p.name, new Set([..._seen, node[1]]), false)) { ok = false; return }
         }
         return
       }
@@ -507,7 +508,8 @@ export function paramNeverString(body, name, _seen = new Set()) {
         for (let i = 0; i < args.length; i++) {
           if (args[i] !== name) { walk(args[i]); continue }
           const param = fn.sig.params[i]
-          if (param == null || !paramNeverString(frameNode(fn), param.name, new Set([..._seen, node[1]]))) { ok = false; return }   // the frame: a default's use counts
+          // the frame: a default's use counts; a default of the parameter itself tests for undefined
+          if (param == null || fn.defaults?.[param.name] != null || !paramNeverString(frameNode(fn), param.name, new Set([..._seen, node[1]]))) { ok = false; return }
         }
         return
       }
