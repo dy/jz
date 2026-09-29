@@ -1907,7 +1907,7 @@ export default (ctx) => {
     const view = ctx.summary?.at(ctx.func.current), k = view?.kindOfExpr(obj)
     if (k == null || summaryTagOf(k) !== K.OBJECT || (typeof obj === 'string' ? lookupValType(obj) : valTypeOf(obj)) !== VAL.OBJECT) return null
     const layouts = view.shapesOfExpr(obj)
-    if (!layouts || layouts.length < 2) return null
+    if (!layouts?.length) return null
     let slot = -1, i32Certain = false, bigintProven = false
     for (const sid of layouts) {
       const i = ctx.schema.list[sid]?.indexOf(prop) ?? -1

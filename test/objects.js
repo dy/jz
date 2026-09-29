@@ -2582,3 +2582,13 @@ export let h = (i) => { try { put(chans[i], 7); return chans[i].k } catch (e) { 
   }
   ok(!compile(src, { optimize: 2, wat: true }).includes('$__dyn_set'), 'every store takes the slot')
 })
+
+// A field read through an expression whose objects the summary names by one
+// layout (a list's element, two literals of one shape) is that layout's slot.
+test('objects: a field of a list element of one layout reads its slot', () => {
+  const src = `export let f = (c) => { const it = [{ b0: c, a1: 2 }, { b0: 1, a1: c }]; let y = 0; for (let i = 0; i < it.length; i++) y += it[i].b0 * it[i].a1; return y }`
+  const js = oracle(src)
+  for (const optimize of levels(0, 2, 3)) is(jz(src, { optimize }).exports.f(3), js.f(3), `O${optimize}`)
+  if (belowOpt(2)) return
+  ok(!/\$__dyn_get|\$__hash_get|\$__schema_slot/.test(compile(src, { optimize: 2, wat: true })), 'no runtime lookup')
+})
