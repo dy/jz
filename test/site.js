@@ -213,7 +213,7 @@ test('site: buttons use the logo bevel and tables remain matte', async () => {
   ok(button.children[0].style.background.includes('rgb(0 0 0 /'), 'light mode uses the same bevel in black')
 })
 
-test('site: title and stat inner outlines track the light and live values without changing FAQ or JZ', async () => {
+test('site: thin title outlines track the light while stats, FAQ and JZ keep their fill', async () => {
   const text = (kind, width = 100, height = 16) => {
     const classes = new Set(), rect = { left: 20, top: 40, width, height, bottom: 40 + height }
     const fill = { textContent: 'Examples', getBoundingClientRect: () => rect }
@@ -239,19 +239,18 @@ test('site: title and stat inner outlines track the light and live values withou
   is(g.measurements(), measured, 'pointer movement reuses measured geometry')
   title.rect.left = 40; title.rect.top = 20; g.emit('scroll'); g.drain()
   ok(at(30, 28), 'scroll remeasures the paint box')
-  ok(stat.classList.contains('title-lit'), 'stat figures share the title x-ray')
-  for (const el of [faq, logo]) {
-    ok(!el.classList.contains('title-lit'), 'FAQ and JZ stay solid')
+  for (const el of [stat, faq, logo]) {
+    ok(!el.classList.contains('title-lit'), 'stats, FAQ and JZ stay solid')
     is(Object.keys(el.style), ['setProperty'], 'unrelated glyphs receive no paint updates')
   }
-  const filter = g.defs.children[1]
+  const filter = g.defs.children[0]
   is(filter.attrs.primitiveUnits, 'objectBoundingBox', 'inner-edge dimensions work across browser coordinate systems')
-  const [rx, ry] = filter.parts.feMorphology.attrs.radius.split(' ').map(Number)
-  ok(Math.abs(rx * 100 - 1.1) + Math.abs(ry * 16 - 1.1) < 1e-12, 'erosion stays just over one CSS pixel to survive WebKit rounding')
+  const [rx, ry] = filter.parts.feGaussianBlur.attrs.stdDeviation.split(' ').map(Number)
+  ok(Math.abs(rx * 100 - .6) + Math.abs(ry * 16 - .6) < 1e-12, 'the inner edge uses a subpixel soft mask instead of integer erosion')
   for (const value of ['2.36×', '2.36×', '1.04×']) {
-    stat.fill.textContent = value; g.emit('mutate'); g.drain()
-    is(stat.outline.textContent, value, 'the decorative outline follows the real stat value')
-    is(g.defs.children.length, 2, 'value changes reuse existing masks')
+    stat.textContent = value; g.emit('mutate'); g.drain()
+    ok(!stat.classList.contains('title-lit'), 'rotating stats remain solid')
+    is(g.defs.children.length, 1, 'stat changes create no glyph masks')
   }
   g.emit('pointerleave'); g.drain(); ok(!lit(), 'leaving restores the title fill')
   g.move(70, 48); g.drain(); g.move(900, 600); g.drain()
@@ -262,7 +261,7 @@ test('site: title and stat inner outlines track the light and live values withou
   g.motion.matches = false; g.emit('motion'); g.move(70, 48); g.drain()
   title.rect.width = 0; title.rect.height = 0; g.emit('resize'); g.drain()
   ok(!lit(), 'collapsed titles shed their cutout')
-  ok(!JSON.stringify(title.style).match(/NaN|Infinity/), 'zero-size paint boxes retain finite coordinates')
+  is(filter.parts.feGaussianBlur.attrs.stdDeviation, '0.6 0.6', 'zero-size paint boxes retain finite mask dimensions')
   title.rect.width = 100; title.rect.height = 16; title.rect.top = 900; title.rect.bottom = 916
   g.emit('scroll'); g.drain(); ok(!lit(), 'offscreen titles stay unmasked')
 })
