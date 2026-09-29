@@ -2349,18 +2349,19 @@ export default (ctx) => {
       valIR = typed(['local.get', `$${value}`], 'f64')
     }
     const off = ['i32.add', typedDataAddr(objIR, isView), ['i32.shl', vi, ['i32.const', SHIFT[et]]]]
+    // The stored value's number (ToNumber, a valueOf's among them) for every
+    // element kind, taken before the index is tested as a store takes it; the
+    // assignment's own value is the value before it. Null where the value is
+    // a number already.
+    const numberOf = (reread) => toNumF64(val, valIR) === valIR ? null : ctx.core.stdlib['__to_num'] ? toNumF64(val, reread) : coerceNullishToNum(reread)
     if (r.isF16 || r.isClamped) {
       // conversion is not a truncation — always through the kernel (RTNE /
       // ToUint8Clamp); the i32Backed shortcut below would store raw low bits
-      const vt = temp('tw')
-      const conv = elemStoreIR(r, off, ['local.get', `$${vt}`])
-      return typed(void_ ? ['block', ...pre,
-        ['local.set', `$${vt}`, asF64(valIR)],
-        guard(conv)]
-        : ['block', ['result', 'f64'], ...pre,
-        ['local.set', `$${vt}`, asF64(valIR)],
-        guard(conv),
-        ['local.get', `$${vt}`]], void_ ? 'void' : 'f64')
+      const vt = temp('tw'), nt = temp('twn'), number = numberOf(typed(['local.get', `$${vt}`], 'f64'))
+      const conv = elemStoreIR(r, off, ['local.get', `$${number ? nt : vt}`])
+      const take = [['local.set', `$${vt}`, asF64(valIR)], ...(number ? [['local.set', `$${nt}`, asF64(number)]] : [])]
+      return typed(void_ ? ['block', ...pre, ...take, guard(conv)]
+        : ['block', ['result', 'f64'], ...pre, ...take, guard(conv), ['local.get', `$${vt}`]], void_ ? 'void' : 'f64')
     }
     if (isBigInt) {
       // Typed storage needs the raw i64 payload. A materialized union can carry
@@ -2517,14 +2518,11 @@ export default (ctx) => {
     // ±2^63 the inline wrap is exact ToInt32 (ir/numeric.js toInt32).
     const vt = temp('tw'), get = ['local.get', `$${vt}`], range = f64Range(asF64(valIR), null, true)
     if (range) get.range = range
-    const i32val = toInt32(get)
-    return typed(void_ ? ['block', ...pre,
-      ['local.set', `$${vt}`, asF64(valIR)],
-      guard([STORE[et], off, i32val])]
-      : ['block', ['result', 'f64'], ...pre,
-      ['local.set', `$${vt}`, asF64(valIR)],
-      guard([STORE[et], off, i32val]),
-      ['local.get', `$${vt}`]], void_ ? 'void' : 'f64')
+    const number = numberOf(typed(['local.get', `$${vt}`], 'f64')), nt = number ? temp('twn') : null
+    const i32val = toInt32(number ? ['local.get', `$${nt}`] : get)
+    const take = [['local.set', `$${vt}`, asF64(valIR)], ...(number ? [['local.set', `$${nt}`, asF64(number)]] : [])]
+    return typed(void_ ? ['block', ...pre, ...take, guard([STORE[et], off, i32val])]
+      : ['block', ['result', 'f64'], ...pre, ...take, guard([STORE[et], off, i32val]), ['local.get', `$${vt}`]], void_ ? 'void' : 'f64')
   }
 
   // TypedArray.prototype.set(source, offset = 0). A typed source of the same byte

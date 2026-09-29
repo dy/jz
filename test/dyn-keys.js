@@ -2956,3 +2956,21 @@ export let kb = () => { let s = ''; for (const k in b) s += k; return s }`
   const wat = compile(src, { wat: true, optimize: { watr: false } })
   ok(!/__schema_tbl/.test(funcWat(wat, 'ka')) && /__schema_tbl/.test(funcWat(wat, 'kb')), 'the untouched literal unrolls, the indexed one keeps the ordered loop')
 })
+
+// A typed store takes its value's number (ToNumber: an object's valueOf) for
+// every element kind, before the index decides whether anything is stored.
+test('typed stores take the number of an object value for every element kind, in range or not', () => {
+  for (const ctor of ['Int8Array', 'Uint8Array', 'Uint8ClampedArray', 'Int16Array', 'Uint16Array', 'Int32Array', 'Uint32Array', 'Float16Array', 'Float32Array', 'Float64Array']) {
+    const src = `export function f(i) {
+      let events = 0; const a = new ${ctor}(2)
+      function rhs() { events = events * 10 + 2; return { valueOf() { events = events * 10 + 3; return 7.6 } } }
+      const r = (a[(events = events * 10 + 1, i)] = rhs())
+      return [events, a[0], a[1], typeof r]
+    }`
+    const expected = oracle(src).f
+    for (const optimize of [0, 2, 3, 'size']) {
+      const { f } = jz(src, { optimize }).exports
+      for (const i of [0, 1, 5, -1]) is(f(i), expected(i), `O${optimize}: ${ctor}[${i}]`)
+    }
+  }
+})
