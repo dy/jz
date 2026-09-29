@@ -1,7 +1,7 @@
 // A typed array's `.length` where the plan knows its element kind, whatever
 // the receiver expression (a record's field, a list element): the byte length's
 // word shifted by the element width, no __length dispatch
-// (module/typedarray.js '.typed:length').
+// (module/typedarray.js '__typed_len').
 import test from 'tst'
 import { ok } from 'tst/assert.js'
 import jz from '../index.js'
@@ -42,4 +42,10 @@ test('typed length: a field that may hold a string keeps the dispatch', () => {
     const { f } = jz(src, { optimize }).exports
     for (const i of [0, 1]) ok(Object.is(f(i), want(i)), `recs[${i}] at ${optimize}`)
   }
+})
+
+test('typed length: a method named length on a receiver that may be a typed array calls the method', () => {
+  const src = `const o = { length: (a, b) => a + b }
+    export let f = (x) => { const r = x > 1 ? o : x > 0 ? new Float64Array(2) : undefined; return r.length(1, 2) }`
+  for (const optimize of levels(0, 2)) ok(jz(src, { optimize }).exports.f(2) === 3, `O${optimize}`)
 })
