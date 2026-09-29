@@ -1938,6 +1938,8 @@ an array, an object and a collection, and releases the call then; a typed
 array's view and a closure's handle above its mark hold the call's memory.
 An export whose result is asked is one the host releases (`jz:release`),
 whether or not it copies an argument in.
+A function with several results (an array literal returned as its elements)
+holds each in a local past its restore and asks each.
 Asked frames come and go with the walk (`arenaReach`). A tail call leaves the frame
 before its epilogue, so one whose callee never runs the function again
 becomes a plain call under the restore, at the price of one frame, and one

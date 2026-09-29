@@ -152,7 +152,8 @@ const ESC_MARK = 'esch'
 // jz's interop imports that hand the host nothing it could keep: they read.
 const EXT_READS = new Set(['$__ext_prop', '$__ext_has', '$__ext_has_iterator', '$__ext_enum', '$__ext_json', '$__ext_json_omits'])
 
-/** @param rewindable  Map `$name` → result type of the functions whose records allow a rewind
+/** @param rewindable  Map `$name` → result type of the functions whose records allow a rewind,
+ *                    a list of types where the function has several results
  *  @param asked       Set of `$name`: those of them whose result may be a heap value
  *  @param unsafe      Set of `$name`: functions every call of which escapes with no address
  *  @param keeps       Map `$name` → reason: functions whose own frame never restores, a caller's may
@@ -619,15 +620,20 @@ export function arenaRewind(root, { rewindable, asked = NO_NAMES, heapAddr, unsa
   // frame inside another keeps all, the outer one deciding for both.
   const reach = globals.has(ROOTN) && info.has(SURVIVE) && info.has(ROOT_RESET)
   const outermost = (bsave) => { const t = node(intern('i32.eq')); push(t, localGet(bsave)); push(t, i32c(-1)); return t }
-  // A frame whose result may be a heap value (`ask`: the local it stands in,
-  // and its type) gives back nothing where the result names memory above its
-  // mark: what it made is the caller's. An address is asked as it is, a
-  // tagged value by `__made`.
+  // A frame whose result may be a heap value (`ask`: the locals its results
+  // stand in, and their types) gives back nothing where one names memory
+  // above its mark: what it made is the caller's. An address is asked as it
+  // is, a tagged value by `__made`.
   const unlessMade = (ask, save, nodes) => {
     if (ask == null) return nodes
-    const made = ask.type === 'i32' ? node(intern('i32.ge_u')) : node(CALL)
-    if (ask.type !== 'i32') push(made, str(MADE))
-    push(made, localGet(ask.ret)); push(made, localGet(save))
+    const madeOf = (ret, type) => {
+      const made = type === 'i32' ? node(intern('i32.ge_u')) : node(CALL)
+      if (type !== 'i32') push(made, str(MADE))
+      push(made, localGet(ret)); push(made, localGet(save))
+      return made
+    }
+    let made = madeOf(ask.rets[0], ask.types[0])
+    for (let i = 1; i < ask.rets.length; i++) { const any = node(intern('i32.or')); push(any, made); push(any, madeOf(ask.rets[i], ask.types[i])); made = any }
     const iff = node(intern('if')); push(iff, made)
     push(iff, node(intern('then')))
     const not = push(iff, node(intern('else')))
@@ -673,10 +679,11 @@ export function arenaRewind(root, { rewindable, asked = NO_NAMES, heapAddr, unsa
     const name = text(T.a[f])
     const resultType = name === null ? undefined : rewindable.get(name)
     if (resultType === undefined) continue
+    const types = Array.isArray(resultType) ? resultType : [resultType]
     const rec = info.get(name)
     if (rec == null) continue
     // a tagged result is asked by a kernel the module has to hold
-    if (asked.has(name) && resultType !== 'i32' && !info.has(MADE)) { if (rewrite) report?.(name, 'result: may hold a heap value'); continue }
+    if (asked.has(name) && types.some(t => t !== 'i32') && !info.has(MADE)) { if (rewrite) report?.(name, 'result: may hold a heap value'); continue }
     if (rec.unsafe) { if (rewrite) report?.(name, rec.why); continue }
     let unsafe = false
     const hasAlloc = rec.allocs, tails = []
@@ -717,7 +724,13 @@ export function arenaRewind(root, { rewindable, asked = NO_NAMES, heapAddr, unsa
     while (declared.has(`$${MARK}heap_save${id}`) || declared.has(`$${MARK}arena_ret${id}`) || declared.has(`$${MARK}esc_save${id}`)) id++
     const save = `$${MARK}heap_save${id}`, ret = `$${MARK}arena_ret${id}`
     const esave = cond ? `$${MARK}esc_save${id}` : null, bsave = cond ? `$${MARK}esc_base${id}` : null
-    const ask = asked.has(name) ? { ret, type: resultType } : null
+    // one local a result: the first by the name a single result has
+    const rets = types.map((t, i) => i === 0 ? ret : `${ret}_${i}`)
+    const ask = asked.has(name) ? { rets, types } : null
+    // Several results stand on the stack as their expressions end, however
+    // many expressions made them (a call may yield all): the locals take them
+    // last first, and yield them in order past the restore.
+    const taken = () => rets.map((r) => { const s = node(LOCAL_SET); push(s, str(r)); return s }).reverse()
 
     // The last instruction (a trailing comment atom is not it).
     let last = NONE, beforeLast = NONE
@@ -725,31 +738,43 @@ export function arenaRewind(root, { rewindable, asked = NO_NAMES, heapAddr, unsa
     const endsWithReturn = T.op[last] === RETURN || T.op[last] === RETURN_CALL
 
     // Every `return X` yields X through the result local after the restore.
+    // Several results stay under the `return` itself, its operands in a row
+    // (a block of several results names a type, which the encoder indexes
+    // wrongly past the 64th).
     eachBody(f, (id) => {
       if (T.op[id] !== RETURN || T.a[id] === NONE) return
+      if (types.length > 1) {
+        for (const n of taken()) push(id, n)
+        for (const n of restore(save, esave, bsave, ask)) push(id, n)
+        for (const r of rets) push(id, localGet(r))
+        return false
+      }
       const value = T.a[id]
       const block = node(BLOCK)
       push(push(block, node(RESULT)), str(resultType))
       T.next[value] = NONE
       push(block, localSet(ret, value))
       for (const n of restore(save, esave, bsave, ask)) push(block, n)
-      push(block, localGet(ret))
+      for (const r of rets) push(block, localGet(r))
       T.a[id] = block
       return false
     })
     // The fall-through value takes the same path.
     if (!endsWithReturn) {
-      T.next[beforeLast] = NONE
-      T.next[last] = NONE
-      push(f, localSet(ret, last))
+      if (types.length === 1) {
+        T.next[beforeLast] = NONE
+        T.next[last] = NONE
+        push(f, localSet(ret, last))
+      } else for (const n of taken()) push(f, n)
       for (const n of restore(save, esave, bsave, ask)) push(f, n)
-      push(f, localGet(ret))
+      for (const r of rets) push(f, localGet(r))
     }
     // Declarations and the save at the top of the body.
     let at = T.a[f]
     while (T.next[at] !== NONE && isHeader(T.next[at])) at = T.next[at]
-    const entry = esave == null ? [local(save, 'i32'), local(ret, resultType), localSet(save, heapGet())]
-      : [local(save, 'i32'), local(esave, 'i32'), local(bsave, 'i32'), local(ret, resultType), localSet(save, heapGet()), localSet(esave, escGet()), escSet(i32c(-1)),
+    const results = rets.map((r, i) => local(r, types[i]))
+    const entry = esave == null ? [local(save, 'i32'), ...results, localSet(save, heapGet())]
+      : [local(save, 'i32'), local(esave, 'i32'), local(bsave, 'i32'), ...results, localSet(save, heapGet()), localSet(esave, escGet()), escSet(i32c(-1)),
         localSet(bsave, baseGet()), ...(reach ? [logFrom(bsave)] : []), baseEnter(save)]
     for (const n of entry) { insertAfter(f, at, n); at = n }
     rewound.add(name)

@@ -960,9 +960,13 @@ export function assemble(ast, profiler) {
     // result (a pointer kind, a tagged f64 the summary cannot hold to numbers,
     // booleans and nullish values) lives in the arena the frame would free
     // where the frame made it, and is older than the frame's mark where it
-    // did not (optimize/arena-rewind.js). A multi-value result has no place
-    // for the saved pointer.
-    if (f.sig.results.length !== 1) { ctx.transform.whyNotRewind?.(`$${f.name}`, 'result: not one scalar'); continue }
+    // did not (optimize/arena-rewind.js). Several results (an array literal
+    // returned as its elements) are asked one by one.
+    if (f.sig.results.length !== 1) {
+      if (reachOn() && f.sig.results.length > 1 && f.sig.results.every(t => t === 'f64')) { rewindable.set(`$${f.name}`, [...f.sig.results]); ask(f) }
+      else ctx.transform.whyNotRewind?.(`$${f.name}`, 'result: not one scalar')
+      continue
+    }
     const ty = f.sig.results[0]
     if (f.sig.ptrKind == null && (ty === 'i32' || (ty === 'f64' && (f.valResult === VAL.NUMBER || holdsNoHeap(ctx.summary?.resultOf(f.name)))))) rewindable.set(`$${f.name}`, ty)
     else if (reachOn() && (ty === 'f64' || (ty === 'i32' && f.sig.ptrKind != null))) { rewindable.set(`$${f.name}`, ty); ask(f) }

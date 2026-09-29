@@ -286,3 +286,30 @@ for (const optimize of levels(2, 3))
       else ok(memory.used - used >= 40 * 32, `${name}: the host holds a view, the call's memory stays at ${optimize}: ${memory.used - used}`)
     }
   })
+
+// An array literal returned as its elements is several results: the frame
+// holds each in a local past its restore, and asks each.
+for (const optimize of levels(2, 3))
+  test(`call release: a call that returns several values releases unless one is of its making, at ${optimize}`, () => {
+    const src = `const kept = ['a string the module holds, too long to pack']
+      const pair = (n) => { const t = []; for (let i = 0; i < n + 8; i++) t.push([i, i * 2]); if (n < 0) return [0, -1]; return [t.length, t[3][1]] }
+      export const two = (n) => pair(n)
+      export const sum = (n) => { const [a, b] = pair(n); return a + b }
+      export const mixed = (n) => { const t = [n, n + 1]; return n % 2 ? [t[0], 'made ' + n + ' zzzzzzzzzzzzzzzzzzzzzz'] : [t[1], kept[0]] }
+      export const nested = (n) => [n, [n + 1, 'nested ' + n + ' zzzzzzzzzzzzzzzzzz'], { k: n }]
+      export const view = (n) => { const a = new Float64Array(4); a[0] = n; return [n, a] }
+      export const churn = (n) => { const a = []; for (let i = 0; i < n; i++) a.push('c' + i + 'yyyyyyyyyyyyyyyy'); return a.length }`
+    const want = oracle(src), { exports, memory } = jz(src, { optimize })
+    const plain = (v) => ArrayBuffer.isView(v) ? [...v] : Array.isArray(v) ? v.map(plain) : v
+    for (const name of ['two', 'sum', 'mixed', 'nested']) {
+      const got = []
+      for (let i = -1; i < 12; i++) { got.push(exports[name](i)); exports.churn(6) }
+      for (let i = -1; i < 12; i++) is(plain(got[i + 1]), plain(want[name](i)), `${name}(${i}) reads back`)
+      let n = 0
+      is(growth(memory, () => exports[name](n++ % 9)), 0, `${name} keeps nothing at ${optimize}`)
+    }
+    const got = [], used = memory.used
+    for (let i = 0; i < 20; i++) { got.push(exports.view(i)); exports.churn(6) }
+    for (let i = 0; i < 20; i++) is(plain(got[i]), plain(want.view(i)), `view(${i}) reads back`)
+    ok(memory.used - used >= 20 * 32, `a view among them holds the call's memory: ${memory.used - used}`)
+  })
