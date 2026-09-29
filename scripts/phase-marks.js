@@ -31,7 +31,7 @@ export const PHASE_NAMES = [
   'finalizeVariantIdentities', 'finalizeConcreteFunctionIds', 'publishParameterAbi', 'emitFuncs', 'emitClosures',
   'buildStart', 'resolveDynFnTables', 'pullStdlib', 'optimizeModule', 'link',
   'plan:moduleGlobalKinds', 'plan:unboxConstTypedGlobals', 'plan:inferModuleIntGlobals', 'plan:collectFacts',
-  'plan:classifyHashDictGlobals', 'plan:flattenFuncNamespaces', 'plan:declareWrittenKeys', 'plan:devirtGlobalCalls', 'plan:devirtClassCalls', 'plan:indexArrayPatterns',
+  'plan:classifyHashDictGlobals', 'plan:flattenFuncNamespaces', 'plan:declareWrittenKeys', 'plan:devirtGlobalCalls', 'plan:devirtClassCalls', 'plan:indexArrayPatterns', 'plan:viewGuardedTyped',
   'plan:bindNestedRowLengths', 'plan:unrollRowLenPadLoops', 'plan:inlineHotInternalCalls', 'plan:inlineLocalLambdas',
   'plan:specializeFixedRestCalls', 'plan:guardConstants', 'plan:canonicalizeCountedLoops', 'plan:splitCharScan', 'plan:laneRecordParams', 'plan:scalarizeModuleScratch', 'plan:resolveAliases', 'plan:splitSplicedBindings', 'plan:propagateConstants', 'plan:resolveHeldMethods', 'plan:scalarizeArrayLiterals', 'plan:scalarizeObjectLiterals',
   'plan:promoteIntArrayLiterals', 'plan:scalarizeTypedArrays', 'plan:synthesizeComputedDispatchCallSites',

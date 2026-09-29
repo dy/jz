@@ -998,6 +998,10 @@ export default (ctx) => {
     const runtimeElemRead = (vt == null || vt === VAL.TYPED) && representationProgramHasBigint(ctx)
       ? '__typed_idx_tagged' : '__typed_idx'
     if (vt === VAL.TYPED || vt == null) setLinkDemand('typedRuntime')
+    // A receiver a guard alone proves typed (`a instanceof Int32Array`, no
+    // constructor in the program) needs the same width dispatch an unknown one
+    // does above: the helper's array body reads eight bytes per element.
+    if (vt === VAL.TYPED) setLinkDemand('typedarray')
     if (runtimeElemRead === '__typed_idx_tagged') inc(runtimeElemRead)
     // The array arm inline, ahead of the helper: the tag test (an array's
     // offset is a heap address; `__heap_end64` is not a validity bound, it

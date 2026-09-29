@@ -56,8 +56,10 @@ export let f = (n, size, reach) => {
 // proven both indices in range by then; a presence proof reading the arm's own
 // guard makes this 0. (Before the summary stopped demanding a typed array's
 // index, the fixture took the dynamic key path, 355 KB with no select at all.)
+// (A specialized copy of the loop would hold the store a second time: the
+// count is the emitter's, with the copies off.)
 test('present init: the fast arm of a versioned swap stores its temp unconverted', () => {
-  is(conversions(wat(swap, { optimize: 3 })), 1, 'the temp converts once, at the store whose key may miss')
+  is(conversions(wat(swap, { optimize: { level: 3, specializeLoops: false } })), 1, 'the temp converts once, at the store whose key may miss')
 })
 
 test('present init: swaps inside and past the arrays match the host', () => {

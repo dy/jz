@@ -8,7 +8,7 @@ import { intExprRange, objLiteralSchemaId } from '../../static.js'
 import { isCondExpr, intCertainMap } from '../../type.js'
 import { makeTypedTracker, joinReassignedTypedLens, dropDisagreeingTypedDefs } from './trackers.js'
 import { analyzeBody } from './body-facts.js'
-import { K, tagOf, hasTag, valOf, core, ANY } from '../../summary/kind.js'
+import { K, hasTag, valOf, valBesidePresence, core, ANY } from '../../summary/kind.js'
 
 /** True iff `name` appears in `body` ONLY as the receiver of an indexed read
  *  `name[k]` (the lean-dict idiom) — a bare reference, a `.`-target, or any
@@ -153,7 +153,7 @@ export function analyzeValTypes(body) {
     const k = summary?.kindOf(name) || ANY
     const nullable = hasTag(k, K.ABSENT) || hasTag(k, K.NULLISH)
     updateRep(name, {
-      val: valOf(k) ?? (!hasTag(k, K.NULLISH) && tagOf(core(k)) !== K.BIGINT ? valOf(core(k)) : undefined),
+      val: valBesidePresence(k) ?? undefined,
       presentVal: nullable ? valOf(core(k)) ?? undefined : undefined,
       nullable, mayBeUndefined: nullable,
       presence: nullable ? 'maybe-undef' : 'present',

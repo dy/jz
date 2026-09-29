@@ -951,6 +951,8 @@ export function promoteGlobals(fn, globalTypes, reachableWrites) {
     // The copy holds what the global holds: the header facts follow it (optimize/licm.js).
     if (fn.presentArrays?.has(gName)) fn.presentArrays.add(lName)
     if (fn.stableHeaderNames?.has(gName)) fn.stableHeaderNames.add(lName)
+    if (fn.viewNames?.has(gName)) fn.viewNames.add(lName)
+    if (fn.presentTyped?.has(gName)) fn.presentTyped.add(lName)
   }
 
   // Replace all global.get with local.get (only for promoted globals)

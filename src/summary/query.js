@@ -8,7 +8,7 @@ import { NONE_CONTRACT, readContract } from './contract.js'
 import { ITER_RECORD_KEYS } from '../std/iter-helpers.js'
 
 import {
-  K, kind, tagOf, paramOf, isNullable, hasTag, join, valOf, kindOfVal, core, UNKNOWN,
+  K, kind, tagOf, paramOf, isNullable, hasTag, join, valOf, valBesidePresence, kindOfVal, core, UNKNOWN,
   ANY, NUMBER, STRING, BOOL, BIGINT, NULLISH, orAbsent, plus, arith, typedStore, typedAux, typedElemKind, typedMethodKind, isPostfixRecovery, logicalMask, selectKind,
   TYPED_CTOR, isCount, ARRAY_METHODS, NUMBER_OPS, BOOL_OPS, bitOf, TAGS, NULL_BITS } from './kind.js'
 
@@ -539,6 +539,7 @@ export function summaryQueries(facts, internal = false) {
       : scopeOfSig.get(x) ?? scopeOfBody.get(x) ?? closuresByBody.get(x) ?? (x?.scope != null ? scopeOfParams.get(x.scope) : undefined) ?? ''),
     resultContract,
     valOfKind: valOf,
+    valBesidePresence,
     /** The value type of a kind without its nullish part (a guard proved presence). */
     coreValOfKind: k => valOf(core(k)),
     fieldKind,

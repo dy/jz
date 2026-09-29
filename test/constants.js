@@ -88,8 +88,9 @@ test('constants: a test of a literal is no code', () => {
   ok(count(kept, /\bif\b|br_if|select/g) > 0, 'a literal an arm may replace is read')
   const exact = of(flows['an exact function of a literal'][0])
   is(count(exact, /f64\.(floor|abs|sqrt|eq|ne)|\bif\b|br_if/g), 0, 'an exact function of a literal is its value')
-  const off = of(flows['a literal read past a test it decides'][0], { optimize: { level: 2, constants: false, watr: false } })
-  ok(count(off, /f64\.(eq|ne)/g) > 0, 'the pass is what decides them')
+  // (the integer pass decides a test its intervals answer too: off as well)
+  const off = of(flows['a literal read past a test it decides'][0], { optimize: { level: 2, constants: false, intNarrow: false, watr: false } })
+  ok(count(off, /f64\.(eq|ne)/g) > 0, 'the passes are what decide them')
 })
 
 // A binding assigned on every path to its reads is never tested for `undefined`.

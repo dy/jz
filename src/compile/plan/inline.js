@@ -94,8 +94,11 @@ let loopsDeep = 0
 /** An element or length read of a typed array over simple operands: no effect,
  *  one value until a write. The receiver's kind is the caller's (`callerView`):
  *  a plain array or a dictionary keeps its read where it stands. */
-let callerView = null
-const isRead = (n) => Array.isArray(n) && typeof n[1] === 'string' && tagOf(core(callerView?.kindOfExpr(n[1]) ?? K.NONE)) === K.TYPED && (
+let callerView = null, callerTyped = null
+// The body's own typed elements name a view a plan pass bound after the summary
+// was built (`guard-views.js`): a typed array the caller declares reads too.
+const isRead = (n) => Array.isArray(n) && typeof n[1] === 'string' &&
+  (tagOf(core(callerView?.kindOfExpr(n[1]) ?? K.NONE)) === K.TYPED || callerTyped?.has(n[1]) === true) && (
   (n[0] === '[]' && n.length === 3 && isSimpleArg(n[2])) ||
   (n[0] === '.' && n[2] === 'length'))
 /** A callee that computes from its arguments alone. */
@@ -173,6 +176,16 @@ const inlinedBody = (func, args) => {
   // the parameter is read once. `s += abs(x[i])` then is `s += Math.abs(x[i])`,
   // the form every later pass knows, instead of a temp ahead of the statement.
   const still = !writesParams && !some(func.body, n => MUTATE_OPS.has(n[0]) || n[0] === 'new' || (n[0] === '()' && !isPureCallee(n[1])))
+  // A body that writes one parameter leaves the others what they were passed
+  // (`project(target, offset, x, y, z)` rounding x, y and z in place): a name
+  // or a sum of names still stands for the parameter it is passed for, where
+  // no argument of the call and no statement of the body writes what it reads.
+  const quietArgs = writesParams && !args.some(a => some(a, n => MUTATE_OPS.has(n[0]) || n[0] === '()' || n[0] === 'new'))
+  const names = (x, out = new Set()) => { if (typeof x === 'string') out.add(x); else if (Array.isArray(x) && x[0] !== 'str') for (let i = 1; i < x.length; i++) names(x[i], out); return out }
+  // (a body that writes a name the argument reads, a global say, reads the argument
+  // as the call bound it, whether or not it writes a parameter of its own)
+  const kept = (name, arg) => !mutatesAny(func.body, names(arg)) &&
+    (!writesParams || (quietArgs && !mutatesAny(func.body, new Set([name]))))
   for (let i = 0; i < params.length; i++) {
     // A default is decided at the site: an argument the call leaves out is the
     // parameter's default, evaluated in its turn in the parameters' scope
@@ -186,7 +199,7 @@ const inlinedBody = (func, args) => {
     // A closure holds the parameter as the call bound it: a name of the caller read
     // in its place would read what the caller stores later. A literal is itself.
     const held = closures?.mentions.has(params[i].name) && !(Array.isArray(arg) && (arg[0] == null || arg[0] === 'str'))
-    if (!held && !writes(params[i].name) && isSimpleArg(arg) && (atom || uses(params[i].name) <= 1)) { subst.set(params[i].name, arg); continue }
+    if (!held && isSimpleArg(arg) && (atom || uses(params[i].name) <= 1) && kept(params[i].name, arg)) { subst.set(params[i].name, arg); continue }
     if (!held && still && isRead(arg) && uses(params[i].name) === 1) { subst.set(params[i].name, arg); continue }
     const tmp = `${T}inarg${freshId(ctx)}`
     // Parameter writes belong to the call's storage, never its caller's binding.
@@ -1082,9 +1095,20 @@ export const inlineHotInternalCalls = (programFacts, ast) => {
       // Below speed, the callee must have this one site, so that splicing the caller
       // duplicates nothing a call kept shared (a guard's string compares into four
       // callers cost the flagship 6 KB).
+      // ... or a pure leaf: its expression substitutes per site, a bounded copy of
+      // arithmetic. A leaf whose calls are all pure leaves themselves is one too
+      // (vectorLength over dot), so a caller of the outer leaf is not held back.
+      const pureLeaf = (callee, seen = new Set()) => {
+        if (!leaves.has(callee) || seen.has(callee)) return false
+        const body = candidates.get(callee).body
+        if (nodeSize(body) > 48) return false
+        seen.add(callee)
+        return !some(body, n => MUTATE_OPS.has(n[0]) || n[0] === 'new' || n[0] === '?.()' ||
+          (n[0] === '()' && !isPureCallee(n[1]) && !pureSIMDCall(n) && !(typeof n[1] === 'string' && pureLeaf(n[1], seen))))
+      }
       // At speed a body of a loop's size takes the calls it keeps along (`lcm`
       // over `gcd`, whose loops stay a function), outside a cycle of calls.
-      const inlinesAway = (callee) => candidates.has(callee) && (speedTier || sitesByCallee.get(callee)?.length === 1)
+      const inlinesAway = (callee) => candidates.has(callee) && (speedTier || sitesByCallee.get(callee)?.length === 1 || pureLeaf(callee))
       if (some(func.body, n => n[0] === '()' && typeof n[1] === 'string' && ctx.funcs.names.has(n[1]) && !inlinesAway(n[1])) &&
           !(speedTier && size <= WARM_BODY && !cyclic(func.name))) continue
     }
@@ -1176,6 +1200,7 @@ export const inlineHotInternalCalls = (programFacts, ast) => {
     if (isExported(func) && !activeCandidates.size) continue
     callerView = ctx.summary?.at(func.sig) ?? null
     callerStable = stableNames(func)
+    callerTyped = typedByFunc.get(func) ?? null
     // Expression-bodied arrows (`() => expr`) have func.body as the return
     // value itself — never a `{}` block. inlineInStmt treats its argument as a
     // statement (discards the return value of any top-level candidate call),

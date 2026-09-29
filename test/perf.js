@@ -947,7 +947,8 @@ test('codegen: a loop guard offset from its counter stays integer within its tes
   if (onKernel()) return
   const hot = compile(loop(heads[0]), { optimize: 'speed', wat: true })
   ok(!/f64\.(le|lt|add)/.test(hot), 'a bounded offset guard compares in i32')
-  ok(/f64\.(le|lt)/.test(compile(loop(heads[4]), { optimize: 'speed', wat: true })), 'a guard sum that can pass INT_MAX keeps f64')
+  // (f64, or the i64 the integer pass carries the same sum in: no i32 that wraps)
+  ok(/f64\.(le|lt)|i64\.(le|lt|gt|ge)_s/.test(compile(loop(heads[4]), { optimize: 'speed', wat: true })), 'a guard sum that can pass INT_MAX keeps f64')
 })
 
 test('codegen: an element read keyed by an integer element stays a word', () => {
@@ -2035,7 +2036,9 @@ const parserFixture = `export let f = (s) => {
 }`
 // The Map hash's inlined string arm (layout-kinds.js mapHashStringArm) adds its
 // packed-string mix and cell load to every copy watr inlines: 13234 -> 13907.
-golden('closure-heavy parser', parserFixture, 13907)
+// The scan loop runs in a specialized copy, the loop as written beside it
+// (optimize/specialize.js): 14343 -> 14721.
+golden('closure-heavy parser', parserFixture, 14721)
 test('closure-heavy parser: behavior behind the size pin', () => {
   const { f } = jz(parserFixture).exports
   for (const [input, expected] of [['', 0], ['0', 0], ['123', 123], ['x12-y3', 123], ['😀१२3', 3]])

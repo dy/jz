@@ -8,7 +8,7 @@ import { ERR_CLASS_NAMES } from '../../../err-codes.js'
 import {
   OBJECT_SCHEMA_HI_MASK, TYPED_ELEM_NAMES, TYPED_ELEM_VIEW_FLAG, DATA_VIEW_FLAG, encodeTypedElemAux, objectSchemaGuardHex,
 } from '../../../layout.js'
-import { PTR, ctx, inc } from '../../ctx.js'
+import { PTR, ctx, inc, setLinkDemand } from '../../ctx.js'
 import { asF64, emitNum, isPureIR, ptrTypeEq, temp, tempI32, typed } from '../../ir.js'
 import { valTypeOf } from '../../kind.js'
 import { K, hasTag } from '../../summary/kind.js'
@@ -86,6 +86,13 @@ function emitTypedInstanceof(a, rhs) {
   // element-type bits and the flags beside them (which the allowlist keeps
   // collision-free — see prepare's comment) are load-bearing for identity.
   inc('__ptr_type', '__ptr_aux')
+  // The test is the program's word that a typed array may arrive here, from the
+  // host or from a value of unknown kind, though no constructor names one: the
+  // arm it guards needs the typed emitters in place and the element helpers'
+  // width dispatch (module/core.js `__typed_idx` is the array body without it).
+  ctx.module.include('typedarray')
+  setLinkDemand('typedarray')
+  setLinkDemand('typedRuntime')
   const elemCode = rhs === 'DataView' ? DATA_VIEW_FLAG : encodeTypedElemAux(rhs, false)
   // Compute `a` exactly ONCE into a local — the bits are read twice below (tag,
   // then aux), and re-embedding the same emitted subtree twice would both

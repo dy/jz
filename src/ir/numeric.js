@@ -340,6 +340,18 @@ export const f64Range = (n, get, allowNaN = false) => {
     if (!Array.isArray(n)) return null
     const op = n[0]
     if (op === 'local.tee' && n.length === 3) return r(n[2], env)
+    // A value block (the emitter's checked element read: its index and bound
+    // set, then the loaded element or the undefined box) answers as its last
+    // expression does. Only a labeled block can be left by a branch with
+    // another value. A fact about a local the statements write is stale there.
+    if (op === 'block' && n.length >= 3 && Array.isArray(n[1]) && n[1][0] === 'result') {
+      let e = env
+      for (let i = 2; i < n.length - 1; i++) {
+        for (let f = e; f; f = f.next) if (writes(n[i], f.name)) { e = null; break }
+        if (!e) break
+      }
+      return r(n[n.length - 1], e)
+    }
     if (op === 'local.get' && typeof n[1] === 'string') {
       let lo = -Infinity, hi = Infinity, fact = false
       for (let e = env; e; e = e.next) if (e.name === n[1]) { fact = true; if (e.lo > lo) lo = e.lo; if (e.hi < hi) hi = e.hi }
@@ -371,6 +383,9 @@ export const f64Range = (n, get, allowNaN = false) => {
     if (op === 'f64.convert_i32_u') return convRange(n[1], false)
     if (op === 'f64.neg') { const a = r(n[1], env); return a && fin(-a.hi, -a.lo) }
     if (op === 'f64.abs') { const a = r(n[1], env); return a && fin(a.lo > 0 ? a.lo : a.hi < 0 ? -a.hi : 0, Math.max(-a.lo, a.hi)) }
+    // The magnitude of the first operand under either sign (the remainder's
+    // sign follows its dividend: `a - trunc(a / b) * b` under copysign).
+    if (op === 'f64.copysign') { const a = r(n[1], env); return a && fin(-Math.max(-a.lo, a.hi), Math.max(-a.lo, a.hi)) }
     if (op === 'f64.sqrt') { const a = r(n[1], env); return a && a.lo >= 0 && fin(Math.sqrt(a.lo), Math.sqrt(a.hi)) }
     // Rounding ops preserve finiteness and are monotonic, so the range maps elementwise. This lets
     // `Math.floor(x)|0` over a bounded x (every grid/image/audio index: `px*scale`, perm[] lookups)

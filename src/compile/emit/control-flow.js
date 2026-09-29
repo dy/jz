@@ -977,9 +977,11 @@ export const controlFlowOps = {
         ctx.types.assumedConstHull = savedHull
         const checked = withRefinements(topCounterRefs, body, emitArm)
         const stmts = (r) => Array.isArray(r[0]) ? r : [r]
-        result.push(['if', typed(guard, 'i32'),
-          ['then', ...stmts(fast)],
-          ['else', ...stmts(checked)]])
+        // (the arm a failing guard runs, marked for the passes that copy loops:
+        // a copy of it would run as rarely as it does, optimize/specialize.js)
+        const twin = ['else', ...stmts(checked)]
+        twin.checkedTwin = true
+        result.push(['if', typed(guard, 'i32'), ['then', ...stmts(fast)], twin])
         return result
       }
     }

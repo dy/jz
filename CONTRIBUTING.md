@@ -85,6 +85,14 @@ and finalizer emission. A block must pass the shared return-path proof before
 selecting multiple results; a possible fallthrough needs to carry undefined.
 Source inlining gives mutated parameters private local storage and captures
 their arguments in call order; substitution must never write a caller's binding.
+An element read with a pure index moves into an effect-free body (one that
+writes nothing and calls nothing but Math and SIMD arithmetic) when its
+parameter is read at most once and every argument is pure: nothing runs
+between the call's evaluation of the argument and the body's, so a pure leaf
+inlines inside a condition or a short-circuit operand, where a temp could not
+go (`dot(a[p], a[p + 1], …) > -1 && …`). Math builtins other than `random`
+flatten as the arithmetic they are, and a leaf that calls such a pure leaf
+inlines below the speed tier: the copy is a bounded expression, not a body.
 Gather maps can retain scalar address generation and checked reads while lifting
 a pure Float64 arithmetic suffix into two lanes. Scalar recurrences execute in
 their original order, including each rounded phase addition. This requires
@@ -528,11 +536,24 @@ SIMD narrowing preserves the scalar conversion: direct saturating instructions
 can lift directly, while modular conversions run per lane before packing.
 Local and result storage also reuse those presence proofs. A missing integer
 element keeps its undefined value through copies and returns; using it as an
-index must not read element zero. Canonical loop proofs refer to exact access
+index must not read element zero. A binding read from such an element holds its
+Number beside its presence in the flow overlay as in the reps (`valBesidePresence`,
+the one projection both share): strict equality against it compares the numbers
+and the undefined boxes inline, the runtime helper serving values of no known kind. Canonical loop proofs refer to exact access
 nodes, so an access outside the loop cannot borrow their bounds. Uint32 locals
 whose every write is proven unsigned retain their magnitude via the existing
-unsigned carrier flag. Primitive parameters consumed only by word operators may
-convert once at the call boundary, as established by the binding-use census.
+unsigned carrier flag. A local every read of which re-applies ToInt32 or
+ToUint32 (a bitwise operand, a Math.imul/clz32 argument, the value stored to an
+integer element of modular width) holds its word whatever number each write
+gives (`narrowWordLocals`, the `wordLocals` pass): the conversions are
+idempotent, so a hash seeded past 2^31 and stepped by Math.imul and `^` is an
+i32. A read that observes the number (a return, a comparison, a truthiness
+test, an index, an arithmetic step, a float or clamped store, a capture) keeps
+the f64. A truthiness test governs an integer local as a comparison with zero
+does: `while (sp)` keeps a stepped stack pointer in i32 under the tolerance
+`while (sp !== 0)` has (`collectComparedNames`). Primitive parameters consumed
+only by word operators may convert once at the call boundary, as established
+by the binding-use census.
 Comparison emission and folding share one signedness proof: equal word bits
 do not imply equal numbers across signed and unsigned domains.
 Checked reads share one lowering for integer conversion and comparison:
@@ -551,15 +572,48 @@ The ordinary range query still proves finiteness; infinity remains unknown.
 Ranges obtained from a local's definition include its implicit zero value:
 the write may be conditional, and arithmetic can make that skipped-write path
 differ from the definition's value before integer conversion.
+The query answers a value block by its last expression (the emitter's checked
+element read: index and bound set, then the element or the undefined box),
+facts about locals the block's statements write set aside.
 Counted floating recurrences reuse that range query and the local write census.
 Every loop entry needs a proven initializer; unknown entries, numeric aliases,
-extra backedges and additional writes prevent the proof. Integer enclosures
+extra backedges and additional writes prevent the proof. A write of another
+value bounds the local by that value's own range: a local stepped by checked
+element reads (`other = next[other]`) has the hull of its element kind. Integer enclosures
 bound rounding at every addition without reassociating the arithmetic. These
 bounds remove only the ToInt32 infinity guard, retaining the f64 accumulator
 and its captured value. The peephole and wide-accumulator pass share the exact
 conversion recognizer; arbitrary selects and property-key guards remain distinct.
 Local typing and emission share the interval-product proof, including the
 negative-zero check; a product fitting i32's magnitude alone is insufficient.
+
+A typed array a guard proves is read as that typed array (`plan/guard-views.js`,
+the `guardViews` pass): past `if (!(a instanceof Float32Array)) throw …` the
+statements that follow read a view of the proven constructor over the same
+storage, `new Float32Array(a.buffer, a.byteOffset, a.length)`, a declaration
+every typed analysis already follows, so the export keeps the typing a type
+test on its parameter withdrew. The guard runs as written and the view is
+another object, so the pass keeps to uses that cannot tell the two apart
+(elements, `length`, `buffer`, `byteOffset`, `byteLength`, a method call, a
+call argument, a further test); a use of the value itself, a reassigned or
+undeclared binding and a guard inside a loop keep the binding. An `instanceof`
+test of a typed constructor is the program's word that a typed array may
+arrive, from the host or from a value of unknown kind: it includes the typed
+module and demands the element helpers' width dispatch, which `__typed_idx`
+without the demand collapses to the array body, eight bytes per element. A
+store on a receiver the flow proves typed includes the module for the same
+reason before it consults the typed store emitter.
+
+A typed array's default sort (`__typed_sort`) reads the element's kind once and
+sorts that width in place: an insertion sort up to 24 elements, a heapsort
+above. Two elements equal in the specification's order share their bits, NaNs
+apart, so a float array first moves its NaNs to the end, in their order, and
+the heap's instability shows nowhere. A receiver of known kind calls that
+kind's body and links no other; a Float16Array and the size tier keep the one
+body over the element helpers. A typed receiver of settled element kind reads
+its element count from its header in `.length`, `subarray` and `sort` (a
+reassigned binding included, when every constructor agrees); a DataView, of no
+element kind, keeps the runtime dispatch.
 
 Typed constructor provenance describes storage, not presence. A field or index
 result needs a separate non-nullish proof before pointer unboxing: the
@@ -1375,6 +1429,9 @@ large constants reduce modulo 2^32 before the compiler's runtime i64 boundary.
 Runtime typed stores, DataView, Atomics values and UTF-16 unit construction
 share exact ToInt32 lowering. Proven ranges keep direct conversions; unknown
 values recover their low word from the IEEE significand beyond the i64 range.
+The unknown tail converts inline below 2^63 (NaN saturates to ToInt32's zero)
+and calls the kernel only for the infinities and the values beyond, lowered
+after the lane lift, which reads the conversion as the kernel call.
 Intrinsic and user calls share excess-argument sequencing. Collection probes
 retain precomputed literal hashes while using the same boxed-value conversion.
 Schema-tag masks reuse the numeric constant evaluator.
@@ -1431,6 +1488,10 @@ counter's EXTENT, entry on one side and loop bound on the other
 rather than reading it.
 
 Ephemeral dictionaries use the same zeroed header allocator as other collections.
+A count dictionary the census proves i32-lean keeps the raw word in its slots
+and reads it with a bare wrap, so every store path encodes the value the same
+way (`emit-assign.js` `dynSetValueI64`), the runtime key-kind dispatch's string
+arm included: a specialized variant of the kernel stores through it.
 Allocation and fixed probes share one capacity calculation; unrepresentable
 domain sizes retain the ordinary growing table instead of overflowing a hint.
 Hash words reserve unsigned values 0/1 for empty/deleted slots. Runtime,
@@ -1574,6 +1635,122 @@ Float32Array storage does not lower JavaScript arithmetic precision. Maps and
 stencils choose their computation lanes together: f32 loads promote to f64x2,
 arithmetic stays f64, and stores round to f32. Copies and sign operations can
 retain f32x4 lanes. Narrow integer stores preserve the scalar conversion.
+Scalar `fround` code computes in f32 where the rounding is the same
+(`optimize/float32.js`, the `narrowFloat32` pass, after the lane lift and the
+devirtualizations, whose marks its copied nodes keep): f64 carries
+53 bits, more than the 2·24 + 2 that make a double rounding of a sum,
+difference, product, quotient or square root of f32 values agree with the
+single one (Figueroa, "When is double rounding innocuous?", SIGNUM Newsletter
+30(3), 1995); negation, magnitude, the roundings to an integer, min, max,
+copysign and the comparisons are exact in either width. A local every write of which holds an exact f32 value (a
+promoted f32, a constant the format holds, a conditional of such, a narrowed
+local) becomes an f32 local whose reads promote; a write of one rounding step
+over exact operands (`x *= s`, the store temp of `out[i] = sx * scale`) rounds
+early when every read it reaches only rounds the value (a demote, a NaN test
+of the value against itself, a copy whose reads do), which one walk of the
+function in evaluation order settles (loop bodies twice; a read node an
+emitter placed at several points is reached by the writes of every one). A
+local no visible write reaches is left alone: code materialized later writes
+such temps. Narrowing is worth its promotes: a local narrows when it removes
+more conversions than its reads in f64 code add, so a flag or a count written
+by constants alone stays f64 (the loop-body ratchet holds it). Then each demote takes
+its operand's f32 form: a promote peels, a step of exact operands computes in
+f32, a conditional demotes in its arms. A value that may hold the undefined box,
+a sum of f64 values, or a local read where the rounding would show stays f64.
+
+An integer a number holds computes in an integer register where its interval
+proves the two agree (`optimize/int-narrow.js`, the `intNarrow` pass, over the
+intervals of `optimize/int-range.js`). Integers below 2^53 are exact in f64, so
+a sum, difference or product that stays within 2^52 is the same number in i64,
+its remainder by a constant is `rem_s`, its quotient under a truncation is
+`div_s`, and a comparison of two such values compares the integers. The
+interval walk follows the statements in evaluation order and keeps for every
+i32, i64 and f64 local `{ lo, hi, int, nz, nan }`: the closed interval, whether
+the value is an integer, whether it may be -0, whether it may be NaN; no
+interval at all is any value, a box among them. A comparison refines the arm
+it guards, arms hull at their join, and a loop head is the hull of its entry
+and its back edges, widened where a bound still moves after two walks and
+narrowed again by the loop's own tests. The function is walked whole each
+time, each loop from the head it had, so the walks are as many as the heads
+take to settle whatever the nesting. An f64 element read is a number only
+where its node says so (`presentNumRead`, `numberRead`): a read that may miss
+yields the undefined box, and `x == null` of it must not fold. The tests of a
+value's kind read the same intervals: a value that equals itself is a number,
+one that equals its truncation is an integer the truncation holds
+(`readBack`), and the i64 that holds a number's bits (`of`) is no box under
+any tag test, no string key, no missing value and no object, so
+`__is_str_key` of it answers 0 and `__eq_strict` of two of them is `f64.eq`.
+A conditional whose test the intervals decide is the arm it takes, after what
+the test does on its way. A local narrows when every write that reaches a
+read is such an integer and it removes more conversions than its reads in f64
+code add, weighted by loop depth; a value that may be -0 narrows only where
+every read is an integer consumer's. A test the intervals decide folds to its
+answer, and `i32.and`/`i32.or` fold only over operands that are 0 or 1: the
+same operators combine flag words.
+
+A loop is compiled twice where its values decide its types
+(`optimize/specialize.js`, the `specializeLoops` pass, off in the `size`
+preset): a copy for reads that hit and integers that are integers, and the loop
+as written for everything else. A typed read that may miss leaves the copy
+where it would miss, for the loop as written, which goes on from the first
+statement of the stretch the read is in: a run of statements that writes no
+memory and calls nothing, which every way to the read passes. What the round
+stored before that statement is stored once. The loop as written takes a way
+in at each such statement (a `br_table` at its top, and at the top of each
+block on the way; a conditional on the way takes its arm without its test),
+the locals the copy keeps in its own give their values back to the ones that
+statement finds live (backward liveness, per statement), and a local the
+stretch read and then wrote is put back from a copy taken where the stretch
+starts. A conditional that tests the kind of a value and calls the runtime in
+the arm a number does not take (`__dyn_get`, `__add_slow`, `__to_num`) leaves
+the same way in place of that arm. An f64 local the copy reads as an integer
+is tested on entry (it equals its own truncation and its magnitude is within
+2^51), except one whose low word is taken as an address: that is a box. The
+copy's locals are its own (`$name.f<id>`), so the integer pass types them by
+the copy's values alone; the copies made where a read leaves run once and
+weigh nothing in that choice (`cold`), beyond the sign of a zero they would
+show. A copy that narrows nothing is dropped (one that tests no read has to
+narrow more to stay), the checked twin of a versioned loop is never copied
+(the emitter marks that arm `checkedTwin`, `compile/emit/control-flow.js`: a
+copy that holds a versioned loop leaves where its extents fail, and the twin
+stays in the loop as written alone; that leave weighs nothing, since the arm
+the extents choose runs as fast in the loop as written, so a versioned loop
+alone buys no copy), the runtime's own functions are left as
+they are written, and a function grows by at most twice its size. Loops
+rewind by the label as written, so a copy rewinds with its original
+(`optimize/loop-rewind.js`).
+
+The guards of a copy are combined once the integers are in place
+(`optimize/guards.js`, the `combineGuards` pass). Each index is read as a sum
+`c + a·counter + Σ k·term`, a term being a local or an expression that only
+computes, named by the writes its locals hold (the last write that runs
+before the read on every way to it). An index the loop leaves alone, and one
+the loop's counter makes (one step at the end of every round, one test at the
+top), is tested ahead of the loop for the first and the last round, in i64,
+and the loop as written runs where a test fails. Reads of one array whose
+indices differ by constants are tested by the first of them, for the least
+and the greatest, where that guard runs whenever the others do and leaves to
+the same statement. A test that fails ahead of its read leaves earlier than
+the read would; the loop as written decides the read. A read the program
+itself keeps within its array stays tested where it stands: one that a
+conditional it is an arm of, or a branch it comes after, shields by reading a
+local its index is made of (`i > 0 ? a[i - 1] : 0`, a stencil's border), whose
+guard ahead of that test would leave on a round that reads nothing.
+
+LICM reads a view's descriptor words as it reads a header's: `fn.viewNames`
+(stamped in `compile/emit-func.js`, carried to a promoted global's local by
+`optimize/globals.js`) names the locals that hold a typed view, whose length
+and data words no store in the loop can change. A typed array binding
+assigned more than once stays a box; its length is read through the low word
+of the box and leaves a loop like a pointer's, where the binding always holds
+an array (`fn.presentTyped`: the header of a binding that may hold none is
+read where the loop reads it, so a loop that runs no round reads nothing).
+`a.subarray(lo, hi).sort()` whose result nobody reads sorts the range in place
+and allocates no view (`module/typedarray.js`). A call spliced at its site
+binds to a temporary only the parameters its body writes and the arguments
+that are not simple: a body that rounds `x`, `y` and `z` in place still reads
+`target` and `offset` as the names they were passed (`compile/plan/inline.js`),
+where no argument of the call and no statement of the body writes them.
 
 Numeric syntax has one evaluator in `static.js`. Module planning, local and
 capture facts, integer proofs and template folding share it; callers retain
@@ -2386,19 +2563,11 @@ body that returns from an arm: a polynomial with a test for zero cost a compare 
 per evaluation, and a loop over it was no lane loop. A labeled block ends with what held at
 each `break` to it, so a binding the block assigns past a `break` is not assigned after it.
 
-Float arithmetic written as `Math.fround` of an operator over `Math.fround`s runs in single
-precision (`src/optimize/float32.js`, pass `narrowFloat32`, after the lane vectorizer, whose
-recognizers read the double form). Rounding the double result of `+`, `-`, `*`, `/` or `sqrt`
-over two singles gives what the single operator gives (Figueroa, "When is double rounding
-innocuous?", SIGNUM Newsletter 30(3), 1995: the wide format holds at least 2p + 2 bits, 53 ≥
-2·24 + 2), and `abs`, `neg`, `floor`, `ceil`, `trunc`, `nearest`, `min`, `max` and `copysign`
-answer a value a single holds. An operand is a single where it is a `promote`, a constant a
-single holds, or a local every definition of which is one; a local read only through
-`demote` is declared a single. A NaN made canonical under the conversion is made canonical
-over it. A module name defined by an exact function of `Math` over numbers held for good
-holds its number (`PI32 = Math.fround( 3.14… )`), published once more after the plan, where
-a call through a name that holds a builtin is the builtin's (`holdModuleNumbers`).
-`test/float32.js` compares every form with the host to the bit.
+Single precision is the `narrowFloat32` pass described with the lane lift above;
+`test/float32.js` compares every form with the host to the bit. A module name
+defined by an exact function of `Math` over numbers held for good holds its number
+(`PI32 = Math.fround( 3.14… )`), published once more after the plan, where a call
+through a name that holds a builtin is the builtin's (`holdModuleNumbers`).
 
 The tape's fold (`src/optimize/fold.js`) answers a comparison of two `f64` constants and a
 mask by a constant that decides or passes its other operand: what a literal argument leaves

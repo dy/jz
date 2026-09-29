@@ -100,7 +100,6 @@ export default (ctx) => {
     __typed_reverse: ['__len', '__typed_get_idx', '__typed_set_idx'],
     __typed_copyWithin: ['__len', '__clamp_idx', '__ptr_aux', '__typed_shift', '__typed_data'],
     __typed_set_rt: ['__len', '__ptr_type', '__ptr_aux', '__typed_same_bytes', '__typed_shift', '__typed_data', '__typed_idx', '__typed_set_idx'],
-    __typed_sort: ['__len', '__typed_get_idx', '__typed_set_idx'],
     __subarray: ['__ptr_aux', '__ptr_offset', '__typed_shift', '__typed_data', '__len', '__mkptr', '__alloc', '__clamp_idx'],
     __typed_slice_rt: ['__ptr_aux', '__typed_shift', '__typed_data', '__len', '__mkptr', '__alloc_hdr_n', '__clamp_idx'],
   })
@@ -1387,6 +1386,11 @@ export default (ctx) => {
   const typedDataAddr = (objIR, isView) => isView
     ? ['i32.load', ['i32.add', typedBase(objIR), ['i32.const', 4]]]
     : typedBase(objIR)
+  // The element count of a typed receiver of known kind: its byte length (an
+  // owned array's header word at base − 8, a view's descriptor word) shifted.
+  const typedLen = (objIR, et, isView) => ['i32.shr_u',
+    ['i32.load', isView ? typedBase(objIR) : ['i32.sub', typedBase(objIR), ['i32.const', 8]]],
+    ['i32.const', SHIFT[et]]]
 
   // A typed receiver never relocates: decode its offset directly, then use
   // aux for element width and view indirection in both raw readers and writers.
@@ -1602,11 +1606,130 @@ export default (ctx) => {
           (i32.shl (local.get $count) (local.get $k)))))
     (f64.reinterpret_i64 (local.get $ptr)))`
 
-  // .sort() — default numeric order (insertion sort, stable). NaN sorts to the end,
-  // -0 before +0 (the equal-value tiebreak via signed-bit compare). BigInt arrays are
-  // compared as signed i64 on their exact bits. A user comparator is handled inline by
-  // the .typed:sort emitter (this helper is the no-argument numeric path).
-  ctx.core.stdlib['__typed_sort'] = `(func $__typed_sort (param $ptr i64) (result f64)
+  // .sort() — default numeric order. NaN sorts to the end, -0 before +0, a
+  // BigInt array by its signed i64. The element's kind is read once per call
+  // and picks a body that loads and stores that width: an insertion sort up to
+  // SORT_SMALL elements, a heapsort above it, n log n and in place. Two elements
+  // equal in this order share their bits, NaNs apart, so the heap's instability
+  // shows nowhere: a float array first moves its NaNs to the end, in their
+  // order, and sorts what is left. A Float16Array's order is not its bits', so
+  // it keeps the one body over the element helpers, as the size tier does
+  // (`leanRuntime`). A user comparator is handled inline by the .typed:sort emitter.
+  const SORT_SMALL = 24
+  const intSort = (sfx, shift, load, store, gt) => ({ sfx, shift, T: 'i32', load, store,
+    after: (a, b) => `(i32.${gt} ${a} ${b})` })
+  // Past the NaNs: greater, or equal with the greater bits (+0 after -0).
+  const floatSort = (T, I, shift) => ({ sfx: T, shift, T, load: `${T}.load`, store: `${T}.store`, nan: true,
+    after: (a, b) => `(i32.or (${T}.gt ${a} ${b}) (i32.and (${T}.eq ${a} ${b}) (${I}.gt_s (${I}.reinterpret_${T} ${a}) (${I}.reinterpret_${T} ${b}))))` })
+  // Indexed by the element code (layout.js TYPED_ELEM_CODE); the BigInt body last.
+  const SORTS = [
+    intSort('i8', 0, 'i32.load8_s', 'i32.store8', 'gt_s'), intSort('u8', 0, 'i32.load8_u', 'i32.store8', 'gt_s'),
+    intSort('i16', 1, 'i32.load16_s', 'i32.store16', 'gt_s'), intSort('u16', 1, 'i32.load16_u', 'i32.store16', 'gt_s'),
+    intSort('i32', 2, 'i32.load', 'i32.store', 'gt_s'), intSort('u32', 2, 'i32.load', 'i32.store', 'gt_u'),
+    floatSort('f32', 'i32', 2), floatSort('f64', 'i64', 3),
+    { sfx: 'i64', shift: 3, T: 'i64', load: 'i64.load', store: 'i64.store', after: (a, b) => `(i64.gt_s ${a} ${b})` },
+  ]
+  const sortDeps = { __typed_sort_any: ['__len', '__typed_get_idx', '__typed_set_idx'] }
+  for (const k of SORTS) {
+    const at = (i) => k.shift ? `(i32.add (local.get $p) (i32.shl ${i} (i32.const ${k.shift})))` : `(i32.add (local.get $p) ${i})`
+    const get = (i) => `(${k.load} ${at(i)})`, set = (i, v) => `(${k.store} ${at(i)} ${v})`
+    const L = (n) => `(local.get $${n})`, dec = (n) => `(local.set $${n} (i32.sub ${L(n)} (i32.const 1)))`
+    sortDeps[`__typed_sort_${k.sfx}`] = [`__typed_sift_${k.sfx}`]
+    // The element at r sinks under the greater of its children until neither is greater.
+    ctx.core.stdlib[`__typed_sift_${k.sfx}`] = `(func $__typed_sift_${k.sfx} (param $p i32) (param $r i32) (param $n i32)
+    (local $c i32) (local $v ${k.T}) (local $w ${k.T}) (local $x ${k.T})
+    (local.set $v ${get(L('r'))})
+    (block $d (loop $l
+      (local.set $c (i32.add (i32.shl ${L('r')} (i32.const 1)) (i32.const 1)))
+      (br_if $d (i32.ge_u ${L('c')} ${L('n')}))
+      (local.set $w ${get(L('c'))})
+      (if (i32.lt_u (i32.add ${L('c')} (i32.const 1)) ${L('n')})
+        (then
+          (local.set $x ${get(`(i32.add ${L('c')} (i32.const 1))`)})
+          (if ${k.after(L('x'), L('w'))}
+            (then (local.set $w ${L('x')}) (local.set $c (i32.add ${L('c')} (i32.const 1)))))))
+      (br_if $d (i32.eqz ${k.after(L('w'), L('v'))}))
+      ${set(L('r'), L('w'))}
+      (local.set $r ${L('c')})
+      (br $l)))
+    ${set(L('r'), L('v'))})`
+    ctx.core.stdlib[`__typed_sort_${k.sfx}`] = `(func $__typed_sort_${k.sfx} (param $p i32) (param $n i32)
+    (local $i i32) (local $j i32) (local $v ${k.T}) (local $w ${k.T})
+    ${k.nan ? `(local.set $i ${L('n')})
+    (block $nd (loop $nl
+      (br_if $nd (i32.eqz ${L('i')}))
+      ${dec('i')}
+      (local.set $v ${get(L('i'))})
+      (if (${k.T}.ne ${L('v')} ${L('v')})
+        (then
+          ${dec('n')}
+          ${set(L('i'), get(L('n')))}
+          ${set(L('n'), L('v'))}))
+      (br $nl)))` : ''}
+    (if (i32.le_s ${L('n')} (i32.const ${SORT_SMALL}))
+      (then
+        (local.set $i (i32.const 1))
+        (block $od (loop $ol
+          (br_if $od (i32.ge_s ${L('i')} ${L('n')}))
+          (local.set $v ${get(L('i'))})
+          (local.set $j ${L('i')})
+          (block $id (loop $il
+            (br_if $id (i32.eqz ${L('j')}))
+            (local.set $w ${get(`(i32.sub ${L('j')} (i32.const 1))`)})
+            (br_if $id (i32.eqz ${k.after(L('w'), L('v'))}))
+            ${set(L('j'), L('w'))}
+            ${dec('j')}
+            (br $il)))
+          ${set(L('j'), L('v'))}
+          (local.set $i (i32.add ${L('i')} (i32.const 1)))
+          (br $ol)))
+        (return)))
+    (local.set $i (i32.shr_u ${L('n')} (i32.const 1)))
+    (block $bd (loop $bl
+      (br_if $bd (i32.eqz ${L('i')}))
+      ${dec('i')}
+      (call $__typed_sift_${k.sfx} ${L('p')} ${L('i')} ${L('n')})
+      (br $bl)))
+    (block $ed (loop $el
+      ${dec('n')}
+      (br_if $ed (i32.le_s ${L('n')} (i32.const 0)))
+      (local.set $v ${get(L('n'))})
+      ${set(L('n'), get('(i32.const 0)'))}
+      ${set('(i32.const 0)', L('v'))}
+      (call $__typed_sift_${k.sfx} ${L('p')} (i32.const 0) ${L('n')})
+      (br $el))))`
+  }
+  const leanSort = () => !!ctx.transform.optimize?.leanRuntime
+  sortDeps.__typed_sort = () => leanSort() ? ['__typed_sort_any']
+    : ['__ptr_aux', '__len', '__typed_data', ...SORTS.map(k => `__typed_sort_${k.sfx}`), ...(ctx.linkDemand.f16 ? ['__typed_sort_any'] : [])]
+  deps(sortDeps)
+  ctx.core.stdlib['__typed_sort'] = () => leanSort()
+    ? `(func $__typed_sort (param $ptr i64) (result f64) (call $__typed_sort_any (local.get $ptr)))`
+    : `(func $__typed_sort (param $ptr i64) (result f64)
+    (local $aux i32) (local $p i32) (local $n i32)
+    (local.set $aux (call $__ptr_aux (local.get $ptr)))
+    ${ctx.linkDemand.f16 ? `(if (i32.and (local.get $aux) (i32.const ${TYPED_ELEM_F16_FLAG}))
+      (then (return (call $__typed_sort_any (local.get $ptr)))))` : ''}
+    (local.set $n (call $__len (local.get $ptr)))
+    (local.set $p (call $__typed_data (local.get $ptr)))
+    (if (i32.and (local.get $aux) (i32.const ${TYPED_ELEM_BIGINT_FLAG}))
+      (then (call $__typed_sort_i64 (local.get $p) (local.get $n)))
+      (else
+        (block $done
+          (block $s7 (block $s6 (block $s5 (block $s4 (block $s3 (block $s2 (block $s1 (block $s0
+            (br_table $s0 $s1 $s2 $s3 $s4 $s5 $s6 $s7 (i32.and (local.get $aux) (i32.const 7))))
+            (call $__typed_sort_i8 (local.get $p) (local.get $n)) (br $done))
+            (call $__typed_sort_u8 (local.get $p) (local.get $n)) (br $done))
+            (call $__typed_sort_i16 (local.get $p) (local.get $n)) (br $done))
+            (call $__typed_sort_u16 (local.get $p) (local.get $n)) (br $done))
+            (call $__typed_sort_i32 (local.get $p) (local.get $n)) (br $done))
+            (call $__typed_sort_u32 (local.get $p) (local.get $n)) (br $done))
+            (call $__typed_sort_f32 (local.get $p) (local.get $n)) (br $done))
+          (call $__typed_sort_f64 (local.get $p) (local.get $n)))))
+    (f64.reinterpret_i64 (local.get $ptr)))`
+
+  // The one body for every kind, over the element helpers: an insertion sort, stable.
+  ctx.core.stdlib['__typed_sort_any'] = `(func $__typed_sort_any (param $ptr i64) (result f64)
     (local $isbig i32) (local $len i32) (local $i i32) (local $j i32) (local $saved f64) (local $nb f64)
     (local.set $isbig (i32.and (call $__ptr_aux (local.get $ptr)) (i32.const ${TYPED_ELEM_BIGINT_FLAG})))
     (local.set $len (call $__len (local.get $ptr)))
@@ -1680,8 +1803,21 @@ export default (ctx) => {
   // positive return shifts (same convention as Array.prototype.sort).
   // Sort the typed array VALUE `arrValIR` in place and return it. Factored out so
   // .typed:sort sorts the receiver and .typed:toSorted sorts a fresh copy with one body.
-  const emitTypedSort = (arrValIR, fn) => {
+  const emitTypedSort = (arrValIR, fn, r = null) => {
     if (fn == null) {
+      // A receiver of known kind calls that kind's body: the program links one
+      // sort, not the nine the dispatch reaches.
+      const kind = !r || r.isF16 || ctx.transform.optimize?.leanRuntime ? null : r.isBigInt ? SORTS[8] : SORTS[r.et]
+      if (kind) {
+        // The receiver's kind is known: its data and length read from its header.
+        inc(`__typed_sort_${kind.sfx}`)
+        const t = temp('tsr')
+        const recv = () => typed(['local.get', `$${t}`], 'f64')
+        return typed(['block', ['result', 'f64'],
+          ['local.set', `$${t}`, asF64(arrValIR)],
+          ['call', `$__typed_sort_${kind.sfx}`, typedDataAddr(recv(), r.isView), typedLen(recv(), r.et, r.isView)],
+          ['local.get', `$${t}`]], 'f64')
+      }
       inc('__typed_sort')
       return typed(['call', '$__typed_sort', asI64(arrValIR)], 'f64')
     }
@@ -1720,7 +1856,33 @@ export default (ctx) => {
         ['br', oL]]],
       ['local.get', `$${arrL}`]], 'f64')
   }
-  ctx.core.emit['.typed:sort'] = (arr, fn) => emitTypedSort(emit(arr), fn)
+  // `a.subarray(lo, hi).sort()` as a statement: the view is made to be sorted
+  // and read by nobody, so its range sorts where it lies and no view is made.
+  const sortRange = (arr) => {
+    if (!Array.isArray(arr) || arr[0] !== '()' || !Array.isArray(arr[1]) || arr[1][0] !== '.' || arr[1][2] !== 'subarray') return null
+    const src = arr[1][1], r = resolveElem(src)
+    if (!r || r.isF16 || ctx.transform.optimize?.leanRuntime || lookupValType(src) !== VAL.TYPED) return null
+    const kind = r.isBigInt ? SORTS[8] : SORTS[r.et]
+    const args = arr[2] == null ? [] : Array.isArray(arr[2]) && arr[2][0] === ',' ? arr[2].slice(1) : [arr[2]]
+    if (!kind || args.length > 2) return null
+    inc(`__typed_sort_${kind.sfx}`, '__clamp_idx')
+    const recv = temp('tsr'), len = tempI32('tsl'), lo = tempI32('tslo'), hi = tempI32('tshi')
+    const value = () => typed(['local.get', `$${recv}`], 'f64')
+    const receiver = asF64(emit(src)), positions = positionArgs(args)
+    const start = positions.index(0)
+    return typed(['block',
+      ['local.set', `$${recv}`, receiver],
+      ...positions.setup,
+      ['local.set', `$${len}`, typedLen(value(), r.et, r.isView)],
+      ['local.set', `$${lo}`, start[0] === 'i32.const' && start[1] === 0 ? start : ['call', '$__clamp_idx', start, ['local.get', `$${len}`]]],
+      ['local.set', `$${hi}`, ['call', '$__clamp_idx', positions.index(1, ['local.get', `$${len}`]), ['local.get', `$${len}`]]],
+      ['call', `$__typed_sort_${kind.sfx}`,
+        ['i32.add', typedDataAddr(value(), r.isView), ['i32.shl', ['local.get', `$${lo}`], ['i32.const', SHIFT[r.et]]]],
+        ['select', ['i32.sub', ['local.get', `$${hi}`], ['local.get', `$${lo}`]], ['i32.const', 0],
+          ['i32.gt_s', ['local.get', `$${hi}`], ['local.get', `$${lo}`]]]]], 'void')
+  }
+  ctx.core.emit['.typed:sort'] = (arr, fn) => (fn == null && ctx.func._expect === 'void' ? sortRange(arr) : null) ??
+    emitTypedSort(emit(arr), fn, resolveElem(arr))
 
   // Type-aware TypedArray read: arr[i]. The DIRECT unchecked load is gated on the
   // structural in-bounds proof (inBoundsArrIdx — the same canonical `for (i=C≥0;
@@ -3105,7 +3267,7 @@ export default (ctx) => {
   // .toSorted(fn?) — a sorted COPY (receiver unchanged): slice-copy, then sort in place.
   ctx.core.emit['.typed:toSorted'] = (arr, fn) => {
     const copy = ctx.core.emit['.typed:slice'](arr)
-    return copy ? emitTypedSort(copy, fn) : null
+    return copy ? emitTypedSort(copy, fn, resolveElem(arr)) : null
   }
 
   // .with(index, value) — a COPY with one element replaced (receiver unchanged). Negative
@@ -3158,16 +3320,19 @@ export default (ctx) => {
     const viewAux = typedAux(name, true)
     const arrL = temp('tua'), srcOff = tempI32('tuo'), data = tempI32('tud'), root = tempI32('tur')
     const len = tempI32('tul'), lo = tempI32('tulo'), hi = tempI32('tuhi'), n = tempI32('tun'), desc = tempI32('tude')
-    inc('__len', '__clamp_idx')
+    inc('__clamp_idx')
     const off4 = (o) => ['i32.load', ['i32.add', ['local.get', `$${srcOff}`], ['i32.const', o]]]
+    // A start of literal zero clamps to zero for every length.
+    const start = positions.index(0)
+    const lower = start[0] === 'i32.const' && start[1] === 0 ? start : ['call', '$__clamp_idx', start, ['local.get', `$${len}`]]
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${arrL}`, receiver],
       ...positions.setup,
       ['local.set', `$${srcOff}`, typedBase(typed(['local.get', `$${arrL}`], 'f64'))],
       ['local.set', `$${data}`, isView ? off4(4) : ['local.get', `$${srcOff}`]],
       ['local.set', `$${root}`, isView ? off4(8) : ['local.get', `$${srcOff}`]],
-      ['local.set', `$${len}`, ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${arrL}`]]]],
-      ['local.set', `$${lo}`, ['call', '$__clamp_idx', positions.index(0), ['local.get', `$${len}`]]],
+      ['local.set', `$${len}`, ['i32.shr_u', isView ? ['i32.load', ['local.get', `$${srcOff}`]] : ['i32.load', ['i32.sub', ['local.get', `$${srcOff}`], ['i32.const', 8]]], ['i32.const', shift]]],
+      ['local.set', `$${lo}`, lower],
       ['local.set', `$${hi}`, ['call', '$__clamp_idx', positions.index(1, ['local.get', `$${len}`]), ['local.get', `$${len}`]]],
       ['local.set', `$${n}`, ['select',
         ['i32.sub', ['local.get', `$${hi}`], ['local.get', `$${lo}`]], ['i32.const', 0],

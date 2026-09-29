@@ -179,15 +179,22 @@ function ensureDynSetAllowed(arr) {
  *  f64 box's low word, 0). Every write path for an i32-lean receiver must agree
  *  with the read's raw-i32 contract, so this is the single choke point (dynSetCall
  *  is also step 7b's HASH fallback) that applies it uniformly. */
+/** A HASH local the census proved i32-lean (`ctx.func.i32HashLocals`, analyze/
+ *  val-types.js dictWalkI32) stores raw i32 bits in its slots and reads them
+ *  back with a bare `i32.wrap_i64` (module/array.js): every path that hands a
+ *  value to `__dyn_set` on such a receiver must encode it here, or a read of
+ *  the boxed `7.0` answers its low word, 0. */
+const i32LeanDict = arr => typeof arr === 'string' && ctx.func.i32HashLocals?.has(arr) === true
+const dynSetValueI64 = (arr, valueF64) => i32LeanDict(arr) ? ['i64.extend_i32_u', asI32(valueF64)] : asI64(valueF64)
+
 function dynSetCall(arr, keyExpr, valueExpr) {
   ensureDynSetAllowed(arr)
   inc('__dyn_set')
-  if (typeof arr === 'string' && ctx.func.i32HashLocals?.has(arr)) {
+  if (i32LeanDict(arr)) {
     const valTmp = temp()
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${valTmp}`, valueExpr],
-      ['drop', ['call', '$__dyn_set', asI64(emit(arr)), asI64(keyExpr),
-        ['i64.extend_i32_u', asI32(typed(['local.get', `$${valTmp}`], 'f64'))]]],
+      ['drop', ['call', '$__dyn_set', asI64(emit(arr)), asI64(keyExpr), dynSetValueI64(arr, typed(['local.get', `$${valTmp}`], 'f64'))]],
       ['local.get', `$${valTmp}`]], 'f64')
   }
   return typed(['f64.reinterpret_i64', ['call', '$__dyn_set', asI64(emit(arr)), asI64(keyExpr), asI64(valueExpr)]], 'f64')
@@ -198,10 +205,18 @@ function dynSetCall(arr, keyExpr, valueExpr) {
 function dispatchByKeyKind(arr, keyExpr, valueExpr, numericIR) {
   ensureDynSetAllowed(arr)
   const keyTmp = temp()
+  // The string arm's value takes the receiver's slot encoding (dynSetValueI64):
+  // the expression's own value stays the number written.
+  const strArm = i32LeanDict(arr)
+    ? (() => { const valTmp = temp(); return ['block', ['result', 'f64'],
+        ['local.set', `$${valTmp}`, valueExpr],
+        ['drop', ['call', '$__dyn_set', asI64(emit(arr)), ['i64.reinterpret_f64', ['local.get', `$${keyTmp}`]], dynSetValueI64(arr, typed(['local.get', `$${valTmp}`], 'f64'))]],
+        ['local.get', `$${valTmp}`]] })()
+    : ['f64.reinterpret_i64', ['call', '$__dyn_set', asI64(emit(arr)), ['i64.reinterpret_f64', ['local.get', `$${keyTmp}`]], asI64(valueExpr)]]
   return block64(
     ['local.set', `$${keyTmp}`, keyExpr],
     ['if', ['result', 'f64'], ['call', '$__is_str_key', ['i64.reinterpret_f64', ['local.get', `$${keyTmp}`]]],
-      ['then', ['f64.reinterpret_i64', ['call', '$__dyn_set', asI64(emit(arr)), ['i64.reinterpret_f64', ['local.get', `$${keyTmp}`]], asI64(valueExpr)]]],
+      ['then', strArm],
       ['else', numericIR(['local.get', `$${keyTmp}`])]])
 }
 
@@ -652,8 +667,13 @@ export function emitElementAssign(arr, idx, val, node = null) {
   //    arrays of a known ctor (codec `ch[c][i] = …` channelData scatter) — the
   //    `.typed:[]=` emitter resolves the element ctor and inlines the store.
   const plannedTypedReceiver = plannedTypedStorageInfo(ctx, arr)
-  if (ctx.core.emit['.typed:[]='] &&
-      (valTypeOf(arr) === VAL.TYPED || plannedTypedReceiver)) {
+  const typedReceiver = valTypeOf(arr) === VAL.TYPED || plannedTypedReceiver
+  // A guard can be the program's only mention of a typed array (`a instanceof
+  // Int32Array`, no constructor anywhere): the store emitter lives in the
+  // module a constructor would have included. Without it the store fell to the
+  // raw f64 slot below, eight bytes over a four-byte element.
+  if (typedReceiver && !ctx.core.emit['.typed:[]=']) ctx.module.include('typedarray')
+  if (ctx.core.emit['.typed:[]='] && typedReceiver) {
     if (!numericKey) {
       const slow = dynSetCall(arr, keyExpr, taggedValueExpr())
       // A stable dynamic key keeps the numeric RMW path behind a key guard.
@@ -704,7 +724,11 @@ export function emitElementAssign(arr, idx, val, node = null) {
     return storeArrayPayload(arrExpr, keyExpr, valueExpr, persist)
   }
 
-  const knownArrVT = typeof arr === 'string' ? lookupValType(arr) : null
+  // A local the dictionary census classified (lean or i32-lean) is a HASH whatever
+  // the frame's value facts carry: a specialized variant reaches this store without
+  // the plan's HASH stamp, and its reads already take the dictionary path.
+  const knownArrVT = typeof arr === 'string'
+    ? lookupValType(arr) ?? (ctx.func.i32HashLocals?.has(arr) || ctx.func.leanHashLocals?.has(arr) ? VAL.HASH : null) : null
   const arrVT = knownArrVT || VAL.OBJECT
 
   // 7b. Known-OBJECT receiver with a non-static key. The schema-slot (step 2) and

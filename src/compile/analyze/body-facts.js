@@ -17,7 +17,7 @@ import { exprType, intLevelMap } from '../../type.js'
 import { K, tagOf, paramOf, hasTag, valOf, core, UNKNOWN, kind } from '../../summary/index.js'
 import { ctorFromElemAux, typedElemAux } from '../../../layout.js'
 import {
-  findMutations, collectI32SafeIndexVars, collectF64StridedIndexVars, collectBareEscapes, narrowUint32,
+  findMutations, collectI32SafeIndexVars, collectF64StridedIndexVars, collectBareEscapes, narrowUint32, narrowWordLocals,
   scanObjectArrayFacts, isFreshArrayCtor, stampBodyRanges, stampLoopCounterRanges,
   scanBindingUses, USE, BINDING_USE_DECLS, BINDING_USE_USES, BINDING_USE_KIND, BINDING_USE_STORE, BINDING_USE_OP, BINDING_USE_MISS,
   invalidateBindingUsesCache, resetMutationNamesCache,
@@ -435,7 +435,7 @@ function computeBodyFacts(body, bodyFacts, elemOrigin) {
   // Install the in-progress valTypes as a lookup overlay so successive decls
   // resolve chains (`const a = new TypedArr(); const b = a[0]` → b: NUMBER)
   // and shorthand-bound `{a}` props see a's type. Restored after walk completes.
-  let unsignedLocals
+  let unsignedLocals, wordLocals
   stampLoopCounterRanges(body)
   withValueOverlay(valTypes, () =>
     withTypedElemOverlay(typedElems, () => {
@@ -449,7 +449,9 @@ function computeBodyFacts(body, bodyFacts, elemOrigin) {
     unsignedLocals = narrowUint32(body, locals, e => e[0] === '[]' &&
       typeof e[1] === 'string' && (typedElemAux(typedStorageNameCtor(ctx, e[1], locals)) & 7) === 5 && presentNodes.has(e))
     for (const nm of unsignedLocals) updateRep(nm, { unsigned: true })
-    widenLocalTypes(body, locals, presentNodes, unsignedLocals)
+    wordLocals = ctx.transform.optimize?.wordLocals
+      ? narrowWordLocals(body, locals, nm => valTypes.get(nm) === VAL.NUMBER, wordStoreOf(body, locals)) : EMPTY_BODY_FACT_SET
+    widenLocalTypes(body, locals, presentNodes, unsignedLocals, wordLocals)
     // A narrowing above retypes a never-reassigned decl whose initializer
     // reads the narrowed name (`const np = 20 + t % 101` over `const t = s
     // >>> 0`): the first pass typed it f64 through t's provisional f64. Re-
@@ -510,7 +512,7 @@ function computeBodyFacts(body, bodyFacts, elemOrigin) {
     typedElems,
     typedLens: typedLens || EMPTY_BODY_FACT_MAP,
     escapes: escapes || EMPTY_BODY_FACT_MAP,
-    flatObjects, sliceViews, unsignedLocals, neverGrown, ownCurrent, readPresent: presentNodes,
+    flatObjects, sliceViews, unsignedLocals, wordLocals, neverGrown, ownCurrent, readPresent: presentNodes,
   }
   // null (not '') when ctx.func.current is unset at capture time — some legitimate
   // callers (plan/literals.js's AST-rewrite passes, narrow.js's refreshCallerLocals)
@@ -598,7 +600,16 @@ function sigFingerprint(sig) {
  * Math.imul/clz32) needs no check — every value it can hold already fits i32.
  */
 const WIDEN_CMP_OPS = new Set(['<', '>', '<=', '>=', '==', '!='])
-function widenLocalTypes(body, locals, readPresent, unsignedLocals) {
+/** A use that is the value stored, its result discarded, to an integer element
+ *  of modular width: the store keeps the low bits of the word alone. A float,
+ *  clamped or BigInt element, a named key and an absent index keep the number. */
+const wordStoreOf = (body, locals) => u => {
+  const dest = u[BINDING_USE_KIND] === USE.BARE ? u[BINDING_USE_STORE] : null
+  if (!dest || typeof dest[1] !== 'string' || !typedElementKey(dest[2], isPresentNumber(ctx, dest[2], body))) return false
+  const aux = typedElemAux(typedStorageNameCtor(ctx, dest[1], locals))
+  return aux != null && (aux & 7) <= 5 && !(aux & (32 | 64))
+}
+function widenLocalTypes(body, locals, readPresent, unsignedLocals, wordLocals) {
   // Shared, lazily-memoized across collectI32SafeIndexVars' own internal use
   // and Pass D below — both want the identical collectBareEscapes(body,
   // locals) fact (same body, same locals, no crossClosure), and it's a real
@@ -634,7 +645,7 @@ function widenLocalTypes(body, locals, readPresent, unsignedLocals) {
   // the identical gap for it (see .work/archive/todo.md KNOWN GAP #1 sibling note).
   const intLevels = intLevelMap(body, nestedNames, null, readPresent)
   const f64IdxVars = collectF64StridedIndexVars(body, locals)  // counters that trunc anyway — don't keep i32
-  const keepI32 = (name) => unsignedLocals.has(name) || i32SafeIdx.has(name) || ((intLevels.get(name) ?? 0) >= 1 && !f64IdxVars.has(name))
+  const keepI32 = (name) => unsignedLocals.has(name) || wordLocals.has(name) || i32SafeIdx.has(name) || ((intLevels.get(name) ?? 0) >= 1 && !f64IdxVars.has(name))
   const widenPass = (node) => {
     if (!Array.isArray(node)) return
     const op = node[0]
@@ -653,18 +664,13 @@ function widenLocalTypes(body, locals, readPresent, unsignedLocals) {
   // copies/arithmetic, even when an index use would otherwise permit wrapping.
   const valueWide = new Set()
   let uses
-  const wordUse = u => {
-    if (u[BINDING_USE_KIND] === USE.WORD) return true
-    const dest = u[BINDING_USE_KIND] === USE.BARE ? u[BINDING_USE_STORE] : null
-    if (!dest || typeof dest[1] !== 'string' || !typedElementKey(dest[2], isPresentNumber(ctx, dest[2], body))) return false
-    const aux = typedElemAux(typedStorageNameCtor(ctx, dest[1], locals))
-    return aux != null && (aux & 7) <= 5 && !(aux & (32 | 64))
-  }
+  const wordStore = wordStoreOf(body, locals)
+  const wordUse = u => u[BINDING_USE_KIND] === USE.WORD || wordStore(u)
   // A use that cannot tell a missing element from zero: a test undefined and
   // zero answer alike, or a step a test excluded both from (analyze-scans.js).
   const missUse = u => u[BINDING_USE_MISS] === true || u[BINDING_USE_KIND] === USE.BOOL_TEST && u[BINDING_USE_OP] !== 'typeof'
   const widenValue = (name, rhs) => {
-    if (locals.get(name) !== 'i32' || unsignedLocals.has(name) ||
+    if (locals.get(name) !== 'i32' || unsignedLocals.has(name) || wordLocals.has(name) ||
         exprType(rhs, locals, null, false, body, readPresent) !== 'f64') return false
     // A checked integer read may lose absence only when every use already
     // asks for its word or cannot tell a missing element from zero. Keep the
@@ -734,7 +740,7 @@ function widenLocalTypes(body, locals, readPresent, unsignedLocals) {
   if (level1I32) {
     const bareEscapes = bareEscapesOf()
     for (const [name, level] of intLevels)
-      if (level === 1 && locals.get(name) === 'i32' && bareEscapes.has(name)) locals.set(name, 'f64')
+      if (level === 1 && locals.get(name) === 'i32' && bareEscapes.has(name) && !wordLocals.has(name)) locals.set(name, 'f64')
   }
   // Pass E: a binding that holds a Boolean beside another kind and whose
   // reads observe its identity (the numeric demand pass denied it a number)

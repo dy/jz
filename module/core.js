@@ -11,6 +11,7 @@ import print from 'watr/print'
  * @module core
  */
 
+import { plannedTypedStorageInfo } from '../src/compile/typed-storage-plan.js'
 import { typed, asF64, asI32, asI64, NULL_NAN, UNDEF_NAN, TOMB_NAN, FALSE_NAN, TRUE_NAN, temp, tempI32, usesDynProps, ptrOffsetIR, ptrTypeEq, isNullish, isUndef, valKindToPtr, sidecarOverride, undefExpr, cloneIR, boxBigInt, unboxBigInt, isPlanTaggedBigint, throwTypeErrorIR, valueTruthyIR } from '../src/ir.js'
 import { emit, emitIdentitySafe, spread, deps, wat } from '../src/bridge.js'
 import { reconstructArgsWithSpreads } from '../src/ir.js'
@@ -2407,6 +2408,19 @@ export default (ctx) => {
       // off the raw offset (no forwarding follow).
       if (vt === VAL.ARRAY && typeof obj === 'string' && liveArrayBinding(obj))
         return typed(['f64.convert_i32_s', ['i32.load', ['i32.sub', arrayBaseIR(obj), ['i32.const', 8]]]], 'f64')
+      // A typed array whose element kind the plan settled (a reassigned binding
+      // included, when every constructor agrees) reads its element count from
+      // its header: an owned array's byte length at base − 8, a view's at its
+      // descriptor. A DataView has no element kind and takes the dispatch.
+      if (vt === VAL.TYPED) {
+        const info = plannedTypedStorageInfo(ctx, obj)
+        if (info) {
+          const base = ptrOffsetIR(asF64(emit(obj)), VAL.TYPED), et = info.elem
+          const bytes = ['i32.load', info.isView ? base : ['i32.sub', base, ['i32.const', 8]]]
+          const shift = et === 7 ? 3 : et >= 4 ? 2 : et >> 1
+          return typed(['f64.convert_i32_s', shift ? ['i32.shr_u', bytes, ['i32.const', shift]] : bytes], 'f64')
+        }
+      }
       const arrayOrTyped = vt == null && rep?.recvArrTyped === true
       // jsstring carrier: keep the externref-typed IR so emitLengthAccess can
       // dispatch to `wasm:js-string.length` instead of forcing through f64.
