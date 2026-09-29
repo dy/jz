@@ -35,7 +35,8 @@ test('iterate present: a list set on first use iterates as the host does, a miss
 
 test('iterate present: the loop over the list tests no receiver', () => {
   if (belowOpt(2)) return
-  const text = funcWat(wat(src, { optimize: 2 }), 'comb')
+  // comb kept a function of its own: its one caller splices it at level 2, and so does watr
+  const text = funcWat(wat(src, { optimize: { level: 2, sourceInline: false, watr: false } }), 'comb')
   const loops = []
   for (let at = text.indexOf('(loop'); at >= 0; at = text.indexOf('(loop', at + 1)) {
     let depth = 0, end = at
