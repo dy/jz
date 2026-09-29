@@ -12,7 +12,7 @@ import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import jz, { compile } from '../index.js'
 import { levels, belowOpt } from './_matrix.js'
-import { ulpDiff, wat, funcWat } from './util.js'
+import { oracle, ulpDiff, wat, funcWat } from './util.js'
 import { MATH_KERNEL } from '../src/prepare/math-kernel.js'
 
 const same = (a, b) => Object.is(a, b) || (a !== a && b !== b)
@@ -80,6 +80,20 @@ test('exp and exp2 round k without a float-to-integer conversion', () => {
     const k = funcWat(wat(`export let f = (x) => ${expr}`), fn)
     ok(k.length > 0 && !/i32\.trunc_f64_s/.test(k) && !/f64\.nearest/.test(k), `${fn}: k from the magic addition`)
   }
+})
+
+test('The kernels\' tables load where the memory is shared or imported, the program holding no other data', () => {
+  // the start copies the static region into __alloc'd space there: the tables are that region
+  const src = `export let f = (x) => [Math.exp(x), Math.log(x + 2), Math.sin(x), Math.atan(x), Math.tanh(x), Math.pow(x + 3, 1.7), 10 ** x, 2 ** x]`
+  const want = oracle(src).f
+  for (const optimize of levels(0, 2, 3))
+    for (const opts of [{ sharedMemory: true, memory: new WebAssembly.Memory({ initial: 16, maximum: 64, shared: true }) }, { importMemory: true, memory: new WebAssembly.Memory({ initial: 16 }) }]) {
+      const { f } = jz(src, { ...opts, optimize }).exports
+      for (const x of [0.3, -1.25, 7]) {
+        const got = f(x), exp = want(x)
+        ok(got.length === exp.length && got.every((v, i) => ulpDiff(v, exp[i]) <= 48), `O${optimize} ${Object.keys(opts)[0]} x = ${x}: ${got}`)
+      }
+    }
 })
 
 test('A program carries the constants of its own kernels only', () => {

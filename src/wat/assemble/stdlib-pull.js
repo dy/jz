@@ -176,7 +176,7 @@ export function pullStdlib(sec) {
   //    so memory can't be gated on allocation alone.
   // Explicit rewind (including an empty checkpoint) needs the arena's reset mark.
   const ALLOC_FUNCS = ['__alloc', '__alloc_hdr', '__alloc_hdr_n', '__clear']
-  const needsAlloc = strPoolLen() > 0 || ALLOC_FUNCS.some(a => reachable.has(a)) ||
+  let needsAlloc = strPoolLen() > 0 || ALLOC_FUNCS.some(a => reachable.has(a)) ||
     // shared memory memory.init's the static region into __alloc'd space at start
     !!(ctx.memory.shared && dataLen() > 0)
   // Memory ops can be emitted *inline* into user/start funcs (a heap-path char read
@@ -280,6 +280,9 @@ export function pullStdlib(sec) {
     if (at.size) injectTable(users, 'math.kc', bytes)
     ctx.runtime.mathKc = null
   }
+  // a table injected above is static data the shared-memory start copies into __alloc'd
+  // space too, where the program had none of its own (Math.exp alone)
+  if (ctx.memory.shared && dataLen() > 0) needsAlloc = true
   if (!needsAlloc) { ctx.scope.globals.delete('__heap'); ctx.scope.globals.delete('__heap_reset') }
   if (needsMemory && ctx.module.modules.core) {
     if (needsAlloc) {
