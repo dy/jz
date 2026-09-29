@@ -2205,7 +2205,8 @@ test('devirtGlobalCalls: the site calls the function; a global nothing reads dro
   const shapes = {
     called: [nz + `\nexport let go = (x) => { m.assign(x, W, 1, 0); return W[0] * 2 + W[1] }`, 6, []],
     alias: [nz + `\nconst nrm = m.assign\nexport let go = (x) => { nrm(x, W, 1, 0); return W[0] * 2 + W[1] }`, 6, []],
-    held: [nz + `\nconst keep = [m.assign]\nexport let go = (x) => { m.assign(x, W, 1, 0); return W[0] * 2 + W[1] + keep.length }`, 7, [`m${T}assign`]],
+    // read at a position only the run knows, the list holds the function (a constant one is its element's local)
+    held: [nz + `\nconst keep = [m.assign]\nexport let go = (x) => { m.assign(x, W, 1, 0); return W[0] * 2 + W[1] + (keep[x & 0] ? 1 : 0) }`, 7, [`m${T}assign`]],
     exported: [nz + `\nconst out = m.assign\nexport { out }\nexport let go = (x) => { m.assign(x, W, 1, 0); return W[0] * 2 + W[1] }`, 6, [`m${T}assign`, 'out']],   // `out` reads it, the host reads `out`
   }
   for (const [name, [src, want, kept]] of Object.entries(shapes)) {

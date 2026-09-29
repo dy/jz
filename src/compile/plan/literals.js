@@ -64,10 +64,12 @@ const coerceAST = (kind, expr) => {
 const maxScalarTypedLoopUnroll = () => ctx.transform.optimize?.scalarTypedLoopUnroll ?? 16
 const maxScalarTypedNestedUnroll = () => ctx.transform.optimize?.scalarTypedNestedUnroll ?? 128
 
+// The elements evaluate once each, in order, into their locals as into the
+// array: any expression but a spread or a hole (an inlined tuple's `[s.l, s.b, h]`).
 const scalarArrayElems = (expr) => {
   if (!Array.isArray(expr) || expr[0] !== '[') return null
   const elems = expr.slice(1)
-  if (elems.some(e => e == null || (Array.isArray(e) && e[0] === '...') || !isSimpleArg(e))) return null
+  if (elems.some(e => e == null || (Array.isArray(e) && e[0] === '...'))) return null
   return elems
 }
 

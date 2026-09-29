@@ -525,6 +525,13 @@ const inlineInExpr = (node, candidates, hot = false) => {
 // `hot`: the statement sits in an innermost loop — the loops the lane vectorizer
 // takes. A loop body that holds no loop of its own.
 const innermost = (body) => !some(body, n => LOOP_OPS.has(n[0]))
+// A value no one reads, as the statements that run what it runs: nothing for
+// a name or a literal, each element in turn for a list the call returned
+// (`return [s.l, s.b, h]` spliced where the call's result is dropped).
+const unused = (v) => v === null || typeof v !== 'object' || v[0] == null || v[0] === 'str' || v[0] === 'bool' ? []
+  : v[0] === '[' && v.every((e, j) => !j || (e != null && !(Array.isArray(e) && e[0] === '...'))) ? v.slice(1).flatMap(unused)
+  : [v]
+
 const inlineInStmt = (stmt, candidates, loopVariantNames = null, hot = false) => {
   if (!Array.isArray(stmt)) return null
   // Statement-position call: the result is unused, but the callee's return
@@ -541,8 +548,7 @@ const inlineInStmt = (stmt, candidates, loopVariantNames = null, hot = false) =>
     const shape = args && inlinedBody(candidates.get(stmt[1]), args)
     if (shape) {
       const { hoisted, rest } = partitionInvariantPrefix(shape.prefix, loopVariantNames)
-      const inert = shape.value === null || typeof shape.value !== 'object' || shape.value[0] == null
-      const splice = inert ? rest : [...rest, shape.value]
+      const splice = [...rest, ...unused(shape.value)]
       return { node: ['{}', [';', ...splice]], changed: true, splice, hoisted }
     }
   }
@@ -614,6 +620,16 @@ const inlineInStmt = (stmt, candidates, loopVariantNames = null, hot = false) =>
     let changed = false
     const next = [';']
     for (let i = 1; i < stmt.length; i++) {
+      // A comma expression in statement position is its operands in order (a
+      // lowered pattern: `let t = f(…), a = t[0], t`), each a statement a call
+      // splices into; the last one's value is dropped, and one that runs
+      // nothing goes with it.
+      const seq = stmt[i]
+      if (Array.isArray(seq) && seq[0] === ',' && seq.some((e, j) => j && inlineInStmt(e, candidates, loopVariantNames, hot))) {
+        const last = seq[seq.length - 1], inert = typeof last === 'string' || isLiteral(last)
+        stmt = [...stmt.slice(0, i), ...seq.slice(1, inert ? -1 : seq.length), ...stmt.slice(i + 1)]
+        changed = true
+      }
       const r = inlineInStmt(stmt[i], candidates, loopVariantNames, hot)
       if (r) changed = true
       if (r?.hoisted?.length) next.push(...r.hoisted)

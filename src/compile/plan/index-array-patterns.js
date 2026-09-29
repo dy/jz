@@ -121,6 +121,10 @@ const indexPulls = (stmts, it, src, view) => {
   return true
 }
 
+/** Whether a statement binds or assigns `name`. */
+const assigns = (n, name) => isArr(n) && (((n[0] === '=' || n[0] === 'let' || n[0] === 'const') && (n[1] === name || isArr(n[1]) && n[1][0] === '=' && n[1][1] === name)) ||
+  n.some((c, j) => j > 0 && assigns(c, name)))
+
 /** The protocol's statements at `list[at]` (its open) rewritten in place, or nothing. */
 const indexPattern = (list, at, view) => {
   const open = list[at], init = isArr(open) && open[0] === 'let' && isArr(open[1]) && open[1][0] === '=' && typeof open[1][1] === 'string' ? open[1][2] : null
@@ -131,11 +135,15 @@ const indexPattern = (list, at, view) => {
   const guard = list[at + 1], pulls = isArr(guard) && guard[0] === 'catch' && isArr(guard[1]) && guard[1][0] === '{}' && isArr(guard[1][1]) && guard[1][1][0] === ';' ? guard[1][1] : null
   const closeAt = pulls ? at + 2 : at + 1, close = list[closeAt], closer = calleeOf(close)
   if (closer === null || !CLOSE.test(closer) || !isArr(close[2]) || close[2][1] !== it) return false
+  // A source held in a name the pulls leave alone is read through that name:
+  // the cursor would be one more name for it, which hides the array's uses.
+  const own = typeof src === 'string' && !missing && !assigns(pulls, src)
   if (pulls) {
     const copy = pulls.slice()
-    if (!indexPulls(copy, it, it, view)) return false
+    if (!indexPulls(copy, it, own ? src : it, view)) return false
     list.splice(at + 1, 2, ...copy.slice(1))
   } else list.splice(at + 1, 1)
+  if (own) { list.splice(at, 1); return true }
   open[1][2] = src
   // a missing source still meets the open, which throws for it
   if (missing) list.splice(at + 1, 0, ['if', ['==', it, [null, null]], ['()', opener, it]])
