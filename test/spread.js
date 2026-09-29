@@ -855,7 +855,7 @@ test('spread into console: the arguments print as the values they spread to', ()
   const lines = []
   const { log, warn, error } = console
   console.log = console.warn = console.error = (...a) => lines.push(a.join(' '))
-  try { for (const optimize of levels(0, 2)) is(jz(src, { optimize }).exports.f(), 1, `O${optimize}`) }
+  try { for (const optimize of levels(0, 2, 3)) is(jz(src, { optimize }).exports.f(), 1, `O${optimize}`) }
   finally { Object.assign(console, { log, warn, error }) }
   const want = ['THREE.Vector3: bad 1 x true', 'THREE.alone', '1.5 b', 'm 1.5 b z', '', '1.5 b 2']
   is(lines.slice(0, want.length), want)
