@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<script>(()=>{try{document.documentElement.dataset.theme=localStorage.getItem('theme')||'light'}catch(e){document.documentElement.dataset.theme='light'}})()</script>
+<script>(()=>{try{document.documentElement.dataset.theme=localStorage.getItem('theme')==='light'?'light':'dark'}catch(e){document.documentElement.dataset.theme='dark'}})()</script>
 <title>JavaScript and WebAssembly Benchmarks | JZ</title>
 <meta name="description" content="jz against V8, Porffor, AssemblyScript, C, Rust and Zig: speed, memory and wasm size, measured across a corpus of numeric kernels.">
 <link rel="canonical" href="https://jz.js.org/bench/">
@@ -35,16 +35,13 @@ body { background: var(--paper); color: var(--ink); font-family: var(--sans);
 
 main { max-width: var(--colw); margin-inline: calc(var(--gx-pad) - var(--padx)) auto; padding: 0 var(--padx) 90px; }
 .intro + section { margin-top: var(--u2); }
-/* each titled section opens with a ruler across the page (as on the landing), its top grown by the script
-   (assets/rhythm.js) onto the next major grid line. The line is an absolute box at its static place (the
-   section's top), spanning the page, not the column. The heading fills the corner cell under it: a half-unit
-   band from the ruler, its caps centred in it; a heading row (.shead) centres its chips in the same band at the
+/* each titled section starts on a major grid line, aligned by assets/rhythm.js. The heading fills a half-unit
+   band, its caps centred in it; a heading row (.shead) centres its chips in the same band at the
    right, so heading and chip labels share one line.
    What follows starts on the band's foot, the next mid line, and keeps its baselines on unit lines: text
    blocks are trimmed and padded (--bl); chart rows are 24px, their text on the row's 16px line and the bar
    filling the caps' unit cell above it. */
 section { margin-top: var(--U); }
-section:has(> h2, > .shead)::before { content: ''; position: absolute; left: 0; right: 0; border-top: 1px solid var(--rule); pointer-events: none; }
 h2 { height: var(--u2); padding-top: calc(20px - 1cap / 2); margin: 0; font-size: var(--fs-caps); font-weight: 700; text-transform: uppercase; letter-spacing: var(--ls-caps); }
 .shead { display: flex; align-items: flex-start; justify-content: space-between; gap: 0 24px; flex-wrap: wrap; }
 .shead h2 { flex: none; }
@@ -91,7 +88,7 @@ code, .mono { font-family: var(--mono); font-size: var(--fs-mono); }
 #outro { font-size: var(--fs-small); line-height: 24px; max-width: none; }
 button {
   font-family: var(--sans); font-size: var(--fs-caps); background: var(--paper); color: var(--ink);
-  border: 1px solid var(--ink); border-radius: 0; padding: 6px 14px; cursor: pointer;
+  border: 1px solid light-dark(var(--ink), var(--rule)); border-radius: 0; padding: 6px 14px; cursor: pointer;
   text-transform: uppercase; letter-spacing: var(--ls-caps);
 }
 button:hover { background: var(--ink); color: var(--paper); }
@@ -177,6 +174,7 @@ h2 .cnt { font-weight: 400; letter-spacing: 0; color: var(--mid); font-variant-n
   #geomean .val .m, #geomean .mh { width: 64px; }
   #geomean .mh { letter-spacing: .04em; }   /* MEMORY in a phone's slot */
   .cards { grid-template-columns: minmax(0, 1fr); }
+  .card .val { max-width: calc(var(--cw) / 2); overflow: hidden; text-overflow: ellipsis; }
 }
 </style>
 </head>
@@ -251,7 +249,6 @@ h2 .cnt { font-weight: 400; letter-spacing: 0; color: var(--mid); font-variant-n
       <a href="https://github.com/dy/jz/issues">issues</a>
     </nav>
     <div class="legal">
-      <p class="about">JZ compiles JavaScript to WebAssembly<br>for audio, graphics, simulations and compute</p>
       <span class="credit">made with <a href="https://github.com/dy/watr">watr</a> and <a href="https://github.com/dy/subscript">jessie</a></span>
       <span class="lic"><a href="https://github.com/dy/jz/blob/main/LICENSE">MIT</a><span class="dot">,</span> <a href="https://github.com/krishnized/license/" aria-label="krishnized license"><span class="om">ॐ</span></a></span>
     </div>

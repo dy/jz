@@ -4,7 +4,7 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <script>(() => { try { document.documentElement.dataset.theme = localStorage.getItem('theme') || 'light' } catch (e) { document.documentElement.dataset.theme = 'light' } })()</script>
+    <script>(() => { try { document.documentElement.dataset.theme = localStorage.getItem('theme') === 'light' ? 'light' : 'dark' } catch (e) { document.documentElement.dataset.theme = 'dark' } })()</script>
     <title>JavaScript to WebAssembly Compiler | JZ</title>
     <meta name="description" content="Compile numeric JavaScript to fast, minimal WebAssembly – no rewrite, no annotations, no runtime, no GC.">
     <link rel="canonical" href="https://jz.js.org/">
@@ -82,7 +82,7 @@
         .ex-all span,
         .author h2,
         .author p,
-        .install > span,
+        .install > :is(.dollar, .cmd),
         .sponsor .report {
           text-box: trim-both cap alphabetic;
         }
@@ -100,7 +100,7 @@
       }
 
       /* dark theme only: the grid carries a live current — assets/grid-current.js compiled in-page by jz.
-   Page-wide, hero-high, fading out above the REPL; its pulses ride the same lines the CSS draws. */
+   Automatic current stays in the header; click bursts have their own shared JS layer. */
       .grid-current {
         display: none;
         position: absolute;
@@ -110,7 +110,6 @@
         width: 100%;
         height: calc(7 * var(--U));
         pointer-events: none;
-        -webkit-mask-image: linear-gradient(#000 calc(100% - var(--U)), transparent);
         mask-image: linear-gradient(#000 calc(100% - var(--U)), transparent);
       }
 
@@ -118,47 +117,31 @@
         display: block;
       }
 
+      .grid-info { position: absolute; z-index: 4; }
+      .grid-info summary { display: flex; align-items: center; justify-content: center; width: 24px; height: 24px;
+        color: var(--dim); cursor: pointer; list-style: none; }
+      .grid-info summary::-webkit-details-marker { display: none; }
+      .grid-info summary:hover, .grid-info[open] summary { color: var(--ink); }
+      .grid-info svg { width: 12px; height: 12px; }
+      .grid-pop { position: absolute; top: var(--info-drop, 40px); right: 0; width: 240px; padding: 16px; background: var(--paper);
+        border: 1px solid var(--rule); font-size: var(--fs-small); line-height: 1.5; }
+      .grid-pop p { margin-bottom: 12px; }
+      .grid-pop select { background: var(--paper); color: var(--ink); border: 1px solid var(--rule);
+        font: inherit; padding: 4px; }
+      .grid-pop output { display: block; color: var(--soft); margin-top: 8px; font-family: var(--font-mono); font-size: 11px; }
+      :root[data-theme="light"] .grid-info { display: none; }
+
       /* MENU — one unit tall; its caps centred in the 40–80 cell (where the other pages' logo sits, so the menu holds
-   still between pages), the icon cells ending on the right ruler as on every page */
+   still between pages), the icon cells inset one unit as on every page */
       .top {
         height: var(--U);
         padding-top: var(--u2);
       }
 
       .hero-nav {
-        display: flex;
         justify-content: flex-end;
-        align-items: center;
-        --nav-gap: 24px;
-        gap: var(--nav-gap);
         height: var(--u2);
         padding-left: var(--in);
-      }
-
-      .hero-nav a {
-        color: var(--ink);
-        opacity: .72;
-        text-decoration: none;
-        font-size: var(--fs-caps);
-        text-transform: uppercase;
-        letter-spacing: var(--ls-caps);
-        transition: opacity .18s;
-      }
-
-      .hero-nav a:hover {
-        opacity: 1;
-      }
-
-      .hero-nav .ver {
-        font-size: var(--fs-small);
-        text-transform: none;
-        letter-spacing: .02em;
-        opacity: .5;
-        margin-left: var(--nav-gap);   /* set apart from the menu: twice its gap */
-      }
-
-      .hero-nav .gh {
-        display: flex;
       }
 
       /* HERO — under the menu ruler: the logo on units 1–2, the title across its JZ letters, the bench row hanging from
@@ -188,7 +171,7 @@
         line-height: 0;
       }
 
-      .logo img {
+      .logo > :is(img, svg) {
         display: block;
         width: calc(2 * var(--U) - 1px);
         height: calc(2 * var(--U) - 1px);
@@ -289,6 +272,7 @@
         width: 24px;
         height: 24px;
       }
+      @media (min-width: 1040px) { .metrics .more { margin-left: -24px; } }
 
       /* TRY — the real REPL, embedded (?embed = tabs, no chrome), ruler to ruler, 7 units tall */
       .repl-embed {
@@ -397,7 +381,6 @@
         .faq details::details-content {
           block-size: 0;
           overflow: clip;
-          overflow-clip-margin: 1px;   /* a full-width table's right edge is drawn 1px past the box */
           transition: block-size .32s cubic-bezier(.22, .6, .36, 1), content-visibility .32s;
           transition-behavior: allow-discrete;
         }
@@ -411,11 +394,9 @@
         color: var(--ink);
       }
 
-      /* tables inside FAQ answers — rows of 40, text baseline 24px down each row, rules on grid lines: each cell
-   draws its top and left edge, the table's shadow the right and bottom ones (just past it, like .gbox) */
+      /* Table content follows the background grid: 40px rows, flush column starts. */
       .faq .ans table {
         width: 100%;
-        box-shadow: 1px 1px var(--rule);
         border-collapse: separate;
         border-spacing: 0;
         font-size: var(--fs-body);
@@ -426,11 +407,7 @@
       .faq .ans td {
         text-align: left;
         vertical-align: top;
-        border: 0 solid var(--rule);
-        border-width: 1px 0 0 1px;
-        padding: calc((39px - 1cap) / 2) 16px;
-        /* between two rules, the caps centred: 1px rule + equal space above the cap line and below the baseline
-   → rows of 40 (64, 88… when a cell wraps; the lines 24px apart) */
+        padding: calc((40px - 1cap) / 2) 0;
       }
 
       @supports (text-box: trim-both cap alphabetic) {
@@ -522,13 +499,13 @@
         padding: 0 16px;
         font-family: var(--mono);
         font-size: var(--fs-mono);
-        background: light-dark(#0c0e11, transparent);
+        background: #000;
         color: #e8e8ea;
         cursor: copy;
       }
 
       /* the command's baseline 24px down the box (its 1px top border included) */
-      .install > span {
+      .install > :is(.dollar, .cmd) {
         margin-top: calc(23px - 1cap);
       }
 
@@ -677,7 +654,7 @@
 
       /* the shared CTA chip (assets/site.css), squared to 2 units × half a unit */
       .sponsor .report {
-        --gbox: var(--ink);
+        --gbox: light-dark(var(--ink), var(--rule));
         display: block;
         width: calc(2 * var(--U));
         height: var(--u2);
@@ -730,7 +707,7 @@
           gap: 16px;
         }
 
-        .logo img {
+        .logo > :is(img, svg) {
           width: calc(var(--U) - 1px);
           height: calc(var(--U) - 1px);
         }
@@ -746,10 +723,6 @@
 
         .repl-embed {
           height: calc(6 * var(--U));
-        }
-
-        .hero-nav {
-          --nav-gap: 14px;
         }
       }
 
@@ -771,18 +744,6 @@
         .metrics {
           grid-template-columns: repeat(2, var(--pitch));
         }
-      }
-
-      /* <480 — (the side inset shrinks to 2 minor units: assets/site.css) the menu starts at the left */
-      @media (max-width: 479px) {
-        .hero-nav {
-          justify-content: flex-start;
-        }
-
-        .hero-nav .ver {
-          margin-left: auto;
-        }
-
       }
 
       /* <352 — a three-unit column: the title steps down to what fits beside the logo, the figures take two
@@ -825,6 +786,16 @@
 
     <!-- dark theme only: the grid's live current (assets/grid-current.js), compiled in-page by jz -->
     <canvas class="grid-current" id="grid-current" aria-hidden="true"></canvas>
+    <details class="grid-info" id="grid-info">
+      <summary aria-label="About the grid animation" title="About the grid animation">
+        <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" aria-hidden="true"><circle cx="10" cy="10" r="8"/><path d="M10 9v6M10 5v1" stroke-width="1.5"/></svg>
+      </summary>
+      <div class="grid-pop">
+        <p>This header animation runs WebAssembly compiled by JZ.</p>
+        <select id="grid-engine" aria-label="Grid animation engine" disabled><option value="wasm">JZ · WASM</option><option value="js">JavaScript</option></select>
+        <output id="grid-stats" aria-live="off">Loading…</output>
+      </div>
+    </details>
 
     <header class="top">
     <nav class="hero-nav col site-nav" aria-label="Main navigation">
@@ -851,11 +822,11 @@
     </nav>
     </header>
 
-    <main class="hero ruled">
+    <main class="hero">
       <div class="col">
       <div class="phead">
         <a class="logo" href="./" aria-label="JZ – home"><img src="jz.svg" width="160" height="160" alt="JZ"></a>
-        <h1 class="title">Compute-first<br class="m"> JS<br class="d"> compiling<br class="m"> to WASM</h1>
+        <h1 class="title">Compute-first<br class="m"> JS<br class="d"> compiling<br class="m"> to <span id="hero-wasm">WASM</span></h1>
       </div>
 
       <!-- five rotating figures, each JZ ÷ a target in the named quantity: speed (above 1× = faster), memory and
@@ -1058,7 +1029,6 @@
           <a href="funding.json">funding</a>
         </nav>
         <div class="legal">
-          <p class="about">JZ compiles JavaScript to WebAssembly<br>for audio, graphics, simulations and compute</p>
           <span class="credit">made with <a href="https://github.com/dy/watr">watr</a> and <a href="https://github.com/dy/subscript">jessie</a></span>
           <span class="lic"><a href="https://github.com/dy/jz/blob/main/LICENSE">MIT</a> <span class="dot">·</span> <a href="https://github.com/krishnized/license/" aria-label="krishnized license"><span class="om">ॐ</span></a></span>
         </div>
@@ -1188,56 +1158,94 @@
 
       // ── Dark theme: the blueprint grid carries a live current — assets/grid-current.js, a real jz program
       //    compiled HERE in the page (the compiler loads only when the page goes dark). Its grid shares the
-      //    page's origin (canvas at 0,0, gridX = the column's ruler), so the pulses ride the lines the CSS draws. ──
+      //    page's origin. This canvas owns only the automatic header current. ──
       const cv = $('grid-current'), ctx = cv.getContext('2d')
+      const info = $('grid-info'), picker = $('grid-engine'), stats = $('grid-stats')
+      const engines = {}, buffers = new WeakMap()
       let eng = null, px = null, img = null, out32 = null, W = 0, H = 0, raf = 0, booting = null
-      const dark = () => root.dataset.theme === 'dark'
+      let elapsed = 0, frames = 0, stamp = 0, visible = true
+      const active = () => root.dataset.theme === 'dark' && !document.hidden && visible
       // Size the backing store to the canvas box at an INTEGER device scale — a fractional one slides the
       // pulses off the CSS grid lines.
       const fit = (force) => {
+        const word = $('hero-wasm').getBoundingClientRect()
+        info.style.left = `${word.right + 2}px`
+        info.style.top = `${word.top + scrollY - 4}px`
+        info.style.setProperty('--info-drop', `${word.height + 12}px`)
+        cv.style.height = `${document.querySelector('.hero').getBoundingClientRect().bottom + scrollY}px`
         const r = cv.getBoundingClientRect()
-        if (!eng || !r.width) return
-        let scale = Math.min(Math.round(devicePixelRatio || 1), 2)
+        if (!eng || !r.width || !r.height || !ctx) return
+        let scale = Math.max(1, Math.min(Math.round(devicePixelRatio || 1), 2))
         if (r.width * r.height * scale * scale > 6e6) scale = 1
         const w = Math.round(r.width * scale), h = Math.round(r.height * scale)
         if (!force && w === W && h === H) return
         W = cv.width = w; H = cv.height = h
         img = ctx.createImageData(W, H); out32 = new Uint32Array(img.data.buffer)
-        px = eng.resize(W, H)
+        let cached = buffers.get(eng)
+        if (!cached || cached.w !== W || cached.h !== H) {
+          cached = { w: W, h: H, px: eng.resize(W, H) }
+          buffers.set(eng, cached)
+        }
+        px = cached.px
         const gx = parseFloat(getComputedStyle(root).backgroundPositionX) % 80   // the grid's origin: the column's left ruler
         try { eng.configure(gx * scale, scale) } catch { }
       }
+      const choose = mode => {
+        eng = engines[mode]; px = null; fit(true)
+        if (W && H && !ArrayBuffer.isView(px)) throw new Error('Grid buffer unavailable')
+        picker.value = mode; elapsed = 0; frames = 0; stamp = 0
+        info.querySelector('summary').title = mode === 'wasm' ? 'This header animation runs WebAssembly compiled by JZ.' : 'This header animation runs the same JavaScript source.'
+        info.querySelector('p').textContent = mode === 'wasm' ? 'This header animation runs WebAssembly compiled by JZ.' : 'This header animation runs the same JavaScript source.'
+      }
       const boot = () => booting ??= (async () => {
-        const src = await (await fetch('assets/grid-current.js')).text()
         try {
-          const { compile, instantiate } = await import('./dist/jz.js')
-          eng = instantiate(compile(src, { optimize: 3 })).exports
-          fit(true)
-        } catch (e) { console.error('jz hero compile failed:', e) }
-        // Safari/JSC canonicalizes NaN-boxed wasm→JS returns: resize() comes back NaN, not a typed array.
-        // Then run the same source as plain JS (valid jz is valid JS).
-        if (ArrayBuffer.isView(px)) return
-        const u = URL.createObjectURL(new Blob([src], { type: 'text/javascript' }))
-        try { eng = await import(u); fit(true) } catch { eng = null } finally { URL.revokeObjectURL(u) }
+          if (!ctx) throw new Error('Canvas unavailable')
+          const response = await fetch('assets/grid-current.js')
+          if (!response.ok) throw new Error('Grid source unavailable')
+          const src = await response.text()
+          const u = URL.createObjectURL(new Blob([src], { type: 'text/javascript' }))
+          try { engines.js = await import(u) } finally { URL.revokeObjectURL(u) }
+          try {
+            const { compile, instantiate } = await import('./dist/jz.js')
+            engines.wasm = instantiate(compile(src, { optimize: 3 })).exports
+            choose('wasm')
+          } catch {
+            // Some engines cannot return the compiler's boxed typed array; use the same source as JS.
+            delete engines.wasm; picker.options[0].disabled = true; choose('js')
+          }
+          picker.disabled = false
+        } catch {
+          eng = null; stats.textContent = 'Grid unavailable'
+        }
       })()
       const loop = (now) => {
-        raf = dark() ? requestAnimationFrame(loop) : 0      // light theme → the loop stops itself
-        if (!raf || !ArrayBuffer.isView(px)) return
-        try { eng.frame(now * 0.001) } catch { return }
-        out32.set(px); ctx.putImageData(img, 0, 0)
+        raf = 0
+        if (!active() || !eng || !ArrayBuffer.isView(px)) return
+        const start = performance.now()
+        try { eng.frame(now * 0.001); out32.set(px); ctx.putImageData(img, 0, 0) }
+        catch { stats.textContent = 'Grid unavailable'; return }
+        elapsed += performance.now() - start; frames++
+        if (!stamp) stamp = now
+        if (now - stamp >= 500) {
+          if (info.open) stats.textContent = `${(elapsed / frames).toFixed(2)} ms/frame · ${Math.round(frames * 1000 / (now - stamp))} fps`
+          elapsed = 0; frames = 0; stamp = now
+        }
+        raf = requestAnimationFrame(loop)
       }
-      const sync = async () => { if (!dark()) return; await boot(); if (!raf) raf = requestAnimationFrame(loop) }
+      const sync = async () => {
+        if (!active()) { cancelAnimationFrame(raf); raf = 0; return }
+        await boot()
+        if (eng && active() && !raf) raf = requestAnimationFrame(loop)
+      }
       new MutationObserver(sync).observe(root, { attributes: true, attributeFilter: ['data-theme'] })
+      document.addEventListener('visibilitychange', sync)
+      new IntersectionObserver(([entry]) => { visible = entry.isIntersecting; sync() }).observe(cv)
+      new ResizeObserver(() => { fit(); sync() }).observe(document.querySelector('.hero'))
+      picker.addEventListener('change', () => { choose(picker.value); sync() })
+      info.addEventListener('keydown', e => { if (e.key === 'Escape') { info.open = false; info.querySelector('summary').focus() } })
+      addEventListener('pointerdown', e => { if (!info.contains(e.target)) info.open = false })
       sync()
-      let refit; addEventListener('resize', () => { clearTimeout(refit); refit = setTimeout(fit, 140) })
-
-      // press on the grid = a four-way pulse burst from the nearest major crossing
-      addEventListener('pointerdown', (e) => {
-        if (!raf || e.target.closest('a, button, iframe, input, summary')) return
-        const r = cv.getBoundingClientRect(), nx = (e.clientX - r.left) / r.width, ny = (e.clientY - r.top) / r.height
-        if (nx >= 0 && nx <= 1 && ny >= 0 && ny <= 1) try { eng.spawn(nx, ny) } catch { }
-      })
-
+      let refit; addEventListener('resize', () => { clearTimeout(refit); refit = setTimeout(() => { fit(); sync() }, 140) })
 
       // ── dev tuning panel: live sliders for the grid-current dials. HIDDEN unless the URL hash contains `tune`
       //    (open …/#tune to reveal, drop it to hide). Indices match assets/grid-current.js param(i,v) (0..6). ──

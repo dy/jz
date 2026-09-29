@@ -23,8 +23,8 @@ const titleOf = (n) => byName[n]?.title || n.replace(/-/g, ' ')
 ;(() => {
   const root = document.documentElement
   const set = (t) => { root.dataset.theme = t }
-  // light by default (the site's blueprint paper); only an explicit toggle persists. OS preference ignored.
-  if (!root.dataset.theme) { try { set(localStorage.getItem('theme') || 'light') } catch { set('light') } }
+  // Dark by default; only an explicit toggle persists. OS preference is ignored.
+  if (!root.dataset.theme) { try { set(localStorage.getItem('theme') === 'light' ? 'light' : 'dark') } catch { set('dark') } }
   addEventListener('click', (e) => {
     if (!e.target.closest?.('.theme-toggle')) return
     const next = root.dataset.theme === 'light' ? 'dark' : 'light'; set(next)

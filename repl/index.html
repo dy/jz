@@ -1,8 +1,9 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<script>(()=>{try{document.documentElement.dataset.theme=localStorage.getItem('theme')==='light'?'light':'dark'}catch(e){document.documentElement.dataset.theme='dark'}})()</script>
 <title>JZ repl — JS → WASM, compiled in your browser</title>
 <meta name="description" content="Paste plain JavaScript, compile it to WebAssembly in your browser, read the WAT, run it, and race the same source as plain JS.">
 <link rel="canonical" href="https://jz.js.org/repl/">
@@ -13,7 +14,7 @@
 <meta name="twitter:card" content="summary_large_image">
 <link rel="icon" href="../jz.svg" type="image/svg+xml">
 <!-- ?embed (the landing iframes this) → tabs instead of the split, no brand. The embedded editor is
-     always dark (the standalone editor stays light; only the embed flips), regardless of the landing theme. -->
+     always dark; the standalone editor follows the saved site theme. -->
 <script>new URLSearchParams(location.search).has('embed') && document.documentElement.classList.add('embed')</script>
 <style>
 /* ── Dark, to match the site (assets/site.css is color-scheme:dark). Geometric sans chrome,
@@ -26,9 +27,8 @@
 :root {
   --sans: Futura, 'Futura PT', 'Avant Garde', 'ITC Avant Garde Gothic Std', 'Century Gothic', Jost, 'Helvetica Neue', sans-serif;
   --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  /* ── EDITOR THEME (left pane). Light by default — a bright workbench against the dark
-     WAT/CLI on the right, which read as the "low-level" output. ?embed flips this whole
-     block back to dark (one override) so the landing's dark section stays seamless.
+  /* ── EDITOR THEME (left pane). These are the light-theme tokens. The dark default
+     and ?embed share the override below; the embedded editor stays dark in either theme.
      The right pane (.right) is ALWAYS dark — its colors live in its own var block. ── */
   --ink: #111214;         /* code text */
   --paper: #f7f7f7;       /* editor / body background — the site's blueprint paper */
@@ -282,7 +282,7 @@ select:focus-visible, button:focus-visible, input:focus-visible, textarea:focus-
    their DOM; .right and .terminal dissolve (display: contents) so each pane stacks under the tab bar
    and the watbar's size + actions float into the bar's right end. Hidden panes use visibility, so
    the editor and WAT keep their scroll. */
-html.embed {
+:root[data-theme="dark"], html.embed {
   --ink: #d0d0d0; --paper: #070707; --mid: #6a6a6a; --soft: #a8a8a8; --faint: #1c1c1c;
   --guide: #ffffff1c; --gut-fg: #4e4e4e; --num: #e6e6e6; --active: #121212; --sel: rgba(255,255,255,.20);
   --def: #fff; --call: #f0f0f0; --kw: #8c8c8c; --punct: #6a6a6a;
@@ -310,6 +310,7 @@ html.embed .tabs { position: absolute; top: 0; left: 0; right: 0; z-index: 4; he
 .tab:hover svg { color: #7a7a7a; }
 .tab[aria-selected="true"] svg { color: #bdbdbd; }
 .tab svg.cico { filter: saturate(.4); }
+.tab:is(:hover, :focus-visible, [aria-selected="true"]) svg.cico { filter: saturate(1); }
 .tab:focus-visible { outline: 2px solid #e6e6e6; outline-offset: -2px; }
 html.embed .watbar { left: auto; height: var(--tabh); gap: 2px; padding: 0 10px 0 0; background: none; border: 0; color: #8c8c8c; }
 html.embed .embed-only { display: inline-flex; }
