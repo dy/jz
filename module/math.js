@@ -279,8 +279,8 @@ export default (ctx) => {
       : typed(['block', ['result', 'f64'], ['drop', baseIR], ['f64.const', 1]], 'f64')
     const b = temp('pw')
     const stmts = [['local.set', `$${b}`, baseIR]]
-    // square-and-multiply of `from` to |n|, LSB-first — mirrors $math.pow's loop
-    // association exactly, so the rounding tree (and thus the last bit) matches
+    // square-and-multiply of `from` to |n|, LSB-first, as $math.pow's loop associates it,
+    // so the rounding tree (and thus the last bit) matches
     let minted = false
     const chain = (from, out) => {
       let sq = from, res = null
@@ -950,10 +950,10 @@ export default (ctx) => {
   //     difference between two sub-ulp kernels is expected). powCoreBody's comment walks the
   //     steps; the JS twin in src/prepare/math-kernel.js (powCore) folds constants to the same
   //     bits.
-  //   ON: $math.pow_core, which delegates to the shared two-phase Ziv dd/td kernel — see $math.pow_transcend's own
-  //     comment above for the algorithm. CORE-MATH-class correctly rounded (0 misrounds on the
-  //     5152-vector gate, test/pow-cr.js) at a measured 8× the default kernel's cost per call,
-  //     hence opt-in rather than default.
+  //   ON: $math.pow_core, which delegates to the shared two-phase Ziv dd/td kernel (see
+  //     $math.pow_transcend's own comment above for the algorithm). CORE-MATH-class
+  //     correctly rounded (0 misrounds on the 5152-vector gate, test/pow-cr.js) at a measured
+  //     8× the default kernel's cost per call, hence opt-in rather than default.
   if (crPow) wat('math.pow_core', `(func $math.pow_core (param $x f64) (param $y f64) (result f64)
     (if (f64.eq (local.get $y) (f64.const 0.5))
       (then (return (f64.sqrt (local.get $x)))))
@@ -1080,7 +1080,7 @@ export default (ctx) => {
       ;; doubles, the reciprocal's square-and-multiply (1/x^n overflowed to 0 where x^-n
       ;; is still a double, 5.67e102 ** -3 is 5.5e-309).
       ;; Also covers ±Infinity x: 1/Inf = 0 through the loop,
-      ;; with neg_base (x<0 && odd y) producing -0 — required for (-Inf)**-odd.
+      ;; with neg_base (x<0 && odd y) producing -0, as (-Inf)**-odd requires.
       ;; Runs before the x==0 fallback so (-0)**oddInt correctly returns ∓0/∓Inf.
       (if (i32.and
             (f64.eq (f64.nearest (local.get $y)) (local.get $y))
