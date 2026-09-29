@@ -95,3 +95,13 @@ test('loop fields: a state array that may share a buffer with the samples stays 
 export let shared = (n) => { const b = new Float64Array(n).fill(1); return kern(b, sec, b) + b[0] }
 export let apart = (n) => { const b = new Float64Array(n).fill(1), st = new Float64Array(2); return kern(b, sec, st) + b[0] }`, [['shared', 6], ['apart', 6]])
 })
+
+// A value that may be missing (`a[k]` past a typed array's end) stored into a
+// Float64Array element reads back NaN: the store converts it, a local would not,
+// so such an element stays in memory.
+test('loop fields: an element a loop stores a maybe-missing value into reads back its number', () => {
+  agrees(`export let f = (k) => { const a = new Float32Array(4), b = new Float64Array(4); let s = 1
+      for (let i = 0; i < 3; i++) { b[1] = k > 0 ? a[k] : -3; s = b[1] } return s }`, [['f', 1], ['f', 9], ['f', -1]])
+  agrees(`export let f = (k) => { const o = { p: undefined }, b = new Float64Array(4); if (k === 1) o.p = 2.5; let s = 1
+      for (let i = 0; i < 3; i++) { b[1] = o.p; s = b[1] + s } return s }`, [['f', 1], ['f', 9]])
+})

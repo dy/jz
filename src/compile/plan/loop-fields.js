@@ -198,7 +198,8 @@ const planLoop = (loop, view) => {
     const r = n[1], k = slotIndex(n[2])
     const e = slotsOf.get(r) ?? { max: -1, written: new Set(), numbers: true }
     e.max = Math.max(e.max, k)
-    if (isWrite) { e.written.add(k); if (value != null && tagOf(core(view.kindOfExpr(value) ?? 0)) !== K.NUMBER) e.numbers = false }
+    // a number, never a missing one: the element store would convert it, the local does not
+    if (isWrite) { e.written.add(k); if (value != null) { const vk = view.kindOfExpr(value); if (tagOf(core(vk ?? 0)) !== K.NUMBER || mayBeMissing(vk)) e.numbers = false } }
     slotsOf.set(r, e)
   }
   const ownF64 = (r) => { const k = view.kindOfExpr(r); return tagOf(core(k ?? 0)) === K.TYPED && ctorName(view.typedPayloadCtorOfExpr(r)) === 'Float64Array' && !(paramOf(k) & VIEW_FLAGS) }
