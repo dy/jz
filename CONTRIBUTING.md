@@ -2306,7 +2306,10 @@ scalar, 2-wide and the constant folder bit-identical (`test/math.js`).
 The scalar kernels read their f64 literals from memory (`$math.kc`, module/math.js
 `kc`), 0, ±Infinity and NaN aside: V8's arm64 code builds a literal from up to
 four 16-bit moves and a register transfer at every use, where a load at a
-constant offset is one instruction. `exp` and `2 ** x` let every argument in
+constant offset is one instruction. The table holds the words of the kernels a
+program includes (stdlib-pull renumbers them as it injects it), 126 bytes behind
+`Math.atan` alone; with a shared or imported memory it is static data the start
+copies into allocated space like any other. `exp` and `2 ** x` let every argument in
 range past their NaN, overflow and underflow tests with one comparison and take
 k = round(64x/ln2) from the low word of x·64/ln2 + 1.5·2^52, with no
 float-to-integer conversion (a range check in wasm); `log` and `log10` pass
