@@ -3,7 +3,7 @@ import test from 'tst'
 import { is, ok, almost, throws } from 'tst/assert.js'
 import jz, { compile } from '../index.js'
 import { i64ToF64, instantiate } from '../interop.js'
-import { onWasi, onKernel, adaptI64, levels } from './_matrix.js'
+import { onWasi, onKernel, adaptI64, levels, belowOpt } from './_matrix.js'
 import { oracle } from './util.js'
 
 // interop's instantiate (not raw WebAssembly.instantiate): a module whose
@@ -1212,7 +1212,7 @@ test('host array handles: a retained object\'s side properties keep their own ki
       out[0] = y; return out }
     export let f = () => step(new Float64Array([1, 2, 3]))[0]`
   for (const optimize of levels(0, 2, 3)) is(jz(src, { optimize }).exports.f(), 1.890625, `O${optimize}`)
-  ok(!/call \$__add_slow/.test(compile(src, { wat: true })), 'the coefficients stay numbers')
+  if (!belowOpt(2)) ok(!/call \$__add_slow/.test(compile(src, { wat: true })), 'the coefficients stay numbers')
 })
 
 test('host allocator: alignment preserves unsigned addresses above 2 GiB', () => {
