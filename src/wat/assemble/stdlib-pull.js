@@ -72,7 +72,7 @@ function reachableStdlib(sec) {
 // (PPC_CALL2). These are the ONLY helpers appendLateStdlib may add; restricting to them avoids
 // touching helpers that live in other module sections (ext-stdlib, imports) where a blind
 // referenced-but-absent scan would wrongly re-append and duplicate them.
-const LATE_VEC_HELPERS = new Set(['math.sin2', 'math.cos2', 'math.pow2', 'math.atan2_2', 'math.hypot_2', 'math.log_v', 'math.exp_v', 'math.exp2_v', 'math.cbrt_v', 'math.fifthroot_v',
+const LATE_VEC_HELPERS = new Set(['math.sin2', 'math.cos2', 'math.pow2', 'math.atan2_2', 'math.hypot_2', 'math.log_v', 'math.exp_v', 'math.exp2_v', 'math.cbrt_v', 'math.pow_fifths_v',
   // math.pow_fold (scalar) is normally eager-included by emitPow's own const-exponent fold (which
   // always `inc()`s it before the vectorizer ever runs, under optimize.crPow — see module/math.js).
   // It's ALSO listed here for the one path where that eager inc doesn't fire: a genuine runtime

@@ -109,9 +109,9 @@ export function tryPerPixelColor(blockNode, fnLocals, freshIdRef, pureFuncMap, o
       }
       if (op === 'call') {
         const v2 = PPC_CALL2[n[1]]
-        if (v2 && n.length === 3) { const a = liftInline(n[2]); return a && ['call', v2, a] }
-        if (v2 && n.length === 4) { const a = liftInline(n[2]), b = liftInline(n[3]); return (a && b) ? ['call', v2, a, b] : null }
-        return null
+        if (!v2 || n.length < 3) return null
+        const args = n.slice(2).map(a => liftInline(a))
+        return args.every(Boolean) ? ['call', v2, ...args] : null
       }
       if (LANE_PURE.f64.has(op)) {
         const ks = n.slice(1).map(liftInline)
@@ -166,8 +166,7 @@ export function tryPerPixelColor(blockNode, fnLocals, freshIdRef, pureFuncMap, o
     if (op === 'f64.convert_i32_s' && isArr(n[1]) && n[1][0] === 'local.get' && pivType.get(n[1][1]) === 'i32') return rampPixelIV(pivType, n[1][1])
     if (op === 'call') {
       const v2 = PPC_CALL2[n[1]]
-      if (v2 && n.length === 3) { const a = liftPPC(n[2]); return a && ['call', v2, a] }
-      if (v2 && n.length === 4) { const a = liftPPC(n[2]), b = liftPPC(n[3]); return (a && b) ? ['call', v2, a, b] : null }
+      if (v2 && n.length >= 3) { const args = n.slice(2).map(a => liftPPC(a)); return args.every(Boolean) ? ['call', v2, ...args] : null }
       // Pure user-function inline: substitute params with lifted args, walk body.
       if (pureFuncMap && pureFuncMap.has(n[1])) return liftPPCInline(n, liftPPC)
       return null

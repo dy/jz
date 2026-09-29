@@ -167,6 +167,23 @@ export const EXP_Q = [1, 0.5, 0.16666666666666666, 0.041666666666666664, 0.00833
 // ln2/64 split for exp's reduction r = (x − k·L1) − k·L2: L1 keeps 36 bits, so
 // k·L1 is exact for every |k| < 2^17 (every finite result), L2 the rest.
 export const EXP_L1 = 0.010830424696223417, EXP_L2 = 2.572804622327669e-14
+// The k/5 power fold (module/math.js $math.pow_fifths): x^c for a constant c = k/5 in
+// (0, 5) as x^p·fifthroot(x^r), p = ⌊c⌋, r = k − 5p. It computes x^(k/5), which differs
+// from the x^c JavaScript means by c's own rounding: x^(c − k/5) − 1 ≈ (c − k/5)·ln x
+// relative, 510 ulp at x = 1e140 for 2.2, and x^r leaves the doubles (to 0 or Infinity)
+// near 2^±(1022/r). [lo, hi] = 2^∓L, L the smaller of the bound keeping that term within
+// 40 ulp and 1021/max(p, r), is where the fold runs on x itself; the helper scales every
+// other x into it.
+export const fifthFold = (c) => {
+  const k = Math.round(c * 5), p = Math.floor(c), r = k - 5 * p
+  // 5c − k exactly: 5c = 4c + c as a TwoSum, then a subtraction Sterbenz makes exact
+  const s = 4 * c + c, bb = s - 4 * c, e = (4 * c - (s - bb)) + (c - bb)
+  const dev = Math.abs((s - k) + e) / 5
+  let L = Math.floor(1021 / Math.max(p, r))
+  if (dev > 0) L = Math.min(L, Math.floor(40 * 2 ** -53 / dev / Math.LN2))
+  return { p, r, lo: 2 ** -L, hi: 2 ** L }
+}
+
 // π and π/2 as doubles, for the offsets atan, asin, acos and atan2 add. `${number}`
 // formats through the Ryū shortest-round-trip __ftoa in both legs (host and
 // self-compiled kernel), so the full-precision f64 bakes into the WAT verbatim.

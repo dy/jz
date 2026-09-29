@@ -270,7 +270,7 @@ export const PPC_CALL2 = {
   '$math.sin': '$math.sin2', '$math.cos': '$math.cos2',
   '$math.pow': '$math.pow2',   // 2-arg; the two-wide kernel, bit-exact with the scalar path (module/math/simd.js)
   '$math.atan2': '$math.atan2_2', '$math.hypot': '$math.hypot_2',   // 2-arg; bit-exact extract/repack
-  '$math.cbrt': '$math.cbrt_v', '$math.fifthroot': '$math.fifthroot_v',   // 1-arg; per-lane scalar repack
+  '$math.cbrt': '$math.cbrt_v', '$math.pow_fifths': '$math.pow_fifths_v',   // per-lane scalar repack
   '$math.pow_fold': '$math.pow_fold_v',   // 2-arg (x, c); only reachable under optimize.crPow — see module/math.js
   // log/exp/exp2: TRUE f64x2 polys — both lanes one evaluation (≈2×, beats V8 native log). Bit-exact
   // via hot-path-vectorized + scalar-edge-fallback ($math.log_v/exp_v/exp2_v, module/math.js).

@@ -1,6 +1,6 @@
 /**
  * f64x2 SIMD transcendentals: sin2/cos2/pow2/pow_fold_v/atan2_2/hypot_2/
- * cbrt_v/fifthroot_v/log_v/exp2_v/exp_v. pow2 is a true two-wide kernel
+ * cbrt_v/pow_fifths_v/log_v/exp2_v/exp_v. pow2 is a true two-wide kernel
  * (both lanes through one pass of the scalar kernel's operations); the
  * others were a pure move from module/math.js
  * (pipeline-minimality) — delimited by the original author's own comment
@@ -156,7 +156,7 @@ export const registerMathSimd = () => {
   // fold itself only exists then — see the authoritative comment above emitPow). Per-lane scalar
   // repack — BIT-EXACT by construction, no cheap 2-lane polynomial for the branchy fdlibm-style
   // dd/td kernel — and it keeps a constant-exponent-pow-bearing pixel kernel's surrounding f64x2
-  // arithmetic vectorized exactly like pow2/atan2_2/hypot_2/cbrt_v/fifthroot_v already do for
+  // arithmetic vectorized exactly like pow2/atan2_2/hypot_2/cbrt_v/pow_fifths_v already do for
   // their own callees. c arrives as v128 (every PPC_CALL2 arg is lifted through the generic splat
   // path — see src/optimize/vectorize.js), but every lane holds the SAME compile-time constant,
   // so extracting lane 0 for both scalar calls is exact. Off crPow, the vectorizer's own
@@ -186,17 +186,42 @@ export const registerMathSimd = () => {
     (f64x2.replace_lane 1
       (f64x2.splat (call $math.hypot (f64x2.extract_lane 0 (local.get $x)) (f64x2.extract_lane 0 (local.get $y))))
       (call $math.hypot (f64x2.extract_lane 1 (local.get $x)) (f64x2.extract_lane 1 (local.get $y)))))`, ['math.hypot'])
-  // cbrt/fifthroot: same per-lane scalar repack (their scalar bodies are branchy exponent-split +
+  // cbrt/pow_fifths: same per-lane scalar repack (their scalar bodies are branchy exponent-split +
   // Newton, no cheap 2-lane poly). BIT-EXACT by construction. Unlocks the Oklab/OkLCh path (3 cbrt
   // per pixel) and the sRGB/Rec.709 `x**(k/5)` gamma so their surrounding f64x2 arithmetic vectorizes.
   wat('math.cbrt_v', `(func $math.cbrt_v (param $x v128) (result v128)
     (f64x2.replace_lane 1
       (f64x2.splat (call $math.cbrt (f64x2.extract_lane 0 (local.get $x))))
       (call $math.cbrt (f64x2.extract_lane 1 (local.get $x)))))`, ['math.cbrt'])
-  wat('math.fifthroot_v', `(func $math.fifthroot_v (param $x v128) (result v128)
-    (f64x2.replace_lane 1
-      (f64x2.splat (call $math.fifthroot (f64x2.extract_lane 0 (local.get $x))))
-      (call $math.fifthroot (f64x2.extract_lane 1 (local.get $x)))))`, ['math.fifthroot'])
+  // $math.pow_fifths two lanes wide: x^r and x^p two-wide, the fifth root a scalar call a lane
+  // (the Newton steps divide), exactly the scalar helper's operations; a lane outside [lo, hi]
+  // sends both through the scalar helper. c, lo and hi are the fold's constants, splat.
+  wat('math.pow_fifths_v', `(func $math.pow_fifths_v (param $x v128) (param $c v128) (param $lo v128) (param $hi v128) (result v128)
+    (local $p f64) (local $r f64) (local $x2 v128) (local $v v128)
+    (if (result v128) (i64x2.all_true (f64x2.ge (f64x2.mul (f64x2.sub (local.get $x) (local.get $lo)) (f64x2.sub (local.get $hi) (local.get $x))) ${splat(0)}))
+      (then
+        (local.set $p (f64.floor (f64x2.extract_lane 0 (local.get $c))))
+        (local.set $r (f64.sub (f64.nearest (f64.mul (f64x2.extract_lane 0 (local.get $c)) (f64.const 5))) (f64.mul (local.get $p) (f64.const 5))))
+        (local.set $x2 (f64x2.mul (local.get $x) (local.get $x)))
+        (local.set $v (if (result v128) (f64.lt (local.get $r) (f64.const 2.5))
+          (then (select (local.get $x2) (local.get $x) (f64.gt (local.get $r) (f64.const 1.5))))
+          (else (select (f64x2.mul (local.get $x2) (local.get $x2)) (f64x2.mul (local.get $x2) (local.get $x)) (f64.gt (local.get $r) (f64.const 3.5))))))
+        (local.set $v (f64x2.replace_lane 1
+          (f64x2.splat (call $math.fifthroot (f64x2.extract_lane 0 (local.get $v))))
+          (call $math.fifthroot (f64x2.extract_lane 1 (local.get $v)))))
+        (if (result v128) (f64.lt (local.get $p) (f64.const 0.5))
+          (then (local.get $v))
+          (else (f64x2.mul
+            (if (result v128) (f64.lt (local.get $p) (f64.const 2.5))
+              (then (select (local.get $x2) (local.get $x) (f64.gt (local.get $p) (f64.const 1.5))))
+              (else (select (f64x2.mul (local.get $x2) (local.get $x2)) (f64x2.mul (local.get $x2) (local.get $x)) (f64.gt (local.get $p) (f64.const 3.5)))))
+            (local.get $v)))))
+      (else
+        (f64x2.replace_lane 1
+          (f64x2.splat (call $math.pow_fifths (f64x2.extract_lane 0 (local.get $x)) (f64x2.extract_lane 0 (local.get $c))
+            (f64x2.extract_lane 0 (local.get $lo)) (f64x2.extract_lane 0 (local.get $hi))))
+          (call $math.pow_fifths (f64x2.extract_lane 1 (local.get $x)) (f64x2.extract_lane 1 (local.get $c))
+            (f64x2.extract_lane 1 (local.get $lo)) (f64x2.extract_lane 1 (local.get $hi)))))))`, ['math.pow_fifths', 'math.fifthroot'])
   // True f64x2 log — both lanes through one fdlibm poly (≈2× over two scalar calls). The HOT path
   // (both lanes a normal finite x>0) mirrors $math.log's normal branch op-for-op: bit-exact (the
   // sqrt2-center conditional becomes a per-lane bitselect; the i32 exponent k becomes an f64 via the

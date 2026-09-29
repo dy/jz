@@ -18,7 +18,8 @@ import { inc, err } from '../src/ctx.js'
 import { repOf, VAL } from '../src/reps.js'
 import { valTypeOf } from '../src/kind.js'
 import { registerPowTranscend } from './math/pow-transcend.js'
-import { PI, HALF_PI, PIO2_CW, INV_PIO2, ROUND_MAGIC, CW_LIMIT, PIO2_LO, TWO_OVER_PI_HEX, SIN_C, COS_C, ATAN_C, ASIN_C, EXPM1_C, LOG_C, EXP2_TAB_HEX, EXP2_Q, EXP_Q, EXP_L1, EXP_L2, POW_LOG_TAB_HEX, POW_LOG_A, POW_LN2HI, POW_LN2LO, polyTree } from './math/trig-tables.js'
+import { powFold } from '../src/prepare/math-kernel.js'
+import { PI, HALF_PI, PIO2_CW, INV_PIO2, ROUND_MAGIC, CW_LIMIT, PIO2_LO, TWO_OVER_PI_HEX, SIN_C, COS_C, ATAN_C, ASIN_C, EXPM1_C, LOG_C, EXP2_TAB_HEX, EXP2_Q, EXP_Q, EXP_L1, EXP_L2, POW_LOG_TAB_HEX, POW_LOG_A, POW_LN2HI, POW_LN2LO, polyTree, fifthFold } from './math/trig-tables.js'
 import { hexBytes } from '../src/static-data.js'
 import { registerMathSimd } from './math/simd.js'
 import { registerSumPrecise } from './math/sum-precise.js'
@@ -59,6 +60,7 @@ export default (ctx) => {
     'math.atanh': ['math.log1p'],
     'math.cbrt': ['math.isFinite'],
     'math.fifthroot': ['math.isFinite'],
+    'math.pow_fifths': ['math.fifthroot'],
     'math.sumPrecise': ['__ptr_offset', '__len', '__alloc'],
   })
   // Helpers: all math ops take f64 and return f64. Args go through ToNumber
@@ -275,7 +277,9 @@ export default (ctx) => {
       ? typed(['f64.const', 1], 'f64')
       : typed(['block', ['result', 'f64'], ['drop', baseIR], ['f64.const', 1]], 'f64')
     const b = temp('pw')
-    const stmts = [['local.set', `$${b}`, baseIR]]
+    // a negative exponent squares the reciprocal, as $math.pow does: 1/x^n overflowed
+    // to 0 where x^-n is still a double
+    const stmts = [['local.set', `$${b}`, n < 0 ? ['f64.div', ['f64.const', 1], baseIR] : baseIR]]
     // square-and-multiply, LSB-first — mirrors $math.pow's loop association exactly,
     // so the rounding tree (and thus the last bit) matches.
     let sq = b, res = null, minted = false
@@ -286,8 +290,8 @@ export default (ctx) => {
       }
       if (m >> 1) { const s = temp('pw'); stmts.push(['local.set', `$${s}`, ['f64.mul', get(sq), get(sq)]]); sq = s; minted = true }
     }
-    let result = get(res)
-    if (n < 0) { result = ['f64.div', ['f64.const', 1], result]; minted = true }   // y<0 → reciprocal, as $math.pow does
+    const result = get(res)
+    if (n < 0) minted = true   // the reciprocal
     // A NaN minted by f64.mul/div has a platform-nondeterministic sign; jz's value
     // model requires the one canonical number-NaN, so `canon` folds it back. Skip when
     // the base provably can't be NaN (same test min/max uses) or when no op was minted
@@ -319,14 +323,15 @@ export default (ctx) => {
     const n = constInt(b)
     if (n !== null && Math.abs(n) <= POW_FOLD_MAX) return foldPow(a, n)
     if (constNum(b) === 0.5) { const ir = typed(['f64.sqrt', toNumF64(a, emit(a))], 'f64'); return nonNegF64(ir[1]) ? ir : canon(ir) }
-    // Both args are compile-time constants: evaluate now, emit f64.const.
+    // Both args are compile-time constants: evaluate now, emit f64.const, as the lowering
+    // below would compute it (src/prepare/math-kernel.js powFold, the kernels' twin).
     // Catches pow(2, -2/12) where the arithmetic folds emit f64.const for both sides.
     const ca = constNum(a), cb = constNum(b)
-    if (ca !== null && cb !== null) return typed(['f64.const', Math.pow(ca, cb)], 'f64')
+    if (ca !== null && cb !== null) return typed(['f64.const', powFold(ca, cb)], 'f64')
     // IR-level fold: peek at emitted IR for both args — e.g. -2/12 emits f64.const -0.1666.
     // We emit, check, and if not foldable, the emitted IR is used by the fallthrough paths.
     const irA = toNumF64(a, emit(a)), irB = toNumF64(b, emit(b))
-    if (isLit(irA) && isLit(irB)) return typed(['f64.const', Math.pow(litVal(irA), litVal(irB))], 'f64')
+    if (isLit(irA) && isLit(irB)) return typed(['f64.const', powFold(litVal(irA), litVal(irB))], 'f64')
     // Constant non-integer exponent c: inline Math.pow(x,c) as a fast fold instead of the
     // general $math.pow. Skipping the ~15-branch pow special-case ladder (only the x-dependent
     // slice — NaN/±Inf/0/negative — is needed; every y-branch is statically dead since c is a
@@ -339,9 +344,9 @@ export default (ctx) => {
     // KERNEL SELECT — `optimize.crPow` (default OFF) picks how a constant non-integer exponent
     // lowers:
     //   OFF (DEFAULT): the k/5-exponent gammas (sRGB/Rec.709 decode, 2.4/2.2/…) take the
-    //     UNCONDITIONAL algebraic fifthroot fold (x^(k/5) = x^p·fifthroot(x^r), p=⌊c⌋,
-    //     r=5c−5p ∈ 1..4; four Newton steps, tens of ulp, not correctly rounded, pinned by
-    //     test/pow.js). Every other constant takes the same `$math.pow` call a runtime exponent
+    //     algebraic fifthroot fold, $math.pow_fifths (x^(k/5) = x^p·fifthroot(x^r), p=⌊c⌋,
+    //     r=5c−5p ∈ 1..4; four Newton steps, within 40 ulp of x^c, not correctly rounded,
+    //     pinned by test/pow.js). Every other constant takes the same `$math.pow` call a runtime exponent
     //     takes: its ladder settles the edges (x=−∞ included) and $math.pow_core, Arm's
     //     optimized-routines pow (see its comment below), does the rest within an ulp of the
     //     host — so `x ** c` and `Math.pow(x, y)` with y == c agree bit for bit, and the
@@ -366,24 +371,15 @@ export default (ctx) => {
       // log(<0)=NaN). x=-Infinity is its OWN case, not "negative": |x|=Infinity means Math.pow
       // ignores the sign for a non-integer exponent (c > 0 in this branch's guard, so the result
       // is +Infinity). x=+0/-0/+∞/NaN carry correctly through power + fifthroot.
-      // The fifthroot fold is within tens of ulp of the true value (four Newton
-      // steps, see $math.fifthroot): the transcendental-kernel class the README
-      // documents, so it stays the default; under crPow it is the opt-in `approxPow`.
+      // The fifthroot fold is within 40 ulp of x^c (four Newton steps, see $math.fifthroot;
+      // [lo, hi], trig-tables.js fifthFold, is where it runs on x itself, $math.pow_fifths
+      // scales every other x): the transcendental-kernel class the README documents, so it
+      // stays the default; under crPow it is the opt-in `approxPow`.
       const fifthrootGate = crPow ? ctx.transform.optimize?.approxPow : true
       if (fifthrootGate && Number.isFinite(c) && c > 0 && c < 5 && !Number.isInteger(c) && Number.isInteger(c * 5)) {
-        inc('math.fifthroot')
-        const t = temp('pw'), g = get(t)
-        const ipow = (k) => k === 1 ? g : k === 2 ? ['f64.mul', g, g]
-          : k === 3 ? ['f64.mul', ['f64.mul', g, g], g] : ['f64.mul', ['f64.mul', g, g], ['f64.mul', g, g]]  // k ∈ 1..4
-        const p = Math.floor(c), r = Math.round(c * 5) - p * 5
-        const root = ['call', '$math.fifthroot', ipow(r)]
-        const body = p === 0 ? root : ['f64.mul', ipow(p), root]
-        return typed(['block', ['result', 'f64'],
-          ['local.set', `$${t}`, irA],
-          ['if', ['result', 'f64'], ['f64.eq', g, ['f64.const', '-inf']],
-            ['then', ['f64.const', 'inf']],
-            ['else', ['if', ['result', 'f64'], ['f64.lt', g, ['f64.const', 0]],
-              ['then', ['f64.const', 'nan']], ['else', body]]]]], 'f64')
+        inc('math.pow_fifths')
+        const { lo, hi } = fifthFold(c)
+        return typed(['call', '$math.pow_fifths', irA, ['f64.const', c], ['f64.const', lo], ['f64.const', hi]], 'f64')
       }
       if (crPow) {
         if (Number.isFinite(c) && !Number.isInteger(c) && c !== 0.5 && c !== -0.5) {
@@ -869,7 +865,9 @@ export default (ctx) => {
     ;; lowering uses (emitPow's foldPow), so x ** 16 and x ** y at y = 16 agree
     ;; bit for bit; a longer chain drifts by its length (x^1000 by 49 ulp), so every
     ;; other integer takes the kernel below, within an ulp of the true value.
-    ;; Also covers ±Infinity x: abs_x stays Inf through the loop, 1/Inf=0,
+    ;; A negative y squares the reciprocal: 1/x^n overflowed to 0 where x^-n is
+    ;; still a double (5.67e102 ** -3 is 5.5e-309).
+    ;; Also covers ±Infinity x: 1/Inf = 0 through the loop,
     ;; with neg_base (x<0 && odd y) producing -0 — required for (-Inf)**-odd.
     ;; Runs before the x==0 fallback so (-0)**oddInt correctly returns ∓0/∓Inf.
     (if (i32.and
@@ -877,6 +875,8 @@ export default (ctx) => {
           (f64.le (f64.abs (local.get $y)) (f64.const 16.0)))
       (then
         (local.set $abs_x (f64.abs (local.get $x)))
+        (if (f64.lt (local.get $y) (f64.const 0.0))
+          (then (local.set $abs_x (f64.div (f64.const 1.0) (local.get $abs_x)))))
         ;; copysign(1, x) gives -1 for any x with sign bit set (incl. -0); f64.lt picks that up.
         (local.set $neg_base (i32.and (f64.lt (f64.copysign (f64.const 1.0) (local.get $x)) (f64.const 0.0))
                                       (i32.and (i32.trunc_f64_s (local.get $y)) (i32.const 1))))
@@ -890,8 +890,6 @@ export default (ctx) => {
             (local.set $abs_x (f64.mul (local.get $abs_x) (local.get $abs_x)))
             (local.set $n (i32.shr_s (local.get $n) (i32.const 1)))
             (br $loop)))
-        (if (f64.lt (local.get $y) (f64.const 0.0))
-          (then (local.set $result (f64.div (f64.const 1.0) (local.get $result)))))
         (if (local.get $neg_base)
           (then (local.set $result (f64.neg (local.get $result)))))
         (return (local.get $result))))
@@ -1010,12 +1008,15 @@ export default (ctx) => {
     ;; y == 0.5 exactly (x > 0): f64.sqrt is correctly rounded
     (if (f64.eq (local.get $y) (f64.const 0.5)) (then (return (f64.sqrt (local.get $x)))))
     ;; |y| < 2^-65: x^y = 1 + y·log(x) rounds to the double next to 1 on y's side of it
-    ;; |y| ≥ 2^63: an even integer, an overflow or an underflow by the sides of 1 x and y are on
+    ;; |y| ≥ 2^63: an even integer, an overflow or an underflow by the sides of 1 x and y are
+    ;; on, 1 at x = 1 (the ladder's x = −1 arrives here as 1)
     (local.set $ax (f64.abs (local.get $y)))
     (if (f64.lt (local.get $ax) (f64.const ${2 ** -65}))
       (then (return (select (f64.add (f64.const 1.0) (local.get $y)) (f64.sub (f64.const 1.0) (local.get $y)) (f64.gt (local.get $x) (f64.const 1.0))))))
     (if (f64.ge (local.get $ax) (f64.const ${2 ** 63}))
-      (then (return (select (f64.const inf) (f64.const 0.0) (i32.eq (f64.gt (local.get $x) (f64.const 1.0)) (f64.gt (local.get $y) (f64.const 0.0)))))))
+      (then (return (select (f64.const 1.0)
+        (select (f64.const inf) (f64.const 0.0) (i32.eq (f64.gt (local.get $x) (f64.const 1.0)) (f64.gt (local.get $y) (f64.const 0.0))))
+        (f64.eq (local.get $x) (f64.const 1.0))))))
     ;; a subnormal x scales by 2^52, its exponent read 52 lower
     (local.set $ix (i64.reinterpret_f64 (local.get $x)))
     (if (i64.lt_u (local.get $ix) (i64.const 0x0010000000000000))
@@ -1346,14 +1347,67 @@ export default (ctx) => {
     (local.set $r (f64.div (f64.sub (local.get $r) (local.get $t)) (f64.add (local.get $w) (local.get $r))))
     (f64.add (local.get $t) (f64.mul (local.get $t) (local.get $r))))`)
 
+  // x^c for a constant c = k/5 in (0, 5) (emitPow's fold): x^p·fifthroot(x^r), p = ⌊c⌋,
+  // r = k − 5p. On [lo, hi] (trig-tables.js fifthFold) that alone is within 40 ulp of x^c.
+  // Past it x = 2^(5j)·x' with |log2 x'| ≤ 2 (x' takes x's significand), the fold runs on x'
+  // and 2^(jk) scales it back (in two steps, so neither factor leaves the doubles), times
+  // 1 + (5c − k)·ln2·j: c's own rounding, x^(c − k/5), on the 2^(5j) part (the part on x'
+  // is under 8 ulp). x ≤ 0, NaN and ±Infinity take Math.pow's answers for a non-integer
+  // c > 0. One call a power, so the lane vectorizer lifts it as one (pow_fifths_v).
+  const fold5 = (x) => `(if (result f64) (f64.lt (local.get $r) (f64.const 2.5))
+        (then (select (local.get $x2) ${x} (f64.gt (local.get $r) (f64.const 1.5))))
+        (else (select (f64.mul (local.get $x2) (local.get $x2)) (f64.mul (local.get $x2) ${x}) (f64.gt (local.get $r) (f64.const 3.5)))))`
+  const foldP = (x) => `(if (result f64) (f64.lt (local.get $p) (f64.const 0.5))
+      (then (local.get $v))
+      (else (f64.mul
+        (if (result f64) (f64.lt (local.get $p) (f64.const 2.5))
+          (then (select (local.get $x2) ${x} (f64.gt (local.get $p) (f64.const 1.5))))
+          (else (select (f64.mul (local.get $x2) (local.get $x2)) (f64.mul (local.get $x2) ${x}) (f64.gt (local.get $p) (f64.const 3.5)))))
+        (local.get $v))))`
+  const pow2i = (e) => `(f64.reinterpret_i64 (i64.shl (i64.extend_i32_s (i32.add ${e} (i32.const 1023))) (i64.const 52)))`
+  wat('math.pow_fifths', `(func $math.pow_fifths (param $x f64) (param $c f64) (param $lo f64) (param $hi f64) (result f64)
+    (local $p f64) (local $r f64) (local $x2 f64) (local $v f64) (local $b i64) (local $e i32) (local $j f64) (local $s f64) (local $bb f64) (local $jk i32)
+    (local.set $p (f64.floor (local.get $c)))
+    (local.set $r (f64.sub (f64.nearest (f64.mul (local.get $c) (f64.const 5))) (f64.mul (local.get $p) (f64.const 5))))
+    (if (f64.ge (f64.mul (f64.sub (local.get $x) (local.get $lo)) (f64.sub (local.get $hi) (local.get $x))) (f64.const 0))
+      (then
+        (local.set $x2 (f64.mul (local.get $x) (local.get $x)))
+        (local.set $v (call $math.fifthroot ${fold5('(local.get $x)')}))
+        (return ${foldP('(local.get $x)')})))
+    (if (i32.eqz (f64.gt (local.get $x) (f64.const 0)))
+      (then (return (select (f64.const 0) (select (f64.const inf) (f64.const nan) (f64.eq (local.get $x) (f64.const -inf)))
+        (f64.eq (local.get $x) (f64.const 0))))))
+    (if (f64.eq (local.get $x) (f64.const inf)) (then (return (local.get $x))))
+    (if (f64.lt (local.get $x) (f64.const 2.2250738585072014e-308))
+      (then (local.set $x (f64.mul (local.get $x) (f64.const 18446744073709551616))) (local.set $e (i32.const -64))))
+    (local.set $b (i64.reinterpret_f64 (local.get $x)))
+    (local.set $e (i32.add (local.get $e) (i32.sub (i32.wrap_i64 (i64.shr_u (local.get $b) (i64.const 52))) (i32.const 1023))))
+    (local.set $j (f64.nearest (f64.mul (f64.convert_i32_s (local.get $e)) (f64.const 0.2))))
+    (local.set $jk (i32.trunc_f64_s (local.get $j)))
+    (local.set $x (f64.reinterpret_i64 (i64.or (i64.and (local.get $b) (i64.const 0xfffffffffffff))
+      (i64.shl (i64.extend_i32_s (i32.add (i32.sub (local.get $e) (i32.mul (local.get $jk) (i32.const 5))) (i32.const 1023))) (i64.const 52)))))
+    (local.set $x2 (f64.mul (local.get $x) (local.get $x)))
+    (local.set $v (call $math.fifthroot ${fold5('(local.get $x)')}))
+    (local.set $v ${foldP('(local.get $x)')})
+    ;; 5c − k exactly (5c = 4c + c as a TwoSum), then 1 + (5c − k)·ln2·j
+    (local.set $s (f64.add (f64.mul (f64.const 4) (local.get $c)) (local.get $c)))
+    (local.set $bb (f64.sub (local.get $s) (f64.mul (f64.const 4) (local.get $c))))
+    (local.set $s (f64.add (f64.sub (local.get $s) (f64.nearest (f64.mul (local.get $c) (f64.const 5))))
+      (f64.add (f64.sub (f64.mul (f64.const 4) (local.get $c)) (f64.sub (local.get $s) (local.get $bb))) (f64.sub (local.get $c) (local.get $bb)))))
+    (local.set $v (f64.mul (local.get $v) (f64.add (f64.const 1) (f64.mul (f64.mul (local.get $s) (f64.const ${Math.LN2})) (local.get $j)))))
+    ;; 2^(jk), past ±1100 an overflow or an underflow anyway, as two factors
+    (local.set $jk (i32.mul (local.get $jk) (i32.trunc_f64_s (f64.nearest (f64.mul (local.get $c) (f64.const 5))))))
+    (local.set $jk (select (i32.const 1100) (select (i32.const -1100) (local.get $jk) (i32.lt_s (local.get $jk) (i32.const -1100))) (i32.gt_s (local.get $jk) (i32.const 1100))))
+    (f64.mul (f64.mul (local.get $v) ${pow2i('(i32.shr_s (local.get $jk) (i32.const 1))')})
+      ${pow2i('(i32.sub (local.get $jk) (i32.shr_s (local.get $jk) (i32.const 1)))')}))`)
+
   // Fifth root of v ≥ 0 — same bit-hack seed (÷5 of the raw bits, within ~4%) + 4 Newton
   // steps t=(4t+v/t⁴)/5, the last one as a correction t + (v/t⁴ − t)/5. Newton squares
   // the relative error each step (×2 for a fifth root): 4e-2 → 3e-3 → 2e-5 → 6e-10 →
   // below f64 precision, so the root is within an ulp or two; the k/5 pow fold built on
-  // it (x^p · fifthroot(x^r)) measures a worst case of ~30 ulp across its exponents
-  // (test/pow.js pins the bound). Three steps stopped at ~6e-10, a million-ulp
-  // approximation.
-  // Caller (constant-exponent pow with denominator 5, e.g. the sRGB 2.4 gamma) guarantees v ≥ 0.
+  // it (x^p · fifthroot(x^r)) measures at most 4 ulp from x^(k/5) where x^r is a normal
+  // double. Three steps stopped at ~6e-10, a million-ulp approximation.
+  // Caller ($math.pow_fifths, e.g. the sRGB 2.4 gamma) guarantees v ≥ 0.
   wat('math.fifthroot', `(func $math.fifthroot (param $v f64) (result f64)
     (local $t f64) (local $s f64) (local $q f64)
     (if (i32.eqz (call $math.isFinite (local.get $v))) (then (return (local.get $v))))

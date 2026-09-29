@@ -25,7 +25,7 @@
  * @module prepare/math-kernel
  */
 
-import { PI, HALF_PI, PIO2_CW, INV_PIO2, ROUND_MAGIC, CW_LIMIT, SIN_C, COS_C, ATAN_C, ASIN_C, EXPM1_C, LOG_C, EXP2_TAB, EXP2_Q, EXP_Q, EXP_L1, EXP_L2, POW_LOG_TAB, POW_LOG_A, POW_LN2HI, POW_LN2LO, polyTree } from '../../module/math/trig-tables.js'
+import { PI, HALF_PI, PIO2_CW, INV_PIO2, ROUND_MAGIC, CW_LIMIT, SIN_C, COS_C, ATAN_C, ASIN_C, EXPM1_C, LOG_C, EXP2_TAB, EXP2_Q, EXP_Q, EXP_L1, EXP_L2, POW_LOG_TAB, POW_LOG_A, POW_LN2HI, POW_LN2LO, polyTree, fifthFold } from '../../module/math/trig-tables.js'
 
 // ---- bit-level helpers (i64.reinterpret_f64 / f64.reinterpret_i64) ----
 const _buf = new ArrayBuffer(8)
@@ -181,18 +181,58 @@ function log1p(x) {
   return log(u) * (x / (u - 1))
 }
 
-/** Fully-constant `Math.pow`/`**` fold, mirroring emitPow's own constant-arg
- *  branches exactly (module/math.js `emitPow`) — NOT the general runtime
- *  `$math.pow`, because emit.js already special-cases fully-literal operands
- *  before ever reaching that call: an integer |n|<=16 exponent square-and-
- *  multiplies (foldPow), exponent 0.5 is f64.sqrt, and everything else is
- *  host `Math.pow` (emit.js's own constant fold, line ~358). Folding earlier
- *  at the source level with this SAME 3-way split reproduces exactly what
- *  compiling the unfolded expression already does today — zero new divergence. */
+/** Fully-constant `Math.pow`/`**` fold: the lowering module/math.js's emitPow gives
+ *  a constant exponent, computed now, so a fold and a run of the same expression
+ *  agree bit for bit: an integer |n| ≤ 16 square-and-multiplies (foldPow), 0.5 is
+ *  f64.sqrt, a k/5 exponent in (0, 5) is $math.pow_fifths, base 2 is $math.exp2,
+ *  and everything else is $math.pow. */
 function pow(a, b) {
   if (Number.isInteger(b) && Math.abs(b) <= 16) return powInt(a, b)
   if (b === 0.5) return Math.sqrt(a)
+  if (b > 0 && b < 5 && !Number.isInteger(b) && Number.isInteger(b * 5)) { const f = fifthFold(b); return powFifths(a, b, f.lo, f.hi) }
+  if (a === 2 && !Number.isInteger(b)) return exp2(b)
   return powRuntime(a, b)
+}
+
+// $math.fifthroot: the bit-hack seed (the bits ÷ 5 as an integer), three Newton steps and
+// a correcting fourth
+function fifthroot(v) {
+  if (!Number.isFinite(v)) return v
+  if (v === 0) return 0
+  let s = 1
+  if (v < 2.2250738585072014e-308) { v = v * 1.2676506002282294e30; s = 9.5367431640625e-07 }
+  let t = bitsF64(f64Bits(v) / 5n + 0x3325E66666666800n), q = 0
+  for (let i = 0; i < 3; i++) { q = t * t; t = (4 * t + v / (q * q)) * 0.2 }
+  q = t * t
+  t = t + (v / (q * q) - t) * 0.2
+  return t * s
+}
+// $math.pow_fifths: x^p·fifthroot(x^r) on [lo, hi]; past it the fold on x' = x·2^(−5j),
+// scaled by 2^(jk) in two factors and corrected for c's own rounding on the 2^(5j) part
+function fifthsFold(x, p, r) {
+  const x2 = x * x
+  const v = fifthroot(r < 2.5 ? (r > 1.5 ? x2 : x) : (r > 3.5 ? x2 * x2 : x2 * x))
+  if (p < 0.5) return v
+  return (p < 2.5 ? (p > 1.5 ? x2 : x) : (p > 3.5 ? x2 * x2 : x2 * x)) * v
+}
+function powFifths(x, c, lo, hi) {
+  const p = Math.floor(c), r = nearest(c * 5) - p * 5
+  if ((x - lo) * (hi - x) >= 0) return fifthsFold(x, p, r)
+  if (!(x > 0)) return x === 0 ? 0 : x === -Infinity ? Infinity : NaN
+  if (x === Infinity) return x
+  let e = 0
+  if (x < 2.2250738585072014e-308) { x = x * 18446744073709551616; e = -64 }
+  const b = f64Bits(x)
+  e += Number((b >> 52n) & 0x7ffn) - 1023
+  const j = nearest(e * 0.2), ji = Math.trunc(j)
+  let v = fifthsFold(bitsF64((b & 0xfffffffffffffn) | (BigInt(e - ji * 5 + 1023) << 52n)), p, r)
+  const s0 = 4 * c + c, bb = s0 - 4 * c
+  const s = (s0 - nearest(c * 5)) + ((4 * c - (s0 - bb)) + (c - bb))
+  v = v * (1 + s * Math.LN2 * j)
+  let jk = ji * Math.trunc(nearest(c * 5))
+  jk = jk > 1100 ? 1100 : jk < -1100 ? -1100 : jk
+  const h = Math.floor(jk / 2)
+  return v * 2 ** h * 2 ** (jk - h)
 }
 
 // The runtime `$math.pow` (module/math.js), operation for operation, so a fold
@@ -214,9 +254,9 @@ function powRuntime(x, y) {
   if (y === 1) return x
   if (Number.isInteger(y) && Math.abs(y) <= 16) {
     let ax = Math.abs(x), n = Math.abs(y), res = 1
+    if (y < 0) ax = 1 / ax
     const neg = (x < 0 || Object.is(x, -0)) && (n & 1) === 1
     while (n > 0) { if (n & 1) res = res * ax; ax = ax * ax; n >>= 1 }
-    if (y < 0) res = 1 / res
     return neg ? -res : res
   }
   if (Math.abs(x) === Infinity) { const r = y > 0 ? Infinity : 0; return x < 0 && oddInteger(y) ? -r : r }
@@ -229,7 +269,7 @@ function powCore(x, y) {
   if (y === 0.5) return Math.sqrt(x)
   const ay = Math.abs(y)
   if (ay < 2 ** -65) return x > 1 ? 1 + y : 1 - y
-  if (ay >= 2 ** 63) return (x > 1) === (y > 0) ? Infinity : 0
+  if (ay >= 2 ** 63) return x === 1 ? 1 : (x > 1) === (y > 0) ? Infinity : 0
   let ix = bitsOf(x)
   if (ix < 0x0010000000000000n) ix = BigInt.asUintN(64, bitsOf(x * 2 ** 52) - (52n << 52n))
   const tmp = BigInt.asIntN(64, ix - 0x3fe6955500000000n)
@@ -266,12 +306,12 @@ function powCore(x, y) {
 }
 function powInt(a, n) {
   if (n === 0) return 1
-  let sq = a, res = null
+  let sq = n < 0 ? 1 / a : a, res = null
   for (let m = Math.abs(n); m > 0; m >>= 1) {
     if (m & 1) res = (res === null) ? sq : res * sq
     if (m >> 1) sq = sq * sq
   }
-  return n < 0 ? 1 / res : res
+  return res
 }
 
 // $math.atan: three intervals on |x|, at most one division, the polynomial, x's sign
@@ -429,5 +469,8 @@ export const MATH_KERNEL = {
   'math.asinh': asinh, 'math.acosh': acosh, 'math.atanh': atanh,
   'math.cbrt': cbrt, 'math.hypot': hypot,
 }
-/** `Math.pow`/`**` — special-cased 3-way split (see `pow` doc above), not a plain unary kernel entry. */
+/** `Math.pow`/`**` with both operands constant: the lowering a constant exponent takes
+ *  (see `pow` above), not a plain unary kernel entry. */
 export const powFold = pow
+/** `$math.pow` itself, as a runtime exponent reaches it. */
+export { powRuntime }
