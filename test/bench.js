@@ -144,6 +144,21 @@ const SPEED = {
   // closure's generic truthiness on AST nodes, `node.loc = at` through
   // __dyn_set) is what `win` waits for.
   jessie:         { v8: 'tie',   as: 'na'   },
+  // stdlib (https://stdlib.io): the library's own code, bundled with nothing
+  // rewritten (scripts/stdlib-probe.mjs `bench` and `bench-all`). The four
+  // functions and the level-1 kernel follow each package's own benchmark;
+  // stdlib-special is the namespace whole, every function of
+  // math/base/special that takes numbers, the checksum over every word of
+  // every result. Paired on one machine, jz/V8: exp 0.53, gamma 0.63, erf 0.43,
+  // pow 0.64, ddot 0.25 (in lanes), special 0.84: its total is three functions'
+  // (polygamma, betaincinv and its kernel, 45 ms of 97), the geomean over its
+  // 338 functions 0.47; rechecked below, the margin being what it is.
+  'stdlib-special': { v8: 'win', as: 'na' },
+  'stdlib-exp':     { v8: 'win', as: 'na' },
+  'stdlib-gamma':   { v8: 'win', as: 'na' },
+  'stdlib-erf':     { v8: 'win', as: 'na' },
+  'stdlib-pow':     { v8: 'win', as: 'na' },
+  'stdlib-ddot':    { v8: 'win', as: 'na' },
 }
 
 // LAB cases (assets/headline.js `LAB`) answer a jz-internal question — they are
@@ -509,7 +524,7 @@ const speedCases = Object.keys(runs)
 // happened to land on the single bench.mjs invocation above.
 const median = xs => [...xs].sort((a, b) => a - b)[xs.length >> 1]
 const recheckTargets = `v8,jz${natAvailable ? ',nat' : ''}`
-for (const id of ['watr', 'sort', 'crc32', 'callback', 'json', 'aos', 'hash', 'base64', 'hashjoin']) {
+for (const id of ['watr', 'sort', 'crc32', 'callback', 'json', 'aos', 'hash', 'base64', 'hashjoin', 'stdlib-special']) {
   if (!speedCases.includes(id) || !runs[id]?.v8 || !runs[id]?.jz) continue
   const s = { v8: [runs[id].v8.medianUs], jz: [runs[id].jz.medianUs] }
   if (runs[id].nat) s.nat = [runs[id].nat.medianUs]

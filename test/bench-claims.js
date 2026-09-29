@@ -388,7 +388,7 @@ test('claims: JZ does not lose to pinned Porffor native by case or geomean', () 
 // silently accepted"). Excluded from the strict and band tests and from the
 // corpus-coverage test until the todo below flips; a case leaves this set the
 // commit it leads.
-const PENDING_CASES = new Set(['stdlib-exp', 'stdlib-gamma', 'stdlib-erf', 'stdlib-pow', 'stdlib-ddot', 'polytri', 'worley', 'fabrik', 'quatmul'])
+const PENDING_CASES = new Set(['stdlib-special', 'stdlib-exp', 'stdlib-gamma', 'stdlib-erf', 'stdlib-pow', 'stdlib-ddot', 'polytri', 'worley', 'fabrik', 'quatmul'])
 const caseRatios = (rivals, ids = null) => {
   const out = []
   for (const [id, c] of Object.entries(cases)) {

@@ -3,7 +3,7 @@
 export const GRAPH_CASES = new Set(['jessie', 'jz', 'webaudio', 'polytri', 'worley', 'fabrik', 'quatmul'])
 // A library's own code bundled into one file (stdlib's packages, scripts/stdlib-probe.mjs
 // bench): ES5 `var` and function declarations, so jz lowers it with jzify like a graph case.
-export const LOWERED_CASES = new Set(['stdlib-exp', 'stdlib-gamma', 'stdlib-erf', 'stdlib-pow', 'stdlib-ddot'])
+export const LOWERED_CASES = new Set(['stdlib-special', 'stdlib-exp', 'stdlib-gamma', 'stdlib-erf', 'stdlib-pow', 'stdlib-ddot'])
 export const HOST_ADAPTERS = { webaudio: ['@audio/decode', '@audio/decode-ape', '@audio/speaker', '@audio/mic', 'pcm-convert'] }
 const EXTERNALS = { webaudio: HOST_ADAPTERS.webaudio }
 // The worklet host loads processor code through `new Function` and a

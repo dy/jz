@@ -5,6 +5,7 @@
 //
 //   dump <spec> <out.json>     the lowered { code, modules } graph, a plain compile() input
 //   bench <spec> <case> <kind> <lo> <hi> [lo2 hi2]   a bench/<case> from the package (see benchCase)
+//   bench-all <namespace> <case>   a bench/<case> of every numeric function of a namespace (see benchAll)
 //   one <spec>                 one scalar function: compile, diff against Node, time
 //   sweep <namespace> <out>    every package of a namespace, one process each → JSON lines
 //   report <out> [list]        summarize a sweep
@@ -42,7 +43,13 @@ for (const [k, v] of Object.entries({ float64: 'Float64Array', float32: 'Float32
 const ALIAS = {
   '@stdlib/assert/is-little-endian': 'export default true',
   '@stdlib/assert/is-big-endian': 'export default false',
+  // the logger a few iterations report to: disabled unless DEBUG names it, so a no-op
+  'debug': 'export default (name) => (a, b, c, d, e) => {}',
 }
+// `has-*-support` asks the environment once, at load (generators through `eval`):
+// the answer Node gives is the target's.
+const DETECT = /^@stdlib\/assert\/has-[\w-]+-support$/
+const detected = (spec) => DETECT.test(spec) ? `export default () => ${nodeRequire(spec)() === true}` : null
 // `setReadOnly( f, 'k', v )` on a function object is `f.k = v`
 const DEFPROP = new Set(['@stdlib/utils/define-nonenumerable-read-only-property', '@stdlib/utils/define-read-only-property'])
 
@@ -102,10 +109,18 @@ function toESM(src, file, resolve, diag) {
 function graph(driver, diag = DIAGS) {
   const alias = Object.assign({}, ALIAS, ...diag.map(d => DIAG_ALIAS[d]))
   const modules = {}
-  const resolve = (spec, from) => alias[spec] ? 'alias:' + spec : createRequire(from).resolve(spec)
+  // by the package a path names too: stdlib requires a sibling package by a relative path
+  const aliased = (name) => name != null && (alias[name] ?? detected(name)) != null
+  const resolve = (spec, from) => {
+    if (aliased(spec)) return 'alias:' + spec
+    const file = createRequire(from).resolve(spec), pkg = /node_modules\/(@stdlib\/.+?)\/lib\/index\.js$/.exec(file)?.[1]
+    return aliased(pkg) ? 'alias:' + pkg : file
+  }
   const visit = (key) => {
     if (key in modules) return
-    if (key.startsWith('alias:')) { modules[key] = alias[key.slice(6)]; return }
+    if (key.startsWith('alias:')) { modules[key] = alias[key.slice(6)] ?? detected(key.slice(6)); return }
+    // `require( './table.json' )` is the parsed value
+    if (key.endsWith('.json')) { modules[key] = 'export default ' + readFileSync(key, 'utf8').trim(); return }
     modules[key] = ''  // cycle guard
     const { code, deps } = toESM(readFileSync(key, 'utf8'), key, resolve, diag)
     modules[key] = code
@@ -134,20 +149,55 @@ const race = (fns, rounds = 15, warm = 3) => {
 // ── one scalar function ─────────────────────────────────────────────────────
 
 const RANGES = [[0.05, 0.95], [1.5, 20], [-3, 3], [1, 100], [-0.9, 0.9]]
-const EXTRA = [[], [2.5], [2.5, 1.5], [3, 2], [0.5, 0.25], [3], [0.5]]
+// the arguments after the first, constant over a sweep: shape and scale parameters, counts
+const EXTRA = [[], [2.5], [2.5, 1.5], [3, 2], [0.5, 0.25], [-1.5, 2.5], [3], [0.5],
+  [2.5, 1.5, 0.5], [20, 10, 5], [0.5, 0.25, 2], [3, 2, 1], [2.5, 1.5, 0.5, 2], [20, 10, 5, 2]]
+const PARAMS = ['x', 'a', 'b', 'c', 'e']
 const SPECIALS = [0, -0, 1, -1, NaN, Infinity, -Infinity, 1e-300, 1e300, 0.5, 2, 1e-10, 12345.678]
 
-// a domain where Node returns finite numbers, so the timing exercises the main path
+// the integers a function of counts takes (`fibonacci( n )`, `gcd( a, b )`, `binomcoef( n, k )`)
+const INT_RANGES = [[0, 40], [1, 24], [-24, 24], [-40, 0], [0, 8]]
+// the i-th of n inputs of a domain: evenly spread, whole where the domain is of integers
+const input = (dom, i, n) => dom.int ? Math.floor(dom.lo + (dom.hi - dom.lo + 1) * i / n) : dom.lo + (dom.hi - dom.lo) * i / n
+
+// the count of numbers a result lists (`frexp( x )` is [ frac, exp ]); 0 for any other value
+const listOf = (v) => (Array.isArray(v) || ArrayBuffer.isView(v)) && v.length >= 1 && v.length <= 4 && Array.prototype.every.call(v, e => typeof e === 'number') ? v.length : 0
+
+// a domain where Node returns finite numbers, so the timing exercises the main path:
+// of reals where one is, else of integers
 function domain(fn, arity) {
-  for (const [lo, hi] of RANGES) for (const c of EXTRA) {
-    if (c.length !== arity - 1) continue
-    let finite = 0, numeric = true
+  for (const int of [false, true]) for (const [lo, hi] of int ? INT_RANGES : RANGES) for (const c of EXTRA) {
+    if (c.length !== arity - 1 || (int && !c.every(Number.isInteger))) continue
+    const dom = { lo, hi, c, ...(int ? { int } : {}) }
+    let finite = 0, numeric = true, len = 0
     for (let i = 0; i < 40 && numeric; i++) {
-      let v; try { v = fn(lo + (hi - lo) * i / 40, ...c) } catch { numeric = false }
-      if (typeof v !== 'number') numeric = false; else if (Number.isFinite(v)) finite++
+      let v; try { v = fn(input(dom, i, 40), ...c) } catch { numeric = false }
+      const l = listOf(v)
+      if (i === 0) len = l
+      if (l !== len || (l === 0 && typeof v !== 'number')) numeric = false
+      else if (l ? Array.prototype.every.call(v, Number.isFinite) : Number.isFinite(v)) finite++
     }
-    if (numeric && finite >= 36) return { lo, hi, c }
+    if (numeric && finite >= 36) return len ? { ...dom, len } : dom
   }
+}
+
+// The function as an export the host calls per element: its ABI (plain f64
+// parameters, or boxed values) and the time of a call through the interop wrapper
+// and through the raw export. BOUNDARY=1 adds it to a probe.
+function boundary(spec, fn, arity, xj, c, jsNs) {
+  const ps = PARAMS.slice(0, arity).join(', '), N = 20000, out = {}
+  try {
+    const b = build(`import fn from '${spec}'\nexport let f = (${ps}) => fn(${ps})`)
+    const inst = instantiate(b.wasm)
+    let raw = null
+    try { const e = new WebAssembly.Instance(new WebAssembly.Module(b.wasm), {}).exports; if (typeof e.f(xj[0], ...c) === 'number') raw = e.f } catch {}
+    out.abi = raw ? 'f64' : 'boxed'
+    const drive = (f) => () => { let s = 0; for (let i = 0; i < N; i++) s += f(xj[i], ...c); return s }
+    const [js, call, rawT] = race([drive(fn), drive(inst.exports.f), ...(raw ? [drive(raw)] : [])], 9, 2)
+    out.callRatio = +(call / js).toFixed(3)
+    if (raw) out.rawRatio = +(rawT / js).toFixed(3)
+  } catch (e) { out.abi = 'fails'; out.boundaryErr = String(e.message).split('\n')[0].slice(0, 120) }
+  return out
 }
 
 function one(spec) {
@@ -156,55 +206,103 @@ function one(spec) {
   try { fn = nodeRequire(spec) } catch (e) { return { ...out, status: 'node-load-fail', err: String(e.message).split('\n')[0] } }
   if (typeof fn !== 'function') return { ...out, status: 'not-function' }
   const arity = out.arity = fn.length
-  if (arity < 1 || arity > 3) return { ...out, status: 'arity-skip' }
+  if (arity < 1 || arity > PARAMS.length) return { ...out, status: 'arity-skip' }
   const dom = out.domain = domain(fn, arity)
   if (!dom) return { ...out, status: 'no-numeric-domain' }
   const { lo, hi, c } = dom
-  const ps = ['x', 'a', 'b'].slice(0, arity).join(', '), rest = ['', ', a', ', a, b'][arity - 1]
+  // The kernel reads its arguments from buffers the driver owns and writes its
+  // results to one, as a bench case does: what the function takes is numbers,
+  // not values of the boundary's kind. The function as an export of its own
+  // (`f`, the boundary a host calls per element) is a second module.
+  // A result that lists L numbers is L results: each is stored, and the sum takes them all.
+  const L = dom.len || 1, N = dom.len ? 50000 : 200000, pages = dom.len ? 512 : 128
+  const rest = c.map((_, i) => `, C[${i}]`).join('')
+  const slots = Array.from({ length: L }, (_, j) => j)
+  const store = dom.len ? `const r = fn(X[i]${rest}); ${slots.map(j => `OUT[i * ${L} + ${j}] = r[${j}]`).join('; ')}` : `OUT[i] = fn(X[i]${rest})`
+  const sum = dom.len ? `const r = fn(X[i]${rest}); s += ${slots.map(j => `r[${j}]`).join(' + ')}` : `s += fn(X[i]${rest})`
   let b
   try {
     b = build(`import fn from '${spec}'
-export let f = (${ps}) => fn(${ps})
-export let loop = (n, lo, hi${rest}) => { let s = 0, d = (hi - lo) / n; for (let i = 0; i < n; i++) s += fn(lo + i * d${rest}); return s }`)
+const X = new Float64Array(${N})
+const OUT = new Float64Array(${N * L})
+const C = new Float64Array(${Math.max(c.length, 1)})
+export let xs = () => X
+export let outs = () => OUT
+export let cs = () => C
+export let each = (n) => { for (let i = 0; i < n; i++) { ${store} } }
+export let loop = (n) => { let s = 0; for (let i = 0; i < n; i++) { ${sum} } return s }`, { memory: pages })
   } catch (e) { return { ...out, status: 'compile-fail', err: String(e.message).split('\n')[0].slice(0, 200) } }
   Object.assign(out, { bytes: b.wasm.byteLength, compileMs: Math.round(b.ms), mods: b.mods })
-  const mod = new WebAssembly.Module(b.wasm)
   let inst
-  try { inst = instantiate(b.wasm) } catch (e) { return { ...out, status: 'instantiate-fail', err: String(e.message).split('\n')[0].slice(0, 200) } }
+  try { inst = instantiate(b.wasm, { memory: pages }) } catch (e) { return { ...out, status: 'instantiate-fail', err: String(e.message).split('\n')[0].slice(0, 200) } }
+  if (c.length) inst.exports.cs().set(c)
 
-  // agreement with Node, bit for bit
-  const pts = [...SPECIALS]
-  for (let i = 0; i < 200; i++) pts.push(lo + (hi - lo) * (i + 0.37) / 200)
+  // Agreement with Node, bit for bit, at every point where Node answers: a point
+  // where it throws (`binomcoef( 1e300, 3 )` recurses without end) would end the
+  // kernel's one pass over them all.
+  const all = [...SPECIALS]
+  for (let i = 0; i < 200; i++) all.push(dom.int ? input(dom, i, 200) : lo + (hi - lo) * (i + 0.37) / 200)
+  const pts = [], wants = []
+  for (const x of all) { try { wants.push(fn(x, ...c)); pts.push(x) } catch { out.nodeThrows = (out.nodeThrows || 0) + 1 } }
   out.points = pts.length; out.mismatch = 0; out.thrown = 0
-  for (const x of pts) {
-    let want, got
-    try { want = fn(x, ...c) } catch { continue }
-    try { got = inst.exports.f(x, ...c) } catch (e) { out.thrown++; out.firstBad ??= { x, err: String(e.message).slice(0, 80) }; continue }
-    if (!Object.is(got, want)) { out.mismatch++; out.firstBad ??= { x, got: String(got), want: String(want) } }
-  }
-
-  // the raw export takes plain numbers only when its ABI is f64
-  let raw = null
-  try { const e = new WebAssembly.Instance(mod, {}).exports; if (typeof e.f(lo, ...c) === 'number') raw = e.f } catch {}
-  out.abi = raw ? 'f64' : 'boxed'
-  const drive = (f) => (n) => { let s = 0, d = (hi - lo) / n; for (let i = 0; i < n; i++) s += f(lo + i * d, ...c); return s }
-  const N = 200000, contenders = [drive(fn), (n) => inst.exports.loop(n, lo, hi, ...c), drive(inst.exports.f)]
-  if (raw) contenders.push(drive(raw))
   try {
-    const [js, loop, call, rawT] = race(contenders.map(f => () => f(N)), 9, 2)
+    inst.exports.xs().set(pts)
+    inst.exports.each(pts.length)
+    const got = inst.exports.outs()
+    pts.forEach((x, i) => {
+      for (let j = 0; j < L; j++) {
+        const g = got[i * L + j], w = dom.len ? wants[i]?.[j] : wants[i]
+        if (!Object.is(g, w)) { out.mismatch++; out.firstBad ??= { x, got: String(g), want: String(w) } }
+      }
+    })
+  } catch (e) { out.thrown++; out.firstBad ??= { err: String(e.message).slice(0, 80) } }
+
+  const xj = new Float64Array(N)
+  for (let i = 0; i < N; i++) xj[i] = input(dom, i, N)
+  const drive = dom.len
+    ? (f) => (n) => { let s = 0; for (let i = 0; i < n; i++) { const r = f(xj[i], ...c); for (let j = 0; j < L; j++) s += r[j] } return s }
+    : (f) => (n) => { let s = 0; for (let i = 0; i < n; i++) s += f(xj[i], ...c); return s }
+  const contenders = [drive(fn), (n) => inst.exports.loop(n)]
+  try {
+    inst.exports.xs().set(xj)
+    // The two loops sum the same terms. A loop jz runs in lanes adds them in another
+    // order (README, "Float sums in lanes"): the sums then agree to rounding, and
+    // `each` above has compared every term bit for bit.
+    const want = contenders[0](N), got = contenders[1](N)
+    if (!Object.is(got, want)) {
+      if (Math.abs(got - want) <= 1e-11 * Math.abs(want)) out.laneSum = true
+      else { out.sumDiffers = true; out.firstBad ??= { loop: String(got), want: String(want) } }
+    }
+    const [js, loop] = race(contenders.map(f => () => f(N)), 9, 2)
     const ns = (t) => +(t / N * 1e6).toFixed(2), x = (t) => +(t / js).toFixed(3)
-    Object.assign(out, { jsNs: ns(js), loopNs: ns(loop), callNs: ns(call), loopRatio: x(loop), callRatio: x(call) })
-    if (raw) Object.assign(out, { rawNs: ns(rawT), rawRatio: x(rawT) })
+    Object.assign(out, { jsNs: ns(js), loopNs: ns(loop), loopRatio: x(loop) })
     out.status = 'ok'
   } catch (e) { out.status = 'run-fail'; out.err = String(e.message).split('\n')[0].slice(0, 200) }
+  if (out.status === 'ok' && process.env.BOUNDARY) Object.assign(out, boundary(spec, fn, arity, xj, c, out.jsNs))
   return out
 }
 
 // ── sweep ───────────────────────────────────────────────────────────────────
 
+// The packages of a namespace, at any depth: a distribution's functions sit a level
+// below it (`stats/base/dists/normal/cdf`). A package's own folders are no packages.
+const OWN = new Set(['lib', 'docs', 'test', 'benchmark', 'examples', 'src', 'include', 'scripts', 'bin', 'etc', 'data', 'wasm', 'node_modules'])
+function packages(ns) {
+  const out = []
+  const walk = (rel) => {
+    for (const d of readdirSync(join(ROOT, 'node_modules/@stdlib', rel), { withFileTypes: true })) {
+      if (!d.isDirectory() || OWN.has(d.name)) continue
+      const sub = `${rel}/${d.name}`
+      if (existsSync(join(ROOT, 'node_modules/@stdlib', sub, 'package.json'))) out.push(`@stdlib/${sub}`)
+      walk(sub)
+    }
+  }
+  walk(ns)
+  return out
+}
+
 function sweep(ns, outFile, conc = 4) {
-  const dir = join(ROOT, 'node_modules/@stdlib', ns)
-  const pkgs = readdirSync(dir).filter(d => existsSync(join(dir, d, 'package.json')) && d !== 'wasm').map(d => `@stdlib/${ns}/${d}`)
+  const pkgs = packages(ns)
   const seen = new Set(existsSync(outFile) ? readFileSync(outFile, 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l).spec) : [])
   if (!existsSync(outFile)) writeFileSync(outFile, '')
   const queue = pkgs.filter(p => !seen.has(p))
@@ -230,28 +328,30 @@ function sweep(ns, outFile, conc = 4) {
   next()
 }
 
+// a package's name in a report: what follows `base/` (`special/exp`, `dists/normal/cdf`)
+const short = (spec) => spec.replace(/^@stdlib\/(?:\w+\/)*?base\//, '')
 function report(file, list) {
   const rows = readFileSync(file, 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l))
   const gm = (a) => a.length ? Math.exp(a.reduce((s, x) => s + Math.log(x), 0) / a.length) : NaN
   const med = (a) => [...a].sort((x, y) => x - y)[a.length >> 1]
   const tally = {}; for (const r of rows) tally[r.status] = (tally[r.status] || 0) + 1
-  const ok = rows.filter(r => r.status === 'ok'), exact = ok.filter(r => !r.mismatch && !r.thrown)
-  const clean = exact.filter(r => r.abi === 'f64' && r.bytes < 2048)
+  const ok = rows.filter(r => r.status === 'ok'), exact = ok.filter(r => !r.mismatch && !r.thrown && !r.sumDiffers)
   const lr = ok.map(r => r.loopRatio), rr = ok.filter(r => r.rawRatio != null).map(r => r.rawRatio)
   console.log('packages', rows.length, tally)
-  console.log(`ran ${ok.length}: agree with Node on every point ${exact.length}, disagree ${ok.length - exact.length}`)
-  console.log(`export ABI: f64 ${ok.filter(r => r.abi === 'f64').length}, boxed ${ok.filter(r => r.abi === 'boxed').length}`)
+  console.log(`ran ${ok.length}: agree with Node on every point ${exact.length}, disagree ${ok.length - exact.length}; summed in lanes ${ok.filter(r => r.laneSum).length}`)
+  const bd = ok.filter(r => r.abi)
+  if (bd.length) {
+    console.log(`export ABI (n=${bd.length}): f64 ${bd.filter(r => r.abi === 'f64').length}, boxed ${bd.filter(r => r.abi === 'boxed').length}`)
+    console.log(`call per element, raw f64 export (n=${rr.length}): geomean ${gm(rr).toFixed(2)}×; interop wrapper: geomean ${gm(bd.filter(r => r.callRatio).map(r => r.callRatio)).toFixed(2)}×`)
+  }
   console.log(`loop in wasm, jz/js: geomean ${gm(lr).toFixed(2)}× median ${med(lr).toFixed(2)}× | faster ${lr.filter(x => x < 0.95).length}, par ${lr.filter(x => x >= 0.95 && x <= 1.05).length}, slower ${lr.filter(x => x > 1.05).length}`)
-  console.log(`call per element, raw f64 export (n=${rr.length}): geomean ${gm(rr).toFixed(2)}×`)
-  console.log(`call per element, interop wrapper: geomean ${gm(ok.map(r => r.callRatio)).toFixed(2)}×`)
-  console.log(`clean subset (agrees, f64 ABI, under 2 KB; n=${clean.length}): loop ${gm(clean.map(r => r.loopRatio)).toFixed(2)}×, raw call ${gm(clean.map(r => r.rawRatio)).toFixed(2)}×`)
   console.log(`size: median ${med(ok.map(r => r.bytes))} B | compile: median ${med(ok.map(r => r.compileMs))} ms`)
   const errs = {}
-  for (const r of rows) if (r.err) (errs[r.status + ': ' + r.err.replace(/'[^']*'/g, "'…'").slice(0, 100)] ||= []).push(r.spec.split('/').pop())
+  for (const r of rows) if (r.err) (errs[r.status + ': ' + r.err.replace(/'[^']*'/g, "'…'").slice(0, 100)] ||= []).push(short(r.spec))
   for (const [k, v] of Object.entries(errs).sort((a, b) => b[1].length - a[1].length)) console.log(String(v.length).padStart(4), k, ' e.g.', v.slice(0, 3).join(', '))
   if (!list) return
   for (const r of [...ok].sort((a, b) => a.loopRatio - b.loopRatio))
-    console.log(r.spec.split('/').pop().padEnd(30), `loop ${r.loopRatio}×`.padEnd(14), `${r.bytes} B`.padEnd(9), r.abi.padEnd(6), r.mismatch ? `DISAGREES ×${r.mismatch} ${JSON.stringify(r.firstBad)}` : '')
+    console.log(short(r.spec).padEnd(34), `loop ${r.loopRatio}×`.padEnd(14), `${r.bytes} B`.padEnd(9), r.mismatch || r.sumDiffers ? `DISAGREES ×${r.mismatch} ${JSON.stringify(r.firstBad)}` : '')
 }
 
 // ── BLAS level 1 ────────────────────────────────────────────────────────────
@@ -306,8 +406,8 @@ export let k = (N, a) => { ${k.call} }`
 // The lowered graph of a package's driver as { code, modules } JSON: a failing
 // package is then a plain compile() input, bisected without the harness.
 function dump(spec, file) {
-  const fn = nodeRequire(spec), arity = Math.min(Math.max(fn.length, 1), 3)
-  const ps = ['x', 'a', 'b'].slice(0, arity).join(', ')
+  const fn = nodeRequire(spec), arity = Math.min(Math.max(fn.length, 1), PARAMS.length)
+  const ps = PARAMS.slice(0, arity).join(', ')
   const g = graph(`import fn from '${spec}'\nexport let f = (${ps}) => fn(${ps})`)
   writeFileSync(file, JSON.stringify(g))
   console.log(`${Object.keys(g.modules).length} modules → ${file}`)
@@ -406,11 +506,128 @@ export let main = () => {
   console.log(`${dir}/${id}.js: ${source.length} B, ${Object.keys(g.modules).length} modules`)
 }
 
+// The packages of a namespace the corpus case leaves out, each with the reason: a
+// function jz does not compile yet. Listed in the case's header; an entry goes the
+// commit its package compiles.
+const PENDING = {
+  '@stdlib/math/base/special/hyp2f1': '`Object.prototype.toString` as a value, through `@stdlib/assert/is-nan`',
+}
+
+// A bench case (bench/<case>/<case>.js) of a whole namespace: every package whose
+// function Node evaluates to finite numbers over one of the probe's domains
+// (`domain`), bundled into one file as `benchCase` bundles one. Each function is
+// swept over its domain by a loop of its own, the arguments after the first as the
+// probe chose them; the checksum folds every word of every result.
+async function benchAll(ns, id) {
+  const { build } = await import('esbuild')
+  const fns = []
+  for (const spec of packages(ns)) {
+    let fn
+    try { fn = nodeRequire(spec) } catch { continue }
+    if (typeof fn !== 'function' || fn.length < 1 || fn.length > PARAMS.length || spec in PENDING) continue
+    const dom = domain(fn, fn.length)
+    if (dom) fns.push({ spec, ...dom })
+  }
+  const g = graph(fns.map((f, k) => `import f${k} from '${f.spec}'`).join('\n') + `\nexport { ${fns.map((f, k) => `f${k}`).join(', ')} }`)
+  const r = await build({
+    stdin: { contents: g.code, resolveDir: '/', loader: 'js', sourcefile: 'driver.js' },
+    bundle: true, format: 'esm', platform: 'neutral', target: 'es2020', write: false, minify: false, legalComments: 'none',
+    plugins: [{ name: 'lowered', setup(b) {
+      b.onResolve({ filter: /.*/ }, (a) => a.path in g.modules ? { path: a.path, namespace: 'lowered' } : undefined)
+      b.onLoad({ filter: /.*/, namespace: 'lowered' }, (a) => ({ contents: g.modules[a.path], loader: 'js', resolveDir: '/' }))
+    } }],
+  })
+  let js = r.outputFiles[0].text
+  const tail = js.match(/\nexport \{([^}]*)\};?\s*$/)
+  if (!tail) throw new Error('no exports in the bundle')
+  const local = new Map(tail[1].split(',').map(e => e.trim()).filter(Boolean).map(e => { const [from, to] = e.split(/\s+as\s+/); return [to ?? from, from] }))
+  js = js.slice(0, tail.index).replace(/^\/\/ lowered:.*\n/gm, '')
+  const version = JSON.parse(readFileSync(join(ROOT, 'node_modules/@stdlib/stdlib/package.json'), 'utf8')).version
+  const num = (v) => Object.is(v, -0) ? '-0' : String(v)
+  const kernels = fns.map((f, k) => {
+    const name = local.get(`f${k}`)
+    if (!name) throw new Error(`no export for ${f.spec}`)
+    const x = f.int ? `Math.floor(${num(f.lo)} + u[i] * (${num(f.hi)} - ${num(f.lo)} + 1))` : `${num(f.lo)} + u[i] * (${num(f.hi)} - ${num(f.lo)})`
+    const call = `${name}(${[x, ...f.c.map(num)].join(', ')})`
+    // a result that lists numbers is stored as their sum
+    const store = f.len ? `{ const r = ${call}; out[at + i] = ${Array.from({ length: f.len }, (_, j) => `r[${j}]`).join(' + ')} }` : `out[at + i] = ${call}`
+    return `// ${short(f.spec)}\nconst k${k} = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) ${store} }`
+  })
+  const pending = Object.entries(PENDING).filter(([spec]) => spec.startsWith(`@stdlib/${ns}/`))
+  const source = `// ${id}.js — every function of @stdlib/${ns} (stdlib ${version}, Apache-2.0) that takes
+// numbers and returns one, or a list of them: ${fns.length} packages, bundled from their CommonJS sources by
+// scripts/stdlib-probe.mjs (\`bench-all ${ns} ${id}\`): the packages' own code with the
+// module seams gone, nothing rewritten. Each function is swept over a domain where
+// it is finite (the probe's \`domain\`: of reals, or of integers for a function of
+// counts), the arguments after the first held; a list is stored as its sum.
+${pending.length ? `// Left out until jz compiles them:\n${pending.map(([spec, why]) => `//   ${short(spec)}: ${why}`).join('\n')}\n` : ''}// Copyright (c) The Stdlib Authors. Licensed under the Apache License, Version 2.0
+// (http://www.apache.org/licenses/LICENSE-2.0); the notices of the bundled files
+// are retained by reference to the package.
+import { mix, medianUs, printResult } from '../_lib/benchlib.js'
+
+${js.trim()}
+
+const N_FN = ${fns.length}
+const N_EVAL = 1 << 12
+const N_RUNS = 21
+const N_WARMUP = 5
+
+${kernels.join('\n')}
+
+const sweep = (u, out) => {
+${fns.map((f, k) => `  k${k}(u, out, ${k} * N_EVAL)`).join('\n')}
+}
+
+// XorShift32, uniform in [0, 1): deterministic per target.
+const uniform = (n, seed) => {
+  const out = new Float64Array(n)
+  let s = seed | 0
+  for (let i = 0; i < n; i++) {
+    s ^= s << 13
+    s ^= s >>> 17
+    s ^= s << 5
+    out[i] = (s >>> 0) / 4294967296
+  }
+  return out
+}
+
+// every word of every result
+const checksum = (out) => {
+  const w = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)
+  let h = 0x811c9dc5 | 0
+  for (let i = 0; i < w.length; i++) h = mix(h, w[i])
+  return h >>> 0
+}
+
+const run = () => {
+  const u = uniform(N_EVAL, 0x1234abcd)
+  const out = new Float64Array(N_FN * N_EVAL)
+  for (let i = 0; i < N_WARMUP; i++) sweep(u, out)
+  const samples = new Float64Array(N_RUNS)
+  for (let i = 0; i < N_RUNS; i++) {
+    const t0 = performance.now()
+    sweep(u, out)
+    samples[i] = performance.now() - t0
+  }
+  printResult(medianUs(samples), checksum(out), N_FN * N_EVAL, 1, N_RUNS)
+}
+
+export let main = () => {
+  run()
+}
+`
+  const dir = join(dirname(SELF), '..', 'bench', id)
+  mkdirSync(dir, { recursive: true })
+  writeFileSync(join(dir, `${id}.js`), source)
+  console.log(`${dir}/${id}.js: ${fns.length} functions, ${source.length} B, ${Object.keys(g.modules).length} modules`)
+}
+
 const [cmd, ...args] = process.argv.slice(2)
 if (cmd === 'one') { const r = one(args[0]); console.log(args.includes('--json') ? '@@' + JSON.stringify(r) : r); process.exit(0) }
 else if (cmd === 'dump') dump(args[0], args[1])
 else if (cmd === 'bench') await benchCase(args[0], args[1], args[2], ...args.slice(3))
+else if (cmd === 'bench-all') await benchAll(args[0], args[1])
 else if (cmd === 'sweep') sweep(args[0], args[1], +(args[2] || 4))
 else if (cmd === 'report') report(args[0], args[1] === 'list')
 else if (cmd === 'blas') blas(args)
-else console.log('usage: stdlib-probe.mjs one <spec> | sweep <namespace> <out.jsonl> [concurrency] | report <out.jsonl> [list] | blas [names…]')
+else console.log('usage: stdlib-probe.mjs one <spec> | sweep <namespace> <out.jsonl> [concurrency] | report <out.jsonl> [list] | blas [names…] | bench <spec> <case> <kind> <lo> <hi> [lo2 hi2] | bench-all <namespace> <case> | dump <spec> <out.json>')

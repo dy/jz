@@ -16,6 +16,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { compile } from '../index.js'
+import { LOWERED_CASES } from '../bench/_lib/graph.js'
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)))
 const BENCH = join(ROOT, 'bench')
@@ -56,7 +57,7 @@ const jzCompileSize = id => {
   const isWatr = id === 'watr'
   const code = readFileSync(join(BENCH, id, `${id}.js`), 'utf8')
   return compile(code, {
-    jzify: isWatr,
+    jzify: isWatr || LOWERED_CASES.has(id),
     modules: { '../_lib/benchlib.js': benchlibHostSource(), ...(isWatr ? watrModuleSources() : {}) },
     imports: {
       env: { logResult: { params: 5 } },
