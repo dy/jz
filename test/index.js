@@ -99,6 +99,7 @@ const TESTS = [
   'number-or-missing',
   'typed-fill',
   'typed-copy',
+  'typed-sort',
   'select-order',
   'pointer-join',
   'typed-rebound',

@@ -19,7 +19,7 @@ import { typedIdxProven, typedIdxWhole, idxKey } from '../src/type.js'
 import { constIntExpr } from '../src/static.js'
 import { VAL, lookupValType, repOf } from '../src/reps.js'
 import { nanPrefixHex, TYPED_ELEM_NAMES, TYPED_ELEM_CODE, TYPED_ELEM_VIEW_FLAG, TYPED_ELEM_BIGINT_FLAG, TYPED_ELEM_F16_FLAG, TYPED_ELEM_CLAMPED_FLAG, DATA_VIEW_AUX, DATA_VIEW_FLAG, encodeTypedElemAux } from '../layout.js'
-import { err, inc, PTR, LAYOUT, registerGetter, setLinkDemand, getFactStore } from '../src/ctx.js'
+import { err, inc, PTR, LAYOUT, HEAP, registerGetter, setLinkDemand, getFactStore } from '../src/ctx.js'
 import { errorCodeLiteral, ERR } from '../err-codes.js'
 import { representationProgramHasBigint } from '../src/compile/representation-plan.js'
 import { plannedTypedStorageCtor, plannedTypedStorageInfo, plannedTypedPayloadInfo } from '../src/compile/typed-storage-plan.js'
@@ -100,7 +100,8 @@ export default (ctx) => {
     __typed_reverse: ['__len', '__typed_get_idx', '__typed_set_idx'],
     __typed_copyWithin: ['__len', '__clamp_idx', '__ptr_aux', '__typed_shift', '__typed_data'],
     __typed_set_rt: ['__len', '__ptr_type', '__ptr_aux', '__typed_same_bytes', '__typed_shift', '__typed_data', '__typed_idx', '__typed_set_idx'],
-    __typed_sort: ['__len', '__typed_get_idx', '__typed_set_idx'],
+    __typed_sort: ['__len', '__typed_isort', '__typed_sort_digit', '__ptr_aux', '__typed_shift', '__typed_data', '__alloc'],
+    __typed_isort: ['__len', '__typed_get_idx', '__typed_set_idx'],
     __subarray: ['__ptr_aux', '__ptr_offset', '__typed_shift', '__typed_data', '__len', '__mkptr', '__alloc', '__clamp_idx'],
     __typed_slice_rt: ['__ptr_aux', '__typed_shift', '__typed_data', '__len', '__mkptr', '__alloc_hdr_n', '__clamp_idx'],
   })
@@ -1621,11 +1622,110 @@ export default (ctx) => {
           (i32.shl (local.get $count) (local.get $k)))))
     (f64.reinterpret_i64 (local.get $ptr)))`
 
-  // .sort() — default numeric order (insertion sort, stable). NaN sorts to the end,
-  // -0 before +0 (the equal-value tiebreak via signed-bit compare). BigInt arrays are
-  // compared as signed i64 on their exact bits. A user comparator is handled inline by
-  // the .typed:sort emitter (this helper is the no-argument numeric path).
+  // .sort() — default numeric order, stable: NaN sorts to the end, -0 before +0,
+  // BigInt arrays compare as signed i64 on their exact bits. A user comparator is
+  // handled inline by the .typed:sort emitter (this helper is the no-argument path).
+  // A short array takes the insertion sort below. A longer one sorts by a byte-wise
+  // LSD radix over a key that orders the raw bits as the values: an integer as
+  // itself (a signed one with its sign bit flipped), a float with its sign bit set
+  // when positive and every bit flipped when negative, a NaN above everything. Each
+  // pass moves the elements stably between the array and a scratch copy on the heap,
+  // which own memory takes back after; a byte every element shares is no pass.
+  const heapTop = ctx.memory.shared ? `(i32.load (i32.const ${HEAP.PTR_ADDR}))` : '(global.get $__heap)'
+  const heapSet = (v) => ctx.memory.shared ? '' : `(global.set $__heap ${v})`
   ctx.core.stdlib['__typed_sort'] = `(func $__typed_sort (param $ptr i64) (result f64)
+    (local $aux i32) (local $len i32) (local $sh i32) (local $w i32) (local $code i32) (local $kind i32)
+    (local $a i32) (local $src i32) (local $dst i32) (local $cnt i32) (local $save i32)
+    (local $pass i32) (local $i i32) (local $d i32) (local $sum i32) (local $t i32)
+    (local $x i64) (local $k i64) (local $sign i64) (local $mask i64) (local $abs i64) (local $inf i64)
+    (local.set $len (call $__len (local.get $ptr)))
+    (if (i32.le_s (local.get $len) (i32.const 32)) (then (return (call $__typed_isort (local.get $ptr)))))
+    (local.set $aux (call $__ptr_aux (local.get $ptr)))
+    (local.set $code (i32.and (local.get $aux) (i32.const 7)))
+    (local.set $sh (call $__typed_shift (local.get $code)))
+    (local.set $w (i32.shl (i32.const 1) (local.get $sh)))
+    ;; kind: 0 unsigned, 1 signed, 2 float
+    (local.set $kind
+      (if (result i32) (i32.and (local.get $aux) (i32.const ${TYPED_ELEM_F16_FLAG})) (then (i32.const 2))
+        (else (if (result i32) (i32.and (local.get $aux) (i32.const ${TYPED_ELEM_BIGINT_FLAG})) (then (i32.const 1))
+          (else (if (result i32) (i32.ge_u (local.get $code) (i32.const 6)) (then (i32.const 2))
+            (else (i32.xor (i32.and (local.get $code) (i32.const 1)) (i32.const 1)))))))))
+    (local.set $sign (i64.shl (i64.const 1) (i64.extend_i32_u (i32.sub (i32.shl (local.get $w) (i32.const 3)) (i32.const 1)))))
+    (local.set $mask (i64.sub (i64.shl (local.get $sign) (i64.const 1)) (i64.const 1)))
+    (if (i32.eq (local.get $w) (i32.const 8)) (then (local.set $mask (i64.const -1))))
+    ;; the float's infinity: its exponent bits all set, no mantissa
+    (local.set $inf (if (result i64) (i32.eq (local.get $w) (i32.const 8)) (then (i64.const 0x7FF0000000000000))
+      (else (if (result i64) (i32.eq (local.get $w) (i32.const 4)) (then (i64.const 0x7F800000)) (else (i64.const 0x7C00))))))
+    (local.set $a (call $__typed_data (local.get $ptr)))
+    (local.set $save ${heapTop})
+    (local.set $dst (call $__alloc (i32.shl (local.get $len) (local.get $sh))))
+    (local.set $cnt (call $__alloc (i32.const 1024)))
+    (local.set $src (local.get $a))
+    (block $passes (loop $next
+      (br_if $passes (i32.ge_u (local.get $pass) (local.get $w)))
+      (memory.fill (local.get $cnt) (i32.const 0) (i32.const 1024))
+      ;; count the digits of this pass
+      (local.set $i (i32.const 0))
+      (block $cd (loop $cl
+        (br_if $cd (i32.ge_u (local.get $i) (local.get $len)))
+        (local.set $d (call $__typed_sort_digit (local.get $src) (local.get $i) (local.get $sh) (local.get $kind) (local.get $sign) (local.get $mask) (local.get $inf) (local.get $pass)))
+        (local.set $t (i32.add (local.get $cnt) (i32.shl (local.get $d) (i32.const 2))))
+        (i32.store (local.get $t) (i32.add (i32.load (local.get $t)) (i32.const 1)))
+        (local.set $i (i32.add (local.get $i) (i32.const 1)))
+        (br $cl)))
+      ;; a digit every element shares moves nothing
+      (if (i32.ne (i32.load (i32.add (local.get $cnt) (i32.shl (local.get $d) (i32.const 2)))) (local.get $len))
+        (then
+          ;; counts to starting offsets
+          (local.set $sum (i32.const 0)) (local.set $i (i32.const 0))
+          (block $pd (loop $pl
+            (br_if $pd (i32.ge_u (local.get $i) (i32.const 256)))
+            (local.set $t (i32.add (local.get $cnt) (i32.shl (local.get $i) (i32.const 2))))
+            (local.set $d (i32.load (local.get $t)))
+            (i32.store (local.get $t) (local.get $sum))
+            (local.set $sum (i32.add (local.get $sum) (local.get $d)))
+            (local.set $i (i32.add (local.get $i) (i32.const 1)))
+            (br $pl)))
+          ;; move each element to its digit's next slot, in order
+          (local.set $i (i32.const 0))
+          (block $md (loop $ml
+            (br_if $md (i32.ge_u (local.get $i) (local.get $len)))
+            (local.set $d (call $__typed_sort_digit (local.get $src) (local.get $i) (local.get $sh) (local.get $kind) (local.get $sign) (local.get $mask) (local.get $inf) (local.get $pass)))
+            (local.set $t (i32.add (local.get $cnt) (i32.shl (local.get $d) (i32.const 2))))
+            (memory.copy (i32.add (local.get $dst) (i32.shl (i32.load (local.get $t)) (local.get $sh)))
+              (i32.add (local.get $src) (i32.shl (local.get $i) (local.get $sh))) (local.get $w))
+            (i32.store (local.get $t) (i32.add (i32.load (local.get $t)) (i32.const 1)))
+            (local.set $i (i32.add (local.get $i) (i32.const 1)))
+            (br $ml)))
+          (local.set $t (local.get $src)) (local.set $src (local.get $dst)) (local.set $dst (local.get $t))))
+      (local.set $pass (i32.add (local.get $pass) (i32.const 1)))
+      (br $next)))
+    (if (i32.ne (local.get $src) (local.get $a))
+      (then (memory.copy (local.get $a) (local.get $src) (i32.shl (local.get $len) (local.get $sh)))))
+    ${heapSet('(local.get $save)')}
+    (f64.reinterpret_i64 (local.get $ptr)))`
+
+  // The byte of an element's sort key a radix pass reads (see __typed_sort).
+  ctx.core.stdlib['__typed_sort_digit'] = `(func $__typed_sort_digit (param $base i32) (param $i i32) (param $sh i32) (param $kind i32)
+    (param $sign i64) (param $mask i64) (param $inf i64) (param $pass i32) (result i32)
+    (local $at i32) (local $x i64)
+    (local.set $at (i32.add (local.get $base) (i32.shl (local.get $i) (local.get $sh))))
+    (local.set $x
+      (if (result i64) (i32.eq (local.get $sh) (i32.const 3)) (then (i64.load (local.get $at)))
+        (else (if (result i64) (i32.eq (local.get $sh) (i32.const 2)) (then (i64.load32_u (local.get $at)))
+          (else (if (result i64) (i32.eq (local.get $sh) (i32.const 1)) (then (i64.load16_u (local.get $at)))
+            (else (i64.load8_u (local.get $at)))))))))
+    (local.set $x
+      (if (result i64) (i32.eq (local.get $kind) (i32.const 1)) (then (i64.xor (local.get $x) (local.get $sign)))
+        (else (if (result i64) (i32.eqz (local.get $kind)) (then (local.get $x))
+          (else (if (result i64) (i64.gt_u (i64.and (local.get $x) (i64.xor (local.get $sign) (local.get $mask))) (local.get $inf))
+            (then (local.get $mask))
+            (else (if (result i64) (i64.ne (i64.and (local.get $x) (local.get $sign)) (i64.const 0))
+              (then (i64.and (i64.xor (local.get $x) (i64.const -1)) (local.get $mask)))
+              (else (i64.or (local.get $x) (local.get $sign)))))))))))
+    (i32.wrap_i64 (i64.and (i64.shr_u (local.get $x) (i64.extend_i32_u (i32.shl (local.get $pass) (i32.const 3)))) (i64.const 255))))`
+
+  ctx.core.stdlib['__typed_isort'] = `(func $__typed_isort (param $ptr i64) (result f64)
     (local $isbig i32) (local $len i32) (local $i i32) (local $j i32) (local $saved f64) (local $nb f64)
     (local.set $isbig (i32.and (call $__ptr_aux (local.get $ptr)) (i32.const ${TYPED_ELEM_BIGINT_FLAG})))
     (local.set $len (call $__len (local.get $ptr)))
