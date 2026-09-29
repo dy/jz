@@ -671,6 +671,24 @@ test('SIMD - f32 reduction widens to f64x2 accumulate, bit-identical', () => {
   is(jz(`export let m = () => { let a = new Float32Array(16); for (let i=0;i<16;i++) a[i]=i+1; let s=0; for (let i=0;i<16;i++) s+=a[i]; return s }`, { optimize: 'speed' }).exports.m(), 136)
 })
 
+// A lag or a tap (`a[i] * b[i + 3]`, an autocorrelation `x[i] * x[i + k]`): a
+// constant offset rides the load's memarg, `offset=12`, and a counter bounded by a
+// length less the lag reads every element present, so the sum is a lane reduction.
+test('SIMD - a reduction over elements at an offset from the counter', () => {
+  const src = `const x = new Float32Array(64), h = new Float32Array(64)
+    for (let i = 0; i < 64; i++) { x[i] = Math.sin(i * 0.3); h[i] = Math.cos(i * 0.7) }
+    export let tap = (n) => { let s = 0; for (let i = 0; i < n; i++) s += x[i] * h[i + 3]; return s }
+    function lag (v, k) { let n = v.length, s = 0; for (let i = 0; i + k < n; i++) s += v[i] * v[i + k]; return s }
+    export let ac = (k, from) => lag(x.subarray(from, from + 40), k)`
+  ok(/f64x2\.add/.test(funcWat(wat(src, { optimize: 2 }), 'tap')), 'the tap sum runs in lanes')
+  const js = oracle(src)
+  for (const optimize of levels(0, 2, 3)) {
+    const m = jz(src, { optimize }).exports
+    for (const n of [0, 1, 7, 60]) almost(m.tap(n), js.tap(n), 1e-12, `tap(${n}) at ${optimize}`)
+    for (const [k, from] of [[0, 0], [3, 5], [39, 2], [40, 0], [45, 1]]) almost(m.ac(k, from), js.ac(k, from), 1e-12, `ac(${k}, ${from}) at ${optimize}`)
+  }
+})
+
 // === SIMD map bitwise-on-float — genSimdMap declines the fast path ===
 // ECMAScript ToInt32 has no SIMD-lane form (WASM SIMD's only float→int lanes —
 // i32x4.trunc_sat_f32x4_*/f64x2_*_zero — SATURATE out-of-range magnitudes,

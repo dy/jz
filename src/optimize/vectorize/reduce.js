@@ -256,7 +256,9 @@ function tryReduceReassoc(bl, fnLocals, freshIdRef, multiAcc = false) {
       const widenF32 = ltw === 'f32' && laneType === 'f64'
       if (ltw !== laneType && !widenF32) return false
       if (widenF32) sawWidenF32 = true
-      const m = matchLaneAddr(node[1], incVar, addrLocals, offsetTees)
+      // a constant element offset (`a[i + 3]`) rides the memarg, `offset=12`: the lane
+      // address is the operand after it, and the lift keeps the memarg on the vector load
+      const m = matchLaneAddr(typeof node[1] === 'string' && node[1].startsWith('offset=') ? node[2] : node[1], incVar, addrLocals, offsetTees)
       if (!m) return false
       if ((1 << m.strideLog2) !== (widenF32 ? 4 : stride)) return false
       if (m.teeName) addrLocals.set(m.teeName, { strideLog2: m.strideLog2, base: m.base })
