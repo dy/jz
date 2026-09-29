@@ -105,6 +105,7 @@ const TESTS = [
   'integral-loops',
   'chosen-calls',
   'loop-fields',
+  'remainder',
   'select-order',
   'pointer-join',
   'typed-rebound',

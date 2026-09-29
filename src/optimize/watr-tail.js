@@ -20,6 +20,11 @@ import {
 } from './index.js'
 import { pureKernel } from './pure-funcs.js'
 
+// A runtime helper's cold half, split off so the engine inlines the hot head
+// (module/core.js `__rem`, its long division `__rem_div`): the single-caller
+// inliner would splice it back.
+const OUT_OF_LINE = ['$__rem_div']
+
 /**
  * Compute the watr optimizer options for a resolved jz `optimize` config (see
  * `resolveOptimize`) — the single source of truth for "which watr passes does THIS
@@ -125,7 +130,7 @@ export function resolveWatrOpts(cfg, { funcCount = 0, boundaryPins = [] } = {}) 
   // mirrors) so watr's inline passes don't dissolve the call nodes the lift needs. The protection
   // policy lives here in jz — watr just honours the `pin` list (no jz names hardcoded in watr).
   if (watrOpts === true) watrOpts = {}
-  watrOpts.pin = watrOpts.pin ? [...watrOpts.pin, ...SIMD_PINNED] : SIMD_PINNED
+  watrOpts.pin = watrOpts.pin ? [...watrOpts.pin, ...SIMD_PINNED, ...OUT_OF_LINE] : [...SIMD_PINNED, ...OUT_OF_LINE]
   // Partial unrolling overlaps branch latency in compact codecs, but duplicates
   // too many cold compiler/parser loops in large module graphs and loses the
   // warm self-compile I-cache race. Users may still opt in explicitly.

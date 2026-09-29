@@ -459,7 +459,19 @@ export default (ctx) => {
   //   halve back down to |b|. Every step (×2, ×0.5, aligned subtraction) is
   //   exact in f64, so the remainder is bit-identical to JS. Sign follows the
   //   dividend (copysign), matching `(-5)%3 === -2`, `5%(-3) === 2`, `-0%3 === -0`.
+  // `__rem` itself answers a dividend below twice the divisor, a ring buffer's
+  // wrap (`(p + 1) % n`, `(x % n + n) % n`): below it the dividend, from it one
+  // subtraction, exact since |b| <= |a| <= 2|b|. A NaN, an infinity or a zero
+  // divisor fails both tests. Small enough for the engine to inline, it leaves
+  // the division to `__rem_div`.
   ctx.core.stdlib['__rem'] = `(func $__rem (param $a f64) (param $b f64) (result f64)
+    (local $x f64) (local $y f64)
+    (if (f64.lt (local.tee $x (f64.abs (local.get $a))) (local.tee $y (f64.abs (local.get $b))))
+      (then (return (local.get $a))))
+    (if (f64.lt (local.get $x) (f64.mul (local.get $y) (f64.const 2)))
+      (then (return (f64.copysign (f64.sub (local.get $x) (local.get $y)) (local.get $a)))))
+    (call $__rem_div (local.get $a) (local.get $b)))`
+  ctx.core.stdlib['__rem_div'] = `(func $__rem_div (param $a f64) (param $b f64) (result f64)
     (local $x f64) (local $y f64)
     (if (f64.ne (local.get $a) (local.get $a)) (then (return (local.get $a))))
     (if (f64.ne (local.get $b) (local.get $b)) (then (return (local.get $b))))
