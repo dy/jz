@@ -139,6 +139,20 @@ const loopBodyOps = (wat) => {
 // unchanged, buf's `buf[i] = buf[i]` included. The bench corpus sizes and
 // timings are gated on their own.
 
+// Release by reach (2026-09-29): a program whose exported frame may keep what
+// it stored links the walk from what its escapes wrote into (module/core/
+// reach.js). Its loops run once per call that ran an escape, none per
+// iteration of the program's own: `__reach_in` 95 nodes and `__survive` 79 a
+// program. A site's lowering now logs its receiver where it is another than
+// the one logged last: a probe of the log's table, which stands in the arm
+// the lowering stood in (40 nodes where watr inlines it). By function,
+// against the counts above: buf 15658 -> 16728 (`__reach_in` +475,
+// `__survive` +395, `f$exp` +200), slice 69086 -> 71158 (+760, +632, +680),
+// condref 83565 -> 92125 (+3800, +3160, +1160, `__esc_elem` +440). Every
+// other function's count is unchanged. Measured, a loop that stores a fresh
+// array into one receiver made at start runs 2.6 -> 3.2 ns an iteration, one
+// that stores into 64 receivers in turn 5.1 -> 5.3.
+
 // Total loop-body ops across the fixed corpus, per category. Deterministic.
 const measure = () => {
   const totals = {}

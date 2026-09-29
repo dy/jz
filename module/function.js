@@ -19,6 +19,7 @@ import { REP_EDGE_REJECT, representationClosureArgAction } from '../src/compile/
 import { T } from '../src/ast.js'
 import { lookupValType, repOf } from '../src/reps.js'
 import { PTR, LAYOUT, inc, err, declGlobal, setLinkDemand, registerGetter } from '../src/ctx.js'
+import { reachOn } from './core/reach.js'
 import { functionLength } from '../src/function.js'
 import { dataLen, dataPush } from '../src/static-data.js'
 
@@ -225,15 +226,24 @@ export default (ctx) => {
 
     const t = tempI32('env')
 
-    const block = [
-      ['local.set', `$${t}`, ['call', '$__alloc', ['i32.const', envCaptures.length * 8]]],
-    ]
+    // Where a frame may keep what its escapes reach (module/core/reach.js), the
+    // environment carries its count in a header, as an array does: the walk
+    // reads there how many slots a closure it met holds, and a cell's address
+    // fills its slot whole, the high word zero, so what the memory held
+    // before reads as no value.
+    const walked = !!ctx.plans.hasSites && reachOn()
+    const env = walked
+      ? (inc('__alloc_hdr'), ['call', '$__alloc_hdr', ['i32.const', envCaptures.length], ['i32.const', envCaptures.length]])
+      : ['call', '$__alloc', ['i32.const', envCaptures.length * 8]]
+    const block = [['local.set', `$${t}`, env]]
     // Store captured values in env: boxed cells as raw i32 in low 4 bytes, others as f64.
     // Avoids i32↔f64 roundtrip; body loads via i32.load/f64.load using the same branch.
     for (let i = 0; i < envCaptures.length; i++) {
       const addr = ['i32.add', ['local.get', `$${t}`], ['i32.const', i * 8]]
-      if (ctx.func.boxed?.has(envCaptures[i]))
-        block.push(['i32.store', addr, ['local.get', `$${ctx.func.boxed.get(envCaptures[i])}`]])
+      if (ctx.func.boxed?.has(envCaptures[i])) {
+        const cell = ['local.get', `$${ctx.func.boxed.get(envCaptures[i])}`]
+        block.push(walked ? ['i64.store', addr, ['i64.extend_i32_u', cell]] : ['i32.store', addr, cell])
+      }
       else {
         // Identity-safe capture shadow (src/compile/emit.js's emitDecl,
         // ctx.func.identityShadow — see its own comment there): a captured,

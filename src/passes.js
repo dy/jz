@@ -84,6 +84,7 @@ export const PASS_NAMES = [
   'vectorizeLaneLocal',       // SIMD-128 lift for lane-pure typed-array loops
   'recursionUnroll',          // inline a single non-tail self-call to depth N (tree-recursion call-overhead)
   'arenaRewind',              // per-call heap rewind for functions whose allocations stay in the frame
+  'arenaReach',               // a call that ran an escape keeps what the escape reaches, not all it allocated (links the walk, ~2 KB)
   'treeshake',
   'jsstring',                 // boundary opt-in: flip exported string params to externref
   // Registry completion (architecture plan Stage 0): every flag a call site

@@ -125,6 +125,7 @@ import { ctx } from '../../ctx.js'
 import { frameRoots } from '../../function.js'
 import { viewsOn } from '../../../module/schema.js'
 import { TO_JSON } from '../emit/to-json.js'
+import { reachOn } from '../../../module/core/reach.js'
 
 const isArr = Array.isArray
 const isName = (x) => typeof x === 'string'
@@ -296,7 +297,7 @@ const SCRATCH = new Set(['jz_iter$__it_open'])
 // runs (emit/dispatch.js): the receiver of the node's store or call, the same
 // for a store a typed array turns into numbers, the binding the node assigns,
 // the node's first argument; or nothing it can read: the flag goes to zero.
-export const SITE = { RECV: 'recv', ELEM: 'elem', CELL: 'cell', ARG: 'arg', ZERO: 'zero' }
+export const SITE = { RECV: 'recv', ELEM: 'elem', CELL: 'cell', ROOT: 'root', ARG: 'arg', ZERO: 'zero' }
 
 /** The constructor a prepared `new X(...)` call names (`new.X`), or null. */
 const ctorOf = (callee) => isName(callee) && callee.startsWith('new.') ? callee.slice(4) : null
@@ -911,7 +912,7 @@ function census(view, roots, declRoots, params, typedParams = NO_NAMES, conditio
         // frame made: a store into fresh memory.
         if (outerName(target)) {
           outer()
-          if (stored) escape('outer binding ' + target, ctx.scope.userGlobals?.has(target) ? SITE.ZERO : SITE.CELL, { older: true, asked })
+          if (stored) escape('outer binding ' + target, !ctx.scope.userGlobals?.has(target) ? SITE.CELL : reachOn() ? SITE.ROOT : SITE.ZERO, { older: true, asked })
         }
       } else if (isArr(target) && target[0] === '.') {
         // A setter the census cannot name runs code of the module; the store may be a plain one.

@@ -18,6 +18,7 @@ import { dataAlign, dataPush, dataLen, strPoolLen } from '../../static-data.js'
 import { MEM_OPS, findBodyStart } from '../../ir.js'
 import { DYN_CACHE_EMPTY } from '../../../layout.js'
 import { installHelperCounters, instrumentHelperCounter } from '../../helper-counters.js'
+import { ROOT_LOG_BYTES } from '../../../module/core/reach.js'
 
 // Each helper is parsed once into its owned, mutable IR. Late SIMD helpers
 // are parsed only when absent from the assembled module. Generated templates
@@ -201,6 +202,20 @@ export function pullStdlib(sec) {
   // are pulled in on demand, never eagerly, so they're already minimal and never pruned
   // here (guarding against any reachability blind spot in a dotted-name template).
   for (const n of [...ctx.core.includes]) if (n.startsWith('__') && !reachable.has(n)) ctx.core.includes.delete(n)
+  // The walk of what a frame's escapes wrote into (module/core/reach.js) is
+  // called by the epilogue link gives the frame (optimize/arena-rewind.js),
+  // which no call of the module names yet: where the log's writer is reached,
+  // its reader comes with it, and link drops it with the frames that need none.
+  if (ctx.core.includes.has('__root')) {
+    inc('__survive', '__root_reset'); resolveIncludes()
+    // Its log is made first thing as the module starts, below every mark a
+    // frame takes; link takes the allocation back where no frame reads it.
+    if (needsAlloc) {
+      let start = sec.start.find(n => Array.isArray(n) && n[0] === 'func' && n[1] === '$__start')
+      if (!start) sec.start.push(start = ['func', '$__start'], ['start', '$__start'])
+      start.splice(findBodyStart(start), 0, ['global.set', '$__roots', ['call', '$__alloc', ['i32.const', ROOT_LOG_BYTES]]])
+    }
+  }
   // Lazy data-table injection — decimal corrections (245 B) and shared
   // power-of-five seeds (828 B), module/number.js. Each table is appended only when
   // its owning function survived pruning, and its base global declared at the
@@ -276,7 +291,9 @@ export function pullStdlib(sec) {
       // directly, no slot. Excluded: the runtime-protocol globals (each has its own
       // reset right here in `__clear` — resetting `__heap_reset` itself would be
       // self-defeating; the escape flag `__esc` and the mark `__base` every frame
-      // and the host save and restore around a call), `__tof_*` coercion scratch (written-before-read within one
+      // and the host save and restore around a call; the count and the last entry of
+      // the log of escapes, which its table, memory no reset touches, has to agree
+      // with), `__tof_*` coercion scratch (written-before-read within one
       // expression, can never carry state across a round) and `__hc_*` helper counters
       // (diagnostics must observe rounds, not be reset by them).
       const globalRestores = []
@@ -284,7 +301,7 @@ export function pullStdlib(sec) {
         const startFn = sec.start.find(n => Array.isArray(n) && n[0] === 'func' && n[1] === '$__start')
         const SNAP_PROTOCOL = new Set(['__heap', '__heap_reset', '__heap_start',
           '__dyn_get_cache_off', '__dyn_get_cache_props', '__durable_fwd_buf', '__durable_fwd_n',
-          '__durable_arr_seen', '__durable_arr_log', '__gsnap_base', '__esc', '__base'])
+          '__durable_arr_seen', '__durable_arr_log', '__gsnap_base', '__esc', '__base', '__rootn', '__rootl'])
         const runtimeWritten = new Set()
         const scanSet = (node) => {
           if (node[0] === 'global.set' && typeof node[1] === 'string' && node[1][0] === '$') runtimeWritten.add(node[1].slice(1))

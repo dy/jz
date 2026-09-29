@@ -115,7 +115,8 @@ const DECLS = ['export', 'import', 'type', 'param', 'result', 'local']
 const HEAP_GLOBALS = new Set(['$__heap', '$__heap_end', '$__heap_end64', '$__heap_start', '$__heap_reset', '$__jz_last_err_bits', '$__seq',
   '$__ic_found_slot', '$__ic_found_hi', '$__dyn_get_cache_off', '$__dyn_get_cache_props', '$__enumc_epoch', '$__coll_order_n', '$__esc', '$__base',
   '$__jbuf', '$__jpos', '$__jcap', '$__jgap', '$__jgaplen', '$__jdepth', '$__jsp', '$__jpstr', '$__jplen', '$__jppos', '$__jp_err',
-  '$__closure_spill', '$math.rng_state', '$math.rng_seeded'])
+  '$__closure_spill', '$math.rng_state', '$math.rng_seeded',
+  '$__roots', '$__rootn', '$__rootl', '$__r_mark', '$__r_top', '$__r_bits', '$__r_sp', '$__r_lim', '$__r_end'])
 const IC_SITE = /^\$__ic_(hi|slot)\d+$/, REGEX_STATE = /^\$__re_(lastIndex_\d+|g\d+_(start|end))$/
 const heapScratch = (name) => HEAP_GLOBALS.has(name) || IC_SITE.test(name) || REGEX_STATE.test(name)
 const NO_NAMES = new Set()
@@ -133,7 +134,12 @@ const CENSUS_GUARDED = /^\$__durable_/
 // ends itself: the JSON writer's stack of open containers (module/json.js),
 // pushed by `__json_enter` and popped by `__json_leave` within one call.
 const LENDS = new Set(['$__json_enter'])
-const LOWERS = new Set(['$__esc_at', '$__esc_val', '$__esc_elem'])
+const LOWERS = new Set(['$__esc_at', '$__esc_val', '$__esc_elem', '$__esc_cell', '$__esc_root'])
+// The log of what the escapes wrote into and the walk from it as a frame
+// returns (module/core/reach.js): kernels of the protocol itself, whose
+// stores go into the log and into scratch above the heap.
+const REACH = /^\$__(root|root_reset|survive|reach_\w+)$/
+const SURVIVE = '$__survive', ROOTN = '$__rootn', ROOTS = '$__roots', ROOT_RESET = '$__root_reset'
 // What asks of a stored value whether a running call made it: no lowering itself.
 const ASKS = '$__esc_new'
 const ESC_MARK = 'esch'
@@ -368,6 +374,7 @@ export function arenaRewind(root, { rewindable, heapAddr, unsafe = NO_NAMES, kee
         const callee = text(T.a[id])
         if (callee === '$__alloc' || callee === '$__alloc_hdr' || callee === '$__alloc_hdr_n') rec.allocs = true
         if (LOWERS.has(callee)) { if (!LOWERS.has(name)) { rec.lowers = true; if (rec.censused) rec.ownFlag = true } return }
+        if (callee !== null && REACH.test(callee)) return
         if (callee === null || callee === ASKS || ARENA_SAFE.includes(callee) || CENSUS_GUARDED.test(callee)) return
         // jz's own interop imports (`$__ext_*`, interop.js) that read hand the
         // host nothing; one that calls the host or sets a property of its
@@ -380,7 +387,7 @@ export function arenaRewind(root, { rewindable, heapAddr, unsafe = NO_NAMES, kee
         rec.calls.add(callee)
       }
     })
-    if (name.startsWith('$__') && !CENSUS_GUARDED.test(name) && !LOWERS.has(name) && !LENDS.has(name)) for (const id of storesOutside(f)) escapeAt(rec, id, 'stores outside')
+    if (name.startsWith('$__') && !CENSUS_GUARDED.test(name) && !LOWERS.has(name) && !LENDS.has(name) && !REACH.test(name)) for (const id of storesOutside(f)) escapeAt(rec, id, 'stores outside')
     info.set(name, rec)
   }
   // A module with no heap pointer and no call of the allocator allocates
@@ -599,15 +606,34 @@ export function arenaRewind(root, { rewindable, heapAddr, unsafe = NO_NAMES, kee
   // The return of a rewound frame: the heap back, or for a conditional frame
   // back only when no escape wrote below the frame's mark, the lower of the
   // flag and the saved one then standing for the caller.
+  // Where an escape did write below the mark, the outermost frame reading the
+  // flag (none ran as it was entered: the base it saved is all ones) keeps
+  // what the escapes reach and gives back the rest (module/core/reach.js); a
+  // frame inside another keeps all, the outer one deciding for both.
+  const reach = globals.has(ROOTN) && info.has(SURVIVE) && info.has(ROOT_RESET)
+  const outermost = (bsave) => { const t = node(intern('i32.eq')); push(t, localGet(bsave)); push(t, i32c(-1)); return t }
   const restore = (save, esave, bsave) => {
     if (esave == null) return back(save)
     const test = node(intern('i32.ge_u')); push(test, escGet()); push(test, localGet(save))
     const iff = node(intern('if')); push(iff, test)
     const then = node(intern('then')); for (const n of back(save)) push(then, n); push(iff, then)
+    if (reach) {
+      const walked = node(CALL); push(walked, str(SURVIVE)); push(walked, localGet(save))
+      const keep = node(intern('if')); push(keep, outermost(bsave))
+      push(push(keep, node(intern('then'))), heapSet(walked))
+      push(push(iff, node(intern('else'))), keep)
+    }
     const lower = node(intern('i32.lt_u')); push(lower, localGet(esave)); push(lower, escGet())
     const join = node(intern('if')); push(join, lower)
     const joined = node(intern('then')); push(joined, escSet(localGet(esave))); push(join, joined)
     return [iff, join, baseSet(localGet(bsave))]
+  }
+  // The log starts empty with the outermost frame.
+  const logFrom = (bsave) => {
+    const empty = node(CALL); push(empty, str(ROOT_RESET))
+    const iff = node(intern('if')); push(iff, outermost(bsave))
+    push(push(iff, node(intern('then'))), empty)
+    return iff
   }
   const baseGet = () => { const g = node(intern('global.get')); push(g, str('$__base')); return g }
   const baseSet = (value) => { const s = node(GLOBAL_SET); push(s, str('$__base')); push(s, value); return s }
@@ -699,7 +725,7 @@ export function arenaRewind(root, { rewindable, heapAddr, unsafe = NO_NAMES, kee
     while (T.next[at] !== NONE && isHeader(T.next[at])) at = T.next[at]
     const entry = esave == null ? [local(save, 'i32'), local(ret, resultType), localSet(save, heapGet())]
       : [local(save, 'i32'), local(esave, 'i32'), local(bsave, 'i32'), local(ret, resultType), localSet(save, heapGet()), localSet(esave, escGet()), escSet(i32c(-1)),
-        localSet(bsave, baseGet()), baseEnter(save)]
+        localSet(bsave, baseGet()), ...(reach ? [logFrom(bsave)] : []), baseEnter(save)]
     for (const n of entry) { insertAfter(f, at, n); at = n }
     rewound.add(name)
     if (esave != null) { flagged.add(name); readers.add(name); report?.(name, 'kept on a call that runs an escape: ' + (conditional.get?.(name) ?? rec.tapeFlagWhy)) }
@@ -824,5 +850,19 @@ export function arenaRewind(root, { rewindable, heapAddr, unsafe = NO_NAMES, kee
     }
   }
   if (heapless) flagged.clear()
+  // The host is the outermost reader of a call it releases by the flag: what
+  // such a call keeps is the host's to walk (interop.js).
+  // Its log starts empty as the host sets its mark (link/sections.js `__base`).
+  else if (reach && [...readers].some(n => hosted.has(n))) for (const name of [SURVIVE, ROOT_RESET]) {
+    const e = push(root, node(intern('export')))
+    push(e, str(`"${name.slice(1)}"`))
+    push(push(e, node(FUNC)), str(name))
+  }
+  // The log the module makes as it starts (wat/assemble/stdlib-pull.js) goes
+  // where no frame walks from it.
+  if (rewrite && !(reach && !heapless && readers.size)) for (let f = T.a[root]; f !== NONE; f = T.next[f]) {
+    if (T.op[f] !== FUNC || text(T.a[f]) !== '$__start') continue
+    walk(f, (id, parent) => { if (parent !== NONE && T.op[id] === GLOBAL_SET && text(T.a[id]) === ROOTS) { remove(parent, id); return false } })
+  }
   return { releasable, rewound, flagged, allocates: (name) => info.get(name)?.allocs ?? false, why: (name) => info.get(name)?.why ?? null }
 }

@@ -29,6 +29,7 @@ import {
 } from '../representation-plan.js'
 import { CARRIER } from '../../summary/contract.js'
 import { SITE, allocatesNothing } from '../analyze/frame-effects.js'
+import { reachOn } from '../../../module/core/reach.js'
 import { CMP_SET, boolEagerBody, eagerSelectOK, isCanonicalBoolExpr, isCmp, selectOK } from './shared.js'
 import { K, NUMBER, hasTag, orAbsent, valOf, core as summaryCore, tagOf as summaryTagOf, tagsOf as summaryTagsOf, bitOf as summaryBitOf, NULL_BITS as SUMMARY_NULL_BITS } from '../../summary/kind.js'
 
@@ -1574,6 +1575,7 @@ export function emit(node, expect) {
   markInstrumented(node)
   const origin = ctx.plans.siteOrigin?.get(node) ?? node
   const heap = ctx.memory.shared || ctx.scope.globals.has('__heap')
+  if (reachOn() && moduleBinding(node)) return rooted(emitNode(node, expect), node[1], node)
   if (ctx.plans.siteGrown?.has(origin) && heap) return whereGrown(node, origin, expect)
   // an assignment yields what it stored: the flag goes down only for a value a
   // running call made, or where the store allocated
@@ -1600,6 +1602,7 @@ export function emit(node, expect) {
  *  before the value is made. */
 export function whereNew(ir, flag, pre = [], mark = null) {
   if (flag === null) return ir
+  if (flag === ROOT) return rooted(ir)
   // a number is no pointer: only the store's own allocation is left to ask
   const number = ir.valKind === VAL.NUMBER || (ir.type === 'i32' && ir.ptrKind == null)
   if (number && mark === null) return ir
@@ -1627,6 +1630,36 @@ const noted = (flag, node) => {
 /** The site (or the site a clone of it copies) is flagged where it is emitted. */
 export const markInstrumented = (node) => ctx.plans.instrumented.add(ctx.plans.siteOrigin?.get(node) ?? node)
 const flagToZero = () => ['global.set', '$__esc', ['i32.const', 0]]
+// A module binding assigned a value: no memory is written, and the value is
+// itself the way into what the call made. Its site runs after the value is
+// made and hands it to the log (`__esc_root`, module/core/reach.js), which
+// lowers the flag for one a running call made. `ROOT` stands for that
+// lowering where a caller holds the value, not the node.
+const ROOT = ['call', '$__esc_root']
+const moduleBinding = (node) => (ASSIGN_OPS.has(node[0]) || node[0] === '++' || node[0] === '--') &&
+  typeof node[1] === 'string' && !ctx.func.boxed?.has(node[1]) && isGlobal(node[1])
+/** `ir` with the value it yields handed to the log, or, given the binding's
+ *  `name`, the value the binding holds once `ir` ran (an assignment that
+ *  computes yields what it stored, a postfix step what stood before). */
+function rooted(ir, name = null, node = null) {
+  inc('__esc_root')
+  if (name === null) {
+    if (ir.valKind === VAL.NUMBER || (ir.type === 'i32' && ir.ptrKind == null)) return ir
+    const kept = escLocal('f64', ESC_VALUE)
+    const out = typed(['block', ['result', 'f64'], ['local.set', kept, asF64(ir)], ['call', '$__esc_root', ['local.get', kept]], ['local.get', kept]], 'f64')
+    if (ir.type === 'f64') for (const k of REP_FACTS) if (ir[k] !== undefined) out[k] = ir[k]
+    return out
+  }
+  const lower = noted(['call', '$__esc_root', asF64(emit(name))], node)
+  if (ir == null) return typed(lower, 'void')
+  const t = Array.isArray(ir) ? ir.type : undefined
+  if (!t || t === 'void') return typed(['block', ...flat(ir), lower], 'void')
+  const value = t === 'i32' ? asF64(ir) : ir, vt = t === 'i32' ? 'f64' : t
+  const kept = escLocal(vt, ESC_VALUE)
+  const out = typed(['block', ['result', vt], ['local.set', kept, value], lower, ['local.get', kept]], vt)
+  if (t !== 'i32') for (const k of REP_FACTS) if (ir[k] !== undefined) out[k] = ir[k]
+  return out
+}
 // The tag of the locals a growth site keeps in: link drops their writes with
 // the check no frame reads (optimize/arena-rewind.js, same tag). Numbered
 // apart from the frame's other names: a site changes no label and no temp
@@ -1649,8 +1682,8 @@ const escLocal = (type, tag) => {
 function holderFlag(target, kind, held = null) {
   if (kind === SITE.CELL) {
     if (typeof target !== 'string') return flagToZero()
-    if (ctx.func.boxed?.has(target)) { inc('__esc_at'); return ['call', '$__esc_at', boxedAddr(target)] }
-    return isGlobal(target) ? flagToZero() : null
+    if (ctx.func.boxed?.has(target)) { const lower = reachOn() ? '__esc_cell' : '__esc_at'; inc(lower); return ['call', '$' + lower, boxedAddr(target)] }
+    return !isGlobal(target) ? null : reachOn() ? ROOT : flagToZero()
   }
   if (target == null || kind === SITE.ZERO) return flagToZero()
   const fn = kind === SITE.ELEM ? '__esc_elem' : '__esc_val'
@@ -1667,7 +1700,9 @@ function holderFlag(target, kind, held = null) {
  *  (`target`, where the caller names it). */
 export function siteFlag(node, target = undefined, held = null) {
   const kind = ctx.plans.siteKinds?.get(ctx.plans.siteOrigin?.get(node) ?? node) ?? SITE.ZERO
-  if (kind === SITE.CELL) return noted(holderFlag(target ?? node[1], kind), node)
+  const name = target ?? node[1]
+  if (reachOn() && typeof name === 'string' && moduleBinding([node[0], name])) return ROOT
+  if (kind === SITE.CELL) return noted(holderFlag(name, kind), node)
   if (kind === SITE.ARG) { const a = node[2]; target = a == null ? null : Array.isArray(a) && a[0] === ',' ? a[1] : a }
   else if (kind !== SITE.ZERO) { const t = node[1]; target = Array.isArray(t) && (t[0] === '.' || t[0] === '[]') ? t[1] : null }
   return noted(holderFlag(target, kind, held), node)
@@ -1740,6 +1775,7 @@ function remarked(node, expect, mark) {
 const REP_FACTS = ['ptrKind', 'ptrAux', 'srcPtrKind', 'schemaSid', 'valKind', 'bigintRaw', 'bigintBox']
 export const withEscapeFlag = (ir, flag = flagToZero()) => {
   if (flag === null) return ir
+  if (flag === ROOT) return rooted(ir)
   if (ir == null) return typed(flag, 'void')
   const t = Array.isArray(ir) ? ir.type : undefined
   if (!t || t === 'void') return typed(['block', flag, ...flat(ir)], 'void')

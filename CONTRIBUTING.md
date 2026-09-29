@@ -1152,6 +1152,41 @@ what their checks kept unless a pass before link made later code read it (a
 receiver read twice is read once into the site's local); a module with no
 reader carries no flag.
 
+A frame that ran an escape keeps what the escape reaches, not all it
+allocated (`arenaReach`, module/core/reach.js; off at the size tier, where a
+kept call keeps whole). An escape into storage older than every frame
+reading the flag (`$__base`) logs where it wrote: the receiver, the cell of a
+captured binding (`__esc_cell`), the value a module binding took
+(`__esc_root`, which lowers the flag to one: below every mark, above the
+zero of an escape the log does not describe). What a frame made is reached
+from outside it only through such storage, by a store that ran while the
+frame did, so the log names every way in. As the outermost frame returns
+(its saved base all ones; for a call the host releases, the host, which
+calls the exported `__survive`), the walk starts from the log and follows
+the blocks the frame made as they stand then, so a store of one fresh value
+into another needs no barrier, and the heap goes back to the end of the
+highest block reached. Nothing moves. The walk reads a block by its
+pointer's kind (a header's count, a table's entries, a moved block's stub, a
+view's buffer, a closure's environment, which carries its count in a header
+where the module has sites) and takes every word that reads as a pointer
+into the frame's memory for one: a number that reads so keeps a block more,
+never one less. A block made before the frame that grew in place past the
+frame's mark counts by its end, and one with no payload, the last the
+frame made, starts at the heap's top. The durable log's buffers, which a store
+into a receiver made at start writes into the frame's memory, count as
+reached; the log of the walk itself is allocated as the module starts, below
+every mark, and link takes the allocation back where no frame walks. It is a
+table an entry is found in by its address, asked only for a receiver other
+than the one logged last, so a loop that stores into one receiver pays a
+compare an iteration, and one that stores into many a probe; it is emptied as
+the outermost frame is entered, where the frame before wrote into it. Blocks below the highest reached stay, reached or not: a value
+stored last keeps what the call made before it. The frame keeps all, as
+before, where the flag stands at zero, where more receivers were written
+than the log holds (128), or where the walk finds no memory for its stack.
+So a function every call of which stores what it made (`keeps`) restores by
+the flag all the same where a host calls it; one the module calls keeps
+whole, the frame around it deciding for both.
+
 `JZ_DEBUG_POISON=1` makes every restore, a frame's, an iteration's and the
 host's, overwrite what it frees: a pointer kept into freed memory reads all
 ones instead of what the block held until the next allocation. The suite and

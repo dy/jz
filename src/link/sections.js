@@ -9,7 +9,7 @@
  *
  * @module link/sections
  */
-import { T, NONE, intern, text, walk, push, node, str, bytes } from '../ir/tape.js'
+import { T, NONE, intern, text, walk, push, node, str, num, bytes } from '../ir/tape.js'
 
 const utf8 = new TextEncoder()
 const varint = (out, n) => { while (n >= 0x80) { out.push((n & 0x7F) | 0x80); n >>>= 7 } out.push(n) }
@@ -98,18 +98,37 @@ export function schemaSections(root, { schemas, fieldContracts, namedUses, error
  *  clears it where a call begins (a call an exception left did not restore
  *  it) and sets it to its own mark around a flagged one. A function, not the
  *  global: its write keeps the global mutable where no frame of the module
- *  writes it (watr takes a global nothing writes for a constant).
+ *  writes it (watr takes a global nothing writes for a constant). The host
+ *  `__base` answers the mark it replaced, which the host puts back where it
+ *  is the older (a frame of the module that called the host, which called
+ *  back) and as the call returns. Where it replaced none, the host is the
+ *  outermost reader, and the log of what the call's escapes write into
+ *  starts empty (module/core/reach.js; the walk from it, `__survive`, is
+ *  exported by optimize/arena-rewind.js).
  *  `exportInner` maps each export name to the function its wrapper calls. */
 export function releaseSection(root, releasable, exportInner, conditional) {
-  const GLOBAL = intern('global'), declared = new Set()
-  for (let c = T.a[root]; c !== NONE; c = T.next[c]) if (T.op[c] === GLOBAL) declared.add(text(T.a[c]))
+  const GLOBAL = intern('global'), FUNC = intern('func'), declared = new Set()
+  for (let c = T.a[root]; c !== NONE; c = T.next[c]) if (T.op[c] === GLOBAL || T.op[c] === FUNC) declared.add(text(T.a[c]))
   if (declared.has('$__base')) {
-    const f = push(root, node(intern('func')))
+    // (func (param $mark i32) (result i32) (local $was i32)
+    //   was = base; [if was == -1: the log starts empty]; base = mark; was)
+    const get = (kind, name) => { const g = node(intern(kind)); push(g, str(name)); return g }
+    const set = (kind, name, value) => { const s = node(intern(kind)); push(s, str(name)); push(s, value); return s }
+    const f = push(root, node(FUNC))
     push(f, str('$__base$set'))
     push(push(f, node(intern('export'))), str('"__base"'))
     const p = push(f, node(intern('param'))); push(p, str('$mark')); push(p, str('i32'))
-    const set = push(f, node(intern('global.set'))); push(set, str('$__base'))
-    push(push(set, node(intern('local.get'))), str('$mark'))
+    push(push(f, node(intern('result'))), str('i32'))
+    const l = push(f, node(intern('local'))); push(l, str('$was')); push(l, str('i32'))
+    push(f, set('local.set', '$was', get('global.get', '$__base')))
+    if (declared.has('$__root_reset')) {
+      // no frame read the flag: the log of what the escapes write into starts empty
+      const none = node(intern('i32.eq')); push(none, get('local.get', '$was')); push(push(none, node(intern('i32.const'))), num(-1))
+      const iff = push(f, node(intern('if'))); push(iff, none)
+      push(push(iff, node(intern('then'))), get('call', '$__root_reset'))
+    }
+    push(f, set('global.set', '$__base', get('local.get', '$mark')))
+    push(f, get('local.get', '$was'))
   }
   const release = [], flag = []
   for (const [name, inner] of exportInner) if (releasable.has(inner)) { release.push(name); if (conditional?.has(inner)) flag.push(name) }

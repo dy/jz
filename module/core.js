@@ -32,6 +32,7 @@ import { eqIdentityChain } from '../layout-kinds.js'
 import { registerF16 } from './core/f16.js'
 import { registerErrorClasses, throwErrorWat, requireReceiverWat } from './core/error-object.js'
 import { registerDurableLog } from './core/durable-log.js'
+import { registerReach, reachOn, REACH_DEPS } from './core/reach.js'
 import { hasExternalIngress } from '../src/compile/func-exports.js'
 import { representationProgramHasBigint } from '../src/compile/representation-plan.js'
 import { errorCodeLiteral, ERR } from '../err-codes.js'
@@ -83,8 +84,9 @@ export default (ctx) => {
     __typed_idx_tagged: ['__typed_idx', '__typed_data', '__len', '__ptr_type', '__ptr_aux', '__alloc', '__mkptr'],
     __box_bigint: ['__alloc', '__mkptr'],
     __ptr_offset: ['__ptr_offset_fwd'],
-    __esc_val: ['__esc_at'],
-    __esc_elem: ['__esc_at'],
+    __esc_val: () => ['__esc_at', ...(reachOn() ? ['__root'] : [])],
+    __esc_elem: () => ['__esc_at', ...(reachOn() ? ['__root'] : [])],
+    ...REACH_DEPS,
     __ptr_offset_fwd: [],
     __is_str_key: ['__ptr_type'],
     __is_truthy: () => representationProgramHasBigint(ctx) ? ['__ptr_type', '__ptr_offset'] : [],
@@ -500,14 +502,22 @@ export default (ctx) => {
   // writes lands in the block the pointer names.
   ctx.core.stdlib['__esc_at'] = `(func $__esc_at (param $a i32)
     (if (i32.lt_u (local.get $a) (global.get $__esc)) (then (global.set $__esc (local.get $a)))))`
-  const escOf = (name, holdsNone) => `(func $${name} (param $v f64)
-    (local $b i64) (local $t i32)
+  // A receiver older than every frame reading the flag is a way into what
+  // they made: where a frame walks from its escapes, the log takes it
+  // (module/core/reach.js), unless it took the same one last: a loop storing
+  // into one receiver logs once.
+  const escOf = (name, holdsNone) => () => `(func $${name} (param $v f64)
+    (local $b i64) (local $t i32) (local $a i32)
     (if (f64.eq (local.get $v) (local.get $v)) (then (return)))
     (local.set $b (i64.reinterpret_f64 (local.get $v)))
     (local.set $t (i32.wrap_i64 (i64.and (i64.shr_u (local.get $b) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK}))))
     (if (i32.and (i32.shl (i32.const 1) (local.get $t)) (i32.const ${holdsNone})) (then (return)))
     (if (i32.eq (local.get $t) (i32.const ${PTR.EXTERNAL})) (then (global.set $__esc (i32.const 0)) (return)))
-    (call $__esc_at (i32.wrap_i64 (local.get $b))))`
+    (local.set $a (i32.wrap_i64 (local.get $b)))
+    (call $__esc_at (local.get $a))${reachOn() ? `
+    (if (i64.ne (local.get $b) (global.get $__rootl))
+      (then (if (i32.lt_u (local.get $a) (global.get $__base))
+        (then (if (i32.ne (global.get $__base) (i32.const -1)) (then (call $__root (local.get $b))))))))` : ''})`
   const HOLDS_NONE = (1 << PTR.ATOM) | (1 << PTR.STRING) | (1 << PTR.BIGINT)
   ctx.core.stdlib['__esc_val'] = escOf('__esc_val', HOLDS_NONE)
   ctx.core.stdlib['__esc_elem'] = escOf('__esc_elem', HOLDS_NONE | (1 << PTR.TYPED) | (1 << PTR.BUFFER))
@@ -527,6 +537,7 @@ export default (ctx) => {
           (i64.ne (i64.and (local.get $b) (i64.const ${ssoBitI64Hex()})) (i64.const 0)))
       (then (return (i32.const 0))))
     (i32.ge_u (i32.wrap_i64 (local.get $b)) (global.get $__base)))`
+  registerReach()
 
   // True iff a NaN-boxed value is a non-primitive (heap object) — tag is neither
   // ATOM (null/undefined/boolean/symbol), STRING or BIGINT. A genuine f64 Number is

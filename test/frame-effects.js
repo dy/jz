@@ -56,7 +56,7 @@ test('frame effects: a fresh object stored into a module field survives the call
     m.exports.f(); m.exports.h()
     is(m.exports.g(), 1, `O${optimize}: the stored object is not overwritten by the next allocation`)
   }
-  is(whyNot(src), 'escape: heap value into st', 'the census names the escaping store')
+  is(whyNot(src), 'kept on a call that runs an escape: heap value into st', 'the census names the escaping store')
 })
 
 test('frame effects: an empty literal kept in a module binding survives the call', () => {
@@ -87,12 +87,175 @@ test('frame effects: a fresh object pushed into a module array, and a string, su
   }
 })
 
-test('frame effects: a value the call surely made, stored into storage older than the call, keeps every call', () => {
-  ok(/^escape: heap value into o/.test(whyNot('export function f(o, n) { o.x = { y: n }; const t = new Array(n).fill(0); return t.length }')), 'through a parameter (the prepared name of `o`)')
-  is(whyNot('const reg = []; function keep(o) { reg.push(o) } export function f(n) { const o = { x: n }; keep(o); return 1 }'), 'escape: heap value into reg', 'through a callee that pushes it into module state')
-  is(whyNot('let last = null; export function f(n) { last = [n, n]; return last.length }'), 'escape: outer binding last', 'into a module binding')
-  is(whyNot('import { log } from "env"; export function f(n) { const o = { x: n }; log(o); const t = new Array(n).fill(0); return t.length }', { imports: { env: { log() {} } } }), 'calls log, the host\'s', 'a host import may keep what it receives')
-  ok(!rewinds('export function f(o, n) { o.x = { y: n }; const t = new Array(n).fill(0); return t.length }'), 'no rewind emitted')
+test('frame effects: a value the call surely made, stored into storage older than the call, escapes on every call', () => {
+  // The frame a host calls reads the flag all the same: it keeps what the store reaches (module/core/reach.js).
+  const kept = 'kept on a call that runs an escape: '
+  const param = 'export function f(o, n) { o.x = { y: n }; const t = new Array(n).fill(0); return t.length }'
+  ok(whyNot(param).startsWith(kept + 'heap value into o'), 'through a parameter (the prepared name of `o`)')
+  ok(flagged(param) && /\$__survive/.test(bodyOf(compile(param, { wat: true, ...TAPE }), 'f')), 'its frame walks from what it wrote into')
+  is(whyNot('const reg = []; function keep(o) { reg.push(o) } export function f(n) { const o = { x: n }; keep(o); return 1 }'), kept + 'heap value into reg', 'through a callee that pushes it into module state')
+  is(whyNot('let last = null; export function f(n) { last = [n, n]; return last.length }'), kept + 'outer binding last', 'into a module binding')
+  // A function of the module's own keeps whole: the frame around it decides for both.
+  const inner = []
+  compile('const reg = []; function keep(o) { reg.push(o); return o.x > 0 ? keep({ x: o.x - 1 }) : 0 } export function f(n) { const o = { x: n }; keep(o); return 1 }',
+    { ...TAPE, whyNotRewind: (n, r) => inner.push(n + ': ' + r) })
+  ok(inner.includes('$keep: escape: heap value into reg'), 'a callee no host calls: ' + inner.join(' | '))
+  // A host handed a value may keep it, and names no address: no call restores.
+  const host = 'import { log } from "env"; export function f(n) { const o = { x: n }; log(o); const t = new Array(n).fill(0); return t.length }'
+  is(whyNot(host, { imports: { env: { log() {} } } }), 'calls log, the host\'s', 'a host import may keep what it receives')
+  ok(!rewinds(host, { imports: { env: { log() {} } } }), 'no rewind emitted')
+})
+
+test('frame effects: a call that ran an escape keeps what the escape reaches', () => {
+  // A thousand temporaries beside the one value kept: the heap goes back to the end of what the value reaches.
+  const churn = `export function churn(n) { const a = []; for (let i = 0; i < n; i++) a.push('c' + i + 'yyyyyyyyyyyyyyyy'); return a.length }`
+  const big = 'const t = []; for (let i = 0; i < 1000; i++) t.push([i, i + n])'
+  const cases = {
+    'a module binding': [`let kept = null
+      export function f(n) { kept = [n, n + 1]; ${big}; return t.length }`, 'kept.join()'],
+    'an entry of a Map made at start': [`const cache = new Map()
+      export function f(n) { cache.set(n & 3, new Float64Array([n, n * 2])); ${big}; return t.length }`, '[...cache.keys()].sort().map(k => k + ":" + cache.get(k)[1]).join()'],
+    'a nested value in a state object': [`const st = { cur: null, n: 0 }
+      export function f(n) { st.cur = { a: [n, { deep: 'v' + n + 'zzzzzzzzzzzzzzzzzzzz' }], b: new Float64Array([n]) }; st.n = n; ${big}; return t.length }`,
+      'st.cur.a[0] + ":" + st.cur.a[1].deep + ":" + st.cur.b[0] + ":" + st.n'],
+    'a closure, the cell and the array it captured': [`const st = { next: null }
+      export function f(n) { let c = n; const arr = [n, n + 1]; st.next = () => { c += arr[1]; return c }; ${big}; return t.length }`, 'st.next() + ":" + st.next()'],
+    'a view, a Set, a BigInt, a slice, a Map': [`const st = { view: null, set: null, big: null, str: null, map: null }
+      export function f(n) { const b = new Float64Array(16); b[3] = n; st.view = b.subarray(2, 8); st.set = new Set([n, 'w' + n + 'zzzzzzzzzzzzzzzzzzzz']); st.big = BigInt(n) * 1000000007n
+        st.str = ('a string long enough to live in the heap ' + n).slice(3, 30); st.map = new Map([[n, { deep: [n] }]]); ${big}; return t.length }`,
+      'st.view[1] + ";" + [...st.set].join() + ";" + String(st.big) + ";" + st.str + ";" + st.map.get([...st.map.keys()][0]).deep[0]'],
+    'an array made at start that the call grows': [`const log = [0]
+      export function f(n) { for (let i = 0; i < 40; i++) log.push({ v: n + i }); ${big}; return t.length }`, 'log.length + ":" + log[log.length - 1].v + ":" + log[1].v'],
+    'a property an object made at start takes': [`const p = { a: 1 }
+      export function f(n) { p['k' + (n & 3) + '_a_key_too_long_to_pack'] = [n, 'v' + n + 'zzzzzzzzzzzzzzzzzzzz']; ${big}; return t.length }`,
+      'Object.keys(p).sort().map(k => k.slice(0, 2) + ":" + p[k]).join(";")'],
+  }
+  for (const [what, [body, read]] of Object.entries(cases)) for (const optimize of levels(2, 3)) {
+    const src = `${body}\n export let read = () => ${read}\n ${churn}`
+    const { exports: m, memory } = jz(src, { optimize }), js = oracle(src), kept = []
+    for (let i = 1; i <= 8; i++) {
+      const used = memory.used
+      m.f(i); js.f(i)
+      kept.push(memory.used - used)
+      m.churn(40); js.churn(40)
+      is(m.read(), js.read(), `${what}: what call ${i} kept reads back at ${optimize}`)
+    }
+    // the first calls make a table's first entries and the durable log, one time each; an array that grows moves whole
+    ok(Math.max(...kept.slice(4)) < 8192, `${what}: a call keeps what it stored, not the 48 KB beside it, at ${optimize}: ${kept}`)
+  }
+  // Below the highest block reached everything stays: a value stored last keeps what the call made before it.
+  const late = `let kept = null
+    export function f(n) { ${big}; kept = [n, t.length]; return t.length }
+    export let read = () => kept.join()\n ${churn}`
+  // The frame keeps all where an escape names no address (a host handed a value), and where the log is full.
+  const host = `import { take } from 'env'
+    const st = { cur: null }
+    export function f(n) { st.cur = [n]; take([n, n + 1]); ${big}; return t.length }
+    export let read = () => st.cur.join()\n ${churn}`
+  const full = `const slots = []; for (let i = 0; i < 200; i++) slots.push({ v: null })
+    export function f(n) { for (let i = 0; i < 200; i++) slots[i].v = [n, i]; ${big}; return t.length }
+    export let read = () => slots[0].v.join() + ';' + slots[199].v.join()\n ${churn}`
+  for (const [what, src, opts] of [['a value stored last', late], ['a host handed a value', host, { imports: { env: { take() {} } } }], ['more receivers than the log holds', full]]) for (const optimize of levels(2, 3)) {
+    const { exports: m, memory } = jz(src, { optimize, ...opts }), js = oracle(src.replace(/import[^\n]*\n/, 'const take = () => {}\n'))
+    for (let i = 1; i <= 3; i++) {
+      const used = memory.used
+      m.f(i); js.f(i)
+      ok(memory.used - used > 40000, `${what}: call ${i} keeps all at ${optimize}`)
+      m.churn(40); js.churn(40)
+      is(m.read(), js.read(), `${what}: what call ${i} kept reads back at ${optimize}`)
+    }
+  }
+})
+
+test('frame effects: a block with no payload, the last its call made, stays with what names it', () => {
+  // an empty typed array is a header alone: its pointer names the heap's top as the call returns
+  const src = `let a
+    export function reset(n) { const b = new Int32Array(n + 2); b[0] = n; a = new Int32Array(n); for (let i = 0; i < n; i++) a[i] = i + 7; return b[0] }
+    export function read(n, k) { let s = 0; for (let i = 0; i < n; i++) s += a[k] | 0; return s }
+    export function write(n, k) { for (let i = 0; i < n; i++) a[k] = (a[k] | 0) + 1; return a.length }
+    export function churn(n) { const t = new Int32Array(n); t.fill(-1); return t.length }
+    let e = null, s = null
+    export function empties() { e = []; s = new Set(); return 1 }
+    export let sizes = () => e.length + ':' + s.size`
+  const js = oracle(src)
+  for (const optimize of levels(0, 2, 3)) {
+    const m = jz(src, { optimize }).exports
+    for (const n of [0, 3, 0, 1, 0]) {
+      is(m.reset(n), js.reset(n)); is(m.churn(64), js.churn(64))
+      for (const k of [0, n]) { is(m.write(2, k), js.write(2, k), `O${optimize}: length ${n}, a write at ${k}`); is(m.read(3, k), js.read(3, k), `O${optimize}: length ${n}, a read at ${k}`) }
+    }
+    is(m.empties(), js.empties()); is(m.churn(64), js.churn(64))
+    is(m.sizes(), js.sizes(), `O${optimize}: an empty array and an empty Set`)
+  }
+})
+
+test('frame effects: the log of what the escapes wrote into is made as the module starts', () => {
+  const src = `let kept = null
+    export function f(i) { const t = new Float64Array(64); t[1] = i; kept = [i, t[1]]; return t.length }
+    export let read = () => kept.join()`
+  const js = oracle(src)
+  for (const optimize of levels(2, 3)) {
+    const { exports: m, memory } = jz(src, { optimize }), held = []
+    for (let i = 0; i < 4; i++) { const used = memory.used; is(m.f(i), js.f(i)); held.push(memory.used - used) }
+    is(m.read(), js.read())
+    is(held[0], held[3], `O${optimize}: the first call keeps what the last does: ${held}`)
+    ok(held[0] > 0 && held[0] < 64, 'the pair it stored, none of its temporary')
+  }
+  if (belowOpt(2)) return
+  ok(!/call \$__alloc/.test(bodyOf(compile(src, { wat: true, ...TAPE }), '__root')), 'no store allocates the log')
+})
+
+test('frame effects: the host keeps the mark of a frame that runs around its call', () => {
+  // `__base` answers the mark it replaced: the host puts an older one back, and the log starts empty only where none stood.
+  const src = `const st = { cur: null }
+    export function f(xs, n) { st.cur = [xs.length, n]; const t = [n, n]; return t.length }
+    export let read = () => st.cur.join()`
+  const { instance, exports: m } = jz(src, { optimize: 2 })
+  const base = instance.exports.__base
+  ok(typeof base === 'function' && typeof instance.exports.__survive === 'function', 'the module hands the host its mark and its walk')
+  is(base(-1) >>> 0, 0xFFFFFFFF, 'no frame reads the flag between calls')
+  is(base(4096) >>> 0, 0xFFFFFFFF, 'a mark set where none stood')
+  is(base(8192) >>> 0, 4096, 'the mark it replaces is the answer: the older one, to put back')
+  is(base(4096) >>> 0, 8192)
+  is(base(-1) >>> 0, 4096, 'and the call returns it to none')
+  is(m.f([1, 2, 3], 5), 2); is(m.read(), '3,5', 'a call between reads what it stored')
+})
+
+test('frame effects: what a walked call kept of a receiver made at start goes at a reset', () => {
+  // The durable log a store into such a receiver writes lies in the call's memory: the walk counts it live.
+  const src = `const log = [0], st = { n: 0 }
+    export function f(n) { log.push(n); st.n = n; const t = []; for (let i = 0; i < 1000; i++) t.push([i, i + n]); return t.length }
+    export function churn(n) { const a = []; for (let i = 0; i < n; i++) a.push('c' + i + 'yyyyyyyyyyyyyyyy'); return a.length }
+    export let read = () => log.join()`
+  for (const optimize of levels(2, 3)) {
+    const { exports: m, memory } = jz(src, { optimize })
+    for (let round = 0; round < 3; round++) {
+      for (let i = 1; i <= 5; i++) { m.f(i); m.churn(20) }
+      is(m.read(), '0,1,2,3,4,5', `round ${round}: the array as the calls left it at ${optimize}`)
+      memory.reset()
+      is(m.read(), '0', `round ${round}: and as the module started, past the reset`)
+      m.churn(60)
+    }
+  }
+})
+
+test('frame effects: the log of escapes holds through resets and through more receivers than it takes', () => {
+  // Its table is memory no reset restores, its count a global: they agree round after round.
+  const src = `const slots = []; for (let i = 0; i < 300; i++) slots.push({ v: null })
+    export function f(from, n) { for (let i = 0; i < n; i++) slots[(from + i) % 300].v = [from, i]; const t = []; for (let i = 0; i < 200; i++) t.push([i]); return t.length }
+    export let read = (i) => { const v = slots[i].v; return v === null ? 'null' : v.join() }`
+  for (const optimize of levels(2, 3)) {
+    const { exports: m, memory } = jz(src, { optimize })
+    for (let round = 0; round < 12; round++) {
+      const fresh = oracle(src)
+      for (const [from, n] of [[round * 37, 90], [round * 11, 5], [round * 53, 200], [round, 1]]) {
+        is(m.f(from, n), fresh.f(from, n))
+        // what an earlier round stored names memory its reset freed: only what this call stored is read
+        for (const i of [from % 300, (from + n - 1) % 300]) is(m.read(i), fresh.read(i), `round ${round}: slot ${i} after ${n} stores from ${from} at ${optimize}`)
+      }
+      memory.reset()
+    }
+  }
 })
 
 test('frame effects: an escape that may not run on a call keeps the call that runs it', () => {
@@ -545,7 +708,7 @@ test('frame effects: whyNotRewind reports no allocation and the vetoing callee',
   const viaCallee = whyNot('const cache = []; function keep(v) { cache.push(v); return v > 0 ? keep(v - 1) : 0 } export function f(n) { const t = new Array(n).fill(0); keep(t.length); return t.length }')
   is(viaCallee, 'kept on a call that runs an escape: calls keep: grows cache', 'the transitive census names the callee and its reason')
   const every = whyNot('let last = null; function keep(v) { last = [v]; return v > 0 ? keep(v - 1) : 0 } export function f(n) { const t = new Array(n).fill(0); keep(t.length); return t.length }')
-  is(every, 'escape: calls keep: outer binding last', 'a callee escaping on every call, called on every call')
+  is(every, 'kept on a call that runs an escape: calls keep: outer binding last', 'a callee escaping on every call, called on every call')
 })
 
 // --- The tape pass: the unsafe set, imports, kernel taint, tail calls, cycles.
@@ -677,6 +840,25 @@ test('arena rewind on the tape: a lowering stays only where a frame or the host 
   ok(/"global.set","\$__esc",\["i32.const",0\]/.test(run([['i32.const', 0]], { exportInner: new Map([['f', '$f']]) })), 'so does a function whose calls the host releases')
 })
 
+test('arena rewind on the tape: the log made at start goes where no frame walks from it', () => {
+  const m = (body) => ['module', HEAP,
+    ['global', '$__esc', ['mut', 'i32'], ['i32.const', -1]], ['global', '$__base', ['mut', 'i32'], ['i32.const', -1]],
+    ['global', '$__roots', ['mut', 'i32'], ['i32.const', 0]], ['global', '$__rootn', ['mut', 'i32'], ['i32.const', 0]],
+    ['global', '$__tab', ['mut', 'i32'], ['i32.const', 0]],
+    ['func', '$__survive', ['param', '$mark', 'i32'], ['result', 'i32'], ['global.get', '$__heap']],
+    ['func', '$__root_reset', ['global.set', '$__rootn', ['i32.const', 0]]],
+    ['func', '$__start', ['global.set', '$__roots', ['call', '$__alloc', ['i32.const', 2048]]], ['global.set', '$__tab', ['i32.const', 1]]],
+    ['func', '$f', ['param', '$c', 'i32'], ['result', 'i32'],
+      ['if', ['local.get', '$c'], ['then', ['global.set', '$__esc', ['i32.const', 0]], ['global.set', '$__tab', ['local.get', '$c']]]], ...body],
+  ]
+  const run = (body) => { const out = onTape(m(body), root => arenaRewind(root, { rewindable: new Map([['$f', 'i32']]), heapAddr: null, censused: new Set(['$f']), userGlobals: new Set(['__tab']),
+    conditional: new Map([['$f', 'outer binding tab']]) })); return [src(out.find(n => n[1] === '$__start')), src(out.find(n => n[1] === '$f'))] }
+  const [kept, walked] = run([alloc])
+  ok(/"global.set","\$__roots"/.test(kept) && /"call","\$__survive"/.test(walked), 'a frame that walks keeps the log')
+  const [gone] = run([['i32.const', 0]])
+  ok(!/\$__roots/.test(gone) && /"global.set","\$__tab"/.test(gone), 'with no frame to walk the allocation goes, and the start keeps the rest')
+})
+
 test('arena rewind on the tape: a mark moved past an operand goes with the check no frame reads', () => {
   // A growth site as emit/dispatch.js leaves it around an operand that allocates.
   const mark = '$\uE000esch0', body = [
@@ -716,6 +898,50 @@ test('arena rewind on the tape: a tail call becomes a plain call inside the rewi
   const self = src(onTape(['module', HEAP, ['func', '$f', ['param', '$n', 'i32'], ['result', 'i32'], ['drop', alloc], ['return_call', '$f', ['local.get', '$n']]]],
     root => arenaRewind(root, { rewindable: new Map([['$f', 'i32']]), heapAddr: null }))[2])
   ok(!/heap_save/.test(self) && /return_call/.test(self), 'a function that tail-calls itself as well')
+})
+
+test('arena rewind on the tape: a tail call is a call: what its callee lowers or keeps, the frames above it read', () => {
+  const m = (call, callee) => ['module', HEAP,
+    ['table', '$tbl', 1, 'funcref'], ['type', '$sig', ['func', ['param', 'i32'], ['result', 'i32']]], ['elem', ['i32.const', 0], 'func', '$__k'],
+    ['global', '$__tab', ['mut', 'i32'], ['i32.const', 0]],
+    ['func', '$__k', ['param', '$p', 'i32'], ['result', 'i32'], ['if', ['local.get', '$p'], ['then', ['global.set', '$__tab', ['local.get', '$p']]]], ['i32.const', 0]],
+    ['func', '$leak', ['param', '$p', 'i32'], ['result', 'i32'], alloc],
+    ['func', '$mid', ['param', '$p', 'i32'], ['result', 'i32'],
+      call.endsWith('indirect') ? [call, '$tbl', ['type', '$sig'], ['local.get', '$p'], ['i32.const', 0]] : [call, callee, ['local.get', '$p']]],
+    ['func', '$f', ['param', '$c', 'i32'], ['result', 'i32'], ['drop', ['call', '$mid', ['local.get', '$c']]], alloc],
+  ]
+  const run = (call, callee, opts = {}) => {
+    const why = []
+    const out = src(onTape(m(call, callee), root => arenaRewind(root, { rewindable: new Map([['$f', 'i32']]), heapAddr: null, exported: new Set(['$f']), report: (n, r) => why.push(`${n}: ${r}`), ...opts })).at(-1))
+    return `${mode(out)}: ${why.join(' | ')}`
+  }
+  is(run('call', '$__k'), 'flag: $f: kept on a call that runs an escape: calls $mid: calls $__k: global.set $__tab', 'the frame above restores by the flag the kernel lowers')
+  is(run('return_call', '$__k'), run('call', '$__k'), 'reached by a tail call as well')
+  is(run('call_indirect'), run('call', '$__k'), 'through the table')
+  is(run('return_call_indirect'), run('call_indirect'), 'and by a tail call through it')
+  const unsafe = { unsafe: new Set(['$leak']) }
+  is(run('call', '$leak', unsafe), 'none: $f: calls $mid: calls $leak: escape', 'a callee that keeps on every call keeps every caller')
+  is(run('return_call', '$leak', unsafe), run('call', '$leak', unsafe), 'reached by a tail call as well')
+})
+
+test('frame effects: what a callee reached by a tail call stored into a module binding survives the frames above it', () => {
+  // `f` leaves by a tail call of `g`; `g` makes the module's array on its first call.
+  const src = `let keep = null
+    function g(n, k) {
+      if (!keep) keep = new Float64Array(n)
+      const out = new Float64Array(n)
+      for (let i = 0; i < keep.length; i++) { keep[i] += i * k; out[i] = keep[i] * 2 }
+      for (let i = 0; i < out.length; i++) out[i] += Math.sqrt(Math.abs(keep[i]))
+      return out
+    }
+    function f(n) { return g(n, 1) }
+    export let h = (n) => g(n, 2)[1]
+    export let go = (n) => { const tmp = new Float64Array(16); tmp.fill(n + 1); const r = f(n); return r[3] + tmp[1] + keep.length * 1000 + keep[2] }`
+  for (const optimize of [...levels(0, 2, 3), 'size']) {
+    const m = jz(src, { optimize }).exports, js = oracle(src)
+    for (let i = 0; i < 4; i++) is(m.go(40), js.go(40), `${optimize}, call ${i}: the array the first call made holds what every call added`)
+    is(m.h(40), js.h(40), `${optimize}: and by a call of its own`)
+  }
 })
 
 test('arena rewind on the tape: a tail call is a call: what its callee lowers or keeps, the frames above it read', () => {
@@ -866,7 +1092,7 @@ test('frame effects: a static getter on a class value is code the census cannot 
     class K { static get tag() { keep = { v: 1 }; return 42 } }
     export function f() { const r = { v: K.tag }; return r.v }
     export function g() { const z = { v: 9 }; return keep.v + z.v }`
-  ok(!rewinds(src), 'the frame is declined: ' + whyNot(src))
+  ok(flagged(src), 'the frame restores by the flag: ' + whyNot(src))
   const m = jz(src, { optimize: 'speed' })
   is(m.exports.f(), 42)
   is(m.exports.g(), 10, 'the getter\'s store survives the call')

@@ -81,6 +81,7 @@ import { isBoundaryWrapped, synthesizeBoundaryWrappers } from './boundary-wrap.j
 import { analyzeFuncForEmit } from './analyze-for-emit.js'
 import { emitFunc } from './emit-func.js'
 import { transitiveFrameEffects, SITE } from './analyze/frame-effects.js'
+import { reachOn } from '../../module/core/reach.js'
 import { analyzeClosureBodyForEmit, emitClosureBody } from './closure-emit.js'
 
 // Optional profiling; pass behavior is identical without a profiler.
@@ -292,6 +293,13 @@ export function assemble(ast, profiler) {
     // while none runs): a value below it was made before every such frame,
     // and a store of it is no escape (module/core.js `__esc_new`).
     declGlobal('__base', 'i32', -1)
+    // The log of what the escapes of one outermost frame wrote into, its
+    // buffer and its count, and the state of the walk that reads it as the
+    // frame returns (module/core/reach.js): the frame's mark and the heap's
+    // top, the bits of the blocks met, the stack's pointer and the memory's
+    // end, the highest end reached.
+    for (const g of ['__roots', '__rootn', '__r_mark', '__r_top', '__r_bits', '__r_sp', '__r_lim', '__r_end']) declGlobal(g, 'i32', 0)
+    declGlobal('__rootl', 'i64', 0)
     ctx.plans.escapeFlag = true
     ctx.plans.hasSites = any
     ctx.plans.instrumented = new WeakSet()
@@ -930,8 +938,12 @@ export function assemble(ast, profiler) {
       continue
     }
     if (frame.arenaUnsafe) { unsafe.add(`$${f.name}`); ctx.transform.whyNotRewind?.(`$${f.name}`, 'escape: ' + frame.why); continue }
-    if (frame.keeps) { keeps.set(`$${f.name}`, frame.keepsWhy); ctx.transform.whyNotRewind?.(`$${f.name}`, 'escape: ' + frame.keepsWhy); continue }
-    if (frame.flagged) conditional.set(`$${f.name}`, frame.siteWhy ?? 'an escape')
+    // A frame every call of which writes what it made into older storage
+    // restores nothing by itself; the one a host calls is the outermost, and
+    // keeps what its escapes reach (module/core/reach.js): it reads the flag.
+    if (frame.keeps && !(reachOn() && isExported(f))) { keeps.set(`$${f.name}`, frame.keepsWhy); ctx.transform.whyNotRewind?.(`$${f.name}`, 'escape: ' + frame.keepsWhy); continue }
+    if (frame.keeps) conditional.set(`$${f.name}`, frame.keepsWhy)
+    else if (frame.flagged) conditional.set(`$${f.name}`, frame.siteWhy ?? 'an escape')
     // A rewound frame returns a scalar: a heap result (a pointer kind, a
     // tagged f64 the summary cannot hold to numbers, booleans and nullish
     // values) lives in the arena it would free; a multi-value result has no
@@ -952,10 +964,13 @@ export function assemble(ast, profiler) {
         const inner = `$${f.name}`
         const escapes = f.frame?.arenaUnsafe || f.frame?.keeps
         if (!rewindable.has(inner) && !escapes) continue   // a heap result
-        const held = allocates(inner) && !rewound.has(inner), copies = boxed.has(exportNamesOf(f.name)[0]) && !releasable.has(inner)
+        // a frame that walks from what it stored (module/core/reach.js) keeps that much on every call
+        const walked = !!f.frame?.keeps && rewound.has(inner)
+        const held = allocates(inner) && (!rewound.has(inner) || walked), copies = boxed.has(exportNamesOf(f.name)[0]) && !releasable.has(inner)
         if (!held && !copies) continue
         const reason = f.frame?.arenaUnsafe ? f.frame.why : f.frame?.keeps ? f.frame.keepsWhy : why(inner) ?? 'its result may hold a heap value'
-        const what = held && copies ? 'what it allocates and the copies the host makes of its arguments' : held ? 'what it allocates' : 'the copies the host makes of its arguments'
+        const kept = walked ? 'what it stores' : 'what it allocates'
+        const what = held && copies ? `${kept} and the copies the host makes of its arguments` : held ? kept : 'the copies the host makes of its arguments'
         for (const name of exportNamesOf(f.name))
           warn('heap-per-call', `export '${name}' keeps ${what} on every call (${reason}): memory grows with each call; call memory.reset() between batches from the host`, { fn: f.name, reason }, f.body?.loc)
       }

@@ -456,8 +456,12 @@ Architecture
   store into a parameter the export boundary types is a number into fixed
   storage, not a growth; the loop to rewind is found by its label, which the
   peephole walk keeps where it copies the loop's node. A render loop with a
-  block per iteration holds the memory flat (`test/mem.js`). What a call
-  replaces in older storage is never freed: that needs a collector.
+  block per iteration holds the memory flat (`test/mem.js`). A frame that
+  ran an escape keeps what the escape reaches and what lies below it
+  (`arenaReach`, module/core/reach.js): the walk from the receivers its
+  escapes wrote into moves nothing and frees the heap above the highest block
+  reached. What a call replaces in older storage is never freed: that needs
+  a collector.
 - Only a DEFINITE store declares a key in a literal's layout. Static
   enumeration stands down whenever the layout is open; the open-layout for-in
   unrolls the closed keys only when neither the layout nor the keys added at
