@@ -8,13 +8,13 @@ const edge = el => {
   return { el, ring }
 }
 const logos = [...document.querySelectorAll('.logo, footer .wordmark')].map(edge)
-const boxes = new Map(), headings = new Map()
+const boxes = new Map(), surfaces = new Map()
 const motion = matchMedia('(prefers-reduced-motion: reduce)')
 const mouse = matchMedia('(hover: hover) and (pointer: fine)')
 const field = { x: innerWidth / 2, y: -160 }
 let pointer = null, raf = 0, dirty = true, ink = []
 let titleId = 0
-const aperture = `data:image/svg+xml,${encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="280" height="280"><defs><radialGradient id="a"><stop offset=".35" stop-color="white"/><stop offset="1" stop-color="white" stop-opacity="0"/></radialGradient></defs><rect width="280" height="280" fill="url(#a)"/></svg>')}`
+const aperture = `data:image/svg+xml,${encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="640" height="640"><defs><linearGradient id="a" x2="1" y2=".6"><stop offset=".2" stop-color="white" stop-opacity="0"/><stop offset=".44" stop-color="white"/><stop offset=".56" stop-color="white"/><stop offset=".8" stop-color="white" stop-opacity="0"/></linearGradient></defs><rect width="640" height="640" fill="url(#a)"/></svg>')}`
 
 let ruler
 if (document.querySelector('html.paper')) {
@@ -34,27 +34,51 @@ if (document.querySelector('html.paper')) {
     defs: el.querySelector('defs') }
 }
 
-// Mask native glyph paint rather than their trimmed text box: descenders stay intact.
-const title = el => {
+// One inner edge, shaded by the same light as the square rings. No displaced copy of the glyph.
+const surface = (el, xray, defs = ruler.defs) => {
   const filter = document.createElementNS('http://www.w3.org/2000/svg', 'filter')
   const id = `ink-${titleId++}`
   filter.setAttribute('id', id)
   filter.setAttribute('primitiveUnits', 'objectBoundingBox')
   filter.setAttribute('color-interpolation-filters', 'sRGB')
-  filter.innerHTML = `<feImage href="${aperture}" x="-1000" y="-1000" result="mask"/>
-    <feComposite in="SourceGraphic" in2="mask" operator="out" result="face"/>
-    <feMorphology in="SourceAlpha" operator="erode" result="inside"/>
+  filter.innerHTML = `<feMorphology in="SourceAlpha" operator="erode" result="inside"/>
     <feComposite in="SourceAlpha" in2="inside" operator="out" result="outline"/>
-    <feComposite in="SourceGraphic" in2="outline" operator="in" result="edge"/>
-    <feMerge><feMergeNode in="edge"/><feMergeNode in="face"/></feMerge>`
-  ruler.defs.append(filter)
-  el.classList.add('reflect-title')
-  el.style.setProperty('--ink-filter', '')
-  return { filter, id, mask: filter.querySelector('feImage'), inset: filter.querySelector('feMorphology') }
+    <feOffset in="SourceAlpha" result="litOffset"/>
+    <feComposite in="SourceAlpha" in2="litOffset" operator="out" result="litEdge"/>
+    <feOffset in="SourceAlpha" result="backOffset"/>
+    <feComposite in="SourceAlpha" in2="backOffset" operator="out" result="backEdge"/>
+    <feFlood flood-color="white" flood-opacity="${xray ? '.12' : '.7'}"/>
+    <feComposite in2="outline" operator="in" result="base"/>
+    <feFlood flood-color="white" flood-opacity=".85"/>
+    <feComposite in2="litEdge" operator="in" result="highlight"/>
+    <feFlood flood-color="white" flood-opacity=".3"/>
+    <feComposite in2="backEdge" operator="in" result="back"/>
+    <feMerge result="shade"><feMergeNode in="base"/><feMergeNode in="highlight"/><feMergeNode in="back"/></feMerge>
+    <feComposite in="SourceGraphic" in2="shade" operator="in" result="edge"/>
+    <feComposite in="SourceGraphic" in2="inside" operator="in" result="solid"/>
+    ${xray ? `<feImage href="${aperture}" x="-1000" y="-1000" result="mask"/>
+    <feComposite in="solid" in2="mask" operator="out" result="face"/>` : ''}
+    <feMerge><feMergeNode in="${xray ? 'face' : 'solid'}"/><feMergeNode in="edge"/></feMerge>`
+  defs.append(filter)
+  el.classList.add('reflect-surface')
+  return { filter, id, mask: xray ? filter.querySelector('feImage') : null,
+    inset: filter.querySelector('feMorphology'), offsets: [...filter.querySelectorAll('feOffset')] }
+}
+const glare = el => {
+  if (el.classList.contains('glare-link') || el.matches('.logo, .wordmark, .gh, .report, .install')) return
+  const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT), nodes = []
+  while (walker.nextNode()) if (walker.currentNode.textContent.trim() && !walker.currentNode.parentElement.closest('svg'))
+    nodes.push(walker.currentNode)
+  for (const node of nodes) {
+    const span = document.createElement('span')
+    span.className = 'glare-ink'
+    node.replaceWith(span); span.append(node)
+    el.classList.add('glare-link')
+  }
 }
 const layout = () => {
   if (ruler) {
-    for (const [el, item] of headings) if (!el.isConnected) { item.filter.remove(); headings.delete(el) }
+    for (const [el, item] of surfaces) if (!el.isConnected) { item.filter.remove(); surfaces.delete(el) }
     const { clientWidth: width, clientHeight: height } = root
     const sides = getComputedStyle(document.body, '::before')
     const left = document.body.getBoundingClientRect().left + parseFloat(sides.left)
@@ -74,20 +98,20 @@ const layout = () => {
       if (!boxes.has(el)) { el.classList.add('reflect-box'); boxes.set(el, edge(el)) }
       boxes.get(el).rect = el.getBoundingClientRect()
     }
-    ink = [...document.querySelectorAll('h1, h2, h3, h4, h5, h6, .metrics .lab, footer .legal > *, a')]
-      .filter(el => el.textContent.trim() && !el.matches('.logo, .wordmark, .gh')).map(el => {
-      if (!el.classList.contains('reflect-text')) el.classList.add('reflect-text')
+    for (const el of document.querySelectorAll('a')) glare(el)
+    ink = [...document.querySelectorAll('h1.title, .logo-letters, .metrics b, .metrics .lab, footer .legal > :not(a)')]
+      .filter(el => el.textContent.trim() || el.matches('.logo-letters')).map(el => {
       const rect = el.getBoundingClientRect()
-      if (/^H[1-6]$/.test(el.tagName)) {
-        if (!headings.has(el)) headings.set(el, title(el))
-        const { filter, mask, inset } = headings.get(el)
+      if (el.matches('h1.title, .logo-letters, .metrics b')) {
+        if (!surfaces.has(el)) surfaces.set(el, surface(el, el.matches('h1.title, .logo-letters')))
+        const { filter, mask, inset } = surfaces.get(el)
         const width = rect.width || 1, height = rect.height || 1
         const x = 2000 / width, y = 2000 / height
         filter.setAttribute('x', `${-x}%`); filter.setAttribute('y', `${-y}%`)
         filter.setAttribute('width', `${100 + 2 * x}%`); filter.setAttribute('height', `${100 + 2 * y}%`)
-        mask.setAttribute('width', 280 / width); mask.setAttribute('height', 280 / height)
+        if (mask) { mask.setAttribute('width', 640 / width); mask.setAttribute('height', 640 / height) }
         inset.setAttribute('radius', `${1 / width} ${1 / height}`)
-      }
+      } else el.classList.add('reflect-text')
       return { el, rect }
     })
   }
@@ -95,19 +119,11 @@ const layout = () => {
 }
 
 // Both a button and a logo use this same one-pixel directional bevel.
-const light = (item, x, y, width) => {
-  const { ring, offsets, blur } = item
+const light = (item, x, y) => {
+  const { ring } = item
   const angle = Math.atan2(x, -y) * 180 / Math.PI
   const rgb = root.dataset.theme === 'light' ? '0 0 0' : '255 255 255'
   ring.style.background = `conic-gradient(from ${angle}deg, rgb(${rgb} / .72), rgb(${rgb} / .08) 65deg, rgb(${rgb} / .03) 110deg, rgb(${rgb} / .31) 180deg, rgb(${rgb} / .03) 250deg, rgb(${rgb} / .08) 295deg, rgb(${rgb} / .72))`
-  if (!offsets) return
-  const length = Math.hypot(x, y) || 1, pixel = 630 / width
-  blur.setAttribute('stdDeviation', pixel * 1.25)
-  offsets.forEach((offset, i) => {
-    const side = i ? -1 : 1
-    offset.setAttribute('dx', -x / length * pixel * side)
-    offset.setAttribute('dy', -y / length * pixel * side)
-  })
 }
 const illumination = rect => {
   const dx = field.x - rect.left - rect.width / 2, dy = field.y - rect.top - rect.height / 2
@@ -134,25 +150,28 @@ const frame = () => {
     painted = true
     const { x, y, power } = illumination(rect)
     item.ring.style.opacity = .3 + .7 * power
-    light(item, x, y, rect.width)
+    light(item, x, y)
   }
   for (const { el, rect } of ink) {
     if (!rect.width || !rect.height || rect.bottom < 0 || rect.top >= innerHeight) continue
-    let { x, y, power } = illumination(rect)
-    const title = headings.get(el)
-    if (title) {
+    const { x, y, power } = illumination(rect)
+    const item = surfaces.get(el)
+    if (item) {
       const dx = field.x - rect.left, dy = field.y - rect.top
       const distance = Math.hypot(Math.max(-dx, 0, dx - rect.width), Math.max(-dy, 0, dy - rect.height))
-      const nearby = pointer && mouse.matches && !motion.matches && distance < 140
+      const nearby = pointer && mouse.matches && !motion.matches && distance < 320
       // Empty image primitives can invalidate Safari's entire filter. Distant ink needs no mask.
-      el.style.setProperty('--ink-filter', nearby ? `url(#${title.id})` : '')
-      title.mask.setAttribute('x', (dx - 140) / rect.width)
-      title.mask.setAttribute('y', (dy - 140) / rect.height)
-      power = Math.max(0, 1 - distance / radius) ** 2
-    }
-    el.style.setProperty('--light-power', power.toFixed(3))
-    el.style.setProperty('--light-dx', `${x.toFixed(3)}px`)
-    el.style.setProperty('--light-dy', `${y.toFixed(3)}px`)
+      el.style.setProperty('--ink-filter', !item.mask || nearby ? `url(#${item.id})` : '')
+      if (item.mask) {
+        item.mask.setAttribute('x', (dx - 320) / rect.width)
+        item.mask.setAttribute('y', (dy - 320) / rect.height)
+      }
+      item.offsets.forEach((offset, i) => {
+        const side = i ? -1 : 1
+        offset.setAttribute('dx', -x * side / rect.width)
+        offset.setAttribute('dy', -y * side / rect.height)
+      })
+    } else el.style.setProperty('--light-power', power.toFixed(3))
   }
   if (painted && Math.abs(target.x - field.x) + Math.abs(target.y - field.y) > .1) schedule()
 }
@@ -165,9 +184,11 @@ addEventListener('pointermove', e => {
 }, { passive: true })
 addEventListener('click', e => {
   if (!ruler || root.dataset.theme !== 'dark' || e.button !== 0 || e.target.closest('a, button, iframe, input, summary, select, textarea, .grid-info')) return
+  if (document.getSelection()?.isCollapsed === false) return
   const x = e.clientX, y = e.clientY + scrollY
   import('./grid-click.js').then(({ spark }) => spark(x, y)).catch(() => {})
 }, { passive: true })
+document.addEventListener('selectionchange', () => { import('./selection.js').catch(() => {}) }, { once: true })
 root.addEventListener('pointerleave', reset)
 addEventListener('blur', reset)
 addEventListener('scroll', invalidate, { passive: true })
@@ -199,26 +220,13 @@ if (logos.length) {
       svg.setAttribute('aria-label', img.alt || 'JZ')
       svg.setAttribute('focusable', 'false')
       const defs = document.createElementNS(ns, 'defs')
-      const face = `logo-face-${i}`, glow = `logo-glow-${i}`
+      const face = `logo-face-${i}`
       defs.innerHTML = `<linearGradient id="${face}" x1="0" y1="0" x2=".65" y2="1">
         <stop stop-color="#fff"/><stop offset=".5" stop-color="#e7eaee"/>
         <stop offset="1" stop-color="#cbd2dc"/>
-      </linearGradient>
-      <filter id="${glow}" x="-30%" y="-30%" width="160%" height="160%" color-interpolation-filters="sRGB">
-        <feOffset in="SourceAlpha" result="litOffset"/>
-        <feComposite in="SourceAlpha" in2="litOffset" operator="out" result="litEdge"/>
-        <feFlood flood-color="#fff" flood-opacity=".85"/>
-        <feComposite in2="litEdge" operator="in" result="highlight"/>
-        <feOffset in="SourceAlpha" result="backOffset"/>
-        <feComposite in="SourceAlpha" in2="backOffset" operator="out" result="backEdge"/>
-        <feFlood flood-color="#fff" flood-opacity=".25"/>
-        <feComposite in2="backEdge" operator="in"/>
-        <feMerge result="outline"><feMergeNode/><feMergeNode in="highlight"/></feMerge>
-        <feGaussianBlur in="outline" result="halo"/>
-        <feMerge><feMergeNode in="halo"/><feMergeNode in="SourceGraphic"/><feMergeNode in="outline"/></feMerge>
-      </filter>`
+      </linearGradient>`
       const letters = document.createElementNS(ns, 'g')
-      letters.setAttribute('filter', `url(#${glow})`)
+      letters.setAttribute('class', 'logo-letters')
       for (const path of svg.querySelectorAll('path')) {
         const paint = path.getAttribute('fill') === 'white' ? 'fill' : path.getAttribute('stroke') === 'white' ? 'stroke' : null
         if (!paint) continue
@@ -227,10 +235,9 @@ if (logos.length) {
       }
       svg.prepend(defs)
       svg.append(letters)
-      logo.offsets = [...defs.querySelectorAll('feOffset')]
-      logo.blur = defs.querySelector('feGaussianBlur')
+      surfaces.set(letters, surface(letters, true, defs))
       img.replaceWith(svg)
     }
-    schedule()
+    invalidate()
   } catch { /* Keep the original image when the enhancement cannot load. */ }
 }

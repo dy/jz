@@ -129,10 +129,18 @@ html.paper:not(.jz-saver):not(.jz-embed) :is(.ruler-refl, .grid-light) { display
 /* Futura (the brand face) for every title, site-wide. */
 h1, h2, h3, h4, h5, h6 { font-family: var(--font); }
 /* Paint-only lighting: text-shadow changes trimmed inline metrics in Chromium. */
-.reflect-title { filter: var(--ink-filter, ) drop-shadow(var(--light-dx, 0px) var(--light-dy, -1px) 0
-    light-dark(rgb(255 255 255 / calc(var(--light-power, 0) * .6)), rgb(255 255 255 / calc(var(--light-power, 0) * .55)))); }
-.reflect-text:not(.reflect-title) { -webkit-text-fill-color: color-mix(in srgb, currentColor,
+.reflect-surface { filter: var(--ink-filter, none); }
+.reflect-text { -webkit-text-fill-color: color-mix(in srgb, currentColor,
   light-dark(#000, #fff) calc(var(--light-power, 0) * 35%)); }
+/* Inline padding gives the paint room for descenders without changing line metrics. */
+.glare-ink { padding-block: .25em; -webkit-box-decoration-break: clone; box-decoration-break: clone;
+  background: linear-gradient(110deg, currentColor 40%, light-dark(#000, #fff) 50%, currentColor 60%) 100% 0 / 300% 100%;
+  -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; }
+.glare-link:is(:hover, :focus-visible) .glare-ink { animation: link-glare .85s ease both; }
+@keyframes link-glare { to { background-position: 0% 0; } }
+@media (prefers-reduced-motion: reduce) {
+  .glare-link:is(:hover, :focus-visible) .glare-ink { animation: none; background-position: 50% 0; }
+}
 
 /* Page title — one face and one place on every page: the display size, caps --title-top under the menu ruler
    (each page's main starts right at the ruler), trimmed to its ink so the cap line sits exactly there. Only
@@ -147,9 +155,17 @@ h1, h2, h3, h4, h5, h6 { font-family: var(--font); }
    on hover). */
 .cico { width: 12px; height: 12px; flex: none; vertical-align: calc((1cap - 12px) / 2); filter: saturate(.4); transition: filter .18s; }
 
-/* One selection highlight site-wide (else pages without their own fall back to the browser blue):
-   ink-on-white in light, white-on-black in dark. */
+/* Native fallback; selection.js outlines document text while editors keep native highlighting. */
 ::selection { background: light-dark(#16161a, #fff); color: light-dark(#fff, #000); }
+:root.outline-selection ::selection { background: transparent !important; color: var(--ink) !important; }
+.selection-outline { position: fixed; inset: 0; width: 100%; height: 100%; z-index: 210; pointer-events: none;
+  fill: none; stroke: var(--ink); stroke-width: 1; }
+@media (forced-colors: active) {
+  :root.outline-selection ::selection { background: Highlight !important; color: HighlightText !important; }
+  .selection-outline { display: none; }
+  .reflect-surface { filter: none; }
+  .glare-ink { background: none; -webkit-text-fill-color: currentColor; }
+}
 
 /* One themed keyboard-focus ring everywhere (else links/buttons fall back to the inconsistent browser
    default). :where() keeps specificity at zero so a page's own focus styles still win. */
@@ -186,9 +202,8 @@ footer .wordmark > .edge-refl { inset: 1px -1px -1px 1px; }
 .masthead nav { margin-left: auto; }
 .site-nav { display: flex; align-items: center; --nav-gap: 24px; gap: var(--nav-gap); }
 @media (min-width: 800px) { .site-nav { padding-right: var(--U); } }
-.site-nav a { color: var(--ink); opacity: .72; text-decoration: none; font-size: var(--fs-caps);
-  text-transform: uppercase; letter-spacing: var(--ls-caps); transition: opacity .18s; }
-.site-nav a:hover { opacity: 1; }
+.site-nav a { color: var(--soft); text-decoration: none; font-size: var(--fs-caps);
+  text-transform: uppercase; letter-spacing: var(--ls-caps); }
 .site-nav .ver { font-size: var(--fs-small); text-transform: none; letter-spacing: .02em; opacity: .5; margin-left: var(--nav-gap); }   /* set apart from the menu: twice its gap */
 /* the two icons take a grid cell each. A cell
    meets its neighbour flush (the negative margin cancels the menu's gap) and fills on hover. */
@@ -241,12 +256,10 @@ footer .wordmark { display: inline-flex; width: 40px; height: 40px; padding: 1px
 footer .wordmark > :is(img, svg) { width: 39px; height: 39px; display: block; }
 footer .fcol { display: flex; flex-direction: column; gap: var(--u); width: var(--U); padding-top: calc(2 * var(--u)); }
 footer .fcol a { text-decoration: none; color: var(--soft); font-size: var(--fs-small); transition: color .16s; }
-footer .fcol a:hover { color: light-dark(#000, #fff); }
 footer .legal { margin-left: auto; align-self: flex-end; display: flex; flex-direction: column; align-items: flex-end; gap: var(--u); font-size: var(--fs-small); line-height: 24px; text-align: right; color: var(--dim); }
 footer .legal .credit { color: var(--mute); }   /* "made with watr and jessie" — muted lead, soft links (jz's parser + assembler) */
 footer .legal .dot { color: var(--mute); }       /* the middot between MIT and ॐ */
 footer .legal a { color: var(--soft); text-decoration: none; }
-footer .legal a:hover { color: light-dark(#000, #fff); }
 footer .legal .om { font-size: 15px; font-weight: 700; }   /* Devanagari strokes are thin — bump weight so ॐ reads as dark as the MIT link (same colour, matched density) */
 @supports (text-box: trim-both cap alphabetic) {
   footer .fcol a, footer .legal > * { text-box: trim-both cap alphabetic; padding-top: var(--bl); }
@@ -260,7 +273,7 @@ footer .legal .om { font-size: 15px; font-weight: 700; }   /* Devanagari strokes
 /* Keep every primary destination visible; compact the surrounding chrome first. The active item names the
    page: full ink, and a 2px bar at the logo's foot (the menu shares the logo's centre line, so the foot is 20px
    below the caps' centre) — on lined paper that is the menu ruler, the bar a tab on it. */
-.site-nav a[aria-current="page"] { opacity: 1; position: relative; }
+.site-nav a[aria-current="page"] { color: var(--ink); position: relative; }
 .site-nav a[aria-current="page"]::after { content: ''; position: absolute; left: 0; right: 0; bottom: calc(.5cap - 20px); height: 2px; background: currentColor; }
 /* On lined paper the logo takes the 40–80 cell above the menu ruler and the menu shares its centre line — the
    question-and-chevron rule of the landing FAQ: a 40–80 band, labels trimmed to their ink and centred in it,

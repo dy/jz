@@ -1,7 +1,7 @@
 // Click-only grid current. Document coordinates keep bursts attached to their
 // crossings while scrolling; no backing buffer or frame loop exists before a click.
 const root = document.documentElement
-let cv, ctx, raf = 0, bursts = []
+let cv, ctx, view, raf = 0, bursts = []
 const active = () => root.dataset.theme === 'dark' && !document.hidden &&
   !root.classList.contains('jz-saver') && !root.classList.contains('jz-embed')
 const clear = () => {
@@ -10,9 +10,11 @@ const clear = () => {
 }
 const fit = () => {
   if (!cv) return
+  view = cv.getBoundingClientRect()
+  if (!view.width || !view.height) return
   const scale = Math.max(1, Math.min(devicePixelRatio || 1, 2))
-  cv.width = Math.round(innerWidth * scale); cv.height = Math.round(innerHeight * scale)
-  ctx.setTransform(scale, 0, 0, scale, 0, 0)
+  cv.width = Math.round(view.width * scale); cv.height = Math.round(view.height * scale)
+  ctx.setTransform(cv.width / view.width, 0, 0, cv.height / view.height, 0, 0)
 }
 const frame = now => {
   raf = 0
@@ -23,7 +25,7 @@ const frame = now => {
     const travel = (now - b.start) * .168, tail = Math.min(travel, 108)
     for (const [dx, dy, power] of [[1, 0, .5 - .45 * b.ox], [-1, 0, .5 + .45 * b.ox],
       [0, 1, .5 - .45 * b.oy], [0, -1, .5 + .45 * b.oy]]) {
-      const x = b.x + dx * travel + .5, y = b.y - scrollY + dy * travel + .5
+      const x = b.x - view.left + dx * travel + .5, y = b.y - scrollY - view.top + dy * travel + .5
       const tx = x - dx * Math.max(tail, 1), ty = y - dy * Math.max(tail, 1)
       const gradient = ctx.createLinearGradient(tx, ty, x, y)
       gradient.addColorStop(0, 'transparent')
@@ -43,6 +45,7 @@ export const spark = (x, y) => {
     cv.className = 'grid-bursts'; cv.setAttribute('aria-hidden', 'true')
     document.body.append(cv); fit()
   }
+  if (!view.width || !view.height) return
   const gx = parseFloat(getComputedStyle(root).backgroundPositionX) || 0
   const jx = gx + Math.round((x - gx) / 40) * 40, jy = Math.round(y / 40) * 40
   bursts.push({ x: jx, y: jy, ox: (x - jx) / 20, oy: (y - jy) / 20,

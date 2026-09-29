@@ -14,11 +14,12 @@ const build = (...args) => spawnSync(process.execPath, [join(root, 'scripts/buil
 // Exercise the shipped pointer controller with a deterministic frame clock. SVG rendering
 // is browser-checked; these ports record its paint attributes without a DOM dependency.
 async function glint({ count = 1, reduced = false, fine = true, failure = 'http', paper = false, textNodes = [], scroll = 0 } = {}) {
-  const events = new Map(), frames = new Map(), requests = [], clicks = []
+  const events = new Map(), frames = new Map(), requests = [], clicks = [], selection = { isCollapsed: true }
   const listen = (name, fn) => events.set(name, fn)
   const node = () => ({ attrs: {}, children: [], style: { setProperty(k, v) { this[k] = v } },
     setAttribute(k, v) { this.attrs[k] = String(v) }, append(el) { this.children.push(el) },
-    remove() { this.removed = true }, parts: {}, querySelector(name) { return this.parts[name] ??= node() } })
+    remove() { this.removed = true }, parts: {}, querySelector(name) { return this.parts[name] ??= node() },
+    querySelectorAll(name) { return this.parts[name] ??= [node(), node()] } })
   const els = Array.from({ length: count }, () => ({
     rect: { left: 20, top: 40, width: 160, height: 160, bottom: 200 }, children: [],
     append(el) { this.children.push(el) }, getBoundingClientRect() { return this.rect },
@@ -36,7 +37,7 @@ async function glint({ count = 1, reduced = false, fine = true, failure = 'http'
   const src = readFileSync(join(root, 'assets/glint.js'), 'utf8').replace('import.meta.url', JSON.stringify('https://jz.test/assets/glint.js'))
     .replace("import('./grid-click.js')", 'loadClicks()')
   const { light } = await runInNewContext(`(async () => {${src}\nreturn { light }})()`, {
-    document: { querySelector: () => paper ? doc : null, addEventListener: listen,
+    document: { querySelector: () => paper ? doc : null, addEventListener: listen, getSelection: () => selection,
       querySelectorAll: selector => selector === '.logo, footer .wordmark' ? els : selector.startsWith('.report') ? controls :
         selector.startsWith('.ruled') ? [...rules.map(rect => ({ getBoundingClientRect: () => rect })), ...(selector.includes('table') ? tables : [])] :
         selector.includes('table') ? tables : selector.startsWith('h1') ? textNodes : [],
@@ -67,7 +68,7 @@ async function glint({ count = 1, reduced = false, fine = true, failure = 'http'
     return n
   }
   return { els, frames, requests, motion, mouse, light, node, drain, doc, classes, ruler, gradient, path, sides, rules, tables, controls, defs,
-    clicks, clickLoads: () => clickLoads,
+    clicks, selection, clickLoads: () => clickLoads,
     measurements: () => measurements,
     emit: (name, event) => events.get(name)?.(event),
     move: (x, y, pointerType = 'mouse') => events.get('pointermove')({ clientX: x, clientY: y, pointerType }),
@@ -123,26 +124,6 @@ test('site: logo respects touch and live reduced-motion changes', async () => {
   g.mouse.matches = false; g.emit('mouse'); g.drain()
   g.move(180, 200)
   is(g.frames.size, 0, 'a device without a fine pointer stays still')
-})
-
-test('site: logo face stays fixed while its one-pixel outline follows the pointer', async () => {
-  const g = await glint()
-  const face = { ring: g.node(), gradient: g.node(), blur: g.node(), offsets: [g.node(), g.node()] }
-  const fixed = { x1: '0', y1: '0', x2: '.65', y2: '1' }
-  face.gradient.attrs = { ...fixed }
-  for (const width of [24, 40, 80, 160]) {
-    g.light(face, -.6, -.8, width)
-    const [a, b] = face.offsets.map(el => el.attrs)
-    ok(Math.abs(Math.hypot(+a.dx, +a.dy) * width / 630 - 1) < 1e-12, `${width}px logo: outline is one CSS pixel`)
-    is(+a.dx, -b.dx, 'opposite outline x offsets')
-    is(+a.dy, -b.dy, 'opposite outline y offsets')
-    is(+face.blur.attrs.stdDeviation * width / 630, 1.25, 'halo scales with the displayed mark')
-  }
-  g.light(face, .8, .6, 160)
-  is(face.gradient.attrs, fixed, 'pointer reversal leaves the silver face unchanged')
-  g.light(face, 0, 0, 160)
-  is(face.offsets.map(el => [Number(el.attrs.dx) || 0, Number(el.attrs.dy) || 0]), [[0, 0], [0, 0]], 'center has no directional offset')
-  is(face.gradient.attrs, fixed, 'center leaves the silver face unchanged')
 })
 
 test('site: absent logos and failed enhancements preserve the page', async () => {
@@ -232,44 +213,98 @@ test('site: buttons use the logo bevel and tables remain matte', async () => {
   ok(button.children[0].style.background.includes('rgb(0 0 0 /'), 'light mode uses the same bevel in black')
 })
 
-test('site: title masks share the cursor light, preserve glyph bounds, and release removed headings', async () => {
-  const text = tagName => {
-    const classes = new Set()
-    return { tagName, textContent: 'Examples', isConnected: true, matches: () => false,
+test('site: header and logo cutouts share a one-pixel bevel; stats retain their fill and FAQ stays plain', async () => {
+  const text = (kind, width = 100, height = 16) => {
+    const classes = new Set(), rect = { left: 20, top: 40, width, height, bottom: 40 + height }
+    return { textContent: 'Examples', isConnected: true, rect,
+      matches: selector => selector.split(', ').includes(kind),
       classList: { add: name => classes.add(name), contains: name => classes.has(name) },
-      style: { setProperty(name, value) { this[name] = value } },
-      getBoundingClientRect: () => ({ left: 20, top: 40, width: 100, height: 16, bottom: 56 }) }
+      style: { setProperty(name, value) { this[name] = value } }, getBoundingClientRect: () => rect }
   }
-  const title = text('H2'), link = text('A'), textNodes = [title, link]
+  const title = text('h1.title'), stat = text('.metrics b'), faq = text('h2'), textNodes = [title, stat, faq]
   const g = await glint({ paper: true, count: 0, textNodes }); g.drain()
-  ok(title.classList.contains('reflect-title'), 'headings use a native-glyph filter')
-  const filter = g.defs.children[0]
-  const mask = filter.parts.feImage
-  is([filter.attrs.x, filter.attrs.y, filter.attrs.width, filter.attrs.height], ['-20%', '-125%', '140%', '350%'], 'filter extends beyond the trimmed box for descenders and bevels')
-  is(filter.attrs.primitiveUnits, 'objectBoundingBox', 'mask coordinates are heading-relative in every browser')
-  is(mask.attrs, { width: '2.8', height: '17.5', x: '3.4', y: '-21.25' }, 'resting aperture is outside the heading')
-  is(title.style['--ink-filter'], '', 'distant headings keep native fill without an empty image filter')
-  is(filter.parts.feMorphology.attrs.radius, '0.01 0.0625', 'outline retains one CSS pixel on both axes')
-  ok(filter.innerHTML.includes('data:image/svg+xml,'), 'mask has a self-contained image rather than a browser-dependent SVG fragment reference')
+  const [filter, number] = g.defs.children, mask = filter.parts.feImage
+  ok(title.classList.contains('reflect-surface'), 'page header uses the glyph filter')
+  ok(!faq.classList.contains('reflect-surface'), 'FAQ and section headings never acquire a cutout')
+  is(g.defs.children.length, 2, 'only the header and stat need filters')
+  is([filter.attrs.x, filter.attrs.y, filter.attrs.width, filter.attrs.height], ['-20%', '-125%', '140%', '350%'], 'filter preserves descenders beyond the trimmed box')
+  is(filter.attrs.primitiveUnits, 'objectBoundingBox', 'coordinates are relative to the glyph box')
+  is(mask.attrs, { width: '6.4', height: '40', x: '1.6', y: '-32.5' }, 'cutout is a broad 640px field')
+  ok(decodeURIComponent(filter.innerHTML).includes('linearGradient'), 'cutout uses a diagonal band rather than a radial hole')
+  ok(!number.innerHTML.includes('feImage'), 'stat filter cannot erase the number interior')
+  is(title.style['--ink-filter'], '', 'resting header retains native fill')
+  is(stat.style['--ink-filter'], 'url(#ink-1)', 'stat has its bevel at rest')
+  g.move(20, 40); g.drain()
+  is(title.style['--ink-filter'], 'url(#ink-0)', 'nearby pointer enables header cutout')
+  for (const [width, height] of [[24, 24], [40, 40], [80, 80], [160, 160], [100, 16]]) {
+    title.rect.width = width; title.rect.height = height
+    g.emit('resize'); g.drain()
+    const [a, b] = filter.parts.feOffset.map(n => n.attrs)
+    ok(Math.abs(Math.hypot(+a.dx * width, +a.dy * height) - 1) < 1e-12, `${width}×${height}: one CSS pixel of bevel`)
+    is([+a.dx, +a.dy], [-b.dx, -b.dy], 'lit and back edges face opposite directions')
+  }
   g.move(70, 48); g.drain()
-  ok(+link.style['--light-power'] > .99, 'a text link receives the same centered cursor light')
-  ok(Math.abs(+mask.attrs.x + .9) + Math.abs(+mask.attrs.y + 8.25) < .01, 'title cutout follows the same settled cursor in heading coordinates')
-  is(title.style['--ink-filter'], 'url(#ink-0)', 'nearby pointer enables the cutout')
-  g.emit('mutate'); g.drain()
-  is(g.defs.children.length, 1, 'repeated layout reuses the heading filter')
-  const removed = text('H3'); textNodes.push(removed); g.emit('mutate'); g.drain()
-  is(g.defs.children.length, 2, 'new benchmark headings receive a filter')
-  removed.isConnected = false; textNodes.pop(); g.emit('mutate'); g.drain()
-  ok(g.defs.children[1].removed, 'replacing benchmark cards releases detached filters')
-  g.emit('pointerleave'); g.drain()
-  is(title.style['--ink-filter'], '', 'leaving restores the complete heading fill')
+  ok(Math.abs(+mask.attrs.x + 2.7) + Math.abs(+mask.attrs.y + 19.5) < .01, 'diagonal cutout follows the settled pointer')
+  g.emit('mutate'); g.drain(); is(g.defs.children.length, 2, 'repeated layout reuses filters')
+  const letters = text('.logo-letters'); textNodes.push(letters); g.emit('mutate'); g.drain()
+  ok(g.defs.children[2].innerHTML.includes('feImage'), 'JZ letters share the same cutout and bevel')
+  letters.isConnected = false; textNodes.pop(); g.emit('mutate'); g.drain()
+  ok(g.defs.children[2].removed, 'detached surfaces release their filter')
+  g.emit('pointerleave'); g.drain(); is(title.style['--ink-filter'], '', 'leaving restores native header fill')
   g.move(70, 48); g.drain(); g.move(900, 600); g.drain()
-  is(title.style['--ink-filter'], '', 'moving to another part of the page restores fill without requiring pointerleave')
-  const still = text('H2')
-  const reduced = await glint({ paper: true, count: 0, reduced: true, textNodes: [still] }); reduced.drain()
-  reduced.move(70, 48)
-  is(reduced.frames.size, 0, 'reduced motion does not animate title masks')
-  is(still.style['--ink-filter'], '', 'reduced motion keeps the complete fill visible')
+  is(title.style['--ink-filter'], '', 'moving elsewhere clears the cutout')
+  g.move(70, 48); g.drain(); g.motion.matches = true; g.emit('motion'); g.drain()
+  is(title.style['--ink-filter'], '', 'live reduced motion restores the fill')
+  g.move(70, 48); is(g.frames.size, 0, 'reduced motion does not animate')
+  title.rect.width = 0; title.rect.height = 0; g.emit('resize'); g.drain()
+  ok(!JSON.stringify(filter.parts).match(/NaN|Infinity/), 'collapsed glyph boxes never generate invalid filter coordinates')
+})
+
+test('site: selection outlines merge inline fragments, follow scroll, clear, and leave editors native', () => {
+  const events = new Map(), frames = [], classes = new Set(), parts = []
+  const rect = (left, top, right, bottom) => ({ left, top, right, bottom, width: right - left, height: bottom - top })
+  const nodes = [
+    { nodeType: 3, textContent: 'First link', rects: [rect(20, 30, 90, 50)] },
+    { nodeType: 3, textContent: ' next line', rects: [rect(90, 30, 140, 50), rect(20, 54, 100, 74)] },
+    { nodeType: 3, textContent: 'outside viewport', rects: [rect(20, 900, 140, 920)] },
+  ]
+  const range = { commonAncestorContainer: { nodeType: 1 }, startContainer: nodes[0], startOffset: 2,
+    endContainer: nodes[2], endOffset: 4, intersectsNode: () => true }
+  const selection = { isCollapsed: false, rangeCount: 1, getRangeAt: () => range }
+  const path = { attrs: {}, setAttribute(k, v) { this.attrs[k] = v } }
+  const svg = { namespaceURI: 'svg', setAttribute() {}, append() {} }
+  const doc = { documentElement: { classList: { toggle(k, on) { if (on) classes.add(k); else classes.delete(k) } } },
+    body: { append() {} }, activeElement: { closest: () => null }, getSelection: () => selection,
+    createElementNS: (_, tag) => tag === 'svg' ? svg : path,
+    createTreeWalker: () => { let i = 0; return { nextNode: () => nodes[i++] } },
+    createRange: () => {
+      let node
+      const part = { selectNodeContents(n) { node = n }, setStart(n, offset) { this.start = [n, offset] },
+        setEnd(n, offset) { this.end = [n, offset] }, getClientRects: () => node.rects }
+      parts.push(part); return part
+    },
+    addEventListener: (name, fn) => events.set(name, fn),
+  }
+  runInNewContext(readFileSync(join(root, 'assets/selection.js'), 'utf8'), {
+    document: doc, NodeFilter: { SHOW_TEXT: 4 }, innerHeight: 800,
+    addEventListener: (name, fn) => events.set(name, fn), requestAnimationFrame: fn => { frames.push(fn); return 1 },
+  })
+  const flush = () => { while (frames.length) frames.shift()() }
+  is(path.attrs.d, 'M20,30H140V50H20ZM20,54H100V74H20Z', 'wrapped selection has one rectangle per visible line, with adjacent link fragments joined')
+  is(parts[0].start, [nodes[0], 2], 'first text slice uses the native start offset')
+  is(parts[2].end, [nodes[2], 4], 'last text slice uses the native end offset')
+  is([range.startOffset, range.endOffset], [2, 4], 'native selection is untouched for copying')
+  ok(classes.has('outline-selection'), 'transparent selection is enabled only with visible outlines')
+  nodes[0].rects = [rect(20, 10, 90, 30)]; nodes[1].rects = [rect(90, 10, 140, 30)]
+  events.get('scroll')(); events.get('scroll')(); is(frames.length, 1, 'scroll updates coalesce')
+  flush(); is(path.attrs.d, 'M20,10H140V30H20Z', 'outlines track the new viewport geometry')
+  selection.isCollapsed = true; events.get('selectionchange')(); flush()
+  is(path.attrs.d, '', 'clearing the native selection removes outlines')
+  ok(!classes.has('outline-selection'), 'clearing restores native highlighting')
+  selection.isCollapsed = false; doc.activeElement.closest = () => ({ tagName: 'TEXTAREA' })
+  events.get('selectionchange')(); flush(); is(path.attrs.d, '', 'editors retain their native selection')
+  doc.activeElement.closest = () => null; doc.getSelection = () => null
+  events.get('selectionchange')(); flush(); is(path.attrs.d, '', 'missing selection leaves no overlay')
 })
 
 test('site: sparkles require a completed background click', async () => {
@@ -280,6 +315,8 @@ test('site: sparkles require a completed background click', async () => {
   for (const tag of ['a', 'button', 'iframe', 'input', 'summary', 'select', 'textarea', '.grid-info'])
     g.emit('click', { ...click, target: { closest: selector => selector.split(', ').includes(tag) ? {} : null } })
   g.emit('click', { ...click, button: 2 }); await Promise.resolve()
+  g.selection.isCollapsed = false; g.emit('click', click); await Promise.resolve()
+  g.selection.isCollapsed = true
   is(g.clickLoads(), 0, 'controls and secondary clicks never load the click layer')
   g.emit('click', click); await Promise.resolve()
   g.emit('click', click); await Promise.resolve()
@@ -291,26 +328,27 @@ test('site: sparkles require a completed background click', async () => {
   is(plain.clickLoads(), 0, 'pages without the grid do not request sparkles')
 })
 
-function clickGrid({ canvas = true } = {}) {
+function clickGrid({ canvas = true, width = 800, height = 600, left = 0, top = 0, dpr = 1 } = {}) {
   const events = new Map(), frames = new Map(), mounted = [], segments = []
   let clock = 1000, id = 0, start
+  const transforms = [], rect = { width, height, left, top }
   const doc = { dataset: { theme: 'dark' }, classList: { contains: () => false } }
   const context = {
-    setTransform() {}, clearRect() { segments.length = 0 }, beginPath() {}, stroke() {},
+    setTransform(...v) { transforms.push(v) }, clearRect() { segments.length = 0 }, beginPath() {}, stroke() {},
     moveTo(x, y) { start = [x, y] }, lineTo(x, y) { segments.push([...start, x, y]) },
     createLinearGradient() { return { addColorStop() {} } },
   }
   const env = { document: { documentElement: doc, hidden: false,
     addEventListener: (name, fn) => events.set(name, fn), body: { append: el => mounted.push(el) },
-    createElement: () => ({ getContext: () => canvas ? context : null, setAttribute() {} }) },
-    addEventListener: (name, fn) => events.set(name, fn), innerWidth: 800, innerHeight: 600, devicePixelRatio: 1, scrollY: 0,
+    createElement: () => ({ getContext: () => canvas ? context : null, setAttribute() {}, getBoundingClientRect: () => rect }) },
+    addEventListener: (name, fn) => events.set(name, fn), innerWidth: 800, innerHeight: 600, devicePixelRatio: dpr, scrollY: 0,
     performance: { now: () => clock }, getComputedStyle: () => ({ backgroundPositionX: '20px' }),
     requestAnimationFrame: fn => { frames.set(++id, fn); return id }, cancelAnimationFrame: n => frames.delete(n),
     MutationObserver: class { constructor(fn) { events.set('theme', fn) } observe() {} },
   }
   const source = readFileSync(join(root, 'assets/grid-click.js'), 'utf8').replace('export const spark', 'const spark')
   const spark = runInNewContext(`(() => {${source}\nreturn spark})()`, env)
-  return { env, doc, frames, mounted, segments, spark, emit: name => events.get(name)?.(),
+  return { env, doc, frames, mounted, segments, transforms, rect, spark, emit: name => events.get(name)?.(),
     tick: delta => { clock += delta; const batch = [...frames.values()]; frames.clear(); batch.forEach(fn => fn(clock)) },
   }
 }
@@ -333,6 +371,20 @@ test('site: click bursts are lazy, grid-aligned, bounded and attached to the doc
   g.tick(10_000)
   is(g.segments.length, 0, 'expired bursts clear the layer')
   is(g.frames.size, 0, 'the loop stops after the final burst')
+})
+
+test('site: click canvas preserves grid coordinates at the right edge with scrollbars and fractional scaling', () => {
+  for (const dpr of [1, 1.25, 2]) {
+    const g = clickGrid({ width: 785, height: 599.5, left: 3, top: 2, dpr })
+    g.spark(780, 200); g.tick(0)
+    const [sx, , , sy] = g.transforms[0]
+    is([g.mounted[0].width, g.mounted[0].height], [Math.round(785 * dpr), Math.round(599.5 * dpr)], 'backing store uses the displayed canvas, excluding the scrollbar')
+    const [x, y] = g.segments[0].slice(2)
+    ok(Math.abs(x * sx * 785 / g.mounted[0].width + 3 - 780.5) < 1e-10, `DPR ${dpr}: right ray aligns at the same CSS grid crossing`)
+    ok(Math.abs(y * sy * 599.5 / g.mounted[0].height + 2 - 200.5) < 1e-10, `DPR ${dpr}: vertical coordinates survive backing-store rounding`)
+  }
+  const hidden = clickGrid({ width: 0 }); hidden.spark(10, 20)
+  is(hidden.frames.size, 0, 'zero-size canvas does not animate')
 })
 
 test('site: click bursts clear on light mode or a hidden tab, then resume only on a new click', () => {
