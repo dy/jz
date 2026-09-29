@@ -64,7 +64,7 @@ export const registerMathSimd = () => {
           (call $math.${name} (f64x2.extract_lane 1 (local.get $x)))))))`, [`math.${name}`])
   trig2('sin', false)
   trig2('cos', true)
-  // True f64x2 pow: both lanes through one pass of $math.pow_core's kernel (module/math.js,
+  // True f64x2 pow: both lanes through one pass of $math.pow's kernel (module/math.js,
   // Arm's optimized-routines pow), op for op in the same order, so every lane is BIT-EXACT
   // with the scalar path. The HOT path takes both lanes in the common case ($math.pow's own
   // fast entry: a normal finite x > 0, a finite non-integer y with 2^-65 ≤ |y| < 2^63, not
@@ -75,6 +75,30 @@ export const registerMathSimd = () => {
   const powLanes = `(f64x2.replace_lane 1
           (f64x2.splat (call $math.pow (f64x2.extract_lane 0 (local.get $x)) (f64x2.extract_lane 0 (local.get $y))))
           (call $math.pow (f64x2.extract_lane 1 (local.get $x)) (f64x2.extract_lane 1 (local.get $y))))`
+  // y·(lhi + llo) = ehi + elo, the factors split at 27 bits, and exp(ehi + elo) both lanes
+  // wide where both scale with one rounding (2^-54 ≤ |ehi| < 512); `edge` computes any
+  // other pair. $math.pow's kernel steps after log(x): $math.pow2 takes lhi and llo from
+  // its own log, $math.pow_b_v from the compiler.
+  const powExpTail2 = (edge) => `
+        (local.set $yhi (v128.and (local.get $y) ${i64s('0xfffffffff8000000')}))
+        (local.set $ylo (f64x2.sub (local.get $y) (local.get $yhi)))
+        (local.set $ehi (f64x2.mul (local.get $yhi) (local.get $lhi)))
+        (local.set $elo (f64x2.add (f64x2.mul (local.get $ylo) (local.get $lhi)) (f64x2.mul (local.get $y) (local.get $llo))))
+        (local.set $ax (f64x2.abs (local.get $ehi)))
+        (if (result v128)
+          (i64x2.all_true (v128.and (f64x2.ge (local.get $ax) ${splat(2 ** -54)}) (f64x2.lt (local.get $ax) ${splat(512.0)})))
+          (then
+            (local.set $ki (i32x4.trunc_sat_f64x2_s_zero (f64x2.nearest (f64x2.mul (local.get $ehi) ${splat(64 / Math.LN2)}))))
+            (local.set $kd (f64x2.convert_low_i32x4_s (local.get $ki)))
+            (local.set $f (f64x2.add (f64x2.sub (f64x2.sub (local.get $ehi) (f64x2.mul (local.get $kd) ${splat(EXP_L1)})) (f64x2.mul (local.get $kd) ${splat(EXP_L2)})) (local.get $elo)))
+            (local.set $a0 (i32.add (global.get $math.exp2_tbl) (i32.shl (i32.and (i32x4.extract_lane 0 (local.get $ki)) (i32.const 63)) (i32.const 4))))
+            (local.set $a1 (i32.add (global.get $math.exp2_tbl) (i32.shl (i32.and (i32x4.extract_lane 1 (local.get $ki)) (i32.const 63)) (i32.const 4))))
+            (local.set $t (f64x2.replace_lane 1 (f64x2.splat (f64.load (local.get $a0))) (f64.load (local.get $a1))))
+            (local.set $q (f64x2.add (f64x2.replace_lane 1 (f64x2.splat (f64.load offset=8 (local.get $a0))) (f64.load offset=8 (local.get $a1)))
+              (f64x2.mul (local.get $f) ${horner2(EXP_Q, '$f')})))
+            (local.set $scale (i64x2.add (local.get $t) (i64x2.shl (i64x2.extend_low_i32x4_s (i32x4.shr_s (local.get $ki) (i32.const 6))) (i32.const 52))))
+            (f64x2.add (local.get $scale) (f64x2.mul (local.get $scale) (local.get $q))))
+          (else ${edge}))`
   wat('math.pow2', `(func $math.pow2 (param $x v128) (param $y v128) (result v128)
     (local $tmp v128) (local $z v128) (local $kd v128) (local $ix v128) (local $invc v128) (local $logc v128) (local $logctail v128)
     (local $zhi v128) (local $zlo v128) (local $rhi v128) (local $rlo v128) (local $r v128)
@@ -91,7 +115,7 @@ export const registerMathSimd = () => {
           (v128.and (f64x2.ge (local.get $ax) ${splat(2 ** -65)}) (f64x2.lt (local.get $ax) ${splat(2 ** 63)}))
           (v128.and (f64x2.ne (f64x2.nearest (local.get $ax)) (local.get $ax)) (f64x2.ne (local.get $y) ${splat(0.5)})))))
       (then
-        ;; log(x) = k·ln2 + log(c) + log1p(z/c − 1), as hi + lo (see $math.pow_core)
+        ;; log(x) = k·ln2 + log(c) + log1p(z/c − 1), as hi + lo (see module/math.js powCoreBody)
         (local.set $tmp (i64x2.sub (local.get $x) ${i64s('0x3fe6955500000000')}))
         (local.set $z (i64x2.sub (local.get $x) (v128.and (local.get $tmp) ${i64s('0xfff0000000000000')})))
         ;; k = tmp >> 52 per lane, to f64 through the low i32 of each lane
@@ -127,30 +151,29 @@ export const registerMathSimd = () => {
         (local.set $lo (f64x2.add (f64x2.add (f64x2.add (f64x2.add (local.get $lo1) (local.get $lo2)) (local.get $lo3)) (local.get $lo4)) (local.get $p)))
         (local.set $lg (f64x2.add (local.get $hi) (local.get $lo)))
         (local.set $tail (f64x2.add (f64x2.sub (local.get $hi) (local.get $lg)) (local.get $lo)))
-        ;; y·(hi + lo) = ehi + elo, the factors split at 27 bits
-        (local.set $yhi (v128.and (local.get $y) ${i64s('0xfffffffff8000000')}))
-        (local.set $ylo (f64x2.sub (local.get $y) (local.get $yhi)))
+        ;; log(x)'s split for the product with y
         (local.set $lhi (v128.and (local.get $lg) ${i64s('0xfffffffff8000000')}))
-        (local.set $llo (f64x2.add (f64x2.sub (local.get $lg) (local.get $lhi)) (local.get $tail)))
-        (local.set $ehi (f64x2.mul (local.get $yhi) (local.get $lhi)))
-        (local.set $elo (f64x2.add (f64x2.mul (local.get $ylo) (local.get $lhi)) (f64x2.mul (local.get $y) (local.get $llo))))
-        ;; exp(ehi + elo) where both lanes scale with one rounding: 2^-54 ≤ |ehi| < 512
-        (local.set $ax (f64x2.abs (local.get $ehi)))
-        (if (result v128)
-          (i64x2.all_true (v128.and (f64x2.ge (local.get $ax) ${splat(2 ** -54)}) (f64x2.lt (local.get $ax) ${splat(512.0)})))
-          (then
-            (local.set $ki (i32x4.trunc_sat_f64x2_s_zero (f64x2.nearest (f64x2.mul (local.get $ehi) ${splat(64 / Math.LN2)}))))
-            (local.set $kd (f64x2.convert_low_i32x4_s (local.get $ki)))
-            (local.set $f (f64x2.add (f64x2.sub (f64x2.sub (local.get $ehi) (f64x2.mul (local.get $kd) ${splat(EXP_L1)})) (f64x2.mul (local.get $kd) ${splat(EXP_L2)})) (local.get $elo)))
-            (local.set $a0 (i32.add (global.get $math.exp2_tbl) (i32.shl (i32.and (i32x4.extract_lane 0 (local.get $ki)) (i32.const 63)) (i32.const 4))))
-            (local.set $a1 (i32.add (global.get $math.exp2_tbl) (i32.shl (i32.and (i32x4.extract_lane 1 (local.get $ki)) (i32.const 63)) (i32.const 4))))
-            (local.set $t (f64x2.replace_lane 1 (f64x2.splat (f64.load (local.get $a0))) (f64.load (local.get $a1))))
-            (local.set $q (f64x2.add (f64x2.replace_lane 1 (f64x2.splat (f64.load offset=8 (local.get $a0))) (f64.load offset=8 (local.get $a1)))
-              (f64x2.mul (local.get $f) ${horner2(EXP_Q, '$f')})))
-            (local.set $scale (i64x2.add (local.get $t) (i64x2.shl (i64x2.extend_low_i32x4_s (i32x4.shr_s (local.get $ki) (i32.const 6))) (i32.const 52))))
-            (f64x2.add (local.get $scale) (f64x2.mul (local.get $scale) (local.get $q))))
-          (else ${powLanes})))
+        (local.set $llo (f64x2.add (f64x2.sub (local.get $lg) (local.get $lhi)) (local.get $tail)))${powExpTail2(powLanes)})
       (else ${powLanes})))`, ['math.pow'])
+
+  // $math.pow_b two lanes wide: the constant base's lhi and llo arrive splat, and both
+  // lanes take $math.pow2's exponential where both take $math.pow_b's kernel path and scale
+  // with one rounding, bit for bit the scalar; any other pair takes $math.pow_b a lane.
+  const powBLanes = `(f64x2.replace_lane 1
+          (f64x2.splat (call $math.pow_b (f64x2.extract_lane 0 (local.get $y)) (f64x2.extract_lane 0 (local.get $x))
+            (f64x2.extract_lane 0 (local.get $lhi)) (f64x2.extract_lane 0 (local.get $llo))))
+          (call $math.pow_b (f64x2.extract_lane 1 (local.get $y)) (f64x2.extract_lane 1 (local.get $x))
+            (f64x2.extract_lane 1 (local.get $lhi)) (f64x2.extract_lane 1 (local.get $llo))))`
+  if (!crPow) wat('math.pow_b_v', `(func $math.pow_b_v (param $y v128) (param $x v128) (param $lhi v128) (param $llo v128) (result v128)
+    (local $yhi v128) (local $ylo v128) (local $ehi v128) (local $elo v128) (local $ax v128) (local $ki v128) (local $kd v128)
+    (local $f v128) (local $t v128) (local $q v128) (local $scale v128) (local $a0 i32) (local $a1 i32)
+    (local.set $ax (f64x2.abs (local.get $y)))
+    (if (result v128)
+      (i64x2.all_true (v128.and
+        (v128.and (f64x2.ge (local.get $ax) ${splat(2 ** -65)}) (f64x2.lt (local.get $ax) ${splat(2 ** 63)}))
+        (v128.and (f64x2.ne (f64x2.nearest (local.get $ax)) (local.get $ax)) (f64x2.ne (local.get $y) ${splat(0.5)}))))
+      (then${powExpTail2(powBLanes)})
+      (else ${powBLanes})))`, ['math.pow_b'])
 
   // $math.pow_fold_v — SIMD twin of $math.pow_fold, ONLY registered under optimize.crPow (that
   // fold itself only exists then — see the authoritative comment above emitPow). Per-lane scalar

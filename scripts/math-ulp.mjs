@@ -53,6 +53,8 @@ const FNS = [
   ...[2, 3, 7, 16, -1, -3, 0.5, 2.4, 0.2, 1 / 2.4, 1 / 3, 0.45, 2.2].map(c => ({
     name: `x**${+c.toPrecision(6)}`, arity: 1, expr: `a[i] ** ${c}`, host: (x) => x ** c, fold: (x) => powFold(x, c), pw: c })),
   { name: '2**x', arity: 1, expr: '2 ** a[i]', host: (x) => 2 ** x, fold: (x) => powFold(2, x) },
+  // any other constant base: $math.pow_b, the compiler taking log(c) (the dB conversion)
+  { name: '10**x', arity: 1, expr: '10 ** a[i]', host: (x) => 10 ** x, fold: (x) => powFold(10, x) },
 ].filter(f => !only || only.includes(f.name))
 const id = (f) => 'k' + FNS.indexOf(f)
 
@@ -155,6 +157,7 @@ const wideSet = (f) => {
   }
   if (f.pw !== undefined) return [gen(N_WIDE, pick(() => rnd() * 2, () => logU(-60, 60), () => logU(-1074, 1024), () => sgn(logU(-20, 20))))]
   if (f.name === '2**x') return [gen(N_WIDE, pick(() => sgn(rnd() * 1100), () => sgn(logU(-60, 4))))]
+  if (f.name === '10**x') return [gen(N_WIDE, pick(() => sgn(rnd() * 330), () => sgn(logU(-60, 4)), () => sgn(rnd() * 6)))]
   return [gen(N_WIDE, wideArgs[DOMAIN[f.name]])]
 }
 
@@ -246,7 +249,7 @@ for (const f of FNS) {
   const r = results[f.name] = { lanes: lifted(f) }
   if (corpus) {
     const m = corpus.get(HOSTNAME[f.name] ?? f.name)
-    if (m && f.pw === undefined && f.name !== '2**x') {
+    if (m && f.pw === undefined && f.name !== '2**x' && f.name !== '10**x') {
       const vs = [...m.values()]
       r.corpus = measure(f, [Float64Array.from(vs, v => v[0]), f.arity === 2 ? Float64Array.from(vs, v => v[1]) : null])
     }

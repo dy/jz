@@ -179,6 +179,7 @@ const TESTS = [
   'layout-kinds',
   'struct-inline',
   'pow',
+  'pow-base',
   'wat-invariants',
   'loop-square',
   'inplace-store',

@@ -72,7 +72,7 @@ function reachableStdlib(sec) {
 // (PPC_CALL2). These are the ONLY helpers appendLateStdlib may add; restricting to them avoids
 // touching helpers that live in other module sections (ext-stdlib, imports) where a blind
 // referenced-but-absent scan would wrongly re-append and duplicate them.
-const LATE_VEC_HELPERS = new Set(['math.sin2', 'math.cos2', 'math.pow2', 'math.atan2_2', 'math.hypot_2', 'math.log_v', 'math.exp_v', 'math.exp2_v', 'math.cbrt_v', 'math.pow_fifths_v',
+const LATE_VEC_HELPERS = new Set(['math.sin2', 'math.cos2', 'math.pow2', 'math.atan2_2', 'math.hypot_2', 'math.log_v', 'math.exp_v', 'math.exp2_v', 'math.cbrt_v', 'math.pow_fifths_v', 'math.pow_b_v',
   // math.pow_fold (scalar) is normally eager-included by emitPow's own const-exponent fold (which
   // always `inc()`s it before the vectorizer ever runs, under optimize.crPow — see module/math.js).
   // It's ALSO listed here for the one path where that eager inc doesn't fire: a genuine runtime
@@ -262,11 +262,11 @@ export function pullStdlib(sec) {
   // 2/π's bits for sin, cos and tan past 2^24 (module/math.js $math.rem_pio2, Payne–Hanek)
   if (injectTable('math.rem_pio2', 'math.pio2_tbl', ctx.runtime.pio2Table)) ctx.runtime.pio2Table = null
   // The 2^(j/64) table both exponentials and pow reduce to (module/math/trig-tables.js
-  // EXP2_TAB), and pow's log table: pow's runtime kernel (the default one; crPow's has
-  // tables of its own) reads both.
+  // EXP2_TAB), and pow's log table: pow's default kernel (inline in $math.pow; crPow's has
+  // tables of its own) and $math.pow_b read the first, $math.pow the second.
   const powKernel = !!ctx.runtime.powLogTable
-  if (injectTable(powKernel ? ['math.exp2', 'math.exp', 'math.pow_core'] : ['math.exp2', 'math.exp'], 'math.exp2_tbl', ctx.runtime.exp2Table)) ctx.runtime.exp2Table = null
-  if (powKernel && injectTable('math.pow_core', 'math.pow_log_tbl', ctx.runtime.powLogTable)) ctx.runtime.powLogTable = null
+  if (injectTable(powKernel ? ['math.exp2', 'math.exp', 'math.pow', 'math.pow_b'] : ['math.exp2', 'math.exp'], 'math.exp2_tbl', ctx.runtime.exp2Table)) ctx.runtime.exp2Table = null
+  if (powKernel && injectTable('math.pow', 'math.pow_log_tbl', ctx.runtime.powLogTable)) ctx.runtime.powLogTable = null
   // the math kernels' constants (module/math.js kc), for any of the kernels that read them
   if (injectTable(ctx.runtime.mathKcUsers || [], 'math.kc', ctx.runtime.mathKc)) ctx.runtime.mathKc = null
   if (!needsAlloc) { ctx.scope.globals.delete('__heap'); ctx.scope.globals.delete('__heap_reset') }

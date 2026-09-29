@@ -2265,10 +2265,20 @@ n && a[child] < a[child + 1]) child++` as a select over the lowered `&&` ran
 implementation for constant and runtime exponents within an ulp of the host:
 Arm's optimized-routines pow, a double-double log from a 128-entry table
 (`scripts/pow-log-table.mjs` derives and checks it) and the shared exp
-table, 10 ns a call against V8's 6; the ladder in front of it takes the
-common case (a positive finite base, a non-integer exponent) straight to
-the kernel and walks the edge cases only for the rest. The constant fold
-in `src/prepare/math-kernel.js` is the kernel's twin, bit for bit.
+table, inline in `$math.pow` after the ladder, which takes the common case (a
+positive finite base, a non-integer exponent) straight to it and walks the
+edge cases only for the rest: 8.1 ns a call against V8's 6.9, where it took
+10.9 as a second function behind the ladder with its literals built inline. A constant base c > 0 other
+than 2 (`Math.pow(10, db / 20)`, `10 ** (db / 20)`) is `$math.pow_b`: the
+compiler takes log(c) with the kernel's own operations (`powLog`), and the call
+runs the exponential part alone, bit for bit the kernel's answer for a runtime
+base equal to c, 3.6 ns against V8's 6.4 (9.9 before); an exponent the kernel
+would not take (an integer, 0.5, a tiny or a non-finite one) goes to
+`$math.pow` (`test/pow-base.js`). A version that took y·log(x) in one double
+where |y·log x| is small (within about 2|y·log x| + 1 ulp) measured 1.45 times the
+kernel's speed, short of the 2 that a hundred ulp would have to buy, so the kernel
+stays whole. The constant fold in `src/prepare/math-kernel.js` is the kernel's
+twin, bit for bit.
 The k/5 fifthroot fold (`$math.pow_fifths`) runs four Newton steps (the last a
 correction) and measures 3 ulp against the exact rational power x^(k/5), which
 `test/pow.js` pins under a 96 ulp ceiling. `x ** 2.2` means the double 2.2,

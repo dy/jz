@@ -18,7 +18,7 @@ import { inc, err } from '../src/ctx.js'
 import { repOf, VAL } from '../src/reps.js'
 import { valTypeOf } from '../src/kind.js'
 import { registerPowTranscend } from './math/pow-transcend.js'
-import { powFold } from '../src/prepare/math-kernel.js'
+import { powFold, powLog } from '../src/prepare/math-kernel.js'
 import { PI, HALF_PI, PIO2_CW, INV_PIO2, ROUND_MAGIC, CW_LIMIT, PIO2_LO, TWO_OVER_PI_HEX, SIN_C, COS_C, ATAN_C, ASIN_C, EXPM1_C, LOG_C, EXP2_TAB_HEX, EXP2_Q, EXP_Q, EXP_L1, EXP_L2, POW_LOG_TAB_HEX, POW_LOG_A, POW_LN2HI, POW_LN2LO, polyTree, fifthFold } from './math/trig-tables.js'
 import { hexBytes } from '../src/static-data.js'
 import { registerMathSimd } from './math/simd.js'
@@ -39,7 +39,8 @@ export default (ctx) => {
     'math.expm1': ['math.exp'],
     'math.log2': ['math.log'],
     'math.log1p': ['math.log'],
-    'math.pow': ['math.pow_core'],
+    'math.pow': crPow ? ['math.pow_core'] : [],
+    'math.pow_b': ['math.pow'],
     'math.pow_core': crPow ? ['math.pow_transcend'] : [],
     'math.pow_scalbn': [],
     // math.pow_transcend/math.pow_fold only exist (are registered as wat() templates below) when
@@ -337,7 +338,7 @@ export default (ctx) => {
     // slice — NaN/±Inf/0/negative — is needed; every y-branch is statically dead since c is a
     // known finite non-0/1/±0.5/integer literal) + the call frame is still a per-pixel win on
     // the gamma curves (v**0.45, a**(1/2.4)) that dominate tone-mapping, and a program whose
-    // only pow is folded this way never pulls the general $math.pow/pow_core. Integers stay on
+    // only pow is folded this way never pulls the general $math.pow. Integers stay on
     // $math.pow (its square-and-multiply path is exact, not transcendental); ±0.5 stays sqrt
     // (also exact, correctly rounded by hardware).
     //
@@ -347,7 +348,7 @@ export default (ctx) => {
     //     algebraic fifthroot fold, $math.pow_fifths (x^(k/5) = x^p·fifthroot(x^r), p=⌊c⌋,
     //     r=5c−5p ∈ 1..4; four Newton steps, within 40 ulp of x^c, not correctly rounded,
     //     pinned by test/pow.js). Every other constant takes the same `$math.pow` call a runtime exponent
-    //     takes: its ladder settles the edges (x=−∞ included) and $math.pow_core, Arm's
+    //     takes: its ladder settles the edges (x=−∞ included) and its kernel, Arm's
     //     optimized-routines pow (see its comment below), does the rest within an ulp of the
     //     host — so `x ** c` and `Math.pow(x, y)` with y == c agree bit for bit, and the
     //     constant fold of the same expression (src/prepare/math-kernel.js) is the kernel's
@@ -391,7 +392,7 @@ export default (ctx) => {
         }
       }
       // Otherwise the constant exponent takes the same kernel as a runtime one
-      // ($math.pow's ladder and $math.pow_core, within an ulp of the host), so `x ** 2.4`
+      // ($math.pow's ladder and kernel, within an ulp of the host), so `x ** 2.4`
       // and `Math.pow(x, 2.4)` agree bit for bit; exp(c·log(x)) was a second algorithm
       // with its own rounding.
     }
@@ -402,6 +403,17 @@ export default (ctx) => {
     // flen=13), which only $math.pow's integer fast path delivers.
     if (allowExpPos && isLit(irA) && litVal(irA) === 2 && n === null)
       return (inc('math.exp2'), typed(['call', '$math.exp2', irB], 'f64'))
+    // Any other positive finite constant base: its log is taken now, with the kernel's own
+    // operations (powLog), and $math.pow_b does the rest, bit for bit $math.pow(c, y) – the
+    // dB conversion 10 ** (db / 20) costs an exponential, not a logarithm and an exponential.
+    if (isLit(irA) && !crPow) {
+      const c = litVal(irA)
+      if (c > 0 && c < Infinity) {
+        const [lhi, llo] = powLog(c)
+        inc('math.pow_b')
+        return typed(['call', '$math.pow_b', irB, ['f64.const', c], ['f64.const', lhi], ['f64.const', llo]], 'f64')
+      }
+    }
     return (inc('math.pow'), typed(['call', '$math.pow', irA, irB], 'f64'))
   }
   ctx.core.emit['math.pow'] = tag((a, b) => emitPow(a, b, true), powCall.deps)
@@ -821,102 +833,6 @@ export default (ctx) => {
   registerPowTranscend()
   } // if (crPow)
 
-  wat('math.pow', `(func $math.pow (param $x f64) (param $y f64) (result f64)
-    (local $result f64) (local $n i32) (local $neg_base i32) (local $abs_x f64)
-    ;; the common case first: a positive finite x and a finite non-integer y (a NaN
-    ;; fails every compare) go straight to the kernel, which takes x = 1 (log 0) and
-    ;; y = 0.5 (a sqrt) itself; everything else walks the ladder below
-    (local.set $abs_x (f64.abs (local.get $y)))
-    (if (i32.and (i32.and (f64.gt (local.get $x) (f64.const 0.0)) (f64.lt (local.get $x) (f64.const inf)))
-                 (i32.and (f64.lt (local.get $abs_x) (f64.const ${2 ** 63})) (f64.ne (f64.nearest (local.get $abs_x)) (local.get $abs_x))))
-      (then (return (call $math.pow_core (local.get $x) (local.get $y)))))
-    ;; y == 0 -> 1 (covers pow(NaN,0), pow(±0,0), pow(±Inf,0))
-    (if (f64.eq (local.get $y) (f64.const 0.0)) (then (return (f64.const 1.0))))
-    ;; y is NaN -> NaN
-    (if (f64.ne (local.get $y) (local.get $y)) (then (return (local.get $y))))
-    ;; x is NaN -> NaN
-    (if (f64.ne (local.get $x) (local.get $x)) (then (return (local.get $x))))
-    ;; y is ±Infinity
-    (if (f64.eq (f64.abs (local.get $y)) (f64.const inf))
-      (then
-        (local.set $abs_x (f64.abs (local.get $x)))
-        (if (f64.eq (local.get $abs_x) (f64.const 1.0))
-          (then (return (f64.const nan))))
-        (if (i32.eq (f64.gt (local.get $abs_x) (f64.const 1.0))
-                    (f64.gt (local.get $y) (f64.const 0.0)))
-          (then (return (f64.const inf)))
-          (else (return (f64.const 0.0))))))
-    ;; x == 1 -> 1 (after y=±Inf check, so 1**Inf already returned NaN)
-    (if (f64.eq (local.get $x) (f64.const 1.0)) (then (return (f64.const 1.0))))
-    ;; y == 1 -> x (preserves -0 for (-0)**1)
-    (if (f64.eq (local.get $y) (f64.const 1.0)) (then (return (local.get $x))))
-    ;; integer fast path, |y| ≤ 16: the square-and-multiply the constant-exponent
-    ;; lowering uses (emitPow's foldPow), so x ** 16 and x ** y at y = 16 agree
-    ;; bit for bit; a longer chain drifts by its length (x^1000 by 49 ulp), so every
-    ;; other integer takes the kernel below, within an ulp of the true value.
-    ;; A negative y squares the reciprocal: 1/x^n overflowed to 0 where x^-n is
-    ;; still a double (5.67e102 ** -3 is 5.5e-309).
-    ;; Also covers ±Infinity x: 1/Inf = 0 through the loop,
-    ;; with neg_base (x<0 && odd y) producing -0 — required for (-Inf)**-odd.
-    ;; Runs before the x==0 fallback so (-0)**oddInt correctly returns ∓0/∓Inf.
-    (if (i32.and
-          (f64.eq (f64.nearest (local.get $y)) (local.get $y))
-          (f64.le (f64.abs (local.get $y)) (f64.const 16.0)))
-      (then
-        (local.set $abs_x (f64.abs (local.get $x)))
-        (if (f64.lt (local.get $y) (f64.const 0.0))
-          (then (local.set $abs_x (f64.div (f64.const 1.0) (local.get $abs_x)))))
-        ;; copysign(1, x) gives -1 for any x with sign bit set (incl. -0); f64.lt picks that up.
-        (local.set $neg_base (i32.and (f64.lt (f64.copysign (f64.const 1.0) (local.get $x)) (f64.const 0.0))
-                                      (i32.and (i32.trunc_f64_s (local.get $y)) (i32.const 1))))
-        (local.set $n (i32.trunc_f64_s (f64.abs (local.get $y))))
-        (local.set $result (f64.const 1.0))
-        (block $done
-          (loop $loop
-            (br_if $done (i32.le_s (local.get $n) (i32.const 0)))
-            (if (i32.and (local.get $n) (i32.const 1))
-              (then (local.set $result (f64.mul (local.get $result) (local.get $abs_x)))))
-            (local.set $abs_x (f64.mul (local.get $abs_x) (local.get $abs_x)))
-            (local.set $n (i32.shr_s (local.get $n) (i32.const 1)))
-            (br $loop)))
-        (if (local.get $neg_base)
-          (then (local.set $result (f64.neg (local.get $result)))))
-        (return (local.get $result))))
-    ;; x is ±Infinity with |y| > 16 (the fast path above handles smaller y):
-    ;; magnitude is Inf for y>0, 0 for y<0; sign is negative only when x is -Inf
-    ;; and y is an odd integer. Odd-ness is tested in f64 (y, y/2 both integral)
-    ;; to avoid an i32.trunc trap on |y| beyond i32 range.
-    (if (f64.eq (f64.abs (local.get $x)) (f64.const inf))
-      (then
-        (local.set $result
-          (select (f64.const inf) (f64.const 0.0) (f64.gt (local.get $y) (f64.const 0.0))))
-        (if (i32.and (f64.lt (local.get $x) (f64.const 0.0))
-                     (i32.and (f64.eq (f64.nearest (local.get $y)) (local.get $y))
-                              (f64.ne (f64.nearest (f64.mul (local.get $y) (f64.const 0.5)))
-                                      (f64.mul (local.get $y) (f64.const 0.5)))))
-          (then (local.set $result (f64.neg (local.get $result)))))
-        (return (local.get $result))))
-    ;; x == ±0: y<0 ? Infinity : 0, negative for -0 and an odd integer y (|y| > 16 here)
-    (if (f64.eq (local.get $x) (f64.const 0.0))
-      (then
-        (local.set $result (select (f64.const inf) (f64.const 0.0) (f64.lt (local.get $y) (f64.const 0.0))))
-        (return (select (f64.neg (local.get $result)) (local.get $result)
-          (i32.and (f64.lt (f64.copysign (f64.const 1.0) (local.get $x)) (f64.const 0.0))
-                   (i32.and (f64.eq (f64.nearest (local.get $y)) (local.get $y))
-                            (f64.ne (f64.nearest (f64.mul (local.get $y) (f64.const 0.5))) (f64.mul (local.get $y) (f64.const 0.5)))))))))
-    ;; x < 0: a non-integer finite y -> NaN; an integer y beyond the fast path
-    ;; takes |x| and, for an odd y, the sign (every |y| ≥ 2^53 is even)
-    (if (f64.lt (local.get $x) (f64.const 0.0))
-      (then
-        (if (f64.ne (f64.nearest (local.get $y)) (local.get $y)) (then (return (f64.const nan))))
-        (local.set $result (call $math.pow_core (f64.neg (local.get $x)) (local.get $y)))
-        (return (select (f64.neg (local.get $result)) (local.get $result)
-          (f64.ne (f64.nearest (f64.mul (local.get $y) (f64.const 0.5))) (f64.mul (local.get $y) (f64.const 0.5)))))))
-    ;; Remaining case: x > 0 finite (≠1), y finite (≠0, ≠1), no integer of |y| ≤ 16.
-    ;; $math.pow_core below is within 0.54 ulp by default (a double-double log, see its
-    ;; comment), or — under optimize.crPow — CORRECTLY ROUNDED in the CORE-MATH sense
-    ;; (two-phase Ziv dd/td kernel, see $math.pow_transcend's comment).
-    (call $math.pow_core (local.get $x) (local.get $y)))`)
 
   // scalbn(x, n) = x * 2^n, correctly rounded even when the result lands in the subnormal
   // range (a single f64.mul by a bit-constructed 2^n would double-round there). Ported from
@@ -949,104 +865,20 @@ export default (ctx) => {
     (f64.mul (local.get $y)
       (f64.reinterpret_i64 (i64.shl (i64.extend_i32_s (i32.add (local.get $n) (i32.const 1023))) (i64.const 52)))))`)
 
-  // x**y for the case the ladder above can't fast-path: x > 0 finite, y finite and not an
-  // integer of magnitude ≤ 16 (the common case enters here first, before the ladder). y==0.5 is
-  // always special-cased to hardware sqrt (correctly rounded, cheaper than either general kernel
-  // below) regardless of crPow. Two kernels, picked by `optimize.crPow` (see the authoritative
-  // comment above `emitPow` for the flag's full semantics and the measured cost of switching):
-  //   OFF (DEFAULT): Arm's optimized-routines pow (Szabolcs Nagy, 2018; MIT OR Apache-2.0 WITH
-  //     LLVM-exception — https://github.com/ARM-software/optimized-routines/blob/master/math/
-  //     pow.c), the algorithm glibc, musl and LLVM's libc ship: log(x) as a double-double from
-  //     a 128-entry table of (1/c, log c) by the top mantissa bits (scripts/pow-log-table.mjs
-  //     derives it from the same 200-bit arithmetic and checks it against pow_log_data.c), a
-  //     degree-7 polynomial on the residual, y·log(x) as an exact split product, then jz's own
-  //     exp table for 2^(k/64). Documented worst case 0.54 ulp; measured against the host's
-  //     Math.pow it is bit-exact on 648 of 660 grid points and one ulp off on the rest
-  //     (V8 ports fdlibm's e_pow.c, "nearly rounded" itself, so an occasional last-ulp
-  //     difference between two sub-ulp kernels is expected). The template's own comment walks
-  //     the steps; the JS twin in src/prepare/math-kernel.js (powCore) folds constants to the
-  //     same bits.
-  //   ON: delegates to the shared two-phase Ziv dd/td kernel — see $math.pow_transcend's own
-  //     comment above for the algorithm. CORE-MATH-class correctly rounded (0 misrounds on the
-  //     5152-vector gate, test/pow-cr.js) at a measured 8× the default kernel's cost per call,
-  //     hence opt-in rather than default.
-  wat('math.pow_core', crPow
-    ? `(func $math.pow_core (param $x f64) (param $y f64) (result f64)
-    (if (f64.eq (local.get $y) (f64.const 0.5))
-      (then (return (f64.sqrt (local.get $x)))))
-    (call $math.pow_transcend (local.get $x) (local.get $y)))`
-    : `(func $math.pow_core (param $x f64) (param $y f64) (result f64)
-    ;; x > 0 finite (≠1), y finite (≠0, ≠1) and no i32-range integer: x^y = exp(y·log(x))
-    ;; with log(x) carried as a double-double, so a large y loses nothing to the
-    ;; rounding of log(x) alone. Arm's optimized-routines pow (Szabolcs Nagy; MIT OR
-    ;; Apache-2.0 WITH LLVM-exception) on jz's own exponential table: within 0.54 ulp,
-    ;; ~40 flops and two table loads, no branch on the common path.
-    ;;
-    ;;   log(x) = k·ln2 + log(c) + log1p(z/c − 1)   x = 2^k·z, z ∈ [OFF, 2·OFF), c from the
-    ;;   table by z's top mantissa bits, r = z/c − 1 exact (z split at 32 bits), the
-    ;;   polynomial on |r| < 2^-7, the sum kept as hi + lo;
-    ;;   y·(hi + lo) = ehi + elo with the factors split at 27 bits, so yhi·lhi is exact;
-    ;;   exp(ehi + elo) = 2^(k/64)·(1 + tail + (e^f − 1)), f = ehi − k·ln2/64 + elo.
-    (local $ix i64) (local $tmp i64) (local $sbits i64) (local $i i32) (local $k i32) (local $tb i32) (local $e i32)
-    (local $z f64) (local $kd f64) (local $invc f64) (local $logc f64) (local $logctail f64)
-    (local $zhi f64) (local $zlo f64) (local $rhi f64) (local $rlo f64) (local $r f64)
-    (local $t1 f64) (local $t2 f64) (local $lo1 f64) (local $lo2 f64) (local $ar f64) (local $ar2 f64) (local $ar3 f64)
-    (local $arhi f64) (local $arhi2 f64) (local $hi f64) (local $lo3 f64) (local $lo4 f64) (local $p f64) (local $lo f64) (local $lg f64) (local $tail f64)
-    (local $yhi f64) (local $ylo f64) (local $lhi f64) (local $llo f64) (local $ehi f64) (local $elo f64)
-    (local $ax f64) (local $f f64) (local $t f64) (local $q f64) (local $scale f64) (local $res f64) (local $one f64)
-    ;; y == 0.5 exactly (x > 0): f64.sqrt is correctly rounded
-    (if (f64.eq (local.get $y) (f64.const 0.5)) (then (return (f64.sqrt (local.get $x)))))
-    ;; |y| < 2^-65: x^y = 1 + y·log(x) rounds to the double next to 1 on y's side of it
-    ;; |y| ≥ 2^63: an even integer, an overflow or an underflow by the sides of 1 x and y are
-    ;; on, 1 at x = 1 (the ladder's x = −1 arrives here as 1)
-    (local.set $ax (f64.abs (local.get $y)))
-    (if (f64.lt (local.get $ax) (f64.const ${2 ** -65}))
-      (then (return (select (f64.add (f64.const 1.0) (local.get $y)) (f64.sub (f64.const 1.0) (local.get $y)) (f64.gt (local.get $x) (f64.const 1.0))))))
-    (if (f64.ge (local.get $ax) (f64.const ${2 ** 63}))
-      (then (return (select (f64.const 1.0)
-        (select (f64.const inf) (f64.const 0.0) (i32.eq (f64.gt (local.get $x) (f64.const 1.0)) (f64.gt (local.get $y) (f64.const 0.0))))
-        (f64.eq (local.get $x) (f64.const 1.0))))))
-    ;; a subnormal x scales by 2^52, its exponent read 52 lower
-    (local.set $ix (i64.reinterpret_f64 (local.get $x)))
-    (if (i64.lt_u (local.get $ix) (i64.const 0x0010000000000000))
-      (then (local.set $ix (i64.sub (i64.reinterpret_f64 (f64.mul (local.get $x) (f64.const 4503599627370496.0))) (i64.const 0x0340000000000000)))))
-    (local.set $tmp (i64.sub (local.get $ix) (i64.const 0x3fe6955500000000)))
-    (local.set $i (i32.and (i32.wrap_i64 (i64.shr_u (local.get $tmp) (i64.const 45))) (i32.const 127)))
-    (local.set $k (i32.wrap_i64 (i64.shr_s (local.get $tmp) (i64.const 52))))
-    (local.set $z (f64.reinterpret_i64 (i64.sub (local.get $ix) (i64.and (local.get $tmp) (i64.const 0xfff0000000000000)))))
-    (local.set $kd (f64.convert_i32_s (local.get $k)))
-    (local.set $tb (i32.add (global.get $math.pow_log_tbl) (i32.mul (local.get $i) (i32.const 24))))
-    (local.set $invc (f64.load (local.get $tb)))
-    (local.set $logc (f64.load offset=8 (local.get $tb)))
-    (local.set $logctail (f64.load offset=16 (local.get $tb)))
-    (local.set $zhi (f64.reinterpret_i64 (i64.and (i64.add (i64.reinterpret_f64 (local.get $z)) (i64.const 0x80000000)) (i64.const 0xffffffff00000000))))
-    (local.set $zlo (f64.sub (local.get $z) (local.get $zhi)))
-    (local.set $rhi (f64.sub (f64.mul (local.get $zhi) (local.get $invc)) (f64.const 1.0)))
-    (local.set $rlo (f64.mul (local.get $zlo) (local.get $invc)))
-    (local.set $r (f64.add (local.get $rhi) (local.get $rlo)))
-    (local.set $t1 (f64.add (f64.mul (local.get $kd) (f64.const ${POW_LN2HI})) (local.get $logc)))
-    (local.set $t2 (f64.add (local.get $t1) (local.get $r)))
-    (local.set $lo1 (f64.add (f64.mul (local.get $kd) (f64.const ${POW_LN2LO})) (local.get $logctail)))
-    (local.set $lo2 (f64.add (f64.sub (local.get $t1) (local.get $t2)) (local.get $r)))
-    (local.set $ar (f64.mul (f64.const ${POW_LOG_A[0]}) (local.get $r)))
-    (local.set $ar2 (f64.mul (local.get $r) (local.get $ar)))
-    (local.set $ar3 (f64.mul (local.get $r) (local.get $ar2)))
-    (local.set $arhi (f64.mul (f64.const ${POW_LOG_A[0]}) (local.get $rhi)))
-    (local.set $arhi2 (f64.mul (local.get $rhi) (local.get $arhi)))
-    (local.set $hi (f64.add (local.get $t2) (local.get $arhi2)))
-    (local.set $lo3 (f64.mul (local.get $rlo) (f64.add (local.get $ar) (local.get $arhi))))
-    (local.set $lo4 (f64.add (f64.sub (local.get $t2) (local.get $hi)) (local.get $arhi2)))
-    (local.set $p (f64.mul (local.get $ar3)
-      (f64.add (f64.const ${POW_LOG_A[1]}) (f64.add (f64.mul (local.get $r) (f64.const ${POW_LOG_A[2]}))
-        (f64.mul (local.get $ar2) (f64.add (f64.const ${POW_LOG_A[3]}) (f64.add (f64.mul (local.get $r) (f64.const ${POW_LOG_A[4]}))
-          (f64.mul (local.get $ar2) (f64.add (f64.const ${POW_LOG_A[5]}) (f64.mul (local.get $r) (f64.const ${POW_LOG_A[6]})))))))))))
-    (local.set $lo (f64.add (f64.add (f64.add (f64.add (local.get $lo1) (local.get $lo2)) (local.get $lo3)) (local.get $lo4)) (local.get $p)))
-    (local.set $lg (f64.add (local.get $hi) (local.get $lo)))
-    (local.set $tail (f64.add (f64.sub (local.get $hi) (local.get $lg)) (local.get $lo)))
+  // pow's steps after log(x) = lg + tail (a double-double): lhi, llo split at 27 bits
+  // (lhi's low 26 bits clear), y likewise, so y·(lhi + llo) = ehi + elo with yhi·lhi
+  // exact; then exp(ehi + elo) on the 2^(j/64) table, 2^(k/64)·(1 + tail + (e^f − 1)),
+  // f = ehi − k·ln2/64 + elo. powExpTail reads $y, $lhi and $llo: pow's kernel
+  // (powCoreBody) computes the two from x, $math.pow_b takes them from the compiler, which took log
+  // of a constant x with these same operations.
+  const powSplitLog = `
+    (local.set $lhi (f64.reinterpret_i64 (i64.and (i64.reinterpret_f64 (local.get $lg)) (i64.const 0xfffffffff8000000))))
+    (local.set $llo (f64.add (f64.sub (local.get $lg) (local.get $lhi)) (local.get $tail)))`
+  const powExpLocals = `(local $k i32) (local $e i32) (local $tb i32) (local $sbits i64) (local $yhi f64) (local $ylo f64) (local $ehi f64) (local $elo f64)
+    (local $ax f64) (local $f f64) (local $t f64) (local $q f64) (local $scale f64) (local $res f64) (local $one f64) (local $hi f64) (local $lo f64)`
+  const powExpTail = `
     (local.set $yhi (f64.reinterpret_i64 (i64.and (i64.reinterpret_f64 (local.get $y)) (i64.const 0xfffffffff8000000))))
     (local.set $ylo (f64.sub (local.get $y) (local.get $yhi)))
-    (local.set $lhi (f64.reinterpret_i64 (i64.and (i64.reinterpret_f64 (local.get $lg)) (i64.const 0xfffffffff8000000))))
-    (local.set $llo (f64.add (f64.sub (local.get $lg) (local.get $lhi)) (local.get $tail)))
     (local.set $ehi (f64.mul (local.get $yhi) (local.get $lhi)))
     (local.set $elo (f64.add (f64.mul (local.get $ylo) (local.get $lhi)) (f64.mul (local.get $y) (local.get $llo))))
     ;; exp(ehi + elo)
@@ -1081,8 +913,220 @@ export default (ctx) => {
         (local.set $hi (f64.add (local.get $one) (local.get $res)))
         (local.set $lo (f64.add (f64.add (f64.sub (local.get $one) (local.get $hi)) (local.get $res)) (local.get $lo)))
         (local.set $res (f64.sub (f64.add (local.get $hi) (local.get $lo)) (local.get $one)))))
-    (f64.mul (local.get $res) (f64.const ${2 ** -1022})))`,
-    crPow ? ['math.pow_transcend'] : [])
+    (f64.mul (local.get $res) (f64.const ${2 ** -1022}))`
+
+  // x**y for the case $math.pow's ladder (below) can't answer itself: x > 0 finite, y finite
+  // and not an integer of magnitude ≤ 16 (the common case enters first, before the ladder).
+  // y==0.5 is always special-cased to hardware sqrt (correctly rounded, cheaper than either
+  // general kernel) regardless of crPow. Two kernels, picked by `optimize.crPow` (see the
+  // authoritative comment above `emitPow` for the flag's full semantics and the measured cost
+  // of switching):
+  //   OFF (DEFAULT), inline in $math.pow after the ladder: Arm's optimized-routines pow (Szabolcs Nagy, 2018; MIT OR Apache-2.0 WITH
+  //     LLVM-exception — https://github.com/ARM-software/optimized-routines/blob/master/math/
+  //     pow.c), the algorithm glibc, musl and LLVM's libc ship: log(x) as a double-double from
+  //     a 128-entry table of (1/c, log c) by the top mantissa bits (scripts/pow-log-table.mjs
+  //     derives it from the same 200-bit arithmetic and checks it against pow_log_data.c), a
+  //     degree-7 polynomial on the residual, y·log(x) as an exact split product, then jz's own
+  //     exp table for 2^(k/64). Documented worst case 0.54 ulp; measured against the host's
+  //     Math.pow it is bit-exact on 648 of 660 grid points and one ulp off on the rest
+  //     (V8 ports fdlibm's e_pow.c, "nearly rounded" itself, so an occasional last-ulp
+  //     difference between two sub-ulp kernels is expected). powCoreBody's comment walks the
+  //     steps; the JS twin in src/prepare/math-kernel.js (powCore) folds constants to the same
+  //     bits.
+  //   ON: $math.pow_core, which delegates to the shared two-phase Ziv dd/td kernel — see $math.pow_transcend's own
+  //     comment above for the algorithm. CORE-MATH-class correctly rounded (0 misrounds on the
+  //     5152-vector gate, test/pow-cr.js) at a measured 8× the default kernel's cost per call,
+  //     hence opt-in rather than default.
+  if (crPow) wat('math.pow_core', `(func $math.pow_core (param $x f64) (param $y f64) (result f64)
+    (if (f64.eq (local.get $y) (f64.const 0.5))
+      (then (return (f64.sqrt (local.get $x)))))
+    (call $math.pow_transcend (local.get $x) (local.get $y)))`, ['math.pow_transcend'])
+
+  // The default kernel, which $math.pow runs inline (one call a power, where calling it
+  // from the ladder cost a second frame): x > 0 finite, y finite: x^y = exp(y·log(x))
+  // with log(x) carried as a double-double, so a large y loses nothing to the
+  // rounding of log(x) alone. Arm's optimized-routines pow (Szabolcs Nagy; MIT OR
+  // Apache-2.0 WITH LLVM-exception) on jz's own exponential table: within 0.54 ulp,
+  // ~40 flops and two table loads, no branch on the common path.
+  //
+  //   log(x) = k·ln2 + log(c) + log1p(z/c − 1)   x = 2^k·z, z ∈ [OFF, 2·OFF), c from the
+  //   table by z's top mantissa bits, r = z/c − 1 exact (z split at 32 bits), the
+  //   polynomial on |r| < 2^-7, the sum kept as hi + lo;
+  //   y·(hi + lo) = ehi + elo with the factors split at 27 bits, so yhi·lhi is exact;
+  //   exp(ehi + elo) = 2^(k/64)·(1 + tail + (e^f − 1)), f = ehi − k·ln2/64 + elo.
+  const powCoreLocals = `
+    (local $ix i64) (local $tmp i64) (local $i i32)
+    (local $z f64) (local $kd f64) (local $invc f64) (local $logc f64) (local $logctail f64)
+    (local $zhi f64) (local $zlo f64) (local $rhi f64) (local $rlo f64) (local $r f64)
+    (local $t1 f64) (local $t2 f64) (local $lo1 f64) (local $lo2 f64) (local $ar f64) (local $ar2 f64) (local $ar3 f64)
+    (local $arhi f64) (local $arhi2 f64) (local $lo3 f64) (local $lo4 f64) (local $p f64) (local $lg f64) (local $tail f64)
+    (local $lhi f64) (local $llo f64) ${powExpLocals}`
+  const powCoreBody = `
+    ;; y == 0.5 exactly (x > 0): f64.sqrt is correctly rounded
+    (if (f64.eq (local.get $y) (f64.const 0.5)) (then (return (f64.sqrt (local.get $x)))))
+    ;; |y| < 2^-65: x^y = 1 + y·log(x) rounds to the double next to 1 on y's side of it
+    ;; |y| ≥ 2^63: an even integer, an overflow or an underflow by the sides of 1 x and y are
+    ;; on, 1 at x = 1 (the ladder's x = −1 arrives here as 1)
+    (local.set $ax (f64.abs (local.get $y)))
+    (if (f64.lt (local.get $ax) (f64.const ${2 ** -65}))
+      (then (return (select (f64.add (f64.const 1.0) (local.get $y)) (f64.sub (f64.const 1.0) (local.get $y)) (f64.gt (local.get $x) (f64.const 1.0))))))
+    (if (f64.ge (local.get $ax) (f64.const ${2 ** 63}))
+      (then (return (select (f64.const 1.0)
+        (select (f64.const inf) (f64.const 0.0) (i32.eq (f64.gt (local.get $x) (f64.const 1.0)) (f64.gt (local.get $y) (f64.const 0.0))))
+        (f64.eq (local.get $x) (f64.const 1.0))))))
+    ;; a subnormal x scales by 2^52, its exponent read 52 lower
+    (local.set $ix (i64.reinterpret_f64 (local.get $x)))
+    (if (i64.lt_u (local.get $ix) (i64.const 0x0010000000000000))
+      (then (local.set $ix (i64.sub (i64.reinterpret_f64 (f64.mul (local.get $x) (f64.const ${2 ** 52}))) (i64.const 0x0340000000000000)))))
+    (local.set $tmp (i64.sub (local.get $ix) (i64.const 0x3fe6955500000000)))
+    (local.set $i (i32.and (i32.wrap_i64 (i64.shr_u (local.get $tmp) (i64.const 45))) (i32.const 127)))
+    (local.set $k (i32.wrap_i64 (i64.shr_s (local.get $tmp) (i64.const 52))))
+    (local.set $z (f64.reinterpret_i64 (i64.sub (local.get $ix) (i64.and (local.get $tmp) (i64.const 0xfff0000000000000)))))
+    (local.set $kd (f64.convert_i32_s (local.get $k)))
+    (local.set $tb (i32.add (global.get $math.pow_log_tbl) (i32.mul (local.get $i) (i32.const 24))))
+    (local.set $invc (f64.load (local.get $tb)))
+    (local.set $logc (f64.load offset=8 (local.get $tb)))
+    (local.set $logctail (f64.load offset=16 (local.get $tb)))
+    (local.set $zhi (f64.reinterpret_i64 (i64.and (i64.add (i64.reinterpret_f64 (local.get $z)) (i64.const 0x80000000)) (i64.const 0xffffffff00000000))))
+    (local.set $zlo (f64.sub (local.get $z) (local.get $zhi)))
+    (local.set $rhi (f64.sub (f64.mul (local.get $zhi) (local.get $invc)) (f64.const 1.0)))
+    (local.set $rlo (f64.mul (local.get $zlo) (local.get $invc)))
+    (local.set $r (f64.add (local.get $rhi) (local.get $rlo)))
+    (local.set $t1 (f64.add (f64.mul (local.get $kd) (f64.const ${POW_LN2HI})) (local.get $logc)))
+    (local.set $t2 (f64.add (local.get $t1) (local.get $r)))
+    (local.set $lo1 (f64.add (f64.mul (local.get $kd) (f64.const ${POW_LN2LO})) (local.get $logctail)))
+    (local.set $lo2 (f64.add (f64.sub (local.get $t1) (local.get $t2)) (local.get $r)))
+    (local.set $ar (f64.mul (f64.const ${POW_LOG_A[0]}) (local.get $r)))
+    (local.set $ar2 (f64.mul (local.get $r) (local.get $ar)))
+    (local.set $ar3 (f64.mul (local.get $r) (local.get $ar2)))
+    (local.set $arhi (f64.mul (f64.const ${POW_LOG_A[0]}) (local.get $rhi)))
+    (local.set $arhi2 (f64.mul (local.get $rhi) (local.get $arhi)))
+    (local.set $hi (f64.add (local.get $t2) (local.get $arhi2)))
+    (local.set $lo3 (f64.mul (local.get $rlo) (f64.add (local.get $ar) (local.get $arhi))))
+    (local.set $lo4 (f64.add (f64.sub (local.get $t2) (local.get $hi)) (local.get $arhi2)))
+    (local.set $p (f64.mul (local.get $ar3)
+      (f64.add (f64.const ${POW_LOG_A[1]}) (f64.add (f64.mul (local.get $r) (f64.const ${POW_LOG_A[2]}))
+        (f64.mul (local.get $ar2) (f64.add (f64.const ${POW_LOG_A[3]}) (f64.add (f64.mul (local.get $r) (f64.const ${POW_LOG_A[4]}))
+          (f64.mul (local.get $ar2) (f64.add (f64.const ${POW_LOG_A[5]}) (f64.mul (local.get $r) (f64.const ${POW_LOG_A[6]})))))))))))
+    (local.set $lo (f64.add (f64.add (f64.add (f64.add (local.get $lo1) (local.get $lo2)) (local.get $lo3)) (local.get $lo4)) (local.get $p)))
+    (local.set $lg (f64.add (local.get $hi) (local.get $lo)))
+    (local.set $tail (f64.add (f64.sub (local.get $hi) (local.get $lg)) (local.get $lo)))
+    ${powSplitLog}${powExpTail}`
+
+  wat('math.pow', `(func $math.pow (param $x f64) (param $y f64) (result f64)
+    (local $result f64) (local $n i32) (local $neg_base i32) (local $abs_x f64)${crPow ? '' : powCoreLocals}
+    (block $kernel
+      ;; the common case first: a positive finite x and a finite non-integer y (a NaN
+      ;; fails every compare) go straight to the kernel after the block, which takes
+      ;; x = 1 (log 0) and y = 0.5 (a sqrt) itself; everything else walks the ladder
+      (local.set $abs_x (f64.abs (local.get $y)))
+      (br_if $kernel (i32.and (i32.and (f64.gt (local.get $x) (f64.const 0.0)) (f64.lt (local.get $x) (f64.const inf)))
+                   (i32.and (f64.lt (local.get $abs_x) (f64.const ${2 ** 63})) (f64.ne (f64.nearest (local.get $abs_x)) (local.get $abs_x)))))
+      ;; y == 0 -> 1 (covers pow(NaN,0), pow(±0,0), pow(±Inf,0))
+      (if (f64.eq (local.get $y) (f64.const 0.0)) (then (return (f64.const 1.0))))
+      ;; y is NaN -> NaN
+      (if (f64.ne (local.get $y) (local.get $y)) (then (return (local.get $y))))
+      ;; x is NaN -> NaN
+      (if (f64.ne (local.get $x) (local.get $x)) (then (return (local.get $x))))
+      ;; y is ±Infinity
+      (if (f64.eq (f64.abs (local.get $y)) (f64.const inf))
+        (then
+          (local.set $abs_x (f64.abs (local.get $x)))
+          (if (f64.eq (local.get $abs_x) (f64.const 1.0))
+            (then (return (f64.const nan))))
+          (if (i32.eq (f64.gt (local.get $abs_x) (f64.const 1.0))
+                      (f64.gt (local.get $y) (f64.const 0.0)))
+            (then (return (f64.const inf)))
+            (else (return (f64.const 0.0))))))
+      ;; x == 1 -> 1 (after y=±Inf check, so 1**Inf already returned NaN)
+      (if (f64.eq (local.get $x) (f64.const 1.0)) (then (return (f64.const 1.0))))
+      ;; y == 1 -> x (preserves -0 for (-0)**1)
+      (if (f64.eq (local.get $y) (f64.const 1.0)) (then (return (local.get $x))))
+      ;; integer fast path, |y| ≤ 16: the square-and-multiply the constant-exponent
+      ;; lowering uses (emitPow's foldPow), so x ** 16 and x ** y at y = 16 agree
+      ;; bit for bit; a longer chain drifts by its length (x^1000 by 49 ulp), so every
+      ;; other integer takes the kernel below, within an ulp of the true value.
+      ;; A negative y squares the reciprocal: 1/x^n overflowed to 0 where x^-n is
+      ;; still a double (5.67e102 ** -3 is 5.5e-309).
+      ;; Also covers ±Infinity x: 1/Inf = 0 through the loop,
+      ;; with neg_base (x<0 && odd y) producing -0 — required for (-Inf)**-odd.
+      ;; Runs before the x==0 fallback so (-0)**oddInt correctly returns ∓0/∓Inf.
+      (if (i32.and
+            (f64.eq (f64.nearest (local.get $y)) (local.get $y))
+            (f64.le (f64.abs (local.get $y)) (f64.const 16.0)))
+        (then
+          (local.set $abs_x (f64.abs (local.get $x)))
+          (if (f64.lt (local.get $y) (f64.const 0.0))
+            (then (local.set $abs_x (f64.div (f64.const 1.0) (local.get $abs_x)))))
+          ;; copysign(1, x) gives -1 for any x with sign bit set (incl. -0); f64.lt picks that up.
+          (local.set $neg_base (i32.and (f64.lt (f64.copysign (f64.const 1.0) (local.get $x)) (f64.const 0.0))
+                                        (i32.and (i32.trunc_f64_s (local.get $y)) (i32.const 1))))
+          (local.set $n (i32.trunc_f64_s (f64.abs (local.get $y))))
+          (local.set $result (f64.const 1.0))
+          (block $done
+            (loop $loop
+              (br_if $done (i32.le_s (local.get $n) (i32.const 0)))
+              (if (i32.and (local.get $n) (i32.const 1))
+                (then (local.set $result (f64.mul (local.get $result) (local.get $abs_x)))))
+              (local.set $abs_x (f64.mul (local.get $abs_x) (local.get $abs_x)))
+              (local.set $n (i32.shr_s (local.get $n) (i32.const 1)))
+              (br $loop)))
+          (if (local.get $neg_base)
+            (then (local.set $result (f64.neg (local.get $result)))))
+          (return (local.get $result))))
+      ;; x is ±Infinity with |y| > 16 (the fast path above handles smaller y):
+      ;; magnitude is Inf for y>0, 0 for y<0; sign is negative only when x is -Inf
+      ;; and y is an odd integer. Odd-ness is tested in f64 (y, y/2 both integral)
+      ;; to avoid an i32.trunc trap on |y| beyond i32 range.
+      (if (f64.eq (f64.abs (local.get $x)) (f64.const inf))
+        (then
+          (local.set $result
+            (select (f64.const inf) (f64.const 0.0) (f64.gt (local.get $y) (f64.const 0.0))))
+          (if (i32.and (f64.lt (local.get $x) (f64.const 0.0))
+                       (i32.and (f64.eq (f64.nearest (local.get $y)) (local.get $y))
+                                (f64.ne (f64.nearest (f64.mul (local.get $y) (f64.const 0.5)))
+                                        (f64.mul (local.get $y) (f64.const 0.5)))))
+            (then (local.set $result (f64.neg (local.get $result)))))
+          (return (local.get $result))))
+      ;; x == ±0: y<0 ? Infinity : 0, negative for -0 and an odd integer y (|y| > 16 here)
+      (if (f64.eq (local.get $x) (f64.const 0.0))
+        (then
+          (local.set $result (select (f64.const inf) (f64.const 0.0) (f64.lt (local.get $y) (f64.const 0.0))))
+          (return (select (f64.neg (local.get $result)) (local.get $result)
+            (i32.and (f64.lt (f64.copysign (f64.const 1.0) (local.get $x)) (f64.const 0.0))
+                     (i32.and (f64.eq (f64.nearest (local.get $y)) (local.get $y))
+                              (f64.ne (f64.nearest (f64.mul (local.get $y) (f64.const 0.5))) (f64.mul (local.get $y) (f64.const 0.5)))))))))
+      ;; x < 0: a non-integer finite y -> NaN; an integer y beyond the fast path
+      ;; takes |x| (whose ladder ends in the kernel) and, for an odd y, the sign
+      ;; (every |y| ≥ 2^53 is even)
+      (if (f64.lt (local.get $x) (f64.const 0.0))
+        (then
+          (if (f64.ne (f64.nearest (local.get $y)) (local.get $y)) (then (return (f64.const nan))))
+          (local.set $result (call $math.pow (f64.neg (local.get $x)) (local.get $y)))
+          (return (select (f64.neg (local.get $result)) (local.get $result)
+            (f64.ne (f64.nearest (f64.mul (local.get $y) (f64.const 0.5))) (f64.mul (local.get $y) (f64.const 0.5)))))))
+      ;; Remaining case: x > 0 finite (≠1), y finite (≠0, ≠1), no integer of |y| ≤ 16.
+    )
+    ;; the kernel, x > 0 finite and y finite: within 0.54 ulp by default (a double-double
+    ;; log, powCoreBody), or under optimize.crPow $math.pow_core, CORRECTLY ROUNDED in the
+    ;; CORE-MATH sense (two-phase Ziv dd/td kernel, see $math.pow_transcend's comment)
+    ${crPow ? '(call $math.pow_core (local.get $x) (local.get $y))' : powCoreBody})`)
+
+  // Math.pow(c, y) and c ** y for a constant c > 0 (emitPow): the compiler took log(c) with
+  // the kernel's own operations (src/prepare/math-kernel.js powLog) and passes it split, so
+  // what is left is y's part, the kernel's arithmetic after the log. A y that
+  // $math.pow's fast entry takes to the kernel and that meets none of the kernel's own
+  // answers (0.5, |y| < 2^-65) runs it here; any other y (an integer, 0.5, a NaN, ±Infinity,
+  // a tiny one) takes $math.pow. Bit for bit $math.pow(c, y) either way, at the cost of the
+  // exponential alone.
+  if (!crPow) wat('math.pow_b', `(func $math.pow_b (param $y f64) (param $x f64) (param $lhi f64) (param $llo f64) (result f64)
+    ${powExpLocals}
+    (local.set $ax (f64.abs (local.get $y)))
+    (if (i32.eqz (i32.and
+          (i32.and (f64.ge (local.get $ax) (f64.const ${2 ** -65})) (f64.lt (local.get $ax) (f64.const ${2 ** 63})))
+          (i32.and (f64.ne (f64.nearest (local.get $ax)) (local.get $ax)) (f64.ne (local.get $y) (f64.const 0.5)))))
+      (then (return (call $math.pow (local.get $x) (local.get $y)))))${powExpTail})`, ['math.pow'])
+
 
   // $math.pow_fold — Math.pow(x, C) for a COMPILE-TIME-CONSTANT non-integer exponent C under
   // optimize.crPow (module/math.js's emitPow const-exponent fold, and its SIMD twin

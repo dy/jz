@@ -270,6 +270,13 @@ function powCore(x, y) {
   const ay = Math.abs(y)
   if (ay < 2 ** -65) return x > 1 ? 1 + y : 1 - y
   if (ay >= 2 ** 63) return x === 1 ? 1 : (x > 1) === (y > 0) ? Infinity : 0
+  const [lhi, llo] = powLog(x)
+  return powExp(y, lhi, llo)
+}
+/** log(x) for x > 0 finite as $math.pow's kernel takes it, a double-double split for the
+ *  product with y: [lhi, llo], lhi's low 26 bits clear. For a constant base the compiler
+ *  takes it here and $math.pow_b runs the rest (powExp). */
+function powLog(x) {
   let ix = bitsOf(x)
   if (ix < 0x0010000000000000n) ix = BigInt.asUintN(64, bitsOf(x * 2 ** 52) - (52n << 52n))
   const tmp = BigInt.asIntN(64, ix - 0x3fe6955500000000n)
@@ -286,8 +293,12 @@ function powCore(x, y) {
   const p = ar3 * (POW_LOG_A[1] + (r * POW_LOG_A[2] + ar2 * (POW_LOG_A[3] + (r * POW_LOG_A[4] + ar2 * (POW_LOG_A[5] + r * POW_LOG_A[6])))))
   const lo = lo1 + lo2 + lo3 + lo4 + p
   const lg = hi + lo, tail = hi - lg + lo
+  const lhi = ofBits(bitsOf(lg) & 0xfffffffff8000000n)
+  return [lhi, lg - lhi + tail]
+}
+// y·(lhi + llo) = ehi + elo, then exp(ehi + elo): the kernel's steps after log(x)
+function powExp(y, lhi, llo) {
   const yhi = ofBits(bitsOf(y) & 0xfffffffff8000000n), ylo = y - yhi
-  const lhi = ofBits(bitsOf(lg) & 0xfffffffff8000000n), llo = lg - lhi + tail
   const ehi = yhi * lhi, elo = ylo * lhi + y * llo
   const ax = Math.abs(ehi)
   if (ax < 2 ** -54) return 1 + ehi
@@ -474,3 +485,5 @@ export const MATH_KERNEL = {
 export const powFold = pow
 /** `$math.pow` itself, as a runtime exponent reaches it. */
 export { powRuntime }
+/** A constant base's log for `$math.pow_b` (module/math.js emitPow). */
+export { powLog }
