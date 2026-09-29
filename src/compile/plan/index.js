@@ -189,7 +189,7 @@ export default function plan(ast, profiler, summarize) {
     sweep('promoteIntArrayLiterals', promoteIntArrayLiterals)
     sweep('scalarizeTypedArrays', () => scalarizeFunctionTypedArrays(facts()))
     // A loop indexing by numbers of unknown integrality: a copy over their int32s, where they are ones.
-    sweep('versionIntegralLoops', versionIntegralLoops)
+    sweep('versionIntegralLoops', () => versionIntegralLoops(facts()))
   }
   const programFacts = facts()
   // A module global's declaration-time literal length holds only while nothing

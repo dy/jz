@@ -70,3 +70,20 @@ test('integral loops: the integral copy reads by an i32 index', () => {
   // the tap loop: a buffer read and a coefficient read, no float index to convert
   ok(loops.some(l => (l.match(/f64\.load/g) || []).length >= 2 && !/\(loop[\s\S]*\(loop/.test(l) && !/trunc_sat/.test(l)), 'an inner loop indexes without converting a float')
 })
+
+test('integral loops: the guard converts no object, and a parameter every call binds to an integer needs none (test/twin-locals.js pins its copy)', () => {
+  // `key | 0` in the guard ran valueOf before the loop: once more, and where a loop of no iterations runs none
+  const src = `export let f = (n) => { const a = new Float64Array(4); a[0] = 5; let calls = 0
+      const key = { valueOf () { calls++; return 0 } }
+      let s = 0
+      for (let i = 0; i < n; i++) s += a[key]
+      return s * 100 + calls }
+    const walk = (s, off, n) => { let r = off, t = 0; for (let i = 0; i < n; i++) t += s[r++]; return t }
+    export let g = (off) => walk(new Uint8Array(16).fill(3), off | 0, 4)`
+  const js = oracle(src)
+  for (const optimize of levels(0, 2, 3)) {
+    const m = jz(src, { optimize }).exports
+    for (const n of [0, 3]) is(m.f(n), js.f(n), `f(${n}) at ${optimize}`)
+    is(m.g(2), js.g(2), `g at ${optimize}`)
+  }
+})
