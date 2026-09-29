@@ -483,6 +483,16 @@ export default (ctx) => {
       (then (return (f64.div (f64.const 0) (f64.const 0)))))
     (if (i32.or (f64.eq (local.get $y) (f64.const inf)) (f64.lt (local.get $x) (local.get $y)))
       (then (return (local.get $a))))
+    ;; integers, the dividend below 2^53 (a ring buffer's index, a counter by a runtime
+    ;; length): x − trunc(x/y)·y is exact. The quotient's rounding error is below
+    ;; x·2^-53/y < 1/y, the least distance from x/y to an integer it is not, so
+    ;; trunc takes the true quotient's, and the product and difference are integers
+    ;; below 2^53.
+    (if (i32.and (f64.lt (local.get $x) (f64.const 9007199254740992))
+          (i32.and (f64.eq (f64.trunc (local.get $x)) (local.get $x)) (f64.eq (f64.trunc (local.get $y)) (local.get $y))))
+      (then (return (f64.copysign
+        (f64.sub (local.get $x) (f64.mul (f64.trunc (f64.div (local.get $x) (local.get $y))) (local.get $y)))
+        (local.get $a)))))
     (block $up (loop $ul
       (br_if $up (f64.gt (f64.mul (local.get $y) (f64.const 2)) (local.get $x)))
       (local.set $y (f64.mul (local.get $y) (f64.const 2)))

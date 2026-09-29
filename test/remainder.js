@@ -1,6 +1,7 @@
 // `%` of a runtime divisor (module/core.js `__rem`): the dividend below the
-// divisor is itself, below twice the divisor one exact subtraction, anything
-// else the long division of `__rem_div`. The first two are the whole of
+// divisor is itself, below twice the divisor one exact subtraction, integers
+// with the dividend below 2^53 the quotient's truncation, anything else the
+// long division of `__rem_div`. The first two are the whole of
 // `__rem`, small enough for the engine to inline at a ring buffer's wrap
 // (`(p + 1) % n`, `(x % n + n) % n`). Every sign, zero, infinity and NaN
 // agrees with the host.
@@ -36,4 +37,20 @@ test('remainder: the wrap runs without the division loop', () => {
   ok(rem.length > 0, '__rem is linked')
   ok(!/\(loop/.test(rem), '__rem itself has no loop')
   ok(/call \$__rem_div/.test(rem), 'it leaves the division to __rem_div')
+})
+
+// Integers below 2^53 take x − trunc(x/y)·y: exact, since the quotient's rounding
+// error (below 1/y) never reaches an integer the true quotient is not. Pairs from
+// every magnitude to 2^53, both signs, and the neighbours of 2^53 either side.
+test('remainder: integer operands agree with the host at every magnitude', () => {
+  const m = run(src, { optimize: 2 })
+  let r = 12345, bad = 0
+  const rnd = () => (r = (Math.imul(r, 1664525) + 1013904223) >>> 0) / 4294967296
+  for (let i = 0; i < 20000; i++) {
+    const a = Math.floor(rnd() * 2 ** Math.floor(rnd() * 54)) * (rnd() < 0.5 ? -1 : 1)
+    const b = Math.max(1, Math.floor(rnd() * 2 ** Math.floor(rnd() * 40))) * (rnd() < 0.3 ? -1 : 1)
+    for (const [x, y] of [[a, b], [a, 3 * b], [-0, b], [2 ** 53 - 1 - i, b], [2 ** 53 + 2 * i, b], [a + 0.5, b]])
+      if (!Object.is(m.rem(x, y), x % y) && bad++ < 5) is(m.rem(x, y), x % y, `${x} % ${y}`)
+  }
+  is(bad, 0, 'no integer pair disagrees')
 })
