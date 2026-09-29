@@ -144,17 +144,20 @@ export const emitIndex = (index, whole = false) => {
   return keyIndex(value)
 }
 
-// IR whose value is an integer when it is not the undefined of a miss.
+// IR whose value is an integer when it is not the undefined of a miss: MISS
+// when that undefined is among its values, WHOLE when none is, 0 otherwise.
+const WHOLE = 1, MISS = 2
+const both = (a, b) => a && b && Math.max(a, b)
 const wholeOrMiss = (v) => {
-  if (!Array.isArray(v)) return false
+  if (!Array.isArray(v)) return 0
   const op = v[0]
-  if (op === 'f64.convert_i32_s' || op === 'f64.convert_i32_u') return true
-  if (op === 'f64.const') return Number.isInteger(v[1]) || v[1] === `nan:${UNDEF_NAN}`
+  if (op === 'f64.convert_i32_s' || op === 'f64.convert_i32_u') return WHOLE
+  if (op === 'f64.const') return Number.isInteger(v[1]) ? WHOLE : v[1] === `nan:${UNDEF_NAN}` ? MISS : 0
   if (op === 'local.tee') return wholeOrMiss(v[2])
-  if (op === 'block' || op === 'then' || op === 'else') return v.length > 1 && wholeOrMiss(v[v.length - 1])
-  if (op === 'if') return v.every(c => !Array.isArray(c) || (c[0] !== 'then' && c[0] !== 'else') || wholeOrMiss(c))
-  if (op === 'select') return wholeOrMiss(v[1]) && wholeOrMiss(v[2])
-  return false
+  if (op === 'block' || op === 'then' || op === 'else') return v.length > 1 ? wholeOrMiss(v[v.length - 1]) : 0
+  if (op === 'if') return v.reduce((k, c) => Array.isArray(c) && (c[0] === 'then' || c[0] === 'else') ? both(k, wholeOrMiss(c)) : k, WHOLE)
+  if (op === 'select') return both(wholeOrMiss(v[1]), wholeOrMiss(v[2]))
+  return 0
 }
 
 /**
@@ -168,10 +171,21 @@ const wholeOrMiss = (v) => {
  */
 export const keyIndex = (key) => {
   if (key?.type === 'i32') return key
-  if (Array.isArray(key) && key[0] === 'f64.convert_i32_s') return typed(key[1], 'i32')
+  // An integer element's value is its index; an unsigned one past 2^31 turns
+  // negative, which every bounds test rejects as it rejects -1.
+  if (Array.isArray(key) && (key[0] === 'f64.convert_i32_s' || key[0] === 'f64.convert_i32_u')) return typed(key[1], 'i32')
+  if (Array.isArray(key) && key[0] === 'f64.const' && typeof key[1] === 'number') {
+    const v = key[1], ok = (v | 0) === v
+    const out = typed(['i32.const', ok ? v | 0 : -1], 'i32')
+    if (!ok) out.indexValid = ['i32.const', 0]
+    return out
+  }
+  const wm = wholeOrMiss(key)
+  // An integer whichever arm runs: the truncate is exact.
+  if (wm === WHOLE && !key.indexValid) return typed(['i32.trunc_sat_f64_s', asF64(key)], 'i32')
   // An integer or a miss (an integer array's checked element, `perm[i]`):
   // only the miss names no element, and its own bit or a NaN test finds it.
-  if (wholeOrMiss(key)) {
+  if (wm) {
     if (key.indexValid) {
       const out = typed(['select', asI32(key), ['i32.const', -1], key.indexValid], 'i32')
       out.indexValid = key.indexValid
@@ -181,12 +195,6 @@ export const keyIndex = (key) => {
     const out = typed(['block', ['result', 'i32'], ['local.set', `$${t}`, asF64(key)],
       ['select', ['i32.trunc_sat_f64_s', get], ['i32.const', -1], ['f64.eq', get, get]]], 'i32')
     out.indexValid = ['f64.eq', get, get]
-    return out
-  }
-  if (Array.isArray(key) && key[0] === 'f64.const' && typeof key[1] === 'number') {
-    const v = key[1], ok = (v | 0) === v
-    const out = typed(['i32.const', ok ? v | 0 : -1], 'i32')
-    if (!ok) out.indexValid = ['i32.const', 0]
     return out
   }
   const t = temp('ix'), i = tempI32('ixi'), ok = tempI32('ixv')

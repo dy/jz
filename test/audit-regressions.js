@@ -1015,6 +1015,29 @@ test('audit: typed local storage preserves missing values through copies and gat
   }
 })
 
+// An integer element used as an index is that integer: a Uint16Array read
+// indexes a table without a round trip through f64 (the WAV decoder's
+// `x[i] = T[s[k]]`), and an unsigned element past 2^31 names no element.
+test('audit: an integer element indexes as its integer, an unsigned one past 2^31 included', () => {
+  const src = `
+    function dec(s, T, x) { for (let i = 0; i < x.length; i++) x[i] = T[s[i]] }
+    export function f(n) { const s = new Uint16Array(n), T = new Float32Array(65536), x = new Float32Array(n)
+      for (let u = 0; u < 65536; u++) T[u] = u / 2
+      for (let i = 0; i < n; i++) s[i] = i * 4099
+      dec(s, T, x); let q = 0; for (let i = 0; i < n; i++) q += x[i]; return q }
+    export function big(i) { const k = new Uint32Array([1, 4294967295, 2147483648, 2147483647]), T = new Float64Array([5, 6, 7]); return T[k[i]] }`
+  const js = oracle(src)
+  for (const optimize of TIERS) {
+    const wasm = jz(src, { optimize }).exports
+    for (const n of [0, 1, 64]) is(wasm.f(n), js.f(n), `${optimize}: table decode of ${n}`)
+    for (const i of [0, 1, 2, 3, 4, -1]) ok(Object.is(wasm.big(i), js.big(i)), `${optimize}: T[k[${i}]]`)
+  }
+  if (!onKernel()) {
+    const f = compile(src, { optimize: 'speed', wat: true }).match(/\(func \$f[\s\S]*?\n  \(func/)[0]
+    ok(!f.includes('f64.convert_i32_u'), 'the element reaches the index as i32, no f64 round trip')
+  }
+})
+
 test('audit: stored typed reads cannot borrow a loop or another receiver length', () => {
   const src = `function gather(a,b,n){let s=0;for(let i=0;i<n;i++){const v=a[i];s+=b[v]+v*v}return s}
     export function f(n){return gather(new Int32Array([0,1]),new Float64Array([7,8]),n)}
