@@ -1150,6 +1150,8 @@ export default (ctx) => {
   // exponential alone.
   if (!crPow) wat('math.pow_b', `(func $math.pow_b (param $y f64) (param $x f64) (param $lhi f64) (param $llo f64) (result f64)
     ${powExpLocals}
+    ;; a zero exponent is 1 without the ladder: 10 ** (0 / 20), a gain of 0 dB, every sample a stage passes
+    (if (f64.eq (local.get $y) (f64.const 0)) (then (return (f64.const 1))))
     (local.set $ax (f64.abs (local.get $y)))
     (if (i32.eqz (i32.and
           (i32.and (f64.ge (local.get $ax) (f64.const ${2 ** -65})) (f64.lt (local.get $ax) (f64.const ${2 ** 63})))
