@@ -31,6 +31,14 @@ const BASELINE = join(import.meta.dirname, 'perf-ratchet.json')
 // These are required JS exceptions, not a lost optimization; timing, Watr/JSON
 // binary-size ceilings and memory caps stay unchanged.
 
+// An index key's units (2026-09-29) are read in the key's own form, packed
+// short string or heap array, decided once before the parse loop, where the
+// loop called __char_at per unit: 30 more loop nodes in __str_arr_idx and
+// __typed_str_idx, and where watr inlines the first into
+// __arr_typed_obj_set_idx (buf +150, slice +2400, condref +1200). A
+// per-function comparison shows no other body changed; each unit is a load
+// or a shift, not a call.
+
 // A short integer's string (2026-09-29) packs its digits into the pointer in
 // __i32_to_str's own digit loop, with no scratch buffer, __itoa or __mkstr
 // pass: 27 loop nodes per module that formats one, in the helper and where
