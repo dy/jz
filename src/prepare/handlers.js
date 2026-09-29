@@ -313,6 +313,20 @@ function renestSoleCommaArg(args) {
   return args
 }
 
+// `(c ? f : g)(args)` as `c ? f(args) : g(args)`, for a choice (grouped, nested)
+// whose every leaf is a name and arguments that are names or literals, so the copy
+// in each arm costs nothing; null otherwise.
+const choiceOfCalls = (callee, args) => {
+  const bare = (n) => Array.isArray(n) && n[0] === '()' && n.length === 2 ? bare(n[1]) : n
+  const names = (n) => { n = bare(n); return typeof n === 'string' || (Array.isArray(n) && n[0] === '?' && n.length === 4 && names(n[2]) && names(n[3])) }
+  const c = bare(callee)
+  if (!Array.isArray(c) || c[0] !== '?' || !names(c)) return null
+  const list = args.length === 1 && Array.isArray(args[0]) && args[0][0] === ',' ? args[0].slice(1) : args
+  if (!list.every(a => a == null || typeof a === 'string' || (Array.isArray(a) && a[0] == null && a.length === 2))) return null
+  const call = (n) => { n = bare(n); return typeof n === 'string' ? ['()', n, ...args.map(cloneNode)] : ['?', n[1], call(n[2]), call(n[3])] }
+  return call(c)
+}
+
 const handlers = {
   ...rejectHandlers(err),
   // Spread operator: [...expr] in arrays, f(...args) in calls, {...obj} in objects
@@ -1100,6 +1114,11 @@ const handlers = {
 '()'(callee, ...args) {
     // Grouping: (expr) → ['()', expr] with no args. Call: f() → ['()', 'f', null] with null arg.
     if (args.length === 0) return prep(callee)
+    // A call through a choice of names is a choice of calls: `(c ? f : g)(x)` evaluates
+    // c, the name, then x, as `c ? f(x) : g(x)` does, and a name's call has no receiver
+    // either way. Each name is then called directly, never held as a value.
+    const chosen = choiceOfCalls(callee, args)
+    if (chosen) return prep(chosen)
     if (typeof callee === 'string' && REJECT_IDENTS[callee]) err(REJECT_IDENTS[callee])
 
     // Compile-time folds: the callee names something resolvable now. Each fold

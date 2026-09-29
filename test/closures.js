@@ -2266,3 +2266,20 @@ test('closure: a value a closure writes into an integer binding converts at a nu
     for (const k of [0, 1, 2]) is(f(k), want(k), `f(${k}) at ${optimize}`)
   }
 })
+
+// A call through a choice of names is a choice of calls: `(c ? f : g)(x)` runs
+// as `c ? f(x) : g(x)`, in the same order, so neither function is held as a
+// value (no table, no trampoline) and each call is direct (encode-wav picks
+// its sample writer this way: `(float ? f32 : bitDepth === 24 ? i24 : i16)(…)`).
+test('closure: a call through a choice of functions calls the chosen one directly', () => {
+  const srcs = [
+    `function a(x, y) { return x + y } function b(x, y) { return x * y }\nexport let f = (c, x) => (c ? a : b)(x, 3)`,
+    `function a(x) { return x + 1 } function b(x) { return x * 2 } function d(x) { return -x }\nexport let f = (c, x) => (c > 1 ? a : c > 0 ? b : d)(x)`,
+    `let log = []\nfunction a(x) { log.push('a' + x); return 1 } function b(x) { log.push('b' + x); return 2 }\nlet pick = (c) => { log.push('pick'); return c }\nexport let f = (c, x) => { log.length = 0; (pick(c) ? a : b)(x); return log.join() }`,
+  ]
+  for (const src of srcs) {
+    const want = oracle(src).f
+    for (const optimize of levels(0, 2, 3)) { const { f } = run(src, { optimize }); for (const c of [0, 1, 2]) is(f(c, 4), want(c, 4), `f(${c}) at ${optimize}`) }
+    ok(!/call_indirect/.test(compile(src, { wat: true })), 'no indirect call')
+  }
+})
