@@ -661,6 +661,19 @@ function walkRewrite(node, doInline, freshI64, freshF64, get, bigint, inlineTrut
     const rng = f64Range(node[2], get, true)
     if (rng && rng.lo > -TWO_63 && rng.hi < TWO_63) return ['i32.wrap_i64', ['i64.trunc_sat_f64_s', node[2]]]
   }
+  // The same conversion behind its inline fast path (toInt32 at the speed tiers):
+  //   (if (result i32) (f64.lt (f64.abs [local.tee T] X) 2^63) (then (wrap (trunc T))) (else (call $__to_int32 T)))
+  // folds as the call does, over X: the guard serves only what the range rules out.
+  if (op === 'if' && node.length === 5 && node[1]?.[0] === 'result' && node[1][1] === 'i32' &&
+      node[2]?.[0] === 'f64.lt' && node[2][1]?.[0] === 'f64.abs' && node[2][2]?.[0] === 'f64.const' && node[2][2][1] === TWO_63 &&
+      node[4]?.[0] === 'else' && node[4][1]?.[0] === 'call' && node[4][1][1] === '$__to_int32') {
+    const held = node[2][1][1]
+    const x = Array.isArray(held) && held[0] === 'local.tee' && held.length === 3 ? held[2] : held
+    const i = narrowI32(x, true)?.node
+    if (i) return i
+    const rng = f64Range(x, get, true)
+    if (rng && rng.lo > -TWO_63 && rng.hi < TWO_63) return ['i32.wrap_i64', ['i64.trunc_sat_f64_s', x]]
+  }
   // (i32.or X 0) / (i32.or 0 X) → X — drops the redundant source-level `|0` clamp left
   // after the fold above, so the accumulator update is a bare i32.add the recognizer matches.
   if (op === 'i32.or' && node.length === 3) {
