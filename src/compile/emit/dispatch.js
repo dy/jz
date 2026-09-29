@@ -1174,6 +1174,19 @@ const elementUses = (n, out) => {
   return out
 }
 
+/** The names statement `s` proves present, among `checked` (the receivers the
+ *  emitter checked, throwing for a missing one, while it emitted `s`): read or
+ *  stored through on every path, bindings nothing assigns. */
+export const provedPresent = (s, checked) => {
+  const out = []
+  if (!checked?.length || !ctx.func.body) return out
+  for (const [name] of elementUses(s, new Map())) {
+    if (!checked.includes(name) || ctx.func.refinements?.get(name)?.notNullish) continue
+    if (isGlobal(name) ? ctx.scope.consts?.has(name) : !ctx.func.boxed?.has(name) && !isReassigned(ctx.func.body, name)) out.push(name)
+  }
+  return out
+}
+
 export function emitBlockBody(node) {
   const inner = node[1]
   const stmts = Array.isArray(inner) && inner[0] === ';' ? inner.slice(1) : [inner]

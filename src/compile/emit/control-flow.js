@@ -23,7 +23,7 @@ import {
 import { withControlFrame, withPendingLabel, withSchemaSpeculation } from '../flow-state.js'
 import { extractRefinements, inferSchemaBranch, mergeRefinement, withRefinements } from '../flow-types.js'
 import { plannedTypedStorageInfo } from '../typed-storage-plan.js'
-import { emit, emitVoid, toBool } from './dispatch.js'
+import { emit, emitVoid, provedPresent, toBool } from './dispatch.js'
 import { loopGuardHi } from './i32-bounds.js'
 import { emitFinalizers } from './statements.js'
 import { isNullable } from '../../summary/kind.js'
@@ -539,6 +539,14 @@ export const controlFlowOps = {
   // The arm takes `init` only to prove its counter facts and emits the loop proper alone.
   'for': (init, cond, step, body, entered = false) => {
     if (body === undefined) return err('for-in/for-of not supported')
+    // A receiver the initializer checked present (`l = data.length`) stays so
+    // through the loop: the initializer runs before every test, body and step.
+    const initPresent = (checkedFrom) => {
+      const refs = new Map()
+      for (const name of provedPresent(init, ctx.func.checkedRecv?.slice(checkedFrom)))
+        refs.set(name, { ...ctx.func.refinements?.get(name), notNullish: true })
+      return refs
+    }
     // An enclosing labeled statement (`outer: for …`) hands its label down so `continue outer`
     // can target this loop's continue point. The immediately-enclosed loop consumes it.
     const myLabel = ctx.func.pendingLabel; ctx.func.pendingLabel = null
@@ -585,7 +593,9 @@ export const controlFlowOps = {
         // so the counters' own step arithmetic (`j++, k += step`) stays integer too.
         const topCounterRefs = counterRefinements(topFacts)
         const result = []
+        const checkedFrom = ctx.func.checkedRecv?.length ?? 0
         if (init != null) result.push(...emitVoid(init))
+        const initRefs = init != null ? initPresent(checkedFrom) : new Map()
         const i64c = (n) => ['i64.const', n]
         const ext = (ir) => ['i64.extend_i32_s', ir]
         const conjs = []
@@ -993,11 +1003,11 @@ export const controlFlowOps = {
         // topCounterRefs (the counter's own [lo, hi], unconditional) wraps BOTH
         // arms; freeRefs (bound-name magnitude, sound only once the guard has
         // passed) wraps the fast arm alone — see comments above each.
-        const fast = withRefinements(topCounterRefs, body,
-          () => freeRefs.size ? withRefinements(freeRefs, body, emitArm) : emitArm())
+        const fast = withRefinements(initRefs, body, () => withRefinements(topCounterRefs, body,
+          () => freeRefs.size ? withRefinements(freeRefs, body, emitArm) : emitArm()))
         ctx.types.assumedBounds = saved
         ctx.types.assumedConstHull = savedHull
-        const checked = withRefinements(topCounterRefs, body, emitArm)
+        const checked = withRefinements(initRefs, body, () => withRefinements(topCounterRefs, body, emitArm))
         const stmts = (r) => Array.isArray(r[0]) ? r : [r]
         result.push(['if', typed(guard, 'i32'),
           ['then', ...stmts(fast)],
@@ -1028,7 +1038,9 @@ export const controlFlowOps = {
     // cell (sets frame.loopFresh; emitDecl then stores rather than re-allocates).
     const freshBoxed = emitLoopFreshBoxed(body, frame)
     const result = []
+    const checkedFrom = ctx.func.checkedRecv?.length ?? 0
     if (init != null && !entered) result.push(...emitVoid(init))
+    const initRefs = init != null && !entered ? initPresent(checkedFrom) : new Map()
     for (const lit of preLoopLits) result.push(...emitVoid(lit))   // allocate hoisted literals once
     // A durable array the body stores into by a name the loop never reassigns
     // is saved for the reset before the loop (module/collection/durable.js):
@@ -1086,10 +1098,11 @@ export const controlFlowOps = {
     // own hull (a second map for the same name would replace its lower bound).
     const bodyRefs = counterRefinements(facts)
     if (condForLoop) extractRefinements(condForLoop, bodyRefs, true)
+    for (const [name, fact] of initRefs) bodyRefs.set(name, bodyRefs.has(name) ? { ...bodyRefs.get(name), ...fact } : fact)
     const emitLoopBody = () => withRefinements(bodyRefs, body, () => withRefinements(savedRefs, body, () => emitVoid(body)))
     const loopBody = []
     if (condForLoop) loopBody.push(['br_if', brk, ['i32.eqz',
-      withRefinements(testRefinements(facts), condForLoop, () => toBool(condForLoop))]])
+      withRefinements(initRefs, condForLoop, () => withRefinements(testRefinements(facts), condForLoop, () => toBool(condForLoop)))]])
     loopBody.push(...freshBoxed)
     if (needsCont) loopBody.push(['block', cont, ...emitLoopBody()])
     else loopBody.push(...emitLoopBody())
@@ -1097,7 +1110,7 @@ export const controlFlowOps = {
       const map = loopGuardHi()
       if (guardHadPrev) map.set(guardName, guardPrev); else map.delete(guardName)
     }
-    if (step) loopBody.push(...emitVoid(step))
+    if (step) loopBody.push(...withRefinements(initRefs, step, () => emitVoid(step)))
     loopBody.push(['br', loop])
     const loopBlockNode = ['block', brk, ['loop', loop, ...loopBody]]
     // Per-iteration arena rewind (compile/analyze/frame-effects.js): an iteration

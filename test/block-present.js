@@ -29,3 +29,34 @@ test('block present: the checked element reads and copies as a typed array', () 
   const text = wat(src, { optimize: 2 })
   ok(!/call \$__(typed_idx|dyn_get|arr_from)/.test(text), 'the length and the copy read the typed array directly')
 })
+
+// A receiver the initializer of a `for` checked present stays so through the
+// loop (compile/emit/control-flow.js): the initializer runs before every test,
+// body and step, so `d` is tested once, before the loop, not on each pass.
+const loop = `const bufs = [new Float32Array([1.5, 2.5, -3]), new Float32Array([4, 5])]
+const total = (d) => { let s = 0; for (let i = 0, n = d.length; i < n; i++) { s += d[i]; d[i] = s } return s }
+export let g = (m) => { let s = 0; for (let k = 0; k < m; k++) s += total(bufs[k]); return s }`
+
+test('block present: a loop over a receiver its initializer checked runs as the host runs it', () => {
+  for (const optimize of levels(0, 2, 3)) {
+    const host = oracle(loop), m = run(loop, { optimize })
+    for (const m0 of [0, 1, 2, 2]) is(m.g(m0), host.g(m0), `g(${m0}) at ${optimize}`)
+    throws(() => m.g(3), `a missing element throws at ${optimize}`)
+    throws(() => host.g(3))
+  }
+})
+
+test('block present: the loop tests its receiver once, before it', () => {
+  if (belowOpt(2)) return
+  const text = wat(loop, { optimize: 2 })
+  const loops = []
+  for (let at = text.indexOf('(loop'); at >= 0; at = text.indexOf('(loop', at + 1)) {
+    let depth = 0, end = at
+    do { const c = text[end++]; if (c === '(') depth++; else if (c === ')') depth-- } while (depth && end < text.length)
+    loops.push(text.slice(at, end))
+  }
+  const inner = loops.filter(l => !/\(loop/.test(l.slice(5)) && /f32\.store/.test(l))
+  ok(inner.length > 0, 'found the loop over the receiver')
+  for (const l of inner) ok(!/__throw_property_nullish|call \$__throw/.test(l), 'no missing-receiver test inside the loop')
+})
+
