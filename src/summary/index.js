@@ -3464,10 +3464,17 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     const prior = refined.get(key)
     if (rtop === rKeys.length) { rKeys.push(key); rPriors.push(prior) } else { rKeys[rtop] = key; rPriors[rtop] = prior }
     rtop++
-    refined.set(key, (prior ?? TAGS) & mask)
+    refined.set(key, (prior ?? (TAGS | UNKNOWN)) & mask)
   }
   const unwind = (mark) => { while (rtop > mark) { rtop--; const key = rKeys[rtop], prior = rPriors[rtop]; if (prior === undefined) refined.delete(key); else refined.set(key, prior) } }
-  const refine = (k, mask) => { const r = k & (mask | UNKNOWN); return (r & TAGS) === 0 ? 0 : r }
+  // A mask's tags keep those of the kind; its own parameter, where it has one
+  // (a typed array's element kind a class test proves), fills an unknown one.
+  const refine = (k, mask) => {
+    let r = k & ((mask & TAGS) | UNKNOWN)
+    const p = mask & UNKNOWN
+    if (p !== 0 && (r & UNKNOWN) === UNKNOWN) r = (r & TAGS) | p
+    return (r & TAGS) === 0 ? 0 : r
+  }
   // A member path (`params.coefs`: a binding and literal keys) a test refines
   // inside an arm of a conditional that neither calls nor stores, so nothing
   // can change what the path holds before the arm reads it.
@@ -3589,7 +3596,8 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     if (op === 'instanceof' && typeof c[1] === 'string' && typeof c[2] === 'string') {
       const tag = INSTANCE_TAGS.get(c[2])
       if (tag == null) return
-      if (when) { refineName(c[1], bitOf(tag)); return }
+      // a typed array of C's element kind, owned or a view: its elements read by that kind
+      if (when) { const aux = tag === K.TYPED ? encodeTypedElemAux(c[2], false) : null; refineName(c[1], bitOf(tag) | (aux == null ? 0 : aux | TYPED_ELEM_VIEW_FLAG | TYPED_ELEM_ANY_VIEW_FLAG)); return }
       if (tag === K.BUFFER) return
       if (tag === K.TYPED) {
         const key = keyOf(c[1]), aux = key === null || kinds[key] == null ? UNKNOWN : typedAux(kinds[key])

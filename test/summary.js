@@ -1088,3 +1088,18 @@ test('summary: instanceof narrows a name on both sides of its test', () => {
   const batch = text.slice(text.indexOf('(func $batch'), text.indexOf('\n  (func', text.indexOf('(func $batch') + 1))
   ok(batch.length > 20 && !/call \$__(dyn_set|dyn_get\b|is_str_key|add_slow)/.test(batch), 'the overlap-add stores by a numeric index')
 })
+
+// Where `x instanceof Float32Array` holds, x is a Float32Array, owned or a
+// view: a binding made from it there reads its elements as Float32, whatever
+// else x may hold elsewhere (a string, a list).
+test('summary: a typed array class test proves the element kind', () => {
+  const src = `export let f = (k) => { let x = k ? new Float32Array([1, 2]) : k === 0 ? 'ab' : [3, 4]
+    if (x instanceof Float32Array) { const y = x; return y[1] + y.length } return -1 }`
+  summarize(src)
+  const view = ctx.summary.at('f')
+  const y = kindOf('f', 'y')
+  is(tagOf(y), K.TYPED, 'the binding is a typed array')
+  ok(view.typedPayloadCtorOfExpr(binding('f', 'y'))?.startsWith('new.Float32Array'), 'of Float32 elements')
+  for (const optimize of levels(0, 2)) is(jz(`export let f = (k) => { let x = k ? new Float32Array([1, 2]) : k === 0 ? 'ab' : [3, 4]
+    if (x instanceof Float32Array) { const y = x; return y[1] + y.length } return -1 }`, { optimize }).exports.f(1), 4, `O${optimize}`)
+})
