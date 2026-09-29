@@ -64,12 +64,14 @@ const coerceAST = (kind, expr) => {
 const maxScalarTypedLoopUnroll = () => ctx.transform.optimize?.scalarTypedLoopUnroll ?? 16
 const maxScalarTypedNestedUnroll = () => ctx.transform.optimize?.scalarTypedNestedUnroll ?? 128
 
-// The elements evaluate once each, in order, into their locals as into the
-// array: any expression but a spread or a hole (an inlined tuple's `[s.l, s.b, h]`).
-const scalarArrayElems = (expr) => {
+// A list's elements, or null for a spread or a hole. Bound to locals they
+// evaluate once each, in order, as into the list: any expression (an inlined
+// tuple's `[s.l, s.b, h]`). Folded into each read (`simple`), only one that
+// reads the same wherever it is copied.
+const scalarArrayElems = (expr, simple = true) => {
   if (!Array.isArray(expr) || expr[0] !== '[') return null
   const elems = expr.slice(1)
-  if (elems.some(e => e == null || (Array.isArray(e) && e[0] === '...'))) return null
+  if (elems.some(e => e == null || (Array.isArray(e) && e[0] === '...') || (simple && !isSimpleArg(e)))) return null
   return elems
 }
 
@@ -719,7 +721,7 @@ const scalarizeArrayLiteralSeq = (seq) => {
     if (!Array.isArray(stmt) || (stmt[0] !== 'let' && stmt[0] !== 'const') || stmt.length !== 2) continue
     const decl = stmt[1]
     if (!Array.isArray(decl) || decl[0] !== '=' || typeof decl[1] !== 'string') continue
-    const elems = scalarArrayElems(decl[2])
+    const elems = scalarArrayElems(decl[2], false)
     if (!elems) continue
     let ok = true
     for (let j = 0; j < stmts.length && ok; j++) {
