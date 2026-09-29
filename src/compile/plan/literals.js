@@ -121,6 +121,13 @@ const safeScalarArrayUse = (node, name, len, parentOp = null) => {
   return true
 }
 
+// A member's step (prepare's `m = +1 m`, which keeps the operand's kind) on
+// a slot that became a name is the name's own step, `++name`: the postfix
+// recovery around it (`(++x) - 1`) is then the one every emitter knows, a
+// BigInt's included.
+const nameStep = (n) => Array.isArray(n) && n[0] === '=' && typeof n[1] === 'string' && Array.isArray(n[2]) &&
+  (n[2][0] === '+1' || n[2][0] === '-1') && n[2][1] === n[1] ? [n[2][0] === '+1' ? '++' : '--', n[1]] : n
+
 const rewriteScalarArrayUses = (node, arrays) => {
   if (!Array.isArray(node) || !arrays.size) return node
   const op = node[0]
@@ -147,7 +154,7 @@ const rewriteScalarArrayUses = (node, arrays) => {
     }
     return out || node
   }
-  return rewriteChildren(node, rewriteScalarArrayUses, arrays)
+  return nameStep(rewriteChildren(node, rewriteScalarArrayUses, arrays))
 }
 
 // What every object inherits: a read of one of these names finds it, whatever the literal declares.
@@ -216,7 +223,7 @@ const rewriteScalarObjectUses = (node, objects) => {
     const fields = objects.get(node[1])
     return key != null ? (fields.get(key) ?? [, undefined]) : node
   }
-  return rewriteChildren(node, rewriteScalarObjectUses, objects)
+  return nameStep(rewriteChildren(node, rewriteScalarObjectUses, objects))
 }
 
 const typedArraySlotIndex = (node, len) => {

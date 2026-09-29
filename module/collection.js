@@ -2734,16 +2734,16 @@ export default (ctx) => {
   // Set/Map → ARRAY, everything else → x's own type, so the downstream `arr[i]`
   // / `.length` dispatch stays statically typed.
   ctx.core.emit['__iter_arr'] = (src) => {
-    const vt = ctx.summary?.at(ctx.func.current).mayBeNullishExpr(src) === true ? null : valTypeOf(src)
-    if (vt === VAL.ARRAY || vt === VAL.TYPED || vt === VAL.BUFFER)
+    const nullish = ctx.summary?.at(ctx.func.current).mayBeNullishExpr(src) === true
+    const vt = valTypeOf(src)
+    if (!nullish && (vt === VAL.ARRAY || vt === VAL.TYPED || vt === VAL.BUFFER))
       return asF64(emit(src))
     const stringPoints = ir => { ctx.module.include('string'); inc('__str_points'); return ['call', '$__str_points', ['i64.reinterpret_f64', ir]] }
-    if (vt === VAL.STRING) return typed(stringPoints(asF64(emit(src))), 'f64')
+    if (!nullish && vt === VAL.STRING) return typed(stringPoints(asF64(emit(src))), 'f64')
     const t = temp('iter')
     const bind = ['local.set', `$${t}`, asF64(emit(src))]
-    if (vt === VAL.SET) return typed(['block', ['result', 'f64'], bind, collKeysFromTemp(t, SET_ENTRY)], 'f64')
-    if (vt === VAL.MAP) return typed(['block', ['result', 'f64'], bind, collEntriesFromTemp(t, MAP_ENTRY)], 'f64')
-    // Unknown receiver: resolve the kind once at runtime (loop-invariant).
+    if (!nullish && vt === VAL.SET) return typed(['block', ['result', 'f64'], bind, collKeysFromTemp(t, SET_ENTRY)], 'f64')
+    if (!nullish && vt === VAL.MAP) return typed(['block', ['result', 'f64'], bind, collEntriesFromTemp(t, MAP_ENTRY)], 'f64')
     // ES: for-of / spread over null/undefined is a TypeError ("x is not
     // iterable") — throw, per spec. The silent zero-iteration this replaces
     // masked two real self-compile miscompiles (a folded undefined-guard and a
@@ -2751,10 +2751,17 @@ export default (ctx) => {
     // before they were caught. Only a present, known-kind source skips it.
     ctx.runtime.throws = true
     inc('__ptr_type', '__is_nullish')
+    const missing = ['if', ['call', '$__is_nullish', ['i64.reinterpret_f64', ['local.get', `$${t}`]]],
+      ['then', ['global.set', '$__jz_last_err_bits', ['i64.reinterpret_f64', ['f64.const', errorCodeLiteral(ERR.ITERATE_NULLISH)]]], ['throw', '$__jz_err', ['f64.const', errorCodeLiteral(ERR.ITERATE_NULLISH)]]]]
+    // A source of a known kind that may be missing (a field set on first
+    // use): the missing one throws, the present one iterates as its kind.
+    const known = vt === VAL.ARRAY || vt === VAL.TYPED || vt === VAL.BUFFER ? ['local.get', `$${t}`]
+      : vt === VAL.STRING ? stringPoints(['local.get', `$${t}`])
+      : vt === VAL.SET ? collKeysFromTemp(t, SET_ENTRY) : vt === VAL.MAP ? collEntriesFromTemp(t, MAP_ENTRY) : null
+    if (known) return typed(['block', ['result', 'f64'], bind, missing, known], 'f64')
+    // Unknown receiver: resolve the kind once at runtime (loop-invariant).
     const ptrType = () => ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]
-    return typed(['block', ['result', 'f64'], bind,
-      ['if', ['call', '$__is_nullish', ['i64.reinterpret_f64', ['local.get', `$${t}`]]],
-        ['then', ['global.set', '$__jz_last_err_bits', ['i64.reinterpret_f64', ['f64.const', errorCodeLiteral(ERR.ITERATE_NULLISH)]]], ['throw', '$__jz_err', ['f64.const', errorCodeLiteral(ERR.ITERATE_NULLISH)]]]],
+    return typed(['block', ['result', 'f64'], bind, missing,
       ['if', ['result', 'f64'], ['i32.eq', ptrType(), ['i32.const', PTR.SET]],
         ['then', collKeysFromTemp(t, SET_ENTRY)],
         ['else', ['if', ['result', 'f64'], ['i32.eq', ptrType(), ['i32.const', PTR.MAP]],

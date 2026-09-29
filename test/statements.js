@@ -1413,6 +1413,19 @@ test('statements: for-of over nullish throws', () => {
   ])
 })
 
+// A source of a known kind that may be missing (a field set on first use)
+// iterates as that kind once present, and throws while missing.
+test('statements: for-of over a maybe-missing array, string and set', () => {
+  for (const [name, init, want] of [['array', '[1, 2, 3]', 6], ['string', "'abc'", 3], ['set', 'new Set([4, 5])', 9]]) {
+    const src = `const st = { n: 1 }
+      export let f = (c) => { if (c) st.xs ??= ${init}; let s = 0; try { for (const v of st.xs) s += typeof v === 'string' ? 1 : v } catch (e) { s = -1 } return s }`
+    const { f } = run(src)
+    is(f(0), -1, `${name}: missing throws`)
+    is(f(1), want, `${name}: present iterates`)
+    is(f(0), want, `${name}: still present`)
+  }
+})
+
 // Predicate builtins carry BOOL (kind-traits CALLEE_VAL): the === compare is
 // a truth-value compare, not raw-bits vs the TRUE/FALSE atom; SWAR reduce accs
 // seed BIGINT from a bigint init.
