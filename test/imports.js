@@ -1,7 +1,7 @@
 // Import statement tests
 import test from 'tst'
 import { is, ok, throws, almost } from 'tst/assert.js'
-import { onWasi, adaptI64, levels } from './_matrix.js'
+import { onWasi, adaptI64, levels, belowOpt } from './_matrix.js'
 import jz, { compile } from '../index.js'
 import { instantiate } from '../interop.js'
 
@@ -1196,6 +1196,29 @@ test('export * as ns from a module binds the namespace for importers', () => {
     './allpass.js': `export function first (x) { return x * 2 }\nexport function second (x) { return x * 3 }`,
   } })
   is(exports.f(2), 49)
+})
+
+// A namespace holds its module's exports alone: a key it reads by value names no
+// internal binding of the module, so the module's helpers stay helpers (a
+// factory whose closure a loop calls splices into that loop).
+test('imports: a namespace read by a computed key holds the exports alone', () => {
+  const c = `function lcg (seed) { let s = seed >>> 0 || 1; return () => { s = (s * 1103515245 + 12345) & 0x7fffffff; return s / 0x3fffffff - 1 } }
+function whiteN (n, seed) { let rand = lcg(seed); let d = new Float32Array(n); for (let i = 0; i < n; i++) d[i] = rand() * 0.9; return d }
+export function white (n, seed) { return whiteN(n, seed) }
+export function twice (n, seed) { return whiteN(n, seed).map(x => x * 2) }`
+  const src = `import * as c from './c.js'
+export let f = (k, n) => { const fn = c[k]; return typeof fn === 'function' ? fn(n, 3)[n - 1] : -1 }`
+  const host = new Function(c.replace(/export /g, '') + '; return { white, twice }')()
+  const want = (k, n) => typeof host[k] === 'function' ? host[k](n, 3)[n - 1] : -1
+  for (const optimize of levels(0, 2)) {
+    const { f } = jz(src, { modules: { './c.js': c }, optimize }).exports
+    for (const [k, n] of [['white', 4], ['twice', 5], ['whiteN', 4], ['lcg', 2], ['white', 1]]) is(f(k, n), want(k, n), `c['${k}'] at ${optimize}`)
+  }
+  if (belowOpt(2)) return
+  const text = compile(src, { modules: { './c.js': c }, optimize: 2, wat: true })
+  ok(!/tramp_\S*(lcg|whiteN)\b/.test(text), 'no internal function is a namespace value')
+  const indirect = text.split('\n  (func ').filter(b => /call_indirect/.test(b)).map(b => b.split(/\s/)[0])
+  ok(indirect.every(n => n === '$f$exp' || n === '$__call_closure'), `the loop calls the generator directly: ${indirect}`)
 })
 
 // A module's scope is the builtins plus its own declarations and imports; it

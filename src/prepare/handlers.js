@@ -2874,11 +2874,14 @@ function prepareModule(specifier, source) {
   prepState.reassignedTopLevel = savedReassigned
   prepState.depth = savedDepth
 
-  // Collect exports: rename exported funcs with prefix
-  const moduleExports = new Map()
+  // Collect exports: rename exported funcs with prefix. `moduleExports` is the
+  // rename map (every binding of the module, by its local name); `exported` is
+  // what an importer or a namespace sees: the module's exports alone.
+  const moduleExports = new Map(), exported = new Map()
   const exportLocal = (exportName, localName) => {
     const mangled = `${prefix}$${localName}`
     moduleExports.set(exportName, mangled)
+    exported.set(exportName, mangled)
     // Aliased export (`export { helper as poles }`, `export default helper`):
     // exportName ('poles'/'default') is what IMPORTERS see, but in-module call
     // sites still reference the ORIGINAL local name ('helper') verbatim — the
@@ -2907,11 +2910,11 @@ function prepareModule(specifier, source) {
       continue
     }
     // Namespace re-export (`export * as ns from`): the map passes through as is.
-    if (val instanceof Map) { moduleExports.set(name, val); continue }
+    if (val instanceof Map) { moduleExports.set(name, val); exported.set(name, val); continue }
     // Re-export alias: export { x } from './mod' → pass through inner module's mangled name
     if (typeof val === 'string') {
       if (val.startsWith(prefix + '$')) {
-        moduleExports.set(name, val)
+        moduleExports.set(name, val); exported.set(name, val)
         continue
       }
       // Re-export of a binding imported from another module: val already carries
@@ -2920,14 +2923,14 @@ function prepareModule(specifier, source) {
       // original mangled name. Pass through verbatim.
       if (val.includes('$') &&
           (ctx.funcs.list.some(f => f.name === val) || ctx.scope.globals.has(val))) {
-        moduleExports.set(name, val)
+        moduleExports.set(name, val); exported.set(name, val)
         continue
       }
       if (ctx.funcs.list.some(f => f.name === val || f.name === `${prefix}$${val}`) || ctx.scope.globals.has(val) || ctx.scope.globals.has(`${prefix}$${val}`)) {
         exportLocal(name, val)
         continue
       }
-      moduleExports.set(name, val)
+      moduleExports.set(name, val); exported.set(name, val)
       continue
     }
     exportLocal(name, name)
@@ -2937,12 +2940,12 @@ function prepareModule(specifier, source) {
     const alias = ctx.funcs.exports['default']
     if (moduleExports.has(alias)) {
       // Already renamed as a named export
-      moduleExports.set('default', moduleExports.get(alias))
+      moduleExports.set('default', moduleExports.get(alias)); exported.set('default', moduleExports.get(alias))
     } else if (alias.startsWith(prefix + '$') || (alias.includes('$') &&
         (ctx.funcs.list.some(f => f.name === alias) || ctx.scope.globals.has(alias)))) {
       // A module-level binding is declared under this module's prefix already, and
       // one imported from another module carries that module's: pass it through.
-      moduleExports.set('default', alias)
+      moduleExports.set('default', alias); exported.set('default', alias)
     } else {
       // Not a named export — rename the function/global. `export default helper`
       // is itself an aliased export (exportName 'default' vs localName `alias`),
@@ -3031,7 +3034,7 @@ function prepareModule(specifier, source) {
   }
 
   // what module-eval.js reads: the namespace, the mangling prefix, the statements
-  const result = { exports: moduleExports, spec: specifier, prefix, init: moduleInit }
+  const result = { exports: exported, spec: specifier, prefix, init: moduleInit }
   ctx.module.resolvedModules.set(specifier, result)
   // a std module's host-boundary contract (`__mt_drain`, `__p_state`, …)
   // is read off the instance by plain name: re-export it from the program
