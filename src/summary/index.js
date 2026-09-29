@@ -2670,6 +2670,8 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
         // An index the fixed length holds reads an element, never past the end.
         const span = spanOf(idx)
         if (span && span[0] >= 0 && span[1] < fixedLen(recv)) { presentReads.add(n); return entryOf(recv, ik) }
+        // So does a counter the loop bounds by the array's own length (`c < inp.length`).
+        if (typeof idx === 'string' && typeof n[1] === 'string' && lenBounds.get(idx) === keyOf(n[1]) && stable(n[1], current ?? MODULE) && fixedLen(recv) >= 0) { presentReads.add(n); return entryOf(recv, ik) }
         presentReads.delete(n)
         return orAbsent(entryOf(recv, ik))
       }

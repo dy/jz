@@ -1138,3 +1138,25 @@ test('summary: nothing after a statement that always leaves reaches a kind', () 
   const fns = text.split('\n  (func ').filter(b => b.split('\n')[0].endsWith('energy'))
   ok(fns.length && fns.every(b => !/call \$__(typed_idx|dyn_get|str_idx|is_str_key|add_slow)/.test(b)), 'the kernel reads its samples as a Float32Array')
 })
+
+// An element of a list of fixed length read by a counter its loop bounds by
+// that list's own length (`for (let c = 0; c < inp.length; c++) f(inp[c])`)
+// is present: `f`'s parameter holds what the list holds, never undefined, so
+// a test of what it is (`data instanceof Float32Array`) is decided.
+test('summary: a counter bounded by a fixed list\'s length reads its elements present', () => {
+  const src = `function energy(data) { let s = 0; for (let i = 0; i < data.length; i++) s += data[i] * data[i]; return s }
+    function run(data) {
+      if (!(data instanceof Float32Array)) return (chunk) => chunk ? energy(chunk) : 0
+      return energy(data)
+    }
+    let inputs = []
+    export let setup = (n) => { inputs[0] = [new Float32Array(n), new Float32Array(n)]; for (let i = 0; i < n; i++) { inputs[0][0][i] = i % 3; inputs[0][1][i] = 1 } }
+    export let f = () => { const inp = inputs[0]; let s = 0; for (let c = 0; c < inp.length; c++) s += run(inp[c]); return s }`
+  const js = oracle(src)
+  for (const optimize of levels(0, 2, 3)) {
+    const m = jz(src, { optimize }).exports
+    for (const n of [4, 9]) { js.setup(n); m.setup(n); is(m.f(), js.f(), `f() after setup(${n}) at ${optimize}`) }
+  }
+  summarize(src)
+  ok(!hasTag(kindOf('run', 'data'), K.ABSENT), 'the element read is present')
+})
