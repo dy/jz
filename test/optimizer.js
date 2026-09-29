@@ -3172,16 +3172,17 @@ test('promoted int array .filter().map() chain stays typed end-to-end', () => {
 test('promoteIntArrayLiterals: hole disqualifies', () => {
   // Sparse literal: [1, , 3] — middle slot is a hole. intLiteralValue
   // returns null for non-literal elements, so the candidate gate skips it.
+  // (a method keeps the list a list: read at constant positions only, it would be its elements' locals)
   const src = `
     export const main = () => {
       const xs = [1, , 3]
-      return xs.length
+      return xs.length + xs.indexOf(3)
     }
   `
   const body = compileMain(src, { propagateLocals: false })
   ok(/\(local \$xs f64\)/.test(body), 'holes break dense int contract; disqualify')
   const { main } = run(src)
-  is(main(), 3)
+  is(main(), 5)
 })
 
 test('promoteIntArrayLiterals: ++/-- on element disqualifies', () => {

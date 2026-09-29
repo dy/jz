@@ -733,7 +733,8 @@ test('array-destructure behavior: destructured nullable-bigint element keeps kin
 test('array-elem kind census: BigInt array literal element carries arrayElemValType BIGINT at the 2^62 boundary', () => {
   if (onKernel()) return   // kernel: inspect never reaches through jz.compile (see array-destructure note above)
   const HI = 4611686018427387903n // 2^62 - 1, host-JS-authority
-  const locals = inspectLocals(`export let f = () => { let a = [${HI}n]; return a[0] }`)
+  // (read at a position only the run knows, the list stays a list)
+  const locals = inspectLocals(`export let f = () => { let a = [${HI}n]; return a[0] + a[a.length - 1] }`)
   const rep = Object.entries(locals).find(([k]) => k === 'a' || k.startsWith('a' + T))?.[1]
   is(rep?.arrayElemValType, VAL.BIGINT)
 })

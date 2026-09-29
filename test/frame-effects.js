@@ -446,7 +446,7 @@ test('frame effects: a builtin called by name is listed by what it keeps', () =>
     'break', 'continue', 'this', 'typeof', 'str', 'strcat', 'delete', 'in', 'navigator.hardwareConcurrency'])
   // the host keeps the callback it schedules and what a request or a file is handed; the rest the emitter alone calls
   const KEEPS = new Set(['setTimeout', 'setInterval', 'clearTimeout', 'clearInterval', 'requestAnimationFrame', 'cancelAnimationFrame', 'fetch', 'fs.read', 'fs.write',
-    '__raw_prop', '__raw_local', '__iter_arr_ctor', '__park_begin', '__park_finish', '__park_rewind',
+    '__raw_prop', '__raw_local', '__iter_arr_ctor', '__typed_len', '__park_begin', '__park_finish', '__park_rewind',
     ...['u8', 'u32', 'f64', 'i64', 'str'].flatMap(t => ['__park_write_' + t, '__park_read_' + t])])
   const names = Object.keys(ctx.core.emit).filter(k => !k.includes(':') && /^[A-Za-z_$]/.test(k) && !SYNTAX.has(k))
   ok(names.length > 200, `the runtime's names are read: ${names.length}`)
