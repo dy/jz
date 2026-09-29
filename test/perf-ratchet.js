@@ -169,6 +169,12 @@ const loopBodyOps = (wat) => {
 // Both of the above together (2026-09-29): release by age asks the slice
 // store's value and moves its growth check on the general key path the sum
 // keeps: slice 109288 -> 109880, every other category unchanged.
+// An index key's int32 test truncates through i64 (2026-09-29, compile/emit/
+// dispatch.js int32Bits): `i32.wrap_i64 (i64.trunc_sat_f64_s x)` is one node
+// more than `i32.trunc_sat_f64_s x` and one arm64 instruction where the i32
+// truncation is a rounding, a round trip and an out-of-line saturation arm.
+// Eight slice programs test one such key in a loop: 109880 -> 109888, every
+// other category unchanged.
 
 // An object made at start is saved before the round's first store into it
 // of a value that names memory of the round (2026-09-29, module/core/
