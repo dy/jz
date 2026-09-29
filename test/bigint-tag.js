@@ -357,3 +357,15 @@ test('bigint tag: a raw direct result into every boxed consumer, and a boxed pro
     }
   }
 })
+
+// A relational comparison that reaches the generic path with a BigInt compares it
+// as one (ES2024 7.2.13): BigInt against BigInt by value, against a number
+// exactly (fraction and range included), against a string as a BigInt literal.
+test('bigint compare: <, >, <=, >= through values of several kinds agree with JS', () => {
+  const src = `export let f = (i, j) => { const v = [5n, -3n, 7, 5, 5.5, 4.5, NaN, 'x', '5', '5.5', 10n, 4611686018427387904n, 9.3e18, -9.3e18, -Infinity, Infinity]; const a = v[i], b = v[j]; return (a < b ? 1 : 0) + (a > b ? 2 : 0) + (a <= b ? 4 : 0) + (a >= b ? 8 : 0) }`
+  const want = oracle(src).f
+  for (const optimize of levels(0, 2)) {
+    const { f } = jz(src, { optimize }).exports
+    for (let i = 0; i < 16; i++) for (let j = 0; j < 16; j++) is(f(i, j), want(i, j), `v[${i}] against v[${j}] at ${optimize}`)
+  }
+})

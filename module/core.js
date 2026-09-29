@@ -71,7 +71,10 @@ export default (ctx) => {
     __eq: () => ['__str_eq', '__ptr_type', '__is_nullish', ...(representationProgramHasBigint(ctx) ? ['__bigint_eq', '__ptr_offset'] : []),
       ...(ctx.core.stdlib['__to_num'] ? ['__to_num'] : []), ...(ctx.core.stdlib['__to_str'] ? ['__is_object', '__to_prim_dflt'] : [])],
     __to_prim_dflt: ['__ptr_type', '__to_str'],
-    __cmp: ['__is_object', '__ptr_type', '__ptr_aux', '__to_prim_dflt', '__is_str_key', '__str_cmp', '__to_num'],
+    __cmp: () => ['__is_object', '__ptr_type', '__ptr_aux', '__to_prim_dflt', '__is_str_key', '__str_cmp', '__to_num', ...(representationProgramHasBigint(ctx) ? ['__is_bigint_box', '__cmp_i64', '__cmp_i64_num', '__bigint_side', '__ptr_offset'] : [])],
+    __bigint_side: ['__to_num', '__is_str_key'],
+    __is_bigint_box: ['__ptr_type'],
+    __cmp_i64_num: ['__cmp_i64'],
     __add_slow: () => ['__ptr_type', '__is_object', '__to_prim_dflt', '__is_str_key', '__str_concat_fresh',
       ...(representationProgramHasBigint(ctx) ? ['__box_bigint', '__ptr_offset'] : [])],
     __eq_strict: ['__str_eq', '__ptr_type', '__ptr_offset'],
@@ -582,12 +585,45 @@ export default (ctx) => {
           : `(call $__to_prim_dflt (local.get $${v}))`})))`).join('')}
     (if (i32.and (call $__is_str_key (local.get $a)) (call $__is_str_key (local.get $b)))
       (then (return (f64.convert_i32_s (call $__str_cmp (local.get $a) (local.get $b))))))
+    ${representationProgramHasBigint(ctx) ? `(if (call $__is_bigint_box (local.get $a))
+      (then (return (if (result f64) (call $__is_bigint_box (local.get $b))
+        (then (call $__cmp_i64 (i64.load (call $__ptr_offset (local.get $a))) (i64.load (call $__ptr_offset (local.get $b)))))
+        (else (call $__cmp_i64_num (i64.load (call $__ptr_offset (local.get $a))) (call $__bigint_side (local.get $b))))))))
+    (if (call $__is_bigint_box (local.get $b))
+      (then (return (f64.neg (call $__cmp_i64_num (i64.load (call $__ptr_offset (local.get $b))) (call $__bigint_side (local.get $a)))))))` : ''}
     (local.set $x (call $__to_num (local.get $a)))
     (local.set $y (call $__to_num (local.get $b)))
     (if (f64.eq (local.get $x) (local.get $y)) (then (return (f64.const 0))))
     (if (f64.lt (local.get $x) (local.get $y)) (then (return (f64.const -1))))
     (if (f64.gt (local.get $x) (local.get $y)) (then (return (f64.const 1))))
     (f64.const nan))`
+
+  // A BigInt's box, as the relational path tests it.
+  ctx.core.stdlib['__is_bigint_box'] = `(func $__is_bigint_box (param $v i64) (result i32)
+    (i32.and (f64.ne (f64.reinterpret_i64 (local.get $v)) (f64.reinterpret_i64 (local.get $v)))
+      (i32.eq (call $__ptr_type (local.get $v)) (i32.const ${PTR.BIGINT}))))`
+  ctx.core.stdlib['__cmp_i64'] = `(func $__cmp_i64 (param $x i64) (param $y i64) (result f64)
+    (if (result f64) (i64.lt_s (local.get $x) (local.get $y)) (then (f64.const -1))
+      (else (f64.convert_i32_u (i64.gt_s (local.get $x) (local.get $y))))))`
+  // The other side of a comparison with a BigInt as a number: a string reads as a
+  // BigInt literal, so one naming no integer is unordered (NaN).
+  ctx.core.stdlib['__bigint_side'] = `(func $__bigint_side (param $v i64) (result f64)
+    (local $n f64)
+    (local.set $n (call $__to_num (local.get $v)))
+    (if (result f64) (i32.and (call $__is_str_key (local.get $v)) (f64.ne (local.get $n) (f64.trunc (local.get $n))))
+      (then (f64.const nan)) (else (local.get $n))))`
+  // A BigInt against a number, exactly (ES2024 7.2.13 step 4): NaN is unordered, a
+  // number past the i64 range is beyond every BigInt jz holds, else the integer
+  // parts compare and then the number's fraction.
+  ctx.core.stdlib['__cmp_i64_num'] = `(func $__cmp_i64_num (param $x i64) (param $y f64) (result f64)
+    (local $t f64) (local $k i64)
+    (if (f64.ne (local.get $y) (local.get $y)) (then (return (f64.const nan))))
+    (if (f64.ge (local.get $y) (f64.const 9223372036854775808)) (then (return (f64.const -1))))
+    (if (f64.lt (local.get $y) (f64.const -9223372036854775808)) (then (return (f64.const 1))))
+    (local.set $t (f64.trunc (local.get $y)))
+    (local.set $k (i64.trunc_f64_s (local.get $t)))
+    (if (i64.ne (local.get $x) (local.get $k)) (then (return (call $__cmp_i64 (local.get $x) (local.get $k)))))
+    (f64.neg (f64.copysign (f64.convert_i32_u (f64.ne (local.get $y) (local.get $t))) (f64.sub (local.get $y) (local.get $t)))))`
 
   // The `+` operator for two carriers that are not both numbers (ES2024
   // 13.15.3): ToPrimitive both, concatenate if either is a string, else add
