@@ -15,10 +15,18 @@ export async function runFiles(files) {
     fn.apply(this, args)
     collect()
   }
+  // A failure's BigInt values print as BigInts: a reporter that serializes them
+  // as JSON (tap) throws on one, and the throw ended the whole run there.
+  const shown = v => typeof v === 'bigint' ? `${v}n` : Array.isArray(v) ? v.map(shown) : v
+  const failed = fn => function (name, error, ...rest) {
+    if (error && (typeof error.actual === 'bigint' || typeof error.expected === 'bigint' || Array.isArray(error.actual) || Array.isArray(error.expected)))
+      error = Object.assign(Object.create(Object.getPrototypeOf(error)), error, { message: error.message, actual: shown(error.actual), expected: shown(error.expected) })
+    return fn.call(this, name, error, ...rest)
+  }
   const result = await test.run({ format: {
     ...base,
     testPass: completed(base.testPass),
-    testFail: completed(base.testFail),
+    testFail: completed(failed(base.testFail)),
   } })
   collect(true)
   return result
