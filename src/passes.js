@@ -95,6 +95,7 @@ export const PASS_NAMES = [
   // silently runs at O0, breaking the representation-free reference tier.
   // test/passes.js greps every gate read against this list + TUNING_KEYS.
   'declareUnseenKeys',        // a key stored on objects nothing asks for their keys: a slot of their literals (plan/declare-unseen-keys.js)
+  'promoteLoopFields',        // a field a loop reads and writes through one receiver: a local for the loop (plan/loop-fields.js)
   'callChosenFunctions',      // a local holding one of several functions and only called: the choice of direct calls (plan/chosen-calls.js)
   'versionIntegralLoops',     // a loop indexing by numbers of unknown integrality: a copy over their int32s where they are ones (plan/integral-loops.js), speed-for-size
   'loadCSE',                  // straight-line typed element-load CSE (compile-level, pre-analyze)

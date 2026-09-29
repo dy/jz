@@ -411,6 +411,8 @@ export function summaryQueries(facts, internal = false) {
       /** A function or closure a walk reached: the program runs it; the rest keep no kind. */
       reaches: id => reached?.has(id) === true,
       shapesOfExpr: e => { const k = kindOfExpr(e); return tagOf(core(k)) === K.OBJECT && paramOf(k) !== UNKNOWN ? [...new Set(shapesOf(paramOf(k)).map(sid => layouts[sid]))] : null },
+      // The construction sites an object expression's value comes from; null when unknown. Two values of disjoint sites are two objects.
+      sitesOfExpr: e => { const k = kindOfExpr(e); return tagOf(core(k)) === K.OBJECT && paramOf(k) !== UNKNOWN ? shapesOf(paramOf(k)) : null },
       // Payload queries preserve identity independently of nullish presence.
       objectSidOfExpr: e => { const k = kindOfExpr(e); return tagOf(core(k)) === K.OBJECT && publicSid(k) !== UNKNOWN ? publicSid(k) : null },
       // The object's layout is known and NOT certified closed: a store outside it

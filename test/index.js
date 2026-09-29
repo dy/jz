@@ -104,6 +104,7 @@ const TESTS = [
   'declare-unseen-keys',
   'integral-loops',
   'chosen-calls',
+  'loop-fields',
   'select-order',
   'pointer-join',
   'typed-rebound',
