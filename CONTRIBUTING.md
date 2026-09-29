@@ -1518,6 +1518,12 @@ src/
                 plan/lanes.js: record parameters as scalar lanes (a parameter read only field by field, at literal or known-shape sites)
                 plan/counted-loops.js: a counted loop over its trip number (computed start, unrolled body rolled back, unit stride versioned); literal-start cursors are the lane vectorizer's (optimize/vectorize/counter-run.js)
                 plan/unswitch-loops.js: a loop testing a name it never writes (`if (stereo)`), a copy for each answer, its declarations renamed so each copy's values have its arms' kinds
+                plan/kind-split.js: a loop reading a name of several kinds, a typed array among them, a copy over that array where `instanceof` says the name holds it (the constructor from the name's values and its callers' arguments)
+                plan/integral-loops.js: a loop moving a cursor of unknown integrality, a copy over its int32s where a test says it is one
+                plan/loop-fields.js: a field or a Float64Array element a loop reads and writes through one receiver, in a local for the loop, stored back after it
+                plan/chosen-calls.js: a local holding one of several named functions and only called, the choice of direct calls
+                plan/called-args.js: a function whose parameter is only called or tested against strings, a copy for each named function or string literal a call passes there
+                plan/object-reads.js: a key a loop reads of an object the function made and only reads, read once where the object is made
   optimize/     WAT-array passes + vectorize.js + loop-rewind.js (per-iteration heap restore, after the vectorizer);
                 arena-rewind, sort-locals, low-word-mask are tape passes run by link
   link/         whole-module passes on the tape: treeshake, custom sections, throw-runtime prune, function order, local names (index.js)
