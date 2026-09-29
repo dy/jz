@@ -166,6 +166,9 @@ const loopBodyOps = (wat) => {
 // count includes: slice 68974 -> 109288, every other category unchanged. The
 // optimistic NUMBER it replaces sent `o.name + 1 + 2` through f64 arithmetic
 // on the string's box ('x1', not 'x12').
+// Both of the above together (2026-09-29): release by age asks the slice
+// store's value and moves its growth check on the general key path the sum
+// keeps: slice 109288 -> 109880, every other category unchanged.
 
 // An object made at start is saved before the round's first store into it
 // of a value that names memory of the round (2026-09-29, module/core/
