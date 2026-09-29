@@ -813,7 +813,7 @@ export default (ctx) => {
     (local $u f64)
     (if (i32.eqz (f64.gt (local.get $x) (f64.const -1)))
       (then (return (select (f64.const -inf) (f64.const nan) (f64.eq (local.get $x) (f64.const -1))))))
-    ;; log1p(+Inf) = +Inf — the ratio below would compute Inf/Inf = NaN.
+    ;; log1p(+Inf) = +Inf: the ratio below would compute Inf/Inf = NaN.
     (if (f64.eq (local.get $x) (f64.const inf)) (then (return (f64.const inf))))
     (local.set $u (f64.add (f64.const 1.0) (local.get $x)))
     (if (f64.eq (local.get $u) (f64.const 1.0))

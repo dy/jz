@@ -22,14 +22,14 @@
 //      to confirm the fold took the cheap path (no `$math.pow`/`$math.pow_core` call)
 //      rather than silently falling through to the general call, which would make the
 //      gate vacuous.
-//   3. $math.pow_fifths — the k/5 fold (x ** 2.4, the sRGB/Rec.709 decode gamma):
+//   3. $math.pow_fifths, the k/5 fold (x ** 2.4, the sRGB/Rec.709 decode gamma):
 //      x^p·fifthroot(x^r), $math.fifthroot's bit-hack seed and four Newton steps, on the
 //      range where it stays within 40 ulp of x^c (module/math/trig-tables.js fifthFold),
 //      $math.pow past it. NOT a ≤1ulp guarantee: a REGRESSION GUARD pins the fold's own
 //      error against the exact rational power so a broken correction term or a lost
 //      Newton step cannot pass silently, and a second gate holds the whole lowering to
-//      the host's x ** c over the doubles. Flag semantics: crPow OFF (default) — the k/5
-//      fold fires by default (approxPow is meaningless there). crPow ON —
+//      the host's x ** c over the doubles. Flag semantics: crPow OFF (default): the k/5
+//      fold fires by default (approxPow is meaningless there). crPow ON:
 //      $math.pow_fold takes the correctly-rounded kernel, and the fold requires an
 //      explicit `{ optimize: { approxPow: true } }` opt-in.
 //   4. The correctly-rounded vector gate — test/vectors/pow-cr.txt: 5152 lines of
@@ -187,7 +187,7 @@ test('const-exponent pow fold — SIMD twin (pow_fold_v) matches the scalar fold
   ok(Object.is(got, want) || ulpDiff(got, want) <= 4, `vectorized loop's folded reduction matches a scalar host computation (got ${got} vs ${want})`)
 })
 
-// === 3. $math.pow_fifths — the k/5 fold's default kernel ===
+// === 3. $math.pow_fifths: the k/5 fold's default kernel ===
 
 // the exported function's own body: the fold's helper calls $math.pow past its range
 const fnOf = (text) => funcWat(text, 'f') || funcWat(text, 'f$exp')
@@ -235,7 +235,7 @@ const exactFifthPow = (x, k) => {
   return cmpScaled((2n * my + 1n) ** 5n, (ey - 1) * 5, xk, exk) < 0 ? step(y, 1) : y
 }
 // Regression ceiling against that reference: the fold measures a worst case of 4 ulp
-// across these exponents on the range it runs (four Newton steps, the last a correction —
+// across these exponents on the range it runs (four Newton steps, the last a correction:
 // module/math.js $math.fifthroot; the x^p · fifthroot(x^r) composition adds the rest),
 // so 96 catches a dropped step (three steps left a ~2.65M ulp floor) while tolerating
 // machine/input variance.
@@ -271,7 +271,7 @@ test(`fifthroot pow fold (default path) — worst case stays under ${ULP_CEILING
 // doubles the lowering, the fold where it holds and $math.pow past it, stays within 48
 // ulp of it: the fold's range bounds its x^(c − k/5) term by 40 (module/math/trig-tables.js
 // fifthFold); 2.2 at x = 1e140 was 510 before the bound.
-test('fifthroot pow fold (default path) — within 48 ulp of the host over the doubles', () => {
+test('fifthroot pow fold (default path): within 48 ulp of the host over the doubles', () => {
   const rng = mkRng(0xF1F7)
   const fifth = run(perExp(FIFTH_EXPS))
   for (const [i, c] of FIFTH_EXPS.entries()) {
