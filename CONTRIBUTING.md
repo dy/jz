@@ -2267,7 +2267,9 @@ level: what an exported parameter is used as is read off it, and the answer may 
 level. A read as a string flows back through what made the value (summary demand, `STR`): a
 copy, a call's argument, the operands of a `+`, so `x = s + s; x.slice( 1 )` uses `s` as a
 string. A test of the analyzers' rule for a second write puts the write in an arm, or opts out. `test/split-bindings.js` pins the statements it leaves and the
-agreement of both forms with the host.
+agreement of both forms with the host. A pass that copies a node or puts one in its place
+carries what the parser noted on it (its position, `loc`) through `copyNode` and `noted`
+(`src/ast.js`), not `slice`: a statement rewritten without them has no source position.
 
 A split binding of the type of the one it continues takes its slot
 (`src/optimize/split-slots.js`, last before the generic optimizer): the one before is dead

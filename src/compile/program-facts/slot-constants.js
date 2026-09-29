@@ -105,7 +105,7 @@ export function collectSlotConstants(ast) {
     if (op === '{}') {
       const parsed = staticObjectProps(node.slice(1))
       if (parsed) {
-        const sid = ctx.schema.register(parsed.names)
+        const sid = ctx.schema.register(parsed.names, parsed.brand)
         for (let i = 0; i < parsed.values.length; i++) {
           const value = parsed.values[i]
           observeConstInt(sid, i, intLiteral(value) ?? (typeof value === 'string' && typeof intRefs?.get(value) === 'number' ? intRefs.get(value) : null))
@@ -149,7 +149,7 @@ export function collectSlotConstants(ast) {
         if (op === '{}') {
           const parsed = staticObjectProps(node.slice(1))
           if (parsed) {
-            const sid = ctx.schema.register(parsed.names)
+            const sid = ctx.schema.register(parsed.names, parsed.brand)
             for (let i = 0; i < parsed.values.length; i++) {
               const value = parsed.values[i]
               record(sid, i,

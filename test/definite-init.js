@@ -36,6 +36,16 @@ export let seen = (n) => { const b = new B(); return b.seen === undefined ? 100 
 export let own = (n) => { const b = new B(); return b.y + n }`, [[5]], 'derived field')
 })
 
+test('definite init: a field stored on one path only is undefined on the other', () => {
+  // The instance literal is the class's schema (its brand salts the id): its
+  // `undefined` inits are writes the int census sees, so `b` is no integer
+  // slot and `o.b * 2` converts the absent value instead of multiplying its
+  // bits (the payload of the undefined NaN would ride out as `undefined`).
+  agrees(`class P { constructor(x) { this.a = 1; if (x > 0) this.b = 2 } }
+export let product = (n) => { const o = new P(n); return o.b * 2 }
+export let plain = (n) => { const o = new P(n); return o.b }`, [[5], [-5]], 'one path')
+})
+
 test('definite init: a return before the stores leaves the fields undefined', () => {
   agrees(`class Q { constructor(x) { this.a = 1; if (x < 0) return; this.b = x * 2 } }
 export let f = (n) => { const o = new Q(n); return o.b === undefined ? -1 : o.b + o.a }`, [[5], [-5]], 'early return')

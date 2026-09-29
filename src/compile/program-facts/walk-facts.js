@@ -307,7 +307,7 @@ function walkFactsRoot(root, full, callerFunc, doSchema, cache = true) {
     observeNodeFacts(node, acc)
     if (op === '{}' && doSchema) {
       const parsed = staticObjectProps(node.slice(1))
-      if (parsed) ctx.schema.register(parsed.names)
+      if (parsed) ctx.schema.register(parsed.names, parsed.brand)
     }
     if (op === '=>') {
       // a concise body naming a function returns it as a value

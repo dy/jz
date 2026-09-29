@@ -21,7 +21,7 @@
 
 import { ctx, warn, declGlobal } from '../../ctx.js'
 import { createFunction, frameRoots } from '../../function.js'
-import { ASSIGN_OPS, COMPARE_OPS, MUTATE_OPS, T, I32_MIN, I32_MAX, ACCESSOR_GET, ACCESSOR_SET, refsAny, extractParams, classifyParam, PARAM_KIND, PARAM_NAME, collectParamNames, walkAst, isBlockBody, returnExprs } from '../../ast.js'
+import { ASSIGN_OPS, COMPARE_OPS, MUTATE_OPS, T, copyNode, I32_MIN, I32_MAX, ACCESSOR_GET, ACCESSOR_SET, refsAny, extractParams, classifyParam, PARAM_KIND, PARAM_NAME, collectParamNames, walkAst, isBlockBody, returnExprs } from '../../ast.js'
 import { VAL, updateGlobalRep } from '../../reps.js'
 import { constNumExpr } from '../../static.js'
 import { typedStaticLen, intLevelMap } from '../../type.js'
@@ -1084,7 +1084,7 @@ export const resolveHeldMethods = (ast) => {
   const rewrite = (n) => {
     if (!Array.isArray(n) || n[0] === 'str' || n[0] == null) return n
     let out = n
-    for (let i = 1; i < n.length; i++) { const c = rewrite(n[i]); if (c !== n[i]) { if (out === n) out = n.slice(); out[i] = c } }
+    for (let i = 1; i < n.length; i++) { const c = rewrite(n[i]); if (c !== n[i]) { if (out === n) out = copyNode(n); out[i] = c } }
     if (out[0] !== '()' || out.length !== 3 || !Array.isArray(out[1]) || out[1][0] !== '.' || out[1][2] !== 'call' || !held.has(out[1][1])) return out
     const args = Array.isArray(out[2]) && out[2][0] === ',' ? out[2].slice(1) : out[2] == null ? [] : [out[2]]
     const method = held.get(out[1][1])

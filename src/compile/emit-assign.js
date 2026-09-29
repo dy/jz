@@ -264,7 +264,7 @@ function tryInplaceReplaceStore(arr, idx, val) {
   if (!idxNumeric) return null
   const parsed = staticObjectProps(val.slice(1))
   if (!parsed || !parsed.values.every(v => valTypeOf(v) === VAL.NUMBER)) return null
-  const sid = ctx.schema.register(parsed.names)
+  const sid = ctx.schema.register(parsed.names, parsed.brand)
   const schema = ctx.schema.list?.[sid]
   const ops = ctx.abi.object?.ops
   if (!schema || !ops) return null

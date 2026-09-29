@@ -121,7 +121,9 @@ export function analyzeSchemaSlotIntCertain(ast, opts) {
     if (op === '{}') {
       const parsed = staticObjectProps(node.slice(1))
       if (parsed) {
-        const sid = ctx.schema.register(parsed.names)
+        // a class instance's literal is its class's schema (the brand salts the id): its
+        // `undefined` inits are writes of the slots the constructor's stores reach
+        const sid = ctx.schema.register(parsed.names, parsed.brand)
         for (let i = 0; i < parsed.values.length; i++) observeSlot(sid, i, isInt(parsed.values[i]))
       }
     } else if (MUTATE_OPS.has(op) && Array.isArray(node[1]) && (node[1][0] === '.' || isStringKeyIndex(node[1]))) {

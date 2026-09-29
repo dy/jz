@@ -21,7 +21,7 @@
  *
  * @module prepare/split-bindings
  */
-import { T } from '../ast.js'
+import { T, noted, copyNode } from '../ast.js'
 
 const COMPOUND = new Map([['+=', '+'], ['-=', '-'], ['*=', '*'], ['/=', '/'], ['%=', '%'], ['**=', '**'],
   ['&=', '&'], ['|=', '|'], ['^=', '^'], ['<<=', '<<'], ['>>=', '>>'], ['>>>=', '>>>']])
@@ -41,7 +41,7 @@ const rename = (n, from, to) => {
   if (n === from) return to
   if (!Array.isArray(n) || n[0] === 'str') return n
   let out = n
-  const at = (i) => { const c = rename(n[i], from, to); if (c !== n[i]) { if (out === n) out = n.slice(); out[i] = c } }
+  const at = (i) => { const c = rename(n[i], from, to); if (c !== n[i]) { if (out === n) out = copyNode(n); out[i] = c } }
   if (n[0] === '.' || n[0] === '?.') at(1)
   else if (n[0] === ':') at(2)
   else for (let i = 1; i < n.length; i++) at(i)
@@ -109,15 +109,15 @@ export function splitReassigned(fn, nested = false) {
       declares(s, declared)
       if (isAssign(s) && !captured.has(s[1]) && mine(s[1], declared, out ?? list, k)) {
         const name = s[1], root = roots.get(name) ?? name, next = `${root}${T}s${serial++}`
-        if (!out) out = list.slice()
-        out[k] = ['let', ['=', next, s[0] === '=' ? s[2] : [COMPOUND.get(s[0]), name, s[2]]]]
+        if (!out) out = copyNode(list)
+        out[k] = noted(s, ['let', noted(s, ['=', next, s[0] === '=' ? s[2] : [COMPOUND.get(s[0]), name, s[2]]])])
         for (let j = k + 1; j < out.length; j++) out[j] = rename(out[j], name, next)
         declared.add(next); own.add(next); roots.set(next, root)
         continue
       }
       if (!nested) continue
       const c = inner(s)
-      if (c !== s) { if (!out) out = list.slice(); out[k] = c }
+      if (c !== s) { if (!out) out = copyNode(list); out[k] = c }
     }
     return out ?? list
   }
@@ -144,7 +144,7 @@ export function splitReassigned(fn, nested = false) {
     if (!Array.isArray(n) || n[0] === '=>' || n[0] === 'str') return n
     if (n[0] === ';') return split(n, within)
     let out = n
-    for (let i = 1; i < n.length; i++) { const c = inner(n[i]); if (c !== n[i]) { if (out === n) out = n.slice(); out[i] = c } }
+    for (let i = 1; i < n.length; i++) { const c = inner(n[i]); if (c !== n[i]) { if (out === n) out = copyNode(n); out[i] = c } }
     return out
   }
   const list = split(top, (name) => own.has(name))

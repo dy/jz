@@ -20,6 +20,11 @@ export const rewriteChildren = (node, visit, state) => {
 /** Template placeholder in prepared AST (prepare.js). */
 export const T = '\uE000'
 
+/** What the parser noted on a node beside its children (its position) goes to
+ *  the node that stands in its place; a copy keeps it. */
+export const noted = (from, to) => { for (const k of Object.keys(from)) if (!(k < from.length)) to[k] = from[k]; return to }
+export const copyNode = (n) => noted(n, n.slice())
+
 // jzify's class namespace (jzify/names.js): the names a class lowers to
 // (`P\uE003len`, the receiver `\uE003self0`) may appear in lowered source
 // (the source-level lowering), so they take a private-use character the parser accepts
