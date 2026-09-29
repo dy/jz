@@ -53,6 +53,9 @@ export function programPins(cfg) {
     // A loop its caller had no room for stays a function (plan/inline.js): the
     // single-caller inliner has no bound of its own.
     ...[...ctx.plans.keptKernels ?? []].map(name => `$${name}`),
+    // A runtime throw only leaves: spliced into its one caller, a hot loop's
+    // cold arm would carry the error's allocation and stores.
+    ...[...ctx.runtime.throwHelpers].filter(name => ctx.core.includes.has(name.slice(1))),
     ...(cfg._vectorizedFnNames?.size
       ? [...cfg._vectorizedFnNames].filter(name => ctx.funcs.map.get(name.slice(1))?.exported)
       : []),

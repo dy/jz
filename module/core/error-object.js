@@ -48,6 +48,7 @@ export function throwErrorWat(ctx, name, className, message) {
   const strWat = text => print(ctx.core.emit['str'](text))
   const sid = ctx.schema.errorSid(className)
   ctx.schema.namedUses.push({ sid, funcName: name })
+  ctx.runtime.throwHelpers.add('$' + name)
   const slots = ctx.abi.object.ops.allocSlots(2)
   const start = dataLen()
   const msgWat = strWat(message), nameWat = strWat(className)

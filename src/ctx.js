@@ -721,6 +721,9 @@ export function reset(proto, globals, bridge) {
     // this safe for content addressed by literal NaN-boxed bit patterns baked
     // directly into a function body, not just global-indirected tables.
     reclaimSpans: [],
+    // The lazy runtime throws (module/core/error-object.js throwErrorWat), by
+    // WAT name: they only leave, so the final optimizer keeps them calls.
+    throwHelpers: new Set(),
   }
 
   ctx.memory = {

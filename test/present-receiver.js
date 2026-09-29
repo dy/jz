@@ -36,3 +36,25 @@ test('present receiver: the bounds test is the only test, a null-holding array k
   ok(/call \$__throw_property_nullish/.test(x), 'the miss arm throws')
   ok(/i64\.eq/.test(y), 'y still tests the element it read: the array holds a null')
 })
+
+// A program's one missing-receiver check still calls the throw helper
+// (optimize/watr-tail.js programPins): spliced into its one caller, the
+// error's allocation and stores would sit in the loop's cold arm.
+const once = `const ps = [{ v: 1 }, undefined, { v: 3 }]
+  export const g = (n) => { let s = 0; for (let i = 0; i < n; i++) s += ps[i % 3].v; return s }`
+
+test('present receiver: a sole missing-receiver check throws as the host does', () => {
+  for (const optimize of levels(0, 2, 3)) {
+    const host = oracle(once), jz = run(once, { optimize })
+    is(jz.g(1), host.g(1), `g(1) at ${optimize}`)
+    throws(() => jz.g(2), 'g(2): the hole has no v')
+    throws(() => host.g(2))
+  }
+})
+
+test('present receiver: a sole missing-receiver check calls the throw helper, no allocation in the loop', () => {
+  if (belowOpt(2)) return
+  const g = fnText(wat(once, { optimize: 2 }), 'g')
+  ok(/call \$__throw_property_nullish/.test(g), 'the miss arm calls the helper')
+  ok(!/call \$__alloc/.test(g), 'the error is built in the helper, not in g')
+})
