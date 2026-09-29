@@ -39,21 +39,25 @@ const IN_SCHEMA_COMPARE_BUDGET = 16
 // Canonical decimal property index. Callers choose the storage/spec limit;
 // -1 is reserved for non-index keys, including leading zeros and overflow.
 export const stringIndexWat = (name, max) => `(func $${name} (param $key i64) (result i32)
-    (local $len i32) (local $i i32) (local $c i32) (local $n i64)
+    (local $len i32) (local $i i32) (local $c i32) (local $n i64) (local $sso i32) (local $src i32)
     (local.set $len (call $__str_length (local.get $key)))
     (if (i32.or (i32.eqz (local.get $len)) (i32.gt_u (local.get $len) (i32.const 10)))
       (then (return (i32.const -1))))
-    (if (i32.and (i32.eq (call $__char_at (local.get $key) (i32.const 0)) (i32.const 48))
-                 (i32.gt_u (local.get $len) (i32.const 1)))
-      (then (return (i32.const -1))))
+    ;; the key's units read in its own form (packed or heap), decided once
+    (local.set $sso (i64.ne (i64.and (local.get $key) (i64.const ${SSO_BIT_I64})) (i64.const 0)))
+    (local.set $src (i32.wrap_i64 (i64.and (local.get $key) (i64.const ${LAYOUT.OFFSET_MASK}))))
     (block $bad
       (loop $l
         (if (i32.ge_u (local.get $i) (local.get $len))
           (then
             (if (i64.gt_u (local.get $n) (i64.const ${max})) (then (return (i32.const -1))))
             (return (i32.wrap_i64 (local.get $n)))))
-        (local.set $c (i32.sub (call $__char_at (local.get $key) (local.get $i)) (i32.const 48)))
+        (local.set $c (i32.sub (if (result i32) (local.get $sso)
+          (then (i32.wrap_i64 (i64.and (i64.shr_u (local.get $key) (i64.mul (i64.extend_i32_u (local.get $i)) (i64.const 7))) (i64.const 0x7f))))
+          (else (i32.load16_u (i32.add (local.get $src) (i32.shl (local.get $i) (i32.const 1)))))) (i32.const 48)))
         (br_if $bad (i32.gt_u (local.get $c) (i32.const 9)))
+        ;; a leading zero only as the whole key
+        (br_if $bad (i32.and (i64.eqz (local.get $n)) (i32.and (i32.eqz (local.get $c)) (i32.and (i32.eqz (local.get $i)) (i32.gt_u (local.get $len) (i32.const 1))))))
         (local.set $n (i64.add (i64.mul (local.get $n) (i64.const 10)) (i64.extend_i32_u (local.get $c))))
         (local.set $i (i32.add (local.get $i) (i32.const 1)))
         (br $l)))
@@ -323,8 +327,8 @@ export default (ctx) => {
     __hash_del_local: () => ['__str_hash', '__str_eq', '__ptr_type', ...relogDeps()],
     // a deleted slot is gone for the host too: it reads the mask through __obj_deleted
     __dyn_del: () => [...viewDeps('__view_del'), '__schema_slot', '__hash_del_local', '__ihash_get_local', '__is_nullish', '__is_str_key', '__to_str', '__str_arr_idx', '__ptr_aux', '__str_eq', '__obj_deleted'],
-    __str_arr_idx: ['__str_length', '__char_at'],
-    __typed_str_idx: ['__str_length', '__char_at'],
+    __str_arr_idx: ['__str_length'],
+    __typed_str_idx: ['__str_length'],
     __typed_key_idx: ['__typed_str_idx', '__str_eq', '__to_num', '__ftoa', '__str_length', '__char_at'],
     __coll_clear: ['__ptr_type', '__ptr_offset', '__ptr_offset_fwd'],
   })

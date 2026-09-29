@@ -118,7 +118,7 @@ export default (ctx) => {
     __hash_keys_ro: ['__ptr_offset', '__prop_order', '__alloc_hdr', '__mkptr'],
     __coll_order: ['__alloc'],
     __prop_order: () => ['__alloc', ...(ctx.core.stdlib['__char_at'] ? ['__is_str_key', '__str_index_key'] : [])],
-    __str_index_key: ['__str_length', '__char_at'],
+    __str_index_key: ['__str_length'],
     // Durable-receiver global-table merge (see __obj_clone's body) pulls in
     // __ihash_get_local/__is_nullish only when collection.js's dyn-props
     // machinery is actually part of this build (mirrors json.js's __json_obj

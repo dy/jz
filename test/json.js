@@ -678,3 +678,28 @@ test('JSON whitespace: every UTF-16 unit, EOF and repeated error recovery', () =
     }
   }
 })
+
+// The writer stores a unit that needs no escape in place and an integer's
+// digits straight into the buffer: differential against V8's JSON.stringify
+// (ECMA-262 §25.5.2.3 SerializeJSONProperty, QuoteJSONString) over integers
+// at the 2^53 edge, fractions, non-finite numbers, escapes, lone and paired
+// surrogates, short and heap strings, and canonical index keys (their order,
+// §10.1.11.1 OrdinaryOwnPropertyKeys).
+test('JSON.stringify: numbers, strings and index keys agree with V8', () => {
+  const { s, g, t, order } = jz(`export let s = (x) => JSON.stringify([x, { k: x, 'q"\\\\': [x, -x] }])
+    export let g = (x) => JSON.stringify({ a: [x, 'x'], b: { c: x } }, null, 2)
+    export let t = (a, b) => JSON.stringify({ [a]: b, z: [b + a, a] })
+    export let order = (a, b, c) => { let o = {}; o[a] = 1; o[b] = 2; o[c] = 3; o.z = 4; return Object.keys(o).join() + JSON.stringify(o) }`).exports
+  const nums = [0, -0, 1, -1, 7, 10, 99, 100, 12345, -98765, 2 ** 31, 2 ** 32 + 1, 2 ** 53 - 1, -(2 ** 53 - 1), 2 ** 53, 2 ** 60, 1e21, 0.5, -0.25, 31.5, 1e-7, 1 / 3, NaN, Infinity, -Infinity, 999999999999999, 1e15]
+  for (const x of nums) {
+    is(s(x), JSON.stringify([x, { k: x, 'q"\\': [x, -x] }]), `number ${x}`)
+    is(g(x), JSON.stringify({ a: [x, 'x'], b: { c: x } }, null, 2), `indented ${x}`)
+  }
+  const strs = ['', 'a', 'abc"d', 'back\\slash', 'nl\nx', 'tab\t', '\u0001\u001f', 'é', '中文字', '😀', '\ud800', 'x\udc00y', 'long string with no escapes at all, just text', '  ', '123456', '1234567']
+  for (const a of strs) for (const b of [...strs, 5, -3.5]) is(t(a, b), JSON.stringify({ [a]: b, z: [b + a, a] }), `string ${JSON.stringify(a)} ${JSON.stringify(b)}`)
+  const keys = ['0', '1', '01', '10', '4294967294', '4294967295', '9999999999', '1.5', '-1', 'a', ' 1', '00', '12345678901']
+  for (const a of keys) for (const b of keys) {
+    const o = {}; o[a] = 1; o[b] = 2; o['1234567'] = 3; o.z = 4
+    is(order(a, b, '1234567'), Object.keys(o).join() + JSON.stringify(o), `keys ${a} ${b}`)
+  }
+})

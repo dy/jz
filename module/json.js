@@ -26,7 +26,9 @@ import { ACCESSOR_CALL } from '../src/compile/emit/accessor-call.js'
 import { TO_JSON } from '../src/compile/emit/to-json.js'
 import { demandHostReceiver } from '../src/compile/func-exports.js'
 import print from 'watr/print'
-import { deletedMaskWat, DATA_VIEW_FLAG, TYPED_ELEM_BIGINT_FLAG } from '../layout.js'
+import { deletedMaskWat, DATA_VIEW_FLAG, TYPED_ELEM_BIGINT_FLAG, ssoBitI64Hex } from '../layout.js'
+
+const SSO_BIT_I64 = ssoBitI64Hex()
 
 function jsonConstString(ctx, expr) {
   if (Array.isArray(expr) && expr[0] === 'str' && typeof expr[1] === 'string') return expr[1]
@@ -205,9 +207,10 @@ export default (ctx) => {
     // Chain edges ($__jput_num → $__jput_str → $__jput): each body CALLS the
     // next stage; without the explicit edge they ride the auto-dep scan, which
     // silently yields nothing under self-compile (test/self-compile-includes.js).
-    __jput_num: ['__ftoa', '__jput_str'],
+    __jput_num: ['__ftoa', '__jput_str', '__jreserve'],
     __jput_raw: ['__jput', '__str_length', '__char_at'],
-    __jput_str: ['__char_at', '__str_length', '__jput'],
+    __jput_str: ['__char_at', '__str_length', '__jput', '__jreserve'],
+    __jreserve: ['__alloc'],
     __jp: ['__jp_ws', '__jp_val', '__jp_str', '__jp_num', '__jp_arr', '__jp_obj', '__sso_char', '__ptr_aux', '__ptr_type', '__ptr_offset', '__str_length'],
     __jp_val: ['__jp_ws', '__jp_str', '__jp_num', '__jp_arr', '__jp_obj'],
     __jp_str: ['__sso_char', '__char_at', '__str_length', '__hex4', '__ishex', '__sso_norm'],
@@ -296,6 +299,15 @@ export default (ctx) => {
   declGlobal('__jsp', 'i32')
 
   // __jput(byte: i32) — append one byte to output buffer
+  // __jreserve(n: i32) — room for n more units, the capacity doubling past it.
+  ctx.core.stdlib['__jreserve'] = `(func $__jreserve (param $n i32)
+    (local $new i32)
+    (if (i32.gt_s (i32.add (global.get $__jpos) (local.get $n)) (global.get $__jcap))
+      (then
+        (global.set $__jcap (i32.shl (i32.add (i32.add (global.get $__jpos) (local.get $n)) (i32.const 1)) (i32.const 1)))
+        (local.set $new (call $__alloc (i32.shl (global.get $__jcap) (i32.const 1))))
+        (memory.copy (local.get $new) (global.get $__jbuf) (i32.shl (global.get $__jpos) (i32.const 1)))
+        (global.set $__jbuf (local.get $new)))))`
   ctx.core.stdlib['__jput'] = `(func $__jput (param $b i32)
     (local $new i32)
     (if (i32.ge_s (global.get $__jpos) (global.get $__jcap))
@@ -364,13 +376,29 @@ export default (ctx) => {
   // __jput_str(ptr: i64) — append string chars (without quotes) to buffer.
   // Per QuoteJSONString: every code unit U+0000..U+001F must be escaped — the
   // five with short forms (\b \t \n \f \r) plus \uXXXX for the rest.
+  // A unit that needs no escape (U+0020.., not '"', '\\' or a surrogate) is
+  // stored in place: the buffer holds the string's length more units, and the
+  // units are read with the source's form (packed short string or heap
+  // array) decided once.
   ctx.core.stdlib['__jput_str'] = `(func $__jput_str (param $ptr i64)
-    (local $len i32) (local $i i32) (local $ch i32) (local $n i32)
+    (local $len i32) (local $i i32) (local $ch i32) (local $n i32) (local $src i32) (local $sso i32)
     (local.set $len (call $__str_length (local.get $ptr)))
+    (local.set $sso (i64.ne (i64.and (local.get $ptr) (i64.const ${SSO_BIT_I64})) (i64.const 0)))
+    (local.set $src (i32.wrap_i64 (i64.and (local.get $ptr) (i64.const ${LAYOUT.OFFSET_MASK}))))
+    (call $__jreserve (local.get $len))
     (local.set $i (i32.const 0))
     (block $d (loop $l
       (br_if $d (i32.ge_s (local.get $i) (local.get $len)))
-      (local.set $ch (call $__char_at (local.get $ptr) (local.get $i)))
+      (local.set $ch (if (result i32) (local.get $sso)
+        (then (i32.wrap_i64 (i64.and (i64.shr_u (local.get $ptr) (i64.mul (i64.extend_i32_u (local.get $i)) (i64.const 7))) (i64.const 0x7f))))
+        (else (i32.load16_u (i32.add (local.get $src) (i32.shl (local.get $i) (i32.const 1)))))))
+      (if (i32.and (i32.and (i32.ge_u (local.get $ch) (i32.const 32)) (i32.ne (i32.and (local.get $ch) (i32.const 0xF800)) (i32.const 0xD800)))
+            (i32.and (i32.ne (local.get $ch) (i32.const 34)) (i32.ne (local.get $ch) (i32.const 92))))
+        (then
+          (i32.store16 (i32.add (global.get $__jbuf) (i32.shl (global.get $__jpos) (i32.const 1))) (local.get $ch))
+          (global.set $__jpos (i32.add (global.get $__jpos) (i32.const 1)))
+          (local.set $i (i32.add (local.get $i) (i32.const 1)))
+          (br $l)))
       (if (i32.eq (i32.and (local.get $ch) (i32.const 0xF800)) (i32.const 0xD800))
         (then
           (if (i32.and (i32.lt_u (local.get $ch) (i32.const 0xDC00))
@@ -419,7 +447,34 @@ export default (ctx) => {
       (call $__jput (call $__char_at (local.get $ptr) (local.get $i)))
       (local.set $i (i32.add (local.get $i) (i32.const 1)))
       (br $l))))`
+  // An integer below 2^53 writes its digits in place; any other number its
+  // Number::toString.
   ctx.core.stdlib['__jput_num'] = `(func $__jput_num (param $val f64)
+    (local $m i64) (local $t i64) (local $n i32) (local $at i32)
+    (if (i32.and (f64.lt (f64.abs (local.get $val)) (f64.const 9007199254740992)) (f64.eq (f64.nearest (local.get $val)) (local.get $val)))
+      (then
+        (call $__jreserve (i32.const 17))
+        (if (f64.lt (local.get $val) (f64.const 0))
+          (then
+            (i32.store16 (i32.add (global.get $__jbuf) (i32.shl (global.get $__jpos) (i32.const 1))) (i32.const 45))
+            (global.set $__jpos (i32.add (global.get $__jpos) (i32.const 1)))))
+        (local.set $m (i64.trunc_f64_u (f64.abs (local.get $val))))
+        (local.set $t (local.get $m))
+        (local.set $n (i32.const 1))
+        (block $c (loop $cl
+          (br_if $c (i64.lt_u (local.get $t) (i64.const 10)))
+          (local.set $t (i64.div_u (local.get $t) (i64.const 10)))
+          (local.set $n (i32.add (local.get $n) (i32.const 1)))
+          (br $cl)))
+        (local.set $at (i32.add (global.get $__jbuf) (i32.shl (i32.add (global.get $__jpos) (local.get $n)) (i32.const 1))))
+        (loop $dl
+          (local.set $at (i32.sub (local.get $at) (i32.const 2)))
+          (local.set $t (i64.div_u (local.get $m) (i64.const 10)))
+          (i32.store16 (local.get $at) (i32.add (i32.const 48) (i32.wrap_i64 (i64.sub (local.get $m) (i64.mul (local.get $t) (i64.const 10))))))
+          (local.set $m (local.get $t))
+          (br_if $dl (i64.ne (local.get $m) (i64.const 0))))
+        (global.set $__jpos (i32.add (global.get $__jpos) (local.get $n)))
+        (return)))
     (call $__jput_str (i64.reinterpret_f64 (call $__ftoa (local.get $val) (i32.const 0) (i32.const 0)))))`
 
   // __json_omit(val: i64) → i32 — 1 if the value serializes to nothing
