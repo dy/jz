@@ -957,8 +957,11 @@ export function emitDecl(...inits) {
     const localType = ctx.func.locals.get(name) || 'f64'
     const ptrKind = repOf(name)?.ptrKind
     // A binding the summary lets be absent, initialized from an element the
-    // emitter loaded without a check: this definition holds a number.
-    if (localType === 'f64' && presentElement(val) && mayBeUndefined(name)) (ctx.func.presentInits ??= []).push(name)
+    // emitter loaded without a check: this definition holds a number. One
+    // whose elements may be null or undefined themselves (`[undefined]`
+    // beside `[{ b0 }]`) holds whatever the element holds.
+    if (localType === 'f64' && presentElement(val) && mayBeUndefined(name) &&
+        !hasTag(ctx.summary?.at(ctx.func.current)?.kindOfExpr(name) ?? 0, K.NULLISH)) (ctx.func.presentInits ??= []).push(name)
     // ptrKind inheritance for alias-init decls is predicted at PLAN time
     // (inheritPtrAliases — slice-4 P1); emit only asserts parity here.
     // Miss (val carries a ptrKind the plan didn't predict) means the predictor

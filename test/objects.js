@@ -2592,3 +2592,17 @@ test('objects: a field of a list element of one layout reads its slot', () => {
   if (belowOpt(2)) return
   ok(!/\$__dyn_get|\$__hash_get|\$__schema_slot/.test(compile(src, { optimize: 2, wat: true })), 'no runtime lookup')
 })
+
+test('objects: a field read through an element that may be undefined throws where JS does', () => {
+  // a present element loaded without a check is a number of a numeric array only: `[undefined]` beside `[{ b0 }]` holds undefined
+  const src = `function g (cs) { let c = cs[0]; return c.b0 }
+    function h (cs) { let c = cs[0]; let b = c.b0; return 5 }
+    const P = [{ b0: 1 }]
+    export let f = () => g([undefined]), k = () => h([undefined]), ok = () => g(P) + h(P)`
+  for (const optimize of levels(0, 2, 3)) {
+    const m = jz(src, { optimize }).exports
+    throws(() => m.f(), `the read throws at ${optimize}`)
+    throws(() => m.k(), `an unused read throws too at ${optimize}`)
+    is(m.ok(), 6, `an object element reads its field at ${optimize}`)
+  }
+})
