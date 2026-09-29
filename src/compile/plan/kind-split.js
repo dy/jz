@@ -30,7 +30,7 @@ import { invalidateBodies } from '../analyze.js'
 import { invalidateProgramFactsCache } from '../program-facts.js'
 
 const LOOPS = new Set(['for', 'while'])
-const MAX_SIZE = 4000
+const MAX_SIZE = 4000, MAX_CTORS = 3
 
 /** The names `node` reads elements (`x[i]`) or a length (`x.length`) of. */
 const receivers = (node) => {
@@ -72,9 +72,20 @@ const ctorName = (c) => { const m = typeof c === 'string' && /^new\.(\w+Array)(\
 /** The typed array constructor names the leaves of `e` (its conditional's arms,
  *  its `||`/`??` operands) hold: through a local's values, and a parameter's
  *  (an element of one, of the argument list a rest parameter gathers) by what
- *  the function's callers pass there (`f([out[0], out[1]])`, `f(out[0])`). */
-const ctorsOf = (e, cx, out) => {
-  for (const [view, x] of sources(e, cx, new Set())) { const c = ctorName(view.typedPayloadCtorOfExpr(x)); if (c) out.add(c) }
+ *  the function's callers pass there (`f([out[0], out[1]])`, `f(out[0])`). A
+ *  caller's argument of no one constructor that is a parameter of the function
+ *  the call sits in, never reassigned (`source`, which a tracker's closure hands
+ *  on), is what that function's callers pass, two functions out. */
+const ctorsOf = (e, cx, out, depth = 0) => {
+  for (const [view, x, site] of sources(e, cx, new Set())) {
+    const c = ctorName(view.typedPayloadCtorOfExpr(x))
+    if (c) { out.add(c); continue }
+    const f = site?.callerFunc
+    const at = depth < 2 && typeof x === 'string' && f?.sig && f.body && cx.programFacts ? f.sig.params.findIndex(p => p.name === x) : -1
+    if (at < 0 || f.rest === x || valuesOf(f.body, x).length) continue
+    const sites = cx.programFacts.callSites.filter(cs => cs.callee === f.name && !cs.synthetic)
+    ctorsOf(x, { view: ctx.summary.at(f.sig), params: f.sig.params.map(p => p.name), rest: f.rest, sites, func: f, body: f.body, programFacts: cx.programFacts }, out, depth + 1)
+  }
 }
 
 // The view a call site's arguments read in: its function's, or the innermost
@@ -104,7 +115,7 @@ const sources = (e, cx, seen) => {
   const bySites = (f) => sites.flatMap(site => {
     const cv = callerView(site)
     const a = cv && f(site.argList)
-    return a == null ? [] : [[cv, a]]
+    return a == null ? [] : [[cv, a, site]]
   })
   if (Array.isArray(e) && e[0] === '?:') return [...sources(e[2], cx, seen), ...sources(e[3], cx, seen)]
   if (Array.isArray(e) && (e[0] === '||' || e[0] === '??')) return [...sources(e[1], cx, seen), ...sources(e[2], cx, seen)]
@@ -121,8 +132,8 @@ const sources = (e, cx, seen) => {
     const k = Array.isArray(e[2]) && e[2][0] == null && Number.isInteger(e[2][1]) ? e[2][1] : null
     if (e[1] === rest && k != null) return bySites(args => args[k])
     // an element of a list literal is the expression written there (`[out[0], out[1]]`)
-    return sources(e[1], cx, seen).map(([v, x]) => Array.isArray(x) && x[0] === '[' && k != null && k + 1 < x.length &&
-      !x.slice(1).some(y => Array.isArray(y) && y[0] === '...') ? [v, x[k + 1]] : [v, ['[]', x, e[2]]])
+    return sources(e[1], cx, seen).map(([v, x, s]) => Array.isArray(x) && x[0] === '[' && k != null && k + 1 < x.length &&
+      !x.slice(1).some(y => Array.isArray(y) && y[0] === '...') ? [v, x[k + 1], s] : [v, ['[]', x, e[2]], s])
   }
   return [[view, e]]
 }
@@ -156,22 +167,30 @@ const splitBody = (func, body, view, params, rest, programFacts) => {
     if (init) collectBindings(init, own)
     collectBindings(bare, inner)
     const writes = writtenIn(bare)
-    // a name of several kinds, a typed array among them, and the one constructor its values name
+    // a name of several kinds, a typed array among them, and the constructors its values name:
+    // one each, or up to three for one of the names (a Float32Array a caller passes, a Float64Array another does)
     const split = []
+    let multi = null
     for (const n of receivers(bare)) {
       if (!(locals.has(n) || own.has(n)) || inner.has(n) || writes.has(n) || captured.has(n) || ctx.funcs.names.has(n)) continue
       const k = view.kindOf(n)
       if (k == null || !hasTag(k, K.TYPED) || (tagOf(core(k)) === K.TYPED && typedAux(k) !== UNKNOWN)) continue
       const ctors = new Set()
       sites ??= programFacts?.callSites.filter(cs => cs.callee === func.name && !cs.synthetic && func.body === body) ?? []
-      ctorsOf(n, { view, params, rest, sites, func, body }, ctors)
+      ctorsOf(n, { view, params, rest, sites, func, body, programFacts }, ctors)
       if (ctors.size === 1) split.push([n, [...ctors][0]])
+      else if (ctors.size > 1 && ctors.size <= MAX_CTORS && !multi) multi = [n, [...ctors]]
     }
-    if (!split.length) continue
-    const fresh = new Map([...split.map(([n]) => n), ...inner].map(n => [n, `${n}${T}k${freshId(ctx)}`]))
-    const copy = cloneWithSubst(bare, new Map(), fresh)
-    const test = split.map(([n, c]) => ['instanceof', n, c]).reduce((a, b) => ['&&', a, b])
-    const choice = ['if', test, ['{}', [';', ['const', ...split.map(([n]) => ['=', fresh.get(n), n])], copy]], ['{}', [';', bare]]]
+    if (!split.length && !multi) continue
+    // a copy per constructor of the one name, each under its own test beside the others'; the loop last
+    const arms = multi ? multi[1].map(c => [...split, [multi[0], c]]) : [split]
+    let choice = ['{}', [';', bare]]
+    for (const arm of arms.reverse()) {
+      const fresh = new Map([...arm.map(([n]) => n), ...inner].map(n => [n, `${n}${T}k${freshId(ctx)}`]))
+      const copy = cloneWithSubst(bare, new Map(), fresh)
+      const test = arm.map(([n, c]) => ['instanceof', n, c]).reduce((a, b) => ['&&', a, b])
+      choice = ['if', test, ['{}', [';', ['const', ...arm.map(([n]) => ['=', fresh.get(n), n])], copy]], choice]
+    }
     parent[idx] = init ? ['{}', [';', init, choice]] : choice
     walkAst(loop, { enter: (n) => { if (LOOPS.has(n[0])) done.add(n) } })
     rewrote = true

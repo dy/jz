@@ -3486,11 +3486,12 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   }
   const unwind = (mark) => { while (rtop > mark) { rtop--; const key = rKeys[rtop], prior = rPriors[rtop]; if (prior === undefined) refined.delete(key); else refined.set(key, prior) } }
   // A mask's tags keep those of the kind; its own parameter, where it has one
-  // (a typed array's element kind a class test proves), fills an unknown one.
+  // (a typed array's element kind a class test proves), fills an unknown one:
+  // no element kind, or a number of one of several (a Float32Array or a Float64Array).
   const refine = (k, mask) => {
     let r = k & ((mask & TAGS) | UNKNOWN)
     const p = mask & UNKNOWN
-    if (p !== 0 && (r & UNKNOWN) === UNKNOWN) r = (r & TAGS) | p
+    if (p !== 0 && typedAux(r) === UNKNOWN) r = (r & TAGS) | p
     return (r & TAGS) === 0 ? 0 : r
   }
   // A member path (`params.coefs`: a binding and literal keys) a test refines

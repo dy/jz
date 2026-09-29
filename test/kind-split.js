@@ -80,3 +80,21 @@ export let peek = () => [...mono, ...left, ...right].join()`
   const f = wat(src, { optimize: 2 }), mix = f.slice(f.indexOf('(func $mix'), f.indexOf('(func', f.indexOf('(func $mix') + 5))
   ok(loopsOf(mix).some(l => /f32\.load/.test(l) && !/call \$__(add_slow|typed_idx|dyn_get)/.test(l)), 'a loop reads the channels as Float32 and adds numbers')
 })
+
+// A kernel a tracker's closure calls with the array its factory was given: one
+// caller passes a Float32Array, another a Float64Array. Each constructor gets a
+// copy of the loop, the class test proving its element kind though the name
+// held a number array of either kind before it.
+test('kind split: an array of either of two kinds, handed on through a closure, reads each by its kind', () => {
+  const src = `function g(data, pos, N, win) { let re = 0, im = 0; for (let i = 0; i < N; i++) { let x = (data[pos + i] || 0) * win[i]; re += x * 0.5; im -= x * 0.25 } return [re, im] }
+function mk(source, N) { const win = new Float64Array(N).fill(0.5); return function at(t) { const [r0, i0] = g(source, t, N, win); const [r1, i1] = g(source, t + 1, N, win); return r0 + i1 } }
+export let a = (n) => { const m = new Float32Array(n).map((_, i) => i * 0.25); const at = mk(m, 8); return at(1) + at(n - 4) }
+export let b = (n) => { const m = new Float64Array(n).map((_, i) => i * 0.1); const at = mk(m, 8); return at(1) + at(n - 2) }
+export let c = (n) => { const m = new Int16Array(n).fill(3); const at = mk(m, 8); return at(2) }`
+  agrees(src, [['a', 16], ['b', 16], ['a', 6], ['b', 5], ['c', 12]])
+  if (belowOpt(2)) return
+  const text = wat(src, { optimize: 2 }), g = text.slice(text.indexOf('(func $g'), text.indexOf('\n  (func ', text.indexOf('(func $g') + 5))
+  const loops = loopsOf(g)
+  ok(loops.some(l => /f32\.load/.test(l) && !/call \$__typed_idx/.test(l)), 'a copy reads Float32 loads')
+  ok(loops.some(l => !/f32\.load/.test(l) && /f64\.load[\s\S]*f64\.load/.test(l) && !/call \$__typed_idx/.test(l)), 'a copy reads Float64 loads')
+})
