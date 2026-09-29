@@ -180,6 +180,7 @@ const TESTS = [
   'struct-inline',
   'pow',
   'pow-base',
+  'pow-int',
   'wat-invariants',
   'loop-square',
   'inplace-store',

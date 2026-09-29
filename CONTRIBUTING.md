@@ -2290,8 +2290,11 @@ the fold on x', 2^(jk) applied in two factors and the 2^(5j) part of the
 exponent's rounding multiplied back in: within 40 ulp of the host everywhere,
 with no pow kernel or table pulled in. The lane vectorizer lifts a constant-exponent pow per lane through the
 same kernel, bit-exact with the scalar loop. A negative integer exponent
-squares the reciprocal (1/x^n overflowed to 0 where x^-n was still a double,
-5.67e102 ** -3), and the kernel's |y| ≥ 2^63 shortcut answers 1 at x = 1,
+takes the reciprocal of x^|n|, one rounding past the chain and so exact where
+the power is (10 ** -2 is 0.01; squaring the reciprocal first gave
+0.010000000000000002, and 20 ulp from the host at 16), and the reciprocal's
+square-and-multiply only where x^|n| leaves the normal doubles (1/x^n
+overflowed to 0 where x^-n was still a double, 5.67e102 ** -3); the kernel's |y| ≥ 2^63 shortcut answers 1 at x = 1,
 where the ladder sends x = −1. A second algorithm (exp∘log, or
 the three-step fifthroot) is never the default: a meaningful result keeps its
 f64 accuracy. `Math.exp` and `2 ** x` are one table kernel (`math/trig-tables.js`
@@ -2359,7 +2362,7 @@ the doubles nearest k·π/2 to k = 1e6 with their ±4-ulp neighbours, 200k
 log-uniform arguments a function, the edges): sin 40, cos 39, tan 49, asin
 38, acos 35, atan and atan2 10, sinh 5, cosh 3, tanh 5, asinh 4, acosh 5,
 atanh 4, exp 1, expm1 3, log 4, log1p 4, log2 4, log10 2, cbrt 0, hypot 2,
-pow 21, a k/5 exponent 40; sin(π) is 1.2246467991473532e-16 and the kπ/2
+pow 11, a k/5 exponent 40; sin(π) is 1.2246467991473532e-16 and the kπ/2
 set stays within 2 ulp. `test/math-ulp.js` pins each bound with the lanes and
 the folder bit-identical. On arm64 against Node 25.9, ns a call scalar and
 two lanes wide on an audio phase: sin 5.0 and 2.7 (the kernels this replaced

@@ -278,21 +278,38 @@ export default (ctx) => {
       ? typed(['f64.const', 1], 'f64')
       : typed(['block', ['result', 'f64'], ['drop', baseIR], ['f64.const', 1]], 'f64')
     const b = temp('pw')
-    // a negative exponent squares the reciprocal, as $math.pow does: 1/x^n overflowed
-    // to 0 where x^-n is still a double
-    const stmts = [['local.set', `$${b}`, n < 0 ? ['f64.div', ['f64.const', 1], baseIR] : baseIR]]
-    // square-and-multiply, LSB-first — mirrors $math.pow's loop association exactly,
-    // so the rounding tree (and thus the last bit) matches.
-    let sq = b, res = null, minted = false
-    for (let m = Math.abs(n); m > 0; m >>= 1) {
-      if (m & 1) {
-        if (res === null) res = sq                 // lowest set bit: result := this square (skip ×1)
-        else { const r = temp('pw'); stmts.push(['local.set', `$${r}`, ['f64.mul', get(res), get(sq)]]); res = r; minted = true }
+    const stmts = [['local.set', `$${b}`, baseIR]]
+    // square-and-multiply of `from` to |n|, LSB-first — mirrors $math.pow's loop
+    // association exactly, so the rounding tree (and thus the last bit) matches
+    let minted = false
+    const chain = (from, out) => {
+      let sq = from, res = null
+      for (let m = Math.abs(n); m > 0; m >>= 1) {
+        if (m & 1) {
+          if (res === null) res = sq                 // lowest set bit: result := this square (skip ×1)
+          else { const r = temp('pw'); out.push(['local.set', `$${r}`, ['f64.mul', get(res), get(sq)]]); res = r; minted = true }
+        }
+        if (m >> 1) { const s = temp('pw'); out.push(['local.set', `$${s}`, ['f64.mul', get(sq), get(sq)]]); sq = s; minted = true }
       }
-      if (m >> 1) { const s = temp('pw'); stmts.push(['local.set', `$${s}`, ['f64.mul', get(sq), get(sq)]]); sq = s; minted = true }
+      return res
     }
-    const result = get(res)
-    if (n < 0) minted = true   // the reciprocal
+    const p = chain(b, stmts)
+    let result = get(p)
+    if (n < 0) {
+      // a negative exponent: the reciprocal of x^|n|, as $math.pow's ladder takes it, one
+      // rounding past the chain and exact where x^|n| is (10 ** -2 is 0.01); where x^|n|
+      // leaves the normal doubles, the reciprocal's square-and-multiply (1/x^n overflowed
+      // to 0 where x^-n is still a double, 5.67e102 ** -3)
+      minted = true
+      const inv = temp('pw')
+      const recip = () => { const out = [['local.set', `$${inv}`, ['f64.div', ['f64.const', 1], get(b)]]]; const r = chain(inv, out); return [...out, get(r)] }
+      result = Math.abs(n) === 1 ? ['f64.div', ['f64.const', 1], get(p)]
+        : ['if', ['result', 'f64'], ['f64.lt', ['f64.abs', get(p)], ['f64.const', Infinity]],
+          ['then', ['if', ['result', 'f64'], ['f64.ge', ['f64.abs', get(p)], ['f64.const', 2 ** -1022]],
+            ['then', ['f64.div', ['f64.const', 1], get(p)]],
+            ['else', ...recip()]]],
+          ['else', ...recip()]]
+    }
     // A NaN minted by f64.mul/div has a platform-nondeterministic sign; jz's value
     // model requires the one canonical number-NaN, so `canon` folds it back. Skip when
     // the base provably can't be NaN (same test min/max uses) or when no op was minted
@@ -1013,6 +1030,18 @@ export default (ctx) => {
     (local.set $tail (f64.add (f64.sub (local.get $hi) (local.get $lg)) (local.get $lo)))
     ${powSplitLog}${powExpTail}`
 
+  // $result = $abs_x^|y| by square-and-multiply, LSB-first (the ladder's integer path)
+  const sqMul = (done, loop) => `
+          (local.set $n (i32.trunc_f64_s (f64.abs (local.get $y))))
+          (local.set $result (f64.const 1.0))
+          (block ${done}
+            (loop ${loop}
+              (br_if ${done} (i32.le_s (local.get $n) (i32.const 0)))
+              (if (i32.and (local.get $n) (i32.const 1))
+                (then (local.set $result (f64.mul (local.get $result) (local.get $abs_x)))))
+              (local.set $abs_x (f64.mul (local.get $abs_x) (local.get $abs_x)))
+              (local.set $n (i32.shr_s (local.get $n) (i32.const 1)))
+              (br ${loop})))`
   wat('math.pow', `(func $math.pow (param $x f64) (param $y f64) (result f64)
     (local $result f64) (local $n i32) (local $neg_base i32) (local $abs_x f64)${crPow ? '' : powCoreLocals}
     (block $kernel
@@ -1046,8 +1075,10 @@ export default (ctx) => {
       ;; lowering uses (emitPow's foldPow), so x ** 16 and x ** y at y = 16 agree
       ;; bit for bit; a longer chain drifts by its length (x^1000 by 49 ulp), so every
       ;; other integer takes the kernel below, within an ulp of the true value.
-      ;; A negative y squares the reciprocal: 1/x^n overflowed to 0 where x^-n is
-      ;; still a double (5.67e102 ** -3 is 5.5e-309).
+      ;; A negative y takes the reciprocal of |x|^|y|, one rounding past the chain and
+      ;; exact where the power is (10 ** -2 is 0.01); where the power leaves the normal
+      ;; doubles, the reciprocal's square-and-multiply (1/x^n overflowed to 0 where x^-n
+      ;; is still a double, 5.67e102 ** -3 is 5.5e-309).
       ;; Also covers ±Infinity x: 1/Inf = 0 through the loop,
       ;; with neg_base (x<0 && odd y) producing -0 — required for (-Inf)**-odd.
       ;; Runs before the x==0 fallback so (-0)**oddInt correctly returns ∓0/∓Inf.
@@ -1055,22 +1086,16 @@ export default (ctx) => {
             (f64.eq (f64.nearest (local.get $y)) (local.get $y))
             (f64.le (f64.abs (local.get $y)) (f64.const 16.0)))
         (then
-          (local.set $abs_x (f64.abs (local.get $x)))
-          (if (f64.lt (local.get $y) (f64.const 0.0))
-            (then (local.set $abs_x (f64.div (f64.const 1.0) (local.get $abs_x)))))
           ;; copysign(1, x) gives -1 for any x with sign bit set (incl. -0); f64.lt picks that up.
           (local.set $neg_base (i32.and (f64.lt (f64.copysign (f64.const 1.0) (local.get $x)) (f64.const 0.0))
                                         (i32.and (i32.trunc_f64_s (local.get $y)) (i32.const 1))))
-          (local.set $n (i32.trunc_f64_s (f64.abs (local.get $y))))
-          (local.set $result (f64.const 1.0))
-          (block $done
-            (loop $loop
-              (br_if $done (i32.le_s (local.get $n) (i32.const 0)))
-              (if (i32.and (local.get $n) (i32.const 1))
-                (then (local.set $result (f64.mul (local.get $result) (local.get $abs_x)))))
-              (local.set $abs_x (f64.mul (local.get $abs_x) (local.get $abs_x)))
-              (local.set $n (i32.shr_s (local.get $n) (i32.const 1)))
-              (br $loop)))
+          (local.set $abs_x (f64.abs (local.get $x)))${sqMul('$done', '$loop')}
+          (if (f64.lt (local.get $y) (f64.const 0.0))
+            (then
+              (if (i32.and (f64.ge (local.get $result) (f64.const ${2 ** -1022})) (f64.lt (local.get $result) (f64.const inf)))
+                (then (local.set $result (f64.div (f64.const 1.0) (local.get $result))))
+                (else
+                  (local.set $abs_x (f64.div (f64.const 1.0) (f64.abs (local.get $x))))${sqMul('$done2', '$loop2')}))))
           (if (local.get $neg_base)
             (then (local.set $result (f64.neg (local.get $result)))))
           (return (local.get $result))))

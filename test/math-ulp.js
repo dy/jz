@@ -19,7 +19,7 @@ const BOUND = {
   sinh: 8, cosh: 8, tanh: 8,            // 5, 3, 5
   asinh: 8, acosh: 8, atanh: 8,         // 4, 5, 4
   exp: 2, expm1: 4, log: 6, log1p: 6, log2: 6, log10: 3,   // 1, 3, 4, 4, 4, 2
-  cbrt: 1, hypot: 3, pow: 24,           // 0, 2, 21 (an integer exponent squares and multiplies)
+  cbrt: 1, hypot: 3, pow: 12,           // 0, 2, 11 (an integer exponent squares and multiplies)
 }
 const BINARY = ['atan2', 'hypot', 'pow']
 const NAMES = Object.keys(BOUND)

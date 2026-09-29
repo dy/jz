@@ -253,10 +253,10 @@ function powRuntime(x, y) {
   if (x === 1) return 1
   if (y === 1) return x
   if (Number.isInteger(y) && Math.abs(y) <= 16) {
-    let ax = Math.abs(x), n = Math.abs(y), res = 1
-    if (y < 0) ax = 1 / ax
-    const neg = (x < 0 || Object.is(x, -0)) && (n & 1) === 1
-    while (n > 0) { if (n & 1) res = res * ax; ax = ax * ax; n >>= 1 }
+    const n0 = Math.abs(y), neg = (x < 0 || Object.is(x, -0)) && (n0 & 1) === 1
+    const sqMul = (ax) => { let n = n0, res = 1; while (n > 0) { if (n & 1) res = res * ax; ax = ax * ax; n >>= 1 } return res }
+    let res = sqMul(Math.abs(x))
+    if (y < 0) res = res >= 2 ** -1022 && res < Infinity ? 1 / res : sqMul(1 / Math.abs(x))
     return neg ? -res : res
   }
   if (Math.abs(x) === Infinity) { const r = y > 0 ? Infinity : 0; return x < 0 && oddInteger(y) ? -r : r }
@@ -317,12 +317,19 @@ function powExp(y, lhi, llo) {
 }
 function powInt(a, n) {
   if (n === 0) return 1
-  let sq = n < 0 ? 1 / a : a, res = null
-  for (let m = Math.abs(n); m > 0; m >>= 1) {
-    if (m & 1) res = (res === null) ? sq : res * sq
-    if (m >> 1) sq = sq * sq
+  const chain = (sq) => {
+    let res = null
+    for (let m = Math.abs(n); m > 0; m >>= 1) {
+      if (m & 1) res = (res === null) ? sq : res * sq
+      if (m >> 1) sq = sq * sq
+    }
+    return res
   }
-  return res
+  const p = chain(a)
+  if (n > 0) return p
+  if (n === -1) return 1 / p
+  // the reciprocal of a^|n|, or where that leaves the normal doubles, the reciprocal's power
+  return Math.abs(p) < Infinity && Math.abs(p) >= 2 ** -1022 ? 1 / p : chain(1 / a)
 }
 
 // $math.atan: three intervals on |x|, at most one division, the polynomial, x's sign
