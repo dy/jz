@@ -50,9 +50,12 @@ export const foldKindTests = () => {
         const t = summary.decisionOf(c)
         if (t != null) {
           // the arm taken, or an empty statement (`null`) for an `if` with none,
-          // after the test where evaluating it may do something
+          // after the test where evaluating it may do something; an empty
+          // statement leaves a sequence that keeps another
           const arm = (t ? c[2] : c[3]) ?? null
-          n[j] = inert(c[1]) ? arm : c[0] !== 'if' ? [',', c[1], arm] : arm == null ? c[1] : ['{}', [';', c[1], arm]]
+          const out = inert(c[1]) ? arm : c[0] !== 'if' ? [',', c[1], arm] : arm == null ? c[1] : ['{}', [';', c[1], arm]]
+          if (out == null && n[0] === ';' && n.length > 2) n.splice(j, 1)
+          else n[j] = out
           changed = true
           j--
           continue
