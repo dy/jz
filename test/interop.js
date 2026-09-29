@@ -415,7 +415,8 @@ test('interop: a numeric array-like parameter is typed storage inside, any array
   const src = `function sum(w, t) { let s = 0; for (let i = 0; i < t.length; i++) s += w[i] * t[i]; return s }
     export let fit = (target) => { let w = new Float64Array(target.length); for (let i = 0; i < w.length; i++) w[i] = i; return sum(w, target) }
     export let first = (a) => a[1] * 10 + a.length`
-  const bytes = compile(src)
+  // the size of the optimized module: a leg's lower default level keeps the runtime
+  const bytes = compile(src, { optimize: 2 })
   ok(bytes.length < 2000, `${bytes.length} bytes: no fork, no ToNumber runtime`)
   const lanes = JSON.parse(new TextDecoder().decode(WebAssembly.Module.customSections(interop.toModule(bytes), 'jz:i64exp')[0]))
   is(lanes.find(e => e.name === 'fit').t['0'], 'Float64Array')
