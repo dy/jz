@@ -2644,7 +2644,8 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       const recv = receiver(n[1]), prop = n[2]
       if (op === '?.' && tagOf(core(recv)) === K.NONE) return NULLISH
       if (typeof prop !== 'string') { expr(prop); return optionalResult(op, recv, tagOf(recv) === K.NONE ? K.NONE : ANY) }
-      return member(op, recv, prop)
+      const k = member(op, recv, prop), pk = op === '.' && rtop ? pathKey(n) : null, pmask = pk === null ? undefined : refined.get(pk)
+      return pmask === undefined ? k : refine(k, pmask)
     }
     if (op === '[]') {
       const recv = receiver(n[1]), idx = n[2], t = tagOf(recv)
@@ -2754,10 +2755,10 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       if (truth === 'pending') return K.NONE
       branch++
       const mark = rtop
-      proves(n[1], true)
+      pathProofs = still(n[2]); proves(n[1], true); pathProofs = false
       const a = truth === false ? K.NONE : selectedExpr(n[2], mask)
       unwind(mark)
-      proves(n[1], false)
+      pathProofs = still(n[3]); proves(n[1], false); pathProofs = false
       const b = truth === true ? K.NONE : selectedExpr(n[3], mask)
       unwind(mark)
       branch--
@@ -3452,8 +3453,8 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   const refined = new Map() // binding id → the tag bits its kind is read within
   const rKeys = [], rPriors = []
   let rtop = 0
-  const refineName = (name, mask) => {
-    const key = keyOf(name)
+  const refineName = (name, mask) => refineKey(keyOf(name), mask)
+  const refineKey = (key, mask) => {
     if (key === null) return
     const prior = refined.get(key)
     if (rtop === rKeys.length) { rKeys.push(key); rPriors.push(prior) } else { rKeys[rtop] = key; rPriors[rtop] = prior }
@@ -3462,6 +3463,20 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   }
   const unwind = (mark) => { while (rtop > mark) { rtop--; const key = rKeys[rtop], prior = rPriors[rtop]; if (prior === undefined) refined.delete(key); else refined.set(key, prior) } }
   const refine = (k, mask) => { const r = k & (mask | UNKNOWN); return (r & TAGS) === 0 ? 0 : r }
+  // A member path (`params.coefs`: a binding and literal keys) a test refines
+  // inside an arm of a conditional that neither calls nor stores, so nothing
+  // can change what the path holds before the arm reads it.
+  const pathKey = (n) => {
+    const keys = []
+    while (Array.isArray(n) && n[0] === '.' && typeof n[2] === 'string') { keys.push(n[2]); n = n[1] }
+    if (typeof n !== 'string' || !keys.length) return null
+    const key = keyOf(n)
+    return key === null ? null : '\0' + key + '\0' + keys.reverse().join('\0')
+  }
+  const STILL = new Set(['()', '?.()', 'new', 'delete', 'await', 'yield', '++', '--', '+1', '-1'])
+  const still = (n) => !Array.isArray(n) || n[0] == null || n[0] === 'str' || n[0] === '=>' ||
+    (!STILL.has(n[0]) && !MUTATE_OPS.has(n[0]) && n.every((c, i) => i === 0 || still(c)))
+  let pathProofs = false
   const NOT_NULLISH = TAGS & ~NULL_BITS
   const TYPEOF_TAGS = {
     number: bitOf(K.NUMBER), string: bitOf(K.STRING), boolean: bitOf(K.BOOL), bigint: bitOf(K.BIGINT), function: bitOf(K.CLOSURE),
@@ -3555,6 +3570,13 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       return
     }
     for (const name of numericProofs(c, when, isNumberHere)) refineName(name, bitOf(K.NUMBER))
+    // `Array.isArray(x)`: an array where it holds, anything else where it fails
+    if (op === '()' && c[1] === 'Array.isArray' && c.length === 3) {
+      const mask = when ? bitOf(K.ARRAY) : TAGS & ~bitOf(K.ARRAY)
+      if (typeof c[2] === 'string') refineName(c[2], mask)
+      else if (pathProofs) refineKey(pathKey(c[2]), mask)
+      return
+    }
     const tp = typeofPredicateOf(c)
     if (tp) {
       const bits = TYPEOF_TAGS[typeof tp.code === 'string' ? tp.code : TYPEOF_NAME[tp.code]]

@@ -9,7 +9,7 @@ import jz, { compile, _compileInProcess } from '../index.js'
 import { ctx } from '../src/ctx.js'
 import { K, kind, join, orNull, tagOf, paramOf, isNullable, hasTag, UNKNOWN } from '../src/summary/index.js'
 import { T as MARK } from '../src/ast.js'
-import { onKernel, OPT_LEVEL, levels } from './_matrix.js'
+import { onKernel, OPT_LEVEL, levels, belowOpt } from './_matrix.js'
 import { oracle } from './util.js'
 
 // Bindings carry prepare's scope suffix; find one by function and bare name.
@@ -1016,5 +1016,33 @@ export let inc = () => inst.inc()`
       await got.init()
       is([got.inc(), got.set(), got.get(), got.inc(), got.get()], expect, `${src.slice(9, 14)} at ${optimize}`)
     }
+  }
+})
+
+// `Array.isArray(x) ? x : [x]` over a field set on first use: the wrapping arm
+// holds what is no array, so the list of records never joins a list of lists.
+// A member path is narrowed only in an arm that neither calls nor stores.
+test('summary: Array.isArray narrows a name, and a member path in an arm that cannot change it', () => {
+  const lists = `const mkSos = (k) => [{ b0: k, a1: 2 }, { b0: k + 1, a1: 3 }]
+    const params = { fs: 1 }, other = { fs: 2 }
+    const bump = (o) => { o.coefs = { b0: 100, a1: 0 }; return 0 }`
+  const shapes = {
+    path: `export let f = (x) => { if (!params._sos) { params._sos = mkSos(1); params.coefs = params._sos }
+      let coefs = Array.isArray(params.coefs) ? params.coefs : [params.coefs]; let y = 0
+      for (let i = 0; i < coefs.length; i++) y += coefs[i].b0 * x + coefs[i].a1; return y }`,
+    name: `export let f = (x) => { if (!params._sos) { params._sos = mkSos(2); params.coefs = params._sos }
+      const c0 = params.coefs; let coefs = Array.isArray(c0) ? c0 : [c0]; let y = 0
+      for (let i = 0; i < coefs.length; i++) y += coefs[i].b0 * x; return y }`,
+    changed: `export let f = (x) => { if (x > 5) other.coefs = mkSos(3)
+      let coefs = Array.isArray(other.coefs) ? (bump(other), [other.coefs]) : [other.coefs]; let y = 0
+      for (let i = 0; i < coefs.length; i++) y += (coefs[i] ? coefs[i].b0 : -1) * x; return y }`,
+  }
+  for (const [name, body] of Object.entries(shapes)) {
+    const src = `${lists}\n${body}`, js = oracle(src)
+    for (const optimize of levels(0, 2, 3)) { const { f } = jz(src, { optimize }).exports; for (const x of [2, 7, 2]) is(f(x), js.f(x), `${name}: f(${x}) at ${optimize}`) }
+    if (name === 'changed' || belowOpt(2)) continue
+    const warnings = []
+    compile(src, { optimize: 2, warnings: w => warnings.push(w) })
+    ok(!warnings.some(w => w.code === 'shape-lost'), `${name}: the records keep their shape`)
   }
 })
