@@ -757,14 +757,16 @@ export function arenaRewind(root, { rewindable, asked = NO_NAMES, heapAddr, unsa
     // Every `return X` yields X through the result local after the restore.
     // Several results stay under the `return` itself, its operands in a row
     // (a block of several results names a type, which the encoder indexes
-    // wrongly past the 64th).
+    // wrongly past the 64th). A return inside X leaves before the one around
+    // it (a dispatched tail call: each arm returns its call), and takes the
+    // same path: the walk goes on into X.
     eachBody(f, (id) => {
       if (T.op[id] !== RETURN || T.a[id] === NONE) return
       if (types.length > 1) {
         for (const n of taken()) push(id, n)
         for (const n of restore(save, esave, bsave, ask)) push(id, n)
         for (const r of rets) push(id, localGet(r))
-        return false
+        return
       }
       const value = T.a[id]
       const block = node(BLOCK)
@@ -774,7 +776,6 @@ export function arenaRewind(root, { rewindable, asked = NO_NAMES, heapAddr, unsa
       for (const n of restore(save, esave, bsave, ask)) push(block, n)
       for (const r of rets) push(block, localGet(r))
       T.a[id] = block
-      return false
     })
     // The fall-through value takes the same path.
     if (!endsWithReturn) {

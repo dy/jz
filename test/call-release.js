@@ -342,3 +342,48 @@ for (const optimize of levels(2, 3, 'size'))
     for (let i = 0; i < 50; i++) exports.stored(i)
     ok(memory.used - used <= 50 * 96, `one that stored a pair keeps the pair, not the 0.5 KB beside it, at ${optimize}: ${(memory.used - used) / 50} a call`)
   })
+
+// A frame whose tail call is dispatched (narrow's typed guard: one arm calls
+// the clone, the other the function) returns from inside the value it
+// returns. Each of those returns restores as the frame's own does; one that
+// left without it would leave the flag the frame's entry cleared, and the
+// caller would free what an escape before the call kept.
+for (const optimize of levels(2, 3, 'size'))
+  test(`call release: a frame whose tail call is dispatched restores on each of its returns, at ${optimize}`, () => {
+    const src = `const st = { last: null }
+      const sc = { f: new Float64Array(8), re: new Float64Array(8), im: new Float64Array(8) }
+      const win = new Float64Array(8).fill(0.5), src = new Float64Array(8).fill(3)
+      function fill(input, out) { const re = out[0], im = out[1], n = input.length; for (let i = 0; i < n; i++) { re[i] = input[i] * 2; im[i] = -input[i] } return out }
+      function dot(a, b) { let s = 0; for (let i = 0; i < a.length; i++) s += a[i] * b[i]; return s }
+      function analyze(src, win) { const N = win.length, f = sc.f; for (let i = 0; i < N; i++) f[i] = src[i] * win[i]; return fill(f, [sc.re, sc.im]) }
+      function energy(src, win) { const N = win.length, f = new Float64Array(N); for (let i = 0; i < N; i++) f[i] = src[i] * win[i]; return dot(f, win) }
+      export function run(k) {
+        st.last = [k, k + 1]
+        let s = 0
+        for (let j = 0; j < k; j++) { const o = analyze(src, win); s += o[0][1] + o[1][2] + energy(src, win) }
+        return s + fill([1, 2], [[0, 0], [0, 0]])[0][1] + dot([1, 2], [3, 4])
+      }
+      export const last = () => st.last === null ? -1 : st.last[1]
+      export const churn = (n) => { const a = []; for (let i = 0; i < n; i++) a.push('c' + i + 'yyyyyyyyyyyyyyyy'); return a.length }`
+    const want = oracle(src), { exports } = jz(src, { optimize: { level: optimize, sourceInline: false } })
+    for (const k of [3, 5, 2]) {
+      is(exports.run(k), want.run(k), `run(${k})`)
+      exports.churn(64); want.churn(64)
+      is(exports.last(), want.last(), `the pair run(${k}) stored reads back`)
+    }
+  })
+
+// The same, through a string result: `snapshot` copies a Map and returns a
+// string; `update`'s tail call of it dispatches. A frame that left without
+// its restore made the next call read freed memory.
+for (const optimize of levels(2, 3))
+  test(`call release: a frame copying a Map and returning a string restores on its dispatched return, at ${optimize}`, () => {
+    const src = `const source = new Map([['seed', [7]]]); const sink = []
+      export function update(n) { for (let i = 0; i < n; i++) source.set('key' + i, [i]); for (let i = 1; i < n; i += 2) source.delete('key' + i); return snapshot() }
+      export function snapshot() { const copy = new Map(source); let count = 0, sum = 0; for (const e of copy) { if (e == null) sink.push(e); count++; sum += e[1][0] } return copy.size + ':' + count + ':' + sum }
+      export let churn = n => new Float64Array(n).length`
+    const want = oracle(src), { exports } = jz(src, { optimize })
+    const both = (name, ...args) => is(exports[name](...args), want[name](...args), `${name}(${args.join()})`)
+    both('update', 0); both('snapshot'); exports._clear(); both('churn', 1024); both('snapshot'); exports._clear()
+    both('update', 1); both('snapshot'); exports._clear(); both('update', 4); both('snapshot')
+  })
