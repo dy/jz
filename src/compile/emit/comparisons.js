@@ -28,6 +28,8 @@ function emitTypeofCmp(a, b, cmpOp) {
   let typeofExpr, code
   if (Array.isArray(a) && a[0] === 'typeof' && typeof b === 'number') { typeofExpr = a[1]; code = b }
   else if (Array.isArray(a) && a[0] === 'typeof' && Array.isArray(b) && b[0] == null) { typeofExpr = a[1]; code = b[1] }
+  // a test the compiler writes after prepare folded the program's to codes (ast.js numberGuard)
+  else if (Array.isArray(a) && a[0] === 'typeof' && Array.isArray(b) && b[0] === 'str' && TYPEOF[b[1]] != null) { typeofExpr = a[1]; code = TYPEOF[b[1]] }
   else return null
   if (typeof code !== 'number') return null
 

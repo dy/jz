@@ -1,4 +1,4 @@
-import { ASSIGN_OPS, commaList, returnExprs, walkAst } from '../../ast.js'
+import { ASSIGN_OPS, commaList, isNumberGuard, returnExprs, walkAst } from '../../ast.js'
 import { nullishArm } from '../../kind.js'
 import { KIND_UNIVERSE, VAL } from '../../reps.js'
 import { K as SUMMARY_KIND, hasTag as summaryHasTag, kind as summaryKind, tagsOf as summaryTagsOf, CARRIER } from '../../summary/index.js'
@@ -85,6 +85,8 @@ function collectDispatchTableClosures(roots) {
 const paramNeedsHostTag = (node, name, localClosures, seen, root = true) => {
   if (!Array.isArray(node)) return false
   if (!root && node[0] === '=>') return false
+  // a loop copy's guard (plan/integral-loops.js) is the compiler asking, not the program
+  if (isNumberGuard(node)) return false
   if (node[0] === 'typeof' && node[1] === name) return true
   if (node[0] === 'u+' && node[1] === name) return true
   if (node[0] === '()' && node[1] === 'Number' && commaList(node[2]).includes(name)) return true
