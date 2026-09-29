@@ -10,7 +10,7 @@ import { ITER_RECORD_KEYS } from '../std/iter-helpers.js'
 import {
   K, kind, tagOf, paramOf, isNullable, hasTag, join, valOf, kindOfVal, core, UNKNOWN,
   ANY, NUMBER, STRING, BOOL, BIGINT, NULLISH, orAbsent, plus, arith, typedStore, typedAux, typedElemKind, typedMethodKind, isPostfixRecovery, logicalMask, selectKind,
-  TYPED_CTOR, isCount, ARRAY_METHODS, NUMBER_OPS, BOOL_OPS, bitOf, TAGS, NULL_BITS } from './kind.js'
+  TYPED_CTOR, isCount, ARRAY_METHODS, NUMBER_OPS, BOOL_OPS, bitOf, TAGS, NULL_BITS, outsideKind } from './kind.js'
 
 export function summaryQueries(facts, internal = false) {
   const { kinds, incoming, fields, results, receivers, closures, closuresByBody, declared, parent, nameKeys, forwards, siteResults,
@@ -177,7 +177,7 @@ export function summaryQueries(facts, internal = false) {
       if (typeof n === 'string') {
         if (aliases.has(n)) return aliasKind(aliases.get(n))
         const key = keyOfAnywhere(n)
-        if (key === null) return funcNames.has(n) ? kind(K.CLOSURE, closureSetIds.get(n) ?? UNKNOWN) : ANY
+        if (key === null) return funcNames.has(n) ? kind(K.CLOSURE, closureSetIds.get(n) ?? UNKNOWN) : outsideKind(n)
         const k = present.has(n) ? core(readKey(key)) : readKey(key)
         // a top-level `let f = (…) => …` is the function `f` (the walker's rule)
         return funcNames.has(n) && (tagOf(k) === K.NONE || (tagOf(k) === K.CLOSURE && paramOf(k) === UNKNOWN)) ? kind(K.CLOSURE, closureSetIds.get(n) ?? UNKNOWN) : k

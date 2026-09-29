@@ -4,10 +4,10 @@
 // a scan that read only the body; each runs against the host, at every level,
 // on fresh module state.
 import test from 'tst'
-import { is } from 'tst/assert.js'
+import { is, ok } from 'tst/assert.js'
 import jz from '../index.js'
 import { levels, belowOpt } from './_matrix.js'
-import { oracle } from './util.js'
+import { oracle, wat } from './util.js'
 
 const agree = (cases) => {
   for (const [name, src, args] of cases) for (const optimize of levels(0, 2, 3)) {
@@ -150,3 +150,13 @@ test('param defaults: an argument forwarded into a defaulted parameter arrives a
   ['in a loop', `function g (w, q = 1) { return w / (2 * q) }\nexport const run = (q) => { let s = 0; for (let i = 0; i < 3; i++) { let k = g(0.5 + i, q); s += k } return s }`, [undefined]],
   ['closure', `export const run = (q) => { const g = (x = 5) => x * 2; return g(q) + g(q + 1) }`, [undefined]],
 ]))
+
+test('param defaults: a Math constant is a number to the summary: a default of one converts nothing', () => {
+  const src = `function h (d, q = Math.PI) { let s = 0; for (let i = 0; i < d.length; i++) { s += d[i] / q; d[i] = s * q } return s }
+    const a = new Float64Array(8).fill(1), b = new Float64Array(8).fill(2)
+    export let run = () => h(a) + h(b, 2) + h(a, undefined)`
+  const js = oracle(src)
+  for (const optimize of levels(0, 2, 3)) is(jz(src, { optimize }).exports.run(), js.run(), `run() at ${optimize}`)
+  if (belowOpt(2)) return
+  ok(!/__to_num/.test(wat(src, { optimize: 2 })), 'no conversion of the defaulted parameter')
+})

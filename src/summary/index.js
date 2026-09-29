@@ -65,7 +65,7 @@ import {
   K, UNKNOWN, bitOf, TAGS, NULL_BITS, kind, tagOf, paramOf, hasTag, isNullable,
   ANY, NUMBER, STRING, BOOL, BIGINT, NULLISH, ABSENT, core, orAbsent, join,
   valOf, kindOfVal, TYPED_CTOR, TYPED_STATIC, isCount, ARRAY_METHODS, NUMBER_OPS, BOOL_OPS,
-  plus, arith, typedStore, typedAux, typedElemKind, typedMethodKind, isPostfixRecovery, logicalMask, selectKind,
+  plus, arith, typedStore, typedAux, typedElemKind, typedMethodKind, isPostfixRecovery, logicalMask, selectKind, outsideKind,
 } from './kind.js'
 export { K, UNKNOWN, kind, tagOf, paramOf, isNullable, tagsOf, hasTag, orNull, join, valOf, valsOf, core } from './kind.js'
 
@@ -2601,7 +2601,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     if (typeof n === 'number') return NUMBER
     if (typeof n === 'string') {
       const key = keyOf(n)
-      if (key === null) return funcByName.has(n) ? kind(K.CLOSURE, closureSet([n])) : ANY  // a name from outside the program
+      if (key === null) return funcByName.has(n) ? kind(K.CLOSURE, closureSet([n])) : outsideKind(n)  // a name from outside the program
       if (bindingScope[key] !== (current ?? MODULE)) {
         let keys = captures.get(current)
         if (!keys) captures.set(current, keys = new Set())
