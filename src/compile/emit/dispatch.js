@@ -14,7 +14,7 @@ import {
 } from '../../ir.js'
 import { BIGINT_JOINT_BINARY_OPS, isPresentNumber, hasAmbiguousBoolMerge, nullishArm, valTypeOf, boolTagged, mixedBoolKind } from '../../kind.js'
 import { VAL, lookupValType, repOf, repOfGlobal, numericStorage, mayBeUndefined } from '../../reps.js'
-import { nonNegIntLiteral } from '../../static.js'
+import { nonNegIntLiteral, staticArrayElems, staticObjectProps } from '../../static.js'
 import { functionLength } from '../../function.js'
 import { exprType, isTerminator } from '../../type.js'
 import {
@@ -723,8 +723,13 @@ export function emitDecl(...inits) {
     // they init to undefined so a read before the write matches JS.
     const flatDecl = ctx.func.flatObjects?.get(name)
     if (flatDecl && Array.isArray(init) && (init[0] === '{}' || init[0] === '[' || init[0] === '[]')) {
+      // The values are this declaration's own: an unrolled copy of a loop
+      // body declares the literal with its counter replaced (`{ a: i }` is
+      // `{ a: 1 }` in the second copy), not as the census read it.
+      const own = init[0] === '{}' ? staticObjectProps(init.slice(1)) : { names: flatDecl.names, values: staticArrayElems(init) }
+      const valueOf = own?.values ? new Map(own.names.map((k, j) => [k, own.values[j]])) : null
       for (let j = 0; j < flatDecl.names.length; j++) {
-        const v = flatDecl.values[j]
+        const v = valueOf ? valueOf.get(flatDecl.names[j]) : flatDecl.values[j]
         // research.md §Carrier invariant: a flat/SRoA field local is the same
         // untyped boxed-value slot a heap object's schema store is (module/
         // object.js's storedValue, now bridge.js's chokepoint) — the previous
