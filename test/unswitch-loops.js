@@ -43,8 +43,10 @@ test('unswitch loops: the stereo copy adds numbers', () => {
     }
     return out.map(l => (l.match(/call \$__add_slow/g) || []).length)
   }
-  // the copy the channels' kinds make is kind-split's (test/kind-split.js); these are unswitching's alone
-  const on = loops(wat(src, { optimize: { level: 2, splitLoopKinds: false } })), off = loops(wat(src, { optimize: { level: 2, unswitchLoops: false, splitLoopKinds: false } }))
+  // the copy the channels' kinds make is kind-split's (test/kind-split.js), the one a
+  // present receiver makes integral-loops' (test/integral-loops.js); these are unswitching's alone
+  const alone = { level: 2, splitLoopKinds: false, versionIntegralLoops: false }
+  const on = loops(wat(src, { optimize: alone })), off = loops(wat(src, { optimize: { ...alone, unswitchLoops: false } }))
   is(off.join(), '2', 'one loop: the channels\' sum and the running sum may both concatenate')
   is(on.join(), '1,1', 'a copy for each answer, one sum each that may concatenate: the stereo copy\'s running sum adds numbers')
 })
