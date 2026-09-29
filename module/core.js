@@ -111,6 +111,8 @@ export default (ctx) => {
     __length_prop_num: () => ['__to_num',
       ...(lengthNeedsDynArm() ? [ctx.linkDemand.external ? '__dyn_get_any_t_h' : '__dyn_get_expr_t_h'] : [])],
     __throw_property_nullish: ['__alloc_hdr', '__mkptr'],
+    // the long division is its own function, the common case answered inline
+    __rem: ['__rem_div'],
     __throw_not_callable: ['__alloc_hdr', '__mkptr'],
     __alloc: ['__memgrow'],
     __alloc_hdr: ['__alloc'],
