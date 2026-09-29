@@ -21,6 +21,7 @@ import { emit, emitIdentitySafe, boolCarrier, toBool, markInstrumented, whereNew
 import { emitArrayViewDef } from '../array-view.js'
 import { privateStringBuilder } from '../analyze-scans.js'
 import { isSideEffectFree } from './shared.js'
+import { stripCanon } from './arithmetic.js'
 import {
   addBoundedFaithful, addFitsI32, addRangeFitsI32, mulBoundedFaithful, mulFitsI32, mulRangeFitsI32, subRangeFitsI32,
 } from './i32-bounds.js'
@@ -191,8 +192,11 @@ function compoundAssign(name, val, f64op, i32op, arithOp) {
   // accumulators pay nothing). A bare asF64 carries a sentinel payload through
   // f64 arithmetic to the boundary (decoded back as `undefined`; JS: NaN) —
   // `s += a[i]` and `let u; s += u` are accumulator shapes the binary '+'
-  // emitter never sees.
-  return writeVar(name, f64op(asF64(toNumF64(name, va)), asF64(toNumF64(val, vb))), void_)
+  // emitter never sees. An operand's NaN guard (sqrt, min, max, negation) is dead
+  // under +, −, × and ÷ as it is in the binary forms: the operation carries the NaN
+  // on and is guarded where its own result escapes (`s += Math.sqrt(x)`).
+  const unguard = arithOp !== '%' ? stripCanon : (v) => v
+  return writeVar(name, f64op(asF64(unguard(toNumF64(name, va))), asF64(unguard(toNumF64(val, vb)))), void_)
 }
 export const assignmentOps = {
   // === Assignment ===

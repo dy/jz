@@ -66,7 +66,7 @@ const widensUnsigned = (v) => v.unsigned && !v.wrapSafe
 // so the inner per-op canon (local.set + select + f64.ne, ~3 ops) is dead on the
 // critical path. This is THE gap that put sqrt-heavy kernels ~23% behind V8
 // (julia/raymarcher/boids); stripping it makes them match native JS.
-const stripCanon = (v) => {
+export const stripCanon = (v) => {
   if (!v) return v
   if (v.canonOf != null) return typed(v.canonOf, 'f64')
   // A NaN-canon nested in the VALUE arm of a `select` / `(if result f64)` is equally

@@ -1,8 +1,8 @@
 import test from 'tst'
 import { is, ok, almost } from 'tst/assert.js'
-import { evaluate, run, funcWat } from './util.js'
+import { evaluate, run, oracle, funcWat } from './util.js'
 import jz, { compile } from '../index.js'
-import { onKernel } from './_matrix.js'
+import { onKernel, levels, belowOpt } from './_matrix.js'
 import { scalarCase } from './_scalar-core-cases.js'
 
 // Math module tests - comprehensive coverage of all Math.* methods
@@ -67,6 +67,28 @@ test('canon-strip soundness: NaN-canon preserved where the result can escape unt
     'NaN through arithmetic is still typeof number')
   is(run(`export const f = (s) => Math.sqrt(s + 1.0) + Math.sqrt(s + 2.0)`).f(2), Math.sqrt(3) + Math.sqrt(4),
     'arithmetic sum of sqrts matches JS exactly')
+})
+
+test('canon-strip: a compound assignment sheds its operand\'s NaN guard as the binary form does', () => {
+  // `s += Math.sqrt(x)` is `s = s + Math.sqrt(x)`: the sum carries a NaN on and is guarded
+  // where it escapes, so the guard on the root is dead under +=, -=, *= and /= as under +.
+  const src = `export const f = (xs, n) => {
+    let s = 0, p = 1, q = 0, d = 64
+    for (let i = 0; i < n; i++) { s += Math.sqrt(xs[i]); p *= Math.max(xs[i], 0.5); q -= Math.min(xs[i], 2); d /= -xs[i] }
+    return [s, p, q, d, typeof s, s === s]
+  }`
+  const want = oracle(src).f
+  const same = (a, b) => Object.is(a, b) || (a !== a && b !== b)
+  for (const optimize of levels(0, 2, 3)) {
+    const { f } = jz(src, { optimize }).exports
+    for (const xs of [[1, 4, 9, 2.5], [1, -4, 9, 2.5], [NaN, 3], [-1], [0.25, -0, 16]]) {
+      const got = f(new Float64Array(xs), xs.length), exp = want(new Float64Array(xs), xs.length)
+      ok(got.length === exp.length && got.every((v, i) => same(v, exp[i])), `O${optimize} [${xs}]: ${got} (JS: ${exp})`)
+    }
+  }
+  if (belowOpt(2)) return
+  const wat = funcWat(jz.compile(`export const f = (n) => { let s = 0, q = 1; for (let i = 0; i < n; i++) { const x = (i % 200) * 0.37 - 30; s += Math.sqrt(x); q *= -x } return s + q }`, { wat: true }), 'f')
+  is((wat.match(/f64\.const nan/g) || []).length, 0, 'no NaN guard on s += Math.sqrt(x) or q *= -x')
 })
 
 test('Math.abs', async () => {
