@@ -31,6 +31,13 @@ const BASELINE = join(import.meta.dirname, 'perf-ratchet.json')
 // These are required JS exceptions, not a lost optimization; timing, Watr/JSON
 // binary-size ceilings and memory caps stay unchanged.
 
+// A short integer's string (2026-09-29) packs its digits into the pointer in
+// __i32_to_str's own digit loop, with no scratch buffer, __itoa or __mkstr
+// pass: 27 loop nodes per module that formats one, in the helper and where
+// watr inlines it into __arr_typed_obj_set_idx's loop (buf +135, slice +216,
+// condref +1080). A per-function comparison against the tree before it shows
+// no other body changed. String(16000) went from 51 to 10 ns.
+
 // Reset-log reuse adds 26 loop nodes to __durable_slot_log in each of the
 // 40 condref modules (+1040). Comparing with only that helper reverted proved
 // all other 1657 function bodies unchanged. The baseline includes this required

@@ -395,7 +395,7 @@ export default (ctx) => {
     __fmt_fixed: ['__ftoa', '__alloc', '__dec_scaled', '__mkstr'],
     __fmt_exp: ['__ftoa', '__alloc', '__dec_sig', '__dec_to_f64', '__fmt_exp_tail', '__mkstr'],
     __fmt_prec: ['__ftoa', '__alloc', '__dec_sig', '__fmt_exp_tail', '__mkstr'],
-    __ftoa_shortest: ['__mkstr_scratch', '__static_str', '__alloc', '__itoa', '__ryu_mulshift', '__ryu_pow5', '__ryu_pow5div'],
+    __ftoa_shortest: ['__mkstr_scratch', '__static_str', '__alloc', '__itoa', '__pow10', '__ryu_mulshift', '__ryu_pow5', '__ryu_pow5div'],
     __ryu_pow5: ['__umul128'],
     __dec_to_f64: ['__ryu_pow5', '__umul128', '__pow10'],
     __ryu_mulshift: ['__umul128'],
@@ -492,8 +492,28 @@ export default (ctx) => {
   // machinery (shortest-repr search, __pow10): a known integer renders with
   // just __itoa_s over a scratch buffer. Lets `"id " + (n|0)` and integer
   // templates skip the ~2 KB float formatter the generic ToString hard-pulls.
+  // Six characters or fewer pack into the pointer itself, digits placed from the
+  // last (__mkstr's short-string layout), with no buffer.
   ctx.core.stdlib['__i32_to_str'] = `(func $__i32_to_str (param $val i32) (result f64)
-    (local $buf i32)
+    (local $buf i32) (local $m i32) (local $d i32) (local $i i32) (local $packed i64)
+    (if (i32.and (i32.gt_s (local.get $val) (i32.const -100000)) (i32.lt_s (local.get $val) (i32.const 1000000)))
+      (then
+        (local.set $m (select (i32.sub (i32.const 0) (local.get $val)) (local.get $val) (i32.lt_s (local.get $val) (i32.const 0))))
+        (local.set $buf (i32.add ${uintDigitsWat('(local.get $m)')} (i32.lt_s (local.get $val) (i32.const 0))))
+        (local.set $i (local.get $buf))
+        (loop $l
+          (local.set $i (i32.sub (local.get $i) (i32.const 1)))
+          (local.set $d (i32.div_u (local.get $m) (i32.const 10)))
+          (local.set $packed (i64.or (local.get $packed) (i64.shl
+            (i64.extend_i32_u (i32.add (i32.const 48) (i32.sub (local.get $m) (i32.mul (local.get $d) (i32.const 10)))))
+            (i64.extend_i32_u (i32.mul (local.get $i) (i32.const 7))))))
+          (local.set $m (local.get $d))
+          (br_if $l (local.get $m)))
+        (if (i32.lt_s (local.get $val) (i32.const 0)) (then (local.set $packed (i64.or (local.get $packed) (i64.const 45)))))
+        (return (f64.reinterpret_i64 (i64.or (i64.or
+          (i64.const ${ptrNanHex(PTR.STRING, LAYOUT.SSO_BIT)})
+          (i64.shl (i64.extend_i32_u (local.get $buf)) (i64.const 42)))
+          (local.get $packed))))))
     (local.set $buf (call $__alloc (i32.const 24)))
     (call $__mkstr_scratch (local.get $buf) (call $__itoa_s (local.get $val) (local.get $buf))))`
 
@@ -1190,6 +1210,7 @@ export default (ctx) => {
     (local $e10 i32) (local $q i32) (local $k i32) (local $sh i32) (local $powLo i64) (local $powHi i64)
     (local $vmTZ i32) (local $vrTZ i32) (local $removed i32) (local $last i32) (local $roundUp i32)
     (local $out i64) (local $buf i32) (local $scr i32) (local $pos i32) (local $olen i32) (local $n i32) (local $i i32)
+    (local $a f64) (local $p f64) (local $y f64) (local $m f64)
     (if (f64.ne (local.get $val) (local.get $val)) (then (return (call $__static_str (i32.const 0)))))
     (if (f64.eq (local.get $val) (f64.const inf)) (then (return (call $__static_str (i32.const 1)))))
     (if (f64.eq (local.get $val) (f64.const -inf)) (then (return (call $__static_str (i32.const 2)))))
@@ -1204,6 +1225,44 @@ export default (ctx) => {
       (then
         (i32.store16 (local.get $buf) (i32.const 45))
         (local.set $pos (i32.const 1))))
+    (block $digits
+    ;; Fifteen significant digits or fewer, found in one test: with k chosen so that
+    ;; y = |val|·10^k lies in [10^14, 10^15), m = round(y) is the only integer whose
+    ;; m·10^-k can round to |val| (two such lie over half a unit apart there, and y
+    ;; falls within a third of a unit of it), and the test is exact: m and 10^k are
+    ;; doubles, their quotient correctly rounded. Any shorter form is m with its
+    ;; trailing zeros stripped. An integer below 2^53 is its own digits.
+    (local.set $a (f64.abs (local.get $val)))
+    (if (i32.and (f64.lt (local.get $a) (f64.const 9007199254740992)) (f64.eq (f64.nearest (local.get $a)) (local.get $a)))
+      (then
+        (local.set $out (i64.trunc_f64_u (local.get $a)))
+        (br $digits)))
+    (if (i32.and (f64.lt (local.get $a) (f64.const 1e15)) (f64.ge (local.get $a) (f64.const 1e-7)))
+      (then
+        ;; k = 14 - floor(e·log10 2) puts y in [10^14, 2·10^15): one step down at most
+        (local.set $e10 (i32.add (i32.const -14) (i32.shr_s (i32.mul
+          (i32.sub (i32.wrap_i64 (i64.shr_u (local.get $bits) (i64.const 52))) (i32.const 1023))
+          (i32.const 78913)) (i32.const 18))))
+        (local.set $p (call $__pow10 (i32.sub (i32.const 0) (local.get $e10))))
+        (local.set $y (f64.mul (local.get $a) (local.get $p)))
+        (if (f64.ge (local.get $y) (f64.const 1e15))
+          (then
+            (local.set $e10 (i32.add (local.get $e10) (i32.const 1)))
+            (local.set $p (f64.div (local.get $p) (f64.const 10)))
+            (local.set $y (f64.mul (local.get $a) (local.get $p)))))
+        (local.set $m (f64.nearest (local.get $y)))
+        (if (f64.eq (f64.div (local.get $m) (local.get $p)) (local.get $a))
+          (then
+            (local.set $out (i64.trunc_f64_u (local.get $m)))
+            (if (i64.eqz (i64.rem_u (local.get $out) (i64.const 100000000)))
+              (then (local.set $out (i64.div_u (local.get $out) (i64.const 100000000))) (local.set $e10 (i32.add (local.get $e10) (i32.const 8)))))
+            (if (i64.eqz (i64.rem_u (local.get $out) (i64.const 10000)))
+              (then (local.set $out (i64.div_u (local.get $out) (i64.const 10000))) (local.set $e10 (i32.add (local.get $e10) (i32.const 4)))))
+            (if (i64.eqz (i64.rem_u (local.get $out) (i64.const 100)))
+              (then (local.set $out (i64.div_u (local.get $out) (i64.const 100))) (local.set $e10 (i32.add (local.get $e10) (i32.const 2)))))
+            (if (i64.eqz (i64.rem_u (local.get $out) (i64.const 10)))
+              (then (local.set $out (i64.div_u (local.get $out) (i64.const 10))) (local.set $e10 (i32.add (local.get $e10) (i32.const 1)))))
+            (br $digits)))))
     (local.set $ieeeM (i64.and (local.get $bits) (i64.const 0xFFFFFFFFFFFFF)))
     (local.set $ieeeE (i32.wrap_i64 (i64.and (i64.shr_u (local.get $bits) (i64.const 52)) (i64.const 0x7FF))))
     ;; m2·2^e2 = |val|·2^-2 — two extra bits for the halfway-boundary math
@@ -1333,7 +1392,7 @@ export default (ctx) => {
           (br $fl1)))
         (local.set $out (i64.add (local.get $vr) (i64.extend_i32_u
           (i32.or (i64.eq (local.get $vr) (local.get $vm)) (local.get $roundUp)))))))
-    (local.set $e10 (i32.add (local.get $e10) (local.get $removed)))
+    (local.set $e10 (i32.add (local.get $e10) (local.get $removed))))
     ;; digits, least-significant first, into scratch
     (local.set $t (local.get $out))
     (block $dd (loop $dl
