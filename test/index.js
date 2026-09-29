@@ -103,6 +103,7 @@ const TESTS = [
   'typed-length',
   'declare-unseen-keys',
   'integral-loops',
+  'unswitch-loops',
   'chosen-calls',
   'loop-fields',
   'remainder',

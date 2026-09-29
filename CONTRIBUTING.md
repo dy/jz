@@ -1517,6 +1517,7 @@ src/
                 analyze/frame-effects.js: per-function and per-loop escape census (what outlives a frame or an iteration)
                 plan/lanes.js: record parameters as scalar lanes (a parameter read only field by field, at literal or known-shape sites)
                 plan/counted-loops.js: a counted loop over its trip number (computed start, unrolled body rolled back, unit stride versioned); literal-start cursors are the lane vectorizer's (optimize/vectorize/counter-run.js)
+                plan/unswitch-loops.js: a loop testing a name it never writes (`if (stereo)`), a copy for each answer, its declarations renamed so each copy's values have its arms' kinds
   optimize/     WAT-array passes + vectorize.js + loop-rewind.js (per-iteration heap restore, after the vectorizer);
                 arena-rewind, sort-locals, low-word-mask are tape passes run by link
   link/         whole-module passes on the tape: treeshake, custom sections, throw-runtime prune, function order, local names (index.js)

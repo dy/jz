@@ -53,6 +53,7 @@ import {
 import { declareWrittenKeys } from './declare-written-keys.js'
 import { declareUnseenKeys } from './declare-unseen-keys.js'
 import { versionIntegralLoops } from './integral-loops.js'
+import { unswitchLoops } from './unswitch-loops.js'
 import { callChosenFunctions } from './chosen-calls.js'
 import { promoteLoopFields, loopFieldCandidates } from './loop-fields.js'
 import { foldKindTests } from './fold-kind-tests.js'
@@ -192,6 +193,8 @@ export default function plan(ast, profiler, summarize) {
     // form rather than `new Int32Array(N)`, but the ordering keeps the door open).
     sweep('promoteIntArrayLiterals', promoteIntArrayLiterals)
     sweep('scalarizeTypedArrays', () => scalarizeFunctionTypedArrays(facts()))
+    // A loop testing a name it never writes: a copy for each answer.
+    sweep('unswitchLoops', unswitchLoops)
     // A loop indexing by numbers of unknown integrality: a copy over their int32s, where they are ones.
     sweep('versionIntegralLoops', () => versionIntegralLoops(facts()))
   }
