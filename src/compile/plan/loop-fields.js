@@ -22,6 +22,12 @@
  * array or a typed array, or a number, never does). A field it writes is a slot of every layout the receiver may have,
  * so the store back after a loop that never wrote it stores what the slot held.
  *
+ * So does an element at a constant index of an owned Float64Array the loop
+ * stores numbers into (`s[0]`, `s[1]` of a filter section's state): no other
+ * receiver of the loop may share its buffer (an array, or a typed array of
+ * another element kind that is no view, is another buffer), and the copy
+ * runs where every index is within the array's length.
+ *
  * A receiver that may be null or undefined throws where the loop first
  * reads it: the loop runs as the copy using locals where every receiver is
  * present, and as itself otherwise, throwing where it did. The copy names
@@ -33,7 +39,8 @@
 import { ctx } from '../../ctx.js'
 import { MUTATE_OPS, T, isBlockBody, some } from '../../ast.js'
 import { freshId } from '../../ir.js'
-import { K, core, tagOf, isNullable, hasTag } from '../../summary/kind.js'
+import { K, core, tagOf, paramOf, isNullable, hasTag } from '../../summary/kind.js'
+import { TYPED_ELEM_VIEW_FLAG, TYPED_ELEM_ANY_VIEW_FLAG } from '../../../layout.js'
 import { invalidateBodies } from '../analyze.js'
 import { invalidateProgramFactsCache } from '../program-facts.js'
 import { LOOP_OPS, collectBindings, nodeSize } from './common.js'
@@ -61,6 +68,11 @@ const isName = (n) => typeof n === 'string'
 const isField = (n) => Array.isArray(n) && n[0] === '.' && typeof n[2] === 'string'
 const numberKey = (k, view) => typeof k === 'number' || (Array.isArray(k) && k[0] == null && typeof k[1] === 'number') ||
   tagOf(core(view.kindOfExpr(k) ?? 0)) === K.NUMBER
+const COUNT_OPS = new Set(['++', '--', '+1', '-1'])
+/** A constant element index (`s[0]`), or null. */
+const slotIndex = (k) => Array.isArray(k) && k[0] == null && Number.isInteger(k[1]) && k[1] >= 0 ? k[1] : typeof k === 'number' && Number.isInteger(k) && k >= 0 ? k : null
+const VIEW_FLAGS = TYPED_ELEM_VIEW_FLAG | TYPED_ELEM_ANY_VIEW_FLAG
+const ctorName = (c) => c?.replace(/^new\./, '') ?? null
 const accessor = (p) => ctx.transform.accessorNames?.has(p) || ctx.transform.literalAccessorNames?.has(p) || p === '__proto__'
 const mayBeMissing = (k) => k == null || isNullable(k) || hasTag(k, K.NULLISH) || hasTag(k, K.ABSENT)
 const isObject = (k) => tagOf(core(k ?? 0)) === K.OBJECT
@@ -70,6 +82,8 @@ const censusOf = (loop, view) => {
   const declared = new Set(), written = new Set(), stored = new Set(), bare = new Set()
   const accesses = []               // [node, isWrite]: every static field access
   const elements = new Set()        // receivers of element accesses
+  const slots = []                  // [node, isWrite, value]: every element access at a constant index
+  const indexed = new Set()         // receivers read or written at an index the loop computes
   const aliases = new Map()         // `const s = r.q` in the loop: s → r.q
   let open = false, computedRead = false
   const visit = (n, parent, slot) => {
@@ -103,7 +117,10 @@ const censusOf = (loop, view) => {
       const t = n[1]
       if (isName(t)) written.add(t)
       else if (isField(t)) { stored.add(t[2]); accesses.push([t, true]) }
-      else if (Array.isArray(t) && t[0] === '[]') { if (!ELEMENT_KINDS.has(tagOf(core(view.kindOfExpr(t[1]) ?? 0))) && !numberKey(t[2], view)) { open = true; return } }
+      else if (Array.isArray(t) && t[0] === '[]') {
+        if (!ELEMENT_KINDS.has(tagOf(core(view.kindOfExpr(t[1]) ?? 0))) && !numberKey(t[2], view)) { open = true; return }
+        if (slotIndex(t[2]) != null) slots.push([t, true, COUNT_OPS.has(op) ? null : n[2]])
+      }
       else { open = true; return }
     }
     if (op === '.') {
@@ -116,19 +133,21 @@ const censusOf = (loop, view) => {
     if (op === '[]') {
       if (!isName(n[1])) { open = true; return }
       elements.add(n[1])
+      if (slotIndex(n[2]) == null) indexed.add(n[1])
+      else if (!(MUTATE_OPS.has(parent?.[0]) && slot === 1)) slots.push([n, false])
       if (!ELEMENT_KINDS.has(tagOf(core(view.kindOfExpr(n[1]) ?? 0))) && !numberKey(n[2], view)) computedRead = true
     }
     for (let i = 1; i < n.length; i++) visit(n[i], n, i)
   }
   visit(loop, null, 0)
-  return open ? null : { declared, written, stored, bare, accesses, elements, aliases, computedRead }
+  return open ? null : { declared, written, stored, bare, accesses, elements, slots, indexed, aliases, computedRead }
 }
 
 /** The fields `loop` holds in locals, by receiver, and the receivers the copy must find present; null for none. */
 const planLoop = (loop, view) => {
   const c = censusOf(loop, view)
   if (!c) return null
-  const { declared, written, stored, bare, accesses, elements, aliases, computedRead } = c
+  const { declared, written, stored, bare, accesses, elements, slots, indexed, aliases, computedRead } = c
   const steady = (r) => isName(r) && !written.has(r) && !declared.has(r)
   // an alias stands for its record when nothing else writes it and it is used for fields alone
   for (const [s, e] of aliases) if (written.has(s) || bare.has(s) || !steady(e[1]) || stored.has(e[2]) || accessor(e[2])) aliases.delete(s)
@@ -170,7 +189,31 @@ const planLoop = (loop, view) => {
     if (f.written && (computedRead || !(shapes?.every(sid => view.layoutSlot(sid, f.p)) ?? false))) continue
     held.push(f)
   }
-  if (!held.some(f => f.written)) return null
+  // An element at a constant index of an owned Float64Array (`s[0]`, `s[1]` of a
+  // filter's state) the loop stores numbers into: no other receiver of the loop
+  // shares its buffer (another element kind, or an array, is another object; a
+  // view is none of these), and every index is within its length in the copy.
+  const slotsOf = new Map()   // receiver → { max, written: Set(index) }
+  for (const [n, isWrite, value] of slots) {
+    const r = n[1], k = slotIndex(n[2])
+    const e = slotsOf.get(r) ?? { max: -1, written: new Set(), numbers: true }
+    e.max = Math.max(e.max, k)
+    if (isWrite) { e.written.add(k); if (value != null && tagOf(core(view.kindOfExpr(value) ?? 0)) !== K.NUMBER) e.numbers = false }
+    slotsOf.set(r, e)
+  }
+  const ownF64 = (r) => { const k = view.kindOfExpr(r); return tagOf(core(k ?? 0)) === K.TYPED && ctorName(view.typedPayloadCtorOfExpr(r)) === 'Float64Array' && !(paramOf(k) & VIEW_FLAGS) }
+  const apartFrom = (r) => [...elements].every(r2 => {
+    if (r2 === r) return true
+    const k2 = view.kindOfExpr(r2), t2 = tagOf(core(k2 ?? 0))
+    return t2 === K.ARRAY || (t2 === K.TYPED && ctorName(view.typedPayloadCtorOfExpr(r2)) != null && ctorName(view.typedPayloadCtorOfExpr(r2)) !== 'Float64Array' && !(paramOf(k2) & VIEW_FLAGS))
+  })
+  const elems = []
+  for (const [r, e] of slotsOf) {
+    if (!steady(r) || bare.has(r) || indexed.has(r) || aliases.has(r) || !e.numbers || !ownF64(r) || !apartFrom(r)) continue
+    if (accesses.some(([n, w]) => w && n[1] === r)) continue
+    elems.push({ recv: r, max: e.max, written: e.written, indices: [...new Set(slots.filter(([n]) => n[1] === r).map(([n]) => slotIndex(n[2])))] })
+  }
+  if (!held.some(f => f.written) && !elems.some(e => e.written.size)) return null
   // every receiver of the loop, present in the copy: nothing in it throws
   const bases = new Set(), chains = new Map()
   for (const [n] of accesses) {
@@ -187,7 +230,7 @@ const planLoop = (loop, view) => {
     if (!steady(r)) return null
     bases.add(r)
   }
-  return { held, bases: [...bases], chains: [...chains.values()], aliases, view }
+  return { held, elems, bases: [...bases], chains: [...chains.values()], aliases, view }
 }
 
 /** `loop` with each held field access naming its local, each chain its record's local, and each name it declares a name of its own. */
@@ -206,6 +249,7 @@ const substitute = (loop, plan, locals, records) => {
       if (local) return local
       return ['.', rec ? rec.local : walk(n[1]), n[2]]
     }
+    if (n[0] === '[]' && isName(n[1]) && slotIndex(n[2]) != null && locals.has(n[1] + '[' + slotIndex(n[2]))) return locals.get(n[1] + '[' + slotIndex(n[2]))
     if (n[0] === ':') return [':', n[1], walk(n[2])]
     // an alias of a record reads the record's local
     if ((n[0] === 'let' || n[0] === 'const')) return [n[0], ...n.slice(1).map(d => Array.isArray(d) && isName(d[1]) && plan.aliases.has(d[1]) && records.has(key(plan.aliases.get(d[1])))
@@ -215,9 +259,10 @@ const substitute = (loop, plan, locals, records) => {
   return walk(loop)
 }
 
-/** Whether some innermost loop of the program stores a field: the pass has anything to look at. */
+/** Whether some innermost loop of the program stores a field or an element at a constant index: the pass has anything to look at. */
 export const loopFieldCandidates = () => ctx.transform.optimize?.promoteLoopFields !== false && ctx.funcs.list.some(f => f.body && !f.raw &&
-  some(f.body, n => LOOP_OPS.has(n[0]) && !some(n, m => m !== n && LOOP_OPS.has(m[0])) && some(n, m => MUTATE_OPS.has(m[0]) && isField(m[1]))))
+  some(f.body, n => LOOP_OPS.has(n[0]) && !some(n, m => m !== n && LOOP_OPS.has(m[0])) &&
+    some(n, m => MUTATE_OPS.has(m[0]) && (isField(m[1]) || Array.isArray(m[1]) && m[1][0] === '[]' && slotIndex(m[1][2]) != null))))
 
 export const promoteLoopFields = () => {
   if (ctx.transform.optimize?.promoteLoopFields === false) return false
@@ -235,11 +280,15 @@ export const promoteLoopFields = () => {
       const records = new Map(plan.chains.map(r => [r.key, { ...r, local: `${r.base}${T}${r.field}${freshId(ctx)}` }]))
       const recv = (r) => r.expr ? records.get(r.key).local : r.key
       const locals = new Map(plan.held.map(f => [f.recv.key + '|' + f.p, `${recv(f.recv)}${T}${f.p}${freshId(ctx)}`]))
-      const decls = plan.held.map(f => ['=', locals.get(f.recv.key + '|' + f.p), ['.', recv(f.recv), f.p]])
-      const back = plan.held.filter(f => f.written).map(f => ['=', ['.', recv(f.recv), f.p], locals.get(f.recv.key + '|' + f.p)])
+      for (const e of plan.elems) for (const k of e.indices) locals.set(e.recv + '[' + k, `${e.recv}${T}${k}${freshId(ctx)}`)
+      const decls = [...plan.held.map(f => ['=', locals.get(f.recv.key + '|' + f.p), ['.', recv(f.recv), f.p]]),
+        ...plan.elems.flatMap(e => e.indices.map(k => ['=', locals.get(e.recv + '[' + k), ['[]', e.recv, [null, k]]]))]
+      const back = [...plan.held.filter(f => f.written).map(f => ['=', ['.', recv(f.recv), f.p], locals.get(f.recv.key + '|' + f.p)]),
+        ...plan.elems.flatMap(e => [...e.written].map(k => ['=', ['[]', e.recv, [null, k]], locals.get(e.recv + '[' + k)]))]
       const copy = ['{}', [';', ['let', ...decls], substitute(st, plan, locals, records), ...back]]
       rewrote = true
       const tests = [...plan.bases.map(r => ['!=', r, [null, null]]),
+        ...plan.elems.map(e => ['>', ['.', e.recv, 'length'], [null, e.max]]),
         ...[...records.values()].map(r => ['!=', ['=', r.local, r.expr], [null, null]])]
       const head = records.size ? [['let', ...[...records.values()].map(r => r.local)]] : []
       if (!tests.length) return head.length ? ['{}', [';', ...head, copy]] : copy

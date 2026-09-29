@@ -74,3 +74,24 @@ test('loop fields: a loop that calls, or stores under a computed key, keeps its 
     export let b = (n, k) => keyed(new Float64Array(n).fill(1), t, k)`
   agrees(src, [['a', 3], ['b', 3, 'other'], ['b', 3, 'acc']])
 })
+
+// a biquad section's state in its own Float64Array, stepped per sample
+const section = `function step (c, s, x) { let y = c.b0 * x + s[0]; s[0] = c.b1 * x - c.a1 * y + s[1]; s[1] = c.b2 * x - c.a2 * y; return y }
+function kern (band, sec, st) { for (let i = 0; i < band.length; i++) band[i] = step(sec, st, band[i]); return st[0] + st[1] }
+const sec = { b0: 0.2, b1: 0.4, b2: 0.2, a1: -0.3, a2: 0.1 }`
+
+test('loop fields: a state array element at a constant index lives in a local for the loop', () => {
+  const src = section + `
+export let run = (n) => { const b = new Float32Array(n).fill(1), st = new Float64Array(2); return kern(b, sec, st) + kern(b, sec, st) + (b[n - 1] ?? 0) }
+export let short = (n) => { const b = new Float32Array(n).fill(1), st = new Float64Array(1); return kern(b, sec, st) + b[n - 1] }`
+  agrees(src, [['run', 8], ['run', 0], ['short', 5]])
+  if (belowOpt(2)) return
+  const loops = loopsOf(wat(src, { optimize: 2 })).filter(l => /f32\.store/.test(l))
+  ok(loops.some(l => !/f64\.(load|store)/.test(l)), 'one copy of the sample loop holds the state in locals')
+})
+
+test('loop fields: a state array that may share a buffer with the samples stays in memory', () => {
+  agrees(section + `
+export let shared = (n) => { const b = new Float64Array(n).fill(1); return kern(b, sec, b) + b[0] }
+export let apart = (n) => { const b = new Float64Array(n).fill(1), st = new Float64Array(2); return kern(b, sec, st) + b[0] }`, [['shared', 6], ['apart', 6]])
+})
