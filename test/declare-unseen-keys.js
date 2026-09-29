@@ -97,3 +97,23 @@ test('declared keys: a record read before its state is stored reads undefined', 
   agree(`const recs = [{ n: 1 }, { n: 2 }]
     export let f = (i, c) => { const r = recs[i]; if (c) r.late = c * 10; return (r.late ?? -1) + r.n }`, [['f', 0, 0], ['f', 1, 3], ['f', 1, 0], ['f', 0, 2]])
 })
+
+// Object.assign stores into its target without asking it for its keys: the
+// keys it copies are declared like any other store's, and a target the summary
+// holds to one layout (an element of a list of records) takes them as slots.
+test('declared keys: Object.assign onto a list element stores slots', () => {
+  const src = `let mk = (g) => ({ b0: g, a1: 0.5 })
+    let run = (data, f) => { f.state ??= new Float64Array(2); let s = f.state; for (let i = 0; i < data.length; i++) { let y = data[i] * f.coefs.b0 + s[0]; s[0] = y * f.coefs.a1; data[i] = y } }
+    export let f = (n) => { let fs = [1, 2, 3].map(() => ({})); for (let i = 0; i < 3; i++) Object.assign(fs[i], { coefs: mk(i), flat: !i })
+      let d = new Float64Array(n).fill(1); for (let f of fs) { if (!f.flat) run(d, f); else f.state = null } return d[0] + d[n - 1] }`
+  agree(src, [['f', 8], ['f', 1]])
+  for (const optimize of levels(2, 3)) ok(dynCalls(wat(src, { optimize }), 'f').length === 0, `slots at ${optimize}`)
+})
+
+test('declared keys: Object.assign keeps what its target can tell', () => {
+  agree(`export let f = (i) => { let fs = [1, 2].map(() => ({})); try { Object.assign(fs[i], { a: 1 }); return fs[i].a + (fs[i].b ?? 7) } catch (e) { return e instanceof TypeError ? -1 : -2 } }`, [['f', 0], ['f', 1], ['f', 5]])
+  agree(`export let f = () => { let o = {}; Object.assign(o, { b: 1 }); o.a = 2; return Object.keys(o).join() }`, [['f']])
+  agree(`export let f = () => { let l = [{}, {}]; Object.assign(l[1], { b: 1, c: 2 }); l[0].z = 3; return JSON.stringify(l) + Object.keys(l[1]) }`, [['f']])
+  agree(`export let f = (x) => { let l = [{ q: 1 }]; Object.assign(l[0], { b: x }, { c: 2, b: 5 }); return l[0].b + l[0].c + l[0].q }`, [['f', 3]])
+  agree(`let mk = () => ({}); export let f = (x) => { let a = mk(), b = mk(); Object.assign(a, { s: x }); b.t = 2; return (a.s ?? 0) + (a.t ?? 10) + (b.s ?? 100) + b.t }`, [['f', 3]])
+})

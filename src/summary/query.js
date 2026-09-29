@@ -410,6 +410,8 @@ export function summaryQueries(facts, internal = false) {
       // The result contract of the callable a call reaches, or null (contract.js).
       calleeContract: n => { const c = calleeOf(n); return c === null ? null : resultContract(c) },
       sidOf: name => { const k = readKind(name); return tagOf(k) === K.OBJECT && !isNullable(k) && publicSid(k) !== UNKNOWN ? publicSid(k) : null },
+      // The one layout an object expression's value has when it is not missing; null when unknown or open.
+      targetSidOfExpr: e => { const k = core(kindOfExpr(e)), sid = publicSid(k); return tagOf(k) === K.OBJECT && sid !== UNKNOWN && !shapesOf(paramOf(k)).some(site => openSchemas.has(site)) ? sid : null },
       spreadSidOfExpr: e => { const k = kindOfExpr(e), sid = publicSid(k); return tagOf(k) === K.OBJECT && !isNullable(k) && sid !== UNKNOWN && !shapesOf(paramOf(k)).some(site => openSchemas.has(site)) ? sid : null },
       // The member shapes of an object expression, a set's or the one shape, for a
       // guarded slot access; null when the shape is unknown or not an object.

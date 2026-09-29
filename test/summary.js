@@ -23,6 +23,9 @@ const binding = (fn, bare) => {
 }
 const kindOf = (fn, bare) => ctx.summary.at(fn).kindOf(binding(fn, bare))
 const sidOf = (props) => ctx.schema.list.findIndex(s => s.join() === props.join())
+// The layout a literal of these keys ends with: its own keys first, then any a
+// later store declares in it (plan/declare-unseen-keys.js).
+const layoutFrom = (props) => ctx.schema.list.findLastIndex(s => props.every((p, i) => s[i] === p))
 // The summary read after a compile is of the program the plan rewrote; these tests
 // pin the source's own functions, so the inliner is off (the speed tier splices callees)
 // and so is the record-parameter lane pass (it replaces a field-reading callee).
@@ -853,8 +856,8 @@ test('summary: Object.assign onto a shape stores each source slot; a shape besid
     return target.a + n
   }`
   summarize(src)
-  is(tagOf(ctx.summary.fieldKind(sidOf(['a', 'b']), 'a')), K.NUMBER, 'a source slot stores into the target slot')
-  ok(!ctx.summary.opaqueSchema(sidOf(['a', 'b'])), 'the target keeps its shape')
+  is(tagOf(ctx.summary.fieldKind(layoutFrom(['a', 'b']), 'a')), K.NUMBER, 'a source slot stores into the target slot')
+  ok(!ctx.summary.opaqueSchema(layoutFrom(['a', 'b'])), 'the target keeps its shape')
   is(tagOf(kindOf('f', 'n')), K.NUMBER, 'a record joined with a boolean is read through the join')
   for (const level of levels(0, 2)) is(jz(src, { optimize: level }).exports.f(true), oracle(src).f(true), `O${level}`)
 })
@@ -870,7 +873,7 @@ test('summary: object stores wait for factory targets and descriptors', () => {
       function descriptor() { return { value: 2 } }
       export function f() { const o = ${update}; return o.x + o.buf.length }`
     summarize(src)
-    const sid = sidOf(['x', 'buf'])
+    const sid = layoutFrom(['x', 'buf'])
     ok(!ctx.summary.opaqueSchema(sid), update + ': factory target keeps its shape')
     is(tagOf(ctx.summary.fieldKind(sid, 'x')), K.NUMBER, 'updated field stays numeric')
     is(ctx.summary.fieldTypedCtor(sid, 'buf'), 'new.Float32Array', 'unwritten buffer stays typed')

@@ -9,7 +9,7 @@
 
 import { DBG_INVARIANTS } from '../src/debug.js'
 import { dataAlign, dataPush, dataLen, pushStaticSlots } from '../src/static-data.js'
-import { typed, asF64, asI64, asI32, NULL_NAN, UNDEF_NAN, TRUE_NAN, FALSE_NAN, temp, tempI32, tempI64, block64, ptrTypeEq, dispatchByPtrType, allocPtr, needsDynShadow, mkPtrIR, extractF64Bits, slotAddr, elemLoad, elemStore, freshId, undefExpr } from '../src/ir.js'
+import { typed, asF64, asI64, asI32, NULL_NAN, UNDEF_NAN, TRUE_NAN, FALSE_NAN, temp, tempI32, tempI64, block64, ptrTypeEq, dispatchByPtrType, allocPtr, needsDynShadow, mkPtrIR, extractF64Bits, slotAddr, elemLoad, elemStore, freshId, undefExpr, isNullish } from '../src/ir.js'
 import { emit, storedValue, storedFieldValue, deps } from '../src/bridge.js'
 import { staticArrayPtr } from './array.js'
 import { valTypeOf, shapeOf } from '../src/kind.js'
@@ -717,7 +717,11 @@ export default (ctx) => {
       const vt = repOf(target)?.val
       if (vt && vt !== VAL.OBJECT) return emitObjectAssignDynamic(target, sources)
     }
-    const tSchema = resolveSchema(target)
+    // An expression target (`list[i]`) the summary holds to one layout: that
+    // layout's slots, as for a bound name, past a test that it is there.
+    const view = typeof target !== 'string' && ctx.summary ? ctx.summary.at(ctx.func.current) : null
+    const summarySid = view ? view.targetSidOfExpr(target) : null
+    const tSchema = resolveSchema(target) ?? (summarySid != null ? ctx.schema.list[summarySid] : null)
     const resolveSchemas = sources.map(copiedSchema)
     if (!tSchema) return emitObjectAssignDynamic(target, sources)
     // Existing targets cannot grow their physical schema. Extra source keys
@@ -729,15 +733,21 @@ export default (ctx) => {
     // Extern-write belt: cross-schema slot copies into the TARGET's sid below
     // (plan's hazard scan marks the same target when it resolves it).
     const tSid = typeof target === 'string'
-      ? (repOf(target)?.schemaId ?? ctx.schema.vars.get(target)) : null
+      ? (repOf(target)?.schemaId ?? ctx.schema.vars.get(target)) : summarySid
     if (tSid != null) ctx.schema.externSlotSids?.add(tSid)
     const t = temp('at'), s = temp('as')
     const tBase = tempI32('tb'), sBase2 = tempI32('sb')
     // Slot copies only: a read of an unknown-schema alias (`let r =
     // Object.assign(t, …); r.a`) dispatches through __dyn_get_any, whose
     // schema arm reads the same slot (the field's only home).
-    const body = [['local.set', `$${t}`, asF64(emit(target))],
-      ['local.set', `$${tBase}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]]]
+    const body = [['local.set', `$${t}`, asF64(emit(target))]]
+    if (summarySid != null && view.mayBeNullishExpr(target)) {
+      ctx.runtime.throws = true
+      body.push(['if', isNullish(['local.get', `$${t}`]), ['then',
+        ['global.set', '$__jz_last_err_bits', ['i64.reinterpret_f64', ['f64.const', errorCodeLiteral(ERR.OBJECT_NULLISH)]]],
+        ['throw', '$__jz_err', ['f64.const', errorCodeLiteral(ERR.OBJECT_NULLISH)]]]])
+    }
+    body.push(['local.set', `$${tBase}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]])
     // a target the module made as it started is saved before the round's first copy into it
     if (hasDurableReset()) { inc('__durable_obj_snap'); body.push(durableObjSnapNode(tBase)) }
     for (let i = 0; i < sources.length; i++) {

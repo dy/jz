@@ -79,6 +79,10 @@ const KEEPING_BUILTINS = /^(Object\.(keys|freeze|isFrozen|getOwnPropertyNames|ge
 // keys, a prototype's), without handing it on (the rest escape it).
 const KEY_READERS = new Set(['Object.keys', 'Object.values', 'Object.getOwnPropertyNames', 'Object.hasOwn', 'Object.freeze', 'Object.isFrozen', 'Object.isSealed', 'Object.isExtensible',
   'Object.assign', 'Object.defineProperty', 'Object.defineProperties', 'Object.setPrototypeOf', 'Object.create', '__keys_ro', '__keys_dyn'])
+// Of those, the ones that only store into their first argument: its keys are
+// written, never read (a store to a declared key and to a missing one leave
+// the same object).
+const KEY_TARGETS = new Set(['Object.assign', 'Object.defineProperty', 'Object.defineProperties'])
 
 const BIND = CLASS_T + 'bind'
 const STRING_METHODS = new Set(['slice', 'substring', 'substr', 'trim', 'trimStart', 'trimEnd', 'toUpperCase', 'toLowerCase', 'padStart', 'padEnd', 'repeat', 'replace', 'replaceAll', 'concat', 'normalize', 'at', 'charAt'])
@@ -2685,7 +2689,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     if (op === '()' || op === '?.()') {
       if (n.length === 2 && op === '()') return expr(n[1])  // a grouping `(e)`: a call always carries its argument slot
       const callee = n[1], base = pushArgs(op === '?.()' ? [',', ...n.slice(2)] : n[2]), count = sp - base
-      if (KEY_READERS.has(callee)) for (let i = 0; i < count; i++) seeKeys(ks[base + i])
+      if (KEY_READERS.has(callee)) for (let i = KEY_TARGETS.has(callee) ? 1 : 0; i < count; i++) seeKeys(ks[base + i])
       let r
       // An optional call: a callee of no kind yet calls nothing, a nullish one answers undefined.
       let optional = null
