@@ -48,6 +48,19 @@ test('integral loops: what else the loop writes reads the same after it', () => 
 
 // `p = q + 1` reads q, which the loop halves: q is no integer, so p is none
 // either; the census drops both and stops (it used to re-add q forever)
+test('integral loops: a handler reads what the loop wrote before it threw', () => {
+  // a copy writes the cursor under a name of its own, which a throw leaves unwritten
+  const src = `const buf = new Float64Array(8)
+    export let run = (p0, k) => { let p = p0, h = 0
+      try { for (let i = 0; i < 8; i++) { h += 1; p = (p + 1) % 5; if (i === k) throw new Error('x'); buf[p] = i } } catch (e) { return h * 100 + p }
+      return h }`
+  const js = oracle(src)
+  for (const optimize of levels(0, 2, 3)) {
+    const m = jz(src, { optimize }).exports
+    for (const [p, k] of [[2, 3], [2, 20], [2.5, 1], [0, 0]]) is(m.run(p, k), js.run(p, k), `run(${p}, ${k}) at ${optimize}`)
+  }
+})
+
 test('integral loops: an index read through a name the loop writes a fraction to agrees with JS', () => {
   const src = `export let f = (n, p0) => { const a = new Float64Array(4); let p = p0, q = 0.5
     for (let i = 0; i < n; i++) { a[p] += 1; p = q + 1; q = q * 0.5 } return a[0] + a[1] * 10 + a[2] * 100 }`

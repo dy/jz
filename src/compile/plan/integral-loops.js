@@ -20,7 +20,8 @@
  * N - 1 : idx - 1`), and that the loop reads from before it: locals of the
  * function (a parameter or a declaration outside the loop) no closure names.
  * A loop with a closure, a label or a suspension in it is left alone, and one
- * too large to copy twice.
+ * too large to copy twice, and one a `try` guards: a throw from the copy
+ * would leave the handler reading the originals, never what the copy wrote.
  *
  * A number of unknown kind is the same case one step earlier: a filter state
  * read back from storage of mixed kinds (`let z1 = s[0]`, `s` a Float64Array
@@ -56,6 +57,7 @@ import { invalidateBodies } from '../analyze.js'
 import { invalidateProgramFactsCache } from '../program-facts.js'
 
 const LOOPS = new Set(['for', 'while'])
+const TRY = new Set(['try', 'catch', 'finally'])   // the protected body is the first operand
 const CLOSED = new Set(['+', '-', '*', '%', 'u-'])
 const BITWISE = new Set(['|', '&', '^', '<<', '>>', '>>>', '~'])
 const STEPS = new Set(['+=', '-=', '*=', '%='])
@@ -218,11 +220,18 @@ const versionBody = (body, params, view, func, programFacts) => {
   } })
   const locals = new Set(params)
   collectBindings(body, locals)
+  // a loop a `try` of the body guards: a throw from the copy would hand the
+  // handler the originals, never what the copy wrote under names of its own
+  const guarded = new Set()
+  walkAst(body, { enter: (n) => {
+    if (n[0] === '=>') return false
+    if (TRY.has(n[0]) && Array.isArray(n[1])) walkAst(n[1], { enter: (m) => { if (m[0] === '=>') return false; if (LOOPS.has(m[0])) guarded.add(m) } })
+  } })
   const loops = []
   walkAst(body, { enter: (node, parent, idx) => {
     if (node[0] === '=>') return false
     // an innermost loop: a nest copies its inner loops alone, each under its own test
-    if (LOOPS.has(node[0]) && parent && !some(node, n => n !== node && LOOPS.has(n[0]))) { loops.push([node, parent, idx]); return false }
+    if (LOOPS.has(node[0]) && parent && !some(node, n => n !== node && LOOPS.has(n[0]))) { if (!guarded.has(node)) loops.push([node, parent, idx]); return false }
   } })
   // a parameter only the program's own calls bind, each to an integer of no name (`off | 0`)
   const sites = func ? programFacts?.callSites.filter(cs => cs.callee === func.name) ?? [] : []
