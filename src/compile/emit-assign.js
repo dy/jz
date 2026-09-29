@@ -31,7 +31,7 @@ import {
 import { emit, idx as emitIndex, storedValue, storedValueNarrow, storedFieldValue } from '../bridge.js'
 import { keyIndex } from './emit/dispatch.js'
 import { REP_EDGE_BOX, representationProgramHasBigint, representationStorageWriteAction } from './representation-plan.js'
-import { plannedTypedStorageInfo } from './typed-storage-plan.js'
+import { plannedTypedStorageInfo, plannedTypedPayloadInfo } from './typed-storage-plan.js'
 import { typedIdxProven, inBoundsArrIdx } from '../type.js'
 import { trySlotUpdate } from './slot-update.js'
 import { durableArrSnapNode, durableObjSnapNode, hasDurableReset } from '../../module/collection/durable.js'
@@ -675,7 +675,9 @@ export function emitElementAssign(arr, idx, val, node = null) {
   //    Also fires for a nested `arr[c]` receiver whose array's elements are typed
   //    arrays of a known ctor (codec `ch[c][i] = …` channelData scatter) — the
   //    `.typed:[]=` emitter resolves the element ctor and inlines the store.
-  const plannedTypedReceiver = plannedTypedStorageInfo(ctx, arr)
+  // A receiver that may be missing stores as its payload's kind, behind the
+  // store's own rejection of the missing one (`.typed:[]=`'s `nullable`).
+  const plannedTypedReceiver = plannedTypedStorageInfo(ctx, arr) ?? plannedTypedPayloadInfo(ctx, arr)
   if (ctx.core.emit['.typed:[]='] &&
       (valTypeOf(arr) === VAL.TYPED || plannedTypedReceiver)) {
     if (!numericKey) {

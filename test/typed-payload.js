@@ -64,3 +64,25 @@ test('typed payload: a versioned loop reads a present channel directly', () => {
   ok(/f32\.load/.test(body), 'an f32 load')
   ok(!/__typed_idx|__utd/.test(body), 'no run-time element dispatch')
 })
+
+// A buffer kept in a field set on first use may be missing: its stores take the
+// typed writer behind the missing receiver's rejection, as its reads do.
+const lazy = `const st = { fs: 48000 }
+  function k(data, params) {
+    if (!params._buf) params._buf = new Float64Array(8)
+    for (let i = 0; i < data.length; i++) { params._buf[i & 7] = data[i]; data[i] = params._buf[(i + 3) & 7] }
+    return data
+  }
+  export let run = (g) => { const d = new Float64Array(16); for (let i = 0; i < 16; i++) d[i] = i * g; k(d, st); return d[5] + d[12] * 10 }`
+
+test('typed payload: a store through a field set on first use is typed', () => {
+  const host = oracle(lazy)
+  for (const optimize of levels(0, 2, 3)) {
+    const m = jz(lazy, { optimize }).exports
+    for (const g of [0.5, 2]) ok(Object.is(m.run(g), host.run(g)), `run(${g}) at ${optimize}`)
+  }
+  if (belowOpt(2)) return
+  const text = wat(lazy, { optimize: 2 })
+  const body = funcWat(text, 'k') || funcWat(text, 'run')
+  ok(body && /f64\.store/.test(body) && !/__dyn_set|__typed_set_idx|__arr_typed_obj_set_idx/.test(body), 'a typed store, no runtime writer')
+})
