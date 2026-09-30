@@ -97,4 +97,3 @@ test('Symbol: the constructor by typeof, its well-known symbols undefined', () =
   is(jz(feature).exports.f(), 'plain')
   ok(!/toStringTag/.test(compile(feature, { wat: true })), 'the arm of the missing feature is gone')
 })
-

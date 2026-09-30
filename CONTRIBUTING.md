@@ -1769,7 +1769,9 @@ substring views never require loads beyond their logical length.
 
 Static data uses owned `Uint8Array` chunks (`src/static-data.js`). Producers write
 bytes directly; relocation adjusts those bytes, and only WAT escaping converts
-them to text. Never use `String.fromCharCode` as a binary serialization layer.
+them to text. Keep `__static_str` outlined until late dead-data removal: the helper
+call retains the ownership edge for sentinel strings. Inlining it earlier leaves
+raw addresses that the helper-based liveness check cannot recognize. Never use `String.fromCharCode` as a binary serialization layer.
 Substring interning shares one UTF-16 address calculation between copied slices
 and views. Short ASCII slices return directly as SSO; the remaining copy path
 always has a memory-backed source and copies whole code units.

@@ -2720,4 +2720,3 @@ test('defineProperty: a descriptor without value defines the key as undefined', 
       return [has(), 'x' in o, o.x === undefined, o.a, k in o, o[k] === undefined].join(' ') }`
   for (const optimize of [0, 2, 3, 'size']) is(jz(src, { optimize }).exports.f('z'), 'true true true 1 true true', `at ${optimize}`)
 })
-

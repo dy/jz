@@ -21,7 +21,7 @@ import { EQ_ZERO_KERNEL } from './_optimizer-kernels.js'
 import { optimize as watOptimize } from 'watr/optimize'
 import parseWat from 'watr/parse'
 import encodeWat from 'watr/compile'
-import { hoistInvariantLoop } from '../src/optimize/licm.js'
+import { hoistInvariantLoop, splitLoopPrivateScratch } from '../src/optimize/licm.js'
 import { devirtSchemaReads } from '../src/optimize/devirt.js'
 import { hoistAddrBase, hoistPtrType } from '../src/optimize/cse-address.js'
 import { peelNarrowConv } from '../src/optimize/vectorize/lift.js'
@@ -1514,6 +1514,40 @@ test('unrolled scalar scratch keeps per-copy SSA and hoists invariant compounds'
   const on = jz(src, { optimize: { ...opts, splitScratch: true } }).exports.main
   const off = jz(src, { optimize: { ...opts, splitScratch: false } }).exports.main
   for (const n of [0, 1, 7, 64]) is(on(n), off(n), `SSA-LICM on===off at n=${n}`)
+})
+
+test('unrolled scalar scratch includes lowered temporaries without changing their lifetime', () => {
+  if (onKernel()) return
+  const scratch = '$\uE000ul0'
+  const cases = [
+    ['invariant', '(local.set $tmp (i32.add (local.get $x) (i32.const 1)))', '', true],
+    ['loop-carried', '(local.set $tmp (i32.add (local.get $tmp) (local.get $x)))', '', false],
+    ['conditional', '(if (i32.eqz (local.get $i)) (then (local.set $tmp (local.get $x))))', '', false],
+    ['live after loop', '(local.set $tmp (local.get $x))', '(local.get $tmp)', false],
+    ['may trap', '(local.set $tmp (i32.div_s (i32.const 12) (local.get $x)))', '', false]
+  ]
+  for (const [name, init, afterLoop, moves] of cases) {
+    const source = `(module (func $f (export "f") (param $n i32) (param $x i32) (result i32)
+      (local $i i32) (local $tmp i32) (local ${scratch} i32) (local $out i32)
+      (block $done (loop $loop
+        (br_if $done (i32.ge_s (local.get $i) (local.get $n)))
+        ${init}
+        (local.set ${scratch} (i32.mul (local.get $tmp) (local.get $tmp)))
+        (local.set $out (i32.add (local.get $out) (local.get ${scratch})))
+        (local.set $i (i32.add (local.get $i) (i32.const 1)))
+        (br $loop)))
+      ${afterLoop ? `(i32.add (local.get $out) ${afterLoop})` : '(local.get $out)'}))`
+    const ast = parseWat(source), fn = findFunc(ast, '$f')
+    const before = new WebAssembly.Instance(new WebAssembly.Module(encodeWat(ast))).exports.f
+    splitLoopPrivateScratch(fn)
+    is(loopCount(fn, n => n[0] === 'i32.mul'), moves ? 0 : 1, name)
+    const after = new WebAssembly.Instance(new WebAssembly.Module(encodeWat(ast))).exports.f
+    // Repeated and changing calls, including a zero-work call whose unused
+    // division would trap if it were moved outside the loop.
+    for (const [n, x] of [[0, 0], [1, 3], [1, 3], [4, -2], [0, 3], [3, 1]])
+      is(after(n, x), before(n, x), `${name}: n=${n}, x=${x}`)
+    if (name === 'may trap') throws(() => after(1, 0), WebAssembly.RuntimeError)
+  }
 })
 
 test('fixed Float64Array locals scalar-replace static slots', () => {

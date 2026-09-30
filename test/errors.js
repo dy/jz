@@ -1296,6 +1296,31 @@ test('instanceof: unsupported RHS rejects loudly at compile time (jz has no prot
   is((() => { try { compile(`export let g = () => 1; export let f = (x) => x instanceof g`, { strict: true }); return false } catch (e) { return e.message.includes('instanceof') } })(), true, 'a user function binding as RHS rejects with the instanceof message')
 })
 
+test('instanceof: primitive wrapper probes fold only for proven primitive inputs', () => {
+  const src = `let calls = 0;
+    const B = Boolean, C = B;
+    function next() { calls++; return 7 }
+    function numeric(value) {
+      if (typeof value === 'object') return value instanceof Number;
+      return typeof value === 'number' && !(value instanceof C);
+    }
+    export function f() {
+      const answer = [next() instanceof Number, 's' instanceof String,
+        true instanceof Boolean, numeric(7), calls];
+      return answer;
+    }`
+  for (const optimize of levels(0, 2, 3)) {
+    const { f } = jz(src, { optimize }).exports
+    is(f(), [false, false, false, true, 1])
+    is(f(), [false, false, false, true, 2])
+  }
+  for (const name of ['Number', 'Boolean', 'String']) {
+    throws(`export let f = () => ({}) instanceof ${name}`, 'instanceof', 'object wrappers need a supported representation')
+    throws(`export let f = () => { const ${name} = 4; return 1 instanceof ${name} }`, 'instanceof', 'a shadowed name cannot fold')
+  }
+  is(jz(`export let f = () => { const B = Boolean, N = Number; return [0,1,2].filter(B).map(N) }`).exports.f(), [1,2], 'local aliases remain usable callbacks')
+})
+
 // A binding that holds a constructor (`var OBJECT = Object`, `const Q = K`)
 // names none by its spelling: `({}) instanceof OBJECT` folded to false.
 // Namespace aliases retain their known constructor. Other aliases reject;

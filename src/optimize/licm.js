@@ -631,8 +631,13 @@ export function splitLoopPrivateScratch(fn) {
     const seen = new Set()
     for (let i = 2; i < loop.length; i++) {
       const s = loop[i]
-      if (Array.isArray(s) && s[0] === 'local.set' && typeof s[1] === 'string' && isUnrolledScratch(s[1])) seen.add(s[1])
+      if (Array.isArray(s) && s[0] === 'local.set' && typeof s[1] === 'string') seen.add(s[1])
     }
+    // Lowering may split a scratch initializer into ordinary temporary locals
+    // (for example, the value captured before NaN canonicalization). Include
+    // those definitions in the same invariance proof, with the same lifetime
+    // checks, so they can move together with the unrolled scratch they feed.
+    if (![...seen].some(isUnrolledScratch)) return
     // Stage 1 — collect SAFE candidates (loop-local, straight-line, first-write, set-only,
     // ≥2 defs) and record each one's def RHS list for the invariance fixpoint.
     const cand = new Map()  // name → { defs: [rhs…] }

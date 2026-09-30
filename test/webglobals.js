@@ -506,4 +506,3 @@ test('host globals: an initializer that reads the host runs once the memory is w
   // a global this host lacks reads as undefined, as its typeof says at compile time for the globals every host has
   is(jz('export let f = () => [typeof globalThis, typeof self === "object" ? 1 : 0, self === undefined ? 1 : 0].join(" ")').exports.f(), 'object 0 1')
 })
-

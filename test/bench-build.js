@@ -8,6 +8,22 @@ import { agreement, exactAgreement, channelsAgree, agrees } from '../bench/_audi
 
 const ROOT = join(import.meta.dirname, '..')
 
+test('bench build: every committed workload is a valid JavaScript module', () => {
+  const result = spawnSync(process.execPath, ['--experimental-vm-modules', '--input-type=module', '-e', `
+    import { readdirSync, readFileSync, existsSync } from 'node:fs'
+    import { join } from 'node:path'
+    import { SourceTextModule } from 'node:vm'
+    const bench = join(process.argv[1], 'bench')
+    for (const entry of readdirSync(bench, { withFileTypes: true })) {
+      if (!entry.isDirectory() || entry.name.startsWith('_')) continue
+      const file = join(bench, entry.name, entry.name + '.js')
+      if (existsSync(file)) new SourceTextModule(readFileSync(file, 'utf8'), { identifier: file })
+    }
+  `, ROOT], { encoding: 'utf8', timeout: 30000 })
+  if (result.error) throw result.error
+  is(result.status, 0, result.stderr)
+})
+
 test('audio comparison: every channel and encoded byte contributes to the verdict', () => {
   const left = Float32Array.of(1, 2), right = Float32Array.of(3, 4)
   is(agrees(channelsAgree([left, right], [left, right.slice()])), true)

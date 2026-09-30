@@ -7,7 +7,7 @@
  */
 
 import { ctx } from '../ctx.js'
-import { hasModule } from '../autoload.js'
+import { hasModule, isNamedCallee } from '../autoload.js'
 import { REJECT_IDENTS } from '../op-policy.js'
 import { isDeclared, resolveScope } from './scope.js'
 import { CONSTANTS, F64_CONSTANTS, GLOBAL_TYPEOF, builtinMemberKey, funcLocalNames, funcValueNames, scopes } from './state.js'
@@ -29,7 +29,7 @@ export const hasFunc = name => ctx.funcs.names.has(name)
 const isNamespaceAliasScoped = name => {
   if (!scopes.length || !isDeclared(name)) return false
   const key = resolveScope(name)
-  return typeof key === 'string' && key !== name && (hasModule(key) || !!builtinMemberKey(key))
+  return typeof key === 'string' && key !== name && (hasModule(key) || isNamedCallee(key) || !!builtinMemberKey(key))
 }
 export const shadowsBuiltin = name => typeof name === 'string' &&
   ((scopes.length && isDeclared(name) && !isNamespaceAliasScoped(name)) || hasFunc(name) || hasFunc(ctx.scope.chain[name]) ||

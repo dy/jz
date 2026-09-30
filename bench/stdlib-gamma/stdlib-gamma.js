@@ -1546,6 +1546,4 @@ const run = () => {
   printResult(medianUs(samples), checksumF64(out), N_EVAL, 1, N_RUNS)
 }
 
-export let main = () => {
-  run()
-}
+export { run as main }

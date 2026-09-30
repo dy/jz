@@ -500,9 +500,7 @@ const run = () => {
   printResult(medianUs(samples), checksumF64(out), N_EVAL, 1, N_RUNS)
 }
 
-export let main = () => {
-  run()
-}
+export { run as main }
 `
   const dir = join(dirname(SELF), '..', 'bench', id)
   mkdirSync(dir, { recursive: true })
@@ -625,9 +623,7 @@ const run = () => {
   printResult(medianUs(samples), checksum(out), N_FN * N_EVAL, 1, N_RUNS)
 }
 
-export let main = () => {
-  run()
-}
+export { run as main }
 `
   const dir = join(dirname(SELF), '..', 'bench', id)
   mkdirSync(dir, { recursive: true })

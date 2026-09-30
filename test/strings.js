@@ -25,7 +25,7 @@ test('string conversion: nullable string reads need only sentinel formatting', (
   }
 })
 
-test('string conversion: inlined sentinel formatting retains its data', () => {
+test('string conversion: sentinel formatting retains its data through final optimization', () => {
   for (const value of ["[m.get('missing'), 1][0]", "({ x: m.get('missing') }).x"]) {
     const src = `export function f() {
       const m = new Map(); m.set('present', 's'); return String(${value});

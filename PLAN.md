@@ -36,9 +36,23 @@ local constructor shadowing, held methods and the typed-store fast paths. Merge
 review fixes unsigned clamping, pointer coercion and assignment-result identity;
 throwing conversions and null receivers preserve evaluation order. SIMD conversion
 recognizers require matching guards and both arms. Nullable strings use sentinel
-formatting without bringing in the number formatter; inlined static-string reads
-retain their seed data. Focused merge regressions pass 11 tests / 524 assertions.
-The full candidate 52 gates are pending; the earlier core results do not certify
+formatting without bringing in the number formatter. Focused merge regressions
+pass 11 tests / 524 assertions. Its fresh 22,567,132-byte compiler passes all 20
+functional and 9 reuse cases, but recursive compilation still exhausts memory.
+
+Candidate 53 keeps the static-string helper outlined until dead-data removal,
+preserving the seed's ownership edge without retaining unused tables. `strbuild`
+is 2,129 bytes and `gainclass` is back to 1,758 bytes. Generated stdlib workloads
+export their existing runner without colliding with library bindings. Their full
+checksums match Node: special functions 2,131,273,638; distributions 377,214,261.
+Proven primitive wrapper probes fold to false, while boxed-object probes remain
+unsupported; constant constructor aliases retain their identity and coercion.
+The focused consolidation sweep passes 627 tests / 14,323 assertions. Expression
+inlining retains wrappers around loop kernels when prefix-only expansion would
+introduce allocations into the caller's loop. Scratch hoisting includes lowered
+temporaries under the existing lifetime and invariance proof. Both O3 failures
+from candidate 51 have focused fixes; the scratch failure also occurs on main.
+The full candidate 53 gates are pending; earlier full-suite results do not certify
 these later changes.
 
 Candidate 39 fixes public constant injection: negative zero, quoted keys,

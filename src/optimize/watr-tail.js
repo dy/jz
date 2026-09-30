@@ -23,7 +23,9 @@ import { pureKernel } from './pure-funcs.js'
 // A runtime helper's cold half, split off so the engine inlines the hot head
 // (module/core.js `__rem`, its long division `__rem_div`): the single-caller
 // inliner would splice it back.
-const OUT_OF_LINE = ['$__rem_div']
+// Static seed data is live through this helper. Preserve that ownership edge
+// until late data stripping; inlining would leave untracked raw addresses.
+const OUT_OF_LINE = ['$__rem_div', '$__static_str']
 
 /**
  * Compute the watr optimizer options for a resolved jz `optimize` config (see
@@ -414,12 +416,6 @@ function stripDeadLateData(module, lazySpans, staticSpan) {
     if (!spans[i].static && spans[i].global !== '__el_tbl' && spans[i].global !== '__ryu_tbl') live.add(spans[i])
   const scan = node => {
     if (!Array.isArray(node) || node[0] === 'data') return
-    // Inlining __static_str / __mkstr can leave an untagged source address
-    // behind a local or a tee. Without address provenance, surviving reads
-    // cannot prove this seed dead merely because its helper disappeared.
-    if (staticSpan && (node[0] === 'memory.copy' ||
-        typeof node[0] === 'string' && node[0].includes('.load')))
-      live.add(staticSpan)
     if (node[0] === 'global' || node[0] === 'global.get' || node[0] === 'global.set') {
       for (let i = 0; i < spans.length; i++) if (node[1] === '$' + spans[i].global) live.add(spans[i])
     } else if (node[0] === 'func') {

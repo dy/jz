@@ -225,6 +225,9 @@ function prepNode(node) {
   if (node === false) return [, false]
   if (!Array.isArray(node)) {
     if (typeof node === 'string') {
+      const conversion = primitiveCtorOf(node)
+      if (conversion === 'Boolean') { includeForCallableValue(); return prep(['=>', 'x', ['!', ['!', 'x']]]) }
+      if (conversion === 'Number') { includeForCallableValue(); return prep(['=>', 'x', ['()', 'Number', 'x']]) }
       if (node in CONSTANTS) return [, CONSTANTS[node]]
       if (node in F64_CONSTANTS) return [, F64_CONSTANTS[node]]
       if (REJECT_IDENTS[node]) err(REJECT_IDENTS[node])
@@ -253,8 +256,6 @@ function prepNode(node) {
       // names.
       if (resolved === GLOBALS[node] && GLOBAL_TYPEOF[node]) {
         if (hasFunc(node)) return node
-        if (node === 'Boolean') { includeForCallableValue(); return prep(['=>', 'x', ['!', ['!', 'x']]]) }
-        if (node === 'Number') { includeForCallableValue(); return prep(['=>', 'x', ['()', 'Number', 'x']]) }
         if (BUILTIN_FNS.has(node)) return node
       }
       // A function of the target named bare (`parseInt`, `isNaN`) is that function, not the
@@ -1708,9 +1709,13 @@ const handlers = {
       : (Array.isArray(rhs) && rhs[0] === '()' && rhs.length === 2 && typeof rhs[1] === 'string') ? rhs[1]
       : null
     const shadowed = rawName != null && shadowsBuiltin(rawName)
-    const name = !shadowed && namespaceModOf(rawName) === 'Object' ? 'Object'
-      : rawName === 'SharedArrayBuffer' && !shadowed ? 'ArrayBuffer' : rawName
+    const name = primitiveCtorOf(rawName) ?? (!shadowed && namespaceModOf(rawName) === 'Object' ? 'Object'
+      : rawName === 'SharedArrayBuffer' && !shadowed ? 'ArrayBuffer' : rawName)
     if (name === 'Object' && !shadowed && !ctx.transform.strict)
+      return ['instanceof', prep(lhs), name]
+    // A primitive can never be a boxed primitive. Defer this proof until
+    // summary/narrowing knows the input; emission rejects object/unknown inputs.
+    if (!shadowed && !ctx.transform.strict && PRIMITIVE_CTORS.has(name))
       return ['instanceof', prep(lhs), name]
     if (name == null || shadowed || !INSTANCEOF_ALLOW.has(name))
       err(`instanceof: unsupported right-hand side (got ${JSON.stringify(rawName ?? rhs)}); ` +
@@ -2036,6 +2041,14 @@ const namesTargetFn = (name) => {
   return emitArity(ctx.core.emit[name], name) > 0
 }
 
+// Constructor identity survives a constant alias even where a callable use
+// lowers to a conversion arrow. Ordinary locals keep their own binding.
+const primitiveCtorOf = name => {
+  if (typeof name !== 'string' || shadowsBuiltin(name)) return null
+  const held = scopes.length && isDeclared(name) ? resolveScope(name) : ctx.scope.chain[name]
+  return PRIMITIVE_CTORS.has(held) ? held : PRIMITIVE_CTORS.has(name) ? name : null
+}
+
 /** A receiver that is a function of the target: its bare name (`Number`, `parseInt`), a name
  *  holding it (`const P = parseInt`), or a member of a namespace it serves (`Math.max`, `M.min`
  *  through an alias). Brings the namespace's module in. */
@@ -2161,6 +2174,8 @@ function preRegisterBuiltinAliases(stmts) {
         // function bodies that call it: jzify lists those bodies first.
         const fn = typeof init === 'string' ? (namesFunc(init) ? init : namesFunc(ctx.scope.chain[init]) ? ctx.scope.chain[init] : null) : null
         if (fn) ctx.scope.chain[name] = fn
+        const primitive = !(blockDeclared.has(init) && PRIMITIVE_CTORS.has(init)) && primitiveCtorOf(init)
+        if (!fn && primitive) registerBuiltinAlias(name, primitive)
         // A builtin namespace bound to a name (`const N = Number`, stdlib's
         // number/ctor) is the namespace: `N.NEGATIVE_INFINITY`, `new N(1)`; a
         // constant bound to a builtin alias (`const fl = floor` after
@@ -2237,6 +2252,8 @@ function prepDecl(op, ...inits) {
       continue
     }
     let [, name, init] = i
+    const primitive = op === 'const' && typeof name === 'string' && primitiveCtorOf(init)
+    if (primitive && !bindingWritten(name) && registerBuiltinAlias(name, primitive)) continue
     const staticStr = op === 'const' ? staticStringExpr(init) : null
     const staticArr = op === 'const' ? staticStringArrayValues(init) : null
     const normed = prep(init)

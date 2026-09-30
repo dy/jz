@@ -548,7 +548,12 @@ const inlineInExpr = (node, candidates, hot = false) => {
       // Declarations in a sequence keep each argument/default at the call's
       // evaluation point, including conditional arms and later operands.
       // Statement bodies keep the statement splice path below.
-      if (shape.prefix.every(s => stmtDeclName(s)))
+      // A retained call to a loop still belongs to its tierable wrapper.
+      // Moving only its argument setup can put allocations into an export's
+      // loop without exposing the callee to statement-level scalarization.
+      const keepsKernel = some(shape.value, n => n[0] === '()' && typeof n[1] === 'string' &&
+        ctx.funcs.map.get(n[1])?.body && loopDepth(ctx.funcs.map.get(n[1]).body, 0) > 0)
+      if (!keepsKernel && shape.prefix.every(s => stmtDeclName(s)))
         return ['(', [',', ...shape.prefix, shape.value]]
     }
   }

@@ -8,7 +8,7 @@ import { ERR_CLASS_NAMES } from '../../../err-codes.js'
 import {
   OBJECT_SCHEMA_HI_MASK, TYPED_ELEM_NAMES, TYPED_ELEM_VIEW_FLAG, DATA_VIEW_FLAG, encodeTypedElemAux, objectSchemaGuardHex,
 } from '../../../layout.js'
-import { PTR, ctx, inc } from '../../ctx.js'
+import { PTR, ctx, inc, err } from '../../ctx.js'
 import { asF64, asI64, emitNum, isPureIR, ptrTypeEq, temp, tempI32, typed } from '../../ir.js'
 import { valTypeOf } from '../../kind.js'
 import { K, hasTag } from '../../summary/kind.js'
@@ -158,6 +158,12 @@ function emitErrorInstanceof(a, rhs) {
 
 export function emitInstanceof(a, rhs) {
   if (isBrand(rhs)) return classInstanceof(a, rhs)
+  if (rhs === 'Number' || rhs === 'Boolean' || rhs === 'String') {
+    const vt = valTypeOf(a)
+    if (vt === VAL.NUMBER || vt === VAL.STRING || vt === VAL.BOOL || vt === VAL.BIGINT)
+      return foldInstanceof(emit(a), false)
+    err(`instanceof: ${rhs} requires a proven primitive input; boxed primitives are unsupported`)
+  }
   if (rhs === 'Object') {
     inc('__is_object')
     return typed(['call', '$__is_object', asI64(emit(a))], 'i32')
