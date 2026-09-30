@@ -98,6 +98,7 @@ const TESTS = [
   'call-release',
   'typed-payload',
   'typed-decode',
+  'typed-store',
   'shift-precedence',
   'loop-step',
   'field-cse',
