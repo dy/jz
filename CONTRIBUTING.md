@@ -2487,7 +2487,8 @@ A module binding nothing that runs reads is not declared, where its value runs n
 (`dropUnreadGlobals`, plan/scope.js, at every level): a name, a literal, a closure, an
 operator that converts nothing (`typeof`, `===`, `&&`), or one that converts numbers, strings
 and booleans only, since an object's conversion calls its `valueOf` and a BigInt's can throw.
-`var Fcn = Function` behind a code generator nothing calls then stops no compile. A read is a
+`var Fcn = Function` behind a code generator nothing calls then compiles to nothing (one the
+program calls is a TypeError where the call runs). A read is a
 name in a function the call graph reaches or in another statement of the module; a binding
 read only by one that goes, goes after it; an exported binding stays (`test/unread-globals.js`).
 

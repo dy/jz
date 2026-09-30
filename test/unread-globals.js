@@ -2,13 +2,13 @@
 // value runs nothing (src/compile/plan/scope.js dropUnreadGlobals): a name, a
 // literal, a closure, an operator over numbers, strings and booleans. A library
 // binds `Function` for a code generator beside the evaluator the program calls;
-// the binding has no reader, and a value the target has no form of stops no
-// compile. At every level: what a program may name does not depend on the
-// optimizer. A value whose evaluation runs code (a call, a conversion of an
-// object) stays, and a binding with a reader that runs stays.
+// the binding has no reader, and nothing of it is compiled. At every level:
+// what a program may name does not depend on the optimizer. A value whose
+// evaluation runs code (a call, a conversion of an object) stays, and a binding
+// with a reader that runs stays: the Function constructor it holds is a
+// TypeError where the call runs (the target compiles no code at run time).
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
-import { compile } from '../index.js'
 import { levels } from './_matrix.js'
 import { oracle, run } from './util.js'
 
@@ -36,12 +36,14 @@ test('unread globals: a binding nothing reads stops no compile', () => {
 })
 
 test('unread globals: a reader that runs keeps the binding', () => {
-  const read = {
-    'a function the host holds': 'const Fcn = Function\n' + GENERATOR + 'export let f = (x) => factory(1)(x)',
-    'a statement of the module': 'const Fcn = Function\nconst made = new Fcn("x", "return x")\nexport let f = (x) => x + 1',
+  const held = 'const Fcn = Function\n' + GENERATOR + 'export let f = (x) => factory(1)(x)'
+  for (const optimize of LEVELS) throws(() => run(held, { optimize }).f(1), /Function constructor/, `a function the host holds at ${optimize}`)
+  const statement = 'const Fcn = Function\nconst made = new Fcn("x", "return x")\nexport let f = (x) => x + 1'
+  for (const optimize of LEVELS) {
+    let threw = false
+    try { run(statement, { optimize }) } catch { threw = true }
+    ok(threw, `a statement of the module throws as it runs at ${optimize}`)
   }
-  for (const [name, src] of Object.entries(read))
-    for (const optimize of LEVELS) throws(() => compile(src, { optimize }), /'Function' is not in scope/, `${name} at ${optimize}`)
 })
 
 // A value whose evaluation runs code is evaluated, reader or none: [source, the calls]
