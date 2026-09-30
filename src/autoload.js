@@ -201,6 +201,7 @@ const CALL_MODULES = dict({
   'fs.write': ['core', 'string', 'fs'],
   'String.fromCharCode': ['core', 'string'],
   Symbol: ['core', 'symbol'],
+  Function: ['core'],
   'Symbol.for': ['core', 'symbol'],
   'String.fromCodePoint': ['core', 'string'],
   'Uint8Array.fromBase64': ['core', 'typedarray', 'string'],

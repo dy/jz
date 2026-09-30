@@ -26,6 +26,14 @@ test('namespace: a member the target does not serve reads as undefined, its call
   is(jz('export let f = () => [typeof Math.frund, Math.frund === undefined, typeof Math.fround].join(" ")').exports.f(), 'undefined true function')
   throws('export let f = (x) => Math.frund(x)', 'math.frund', 'a call of an unserved member should error')
 })
+// `Function(…)` and `new Function(…)`: the target compiles no code at run time, so the call
+// is a TypeError there (a library reaches for `new Function('return this')()` behind a test of
+// its environment), and `typeof Function` is 'function' as a function of the target.
+test('Function constructor: a TypeError at run time, a function by typeof', () => {
+  is(jz('export let f = () => { try { return new Function("return this")() } catch (e) { return e.name } }').exports.f(), 'TypeError')
+  is(jz('export let f = () => { try { return Function("x", "return x")(1) } catch (e) { return e.message.slice(0, 20) } }').exports.f(), 'Function constructor')
+  is(jz('export let f = () => typeof Function').exports.f(), 'function')
+})
 test('module: a second function declaration of a name is an early error', () => throws('function f() { return 1 }\nfunction f() { return 2 }\nexport let g = () => f()', 'duplicate function declaration', 'a duplicate top-level function should error'))
 test('prohibited: eval', () => throws('eval("1")', 'eval', 'eval should error'))
 

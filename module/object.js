@@ -11,7 +11,6 @@ import { DBG_INVARIANTS } from '../src/debug.js'
 import { dataAlign, dataPush, dataLen, pushStaticSlots } from '../src/static-data.js'
 import { typed, asF64, asI64, asI32, NULL_NAN, UNDEF_NAN, TRUE_NAN, FALSE_NAN, temp, tempI32, tempI64, block64, ptrTypeEq, dispatchByPtrType, allocPtr, needsDynShadow, mkPtrIR, extractF64Bits, slotAddr, elemLoad, elemStore, freshId, undefExpr } from '../src/ir.js'
 import { emit, storedValue, storedFieldValue, deps } from '../src/bridge.js'
-import { includeForOp, includeForArrayAccess } from '../src/autoload.js'
 import { staticArrayPtr } from './array.js'
 import { valTypeOf, shapeOf } from '../src/kind.js'
 import { VAL, lookupValType, repOf } from '../src/reps.js'
@@ -804,7 +803,7 @@ export default (ctx) => {
     const t = temp('dp')
     const vi = props ? props.names.indexOf('value') : -1
     // the store and the `in` below are the emitter's own, on a temp: their helpers are not prepare's to include
-    includeForArrayAccess(); includeForOp('in')
+    for (const m of ['array', 'collection', 'string']) ctx.module.include(m)
     if (k != null && props && vi >= 0) return typed(['block', ['result', 'f64'],
       ['local.set', `$${t}`, asF64(emit(obj))],
       ['drop', asF64(emit(['=', ['.', t, k], props.values[vi]]))],
@@ -812,7 +811,6 @@ export default (ctx) => {
     // A static descriptor without `value` (`{}`, `{ enumerable: false }`: ValidateAndApplyPropertyDescriptor,
     // ES2026 §10.1.6.3) defines an absent key as undefined and leaves a present one as it is.
     if (k != null && props) {
-      includeForOp('in')
       return typed(['block', ['result', 'f64'],
         ['local.set', `$${t}`, asF64(emit(obj))],
         ['if', asI32(emit(['!', ['in', ['str', k], t]])),
