@@ -156,6 +156,26 @@ test('guards: reads under a test of something else', () => {
 // the emitter keeps in a temp (`local.tee`) is the sum it stores. A test that
 // equates the counter with another local, or tests an element it reads, bounds
 // no index: the reads past it still take their tests ahead of the loop.
+// A test on what a read answers (`pos[p + c] === 0`, the read hedged for a
+// miss) bounds nothing of the address: the reads beside it in the ternary's
+// arms are tested ahead of the loop like any other.
+test('guards: a test on an element read shields no index made of its address', () => {
+  const src = `export function f(pos, n) {
+  if (!(pos instanceof Float32Array)) throw new TypeError('x')
+  const bits = new Uint32Array(pos.buffer, pos.byteOffset, pos.length), result = new Int32Array(n)
+  for (let v = 0; v < n; v++) {
+    const p = v * 3
+    let h = 2166136261
+    for (let c = 0; c < 3; c++) h = Math.imul(h ^ (pos[p + c] === 0 ? 0 : bits[p + c]), 16777619)
+    result[v] = h
+  }
+  return result[0] + result[n - 1]
+}`
+  shapes(src, w => ok(fewest(w, 'i32.load') <= 1, 'the bit reads are tested ahead of the loop'))
+  const pos = n => { const a = new Float32Array(n * 3); for (let i = 0; i < a.length; i++) a[i] = i % 4 === 0 ? 0 : i * 0.5; return a }
+  for (const n of [0, 1, 4, 9]) for (const m of [n, n + 1, Math.max(0, n - 1)]) agree(src, 'f', [pos(m), n])
+})
+
 // An inlined callee's reads index through temps the emitter tees inside the
 // guard's test: a guard that merges into its neighbour, or goes ahead of the
 // loop, keeps those assignments, the reads after it depend on them.

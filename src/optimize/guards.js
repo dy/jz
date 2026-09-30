@@ -217,7 +217,7 @@ const combine = (loop, holder, tag, types) => {
   // is one a test on the way to it shields: a conditional it is an arm of, or
   // a branch it comes after, that reads a local its index is made of.
   const expand = (e, out, deep = 0) => {
-    if (!isArr(e)) return out
+    if (!isArr(e) || /\.load/.test(e[0])) return out
     if (e[0] === 'local.get' || e[0] === 'local.tee') {
       if (!out.has(e[1])) {
         out.add(e[1])
@@ -225,7 +225,11 @@ const combine = (loop, holder, tag, types) => {
       }
       if (e[0] === 'local.get') return out
     }
-    for (let i = 1; i < e.length; i++) expand(e[i], out, deep)
+    // (a value is what its expression computes: a block's last, a conditional's
+    // arms, one of a select's; the tests and the sets on the way to it bound nothing)
+    if (e[0] === 'block' || e[0] === 'then' || e[0] === 'else') return expand(e[e.length - 1], out, deep)
+    if (e[0] === 'if') { for (let i = 3; i < e.length; i++) expand(e[i], out, deep); return out }
+    for (let i = 1, n = e[0] === 'select' && e.length === 4 ? 3 : e.length; i < n; i++) expand(e[i], out, deep)
     return out
   }
   const madeOf = form => {

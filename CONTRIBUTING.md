@@ -1474,7 +1474,10 @@ element always takes its conversion (`E | 0` for Int32Array): a copy of a
 loop counter would otherwise rate the local unbounded and widen it to f64.
 Loop versioning
 groups cursor offsets by their shared extent and omits already-covered nest
-guards; negative offsets participate in the lower bound. A nested level lifts
+guards; negative offsets participate in the lower bound. A cursor read in a
+statement before the one that advances it (`out[k] = x; k++`, a compaction)
+spans one round fewer than a read at or after the advance: an output sized
+for every round takes the fast arm. A nested level lifts
 its guard to the nest entry only when every name that guard reads is stable
 over the top loop's body, condition and step (`stableLoopNames`: a call may
 replace a global, so calls count as writes). The top loop's own counter,
@@ -1755,7 +1758,9 @@ conditional it is an arm of, or a branch it comes after, shields by bounding
 a local its index is made of (`i > 0 ? a[i - 1] : 0`, a stencil's border), whose
 guard ahead of that test would leave on a round that reads nothing. A test
 bounds a local by ordering it, or equating it with a constant (`!x` included);
-one that equates two locals, or tests an element it reads, bounds nothing.
+one that equates two locals, or tests an element it reads, bounds nothing:
+what it reads through a select, a block or a conditional is what they compute,
+not the tests and the sets on the way to it.
 
 LICM reads a view's descriptor words as it reads a header's: `fn.viewNames`
 (stamped in `compile/emit-func.js`, carried to a promoted global's local by

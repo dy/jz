@@ -472,6 +472,28 @@ export function versionableTypedFor(init, cond, step, body, locals, entryHint = 
     cursorKCache.set(name, K)
     return K
   }
+  // Where the body first advances a cursor, by top-level statement: a read in a
+  // statement before it sees the entry value plus at most K per round gone by;
+  // one in the statement of the advance, or after it, may see this round's too.
+  const advancesIn = (n, name) => { let k = 0; walkAst(n, { enter: x => { if (x[0] === '=>') return false; if ((x[0] === '++' || x[0] === '+=') && x[1] === name) k++ } }); return k }
+  const cursorWriteCache = new Map()
+  const cursorWriteAt = (name) => {
+    if (cursorWriteCache.has(name)) return cursorWriteCache.get(name)
+    let at = -1
+    if (seqBody) for (let s = 1; s < body.length; s++) if (advancesIn(body[s], name) > 0) { at = s; break }
+    cursorWriteCache.set(name, at)
+    return at
+  }
+  const postfixOf = (e, name) => Array.isArray(e) && e[0] === '-' && e.length === 3 && intLiteralValue(e[2]) === 1
+    && Array.isArray(e[1]) && e[1][0] === '++' && e[1][1] === name
+  const cursorPost = (name, idx) => {
+    const at = cursorWriteAt(name)
+    if (at === -1 || scanTop === -1) return true
+    if (scanTop !== at) return scanTop > at
+    // (the statement of the advance: a lone postfix `arr[c++]` reads before it)
+    return !(advancesIn(body[scanTop], name) === 1 && (postfixOf(idx, name) ||
+      (Array.isArray(idx) && idx[0] === '+' && idx.length === 3 && (postfixOf(idx[1], name) || postfixOf(idx[2], name)))))
+  }
   const cands = []
   const seen = new Set()
   // A body-advanced iv (bump > 0) exceeds bound−1 only AFTER its increment
@@ -530,7 +552,7 @@ export function versionableTypedFor(init, cond, step, body, locals, entryHint = 
             const K = mc ? cursorAdvanceOf(mc.c) : null
             if (mc && K != null) {
               seen.add(key)
-              cands.push({ recv: n[1], idx: n[2], cursor: mc.c, K, cConst: mc.K0 })
+              cands.push({ recv: n[1], idx: n[2], cursor: mc.c, K, cConst: mc.K0, post: !forcePre && cursorPost(mc.c, n[2]) })
             } else {
               // LAST resort — beyond the affine model (masked ring cursors, wrap
               // idioms): an interval HULL the static walk bounded but couldn't
