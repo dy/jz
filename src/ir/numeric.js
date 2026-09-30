@@ -8,7 +8,7 @@
 import { ctx, err, inc } from '../ctx.js'
 import { I32_MIN, I32_MAX, isLeaf } from '../ast.js'
 import { typed } from './tag.js'
-import { UNDEF_NAN } from './sentinels.js'
+import { ATOM, atomNanHex } from '../../layout.js'
 import { temp, tempI32 } from './locals.js'
 import { boxPtrIR, valKindToPtr } from './pointers.js'
 import { int32 } from '../static.js'
@@ -21,13 +21,13 @@ import { int32 } from '../static.js'
 export const int32Bits = (x) => ['i32.wrap_i64', ['i64.trunc_sat_f64_s', x]]
 // IR whose value is an integer when it is not the undefined of a miss: MISS
 // when that undefined is among its values, WHOLE when none is, 0 otherwise.
-const WHOLE = 1, MISS = 2
+const WHOLE = 1, MISS = 2, UNDEF = `nan:${atomNanHex(ATOM.UNDEF)}`
 const both = (a, b) => a && b && Math.max(a, b)
 const wholeOrMiss = (v) => {
   if (!Array.isArray(v)) return 0
   const op = v[0]
   if (op === 'f64.convert_i32_s' || op === 'f64.convert_i32_u') return WHOLE
-  if (op === 'f64.const') return Number.isInteger(v[1]) ? WHOLE : v[1] === `nan:${UNDEF_NAN}` ? MISS : 0
+  if (op === 'f64.const') return Number.isInteger(v[1]) ? WHOLE : v[1] === UNDEF ? MISS : 0
   if (op === 'local.tee') return wholeOrMiss(v[2])
   if (op === 'block' || op === 'then' || op === 'else') return v.length > 1 ? wholeOrMiss(v[v.length - 1]) : 0
   if (op === 'if') return v.reduce((k, c) => Array.isArray(c) && (c[0] === 'then' || c[0] === 'else') ? both(k, wholeOrMiss(c)) : k, WHOLE)

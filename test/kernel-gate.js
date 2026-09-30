@@ -16,6 +16,8 @@ import { compile } from '../index.js'
 import { PROGRAMS } from '../scripts/kernel-gate-corpus.js'
 import { deriveStatus, judgeMemory, judgeSpeed, median, validateReport } from '../scripts/kernel-gate-judge.mjs'
 import { graphEntries, contentHash } from '../scripts/graph-provenance.mjs'
+import { resolveSelfCompileBuild, SELF_ENTRY } from '../scripts/build-profile.mjs'
+import { rewriteModuleImports } from '../src/resolve.js'
 import { onKernel } from './_matrix.js'
 
 const ROOT = new URL('..', import.meta.url).pathname
@@ -31,6 +33,26 @@ const fixture = (body, readers = true) => compile((readers ? READERS : '') + `ex
 const GARBAGE = 'return new Uint8Array([1, 2, 3])'
 const withDir = (fn) => { const dir = mkdtempSync(join(tmpdir(), 'jz-gate-')); try { return fn(dir) } finally { rmSync(dir, { recursive: true, force: true }) } }
 const manifestOf = (path) => JSON.parse(readFileSync(path, 'utf8'))
+
+test('kernel gate: the ordinary self-compiler graph has no import cycles', () => {
+  if (onKernel()) return
+  const { graph } = resolveSelfCompileBuild()
+  const sources = new Map([...Object.entries(graph.modules), [SELF_ENTRY, graph.code]])
+  const done = new Set(), stack = []
+  const visit = name => {
+    if (done.has(name)) return
+    if (stack.includes(name)) throw Error(`Circular self-compiler import: ${[...stack, name].map(p => relative(ROOT, p)).join(' -> ')}`)
+    stack.push(name)
+    rewriteModuleImports(sources.get(name), (text, dep) => {
+      if (sources.has(dep)) visit(dep)
+      return text
+    })
+    stack.pop(); done.add(name)
+  }
+  visit(SELF_ENTRY)
+  ok(done.has(join(ROOT, 'src/ir/numeric.js')) && done.has(join(ROOT, 'src/ir/sentinels.js')),
+    `${done.size} reachable modules, including numeric coercions and sentinels, are acyclic`)
+})
 
 test('kernel gate: graph fingerprints survive checkout moves and retain source and edge changes', () => {
   if (onKernel()) return
