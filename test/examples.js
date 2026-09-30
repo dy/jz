@@ -319,8 +319,10 @@ test('example: toroidal-wrap stencils (diffusion, slime) vectorize and stay bit-
     // — value-exact for any finite integer-valued f64, not an approximation.
     const cases = [
         { name: 'diffusion', want: 60, drive: (e) => { const p = e.resize(64, 48); if (e.seedRect) e.seedRect(20, 15, 40, 30); for (let f = 0; f < 8; f++) e.frame(); return [...p]; } },
-        // slime: 18 since its blur became a partial mix, src·(1−D) + mean·D
-        { name: 'slime', want: 18, drive: (e) => { const p = e.resize(64, 48); e.seed(); for (let f = 0; f < 20; f++) e.frame(f); return [...p]; } },
+        // slime: 18 since its blur became a partial mix, src·(1−D) + mean·D; 17 since its
+        // loop runs as a copy where both grids are present (plan/integral-loops.js): the
+        // stencil keeps its 9 f64x2.add and 4 f64x2.mul, one constant's splat is shared
+        { name: 'slime', want: 17, drive: (e) => { const p = e.resize(64, 48); e.seed(); for (let f = 0; f < 20; f++) e.frame(f); return [...p]; } },
     ];
     for (const { name, want, drive } of cases) {
         const src = fs.readFileSync(new URL(`../examples/${name}/${name}.js`, import.meta.url), 'utf8');
