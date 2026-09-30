@@ -362,6 +362,23 @@ export function intRanges(fn, bodyStart, assume = null, regions = null) {
   // The interval each operand had when its operator ran (the recorded `av` is
   // the hull of every visit; a refinement uses this visit's).
   const seenAt = new Map()
+  // A comparison describes the value read by each operand. A later operand
+  // can overwrite that local before either arm starts. Walk each guard once
+  // backwards to exclude those stale reads from its refinements.
+  const staleGuards = new Map()
+  const staleReads = c => {
+    if (staleGuards.has(c)) return staleGuards.get(c)
+    const stale = new Set(), written = new Set()
+    const scan = n => {
+      if (!isArr(n)) return
+      if ((n[0] === 'local.get' || n[0] === 'local.tee') && written.has(n[1])) stale.add(n)
+      if (n[0] === 'local.set' || n[0] === 'local.tee') written.add(n[1])
+      for (let i = n.length - 1; i > 0; i--) scan(n[i])
+    }
+    scan(c)
+    staleGuards.set(c, stale)
+    return stale
+  }
   // What a test establishes: the intervals of the locals it compares, in the
   // environment where it holds (`truth`) or fails.
   const readName = x => isArr(x) && (x[0] === 'local.get' || x[0] === 'local.tee') && typeof x[1] === 'string' && tracked(x[1]) ? x[1] : null
@@ -389,18 +406,18 @@ export function intRanges(fn, bodyStart, assume = null, regions = null) {
     // box is a NaN.
     bind(env, name, { lo, hi, int: whole, nz: (x ? x.nz : floats) && lo <= 0 && hi >= 0, nan: false })
   }
-  const refine = (c, truth, env) => {
+  const refine = (c, truth, env, stale = staleReads(c)) => {
     if (!isArr(c)) return
     const op = c[0]
-    if (op === 'i32.eqz') return refine(c.find(isArr), !truth, env)
-    if ((op === 'i32.and' && truth) || (op === 'i32.or' && !truth)) { for (const k of c) if (isArr(k)) refine(k, truth, env); return }
+    if (op === 'i32.eqz') return refine(c.find(isArr), !truth, env, stale)
+    if ((op === 'i32.and' && truth) || (op === 'i32.or' && !truth)) { for (const k of c) if (isArr(k)) refine(k, truth, env, stale); return }
     if ((op === 'local.get' || op === 'local.tee') && types.get(c[1]) === 'i32') {
-      bound(env, c[1], truth ? 'ne' : 'eq', { lo: 0, hi: 0 }, false)
+      if (!stale.has(c)) bound(env, c[1], truth ? 'ne' : 'eq', { lo: 0, hi: 0 }, false)
       return
     }
     const [p, q] = c.filter(isArr)
     const a = seenAt.get(p) ?? null, b = seenAt.get(q) ?? null
-    const x = readName(p), y = readName(q)
+    const x = stale.has(p) ? null : readName(p), y = stale.has(q) ? null : readName(q)
     const floats = op in F64_CMP
     const back = (op === 'f64.eq' || op === 'f64.ne') && x != null ? readBack(q, x) : null
     if (back) {
@@ -572,7 +589,14 @@ export function intRanges(fn, bodyStart, assume = null, regions = null) {
       // it tests).
       case 'f64.load': return n.presentNumRead || n.numberRead ? NUMBER : null
       case 'i32.wrap_i64': return fitsI32(a) ? a : I32
-      case 'i64.trunc_sat_f64_s': return !a ? null : none(a) ? answer(0) : val(Math.min(Math.trunc(a.lo), a.nan ? 0 : Infinity), Math.max(Math.trunc(a.hi), a.nan ? 0 : -Infinity))
+      case 'i64.trunc_sat_f64_s': {
+        if (!a) return null
+        if (none(a)) return answer(0)
+        const lo = Math.min(Math.trunc(a.lo), a.nan ? 0 : Infinity), hi = Math.max(Math.trunc(a.hi), a.nan ? 0 : -Infinity)
+        // Saturation can change the magnitude; its i64 endpoints are not
+        // exactly representable as Numbers. Keep only exact interior bounds.
+        return Number.isSafeInteger(lo) && Number.isSafeInteger(hi) ? val(lo, hi) : null
+      }
       case 'i32.trunc_sat_f64_s': return !a ? I32 : none(a) ? answer(0)
         : val(Math.max(I32.lo, Math.min(Math.trunc(a.lo), a.nan ? 0 : Infinity)), Math.min(I32.hi, Math.max(Math.trunc(a.hi), a.nan ? 0 : -Infinity)))
       case 'i32.trunc_sat_f64_u': return real(a) && a.lo >= 0 && a.hi <= I32.hi ? val(Math.trunc(a.lo), Math.trunc(a.hi)) : I32

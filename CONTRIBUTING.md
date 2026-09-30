@@ -1759,8 +1759,11 @@ its remainder by a constant is `rem_s`, its quotient under a truncation is
 interval walk follows the statements in evaluation order and keeps for every
 i32, i64 and f64 local `{ lo, hi, int, nz, nan }`: the closed interval, whether
 the value is an integer, whether it may be -0, whether it may be NaN; no
-interval at all is any value, a box among them. A comparison refines the arm
-it guards, arms hull at their join, and a loop head is the hull of its entry
+interval at all is any value, a box among them. Raw i64 constants and truncations
+have bounds only where Number endpoints represent their integers exactly.
+A comparison refines only reads that later guard operands have not overwritten;
+this applies through eager compound tests and negation. Arms hull at their join,
+and a loop head is the hull of its entry
 and its back edges, widened where a bound still moves after two walks and
 narrowed again by the loop's own tests. Only a local on a cycle of writes (a
 counter, a running sum, a pair that feed each other) widens: every other

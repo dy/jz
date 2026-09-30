@@ -5,7 +5,7 @@
 // differential against the host; the WAT shows where the arithmetic runs.
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import { agree, wat } from './util.js'
+import { agree, oracle, run, wat } from './util.js'
 import { belowOpt } from './_matrix.js'
 import parseWat from 'watr/parse'
 import encodeWat from 'watr/compile'
@@ -243,6 +243,14 @@ test('int-narrow: i64 comparisons retain bits beyond exact Number integers', () 
 })
 
 test('int-narrow: saturating i64 conversions keep their actual magnitude', () => {
+  for (const n of ['1e30', '-1e30', 'inf', '-inf', 'nan', '4503599627370496', '-4503599627370496', '0']) {
+    const src = `(module (func $f (export "f") (result i32)
+      (f64.gt (f64.abs (f64.convert_i64_s (i64.trunc_sat_f64_s (f64.const ${n})))) (f64.const 1e25))))`
+    const ir = parseWat(src), before = new WebAssembly.Instance(new WebAssembly.Module(encodeWat(ir))).exports.f
+    narrowInts(ir[1])
+    const after = new WebAssembly.Instance(new WebAssembly.Module(encodeWat(ir))).exports.f
+    is(after(), before(), `saturated magnitude, ${n}`)
+  }
   const src = `(module (func $f (export "f") (param $c i32) (result i32) (local $x f64)
     (local.set $x (select (f64.const 1e30) (f64.const -1e30) (local.get $c)))
     (f64.gt (f64.abs (f64.convert_i64_s (i64.trunc_sat_f64_s (local.get $x)))) (f64.const 1e25))))`
@@ -250,4 +258,42 @@ test('int-narrow: saturating i64 conversions keep their actual magnitude', () =>
   narrowInts(ir[1])
   const after = new WebAssembly.Instance(new WebAssembly.Module(encodeWat(ir))).exports.f
   for (const c of [0, 0, 1, 0]) is(after(c), before(c), `saturated magnitude, c=${c}`)
+})
+
+test('int-narrow: guard refinements follow later operand writes', () => {
+  const bodies = [
+    'if (x < (x = (n + 1) & 7)) return x === 7; return 3',
+    'return x < (x = (n + 1) & 7) ? x === 7 : 3',
+    'if (x > (x = (n - 1) & 7)) return x === 0; return 3',
+    'if (!((x < 3) & (x = (n + 5) & 7))) return x; return x === 7',
+    'if ((x > 3) | (x = (n + 2) & 7)) return x; return x === 0',
+    'if ((x = (n + 1) & 7) < 7) return x === 7; return x',
+  ]
+  for (const body of bodies) {
+    const src = `export function f(n) { let x = n & 7; ${body} }`, host = oracle(src).f
+    for (const optimize of [0, 1, 2, 3, 'size']) {
+      const f = run(src, { optimize }).f
+      for (const n of [6, 6, 0, 6, -1, 1, 2, 7, 8, 14, 2147483647, -2147483648])
+        is(f(n), host(n), `${body}, ${optimize}, ${n}`)
+    }
+  }
+})
+
+test('int-narrow: eager compound guards keep refinements on current reads', () => {
+  const guards = [
+    '(i32.lt_s (local.get $x) (local.tee $x (i32.and (i32.add (local.get $n) (i32.const 1)) (i32.const 7))))',
+    '(i32.and (i32.lt_s (local.get $x) (i32.const 3)) (local.tee $x (i32.and (i32.add (local.get $n) (i32.const 5)) (i32.const 7))))',
+    '(i32.eqz (i32.or (i32.gt_s (local.get $x) (i32.const 3)) (local.tee $x (i32.and (i32.add (local.get $n) (i32.const 2)) (i32.const 7)))))',
+  ]
+  for (const guard of guards) {
+    const src = `(module (func $f (export "f") (param $n i32) (result i32) (local $x i32)
+      (local.set $x (i32.and (local.get $n) (i32.const 7)))
+      (if (result i32) ${guard}
+        (then (i32.eq (local.get $x) (i32.const 7)))
+        (else (i32.eq (local.get $x) (i32.const 0))))))`
+    const ir = parseWat(src), before = new WebAssembly.Instance(new WebAssembly.Module(encodeWat(ir))).exports.f
+    narrowInts(ir[1])
+    const after = new WebAssembly.Instance(new WebAssembly.Module(encodeWat(ir))).exports.f
+    for (const n of [6, 6, 0, 6, -1, 1, 2, 3, 4, 5, 7, 8, 14]) is(after(n), before(n), `${guard}, n=${n}`)
+  }
 })

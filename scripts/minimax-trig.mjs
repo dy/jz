@@ -1,4 +1,5 @@
-// The kernels' polynomials (module/math/trig-tables.js SIN_C, COS_C, ATAN_C, ASIN_C):
+// The kernels' polynomials (module/math/trig-tables.js SIN_C, COS_C, ATAN_C),
+// plus the former asin fit for comparison with its current fdlibm kernel:
 // minimax fits of the function's relative error on the reduced interval, by the Remez
 // exchange in 256-bit fixed point, the coefficients rounded to the nearest double. Each is
 // then measured as the kernels evaluate it (polyTree, binary64) against the same
@@ -12,7 +13,7 @@
 //   asin(r) = r·(1 + t·S(t))          |r| ≤ 1/2            (after asin's half-angle step)
 //
 // The degree of each is the lowest whose measured error stays well inside the 100-ulp
-// budget jz's Math keeps against V8: one degree less costs sin 46000 ulp, cos 1071, atan
+// budget used when these fits were selected: one degree less costs sin 46000 ulp, cos 1071, atan
 // 248, asin 537 (the minimax bound, 2^53 × the relative error).
 import { polyTree as tree } from '../module/math/trig-tables.js'
 
