@@ -57,7 +57,8 @@ export function f(n) {
 
 test('store-int32: an unknown value converts inline below 2^63 and through the kernel beyond', () => {
   const src = `export function f(v) { const a = new Int32Array(2); a[0] = v; a[1] = -v; return a[0] * 3 + a[1] }`
-  shapes(src, w => ok(/\(f64\.ge\s*\(f64\.abs/.test(w) && calls(w, '__to_int32') >= 1, 'the kernel stays behind the magnitude guard'))
+  // The emitter puts the fast arm first; late lowering puts the slow arm first.
+  shapes(src, w => ok(/\(f64\.(?:lt|ge)\s*\(f64\.abs/.test(w) && calls(w, '__to_int32') >= 1, 'the kernel stays behind the magnitude guard'))
   const VALUES = [0, 1, -1, 1.5, -1.5, 2147483647, 2147483648, -2147483649, 4294967296.5, 1e20, -1e20,
     2 ** 53 + 2, 2 ** 63 - 1024, -(2 ** 63 - 1024), 2 ** 63, -(2 ** 63), 2 ** 63 + 4096, 2 ** 84, 2 ** 84 + 2 ** 40, NaN, Infinity, -Infinity, -0]
   for (const v of VALUES) agree(src, 'f', [v])
