@@ -97,7 +97,13 @@ const layout = () => {
         if (heading) title(el)
         if (!heading) el.classList.add('reflect-text')
         const rect = el.getBoundingClientRect()
-        return { el, heading, rect }
+        let bounds = rect
+        if (heading) {
+          const range = document.createRange()
+          range.selectNodeContents(el.querySelector('.title-fill'))
+          bounds = range.getBoundingClientRect()
+        }
+        return { el, heading, rect, bounds }
       })
   }
   dirty = false
@@ -119,7 +125,6 @@ const frame = () => {
   raf = 0
   if (root.classList.contains('jz-saver') || root.classList.contains('jz-embed')) return
   if (dirty) layout()
-  root.style.setProperty('--light-active', pointer && mouse.matches && !motion.matches ? '1' : '0')
   const target = pointer && mouse.matches && !motion.matches ? pointer : { x: innerWidth / 2, y: -160 }
   field.x = motion.matches ? target.x : field.x + (target.x - field.x) * .2
   field.y = motion.matches ? target.y : field.y + (target.y - field.y) * .2
@@ -141,11 +146,15 @@ const frame = () => {
       item.el.style.setProperty('--light-y', `${field.y - rect.top}px`)
     }
   }
-  for (const { el, heading, rect } of ink) {
+  for (const { el, heading, rect, bounds } of ink) {
     if (!rect.width || !rect.height || rect.bottom < 0 || rect.top >= innerHeight) continue
     if (heading) {
       el.style.setProperty('--light-x', `${(field.x - rect.left).toFixed(1)}px`)
       el.style.setProperty('--light-y', `${(field.y - rect.top).toFixed(1)}px`)
+      // Keep the fill over the letters; distant vertical motion has less influence.
+      const half = Math.max(bounds.width / 2, 1), cx = bounds.left + half, cy = bounds.top + bounds.height / 2
+      el.style.setProperty('--shine-x', `${(cx - rect.left + half * Math.tanh((field.x - cx) / half)).toFixed(1)}px`)
+      el.style.setProperty('--shine-y', `${(cy - rect.top + 60 * Math.tanh((field.y - cy) / 240)).toFixed(1)}px`)
     } else el.style.setProperty('--light-power', illumination(rect).power.toFixed(3))
   }
   if (painted && Math.abs(target.x - field.x) + Math.abs(target.y - field.y) > .1) schedule()

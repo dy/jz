@@ -44,6 +44,7 @@ async function glint({ count = 1, reduced = false, fine = true, failure = 'http'
         selector.startsWith('.ruled') ? [...rules.map(rect => ({ getBoundingClientRect: () => rect })), ...(selector.includes('table') ? tables : [])] :
         selector.includes('table') ? tables : selector.startsWith('h1') ? textNodes.filter(el => el.matches(selector)) : [],
       createElement: node, createElementNS: (_, tag) => tag === 'svg' ? ruler : node(), documentElement: doc,
+      createRange: () => { let fill; return { selectNodeContents(el) { fill = el }, getBoundingClientRect: () => { measurements++; return fill.getBoundingClientRect() } } },
       body: { append(el) { mounted.push(el) }, getBoundingClientRect: () => ({ left: 0 }) } },
     matchMedia: query => query.includes('reduced-motion') ? motion : mouse,
     addEventListener: listen, innerWidth: 1000, innerHeight: 800, scrollY: scroll, URL,
@@ -219,7 +220,7 @@ test('site: buttons use the logo bevel and tables remain matte', async () => {
 test('site: brushed title rims share the cursor light without filters or stat effects', async () => {
   const text = (kind, width = 100, height = 16) => {
     const classes = new Set(), rect = { left: 20, top: 40, width, height, bottom: 40 + height }
-    const fill = { textContent: 'Examples', getBoundingClientRect: () => rect }
+    const fill = { textContent: 'Examples', getBoundingClientRect: () => fill.inkRect || rect }
     const outline = { textContent: 'Examples', isConnected: true, style: {} }
     return { textContent: 'Examples', rect, fill, outline, dataset: {},
       matches: selector => selector.split(', ').includes(kind),
@@ -230,17 +231,34 @@ test('site: brushed title rims share the cursor light without filters or stat ef
   }
   const title = text('h1.title'), stat = text('.metrics b'), faq = text('h2'), logo = text('.logo-letters'), textNodes = [title, stat, faq, logo]
   const g = await glint({ paper: true, count: 0, textNodes }); g.drain()
-  is(g.doc.style['--light-active'], '0', 'silver faces rest as outlines without a pointer')
   const at = (x, y) => Math.abs(parseFloat(title.style['--light-x']) - x) + Math.abs(parseFloat(title.style['--light-y']) - y) < .15
   ok(at(480, -200), 'resting titles share the overhead light')
   g.move(70, 48); g.drain()
-  is(g.doc.style['--light-active'], '1', 'the radial fill uses the same live pointer as the rim')
   ok(at(50, 8), 'reflection uses local CSS pixels')
   const measured = g.measurements()
   g.move(70, 48); is(g.drain(), 1, 'repeated pointer position settles in one frame')
   is(g.measurements(), measured, 'pointer movement reuses measured geometry')
   title.rect.left = 40; title.rect.top = 20; g.emit('scroll'); g.drain()
   ok(at(30, 28), 'scroll remeasures the paint box')
+  title.rect.width = 800
+  title.fill.inkRect = { left: 60, top: 20, width: 200, height: 16 }
+  g.emit('resize'); g.move(160, 28); g.drain()
+  const shine = () => ['--shine-x', '--shine-y'].map(name => parseFloat(title.style[name]))
+  const centered = () => Math.abs(shine()[0] - 120) + Math.abs(shine()[1] - 8) < .15
+  ok(centered(), 'the fill centers on the actual letters inside a wider heading')
+  g.move(160, 268); g.drain()
+  ok(shine()[1] > 8 && shine()[1] < 68, '240px vertical travel moves the fill less than 60px')
+  for (const [x, y] of [[-1e6, -1e6], [1e6, 1e6], [-1e6, -1e6]]) {
+    g.move(x, y); g.drain()
+    const [sx, sy] = shine()
+    ok(sx >= 20 && sx <= 220 && sy >= -52 && sy <= 68, 'far cursors keep the light over the letter bounds with a bounded vertical offset')
+  }
+  g.move(160, 28); g.drain()
+  ok(centered(), 'returning to the same point restores the same gradient')
+  title.fill.inkRect.width = 0; title.fill.inkRect.height = 0
+  g.emit('resize'); g.drain()
+  ok(shine().every(Number.isFinite), 'zero-size ink has finite fallback coordinates')
+  title.rect.width = 100; delete title.fill.inkRect
   for (const el of [stat, faq, logo])
     is(Object.keys(el.style), ['setProperty'], 'unrelated glyphs receive no paint updates')
   for (const value of ['2.36×', '2.36×', '1.04×']) {
@@ -248,10 +266,9 @@ test('site: brushed title rims share the cursor light without filters or stat ef
     is(g.defs.children.length, 0, 'text updates never allocate SVG blur filters')
   }
   g.emit('pointerleave'); g.drain()
-  is(g.doc.style['--light-active'], '0', 'leaving clears the radial fill')
+  ok(Number.isFinite(parseFloat(title.style['--shine-y'])), 'leaving retains a finite resting fill position')
   ok(at(460, -180), 'leaving resets the resting reflection')
   g.move(70, 48); g.drain(); g.motion.matches = true; g.emit('motion'); g.drain()
-  is(g.doc.style['--light-active'], '0', 'reduced motion disables pointer-driven fill')
   ok(at(460, -180), 'reduced motion restores static lighting')
   g.move(70, 48); is(g.frames.size, 0, 'reduced motion does not animate')
   g.motion.matches = false; g.emit('motion'); g.drain()

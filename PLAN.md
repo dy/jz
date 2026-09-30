@@ -9,7 +9,7 @@ that shaped the tree, the work left before release and the latest gate reading.
 ## Release status, September 30
 
 **V1 remains blocked by recursive bootstrap and incomplete release gates.**
-Consolidated candidate 45 passes the full core suite: 5,527 tests and 212,456
+Consolidated candidate 48 passes the full core suite: 5,532 tests and 212,977
 assertions. It combines main's memory fixes, the performance branch and the v1
 work. Main's release protocol, held views and nested-return restoration remain;
 fixed-memory compilation and the receiver-only array-growth rule are retained.
@@ -26,6 +26,10 @@ its full SIMD suite passes 240 tests / 7,089 assertions, including empty work,
 lane boundaries, missing reads, reused buffers and temporary assignments. The
 shared-load rewrite requires one assignment dominating every substituted read;
 reads before assignment and differently assigned values remain distinct.
+Candidate 50 reuses field-target lists and avoids redundant analysis storage.
+Its focused sweep passes 159 tests / 32,402 assertions; direct alias mutation,
+shadowing and reuse checks pass 17 assertions. The allocation regression for
+repeated local aliases falls from 3.61 MB to 3.43 MB with identical output bytes.
 
 Candidate 39 fixes public constant injection: negative zero, quoted keys,
 sparse-array length, cycle rejection and adjacent negative template values.
@@ -37,11 +41,11 @@ Floatbeat/landing interaction checks pass. The strict bundle is still 2.9 MB
 The numeric-coercion import cycle is fixed. Candidate 42 builds a fresh ordinary
 Wasm compiler (22,357,874 bytes); summary fingerprint and temporary-allocation
 fixes reduce its first recursive summary pass from 628 MB to 482 MB. Candidate
-47 reduces it further to 315 MB, but the later list-kind specialization still
+50 reduces it further to 287 MB, but the later list-kind specialization still
 exhausts the 4 GiB heap after eight summary passes. Its fresh compiler is
-22,360,122 bytes. The export census reduces sampled native allocations from
+22,375,869 bytes. The export census reduces sampled native allocations from
 1,488 to 1,203 MiB but barely changes the Wasm heap. Ordinary build defaults
-have not changed. Fresh round-trip and parity/oracle gates pass on candidate 47;
+have not changed. Fresh round-trip and parity/oracle gates pass on candidate 50;
 the forced-checkpoint gate also passes on candidates 47 and 48. The remaining matrix, conformance,
 extended, fuzz and complete hosted-suite checks have not all passed on the latest
 candidate.
@@ -61,7 +65,7 @@ do not certify the entire audio corpus or the standing speed claims. Fresh
 reference-machine performance evidence remains open.
 
 The newer shared-site title treatment, engine switch and popup positioning
-are reconciled. All 25 site tests / 483 assertions pass, as do real-browser
+are reconciled, including the later title-light bounds. All 25 site tests / 494 assertions pass, as do real-browser
 checks of Floatbeat, desktop/mobile layout, popup bounds, keyboard focus,
 Escape/refocus, reduced motion and forced colors.
 

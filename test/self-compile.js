@@ -521,6 +521,24 @@ test('self-compile: long literal decoding uses linear storage and preserves text
   }
 })
 
+test('self-compile: repeated local names do not retain unused alias-use lists', () => {
+  const s = getSelf(), prior = new Map()
+  for (const count of [0, 256, 256, 64, 0, 256]) {
+    const source = Array.from({ length: count }, (_, i) =>
+      `function part${i}(x){const record={value:x};const alias=record;return alias.value+${i}}`).join('') +
+      `export function main(x){let sum=0;${Array.from({ length: count }, (_, i) => `sum+=part${i}(x);`).join('')}return sum}`
+    const out = s.exports.default(s.memory.String(source), 0, s.memory.String('1'))
+    const bytes = new Uint8Array(s.memory.read(out))
+    const summary = phaseDeltas(readMarks(s)).find(p => p.name === 'summary')
+    ok(summary && summary.bytes < 128 * 1024 + count * 13 * 1024,
+      `${count} independent aliases: first summary uses ${summary?.bytes} bytes`)
+    const { main } = instantiate(bytes).exports
+    for (const x of [0, 2, -3, 2]) is(main(x), count ? count * x + count * (count - 1) / 2 : 0)
+    if (prior.has(count)) is([...bytes], [...prior.get(count)], `${count}: repeated and interleaved compilations preserve the module`)
+    else prior.set(count, bytes)
+  }
+})
+
 test('self-compile: summary fingerprints use linear storage for named records', () => {
   const s = getSelf()
   for (const count of [0, 512, 512, 128, 0, 512]) {

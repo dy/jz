@@ -133,11 +133,11 @@ h1, h2, h3, h4, h5, h6 { font-family: var(--font); }
 .reflect-title[data-metal-ready="true"] > .title-outline { visibility: visible; }
 .metal-face {
   mask-image: radial-gradient(ellipse 480px 180px at var(--fill-x, 50%) var(--fill-y, 50%), #000, #000e 50%, transparent),
-    radial-gradient(ellipse 360px 120px at var(--fill-x, 50%) calc(200% - var(--fill-y, 50%)), #0006, transparent);
-  opacity: var(--light-active, 0);
+    radial-gradient(ellipse 360px 120px at var(--fill-x, 50%) calc(200% - var(--fill-y, 50%)), #0006, transparent),
+    linear-gradient(145deg, #0003, #0001);
   pointer-events: none;
 }
-.reflect-title { --fill-x: calc(var(--light-x, 0px) + .25em); --fill-y: calc(var(--light-y, -160px) + .25em); }
+.reflect-title { --fill-x: calc(var(--shine-x, 50%) + .25em); --fill-y: calc(var(--shine-y, 50%) + .25em); }
 .title-outline {
   -webkit-text-fill-color: transparent;
   background: repeating-linear-gradient(0deg, #ffffff18 0 .5px, #0000000d .5px 1px, transparent 1px 2.5px),
