@@ -171,7 +171,10 @@ const splitBody = (func, body, view, params, rest, programFacts) => {
     collectBindings(bare, inner)
     const writes = writtenIn(bare)
     // a name of several kinds, a typed array among them, and the constructors its values name:
-    // one each, or up to three for one of the names (a Float32Array a caller passes, a Float64Array another does)
+    // one each, or up to three for one of the names (a Float32Array a caller passes, a Float64Array another
+    // does) where the loop only reads that name's elements: a loop storing into it is versioned by
+    // width after emission (optimize/unswitch.js), one copy per width instead of one per constructor
+    const storedInto = (n) => some(bare, m => ASSIGN_OPS.has(m[0]) && Array.isArray(m[1]) && m[1][0] === '[]' && m[1][1] === n)
     const split = []
     let multi = null
     for (const n of receivers(bare)) {
@@ -182,7 +185,7 @@ const splitBody = (func, body, view, params, rest, programFacts) => {
       sites ??= programFacts?.callSites.filter(cs => cs.callee === func.name && !cs.synthetic && func.body === body) ?? []
       ctorsOf(n, { view, params, rest, sites, func, body, programFacts }, ctors)
       if (ctors.size === 1) split.push([n, [...ctors][0]])
-      else if (ctors.size > 1 && ctors.size <= MAX_CTORS && !multi) multi = [n, [...ctors]]
+      else if (ctors.size > 1 && ctors.size <= MAX_CTORS && !multi && !storedInto(n)) multi = [n, [...ctors]]
     }
     if (!split.length && !multi) continue
     // a copy per constructor of the one name, each under its own test beside the others'; the loop last
