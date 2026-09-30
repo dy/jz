@@ -285,6 +285,29 @@ test('summary: dynamic literals analyze callbacks after spreads and computed key
   }
 })
 
+test('summary: closure unions preserve overlapping, subset and reversed dispatch tables', () => {
+  for (const [left, right] of [
+    ['[named, a, b]', '[b, other]'], ['[named, a, b]', '[b, named]'],
+    ['[b, named]', '[named, a, b]'], ['[named, named]', '[a, b]'],
+    ['[]', '[named]'],
+  ]) {
+    const src = `function named(x) { return x + 5 }
+      function other(x) { return x - 7 }
+      export function f(which, i, offset) {
+        const a = x => x + offset, b = x => x * offset
+        const left = ${left}, right = ${right}, table = which ? left : right
+        if (!table.length) return 0
+        try { return table[i](3) } catch (e) { return e.name }
+      }`
+    for (const optimize of levels(0, 1, 2, 3, 'size')) {
+      const got = jz(src, { optimize }).exports.f, want = oracle(src).f
+      for (const [which, offset] of [[0, 2], [0, 2], [1, -3], [0, 7], [1, 2]])
+        for (const i of [-1, 0, 1, 2, 3])
+          is(got(which, i, offset), want(which, i, offset), `${left} / ${right}, O${optimize}: ${which}, ${i}, ${offset}`)
+    }
+  }
+})
+
 test('summary: stores join into the slot; a differing store or a computed write poisons it', () => {
   summarize(`const mk = () => ({ a: new Float32Array(4), b: new Float32Array(4), c: 1 })
     export const f = (k) => { const o = mk(); o.a = new Float32Array(8); o.b = new Float64Array(8); o[k] = 2; return o.a[0] + o.b[0] + o.c }`)

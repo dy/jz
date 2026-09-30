@@ -20,6 +20,17 @@ test('warnings: no sink → no advisories emitted', () => {
   is(warningsFor('export let f = () => [1, 2, 3]').length, 0)
 })
 
+test('fixed length: resize advisories retain their operation with diagnostics enabled', () => {
+  for (const [name, args] of [['unshift', '4'], ['pop', ''], ['shift', ''], ['splice', '1, 1, 4']]) {
+    const src = `const out = [1, 2, 3]; export function f() { out.${name}(${args}); return out.length }`
+    for (const why of [false, true, true, false, true]) {
+      const entries = warningsFor(src, { why }).filter(e => e.code === 'array-open')
+      if (why) ok(entries.some(e => e.message.includes(`resized by ${name}`)), `${name}: ${JSON.stringify(entries)}`)
+      else is(entries, [], `${name}: disabled diagnostics stay silent`)
+    }
+  }
+})
+
 test('warnings: heap-return on an exported result the host holds in the module\'s memory', () => {
   const ws = warningsFor('export let f = () => { let a = new Float64Array(3); return a }')
   is(ws.length, 1)

@@ -14,6 +14,25 @@ const lit = value => [null, value]
 const typed = ['()', 'new.BigInt64Array', lit(0)]
 const reduce = (callback, initial) => ['()', ['.', typed, 'reduce'], [',', callback, initial]]
 
+test('summary queries: closure unions retain their members through the capacity boundary and reuse', () => {
+  let retained
+  for (const count of [0, 1, 1023, 1024, 1025, 1025, 1]) {
+    const closures = Array.from({ length: count }, (_, i) => ['=>', [',', 'x'], ['+', 'x', lit(i)]])
+    const ast = [';', ...closures.map((fn, i) => ['let', ['=', 'f' + i, fn]]),
+      ['let', ['=', 'joined', count ? 'f0' : lit(0)]],
+      ...closures.slice(1).map((_, i) => ['=', 'joined', 'f' + (i + 1)]),
+      ['=', 'joined', count ? 'f0' : lit(0)]]
+    const summary = summarize(ast, { funcs: [], schemas: [], brandOf: () => null, imports: new Map(), exported: () => false })
+    const id = summary.at('').calleeOf(['()', 'joined', lit(2)])
+    if (count && count <= 1024) {
+      is(summary.closureMembers(id), Array.from({ length: count }, (_, i) => i), `${count}: the subset assignment retains the union`)
+      if (count === 1024) retained = [summary, id]
+    } else is(id, null, `${count}: no bounded dispatch table`)
+    is([...summary.escaped], count > 1024 ? Array.from({ length: count }, (_, i) => i) : [], `${count}: only overflow escapes every member`)
+    if (retained) is(retained[0].closureMembers(retained[1]), Array.from({ length: 1024 }, (_, i) => i), 'later summaries leave the retained union unchanged')
+  }
+})
+
 test('summary queries: inherited methods agree with the solved function result', () => {
   const ast = [';', ['const', ['=', 'o', ['{}', [':', 'x', lit(1)]]]]]
   for (const [name, expected] of [['hasOwnProperty', VAL.BOOL], ['toString', VAL.STRING], ['valueOf', VAL.OBJECT]]) {

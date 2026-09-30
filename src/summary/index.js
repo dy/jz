@@ -100,6 +100,7 @@ const STRING_BOOL_METHODS = new Set(['includes', 'startsWith', 'endsWith'])
 const PRIMITIVE_METHODS = new Set([...STRING_METHODS, ...STRING_NUMBER_METHODS, ...STRING_BOOL_METHODS, 'split', 'at', 'charAt', 'match', 'matchAll', 'toString', 'valueOf', 'toLocaleString', 'toFixed', 'toPrecision', 'toExponential', 'toLocaleUpperCase', 'toLocaleLowerCase', 'isWellFormed', 'toWellFormed', 'constructor', 'length'])
 const SPAN_BINARY = new Set(['&', '+', '-', '*', '%', '|', '<<'])
 const RANGE_BINARY = new Set(['+', '-', '*', '/'])
+const memberBefore = (a, b) => typeof a === typeof b ? a < b : typeof a === 'number'
 
 // These helpers carry call-site result facts; keep their call boundary through planning.
 const MODELED_RESULT = /\$__it_(from|mk|drain|arr)$/
@@ -221,8 +222,30 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     const pair = a * 65536 + b
     let id = unions.get(pair)
     if (id !== undefined) return id
-    const ids = [...new Set([...membersOf(a), ...membersOf(b)])].sort((x, y) => typeof x === typeof y ? (x < y ? -1 : x > y ? 1 : 0) : typeof x === 'number' ? -1 : 1)
+    const left = membersOf(a), right = membersOf(b)
+    const small = left.length < right.length ? left : right, large = small === left ? right : left
+    // Members are sorted and unique. A subset adds nothing: reuse its superset
+    // without constructing a Set, sorting a copy or serializing the same list.
+    let i = 0, j = 0, ids
+    while (i < large.length && j < small.length) {
+      if (large[i] === small[j]) { i++; j++ }
+      else if (memberBefore(large[i], small[j])) i++
+      else break
+    }
+    if (j === small.length) ids = large
+    else {
+      ids = []; i = 0; j = 0
+      while (i < left.length && j < right.length) {
+        if (left[i] === right[j]) { ids.push(left[i++]); j++ }
+        else if (memberBefore(left[i], right[j])) ids.push(left[i++])
+        else ids.push(right[j++])
+      }
+      while (i < left.length) ids.push(left[i++])
+      while (j < right.length) ids.push(right[j++])
+    }
     if (ids.length > CLOSURE_SET_MAX || SET_BASE + closureSets.length >= UNKNOWN) { for (const id of ids) escapeId(id); id = UNKNOWN }
+    else if (ids === left) id = a
+    else if (ids === right) id = b
     else id = closureSet(ids)
     unions.set(pair, id); unions.set(b * 65536 + a, id)
     return id
@@ -530,7 +553,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     lens.set(c, n); changed = true
   }
   const fixLen = (c, n) => {
-    const old = lens.get(c); setLen(c, old === undefined || old === n ? n : LEN_OPEN, `built at ${n} elements elsewhere`)
+    const old = lens.get(c); setLen(c, old === undefined || old === n ? n : LEN_OPEN, onOpen ? `built at ${n} elements elsewhere` : null)
     const was = built.get(c); built.set(c, was === undefined || was === n ? n : LEN_OPEN)
   }
   /** The array's length may change: by a counted init push (`counted`) or in a way no count follows. */
@@ -2275,7 +2298,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
           const g = grown.get(c), count = trips.reduce((p, t) => p * t, n)
           if (!g) grown.set(c, { n: count, name: via }); else if (g.name === via) g.n += count; else unknown.add(c)
         }
-      } else if (name === 'unshift' || name === 'pop' || name === 'shift' || name === 'splice') openLen(recv, `resized by ${name}`)
+      } else if (name === 'unshift' || name === 'pop' || name === 'shift' || name === 'splice') openLen(recv, onOpen ? `resized by ${name}` : null)
       if (node && ARRAY_CALLBACKS.has(name)) return arrayCallback(node, recv, name, base, n)
       if (name === 'push' || name === 'unshift') { for (let i = 0; i < n; i++) raiseElem(recv, ks[base + i]); return NUMBER }
       // The searches compare by strict equality or SameValueZero and keep nothing of their argument.
