@@ -2462,7 +2462,9 @@ name the program declares, through any names (`var P = parseInt; var Q = P; Q( s
 function where the name is called or asked its type (prepare's `namesTargetFn`, the alias
 table `scope.chain`): the table seeds each such name with the module that serves it, for the
 call's sake, and a read of the name used to resolve to the module. A seeded name is the
-target's own (`RangeError` is seeded `Error`, its module's; the call keeps its class). The
+target's own (`RangeError` is seeded `Error`, its module's; the call keeps its class). Its
+`.length`/`.name` is the reflection `Math.max.length` is refused as (`isTargetFnRecv`), not
+the undefined an unserved member of its namespace reads as. The
 `Function` constructor lowers to a `TypeError` where it runs (`ERR.DYNAMIC_CODE`): jz compiles
 no source at run time, and a library reaches it only behind a feature test that fails.
 

@@ -210,9 +210,10 @@ export function prep(node) {
       // A bare #name ident outside its class body: the `#field in obj` brand check
       // (or a leaked private name). Reject with intent, not "not in scope".
       if (node[0] === '#') err(`private name '${node}' not supported — jz has no class-based private fields (no #field declarations, no #field in obj brand checks); use a plain property with a naming convention instead, e.g. this._${node.slice(1)}`)
-      // Boolean/Number as a value (`.filter(Boolean)`, `.map(Number)`): an arrow applying the conversion.
-      if (node === 'Boolean') { includeForCallableValue(); return prep(['=>', 'x', ['!', ['!', 'x']]]) }
-      if (node === 'Number') { includeForCallableValue(); return prep(['=>', 'x', ['()', 'Number', 'x']]) }
+      // Boolean/Number as a value (`.filter(Boolean)`, `.map(Number)`): an arrow applying the
+      // conversion, unless a binding of the program holds the name (`const Number = 7`).
+      if (node === 'Boolean' && !shadowsBuiltin(node)) { includeForCallableValue(); return prep(['=>', 'x', ['!', ['!', 'x']]]) }
+      if (node === 'Number' && !shadowsBuiltin(node)) { includeForCallableValue(); return prep(['=>', 'x', ['()', 'Number', 'x']]) }
       // Block locals shadow module imports/globals, even when the local keeps the same name.
       if (scopes.length && isDeclared(node)) return resolveScope(node)
       // A user top-level binding (`let Math = …`) shadows a same-named builtin
@@ -1506,6 +1507,14 @@ const handlers = {
     // A user binding named like a builtin namespace (`let Math = {…}`) shadows it
     // — read the property off the local value, not the builtin namespace table.
     if (shadowsBuiltin(obj)) { includeForProperty(prop); return ['.', prep(obj), prop] }
+    // `.length`/`.name` of a function of the target, named bare (`Number.length`,
+    // `parseInt.name`, a held `P.length`) or as a member of a namespace (`Math.max.length`,
+    // `M.min.name`): jz has no function-object reflection. Before the namespace read below,
+    // where a constructor's unserved member (`Number.foo`) reads as undefined, as a missing
+    // property does. Constants such as Math.PI are values, so their properties remain
+    // ordinary reads.
+    if ((prop === 'length' || prop === 'name') && isTargetFnRecv(obj))
+      err(`.${prop} is not supported on a function value — jz has no general function-object reflection`)
     // Function-scoped namespace aliases resolve here too (namespaceModOf) — the
     // module-level chain alone missed `const M = Math; M.sqrt` inside a body.
     const mod = namespaceModOf(obj)
@@ -1525,16 +1534,6 @@ const handlers = {
     // name, as `Number.prototype` is, for a method of it a name holds (plan/scope.js
     // resolveHeldMethods) or `.call( recv )` takes in place.
     if (prop === 'prototype' && typeof obj === 'string' && NS_CTORS.has(obj) && !shadowsBuiltin(obj) && !(scopes.length && isDeclared(obj))) return `${obj}.prototype`
-    // Resolve plain namespaces and their aliases as well as constructors.
-    // Constants such as Math.PI are values, so their properties remain ordinary reads.
-    if ((prop === 'length' || prop === 'name') && Array.isArray(obj) && obj[0] === '.' &&
-        typeof obj[1] === 'string' && typeof obj[2] === 'string' && !shadowsBuiltin(obj[1])) {
-      const ns = namespaceModOf(obj[1])
-      if (ns) includeModule(ns)
-      if (NS_CTORS.has(obj[1]) && !(scopes.length && isDeclared(obj[1])) ||
-          ns && emitArity(ctx.core.emit[ns + '.' + obj[2]], ns + '.' + obj[2]) > 0)
-        err(`.${prop} is not supported on a function value — jz has no general function-object reflection`)
-    }
     // Source module namespace: import * as X → X.prop resolved to mangled name
     if (typeof obj === 'string' && ctx.module.namespaces?.[obj]) {
       const mangled = ctx.module.namespaces[obj].get(prop)
@@ -1928,6 +1927,22 @@ const namesTargetFn = (name) => {
   if (!mod || hasModule(name) || !hasModule(mod)) return false   // a namespace (`Math`, `JSON`) is no function
   includeModule(mod)
   return emitArity(ctx.core.emit[name], name) > 0
+}
+
+/** A receiver that is a function of the target: its bare name (`Number`, `parseInt`), a name
+ *  holding it (`const P = parseInt`), or a member of a namespace it serves (`Math.max`, `M.min`
+ *  through an alias). Brings the namespace's module in. */
+const isTargetFnRecv = (obj) => {
+  if (typeof obj === 'string') {
+    if (shadowsBuiltin(obj)) return false
+    const held = scopes.length && isDeclared(obj) ? resolveScope(obj) : ctx.scope.chain[obj]
+    return NS_CTORS.has(obj) || namesTargetFn(obj) || held !== obj && namesTargetFn(held)
+  }
+  if (!Array.isArray(obj) || obj[0] !== '.' || typeof obj[1] !== 'string' || typeof obj[2] !== 'string' || shadowsBuiltin(obj[1])) return false
+  const ns = namespaceModOf(obj[1])
+  if (ns) includeModule(ns)
+  return NS_CTORS.has(obj[1]) && !(scopes.length && isDeclared(obj[1])) ||
+    !!ns && emitArity(ctx.core.emit[ns + '.' + obj[2]], ns + '.' + obj[2]) > 0
 }
 
 /** Bind `name` to builtin emit key `key` at the current scope (module
