@@ -1497,6 +1497,8 @@ its wrapping semantics unless the optimizer independently proves no wrap.
 Table reuse invalidates enumeration keys before clearing its contents. Host
 `memory.reset()` calls the compiled reset so heap rewind, cache invalidation and
 durable-state healing have one owner; JS-only memory retains its fallback.
+Owned-memory usage takes its baseline after initialization completes, including
+reactors initialized after the host adapter is ready.
 
 The size preset keeps indirect function-table calls instead of adding speculative
 direct arms alongside their fallback. It also keeps shared/exported source bodies
@@ -3067,8 +3069,10 @@ reacquire views through `memory.read()`.
 Array/object writes stage replacement values before committing contents and
 length. If staging throws, the destination is unchanged; allocations remain
 until reset and user getter effects are not rolled back. `memory.reset()`
-invalidates handles allocated after the reset base; module-initialized state
-remains live. Direct writes and forged pointers bypass these checks.
+invalidates handles allocated after the reset base. Owned memory retains
+module-initialized state. Imported/shared memory resets the entire arena and
+requires re-instantiation before calling the module again. Direct writes and
+forged pointers bypass these checks.
 
 ### Experimental ABI
 

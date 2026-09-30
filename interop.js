@@ -61,7 +61,7 @@ const makeJsAllocator = (mem, heapGlobal) => {
   const getPtr = heapGlobal ? () => heapGlobal.value >>> 0 : () => dv().getUint32(HEAP.PTR_ADDR, true)
   const setPtr = heapGlobal ? v => { heapGlobal.value = v } : v => dv().setInt32(HEAP.PTR_ADDR, v, true)
   // Rewind target: the global's post-static-init value, else the fixed start.
-  const base = heapGlobal ? (heapGlobal.value >>> 0) : HEAP.START
+  let base = heapGlobal ? (heapGlobal.value >>> 0) : HEAP.START
   const alloc = (bytes) => {
     // Align up to 8 without `& ~7` — a JS bitwise op ToInt32-truncates its RESULT too,
     // so `(x + 7) & ~7` would re-introduce the same sign flip past 2 GiB even with a
@@ -86,7 +86,12 @@ const makeJsAllocator = (mem, heapGlobal) => {
   }
   // The heap top and the post-init base: `memory.used` is their distance, and a
   // call that may release its argument copies rewinds the top to a mark.
-  return { alloc, reset, initHeapPtr, top: getPtr, setTop: setPtr, base }
+  return { alloc, reset, initHeapPtr, top: getPtr, setTop: setPtr,
+    used: () => getPtr() - base,
+    // Owned modules may initialize after the host adapter is ready. Cell-backed
+    // memories keep their fixed reset target (HEAP.START).
+    markBase: () => { if (heapGlobal) base = getPtr() },
+  }
 }
 
 // ── Custom-section reading ──────────────────────────────────────────────────
@@ -387,7 +392,7 @@ export const memory = (src) => {
 
   // Allocator scaffold: bumps the exported `$__heap` global (or memory[1020] for
   // shared memory). Wasm `_alloc` takes over when exported; `_clear`/jsReset rewinds.
-  const { alloc: jsAlloc, reset: jsReset, initHeapPtr, top, setTop, base } = makeJsAllocator(mem, wasmExports?.__heap)
+  const { alloc: jsAlloc, reset: jsReset, initHeapPtr, top, setTop, used, markBase } = makeJsAllocator(mem, wasmExports?.__heap)
   // `_alloc`'s i32 result crosses the wasm→JS boundary SIGNED (same ToInt32 rule as any
   // other i32 — see makeJsAllocator's comment); `>>> 0` restores the true unsigned address
   // once the heap grows past 2 GiB, matching jsAlloc's own already-unsigned return.
@@ -429,7 +434,8 @@ export const memory = (src) => {
   // Bytes the heap holds above the mark `memory.reset()` returns to: what calls
   // allocated and kept, and what the host allocated. A host that sees it climb
   // call after call has a leak to fix; a reset returns it to 0.
-  Object.defineProperty(mem, 'used', { get: () => top() - base, configurable: true })
+  Object.defineProperty(mem, 'used', { get: used, configurable: true })
+  mem._markBase = markBase
   // What a decoded value names above this address holds the memory of the call that returned it (mem.read).
   mem._above = Infinity
   mem._held = false
@@ -2020,7 +2026,10 @@ const finishInstantiation = (mod, inst, imports, needsWasi, opts, state) => {
   const enhanced = memory(memSrc)
   state.mem = enhanced
   state.flushPrint?.()
-  if (!needsWasi) inst.exports._initialize?.()
+  if (!needsWasi && inst.exports._initialize) {
+    inst.exports._initialize()
+    enhanced._markBase?.()
+  }
   // A memoryless module keeps a minimal reader internally (state.mem, for decoding
   // its SSO/atom boundary values), but the result's `.memory` stays null — the
   // module genuinely exposes no linear memory. `jz.memory(result)` still hands back

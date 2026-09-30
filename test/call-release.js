@@ -7,7 +7,7 @@
 // whatever a call may keep keeps the memory it lives in. `memory.used` reads
 // the heap above the mark `memory.reset()` returns to.
 import test from 'tst'
-import { is, ok } from 'tst/assert.js'
+import { is, ok, throws } from 'tst/assert.js'
 import jz from '../index.js'
 import { levels, onWasi } from './_matrix.js'
 import { oracle } from './util.js'
@@ -26,6 +26,37 @@ test('call release: memory.used reads the heap the calls and the host keep', () 
   ok(memory.used >= 16 * 8 + 64 * 4, 'a buffer the host made counts')
   memory.reset()
   is(memory.used, 0, 'a reset returns it to 0')
+})
+
+test('call release: delayed initialization establishes the used-memory baseline', () => {
+  throws(() => jz(`const state = globalThis.JSON.parse('['); export const read = () => state`, { host: 'js' }), /JSON/)
+  const instances = []
+  for (const host of ['js', 'wasi']) for (const values of ['[]', '[3,4]', '[9]']) {
+    const seeds = host === 'js' ? [values, `globalThis.JSON.parse('${values}')`] : [values]
+    for (const seed of seeds) for (let repeat = 0; repeat < 2; repeat++) {
+      const { exports, memory } = jz(`const state = new Float64Array(${seed}); let kept = [];
+        export const read = () => state;
+        export const keep = n => { kept.push(new Float64Array(n)); return kept.length }`, { host })
+      const want = JSON.parse(values)
+      instances.push({ exports, memory, want })
+      is(memory.used, 0, `${host}: initialization is below the baseline`)
+      for (let i = 0; i < 2; i++) {
+        is(Array.from(exports.read()), want, 'initial state survives reads and reset')
+        is(memory.used, 0, 'reading initialized storage keeps nothing new')
+        exports.keep(16)
+        ok(memory.used >= 128, 'a call retaining fresh storage counts')
+        memory.Float64Array([5, 6, 7])
+        ok(memory.used >= 152, 'host allocation counts too')
+        memory.reset()
+        is(memory.used, 0, 'reset returns to the same baseline')
+      }
+      is(Array.from(exports.read()), want, 'state remains readable after the final reset')
+    }
+  }
+  for (const { exports, memory, want } of instances) {
+    is(memory.used, 0, 'later instances do not change the baseline')
+    is(Array.from(exports.read()), want, 'later instances do not change initialized state')
+  }
 })
 
 for (const optimize of levels(2, 3, 'size'))
@@ -228,7 +259,7 @@ test('call release: a call of numbers made while another runs tells it what it k
     export let check = () => { let s = 0; for (let i = 0; i < kept.length; i++) s += kept[i][0] * 10 + kept[i][1]; return s }
     export let churn = (n) => { const a = []; for (let i = 0; i < n; i++) a.push('c' + i + 'yyyyyyyyyyyyyyyy'); return a.length }`
   let n = 0
-  inst = jz(src, { imports: { host: { poke: () => inst.exports.keep(n) } } })
+  inst = jz(src, { host: 'js', imports: { host: { poke: () => inst.exports.keep(n) } } })
   let want = 0
   for (n = 0; n < 100; n++) { inst.exports.outer(new Float64Array(64).fill(n)); want += n * 10 + 7; inst.exports.churn(8) }
   for (n = 100; n < 200; n++) { inst.exports.keep(n); want += n * 10 + 7; inst.exports.churn(8) }
