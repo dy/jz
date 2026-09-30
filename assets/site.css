@@ -43,7 +43,7 @@
   --u: 8px;
   --u2: 40px;
   --U: 80px;
-  --g-maj: light-dark(rgba(0,0,0,.02), rgba(255,255,255,.06));    /* ink added by each level: an 80px line = all three */
+  --g-maj: light-dark(rgba(0,0,0,.02), rgba(255,255,255,.042));   /* ink added by each level: an 80px line = all three */
   --g-mid: light-dark(rgba(0,0,0,.022), rgba(255,255,255,.05));   /* a 40px line = mid + unit */
   --g-min: light-dark(rgba(0,0,0,.012), rgba(255,255,255,.028));  /* an 8px line; two crossing = a dot, still under a 40px line */
 
@@ -115,10 +115,7 @@ html.paper body::before {
 .ruler-refl { display: none; position: fixed; inset: 0; width: 100%; height: 100%;
   z-index: 3; pointer-events: none; color: #fff; mix-blend-mode: screen; }
 :root[data-theme="light"] .ruler-refl { color: #000; mix-blend-mode: multiply; }
-.grid-light { display: none; position: fixed; top: -320px; left: -320px; width: 640px; height: 640px;
-  z-index: -1; pointer-events: none; mix-blend-mode: overlay;
-  background: radial-gradient(circle, light-dark(rgb(0 0 0 / .55), rgb(255 255 255 / .8)), transparent 70%); }
-html.paper:not(.jz-saver):not(.jz-embed) :is(.ruler-refl, .grid-light) { display: block; }
+html.paper:not(.jz-saver):not(.jz-embed) .ruler-refl { display: block; }
 .grid-bursts { position: fixed; inset: 0; width: 100%; height: 100%; z-index: -1; pointer-events: none; }
 
 /* Cross-document View Transitions: every page links this stylesheet, so same-origin navigations

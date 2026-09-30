@@ -1,4 +1,4 @@
-// One cursor light for the grid, rulers, outlines and reflective ink.
+// One cursor light for rulers, outlines and reflective ink.
 const root = document.documentElement, radius = 320
 const edge = el => {
   const ring = document.createElement('span')
@@ -25,11 +25,7 @@ if (document.querySelector('html.paper')) {
     <stop offset="1" stop-color="currentColor" stop-opacity="0"/>
   </radialGradient></defs><path fill="none" stroke="url(#ruler-light)" stroke-width="1"/>`
   document.body.append(el)
-  const grid = document.createElement('div')
-  grid.className = 'grid-light'
-  grid.setAttribute('aria-hidden', 'true')
-  document.body.append(grid)
-  ruler = { el, grid, gradient: el.querySelector('radialGradient'), path: el.querySelector('path'), defs: el.querySelector('defs') }
+  ruler = { el, gradient: el.querySelector('radialGradient'), path: el.querySelector('path'), defs: el.querySelector('defs') }
 }
 
 // Subtract a soft alpha mask: a fractional-pixel inner edge without the square erosion kernel.
@@ -147,7 +143,6 @@ const frame = () => {
   let painted = !!ruler
   if (ruler) {
     ruler.gradient.setAttribute('cx', field.x); ruler.gradient.setAttribute('cy', field.y)
-    ruler.grid.style.transform = `translate(${field.x}px, ${field.y}px)`
   }
   for (const item of [...logos, ...boxes.values()]) {
     const rect = item.rect || item.el.getBoundingClientRect()

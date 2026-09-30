@@ -14,7 +14,7 @@ const build = (...args) => spawnSync(process.execPath, [join(root, 'scripts/buil
 // Exercise the shipped pointer controller with a deterministic frame clock. SVG rendering
 // is browser-checked; these ports record its paint attributes without a DOM dependency.
 async function glint({ count = 1, reduced = false, fine = true, failure = 'http', paper = false, textNodes = [], scroll = 0 } = {}) {
-  const events = new Map(), frames = new Map(), requests = [], clicks = [], selection = { isCollapsed: true }
+  const events = new Map(), frames = new Map(), requests = [], clicks = [], mounted = [], selection = { isCollapsed: true }
   const listen = (name, fn) => events.set(name, fn)
   const node = () => ({ attrs: {}, children: [], style: { setProperty(k, v) { this[k] = v } },
     setAttribute(k, v) { this.attrs[k] = String(v) }, append(el) { this.children.push(el) },
@@ -43,7 +43,7 @@ async function glint({ count = 1, reduced = false, fine = true, failure = 'http'
         selector.startsWith('.ruled') ? [...rules.map(rect => ({ getBoundingClientRect: () => rect })), ...(selector.includes('table') ? tables : [])] :
         selector.includes('table') ? tables : selector.startsWith('h1') ? textNodes.filter(el => el.matches(selector)) : [],
       createElement: node, createElementNS: (_, tag) => tag === 'svg' ? ruler : node(), documentElement: doc,
-      body: { append() {}, getBoundingClientRect: () => ({ left: 0 }) } },
+      body: { append(el) { mounted.push(el) }, getBoundingClientRect: () => ({ left: 0 }) } },
     matchMedia: query => query.includes('reduced-motion') ? motion : mouse,
     addEventListener: listen, innerWidth: 1000, innerHeight: 800, scrollY: scroll, URL,
     loadClicks: async () => { clickLoads++; return { spark: (x, y) => clicks.push([x, y]) } },
@@ -69,7 +69,7 @@ async function glint({ count = 1, reduced = false, fine = true, failure = 'http'
     return n
   }
   return { els, frames, requests, motion, mouse, light, node, drain, doc, classes, ruler, gradient, path, sides, rules, tables, controls, defs,
-    clicks, selection, clickLoads: () => clickLoads,
+    clicks, mounted, selection, clickLoads: () => clickLoads,
     measurements: () => measurements,
     emit: (name, event) => events.get(name)?.(event),
     move: (x, y, pointerType = 'mouse') => events.get('pointermove')({ clientX: x, clientY: y, pointerType }),
@@ -142,6 +142,7 @@ test('site: ruler reflection follows the pointer and remeasures only after layou
   const g = await glint({ count: 0, paper: true })
   g.drain()
   is(g.requests.length, 0, 'rulers need no logo asset')
+  is(g.mounted, [g.ruler], 'only rulers get a light layer; the grid stays static')
   is(g.path.attrs.d, 'M20.5,0V800M180.5,0V800M0,320.5H1000', 'reflection occupies the existing one-pixel dividers')
   const measured = g.measurements()
   g.move(180, 200); g.drain()
@@ -188,6 +189,7 @@ test('site: ruler reflection follows the pointer and remeasures only after layou
   is(g.gradient.attrs, { cx: '500', cy: '-160' }, 'reduced motion returns to a static overhead light')
   g.move(10, 10)
   is(g.frames.size, 0, 'reduced motion does not schedule ruler animation')
+  is(g.mounted, [g.ruler], 'pointer movement and theme changes never mount a grid light')
 })
 
 test('site: buttons use the logo bevel and tables remain matte', async () => {
