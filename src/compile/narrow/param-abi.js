@@ -18,7 +18,7 @@ import { isExported } from '../func-exports.js'
 import { paramNumericArrayLike, paramArrayLikeList, isListLit } from '../param-numeric.js'
 import { ensureParamRep } from '../../param-reps.js'
 import { scanBindingUses, USE, BINDING_USE_KIND, BINDING_USE_USES } from '../analyze-scans.js'
-import { K, tagOf, core } from '../../summary/kind.js'
+import { K, NUMBER, tagOf, core } from '../../summary/kind.js'
 import { holdsBoolBeside } from '../../kind.js'
 import { frameNode } from '../../function.js'
 import { materializeVariant } from '../variant.js'
@@ -272,8 +272,9 @@ export function substituteIntConstParams(paramReps, addressTaken) {
     }
     if (!subst) continue
     const view = ctx.summary.at(func.sig)
+    // Keep unions: a later typeof guard can prove the BigInt arm at emission.
     if (mixesNumericKinds(frameNode(func), n => typeof n === 'string' && subst.has(n)
-      ? K.NUMBER : tagOf(core(view.kindOfExpr(n))))) continue
+      ? NUMBER : view.kindOfExpr(n))) continue
     replaceReads(frameNode(func), subst)
     changed = true
   }

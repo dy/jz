@@ -1,5 +1,5 @@
 import { some } from '../ast.js'
-import { K } from '../summary/kind.js'
+import { K, hasTag } from '../summary/kind.js'
 
 // Substitution must not turn a call's runtime TypeError into a compile-time
 // rejection. Comparisons accept both domains; arithmetic and bitwise ops do not.
@@ -9,5 +9,5 @@ export const mixesNumericKinds = (body, kindOf) => some(body, n => {
   if (n.length !== 3 || !UNMIXED_OPS.has(op) &&
       !(typeof op === 'string' && op.endsWith('=') && UNMIXED_OPS.has(op.slice(0, -1)))) return false
   const a = kindOf(n[1]), b = kindOf(n[2])
-  return a === K.BIGINT && b === K.NUMBER || a === K.NUMBER && b === K.BIGINT
+  return hasTag(a, K.BIGINT) && hasTag(b, K.NUMBER) || hasTag(a, K.NUMBER) && hasTag(b, K.BIGINT)
 })

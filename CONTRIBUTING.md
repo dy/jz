@@ -2686,7 +2686,9 @@ consumers then see as the literal they serve best, a store inside a fixed length
 sum, not as a name whose value a fact carries. The parameter stays in the signature; callers
 pass what the body no longer reads. Substitution and inlining share the numeric-domain
 check in `compile/numeric-mix.js`: a call that mixes Number and BigInt must still
-throw when it runs, so a statically mixed body retains its parameter references.
+throw when it runs, so a possibly mixed body retains its parameter references.
+Constant replacement keeps union members in that check: a later `typeof` guard
+can narrow a Number-or-BigInt parameter to its BigInt arm.
 A self-recursive helper writing `out[ offset + stride ]`
 (stdlib's `modff`) stores at a literal index instead of guarding a growth at every call
 (`test/array-methods.js`).

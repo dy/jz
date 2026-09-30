@@ -586,6 +586,26 @@ test('audit: constant parameters preserve conditional mixed-domain errors and ar
   }
 })
 
+test('audit: constant parameters preserve a guarded Number-or-BigInt domain', () => {
+  const src = `let trace = 0
+    function value(c) { trace = trace * 10 + 1; return c === 2 ? 3 : 3n }
+    function mix(a, k) {
+      trace = trace * 10 + 2
+      if (typeof a === 'bigint') return a - k
+      return a + k
+    }
+    export function f(c) {
+      trace = 0
+      try { const result = c ? mix(value(c), 1) : 0; return [trace, result] }
+      catch (e) { return [trace, e instanceof TypeError] }
+    }`
+  const host = oracle(src).f
+  for (const optimize of TIERS) {
+    const f = jz(src, { optimize }).exports.f
+    for (const c of [0, 1, 1, 2, 0, 2]) is(f(c), host(c), `guarded input ${c} at ${optimize}`)
+  }
+})
+
 // A closure stored beside the fields of an object a literal nested (`ns.inner.parse = f`
 // where the literal declared no `parse`) runs when the member is called
 // (src/summary/index.js): its body is reached and its parameter bound. Unreached, a

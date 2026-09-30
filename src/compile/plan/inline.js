@@ -37,7 +37,7 @@ import {
 import { freshId } from '../../ir.js'
 import { cloneWithSubst } from '../../type.js'
 import { constIntExpr, constNumExpr } from '../../static.js'
-import { K, core, tagOf, hasModeledResult, answeredAtCall } from '../../summary/index.js'
+import { K, kind, core, tagOf, hasModeledResult, answeredAtCall } from '../../summary/index.js'
 import { analyzeBody } from '../analyze.js'
 import {
   LOOP_OPS, isSimpleArg, mutatesAny, loopDepth, nodeSize, clonePlain, collectBindings,
@@ -119,7 +119,11 @@ const operandKind = (e) => Array.isArray(e) && e[0] === 'bigint' ? K.BIGINT
 // when the call runs, and no sooner: spliced, the operator would be one the compiler rejects.
 const mixesKinds = (func, args) => {
   const at = new Map(func.sig.params.map((p, i) => [p.name, i]))
-  const kindOf = (e) => typeof e === 'string' && at.has(e) ? operandKind(args[at.get(e)]) : typeof e === 'string' ? K.NONE : operandKind(e)
+  const kindOf = (e) => {
+    const tag = typeof e === 'string' && at.has(e) ? operandKind(args[at.get(e)]) : typeof e === 'string' ? K.NONE : operandKind(e)
+    // An unconstrained argument is not proof of a mismatched call site.
+    return tag === K.ANY ? 0 : kind(tag)
+  }
   return mixesNumericKinds(func.body, kindOf)
 }
 

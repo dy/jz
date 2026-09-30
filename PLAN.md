@@ -8,99 +8,64 @@ that shaped the tree, the work left before release and the latest gate reading.
 
 ## Release status, September 30
 
-**V1 remains blocked by recursive bootstrap and incomplete release gates.**
-Consolidated candidate 51 passes the full default core suite: 5,534 tests and
-213,103 assertions; O0 also passes 5,379 tests / 145,337 assertions. It combines main's memory fixes, the performance branch and the v1
-work. Main's release protocol, held views and nested-return restoration remain;
-fixed-memory compilation and the receiver-only array-growth rule are retained.
-The local integration branch preserves both parent histories. Candidate 43 adds
-the latest performance commit and fixes its integration with parameter defaults,
-nested closures and fresh call-graph facts. Its focused sweep passes 53 tests
-and 782 assertions. Candidate 45 adds a reusable export census in summary
-analysis; its semantic sweep passes 116 tests / 31,647 assertions. Candidate 47
-reuses closure unions and defers disabled diagnostic formatting. The nested
-dispatch-table regression falls from 18.77 MB to 3.94 MB of summary allocation,
-with identical output bytes. The new capacity test checks 0, 1, 1,023, 1,024 and
-1,025 closures and repeated analysis. The latest main SIMD change is reconciled;
-its full SIMD suite passes 240 tests / 7,089 assertions, including empty work,
-lane boundaries, missing reads, reused buffers and temporary assignments. The
-shared-load rewrite requires one assignment dominating every substituted read;
-reads before assignment and differently assigned values remain distinct.
-Candidate 50 reuses field-target lists and avoids redundant analysis storage.
-Its focused sweep passes 159 tests / 32,402 assertions; direct alias mutation,
-shadowing and reuse checks pass 17 assertions. The allocation regression for
-repeated local aliases falls from 3.61 MB to 3.43 MB with identical output bytes.
+**The v1 work is consolidated on main; v1 is not ready to tag.** Landing
+`fbce4604` contains performance commit `293db798`, stdlib commit `4c77ec62` and
+main's memory lineage. It preserves asked/several results, held views and
+nested-return restoration, alongside fixed-memory compilation and the
+receiver-only array-growth rule. Both incoming histories remain reachable.
+The original dirty checkout is preserved on `wip/pre-v1-consolidation-20260930`.
+Nothing has been pushed or published.
 
-Candidate 52 incorporates stdlib commit `4c77ec62`, retaining builtin reflection,
-local constructor shadowing, held methods and the typed-store fast paths. Merge
-review fixes unsigned clamping, pointer coercion and assignment-result identity;
-throwing conversions and null receivers preserve evaluation order. SIMD conversion
-recognizers require matching guards and both arms. Nullable strings use sentinel
-formatting without bringing in the number formatter. Focused merge regressions
-pass 11 tests / 524 assertions. Its fresh 22,567,132-byte compiler passes all 20
-functional and 9 reuse cases, but recursive compilation still exhausts memory.
+The landed snapshot passes the complete default core suite: **5,563 tests /
+213,900 assertions**, and O0: **5,408 tests / 145,797 assertions**. These gates
+use the prepared watr fixes described below. Merge regressions cover class-body
+parsing, typed-array indices and coercion, builtin reflection and shadowing,
+static-string data lifetime, loop inlining and scratch hoisting. A subsequent
+sibling review found that constant replacement must retain Number-or-BigInt
+unions when a later `typeof` branch narrows them. Its regression checks skipped,
+throwing, repeated and numeric calls against Node, including argument effects.
+Its O3 optimizer, array, alias and audit sweep passes 546 tests / 37,278
+assertions, with 288 assertions across the focused optimization tiers. The
+correction still requires its full rerun; the earlier core result does not certify it. Remaining matrix, conformance, extended, fuzz and hosted-suite gates
+have not all passed on the final source.
 
-Candidate 53 keeps the static-string helper outlined until dead-data removal,
-preserving the seed's ownership edge without retaining unused tables. `strbuild`
-is 2,129 bytes and `gainclass` is back to 1,758 bytes. Generated stdlib workloads
-export their existing runner without colliding with library bindings. Their full
-checksums match Node: special functions 2,131,273,638; distributions 377,214,261.
-Proven primitive wrapper probes fold to false, while boxed-object probes remain
-unsupported; constant constructor aliases retain their identity and coercion.
-The focused consolidation sweep passes 627 tests / 14,323 assertions. Expression
-inlining retains wrappers around loop kernels when prefix-only expansion would
-introduce allocations into the caller's loop. Scratch hoisting includes lowered
-temporaries under the existing lifetime and invariance proof. Both O3 failures
-from candidate 51 have focused fixes; the scratch failure also occurs on main.
-Candidate 53's default run found three further integration issues before its
-local-server test was blocked by the sandbox. Candidate 54 reconciles builtin
-shadowing and held constructor aliases, preserves runtime mixed-domain errors
-when replacing constant parameters, and updates the obsolete rejection test for
-supported `parseInt` aliases. The focused regressions pass 9 tests / 759 assertions.
-The full candidate 54 gates are pending; earlier full-suite results do not certify
-these later changes.
+Fresh browser bundles and real-browser checks pass on the landed snapshot:
+exact Floatbeat samples, saved-formula create/update/reload/delete, sharing,
+keyboard focus, mobile layout, popup bounds, reduced motion and forced colors.
+Import lint and public TypeScript checks pass. The strict browser bundle is
+2,908.6 kB (816.6 kB gzip), above the optional minimal-bundle target.
 
-Candidate 39 fixes public constant injection: negative zero, quoted keys,
-sparse-array length, cycle rejection and adjacent negative template values.
-The public API sweep passes 27 tests / 349 assertions, with the new regressions
-also passing on WASI. Fresh browser bundles, public types, import lint and
-Floatbeat/landing interaction checks pass. The strict bundle is still 2.9 MB
-(814 kB gzip), above the optional minimal-bundle target.
-
-The numeric-coercion import cycle is fixed. Candidate 42 builds a fresh ordinary
-Wasm compiler (22,357,874 bytes); summary fingerprint and temporary-allocation
-fixes reduce its first recursive summary pass from 628 MB to 482 MB. Candidate
-50 reduces it further to 287 MB, but the later list-kind specialization still
-exhausts the 4 GiB heap after eight summary passes. Its fresh compiler is
-22,375,869 bytes. The export census reduces sampled native allocations from
-1,488 to 1,203 MiB but barely changes the Wasm heap. Ordinary build defaults
-have not changed. Fresh round-trip and parity/oracle gates pass on candidate 50;
-the forced-checkpoint gate also passes on candidates 47 and 48. The remaining matrix, conformance,
-extended, fuzz and complete hosted-suite checks have not all passed on the latest
-candidate.
+Recursive bootstrap remains a release blocker. The latest completed ordinary
+build is candidate 52's 22,567,132-byte compiler: all 20 functional and 9 reuse
+cases pass, but compiling itself exhausts the 4 GiB heap after list-kind
+specialization. Summary storage changes reduced the first recursive summary
+pass from 628 MB to 287 MB; eight rebuilt summaries still exhaust memory later.
+Ordinary build defaults remain unchanged. Earlier round-trip, parity/oracle and
+checkpoint gates pass; they do not prove recursive completion.
 
 The validation dependency includes the three prepared watr 5.11.9 fixes:
 exception-handler ordering, argument evaluation order and signed block-type
-encoding. Its complete native and compiled tests pass; a clean offline package
-consumer checks all shipped encoders. It remains unpublished, and the jz
-registry dependency is still 5.11.8. A clean registry installation is therefore
-still a release gate.
+encoding. Native, compiled and clean offline package-consumer checks pass.
+The package remains unpublished; npm still serves 5.11.8 and jz still requires
+`^5.11.8`. Publication approval is pending. A clean registry installation remains
+a release gate.
+
+Fresh reference-machine speed and size evidence remains open. The static-string
+fix's size probes give `strbuild` 2,129 bytes and `gainclass` 1,758 bytes, without
+changing the workload. The expanded stdlib harnesses are valid modules and their
+full checksums match Node: special functions 2,131,273,638; distributions
+377,214,261. Other standing per-case claims still have gaps; no acceptance bars
+were relaxed. The next math optimization is recorded in
+[the math follow-up](.work/math-followup.md).
 
 Color-space passes all 702 directed conversion pairs and standalone execution
-in Wasmer; unplugin passes its five-bundler integration suite. FormantShift
-processes 256 blocks with exact output and no ongoing heap growth; dewow also
-has exact output and zero ongoing growth in the checked renders. These checks
-do not certify the entire audio corpus or the standing speed claims. Fresh
-reference-machine performance evidence remains open.
+in Wasmer; unplugin passes its five-bundler integration suite. Checked renders
+of FormantShift (256 blocks) and dewow have exact output and no ongoing heap
+growth. Those results do not certify the entire audio corpus.
 
-The newer shared-site title treatment, engine switch and popup positioning
-are reconciled, including the later title-light bounds. All 25 site tests / 494 assertions pass, as do real-browser
-checks of Floatbeat, desktop/mobile layout, popup bounds, keyboard focus,
-Escape/refocus, reduced motion and forced colors.
-
-Source maps, Floatbeat, strict entry/types, and package integrations have targeted
-validation. Detailed gate logs are local verification artifacts. Dated evidence below belongs
-to its recorded snapshots, not every later working-tree change.
+Source maps, strict entry/types, fixed memory and package integrations have
+targeted validation. Detailed gate logs are local verification artifacts; dated
+evidence below belongs to its recorded snapshot, not every later source change.
 
 ## Release status, September 27
 
