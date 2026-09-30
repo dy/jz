@@ -213,6 +213,9 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   /** The one shape of an object kind, or UNKNOWN for a set or an unknown shape. */
   const sidOf = (k) => tagOf(k) === K.OBJECT && paramOf(k) < SET_BASE ? paramOf(k) : UNKNOWN
   const unionShapes = (a, b) => {
+    // a site of a folded layout is the layout (the memo below holds no answer from before a fold)
+    a = canonSid(a); b = canonSid(b)
+    if (a === b) return a
     const pair = a * 65536 + b
     let id = shapeUnions.get(pair)
     if (id !== undefined) return id
@@ -309,6 +312,8 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   const foldLayout = (l) => {
     if (foldedLayouts.has(l)) return
     foldedLayouts.add(l); changed = true
+    // A union of sites of this layout answered a set before the fold: from now on it is the layout.
+    shapeUnions.clear()
     for (const site of sitesByLayout.get(l) ?? []) {
       if (site === l) continue
       slots(site).forEach((k, i) => raiseSlot(l, i, k))
