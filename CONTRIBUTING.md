@@ -1686,6 +1686,9 @@ No initialization state or second full power table is needed.
 The shared unsigned 64×128 product supplies all three rounding limbs. Decimal
 inputs whose significand and power of ten are exact f64 operands use one
 multiply or divide; the full integer algorithm handles the remaining range.
+An integer below 2^53 renders as its digits before the shortest search starts
+(`__ftoa_shortest`): a counter, an index or a key made of numbers (stdlib's `memoize`
+joins its arguments) formats in a digit loop, the boundary and beyond as before.
 
 Function-local layouts belong in `localReps`, carried by the function plan.
 Do not publish inferred local or parameter schemas in `ctx.schema.vars`:
@@ -2383,6 +2386,15 @@ passes that read a loop by its shape match (a clamp against `w - 1`, a window of
 the blur recognizers stopped firing on a literal), and the emitter folds a constant of the
 source where it is read. `test/constants.js` pins the flows and the folds.
 
+A parameter every call fixes to one integer reads as that integer in its body
+(`substituteIntConstParams`, narrow/param-abi.js, once the signatures settle; validated as
+`intConst` is: never written, no default, not the rest): an index, a stride, an offset the
+consumers then see as the literal they serve best, a store inside a fixed length or a folded
+sum, not as a name whose value a fact carries. The parameter stays in the signature; callers
+pass what the body no longer reads. A self-recursive helper writing `out[ offset + stride ]`
+(stdlib's `modff`) stores at a literal index instead of guarding a growth at every call
+(`test/array-methods.js`).
+
 A literal of no members declares nothing, so it scalarizes to nothing and every read of it
 is `undefined` (`opts = {}`, the default of an options parameter), and `||` or `??` over a
 literal `undefined` or `null` is its right side (`emit/logical.js`): `opts.tolerance || EPS`
@@ -2444,6 +2456,14 @@ one imports it as undefined (interop). `Ctor.prototype.m.call( recv, … )` name
 primitive's prototype (`Number.prototype.toString.call( n, 16 )`) is the method on the
 receiver (`foldPrototypeBorrow`), as the array-like borrow was; `Boolean.prototype` is the
 dotted name as `Number.prototype` is, where the bare `Boolean` is the conversion.
+A function of the target named bare (`parseInt`, `isNaN`, `Symbol`, `RangeError`) held in a
+name the program declares, through any names (`var P = parseInt; var Q = P; Q( s )`), is that
+function where the name is called or asked its type (prepare's `namesTargetFn`, the alias
+table `scope.chain`): the table seeds each such name with the module that serves it, for the
+call's sake, and a read of the name used to resolve to the module. A seeded name is the
+target's own (`RangeError` is seeded `Error`, its module's; the call keeps its class). The
+`Function` constructor lowers to a `TypeError` where it runs (`ERR.DYNAMIC_CODE`): jz compiles
+no source at run time, and a library reaches it only behind a feature test that fails.
 
 A module whose initializer reaches into the host (a host global it names, a member read or a
 call on a host value) ships its init as the `_initialize` export, as a WASI reactor does
@@ -2470,6 +2490,14 @@ and booleans only, since an object's conversion calls its `valueOf` and a BigInt
 `var Fcn = Function` behind a code generator nothing calls then stops no compile. A read is a
 name in a function the call graph reaches or in another statement of the module; a binding
 read only by one that goes, goes after it; an exported binding stays (`test/unread-globals.js`).
+
+A function's properties are a record reached through its name (`materializeAutoBoxSchemas`,
+plan/scope.js: the `__inner__` box), and the function's value is the callable. A function
+taken as a value (an argument, an element, an alias) is read through that value, so its
+properties keep the closure-keyed dynamic path, which every alias reaches: `typeof`, a call
+and a property read through the value answer what the host answers (stdlib's
+`assert/is-object-like` hands `isObjectLike` to `arrayfcn` and then sets
+`isObjectLike.isObjectLikeArray`; `test/objects.js`).
 
 ## Principles
 

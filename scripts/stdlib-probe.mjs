@@ -525,13 +525,21 @@ const PENDING = {}
 // probe chose them; the checksum folds every word of every result.
 async function benchAll(ns, id) {
   const { build } = await import('esbuild')
-  const fns = []
+  // A function whose call costs more than CALL_BUDGET in Node is left out: a sweep of
+  // it would dwarf the namespace (studentized-range's quantile, 21 ms a call, against
+  // a namespace of nanosecond functions), so it is a case of its own if measured at all.
+  const CALL_BUDGET = 1e-3
+  const fns = [], costly = []
   for (const spec of packages(ns)) {
     let fn
     try { fn = nodeRequire(spec) } catch { continue }
     if (typeof fn !== 'function' || fn.length < 1 || fn.length > PARAMS.length || spec in PENDING) continue
     const dom = domain(fn, fn.length)
-    if (dom) fns.push({ spec, ...dom })
+    if (!dom) continue
+    const t = performance.now(); for (let i = 0; i < 40; i++) fn(input(dom, i, 40), ...dom.c)
+    const perCall = (performance.now() - t) / 40 / 1e3
+    if (perCall > CALL_BUDGET) { costly.push([spec, `${(perCall * 1e3).toFixed(perCall < 1e-3 ? 3 : 1)} ms a call in Node`]); continue }
+    fns.push({ spec, ...dom })
   }
   const g = graph(fns.map((f, k) => `import f${k} from '${f.spec}'`).join('\n') + `\nexport { ${fns.map((f, k) => `f${k}`).join(', ')} }`)
   const r = await build({
@@ -558,14 +566,14 @@ async function benchAll(ns, id) {
     const store = f.len ? `{ const r = ${call}; out[at + i] = ${Array.from({ length: f.len }, (_, j) => `r[${j}]`).join(' + ')} }` : `out[at + i] = ${call}`
     return `// ${short(f.spec)}\nconst k${k} = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) ${store} }`
   })
-  const pending = Object.entries(PENDING).filter(([spec]) => spec.startsWith(`@stdlib/${ns}/`))
+  const pending = [...Object.entries(PENDING).filter(([spec]) => spec.startsWith(`@stdlib/${ns}/`)), ...costly]
   const source = `// ${id}.js — every function of @stdlib/${ns} (stdlib ${version}, Apache-2.0) that takes
 // numbers and returns one, or a list of them: ${fns.length} packages, bundled from their CommonJS sources by
 // scripts/stdlib-probe.mjs (\`bench-all ${ns} ${id}\`): the packages' own code with the
 // module seams gone, nothing rewritten. Each function is swept over a domain where
 // it is finite (the probe's \`domain\`: of reals, or of integers for a function of
 // counts), the arguments after the first held; a list is stored as its sum.
-${pending.length ? `// Left out until jz compiles them:\n${pending.map(([spec, why]) => `//   ${short(spec)}: ${why}`).join('\n')}\n` : ''}// Copyright (c) The Stdlib Authors. Licensed under the Apache License, Version 2.0
+${pending.length ? `// Left out (a sweep would dwarf the namespace, or jz does not compile it yet):\n${pending.map(([spec, why]) => `//   ${short(spec)}: ${why}`).join('\n')}\n` : ''}// Copyright (c) The Stdlib Authors. Licensed under the Apache License, Version 2.0
 // (http://www.apache.org/licenses/LICENSE-2.0); the notices of the bundled files
 // are retained by reference to the package.
 import { mix, medianUs, printResult } from '../_lib/benchlib.js'
