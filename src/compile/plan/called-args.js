@@ -11,8 +11,11 @@
  * The parameter is read nowhere but as a callee and written nowhere (no
  * closure mentions it, no default fills it); the argument names a function
  * declaration nothing assigns and nothing in the function shadows, so the
- * name reads the same function in the copy as the value did. The argument is
- * still passed, so the call's order of evaluation and its signature stay.
+ * name reads the same function in the copy as the value did. The copy's
+ * sites pass `undefined` in its place: reading a function's name does
+ * nothing, the signature stays, and a function no site passes as a value
+ * any more is no value (it keeps no table entry, and splices like any
+ * other callee).
  *
  * A string the function tests its parameter against (`type === 'square'`,
  * a mode chosen per call site) gets the same treatment: for a call passing a
@@ -24,7 +27,7 @@
  * @module compile/plan/called-args
  */
 import { ctx } from '../../ctx.js'
-import { T, ASSIGN_OPS, some, walkAst } from '../../ast.js'
+import { T, ASSIGN_OPS, callArgs, setCallArgs, some, walkAst } from '../../ast.js'
 import { frameRoots } from '../../function.js'
 import { materializeVariant } from '../variant.js'
 import { invalidateBodies } from '../analyze.js'
@@ -191,7 +194,13 @@ export const specializeCalledArgs = (programFacts, ast) => {
         origin: func, key: name, name, kind: str ? 'string-arg' : 'called-arg',
         body: str ? settled(substituted(func.body, param, sites[0].argList[called(func, param)])) : spelled(func.body, param, fn), eligibleSites: sites, fallback: func,
       })
-      for (const site of sites) touched.add(site.callerFunc?.body ?? ast)
+      for (const site of sites) {
+        if (!str) {
+          const args = callArgs(site.node), k = called(func, param)
+          args[k] = [null, undefined]; setCallArgs(site.node, args); site.argList[k] = args[k]
+        }
+        touched.add(site.callerFunc?.body ?? ast)
+      }
     }
   }
   for (const body of touched) invalidateProgramFactsCache(body)

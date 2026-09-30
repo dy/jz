@@ -1175,10 +1175,15 @@ export const inlineHotInternalCalls = (programFacts, ast) => {
       // callers cost the flagship 6 KB), or be a leaf spliced at every site while
       // the caller has one: the caller's copy of it then moves, and nothing is added
       // (a filter's `lowpass`, calling the `base` and `norm` its siblings call too).
+      // A leaf called only in loops takes a leaf callee along as well while the
+      // copies stay within the hot bound, 200 nodes (a band-limited step and its
+      // table lookup, called per sample from two sums): the calls are what the
+      // loops pay for.
       // At speed a body of a loop's size takes the calls it keeps along (`lcm`
       // over `gcd`, whose loops stay a function), outside a cycle of calls.
       const inlinesAway = (callee) => candidates.has(callee) && (speedTier || sitesByCallee.get(callee)?.length === 1 ||
-        (sites.length === 1 && leaves.has(callee) && !hotOnly.has(callee)))
+        (sites.length === 1 && leaves.has(callee) && !hotOnly.has(callee)) ||
+        (coldSites === 0 && leaves.has(callee) && !hotOnly.has(callee) && sites.length * nodeSize(candidates.get(callee).body) <= 200))
       if (some(func.body, n => n[0] === '()' && typeof n[1] === 'string' && ctx.funcs.names.has(n[1]) && !inlinesAway(n[1])) &&
           !(speedTier && size <= WARM_BODY && !cyclic(func.name))) continue
     }

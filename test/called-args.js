@@ -38,6 +38,15 @@ test('called args: a function given as an argument it only calls is called direc
   if (!belowOpt(2)) ok(!/call_indirect/.test(wat(blep, { optimize: 2 })), 'no indirect call')
 })
 
+// The copies pass `undefined` where the function was: step and ramp are no values
+// then, and each (a leaf over a leaf, lookup, that both call) splices into the sums.
+test('called args: the function a copy calls splices into its loops', () => {
+  if (belowOpt(2)) return
+  const w = wat(blep, { optimize: 2 })
+  ok(!/\(call \$(step|ramp|lookup)\b/.test(w), 'step, ramp and lookup spliced')
+  ok(!/\(elem/.test(w), 'no function table')
+})
+
 test('called args: a parameter used otherwise, or a name that may change, keeps the value', () => {
   // the parameter is also read as a value
   agrees(`const a = x => x + 1, b = x => x * 2
