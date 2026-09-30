@@ -12,7 +12,7 @@ import { simplifyCast } from 'watr/optimize'
 import { LAYOUT, FORWARDING_MASK, ctx } from '../ctx.js'
 import { nanboxF64 } from '../abi/index.js'
 import { findBodyStart, isPureIR, hasExpensiveOp, f64Range, cloneIR, valueTruthyIR } from '../ir.js'
-import { foldIntCompare, narrowI32, int32Operand } from '../ir/numeric.js'
+import { foldIntCompare, narrowI32, int32Operand, guardedInt32Operand } from '../ir/numeric.js'
 import { isLeaf, walkAst } from '../ast.js'
 import { clearFlowRanges, tagFlowRanges } from './flow-range.js'
 import { nanPrefixHex, atomNanHex, STR_INTERN_BIT } from '../../layout.js'
@@ -328,11 +328,18 @@ export function lowerToInt32Tails(fn) {
   const decls = []
   let n = 0
   for (let i = 2; i < bodyStart; i++) {
-    const m = Array.isArray(fn[i]) && fn[i][0] === 'local' && typeof fn[i][1] === 'string' && fn[i][1].match(/^\$__ti(\d+)$/)
+    const m = Array.isArray(fn[i]) && (fn[i][0] === 'local' || fn[i][0] === 'param') && typeof fn[i][1] === 'string' && fn[i][1].match(/^\$__ti(\d+)$/)
     if (m) n = Math.max(n, +m[1] + 1)
   }
   const lower = node => {
     if (!Array.isArray(node)) return node
+    // The emitter already supplies this guard. Lower nested conversions in
+    // its captured argument, leaving its cold fallback as one plain call.
+    const held = guardedInt32Operand(node)
+    if (held) {
+      if (held[0] === 'local.tee') held[2] = lower(held[2])
+      return node
+    }
     for (let i = 1; i < node.length; i++) node[i] = lower(node[i])
     if (node[0] !== 'call' || node[1] !== '$__to_int32' || node.length !== 3) return node
     const x = node[2], leaf = Array.isArray(x) && x[0] === 'local.get'
@@ -707,10 +714,8 @@ function walkRewrite(node, doInline, freshI64, freshF64, get, bigint, inlineTrut
   // The same conversion behind its inline fast path (toInt32 at the speed tiers):
   //   (if (result i32) (f64.lt (f64.abs [local.tee T] X) 2^63) (then (wrap (trunc T))) (else (call $__to_int32 T)))
   // folds as the call does, over X: the guard serves only what the range rules out.
-  if (op === 'if' && node.length === 5 && node[1]?.[0] === 'result' && node[1][1] === 'i32' &&
-      node[2]?.[0] === 'f64.lt' && node[2][1]?.[0] === 'f64.abs' && node[2][2]?.[0] === 'f64.const' && node[2][2][1] === TWO_63 &&
-      node[4]?.[0] === 'else' && node[4][1]?.[0] === 'call' && node[4][1][1] === '$__to_int32') {
-    const held = node[2][1][1]
+  const held = op === 'if' && guardedInt32Operand(node)
+  if (held) {
     const x = Array.isArray(held) && held[0] === 'local.tee' && held.length === 3 ? held[2] : held
     const i = narrowI32(x, true)?.node
     if (i) return i

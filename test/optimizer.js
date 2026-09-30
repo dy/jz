@@ -14,7 +14,7 @@ import { almost, is, ok, throws } from 'tst/assert.js'
 import jz from '../index.js'
 import { onKernel, levels } from './_matrix.js'
 import { collectReachableGlobalWrites, optimizeFunc, resolveOptimize, PASS_NAMES } from '../src/optimize/index.js'
-import { fusedRewrite } from '../src/optimize/peephole.js'
+import { fusedRewrite, lowerToInt32Tails } from '../src/optimize/peephole.js'
 import { ctx } from '../src/ctx.js'
 import { compile } from '../index.js'
 import { EQ_ZERO_KERNEL } from './_optimizer-kernels.js'
@@ -35,6 +35,10 @@ test('SIMD store conversion peeling requires matching guards and both value arms
   const guarded = (limit, hit, miss) => ['if', ['result', 'i32'],
     ['f64.lt', ['f64.abs', x], ['f64.const', limit]], ['then', hit], ['else', ['call', '$__to_int32', miss]]]
   is(peelNarrowConv(guarded(2 ** 63, wrap(x), x), 'i32'), x)
+  const inverse = guarded(2 ** 63, wrap(x), x)
+  inverse[2][0] = 'f64.ge'
+  ;[inverse[3][1], inverse[4][1]] = [inverse[4][1], inverse[3][1]]
+  is(peelNarrowConv(inverse, 'i32'), x, 'the slow-first guard is the same conversion')
   for (const val of [guarded(2 ** 63, ['i32.const', 7], x), guarded(2 ** 64, wrap(x), x),
     guarded(2 ** 63, wrap(y), x), guarded(2 ** 63, wrap(x), y),
     ['select', wrap(x), ['i32.const', 0], ['f64.ne', y, ['f64.const', Infinity]]]])
@@ -42,6 +46,24 @@ test('SIMD store conversion peeling requires matching guards and both value arms
   const captured = guarded(2 ** 63, wrap(get('$t')), get('$t'))
   captured[2][1][1] = ['local.tee', '$t', ['f64.add', x, ['f64.const', 0.5]]]
   is(peelNarrowConv(captured, 'i32'), captured[2][1][1][2], 'the capture executes once')
+})
+
+test('late integer conversion preserves parameters whose names match its temporaries', () => {
+  const ir = parseWat(`(module
+    (import "env" "convert" (func $__to_int32 (param f64) (result i32)))
+    (func $f (export "f") (param $__ti0 f64) (result i32)
+      (i32.add
+        (call $__to_int32 (f64.add (local.get $__ti0) (f64.const 0.5)))
+        (i32.trunc_sat_f64_s (local.get $__ti0)))))`)
+  const imports = { env: { convert: n => n | 0 } }
+  const before = new WebAssembly.Instance(new WebAssembly.Module(encodeWat(ir)), imports).exports.f
+  lowerToInt32Tails(ir[2])
+  const once = encodeWat(ir)
+  lowerToInt32Tails(ir[2])
+  is(encodeWat(ir), once, 'lowering twice adds no guards or locals')
+  const after = new WebAssembly.Instance(new WebAssembly.Module(once), imports).exports.f
+  for (const n of [0, 1, 1, -7, 1, 127.5, -(2 ** 31), 2 ** 31, 2 ** 32,
+    -(2 ** 63), 2 ** 63, 1e30, NaN, Infinity, -Infinity]) is(after(n), before(n), `n=${n}`)
 })
 
 // Count `call $NAME` nodes that survive INSIDE a loop within the user function $f

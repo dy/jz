@@ -1,5 +1,6 @@
 import { registerResetHook } from '../../ctx.js'
 import { cloneNode, isLeaf, nodeEqual } from '../../ast.js'
+import { guardedInt32Operand } from '../../ir/numeric.js'
 import { hasBranchOrReturn, hasSideEffect, isI32Const, matchMirrorAddr } from './addr-model.js'
 import { aosAddrPair, aosGather, aosStore, getOrAllocLanedLocal } from './aos.js'
 import { matchCanonBlock, matchCanonSelect } from './idioms.js'
@@ -784,14 +785,8 @@ export function peelNarrowConv(val, sty) {
   if (val[0] === 'call' && val[1] === '$__to_int32' && val.length === 3) return val[2]
   // The same behind its inline fast path (toInt32 at the speed tiers):
   //   (if (result i32) (f64.lt (f64.abs [local.tee T] X) 2^63) (then (wrap (trunc T))) (else (call $__to_int32 T)))
-  if (val[0] === 'if' && val.length === 5 && isArr(val[2]) && val[2][0] === 'f64.lt' && isArr(val[2][1]) && val[2][1][0] === 'f64.abs' &&
-      isArr(val[4]) && isArr(val[4][1]) && val[4][1][0] === 'call' && val[4][1][1] === '$__to_int32') {
-    const held = val[2][1][1]
-    const read = held?.[0] === 'local.tee' ? ['local.get', held[1]] : isLeaf(held) ? held : null
-    if (!read || !nodeEqual(val[1], ['result', 'i32']) ||
-        !nodeEqual(val[2][2], ['f64.const', 9223372036854775808]) ||
-        !nodeEqual(val[3], ['then', ['i32.wrap_i64', ['i64.trunc_sat_f64_s', read]]]) ||
-        !nodeEqual(val[4], ['else', ['call', '$__to_int32', read]])) return null
+  const held = guardedInt32Operand(val)
+  if (held) {
     return isArr(held) && held[0] === 'local.tee' && held.length === 3 ? held[2] : held
   }
   if (val[0] === 'i32.trunc_sat_f64_s' || val[0] === 'i32.trunc_sat_f64_u') return val[1]

@@ -6,7 +6,7 @@
  */
 
 import { ctx, err, inc, OPTF } from '../ctx.js'
-import { I32_MIN, I32_MAX, isLeaf } from '../ast.js'
+import { I32_MIN, I32_MAX, isLeaf, nodeEqual } from '../ast.js'
 import { typed } from './tag.js'
 import { ATOM, atomNanHex } from '../../layout.js'
 import { temp, tempI32 } from './locals.js'
@@ -503,6 +503,22 @@ export const f64Range = (n, get, allowNaN = false) => {
     return null
   }
   return r(n)
+}
+
+/** Operand captured by the exact ToInt32 fast path, before its two arms.
+ *  Match the threshold and both consumers so an arbitrary branch cannot
+ *  borrow the conversion's semantics. */
+export const guardedInt32Operand = n => {
+  if (!Array.isArray(n) || n[0] !== 'if' || n.length !== 5 ||
+      (n[2]?.[0] !== 'f64.lt' && n[2]?.[0] !== 'f64.ge') || n[2][1]?.[0] !== 'f64.abs') return null
+  const held = n[2][1][1]
+  const read = held?.[0] === 'local.tee' && held.length === 3 ? ['local.get', held[1]] : isLeaf(held) ? held : null
+  const fast = ['i32.wrap_i64', ['i64.trunc_sat_f64_s', read]], slow = ['call', '$__to_int32', read]
+  const slowFirst = n[2][0] === 'f64.ge'
+  return read && nodeEqual(n[1], ['result', 'i32']) &&
+    nodeEqual(n[2][2], ['f64.const', 2 ** 63]) &&
+    nodeEqual(n[3], ['then', slowFirst ? slow : fast]) &&
+    nodeEqual(n[4], ['else', slowFirst ? fast : slow]) ? held : null
 }
 
 /** Operand of a ToInt32 conversion. An arbitrary select is not a conversion:

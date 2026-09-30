@@ -134,7 +134,9 @@ Integer-store shortcuts prove numeric carriers, not merely an i32 representation
 pointers still need ToNumber. Clamping requires the original signed magnitude;
 a Uint32 word with its high bit set cannot use the signed-word clamp. An observed
 assignment preserves its original RHS, including object identity and undefined.
-SIMD conversion peeling checks the guard, both arms and their shared operand.
+SIMD conversion peeling and late integer conversion share the same proof of
+the guard, both arms and their captured operand. An existing exact conversion
+keeps one magnitude guard; lowering it again adds no guards or temporaries.
 
 Typed-width loop versions accept stable local receivers as well as parameters.
 They validate the complete Float32/Float64 carrier, snapshot fixed storage and
@@ -170,6 +172,8 @@ See [PLAN.md](PLAN.md) for remaining gates and DSP evidence.
 A declaration supplies a whole-body integer range only when it is the binding's
 sole initializer and no code reassigns it. Copied declarations after unrolling
 retain their individual values without publishing one copy's range for all.
+Installed typed lengths may narrow an earlier width-based range; the invariant
+check rejects widening a range that another pass may already have consumed.
 
 Load reuse visits reads and writes in evaluation order. A shared load executes
 at its first occurrence, never before preceding operands; identity-observing

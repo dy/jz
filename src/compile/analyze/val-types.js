@@ -335,8 +335,10 @@ export function analyzeValTypes(body) {
         if (declRange && Number.isFinite(declRange[0]) && Number.isFinite(declRange[1]) && hasSingleInitializer(body, a[1])) {
           if (DBG_INVARIANTS) {
             const prior = repOf(a[1])?.range
-            if (prior && (prior[0] !== declRange[0] || prior[1] !== declRange[1]))
-              throw new Error(`analyzeValTypes: declRange restamp for '${a[1]}' diverges from analyzeBody's early stamp — prior=[${prior}] new=[${declRange}] (idempotence probe)`)
+            // Installed typed lengths can refine the early width-based hull.
+            // Widening would invalidate proofs that already consumed it.
+            if (prior && (declRange[0] < prior[0] || declRange[1] > prior[1]))
+              throw new Error(`analyzeValTypes: declRange restamp for '${a[1]}' widens analyzeBody's early stamp — prior=[${prior}] new=[${declRange}]`)
           }
           updateRep(a[1], { range: declRange })
         }
