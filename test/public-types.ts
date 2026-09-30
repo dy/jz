@@ -19,6 +19,7 @@ const opts: CompileOptions = {
   optimize: { level: 'speed', simd: false, tailCall: false },
   warnings: (w) => { void w.code },
   why: true,
+  define: { EMPTY: undefined, DATA: { 'a-b': -0, values: [undefined, null] } },
 }
 const fixed: CompileOptions = { memory: { fixed: ['process'] as const } }
 void fixed

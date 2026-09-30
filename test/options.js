@@ -3,7 +3,7 @@
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
 import jz, { compile } from '../index.js'
-import { belowOpt } from './_matrix.js'
+import { belowOpt, levels } from './_matrix.js'
 
 const flat = s => s.replace(/\s+/g, ' ')
 const HEAP = 'export let f = (n) => { let a = new Float64Array(n); a[0] = 1.5; return a[0] }'
@@ -12,6 +12,52 @@ const TAIL = 'export let sum = (n, acc) => n === 0 ? acc : sum(n - 1, acc + n)'
 const GROW = 'export let f = (n) => { const a = []; for (let i = 0; i < n; i++) a.push(i); return a }'
 const THROW = 'export let f = (x) => { if (x < 0) throw new RangeError("neg"); return x }'
 const DEP = 'export let f = (n) => { let a = new Float64Array(n); for (let i = 1; i < n; i++) a[i] = a[i - 1] + 1; return a[0] }'
+
+test('options: define preserves scalar values, property names and sparse array length', () => {
+  const shared = { 'a-b': 7 }, value = {
+    '': null, 'a-b': -0, 'quote"\\': 'α😀', left: shared, right: shared,
+    ['__proto__']: 13, slots: [, undefined, ,],
+  }
+  const src = `export const f = () => [K[''] === null, 1 / K['a-b'], K['quote"\\\\'],
+    K.left['a-b'], K.right['a-b'], K['__proto__'], K.slots.length,
+    K.slots[0] === undefined, K.slots[2] === undefined, 0 in K.slots, 2 in K.slots]`
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const f = jz(src, { define: { K: value }, optimize }).exports.f
+    const expected = [true, -Infinity, 'α😀', 7, 7, 13, 3, true, true, true, true]
+    is(f(), expected, `literal fields, O${optimize}`)
+    is(f(), expected, `same instance again, O${optimize}`)
+    for (const K of [undefined, null, true, false, 0, -0, NaN, Infinity, -Infinity, '', 'α😀']) {
+      const actual = jz('export const f = () => K', { define: { K }, optimize }).exports.f()
+      ok(Object.is(actual, K), `scalar ${String(K)}, O${optimize}`)
+    }
+    for (const K of [[], [,], [,,], [1,,], []]) {
+      const f = jz('export const f = () => [K.length, K[K.length - 1] === undefined]', { define: { K }, optimize }).exports.f
+      is(f(), [K.length, K[K.length - 1] === undefined], `empty/trailing holes, O${optimize}`)
+    }
+  }
+})
+
+test('options: define rejects cycles and nonliteral values, then compiles again', () => {
+  const object = {}, array = []
+  object.self = object; array.push(array)
+  let reads = 0
+  const accessor = { get x() { reads++; return 1 } }
+  for (const K of [object, array, new Date(0), new Map(), new Float64Array(1), { fn() {} }, accessor]) {
+    throws(() => compile('export const f = () => K', { define: { K } }), /not a compile-time constant/)
+    is(jz('export const f = () => K', { define: { K: { x: 9 } } }).exports.f(), { x: 9 }, 'valid input after rejection')
+  }
+  is(reads, 0, 'reject accessors without executing them')
+})
+
+test('template constants preserve literal values at operator and property boundaries', () => {
+  is(jz`export const f = () => 1-${-1}`.exports.f(), 2, 'subtraction before a negative value')
+  is(jz`export const f = () => 1/${-0}`.exports.f(), -Infinity, 'negative zero')
+  is(jz`export const f = () => !${false}`.exports.f(), true, 'boolean operand')
+  const data = { 'a-b': 7, text: 'α😀', slots: [,] }
+  const f = jz`export const f = () => { const k = ${data}; return [k['a-b'], k.text, k.slots.length] }`.exports.f
+  is(f(), [7, 'α😀', 1])
+  is(f(), [7, 'α😀', 1], 'repeat')
+})
 
 test('options: memory descriptor sets initial and maximum pages', () => {
   const wat = flat(compile(HEAP, { wat: true, memory: { initial: 4, maximum: 16 } }))

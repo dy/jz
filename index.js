@@ -132,8 +132,8 @@ export default function jz(code, ...args) {
       } else {
         const s = serialize(v)
         if (s !== null && (typeof v === 'number' || typeof v === 'boolean')) {
-          // Scalars inline directly
-          src += s
+          // Parentheses keep a negative literal from joining the preceding operator.
+          src += `(${s})`
         } else if (s !== null) {
           // Strings, arrays, objects — hoist as compile-time literal
           const key = `$$${i}`

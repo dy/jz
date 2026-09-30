@@ -4,7 +4,7 @@
 export type Host = 'js' | 'wasi' | 'native'
 
 /** Value injectable through `define`. */
-export type DefineValue = number | boolean | string | null | DefineValue[] | { [k: string]: DefineValue }
+export type DefineValue = number | boolean | string | null | undefined | DefineValue[] | { [k: string]: DefineValue }
 
 /** Raw NaN-box carrier used by the memory API. */
 export type JzPointer = bigint

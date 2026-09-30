@@ -56,7 +56,7 @@ memory.used                               // 0: the call kept nothing it allocat
 |---|---|
 | `modules` | Sources for static imports, `{ './dep.js': source }`. The CLI reads them from disk. |
 | `imports` | Host modules for `import { fn } from "mod"`: functions, constants, or a whole namespace such as `Math`. |
-| `define` | Compile-time constants injected as bindings, `{ DEBUG: false, N: 1024 }`. |
+| `define` | Compile-time constants injected as bindings, `{ DEBUG: false, N: 1024 }`. Accepts numbers, booleans, strings, null/undefined, arrays and plain data objects. |
 | `host` | `'js'` (default), `'wasi'` for standalone runtimes, `'native'` for the wasm2c lane. |
 | `memory` | Initial pages, a `WebAssembly.Memory` or `jz.memory()` shared between modules, or `{ initial, maximum, shared, import, fixed }`. `fixed: ['process']` requires named Wasm exports to use fixed storage. |
 | `optimize` | `true` (default), `'speed'`, `'size'`, `false`, or an object: `{ level, simd, tailCall, exceptions, alloc }` for engines without SIMD or tail calls and for raw standalone modules. |

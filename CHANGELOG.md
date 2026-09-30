@@ -21,6 +21,7 @@
 - Preserve namespace key evaluation, lexical shadowing and live exports, including quoted export names.
 - Preserve class and iterator return values through null-receiver checks.
 - Preserve class-method and expression-continuation boundaries, and reject malformed object property names.
+- Preserve injected constants' negative zero, quoted keys and trailing array elements; reject cyclic or nonliteral definitions.
 - Copy accessor values through dynamic spreads; reject accessor definitions that need a runtime property layout.
 - Keep optional-method receiver handling consistent in the Wasm-hosted compiler.
 - Avoid quadratic store-forwarding traversal in expressions without memory candidates.
