@@ -28,6 +28,17 @@ export function normTee(n) {
   return n.map(normTee)
 }
 
+// An element read as a value carries its hole test — `select(nan, X, eq(bits X, HOLE))`
+// — where a compare read the same element bare (a hole's bits are NaN either way). In
+// the branch a `>`/`<` compare selects, X is no NaN, so the value is X.
+const stripHoleSelect = (n) => {
+  if (!isArr(n) || n[0] !== 'select' || n.length !== 4) return n
+  const [, nan, x, test] = n
+  if (!(isArr(nan) && nan[0] === 'f64.const' && String(nan[1]).toLowerCase() === 'nan')) return n
+  if (!(isArr(test) && test[0] === 'i64.eq' && isArr(test[1]) && test[1][0] === 'i64.reinterpret_f64' && isArr(test[2]) && test[2][0] === 'i64.const')) return n
+  return exprEq(normTee(x), normTee(test[1][1])) ? x : n
+}
+
 // Recognize an integer min/max reduction body. WASM has no scalar i32.min/max, so
 // `m = max(m, a[i])` — written `Math.max(m,a[i])|0` or `a[i]>m?a[i]:m` — lowers, after
 // the ToInt32-through-`?:` fold, to a select-shaped body:
@@ -75,7 +86,9 @@ export function matchIntMinMaxReduce(rhs, accName) {
   if (isLocalGet(cmp[2], accName)) { condExpr = cmp[1]; exprIsLeftOfCmp = true }
   else if (isLocalGet(cmp[1], accName)) { condExpr = cmp[2]; exprIsLeftOfCmp = false }
   else return null
-  // The compared expr and the chosen branch must be the SAME lane (tee vs reload aside).
+  // The compared expr and the chosen branch must be the SAME lane (tee vs reload aside,
+  // and the hole test a value read carries).
+  if (laneType === 'f64') exprBr = stripHoleSelect(exprBr)
   if (!exprEq(normTee(condExpr), normTee(exprBr))) return null
   // cond true ⟺ EXPR > acc  ⇒  picking EXPR-when-true is a max; picking-when-false a min.
   const predExprGreater = dir === 'gt' ? exprIsLeftOfCmp : !exprIsLeftOfCmp

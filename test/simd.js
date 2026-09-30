@@ -2011,6 +2011,26 @@ test('vectorize: f64 product reduction lifts to f64x2.mul', () => {
   ok(/f64x2\.mul/.test(wat(src, SIMD_OPT)), 'expected f64x2.mul')
 })
 
+test('vectorize: a conditional-store max lifts through the load cache\'s tee and a value read\'s hole test', () => {
+  // `if (a[i] > m) m = a[i]` reaches the recognizer in two more shapes: the load cache
+  // shares the element between the compare and the store as one tee'd temp (declared
+  // `(local.set $t 0)`, filled `(local.tee $t LOAD)`, read `(local.get $t)`), and an
+  // element read as a value carries its hole test, `select(nan, x, x is hole)`, while the
+  // compare read it bare. Both are the same reduction: in the arm the compare selects,
+  // the element is no NaN.
+  const shared = `const a = new Float64Array(1000)
+    export const main = () => { for (let i = 0; i < 1000; i++) a[i] = Math.sin(i * 1.3) * 1000
+      a[500] = NaN; let i = 0, m = 1; while (i < 1000) { if (a[i] > m) m = a[i]; i++ } return (m * 1000) | 0 }`
+  const resized = `let a
+    export let resize = (n) => { a = new Float64Array(n); for (let i = 0; i < n; i++) a[i] = Math.cos(i * 0.9) * 500; a[70] = NaN }
+    export let main = (n) => { let i = 0, m = 1; while (i < n) { if (a[i] > m) m = a[i]; i++ } return (m * 1000) | 0 }`
+  const peak = (src, opt) => { const e = runVec(src, opt); e.resize?.(777); return e.main(777) }
+  for (const [name, src] of [['the shared read', shared], ['the value read of a resized array', resized]]) {
+    is(peak(src, SPEED), peak(src, SPEED_SCALAR), `${name}: bit-exact (NaN ignored)`)
+    ok(/f64x2\.pmax/.test(wat(src, SPEED)), `${name}: → f64x2.pmax`)
+  }
+})
+
 test('vectorize: f64 comparison min/max reduction lifts to f64x2.pmax/pmin (NaN-exact)', () => {
   // `m = a[i] > m ? a[i] : m` and `if (a[i] > m) m = a[i]` are the same reduction. f64x2.pmax
   // replicates `(a>m)?a:m` EXACTLY per element — pmax(m,a)=(m<a)?a:m keeps the accumulator on a

@@ -37,6 +37,24 @@ import { simdLoop, simdBound } from './scaffold.js'
 // one-or-two-statement canonical body vs. arbitrary straight-line multi-statement body) enough
 // that unifying their MATCH bodies (not just their dispatch slot) would risk a behavior change
 // under the byte-identical gate; kept as two internal matchers behind one recognizer entry,
+// The tees of a statement that hold a pure load, inlined at the tee and at every read
+// of the local (a temp the load cache made for a lane read), the names noted in
+// `teed`; a local read past the loop keeps its tee.
+const inlineLaneTees = (stmt, outsideReads, teed) => {
+  const tees = new Map()
+  ;(function find(n) {
+    if (!isArr(n)) return
+    if (n[0] === 'local.tee' && n.length === 3 && typeof n[1] === 'string' && isArr(n[2]) && n[2][0] in LOAD_OPS
+        && !hasSideEffect(n[2]) && !outsideReads?.has(n[1])) tees.set(n[1], n[2])
+    n.forEach(find)
+  })(stmt)
+  if (!tees.size) return stmt
+  for (const t of tees.keys()) teed.add(t)
+  const clone = (n) => isArr(n) ? n.map(clone) : n
+  const sub = (n) => !isArr(n) ? n : (n[0] === 'local.tee' || n[0] === 'local.get') && tees.has(n[1]) ? clone(tees.get(n[1])) : n.map(sub)
+  return sub(stmt)
+}
+
 // selected by which fold order (`bitExact`) actually fires — see `tryReduce`.
 function tryReduceReassoc(bl, fnLocals, freshIdRef, multiAcc = false) {
   // Same scaffold as tryVectorize, but no preamble: a reduction block is just the loop.
@@ -62,6 +80,17 @@ function tryReduceReassoc(bl, fnLocals, freshIdRef, multiAcc = false) {
   }
   const bodyStmts = []
   for (let i = 3; i < incIdx; i++) bodyStmts.push(asSelectAssign(loopNode[i]))
+  // A lane read the load cache shares between the compare and the store arrives as a
+  // temp: `(local.set $t C)` declares it, `(f64.gt (local.tee $t LOAD) acc)` fills it
+  // and the store reads `(local.get $t)`. Both sides are that load: inline it for
+  // recognition and drop the declaration its reads no longer need. Sound as the collapse
+  // below: the lift consumes the load, the scalar remainder keeps the tee and its temp.
+  const teed = new Set()
+  for (let i = 0; i < bodyStmts.length; i++) bodyStmts[i] = inlineLaneTees(bodyStmts[i], bl.outsideReads, teed)
+  if (teed.size) for (let i = bodyStmts.length - 1; i >= 0; i--) {
+    const s = bodyStmts[i]
+    if (isArr(s) && s[0] === 'local.set' && teed.has(s[1]) && !hasSideEffect(s[2])) bodyStmts.splice(i, 1)
+  }
   // CSE collapse: `m = a[i] > m ? a[i] : m` hoists the load into its own `(local.set $t LOAD)`
   // ahead of the reduction, making a 2-statement body the single-statement min/max recognizer
   // misses. When $t is pure (no side effect, no accumulator reference) inline it back into the
