@@ -53,8 +53,10 @@ test('wide accumulator: the clone converts nothing per iteration; the size tier 
     const carriers = count(versioned, /\(local \$__wa\d+ i64\)/g)
     ok(carriers >= 1, `${name}: carried as i64`)
     // The versioned body keeps every original conversion (the fallback loop) and adds
-    // exactly one entry round-trip per carrier: the fast clone itself converts nothing.
-    is(count(versioned, /i64\.trunc_sat_f64_s/g), count(plain, /i64\.trunc_sat_f64_s/g) + 2 * carriers, `${name}: no conversion inside the fast loop`)
+    // at most one entry round-trip per carrier (int-narrow decides the round-trip of a
+    // value the intervals know an integer): the fast clone itself converts nothing.
+    const before = count(plain, /i64\.trunc_sat_f64_s/g), after = count(versioned, /i64\.trunc_sat_f64_s/g)
+    ok(after >= before && after <= before + 2 * carriers, `${name}: no conversion inside the fast loop (${after} of ${before} + ${2 * carriers})`)
     ok(/i64\.(add|sub)/.test(versioned), `${name}: integer update`)
     ok(!/\$__wa\d+/.test(compile(src, { optimize: 'size', wat: true })), `${name}: size tier is not versioned`)
   }

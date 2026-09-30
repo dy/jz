@@ -172,7 +172,9 @@ export const lookupValType = name => {
   }
   const ov = ctx.func.localValTypesOverlay
   const hasOverlayValues = ov?.size || (ov?.mapOverlay === true && (ov.own?.size || ov.base?.size))
-  if (hasOverlayValues) { const v = ov.get(name); if (v) return typeof v === 'number' ? ctx.summary.valOfKind(v) : v }
+  // A flow fact keeps the kind's presence bits (`const x = a[i]` may be absent);
+  // the value is read beside them, as analyzeValTypes stamps the rep's `val`.
+  if (hasOverlayValues) { const v = ov.get(name); if (v) return typeof v === 'number' ? ctx.summary.valBesidePresence(v) : v }
   // The program summary (src/summary): the binding's kind in the current function's scope.
   const planned = ctx.func.localReps?.get(name)?.val || ctx.scope.globalValTypes?.get(name)
   if (planned) return planned

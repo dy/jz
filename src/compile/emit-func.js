@@ -1,4 +1,5 @@
 import { DBG_INVARIANTS, assertCtxInvariants } from '../debug.js'
+import { plannedTypedStorageInfo } from './typed-storage-plan.js'
 import parseWat from 'watr/parse'
 import { ctx, PTR, LAYOUT } from '../ctx.js'
 import { isBlockBody, returnExprs } from '../ast.js'
@@ -138,6 +139,10 @@ export function emitFunc(func, functionPlan, programFacts, arrayGlobals) {
   const presentArrays = new Set()
   const kinds = ctx.summary?.at(body)
   const presentArray = nm => isPresentArray(kinds?.kindOfExpr(nm))
+  // The typed array bindings that are present likewise: one assigned more than
+  // once stays a box, whose header is read through its low word.
+  const presentTyped = new Set()
+  const typedPresent = (nm) => { const k = kinds?.kindOfExpr(nm); return k != null && tagOf(core(k)) === K.TYPED && !isNullable(k) }
   if (kinds) {
     for (const p of sig.params) if (presentArray(p.name)) presentArrays.add(`$${p.name}`)
     if (installedPlan.localReps) for (const nm of installedPlan.localReps.keys()) if (presentArray(nm)) presentArrays.add(`$${nm}`)
@@ -145,6 +150,8 @@ export function emitFunc(func, functionPlan, programFacts, arrayGlobals) {
       const nm = arrayGlobals[i]
       if (isGlobal(nm) && presentArray(nm)) presentArrays.add(`$${nm}`)
     }
+    for (const p of sig.params) if (typedPresent(p.name)) presentTyped.add(`$${p.name}`)
+    if (installedPlan.localReps) for (const nm of installedPlan.localReps.keys()) if (typedPresent(nm)) presentTyped.add(`$${nm}`)
   }
   // The interval each numeric parameter receives over the function's calls
   // (summary `paramRangesOf`): the flow ranges start from it, so a ToInt32 of
@@ -177,6 +184,7 @@ export function emitFunc(func, functionPlan, programFacts, arrayGlobals) {
   if (plannedDistinctParams) fn.distinctParams = plannedDistinctParams
   if (plannedStableHeaderNames) fn.stableHeaderNames = plannedStableHeaderNames
   if (presentArrays.size) fn.presentArrays = presentArrays
+  if (presentTyped.size) fn.presentTyped = presentTyped
   if (paramRanges.size) fn.paramRanges = paramRanges
   // Inline `(export ...)` attribute only for the syntactic inline-export
   // form (`export function foo`, snapshot in `func.exported` at defFunc
@@ -353,6 +361,12 @@ export function emitFunc(func, functionPlan, programFacts, arrayGlobals) {
     fn.push(...paramInits, ...boxedParamInits, ...preboxedLocalInits, tcoTailRewrite(finalIR, sig.results[0]))
   }
 
+  // The locals that hold a view of a buffer: its descriptor is written once,
+  // when the view is made, so its words are what they were (optimize/licm.js).
+  const views = new Set()
+  for (const l of [...ctx.func.locals.keys(), ...sig.params.map(p => p.name)])
+    if (plannedTypedStorageInfo(ctx, l)?.isView) views.add(dollar(l))
+  if (views.size) fn.viewNames = views
   publishLoopRewinds(ctx, name)
   return fn
   } finally {

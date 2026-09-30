@@ -19,6 +19,9 @@ const HERE = dirname(fileURLToPath(import.meta.url))
 
 
 const SIMD_OPT = { optimize: { vectorizeLaneLocal: true, watr: true } }
+// The disjointness guard of a versioned loop: `i32.or` of its two halves, or the
+// half that is left where the offset's interval decides the other.
+const GUARD = /i32\.or|i32\.(ge|le)_s/
 // Same pipeline with vectorization OFF — the scalar oracle for SIMD correctness checks.
 const NOVEC = { optimize: { vectorizeLaneLocal: false, watr: true } }
 const runVec = (code, opts) => jz(code, opts).exports
@@ -3078,7 +3081,9 @@ test('SIMD multi-pixel - vertical box blur (outer-loop peel + 4-pixel SIMD)', ()
   const ON = { optimize: 'speed' }, OFF = { optimize: { level: 'speed', blurMultiPixel: false } }
   for (const [w, h, r] of [[64, 8, 4], [63, 7, 3], [17, 9, 2], [15, 5, 1], [8, 8, 3], [7, 7, 2], [5, 5, 1], [9, 9, 4], [4, 4, 1]])
     is(runVec(vblur(w, h, r), ON).main(), runVec(vblur(w, h, r), OFF).main(), `vblur ${w}x${h} r=${r}`)
-  ok(/i16x8\.extend_high/.test(wat(vblur(64, 8, 4), ON)), '4-pixel SIMD must fire on the vertical pass')
+  // (rows 4..11 are the interior: at 8 rows and a radius of 4 there is none, and the
+  // intervals drop the loop that would run it)
+  ok(/i16x8\.extend_high/.test(wat(vblur(64, 16, 4), ON)), '4-pixel SIMD must fire on the vertical pass')
 })
 
 test('SIMD channel order - permuted RGBA channels stay positionally correct', () => {
@@ -3735,7 +3740,7 @@ test('SIMD alias-version i32 - same-array write shifted AHEAD of the read (a[i+k
   }`
   const w = wat(src, SIMD_OPT)
   ok(hasV128(w), 'v128 present')
-  ok(/i32\.or/.test(w), 'disjointness guard present')
+  ok(GUARD.test(w), 'disjointness guard present')
   for (let k = 0; k <= 15; k++)
     is(runVec(src, SIMD_OPT).main(k), runVec(src, NOVEC).main(k), `k=${k} bit-exact vs scalar`)
 })
@@ -3751,7 +3756,7 @@ test('SIMD alias-version f64 - same-array runtime-offset window (3-term affine i
   }`
   const w = wat(src, SIMD_OPT)
   ok(/f64x2\./.test(w), 'f64x2 present')
-  ok(/i32\.or/.test(w), 'disjointness guard present')
+  ok(GUARD.test(w), 'disjointness guard present')
   for (let k = 0; k <= 15; k++)   // lanes=2 for f64: delta = k+5 ranges 5..20, always ≥ 2 —
     is(runVec(src, SIMD_OPT).main(k), runVec(src, NOVEC).main(k), `k=${k} bit-exact vs scalar`)
   // swept for guard-shape coverage even though this window never overlaps; the recurrence-style
@@ -3769,7 +3774,7 @@ test('SIMD alias-version i16 - same-array runtime-offset shift versions, bit-exa
   }`
   const w = wat(src, SIMD_OPT)
   ok(hasV128(w), 'v128 present')
-  ok(/i32\.or/.test(w), 'disjointness guard present')
+  ok(GUARD.test(w), 'disjointness guard present')
   for (let k = 0; k <= 15; k++)   // lanes=8 for i16: k=1..7 overlap, k≥8 disjoint
     is(runVec(src, SIMD_OPT).main(k), runVec(src, NOVEC).main(k), `k=${k} bit-exact vs scalar`)
 })
@@ -3785,7 +3790,7 @@ test('SIMD alias-version i8 - byte-stride same-array runtime-offset shift versio
   }`
   const w = wat(src, SIMD_OPT)
   ok(/i8x16\./.test(w) || hasV128(w), 'v128 present')
-  ok(/i32\.or/.test(w), 'disjointness guard present')
+  ok(GUARD.test(w), 'disjointness guard present')
   for (let k = 0; k <= 20; k++)   // lanes=16 for i8: delta = k+16 ranges 16..36, always ≥ 16 —
     is(runVec(src, SIMD_OPT).main(k), runVec(src, NOVEC).main(k), `k=${k} bit-exact vs scalar`)
   // swept for guard-shape coverage; k+16 never overlaps at this stride (byte lanes need a huge

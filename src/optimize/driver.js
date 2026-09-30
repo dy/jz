@@ -17,7 +17,7 @@ import { forwardStores } from './forward-store.js'
 import { vectorizeLaneLocal } from './vectorize/index.js'
 import { hoistPtrType, hoistAddrBase } from './cse-address.js'
 import {
-  boolConvertToSelect, foldV128Memargs, inlinePtrOffsetFastPass, fusedRewrite,
+  boolConvertToSelect, foldV128Memargs, inlinePtrOffsetFastPass, fusedRewrite, lowerToInt32Tails,
 } from './peephole.js'
 import { hoistInvariantPtrOffset, splitLoopPrivateScratch, hoistInvariantLoop, narrowLoopBound, cseScalarLoad } from './licm.js'
 import { promoteGlobals } from './globals.js'
@@ -25,9 +25,12 @@ import { unswitchTypedParamLoop, unswitchStringRepLoop } from './unswitch.js'
 import { foldGuardedUpdates } from './guarded-update.js'
 import { hoistTypedDecode } from './typed-decode.js'
 import { foldShiftRemainder } from './shift-remainder.js'
+import { narrowFloat32 } from './float32.js'
+import { narrowInts } from './int-narrow.js'
+import { specializeLoops } from './specialize.js'
+import { combineGuards } from './guards.js'
 import { wideAccumulator } from './wide-accumulator.js'
 import { devirtSchemaReads, foldStaticConstArrayReads, devirtConstFnArrayCalls } from './devirt.js'
-import { narrowFloat32 } from './float32.js'
 
 /**
  * Run all per-function IR optimizations on a single function node.
@@ -151,12 +154,26 @@ export function optimizeFunc(fn, cfg, globalTypes, reachableWrites) {
   // the original call_indirect as the always-sound default arm.
   if (!cfg || cfg.devirtFnArrays !== false) devirtConstFnArrayCalls(fn, cfg)
   if (!cfg || cfg.devirtSchemaReads !== false) devirtSchemaReads(fn)
+  // After the lift, which reads the exact conversion as the kernel call, and
+  // the devirtualizations, which read emit's marks: the conversion's inline
+  // tail, then the loops specialized on reads that hit, integer registers for
+  // the integer values, and single-precision locals and arithmetic for
+  // `fround` code.
+  // (the inline tail is the per-site fast path of a conversion: where those
+  // share their helper for size, `inlineToNum: false`, this one calls its own)
+  if ((!cfg || cfg.fusedRewrite !== false) && (!cfg || cfg.inlineToNum !== false)) lowerToInt32Tails(fn)
+  if (!cfg || cfg.intNarrow !== false) {
+    const copies = cfg && cfg.specializeLoops === true ? specializeLoops(fn) : null
+    narrowInts(fn, copies)
+    // Over the integers: the guards of the copies, where one test decides many.
+    if (copies && cfg.combineGuards !== false) combineGuards(fn)
+  }
+  if (!cfg || cfg.narrowFloat32 !== false) narrowFloat32(fn)
   // Helper calls are the form every pass above reasons about: LICM hoists an invariant
   // `$__ptr_offset`, unswitch and devirt recognize it. Its inline fast path is lowering
   // (speed tier), so it runs last. Value numbering and statement scheduling are watr's
   // (optimize/watr-tail.js).
   // After the lane vectorizer, whose recognizers read float arithmetic in its double form.
-  if (cfg && cfg.narrowFloat32 === true) narrowFloat32(fn)
   if (cfg && cfg.inlinePtrOffsetFast === true) inlinePtrOffsetFastPass(fn)
   // The fold, loop rotation, the condition chains and the boolean
   // canonicalization follow on the tape (src/link).

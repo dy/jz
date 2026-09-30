@@ -250,19 +250,32 @@ test('Math.tan', async () => {
 // Inverse trigonometric functions
 // ============================================
 
-test('Math.asin', async () => {
-  almost(await evaluate('Math.asin(0)'), Math.asin(0), 1e-6)
-  almost(await evaluate('Math.asin(0.5)'), Math.asin(0.5), 1e-6)
-  almost(await evaluate('Math.asin(1)'), Math.asin(1), 1e-6)
-  almost(await evaluate('Math.asin(-0.5)'), Math.asin(-0.5), 1e-6)
+// fdlibm's asin and acos (module/math.js): within one ulp of the true value, so
+// within one ulp of a host that rounds correctly (V8 since its libc kernels) and
+// exact where the reference is exact. The former acos, π/2 − asin(x), lost digits
+// near 1: 25 million ulps at 1 − 2^-52.
+test('Math.asin and Math.acos: within one ulp of the host across the domain', () => {
+  const m = run('export const asin = (x) => Math.asin(x); export const acos = (x) => Math.acos(x)')
+  const ulps = (a, b) => { const d = bits(a) - bits(b); return d < 0n ? -d : d }
+  const bits = (v) => new BigInt64Array(new Float64Array([v]).buffer)[0]
+  let s = 0x9e3779b9
+  const next = () => { s ^= s << 13; s ^= s >>> 17; s ^= s << 5; return (s >>> 0) / 4294967296 }
+  const xs = [0, -0, 1, -1, 0.5, -0.5, 1 - 2 ** -52, -(1 - 2 ** -52), 2 ** -27, 2 ** -60, 0.975, 0.9751, 0.4999999, 0.5000001]
+  for (let i = 1; i < 2000; i++) xs.push(-1 + i / 1000)
+  for (let i = 0; i < 20000; i++) xs.push(next() * 2 - 1)
+  let far = 0, exact = 0
+  for (const x of xs) for (const [name, f, g] of [['asin', m.asin, Math.asin], ['acos', m.acos, Math.acos]]) {
+    const got = f(x), want = g(x)
+    if (Object.is(got, want)) { exact++; continue }
+    if (ulps(got, want) > 1n) { far++; if (far < 4) console.log(`${name}(${x}) = ${got}, the host answers ${want}`) }
+  }
+  is(far, 0, 'never more than one ulp from the host')
+  ok(exact > xs.length * 2 * 0.95, `the same bits as the host almost everywhere (${exact} of ${xs.length * 2})`)
+  is(m.asin(1), Math.PI / 2); is(m.asin(-1), -Math.PI / 2); is(m.acos(1), 0); is(m.acos(-1), Math.PI); is(m.acos(0), Math.PI / 2)
+  ok(Object.is(m.asin(-0), -0), 'asin(-0) is -0')
+  for (const x of [1.0000001, -1.5, Infinity, -Infinity, NaN]) { ok(Number.isNaN(m.asin(x)), `asin(${x}) is NaN`); ok(Number.isNaN(m.acos(x)), `acos(${x}) is NaN`) }
 })
 
-test('Math.acos', async () => {
-  almost(await evaluate('Math.acos(0)'), Math.acos(0), 1e-6)
-  almost(await evaluate('Math.acos(0.5)'), Math.acos(0.5), 1e-6)
-  almost(await evaluate('Math.acos(1)'), Math.acos(1), 1e-6)
-  almost(await evaluate('Math.acos(-0.5)'), Math.acos(-0.5), 1e-6)
-})
 
 test('Math.atan', async () => {
   almost(await evaluate('Math.atan(0)'), Math.atan(0), 1e-5)

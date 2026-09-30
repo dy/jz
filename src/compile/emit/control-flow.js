@@ -854,8 +854,8 @@ export const controlFlowOps = {
             if (c.cursor != null) {
               const key = c.recv + '\x00' + c.cursor + '\x00' + c.K
               const g = cursorGroups.get(key)
-              if (!g) cursorGroups.set(key, { ...c, minC: c.cConst, maxC: c.cConst })
-              else { g.minC = Math.min(g.minC, c.cConst); g.maxC = Math.max(g.maxC, c.cConst) }
+              if (!g) cursorGroups.set(key, { ...c, minC: c.cConst, maxC: c.cConst, anyPost: !!c.post })
+              else { g.minC = Math.min(g.minC, c.cConst); g.maxC = Math.max(g.maxC, c.cConst); if (c.post) g.anyPost = true }
               continue
             }
             const gk = c.recv + '\x00' + c.a + '\x00' + c.slots.map(t => t.k + '*' + slotKey(t.e)).join('+')
@@ -863,15 +863,18 @@ export const controlFlowOps = {
             if (!g) groups.set(gk, { recv: c.recv, a: c.a, slots: c.slots, maxC: c.bConst, minC: c.bConst, anyPost: !!c.post })
             else { g.maxC = Math.max(g.maxC, c.bConst); g.minC = Math.min(g.minC, c.bConst); if (c.post) g.anyPost = true }
           }
-          // A monotone cursor spans entry..entry+K*trips. Like affine groups,
-          // all offsets on one receiver need only the lowest and highest check.
+          // A monotone cursor spans entry..entry+K*trips; read before the round's
+          // advance, entry..entry+K*(trips-1): a compaction into an output sized for
+          // every round takes the fast arm. Like affine groups, all offsets on one
+          // receiver need only the lowest and highest check.
           for (const g of cursorGroups.values()) {
             // an f64 cursor takes the slot's integral and magnitude conjuncts: a
             // fractional entry advanced by whole steps names no element
             const entry = slotI64(g.cursor, exprType(g.cursor, ctx.func.locals) === 'i32' ? 'i32' : 'f64'), info = levelInfo.get(vs)
-            const trips = ['i64.add', ['i64.sub', ['local.get', `$${info.maxIv}`], info.entryIR()], i64c(1)]
+            const gone = ['i64.sub', ['local.get', `$${info.maxIv}`], info.entryIR()]
+            const rounds = g.anyPost ? ['i64.add', gone, i64c(1)] : gone
             const lo = g.minC < 0 ? ['i64.add', entry, i64c(g.minC)] : entry
-            let hi = ['i64.add', entry, ['i64.mul', i64c(g.K), trips]]
+            let hi = ['i64.add', entry, ['i64.mul', i64c(g.K), rounds]]
             if (g.maxC) hi = ['i64.add', hi, i64c(g.maxC)]
             conjs.push(['i64.ge_s', lo, i64c(0)], ['i64.lt_s', hi, len64Of(g.recv)])
           }
@@ -1006,9 +1009,11 @@ export const controlFlowOps = {
         ctx.types.assumedConstHull = savedHull
         const checked = withRefinements(initRefs, body, () => withRefinements(topCounterRefs, body, emitArm))
         const stmts = (r) => Array.isArray(r[0]) ? r : [r]
-        result.push(['if', typed(guard, 'i32'),
-          ['then', ...stmts(fast)],
-          ['else', ...stmts(checked)]])
+        // (the arm a failing guard runs, marked for the passes that copy loops:
+        // a copy of it would run as rarely as it does, optimize/specialize.js)
+        const twin = ['else', ...stmts(checked)]
+        twin.checkedTwin = true
+        result.push(['if', typed(guard, 'i32'), ['then', ...stmts(fast)], twin])
         return result
       }
     }

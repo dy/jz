@@ -66,6 +66,11 @@ export const typedMethodKind = (name, recv) => {
 const VAL_OF = [null, VAL.NUMBER, VAL.STRING, VAL.BOOL, VAL.BIGINT, null, VAL.TYPED, VAL.ARRAY, VAL.OBJECT, VAL.CLOSURE, VAL.MAP, VAL.SET, VAL.DATE, VAL.REGEX, VAL.HASH, VAL.BUFFER, null, null]
 /** The single non-nullable value kind, or null; presence is a separate query. */
 export const valOf = k => isNullable(k) ? null : VAL_OF[tagOf(k)] ?? null
+/** The value kind a binding holds beside its presence: the single kind, or the
+ *  core of a kind that may only be absent (`const x = a[i]`), which the reps
+ *  carry as `mayBeUndefined`. A nullish the program wrote is a value of its
+ *  own, and a nullable BigInt's absent arm reads Number: neither has one kind. */
+export const valBesidePresence = k => valOf(k) ?? (!hasTag(k, K.NULLISH) && tagOf(core(k)) !== K.BIGINT ? valOf(core(k)) : null)
 export const kindOfVal = v => { const t = VAL_OF.indexOf(v); return v == null ? ANY : t < 0 ? ANY : kind(t) }
 export const valsOf = k => { const out = []; for (let t = K.NUMBER; t < K.ANY; t++) if (t !== K.NULLISH && t !== K.ABSENT && hasTag(k, t)) out.push(VAL_OF[t]); return out }
 

@@ -28,6 +28,9 @@ export const PASS_NAMES = [
   'hoistInvariantLoop',       // unified LICM (subsumes the former ToInt32/PtrOffsetLoop/CellLoads hoists)
   'narrowLoopBound',          // f64 loop bound → hoisted i32 (unblocks the lane-vectorizer)
   'wideAccumulator',          // f64 integer accumulator carried as i64 under a runtime magnitude guard (versioned loop)
+  'intNarrow',                // integer-valued f64 locals and arithmetic in i32/i64 where the interval proves them exact (optimize/int-narrow.js)
+  'specializeLoops',          // a copy of a loop for reads that hit and integers that are integers, beside the loop as written (optimize/specialize.js)
+  'combineGuards',            // the guards of a specialized loop: one test ahead of the loop or of a run of reads decides many (optimize/guards.js)
   'splitCharScan',            // charCodeAt scan loops: split at min(N, s.length) → i32 char carrier (plan-level)
   'countedLoops',             // cursors, computed starts and unrolled bodies → one counter from 0, unit stride versioned (plan/counted-loops.js)
   // Pre-analyze loop-shape transforms — applied in compile/index.js (NOT this pass pipeline), but
@@ -110,6 +113,8 @@ export const PASS_NAMES = [
   'twinLocals',               // a versioned counted loop's checked twin writes locals of its own (compile/twin-locals.js)
   'carryElements',            // an element a loop stores for its next pass stays in a local (compile/carry-elements.js)
   'arrayViews',               // a slice read only as a spread source keeps its array and a range (compile/array-view.js)
+  'wordLocals',               // a local every read of which re-applies ToInt32 holds its word (compile/analyze-scans.js narrowWordLocals)
+  'guardViews',               // a typed array a guard proves is read through a view of its constructor (compile/plan/guard-views.js)
   'hoistConstLit',            // loop-invariant const array/object literal hoist (allocate once)
   'unrollScalarChain',        // serial-chain (address-carried scalar) ×2 pairing — speed-only
   'selectArmUpdates',         // disjoint-arm update chain → select accumulation — speed-only

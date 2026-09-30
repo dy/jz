@@ -14,7 +14,7 @@ import { MATH_KERNEL, powRuntime } from '../src/prepare/math-kernel.js'
 // the bound, in ulps, each function keeps against the host (measured maximum in the comment)
 const BOUND = {
   sin: 48, cos: 48, tan: 56,            // 40, 39, 49: the degree-11 sine and degree-12 cosine
-  asin: 44, acos: 44,                   // 38, 36
+  asin: 1, acos: 1,                     // fdlibm rational kernels
   atan: 16, atan2: 16,                  // 10, 10
   sinh: 8, cosh: 8, tanh: 8,            // 5, 3, 5
   asinh: 8, acosh: 8, atanh: 8,         // 4, 5, 4

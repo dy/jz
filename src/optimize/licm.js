@@ -396,7 +396,36 @@ const singleDefs = (fn, bodyStart) => {
   return defs
 }
 
-function computeLoopInvariance(loopNode, { distinctParams, baseParamOf, allowPrivateSets = false, stableHeaderNames = null, presentArrays = null, defs = null }) {
+// A word of a view's descriptor: its byte length at 0, its data address at 4
+// (module/typedarray.js typedDataAddr, typedLen), read through the local that
+// holds the view. `views` names those locals (compile/emit-func.js).
+const viewWord = (node, views) => {
+  if (!views || node[0] !== 'i32.load') return null
+  let a = node[node.length - 1], at = 0
+  if (node.length === 3) { const m = typeof node[1] === 'string' && /^offset=(\d+)$/.exec(node[1]); if (!m) return null; at = +m[1] }
+  else if (node.length !== 2) return null
+  if (Array.isArray(a) && a[0] === 'i32.add' && a.length === 3 && Array.isArray(a[2]) && a[2][0] === 'i32.const') { at += Number(a[2][1]); a = a[1] }
+  return (at === 0 || at === 4) && Array.isArray(a) && a[0] === 'local.get' && typeof a[1] === 'string' && views.has(a[1]) ? a : null
+}
+
+// The address a stable-header local holds: the local itself where it is a
+// pointer, the low word of its box where the binding is assigned more than
+// once and stays an f64 (`let a = new Float32Array(n)`, grown later). A box
+// may hold no array at all: `present` names the ones that always do, whose
+// header may be read ahead of a loop that runs no round.
+const stableBase = (n, names, present) => {
+  let boxed = false
+  if (Array.isArray(n) && n[0] === 'i32.wrap_i64' && n.length === 2) {
+    n = n[1]
+    if (Array.isArray(n) && n[0] === 'i64.and' && n.length === 3 && Array.isArray(n[2]) && n[2][0] === 'i64.const' && BigInt(n[2][1]) === 0xFFFFFFFFn) n = n[1]
+    if (!Array.isArray(n) || n[0] !== 'i64.reinterpret_f64' || n.length !== 2) return false
+    n = n[1]
+    boxed = true
+  }
+  return Array.isArray(n) && n[0] === 'local.get' && typeof n[1] === 'string' && names.has(n[1]) && (!boxed || present?.has(n[1]) === true)
+}
+
+function computeLoopInvariance(loopNode, { distinctParams, baseParamOf, allowPrivateSets = false, stableHeaderNames = null, presentArrays = null, presentTyped = null, defs = null, views = null }) {
   const presentNames = presentArrays || stableHeaderNames
     ? new Set([...(presentArrays ?? []), ...(stableHeaderNames ?? [])]) : null
   const headerSafe = ctx.scope.headerSafeFuncs ?? null
@@ -459,8 +488,14 @@ function computeLoopInvariance(loopNode, { distinctParams, baseParamOf, allowPri
       const inner = new Set([...bound].filter(b => b !== node[1]))
       return pureGiven(node[2], inner)
     }
+    // A view's descriptor word: no store of the program writes it, so it is
+    // invariant with the local that holds the view.
+    if (op === 'i32.load') { const view = viewWord(node, views); if (view) return pureGiven(view, bound) }
     if ((op === 'f64.load' || op === 'i32.load') && node.length === 2) {
-      const a = node[1]
+      // An address a hoist left in a local of its own (`$__li = ptr - 8`) is
+      // the address its one write computes.
+      const held = Array.isArray(node[1]) && node[1][0] === 'local.get' ? defs?.get(node[1][1]) : null
+      const a = held != null && held !== MULTI && Array.isArray(held) && held[0] === 'i32.sub' && pureGiven(node[1], bound) ? held : node[1]
       if (Array.isArray(a) && a[0] === 'local.get' && typeof a[1] === 'string' && a[1].startsWith(CELL_PREFIX)
         && !hasAnyCall && !hasUnknownStore && !storedCells.has(a[1]) && (bound.has(a[1]) || !locals.has(a[1]))) return true
       // Length-HEADER load: `i32.load(i32.sub(local.get $X, i32.const 8))` where $X is a
@@ -471,9 +506,9 @@ function computeLoopInvariance(loopNode, { distinctParams, baseParamOf, allowPri
       // this loop could contain ever targets it), so invariance follows purely from $X's own
       // address being loop-invariant (the local.get rule just below, applied to $X itself).
       if (op === 'i32.load' && stableHeaderNames && Array.isArray(a) && a[0] === 'i32.sub' && a.length === 3 &&
-          Array.isArray(a[1]) && a[1][0] === 'local.get' && typeof a[1][1] === 'string' && stableHeaderNames.has(a[1][1]) &&
+          stableBase(a[1], stableHeaderNames, presentTyped) &&
           Array.isArray(a[2]) && a[2][0] === 'i32.const' && Number(a[2][1]) === 8 &&
-          pureGiven(a[1], bound)) return true
+          pureGiven(node[1], bound)) return true
       // Any header word (the forwarding tag at -4, the length at -8) of an
       // invariant address, in a loop that writes no header (HEADER_STORE_FREE)
       // and calls nothing that could: the element stores of the kernel it
@@ -481,7 +516,7 @@ function computeLoopInvariance(loopNode, { distinctParams, baseParamOf, allowPri
       // array in a loop that writes another (`quat.multiply(out, a[i], b[i])`).
       if (op === 'i32.load' && !hasHeaderStore && !hasUnsafeCall && Array.isArray(a) && a[0] === 'i32.sub' && a.length === 3 &&
           Array.isArray(a[2]) && a[2][0] === 'i32.const' && (Number(a[2][1]) === 8 || Number(a[2][1]) === 4) &&
-          presentPtr(a[1], presentNames, defs) && pureGiven(a[1], bound)) return true
+          presentPtr(a[1], presentNames, defs) && pureGiven(node[1], bound)) return true
       // Alias-analysis LICM: a load from a typed-array param PROVEN distinct from every buffer
       // this loop writes (base ∉ storedBases) is loop-invariant when its address is invariant —
       // even across the loop's stores, because they can't alias it. This is what lets rust/clang
@@ -772,7 +807,7 @@ export function hoistInvariantLoop(fn) {
       return null
     },
     analyze: (loop, nested) => {
-      const { pureGiven, hasV128 } = computeLoopInvariance(loop, { distinctParams, baseParamOf, stableHeaderNames, presentArrays, defs })
+      const { pureGiven, hasV128 } = computeLoopInvariance(loop, { distinctParams, baseParamOf, stableHeaderNames, presentArrays, presentTyped: fn.presentTyped || null, defs, views: fn.viewNames || null })
       return (node, bound) => ((nested && !hasV128) || hasHardOp(node, hardOpCache) || isPtrBaseDecode(node)) && pureGiven(node, bound)
     },
   })

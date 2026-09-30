@@ -64,6 +64,9 @@ export const HELPER_COUNTERS = [
   ['__coll_order', 'coll_order'],
   ['__schema_slot_h', 'schema_slot_h'],
   ['__memgrow', 'memgrow'],
+  ['__to_int32', 'to_int32'],
+  ['__rem', 'rem'],
+  ['__to_num', 'to_num'],
 ]
 
 const COUNTER_BY_HELPER = new Map(HELPER_COUNTERS.map(([helper, label]) => [helper, `__hc_${label}`]))

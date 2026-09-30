@@ -188,8 +188,11 @@ function kindTruthyIR(node, ir) {
   const get = () => typed(once ? ['local.get', `$${once}`] : ir, 'f64')
   // A Boolean rides either carrier: the raw 0/1 (a number by value) or the
   // atom box; a nullish value is a box that is not TRUE.
+  // A number, present or not (an element read that may miss), is truthy where it
+  // is a number other than zero: a box, the undefined one included, is a NaN.
   const test = tags === summaryBitOf(K.BOOL)
     ? ['i32.or', ['i32.and', ['f64.eq', get(), get()], ['f64.ne', get(), ['f64.const', 0]]], ['i64.eq', ['i64.reinterpret_f64', get()], ['i64.const', TRUE_NAN]]]
+    : tags === summaryBitOf(K.NUMBER) ? ['i32.and', ['f64.eq', get(), get()], ['f64.ne', get(), ['f64.const', 0]]]
     : (tags & NEVER_BY_VALUE) === 0 ? ['i32.eqz', isNullish(get())]
     : null
   if (!test) return null

@@ -679,11 +679,14 @@ export function emitElementAssign(arr, idx, val, node = null) {
   //    Also fires for a nested `arr[c]` receiver whose array's elements are typed
   //    arrays of a known ctor (codec `ch[c][i] = …` channelData scatter) — the
   //    `.typed:[]=` emitter resolves the element ctor and inlines the store.
-  // A receiver that may be missing stores as its payload's kind, behind the
-  // store's own rejection of the missing one (`.typed:[]=`'s `nullable`).
   const plannedTypedReceiver = plannedTypedStorageInfo(ctx, arr) ?? plannedTypedPayloadInfo(ctx, arr)
-  if (ctx.core.emit['.typed:[]='] &&
-      (valTypeOf(arr) === VAL.TYPED || plannedTypedReceiver)) {
+  const typedReceiver = valTypeOf(arr) === VAL.TYPED || plannedTypedReceiver
+  // A guard can be the program's only mention of a typed array (`a instanceof
+  // Int32Array`, no constructor anywhere): the store emitter lives in the
+  // module a constructor would have included. Without it the store fell to the
+  // raw f64 slot below, eight bytes over a four-byte element.
+  if (typedReceiver && !ctx.core.emit['.typed:[]=']) ctx.module.include('typedarray')
+  if (ctx.core.emit['.typed:[]='] && typedReceiver) {
     if (!numericKey) {
       const slow = dynSetCall(arr, keyExpr, taggedValueExpr())
       // A stable dynamic key keeps the numeric RMW path behind a key guard.
@@ -734,7 +737,11 @@ export function emitElementAssign(arr, idx, val, node = null) {
     return storeArrayPayload(arrExpr, keyExpr, valueExpr, persist)
   }
 
-  const knownArrVT = typeof arr === 'string' ? lookupValType(arr) : null
+  // A local the dictionary census classified (lean or i32-lean) is a HASH whatever
+  // the frame's value facts carry: a specialized variant reaches this store without
+  // the plan's HASH stamp, and its reads already take the dictionary path.
+  const knownArrVT = typeof arr === 'string'
+    ? lookupValType(arr) ?? (ctx.func.i32HashLocals?.has(arr) || ctx.func.leanHashLocals?.has(arr) ? VAL.HASH : null) : null
   const arrVT = knownArrVT || VAL.OBJECT
 
   // 7b. Known-OBJECT receiver with a non-static key. The schema-slot (step 2) and

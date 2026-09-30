@@ -56,7 +56,8 @@ const times = (k, e) => k === 1 ? e : ['*', num(k), e]
  * states. For a loop that runs, T = B − C (+1 for `<=`) trips reach the
  * counter's last value; an affine index is extreme at the first and last
  * counter values, and a cursor advancing at most K per trip stays within
- * [c, c + K·T] offset by its reads' constants. The test owns copies of the
+ * [c, c + K·T] offset by its reads' constants, [c, c + K·(T − 1)] where every
+ * read of it comes before the trip's advance. The test owns copies of the
  * loop's expressions, so the body stays a tree.
  */
 function extentTest(spec, locals) {
@@ -70,13 +71,13 @@ function extentTest(spec, locals) {
   const push = (t) => { const k = JSON.stringify(t); if (!seen.has(k)) { seen.add(k); tests.push(t) } }
   const cursors = new Map()
   for (const c of cands) {
-    if (c.presence || c.range || c.ind != null || c.post || receiverMayBeAbsent(c.recv, c.idx)) return null
+    if (c.presence || c.range || c.ind != null || (c.post && c.cursor == null) || receiverMayBeAbsent(c.recv, c.idx)) return null
     const len = ['.', c.recv, 'length']
     if (c.cursor != null) {
       if (!i32(c.cursor)) return null
       const key = c.recv + '\0' + c.cursor, e = cursors.get(key)
-      if (!e) cursors.set(key, { len, c: c.cursor, K: c.K, lo: c.cConst, hi: c.cConst })
-      else { e.lo = Math.min(e.lo, c.cConst); e.hi = Math.max(e.hi, c.cConst) }
+      if (!e) cursors.set(key, { len, c: c.cursor, K: c.K, lo: c.cConst, hi: c.cConst, post: !!c.post })
+      else { e.lo = Math.min(e.lo, c.cConst); e.hi = Math.max(e.hi, c.cConst); if (c.post) e.post = true }
       continue
     }
     if (c.slots.some(t => t.wrap || !i32(t.e))) return null
@@ -90,9 +91,9 @@ function extentTest(spec, locals) {
     push(['>=', at(lo()), num(0)])
     push(['<', at(hi()), len])
   }
-  for (const { len, c, K, lo, hi } of cursors.values()) {
+  for (const { len, c, K, lo, hi, post } of cursors.values()) {
     push(['>=', plus(c, lo), num(0)])
-    push(['<', plus(['+', c, times(K, trips())], hi), len])
+    push(['<', plus(['+', c, times(K, post ? trips() : plus(trips(), -1))], hi), len])
   }
   return tests.length ? tests.reduce((a, t) => ['&&', a, t]) : null
 }

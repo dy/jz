@@ -19,7 +19,7 @@ import { repOf, VAL } from '../src/reps.js'
 import { valTypeOf } from '../src/kind.js'
 import { registerPowTranscend } from './math/pow-transcend.js'
 import { powFold, powLog } from '../src/prepare/math-kernel.js'
-import { PI, HALF_PI, PIO2_CW, INV_PIO2, ROUND_MAGIC, CW_LIMIT, PIO2_LO, TWO_OVER_PI_HEX, SIN_C, COS_C, ATAN_C, ASIN_C, EXPM1_C, LOG_C, EXP2_TAB_HEX, EXP2_Q, EXP_Q, EXP_L1, EXP_L2, POW_LOG_TAB_HEX, POW_LOG_A, POW_LN2HI, POW_LN2LO, polyTree, fifthFold } from './math/trig-tables.js'
+import { ASIN_PIO2_HI, ASIN_PIO2_LO, ASIN_PIO4_HI, ASIN_PI, ASIN_P, ASIN_Q, PI, HALF_PI, PIO2_CW, INV_PIO2, ROUND_MAGIC, CW_LIMIT, PIO2_LO, TWO_OVER_PI_HEX, SIN_C, COS_C, ATAN_C, EXPM1_C, LOG_C, EXP2_TAB_HEX, EXP2_Q, EXP_Q, EXP_L1, EXP_L2, POW_LOG_TAB_HEX, POW_LOG_A, POW_LN2HI, POW_LN2LO, polyTree, fifthFold } from './math/trig-tables.js'
 import { hexBytes } from '../src/static-data.js'
 import { registerMathSimd } from './math/simd.js'
 import { registerSumPrecise } from './math/sum-precise.js'
@@ -1210,34 +1210,95 @@ export default (ctx) => {
     (local.set $z (f64.mul (local.get $t) (local.get $t)))
     (f64.copysign (f64.add (local.get $o) (f64.mul (local.get $t) ${horner(ATAN_C, '$z')})) (local.get $x)))`)
 
-  // asin and acos on |x| ≤ ½ take asin(a) = a·(1 + t·S(t)) (trig-tables.js ASIN_C, 33 ulp
-  // minimax) at a = x; past ½ at a = √((1 − |x|)/2) (1 − |x| exact there), with
-  // asin(|x|) = π/2 − 2·asin(a) and acos(x) = 2·asin(a), or π − 2·asin(a) below −½: no
-  // cancellation near ±1, where acos(x) = π/2 − asin(x) lost every digit of a small
-  // result. Both halves select rather than branch (the root is cheap beside a miss on
-  // arguments that straddle ½). |x| > 1 and NaN give the canonical NaN.
-  const asinK = (a) => `
-    (local.set $z (f64.mul (local.get ${a}) (local.get ${a})))
-    (local.set $s (f64.mul (local.get ${a}) ${horner(ASIN_C, '$z')}))`
-  const halfAngle = `
-    (local.set $h (f64.gt (local.get $a) (f64.const 0.5)))
-    (local.set $a (select (f64.sqrt (f64.mul (f64.const 0.5) (f64.sub (f64.const 1) (local.get $a)))) (local.get $a) (local.get $h)))`
+  // fdlibm's asin and acos (e_asin.c, e_acos.c; the constants in
+  // math/trig-tables.js), operation for operation: |x| < 0.5 by the rational
+  // R(x²) = P/Q of (asin(x) − x)/x, the rest by s = sqrt((1 − |x|)/2), R(s²) and
+  // a split of s into a word and a remainder that keeps the last bits. Within
+  // one ulp of the true value, and acos loses no digits near 1, where the
+  // former π/2 − asin(x) cancelled.
+  // (plain nested Horner, in fdlibm's order; the shared `horner` above builds another tree)
+  const nested = (z, cs) => cs.reduceRight((acc, c) => acc === null ? `(f64.const ${c})` : `(f64.add (f64.const ${c}) (f64.mul ${z} ${acc}))`, null)
+  const R = (z) => [`(f64.mul ${z} ${nested(z, ASIN_P)})`, `(f64.add (f64.const 1) (f64.mul ${z} ${nested(z, ASIN_Q)}))`]
+  const hiWord = (x) => `(i32.wrap_i64 (i64.shr_u (i64.reinterpret_f64 ${x}) (i64.const 32)))`
+  const loWord = (x) => `(i32.wrap_i64 (i64.reinterpret_f64 ${x}))`
+  const [asinP, asinQ] = R('(local.get $t)')
   wat('math.asin', `(func $math.asin (param $x f64) (result f64)
-    (local $a f64) (local $z f64) (local $s f64) (local $h i32)
-    (local.set $a (f64.abs (local.get $x)))
-    (if (i32.eqz (f64.le (local.get $a) (f64.const 1))) (then (return (f64.const nan))))${halfAngle}${asinK('$a')}
-    (f64.copysign (select (f64.sub (f64.const ${HALF_PI}) (f64.mul (f64.const 2) (local.get $s))) (local.get $s) (local.get $h)) (local.get $x)))`)
+    (local $t f64) (local $w f64) (local $p f64) (local $q f64) (local $c f64) (local $r f64) (local $s f64)
+    (local $hx i32) (local $ix i32)
+    (local.set $hx ${hiWord('(local.get $x)')})
+    (local.set $ix (i32.and (local.get $hx) (i32.const 0x7fffffff)))
+    ;; |x| >= 1: ±π/2 at ±1 (with the low word of π/2), NaN beyond and for NaN
+    (if (i32.ge_s (local.get $ix) (i32.const 0x3ff00000)) (then
+      (if (i32.eqz (i32.or (i32.sub (local.get $ix) (i32.const 0x3ff00000)) ${loWord('(local.get $x)')}))
+        (then (return (f64.add (f64.mul (local.get $x) (f64.const ${ASIN_PIO2_HI})) (f64.mul (local.get $x) (f64.const ${ASIN_PIO2_LO}))))))
+      (return (f64.const nan))))
+    ;; |x| < 0.5: x + x·R(x²); below 2^-27 the value is x
+    (if (i32.lt_s (local.get $ix) (i32.const 0x3fe00000)) (then
+      (if (i32.lt_s (local.get $ix) (i32.const 0x3e400000)) (then (return (local.get $x))))
+      (local.set $t (f64.mul (local.get $x) (local.get $x)))
+      (local.set $p ${asinP})
+      (local.set $q ${asinQ})
+      (local.set $w (f64.div (local.get $p) (local.get $q)))
+      (return (f64.add (local.get $x) (f64.mul (local.get $x) (local.get $w))))))
+    ;; 0.5 <= |x| < 1
+    (local.set $w (f64.sub (f64.const 1) (f64.abs (local.get $x))))
+    (local.set $t (f64.mul (local.get $w) (f64.const 0.5)))
+    (local.set $p ${asinP})
+    (local.set $q ${asinQ})
+    (local.set $s (f64.sqrt (local.get $t)))
+    (if (i32.ge_s (local.get $ix) (i32.const 0x3FEF3333))
+      (then
+        ;; |x| > 0.975
+        (local.set $w (f64.div (local.get $p) (local.get $q)))
+        (local.set $t (f64.sub (f64.const ${ASIN_PIO2_HI})
+          (f64.sub (f64.mul (f64.const 2) (f64.add (local.get $s) (f64.mul (local.get $s) (local.get $w)))) (f64.const ${ASIN_PIO2_LO})))))
+      (else
+        (local.set $w (f64.reinterpret_i64 (i64.and (i64.reinterpret_f64 (local.get $s)) (i64.const 0xFFFFFFFF00000000))))
+        (local.set $c (f64.div (f64.sub (local.get $t) (f64.mul (local.get $w) (local.get $w))) (f64.add (local.get $s) (local.get $w))))
+        (local.set $r (f64.div (local.get $p) (local.get $q)))
+        (local.set $p (f64.sub (f64.mul (f64.mul (f64.const 2) (local.get $s)) (local.get $r)) (f64.sub (f64.const ${ASIN_PIO2_LO}) (f64.mul (f64.const 2) (local.get $c)))))
+        (local.set $q (f64.sub (f64.const ${ASIN_PIO4_HI}) (f64.mul (f64.const 2) (local.get $w))))
+        (local.set $t (f64.sub (f64.const ${ASIN_PIO4_HI}) (f64.sub (local.get $p) (local.get $q))))))
+    (if (result f64) (i32.gt_s (local.get $hx) (i32.const 0)) (then (local.get $t)) (else (f64.neg (local.get $t)))))`)
 
+  const [acosP, acosQ] = R('(local.get $z)')
   wat('math.acos', `(func $math.acos (param $x f64) (result f64)
-    (local $a f64) (local $z f64) (local $s f64) (local $h i32)
-    (local.set $a (f64.abs (local.get $x)))
-    (if (i32.eqz (f64.le (local.get $a) (f64.const 1))) (then (return (f64.const nan))))${halfAngle}
-    ;; the kernel's argument: x itself up to ½ (asin is odd), the half angle past it
-    (local.set $a (select (local.get $a) (local.get $x) (local.get $h)))${asinK('$a')}
-    (select
-      (select (f64.mul (f64.const 2) (local.get $s)) (f64.sub (f64.const ${PI}) (f64.mul (f64.const 2) (local.get $s))) (f64.gt (local.get $x) (f64.const 0)))
-      (f64.sub (f64.const ${HALF_PI}) (local.get $s))
-      (local.get $h)))`)
+    (local $z f64) (local $p f64) (local $q f64) (local $r f64) (local $w f64) (local $s f64) (local $c f64) (local $df f64)
+    (local $hx i32) (local $ix i32)
+    (local.set $hx ${hiWord('(local.get $x)')})
+    (local.set $ix (i32.and (local.get $hx) (i32.const 0x7fffffff)))
+    ;; |x| >= 1: 0 at 1, π at -1, NaN beyond and for NaN
+    (if (i32.ge_s (local.get $ix) (i32.const 0x3ff00000)) (then
+      (if (i32.eqz (i32.or (i32.sub (local.get $ix) (i32.const 0x3ff00000)) ${loWord('(local.get $x)')}))
+        (then (return (select (f64.const 0) (f64.const ${ASIN_PI + 2 * ASIN_PIO2_LO}) (i32.gt_s (local.get $hx) (i32.const 0))))))
+      (return (f64.const nan))))
+    ;; |x| < 0.5: π/2 − (x − (π/2's low word − x·R(x²))); below 2^-57 it is π/2
+    (if (i32.lt_s (local.get $ix) (i32.const 0x3fe00000)) (then
+      (if (i32.le_s (local.get $ix) (i32.const 0x3c600000)) (then (return (f64.const ${ASIN_PIO2_HI + ASIN_PIO2_LO}))))
+      (local.set $z (f64.mul (local.get $x) (local.get $x)))
+      (local.set $p ${acosP})
+      (local.set $q ${acosQ})
+      (local.set $r (f64.div (local.get $p) (local.get $q)))
+      (return (f64.sub (f64.const ${ASIN_PIO2_HI}) (f64.sub (local.get $x) (f64.sub (f64.const ${ASIN_PIO2_LO}) (f64.mul (local.get $x) (local.get $r))))))))
+    ;; x < -0.5: π − 2·(s + (R(s²)·s − π/2's low word)), s = sqrt((1 + x)/2)
+    (if (i32.lt_s (local.get $hx) (i32.const 0)) (then
+      (local.set $z (f64.mul (f64.add (f64.const 1) (local.get $x)) (f64.const 0.5)))
+      (local.set $p ${acosP})
+      (local.set $q ${acosQ})
+      (local.set $s (f64.sqrt (local.get $z)))
+      (local.set $r (f64.div (local.get $p) (local.get $q)))
+      (local.set $w (f64.sub (f64.mul (local.get $r) (local.get $s)) (f64.const ${ASIN_PIO2_LO})))
+      (return (f64.sub (f64.const ${ASIN_PI}) (f64.mul (f64.const 2) (f64.add (local.get $s) (local.get $w)))))))
+    ;; x > 0.5: 2·(df + (R(s²)·s + c)), s = sqrt((1 − x)/2) split into its word df and c
+    (local.set $z (f64.mul (f64.sub (f64.const 1) (local.get $x)) (f64.const 0.5)))
+    (local.set $s (f64.sqrt (local.get $z)))
+    (local.set $df (f64.reinterpret_i64 (i64.and (i64.reinterpret_f64 (local.get $s)) (i64.const 0xFFFFFFFF00000000))))
+    (local.set $c (f64.div (f64.sub (local.get $z) (f64.mul (local.get $df) (local.get $df))) (f64.add (local.get $s) (local.get $df))))
+    (local.set $p ${acosP})
+    (local.set $q ${acosQ})
+    (local.set $r (f64.div (local.get $p) (local.get $q)))
+    (local.set $w (f64.add (f64.mul (local.get $r) (local.get $s)) (local.get $c)))
+    (f64.mul (f64.const 2) (f64.add (local.get $df) (local.get $w))))`)
 
   wat('math.atan2', `(func $math.atan2 (param $y f64) (param $x f64) (result f64)
     ;; If either argument is NaN, the result is NaN (ECMA-262 21.3.2.5).

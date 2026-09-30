@@ -22,6 +22,9 @@ import { ctx, HEAP } from '../ctx.js'
 import { T as MARK } from '../ast.js'
 
 const HEADER = new Set(['export', 'param', 'result', 'local'])
+// A loop's specialized copy (optimize/specialize.js) carries the loop's label
+// with a suffix: it is the same loop, and rewinds as it does.
+const written = (label) => typeof label === 'string' ? label.replace(/(?:\.f\d+)+$/, '') : label
 
 /**
  * @param funcs    emitted function arrays
@@ -45,8 +48,8 @@ export function insertLoopRewinds(funcs, owners) {
       for (let i = from; i < list.length; i++) {
         const n = list[i]
         if (!Array.isArray(n)) continue
-        const loopNode = n[0] === 'loop' && labels.has(n[1]) ? n
-          : n[0] === 'block' && Array.isArray(n[2]) && n[2][0] === 'loop' && labels.has(n[2][1]) ? n[2] : null
+        const loopNode = n[0] === 'loop' && labels.has(written(n[1])) ? n
+          : n[0] === 'block' && Array.isArray(n[2]) && n[2][0] === 'loop' && labels.has(written(n[2][1])) ? n[2] : null
         if (loopNode !== null && !done.has(loopNode)) {
           done.add(loopNode)
           const name = `$${MARK}lrw${id++}`

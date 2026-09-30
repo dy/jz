@@ -120,6 +120,7 @@ const LEVEL_PRESETS = Object.freeze({
     arrayViews: false,        // an array slice view keeps the ordinary slice beside its range copy — speed-for-size
     versionTypedBounds: false,// typed-bounds loop versioning duplicates every proven nest (guarded fast arm + checked twin, ×1.5-3 on small kernels) — the branchless checked reads alone are the size-tier lowering; speed-only trade
     wideAccumulator: false,   // i64-carried accumulator versions the loop (guarded fast clone + the f64 original) — speed-only
+    specializeLoops: false,   // a specialized copy keeps the loop as written beside it: speed-only
     sourceInlineDup: false,   // shared/exported source bodies stay outlined; single-use internal bodies still inline
     arenaReach: false,        // the walk from what a call's escapes wrote into is ~2 KB of runtime: a call that ran an escape keeps all it allocated — memory-for-size
     versionIntegralLoops: false, // an integral copy of a loop beside it: speed-for-size

@@ -881,12 +881,17 @@ export default (ctx) => {
                 ['else', ['f64.reinterpret_i64', ['call', '$__dyn_get_t', asI64(emit(arr)), ['i64.reinterpret_f64', ['local.get', `$${kt}`]], ['i32.const', PTR.TYPED]]]]]], 'f64')
           }
         }
-        inc(fn)
-        return typed(['f64.reinterpret_i64', ['call', `$${fn}`, asI64(emit(arr)), asI64(storedValue(idx)),
-          ...(present ? [['i32.const', PTR.TYPED]] : [])]], 'f64')
+        // (a receiver a guard alone proves typed, no constructor's, keeps the
+        // key-kind dispatch below: a number key reads the element through the
+        // runtime's width dispatch, a string key the property)
+        if (present) {
+          inc(fn)
+          return typed(['f64.reinterpret_i64', ['call', `$${fn}`, asI64(emit(arr)), asI64(storedValue(idx)), ['i32.const', PTR.TYPED]]], 'f64')
+        }
+      } else {
+        const r = ctx.core.emit['.typed:[]'](arr, idx, node)
+        if (r) return r
       }
-      const r = ctx.core.emit['.typed:[]'](arr, idx, node)
-      if (r) return r
     }
     // Literal string key on schema-known object → direct payload slot read (skip __dyn_get)
     const litKey = isLiteralStr(idx) ? idx[1]
@@ -982,6 +987,10 @@ export default (ctx) => {
     const runtimeElemRead = (vt == null || vt === VAL.TYPED) && representationProgramHasBigint(ctx)
       ? '__typed_idx_tagged' : '__typed_idx'
     if (vt === VAL.TYPED || vt == null) setLinkDemand('typedRuntime')
+    // A receiver a guard alone proves typed (`a instanceof Int32Array`, no
+    // constructor in the program) needs the same width dispatch an unknown one
+    // does above: the helper's array body reads eight bytes per element.
+    if (vt === VAL.TYPED) setLinkDemand('typedarray')
     if (runtimeElemRead === '__typed_idx_tagged') inc(runtimeElemRead)
     // The array arm inline, ahead of the helper: the tag test (an array's
     // offset is a heap address; `__heap_end64` is not a validity bound, it

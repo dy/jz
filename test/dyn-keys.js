@@ -717,6 +717,28 @@ test('loop guards reject changes to bounds, offsets and duplicate cursor steps',
   }
 })
 
+// A compaction reads its cursor before advancing it: the last round reads
+// out[k0 + K*(rounds - 1)], and an output sized for every round takes the fast
+// arm. A read after the advance keeps the extent one step wider.
+test('cursor guards take the exact extent of a read before the round\'s advance', () => {
+  const pre = `export function run(n) { const a = new Float64Array(n), out = new Float64Array(n); for (let i = 0; i < n; i++) a[i] = i * 2;
+    let k = 0; for (let i = 0; i < n; i++) { if (a[i] === 4) continue; out[k] = a[i]; k++ } return k * 1000 + out[0] + out[n - 1] }`
+  const post = `export function run(n) { const a = new Float64Array(n), out = new Float64Array(n + 1); for (let i = 0; i < n; i++) a[i] = i * 2;
+    let k = 0; for (let i = 0; i < n; i++) { if (a[i] === 4) continue; k++; out[k] = a[i] } return k * 1000 + out[1] + out[n] }`
+  for (const src of [pre, post]) for (const optimize of [0, 2, 3]) {
+    const wasm = jz(src, { optimize }).exports, expected = oracle(src)
+    for (const n of [0, 1, 3, 8]) is(wasm.run(n), expected.run(n), `${optimize} n=${n}`)
+  }
+  if (!onKernel()) {
+    const guard = src => funcWat(compile(src, { optimize: { level: 'speed', watr: false }, wat: true }), 'run')
+    // (the extent is k + maxIv, one round fewer than k + (maxIv + 1); the constants fold)
+    const flat = src => guard(src).replace(/\s+\)/g, ')').replace(/\s+/g, ' ')
+    // (a temp's name carries the emitter's private-use mark before its stem)
+    ok(/\(local\.get \$k[^\s)]*\)\)\)\) \(local\.tee \$[^\s)]*?tvq\d+ /.test(flat(pre)), 'a read before the advance: the rounds gone by')
+    ok(/\(local\.get \$k[^\s)]*\)\)\)\) \(i64\.add \(local\.tee \$[^\s)]*?tvq\d+ /.test(flat(post)), 'a read after the advance: one round more')
+  }
+})
+
 test('cursor guards require an existing local whose writes stay in the body budget', () => {
   const sources = [
     ...['let', 'const'].map(decl => `function scan(a, indices, n) {

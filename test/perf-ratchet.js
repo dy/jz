@@ -106,18 +106,38 @@ const BASELINE = join(import.meta.dirname, 'perf-ratchet.json')
 // original loop as the cold fallback, the last child of its `$__wa…d` block:
 // the per-iteration cost this proxies is the guarded clone's, so the fallback
 // is not counted. The clone's header check is real per-iteration work and is.
+// A specialized loop (src/optimize/specialize.js) keeps the loop as written
+// the same way: the last child of its `$__sp.f<n>d` block, or of the block
+// that block holds (the loop's own exit). The copy's guards and the tests
+// ahead of it are counted.
+const isLoop = (n) => Array.isArray(n) && n[0] === 'loop'
 const loopBodyOps = (wat) => {
   let count = 0
   const walk = (n, inLoop) => {
     if (!Array.isArray(n)) return
     const here = inLoop || n[0] === 'loop'
     if (here && typeof n[0] === 'string') count++
-    const end = n[0] === 'block' && /^\$__wa\d+d$/.test(n[1]) ? n.length - 1 : n.length
-    for (let i = 1; i < end; i++) walk(n[i], here)
+    let end = n[0] === 'block' && /^\$__wa\d+d$/.test(n[1]) ? n.length - 1 : n.length
+    const copy = n[0] === 'block' && typeof n[1] === 'string' && /__sp\.f\d+d$/.test(n[1])
+    if (copy && isLoop(n[end - 1])) end--
+    for (let i = 1; i < end; i++) {
+      const c = n[i]
+      if (!copy || !Array.isArray(c) || c[0] !== 'block' || !isLoop(c[c.length - 1])) { walk(c, here); continue }
+      if (here) count++
+      for (let k = 1; k < c.length - 1; k++) walk(c[k], here)
+    }
   }
   walk(parseWat(wat), false)
   return count
 }
+
+// Specialized loops (2026-09-29): a loop whose reads may miss, or whose
+// numbers are integers the emitter could not prove, runs in a copy that tests
+// the reads and carries the integers in integer registers, the loop as
+// written beside it (not counted, as above), which alone keeps the checked
+// twin of a loop the emitter versioned. The copies' loops count: slice 71598
+// -> 66657; the other categories hold no loop worth a copy and keep their
+// counts. With `specializeLoops: false` slice counts what it did.
 
 // Element-kind variants (2026-09-28): an export whose array parameter the body
 // uses as numbers has Float32Array variants beside it (narrow/param-abi.js),

@@ -367,7 +367,11 @@ test('LICM: checked-access length HEADER decode hoists once per function (neverG
     Array.isArray(n[1][1]) && n[1][1][0] === 'local.get' &&
     Array.isArray(n[1][2]) && n[1][2][0] === 'i32.const' && Number(n[1][2][1]) === 8
 
-  const fnOn = findFunc(parse(src, preWatr('speed')), '$scan')
+  // pre-watr: `f` releases what it made as it returns, so its call of `scan` is one watr inlines
+  // (a specialized copy of a loop computes its own values ahead of itself,
+  // beside the loop as written: the count is the hoist's, with the copies off)
+  const fnOn = findFunc(parse(src, preWatr({ level: 'speed', specializeLoops: false })), '$scan')
+  is(loopCount(findFunc(parse(src, preWatr('speed')), '$scan'), isHeaderDecode), 0, 'no decode inside a loop, specialized or not')
   ok(fnOn, 'the JZ pass is inspected before backend inlining')
   is(loopCount(fnOn, isHeaderDecode), 0, 'length header decode fully hoisted out of both loops')
   ok(count(fnOn, isHeaderDecode) <= 2, 'at most one decode per array (v, z) survives, at function scope')
@@ -4623,9 +4627,10 @@ test('range-narrowing: ToInt32 of a bounded value through a reused local drops t
   }`
   const t = parse(src, 'speed')
   // INVARIANT: the bounded index path carries no +∞ guard and no bare i32 trunc_sat — the wrapped i64 truncation.
+  // `xi` is read by `&` alone, so it holds its word (narrowWordLocals): the one truncation is at its write.
   is(loopCount(t, n => n[0] === 'f64.const' && n[1] === 'Infinity'), 0, 'no +∞ guard in loop')
   is(loopCount(t, n => n[0] === 'i32.trunc_sat_f64_s'), 0, 'no bare i32 trunc_sat in loop')
-  ok(loopCount(t, n => n[0] === 'i64.trunc_sat_f64_s') >= 2, 'bounded index truncated through i64')
+  ok(loopCount(t, n => n[0] === 'i64.trunc_sat_f64_s') >= 1, 'bounded index truncated through i64')
   // Bit-exact vs JS over the full input range.
   const { f } = run(src)
   const ref = (n) => {
@@ -5742,7 +5747,7 @@ export let run = (n, len) => {
   }
   // Structural: the guarded fast arm's cursor reads are bare loads (no bounds
   // check idiom); the checked twin keeps its guarded reads.
-  const wat = jz.compile(src, { wat: true, optimize: preWatr('speed') })
+  const wat = jz.compile(src, { wat: true, optimize: preWatr({ level: 'speed', specializeLoops: false }) })
   const fn = wat.split('(func ').find(f => f.startsWith('$cursorScan')) || ''
   ok(fn.length > 0, 'inspect the cursor worker before backend inlining')
   const guardAt = fn.indexOf('i64.lt_s')

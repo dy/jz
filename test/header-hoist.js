@@ -88,3 +88,52 @@ test('header hoist: an array held as its elements\' locals has no header to save
   const host = oracle(src).run
   for (const optimize of levels(0, 2, 3)) for (const n of [3, 0]) is(jz(src, { optimize }).exports.run(n), host(n), `run(${n}) at ${optimize}`)
 })
+
+// A typed array binding assigned more than once stays a boxed f64 (`let a =
+// new Float32Array(8)`, grown later); its length word is as fixed as a
+// pointer local's, read through the low word of the box.
+const grownSrc = `export function f(n, m) {
+    let a = new Float32Array(8), s = 0
+    const idx = new Int32Array(64)
+    for (let k = 0; k < 64; k++) idx[k] = (k * 7 + n) % m
+    for (let r = 0; r < n; r++) {
+      if (a.length < r) a = new Float32Array(r * 2)
+      for (let i = 0; i < 64; i++) { const j = idx[i]; a[j] = i; s += a[j >> 1] }
+    }
+    return s
+  }`
+// The loops that hold no other loop, as text.
+const innermost = (fn) => {
+  const out = []
+  for (let at = fn.indexOf('(loop '); at >= 0; at = fn.indexOf('(loop ', at + 1)) {
+    let depth = 0, end = at
+    for (; end < fn.length; end++) { if (fn[end] === '(') depth++; else if (fn[end] === ')' && --depth === 0) break }
+    const body = fn.slice(at, end + 1)
+    if (body.indexOf('(loop ', 1) < 0) out.push(body)
+  }
+  return out
+}
+
+test('header hoist: a regrown typed array answers what the host answers', () => {
+  for (const optimize of levels(0, 2, 3))
+    for (const [n, m] of [[0, 8], [3, 8], [9, 8], [20, 16], [20, 64], [40, 200], [5, -7]])
+      agree(grownSrc, 'f', [n, m], { optimize }, `f(${n}, ${m}) at ${optimize}`)
+})
+
+test('header hoist: the length of a regrown typed array is read before the loop', () => {
+  if (belowOpt(2)) return
+  const fn = fnText(wat(grownSrc, { optimize: { level: 2, specializeLoops: false } }), 'f')
+  const loops = innermost(fn).filter(l => /f32\.store/.test(l))
+  ok(loops.length > 0, 'the loop that stores is there')
+  for (const l of loops) is((l.match(/i32\.load/g) || []).length, 1, 'the index is the one word read inside the loop that stores')
+})
+
+// A box may hold no array: its header is read where the loop reads it, so a
+// loop that runs no round reads nothing.
+test('header hoist: a binding that may hold no array keeps its header read in the loop', () => {
+  const src = `const make = n => { if (!n) return null; const a = new Float64Array(n); for (let i = 0; i < n; i++) a[i] = i + 1; return a }
+    const forward = n => make(n)
+    const sum = (a, n) => { let s = 0; for (let i = 0; i < n; i++) s += a[i]; return s }
+    export const f = n => sum(forward(n), n)`
+  for (const optimize of levels(0, 2, 3)) for (const n of [0, 1, 8, 0, 3]) agree(src, 'f', [n], { optimize }, `f(${n}) at ${optimize}`)
+})

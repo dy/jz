@@ -492,7 +492,7 @@ const pureFlattenExpr = (n) => {
   if (op == null) return true                                       // boxed literal [null, v]
   // Native SIMD constructors/arithmetic are effect-free and non-trapping,
   // so their initializers qualify for the same splicing as scalar arithmetic.
-  if (pureSIMDCall(n)) {
+  if (pureSIMDCall(n) || op === '()' && isPureCallee(n[1])) {
     const args = callArgs(n)
     return !!args && args.every(pureFlattenExpr)
   }
@@ -1156,7 +1156,15 @@ export const inlineHotInternalCalls = (programFacts, ast) => {
       // loops pay for.
       // At speed a body of a loop's size takes the calls it keeps along (`lcm`
       // over `gcd`, whose loops stay a function), outside a cycle of calls.
-      const inlinesAway = (callee) => candidates.has(callee) && (speedTier || sitesByCallee.get(callee)?.length === 1 ||
+      const pureLeaf = (callee, seen = new Set()) => {
+        if (!leaves.has(callee) || seen.has(callee)) return false
+        const body = candidates.get(callee).body
+        if (nodeSize(body) > 48) return false
+        seen.add(callee)
+        return !some(body, n => MUTATE_OPS.has(n[0]) || n[0] === 'new' || n[0] === '?.()' ||
+          (n[0] === '()' && !isPureCallee(n[1]) && !pureSIMDCall(n) && !(typeof n[1] === 'string' && pureLeaf(n[1], seen))))
+      }
+      const inlinesAway = (callee) => candidates.has(callee) && (speedTier || sitesByCallee.get(callee)?.length === 1 || pureLeaf(callee) ||
         (sites.length === 1 && leaves.has(callee) && !hotOnly.has(callee)) ||
         (coldSites === 0 && leaves.has(callee) && !hotOnly.has(callee) && sites.length * nodeSize(candidates.get(callee).body) <= 200))
       if (some(func.body, n => n[0] === '()' && typeof n[1] === 'string' && ctx.funcs.names.has(n[1]) && !inlinesAway(n[1])) &&

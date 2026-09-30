@@ -287,7 +287,12 @@ export function fusedRewrite(fn, bigint = false, inlineTruthy = true) {
     }
     if (defVal.has(name)) return defVal.get(name)
     if (!recurrence || numericLocals || !floatLocals.has(name)) return null
-    if (!bounds.has(name)) bounds.set(name, boundedFloatLocal(name, defs.get(name), owners, params))
+    // A write of another value bounds the local by its own range; one that
+    // reads back through a local under enclosure is unknown while it is built.
+    if (!bounds.has(name)) {
+      bounds.set(name, null)
+      bounds.set(name, boundedFloatLocal(name, defs.get(name), owners, params, v => f64Range(v, n => get(n, true), true)))
+    }
     return bounds.get(name)
   }
   // A local's reads in the function as it stood before this walk.
@@ -310,14 +315,47 @@ export function fusedRewrite(fn, bigint = false, inlineTruthy = true) {
   if (newDecls.length) fn.splice(bodyStart, 0, ...newDecls)
 }
 
-// All writes must be constants or one constant increment per counted iteration.
+/** The exact conversions no range proof folded (`call $__to_int32 X`, left by
+ *  the walk above and read by the lane lift in that form) convert inline where
+ *  the i64 truncation is exact, every finite |x| < 2^63 (NaN saturates to
+ *  ToInt32's zero), and call the kernel only for the infinities and the values
+ *  beyond, whose low word it recovers from the significand. A property a typed
+ *  array may carry leaves such a value unbounded (`next[other]` with `other`
+ *  possibly undefined). Runs after the lift. */
+export function lowerToInt32Tails(fn) {
+  if (!Array.isArray(fn) || fn[0] !== 'func') return
+  const bodyStart = findBodyStart(fn)
+  const decls = []
+  let n = 0
+  for (let i = 2; i < bodyStart; i++) {
+    const m = Array.isArray(fn[i]) && fn[i][0] === 'local' && typeof fn[i][1] === 'string' && fn[i][1].match(/^\$__ti(\d+)$/)
+    if (m) n = Math.max(n, +m[1] + 1)
+  }
+  const lower = node => {
+    if (!Array.isArray(node)) return node
+    for (let i = 1; i < node.length; i++) node[i] = lower(node[i])
+    if (node[0] !== 'call' || node[1] !== '$__to_int32' || node.length !== 3) return node
+    const x = node[2], leaf = Array.isArray(x) && x[0] === 'local.get'
+    const t = leaf ? x[1] : `$__ti${n++}`
+    if (!leaf) decls.push(['local', t, 'f64'])
+    const first = leaf ? x : ['local.tee', t, x]
+    return ['if', ['result', 'i32'], ['f64.ge', ['f64.abs', first], ['f64.const', TWO_63]],
+      ['then', ['call', '$__to_int32', ['local.get', t]]],
+      ['else', ['i32.wrap_i64', ['i64.trunc_sat_f64_s', ['local.get', t]]]]]
+  }
+  for (let i = bodyStart; i < fn.length; i++) fn[i] = lower(fn[i])
+  if (decls.length) fn.splice(bodyStart, 0, ...decls)
+}
+
+// All writes must be constants, values with a range of their own (`range`, NaN
+// admitted: a checked element read), or one constant increment per counted iteration.
 // The count comes from the facts HIR proved for the loop (loopFacts, on its lowering
 // link): a counter only its step moves stays within its hull, so the body runs at most
 // ⌊(hi - lo) / step⌋ + 1 times per entry. Integer enclosures avoid assuming repeated floating addition equals N * step:
 // rounding is monotone, and each integral bound + floor/ceil(step) is exact
 // while its magnitude stays within 2^53. These are magnitude bounds, not an
 // integer-value proof; the accumulator itself remains f64.
-function boundedFloatLocal(name, writes, owners, params) {
+function boundedFloatLocal(name, writes, owners, params, range = null) {
   if (!writes) return null
   let lo = 0, hi = 0
   const changes = (n, key) => {
@@ -353,7 +391,12 @@ function boundedFloatLocal(name, writes, owners, params) {
     const op = v[0], a = v[1], b = v[2]
     const self = x => x?.[0] === 'local.get' && x[1] === name
     const c = self(a) ? b : op === 'f64.add' && self(b) ? a : null
-    if ((op !== 'f64.add' && op !== 'f64.sub') || c?.[0] !== 'f64.const' || typeof c[1] !== 'number' || !Number.isFinite(c[1])) return null
+    if ((op !== 'f64.add' && op !== 'f64.sub') || c?.[0] !== 'f64.const' || typeof c[1] !== 'number' || !Number.isFinite(c[1])) {
+      const r = range ? range(v) : null
+      if (!r) return null
+      lo = Math.min(lo, r.lo); hi = Math.max(hi, r.hi)
+      continue
+    }
     const delta = (op === 'f64.sub' ? -1 : 1) * c[1]
     const info = owners.get(w), loop = info?.node, block = info?.parent?.node
     const facts = block && ctx.plans.loweringLinks?.get(block)?.plan
@@ -658,7 +701,7 @@ function walkRewrite(node, doInline, freshI64, freshF64, get, bigint, inlineTrut
   if (op === 'call' && node[1] === '$__to_int32' && node.length === 3) {
     const i = narrowI32(node[2], true)?.node
     if (i) return i
-    const rng = f64Range(node[2], get, true)
+    const rng = f64Range(node[2], get, true) || (get && f64Range(node[2], name => get(name, true), true))
     if (rng && rng.lo > -TWO_63 && rng.hi < TWO_63) return ['i32.wrap_i64', ['i64.trunc_sat_f64_s', node[2]]]
   }
   // The same conversion behind its inline fast path (toInt32 at the speed tiers):

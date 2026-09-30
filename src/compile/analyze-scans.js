@@ -1016,6 +1016,55 @@ function narrowUint32In(body, locals, states, isTypedU32) {
   return result || EMPTY_SCAN_SET
 }
 
+/**
+ * Narrow word locals to i32: a number every read of which re-applies ToInt32 or
+ * ToUint32. Those conversions are idempotent (ECMA-262 7.1.6, 7.1.7) and agree
+ * on the low word, so the word taken at the write is the word each read would
+ * have taken from the number, whatever was written: an integer past 2^31 (a
+ * hash seeded `2166136261`, stepped by Math.imul and `^`), a fraction, NaN.
+ * narrowUint32 proves its locals by their WRITES and lets every read see the
+ * magnitude; this proves them by their READS and needs no fact about a write
+ * but its kind (`isNumber`: a string or an object converts by its own rules,
+ * once per read).
+ *
+ * A read qualifies as a bitwise operand, a Math.imul/clz32 argument, the
+ * implicit read of a bitwise compound assignment, or the value stored to an
+ * integer element of modular width (`wordStore`). Anything that observes the
+ * number keeps the f64: a return, a comparison, a truthiness test, an index
+ * (`a[2 ** 32]` is no element), an arithmetic step, a float or clamped store, a
+ * capture. One declaration only: a name declared twice is two bindings.
+ */
+const WORD_ASSIGN_OPS = new Set(['=', '&=', '|=', '^=', '<<=', '>>=', '>>>='])
+const WORD_FNS = new Set(['math.imul', 'math.clz32'])
+export function narrowWordLocals(body, locals, isNumber, wordStore) {
+  let words = null
+  for (const [name, s] of scanBindingUses(body)) {
+    if (locals.get(name) !== 'f64' || s[BINDING_USE_DECLS] !== 1 || s[BINDING_USE_INIT] === undefined || !isNumber(name)) continue
+    let reads = 0
+    for (const u of s[BINDING_USE_USES]) {
+      const k = u[BINDING_USE_KIND]
+      if (k === USE.REASSIGN) continue
+      if (k !== USE.WORD && !(k === USE.CALL_ARG && WORD_FNS.has(u[BINDING_USE_CALLEE])) && !wordStore(u)) { reads = 0; break }
+      reads++
+    }
+    if (reads) (words ||= new Set()).add(name)
+  }
+  if (!words) return EMPTY_SCAN_SET
+  // The census records a write without its operator: a step or an arithmetic
+  // compound reads the number it advances.
+  walkAst(body, { enter: n => {
+    if (n[0] === '=>') return false
+    if (typeof n[1] === 'string' && MUTATE_OPS.has(n[0]) && !WORD_ASSIGN_OPS.has(n[0])) words.delete(n[1])
+  } })
+  for (const name of words) {
+    locals.set(name, 'i32')
+    // A hull of the numbers written is no hull of their words.
+    const r = repOf(name)?.range
+    if (r && (r[0] < -2147483648 || r[1] > 2147483647)) updateRep(name, { range: undefined })
+  }
+  return words
+}
+
 // Operators under which a counter remains a *monotone, bounded* function of the
 // index root: an affine index `base + i*stride` (and `i << k`) whose computed
 // offset must fit i32-addressable wasm32 memory therefore bounds the counter to
@@ -1151,8 +1200,8 @@ function collectComparedNames(body, crossClosure) {
       if (typeof node[1] === 'string') add(node[1])
       if (typeof node[2] === 'string') add(node[2])
     }
-    if (node[0] === 'while') testedCounters(node[1], add)
-    else if (node[0] === 'for') testedCounters(node[2], add)
+    if (node[0] === 'while' || node[0] === 'if' || node[0] === '?:') testedCounters(node[1], add)
+    else if (node[0] === 'for' || node[0] === 'do') testedCounters(node[2], add)
   }
   walkAst(body, { enter })
   return names || EMPTY_SCAN_SET
