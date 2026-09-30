@@ -1,12 +1,61 @@
 import test from 'tst';
-import { is, ok } from 'tst/assert.js';
+import { is, ok, throws } from 'tst/assert.js';
 import jz from '../index.js';
+import { instantiate } from '../interop.js';
 import fs from 'fs';
+import { basename, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { FLOATBEATS, moduleSrc } from '../examples/jukebox/floatbeats.js';
-import { OPT } from '../examples/build.mjs';
+import { OPT, buildExample, buildKernel } from '../examples/build.mjs';
 import { onWasi } from './_matrix.js';
 
 let mandelbrotSrc = fs.readFileSync(new URL('../examples/mandelbrot/mandelbrot.js', import.meta.url), 'utf8');
+
+test('example build: resolves fresh transitive imports for examples and sibling kernels', () => {
+    const dir = fs.mkdtempSync(fileURLToPath(new URL('../examples/.build-test-', import.meta.url)));
+    const name = basename(dir), entry = join(dir, `${name}.js`), output = join(dir, `${name}.wasm`);
+    try {
+        fs.writeFileSync(entry, 'export let f = () => 0');
+        buildExample(name);
+        is(instantiate(fs.readFileSync(output)).exports.f(), 0, 'smallest numeric example');
+        fs.mkdirSync(join(dir, 'lib'));
+        fs.writeFileSync(entry, "import { value } from './lib/bridge.js'; export let f = () => value + 1");
+        fs.writeFileSync(join(dir, 'lib/bridge.js'), "export { value } from './value.js'");
+        fs.writeFileSync(join(dir, 'variant.js'), "import { value } from './lib/bridge.js'; export let f = () => value * 2");
+        for (const value of [7, 7, 11, 7]) {
+            fs.writeFileSync(join(dir, 'lib/value.js'), `export const value = ${value}`);
+            buildExample(name); buildKernel(name, 'variant');
+            is(instantiate(fs.readFileSync(output)).exports.f(), value + 1, 'A/A/B/A rebuilds resolve current imports');
+            is(instantiate(fs.readFileSync(join(dir, 'variant.wasm'))).exports.f(), value * 2, 'sibling kernels use the same resolver');
+        }
+        fs.unlinkSync(join(dir, 'lib/value.js')); fs.unlinkSync(output);
+        throws(() => buildExample(name), undefined, 'a missing transitive import fails the build');
+        is(fs.existsSync(output), false, 'failure does not publish an artifact');
+    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('example build: runs custom asset builders on every invocation and propagates failures', () => {
+    const dir = fs.mkdtempSync(fileURLToPath(new URL('../examples/.build-test-', import.meta.url)));
+    const name = basename(dir), output = join(dir, `${name}.wasm`);
+    try {
+        fs.writeFileSync(join(dir, 'build.mjs'), `
+            import { readFileSync, writeFileSync } from 'node:fs';
+            import { compile } from '../../index.js';
+            const value = +readFileSync(new URL('./value.txt', import.meta.url), 'utf8');
+            writeFileSync(new URL('./${name}.wasm', import.meta.url), compile('export let f = () => ' + value));
+        `);
+        for (const value of [0, 7, 7, 11, 7]) {
+            fs.writeFileSync(join(dir, 'value.txt'), String(value));
+            fs.rmSync(output, { force: true });
+            buildExample(name);
+            is(instantiate(fs.readFileSync(output)).exports.f(), value, 'fresh custom build, including zero and A/A/B/A');
+        }
+        fs.writeFileSync(join(dir, 'build.mjs'), 'process.exitCode = 1');
+        fs.unlinkSync(output);
+        throws(() => buildExample(name), error => error.status === 1, 'a custom builder failure is not swallowed');
+        is(fs.existsSync(output), false, 'a failing builder does not fall back to an ordinary build');
+    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
 
 test('example: ulam renders the requested view across repeated calls', async () => {
     const src = fs.readFileSync(new URL('../examples/ulam/ulam.js', import.meta.url), 'utf8');

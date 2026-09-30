@@ -1,5 +1,7 @@
 import { compile } from '../index.js'
+import { resolveModuleGraph } from '../src/resolve.js'
 import fs from 'fs'
+import { execFileSync } from 'node:child_process'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -11,23 +13,26 @@ export const OPT = { optimize: 'speed' }
 /** Compile examples/<name>/<name>.js → examples/<name>/<name>.wasm (a single artifact). */
 export function buildExample(name) {
   const dir = join(fileURLToPath(new URL('.', import.meta.url)), name)
-  const src = fs.readFileSync(join(dir, `${name}.js`), 'utf8')
-  fs.writeFileSync(join(dir, `${name}.wasm`), compile(src, OPT))
-  console.log(`Compiled ${name}`)
+  const build = join(dir, 'build.mjs')
+  if (fs.existsSync(build)) {
+    execFileSync(process.execPath, [build], { cwd: dir, stdio: 'inherit' })
+    return
+  }
+  buildKernel(name, name)
 }
 
 /** Compile a specific kernel file examples/<dir>/<kernel>.js → <kernel>.wasm
  *  (for variants like a SIMD sibling alongside the scalar example). */
 export function buildKernel(exampleDir, kernel) {
   const dir = join(fileURLToPath(new URL('.', import.meta.url)), exampleDir)
-  const wasm = compile(fs.readFileSync(join(dir, `${kernel}.js`), 'utf8'), OPT)
+  const { code, modules } = resolveModuleGraph(join(dir, `${kernel}.js`))
+  const wasm = compile(code, { ...OPT, modules })
   fs.writeFileSync(join(dir, `${kernel}.wasm`), wasm)
   console.log(`Compiled ${exampleDir}/${kernel}`)
 }
 
-/** Compile every gallery example in the descriptor (plus any extra `kernels`, e.g. SIMD
- *  siblings) and the standalone demos. This is the single shared build — no per-example
- *  build scripts, no duplicate one-liners. */
+/** Compile the gallery, sibling kernels and standalone demos. Custom build scripts
+ *  also prepare their browser assets (three.js sources, generated jukebox kernels). */
 export async function buildAll() {
   const { examples } = await import('./examples.js')
   for (const e of examples) {
@@ -35,9 +40,7 @@ export async function buildAll() {
     for (const k of e.kernels || []) buildKernel(e.name, k)
   }
   // Standalone demos not in the gallery descriptor:
-  buildExample('rfft')
-  buildExample('zzfx')
-  await import('./jukebox/build.mjs')   // custom: compiles beat-*.wasm from floatbeats.js
+  for (const name of ['rfft', 'zzfx', 'jukebox']) buildExample(name)
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
