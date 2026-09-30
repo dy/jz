@@ -13,7 +13,7 @@
 import { ctx, warn } from '../../ctx.js'
 import { isLiteralStr } from '../../ir.js'
 import { scanBoundedLoops } from '../../type.js'
-import { VAL, updateRep } from '../../reps.js'
+import { VAL } from '../../reps.js'
 import { isExported } from '../func-exports.js'
 
 /** Gate the jsstring carrier on the host. ON by default for the JS host: a
@@ -148,7 +148,7 @@ export function applyJsstringBoundaryCarrier(paramReps, addressTaken) {
       if (!stringDiscriminating && r?.val !== VAL.STRING && !hasStringDefault) continue
       p.type = 'externref'
       p.jsstring = true
-      updateRep(p.name, { carrier: 'jsstring', val: VAL.STRING })
+      // analyzeForEmit installs the local rep when it enters this function.
       if (hasStringDefault) p.jsstringDefault = defVal[1]
     }
   }

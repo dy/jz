@@ -16,17 +16,23 @@ receiver-only array-growth rule. Both incoming histories remain reachable.
 The original dirty checkout is preserved on `wip/pre-v1-consolidation-20260930`.
 Nothing has been pushed or published.
 
-The compiler at `e9ce30b7` passes the complete default core suite: **5,565 tests /
-213,966 assertions**, O0: **5,410 / 145,857**, and O3: **5,424 / 155,893**.
-These gates use the prepared watr fixes described below. The WASI run found
-nine test/host-contract mismatches and one usage-accounting bug: owned modules
-initialized after memory wrapping counted initialization as later usage. The
-baseline now follows completed initialization. Its regression covers empty and
-populated state, failed initialization, repeated instances, retained state,
-host allocations and repeated resets. Focused WASI checks pass **63 tests /
-16,437 assertions**, and accounting checks pass at O0/O2/O3. The full matrix,
-conformance, extended and hosted gates are being rerun; earlier core results do
-not certify the final host-adapter change.
+The complete core matrix at `adc7831b` passes: default **5,566 tests / 214,220
+assertions**, O0 **5,411 / 146,111**, O3 **5,425 / 156,147**, and WASI **5,469 /
+199,940**. These gates use the prepared watr fixes described below. The earlier
+WASI run found nine test/host-contract mismatches and one usage-accounting bug:
+owned modules initialized after memory wrapping counted initialization as later
+usage. The baseline now follows completed initialization. Its regression covers
+empty and populated state, failed initialization, repeated instances, retained
+state, host allocations and repeated resets. The release/fixed-memory sweep
+also passes with freed-memory poisoning: **61 tests / 26,692 assertions**.
+The invariant run then exposed a redundant jsstring-planning write into the
+inactive session frame. That write is removed; function analysis already owns
+the parameter's local representation. The new regression fails before the fix
+and passes after it, including empty strings, UTF-16, wide numeric results,
+defaults, repeated compiles and later compiles of different programs. Focused
+session/string checks pass **31 tests / 302 assertions** with invariants enabled;
+the three original digit-parser failures also pass. Final broad gates remain
+pending after this correction.
 
 Merge regressions cover class-body parsing, typed-array indices and coercion,
 builtin reflection and shadowing, static-string data lifetime, loop inlining,
@@ -38,7 +44,7 @@ Fresh browser bundles and real-browser checks pass on the landed snapshot:
 exact Floatbeat samples, saved-formula create/update/reload/delete, sharing,
 keyboard focus, mobile layout, popup bounds, reduced motion and forced colors.
 Import lint and public TypeScript checks pass. The strict browser bundle is
-2,908.6 kB (816.6 kB gzip), above the optional minimal-bundle target.
+2,908.8 kB (816.7 kB gzip), above the optional minimal-bundle target.
 
 Recursive bootstrap remains a release blocker. The latest completed ordinary
 build is candidate 52's 22,567,132-byte compiler: all 20 functional and 9 reuse

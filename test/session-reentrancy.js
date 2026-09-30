@@ -22,11 +22,12 @@
  * for good measure — same probe, no extra cost).
  */
 import test from 'tst'
-import { ok } from 'tst/assert.js'
+import { is, ok } from 'tst/assert.js'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { compile } from '../index.js'
+import { instantiate } from '../interop.js'
 import * as ctxModule from '../src/ctx.js'
 import { ctx } from '../src/ctx.js'
 import { enterActiveFunction, isInactiveFunction, restoreActiveFunction } from '../src/compile/active-function.js'
@@ -402,6 +403,34 @@ test('active frame restores as one record after functions, late closures, and __
     'synthetic __start and late-closure emission restored the displaced frame by identity')
   ok(ctx.func._expect === null && ctx.func._selfAccumConcat === null && ctx.func._schemaSpecSlow === false,
     'expression-emission scopes cannot leak out of the active record')
+})
+
+test('jsstring boundary planning leaves the session frame inactive across repeated and different programs', () => {
+  if (onKernel()) return
+  const digits = `export const f = s => {
+    let n = 0
+    for (let i = 0; i < s.length; i++) {
+      const c = s.charCodeAt(i)
+      if (c >= 48 && c <= 57) n = n * 10 + c - 48
+    }
+    return n
+  }`
+  const length = `export const f = (s = '') => s.length`
+  const number = `export const f = s => s + 1`
+  for (const optimize of [0, 2, 3]) {
+    const retained = []
+    for (const src of [digits, digits, length, number, digits]) {
+      const bytes = compile(src, { host: 'js', optimize })
+      ok(isInactiveFunction(ctx), 'boundary planning leaves no parameter rep on the session frame')
+      const { exports } = instantiate(bytes)
+      const cases = src === digits ? [['', 0], ['9', 9], ['abc123xyz', 123], ['99999999999', 99999999999], ['😀42', 42]]
+        : src === length ? [[undefined, 0], ['', 0], ['abc', 3], ['😀', 2]]
+        : [[0, 1], [2, 3], [-1, 0]]
+      retained.push({ exports, cases })
+      for (const { exports, cases } of retained) for (const [input, expected] of cases)
+        is(exports.f(input), expected, 'later compiles preserve the current and earlier instances')
+    }
+  }
 })
 
 test('session-reentrancy: closure/loop-plan A then structurally-similar B — warm matches fresh-process (audit-#19 stale-plan probe)', () => {
