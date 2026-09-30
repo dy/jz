@@ -150,11 +150,13 @@ const SPEED = {
   // stdlib-special is the namespace whole, every function of
   // math/base/special that takes numbers, the checksum over every word of
   // every result. Paired on one machine, jz/V8: exp 0.53, gamma 0.63, erf 0.43,
-  // pow 0.64, ddot 0.25 (in lanes), special 0.84: its total is three functions'
-  // (polygamma, betaincinv and its kernel, 45 ms of 97), the geomean over its
-  // 338 functions 0.47; rechecked below, the margin being what it is.
+  // pow 0.64, ddot 0.25 (in lanes), special 0.66: its total is three functions'
+  // (polygamma, betaincinv and its kernel), the geomean over its 339 functions
+  // 0.48; rechecked below, the margin being what it is.
   'stdlib-special': { v8: 'win', as: 'na' },
-  // every function of stats/base/dists that takes numbers, 426 packages, the same way
+  // every function of stats/base/dists that takes numbers, 429 packages, the same
+  // way (geomean 0.45); studentized-range's cdf and quantile are left out, a sweep
+  // of either would dwarf the namespace (scripts/stdlib-probe.mjs CALL_BUDGET)
   'stdlib-dists':   { v8: 'win', as: 'na' },
   'stdlib-exp':     { v8: 'win', as: 'na' },
   'stdlib-gamma':   { v8: 'win', as: 'na' },

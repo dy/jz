@@ -38,7 +38,7 @@ export { freshId, temp, tempI32, tempI64, block64, withTemp } from './ir/locals.
 export { mkPtrIR, ptrOffsetIR, fwdOffsetIR, valKindToPtr, extractF64Bits, ptrTypeEq, dispatchByPtrType } from './ir/pointers.js'
 export { MAX_CLOSURE_ARITY, MEM_OPS, WASM_OPS, BOXED_MUTATORS, isLit, litVal, isNullishLit, isPureIR, hasExpensiveOp, dataDependentFlag, isNumericIR, resolveValType, emitNum } from './ir/classify.js'
 export { callWithArgs, multiCount, loopTop, flat, findBodyStart, verifyFn, buildRefcount, nextLocalId, tcoTailRewrite, reconstructArgsWithSpreads } from './ir/control.js'
-export { keyIndex, int32Bits, asF64, asI32, asI32Sat, asPtrOffset, asParamType, maskBound, f64Range, toI32, toInt32, asI64, fromI64, f64rem } from './ir/numeric.js'
+export { keyIndex, int32Bits, asF64, asI32, asI32Sat, asPtrOffset, asParamType, maskBound, f64Range, toI32, toInt32, i32Narrowed, i32Word, asI64, fromI64, f64rem } from './ir/numeric.js'
 export { bigintStrict, bigintEraseErr, boxBigInt, rawBigInt, deferBigintBox, materializeDeferredBigint, unboxBigInt, applyBigintRepresentationAction, maybeUnboxBigInt, isBigIntBox, isSchemaSlotBigintPossible, isPlanTaggedBigint, isPlanRawBigint, isTaggedElemRead, readI64MayUnbox, readI64 } from './ir/bigint.js'
 export { usesDynProps, needsDynShadow, isBoundName, isGlobal, isConst, boxedAddr, dollar, clearDollar, readVar, writeVar } from './ir/vars.js'
 export { slotAddr, elemLoad, elemStore, arrayLoop, allocPtr, staticArrayPtr } from './ir/arrays.js'

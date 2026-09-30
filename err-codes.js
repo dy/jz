@@ -102,6 +102,7 @@ export const ERR = {
   BTOA_CHARACTER: 319,        // btoa — code unit outside the Latin-1 byte range
   HEX_ODD_LENGTH: 317,         // fromHex/setFromHex — odd-length input
   HEX_INVALID_DIGIT: 318,      // fromHex/setFromHex — non-hex character
+  DYNAMIC_CODE: 322,           // Function constructor — the target compiles no code at run time
 }
 
 /** code → { name, message }. `name` is the ECMAScript error class this site
@@ -173,6 +174,7 @@ export const ERR_INFO = {
   [ERR.BASE64_LEFTOVER_CHAR]: { name: 'SyntaxError', message: 'Malformed base64 string' },
   [ERR.HEX_ODD_LENGTH]: { name: 'SyntaxError', message: 'Hex string must have an even length' },
   [ERR.HEX_INVALID_DIGIT]: { name: 'SyntaxError', message: 'Invalid hex character' },
+  [ERR.DYNAMIC_CODE]: { name: 'TypeError', message: 'Function constructor: the target compiles no code at run time' },
 }
 
 /** Internal exception transport. Reserved atom 3 carries a code in its low word;

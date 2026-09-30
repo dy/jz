@@ -1,11 +1,9 @@
 // stdlib-special.js — every function of @stdlib/math/base/special (stdlib 0.4.1, Apache-2.0) that takes
-// numbers and returns one, or a list of them: 338 packages, bundled from their CommonJS sources by
+// numbers and returns one, or a list of them: 339 packages, bundled from their CommonJS sources by
 // scripts/stdlib-probe.mjs (`bench-all math/base/special stdlib-special`): the packages' own code with the
 // module seams gone, nothing rewritten. Each function is swept over a domain where
 // it is finite (the probe's `domain`: of reals, or of integers for a function of
 // counts), the arguments after the first held; a list is stored as its sum.
-// Left out until jz compiles them:
-//   special/hyp2f1: a read of `Symbol` as a value, through `@stdlib/symbol/ctor`
 // Copyright (c) The Stdlib Authors. Licensed under the Apache License, Version 2.0
 // (http://www.apache.org/licenses/LICENSE-2.0); the notices of the bundled files
 // are retained by reference to the package.
@@ -12218,7 +12216,7 @@ var poly_p12_default = evalpoly103;
 
 var ONE_DIV_PI = 0.3183098861837907;
 function ellipk(m) {
-  var FLG;
+  var FLG2;
   var kdm;
   var td;
   var qd;
@@ -12227,7 +12225,7 @@ function ellipk(m) {
   x = m;
   if (m < 0) {
     x = m / (m - 1);
-    FLG = true;
+    FLG2 = true;
   }
   if (x === 0) {
     return lib_default54;
@@ -12264,7 +12262,7 @@ function ellipk(m) {
     kdm = poly_p12_default(td - 0.05);
     t = -lib_default48(qd) * (kdm * ONE_DIV_PI);
   }
-  if (FLG) {
+  if (FLG2) {
     return t / lib_default31(1 - m);
   }
   return t;
@@ -12370,7 +12368,7 @@ function evalpoly115(x) {
 var poly_p12_default2 = evalpoly115;
 
 function ellipe(m) {
-  var FLG;
+  var FLG2;
   var kdm;
   var edm;
   var td;
@@ -12380,7 +12378,7 @@ function ellipe(m) {
   x = m;
   if (m < 0) {
     x = m / (m - 1);
-    FLG = true;
+    FLG2 = true;
   }
   if (x === 0) {
     return lib_default54;
@@ -12418,7 +12416,7 @@ function ellipe(m) {
     km = lib_default271(x);
     t = (lib_default54 + km * (kdm - edm)) / kdm;
   }
-  if (FLG) {
+  if (FLG2) {
     return t * lib_default31(1 - m);
   }
   return t;
@@ -12443,7 +12441,7 @@ function assign(u, m, out, stride, offset) {
   var phi0;
   var phi1;
   var atmp;
-  var FLG;
+  var FLG2;
   var gdu;
   var uK2;
   var uK4;
@@ -12504,7 +12502,7 @@ function assign(u, m, out, stride, offset) {
     uK2cen = u / K2 + 0.5;
     uK2 = K2 * (uK2cen % 1 - 0.5);
     uK4 = uK2cen % 4;
-    FLG = uK4 >= 1 && uK4 < 2;
+    FLG2 = uK4 >= 1 && uK4 < 2;
     sinhu = lib_default264(uK2);
     sechu = 1 / lib_default236(uK2);
     tanhu = lib_default253(uK2);
@@ -12515,7 +12513,7 @@ function assign(u, m, out, stride, offset) {
     cn2 = sechu - b * tanhu;
     dn2 = sechu + a * (sinhu + uK2 * sechu) * tanhu;
     am2 = gdu + b;
-    if (FLG) {
+    if (FLG2) {
       sn2 = -sn2;
       cn2 = -cn2;
     }
@@ -15378,6 +15376,627 @@ var main_default282 = heavisidef;
 
 var lib_default350 = main_default282;
 
+function isNumber(value) {
+  return typeof value === "number";
+}
+var primitive_default = isNumber;
+
+var has_tostringtag_support_default = () => true;
+
+var toStr = Object.prototype.toString;
+var tostring_default = toStr;
+
+function nativeClass(v3) {
+  return tostring_default.call(v3);
+}
+var main_default283 = nativeClass;
+
+var has = Object.prototype.hasOwnProperty;
+function hasOwnProp(value, property) {
+  if (value === void 0 || value === null) {
+    return false;
+  }
+  return has.call(value, property);
+}
+var main_default284 = hasOwnProp;
+
+var lib_default351 = main_default284;
+
+var Sym = typeof Symbol === "function" ? Symbol : void 0;
+var main_default285 = Sym;
+
+var lib_default352 = main_default285;
+
+var toStrTag = typeof lib_default352 === "function" ? lib_default352.toStringTag : "";
+var tostringtag_default = toStrTag;
+
+function nativeClass2(v3) {
+  var isOwn;
+  var tag;
+  var out;
+  if (v3 === null || v3 === void 0) {
+    return tostring_default.call(v3);
+  }
+  tag = v3[tostringtag_default];
+  isOwn = lib_default351(v3, tostringtag_default);
+  try {
+    v3[tostringtag_default] = void 0;
+  } catch (err) {
+    return tostring_default.call(v3);
+  }
+  out = tostring_default.call(v3);
+  if (isOwn) {
+    v3[tostringtag_default] = tag;
+  } else {
+    delete v3[tostringtag_default];
+  }
+  return out;
+}
+var polyfill_default2 = nativeClass2;
+
+var main;
+if (has_tostringtag_support_default()) {
+  main = polyfill_default2;
+} else {
+  main = main_default283;
+}
+var lib_default353 = main;
+
+var toString = Number.prototype.toString;
+var tostring_default2 = toString;
+
+var toString2 = tostring_default2;
+function test(value) {
+  try {
+    toString2.call(value);
+    return true;
+  } catch (err) {
+    return false;
+  }
+}
+var try2serialize_default = test;
+
+var FLG = has_tostringtag_support_default();
+function isNumber2(value) {
+  if (typeof value === "object") {
+    if (value instanceof Number) {
+      return true;
+    }
+    if (FLG) {
+      return try2serialize_default(value);
+    }
+    return lib_default353(value) === "[object Number]";
+  }
+  return false;
+}
+var object_default = isNumber2;
+
+function isNumber3(value) {
+  return primitive_default(value) || object_default(value);
+}
+var main_default286 = isNumber3;
+
+main_default286.isPrimitive = primitive_default;
+main_default286.isObject = object_default;
+var lib_default354 = main_default286;
+
+var isNumber4 = lib_default354.isPrimitive;
+function isnan2(value) {
+  return isNumber4(value) && lib_default30(value);
+}
+var primitive_default2 = isnan2;
+
+var isNumber5 = lib_default354.isObject;
+function isnan3(value) {
+  return isNumber5(value) && lib_default30(value.valueOf());
+}
+var object_default2 = isnan3;
+
+function isnan4(value) {
+  return primitive_default2(value) || object_default2(value);
+}
+var main_default287 = isnan4;
+
+main_default287.isPrimitive = primitive_default2;
+main_default287.isObject = object_default2;
+var lib_default355 = main_default287;
+
+var config_default = {
+  "MACHEP": 11102230246251565e-32,
+  "EPS": 1e-13,
+  "ETHRESH": 1e-12,
+  "MAX_ITERATIONS": 1e4
+};
+
+var EPS = config_default.EPS;
+function isNonPositiveInteger(x) {
+  var diff;
+  var ix;
+  ix = lib_default128(x);
+  diff = lib_default(x - ix);
+  return ix <= 0 && diff < EPS;
+}
+var isnonpositiveinteger_default = isNonPositiveInteger;
+
+function hyp2f1NegCEqualBC(a, b, x) {
+  var collectorMax;
+  var collector;
+  var sum;
+  var k;
+  collectorMax = 1;
+  collector = 1;
+  sum = 1;
+  if (lib_default(b) >= 1e5) {
+    return NaN;
+  }
+  for (k = 1; k <= -b; k++) {
+    collector *= (a + k - 1) * x / k;
+    collectorMax = lib_default149(lib_default(collector), collectorMax);
+    sum += collector;
+  }
+  if (1e-16 * (1 + collectorMax / lib_default(sum)) > 1e-7) {
+    return NaN;
+  }
+  return sum;
+}
+var hyp2f1negcequalbc_default = hyp2f1NegCEqualBC;
+
+var EPS2 = config_default.EPS;
+function isInteger2(x) {
+  var diff;
+  var ix;
+  ix = lib_default128(x);
+  diff = lib_default(x - ix);
+  return diff < EPS2;
+}
+var isinteger_default = isInteger2;
+
+var MACHEP = config_default.MACHEP;
+var EPS3 = config_default.EPS;
+var MAX_ITERATIONS2 = config_default.MAX_ITERATIONS;
+function hyp2f1ra(a, b, c2, x, loss) {
+  var f2Val;
+  var f1Val;
+  var f0Val;
+  var err;
+  var da;
+  var f1;
+  var f0;
+  var t;
+  var n;
+  loss = 0;
+  err = 0;
+  if (c2 < 0 && a <= c2 || c2 >= 0 && a >= c2) {
+    da = lib_default128(a - c2);
+  } else {
+    da = lib_default128(a);
+  }
+  t = a - da;
+  if (lib_default(da) > MAX_ITERATIONS2) {
+    loss = 1;
+    return {
+      "value": NaN,
+      "error": loss
+    };
+  }
+  if (da < 0) {
+    f2Val = 0;
+    f1 = hys2f1(t, b, c2, x, err);
+    loss += f1.error;
+    err = f1.error;
+    f0 = hys2f1(t - 1, b, c2, x, err);
+    loss += f0.error;
+    t -= 1;
+    f1Val = f1.value;
+    f0Val = f0.value;
+    for (n = 1; n < -da; n++) {
+      f2Val = f1Val;
+      f1Val = f0Val;
+      f0Val = -((2 * t - c2 - t * x + b * x) * f1Val + t * (x - 1) * f2Val) / (c2 - t);
+      t -= 1;
+    }
+  } else {
+    f2Val = 0;
+    f1 = hys2f1(t, b, c2, x, err);
+    loss += f1.error;
+    err = f1.error;
+    f0 = hys2f1(t + 1, b, c2, x, err);
+    loss += f0.error;
+    t += 1;
+    f1Val = f1.value;
+    f0Val = f0.value;
+    for (n = 1; n < da; n++) {
+      f2Val = f1Val;
+      f1Val = f0Val;
+      f0Val = -((2 * t - c2 - t * x + b * x) * f1Val + (c2 - t) * f2Val) / (t * (x - 1));
+      t += 1;
+    }
+  }
+  return {
+    "value": f0Val,
+    "error": loss
+  };
+}
+function hys2f1(a, b, c2, x, loss) {
+  var intFlag;
+  var umax;
+  var f;
+  var g;
+  var h;
+  var k;
+  var m;
+  var s;
+  var u;
+  var i;
+  intFlag = 0;
+  if (lib_default(b) > lib_default(a)) {
+    f = b;
+    b = a;
+    a = f;
+  }
+  if (isnonpositiveinteger_default(b) && lib_default(b) < lib_default(a)) {
+    f = b;
+    b = a;
+    a = f;
+    intFlag = 1;
+  }
+  if ((lib_default(a) > lib_default(c2) + 1 || intFlag) && lib_default(c2 - a) > 2 && lib_default(a) > 2) {
+    return hyp2f1ra(a, b, c2, x, loss);
+  }
+  i = 0;
+  umax = 0;
+  f = a;
+  g = b;
+  h = c2;
+  s = 1;
+  u = 1;
+  k = 0;
+  do {
+    if (lib_default(h) < EPS3) {
+      loss = 1;
+      return {
+        "value": lib_default43,
+        "error": loss
+      };
+    }
+    m = k + 1;
+    u *= (f + k) * (g + k) * x / ((h + k) * m);
+    s += u;
+    k = lib_default(u);
+    if (k > umax) {
+      umax = k;
+    }
+    k = m;
+    i += 1;
+    if (i > MAX_ITERATIONS2) {
+      loss = 1;
+      return {
+        "value": s,
+        "error": loss
+      };
+    }
+  } while (s === 0 || lib_default(u / s) > MACHEP);
+  loss = MACHEP * umax / lib_default(s) + MACHEP * i;
+  return {
+    "value": s,
+    "error": loss
+  };
+}
+var hys2f1_default = hys2f1;
+
+var MACHEP2 = config_default.MACHEP;
+var EPS4 = config_default.EPS;
+var ETHRESH = config_default.ETHRESH;
+var MAX_ITERATIONS3 = config_default.MAX_ITERATIONS;
+function hyt2f1(a, b, c2, x, loss) {
+  var negIntA;
+  var negIntB;
+  var qVal;
+  var rVal;
+  var sign;
+  var err1;
+  var err;
+  var val;
+  var aid;
+  var ax;
+  var id;
+  var d1;
+  var d2;
+  var y12;
+  var i;
+  var p101;
+  var q;
+  var r;
+  var t;
+  var y;
+  var w;
+  var d3;
+  var e;
+  var s;
+  negIntA = isnonpositiveinteger_default(a);
+  negIntB = isnonpositiveinteger_default(b);
+  err = 0;
+  err1 = 0;
+  s = 1 - x;
+  if (x < -0.5 && !(negIntA || negIntB)) {
+    if (b > a) {
+      y = hys2f1_default(a, c2 - b, c2, -x / s, err);
+      val = lib_default142(s, -a) * y.value;
+    } else {
+      y = hys2f1_default(c2 - a, b, c2, -x / s, err);
+      val = lib_default142(s, -b) * y.value;
+    }
+    loss = y.error;
+    return {
+      "value": val,
+      "error": loss
+    };
+  }
+  d3 = c2 - a - b;
+  id = lib_default128(d3);
+  if (x > 0.85 && !negIntA && !negIntB) {
+    if (isinteger_default(d3) === false) {
+      y = hys2f1_default(a, b, c2, x, err);
+      if (y.error < ETHRESH) {
+        return y;
+      }
+      err = y.error;
+      q = hys2f1_default(a, b, 1 - d3, s, err);
+      qVal = q.value;
+      err = q.error;
+      sign = 1;
+      w = lib_default167(d3);
+      sign *= lib_default339(d3);
+      w -= lib_default167(c2 - a);
+      sign *= lib_default339(c2 - a);
+      w -= lib_default167(c2 - b);
+      sign *= lib_default339(c2 - b);
+      qVal *= sign * lib_default138(w);
+      r = hys2f1_default(c2 - a, c2 - b, d3 + 1, s, err1);
+      err1 = r.error;
+      rVal = lib_default142(s, d3) * r.value;
+      sign = 1;
+      w = lib_default167(-d3);
+      sign *= lib_default339(-d3);
+      w -= lib_default167(a);
+      sign *= lib_default339(a);
+      w -= lib_default167(b);
+      sign *= lib_default339(b);
+      rVal *= sign * lib_default138(w);
+      y = qVal + rVal;
+      err += err1 + MACHEP2 * lib_default149(lib_default(qVal), lib_default(rVal)) / y;
+      y *= lib_default159(c2);
+    } else {
+      if (id >= 0) {
+        e = d3;
+        d1 = d3;
+        d2 = 0;
+        aid = id;
+      } else {
+        e = -d3;
+        d1 = 0;
+        d2 = d3;
+        aid = -id;
+      }
+      ax = lib_default48(s);
+      y = lib_default266(1) + lib_default266(1 + e) - lib_default266(a + d1) - lib_default266(b + d1) - ax;
+      y /= lib_default159(e + 1);
+      p101 = (a + d1) * (b + d1) * s / lib_default159(e + 2);
+      t = 1;
+      do {
+        r = lib_default266(1 + t) + lib_default266(1 + t + e) - lib_default266(a + t + d1) - lib_default266(b + t + d1) - ax;
+        q = p101 * r;
+        y += q;
+        p101 *= s * (a + t + d1) / (t + 1);
+        p101 *= (b + t + d1) / (t + 1 + e);
+        t += 1;
+        if (t > MAX_ITERATIONS3) {
+          loss = 1;
+          return {
+            "value": NaN,
+            "error": loss
+          };
+        }
+      } while (y === 0 || lib_default(q / y) > EPS4);
+      if (id === 0) {
+        y *= lib_default159(c2) / (lib_default159(a) * lib_default159(b));
+        return {
+          "value": y,
+          "error": err
+        };
+      }
+      y12 = 1;
+      if (aid !== 1) {
+        t = 0;
+        p101 = 1;
+        for (i = 1; i < aid; i++) {
+          r = 1 - e + t;
+          p101 *= s * (a + t + d2) * (b + t + d2) / r;
+          t += 1;
+          p101 /= t;
+          y12 += p101;
+        }
+      }
+      p101 = lib_default159(c2);
+      y12 *= lib_default159(e) * p101 / (lib_default159(a + d1) * lib_default159(b + d1));
+      y *= p101 / (lib_default159(a + d2) * lib_default159(b + d2));
+      if (aid % 2 !== 0) {
+        y = -y;
+      }
+      q = lib_default142(s, id);
+      if (id > 0) {
+        y *= q;
+      } else {
+        y12 *= q;
+      }
+      y += y12;
+    }
+    return {
+      "value": y,
+      "error": err
+    };
+  }
+  y = hys2f1_default(a, b, c2, x, err);
+  return y;
+}
+var hyt2f1_default = hyt2f1;
+
+var ETHRESH2 = config_default.ETHRESH;
+function hyp2f1(a, b, c2, x) {
+  var negIntCaOrCb;
+  var negIntC;
+  var negIntB;
+  var negIntA;
+  var isIntD;
+  var aid;
+  var err;
+  var ax;
+  var d2;
+  var d1;
+  var id;
+  var ic;
+  var ia;
+  var ib;
+  var t1;
+  var y12;
+  var y2;
+  var q;
+  var r;
+  var p101;
+  var e;
+  var s;
+  var d3;
+  var y;
+  var i;
+  err = 0;
+  s = 1 - x;
+  d3 = c2 - a - b;
+  ax = lib_default(x);
+  ia = lib_default128(a);
+  ib = lib_default128(b);
+  id = lib_default128(d3);
+  ic = lib_default128(c2);
+  negIntA = isnonpositiveinteger_default(a);
+  negIntB = isnonpositiveinteger_default(b);
+  negIntC = isnonpositiveinteger_default(c2);
+  isIntD = isinteger_default(d3);
+  t1 = lib_default(b - a);
+  if (lib_default355(a) || lib_default355(b) || lib_default355(c2) || lib_default355(x)) {
+    return NaN;
+  }
+  if (x === 0) {
+    return 1;
+  }
+  if ((a === 0 || b === 0) && c2 !== 0) {
+    return 1;
+  }
+  if (d3 <= -1 && !(!isIntD && s < 0) && !(negIntA || negIntB)) {
+    return lib_default142(s, d3) * hyp2f1(c2 - a, c2 - b, c2, x);
+  }
+  if (d3 <= 0 && x === 1 && !(negIntA || negIntB)) {
+    return lib_default43;
+  }
+  if (ax < 1 || x === -1) {
+    if (b === c2) {
+      if (negIntB) {
+        return hyp2f1negcequalbc_default(a, b, x);
+      }
+      return lib_default142(s, -a);
+    }
+    if (a === c2) {
+      return lib_default142(s, -b);
+    }
+  }
+  if (negIntC) {
+    if (negIntA && ia > ic) {
+      y = hyt2f1_default(a, b, c2, x, err);
+      return y.value;
+    }
+    if (negIntB && ib > ic) {
+      y = hyt2f1_default(a, b, c2, x, err);
+      return y.value;
+    }
+    return lib_default43;
+  }
+  if (negIntA || negIntB) {
+    y = hyt2f1_default(a, b, c2, x, err);
+    return y.value;
+  }
+  if (x < -2 && !isinteger_default(t1)) {
+    p101 = hyp2f1(a, 1 - c2 + a, 1 - b + a, 1 / x);
+    q = hyp2f1(b, 1 - c2 + b, 1 - a + b, 1 / x);
+    p101 *= lib_default142(-x, -a);
+    q *= lib_default142(-x, -b);
+    t1 = lib_default159(c2);
+    s = t1 * lib_default159(b - a) / (lib_default159(b) * lib_default159(c2 - a));
+    y = t1 * lib_default159(a - b) / (lib_default159(a) * lib_default159(c2 - b));
+    return s * p101 + y * q;
+  }
+  if (x < -1) {
+    if (lib_default(a) < lib_default(b)) {
+      return lib_default142(s, -a) * hyp2f1(a, c2 - b, c2, x / (x - 1));
+    }
+    return lib_default142(s, -b) * hyp2f1(b, c2 - a, c2, x / (x - 1));
+  }
+  if (ax > 1) {
+    return lib_default43;
+  }
+  p101 = c2 - a;
+  r = c2 - b;
+  negIntCaOrCb = isnonpositiveinteger_default(p101) || isnonpositiveinteger_default(r);
+  if (ax === 1) {
+    if (x > 0) {
+      if (negIntCaOrCb) {
+        if (d3 >= 0) {
+          y = hys2f1_default(c2 - a, c2 - b, c2, x, err);
+          return lib_default142(s, d3) * y.value;
+        }
+        return lib_default43;
+      }
+      if (d3 <= 0) {
+        return lib_default43;
+      }
+      return lib_default159(c2) * lib_default159(d3) / (lib_default159(p101) * lib_default159(r));
+    }
+    if (d3 <= -1) {
+      return lib_default43;
+    }
+  }
+  if (d3 < 0) {
+    y = hyt2f1_default(a, b, c2, x, err);
+    if (y.error < ETHRESH2) {
+      return y.value;
+    }
+    y = y.value;
+    err = 0;
+    aid = 2 - id;
+    e = c2 + aid;
+    d2 = hyp2f1(a, b, e, x);
+    d1 = hyp2f1(a, b, e + 1, x);
+    q = a + b + 1;
+    for (i = 0; i < aid; i++) {
+      r = e - 1;
+      y12 = (e - a) * (e - b) * x;
+      y2 = r - (2 * e - q) * x;
+      y2 *= e;
+      y = (y2 * d2 + y12 * d1) / (e * r * s);
+      e = r;
+      d1 = d2;
+      d2 = y;
+    }
+    return y;
+  }
+  if (negIntCaOrCb) {
+    y = hys2f1_default(c2 - a, c2 - b, c2, x, err);
+    return lib_default142(s, d3) * y.value;
+  }
+  y = hyt2f1_default(a, b, c2, x, err);
+  return y.value;
+}
+var main_default288 = hyp2f1;
+
+var lib_default356 = main_default288;
+
 function hypot7(x, y) {
   var tmp7;
   if (lib_default76(x) || lib_default76(y)) {
@@ -15403,9 +16022,9 @@ function hypot7(x, y) {
   y /= x;
   return x * lib_default31(1 + y * y);
 }
-var main_default283 = hypot7;
+var main_default289 = hypot7;
 
-var lib_default351 = main_default283;
+var lib_default357 = main_default289;
 
 function hypotf2(x, y) {
   var tmp7;
@@ -15434,23 +16053,23 @@ function hypotf2(x, y) {
   y = lib_default3(y / x);
   return lib_default3(x * lib_default38(lib_default3(1 + lib_default3(y * y))));
 }
-var main_default284 = hypotf2;
+var main_default290 = hypotf2;
 
-var lib_default352 = main_default284;
+var lib_default358 = main_default290;
 
 function inv(x) {
   return 1 / x;
 }
-var main_default285 = inv;
+var main_default291 = inv;
 
-var lib_default353 = main_default285;
+var lib_default359 = main_default291;
 
 function invf(x) {
   return lib_default3(1 / lib_default3(x));
 }
-var main_default286 = invf;
+var main_default292 = invf;
 
-var lib_default354 = main_default286;
+var lib_default360 = main_default292;
 
 function evalpoly131(x) {
   if (x === 0) {
@@ -15488,9 +16107,9 @@ function kernelLog1pf(f) {
   hfsq = lib_default3(HALF9 * lib_default3(f * f));
   return lib_default3(s * lib_default3(hfsq + R));
 }
-var main_default287 = kernelLog1pf;
+var main_default293 = kernelLog1pf;
 
-var lib_default355 = main_default287;
+var lib_default361 = main_default293;
 
 function evalpoly133(x) {
   if (x === 0) {
@@ -15537,10 +16156,10 @@ var assign_default10 = kernelSincosf;
 function kernelSincosf2(x) {
   return assign_default10(x, [0, 0], 1, 0);
 }
-var main_default288 = kernelSincosf2;
+var main_default294 = kernelSincosf2;
 
-main_default288.assign = assign_default10;
-var lib_default356 = main_default288;
+main_default294.assign = assign_default10;
+var lib_default362 = main_default294;
 
 function kroneckerDelta(i, j) {
   if (lib_default30(i) || lib_default30(j)) {
@@ -15551,9 +16170,9 @@ function kroneckerDelta(i, j) {
   }
   return 0;
 }
-var main_default289 = kroneckerDelta;
+var main_default295 = kroneckerDelta;
 
-var lib_default357 = main_default289;
+var lib_default363 = main_default295;
 
 function kroneckerDeltaf(i, j) {
   if (lib_default6(i) || lib_default6(j)) {
@@ -15564,9 +16183,9 @@ function kroneckerDeltaf(i, j) {
   }
   return 0;
 }
-var main_default290 = kroneckerDeltaf;
+var main_default296 = kroneckerDeltaf;
 
-var lib_default358 = main_default290;
+var lib_default364 = main_default296;
 
 function lcm(a, b) {
   var d2;
@@ -15585,9 +16204,9 @@ function lcm(a, b) {
   }
   return a / d2 * b;
 }
-var main_default291 = lcm;
+var main_default297 = lcm;
 
-var lib_default359 = main_default291;
+var lib_default365 = main_default297;
 
 function lcmf(a, b) {
   var d2;
@@ -15606,16 +16225,16 @@ function lcmf(a, b) {
   }
   return a / d2 * b;
 }
-var main_default292 = lcmf;
+var main_default298 = lcmf;
 
-var lib_default360 = main_default292;
+var lib_default366 = main_default298;
 
 function log(x, b) {
   return lib_default48(x) / lib_default48(b);
 }
-var main_default293 = log;
+var main_default299 = log;
 
-var lib_default361 = main_default293;
+var lib_default367 = main_default299;
 
 function log1mexp(x) {
   var ax;
@@ -15631,9 +16250,9 @@ function log1mexp(x) {
   }
   return lib_default46(-lib_default138(-ax));
 }
-var main_default294 = log1mexp;
+var main_default300 = log1mexp;
 
-var lib_default362 = main_default294;
+var lib_default368 = main_default300;
 
 function log1pexp(x) {
   if (lib_default30(x)) {
@@ -15650,9 +16269,9 @@ function log1pexp(x) {
   }
   return x;
 }
-var main_default295 = log1pexp;
+var main_default301 = log1pexp;
 
-var lib_default363 = main_default295;
+var lib_default369 = main_default301;
 
 function logaddexp(x, y) {
   var d2;
@@ -15668,29 +16287,29 @@ function logaddexp(x, y) {
   }
   return y + lib_default46(lib_default138(d2));
 }
-var main_default296 = logaddexp;
+var main_default302 = logaddexp;
 
-var lib_default364 = main_default296;
+var lib_default370 = main_default302;
 
 function logf(x, b) {
   return lib_default3(lib_default15(lib_default3(x)) / lib_default15(lib_default3(b)));
 }
-var main_default297 = logf;
+var main_default303 = logf;
 
-var lib_default365 = main_default297;
+var lib_default371 = main_default303;
 
 function isProbability(x) {
   return x >= 0 && x <= 1;
 }
-var main_default298 = isProbability;
+var main_default304 = isProbability;
 
-var lib_default366 = main_default298;
+var lib_default372 = main_default304;
 
 function logit(p101) {
   if (lib_default30(p101)) {
     return p101;
   }
-  if (!lib_default366(p101)) {
+  if (!lib_default372(p101)) {
     return NaN;
   }
   if (p101 === 0) {
@@ -15701,22 +16320,22 @@ function logit(p101) {
   }
   return lib_default48(p101 / (1 - p101));
 }
-var main_default299 = logit;
+var main_default305 = logit;
 
-var lib_default367 = main_default299;
+var lib_default373 = main_default305;
 
 function isProbabilityf(x) {
   return x >= 0 && x <= 1;
 }
-var main_default300 = isProbabilityf;
+var main_default306 = isProbabilityf;
 
-var lib_default368 = main_default300;
+var lib_default374 = main_default306;
 
 function logitf(p101) {
   if (lib_default6(p101)) {
     return p101;
   }
-  if (!lib_default368(p101)) {
+  if (!lib_default374(p101)) {
     return NaN;
   }
   if (p101 === 0) {
@@ -15727,46 +16346,46 @@ function logitf(p101) {
   }
   return lib_default15(lib_default3(p101 / lib_default3(1 - p101)));
 }
-var main_default301 = logitf;
+var main_default307 = logitf;
 
-var lib_default369 = main_default301;
+var lib_default375 = main_default307;
 
 var FLOAT64_MAX_SAFE_NTH_LUCAS = 76 | 0;
-var lib_default370 = FLOAT64_MAX_SAFE_NTH_LUCAS;
+var lib_default376 = FLOAT64_MAX_SAFE_NTH_LUCAS;
 
 var lucas_default = [2, 1, 3, 4, 7, 11, 18, 29, 47, 76, 123, 199, 322, 521, 843, 1364, 2207, 3571, 5778, 9349, 15127, 24476, 39603, 64079, 103682, 167761, 271443, 439204, 710647, 1149851, 1860498, 3010349, 4870847, 7881196, 12752043, 20633239, 33385282, 54018521, 87403803, 141422324, 228826127, 370248451, 599074578, 969323029, 1568397607, 2537720636, 4106118243, 6643838879, 10749957122, 17393796001, 28143753123, 45537549124, 73681302247, 119218851371, 192900153618, 312119004989, 505019158607, 817138163596, 1322157322203, 2139295485799, 3461452808002, 5600748293801, 9062201101803, 14662949395604, 23725150497407, 38388099893011, 62113250390418, 100501350283429, 162614600673847, 263115950957276, 425730551631123, 688846502588399, 1114577054219522, 1803423556807921, 2918000611027443, 4721424167835364, 7639424778862807];
 
 function lucas(n) {
-  if (lib_default30(n) || !lib_default106(n) || n > lib_default370) {
+  if (lib_default30(n) || !lib_default106(n) || n > lib_default376) {
     return NaN;
   }
   return lucas_default[n];
 }
-var main_default302 = lucas;
+var main_default308 = lucas;
 
-var lib_default371 = main_default302;
+var lib_default377 = main_default308;
 
 var FLOAT32_MAX_SAFE_NTH_LUCAS = 34 | 0;
-var lib_default372 = FLOAT32_MAX_SAFE_NTH_LUCAS;
+var lib_default378 = FLOAT32_MAX_SAFE_NTH_LUCAS;
 
 var lucas_default2 = [2, 1, 3, 4, 7, 11, 18, 29, 47, 76, 123, 199, 322, 521, 843, 1364, 2207, 3571, 5778, 9349, 15127, 24476, 39603, 64079, 103682, 167761, 271443, 439204, 710647, 1149851, 1860498, 3010349, 4870847, 7881196, 12752043];
 
 function lucasf(n) {
-  if (lib_default6(n) || !lib_default111(n) || n > lib_default372) {
+  if (lib_default6(n) || !lib_default111(n) || n > lib_default378) {
     return NaN;
   }
   return lucas_default2[n];
 }
-var main_default303 = lucasf;
+var main_default309 = lucasf;
 
-var lib_default373 = main_default303;
+var lib_default379 = main_default309;
 
 function isPositiveZerof(x) {
   return x === 0 && 1 / x === lib_default7;
 }
-var main_default304 = isPositiveZerof;
+var main_default310 = isPositiveZerof;
 
-var lib_default374 = main_default304;
+var lib_default380 = main_default310;
 
 function maxf2(x, y) {
   if (lib_default6(x) || lib_default6(y)) {
@@ -15776,7 +16395,7 @@ function maxf2(x, y) {
     return lib_default7;
   }
   if (x === y && x === 0) {
-    if (lib_default374(x)) {
+    if (lib_default380(x)) {
       return x;
     }
     return y;
@@ -15786,16 +16405,16 @@ function maxf2(x, y) {
   }
   return y;
 }
-var main_default305 = maxf2;
+var main_default311 = maxf2;
 
-var lib_default375 = main_default305;
+var lib_default381 = main_default311;
 
 function maxabsf(x, y) {
-  return lib_default375(lib_default5(lib_default3(x)), lib_default5(lib_default3(y)));
+  return lib_default381(lib_default5(lib_default3(x)), lib_default5(lib_default3(y)));
 }
-var main_default306 = maxabsf;
+var main_default312 = maxabsf;
 
-var lib_default376 = main_default306;
+var lib_default382 = main_default312;
 
 function maxn(x, y) {
   var len;
@@ -15835,9 +16454,9 @@ function maxn(x, y) {
   }
   return m;
 }
-var main_default307 = maxn;
+var main_default313 = maxn;
 
-var lib_default377 = main_default307;
+var lib_default383 = main_default313;
 
 function maxabsn(x, y) {
   var nargs;
@@ -15848,17 +16467,17 @@ function maxabsn(x, y) {
     return lib_default43;
   }
   if (nargs === 2) {
-    return lib_default377(lib_default(x), lib_default(y));
+    return lib_default383(lib_default(x), lib_default(y));
   }
   args = [];
   for (i = 0; i < nargs; i++) {
     args.push(lib_default(arguments[i]));
   }
-  return lib_default377.apply(null, args);
+  return lib_default383.apply(null, args);
 }
-var main_default308 = maxabsn;
+var main_default314 = maxabsn;
 
-var lib_default378 = main_default308;
+var lib_default384 = main_default314;
 
 function minf2(x, y) {
   if (lib_default6(x) || lib_default6(y)) {
@@ -15878,16 +16497,16 @@ function minf2(x, y) {
   }
   return y;
 }
-var main_default309 = minf2;
+var main_default315 = minf2;
 
-var lib_default379 = main_default309;
+var lib_default385 = main_default315;
 
 function minabsf(x, y) {
-  return lib_default379(lib_default5(lib_default3(x)), lib_default5(lib_default3(y)));
+  return lib_default385(lib_default5(lib_default3(x)), lib_default5(lib_default3(y)));
 }
-var main_default310 = minabsf;
+var main_default316 = minabsf;
 
-var lib_default380 = main_default310;
+var lib_default386 = main_default316;
 
 function minn(x, y) {
   var len;
@@ -15927,9 +16546,9 @@ function minn(x, y) {
   }
   return m;
 }
-var main_default311 = minn;
+var main_default317 = minn;
 
-var lib_default381 = main_default311;
+var lib_default387 = main_default317;
 
 function minabsn(x, y) {
   var nargs;
@@ -15940,17 +16559,17 @@ function minabsn(x, y) {
     return lib_default43;
   }
   if (nargs === 2) {
-    return lib_default381(lib_default(x), lib_default(y));
+    return lib_default387(lib_default(x), lib_default(y));
   }
   args = [];
   for (i = 0; i < nargs; i++) {
     args.push(lib_default(arguments[i]));
   }
-  return lib_default381.apply(null, args);
+  return lib_default387.apply(null, args);
 }
-var main_default312 = minabsn;
+var main_default318 = minabsn;
 
-var lib_default382 = main_default312;
+var lib_default388 = main_default318;
 
 function minmax(x, y, out, stride, offset) {
   if (lib_default30(x) || lib_default30(y)) {
@@ -15982,10 +16601,10 @@ var assign_default11 = minmax;
 function minmax2(x, y) {
   return assign_default11(x, y, [0, 0], 1, 0);
 }
-var main_default313 = minmax2;
+var main_default319 = minmax2;
 
-main_default313.assign = assign_default11;
-var lib_default383 = main_default313;
+main_default319.assign = assign_default11;
+var lib_default389 = main_default319;
 
 function minmaxabs(x, y, out, stride, offset) {
   var ax;
@@ -16011,10 +16630,10 @@ var assign_default12 = minmaxabs;
 function minmaxabs2(x, y) {
   return assign_default12(x, y, [0, 0], 1, 0);
 }
-var main_default314 = minmaxabs2;
+var main_default320 = minmaxabs2;
 
-main_default314.assign = assign_default12;
-var lib_default384 = main_default314;
+main_default320.assign = assign_default12;
+var lib_default390 = main_default320;
 
 function minmaxabsf(x, y, out, stride, offset) {
   var ax;
@@ -16040,10 +16659,10 @@ var assign_default13 = minmaxabsf;
 function minmaxabsf2(x, y) {
   return assign_default13(x, y, [0, 0], 1, 0);
 }
-var main_default315 = minmaxabsf2;
+var main_default321 = minmaxabsf2;
 
-main_default315.assign = assign_default13;
-var lib_default385 = main_default315;
+main_default321.assign = assign_default13;
+var lib_default391 = main_default321;
 
 function minmaxf(x, y, out, stride, offset) {
   if (lib_default6(x) || lib_default6(y)) {
@@ -16075,10 +16694,10 @@ var assign_default14 = minmaxf;
 function minmaxf2(x, y) {
   return assign_default14(x, y, [0, 0], 1, 0);
 }
-var main_default316 = minmaxf2;
+var main_default322 = minmaxf2;
 
-main_default316.assign = assign_default14;
-var lib_default386 = main_default316;
+main_default322.assign = assign_default14;
+var lib_default392 = main_default322;
 
 var FLOAT64_HIGH_WORD_EXPONENT_MASK2 = lib_default116;
 var FLOAT64_HIGH_WORD_SIGNIFICAND_MASK2 = lib_default117;
@@ -16156,10 +16775,10 @@ var assign_default15 = modf;
 function modf2(x) {
   return assign_default15(x, [0, 0], 1, 0);
 }
-var main_default317 = modf2;
+var main_default323 = modf2;
 
-main_default317.assign = assign_default15;
-var lib_default387 = main_default317;
+main_default323.assign = assign_default15;
+var lib_default393 = main_default323;
 
 var FLOAT32_NUM_SIGNIFICAND_BITS2 = lib_default25;
 var FLOAT32_HIGH_WORD_EXPONENT_MASK = lib_default12;
@@ -16222,10 +16841,10 @@ var assign_default16 = modff;
 function modff2(x) {
   return assign_default16(x, [0, 0], 1, 0);
 }
-var main_default318 = modff2;
+var main_default324 = modff2;
 
-main_default318.assign = assign_default16;
-var lib_default388 = main_default318;
+main_default324.assign = assign_default16;
+var lib_default394 = main_default324;
 
 function nanmax(x, y) {
   if (lib_default30(x)) {
@@ -16233,19 +16852,19 @@ function nanmax(x, y) {
   }
   return lib_default30(y) ? x : lib_default149(x, y);
 }
-var main_default319 = nanmax;
+var main_default325 = nanmax;
 
-var lib_default389 = main_default319;
+var lib_default395 = main_default325;
 
 function nanmaxf(x, y) {
   if (lib_default6(x)) {
     return lib_default6(y) ? NaN : y;
   }
-  return lib_default6(y) ? x : lib_default375(x, y);
+  return lib_default6(y) ? x : lib_default381(x, y);
 }
-var main_default320 = nanmaxf;
+var main_default326 = nanmaxf;
 
-var lib_default390 = main_default320;
+var lib_default396 = main_default326;
 
 function nanmin(x, y) {
   if (lib_default30(x)) {
@@ -16253,19 +16872,19 @@ function nanmin(x, y) {
   }
   return lib_default30(y) ? x : lib_default151(x, y);
 }
-var main_default321 = nanmin;
+var main_default327 = nanmin;
 
-var lib_default391 = main_default321;
+var lib_default397 = main_default327;
 
 function nanminf(x, y) {
   if (lib_default6(x)) {
     return lib_default6(y) ? NaN : y;
   }
-  return lib_default6(y) ? x : lib_default379(x, y);
+  return lib_default6(y) ? x : lib_default385(x, y);
 }
-var main_default322 = nanminf;
+var main_default328 = nanminf;
 
-var lib_default392 = main_default322;
+var lib_default398 = main_default328;
 
 var negafibonacci_default = [0, 1, -1, 2, -3, 5, -8, 13, -21, 34, -55, 89, -144, 233, -377, 610, -987, 1597, -2584, 4181, -6765, 10946, -17711, 28657, -46368, 75025, -121393, 196418, -317811, 514229, -832040, 1346269, -2178309, 3524578, -5702887, 9227465, -14930352, 24157817, -39088169, 63245986, -102334155, 165580141, -267914296, 433494437, -701408733, 1134903170, -1836311903, 2971215073, -4807526976, 7778742049, -12586269025, 20365011074, -32951280099, 53316291173, -86267571272, 139583862445, -225851433717, 365435296162, -591286729879, 956722026041, -1548008755920, 2504730781961, -4052739537881, 6557470319842, -10610209857723, 17167680177565, -27777890035288, 44945570212853, -72723460248141, 117669030460994, -190392490709135, 308061521170129, -498454011879264, 806515533049393, -1304969544928657, 2111485077978050, -3416454622906707, 5527939700884757, -8944394323791464];
 
@@ -16280,9 +16899,9 @@ function negafibonacci(n) {
   }
   return negafibonacci_default[an];
 }
-var main_default323 = negafibonacci;
+var main_default329 = negafibonacci;
 
-var lib_default393 = main_default323;
+var lib_default399 = main_default329;
 
 var negafibonaccif_default = [0, 1, -1, 2, -3, 5, -8, 13, -21, 34, -55, 89, -144, 233, -377, 610, -987, 1597, -2584, 4181, -6765, 10946, -17711, 28657, -46368, 75025, -121393, 196418, -317811, 514229, -832040, 1346269, -2178309, 3524578, -5702887, 9227465, -14930352];
 
@@ -16297,9 +16916,9 @@ function negafibonaccif(n) {
   }
   return negafibonaccif_default[an];
 }
-var main_default324 = negafibonaccif;
+var main_default330 = negafibonaccif;
 
-var lib_default394 = main_default324;
+var lib_default400 = main_default330;
 
 var negalucas_default = [2, -1, 3, -4, 7, -11, 18, -29, 47, -76, 123, -199, 322, -521, 843, -1364, 2207, -3571, 5778, -9349, 15127, -24476, 39603, -64079, 103682, -167761, 271443, -439204, 710647, -1149851, 1860498, -3010349, 4870847, -7881196, 12752043, -20633239, 33385282, -54018521, 87403803, -141422324, 228826127, -370248451, 599074578, -969323029, 1568397607, -2537720636, 4106118243, -6643838879, 10749957122, -17393796001, 28143753123, -45537549124, 73681302247, -119218851371, 192900153618, -312119004989, 505019158607, -817138163596, 1322157322203, -2139295485799, 3461452808002, -5600748293801, 9062201101803, -14662949395604, 23725150497407, -38388099893011, 62113250390418, -100501350283429, 162614600673847, -263115950957276, 425730551631123, -688846502588399, 1114577054219522, -1803423556807921, 2918000611027443, -4721424167835364, 7639424778862807];
 
@@ -16309,14 +16928,14 @@ function negalucas(n) {
     return NaN;
   }
   an = lib_default(n);
-  if (an > lib_default370) {
+  if (an > lib_default376) {
     return NaN;
   }
   return negalucas_default[an];
 }
-var main_default325 = negalucas;
+var main_default331 = negalucas;
 
-var lib_default395 = main_default325;
+var lib_default401 = main_default331;
 
 var SQRT_54 = 2.23606797749979;
 var LN_PHI3 = lib_default48(lib_default201);
@@ -16331,9 +16950,9 @@ function nonfibonacci(n) {
   b = lib_default48(SQRT_54 * (n + a) - 5 + 3 / n) / LN_PHI3;
   return lib_default105(n + b - 2);
 }
-var main_default326 = nonfibonacci;
+var main_default332 = nonfibonacci;
 
-var lib_default396 = main_default326;
+var lib_default402 = main_default332;
 
 var SQRT_55 = 2.23606797749979;
 var LN_PHI4 = lib_default15(lib_default311);
@@ -16348,9 +16967,9 @@ function nonfibonaccif(n) {
   b = lib_default15(SQRT_55 * (n + a) - 5 + 3 / n) / LN_PHI4;
   return lib_default16(n + b - 2);
 }
-var main_default327 = nonfibonaccif;
+var main_default333 = nonfibonaccif;
 
-var lib_default397 = main_default327;
+var lib_default403 = main_default333;
 
 function pdiff(x, y) {
   if (lib_default30(x) || lib_default30(y)) {
@@ -16361,9 +16980,9 @@ function pdiff(x, y) {
   }
   return 0;
 }
-var main_default328 = pdiff;
+var main_default334 = pdiff;
 
-var lib_default398 = main_default328;
+var lib_default404 = main_default334;
 
 function pdifff(x, y) {
   if (lib_default6(x) || lib_default6(y)) {
@@ -16374,12 +16993,12 @@ function pdifff(x, y) {
   }
   return 0;
 }
-var main_default329 = pdifff;
+var main_default335 = pdifff;
 
-var lib_default399 = main_default329;
+var lib_default405 = main_default335;
 
 var PI_SQUARED = 9.869604401089358;
-var lib_default400 = PI_SQUARED;
+var lib_default406 = PI_SQUARED;
 
 function evalrational66(x) {
   var ax;
@@ -16514,7 +17133,7 @@ function trigamma(x) {
     }
     s = lib_default166(x);
     z = 1 - x;
-    return -trigamma(z) + lib_default400 / (s * s);
+    return -trigamma(z) + lib_default406 / (s * s);
   }
   if (x < 1) {
     result = 1 / (x * x);
@@ -16536,9 +17155,9 @@ function trigamma(x) {
   }
   return result;
 }
-var main_default330 = trigamma;
+var main_default336 = trigamma;
 
-var lib_default401 = main_default330;
+var lib_default407 = main_default336;
 
 var debug4 = alias_debug_default("polygamma");
 var MAX_SERIES_ITERATIONS = 1e6;
@@ -16651,7 +17270,7 @@ function attransitionplus(n, x) {
 var attransitionplus_default = attransitionplus;
 
 var LN_PI = 1.1447298858494002;
-var lib_default402 = LN_PI;
+var lib_default408 = LN_PI;
 
 function evalpoly136(x) {
   if (x === 0) {
@@ -16830,7 +17449,7 @@ function polycotpi(n, x, xc) {
   if (sum === 0) {
     return sum;
   }
-  powTerms = n * lib_default402;
+  powTerms = n * lib_default408;
   if (s === 0) {
     return sum >= 0 ? lib_default43 : lib_default44;
   }
@@ -16905,7 +17524,7 @@ function polygamma(n, x) {
     return lib_default266(x);
   }
   if (n === 1) {
-    return lib_default401(x);
+    return lib_default407(x);
   }
   if (x < 0) {
     if (lib_default105(x) === x) {
@@ -16939,9 +17558,9 @@ function polygamma(n, x) {
   }
   return attransitionplus_default(n, x);
 }
-var main_default331 = polygamma;
+var main_default337 = polygamma;
 
-var lib_default403 = main_default331;
+var lib_default409 = main_default337;
 
 function ramp(x) {
   if (lib_default30(x)) {
@@ -16952,9 +17571,9 @@ function ramp(x) {
   }
   return 0;
 }
-var main_default332 = ramp;
+var main_default338 = ramp;
 
-var lib_default404 = main_default332;
+var lib_default410 = main_default338;
 
 function rampf(x) {
   if (lib_default6(x)) {
@@ -16965,23 +17584,23 @@ function rampf(x) {
   }
   return 0;
 }
-var main_default333 = rampf;
+var main_default339 = rampf;
 
-var lib_default405 = main_default333;
+var lib_default411 = main_default339;
 
 function rcbrt(x) {
   return 1 / lib_default211(x);
 }
-var main_default334 = rcbrt;
+var main_default340 = rcbrt;
 
-var lib_default406 = main_default334;
+var lib_default412 = main_default340;
 
 function rcbrtf(x) {
   return lib_default3(1 / lib_default211(lib_default3(x)));
 }
-var main_default335 = rcbrtf;
+var main_default341 = rcbrtf;
 
-var lib_default407 = main_default335;
+var lib_default413 = main_default341;
 
 function risingFactorial2(x, n) {
   var result;
@@ -17016,9 +17635,9 @@ function risingFactorial2(x, n) {
   }
   return 1 / lib_default164(x, n);
 }
-var main_default336 = risingFactorial2;
+var main_default342 = risingFactorial2;
 
-var lib_default408 = main_default336;
+var lib_default414 = main_default342;
 
 function roundNearestEven(x) {
   var frac;
@@ -17036,9 +17655,9 @@ function roundNearestEven(x) {
   }
   return int % 2 === 0 ? int : int + 1;
 }
-var main_default337 = roundNearestEven;
+var main_default343 = roundNearestEven;
 
-var lib_default409 = main_default337;
+var lib_default415 = main_default343;
 
 var HUGE11 = 1e308;
 var TINY10 = 1e-323;
@@ -17076,9 +17695,9 @@ function round10(x) {
   }
   return sign * y2;
 }
-var main_default338 = round10;
+var main_default344 = round10;
 
-var lib_default410 = main_default338;
+var lib_default416 = main_default344;
 
 var HUGE12 = lib_default142(2, lib_default119);
 var HALF_HUGE = HUGE12 / 2;
@@ -17119,9 +17738,9 @@ function round2(x) {
   }
   return sign * y2;
 }
-var main_default339 = round2;
+var main_default345 = round2;
 
-var lib_default411 = main_default339;
+var lib_default417 = main_default345;
 
 var MAX_INT4 = lib_default185 + 1;
 var HUGE13 = 1e308;
@@ -17152,9 +17771,9 @@ function roundn(x, n) {
   }
   return lib_default128(y) / s;
 }
-var main_default340 = roundn;
+var main_default346 = roundn;
 
-var lib_default412 = main_default340;
+var lib_default418 = main_default346;
 
 function roundb(x, n, b) {
   var y;
@@ -17166,7 +17785,7 @@ function roundb(x, n, b) {
     return x;
   }
   if (b === 10) {
-    return lib_default412(x, n);
+    return lib_default418(x, n);
   }
   if (n === 0 || b === 1) {
     return lib_default128(x);
@@ -17181,9 +17800,9 @@ function roundb(x, n, b) {
   }
   return y;
 }
-var main_default341 = roundb;
+var main_default347 = roundb;
 
-var lib_default413 = main_default341;
+var lib_default419 = main_default347;
 
 var MAX_INT5 = lib_default203 + 1;
 var HUGE14 = lib_default3(1e38);
@@ -17217,9 +17836,9 @@ function roundnf(x, n) {
   }
   return lib_default3(lib_default233(y) / s);
 }
-var main_default342 = roundnf;
+var main_default348 = roundnf;
 
-var lib_default414 = main_default342;
+var lib_default420 = main_default348;
 
 function roundsd(x, n, b) {
   var base;
@@ -17262,59 +17881,59 @@ function roundsd(x, n, b) {
   }
   return y;
 }
-var main_default343 = roundsd;
+var main_default349 = roundsd;
 
-var lib_default415 = main_default343;
+var lib_default421 = main_default349;
 
 function rsqrt(x) {
   return 1 / lib_default31(x);
 }
-var main_default344 = rsqrt;
+var main_default350 = rsqrt;
 
-var lib_default416 = main_default344;
+var lib_default422 = main_default350;
 
 function rsqrtf(x) {
   return lib_default3(1 / lib_default31(lib_default3(x)));
 }
-var main_default345 = rsqrtf;
+var main_default351 = rsqrtf;
 
-var lib_default417 = main_default345;
+var lib_default423 = main_default351;
 
 function sec(x) {
   return 1 / lib_default165(x);
 }
-var main_default346 = sec;
+var main_default352 = sec;
 
-var lib_default418 = main_default346;
+var lib_default424 = main_default352;
 
 function secd(x) {
   return 1 / lib_default229(x);
 }
-var main_default347 = secd;
+var main_default353 = secd;
 
-var lib_default419 = main_default347;
+var lib_default425 = main_default353;
 
 function secdf(x) {
   return lib_default3(lib_default3(1) / lib_default232(lib_default3(x)));
 }
-var main_default348 = secdf;
+var main_default354 = secdf;
 
-var lib_default420 = main_default348;
+var lib_default426 = main_default354;
 
 var ONE25 = lib_default3(1);
 function secf(x) {
   return lib_default3(ONE25 / lib_default235(lib_default3(x)));
 }
-var main_default349 = secf;
+var main_default355 = secf;
 
-var lib_default421 = main_default349;
+var lib_default427 = main_default355;
 
 function sech(x) {
   return 1 / lib_default236(x);
 }
-var main_default350 = sech;
+var main_default356 = sech;
 
-var lib_default422 = main_default350;
+var lib_default428 = main_default356;
 
 function evalpoly146(x) {
   if (x === 0) {
@@ -17490,10 +18109,10 @@ var assign_default17 = sici;
 function sici2(x) {
   return assign_default17(x, [0, 0], 1, 0);
 }
-var main_default351 = sici2;
+var main_default357 = sici2;
 
-main_default351.assign = assign_default17;
-var lib_default423 = main_default351;
+main_default357.assign = assign_default17;
+var lib_default429 = main_default357;
 
 function sinc(x) {
   if (lib_default30(x)) {
@@ -17507,9 +18126,9 @@ function sinc(x) {
   }
   return lib_default166(x) / (lib_default26 * x);
 }
-var main_default352 = sinc;
+var main_default358 = sinc;
 
-var lib_default424 = main_default352;
+var lib_default430 = main_default358;
 
 var ONE26 = lib_default3(1);
 var ZERO22 = lib_default3(0);
@@ -17526,9 +18145,9 @@ function sincf(x) {
   }
   return lib_default3(lib_default27(x) / lib_default3(lib_default28 * x));
 }
-var main_default353 = sincf;
+var main_default359 = sincf;
 
-var lib_default425 = main_default353;
+var lib_default431 = main_default359;
 
 function sincosd(x, out, stride, offset) {
   out[offset] = lib_default245(x);
@@ -17540,10 +18159,10 @@ var assign_default18 = sincosd;
 function sincosd2(x) {
   return assign_default18(x, [0, 0], 1, 0);
 }
-var main_default354 = sincosd2;
+var main_default360 = sincosd2;
 
-main_default354.assign = assign_default18;
-var lib_default426 = main_default354;
+main_default360.assign = assign_default18;
+var lib_default432 = main_default360;
 
 function sincosdf(x, out, stride, offset) {
   out[offset] = lib_default248(x);
@@ -17555,12 +18174,12 @@ var assign_default19 = sincosdf;
 function sincosdf2(x) {
   return assign_default19(x, [0, 0], 1, 0);
 }
-var main_default355 = sincosdf2;
+var main_default361 = sincosdf2;
 
-main_default355.assign = assign_default19;
-var lib_default427 = main_default355;
+main_default361.assign = assign_default19;
+var lib_default433 = main_default361;
 
-var kernelSincosf3 = lib_default356.assign;
+var kernelSincosf3 = lib_default362.assign;
 var PIO4_WORD4 = 1061752794 | 0;
 var THREE_PIO4_WORD4 = 1075235811 | 0;
 var FIVE_PIO4_WORD4 = 1081824209 | 0;
@@ -17664,10 +18283,10 @@ var assign_default20 = sincosf;
 function sincosf2(x) {
   return assign_default20(x, [0, 0], 1, 0);
 }
-var main_default356 = sincosf2;
+var main_default362 = sincosf2;
 
-main_default356.assign = assign_default20;
-var lib_default428 = main_default356;
+main_default362.assign = assign_default20;
+var lib_default434 = main_default362;
 
 var sincos11 = lib_default130.assign;
 function sincospi(x, out, stride, offset) {
@@ -17721,10 +18340,10 @@ var assign_default21 = sincospi;
 function sincospi2(x) {
   return assign_default21(x, [0, 0], 1, 0);
 }
-var main_default357 = sincospi2;
+var main_default363 = sincospi2;
 
-main_default357.assign = assign_default21;
-var lib_default429 = main_default357;
+main_default363.assign = assign_default21;
+var lib_default435 = main_default363;
 
 function evalpoly158(x) {
   if (x === 0) {
@@ -17742,7 +18361,7 @@ function evalpoly159(x) {
 }
 var polyval_b_default = evalpoly159;
 
-var PI2O6 = lib_default400 / 6;
+var PI2O6 = lib_default406 / 6;
 function spence(x) {
   var flg;
   var w;
@@ -17781,9 +18400,9 @@ function spence(x) {
   }
   return y;
 }
-var main_default358 = spence;
+var main_default364 = spence;
 
-var lib_default430 = main_default358;
+var lib_default436 = main_default364;
 
 function evalpoly160(x) {
   if (x === 0) {
@@ -17844,9 +18463,9 @@ function spencef(x) {
   }
   return y;
 }
-var main_default359 = spencef;
+var main_default365 = spencef;
 
-var lib_default431 = main_default359;
+var lib_default437 = main_default365;
 
 function sqrt1pm1(x) {
   if (lib_default30(x)) {
@@ -17857,73 +18476,73 @@ function sqrt1pm1(x) {
   }
   return lib_default147(lib_default46(x) / 2);
 }
-var main_default360 = sqrt1pm1;
+var main_default366 = sqrt1pm1;
 
-var lib_default432 = main_default360;
+var lib_default438 = main_default366;
 
 function sqrtpi(x) {
   return lib_default31(x * lib_default26);
 }
-var main_default361 = sqrtpi;
+var main_default367 = sqrtpi;
 
-var lib_default433 = main_default361;
+var lib_default439 = main_default367;
 
 function sqrtpif(x) {
   return lib_default38(lib_default3(lib_default3(x) * lib_default28));
 }
-var main_default362 = sqrtpif;
+var main_default368 = sqrtpif;
 
-var lib_default434 = main_default362;
+var lib_default440 = main_default368;
 
 function tand(x) {
   return lib_default245(x) / lib_default229(x);
 }
-var main_default363 = tand;
+var main_default369 = tand;
 
-var lib_default435 = main_default363;
+var lib_default441 = main_default369;
 
 function tandf(x) {
   x = lib_default3(x);
   return lib_default248(x) / lib_default232(x);
 }
-var main_default364 = tandf;
+var main_default370 = tandf;
 
-var lib_default436 = main_default364;
+var lib_default442 = main_default370;
 
 var tribonacci_default = [0, 0, 1, 1, 2, 4, 7, 13, 24, 44, 81, 149, 274, 504, 927, 1705, 3136, 5768, 10609, 19513, 35890, 66012, 121415, 223317, 410744, 755476, 1389537, 2555757, 4700770, 8646064, 15902591, 29249425, 53798080, 98950096, 181997601, 334745777, 615693474, 1132436852, 2082876103, 3831006429, 7046319384, 12960201916, 23837527729, 43844049029, 80641778674, 148323355432, 272809183135, 501774317241, 922906855808, 1697490356184, 3122171529233, 5742568741225, 10562230626642, 19426970897100, 35731770264967, 65720971788709, 120879712950776, 222332455004452, 408933139743937, 752145307699165, 1383410902447554, 2544489349890656, 4680045560037375, 8607945812375585];
 
 var FLOAT64_MAX_SAFE_NTH_TRIBONACCI = 63 | 0;
-var lib_default437 = FLOAT64_MAX_SAFE_NTH_TRIBONACCI;
+var lib_default443 = FLOAT64_MAX_SAFE_NTH_TRIBONACCI;
 
-var FLOAT64_MAX_SAFE_NTH_TRIBONACCI2 = lib_default437;
+var FLOAT64_MAX_SAFE_NTH_TRIBONACCI2 = lib_default443;
 function tribonacci(n) {
   if (lib_default30(n) || !lib_default106(n) || n > FLOAT64_MAX_SAFE_NTH_TRIBONACCI2) {
     return NaN;
   }
   return tribonacci_default[n];
 }
-var main_default365 = tribonacci;
+var main_default371 = tribonacci;
 
-var lib_default438 = main_default365;
+var lib_default444 = main_default371;
 
 var tribonaccif_default = [0, 0, 1, 1, 2, 4, 7, 13, 24, 44, 81, 149, 274, 504, 927, 1705, 3136, 5768, 10609, 19513, 35890, 66012, 121415, 223317, 410744, 755476, 1389537, 2555757, 4700770, 8646064, 15902591];
 
 var FLOAT32_MAX_SAFE_NTH_TRIBONACCI = 30 | 0;
-var lib_default439 = FLOAT32_MAX_SAFE_NTH_TRIBONACCI;
+var lib_default445 = FLOAT32_MAX_SAFE_NTH_TRIBONACCI;
 
-var FLOAT32_MAX_SAFE_NTH_TRIBONACCI2 = lib_default439;
+var FLOAT32_MAX_SAFE_NTH_TRIBONACCI2 = lib_default445;
 function tribonaccif(n) {
   if (lib_default6(n) || !lib_default111(n) || n > FLOAT32_MAX_SAFE_NTH_TRIBONACCI2) {
     return NaN;
   }
   return tribonaccif_default[n];
 }
-var main_default366 = tribonaccif;
+var main_default372 = tribonaccif;
 
-var lib_default440 = main_default366;
+var lib_default446 = main_default372;
 
 var FLOAT32_PI_SQUARED = lib_default3(9.869604401089358);
-var lib_default441 = FLOAT32_PI_SQUARED;
+var lib_default447 = FLOAT32_PI_SQUARED;
 
 function evalrational71(x) {
   var ax;
@@ -18019,7 +18638,7 @@ function trigammaf(x) {
       z = lib_default3(ONE28 + z);
     }
     s = lib_default5(x) < lib_default5(z) ? lib_default27(x) : lib_default27(z);
-    return lib_default3(lib_default3(result - trigammaf(z)) + lib_default3(lib_default441 / lib_default3(s * s)));
+    return lib_default3(lib_default3(result - trigammaf(z)) + lib_default3(lib_default447 / lib_default3(s * s)));
   }
   if (x < ONE28) {
     result = lib_default3(ONE28 / lib_default3(x * x));
@@ -18036,9 +18655,9 @@ function trigammaf(x) {
   }
   return result;
 }
-var main_default367 = trigammaf;
+var main_default373 = trigammaf;
 
-var lib_default442 = main_default367;
+var lib_default448 = main_default373;
 
 function trunc10(x) {
   var sign;
@@ -18053,9 +18672,9 @@ function trunc10(x) {
   }
   return sign * lib_default142(10, lib_default105(lib_default214(x)));
 }
-var main_default368 = trunc10;
+var main_default374 = trunc10;
 
-var lib_default443 = main_default368;
+var lib_default449 = main_default374;
 
 function trunc2(x) {
   var sign;
@@ -18070,9 +18689,9 @@ function trunc2(x) {
   }
   return sign * lib_default142(2, lib_default105(lib_default218(x)));
 }
-var main_default369 = trunc2;
+var main_default375 = trunc2;
 
-var lib_default444 = main_default369;
+var lib_default450 = main_default375;
 
 var MAX_INT6 = lib_default185 + 1;
 var HUGE15 = 1e308;
@@ -18103,9 +18722,9 @@ function truncn(x, n) {
   }
   return lib_default137(y) / s;
 }
-var main_default370 = truncn;
+var main_default376 = truncn;
 
-var lib_default445 = main_default370;
+var lib_default451 = main_default376;
 
 function truncb(x, n, b) {
   var y;
@@ -18117,7 +18736,7 @@ function truncb(x, n, b) {
     return x;
   }
   if (b === 10) {
-    return lib_default445(x, n);
+    return lib_default451(x, n);
   }
   if (n === 0 || b === 1) {
     return lib_default137(x);
@@ -18132,9 +18751,9 @@ function truncb(x, n, b) {
   }
   return y;
 }
-var main_default371 = truncb;
+var main_default377 = truncb;
 
-var lib_default446 = main_default371;
+var lib_default452 = main_default377;
 
 function truncsd(x, n, b) {
   var exp3;
@@ -18168,39 +18787,39 @@ function truncsd(x, n, b) {
   }
   return y;
 }
-var main_default372 = truncsd;
+var main_default378 = truncsd;
 
-var lib_default447 = main_default372;
+var lib_default453 = main_default378;
 
 function vercos(x) {
   return 1 + lib_default165(x);
 }
-var main_default373 = vercos;
+var main_default379 = vercos;
 
-var lib_default448 = main_default373;
+var lib_default454 = main_default379;
 
 var ONE29 = lib_default3(1);
 function vercosf(x) {
   return lib_default3(ONE29 + lib_default235(x));
 }
-var main_default374 = vercosf;
+var main_default380 = vercosf;
 
-var lib_default449 = main_default374;
+var lib_default455 = main_default380;
 
 function versin(x) {
   return 1 - lib_default165(x);
 }
-var main_default375 = versin;
+var main_default381 = versin;
 
-var lib_default450 = main_default375;
+var lib_default456 = main_default381;
 
 var ONE30 = lib_default3(1);
 function versinf(x) {
   return lib_default3(ONE30 - lib_default235(x));
 }
-var main_default376 = versinf;
+var main_default382 = versinf;
 
-var lib_default451 = main_default376;
+var lib_default457 = main_default382;
 
 function wrap3(v3, min3, max3) {
   var delta;
@@ -18225,9 +18844,9 @@ function wrap3(v3, min3, max3) {
   }
   return min3 + (v3 - min3) % delta;
 }
-var main_default377 = wrap3;
+var main_default383 = wrap3;
 
-var lib_default452 = main_default377;
+var lib_default458 = main_default383;
 
 var ZERO25 = lib_default3(0);
 var ONE31 = lib_default3(1);
@@ -18257,9 +18876,9 @@ function wrapf(v3, min3, max3) {
   }
   return lib_default3(min3 + lib_default3(lib_default3(v3 - min3) % delta));
 }
-var main_default378 = wrapf;
+var main_default384 = wrapf;
 
-var lib_default453 = main_default378;
+var lib_default459 = main_default384;
 
 function xlog1py(x, y) {
   if (x === 0 && !lib_default30(y)) {
@@ -18267,9 +18886,9 @@ function xlog1py(x, y) {
   }
   return x * lib_default46(y);
 }
-var main_default379 = xlog1py;
+var main_default385 = xlog1py;
 
-var lib_default454 = main_default379;
+var lib_default460 = main_default385;
 
 function xlogy(x, y) {
   if (x === 0 && !lib_default30(y)) {
@@ -18277,9 +18896,9 @@ function xlogy(x, y) {
   }
   return x * lib_default48(y);
 }
-var main_default380 = xlogy;
+var main_default386 = xlogy;
 
-var lib_default455 = main_default380;
+var lib_default461 = main_default386;
 
 function xlogyf(x, y) {
   if (x === 0 && !lib_default6(y)) {
@@ -18287,11 +18906,11 @@ function xlogyf(x, y) {
   }
   return lib_default3(lib_default3(x) * lib_default15(lib_default3(y)));
 }
-var main_default381 = xlogyf;
+var main_default387 = xlogyf;
 
-var lib_default456 = main_default381;
+var lib_default462 = main_default387;
 
-const N_FN = 338
+const N_FN = 339
 const N_EVAL = 1 << 12
 const N_RUNS = 21
 const N_WARMUP = 5
@@ -18684,294 +19303,296 @@ const k191 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = li
 const k192 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default349(0.05 + u[i] * (0.95 - 0.05), 2.5) }
 // special/heavisidef
 const k193 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default350(0.05 + u[i] * (0.95 - 0.05), 2.5) }
+// special/hyp2f1
+const k194 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default356(0.05 + u[i] * (0.95 - 0.05), 2.5, 1.5, 0.5) }
 // special/hypot
-const k194 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default351(0.05 + u[i] * (0.95 - 0.05), 2.5) }
+const k195 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default357(0.05 + u[i] * (0.95 - 0.05), 2.5) }
 // special/hypotf
-const k195 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default352(0.05 + u[i] * (0.95 - 0.05), 2.5) }
+const k196 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default358(0.05 + u[i] * (0.95 - 0.05), 2.5) }
 // special/inv
-const k196 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default353(0.05 + u[i] * (0.95 - 0.05)) }
+const k197 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default359(0.05 + u[i] * (0.95 - 0.05)) }
 // special/invf
-const k197 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default354(0.05 + u[i] * (0.95 - 0.05)) }
+const k198 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default360(0.05 + u[i] * (0.95 - 0.05)) }
 // special/kernel-betainc
-const k198 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) { const r = lib_default188(0.05 + u[i] * (0.95 - 0.05), 2.5, 1.5, 0.5, 2); out[at + i] = r[0] + r[1] } }
+const k199 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) { const r = lib_default188(0.05 + u[i] * (0.95 - 0.05), 2.5, 1.5, 0.5, 2); out[at + i] = r[0] + r[1] } }
 // special/kernel-betaincinv
-const k199 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) { const r = lib_default197(0.05 + u[i] * (0.95 - 0.05), 0.5, 0.25, 2); out[at + i] = r[0] + r[1] } }
+const k200 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) { const r = lib_default197(0.05 + u[i] * (0.95 - 0.05), 0.5, 0.25, 2); out[at + i] = r[0] + r[1] } }
 // special/kernel-cos
-const k200 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default154(0.05 + u[i] * (0.95 - 0.05), 2.5) }
+const k201 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default154(0.05 + u[i] * (0.95 - 0.05), 2.5) }
 // special/kernel-cosf
-const k201 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default19(0.05 + u[i] * (0.95 - 0.05)) }
+const k202 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default19(0.05 + u[i] * (0.95 - 0.05)) }
 // special/kernel-log1p
-const k202 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default213(0.05 + u[i] * (0.95 - 0.05)) }
+const k203 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default213(0.05 + u[i] * (0.95 - 0.05)) }
 // special/kernel-log1pf
-const k203 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default355(0.05 + u[i] * (0.95 - 0.05)) }
+const k204 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default361(0.05 + u[i] * (0.95 - 0.05)) }
 // special/kernel-sin
-const k204 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default155(0.05 + u[i] * (0.95 - 0.05), 2.5) }
+const k205 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default155(0.05 + u[i] * (0.95 - 0.05), 2.5) }
 // special/kernel-sincosf
-const k205 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) { const r = lib_default356(0.05 + u[i] * (0.95 - 0.05)); out[at + i] = r[0] + r[1] } }
+const k206 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) { const r = lib_default362(0.05 + u[i] * (0.95 - 0.05)); out[at + i] = r[0] + r[1] } }
 // special/kernel-sinf
-const k206 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default20(0.05 + u[i] * (0.95 - 0.05)) }
+const k207 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default20(0.05 + u[i] * (0.95 - 0.05)) }
 // special/kernel-tan
-const k207 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default242(0.05 + u[i] * (0.95 - 0.05), 2.5, 1.5) }
+const k208 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default242(0.05 + u[i] * (0.95 - 0.05), 2.5, 1.5) }
 // special/kernel-tanf
-const k208 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default250(0.05 + u[i] * (0.95 - 0.05), 2.5) }
+const k209 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default250(0.05 + u[i] * (0.95 - 0.05), 2.5) }
 // special/kronecker-delta
-const k209 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default357(0.05 + u[i] * (0.95 - 0.05), 2.5) }
+const k210 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default363(0.05 + u[i] * (0.95 - 0.05), 2.5) }
 // special/kronecker-deltaf
-const k210 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default358(0.05 + u[i] * (0.95 - 0.05), 2.5) }
+const k211 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default364(0.05 + u[i] * (0.95 - 0.05), 2.5) }
 // special/labs
-const k211 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default294(0.05 + u[i] * (0.95 - 0.05)) }
+const k212 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default294(0.05 + u[i] * (0.95 - 0.05)) }
 // special/lcm
-const k212 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default359(Math.floor(0 + u[i] * (40 - 0 + 1)), 3) }
+const k213 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default365(Math.floor(0 + u[i] * (40 - 0 + 1)), 3) }
 // special/lcmf
-const k213 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default360(Math.floor(0 + u[i] * (40 - 0 + 1)), 3) }
+const k214 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default366(Math.floor(0 + u[i] * (40 - 0 + 1)), 3) }
 // special/ldexp
-const k214 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default125(0.05 + u[i] * (0.95 - 0.05), 2.5) }
+const k215 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default125(0.05 + u[i] * (0.95 - 0.05), 2.5) }
 // special/ldexpf
-const k215 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default319(0.05 + u[i] * (0.95 - 0.05), 2.5) }
+const k216 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default319(0.05 + u[i] * (0.95 - 0.05), 2.5) }
 // special/ln
-const k216 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default48(0.05 + u[i] * (0.95 - 0.05)) }
+const k217 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default48(0.05 + u[i] * (0.95 - 0.05)) }
 // special/lnf
-const k217 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default15(0.05 + u[i] * (0.95 - 0.05)) }
+const k218 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default15(0.05 + u[i] * (0.95 - 0.05)) }
 // special/log
-const k218 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default361(0.05 + u[i] * (0.95 - 0.05), 2.5) }
+const k219 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default367(0.05 + u[i] * (0.95 - 0.05), 2.5) }
 // special/log10
-const k219 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default214(0.05 + u[i] * (0.95 - 0.05)) }
+const k220 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default214(0.05 + u[i] * (0.95 - 0.05)) }
 // special/log1mexp
-const k220 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default362(0.05 + u[i] * (0.95 - 0.05)) }
+const k221 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default368(0.05 + u[i] * (0.95 - 0.05)) }
 // special/log1p
-const k221 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default46(0.05 + u[i] * (0.95 - 0.05)) }
+const k222 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default46(0.05 + u[i] * (0.95 - 0.05)) }
 // special/log1pexp
-const k222 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default363(0.05 + u[i] * (0.95 - 0.05)) }
+const k223 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default369(0.05 + u[i] * (0.95 - 0.05)) }
 // special/log1pf
-const k223 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default51(0.05 + u[i] * (0.95 - 0.05)) }
+const k224 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default51(0.05 + u[i] * (0.95 - 0.05)) }
 // special/log1pmx
-const k224 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default175(0.05 + u[i] * (0.95 - 0.05)) }
+const k225 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default175(0.05 + u[i] * (0.95 - 0.05)) }
 // special/log2
-const k225 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default218(0.05 + u[i] * (0.95 - 0.05)) }
+const k226 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default218(0.05 + u[i] * (0.95 - 0.05)) }
 // special/logaddexp
-const k226 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default364(0.05 + u[i] * (0.95 - 0.05), 2.5) }
+const k227 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default370(0.05 + u[i] * (0.95 - 0.05), 2.5) }
 // special/logf
-const k227 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default365(0.05 + u[i] * (0.95 - 0.05), 2.5) }
+const k228 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default371(0.05 + u[i] * (0.95 - 0.05), 2.5) }
 // special/logit
-const k228 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default367(0.05 + u[i] * (0.95 - 0.05)) }
+const k229 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default373(0.05 + u[i] * (0.95 - 0.05)) }
 // special/logitf
-const k229 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default369(0.05 + u[i] * (0.95 - 0.05)) }
+const k230 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default375(0.05 + u[i] * (0.95 - 0.05)) }
 // special/lucas
-const k230 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default371(Math.floor(0 + u[i] * (40 - 0 + 1))) }
+const k231 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default377(Math.floor(0 + u[i] * (40 - 0 + 1))) }
 // special/lucasf
-const k231 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default373(Math.floor(1 + u[i] * (24 - 1 + 1))) }
+const k232 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default379(Math.floor(1 + u[i] * (24 - 1 + 1))) }
 // special/max
-const k232 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default149(0.05 + u[i] * (0.95 - 0.05), 2.5) }
+const k233 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default149(0.05 + u[i] * (0.95 - 0.05), 2.5) }
 // special/maxabs
-const k233 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default183(0.05 + u[i] * (0.95 - 0.05), 2.5) }
+const k234 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default183(0.05 + u[i] * (0.95 - 0.05), 2.5) }
 // special/maxabsf
-const k234 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default376(0.05 + u[i] * (0.95 - 0.05), 2.5) }
+const k235 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default382(0.05 + u[i] * (0.95 - 0.05), 2.5) }
 // special/maxabsn
-const k235 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default378(0.05 + u[i] * (0.95 - 0.05), 2.5) }
+const k236 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default384(0.05 + u[i] * (0.95 - 0.05), 2.5) }
 // special/maxf
-const k236 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default375(0.05 + u[i] * (0.95 - 0.05), 2.5) }
+const k237 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default381(0.05 + u[i] * (0.95 - 0.05), 2.5) }
 // special/maxn
-const k237 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default377(0.05 + u[i] * (0.95 - 0.05), 2.5) }
+const k238 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default383(0.05 + u[i] * (0.95 - 0.05), 2.5) }
 // special/min
-const k238 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default151(0.05 + u[i] * (0.95 - 0.05), 2.5) }
+const k239 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default151(0.05 + u[i] * (0.95 - 0.05), 2.5) }
 // special/minabs
-const k239 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default184(0.05 + u[i] * (0.95 - 0.05), 2.5) }
+const k240 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default184(0.05 + u[i] * (0.95 - 0.05), 2.5) }
 // special/minabsf
-const k240 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default380(0.05 + u[i] * (0.95 - 0.05), 2.5) }
+const k241 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default386(0.05 + u[i] * (0.95 - 0.05), 2.5) }
 // special/minabsn
-const k241 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default382(0.05 + u[i] * (0.95 - 0.05), 2.5) }
+const k242 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default388(0.05 + u[i] * (0.95 - 0.05), 2.5) }
 // special/minf
-const k242 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default379(0.05 + u[i] * (0.95 - 0.05), 2.5) }
+const k243 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default385(0.05 + u[i] * (0.95 - 0.05), 2.5) }
 // special/minmax
-const k243 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) { const r = lib_default383(0.05 + u[i] * (0.95 - 0.05), 2.5); out[at + i] = r[0] + r[1] } }
+const k244 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) { const r = lib_default389(0.05 + u[i] * (0.95 - 0.05), 2.5); out[at + i] = r[0] + r[1] } }
 // special/minmaxabs
-const k244 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) { const r = lib_default384(0.05 + u[i] * (0.95 - 0.05), 2.5); out[at + i] = r[0] + r[1] } }
+const k245 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) { const r = lib_default390(0.05 + u[i] * (0.95 - 0.05), 2.5); out[at + i] = r[0] + r[1] } }
 // special/minmaxabsf
-const k245 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) { const r = lib_default385(0.05 + u[i] * (0.95 - 0.05), 2.5); out[at + i] = r[0] + r[1] } }
+const k246 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) { const r = lib_default391(0.05 + u[i] * (0.95 - 0.05), 2.5); out[at + i] = r[0] + r[1] } }
 // special/minmaxf
-const k246 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) { const r = lib_default386(0.05 + u[i] * (0.95 - 0.05), 2.5); out[at + i] = r[0] + r[1] } }
+const k247 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) { const r = lib_default392(0.05 + u[i] * (0.95 - 0.05), 2.5); out[at + i] = r[0] + r[1] } }
 // special/minn
-const k247 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default381(0.05 + u[i] * (0.95 - 0.05), 2.5) }
+const k248 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default387(0.05 + u[i] * (0.95 - 0.05), 2.5) }
 // special/modf
-const k248 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) { const r = lib_default387(0.05 + u[i] * (0.95 - 0.05)); out[at + i] = r[0] + r[1] } }
+const k249 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) { const r = lib_default393(0.05 + u[i] * (0.95 - 0.05)); out[at + i] = r[0] + r[1] } }
 // special/modff
-const k249 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) { const r = lib_default388(0.05 + u[i] * (0.95 - 0.05)); out[at + i] = r[0] + r[1] } }
+const k250 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) { const r = lib_default394(0.05 + u[i] * (0.95 - 0.05)); out[at + i] = r[0] + r[1] } }
 // special/nanmax
-const k250 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default389(0.05 + u[i] * (0.95 - 0.05), 2.5) }
+const k251 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default395(0.05 + u[i] * (0.95 - 0.05), 2.5) }
 // special/nanmaxf
-const k251 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default390(0.05 + u[i] * (0.95 - 0.05), 2.5) }
+const k252 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default396(0.05 + u[i] * (0.95 - 0.05), 2.5) }
 // special/nanmin
-const k252 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default391(0.05 + u[i] * (0.95 - 0.05), 2.5) }
+const k253 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default397(0.05 + u[i] * (0.95 - 0.05), 2.5) }
 // special/nanminf
-const k253 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default392(0.05 + u[i] * (0.95 - 0.05), 2.5) }
+const k254 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default398(0.05 + u[i] * (0.95 - 0.05), 2.5) }
 // special/negafibonacci
-const k254 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default393(Math.floor(-40 + u[i] * (0 - -40 + 1))) }
+const k255 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default399(Math.floor(-40 + u[i] * (0 - -40 + 1))) }
 // special/negafibonaccif
-const k255 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default394(Math.floor(-40 + u[i] * (0 - -40 + 1))) }
+const k256 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default400(Math.floor(-40 + u[i] * (0 - -40 + 1))) }
 // special/negalucas
-const k256 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default395(Math.floor(-40 + u[i] * (0 - -40 + 1))) }
+const k257 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default401(Math.floor(-40 + u[i] * (0 - -40 + 1))) }
 // special/nonfibonacci
-const k257 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default396(Math.floor(0 + u[i] * (40 - 0 + 1))) }
+const k258 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default402(Math.floor(0 + u[i] * (40 - 0 + 1))) }
 // special/nonfibonaccif
-const k258 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default397(Math.floor(0 + u[i] * (40 - 0 + 1))) }
+const k259 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default403(Math.floor(0 + u[i] * (40 - 0 + 1))) }
 // special/pdiff
-const k259 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default398(0.05 + u[i] * (0.95 - 0.05), 2.5) }
+const k260 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default404(0.05 + u[i] * (0.95 - 0.05), 2.5) }
 // special/pdifff
-const k260 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default399(0.05 + u[i] * (0.95 - 0.05), 2.5) }
+const k261 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default405(0.05 + u[i] * (0.95 - 0.05), 2.5) }
 // special/polygamma
-const k261 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default403(Math.floor(0 + u[i] * (40 - 0 + 1)), 3) }
+const k262 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default409(Math.floor(0 + u[i] * (40 - 0 + 1)), 3) }
 // special/pow
-const k262 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default142(0.05 + u[i] * (0.95 - 0.05), 2.5) }
+const k263 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default142(0.05 + u[i] * (0.95 - 0.05), 2.5) }
 // special/powf
-const k263 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default320(0.05 + u[i] * (0.95 - 0.05), 2.5) }
+const k264 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default320(0.05 + u[i] * (0.95 - 0.05), 2.5) }
 // special/powm1
-const k264 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default178(0.05 + u[i] * (0.95 - 0.05), 2.5) }
+const k265 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default178(0.05 + u[i] * (0.95 - 0.05), 2.5) }
 // special/rad2deg
-const k265 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default35(0.05 + u[i] * (0.95 - 0.05)) }
+const k266 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default35(0.05 + u[i] * (0.95 - 0.05)) }
 // special/rad2degf
-const k266 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default37(0.05 + u[i] * (0.95 - 0.05)) }
+const k267 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default37(0.05 + u[i] * (0.95 - 0.05)) }
 // special/ramp
-const k267 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default404(0.05 + u[i] * (0.95 - 0.05)) }
+const k268 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default410(0.05 + u[i] * (0.95 - 0.05)) }
 // special/rampf
-const k268 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default405(0.05 + u[i] * (0.95 - 0.05)) }
+const k269 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default411(0.05 + u[i] * (0.95 - 0.05)) }
 // special/rcbrt
-const k269 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default406(0.05 + u[i] * (0.95 - 0.05)) }
+const k270 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default412(0.05 + u[i] * (0.95 - 0.05)) }
 // special/rcbrtf
-const k270 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default407(0.05 + u[i] * (0.95 - 0.05)) }
+const k271 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default413(0.05 + u[i] * (0.95 - 0.05)) }
 // special/riemann-zeta
-const k271 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default269(0.05 + u[i] * (0.95 - 0.05)) }
+const k272 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default269(0.05 + u[i] * (0.95 - 0.05)) }
 // special/rising-factorial
-const k272 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default408(0.05 + u[i] * (0.95 - 0.05), 3) }
+const k273 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default414(0.05 + u[i] * (0.95 - 0.05), 3) }
 // special/round
-const k273 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default128(0.05 + u[i] * (0.95 - 0.05)) }
+const k274 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default128(0.05 + u[i] * (0.95 - 0.05)) }
 // special/round-nearest-even
-const k274 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default409(0.05 + u[i] * (0.95 - 0.05)) }
+const k275 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default415(0.05 + u[i] * (0.95 - 0.05)) }
 // special/round10
-const k275 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default410(0.05 + u[i] * (0.95 - 0.05)) }
+const k276 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default416(0.05 + u[i] * (0.95 - 0.05)) }
 // special/round2
-const k276 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default411(0.05 + u[i] * (0.95 - 0.05)) }
+const k277 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default417(0.05 + u[i] * (0.95 - 0.05)) }
 // special/roundb
-const k277 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default413(0.05 + u[i] * (0.95 - 0.05), 2.5, 1.5) }
+const k278 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default419(0.05 + u[i] * (0.95 - 0.05), 2.5, 1.5) }
 // special/roundf
-const k278 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default233(0.05 + u[i] * (0.95 - 0.05)) }
+const k279 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default233(0.05 + u[i] * (0.95 - 0.05)) }
 // special/roundn
-const k279 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default412(0.05 + u[i] * (0.95 - 0.05), 2.5) }
+const k280 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default418(0.05 + u[i] * (0.95 - 0.05), 2.5) }
 // special/roundnf
-const k280 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default414(0.05 + u[i] * (0.95 - 0.05), 2.5) }
+const k281 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default420(0.05 + u[i] * (0.95 - 0.05), 2.5) }
 // special/roundsd
-const k281 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default415(0.05 + u[i] * (0.95 - 0.05), 2.5, 1.5) }
+const k282 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default421(0.05 + u[i] * (0.95 - 0.05), 2.5, 1.5) }
 // special/rsqrt
-const k282 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default416(0.05 + u[i] * (0.95 - 0.05)) }
+const k283 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default422(0.05 + u[i] * (0.95 - 0.05)) }
 // special/rsqrtf
-const k283 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default417(0.05 + u[i] * (0.95 - 0.05)) }
+const k284 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default423(0.05 + u[i] * (0.95 - 0.05)) }
 // special/sec
-const k284 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default418(0.05 + u[i] * (0.95 - 0.05)) }
+const k285 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default424(0.05 + u[i] * (0.95 - 0.05)) }
 // special/secd
-const k285 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default419(0.05 + u[i] * (0.95 - 0.05)) }
+const k286 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default425(0.05 + u[i] * (0.95 - 0.05)) }
 // special/secdf
-const k286 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default420(0.05 + u[i] * (0.95 - 0.05)) }
+const k287 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default426(0.05 + u[i] * (0.95 - 0.05)) }
 // special/secf
-const k287 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default421(0.05 + u[i] * (0.95 - 0.05)) }
+const k288 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default427(0.05 + u[i] * (0.95 - 0.05)) }
 // special/sech
-const k288 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default422(0.05 + u[i] * (0.95 - 0.05)) }
+const k289 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default428(0.05 + u[i] * (0.95 - 0.05)) }
 // special/sici
-const k289 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) { const r = lib_default423(0.05 + u[i] * (0.95 - 0.05)); out[at + i] = r[0] + r[1] } }
+const k290 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) { const r = lib_default429(0.05 + u[i] * (0.95 - 0.05)); out[at + i] = r[0] + r[1] } }
 // special/signum
-const k290 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default192(0.05 + u[i] * (0.95 - 0.05)) }
+const k291 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default192(0.05 + u[i] * (0.95 - 0.05)) }
 // special/signumf
-const k291 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default247(0.05 + u[i] * (0.95 - 0.05)) }
+const k292 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default247(0.05 + u[i] * (0.95 - 0.05)) }
 // special/sin
-const k292 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default156(0.05 + u[i] * (0.95 - 0.05)) }
+const k293 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default156(0.05 + u[i] * (0.95 - 0.05)) }
 // special/sinc
-const k293 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default424(0.05 + u[i] * (0.95 - 0.05)) }
+const k294 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default430(0.05 + u[i] * (0.95 - 0.05)) }
 // special/sincf
-const k294 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default425(0.05 + u[i] * (0.95 - 0.05)) }
+const k295 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default431(0.05 + u[i] * (0.95 - 0.05)) }
 // special/sincos
-const k295 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) { const r = lib_default130(0.05 + u[i] * (0.95 - 0.05)); out[at + i] = r[0] + r[1] } }
+const k296 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) { const r = lib_default130(0.05 + u[i] * (0.95 - 0.05)); out[at + i] = r[0] + r[1] } }
 // special/sincosd
-const k296 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) { const r = lib_default426(0.05 + u[i] * (0.95 - 0.05)); out[at + i] = r[0] + r[1] } }
+const k297 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) { const r = lib_default432(0.05 + u[i] * (0.95 - 0.05)); out[at + i] = r[0] + r[1] } }
 // special/sincosdf
-const k297 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) { const r = lib_default427(0.05 + u[i] * (0.95 - 0.05)); out[at + i] = r[0] + r[1] } }
+const k298 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) { const r = lib_default433(0.05 + u[i] * (0.95 - 0.05)); out[at + i] = r[0] + r[1] } }
 // special/sincosf
-const k298 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) { const r = lib_default428(0.05 + u[i] * (0.95 - 0.05)); out[at + i] = r[0] + r[1] } }
+const k299 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) { const r = lib_default434(0.05 + u[i] * (0.95 - 0.05)); out[at + i] = r[0] + r[1] } }
 // special/sincospi
-const k299 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) { const r = lib_default429(0.05 + u[i] * (0.95 - 0.05)); out[at + i] = r[0] + r[1] } }
+const k300 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) { const r = lib_default435(0.05 + u[i] * (0.95 - 0.05)); out[at + i] = r[0] + r[1] } }
 // special/sind
-const k300 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default245(0.05 + u[i] * (0.95 - 0.05)) }
+const k301 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default245(0.05 + u[i] * (0.95 - 0.05)) }
 // special/sindf
-const k301 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default248(0.05 + u[i] * (0.95 - 0.05)) }
+const k302 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default248(0.05 + u[i] * (0.95 - 0.05)) }
 // special/sinf
-const k302 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default256(0.05 + u[i] * (0.95 - 0.05)) }
+const k303 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default256(0.05 + u[i] * (0.95 - 0.05)) }
 // special/sinh
-const k303 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default264(0.05 + u[i] * (0.95 - 0.05)) }
+const k304 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default264(0.05 + u[i] * (0.95 - 0.05)) }
 // special/sinpi
-const k304 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default166(0.05 + u[i] * (0.95 - 0.05)) }
+const k305 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default166(0.05 + u[i] * (0.95 - 0.05)) }
 // special/sinpif
-const k305 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default27(0.05 + u[i] * (0.95 - 0.05)) }
+const k306 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default27(0.05 + u[i] * (0.95 - 0.05)) }
 // special/spence
-const k306 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default430(0.05 + u[i] * (0.95 - 0.05)) }
+const k307 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default436(0.05 + u[i] * (0.95 - 0.05)) }
 // special/spencef
-const k307 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default431(0.05 + u[i] * (0.95 - 0.05)) }
+const k308 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default437(0.05 + u[i] * (0.95 - 0.05)) }
 // special/sqrt
-const k308 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default31(0.05 + u[i] * (0.95 - 0.05)) }
+const k309 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default31(0.05 + u[i] * (0.95 - 0.05)) }
 // special/sqrt1pm1
-const k309 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default432(0.05 + u[i] * (0.95 - 0.05)) }
+const k310 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default438(0.05 + u[i] * (0.95 - 0.05)) }
 // special/sqrtf
-const k310 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default38(0.05 + u[i] * (0.95 - 0.05)) }
+const k311 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default38(0.05 + u[i] * (0.95 - 0.05)) }
 // special/sqrtpi
-const k311 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default433(0.05 + u[i] * (0.95 - 0.05)) }
+const k312 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default439(0.05 + u[i] * (0.95 - 0.05)) }
 // special/sqrtpif
-const k312 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default434(0.05 + u[i] * (0.95 - 0.05)) }
+const k313 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default440(0.05 + u[i] * (0.95 - 0.05)) }
 // special/tan
-const k313 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default243(0.05 + u[i] * (0.95 - 0.05)) }
+const k314 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default243(0.05 + u[i] * (0.95 - 0.05)) }
 // special/tand
-const k314 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default435(0.05 + u[i] * (0.95 - 0.05)) }
+const k315 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default441(0.05 + u[i] * (0.95 - 0.05)) }
 // special/tandf
-const k315 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default436(0.05 + u[i] * (0.95 - 0.05)) }
+const k316 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default442(0.05 + u[i] * (0.95 - 0.05)) }
 // special/tanf
-const k316 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default251(0.05 + u[i] * (0.95 - 0.05)) }
+const k317 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default251(0.05 + u[i] * (0.95 - 0.05)) }
 // special/tanh
-const k317 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default253(0.05 + u[i] * (0.95 - 0.05)) }
+const k318 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default253(0.05 + u[i] * (0.95 - 0.05)) }
 // special/tribonacci
-const k318 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default438(Math.floor(0 + u[i] * (40 - 0 + 1))) }
+const k319 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default444(Math.floor(0 + u[i] * (40 - 0 + 1))) }
 // special/tribonaccif
-const k319 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default440(Math.floor(1 + u[i] * (24 - 1 + 1))) }
+const k320 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default446(Math.floor(1 + u[i] * (24 - 1 + 1))) }
 // special/trigamma
-const k320 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default401(0.05 + u[i] * (0.95 - 0.05)) }
+const k321 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default407(0.05 + u[i] * (0.95 - 0.05)) }
 // special/trigammaf
-const k321 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default442(0.05 + u[i] * (0.95 - 0.05)) }
+const k322 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default448(0.05 + u[i] * (0.95 - 0.05)) }
 // special/trunc
-const k322 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default137(0.05 + u[i] * (0.95 - 0.05)) }
+const k323 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default137(0.05 + u[i] * (0.95 - 0.05)) }
 // special/trunc10
-const k323 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default443(0.05 + u[i] * (0.95 - 0.05)) }
+const k324 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default449(0.05 + u[i] * (0.95 - 0.05)) }
 // special/trunc2
-const k324 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default444(0.05 + u[i] * (0.95 - 0.05)) }
+const k325 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default450(0.05 + u[i] * (0.95 - 0.05)) }
 // special/truncb
-const k325 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default446(0.05 + u[i] * (0.95 - 0.05), 2.5, 1.5) }
+const k326 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default452(0.05 + u[i] * (0.95 - 0.05), 2.5, 1.5) }
 // special/truncf
-const k326 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default18(0.05 + u[i] * (0.95 - 0.05)) }
+const k327 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default18(0.05 + u[i] * (0.95 - 0.05)) }
 // special/truncn
-const k327 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default445(0.05 + u[i] * (0.95 - 0.05), 2.5) }
+const k328 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default451(0.05 + u[i] * (0.95 - 0.05), 2.5) }
 // special/truncsd
-const k328 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default447(0.05 + u[i] * (0.95 - 0.05), 2.5, 1.5) }
+const k329 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default453(0.05 + u[i] * (0.95 - 0.05), 2.5, 1.5) }
 // special/vercos
-const k329 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default448(0.05 + u[i] * (0.95 - 0.05)) }
+const k330 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default454(0.05 + u[i] * (0.95 - 0.05)) }
 // special/vercosf
-const k330 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default449(0.05 + u[i] * (0.95 - 0.05)) }
+const k331 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default455(0.05 + u[i] * (0.95 - 0.05)) }
 // special/versin
-const k331 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default450(0.05 + u[i] * (0.95 - 0.05)) }
+const k332 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default456(0.05 + u[i] * (0.95 - 0.05)) }
 // special/versinf
-const k332 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default451(0.05 + u[i] * (0.95 - 0.05)) }
+const k333 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default457(0.05 + u[i] * (0.95 - 0.05)) }
 // special/wrap
-const k333 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default452(0.05 + u[i] * (0.95 - 0.05), -1.5, 2.5) }
+const k334 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default458(0.05 + u[i] * (0.95 - 0.05), -1.5, 2.5) }
 // special/wrapf
-const k334 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default453(0.05 + u[i] * (0.95 - 0.05), -1.5, 2.5) }
+const k335 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default459(0.05 + u[i] * (0.95 - 0.05), -1.5, 2.5) }
 // special/xlog1py
-const k335 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default454(0.05 + u[i] * (0.95 - 0.05), 2.5) }
+const k336 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default460(0.05 + u[i] * (0.95 - 0.05), 2.5) }
 // special/xlogy
-const k336 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default455(0.05 + u[i] * (0.95 - 0.05), 2.5) }
+const k337 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default461(0.05 + u[i] * (0.95 - 0.05), 2.5) }
 // special/xlogyf
-const k337 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default456(0.05 + u[i] * (0.95 - 0.05), 2.5) }
+const k338 = (u, out, at) => { for (let i = 0; i < N_EVAL; i++) out[at + i] = lib_default462(0.05 + u[i] * (0.95 - 0.05), 2.5) }
 
 const sweep = (u, out) => {
   k0(u, out, 0 * N_EVAL)
@@ -19312,6 +19933,7 @@ const sweep = (u, out) => {
   k335(u, out, 335 * N_EVAL)
   k336(u, out, 336 * N_EVAL)
   k337(u, out, 337 * N_EVAL)
+  k338(u, out, 338 * N_EVAL)
 }
 
 // XorShift32, uniform in [0, 1): deterministic per target.

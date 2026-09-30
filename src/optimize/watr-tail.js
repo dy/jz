@@ -348,8 +348,21 @@ function legalizeReactorInit(module) {
  * alias/parametric/mixed-export/fs/optimize-tier variants) before and after this
  * function grew real behavior — all hashes match. `test:wasi` (40/40) stays green.
  */
+// A module that reaches into the host from its initializer: a host global it names
+// (`globalThis`, `self`), a member read or a call on a host value (`__ext_*`). No
+// host can serve those before `new WebAssembly.Instance` returns (its memory is
+// not wired), so such a module ships its init as `_initialize` too (the reactor
+// convention above), which the interop calls once the memory is; a pure module
+// keeps its `start` section and instantiates bare.
+const HOST_ENV_GLOBALS = new Set(['WebAssembly', 'globalThis', 'self', 'window', 'global', 'process'])
+const initTouchesHost = (module) => module.some(n => Array.isArray(n) && n[0] === 'import' && n[1] === '"env"' &&
+  typeof n[2] === 'string' && (HOST_ENV_GLOBALS.has(n[2].slice(1, -1)) || n[2].startsWith('"__ext_')))
+
 export function legalizeForTarget(module, targetProfile) {
-  if (!targetProfile?.commandEntry) return module
+  if (!targetProfile?.commandEntry) {
+    if (initTouchesHost(module)) legalizeReactorInit(module)
+    return module
+  }
   legalizeCommandEntries(module)
   legalizeReactorInit(module)
   return module
@@ -401,6 +414,12 @@ function stripDeadLateData(module, lazySpans, staticSpan) {
     if (!spans[i].static && spans[i].global !== '__el_tbl' && spans[i].global !== '__ryu_tbl') live.add(spans[i])
   const scan = node => {
     if (!Array.isArray(node) || node[0] === 'data') return
+    // Inlining __static_str / __mkstr can leave an untagged source address
+    // behind a local or a tee. Without address provenance, surviving reads
+    // cannot prove this seed dead merely because its helper disappeared.
+    if (staticSpan && (node[0] === 'memory.copy' ||
+        typeof node[0] === 'string' && node[0].includes('.load')))
+      live.add(staticSpan)
     if (node[0] === 'global' || node[0] === 'global.get' || node[0] === 'global.set') {
       for (let i = 0; i < spans.length; i++) if (node[1] === '$' + spans[i].global) live.add(spans[i])
     } else if (node[0] === 'func') {

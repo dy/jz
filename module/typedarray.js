@@ -9,7 +9,7 @@ import print from 'watr/print'
  * @module typed
  */
 
-import { typed, asF64, asI32, asI32Sat, asI64, toInt32, f64Range, toNumF64, coerceNullishToNum, coerceAtomsToNum, NULL_NAN, TRUE_NAN, FALSE_NAN, allocPtr, boxBigInt, rawBigInt, deferBigintBox, isBigIntBox, mkPtrIR, ptrOffsetIR, ptrTypeEq, temp, tempI32, tempI64, undefExpr, throwTypeErrorIR, truthyIR, isLit, isConst, isPureIR, litVal, freshId, readI64MayUnbox, readI64, unboxBigInt, maybeUnboxBigInt, fromI64, isNullish } from '../src/ir.js'
+import { typed, asF64, asI32, asI32Sat, asI64, toInt32, i32Narrowed, i32Word, f64Range, toNumF64, coerceNullishToNum, coerceAtomsToNum, NULL_NAN, TRUE_NAN, FALSE_NAN, allocPtr, boxBigInt, rawBigInt, deferBigintBox, isBigIntBox, mkPtrIR, ptrOffsetIR, ptrTypeEq, temp, tempI32, tempI64, undefExpr, throwTypeErrorIR, truthyIR, isLit, isConst, isPureIR, litVal, freshId, readI64MayUnbox, readI64, unboxBigInt, maybeUnboxBigInt, fromI64, isNullish } from '../src/ir.js'
 import { isReassigned, T, ASSIGN_OPS, walkAst, some, every, REFS_THROUGH_ARROWS } from '../src/ast.js'
 import { emit, idx, deps, call, positionArgs } from '../src/bridge.js'
 import { strHashLiteral } from './collection.js'
@@ -1337,7 +1337,24 @@ export default (ctx) => {
   const elemStoreIR = (r, off, valF64) => {
     if (r.isBigInt) return ['i64.store', off, ['i64.reinterpret_f64', valF64]]
     if (r.isF16) { inc('__f64_to_f16'); return ['i32.store16', off, ['call', '$__f64_to_f16', valF64]] }
-    if (r.isClamped) { inc('__u8_clamp'); return ['i32.store8', off, ['call', '$__u8_clamp', valF64]] }
+    // ToUint8Clamp (ES2026 §7.1.12) inline: the value clamped to [0, 255] and
+    // rounded half to even is `f64.nearest`, whose saturating unsigned
+    // truncation takes NaN to 0 as the clamp does; a word (an i32, an integer
+    // element's read) clamps in i32 by two selects. No call per pixel of an
+    // ImageData (its data is a Uint8ClampedArray).
+    if (r.isClamped) {
+      if (Array.isArray(valF64) && valF64[0] === 'f64.const' && typeof valF64[1] === 'number') {
+        const v = valF64[1], f = Math.floor(v)
+        return ['i32.store8', off, ['i32.const', v !== v ? 0 : v <= 0 ? 0 : v >= 255 ? 255 : f + 0.5 < v ? f + 1 : v < f + 0.5 ? f : f % 2 === 0 ? f : f + 1]]
+      }
+      const word = i32Word(valF64)
+      if (word) {
+        const t = tempI32('clamp')
+        // (the tee is the first read of the word: operands evaluate in order)
+        return ['i32.store8', off, ['select', ['i32.const', 0], ['select', ['i32.const', 255], ['local.tee', `$${t}`, word], ['i32.gt_s', ['local.get', `$${t}`], ['i32.const', 255]]], ['i32.lt_s', ['local.get', `$${t}`], ['i32.const', 0]]]]
+      }
+      return ['i32.store8', off, ['i32.trunc_sat_f64_u', ['f64.nearest', ['f64.min', ['f64.max', valF64, ['f64.const', 0]], ['f64.const', 255]]]]]
+    }
     if (r.et === 7) return ['f64.store', off, valF64]
     if (r.et === 6) return ['f32.store', off, ['f32.demote_f64', valF64]]
     // Integer kinds: exact ES ToIntN — the old plain i32.trunc_f64_* trapped on
@@ -2364,11 +2381,18 @@ export default (ctx) => {
       // PutValue rejects the captured receiver after key/RHS evaluation, but
       // before element coercion or even a length-header load. Keep the direct
       // store paths below; the RHS temp still carries its original value.
-      const key = tempI32('tkey'), value = temp('tval')
-      pre.push(['local.set', `$${key}`, vi], ['local.set', `$${value}`, asF64(valIR)],
+      // A void integer store keeps the word its value narrows to (i32Narrowed,
+      // as the store below): converting a number the check could precede is no
+      // effect, and the temp would hide the value's shape from the narrowing.
+      // A clamped store keeps a word alone (an i32, an element's read: the clamp
+      // rounds a fraction the ring would drop); a constant needs no temp.
+      const word = void_ && !isBigInt && !r.isF16 ? (r.isClamped ? i32Word(valIR) : et <= 5 ? i32Narrowed(valIR) : null) : null
+      const constant = Array.isArray(valIR) && valIR[0] === 'f64.const' && typeof valIR[1] === 'number'
+      const key = tempI32('tkey'), value = constant ? null : word ? tempI32('tval') : temp('tval')
+      pre.push(['local.set', `$${key}`, vi], ...(constant ? [] : [['local.set', `$${value}`, word ?? asF64(valIR)]]),
         ['if', isNullish(objIR), ['then', ['drop', throwTypeErrorIR()]]])
       vi = ['local.get', `$${key}`]
-      valIR = typed(['local.get', `$${value}`], 'f64')
+      if (!constant) valIR = typed(['local.get', `$${value}`], word ? 'i32' : 'f64')
     }
     const off = ['i32.add', typedDataAddr(objIR, isView), ['i32.shl', vi, ['i32.const', SHIFT[et]]]]
     // The stored value's number (ToNumber, a valueOf's among them) for every
@@ -2377,6 +2401,13 @@ export default (ctx) => {
     // a number already.
     const numberOf = (reread) => toNumF64(val, valIR) === valIR ? null : ctx.core.stdlib['__to_num'] ? toNumF64(val, reread) : coerceNullishToNum(reread)
     if (r.isF16 || r.isClamped) {
+      const word = void_ && r.isClamped ? i32Word(valIR) : null
+      if (word) {
+        const v32 = tempI32('tw')
+        return typed(['block', ...pre, ['local.set', `$${v32}`, word], guard(elemStoreIR(r, off, typed(['local.get', `$${v32}`], 'i32')))], 'void')
+      }
+      if (void_ && Array.isArray(valIR) && valIR[0] === 'f64.const' && typeof valIR[1] === 'number')
+        return typed(['block', ...pre, guard(elemStoreIR(r, off, valIR))], 'void')
       // conversion is not a truncation — always through the kernel (RTNE /
       // ToUint8Clamp); the i32Backed shortcut below would store raw low bits
       const vt = temp('tw'), nt = temp('twn'), number = numberOf(typed(['local.get', `$${vt}`], 'f64'))
@@ -2483,33 +2514,19 @@ export default (ctx) => {
         guard(['f32.store', off, ['f32.demote_f64', asF64(storeV)]]),
         ['local.get', `$${vt}`]], 'f64')
     }
-    // Integer store: when the source is already i32-typed (bitwise ops, |0, known-i32 var) —
-    // OR an `f64.convert_i32_*` that peels back to i32 (an Int8/Uint8/Int16/… element READ
-    // materialized as f64 by the universal value model) — store the i32 low bits directly,
-    // skipping the f64 detour that costs a sign branch + i64 trunc + i32 wrap on every write.
-    // This eradicates the f64 round-trip on byte/typed-array TRANSFORMS — `out[i] = table[in[j]]`
-    // and `dst[i] = src[j]` (base64, qoi, wav, blur) — where both sides are integer elements.
-    // `store8/16` mask the low bits, so storing the convert's i32 source is bit-identical; the
-    // non-void result reboxes that i32 to f64 (the assignment's RHS value, in element range here).
-    // A lean checked READ as the store value (out[op] = src[i] — the codec
-    // byte-transform class): ToInt32 composes through it — the hit arm's
-    // convert peels to the raw i32 load, the undefined miss arm is NaN → 0.
-    // Rebuilding as an i32 if-form keeps the store on the integer path
-    // (no f64 round-trip, no temp) — the -Os pairing of the two emitters.
-    if (Array.isArray(valIR) && valIR[0] === 'if' &&
-        Array.isArray(valIR[1]) && valIR[1][1] === 'f64' &&
-        Array.isArray(valIR[3]) && valIR[3][0] === 'then' &&
-        Array.isArray(valIR[3][1]) && (valIR[3][1][0] === 'f64.convert_i32_s' || valIR[3][1][0] === 'f64.convert_i32_u') &&
-        Array.isArray(valIR[4]) && valIR[4][0] === 'else' &&
-        Array.isArray(valIR[4][1]) && valIR[4][1][0] === 'f64.const' && String(valIR[4][1][1]).startsWith('nan:')) {
-      valIR = typed(['if', ['result', 'i32'], valIR[2],
-        ['then', valIR[3][1][1]],
-        ['else', ['i32.const', 0]]], 'i32')
-    }
-    const i32Backed = valIR.type === 'i32' ||
-      (Array.isArray(valIR) && (valIR[0] === 'f64.convert_i32_s' || valIR[0] === 'f64.convert_i32_u'))
-    if (i32Backed) {
-      const vi32 = asI32(valIR)
+    // Integer store: a value the integer ring holds stores its low bits, with no
+    // f64 detour (a sign branch, an i64 trunc and a wrap on every write) and no
+    // ToInt32 call: an i32 (bitwise ops, `|0`, a known-i32 var), an integer
+    // element read whose convert peels back to its load (`dst[i] = src[j]`,
+    // `out[i] = table[in[j]]`: base64, qoi, wav, blur), a checked read of one
+    // (the hit arm its raw load, the undefined miss ToInt32's 0: the codec
+    // byte-transform class, `px[i] = lut[ink[i]]`), an exact-int tree, a bounded
+    // f64 tree. i32Narrowed is the narrowing toInt32 itself starts with; here it
+    // sees the value before a temp would hide it. `store8/16` mask the low bits.
+    // An observed assignment keeps the original value and signedness through
+    // the shared conversion path below, including objects and missing reads.
+    const vi32 = void_ ? i32Narrowed(valIR) : null
+    if (vi32) {
       if (rmwCandidate && pureStorable(vi32))
         return typed(['block', ...pre, guard(['block',
           ['local.set', `$${rmwAddr}`, off],
@@ -2522,18 +2539,14 @@ export default (ctx) => {
         : Array.isArray(vi32) &&
           ((vi32[0] === 'local.get' && typeof vi32[1] === 'string') ||
            (vi32[0] === 'i32.const' && (typeof vi32[1] === 'number' || typeof vi32[1] === 'string')))
-      if (void_ && cheap && proven) return typed(pre.length
+      if (cheap && proven) return typed(pre.length
         ? ['block', ...pre, [STORE[et], off, vi32]]
         : [STORE[et], off, vi32], 'void')
-      if (void_ && cheap) return typed(['block', ...pre, guard([STORE[et], off, vi32])], 'void')
+      if (cheap) return typed(['block', ...pre, guard([STORE[et], off, vi32])], 'void')
       const v32 = tempI32('tw')
-      return typed(void_ ? ['block', ...pre,
+      return typed(['block', ...pre,
         ['local.set', `$${v32}`, vi32],
-        guard([STORE[et], off, ['local.get', `$${v32}`]])]
-        : ['block', ['result', 'f64'], ...pre,
-        ['local.set', `$${v32}`, vi32],
-        guard([STORE[et], off, ['local.get', `$${v32}`]]),
-        [(et & 1) ? 'f64.convert_i32_u' : 'f64.convert_i32_s', ['local.get', `$${v32}`]]], void_ ? 'void' : 'f64')
+        guard([STORE[et], off, ['local.get', `$${v32}`]])], 'void')
     }
     // The conversion reads the value's temp, which knows no range; the value
     // itself may (an integer element's difference, a miss arm's NaN): within

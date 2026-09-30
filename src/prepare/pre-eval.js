@@ -82,6 +82,7 @@
  */
 
 import { copyLoc, COMPARE_OPS, MUTATE_OPS, TYPEOF, typeofPredicate, walkAst, extractParams, classifyParam, PARAM_NAME } from '../ast.js'
+import { isNamedCallee } from '../autoload.js'
 import { ctx } from '../ctx.js'
 import { int32, numBinOp } from '../static.js'
 import { MATH_KERNEL, powFold } from './math-kernel.js'
@@ -534,6 +535,9 @@ function collectArgs(argsNode) {
 function typeofName(name, state, seen) {
   if (state.written.has(name)) return null
   if (state.funcByName.has(name)) return 'function'
+  // a function of the target, reached through the constants that hold it (`var Sym = Symbol;
+  // var ctor = Sym; typeof ctor`: prepare's static typeof sees the bare name alone)
+  if (!state.consts.has(name) && isNamedCallee(name)) return 'function'
   if (name.startsWith('math.')) return MATH_CONST[name.slice(5)] !== undefined ? 'number' : MATH_KERNEL[name.slice(5)] ? 'function' : null
   if (!state.consts.has(name) || seen?.has(name)) return null
   seen = (seen || new Set()).add(name)
@@ -587,6 +591,12 @@ function evalConst(node, env, state) {
   if (op === 'u-' || op === 'u+' || op === '!' || op === '~') {
     const a = evalConst(node[1], env, state)
     return a && foldUnary(op, a)
+  }
+  // `typeof name` alone, where the program fixes it (typeofName: a declared function, a
+  // constant's kind, a function of the target held through constants)
+  if (op === 'typeof' && node.length === 2 && typeof node[1] === 'string' && !env.has(node[1])) {
+    const kind = typeofName(node[1], state)
+    return kind == null ? null : strResult(kind)
   }
   if (op === '===' || op === '!==' || op === '==' || op === '!=') {
     const tp = typeofPredicate(node)

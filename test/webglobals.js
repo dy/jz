@@ -482,3 +482,28 @@ test('URLSearchParams: forEach observes live entries across callback growth and 
     `let p = new URLSearchParams('a=1&b=2&c=3'); let s = ''; p.forEach((v,k,self) => { s += k + v; if (k === 'a') self.delete('b') }); return s + ':' + p.size`,
   ]) is(run('export function f(){' + body + '}'), new Function(body)(), body)
 })
+
+// A module whose initializer reaches into the host (a host global it names, a member
+// of a host value) ships its init as the `_initialize` export, called by the interop
+// once the memory is readable (optimize/watr-tail.js legalizeReactorInit, the WASI
+// reactor's convention): nothing serves `globalThis.document` inside
+// `new WebAssembly.Instance`. A pure module keeps its `start` section.
+test('host globals: an initializer that reads the host runs once the memory is wired', () => {
+  if (onWasi() || onKernel()) return
+  const touching = `const g = typeof self === 'object' ? self : globalThis
+    const doc = g.document
+    let seen = 0
+    export let f = () => { seen++; return (doc === undefined ? 1 : 0) + seen }`
+  for (const optimize of levels(0, 2, 3)) {
+    const wat = compile(touching, { optimize, wat: true })
+    ok(/_initialize/.test(wat) && !/\(start /.test(wat), `init is the export at ${optimize}`)
+    const m = jz(touching, { optimize }).exports
+    is(m.f(), 2, `the initializer ran once, before the first call, at ${optimize}`)
+    is(m.f(), 3, `and once only at ${optimize}`)
+  }
+  const pure = 'let n = 0\nexport let f = () => ++n'
+  ok(/\(start /.test(compile(pure, { wat: true })) && !/_initialize/.test(compile(pure, { wat: true })), 'a pure module keeps its start section')
+  // a global this host lacks reads as undefined, as its typeof says at compile time for the globals every host has
+  is(jz('export let f = () => [typeof globalThis, typeof self === "object" ? 1 : 0, self === undefined ? 1 : 0].join(" ")').exports.f(), 'object 0 1')
+})
+

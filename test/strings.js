@@ -7,6 +7,37 @@ import { strHashLiteral } from '../module/collection.js'
 import { levels } from './_matrix.js'
 import { run, oracle, cases, agree, funcWat } from './util.js'
 
+test('string conversion: nullable string reads need only sentinel formatting', () => {
+  const src = `const words = ['', 'a', 'long string', null];
+    export function f(i) {
+      let reads = 0;
+      function next() { reads++; return i | 0 }
+      const value = words[next()];
+      return [String(words[next()]), \`<\${words[next()]} >\`, '' + value, reads];
+    }`
+  const expected = oracle(src).f
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const { f } = jz(src, { optimize }).exports
+    for (const i of [0, 0, 1, 2, 3, 4, -1, 2, 0]) is(f(i), expected(i), `O${optimize}, index ${i}`)
+    const wat = compile(src, { optimize, wat: true })
+    ok(!wat.includes('(func $__to_str'), 'string, null and undefined need no dynamic formatter')
+    ok(!wat.includes('(func $__ftoa'), 'string reads need no number formatter')
+  }
+})
+
+test('string conversion: inlined sentinel formatting retains its data', () => {
+  for (const value of ["[m.get('missing'), 1][0]", "({ x: m.get('missing') }).x"]) {
+    const src = `export function f() {
+      const m = new Map(); m.set('present', 's'); return String(${value});
+    }`
+    for (const optimize of levels(0, 1, 2, 3, 'size')) {
+      const { f } = jz(src, { optimize }).exports
+      is(f(), 'undefined', `O${optimize}: ${value}`)
+      is(f(), 'undefined', 'formatting survives the export arena reset')
+    }
+  }
+})
+
 test('string conversion: checked elements preserve missing values and evaluate once', () => {
   for (const values of ['[1,NaN,-0,4294967295]', '["a","long string"]', '[true,false]', 'new Int32Array([1,2])']) {
     const src = `export function f(i){

@@ -2744,6 +2744,16 @@ export default (ctx) => {
   // typeof returns a preallocated JS type-name string. Dynamic dispatch also
   // recognizes Boolean atoms and boxed BigInts. Comparison patterns bypass
   // this string-producing path through emitTypeofCmp.
+  // `Function(…)` and `new Function(…)`: the target compiles no code at run time. A
+  // library reaches for it behind a test of its environment (`new Function('return this')()`
+  // where no global object was found), so the call is a TypeError there, not a refused compile.
+  ctx.core.emit['Function'] = () => {
+    ctx.runtime.throws = true
+    ctx.schema.errorSid('TypeError')
+    return typed(['block', ['result', 'f64'],
+      ['global.set', '$__jz_last_err_bits', ['i64.reinterpret_f64', ['f64.const', errorCodeLiteral(ERR.DYNAMIC_CODE)]]],
+      ['throw', '$__jz_err', ['f64.const', errorCodeLiteral(ERR.DYNAMIC_CODE)]]], 'f64')
+  }
   ctx.core.emit['typeof'] = (a) => {
     // A known typeof result does not make its operand effect-free. Sequence
     // the operand once, including calls or throws inside comma expressions.

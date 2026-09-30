@@ -24,9 +24,25 @@ import encodeWat from 'watr/compile'
 import { hoistInvariantLoop } from '../src/optimize/licm.js'
 import { devirtSchemaReads } from '../src/optimize/devirt.js'
 import { hoistAddrBase, hoistPtrType } from '../src/optimize/cse-address.js'
+import { peelNarrowConv } from '../src/optimize/vectorize/lift.js'
 import { funcWat, run, oracle } from './util.js'
 import { belowOpt, onWasi } from './_matrix.js'
 import { parse, loopCount, count, walk } from '../scripts/wat-probe.mjs'
+
+test('SIMD store conversion peeling requires matching guards and both value arms', () => {
+  const get = name => ['local.get', name], x = get('$x'), y = get('$y')
+  const wrap = v => ['i32.wrap_i64', ['i64.trunc_sat_f64_s', v]]
+  const guarded = (limit, hit, miss) => ['if', ['result', 'i32'],
+    ['f64.lt', ['f64.abs', x], ['f64.const', limit]], ['then', hit], ['else', ['call', '$__to_int32', miss]]]
+  is(peelNarrowConv(guarded(2 ** 63, wrap(x), x), 'i32'), x)
+  for (const val of [guarded(2 ** 63, ['i32.const', 7], x), guarded(2 ** 64, wrap(x), x),
+    guarded(2 ** 63, wrap(y), x), guarded(2 ** 63, wrap(x), y),
+    ['select', wrap(x), ['i32.const', 0], ['f64.ne', y, ['f64.const', Infinity]]]])
+    is(peelNarrowConv(val, 'i32'), null, 'a different guard or value is not a conversion')
+  const captured = guarded(2 ** 63, wrap(get('$t')), get('$t'))
+  captured[2][1][1] = ['local.tee', '$t', ['f64.add', x, ['f64.const', 0.5]]]
+  is(peelNarrowConv(captured, 'i32'), captured[2][1][1][2], 'the capture executes once')
+})
 
 // Count `call $NAME` nodes that survive INSIDE a loop within the user function $f
 // only (scoped past module builtins, which carry their own loops).

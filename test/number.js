@@ -491,3 +491,19 @@ test('Number.isNaN retains the numeric proof across a nullable helper result', (
     for (const k of [0, 0, -1, 1, 1, 2, 3, 0]) is(f(k), native(k), `O${optimize}, input ${k}`)
   }
 })
+
+// An integer below 2^53 renders as its digits (module/number.js __ftoa_shortest's
+// integer path); the boundary and beyond keep the shortest representation.
+test('number formatting: integers render as their digits, the 2^53 edge included', () => {
+  const src = `export let s = (x) => String(x)
+    export let key = (a, b) => a + ',' + b`
+  const host = oracle(src)
+  const vals = [0, -0, 1, -1, 9, 10, -10, 99, 12345, -987654321, 2147483647, -2147483648, 4294967296,
+    9007199254740991, -9007199254740991, 9007199254740992, 9007199254740993, 1e15, 1e16, 1e20, 1e21,
+    123456789012345680000, 2 ** 60, 1.5, -0.5, 1e-7]
+  for (const optimize of levels(0, 2, 3)) {
+    const got = run(src, { optimize })
+    for (const v of vals) is(got.s(v), host.s(v), `String(${v}) at ${optimize}`)
+    is(got.key(-3, 2), host.key(-3, 2), `key at ${optimize}`)
+  }
+})

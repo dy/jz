@@ -20,7 +20,7 @@
  */
 
 import { DBG_INVARIANTS } from '../../debug.js'
-import { ctx, err } from '../../ctx.js'
+import { ctx, err, getFactStore } from '../../ctx.js'
 import { withTypedElemOverlay } from '../flow-state.js'
 import { I32_MIN, I32_MAX } from '../../ir.js'
 import { staticArrayLen } from '../../static.js'
@@ -31,7 +31,7 @@ import { K, tagOf, paramOf, valOf, valsOf, hasTag, core, UNKNOWN } from '../../s
 import { paramFactsOf, ensureParamRep, mergeParamFact, latticeMeet } from '../../param-reps.js'
 import { inferArrElemSchemaSet } from '../infer.js'
 import { RECUR_INT_OPS, assertValKindConsistent, buildCallerTypedLenCtx, resetParamWasmFacts, createPhaseState } from './caller-ctx.js'
-import { applyI32ParamSpecialization, validateTypedLenParams, validateLenBoundOfParams, validateIntConstParams, applyPointerParamAbi, narrowableFuncs, applyTypedPointerParamAbi } from './param-abi.js'
+import { applyI32ParamSpecialization, validateTypedLenParams, validateLenBoundOfParams, validateIntConstParams, substituteIntConstParams, applyPointerParamAbi, narrowableFuncs, applyTypedPointerParamAbi } from './param-abi.js'
 import { narrowI32Results, seedResultKinds, narrowPointerResults, narrowReturnArrayElemSets } from './results.js'
 import { inferInternalArrayLengths, inferTypedValueRanges, boundedByCallerLength, inferNumericRanges } from './summaries.js'
 import { jsstringEnabled, applyJsstringBoundaryCarrier } from './jsstring-carrier.js'
@@ -682,6 +682,10 @@ export default function narrowSignatures(programFacts, ast) {
     if (!reps) continue
     for (const r of reps.values()) r.kindsCoverage = 'closed'
   }
+
+  // A parameter fixed to one integer reads as the integer: the summary of what
+  // emission sees is built anew (compile/index.js summarizeProgram).
+  if (substituteIntConstParams(paramReps, addressTaken)) getFactStore().revision++
 
   if (DBG_INVARIANTS) assertValKindConsistent(paramReps)
 }

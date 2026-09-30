@@ -130,6 +130,9 @@ function rewriteBundlerAliasesNode(node, aliases, interopBindings) {
   if (!Array.isArray(node)) return node
   const rec = n => rewriteBundlerAliases(n, aliases, interopBindings)
 
+  // A counted head's `;` is a tuple, not a list: an empty part is a part.
+  if (node[0] === 'for' && Array.isArray(node[1]) && node[1][0] === ';')
+    return ['for', node[1].map((part, i) => i === 0 ? part : rec(part)), rec(node[2])]
   if (node[0] === ';') {
     const out = [';']
     for (let i = 1; i < node.length; i++) {

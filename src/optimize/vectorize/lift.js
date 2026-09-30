@@ -1,5 +1,5 @@
 import { registerResetHook } from '../../ctx.js'
-import { cloneNode } from '../../ast.js'
+import { cloneNode, isLeaf, nodeEqual } from '../../ast.js'
 import { hasBranchOrReturn, hasSideEffect, isI32Const, matchMirrorAddr } from './addr-model.js'
 import { aosAddrPair, aosGather, aosStore, getOrAllocLanedLocal } from './aos.js'
 import { matchCanonBlock, matchCanonSelect } from './idioms.js'
@@ -247,7 +247,9 @@ export function liftStmt(stmt, ctx) {
       // A lane the body bounds within i32 truncates as a vector: there the
       // saturating lane conversion is the scalar word conversion, NaN to zero too.
       const ranged = sty !== 'f32' && isArr(inner) && inner[0] === 'local.get' && ctx.i32Ranged?.has(inner[1])
-      const ns = narrowStore(addr, innerV, ctx.laneType, sty, ctx, ranged ? 'i32.trunc_sat_f64_s' : unmaskStore(stmt[2], sty)[0])
+      // the inline fast path of the exact conversion keeps the call per lane
+      const conv = unmaskStore(stmt[2], sty)[0]
+      const ns = narrowStore(addr, innerV, ctx.laneType, sty, ctx, ranged ? 'i32.trunc_sat_f64_s' : conv === 'if' ? 'call' : conv)
       return ns || liftFail(ctx, `no narrowing ${ctx.laneType}->${sty}`)
     }
     const val = liftExprV(stmt[2], ctx)
@@ -543,7 +545,7 @@ export function liftExprV(expr, ctx) {
   if (ctx.laneType === 'i32') {
     const av = liftAddSubOfConverts(expr, ctx)
     if (av) return av
-    if (op === 'select' || op === 'call') {
+    if (op === 'select' || op === 'call' || op === 'if') {
       const peeled = peelNarrowConv(expr, 'i32')
       const pv = peeled && liftAddSubOfConverts(peeled, ctx)
       if (pv) return pv
@@ -773,11 +775,25 @@ export function peelNarrowConv(val, sty) {
   if (val[0] === 'select' && val.length === 4 && isI32Const(val[2]) && val[2][1] === 0 &&
       isArr(val[1]) && val[1][0] === 'i32.wrap_i64' && isArr(val[1][1]) && val[1][1][0] === 'i64.trunc_sat_f64_s') {
     let inner = val[1][1][1]   // the f64 operand of the trunc, captured in a `(local.tee $inf …)`
+    const read = inner?.[0] === 'local.tee' ? ['local.get', inner[1]] : isLeaf(inner) ? inner : null
+    if (!read || !nodeEqual(val[3], ['f64.ne', read, ['f64.const', Infinity]])) return null
     if (isArr(inner) && inner[0] === 'local.tee' && inner.length === 3) inner = inner[2]   // peel to the tee's VALUE
     return inner
   }
   // The exact ES ToIntN element-store conversion is preserved per lane.
   if (val[0] === 'call' && val[1] === '$__to_int32' && val.length === 3) return val[2]
+  // The same behind its inline fast path (toInt32 at the speed tiers):
+  //   (if (result i32) (f64.lt (f64.abs [local.tee T] X) 2^63) (then (wrap (trunc T))) (else (call $__to_int32 T)))
+  if (val[0] === 'if' && val.length === 5 && isArr(val[2]) && val[2][0] === 'f64.lt' && isArr(val[2][1]) && val[2][1][0] === 'f64.abs' &&
+      isArr(val[4]) && isArr(val[4][1]) && val[4][1][0] === 'call' && val[4][1][1] === '$__to_int32') {
+    const held = val[2][1][1]
+    const read = held?.[0] === 'local.tee' ? ['local.get', held[1]] : isLeaf(held) ? held : null
+    if (!read || !nodeEqual(val[1], ['result', 'i32']) ||
+        !nodeEqual(val[2][2], ['f64.const', 9223372036854775808]) ||
+        !nodeEqual(val[3], ['then', ['i32.wrap_i64', ['i64.trunc_sat_f64_s', read]]]) ||
+        !nodeEqual(val[4], ['else', ['call', '$__to_int32', read]])) return null
+    return isArr(held) && held[0] === 'local.tee' && held.length === 3 ? held[2] : held
+  }
   if (val[0] === 'i32.trunc_sat_f64_s' || val[0] === 'i32.trunc_sat_f64_u') return val[1]
   // Bare wrap-through-i64 (asI32's boundary coercion — ES ToInt32 wrap, no guard).
   if (val[0] === 'i32.wrap_i64' && isArr(val[1]) && val[1][0] === 'i64.trunc_sat_f64_s') return val[1][1]

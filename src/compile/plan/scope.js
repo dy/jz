@@ -30,7 +30,7 @@ import { MAX_CLOSURE_ARITY, UNDEF_NAN, freshId } from '../../ir.js'
 import { analyzeFuncNamespaces } from '../analyze.js'
 import { collectGlobalBareEscapes } from '../analyze-scans.js'
 import { invalidateProgramFactsCache } from '../program-facts.js'
-import { includeForNamedCall, includeForGenericMethod } from '../../autoload.js'
+import { includeForNamedCall, includeForGenericMethod, isNamedCallee } from '../../autoload.js'
 
 const isConstInt = value => Number.isInteger(value) && !Object.is(value, -0) && value >= I32_MIN && value <= I32_MAX
 
@@ -1024,9 +1024,30 @@ export const devirtGlobalCalls = (ast) => {
   return changed
 }
 
-// The methods of `Object.prototype` a program holds in a name, to call on a value of its choice.
-const HELD_METHODS = new Set(['toString', 'hasOwnProperty'])
-const heldMethod = (e) => Array.isArray(e) && e.length === 3 && e[0] === '.' && e[1] === 'Object.prototype' && HELD_METHODS.has(e[2]) ? e[2] : null
+// A builtin a program holds in a name: a method of a prototype the target dispatches by the
+// receiver's kind (`Object.prototype.toString`, `String.prototype.toLowerCase`), to call on a
+// value of its choice, or a function of the target named bare or in a namespace (`Symbol`,
+// `String.fromCharCode`), to call or read a member of.
+const PROTO_NS = new Set(['Object', 'String', 'Array', 'Number', 'Boolean'])
+const HELD_OBJECT_METHODS = new Set(['toString', 'hasOwnProperty'])
+const dotted = (e) => typeof e === 'string' ? e : Array.isArray(e) && e[0] === '.' && typeof e[2] === 'string' ? (r => r === null ? null : `${r}.${e[2]}`)(dotted(e[1])) : null
+// The namespaces of the target a name may hold whole (`var proto = Object.prototype;
+// proto.toString`, `var M = Math`): their members resolve as if named in place.
+const HELD_NS = new Set(['Object.prototype', 'String.prototype', 'Array.prototype', 'Number.prototype', 'Boolean.prototype', 'Math', 'JSON', 'Symbol'])
+// `nsOf`: the namespace a name holds, where the caller resolves names
+const heldBuiltin = (e, nsOf = () => null) => {
+  if (typeof e === 'string') return isNamedCallee(e) ? { callee: e } : HELD_NS.has(e) ? { namespace: e } : null
+  if (!Array.isArray(e) || e[0] !== '.' || e.length !== 3 || typeof e[2] !== 'string') return null
+  const owner = typeof e[1] === 'string' && nsOf(e[1]) !== null ? nsOf(e[1]) : dotted(e[1])
+  if (owner === null) return null
+  if (HELD_NS.has(`${owner}.${e[2]}`)) return { namespace: `${owner}.${e[2]}` }
+  const proto = owner.endsWith('.prototype') ? owner.slice(0, -'.prototype'.length) : null
+  if (proto !== null) return PROTO_NS.has(proto) && (proto !== 'Object' || HELD_OBJECT_METHODS.has(e[2])) ? { proto, method: e[2] } : null
+  const callee = `${owner}.${e[2]}`
+  return isNamedCallee(callee) ? { callee } : null
+}
+// the callee as prepare names a call of it: the key of the emit table (`String.fromCharCode`)
+const calleeAst = (callee) => callee
 
 /**
  * A module name that holds a method of `Object.prototype` for good is that
@@ -1066,7 +1087,7 @@ export const resolveHeldMethods = (ast) => {
     if (seen.has(name) || open.has(name)) return null
     seen.add(name)
     const v = defs.get(name)
-    return v === undefined ? null : typeof v === 'string' ? methodOf(v, seen) : heldMethod(v)
+    return v === undefined ? null : typeof v === 'string' && !isNamedCallee(v) && !HELD_NS.has(v) ? methodOf(v, seen) : heldBuiltin(v, (n) => methodOf(n, new Set(seen))?.namespace ?? null)
   }
   for (const name of defs.keys()) { const m = methodOf(name); if (m) held.set(name, m) }
   if (!held.size) return false
@@ -1082,7 +1103,7 @@ export const resolveHeldMethods = (ast) => {
   for (const r of roots) stores(r)
   for (const f of bodies) { stores(f.body); if (f.defaults) for (const d of Object.values(f.defaults)) stores(d) }
   // a name declared with one that a store opened holds nothing for good either
-  for (const name of [...held.keys()]) { for (let v = defs.get(name); typeof v === 'string'; v = defs.get(v)) if (!held.has(v)) { held.delete(name); break } }
+  for (const name of [...held.keys()]) { for (let v = defs.get(name); typeof v === 'string' && !isNamedCallee(v) && !HELD_NS.has(v); v = defs.get(v)) if (!held.has(v)) { held.delete(name); break } }
   if (!held.size) return false
 
   let changed = false
@@ -1090,11 +1111,42 @@ export const resolveHeldMethods = (ast) => {
     if (!Array.isArray(n) || n[0] === 'str' || n[0] == null) return n
     let out = n
     for (let i = 1; i < n.length; i++) { const c = rewrite(n[i]); if (c !== n[i]) { if (out === n) out = copyNode(n); out[i] = c } }
-    if (out[0] !== '()' || out.length !== 3 || !Array.isArray(out[1]) || out[1][0] !== '.' || out[1][2] !== 'call' || !held.has(out[1][1])) return out
-    const args = Array.isArray(out[2]) && out[2][0] === ',' ? out[2].slice(1) : out[2] == null ? [] : [out[2]]
-    const method = held.get(out[1][1])
-    if (method === 'toString' && args.length === 1) { includeForNamedCall('__object_toString'); changed = true; return ['()', '__object_toString', args[0]] }
-    if (method === 'hasOwnProperty' && args.length === 2) { includeForGenericMethod('hasOwnProperty'); changed = true; return ['()', ['.', args[0], 'hasOwnProperty'], args[1]] }
+    const argsOf = (a) => Array.isArray(a) && a[0] === ',' ? a.slice(1) : a == null ? [] : [a]
+    const list = (args) => args.length === 0 ? null : args.length === 1 ? args[0] : [',', ...args]
+    // `name.call( recv, …args )`: a prototype method on the receiver, a function of the target on the args
+    // (`name` a held name, or a member of a held namespace the walk named in place)
+    const target = out[0] === '()' && out.length === 3 && Array.isArray(out[1]) && out[1][0] === '.' && out[1][2] === 'call'
+      ? (typeof out[1][1] === 'string' ? held.get(out[1][1]) : heldBuiltin(out[1][1])) : undefined
+    if (target != null && target.namespace === undefined) {
+      const b = target, args = argsOf(out[2])
+      if (b.proto === 'Object' && b.method === 'toString' && args.length === 1) { includeForNamedCall('__object_toString'); changed = true; return ['()', '__object_toString', args[0]] }
+      if (b.proto === 'Object' && b.method === 'hasOwnProperty' && args.length === 2) { includeForGenericMethod('hasOwnProperty'); changed = true; return ['()', ['.', args[0], 'hasOwnProperty'], args[1]] }
+      if (b.proto !== undefined && b.proto !== 'Object' && args.length >= 1) { includeForGenericMethod(b.method); changed = true; return ['()', ['.', args[0], b.method], list(args.slice(1))] }
+      if (b.callee !== undefined && args.length >= 1) { includeForNamedCall(b.callee); changed = true; return ['()', calleeAst(b.callee), list(args.slice(1))] }
+      return out
+    }
+    // `name( …args )`: the function of the target
+    if (out[0] === '()' && typeof out[1] === 'string' && held.get(out[1])?.callee !== undefined) {
+      const b = held.get(out[1]); includeForNamedCall(b.callee); changed = true
+      return out.length === 3 ? ['()', calleeAst(b.callee), out[2]] : ['()', calleeAst(b.callee)]
+    }
+    // `name.member` of a held namespace: the member as the source names it in place
+    // (`Object.prototype.toString`, which `.call( v )` below takes as the method), a
+    // function of the target by its key, else a member the target does not serve: undefined
+    if (out[0] === '.' && out.length === 3 && typeof out[1] === 'string' && typeof out[2] === 'string' && held.get(out[1])?.namespace !== undefined) {
+      const ns = held.get(out[1]).namespace, key = `${ns}.${out[2]}`
+      changed = true
+      if (heldBuiltin(['.', ns, out[2]])?.proto !== undefined) return ['.', ns, out[2]]
+      return ctx.core.emit[key] !== undefined || includeForNamedCall(key) ? key : [, undefined]
+    }
+    // `name.member`: the member of the function of the target, as prepare names one
+    // (`Sym.for` the key of the emit table; `Sym.iterator`, a member the target does not
+    // serve, undefined as a missing property of an object is)
+    if (out[0] === '.' && out.length === 3 && typeof out[1] === 'string' && typeof out[2] === 'string' && out[2] !== 'call' && held.get(out[1])?.callee !== undefined) {
+      const key = `${held.get(out[1]).callee}.${out[2]}`
+      changed = true
+      return ctx.core.emit[key] !== undefined || includeForNamedCall(key) ? key : [, undefined]
+    }
     return out
   }
   for (const f of bodies) f.body = rewrite(f.body)
@@ -1188,7 +1240,7 @@ const inert = (e, view) => {
   if (e == null || typeof e === 'string' || typeof e === 'number') return true
   if (!Array.isArray(e)) return false
   if (e[0] == null || e[0] === 'str' || e[0] === 'bool' || e[0] === '=>') return true
-  if (heldMethod(e)) return true
+  if (heldBuiltin(e)) return true
   if (PLAIN_OPS.has(e[0])) return e.slice(1).every(o => inert(o, view))
   if (!CONVERTING_OPS.has(e[0]) || !view) return false
   return e.slice(1).every(o => inert(o, view) && SCALAR_TAGS.has(tagOf(core(view.kindOfExpr(o)))))

@@ -126,6 +126,12 @@ calculation. Empty signed ranges remain empty even beside INT_MIN; widening
 loads require their complete read span before subtracting extra lanes.
 Small loop helpers enter exported loops only after their callees have expanded,
 so the size budget includes the work being moved out of a tierable function.
+Integer-store shortcuts prove numeric carriers, not merely an i32 representation:
+pointers still need ToNumber. Clamping requires the original signed magnitude;
+a Uint32 word with its high bit set cannot use the signed-word clamp. An observed
+assignment preserves its original RHS, including object identity and undefined.
+SIMD conversion peeling checks the guard, both arms and their shared operand.
+
 Typed-width loop versions accept stable local receivers as well as parameters.
 They validate the complete Float32/Float64 carrier, snapshot fixed storage and
 retain bounds checks, f32 rounding and the original assignment value. Numeric
@@ -1776,6 +1782,9 @@ No initialization state or second full power table is needed.
 The shared unsigned 64×128 product supplies all three rounding limbs. Decimal
 inputs whose significand and power of ten are exact f64 operands use one
 multiply or divide; the full integer algorithm handles the remaining range.
+An integer below 2^53 renders as its digits before the shortest search starts
+(`__ftoa_shortest`): a counter, an index or a key made of numbers (stdlib's `memoize`
+joins its arguments) formats in a digit loop, the boundary and beyond as before.
 
 Function-local layouts belong in `localReps`, carried by the function plan.
 Do not publish inferred local or parameter schemas in `ctx.schema.vars`:
@@ -1919,7 +1928,8 @@ closures where the summary cannot follow them; `includes`, `indexOf` and
 `lastIndexOf` keep nothing of their argument, `slice` yields a copy with a
 cell of its own whose elements are the row's positions from a literal start,
 and any other name on an array is a property beside the elements; shape sets
-of up to 64 layouts. A spread of sources whose layouts the summary knows makes
+of up to 64 layouts. A layout with more construction sites folds to its layout
+in every union, including unions formed before the fold. A spread of sources whose layouts the summary knows makes
 a layout no literal may name: the summary lists it (`unnamedLayouts`), and
 the compile names it and summarizes again until a spread of such a literal
 makes none new, before the plan decides anything from the summary, so the
@@ -2309,9 +2319,19 @@ failed side of a comparison may hold NaN. Consecutive byte stores of one
 word's bytes at consecutive addresses (`o[k] = u & 0xff; o[k + 1] = u >>> 8`,
 `writeU32`) are the word's little-endian store16/store32 (`mergeByteStores`);
 wav's sample loop stores its truncation directly. The
-`__to_int32` helper stays a call where its argument is a checked read's
-Number|undefined: folding it to the inline truncation measured 17% slower on
-glyfparse (the representation of ToInt32-blind reads is the open lever there).
+integer element store (`module/typedarray.js`) stores the word its value narrows to
+(`i32Narrowed`, ir/numeric.js, the narrowing toInt32 itself starts with, seen before a
+temp hides the value): an i32, an integer element's read with its convert peeled, a
+checked read of one as the i32 if-form (the hit arm its raw load, the undefined miss
+ToInt32's 0: `px[i] = lut[ink[i]]`, the byte-transform class), an exact-int tree, a
+bounded f64. A receiver a module `let` holds keeps that word through the check of the
+receiver. A value only the runtime bounds (`ink[p] = v > 255 ? 255 : v`) converts at
+the speed tiers behind the kernel's own first test inline, the `__to_int32` call its
+cold arm (`inlineToNum`; the peephole and the vectorizer read that form as they read
+the call), and -Os keeps the call alone. A `Uint8ClampedArray` store is ToUint8Clamp
+inline: `f64.nearest` of the value clamped to [0, 255] under a saturating unsigned
+truncation (NaN to 0 as the clamp says), two selects for a word, a folded constant; no
+call per pixel of an ImageData (`test/typed-store.js`).
 Load CSE (`cse-load.js`) keeps a condition's typed loads available past an
 `if (C) break|continue|return|throw` with no else, since the statements after
 it run only when C ran and fell through, and one load serves an
@@ -2657,6 +2677,15 @@ passes that read a loop by its shape match (a clamp against `w - 1`, a window of
 the blur recognizers stopped firing on a literal), and the emitter folds a constant of the
 source where it is read. `test/constants.js` pins the flows and the folds.
 
+A parameter every call fixes to one integer reads as that integer in its body
+(`substituteIntConstParams`, narrow/param-abi.js, once the signatures settle; validated as
+`intConst` is: never written, no default, not the rest): an index, a stride, an offset the
+consumers then see as the literal they serve best, a store inside a fixed length or a folded
+sum, not as a name whose value a fact carries. The parameter stays in the signature; callers
+pass what the body no longer reads. A self-recursive helper writing `out[ offset + stride ]`
+(stdlib's `modff`) stores at a literal index instead of guarding a growth at every call
+(`test/array-methods.js`).
+
 A literal of no members declares nothing, so it scalarizes to nothing and every read of it
 is `undefined` (`opts = {}`, the default of an options parameter), and `||` or `??` over a
 literal `undefined` or `null` is its right side (`emit/logical.js`): `opts.tolerance || EPS`
@@ -2692,15 +2721,48 @@ A typed store reads its key before its value, as PutValue does (`module/typedarr
 key that reads what the value's effects may store to (a global or an element a call changes,
 a local the value assigns) is taken into a temp first.
 
-A module name that holds a method of `Object.prototype` for good is the method where it is
-called through `call` (`resolveHeldMethods`, plan/scope.js, at every level): `var toStr =
-Object.prototype.toString; … toStr.call( v )` is `__object_toString( v )`, `has.call( o, k )`
-is `o.hasOwnProperty( k )`, the forms jzify gives the method named in place. A library tests
-a value's class this way from a module of its own that another imports (stdlib's
-`utils/native-class`), so the name is resolved where the modules are one program. The name
-is declared once with the method, or with a name that holds it, and nothing stores to it; its
-declaration goes with its last mention. Any other use of it is a value the target has no
-form of and stops the compile, as before (`test/held-method.js`).
+A module name that holds a builtin for good is that builtin where the name is used
+(`resolveHeldMethods`, plan/scope.js, at every level): a method of a prototype the target
+dispatches by the receiver's kind (`Object`, `String`, `Array`, `Number`, `Boolean`), called
+through `call` (`var toStr = Object.prototype.toString; … toStr.call( v )` is
+`__object_toString( v )`, `has.call( o, k )` is `o.hasOwnProperty( k )`, `lower.call( s )` is
+`s.toLowerCase()`); a function of the target named bare or in a namespace (`Symbol`,
+`String.fromCharCode`: `isNamedCallee`, autoload.js), called direct or through `call`; a
+namespace held whole (`var proto = Object.prototype; proto.toString.call( v )`), whose members
+resolve as if named in place. A member of a held function or namespace the target does not
+serve reads as undefined (`Sym.toStringTag`, `proto.__defineGetter__`: no well-known symbols,
+no legacy accessors), as prepare reads a member of a namespace it does not serve (`Math.frund`
+is undefined, a call of it is still refused): a library's polyfill holds them and never runs.
+A library tests a value's class and its environment this way from modules of its own that
+another imports (stdlib's `utils/native-class`, `symbol/ctor`, `utils/define-property`), so
+the name is resolved where the modules are one program. The name is declared once with the
+builtin, or with a name that holds it, and nothing stores to it; its declaration goes with its
+last mention. Any other use of it is a value the target has no form of and stops the compile,
+as before (`test/held-method.js`). Prepare answers `typeof` of what the program never declares
+at compile time (`staticTypeofString`): a function of the target is `'function'` (`typeof
+Symbol`, `typeof String.fromCharCode`), the globals every host has (`globalThis`,
+`WebAssembly`) are `'object'`, an unresolvable name is `'undefined'`; `window`, `self`,
+`global` and `process` are one host's or another's, so the run answers, and a host that lacks
+one imports it as undefined (interop). `Ctor.prototype.m.call( recv, … )` named in place on a
+primitive's prototype (`Number.prototype.toString.call( n, 16 )`) is the method on the
+receiver (`foldPrototypeBorrow`), as the array-like borrow was; `Boolean.prototype` is the
+dotted name as `Number.prototype` is, where the bare `Boolean` is the conversion.
+A function of the target named bare (`parseInt`, `isNaN`, `Symbol`, `RangeError`) held in a
+name the program declares, through any names (`var P = parseInt; var Q = P; Q( s )`), is that
+function where the name is called or asked its type (prepare's `namesTargetFn`, the alias
+table `scope.chain`): the table seeds each such name with the module that serves it, for the
+call's sake, and a read of the name used to resolve to the module. A seeded name is the
+target's own (`RangeError` is seeded `Error`, its module's; the call keeps its class). Its
+`.length`/`.name` is the reflection `Math.max.length` is refused as (`isTargetFnRecv`), not
+the undefined an unserved member of its namespace reads as. The
+`Function` constructor lowers to a `TypeError` where it runs (`ERR.DYNAMIC_CODE`): jz compiles
+no source at run time, and a library reaches it only behind a feature test that fails.
+
+A module whose initializer reaches into the host (a host global it names, a member read or a
+call on a host value) ships its init as the `_initialize` export, as a WASI reactor does
+(`legalizeReactorInit`, optimize/watr-tail.js), and the interop calls it once the memory is
+readable: nothing can serve `globalThis.document` from inside `new WebAssembly.Instance`. A
+pure module keeps its `start` section and instantiates bare.
 
 A module name that holds one regular expression for good is that expression where a method
 of it is called (`holdModuleRegexes`, plan/scope.js). jz compiles a regular expression where
@@ -2718,9 +2780,18 @@ A module binding nothing that runs reads is not declared, where its value runs n
 (`dropUnreadGlobals`, plan/scope.js, at every level): a name, a literal, a closure, an
 operator that converts nothing (`typeof`, `===`, `&&`), or one that converts numbers, strings
 and booleans only, since an object's conversion calls its `valueOf` and a BigInt's can throw.
-`var Fcn = Function` behind a code generator nothing calls then stops no compile. A read is a
+`var Fcn = Function` behind a code generator nothing calls then compiles to nothing (one the
+program calls is a TypeError where the call runs). A read is a
 name in a function the call graph reaches or in another statement of the module; a binding
 read only by one that goes, goes after it; an exported binding stays (`test/unread-globals.js`).
+
+A function's properties are a record reached through its name (`materializeAutoBoxSchemas`,
+plan/scope.js: the `__inner__` box), and the function's value is the callable. A function
+taken as a value (an argument, an element, an alias) is read through that value, so its
+properties keep the closure-keyed dynamic path, which every alias reaches: `typeof`, a call
+and a property read through the value answer what the host answers (stdlib's
+`assert/is-object-like` hands `isObjectLike` to `arrayfcn` and then sets
+`isObjectLike.isObjectLikeArray`; `test/objects.js`).
 
 ## Principles
 

@@ -9,8 +9,8 @@ that shaped the tree, the work left before release and the latest gate reading.
 ## Release status, September 30
 
 **V1 remains blocked by recursive bootstrap and incomplete release gates.**
-Consolidated candidate 48 passes the full core suite: 5,532 tests and 212,977
-assertions. It combines main's memory fixes, the performance branch and the v1
+Consolidated candidate 51 passes the full default core suite: 5,534 tests and
+213,103 assertions; O0 also passes 5,379 tests / 145,337 assertions. It combines main's memory fixes, the performance branch and the v1
 work. Main's release protocol, held views and nested-return restoration remain;
 fixed-memory compilation and the receiver-only array-growth rule are retained.
 The local integration branch preserves both parent histories. Candidate 43 adds
@@ -30,6 +30,16 @@ Candidate 50 reuses field-target lists and avoids redundant analysis storage.
 Its focused sweep passes 159 tests / 32,402 assertions; direct alias mutation,
 shadowing and reuse checks pass 17 assertions. The allocation regression for
 repeated local aliases falls from 3.61 MB to 3.43 MB with identical output bytes.
+
+Candidate 52 incorporates stdlib commit `4c77ec62`, retaining builtin reflection,
+local constructor shadowing, held methods and the typed-store fast paths. Merge
+review fixes unsigned clamping, pointer coercion and assignment-result identity;
+throwing conversions and null receivers preserve evaluation order. SIMD conversion
+recognizers require matching guards and both arms. Nullable strings use sentinel
+formatting without bringing in the number formatter; inlined static-string reads
+retain their seed data. Focused merge regressions pass 11 tests / 524 assertions.
+The full candidate 52 gates are pending; the earlier core results do not certify
+these later changes.
 
 Candidate 39 fixes public constant injection: negative zero, quoted keys,
 sparse-array length, cycle rejection and adjacent negative template values.

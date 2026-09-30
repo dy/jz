@@ -233,6 +233,49 @@ export function validateIntConstParams(paramReps, addressTaken) {
   }
 }
 
+// The positions of a node that hold a name without reading a binding: a member's
+// name, a literal key, a string's text. A closure keeps its names: its body is
+// compiled apart, with the constant as a fact of the binding (closure-emit.js).
+const NAME_SLOTS = { '.': 2, '?.': 2, ':': 1 }
+const OPAQUE = new Set(['str', '=>', 'function', 'function*', 'class', 'import', 'export'])
+const replaceReads = (node, subst) => {
+  if (!Array.isArray(node) || OPAQUE.has(node[0])) return
+  const skip = NAME_SLOTS[node[0]]
+  for (let i = 1; i < node.length; i++) {
+    const c = node[i]
+    if (i === skip) continue
+    if (typeof c === 'string') { const v = subst.get(c); if (v !== undefined) node[i] = [null, v] }
+    else replaceReads(c, subst)
+  }
+}
+
+/** A parameter every call fixes to one integer (`intConst`, validated: never
+ *  written, no default, not the rest) reads as that integer in its body: an
+ *  index, a stride, an offset the consumers then see as the literal they serve
+ *  best (a store inside a fixed length, a folded sum), not as a name whose value
+ *  a fact carries. The parameter stays in the signature: callers pass what the
+ *  body no longer reads. In place, so every plan keyed by a node keeps its key. */
+export function substituteIntConstParams(paramReps, addressTaken) {
+  let changed = false
+  for (const func of ctx.funcs.list) {
+    if (isExported(func) || func.raw || addressTaken.has(func.name) || !func.body) continue
+    const reps = paramReps.get(func.name)
+    if (!reps) continue
+    const restIdx = func.rest ? func.sig.params.length - 1 : -1
+    let subst = null
+    for (const [k, r] of reps) {
+      if (r.intConst == null || k === restIdx || k >= func.sig.params.length) continue
+      const pname = func.sig.params[k].name
+      if (func.defaults?.[pname] != null) continue
+      ;(subst ??= new Map()).set(pname, r.intConst)
+    }
+    if (!subst) continue
+    replaceReads(frameNode(func), subst)
+    changed = true
+  }
+  return changed
+}
+
 export function applyPointerParamAbi(paramReps, addressTaken) {
   for (const func of ctx.funcs.list) {
     if (isExported(func) || func.raw || addressTaken.has(func.name)) continue

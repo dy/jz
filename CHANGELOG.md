@@ -16,6 +16,9 @@
 - Preserve callbacks and mode arguments read or written by parameter defaults and nested closures.
 - Keep unsigned helper results, SIMD arguments and mutable captured values correctly typed.
 - Preserve missing elements when converting checked array reads to strings.
+- Keep nullable-string conversion compact and retain static strings after helper inlining.
+- Preserve unsigned clamping, object coercion and assignment values in typed-array stores.
+- Recognize held builtin functions consistently while respecting local constructor names.
 - Reduce snapshot allocation for Map entries whose identity is unobservable.
 - Preserve signed zeros and infinite quadrants when folding `Math.atan2`.
 - Inline scalar allocation helpers while preserving pointer-factory boundaries and retained state.

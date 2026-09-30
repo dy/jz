@@ -1989,11 +1989,13 @@ const buildImports = (mod, opts, state) => {
   for (const imp of WebAssembly.Module.imports(mod)) {
     if (imp.kind === 'global' && imp.module === 'env') {
       const host = globalThis[imp.name]
-      if (host !== undefined) {
-        if (!imports.env) imports.env = {}
-        let id = state.extMap.indexOf(host); if (id === -1) { id = state.extMap.length; state.extMap.push(host) }
-        imports.env[imp.name] = new WebAssembly.Global({ value: 'i64', mutable: false }, ptr(11, 0, id))
-      }
+      if (!imports.env) imports.env = {}
+      // A global this host lacks (`self` in Node, `process` in a browser) is undefined: a
+      // library selects its global object by testing them, and the arm it does not take
+      // still names the value.
+      if (host === undefined) { imports.env[imp.name] = new WebAssembly.Global({ value: 'i64', mutable: false }, UNDEF_NAN); continue }
+      let id = state.extMap.indexOf(host); if (id === -1) { id = state.extMap.length; state.extMap.push(host) }
+      imports.env[imp.name] = new WebAssembly.Global({ value: 'i64', mutable: false }, ptr(11, 0, id))
     }
   }
   return { imports, needsWasi }
@@ -2004,8 +2006,10 @@ const finishInstantiation = (mod, inst, imports, needsWasi, opts, state) => {
   // WASI reactor convention: a `host: 'wasi'` module ships its init as the standard
   // `_initialize` export (never a wasm start section — WASI calls there would fire
   // before _setMemory above). Called for ANY module exporting it, imports or not:
-  // a hostless wasi module (no console/Date use) still needs its init run.
-  inst.exports._initialize?.()
+  // a hostless wasi module (no console/Date use) still needs its init run. A JS-host
+  // module whose init reaches the host (a host global, a member of a host value)
+  // ships the same export, called below once its memory is readable.
+  if (needsWasi) inst.exports._initialize?.()
 
   // Drive WASM timer queue via JS scheduling (non-blocking, no-op if absent).
   attachTimers(inst)
@@ -2016,6 +2020,7 @@ const finishInstantiation = (mod, inst, imports, needsWasi, opts, state) => {
   const enhanced = memory(memSrc)
   state.mem = enhanced
   state.flushPrint?.()
+  if (!needsWasi) inst.exports._initialize?.()
   // A memoryless module keeps a minimal reader internally (state.mem, for decoding
   // its SSO/atom boundary values), but the result's `.memory` stays null — the
   // module genuinely exposes no linear memory. `jz.memory(result)` still hands back

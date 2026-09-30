@@ -5,7 +5,7 @@
  * @module ir/numeric
  */
 
-import { ctx, err, inc } from '../ctx.js'
+import { ctx, err, inc, OPTF } from '../ctx.js'
 import { I32_MIN, I32_MAX, isLeaf } from '../ast.js'
 import { typed } from './tag.js'
 import { ATOM, atomNanHex } from '../../layout.js'
@@ -508,12 +508,11 @@ export const int32Operand = n => {
   return null
 }
 
-/** The compile-time ToInt32 lowerings every conversion shares: an i32-backed
- *  value peels, a literal folds, an exact-int tree computes in the i32 ring, and
- *  a finite-range proof retires the runtime guard (in i32 range one trunc_sat is
- *  exact; within ±2^63 the i64 wrap is the modulus). Null when only the runtime
- *  conversion of an unknown f64 remains. */
-const i32Narrowed = n => {
+/** The i32 a value already is, or the exact ToInt32 of what the ring or a range proves:
+ *  an i32, a peeled convert, a checked integer element read (its miss arm 0), an
+ *  exact-int tree, a bounded f64 tree; null where only the runtime knows. */
+export const i32Narrowed = n => {
+  if (n.ptrKind != null) return null
   if (n.type === 'i32') return n
   // Peephole: i32.wrap_i64(i64.trunc_sat_f64_s(f64.convert_i32_*(x))) === x for all i32
   // inputs (both signed and unsigned variants round-trip identically). The argument of
@@ -589,8 +588,20 @@ const mapCheckedRead = (n, hitOf, miss, branchOnly = false) => {
     ? ['if', ['result', 'i32'], cond, ['then', hit], ['else', absent]]
     : ['select', hit, absent, cond], 'i32')
 }
-const i32CheckedRead = n => mapCheckedRead(n, v =>
-  v[0] === 'f64.convert_i32_s' || v[0] === 'f64.convert_i32_u' ? typed(v[1], 'i32') : null, 0)
+const i32CheckedRead = (n, signedOnly = false) => mapCheckedRead(n, v =>
+  v[0] === 'f64.convert_i32_s' || v[0] === 'f64.convert_i32_u' && (!signedOnly || topBitClear(v[1]))
+    ? typed(v[1], 'i32') : null, 0)
+
+/** A signed word's value: an i32, an integer element's read with its
+ *  convert peeled, a checked read of one (its miss the 0 ToInt32 takes
+ *  undefined to). Null for a number the ring would have to truncate. */
+export const i32Word = n => {
+  if (n.ptrKind != null) return null
+  if (n.type === 'i32') return n.unsigned && !topBitClear(n) ? null : n
+  if (Array.isArray(n) && (n[0] === 'f64.convert_i32_s' || n[0] === 'f64.convert_i32_u' && topBitClear(n[1])))
+    return Array.isArray(n[1]) ? typed(n[1], 'i32') : n[1]
+  return n.checkedNumRead && Array.isArray(n) ? i32CheckedRead(n, true) : null
+}
 
 /** Coerce node to i32 with wrapping (JS `|0` semantics: values > 2^31 wrap to negative).
  *  Per ECMAScript ToInt32, NaN and ±∞ map to 0. `i64.trunc_sat_f64_s` handles NaN
@@ -627,6 +638,20 @@ export const toInt32 = n => {
   const narrowed = i32Narrowed(n)
   if (narrowed) return narrowed
   inc('__to_int32')
+  // The kernel's own first test, inline where bytes buy speed (inlineToNum: the
+  // per-site fast path of a conversion): a value under 2^63 in magnitude is the
+  // low word of its saturating i64 truncation; the call takes the rest (NaN, the
+  // infinities, a magnitude whose low word lies beyond the i64 in the
+  // significand). A pixel store of a sum only the runtime bounds
+  // (`ink[p] = v > 255 ? 255 : v`) then converts without a call.
+  if (ctx.transform.optFlags & OPTF.inlineToNum) {
+    const t = isLeaf(n) ? null : temp('tint')
+    const get = () => t ? ['local.get', `$${t}`] : n
+    return typed(['if', ['result', 'i32'],
+      ['f64.lt', ['f64.abs', t ? ['local.tee', `$${t}`, n] : n], ['f64.const', 9223372036854775808]],
+      ['then', ['i32.wrap_i64', ['i64.trunc_sat_f64_s', get()]]],
+      ['else', ['call', '$__to_int32', get()]]], 'i32')
+  }
   return typed(['call', '$__to_int32', n], 'i32')
 }
 

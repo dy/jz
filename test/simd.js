@@ -3644,7 +3644,11 @@ test('SIMD general-map safety - same-array recurrence (a[i]=a[i-1]+a[i]) never v
   ok(!/i32x4\.add/.test(w), 'no i32x4.add lift of the recurrence (only the unrelated i32x4.splat fill, if any, may vectorize)')
 })
 
-test('SIMD general-map safety - same-array recurrence at a RUNTIME offset never vectorizes', () => {
+// The store of `a[i - off] + a[i]` is an i32 word (the sum of two element reads,
+// ir/numeric.js i32Narrowed), so the loop is one the vectorizer versions: SIMD
+// under a hoisted `off >= lanes` guard (the reads then lie before every write of
+// the vector), the untouched scalar loop otherwise. It never lifts unguarded.
+test('SIMD general-map safety - same-array recurrence at a RUNTIME offset vectorizes only under a distance guard', () => {
   const src = `export let main = (offIn) => {
     const off = (offIn | 0) || 1, n = 24
     const a = new Int32Array(n)
@@ -3652,10 +3656,12 @@ test('SIMD general-map safety - same-array recurrence at a RUNTIME offset never 
     for (let i = off; i < n; i++) a[i] = a[i - off] + a[i]
     return a[n - 1]
   }`
-  is(runVec(src, SIMD_OPT).main(1), runVec(src, NOVEC).main(1), 'off=1 result unaffected by vectorizer')
-  is(runVec(src, SIMD_OPT).main(2), runVec(src, NOVEC).main(2), 'off=2 result unaffected by vectorizer')
+  for (const off of [1, 2, 3, 4, 5, 7, 8])
+    is(runVec(src, SIMD_OPT).main(off), runVec(src, NOVEC).main(off), `off=${off} result unaffected by vectorizer`)
   const w = wat(src, SIMD_OPT)
-  ok(!/i32x4\.add/.test(w), 'no i32x4.add lift of the runtime-offset recurrence')
+  ok(/i32x4\.add/.test(w), 'the recurrence lifts to i32x4.add')
+  ok(/i32\.ge_s \(local\.get \$[^\s)]+\) \(i32\.const 4\)/.test(w), 'under the distance guard (off >= 4 lanes)')
+  ok(/i32\.store[\s\S]*i32x4\.add|i32x4\.add[\s\S]*i32\.store/.test(w), 'the scalar loop stays beside it')
 })
 
 // ---- Runtime alias versioning (layer 3, .work/archive/vectorizer-generality-design.md follow-up) ------

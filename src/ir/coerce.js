@@ -195,36 +195,18 @@ export const coerceAtomsToNum = (valIR) => {
       ['i64.eq', bits(), ['i64.const', TRUE_NAN]]]]], 'f64')
 }
 
-/** ToString for an i64 string carrier that may hold the UNDEF_NAN sentinel:
- *  undefined→"undefined", anything else → itself. The STRING-domain mirror of
- *  coerceNullishToNum just above — same "`valIR` must be side-effect-free, it
- *  is duplicated" contract — but only ONE sentinel arm (never NULL_NAN: this
- *  design's whole census/maybeUndefined machinery is specifically about a
- *  dict/Map absent-key read, which is real JS `undefined`, never `null` —
- *  matching toNumF64's own NUMBER-census widening, which is likewise gated
- *  to NUMBER only, never both nullish kinds). "undefined" reuses the fixed
- *  static-string table module/number.js already builds for every OTHER
- *  nullish/NaN-to-string site in the codebase (`__static_str(6)` — see its
- *  own doc comment for the full index table) rather than a new string-
- *  constant mechanism: MAX_SSO=6 can't hold 9-char "undefined" inline
- *  (ssoStrI64 below is not an option), and this file's NO-EMIT contract
- *  (module/string.js imports FROM here, so the reverse import would cycle —
- *  see ssoStrI64's own doc) blocks reaching `emit(['str', …])` for a fresh
- *  data-segment literal. `inc('__static_str')` is the established, ALREADY-
- *  used-from-outside-its-owning-module precedent (module/atomics.js's
- *  `Atomics.wait`, which pulls the SAME helper the same way for its
- *  'ok'/'not-equal'/'timed-out' results) — safe here because every call site
- *  of toStrI64's widening below is itself a STRING-coercion context
- *  (String()/template-literal/`+`-concat), which autoload.js's own MOD_DEPS
- *  already makes depend on 'number' before 'string' loads, so `__static_str`
- *  is always registered by the time this runs. */
-const coerceNullishToStr = (valIR) => {
+/** String payloads need only the possible sentinel spellings. The caller
+ * captures the value once before these tests. */
+const coerceNullishToStr = (valIR, nullable = false) => {
   inc('__static_str')
+  const present = nullable ? ['if', ['result', 'i64'],
+    ['i64.eq', cloneIR(valIR), ['i64.const', NULL_NAN]],
+    ['then', ssoStrI64('null')], ['else', cloneIR(valIR)]] : cloneIR(valIR)
   return typed(
     ['if', ['result', 'i64'],
       ['i64.eq', cloneIR(valIR), ['i64.const', UNDEF_NAN]],
       ['then', typed(['i64.reinterpret_f64', ['call', '$__static_str', ['i32.const', 6]]], 'i64')],
-      ['else', cloneIR(valIR)]],
+      ['else', present]],
     'i64')
 }
 
@@ -508,21 +490,19 @@ export function numberStorageValue(v) {
  *  an abrupt completion through the closure call. */
 export function toStrI64(node, v) {
   const vt = valTypeOf(node)
-  const summaryNullable = ctx.summary?.at(ctx.func.current)?.mayBeNullishExpr(node) === true
+  const summaryKind = ctx.summary?.at(ctx.func.current).kindOfExpr(node) ?? K.NONE
+  const summaryNullable = (summaryKind & NULL_BITS) !== 0
   // Container element kinds describe stored values; a checked read may still
   // answer undefined. Preserve that absence before taking scalar shortcuts.
   const missing = censusMaybeUndefined(node) || mayMissValue(node, v)
-  const censusStr = vt == null && censusMaybeUndefinedKind(node) === VAL.STRING
+  const censusStr = vt == null && (censusMaybeUndefinedKind(node) === VAL.STRING ||
+    tagOf(summaryKind) === K.STRING)
   if (vt === VAL.STRING || censusStr) {
     if (!missing && !summaryNullable) return asI64(v)
-    if (!summaryNullable) {
-      const t = tempI64('cns')
-      return typed(['block', ['result', 'i64'],
-        ['local.set', `$${t}`, asI64(v)],
-        coerceNullishToStr(typed(['local.get', `$${t}`], 'i64'))], 'i64')
-    }
-    inc('__to_str')
-    return typed(['call', '$__to_str', asI64(v)], 'i64')
+    const t = tempI64('cns')
+    return typed(['block', ['result', 'i64'],
+      ['local.set', `$${t}`, asI64(v)],
+      coerceNullishToStr(typed(['local.get', `$${t}`], 'i64'), summaryNullable)], 'i64')
   }
   if (vt === VAL.BOOL) {
     if (!missing && !summaryNullable)

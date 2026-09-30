@@ -203,7 +203,7 @@ function rebinds(n, name) {
 // plus the numeric/string globals whose results are fresh values or scalars,
 // and the lane operations (module/simd.js), which compute on values wasm
 // holds outside the heap. `math.` is the prepared spelling of `Math.`.
-const PURE_CALLEES = /^(__object_rest|(f32x4|f64x2|i32x4|v128)\.\w+|crypto\.(getRandomValues|randomUUID)|Object\.(keys|values|entries|isFrozen|isSealed|isExtensible|freeze|seal|preventExtensions|create|getOwnPropertyDescriptor|getOwnPropertyNames|getPrototypeOf|hasOwn|is|fromEntries|groupBy)|Map\.groupBy|JSON\.(stringify|parse)|Array\.(isArray|of|from)|ArrayBuffer\.isView|((Int|Uint|Float|BigInt|BigUint)(8|16|32|64)(Clamped)?Array|Float16Array)\.(from|fromBase64|fromHex)|console\.\w+|[Mm]ath\.\w+|Number(\.\w+)?|String(\.\w+)?|Boolean|BigInt(\.\w+)?|Symbol(\.\w+)?|Atomics\.\w+|RegExp\.escape|Date\.now|performance\.now|isNaN|isFinite|parseInt|parseFloat|structuredClone|Date\.UTC|Date\.parse|atob|btoa|(en|de)codeURI(Component)?)$/
+const PURE_CALLEES = /^(__object_rest|Function|readStdin|(f32x4|f64x2|i32x4|v128)\.\w+|crypto\.(getRandomValues|randomUUID)|Object\.(keys|values|entries|isFrozen|isSealed|isExtensible|freeze|seal|preventExtensions|create|getOwnPropertyDescriptor|getOwnPropertyNames|getPrototypeOf|hasOwn|is|fromEntries|groupBy)|Map\.groupBy|JSON\.(stringify|parse)|Array\.(isArray|of|from)|ArrayBuffer\.isView|((Int|Uint|Float|BigInt|BigUint)(8|16|32|64)(Clamped)?Array|Float16Array)\.(from|fromBase64|fromHex)|console\.\w+|[Mm]ath\.\w+|Number(\.\w+)?|String(\.\w+)?|Boolean|BigInt(\.\w+)?|Symbol(\.\w+)?|Atomics\.\w+|RegExp\.escape|Date\.now|performance\.now|isNaN|isFinite|parseInt|parseFloat|structuredClone|Date\.UTC|Date\.parse|atob|btoa|(en|de)codeURI(Component)?)$/
 // Pure callees that read a literal's getters (module/schema.js viewsOn) while
 // they list its properties; JSON.stringify also calls toJSON (emit/to-json.js).
 const ENUMERATING = /^(__object_rest|Object\.(values|entries)|JSON\.stringify|structuredClone)$/
@@ -420,6 +420,11 @@ function mayBeBigint(view, e) {
 /** A store of `prop` into the receiver writes a slot in place: the summary
  *  lists the receiver's layouts and each declares the property. Any other
  *  property takes storage of its own the first time it is written. */
+/** The index is an integer literal below the fixed length of the array `recv` holds. */
+function withinFixedLen(view, recv, index) {
+  if (!view || !isArr(index) || index[0] != null || !Number.isInteger(index[1]) || index[1] < 0) return false
+  try { return index[1] < view.fixedLenOfExpr(recv) } catch { return false }
+}
 function fixedSlot(view, recv, prop) {
   if (!view || !isName(prop)) return false
   let sids
@@ -940,7 +945,9 @@ function census(view, roots, declRoots, params, typedParams = NO_NAMES, conditio
         const lit = isArr(target[2]) && target[2][0] == null && typeof target[2][1] === 'string'
         const fns = lit ? accessorFunctions(target[2][1], recv, target[2][1] + ACCESSOR_SET) : NO_FUNCTIONS
         if (fns === null) unknownCall('accessor ' + target[2][1]); else reaches(fns)
-        store(recv, stored && !(plain && heldBy(recv, val, n)), !typedRecv(recv) && !(lit && fixedSlot(view, recv, target[2][1])), !lit, false, asked)
+        // An integer literal inside the length the receiver holds for good writes a cell
+        // the array has (the emitter's raw store, emit-assign.js storeFixedElement).
+        store(recv, stored && !(plain && heldBy(recv, val, n)), !typedRecv(recv) && !(lit && fixedSlot(view, recv, target[2][1])) && !withinFixedLen(view, recv, target[2]), !lit, false, asked)
         if (op === '=' && mayBeTyped(view, recv)) convert(val)   // a typed element store converts its value
       } else if (isArr(target) && target[0] === '{}') {
         escape('destructuring assignment')   // targets may be member paths

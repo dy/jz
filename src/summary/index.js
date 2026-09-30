@@ -264,6 +264,9 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   /** The one shape of an object kind, or UNKNOWN for a set or an unknown shape. */
   const sidOf = (k) => tagOf(k) === K.OBJECT && paramOf(k) < SET_BASE ? paramOf(k) : UNKNOWN
   const unionShapes = (a, b) => {
+    // a site of a folded layout is the layout (the memo below holds no answer from before a fold)
+    a = canonSid(a); b = canonSid(b)
+    if (a === b) return a
     const pair = a * 65536 + b
     let id = shapeUnions.get(pair)
     if (id !== undefined) return id
@@ -365,6 +368,8 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   const foldLayout = (l) => {
     if (foldedLayouts.has(l)) return
     foldedLayouts.add(l); changed = true
+    // A union of sites of this layout answered a set before the fold: from now on it is the layout.
+    shapeUnions.clear()
     for (const site of sitesByLayout.get(l) ?? []) {
       if (site === l) continue
       slots(site).forEach((k, i) => raiseSlot(l, i, k))
@@ -1654,6 +1659,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       }
       if (callee === '__keys_ro' || callee === '__keys_dyn') return kind(K.ARRAY)
       if (callee === '__hide_member') return NUMBER // metadata only; the preceding assignment owns the value write
+      if (callee === '__object_toString') return STRING // the class of a value, `[object X]` (module/object.js)
       const f = funcByName.get(callee)
       if (f) {
         bind(callee, paramNamesOf(f), base, n, f.defaults, f.rest || !n || escaped.has(callee) ? null : initContextFor(callee, ks[base]), node ? node[2] : null)

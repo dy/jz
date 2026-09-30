@@ -21,7 +21,7 @@ import { addSource, ctx, declGlobal, derive, emitArity, err, setFeature } from '
 import { INTRINSIC_ARITY } from '../builtin-signatures.js'
 import { createFunction } from '../function.js'
 import { copyLoc, markSource, MUTATE_OPS, PARAM_DEFAULT, PARAM_KIND, PARAM_NAME, PARAM_PATTERN, REFS_THROUGH_ARROWS, STMT_OPS, T, TYPEOF, accessorOf, alwaysReturns, classifyParam, cloneNode, collectParamNames, extractParams, handlerArgs, hasOptionalChain, isBrand, refsName, walkAst, withLoc, isArrayIndexKey } from '../ast.js'
-import { COLLECTION_CTORS, CTORS, hasModule, includeForArrayAccess, includeForArrayLiteral, includeForCallableValue, includeForGenericMethod, includeForNamedCall, includeForNumericCoercion, includeForObjectLiteral, includeForObjectPattern, includeForOp, includeForProperty, includeForRuntimeCtor, includeForStringOnly, includeForStringValue, includeMods, includeModule } from '../autoload.js'
+import { isNamedCallee, COLLECTION_CTORS, CTORS, hasModule, includeForArrayAccess, includeForArrayLiteral, includeForCallableValue, includeForGenericMethod, includeForNamedCall, includeForNumericCoercion, includeForObjectLiteral, includeForObjectPattern, includeForOp, includeForProperty, includeForRuntimeCtor, includeForStringOnly, includeForStringValue, includeMods, includeModule } from '../autoload.js'
 import { censusShapedNode } from '../kind.js'
 import { REJECT_IDENTS, rejectHandlers } from '../op-policy.js'
 import { recordGlobalRep } from '../compile/infer.js'
@@ -257,6 +257,9 @@ function prepNode(node) {
         if (node === 'Number') { includeForCallableValue(); return prep(['=>', 'x', ['()', 'Number', 'x']]) }
         if (BUILTIN_FNS.has(node)) return node
       }
+      // A function of the target named bare (`parseInt`, `isNaN`) is that function, not the
+      // module that serves it (the chain seeds the module for the call's sake).
+      if (!shadowsBuiltin(node) && namesTargetFn(node)) return node
       // Cross-module import: mangled name (e.g. __util_js$clone)
       if (resolved && resolved !== node) return resolved
       // Block scope: resolve renames
@@ -1576,6 +1579,14 @@ const handlers = {
     // A user binding named like a builtin namespace (`let Math = {…}`) shadows it
     // — read the property off the local value, not the builtin namespace table.
     if (shadowsBuiltin(obj)) { includeForProperty(prop); return ['.', prep(obj), prop] }
+    // `.length`/`.name` of a function of the target, named bare (`Number.length`,
+    // `parseInt.name`, a held `P.length`) or as a member of a namespace (`Math.max.length`,
+    // `M.min.name`): jz has no function-object reflection. Before the namespace read below,
+    // where a constructor's unserved member (`Number.foo`) reads as undefined, as a missing
+    // property does. Constants such as Math.PI are values, so their properties remain
+    // ordinary reads.
+    if ((prop === 'length' || prop === 'name') && isTargetFnRecv(obj))
+      err(`.${prop} is not supported on a function value — jz has no general function-object reflection`)
     // Function-scoped namespace aliases resolve here too (namespaceModOf) — the
     // module-level chain alone missed `const M = Math; M.sqrt` inside a body.
     const mod = namespaceModOf(obj)
@@ -1583,19 +1594,18 @@ const handlers = {
     if (mod) {
       includeModule(mod)
       const key = mod + '.' + prop
+      // A member the target does not serve of a namespace it does (`Symbol.toStringTag`,
+      // a well-known symbol; `Math.frund`) reads as undefined, as a missing property of an
+      // object does; a call of it still errs (the call handler names its key itself).
+      if (prop !== 'prototype' && ctx.core.emit[key] === undefined && !includeForNamedCall(key) && ctx.core.emit[key] === undefined) return [, undefined]
       if (emitArity(ctx.core.emit[key], key) > 0) includeForCallableValue()
       return key
     }
-    // Resolve plain namespaces and their aliases as well as constructors.
-    // Constants such as Math.PI are values, so their properties remain ordinary reads.
-    if ((prop === 'length' || prop === 'name') && Array.isArray(obj) && obj[0] === '.' &&
-        typeof obj[1] === 'string' && typeof obj[2] === 'string' && !shadowsBuiltin(obj[1])) {
-      const ns = namespaceModOf(obj[1])
-      if (ns) includeModule(ns)
-      if (NS_CTORS.has(obj[1]) && !(scopes.length && isDeclared(obj[1])) ||
-          ns && emitArity(ctx.core.emit[ns + '.' + obj[2]], ns + '.' + obj[2]) > 0)
-        err(`.${prop} is not supported on a function value — jz has no general function-object reflection`)
-    }
+    // The prototype of a builtin constructor no module serves as a namespace
+    // (`Boolean.prototype`, where the bare name is the conversion): the dotted
+    // name, as `Number.prototype` is, for a method of it a name holds (plan/scope.js
+    // resolveHeldMethods) or `.call( recv )` takes in place.
+    if (prop === 'prototype' && typeof obj === 'string' && NS_CTORS.has(obj) && !shadowsBuiltin(obj) && !(scopes.length && isDeclared(obj))) return `${obj}.prototype`
     // Source module namespace: import * as X → X.prop resolved to mangled name
     if (typeof obj === 'string' && ctx.module.namespaces?.[obj])
       return ctx.module.namespaces[obj].get(prop) ?? [, undefined]
@@ -1725,6 +1735,12 @@ function builtinGlobalNamed(x) {
 function staticTypeofString(x) {
   const builtin = builtinGlobalNamed(x)
   if (builtin) return GLOBAL_TYPEOF[builtin]
+  // The globals every host has (`globalThis`, `WebAssembly`): objects, imported where a program
+  // names them. `window`, `self`, `global`, `process` are one host's or another's: the run answers.
+  if ((x === 'globalThis' || x === 'WebAssembly') && !(scopes.length && isDeclared(x)) && !ctx.scope.userGlobals?.has?.(x)) return 'object'
+  // A function of the target the program never declares (`Symbol`, `parseInt`: a feature a library tests
+  // for), whether or not its module is in yet.
+  if (typeof x === 'string' && isNamedCallee(x) && !(scopes.length && isDeclared(x)) && !ctx.scope.userGlobals?.has?.(x)) { includeForNamedCall(x); return 'function' }
   // Spec §13.5.3: unresolvable bare ref → 'undefined'.
   if (isUnresolvableBareIdent(x)) return 'undefined'
   if (Array.isArray(x) && (x[0] === '.' || x[0] === '[]') &&
@@ -1744,6 +1760,7 @@ function staticTypeofString(x) {
     if (GLOBALS[x] && emitArity(ctx.core.emit?.[x], x) > 0) return 'function'
   }
   const px = prep(x)
+  if (namesTargetFn(px)) return 'function'
   if (typeof px === 'string' && px.includes('.') &&
       (INTRINSIC_ARITY[px] != null || emitArity(ctx.core.emit?.[px], px) > 0)) return 'function'
   return null
@@ -2008,6 +2025,33 @@ const registerMemberAlias = (name, key) => !bindingWritten(name) && registerBuil
 // `name` reads as the function `fn` from here on, through the chain every import alias resolves through.
 const registerFnAlias = (name, fn) => { ctx.scope.chain[name] = fn }
 
+/** A function of the target a program names bare (`parseInt`, `Symbol`, `isNaN`): a callee of
+ *  the table, or a global whose module serves it as a function. Brings its module in. */
+const namesTargetFn = (name) => {
+  if (typeof name !== 'string') return false
+  if (isNamedCallee(name)) return includeForNamedCall(name)
+  const mod = GLOBALS[name]
+  if (!mod || hasModule(name) || !hasModule(mod)) return false   // a namespace (`Math`, `JSON`) is no function
+  includeModule(mod)
+  return emitArity(ctx.core.emit[name], name) > 0
+}
+
+/** A receiver that is a function of the target: its bare name (`Number`, `parseInt`), a name
+ *  holding it (`const P = parseInt`), or a member of a namespace it serves (`Math.max`, `M.min`
+ *  through an alias). Brings the namespace's module in. */
+const isTargetFnRecv = (obj) => {
+  if (typeof obj === 'string') {
+    if (shadowsBuiltin(obj)) return false
+    const held = scopes.length && isDeclared(obj) ? resolveScope(obj) : ctx.scope.chain[obj]
+    return NS_CTORS.has(obj) || namesTargetFn(obj) || held !== obj && namesTargetFn(held)
+  }
+  if (!Array.isArray(obj) || obj[0] !== '.' || typeof obj[1] !== 'string' || typeof obj[2] !== 'string' || shadowsBuiltin(obj[1])) return false
+  const ns = namespaceModOf(obj[1])
+  if (ns) includeModule(ns)
+  return NS_CTORS.has(obj[1]) && !(scopes.length && isDeclared(obj[1])) ||
+    !!ns && emitArity(ctx.core.emit[ns + '.' + obj[2]], ns + '.' + obj[2]) > 0
+}
+
 /** Bind `name` to builtin emit key `key` at the current scope (module
  *  `scope.chain` at depth 0, block scope otherwise) instead of declaring a
  *  real global/local — mirrors the `const alias = fn` function-alias fast
@@ -2246,6 +2290,10 @@ function prepDecl(op, ...inits) {
         if (op === 'const' && bindingWritten(name)) err(`Assignment to constant '${name}' (TypeError in JS)`)
         registerBuiltinAlias(name, normed); continue
       }
+      // `const P = parseInt`, a function of the target named bare, through any names
+      // (`const Q = P`): the name is that function, as an alias of a member is.
+      if (typeof normed === 'string' && normed !== name && typeof init === 'string' && !shadowsBuiltin(init)
+          && namesTargetFn(normed) && registerBuiltinAlias(name, normed)) continue
     }
 
     if (isDestructPattern(name)) {
@@ -2536,7 +2584,10 @@ function dispatchConstructorCall(callee, args) {
 // or an Array method applied to a copy (`Array.prototype.slice.call(typed)`
 // returns a plain array, so the receiver copies through Array.from first).
 // Mutating Array methods on a copy would lose the write; they keep the reject.
-const BORROW_CTORS = new Set(['Array', ...TYPED_ELEM_NAMES])
+// A primitive's prototype method borrowed onto a value of its kind (`Number.prototype.toString.call( n, 16 )`,
+// `String.prototype.slice.call( s, 1 )`, `Boolean.prototype.toString.call( b )`) is the method on the receiver.
+const PRIMITIVE_CTORS = new Set(['String', 'Number', 'Boolean'])
+const BORROW_CTORS = new Set(['Array', ...TYPED_ELEM_NAMES, ...PRIMITIVE_CTORS])
 const ARRAY_COPY_SAFE = new Set(['slice', 'map', 'filter', 'join', 'indexOf', 'lastIndexOf', 'includes',
   'reduce', 'reduceRight', 'forEach', 'some', 'every', 'find', 'findIndex', 'findLast', 'findLastIndex', 'concat', 'at', 'flat', 'flatMap', 'entries', 'keys', 'values', 'toString'])
 function foldPrototypeBorrow(callee, args) {
@@ -2550,6 +2601,7 @@ function foldPrototypeBorrow(callee, args) {
   const [recv, ...rest] = handlerArgs(args)
   if (recv == null) return undefined
   if (ctor === 'Array' && !ARRAY_COPY_SAFE.has(method[2])) return undefined
+  if (PRIMITIVE_CTORS.has(ctor)) includeForGenericMethod(method[2])
   const base = ctor === 'Array' ? ['()', ['.', 'Array', 'from'], recv] : recv
   return prep(['()', ['.', base, method[2]], rest.length === 0 ? null : rest.length === 1 ? rest[0] : [',', ...rest]])
 }
@@ -2653,6 +2705,11 @@ function resolveCallee(callee, args) {
     }
     if (resolved?.includes('.')) return resolved
     if (resolved && hasFunc(resolved)) return resolved
+    // A function of the target held in a name the program declared, through any names
+    // (`var Sym = Symbol; var ctor = Sym; ctor('a')`, `var P = parseInt`): the call the
+    // target names. A seeded name (GLOBALS: `RangeError` → `Error`, the module that
+    // serves it) is the target's own, called as written.
+    if (resolved && resolved !== callee && resolved !== GLOBALS[callee] && namesTargetFn(resolved)) return resolved
     // Chain-resolved VALUE GLOBAL — a default-imported factory product
     // (`export default make(...)` → module global `__dep$default`;
     // `import thing …; thing(x)` must closure-call that global, not fall

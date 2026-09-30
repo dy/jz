@@ -132,9 +132,9 @@ h1, h2, h3, h4, h5, h6 { font-family: var(--font); }
 .reflect-title[data-metal-ready="true"] > .title-fill { -webkit-text-fill-color: transparent; }
 .reflect-title[data-metal-ready="true"] > .title-outline { visibility: visible; }
 .metal-face {
-  mask-image: radial-gradient(ellipse 480px 180px at var(--fill-x, 50%) var(--fill-y, 50%), #000, #000e 50%, transparent),
-    radial-gradient(ellipse 360px 120px at var(--fill-x, 50%) calc(200% - var(--fill-y, 50%)), #0006, transparent),
-    linear-gradient(145deg, #0003, #0001);
+  mask-image: radial-gradient(ellipse 260px 150px at var(--fill-x, 50%) var(--fill-y, 50%), #000, #000d 25%, transparent),
+    radial-gradient(ellipse 200px 90px at var(--fill-x, 50%) calc(200% - var(--fill-y, 50%)), #0003, transparent),
+    linear-gradient(145deg, #00000008, #00000002);
   pointer-events: none;
 }
 .reflect-title { --fill-x: calc(var(--shine-x, 50%) + .25em); --fill-y: calc(var(--shine-y, 50%) + .25em); }

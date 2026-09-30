@@ -168,8 +168,18 @@ test('function reflection rejects resolved Promise helpers and namespace aliases
     throws(`const M = Math; export let f = () => ${expr}`,
       'not supported on a function value', expr)
   }
+  // A function of the target named bare, or held in a name: the same reflection, not the
+  // undefined an unserved member of its namespace reads as (`Number.length` is 1 in JS).
+  for (const expr of ['Number.length', 'Number.name', 'parseInt.length', 'isNaN.name', 'Symbol.length', 'P.length']) {
+    throws(`const P = parseInt; export let f = () => ${expr}`,
+      'not supported on a function value', expr)
+  }
   is(run('export let f = () => { const Math = { max: { length: 3 } }; return Math.max.length }').f(), 3)
+  is(run('export let f = () => { const Number = { length: 4 }; return Number.length }').f(), 4, 'a local named like a constructor')
+  is(run('export let f = () => { const Number = 7, Boolean = 2; return Number + Boolean }').f(), 9, 'locals named like the conversions are the locals')
+  is(run('let Number = { length: 5 }; export let f = () => Number.length').f(), 5, 'a global named like a constructor')
   is(run('export let f = () => Math.PI.length').f(), undefined)
+  is(run('export let f = () => Number.foo').f(), undefined, 'an unserved member of a constructor namespace')
 })
 
 test('dynamic method arms share a block callback body and its nested closures', () => {

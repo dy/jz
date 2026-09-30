@@ -4,7 +4,7 @@ import { is, ok, throws } from 'tst/assert.js'
 import jz, { compile } from '../index.js'
 import { onWasi, onKernel, adaptI64, levels } from './_matrix.js'
 import { parse, has } from '../scripts/wat-probe.mjs'
-import { oracle, cases } from './util.js'
+import { oracle, cases, funcWat } from './util.js'
 
 function run(code) {
   const { module, instance } = jz(code)
@@ -2414,4 +2414,27 @@ test('.sort: stable, undefined last, default order by strings, as JS sorts', () 
       for (const n of [0, 1, 2, 17, 257]) for (const s of [1, 9]) is(JSON.stringify(f(n, s)), JSON.stringify(want(n, s)), `n=${n} s=${s} at ${optimize}: ${src.slice(40, 90)}`)
     }
   }
+})
+
+// A parameter every call fixes to one integer reads as the integer in its body
+// (narrow/param-abi.js substituteIntConstParams): a self-recursive helper's
+// `out[offset + stride]` is a store at a literal index, not a growth the helper
+// must be ready for at every call.
+test('a parameter fixed to one integer is that integer: an out-array store stays a plain store', () => {
+  const src = `function assign(x, out, stride, offset) {
+      if (x < 1) {
+        if (x < 0) { assign(-x, out, stride, offset); out[offset] = -out[offset]; out[offset + stride] = -out[offset + stride]; return out }
+        out[offset] = 0; out[offset + stride] = x; return out
+      }
+      const i = Math.floor(x); out[offset] = i; out[offset + stride] = x - i; return out
+    }
+    export let f = (x) => { const r = assign(x, [0, 0], 1, 0); return r[0] * 10 + r[1] }`
+  const host = oracle(src)
+  for (const optimize of levels(0, 2, 3)) {
+    const { f } = jz(src, { optimize }).exports
+    for (const x of [-2.5, -0.25, 0, 0.75, 1, 3.5, 1e6 + 0.5]) is(f(x), host.f(x), `f(${x}) at ${optimize}`)
+  }
+  if (onKernel()) return
+  const text = compile(src, { optimize: 'speed', wat: true })
+  ok(!/__arr_set_idx_ptr/.test(funcWat(text, 'assign')), 'the helper stores at literal indices, without the growth helper')
 })
