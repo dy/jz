@@ -562,6 +562,28 @@ test('self-compile: repeated guards avoid temporary analysis closures and member
   }
 })
 
+test('self-compile: nested dispatch tables reuse closure union storage', () => {
+  const s = getSelf(), previous = new Map()
+  for (const count of [0, 64, 64, 16, 0, 64]) {
+    const source = 'function apply(fn,x){return fn(x)}' +
+      Array.from({ length: count }, (_, i) => `function step${i}(x){return x+${i}}`).join('') +
+      Array.from({ length: count }, (_, i) => `function part${i}(x,mode){const table=[` +
+        Array.from({ length: i + 1 }, (_, j) => 'step' + j).join(',') +
+        `,y=>y+x];return apply(table[mode?${i + 1}:0],x)}`).join('') +
+      `export function main(x,mode){return ${Array.from({ length: count }, (_, i) => `part${i}(x,mode)`).join('+') || '0'}}`
+    const out = s.exports.default(s.memory.String(source), 0, s.memory.String('1'))
+    const bytes = new Uint8Array(s.memory.read(out))
+    const summary = phaseDeltas(readMarks(s)).find(p => p.name === 'summary')
+    ok(summary && summary.bytes < 512 * 1024 + count * 96 * 1024,
+      `${count} dispatch tables: first summary uses ${summary?.bytes} bytes`)
+    const { main } = instantiate(bytes).exports
+    for (const [x, mode] of [[0, 0], [2, 1], [-3, 1], [0, 0], [2, 0]])
+      is(main(x, mode), count ? count * x * (mode ? 2 : 1) : 0)
+    if (previous.has(count)) is(bytes, previous.get(count), 'repeated and interleaved compilations emit identical bytes')
+    else previous.set(count, bytes)
+  }
+})
+
 test('self-compile: heap marks name their phases, reset per call, and stay readable after a failed compile', () => {
   const s = getSelf()
   const src = 'let inc = x => x + 1; export let main = () => inc(10)'

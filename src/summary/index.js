@@ -217,6 +217,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     }
     return id
   }
+  const namedClosure = name => closureSetIds.get(name) ?? closureSet([name])
   const unions = new Map()       // `a * 65536 + b` → the union's id, computed once per pair
   const unionClosures = (a, b) => {
     const pair = a * 65536 + b
@@ -2418,7 +2419,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   // the function does not escape by it.
   // A function named as a receiver (`f.prop`, `f.m(…)`) keeps its identity: its
   // own properties (closureProps) are read and stored through it.
-  const receiver = (n) => typeof n === 'string' && funcByName.has(n) && keyOf(n) === null ? kind(K.CLOSURE, closureSet([n])) : expr(n)
+  const receiver = (n) => typeof n === 'string' && funcByName.has(n) && keyOf(n) === null ? kind(K.CLOSURE, namedClosure(n)) : expr(n)
 
   // A static object literal's shape is structural: its schema (or the
   // registry's silence) is looked up once per node. A literal with a spread
@@ -2684,7 +2685,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     if (typeof n === 'number') return NUMBER
     if (typeof n === 'string') {
       const key = keyOf(n)
-      if (key === null) return funcByName.has(n) ? kind(K.CLOSURE, closureSet([n])) : outsideKind(n)  // a name from outside the program
+      if (key === null) return funcByName.has(n) ? kind(K.CLOSURE, namedClosure(n)) : outsideKind(n)  // a name from outside the program
       if (bindingScope[key] !== (current ?? MODULE)) {
         let keys = captures.get(current)
         if (!keys) captures.set(current, keys = new Set())
@@ -2697,7 +2698,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       const k = (post.get(key) ?? (pre.has(key) ? incoming[key] : kinds[key])) ?? K.NONE
       // A top-level `let f = (…) => …` is the function `f` (prepare registers
       // it): the binding reads as that function until an assignment rebinds it.
-      if (funcByName.has(n) && (tagOf(k) === K.NONE || (tagOf(k) === K.CLOSURE && paramOf(k) === UNKNOWN))) return kind(K.CLOSURE, closureSet([n]))
+      if (funcByName.has(n) && (tagOf(k) === K.NONE || (tagOf(k) === K.CLOSURE && paramOf(k) === UNKNOWN))) return kind(K.CLOSURE, namedClosure(n))
       const mask = refined.get(key)
       return mask === undefined ? k : refine(k, mask)
     }

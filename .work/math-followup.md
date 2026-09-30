@@ -169,3 +169,60 @@ base and current: `1e30 | 0` gives -1 instead of Node's 0. Reproducer:
 `/private/tmp/jz-math-range-repro.mjs`; results:
 `/private/tmp/jz-math-range-repro.log`. The exported-parameter regression uses
 ±Infinity to test the argument-hull boundary independently of this defect.
+
+## Consolidation, 2026-09-30
+
+State of main after the landings (`math-target` through `7104c8c4`, the follow-up
+through `7d99a984`, jz-46's stdlib stack through `6f069d30`, later commits by others):
+
+- What `math-target` brought, all on main: parameter argument hulls, header-load
+  hoist before a loop, present-receiver fusion, module function aliases, the
+  pmndrs/math bench cases (`polytri`, `worley`, `fabrik`, `quatmul`, pending in the
+  claims gate), SLP field pairs (`src/optimize/vectorize/dot-slp.js`, address model in
+  `access.js`), store-to-load forwarding with dead-store elimination
+  (`src/optimize/forward-store.js`, key `forwardStores`), the export-boundary merge
+  with jz-5e's kind variants (`Array+` slots select no variant, `interop.js` slotsOf).
+- Failures the core suite shows on main that predate or are unrelated to that work,
+  each reproduced on a tree without it: `errors.js` strict-mode number default,
+  `unsigned.js` grouped expressions at O2, `summary.js` "bytes: 2212",
+  `summary-queries.js` BigInt shape join, `field-cse.js` "fewer reads with the
+  cache", `dyn-closure-tables.js` "'nf1_0' is not in scope", and `async.js` fetch
+  (a 5 s timeout under load).
+- Fixed here: `examples.js` "buddhabrot: density peak-find must lift to f64x2.pmax"
+  regressed at `c9824c6e` (passes at `7104c8c4`). Two shapes reached the reduction
+  recognizer that it did not know: the load cache shares `dens[i]` between the
+  compare and the store as one tee'd temp, and the value read of an element that
+  may be missing carries `select(nan, x, x is hole)` while the compare reads it
+  bare. `reduce.js` inlines the tee'd load and drops the temp's declaration for
+  recognition; `idioms.js` sees through the hole test in the arm a `>`/`<` compare
+  selects. Pinned in `test/simd.js` with minimal kernels of both shapes.
+
+Speed, measured on this machine at load 15–100 (paired, same process, min of 7–15;
+never a release figure): the SLP field pairs and forwarding take the pmndrs/math
+kernels to geomean 0.93 of the previous head (mat4.multiply 0.65–0.75, fromRTS 0.55,
+funnel 0.57, quat.slerp 0.74). The bench harness still has jz behind V8 on the four
+cases (quatmul 45–55 vs 33–36 µs, fabrik 62–72 vs 45–50, polytri 2939 vs 1955,
+worley 1429 vs 1298 in the last runs; worley was 0.64× in a quieter one).
+
+What still costs in `quatmul` and `fabrik`, in order, each a general class:
+
+1. Repeated guarded element reads (`a[i]` for `multiply`, again for `invert`) across
+   stores to other module arrays: forwarding forgets them because it cannot prove
+   `a`, `out`, `inv` distinct. Needs a distinct-allocation fact for module-const
+   arrays (a `global.get` leaf whose initializer allocates), then the ~10 loads per
+   iteration go. `cseScalarLoad`'s `fn.cseLoadBases` is the existing oracle of that
+   kind; it does not reach the hoisted `$__li*` bases.
+2. `invert`'s early return puts its stores in both arms of a diamond; forwarding
+   across the join needs a `select` of the two arms' values (`.work` item 2 above).
+3. The remaining `polytri` cost is in `between`, `intersectProp`, `diagonalie`
+   (conversions and bounds), per the profile above.
+4. quat.multiply and vec3.cross do not pack: permuted lane pairs (`bz,bx`) and mixed
+   add/sub; at two f64 lanes the shuffles and sign flips cost what they save.
+5. Forwarding shrinks bodies below the leaf-inline budget (cull's `buildFrustum` is
+   spliced into `spheresRun`, ~1.2× slower there): the inliner's cost model should
+   count what forwarding removed as already cheap, not as room.
+
+Method that gave usable numbers on the loaded machine: build each kernel set at
+`{ level: 'speed' }` from two trees, instantiate both in one process, warm each
+export 200 ms, alternate samples, take the minimum; sequential per-tree runs showed
+±30% ordering bias on identical wasm.

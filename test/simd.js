@@ -11,6 +11,8 @@ import encodeWat from 'watr/compile'
 import { vectorizeLaneLocal } from '../src/optimize/vectorize/index.js'
 import { simdBound, matchBlockLoop } from '../src/optimize/vectorize/scaffold.js'
 import { tryGatherMap } from '../src/optimize/vectorize/gather-map.js'
+import { matchIntMinMaxReduce } from '../src/optimize/vectorize/idioms.js'
+import { ATOM, atomNanHex } from '../layout.js'
 import { GATHER_MAP_KERNEL as GATHER_MAP, BOUNDED_GATHER_KERNEL } from './_optimizer-kernels.js'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
@@ -2030,6 +2032,43 @@ test('vectorize: f64 product reduction lifts to f64x2.mul', () => {
   is(runVec(src, SIMD_OPT).main(), runVec(src).main())
   is(runVec(src, SIMD_OPT).main(), 1024)
   ok(/f64x2\.mul/.test(wat(src, SIMD_OPT)), 'expected f64x2.mul')
+})
+
+test('vectorize: reduction recognition only removes the missing-element sentinel check', () => {
+  const x = ['local.get', '$x'], acc = ['local.get', '$m'], hole = atomNanHex(ATOM.UNDEF)
+  for (const bits of [hole, '0x3FF0000000000000', '0x7FF0000000000000', '0']) {
+    const value = ['select', ['f64.const', 'nan'], x, ['i64.eq', ['i64.reinterpret_f64', x], ['i64.const', bits]]]
+    const reduction = ['select', value, acc, ['f64.gt', x, acc]]
+    is(matchIntMinMaxReduce(reduction, '$m') !== null, bits === hole, `${bits}: only a missing slot is normalization`)
+  }
+})
+
+test('vectorize: a conditional-store max lifts through the load cache\'s tee and a value read\'s hole test', () => {
+  // `if (a[i] > m) m = a[i]` reaches the recognizer in two more shapes: the load cache
+  // shares the element between the compare and the store as one tee'd temp (declared
+  // `(local.set $t 0)`, filled `(local.tee $t LOAD)`, read `(local.get $t)`), and an
+  // element read as a value carries its hole test, `select(nan, x, x is hole)`, while the
+  // compare read it bare. Both are the same reduction: in the arm the compare selects,
+  // the element is no NaN.
+  const shared = `const a = new Float64Array(1000)
+    export const main = () => { for (let i = 0; i < 1000; i++) a[i] = Math.sin(i * 1.3) * 1000
+      a[500] = NaN; let i = 0, m = 1; while (i < 1000) { if (a[i] > m) m = a[i]; i++ } return (m * 1000) | 0 }`
+  const resized = `let a
+    export let resize = (n) => { a = new Float64Array(n); for (let i = 0; i < n; i++) a[i] = Math.cos(i * 0.9) * 500; a[70] = NaN }
+    export let main = (n) => { let i = 0, m = 1; while (i < n) { if (a[i] > m) m = a[i]; i++ } return (m * 1000) | 0 }`
+  const peak = (src, opt) => { const e = runVec(src, opt); e.resize?.(777); return e.main(777) }
+  for (const [name, src] of [['the shared read', shared], ['the value read of a resized array', resized]]) {
+    is(peak(src, SPEED), peak(src, SPEED_SCALAR), `${name}: bit-exact (NaN ignored)`)
+    ok(/f64x2\.pmax/.test(wat(src, SPEED)), `${name}: → f64x2.pmax`)
+  }
+  for (const opts of [SPEED, SPEED_SCALAR]) {
+    const native = oracle(resized), compiled = runVec(resized, opts)
+    for (const size of [0, 1, 2, 3, 71, 777, 777, 0, 7, 7]) {
+      native.resize(size); compiled.resize(size)
+      for (const n of [0, 1, Math.max(0, size - 1), size, size + 1])
+        is(compiled.main(n), native.main(n), `size ${size}, bound ${n}: empty work, lane tails, holes and reused storage`)
+    }
+  }
 })
 
 test('vectorize: f64 comparison min/max reduction lifts to f64x2.pmax/pmin (NaN-exact)', () => {

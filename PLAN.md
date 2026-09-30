@@ -9,7 +9,7 @@ that shaped the tree, the work left before release and the latest gate reading.
 ## Release status, September 30
 
 **V1 remains blocked by recursive bootstrap and incomplete release gates.**
-Consolidated candidate 41 passes the full core suite: 5,520 tests and 212,270
+Consolidated candidate 45 passes the full core suite: 5,527 tests and 212,456
 assertions. It combines main's memory fixes, the performance branch and the v1
 work. Main's release protocol, held views and nested-return restoration remain;
 fixed-memory compilation and the receiver-only array-growth rule are retained.
@@ -17,10 +17,13 @@ The local integration branch preserves both parent histories. Candidate 43 adds
 the latest performance commit and fixes its integration with parameter defaults,
 nested closures and fresh call-graph facts. Its focused sweep passes 53 tests
 and 782 assertions. Candidate 45 adds a reusable export census in summary
-analysis; its semantic sweep passes 116 tests / 31,647 assertions. The full
-core/matrix battery is in progress. The prior core attempt stopped after
-2,568 passes because its sandbox blocked a local HTTP server; the new run has
-the required localhost access.
+analysis; its semantic sweep passes 116 tests / 31,647 assertions. Candidate 47
+reuses closure unions and defers disabled diagnostic formatting. The nested
+dispatch-table regression falls from 18.77 MB to 3.94 MB of summary allocation,
+with identical output bytes. The new capacity test checks 0, 1, 1,023, 1,024 and
+1,025 closures and repeated analysis. The latest main SIMD change is reconciled;
+its full SIMD suite passes 239 tests / 6,980 assertions, including empty work,
+lane boundaries, missing reads and reused buffers.
 
 Candidate 39 fixes public constant injection: negative zero, quoted keys,
 sparse-array length, cycle rejection and adjacent negative template values.
@@ -31,13 +34,13 @@ Floatbeat/landing interaction checks pass. The strict bundle is still 2.9 MB
 
 The numeric-coercion import cycle is fixed. Candidate 42 builds a fresh ordinary
 Wasm compiler (22,357,874 bytes); summary fingerprint and temporary-allocation
-fixes reduce its first recursive summary pass from 628 MB to 482 MB. Recursive
-compilation reaches loop-unswitch planning, then still exhausts the 4 GiB heap.
-Candidate 45 repeats that recursive failure with a fresh 22,358,437-byte compiler.
-The export census reduces sampled native allocations from 1,488 to 1,203 MiB,
-but barely changes the Wasm heap; it does not close the bootstrap limit. Ordinary
-build defaults have not changed. Fresh parity/oracle and forced-checkpoint gates
-pass on candidate 45. The remaining matrix, conformance,
+fixes reduce its first recursive summary pass from 628 MB to 482 MB. Candidate
+47 reduces it further to 315 MB, but the later list-kind specialization still
+exhausts the 4 GiB heap after eight summary passes. Its fresh compiler is
+22,360,122 bytes. The export census reduces sampled native allocations from
+1,488 to 1,203 MiB but barely changes the Wasm heap. Ordinary build defaults
+have not changed. Fresh round-trip and parity/oracle gates pass on candidate 47;
+the forced-checkpoint gate last passed on candidate 45. The remaining matrix, conformance,
 extended, fuzz and complete hosted-suite checks have not all passed on the latest
 candidate.
 
