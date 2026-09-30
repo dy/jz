@@ -22,8 +22,10 @@ reuses closure unions and defers disabled diagnostic formatting. The nested
 dispatch-table regression falls from 18.77 MB to 3.94 MB of summary allocation,
 with identical output bytes. The new capacity test checks 0, 1, 1,023, 1,024 and
 1,025 closures and repeated analysis. The latest main SIMD change is reconciled;
-its full SIMD suite passes 239 tests / 6,980 assertions, including empty work,
-lane boundaries, missing reads and reused buffers.
+its full SIMD suite passes 240 tests / 7,089 assertions, including empty work,
+lane boundaries, missing reads, reused buffers and temporary assignments. The
+shared-load rewrite requires one assignment dominating every substituted read;
+reads before assignment and differently assigned values remain distinct.
 
 Candidate 39 fixes public constant injection: negative zero, quoted keys,
 sparse-array length, cycle rejection and adjacent negative template values.
@@ -40,7 +42,7 @@ exhausts the 4 GiB heap after eight summary passes. Its fresh compiler is
 22,360,122 bytes. The export census reduces sampled native allocations from
 1,488 to 1,203 MiB but barely changes the Wasm heap. Ordinary build defaults
 have not changed. Fresh round-trip and parity/oracle gates pass on candidate 47;
-the forced-checkpoint gate last passed on candidate 45. The remaining matrix, conformance,
+the forced-checkpoint gate also passes on candidates 47 and 48. The remaining matrix, conformance,
 extended, fuzz and complete hosted-suite checks have not all passed on the latest
 candidate.
 

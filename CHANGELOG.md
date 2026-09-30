@@ -27,7 +27,8 @@
 - Keep optional-method receiver handling consistent in the Wasm-hosted compiler.
 - Avoid quadratic store-forwarding traversal in expressions without memory candidates.
 - Reduce compiler analysis memory by sharing module facts, definition scans, and direct call edges.
-- Build summary fingerprints with linear storage, avoid temporary guard allocations, and reuse the export census during analysis.
+- Build summary fingerprints with linear storage, reuse closure unions and the export census, and avoid unused analysis allocations.
+- Preserve the defining load and assignment order when recognizing shared SIMD reduction inputs.
 - Copy long template fragments from the string pool instead of emitting thousands of literal stores.
 - Handle Unicode identifiers, whitespace and line terminators without changing literal contents.
 - Preserve element shapes through custom iterator protocols and report valid layout names in diagnostics.

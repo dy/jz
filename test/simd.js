@@ -2034,6 +2034,37 @@ test('vectorize: f64 product reduction lifts to f64x2.mul', () => {
   ok(/f64x2\.mul/.test(wat(src, SIMD_OPT)), 'expected f64x2.mul')
 })
 
+test('vectorize: a shared lane temporary needs one dominating assignment', () => {
+  compile('export const ready = () => 0')
+  const load = base => `(f64.load (i32.add (i32.const ${base}) (i32.shl (local.get $i) (i32.const 3))))`
+  for (const mode of ['shared', 'reassigned', 'read-before-write', 'live-out']) {
+    const condition = mode === 'read-before-write' ? '(local.get $t)' : `(local.tee $t ${load(1024)})`
+    const value = mode === 'reassigned' ? `(local.tee $t ${load(2048)})`
+      : mode === 'read-before-write' ? `(local.tee $t ${load(1024)})` : '(local.get $t)'
+    const source = `(module (memory (export "memory") 1)
+      (func (export "f") (param $n i32) (result f64) (local $i i32) (local $m f64) (local $t f64)
+        (local.set $m (f64.const 1))
+        (block $break (loop $loop
+          (br_if $break (i32.eqz (i32.lt_s (local.get $i) (local.get $n))))
+          (local.set $m (if (result f64) (f64.gt ${condition} (local.get $m))
+            (then ${value}) (else (local.get $m))))
+          (local.set $i (i32.add (local.get $i) (i32.const 1))) (br $loop)))
+        ${mode === 'live-out' ? '(f64.add (local.get $m) (local.get $t))' : '(local.get $m)'}))`
+    const scalar = new WebAssembly.Instance(new WebAssembly.Module(encodeWat(parseWat(source)))).exports
+    const tree = parseWat(source)
+    vectorizeLaneLocal(tree.find(n => n[0] === 'func'), { relaxedFma: true })
+    const lifted = new WebAssembly.Instance(new WebAssembly.Module(encodeWat(tree))).exports
+    for (const values of [Array(8).fill(0), [2, 3, 4, 5, NaN, 7, 8, 9], Array(8).fill(0)]) {
+      for (const e of [scalar, lifted]) {
+        new Float64Array(e.memory.buffer, 1024, 8).set(values)
+        new Float64Array(e.memory.buffer, 2048, 8).set([2, 3, 4, 5, 6, 7, 8, 9])
+      }
+      for (const n of [0, 1, 2, 3, 4, 7, 8, 8, 0]) is(lifted.f(n), scalar.f(n), `${mode}, count ${n}`)
+    }
+    if (mode === 'shared') ok(JSON.stringify(tree).includes('f64x2.pmax'), 'a shared dominating load still vectorizes')
+  }
+})
+
 test('vectorize: reduction recognition only removes the missing-element sentinel check', () => {
   const x = ['local.get', '$x'], acc = ['local.get', '$m'], hole = atomNanHex(ATOM.UNDEF)
   for (const bits of [hole, '0x3FF0000000000000', '0x7FF0000000000000', '0']) {

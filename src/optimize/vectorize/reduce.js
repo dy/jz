@@ -43,14 +43,35 @@ import { simdLoop, simdBound } from './scaffold.js'
 // of the local (a temp the load cache made for a lane read), the names noted in
 // `teed`; a local read past the loop keeps its tee.
 const inlineLaneTees = (stmt, outsideReads, teed) => {
-  const tees = new Map()
-  ;(function find(n) {
+  const tees = new Map(), written = new Set(), blocked = new Set()
+  let straight = true
+  const find = (n, defined) => {
     if (!isArr(n)) return
-    if (n[0] === 'local.tee' && n.length === 3 && typeof n[1] === 'string' && isArr(n[2]) && n[2][0] in LOAD_OPS
-        && !hasSideEffect(n[2]) && !outsideReads?.has(n[1])) tees.set(n[1], n[2])
-    n.forEach(find)
-  })(stmt)
-  if (!tees.size) return stmt
+    const op = n[0]
+    if (op === 'local.get') { if (!defined.has(n[1])) blocked.add(n[1]); return }
+    if (op === 'local.set' || op === 'local.tee') {
+      find(n[2], defined)
+      if (written.has(n[1])) blocked.add(n[1])
+      written.add(n[1]); defined.add(n[1])
+      if (op === 'local.tee' && n.length === 3 && typeof n[1] === 'string' && isArr(n[2]) && n[2][0] in LOAD_OPS
+          && !hasSideEffect(n[2]) && !outsideReads?.has(n[1])) tees.set(n[1], n[2])
+      return
+    }
+    if (op === 'if') {
+      let i = typeof n[1] === 'string' ? 2 : 1
+      if (isArr(n[i]) && n[i][0] === 'result') i++
+      find(n[i++], defined)
+      for (; i < n.length; i++) find(n[i], new Set(defined))
+      return
+    }
+    if (op === 'br' || op === 'br_if' || op === 'br_table' || op === 'loop' || op === 'return' || op.startsWith('throw') || op.startsWith('try')) straight = false
+    for (let i = 1; i < n.length; i++) find(n[i], defined)
+  }
+  find(stmt, new Set())
+  // Every substituted read must see the one load, on every path. A branch's
+  // assignment does not define its sibling or the continuation.
+  for (const name of blocked) tees.delete(name)
+  if (!straight || !tees.size) return stmt
   for (const t of tees.keys()) teed.add(t)
   const clone = (n) => isArr(n) ? n.map(clone) : n
   const sub = (n) => !isArr(n) ? n : (n[0] === 'local.tee' || n[0] === 'local.get') && tees.has(n[1]) ? clone(tees.get(n[1])) : n.map(sub)
@@ -80,14 +101,14 @@ function tryReduceReassoc(bl, fnLocals, freshIdRef, multiAcc = false) {
     return stmt
   }
   const bodyStmts = []
-  for (let i = 3; i < incIdx; i++) bodyStmts.push(asSelectAssign(loopNode[i]))
+  for (let i = 3; i < incIdx; i++) bodyStmts.push(loopNode[i])
   // A lane read the load cache shares between the compare and the store arrives as a
   // temp: `(local.set $t C)` declares it, `(f64.gt (local.tee $t LOAD) acc)` fills it
   // and the store reads `(local.get $t)`. Both sides are that load: inline it for
   // recognition and drop the declaration its reads no longer need. Sound as the collapse
   // below: the lift consumes the load, the scalar remainder keeps the tee and its temp.
   const teed = new Set()
-  for (let i = 0; i < bodyStmts.length; i++) bodyStmts[i] = inlineLaneTees(bodyStmts[i], bl.outsideReads, teed)
+  for (let i = 0; i < bodyStmts.length; i++) bodyStmts[i] = asSelectAssign(inlineLaneTees(bodyStmts[i], bl.outsideReads, teed))
   if (teed.size) for (let i = bodyStmts.length - 1; i >= 0; i--) {
     const s = bodyStmts[i]
     if (isArr(s) && s[0] === 'local.set' && teed.has(s[1]) && !hasSideEffect(s[2])) bodyStmts.splice(i, 1)
