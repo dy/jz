@@ -186,10 +186,10 @@ export function assemble(ast, profiler) {
   let built = null
   const nodeIds = DBG_INVARIANTS ? { of: new WeakMap(), next: 0 } : null
   const summaryKey = () => {
-    let key = `${getFactStore().revision}|${ctx.schema.list.length}|${ctx.funcs.list.length}|${ctx.funcs.names.size}|${ctx.scope.globals.size}` +
-      `|${ctx.schema.poisoned?.size ?? 0}|${ctx.schema.hidden.size}|${ctx.transform.classes?.size ?? 0}|${ctx.module.imports.length}|${ctx.scope.constStrs?.size ?? 0}|${ctx.scope.shapeStrs?.size ?? 0}`
-    for (const [name, sid] of ctx.schema.vars) key += `|${name}=${sid}`
-    return key
+    const parts = [`${getFactStore().revision}|${ctx.schema.list.length}|${ctx.funcs.list.length}|${ctx.funcs.names.size}|${ctx.scope.globals.size}` +
+      `|${ctx.schema.poisoned?.size ?? 0}|${ctx.schema.hidden.size}|${ctx.transform.classes?.size ?? 0}|${ctx.module.imports.length}|${ctx.scope.constStrs?.size ?? 0}|${ctx.scope.shapeStrs?.size ?? 0}`]
+    for (const [name, sid] of ctx.schema.vars) parts.push('|', name, '=', sid)
+    return parts.join('')
   }
   const summaryNow = () => {
     const key = summaryKey()

@@ -521,6 +521,27 @@ test('self-compile: long literal decoding uses linear storage and preserves text
   }
 })
 
+test('self-compile: summary fingerprints use linear storage for named records', () => {
+  const s = getSelf()
+  for (const count of [0, 512, 512, 128, 0, 512]) {
+    const parts = Math.ceil(count / 64)
+    const source = Array.from({ length: parts }, (_, part) =>
+      `function part${part}(x) { let sum = 0;` +
+      Array.from({ length: Math.min(64, count - part * 64) }, (_, j) => {
+        const i = part * 64 + j
+        return `const record${i} = { value: x + ${i} }; sum += record${i}.value;`
+      }).join('') + 'return sum; }').join('') +
+      `export function main(x) { return ${Array.from({ length: parts }, (_, i) => `part${i}(x)`).join('+') || '0'}; }`
+    const out = s.exports.default(s.memory.String(source), 0, s.memory.String('1'))
+    const bytes = new Uint8Array(s.memory.read(out))
+    const summary = phaseDeltas(readMarks(s)).find(p => p.name === 'summary')
+    ok(summary && summary.bytes < 1024 * 1024 + count * 8192,
+      `${count} record bindings: first summary uses ${summary?.bytes} bytes, without retaining each fingerprint prefix`)
+    const { main } = instantiate(bytes).exports
+    for (const x of [0, 2, -3, 2]) is(main(x), count ? count * x + count * (count - 1) / 2 : 0)
+  }
+})
+
 test('self-compile: heap marks name their phases, reset per call, and stay readable after a failed compile', () => {
   const s = getSelf()
   const src = 'let inc = x => x + 1; export let main = () => inc(10)'
