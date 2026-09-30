@@ -14,10 +14,10 @@
 //
 // @module test/fuzz
 import test from 'tst'
-import { ok } from 'tst/assert.js'
+import { is, ok } from 'tst/assert.js'
 import {
   fuzz, fuzzTyped, fuzzTypedMap, fuzzTypedInt, fuzzTypedIntMinMax, fuzzTypedIVSR, fuzzTypedByteScan, fuzzLoopBound,
-  check, report, DEFAULTS, genScalarProgram as genProgram, scalarSource as toSource,
+  check, report, same, inContract, DEFAULTS, genScalarProgram as genProgram, scalarSource as toSource,
 } from './_fuzz.js'
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -45,6 +45,42 @@ const GATE_SCALE = Math.min(1, Math.max(0.05, +process.env.JZ_FUZZ_GATE || 1))
 const N = (n) => Math.max(5, Math.round(n * GATE_SCALE))
 const GATE = { count: N(200), seedStart: 1, inputs: 12, inputSeed: 7, optLevels: [0, 1, 2, 3], cfg: DEFAULTS }
 if (!isMain) {
+  test('fuzz oracle: signed zero and wide arithmetic remain observable', () => {
+    for (const [got, want] of [[0, -0], [-0, 0], [-1, 4294967295], [0, 4294967296]])
+      is(same(got, want), false, `${Object.is(got, -0) ? '-0' : got} differs from ${Object.is(want, -0) ? '-0' : want}`)
+    for (const value of [0, -0, NaN, Infinity, -Infinity, 4294967295, 2 ** 53])
+      is(same(value, value), true, 'identical numeric results agree')
+  })
+  test('fuzz oracle: only executed wide bitwise operands leave the documented contract', () => {
+    const num = v => ({ k: 'num', v }), bin = (o, l, r) => ({ k: 'bin', o, l: num(l), r: num(r) })
+    const admits = (ret, body = []) => inContract({ params: [], body, ret }, [])
+    for (const expr of [bin('+', 2147483647, 1), bin('*', 2147483647, 2), bin('>>>', -1, 0),
+      { k: 'un', o: '-', x: num(0) }, bin('/', 1, -0), bin('*', 2 ** 53, 2)])
+      is(admits(expr), true, 'Number arithmetic, unsigned results and signed zero stay in scope')
+    for (const op of ['&', '|', '^', '<<', '>>', '>>>']) {
+      is(admits(bin(op, 2 ** 63 - 1024, 0)), true, `${op}: below the magnitude boundary`)
+      is(admits(bin(op, 2 ** 63, 0)), false, `${op}: at the magnitude boundary`)
+      is(admits(bin(op, 1, -(2 ** 63))), false, `${op}: the second operand also converts`)
+      is(admits(bin(op, NaN, 0)), true, `${op}: NaN converts to zero`)
+    }
+    for (const v of [2 ** 63, -(2 ** 63), Infinity, -Infinity]) {
+      is(admits({ k: 'un', o: '~', x: num(v) }), false, 'wide bitwise negation')
+      is(admits({ k: 'call', f: 'Math.imul', a: [num(1), num(v)] }), false, 'wide imul operand')
+    }
+    const wide = bin('|', 2 ** 63, 0)
+    is(admits({ k: 'cond', c: num(0), t: wide, e: num(1) }), true, 'an untaken branch does not convert')
+    for (const bound of [0, 1])
+      is(admits(num(1), [{ k: 'while', ctr: 'i', bound, body: [{ k: 'let', n: 'x', init: wide }] }]), bound === 0, 'zero work skips the conversion; one iteration executes it')
+    const dynamic = { params: ['x'], body: [], ret: { k: 'bin', o: '|', l: { k: 'var', n: 'x' }, r: num(0) } }
+    for (const x of [1, 1, 2 ** 63, 1])
+      is(inContract(dynamic, [x]), x === 1, 'A/A/B/A calls retain no exclusion state')
+  })
+  test('fuzz oracle: constant arithmetic uses JavaScript per-operation rounding', () => {
+    const num = v => ({ k: 'num', v })
+    const prog = { params: [], body: [], ret: { k: 'bin', o: '-',
+      l: { k: 'bin', o: '+', l: num(0.1), r: num(0.2) }, r: num(0.3) } }
+    is(check(prog, { inputs: 1, inputSeed: 7, optLevels: [0, 1, 2, 3] }), null)
+  })
   test('fuzz: no new miscompiles in seeds 1..200 × opt {0,1,2,3}', () => {
     const findings = fuzz(GATE)
     ok(findings.invalid === 0, `generator emitted ${findings.invalid} malformed programs — scope bug`)

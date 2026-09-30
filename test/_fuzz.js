@@ -182,48 +182,18 @@ const toSource = (prog) =>
 // ─────────────────────────────────────────────────────────────────────────────
 // Oracle — compile/run both ways; compare bit-exactly (Object.is folds -0/NaN).
 // ─────────────────────────────────────────────────────────────────────────────
-// Input range = jz's integer CONTRACT-valid range. jz's integer arithmetic is
-// asm.js-style: `+`/`-`/`*`/`~`/`<<`/`|0` stay i32 (wrapping / ToInt32) for speed,
-// matching JS exactly only while operands stay where i32 == f64 — i.e. |x| < 2^31
-// for bitwise (ToInt32) and products/sums < 2^31 for arithmetic. Adversarial
-// ±2^31-scale integers fed into escaping arithmetic (e.g. returning `(~p0)*5`,
-// `~(p*p)` at 2^32) wrap where JS keeps an f64 Number — a deliberately-allowed
-// boundary (see README integer contract), NOT a miscompile. So finite magnitudes
-// are capped < 2^14 (products < 2^28 ≪ 2^31, exact) while NaN/±Inf/±0 and a few
-// non-integer floats stay in — they exercise the % / Math / NaN-box edges (which
-// flow through f64 paths) without tripping the integer contract.
+// Modest inputs can still produce wide intermediates. Keep those in scope,
+// including unsigned results and signed zero; only the documented wide
+// bitwise-operand divergence is filtered below.
 const SPECIALS = [0, -0, 1, -1, 2, -2, 0.5, -0.5, 3, 7, 255, 256, -256, 1000, -1000, 8191, 0.1, NaN, Infinity, -Infinity, 12345.678, -9876.5]
 const argval = (g) => g.chance(0.4) ? g.pick(SPECIALS) : (g() - 0.5) * (g.chance(0.5) ? 2 ** 14 : 200)
-// `a` = jz-wasm result, `b` = JS result. Exact match, or both NaN. Plus jz's
-// documented integer contract: its `+`/`-`/`*`/`~`/`<<`/`|0` are asm.js-style
-// ToInt32-wrapping (kept i32 for speed), so when JS yields an integer OUTSIDE
-// int32 range, jz returns its ToInt32 — accept that (`a === (b|0)`, b an integer
-// jz wrapped). For results ≤ 2^53 this is exactly ToInt32 of the true result
-// (mod 2^32 is a ring homomorphism, so per-op i32 wrapping == wrapping the whole
-// expression). NaN/±Inf and non-integers fall through to the strict checks, so
-// real miscompiles (a wrong value that ISN'T the ToInt32 wrap) are still caught.
-const same = (a, b) =>
-  Object.is(a, b) || a === b || (Number.isNaN(a) && Number.isNaN(b)) ||
-  (Number.isInteger(b) && Number.isInteger(a) && a === (b | 0) && a !== b)
+// Object.is also observes signed zero and agrees for two NaNs.
+export const same = (a, b) => Object.is(a, b)
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Integer-CONTRACT model — decides whether an input is in-contract for a program.
+// Contract model — track only executed bitwise operands outside |x| < 2^63.
 // ─────────────────────────────────────────────────────────────────────────────
-// `same()` accepts a final-value i32 wrap (a === b|0). But jz narrows i32 at every
-// op, so an INTERMEDIATE that overflows ±2^31 (or is -0, which i32 can't hold, or a
-// `>>>` past 2^31 since jz keeps signed) and then flows through a NON-wrapping op
-// (Math.*, /, comparison, 1/x) yields a final value `same()` can't recognize as the
-// wrap — jz is correct PER CONTRACT, not a miscompile. This walks the AST exactly
-// like JS (so values match the JS oracle) while tracking which results jz holds as
-// i32; if any i32 result is out-of-contract for these args, the input is skipped.
-// Only i32 paths are gated — f64 / NaN / -0-via-f64 / % edges stay fully checked, so
-// a real miscompile (e.g. a sign-flipped NaN) is never masked.
-const I32MIN = -2147483648, I32MAX = 2147483647
-const outOfContract = (v) => v < I32MIN || v > I32MAX || Object.is(v, -0)
-// A bitwise/`~` operand outside i32 range needs a real ToInt32 (modulo-2^32) wrap;
-// JS does that, but jz converts via i32.trunc (saturating / precision-lossy for
-// |x| ≥ 2^31), so the result diverges. In range, ToInt32 == trunc and jz matches.
-const needsWrap = (v) => v < I32MIN || v > I32MAX
+const wideBitwise = v => Math.abs(v) >= 2 ** 63
 const jsBin = (o, a, b) => {
   switch (o) {
     case '+': return a + b; case '-': return a - b; case '*': return a * b
@@ -239,45 +209,29 @@ const MATHFN = {
   'Math.trunc': Math.trunc, 'Math.abs': Math.abs, 'Math.sqrt': Math.sqrt,
   'Math.min': Math.min, 'Math.max': Math.max, 'Math.imul': Math.imul,
 }
-// Returns { v, i32 } — v is the JS value, i32 marks results jz keeps as int32.
-// Sets st.oob when an i32-typed value leaves the contract-exact domain.
+// Evaluate as JavaScript, marking a wide bitwise conversion when it executes.
 const evalC = (e, env, st) => {
   switch (e.k) {
-    case 'num': return { v: e.v, i32: Number.isInteger(e.v) }
-    case 'var': return env.get(e.n) || { v: 0, i32: false }
+    case 'num': return e.v
+    case 'var': return env.get(e.n)
     case 'un': {
       const x = evalC(e.x, env, st)
-      if (e.o === '~') { if (needsWrap(x.v)) st.oob = true; return { v: ~x.v, i32: true } }
-      const v = -x.v
-      if (x.i32 && outOfContract(v)) st.oob = true              // i32 negate: no -0, may overflow (-(1<<31))
-      return { v, i32: x.i32 }
+      if (e.o === '~') { if (wideBitwise(x)) st.oob = true; return ~x }
+      return -x
     }
     case 'bin': {
       const l = evalC(e.l, env, st), r = evalC(e.r, env, st)
-      const o = e.o, v = jsBin(o, l.v, r.v)
-      if (o === '>>>') { if (needsWrap(l.v) || v > I32MAX) st.oob = true; return { v, i32: true } }  // jz keeps signed i32
-      if (o === '<<' || o === '>>') { if (needsWrap(l.v)) st.oob = true; return { v, i32: true } }    // LHS ToInt32'd
-      if (o === '&' || o === '|' || o === '^') { if (needsWrap(l.v) || needsWrap(r.v)) st.oob = true; return { v, i32: true } }
-      if (o === '<' || o === '>' || o === '<=' || o === '>=' || o === '===' || o === '!==')
-        return { v, i32: true }                                 // boolean 0/1 — i32 (so -(cmp) sees -0)
-      if (o === '+' || o === '-' || o === '*') {
-        const i32 = l.i32 && r.i32
-        if (i32 && outOfContract(v)) st.oob = true
-        return { v, i32 }
-      }
-      return { v, i32: false }                                  // '/', '%' → f64
+      if (['&', '|', '^', '<<', '>>', '>>>'].includes(e.o) && (wideBitwise(l) || wideBitwise(r))) st.oob = true
+      return jsBin(e.o, l, r)
     }
     case 'cond': {
       const c = evalC(e.c, env, st)
-      return c.v ? evalC(e.t, env, st) : evalC(e.e, env, st)
+      return c ? evalC(e.t, env, st) : evalC(e.e, env, st)
     }
     case 'call': {
       const a = e.a.map((x) => evalC(x, env, st))
-      // Math.imul ToInt32's BOTH operands (like the bitwise ops above) — an operand
-      // outside i32 range needs a real modulo-2^32 wrap that jz's documented asm.js
-      // integer contract doesn't perform (it saturates past ±2^63), so it's out of contract.
-      if (e.f === 'Math.imul') { if (needsWrap(a[0].v) || needsWrap(a[1].v)) st.oob = true; return { v: Math.imul(a[0].v, a[1].v), i32: true } }
-      return { v: MATHFN[e.f](...a.map((x) => x.v)), i32: false }
+      if (e.f === 'Math.imul' && a.some(wideBitwise)) st.oob = true
+      return MATHFN[e.f](...a)
     }
   }
 }
@@ -285,26 +239,26 @@ const execC = (stmts, env, st) => {
   for (const s of stmts) {
     if (st.oob) return
     if (s.k === 'let' || s.k === 'set') env.set(s.n, evalC(s.k === 'let' ? s.init : s.x, env, st))
-    else if (s.k === 'if') { const c = evalC(s.c, env, st); c.v ? execC(s.then, env, st) : s.els && execC(s.els, env, st) }
+    else if (s.k === 'if') { const c = evalC(s.c, env, st); c ? execC(s.then, env, st) : s.els && execC(s.els, env, st) }
     else if (s.k === 'while') {
-      env.set(s.ctr, { v: 0, i32: true })
-      while (!st.oob && env.get(s.ctr).v < s.bound) {
+      env.set(s.ctr, 0)
+      while (!st.oob && env.get(s.ctr) < s.bound) {
         execC(s.body, env, st)
-        env.set(s.ctr, { v: env.get(s.ctr).v + 1, i32: true })
+        env.set(s.ctr, env.get(s.ctr) + 1)
       }
     }
   }
 }
-// True when every i32-narrowed intermediate stays in contract for these args.
-const inContract = (prog, args) => {
+// Untaken branches and zero-trip loops cannot introduce a divergence.
+export const inContract = (prog, args) => {
   const env = new Map()
-  prog.params.forEach((p, i) => env.set(p, { v: args[i], i32: false }))  // params are f64 to jz
+  prog.params.forEach((p, i) => env.set(p, args[i]))
   const st = { oob: false }
   execC(prog.body, env, st)
   if (!st.oob) evalC(prog.ret, env, st)
   return !st.oob
 }
-// Coverage accounting — surfaced in the CLI summary so the i32-contract skips are
+// Coverage accounting — surfaced in the CLI summary so the bitwise-contract skips are
 // never a silent cap (a generator change that suddenly skips everything is visible).
 const contractStats = { compared: 0, skipped: 0, nonNumeric: 0 }
 
@@ -360,13 +314,15 @@ export const check = (prog, opts) => {
   // Program is valid JS — now compile once per opt level (compile is the cost).
   const wasmFns = {}
   for (const opt of opts.optLevels) {
-    try { wasmFns[opt] = jz(src, { optimize: opt }).exports.f }
+    // The scalar oracle uses JS's rounding at each operation. Exact rational
+    // constant folding has its own oracle and parity tests in preeval.js.
+    try { wasmFns[opt] = jz(src, { optimize: { level: opt, rationalConst: false } }).exports.f }
     catch (e) { return { kind: 'jz-compile', opt, err: String(e && e.message || e), src } }
   }
   for (let i = 0; i < inputs.length; i++) {
     const want = wants[i]
     if (typeof want !== 'number') { contractStats.nonNumeric++; continue }   // non-numeric JS result — out of scope
-    if (!inContract(prog, inputs[i])) { contractStats.skipped++; continue }   // i32 contract exceeded for these args — skip
+    if (!inContract(prog, inputs[i])) { contractStats.skipped++; continue }   // an executed wide bitwise operand
     contractStats.compared++
     for (const opt of opts.optLevels) {
       let got, gotErr = false
@@ -501,15 +457,14 @@ export const report = (f, opts) => {
 // exact and these never i32-narrow, so jz == JS bit-for-bit with no contract caveat —
 // PROVIDED the generated expression isn't itself a compile-time constant (see below).
 // The loop counter `i` is i32 and is used only as the subscript — never inside a value
-// expression, where e.g. `i * -1.0` would mint a -0 that jz's i32 path can't hold (the
-// documented integer contract the scalar oracle skips; phase-2 with the contract model
-// can add index-dependent values).
+// expression. The scalar generator separately covers arithmetic over counters,
+// including signed zero and results outside the signed-word range.
 //
-// LITERAL-CHAIN CAVEAT (.work/archive/todo.md item #6): a subtree built ENTIRELY from F_LEAF
+// A subtree built ENTIRELY from F_LEAF
 // literals (no `buf[i]` anywhere in it) is exactly the shape `src/prepare/pre-eval.js`
 // constant-folds at compile time via its Rational carry — by design, rounded ONCE for
-// the whole chain instead of per-operation (README FAQ "Compiled constants are more
-// accurate than run-as-JS, never less"; pinned by test/preeval.js's "rational carry
+// the whole chain instead of per-operation (README's constant-arithmetic contract;
+// pinned by test/preeval.js's "rational carry
 // beats sequential per-op rounding"). Real stepwise JS rounds `+ - * /` per operation
 // (ES Number::multiply etc.), so a folded literal chain like `(0.1*1.5)*1.5` legitimately
 // disagrees with naive `jsFn()` evaluation of the SAME source text — not a jz miscompile,
@@ -662,18 +617,16 @@ export const fuzzTypedMap = (opts) => {
 // Exercises the `(i32 ± i32)|0` lowering over typed-array loads (which emit as f64
 // then ToInt32): the optimizer folds it back to i32.add/sub, which is what lets the
 // int SUM reduction vectorize to i32x4.add. Every op is `|0`-clamped so JS and jz
-// agree step-for-step under the integer contract (`same()` tolerates the wrap). The
+// agree step-for-step, including their explicit wrapping. The
 // returned sum crosses both the map result and the reduction.
 // `*` excluded: products of i32 values can exceed 2^53, where JS (Number) loses
-// precision before `|0` while jz wraps each step — a documented integer-contract
-// divergence, not a miscompile (the scalar fuzzer gates it via inContract). The
+// precision before `|0`; multiplication needs its own rounding-sensitive oracle. The
 // kept ops are mod-2^32 homomorphic, so jz's per-step wrap == JS's exact-then-`|0`,
 // and the small init keeps every value well inside the exact range.
 const I_LEAF = ['a[i]', '1', '2', '3', '7', '255']
 const iLeaf = (g) => g.chance(0.6) ? 'a[i]' : g.pick(I_LEAF)
-// Comparison over LEAVES only (bounded operands): a comparison must never consume a
-// non-`|0`'d arithmetic intermediate, which can overflow i32 (e.g. `(a<<a)`), where JS
-// keeps the exact Number and jz wraps — a contract divergence, not a miscompile.
+// Leaf comparisons isolate the typed map's comparison and conditional lowering.
+// The scalar generator covers comparisons of arithmetic intermediates.
 const genIntCmp = (g) => `(${iLeaf(g)} ${g.pick(['<', '>', '<=', '>=', '===', '!=='])} ${iLeaf(g)})`
 const genIntExpr = (g, d) => {
   if (d <= 0 || g.chance(0.4)) return iLeaf(g)
@@ -770,7 +723,7 @@ export const fuzzTypedIntMinMax = (opts) => {
 // vectorizer falls through to induction-variable strength reduction — `a[i]` addressing
 // becomes a strided pointer. Differential vs JS validates the IV-SR transform keeps the
 // pointer in lockstep with `i` across break/continue control flow. Every op is `|0`-clamped
-// so JS and jz agree under the integer contract (`same()` tolerates the wrap).
+// so JS and jz agree exactly, including their explicit wrapping.
 const IVSR_BODIES = [
   'if (a[i] > T) break; acc = (acc + a[i]) | 0;',
   'if (a[i] < 0) continue; acc = (acc ^ a[i]) | 0;',
