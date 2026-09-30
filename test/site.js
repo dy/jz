@@ -220,7 +220,7 @@ test('site: thin title outlines track the light while stats, FAQ and JZ keep the
     const classes = new Set(), rect = { left: 20, top: 40, width, height, bottom: 40 + height }
     const fill = { textContent: 'Examples', getBoundingClientRect: () => rect }
     const outline = { textContent: 'Examples', isConnected: true, style: {} }
-    return { textContent: 'Examples', rect, fill, outline,
+    return { textContent: 'Examples', rect, fill, outline, dataset: {},
       matches: selector => selector.split(', ').includes(kind),
       classList: { add: name => classes.add(name), remove: name => classes.delete(name), contains: name => classes.has(name),
         toggle: (name, on) => on ? classes.add(name) : classes.delete(name) },
@@ -266,6 +266,19 @@ test('site: thin title outlines track the light while stats, FAQ and JZ keep the
   is(filter.parts.feGaussianBlur.attrs.stdDeviation, '0.6 0.6', 'zero-size paint boxes retain finite mask dimensions')
   title.rect.width = 100; title.rect.height = 16; title.rect.top = 900; title.rect.bottom = 916
   g.emit('scroll'); g.drain(); ok(!lit(), 'offscreen titles stay unmasked')
+  title.rect.top = 40; title.rect.bottom = 56
+  title.dataset.titleStyle = 'outline'; g.emit('pointerleave'); g.drain()
+  ok(at(460, -200), 'outline study returns to the same overhead light as the rulers')
+  g.mouse.matches = false; g.emit('mouse'); g.drain()
+  title.dataset.titlePreview = 'true'; g.emit('mutate'); g.drain()
+  ok(lit() && at(50, 8), 'touch and keyboard preview place a stationary light at the title center')
+  for (const mode of ['outline', 'outline', 'fill', 'prism', 'current']) {
+    title.dataset.titleStyle = mode; g.emit('mutate'); g.drain()
+    ok(lit() && at(50, 8), `${mode}: switching styles keeps the preview light stable`)
+    is(g.defs.children.length, 1, 'switching styles reuses the existing title layers')
+  }
+  title.dataset.titlePreview = 'false'; g.emit('mutate'); g.drain()
+  ok(!lit() && at(460, -200), 'clearing preview returns to the resting light')
 })
 
 test('site: selection outlines merge inline fragments, follow scroll, clear, and leave editors native', () => {

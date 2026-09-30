@@ -1040,6 +1040,7 @@
       import rhythm, { snap } from './assets/rhythm.js'
       const $ = id => document.getElementById(id)
       const root = document.documentElement
+      if (new URLSearchParams(location.search).has('title')) import('./assets/title-lab.js')
 
         // ── Bench row: five cells, each rotating through a field of targets — JZ ÷ target in the named quantity
         //    (speed: above 1× is faster; memory, size: below 1× is less). A cell steps every few seconds

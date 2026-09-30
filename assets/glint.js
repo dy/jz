@@ -165,11 +165,12 @@ const frame = () => {
       continue
     }
     if (heading) {
-      const dx = field.x - rect.left, dy = field.y - rect.top
+      const preview = el.dataset.titlePreview === 'true'
+      const dx = preview ? rect.width / 2 : field.x - rect.left, dy = preview ? rect.height / 2 : field.y - rect.top
       const distance = Math.hypot(Math.max(-dx, 0, dx - rect.width), Math.max(-dy, 0, dy - rect.height))
-      const nearby = !!pointer && mouse.matches && !motion.matches && distance < 230
+      const nearby = preview || !!pointer && mouse.matches && !motion.matches && distance < 230
       el.classList.toggle('title-lit', nearby)
-      if (nearby) {
+      if (nearby || el.dataset.titleStyle) {
         el.style.setProperty('--light-x', `${dx.toFixed(1)}px`)
         el.style.setProperty('--light-y', `${dy.toFixed(1)}px`)
       }
@@ -203,7 +204,7 @@ if (ruler) {
   new ResizeObserver(invalidate).observe(document.body)
   new MutationObserver(invalidate).observe(root, { attributes: true, attributeFilter: ['data-theme', 'class'] })
   new MutationObserver(invalidate).observe(document.body, {
-    childList: true, subtree: true, attributes: true, attributeFilter: ['disabled', 'hidden'],
+    childList: true, subtree: true, attributes: true, attributeFilter: ['disabled', 'hidden', 'data-title-style', 'data-title-preview'],
   })
 }
 schedule()
