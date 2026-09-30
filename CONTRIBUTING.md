@@ -234,6 +234,13 @@ An unresolved index can still read an array element or named property. The
 solver may defer its transfer while the index has no evidence; a public query
 must retain those possible values instead of proving the read absent.
 
+Collection enumeration shares the ordered property walk with plain objects.
+Array and typed-array indices precede named properties; initialized and runtime
+property tables merge without duplicate keys. Typed views have no sidecar header.
+Copies read indexed values only within the indexed-value buffer, then use named
+property lookup. This preserves metadata on compiler IR arrays copied with
+`Object.assign([], node)` under both compiler hosts.
+
 Runtime helper templates own their freshly parsed IR. Each demanded helper is
 realized once; late helpers are added only when absent, so there is no parsed
 template cache or clone pass. Generated helpers use `loc: false` to avoid

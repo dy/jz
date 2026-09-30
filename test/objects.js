@@ -399,6 +399,64 @@ test('Object.assign primitive targets reject without ToObject boxing', () => {
   is(run(`export let f = () => Object.assign({}, { a: 1 }).a`).f(), 1)
 })
 
+test('array enumeration and copies retain named properties beside elements', () => {
+  const src = `
+    const copy = n => Object.assign([], n)
+    export function f(size, value, shift) {
+      const a = []
+      for (let i = 0; i < size; i++) a.push(i + 10)
+      a.schemaSid = value; a.type = 'node'; a.missing = undefined
+      if (shift) { a.shift(); a.push(90) }
+      const b = copy(a), keys = []
+      for (const k in a) keys.push(k)
+      return JSON.stringify([Object.keys(a), Object.values(a), Object.entries(a), keys,
+        b.length, b.schemaSid, b.type, Object.hasOwn(b, 'missing'), { ...a }, Object.assign({}, a)])
+    }`
+  const js = oracle(src).f
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const f = jz(src, { optimize }).exports.f
+    for (const args of [[0, 0, false], [1, 3, false], [1, 3, false], [3, 7, true], [1, 3, false]])
+      is(f(...args), js(...args), `array own properties O${optimize}: ${args}`)
+  }
+})
+
+test('array enumeration merges initialized and runtime properties without stale keys', () => {
+  const src = `
+    const a = [10, 20]; a.first = 1; a.second = 2
+    export function f(v, key) {
+      a.first = v; a.third = 3
+      if (v === 0) delete a[key]
+      if (v === 2) a.second = 4
+      const b = Object.assign([], a)
+      return JSON.stringify([Object.keys(a), Object.values(a), Object.entries(a), b.first, b.second, b.third])
+    }`
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const f = jz(src, { optimize }).exports.f, js = oracle(src).f
+    for (const v of [1, 1, 0, 2, 1]) is(f(v, 'second'), js(v, 'second'), `durable array properties O${optimize}, v=${v}`)
+  }
+})
+
+test('collection enumeration includes named properties on owned storage and views', () => {
+  const src = `
+    const data = new Int32Array([11, 22, 33]); const held = data.subarray(1)
+    held.init = 'kept'
+    export function f(mode, value, key) {
+      const a = mode === 0 ? new Int32Array(0) : mode === 1 ? new Int32Array([5, 7])
+        : mode === 2 ? data.subarray(1) : mode === 3 ? held
+        : mode === 4 ? new DataView(new ArrayBuffer(8)) : mode === 5 ? new Set([1]) : new Map([[1, 2]])
+      a.first = value; a.second = undefined; a['01'] = 9
+      if (value === 0) delete a[key]
+      const keys = []; for (const k in a) keys.push(k)
+      return JSON.stringify([Object.keys(a), Object.values(a), Object.entries(a), keys,
+        Object.assign({}, a), {...a}, data[0], data[1], data[2]])
+    }`
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const f = jz(src, { optimize }).exports.f, js = oracle(src).f
+    for (const mode of [0, 1, 2, 3, 4, 5, 6, 3, 2, 0]) for (const value of [1, 1, 0, 2])
+      is(f(mode, value, 'second'), js(mode, value, 'second'), `O${optimize}, mode=${mode}, value=${value}`)
+  }
+})
+
 test('Object.fromEntries rejects unsupported array-like literal entries', () => {
   throws(() => compile(`export let f = () => Object.fromEntries([new String('ab')])`),
     /literal entries must be array pairs/)

@@ -368,7 +368,7 @@ export default (ctx) => {
     if ((typeof obj === 'string' ? lookupValType(obj) : valTypeOf(obj)) === VAL.CLOSURE || ctx.summary?.at(ctx.func.current).valOfExpr(obj) === VAL.CLOSURE)
       err('Object.keys/getOwnPropertyNames on a function value is not supported — jz compiles closures/named functions straight to WASM funcs with no reflectable property bag; jz has no general function-object reflection')
     if (isHashTyped(obj)) return ro ? emitHashKeysRO(obj) : emitHashKeys(obj)
-    if (arrayValType(obj)) return idxKeys(obj, '__len')
+    if (arrayValType(obj)) return emitIndexed(obj, 0)
     if (stringValType(obj)) return idxKeys(obj, '__str_len')
     // The summary's word first: a name whose objects have one closed layout
     // enumerates that layout. The per-name write censuses below cannot see a
@@ -389,10 +389,11 @@ export default (ctx) => {
   }
   ctx.core.emit['Object.keys'] = (obj) => emitKeysGeneric(obj, false)
 
-  // The own enumerable properties of a receiver no layout or dictionary
+  // The indexed properties of a receiver no layout or dictionary
   // describes (the runtime enumerations below): an array's, a typed array's
   // and a string's indices, as keys (mode 0), values (1) or [key, value]
-  // entries (2); a DataView and any other kind have none.
+  // entries (2); a DataView and any other kind have no indexed entries.
+  // idxEnum appends collection properties stored outside their indexed data.
   deps({ __idx_enum: ['__ptr_type', '__ptr_aux', '__ptr_offset', '__len', '__str_len', '__to_str', '__typed_idx', '__str_idx', '__alloc_hdr', '__mkptr'],
     __idx_values: ['__idx_enum', '__ptr_type', '__ptr_offset'] })
   // The payload of an index-keyed receiver's values (__idx_enum mode 1), 0 for any other kind.
@@ -598,7 +599,7 @@ export default (ctx) => {
           ['br', `$loop${id}`]]],
         out.ptr], 'f64')
     }
-    if (arrayValType(obj)) { inc('__arr_from'); return typed(['call', '$__arr_from', asI64(emit(obj))], 'f64') }
+    if (arrayValType(obj)) return emitIndexed(obj, 1)
     if (isHashTyped(obj)) return emitHashValues(obj)
     const schema = resolveSchema(obj)
     if (!schema || hasOutOfSchemaWrites(obj, schema) || mayHaveDynProps(obj)) return emitRuntimeValues(obj)
@@ -639,29 +640,7 @@ export default (ctx) => {
           ['br', `$loop${id}`]]],
         out.ptr], 'f64')
     }
-    if (arrayValType(obj)) {
-      inc('__len', '__to_str', '__ptr_offset', '__alloc_hdr')
-      const v = temp('oea'), i = tempI32('oeai'), len = tempI32('oeal'), base = tempI32('oeab'), pair = tempI32('oeap')
-      const vPtr = () => ['i64.reinterpret_f64', ['local.get', `$${v}`]]
-      const out = allocPtr({ type: PTR.ARRAY, len: ['local.get', `$${len}`], tag: 'oea' })
-      const id = freshId(ctx)
-      return typed(['block', ['result', 'f64'],
-        ['local.set', `$${v}`, asF64(emit(obj))],
-        ['local.set', `$${len}`, ['call', '$__len', vPtr()]],
-        out.init,
-        ['local.set', `$${base}`, ['call', '$__ptr_offset', vPtr()]],
-        ['local.set', `$${i}`, ['i32.const', 0]],
-        ['block', `$brk${id}`, ['loop', `$loop${id}`,
-          ['br_if', `$brk${id}`, ['i32.ge_s', ['local.get', `$${i}`], ['local.get', `$${len}`]]],
-          ['local.set', `$${pair}`, ['call', '$__alloc_hdr', ['i32.const', 2], ['i32.const', 2]]],
-          ['f64.store', slotAddr(pair, 0), ['f64.reinterpret_i64',
-            ['call', '$__to_str', ['i64.reinterpret_f64', ['f64.convert_i32_s', ['local.get', `$${i}`]]]]]],
-          ['f64.store', slotAddr(pair, 1), elemLoad(base, i)],
-          elemStore(out.local, i, mkPtrIR(PTR.ARRAY, 0, ['local.get', `$${pair}`])),
-          ['local.set', `$${i}`, ['i32.add', ['local.get', `$${i}`], ['i32.const', 1]]],
-          ['br', `$loop${id}`]]],
-        out.ptr], 'f64')
-    }
+    if (arrayValType(obj)) return emitIndexed(obj, 2)
     if (isHashTyped(obj)) return emitHashEntries(obj)
     const schema = resolveSchema(obj)
     if (!schema || hasOutOfSchemaWrites(obj, schema) || mayHaveDynProps(obj)) return emitRuntimeEntries(obj)
@@ -1602,7 +1581,8 @@ function hashEntriesFromTemp(t) {
 // Type-unknown receiver: bind the value, branch on ptr-type. HASH walks the
 // probe table; OBJECT loads the schema's key array (registered statically at
 // compile time or lazily at runtime by JSON.parse via __jp_schema_get); other
-// types (ARRAY, nullish, primitives) return an empty array. The empty-array
+// indexed collections include indices and named properties; primitives without
+// indices return an empty array. The empty-array
 // fallback is allocated in all arms for type uniformity at the if boundary.
 function emitRuntimeKeys(obj, ro) {
   const t = temp('rk')
@@ -1641,10 +1621,19 @@ function runtimeKeysFromTemp(t, tag, ro) {
 
 // An index-keyed receiver's keys, values or entries (__idx_enum): what a
 // runtime enumeration lists for a kind neither a layout nor a dictionary holds.
+// Collections append their named properties through the shared property walk.
 const idxEnum = (t, mode) => {
   ctx.module.include('string')
-  inc('__idx_enum')
-  const own = ['call', '$__idx_enum', ['i64.reinterpret_f64', ['local.get', `$${t}`]], ['i32.const', mode]]
+  ctx.module.include('collection')
+  inc('__idx_enum', '__ptr_type', '__ptr_aux')
+  const named = mode === 0 ? objectKeysFromTemp(t, false, true, mode)
+    : mode === 1 ? objectValuesFromTemp(t, mode) : objectEntriesFromTemp(t, mode)
+  const own = ['if', ['result', 'f64'],
+    [PTR.ARRAY, PTR.TYPED, PTR.SET, PTR.MAP].map(type =>
+      ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${t}`]]], ['i32.const', type]])
+      .reduce((a, b) => ['i32.or', a, b]),
+    ['then', named],
+    ['else', ['call', '$__idx_enum', ['i64.reinterpret_f64', ['local.get', `$${t}`]], ['i32.const', mode]]]]
   if (!demandHostReceiver()) return own
   // a host object lists its own (collection.js __ext_enum)
   ctx.module.include('collection')
@@ -1652,6 +1641,12 @@ const idxEnum = (t, mode) => {
   return ['if', ['result', 'f64'], ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${t}`]]], ['i32.const', PTR.EXTERNAL]],
     ['then', ['f64.reinterpret_i64', ['call', '$__ext_enum', ['i64.reinterpret_f64', ['local.get', `$${t}`]], ['i32.const', mode]]]],
     ['else', own]]
+}
+
+function emitIndexed(obj, mode) {
+  const t = temp('ri')
+  return typed(['block', ['result', 'f64'],
+    ['local.set', `$${t}`, asF64(emit(obj))], idxEnum(t, mode)], 'f64')
 }
 
 function emitRuntimeValues(obj) {
@@ -1672,15 +1667,17 @@ function emitRuntimeValues(obj) {
         ['else', idxEnum(t, 1)]]]]], 'f64')
 }
 
-// A copy's source values beside its runtime keys (__idx_values): an array's,
-// a typed array's or a string's by position, whose index the generic property
-// read misses or misreads; for any other kind, each key's value (__dyn_get_any).
+// Index values use their dedicated readers; named keys appended after them
+// use ordinary property reads instead of running past the index-value buffer.
 const idxValuesBase = (s) => {
   ctx.module.include('string')
   inc('__idx_values')
   return ['call', '$__idx_values', ['i64.reinterpret_f64', ['local.get', `$${s}`]]]
 }
-const copiedValue = (s, valsBase, i, key) => ['if', ['result', 'i64'], ['local.get', `$${valsBase}`],
+const copiedValue = (s, valsBase, i, key) => ['if', ['result', 'i64'],
+  ['if', ['result', 'i32'], ['local.get', `$${valsBase}`],
+    ['then', ['i32.lt_u', ['local.get', `$${i}`], ['i32.load', ['i32.sub', ['local.get', `$${valsBase}`], ['i32.const', 8]]]]],
+    ['else', ['i32.const', 0]]],
   ['then', ['i64.load', ['i32.add', ['local.get', `$${valsBase}`], ['i32.shl', ['local.get', `$${i}`], ['i32.const', 3]]]]],
   ['else', ['call', '$__dyn_get_any', ['i64.reinterpret_f64', ['local.get', `$${s}`]], ['i64.reinterpret_f64', ['local.get', `$${key}`]]]]]
 
@@ -1794,8 +1791,11 @@ export function walkObjectProperties(env, onStatic, onDynamic, local) {
 
 // `dynOnly`: the keys added after the literal alone (for-in's tail behind the
 // unrolled declared keys, control-flow.js unrollForIn) – the schema row is
-// not read; the site's own cache holds that list and no other.
-function emitEnumerateObject(t, emitStaticStore, emitDynStore, ro, dynOnly = false) {
+// not read; the site's own cache holds that list and no other. `indexed`
+// seeds the result with indexed elements, then appends the same ordered
+// sidecar properties. Arrays have a header even in static data; typed views
+// have no header and keep their named properties in the global table.
+function emitEnumerateObject(t, emitStaticStore, emitDynStore, ro, dynOnly = false, indexed = null) {
   inc('__alloc_hdr', '__ptr_offset', '__prop_order', '__str_index_key', '__str_eq')
   ctx.module.include('string')
   if (ro) declEnumcGlobals()
@@ -1829,6 +1829,7 @@ function emitEnumerateObject(t, emitStaticStore, emitDynStore, ro, dynOnly = fal
   // (header-patched) output allocation.
   const dnGReal = tempI32('oednGr'), dnSReal = tempI32('oednSr')
   const total = tempI32('oetot')
+  const initial = indexed == null ? null : temp('oeindices'), ni = indexed == null ? null : tempI32('oeindicesn')
   const out = tempI32('oeo'), i = tempI32('oei'), o = tempI32('oej')
   // Under a view (viewRowIR) the schema stream's position and slot differ;
   // only an accessor's gives a slot a kind other than data.
@@ -1883,8 +1884,27 @@ function emitEnumerateObject(t, emitStaticStore, emitDynStore, ro, dynOnly = fal
           ['i32.eq', ['local.get', `$${base}`], ['global.get', `$${site.off}`]],
           ['i32.eq', ['global.get', `$${site.len}`], ['i32.const', -1]]]]]],
     ['then', ['br', `$oed${id}`, ['global.get', `$${site.arr}`]]]]] : []
+  const globalProps = () => hasDynProps ? [
+    ['if', ['f64.ne', ['global.get', '$__dyn_props'], ['f64.const', 0]],
+      ['then',
+        ['local.set', `$${props}`, ['call', '$__ihash_get_local',
+          ['i64.reinterpret_f64', ['global.get', '$__dyn_props']],
+          ['i64.reinterpret_f64', ['f64.convert_i32_s', ['local.get', `$${base}`]]]]],
+        ['if', ['i32.eqz', ['call', '$__is_nullish', ['local.get', `$${props}`]]],
+          ['then',
+            ['local.set', `$${poffG}`, ['call', '$__ptr_offset', ['local.get', `$${props}`]]],
+            ['local.set', `$${pcapG}`, ['i32.load', ['i32.sub', ['local.get', `$${poffG}`], ['i32.const', 4]]]],
+            ['local.set', `$${dnG}`, ['i32.load', ['i32.sub', ['local.get', `$${poffG}`], ['i32.const', 8]]]]]]]]
+  ] : []
+  const hasHeader = () => indexed == null ? ['i32.const', 1] :
+    ['i32.or',
+      ['i32.ne', ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${t}`]]], ['i32.const', PTR.TYPED]],
+      ['i32.eqz', ['i32.and', ['call', '$__ptr_aux', ['i64.reinterpret_f64', ['local.get', `$${t}`]]], ['i32.const', 8]]]]
   const raw = ['i32.wrap_i64', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]
   return ['block', `$oed${id}`, ['result', 'f64'],
+    ...(indexed == null ? [] : [
+      ['local.set', `$${initial}`, ['call', '$__idx_enum', ['i64.reinterpret_f64', ['local.get', `$${t}`]], ['i32.const', indexed]]],
+      ['local.set', `$${ni}`, ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${initial}`]]]]]),
     // A static-segment receiver (below the heap: no header, so never a
     // sidecar, and never forwarded) is the site's cached one when its pointer
     // and the epoch match – nothing else to read (roHit below is the heap
@@ -1915,15 +1935,15 @@ function emitEnumerateObject(t, emitStaticStore, emitDynStore, ro, dynOnly = fal
     // mark, per the durable-receiver policy) or in the global __dyn_props
     // table keyed by offset (populated by a RUNTIME/post-init write on a
     // DURABLE receiver; see collection.js's heapResetWat). Static-segment
-    // objects (base < __heap_start) have no header at all and predate any
-    // warm-reuse machinery, so they contribute no dyn keys either way.
+    // objects (base < __heap_start) have no header; their dynamic keys
+    // live in the global table. Collections also merge both sources.
     ['local.set', `$${base}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
-    ['local.set', `$${mask}`, deletedMaskIR(base)],
+    ['local.set', `$${mask}`, indexed == null ? deletedMaskIR(base) : ['i32.const', 0]],
     ['local.set', `$${dnG}`, ['i32.const', 0]],
     ['local.set', `$${poffG}`, ['i32.const', 0]],
     ['local.set', `$${dnS}`, ['i32.const', 0]],
     ['local.set', `$${poffS}`, ['i32.const', 0]],
-    ['if', ['i32.ge_u', ['local.get', `$${base}`], heapResetIR()],
+    ['if', ['i32.and', hasHeader(), ['i32.ge_u', ['local.get', `$${base}`], heapResetIR()]],
       ['then',
         ['local.set', `$${props}`, ['i64.load', ['i32.sub', ['local.get', `$${base}`], ['i32.const', 16]]]],
         ['if', ['i32.eq',
@@ -1938,12 +1958,13 @@ function emitEnumerateObject(t, emitStaticStore, emitDynStore, ro, dynOnly = fal
         ...roHit],
       ...(hasDynProps ? [['else',
         // Sidecar (init-time keys, if any) — only for genuinely heap-allocated
-        // receivers (base >= __heap_start): static-segment objects have no
-        // header at all, so the off-16 read would hit neighboring static data.
+        // objects (base >= __heap_start), or header-carrying collections.
+        // Static objects and typed views have no header; never read off-16.
         // Durable words may carry the runtime-shadowed bit0 marker
         // (collection.js __dyn_set) — mask it out or the resolved sidecar off
         // is misaligned.
-        ['if', ['i32.ge_u', ['local.get', `$${base}`], ['global.get', '$__heap_start']],
+        ['if', ['i32.and', hasHeader(),
+            ['i32.ge_u', ['local.get', `$${base}`], indexed == null ? ['global.get', '$__heap_start'] : ['i32.const', 16]]],
           ['then',
         ['local.set', `$${props}`, ['i64.and',
           ['i64.load', ['i32.sub', ['local.get', `$${base}`], ['i32.const', 16]]], ['i64.const', -2]]],
@@ -1960,16 +1981,12 @@ function emitEnumerateObject(t, emitStaticStore, emitDynStore, ro, dynOnly = fal
         // header, so the global table is their only storage), and the probe is
         // keyed by offset, needing no header. Gating it on heap_start silently
         // dropped `o.zz = 3` on a data-segment literal from enumeration.
-        ['if', ['f64.ne', ['global.get', '$__dyn_props'], ['f64.const', 0]],
-          ['then',
-            ['local.set', `$${props}`, ['call', '$__ihash_get_local',
-              ['i64.reinterpret_f64', ['global.get', '$__dyn_props']],
-              ['i64.reinterpret_f64', ['f64.convert_i32_s', ['local.get', `$${base}`]]]]],
-            ['if', ['i32.eqz', ['call', '$__is_nullish', ['local.get', `$${props}`]]],
-              ['then',
-                ['local.set', `$${poffG}`, ['call', '$__ptr_offset', ['local.get', `$${props}`]]],
-                ['local.set', `$${pcapG}`, ['i32.load', ['i32.sub', ['local.get', `$${poffG}`], ['i32.const', 4]]]],
-                ['local.set', `$${dnG}`, ['i32.load', ['i32.sub', ['local.get', `$${poffG}`], ['i32.const', 8]]]]]]]]]] : [])],
+        ...(indexed == null ? globalProps() : [])]] : [])],
+    // Shifted arrays and typed views can use the global table above the reset base.
+    ...(indexed == null ? [] : [
+      ...globalProps(),
+      ['if', ['i32.and', ['i32.eqz', ['local.get', `$${dnG}`]], ['i32.eqz', ['local.get', `$${dnS}`]]],
+        ['then', ['br', `$oed${id}`, ['local.get', `$${initial}`]]]]]),
     // for-in with no dyn sources at all: the enumeration IS the schema key
     // array, and __schema_tbl[sid] already holds it as a static jz array —
     // return it boxed directly. Read-only by for-in's contract, static by
@@ -1983,9 +2000,12 @@ function emitEnumerateObject(t, emitStaticStore, emitDynStore, ro, dynOnly = fal
     // Over-allocate sn+dnG+dnS; patch length to actual `o` post-dedup so
     // removed shadow-mirror/cross-source-duplicate slots never expose
     // garbage tails.
-    ['local.set', `$${total}`, ['i32.add', ['local.get', `$${sn}`], ['i32.add', ['local.get', `$${dnG}`], ['local.get', `$${dnS}`]]]],
+    ['local.set', `$${total}`, ['i32.add', ['local.get', `$${ni ?? sn}`], ['i32.add', ['local.get', `$${dnG}`], ['local.get', `$${dnS}`]]]],
     ['local.set', `$${out}`, ['call', '$__alloc_hdr', ['local.get', `$${total}`], ['local.get', `$${total}`]]],
-    ['local.set', `$${o}`, ['i32.const', 0]],
+    ['local.set', `$${o}`, ni == null ? ['i32.const', 0] : ['local.get', `$${ni}`]],
+    ...(indexed == null ? [] : [['memory.copy', ['local.get', `$${out}`],
+      ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${initial}`]]],
+      ['i32.shl', ['local.get', `$${ni}`], ['i32.const', 3]]]]),
     ['if', ['i32.ne', ['local.get', `$${poffG}`], ['i32.const', 0]],
       ['then',
         ['local.set', `$${ordG}`, ['call', '$__prop_order', ['local.get', `$${poffG}`], ['local.get', `$${pcapG}`], ['i32.const', 24]]],
@@ -2005,7 +2025,7 @@ function emitEnumerateObject(t, emitStaticStore, emitDynStore, ro, dynOnly = fal
 
 // Object.keys for an OBJECT — copy schema key (i64@src+i*8) then dyn key (i64@slot+8).
 // ro (for-in): serve the static schema array / enum cache — see emitEnumerateObject.
-const objectKeysFromTemp = (t, ro, dynOnly = false) => emitEnumerateObject(t,
+const objectKeysFromTemp = (t, ro, dynOnly = false, indexed = null) => emitEnumerateObject(t,
   ({ out, o, src, row }) => [
     ['i64.store',
       ['i32.add', ['local.get', `$${out}`], ['i32.shl', ['local.get', `$${o}`], ['i32.const', 3]]],
@@ -2013,10 +2033,10 @@ const objectKeysFromTemp = (t, ro, dynOnly = false) => emitEnumerateObject(t,
   ({ out, o, slot }) => [
     ['i64.store',
       ['i32.add', ['local.get', `$${out}`], ['i32.shl', ['local.get', `$${o}`], ['i32.const', 3]]],
-      ['i64.load', ['i32.add', ['local.get', `$${slot}`], ['i32.const', 8]]]]], ro, dynOnly)
+      ['i64.load', ['i32.add', ['local.get', `$${slot}`], ['i32.const', 8]]]]], ro, dynOnly, indexed)
 
 // Object.values for an OBJECT — copy schema value (f64@base+i*8) then dyn value (f64@slot+16).
-const objectValuesFromTemp = (t) => emitEnumerateObject(t,
+const objectValuesFromTemp = (t, indexed = null) => emitEnumerateObject(t,
   (env) => [
     ['f64.store',
       ['i32.add', ['local.get', `$${env.out}`], ['i32.shl', ['local.get', `$${env.o}`], ['i32.const', 3]]],
@@ -2024,12 +2044,12 @@ const objectValuesFromTemp = (t) => emitEnumerateObject(t,
   ({ out, o, slot }) => [
     ['f64.store',
       ['i32.add', ['local.get', `$${out}`], ['i32.shl', ['local.get', `$${o}`], ['i32.const', 3]]],
-      ['f64.load', ['i32.add', ['local.get', `$${slot}`], ['i32.const', 16]]]]])
+      ['f64.load', ['i32.add', ['local.get', `$${slot}`], ['i32.const', 16]]]]], false, indexed != null, indexed)
 
 // Object.entries for an OBJECT — alloc 2-slot ARRAY pair {key, value} for each
 // schema slot (key from src+i*8, value from base+i*8) then each dyn slot
 // (key@slot+8, value@slot+16) and box the pair into out[o*8].
-const objectEntriesFromTemp = (t) => emitEnumerateObject(t,
+const objectEntriesFromTemp = (t, indexed = null) => emitEnumerateObject(t,
   (env) => [
     ['local.set', `$${env.pair}`, ['call', '$__alloc_hdr', ['i32.const', 2], ['i32.const', 2]]],
     ['i64.store', ['local.get', `$${env.pair}`],
@@ -2046,4 +2066,4 @@ const objectEntriesFromTemp = (t) => emitEnumerateObject(t,
       ['f64.load', ['i32.add', ['local.get', `$${slot}`], ['i32.const', 16]]]],
     ['f64.store',
       ['i32.add', ['local.get', `$${out}`], ['i32.shl', ['local.get', `$${o}`], ['i32.const', 3]]],
-      mkPtrIR(PTR.ARRAY, 0, ['local.get', `$${pair}`])]])
+      mkPtrIR(PTR.ARRAY, 0, ['local.get', `$${pair}`])]], false, indexed != null, indexed)
