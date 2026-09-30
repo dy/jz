@@ -14,6 +14,31 @@ const lit = value => [null, value]
 const typed = ['()', 'new.BigInt64Array', lit(0)]
 const reduce = (callback, initial) => ['()', ['.', typed, 'reduce'], [',', callback, initial]]
 
+test('summary queries: held fields require every alias to remain read-only and unambiguous', () => {
+  const options = { funcs: [], schemas: [['HIGH']], brandOf: () => null, imports: new Map(), exported: () => false }
+  const read = ['.', 'alias', 'HIGH']
+  const ast = [';', ['const', ['=', 'limits', ['{}', [':', 'HIGH', lit(7)]]]],
+    ['const', ['=', 'alias', 'limits']], ['const', ['=', 'high', read]]]
+  const cases = [
+    ['empty', null, [], false],
+    ['read', ast, [], true],
+    ['read again', ast, [], true],
+    ['write through alias', [';', ...ast.slice(1), ['=', read, lit(9)]], [], false],
+    ['increment root', [';', ...ast.slice(1), ['++', ['.', 'limits', 'HIGH']]], [], false],
+    ['escape alias', [';', ...ast.slice(1), ['()', 'unknown', 'alias']], [], false],
+    ['shadow root', ast, [{ name: 'f', sig: { params: [{ name: 'limits' }] }, body: ['.', 'limits', 'HIGH'] }], false],
+    ['shadow alias', ast, [{ name: 'f', sig: { params: [{ name: 'alias' }] }, body: ['.', 'alias', 'HIGH'] }], false],
+    ['read after changes', ast, [], true],
+  ]
+  let retained
+  for (const [label, body, funcs, known] of cases) {
+    const summary = summarize(body, { ...options, funcs })
+    is(summary.held.get('high'), known ? 7 : undefined, label)
+    if (known) retained ??= summary
+    if (retained) is(retained.held.get('high'), 7, `${label}: later analyses preserve earlier facts`)
+  }
+})
+
 test('summary queries: closure unions retain their members through the capacity boundary and reuse', () => {
   let retained
   for (const count of [0, 1, 1023, 1024, 1025, 1025, 1]) {

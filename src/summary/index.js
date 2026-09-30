@@ -101,6 +101,7 @@ const PRIMITIVE_METHODS = new Set([...STRING_METHODS, ...STRING_NUMBER_METHODS, 
 const SPAN_BINARY = new Set(['&', '+', '-', '*', '%', '|', '<<'])
 const RANGE_BINARY = new Set(['+', '-', '*', '/'])
 const memberBefore = (a, b) => typeof a === typeof b ? a < b : typeof a === 'number'
+const maskSpan = m => m && m[0] === m[1] && m[0] >= 0 && m[0] <= 0x7fffffff ? [0, m[0]] : null
 
 // These helpers carry call-site result facts; keep their call boundary through planning.
 const MODELED_RESULT = /\$__it_(from|mk|drain|arr)$/
@@ -555,7 +556,8 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   }
   const fixLen = (c, n) => {
     const old = lens.get(c); setLen(c, old === undefined || old === n ? n : LEN_OPEN, onOpen ? `built at ${n} elements elsewhere` : null)
-    const was = built.get(c); built.set(c, was === undefined || was === n ? n : LEN_OPEN)
+    const was = built.get(c), next = was === undefined || was === n ? n : LEN_OPEN
+    if (was !== next) built.set(c, next)
   }
   /** The array's length may change: by a counted init push (`counted`) or in a way no count follows. */
   const openLen = (arr, why, counted = false) => { const c = lenCell(arr); if (c >= 0) { setLen(c, LEN_OPEN, why); if (!counted) unknown.add(c) } }
@@ -591,8 +593,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     if (!SPAN_BINARY.has(op)) return null
     const a = spanOf(e[1], scope), b = spanOf(e[2], scope)
     // A mask keeps any value inside it: ToInt32 of the other operand, whatever it is, then the bits.
-    const mask = (m) => m && m[0] === m[1] && m[0] >= 0 && m[0] <= 0x7fffffff ? [0, m[0]] : null
-    if (op === '&') return mask(b) ?? mask(a)
+    if (op === '&') return maskSpan(b) ?? maskSpan(a)
     if (!a || !b) return null
     let lo, hi
     if (op === '+') { lo = a[0] + b[0]; hi = a[1] + b[1] }
@@ -1788,16 +1789,21 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       if (calleeParam >= 0 || argParams.size) fwdSites.set(e, { fn: id, calleeParam: calleeParam >= 0 ? calleeParam : null, argParams })
     }
     if (!isBlock(body)) { site(body); return }
-    const counts = new Map()
+    let counts = null
     const count = (n) => { if (typeof n === 'string') counts.set(n, (counts.get(n) ?? 0) + 1); else if (Array.isArray(n)) for (let i = 1; i < n.length; i++) count(n[i]) }
-    count(body)
     const inits = new Map()   // `const r = call()` → the call
     const walk = (n) => {
       if (!Array.isArray(n)) return
       const op = n[0]
       if (op === '=>') return
       if (op === 'const' && n.length === 2 && Array.isArray(n[1]) && n[1][0] === '=' && typeof n[1][1] === 'string' && Array.isArray(n[1][2]) && n[1][2][0] === '()') inits.set(n[1][1], n[1][2])
-      if (op === 'return' && n.length > 1) { const e = n[1]; if (typeof e === 'string' && counts.get(e) === 2 && inits.has(e)) site(inits.get(e)); else site(e) }
+      if (op === 'return' && n.length > 1) {
+        const e = n[1]
+        if (typeof e === 'string' && inits.has(e)) {
+          if (counts === null) { counts = new Map(); count(body) }
+          if (counts.get(e) === 2) site(inits.get(e))
+        } else site(e)
+      }
       for (let i = 1; i < n.length; i++) walk(n[i])
     }
     walk(body)
@@ -3305,13 +3311,18 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     const key = keyOf(name, scope)
     if (key !== null && !unseen(scope, name, bare)) definitions.set(key, definitions.has(key) || value == null ? null : [scope, value])
   }
-  // Every mention of a name in the program: the node that holds it, its place there, and that node's holder.
+  // Mentions of uniquely declared names, the only ones `onlyRead` can prove:
+  // flat triples of holder node, child index and the holder's parent.
   const nameSites = new Map()
   const mention = (n, up) => {
     if (!Array.isArray(n) || n[0] === 'str') return
     for (let i = 1; i < n.length; i++) {
       const c = n[i]
-      if (typeof c === 'string') { let l = nameSites.get(c); if (!l) nameSites.set(c, l = []); l.push([n, i, up]) }
+      if (typeof c === 'string') {
+        if (nameKeys.get(c)?.length !== 1) continue
+        let l = nameSites.get(c); if (!l) nameSites.set(c, l = [])
+        l.push(n, i, up)
+      }
       else mention(c, n)
     }
   }
@@ -3326,7 +3337,9 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     const key = soleKey(name), def = key === null ? null : definitions.get(key)
     if (!def || seen.has(key)) return false
     seen.add(key)
-    for (const [n, i, up] of nameSites.get(name) ?? []) {
+    const sites = nameSites.get(name)
+    for (let j = 0; sites && j < sites.length; j += 3) {
+      const n = sites[j], i = sites[j + 1], up = sites[j + 2]
       if (n[0] === '=' && i === 1 && n[2] === def[1]) continue                                                               // its own definition
       if (n[0] === '.' && i === 1 && typeof n[2] === 'string' && !(up && MUTATE_OPS.has(up[0]) && up[1] === n)) continue   // a field read
       if (n[0] === '=' && i === 2 && typeof n[1] === 'string' && up && (up[0] === 'let' || up[0] === 'const') && onlyRead(n[1], seen)) continue   // an alias, read the same way
@@ -3859,12 +3872,16 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   // built once: the slot behind a name on a known shape, or every schema's
   // slot of that name behind a receiver the summary cannot name.
   const NO_KEYS = []
-  const slotKeyLists = new Map()   // sid → Map(prop → [key])
+  const slotKeyLists = new Map()   // shape or union id → Map(prop → slot keys)
   const slotKeyList = (sid, prop) => {
     let m = slotKeyLists.get(sid)
     if (!m) slotKeyLists.set(sid, m = new Map())
     let l = m.get(prop)
-    if (l === undefined) m.set(prop, l = [slotKey(sid, prop)])
+    if (l === undefined) {
+      l = []
+      for (const member of shapesOf(sid)) if (schemas[member].indexOf(prop) >= 0) l.push(slotKey(member, prop))
+      m.set(prop, l)
+    }
     return l
   }
   const propKeyLists = new Map()   // prop → the keys of every schema's slot of that name
@@ -3875,13 +3892,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   }
   const slotKeysOf = (recv, prop) => {
     const r = kindOfExpr(recv), t = tagOf(r)
-    if (t === K.OBJECT && paramOf(r) !== UNKNOWN) {
-      const shapes = shapesOf(paramOf(r))
-      if (shapes.length === 1) return schemas[shapes[0]].indexOf(prop) >= 0 ? slotKeyList(shapes[0], prop) : NO_KEYS
-      const l = []
-      for (const sid of shapes) if (schemas[sid].indexOf(prop) >= 0) l.push(...slotKeyList(sid, prop))
-      return l
-    }
+    if (t === K.OBJECT && paramOf(r) !== UNKNOWN) return slotKeyList(paramOf(r), prop)
     return propKeyList(prop)
   }
   let demandChanged = false
@@ -3959,6 +3970,11 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   const isBigintExpr = (e) => tagOf(kindOfExpr(e)) === K.BIGINT
   const isNumberExpr = (e) => typeof e === 'number' || (Array.isArray(e) && ((e[0] == null && typeof e[1] === 'number') || NUMBER_OPS.has(e[0]) || e[0] === 'u-' || e[0] === 'u+' || (e[0] === '.' && e[2] === 'length'))) || tagOf(kindOfExpr(e)) === K.NUMBER
   const relCx = (o) => isStringExpr(o) ? OTHER : isNumberExpr(o) ? NUM : COMPAT
+  const eqCx = (value, other) => {
+    if (kindOfExpr(other) !== NUMBER) return OTHER
+    const k = kindOfExpr(value)
+    return tagOf(core(k)) === K.NUMBER && !hasTag(k, K.NULLISH) ? NUM : COMPAT
+  }
   const argCount = (a) => a == null ? 0 : Array.isArray(a) && a[0] === ',' ? a.length - 1 : 1
   const argAt = (a, i) => Array.isArray(a) && a[0] === ',' ? a[i + 1] : a
   const demand = (n, cx = OTHER, into = null) => {
@@ -4021,11 +4037,6 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     if (op === '==' || op === '!=' || op === '===' || op === '!==') {
       // `x !== x` holds for NaN alone: of a number it reads the number, of any other kind nothing.
       if (typeof n[1] === 'string' && n[1] === n[2]) { useOf(n[1], COMPAT); return }
-      const eqCx = (value, other) => {
-        if (kindOfExpr(other) !== NUMBER) return OTHER
-        const k = kindOfExpr(value)
-        return tagOf(core(k)) === K.NUMBER && !hasTag(k, K.NULLISH) ? NUM : COMPAT
-      }
       useOf(n[1], eqCx(n[1], n[2])); useOf(n[2], eqCx(n[2], n[1])); return
     }
     if (op === ',') { for (let i = 1; i < n.length - 1; i++) demand(n[i]); useOf(n[n.length - 1], cx, into); return }
