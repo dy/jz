@@ -91,8 +91,9 @@ const BIND = CLASS_T + 'bind'
 // returns is read off its call, never its body, so a call of one stays one.
 const ITER_FROM = /\$__it_from$/, ITER_MK = /\$__it_mk$/, ITER_DRAIN = /\$__it_drain$/, ITER_ARR = /\$__it_arr$/
 const ASYNC_RUN = /\$__async_run$/, AWAITED = /\$__awaited$/, REJECT = /\$__p_reject$/
-const AT_CALL = [ITER_FROM, ITER_MK, ITER_DRAIN, ITER_ARR, ASYNC_RUN, AWAITED, REJECT]
-export const answeredAtCall = (name) => AT_CALL.some(r => r.test(name))
+// one pattern, the seven's alternatives: the compiler compiles itself, which resolves a regex where it is written
+const AT_CALL = /\$__(it_from|it_mk|it_drain|it_arr|async_run|awaited|p_reject)$/
+export const answeredAtCall = (name) => AT_CALL.test(name)
 const STRING_METHODS = new Set(['slice', 'substring', 'substr', 'trim', 'trimStart', 'trimEnd', 'toUpperCase', 'toLowerCase', 'padStart', 'padEnd', 'repeat', 'replace', 'replaceAll', 'concat', 'normalize', 'at', 'charAt'])
 const STRING_NUMBER_METHODS = new Set(['charCodeAt', 'codePointAt', 'indexOf', 'lastIndexOf', 'search', 'localeCompare'])
 const STRING_BOOL_METHODS = new Set(['includes', 'startsWith', 'endsWith'])
