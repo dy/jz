@@ -29,6 +29,7 @@
  */
 
 import { ctx } from '../../ctx.js'
+import { mixesNumericKinds } from '../numeric-mix.js'
 import {
   callArgs, setCallArgs, some, walkAst, blockStmts, stmtList, T, CLASS_T, refsName, refsAny, REFS_IN_EXPR, MUTATE_OPS,
   extractParams, isBlockBody, REFS_THROUGH_ARROWS,
@@ -111,8 +112,6 @@ const closureBindings = (body) => {
   return binds
 }
 
-// The operators that throw on a BigInt beside a Number (a comparison takes both).
-const UNMIXED_OPS = new Set(['+', '-', '*', '/', '%', '**', '&', '|', '^', '<<', '>>'])
 const operandKind = (e) => Array.isArray(e) && e[0] === 'bigint' ? K.BIGINT
   : typeof e === 'number' || (Array.isArray(e) && e[0] == null && typeof e[1] === 'number') ? K.NUMBER
   : e == null ? K.NONE : tagOf(core(callerView?.kindOfExpr(e) ?? K.NONE))
@@ -121,11 +120,7 @@ const operandKind = (e) => Array.isArray(e) && e[0] === 'bigint' ? K.BIGINT
 const mixesKinds = (func, args) => {
   const at = new Map(func.sig.params.map((p, i) => [p.name, i]))
   const kindOf = (e) => typeof e === 'string' && at.has(e) ? operandKind(args[at.get(e)]) : typeof e === 'string' ? K.NONE : operandKind(e)
-  return some(func.body, n => {
-    if (!UNMIXED_OPS.has(n[0]) || n.length !== 3) return false
-    const a = kindOf(n[1]), b = kindOf(n[2])
-    return (a === K.BIGINT && b === K.NUMBER) || (a === K.NUMBER && b === K.BIGINT)
-  })
+  return mixesNumericKinds(func.body, kindOf)
 }
 
 // A function body's statements, or null for an expression body: `(…) => ({ b0, a1 })`

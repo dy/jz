@@ -1742,10 +1742,10 @@ function staticTypeofString(x) {
   if (builtin) return GLOBAL_TYPEOF[builtin]
   // The globals every host has (`globalThis`, `WebAssembly`): objects, imported where a program
   // names them. `window`, `self`, `global`, `process` are one host's or another's: the run answers.
-  if ((x === 'globalThis' || x === 'WebAssembly') && !(scopes.length && isDeclared(x)) && !ctx.scope.userGlobals?.has?.(x)) return 'object'
+  if ((x === 'globalThis' || x === 'WebAssembly') && !shadowsBuiltin(x)) return 'object'
   // A function of the target the program never declares (`Symbol`, `parseInt`: a feature a library tests
   // for), whether or not its module is in yet.
-  if (typeof x === 'string' && isNamedCallee(x) && !(scopes.length && isDeclared(x)) && !ctx.scope.userGlobals?.has?.(x)) { includeForNamedCall(x); return 'function' }
+  if (typeof x === 'string' && isNamedCallee(x) && !shadowsBuiltin(x)) { includeForNamedCall(x); return 'function' }
   // Spec §13.5.3: unresolvable bare ref → 'undefined'.
   if (isUnresolvableBareIdent(x)) return 'undefined'
   if (Array.isArray(x) && (x[0] === '.' || x[0] === '[]') &&
@@ -1765,7 +1765,7 @@ function staticTypeofString(x) {
     if (GLOBALS[x] && emitArity(ctx.core.emit?.[x], x) > 0) return 'function'
   }
   const px = prep(x)
-  if (namesTargetFn(px)) return 'function'
+  if (!shadowsBuiltin(x) && namesTargetFn(px)) return 'function'
   if (typeof px === 'string' && px.includes('.') &&
       (INTRINSIC_ARITY[px] != null || emitArity(ctx.core.emit?.[px], px) > 0)) return 'function'
   return null
@@ -2044,9 +2044,10 @@ const namesTargetFn = (name) => {
 // Constructor identity survives a constant alias even where a callable use
 // lowers to a conversion arrow. Ordinary locals keep their own binding.
 const primitiveCtorOf = name => {
-  if (typeof name !== 'string' || shadowsBuiltin(name)) return null
+  if (typeof name !== 'string') return null
   const held = scopes.length && isDeclared(name) ? resolveScope(name) : ctx.scope.chain[name]
-  return PRIMITIVE_CTORS.has(held) ? held : PRIMITIVE_CTORS.has(name) ? name : null
+  const ctor = PRIMITIVE_CTORS.has(held) ? held : PRIMITIVE_CTORS.has(name) ? name : null
+  return ctor && !shadowsBuiltin(name) ? ctor : null
 }
 
 /** A receiver that is a function of the target: its bare name (`Number`, `parseInt`), a name

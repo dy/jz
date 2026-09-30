@@ -52,7 +52,12 @@ inlining retains wrappers around loop kernels when prefix-only expansion would
 introduce allocations into the caller's loop. Scratch hoisting includes lowered
 temporaries under the existing lifetime and invariance proof. Both O3 failures
 from candidate 51 have focused fixes; the scratch failure also occurs on main.
-The full candidate 53 gates are pending; earlier full-suite results do not certify
+Candidate 53's default run found three further integration issues before its
+local-server test was blocked by the sandbox. Candidate 54 reconciles builtin
+shadowing and held constructor aliases, preserves runtime mixed-domain errors
+when replacing constant parameters, and updates the obsolete rejection test for
+supported `parseInt` aliases. The focused regressions pass 9 tests / 759 assertions.
+The full candidate 54 gates are pending; earlier full-suite results do not certify
 these later changes.
 
 Candidate 39 fixes public constant injection: negative zero, quoted keys,
@@ -94,8 +99,8 @@ checks of Floatbeat, desktop/mobile layout, popup bounds, keyboard focus,
 Escape/refocus, reduced motion and forced colors.
 
 Source maps, Floatbeat, strict entry/types, and package integrations have targeted
-validation. The complete result ledger is [.work/v1.md](.work/v1.md). Dated evidence
-below belongs to its recorded snapshots, not every later working-tree change.
+validation. Detailed gate logs are local verification artifacts. Dated evidence below belongs
+to its recorded snapshots, not every later working-tree change.
 
 ## Release status, September 27
 

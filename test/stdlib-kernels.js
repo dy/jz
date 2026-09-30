@@ -168,13 +168,15 @@ test('stdlib: builtin typeof follows aliases and respects shadowed bindings', ()
     `export let f = () => typeof Math['random']`,
     `export let f = () => { const performance = { now: 3 }; return typeof performance.now }`,
     `const Symbol = 3; export let f = () => typeof Symbol`,
+    `const S = Symbol; export let f = () => { const Symbol = 3; return [typeof S, typeof Symbol] }`,
     `export let f = () => { const Symbol = 3; return typeof Symbol }`,
     `export let f = () => { const pick = Symbol => typeof Symbol; return pick('value') }`,
     `const parseInt = 3; export let f = () => typeof parseInt`,
     `const Math = { sin: 3 }; export let f = () => typeof Math.sin`,
   ]) is(run(source).f(), oracle(source).f(), source)
-  is(graph(`import { Symbol } from './value.js'; export let f = () => typeof Symbol`,
-    { './value.js': 'export const Symbol = 3' }), 'number', 'imported binding shadows the constructor')
+  for (const name of ['Symbol', 'parseInt', 'Math', 'globalThis', 'WebAssembly'])
+    is(graph(`import { ${name} } from './value.js'; export let f = () => typeof ${name}`,
+      { './value.js': `export const ${name} = 3` }), 'number', `imported ${name} shadows the builtin`)
 })
 
 test('stdlib: namespace introspection preserves booleans, aliases and user bindings', () => {

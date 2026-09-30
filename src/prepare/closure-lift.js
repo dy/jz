@@ -29,7 +29,8 @@ export const hasFunc = name => ctx.funcs.names.has(name)
 const isNamespaceAliasScoped = name => {
   if (!scopes.length || !isDeclared(name)) return false
   const key = resolveScope(name)
-  return typeof key === 'string' && key !== name && (hasModule(key) || isNamedCallee(key) || !!builtinMemberKey(key))
+  return typeof key === 'string' && key !== name &&
+    (hasModule(key) || GLOBAL_TYPEOF[key] === 'function' || isNamedCallee(key) || !!builtinMemberKey(key))
 }
 export const shadowsBuiltin = name => typeof name === 'string' &&
   ((scopes.length && isDeclared(name) && !isNamespaceAliasScoped(name)) || hasFunc(name) || hasFunc(ctx.scope.chain[name]) ||

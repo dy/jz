@@ -22,6 +22,7 @@ import { K, tagOf, core } from '../../summary/kind.js'
 import { holdsBoolBeside } from '../../kind.js'
 import { frameNode } from '../../function.js'
 import { materializeVariant } from '../variant.js'
+import { mixesNumericKinds } from '../numeric-mix.js'
 
 // narrowMutatedParams: admit a body-WRITTEN param into the i32 specialization
 // when every mutation of it is provably int-preserving. Reuses type.js's
@@ -270,6 +271,9 @@ export function substituteIntConstParams(paramReps, addressTaken) {
       ;(subst ??= new Map()).set(pname, r.intConst)
     }
     if (!subst) continue
+    const view = ctx.summary.at(func.sig)
+    if (mixesNumericKinds(frameNode(func), n => typeof n === 'string' && subst.has(n)
+      ? K.NUMBER : tagOf(core(view.kindOfExpr(n))))) continue
     replaceReads(frameNode(func), subst)
     changed = true
   }
@@ -555,4 +559,3 @@ export function applyExportTypedArrayAbi(paramReps, callSites, addressTaken) {
   if (touched.length) invalidateBodies(touched)
   return touched.length > 0
 }
-

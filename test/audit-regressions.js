@@ -567,6 +567,25 @@ test('audit: a call that mixes a BigInt and a Number throws when it runs', () =>
   }
 })
 
+test('audit: constant parameters preserve conditional mixed-domain errors and argument effects', () => {
+  for (const op of ['+', '-', '*', '/', '%', '&', '|', '^', '<<', '>>', '+=', '-=', '*=', '&=', '<<=']) {
+    const src = `let trace = 0
+      function value() { trace = trace * 10 + 1; return 3n }
+      function mix(a, b) { trace = trace * 10 + 2; return a ${op} b }
+      export function f(go) {
+        trace = 0
+        try { if (go) mix(value(), 1) }
+        catch (e) { return [trace, e instanceof TypeError] }
+        return [trace, false]
+      }`
+    const host = oracle(src).f
+    for (const optimize of TIERS) {
+      const f = jz(src, { optimize }).exports.f
+      for (const go of [0, 1, 1, 0]) is(f(go), host(go), `${op}(${go}) at ${optimize}`)
+    }
+  }
+})
+
 // A closure stored beside the fields of an object a literal nested (`ns.inner.parse = f`
 // where the literal declared no `parse`) runs when the member is called
 // (src/summary/index.js): its body is reached and its parameter bound. Unreached, a

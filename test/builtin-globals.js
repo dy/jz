@@ -3,7 +3,7 @@
 // whether or not jz holds a value for it. `typeof` of one used to fail
 // ("'math' is not in scope") or answer 'undefined' (console, setTimeout);
 // it answers what JS answers now (prepare/state.js GLOBAL_TYPEOF), for a
-// namespace alias too. One used as a value is rejected naming it, and a
+// namespace alias too. Unsupported value uses are rejected naming it, and a
 // binding that takes a builtin's name (`(Number) => Number + 1`) is the
 // binding, never the builtin.
 import test from 'tst'
@@ -58,7 +58,12 @@ test('builtin globals: a binding that takes the name is the binding', () => agre
   ['typeof a module function parseInt', `let parseInt = (s) => 42\nexport let f = () => typeof parseInt`],
 ]))
 
-test('builtin globals: one used as a value is rejected naming it', () => {
+test('builtin globals: a held callable alias calls the builtin', () => agree([
+  ['local parseInt', `export let f = () => { const P = parseInt; return P('12') }`],
+  ['module parseInt', `const P = parseInt; export let f = () => P('12', 8)`],
+]))
+
+test('builtin globals: unsupported value uses are rejected naming it', () => {
   for (const [name, src] of [
     ['Math', `let g = (m) => m.sqrt(9)\nexport let f = () => g(Math)`],
     ['Math', `export let f = () => [Math].length`],
@@ -67,7 +72,6 @@ test('builtin globals: one used as a value is rejected naming it', () => {
     ['console', `export let f = () => [console].length`],
     ['Map', `let g = (c) => new c()\nexport let f = () => g(Map)`],
     ['parseInt', `export let f = () => ['1', '2'].map(parseInt)`],
-    ['parseInt', `export let f = () => { const P = parseInt; return P('12') }`],
     ['isNaN', `export let f = () => [1].filter(isNaN)`],
     ['setTimeout', `export let f = () => [setTimeout].length`],
   ]) throws(() => jz(src), new RegExp(`'${name}' as a value is not supported`), `${name}: ${src.split('\n').pop()}`)

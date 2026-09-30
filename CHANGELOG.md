@@ -20,6 +20,7 @@
 - Preserve unsigned clamping, object coercion and assignment values in typed-array stores.
 - Recognize held builtin functions consistently while respecting local constructor names.
 - Preserve constant primitive-constructor aliases and fold proven primitive wrapper probes.
+- Respect imported builtin-name shadows and keep mixed-domain call errors at runtime.
 - Keep loop kernels outlined when partial inlining would allocate in the caller loop.
 - Hoist lowered scratch temporaries together with invariant unrolled calculations.
 - Reduce snapshot allocation for Map entries whose identity is unobservable.
