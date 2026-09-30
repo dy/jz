@@ -80,7 +80,7 @@ test('called args: other parameter defaults can read, capture or reassign the sp
   for (const value of ['f', 'x => f(x)']) agrees(`
     function inc(x) { return x + 1 }
     function ap(f, other = ${value}) { return f(2) + other(3) }
-    export function run() { return ap(inc) }`, [['run'], ['run']])
+    export function probe() { return ap(inc) }`, [['probe'], ['probe']])
   agrees(`function pick(mode, x = (mode = 'b')) { return mode === 'a' ? 1 : 2 }
     export function run(supplied) { return supplied ? pick('a', 7) : pick('a') }`,
   [['run', 0], ['run', 0], ['run', 1], ['run', 0]])
@@ -90,13 +90,13 @@ test('called args: nested closures keep captured argument values and writes', ()
   for (const [getter, call] of [['() => [f][0]', 'get()(3)'], ['() => () => f', 'get()()(3)']]) agrees(`
     function inc(x) { return x + 1 }
     function ap(f) { const get = ${getter}; return f(2) + ${call} }
-    export function run() { return ap(inc) }`, [['run'], ['run']])
+    export function probe() { return ap(inc) }`, [['probe'], ['probe']])
   agrees(`function pick(mode) {
       const change = () => { mode = 'b' }
       if (mode === 'a') change()
       return mode === 'b' ? 2 : 1
     }
-    export function run() { return pick('a') }`, [['run'], ['run']])
+    export function probe() { return pick('a') }`, [['probe'], ['probe']])
 })
 
 // A mode string per call site: the copy reads the literal, its tests decide and

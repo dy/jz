@@ -14,7 +14,7 @@ import { agree, wat, funcWat } from './util.js'
 // The fact as the summary holds it after a compile: `fixedLenOf` of a module
 // binding, or of a function's binding by the name the source gave it.
 const fixedLen = (src, scope, name) => {
-  compile(src, { optimize: 0, imports: { host: { sink: () => 0 } } })
+  compile(src, { host: 'js', optimize: 0, imports: { host: { sink: () => 0 } } })
   const fn = scope == null ? null : ctx.funcs.map.get(scope)
   const spelled = fn ? JSON.stringify([fn.sig.params.map(p => p.name), fn.body]).match(new RegExp('"' + name + '[^"A-Za-z0-9_$][^"]*"'))?.[0] : null
   return ctx.summary.at(fn?.body).fixedLenOf(spelled ? JSON.parse(spelled) : name)

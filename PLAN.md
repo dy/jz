@@ -16,18 +16,23 @@ receiver-only array-growth rule. Both incoming histories remain reachable.
 The original dirty checkout is preserved on `wip/pre-v1-consolidation-20260930`.
 Nothing has been pushed or published.
 
-The landed snapshot passes the complete default core suite: **5,563 tests /
-213,900 assertions**, and O0: **5,408 tests / 145,797 assertions**. These gates
-use the prepared watr fixes described below. Merge regressions cover class-body
-parsing, typed-array indices and coercion, builtin reflection and shadowing,
-static-string data lifetime, loop inlining and scratch hoisting. A subsequent
-sibling review found that constant replacement must retain Number-or-BigInt
-unions when a later `typeof` branch narrows them. Its regression checks skipped,
-throwing, repeated and numeric calls against Node, including argument effects.
-Its O3 optimizer, array, alias and audit sweep passes 546 tests / 37,278
-assertions, with 288 assertions across the focused optimization tiers. The
-correction still requires its full rerun; the earlier core result does not certify it. Remaining matrix, conformance, extended, fuzz and hosted-suite gates
-have not all passed on the final source.
+The compiler at `e9ce30b7` passes the complete default core suite: **5,565 tests /
+213,966 assertions**, O0: **5,410 / 145,857**, and O3: **5,424 / 155,893**.
+These gates use the prepared watr fixes described below. The WASI run found
+nine test/host-contract mismatches and one usage-accounting bug: owned modules
+initialized after memory wrapping counted initialization as later usage. The
+baseline now follows completed initialization. Its regression covers empty and
+populated state, failed initialization, repeated instances, retained state,
+host allocations and repeated resets. Focused WASI checks pass **63 tests /
+16,437 assertions**, and accounting checks pass at O0/O2/O3. The full matrix,
+conformance, extended and hosted gates are being rerun; earlier core results do
+not certify the final host-adapter change.
+
+Merge regressions cover class-body parsing, typed-array indices and coercion,
+builtin reflection and shadowing, static-string data lifetime, loop inlining,
+scratch hoisting and guarded Number-or-BigInt errors. Imported/shared memory
+still resets the entire arena; re-instantiation after reset is required and
+verified for repeated and changed modules. The public contract now says so.
 
 Fresh browser bundles and real-browser checks pass on the landed snapshot:
 exact Floatbeat samples, saved-formula create/update/reload/delete, sharing,
