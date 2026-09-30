@@ -319,10 +319,18 @@ test('example: toroidal-wrap stencils (diffusion, slime) vectorize and stay bit-
     // — value-exact for any finite integer-valued f64, not an approximation.
     const cases = [
         { name: 'diffusion', want: 60, drive: (e) => { const p = e.resize(64, 48); if (e.seedRect) e.seedRect(20, 15, 40, 30); for (let f = 0; f < 8; f++) e.frame(); return [...p]; } },
-        // slime: 18 since its blur became a partial mix, src·(1−D) + mean·D; 17 since its
-        // loop runs as a copy where both grids are present (plan/integral-loops.js): the
-        // stencil keeps its 9 f64x2.add and 4 f64x2.mul, one constant's splat is shared
-        { name: 'slime', want: 17, drive: (e) => { const p = e.resize(64, 48); e.seed(); for (let f = 0; f < 20; f++) e.frame(f); return [...p]; } },
+        // The present-grid arm still has 17 operations (9 add, 4 mul, 4 splat).
+        // The checked fallback now also vectorizes, adding 18; each call runs
+        // one arm. Pin both copies and compare every frame across resize/reuse.
+        { name: 'slime', want: 35, drive: (e) => {
+            const frames = [];
+            for (const [w, h] of [[0, 0], [1, 1], [2, 2], [3, 3], [64, 48], [64, 48], [65, 49], [64, 48]]) {
+                const p = e.resize(w, h); e.seed();
+                is(p.length, w * h);
+                for (let f = 0; f < 20; f++) { e.frame(f); frames.push(...p); }
+            }
+            return frames;
+        } },
     ];
     for (const { name, want, drive } of cases) {
         const src = fs.readFileSync(new URL(`../examples/${name}/${name}.js`, import.meta.url), 'utf8');
@@ -331,7 +339,7 @@ test('example: toroidal-wrap stencils (diffusion, slime) vectorize and stay bit-
         const run = (opts) => drive(jz(src, { ...opts, randomSeed: 42 }).exports);
         const simd = run({ ...OPT }), scal = run({ ...OPT, noSimd: true });
         is(simd.length, scal.length);
-        is(simd.filter((v, i) => v !== scal[i]).length, 0, `${name} wrap-stencil bit-exact vs scalar (3072 px)`);
+        is(simd.filter((v, i) => v !== scal[i]).length, 0, `${name} wrap-stencil bit-exact vs scalar (${simd.length} pixel samples)`);
     }
 });
 

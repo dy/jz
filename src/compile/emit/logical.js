@@ -16,7 +16,7 @@ import { extractRefinements, withRefinements } from '../flow-types.js'
 import { REP_EDGE_BOX, REP_EDGE_REJECT, representationJoinArmAction } from '../representation-plan.js'
 import { tagFnArrayDispatch } from './call.js'
 import { emit, markDropped, toBool } from './dispatch.js'
-import { REF_EQ_KINDS, boolEagerBody, eagerSelectOK, i32JoinRep, isCanonicalBoolExpr, isNumArm, selectOK } from './shared.js'
+import { REF_EQ_KINDS, boolEagerBody, eagerSelectOK, i32JoinRep, isCanonicalBoolExpr, isCmp, isNumArm, selectOK } from './shared.js'
 
 
 // f64 arithmetic that can MINT a sign-nondeterministic NaN (0/0, ∞−∞, 0·∞, x%0): on x86
@@ -447,10 +447,11 @@ export const logicalOps = {
     if (va.type === 'i32') {
       let vb = emitRight()
       if (resolveValType(b, valTypeOf, lookupValType) === VAL.BOOL && resolveValType(a, valTypeOf, lookupValType) === VAL.NUMBER) vb = numericBoolArm(vb)
-      // Boolean-only short circuit with a pure RHS is safe to evaluate
-      // eagerly. Comparisons are canonical 0/1, so bitwise AND preserves the
-      // value while removing the nested if/tee ladder in scalar predicates.
-      if (vb.type === 'i32' && boolEagerBody() && isCanonicalBoolExpr(a) && isCanonicalBoolExpr(b) && eagerSelectOK(vb))
+      // Match toBool's eager comparison rule even when the surrounding body
+      // calls functions: canonical conditions share this value lowering.
+      // Longer chains keep the call-free-body cost guard.
+      if (vb.type === 'i32' && eagerSelectOK(va, vb) &&
+          ((isCmp(a) && isCmp(b)) || (boolEagerBody() && isCanonicalBoolExpr(a) && isCanonicalBoolExpr(b))))
         return typed(['i32.and', va, vb], 'i32')
       // An unboxed pointer arm beside a plain one (`ok && typedArr`) takes the
       // boxed path below, where each arm boxes by its own kind (see '||').
@@ -556,7 +557,8 @@ export const logicalOps = {
       if (resolveValType(b, valTypeOf, lookupValType) === VAL.BOOL && resolveValType(a, valTypeOf, lookupValType) === VAL.NUMBER) vb = numericBoolArm(vb)
       // Boolean twin of && above: eager pure RHS + canonical 0/1 values make
       // bitwise OR exactly equivalent to short-circuit OR.
-      if (vb.type === 'i32' && boolEagerBody() && isCanonicalBoolExpr(a) && isCanonicalBoolExpr(b) && eagerSelectOK(vb))
+      if (vb.type === 'i32' && eagerSelectOK(va, vb) &&
+          ((isCmp(a) && isCmp(b)) || (boolEagerBody() && isCanonicalBoolExpr(a) && isCanonicalBoolExpr(b))))
         return typed(['i32.or', va, vb], 'i32')
       // An unboxed pointer arm (a typed-array parameter: `output || scratch`) is
       // no i32 number. A single i32 join would widen it numerically downstream

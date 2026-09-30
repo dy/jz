@@ -5266,6 +5266,24 @@ test('pure boolean chains lower eagerly while effectful RHS stays short-circuite
   is(f(1), 11, 'true lhs evaluates effectful rhs once')
 })
 
+test('pure comparison pairs stay eager beside calls and preserve short-circuit effects', () => {
+  for (const op of ['&&', '||']) {
+    const src = `export function f(a,b) { const v=a>0${op}b<1; return Math.sqrt(v ? 4 : 9) }`
+    const f = findFunc(parse(src, { level: 'speed', watr: false }), '$f')
+    ok(count(f, n => n[0] === (op === '&&' ? 'i32.and' : 'i32.or')) > 0, `${op}: comparisons remain eager in a call-bearing body`)
+    const actual = run(src, { optimize: 'speed' }).f, expected = oracle(src).f
+    for (const a of [-1, 0, 1, NaN, Infinity]) for (const b of [-1, 0, 1, NaN, Infinity])
+      is(actual(a, b), expected(a, b))
+    const effect = `export function f(x) { let n=0; const v=x>0${op}++n>0; return n*10+Math.sqrt(v ? 4 : 9) }`
+    const g = run(effect, { optimize: 'speed' }).f, js = oracle(effect).f
+    for (const x of [0, 1, 1, NaN, -1]) is(g(x), js(x), `${op}: the RHS runs only when required`)
+    const guarded = `export function f(x) { return Math.sqrt((x>0${op}null.value>0) ? 4 : 9) }`
+    const h = run(guarded, { optimize: 'speed' }).f
+    is(h(op === '&&' ? 0 : 1), op === '&&' ? 3 : 2, `${op}: skipped access does not throw`)
+    throws(() => h(op === '&&' ? 1 : 0), /null|property|properties|TypeError/, `${op}: evaluated null access throws`)
+  }
+})
+
 test('source-inlined call-free boolean leaves stay eager inside call-bearing callers', () => {
   const src = `
     const leaf=(r,g,b,a)=>{return r===g&&g===b&&b===a&&a>0}

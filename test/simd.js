@@ -2814,6 +2814,31 @@ test('escape-time f64x2 - compound-top guard, ESCAPE first (mandelbrot) bit-exac
   is(dc3, sc3)
 })
 
+test('escape-time f64x2 - pure compound guard survives a call-bearing epilogue', () => {
+  const src = `
+    const out = new Float64Array(8)
+    export function render(n, c) {
+      for (let x = 0; x < n; x++) {
+        let z = x * 0.25, i = 0
+        while (i < 8 && z * z < 100) { z = z * z + c; i++ }
+        out[x] = Math.sqrt(z)
+      }
+    }
+    export function read(i) { return out[i] }
+  `
+  const scalar = runVec(src, ESC_SCALAR), vector = runVec(src, ESC_VEC), js = oracle(src)
+  const w = wat(src, ESC_VEC)
+  ok(/f64x2\./.test(w) && /\$__esc\d+_tb\d+/.test(w), 'pure comparisons keep the SIMD path and scalar tail')
+  ok(!/v128\.bitselect/.test(w), 'no per-iteration lane freeze')
+  for (const [n, c] of [[0, 0], [1, 0], [2, 0.1], [3, 0.1], [4, -0.25], [7, 0.5], [8, 0.5], [8, 0.5], [8, NaN], [0, 1], [8, 0.5]]) {
+    scalar.render(n, c); vector.render(n, c); js.render(n, c)
+    for (let i = 0; i < 8; i++) {
+      is(vector.read(i), js.read(i), `Node parity at ${n}, ${c}, ${i}`)
+      is(vector.read(i), scalar.read(i), `scalar parity at ${n}, ${c}, ${i}`)
+    }
+  }
+})
+
 // Burning-ship structure: escape break is AFTER the z-update (not before), the
 // squares are inlined (no x2/y2 temps), the update uses Math.abs, the output is a
 // smooth colour read from the post-loop z, and the store uses a parallel `j`
