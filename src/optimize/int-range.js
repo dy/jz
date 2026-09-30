@@ -110,14 +110,16 @@ const envWithin = (a, b) => {
   }
   return true
 }
-const widen = (old, next) => {
+// (`open`: the slots of the locals whose bounds may move without end, the ones on
+// a cycle of writes; every other bound is a hull of theirs and settles once they do)
+const widen = (old, next, open) => {
   const x = old.runs, y = next.runs, runs = [], mine = []
   for (let c = 0; c < x.length; c++) {
     const p = x[c], q = y[c], r = []
     for (let k = 0; k < RUN; k++) {
       const u = p[k], v = u && q !== undefined ? q[k] : null
       if (!v) r.push(null)
-      else if (u.of || v.of) r.push(hull(u, v))
+      else if (u.of || v.of || !open.has(c * RUN + k)) r.push(hull(u, v))
       else r.push({ lo: v.lo < u.lo ? -Infinity : u.lo, hi: v.hi > u.hi ? Infinity : u.hi, int: u.int && v.int, nz: u.nz || v.nz, nan: u.nan || v.nan })
     }
     runs.push(r)
@@ -251,6 +253,87 @@ export function intRanges(fn, bodyStart, assume = null, regions = null) {
     }
   }
   const tracked = name => { const t = types.get(name); return t === 'f64' || t === 'i32' || t === 'i64' }
+  // The locals on a cycle of writes (a counter, a running sum, a pair that feed each
+  // other): the ones a loop can move without end, which widen; the rest follow them.
+  const feeds = new Map()
+  const readsOf = (n, out) => { if (!isArr(n)) return out; if ((n[0] === 'local.get' || n[0] === 'local.tee') && typeof n[1] === 'string') out.add(n[1]); for (let i = 1; i < n.length; i++) readsOf(n[i], out); return out }
+  const noteWrites = n => { if (!isArr(n)) return; if ((n[0] === 'local.set' || n[0] === 'local.tee') && typeof n[1] === 'string') { const out = feeds.get(n[1]) ?? feeds.set(n[1], new Set()).get(n[1]); for (let i = 2; i < n.length; i++) readsOf(n[i], out) } for (let i = 1; i < n.length; i++) noteWrites(n[i]) }
+  for (let i = bodyStart; i < fn.length; i++) noteWrites(fn[i])
+  const cyclic = new Set()
+  // The typed arrays this function makes (`__alloc_hdr_n`, zeroed) and reads and
+  // writes through locals alone (`elements`): a load of one is bounded by what
+  // the function stores into it. A local is one of them where its every write is
+  // an allocation, boxed or not; an alias where its every write copies, boxes or
+  // unboxes one; the array escapes where a local of it is read anywhere but an
+  // address, a header, a fill, a copy, a box, an unbox or a compare of its box.
+  const wexprs = new Map()
+  const noteExprs = n => { if (!isArr(n)) return; if ((n[0] === 'local.set' || n[0] === 'local.tee') && typeof n[1] === 'string' && n.length === 3) (wexprs.get(n[1]) ?? wexprs.set(n[1], []).get(n[1])).push(n[2]); for (let i = 1; i < n.length; i++) noteExprs(n[i]) }
+  for (let i = bodyStart; i < fn.length; i++) noteExprs(fn[i])
+  const isAlloc = e => isArr(e) && e[0] === 'call' && typeof e[1] === 'string' && /^\$__alloc_hdr_n(_|$)/.test(e[1])
+  const boxed = e => isArr(e) && e[0] === 'f64.reinterpret_i64' && e[1]?.[0] === 'i64.or' && e[1].length === 3 && (e[1][1]?.[0] === 'i64.const' || e[1][1]?.[0] === 'global.get') && e[1][2]?.[0] === 'i64.extend_i32_u' ? e[1][2][1] : null
+  const mkptr = e => isArr(e) && e[0] === 'call' && typeof e[1] === 'string' && /^\$__mkptr(_|$)/.test(e[1]) && e.length > 2 ? e[e.length - 1] : null
+  const unboxed = e => isArr(e) && e[0] === 'i32.wrap_i64' && e.length === 2 ? (e[1]?.[0] === 'i64.and' && e[1][2]?.[0] === 'i64.const' && e[1][1]?.[0] === 'i64.reinterpret_f64' ? e[1][1][1] : e[1]?.[0] === 'i64.reinterpret_f64' ? e[1][1] : null) : null
+  const fresh = e => isAlloc(e) || (boxed(e) ? fresh(boxed(e)) : mkptr(e) ? fresh(mkptr(e)) : false)
+  const nameRead = e => isArr(e) && (e[0] === 'local.get' || e[0] === 'local.tee') && typeof e[1] === 'string' ? e[1] : null
+  // the local an alias form reads, or null
+  const aliasOf = e => nameRead(e) ?? (boxed(e) ? nameRead(boxed(e)) : mkptr(e) ? nameRead(mkptr(e)) : unboxed(e) ? nameRead(unboxed(e)) : null)
+  const rootOf = new Map()
+  for (const [x, es] of wexprs) if (es.every(fresh)) rootOf.set(x, x)
+  for (let changed = true; changed;) {
+    changed = false
+    for (const [x, es] of wexprs) {
+      if (rootOf.has(x)) continue
+      const roots = new Set(es.map(e => { const y = aliasOf(e); return y == null ? null : rootOf.get(y) ?? null }))
+      if (roots.size === 1 && !roots.has(null)) { rootOf.set(x, [...roots][0]); changed = true }
+    }
+  }
+  const escaped = new Set()
+  // the base local an address reads, through the adds of an index
+  const baseOf = e => { if (!isArr(e)) return null; if (nameRead(e) != null) return rootOf.has(nameRead(e)) ? nameRead(e) : null; if (e[0] === 'i32.add' && e.length === 3) return baseOf(e[1]) ?? baseOf(e[2]); return null }
+  const LOAD = /^(i32|i64|f32|f64)\.(load|store)/
+  const escapes = (n, parent, at) => {
+    if (!isArr(n)) return
+    const x = nameRead(n)
+    if (x != null && rootOf.has(x)) {
+      const p = parent?.[0]
+      const ok = (LOAD.test(p) && at === 1 && baseOf(n) != null) ||
+        (p === 'i32.add' && at !== 0) || (p === 'i32.sub' && at === 1 && parent[2]?.[0] === 'i32.const') ||
+        (p === 'memory.fill' && at === 1) || ((p === 'local.set' || p === 'local.tee') && rootOf.has(parent[1])) ||
+        p === 'i64.extend_i32_u' || p === 'i64.reinterpret_f64' || (mkptr(parent) != null && at === parent.length - 1) ||
+        /^(i64|f64)\.(eq|ne)$/.test(p)
+      if (!ok) escaped.add(rootOf.get(x))
+      if (n[0] === 'local.get') return
+    }
+    // (an add or a header offset is an address where its own use is one; the chain ends at a load or a store)
+    if (n[0] === 'i32.add' || n[0] === 'i32.sub') { const b = baseOf(n); if (b != null && !(LOAD.test(parent?.[0]) && at === 1) && !(parent?.[0] === 'i32.add' || parent?.[0] === 'i32.sub' || parent?.[0] === 'memory.fill')) escaped.add(rootOf.get(b)) }
+    if (n[0] === 'memory.copy' || n[0] === 'memory.init') { const b = baseOf(n[1]); if (b != null) escaped.add(rootOf.get(b)) }
+    for (let i = 1; i < n.length; i++) escapes(n[i], n, i)
+  }
+  for (let i = bodyStart; i < fn.length; i++) escapes(fn[i], null, 0)
+  const elements = new Map()   // root → { hull, ones, unknown }: what the function stored, whether it filled with ones
+  for (const r of new Set(rootOf.values())) if (!escaped.has(r)) elements.set(r, { hull: exact(0), ones: false, unknown: false, moves: 0 })
+  let elementsMoved = false
+  const rootAt = e => { const b = baseOf(e); return b == null ? null : elements.get(rootOf.get(b)) ?? null }
+  const stored = (el, v, fits) => {
+    if (el.unknown) return
+    const next = v && !v.of && v.int && !v.nan && fits(v) ? hull(el.hull, v) : null
+    if (!next) { el.unknown = true; elementsMoved = true }
+    // (a hull that keeps growing, a chain of arrays feeding one another, is any word after a few rounds)
+    else if (!within(next, el.hull)) { el.hull = ++el.moves > 3 ? val(I32.lo, I32.hi) : next; elementsMoved = true }
+  }
+  const FITS = { 'i32.store': v => v.lo >= I32.lo && v.hi <= I32.hi, 'i64.store32': v => v.lo >= I32.lo && v.hi <= I32.hi, 'i32.store16': v => v.lo >= -32768 && v.hi <= 65535, 'i32.store8': v => v.lo >= -128 && v.hi <= 255 }
+  const loaded = (el, op) => {
+    if (!el || el.unknown) return null
+    const range = op === 'i32.load8_u' ? [0, 255] : op === 'i32.load8_s' ? [-128, 127] : op === 'i32.load16_u' ? [0, 65535] : op === 'i32.load16_s' ? [-32768, 32767] : [I32.lo, I32.hi]
+    let h = el.hull
+    if (el.ones) h = hull(h, exact(range[0] === 0 ? range[1] : -1))
+    // (a store of a wider element than the load reads gives the bytes the load's kind reads: any)
+    return h.lo >= range[0] && h.hi <= range[1] ? h : null
+  }
+  for (const start of feeds.keys()) {
+    const seen = new Set(), stack = [...feeds.get(start)]
+    while (stack.length) { const x = stack.pop(); if (x === start) { cyclic.add(start); break } if (seen.has(x)) continue; seen.add(x); for (const y of feeds.get(x) ?? []) stack.push(y) }
+  }
   const av = new Map(), writes = new Map(), reads = new Map(), loops = new Map(), entry = new Map()
   const labels = [], stack = []
   const heads = new Map(), backs = new Map()
@@ -447,6 +530,8 @@ export function intRanges(fn, bodyStart, assume = null, regions = null) {
     const kids = n.filter(isArr), vs = []
     for (const k of kids) vs.push(ev(k, st))
     if (!st.env) return null
+    if (FITS[op] && kids.length === 2) { const el = rootAt(kids[0]); if (el) stored(el, vs[1], FITS[op]) }
+    else if (op === 'memory.fill' && kids.length === 3) { const el = rootAt(kids[0]); if (el && !el.unknown) { const b = vs[1]; if (b && b.lo === b.hi && (b.lo & 255) === 0) {} else if (b && b.lo === b.hi && (b.lo & 255) === 255) { if (!el.ones) { el.ones = true; elementsMoved = true } } else { el.unknown = true; elementsMoved = true } } }
     for (let i = 0; i < kids.length; i++) seenAt.set(kids[i], vs[i])
     const r = kids.length === n.length - 1 ? remainderOf(n) : null
     if (r) {
@@ -561,10 +646,11 @@ export function intRanges(fn, bodyStart, assume = null, regions = null) {
         const p = [Math.trunc(v.lo / k), Math.trunc(v.hi / k)]
         return val(Math.min(...p), Math.max(...p))
       }
-      case 'i32.load8_u': return val(0, 255)
-      case 'i32.load8_s': return val(-128, 127)
-      case 'i32.load16_u': return val(0, 65535)
-      case 'i32.load16_s': return val(-32768, 32767)
+      case 'i32.load': return loaded(rootAt(x), op)
+      case 'i32.load8_u': return loaded(rootAt(x), op) ?? val(0, 255)
+      case 'i32.load8_s': return loaded(rootAt(x), op) ?? val(-128, 127)
+      case 'i32.load16_u': return loaded(rootAt(x), op) ?? val(0, 65535)
+      case 'i32.load16_s': return loaded(rootAt(x), op) ?? val(-32768, 32767)
       case 'i32.eqz': return a && (a.lo > 0 || a.hi < 0) ? answer(0) : a && a.lo === 0 && a.hi === 0 ? answer(1) : BOOL
       case 'i32.popcnt': case 'i32.clz': case 'i32.ctz': return val(0, 32)
     }
@@ -618,7 +704,7 @@ export function intRanges(fn, bodyStart, assume = null, regions = null) {
     let head = heads.get(n)
     if (phase === 'up') {
       if (!head) { head = entering; moved = true }
-      else if (!envWithin(entering, head)) { head = round > 2 ? widen(head, entering) : joinEnv(head, entering); moved = true }
+      else if (!envWithin(entering, head)) { head = round > 2 ? widen(head, entering, open()) : joinEnv(head, entering); moved = true }
     } else if (phase === 'down' && head && envWithin(entering, head)) head = entering
     else if (!head) head = entering
     heads.set(n, head)
@@ -656,6 +742,8 @@ export function intRanges(fn, bodyStart, assume = null, regions = null) {
   }
 
   const env = envOf(new Map())
+  let openSlots = null
+  const open = () => { if (!openSlots) { openSlots = new Set(); for (const [name, i] of env.index) if (cyclic.has(name)) openSlots.add(i) } return openSlots }
   for (const [name, type] of types) if (type === 'f64' || type === 'i32' || type === 'i64') bind(env, name, params.has(name) ? null : exact(0))
   const body = fn.slice(bodyStart)
   const walk = () => seq(body, { env: fork(env) })
@@ -666,7 +754,9 @@ export function intRanges(fn, bodyStart, assume = null, regions = null) {
   for (round = 0, moved = true; moved && !abort; round++) {
     if (round > 24) return null
     moved = false
+    elementsMoved = false
     walk()
+    if (elementsMoved) moved = true
   }
   phase = 'down'
   for (let k = 0; k < 2 && !abort; k++) walk()

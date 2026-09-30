@@ -1670,7 +1670,21 @@ the value is an integer, whether it may be -0, whether it may be NaN; no
 interval at all is any value, a box among them. A comparison refines the arm
 it guards, arms hull at their join, and a loop head is the hull of its entry
 and its back edges, widened where a bound still moves after two walks and
-narrowed again by the loop's own tests. The function is walked whole each
+narrowed again by the loop's own tests. Only a local on a cycle of writes (a
+counter, a running sum, a pair that feed each other) widens: every other
+bound is a hull of theirs and settles once they do, so a flag written 0 and 1
+stays [0, 1]. A typed array the function makes (`__alloc_hdr_n`, zeroed) and
+reads and writes through its locals alone, boxed or unboxed, holds what the
+function stores into it, so an integer element read from one is bounded by
+those stores (a stack of triangle indices, a hash table of counters); an
+array a local of which is read anywhere but an address, a header, a fill, a
+copy, a box, an unbox or a compare of its box escapes, and its elements are
+any word. The elements are part of the fixpoint, and one whose hull grows
+for more than three rounds is any word. A number the intervals know is truthy
+where it is not zero, and the test a copy makes of a number it assumes an
+integer is decided where the intervals already know it (`int-narrow.js`);
+an element read that may miss is truthy where it is a number other than zero,
+inline, since a box is a NaN (`emit/dispatch.js` kindTruthyIR). The function is walked whole each
 time, each loop from the head it had, so the walks are as many as the heads
 take to settle whatever the nesting. An f64 element read is a number only
 where its node says so (`presentNumRead`, `numberRead`): a read that may miss
@@ -1724,18 +1738,24 @@ The guards of a copy are combined once the integers are in place
 (`optimize/guards.js`, the `combineGuards` pass). Each index is read as a sum
 `c + a·counter + Σ k·term`, a term being a local or an expression that only
 computes, named by the writes its locals hold (the last write that runs
-before the read on every way to it). An index the loop leaves alone, and one
-the loop's counter makes (one step at the end of every round, one test at the
-top), is tested ahead of the loop for the first and the last round, in i64,
+before the read on every way to it); a temp the emitter tees an index into is
+the sum it stores, and a test that goes, or is rewritten, keeps the temp's
+assignment: the reads after it depend on it. An index the loop leaves alone, and one the loop's counter
+makes (one step at the end of every round, one test at the top, or one of
+the tests the top leaves by: `flag && j < n` in the short-circuit form the
+emitter writes bounds `j` on every round that runs), is tested ahead of the
+loop for the first and the last round, in i64,
 and the loop as written runs where a test fails. Reads of one array whose
 indices differ by constants are tested by the first of them, for the least
 and the greatest, where that guard runs whenever the others do and leaves to
 the same statement. A test that fails ahead of its read leaves earlier than
 the read would; the loop as written decides the read. A read the program
 itself keeps within its array stays tested where it stands: one that a
-conditional it is an arm of, or a branch it comes after, shields by reading a
-local its index is made of (`i > 0 ? a[i - 1] : 0`, a stencil's border), whose
-guard ahead of that test would leave on a round that reads nothing.
+conditional it is an arm of, or a branch it comes after, shields by bounding
+a local its index is made of (`i > 0 ? a[i - 1] : 0`, a stencil's border), whose
+guard ahead of that test would leave on a round that reads nothing. A test
+bounds a local by ordering it, or equating it with a constant (`!x` included);
+one that equates two locals, or tests an element it reads, bounds nothing.
 
 LICM reads a view's descriptor words as it reads a header's: `fn.viewNames`
 (stamped in `compile/emit-func.js`, carried to a promoted global's local by

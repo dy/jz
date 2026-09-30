@@ -58,10 +58,14 @@ const combine = (loop, holder, tag, types) => {
   if (n > first + 2 && again?.[0] === 'br' && again[1] === loop[1] && step?.[0] === 'local.set' && types.get(step[1]) === 'i32' && writes.get(step[1]).length === 1 &&
       step[2]?.[0] === 'i32.add' && step[2][1]?.[0] === 'local.get' && step[2][1][1] === step[1] && step[2][2]?.[0] === 'i32.const' && Number(step[2][2][1]) === 1 &&
       top?.[0] === 'br_if' && top.length === 3) {
-    const t = top[2]?.[0] === 'i32.eqz' && top[2][1]?.[0] === 'i32.lt_s' ? top[2][1] : top[2]?.[0] === 'i32.ge_s' ? top[2] : null
-    const limit = t?.[2]
-    if (t && t[1]?.[0] === 'local.get' && t[1][1] === step[1] &&
-        (limit?.[0] === 'i32.const' || (limit?.[0] === 'local.get' && types.get(limit[1]) === 'i32' && still(limit[1])))) { counter = step[1]; bound = limit }
+    // The bound the test leaves by, or one of the tests it leaves by (`!flag || j >= n`,
+    // `!(flag && j < n)`): a round that runs has j < n whatever the others said.
+    const isCounter = e => e?.[0] === 'local.get' && e[1] === step[1]
+    const above = e => e?.[0] === 'i32.ge_s' && isCounter(e[1]) ? e[2] : e?.[0] === 'i32.eqz' ? below(e[1]) : e?.[0] === 'i32.or' ? (above(e[1]) ?? above(e[2])) : null
+    const both = e => e?.[0] === 'if' && e.length === 5 && e[1]?.[0] === 'result' && e[3]?.[0] === 'then' && e[3].length === 2 && e[4]?.[0] === 'else' && e[4].length === 2 && e[4][1]?.[0] === 'i32.const' && Number(e[4][1][1]) === 0 ? [e[2], e[3][1]] : null
+    const below = e => e?.[0] === 'i32.lt_s' && isCounter(e[1]) ? e[2] : e?.[0] === 'i32.eqz' ? above(e[1]) : e?.[0] === 'i32.and' ? (below(e[1]) ?? below(e[2])) : both(e) ? (below(both(e)[0]) ?? below(both(e)[1])) : null
+    const limit = above(top[2])
+    if (limit && (limit[0] === 'i32.const' || (limit[0] === 'local.get' && types.get(limit[1]) === 'i32' && still(limit[1])))) { counter = step[1]; bound = limit }
   }
 
   // Whether `a` runs before `b` in every round that reaches `b`: `a` stands
@@ -132,6 +136,7 @@ const combine = (loop, holder, tag, types) => {
       return d ? { key: x + '@' + place.get(d), moves: true } : null
     }
     if (e[0] === 'i32.const' || e[0] === 'i64.const') return { key: e[0] + ' ' + e[1], moves: false }
+    if (e[0] === 'local.tee' && e.length === 3 && word(e[1])) return plain(e[2], at)
     if (!COMPUTES.test(e[0])) return null
     // (a division by what may be zero traps where it stands)
     if (/(rem|div)_[su]$/.test(e[0]) && !((e[2]?.[0] === 'i32.const' || e[2]?.[0] === 'i64.const') && Number(e[2][1]) !== 0 && Number(e[2][1]) !== -1)) return null
@@ -164,6 +169,8 @@ const combine = (loop, holder, tag, types) => {
       const p = linear(e[1], at, deep + 1)
       r = p && times(p, 2 ** (Number(e[2][1]) & (op === 'i32.shl' ? 31 : 63)))
     } else if ((op === 'i32.wrap_i64' || op === 'i64.extend_i32_s' || op === 'i64.extend_i32_u') && e.length === 2) r = linear(e[1], at, deep + 1)
+    // (a tee is the value it stores, where the index temp the emitter keeps is set)
+    else if (op === 'local.tee' && e.length === 3 && word(e[1])) r = linear(e[2], at, deep + 1)
     // (the sums are taken to 2^32, where an extension and a wrap are the value they take)
     if (!r && op !== 'local.get') {
       const v = plain(e, at), type = typeOf(e, types)
@@ -248,10 +255,23 @@ const combine = (loop, holder, tag, types) => {
     }
     return out
   }
+  // What a test bounds: the locals it orders, or equates with a constant (`!x`
+  // included), through the boolean operators. A load it tests, or two locals it
+  // equates, bound no index.
+  const ORDER = /^(i32|i64|f64)\.(lt|gt|le|ge)(_[su])?$/, EQUAL = /^(i32|i64|f64)\.(eq|ne)$/
+  const isConst = e => isArr(e) && /\.const$/.test(e[0])
+  const bounds = (t, out) => {
+    if (!isArr(t)) return out
+    if (ORDER.test(t[0])) { expand(t[1], out); expand(t[2], out) }
+    else if (EQUAL.test(t[0])) { if (isConst(t[1])) expand(t[2], out); else if (isConst(t[2])) expand(t[1], out) }
+    else if (t[0] === 'i32.eqz' || t[0] === 'i64.eqz') { if (t[1]?.[0] === 'local.get' || t[1]?.[0] === 'local.tee') expand(t[1], out); else bounds(t[1], out) }
+    else if (/^i32\.(and|or)$/.test(t[0]) || t[0] === 'select' || t[0] === 'if' || t[0] === 'then' || t[0] === 'else' || t[0] === 'block') for (let i = 1; i < t.length; i++) bounds(t[i], out)
+    return out
+  }
   const shielded = (from, g) => {
     const made = madeOf(g.index)
     if (!made.size) return false
-    for (const t of crossed(from, g.by)) for (const x of expand(t, new Set())) if (made.has(x)) return true
+    for (const t of crossed(from, g.by)) for (const x of bounds(t, new Set())) if (made.has(x)) return true
     return false
   }
 
@@ -267,6 +287,9 @@ const combine = (loop, holder, tag, types) => {
   }
   if (!read.length) return false
 
+  // A test that goes, or is rewritten, keeps the temps it tees: the loads after it read them.
+  const tees = (n, out) => { if (isArr(n)) { if (n[0] === 'local.tee' && n.length === 3) out.push(['local.set', n[1], n[2]]); else for (let i = 1; i < n.length; i++) tees(n[i], out) } return out }
+  const gone = by => { const keep = tees(by[2], []); by.length = 0; if (!keep.length) by.push('nop'); else if (keep.length === 1) by.push(...keep[0]); else by.push('block', ...keep) }
   // Ahead of the loop: the indices of no round, and the counter's.
   const ahead = new Map()
   for (const g of read) {
@@ -274,8 +297,7 @@ const combine = (loop, holder, tag, types) => {
     const at = ahead.get(g.key)
     if (at) { at.lo = Math.min(at.lo, g.c); at.hi = Math.max(at.hi, g.c) } else ahead.set(g.key, { g, lo: g.c, hi: g.c })
     g.done = true
-    g.by.length = 0
-    g.by.push('nop')
+    gone(g.by)
   }
   const tests = [], asked = new Set()
   const ask = test => { const key = JSON.stringify(test); if (!asked.has(key)) { asked.add(key); tests.push(['br_if', slow, test]) } }
@@ -305,8 +327,9 @@ const combine = (loop, holder, tag, types) => {
     if (!rest.length) continue
     const base = less(g.index, 0)
     const within = c => ['i32.lt_u', narrow(base, c), narrow(g.length)]
-    g.by[2] = ['i32.eqz', lo === hi ? within(lo) : ['i32.and', within(lo), within(hi)]]
-    for (const r of rest) { r.by.length = 0; r.by.push('nop') }
+    const keep = tees(g.by[2], []), test = ['i32.eqz', lo === hi ? within(lo) : ['i32.and', within(lo), within(hi)]]
+    if (keep.length) { const br = ['br_if', g.by[1], test]; g.by.length = 0; g.by.push('block', ...keep, br) } else g.by[2] = test
+    for (const r of rest) gone(r.by)
     merged = true
   }
   return merged || tests.length > 0

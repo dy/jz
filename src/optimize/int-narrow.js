@@ -221,6 +221,9 @@ export function integerPlan(fn, assume = null, regions = null) {
 /** Carry the integer-valued f64 locals of `fn` in integer registers. `assume`
  *  is the entry facts of specialized loops (int-range.js). Returns whether the
  *  function changed. */
+// The same read twice: one node, or two reads of one local.
+const sameRead = (p, q) => p === q || (Array.isArray(p) && Array.isArray(q) && p[0] === 'local.get' && q[0] === 'local.get' && p[1] === q[1])
+
 export function narrowInts(fn, assume = null) {
   if (!isArr(fn) || fn[0] !== 'func') return false
   const plan = integerPlan(fn, assume)
@@ -387,6 +390,20 @@ export function narrowInts(fn, assume = null) {
     if (op === 'call' && n.length === 3 && typeof n[1] === 'string' && KIND.test(n[1]) && at(n)?.hi === 0) {
       did = true
       return pure(n[2]) ? ['i32.const', 0] : ['block', ['result', 'i32'], ['drop', F(n[2])], ['i32.const', 0]]
+    }
+    // The bits of an integer within 2^51 are the bits of its truncation converted back: the
+    // test a copy makes of a number it assumes an integer is decided where the intervals know.
+    if ((op === 'i64.ne' || op === 'i64.eq') && n.length === 3 && n[1]?.[0] === 'i64.reinterpret_f64' && n[2]?.[0] === 'i64.reinterpret_f64') {
+      const back = n[1][1], v = n[2][1]
+      if (back?.[0] === 'f64.convert_i64_s' && back[1]?.[0] === 'i64.trunc_sat_f64_s' && sameRead(back[1][1], v)) {
+        const a = at(v)
+        if (a && !a.of && a.int && !a.nan && !a.nz && a.lo >= -LIMIT && a.hi <= LIMIT) { did = true; return ['i32.const', op === 'i64.eq' ? 1 : 0] }
+      }
+    }
+    // A number that is never NaN is truthy where it is not zero (a box is a NaN: not this).
+    if (op === 'call' && n[1] === '$__is_truthy' && n.length === 3 && at(n[2])?.of && at(n[2]).mask == null && !at(n[2]).of.nan) {
+      did = true
+      return ['f64.ne', ['f64.reinterpret_i64', F(n[2])], ['f64.const', 0]]
     }
     if (op === 'call' && n[1] === '$__eq_strict' && n.length === 4 && at(n[2])?.of && at(n[3])?.of && at(n[2]).mask == null && at(n[3]).mask == null) {
       did = true

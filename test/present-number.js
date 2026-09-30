@@ -75,3 +75,22 @@ test('present-number: a subarray sorted in place reads its bounds from the heade
   })
   for (const [n, k] of [[0, 0], [1, 1], [10, 0], [10, 4], [10, 10], [40, 30], [40, 60]]) agree(src, 'f', [n, k])
 })
+
+// A number that may be missing (an element of a typed binding that is a box)
+// is truthy where it is a number other than zero, inline: a box is a NaN.
+test('present-number: the truthiness of an element that may be missing', () => {
+  const src = `export function f(n, k) {
+  let flags = new Uint8Array(4)
+  if (n > 4) flags = new Uint8Array(n)
+  for (let i = 0; i < n; i++) flags[i] = (i * 7 + k) % 3
+  let a = 0, b = 0, c = 0
+  for (let i = 0; i < n + 2; i++) {
+    if (flags[i]) a++
+    if (!flags[i]) b++
+    c += flags[i] ? 2 : 1
+  }
+  return a * 10000 + b * 100 + c
+}`
+  if (!belowOpt(2)) is(wat(src).includes('$__is_truthy'), false, 'no truthiness through the runtime')
+  for (const n of [0, 1, 3, 4, 5, 9, 16]) for (const k of [0, 1, 2]) agree(src, 'f', [n, k])
+})

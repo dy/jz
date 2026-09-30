@@ -181,3 +181,41 @@ test('int-narrow: a shift by a count the intervals do not know', () => {
 }`
   for (const n of [0, 5, 9, 20]) for (const k of [0, 1, 3, 33, -1]) agree(src, 'f', [n, k])
 })
+
+// A number the intervals know is truthy where it is not zero: no call to the
+// runtime's kind chain for a flag carried as an integer.
+test('int-narrow: the truthiness of a number the intervals know', () => {
+  const src = `export function f(n) {
+  let split = false, total = 0
+  for (let g = 0; g < n; g++) {
+    for (let i = 0; i < 4 && !split; i++) if ((g + i) % 7 === 3) split = true
+    const size = split ? 0 : 8
+    for (let j = 0; split && j < 8; j++) total += j
+    total += size + (g % 5 ? 1 : 2)
+    split = false
+  }
+  return total
+}`
+  shapes(src, w => ok(!w.includes('$__is_truthy'), 'no truthiness through the runtime'))
+  for (const n of [0, 1, 5, 20, 100]) agree(src, 'f', [n])
+})
+
+// A typed array the function makes and keeps to itself holds what the function
+// stores into it: an index read from one is bounded by those stores, and its
+// arithmetic stays in i32 where the bound says so.
+test('int-narrow: elements bounded by what the function stores', () => {
+  const src = `export function f(n) {
+  const stack = new Int32Array(n + 1), seen = new Int32Array(n)
+  let top = 0, s = 0
+  stack[top++] = 0
+  while (top > 0) {
+    const f = stack[--top]
+    const base = f * 3
+    s += base
+    if (f < n && seen[f] === 0) { seen[f] = 1; stack[top++] = (f * 7 + 1) & 0xffff; if (top < n) stack[top++] = (f + 1) & 0xffff }
+  }
+  return s
+}`
+  shapes(src, w => { const copy = w.slice(w.search(/\(loop \$[^\s)]*\.f\d+[\s)]/)); ok(!/i64\.mul/.test(copy.slice(0, copy.indexOf('(br $'))), 'the product of an element the stores bound is an i32') })
+  for (const n of [0, 1, 2, 5, 16, 100]) agree(src, 'f', [n])
+})

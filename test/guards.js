@@ -150,3 +150,39 @@ test('guards: reads under a test of something else', () => {
 }`
   for (const n of [0, 1, 7, 14, 15, 16, 40]) for (const len of [16, 17, 3, 0]) agree(src, 'f', [n, len])
 })
+
+// The bound a loop's counter runs to is read through the other tests the loop
+// leaves by (`flag && j < n`, the emitter's short-circuit form), and an index
+// the emitter keeps in a temp (`local.tee`) is the sum it stores. A test that
+// equates the counter with another local, or tests an element it reads, bounds
+// no index: the reads past it still take their tests ahead of the loop.
+// An inlined callee's reads index through temps the emitter tees inside the
+// guard's test: a guard that merges into its neighbour, or goes ahead of the
+// loop, keeps those assignments, the reads after it depend on them.
+test('guards: the temps a removed test tees stay assigned', () => {
+  const src = `const a = [], b = [], out = [0, 0, 0]
+for (let i = 0; i < 64; i++) { a.push([i, i + 1, i + 2, i + 3]); b.push([i * 2, 1, 2, 3]) }
+const dot = (p, q) => { let s = 0; for (let k = 0; k < 4; k++) { s += p[k] * q[k]; s += p[3 - k] - q[3 - k] } out[0] = s; return s + out[0] }
+export const f = (n) => { let acc = 0; for (let i = 0; i < n; i++) acc += dot(a[i], b[i]); return acc }`
+  for (const n of [0, 1, 3, 64]) agree(src, 'f', [n])
+})
+
+test('guards: a counter bounded beside a flag, read through a temp, past a test that bounds nothing', () => {
+  const src = `export function f(n, len, flag) {
+  const a = new Float64Array(len), m = new Uint8Array(32)
+  for (let i = 0; i < len; i++) a[i] = i + 0.5
+  for (let i = 0; i < 32; i++) m[i] = (i * 5) % 3
+  let s = 0
+  for (let i = 0; i < 4; i++) {
+    for (let j = 0; flag && j < n; j++) {
+      const q = j * 6
+      if (i === j || m[j & 31]) continue
+      const x = a[q] * 2 + a[q + 1] * 3 + a[q + 2] * 5, y = a[q + 3] * 7 + a[q + 4] * 11 + a[q + 5] * 13
+      s += (x === x ? x : 100) + (y === y ? y : 1000)
+    }
+  }
+  return s
+}`
+  shapes(src, w => ok(fewest(w, 'f64.load') <= 3, 'no read tests in the loop: its exit, its skips'))
+  for (const n of [0, 1, 3, 5]) for (const len of [30, 29, 12, 0]) for (const flag of [1, 0]) agree(src, 'f', [n, len, flag])
+})
