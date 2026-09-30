@@ -25,7 +25,7 @@
  * @module prepare/math-kernel
  */
 
-import { PI, INV_PI, HALF_PI, SIN_C, COS_C, EXPM1_C, LOG_C, EXP2_TAB, EXP2_Q, EXP_Q, EXP_L1, EXP_L2, POW_LOG_TAB, POW_LOG_A, POW_LN2HI, POW_LN2LO, polyTree } from '../../module/math/trig-tables.js'
+import { ASIN_PIO2_HI, ASIN_PIO2_LO, ASIN_PIO4_HI, ASIN_PI, ASIN_P, ASIN_Q, PI, INV_PI, HALF_PI, SIN_C, COS_C, EXPM1_C, LOG_C, EXP2_TAB, EXP2_Q, EXP_Q, EXP_L1, EXP_L2, POW_LOG_TAB, POW_LOG_A, POW_LN2HI, POW_LN2LO, polyTree } from '../../module/math/trig-tables.js'
 
 // ---- bit-level helpers (i64.reinterpret_f64 / f64.reinterpret_i64) ----
 const _buf = new ArrayBuffer(8)
@@ -293,17 +293,60 @@ function atan(x) {
   return copysign(r, x)
 }
 
+// fdlibm's asin and acos (module/math.js), word for word: the high word decides
+// the range, the rational R(x²) = P/Q serves both, and a sqrt split into its
+// word and a remainder keeps the last bits on 0.5 <= |x| < 1.
+const hiWord = (x) => Number(f64Bits(x) >> 32n) | 0
+const loWord = (x) => Number(f64Bits(x) & 0xffffffffn)
+const wordOf = (x) => bitsF64(f64Bits(x) & 0xffffffff00000000n)
+const asinP = (z) => z * (ASIN_P[0] + z * (ASIN_P[1] + z * (ASIN_P[2] + z * (ASIN_P[3] + z * (ASIN_P[4] + z * ASIN_P[5])))))
+const asinQ = (z) => 1 + z * (ASIN_Q[0] + z * (ASIN_Q[1] + z * (ASIN_Q[2] + z * ASIN_Q[3])))
 function asin(x) {
-  if (Math.abs(x) > 1) return NaN
-  const ax = Math.abs(x)
-  const a = ax <= 0.5 ? ax : Math.sqrt(0.5 * (1 - ax))
-  const u = a * a
-  let r = a + (a * u) * (0.16666666715486264 + u * (0.074999892151409259 + u * (0.044648555271317079 + u * (0.030259196387355945 + u * (0.023661273034955098 + u * (0.010472588920432560 + u * 0.031028862087420162))))))
-  if (ax > 0.5) r = HALF_PI - 2 * r
-  return copysign(r, x)
+  const hx = hiWord(x), ix = hx & 0x7fffffff
+  if (ix >= 0x3ff00000) {
+    if (((ix - 0x3ff00000) | loWord(x)) === 0) return x * ASIN_PIO2_HI + x * ASIN_PIO2_LO
+    return NaN
+  }
+  if (ix < 0x3fe00000) {
+    if (ix < 0x3e400000) return x
+    const t = x * x, p = asinP(t), q = asinQ(t), w = p / q
+    return x + x * w
+  }
+  let w = 1 - Math.abs(x), t = w * 0.5
+  let p = asinP(t), q = asinQ(t)
+  const s = Math.sqrt(t)
+  if (ix >= 0x3FEF3333) {
+    w = p / q
+    t = ASIN_PIO2_HI - (2 * (s + s * w) - ASIN_PIO2_LO)
+  } else {
+    w = wordOf(s)
+    const c = (t - w * w) / (s + w), r = p / q
+    p = 2 * s * r - (ASIN_PIO2_LO - 2 * c)
+    q = ASIN_PIO4_HI - 2 * w
+    t = ASIN_PIO4_HI - (p - q)
+  }
+  return hx > 0 ? t : -t
 }
 
-function acos(x) { return HALF_PI - asin(x) }
+function acos(x) {
+  const hx = hiWord(x), ix = hx & 0x7fffffff
+  if (ix >= 0x3ff00000) {
+    if (((ix - 0x3ff00000) | loWord(x)) === 0) return hx > 0 ? 0 : ASIN_PI + 2 * ASIN_PIO2_LO
+    return NaN
+  }
+  if (ix < 0x3fe00000) {
+    if (ix <= 0x3c600000) return ASIN_PIO2_HI + ASIN_PIO2_LO
+    const z = x * x, p = asinP(z), q = asinQ(z), r = p / q
+    return ASIN_PIO2_HI - (x - (ASIN_PIO2_LO - x * r))
+  }
+  if (hx < 0) {
+    const z = (1 + x) * 0.5, p = asinP(z), q = asinQ(z), s = Math.sqrt(z), r = p / q, w = r * s - ASIN_PIO2_LO
+    return ASIN_PI - 2 * (s + w)
+  }
+  const z = (1 - x) * 0.5, s = Math.sqrt(z), df = wordOf(s), c = (z - df * df) / (s + df)
+  const p = asinP(z), q = asinQ(z), r = p / q, w = r * s + c
+  return 2 * (df + w)
+}
 
 function atan2(y, x) {
   if (Number.isNaN(x)) return x

@@ -154,6 +154,14 @@ export const EXP_L1 = 0.010830424696223417, EXP_L2 = 2.572804622327669e-14
 // string-literal workaround for the kernel's 9-digit dtoa is obsolete.
 export const PI = Math.PI, INV_PI = 1 / Math.PI, HALF_PI = Math.PI / 2
 
+// fdlibm's asin and acos (Sun Microsystems, e_asin.c and e_acos.c, as V8 ran them
+// until its libc kernels): asin(x) = x + x·R(x²) on |x| < 0.5 with the rational
+// R = P/Q, the rest by sqrt((1 − |x|)/2) and the same R; π/2 and π/4 in two words.
+// The values are the words the sources give.
+export const ASIN_PIO2_HI = 1.5707963267948966, ASIN_PIO2_LO = 6.123233995736766e-17, ASIN_PIO4_HI = 0.7853981633974483, ASIN_PI = 3.141592653589793
+export const ASIN_P = [0.16666666666666666, -0.3255658186224009, 0.20121253213486293, -0.04005553450067941, 0.0007915349942898145, 0.00003479331075960212]
+export const ASIN_Q = [-2.403394911734414, 2.0209457602335057, -0.6882839716054533, 0.07703815055590194]
+
 // The pow kernel's log table (scripts/pow-log-table.mjs): for z ∈ [0x1.69555p-1, 0x1.69555p0)
 // split into 128 subintervals by the top mantissa bits of z − OFF, an entry holds 1/c
 // (c near the subinterval's center, 1/c = j/128 or j/256 so z/c − 1 is exact), log(c)
