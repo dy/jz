@@ -188,8 +188,10 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     objectKinds.set(node, merge(objectKinds.get(node) ?? K.NONE, k))
     return k
   }
-  const funcByName = new Map()
-  for (const f of funcs) funcByName.set(f.name, f)
+  // Public entry points stay fixed throughout the analysis. Reuse the census
+  // instead of enumerating the export registry at every call and every round.
+  const funcByName = new Map(), exportedNames = new Set()
+  for (const f of funcs) { funcByName.set(f.name, f); if (exported(f)) exportedNames.add(f.name) }
   let changed = false
 
   const escapeId = (id) => { if (!escaped.has(id)) { escaped.add(id); changed = true; escape(results.get(id) ?? K.NONE); for (const k of closureProps.get(id)?.values() ?? []) escape(k) } }
@@ -634,7 +636,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   const moved = new Map()        // function name → each position's bound-change count; four opens it
   // A function the host, a dispatcher or a caller the walk never sees may
   // call receives anything: it has no hull.
-  const openCaller = (name, f) => exported(f) || hostClosures.has(name) || escaped.has(name) || !!f.sig.dispatcher
+  const openCaller = (name, f) => exportedNames.has(f.name) || hostClosures.has(name) || escaped.has(name) || !!f.sig.dispatcher
   const paramRangeOf = (fn, name) => {
     const f = funcByName.get(fn)
     if (!f || openCaller(fn, f)) return null
@@ -4047,12 +4049,12 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     for (let i = 1; i < n.length; i++) demand(n[i])
   }
   const seedable = new Set()   // exported parameters (keys) the demand may seed NUMBER
-  for (const f of funcs) if (exported(f)) for (const p of f.sig.params) if (!p.rest && !f.defaults?.[p.name]) seedable.add(keyIn(f.name, p.name))
+  for (const f of funcs) if (exportedNames.has(f.name)) for (const p of f.sig.params) if (!p.rest && !f.defaults?.[p.name]) seedable.add(keyIn(f.name, p.name))
   // An explicit numeric entry prologue is already the host boundary's coercion.
   // Later reads observe the overwritten value and cannot revoke that contract;
   // a parameter default runs before the prologue and reads the host's value.
   const entryNumeric = new Set()
-  for (const f of funcs) if (exported(f) && !f.defaults) {
+  for (const f of funcs) if (exportedNames.has(f.name) && !f.defaults) {
     const pending = [f.body]
     while (pending.length) {
       const n = pending.shift()
@@ -4074,15 +4076,15 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     grown.clear()   // the init pushes are counted afresh by every round's walk
     spreadSources.clear() // join the source kinds from this round's reachable contexts
     for (const f of funcs) {
-      if (exported(f) || hostClosures.has(f.name) || escaped.has(f.name) || f.sig.dispatcher) reach(f.name)   // a dispatcher is called by emitted code
+      if (exportedNames.has(f.name) || hostClosures.has(f.name) || escaped.has(f.name) || f.sig.dispatcher) reach(f.name)   // a dispatcher is called by emitted code
       if (!reached.has(f.name)) continue
       if (f.rest) { if (escaped.has(f.name)) restUnknown(f.name, f.rest); else raise(kinds, keyIn(f.name, f.rest), restArrayOf(f.name)) }
       if (escaped.has(f.name)) for (const p of f.sig.params) if (!p.rest) bindParam(keyIn(f.name, p.name), ANY)
-      if (exported(f) || hostClosures.has(f.name) || escaped.has(f.name)) runDefaults(f.name, f.defaults)
+      if (exportedNames.has(f.name) || hostClosures.has(f.name) || escaped.has(f.name)) runDefaults(f.name, f.defaults)
       const contexts = initContexts.get(f.name)
       if (contexts === undefined || plainInits.has(f.name) || escaped.has(f.name)) walkFunction(f.name, f.body, paramNamesOf(f), f.defaults)
       if (contexts !== undefined) for (const c of contexts.values()) { activeCtx = c; walkFunction(f.name, f.body, paramNamesOf(f), f.defaults); activeCtx = null }
-      if (exported(f) || hostClosures.has(f.name)) escapeToHost(results.get(f.name) ?? K.NONE)
+      if (exportedNames.has(f.name) || hostClosures.has(f.name)) escapeToHost(results.get(f.name) ?? K.NONE)
     }
     for (let id = 0; id < closureBodies.length; id++) {
       if (hostClosures.has(id) || escaped.has(id)) reach(id)
@@ -4106,7 +4108,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   // contract normalizes at entry (`boundaryTyped`, narrow/param-abi.js: its
   // constructor, then `+` when written) arrives as that typed array.
   const seed = (numeric) => {
-    for (const f of funcs) if (exported(f)) for (const p of f.sig.params) { const key = keyIn(f.name, p.name); bindParam(key, p.boundaryTyped ? kind(K.TYPED, encodeTypedElemAux(p.boundaryTyped.replace('+', ''), false)) : numeric.includes(key) ? NUMBER : ANY) }
+    for (const f of funcs) if (exportedNames.has(f.name)) for (const p of f.sig.params) { const key = keyIn(f.name, p.name); bindParam(key, p.boundaryTyped ? kind(K.TYPED, encodeTypedElemAux(p.boundaryTyped.replace('+', ''), false)) : numeric.includes(key) ? NUMBER : ANY) }
   }
   seed([])
   fixpoint()
@@ -4116,7 +4118,6 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   // program's own coercion; a compatible one is also a `+` operand, and the
   // wrapper rejects the string or object JS would have concatenated; a
   // parameter that also flows to the host stays ANY.
-  const exportedNames = new Set(funcs.filter(exported).map(f => f.name))
   // An expression body is the result itself. A callable that escaped is called,
   // and its result read, where no walk sees; an exported function's result
   // reaches the host as itself (`fib('1')` is '1'): both results are denied.
