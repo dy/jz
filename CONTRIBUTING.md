@@ -1788,7 +1788,8 @@ the closures the shapes hold under the name; `includes`, `indexOf` and
 `lastIndexOf` keep nothing of their argument, `slice` yields a copy with a
 cell of its own whose elements are the row's positions from a literal start,
 and any other name on an array is a property beside the elements; shape sets
-of up to 64 layouts. A class
+of up to 64 layouts (a layout with more construction sites folds: each site is the
+layout from then on, in every union, whatever a union answered before the fold). A class
 initializer (`C⟨init⟩`) called on one layout is walked for that layout under
 bindings of its own (initializer contexts): a derived class's `super(…)` no
 longer joins its arguments into the base's parameters, so each layout's
