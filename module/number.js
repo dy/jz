@@ -1204,6 +1204,27 @@ export default (ctx) => {
       (then
         (i32.store16 (local.get $buf) (i32.const 45))
         (local.set $pos (i32.const 1))))
+    ;; An integer below 2^53 is its digits (ES 6.1.6.1.20 step 6, k = n): a counter,
+    ;; an index, a key formats without the shortest-representation search.
+    (if (i32.and (f64.eq (f64.trunc (local.get $val)) (local.get $val))
+                 (f64.lt (f64.abs (local.get $val)) (f64.const 9007199254740992)))
+      (then
+        (local.set $m2 (i64.trunc_f64_u (f64.abs (local.get $val))))
+        (local.set $t (local.get $m2))
+        (local.set $n (i32.const 0))
+        (loop $count
+          (local.set $n (i32.add (local.get $n) (i32.const 1)))
+          (local.set $t (i64.div_u (local.get $t) (i64.const 10)))
+          (br_if $count (i64.ne (local.get $t) (i64.const 0))))
+        (local.set $olen (i32.add (local.get $pos) (local.get $n)))
+        (local.set $i (local.get $olen))
+        (loop $digits
+          (local.set $i (i32.sub (local.get $i) (i32.const 1)))
+          (i32.store16 (i32.add (local.get $buf) (i32.shl (local.get $i) (i32.const 1)))
+            (i32.add (i32.const 48) (i32.wrap_i64 (i64.rem_u (local.get $m2) (i64.const 10)))))
+          (local.set $m2 (i64.div_u (local.get $m2) (i64.const 10)))
+          (br_if $digits (i64.ne (local.get $m2) (i64.const 0))))
+        (return (call $__mkstr_scratch (local.get $buf) (local.get $olen)))))
     (local.set $ieeeM (i64.and (local.get $bits) (i64.const 0xFFFFFFFFFFFFF)))
     (local.set $ieeeE (i32.wrap_i64 (i64.and (i64.shr_u (local.get $bits) (i64.const 52)) (i64.const 0x7FF))))
     ;; m2·2^e2 = |val|·2^-2 — two extra bits for the halfway-boundary math
