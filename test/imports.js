@@ -1221,6 +1221,15 @@ export let f = (k, n) => { const fn = c[k]; return typeof fn === 'function' ? fn
   ok(indirect.every(n => n === '$f$exp' || n === '$__call_closure'), `the loop calls the generator directly: ${indirect}`)
 })
 
+// `export let idx, cur, parse = …` (subscript's parser state): a declarator with no
+// value is an export like the others, by name and on the namespace.
+test('imports: a declarator with no value is exported', () => {
+  const modules = { './p.js': 'export let idx, cur = 5, bump = () => (idx = (idx ?? 0) + 1)' }
+  is(jz(`import { idx, cur, bump } from './p.js'\nexport let f = () => { bump(); bump(); return idx * 10 + cur }`, { modules }).exports.f(), 25)
+  const { g } = jz(`import * as p from './p.js'\nexport let g = (k) => { p.bump(); return typeof p[k] }`, { modules }).exports
+  is([g('idx'), g('bump'), g('nope')], ['number', 'function', 'undefined'])
+})
+
 // A module's scope is the builtins plus its own declarations and imports; it
 // never sees the importing module's bindings (ES module scopes do not nest).
 // `b.js` is first reached beneath `a.js`, after `a.js` bound `core` to another

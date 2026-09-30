@@ -815,7 +815,9 @@ const handlers = {
   'export': decl => {
     if (Array.isArray(decl) && (decl[0] === 'let' || decl[0] === 'const'))
       for (const i of decl.slice(1))
-        if (Array.isArray(i) && i[0] === '=') {
+        // `export let idx, cur, parse = …`: a declarator with no value is exported all the same
+        if (typeof i === 'string') ctx.funcs.exports[i] = true
+        else if (Array.isArray(i) && i[0] === '=') {
           if (typeof i[1] === 'string') ctx.funcs.exports[i[1]] = true
           // `export let { a, b: c } = …` / `export let [x, y] = …` — every
           // BoundName of the declaration is an export (ES §16.2.3.2). Surfaced
