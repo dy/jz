@@ -3066,8 +3066,10 @@ test('receiver-HASH: a module literal whose keys functions add is a dictionary, 
     export let view = () => JSON.stringify(bag) + Object.keys(bag).join() + ('x' in bag)`, 'bag'],
   ]
   for (const [src, name] of cases) {
-    jz.compile(src, { wat: true })
-    is(ctx.scope.globalValTypes?.get(name), VAL.HASH, `${name} allocates a dictionary`)
+    if (!onKernel()) {
+      jz.compile(src, { wat: true })
+      is(ctx.scope.globalValTypes?.get(name), VAL.HASH, `${name} allocates a dictionary`)
+    }
     const want = oracle(src), got = run(src)
     const before = [want.view(), got.view()]
     want.touch(); got.touch()

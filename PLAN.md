@@ -8,78 +8,141 @@ that shaped the tree, the work left before release and the latest gate reading.
 
 ## Release status, September 30
 
-**The v1 work is consolidated on main; v1 is not ready to tag.** Landing
-`fbce4604` contains performance commit `293db798`, stdlib commit `4c77ec62` and
-main's memory lineage. It preserves asked/several results, held views and
-nested-return restoration, alongside fixed-memory compilation and the
-receiver-only array-growth rule. Both incoming histories remain reachable.
-The original dirty checkout is preserved on `wip/pre-v1-consolidation-20260930`.
-Nothing has been pushed or published.
+**The perf, stdlib, memory and mikktspace handovers are consolidated locally
+on main at `ce77709c`. V1 is not ready to tag.** Main retains perf `293db798`,
+stdlib `4c77ec62`, the memory lineage from `86a47904`, and all five mikktspace
+commits through `a4e3da3a`, with merge resolutions and the review corrections
+below. The active benchmark, site and test-runner edits are preserved
+separately. The original dirty tree remains on `wip/pre-v1-consolidation-20260930`.
 
-The complete core matrix at `adc7831b` passes: default **5,566 tests / 214,220
-assertions**, O0 **5,411 / 146,111**, O3 **5,425 / 156,147**, and WASI **5,469 /
-199,940**. These gates use the prepared watr fixes described below. The earlier
-WASI run found nine test/host-contract mismatches and one usage-accounting bug:
-owned modules initialized after memory wrapping counted initialization as later
-usage. The baseline now follows completed initialization. Its regression covers
-empty and populated state, failed initialization, repeated instances, retained
-state, host allocations and repeated resets. The release/fixed-memory sweep
-also passes with freed-memory poisoning: **61 tests / 26,692 assertions**.
-The invariant run then exposed a redundant jsstring-planning write into the
-inactive session frame. That write is removed; function analysis already owns
-the parameter's local representation. The new regression fails before the fix
-and passes after it, including empty strings, UTF-16, wide numeric results,
-defaults, repeated compiles and later compiles of different programs. Focused
-session/string checks pass **31 tests / 302 assertions** with invariants enabled;
-the three original digit-parser failures also pass. Fifty JS/WASI binaries at
-O0/O1/O2/O3/size are byte-identical before and after this fix. The invariant run
-also found a test bridge stub missing the required `emitReference` hook; after
-correcting the stub, all **10 pass-registry tests / 28 assertions** pass. Final
-broad gates remain pending after these corrections.
+Verification is on frozen `ce77709c`, using the prepared watr fixes. Subsequent
+cleanup removes an unused import, clarifies the example-builder comment and
+confines a native-scope test assertion to the native compiler leg. Lint and the
+affected test pass after those corrections; compiler behavior is unchanged.
 
-Merge regressions cover class-body parsing, typed-array indices and coercion,
-builtin reflection and shadowing, static-string data lifetime, loop inlining,
-scratch hoisting and guarded Number-or-BigInt errors. Imported/shared memory
-still resets the entire arena; re-instantiation after reset is required and
-verified for repeated and changed modules. The public contract now says so.
+| Check | Result |
+| --- | --- |
+| Default core | **5,705 tests / 221,682 assertions pass**. |
+| O0 core | **5,550 / 152,726 pass**. |
+| O3 core with invariants | **5,566 / 162,967 pass**. |
+| WASI core | **5,608 / 207,011 pass**. |
+| Browser build | Pass; five parity probes agree. Strict bundle **2,996.2 kB**, **845.5 kB gzip**. |
+| Fresh compiler | **23,940,717 bytes**; **20/20 functional** and **9/9 reuse/error-recovery** cases pass. |
+| Recursive compiler | Fails at the 4 GiB heap limit after list-kind specialization. |
+| Enumeration poisoning | All four regression tests pass at five tiers: **420 assertions**. |
+| Types/package/lint | Public types pass; package dry run includes all required entries and no scratch/test/Wasm artifacts (**369 files, 4,272,606 B packed**). Import lint passes after removing one unused import. |
+| Numeric differential sweep | **5,000 programs**, **91,235 inputs compared**, **8,765 excluded**, no mismatches or malformed programs; O0/O1/O2/O3. |
+| Memory poisoning | **89 tests / 21,278 assertions pass** across release, fixed-memory, guarded-view and typed-sort tests. |
+| Language conformance | **3,222 positive cases / 4,045 correct syntax rejections**, zero unexpected failures; two unchanged expected failures. |
+| Builtins conformance | **904 pass**, zero unexpected failures; 43 unchanged expected failures. |
+| three.js | **3 tests / 90 assertions pass**. |
+| Integration matrix | Default **179 / 1,793**, O0 **74 / 589**, O3 **74 / 589**, WASI **77 / 357** tests/assertions pass. |
+| Generated checks | Native correctness passes; one unchanged `fgather` cost failure (**36/37 tests, 102 assertions**). WASI **37/37, 92 assertions pass**. |
+| Examples | Complete gallery, siblings, custom assets and standalone demos build successfully. |
+| Claims | **7 pass / 15 fail / 2 skip**, with exactly the same failing claims as the preceding snapshot. |
+| Self-compile round trips | **85 tests / 2,932 assertions pass**, using the fresh compiler above. |
+| Kernel parity/oracles | **15 tests / 750 assertions pass**; byte-identical WAT at O0/O2/O3. |
+| Checkpoint overlay | **9 tests / 112 assertions pass**, including empty and repeated inputs, changed inputs, park/unpark, error recovery and allocation-free recording. |
+| Hosted suite | **4,876/4,881 tests pass, 195,712 assertions**. One invalid native-scope assertion is corrected and retested (native: 4 assertions; hosted: 2). The four remaining program failures also reproduce on a fresh pre-mikktspace compiler from `88f5f193`. |
 
-Fresh browser bundles and real-browser checks pass on the landed snapshot:
-exact Floatbeat samples, saved-formula create/update/reload/delete, sharing,
-keyboard focus, mobile layout, popup bounds, reduced motion and forced colors.
-Import lint and public TypeScript checks pass. The strict browser bundle is
-2,908.8 kB (816.7 kB gzip), above the optional minimal-bundle target.
+The merge keeps main's asked/several results, held views and nested-return
+restoration together with `memory.fixed` and receiver-only array-growth taint.
+Review corrected guarded-view identity, unsafe wide-i64 interval facts,
+saturation and stale guard refinements. Fixed-memory exports retain their
+no-allocation proof. Exact integer-conversion guards now share one lowering
+rule; short typed sorts keep main's stable radix kernel above 32 elements.
+Class parsing, typed indices/coercion, builtin reflection/shadowing, string
+lifetime, BigInt carriers and split-local lifetime fixes remain included.
 
-Recursive bootstrap remains a release blocker. The latest completed ordinary
-build is candidate 52's 22,567,132-byte compiler: all 20 functional and 9 reuse
-cases pass, but compiling itself exhausts the 4 GiB heap after list-kind
-specialization. Summary storage changes reduced the first recursive summary
-pass from 628 MB to 287 MB; eight rebuilt summaries still exhaust memory later.
-Ordinary build defaults remain unchanged. Earlier round-trip, parity/oracle and
-checkpoint gates pass; they do not prove recursive completion.
+Self-hosted array copies now preserve named properties, including IR schema
+metadata. The same ordered property walk serves arrays, typed storage/views,
+Sets, Maps and buffers. Runtime enumeration checks Number values before pointer
+tags, rejects nullish public receivers, and retains the empty-source semantics
+of copy/spread/for-in. Four regressions compare **420 results with Node** across
+O0/O1/O2/O3/size, including empty inputs, shifts, initialized/runtime keys,
+delete/reinsert, repeated and changed inputs, and receiver evaluation counts.
+A separate poisoned-memory probe retains nested objects and dynamic strings
+across copying, return and subsequent allocation at all five tiers.
 
-The validation dependency includes the three prepared watr 5.11.9 fixes:
-exception-handler ordering, argument evaluation order and signed block-type
-encoding. Native, compiled and clean offline package-consumer checks pass.
-The package remains unpublished; npm still serves 5.11.8 and jz still requires
-`^5.11.8`. Publication approval is pending. A clean registry installation remains
-a release gate.
+The shared example builder resolves transitive imports and runs custom builders
+on every request. Its two regression tests cover empty inputs, A/A/B/A rebuilds,
+changed dependencies and propagated failures. The complete gallery build
+passes on local main at `ce77709c`, including custom three.js assets, sibling
+kernels, rfft, zzfx and all twelve jukebox beats.
+The local browser build also passes all five parity probes using installed
+registry watr 5.11.8; the release matrix above uses the prepared dependency fixes.
 
-Fresh reference-machine speed and size evidence remains open. The static-string
-fix's size probes give `strbuild` 2,129 bytes and `gainclass` 1,758 bytes, without
-changing the workload. The expanded stdlib harnesses are valid modules and their
-full checksums match Node: special functions 2,131,273,638; distributions
-377,214,261. Other standing per-case claims still have gaps; no acceptance bars
-were relaxed. The next math optimization is recorded in
-[the math follow-up](.work/math-followup.md).
+The numeric oracle uses `Object.is` and excludes only executed bitwise operands
+whose magnitude reaches 2^63. The final 5,000-program sweep on `ce77709c`
+compares **91,235 inputs**, excludes **8,765**, and finds no mismatches or
+malformed programs. Its per-operation Node comparison disables rational
+constant folding; the documented round-once rule is separately tested.
 
-Color-space passes all 702 directed conversion pairs and standalone execution
-in Wasmer; unplugin passes its five-bundler integration suite. Checked renders
-of FormantShift (256 blocks) and dewow have exact output and no ongoing heap
-growth. Those results do not certify the entire audio corpus.
+Local cost probes retain correct outputs and show no timing loss for 128
+64-element array enumerations/copies: medians **0.065 / 0.170 ms**, previously
+**0.068 / 0.176 ms**. Correct property handling grows those O3 modules from
+**11,725 → 13,902 B** and **23,813 → 25,173 B**. The earlier MikkTSpace comparison
+on unchanged ShaderBall inputs retains byte-identical tangents (849,696 and
+209,472 values), with median **27.22 ms** versus main's **65.41 ms** and module
+size **101,009 B** versus **81,946 B**. These loaded-machine measurements are
+diagnostics, not reference-machine claim certification.
 
-Source maps, strict entry/types, fixed memory and package integrations have
-targeted validation. Detailed gate logs are local verification artifacts; dated
-evidence below belongs to its recorded snapshot, not every later source change.
+Release remains blocked by:
+
+- **Recursive memory use.** The first summary allocation fell from 628 MB to
+  287 MB, but repeated rebuilt summaries still exhaust the heap. Functional
+  and reuse passes do not establish recursive completion.
+- **Hosted compiler compatibility.** Imported/shared memory options are not
+  forwarded through `test/kernel-target.js` and `scripts/self.js`; the long
+  literal-fragment test reads the wrong memory. Constant JSON folding of an
+  inline RegExp or a nested literal object emits a function that incorrectly
+  throws a BigInt serialization error when called. Nullable BigInt array reads
+  under nested unary operations return encoded data instead of the value:
+  `const a = [17n]; return ~~a[k]` fails the `[0, 1, 1, -1, 0]` call sequence
+  at all five tiers. All four failures reproduce on a freshly built compiler
+  from main immediately before mikktspace (`88f5f193`), with the same prepared
+  watr dependency; native runs pass. The tests remain enabled in
+  `test/strings.js`, `test/json.js`, `test/js-parity.js` and `test/bigint-tag.js`.
+- **Dependency release.** Gates use the three prepared watr fixes for handler
+  ordering, argument evaluation order and signed block-type encoding. Native,
+  compiled and offline package-consumer checks pass. Publication approval is
+  pending; this checkout still requires `^5.11.8` and locks 5.11.8. A clean
+  registry installation must pass before release.
+- **Performance, size and evidence.** The final frozen claims run retains 15
+  failures covering freshness, rival coverage, RSS, w2c, per-case speed and
+  size. Final native generated correctness passes, but `fgather` costs **12,840**
+  against **12,560** (main was **14,400**). The previous `slice` cost failure
+  is closed. No acceptance bars were relaxed. Fresh reference measurements
+  and the [math follow-up](.work/math-followup.md) remain open.
+
+`audiojs-math` remains the separate exact-V8 Math alternative documented in
+CONTRIBUTING; it changes the selected accuracy/performance contract. Earlier
+browser/UI, color-space and package-integration checks belong to their recorded
+snapshots. Nothing has been pushed or published from this consolidation.
+
+## Consolidation review pins
+
+| Regression | Direct evidence |
+| --- | --- |
+| Hosted inference test inspected the native scope | `receiver-HASH: a module literal whose keys functions add is a dictionary, dot-written or not` in `test/inference.js`: private scope inspection stays on the native leg; both compiler targets compare dictionary enumeration/JSON before and after the same dot-write. |
+| Array copies lost named IR metadata | `array enumeration and copies retain named properties beside elements`, `array enumeration merges initialized and runtime properties without stale keys`, and `collection enumeration includes named properties on owned storage and views` in `test/objects.js`: zero/one/many elements, shifts, undefined own values, typed views, DataView, Set/Map/ArrayBuffer, initialized/runtime keys, delete/reinsert and A/A/B/A at every tier. |
+| Numeric fractions were read as pointer tags; nullish enumeration silently returned empty | `runtime enumeration distinguishes numeric payloads and nullish copy sources` in `test/objects.js`: twelve finite numeric payloads, ±0, NaN, infinities, booleans, BigInt, empty/repeated strings, null/undefined; keys/values/entries, copies, spread and for-in, with exact receiver-evaluation counts. |
+| Shared example builds skipped module graphs/custom builders | The two shared-builder regressions in `test/examples.js`: transitive reexports, sibling kernels, zero-work rebuilds, A/A/B/A, dependency edits and propagated failures. |
+| Guard views changed receiver identity | `guard view: storage access preserves identity through calls, methods and callbacks` in `test/guard-views.js`: helper equality, `fill` return and `every` callback receiver; lengths 0/1/3, same/same/different/same receivers. |
+| Large i64 constants rounded onto adjacent payloads | `int-narrow: i64 comparisons retain bits beyond exact Number integers`: five adjacent pairs near ±2^53, signed i64 limits and NaN-box payloads; six comparisons, repeated 0/0/1/0 selections. |
+| Saturation used the input's magnitude | `int-narrow: saturating i64 conversions keep their actual magnitude`: ±1e30, infinities, NaN, ±2^52 and zero; compare optimized Wasm with the original conversion. |
+| Guard facts survived a later operand's write | `int-narrow: guard refinements follow later operand writes`: `x < (x = (n + 1) & 7)` at n=6, conditional expressions, reverse comparisons and compound tests; O0/O1/O2/O3/size. The sibling eager-compound-guard test checks the IR directly. |
+| Guard specialization allocated inside a fixed-memory export | `fixed memory: typed guards keep borrowed receivers allocation-free`: empty, A/A/B/A, wrong typed kind and null, repeated 32 times at every tier; unchanged memory use and final `noAllocation` proof. |
+| Exact conversion wrapped twice | `typed store: a clamped sum converts inline at the speed tiers, through the kernel at -Os` requires one magnitude guard and one cold call at O2/O3/speed. The inference sieve stays within its original conversion budget (23 against 25). |
+| Conversion temporary shadowed a parameter | `late integer conversion preserves parameters whose names match its temporaries` uses a `$__ti0` parameter, repeated inputs, signed/word/2^63 boundaries, huge values, NaN and infinities; original and optimized Wasm agree, and a second lowering pass is byte-identical. |
+| Late typed-length facts tightened an early range | `word local: the weld hash of a vertex` runs at 0/1/7/20 vertices with invariants enabled and matches Node. The invariant continues rejecting range widening. |
+| Sort algorithm boundary | `typed sort: NaNs keep their order past the numbers` checks payload order at 31/32/33; the per-kind differential sweep includes empty, singleton, boundary and large arrays. |
+
+The `int-narrow` tests above are in `test/int-narrow.js`; the fixed-memory and
+sort pins are in `test/fixed-memory.js` and `test/typed-sort.js`. All four incoming
+histories remain ancestors of main. Gate logs, frozen source/dependency manifests
+and the two compiler builds are retained outside the checkout for review;
+temporary validation worktrees are removed after the checks finish.
 
 ## Release status, September 27
 
@@ -601,10 +664,10 @@ Architecture
   until the consumer decides their result. Load CSE keeps an exit-only
   `if`'s loads, small-constant unrolling has a cost budget, and watr's `ifset`
   leaves a branchy condition alone.
-- Transcendentals share one evaluation tree (`polyTree`) across the scalar
+- Transcendental polynomials share one evaluation tree (`polyTree`) across the scalar
   WAT, the two-wide WAT and the JS constant folder, so the three agree bit
-  for bit. exp and exp2 are one table kernel at 0.5 ulp; the atan, asin and
-  acos minimax (1e-10) is a deliberate speed trade. The LAB colour cases gate
+  for bit. exp and exp2 are one table kernel at 0.5 ulp; atan keeps its
+  minimax speed trade. Asin and acos use fdlibm with a 1-ULP gate. The LAB colour cases gate
   through `LAB_SPEED` with a named, measured divergence from V8 instead of
   checksum equality.
 - The source inliner splices a multi-declarator declaration only in an
