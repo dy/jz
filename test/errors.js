@@ -1321,6 +1321,19 @@ test('instanceof: primitive wrapper probes fold only for proven primitive inputs
   is(jz(`export let f = () => { const B = Boolean, N = Number; return [0,1,2].filter(B).map(N) }`).exports.f(), [1,2], 'local aliases remain usable callbacks')
 })
 
+test('instanceof: primitive wrapper probes include nullish values and primitive unions', () => {
+  for (const values of ['[]', `[null, undefined, 0, false, '', 1n]`])
+    for (const name of ['Number', 'Boolean', 'String'])
+      for (const optimize of levels(0, 2, 3)) {
+        const src = `const values = ${values}; let calls = 0;
+          function next(i) { calls++; return values[i] }
+          export function f(i) { return [next(i) instanceof ${name}, calls] }`
+        const f = jz(src, { optimize }).exports.f
+        let calls = 0
+        for (const i of [-1, 0, 0, 1, 2, 3, 4, 5, 6]) is(f(i), [false, ++calls], `${name}(${i}) at ${optimize}`)
+      }
+})
+
 // A binding that holds a constructor (`var OBJECT = Object`, `const Q = K`)
 // names none by its spelling: `({}) instanceof OBJECT` folded to false.
 // Namespace aliases retain their known constructor. Other aliases reject;

@@ -11,7 +11,7 @@ import {
 import { PTR, ctx, inc, err } from '../../ctx.js'
 import { asF64, asI64, emitNum, isPureIR, ptrTypeEq, temp, tempI32, typed } from '../../ir.js'
 import { valTypeOf } from '../../kind.js'
-import { K, hasTag } from '../../summary/kind.js'
+import { K, hasTag, tagsOf, bitOf, NULL_BITS } from '../../summary/kind.js'
 import { VAL, repOf } from '../../reps.js'
 import { plannedTypedStorageInfo } from '../typed-storage-plan.js'
 import { emit } from './dispatch.js'
@@ -43,6 +43,7 @@ const foldInstanceof = (va, bool) =>
 // =SET, etc, kind.js/kind-traits.js) — reusing it here is "matching every OTHER
 // valTypeOf-driven instanceof fold", not a new inference.
 const INSTANCEOF_TAG = { Array: [VAL.ARRAY, PTR.ARRAY], Map: [VAL.MAP, PTR.MAP], Set: [VAL.SET, PTR.SET], ArrayBuffer: [VAL.BUFFER, PTR.BUFFER] }
+const PRIMITIVE_BITS = bitOf(K.NUMBER) | bitOf(K.STRING) | bitOf(K.BOOL) | bitOf(K.BIGINT) | NULL_BITS
 
 /** The value may be undefined or null: the summary's kind carries NULLISH, or
  *  ABSENT (an uninitialized `let` returned on one path, a record field assigned
@@ -160,7 +161,9 @@ export function emitInstanceof(a, rhs) {
   if (isBrand(rhs)) return classInstanceof(a, rhs)
   if (rhs === 'Number' || rhs === 'Boolean' || rhs === 'String') {
     const vt = valTypeOf(a)
-    if (vt === VAL.NUMBER || vt === VAL.STRING || vt === VAL.BOOL || vt === VAL.BIGINT)
+    const tags = tagsOf(ctx.summary?.at(ctx.func.current).kindOfExpr(a) ?? 0)
+    if (vt === VAL.NUMBER || vt === VAL.STRING || vt === VAL.BOOL || vt === VAL.BIGINT ||
+        tags !== 0 && (tags & ~PRIMITIVE_BITS) === 0)
       return foldInstanceof(emit(a), false)
     err(`instanceof: ${rhs} requires a proven primitive input; boxed primitives are unsupported`)
   }
