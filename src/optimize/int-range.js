@@ -141,6 +141,14 @@ const NOT = { eq: 'ne', ne: 'eq', lt: 'ge', le: 'gt', gt: 'le', ge: 'lt' }
 const numConst = n => isArr(n) && (n[0] === 'f64.const' || n[0] === 'i32.const' || n[0] === 'i64.const') ? constValue(n) : null
 const constValue = n => {
   const v = n[1]
+  // Intervals use Number endpoints. An i64 payload beyond its exact integer
+  // range must not round onto a neighbouring value and prove a false equality.
+  if (n[0] === 'i64.const') {
+    try {
+      const c = Number(BigInt.asIntN(64, BigInt(typeof v === 'string' ? v.replace(/_/g, '') : v)))
+      return Number.isSafeInteger(c) ? c : null
+    } catch { return null }
+  }
   if (typeof v === 'number') return v
   if (typeof v === 'bigint') return Number(BigInt.asIntN(64, v))
   if (typeof v !== 'string') return null

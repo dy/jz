@@ -4,9 +4,12 @@
 // remainders and truncated quotients are the integers' own. Every value is a
 // differential against the host; the WAT shows where the arithmetic runs.
 import test from 'tst'
-import { ok } from 'tst/assert.js'
+import { is, ok } from 'tst/assert.js'
 import { agree, wat } from './util.js'
 import { belowOpt } from './_matrix.js'
+import parseWat from 'watr/parse'
+import encodeWat from 'watr/compile'
+import { narrowInts } from '../src/optimize/int-narrow.js'
 
 const count = (text, op) => (text.match(new RegExp(`\\(${op.replace('.', '\\.')}[\\s)]`, 'g')) || []).length
 const shapes = (src, check) => { if (!belowOpt(2)) check(wat(src)) }
@@ -218,4 +221,33 @@ test('int-narrow: elements bounded by what the function stores', () => {
 }`
   shapes(src, w => { const copy = w.slice(w.search(/\(loop \$[^\s)]*\.f\d+[\s)]/)); ok(!/i64\.mul/.test(copy.slice(0, copy.indexOf('(br $'))), 'the product of an element the stores bound is an i32') })
   for (const n of [0, 1, 2, 5, 16, 100]) agree(src, 'f', [n])
+})
+
+test('int-narrow: i64 comparisons retain bits beyond exact Number integers', () => {
+  const pairs = [
+    ['9007199254740992', '9007199254740993'],
+    ['-9007199254740992', '-9007199254740993'],
+    ['9223372036854775806', '9223372036854775807'],
+    ['-9223372036854775808', '-9223372036854775807'],
+    ['0x7ff8000000000000', '0x7ff8000000000001'],
+  ]
+  for (const [a, b] of pairs) for (const op of ['eq', 'ne', 'lt_s', 'le_s', 'gt_s', 'ge_s']) {
+    const src = `(module (func $f (export "f") (param $c i32) (result i32) (local $x i64)
+      (local.set $x (select (i64.const ${a}) (i64.const ${b}) (local.get $c)))
+      (if (result i32) (i64.${op} (local.get $x) (i64.const ${a})) (then (i32.const 7)) (else (i32.const 9)))))`
+    const ir = parseWat(src), before = new WebAssembly.Instance(new WebAssembly.Module(encodeWat(ir))).exports.f
+    narrowInts(ir[1])
+    const after = new WebAssembly.Instance(new WebAssembly.Module(encodeWat(ir))).exports.f
+    for (const c of [0, 0, 1, 0]) is(after(c), before(c), `${a}, ${b}, ${op}, c=${c}`)
+  }
+})
+
+test('int-narrow: saturating i64 conversions keep their actual magnitude', () => {
+  const src = `(module (func $f (export "f") (param $c i32) (result i32) (local $x f64)
+    (local.set $x (select (f64.const 1e30) (f64.const -1e30) (local.get $c)))
+    (f64.gt (f64.abs (f64.convert_i64_s (i64.trunc_sat_f64_s (local.get $x)))) (f64.const 1e25))))`
+  const ir = parseWat(src), before = new WebAssembly.Instance(new WebAssembly.Module(encodeWat(ir))).exports.f
+  narrowInts(ir[1])
+  const after = new WebAssembly.Instance(new WebAssembly.Module(encodeWat(ir))).exports.f
+  for (const c of [0, 0, 1, 0]) is(after(c), before(c), `saturated magnitude, c=${c}`)
 })
