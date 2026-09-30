@@ -72,7 +72,7 @@ const FORCED = selfBuildWith({
     ['export default function compileSelf(', TEST_ENTRIES + 'export default function compileSelf('],
   ],
   // the labeled failure, inside the encoder's export handling: after the unpark on this kernel
-  'watr/src/compile.js': [[
+  [watrSrc('compile.js')]: [[
     '        ctx.export.push([nm, [kind, items.length]])\n',
     '        if (nm.valueOf() === \'"__fail_after_unpark"\') throw new Error(\'test-only failure in the encoder, after the unpark: export "__fail_after_unpark"\')\n        ctx.export.push([nm, [kind, items.length]])\n',
   ]],
