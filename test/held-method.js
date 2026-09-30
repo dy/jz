@@ -138,3 +138,22 @@ test('held method: the class of a value is a string where two are added', () => 
   for (const optimize of levels(0, 2, 3, 'size')) is(jz(src, { optimize }).exports.f(), '[object Number][object Number][object String][object String]', `at ${optimize}`)
 })
 
+// A function of the target named bare (`Symbol`, `parseInt`) held in a name, through any
+// names (`var Sym = Symbol; var ctor = Sym`), is that function where it is called or asked
+// its type: the chain seeds the function's module for the call's sake, and a read of the
+// name resolved to the module. A block-local alias resolves through its scope.
+test('held builtin: a bare function of the target through a chain of names', () => {
+  const src = `var Sym = Symbol
+    var ctor = Sym
+    var P = parseInt
+    var Q = P
+    export let sym = () => typeof ctor('a') + ' ' + typeof ctor
+    export let num = (s) => Q(s) + P('1') + (typeof Q === 'function' ? 100 : 0)
+    export let local = (s) => { const R = parseInt; return R(s) * 2 }`
+  for (const optimize of levels(0, 2, 3)) {
+    const { sym, num, local } = jz(src, { optimize }).exports
+    is(sym(), 'symbol function', `sym at ${optimize}`)
+    is(num('42'), 143, `num at ${optimize}`)
+    is(local('21'), 42, `local at ${optimize}`)
+  }
+})

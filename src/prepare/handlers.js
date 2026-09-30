@@ -223,6 +223,9 @@ export function prep(node) {
       // Host numeric constant (`Math.PI` etc.) → fold to its f64 literal. Placed after the
       // local/user-global checks above so a same-named binding still shadows it.
       if (ctx.scope.hostConsts && node in ctx.scope.hostConsts) return [, ctx.scope.hostConsts[node]]
+      // A function of the target named bare (`parseInt`, `isNaN`) is that function, not the
+      // module that serves it (the chain seeds the module for the call's sake).
+      if (!shadowsBuiltin(node) && namesTargetFn(node)) return node
       const resolved = ctx.scope.chain[node]
       if (resolved?.includes('.')) return resolved
       // Cross-module import: mangled name (e.g. __util_js$clone)
@@ -1669,6 +1672,8 @@ function staticTypeofString(x) {
   // Bare callable global: parseInt, parseFloat, isNaN, isFinite, Error, BigInt, etc.
   if (typeof x === 'string' && !ctx.func?.locals?.has(x) && GLOBALS[x] && emitArity(ctx.core.emit?.[x], x) > 0) return 'function'
   const px = prep(x)
+  // a function of the target held in a name (`var P = parseInt; typeof P`)
+  if (namesTargetFn(px)) return 'function'
   if (typeof px === 'string' && px.includes('.') && emitArity(ctx.core.emit?.[px], px) > 0) return 'function'
   return null
 }
@@ -1914,6 +1919,17 @@ const registerMemberAlias = (name, key) => !bindingWritten(name) && registerBuil
 // `name` reads as the function `fn` from here on, through the chain every import alias resolves through.
 const registerFnAlias = (name, fn) => { ctx.scope.chain[name] = fn }
 
+/** A function of the target a program names bare (`parseInt`, `Symbol`, `isNaN`): a callee of
+ *  the table, or a global whose module serves it as a function. Brings its module in. */
+const namesTargetFn = (name) => {
+  if (typeof name !== 'string') return false
+  if (isNamedCallee(name)) return includeForNamedCall(name)
+  const mod = GLOBALS[name]
+  if (!mod || hasModule(name) || !hasModule(mod)) return false   // a namespace (`Math`, `JSON`) is no function
+  includeModule(mod)
+  return emitArity(ctx.core.emit[name], name) > 0
+}
+
 /** Bind `name` to builtin emit key `key` at the current scope (module
  *  `scope.chain` at depth 0, block scope otherwise) instead of declaring a
  *  real global/local — mirrors the `const alias = fn` function-alias fast
@@ -2149,6 +2165,10 @@ function prepDecl(op, ...inits) {
           && typeof init === 'string' && !shadowsBuiltin(init)) {
         registerBuiltinAlias(name, normed); continue
       }
+      // `const P = parseInt`, a function of the target named bare, through any names
+      // (`const Q = P`): the name is that function, as an alias of a member is.
+      if (typeof normed === 'string' && normed !== name && typeof init === 'string' && !shadowsBuiltin(init)
+          && namesTargetFn(normed) && registerBuiltinAlias(name, normed)) continue
     }
 
     if (isDestructPattern(name)) {
@@ -2536,6 +2556,11 @@ function resolveCallee(callee, args) {
     }
     if (resolved?.includes('.')) return resolved
     if (resolved && hasFunc(resolved)) return resolved
+    // A function of the target held in a name the program declared, through any names
+    // (`var Sym = Symbol; var ctor = Sym; ctor('a')`, `var P = parseInt`): the call the
+    // target names. A seeded name (GLOBALS: `RangeError` → `Error`, the module that
+    // serves it) is the target's own, called as written.
+    if (resolved && resolved !== callee && resolved !== GLOBALS[callee] && namesTargetFn(resolved)) return resolved
     // Chain-resolved VALUE GLOBAL — a default-imported factory product
     // (`export default make(...)` → module global `__dep$default`;
     // `import thing …; thing(x)` must closure-call that global, not fall
