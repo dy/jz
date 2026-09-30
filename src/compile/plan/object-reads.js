@@ -70,8 +70,10 @@ export const hoistObjectReads = () => {
     let rewrote = false
     for (const [name, { list, st }] of decls) {
       if (counts.get(name) !== 1 || params.has(name)) continue
+      // the declaration's own list is the binding's scope: a loop that holds the list
+      // makes the object again each pass, so only a loop inside it reads it more than once
       const seen = []
-      mentions(func.body, name, seen)
+      mentions(list, name, seen)
       // the declaration itself, then reads by name alone: `p.key`, `p?.key`, never a callee's receiver or a store's target
       const reads = seen.filter(m => m.parent !== st[1])
       if (seen.length - reads.length !== 1) continue
