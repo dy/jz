@@ -123,11 +123,24 @@
       .grid-info summary::-webkit-details-marker { display: none; }
       .grid-info summary:hover, .grid-info[open] summary { color: var(--ink); }
       .grid-info svg { width: 12px; height: 12px; }
-      .grid-pop { position: absolute; top: var(--info-drop, 40px); right: 0; width: 240px; padding: 16px; background: var(--paper);
+      .grid-pop { position: absolute; top: var(--info-drop, 40px); right: 0; width: min(240px, calc(100vw - 32px)); padding: 16px; background: var(--paper);
         border: 1px solid var(--rule); font-size: var(--fs-small); line-height: 1.5; }
       .grid-pop p { margin-bottom: 12px; }
-      .grid-pop select { background: var(--paper); color: var(--ink); border: 1px solid var(--rule);
-        font: inherit; padding: 4px; }
+      .grid-engine { position: relative; width: 88px; height: 46px; border: 0; padding: 0; border-radius: 999px;
+        appearance: none; cursor: pointer; background: linear-gradient(180deg, #050505, #1c1c1c 60%, #262626);
+        box-shadow: inset 0 3px 6px #000e, inset 0 -2px 3px #ffffff0d, inset 0 0 0 1px #0009,
+          0 1px 0 #ffffff0f, 0 0 0 1px #ffffff29; }
+      .grid-engine .knob { position: absolute; top: 4px; left: 4px; width: 38px; height: 38px; border-radius: 50%;
+        background: linear-gradient(180deg, #fff, #ededed 45%, #c4c4c8);
+        box-shadow: 0 3px 6px #0009, 0 1px 2px #0008, inset 0 1px 1px #fffffff2, inset 0 -2px 2px #0003;
+        transition: transform .24s cubic-bezier(.34, .72, .28, 1.3); }
+      .grid-engine[aria-checked="true"] .knob { transform: translateX(42px); }
+      .grid-engine .lbl-js, .grid-engine .lbl-jz { position: absolute; top: 0; left: 4px; width: 38px; height: 100%; z-index: 1;
+        display: grid; place-items: center; font: 700 14px/1 var(--font); letter-spacing: .02em; color: #ffffff80; transition: color .2s; }
+      .grid-engine .lbl-jz { left: 46px; }
+      .grid-engine[aria-checked="false"] .lbl-js, .grid-engine[aria-checked="true"] .lbl-jz { color: #141414; }
+      .grid-engine:disabled { cursor: default; opacity: .5; }
+      .grid-engine:focus-visible { outline: 2px solid var(--ink); outline-offset: 4px; }
       .grid-pop output { display: block; color: var(--soft); margin-top: 8px; font-family: var(--font-mono); font-size: 11px; }
       :root[data-theme="light"] .grid-info { display: none; }
 
@@ -774,7 +787,7 @@
       </summary>
       <div class="grid-pop">
         <p>This header animation runs WebAssembly compiled by JZ.</p>
-        <select id="grid-engine" aria-label="Grid animation engine" disabled><option value="wasm">JZ · WASM</option><option value="js">JavaScript</option></select>
+        <button class="grid-engine" id="grid-engine" type="button" role="switch" aria-label="Use JZ-compiled WebAssembly" aria-checked="true" value="wasm" disabled><span class="knob" aria-hidden="true"></span><span class="lbl-js" aria-hidden="true">JS</span><span class="lbl-jz" aria-hidden="true">JZ</span></button>
         <output id="grid-stats" aria-live="off">Loading…</output>
       </div>
     </details>
@@ -1143,10 +1156,20 @@
       //    page's origin. This canvas owns only the automatic header current. ──
       const cv = $('grid-current'), ctx = cv.getContext('2d')
       const info = $('grid-info'), picker = $('grid-engine'), stats = $('grid-stats')
+      const pop = info.querySelector('.grid-pop')
       const engines = {}, buffers = new WeakMap()
       let eng = null, px = null, img = null, out32 = null, W = 0, H = 0, raf = 0, booting = null
       let elapsed = 0, frames = 0, stamp = 0, visible = true
       const active = () => root.dataset.theme === 'dark' && !document.hidden && visible
+      const placeInfo = () => {
+        if (!info.open) return
+        const anchor = info.querySelector('summary').getBoundingClientRect()
+        const width = pop.offsetWidth, edge = root.clientWidth - 16
+        const right = anchor.right + 8, beside = right + width <= edge
+        const left = beside ? right : Math.max(16, Math.min(anchor.right - width, edge - width))
+        pop.style.left = `${left - anchor.left}px`
+        pop.style.top = beside ? '0px' : 'var(--info-drop)'
+      }
       // Size the backing store to the canvas box at an INTEGER device scale — a fractional one slides the
       // pulses off the CSS grid lines.
       const fit = (force) => {
@@ -1154,6 +1177,7 @@
         info.style.left = `${word.right + 2}px`
         info.style.top = `${word.top + scrollY - 4}px`
         info.style.setProperty('--info-drop', `${word.height + 12}px`)
+        placeInfo()
         cv.style.height = `${document.querySelector('.hero').getBoundingClientRect().bottom + scrollY}px`
         const r = cv.getBoundingClientRect()
         if (!eng || !r.width || !r.height || !ctx) return
@@ -1176,6 +1200,7 @@
         eng = engines[mode]; px = null; fit(true)
         if (W && H && !ArrayBuffer.isView(px)) throw new Error('Grid buffer unavailable')
         picker.value = mode; elapsed = 0; frames = 0; stamp = 0
+        picker.setAttribute('aria-checked', mode === 'wasm')
         info.querySelector('summary').title = mode === 'wasm' ? 'This header animation runs WebAssembly compiled by JZ.' : 'This header animation runs the same JavaScript source.'
         info.querySelector('p').textContent = mode === 'wasm' ? 'This header animation runs WebAssembly compiled by JZ.' : 'This header animation runs the same JavaScript source.'
       }
@@ -1193,9 +1218,9 @@
             choose('wasm')
           } catch {
             // Some engines cannot return the compiler's boxed typed array; use the same source as JS.
-            delete engines.wasm; picker.options[0].disabled = true; choose('js')
+            delete engines.wasm; choose('js')
           }
-          picker.disabled = false
+          picker.disabled = !engines.wasm
         } catch {
           eng = null; stats.textContent = 'Grid unavailable'
         }
@@ -1209,7 +1234,7 @@
         elapsed += performance.now() - start; frames++
         if (!stamp) stamp = now
         if (now - stamp >= 500) {
-          if (info.open) stats.textContent = `${(elapsed / frames).toFixed(2)} ms/frame · ${Math.round(frames * 1000 / (now - stamp))} fps`
+          if (info.open) stats.textContent = `${(elapsed / frames).toFixed(2)} ms/frame, ${Math.round(frames * 1000 / (now - stamp))} fps`
           elapsed = 0; frames = 0; stamp = now
         }
         raf = requestAnimationFrame(loop)
@@ -1223,7 +1248,8 @@
       document.addEventListener('visibilitychange', sync)
       new IntersectionObserver(([entry]) => { visible = entry.isIntersecting; sync() }).observe(cv)
       new ResizeObserver(() => { fit(); sync() }).observe(document.querySelector('.hero'))
-      picker.addEventListener('change', () => { choose(picker.value); sync() })
+      picker.addEventListener('click', () => { choose(picker.value === 'wasm' ? 'js' : 'wasm'); sync() })
+      info.addEventListener('toggle', placeInfo)
       info.addEventListener('keydown', e => { if (e.key === 'Escape') { info.open = false; info.querySelector('summary').focus() } })
       addEventListener('pointerdown', e => { if (!info.contains(e.target)) info.open = false })
       sync()
