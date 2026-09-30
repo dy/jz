@@ -275,7 +275,7 @@ test('passes: duplicate stdlib registration throws at registration time, both di
   const m = await import('../src/ctx.js')
   const { bind } = await import('../src/bridge.js')
   const { reset, registerName, verifyEmitIntegrity } = m
-  const noopBridge = { emit: () => {}, flat: () => {}, body: () => {}, bool: () => {}, idx: () => {}, spread: () => {}, emitIdentitySafe: () => {} }
+  const noopBridge = { emit: () => {}, emitReference: () => {}, flat: () => {}, body: () => {}, bool: () => {}, idx: () => {}, spread: () => {}, emitIdentitySafe: () => {} }
   const freshHandler = () => Object.assign(() => 1, { deps: [], argc: 0 })
 
   // combo 1: raw assignment first, reg() second — caught immediately.

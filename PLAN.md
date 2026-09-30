@@ -31,8 +31,11 @@ the parameter's local representation. The new regression fails before the fix
 and passes after it, including empty strings, UTF-16, wide numeric results,
 defaults, repeated compiles and later compiles of different programs. Focused
 session/string checks pass **31 tests / 302 assertions** with invariants enabled;
-the three original digit-parser failures also pass. Final broad gates remain
-pending after this correction.
+the three original digit-parser failures also pass. Fifty JS/WASI binaries at
+O0/O1/O2/O3/size are byte-identical before and after this fix. The invariant run
+also found a test bridge stub missing the required `emitReference` hook; after
+correcting the stub, all **10 pass-registry tests / 28 assertions** pass. Final
+broad gates remain pending after these corrections.
 
 Merge regressions cover class-body parsing, typed-array indices and coercion,
 builtin reflection and shadowing, static-string data lifetime, loop inlining,
