@@ -13,6 +13,7 @@
 export const examples = [
   { name: 'blackhole',    title: 'Black Hole',        blurb: 'Schwarzschild geodesics, ray-traced — the far disk arcs over the shadow, brighter on the approaching limb' },
   { name: 'nbody',        title: 'N-body',            blurb: 'three bodies in a chaotic dance tear each other’s star disks into tidal bridges and tails', show: true },
+  { name: 'threejs-math', title: 'three.js Math',     blurb: 'three.js’s own Vector3/Matrix4/Frustum, unmodified — a camera culls a field of spheres against the view frustum; drag to steer' },
   { name: 'boids',        title: 'Boids',             blurb: 'Reynolds flocking — cohesion, alignment, separation; the cursor is a hawk', show: true },
   { name: 'fireflies',    title: 'Fireflies',         blurb: 'Kuramoto oscillators — neighbour-coupled fireflies lock into traveling waves of synchrony' },
   { name: 'swarm',        title: 'Swarm',             blurb: 'flies chase the cursor, every path kept as a long-exposure hairline' },
@@ -152,6 +153,7 @@ export const WIKI = {
   'raymarcher':        W + 'Ray_marching',
   'metaballs':         W + 'Metaballs',
   'nbody':             W + 'N-body_simulation',
+  'threejs-math':      W + 'Viewing_frustum',
   'boids':             W + 'Boids',
   'swarm':             W + 'Swarm_behaviour',
   'dwa':               W + 'Dynamic_window_approach',

@@ -420,6 +420,24 @@ test('Number: String() shortest round-trip (Ryū)', () => {
   is(f(999999999.9), '999999999.9')
 })
 
+// The fifteen-digit path (a value whose shortest form has at most 15 significant
+// digits skips the Ryū core): differential against V8's String(), the spec's
+// Number::toString (ECMA-262 §6.1.6.1.20), across the path's edges and a seeded
+// sweep of short decimals, integers and full-precision doubles.
+test('Number: String() of short decimals agrees with Number::toString', () => {
+  const f = run(`export let f = (x) => String(x)`).f
+  const edges = [31.5, 0.25, 16000, 48000, 1e15 - 1, 1e15, 1e15 + 1, 999999999999999.9, 99999999999999.98, 2 ** 53 - 1, 2 ** 53 + 2,
+    1e-7, 9.999999999999999e-8, 1.2e-7, 5e-7, 123456789012345e-7, 1234567890123456e-7, 0.1 + 0.7, 1.005, 0.035, 4503599627370495.5, 1e14 + 0.5]
+  let r = 0x2545f491
+  const rnd = () => (r = (Math.imul(r, 1664525) + 1013904223) >>> 0) / 4294967296
+  const gen = [() => +(rnd() * 10 ** (rnd() * 20 - 8)).toPrecision(1 + Math.floor(rnd() * 17)), () => Math.round(rnd() * 1e6) / 10 ** Math.floor(rnd() * 9),
+    () => Math.floor(rnd() * 2 ** Math.floor(rnd() * 60)), () => rnd() * 10 ** (rnd() * 30 - 10)]
+  const vals = [...edges, ...Array.from({ length: 8000 }, (_, i) => gen[i % 4]())]
+  let bad = 0
+  for (const v of vals) for (const x of [v, -v]) if (f(x) !== String(x) && bad++ < 5) is(f(x), String(x), `String(${x})`)
+  is(bad, 0, `${bad} of ${vals.length * 2} disagree`)
+})
+
 
 test('Number/parseFloat: saturated exponents and a single exponent sign', () => {
   const { n, p } = run(`export function n(s) { return Number(s) }

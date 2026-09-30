@@ -32,16 +32,14 @@ export function createActiveFunction({
     body,
     exported: !!exported,
     atModuleScope: !!moduleScope,
+    freshObjects: null,  // frame-census literal origins; no reset save for direct field writes
 
     locals: new Map(),
     localReps: null,
-    localProps: null,
     typedElem: null,
     typedLen: null,
     lenBoundOf: null,
     boxed: new Map(),
-    capturedNames: null,
-    identityShadow: null,
     cellTypes: null,
     flatObjects: null,
     sliceViews: null,
@@ -71,6 +69,7 @@ export function createActiveFunction({
     directClosures,
     zeroInitSeen: null,
     maybeNullish: null,
+    numShadow: null,
     taggedLocals: null,
     boxedResult: false,
     valResult: null,
@@ -142,10 +141,10 @@ export function isInactiveFunction(ctx) {
   // first writer created it, the record is no longer the session frame.
   const unallocated = value => value === null
   return frame.current === null && frame.body === null && frame.exported === false &&
-    frame.atModuleScope === false && emptyMap(frame.locals) && frame.localReps === null &&
-    frame.localProps === null && frame.typedElem === null && frame.typedLen === null &&
+    frame.atModuleScope === false && frame.freshObjects === null && emptyMap(frame.locals) && frame.localReps === null &&
+    frame.typedElem === null && frame.typedLen === null &&
     frame.lenBoundOf === null &&
-    emptyMap(frame.boxed) && unallocated(frame.capturedNames) && unallocated(frame.identityShadow) &&
+    emptyMap(frame.boxed) &&
     unallocated(frame.cellTypes) && unallocated(frame.flatObjects) &&
     unallocated(frame.sliceViews) && unallocated(frame.arrayViews) && frame.restView === null && unallocated(frame.leanHashLocals) && unallocated(frame.i32HashLocals) &&
     unallocated(frame.leanHashDomains) && unallocated(frame.preboxed) && frame.preboxInits === null &&
@@ -154,7 +153,7 @@ export function isInactiveFunction(ctx) {
     frame.flowValBlocked === null && frame.repsFrozen === false && unallocated(frame.p1Predicted) &&
     emptyMap(frame.localValTypesOverlay) && frame.localTypedElemsOverlay === null &&
     unallocated(frame.closureAux) && frame.directClosures === null && unallocated(frame.zeroInitSeen) &&
-    unallocated(frame.maybeNullish) && unallocated(frame.taggedLocals) &&
+    unallocated(frame.maybeNullish) && unallocated(frame.numShadow) && unallocated(frame.taggedLocals) &&
     frame.boxedResult === false && frame.valResult === null && frame.mixedAtomReturn === false &&
     frame.charDecomp === null && frame.charDecompGlobals === false && frame.concatBufs === null &&
     frame.probeHoist === null && frame.lenHoist === null && frame.hoistTempDefs === null &&

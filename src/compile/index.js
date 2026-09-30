@@ -30,7 +30,7 @@ import { dataLen, dataBytes, strPoolLen, strPoolBytes } from '../static-data.js'
  * @module compile
  */
 
-import { ctx, err, PTR, HEAP, getFactStore, declGlobal } from '../ctx.js'
+import { ctx, err, PTR, HEAP, getFactStore, declGlobal, inc } from '../ctx.js'
 import { createFunction, frameNode, frameRoots } from '../function.js'
 import { functionPlanOf, publishFunctionPlan, retireFunctionPlan } from './function-plan.js'
 import { FIELD } from '../../layout.js'
@@ -79,7 +79,7 @@ import { buildInternTable } from './intern-table.js'
 import { captureFuncInspect } from './func-inspect.js'
 import { isBoundaryWrapped, synthesizeBoundaryWrappers } from './boundary-wrap.js'
 import { analyzeFuncForEmit } from './analyze-for-emit.js'
-import { emitFunc } from './emit-func.js'
+import { emitFunc, presentArrayGlobals } from './emit-func.js'
 import { transitiveFrameEffects, SITE } from './analyze/frame-effects.js'
 import { reachOn } from '../../module/core/reach.js'
 import { analyzeClosureBodyForEmit, emitClosureBody } from './closure-emit.js'
@@ -166,21 +166,23 @@ export function assemble(ast, profiler) {
   // seam: compile/analyze/body-facts.js, plan's sweeps), the registries beside it
   // by content, which is cheap. A summary built under the current key is still the
   // program's; JZ_DEBUG_INVARIANTS checks each reuse against its full inputs.
-  const summaryOf = () => summarize(ast, {
+  const summaryOf = (losses = ctx.warnings ? [] : null) => Object.assign(summarize(ast, {
     inits: ctx.module.moduleInits, funcs: ctx.funcs.list, schemas: ctx.schema.list, brandOf: ctx.schema.brandOf, classes: ctx.transform.classes, accessors: ctx.transform.literalAccessorNames, hidden: ctx.schema.hidden, exported: isExported,
     boundSchema: (name) => ctx.schema.poisoned?.has(name) ? undefined : ctx.schema.vars.get(name),   // the binding's schema a declared literal is allocated with (module/object.js `{}`)
     imports: new Map(ctx.module.imports.filter(imp => imp[3]?.[0] === 'func').map(imp => imp[3][1].replace(/^\$/, '')).map(name => [name, ctx.module.hostImportValTypes.get(name) ?? null])),
     hostGlobals: Object.entries(ctx.funcs.exports).map(([name, v]) => v === true ? name : v).filter(v => typeof v === 'string'),
     // a function's property prepare lifted to a function of its own (`f.prop = arrow` at top level), unless the property is reassigned
     liftedProp: (fn, prop) => { const lifted = `${fn}$${prop}`; return ctx.funcs.names.has(lifted) && !ctx.funcs.multiProp.has(`${fn}.${prop}`) ? lifted : null },
-    // `why`: the first cause the summary loses an object shape by (its reads and stores are dynamic from then on)
-    onLose: ctx.warnings ? (sid, why, fn, site) => warn('shape-lost', `schema ${sid} {${ctx.schema.list[sid]?.slice(0, 6).join(', ')}${ctx.schema.list[sid]?.length > 6 ? ', …' : ''}} is lost: ${why}`, { fn: typeof fn === 'string' ? fn : fn == null ? undefined : `closure ${fn}`, sid, why, site: site == null ? undefined : JSON.stringify(site).slice(0, 160) }) : null,
+    // a function's typed-guard clone, which its direct calls reach at run time (narrow/specialize.js)
+    guardedClone: (fn) => ctx.types.specFns?.get(fn) ?? null,
+    // `losses`: the first cause the summary loses each object shape by (its reads and stores are dynamic from then on)
+    onLose: losses && ((...loss) => losses.push(loss)),
     // `why` only (a sink alone reports the shape and read advisories): the first cause an array built at a fixed count keeps its guards by
     onOpen: ctx.warnings && (ctx.transform.whyNotRewind || ctx.transform.optimize?.whyNotSimd) ? (count, why, fn, site) => warn('array-open', `an array of ${count} elements keeps its length checks: ${why}`, { fn: typeof fn === 'string' ? fn : fn == null ? undefined : `closure ${fn}`, why, site: site == null ? undefined : JSON.stringify(site).slice(0, 120) }) : null,
     moduleGlobals: ctx.scope.globals,
     constStrings: jsonShapeStrings,
     constString: (name) => ctx.scope.shapeStrs?.get(name) ?? ctx.scope.constStrs?.get(name) ?? null,   // a module const's folded string (kind/shape.js jsonConstString)
-  })
+  }), { losses })
   let built = null
   const nodeIds = DBG_INVARIANTS ? { of: new WeakMap(), next: 0 } : null
   const summaryKey = () => {
@@ -189,7 +191,7 @@ export function assemble(ast, profiler) {
     for (const [name, sid] of ctx.schema.vars) key += `|${name}=${sid}`
     return key
   }
-  const summarizeProgram = () => {
+  const summaryNow = () => {
     const key = summaryKey()
     if (built?.key !== key) built = { key, summary: timePhase(profiler, 'summary', summaryOf), inputs: nodeIds && summaryInputs(ast, nodeIds) }
     else if (nodeIds) {
@@ -198,6 +200,21 @@ export function assemble(ast, profiler) {
       if (at >= 0 || now.length !== was.length) throw new Error(`[summary] its inputs changed under an unchanged key, a rewrite that bypassed the mutation seams (compile/analyze/body-facts.js): ${(now[at] ?? '').slice(0, 160)}`)
     }
     return built.summary
+  }
+  // A spread of sources whose layouts the summary knows makes a layout no
+  // literal names: named, the next summary types the literal's fields, and a
+  // spread of that literal makes another (`{...stretch(o), complex: true}`).
+  // Every summary names them all, so what the plan decides from one agrees
+  // with the layout the emitter builds (module/object.js emitObjectSpread).
+  const summarizeProgram = () => {
+    let summary = summaryNow()
+    for (let round = 0; round < 64 && summary.unnamedLayouts.length; round++) {
+      const named = ctx.schema.list.length
+      for (const names of summary.unnamedLayouts) ctx.schema.register(names)
+      if (ctx.schema.list.length === named) break
+      summary = summaryNow()
+    }
+    return summary
   }
   ctx.summary = summarizeProgram()
   // Include imported functions for call resolution (e.g. template interpolations).
@@ -235,6 +252,10 @@ export function assemble(ast, profiler) {
   // The plan rewrote the program (inlined calls, scalar-replaced literals,
   // specialized variants with their own scopes): summarize what emission sees.
   ctx.summary = summarizeProgram()
+  // The advisory reports what this summary loses: an earlier one, taken before
+  // the plan dropped an arm a test never takes, may lose a shape the program keeps.
+  for (const [sid, why, fn, site] of ctx.summary.losses ?? [])
+    warn('shape-lost', `schema ${sid} {${ctx.schema.list[sid]?.slice(0, 6).join(', ')}${ctx.schema.list[sid]?.length > 6 ? ', …' : ''}} is lost: ${why}`, { fn: typeof fn === 'string' ? fn : fn == null ? undefined : `closure ${fn}`, sid, why, site: site == null ? undefined : JSON.stringify(site).slice(0, 160) })
   // A layout's view runs only where the code the program lowers builds an
   // object literal with an accessor (module/schema.js viewsOn).
   settleViews([ast, ...(ctx.module.moduleInits ?? []),
@@ -442,14 +463,15 @@ export function assemble(ast, profiler) {
   // whole stage (see the memo doc in ast.js).
   const funcs = timePhase(profiler, 'emitFuncs', () => {
     const out = []
+    const arrayGlobals = presentArrayGlobals()
     beginAssignedMemo()
     try {
       for (const func of programFacts.programIndex.concreteFunctionOrder()) {
-        if (func.raw) out.push(emitFunc(func, null, programFacts))
+        if (func.raw) out.push(emitFunc(func, null, programFacts, arrayGlobals))
         else if (!reachableForLowering(func)) continue
         else {
           const functionPlan = functionPlanOf(ctx, func)
-          out.push(emitFunc(func, functionPlan, programFacts))
+          out.push(emitFunc(func, functionPlan, programFacts, arrayGlobals))
           retireFunctionPlan(ctx, func, functionPlan)
           invalidateBindingUsesCache(func.body)
         }
@@ -469,7 +491,9 @@ export function assemble(ast, profiler) {
     // only the pure emit half is bracketed.
     while (compiledBodyCount < (ctx.closure.bodies?.length || 0)) {
       const batchEnd = ctx.closure.bodies.length
-      for (let i = compiledBodyCount; i < batchEnd; i++) analyzeClosureBodyForEmit(ctx.closure.bodies[i])
+      timePhase(profiler, 'analyzeClosures', () => {
+        for (let i = compiledBodyCount; i < batchEnd; i++) analyzeClosureBodyForEmit(ctx.closure.bodies[i])
+      })
       beginAssignedMemo()
       try {
         for (let i = compiledBodyCount; i < batchEnd; i++) {
@@ -538,6 +562,10 @@ export function assemble(ast, profiler) {
     stdlib: [],     // stdlib functions
     customs: [],    // custom sections + exports
   }
+  // A closure whose callers are unknown may be held by the host (an export's
+  // result, a host object's property or argument): the host calls it through
+  // the exported trampoline.
+  if (ctx.summary?.escaped?.size && ctx.core.stdlib.__call_closure) inc('__call_closure')
   // Uniform closure convention: (env f64, argc i32, a0..a{MAX-1} f64) → f64.
   // argc = actual arg count passed; missing slots padded with UNDEF_NAN at caller.
   // Rest-param bodies pack slots a[fixedParams..argc-1] into their rest array.
@@ -681,14 +709,16 @@ export function assemble(ast, profiler) {
     if (func) lateNamedExports.push(['export', `"${name}"`, ['func', `$${isBoundaryWrapped(func) ? val + '$exp' : val}`]])
     else if (ctx.scope.globals.has(val)) lateNamedExports.push(['export', `"${name}"`, ['global', `$${val}`]])
   }
-  // Each export whose arguments the host copies into memory (a boxed or rest
-  // parameter) and the function its wrapper calls: link names those whose
-  // calls keep nothing (`jz:release`).
-  const exportInner = new Map()
+  // Every export can return allocated storage. Arguments copied by the host
+  // additionally need release even when the function itself allocates nothing.
+  const exportInner = new Map(), copiedArgs = new Set()
   for (const f of programFacts.programIndex.concreteFunctionOrder())
-    if (isExported(f) && (f._exportI64?.p?.length || f.rest)) for (const exportName of exportNamesOf(f.name)) exportInner.set(exportName, `$${f.name}`)
+    if (isExported(f)) for (const exportName of exportNamesOf(f.name)) {
+      exportInner.set(exportName, `$${f.name}`)
+      if (f._exportI64?.p?.length || f.rest) copiedArgs.add(exportName)
+    }
   const lateFacts = {
-    exportInner,
+    exportInner, copiedArgs,
     rest: lateRest,
     ext: lateExt,
     i64: lateI64,
@@ -930,19 +960,7 @@ export function assemble(ast, profiler) {
   // and the first reason; `entry`: those with an escape the emitter flagged at
   // no node (a site it never emitted through its dispatch, a body the census
   // never walked), where link lowers the flag as the frame is entered.
-  // `asked`: those of the candidates whose result may be a heap value: the
-  // frame asks it as it returns, and restores unless the result names memory
-  // of its own making, which is the caller's then. Off with the walk
-  // (`arenaReach`), at the size tier: the frame and its question cost bytes.
-  const rewindable = new Map(), asked = new Set(), unsafe = new Set(), keeps = new Map(), conditional = new Map(), entry = new Set()
-  // The exports whose arguments the host copies in, as prepare listed them; an
-  // export whose result is asked joins the released ones beside them: the
-  // host releases its call once it holds a copy of the result.
-  const boxed = new Set(lateFacts.exportInner.keys())
-  const ask = (f) => {
-    asked.add(`$${f.name}`)
-    if (isExported(f)) for (const exportName of exportNamesOf(f.name)) if (!lateFacts.exportInner.has(exportName)) lateFacts.exportInner.set(exportName, `$${f.name}`)
-  }
+  const rewindable = new Map(), numberResult = new Set(), asked = new Set(), unsafe = new Set(), keeps = new Map(), conditional = new Map(), entry = new Set()
   const unflagged = (sites) => sites != null && [...sites].some(n => !ctx.plans.instrumented?.has(n))
   for (const [name, id] of ctx.closure.summaryId ?? [])
     if (id === undefined || !ctx.plans.closureSites?.has(id) || ctx.plans.closureUnsited?.has(id) || unflagged(ctx.plans.closureSites.get(id))) { unsafe.add(`$${name}`); entry.add(`$${name}`) }
@@ -963,20 +981,15 @@ export function assemble(ast, profiler) {
     if (frame.keeps && !(reachOn() && isExported(f))) { keeps.set(`$${f.name}`, frame.keepsWhy); ctx.transform.whyNotRewind?.(`$${f.name}`, 'escape: ' + frame.keepsWhy); continue }
     if (frame.keeps) conditional.set(`$${f.name}`, frame.keepsWhy)
     else if (frame.flagged) conditional.set(`$${f.name}`, frame.siteWhy ?? 'an escape')
-    // A rewound frame returns one value, a scalar or a value it asks: a heap
-    // result (a pointer kind, a tagged f64 the summary cannot hold to numbers,
-    // booleans and nullish values) lives in the arena the frame would free
-    // where the frame made it, and is older than the frame's mark where it
-    // did not (optimize/arena-rewind.js). Several results (an array literal
-    // returned as its elements) are asked one by one.
-    if (f.sig.results.length !== 1) {
-      if (reachOn() && f.sig.results.length > 1 && f.sig.results.every(t => t === 'f64')) { rewindable.set(`$${f.name}`, [...f.sig.results]); ask(f) }
-      else ctx.transform.whyNotRewind?.(`$${f.name}`, 'result: not one scalar')
-      continue
+    // A heap result permits restoring only when it predates the frame. Tuple
+    // lanes are boxed element carriers and each must pass that same check.
+    const results = f.sig.results, ty = results[0], name = `$${f.name}`
+    if (results.length === 1 && f.sig.ptrKind == null && (ty === 'i32' || (ty === 'f64' && (f.valResult === VAL.NUMBER || holdsNoHeap(ctx.summary?.resultOf(f.name)))))) rewindable.set(name, ty)
+    else if (reachOn() && results.length && (results.length === 1 ? ty === 'i32' || ty === 'f64' : results.every(t => t === 'f64'))) {
+      rewindable.set(name, results.length === 1 ? ty : results)
+      asked.add(name)
     }
-    const ty = f.sig.results[0]
-    if (f.sig.ptrKind == null && (ty === 'i32' || (ty === 'f64' && (f.valResult === VAL.NUMBER || holdsNoHeap(ctx.summary?.resultOf(f.name)))))) rewindable.set(`$${f.name}`, ty)
-    else if (reachOn() && (ty === 'f64' || (ty === 'i32' && f.sig.ptrKind != null))) { rewindable.set(`$${f.name}`, ty); ask(f) }
+    else if (results.length === 1 && f.sig.ptrKind == null && ty === 'f64' && (tagsOf(ctx.summary?.resultOf(f.name) ?? 0) & bitOf(K.NUMBER)) !== 0) { rewindable.set(name, ty); numberResult.add(name) }
     else ctx.transform.whyNotRewind?.(`$${f.name}`, 'result: may hold a heap value')
   }
   // An export that keeps memory on every call, read off the rewind's verdict
@@ -1039,10 +1052,10 @@ export function assemble(ast, profiler) {
   return { module, link: {
     optimize: ctx.transform.optimize,
     userFuncs: lateFacts.userFuncs, userGlobals: ctx.scope.userGlobals,
-    rewindable, asked, unsafe, heapAddr: ctx.memory.shared ? HEAP.PTR_ADDR : null, exportInner: lateFacts.exportInner,
+    rewindable, numberResult, asked, unsafe, heapAddr: ctx.memory.shared ? HEAP.PTR_ADDR : null, exportInner: lateFacts.exportInner, copiedArgs: lateFacts.copiedArgs,
     // Module bindings that never hold a heap value: a write to one strands nothing.
     scalarGlobals: new Set([...(ctx.scope.userGlobals ?? [])].filter(g => holdsNoHeap(ctx.summary?.kindOfExpr(g))).map(g => `$${g}`)),
-    adviseKept: ctx.warnings && ctx.transform.alloc !== false ? adviseKept(rewindable, boxed) : null,
+    adviseKept: ctx.warnings && ctx.transform.alloc !== false ? adviseKept(rewindable, lateFacts.copiedArgs) : null,
     closureTargets, closureNames, conditional, keeps, entry, keepsNothing: ctx.module.keepsNothing,
     exported: new Set(ctx.funcs.list.filter(f => isExported(f)).map(f => `$${f.name}`)),
     censused: new Set([...ctx.funcs.list.filter(f => f.frame).map(f => `$${f.name}`),

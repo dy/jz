@@ -83,8 +83,33 @@ Equal-width literal tuples in every arm of a conditional use the existing
 multiple-result ABI. Expression and statement returns share element boxing
 and finalizer emission. A block must pass the shared return-path proof before
 selecting multiple results; a possible fallthrough needs to carry undefined.
-Source inlining gives mutated parameters private local storage and captures
-their arguments in call order; substitution must never write a caller's binding.
+Source inlining captures arguments in call order before defaults or the body
+run. Parameter writes in defaults and nested closures require private mutable
+storage. Unwritten literals substitute directly. A leaf can also substitute a
+single first operand, or reread a binding when its whole expression cannot
+invoke user code. Caller-local bindings no closure captures also substitute
+when neither the remaining arguments nor the callee writes them. Single-use
+Number arithmetic over those bindings follows the same proof. Other arguments
+retain captures; alias/local passes can remove copies after proving their
+sources stay unchanged. Closure splices do not inherit the parent's binding proof.
+Expression calls keep captures in a sequence at their evaluation point. Inlining
+never moves initializers out of branches or loops; the IR optimizer owns motion.
+Every variable write invalidates its earlier flow kind immediately, including
+assignments nested in expressions. The next operand cannot read a stale kind.
+Captured mutable cells keep their joined kind because a call can change them
+between operands. Grouped sequences preserve their final value's carrier,
+including SIMD lanes and the full magnitude of unsigned helper results.
+Tagged BigInt copies are solved together when bindings refer back to each other.
+Every incoming write must preserve or normalize the component's carrier before
+its representation becomes a read fact. This includes nested closures' writes
+to the owning frame's bindings. Captures carry the owner's settled representation
+through each nested environment, including raw payloads that resemble NaN boxes.
+A carrier proof alone cannot establish a value's kind: call-site BigInt-only
+proofs also require the source expression's semantic kind.
+A definite semantic BigInt can fold a
+typeof guard even when stored boxed, provided incoming parameter observations
+also exclude other kinds. A return exposed by branch folding ends
+emission of the enclosing statement list.
 Gather maps can retain scalar address generation and checked reads while lifting
 a pure Float64 arithmetic suffix into two lanes. Scalar recurrences execute in
 their original order, including each rounded phase addition. This requires
@@ -131,6 +156,10 @@ stores discard irrelevant casts and masks. Integer constant pooling uses
 canonical bits rather than source spellings and skips literals too cheap to pool.
 The downstream watr workflow builds and tests with the same current JZ package.
 See [PLAN.md](PLAN.md) for remaining gates and DSP evidence.
+
+A declaration supplies a whole-body integer range only when it is the binding's
+sole initializer and no code reassigns it. Copied declarations after unrolling
+retain their individual values without publishing one copy's range for all.
 
 Load reuse visits reads and writes in evaluation order. A shared load executes
 at its first occurrence, never before preceding operands; identity-observing
@@ -482,7 +511,7 @@ pointer kind tests as a Boolean carrier or as presence (`kindTruthyIR`). A
 Boolean rides either carrier, the raw 0/1 or the atom box: a test of a
 BOOL-typed f64 is the number test then the atom compare, never the atom's aux
 bit alone (the kernel found the first form: the compiler's own `bool && expr`
-miscompiled).
+miscompiled), and a relational compare of one takes its number (`cmpOp`).
 Unknown-receiver stores propagate only when their pending effect grows. A
 newly exposed construction replays both indexed and arbitrary-key effects;
 numeric reseeding clears these pending facts before solving again. Cache-hit
@@ -808,8 +837,7 @@ whenever the summary knows the layout and does not certify it closed
 a literal-bound name's layout is no sidecar entry: the plan declares the key
 in the literal (`plan/declare-written-keys.js`: `{ a: 1, b: undefined }` for
 `o.b = 2` or `o['b'] = 2`), so it is a slot of one closed layout; the name's
-layout is bound for the per-name slot paths, which keeps a flattened object
-property out of the function namespace box. Definite means the store runs
+layout is bound for the per-name slot paths. Definite means the store runs
 before anything can observe the object: a statement of the same list as the
 binding, with nothing between them that could run other code or ask about
 keys (`in`, a spread, a deletion, a branch, a loop, an unresolved call);
@@ -829,15 +857,18 @@ of another literal) ends its run: an alias reaches code the pass cannot
 follow, and a key declared after a computed store would sit ahead of it in
 the layout. A namespace of plain values (`parse.comment ??= {…}` with no
 arrow property) flattens like one with arrows (`plan/scope.js`
-`flattenFuncNamespaces` witnesses it by a top-level property store on a
-function), so the pass sees the flattened global as a literal-bound name. A
-call through a global bound once to a function (`devirtGlobalCalls`: a
-flattened `m.assign = nz` called as `m.assign(…)`, an alias `nrm = m.assign`)
-rewrites to the function's own call, so the call census, the inliner and the
-parameter proofs read it as one; a global nothing reads once its calls are
-rewritten, or an alias of one, drops its init and leaves `ctx.funcs.globalDevirt`,
-so the function's address is no longer taken by it. One read as a value, or
-one the host holds, keeps both. A conditional store keeps
+`flattenFuncNamespaces` witnesses it by a store to a function's property
+anywhere, or a top-level compound one), so the pass sees the flattened global
+as a literal-bound name. A function's properties are never boxed: where the
+function escapes they stay in the table its pointer keys, so the function
+read as a value is still callable and still a function to `typeof`. A call
+through a global bound once to a function (`devirtGlobalCalls`: a flattened
+`m.assign = nz` called as `m.assign(…)`, an alias `nrm = m.assign`) rewrites
+to the function's own call, so the call census, the inliner and the parameter
+proofs read it as one; a global nothing reads once its calls are rewritten, or
+an alias of one, drops its init and leaves `ctx.funcs.globalDevirt`, so the
+function's address is no longer taken by it. One read as a value, or one the
+host holds, keeps both. A conditional store keeps
 its key out of the literal and in the sidecar, because a declared slot is an
 own property from the literal on and `in`, hasOwnProperty, for-in and
 Object.keys would all report it before the store. This is the one place a
@@ -967,6 +998,9 @@ invalidate a held slot. Map updates return the receiver; assignments return
 the stored value. Nullable number/string coercion evaluates
 an expression once before its sentinel checks; a computed read can run key
 conversion hooks and is never duplicated just because its stored kind is known.
+String conversion applies the same absence check to numeric, string and boolean
+elements. A stored element kind cannot erase the undefined of a missing read;
+constructors, interpolation and string-method arguments share that conversion.
 Lookup dependencies name hashing/equality directly, not mutation helpers.
 
 Source inlining builds the exported expression subset once per pass. A
@@ -986,7 +1020,9 @@ body. A default is decided at the site: an argument the call leaves out is
 its parameter's default, evaluated in its turn in the parameters' scope, or
 undefined; one the call passes runs no default where the caller's summary
 proves it not nullish, and a value that may be undefined keeps the call at
-that site. Nested-call
+that site. A selected default containing a closure also keeps the call: its
+captures belong to the callee's parameter scope, which source substitution
+does not clone. Nested-call
 hoisting uses its body map for membership too, and reuses that map through the
 current function's rounds, before the function record's body is replaced; it
 lifts a call out of an `if` test to a declaration before the `if` (an `else
@@ -1001,6 +1037,8 @@ and the body (`Vector3.applyMatrix4` from a dozen sites, `intersectsSphere`
 with a loop of its own); those copies are bounded together (400 nodes). A
 dispatcher's arm and a binder's closure are no sites: they call the member
 for a receiver the summary cannot name, and the function stays for them.
+Unreachable callers also cost no copies; the summary's reachability proof
+keeps unused library methods from consuming a live callee's duplication budget.
 An eligible callee's returns lower to one trailing `return r`: `return X`
 assigns `r`, inside a loop `done = true; break` follows (and a loop that may
 return ends the loop around it the same way); statements after one that may
@@ -1045,6 +1083,17 @@ finishes once, so the reads replace the steps only where every pull binds a
 name with an expression that runs no code (a default of `a.push(1), 0`
 between two steps keeps the protocol). A collection, a string (iterated by
 code point) or a value that may be nullish keeps the protocol.
+
+The generated bounded loop over a Map snapshot proves each entry pair
+present inside its body, so an array pattern can read that pair by index.
+The proof requires the private snapshot to remain unescaped and unwritten,
+its bounds unchanged, and the pair binding neither reassigned nor captured.
+When every use of a pair reads only its key, value or length, `splitMapPairs`
+replaces those private pairs with key/value column snapshots captured before
+iteration. Escaped, mutated or dynamically indexed pairs keep their arrays.
+An empty Map creates no columns; own key/value methods or size properties
+prevent the rewrite. Changed planning passes invalidate identity-keyed binding
+and mutation scans before the next pass reads them.
 
 The frame census (compile/analyze/frame-effects.js) reads the summary through
 the function's own view (keyed by its signature, as the emitter reads it). It
@@ -1515,6 +1564,13 @@ src/
                 analyze/frame-effects.js: per-function and per-loop escape census (what outlives a frame or an iteration)
                 plan/lanes.js: record parameters as scalar lanes (a parameter read only field by field, at literal or known-shape sites)
                 plan/counted-loops.js: a counted loop over its trip number (computed start, unrolled body rolled back, unit stride versioned); literal-start cursors are the lane vectorizer's (optimize/vectorize/counter-run.js)
+                plan/unswitch-loops.js: a loop testing a name it never writes (`if (stereo)`), a copy for each answer, its declarations renamed so each copy's values have its arms' kinds
+                plan/kind-split.js: a loop reading a name of several kinds, a typed array among them, a copy over that array where `instanceof` says the name holds it (the constructor from the name's values and its callers' arguments)
+                plan/integral-loops.js: a loop moving a cursor of unknown integrality, a copy over its int32s where a test says it is one
+                plan/loop-fields.js: a field or a Float64Array element a loop reads and writes through one receiver, in a local for the loop, stored back after it
+                plan/chosen-calls.js: a local holding one of several named functions and only called, the choice of direct calls
+                plan/called-args.js: a function whose parameter is only called or tested against strings, a copy for each named function or string literal a call passes there
+                plan/object-reads.js: a key a loop reads of an object the function made and only reads, read once where the object is made
   optimize/     WAT-array passes + vectorize.js + loop-rewind.js (per-iteration heap restore, after the vectorizer);
                 arena-rewind, sort-locals, low-word-mask are tape passes run by link
   link/         whole-module passes on the tape: treeshake, custom sections, throw-runtime prune, function order, local names (index.js)
@@ -1565,6 +1621,36 @@ statement is read at a precedence of its own (`ONE`, which admits what
 subscript's `lvl - .5` admits), and the boundary after it only notes that
 another follows. The trees are subscript's, node for node (`test/parse-list.js`).
 The change belongs in subscript's `feature/asi.js`; this layer goes when it is there.
+
+It also reads source text the way ECMAScript does where subscript takes a
+shortcut. A name is ID_Start then ID_Continue, `$`, `_`, ZWNJ and ZWJ, written
+raw, as a surrogate pair or escaped (`src/unicode.js`; the range tables are
+generated from Node's Unicode data by `scripts/gen-unicode-id.mjs`, since the
+compiled compiler has no `\p{…}`), and every stage after the early errors sees
+an escaped name decoded. Between tokens stand the WhiteSpace and
+LineTerminator characters and no others; the space layer owns the comments and
+ends a line at LF, CR, LS and PS (`test/identifiers.js`). Two statements on one
+line need `;` between them unless the first ended in a block of its own, and a
+postfix `++`/`--` takes no line break before it: the step layer checks every
+place the ASI layer splits a statement off, and every statement body end,
+against the gap the space layer saw (`test/parser-bugs.js`). The ASI layer's
+flags outlive the tokens that raised them; the step layer keeps an empty
+statement's `;` out of the next statement and reads the gap before a template
+for its tag, and a label heads any statement, not only a loop.
+
+A parsed node's `loc` indexes the compile's sources laid end to end: the
+program's text from 0, then each bundled module's after the one before
+(`ctx.js addSource`, `prepare/handlers.js parseModule`). The compiler's own
+`jz:` modules and the text it writes carry none. A rewrite gives the node it
+builds the position of the node it replaces (`ast.js withLoc`,
+`rewriteChildren`, jzify's recursive rewriters, `prep`), and a function record
+keeps its body's position when a pass rebuilds the body. The walks that reject
+(the early errors, jzify, prepare, emit) hold a located node's position current
+while inside it and restore the enclosing one after: a fault at a node the
+compiler built reports the nearest written one around it, and outside any walk
+the active function's body stands in (`ctx.js here`). `locate` maps a position
+to its module, line and column, and a message shows the names the source wrote
+(`test/error-location.js`).
 
 **One shared optimizer, owned by watr (`~/projects/watr`).** Generic optimizer changes belong there, with tests in both projects. JZ supplies language-specific analysis, representation contracts, and lowering. The existing generic passes in `src/optimize/` are migration work: consolidate them into watr and delete JZ copies, rather than building a competing optimizer. Never patch only `node_modules`.
 
@@ -1661,7 +1747,11 @@ imported namespace, reads as `f` (a call through it is direct, an export of it
 re-exports the function).
 Record scalar replacement uses one validator for field access, nonescape and
 whole-record replacement. Replacement values evaluate before any field changes;
-aliases, captures, differing field sets and observed record values keep storage.
+stable local aliases share the same fields only when their source cannot be
+rebound. A result copied through locals whose only readers compare with null or
+undefined needs presence alone; a scalarized record supplies a non-nullish marker.
+Other definitions retain their exact values, so null and undefined stay distinct.
+Captures, differing field sets and observed record identities keep storage.
 
 Strings store UTF-16LE code units; lengths and positions count units, while
 allocation sizes and addresses count bytes. Short ASCII strings retain the
@@ -1706,6 +1796,15 @@ stores no pointer, so a call that destructures keeps nothing, and the frame
 census counts no store into a record for an escape (`SCRATCH`): the iterator
 it holds is lent from its opening to its close.
 
+An object rest `{a, ...r} = o` is the spread of `o` without the keys the
+pattern names (`expandDestruct`, `src/prepare/handlers.js`): the spread item
+carries them (`spreadExclusions`, `src/ast.js`), a computed one as the temp
+holding its property key, and every reader of a literal's spreads (the
+summary, the emitter, the layout census) skips them. A source whose layout
+the summary proves copies its slots; any other copies its own keys at run
+time. A pattern that begins with a rest, a computed key or nothing tests its
+source for null and undefined first; a named key's read throws by itself.
+
 An async body suspends only at statements (`jzify/generators.js`: a yield as a
 statement, or the right side of `let x = yield E` / `x = yield E` /
 `x.f = yield E`), so `jzify/async.js` hoists every other `await` first: the
@@ -1713,8 +1812,22 @@ awaited value lands in a temp declared before the statement; what the
 statement evaluates before that await lands in temps ahead of it, a callee and
 an assignment target staying in place; a short-circuit or conditional whose
 later arm awaits becomes an if statement assigning a temp; a loop whose test
-awaits tests at the top of `while (true)`. Class lowering (`jzify/classes.js`)
-takes `static async` methods on both of its paths and a bare `super()`, and the
+awaits tests at the top of `while (true)`. An await suspends the machine as a
+yield does, and the value it resumes with is `__awaited(a, v)`, `a` holding
+the operand: the summary types it as the operand's settled value, the operand
+itself when it is no thenable, the value an async call's promise fulfills with
+(the promise is named at its `__async_run` call node, as the iterator runtime's
+records are, beside what the machine completes with, a promise or thenable it
+completes with adopted), anything for a promise made another way. The
+machine's locals are declared ahead of the steps that initialize them behind
+the TDZ mark (`src/ast.js`), a declaration that defines no value; a bare
+`let x` in the body defines its undefined where it stands. An async function
+passes its arguments straight to its machine, `(a, b) =>
+__async_run(M(a, b))`, all of them packed only when it reads `arguments`. A
+closure made inside an async function or a generator reads the kinds the same
+closure made inside a plain function does (`test/async-factory.js`).
+Class lowering (`jzify/classes.js`) takes `static async` methods on both of
+its paths and a bare `super()`, and the
 member census counts an optional method call (`o.m?.()`) as a read, since the
 call binds the method as a value first (`src/compile/emit/class-dispatch.js`).
 A derived constructor's statements before `super(…)` run before the base's
@@ -1731,6 +1844,20 @@ see (`Error`, an expression) or as an expression with statics, and the
 instance's class as it would through a prototype (`classMemberIn`); a static
 call `C.s(…)` reaches the lifted function `C$s` in the summary as in the
 emitter (`liftedProp`, method-dispatch.js `tryFnPropCall`).
+
+A bundled module's statements run at start-up, before its importers', in the
+order ES evaluates them (`ctx.module.moduleInits`). `import('x')` of a
+literal hoists a namespace import of `x` (jzify `hoistDynamicImports`):
+awaited at module level it is a static import; anywhere else the call is
+`Promise.resolve().then(() => ns)` and the import is lazy. Once every module
+is prepared (`src/prepare/module-eval.js`), a module no static import
+reaches from the entry moves its statements into a loader that runs once,
+after the loaders of the lazy modules it imports, and keeps an evaluation
+error for every later import; a declaration of one of its globals becomes
+the assignment it makes. A namespace read as a value is one object per
+module, keys in code-unit order, a getter for a binding a function assigns.
+The loader's bindings are spelled without `T`: a `T`-named declaration in a
+module initializer is a temp of the start function.
 
 A member is a function of its own: `arguments` in a method, an accessor or
 a constructor is the member's (`ownArguments`, lowered as a function's before
@@ -1781,11 +1908,23 @@ element (`callbackElem`: the parameter is aliased to a read of the array);
 a class member on an unknown receiver as called with the family of classes
 whose member of that name is that function (`familyOf`), and a member call
 on a jz object of lost shape as the join of those members' results and of
-the closures the shapes hold under the name; `includes`, `indexOf` and
+the closures the shapes hold under the name; a member call through a shape
+beside primitives (`merge`'s mixed cell) or through a value of unknown or
+several kinds as a call of the closure the shapes hold under the name, the
+unknown one's result unknown (an async factory's object sits in every
+promise's value slot beside what the other promises settle with, and its
+methods run through that join: left uncalled, their writes to captured and
+module bindings went unseen), and a read through such a value hands those
+closures where the summary cannot follow them; `includes`, `indexOf` and
 `lastIndexOf` keep nothing of their argument, `slice` yields a copy with a
 cell of its own whose elements are the row's positions from a literal start,
 and any other name on an array is a property beside the elements; shape sets
-of up to 64 layouts. A class
+of up to 64 layouts. A spread of sources whose layouts the summary knows makes
+a layout no literal may name: the summary lists it (`unnamedLayouts`), and
+the compile names it and summarizes again until a spread of such a literal
+makes none new, before the plan decides anything from the summary, so the
+plan and the emitter read the literal's fields in the layout `emitObjectSpread`
+builds. A class
 initializer (`C⟨init⟩`) called on one layout is walked for that layout under
 bindings of its own (initializer contexts): a derived class's `super(…)` no
 longer joins its arguments into the base's parameters, so each layout's
@@ -1823,7 +1962,15 @@ slots (`__view_find`, `__view_get`, `__view_set`, `__view_del`) and the data
 copy a spread or a clone makes (`__view_data`), which the module exports: the
 host decodes such an object through it (`jz:views` lists the layouts). After a
 `delete` of an accessor, a read or store of its name through a binding takes
-the dynamic path. A slot the layout
+the dynamic path. A property stored outside a layout (through an alias, a
+destructuring target, a helper's parameter) lives in the object's
+dictionary: its header's, or for a durable or static object the one
+`__dyn_props` keys by its offset. The module exports both lookups
+(`__obj_props`, beside `__dyn_set`) and the deleted-slot mask
+(`__obj_deleted`, beside `__dyn_del`), and the host decodes an object as
+enumeration does: the layout's slots less the deleted ones, then the
+dictionaries, a later value replacing an earlier one in place. The copy
+`__view_data` makes reads the same dictionaries. A slot the layout
 marks hidden (`ctx.schema.hidden`: an Error's `message` and `name`, a
 closure-lowered class's members, named by the brand on its instance literal)
 drops out of the view but keeps its slot, so reads, stores and calls go
@@ -1875,16 +2022,35 @@ its fallback arm's generic call, and a direct call through a receiver the
 readers cannot type (an optional chain's temp) carries the atom too.
 
 A binding that holds a Boolean beside another kind (`let v; if (k) v = true;
-else v = 1`, `let x = c && 1`) and whose reads observe its identity (a
-return, a `typeof`, a strict compare, a store: the summary's numeric demand
-pass denied it a number) is a tagged carrier (`boolTaggedBinding`,
-`src/compile/emit/dispatch.js`): every Boolean store lands as its atom, a
-merge keeps its Boolean arm boxed (`emitIdentitySafe`), its storage is the
-tagged f64 (`analyze/body-facts.js` Pass E, over a known union only, never
-the unknown kind), and no flow fact of one store's kind is recorded for it.
-A binding read only for truthiness or arithmetic keeps the raw carrier. The
-compile-time rejection remains for the one case a plan typed such a binding
-as one concrete non-Boolean kind.
+else v = 1`, `let x = c && 1`) and some read of which may observe its
+identity (a return, a `typeof`, a strict compare, a string, a store: the
+summary's numeric demand pass did not prove every read a conversion) is a
+tagged carrier (`boolTagged`, `src/kind/val-type-of.js`): every Boolean store
+lands as its atom (`boolCarrier`, `src/compile/emit/dispatch.js`: a
+declaration, an assignment, a logical assignment, a parameter default), a
+merge keeps its Boolean arm boxed (`emitIdentitySafe`, a merge nested in a
+merge of open kind included), its storage is the tagged f64
+(`analyze/body-facts.js` Pass E), a store that may be a Boolean records no
+flow fact (a store of an array or a number still does), and a numeric read
+converts the atoms (`toNumF64`, as for a slot or a result of such a kind; a
+slot holding a Boolean beside a number is no integer to the slot census).
+The summary's kind decides where it names its tags; where it is the unknown
+kind, the binding is tagged when a Boolean reaches it (`boolStores`: a
+store, a definition or an argument of a kind naming BOOL, or one Boolean by
+its syntax), and in a body no walk reached, which keeps no kind, when its
+stores are a Boolean and another value by their syntax. A parameter holds
+its callers' atoms whatever its reads (`coerceArg` boxes a Boolean for an
+untyped parameter), and calls passing a comparison beside an integer leave it
+the tagged f64 unless every read converts (`narrow/param-abi.js` narrows no
+other one to i32). A binding every read of which converts keeps the raw
+carrier and holds numbers: a store of a value that may carry an atom (a
+field, an element, a result) lands as its ToNumber. No such binding rejects;
+`test/bool-number.js` pins each operation in each place. An integer-certain
+binding counts the writes a nested closure makes to it, and a reassigned
+parameter its caller's value (`intLevelMap` seeds the analyzed body's own
+parameters, the slot census's included). A Boolean answers its own
+`toString` ("true", not "1": `.boolean:toString` for a Boolean receiver, an
+atom arm in the runtime method dispatch).
 
 A typed array's `fill` converts its value once for a numeric array (`fill('12')`
 stores 12), writes the first element through the element writer and doubles
@@ -1949,33 +2115,39 @@ the frame returns (`asked`, module/core.js `__made`; an address as it is): one
 that names memory at or above the frame's mark is of the frame's making and
 the caller's to keep, so the frame gives back nothing; a number, or a value
 older than the call, lets it restore. The host asks the same of what an export
-returns as it decodes it (interop.js `settled`): it takes a copy of a string,
+returns as it decodes it (interop.js `mem.read`): it takes a copy of a string,
 an array, an object and a collection, and releases the call then; a typed
 array's view and a closure's handle above its mark hold the call's memory.
 An export whose result is asked is one the host releases (`jz:release`),
 whether or not it copies an argument in.
 A function with several results (an array literal returned as its elements)
 holds each in a local past its restore and asks each.
-Asked frames come and go with the walk (`arenaReach`). A tail call leaves the frame
+Asked frames come and go with the walk (`arenaReach`). Without that runtime,
+a mixed numeric result can still release its frame when it returns an ordinary
+number; NaNs and boxed values retain the frame. The host applies the same check
+before releasing copied arguments. A tail call leaves the frame
 before its epilogue, so one whose callee never runs the function again
 becomes a plain call under the restore, at the price of one frame, and one
 that may (a recursion written as tail calls) stays, the function keeping its
 heap. Allocation counts through callees. The durable-heap logs
 record only mutations of containers made before the reset mark, each a store
 the census counts: its site lowers the flag to the durable receiver, so no
-frame restores over a logging path. An object is logged as an array is, whole
-and once a round (`__durable_obj_snap`; its record's address is odd, its
-cells as many as its capacity), by the first store into it of a value that
-names memory of the round (`__is_eph_bits`, asked as the store runs): a
-field, a key the runtime resolves to a slot, a copy by `Object.assign`. The
-store may stand at no site (a kernel's arm, a store the census takes for a
-loan), so the snapshot lowers the flag itself, to the object, where it
-allocates its record: link reads its call like any other. A reset puts back
-the slots that name memory of the round as it runs, each as the record holds
-it, so a field a call pointed at what it made, or at an argument, names no
-freed memory after it and reads as before the store. A store of a number logs
-nothing, and a field that holds one as the reset runs keeps it, in whatever
-object. `whyNotRewind` names the reason
+frame restores over a logging path. An object's tagged field is logged once
+per round (`__durable_obj_snap`) when it first receives a value that names
+memory of that round (`__is_eph_bits`). Static writes, computed keys and
+`Object.assign` use the same field log. Its record shares the array log and
+address bitmap; an odd address marks one field's saved value. Recording only
+that field leaves neighboring raw BigInt cells uninterpreted, even when their
+bits resemble a pointer. A store may stand at no census site (a runtime
+kernel or a borrowed iterator record), so allocating the record lowers the
+escape flag to the field itself. Reset restores a logged field only if it
+still names the round's memory. Numbers and raw BigInts keep their mutations,
+and their stores need no undo record. A direct field store into a function
+local whose every initializer is an object literal needs no reset save either:
+its receiver was made after the reset mark. The frame census supplies that
+fact; parameter aliases, nested writes to the binding, calls that return an
+object, and paths through its fields retain the runtime check.
+`whyNotRewind` names the reason
 for every candidate that keeps its heap. Load CSE (`src/compile/cse-load.js`) keeps a
 cached typed-array load across a call whose callee does not `writesOuter`; any other
 call or user conversion invalidates after its operands, which run first. A store keeps
@@ -1991,13 +2163,22 @@ a load read there is available after the expression and in its later operands, a
 first read in a later operand is that operand's own, and what any operand invalidated
 is gone after it. A field of an object is cached like an element (`fieldOf`): the
 receiver a binding, the field a slot of every layout the summary lists for it, with no
-accessor of the name on any of them, and the first read the expression its statement
-evaluates first, so the cache is a `const` declared before that statement (an
-assignment inside an expression the emitter folds would be lost with it). A store of a field of that name through any
-receiver ends it (two bindings may hold one object), a computed-key store into a
-receiver that may be an object ends every field, and a call that may write outer
+accessor of the name on any of them, and the first read one its statement makes
+before it applies any operation (`let y = c.b[c.p]` reads `c.b` and `c.p` first),
+so the cache is a `const` declared before that statement, in the order of the reads
+(an assignment inside an expression the emitter folds would be lost with it). A store of a field of that name through any
+receiver ends it unless the summary proves their construction sites disjoint;
+equal layouts alone prove nothing. Host-visible or opaque identities decline the
+proof, and folding a layout removes its per-site distinction.
+A computed-key store into a receiver that may be an object ends every field it
+may reach, and a call that may write outer
 storage, a user conversion or a reassignment of the receiver flushes as for elements;
-an element store into an array or a typed array leaves fields alone.
+an element store into an array or a typed array leaves fields alone, whatever
+expression names the array (`c.b[c.p] = v`). Conditional
+arms inherit their test's cached field and plain-array reads; the join retains only reads surviving
+both arms, including when source inlining lowered returns to result assignments.
+Typed-element loads retain their existing control boundaries so checked-load conversions
+do not hide conditional reductions from the vectorizer.
 A function whose fresh allocation is stored into module state used to rewind
 and hand out a dangling pointer; the census is what makes the rewind sound.
 The same census runs per loop with the loop body as its scope: an iteration
@@ -2154,14 +2335,37 @@ n && a[child] < a[child + 1]) child++` as a select over the lowered `&&` ran
 implementation for constant and runtime exponents within an ulp of the host:
 Arm's optimized-routines pow, a double-double log from a 128-entry table
 (`scripts/pow-log-table.mjs` derives and checks it) and the shared exp
-table, 10 ns a call against V8's 6; the ladder in front of it takes the
-common case (a positive finite base, a non-integer exponent) straight to
-the kernel and walks the edge cases only for the rest. The constant fold
-in `src/prepare/math-kernel.js` is the kernel's twin, bit for bit.
-The k/5 fifthroot fold runs four Newton steps (the last a correction) and
-measures a worst case of ~40 ulp across its exponents against the exact
-rational power, which `test/pow.js` pins under a 96 ulp ceiling. The lane vectorizer lifts a constant-exponent pow per lane through the
-same kernel, bit-exact with the scalar loop. A second algorithm (exp∘log, or
+table, inline in `$math.pow` after the ladder, which takes the common case (a
+positive finite base, a non-integer exponent) straight to it and walks the
+edge cases only for the rest: 8.1 ns a call against V8's 6.9, where it took
+10.9 as a second function behind the ladder with its literals built inline. A constant base c > 0 other
+than 2 (`Math.pow(10, db / 20)`, `10 ** (db / 20)`) is `$math.pow_b`: the
+compiler takes log(c) with the kernel's own operations (`powLog`), and the call
+runs the exponential part alone, bit for bit the kernel's answer for a runtime
+base equal to c, 3.6 ns against V8's 6.4 (9.9 before); an exponent the kernel
+would not take (an integer, 0.5, a tiny or a non-finite one) goes to
+`$math.pow` (`test/pow-base.js`). A version that took y·log(x) in one double
+where |y·log x| is small (within about 2|y·log x| + 1 ulp) measured 1.45 times the
+kernel's speed, short of the 2 that a hundred ulp would have to buy, so the kernel
+stays whole. The constant fold in `src/prepare/math-kernel.js` is the kernel's
+twin, bit for bit.
+The k/5 fifthroot fold (`$math.pow_fifths`) runs four Newton steps (the last a
+correction) and measures 3 ulp against the exact rational power x^(k/5), which
+`test/pow.js` pins under a 96 ulp ceiling. `x ** 2.2` means the double 2.2,
+though, and x^(c − k/5) − 1 ≈ (c − k/5)·ln x grows with |ln x| (513 ulp at
+x = 7e-140 for 2.2), and x^r leaves the doubles near 2^±(1022/r): the fold runs
+on x itself only on [2^-L, 2^L] (`trig-tables.js` fifthFold, L keeping that
+term within 40 ulp, 72 for 2.4), and every other x is written 2^(5j)·x' with
+the fold on x', 2^(jk) applied in two factors and the 2^(5j) part of the
+exponent's rounding multiplied back in: within 40 ulp of the host everywhere,
+with no pow kernel or table pulled in. The lane vectorizer lifts a constant-exponent pow per lane through the
+same kernel, bit-exact with the scalar loop. A negative integer exponent
+takes the reciprocal of x^|n|, one rounding past the chain and so exact where
+the power is (10 ** -2 is 0.01; squaring the reciprocal first gave
+0.010000000000000002, and 20 ulp from the host at 16), and the reciprocal's
+square-and-multiply only where x^|n| leaves the normal doubles (1/x^n
+overflowed to 0 where x^-n was still a double, 5.67e102 ** -3); the kernel's |y| ≥ 2^63 shortcut answers 1 at x = 1,
+where the ladder sends x = −1. A second algorithm (exp∘log, or
 the three-step fifthroot) is never the default: a meaningful result keeps its
 f64 accuracy. `Math.exp` and `2 ** x` are one table kernel (`math/trig-tables.js`
 EXP2_TAB: 2^(j/64) as the nearest double and the tail its rounding dropped;
@@ -2169,6 +2373,80 @@ EXP2_TAB: 2^(j/64) as the nearest double and the tail its rounding dropped;
 head and tail), T + T·(q + tail) with q the exact-coefficient remainder
 series, one exponent build; 0.52 ulp against a 200-bit reference for both,
 scalar, 2-wide and the constant folder bit-identical (`test/math.js`).
+The scalar kernels read their f64 literals from memory (`$math.kc`, module/math.js
+`kc`), 0, ±Infinity and NaN aside: V8's arm64 code builds a literal from up to
+four 16-bit moves and a register transfer at every use, where a load at a
+constant offset is one instruction. The table holds the words of the kernels a
+program includes (stdlib-pull renumbers them as it injects it), 126 bytes behind
+`Math.atan` alone; with a shared or imported memory it is static data the start
+copies into allocated space like any other. `exp` and `2 ** x` let every argument in
+range past their NaN, overflow and underflow tests with one comparison and take
+k = round(64x/ln2) from the low word of x·64/ln2 + 1.5·2^52, with no
+float-to-integer conversion (a range check in wasm); `log` and `log10` pass
+every normal x > 0 by one comparison and centre m on √2 by a select, where the
+branch went as the argument's low bits went. None of it changes a bit
+(`test/math-entry.js`); ns a call on arm64 against Node 25.9, loop subtracted,
+before and after, V8 last: exp 3.3 and 2.1 (2.4), `2 ** x` 3.1 and 2.0 (4.1),
+log 4.1 and 3.0 (3.1), sin 4.2 and 2.4 (6.3), atan 2.9 and 2.2 (2.6).
+
+jz's Math is not V8's bit for bit: it keeps within 50 ulp of it, for 9% more
+time on the floatbeat corpus than the fast kernels it replaced, where porting
+V8's fdlibm exactly (branch `audiojs-math`) took 75% more. The budget is spent
+on the polynomials, never on the argument reduction. `sin`, `cos` and
+`tan` reduce x to n·π/2 + r, |r| ≤ π/4, and take sin(r) or cos(r) by n's
+parity (a branch; a phase keeps it predicted), negated by n's second bit.
+An |x| ≤ π/4 (the double below it; x·2/π rounds to ½ and ties to n = 0) is its
+own remainder and skips the reduction, the same bits: an LFO or a pan angle in
+[0, 0.7] ran at 0.73 (sin) and 0.57 (cos) of V8's speed and now 1.26 and 1.21,
+where an argument across [−30, 44] pays the test (2.2 to 1.9 times V8).
+Below 2^24 the reduction is inline Cody–Waite: n from x·2/π rounded by adding
+and removing 1.5·2^52 (whose low word is then n), r = x − n·H1 − n·H2 − n·H3 −
+n·H4 with π/2 in 29, 29, 29 and 53-bit parts, each truncated so −0 stays −0.
+Every n·Hk but the last is exact and every subtraction that cancels is exact,
+so r is within an ulp of the true remainder even at the double nearest a
+multiple of π/2 (an exhaustive search of k < 2^24 finds the worst at k =
+9206271, |r| = 2^-59), where three parts (111 bits) would err by 6e6 ulp.
+Past 2^24 `$math.rem_pio2` is Payne–Hanek in integer arithmetic: x's 53-bit
+significand times the 192 bits of 2/π its exponent selects (a read-only
+table, fdlibm's ipio2 bits in 64-bit words), the product mod 2^192 giving n
+mod 4 and a 128-bit fraction, within 1.3 ulp of the true remainder, the
+worst double of all (6381956970095103·2^797, |r| = 2^-61) included; no loop
+and no scratch memory, where fdlibm's version keeps a working array in
+linear memory. The kernels (`trig-tables.js`, fitted by
+`scripts/minimax-trig.mjs`'s Remez exchange in 256-bit fixed point) are the
+lowest degree the budget allows: sin(r) = r·(1 + t·P(t)) of degree 11 (45 ulp
+minimax, 38 as evaluated; degree 9 is 46000) and cos(r) of degree 12 (0.8 and
+2.2; degree 10 is 1071). `sin2`/`cos2` do the same two lanes wide, one
+kernel when both lanes' parities agree, bit-identical with the scalar; a lane
+past 2^24 sends both to it. The constant folder mirrors the kernels below
+2^24 and leaves a larger literal argument for run time (the compiler compiled
+by itself has 64-bit BigInt, which cannot mirror the 192-bit product).
+`atan` reduces |x| by three intervals and at most one division (as is, π/4 +
+atan((|x| − 1)/(|x| + 1)), π/2 + atan(−1/|x|)) to |t| ≤ tan(π/8) and a
+degree-19 odd polynomial (8.8 ulp minimax); `atan2` divides and calls it, and
+`atan2_2` runs the same operations two lanes wide, the interval picked per lane
+by bitselect, where both lanes have a finite y and a finite nonzero x (3.3 ns
+an element in a lifted loop against 5.9 lane by lane, V8 7.8).
+`asin` and `acos` take a degree-21 odd polynomial on |a| ≤ ½ (33 ulp
+minimax), at a = √((1 − |x|)/2) past ½, and acos near ±1 as 2·asin(a) or π −
+2·asin(a), where π/2 − asin(x) had cancelled a small result away. `sinh` and
+`cosh` split e^|x| as (½e^(|x|/2))·e^(|x|/2) past 709.78, where the result is
+still finite; `asinh`, `acosh` and `atanh` take fdlibm's forms over jz's log
+and log1p, each the one that cancels nothing in its range; `log1p` takes the
+ratio x/(u − 1) before the product that overflowed past 2.5e305. Measured
+against V8 (`node scripts/math-ulp.mjs`: the floatbeat corpus's arguments,
+the doubles nearest k·π/2 to k = 1e6 with their ±4-ulp neighbours, 200k
+log-uniform arguments a function, the edges): sin 40, cos 39, tan 49, asin
+38, acos 35, atan and atan2 10, sinh 5, cosh 3, tanh 5, asinh 4, acosh 5,
+atanh 4, exp 1, expm1 3, log 4, log1p 4, log2 4, log10 2, cbrt 0, hypot 2,
+pow 11, a k/5 exponent 40; sin(π) is 1.2246467991473532e-16 and the kπ/2
+set stays within 2 ulp. `test/math-ulp.js` pins each bound with the lanes and
+the folder bit-identical. On arm64 against Node 25.9, ns a call scalar and
+two lanes wide on an audio phase: sin 5.0 and 2.7 (the kernels this replaced
+4.6 and 2.6, the fdlibm port 6.0 and 5.6, V8 13); atan 3.7 (3.9, 4.4, V8 7.5);
+asin 3.6, where its degree costs what fdlibm's rational kernel does (2.4
+before, V8 7.4). The floatbeat corpus runs at 0.49 of V8's time (0.45 before,
+0.78 with the fdlibm port).
 
 Values use proven raw lanes or tagged carriers; heap values use NaN-boxing (see README). The legacy `ctx` store still carries compilation state. Consult its lifecycle ownership table in [`src/ctx.js`](src/ctx.js) before changing state; new persistent facts belong in ProgramIndex and frozen summaries, not another ambient store.
 
@@ -2306,7 +2584,11 @@ value, is undefined; `typeof undefined` against a type, an equality of two truth
 `||` or `&&` read as a test, and the `if` or `?:` of a decided test are their answers. A
 logical operator read as a value keeps its form: the kinds of what it yields were read off it.
 A local nothing reads, declared with a value that runs nothing (a name, a literal, a fresh
-object or array of such), is not declared. After the splices each list inside a body splits
+object or array of such), is not declared only when this pass can remove every store too.
+Closure captures, including write-only captures, and stores outside statement lists retain
+their bindings. Prefix flattening likewise keeps a binding captured by its result: a closure
+may write it or read it after the initializer's source changes.
+After the splices each list inside a body splits
 as the body's own list does (`splitReassigned( fn, true )`), over the bindings the list
 declares ahead of the assignment and nothing outside the list mentions, and over a binding
 declared bare outside the list that the list alone mentions, from an assignment nothing in
@@ -2318,7 +2600,9 @@ is one of a fixed count at each site before the splices run, and a test of the c
 decided in the variant (`if ( arguments.length > 1 )`). A body that makes closures splices
 with them where its own control is a list with one trailing return: a closure's parameters
 and locals are named anew with the body's, and a parameter a closure mentions is bound to a
-temp, never read as the caller's name. A lambda declared in a list of its own splices where it
+temp, never read as the caller's name. A closure's writes require mutable parameter storage
+even when the call supplies a literal or selects a literal default.
+A lambda declared in a list of its own splices where it
 is called, where nothing outside the list mentions it. A loop that calls its parameter (a
 series summed from a generator, a continued fraction from its terms) splices at the speed
 tier wherever the argument is a function the caller names or makes, whatever the count of
@@ -2627,7 +2911,7 @@ the corpus *is* the guarantee, so widen it toward the code you actually ship.
 
 The public surface is deliberately small (README owns it): the root exports
 `jz`, `compile`, `instantiate` and `jz.memory`; the `jz/interop` subpath with
-`instantiate` and `memory`; the eleven compile options in `index.d.ts`; and the
+`instantiate` and `memory`; the compile options in `index.d.ts`; and the
 CLI flags in `jz --help`. Everything else is internal and may change without a
 major version, including `jz.pool` (experimental SPMD worker pool, node only).
 
@@ -2727,8 +3011,6 @@ conversions, pointer/tag accessors, NaN constants, `toModule`, `wrapVal`,
 
 - DataView indexed own properties are unsupported; indexed writes reject.
   Unextended views have no `.length` or indexed elements.
-- Ambiguous Boolean/Number locals whose stored identity escapes reject;
-  truthiness-only uses compile.
 - Rest-parameter BigInt elements lack boundary evidence and reject.
 - Array patterns share lazy pulls, undefined-only defaults and IteratorClose on
   early completion or binding errors. Native Map/Set views are snapshots.
@@ -2754,6 +3036,23 @@ integer loops currently use a full i32-domain bound; many SIMD, dynamic-bound an
 recursive shapes remain unknown. Shared-memory writes leave allocation unknown.
 These facts exclude initialization and host marshalling and do not certify an
 audio deadline. Inspection does not alter output bytes.
+
+`memory.fixed` selects exports for a final-code memory proof, sharing that
+inspection's call/effect census (`compile/func-inspect.js`). The proof rejects
+allocation, host/open-table calls and cycles, and checks every hidden typed
+variant. `compile/fixed-memory.js` follows the settled frame census to named
+callees and plans non-escaping constant-size typed locals after the function
+plan is installed. Placements belong to a function signature and constructor
+node, never to the length expression (named sizes can recur). Equal layouts share a static slot only
+across disjoint top-level statement spans: an entire loop/branch is one span.
+Numeric keys cannot expose `.buffer`; captures, aliases and identity uses
+decline placement. Constructors clear the slot at their original site. The
+normal static-data writer, rebasing and heap-base calculation own placement.
+Before Wasm inlining erases function identities, scratch owners must also prove
+non-reentrancy in every call context, including unselected exports. Scratch
+slots belong to the instance.
+The contract disables `arenaReach` for the whole module; ordinary exports may
+still allocate. It does not certify host marshalling or wall-clock latency.
 
 Levels 2 and above carry integer accumulators in guarded i64 loops, whether or
 not a ToInt32 read is present: the carried update alone shortens the chain. It restores f64 on exit or before leaving the exact-integer

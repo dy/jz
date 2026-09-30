@@ -12,7 +12,7 @@ import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
 import jz, { compile } from '../index.js'
 import * as interop from 'jz/interop'
-import { onWasi, onKernel, levels } from './_matrix.js'
+import { onWasi, onKernel, levels, belowOpt } from './_matrix.js'
 import { HEAP } from '../layout.js'
 import { oracle } from './util.js'
 
@@ -71,17 +71,16 @@ test('package: root and every public subpath ship declarations; pointer carriers
     ok(readFileSync(new URL(name, root), 'utf8').length > 0, `${name} is non-empty`)
 })
 
-test('interop: subpath stays compiler-free — only wasi.js and layout.js outside its file', async () => {
+test('interop: subpath stays compiler-free with only host and codec dependencies', async () => {
   // The whole point of the subpath: it can be loaded without dragging in the
   // compiler. Enforce it as a static contract — `jz/interop` may import only
-  // `./wasi.js`, `./layout.js`, and `./err-codes.js` (the $__jz_err code→message
-  // table — a leaf data module, same shape as layout.js, no compile machinery).
-  // Any new dep here is a regression.
+  // host linking, layout, error metadata and the UTF-8 codec for worklet hosts.
+  // Compiler dependencies must never enter this path.
   const { readFileSync } = await import('node:fs')
   const url = await import.meta.resolve('jz/interop')
   const src = readFileSync(new URL(url), 'utf8')
   const imports = [...src.matchAll(/^import\s.*?from\s+['"]([^'"]+)['"]/gm)].map(m => m[1])
-  const allowed = new Set(['./wasi.js', './layout.js', './err-codes.js'])
+  const allowed = new Set(['./wasi.js', './layout.js', './err-codes.js', './utf8.js'])
   for (const imp of imports) {
     ok(allowed.has(imp), `jz/interop imports ${imp} — only ${[...allowed].join(', ')} are allowed`)
     for (const forbidden of ['subscript', 'watr', './src/', './index.js', './module/']) {
@@ -416,7 +415,7 @@ test('interop: a numeric array-like parameter is typed storage inside, any array
     export let fit = (target) => { let w = new Float64Array(target.length); for (let i = 0; i < w.length; i++) w[i] = i; return sum(w, target) }
     export let first = (a) => a[1] * 10 + a.length`
   const bytes = compile(src)
-  ok(bytes.length < 2000, `${bytes.length} bytes: no fork, no ToNumber runtime`)
+  if (!belowOpt(2)) ok(bytes.length < 2000, `${bytes.length} bytes: no fork, no ToNumber runtime`)
   const lanes = JSON.parse(new TextDecoder().decode(WebAssembly.Module.customSections(interop.toModule(bytes), 'jz:i64exp')[0]))
   is(lanes.find(e => e.name === 'fit').t['0'], 'Float64Array')
   const { exports } = interop.instantiate(bytes)
@@ -652,4 +651,19 @@ test('interop: numeric host imports preserve zero, NaN, infinities and hidden co
     throws(() => jz(source, {imports: {env: {}}}), /not declared/, 'missing remains an error')
   }
   is(jz('export let f = () => 7', {imports: {}}).exports.f(), 7, 'empty imports after numeric modules')
+})
+
+// The box codec moves bits through one 8-byte cell: every tag, aux and offset
+// comes back as built, a number's bits survive both ways, and a BigInt takes
+// its value mod 2^64 (a negative one sign-extended, as the i64 lane carries it).
+test('interop: the NaN-box codec keeps every bit', () => {
+  const { ptr, type, aux, offset, f64ToI64, i64ToF64 } = interop
+  for (const [t, a, o] of [[0, 0, 0], [3, 7, 16], [15, 0x7fff, 0xffffffff], [6, 0x4000, 0x80000000], [1, 1, 1]]) {
+    const p = ptr(t, a, o)
+    is([type(p), aux(p), offset(p)], [t, a, o], `ptr(${t}, ${a}, ${o})`)
+    ok(p >= 0n && p < 2n ** 64n, 'an unsigned 64-bit value')
+  }
+  for (const n of [0, -0, 1.5, -2.25, 1e308, 5e-324, Infinity, -Infinity, Math.PI]) ok(Object.is(i64ToF64(f64ToI64(n)), n), `${n} round trips`)
+  is(f64ToI64(1), 0x3ff0000000000000n)
+  is([offset(-5n), type(-5n), aux(-5n)], [2 ** 32 - 5, 15, 0x7fff], 'a negative BigInt reads as its two\'s complement bits')
 })

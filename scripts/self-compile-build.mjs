@@ -23,12 +23,6 @@ const t0 = Date.now()
 // optimizing compiler-only SIMD and peephole candidates before encoding; level
 // 1 keeps the essential cleanup while the hosted compiler still applies each
 // user program's requested optimization profile. Override for diagnosis.
-const SELF_OPT = process.env.JZ_SELF_COMPILE_OPT ?? '1'
-const HELPER_COUNTERS = /^(1|true|yes)$/i.test(process.env.JZ_HELPER_COUNTERS || '')
-const HELPER_SITES = process.env.JZ_HELPER_SITES || ''
-const HELPER_SITES_ON = !!HELPER_SITES && !/^(0|false|no)$/i.test(HELPER_SITES)
-const HELPER_SITE_FILTER = /^(1|true|yes)$/i.test(HELPER_SITES) ? 'ptr_offset' : HELPER_SITES
-const selfOptLevel = SELF_OPT === 'false' ? false : (isNaN(+SELF_OPT) ? SELF_OPT : +SELF_OPT)
 // packData corruption was root-caused watr-side (isDroppable ';'-comment guard,
 // fixed in watr 5.1.1 with byte-image regression tests) — full default config again.
 //
@@ -44,12 +38,7 @@ const selfOptLevel = SELF_OPT === 'false' ? false : (isNaN(+SELF_OPT) ? SELF_OPT
 // localidx/codeItemSize self-time). The kernel is a controlled artifact
 // whose size test/perf pins track; the guard's never-inflate policing is
 // redundant here. No-op until watr >5.2.3 lands the option.
-const profile = resolveSelfCompileBuild({
-  optimize: selfOptLevel,
-  snapshot: !/^(0|false|no)$/i.test(process.env.JZ_SELF_COMPILE_SNAPSHOT || '1'),
-  helperCounters: HELPER_COUNTERS || HELPER_SITES_ON,
-  helperCallsites: HELPER_SITES_ON ? HELPER_SITE_FILTER : false,
-})
+const profile = resolveSelfCompileBuild()
 console.log('resolved self-compile graph…', Object.keys(profile.graph.modules).length, 'modules')
 const wasm = compile(profile.graph.code, {
   host: 'js', // The compiler artifact's host is independent of the test matrix.

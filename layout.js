@@ -112,6 +112,10 @@ export const TYPED_ELEM_CLAMPED_FLAG = 64
 // DataView shares the view descriptor, but has no indexed elements.
 export const DATA_VIEW_FLAG = 128
 export const DATA_VIEW_AUX = DATA_VIEW_FLAG | TYPED_ELEM_VIEW_FLAG
+// A static fact only, never a pointer's aux: an array of one element kind that
+// may be owned or a view (`cond ? a.subarray(4) : new Float64Array(8)`). Its
+// accesses read the view bit off the pointer (constructor form `new.X.anyview`).
+export const TYPED_ELEM_ANY_VIEW_FLAG = 256
 
 /** What the dynamic-property cache's offset holds while the cache is empty
  *  (module/collection.js `__dyn_get_cache_off`). No key is 1: a memory offset
@@ -133,9 +137,10 @@ export function encodeTypedElemAux(name, isView = false) {
 }
 
 /** Encode a `typedElemCtor` string ('new.Int32Array' | 'new.Int32Array.view') to the 4-bit
- *  aux value used in PTR.TYPED NaN-boxing. Returns null for unknown ctors (ArrayBuffer/DataView). */
+ *  aux value used in PTR.TYPED NaN-boxing. Returns null for unknown ctors (ArrayBuffer/DataView)
+ *  and for an array that may be owned or a view, which no one pointer aux describes. */
 export function typedElemAux(ctor) {
-  if (!ctor || !ctor.startsWith('new.')) return null
+  if (!ctor || !ctor.startsWith('new.') || ctor.endsWith('.anyview')) return null
   const isView = ctor.endsWith('.view')
   const name = isView ? ctor.slice(4, -5) : ctor.slice(4)
   return encodeTypedElemAux(name, isView)
@@ -148,12 +153,12 @@ export function typedElemAux(ctor) {
 export function ctorFromElemAux(aux) {
   if (aux == null) return null
   if (aux & DATA_VIEW_FLAG) return null
-  const isView = (aux & 8) !== 0
+  const anyView = (aux & TYPED_ELEM_ANY_VIEW_FLAG) !== 0, isView = (aux & 8) !== 0
   const name = (aux & TYPED_ELEM_F16_FLAG) !== 0 ? 'Float16Array'
     : (aux & TYPED_ELEM_CLAMPED_FLAG) !== 0 ? 'Uint8ClampedArray'
     : (aux & 16) !== 0 ? 'BigInt64Array' : TYPED_ELEM_NAMES[aux & 7]
   if (!name) return null
-  return isView ? `new.${name}.view` : `new.${name}`
+  return anyView ? `new.${name}.anyview` : isView ? `new.${name}.view` : `new.${name}`
 }
 
 /** Host-side high u32 word for NaN-boxed f64 pointer encoding (interop) — the

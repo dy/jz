@@ -1,7 +1,35 @@
 import test from 'tst'
-import { is, ok } from 'tst/assert.js'
+import { is, ok, throws } from 'tst/assert.js'
 import jz, { compile } from '../index.js'
 import { onWasi, levels } from './_matrix.js'
+
+test('method receiver: internal emitter keys and getter names are ordinary callable properties', () => {
+  if (onWasi()) return // host callbacks use the JS interop boundary
+  const keys = ['[]', '[]=', 'slice#view', 'raw', 'byteLength', 'buffer', 'size']
+  const src = keys.map((key, i) => `export function f${i}(o) { return o[${JSON.stringify(key)}](2) }`).join('\n')
+    + '\nexport function typed() { return new Uint8Array(2).length }'
+  for (const optimize of levels(0, 1, 2, 3)) {
+    const functions = jz(src, { optimize }).exports
+    for (const [i, key] of keys.entries()) {
+      const receiver = { value: 7, [key](x) { return this.value + x } }
+      is(functions[`f${i}`](receiver), 9, `O${optimize}: ${key}`)
+    }
+  }
+})
+
+test('method receiver: builtin getters do not become callable methods', () => {
+  const receivers = ['new Uint8Array(4)', 'new Uint8Array(4)', 'new Map()', 'new Set()']
+  const keys = ['byteLength', 'buffer', 'size', 'size']
+  const src = receivers.map((receiver, i) => `export function f${i}() {
+    const o = ${receiver}; let count = 0
+    try { o[${JSON.stringify(keys[i])}](++count); return -1 }
+    catch (e) { return e.name === 'TypeError' ? count : -2 }
+  }`).join('\n')
+  for (const optimize of levels(0, 1, 2, 3)) {
+    const functions = jz(src, { optimize }).exports
+    for (let i = 0; i < receivers.length; i++) is(functions[`f${i}`](), 1, `O${optimize}: ${receivers[i]}.${keys[i]}`)
+  }
+})
 
 const cases = {
 identity: `const o={v:3,m(){'use strict';return this}}; const m=o.m; return [o.m()===o,m()===undefined,m.call(null)===null,m.call(false)===false,m.call(0)===0,m.call()===undefined,m.apply()===undefined]`,
@@ -36,6 +64,45 @@ test('method receiver: detached generator observes undefined', () => {
     return [before, seen === undefined, first.done, first.value, last.done]
   }`
   is(jz(src).exports.f(), [true, true, true, undefined, true])
+})
+
+test('method receiver: guarded class results keep their value representation', () => {
+  const src = `class Result {
+    array() { return [3, 5] }
+    typed() { return new Float64Array([7, 11]) }
+    object() { return {v:13} }
+    string() { return 'guarded' }
+    bool() { return true }
+    bigint() { return 17n }
+    word() { return 4294967295 }
+  }
+  export function f(present) {
+    const r = present ? new Result() : null
+    return [r.array()[1], r.typed()[1], r.object().v, r.string(),
+      typeof r.bool(), r.bool(), typeof r.bigint(), r.bigint(), r.word()]
+  }`
+  for (const optimize of levels(0, 1, 2, 3)) {
+    const { f } = jz(src, { optimize }).exports
+    is(f(1), [5, 11, 13, 'guarded', 'boolean', true, 'bigint', 17n, 4294967295])
+    throws(() => f(0), TypeError)
+  }
+})
+
+test('method receiver: an in-bounds array element can still be nullish', () => {
+  const src = `class C { value() { return 1 } get x() { return 2 } }
+    export function f(present, getter) {
+      const a = [new C(), present ? new C() : null]
+      let sum = 0
+      for (let i = 0; i < a.length; i++) sum += getter ? a[i].x : a[i].value()
+      return sum
+    }`
+  for (const optimize of levels(0, 1, 2, 3)) {
+    const { f } = jz(src, { optimize }).exports
+    is(f(1, 0), 2)
+    is(f(1, 1), 4)
+    throws(() => f(0, 0), TypeError)
+    throws(() => f(0, 1), TypeError)
+  }
 })
 
 test('method receiver: ABI resets between compiles', () => {
@@ -251,5 +318,32 @@ test('method receiver: union collection callbacks use their registered family', 
     const { f, str } = jz(src, { optimize }).exports
     for (const k of [0, 1, 1, 2, 3, 0]) is(f(k), [3,7,11,15][k])
     is(str(0), '1,2'); is(str(1), 'abc')
+  }
+})
+
+
+test('method receiver: grouped optional methods preserve chain boundaries and argument order', () => {
+  for (const call of [
+    '(get()?.indexOf)(arg())', '(get()?.indexOf)?.(arg())',
+    '(get()?.[method])(arg())', '(get()?.[method])?.(arg())',
+    '(get()?.inner?.indexOf)(arg())', '(get()?.inner.indexOf)(arg())',
+    '(get()?.inner?.indexOf)?.(arg())',
+  ]) {
+    const source = `export function f(k) {
+      let order=0; const method='indexOf';
+      const custom={indexOf(x){order=order*10+4;return this.value+x},value:40};
+      const values=[null,undefined,{},'ab',[2],custom,
+        {inner:null},{inner:custom},{inner:'ab'},
+        {get indexOf(){order=order*10+3;return custom.indexOf},value:50}];
+      const get=()=>{order=order*10+1;return values[k]};
+      const arg=()=>{order=order*10+2;return 2};
+      try {return [${call},order]} catch(e){return [e.name,order]}
+    }`
+    const ref = new Function(source.replace('export ', '') + ';return f')()
+    for (const optimize of levels(0, 2, 3)) {
+      const {f}=jz(source,{optimize}).exports
+      for (const k of [0,0,1,2,3,4,5,6,7,8,9,0])
+        is(f(k),ref(k),`O${optimize}, ${call}, receiver ${k}`)
+    }
   }
 })

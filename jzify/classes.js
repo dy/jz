@@ -3,7 +3,7 @@
  * @module jzify/classes
  */
 
-import { extractParams, objectLiteralEntries, blockStmts, refsName, REFS_IN_EXPR, ACCESSOR_GET, ACCESSOR_SET, MUTATE_OPS, BRAND, CLASS_T } from '../src/ast.js'
+import { extractParams, objectLiteralEntries, blockStmts, refsName, REFS_IN_EXPR, ACCESSOR_GET, ACCESSOR_SET, MUTATE_OPS, BRAND, CLASS_T, withLoc } from '../src/ast.js'
 import { ctx, err, warn } from '../src/ctx.js'
 import { usesArguments } from './arguments.js'
 import { MAX_CLOSURE_ARITY } from '../src/ir.js'
@@ -89,7 +89,9 @@ const classBodyItems = (body) =>
 // Rename `this` → `to`, not crossing into a nested `function`/`class` (those
 // rebind `this`); arrows inherit `this`, so they are crossed. Property *names*
 // (`obj.this`, `{this: …}` value-side only) are left alone.
-function renameThis(node, to) {
+// What a node rewrites to stands at its source position (ast.js withLoc).
+function renameThis(node, to) { return withLoc(renameThisNode(node, to), node) }
+function renameThisNode(node, to) {
   if (node === 'this') return to
   if (!Array.isArray(node)) return node
   if (node[0] === 'function' || node[0] === 'function*' || node[0] === 'class') return node
@@ -120,7 +122,8 @@ function assignedThisFields(node, out) {
 //    else keeps its own dynamic `this` and is rejected downstream);
 //  - `Base.prototype.m.call(this, …args)` in a class extending `Base` is the
 //    explicit form of `super.m(…args)`.
-function normalizeClassIdioms(node, base) {
+function normalizeClassIdioms(node, base) { return withLoc(normalizeClassIdiomsNode(node, base), node) }
+function normalizeClassIdiomsNode(node, base) {
   if (!Array.isArray(node)) return node
   if (node[0] === 'class') return node
   if (node[0] === '=' && Array.isArray(node[1]) && node[1][0] === '.' && node[1][1] === 'this'
@@ -198,7 +201,8 @@ function collectSuperMethodCalls(node, out = new Set()) {
 
 // `recv`, when given, is passed as the first argument: the base's method is a
 // shared function taking the receiver (the struct lowering below).
-function rewriteSuperMethodCalls(node, baseMethodVars, recv) {
+function rewriteSuperMethodCalls(node, baseMethodVars, recv) { return withLoc(rewriteSuperMethodCallsNode(node, baseMethodVars, recv), node) }
+function rewriteSuperMethodCallsNode(node, baseMethodVars, recv) {
   if (!Array.isArray(node)) return node
   if (node[0] === 'function' || node[0] === 'class') return node
   if (node[0] === '()') {
@@ -575,7 +579,7 @@ function lowerClass(name, heritage, body, hoists, trailers) {
       jzifyError(JC.superProp)
   }
   const base = typeof heritage === 'string' ? resolveClass(heritage) : null
-  if (structsOn && hoists && atModuleScope() && (heritage == null || base) && (statics.length === 0 || trailers))
+  if (structsOn && hoists && atModuleScope() && (heritage == null || base && !base.nominal) && (statics.length === 0 || trailers))
     return lowerStruct({ name, base, ctorParams, ctorBody, methods, fields, statics, superMethods, hoists, trailers })
   // The advisory names what kept the class from its schema lowering (`why`):
   // a class of closures reads and calls its members through the runtime.
@@ -606,6 +610,19 @@ function lowerClass(name, heritage, body, hoists, trailers) {
   // `o.constructor` is the instance's class: the factory, bound below for the slot to hold.
   const ctorMember = readsConstructor()
   const cls = name || names.classStatic()
+  // A class whose base constructs its instance (Error or an expression) has
+  // no unique schema. Give its instances a hidden nominal mark instead;
+  // derived factories retain their base's mark as they build the same object.
+  let nominal = null
+  if (atModuleScope() && heritage != null) {
+    const id = ctx.transform.classId = (ctx.transform.classId ?? 0) + 1
+    const brand = BRAND + id
+    nominal = CLASS_T + 'instance' + id
+    const entry = { brand, name: cls, module: ctx.module.currentPrefix, factory: cls,
+      nominal, fields: [], methods: new Map(), base: base?.brand ?? null, staticAccessors: new Set() }
+    structClasses.set(cls, entry)
+    ;(ctx.transform.classes ??= new Map()).set(brand, entry)
+  }
   if (ctorMember) litProps.push([':', 'constructor', cls])
   // The instance holds its class's members as slots, which JS keeps on the
   // prototype: a brand gives the instance a layout of its own, whose members
@@ -656,6 +673,10 @@ function lowerClass(name, heritage, body, hoists, trailers) {
     if (defaultArgs) params = ['()', defaultArgs.length === 1 ? defaultArgs[0] : [',', ...defaultArgs]]
   } else {
     stmts.push(['let', ['=', self, lit]])
+  }
+  if (nominal) {
+    stmts.push(['=', ['.', self, nominal], [null, 1]])
+    stmts.push(['()', '__hide_member', [',', self, ['str', nominal]]])
   }
   // `this`-dependent field initializers run, in declaration order, before the ctor.
   if (heritage == null) {

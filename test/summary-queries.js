@@ -14,6 +14,36 @@ const lit = value => [null, value]
 const typed = ['()', 'new.BigInt64Array', lit(0)]
 const reduce = (callback, initial) => ['()', ['.', typed, 'reduce'], [',', callback, initial]]
 
+test('summary queries: inherited methods agree with the solved function result', () => {
+  const ast = [';', ['const', ['=', 'o', ['{}', [':', 'x', lit(1)]]]]]
+  for (const [name, expected] of [['hasOwnProperty', VAL.BOOL], ['toString', VAL.STRING], ['valueOf', VAL.OBJECT]]) {
+    const call = ['()', ['.', 'o', name], name === 'hasOwnProperty' ? ['str', 'x'] : null]
+    const summary = summarize(ast, { funcs: [{ name: 'f', sig: { params: [] }, body: call }], schemas: [['x']], brandOf: () => null, imports: new Map(), exported: () => true })
+    is(summary.resultVal('f'), expected, `${name} function result`)
+    is(summary.at('f').valOfExpr(call), expected, `${name} expression result`)
+  }
+})
+
+test('summary queries: disjoint objects use construction sites, including joins and folded layouts', () => {
+  const object = n => ['{}', [':', 'x', lit(n)]]
+  const ast = [';', ['const', ['=', 'a', object(1)]], ['const', ['=', 'b', object(2)]],
+    ['const', ['=', 'alias', 'a']], ['let', ['=', 'joined', 'a']], ['=', 'joined', 'b']]
+  const options = { funcs: [], schemas: [['x']], brandOf: () => null, imports: new Map(), exported: () => false }
+  const first = summarize(ast, options).at('')
+  is(first.objectsDisjoint('a', 'b'), true, 'equal layout, separate construction sites')
+  is(first.objectsDisjoint('alias', 'b'), true, 'a stable alias keeps its construction identity')
+  is(first.objectsDisjoint('a', 'alias'), false, 'same object')
+  is(first.objectsDisjoint('a', 'joined'), false, 'a join can name either object')
+  is(first.objectsDisjoint('a', 'unknown'), false, 'unknown origin')
+  is(first.objectsDisjoint('a', lit(1)), false, 'not an object proof')
+  const wide = [';', ...ast.slice(1), ...Array.from({ length: 70 }, (_, i) => ['=', 'joined', object(i + 3)])]
+  const folded = summarize(wide, options).at('')
+  is(folded.objectsDisjoint('a', 'b'), false, 'folding a layout removes its per-site distinction')
+  is(first.objectsDisjoint('a', 'b'), true, 'a later summary cannot change a retained proof')
+  const hosted = summarize(ast, { ...options, funcs: [{ name: 'give', sig: { params: [] }, body: 'a' }], exported: f => f.name === 'give' }).at('')
+  is(hosted.objectsDisjoint('a', 'b'), false, 'host-visible identities stay conservative')
+})
+
 test('summary queries: an unresolved array index retains possible element and named-property kinds', () => {
   for (const values of [[], [['[', lit('x')]]]) {
     const read = ['[]', 'rows', 'key']
@@ -348,14 +378,14 @@ test('summary contract: a closure set with Number and BigInt members, a BigInt b
   is(summary.resultContract('through').carrier, CARRIER.BOXED, 'through a call to such a callable')
 })
 
-test('summary contract: prepare\'s postfix recovery keeps the operand\'s kind; an array literal reads its own cell', () => {
+test('summary contract: postfix keeps the numeric operand\'s kind; an array literal reads its own cell', () => {
   const big = lit(9n), one = lit(1)
   const inc = ['=', ['.', 'o', 'n'], ['+1', ['.', 'o', 'n']]]
   const elem = ['=', ['[]', 'a', lit(0)], ['+1', ['[]', 'a', lit(0)]]]
   const funcs = [
-    { name: 'member', sig: { params: [], results: ['f64'] }, body: ['{}', ['const', ['=', 'o', ['{}', [':', 'n', big]]]], ['return', ['-', inc, one]]] },
-    { name: 'element', sig: { params: [], results: ['f64'] }, body: ['{}', ['const', ['=', 'a', ['[', big]]], ['return', ['-', elem, one]]] },
-    { name: 'name', sig: { params: [], results: ['f64'] }, body: ['{}', ['let', ['=', 'n', big]], ['return', ['+', ['--', 'n'], one]]] },
+    { name: 'member', sig: { params: [], results: ['f64'] }, body: ['{}', ['const', ['=', 'o', ['{}', [':', 'n', big]]]], ['return', ['postfix', inc]]] },
+    { name: 'element', sig: { params: [], results: ['f64'] }, body: ['{}', ['const', ['=', 'a', ['[', big]]], ['return', ['postfix', elem]]] },
+    { name: 'name', sig: { params: [], results: ['f64'] }, body: ['{}', ['let', ['=', 'n', big]], ['return', ['postfix', ['--', 'n']]]] },
     { name: 'plain', sig: { params: [], results: ['f64'] }, body: ['{}', ['let', ['=', 'n', big]], ['return', ['-', 'n', one]]] },
     { name: 'box', sig: { params: [{ name: 'v' }], results: ['f64'] }, body: ['[]', ['[', 'v'], lit(0)] },
   ]
@@ -364,7 +394,7 @@ test('summary contract: prepare\'s postfix recovery keeps the operand\'s kind; a
   is(summary.resultContract('element').kind, kind(K.BIGINT), 'an element inside a literal\'s count is there: its own kind')
   is(summary.resultContract('name').kind, kind(K.BIGINT), 'a name decrement\'s old value too')
   is(summary.resultContract('plain').kind, K.NONE, 'a genuine BigInt - Number never completes')
-  is(summary.at('member').kindOfExpr(['-', inc, one]), kind(K.BIGINT), 'the query reads the recovery as the solver does')
+  is(summary.at('member').kindOfExpr(['postfix', inc]), kind(K.BIGINT), 'the query reads the update as the solver does')
   is(summary.resultContract('box').carrier, CARRIER.RAW_I64, 'a literal tuple has its BigInt element zero present')
   is(summary.at('box').kindOfExpr(['[', 'v']), summary.at('box').kindOfExpr(['[', 'v']))
 })
@@ -546,6 +576,7 @@ test('summary containers: enum values and entry tuples feed numeric Map payloads
     export const f = () => pack(7 & ~bit(tags.b), true)`
   for (const optimize of levels(0, 1, 2, 3)) {
     const binary = _compileInProcess(src, { optimize })
+    _compileInProcess(src, { optimize: { level: optimize, sourceInline: false, inlineFns: false } })
     is(ctx.summary.resultOf('bit'), kind(K.NUMBER), 'Map construction retains entry value kinds')
     is(instantiate(onKernel() ? compile(src, { optimize }) : binary).exports.f(), 13, `O${optimize}`)
   }
@@ -603,8 +634,10 @@ test('summary shapes: bounded joins and their overflow keep BigInt fields readab
     const src = `function pick(k){${cases};return {field0:0,value:0n}}
       function read(k){return pick(k).value} export function f(k){return read(k)}`
     for (const optimize of levels(0, 1, 2, 3)) {
-      const binary = _compileInProcess(src, { optimize })
+      // `read` answers as a function where the plan keeps it one: from O1 up it splices into `f`
+      _compileInProcess(src, { optimize: { level: optimize, sourceInline: false, inlineFns: false } })
       if (count <= 16) is(ctx.summary.resultOf('read'), kind(K.BIGINT), 'retained shapes agree on the field kind')
+      const binary = _compileInProcess(src, { optimize })
       const f = instantiate(onKernel() ? compile(src, { optimize }) : binary).exports.f
       for (const k of [0, 0, count - 1, 1, -1, 0])
         is(f(k), BigInt(k < 0 ? 0 : k), `${count} shapes, O${optimize}, input ${k}`)

@@ -161,9 +161,17 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
     // Grouping and numeric conversion preserve a proven integer interval.
     // Load-CSE uses unary plus when its temporary needs a Number carrier.
     if (e.length === 2 && (op === '()' || op === 'u+')) return ev(x)
-    // Prepared post-increment indices use `(++cursor) - 1`. Transfer the
-    // mutation and return the incremented interval so the outer subtraction
-    // recovers the exact pre-increment index hull.
+    // Save the old hull before transferring a postfix update, exactly once.
+    if (op === 'postfix' && Array.isArray(x) &&
+        (x[0] === '++' || x[0] === '--') && typeof x[1] === 'string') {
+      const before = ev(x[1])
+      visit(x)
+      const after = env.get(x[1]), delta = x[0] === '++' ? 1 : -1
+      // A loop theorem can cap the updated cursor more tightly than its
+      // incoming invariant. Exact integer transfer constrains the old value too.
+      return before && after ? [Math.max(before[0], after[0] - delta), Math.min(before[1], after[1] - delta)] : before
+    }
+    // Prefix indices yield the interval after the mutation.
     if (e.length === 2 && (op === '++' || op === '--') && typeof x === 'string') {
       visit(e)
       return env.get(x) ?? null
@@ -709,6 +717,7 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
       const decls = new Map(); collectDecls(init, decls)
       const stepDelta = (s, name) => {
         if (!Array.isArray(s)) return null
+        if (s[0] === 'postfix') s = s[1]
         if (s[0] === '++' && s[1] === name) return 1
         if (s[0] === '+=' && s[1] === name) return constInt(s[2])
         if (s[0] === '=' && s[1] === name && Array.isArray(s[2]) && s[2][0] === '+') {
@@ -1216,6 +1225,10 @@ export function intervalProvenIdx(ctx) {
   const cache = getFactStore().ipProven
   const hit = cache.get(body)
   if (hit) return hit
+  return collectIntervalProof(ctx, body, cache)
+}
+
+function collectIntervalProof(ctx, body, cache) {
   const out = new Set(), ranges = new Map()
   const lens = (name) => ctx.func.typedLen?.get(name) ?? ctx.scope?.globalTypedLen?.get(name)
     ?? ctx.func.localReps?.get(name)?.arrayLen ?? null

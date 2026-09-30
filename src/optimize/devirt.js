@@ -427,13 +427,18 @@ export function foldStaticConstArrayReads(fn) {
     //    re-reads it through $__ptr_offset_fwd, then yields the local – a never-resized
     //    static array never forwards, so the whole hop is the base.
     let baseLocal = null
+    // The hop itself, not a block that merely contains its parts: its first
+    // statement sets the base local from the box, its value reads that local
+    // back, and it calls $__ptr_offset_fwd between. An index computed in a
+    // block that reads the array's length holds the same base and call.
     const hopLocal = (blk) => {
-      let local = null, fwd = false
-      walkAst(blk, { enter: m => {
-        if ((m[0] === 'local.tee' || m[0] === 'local.set') && isBaseIR(m[2])) local = m[1]
-        if (m[0] === 'call' && m[1] === '$__ptr_offset_fwd') fwd = true
-      } })
-      return local && fwd ? local : null
+      const body = blk.slice(Array.isArray(blk[1]) && blk[1][0] === 'result' ? 2 : 1)
+      const set = body[0], get = body[body.length - 1]
+      if (body.length < 2 || !Array.isArray(set) || (set[0] !== 'local.tee' && set[0] !== 'local.set') || !isBaseIR(set[2])) return null
+      if (!Array.isArray(get) || get[0] !== 'local.get' || get[1] !== set[1]) return null
+      let fwd = false
+      walkAst(blk, { enter: m => { if (m[0] === 'call' && m[1] === '$__ptr_offset_fwd') fwd = true } })
+      return fwd ? set[1] : null
     }
     const subBase = (n, parent, idx) => {
       if (!parent) return

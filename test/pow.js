@@ -22,18 +22,16 @@
 //      to confirm the fold took the cheap path (no `$math.pow`/`$math.pow_core` call)
 //      rather than silently falling through to the general call, which would make the
 //      gate vacuous.
-//   3. $math.fifthroot — the bit-hack-seed + 3-Newton-step kernel the k/5 fold
-//      (x ** 2.4, the sRGB/Rec.709 decode gamma) uses UNCONDITIONALLY by default. NOT a
-//      ≤1ulp guarantee: 3 steps leave a worst case in the low millions of ulp (measured
-//      ~2.6M; a 4th step, prototyped on an unmerged branch, brings it to a few hundred
-//      but never shipped) — a REGRESSION GUARD pins the bound so a broken correction
-//      term or a lost Newton step cannot pass silently. $math.cbrt, this fold's usual
-//      downstream neighbour in the sRGB/Oklab pipeline, is itself a documented
-//      non-bit-exact approximation, so ≤1ulp here buys no externally-observable win.
-//      Flag semantics: crPow OFF (default) — the k/5 fifthroot fast path fires
-//      unconditionally, the pre-CR-pow behaviour bit-for-bit (approxPow is meaningless
-//      there). crPow ON — $math.pow_fold takes the correctly-rounded kernel, and
-//      fifthroot requires an explicit `{ optimize: { approxPow: true } }` opt-in.
+//   3. $math.pow_fifths, the k/5 fold (x ** 2.4, the sRGB/Rec.709 decode gamma):
+//      x^p·fifthroot(x^r), $math.fifthroot's bit-hack seed and four Newton steps, on the
+//      range where it stays within 40 ulp of x^c (module/math/trig-tables.js fifthFold),
+//      $math.pow past it. NOT a ≤1ulp guarantee: a REGRESSION GUARD pins the fold's own
+//      error against the exact rational power so a broken correction term or a lost
+//      Newton step cannot pass silently, and a second gate holds the whole lowering to
+//      the host's x ** c over the doubles. Flag semantics: crPow OFF (default): the k/5
+//      fold fires by default (approxPow is meaningless there). crPow ON:
+//      $math.pow_fold takes the correctly-rounded kernel, and the fold requires an
+//      explicit `{ optimize: { approxPow: true } }` opt-in.
 //   4. The correctly-rounded vector gate — test/vectors/pow-cr.txt: 5152 lines of
 //      `xbits ybits resultbits` (big-endian f64 hex), generated with mpmath 1.4.1 at
 //      200-bit precision (round-to-nearest on the final float conversion), inputs
@@ -189,24 +187,26 @@ test('const-exponent pow fold — SIMD twin (pow_fold_v) matches the scalar fold
   ok(Object.is(got, want) || ulpDiff(got, want) <= 4, `vectorized loop's folded reduction matches a scalar host computation (got ${got} vs ${want})`)
 })
 
-// === 3. $math.fifthroot — the k/5 fold's default kernel ===
+// === 3. $math.pow_fifths: the k/5 fold's default kernel ===
 
-test('fifthroot-backed pow fold reaches WAT via $math.fifthroot by default (not $math.pow/$math.pow_fold)', () => {
-  const text = wat('export let f = (x) => x ** 2.4')
-  ok(text.includes('call $math.fifthroot'), 'x ** 2.4 must fold through $math.fifthroot by default')
-  ok(!/call \$math\.pow(_core|_fold)? /.test(text), 'x ** 2.4 must not fall through to the general pow paths')
+// the exported function's own body: the fold's helper calls $math.pow past its range
+const fnOf = (text) => funcWat(text, 'f') || funcWat(text, 'f$exp')
+test('fifthroot-backed pow fold reaches WAT via $math.pow_fifths by default (not $math.pow/$math.pow_fold)', () => {
+  const fn = fnOf(wat('export let f = (x) => x ** 2.4'))
+  ok(fn.includes('call $math.pow_fifths'), 'x ** 2.4 must fold through $math.pow_fifths by default')
+  ok(!/call \$math\.pow(_core|_fold)? /.test(fn), 'x ** 2.4 must not call the general pow paths itself')
 })
 
 test('x ** 2.4 under crPow (without approxPow) routes through the correctly-rounded $math.pow_fold', () => {
   const text = wat('export let f = (x) => x ** 2.4', CR_POW)
   ok(text.includes('call $math.pow_fold'), 'crPow build must use $math.pow_fold, not the approximate fifthroot fast path')
-  ok(!text.includes('call $math.fifthroot'), 'crPow build must not reach $math.fifthroot from pow unless approxPow is also set')
+  ok(!text.includes('call $math.pow_fifths'), 'crPow build must not reach $math.pow_fifths from pow unless approxPow is also set')
 })
 
-test('x ** 2.4 under crPow + approxPow opts back into $math.fifthroot', () => {
-  const text = wat('export let f = (x) => x ** 2.4', CR_POW_APPROX)
-  ok(text.includes('call $math.fifthroot'), 'crPow+approxPow must fold through $math.fifthroot')
-  ok(!/call \$math\.pow(_core|_fold)? /.test(text), 'crPow+approxPow must not fall through to the general pow paths')
+test('x ** 2.4 under crPow + approxPow opts back into $math.pow_fifths', () => {
+  const fn = fnOf(wat('export let f = (x) => x ** 2.4', CR_POW_APPROX))
+  ok(fn.includes('call $math.pow_fifths'), 'crPow+approxPow must fold through $math.pow_fifths')
+  ok(!/call \$math\.pow(_core|_fold)? /.test(fn), 'crPow+approxPow must not call the general pow paths itself')
 })
 
 // k/5 exponents in (0,5), the fold's own domain (see module/math.js emitPow) — 2.4 is the
@@ -234,26 +234,26 @@ const exactFifthPow = (x, k) => {
   const [my, ey] = mantExp(y)                   // the midpoint to the next double: (2·my + 1) · 2^(ey − 1)
   return cmpScaled((2n * my + 1n) ** 5n, (ey - 1) * 5, xk, exk) < 0 ? step(y, 1) : y
 }
-// Regression ceiling against that reference: the fold measures a worst case of ~40 ulp
-// across these exponents on this grid (four Newton steps, the last a correction —
+// Regression ceiling against that reference: the fold measures a worst case of 4 ulp
+// across these exponents on the range it runs (four Newton steps, the last a correction:
 // module/math.js $math.fifthroot; the x^p · fifthroot(x^r) composition adds the rest),
 // so 96 catches a dropped step (three steps left a ~2.65M ulp floor) while tolerating
 // machine/input variance.
 const ULP_CEILING = 96
 
-test(`fifthroot pow fold (default path) — worst case stays under ${ULP_CEILING} ulp vs the exact rational power (regression guard)`, () => {
+test(`fifthroot pow fold (default path) — worst case stays under ${ULP_CEILING} ulp vs the exact rational power (regression guard)`, async () => {
+  const { fifthFold } = await import('../module/math/trig-tables.js')
   const rng = mkRng(0x51DEC0DE)
   const fifth = run(perExp(FIFTH_EXPS))
   let worstOverall = 0
   for (const [i, c] of FIFTH_EXPS.entries()) {
     const f = fifth[`e${i}`]
-    // Domain kept where the fold's OWN intermediate x**r (r up to 4, the algebraic
-    // decomposition x**(k/5) = x**p · fifthroot(x**r)) can't itself over/underflow —
-    // that's a separate, pre-existing property of the decomposition, not of
-    // $math.fifthroot's own Newton accuracy, which is what this guard targets.
+    // Domain kept where the fold runs (fifthFold's [lo, hi]): past it the power is
+    // $math.pow's x^c, which the next test holds to the host.
+    const { lo, hi } = fifthFold(c), L = Math.log10(hi)
     const xs = []
-    for (let e = -75; e <= 75; e += 3) xs.push(10 ** e)
-    for (let i = 0; i < 200; i++) xs.push(10 ** ((rng() - 0.5) * 150))
+    for (let e = -75; e <= 75; e += 3) if (10 ** e >= lo && 10 ** e <= hi) xs.push(10 ** e)
+    for (let i = 0; i < 200; i++) xs.push(10 ** ((rng() - 0.5) * 2 * L))
     let worst = 0
     const k = Math.round(c * 5)
     for (const x of xs) {
@@ -264,6 +264,26 @@ test(`fifthroot pow fold (default path) — worst case stays under ${ULP_CEILING
     ok(worst <= ULP_CEILING, `c=${c}: worst case ${worst} ulp exceeds the ${ULP_CEILING} ulp regression ceiling`)
   }
   console.log(`fifthroot fold worst-case ulp across ${FIFTH_EXPS.length} exponents: ${worstOverall}`)
+})
+
+// x ** c means the double c, not the rational k/5 (ECMA-262 Number::exponentiate on the
+// two Numbers); the reference is the host's own x ** c. Over every magnitude of the
+// doubles the lowering, the fold where it holds and $math.pow past it, stays within 48
+// ulp of it: the fold's range bounds its x^(c − k/5) term by 40 (module/math/trig-tables.js
+// fifthFold); 2.2 at x = 1e140 was 510 before the bound.
+test('fifthroot pow fold (default path): within 48 ulp of the host over the doubles', () => {
+  const rng = mkRng(0xF1F7)
+  const fifth = run(perExp(FIFTH_EXPS))
+  for (const [i, c] of FIFTH_EXPS.entries()) {
+    const f = fifth[`e${i}`]
+    let worst = 0, at = 0
+    for (const x of [5e-324, 2.2250738585072014e-308, 1.7976931348623157e308, ...Array.from({ length: 400 }, () => (1 + rng()) * 2 ** Math.floor(-1074 + rng() * 2098))]) {
+      const u = ulpDiff(f(x), x ** c)
+      if (u > worst) { worst = u; at = x }
+    }
+    for (const x of [0, -0, -1, Infinity, -Infinity, NaN]) ok(Object.is(f(x), x ** c), `${x} ** ${c}: ${f(x)}, host ${x ** c}`)
+    ok(worst <= 48, `c=${c}: ${worst} ulp from the host at x = ${at}`)
+  }
 })
 
 // === 4. Correctly rounded on the authoritative vector set (runtime + fold paths) ===

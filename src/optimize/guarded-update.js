@@ -52,7 +52,10 @@ const armOf = (n, tag) => isArr(n) && n[0] === tag && n.length === 2 ? n[1] : nu
 const conjunction = c => {
   if (!isArr(c) || c[0] !== 'if' || c.length !== 5 || c[1]?.[0] !== 'result' || c[1][1] !== 'i32') return null
   const b = armOf(c[3], 'then'), z = armOf(c[4], 'else')
-  return b && isConst(z, 0) ? [c[2], b] : null
+  // Value-preserving && keeps its false condition in a tee. On that arm
+  // the saved i32 is necessarily zero; retain the tee in the outer guard.
+  const savedZero = z?.[0] === 'local.get' && c[2]?.[0] === 'local.tee' && z[1] === c[2][1]
+  return b && (isConst(z, 0) || savedZero) ? [c[2], b] : null
 }
 
 const rewrite = node => {

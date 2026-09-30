@@ -7,13 +7,12 @@
 import { positionArgs, storedValue } from '../../bridge.js'
 import { i64Hex, oobNanIR, OBJECT_SCHEMA_HI_MASK, objectSchemaGuardHex } from '../../../layout.js'
 import { K, tagOf, paramOf, isNullable, hasTag, UNKNOWN } from '../../summary/index.js'
-import { inBoundsArrIdx } from '../../type/canonical-bounds.js'
 import { bodyOnlyCharCodeAtCalls } from '../../abi/string.js'
-import { T, isLeaf, isReassigned } from '../../ast.js'
-import { includeForRuntimeKeyIteration, includeModule } from '../../autoload.js'
-import { LAYOUT, PTR, ctx, emitArity, err, inc, setLinkDemand, warnDeopt } from '../../ctx.js'
+import { T, ACCESSOR_GET, isLeaf, isReassigned } from '../../ast.js'
+import { RESOLVED_PROP_MODULES, includeForRuntimeKeyIteration, includeModule } from '../../autoload.js'
+import { LAYOUT, PTR, ctx, emitArity, err, strictCode, inc, setLinkDemand, warnDeopt } from '../../ctx.js'
 import {
-  BOXED_MUTATORS, allocPtr, asF64, asI32, asI64, block64, boolBoxIR, cloneIR, deferBigintBox, dispatchByPtrType, freshId, isGlobal, isNullish, materializeDeferredBigint, ptrOffsetIR, ptrTypeEq, reconstructArgsWithSpreads, sidecarOverride, temp, tempI32, throwTypeErrorIR, typed, undefExpr, usesDynProps,
+  BOXED_MUTATORS, TRUE_NAN, allocPtr, asF64, asI32, asI64, block64, boolBoxIR, cloneIR, deferBigintBox, dispatchByPtrType, freshId, isBoolAtom, isGlobal, isNullish, materializeDeferredBigint, ptrOffsetIR, ptrTypeEq, reconstructArgsWithSpreads, sidecarOverride, temp, tempI32, throwTypeErrorIR, typed, undefExpr, usesDynProps,
 } from '../../ir.js'
 import { censusMaybeUndefined, valTypeOf } from '../../kind.js'
 import { methodValType } from '../../kind-traits.js'
@@ -23,8 +22,17 @@ import { representationProgramHasBigint } from '../representation-plan.js'
 import { buildArrayWithSpreads, emitMethodCallSpread, emitNonCallable } from './call-args.js'
 import { emit } from './dispatch.js'
 import { classMethodCall } from './class-dispatch.js'
-import { copyReceiverFacts, stringOps } from './shared.js'
+import { copyReceiverFacts, isPresentArrayElement, stringOps } from './shared.js'
 
+
+// Internal index hooks and property getters share the emitter table with
+// methods. Only public property registrations can supply a callable builtin;
+// a source key such as "[]" must remain an ordinary property lookup.
+const builtinMethod = (method, kind = null) => {
+  if (!RESOLVED_PROP_MODULES[method]) return null
+  const key = kind ? `.${kind}:${method}` : `.${method}`
+  return ctx.core.getters.has(key) ? null : ctx.core.emit[key]
+}
 
 // Map/Set methods whose generic (`.${method}`) emitter assumes a collection
 // receiver and dereferences a key/value argument. Every one needs ≥1 argument
@@ -237,7 +245,7 @@ function tryBoxedDelegate({ obj, method, callMethod }) {
   if (typeof obj === 'string' && ctx.schema.isBoxed?.(obj) && !ctx.summary?.memberMayBeOwn(method)
       && !ctx.schema.list[ctx.schema.idOf(obj)]?.includes(method)) {
     const innerVt = repOf(obj)?.val
-    const innerEmitter = ctx.core.emit[`.${innerVt}:${method}`] || ctx.core.emit[`.${method}`]
+    const innerEmitter = builtinMethod(method, innerVt) || builtinMethod(method)
     if (innerEmitter) {
       const innerName = `${obj}${T}inner`
       if (!ctx.func.locals.has(innerName)) ctx.func.locals.set(innerName, 'f64')
@@ -279,7 +287,7 @@ function tryBoxedDelegate({ obj, method, callMethod }) {
 // already computed `$__ptr_type` into a local (tryRuntimePtrTypeFork does,
 // for its own STRING/TYPED cases) reuse it instead of a second call.
 function dateAuxFallback(recv, method, callMethod, fallback, ptrTypeLocal) {
-  const dateEmitter = ctx.core.emit[`.date:${method}`]
+  const dateEmitter = builtinMethod(method, 'date')
   if (!dateEmitter) return fallback
   const dateSid = ctx.schema.ensureDateSid?.()
   if (dateSid == null) err('internal: Date schema registration is unavailable')
@@ -301,7 +309,7 @@ function dateAuxFallback(recv, method, callMethod, fallback, ptrTypeLocal) {
 // throw after argument evaluation. Dynamic spreads are rejected because their
 // runtime arity cannot preserve Date setters' optional-argument defaults.
 function unresolvedDateMethod(obj, method, parsed) {
-  const dateEmitter = ctx.core.emit[`.date:${method}`]
+  const dateEmitter = builtinMethod(method, 'date')
   if (!dateEmitter || method === 'valueOf') return null
   const noArgs = emitArity(dateEmitter) <= 1
   if (parsed.hasSpread && !noArgs)
@@ -354,7 +362,7 @@ function trySidecarToPrimitive({ obj, method, parsed, vt, callMethod }) {
   if ((method === 'valueOf' || method === 'toString') && ctx.closure.call
       && !parsed.hasSpread && parsed.normal.length === 0
       && (vt === VAL.ARRAY || vt === VAL.TYPED || vt === VAL.OBJECT || !vt)) {
-    const builtin = (vt && ctx.core.emit[`.${vt}:${method}`]) || ctx.core.emit[`.${method}`]
+    const builtin = (vt && builtinMethod(method, vt)) || builtinMethod(method)
     if (builtin) {
       includeForRuntimeKeyIteration()
       // Date carve-out, unresolved receivers only (.work/archive/printer-trio.md
@@ -375,7 +383,7 @@ function trySidecarToPrimitive({ obj, method, parsed, vt, callMethod }) {
 // own callable property with the same name; when the summary observed such a
 // write, probe it before falling back to the prototype emitter.
 function tryStaticDispatch({ obj, method, parsed, vt, callMethod }) {
-  const emitter = vt && ctx.core.emit[`.${vt}:${method}`]
+  const emitter = vt && builtinMethod(method, vt)
   if (!emitter) return
   const mayShadow = vt !== VAL.STRING && usesDynProps(vt) &&
     ctx.summary?.memberMayBeOwnOn(method, vt) && ctx.closure.call && ctx.core.emit.str
@@ -412,12 +420,11 @@ function tryStaticDispatch({ obj, method, parsed, vt, callMethod }) {
 // separate fork would have to re-decide that priority itself and could invert it
 // for some method, silently misrouting a real string through the typed/generic arm.
 function tryRuntimePtrTypeFork({ obj, method, parsed, vt, callMethod, optional }) {
-  const strKey = `.string:${method}`, genKey = `.${method}`, typedKey = `.typed:${method}`
   // VAL.ARRAY is structurally incompatible with PTR.STRING — no fork needed.
   // Only fork when vt is truly unknown (!vt), not for proven types.
-  const strEmitter = ctx.core.emit[strKey]
-  const typedEmitter = ctx.core.emit[typedKey]
-  const genEmitter = ctx.core.emit[genKey]
+  const strEmitter = builtinMethod(method, 'string')
+  const typedEmitter = builtinMethod(method, 'typed')
+  const genEmitter = builtinMethod(method)
   if (!vt && (strEmitter || typedEmitter)) {
     // Block-bodied callbacks require closures in every arm. Lower each source
     // callback once, then reuse its construction expression on the mutually
@@ -443,7 +450,7 @@ function tryRuntimePtrTypeFork({ obj, method, parsed, vt, callMethod, optional }
     // A union has no single valType, but its tag set still excludes families.
     // Do not emit the typed-array machinery for an Array|String receiver.
     const mayBe = kind => !receiverKind || hasTag(receiverKind, kind)
-    const numEmitter = mayBe(K.NUMBER) && ctx.core.emit[`.number:${method}`]
+    const numEmitter = mayBe(K.NUMBER) && builtinMethod(method, 'number')
     const mayBeUndef = view?.mayBeNullishExpr(obj) !== false
     // A runtime tag must select the builtin's receiver family. Other objects
     // use a property call; primitive payloads must never reach an array helper.
@@ -463,7 +470,7 @@ function tryRuntimePtrTypeFork({ obj, method, parsed, vt, callMethod, optional }
     const missing = optional ? undefExpr() : emitNonCallable(undefExpr(), parsed)
     // Object-prototype emitters accept every non-null receiver, including
     // primitives. Reuse their registration instead of treating them as arrays.
-    const objectMethod = genEmitter && (ctx.core.emit[`.${VAL.OBJECT}:${method}`] === genEmitter
+    const objectMethod = genEmitter && (builtinMethod(method, VAL.OBJECT) === genEmitter
       || method === 'toString' || method === 'valueOf')
     let generic
     if (genEmitter) {
@@ -472,7 +479,7 @@ function tryRuntimePtrTypeFork({ obj, method, parsed, vt, callMethod, optional }
       const tags = [], specific = []
       for (const [tag, kind, val] of families) {
         if (!mayBe(kind)) continue
-        const emitter = ctx.core.emit[`.${val}:${method}`] ?? genEmitter
+        const emitter = builtinMethod(method, val) ?? genEmitter
         if (emitter === genEmitter) tags.push(tag)
         else specific.push([tag, materializeBuiltinResult(val, callMethod(t, emitter))])
       }
@@ -499,7 +506,7 @@ function tryRuntimePtrTypeFork({ obj, method, parsed, vt, callMethod, optional }
     // A boxed BigInt receiver (`x.toString(16)` on a carrier the program
     // could not kind) takes the `.bigint:` emitter; `t` holds the box, so the
     // emitter's readI64 unboxes it (ir/bigint.js isTaggedLocal).
-    const bigintEmitter = mayBe(K.BIGINT) && representationProgramHasBigint(ctx) && ctx.core.emit[`.bigint:${method}`]
+    const bigintEmitter = mayBe(K.BIGINT) && representationProgramHasBigint(ctx) && builtinMethod(method, 'bigint')
     if (bigintEmitter) {
       (ctx.func.taggedLocals ??= new Set()).add(t)
       cases.push([PTR.BIGINT, materializeBuiltinResult(VAL.BIGINT, callMethod(t, bigintEmitter))])
@@ -511,7 +518,13 @@ function tryRuntimePtrTypeFork({ obj, method, parsed, vt, callMethod, optional }
     // `$__ptr_type` call.
     const fallback = mayBe(K.DATE) ? dateAuxFallback(t, method, callMethod, generic, tt) : generic
     const primitive = numEmitter ? asF64(callMethod(t, numEmitter)) : objectMethod ? generic : missing
-    if (mayBe(K.NUMBER) || mayBe(K.BOOL) || mayBeUndef) cases.push([PTR.ATOM, primitive])
+    // A Boolean is an atom as well: its own methods (Boolean.prototype's
+    // toString and valueOf), never a number's (`true.toString()` is "true").
+    const own = () => typed(['local.get', `$${t}`], 'f64')
+    const boolean = method === 'toString' ? typed(['select', asF64(emit(['str', 'true'])), asF64(emit(['str', 'false'])),
+      ['i64.eq', ['i64.reinterpret_f64', own()], ['i64.const', TRUE_NAN]]], 'f64') : method === 'valueOf' ? own() : missing
+    const atom = numEmitter && mayBe(K.BOOL) ? typed(['if', ['result', 'f64'], isBoolAtom(own()), ['then', boolean], ['else', primitive]], 'f64') : primitive
+    if (mayBe(K.NUMBER) || mayBe(K.BOOL) || mayBeUndef) cases.push([PTR.ATOM, atom])
     if (!bigintEmitter && mayBe(K.BIGINT)) cases.push([PTR.BIGINT, objectMethod ? generic : missing])
     let boxed = dispatchByPtrType(tt, cases, fallback)
     if (mayBeUndef) boxed = typed(['if', ['result', 'f64'],
@@ -535,7 +548,7 @@ function tryRuntimePtrTypeFork({ obj, method, parsed, vt, callMethod, optional }
 // sidecar (a user's own `.toFixed` closure must win — ES own-property shadowing)
 // and otherwise yields `undefined`, the same result the dynamic path produced.
 function tryRuntimeNumberMethod({ obj, method, parsed, vt, callMethod }) {
-  const numEmitter = ctx.core.emit[`.number:${method}`]
+  const numEmitter = builtinMethod(method, 'number')
   if (vt || !numEmitter || parsed.hasSpread || !ctx.closure.call) return
   const t = `${T}rn${freshId(ctx)}`
   ctx.func.locals.set(t, 'f64')
@@ -563,25 +576,44 @@ function tryRuntimeNumberMethod({ obj, method, parsed, vt, callMethod }) {
           ['else', undefExpr()]], 'f64') : undefExpr())]])
 }
 
-// 9. Schema property closure call: `x.prop(args)` where prop is a closure slot in
-// x's schema. Boxed schemas don't currently support spread callers (each box
-// hands the inner value through), so spread is restricted to the non-boxed path.
-function trySchemaClosureCall({ obj, method, parsed }) {
-  if (typeof obj === 'string' && ctx.schema.slotOf && ctx.closure.call) {
-    const idx = ctx.schema.slotOf(obj, method)
-    if (idx >= 0) {
-      const propRead = typed(ctx.abi.object.ops.load(ptrOffsetIR(asF64(emit(obj)), lookupValType(obj) || VAL.OBJECT), idx), 'f64')
-      const prebuilt = parsed.hasSpread && !ctx.schema.isBoxed?.(obj)
-      const callArgs = prebuilt
-        ? [buildArrayWithSpreads(reconstructArgsWithSpreads(parsed.normal, parsed.spreads))]
-        : parsed.normal
-      // Whichever function the slot holds at runtime, its result crosses the
-      // closure ABI in the boxed carrier: a closure's return edge boxes, a
-      // named function's trampoline boxes a raw result (emit/dispatch.js).
-      const kind = ctx.summary.kindOfExpr(['.', obj, method])
-      return ctx.closure.call(propRead, callArgs, prebuilt, tagOf(kind) !== K.CLOSURE || isNullable(kind), asF64(emit(obj)))
+// A known own slot or getter precedes builtin methods. Read the property through
+// the shared accessor path, holding the receiver before arguments can replace it.
+function trySchemaClosureCall(c) {
+  const { obj, method, parsed } = c
+  if (c.skipOwn) return
+  const view = ctx.summary.at(ctx.func.current), sid = view.objectSidOfExpr(obj)
+  const shapes = view.shapesOfExpr(obj)
+  if (!shapes?.length) return
+  const own = shapes.filter(id => ctx.schema.list[id]?.some(p => p === method || p === method + ACCESSOR_GET))
+  if (!own.length) return
+  const mayDelete = own.some(id => ctx.summary.deletableSchema(id))
+  const recv = temp('ownRecv'), value = storedValue(obj)
+  copyReceiverFacts(obj, recv)
+  if (sid != null) (ctx.func.refinements ??= new Map()).set(recv, { schemaId: sid, notNullish: view.mayBeNullishExpr(obj) === false })
+  view.alias(recv, obj, false)
+  try {
+    const kind = view.kindOfExpr(['.', recv, method])
+    const prop = ['.', recv, method], propRead = asF64(emit(prop))
+    let call = ctx.closure.call ? ownMethodCall(propRead, parsed,
+      tagOf(kind) !== K.CLOSURE || isNullable(kind), typed(['local.get', `$${recv}`], 'f64'))
+      : emitNonCallable(prop, parsed, propRead)
+    if (own.length !== shapes.length || mayDelete) {
+      const tag = ['i64.and', ['i64.reinterpret_f64', ['local.get', `$${recv}`]], ['i64.const', OBJECT_SCHEMA_HI_MASK]]
+      let guard
+      for (const id of own) {
+        const match = ['i64.eq', cloneIR(tag), ['i64.const', objectSchemaGuardHex(id)]]
+        guard = guard ? ['i32.or', guard, match] : match
+      }
+      if (mayDelete) {
+        includeModule('object')
+        guard = ['i32.and', guard, asI32(ctx.core.emit['Object.hasOwn'](recv, ['str', method]))]
+      }
+      const fallback = runTyped({ ...c, obj: recv, skipOwn: true })
+      call = typed(['if', ['result', 'f64'], guard, ['then', call],
+        ['else', methodValType(method, null, c.vt, ctx) === VAL.BOOL ? boolBoxIR(fallback) : asF64(fallback)]], 'f64')
     }
-  }
+    return block64(['local.set', `$${recv}`, value], call)
+  } finally { view.unalias(recv) }
 }
 
 // 10. Generic only — but a collection emitter (`.get`/`.set`/`.has`/`.add`/
@@ -605,11 +637,11 @@ function tryGenericEmitter({ obj, method, parsed, vt, callMethod }) {
   // builtins — `ctx.schema.slotOf(o,p)`, `node.map(...)`, `s.get(k)` — dispatch
   // correctly instead of being hijacked by `Array.prototype.{find,map,…}`.
   const objectShadow = vt === VAL.OBJECT || vt === VAL.HASH
-  if (ctx.core.emit[`.${method}`] && !collectionMisfit && !strIndexMisfit && !objectShadow) {
+  if (builtinMethod(method) && !collectionMisfit && !strIndexMisfit && !objectShadow) {
     // Only an actual Date-only alias needs a brand guard. Shared names such
     // as toString/valueOf retain their generic inherited implementation.
-    const generic = ctx.core.emit[`.${method}`]
-    const callFlat = receiver => generic === ctx.core.emit[`.date:${method}`]
+    const generic = builtinMethod(method)
+    const callFlat = receiver => generic === builtinMethod(method, 'date')
       ? unresolvedDateMethod(receiver, method, parsed)
       : callMethod(receiver, generic)
     // Statically-UNKNOWN receiver: an OWN property named like the builtin shadows it
@@ -721,7 +753,7 @@ function tryDynamicPropCall({ obj, method, parsed, vt, callMethod, optional = fa
       return callMethod(obj, (fn, receiver, ...args) => ctx.closure.call(
         asF64(emit(fn)), args, false, false, receiver == null ? null : asF64(storedValue(receiver))))
     includeForRuntimeKeyIteration()
-    if (ctx.transform.strict)
+    if (strictCode())
       err(`strict mode: method call \`${typeof obj === 'string' ? obj : '<expr>'}.${method}(...)\` on a value of unknown type pulls dynamic dispatch stdlib. Annotate the receiver type or pass { strict: false }.`)
     const objTmp = temp('mobj')
     const propTmp = temp('mprop')
@@ -736,7 +768,7 @@ function tryDynamicPropCall({ obj, method, parsed, vt, callMethod, optional = fa
     const bits = ['i64.reinterpret_f64', ['local.get', `$${objTmp}`]]
     const slotLoad = () => ctx.abi.object.ops.load(['i32.wrap_i64', ['i64.and', bits, ['i64.const', LAYOUT.OFFSET_MASK]]], slot)
     // An element read the interval prover puts in bounds is exactly the shape.
-    const exact = slot >= 0 && (!isNullable(rk) || (Array.isArray(obj) && obj[0] === '[]' && typeof obj[1] === 'string' && typeof obj[2] === 'string' && inBoundsArrIdx(ctx).has(obj[1] + '\x00' + obj[2])))
+    const exact = slot >= 0 && (!isNullable(rk) || isPresentArrayElement(obj))
     let propRead = exact ? typed(slotLoad(), 'f64')
       : slot >= 0
       ? typed(['if', ['result', 'f64'],
@@ -838,7 +870,7 @@ function externalMethodFallback({ obj, method, parsed }) {
         ['then', throwTypeErrorIR()],
         ['else', emitNonCallable(obj, parsed, recv())]]], 'f64')
   }
-  if (ctx.transform.strict)
+  if (strictCode())
     err(`strict mode: method call \`${typeof obj === 'string' ? obj : '<expr>'}.${method}(...)\` on a value of unknown type falls through to host \`__ext_call\`. Annotate the receiver type or pass { strict: false }.`)
   // RequireObjectCoercible (ES 13.3 — the nullish-receiver
   // check) must run BEFORE the target-capability branch below chooses
@@ -889,11 +921,27 @@ function externalMethodFallback({ obj, method, parsed }) {
 }
 
 const TYPED_STRATEGIES = [
-  tryBoxedDelegate, trySidecarToPrimitive, tryStaticDispatch, tryRuntimePtrTypeFork,
-  tryRuntimeNumberMethod, trySchemaClosureCall, tryGenericEmitter, tryDynamicPropCall,
+  tryBoxedDelegate, trySchemaClosureCall, trySidecarToPrimitive, tryStaticDispatch, tryRuntimePtrTypeFork,
+  tryRuntimeNumberMethod, tryGenericEmitter, tryDynamicPropCall,
   externalMethodFallback,
 ]
 const runTyped = (c) => { for (const strategy of TYPED_STRATEGIES) { const r = strategy(c); if (r !== undefined) return r } }
+
+// The guard returns the method's value unchanged, including the representation
+// facts that distinguish an i32 pointer from a number and a raw bigint from f64.
+function guardMethodReceiver(recv, value, result) {
+  const wrap = ir => {
+    const out = typed(['block', ...(ir.type === 'void' ? [] : [['result', ir.type]]),
+      ['local.set', `$${recv}`, value],
+      ['if', isNullish(typed(['local.get', `$${recv}`], 'f64')), ['then', ['drop', throwTypeErrorIR('read')]]], ir], ir.type)
+    for (const key of ['ptrKind', 'ptrAux', 'srcPtrKind', 'schemaSid', 'valKind', 'bigintRaw'])
+      if (ir[key] !== undefined) out[key] = ir[key]
+    return out
+  }
+  const guarded = wrap(result)
+  if (result.bigintBox) deferBigintBox(guarded, () => wrap(materializeDeferredBigint(result)))
+  return guarded
+}
 
 // 0. A class method (jzify/classes.js): a direct call of the class's function
 // with the receiver when the summary names the receiver's class; a schema-id
@@ -918,16 +966,33 @@ function tryClassMethodCall(c) {
  *    3. splice with insert items → __arr_splice (the one method that delete+insert)
  *    4. fn.prop direct call to fn$prop (skipped for reassigned wrapper-composition)
  *    5. Boxed-schema receiver → delegate to inner value at slot 0 (+ writeback)
- *    6. valueOf / toString — sidecar own-property shadow check
- *    7. Known-type static dispatch via .${vt}:${method}
- *    8. Unknown / guessed-ARRAY runtime ptr-type fork over string/typed vs generic
- *    9. Schema property closure call
+ *    6. Known own schema slot/getter call
+ *    7. valueOf / toString — sidecar own-property shadow check
+ *    8. Known-type static dispatch via .${vt}:${method}
+ *    9. Unknown / guessed-ARRAY runtime ptr-type fork over string/typed vs generic
  *    10. Generic emitter (with collection/strIndex arity guards + object shadow)
  *    11. Dynamic property closure call (with PTR.EXTERNAL fallback if non-wasi)
  *    12. External method fallback via __ext_call (or undefined under wasi)
  */
 export function emitMethodCall(callee, parsed, callArgs, optional = false) {
   const [, obj, method] = callee
+
+  // GetV rejects a nullish receiver before any method strategy or argument.
+  // Keep the surviving value present throughout nested fallback dispatch.
+  const view = ctx.summary?.at(ctx.func.current)
+  // Native string receivers keep their externref carrier. Their builtin
+  // rejects invalid receivers; routing through the boxed guard loses both
+  // that carrier and the original charCodeAt bounds proof.
+  const nativeString = typeof obj === 'string' && repOf(obj)?.carrier === 'jsstring'
+  if (!nativeString && view?.mayBeNullishExpr(obj) === true && !isPresentArrayElement(obj)) {
+    const recv = temp('methodRecv'), value = storedValue(obj)
+    copyReceiverFacts(obj, recv)
+    view.alias(recv, obj)
+    try {
+      const result = emitMethodCall(['.', recv, method], parsed, callArgs, optional)
+      return guardMethodReceiver(recv, value, result)
+    } finally { view.unalias(recv) }
+  }
 
   // Strategies 1–4 (context-free, order-sensitive, first match wins).
   for (const strategy of LEADING_STRATEGIES) {
@@ -962,16 +1027,8 @@ export function emitMethodCall(callee, parsed, callArgs, optional = false) {
         return emitMethodCallSpread(objArg, methodEmitter, parsed, method)
       const recv = temp('methodRecv'), value = storedValue(objArg)
       copyReceiverFacts(objArg, recv)
-      const setup = [
-        ['local.set', `$${recv}`, value],
-        ['if', isNullish(typed(['local.get', `$${recv}`], 'f64')), ['then', ['drop', throwTypeErrorIR('read')]]],
-      ]
       const result = emitMethodCallSpread(recv, methodEmitter, parsed, method)
-      const wrap = ir => typed(['block', ['result', ir.type], ...setup, ir], ir.type)
-      const guarded = wrap(result)
-      if (result.bigintRaw) guarded.bigintRaw = true
-      if (result.bigintBox) deferBigintBox(guarded, () => wrap(materializeDeferredBigint(result)))
-      return guarded
+      return guardMethodReceiver(recv, value, result)
     },
   }
   const cls = tryClassMethodCall(c)

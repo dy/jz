@@ -1,9 +1,10 @@
 // A property the program adds to an object after its creation reads `undefined`
 // until it is assigned: a module `let st = {}` grown by a function, a function's
-// own properties, an auto-boxed binding. The slots such a binding gains hold the
-// undefined sentinel, not the allocator's zero (module/object.js's empty literal,
-// the auto-box preambles in start-fn.js and emit/dispatch.js), so a test for the
-// property fires and the array kept there grows in place.
+// own properties. The slots a literal's declared keys gain hold the undefined
+// sentinel, not the allocator's zero (module/object.js's empty literal), so a
+// test for the property fires and the array kept there grows in place; the
+// summary holds them absent at the literal (summary/index.js staticLiteral), so
+// `=== undefined` stays a runtime test.
 import test from 'tst'
 import { levels } from './_matrix.js'
 import { agree } from './util.js'
@@ -20,10 +21,39 @@ export let before = () => [typeof st2.history, st2.history ? 1 : 0, touch(), typ
 function g() { return 1 }
 export let fnProps = () => { let before = typeof g.count; g.count = (g.count ?? 0) + 1; g.count++; return [before, g.count, g()].join() }
 export let localObj = (k) => { let o = {}; let before = typeof o.hist; if (k) o.hist = [1, 2]; return [before, typeof o.hist, o.hist ? o.hist.length : -1].join() }
-export let localLoop = (n) => { let o = {}; for (let i = 0; i < n; i++) { if (!o.acc) o.acc = []; o.acc.push(i) } return [typeof o.acc, o.acc ? o.acc.length : -1].join() }`
-const calls = [['grown', []], ['twoProps', []], ['before', []], ['fnProps', []], ['localObj', [0]], ['localObj', [3]], ['localLoop', [0]], ['localLoop', [3]]]
+export let localLoop = (n) => { let o = {}; for (let i = 0; i < n; i++) { if (!o.acc) o.acc = []; o.acc.push(i) } return [typeof o.acc, o.acc ? o.acc.length : -1].join() }
+let st3 = {}
+let touch3 = () => { if (!st3.history) st3.history = [1]; return 1 }
+export let tested = () => [st3.history === undefined, st3.history == null, touch3(), st3.history === undefined, st3.history.length].join()
+let st4 = { a: 1 }
+export let widened = () => { let r = [st4.b === undefined, st4.a]; st4.b = 'x'; r.push(st4.b === undefined, st4.b); return r.join() }`
+const calls = [['grown', []], ['twoProps', []], ['before', []], ['fnProps', []], ['localObj', [0]], ['localObj', [3]], ['localLoop', [0]], ['localLoop', [3]], ['tested', []], ['widened', []]]
 
 for (const optimize of levels(0, 2, 3, 'size'))
   test(`late field: a property added after creation reads undefined until assigned at ${optimize}`, () => {
     for (const [name, args] of calls) agree(src, name, args, { optimize }, `${name}(${args}) at ${optimize}`)
+  })
+
+// A module binding whose keys a function adds later is the object itself, its
+// added keys where any object's go (its own property table): a box standing in
+// for it listed `__inner__` among its keys, answered `in` before the store,
+// serialized the box and gave an alias taken before the box its bare object.
+const grownSrc = `let st = {}
+let alias = st
+let touch = () => { st.history = [1]; return 1 }
+let seen = () => [Object.keys(st).join(), 'history' in st, JSON.stringify(st), st.hasOwnProperty('history'), alias === st, JSON.stringify(alias)].join('|')
+export let f = () => [seen(), touch(), seen()].join('/')
+let cfg = { a: 1 }
+let cfgAlias = cfg
+let setCfg = () => { cfg.b = 2; return 1 }
+let cfgSeen = () => [Object.keys(cfg).join(), 'b' in cfg, JSON.stringify(cfg), cfg.hasOwnProperty('b'), cfgAlias === cfg].join('|')
+export let g = () => [cfgSeen(), setCfg(), cfgSeen()].join('/')
+let arr = [1, 2]
+export let h = () => [Object.assign(arr, { x: 3 }) === arr, arr.length, arr.x, 'x' in arr, JSON.stringify(arr)].join('|')
+let reg = {}
+let fill = () => { reg.get = (k) => k * 2; reg.has = (k) => k > 1; reg.keys = () => 'own'; return 1 }
+export let m = () => [fill(), reg.get(2), reg.has(3), reg.keys(), Object.keys(reg).join()].join('|')`
+for (const optimize of levels(0, 2, 3))
+  test(`late field: a module binding grown later keeps its identity and its keys at ${optimize}`, () => {
+    for (const name of ['f', 'g', 'h', 'm']) agree(grownSrc, name, [], { optimize }, `${name} at ${optimize}`)
   })

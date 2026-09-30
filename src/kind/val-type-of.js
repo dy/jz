@@ -31,8 +31,9 @@ import { literalTruthiness, nullishArm } from './lattice.js'
 import { censusMaybeUndefinedKind } from './dict-census.js'
 import { valOf as summaryVal, contractVal } from '../summary/index.js'
 import { typedIndexKnown } from '../type/canonical-bounds.js'
-import { K, NUMBER, TAGS, NULL_BITS, bitOf, tagsOf, isPostfixRecovery } from '../summary/kind.js'
+import { K, NUMBER, TAGS, NULL_BITS, UNKNOWN, bitOf, tagsOf } from '../summary/kind.js'
 import { shapeOf, jsonConstString, spreadMergeResolves } from './shape.js'
+import { spreadExclusions } from '../ast.js'
 
 /**
  * Per-op val-type rules — the dispatch table behind `valTypeOf`. Each entry
@@ -95,8 +96,9 @@ VT['{}'] = (args) => {
   // silently misdispatch (fixed-slot / array index) and return undefined —
   // the bug this fixes.
   if (!spreadMergeResolves(args)) {
-    // `{ ...src }` with a single unresolvable spread aliases src — carry its type.
-    return args.length === 1 && Array.isArray(args[0]) && args[0][0] === '...' ? valTypeOf(args[0][1]) : VAL.HASH
+    // `{ ...src }` with a single unresolvable spread aliases src: carry its
+    // type; an object rest (a spread skipping keys) copies into a HASH.
+    return args.length === 1 && Array.isArray(args[0]) && args[0][0] === '...' && !spreadExclusions(args[0]) ? valTypeOf(args[0][1]) : VAL.HASH
   }
   return null
 }
@@ -181,11 +183,12 @@ VT['&&'] = VT['||'] = VT['??'] = (args) => {
 // satisfies `ta === VAL.BOOL`/`tb === VAL.BOOL` here, so it's excluded for free,
 // not by special-casing.
 //
-// Recursive through nested merges: when this node's own arms collapse via the
-// ordinary same-kind branch (`ta === tb`, e.g. both resolve NUMBER) rather than
-// the coercion branch itself, the join is STILL ambiguous if either arm is
-// itself an ambiguous merge — the outer NUMBER kind may carry a nested coerced
-// bool's bits. A statically-resolved `?:` condition (VT['?:'] line 143-144)
+// Recursive through nested merges: when this node's own arms do not take the
+// coercion branch themselves, the join is STILL ambiguous if either arm is
+// itself an ambiguous merge: an outer NUMBER kind may carry a nested coerced
+// bool's bits, and an outer open kind (`k ? (b || 5) : x`, an arm of no single
+// kind) yields that arm's value, whose Boolean an identity-observing consumer
+// must see as itself. A statically-resolved `?:` condition (VT['?:'])
 // only ever evaluates its own live arm, so this mirrors that: recurse into the
 // live arm instead of returning early.
 // Narrowing supplies its scoped summary resolver before local representations exist.
@@ -198,6 +201,8 @@ export function hasAmbiguousBoolMerge(node, vt = valTypeOf) {
   // the gate's dominant regression).
   if (!Array.isArray(node)) return false
   const op = node[0]
+  if (op === '(') return hasAmbiguousBoolMerge(node[1], vt)
+  if (op === ',') return hasAmbiguousBoolMerge(node[node.length - 1], vt)
   if (op === '?:') {
     const cond = node[1], a = node[2], b = node[3]
     const truthy = conditionValue(cond)
@@ -205,16 +210,14 @@ export function hasAmbiguousBoolMerge(node, vt = valTypeOf) {
     const ta = vt(a), tb = vt(b)
     if (ta === VAL.BOOL && tb === VAL.NUMBER) return true
     if (tb === VAL.BOOL && ta === VAL.NUMBER) return true
-    if (ta && ta === tb) return hasAmbiguousBoolMerge(a, vt) || hasAmbiguousBoolMerge(b, vt)
-    return false
+    return hasAmbiguousBoolMerge(a, vt) || hasAmbiguousBoolMerge(b, vt)
   }
   if (op === '&&' || op === '||' || op === '??') {
     const a = node[1], b = node[2]
     const ta = vt(a), tb = vt(b)
     if (ta === VAL.BOOL && tb === VAL.NUMBER) return true
     if (tb === VAL.BOOL && ta === VAL.NUMBER) return true
-    if (ta && ta === tb) return hasAmbiguousBoolMerge(a, vt) || hasAmbiguousBoolMerge(b, vt)
-    return false
+    return hasAmbiguousBoolMerge(a, vt) || hasAmbiguousBoolMerge(b, vt)
   }
   return false
 }
@@ -229,6 +232,10 @@ const typedReceiverCtor = recv =>
   typedStorageCtorFromContext(ctx, recv, {
     resolveName: name => typedCtorRawOf(name) ?? repOf(name)?.typedCtor ?? null,
   }) ?? summaryTypedCtor(ctx, recv)
+
+// A dissolved slot's kind is its initializer's, but a Boolean-or-Number merge
+// lands there as its identity (emit/dispatch.js storedValueNarrow): no NUMBER.
+const flatSlotVal = (value) => hasAmbiguousBoolMerge(value) ? null : valTypeOf(value)
 
 // `[]` op covers both array literals (1 arg) and index access (2 args).
 // Array literal: `[]` → ['[]', null]; `[1,2]` → ['[]', [',', ...]]; `[x]` → ['[]', x].
@@ -265,7 +272,10 @@ VT['[]'] = (args) => {
       const k = staticIndexKey(args[1])
       if (k != null && (!flat.written?.has(k) || flat.selfPreserving?.has(k))) {
         const i = flat.names.indexOf(k)
-        if (i >= 0 && flat.values[i] !== undefined) return valTypeOf(flat.values[i])
+        if (i >= 0 && flat.values[i] !== undefined) {
+          const kind = flatSlotVal(flat.values[i])
+          if (!flat.written?.has(k) || kind === VAL.NUMBER || kind === VAL.BIGINT) return kind
+        }
       }
     }
   }
@@ -345,13 +355,16 @@ VT['.'] = (args) => {
   // (`p.x = …`) stays untyped UNLESS every write is provably self-preserving
   // (`p.x = p.x + 1`, `p.x += 1`, prepare's `p.x++`/`--` desugar — see
   // analyze-scans.js selfPreservingWrittenKeys, the flat-SRoA sibling of the
-  // schema-slot census's self-read neutrality): such a write can only ever
-  // keep the literal's own kind, never change it.
+  // schema-slot census's self-read neutrality): only Number and BigInt initializers
+  // retain their kind under numeric updates; other kinds may be coerced.
   if (typeof args[0] === 'string') {
     const flat = ctx.func.flatObjects?.get(args[0])
     if (flat && (!flat.written?.has(args[1]) || flat.selfPreserving?.has(args[1]))) {
       const i = flat.names.indexOf(args[1])
-      if (i >= 0 && flat.values[i] !== undefined) return valTypeOf(flat.values[i])
+      if (i >= 0 && flat.values[i] !== undefined) {
+        const kind = flatSlotVal(flat.values[i])
+        if (!flat.written?.has(args[1]) || kind === VAL.NUMBER || kind === VAL.BIGINT) return kind
+      }
     }
   }
   // Schema slot read: when `varName` has a bound schemaId and `.prop` resolves
@@ -455,11 +468,12 @@ const censusBigintBinaryVT = (base) => (args) =>
   censusMaybeUndefinedKind(args[0]) === VAL.BIGINT && censusMaybeUndefinedKind(args[1]) === VAL.BIGINT
     ? VAL.BIGINT : base(args)
 for (const op of NUMERIC_BINARY_OPS) if (op !== 'u-') VT[op] = censusBigintBinaryVT(numericBinaryVT)
-// `'+1'`/`'-1'` — prepare's dedicated member ++/-- unary (index.js '++'/'--'):
-// "the operand, incremented/decremented by one" — kind-preserving, exactly
-// like the bare-name '++'/'--' unary rule below, just spelled as its own op
-// so it's unambiguous at emit time (see prepare/index.js's comment on why).
-VT['+1'] = VT['-1'] = (args) => valTypeOf(args[0])
+// Member updates preserve BigInt; all other primitive operands become Number.
+// An object may return either numeric kind from its conversion hook.
+VT['+1'] = VT['-1'] = (args) => {
+  const kind = valTypeOf(args[0])
+  return kind === VAL.BIGINT ? VAL.BIGINT : kind == null || kind === VAL.OBJECT ? null : VAL.NUMBER
+}
 // `~`, `++`, `--`, `**` preserve/propagate BigInt…
 const numericUnaryVT = (args) =>
   valTypeOf(args[0]) === VAL.BIGINT || (args[1] != null && valTypeOf(args[1]) === VAL.BIGINT) ? VAL.BIGINT : VAL.NUMBER
@@ -490,10 +504,9 @@ VT['+'] = (args) => {
   // it neither converts nor is compatible: a container store, a return)
   // keeps JS semantics for every kind the host may pass through an `any`
   // parameter (`null + 3` and `'a' + 3` through such a local were added as
-  // raw f64, the box's bits coming back as the result). Any other unknown
-  // side takes the guarded ABI's numeric contract, the optimistic NUMBER:
-  // load-bearing for local numeric inference (demoting it doubled the
-  // slice/nest loop-body op counts).
+  // raw f64, the box's bits coming back as the result). A side the summary
+  // cannot name leaves the sum to the run where the program concatenates
+  // (addsAsNumber below).
   if (ctx.summary && (ta == null || tb == null)) {
     const view = ctx.summary.at(ctx.func.current)
     const v = view.valOfExpr(['+', args[0], args[1]])
@@ -506,13 +519,52 @@ VT['+'] = (args) => {
   return VAL.NUMBER
 }
 /** A kind whose every value adds as a number: numbers, booleans and missing
- *  values, or the kind that names no tag at all (ANY keeps the optimistic
- *  contract above). */
+ *  values. A kind the summary cannot name (a host value, a dynamic read, a
+ *  method's result) may be a string, which the `+` emitter concatenates at run
+ *  time wherever the program can (compile/emit/arithmetic.js): calling that
+ *  sum a number sent the next `+` or `*` through f64 arithmetic on the string's
+ *  box (`o.name + 1 + 2` gave 'x1'). Only a program that cannot concatenate
+ *  adds it as a number. */
 const ADDEND_BITS = bitOf(K.NUMBER) | bitOf(K.BOOL) | NULL_BITS
-const addsAsNumber = k => tagsOf(k) === TAGS || (tagsOf(k) & ~ADDEND_BITS) === 0
+const addsAsNumber = k => (tagsOf(k) & ~ADDEND_BITS) === 0 || tagsOf(k) === TAGS && !ctx.core.stdlib['__str_concat']
 /** A bare name the numeric demand pass denied a number. */
 export const numericDenied = (node, view = ctx.summary?.at(ctx.func.current)) =>
   typeof node === 'string' && view != null && view.numericDenied(node)
+
+/** A known kind holding a Boolean beside another kind: a union of named
+ *  tags, never the unknown kind (which carries every tag). */
+export const mixedBoolKind = k => {
+  const c = k & ~UNKNOWN & ~NULL_BITS
+  return (c & bitOf(K.BOOL)) !== 0 && (c !== bitOf(K.BOOL) || (k & NULL_BITS) !== 0) && c !== (TAGS & ~NULL_BITS)
+}
+
+/** A binding that holds a Boolean beside another value. The kind answers
+ *  where it names its tags. The unknown kind names them all: a Boolean reaching
+ *  the binding says so. A body no walk reached keeps no kind: its stores
+ *  answer by their syntax, a Boolean beside another value. Flow facts do not
+ *  enter: the storage is one for every path. */
+export const holdsBoolBeside = (name, view) => {
+  const k = view.bindingKindOf(name)
+  return mixedBoolKind(k) || (k === K.NONE ? view.boolStores(name) === 3
+    : (k & TAGS & ~NULL_BITS) === (TAGS & ~NULL_BITS) && (view.boolStores(name) & 1) !== 0)
+}
+
+/** A binding whose Booleans are atoms, the carrier that keeps their identity:
+ *  it holds a Boolean beside another value (holdsBoolBeside) and a read may
+ *  observe which (the numeric demand pass did not prove every read a
+ *  conversion over Number/Boolean/nullish storage). Other kinds may run user
+ *  code or throw when converted, so their reads keep that evaluation point.
+ *  A parameter takes its callers' atoms whatever its reads,
+ *  unless its carrier is the integer one (narrow/param-abi.js narrows only
+ *  one every read of which converts). */
+export const boolTagged = (name, view = ctx.summary?.at(ctx.func.current)) => {
+  if (typeof name !== 'string' || view == null) return false
+  if (ctx.func.localReps?.get(name)?.val || ctx.scope.globalValTypes?.get(name)) return false
+  if (!holdsBoolBeside(name, view)) return false
+  if (!view.isParam(name)) return !view.numericDemand(name) ||
+    (view.bindingKindOf(name) & TAGS & ~(bitOf(K.NUMBER) | bitOf(K.BOOL) | NULL_BITS)) !== 0
+  return ctx.func.current?.params?.find(p => p.name === name)?.type !== 'i32'
+}
 
 // A sequence forwards its final value, including presence. The settled
 // summary declines nullable/mixed kinds; do not fall back from that answer
@@ -527,6 +579,7 @@ VT[','] = (args) => {
 // `(a = x*x) + (b = y*y)` falls through to null and `+` emits the polymorphic
 // string-concat dispatch on two pure-numeric subexpressions.
 VT['='] = (args) => valTypeOf(args[1])
+VT.postfix = (args) => valTypeOf(args[0])
 VT['+='] = (args) => {
   const ta = typeof args[0] === 'string' ? lookupValType(args[0]) : null
   const tb = valTypeOf(args[1])
@@ -544,6 +597,8 @@ const compoundNumericVT = (args) => {
   return ta === VAL.BIGINT || valTypeOf(args[1]) === VAL.BIGINT ? VAL.BIGINT : VAL.NUMBER
 }
 for (const op of COMPOUND_NUMERIC_OPS) VT[op] = compoundNumericVT
+
+VT['('] = args => valTypeOf(args[0])
 
 VT['()'] = (args) => {
   const callee = args[0]
@@ -650,7 +705,6 @@ export function valTypeOf(expr) {
   if (!Array.isArray(expr)) return null
 
   const op = expr[0]
-  if (isPostfixRecovery(op, expr[1], expr[2])) return valTypeOf(expr[1])
   if (op == null) {
     // Literal forms: [] = undefined, [null, null] = null, [null, n] = number, [, bool] = boolean.
     // Bigint literals are NEVER this shape — the parser tags them structurally

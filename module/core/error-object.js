@@ -26,6 +26,19 @@ export function requireReceiverWat(value) {
       (throw $__jz_err (f64.const ${code}))))`
 }
 
+// A primitive holds no property of its own and strict code cannot give it one:
+// a store on a Number (a real number or a NaN), a String, a Boolean or a
+// BigInt throws. `value` is an i64 local read; `type` its i32 tag local. Nullish
+// receivers take requireReceiverWat's throw first.
+export function requireObjectWat(value, type) {
+  const code = errorCodeLiteral(ERR.PRIMITIVE_PROPERTY)
+  return `(if (i32.or (f64.eq (f64.reinterpret_i64 ${value}) (f64.reinterpret_i64 ${value}))
+      (i32.or (i32.eq ${type} (i32.const ${PTR.ATOM}))
+        (i32.or (i32.eq ${type} (i32.const ${PTR.STRING})) (i32.eq ${type} (i32.const ${PTR.BIGINT})))))
+    (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${code})))
+      (throw $__jz_err (f64.const ${code}))))`
+}
+
 // Shared lazy runtime throw: ordinary branded Error storage and transport.
 // Track literal data so dead helpers leave no strings in the final module.
 export function throwErrorWat(ctx, name, className, message) {
@@ -35,6 +48,7 @@ export function throwErrorWat(ctx, name, className, message) {
   const strWat = text => print(ctx.core.emit['str'](text))
   const sid = ctx.schema.errorSid(className)
   ctx.schema.namedUses.push({ sid, funcName: name })
+  ctx.runtime.throwHelpers.add('$' + name)
   const slots = ctx.abi.object.ops.allocSlots(2)
   const start = dataLen()
   const msgWat = strWat(message), nameWat = strWat(className)

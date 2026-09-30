@@ -154,6 +154,9 @@ examples/**/build/
 examples/**/*.wasm
 # Debug WAT dumps alongside example kernels (inspection output, regenerable)
 examples/**/*.wat
+# Vendored three.js math source (produced by examples/threejs-math/build.mjs from the
+# pinned node_modules/three) — regenerable, not hand-maintained.
+examples/threejs-math/three/
 /.playwright-mcp
 /.vscode
 *.swf

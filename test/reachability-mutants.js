@@ -15,8 +15,10 @@ import { onKernel } from './_matrix.js'
 
 const strip = s => s.replace(/\x1b\[[0-9;]*m/g, '')
 const run = (env = {}, args = []) => {
+  // The child owns its reporter and filter: its diagnostic parser expects
+  // pretty output, and a parent filter must not skip the mutated suite.
   const r = spawnSync(process.execPath, [...args, new URL('./reachability.js', import.meta.url).pathname],
-    { cwd: new URL('..', import.meta.url).pathname, encoding: 'utf8', env: { ...process.env, ...env }, timeout: 300_000 })
+    { cwd: new URL('..', import.meta.url).pathname, encoding: 'utf8', env: { ...process.env, ...env, TST_FORMAT: 'pretty', TST_GREP: '', TST_BAIL: '' }, timeout: 300_000 })
   const out = strip(r.stdout + r.stderr)
   const failed = [...out.matchAll(/✗ (reachability(?: census)?: [^:\n]+)/g)].map(m => m[1])
   return { status: r.status, out, failed, behavioral: failed.filter(t => !t.startsWith('reachability census')), census: failed.filter(t => t.startsWith('reachability census')) }

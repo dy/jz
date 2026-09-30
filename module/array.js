@@ -8,8 +8,7 @@
  * @module array
  */
 
-import { dataAlign, dataPush, dataLen, pushStaticSlots } from '../src/static-data.js'
-import { throwErrorIR, numberNanIR, typed, asF64, asI64, asI32, UNDEF_NAN, temp, tempI32, allocPtr, arrayLoop, deferBigintBox, elemStore, throwTypeErrorIR, truthyIR, extractF64Bits, mkPtrIR, slotAddr, isLiteralStr, resolveValType, undefExpr, ptrTypeEq, isPureIR, freshId, isNullish, isUndef, toStrI64, fwdOffsetIR } from '../src/ir.js'
+import { throwErrorIR, numberNanIR, typed, asF64, asI64, asI32, keyIndex, UNDEF_NAN, temp, tempI32, allocPtr, staticArrayPtr, arrayLoop, deferBigintBox, elemStore, throwTypeErrorIR, truthyIR, extractF64Bits, slotAddr, isLiteralStr, resolveValType, undefExpr, ptrTypeEq, isPureIR, freshId, isNullish, isUndef, toStrI64, fwdOffsetIR } from '../src/ir.js'
 import { inBoundsArrIdx, typedIdxProven } from '../src/type.js'
 import { emit, spread, deps, idx as emitIndex, storedValue, storedValueNarrow, storedValuePlanned, positionArgs } from '../src/bridge.js'
 import { censusMaybeUndefinedKind, isPresentNumber, valTypeOf } from '../src/kind.js'
@@ -17,7 +16,7 @@ import { extractParams, classifyParam, PARAM_NAME, ASSIGN_OPS, isArrayIndexKey }
 import { staticPropertyKey, staticObjectProps, inlineArraySid, inlineArrayUnion, staticIndexKey, intLiteralValue, structLiteralFields, intExprRange } from '../src/static.js'
 import { VAL, lookupValType, lookupNotString, isDisjointFrom, KIND_UNIVERSE, mayBeUndefined, repOf, repOfGlobal } from '../src/reps.js'
 import { structInline } from '../src/abi/index.js'
-import { ctx, inc, err, warnDeopt, PTR, LAYOUT, followForwardingWat, setLinkDemand } from '../src/ctx.js'
+import { ctx, inc, err, strictCode, warnDeopt, PTR, LAYOUT, followForwardingWat, setLinkDemand } from '../src/ctx.js'
 import { strHashLiteral, dynPropsFilterSetIR, durableFwdLogIR, durableArrSnapIR, durableArrSnapNode } from './collection.js'
 import { hasDurableReset } from './collection/durable.js'
 import { errorCodeLiteral, ERR } from '../err-codes.js'
@@ -37,6 +36,7 @@ import { hasExternalIngress } from '../src/compile/func-exports.js'
 import { hoistArrayValue, makeCallback, callbackElem, callbackArgReps, idxArg, arrArg, callbackReadsArray } from './array/callback.js'
 import { arrayFromEmit } from './array/from.js'
 import { registerEarlyExit } from './array/early-exit.js'
+import { heapScratch, mergeSortIR } from './array/sort.js'
 
 
 // Complement of {ARRAY, TYPED} in the VAL domain — the kindSet argument
@@ -50,34 +50,9 @@ function allocArray(len, cap) {
   return { local: a.local, setup: [a.init], ptr: a.ptr }
 }
 
-/** Pack literal i64 slots as a static ARRAY into the data segment, returning a
- *  folded ARRAY pointer to the first slot. The 16-byte header MUST match
- *  __alloc_hdr (core.js): a zeroed dyn-props word at off-16, then len/cap at
- *  off-8/-4. Heap arrays get that props word zeroed for free; a static array with
- *  only an 8-byte header left off-16 pointing at adjacent data-segment bytes, so
- *  for-in / named-prop lookup (which read off-16 as the props-sidecar pointer)
- *  walked garbage → OOB (test262 built-ins/Object/keys sparse-array). */
-export function staticArrayPtr(slots) {
-  dataAlign(8)
-  const headerOff = dataLen()
-  const len = slots.length
-  const hdr = new Uint8Array(16); const dv = new DataView(hdr.buffer)
-  dv.setInt32(8, len, true); dv.setInt32(12, len, true)  // off-8: len, off-4: cap (props word at 0..7 stays 0)
-  dataPush(hdr)
-  pushStaticSlots(slots)
-  const ptr = mkPtrIR(PTR.ARRAY, 0, headerOff + 16)
-  // Compile-time identity for the static base/len read fold (see the saArr tag in
-  // the '[]' handler + optimize's foldStaticConstArrayReads): a const global bound
-  // to this literal reads elements with literal base/len instead of the
-  // __ptr_offset call + header load.
-  ptr.staticOff = headerOff + 16
-  ptr.staticLen = len
-  return ptr
-}
-
 const arrayLenFromPtr = ptr => ['i32.load', ['i32.sub', ['local.get', `$${ptr}`], ['i32.const', 8]]]
 
-const needsArrayDynMove = () => ctx.core.includes.has('__dyn_set')
+const needsArrayDynMove = () => (ctx.core.includes.has('__dyn_set') || ctx.core.includes.has('__dyn_set_own'))
 // Head slack exists only where a shift can make it (see arrBaseWat): a program
 // without one links a grow that never looks for it.
 const needsHeadSlack = () => ctx.core.includes.has('__arr_shift')
@@ -209,11 +184,11 @@ export default (ctx) => {
     __arr_set_idx_ptr: ['__arr_grow', '__ptr_offset', ...(needsDurableFwdLog() ? ['__durable_arr_snap'] : [])],
     __arr_typed_set_idx: () => ['__ptr_type', '__ptr_aux', '__len', '__arr_set_idx_ptr',
       representationProgramHasBigint(ctx) || ctx.core.includes.has('__typed_set_idx_tagged') ? '__typed_set_idx_tagged' : '__typed_set_idx'],
-    __arr_typed_obj_set_idx: () => ['__is_nullish', '__arr_typed_set_idx', '__ptr_type', '__dyn_set', '__i32_to_str',
+    __arr_typed_obj_set_idx: () => ['__is_nullish', '__arr_typed_set_idx', '__ptr_type', '__dyn_set_own', '__i32_to_str',
       ...(ctx.linkDemand.external ? ['__ext_set'] : [])],
     __arr_push1: ['__arr_grow_known', '__ptr_offset_fwd', ...(needsDurableFwdLog() ? ['__durable_arr_snap'] : [])],
     __arr_push_slot: ['__arr_grow_known', '__ptr_offset_fwd', ...(needsDurableFwdLog() ? ['__durable_arr_snap'] : [])],
-    __arr_set_length: ['__arr_grow_known', '__ptr_offset', '__ptr_type', ...(needsDurableFwdLog() ? ['__durable_arr_snap'] : [])],
+    __arr_set_length: ['__arr_grow_known', '__ptr_offset', '__ptr_type', '__to_num', '__to_int32', ...(needsDurableFwdLog() ? ['__durable_arr_snap'] : [])],
     __arr_unshift: ['__arr_grow', '__len', '__ptr_offset', ...(needsDurableFwdLog() ? ['__durable_arr_snap'] : [])],
     __arr_splice: ['__arr_grow', '__len', '__ptr_offset', '__alloc_hdr', '__mkptr', ...(needsDurableFwdLog() ? ['__durable_arr_snap'] : [])],
     __arr_flat: ['__ptr_offset', '__len', '__ptr_type', '__alloc_hdr', '__mkptr'],  // body-calls __alloc_hdr; declare it (self-compile auto-scan can't be relied on — see test/self-compile-includes.js)
@@ -536,7 +511,7 @@ export default (ctx) => {
     (if (i32.or (i32.eq (local.get $t) (i32.const ${PTR.OBJECT}))
                 (i32.eq (local.get $t) (i32.const ${PTR.HASH})))
       (then
-        (drop (call $__dyn_set (local.get $ptr)
+        (drop (call $__dyn_set_own (local.get $ptr)
           (i64.reinterpret_f64 (call $__i32_to_str (local.get $i)))
           (i64.reinterpret_f64 (local.get $val))))
         (return (f64.reinterpret_i64 (local.get $ptr)))))
@@ -613,12 +588,21 @@ export default (ctx) => {
   // matching JS sparse-array semantics. Non-ARRAY receivers are left unchanged so a
   // mistyped `.length =` cannot corrupt object/collection headers. Returns the
   // (possibly relocated) pointer; the assignment's value is N (computed at the call site).
-  ctx.core.stdlib['__arr_set_length'] = `(func $__arr_set_length (param $ptr i64) (param $n i32) (result f64)
-    (local $base i32) (local $p f64) (local $oldLen i32) (local $cap i32) (local $k i32)
+  ctx.core.stdlib['__arr_set_length'] = `(func $__arr_set_length (param $ptr i64) (param $value i64) (result f64)
+    (local $base i32) (local $p f64) (local $oldLen i32) (local $cap i32) (local $k i32) (local $n i32)
     (local.set $p (f64.reinterpret_i64 (local.get $ptr)))
     (if (i32.ne (call $__ptr_type (local.get $ptr)) (i32.const ${PTR.ARRAY}))
       (then (return (local.get $p))))
-    (if (i32.lt_s (local.get $n) (i32.const 0)) (then (local.set $n (i32.const 0))))
+    ;; ArraySetLength performs two conversions, in order: observable valueOf
+    ;; calls may give different values. The assignment still yields $value.
+    (local.set $n (call $__to_int32 (call $__to_num (local.get $value))))
+    (if (f64.ne (f64.convert_i32_u (local.get $n)) (call $__to_num (local.get $value)))
+      (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${errorCodeLiteral(ERR.ARRAY_LENGTH)})))
+        (throw $__jz_err (f64.const ${errorCodeLiteral(ERR.ARRAY_LENGTH)}))))
+    ;; A dense eight-byte-slot array cannot fit this many elements in wasm32.
+    (if (i32.gt_u (local.get $n) (i32.const 536870909))
+      (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${errorCodeLiteral(ERR.HEAP_EXHAUSTED)})))
+        (throw $__jz_err (f64.const ${errorCodeLiteral(ERR.HEAP_EXHAUSTED)}))))
     (local.set $base (call $__ptr_offset (local.get $ptr)))
     (if (i32.lt_u (local.get $base) (i32.const 8)) (then (return (local.get $p))))
     ${durableArrSnapIR('base')}
@@ -976,7 +960,7 @@ export default (ctx) => {
       return true
     }
     const dynLoad = (objExpr, keyExpr) => {
-      if (ctx.transform.strict) err(`strict mode: dynamic property access \`${typeof arr === 'string' ? arr : '<expr>'}[<expr>]\` falls back to __dyn_get. Use a literal key or known typed-array receiver, or pass { strict: false }.`)
+      if (strictCode()) err(`strict mode: dynamic property access \`${typeof arr === 'string' ? arr : '<expr>'}[<expr>]\` falls back to __dyn_get. Use a literal key or known typed-array receiver, or pass { strict: false }.`)
       warnDeopt('deopt-dyn-read', `dynamic property read \`${typeof arr === 'string' ? arr : '<expr>'}[…]\` couldn't resolve a static type — it falls back to a runtime hash lookup (~1.5–2× slower than a typed/slot read, far worse in a hot loop). Use a literal key, a typed-array receiver, or a Map for genuinely dynamic keys.`)
       const fn = ensureHostOpaqueGet() ? '__dyn_get_any' : '__dyn_get'
       if (fn === '__dyn_get') inc(fn)
@@ -1053,8 +1037,7 @@ export default (ctx) => {
           // isStmt(prec[hole]) truthy in the kernel, breaking the literal-key
           // shorthand method "Unclosed {" family. EVERYTHING ELSE — real numbers AND canonical
           // arithmetic NaN (hi 0x7FF80000, aux 0) — keeps the documented
-          // i32-truncating index contract (`a[NaN]` → a[0], a[1.5] → a[1];
-          // pinned in test/array-methods.js "array index contract").
+          // numeric index check: fractional/non-finite keys name no element.
           ['else', ['if', ['result', 'f64'],
             ['i32.le_u',
               ['i32.sub',
@@ -1068,12 +1051,11 @@ export default (ctx) => {
     if (typeof arr === 'string' && ctx.schema.isBoxed?.(arr)) {
       const inner = ctx.schema.emitInner(arr)
       if (keyType === VAL.STRING) return typed(dynLoad(asF64(emit(arr)), asF64(emit(idx))), 'f64')
+      inc('__arr_idx')
       if (useRuntimeKeyDispatch)
         return emitDynamicKeyDispatch(asF64(emit(arr)), keyExpr =>
-          ctx.abi.array.ops.load(['call', '$__ptr_offset', ['i64.reinterpret_f64', inner]], asI32(typed(keyExpr, 'f64'))))
-      return typed(
-        ctx.abi.array.ops.load(['call', '$__ptr_offset', ['i64.reinterpret_f64', inner]], vi),
-        'f64')
+          ['call', '$__arr_idx', asI64(inner), keyIndex(typed(keyExpr, 'f64'))])
+      return typed(['call', '$__arr_idx', asI64(inner), vi], 'f64')
     }
     // HASH receiver with runtime string key: probe the HASH directly via
     // __hash_get_local. Mirrors the literal-key path above but defers the
@@ -1122,7 +1104,7 @@ export default (ctx) => {
       if (mayBeUndefined(arr)) {
         if (useRuntimeKeyDispatch && keyType !== VAL.NUMBER) {
           inc('__arr_idx')
-          return emitDynamicKeyDispatch(ptrExpr, key => ['call', '$__arr_idx', asI64(ptrExpr), asI32(typed(key, 'f64'))])
+          return emitDynamicKeyDispatch(ptrExpr, key => ['call', '$__arr_idx', asI64(ptrExpr), keyIndex(typed(key, 'f64'))])
         }
         // An absent receiver reads undefined, as the helper answers.
         return typed(arrayFast(() => undefExpr()), 'f64')
@@ -1297,7 +1279,7 @@ export default (ctx) => {
         return typed(['block', ['result', 'f64'],
           ['local.set', `$${baseTmp}`, ptrExpr],
           emitDynamicKeyDispatch(typed(['local.get', `$${baseTmp}`], 'f64'), keyExpr => {
-            const keyI32 = asI32(typed(keyExpr, 'f64'))
+            const keyI32 = keyIndex(typed(keyExpr, 'f64'))
             inc('__arr_idx')
             return (['call', '$__arr_idx', ['i64.reinterpret_f64', ['local.get', `$${baseTmp}`]], keyI32])
           })], 'f64')
@@ -1318,7 +1300,7 @@ export default (ctx) => {
       const keyIsNum = keyType === VAL.NUMBER
       if (useRuntimeKeyDispatch && !keyIsNum)
         return emitDynamicKeyDispatch(ptrExpr, keyExpr => {
-          const keyI32 = asI32(typed(keyExpr, 'f64'))
+          const keyI32 = keyIndex(typed(keyExpr, 'f64'))
           return (['call', `$${runtimeElemRead}`, ['i64.reinterpret_f64', ptrExpr], keyI32])
         })
       return typed((['call', `$${runtimeElemRead}`, ['i64.reinterpret_f64', ptrExpr], vi]), 'f64')
@@ -1351,7 +1333,7 @@ export default (ctx) => {
     // Mirrors the `&& !keyIsNum` guard in the known-array/typed branches above.
     if (useRuntimeKeyDispatch && keyType !== VAL.NUMBER)
       return emitDynamicKeyDispatch(ptrExpr, keyExpr => {
-        const keyI32 = asI32(typed(keyExpr, 'f64'))
+        const keyI32 = keyIndex(typed(keyExpr, 'f64'))
         // recvArrTyped: the receiver-CLASS proof above rules out OBJECT/HASH/
         // STRING at every call site, so neither runtime tag test below can ever
         // take its other arm — collapse straight to the bare __typed_idx call.
@@ -2364,88 +2346,74 @@ export default (ctx) => {
     return emitArrayReverseInPlace(['nop'], typed(['call', '$__arr_from', asI64(emit(arr))], 'f64'))
   }
 
-  // Insertion sort — stable, in-place, O(n²). The comparator is called per
-  // shift; positive return → swap. NaN returns become "no swap" via f64.gt's
-  // IEEE 754 semantics (NaN compares false), matching the spec's NaN-as-0
-  // behavior. When fn is omitted, elements are compared as strings via
-  // __to_str → __str_cmp (byte-wise; NOT locale-aware).
-  // Insertion-sort an array VALUE in place, returning it. `.sort` mutates the
-  // receiver; `.toSorted` (ES2023) sorts a fresh __arr_from copy. Default (no
-  // comparator) is lexicographic-string order per spec — NOT the numeric
-  // default typed arrays use (see .typed:sort).
+  // Sort an array VALUE in place, returning it: `.sort` sorts the receiver,
+  // `.toSorted` (ES2023) a fresh __arr_from copy. As the spec's
+  // SortIndexedProperties: the elements are read out once, undefined set aside
+  // for the end (a comparator never sees it), the rest merge sorted stably
+  // (module/array/sort.js) and written back, the array re-read after the
+  // comparator ran (it may have grown the array). A comparator's positive
+  // result puts a after b; NaN is no order. The default order compares each
+  // element's string once made (__to_str → __str_cmp, code unit order, not
+  // locale-aware): records of a key and its value.
   function emitArraySortInPlace(setup, value, fn) {
-    const arrTmp = temp('sr')
-    const base = tempI32('sb')
-    const len = tempI32('sl')
-    const i = tempI32('si')
-    const j = tempI32('sj')
-    const cur = temp('sc')
-    const neighbor = temp('sn')
+    const arrTmp = temp('sr'), base = tempI32('sb'), len = tempI32('sl'), m = tempI32('sm'), i = tempI32('si')
+    const buf = tempI32('sbf'), tmp = tempI32('stp'), v = temp('sv')
     const id = freshId(ctx)
-    const outerExit = `$sortexit${id}`, innerExit = `$sortinnerexit${id}`
-    const outerLoop = `$sortouter${id}`, innerLoop = `$sortinner${id}`
-
-    let cmpExpr, cmpSetup
+    const shift = fn == null ? 4 : 3
+    let cmpSetup = ['nop'], after
     if (fn == null) {
-      // default comparator is ToString + byte compare — both live in the string
+      // default comparator is ToString + code unit compare: both live in the string
       // module, which an all-numeric program hasn't loaded (dangling inc otherwise)
       ctx.module.include('string')
       inc('__to_str', '__str_cmp')
-      cmpExpr = (aIR, bIR) => typed(['f64.convert_i32_s',
-        ['call', '$__str_cmp',
-          ['call', '$__to_str', ['i64.reinterpret_f64', aIR]],
-          ['call', '$__to_str', ['i64.reinterpret_f64', bIR]]
-        ]
-      ], 'f64')
-      cmpSetup = ['nop']
+      after = (a, b) => ['i32.gt_s', ['call', '$__str_cmp', ['i64.load', a], ['i64.load', b]], ['i32.const', 0]]
     } else {
       const cb = makeCallback(fn, [])
       cmpSetup = cb.setup
-      cmpExpr = (aIR, bIR) => asF64(cb.call([
-        typed(aIR, 'f64'),
-        typed(bIR, 'f64')
-      ]))
+      after = (a, b) => ['f64.gt', asF64(cb.call([typed(['f64.load', a], 'f64'), typed(['f64.load', b], 'f64')])), ['f64.const', 0]]
     }
-
     inc('__ptr_offset')
     if (needsDurableFwdLog()) inc('__durable_arr_snap')  // explicit edge — see durableArrSnapIR's comment
-
-    const addr = (idxIR) => ['i32.add', ['local.get', `$${base}`], ['i32.shl', idxIR, ['i32.const', 3]]]
-    const jPlus1 = ['i32.add', ['local.get', `$${j}`], ['i32.const', 1]]
-
+    const get = (n) => ['local.get', `$${n}`]
+    const slot = (b, k) => ['i32.add', get(b), ['i32.shl', get(k), ['i32.const', 3]]]
+    const rec = (k) => ['i32.add', get(buf), ['i32.shl', get(k), ['i32.const', shift]]]
+    const scratch = heapScratch(buf, ['i32.shl', get(len), ['i32.const', shift + 1]])
     return typed(['block', ['result', 'f64'],
       setup,
       cmpSetup,
       ['local.set', `$${arrTmp}`, value],
-      ['local.set', `$${base}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${arrTmp}`]]]],
-      durableArrSnapNode(base),
-      ['local.set', `$${len}`, ['i32.load', ['i32.sub', ['local.get', `$${base}`], ['i32.const', 8]]]],
-
-      ['local.set', `$${i}`, ['i32.const', 1]],
-      ['block', outerExit,
-        ['loop', outerLoop,
-          ['br_if', outerExit, ['i32.ge_s', ['local.get', `$${i}`], ['local.get', `$${len}`]]],
-          ['local.set', `$${cur}`, ['f64.load', addr(['local.get', `$${i}`])]],
-          ['local.set', `$${j}`, ['i32.sub', ['local.get', `$${i}`], ['i32.const', 1]]],
-
-          ['block', innerExit,
-            ['loop', innerLoop,
-              ['br_if', innerExit, ['i32.lt_s', ['local.get', `$${j}`], ['i32.const', 0]]],
-              ['local.set', `$${neighbor}`, ['f64.load', addr(['local.get', `$${j}`])]],
-              // Break unless cmp(neighbor, cur) > 0. f64.gt is false for NaN.
-              ['br_if', innerExit, ['i32.eqz',
-                ['f64.gt',
-                  cmpExpr(['local.get', `$${neighbor}`], ['local.get', `$${cur}`]),
-                  ['f64.const', 0]]]],
-              ['f64.store', addr(jPlus1), ['local.get', `$${neighbor}`]],
-              ['local.set', `$${j}`, ['i32.sub', ['local.get', `$${j}`], ['i32.const', 1]]],
-              ['br', innerLoop]]],
-
-          ['f64.store', addr(jPlus1), ['local.get', `$${cur}`]],
-          ['local.set', `$${i}`, ['i32.add', ['local.get', `$${i}`], ['i32.const', 1]]],
-          ['br', outerLoop]]],
-
-      ['local.get', `$${arrTmp}`]
+      ['local.set', `$${base}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', get(arrTmp)]]],
+      ['local.set', `$${len}`, ['i32.load', ['i32.sub', get(base), ['i32.const', 8]]]],
+      ['if', ['i32.gt_s', get(len), ['i32.const', 1]], ['then',
+        ...scratch.take,
+        ['local.set', `$${tmp}`, ['i32.add', get(buf), ['i32.shl', get(len), ['i32.const', shift]]]],
+        // the elements out, undefined set aside
+        ['local.set', `$${m}`, ['i32.const', 0]], ['local.set', `$${i}`, ['i32.const', 0]],
+        ['block', `$sortgd${id}`, ['loop', `$sortg${id}`,
+          ['br_if', `$sortgd${id}`, ['i32.ge_s', get(i), get(len)]],
+          ['local.set', `$${v}`, ['f64.load', slot(base, i)]],
+          ['if', ['i32.eqz', isUndef(get(v))], ['then',
+            ...(fn == null
+              ? [['i64.store', rec(m), ['call', '$__to_str', ['i64.reinterpret_f64', get(v)]]],
+                 ['f64.store', ['i32.add', rec(m), ['i32.const', 8]], get(v)]]
+              : [['f64.store', rec(m), get(v)]]),
+            ['local.set', `$${m}`, ['i32.add', get(m), ['i32.const', 1]]]]],
+          ['local.set', `$${i}`, ['i32.add', get(i), ['i32.const', 1]]],
+          ['br', `$sortg${id}`]]],
+        mergeSortIR(buf, tmp, m, shift, after),
+        // back into the array, as it stands now, undefined last
+        ['local.set', `$${base}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', get(arrTmp)]]],
+        durableArrSnapNode(base),
+        ['local.set', `$${i}`, ['i32.const', 0]],
+        ['block', `$sortwd${id}`, ['loop', `$sortw${id}`,
+          ['br_if', `$sortwd${id}`, ['i32.ge_s', get(i), get(len)]],
+          ['f64.store', slot(base, i), ['if', ['result', 'f64'], ['i32.lt_s', get(i), get(m)],
+            ['then', ['f64.load', fn == null ? ['i32.add', rec(i), ['i32.const', 8]] : rec(i)]],
+            ['else', undefExpr()]]],
+          ['local.set', `$${i}`, ['i32.add', get(i), ['i32.const', 1]]],
+          ['br', `$sortw${id}`]]],
+        scratch.release]],
+      get(arrTmp)
     ], 'f64')
   }
   ctx.core.emit['.sort'] = (arr, fn) => {

@@ -171,8 +171,10 @@ test('audit: cursor guards join offsets and retain negative-offset checks', () =
       is(wasm.run(...args), js.run(...args), `${optimize}: ${args}`)
   }
   if (!onKernel()) {
-    // pre-watr: `run` releases what it made as it returns, so its call of `scan` is one watr inlines
-    const wat = funcWat(compile(src, { optimize: { level: 'speed', watr: false }, wat: true }), 'scan')
+    // pre-watr: `run` releases what it made as it returns, so its call of `scan` is one watr inlines;
+    // one loop: its int32 copy (plan/integral-loops.js) guards its own extents alike
+    const wat = funcWat(compile(src, { optimize: { level: 'speed', watr: false, versionIntegralLoops: false }, wat: true }), 'scan')
+    ok(wat.length > 0, 'inspect cursor extents before backend inlining')
     is((wat.match(/i64\.lt_s/g) || []).length, 1, 'one upper extent for all cursor offsets')
     is((wat.match(/i64\.ge_s/g) || []).length, 1, 'one lower extent for all cursor offsets')
   }
@@ -1015,6 +1017,29 @@ test('audit: typed local storage preserves missing values through copies and gat
   }
 })
 
+// An integer element used as an index is that integer: a Uint16Array read
+// indexes a table without a round trip through f64 (the WAV decoder's
+// `x[i] = T[s[k]]`), and an unsigned element past 2^31 names no element.
+test('audit: an integer element indexes as its integer, an unsigned one past 2^31 included', () => {
+  const src = `
+    function dec(s, T, x) { for (let i = 0; i < x.length; i++) x[i] = T[s[i]] }
+    export function f(n) { const s = new Uint16Array(n), T = new Float32Array(65536), x = new Float32Array(n)
+      for (let u = 0; u < 65536; u++) T[u] = u / 2
+      for (let i = 0; i < n; i++) s[i] = i * 4099
+      dec(s, T, x); let q = 0; for (let i = 0; i < n; i++) q += x[i]; return q }
+    export function big(i) { const k = new Uint32Array([1, 4294967295, 2147483648, 2147483647]), T = new Float64Array([5, 6, 7]); return T[k[i]] }`
+  const js = oracle(src)
+  for (const optimize of TIERS) {
+    const wasm = jz(src, { optimize }).exports
+    for (const n of [0, 1, 64]) is(wasm.f(n), js.f(n), `${optimize}: table decode of ${n}`)
+    for (const i of [0, 1, 2, 3, 4, -1]) ok(Object.is(wasm.big(i), js.big(i)), `${optimize}: T[k[${i}]]`)
+  }
+  if (!onKernel()) {
+    const f = compile(src, { optimize: 'speed', wat: true }).match(/\(func \$f[\s\S]*?\n  \(func/)[0]
+    ok(!f.includes('f64.convert_i32_u'), 'the element reaches the index as i32, no f64 round trip')
+  }
+})
+
 test('audit: stored typed reads cannot borrow a loop or another receiver length', () => {
   const src = `function gather(a,b,n){let s=0;for(let i=0;i<n;i++){const v=a[i];s+=b[v]+v*v}return s}
     export function f(n){return gather(new Int32Array([0,1]),new Float64Array([7,8]),n)}
@@ -1196,11 +1221,16 @@ test('audit: word-only helper parameters normalize at the call boundary', () => 
     function identity(v){return v}
     function capture(v){const read=()=>v;return read()}
     function compare(v){return v===undefined}
-    export function f(i){const a=new Int32Array([11,2]),v=a[i];return [word(v),identity(v),capture(v),compare(v)]}`
+    export function f(i){const a=new Int32Array([11,2]),v=a[i];return [word(3),word(v),word(i/2),identity(v),capture(v),compare(v)]}`
   const js=oracle(src)
   for(const optimize of TIERS){
     const wasm=jz(src,{optimize:{level:optimize,sourceInline:false}}).exports
     for(const i of [0,0,1,2,-1,0])is(wasm.f(i),js.f(i), `${optimize}: index ${i}`)
+  }
+  if(!onKernel()){
+    const body=funcWat(compile(src,{optimize:{level:'speed',sourceInline:false,watr:false},wat:true}),'word')
+    ok(body.includes('i32.and'),'the word helper remains a real function')
+    ok(!/f64|trunc_sat/.test(body),'mixed integer, fraction and missing inputs normalize before the word-only helper')
   }
 })
 
@@ -1232,8 +1262,10 @@ test('audit: checked integer locals normalize only at word consumers', () => {
     }
   }
   if(!onKernel()){
+    // Bound the destination index so this codegen check isolates the loaded
+    // value's word consumers; an unbounded j+1 needs separate index arithmetic.
     const src=`function word(a,out,i,j){const v=a[i];out[j]=v;out[j+1]=v;return v&7}
-      export function f(i,j){return word(new Uint32Array([4294967295]),new Int8Array(2),i|0,j|0)}`
+      export function f(i,j){return word(new Uint32Array([4294967295]),new Int8Array(2),i|0,j&1)}`
     const body=funcWat(compile(src,{optimize:{level:'speed',sourceInline:false,watr:false},wat:true}),'word')
     ok(body.includes('i32.load')&&body.includes('i32.store8'),'checked load and stores survive')
     ok(!/f64|__to_int32|trunc_sat/.test(body),'word-only local needs no float round trip or conversion helper')
@@ -1305,6 +1337,36 @@ test('audit: bounded numeric conversions retain missing and nonfinite values', (
     const wat=compile(src,{optimize:2,wat:true})
     ok(!wat.includes('$__to_int32'),'bounded payload or missing read needs no arbitrary-number conversion helper')
   }
+})
+
+// An integer element store converts its value by ToInt32. Over checked reads
+// of integer elements (a length the compiler does not know: the adaptive
+// filter taps of a TTA decoder, `qm[i] -= dx[i]`) the value is a bounded
+// integer or the NaN of a miss, and the inline wrap is exact; the helper that
+// recovers the low word past 2^63 stays for values of no known range.
+test('audit: an integer element store over checked integer reads converts inline', () => {
+  const src=`let a=new Int32Array(4),b=new Int32Array(4),u=new Uint32Array(4),f=new Float64Array(4)
+    a[0]=2147483647;b[0]=-2147483648;a[1]=-2147483648;b[1]=2147483647;a[2]=5;b[2]=9
+    u[0]=4294967295;u[1]=4294967294;f[0]=1e19;f[1]=-3.9e19;f[2]=2.5e300
+    export let g=(k)=>{
+      let q=new Int32Array(8),r=new Uint8Array(8),s=new Int16Array(8)
+      for(let i=0;i<4;i++)q[i]=a[i]-b[i]
+      q[4]=a[k+5]-b[0];q[5]=u[0]+u[1];q[6]=f[0]+f[1];q[7]=f[2]*2
+      for(let i=0;i<4;i++){r[i]=a[i]+b[i]*3;s[i]=u[i]-a[i]}
+      r[4]=f[k]-1;s[4]=f[1]-f[0]
+      return [...q,...r,...s].join()
+    }`
+  const js=oracle(src)
+  for(const optimize of TIERS){
+    const wasm=jz(src,{optimize}).exports
+    for(const k of [0,1])is(wasm.g(k),js.g(k),`${optimize}: k=${k}`)
+  }
+  const taps=`let mk=()=>({qm:new Int32Array(8),dx:new Int32Array(8)})
+    let st=[mk(),mk()]
+    let step=(ch,v)=>{let {qm,dx}=ch;for(let i=0;i<8;i++){dx[i]=(v+i)|0;qm[i]-=dx[i]}return qm[3]}
+    export let t=(v)=>[step(st[v&1],v),step(st[v&1],v)].join()`
+  ok(!compile(taps,{optimize:2,wat:true}).includes('$__to_int32'),'a difference of integer elements converts inline')
+  for(const v of [3,2147483647,-2147483648])is(jz(taps).exports.t(v),oracle(taps).t(v),`and wraps as JavaScript does: ${v}`)
 })
 
 test('audit: range folding includes a local\'s implicit zero value', () => {

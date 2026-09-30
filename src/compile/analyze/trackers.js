@@ -31,7 +31,7 @@ export const makeTypedTracker = (get, set, del, getLen, setLen, delLen, body) =>
       // way two typed-array bindings can overlap. Recording that the program creates
       // ANY view lets memory-reordering passes (SLP) stay sound by bailing when set —
       // with no view, distinct typed bases own disjoint allocations.
-      if (typeof c === 'string' && c.endsWith('.view')) setLinkDemand('typedView')
+      if (typeof c === 'string' && (c.endsWith('.view') || c.endsWith('.anyview'))) setLinkDemand('typedView')
       const prev = get(name)
       if (prev && prev !== c) invalidate(name)
       else {

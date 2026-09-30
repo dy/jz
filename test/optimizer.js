@@ -38,6 +38,46 @@ const findFunc = (tree, name) => { let f = null; const w = n => { if (!Array.isA
 const preWatr = (opt) => typeof opt === 'object' ? { watr: false, ...opt } : { level: opt, watr: false }
 const callsInLoop = (src, name, opt = 2) => loopCount(findFunc(parse(src, preWatr(opt)), '$f'), n => n[0] === 'call' && n[1] === name)
 
+test('LICM array presence: module constants, defaults and shadowing stay distinct', () => {
+  const src = `const values = [2, 3, 5, 7]
+    export function sum(n, a = values) {
+      let s = 0
+      for (let i = 0; i < n; i++) s += a[i & 3]
+      return s
+    }
+    function shadow(values, n) {
+      let s = 0
+      for (let i = 0; i < n; i++) s += values[i & 3]
+      return s
+    }
+    export function nullable(n, absent) { return shadow(absent ? null : [1, 4, 9, 16], n) }
+    export function local(n) {
+      const values = n < 0 ? null : [11, 13, 17, 19]
+      let s = 0
+      for (let i = 0; i < n; i++) s += values[i & 3]
+      return s
+    }
+    export function change(v) { values[0] = v }
+    export function direct(n) {
+      let s = 0
+      for (let i = 0; i < n; i++) s += values[i & 3]
+      return s
+    }`
+  for (const optimize of levels(0, 1, 2, 3)) {
+    const f = jz(src, { optimize }).exports
+    is(f.direct(4), 17)
+    is(f.sum(4), 17, 'default reads the module array')
+    is(f.nullable(0, 1), 0, 'a shadowed nullable receiver is not read before an empty loop')
+    throws(() => f.nullable(1, 1))
+    is(f.nullable(4, 0), 30)
+    is(f.local(-1), 0)
+    is(f.local(4), 60)
+    f.change(23)
+    is(f.direct(4), 38, 'const bindings still permit element writes')
+    is(f.sum(4), 38)
+  }
+})
+
 test('address CSE: exits and sibling writes end the dominating region', () => {
   for (const pass of [hoistAddrBase, hoistPtrType]) {
     const site = pass === hoistAddrBase
@@ -311,12 +351,13 @@ test('LICM: checked-access length HEADER decode hoists once per function (neverG
     Array.isArray(n[1][1]) && n[1][1][0] === 'local.get' &&
     Array.isArray(n[1][2]) && n[1][2][0] === 'i32.const' && Number(n[1][2][1]) === 8
 
-  // pre-watr: `f` releases what it made as it returns, so its call of `scan` is one watr inlines
   const fnOn = findFunc(parse(src, preWatr('speed')), '$scan')
+  ok(fnOn, 'the JZ pass is inspected before backend inlining')
   is(loopCount(fnOn, isHeaderDecode), 0, 'length header decode fully hoisted out of both loops')
   ok(count(fnOn, isHeaderDecode) <= 2, 'at most one decode per array (v, z) survives, at function scope')
 
   const fnOff = findFunc(parse(src, preWatr({ level: 'speed', hoistInvariantLoop: false })), '$scan')
+  ok(fnOff, 'the control retains the same function')
   ok(loopCount(fnOff, isHeaderDecode) >= 1, 'sanity: without hoistInvariantLoop the decode DOES recur in-loop')
 
   // Bit-exact vs a plain-JS reference across the hull cursor's edge cases (n=0/1, cursor
@@ -1040,6 +1081,23 @@ test('inline: a leaf past the everywhere budget splices at its loop sites, the s
   ok(count(parse(SRC, preWatr(2)), n => (n[0] === 'call' || n[0] === 'return_call') && n[1] === '$leaf') >= 1, 'the straight-line sites keep the call')
 })
 
+test('inline: unreachable callers do not consume the duplication budget', () => {
+  const unused = Array.from({ length: 24 }, (_, i) => `function unused${i}(p) { return set(p, ${i}, 1) }`).join('\n')
+  const src = `function set(p, x, z) { if (z === undefined) z = p.z; p.x = x; p.z = z; return p }
+    ${unused}
+    export function f(n) {
+      const p = { x: 0, z: 0 }; let s = 0
+      for (let k = 0; k < 2; k++) { set(p, k, 1); for (let i = 0; i < n; i++) s += p.x + p.z + i }
+      return s
+    }`
+  for (const optimize of levels(0, 2, 3)) {
+    const { f } = jz(src, { optimize }).exports
+    for (const n of [0, 1, 4, 9]) is(f(n), n * n + 2 * n, `nested loop, n=${n}, O${optimize}`)
+  }
+  if (onKernel()) return
+  ok(!/call \$__alloc/.test(jz.compile(src, { optimize: 'speed', wat: true })), 'the live setter inlines and the receiver scalarizes')
+})
+
 test('inline: a method\'s synthesized dispatcher and binder are no sites of it', () => {
   // ~90 nodes at one loop site: over the everywhere budget only if the dispatcher's arm and the binder's closure count
   const SRC = `
@@ -1269,14 +1327,18 @@ test('unknown coercions still use __to_num', () => {
 test('dynamic prop reads reuse receiver type tag', () => {
   if (onWasi()) return  // wasi: external object WAT name differs
   if (belowOpt(2)) return  // receiver-tag CSE/hoisting runs at optimize >= 2
-  // pre-watr: a frame that releases what it made as it returns leaves a call watr inlines; the pin reads the body before watr
   const wat = jz.compile(`
     export const main = (o) => {
       return o.a + o.b + o.c
     }
-  `, { wat: true, optimize: { watr: false } })
+  `, { wat: true })
   ok(/\(call \$__dyn_get_any_t_h\b/.test(wat))
-  ok(/\$__pt\d+/.test(wat), 'expected repeated receiver tag to be hoisted')
+  const reads = []
+  walk(parseWat(wat), n => { if (n[0] === 'call' && n[1] === '$__dyn_get_any_t_h') reads.push(n) })
+  is(reads.length, 3, 'three property reads')
+  is(reads[0][4][0], 'local.tee', 'the first read saves the receiver tag')
+  const tag = reads[0][4][1]
+  ok(reads.slice(1).every(n => n[4][0] === 'local.get' && n[4][1] === tag), 'later reads reuse that tag, including after inlining')
 })
 
 test('monomorphic schema-slot devirtualization: singleton-schema dot-read compiles to aux-guard + load, no call', () => {
@@ -1721,7 +1783,7 @@ test('known array spread skips string/typed item dispatch', () => {
   const wat = jz.compile(`
     const copy = (a) => [...a]
     export const main = () => copy([1, 2, 3])[1]
-  `, { wat: true, optimize: { watr: false } })
+  `, { wat: true, optimize: { watr: false, sourceInline: false } })
   const copyBody = wat.match(/\(func \$copy[\s\S]*?\n  \)/)?.[0] || ''
   ok(/\(memory\.copy\b/.test(copyBody), 'known ARRAY spread should bulk-copy with memory.copy')
   ok(!/\(call \$__str_idx\b/.test(copyBody), 'known ARRAY spread should skip string indexing')
@@ -1861,6 +1923,54 @@ test('sourceInline: small helpers join existing exported loops', () => {
   if (!belowOpt(3)) ok(!/\(call \$count\b/.test(jz.compile(src, { wat: true, optimize: 3 })))
 })
 
+test('sourceInline: leaf substitution retains reads around coercion and later arguments', () => {
+  const cases = [
+    `let x = 0; const leaf = v => v + ((x = 7), 1);
+      export const f = n => { x = n; const r = leaf(x); return [r, x] }`,
+    `let x; const leaf = v => v * 2 + v * 3;
+      export const f = n => { x = {valueOf() { x = 9; return n }}; const r = leaf(x); return [r, x] }`,
+    `let x = 0; const leaf = (v, w) => v !== v;
+      export const f = n => { x = n; const r = leaf(x, x = NaN); return [r, Number.isNaN(x)] }`,
+    `let x = 0; const leaf = v => ((x = 7), v);
+      export const f = n => { x = n; const r = leaf(x); return [r, x] }`,
+    `let calls = 0; const arg = n => { calls++; return n };
+      const leaf = v => false ? v : 4;
+      export const f = n => [leaf(arg(n)), calls]`,
+    `let calls = 0; const arg = n => { calls++; return {value: n} };
+      const leaf = v => v.value;
+      export const f = n => [leaf(arg(n)), calls]`,
+  ]
+  for (const src of cases) for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const ref = oracle(src).f, { f } = run(src, { optimize })
+    for (const n of [3, 3, -2, 0, NaN, 3]) is(f(n), ref(n), `leaf evaluation at O${optimize}, n=${n}`)
+  }
+})
+
+test('sourceInline: caller binding substitution preserves writes, captures and coercions', () => {
+  const cases = [
+    `const pair = (v, w) => v * 10 + w;
+      export const f = n => { let x = n; return pair(x, x = n + 10) }`,
+    `const pair = (v, w) => v * 10 + w;
+      export const f = n => { let x = n; return pair(-x, x = n + 10) }`,
+    `const leaf = v => v * 2 + v * 3;
+      export const f = n => { let x = { valueOf() { x = 9; return n } };
+        const result = leaf(x); return [result, x] }`,
+    `const leaf = v => v.x + v.x;
+      export const f = n => { let p = { get x() { p = { x: 20 }; return n } };
+        const result = leaf(p); return [result, p.x] }`,
+    `const keep = v => () => v;
+      export const f = n => { let x = n; const read = keep(x); x++; return [read(), x] }`,
+    `const leaf = (v, touch) => { touch(); return v };
+      function outer(x, touch = () => { x += 10 }) { return leaf(x, touch) }
+      export const f = n => outer(n)`,
+  ]
+  for (const src of cases) for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const ref = oracle(src).f, { f } = run(src, { optimize })
+    for (const n of [3, 3, -2, 0, 0.5, 3])
+      is(f(n), ref(n), `caller storage at O${optimize}, n=${n}`)
+  }
+})
+
 test('sourceInline: mutable parameters retain private storage and argument order', () => {
   const src = `let calls = 0
     function arg(x) { calls = calls * 10 + x; return x }
@@ -1875,6 +1985,26 @@ test('sourceInline: mutable parameters retain private storage and argument order
   is(main(), [6, 3, 0, 3, 1, 21])
   is(main(), [6, 3, 0, 3, 1, 2121])
   if (!belowOpt(3)) ok(!/\(call \$count\b/.test(jz.compile(src, { wat: true, optimize: 3 })))
+})
+
+test('sourceInline: expression flattening preserves writable parameters and locals', () => {
+  const cases = [
+    `const step = (a, b) => (b = a + 1) && b; export const f = n => 2 * step(n)`,
+    `const step = (a, b = 0) => (b += a) && b; export const f = n => 2 * step(n)`,
+    `const step = (a, b) => (b = a + 1) && b; export const f = n => 2 * step(n, n + 2)`,
+    `const step = (a, b) => (b = a + 1) && b;
+      export const f = n => { const v = 2 * step(n, n); return v + n }`,
+    `const step = a => { let b = a + 2; return (b = a + 1) && b }
+      export const f = n => 2 * step(n)`,
+    `const step = (a, b = 1) => b++ + a + b; export const f = n => 2 * step(n)`,
+  ]
+  for (const src of cases) {
+    const ref = oracle(src).f
+    for (const optimize of levels(0, 2, 3)) {
+      const { f } = run(src, { optimize })
+      for (const n of [3, -1, 0, 0.5, 3]) is(f(n), ref(n), `private assignment storage at O${optimize}`)
+    }
+  }
 })
 
 test('sourceInline: exported loop budget includes expanded callees', () => {
@@ -2900,11 +3030,22 @@ test('promoteIntArrayLiterals: .push disqualifies (length mutation)', () => {
   is(main(), 4)
 })
 
+// A test the summary decides folds before promotion (plan/fold-kind-tests.js):
+// the promoted literal never meets it. One an inlined helper brings in after
+// the fold is still there to see a typed array, so it disqualifies.
 test('promoteIntArrayLiterals: Array.isArray disqualifies (typed arrays return false)', () => {
-  const src = `
+  const decided = `
     export const main = () => {
       const xs = [1, 2, 3]
       return Array.isArray(xs) ? xs.length : -1
+    }
+  `
+  is(run(decided).main(), 3, 'a decided test folds, its answer kept')
+  const src = `
+    const isArr = (v) => Array.isArray(v)
+    export const main = () => {
+      const xs = [1, 2, 3]
+      return (isArr(xs) ? xs.length : -1) + (isArr(7) ? 100 : 0)
     }
   `
   const body = compileMain(src, { propagateLocals: false })
@@ -3161,16 +3302,17 @@ test('promoted int array .filter().map() chain stays typed end-to-end', () => {
 test('promoteIntArrayLiterals: hole disqualifies', () => {
   // Sparse literal: [1, , 3] — middle slot is a hole. intLiteralValue
   // returns null for non-literal elements, so the candidate gate skips it.
+  // (a method keeps the list a list: read at constant positions only, it would be its elements' locals)
   const src = `
     export const main = () => {
       const xs = [1, , 3]
-      return xs.length
+      return xs.length + xs.indexOf(3)
     }
   `
   const body = compileMain(src, { propagateLocals: false })
   ok(/\(local \$xs f64\)/.test(body), 'holes break dense int contract; disqualify')
   const { main } = run(src)
-  is(main(), 3)
+  is(main(), 5)
 })
 
 test('promoteIntArrayLiterals: ++/-- on element disqualifies', () => {
@@ -5021,9 +5163,9 @@ export let main = () => {
   code[6] = 2; code[7] = 0; code[8] = 0
   return exec(code, reg)
 }`
-  // pre-watr: `main` releases what it made as it returns, so its call of `exec` is one watr inlines
   const wat = jz.compile(src, { wat: true, optimize: preWatr('speed') })
-  const execWat = wat.split('(func ').find(c => /^\$exec\b/.test(c)) || wat
+  const execWat = wat.split('(func ').find(c => /^\$exec\b/.test(c)) || ''
+  ok(execWat.length > 0, 'inspect the fetch worker before backend inlining')
   ok(!/\$[^ )]*tbg/.test(execWat), 'known length and pc hull retire the fetch guard entirely')
   ok(/i32\.load offset=4 \(local\.get \$__ab\d+\)/.test(execWat) &&
     /i32\.load offset=8 \(local\.get \$__ab\d+\)/.test(execWat),
@@ -5119,10 +5261,15 @@ test('fixed global typed cells cache across loops but reachable mutation fails c
     let cfg=new Float64Array(1);cfg[0]=2
     const bump=()=>{cfg[0]=cfg[0]+1}
     export let f=n=>{let s=0;for(let i=0;i<n;i++){s+=cfg[0];bump()}return s}`
-  const mutTree = parse(mutating, { level: 'speed' })
+  // the write stays behind a call: source inlining would splice `bump` into the
+  // loop, whose cell then lives in a local for the loop (plan/loop-fields.js)
+  const mutTree = parse(mutating, { level: 'speed', sourceInline: false })
   ok(loopCount(findFunc(mutTree, '$f'), n => n[0] === 'f64.load') >= 1,
     'a reachable element write keeps the load in the loop')
-  is(run(mutating, { optimize: 'speed' }).f(4), 14, 'mutating fallback exact')
+  is(run(mutating, { optimize: { level: 'speed', sourceInline: false } }).f(4), 14, 'mutating fallback exact')
+  is(loopCount(findFunc(parse(mutating, { level: 'speed' }), '$f'), n => n[0] === 'f64.load'), 0,
+    'the spliced write carries the cell in a local')
+  is(run(mutating, { optimize: 'speed' }).f(4), 14, 'the carried cell exact')
 
   // Replacing a first-load local.tee must not leave cache initializers reading
   // the wasm local's default zero before the typed-array base is decoded.
@@ -5269,7 +5416,7 @@ test('typed value hulls fail closed on wraparound, aliases, and closure writes',
 test('plain-array length proofs reject conditional growth, aliases, and extending writes', () => {
   const conditional = `const build=(x)=>{const a=[];if(x)a.push(7);return a}
     const get=(a)=>a[0]|0;export let f=(x)=>get(build(x))`
-  const wat = jz.compile(conditional, { wat: true, optimize: { level: 'speed', watr: false } })
+  const wat = jz.compile(conditional, { wat: true, optimize: { level: 'speed', watr: false, sourceInline: false } })
   const getWat = wat.split('(func $get')[1]?.split('(func ')[0] || ''
   ok(/i32\.lt_u/.test(getWat), 'conditional push cannot become a fixed returned length')
   const c = run(conditional, { optimize: 'speed' }).f
@@ -5527,9 +5674,9 @@ export let run = (n, len) => {
   }
   // Structural: the guarded fast arm's cursor reads are bare loads (no bounds
   // check idiom); the checked twin keeps its guarded reads.
-  // pre-watr: `run` releases what it made as it returns, so its call of `cursorScan` is one watr inlines
   const wat = jz.compile(src, { wat: true, optimize: preWatr('speed') })
   const fn = wat.split('(func ').find(f => f.startsWith('$cursorScan')) || ''
+  ok(fn.length > 0, 'inspect the cursor worker before backend inlining')
   const guardAt = fn.indexOf('i64.lt_s')
   ok(guardAt > 0, 'cursor guard present')
   const thenAt = fn.indexOf('(then', guardAt)
@@ -5756,10 +5903,10 @@ test('select-gate FLAG veto: nested-if load-bearing cond stays if/else, plain-co
   // here). Scope the check to the function's own top-level return expression — that's the
   // one node the select-gate veto actually governs (outer ternary → if/else, not select).
   const topExpr = (fn) => { const last = fn[fn.length - 1]; return Array.isArray(last) && last[0] === 'return' ? last[1] : last }
-  // pre-watr: a frame that releases what it made as it returns leaves a call watr inlines; the pin reads the body before watr
-  // no frame around the body either: its result, which may be a string, would be asked as it returns (optimize/arena-rewind.js)
   for (const optimize of levels(2, 3, 'speed')) {
-    const tree = parse(pickChild, { ...preWatr(optimize), arenaRewind: false })
+    // Inspect the branch result before the independent arena epilogue moves
+    // it into a return local; the runtime checks below use the full preset.
+    const tree = parse(pickChild, { level: optimize, arenaRewind: false })
     const fn = findFunc(tree, '$f') || findFunc(tree, '$f$exp')
     const top = topExpr(fn)
     // if/else, or its jump-chain form (chainConditions lowers the value-if

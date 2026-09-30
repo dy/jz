@@ -44,6 +44,16 @@ export function forwardStores(fn) {
 // value to forward, the statement's index, whether it was a store, and whether
 // something read the slot since (then the store stays).
 const forwardIn = (list, from, counts) => {
+  // Only these statements can seed an entry. Operand lists without either cannot
+  // forward or remove anything; rescanning their subtrees makes deep expressions
+  // quadratic. The caller still visits their children to find nested candidates.
+  let seeded = false
+  for (let i = from; i < list.length; i++) {
+    const s = list[i]
+    if (isArr(s) && (s[0] === 'f64.store' || s[0] === 'local.set' &&
+        typeof s[1] === 'string' && isArr(s[2]) && s[2][0] === 'f64.load')) { seeded = true; break }
+  }
+  if (!seeded) return
   const w = { defs: new Map(), writes: NONE }
   const entries = new Map()
   const dead = []

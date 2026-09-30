@@ -34,8 +34,7 @@
  *   compiler artifact. Default 2 instead of the user runtime's speed-tuned 8.
  * @param {number} [p.memory]     memory pages — the kernel's declared INITIAL commitment; $__memgrow extends on demand (no max). Default 1024 (64 MiB): small graphs stay near their true need instead of paying the old flat 8192-page/512 MiB floor (census 2026-08-18: jessie's real working set is ~150 MB, 70.7% of the old commitment was never touched).
  * @param {boolean} [p.helperCounters]  compile() opts.helperCounters passthrough
- *   (self-compile-build.mjs's JZ_HELPER_COUNTERS diagnostic profiling knob; unused
- *   by build-dist.mjs, default false so its behavior is unchanged).
+ *   (`JZ_HELPER_COUNTERS` diagnostic profiling knob, default false).
  * @param {boolean} [p.compactCollections] Build the compiler artifact's own
  *   Set/Map/HASH tables without the redundant 4-byte-per-slot probe lane.
  *   This is an outer-build option only: the compiled compiler still emits the
@@ -77,10 +76,24 @@ export function specializeInvariants(source, enabled = false) {
   return hasDeclaration ? source.replace(marker, 'export const DBG_INVARIANTS = false') : source
 }
 
+// Every builder and attestation resolves the same diagnostic environment.
+// JZ_SELF_COMPILE_OPT accepts a level or a JSON optimizer configuration.
+const selfOptimize = () => {
+  const value = process.env.JZ_SELF_COMPILE_OPT ?? '1'
+  if (value.trimStart().startsWith('{')) return JSON.parse(value)
+  return value === 'false' ? false : isNaN(+value) ? value : +value
+}
+const helperSites = () => {
+  const value = process.env.JZ_HELPER_SITES || ''
+  return !value || /^(0|false|no)$/i.test(value) ? false
+    : /^(1|true|yes)$/i.test(value) ? 'ptr_offset' : value
+}
+
+// Explicit options take precedence over the self-build diagnostic environment.
 export function resolveSelfCompileBuild({
   debugInvariants = false,
-  optimize = 1,
-  snapshot = true,
+  optimize = selfOptimize(),
+  snapshot = !/^(0|false|no)$/i.test(process.env.JZ_SELF_COMPILE_SNAPSHOT || '1'),
   watrGuard = false,
   arrayMinCap = 2,
   arrayLiteralMinCap = 2,
@@ -88,8 +101,8 @@ export function resolveSelfCompileBuild({
   collectionInitCap = 2,
   memory = 1024,
   compactCollections = process.env.JZ_SELF_COMPILE_COMPACT_COLLECTIONS !== '0',
-  helperCounters = false,
-  helperCallsites = false,
+  helperCounters = /^(1|true|yes)$/i.test(process.env.JZ_HELPER_COUNTERS || '') || !!helperSites(),
+  helperCallsites = helperSites(),
 } = {}) {
   const graph = resolveModuleGraph(SELF_ENTRY, { resolveNode: true })
 

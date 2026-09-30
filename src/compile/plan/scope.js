@@ -12,7 +12,6 @@
  *   - `inferModuleIntGlobals`      — purpose-focused f64→i32 numeric demotion
  *   - `flattenFuncNamespaces`      — `f.prop` slot SROA + dead-write drop
  *   - `devirtGlobalCalls`          — `call_indirect $global` → direct `call`
- *   - `materializeAutoBoxSchemas`  — schema registration for object propMap
  *   - `resolveClosureWidth`        — uniform closure ABI width
  *   - `canSkipWholeProgramNarrowing` — fast-path gate for monomorphic programs
  *
@@ -104,9 +103,8 @@ export function foldModuleConstants(ast) {
  *  global assigned nowhere keeps the declaration's claim. A typed-array kind
  *  names its constructor (`let mem; init = n => { mem = new Float64Array(n) }`);
  *  a const bound to an object of one schema names the schema. A hash kind is
- *  not claimed: this runs on the entry summary, before materializeAutoBoxSchemas
- *  gives a dot-written `{}` its schema (classifyHashDictGlobals decides the
- *  dictionaries). An exported global keeps its kind: the host can
+ *  not claimed: classifyHashDictGlobals decides the dictionaries. An exported
+ *  global keeps its kind: the host can
  *  store only a number through its export (src/summary). An array global's
  *  element facts are its cell's, the join of every store in the program (a
  *  table `const T = [1.5, …]` reads numbers; `C[i][j]` one level down): the
@@ -155,16 +153,16 @@ export const moduleGlobalKinds = (summary) => {
   }
 }
 
+// A module `{}` the program writes keys into is the dictionary the literal
+// allocates (module/object.js `{}`: a computed or a literal key write).
 export const classifyHashDictGlobals = (ast, programFacts) => {
-  const dynWriteVars = programFacts?.dynWriteVars
-  if (!dynWriteVars?.size || !ctx.scope.userGlobals?.size) return
-  const propMap = programFacts.propMap
+  const dynWriteVars = programFacts?.dynWriteVars, literalWriteKeys = programFacts?.literalWriteKeys
+  if ((!dynWriteVars?.size && !literalWriteKeys?.size) || !ctx.scope.userGlobals?.size) return
   const mark = (name, init) => {
     if (typeof name !== 'string' || !ctx.scope.userGlobals.has(name)) return
     if (ctx.scope.globalValTypes?.has(name)) return                 // fill only — never overwrite
     if (!Array.isArray(init) || init[0] !== '{}' || init.length !== 1) return
-    if (!dynWriteVars.has(name)) return
-    if (propMap?.get(name)?.size) return                            // dot-write elsewhere → materializeAutoBoxSchemas binds a real schema later
+    if (!dynWriteVars?.has(name) && !literalWriteKeys?.get(name)?.size) return
     if (ctx.schema.resolve?.(name)?.length) return                  // non-empty merged schema — not dict-mode
     ;(ctx.scope.globalValTypes ||= new Map()).set(name, VAL.HASH)
   }
@@ -548,7 +546,7 @@ export const inferModuleIntGlobals = (ast) => {
  * an alias could reach the table) keep the dynamic path. Together these can
  * eliminate the `__dyn_*` machinery from a namespace-only program outright.
  */
-export const flattenFuncNamespaces = (ast) => {
+export const flattenFuncNamespaces = (ast, propMap = null) => {
   const names = ctx.funcs.names
   if (!names?.size) return false
   // Cheap structural gate: a flattenable namespace exists only if some lifted
@@ -562,9 +560,11 @@ export const flattenFuncNamespaces = (ast) => {
       if (names.has(n.slice(0, i))) { hasNs = true; break outer }
   }
   // A namespace of plain values only (`parse.comment ??= {…}`, no arrow
-  // property) lifts no name: its witness is a top-level property store on a
-  // function, in a module initializer or the entry (the declared-keys pass
-  // then sees the flattened global as a literal-bound name).
+  // property) lifts no name: its witness is a store to a function's property,
+  // anywhere (`propMap`, the program facts' written properties), or a
+  // top-level compound one, in a module initializer or the entry (the
+  // declared-keys pass then sees the flattened global as a literal-bound name).
+  if (!hasNs && propMap) for (const n of propMap.keys()) if (names.has(n)) { hasNs = true; break }
   if (!hasNs) {
     const topStore = (st) => Array.isArray(st) && ASSIGN_OPS.has(st[0]) && Array.isArray(st[1]) && st[1][0] === '.' && typeof st[1][1] === 'string' && names.has(st[1][1])
     const stmts = (root) => Array.isArray(root) && root[0] === ';' ? root.slice(1) : [root]
@@ -584,11 +584,12 @@ export const flattenFuncNamespaces = (ast) => {
       if (ctx.funcs.multiProp.has(`${f}.${prop}`)) { plan(prop, { global: `${f}${T}${prop}` }); continue }
       const w = info.writes.get(prop)
       // Single top-level write of the lifted `$f$prop` (the `f.prop = arrow`
-      // definition shape): calls to it already lower to a direct `call $f$prop`,
-      // which a global would demote to call_indirect — leave it alone; when it's
-      // additionally never read as a value, the write itself is dead → drop it.
+      // definition shape): a call of it is a direct call of `$f$prop`, which a
+      // global would demote to call_indirect, and it becomes one here, so every
+      // later pass sees the call edge; when the property is additionally never
+      // read as a value, the write itself is dead → drop it.
       if (w && w.length === 1 && w[0].atInit && w[0].rhs === `${f}$${prop}`) {
-        if (!info.valRead.has(prop)) plan(prop, { drop: true })
+        plan(prop, { direct: `${f}$${prop}`, drop: !info.valRead.has(prop) })
         continue
       }
       // Everything else dissolves into a module global — the namespace is
@@ -618,6 +619,10 @@ export const flattenFuncNamespaces = (ast) => {
   const rewrite = (node, stmt = false) => {
     if (!Array.isArray(node)) return node
     const op = node[0]
+    if (op === '()' && Array.isArray(node[1]) && node[1][0] === '.') {
+      const d = decisionFor(node[1][1], node[1][2])
+      if (d?.direct) return ['()', d.direct, ...node.slice(2).map(a => rewrite(a))]
+    }
     if (op === '.' || op === '?.') {
       const d = decisionFor(node[1], node[2])
       if (d?.global) return d.global  // drop-decisions leave reads/calls alone
@@ -1257,35 +1262,6 @@ export const dropUnreadGlobals = (ast, programFacts) => {
     }
   }
   return changed
-}
-
-export const materializeAutoBoxSchemas = (programFacts) => {
-  if (!ctx.schema.register) return
-  for (const [name, props] of programFacts.propMap) {
-    // A name whose objects are minted elsewhere (`const alias = ns.inner`, a
-    // parameter) or whose sources disagree keeps no merged or boxed layout:
-    // the declaration's value replaces a box, and a slot store by a layout
-    // the object does not carry lands past its fields. Its dot writes take
-    // the dynamic path (ctx.schema.unknownInit's doc, ctx.js).
-    if (ctx.schema.unknownInit?.has(name) || ctx.schema.poisoned?.has(name)) continue
-    // A name already bound to a literal's layout keeps it. Widening that layout
-    // with the keys the program writes is declareWrittenKeys' job, and it does
-    // so only for a DEFINITE store — one that runs before anything can observe
-    // the object. Merging every written key here, conditional ones included,
-    // made `if (x) o.b = 2` declare `b` on every object of the literal: `in`,
-    // hasOwnProperty, Object.keys and for-in all reported it before the store.
-    if (ctx.schema.vars.has(name)) continue
-    const valueProps = [...props].filter(prop => !ctx.funcs.names.has(`${name}$${prop}`))
-    if (!valueProps.length) continue
-    const allProps = [...props]
-    const schema = ['__inner__', ...allProps]
-    const schemaId = ctx.schema.register(schema)
-    ctx.schema.vars.set(name, schemaId)
-    if (ctx.funcs.names.has(name) && !ctx.scope.globals.has(name))
-      declGlobal(name, 'f64')
-    if (!ctx.schema.autoBox) ctx.schema.autoBox = new Map()
-    ctx.schema.autoBox.set(name, { schemaId, schema })
-  }
 }
 
 export const resolveClosureWidth = (programFacts) => {

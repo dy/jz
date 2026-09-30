@@ -29,9 +29,10 @@ export const loopLitVal = (n) => Array.isArray(n) && n.length === 2 && n[0] == n
 export const litN = (n, k) => Array.isArray(n) && n.length === 2 && n[0] == null && n[1] === k
 
 // The induction variable a statement increments by exactly +1, else null. Covers
-// `i++` (post-inc desugars to `(++i) - 1`), `++i`, `i += 1`, `i = i + 1` / `i = 1 + i`.
+// `i++`, `++i`, `i += 1`, `i = i + 1` / `i = 1 + i`.
 export function unitIncVar(stmt) {
   if (!Array.isArray(stmt)) return null
+  if (stmt[0] === 'postfix') stmt = stmt[1]
   let inc = stmt
   if (stmt[0] === '-' && litN(stmt[2], 1) && Array.isArray(stmt[1]) && stmt[1][0] === '++') inc = stmt[1]
   if (inc[0] === '++' && typeof inc[1] === 'string') return inc[1]
@@ -191,9 +192,10 @@ export function testRefinements(facts) {
 }
 
 // A step that moves `name` by a fixed amount per pass: `x++`, `x--`, `x += S`, `x -= S`,
-// `x = x ± S`, `x = S + x` (a postfix value, `(++x) - 1`, is the same write) →
+// `x = x ± S`, `x = S + x` (discarding a postfix value keeps the same write) →
 // { name, by, sign }, else null.
 function counterStep(s) {
+  if (Array.isArray(s) && s[0] === 'postfix') s = s[1]
   if (Array.isArray(s) && s.length === 3 && (s[0] === '-' || s[0] === '+') && Array.isArray(s[1]) &&
       (s[1][0] === '++' || s[1][0] === '--') && constIntExpr(s[2]) === 1) s = s[1]
   if (!Array.isArray(s) || typeof s[1] !== 'string') return null

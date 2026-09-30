@@ -1,7 +1,7 @@
 // Import statement tests
 import test from 'tst'
 import { is, ok, throws, almost } from 'tst/assert.js'
-import { onWasi, adaptI64, levels } from './_matrix.js'
+import { onWasi, adaptI64, levels, belowOpt } from './_matrix.js'
 import jz, { compile } from '../index.js'
 import { instantiate } from '../interop.js'
 
@@ -1198,6 +1198,38 @@ test('export * as ns from a module binds the namespace for importers', () => {
   is(exports.f(2), 49)
 })
 
+// A namespace holds its module's exports alone: a key it reads by value names no
+// internal binding of the module, so the module's helpers stay helpers (a
+// factory whose closure a loop calls splices into that loop).
+test('imports: a namespace read by a computed key holds the exports alone', () => {
+  const c = `function lcg (seed) { let s = seed >>> 0 || 1; return () => { s = (s * 1103515245 + 12345) & 0x7fffffff; return s / 0x3fffffff - 1 } }
+function whiteN (n, seed) { let rand = lcg(seed); let d = new Float32Array(n); for (let i = 0; i < n; i++) d[i] = rand() * 0.9; return d }
+export function white (n, seed) { return whiteN(n, seed) }
+export function twice (n, seed) { return whiteN(n, seed).map(x => x * 2) }`
+  const src = `import * as c from './c.js'
+export let f = (k, n) => { const fn = c[k]; return typeof fn === 'function' ? fn(n, 3)[n - 1] : -1 }`
+  const host = new Function(c.replace(/export /g, '') + '; return { white, twice }')()
+  const want = (k, n) => typeof host[k] === 'function' ? host[k](n, 3)[n - 1] : -1
+  for (const optimize of levels(0, 2)) {
+    const { f } = jz(src, { modules: { './c.js': c }, optimize }).exports
+    for (const [k, n] of [['white', 4], ['twice', 5], ['whiteN', 4], ['lcg', 2], ['white', 1]]) is(f(k, n), want(k, n), `c['${k}'] at ${optimize}`)
+  }
+  if (belowOpt(2)) return
+  const text = compile(src, { modules: { './c.js': c }, optimize: 2, wat: true })
+  ok(!/tramp_\S*(lcg|whiteN)\b/.test(text), 'no internal function is a namespace value')
+  const indirect = text.split('\n  (func ').filter(b => /call_indirect/.test(b)).map(b => b.split(/\s/)[0])
+  ok(indirect.every(n => n === '$f$exp' || n === '$__call_closure'), `the loop calls the generator directly: ${indirect}`)
+})
+
+// `export let idx, cur, parse = …` (subscript's parser state): a declarator with no
+// value is an export like the others, by name and on the namespace.
+test('imports: a declarator with no value is exported', () => {
+  const modules = { './p.js': 'export let idx, cur = 5, bump = () => (idx = (idx ?? 0) + 1)' }
+  is(jz(`import { idx, cur, bump } from './p.js'\nexport let f = () => { bump(); bump(); return idx * 10 + cur }`, { modules }).exports.f(), 25)
+  const { g } = jz(`import * as p from './p.js'\nexport let g = (k) => { p.bump(); return typeof p[k] }`, { modules }).exports
+  is([g('idx'), g('bump'), g('nope')], ['number', 'function', 'undefined'])
+})
+
 // A module's scope is the builtins plus its own declarations and imports; it
 // never sees the importing module's bindings (ES module scopes do not nest).
 // `b.js` is first reached beneath `a.js`, after `a.js` bound `core` to another
@@ -1234,7 +1266,76 @@ test('imports: an error in a bundled module names the module and its line', () =
   const modules = { './e.js': `const k = 1\nexport const f = (o) => {\n  delete o.k\n  return k\n}\n` }
   let msg = null
   try { jz(main, { modules }) } catch (e) { msg = e.message }
-  ok(msg != null && /at \.\/e\.js:3:11\n\s+delete o\.k/.test(msg), `names the module: ${JSON.stringify(msg?.slice(0, 160))}`)
+  // the `delete` expression that faulted, not the member read inside it
+  ok(msg != null && /at \.\/e\.js:3:3\n\s+delete o\.k/.test(msg), `names the module: ${JSON.stringify(msg?.slice(0, 160))}`)
   try { jz(`export let r = () => {\n  delete r.k\n}`) } catch (e) { msg = e.message }
   ok(/at line 2:\d+\n/.test(msg), `the program's own error keeps its plain line: ${JSON.stringify(msg?.slice(0, 160))}`)
+})
+
+
+test('namespace computed reads respect lexical bindings and evaluate keys once', async () => {
+  const dep = 'export let a=1; export const b=2; export const c=3; export const set=v=>a=v; const n0=11,nfalse=12,nundef=13; export {n0 as "0",nfalse as false,nundef as undefined}'
+  const source = `
+    import * as ns from './dep.js'
+    import * as empty from './empty.js'
+    const read = (ns, key) => ns[key]
+    export const shadow = () => {
+      let out = read({b:13}, 'b')
+      { const ns={b:17}; out += ns['b'] }
+      return out + ns.b
+    }
+    export const once = flag => {
+      let calls=0
+      const key=()=>{calls++; return flag ? 'c' : 'missing'}
+      const value=ns[key()]
+      return [value,calls]
+    }
+    export const coercion = flag => {
+      let calls=0
+      const key={toString(){calls+=10;return flag?'missing':'b'},valueOf(){calls+=100;return 'a'}}
+      const value=ns[key]
+      return [value,calls]
+    }
+    export const noExports = () => {
+      let calls=0
+      const key={toString(){calls++;return 'a'}}
+      const value=empty[key]
+      return [value,calls]
+    }
+    export const throwsKey = () => {
+      let calls=0
+      try { const value=empty[{toString(){calls++;throw new TypeError('key')}}]; return [value,calls] }
+      catch(e) { return [e.name,calls] }
+    }
+    const readKey = key => ns[key]
+    export const primitives = () => [readKey(0),readKey(false),readKey(undefined),readKey(0n)]
+    export const live = () => ns[(ns.set(9),'a')]
+    export const symbols = () => [ns[Symbol('a')]===undefined,ns[{toString(){return Symbol('b')}}]===undefined]
+    export const shadowString = () => { const String=()=> 'b', __property_key=()=> 'a'; return [ns[{toString(){return 'b'}}],ns[String('a')]] }
+    export const literalMiss = () => ns['missing']===undefined && ns.missing===undefined
+  `
+  const uri = text => 'data:text/javascript,' + encodeURIComponent(text)
+  const reference = await import(uri(source.replaceAll('./dep.js', uri(dep)).replaceAll('./empty.js', uri('export {}'))))
+  const modules = {'./dep.js': dep, './empty.js': 'export {}'}
+  for (const optimize of levels(0,1,2,3,'size')) {
+    const actual = jz(source,{modules,optimize}).exports
+    for (const name of ['shadow','once','coercion','noExports','throwsKey','primitives','live','symbols','shadowString','literalMiss'])
+      for (const flag of [0,1,0]) is(actual[name](flag),reference[name](flag), `${name}(${flag}), O${optimize}`)
+  }
+})
+
+test('quoted and keyword module names survive imports and re-exports', () => {
+  const modules = {
+    './dep.js': 'const f=x=>x+11; export {f as "", f as "π space", f as false}',
+    './via.js': 'export {"" as blank, "π space" as " spaced ", false as flag} from "./dep.js"; export * as "namespace" from "./dep.js"',
+  }
+  const source = `import {blank, " spaced " as spaced, flag, "namespace" as ns} from './via.js'
+    const key=()=>''
+    export const f=()=>blank(1)+spaced(2)+flag(3)+ns[''](4)+ns[key()](5)`
+  for (const optimize of levels(0,1,2,3,'size')) {
+    const {f} = jz(source,{modules,optimize}).exports
+    is(f(),70,`quoted names, O${optimize}`)
+    is(f(),70,`repeated call, O${optimize}`)
+  }
+  throws(() => compile('const n=1; export {n as 1}'), /Invalid module export name/)
 })

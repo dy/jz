@@ -11,6 +11,53 @@ import { oracle, funcWat } from './util.js'
 
 const run = (body) => jz('export let f = () => {' + body + '}', { jzify: true }).exports.f()
 
+test('dictionary writes preserve key coercion order, assigned values and growing aliases', () => {
+  for (const value of ['7', "'saved'", '9221120237041090577n']) {
+    const src = `export function f(){
+      let events=0,p={};const alias=p
+      const key={toString(){events=events*10+2;return 'length'}}
+      const value=()=>{events=events*10+1;return ${value}}
+      const assigned=p[key]=value()
+      for(let i=0;i<80;i++)p['item'+i]=i
+      p.last=${value}
+      return [assigned,p.length,alias.length,p.last,alias.last,events,Object.keys(alias).length,alias.item79]
+    }`
+    const want = oracle(src).f()
+    for (const optimize of levels(0, 1, 2, 3)) {
+      const { f } = jz(src, { optimize }).exports
+      is(f(), want, `${value}, O${optimize}`)
+      is(f(), want, `repeat ${value}, O${optimize}`)
+    }
+  }
+})
+
+test('array length writes through literal, computed and coercing keys resize every alias', () => {
+  for (const optimize of levels(0, 1, 2, 3)) {
+    for (const key of ["'length'", 'key', "({toString(){calls++;return key}})"]) {
+      const src = `export function f(n,key){
+        const a=[2,3],b=a;let calls=0;const before=a[0];
+        const assigned=(b[${key}]=n);
+        return [before+a[0],a.length,b.length,a[2],assigned,calls]
+      }`
+      const want = oracle(src).f, got = jz(src, { optimize }).exports.f
+      for (const n of [0,1,4,40,0]) is(got(n,'length'),want(n,'length'), `O${optimize}, ${key}, ${n}`)
+    }
+  }
+})
+
+test('array length assignment preserves the value and validates both numeric conversions', () => {
+  for (const optimize of levels(0, 1, 2, 3)) for (const access of ['a.length', "a['length']", 'a[key]']) {
+    const src = `export function f(v,key){const a=[4,5,6];try {const result=(${access}=v);return [a.length,result===v,a[0],a[2]]}catch(e){return [e.name,a.length,a[0],a[2]]}}`
+    const got = jz(src, { optimize }).exports.f, want = oracle(src).f
+    for (const v of [0,-0,1,4,'2','',null,true,false,-1,1.5,NaN,Infinity,undefined])
+      is(got(v,'length'), want(v,'length'), `${access}, ${String(v)}, O${optimize}`)
+    const effects = `export function f(first,second,key){const a=[4,5,6];let calls=0;const v={valueOf(){return ++calls===1?first:second}};try{const result=(${access}=v);return [a.length,calls,result===v]}catch(e){return [e.name,calls,a.length]}}`
+    const actual = jz(effects, { optimize }).exports.f, expected = oracle(effects).f
+    for (const [first, second] of [[2,2],[4294967298,2],[1,2],[2,1],[NaN,0]])
+      is(actual(first,second,'length'), expected(first,second,'length'), `${access} conversions ${first}/${second}, O${optimize}`)
+  }
+})
+
 test('runtime keys read collection size after growth, deletion and clearing', () => {
   for (const ctor of ['Map', 'Set']) for (const optimize of [0, 2, 'speed']) {
     const put = ctor === 'Map' ? 'm.set(i,i)' : 'm.add(i)'
@@ -88,7 +135,7 @@ test('typed-array property keys preserve named values and canonical numeric inde
 
 // The export boundary (README, "Host boundary"): a parameter used only as a
 // typed-array index takes an f64 slot, so the host's key converts as `+key` and
-// the index coerces to i32 ("Array indices coerce to i32"). Property semantics
+// the typed array validates that numeric index. Property semantics
 // for string keys hold wherever the program holds the key as a string: an
 // internal helper whose callers pass strings.
 test('exported typed-array index parameters take the numeric boundary; internal string keys keep property semantics', () => {
@@ -100,7 +147,7 @@ test('exported typed-array index parameters take the numeric boundary; internal 
   ]) {
     const src = `const a = new Float64Array([3, 5]); ${exports}`
     const ref = new Float64Array([3, 5])
-    const at = (key) => { const i = +key | 0; return i >= 0 && i < ref.length ? ref[i] : undefined }
+    const at = key => ref[+key]
     const expected = { get: at, mixed: (key) => at(key) + (key | 0) }
     for (const optimize of [...levels(0, 2, 3), 'size']) {
       const wasm = jz(src, { optimize }).exports
@@ -122,11 +169,10 @@ test('exported typed-array stores take the numeric boundary for key and value; i
     export function get(key) { return a[key]; }`
   for (const optimize of [...levels(0, 2, 3), 'size']) {
     const wasm = jz(src, { optimize }).exports, ref = new Float64Array([3, 5])
-    const at = (key) => { const i = +key | 0; return i >= 0 && i < ref.length ? ref[i] : undefined }
+    const at = key => ref[+key]
     for (const [key, value] of [['note', 'text'], ['note', undefined], ['01', 9], [0, '11'], ['1', 13], ['', false]]) {
       wasm.put(key, value)
-      const i = +key | 0
-      if (i >= 0 && i < ref.length) ref[i] = +value
+      ref[+key] = +value
       for (const key of ['note', '01', 0, 1, '', 'length'])
         is(wasm.get(key), at(key), `O${optimize}: stored ${key}`)
     }
@@ -984,11 +1030,9 @@ test('dictionary slot updates hash every string representation after key normali
 })
 
 test('dyn-keys: atom-vs-NaN key split (index contract preserved)', () => {
-  // Real NaN keeps the documented i32-truncating index contract (a[NaN] → a[0]);
-  // only ATOM boxes (undefined/null) stringify. The first ToPropertyKey arm
-  // used f64.eq(k,k), which lumped real NaN in with the atoms and broke the
-  // contract pin in array-methods.
-  is(run(`const a = [11, 22]; const k = 0/0; return a[k]`), 11)
+  // A real NaN names no element (a[NaN] is undefined); only ATOM boxes
+  // (undefined/null) stringify to a property key.
+  is(run(`const a = [11, 22]; const k = 0/0; return a[k]`), undefined)
   is(run(`const d = {}; d['undefined'] = 7; const u = [, 1][0]; return d[u]`), 7)
 })
 
@@ -2509,37 +2553,25 @@ test('zero-evidence host BigInt REJECTS at the wrapper (phase-c C4b correct-or-r
 // hypothetical proven-raw slot. The five states below are the full space the
 // audit asked to pin; see each test for which are reachable.
 
-test('phase-c C4b (1): proven-RAW BigInt export param is architecturally UNREACHABLE today — documented, not a regression', () => {
-  // jz:hostabi's `raw` field is real wire format and interop.js's i64Arg
-  // dispatches on it (a plain bigint would pass straight through, no box —
-  // native wasm BigInt→i64 coercion) — but the current compiler never
-  // populates it. Reachability proof (representation-plan.js): makeBoundaryData
-  // sets `uncovered = isExported(...)` UNCONDITIONALLY for every exported
-  // function's params — the JS host can call with ANY value regardless of
-  // what the function body proves about its own internal call sites,
-  // so the export boundary can never be "closed world" the way an
-  // internal-only call graph can. `uncovered` forces `currentParamRep` to
-  // ANY_BIGINT (never CLOSED) for any param that may touch bigint at all;
-  // `targetRepFor` only returns RAW_BIGINT when `current` IS closed — with
-  // `current` forced open, every path falls through to BOXED_BIGINT
-  // instead. Verified empirically against the STRONGEST evidence shape
-  // (direct bigint arithmetic on the param, no typeof guard at all) — even
-  // stronger than the reachable "tagged" shape below — and it still produces
-  // NO jz:hostabi entry whatsoever (the census's own optimistic NUMBER
-  // default wins before RepresentationPlan's boundary logic would even get a
-  // chance to choose BOXED over RAW): the export stays a zero-evidence f64
-  // numeric slot, pin (3) below, not a raw-bigint acceptor.
+test('host BigInt arithmetic evidence selects a tagged export parameter', () => {
+  if (onKernel()) return
   const td = new TextDecoder()
-  const hostAbiOf = (src) => {
-    const wasm = compile(src, { jzify: true })
-    const secs = WebAssembly.Module.customSections(new WebAssembly.Module(wasm), 'jz:hostabi')
-    return secs.length ? JSON.parse(td.decode(secs[0])) : null
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    for (const src of ['export let f = n => n * 2n', `export let f = n => typeof n === 'bigint'`]) {
+      const { module, exports: { f } } = jz(src, { optimize })
+      const sections = WebAssembly.Module.customSections(module, 'jz:hostabi')
+      ok(sections.length, `BigInt evidence publishes a boundary O${optimize}`)
+      const entry = JSON.parse(td.decode(sections[0])).find(e => e.name === 'f')
+      is(entry.raw, undefined, 'the host boundary remains open')
+      ok(entry.tag.includes(0), 'arithmetic and typeof both use tagged ingress')
+      const ref = oracle(src).f
+      for (const n of [0n, 5n, -7n, 5n]) is(f(n), ref(n))
+      if (src.includes('*')) {
+        throws(() => f(5), TypeError, 'Number does not silently enter BigInt arithmetic')
+        is(f(5n), 10n, 'a valid call still works after rejection')
+      } else is(f(5), false)
+    }
   }
-  is(hostAbiOf('export let f = (n) => n * 2n'), null,
-    'direct bigint arithmetic on a zero-evidence param: no hostabi entry at all — not raw, not tagged')
-  const tagged = hostAbiOf(`export let check = value => typeof value === 'bigint'`)
-  is(tagged[0].raw, undefined, 'raw is never populated by the current compiler')
-  ok(tagged[0].tag.includes(0), 'the one reachable evidenced state lands tag, never raw')
 })
 
 test('phase-c C4b (2): tagged (evidenced) BigInt param accepts plain bigint via the box path and computes correctly', () => {
@@ -2865,16 +2897,18 @@ test('declared keys: registration calls between the literal and its store keep t
   is(keys(), '//;/*;#!;'); is(has(), true)
 })
 test('declared keys stand down for a call that reaches the literal, an alias, a callback, a default', () => {
-  const probeMod = { './probe.js': `import { parse } from './parse.js'\nexport const seen = []\nexport const look = () => seen.push('#!' in parse.comment)\nexport const noop = () => 0\nexport const withDefault = (o = parse.comment) => seen.push('#!' in o)\nexport const each = (arr, fn) => arr.forEach(fn)\nexport const viaLook = () => look()\nexport const hooks = [look]\nexport const fire = () => hooks[0]()` }
+  const probeMod = { './probe.js': `import { parse } from './parse.js'\nexport const seen = []\nexport const look = () => seen.push('#!' in parse.comment)\nexport const noop = () => 0\nexport const withDefault = (o = parse.comment) => seen.push('#!' in o)\nexport const each = (arr, fn) => arr.forEach(fn)\nexport const viaLook = () => look()\nexport const hooks = [look]\nexport const fire = () => hooks[0]()\nexport const left = n => n > 0 ? right(n - 1) : look()\nexport const right = n => n > 0 ? left(n - 1) : noop()` }
   for (const [name, between] of [
     ['reaching call', `look()`],
     ['call through a callee that reaches', `viaLook()`],
+    ['recursive call graph reaches the literal', `left(4)`],
+    ['opposite entry of the recursive call graph', `right(5)`],
     ['call of a callee the census cannot see', `fire()`],
     ['alias', `const cm = parse.comment; noop(); seen.push('#!' in cm)`],
     ['callback argument', `each([1], () => seen.push('#!' in parse.comment))`],
     ['parameter default', `withDefault()`],
   ]) {
-    const main = `import { parse } from './parse.js'\nimport { seen, look, noop, withDefault, each, viaLook, fire } from './probe.js'\n${between}\nparse.comment['#!'] = '\\n'\nexport let f = () => seen.join(',') + '|' + ('#!' in parse.comment)`
+    const main = `import { parse } from './parse.js'\nimport { seen, look, noop, withDefault, each, viaLook, fire, left, right } from './probe.js'\n${between}\nparse.comment['#!'] = '\\n'\nexport let f = () => seen.join(',') + '|' + ('#!' in parse.comment)`
     is(jz(main, { modules: modulesOf(main, probeMod) }).exports.f(), 'false|true', name)
   }
 })
@@ -2955,4 +2989,22 @@ export let kb = () => { let s = ''; for (const k in b) s += k; return s }`
   for (const fn of ['ka', 'kb']) is(got[fn](), want[fn](), `${fn} after add`)
   const wat = compile(src, { wat: true, optimize: { watr: false } })
   ok(!/__schema_tbl/.test(funcWat(wat, 'ka')) && /__schema_tbl/.test(funcWat(wat, 'kb')), 'the untouched literal unrolls, the indexed one keeps the ordered loop')
+})
+
+// A typed store takes its value's number (ToNumber: an object's valueOf) for
+// every element kind, before the index decides whether anything is stored.
+test('typed stores take the number of an object value for every element kind, in range or not', () => {
+  for (const ctor of ['Int8Array', 'Uint8Array', 'Uint8ClampedArray', 'Int16Array', 'Uint16Array', 'Int32Array', 'Uint32Array', 'Float16Array', 'Float32Array', 'Float64Array']) {
+    const src = `export function f(i) {
+      let events = 0; const a = new ${ctor}(2)
+      function rhs() { events = events * 10 + 2; return { valueOf() { events = events * 10 + 3; return 7.6 } } }
+      const r = (a[(events = events * 10 + 1, i)] = rhs())
+      return [events, a[0], a[1], typeof r]
+    }`
+    const expected = oracle(src).f
+    for (const optimize of [0, 2, 3, 'size']) {
+      const { f } = jz(src, { optimize }).exports
+      for (const i of [0, 1, 5, -1]) is(f(i), expected(i), `O${optimize}: ${ctor}[${i}]`)
+    }
+  }
 })

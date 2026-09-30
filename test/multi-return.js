@@ -2,7 +2,7 @@
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
 import { run, wat, funcWat, oracle } from './util.js'
-import { levels } from './_matrix.js'
+import { belowOpt, levels } from './_matrix.js'
 import parseWat from 'watr/parse'
 
 
@@ -156,4 +156,26 @@ test('multi: incompatible conditional arrays retain array results', () => {
     for (const name of Object.keys(host)) for (const n of [0, 1, 0])
       is(ex[name](n, [6, 7]), host[name](n, [6, 7]), `${name}(${n}) O${optimize}`)
   }
+})
+
+// A small tuple helper spliced into a loop leaves no list behind: the pattern
+// that takes its first lane reads the lane's local, and a call whose result
+// is dropped keeps only what its elements run (plan/inline.js, literals.js).
+test('multi: a spliced tuple helper allocates nothing per iteration', () => {
+  const src = `function svf (s, x, f, q) { s.l += f * s.b; let h = x - s.l - q * s.b; s.b += f * h; return [s.l, s.b, h] }
+    const st = { l: 0, b: 0 }, st2 = { l: 0, b: 0 }
+    export let f = (d) => { let s = 0; for (let i = 0; i < d.length; i++) { let [a, , h] = svf(st, d[i], 0.1, 1.2); svf(st2, a + h, 0.2, 0.8); s += st2.b } return s }`
+  const d = [1, -0.5, 0.25, 2, -3, 0.125]
+  for (const optimize of levels(0, 2, 3)) { const ex = run(src, { optimize }), js = oracle(src); is(ex.f(d), js.f(d), `O${optimize}`); is(ex.f(d), js.f(d), `O${optimize}, the state carried`) }
+  if (belowOpt(2)) return
+  const text = wat(src, { optimize: 2 })
+  // every loop of the module, as written
+  const loops = []
+  for (let at = text.indexOf('(loop'); at >= 0; at = text.indexOf('(loop', at + 1)) {
+    let depth = 0, end = at
+    do { const c = text[end++]; if (c === '(') depth++; else if (c === ')') depth-- } while (depth && end < text.length)
+    loops.push(text.slice(at, end))
+  }
+  ok(loops.length && !/\(func \$svf\b/.test(text), 'the helper is spliced')
+  ok(loops.every(l => !/call \$__alloc/.test(l)), 'no loop allocates')
 })

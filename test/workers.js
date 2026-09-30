@@ -50,6 +50,21 @@ test('atomics: unproven receiver rejects at compile', () => {
   ok(err && /proven Int32Array/.test(err.message), 'unproven receiver → clean compile reject')
 })
 
+test('atomics: wait clamps negative timeouts and evaluates coercion once', () => {
+  if (onWasi() || onKernel()) return
+  const src = `export let f = () => {
+    let a = new Int32Array(1), calls = 0
+    let t = { valueOf() { calls++; return -1 } }
+    return [Atomics.wait(a, 0, 0, -1), Atomics.wait(a, 0, 0, -Infinity),
+      Atomics.wait(a, 0, 0, 0), Atomics.wait(a, 0, 0, t), calls,
+      Atomics.wait(a, 0, 1, NaN), Atomics.wait(a, 0, 1, Infinity)]
+  }`
+  for (const optimize of levels()) {
+    const f = jz(src, { optimize, sharedMemory: true, memory: sharedMem() }).exports.f
+    is(f(), ['timed-out', 'timed-out', 'timed-out', 'timed-out', 1, 'not-equal', 'not-equal'])
+  }
+})
+
 test('atomics: shared-memory stringify (static region relocates)', () => {
   if (onWasi() || onKernel()) return
   // shared memory has no active data segment — static strings + Ryū/EL tables

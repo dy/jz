@@ -142,15 +142,53 @@ test('stdlib: apply on an imported function with a run-time argument array', () 
   is(e.f(1, 2), 2); is(e.g(1, 5, 3), 5)
 })
 
-// Feature detection reads `typeof` of a global the target may lack. It must
-// evaluate (to 'undefined' here), so the fallback branch is the one compiled.
-// Live: assert/has-symbol-support, reached from every typed-array polyfill.
 // `??=` tests its target as it is: a bare `let` read back through it is no NaN.
 test('stdlib: a returned local assigned through ??= keeps undefined apart from NaN', () => {
   agree(`export let f = () => { let a; a ??= 41; a += 1; return a }`, 'f', [])
 })
-test.todo('stdlib: typeof of an unsupported global evaluates', () => {
-  ok(jz(`export let f = (x) => (typeof Symbol === 'function') ? 1 : x`).exports.f(2.5) != null)
+test('stdlib: feature detection sees a builtin before its first use', () => {
+  is(jz(`export let f = (x) => (typeof Symbol === 'function') ? 1 : x`).exports.f(2.5), 1)
+  const names = ['Symbol', 'Object', 'Number', 'String', 'Boolean', 'Date', 'Map', 'Set', 'RegExp', 'Promise', 'Error', 'Function',
+    'Math', 'JSON', 'Math.PI', 'Math.random', 'Date.now', 'console', 'console.log', 'performance', 'performance.now', 'parseInt', 'isNaN']
+  const source = `export let f = () => [${names.map(name => `typeof ${name}`).join(',')}]`
+  is(run(source).f(), oracle(source).f(), 'builtins have their declared types without a call')
+  const imports = WebAssembly.Module.imports(new WebAssembly.Module(jz.compile(source)))
+  ok(!imports.some(i => /rng|clock|time/i.test(i.name)), 'typeof does not request random numbers or read the clock')
+})
+
+test('stdlib: builtin typeof follows aliases and respects shadowed bindings', () => {
+  for (const source of [
+    `const S = Symbol; export let f = () => typeof S`,
+    `export let f = () => { const S = Symbol; return typeof S }`,
+    `const random = Math.random; export let f = () => typeof random`,
+    `const { now } = Date; export let f = () => typeof now`,
+    `const P = performance; const { now } = P; export let f = () => typeof now`,
+    `const C = console; const { log } = C; export let f = () => typeof log`,
+    `export let f = () => Date.hasOwnProperty('now') ? 1 : 0`,
+    `export let f = () => typeof Math['random']`,
+    `export let f = () => { const performance = { now: 3 }; return typeof performance.now }`,
+    `const Symbol = 3; export let f = () => typeof Symbol`,
+    `export let f = () => { const Symbol = 3; return typeof Symbol }`,
+    `export let f = () => { const pick = Symbol => typeof Symbol; return pick('value') }`,
+    `const parseInt = 3; export let f = () => typeof parseInt`,
+    `const Math = { sin: 3 }; export let f = () => typeof Math.sin`,
+  ]) is(run(source).f(), oracle(source).f(), source)
+  is(graph(`import { Symbol } from './value.js'; export let f = () => typeof Symbol`,
+    { './value.js': 'export const Symbol = 3' }), 'number', 'imported binding shadows the constructor')
+})
+
+test('stdlib: namespace introspection preserves booleans, aliases and user bindings', () => {
+  for (const source of [
+    `export let f = () => [Date.hasOwnProperty('now'), Date.hasOwnProperty('missing')]`,
+    `export let f = () => { const D = Date; return [D.hasOwnProperty('prototype'), D.hasOwnProperty('now')] }`,
+    `export let f = () => { const M = Math; return Array.isArray(M) === false }`,
+    `const A = Array; const M = Math; export let f = () => A.isArray(M) === false`,
+    `const Math = []; export let f = () => Array.isArray(Math)`,
+    `const Array = { isArray: x => x + 1 }; export let f = () => Array.isArray(3)`,
+    `const Date = {}; export let f = () => Date.hasOwnProperty('now')`,
+  ]) agree(source, 'f', [])
+  is(graph(`import { Math } from './value.js'; export let f = () => Array.isArray(Math)`,
+    { './value.js': 'export const Math = []' }), true, 'an imported binding keeps its own identity')
 })
 
 // ── Numeric proof ───────────────────────────────────────────────────────────
@@ -198,13 +236,17 @@ test('stdlib: an isnan guard before arithmetic keeps the f64 export', () => {
 // A value returned to the host as itself keeps its identity (`fib('1')` is
 // '1', test/audit-regressions.js): a parameter returned by an exported function,
 // through any callee, stays boxed. The tiny-argument early-out is that shape.
-test.todo('stdlib: returning the parameter itself keeps the f64 export', () => {
-  ok(takesF64(`const F = new Float64Array(1)
+test('stdlib: an early return of the original parameter preserves its identity', () => {
+  const source = `const F = new Float64Array(1)
     const U = new Uint32Array(F.buffer)
     function hi(x) { F[0] = x; return U[1] }
     function kern(x, y) { var z = x * x; return x + z * (y + z * 0.5) }
     function s(x) { var ix = hi(x) & 0x7fffffff; if (ix < 0x3e500000) { return x } if (ix <= 0x3fe921fb) { return kern(x, 0.0) } return NaN }
-    export let f = (x) => s(x)`))
+    export let f = (x) => s(x)`
+  ok(!takesF64(source), 'a word test after conversion cannot narrow the original value')
+  const f = run(source).f, host = oracle(source).f
+  for (const x of [0, -0, 1e-20, '1e-20', '', false, null, 0.5, NaN])
+    ok(Object.is(f(x), host(x)), `identity and value of ${String(x)}`)
 })
 
 // A module constant read from a float view, or computed by a call this pass

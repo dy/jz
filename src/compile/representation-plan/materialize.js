@@ -88,6 +88,12 @@ export function representationBoundaryActionCount(ctx, identity, action) {
   return n
 }
 
+const paramIndex = (params, name) => {
+  if (params) for (let i = 0; i < params.length; i++)
+    if (params[i].name === name) return i
+  return -1
+}
+
 const activeBody = (ctx, consumer) => {
   const program = programPlanRecord(ctx)
   if (program?.bigint !== true) return null
@@ -118,6 +124,14 @@ export const activeRep = (ctx, node, target) => {
  *  gate, as on a name the plan materialized. */
 export function representationProvesBigint(ctx, node) {
   const body = activeBody(ctx, 'representationProvesBigint')
+  if (typeof node === 'string') {
+    const semantic = body?.semanticNames?.get(node)
+    // A parameter's semantic can describe the body's BigInt demand. Its
+    // incoming observations must also exclude other kinds before typeof folds.
+    const k = paramIndex(body?.boundary?.func?.sig?.params, node)
+    if (k >= 0 && !definiteBigint(body.boundary.params[k].observed)) return false
+    return semantic != null && definiteBigint(semantic)
+  }
   const packed = body?.nodeFacts?.get(node)
   return packed != null && definiteBigint(packed >> 6)
 }
@@ -125,7 +139,7 @@ export function representationProvesBigint(ctx, node) {
 /** Materialized representation of a stable parameter or normalized local. */
 export function representationActiveMaterializedRep(ctx, name) {
   // A sequence forwards its final producer's carrier, not just its kind.
-  while (Array.isArray(name) && name[0] === ',') name = name[name.length - 1]
+  while (Array.isArray(name) && (name[0] === ',' || name[0] === '(')) name = name[name.length - 1]
   const active = activeBody(ctx, 'representationActiveMaterializedRep')
   if (!active) return NO_BIGINT
   if (Array.isArray(name) && active.materializedJoins?.has(name))
@@ -139,16 +153,14 @@ export function representationActiveMaterializedRep(ctx, name) {
       : programPlanRecord(ctx)?.provenance?.resolveMemberCallee(name[1])?.name ?? null
     return calleeName != null && ctx.funcs.map.get(calleeName)?.body ? contractRep(callContractOf(ctx, name)) ?? NO_BIGINT : NO_BIGINT
   }
-  const handle = ctx.plans.representations.get(ctx.func.current)
-  const record = handle && ctx.plans.representationData.get(handle)
-  const boundary = record?.body?.boundary
-  const k = boundary?.func?.sig?.params?.findIndex(p => p.name === name) ?? -1
+  const boundary = active.boundary
+  const k = paramIndex(boundary?.func?.sig?.params, name)
   if (k >= 0) {
-    const boundaryReady = record.body?.hostBoxParams?.has(k) || record.body?.closureBoxParams?.has(k)
-    const ready = boundary.params[k]?.stable === true || record.body?.materializedNames?.has(name)
+    const boundaryReady = active.hostBoxParams?.has(k) || active.closureBoxParams?.has(k)
+    const ready = boundary.params[k]?.stable === true || active.materializedNames?.has(name)
     return (boundary.covered === true && ready) || boundaryReady ? activeRep(ctx, name, true) : NO_BIGINT
   }
-  return record?.body?.materializedNames?.has(name) ? activeRep(ctx, name, true) : NO_BIGINT
+  return active.materializedNames?.has(name) ? activeRep(ctx, name, true) : NO_BIGINT
 }
 
 /** Frozen action for one ordinary tagged storage/value slot. */
@@ -264,7 +276,7 @@ export function representationUnaryUpdateAction(ctx, name) {
   if (semantic == null || target == null) {
     const func = boundary.func
     const params = func && func.sig ? func.sig.params : null
-    const k = params ? params.findIndex(p => p.name === name) : -1
+    const k = paramIndex(params, name)
     if (k >= 0) {
       if (semantic == null) semantic = boundary.params[k] ? boundary.params[k].semantic : null
       if (target == null) target = boundary.params[k] ? boundary.params[k].target : null

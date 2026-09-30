@@ -4,7 +4,8 @@
 // declaration some read can find unassigned stays absent.
 import test from 'tst'
 import { is } from 'tst/assert.js'
-import { compile } from '../index.js'
+import { _compileInProcess as compile } from '../index.js'
+// These probes inspect the in-process summary; runtime checks still use the matrix target.
 import { ctx } from '../src/ctx.js'
 import { definitelyAssigned } from '../src/summary/definite.js'
 import { K, hasTag } from '../src/summary/kind.js'
@@ -102,6 +103,38 @@ const modules = [
     var G = [1].map(g)[0]
     H = 1
     export let f = (x) => x + (G === undefined ? 5 : G) + H`, 'H', true],
+  ['mutually recursive readers before assignment', `var H
+    function a(n) { return n ? b(n - 1) : H }
+    function b(n) { return n ? a(n - 1) : H }
+    var G = a(3)
+    H = 2
+    export let f = (x) => x + (G === undefined ? 5 : G) + b(2)`, 'H', true],
+  ['mutually recursive readers after assignment', `var H
+    function a(n) { return n ? b(n - 1) : H }
+    function b(n) { return n ? a(n - 1) : H }
+    H = 2
+    var G = a(3)
+    export let f = (x) => x + G + b(2)`, 'H', false],
+  ['an indirect callback reads before assignment', `var H
+    function leaf() { return H }
+    function middle() { return leaf() }
+    function entry() { return middle() }
+    var G = [1].map(entry)[0]
+    H = 2
+    export let f = (x) => x + (G === undefined ? 5 : G) + H`, 'H', true],
+  ['a parameter default reads through another function', `var H
+    function leaf() { return H }
+    function entry(v = leaf()) { return v }
+    var G = entry()
+    H = 2
+    export let f = (x) => x + (G === undefined ? 5 : G) + H`, 'H', true],
+  ['a getter reads through an unnamed call before assignment', `var H
+    function leaf() { return H }
+    function middle() { return leaf() }
+    const o = { get value() { return middle() } }
+    var G = o.value
+    H = 2
+    export let f = (x) => x + (G === undefined ? 5 : G) + o.value`, 'H', true],
   ['a function called after the assignment', `var H
     H = 2
     function g() { return H * 2 }

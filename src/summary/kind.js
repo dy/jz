@@ -1,7 +1,7 @@
 /** The summary's kind lattice and pure scalar transfer rules. No solver state. */
 import { COMPARE_OPS } from '../ast.js'
 import { VAL } from '../reps.js'
-import { TYPED_ELEM_BIGINT_FLAG, TYPED_ELEM_VIEW_FLAG, DATA_VIEW_FLAG } from '../../layout.js'
+import { TYPED_ELEM_BIGINT_FLAG, TYPED_ELEM_VIEW_FLAG, TYPED_ELEM_ANY_VIEW_FLAG, DATA_VIEW_FLAG } from '../../layout.js'
 
 export const K = {
   NONE: 0, NUMBER: 1, STRING: 2, BOOL: 3, BIGINT: 4, NULLISH: 5, TYPED: 6, ARRAY: 7,
@@ -27,10 +27,17 @@ export const isNullable = k => (k & NULL_BITS) !== 0 && (k & TAGS_NOT_NULL) !== 
 export const tagsOf = k => k & TAGS
 export const hasTag = (k, tag) => (k & bitOf(tag)) !== 0
 export const ANY = kind(K.ANY), NUMBER = kind(K.NUMBER), STRING = kind(K.STRING), BOOL = kind(K.BOOL), BIGINT = kind(K.BIGINT), NULLISH = kind(K.NULLISH), ABSENT = kind(K.ABSENT)
+/** The kind of a name from outside the program: a Math constant (`Math.SQRT1_2`, lowered to `math.SQRT1_2`) is a number, anything else any value. */
+export const outsideKind = name => /^math\.[A-Z][A-Z0-9_]*$/.test(name) ? NUMBER : ANY
 export const core = k => k & ~NULL_BITS
 const withTag = (k, tag) => (k & TAGS_NOT_NULL) === 0 ? (k & TAGS) | bitOf(tag) | UNKNOWN : k | bitOf(tag)
 export const orNull = k => withTag(k, K.NULLISH)
 export const orAbsent = k => withTag(k, K.ABSENT)
+
+const VIEW_BITS = TYPED_ELEM_VIEW_FLAG | TYPED_ELEM_ANY_VIEW_FLAG
+/** Two element auxes of one kind, owned or a view: the kind, its view bit read at run time. */
+const anyView = (pa, pb) => numberAux(pa) && numberAux(pb) && pa !== TYPED_NUMBER && pb !== TYPED_NUMBER &&
+  (pa & ~VIEW_BITS) === (pb & ~VIEW_BITS) ? pa | pb | VIEW_BITS : null
 
 /** Union of tag sets. Typed widths may disagree while their Number domain survives. */
 export function join(a, b) {
@@ -40,7 +47,7 @@ export function join(a, b) {
   if ((mn & (mn - 1)) !== 0) return m | UNKNOWN
   const pa = a & mn ? paramOf(a) : undefined, pb = b & mn ? paramOf(b) : undefined
   return m | (pa === undefined ? pb : pb === undefined || pa === pb ? pa
-    : mn === bitOf(K.TYPED) && numberAux(pa) && numberAux(pb) ? TYPED_NUMBER : UNKNOWN)
+    : mn === bitOf(K.TYPED) && numberAux(pa) && numberAux(pb) ? anyView(pa, pb) ?? TYPED_NUMBER : UNKNOWN)
 }
 
 export const typedElemKind = k => paramOf(k) === UNKNOWN ? join(NUMBER, BIGINT)
@@ -53,7 +60,7 @@ export const typedMethodKind = (name, recv) => {
   if (name === 'set') return NULLISH
   const aux = paramOf(recv)
   return kind(K.TYPED, aux === UNKNOWN || aux === TYPED_NUMBER ? aux
-    : name === 'subarray' ? aux | TYPED_ELEM_VIEW_FLAG : TYPED_FRESH.has(name) ? aux & ~TYPED_ELEM_VIEW_FLAG : aux)
+    : name === 'subarray' ? aux & ~TYPED_ELEM_ANY_VIEW_FLAG | TYPED_ELEM_VIEW_FLAG : TYPED_FRESH.has(name) ? aux & ~VIEW_BITS : aux)
 }
 
 const VAL_OF = [null, VAL.NUMBER, VAL.STRING, VAL.BOOL, VAL.BIGINT, null, VAL.TYPED, VAL.ARRAY, VAL.OBJECT, VAL.CLOSURE, VAL.MAP, VAL.SET, VAL.DATE, VAL.REGEX, VAL.HASH, VAL.BUFFER, null, null]
@@ -69,16 +76,13 @@ export const TYPED_STATIC = /^((?:Int8|Uint8|Uint8Clamped|Int16|Uint16|Int32|Uin
 const COUNT_PROPS = new Map([['length', [K.ARRAY, K.TYPED, K.STRING]], ['size', [K.MAP, K.SET]], ['byteLength', [K.TYPED, K.BUFFER]], ['byteOffset', [K.TYPED]]])
 export const isCount = (prop, k) => COUNT_PROPS.get(prop)?.includes(tagOf(k)) === true &&
   (prop !== 'length' || tagOf(k) !== K.TYPED || paramOf(k) !== UNKNOWN)
+// The inherited result is used only after ruling out an own method or getter.
+export const OBJECT_PROTO_METHODS = new Set(['hasOwnProperty', 'isPrototypeOf', 'propertyIsEnumerable', 'toString', 'toLocaleString', 'valueOf'])
+export const objectProtoResult = (recv, name) => name === 'valueOf' ? recv : name === 'toString' || name === 'toLocaleString' ? STRING : BOOL
+
 // Other literal names on an array are dictionary entries, not prototype members.
 export const ARRAY_METHODS = new Set(['push', 'pop', 'shift', 'unshift', 'slice', 'splice', 'map', 'filter', 'reduce', 'reduceRight', 'forEach', 'indexOf', 'lastIndexOf', 'includes', 'join', 'concat', 'sort', 'reverse', 'find', 'findIndex', 'findLast', 'findLastIndex', 'some', 'every', 'fill', 'flat', 'flatMap', 'at', 'entries', 'keys', 'values', 'copyWithin', 'toString', 'toSorted', 'toReversed', 'toSpliced', 'with'])
 export const NUMBER_OPS = new Set(['-', '*', '/', '%', '**', '&', '|', '^', '<<', '>>', '>>>', '~', '++', '--'])
-/** Prepare's postfix recovery (handlers.js `++`/`--`): `x++` is `(++x) - 1`,
- *  `o.p++` is `(o.p = +1 o.p) - 1`, and the decrements add. The literal is the
- *  compiler's correction, not JS arithmetic: the value is the old one, in the
- *  operand's own numeric kind (emission subtracts `1n` from a BigInt). */
-export const isPostfixRecovery = (op, a, b) => Array.isArray(b) && b[0] == null && b[1] === 1 && Array.isArray(a) &&
-  (op === '-' ? a[0] === '++' || (a[0] === '=' && Array.isArray(a[2]) && a[2][0] === '+1')
-    : op === '+' && (a[0] === '--' || (a[0] === '=' && Array.isArray(a[2]) && a[2][0] === '-1')))
 // Boolean value identity is shared by summary, value typing and integer
 // carriers, including the inliner's eager boolean operators. Membership
 // operators stay outside integer certainty because their operands may throw.

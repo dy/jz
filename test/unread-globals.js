@@ -41,7 +41,7 @@ test('unread globals: a reader that runs keeps the binding', () => {
     'a statement of the module': 'const Fcn = Function\nconst made = new Fcn("x", "return x")\nexport let f = (x) => x + 1',
   }
   for (const [name, src] of Object.entries(read))
-    for (const optimize of LEVELS) throws(() => compile(src, { optimize }), /'Function' is not in scope/, `${name} at ${optimize}`)
+    for (const optimize of LEVELS) throws(() => compile(src, { optimize }), /'Function' as a value is not supported/, `${name} at ${optimize}`)
 })
 
 // A value whose evaluation runs code is evaluated, reader or none: [source, the calls]

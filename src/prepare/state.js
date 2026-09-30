@@ -11,6 +11,7 @@
  */
 
 import { ctx, registerResetHook } from '../ctx.js'
+import { TIMER_NAMES } from '../autoload.js'
 import { ERR_CLASS_NAMES } from '../../err-codes.js'
 import { TYPED_ELEM_NAMES } from '../../layout.js'
 
@@ -177,6 +178,8 @@ export const F64_CONSTANTS = Object.assign(Object.create(null), { 'NaN': NaN, 'I
 // need a list of these names to know what to emit, so the table lives here either way.
 export const GLOBALS = Object.assign(Object.create(null), {
   Math: 'math',
+  console: 'console',
+  performance: 'performance',
   fs: 'fs',
   fetch: 'web',
   Number: 'Number',
@@ -219,6 +222,25 @@ export const GLOBALS = Object.assign(Object.create(null), {
 export const NS_CTORS = new Set(['Number', 'String', 'Boolean', 'BigInt', 'Object',
   'Array', 'Symbol', 'Error', 'Date', 'RegExp', 'Function', 'Map', 'Set',
   'Promise', 'ArrayBuffer', 'DataView', 'WeakMap', 'WeakSet'])
+export const NS_OBJECTS = new Set(['math', 'JSON', 'Atomics', 'crypto', 'navigator', 'fs', 'console', 'performance'])
+
+// The builtin functions jz calls in place. A function's GLOBALS entry names the
+// module that implements it (`parseInt` → number), never its value.
+export const BUILTIN_FNS = new Set(['isNaN', 'isFinite', 'parseInt', 'parseFloat', 'encodeURIComponent',
+  'decodeURIComponent', 'encodeURI', 'decodeURI', 'atob', 'btoa', 'fetch', 'structuredClone', ...TIMER_NAMES])
+// What `typeof` answers for a builtin global jz resolves at compile time and
+// holds no value for: a namespace is an object, a constructor or function a
+// function. A global jz lacks (Reflect, Intl) answers 'undefined', as feature
+// detection expects; one it holds as a value (Float64Array, Event) answers at
+// run time.
+export const GLOBAL_TYPEOF = Object.create(null)
+for (const n of [...Object.keys(GLOBALS), ...NS_CTORS, ...BUILTIN_FNS, 'SharedArrayBuffer', 'URLSearchParams', 'Iterator'])
+  GLOBAL_TYPEOF[n] = 'function'
+for (const n of ['Math', 'JSON', 'Atomics', 'console', 'crypto', 'navigator', 'performance', 'fs']) GLOBAL_TYPEOF[n] = 'object'
+/** The builtin global a resolved bare name denotes, or null: the name itself,
+ *  or the namespace whose module it names (`math` is Math). */
+export const builtinGlobalOf = key => GLOBAL_TYPEOF[key] ? key
+  : Object.keys(GLOBALS).find(n => GLOBALS[n] === key && GLOBAL_TYPEOF[n] === 'object') ?? null
 
 // --- Builtin-namespace member aliasing --------------------------------------
 // `let/const name = NS.member` (`let sin = Math.sin`) and destructuring

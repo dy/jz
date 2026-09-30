@@ -38,3 +38,51 @@ test('typed payload: the store is direct', () => {
   ok(/f32\.store/.test(body), 'an f32 store')
   ok(!/call \$__typed_set_idx_tagged/.test(body), 'no runtime writer')
 })
+
+// A channel read at a loop index may be missing too. Inlined into that loop, a
+// kernel's loop is versioned: its guard tests every receiver present, and in the
+// fast arm the receiver reads as its constructor (emit/control-flow.js, the
+// guard's `notNullish` refinement), not through the run-time element dispatch.
+const pairs = `
+function pair(x, x2, s, out, k) { let z = s[0], q = 0, q2 = 0; for (let i = 0, l = x.length; i < l; i++) { let v = x[i], v2 = x2[i]; z = z * 0.5 + v; q += v * v; q2 += v2 * v2 } s[0] = z; out[k] = q; out[k + 1] = q2 }
+function ms(channels, out) { let n = channels.length, k = 0; for (; k + 1 < n; k += 2) pair(channels[k], channels[k + 1], new Float64Array(4), out, k); return out }
+let L = new Float32Array(64), R = new Float32Array(64), o = new Float64Array(2)
+export let run = (g) => { for (let i = 0; i < 64; i++) { L[i] = Math.sin(i * g); R[i] = Math.cos(i * g) } ms([L, R], o); return o[0] * 1000 + o[1] }`
+
+test('typed payload: a channel read at a loop index agrees with the host', () => {
+  const host = oracle(pairs)
+  for (const optimize of levels(0, 2, 3, 'size')) {
+    const got = jz(pairs, { optimize }).exports.run(0.3), want = host.run(0.3)
+    ok(Object.is(got, want), `run at ${optimize}: ${got} for ${want}`)
+  }
+})
+
+test('typed payload: a versioned loop reads a present channel directly', () => {
+  if (belowOpt(2)) return
+  const text = wat(pairs, { optimize: 'speed' })
+  const body = funcWat(text, 'run$exp') || funcWat(text, 'run')
+  ok(/f32\.load/.test(body), 'an f32 load')
+  ok(!/__typed_idx|__utd/.test(body), 'no run-time element dispatch')
+})
+
+// A buffer kept in a field set on first use may be missing: its stores take the
+// typed writer behind the missing receiver's rejection, as its reads do.
+const lazy = `const st = { fs: 48000 }
+  function k(data, params) {
+    if (!params._buf) params._buf = new Float64Array(8)
+    for (let i = 0; i < data.length; i++) { params._buf[i & 7] = data[i]; data[i] = params._buf[(i + 3) & 7] }
+    return data
+  }
+  export let run = (g) => { const d = new Float64Array(16); for (let i = 0; i < 16; i++) d[i] = i * g; k(d, st); return d[5] + d[12] * 10 }`
+
+test('typed payload: a store through a field set on first use is typed', () => {
+  const host = oracle(lazy)
+  for (const optimize of levels(0, 2, 3)) {
+    const m = jz(lazy, { optimize }).exports
+    for (const g of [0.5, 2]) ok(Object.is(m.run(g), host.run(g)), `run(${g}) at ${optimize}`)
+  }
+  if (belowOpt(2)) return
+  const text = wat(lazy, { optimize: 2 })
+  const body = funcWat(text, 'k') || funcWat(text, 'run')
+  ok(body && /f64\.store/.test(body) && !/__dyn_set|__typed_set_idx|__arr_typed_obj_set_idx/.test(body), 'a typed store, no runtime writer')
+})

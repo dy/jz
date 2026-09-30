@@ -419,7 +419,7 @@ test('error: strict mode dynamic property access message', () => {
 // compile time (`Binding '…' can be both Boolean and Number…`), and a plain
 // reassignment once skipped even that and read the Boolean as a raw
 // number. The binding is now a tagged carrier: every Boolean store lands
-// as its atom (src/compile/emit/dispatch.js boolTaggedBinding, boolCarrier)
+// as its atom (src/kind/val-type-of.js boolTagged, emit/dispatch.js boolCarrier)
 // and the reads take the dynamic forms a mixed kind takes. Reference:
 // ECMA-262 13.15.2 (the value of `??`/`&&` is one operand, unconverted),
 // 13.5.3 typeof (a Boolean reads "boolean"), 7.2.15 IsStrictlyEqual.
@@ -1280,6 +1280,28 @@ test('instanceof: unsupported RHS rejects loudly at compile time (jz has no prot
   rejects(`export let f = (x) => x instanceof WeakSet`)
   rejects(`export let g = () => 1; export let f = (x) => x instanceof g`, 'user binding')
   is((() => { try { compile(`export let g = () => 1; export let f = (x) => x instanceof g`, { strict: true }); return false } catch (e) { return e.message.includes('instanceof') } })(), true, 'a user function binding as RHS rejects with the instanceof message')
+})
+
+// A binding that holds a constructor (`var OBJECT = Object`, `const Q = K`)
+// names none by its spelling: `({}) instanceof OBJECT` folded to false.
+// Namespace aliases retain their known constructor. Other aliases reject;
+// neither a primitive LHS nor `new C() instanceof C` proves an answer for an
+// arbitrary RHS (it may be noncallable, or the constructor may return an object).
+test('instanceof: a binding holding a constructor is not told apart by its spelling', () => {
+  for (const [src, want] of [
+    [`export let f = () => { const O = Object; return 'o' instanceof O }`, false],
+    [`var OBJECT = Object\nexport let f = () => ({}) instanceof OBJECT`, true],
+    [`export let f = () => { var OBJECT = Object; var OBJECT = Object; return ({}) instanceof OBJECT }`, true],
+  ]) for (const optimize of levels(0, 2, 3)) is(jz(src, { optimize }).exports.f(), want, `${src.split('\n').pop()} O${optimize}`)
+  for (const src of [
+    `const E = TypeError\nexport let f = () => new E('x') instanceof E`,
+    `const E = TypeError\nexport let f = () => 1 instanceof E`,
+    `const E = 4\nexport let f = () => 1 instanceof E`,
+    `function C() { return {} }\nexport let f = () => new C() instanceof C`,
+    `const A = Array\nexport let f = () => [1] instanceof A`,
+    `const E = TypeError\nexport let f = () => new TypeError('x') instanceof E`,
+    `class K { constructor() { this.a = 1 } }\nconst Q = K\nexport let f = () => new K() instanceof Q`,
+  ]) throws(src, 'instanceof: unsupported right-hand side', src.split('\n').pop())
 })
 
 // Side effects in the LHS still run even when the boolean answer is folded to

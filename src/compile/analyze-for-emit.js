@@ -19,7 +19,7 @@ import {
 import { inferLocals } from './infer.js'
 import { strengthReduceLoopDivMod } from './loop-divmod.js'
 import { closureMutatedVars } from './loop-model.js'
-import { mintRepresentationPlan, representationProgramHasBigint } from './representation-plan.js'
+import { BIGINT_REP_BOXED, BIGINT_REP_RAW, mintRepresentationPlan, representationParamRep, representationProgramHasBigint } from './representation-plan.js'
 import { mintTypedStoragePlan } from './typed-storage-plan.js'
 import { narrowBoundedSquare } from './loop-square.js'
 import { unrollRecurrence, unrollScalarChains, selectArmUpdatesIn } from './loop-recurrence.js'
@@ -73,7 +73,7 @@ export function analyzeFuncForEmit(func, programFacts) {
   }
 
   const { name, body, sig } = func
-  const previousFrame = enterFunc(sig, body, { exported: isExported(func) })
+  const previousFrame = enterFunc(sig, body, { exported: isExported(func), loc: func.loc })
   try {
 
   const block = isBlockBody(body)
@@ -236,10 +236,14 @@ export function analyzeFuncForEmit(func, programFacts) {
   // skipped by narrowValResults, so without trusting their params here they'd fall to the
   // i64 boundary carrier. The closure path runs the same proof at line ~1300.
   if (isExported(func)) {
-    for (const p of sig.params) {
+    for (let i = 0; i < sig.params.length; i++) {
+      const p = sig.params[i]
       if (p.type === 'f64' && p.ptrKind == null && !p.jsstring
           && !func.defaults?.[p.name] && !ctx.func.boxed?.has(p.name)
           && !ctx.func.localReps?.get(p.name)?.val
+          // The settled boundary owns BigInt ingress. A body-use numeric
+          // proof cannot replace that tagged lane with the host's ToNumber.
+          && !(representationParamRep(ctx, func, i) & (BIGINT_REP_RAW | BIGINT_REP_BOXED))
           // Numeric either by PROOF (ToNumber-forcing uses, in this body or,
           // through the program summary's numeric demand, wherever the value
           // flows: a slot every read of which converts, a callee's parameter),
@@ -306,8 +310,8 @@ export function analyzeFuncForEmit(func, programFacts) {
         n => n[0] === '()' && typeof n[1] === 'string' && (ctx.funcs.map.get(n[1])?.frame?.writesOuter === false ||
           n[1].startsWith('math.') && callArgs(n).every(a => valTypeOf(a) === VAL.NUMBER)),
         n => runsConversion(summary, n), fieldRead,
-        recv => { const vt = typeof recv === 'string' ? valTypeOf(recv) : null; return vt !== VAL.ARRAY && vt !== VAL.TYPED && vt !== VAL.STRING },
-        summary ? (a, b) => { const ca = summary.arrayCellOf(a), cb = summary.arrayCellOf(b); return ca != null && cb != null && ca !== cb } : null) > 0)
+        recv => { const vt = valTypeOf(recv); return vt !== VAL.ARRAY && vt !== VAL.TYPED && vt !== VAL.STRING },
+        summary ? (a, b) => { const ca = summary.arrayCellOf(a), cb = summary.arrayCellOf(b); return ca != null && cb != null && ca !== cb } : null, summary?.objectsDisjoint) > 0)
     invalidateLocalsCache(body)
 
   if (block) {
@@ -495,7 +499,6 @@ export function analyzeFuncForEmit(func, programFacts) {
     block,
     locals: ctx.func.locals,
     boxed: ctx.func.boxed,
-    capturedNames: ctx.func.capturedNames,
     cellTypes,
     flatObjects: ctx.func.flatObjects,
     sliceViews: ctx.func.sliceViews,

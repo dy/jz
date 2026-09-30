@@ -5,6 +5,42 @@ import { isDestructurePat } from '../jzify/hoist-vars.js'
 import { parse } from '../src/parse.js'
 import { levels } from './_matrix.js'
 
+test('line comments stop at every line terminator without rewriting literal text', () => {
+    for (const newline of ['\n', '\r', '\r\n', '\u2028', '\u2029']) {
+        const src = `// first${newline}export function f() {
+            let value = 1; // second${newline}value += 2;
+            /* block${newline}comment */ return value
+        }
+        export function stop() { return // no return value${newline}7 }`
+        const m = jz(src).exports
+        is(m.f(), 3, `comment terminator ${JSON.stringify(newline)}`)
+        is(m.stop(), undefined, 'a comment line break ends return')
+    }
+    for (const newline of ['\u2028', '\u2029']) {
+        const src = `export function f() { return ['//a${newline}b', \`/*c${newline}d*/\`] }`
+        is(jz(src).exports.f(), [`//a${newline}b`, `/*c${newline}d*/`], 'literal separators remain content')
+    }
+})
+
+test('unicode identifiers use start and continuation categories', () => {
+    for (const name of ['µs', 'ª', 'º', 'π', '日本語', '𐐀', 'a·b', 'á', 'a\u200db', 'a\u200cb']) {
+        const src = `export let f = () => { let ${name} = 7; return ${name} }`
+        is(jz(src).exports.f(), 7, name)
+    }
+    for (const name of ['😀', '×', '÷', '·a', '́a', '☀', '\\u{1f600}', '\\u0020']) {
+        let error
+        try { parse(`let ${name} = 1`) } catch (e) { error = e }
+        ok(error, `reject non-identifier ${name}`)
+    }
+    for (const gap of ['\u00a0', '\ufeff', '\u1680', '\u2009', '\u202f', '\u205f', '\u3000'])
+        is(jz(`export${gap}let${gap}f=()=>7`).exports.f(), 7, `space U+${gap.charCodeAt(0).toString(16)}`)
+    for (const newline of ['\u2028', '\u2029']) {
+        is(jz(`export let f=()=>{return${newline}7}`).exports.f(), undefined, 'line separator ends return')
+        is(jz(`export let f=()=>"a${newline}b"`).exports.f(), `a${newline}b`, 'string content stays unchanged')
+    }
+    is(jz('export let f=()=>{let unit={µs:7};return unit.µs}').exports.f(), 7, 'Unicode property name')
+})
+
 test('multiplication after a semicolon preserves parser ASI state', () => {
     for (const gap of ['', ' ', '\n']) {
         const src = `export let f = r => { const q = 1;${gap}const r2 = r*r; return r2 + q }`;
@@ -861,6 +897,71 @@ test('restricted statement boundaries honor ASI and every line terminator (asi-a
       'a do block is followed directly by while, including nested sibling blocks')
 })
 
+// Two statements on one line need `;` between them unless the first ended in a
+// block of its own (§12.10). The ASI layer split them wherever its line flag was
+// up: after any `}` (an arrow body, an object literal, a function expression) and
+// anywhere after the first line break, so each of these compiled.
+test('statements on one line need a separator (asi-and-line-terminator-context)', () => {
+    for (const src of [
+        'export let a = () => {}export let b = 2',
+        'export let a = () => { f(1) } export let b = 2',
+        'let o = { a: 1 } let b = 2',
+        'let f = function () {} f()',
+        'let C = class {} let d = 1',
+        'x = () => {} y = 2',
+        'export default {} export let b = 2',
+        'if (c) x = () => {} y = 2',
+        'if (c) {} else x = {} y = 2',
+        'L: x = {} y = 2',
+        'let a = 1\nlet b = 2 3',
+        'x = 1\ny = z y = 2',
+        'debugger (z)',
+        'switch (c) { case 1: a() b() }',
+        'do x = {} while (c)',
+        'function F() { throw {} y = 2 }',
+    ]) rejects(src)
+    for (const src of [
+        'export let a = () => {}\nexport let b = 2',
+        'export let a = () => {}; export let b = 2',
+        'if (c) { x = () => {} } y = 2',
+        'if (c) {} else {} y = 2',
+        'function g() {} g()',
+        'class C {} let d = 1',
+        '{ } y = 2',
+        'L: { } y = 2',
+        'try {} catch {} y = 2',
+        'switch (c) {} y = 2',
+        'for (;;) { break } y = 2',
+        'export function k() {} export let v = 1',
+        'export default class {} y = 2',
+        'switch (c) { case 1: if (x) {} y() }',
+        'class K { *g() {} static *h() {} get x() {} set x(v) {} m() {} }',
+        'x = () => {} /* a comment\n with a line break */ y = 2',
+    ]) ok(Array.isArray(parse(src)), `valid: ${JSON.stringify(src)}`)
+})
+
+// A postfix `++` takes no line break before it: `x`, a line break, `++y` is
+// `x; ++y`, and a statement that ends in `}` is followed by a prefix `++`.
+test('an update after a line break or a block is a prefix one (asi-and-line-terminator-context)', () => {
+    is(jz('export let f = () => {\n  let x = 1, y = 1\n  x\n  ++y\n  return x * 10 + y\n}').exports.f(), 12)
+    is(jz('export let f = () => {\n  let x = 1, y = 1\n  x\n  --y\n  return x * 10 + y\n}').exports.f(), 10)
+    is(jz('export let f = (c) => {\n  let n = 0\n  if (c) {} ++n\n  switch (c) {} ++n\n  return n\n}').exports.f(1), 2)
+    is(jz('export let f = () => { let x = 1; x++; return x }').exports.f(), 2)
+})
+
+// The ASI layer's flags outlived the tokens they were raised for: an empty
+// statement's `;` and line break ended the next statement's operand (`return 1`
+// returned nothing), and a line break kept a tag on a later line from its
+// template. A label heads any statement, not only a loop's.
+test('an empty statement, a tagged template and a label end where they are written (asi-and-line-terminator-context)', () => {
+    is(jz('export let f = () => {\n  ;\n  return 1\n}').exports.f(), 1)
+    is(jz('export let f = () => {\n  ;;\n  return 2\n}').exports.f(), 2)
+    is(jz('let n = 0\nfunction t() { n++; return n }\n\nt``;\nexport let f = () => n').exports.f(), 1)
+    is(JSON.stringify(parse('L: var y = 2')), '[":","L",["var",["=","y",[null,2]]]]')
+    is(JSON.stringify(parse('L: debugger')), '[":","L",["debugger"]]')
+    ok(Array.isArray(parse('let o = { var: 1, return: 2, x: c ? d : e }')), 'a keyword-named property is no label')
+})
+
 test('adjacent string literals require a real statement boundary (other-jessie-context-loss)', () => {
     rejects("0;\nvar s = '''';", 'adjacent string literals')
     rejects('0;\nvar s = """";', 'adjacent string literals')
@@ -983,12 +1084,16 @@ test('explicit sourceType preserves Script and Module parse-goal early errors', 
 })
 
 test('else boundaries distinguish ASI, empty statements, and IdentifierName properties', () => {
+    for (const gap of ['\n', '\r', '\u2028', '\u2029', '\n/* comment */ '])
+      rejects(`if (false)${gap}else {}`)
     rejects('if (false) x = 1 else x = -1', 'before else')
     rejects('if (false) {}; else {}', 'between an if consequent and else')
 
     ok(Array.isArray(parse('if (false) x = 1; else x = -1')), 'an explicit terminator before else remains valid')
     ok(Array.isArray(parse('if (false) x = 1\nelse x = -1')), 'a LineTerminator may supply ASI')
     ok(Array.isArray(parse('if (false) {} else {}')), 'a block consequent needs no semicolon')
+    for (const body of [';', '(1)', '"text"', '/x/'])
+      ok(Array.isArray(parse(`if (false) ${body}\nelse {}`)), `explicit consequent ${body} remains valid`)
     ok(Array.isArray(parse('if (x) if (y) a(); else b();')), 'dangling else still binds to the nearest if')
     ok(Array.isArray(parse('let o = { else: 1, else() {} }; o.else')), '`else` remains an IdentifierName in properties')
     ok(Array.isArray(parse('class C { get else() { return 1 } set else(v) {} }')),
@@ -1005,4 +1110,70 @@ test('a one-statement block is a block: sole declarations inside braces stay acc
     is(jz('export let f = (x) => { l: { const t = x; if (t) break l } return x }').exports.f(4), 4)
     rejects('export let f = () => { if (true) const x = 1; return 1 }', 'block in statement position')
     rejects('export let f = () => { while (false) let\n[x] = 0; return 1 }', 'block in statement position')
+})
+
+
+test('ASI: calls and element accesses continue expressions across line terminators', () => {
+    const bodies = [
+        ['let a = inc GAP (3); return a', 4],
+        ['let a; if (true) a = inc GAP (3); return a', 4],
+        ['const a = [7,9] GAP [1]; return a', 9],
+        ['let a = 0; a = inc GAP (3); return a', 4],
+        ['const pick = (a,b) => b; const n = pick(0, inc GAP (3)); return n', 4],
+        ['let a GAP (1); return typeof a', 'undefined'],
+        ['let a,b GAP [1]; return typeof b', 'undefined'],
+        ['const tag = x => x[0]; return tag GAP `text`', 'text'],
+        ['const g = function(){return 3} GAP `text`; return g', 3],
+        ['const g = ()=>{} GAP (1); return typeof g', 'function'],
+        ['const g = ()=>{} GAP `text`; return typeof g', 'function'],
+        ['return (function(){return 8} GAP `text`)', 8],
+    ]
+    for (const gap of ['\n', '\r', '\r\n', '\u2028', '\u2029', '/*\n*/']) {
+        for (const [body, want] of bodies) {
+            const src = `const inc = n => n + 1; export function f() { ${body.replace('GAP', gap)} }`
+            for (const optimize of levels(0, 2, 3))
+                is(jz(src, { optimize }).exports.f(), want, `${body}, ${JSON.stringify(gap)}, O${optimize}`)
+        }
+    }
+    // Nested grouping and bare declarations must leave no parser state.
+    for (const src of ['let a\n(1)', 'let a\n(1)', '', 'let b = [7,9]\n[1]', 'let a\n(1)'])
+        is(JSON.stringify(parse(src)), JSON.stringify(src === '' ? '' : src.startsWith('let b')
+            ? ['let', ['=', 'b', ['[]', ['[]', [',', [null, 7], [null, 9]]], [null, 1]]]]
+            : [';', ['let', 'a'], ['()', [null, 1]]]), 'repeated parser entry preserves the parsed value')
+    rejects('let a = (')
+    is(JSON.stringify(parse('0')), JSON.stringify([null, 0]), 'smallest expression after a failed parse')
+    is(parse(''), '', 'zero-work parse after an expression')
+})
+
+test('class method boundaries end before computed members, including without a line break', () => {
+    for (const gap of ['', ' ', '\n', '\r', '\r\n', '\u2028', '\u2029', '/*\n*/']) {
+        const src = `class C {
+            constructor() { this.n = 7 }${gap}['read']() { return this.n }
+            get doubled() { return this.n * 2 }${gap}['next']() { return this.doubled + 1 }
+            set value(v) { this.n = v }${gap}['reset']() { this.value = 7 }
+            static zero() { return 0 }${gap}['last']() { return C.zero() }
+        }
+        export function f() { const c = new C(); c.reset(); return c.read() * 100 + c.next() + c.last() }`
+        for (const optimize of levels(0, 2, 3))
+            is(jz(src, { optimize }).exports.f(), 715, `class separator ${JSON.stringify(gap)}, O${optimize}`)
+    }
+    rejects("const o = { read() {} ['next']() {} }")
+    is(jz("export function f(){ const o = { read() { return 4 }, ['next']() { return 5 } }; return o.read() + o.next() }").exports.f(), 9,
+        'object methods still use their comma grammar after a failed parse')
+})
+
+test('object property names reject member expressions and joined methods', () => {
+    for (const members of ['a.b: 1', 'a[0]: 1', '-1: 1', 'm(){} ["n"](){}',
+        'get x(){} ["n"](){}', 'set x(v){} ["n"](){}', '*g(){} ["n"](){}', 'async m(){} ["n"](){}']) {
+        rejects(`const o = ({${members}})`)
+        rejects(`class C extends ({${members}}).m {}`)
+    }
+    const src = `export function f() {
+        const keys = ['x'], o = { [keys[0]]: 2, [keys[0] + 'y']() { return 3 },
+            true: 7, null: 11, 1n: 13, NaN: 17 }, a = { get ['z']() { return 5 } }
+        return o.x + o.xy() + a.z + o.true + o.null + o[1] + o.NaN
+    }`
+    for (const optimize of levels(0, 2, 3))
+        is(jz(src, { optimize }).exports.f(), 58, 'computed expressions and literal property names remain valid')
+    is(parse(''), '', 'empty parse after rejecting property names')
 })

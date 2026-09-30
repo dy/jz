@@ -17,6 +17,23 @@ const prefix = `let trace=0
   function mark(n,stage){trace=trace*10+n;if(stage===n)throw n}
   export const state=()=>trace;`
 
+test('sequence Boolean joins preserve identity, preceding effects and throw recovery', () => {
+  const source = `${prefix}
+    function choose(v) { return v || 5 }
+    export function f(k,n,stage) {
+      trace=0
+      return (mark(1,stage), (mark(2,stage), k > 0 ? choose(k > 1) : choose(n)))
+    }`
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const actual = jz(source, { optimize }).exports, expected = oracle(source)
+    for (const args of [[2,7,0], [2,7,0], [1,7,0], [0,0,0], [0,7,0],
+      [2,7,1], [2,7,0], [2,7,2], [0,NaN,0], [2,7,0]]) {
+      is(observe(actual.f, args, true), observe(expected.f, args, false), `identity O${optimize}: ${args}`)
+      is(actual.state(), expected.state(), 'sequence prefixes run once and stop at the throw')
+    }
+  }
+})
+
 // These rules are independent of an active function and of discarded operands.
 test('sequence kinds: the last value owns the kind, including scoped names and absence', () => {
   const summary = summarize([';', ['let', ['=', 'value', ['bigint', '6']]], ['let', ['=', 'flag', ['bool', 1]]]],

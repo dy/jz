@@ -21,6 +21,7 @@ import { createArgumentsLowering } from './arguments.js'
 import { createTransform, bindGenerators } from './transform.js'
 import { createGeneratorLowering } from './generators.js'
 import { collectParamNames, extractParams, isBlockBody, JZ_BLOCK_OPS, MUTATE_OPS } from '../src/ast.js'
+import { err } from '../src/ctx.js'
 
 const names = createNames()
 const SHADOW_SENSITIVE = new Set([
@@ -34,9 +35,20 @@ let activeBuiltinScope = null
 const addBuiltinName = (scope, name) => {
   if (typeof name === 'string') scope.names.add(name)
 }
+// A variable or parameter binds a value; a class, function or import names itself.
 const addPatternNames = (scope, pattern) => {
   const bound = collectParamNames([pattern])
-  for (const name of bound) addBuiltinName(scope, name)
+  for (const name of bound) { addBuiltinName(scope, name); scope.values.add(name) }
+}
+// A declarator whose value is a class or function literal names it, as a
+// declaration does (`const g = function* () {}`; a `var` is hoisted apart
+// from its value by then).
+const addDeclarator = (scope, d) => {
+  if (!Array.isArray(d) || d[0] !== '=') return addPatternNames(scope, d)
+  addPatternNames(scope, d[1])
+  if (typeof d[1] !== 'string' || !Array.isArray(d[2])) return
+  const lit = d[2][0] === 'async' && Array.isArray(d[2][1]) ? d[2][1][0] : d[2][0]
+  if (lit === 'class' || lit === 'function' || lit === 'function*' || lit === '=>') scope.values.delete(d[1])
 }
 const addImportBindings = (scope, node) => {
   if (typeof node === 'string') { addBuiltinName(scope, node); return }
@@ -62,6 +74,12 @@ const declaredClass = (name) => {
   for (let s = activeBuiltinScope; s; s = s.parent) if (s.names.has(name)) return s.classes.has(name)
   return false
 }
+// The nearest declaration of `name` binds a value (`var OBJECT = Object`, a
+// parameter): its spelling names no constructor.
+const declaredValue = (name) => {
+  for (let s = activeBuiltinScope; s; s = s.parent) if (s.names.has(name)) return s.values.has(name) && !s.classes.has(name)
+  return false
+}
 // A node's builtin scope is entered around its own rewrite and left after
 // it: a pair, not a wrapper taking a closure, so a walk allocates nothing
 // per node (the self-compile makes a closure record for each).
@@ -79,7 +97,7 @@ const functionNameWrite = name => {
 // every other function.
 const buildBuiltinScopes = root => {
   const map = new WeakMap()
-  const childScope = parent => ({ parent, names: new Set(), classes: new Set(), strict: parent?.strict ?? false, self: null })
+  const childScope = parent => ({ parent, names: new Set(), values: new Set(), classes: new Set(), strict: parent?.strict ?? false, self: null })
   const functionDecls = new WeakSet()
   const strictBody = body => {
     if (Array.isArray(body) && body[0] === '{}') body = body[1]
@@ -102,7 +120,7 @@ const buildBuiltinScopes = root => {
       if (op === 'let' || op === 'const' || op === 'var' || op === 'using') {
         for (let i = 1; i < stmt.length; i++) {
           const d = stmt[i]
-          addPatternNames(scope, Array.isArray(d) && d[0] === '=' ? d[1] : d)
+          addDeclarator(scope, d)
           // a class expression's binding names a class too (`const C = class {}`)
           if (Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string' && Array.isArray(d[2]) && d[2][0] === 'class') scope.classes.add(d[1])
         }
@@ -114,7 +132,8 @@ const buildBuiltinScopes = root => {
           (stmt[1][0] === 'function' || stmt[1][0] === 'function*')) {
         addBuiltinName(scope, stmt[1][1])
         functionDecls.add(stmt[1])
-      } else if (op === 'import' || op === 'from') addImportBindings(scope, stmt)
+      } else if (op === 'import' || op === 'from' ||
+          op === ',' && Array.isArray(stmt[1]) && stmt[1][0] === 'import') addImportBindings(scope, stmt)
     }
   }
   const vars = (node, scope) => {
@@ -222,6 +241,7 @@ let transform, transformScope, transformParams
   classBrand: (name) => declaredAtModuleScope(name) ? classBrand(name) : null,
   classStaticAccessor: (name, slot) => declaredAtModuleScope(name) && classStaticAccessor(name, slot),
   isClass: declaredClass,
+  isValue: declaredValue,
   lowerObjectLiteralThis: () => lowerObjectLiteralThis,
   lowerObjectLiteralAccessors: () => lowerObjectLiteralAccessors,
   shadowsBuiltin: shadowsJzifyBuiltin,
@@ -243,7 +263,7 @@ const iterProto = { on: false, helpers: false, program: false, programHelpers: f
 // Whether the program reads a `constructor` member (`new this.constructor(…)`,
 // `a.constructor === C`): its classes then carry the member (classes.js).
 const ctorUse = { on: false, program: false }
-const genErr = (msg) => { throw new Error('jzify: ' + msg) }
+const genErr = (msg) => err('jzify: ' + msg)
 const { lowerGenerator, desugarForOfGenerator, desugarForOfProtocol, unwindChain, fuseTerminal, fusedLoop, isTerminal } = createGeneratorLowering({ transform, transformParams, err: genErr, generatorNames, genTemp: (t) => names.genTemp(t), iterProto, lowerArguments })
 const { lowerAsync, lowerAsyncGen } = createAsyncLowering({ genTemp: (t) => names.genTemp(t), err: genErr })
 bindGenerators({ lowerGenerator, desugarForOfGenerator, desugarForOfProtocol, lowerAsync, lowerAsyncGen, generatorNames, iterProto, unwindChain, fuseTerminal, fusedLoop, isTerminal })
@@ -350,32 +370,50 @@ function typedCtorValues(node) {
   } finally { leaveBuiltinScope(prior) }
 }
 
-// `await import('x')` at module level with a literal specifier is a static
-// import in all but syntax: hoist `import * as __dynN from 'x'` and read the
-// namespace in place (`(await import('m')).default` → `__dynN.default`); the
-// resolver already bundles 'x' (src/resolve.js dynImportRe). A `try` around
-// the optional load stays, now around a plain assignment. Nested function
-// bodies are not touched: a real runtime import there stays a reject.
-function hoistModuleDynamicImports(ast) {
+// `import('x')` with a literal specifier: 'x' joins the compile-time graph (the
+// resolver bundles it too, src/resolve.js dynImportRe) under a namespace import
+// hoisted to the module's top. Awaited at module level it is a static import
+// in all but syntax (top-level await is otherwise unsupported): the namespace
+// reads in place, `(await import('m')).default` → `__dynN.default`, and a `try`
+// around the optional load stays around a plain assignment. Anywhere else the
+// import is lazy and the call is the promise of the namespace object, read in
+// a job: a module only such imports reach evaluates at the first read
+// (prepare/module-eval.js). A computed specifier stays a reject (transform.js).
+const isImportCall = (n) => Array.isArray(n) && n[0] === '()' && n[1] === 'import' && Array.isArray(n[2]) && n[2][0] == null && typeof n[2][1] === 'string'
+const isAwaitedImport = (n) => Array.isArray(n) && n[0] === 'await' && isImportCall(n[1])
+function hoistDynamicImports(ast) {
   if (!Array.isArray(ast)) return ast
-  const hoisted = []
-  const isDyn = (n) => Array.isArray(n) && n[0] === 'await' && Array.isArray(n[1]) && n[1][0] === '()' && n[1][1] === 'import'
-    && Array.isArray(n[1][2]) && n[1][2][0] == null && typeof n[1][2][1] === 'string'
-  const walk = (n) => {
-    if (!Array.isArray(n)) return n
-    if (n[0] === '=>' || n[0] === 'function' || n[0] === 'function*' || n[0] === 'class' || n[0] === 'async') return n
-    const dyn = isDyn(n) ? n : n[0] === '()' && n.length === 2 && isDyn(n[1]) ? n[1] : null   // `(await import('x'))`
-    if (dyn) {
-      const ns = `__dyn${hoisted.length}`
-      hoisted.push(['import', ['from', ['as', '*', ns], [null, dyn[1][2][1]]]])
-      return ns
-    }
-    return n.map((c, i) => i === 0 ? c : walk(c))
+  const hoisted = [], lazy = new Map()
+  const hoist = (spec, at, flag) => {
+    const ns = names.genTemp('dyn'), st = ['import', ['from', ['as', '*', ns], [null, spec]], ...flag]
+    if (at.loc != null) st.loc = at.loc
+    hoisted.push(st)
+    return ns
   }
-  const out = walk(ast)
+  const walk = (n, top) => {
+    if (!Array.isArray(n)) return n
+    if (n[0] === '=>' || n[0] === 'function' || n[0] === 'function*' || n[0] === 'class' || n[0] === 'async') top = false
+    const dyn = !top ? null : isAwaitedImport(n) ? n : n[0] === '()' && n.length === 2 && isAwaitedImport(n[1]) ? n[1] : null   // `(await import('x'))`
+    if (dyn) return hoist(dyn[1][2][1], dyn[1], [])
+    if (isImportCall(n)) {
+      const spec = n[2][1]
+      if (!lazy.has(spec)) lazy.set(spec, hoist(spec, n, ['lazy']))
+      return ['()', ['.', ['()', ['.', 'Promise', 'resolve'], null], 'then'], ['=>', ['()', null], lazy.get(spec)]]
+    }
+    for (let i = 1; i < n.length; i++) n[i] = walk(n[i], top)
+    return n
+  }
+  const out = walk(ast, true)
   if (!hoisted.length) return ast
   const stmts = Array.isArray(out) && out[0] === ';' ? out.slice(1) : [out]
   return [';', ...hoisted, ...stmts]
+}
+/** The literal specifiers of the module's `import()` calls, awaited at its top or not. */
+const dynamicImportsOf = (ast) => {
+  const out = []
+  const walk = (n) => { if (!Array.isArray(n)) return; if (isImportCall(n)) out.push(n[2][1]); for (let i = 1; i < n.length; i++) walk(n[i]) }
+  walk(ast)
+  return out
 }
 
 // The module's imports in source order, each specifier with the local names
@@ -474,7 +512,7 @@ export default function jzify(ast, { structs = true, importedBinding = null, std
   ctorUse.on = ctorUse.program
   ast = canonSymbols(ast, true)
   if (!std) ast = typedCtorValues(ast)
-  ast = hoistModuleDynamicImports(ast)
+  ast = hoistDynamicImports(ast)
   ast = implicitStdImports(ast)
   resetClasses(structs, importedBinding ? { list: importsOf(ast), importedBinding } : null)
   if (Array.isArray(ast)) {
@@ -511,6 +549,9 @@ export default function jzify(ast, { structs = true, importedBinding = null, std
  *  module's own lowering, so a class extending an imported class finds its
  *  base lowered without the lowering re-entering itself. */
 jzify.imports = (ast) => importsOf(implicitStdImports(ast))
+/** The specifiers the module's `import()` calls name: modules of the graph
+ *  that only a lazy namespace import reaches (prepare/module-eval.js). */
+jzify.dynamicImports = dynamicImportsOf
 /** The program's iterator producers, read off every module's parsed AST
  *  before any is lowered: each module then lowers for-of and spreads under
  *  the graph's producers, not its own. Resets the witness per compile. */

@@ -7,6 +7,42 @@ import { onWasi, onKernel, adaptI64, levels } from './_matrix.js'
 import { BIGINT_TYPED_STORE_CALLS, BIGINT_TYPED_STORE_CATCH_SOURCE, BIGINT_TYPED_STORE_ERROR_SOURCE, BIGINT_TYPED_STORE_PAYLOAD, BIGINT_TYPED_STORE_SOURCE, BIGINT_TYPED_STORE_THROW_CALLS } from './_bigint-typed-store-corpus.js'
 import { cases, oracle } from './util.js'
 
+test('builtin method conditions preserve receiver families and own overrides', () => {
+  const source = `let calls = 0
+    function choose(names, key) { return names.get ? names.get(key) : names.has(key) ? '$__L' : undefined }
+    function pick(n) { calls++; return n === 0 ? new Map() : n === 1 ? new Set() : n === 2 ? {get: 7} : n === 3 ? {get: false} : n === 4 ? null : {} }
+    export function names() { return [choose(new Map([['a','L0'],['b','L1']]), 'a'), choose(new Map([['a','L0'],['b','L1']]), 'b'), choose(new Set(['a']), 'a')] }
+    export function check(n) { calls = 0; const out = pick(n)?.get ? 1 : 0; return [out, calls] }
+    export function chain(n) {
+      const obj = n === 0 ? null : {names: new Map()}
+      return [!!obj?.names.get, !!obj?.names['get'], !!obj?.names?.['has']]
+    }
+    export function indexed(n) {
+      calls = 0
+      const key = 'get', obj = pick(n)
+      return [!!obj?.[key], !!obj?.['get'], calls]
+    }
+    export function shadow(n) {
+      const m = new Map()
+      if (n === 1) m.get = undefined
+      if (n === 2) m.get = false
+      if (n === 3) m.get = () => 8
+      if (n === 4) { m.get = null; const key = n > 0 ? 'get' : 'x'; delete m[key] }
+      let out = 0; if (m.get) out++
+      return [out, !m.get, m.get ? true : 'missing', !!m.has, !!m.size]
+    }
+    export function shapes() { const a = [], t = new Float64Array(), s = ''; return [!!a.slice, !!t.slice, !!s.slice, !!a.get, !!t.get, !!s.get] }`
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const m = jz(source, { optimize }).exports, ref = oracle(source)
+    is(m.names(), ref.names(), `Map lookup identity at O${optimize}`)
+    is(m.shapes(), ref.shapes(), `method families at O${optimize}`)
+    for (let n = 0; n < 6; n++) is(m.check(n), ref.check(n), `optional receiver ${n} at O${optimize}`)
+    for (let n = 0; n < 6; n++) is(m.indexed(n), ref.indexed(n), `indexed receiver ${n} at O${optimize}`)
+    for (let n = 0; n < 2; n++) is(m.chain(n), ref.chain(n), `optional continuation ${n} at O${optimize}`)
+    for (let n = 0; n < 5; n++) is(m.shadow(n), ref.shadow(n), `own override ${n} at O${optimize}`)
+  }
+})
+
 test('Map copy preserves order, independent mutations, sparse sources and forwarding', () => {
   const src = `export function f(n, sparse) {
     const source = new Map(), alias = source

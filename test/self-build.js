@@ -8,6 +8,7 @@ import { dirname, join } from 'node:path'
 import compile from 'watr/compile'
 import { selfBuild, selfBuildWith } from './_self-build.js'
 import { applyOverlays } from './_self-overlay.js'
+import { privateBuild } from '../scripts/private-build.mjs'
 
 const wasm = value => compile(`(module (func (export "value") (result i32) (i32.const ${value})))`)
 const A = wasm(11), B = wasm(22)
@@ -47,6 +48,42 @@ function fixture(fn) {
     rmSync(root, { recursive: true, force: true })
   }
 }
+
+test('self-build: all kernel transactions share the build timeout override', () => {
+  const original = childProcess.spawnSync, saved = process.env.JZ_SELF_BUILD_TIMEOUT
+  const timeouts = []
+  childProcess.spawnSync = (_exe, args, opts) => {
+    timeouts.push(opts.timeout)
+    writeFileSync(args[1], B)
+    return { status: 0, signal: null }
+  }
+  syncBuiltinESMExports()
+  try {
+    fixture(({ root }) => {
+      const gates = [...LOADERS, ['attested gate', r => () => privateBuild(r, 'scripts/self-compile-build.mjs').bytes]]
+      for (const limit of [undefined, '3600000']) {
+        if (limit === undefined) delete process.env.JZ_SELF_BUILD_TIMEOUT
+        else process.env.JZ_SELF_BUILD_TIMEOUT = limit
+        for (const [name, make] of gates) {
+          is(result(make(root)()), 22, name)
+          is(timeouts.at(-1), limit === undefined ? 1_200_000 : 3_600_000, name)
+        }
+      }
+      for (const limit of ['invalid', '0', '-1', '1.5', 'Infinity']) {
+        process.env.JZ_SELF_BUILD_TIMEOUT = limit
+        for (const [, make] of gates) throws(make(root), /positive integer in milliseconds/)
+      }
+      is(timeouts.length, 6, 'invalid settings never start a builder')
+      is(result(privateBuild(root, 'scripts/self-compile-build.mjs', [], { timeout: 1234 }).bytes), 22)
+      is(timeouts.at(-1), 1234, 'an explicit transaction timeout wins')
+    })
+  } finally {
+    if (saved === undefined) delete process.env.JZ_SELF_BUILD_TIMEOUT
+    else process.env.JZ_SELF_BUILD_TIMEOUT = saved
+    childProcess.spawnSync = original
+    syncBuiltinESMExports()
+  }
+})
 
 for (const [name, make] of LOADERS) test(`${name}: failed build cannot use a valid stale artifact or retry in the same run`, () => {
   fixture(({ root, stale, builder, attempts }) => {
@@ -225,9 +262,21 @@ test('self-build: kernel cache fixture preserves empty→empty→A→A→B→err
       retained.push([source, bytes, expected])
     }
     for (const [source, bytes, expected] of retained) { assert.deepEqual([...bytes], expected); check(source, bytes) }
+    const memories = [], NativeInstance = WebAssembly.Instance
+    WebAssembly.Instance = class extends NativeInstance {
+      constructor(...args) { super(...args); memories.push(new WeakRef(this.exports.memory)) }
+    }
+    try {
+      for (let i = 0; i < 16; i++) {
+        assert.throws(() => compileViaKernel('!'), /fixture compile error/)
+        await new Promise(resolve => setImmediate(resolve))
+      }
+      assert.ok(memories.slice(0, -2).every(ref => ref.deref() === undefined),
+        'failed compiles release old compiler memories too')
+    } finally { WebAssembly.Instance = NativeInstance }
     assert.equal(reads, 1, 'cache the module, not a compiler instance or a program failure')
     console.log('cache fixture passed')
-  `], { encoding: 'utf8', timeout: 60_000, env: { ...process.env, JZ_TEST_TARGET: 'jz.wasm', JZ_KERNEL: '' } })   // the leg that consumes the selected artifact by name
+  `], { encoding: 'utf8', timeout: 60_000, env: { ...process.env, JZ_TEST_TARGET: 'jz.wasm', JZ_KERNEL: '', JZ_KERNEL_GC_EVERY: '2' } })   // the leg that consumes the selected artifact by name
   ok(out.endsWith('cache fixture passed\n'), 'selected artifact read once; exact outputs survive later calls and errors')
 })
 

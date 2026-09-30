@@ -48,6 +48,8 @@ main { flex: 1; display: flex; min-height: 0; }
   padding: 8px 12px 8px 10px; pointer-events: none;
 }
 .srcbar > * { pointer-events: auto; }
+.srcactions { display: flex; gap: 8px; }
+button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .tbtn {
   display: inline-flex; align-items: center; gap: 7px; background: rgba(12,12,18,.66);
   color: var(--soft); border: 1px solid var(--line); padding: 5px 11px; cursor: pointer;
@@ -76,6 +78,7 @@ main { flex: 1; display: flex; min-height: 0; }
 #hl { z-index: 1; overflow: hidden; pointer-events: none; color: var(--ink); }
 #editor { z-index: 2; resize: none; overflow: auto; color: transparent; caret-color: var(--accent); }
 #editor:focus, #editor:focus-visible { outline: none; }
+#editor:focus-visible { outline: 1px solid var(--accent); outline-offset: -2px; }
 #editor::selection { background: rgba(232,181,74,.22); }
 /* monochrome syntax + a single warm tint on numbers (the one place value lives) */
 #hl .k { font-weight: 700; color: #fff; }
@@ -160,15 +163,27 @@ select {
 .visopts .seg button.on { background: #dcdcdc; color: #0a0a0a; }
 
 /* ── library drawer ── */
-.scrim { position: fixed; inset: 0; z-index: 9; background: rgba(4,4,8,.5); opacity: 0; pointer-events: none; transition: opacity .25s; }
-.scrim.open { opacity: 1; pointer-events: auto; }
 .library {
   position: fixed; top: 44px; bottom: 0; left: 0; width: 320px; max-width: 86vw; z-index: 10;
-  background: var(--panel); border-right: 1px solid var(--line);
-  transform: translateX(-101%); transition: transform .26s cubic-bezier(.22,.6,.36,1);
-  display: flex; flex-direction: column; box-shadow: 8px 0 32px rgba(0,0,0,.4);
+  height: calc(100% - 44px); max-height: none; color: var(--ink);
+  background: var(--panel); border: 0; border-right: 1px solid var(--line);
+  flex-direction: column; box-shadow: 8px 0 32px rgba(0,0,0,.4);
 }
-.library.open { transform: none; }
+.library[open] { display: flex; }
+.library::backdrop { background: rgba(4,4,8,.5); }
+.libhead { display: flex; align-items: center; justify-content: space-between; }
+.libhead .tp { width: 44px; height: 44px; flex-shrink: 0; }
+.saveform { padding: 0 18px 12px; }
+.saveform label { display: block; font-size: 12px; margin-bottom: 6px; color: var(--soft); }
+.saveform div { display: flex; gap: 8px; }
+.saveform input { min-width: 0; width: 100%; background: var(--bg); color: var(--ink); border: 1px solid var(--line); padding: 8px; font: 16px var(--sans); }
+.saveform .tbtn { min-height: 44px; }
+#saveStatus { font-size: 12px; color: var(--soft); margin-top: 6px; }
+#saveStatus:empty { display: none; }
+.savedrow { display: flex; align-items: center; }
+.savedrow .libitem { min-width: 0; }
+.savedrow .nm { overflow-wrap: anywhere; }
+.savedrow .remove { flex: 0 0 44px; min-height: 44px; }
 .library h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .16em; color: var(--dim);
   font-weight: 600; padding: 16px 18px 10px; display: flex; align-items: baseline; gap: 8px; }
 .library h2 span { color: #45454f; font-weight: 400; }
@@ -193,7 +208,12 @@ select {
   main { flex-direction: column; }
   .code { border-right: 0; border-bottom: 1px solid var(--line); }
   .pane { flex: 1 1 0; }
-  #editor { font-size: 16px; }       /* iOS no-zoom */
+  #hl, #editor { font-size: 16px; }  /* matching layers; no iOS focus zoom */
+  .visbar { flex-wrap: wrap; gap: 6px; }
+  .visswitch { flex: 0 0 100%; margin-left: 0; }
+  .visswitch button { flex: 1; padding: 6px 4px; }
+  .tune { flex: 1; max-width: none; }
+  .visopts { left: 14px; transform: none; }
 }
 </style>
 </head>
@@ -215,14 +235,17 @@ select {
 <main>
   <div class="pane code">
     <div class="srcbar">
-      <button class="tbtn" id="lib" aria-label="open library" aria-controls="library">
+      <button class="tbtn" id="lib" aria-label="open library" aria-controls="library" aria-expanded="false">
         <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="5" width="3.4" height="14" rx=".6"/><rect x="8" y="5" width="3.4" height="14" rx=".6"/><path d="M14.4 6.3l3.3-.9 3.4 12.8-3.3.9z"/></svg>
         Library
       </button>
+      <div class="srcactions">
+      <button class="tbtn" id="save">Save</button>
       <button class="tbtn" id="share" aria-label="copy share link">
         <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 12v7a1 1 0 001 1h14a1 1 0 001-1v-7M16 6l-4-4-4 4M12 2v13"/></svg>
         <span id="shareLabel">Share</span>
       </button>
+      </div>
     </div>
     <div class="editwrap">
       <div class="gutter"><pre id="gutter"></pre></div>
@@ -272,20 +295,27 @@ select {
   </div>
 </main>
 
-<div class="scrim" id="scrim"></div>
-<aside class="library" id="library" aria-label="floatbeat library">
-  <h2>Library <span id="libcount"></span></h2>
+<dialog class="library" id="library" aria-labelledby="libraryTitle">
+  <div class="libhead"><h2 id="libraryTitle">Library <span id="libcount"></span></h2><button class="tp" id="libClose" aria-label="close library">×</button></div>
+  <form class="saveform" id="saveForm">
+    <label for="saveName">Name</label>
+    <div><input id="saveName" required maxlength="80" autocomplete="off"><button class="tbtn" type="submit">Save</button></div>
+    <p id="saveStatus" role="status"></p>
+  </form>
   <div class="liblist" id="liblist"></div>
-</aside>
+</dialog>
 
 <script type="module">
 // The compiler runs HERE — `jz(src)` parses, infers types, emits WASM and instantiates
 // it on every edit. No server, no prebuilt .wasm, no build step. The hot sample-fill
 // loop is the part jz compiles; the visualizer reads the resulting audio off an analyser.
-import jz, { compile } from '../dist/jz.js'
+import { compile } from '../dist/jz.js'
+import { instantiate } from '../dist/interop.js'
 import { FLOATBEATS } from '../examples/jukebox/floatbeats.js'
 import { makeChordBody } from './chords.js'
 import { makeVisualizers } from './visualizers.js'
+import { readLibrary, writeLibrary } from './library.js'
+import { encodeFormula, decodeFormula } from './share.js'
 
 // Library = the soft randomized chord player up front, then the community corpus.
 // A `make()` entry regenerates a fresh randomized body each load; others are static.
@@ -412,18 +442,20 @@ const wrap = (body) => /\bexport\b/.test(body) ? body :
 `export let beat = (${body})
 export let fill = (len, off) => { let b = new Float64Array(len); let i = 0; while (i < len) { let s = beat(off + i); b[i] = s < -1 ? -1 : (s > 1 ? 1 : s); i++ } return b }`
 
-let jzFill = null, jsFill = null, kind = 'jz', lastSrc = '', lastOk = false, lastMs = 0
+let jzFill = null, jsFill = null, kind = 'jz', lastSrc = '', lastOk = false, lastMs = null
+let workletProgram = null
 const setKind = (k) => {
   if (k === 'js' && !jsFill) return
-  kind = k; lastMs = 0
+  kind = k; lastMs = null
   $('ejs').classList.toggle('on', k === 'js'); $('ejz').classList.toggle('on', k === 'jz')
+  worklet?.port.postMessage({ type: 'kind', kind: k })
 }
 const buildEngine = (src) => {
   const mod = wrap(src)
   const bare = !/\bexport\b/.test(src)
   const t0 = performance.now()
   const bytes = compile(mod)
-  const { exports, memory } = jz(mod)
+  const { exports, memory } = instantiate(bytes)
   const ms = performance.now() - t0
   if (typeof exports.fill !== 'function') throw new Error('export `fill` not found')
   jzFill = (len, off) => { const v = exports.fill(len, off); const out = Float64Array.from(v); memory.reset(); return out }
@@ -434,6 +466,10 @@ const buildEngine = (src) => {
   else jsFill = null
   $('ejs').disabled = !jsFill
   if (kind === 'js' && !jsFill) setKind('jz')
+  // Bytes cross worklet agent boundaries reliably; a WebAssembly.Module can
+  // be rejected during deserialization without delivering an onmessage event.
+  workletProgram = { type: 'kernel', bytes, source: src, bare }
+  sendKernel()
   return { ms, bytes: bytes.length }
 }
 // time the active engine's chunk fill — the live jz-vs-JS compute number in the HUD
@@ -461,10 +497,11 @@ const rebuild = (src) => {
   }
 }
 
-// ── audio: gapless ½-s chunks just ahead of the playhead, through master→analyser→out.
-//    A live recompile only swaps `engine`; the next chunk renders the new formula. ─────
+// AudioWorklet keeps rendering while the main thread compiles an edit. Older
+// hosts retain the scheduled-buffer path. Both feed master→analyser→output.
 let SR = 44100, CHUNK = SR / 2 | 0
 let actx, master, analyser, playing = false, off = 0, streamStart = 0, nextTime = 0, queued = []
+let worklet, workletReady, streamVersion = 0
 let timeBuf = new Float32Array(2048), freqBuf = new Uint8Array(1024)
 const audio = () => {
   if (!actx) {
@@ -477,7 +514,28 @@ const audio = () => {
   if (actx.state === 'suspended') actx.resume()
   return actx
 }
+const sendKernel = (restart = false) => {
+  if (worklet && workletProgram) worklet.port.postMessage({ ...workletProgram, kind, rate: SR, restart })
+}
+const ensureWorklet = () => workletReady ||= actx.audioWorklet.addModule('./processor.js').then(() => {
+  worklet = new AudioWorkletNode(actx, 'jz-floatbeat', {
+    numberOfInputs: 0, numberOfOutputs: 1, outputChannelCount: [1],
+    processorOptions: { program: { ...workletProgram, kind, rate: SR } },
+  })
+  worklet.connect(master)
+  worklet.port.onmessage = ({ data }) => {
+    if (data.type === 'meter') lastMs = data.ms
+    else if (data.type === 'error') {
+      stopStream(); setStatus(`<span class="bad">${esc(data.message)}</span>`)
+    }
+  }
+  worklet.onprocessorerror = () => {
+    stopStream(); worklet.disconnect(); worklet = null; workletReady = null
+    setStatus('<span class="bad">Audio stopped. Press play to restart.</span>')
+  }
+}).catch(e => { workletReady = null; throw e })
 const schedule = () => {
+  if (actx.audioWorklet) return
   if (!jzFill) return
   while (nextTime < actx.currentTime + 0.3) {
     const out = fillMeasured(CHUNK, off)
@@ -487,8 +545,21 @@ const schedule = () => {
     nextTime += CHUNK / SR; off += CHUNK
   }
 }
-const startStream = () => { audio(); off = 0; streamStart = actx.currentTime + 0.06; nextTime = streamStart; playing = true; reflectPlay(); $('hint').style.opacity = 0; schedule() }
-const stopStream = () => { playing = false; reflectPlay(); for (const s of queued) { try { s.stop() } catch {} } queued = [] }
+const startStream = async () => {
+  const version = ++streamVersion
+  audio(); off = 0; streamStart = actx.currentTime + 0.06; nextTime = streamStart
+  playing = true; reflectPlay(); $('hint').style.opacity = 0
+  try {
+    if (actx.audioWorklet) {
+      await ensureWorklet()
+      if (version === streamVersion && playing) worklet.port.postMessage({ type: 'play', rate: SR })
+    } else schedule()
+  } catch(e) {
+    if (version !== streamVersion) return
+    stopStream(); setStatus(`<span class="bad">${esc(e.message || e)}</span>`)
+  }
+}
+const stopStream = () => { streamVersion++; playing = false; reflectPlay(); worklet?.port.postMessage({ type: 'stop' }); for (const s of queued) { try { s.stop() } catch {} } queued = [] }
 const reflectPlay = () => {
   const b = $('play'); b.classList.toggle('on', playing); b.setAttribute('aria-label', playing ? 'pause' : 'play')
   $('playIco').innerHTML = playing ? '<path d="M6 5h4v14H6zM14 5h4v14h-4z"/>' : '<path d="M8 5v14l11-7z"/>'
@@ -538,7 +609,7 @@ const loop = () => {
   const now = performance.now(), dt = now - lastFrame; lastFrame = now
   const inst = dt > 0 ? Math.min(1000 / dt, 240) : fps; fps += (inst - fps) * 0.1
   fpsEl.textContent = fps >= 1 ? fps.toFixed(0) : '··'
-  msEl.textContent = lastMs ? lastMs.toFixed(lastMs < 10 ? 2 : 1) : '··'
+  msEl.textContent = lastMs != null ? lastMs.toFixed(lastMs < 10 ? 2 : 1) : '··'
   if (analyser && playing) { analyser.getFloatTimeDomainData(timeBuf); analyser.getByteFrequencyData(freqBuf) }
   else { timeBuf.fill(0); freqBuf.fill(0) }
   vis.frame(g2, { time: timeBuf, freq: freqBuf, sr: actx ? actx.sampleRate : SR, W, H, dpr, accent: ACCENT, playing })
@@ -555,35 +626,80 @@ $('watBtn').addEventListener('click', () => setWat(watEl.style.display !== 'bloc
 $('watClose').addEventListener('click', () => setWat(false))
 
 // ── library ───────────────────────────────────────────────────────────────────
-let tuneIdx = -1
+let tuneIdx = -1, savedId = null, tuneName = 'untitled', tuneBy = 'you', saved = []
+try { saved = readLibrary(localStorage) } catch {}
 const fmtSr = (sr) => (sr % 1000 ? (sr / 1000).toFixed(2) : sr / 1000) + ' kHz'
 const buildLibrary = () => {
-  $('libcount').textContent = LIBRARY.length
-  $('liblist').innerHTML = LIBRARY.map((t, i) =>
+  $('libcount').textContent = LIBRARY.length + saved.length
+  $('liblist').innerHTML = (saved.length ? '<h2>Saved</h2>' + saved.map((t, i) =>
+    `<div class="savedrow"><button class="libitem" data-saved="${i}"><span class="nm">${esc(t.name)}</span><span class="mt">${fmtSr(t.sr)}</span></button><button class="lnk remove" data-remove="${i}">Delete</button></div>`
+  ).join('') + '<h2>Examples</h2>' : '') + LIBRARY.map((t, i) =>
     `<button class="libitem" data-i="${i}"><span class="nm">${esc(t.name)}</span><span class="mt">${esc(t.by)} · ${fmtSr(t.sr)}</span></button>`
   ).join('') + `<button class="libitem new" data-i="-1"><span class="nm">＋ New formula</span><span class="mt">blank slate, 44.1 kHz</span></button>`
-  $('liblist').querySelectorAll('.libitem').forEach((b) => b.onclick = () => { loadTune(+b.dataset.i); closeLib() })
+  $('liblist').querySelectorAll('[data-i]').forEach((b) => b.onclick = () => { loadTune(+b.dataset.i); closeLib() })
+  $('liblist').querySelectorAll('[data-saved]').forEach((b) => b.onclick = () => {
+    const t = saved[+b.dataset.saved]
+    tuneIdx = -1; savedId = t.id
+    setSrc(t.body, t.sr); setTune(t.name, 'you', t.sr); markLibrary(); closeLib()
+    if (playing) { stopStream(); startStream() }
+  })
+  $('liblist').querySelectorAll('[data-remove]').forEach((b) => {
+    const t = saved[+b.dataset.remove]
+    b.setAttribute('aria-label', 'Delete ' + t.name)
+    b.onclick = () => {
+      if (!persist(saved.filter(row => row.id !== t.id))) return
+      if (savedId === t.id) savedId = null
+      buildLibrary(); $('saveName').focus()
+      $('saveStatus').textContent = 'Deleted'
+    }
+  })
+  markLibrary()
 }
-const markLibrary = () => $('liblist').querySelectorAll('.libitem').forEach((b) => b.classList.toggle('on', +b.dataset.i === tuneIdx))
+const markLibrary = () => $('liblist').querySelectorAll('.libitem').forEach((b) => b.classList.toggle('on',
+  b.dataset.saved != null ? saved[+b.dataset.saved]?.id === savedId : savedId == null && +b.dataset.i === tuneIdx))
+const persist = rows => {
+  try { writeLibrary(localStorage, rows); saved = rows; return true }
+  catch { $('saveStatus').textContent = 'Could not save in this browser. Use Share to keep a link.'; return false }
+}
 const setSrc = (src, sr) => {
   editor.value = src
-  SR = sr; CHUNK = SR / 2 | 0; srSel.value = String(sr)
+  SR = sr; CHUNK = SR / 2 | 0
+  srSel.querySelector('[data-custom]')?.remove()
+  if (![...srSel.options].some(o => +o.value === sr)) {
+    const option = new Option(fmtSr(sr), String(sr)); option.dataset.custom = ''; srSel.add(option)
+  }
+  srSel.value = String(sr)
   paint(); refreshChrome(); rebuild(src); setHash()
 }
 const loadTune = (i) => {
-  tuneIdx = i
+  tuneIdx = i; savedId = null
   if (i < 0) { setSrc(DEFAULT, 44100); setTune('untitled', 'you', 44100) }
   else { const t = LIBRARY[i]; setSrc(t.make ? t.make() : t.body, t.sr); setTune(t.name, t.by, t.sr) }
   markLibrary()
   if (playing) { stopStream(); startStream() }
 }
-const setTune = (name, by, sr) => { $('tune').innerHTML = `<b>${esc(name)}</b> <span>· ${esc(by)} · ${fmtSr(sr)}</span>` }
+const setTune = (name, by, sr) => { tuneName = name; tuneBy = by; $('tune').innerHTML = `<b>${esc(name)}</b> <span>· ${esc(by)} · ${fmtSr(sr)}</span>` }
 const switchTune = (dir) => { const n = LIBRARY.length; loadTune(tuneIdx < 0 ? (dir > 0 ? 0 : n - 1) : (tuneIdx + dir + n) % n) }
 
-const openLib = () => { $('library').classList.add('open'); $('scrim').classList.add('open') }
-const closeLib = () => { $('library').classList.remove('open'); $('scrim').classList.remove('open') }
-$('lib').addEventListener('click', () => $('library').classList.contains('open') ? closeLib() : openLib())
-$('scrim').addEventListener('click', closeLib)
+const openLib = () => {
+  $('saveName').value = tuneName; $('saveStatus').textContent = ''
+  $('library').showModal(); $('lib').setAttribute('aria-expanded', 'true')
+}
+const closeLib = () => { if ($('library').open) $('library').close() }
+$('library').addEventListener('close', () => $('lib').setAttribute('aria-expanded', 'false'))
+$('lib').addEventListener('click', openLib)
+$('libClose').addEventListener('click', closeLib)
+$('save').addEventListener('click', () => { openLib(); $('saveName').focus(); $('saveName').select() })
+$('saveForm').addEventListener('submit', e => {
+  e.preventDefault()
+  const name = $('saveName').value.trim()
+  if (!name) { $('saveName').focus(); return }
+  const row = { id: savedId || crypto.randomUUID(), name, body: editor.value, sr: SR }
+  const rows = saved.filter(t => t.id !== row.id); rows.unshift(row)
+  if (!persist(rows)) return
+  savedId = row.id; tuneIdx = -1
+  setTune(name, 'you', SR); buildLibrary(); $('saveStatus').textContent = 'Saved'
+})
 
 // ── transport wiring ──────────────────────────────────────────────────────────
 $('play').addEventListener('click', () => playing ? stopStream() : startStream())
@@ -591,7 +707,7 @@ $('prev').addEventListener('click', () => switchTune(-1))
 $('next').addEventListener('click', () => switchTune(1))
 $('ejs').addEventListener('click', () => setKind('js'))
 $('ejz').addEventListener('click', () => setKind('jz'))
-srSel.addEventListener('change', () => { SR = +srSel.value; CHUNK = SR / 2 | 0; if (playing) { stopStream(); startStream() } })
+srSel.addEventListener('change', () => { SR = +srSel.value; CHUNK = SR / 2 | 0; setTune(tuneName, tuneBy, SR); setHash(); if (playing) { stopStream(); startStream() } })
 
 // ── editing: live recompile, Tab→2sp, Cmd/Ctrl+Enter toggles play ──────────────
 let deb = 0
@@ -613,34 +729,34 @@ document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') { closeLib(); if (watEl.style.display === 'block') setWat(false) }
 })
 
-// ── share: #<sr>.<base64url(src)> ─────────────────────────────────────────────
-const enc = (src) => {
-  const b = new TextEncoder().encode(src); let s = ''
-  for (let i = 0; i < b.length; i += 8192) s += String.fromCharCode(...b.subarray(i, i + 8192))
-  return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+// ── share: legacy base64url and shorter gzip links ────────────────────────────
+let hashT = 0, hashVersion = 0
+const updateHash = async () => {
+  const version = ++hashVersion, rate = SR, source = editor.value
+  const encoded = await encodeFormula(source)
+  if (version === hashVersion) history.replaceState(null, '', '#' + rate + '.' + encoded)
 }
-const dec = (h) => new TextDecoder().decode(Uint8Array.from(atob(h.replace(/-/g, '+').replace(/_/g, '/')), (c) => c.charCodeAt(0)))
-let hashT = 0
-const setHash = () => { clearTimeout(hashT); hashT = setTimeout(() => { try { history.replaceState(null, '', '#' + SR + '.' + enc(editor.value)) } catch {} }, 700) }
+const setHash = () => { hashVersion++; clearTimeout(hashT); hashT = setTimeout(() => updateHash().catch(() => {}), 700) }
 $('share').addEventListener('click', async () => {
-  try { history.replaceState(null, '', '#' + SR + '.' + enc(editor.value)); await navigator.clipboard.writeText(location.href)
+  try { clearTimeout(hashT); await updateHash(); await navigator.clipboard.writeText(location.href)
     const l = $('shareLabel'), o = l.textContent; l.textContent = 'Copied'; setTimeout(() => l.textContent = o, 1400)
-  } catch {}
+  } catch(e) { setStatus(`<span class="bad">${esc(e.message?.includes('too long') ? e.message : 'Could not copy. Copy the link from your address bar.')}</span>`) }
 })
 
 // ── boot ──────────────────────────────────────────────────────────────────────
 buildLibrary(); buildSwitch(); renderVisOpts(); measureChar(); resize()
-const fromHash = () => {
+const fromHash = async () => {
   const h = location.hash.slice(1); if (!h) return false
   const dot = h.indexOf('.'); if (dot < 0) return false
   try {
-    const sr = +h.slice(0, dot) || 44100, src = dec(h.slice(dot + 1))
-    const match = LIBRARY.findIndex((t) => t.body === src)
+    const sr = +h.slice(0, dot), src = await decodeFormula(h.slice(dot + 1))
+    if (!Number.isInteger(sr) || sr < 1000 || sr > 192000) return false
+    const match = LIBRARY.findIndex((t) => t.body === src && t.sr === sr)
     if (match >= 0) { loadTune(match); return true }
     tuneIdx = -1; setSrc(src, sr); setTune('shared', 'link', sr); return true
   } catch { return false }
 }
-if (!fromHash()) loadTune(0)
+if (!await fromHash()) loadTune(0)
 refreshChrome()
 loop()
 </script>

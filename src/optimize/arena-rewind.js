@@ -177,7 +177,7 @@ const EXT_READS = new Set(['$__ext_prop', '$__ext_has', '$__ext_has_iterator', '
  *  @param keepsNothing Set of `$name`: runtime imports that keep nothing they are handed
  *  @returns `releasable` (the rewindable functions whose frames keep nothing, allocating or
  *    not), `rewound` (those rewritten), and per function whether it allocates and why not */
-export function arenaRewind(root, { rewindable, asked = NO_NAMES, heapAddr, unsafe = NO_NAMES, keeps = NO_NAMES, entry = NO_NAMES, exported = NO_NAMES, exportInner = null, report = null, rewrite = true, scalarGlobals = NO_NAMES, closureTargets = null, closureNames = NO_NAMES, conditional = NO_NAMES, censused = NO_NAMES, userGlobals = NO_NAMES, keepsNothing = NO_NAMES }) {
+export function arenaRewind(root, { rewindable, numberResult = NO_NAMES, asked = NO_NAMES, heapAddr, unsafe = NO_NAMES, keeps = NO_NAMES, entry = NO_NAMES, exported = NO_NAMES, exportInner = null, report = null, rewrite = true, scalarGlobals = NO_NAMES, closureTargets = null, closureNames = NO_NAMES, conditional = NO_NAMES, censused = NO_NAMES, userGlobals = NO_NAMES, keepsNothing = NO_NAMES }) {
   const releasable = new Set(), rewound = new Set(), flagged = new Set()
   // The conditional functions whose flag something reads: the frames rewound
   // here, and those the host releases by it.
@@ -223,6 +223,8 @@ export function arenaRewind(root, { rewindable, asked = NO_NAMES, heapAddr, unsa
   // What the allocator returns is fresh whatever sized it (a count read off a
   // table is no address in one).
   const ALLOCATES = new Set(['$__alloc', '$__alloc_hdr', '$__alloc_hdr_n'])
+  // Growth returns its receiver or fresh storage; its capacity is no address.
+  const GROWS = new Set(['$__arr_grow', '$__arr_grow_known'])
   const reaches = (id, tainted) => {
     if (id === NONE) return true   // an operand left on the stack (flat WAT): unknown, so tainted
     let hit = false
@@ -231,7 +233,12 @@ export function arenaRewind(root, { rewindable, asked = NO_NAMES, heapAddr, unsa
       const s = opText(n)
       if (s === 'global.get') { if (!constants.has(text(T.a[n]))) hit = true }
       else if (s === 'local.get') { if (tainted.has(text(T.a[n]))) hit = true }
-      else if (s === 'call') { const c = text(T.a[n]); if (ALLOCATES.has(c)) return false; if (!ARENA_SAFE.includes(c) && (!defined.has(c) || tableResults.has(c))) hit = true }
+      else if (s === 'call') {
+        const c = text(T.a[n])
+        if (ALLOCATES.has(c)) return false
+        if (GROWS.has(c)) { hit = reaches(T.next[T.a[n]], tainted); return false }
+        if (!ARENA_SAFE.includes(c) && (!defined.has(c) || tableResults.has(c))) hit = true
+      }
       else if (s === 'call_indirect' || s === 'call_ref') hit = true
     })
     return hit
@@ -633,6 +640,13 @@ export function arenaRewind(root, { rewindable, asked = NO_NAMES, heapAddr, unsa
   const unlessMade = (ask, save, nodes) => {
     if (ask == null) return nodes
     const madeOf = (ret, type) => {
+      // Without the reachability runtime, only ordinary numbers prove the
+      // result cannot name this frame. NaNs (including boxes) keep it.
+      if (ask.numeric) {
+        const boxed = node(intern('f64.ne'))
+        push(boxed, localGet(ret)); push(boxed, localGet(ret))
+        return boxed
+      }
       const made = type === 'i32' ? node(intern('i32.ge_u')) : node(CALL)
       if (type !== 'i32') push(made, str(MADE))
       push(made, localGet(ret)); push(made, localGet(save))
@@ -743,7 +757,7 @@ export function arenaRewind(root, { rewindable, asked = NO_NAMES, heapAddr, unsa
     const esave = cond ? `$${MARK}esc_save${id}` : null, bsave = cond ? `$${MARK}esc_base${id}` : null
     // one local a result: the first by the name a single result has
     const rets = types.map((t, i) => i === 0 ? ret : `${ret}_${i}`)
-    const ask = asked.has(name) ? { rets, types } : null
+    const ask = asked.has(name) || numberResult.has(name) ? { rets, types, numeric: numberResult.has(name) } : null
     // Several results stand on the stack as their expressions end, however
     // many expressions made them (a call may yield all): the locals take them
     // last first, and yield them in order past the restore.

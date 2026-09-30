@@ -9,13 +9,12 @@
 
 import { DBG_INVARIANTS } from '../src/debug.js'
 import { dataAlign, dataPush, dataLen, pushStaticSlots } from '../src/static-data.js'
-import { typed, asF64, asI64, asI32, NULL_NAN, UNDEF_NAN, TRUE_NAN, FALSE_NAN, temp, tempI32, tempI64, block64, ptrTypeEq, dispatchByPtrType, allocPtr, needsDynShadow, mkPtrIR, extractF64Bits, slotAddr, elemLoad, elemStore, freshId, undefExpr } from '../src/ir.js'
-import { emit, storedValue, storedFieldValue, deps } from '../src/bridge.js'
-import { staticArrayPtr } from './array.js'
+import { staticArrayPtr, typed, asF64, asI64, asI32, NULL_NAN, UNDEF_NAN, TRUE_NAN, FALSE_NAN, temp, tempI32, tempI64, block64, ptrTypeEq, dispatchByPtrType, allocPtr, needsDynShadow, mkPtrIR, extractF64Bits, slotAddr, elemLoad, elemStore, freshId, undefExpr, isNullish } from '../src/ir.js'
+import { emit, storedValue, storedFieldValue, withIgnoredArgs, deps } from '../src/bridge.js'
 import { valTypeOf, shapeOf } from '../src/kind.js'
 import { VAL, lookupValType, repOf } from '../src/reps.js'
 import { ctx, err, inc, PTR, LAYOUT, declGlobal } from '../src/ctx.js'
-import { isReassigned, MUTATE_OPS, some, isBrand, canonicalKeyOrder } from '../src/ast.js'
+import { isReassigned, MUTATE_OPS, some, isBrand, canonicalKeyOrder, spreadExclusions, accessorOf } from '../src/ast.js'
 import { staticObjectProps, dictCapacity } from '../src/static.js'
 import { errorCodeLiteral, ERR, ERR_CLASS_NAMES, ERR_SCHEMA_PROPS } from '../err-codes.js'
 import { deletedMaskIR, deletedSlotIR, HEAP, DATA_VIEW_FLAG, nanPrefixHex } from '../layout.js'
@@ -57,12 +56,8 @@ const objectToStringTagForVal = (obj) => {
 const heapResetIR = () => ctx.scope.globals.has('__heap_reset') ? ['global.get', '$__heap_reset'] : ['i32.const', 0]
 
 export default (ctx) => {
+  ctx.core.emit.__object_rest = (source, ...excluded) => emitDynamicSpread([['...', source]], excluded)
   inc('__mkptr', '__alloc', '__alloc_hdr', '__ptr_offset', '__len', '__ptr_type')
-  // Pure schema resolver for expressions (name → bound schema, literal → keys,
-  // spread literal → merged) — exposed as a ctx hook so plan-time passes
-  // (analyze's Object.assign predictor, slice-4 P3) mirror emit's resolution
-  // exactly instead of duplicating it.
-  ctx.schema.resolveExpr = resolveSchema
 
   // Object literal: {x: 1, y: 2} → allocate, fill, return pointer with schemaId.
   // OBJECT alloc uses __alloc_hdr (16-byte header at off-16) to enable per-object
@@ -72,10 +67,10 @@ export default (ctx) => {
   // global-hash path (their off-16 belongs to neighboring static slots).
   ctx.core.emit['{}'] = (...rawProps) => {
     if (rawProps.length === 0) {
-      // Honor the literal target's autobox/merged schema so `let ctx = {}` followed
-      // by `ctx.meta = ...` allocates with the right cap. Otherwise the default
-      // cap=1 alloc overwrites the autobox preamble's wrapper, and subsequent
-      // schema-slot writes to offsets >= 8 land out-of-bounds.
+      // Honor the literal target's merged schema (the keys the plan declares,
+      // declare-written-keys.js) so `let ctx = {}` followed by `ctx.meta = ...`
+      // allocates with the right cap: schema-slot writes past a default-cap
+      // alloc land out of bounds.
       const target = takeLiteralTarget()
       const merged = target ? ctx.schema.resolve(target) : null
       // Dictionary mode: a direct `{}` initializer with property writes but no
@@ -122,11 +117,10 @@ export default (ctx) => {
       // was never assigned reads `undefined` (`if (!st.history) st.history = []`
       // on a module `let st = {}`): the fresh slots hold the sentinel, not the
       // allocator's zero, which a test for presence would take for a number.
-      // An auto-box's inner slot keeps its value.
       const t = tempI32('ob')
       return typed(['block', ['result', 'f64'],
         ['local.set', `$${t}`, alloc],
-        ...merged.map((name, i) => name === '__inner__' ? null : ctx.abi.object.ops.store(['local.get', `$${t}`], i, undefExpr())).filter(Boolean),
+        ...merged.map((_, i) => ctx.abi.object.ops.store(['local.get', `$${t}`], i, undefExpr())),
         mkPtrIR(PTR.OBJECT, schemaId, ['local.get', `$${t}`])], 'f64')
     }
 
@@ -183,7 +177,9 @@ export default (ctx) => {
     // written through ANY receiver — including expression receivers like
     // `map.get(k).n++` that no alias analysis could attribute — so a literal
     // whose schema intersects it allocates per-evaluation instead.
-    const neverWritten = names.every(n => !ctx.module.writtenProps?.has(n))
+    // Nor may one gain a key: a store of a new key on one instance
+    // (`a = mk(); a.extra = 5`) would show on every evaluation of the literal.
+    const neverWritten = names.every(n => !ctx.module.writtenProps?.has(n)) && !ctx.summary?.grownSchema?.(schemaId)
     // `!shadow`: a computed-key write on the target (`o[k]=v`) mutates the object —
     // a shared static instance would leak call N's writes into call N+1, so a
     // literal a computed key can reach allocates fresh per evaluation (the
@@ -369,7 +365,7 @@ export default (ctx) => {
     // wrong value (`[]`, not the real own-key list), not a reject — same
     // function-object-reflection gap, same remedy, as the `.length`/`.name`
     // reject in prepare/index.js's `.` handler.
-    if ((typeof obj === 'string' ? lookupValType(obj) : valTypeOf(obj)) === VAL.CLOSURE)
+    if ((typeof obj === 'string' ? lookupValType(obj) : valTypeOf(obj)) === VAL.CLOSURE || ctx.summary?.at(ctx.func.current).valOfExpr(obj) === VAL.CLOSURE)
       err('Object.keys/getOwnPropertyNames on a function value is not supported — jz compiles closures/named functions straight to WASM funcs with no reflectable property bag; jz has no general function-object reflection')
     if (isHashTyped(obj)) return ro ? emitHashKeysRO(obj) : emitHashKeys(obj)
     if (arrayValType(obj)) return idxKeys(obj, '__len')
@@ -571,6 +567,11 @@ export default (ctx) => {
         ['then', emitTag('[object Number]')],
         ['else', nonNumericTag]])
   }
+  // Inherited object methods retain their own contracts: toString reports
+  // the object tag instead of invoking valueOf through general coercion.
+  const objectMethod = build => (obj, ...ignored) => withIgnoredArgs(obj, ignored, build)
+  ctx.core.emit[`.${VAL.OBJECT}:toString`] = objectMethod(ctx.core.emit['__object_toString'])
+  ctx.core.emit[`.${VAL.OBJECT}:valueOf`] = objectMethod(obj => asF64(emit(obj)))
 
   // String primitives are coerced to exotic String objects whose own enumerable
   // properties are the indexed characters. Object.values/entries iterate them.
@@ -714,47 +715,18 @@ export default (ctx) => {
     // object; JS gives `{a:1}`).
     if (Array.isArray(target) && target[0] === '{}' && !enumView(literalProps(target).filter(p => Array.isArray(p) && p[0] === ':').map(p => p[1])))
       return emitObjectSpread([...literalProps(target), ...sources.map(s => ['...', s])])
-    const knownSchema = resolveSchema
+    // A target that is no plain object (an array, a function, a collection,
+    // a dictionary) keeps its identity: the copied keys are its own
+    // properties, beside its elements or entries (the computed-key store).
     if (typeof target === 'string') {
       const vt = repOf(target)?.val
-      if (vt && vt !== VAL.OBJECT) {
-        const allProps = []
-        for (const src of sources) {
-          const s = knownSchema(src)
-          if (!s) err('Object.assign: source\'s shape isn\'t known at compile time — pass an object literal, or a variable with one consistent shape')
-          for (const p of s) if (!allProps.includes(p)) allProps.push(p)
-        }
-        const boxedSchema = ['__inner__', ...allProps]
-        // register() dedupes by shape, so this returns the id the plan-time
-        // predictor (analyze's Object.assign post-walk pass) already bound to
-        // the target — the binding + externSlotSids belt are plan state now.
-        // Assert-only tripwire (slice-4 P3 flip).
-        const schemaId = ctx.schema.register(boxedSchema)
-        if (DBG_INVARIANTS && ctx.schema.idOf(target) !== schemaId)
-          throw new Error(`P3 Object.assign drift: ${target} plan-bound sid=${ctx.schema.idOf(target)}, emit computes sid=${schemaId}`)
-        const t = tempI32('bx'), s = temp('bs')
-        const body = [
-          ['local.set', `$${t}`, ['call', '$__alloc_hdr', ['i32.const', 0], ['i32.const', ctx.abi.object.ops.allocSlots(boxedSchema.length)]]],
-          ctx.abi.object.ops.store(['local.get', `$${t}`], 0, asF64(emit(target))),
-        ]
-        const sBase = tempI32('sb')
-        for (const source of sources) {
-          const sSchema = resolveSchema(source)
-          body.push(['local.set', `$${s}`, asF64(emit(source))])
-          body.push(['local.set', `$${sBase}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${s}`]]]])
-          for (let si = 0; si < sSchema.length; si++) {
-            const ti = boxedSchema.indexOf(sSchema[si])
-            if (ti < 0) continue
-            body.push(ctx.abi.object.ops.store(['local.get', `$${t}`], ti, ctx.abi.object.ops.load(['local.get', `$${sBase}`], si)))
-          }
-        }
-        body.push(['local.set', `$${target}`,
-          mkPtrIR(PTR.OBJECT, schemaId, ['local.get', `$${t}`])])
-        body.push(['local.get', `$${target}`])
-        return typed(['block', ['result', 'f64'], ...body], 'f64')
-      }
+      if (vt && vt !== VAL.OBJECT) return emitObjectAssignDynamic(target, sources)
     }
-    const tSchema = resolveSchema(target)
+    // An expression target (`list[i]`) the summary holds to one layout: that
+    // layout's slots, as for a bound name, past a test that it is there.
+    const view = typeof target !== 'string' && ctx.summary ? ctx.summary.at(ctx.func.current) : null
+    const summarySid = view ? view.targetSidOfExpr(target) : null
+    const tSchema = resolveSchema(target) ?? (summarySid != null ? ctx.schema.list[summarySid] : null)
     const resolveSchemas = sources.map(copiedSchema)
     if (!tSchema) return emitObjectAssignDynamic(target, sources)
     // Existing targets cannot grow their physical schema. Extra source keys
@@ -766,24 +738,36 @@ export default (ctx) => {
     // Extern-write belt: cross-schema slot copies into the TARGET's sid below
     // (plan's hazard scan marks the same target when it resolves it).
     const tSid = typeof target === 'string'
-      ? (repOf(target)?.schemaId ?? ctx.schema.vars.get(target)) : null
+      ? (repOf(target)?.schemaId ?? ctx.schema.vars.get(target)) : summarySid
     if (tSid != null) ctx.schema.externSlotSids?.add(tSid)
     const t = temp('at'), s = temp('as')
     const tBase = tempI32('tb'), sBase2 = tempI32('sb')
     // Slot copies only: a read of an unknown-schema alias (`let r =
     // Object.assign(t, …); r.a`) dispatches through __dyn_get_any, whose
     // schema arm reads the same slot (the field's only home).
-    const body = [['local.set', `$${t}`, asF64(emit(target))],
-      ['local.set', `$${tBase}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]]]
-    // a target the module made as it started is saved before the round's first copy into it
-    if (hasDurableReset()) { inc('__durable_obj_snap'); body.push(durableObjSnapNode(tBase)) }
+    const body = [['local.set', `$${t}`, asF64(emit(target))]]
+    if (summarySid != null && view.mayBeNullishExpr(target)) {
+      ctx.runtime.throws = true
+      body.push(['if', isNullish(['local.get', `$${t}`]), ['then',
+        ['global.set', '$__jz_last_err_bits', ['i64.reinterpret_f64', ['f64.const', errorCodeLiteral(ERR.OBJECT_NULLISH)]]],
+        ['throw', '$__jz_err', ['f64.const', errorCodeLiteral(ERR.OBJECT_NULLISH)]]]])
+    }
+    body.push(['local.set', `$${tBase}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]])
+    // Each copied value runs before logging its destination field. Only a
+    // heap value needs an undo record; numeric fields keep their mutations.
+    const field = temp('av'), fieldGet = ['local.get', `$${field}`]
+    if (hasDurableReset()) inc('__durable_obj_snap', '__is_eph_bits')
     for (let i = 0; i < sources.length; i++) {
       const source = sources[i]
       const sSchema = resolveSchemas[i]
       body.push(['local.set', `$${s}`, asF64(emit(source))])
       body.push(['local.set', `$${sBase2}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${s}`]]]])
-      for (const e of enumEntries(sSchema))
-        body.push(ctx.abi.object.ops.store(['local.get', `$${tBase}`], tSchema.indexOf(e.key), enumValue(e, ['local.get', `$${sBase2}`], ['local.get', `$${s}`])))
+      for (const e of enumEntries(sSchema)) {
+        const slot = tSchema.indexOf(e.key)
+        body.push(['local.set', `$${field}`, enumValue(e, ['local.get', `$${sBase2}`], ['local.get', `$${s}`])])
+        if (hasDurableReset()) body.push(durableObjSnapNode(tBase, fieldGet, slot))
+        body.push(ctx.abi.object.ops.store(['local.get', `$${tBase}`], slot, fieldGet))
+      }
     }
     body.push(['local.get', `$${t}`])
     return typed(['block', ['result', 'f64'], ...body], 'f64')
@@ -1150,9 +1134,9 @@ function resolveSchema(obj) {
 // (b) make emit build an OBJECT while analysis HASH-typed the binding, so reads
 // misdispatch. Treat params as unknown → dynamic runtime-key spread (always sound),
 // mirroring spreadSchema in src/kind.js so both phases agree.
-function spreadSourceSchema(obj) {
+function spreadSourceSchema(obj, site) {
   if (ctx.summary) {
-    const sid = ctx.summary.at(ctx.func.current).spreadSidOfExpr(obj)
+    const sid = ctx.summary.at(ctx.func.current).spreadSidOfExpr(obj, site)
     return sid == null ? null : ctx.schema.list[sid]
   }
   if (typeof obj === 'string') {
@@ -1205,10 +1189,12 @@ function mergeSpreadNames(props) {
       // Conditional presence requires HASH key insertion; fixed slots cannot
       // distinguish absent from present-with-undefined.
       if (conditionalSpreadGroup(p[1])) return null
-      const s = spreadSourceSchema(p[1])
-      if (!s) return null
+      const s = spreadSourceSchema(p[1], p)
+      // an object rest skips its pattern's keys; a computed one is known at run time only
+      const skip = spreadExclusions(p)
+      if (!s || skip?.exprs.length) return null
       // a spread copies values: an accessor is the data key it defines (module/schema.js enumView)
-      for (const n of enumKeys(s)) if (!seen.has(n)) { seen.add(n); names.push(n) }
+      for (const n of enumKeys(s)) if (!seen.has(n) && !skip?.names.includes(n)) { seen.add(n); names.push(n) }
     } else if (Array.isArray(p) && p[0] === ':' && !seen.has(p[1])) {
       seen.add(p[1]); names.push(p[1])
     }
@@ -1242,8 +1228,8 @@ function emitObjectSpread(props, _target = takeLiteralTarget()) {
   // (jz's own narrow.js had to hand-route around it). __obj_clone keys off the
   // box's runtime schemaId, so it copies static-segment sources too; the schema
   // table it reads must exist, so declare + force it (assemble.js).
-  if (!allKnown && props.length === 1 && Array.isArray(props[0]) && props[0][0] === '...') {
-    const sourceKind = ctx.summary?.at(ctx.func.current).valOfExpr(props[0][1])
+  if (!allKnown && props.length === 1 && Array.isArray(props[0]) && props[0][0] === '...' && !spreadExclusions(props[0])) {
+    const sourceKind = ctx.summary?.at(ctx.func.current).spreadValOfExpr(props[0][1], props[0])
     // Clone preserves primitive values; spread must instead enumerate them
     // into a new object, including an empty object for nullish sources.
     if (sourceKind !== VAL.OBJECT && sourceKind !== VAL.HASH) return emitDynamicSpread(props)
@@ -1260,7 +1246,11 @@ function emitObjectSpread(props, _target = takeLiteralTarget()) {
         ['then', ['f64.reinterpret_i64', ['call', '$__view_data', ['i64.reinterpret_f64', ['local.get', `$${src}`]]]]],
         ['else', ['call', '$__obj_clone', ['local.get', `$${src}`]]]]], 'f64')
   }
-  if (!allKnown) return emitDynamicSpread(props)
+  if (!allKnown) {
+    if (ctx.transform.literalAccessorNames?.size && props.some(p => Array.isArray(p) && p[0] === ':' && accessorOf(p[1], ctx.transform.literalAccessorNames)))
+      err('object literal accessors require statically known property names')
+    return emitDynamicSpread(props)
+  }
 
   const schemaId = ctx.schema.register(allNames)
   // Extern-write belt: the spread slot-copies below write source-schema values
@@ -1307,21 +1297,21 @@ function emitObjectSpread(props, _target = takeLiteralTarget()) {
             ['else', ...absent]])
         continue
       }
-      const sSchema = spreadSourceSchema(p[1]), view = enumView(sSchema)
+      const sSchema = spreadSourceSchema(p[1], p), view = enumView(sSchema), skip = spreadExclusions(p)?.names
       if (view) {
         // each key's value, once: an accessor through its getter (enumValue)
         const sv = temp('ospv')
         body.push(['local.set', `$${sv}`, asF64(emit(p[1]))],
           ['local.set', `$${src}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${sv}`]]]])
         for (const e of view) {
-          const ti = schema.indexOf(e.key)
+          const ti = skip?.includes(e.key) ? -1 : schema.indexOf(e.key)
           if (ti >= 0) body.push(ctx.abi.object.ops.store(['local.get', `$${t}`], ti, enumValue(e, ['local.get', `$${src}`], ['local.get', `$${sv}`])))
         }
         continue
       }
       body.push(['local.set', `$${src}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', asF64(emit(p[1]))]]])
       for (let si = 0; si < sSchema.length; si++) {
-        const ti = schema.indexOf(sSchema[si])
+        const ti = skip?.includes(sSchema[si]) ? -1 : schema.indexOf(sSchema[si])
         if (ti < 0) continue
         body.push(ctx.abi.object.ops.store(['local.get', `$${t}`], ti, ctx.abi.object.ops.load(['local.get', `$${src}`], si)))
       }
@@ -1346,7 +1336,7 @@ function emitObjectSpread(props, _target = takeLiteralTarget()) {
 // every key of each source in order (later overrides earlier — JS semantics),
 // threading explicit `k: v` props at their source position. Mirrors
 // emitObjectAssignDynamic but seeds an empty HASH instead of an existing target.
-function emitDynamicSpread(props) {
+function emitDynamicSpread(props, excluded = null) {
   ctx.module.include('collection')
   inc('__hash_new', '__hash_set_local', '__dyn_get_any', '__ptr_offset', '__len')
   const t = temp('dst'), s = temp('dss'), sBase = tempI32('dssb')
@@ -1358,7 +1348,26 @@ function emitDynamicSpread(props) {
   const setKey = (keyBits, valBits) =>
     ['local.set', `$${t}`, ['f64.reinterpret_i64',
       ['call', '$__hash_set_local', ['i64.reinterpret_f64', ['local.get', `$${t}`]], keyBits, valBits]]]
+  // An object rest skips the keys its pattern named (ast.js spreadExclusions):
+  // a store runs unless its key equals one of `keys`, the ones left to compare
+  // at run time (a computed key, or any key of a source listed at run time).
+  const unless = (keyBits, keys, store) => {
+    if (!keys.length) return store
+    ctx.module.include('string')
+    inc('__str_eq')
+    const hit = keys.map(k => ['call', '$__str_eq', keyBits, asI64(emit(k))]).reduce((a, b) => ['i32.or', a, b])
+    return ['if', ['i32.eqz', hit], ['then', store]]
+  }
   const body = [['local.set', `$${t}`, ['call', '$__hash_new']]]
+  const omit = []
+  if (excluded) {
+    inc('__eq_strict')
+    for (const k of excluded) {
+      const local = tempI64('dsex')
+      body.push(['local.set', `$${local}`, asI64(emit(k))])
+      omit.push(['local.get', `$${local}`])
+    }
+  }
 
   for (let pi = 0; pi < props.length; pi++) {
     const p = props[pi]
@@ -1383,18 +1392,23 @@ function emitDynamicSpread(props) {
       // own doc for why that residual gap is inherent to the OBJECT slot model).
       inc('__ptr_type')
       body.push(['local.set', `$${s}`, asF64(emit(p[1]))])
-      const setKeys = group.props.map((gp, gi) =>
-        setKey(asI64(emit(['str', String(group.keys[gi])])), ctx.abi.object.ops.loadBits(['local.get', `$${sBase}`], gi)))
+      const setKeys = enumEntries(canonicalKeyOrder(group.keys)).map(e =>
+        setKey(asI64(emit(['str', String(e.key)])), e.kind === ENUM_DATA ? ctx.abi.object.ops.loadBits(['local.get', `$${sBase}`], e.slot)
+          : asI64(typed(enumValue(e, ['local.get', `$${sBase}`], ['local.get', `$${s}`]), 'f64'))))
       body.push(['if', ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${s}`]]], ['i32.const', PTR.OBJECT]],
         ['then', ['local.set', `$${sBase}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${s}`]]]], ...setKeys]])
       continue
     }
-    const sSchema = spreadSourceSchema(p[1])
+    const sSchema = excluded ? null : spreadSourceSchema(p[1], p), skip = spreadExclusions(p)
     body.push(['local.set', `$${s}`, asF64(emit(p[1]))])
     if (sSchema) {
       body.push(['local.set', `$${sBase}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${s}`]]]])
-      for (let si = 0; si < sSchema.length; si++)
-        body.push(setKey(asI64(emit(['str', String(sSchema[si])])), ctx.abi.object.ops.loadBits(['local.get', `$${sBase}`], si)))
+      for (const e of enumEntries(sSchema)) {
+        if (skip?.names.includes(e.key)) continue
+        const k = asI64(emit(['str', String(e.key)]))
+        body.push(unless(k, skip?.exprs ?? [], setKey(k, e.kind === ENUM_DATA ? ctx.abi.object.ops.loadBits(['local.get', `$${sBase}`], e.slot)
+          : asI64(typed(enumValue(e, ['local.get', `$${sBase}`], ['local.get', `$${s}`]), 'f64')))))
+      }
       continue
     }
     body.push(
@@ -1407,7 +1421,10 @@ function emitDynamicSpread(props) {
         ['br_if', `$dsbrk${id}_${pi}`, ['i32.ge_s', ['local.get', `$${i}`], ['local.get', `$${len}`]]],
         ['local.set', `$${key}`, ['f64.load',
           ['i32.add', ['local.get', `$${keysBase}`], ['i32.shl', ['local.get', `$${i}`], ['i32.const', 3]]]]],
-        setKey(['i64.reinterpret_f64', ['local.get', `$${key}`]], copiedValue(s, valsBase, i, key)),
+        ['block', `$dsskip${id}_${pi}`,
+          ...omit.map(k => ['br_if', `$dsskip${id}_${pi}`, ['call', '$__eq_strict', ['i64.reinterpret_f64', ['local.get', `$${key}`]], k]]),
+unless(['i64.reinterpret_f64', ['local.get', `$${key}`]], skip ? [...skip.names.map(n => ['str', n]), ...skip.exprs] : [],
+          setKey(['i64.reinterpret_f64', ['local.get', `$${key}`]], copiedValue(s, valsBase, i, key)))],
         ['local.set', `$${i}`, ['i32.add', ['local.get', `$${i}`], ['i32.const', 1]]],
         ['br', `$dsloop${id}_${pi}`]]])
   }

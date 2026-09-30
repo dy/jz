@@ -8,7 +8,7 @@ import { ctx, err, inc } from '../../ctx.js'
 import {
   applyBigintRepresentationAction, asF64, boxBigInt, f64rem, fromI64, isConst, isGlobal, isNullish, isNullishLit, readI64, readVar, temp, throwTypeErrorIR, toNumF64, toStrI64, truthyIR, typed, writeVar,
 } from '../../ir.js'
-import { hasAmbiguousBoolMerge, valTypeOf } from '../../kind.js'
+import { hasAmbiguousBoolMerge, valTypeOf, boolTagged } from '../../kind.js'
 import { VAL, repOf } from '../../reps.js'
 import { emitElementAssign, emitPropertyAssign } from '../emit-assign.js'
 import { withInitializerScope } from '../flow-state.js'
@@ -17,10 +17,11 @@ import {
 } from '../representation-plan.js'
 import { plannedTypedStorageCtor } from '../typed-storage-plan.js'
 import { I64_ARITH_OP, bigIntDivIR, bigIntDomainsCanMix, bigIntOperand, bigintMixReject } from './bigint.js'
-import { emit, emitIdentitySafe, rejectAmbiguousBoolIdentity, boolTaggedBinding, boolCarrier, toBool, markInstrumented, whereNew, withEscapeFlag, siteFlag } from './dispatch.js'
+import { emit, emitIdentitySafe, boolCarrier, toBool, markInstrumented, whereNew, withEscapeFlag, siteFlag, bindingStore } from './dispatch.js'
 import { emitArrayViewDef } from '../array-view.js'
 import { privateStringBuilder } from '../analyze-scans.js'
 import { isSideEffectFree } from './shared.js'
+import { stripCanon } from './arithmetic.js'
 import {
   addBoundedFaithful, addFitsI32, addRangeFitsI32, mulBoundedFaithful, mulFitsI32, mulRangeFitsI32, subRangeFitsI32,
 } from './i32-bounds.js'
@@ -86,10 +87,10 @@ function stagedReference(name, update = true, rhs) {
   return pre.length ? { ref: [name[0], recv, key], pre } : null
 }
 const afterStaging = (pre, out) => out?.type ? typed(['block', ['result', out.type], ...pre, out], out.type) : ['block', ...pre, ...(out ? [out] : [])]
-const putReference = (ref, value) => ref[0] === '[]'
+export const putReference = (ref, value) => ref[0] === '[]'
   ? emitElementAssign(ref[1], ref[2], value) : emitPropertyAssign(ref[1], ref[2], value)
 /** Lower a compound member write through its staged reference: `build` receives the reference to read and write. */
-function throughReference(name, rhs, build) {
+export function throughReference(name, rhs, build) {
   const staged = stagedReference(name, true, rhs)
   if (!staged) return build(name)
   return afterStaging(staged.pre, build(staged.ref))
@@ -191,8 +192,11 @@ function compoundAssign(name, val, f64op, i32op, arithOp) {
   // accumulators pay nothing). A bare asF64 carries a sentinel payload through
   // f64 arithmetic to the boundary (decoded back as `undefined`; JS: NaN) —
   // `s += a[i]` and `let u; s += u` are accumulator shapes the binary '+'
-  // emitter never sees.
-  return writeVar(name, f64op(asF64(toNumF64(name, va)), asF64(toNumF64(val, vb))), void_)
+  // emitter never sees. An operand's NaN guard (sqrt, min, max, negation) is dead
+  // under +, −, × and ÷ as it is in the binary forms: the operation carries the NaN
+  // on and is guarded where its own result escapes (`s += Math.sqrt(x)`).
+  const unguard = arithOp !== '%' ? stripCanon : (v) => v
+  return writeVar(name, f64op(asF64(unguard(toNumF64(name, va))), asF64(unguard(toNumF64(val, vb)))), void_)
 }
 export const assignmentOps = {
   // === Assignment ===
@@ -216,20 +220,12 @@ export const assignmentOps = {
     if (Array.isArray(name) && name[0] === '.')  return emitPropertyAssign(name[1], name[2], val)
     if (Array.isArray(name) && name[0] === '__raw_prop')  return emitPropertyAssign(name[1], name[2], val, true)   // the accessor probe's plain-store arm
     if (typeof name !== 'string') err(`Assignment to non-variable: ${JSON.stringify(name)} — jz assigns to a plain variable, obj.prop, or arr[i] only`)
-    // Plain reassignment (`x = …`, `name` already bound) reaches a DIFFERENT
-    // emitter than a decl-with-init (emitDecl above) — the ambiguous-identity
-    // REJECT lived only on the decl path, so `let x; x = false ?? 1` (and any
-    // later `typeof x`/`x === false`) skipped it entirely and silently kept
-    // the collapsed raw-NUMBER carrier (audit-#12 BOOL_CARRIER family). Same
-    // helper, same contract: rejects only when SOME use of `name` actually
-    // observes its identity — a truthiness-only reassignment still compiles.
-    rejectAmbiguousBoolIdentity(name, val)
     // An array slice view keeps its array and a range (compile/array-view.js).
     if (ctx.func.arrayViews?.has(name)) {
       const def = ctx.func._expect === 'void' ? emitArrayViewDef(name, val, { emit, toBool }) : (ctx.func.arrayViews.delete(name), null)
       if (def) return typed(['block', ...def], 'void')
     }
-    const tagged = boolTaggedBinding(name)
+    const tagged = boolTagged(name)
     if (isNullishLit(val)) (ctx.func.maybeNullish ??= new Set()).add(name)   // null-flow: later arithmetic on this var coerces
     const void_ = ctx.func._expect === 'void'
     // Replacing the binding does not kill aliases of its old string. The use
@@ -259,7 +255,7 @@ export const assignmentOps = {
     finally { if (objectLiteral) ctx.schema.targetStack.pop() }
     const repAction = representationBindingWriteAction(ctx, name, val)
     ev = applyBigintRepresentationAction(ev, val, repAction)
-    if (tagged) ev = boolCarrier(name, val, ev)
+    ev = boolCarrier(name, val, ev)
     return writeVar(name, ev, void_, val)
   },
 
@@ -331,7 +327,7 @@ export const assignmentOps = {
     const cond = op === '??=' ? isNullish(lhs) : truthyIR(lhs)
     // &&= and ??= assign when cond is true (truthy / nullish); ||= assigns when cond is false
     const repAction = representationBindingWriteAction(ctx, name, val)
-    const assigned0 = asF64(applyBigintRepresentationAction(emit(val), val, repAction))
+    const assigned0 = asF64(applyBigintRepresentationAction(bindingStore(name, val), val, repAction))
     const asked = site && ctx.plans.siteAsked?.has(ctx.plans.siteOrigin?.get(site) ?? site)
     const assigned = !site ? assigned0 : asked ? whereNew(assigned0, siteFlag(site, name)) : withEscapeFlag(assigned0, siteFlag(site, name))
     const [thenExpr, elseExpr] = op === '||='

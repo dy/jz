@@ -1,5 +1,5 @@
 import { ctx } from '../ctx.js'
-import { EQUALITY_OPS, MUTATE_OPS, RELATIONAL_OPS, T, walkAst } from '../ast.js'
+import { EQUALITY_OPS, MUTATE_OPS, RELATIONAL_OPS, T, isNumberGuard, walkAst } from '../ast.js'
 import { typedCtorRawOf } from '../static.js'
 import { VAL } from '../reps.js'
 import { K, tagOf, paramOf, hasTag, core } from '../summary/kind.js'
@@ -151,13 +151,14 @@ export function paramAllUsesNumeric(body, name, _seen = new Set(), requireProof 
     grew = false
     const collect = (node) => {
       if (!Array.isArray(node)) return
-      if ((node[0] === 'let' || node[0] === 'const') && node.length === 2
-          && Array.isArray(node[1]) && node[1][0] === '=' && typeof node[1][1] === 'string') {
-        const init = node[1][2]
-        if (typeof init === 'string' && names.has(init) && !names.has(node[1][1])) { names.add(node[1][1]); grew = true }
-        else if (Array.isArray(init) && init[0] === '=>' && !closures.has(node[1][1])) {
+      if (node[0] === 'let' || node[0] === 'const') for (let i = 1; i < node.length; i++) {
+        const d = node[i]
+        if (!Array.isArray(d) || d[0] !== '=' || typeof d[1] !== 'string') continue
+        const init = d[2]
+        if (typeof init === 'string' && names.has(init) && !names.has(d[1])) { names.add(d[1]); grew = true }
+        else if (node.length === 2 && Array.isArray(init) && init[0] === '=>' && !closures.has(d[1])) {
           const ps = Array.isArray(init[1]) ? init[1].slice(1) : [init[1]]   // ['()', p0, p1] → [p0,p1]
-          if (ps.every(p => typeof p === 'string')) closures.set(node[1][1], { params: ps, body: init[2] })
+          if (ps.every(p => typeof p === 'string')) closures.set(d[1], { params: ps, body: init[2] })
         }
       }
       for (let i = 1; i < node.length; i++) collect(node[i])
@@ -193,7 +194,13 @@ export function paramAllUsesNumeric(body, name, _seen = new Set(), requireProof 
     guarded = prior
   }
   // A param in a numeric-operand slot is a PROVING use; recurse into a non-param sub-expr.
-  const numOperand = (n) => { if (names.has(n)) proven = true; else walk(n) }
+  // A conditional's value is the operand, so its arms stand in the operand's place
+  // (the clamp `(s < -1 ? -1 : s > 1 ? 1 : s) * k`).
+  const numOperand = (n) => {
+    if (names.has(n)) proven = true
+    else if (Array.isArray(n) && n[0] === '?:' && n.length === 4) { walk(n[1]); numOperand(n[2]); numOperand(n[3]) }
+    else walk(n)
+  }
   // Positional call args, flattening the `(, a b c)` node multi-arg calls parse to —
   // without this a forward like `fbm(x, y, t, …)` never matched its param positions.
   const flat1 = (a) => Array.isArray(a) && a[0] === ',' ? a.slice(1).flatMap(flat1) : [a]
@@ -203,13 +210,10 @@ export function paramAllUsesNumeric(body, name, _seen = new Set(), requireProof 
     if (typeof node === 'string') { if (names.has(node)) ok = false; return }  // bare use → reject
     if (!Array.isArray(node)) return
     const op = node[0]
-    // single `let/const x = init`: x is a binding (not a use). A pure copy of an
+    // `let/const x = init`: x is a binding (not a use). A pure copy of an
     // alias is consumed (already in `names`); otherwise the init must be numeric.
-    if ((op === 'let' || op === 'const') && node.length === 2
-        && Array.isArray(node[1]) && node[1][0] === '=' && typeof node[1][1] === 'string') {
-      const init = node[1][2]
-      if (typeof init === 'string' && names.has(init)) return
-      walk(init)
+    if ((op === 'let' || op === 'const') && node.slice(1).every(d => Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string')) {
+      for (let i = 1; i < node.length; i++) if (!(typeof node[i][2] === 'string' && names.has(node[i][2]))) walk(node[i][2])
       return
     }
     if (op === '=>') {                                  // closure capture: recurse unless shadowed
@@ -325,7 +329,8 @@ export function paramAllUsesNumeric(body, name, _seen = new Set(), requireProof 
         for (let i = 0; i < args.length; i++) {
           if (!names.has(args[i])) { walk(args[i]); continue }
           const p = fn.sig.params[i]
-          if (!p || !paramAllUsesNumeric(fn.body, p.name, new Set([..._seen, node[1]]), false)) { ok = false; return }
+          // a default tells undefined from the NaN ToNumber makes of it
+          if (!p || fn.defaults?.[p.name] != null || !paramAllUsesNumeric(fn.body, p.name, new Set([..._seen, node[1]]), false)) { ok = false; return }
         }
         return
       }
@@ -503,7 +508,8 @@ export function paramNeverString(body, name, _seen = new Set()) {
         for (let i = 0; i < args.length; i++) {
           if (args[i] !== name) { walk(args[i]); continue }
           const param = fn.sig.params[i]
-          if (param == null || !paramNeverString(frameNode(fn), param.name, new Set([..._seen, node[1]]))) { ok = false; return }   // the frame: a default's use counts
+          // the frame: a default's use counts; a default of the parameter itself tests for undefined
+          if (param == null || fn.defaults?.[param.name] != null || !paramNeverString(frameNode(fn), param.name, new Set([..._seen, node[1]]))) { ok = false; return }
         }
         return
       }
@@ -657,6 +663,9 @@ export function countingNames(body, params) {
     const op = n[0]
     if (op == null || op === 'str') return
     if (op === '=>') { walkAst(n, { enter: (m) => { for (let i = 1; i < m.length; i++) if (typeof m[i] === 'string') reject(m[i]) } }); return }
+    // a loop copy's guard (`typeof ix === 'number'`) is the compiler asking for
+    // the type, not the program reading the value: its cursor still counts
+    if (isNumberGuard(n)) return
     if (op === 'let' || op === 'const') {
       for (let i = 1; i < n.length; i++) { const d = n[i]; if (Array.isArray(d) && d[0] === '=') { if (typeof d[1] === 'string') visit(d[2], cands.has(d[1])); else visit(d, false) } }
       return
@@ -707,6 +716,43 @@ export function countingNames(body, params) {
 }
 const EMPTY_NAMES = new Set()
 
+// A list literal whose elements are plain values (no spread): `[l, r]`.
+export const isListLit = (a) => Array.isArray(a) && a[0] === '[' && a.length > 1 && a.every((e, j) => j === 0 || !Array.isArray(e) || e[0] !== '...')
+/** Parameter `name` used only as a list of numeric array-likes (a kernel's
+ *  channels, `ms([l, r])`): every use is `name.length` or an element read
+ *  `name[c]`, and an element is used only as a numeric array-like
+ *  (paramNumericArrayLike below): indexed, bound to a local that is, or
+ *  forwarded to a parameter that is. No element is replaced, no other use.
+ *  Returns null when not, else the elements' `{ writes, reads }`. */
+export function paramArrayLikeList(body, name, _seen = new Set(), params = null) {
+  if (body == null) return null
+  const el = `${T}el`
+  let ok = true, any = false
+  // The body with every element read named `el`: its uses are the elements'.
+  const sub = (n) => {
+    if (!ok || n === el) { ok = false; return n }
+    if (n === name) { ok = false; return n }
+    if (!Array.isArray(n)) return n
+    const op = n[0]
+    if (op == null || op === 'str' || op === 'template') return n
+    if (op === '=>') {
+      const ps = n[1]
+      const shadowed = Array.isArray(ps) ? ps.some(p => p === name || (Array.isArray(p) && p[1] === name)) : ps === name
+      return shadowed ? n : [op, n[1], sub(n[2])]
+    }
+    if (MUTATE_OPS.has(op) || op === 'delete') {
+      const t = n[1]
+      if (t === name || (Array.isArray(t) && (t[0] === '[]' || t[0] === '.' || t[0] === '?.') && t[1] === name)) { ok = false; return n }
+    }
+    if ((op === '.' || op === '?.') && n[1] === name) { if (n[2] !== 'length') ok = false; return n }
+    if (op === '[]' && n.length === 3 && n[1] === name) { any = true; sub(n[2]); return el }
+    return n.map((c, i) => i === 0 ? c : sub(c))
+  }
+  const body2 = sub(body)
+  if (!ok || !any) return null
+  return paramNumericArrayLike(body2, el, _seen, params)
+}
+
 /** Exported-param `name` used only as a numeric array-like: every use is an
  *  element read `name[i]`, an element write `name[i] = v` (or compound/update),
  *  `name.length`, or a forward into a user function whose parameter is itself
@@ -733,16 +779,17 @@ export function paramNumericArrayLike(body, name, _seen = new Set(), params = nu
   const flat1 = (a) => Array.isArray(a) && a[0] === ',' ? a.slice(1).flatMap(flat1) : [a]
   const closures = new Map()
   // Views and copies of the receiver (`let h = data.subarray(a, b)`, `.slice`)
-  // are the same storage kind: their uses count as the receiver's.
+  // are the same storage kind, and a local declared from it (`let x = data`) is
+  // the storage itself: their uses count as the receiver's.
   const names = new Set([name])
+  const viewOf = (init) => Array.isArray(init) && init[0] === '()' && Array.isArray(init[1]) && init[1][0] === '.' && names.has(init[1][1])
+    && (init[1][2] === 'subarray' || init[1][2] === 'slice')
+  const aliasOf = (d) => Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string' && (names.has(d[2]) || viewOf(d[2]))
   for (let grew = true; grew;) {
     grew = false
     walkAst(body, { enter: (n) => {
-      if ((n[0] === 'let' || n[0] === 'const') && n.length === 2 && Array.isArray(n[1]) && n[1][0] === '=' && typeof n[1][1] === 'string') {
-        const init = n[1][2]
-        if (Array.isArray(init) && init[0] === '()' && Array.isArray(init[1]) && init[1][0] === '.' && names.has(init[1][1])
-            && (init[1][2] === 'subarray' || init[1][2] === 'slice') && !names.has(n[1][1])) { names.add(n[1][1]); grew = true }
-      }
+      if (n[0] === 'let' || n[0] === 'const') for (let i = 1; i < n.length; i++)
+        if (aliasOf(n[i]) && !names.has(n[i][1])) { names.add(n[i][1]); grew = true }
     } })
   }
   // Locals with a numeric initializer (loop counters, `let j = i * 2`): an
@@ -787,11 +834,16 @@ export function paramNumericArrayLike(body, name, _seen = new Set(), params = nu
     // A statement that is the bare name discards it (an inlined callee's
     // `return out` whose caller drops the result): no use.
     if (op === ';') { for (let i = 1; i < node.length; i++) if (!names.has(node[i])) walk(node[i]); return }
-    // The alias declaration itself: the view/copy call is a use, its args walk.
-    if ((op === 'let' || op === 'const') && node.length === 2 && Array.isArray(node[1]) && node[1][0] === '=' && names.has(node[1][1]) && node[1][1] !== name) {
-      const init = node[1][2]
-      used = true; reads = true
-      for (let i = 2; i < init.length; i++) walk(init[i])
+    // An alias declaration itself: the view/copy call is a use, its args walk;
+    // the storage bound as it is, nothing. Other declarators walk as they are.
+    if ((op === 'let' || op === 'const') && node.slice(1).some(d => aliasOf(d) && d[1] !== name)) {
+      for (let i = 1; i < node.length; i++) {
+        const d = node[i]
+        if (!aliasOf(d) || d[1] === name) { walk(d); continue }
+        if (names.has(d[2])) continue
+        used = true; reads = true
+        for (let j = 2; j < d[2].length; j++) walk(d[2][j])
+      }
       return
     }
     if (op === '=>') {
@@ -842,16 +894,22 @@ export function paramNumericArrayLike(body, name, _seen = new Set(), params = nu
     // sees a typed array with the same contents; identity is not preserved).
     if (op === 'return' && names.has(node[1])) { used = true; reads = true; return }
     if ((op === '.' || op === '?.') && names.has(node[1])) { if (node[2] !== 'length') ok = false; else used = true; return }
-    if (op === '()' && typeof node[1] === 'string') {
+    const callee = op === '()' && typeof node[1] === 'string' ? node[1] : null
+    if (callee != null) {
       const args = node.slice(2).flatMap(flat1)
-      const cl = closures.get(node[1])
-      const fn = cl ? null : ctx.funcs.map?.get(node[1])
+      const cl = closures.get(callee)
+      const fn = cl ? null : ctx.funcs.map?.get(callee)
       for (let i = 0; i < args.length; i++) {
-        if (!names.has(args[i])) { walk(args[i]); continue }
+        // The storage as an element of a list literal (`ms([l, r])`): the
+        // parameter it binds must be a list of numeric array-likes.
+        const list = isListLit(args[i]) && args[i].some((e, j) => j > 0 && names.has(e))
+        if (!names.has(args[i]) && !list) { walk(args[i]); continue }
+        if (list) for (let j = 1; j < args[i].length; j++) if (!names.has(args[i][j])) walk(args[i][j])
         const target = cl ? cl.params[i] : (fn && fn.body && !fn.raw && !fn.rest && fn.sig?.params?.[i]?.name)
         const targetBody = cl ? cl.body : fn?.body
         const targetParams = cl ? cl.params : fn?.sig?.params?.map(q => q.name)
-        const inner = target && !_seen.has(node[1] + '#' + i) && paramNumericArrayLike(targetBody, target, new Set([..._seen, node[1] + '#' + i]), targetParams)
+        const key = callee + '#' + i + (list ? '[]' : '')
+        const inner = target && !_seen.has(key) && (list ? paramArrayLikeList : paramNumericArrayLike)(targetBody, target, new Set([..._seen, key]), targetParams)
         if (!inner) { ok = false; return }
         used = true; numericUse = true
         if (inner.writes) writes = true

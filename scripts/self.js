@@ -20,9 +20,7 @@ import { frontHalf } from '../src/front.js'
 import { beginSession, configureDiagnostics } from '../src/session.js'
 import { assemble, linkAssembled, tailFacts } from '../src/compile/index.js'
 
-import {
-  emit, emitter, emitBoolStr, emitIndex, buildArrayWithSpreads, emitIdentitySafe,
-} from '../src/compile/emit.js'
+import { emitter, emissionHooks } from '../src/compile/emit.js'
 import { watrTail } from '../src/optimize/watr-tail.js'
 import { T } from '../src/ir/tape.js'
 import { resetMarks, recordPhase, markStage, markTape, STAGE_FRONT, STAGE_EMIT, STAGE_OPTIMIZE, STAGE_CHECKPOINT } from './phase-marks.js'
@@ -55,7 +53,7 @@ function setupSelf(strict, optJSON, modulesJSON, host, buildJSON) {
   // injections remain here.
   beginSession({
     emitter, globals: GLOBALS,
-    hooks: { emit, bool: emitBoolStr, idx: emitIndex, spread: buildArrayWithSpreads, emitIdentitySafe },
+    hooks: emissionHooks(),
     optimize: optJSON ? JSON.parse(optJSON) : false,
     strict: !!strict, host: host || undefined, alloc: build?.alloc,
   })
@@ -306,4 +304,3 @@ export function compileDiag(source, strict, optJSON) {
   emitIR(front(source, strict))
   return JSON.stringify(ctx.core.diagSink)
 }
-

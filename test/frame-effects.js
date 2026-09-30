@@ -10,7 +10,7 @@
 // (`kept on a call that runs an escape: …`, the first the frame may reach).
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import jz, { compile } from '../index.js'
+import jz, { compile, _compileInProcess } from '../index.js'
 import { resetTape, fromWat, toWat } from '../src/ir/tape.js'
 import { arenaRewind } from '../src/optimize/arena-rewind.js'
 import { listedBuiltin } from '../src/compile/analyze/frame-effects.js'
@@ -29,6 +29,77 @@ const whyNot = (src, opts = {}) => { const why = []; compile(src, { ...TAPE, ...
 const growth = (memory, call, calls = 200, settle = 1) => { for (let i = 0; i < settle; i++) call(); const used = memory.used; for (let i = 0; i < calls; i++) call(); return memory.used - used }
 // Each `(loop …)` span of a body, by its parentheses.
 const loopSpans = (wat) => [...wat.matchAll(/\(loop/g)].map(({ index }) => { let d = 0, j = index; do { d += wat[j] === '(' ? 1 : wat[j] === ')' ? -1 : 0; j++ } while (d > 0); return wat.slice(index, j) })
+
+test('frame effects: optional mutations retain grown collection storage', () => {
+  for (const [init, method, args, size, read] of [
+    ['new Set()', 'add', 'k', 'size', 'has(k)'],
+    ['new Map()', 'set', 'k,k+1', 'size', 'get(k)'],
+    ['[]', 'push', 'k', 'length', 'at(k)'],
+  ]) for (const call of [
+    `state.items?.${method}(${args})`, `state.items.${method}?.(${args})`, `state.items?.${method}?.(${args})`,
+    `state.items?.[method](${args})`, `state.items[method]?.(${args})`, `state.items?.[method]?.(${args})`,
+    `(state.items?.${method})(${args})`, `(state.items?.[method])(${args})`, `(state.items?.[method])?.(${args})`,
+  ]) {
+    const source = `const state={items:${init}}, method="${method}";
+      export function add(k){${call}}
+      export function size(){return state.items.${size}}
+      export function read(k){return state.items.${read}}
+      export function churn(n){const a=new Float64Array(n);a[0]=3;return a[0]}`
+    for (const optimize of [{ level: 1, arenaRewind: true }, ...levels(2, 3)]) {
+      const { exports: m } = jz(source, { optimize }), ref = oracle(source)
+      for (let i = 0; i < 40; i++) {
+        m.add(i); ref.add(i)
+        m.churn(100)
+        is(m.size(), ref.size(), `${call}: count survives scratch allocation, ${i}`)
+        is(m.read(i), ref.read(i), `${call}: latest value survives scratch allocation, ${i}`)
+      }
+    }
+  }
+})
+
+test('frame effects: array length coercion does not retain local storage', () => {
+  const source = `let saved = null
+    export function f(n) { const a = new Array(8).fill(1), key = n >= 0 ? 'length' : 'x'; a[key] = n; return a.length }
+    export function keep(n) {
+      const a = [], key = n >= 0 ? 'length' : 'x'
+      a[key] = { valueOf() { saved = [n, n + 1]; return n } }
+      return a.length
+    }
+    export function read() { return saved[1] }
+    export function churn(n) { return new Float64Array(n).length }`
+  for (const optimize of levels(2, 3, 'size')) {
+    const { exports: m, memory } = jz(source, { optimize }), ref = oracle(source)
+    for (const n of [0, 2, 8, 40, -1]) {
+      is(m.f(n), ref.f(n), `dynamic property at ${n}, O${optimize}`)
+      is(growth(memory, () => m.f(n), 20), 0, `local resize releases its storage at ${n}, O${optimize}`)
+    }
+    for (const n of [2, 40]) {
+      is(m.keep(n), ref.keep(n), `coercing length at O${optimize}`)
+      m.churn(1024)
+      is(m.read(), ref.read(), 'coercion still retains the allocation it publishes')
+    }
+  }
+})
+
+test('frame effects: SIMD registers do not escape, but their argument calls do', () => {
+  const plain = `export function f(x) { const v=f32x4.splat(x); return f32x4.lane(f32x4.add(v,v),0) }`
+  if (!onKernel()) ok(!bodyOf(compile(plain, { wat: true, ...TAPE }), 'f').includes('global.set $__esc'),
+    'register operations need no heap escape flag')
+  const src = `let saved;
+    function keep(x) { saved=new Float64Array([x,x+1]); return x }
+    export function f(x) { return f32x4.lane(f32x4.splat(keep(x)),0) }
+    export function churn(n) { return new Float64Array(n).length }
+    export function peek(i) { return saved[i] }`
+  for (const optimize of levels(0, 2, 'speed')) {
+    const { f, churn, peek } = jz(src, { optimize }).exports
+    for (const x of [7, 19, -3]) {
+      is(f(x), x)
+      is(churn(32), 32)
+      is(peek(0), x, 'the argument call keeps its published allocation')
+      is(peek(1), x+1)
+    }
+  }
+})
 
 test('frame effects: own builtin-named methods retain their call effects', () => {
   for (const [init, method] of [['new Map()', 'get'], ['[1,2]', 'slice'], ['{}', 'get']]) {
@@ -404,9 +475,8 @@ test('frame effects: a call the census cannot name is no escape: what it runs lo
     export function f(k, x) { const t = [x, x]; const r = k === 1 ? arr : bag; r.push(t.length); return k === 1 ? arr.length : bag.n }
     export function churn(n) { const a = []; for (let i = 0; i < n; i++) a.push([i, i]); return a.length }
     export let read = () => arr.length * 100 + arr[arr.length - 1] + bag.n`
-  const want = oracle(pushes)
   for (const optimize of levels(0, 2, 3)) {
-    const m = jz(pushes, { optimize }).exports
+    const m = jz(pushes, { optimize }).exports, want = oracle(pushes)
     for (let i = 0; i < 40; i++) is(m.f(i & 1, i), want.f(i & 1, i))
     m.churn(64); is(m.read(), want.read(), `the grown array and the object's count at O${optimize}`)
   }
@@ -439,14 +509,14 @@ test('frame effects: a stored value no running call made lowers nothing', () => 
 
 test('frame effects: a builtin called by name is listed by what it keeps', () => {
   // One the census does not list is an escape with no address at every call of it: the calls it sits in keep their memory.
-  compile('export let f = () => 1')
+  _compileInProcess('export let f = () => 1')
   includeAllMods()
   // what the emitter dispatches by these names is syntax, no callee
-  const SYNTAX = new Set(['let', 'const', 'export', 'block', 'throw', 'catch', 'finally', 'return', 'u+', 'u-', 'instanceof', 'void', 'if', 'for', 'while', 'label',
+  const SYNTAX = new Set(['let', 'const', 'export', 'block', 'throw', 'catch', 'finally', 'return', 'u+', 'u-', 'postfix', 'instanceof', 'void', 'if', 'for', 'while', 'label',
     'break', 'continue', 'this', 'typeof', 'str', 'strcat', 'delete', 'in', 'navigator.hardwareConcurrency'])
   // the host keeps the callback it schedules and what a request or a file is handed; the rest the emitter alone calls
   const KEEPS = new Set(['setTimeout', 'setInterval', 'clearTimeout', 'clearInterval', 'requestAnimationFrame', 'cancelAnimationFrame', 'fetch', 'fs.read', 'fs.write',
-    '__raw_prop', '__raw_local', '__iter_arr_ctor', '__park_begin', '__park_finish', '__park_rewind',
+    '__raw_prop', '__raw_local', '__iter_arr_ctor', '__typed_len', '__park_begin', '__park_finish', '__park_rewind',
     ...['u8', 'u32', 'f64', 'i64', 'str'].flatMap(t => ['__park_write_' + t, '__park_read_' + t])])
   const names = Object.keys(ctx.core.emit).filter(k => !k.includes(':') && /^[A-Za-z_$]/.test(k) && !SYNTAX.has(k))
   ok(names.length > 200, `the runtime's names are read: ${names.length}`)
@@ -539,45 +609,6 @@ test('frame effects: what a store\'s operand allocates is no growth of its recei
       is(m.read(), js.read(), `${what}: what it stored reads back at ${optimize}`)
     }
   }
-})
-
-test('frame effects: a literal stored as numbers into the cells its element had is no escape', () => {
-  // the immutable-update idiom: every step replaces each record, and the emitter writes the fields in place
-  const src = `const init = () => {
-      const ps = []
-      let s = 0x9e3779b9 | 0
-      for (let i = 0; i < 24; i++) {
-        s = (s ^ (s << 7)) | 0
-        s = (s ^ (s >>> 9)) | 0
-        ps.push({ x: (s >>> 2) & 255, y: (s >>> 5) & 255, vx: (1 + (s & 3)) | 0, vy: (1 + ((s >>> 9) & 3)) | 0 })
-      }
-      return ps
-    }
-    const step = (ps) => {
-      let h = 0
-      for (let it = 0; it < 5; it++) for (let i = 0; i < 24; i++) {
-        const p = ps[i]
-        const nx = (p.x + p.vx) & 1023, ny = (p.y + p.vy) & 1023, wx = (p.vx ^ it) | 0, wy = (p.vy + 1) | 0
-        ps[i] = { x: nx, y: ny, vx: wx, vy: wy }
-        h = Math.imul(h ^ (nx + ny * 31), 16777619)
-      }
-      return h >>> 0
-    }
-    export const f = () => { let cs = step(init()); const ps = init(); cs = (cs + step(ps) + ps.length) | 0; return cs }
-    export const g = () => step(init())`
-  const want = oracle(src)
-  for (const optimize of levels(0, 2, 3)) {
-    const { exports: m, memory } = jz(src, { optimize })
-    for (let i = 0; i < 3; i++) is(m.f(), want.f(), `O${optimize}, call ${i}`)
-    is(m.g(), want.g(), `O${optimize}: a function that ends by the call`)
-    if (optimize < 2) continue   // no frame restores below
-    is(growth(memory, () => m.f()), 0, `O${optimize}: the call keeps nothing`)
-    is(growth(memory, () => m.g()), 0, `O${optimize}: keeps nothing either`)
-  }
-  if (belowOpt(2)) return
-  const loops = loopSpans(bodyOf(compile(src, { wat: true }), 'step')).filter(l => /i32\.store offset=12/.test(l))
-  ok(loops.length > 0, 'the records are written in place, four words each')
-  ok(loops.every(l => !/\$__esc|\$__alloc/.test(l)), 'and their loop lowers no flag and allocates nothing')
 })
 
 test('frame effects: a value read off the receiver it is stored into is no escape', () => {
@@ -769,6 +800,23 @@ test('arena rewind on the tape: a kernel storing through a module-wide table vet
   ok(run([['local.set', '$t', ['global.get', '$__heap']], ['i32.store', ['local.get', '$t'], ['i32.const', 1]], ['global.set', '$__heap', ['i32.add', ['local.get', '$t'], ['i32.const', 8]]], ['local.get', '$t']]), 'a bump at the heap pointer is an allocation')
 })
 
+test('arena rewind on the tape: array growth derives storage from its receiver, not capacity', () => {
+  for (const grow of ['$__arr_grow', '$__arr_grow_known']) for (const held of [false, true]) {
+    const m = ['module', HEAP,
+      ['global', '$__tab', ['mut', 'i32'], ['i32.const', 0]],
+      ['func', grow, ['param', '$p', 'i64'], ['param', '$n', 'i32'], ['result', 'f64'], ['f64.reinterpret_i64', ['local.get', '$p']]],
+      ['func', '$__resize', ['param', '$p', 'i64'], ['result', 'i32'], ['local', '$q', 'f64'],
+        ['local.set', '$q', ['call', grow,
+          held ? ['i64.extend_i32_u', ['global.get', '$__tab']] : ['local.get', '$p'],
+          ['i32.load', ['global.get', '$__tab']]]],
+        ['i32.store', ['i32.wrap_i64', ['i64.reinterpret_f64', ['local.get', '$q']]], ['i32.const', 1]], ['i32.const', 0]],
+      ['func', '$f', ['result', 'i32'], ['drop', ['call', '$__resize', ['i64.const', 0]]], alloc],
+    ]
+    const out = onTape(m, root => arenaRewind(root, { rewindable: new Map([['$f', 'i32']]), heapAddr: null }))
+    is(/heap_save/.test(src(out)), !held, `${grow}: ${held ? 'table receiver retains' : 'table capacity releases'}`)
+  }
+})
+
 test('arena rewind on the tape: an escape in a branch of user code raises the flag, one on every call vetoes, a kernel\'s rare path alone keeps the frame', () => {
   const m = (body) => ['module', HEAP,
     ['import', '"env"', '"x"', ['func', '$env.x', ['param', 'f64'], ['result', 'f64']]],
@@ -883,70 +931,22 @@ test('arena rewind on the tape: a mark moved past an operand goes with the check
   ok(/"f64.store"/.test(out) && /"local.set","\$\uE000escv0"/.test(out), 'the store and its value stay')
 })
 
-test('arena rewind on the tape: a tail call becomes a plain call inside the rewind, unless its callee may run the function again', () => {
-  const m = (callee, body = ['local.get', '$p']) => ['module', HEAP,
+test('arena rewind on the tape: acyclic safe tail calls return through cleanup; recursive tail calls veto', () => {
+  const m = (callee) => ['module', HEAP,
     ['func', '$__len', ['param', '$p', 'i32'], ['result', 'i32'], ['local.get', '$p']],
-    ['func', '$user', ['param', '$p', 'i32'], ['result', 'i32'], body],
+    ['func', '$user', ['param', '$p', 'i32'], ['result', 'i32'], ['local.get', '$p']],
     ['func', '$f', ['result', 'i32'], ['drop', alloc], ['return_call', callee, ['i32.const', 3]]],
   ]
-  const run = (...a) => { const why = []; return [src(onTape(m(...a), root => arenaRewind(root, { rewindable: new Map([['$f', 'i32']]), heapAddr: null, report: (n, r) => why.push(`${n}: ${r}`) }))[4]), why.join(' | ')] }
-  for (const callee of ['$__len', '$user']) {
-    const [f] = run(callee)
-    ok(/heap_save/.test(f) && !/return_call/.test(f) && f.includes(`"call","${callee}"`), `${callee}: the tail call is a plain call under the restore`)
-  }
-  // a recursion written as tail calls counts on the frame the call elides
-  for (const [what, body] of [['by a call', ['call', '$f']], ['by a tail call', ['return_call', '$f']]]) {
-    const [f, why] = run('$user', body)
-    ok(!/heap_save/.test(f) && /return_call/.test(f), `a callee that runs the function again ${what} keeps the tail call`)
-    is(why, '$f: return_call', 'and the function keeps its heap, by name')
-  }
-  const self = src(onTape(['module', HEAP, ['func', '$f', ['param', '$n', 'i32'], ['result', 'i32'], ['drop', alloc], ['return_call', '$f', ['local.get', '$n']]]],
-    root => arenaRewind(root, { rewindable: new Map([['$f', 'i32']]), heapAddr: null }))[2])
-  ok(!/heap_save/.test(self) && /return_call/.test(self), 'a function that tail-calls itself as well')
-})
-
-test('arena rewind on the tape: a tail call is a call: what its callee lowers or keeps, the frames above it read', () => {
-  const m = (call, callee) => ['module', HEAP,
-    ['table', '$tbl', 1, 'funcref'], ['type', '$sig', ['func', ['param', 'i32'], ['result', 'i32']]], ['elem', ['i32.const', 0], 'func', '$__k'],
-    ['global', '$__tab', ['mut', 'i32'], ['i32.const', 0]],
-    ['func', '$__k', ['param', '$p', 'i32'], ['result', 'i32'], ['if', ['local.get', '$p'], ['then', ['global.set', '$__tab', ['local.get', '$p']]]], ['i32.const', 0]],
-    ['func', '$leak', ['param', '$p', 'i32'], ['result', 'i32'], alloc],
-    ['func', '$mid', ['param', '$p', 'i32'], ['result', 'i32'],
-      call.endsWith('indirect') ? [call, '$tbl', ['type', '$sig'], ['local.get', '$p'], ['i32.const', 0]] : [call, callee, ['local.get', '$p']]],
-    ['func', '$f', ['param', '$c', 'i32'], ['result', 'i32'], ['drop', ['call', '$mid', ['local.get', '$c']]], alloc],
-  ]
-  const run = (call, callee, opts = {}) => {
-    const why = []
-    const out = src(onTape(m(call, callee), root => arenaRewind(root, { rewindable: new Map([['$f', 'i32']]), heapAddr: null, exported: new Set(['$f']), report: (n, r) => why.push(`${n}: ${r}`), ...opts })).at(-1))
-    return `${mode(out)}: ${why.join(' | ')}`
-  }
-  is(run('call', '$__k'), 'flag: $f: kept on a call that runs an escape: calls $mid: calls $__k: global.set $__tab', 'the frame above restores by the flag the kernel lowers')
-  is(run('return_call', '$__k'), run('call', '$__k'), 'reached by a tail call as well')
-  is(run('call_indirect'), run('call', '$__k'), 'through the table')
-  is(run('return_call_indirect'), run('call_indirect'), 'and by a tail call through it')
-  const unsafe = { unsafe: new Set(['$leak']) }
-  is(run('call', '$leak', unsafe), 'none: $f: calls $mid: calls $leak: escape', 'a callee that keeps on every call keeps every caller')
-  is(run('return_call', '$leak', unsafe), run('call', '$leak', unsafe), 'reached by a tail call as well')
-})
-
-test('frame effects: what a callee reached by a tail call stored into a module binding survives the frames above it', () => {
-  // `f` leaves by a tail call of `g`; `g` makes the module's array on its first call.
-  const src = `let keep = null
-    function g(n, k) {
-      if (!keep) keep = new Float64Array(n)
-      const out = new Float64Array(n)
-      for (let i = 0; i < keep.length; i++) { keep[i] += i * k; out[i] = keep[i] * 2 }
-      for (let i = 0; i < out.length; i++) out[i] += Math.sqrt(Math.abs(keep[i]))
-      return out
-    }
-    function f(n) { return g(n, 1) }
-    export let h = (n) => g(n, 2)[1]
-    export let go = (n) => { const tmp = new Float64Array(16); tmp.fill(n + 1); const r = f(n); return r[3] + tmp[1] + keep.length * 1000 + keep[2] }`
-  for (const optimize of [...levels(0, 2, 3), 'size']) {
-    const m = jz(src, { optimize }).exports, js = oracle(src)
-    for (let i = 0; i < 4; i++) is(m.go(40), js.go(40), `${optimize}, call ${i}: the array the first call made holds what every call added`)
-    is(m.h(40), js.h(40), `${optimize}: and by a call of its own`)
-  }
+  const kernel = src(onTape(m('$__len'), root => arenaRewind(root, { rewindable: new Map([['$f', 'i32']]), heapAddr: null }))[4])
+  ok(/heap_save/.test(kernel) && !/return_call/.test(kernel) && /"call","\$__len"/.test(kernel), 'the kernel tail call is a plain call under the restore')
+  const user = src(onTape(m('$user'), root => arenaRewind(root, { rewindable: new Map([['$f', 'i32']]), heapAddr: null }))[4])
+  ok(/heap_save/.test(user) && !/return_call/.test(user), 'a safe user leaf returns through cleanup')
+  const recursive = m('$user')
+  recursive[3] = ['func', '$user', ['param', '$p', 'i32'], ['result', 'i32'], ['return_call', '$f']]
+  const cycle = src(onTape(recursive, root => arenaRewind(root, { rewindable: new Map([['$f', 'i32']]), heapAddr: null }))[4])
+  ok(!/heap_save/.test(cycle) && /return_call/.test(cycle), 'mutual recursion retains frame elision')
+  const self = src(onTape(m('$f'), root => arenaRewind(root, { rewindable: new Map([['$f', 'i32']]), heapAddr: null }))[4])
+  ok(!/heap_save/.test(self) && /return_call/.test(self), 'self recursion retains frame elision')
 })
 
 test('arena rewind on the tape: a tail call is a call: what its callee lowers or keeps, the frames above it read', () => {

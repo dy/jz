@@ -5,7 +5,23 @@ import { compile } from '../index.js'
 import jz from '../index.js'
 import { strHashLiteral } from '../module/collection.js'
 import { levels } from './_matrix.js'
-import { run, oracle, cases, agree } from './util.js'
+import { run, oracle, cases, agree, funcWat } from './util.js'
+
+test('string conversion: checked elements preserve missing values and evaluate once', () => {
+  for (const values of ['[1,NaN,-0,4294967295]', '["a","long string"]', '[true,false]', 'new Int32Array([1,2])']) {
+    const src = `export function f(i){
+      const a=${values};let calls=0
+      const next=()=>{calls++;return i}
+      return [String(a[next()]),\`x\${a[next()]}z\`,''+a[next()],
+        'undefined,false,true,a,1'.includes(a[next()]),calls]
+    }`
+    const ref=oracle(src).f
+    for(const optimize of levels(0,1,2,3,'size')){
+      const f=jz(src,{optimize}).exports.f
+      for(const i of [-1,0,1,3,20,0]) is(f(i),ref(i),`${values}, O${optimize}, index ${i}`)
+    }
+  }
+})
 
 test('string operands: preserve boolean, numeric, BigInt and nullable identities', () => {
   const src = `export function f(n) {
@@ -460,6 +476,29 @@ test('template literal: fused concat returns string and skips concat helper', ()
   const start = wat.indexOf('(func $f')
   const end = wat.indexOf('\n  (func ', start + 1)
   ok(!wat.slice(start, end).includes('call $__str_concat'))
+})
+
+test('fused concat: long literal fragments use bounded code and preserve evaluation order', () => {
+  const prefix = '0123456789abcdef'.repeat(128), suffix = 'tail\0'.repeat(17)
+  const src = `let trace = ''
+    function value(n) { trace += 'v'; return n ? '𝄞' : '' }
+    export function f(n) {
+      trace = ''
+      const out = \`${prefix}\${value(n)}${JSON.stringify(suffix).slice(1,-1)}\`
+      return [out, trace, \`${'a'.repeat(32)}\${n|0}\`, \`${'b'.repeat(33)}\${n|0}\`]
+    }`
+  const js = oracle(src).f
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    for (const shared of [false, true]) {
+      const memory = shared ? new WebAssembly.Memory({ initial: 4, maximum: 64, shared: true }) : undefined
+      const { f } = jz(src, { optimize, ...(shared ? { memory } : {}) }).exports
+      for (const n of [0, 1, 1, 0]) is(f(n), js(n), `O${optimize}, shared=${shared}, n=${n}`)
+    }
+  }
+  const wat = compile(src, { wat: true, optimize: { level: 1, watr: false } })
+  const fn = funcWat(wat, 'f')
+  ok(fn.includes('memory.copy'), 'long fragments copy from the string pool')
+  ok((fn.match(/i32.store(?:16)?\b/g) || []).length < 64, 'literal length does not expand the function into stores')
 })
 
 test('fused concat: literal ASCII parts store inline — no per-separator copy or length call', () => {
@@ -1268,6 +1307,20 @@ test('static array fold: mutation before the fold site ends the fact', () => {
   // No mutation -> the fold must still fire and stay correct.
   const m4 = run(`const S=['a','b']; const T = \`=\${S.join('')}=\`; export let t = () => T`)
   is(m4.t(), '=ab=')
+})
+
+// The base fold (optimize/devirt.js foldStaticConstArrayReads) replaces the
+// inline forwarding hop by the array's base. It took any block holding a base
+// tee and a forwarding call for the hop: an index computed in a block over the
+// array's own length (a key test around `i % words.length`) became the base.
+test('static array fold: an index that reads the array stays the index', () => {
+  const src = `const words = ['a', 'b', 'c', 'd', 'e', 'f', 'g']
+    export let f = (n) => { let s = ''; for (let i = 0; i < n; i++) s += words[i % words.length]; return s }
+    export let g = (n) => { const counts = {}; for (let i = 0; i < n; i++) { const w = words[i % words.length]; counts[w] = (counts[w] | 0) + 1 } return counts.a * 10 + counts.b }`
+  for (const optimize of levels(0, 2, 3)) {
+    agree(src, 'f', [9], { optimize }, `f at ${optimize}`)
+    agree(src, 'g', [9], { optimize }, `g at ${optimize}`)
+  }
 })
 
 test('startsWith/endsWith position argument rejects loudly (was silently dropped)', () => {

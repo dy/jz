@@ -1,6 +1,6 @@
 import { DBG_INVARIANTS, assertCtxInvariants } from '../debug.js'
 import { ctx, inc, PTR, declGlobal } from '../ctx.js'
-import { T, isBlockBody, isReassigned } from '../ast.js'
+import { T, isBlockBody, isReassigned, withLoc } from '../ast.js'
 import { hasAmbiguousBoolMerge } from '../kind.js'
 import { typedElemAux } from '../../layout.js'
 import { VAL, updateRep } from '../reps.js'
@@ -18,7 +18,7 @@ import {
   mintRepresentationPlan, representationProgramHasBigint, representationReturnAction,
 } from './representation-plan.js'
 import { mintTypedStoragePlan } from './typed-storage-plan.js'
-import { emit, emitBlockBody, emitIdentitySafe } from './emit.js'
+import { emit, emitBlockBody, emitIdentitySafe, bindingStore } from './emit.js'
 import { enterFunc, emitPreboxedLocalInits, placePreboxedLocalInits, seedSummaryParam, seedSummaryLocals } from './func-entry.js'
 import { paramAllUsesNumeric } from './param-numeric.js'
 import { unbounded } from '../summary/index.js'
@@ -26,7 +26,7 @@ import { arraySliceViews } from './array-view.js'
 import { frameNode } from '../function.js'
 
 const normalizeClosureBody = cb => {
-  if (Array.isArray(cb.body) && cb.body[0] === ';') cb.body = ['{}', cb.body]
+  if (Array.isArray(cb.body) && cb.body[0] === ';') cb.body = withLoc(['{}', cb.body], cb.body)
 }
 
 // A closure that captures no cell: read-only, shared by every such closure.
@@ -203,6 +203,7 @@ export function analyzeClosureBodyForEmit(cb) {
       name: cb.name,
       params: cb.params.map(name => ({ name, type: 'f64' })),
       results: ['f64'],
+      scope: cb.scope,
     }
     seedSummaryLocals(ctx.summary?.at(cb.scope))
     mintTypedStoragePlan(ctx, cb, repSig, cb.body, ctx.func.localReps)
@@ -211,7 +212,7 @@ export function analyzeClosureBodyForEmit(cb) {
     // return edges convert to and every caller reads (body-data.js callRep,
     // ir/bigint.js isTaggedCallResult).
     if (representationProgramHasBigint(ctx))
-      mintRepresentationPlan(ctx, cb, repSig, cb.body, ctx.func.localReps, { generic: true })
+      mintRepresentationPlan(ctx, cb, repSig, cb.body, ctx.func.localReps, { generic: true, captures: cb.bigintReps })
     return publishPreparedFunctionPlan(ctx, cb, ctx.func)
   } finally {
     ctx.closure.emitting = prevEmitting
@@ -307,12 +308,14 @@ export function emitClosureBody(cb, functionPlan) {
   const defaultParamInits = []
   if (cb.defaults) {
     for (const [pname, defVal] of Object.entries(cb.defaults)) {
+      // A parameter the callers give a number beside a Boolean default takes its atom.
+      const value = asF64(bindingStore(pname, defVal))
       if (boxedParamNames.has(pname)) {
         defaultParamInits.push(['if', isUndef(['f64.load', boxedAddr(pname)]),
-          ['then', ['f64.store', boxedAddr(pname), asF64(emit(defVal))]]])
+          ['then', ['f64.store', boxedAddr(pname), value]]])
       } else {
         defaultParamInits.push(['if', isUndef(['local.get', `$${pname}`]),
-          ['then', ['local.set', `$${pname}`, asF64(emit(defVal))]]])
+          ['then', ['local.set', `$${pname}`, value]]])
       }
     }
   }

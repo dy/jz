@@ -149,7 +149,7 @@ export const DERIVED_PROP_MODULES = Object.assign(Object.create(null), {
   "toPrecision": ["number"],
   "toReversed": ["array", "typedarray"],
   "toSorted": ["array", "typedarray"],
-  "toString": ["date", "number", "string"],
+  "toString": ["date", "number", "object", "string"],
   "toTimeString": ["date"],
   "toUTCString": ["date"],
   "toUpperCase": ["string"],
@@ -159,7 +159,7 @@ export const DERIVED_PROP_MODULES = Object.assign(Object.create(null), {
   "unicode": ["regex"],
   "unicodeSets": ["regex"],
   "unshift": ["array"],
-  "valueOf": ["date", "string"],
+  "valueOf": ["date", "object", "string"],
   "values": ["collection"],
   "with": ["array", "typedarray"],
 })

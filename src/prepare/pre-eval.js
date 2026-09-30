@@ -81,7 +81,7 @@
  * @module prepare/pre-eval
  */
 
-import { COMPARE_OPS, MUTATE_OPS, TYPEOF, typeofPredicate, walkAst, extractParams, classifyParam, PARAM_NAME } from '../ast.js'
+import { copyLoc, COMPARE_OPS, MUTATE_OPS, TYPEOF, typeofPredicate, walkAst, extractParams, classifyParam, PARAM_NAME } from '../ast.js'
 import { ctx } from '../ctx.js'
 import { int32, numBinOp } from '../static.js'
 import { MATH_KERNEL, powFold } from './math-kernel.js'
@@ -456,7 +456,13 @@ function evalMathCall(name, vs) {
   const uf = HOST_EXACT_UNARY[name]
   if (uf) return vs.length === 1 ? numResult(uf(vs[0])) : null
   const kfn = MATH_KERNEL['math.' + name]
-  return kfn ? numResult(kfn(...vs)) : null
+  if (!kfn) return null
+  // an argument left out is undefined, NaN as the number the kernel reads
+  const args = vs.slice()
+  while (args.length < kfn.length) args.push(NaN)
+  // a kernel that answers undefined leaves the call for run time
+  const v = kfn(...args)
+  return v === undefined ? null : numResult(v)
 }
 
 /** args: EvalResult[] (some entries may be null — the method itself validates types/arity).
@@ -713,6 +719,9 @@ function collectParamNamesShallow(paramsNode) {
 }
 
 function foldNode(node, env, state) {
+  return copyLoc(node, foldNodeInner(node, env, state))
+}
+function foldNodeInner(node, env, state) {
   if (typeof node === 'string') {
     // A bare-string node is a plain identifier COPY-through in the common case,
     // but it is ALSO the exact shape prepare's '.' handler collapses a namespace
@@ -862,6 +871,9 @@ const sameStmts = (a, b) => a.length === b.length && a.every((s, i) => s === b[i
 // original object. `foldStmts` therefore returns the exact input array (and
 // `foldBlockLike` the exact input node) whenever nothing in it changed, all the way up.
 function foldBlockLike(node, env, state) {
+  return copyLoc(node, foldBlockLikeInner(node, env, state))
+}
+function foldBlockLikeInner(node, env, state) {
   const wasBraced = Array.isArray(node) && node[0] === '{}'
   const original = blockToStmtArray(node)
   const folded = foldStmts(original, env, state)

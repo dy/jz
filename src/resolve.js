@@ -30,6 +30,11 @@ const importRe = /^\s*(?:import\b[^'"]*?\bfrom\s*|import\s+|export\b[^'"]*?\bfro
 // import in all but syntax (jzify hoists it); bundle its target the same way.
 const dynImportRe = /\bimport\s*\(\s*['"]([^'"]+)['"]\s*\)/g
 
+// Graph resolution and build provenance must recognize the same import sites.
+export const rewriteModuleImports = (source, rewrite) => source
+  .replace(importRe, rewrite)
+  .replace(dynImportRe, rewrite)
+
 /**
  * @param {string} entryFile - absolute or cwd-relative path to the entry module.
  * @param {object} [opts]
@@ -110,7 +115,7 @@ export function resolveModuleGraph(entryFile, { resolveNode = false, external = 
     const rel = spec.startsWith('./') || spec.startsWith('../')
     if (isExternal(spec) || (rel && isExternal(spec, resolve(fromDir, spec)) || (rel && isExternal(spec, resolve(fromDir, spec) + '.js')))) {
       const names = externals[spec] ??= new Set()
-      const m = /^import\s+(?:(\w+)\s*,?\s*)?(?:\{([^}]*)\})?/.exec(match)
+      const m = /^import\s+(?:([\p{ID_Start}$_][\p{ID_Continue}$\u200c\u200d]*)\s*,?\s*)?(?:\{([^}]*)\})?/u.exec(match)
       if (m?.[1]) names.add('default')
       for (const part of (m?.[2] ?? '').split(',')) { const nm = part.trim().split(/\s+as\s+/)[0]; if (nm) names.add(nm) }
       return match
@@ -120,9 +125,7 @@ export function resolveModuleGraph(entryFile, { resolveNode = false, external = 
     const at = match.lastIndexOf(spec), q = match[at - 1]
     return match.slice(0, at - 1) + q + abs + q + match.slice(at + spec.length + 1)
   }
-  const rewriteImports = (src, fromDir) => src
-    .replace(importRe, (match, spec) => rewriteOne(match, spec, fromDir))
-    .replace(dynImportRe, (match, spec) => rewriteOne(match, spec, fromDir))
+  const rewriteImports = (src, fromDir) => rewriteModuleImports(src, (match, spec) => rewriteOne(match, spec, fromDir))
   const specifiersIn = (src) => {
     const out = []
     for (const re of [importRe, dynImportRe]) { let m; re.lastIndex = 0; while ((m = re.exec(src)) !== null) out.push(m[1]) }

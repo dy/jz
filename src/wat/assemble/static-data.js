@@ -55,10 +55,12 @@ export function stripDeadLazyTables(sec) {
     for (const c of n) { if (typeof c === 'string' && c[0] === '$') mark(c); else scan(c) }
   }
   while (work.length) scan(byName.get(work.pop()))
+  // a table several functions read lives while any of them does
+  const spanLive = (s) => s.fns ? s.fns.some(f => live.has(f)) : live.has(s.fn)
   // Keep the survivor metadata through watr. Its later inlining/constant folding can
   // prove an owner dead even when this pre-watr graph still reaches it; watrTail uses
   // the exact byte ranges to remove those newly-orphaned table bytes from active data.
-  if (spans.every(s => live.has(s.fn))) { ctx.runtime.lazySpans = spans; return }
+  if (spans.every(spanLive)) { ctx.runtime.lazySpans = spans; return }
   // Rebuild the tail (the spans are the last data appends, in order): truncate
   // to the first span's pre-pad start, re-append live tables, re-point their
   // base globals — both the scope entry and the already-pushed sec.globals IR.
@@ -75,7 +77,7 @@ export function stripDeadLazyTables(sec) {
   dataReset(dataBytes().slice(0, spans[0].start))
   const survivors = []
   for (const s of spans) {
-    if (!live.has(s.fn)) { setInit(s.global, 0); continue }
+    if (!spanLive(s)) { setInit(s.global, 0); continue }
     dataAlign(8)
     s.start = dataLen()
     s.base = s.start

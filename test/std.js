@@ -41,9 +41,17 @@ test('std: one class identity across modules', () => {
     import { T } from './b.js'
     export const f = () => { const e = mk(); const t = new T(); let n = 0; t.addEventListener('go', () => n++); t.go(); return (e instanceof Event ? 1 : 0) + (e.type === 'tick' ? 10 : 0) + n * 100 }`
   is(run(src, { modules }), 111)
-  const wat = compile(src, { modules, wat: true })
-  // none where every site took the factory's body (the speed tier)
-  ok((wat.match(/\(func \$\S*\$Event\n/g) || []).length <= 1, 'one Event factory for the program')
+  const wat = compile(src, { modules, wat: true, optimize: { level: 2, watr: false, sourceInline: false } })
+  is((wat.match(/\(func \$\S*\$Event\n/g) || []).length, 1, 'one Event factory for the program')
+})
+
+test('std: combined default and named imports share class identity', () => {
+  for (const local of ['C', 'Array']) {
+    const modules = { './c.js': `class C { x = 7 }; export default C; export const size = 3` }
+    const source = `import ${local}, {size as n} from './c.js'
+      export function f() { const c = new ${local}(); return [c instanceof ${local}, c.x, n] }`
+    is(jz(source, { modules }).exports.f(), [true, 7, 3], `${local}: every import binding belongs to the module scope`)
+  }
 })
 
 test('std: one promise runtime across modules – a promise settled in one module resolves an await in another', async () => {
@@ -59,7 +67,7 @@ test('std: one promise runtime across modules – a promise settled in one modul
   const m = jz(src, { modules })
   is(await m.exports.f(), 8)
   is(await m.exports.k(), 2, 'a raw promise from an imported async function adopts at the boundary')
-  const wat = compile(src, { modules, wat: true })
+  const wat = compile(src, { modules, wat: true, optimize: { level: 2, watr: false } })
   is((wat.match(/\(func \$\S*__p_settle\S*/g) || []).length, 1, 'one settle function for the program')
   ok(typeof m.exports.__mt_drain === 'function', 'the host-boundary contract is exported from the program')
 })
@@ -76,6 +84,25 @@ test('std: DOMException carries name and legacy code; `globalThis.X || Error` ke
       try { throw DOMErr('bad', 'IndexSizeError') } catch (e) { b = (e instanceof DOMException ? 1 : 0) + e.code * 10 + (e.message === 'bad' ? 100 : 0) }
       return a * 1000 + b
     }`), 111111 * 1000 + 111)
+})
+
+test('class identity: constructed bases retain nominal ancestry', () => {
+  is(run(`
+    class Base extends Error {}
+    class Derived extends Base {}
+    class Other extends Error {}
+    class Dynamic extends (Base || Error) {}
+    export let f = () => {
+      const base = new Base('base'), derived = new Derived('derived'), dynamic = new Dynamic('dynamic')
+      let calls = 0
+      const read = () => { calls++; return derived }
+      return [base instanceof Base, base instanceof Derived, derived instanceof Base,
+        derived instanceof Derived, derived instanceof Other, derived instanceof Error,
+        dynamic instanceof Dynamic, dynamic instanceof Base, dynamic.message,
+        new Error() instanceof Base, null instanceof Base, 1 instanceof Base,
+        read() instanceof Base, calls, Object.keys(derived).length, Object.keys({...derived}).length]
+    }
+  `), [true, false, true, true, false, true, true, true, 'dynamic', false, false, false, true, 1, 0, 0])
 })
 
 test('std: WeakRef derefs and FinalizationRegistry never fires (no collector)', () => {

@@ -215,7 +215,7 @@ test('site: buttons use the logo bevel and tables remain matte', async () => {
   ok(button.children[0].style.background.includes('rgb(0 0 0 /'), 'light mode uses the same bevel in black')
 })
 
-test('site: thin title outlines track the light while stats, FAQ and JZ keep their fill', async () => {
+test('site: title and stat inner outlines track the light and live values without changing FAQ or JZ', async () => {
   const text = (kind, width = 100, height = 16) => {
     const classes = new Set(), rect = { left: 20, top: 40, width, height, bottom: 40 + height }
     const fill = { textContent: 'Examples', getBoundingClientRect: () => rect }
@@ -241,18 +241,19 @@ test('site: thin title outlines track the light while stats, FAQ and JZ keep the
   is(g.measurements(), measured, 'pointer movement reuses measured geometry')
   title.rect.left = 40; title.rect.top = 20; g.emit('scroll'); g.drain()
   ok(at(30, 28), 'scroll remeasures the paint box')
-  for (const el of [stat, faq, logo]) {
-    ok(!el.classList.contains('title-lit'), 'stats, FAQ and JZ stay solid')
+  ok(stat.classList.contains('title-lit'), 'stat figures share the title x-ray')
+  for (const el of [faq, logo]) {
+    ok(!el.classList.contains('title-lit'), 'FAQ and JZ stay solid')
     is(Object.keys(el.style), ['setProperty'], 'unrelated glyphs receive no paint updates')
   }
-  const filter = g.defs.children[0]
+  const filter = g.defs.children[1]
   is(filter.attrs.primitiveUnits, 'objectBoundingBox', 'inner-edge dimensions work across browser coordinate systems')
-  const [rx, ry] = filter.parts.feGaussianBlur.attrs.stdDeviation.split(' ').map(Number)
-  ok(Math.abs(rx * 100 - .6) + Math.abs(ry * 16 - .6) < 1e-12, 'the inner edge uses a subpixel soft mask instead of integer erosion')
+  const [rx, ry] = filter.parts.feMorphology.attrs.radius.split(' ').map(Number)
+  ok(Math.abs(rx * 100 - 1.1) + Math.abs(ry * 16 - 1.1) < 1e-12, 'erosion stays just over one CSS pixel to survive WebKit rounding')
   for (const value of ['2.36×', '2.36×', '1.04×']) {
-    stat.textContent = value; g.emit('mutate'); g.drain()
-    ok(!stat.classList.contains('title-lit'), 'rotating stats remain solid')
-    is(g.defs.children.length, 1, 'stat changes create no glyph masks')
+    stat.fill.textContent = value; g.emit('mutate'); g.drain()
+    is(stat.outline.textContent, value, 'the decorative outline follows the real stat value')
+    is(g.defs.children.length, 2, 'value changes reuse existing masks')
   }
   g.emit('pointerleave'); g.drain(); ok(!lit(), 'leaving restores the title fill')
   g.move(70, 48); g.drain(); g.move(900, 600); g.drain()
@@ -263,7 +264,7 @@ test('site: thin title outlines track the light while stats, FAQ and JZ keep the
   g.motion.matches = false; g.emit('motion'); g.move(70, 48); g.drain()
   title.rect.width = 0; title.rect.height = 0; g.emit('resize'); g.drain()
   ok(!lit(), 'collapsed titles shed their cutout')
-  is(filter.parts.feGaussianBlur.attrs.stdDeviation, '0.6 0.6', 'zero-size paint boxes retain finite mask dimensions')
+  ok(!JSON.stringify(title.style).match(/NaN|Infinity/), 'zero-size paint boxes retain finite coordinates')
   title.rect.width = 100; title.rect.height = 16; title.rect.top = 900; title.rect.bottom = 916
   g.emit('scroll'); g.drain(); ok(!lit(), 'offscreen titles stay unmasked')
   title.rect.top = 40; title.rect.bottom = 56
@@ -433,7 +434,7 @@ test('site: click bursts clear on light mode or a hidden tab, then resume only o
 
 // Run the page's grid controller, mocking only browser/engine boundaries. The numeric
 // simulation's JS/WASM parity is covered by grid-current.js; these tests pin its lifecycle.
-function gridDemo({ failure, gate = Promise.resolve(), hidden = false, width = 160, height = 240, dpr = 1, viewport = 1280, wordRight = 300 } = {}) {
+function gridDemo({ failure, gate = Promise.resolve(), hidden = false, width = 160, height = 240, dpr = 1 } = {}) {
   const events = new Map(), frames = new Map(), sizes = [], draws = []
   const listen = (name, fn) => events.set(name, [...events.get(name) || [], fn])
   const emit = (name, event) => events.get(name)?.forEach(fn => fn(event))
@@ -445,19 +446,17 @@ function gridDemo({ failure, gate = Promise.resolve(), hidden = false, width = 1
       this.px.fill(mode === 'wasm' ? 11 : 22)
     },
   })
-  const wasm = engine('wasm'), js = engine('js'), summary = { focus() { this.focused = true },
-    getBoundingClientRect: () => ({ left: parseFloat(info.style.left), right: parseFloat(info.style.left) + 24 }) }, description = {}
-  const picker = { disabled: true, value: 'wasm', setAttribute(k, v) { this[k] = String(v) }, addEventListener: listen }, stats = { textContent: 'Loading…' }
-  const pop = { style: {}, get offsetWidth() { return Math.min(240, ctx.root.clientWidth - 32) } }
-  const info = { open: true, style: { setProperty(k, v) { this[k] = v } }, querySelector: s => s === 'summary' ? summary : s === '.grid-pop' ? pop : description, contains: () => false, addEventListener: listen }
+  const wasm = engine('wasm'), js = engine('js'), summary = { focus() {} }, description = {}
+  const picker = { disabled: true, options: [{}], addEventListener: listen }, stats = { textContent: 'Loading…' }
+  const info = { open: true, style: { setProperty(k, v) { this[k] = v } }, querySelector: s => s === 'summary' ? summary : description, contains: () => false, addEventListener: listen }
   const canvas = { style: {}, getBoundingClientRect: () => rect, getContext: () => failure === 'canvas' ? null : {
     createImageData: (w, h) => ({ data: new Uint8ClampedArray(w * h * 4) }), putImageData: img => draws.push(new Uint32Array(img.data.buffer)[0]),
   } }
   const nodes = { 'grid-current': canvas, 'grid-info': info, 'grid-engine': picker, 'grid-stats': stats,
-    'hero-wasm': { getBoundingClientRect: () => ({ right: wordRight, top: 40, height: 40 }) } }
+    'hero-wasm': { getBoundingClientRect: () => ({ right: 300, top: 40, height: 40 }) } }
   let id = 0
   const ctx = {
-    $: key => nodes[key], root: { dataset: { theme: 'dark' }, clientWidth: viewport },
+    $: key => nodes[key], root: { dataset: { theme: 'dark' } },
     document: { hidden, addEventListener: listen, querySelector: () => ({ getBoundingClientRect: () => ({ bottom: rect.height - ctx.scrollY }) }) }, addEventListener: listen,
     performance: { now: () => 1 }, devicePixelRatio: dpr, scrollY: 0,
     getComputedStyle: () => ({ backgroundPositionX: '160px' }),
@@ -479,9 +478,9 @@ function gridDemo({ failure, gate = Promise.resolve(), hidden = false, width = 1
   const source = html.slice(html.indexOf("const cv = $('grid-current')"), html.indexOf('// ── dev tuning panel'))
     .replace('await import(u)', 'await loadJS()').replace("await import('./dist/jz.js')", 'await loadWasm()')
   const api = runInNewContext(`(() => {${source}\nreturn { boot, sync }})()`, ctx)
-  return { ...api, ctx, picker, stats, info, pop, summary, description, canvas, rect, sizes, draws, frames, emit,
+  return { ...api, ctx, picker, stats, info, summary, description, canvas, rect, sizes, draws, frames, emit,
     tick: (now = 1000) => { const batch = [...frames.values()]; frames.clear(); batch.forEach(fn => fn(now)) },
-    select: mode => { if (picker.value !== mode) emit('click') },
+    select: mode => { picker.value = mode; emit('change') },
   }
 }
 
@@ -509,39 +508,6 @@ test('site: grid engines reuse buffers through WASM → WASM → JS → WASM and
   is([g.info.style.left, g.info.style.top, g.info.style['--info-drop']], ['302px', '36px', '52px'], 'superscript info follows WASM; its popover clears the word')
 })
 
-test('site: grid info opens right when it fits and stays within narrow viewports', async () => {
-  for (const [viewport, wordRight, left, top] of [
-    [1280, 300, 334, '0px'], [590, 300, 334, '0px'],
-    [589, 300, 86, 'var(--info-drop)'], [200, 175, 16, 'var(--info-drop)'],
-    [260, 10, 16, 'var(--info-drop)'],
-  ]) {
-    const g = gridDemo({ viewport, wordRight }); await g.boot()
-    const x = parseFloat(g.info.style.left) + parseFloat(g.pop.style.left)
-    is([x, g.pop.style.top], [left, top], `${viewport}px viewport / ${wordRight}px anchor: placement`)
-    ok(x >= 16 && x + g.pop.offsetWidth <= viewport - 16, 'panel stays within both viewport edges')
-  }
-  const g = gridDemo(); await g.boot()
-  g.ctx.root.clientWidth = 589; g.emit('resize'); g.emit('timer')
-  is(g.pop.style.top, 'var(--info-drop)', 'open panel moves below after resize')
-  g.emit('keydown', { key: 'Escape' })
-  is([g.info.open, g.summary.focused], [false, true], 'Escape closes and restores focus')
-  g.ctx.root.clientWidth = 900; g.info.open = true; g.emit('toggle')
-  is([g.pop.style.left, g.pop.style.top], ['32px', '0px'], 'reopening recomputes available space')
-  g.emit('pointerdown', { target: {} })
-  is(g.info.open, false, 'outside click closes the panel')
-})
-
-test('site: JS/JZ switch reports its engine and separates frame stats with a comma', async () => {
-  const g = gridDemo(); await g.boot()
-  is([g.picker.disabled, g.picker['aria-checked']], [false, 'true'], 'ready switch starts on JZ')
-  g.tick(1000); g.tick(1600)
-  is(g.stats.textContent, '0.00 ms/frame, 3 fps', 'readout uses a comma between values')
-  g.emit('click'); g.tick()
-  is([g.picker.value, g.picker['aria-checked'], g.draws.at(-1)], ['js', 'false', 22], 'click selects JS in the UI and renderer')
-  g.emit('click'); g.tick()
-  is([g.picker.value, g.picker['aria-checked'], g.draws.at(-1)], ['wasm', 'true', 11], 'next click restores JZ')
-})
-
 test('site: grid backing store stays on an integer grid at low and high display scales', async () => {
   for (const [dpr, scale] of [[.25, 1], [.49, 1], [.5, 1], [1.49, 1], [1.5, 2], [3, 2]]) {
     const g = gridDemo({ dpr }); await g.boot(); g.tick()
@@ -563,7 +529,7 @@ test('site: grid boot races, missing source, missing canvas and unsupported WASM
     if (failure === 'wasm' || failure === 'boxed') {
       is(g.picker.value, 'js', `${failure}: JS selected`)
       is(g.draws, [22], `${failure}: the JS buffer reaches the canvas`)
-      is([g.picker.disabled, g.picker['aria-checked']], [true, 'false'], `${failure}: switch stays on JS when WASM is unavailable`)
+      is(g.picker.options[0].disabled, true, `${failure}: unavailable WASM cannot be selected`)
       is(g.description.textContent, 'This header animation runs the same JavaScript source.', `${failure}: no false WASM claim`)
     } else {
       is(g.stats.textContent, 'Grid unavailable', `${failure}: failure is visible`)

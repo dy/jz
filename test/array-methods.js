@@ -50,6 +50,37 @@ test('.pop: empty, drained and refilled arrays preserve length and values', () =
   }
 })
 
+test('computed array writes refresh relocated storage without undoing a rebind', () => {
+  const source = `function size(a) { return a.length }
+    export function local(n) {
+      const a = [], key = n > 0 ? 'length' : 'x'
+      a[key] = { valueOf() { return n } }
+      return a.length
+    }
+    export function returned(n) {
+      const a = new Array(), key = n > 0 ? 'length' : 'x'
+      a[key] = { valueOf() { return n } }
+      return size(a)
+    }
+    export function indexed(k) {
+      const a = [], pad = new Float64Array(16)
+      a[k] = 7
+      return [a.length, a[k], pad.length]
+    }
+    export function rebound(n) {
+      let a = []; const old = a, key = n > 0 ? 'length' : 'x'
+      const value = { valueOf() { a = [9]; return n } }
+      const result = a[key] = value
+      return [a.length, a[0], old.length, result === value]
+    }`
+  for (const optimize of levels(0, 2, 3, 'size')) {
+    const m = jz(source, { optimize }).exports, ref = oracle(source)
+    for (const n of [2, 40, 0, 100]) for (const name of ['local', 'returned', 'rebound'])
+      is(m[name](n), ref[name](n), `${name}(${n}) at O${optimize}`)
+    for (const k of ['39', 39, 'x']) is(m.indexed(k), ref.indexed(k), `indexed(${k}) at O${optimize}`)
+  }
+})
+
 // === .map ===
 
 test('.map: double', () => {
@@ -618,16 +649,16 @@ test('Regression: dynamic property access on string returns undefined', () => {
   is(test(), undefined, 'missing property on string returns undefined')
 })
 
-test('Regression: dynamic property assignment on string fails gracefully', () => {
-  // JS semantics (ES2023 §13.15.2, non-strict PutValue on a primitive base):
-  // the write is silently DISCARDED — `s.prop` reads back undefined. The old
-  // pin asserted 42 (jz used to store string expandos in the global dyn-props
-  // table), diverging from every engine; strings are primitives and now end
-  // the dyn read/write paths immediately (module/collection.js STRING arms).
+test('Regression: dynamic property assignment on string throws', () => {
+  // Every jz module is strict code: PutValue on a primitive base throws
+  // TypeError (ES2023 §10.1.9.2 OrdinarySetWithOwnDescriptor returns false for a
+  // primitive receiver, §6.2.5.6 throws in strict code). The old pins asserted
+  // 42 (a string expando in the global dyn-props table), then undefined (the
+  // sloppy-mode drop).
   const { test } = runHost(`
-    export let test = () => { let s = "foo"; s.prop = 42; return s.prop }
+    export let test = () => { let s = "foo"; try { s.prop = 42; return s.prop } catch (e) { return e.name } }
   `)
-  is(test(), undefined, 'property write on a string primitive is dropped (JS semantics)')
+  is(test(), 'TypeError', 'property write on a string primitive throws (strict code)')
 })
 
 test('Regression: external method returning typed array spreads into array', () => {
@@ -1296,22 +1327,33 @@ test('.subarray: chained methods + sub-of-sub + Uint8 kind-aware', () => {
   is(runHost(`export let f = () => { let a = new Int16Array(5); for (let i=0;i<5;i++) a[i]=i*3; let v = a.subarray(2); v[0]=-9; return a[2] }`).f(), -9)
 })
 
-// Integer-index contract (asm.js-style; see README "differences with JS"). An index
-// coerces to i32, so a fractional/NaN index TRUNCATES rather than yielding JS's
-// `undefined`. Typed-array access is raw (no bounds check) — the speed primitive that
-// makes the hot loops competitive; plain `[]` arrays stay bounds-checked. This pins the
-// contract so it stays intentional (and distinct from the object numeric-KEY path, which
-// IS JS-correct via __i32_to_str). NOT a JS-parity claim — a documented divergence.
-test('array index contract: i32-truncating, typed raw, plain bounds-checked', () => {
-  // Fractional/NaN index TRUNCATES to a valid in-bounds element (the contract), not JS's undefined.
-  is(run(`export let f = () => { const a=[11,22]; return a[1.5] }`).f(), 22)   // →a[1]; JS: undefined
-  is(run(`export let f = () => { const a=[11,22]; return a[NaN] }`).f(), 11)   // →a[0]; JS: undefined
-  is(run(`export let f = () => { const a=new Float64Array(2); a[0]=11; a[1]=22; return a[1.5] }`).f(), 22)
-  is(run(`export let f = () => { const a=new Float64Array(2); a[0]=11; a[1]=22; return a[NaN] }`).f(), 11)
-  // Plain `[]` arrays ARE bounds-checked: OOB / negative → undefined (surfaces as NaN at the f64
-  // return boundary), NOT a raw read. (A typed array would read raw memory — the speed primitive.)
-  ok(Number.isNaN(run(`export let f = () => { const a=[11,22]; return a[5] }`).f()), 'plain OOB → undefined')
-  ok(Number.isNaN(run(`export let f = () => { const a=[11,22]; return a[-1] }`).f()), 'plain negative → undefined')
+// Fractional, non-finite and out-of-bounds numeric keys read undefined.
+test('array index contract: a key that names no element reads undefined', () => {
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    for (const init of ['[11,22]', 'new Float64Array([11,22])']) {
+      for (const key of ['1.5', 'NaN', 'Infinity', '4294967296', '5', '-1'])
+        is(runHost(`export const f=()=>{const a=${init};return a[${key}]}`, { optimize }).f(), undefined, `${init}[${key}] O${optimize}`)
+      const { f } = runHost(`export const f=k=>{const a=${init};return a[k]}`, { optimize })
+      for (const key of [0, 1, 1.5, NaN, Infinity, -Infinity, 4294967296, 5, -1, 0])
+        is(f(key), [11,22][key], `${init}, dynamic ${key} O${optimize}`)
+    }
+    const source = `export function f(k) { const a=[11,22]; a.note=7; return [a[k],a.note] }`
+    const f = runHost(source, { optimize }).f
+    for (const key of [0, 1.5, NaN, 2, 1, 0]) is(f(key), [[11,22][key],7], `named properties, ${key} O${optimize}`)
+    const empty = runHost(`export const f=k=>{const a=[];return a[k]}`, { optimize }).f
+    for (const key of [0, 1.5, NaN, 0]) is(empty(key), undefined, `empty ${key} O${optimize}`)
+  }
+})
+
+// Integer arithmetic must not wrap an out-of-range property into a live slot.
+test('array index contract: arithmetic preserves the full numeric key', () => {
+  const source = `export function f(x,y) { x=x|0; y=y|0; const a=[11,22]; return [a[x*y],a[x+y],a[x-y]] }`
+  const ref = oracle(source).f
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const f = runHost(source, { optimize }).f
+    for (const args of [[0,1],[65536,65536],[-2147483648,-2147483648],[2147483647,-2147483648],[0,1]])
+      is(f(...args), ref(...args), `${args} O${optimize}`)
+  }
 })
 
 // A small fixed typed array whose reference is CAPTURED (bound, stored, or subarray'd)
@@ -2341,5 +2383,35 @@ test('TypedArray.from and construction: mapfn runs, every value converts with To
     const src = `export let f = (x) => { ${body} }`, native = oracle(src).f
     for (const optimize of levels(0, 2, 'speed', 'size'))
       for (const x of [9, -3.5]) is(jz(src, { optimize }).exports.f(x), native(x), `${body.slice(10, 60)}…, O${optimize}, x=${x}`)
+  }
+})
+
+// push answers the array's new length: a number every consumer reads as one.
+test('.push: its result is the new length, a number', () => {
+  const bodies = ['let a = [1]; return a.push(x) + 1', 'let a = [x]; let n = a.push(3); return n + 1', 'let a = [1]; return a.push(2) === 2', 'let a = []; return a.push(x, x) * 2']
+  for (const body of bodies) {
+    const src = `export let f = (x) => { ${body} }`, want = new Function('x', body)(5)
+    for (const optimize of levels(0, 2, 3)) is(jz(src, { optimize }).exports.f(5), want, `${body} at ${optimize}`)
+  }
+})
+
+// Array#sort and #toSorted as the spec's SortIndexedProperties: stable, undefined
+// last without a comparator call, a default order by each element's string. The
+// merge sort behind them (module/array/sort.js) against JS's answers.
+test('.sort: stable, undefined last, default order by strings, as JS sorts', () => {
+  const lcg = 's = (Math.imul(s, 1664525) + 1013904223) >>> 0'
+  const srcs = [
+    `export let f = (n, s) => { const a = []; for (let i = 0; i < n; i++) { ${lcg}; a.push(s % 7 === 0 ? undefined : s % 11 === 0 ? NaN : (s % 2000) - 1000) } a.sort(); return a }`,
+    `export let f = (n, s) => { const a = []; for (let i = 0; i < n; i++) { ${lcg}; a.push(s % 9 === 0 ? undefined : s % 5 === 0 ? 'x' + (s % 30) : s % 3 === 0 ? 'U' + (s % 7) : 'ab' + (s % 50)) } a.sort(); return a }`,
+    `export let f = (n, s) => { const a = []; for (let i = 0; i < n; i++) { ${lcg}; a.push({ k: s % 10, i }) } a.sort((x, y) => x.k - y.k); return a.map(o => o.k * 10000 + o.i) }`,
+    `export let f = (n, s) => { const a = []; let seen = 0; for (let i = 0; i < n; i++) { ${lcg}; a.push(s % 6 === 0 ? undefined : s % 100) } a.sort((x, y) => { if (x === undefined || y === undefined) seen++; return y - x }); a.push(seen); return a }`,
+    `export let f = (n, s) => { const a = []; for (let i = 0; i < n; i++) { ${lcg}; a.push(s % 300 - 150) } const b = a.toSorted((x, y) => x - y); return [...b, ...a.slice(0, 3)] }`,
+  ]
+  for (const src of srcs) {
+    const want = oracle(src).f
+    for (const optimize of levels(0, 2)) {
+      const { f } = jz(src, { optimize }).exports
+      for (const n of [0, 1, 2, 17, 257]) for (const s of [1, 9]) is(JSON.stringify(f(n, s)), JSON.stringify(want(n, s)), `n=${n} s=${s} at ${optimize}: ${src.slice(40, 90)}`)
+    }
   }
 })

@@ -12,6 +12,41 @@ const check = (src, args, reference = src) => {
   }
 }
 
+test('numeric call arguments: captured Number/object unions convert at every use', () => {
+  const src = `function twice(v) { return v * 2 + v * 3 }
+    export function f(k) {
+      let calls = 0
+      let x = { valueOf() {
+        calls++; x = 9
+        if (k === 2) throw 7
+        return k === 3 ? 1n : k === 4 ? '2' : k === 5 ? undefined : k
+      } }
+      try { const result = twice(x); return [result, x, calls] }
+      catch (e) { return [e === 7 ? 7 : e.name, x, calls] }
+    }`
+  for (const optimize of [0, 1, 2, 3, 'size']) {
+    const want = oracle(src), got = jz(src, { optimize }).exports
+    for (const k of [0, 0, 1, 2, 3, 4, 5, 1])
+      is(got.f(k), want.f(k), `O${optimize}, conversion/throw/reuse ${k}`)
+  }
+})
+
+test('numeric Boolean unions: conversions keep their branch, count and throwing point', () => {
+  const src = `let calls = 0
+    function use(x, count) { let sum = 0; for (let i = 0; i < count; i++) sum += +x; return sum }
+    export function f(k, count) {
+      calls = 0
+      const xs = [true, null, { valueOf() { if (++calls === 2) throw 7; return 4 } }, 1n, '2']
+      try { return [use(xs[k], count), calls] }
+      catch(e) { return [e === 7 ? 7 : e.name, calls] }
+    }`
+  for (const optimize of [0, 1, 2, 3, 'size']) {
+    const want = oracle(src), got = jz(src, { optimize }).exports
+    for (const k of [0, 2, 2, 3, 4, 1, 2]) for (const count of [0, 1, 2, 0])
+      is(got.f(k, count), want.f(k, count), `O${optimize}, union ${k}, uses ${count}`)
+  }
+})
+
 test('method positions: string ranges capture arguments and default only undefined', () => {
   for (const method of ['slice', 'substring']) check(`export function f(k) {
     let trace='', end=3
@@ -22,6 +57,22 @@ test('method positions: string ranges capture arguments and default only undefin
       'abcdef'.${method}(1,{valueOf(){return undefined}}),'abcdef'.${method}(-2,Infinity)] }
     catch(e){ return [e===1?'one':e.name,trace] }
   }`, [0,0,2,3,0])
+})
+
+test('substring comparisons preserve argument capture, coercion and operand order', () => {
+  for (const method of ['slice', 'substring']) check(`export function f(k) {
+    let trace = '', end = 3
+    const start = { valueOf() { trace += 'v'; end = 1; if(k === 2) throw 7; return k === 3 ? 1n : 1 } }
+    function rhs() { trace += 'r'; return 'bc' }
+    function arg() { trace += 'a'; return end }
+    try {
+      const left = 'abcdef'.${method}(start, arg()) === rhs()
+      const right = rhs() === 'abcdef'.${method}(start, undefined)
+      const empty = { valueOf() {}, toString: undefined }
+      return [left, right, trace, new String(empty).${method}(undefined, empty) === '',
+        'abc'.${method}(1, null) !== '', 'abc'.${method}(1, '2') === 'b']
+    } catch(e) { return [e === 7 ? 7 : e.name, trace] }
+  }`, [0, 2, 3, 0])
 })
 
 test('method positions: array and typed at, slice and subarray coerce before clamping', () => {

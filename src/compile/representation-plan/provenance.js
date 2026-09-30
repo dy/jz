@@ -1,7 +1,7 @@
-import { ASSIGN_OPS, commaList, returnExprs, walkAst } from '../../ast.js'
+import { ASSIGN_OPS, commaList, isNumberGuard, returnExprs, walkAst } from '../../ast.js'
 import { nullishArm } from '../../kind.js'
 import { KIND_UNIVERSE, VAL } from '../../reps.js'
-import { K as SUMMARY_KIND, hasTag as summaryHasTag, kind as summaryKind, tagsOf as summaryTagsOf, CARRIER } from '../../summary/index.js'
+import { K as SUMMARY_KIND, valOf as summaryValOf, core as summaryCore, hasTag as summaryHasTag, kind as summaryKind, tagsOf as summaryTagsOf, CARRIER } from '../../summary/index.js'
 import {
   ANY_BIGINT, BIGINT_READ_METHODS, BIGINT_REP_NONE, BIGINT_REP_RAW, BIGINT_REP_TOP, BIGINT_TYPED_CTORS, BOXED_BIGINT, DEF_RHS,
   NO_BIGINT, NUMERIC_VALUE_OPS, RAW_BIGINT, STORAGE_READ_METHODS, STORAGE_WRITE_METHODS, VALUE_COERCERS,
@@ -85,6 +85,8 @@ function collectDispatchTableClosures(roots) {
 const paramNeedsHostTag = (node, name, localClosures, seen, root = true) => {
   if (!Array.isArray(node)) return false
   if (!root && node[0] === '=>') return false
+  // a loop copy's guard (plan/integral-loops.js) is the compiler asking, not the program
+  if (isNumberGuard(node)) return false
   if (node[0] === 'typeof' && node[1] === name) return true
   if (node[0] === 'u+' && node[1] === name) return true
   if (node[0] === '()' && node[1] === 'Number' && commaList(node[2]).includes(name)) return true
@@ -252,7 +254,7 @@ export function solveBigintProvenance(ctx, programFacts, ast) {
 
   const defMapByFunc = new Map()
   for (const func of ctx.funcs.list)
-    if (!func.raw && func.body) defMapByFunc.set(func, collectDefs(func.body))
+    if (!func.raw && func.body) defMapByFunc.set(func, collectDefs(func.body, func.sig?.params))
 
   // The summary's kind of a schema slot: BigInt among a bounded set of kinds
   // is evidence; the unbounded ANY proves nothing. An element read stays with
@@ -325,7 +327,7 @@ export function solveBigintProvenance(ctx, programFacts, ast) {
     if (isBigintOrigin(node)) return RAW_BIGINT
     if (typeof node === 'string') return globalReps.get(node) ?? ANY_BIGINT
     if (!Array.isArray(node)) return ANY_BIGINT
-    if (node[0] === ',') return exprRep(node[node.length - 1], func, localNames)
+    if ((node[0] === ',' || node[0] === '(')) return exprRep(node[node.length - 1], func, localNames)
     if (node[0] === '=') return exprRep(node[2], func, localNames)
     if (node[0] === '?:') return joinRep(exprRep(node[2], func, localNames), exprRep(node[3], func, localNames))
     if (node[0] === '&&' || node[0] === '||' || node[0] === '??')
@@ -365,6 +367,18 @@ export function solveBigintProvenance(ctx, programFacts, ast) {
       return changed
     }
     if (op === '=>') return false
+    // A host parameter used beside a BigInt operand needs the tagged lane,
+    // even when inlining removed every in-program call that supplied one.
+    // Follow the operand's provenance, including constants, fields and calls.
+    if (func?.sig && NUMERIC_VALUE_OPS.has(op)) {
+      for (let i = 1; i < node.length; i++) {
+        if (typeof node[i] !== 'string') continue
+        const k = func.sig.params.findIndex(p => p.name === node[i])
+        if (k < 0 || !node.some((v, j) => j > 0 && j !== i && exprMay(v, func, localNames))) continue
+        if (mark(paramsFor(func), k)) changed = true
+        if (mark(localNames, node[i])) changed = true
+      }
+    }
     if (op === 'let' || op === 'const') {
       for (let i = 1; i < node.length; i++) {
         const decl = node[i]
@@ -718,7 +732,11 @@ export function solveBigintProvenance(ctx, programFacts, ast) {
         const args = commaList(node[2])
         for (let k = 0; k < callee.sig.params.length; k++) {
           const rep = k < args.length ? exprRep(args[k], func, localNames) : NO_BIGINT
-          const closedBigint = bigintRepIsClosed(rep) &&
+          // A carrier says how a BigInt travels, not that every value is one.
+          // In particular a closure's tagged result may also be a Number.
+          const valueBigint = k < args.length && (isBigintOrigin(args[k]) ||
+            summaryValOf(summaryCore(ctx.summary?.at(func?.sig ?? '').kindOfExpr(args[k]) ?? 0)) === VAL.BIGINT)
+          const closedBigint = valueBigint && bigintRepIsClosed(rep) &&
             bigintRepBits(rep) !== BIGINT_REP_NONE && bigintRepBits(rep) !== BIGINT_REP_TOP
           markCallArg(callee.name, k, closedBigint)
           markRawArg(callee.name, k, closedBigint && bigintRepBits(rep) === BIGINT_REP_RAW)
@@ -742,7 +760,7 @@ export function solveBigintProvenance(ctx, programFacts, ast) {
  *  slot, boxed, and its reads test the tag; a parameter the summary cannot
  *  bound is closure-emit.js's tagged local instead), its storage receivers
  *  and whether a tail may be a BigInt. */
-export function deriveLocalProvenance(sig, body, localReps, program, summary = null) {
+export function deriveLocalProvenance(sig, body, localReps, program, summary, bindings) {
   const names = new Set(), params = new Set(), storage = new Set()
   const scanStorage = node => walkAst(node, { enter: (n, parent) => {
     if (parent !== null && n[0] === '=>') return false
@@ -770,11 +788,10 @@ export function deriveLocalProvenance(sig, body, localReps, program, summary = n
   }
   if (localReps) for (const [name, rep] of localReps)
     if (rep?.val === VAL.BIGINT || rep?.presentVal === VAL.BIGINT) names.add(name)
-  const defs = collectDefs(body)
   let changed = true
   while (changed) {
     changed = false
-    for (const [name, entries] of defs)
+    for (const [name, entries] of bindings)
       if (!names.has(name) && entries.some(entry => entry[DEF_RHS] != null && localExprMay(entry[DEF_RHS]))) {
         names.add(name)
         changed = true

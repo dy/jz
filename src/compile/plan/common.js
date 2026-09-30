@@ -70,12 +70,12 @@ const collectBindingTarget = (node, out) => {
     for (let i = 1; i < node.length; i++) collectBindingTarget(node[i], out)
 }
 
-/** True iff `node` writes to any name in `names` (incl. `++`/`--` and compound assigns). */
-export const mutatesAny = (node, names) => some(node, n => {
+/** True iff `node` writes a queried name; opts select the same scope boundary as some(). */
+export const mutatesAny = (node, names, opts) => some(node, n => {
   const op = n[0]
   if ((op === '++' || op === '--') && typeof n[1] === 'string') return names.has(n[1])
   return ASSIGN_OPS.has(op) && typeof n[1] === 'string' && names.has(n[1])
-})
+}, opts)
 
 /** Deep-clone array-tree AST. Plain values pass through by identity. */
 export const clonePlain = node => Array.isArray(node) ? node.map(clonePlain) : node

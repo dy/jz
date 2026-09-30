@@ -12,12 +12,13 @@ import { withCurrentFunction, withTypedElems } from '../flow-state.js'
 import { isBlockBody, alwaysReturns, hasBareReturn, returnExprs, walkAst, isReassigned } from '../../ast.js'
 import { analyzeBody, reanalyzeBody, clearBodyFacts } from '../analyze.js'
 import { exprType, typedStaticLen } from '../../type.js'
-import { ctorFromElemAux } from '../../../layout.js'
+import { ctorFromElemAux, TYPED_ELEM_ANY_VIEW_FLAG } from '../../../layout.js'
 import { hasAmbiguousBoolMerge } from '../../kind.js'
 import { VAL, KIND_UNIVERSE } from '../../reps.js'
 import { paramFactsOf } from '../../param-reps.js'
 import { isExported } from '../func-exports.js'
 import { K, tagOf, paramOf, isNullable, valOf, valsOf, hasTag, core, UNKNOWN, PRESENCE } from '../../summary/index.js'
+import { typedAux } from '../../summary/kind.js'
 
 /**
  * Phase E: numeric result narrowing.
@@ -48,6 +49,12 @@ import { K, tagOf, paramOf, isNullable, valOf, valsOf, hasTag, core, UNKNOWN, PR
  * value-used functions are skipped by the narrowable filter.
  */
 const NO_PRESENT_READS = new Set()
+const callsSelf = (node, name) => {
+  if (!Array.isArray(node)) return false
+  if (node[0] === '()' && node[1] === name) return true
+  for (let i = 0; i < node.length; i++) if (callsSelf(node[i], name)) return true
+  return false
+}
 export function narrowI32Results(funcs, paramReps) {
   // The post-parameter pass adds settled lengths to the body's proof inputs.
   if (paramReps) clearBodyFacts(funcs.map(f => f.body))
@@ -114,7 +121,13 @@ export function narrowI32Results(funcs, paramReps) {
   }
   const isUnsignedTail = (e, unsignedLocals) => tailSign(e, unsignedLocals) === 'unsigned'
   const isUnclassifiableTail = (e, unsignedLocals) => tailSign(e, unsignedLocals) === null
-  const callsSelf = (n, name) => Array.isArray(n) && ((n[0] === '()' && n[1] === name) || n.some(c => callsSelf(c, name)))
+  // Signatures change during this fixpoint, but the bodies do not.
+  const recursiveBodies = new Map()
+  const recursive = func => {
+    let value = recursiveBodies.get(func)
+    if (value === undefined) { value = callsSelf(func.body, func.name); recursiveBodies.set(func, value) }
+    return value
+  }
   // Classify a func's return tails as all-v128 / all-i32 (+ sign) under the CURRENT sig.results.
   const evalTails = (func, body, exprs) => withCurrentFunction(func.sig, () => {
     // valTypes: analyzeBody's VAL-kind facts, threaded into exprType's bitwise-ops
@@ -213,7 +226,7 @@ export function narrowI32Results(funcs, paramReps) {
       // f64 result, so `cnt` widens to f64 and the i32 narrowing never fires. Break the cycle
       // optimistically: tentatively assume the i32 result, re-analyze, and keep it ONLY if every
       // tail is then i32 (else revert). Sound — committed only when self-consistent.
-      if (!r.allI32 && !r.allV128 && callsSelf(body, func.name)) {
+      if (!r.allI32 && !r.allV128 && recursive(func)) {
         const saved = func.sig.results
         func.sig.results = ['i32']
         const opt = reanalyzeBody(body, () => evalTails(func, body, exprs))
@@ -317,10 +330,13 @@ export function narrowPointerResults(funcs, paramReps, calledInside) {
       func.sig.ptrKind = VAL.OBJECT
       func.sig.ptrAux = paramOf(k)
     } else if (func.valResult === VAL.TYPED) {
-      if (paramOf(k) === UNKNOWN) continue
+      // an unboxed pointer keeps one aux: a join of several widths or of an
+      // owned array and a view (their view bit read at run time) stays boxed
+      const aux = typedAux(k)
+      if (aux === UNKNOWN || aux & TYPED_ELEM_ANY_VIEW_FLAG) continue
       func.sig.results = ['i32']
       func.sig.ptrKind = VAL.TYPED
-      func.sig.ptrAux = paramOf(k)
+      func.sig.ptrAux = aux
       // A factory returning one local of static length (`const out = new
       // Float64Array(n)` with `n` a call-site constant) publishes that length:
       // the caller's binding (`const sig = mkSignal(N)`) then proves its

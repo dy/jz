@@ -12,6 +12,7 @@ import { collectSlotWriteHazards, applySlotWriteHazards } from './slot-write-haz
 import { collectBodyElemSids } from './shared.js'
 import { effectiveWriteValue } from '../../ast.js'
 import { frameNode } from '../../function.js'
+import { mixedBoolKind } from '../../kind.js'
 
 /** Whole-program slot intCertain observation.
  *
@@ -100,13 +101,16 @@ export function analyzeSchemaSlotIntCertain(ast, opts) {
   // Round 1 may reuse gen-cached checkers (they close over the LIVE census, so
   // later poisoning flows through); after any flip the LOCAL binding fixpoints
   // baked into those checkers may be stale-optimistic, so rebuild fresh.
-  const bodyIntCertainOf = (body, fresh) => {
-    if (fresh) return intLevelChecker(body, slotLevelOf)
+  // A body's levels take its own function's parameters as entry values: a
+  // parameter the body reassigns (to a Boolean, say) still holds the caller's
+  // value on the other path.
+  const bodyIntCertainOf = (body, fresh, params) => {
+    if (fresh) return intLevelChecker(body, slotLevelOf, params)
     if (body != null && typeof body === 'object') {
       const hit = pf.bodyIntCertain.get(body)
       if (hit?.gen === pf.gen) return hit.isInt
     }
-    const isInt = intLevelChecker(body, slotLevelOf)
+    const isInt = intLevelChecker(body, slotLevelOf, params)
     if (body != null && typeof body === 'object')
       pf.bodyIntCertain.set(body, { gen: pf.gen, isInt })
     return isInt
@@ -115,9 +119,13 @@ export function analyzeSchemaSlotIntCertain(ast, opts) {
   // Body walker: for each `{}` literal observe per-slot intCertain; for each
   // `obj.prop = expr` write, poison-or-confirm the slot resolved via the
   // schema attached to `obj` (ValueRep `schemaId` or `ctx.schema.vars`).
+  // A closure's stores count like its maker's: `p.o = 0.25` in a callback a
+  // factory returns writes the slot the factory's literal made. Its body's own
+  // bindings answer its values; a name it captures is no integer to it.
+  let freshRound = false
   const visit = (node, isInt) => walkAst(node, { enter: node => {
     const op = node[0]
-    if (op === '=>') return false
+    if (op === '=>') { if (node[2] != null) visit(node[2], bodyIntCertainOf(node[2], freshRound)); return false }
     if (op === '{}') {
       const parsed = staticObjectProps(node.slice(1))
       if (parsed) {
@@ -147,10 +155,20 @@ export function analyzeSchemaSlotIntCertain(ast, opts) {
     }
   } })
 
+  // A slot holding a Boolean beside a number holds the Boolean's atom (a store
+  // boxes it, ir/sentinels.js carrierF64): its bits are no integer, whatever
+  // the integer a Boolean converts to.
+  const boolSlots = []
+  if (ctx.summary) for (let sid = 0; sid < ctx.schema.list.length; sid++) {
+    const props = ctx.schema.list[sid]
+    for (let i = 0; i < props.length; i++) if (mixedBoolKind(ctx.summary.fieldKind(sid, props[i]))) boolSlots.push(sid, i)
+  }
   const sweep = (fresh) => {
+    freshRound = fresh
     // Hazard poison FIRST: the optimistic slotIntOf resolver must never count a
     // hazarded slot int mid-fixpoint (it would infect other slots' certainty).
     applySlotWriteHazards(hazards, poisonSlot)
+    for (let j = 0; j < boolSlots.length; j += 2) poisonSlot(boolSlots[j], boolSlots[j + 1])
     flipped = false
     curSids = null
     if (ast) visit(ast, bodyIntCertainOf(ast, fresh))
@@ -158,7 +176,7 @@ export function analyzeSchemaSlotIntCertain(ast, opts) {
       if (!func.body || func.raw) continue
       curSids = bodySidsOf(func)
       const frame = frameNode(func)   // a parameter default runs in the frame
-      visit(frame, bodyIntCertainOf(frame, fresh))
+      visit(frame, bodyIntCertainOf(frame, fresh, func.sig.params))
       curSids = null
     }
     if (ctx.module.initFacts?.hasSchemaLiterals && ctx.module.moduleInits) {

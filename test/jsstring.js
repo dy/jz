@@ -20,7 +20,7 @@
  *     engines without native builtin support still work
  */
 import test from 'tst'
-import { is, ok } from 'tst/assert.js'
+import { is, ok, throws } from 'tst/assert.js'
 import { onWasi } from './_matrix.js'
 import jz from '../index.js'
 import { run } from './util.js'
@@ -54,6 +54,8 @@ test('jsstring opt-in: runtime correctness — sum of char codes', () => {
   is(sum('abc'), 97 + 98 + 99)
   is(sum(''), 0)
   is(sum('abcdefghij'), [97,98,99,100,101,102,103,104,105,106].reduce((a,b) => a+b, 0))
+  throws(() => sum(null), 'null receivers still reject')
+  throws(() => sum(undefined), 'undefined receivers still reject')
 })
 
 test('jsstring opt-in: .length alone stays polymorphic (number → undefined)', () => {

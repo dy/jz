@@ -8,9 +8,79 @@
 import { ctx, err, inc } from '../ctx.js'
 import { I32_MIN, I32_MAX, isLeaf } from '../ast.js'
 import { typed } from './tag.js'
-import { temp } from './locals.js'
+import { UNDEF_NAN } from './sentinels.js'
+import { temp, tempI32 } from './locals.js'
 import { boxPtrIR, valKindToPtr } from './pointers.js'
 import { int32 } from '../static.js'
+
+// The low 32 bits of a number's truncation, for a test that converts them
+// back and compares: equal exactly when the number is an int32, as with the
+// saturating i32 truncation. V8 lowers that one on arm64 to a rounding, a
+// conversion, a round trip and an out-of-line saturation arm; the i64
+// truncation is one instruction.
+export const int32Bits = (x) => ['i32.wrap_i64', ['i64.trunc_sat_f64_s', x]]
+// IR whose value is an integer when it is not the undefined of a miss: MISS
+// when that undefined is among its values, WHOLE when none is, 0 otherwise.
+const WHOLE = 1, MISS = 2
+const both = (a, b) => a && b && Math.max(a, b)
+const wholeOrMiss = (v) => {
+  if (!Array.isArray(v)) return 0
+  const op = v[0]
+  if (op === 'f64.convert_i32_s' || op === 'f64.convert_i32_u') return WHOLE
+  if (op === 'f64.const') return Number.isInteger(v[1]) ? WHOLE : v[1] === `nan:${UNDEF_NAN}` ? MISS : 0
+  if (op === 'local.tee') return wholeOrMiss(v[2])
+  if (op === 'block' || op === 'then' || op === 'else') return v.length > 1 ? wholeOrMiss(v[v.length - 1]) : 0
+  if (op === 'if') return v.reduce((k, c) => Array.isArray(c) && (c[0] === 'then' || c[0] === 'else') ? both(k, wholeOrMiss(c)) : k, WHOLE)
+  if (op === 'select') return both(wholeOrMiss(v[1]), wholeOrMiss(v[2]))
+  return 0
+}
+
+/**
+ * The element index a number key names, as i32. A number names an element
+ * only as an integer the i32 index holds exactly (an array index, a typed
+ * array's integer index): a fraction, NaN, ±Infinity, a value past 2^31 or a
+ * missing value (a nested read's miss included) names none. It becomes -1,
+ * which every bounds test rejects like an index past the length: a read is
+ * undefined, a store drops. `indexValid` carries the bit to a consumer whose
+ * bounds are proven.
+ */
+export const keyIndex = (key) => {
+  if (key?.type === 'i32') return key
+  // An integer element's value is its index; an unsigned one past 2^31 turns
+  // negative, which every bounds test rejects as it rejects -1.
+  if (Array.isArray(key) && (key[0] === 'f64.convert_i32_s' || key[0] === 'f64.convert_i32_u')) return typed(key[1], 'i32')
+  if (Array.isArray(key) && key[0] === 'f64.const' && typeof key[1] === 'number') {
+    const v = key[1], ok = (v | 0) === v
+    const out = typed(['i32.const', ok ? v | 0 : -1], 'i32')
+    if (!ok) out.indexValid = ['i32.const', 0]
+    return out
+  }
+  const wm = wholeOrMiss(key)
+  // An integer whichever arm runs: the truncate is exact.
+  if (wm === WHOLE && !key.indexValid) return typed(['i32.trunc_sat_f64_s', asF64(key)], 'i32')
+  // An integer or a miss (an integer array's checked element, `perm[i]`):
+  // only the miss names no element, and its own bit or a NaN test finds it.
+  if (wm) {
+    if (key.indexValid) {
+      const out = typed(['select', asI32(key), ['i32.const', -1], key.indexValid], 'i32')
+      out.indexValid = key.indexValid
+      return out
+    }
+    const t = temp('ix'), get = ['local.get', `$${t}`]
+    const out = typed(['block', ['result', 'i32'], ['local.set', `$${t}`, asF64(key)],
+      ['select', ['i32.trunc_sat_f64_s', get], ['i32.const', -1], ['f64.eq', get, get]]], 'i32')
+    out.indexValid = ['f64.eq', get, get]
+    return out
+  }
+  const t = temp('ix'), i = tempI32('ixi'), ok = tempI32('ixv')
+  const out = typed(['block', ['result', 'i32'],
+    ['local.set', `$${t}`, asF64(key)],
+    ['local.set', `$${ok}`, ['f64.eq', ['f64.convert_i32_s', ['local.tee', `$${i}`, int32Bits(['local.get', `$${t}`])]], ['local.get', `$${t}`]]],
+    ['select', ['local.get', `$${i}`], ['i32.const', -1], ['local.get', `$${ok}`]]], 'i32')
+  out.indexValid = ['local.get', `$${ok}`]
+  return out
+}
+
 
 // An exact integer carrier and the signedness of its numeric interpretation.
 const compareWord = n => {
@@ -404,6 +474,14 @@ export const f64Range = (n, get, allowNaN = false) => {
       const [t, f] = factsOf(n[3], env)
       const a = arm(n[1], env, t), b = arm(n[2], env, f)
       return a && b && fin(Math.min(a.lo, b.lo), Math.max(a.hi, b.hi))
+    }
+    // A block's value is its tail's (a checked read: the index staged, then
+    // the element or the miss), read after the statements, which may write a
+    // local an enclosing test bounded.
+    if (op === 'block' && n[1]?.[0] === 'result' && n[1][1] === 'f64' && n.length > 2) {
+      let e = env
+      for (let f = env; f && e; f = f.next) for (let i = 2; i < n.length - 1; i++) if (writes(n[i], f.name)) { e = null; break }
+      return r(n[n.length - 1], e)
     }
     if (op === 'f64.min') { const a = r(n[1], env), b = r(n[2], env); return a && b && fin(Math.min(a.lo, b.lo), Math.min(a.hi, b.hi)) }
     if (op === 'f64.max') { const a = r(n[1], env), b = r(n[2], env); return a && b && fin(Math.max(a.lo, b.lo), Math.max(a.hi, b.hi)) }

@@ -46,6 +46,7 @@ export const T = {
   symId: new Map([['', 0]]),
   bigs: [],
   blobs: [],
+  locations: null,
 }
 
 const columns = (cap) => {
@@ -65,6 +66,7 @@ export function resetTape() {
   T.symId = new Map([['', 0]])
   T.bigs = []
   T.blobs = []
+  T.locations = null
 }
 
 export const intern = (s) => {
@@ -130,6 +132,7 @@ export function replace(parent, old, id) {
 export function clone(id) {
   const c = node(T.op[id])
   T.ty[c] = T.ty[id]; T.imm[c] = T.imm[id]; T.sym[c] = T.sym[id]; T.sid[c] = T.sid[id]
+  if (T.locations?.has(id)) T.locations.set(c, T.locations.get(id))
   let prev = NONE
   for (let k = T.a[id]; k !== NONE; k = T.next[k]) { const kc = clone(k); if (prev === NONE) T.a[c] = kc; else T.next[prev] = kc; prev = kc }
   return c
@@ -165,6 +168,7 @@ function decode(x) {
     const id = node(head == null ? OP_NULLHEAD : intern(String(head)))
     if (typeof x.type === 'string') T.ty[id] = intern(x.type)
     if (typeof x.schemaSid === 'number') T.sid[id] = x.schemaSid
+    if (typeof x.sourceLoc === 'number') (T.locations ??= new Map()).set(id, x.sourceLoc)
     let prev = NONE
     for (let i = 1; i < x.length; i++) {
       const c = decode(x[i])
@@ -203,6 +207,7 @@ export function toWat(id) {
   for (let c = T.a[id]; c !== NONE; c = T.next[c]) out[n++] = toWat(c)
   if (T.ty[id] !== 0) out.type = T.syms[T.ty[id]]
   if (T.sid[id] !== NONE) out.schemaSid = T.sid[id]
+  if (T.locations?.has(id)) out.sourceLoc = T.locations.get(id)
   return out
 }
 

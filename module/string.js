@@ -21,9 +21,10 @@
  * @module string
  */
 
-import { typed, asF64, asI32Sat, asI64, toInt32, NULL_NAN, UNDEF_NAN, FALSE_NAN, TRUE_NAN, mkPtrIR, temp, tempI32, toNumF64, toStrI64, MAX_CLOSURE_ARITY } from '../src/ir.js'
-import { emit, emitIdentitySafe, argIR, storedValue, positionArgs, bool, method, deps, general, wat, bind } from '../src/bridge.js'
-import { valTypeOf, hasAmbiguousBoolMerge, censusMaybeUndefined } from '../src/kind.js'
+import { T } from '../src/ast.js'
+import { typed, asF64, asI32Sat, asI64, asPtrOffset, toInt32, NULL_NAN, UNDEF_NAN, FALSE_NAN, TRUE_NAN, mkPtrIR, temp, tempI32, toNumF64, toStrI64, MAX_CLOSURE_ARITY } from '../src/ir.js'
+import { emit, argIR, storedValue, positionArgs, withIgnoredArgs, bool, method, deps, general, wat, bind } from '../src/bridge.js'
+import { valTypeOf, hasAmbiguousBoolMerge, censusMaybeUndefined, isPresentNumber } from '../src/kind.js'
 import { VAL } from '../src/reps.js'
 import { ctx, inc, PTR, LAYOUT, err, declGlobal } from '../src/ctx.js'
 import { dataAlign, dataPush, dataLen, strPoolPush } from '../src/static-data.js'
@@ -1766,24 +1767,31 @@ export default (ctx) => {
   // (21.1.3.27/28). Typed forms cover the static-string case; generic forms
   // pair with them so the dispatcher can pick a runtime ptr-type branch when
   // the receiver type can't be statically inferred (e.g. a callback param).
-  bind('.string:toString', (str) => asF64(emit(str)))
-  bind('.string:valueOf', (str) => asF64(emit(str)))
+  const identityMethod = (value, ...ignored) => withIgnoredArgs(value, ignored, node => asF64(storedValue(node)))
+  bind('.string:toString', identityMethod)
+  bind('.string:valueOf', identityMethod)
   // Boolean.prototype.toString (ES2024 20.3.3.2): the truth value's name, as `String( b )` answers
   bind('.boolean:toString', (b) => bool(b))
   // Normalization is an identity operation; Unicode normalization tables are not shipped.
   bind('.string:normalize', (str) => asF64(emit(str)))
+  // Property keys preserve symbol atoms; every other value takes the shared
+  // string-hint conversion, including user toString/valueOf hooks.
+  bind(T + 'key', value => {
+    inc('__to_str')
+    return typed(['f64.reinterpret_i64', ['call', '$__to_str', asI64(storedValue(value))]], 'f64')
+  })
   bind('.normalize', (val) => {
     inc('__to_str')
     return typed(['f64.reinterpret_i64', ['call', '$__to_str', asI64(emit(val))]], 'f64')
   })
-  bind('.toString', (val) => {
+  bind('.toString', (val, ...ignored) => {
     inc('__to_str')
-    return typed(['f64.reinterpret_i64', ['call', '$__to_str', asI64(emit(val))]], 'f64')
+    return withIgnoredArgs(val, ignored, node => typed(['f64.reinterpret_i64', ['call', '$__to_str', asI64(storedValue(node))]], 'f64'))
   })
   // Object.prototype.valueOf returns the receiver (per ES2024 20.1.3.7).
   // Array/Object inherit this; only primitive wrappers (Number/Boolean/String)
   // override to return the primitive — strings already covered by .string:valueOf.
-  bind('.valueOf', (val) => asF64(emit(val)))
+  bind('.valueOf', identityMethod)
 
   // ToIntegerOrInfinity for a string-method position argument: ToNumber (so
   // string / boolean / null / undefined positions coerce per spec) then trunc.
@@ -1813,8 +1821,7 @@ export default (ctx) => {
 
   // String operands share the interpolation conversion: preserve mixed-value
   // identities, with no runtime conversion for proven strings.
-  const partStrI64 = (p, v) => valTypeOf(p) === VAL.BOOL && !censusMaybeUndefined(p)
-    ? asI64(bool(p)) : toStrI64(p, v ?? argIR(p))
+  const partStrI64 = (p, v) => toStrI64(p, v ?? argIR(p))
   const searchArg = (search) => partStrI64(search ?? [, undefined])
 
   bind('.string:indexOf', (str, search, from) => {
@@ -2101,11 +2108,18 @@ export default (ctx) => {
     for (let i = 0; i < parts.length; i++) {
       if (lits[i] != null) {
         const s = lits[i]
-        let k = 0
-        for (; k + 2 <= s.length; k += 2)
-          alloc.push(['i32.store', dstAt(k), ['i32.const',
-            (s.charCodeAt(k) | (s.charCodeAt(k + 1) << 16)) | 0]])
-        if (k < s.length) alloc.push(['i32.store16', dstAt(k), ['i32.const', s.charCodeAt(k)]])
+        // Keep short separators inline; long fragments share the literal pool
+        // instead of growing code by one store per two UTF-16 units.
+        if (s.length > 32) {
+          alloc.push(['memory.copy', ['local.get', `$${dst}`],
+            asPtrOffset(emit(parts[i]), VAL.STRING), ['i32.const', s.length * 2]])
+        } else {
+          let k = 0
+          for (; k + 2 <= s.length; k += 2)
+            alloc.push(['i32.store', dstAt(k), ['i32.const',
+              (s.charCodeAt(k) | (s.charCodeAt(k + 1) << 16)) | 0]])
+          if (k < s.length) alloc.push(['i32.store16', dstAt(k), ['i32.const', s.charCodeAt(k)]])
+        }
         alloc.push(['local.set', `$${dst}`, ['i32.add', ['local.get', `$${dst}`], ['i32.const', s.length * 2]]])
         continue
       }
@@ -2191,34 +2205,15 @@ export default (ctx) => {
     return typed(['call', '$__codepoint_at', asI64(emit(str)), posIndex(idx)], 'f64')
   })
 
-  // One code unit, packed only when ASCII.
   bind('String', (value) => {
     if (value === undefined) return emit(['str', ''])
-    // Ambiguous BOOL∪NUMBER merge (.work/archive/todo.md §deletion-sweep, MECHANISM A
-    // family): valTypeOf already collapsed it to NUMBER, so the VAL.NUMBER
-    // branch below would __ftoa the raw collapsed bits directly, never
-    // reaching toStrI64/__to_str's already-correct atom formatting. This is
-    // a static-valType check, not an IR-shape check, so argIR alone can't
-    // skip it — needs the explicit early exit, boxed via emitIdentitySafe.
-    if (hasAmbiguousBoolMerge(value))
-      return typed(['f64.reinterpret_i64', toStrI64(value, emitIdentitySafe(value))], 'f64')
-    // maybeUndefined join (.work/archive/todo.md §deletion-sweep §1b): a dict-census
-    // NUMBER claim on a `[]`/`.` read is "every value ever WRITTEN", not "this
-    // key exists" — an absent key is real `undefined` at runtime, and
-    // String(undefined) === "undefined" (22.1.3.6 String(value)), not the
-    // __ftoa formatting of the raw NaN-boxed bits below. Same early-exit shape
-    // as the hasAmbiguousBoolMerge carve-out above; falls through to the LAST
-    // branch (toStrI64/__to_str), already correct — it special-cases
-    // UNDEF_NAN/NULL_NAN before generic dispatch.
-    if (censusMaybeUndefined(value))
-      return typed(['f64.reinterpret_i64', toStrI64(value, emit(value))], 'f64')
-    if (valTypeOf(value) === VAL.STRING) return emit(value)
-    if (valTypeOf(value) === VAL.BOOL) return bool(value)
-    if (valTypeOf(value) === VAL.NUMBER) {
+    const v = argIR(value)
+    // A numeric element kind alone does not prove an indexed value exists.
+    if (!hasAmbiguousBoolMerge(value) && isPresentNumber(ctx, value)) {
       inc('__ftoa')
-      return typed(['call', '$__ftoa', asF64(emit(value)), ['i32.const', 0], ['i32.const', 0]], 'f64')
+      return typed(['call', '$__ftoa', asF64(v), ['i32.const', 0], ['i32.const', 0]], 'f64')
     }
-    return typed(['f64.reinterpret_i64', toStrI64(value, emit(value))], 'f64')
+    return typed(['f64.reinterpret_i64', toStrI64(value, v)], 'f64')
   })
 
   // 1-byte string from a raw byte: SSO when ASCII (<0x80, fits the 7-bit codec),

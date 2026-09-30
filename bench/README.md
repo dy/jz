@@ -47,6 +47,10 @@ fuses floating-point operations. Resample has distinct native Go and Porffor
 variants; disabling only FMA restores the strict reference in each control build
 (`go build -gcflags=-d=fmahash=n` and `CC='cc -ffp-contract=off' porf native`).
 Production benchmark flags remain unchanged.
+The same Go control restores the strict checksums for `gainclass` (1297017192),
+`slices` (3020911897) and `delayline` (1887209008); their native Go alternates
+are 359062747, 3246044915 and 2056124083 respectively. Their Go-Wasm,
+TinyGo and Zig-Wasm ports agree exactly with JavaScript.
 
 ## Run
 

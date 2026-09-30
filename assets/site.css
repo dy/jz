@@ -125,9 +125,9 @@ html.paper:not(.jz-saver):not(.jz-embed) .ruler-refl { display: block; }
 
 /* Futura (the brand face) for every title, site-wide. */
 h1, h2, h3, h4, h5, h6 { font-family: var(--font); }
-/* A soft mask keeps the thin edge inside each glyph. Paint padding preserves overhangs and descenders. */
+/* A two-step mask keeps the edge inside each glyph. Padding preserves descenders. */
 .reflect-title { display: grid; }
-.reflect-title > span { grid-area: 1 / 1; text-box: inherit; padding: .25em; margin: -.25em; }
+.reflect-title > span { grid-area: 1 / 1; text-box: inherit; padding-block: .25em; margin-block: -.25em; }
 .title-outline { visibility: hidden; pointer-events: none; user-select: none;
   color: light-dark(#000, #fff); }
 .title-lit > .title-fill {

@@ -34,9 +34,16 @@ const recordObjectLiteralDef = (facts, name, direct) => {
 // in one of them reaches its target without handing the callable on.
 const TEST_SLOTS = { '&&': [1], '||': [1], '!': [1], '?:': [1], 'if': [1], 'while': [1], 'do': [2], 'for': [2], '??': [1] }
 
+// Per-op slots where a bare string is a name and no value: a member's property,
+// a literal's key or a label, a jump's label. A function of that name is not
+// taken as a value there (`o.lowpass`, `{ lowpass: 1 }`).
+const NAME_SLOTS = { '.': [2], '?.': [2], ':': [1], 'break': [1], 'continue': [1] }
+
 const ESCAPE_SKIP = {
   '.': true, '?.': true,          // receiver never escapes via the read itself; slot2 is a prop NAME
   'str': true,                    // payload
+  ':': new Set([0]),              // a literal's key or a label is a name
+  'break': true, 'continue': true, // a label
   '[]': new Set([0]),             // receiver safe; a bare INDEX name still marks (keys coerce so it's over-marking, but harmless)
   'in': new Set([1]),             // RHS receiver is queried, not exposed; the key (slot 0) remains a value read
   '=>': new Set([0]),             // params are bindings; a bare-name BODY is a returned value → marks
@@ -476,9 +483,11 @@ function walkFactsRoot(root, full, callerFunc, doSchema, cache = true) {
         }
         return
       }
+      // A literal's payload is text (`type || 'lowpass'`), whatever function it names.
+      if (op == null || op === 'str') return
       for (let i = 1; i < node.length; i++) {
         const child = node[i]
-        if (isFuncRef(child, ctx.funcs.names)) acc.addressTakenNames.add(child)
+        if (isFuncRef(child, ctx.funcs.names)) { if (!NAME_SLOTS[op]?.includes(i)) acc.addressTakenNames.add(child) }
         else walkFacts(child, true, inArrow, caller)
       }
     } else {
@@ -600,6 +609,8 @@ export function collectProgramFacts(ast) {
   for (const [name, direct] of f.objectLiteralDefs)
     if (direct) literalObjectVars.add(name)
 
+  // A key Object.assign copies is a store of it, on whatever holds the target.
+  for (const p of ctx.summary?.assignedProps ?? []) f.writtenProps.add(p)
   ctx.module.writtenProps = f.writtenProps
   return {
     dynVars: f.dynVars, dynWriteVars: f.dynWriteVars, anyDyn: f.anyDyn, propMap, addressTakenNames, callSites,

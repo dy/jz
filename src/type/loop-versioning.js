@@ -85,6 +85,17 @@ export function typedStaticLen(rhs) {
 // intLiteralValue chain). Consumers here (typedStaticLen above, typedIdxProven
 // below) import the shared static.js version — see its doc comment there.
 
+/** `recv[idx]` proven by the interval walk (typedIdxProven class 5), which
+ *  models integer values only, or by a versioning guard (class 4), which tests
+ *  every f64 term of the index integral and within ±2^31: the key names an
+ *  element, it needs no test of its own. */
+export function typedIdxWhole(recv, idx, node = null) {
+  if (typeof recv !== 'string') return false
+  if (activeBoundsAssumption(ctx, recv, idx)) return true
+  const ip = intervalProvenIdx(ctx)
+  return node != null && node[1] === recv && node[2] === idx && ip.has(node) || ip.has(idxKey(recv, idx))
+}
+
 /** `recv[idx]` provably within [0, recv.length) for a typed receiver — the gate the
  *  checked `.typed:[]` forms and the identity folds share. Proof classes:
  *  1. the canonical-loop structural pair (inBoundsArrIdx);
@@ -105,12 +116,17 @@ export function typedIdxProven(recv, idx, node = null) {
   if (typeof recv !== 'string') return false
   const ownNode = node != null && node[1] === recv && node[2] === idx
   if (ownNode && getFactStore().guardProven.has(node)) return true
+  // Version guards validate integral entry values and every cursor advance.
+  if (activeBoundsAssumption(ctx, recv, idx)) return true
   // 8. the program summary holds this read inside the count (src/summary
   //    `typedReadPresent`: a view of a sized buffer, an index a module constant
   //    fixes, a counter its loop bounds by the array's own length).
-  if (ownNode && ctx.summary?.at(ctx.func.current)?.presentTypedRead?.(node)) return true
-  // Most literal and canonical-loop accesses need no whole-body interval walk.
-  if (typedIndexKnown(ctx, recv, idx)) return true
+  const integral = exprType(idx, ctx.func.locals) === 'i32' ||
+    (typeof idx === 'string' && repOf(idx)?.intCertain) || intExprRange(idx) != null
+  if (integral && ownNode && ctx.summary?.at(ctx.func.current)?.presentTypedRead?.(node)) return true
+  // Range-only loop facts need an integer value. The interval interpreter below
+  // proves both at the access, including a parameter overwritten by a bit mask.
+  if (integral && typedIndexKnown(ctx, recv, idx)) return true
   const ip = intervalProvenIdx(ctx)
   if (ownNode && ip.has(node) || ip.has(idxKey(recv, idx))) return true
   const len = ctx.func.typedLen?.get(recv) ?? ctx.scope?.globalTypedLen?.get(recv)
@@ -257,6 +273,52 @@ export function bodyAffineEnv(body, iv) {
   return env
 }
 
+/** The affine environment at each top-level statement of a sequential body,
+ *  for the lets it declares at top level and advances by a step:
+ *  `let i1 = i0, i3 = i1 + 2*n4 … i1 += n8; i3 += n8 …` (the split-radix
+ *  butterfly). A statement `name += e` / `name -= e` of an invariant affine `e`
+ *  moves the name's form; any other write leaves it unresolvable from that
+ *  statement on. Returns { envs (statement index → env), advanced } or null
+ *  when no top-level let is advanced. */
+export function positionalAffineEnvs(body, iv) {
+  const flat = bodyAffineEnv(body, iv)
+  const declaredName = d => typeof d === 'string' ? d : Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string' ? d[1] : null
+  const advanced = new Set()
+  for (let s = 1; s < body.length; s++) {
+    const st = body[s]
+    if (Array.isArray(st) && st[0] === 'let') for (let k = 1; k < st.length; k++) {
+      const name = declaredName(st[k])
+      if (name != null && flat.get(name) === null && isReassigned(body, name)) advanced.add(name)
+    }
+  }
+  if (!advanced.size) return null
+  const env = new Map(flat)
+  const envs = []
+  for (let s = 1; s < body.length; s++) {
+    const st = body[s]
+    const written = new Set()
+    walkAst(st, { enter: n => {
+      if (n[0] === '=>') return false
+      if ((WRITE_OPS.has(n[0]) || n[0] === '++' || n[0] === '--') && advanced.has(n[1])) written.add(n[1])
+      if (n[0] === 'let' || n[0] === 'const') for (let k = 1; k < n.length; k++) { const name = declaredName(n[k]); if (advanced.has(name)) written.add(name) }
+    } })
+    const mentions = e => typeof e === 'string' ? advanced.has(e) : Array.isArray(e) && e.some((c, i) => i > 0 && mentions(c))
+    const stepped = Array.isArray(st) && (st[0] === '+=' || st[0] === '-=') && advanced.has(st[1]) && !mentions(st[2])
+    const at = new Map(env)
+    if (!stepped) for (const name of written) at.set(name, null)
+    envs[s] = at
+    if (stepped) env.set(st[1], affineIdxOfIV([st[0] === '+=' ? '+' : '-', st[1], st[2]], iv, body, env))
+    else if (Array.isArray(st) && st[0] === 'let' && st.length > 1) {
+      for (let k = 1; k < st.length; k++) {
+        const d = st[k], name = declaredName(d)
+        if (advanced.has(name)) env.set(name, Array.isArray(d) && d[0] === '=' ? affineIdxOfIV(d[2], iv, body, env) : null)
+      }
+      for (const name of written) if (!st.slice(1).some(d => declaredName(d) === name)) env.set(name, null)
+    } else for (const name of written) env.set(name, null)
+  }
+  return { envs, advanced }
+}
+
 /** Whether a typed access's receiver may be absent at run time: nullable, with
  *  no pointer representation, refinement or active bounds assumption. An extent
  *  test reads the receiver's length, so it must establish presence first. */
@@ -274,11 +336,11 @@ export const sourceVersionedLoop = (n) => n[0] === 'for' && n.length === 5 && ge
 /** `idx` as a MONOTONE CURSOR reference: a bare non-iv local name `c`, or `c + K0`
  *  / `K0 + c` with K0 an int literal — the shapes a data-dependent stream cursor
  *  (`stream[r]`, `stream[r+1]`) is read at. A postfix `c++` used in VALUE position
- *  lowers (prepare.js) to `(++c) - 1`: the read sees the OLD value, same as a bare
+ *  retains an explicit postfix node: the read sees the OLD value, same as a bare
  *  `c` — unwrapped here so `stream[r++]` matches like `stream[r]` (the ++ itself is
  *  counted separately by maxCursorAdvance, wherever it appears in the body). */
 function monotoneCursorOf(idx, iv) {
-  const unwrapPost = (e) => Array.isArray(e) && e[0] === '-' && e.length === 3 && intLiteralValue(e[2]) === 1
+  const unwrapPost = (e) => Array.isArray(e) && e[0] === 'postfix'
     && Array.isArray(e[1]) && e[1][0] === '++' && typeof e[1][1] === 'string' ? e[1][1] : e
   const base = unwrapPost(idx)
   if (typeof base === 'string') return base !== iv ? { c: base, K0: 0 } : null
@@ -341,6 +403,12 @@ function maxCursorAdvance(n, c) {
  *  - a candidate whose static low extent `a*C + bConst` is provably negative is
  *    DROPPED (its first iterations are genuinely OOB — the checked form is the
  *    semantics, a guard would just always fail). */
+// A name holds typed storage of one constructor: by the name's own facts, or by
+// the summary, which follows a buffer out of the record or array it was kept in
+// (`const { x } = cache.get(n)`, `const x = chs[c]`), as the element loads do.
+// One that may be missing is a candidate too: the guard tests its presence.
+const typedRecv = (name) => typedStorageNameCtor(ctx, name) ?? ctx.summary?.at(ctx.func.current).typedPayloadCtorOfExpr(name) ?? null
+
 export function versionableTypedFor(init, cond, step, body, locals, entryHint = null) {
   // `&&`-cond whiles (`while (len < max && src[j+len] === src[ip+len]) len++`
   // — the LZ match scan): the countable bound must be the LEFTMOST conjunct.
@@ -443,7 +511,7 @@ export function versionableTypedFor(init, cond, step, body, locals, entryHint = 
   //     abs-compare fails and the checked arm takes over; a genuine number converts
   //     exactly via ceil/floor + trunc_sat (never traps, saturation is conjunct-dead).
   const bKind = intLiteralValue(bound) != null ? 'i32'
-    : (() => { const r = lengthRecv(bound); return r != null && typedStorageNameCtor(ctx, r) && stable(r) })() ? 'i32'
+    : (() => { const r = lengthRecv(bound); return r != null && typedRecv(r) && stable(r) })() ? 'i32'
     : typeof bound === 'string' && stable(bound) ? (exprType(bound, locals) === 'i32' ? 'i32' : 'f64')
     // an invariant pure EXPRESSION bound (`x < w - 1` — the stencil interior) re-
     // evaluates safely in the guard; machine-f64 rides the runtime-conjunct path
@@ -492,11 +560,29 @@ export function versionableTypedFor(init, cond, step, body, locals, entryHint = 
   // they evaluate only when `iv < bound` already held this iteration
   let forcePre = false
   const isPost = () => !forcePre && bump > 0 && (ivWriteAt === -1 || scanTop === -1 || scanTop >= ivWriteAt)
+  // Indices over a let the body advances (`i3 += n8`): each occurrence takes
+  // its form at its own statement, collected per key; the key is guarded at
+  // every form, or at none when one occurrence has no form (the fast arm's
+  // proof is keyed by the index text, so it must cover each place it names).
+  const pos = seqBody && bump === 0 ? positionalAffineEnvs(body, iv) : null
+  const mentionsAdvanced = e => typeof e === 'string' ? pos.advanced.has(e) : Array.isArray(e) && e.some((c, i) => i > 0 && mentionsAdvanced(c))
+  const advancedKeys = new Map()   // key → { recv, idx, forms: Map(signature → affine), bad, absent }
   const scan = (n) => {
     if (sourceVersionedLoop(n)) return false
     if (n[0] === '[]' && n.length === 3 && typeof n[1] === 'string' && n[1] !== iv
-        && typedStorageNameCtor(ctx, n[1]) && stable(n[1])) {
+        && typedRecv(n[1]) && stable(n[1])) {
       const key = idxKey(n[1], n[2])
+      if (pos && mentionsAdvanced(n[2])) {
+        let o = advancedKeys.get(key)
+        if (!o) advancedKeys.set(key, o = { recv: n[1], idx: n[2], forms: new Map(), bad: false, absent: false })
+        if (receiverMayBeAbsent(n[1], n[2])) o.absent = true
+        if (!typedIdxProven(n[1], n[2], n)) {
+          const aff = scanTop >= 0 ? affineIdxOfIV(n[2], iv, body, pos.envs[scanTop] ?? env) : null
+          if (!aff || !aff.slots.every(t => stableExpr(t.e)) || aff.slots.length === 0 && startC != null && aff.a * startC + aff.bConst < 0) o.bad = true
+          else o.forms.set(JSON.stringify([aff.a, aff.bConst, aff.slots.map(t => [t.k, t.e])]), aff)
+        }
+        return
+      }
       // Stored length bounds do not prove the receiver exists. Versioning can
       // establish both facts once, keeping nullable globals out of hot reads.
       const absent = receiverMayBeAbsent(n[1], n[2])
@@ -554,6 +640,13 @@ export function versionableTypedFor(init, cond, step, body, locals, entryHint = 
     for (let s = 1; s < body.length; s++) { scanTop = s; walkAst(body[s], { enter: scan }) }
     scanTop = -1
   } else walkAst(body, { enter: scan })
+  for (const o of advancedKeys.values()) {
+    if (o.absent) cands.push({ recv: o.recv, idx: o.idx, presence: true })
+    if (o.bad) continue
+    for (const aff of o.forms.values())
+      cands.push({ recv: o.recv, idx: o.idx, a: aff.a, bConst: aff.bConst, post: false,
+        slots: aff.slots.map(t => ({ ...t, kind: exprType(t.e, locals) === 'i32' ? 'i32' : 'f64' })) })
+  }
   // `&&`-cond rest conjuncts — scanned AFTER the body so a shared-key body
   // access (potentially post-increment, wider extent) wins the seen-set
   if (condRest != null) { forcePre = true; walkAst(condRest, { enter: scan }); forcePre = false }

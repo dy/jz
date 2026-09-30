@@ -128,6 +128,8 @@ function makeIntLevelExpr(intLevels, slotLevelOf, readPresent) {
     }
     if (op === 'u-') return levelOf(expr[1]) ? 1 : 0 // -(0) is -0; -(-2^31) exceeds int32
     if (op === 'u+') return levelOf(expr[1])         // ToNumber identity on an int
+    // prepare's `++o.k` / `o.k++` step (`o.k = +1 o.k`): the sum with 1, integral-closed, range-open
+    if (op === '+1' || op === '-1') return levelOf(expr[1]) ? 1 : 0
     if (op === '?:') return Math.min(levelOf(expr[2]), levelOf(expr[3]))
     if (op === '&&' || op === '||') return Math.min(levelOf(expr[1]), levelOf(expr[2]))
     if (op === '()') {
@@ -156,11 +158,11 @@ const _slotLevelAdapter = (slotIntOf) => slotIntOf
  *  `slotLevelOf(obj, prop)` → 0|1|2|null resolves `.prop` reads.
  *  `readPresent` supplies exact typed-read nodes whose absence is ruled out;
  *  their payloads ground the same lattice without bounding subsequent sums. */
-export function intLevelMap(body, capturedNames, slotLevelOf, readPresent) {
+export function intLevelMap(body, capturedNames, slotLevelOf, readPresent, params = ctx.func.current?.params) {
   const defs = takeScratchMap()
-  try { return intLevelMapIn(body, capturedNames, slotLevelOf, defs, readPresent) } finally { releaseScratchMap(defs) }
+  try { return intLevelMapIn(body, capturedNames, slotLevelOf, defs, readPresent, params) } finally { releaseScratchMap(defs) }
 }
-function intLevelMapIn(body, capturedNames, slotLevelOf, defs, readPresent) {
+function intLevelMapIn(body, capturedNames, slotLevelOf, defs, readPresent, params) {
   collectIntDefs(body, capturedNames, defs)
   if (defs.size === 0) return new Map()
   const levels = new Map()
@@ -172,10 +174,11 @@ function intLevelMapIn(body, capturedNames, slotLevelOf, defs, readPresent) {
   // fixpoint, since `levelOf(p)` reads p's own provisional 2. Seed f64
   // params 0 so the unknown entry value grounds the lattice; i32-narrowed
   // params (integer ABI) stay strict. Seeding 0 is always conservative —
-  // at worst it re-applies a floor/round that was a runtime no-op — so a
-  // mismatched ctx.func.current can only
-  // forgo an optimization, never miscompile.
-  for (const p of ctx.func.current?.params || [])
+  // at worst it re-applies a floor/round that was a runtime no-op. The seeds
+  // are the analyzed body's own parameters (`params`, the current function's
+  // by default): without them a reassigned parameter reads as the Boolean or
+  // the integer the body gives it, never as the caller's number.
+  for (const p of params || [])
     if (p.type !== 'i32' && levels.has(p.name)) levels.set(p.name, 0)
   const levelOf = makeIntLevelExpr(levels, slotLevelOf, readPresent)
   // The defs as two lists, read by index in every round: an entry-pair walk
@@ -208,6 +211,6 @@ export function intCertainMap(body, capturedNames, slotIntOf) {
 }
 
 /** Returns `expr => 0|1|2` over `body`'s level fixpoint (slot census / raw-i32 consumers). */
-export function intLevelChecker(body, slotLevelOf) {
-  return makeIntLevelExpr(intLevelMap(body, undefined, slotLevelOf), slotLevelOf)
+export function intLevelChecker(body, slotLevelOf, params) {
+  return makeIntLevelExpr(intLevelMap(body, undefined, slotLevelOf, undefined, params), slotLevelOf)
 }

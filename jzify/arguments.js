@@ -3,7 +3,7 @@
  * @module jzify/arguments
  */
 
-import { collectParamNames, extractParams } from '../src/ast.js'
+import { collectParamNames, extractParams, withLoc } from '../src/ast.js'
 import { hasArrayPattern } from '../src/iterator-pattern.js'
 import { isDestructurePat } from './hoist-vars.js'
 
@@ -106,7 +106,9 @@ function stripArgumentsVarDecl(body) {
   return converted.length === 1 ? converted[0] : [';', ...converted]
 }
 
-function renameArguments(node, to) {
+// What a node rewrites to stands at its source position (ast.js withLoc).
+function renameArguments(node, to) { return withLoc(renameArgumentsNode(node, to), node) }
+function renameArgumentsNode(node, to) {
   if (node === 'arguments') return to
   if (!Array.isArray(node)) return node
   if (node[0] === 'function' || node[0] === 'function*') return node
@@ -120,7 +122,8 @@ function renameArguments(node, to) {
   return node.map(n => renameArguments(n, to))
 }
 
-function prependParamDecls(decl, body) {
+function prependParamDecls(decl, body) { return withLoc(prependParamDeclsTo(decl, body), body) }
+function prependParamDeclsTo(decl, body) {
   if (Array.isArray(body) && body[0] === '{}') {
     const inner = body[1]
     if (Array.isArray(inner) && inner[0] === ';') return ['{}', [';', decl, ...inner.slice(1)]]
@@ -189,9 +192,11 @@ export function createArgumentsLowering(names) {
     if (!paramsNeedLowering && !usesArgsObj) return finish(params, body, init)
     const name = names.arg()
     const decls = []
+    // each parameter's binding stands where the parameter was written
+    const bind = (target, value, param) => decls.push(withLoc(withLoc(['=', target, value], target), param))
     for (const [idx, param] of extractParams(params).entries()) {
       if (Array.isArray(param) && param[0] === '...') {
-        decls.push(['=', param[1], ['()', ['.', name, 'slice'], [null, idx]]])
+        bind(param[1], ['()', ['.', name, 'slice'], [null, idx]], param)
         continue
       }
       if (Array.isArray(param) && param[0] === '=') {
@@ -199,13 +204,13 @@ export function createArgumentsLowering(names) {
         // default for a passed null. The rest-array index read is idempotent
         // and pure, so the ternary re-reads instead of spilling a temp.
         const read = ['[]', name, [null, idx]]
-        decls.push(['=', param[1], ['?:', ['===', read, 'undefined'], renameArguments(param[2], name), read]])
+        bind(param[1], ['?:', ['===', read, 'undefined'], renameArguments(param[2], name), read], param)
         continue
       }
-      decls.push(['=', param, ['[]', name, [null, idx]]])
+      bind(param, ['[]', name, [null, idx]], param)
     }
     const renamed = usesArgsObj ? renameArguments(body, name) : body
-    const initializers = decls.length ? [['let', ...decls]] : []
+    const initializers = decls.length ? [withLoc(['let', ...decls], decls[0])] : []
     for (const st of init) initializers.push(usesArgsObj ? renameArguments(st, name) : st)
     return finish(['()', ['...', name]], renamed, initializers)
   }
@@ -215,10 +220,10 @@ export function createArgumentsLowering(names) {
     const transform = transformRef
     if (node == null || !Array.isArray(node)) return node
     const op = node[0]
-    if (op === '=') return ['=', transformPattern(node[1]), transform(node[2])]
-    if (op === ':') return [':', transform(node[1]), transformPattern(node[2])]
-    if (op === '...') return ['...', transformPattern(node[1])]
-    if (op === '[]' || op === '{}' || op === ',') return [op, ...node.slice(1).map(transformPattern)]
+    if (op === '=') return withLoc(['=', transformPattern(node[1]), transform(node[2])], node)
+    if (op === ':') return withLoc([':', transform(node[1]), transformPattern(node[2])], node)
+    if (op === '...') return withLoc(['...', transformPattern(node[1])], node)
+    if (op === '[]' || op === '{}' || op === ',') return withLoc([op, ...node.slice(1).map(transformPattern)], node)
     return transform(node)
   }
 

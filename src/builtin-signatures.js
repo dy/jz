@@ -2,6 +2,9 @@
  *  function reflection. For variadic handlers this is the fixed prefix, just
  *  like Function.length; their emitters still lower all supplied arguments. */
 export const INTRINSIC_ARITY = {
+  'math.random': 0, 'Date.now': 0, 'performance.now': 0,
+  'console.log': 0, 'console.warn': 0, 'console.error': 0, 'console.info': 0, 'console.debug': 0,
+  'console.now': 0, 'console.perfNow': 0,
   'Array.isArray': 1,
   'Number.isFinite': 1, 'Number.isNaN': 1, 'Number.isInteger': 1, 'Number.isSafeInteger': 1,
   'math.abs': 1, 'math.acos': 1, 'math.acosh': 1, 'math.asin': 1, 'math.asinh': 1,

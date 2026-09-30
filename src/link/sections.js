@@ -108,7 +108,7 @@ export function schemaSections(root, { schemas, fieldContracts, namedUses, error
  *  starts empty (module/core/reach.js; the walk from it, `__survive`, is
  *  exported by optimize/arena-rewind.js).
  *  `exportInner` maps each export name to the function its wrapper calls. */
-export function releaseSection(root, { releasable, flagged: conditional, rewound, allocates }, exportInner, asked) {
+export function releaseSection(root, { releasable, flagged: conditional, rewound, allocates }, exportInner, asked, numberResult) {
   const GLOBAL = intern('global'), FUNC = intern('func'), declared = new Set()
   for (let c = T.a[root]; c !== NONE; c = T.next[c]) if (T.op[c] === GLOBAL || T.op[c] === FUNC) declared.add(text(T.a[c]))
   if (declared.has('$__base')) {
@@ -139,9 +139,10 @@ export function releaseSection(root, { releasable, flagged: conditional, rewound
   // `ask`: those that allocate and whose result may be a heap value: the
   // frame keeps what it made where the result names it, and the host, which
   // takes a copy of a string, an array or an object, releases it then.
-  const release = [], flag = [], host = [], ask = []
+  const release = [], flag = [], host = [], ask = [], number = []
   for (const [name, inner] of exportInner) if (releasable.has(inner)) {
     release.push(name)
+    if (numberResult?.has(inner)) number.push(name)
     if (conditional?.has(inner)) flag.push(name)
     if (allocates(inner) && !rewound.has(inner)) host.push(name)
     if (asked?.has(inner) && allocates(inner)) ask.push(name)
@@ -149,7 +150,7 @@ export function releaseSection(root, { releasable, flagged: conditional, rewound
   if (!release.length) return
   const c = push(root, node(intern('@custom')))
   push(c, str('"jz:release"'))
-  push(c, bytes([...utf8.encode(JSON.stringify({ release, ...(flag.length && { flag }), ...(host.length && { host }), ...(ask.length && { ask }) }))]))
+  push(c, bytes([...utf8.encode(JSON.stringify({ release, ...(flag.length && { flag }), ...(host.length && { host }), ...(ask.length && { ask }), ...(number.length && { number }) }))]))
   if (flag.length && declared.has('$__esc')) {
     const e = push(root, node(intern('export')))
     push(e, str('"__esc"'))

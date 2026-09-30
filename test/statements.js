@@ -1,11 +1,11 @@
 // Phase 1: Block bodies, control flow, statements
 import test from 'tst'
 import { is, ok, throws, almost } from 'tst/assert.js'
-import { onWasi, onKernel } from './_matrix.js'
+import { onWasi, onKernel, levels } from './_matrix.js'
 import jz, { compile } from '../index.js'
 import math from '../module/math.js'
 import { scalarCase } from './_scalar-core-cases.js'
-import { cases, run } from './util.js'
+import { cases, run, oracle } from './util.js'
 
 
 function runScalarCase(id, opts) {
@@ -336,19 +336,31 @@ test('setInterval: returns timer ID', () => {
   ok(typeof id === 'number' && id > 0)
 })
 
+// How many ticks run before the clear depends on when the host runs its
+// timers (a loaded machine runs them late): what clearInterval promises is
+// that none runs after it.
 test('clearInterval: stops interval', async () => {
   const result = jz(`
     export let count = 0
+    let id = 0
+    export let stop = () => clearInterval(id)
     export let start = () => {
-      let id = setInterval(() => { count = count + 1 }, 20)
-      setTimeout(() => { clearInterval(id) }, 70)
+      id = setInterval(() => {
+        count = count + 1
+        if (count === 3) clearInterval(id)
+      }, 10)
       return 1
     }
   `)
-  is(result.exports.start(), 1)
-  await new Promise(r => setTimeout(r, 120))
-  // Interval fires at ~20, 40, 60ms; cleared at 70ms → 3 ticks
-  is(result.exports.count.value, 3)
+  try {
+    is(result.exports.start(), 1)
+    const deadline = Date.now() + 5000
+    while (result.exports.count.value < 3 && Date.now() < deadline)
+      await new Promise(r => setTimeout(r, 10))
+    is(result.exports.count.value, 3)
+    await new Promise(r => setTimeout(r, 50))
+    is(result.exports.count.value, 3, 'no callbacks after clearInterval')
+  } finally { result.exports.stop() }
 })
 
 test('timer callback captures outer scope', async () => {
@@ -380,9 +392,10 @@ test('multiple simultaneous timers', async () => {
   is(result.exports.b.value, 2)
 })
 
-// host: 'js' setTimeout/setInterval lower to env imports + __invoke_closure
-// trampoline (no in-wasm queue). Lock the surface in.
-test('host:js timers: env.setTimeout/clearTimeout imports, __invoke_closure export', () => {
+// host: 'js' setTimeout/setInterval lower to env imports + the __call_closure
+// trampoline, the host's call of any closure it holds (no in-wasm queue). Lock
+// the surface in.
+test('host:js timers: env.setTimeout/clearTimeout imports, __call_closure export', () => {
   if (onWasi()) return  // wasi: host timer imports
   const wasm = compile(`
     setTimeout(() => {}, 10)
@@ -397,7 +410,7 @@ test('host:js timers: env.setTimeout/clearTimeout imports, __invoke_closure expo
   ok(imports.includes('env.setTimeout'), `expected env.setTimeout: ${imports}`)
   ok(imports.includes('env.clearTimeout'), `expected env.clearTimeout: ${imports}`)
   ok(!imports.some(i => i.includes('clock_time_get')), `should not import clock_time_get: ${imports}`)
-  ok(exports.includes('__invoke_closure'), `expected __invoke_closure export: ${exports}`)
+  ok(exports.includes('__call_closure'), `expected __call_closure export: ${exports}`)
   ok(!exports.includes('__timer_tick'), `should not export __timer_tick: ${exports}`)
 })
 
@@ -417,9 +430,9 @@ test('host:js timers import only the requested host functions', () => {
   is(clearOnly.exports.f(), 1)
 })
 
-// === Auto-boxing: property assignment ===
+// === Property assignment on functions and arrays ===
 
-test('fn.prop: auto-box write + read', () => {
+test('fn.prop: write + read', () => {
   const { g } = run(`
     export let f = (x) => x
     f.loc = 42
@@ -428,7 +441,7 @@ test('fn.prop: auto-box write + read', () => {
   is(g(), 42)
 })
 
-test('fn.prop: auto-box write/read from functions', () => {
+test('fn.prop: write/read from functions', () => {
   const { set, get } = run(`
     export let err = (msg) => { throw msg }
     err.loc = 0
@@ -440,7 +453,7 @@ test('fn.prop: auto-box write/read from functions', () => {
   is(get(), 42)
 })
 
-test('fn.prop: function still callable after boxing', () => {
+test('fn.prop: function still callable after a property store', () => {
   is(run(`
     export let f = (x) => x + 1
     f.tag = 0
@@ -476,11 +489,11 @@ test('fn.prop: reassignment is a mutable slot, not a static direct call', () => 
   `).exports.f(), 11)
 })
 
-test('auto-box: local array property/length/index/method', () => {
+test('local array property/length/index/method', () => {
   cases([
     ['local array property', '() => { let a = [1, 2, 3]; a.x = 99; return a.x }', 99],
-    ['local array .length after boxing', '() => { let a = [10, 20, 30]; a.tag = 1; return a.length }', 3],
-    ['local array indexing after boxing', '() => { let a = [10, 20, 30]; a.tag = 1; return a[0] + a[1] + a[2] }', 60],
+    ['local array .length after a property store', '() => { let a = [10, 20, 30]; a.tag = 1; return a.length }', 3],
+    ['local array indexing after a property store', '() => { let a = [10, 20, 30]; a.tag = 1; return a[0] + a[1] + a[2] }', 60],
     ['arrow property call (valueOf pattern)', '() => { let a = [1,2]; a.myFn = () => 99; return a.myFn() }', 99],
   ])
 })
@@ -516,6 +529,54 @@ test('assign postfix: x = i++', () => runScalarCase('assign-postfix-value'))
 test('assign prefix: x = ++i', () => runScalarCase('assign-prefix-value'))
 
 test('postfix increments side effect', () => runScalarCase('postfix-side-effect'))
+
+test('postfix preserves the old numeric value across rounding and member coercion', () => {
+  for (const value of ['true', "'2'", '-0', '9007199254740992', 'NaN', 'Infinity', '9221120237041090577n']) {
+    let src = ''
+    for (const [name, init, target] of [['local', value, 'a'], ['field', `{x:${value}}`, 'a.x'], ['element', `[${value}]`, 'a[0]']])
+      for (const [suffix, op] of [['inc','++'],['dec','--']])
+        src += `export const ${name}${suffix}=()=>{let a=${init};const old=${target}${op};return [old,${target}]};`
+    const want = oracle(src)
+    for (const optimize of levels(0, 1, 2, 3)) {
+      const got = jz(src, { optimize }).exports
+      for (const name of Object.keys(want)) is(got[name](), want[name](), `${name}, ${value}, O${optimize}`)
+    }
+  }
+})
+
+test('postfix takes its reference and numeric conversion once before writing', () => {
+  const src = `export const f=()=>{
+    let events='',x={valueOf(){events+='v';return 9007199254740992}}
+    const obj={get value(){events+='g';return x},set value(v){events+='s';x=v}}
+    const key={toString(){events+='k';return 'value'}}
+    const recv=()=>{events+='r';return obj}
+    const old=recv()[key]++
+    return [events,old,x]
+  }`
+  // GetValue retains the converted reference key (ECMA-262 6.2.5.5).
+  // Node 25 converts it twice; use the specification's once-only contract,
+  // as the compound-update tests in to-primitive.js do.
+  for (const optimize of levels(0, 1, 2, 3))
+    is(jz(src, { optimize }).exports.f(), ['rkgvs',9007199254740992,9007199254740992], `reference/coercion order O${optimize}`)
+})
+
+test('arithmetic around a prefix BigInt update remains ordinary source arithmetic', () => {
+  for (const expression of ['(++n)-1', '(--n)+1', '(o.x=++n)-1'])
+    throws(() => jz(`export const f=()=>{let n=1n,o={x:n};return ${expression}}`).exports.f(), /Cannot mix BigInt|BigInt.*mix|TypeError/)
+})
+
+test('updates apply ToNumeric once when an object produces BigInt', () => {
+  for (const target of ['a', 'a.x', 'a[0]']) {
+    const value = `{valueOf(){calls++;return 41n}}`
+    const init = target === 'a' ? value : target === 'a.x' ? `{x:${value}}` : `[${value}]`
+    for (const op of ['++', '--']) for (const prefix of [false, true]) {
+      const src = `export const f=()=>{let calls=0,a=${init};const n=${prefix ? op + target : target + op};return [n,${target},calls]}`
+      const want = oracle(src).f()
+      for (const optimize of levels(0, 1, 2, 3))
+        is(jz(src, { optimize }).exports.f(), want, `${prefix ? 'prefix' : 'postfix'} ${target}${op} O${optimize}`)
+    }
+  }
+})
 
 test('array[i++] uses old index', () => {
   is(run('export let f = () => { let a = [10, 20, 30]; let i = 1; return a[i++] }').f(), 20)
@@ -1403,6 +1464,19 @@ test('statements: for-of over nullish throws', () => {
     ['nullish parameter', `(x) => { let n = 0; try { for (let v of x) n++ } catch (e) { n = -1 } return n }`, -1, null],
     ['null literal', `() => { let n = 0; try { for (let v of null) n++ } catch (e) { n = -1 } return n }`, -1],
   ])
+})
+
+// A source of a known kind that may be missing (a field set on first use)
+// iterates as that kind once present, and throws while missing.
+test('statements: for-of over a maybe-missing array, string and set', () => {
+  for (const [name, init, want] of [['array', '[1, 2, 3]', 6], ['string', "'abc'", 3], ['set', 'new Set([4, 5])', 9]]) {
+    const src = `const st = { n: 1 }
+      export let f = (c) => { if (c) st.xs ??= ${init}; let s = 0; try { for (const v of st.xs) s += typeof v === 'string' ? 1 : v } catch (e) { s = -1 } return s }`
+    const { f } = run(src)
+    is(f(0), -1, `${name}: missing throws`)
+    is(f(1), want, `${name}: present iterates`)
+    is(f(0), want, `${name}: still present`)
+  }
 })
 
 // Predicate builtins carry BOOL (kind-traits CALLEE_VAL): the === compare is

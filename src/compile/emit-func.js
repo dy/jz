@@ -13,7 +13,7 @@ import { core, isNullable, K, tagOf } from '../summary/kind.js'
 import { restoreActiveFunction, publishLoopRewinds } from './active-function.js'
 import { installFunctionPlan } from './function-plan.js'
 import { makeMapOverlay } from './map-overlay.js'
-import { emit, emitBlockBody, emitIdentitySafe, emitVoid, toBool } from './emit.js'
+import { emit, emitBlockBody, emitIdentitySafe, emitVoid, toBool, bindingStore } from './emit.js'
 import { emitCharDecompPrologue } from '../abi/string.js'
 import { representationReturnAction } from './representation-plan.js'
 import { recordParamClosureDefault, recordDirectReturnClosure } from './dyn-closure-tables.js'
@@ -21,6 +21,21 @@ import { enterFunc, emitPreboxedLocalInits, placePreboxedLocalInits } from './fu
 import { isBoundaryWrapped } from './boundary-wrap.js'
 import { hoistUnionCursorUnbox } from './coercion-hoist.js'
 import { isExported } from './func-exports.js'
+import { planNumericShadows } from './num-shadow.js'
+import { planFixedScratch } from './fixed-memory.js'
+
+const isPresentArray = k => k != null && tagOf(core(k)) === K.ARRAY && !isNullable(k)
+
+/** Module constants share one kind across function scopes. Select the array
+ * candidates once, before emission, instead of caching every global name in
+ * every function's summary view. Function-local shadowing is checked below. */
+export function presentArrayGlobals() {
+  const out = []
+  const kinds = ctx.summary?.at('')
+  if (kinds && ctx.scope.consts) for (const name of ctx.scope.consts)
+    if (ctx.scope.globals.has(name) && isPresentArray(kinds.kindOfExpr(name))) out.push(name)
+  return out
+}
 
 /**
  * Phase: emit one user function to WAT IR.
@@ -28,7 +43,7 @@ import { isExported } from './func-exports.js'
  * Reads the published `FunctionPlan` and narrowed `func.sig`; applies scoped
  * schema param bindings during emission so they cannot leak between functions.
  */
-export function emitFunc(func, functionPlan, programFacts) {
+export function emitFunc(func, functionPlan, programFacts, arrayGlobals) {
   // Raw WAT functions (e.g., _alloc, _clear from memory module)
   if (func.raw) return parseWat(func.raw, { loc: false })
 
@@ -36,7 +51,7 @@ export function emitFunc(func, functionPlan, programFacts) {
   const multi = sig.results.length > 1
   const _reps = programFacts.programIndex.parameterAbiOf(func)
 
-  const previousFrame = enterFunc(sig, body, { exported: isExported(func) })
+  const previousFrame = enterFunc(sig, body, { exported: isExported(func), loc: func.loc })
   const prevEmitting = ctx.closure.emitting
   ctx.closure.emitting = name   // the owner of closures minted in this body (wasm name section only)
   try {
@@ -100,6 +115,8 @@ export function emitFunc(func, functionPlan, programFacts) {
   // working copy and seeds the complete active record from it. Canonical plan
   // collections never leave function-plan.js.
   const installedPlan = installFunctionPlan(ctx, functionPlan)
+  ctx.func.freshObjects = func.frame?.freshObjects ?? null
+  planFixedScratch(func)
   const block = installedPlan.block
   // Derive WAT-node metadata before call-site seeding mutates the active rep
   // map. This preserves the published analysis snapshot's exact semantics.
@@ -120,11 +137,14 @@ export function emitFunc(func, functionPlan, programFacts) {
   // (optimize/licm.js), where a receiver that might be missing could not be.
   const presentArrays = new Set()
   const kinds = ctx.summary?.at(body)
-  const presentArray = (nm) => { const k = kinds?.kindOfExpr(nm); return k != null && tagOf(core(k)) === K.ARRAY && !isNullable(k) }
+  const presentArray = nm => isPresentArray(kinds?.kindOfExpr(nm))
   if (kinds) {
     for (const p of sig.params) if (presentArray(p.name)) presentArrays.add(`$${p.name}`)
     if (installedPlan.localReps) for (const nm of installedPlan.localReps.keys()) if (presentArray(nm)) presentArrays.add(`$${nm}`)
-    if (ctx.scope.consts) for (const nm of ctx.scope.consts) if (isGlobal(nm) && presentArray(nm)) presentArrays.add(`$${nm}`)
+    for (let i = 0; i < arrayGlobals.length; i++) {
+      const nm = arrayGlobals[i]
+      if (isGlobal(nm) && presentArray(nm)) presentArrays.add(`$${nm}`)
+    }
   }
   // The interval each numeric parameter receives over the function's calls
   // (summary `paramRangesOf`): the flow ranges start from it, so a ToInt32 of
@@ -147,6 +167,8 @@ export function emitFunc(func, functionPlan, programFacts) {
       if (r.mayBeUndefined || r.missArg) (ctx.func.maybeNullish ??= new Set()).add(pname)
     }
   }
+
+  planNumericShadows(body, sig.params)
 
   const fn = ['func', `$${name}`]
   // Stamp the emit-side CSE, alias, and stable-header facts captured from the
@@ -191,7 +213,8 @@ export function emitFunc(func, functionPlan, programFacts) {
     const t = p?.type || 'f64'
     // emit(defVal) ONCE, before branching on t — same self-compile miscompile class as
     // emit.js's 'return' handler. See .work/archive/todo.md (groundtruth archive).
-    const emittedDefVal = emit(defVal)
+    // A parameter the callers give a number beside a Boolean default takes its atom.
+    const emittedDefVal = bindingStore(pname, defVal)
     // dyn-closure-tables.js: a default value that's provably a closure literal
     // (e.g. subscript's `dispatch(ops, tail, fn = (a, …) => {…})`) is the fact
     // proveClosureFactory needs to see through `dispatch`'s forwarded return.

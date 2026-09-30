@@ -5,6 +5,46 @@ import { run, oracle, funcWat } from './util.js'
 import jz, { compile } from '../index.js'
 import { belowOpt, levels, onWasi } from './_matrix.js'
 
+test('spread: a guarded nullable source keeps its nested field layout', () => {
+  const source = `const parts = n => n.length > 1 ? {offset: 0, addr: n[0], value: n[1]} : null
+    const wrap = n => {
+      const p = parts(n)
+      if (!p) return null
+      return {parts: {...p, value: n[2]}}
+    }
+    export const f = s => {
+      const p = wrap(JSON.parse(s))
+      return JSON.stringify(p.parts.addr)
+    }`
+  const ref = oracle(source).f
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const f = jz(source, { optimize }).exports.f
+    for (const value of [[['local.get', '$o'], 1, 2], ['word', null, false], [0, 4, 5]]) {
+      const input = JSON.stringify(value)
+      is(f(input), ref(input), `nested read at O${optimize}: ${input}`)
+    }
+  }
+})
+
+test('spread: source presence belongs to each copy before and after reassignment', () => {
+  const source = `const part = n => n > 0 ? {value: n} : null
+    export function f(n) {
+      let p = part(n)
+      const before = {...p, at: 1}
+      if (!p) return [Object.keys(before).join(','), before.at]
+      const guarded = {...p}
+      p = null
+      const after = {...p, at: 2}
+      return [guarded.value, Object.keys(before).join(','), before.value,
+        Object.keys(after).join(','), after.at]
+    }`
+  const ref = oracle(source).f
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const f = jz(source, { optimize }).exports.f
+    for (const n of [-1, 0, 1, 7]) is(f(n), ref(n), `copy presence at O${optimize}, n=${n}`)
+  }
+})
+
 // ============================================
 // SPREAD IN ARRAY LITERALS
 // ============================================
@@ -855,8 +895,79 @@ test('spread into console: the arguments print as the values they spread to', ()
   const lines = []
   const { log, warn, error } = console
   console.log = console.warn = console.error = (...a) => lines.push(a.join(' '))
-  try { for (const optimize of levels(0, 2)) is(jz(src, { optimize }).exports.f(), 1, `O${optimize}`) }
+  try { for (const optimize of levels(0, 2, 3)) is(jz(src, { optimize }).exports.f(), 1, `O${optimize}`) }
   finally { Object.assign(console, { log, warn, error }) }
   const want = ['THREE.Vector3: bad 1 x true', 'THREE.alone', '1.5 b', 'm 1.5 b z', '', '1.5 b 2']
   is(lines.slice(0, want.length), want)
+})
+
+// A spread of sources whose layouts only the summary proves (a parameter every
+// caller passes one shape) makes a layout no literal names: every summary names
+// it, and the literal's fields read as slots (compile/index.js summarizeProgram).
+test('spread: a layout the summary derives types the literal\'s fields', () => {
+  const src = `let g = (o) => { let r = {...o, z: 1}; return r.b * 2 + r.z }\nexport let f = (n) => g({a: 1, b: n})`
+  for (const optimize of levels(0, 2, 3)) {
+    is(jz(src, { optimize }).exports.f(4), oracle(src).f(4), `O${optimize}`)
+    ok(!/\$__dyn_get/.test(compile(src, { optimize, wat: true })), `read as slots O${optimize}`)
+  }
+})
+
+// A spread of such a literal makes another layout, known only once the first
+// is named. Named after the plan alone, the outer one stayed unnamed while the
+// emitter built it as a layout, and a parameter the plan had typed a
+// dictionary read it as one: NaN. Each summary names layouts until a spread
+// of one makes none new, before the plan decides anything from it.
+test('spread: a spread of a spread\'s result reads its fields as slots', () => {
+  const cases = [
+    `let inner = (o) => ({ ...o, y: 2 })\nlet outer = (o) => ({ ...inner(o), z: 3 })\nlet use = (o) => o.x + o.y * 10 + o.z * 100\nexport let f = (n) => use(outer({ x: n }))`,
+    `let stretch = (opts) => ({ ...opts, frameSize: opts.frameSize * 2, hopSize: 4 })\nlet batch = (data, opts) => (opts?.frameSize ?? 0) + (opts?.hopSize ?? 0) + (opts?.complex ? 1000 : 0) + data\nexport let f = (n) => batch(n, { ...stretch({ frameSize: 8 }), complex: true })`,
+    `let inner = (o) => ({ ...o, y: 2 })\nlet outer = (o) => ({ ...inner(o), z: 3 })\nlet outer2 = (o) => ({ ...inner(o), q: 5, z: 4 })\nlet use = (o) => o.x + o.y * 10 + o.z * 100\nexport let f = (n) => use(outer({ x: n })) + use(outer2({ x: n }))`,
+  ]
+  let deep = `let l0 = (o) => ({ ...o, f0: 1 })\n`
+  for (let i = 1; i < 12; i++) deep += `let l${i} = (o) => ({ ...l${i - 1}(o), f${i}: ${i + 1} })\n`
+  cases.push(deep + `let use = (o) => o.x + o.f0 * 10 + o.f11 * 100\nexport let f = (n) => use(l11({ x: n }))`)
+  for (const src of cases) for (const optimize of levels(0, 2, 3)) {
+    is(jz(src, { optimize }).exports.f(4), oracle(src).f(4), `${src.split('\n').pop().slice(18, 60)} O${optimize}`)
+    if (!belowOpt(2) && optimize >= 2) ok(!/call \$__dyn_get/.test(compile(src, { optimize, wat: true })), `read as slots O${optimize}`)
+  }
+})
+
+// An option never set, spread into the options a helper takes
+// (`tracker(8, { D: …, ...opts.estimator })`), copies no key: the helper's
+// `opts.D` is the number the literal stores, not a value of any kind, and the
+// per-bin stride `o += D` adds.
+test('spread: a source that is only ever undefined or null copies no key', () => {
+  const src = `function tracker(half, opts = {}) {
+      let D = opts.D || 96, alpha = opts.alpha ?? 0.7
+      const val = new Float64Array((half + 1) * D)
+      let frame = 0
+      return (mag) => {
+        let s = 0
+        for (let k = 0, o = 0; k <= half; k++, o += D) { val[o + frame % D] = alpha * mag[k]; s += val[o] }
+        frame++
+        return s
+      }
+    }
+    function make(opts) { return tracker(8, { D: Math.round(1.5 * opts.fs / opts.hop), ...opts.estimator }) }
+    const t = make({ fs: 480, hop: 60 })
+    const u = tracker(4, { D: 3, ...(null), ...undefined })
+    const m = new Float64Array(9).fill(0.5)
+    export let f = (k) => { m[k & 7] = k; return t(m) + u(m) + Object.keys({ a: 1, ...null, ...undefined }).length }
+    export let g = (x) => { const o = { a: 1, ...(x > 0 ? { b: x } : undefined) }; return Object.keys(o).join() + (o.b ?? -1) }`
+  const js = oracle(src)
+  for (const optimize of levels(0, 2, 3)) {
+    const { f, g } = jz(src, { optimize }).exports
+    for (const k of [1, 2, 3]) is(f(k), js.f(k), `f(${k}) at ${optimize}`)
+    for (const x of [0, 2]) is(g(x), js.g(x), `g(${x}) at ${optimize}`)
+  }
+  if (belowOpt(2)) return
+  // the program's own functions (not the runtime's): no loop asks for a string or a dictionary
+  const own = compile(src, { optimize: 2, wat: true }).split('\n  (func ').filter(b => !/^\$\W?(__|math\.)/.test(b))
+  const loops = []
+  for (const text of own) for (let at = text.indexOf('(loop'); at >= 0; at = text.indexOf('(loop', at + 1)) {
+    let depth = 0, end = at
+    do { const c = text[end++]; if (c === '(') depth++; else if (c === ')') depth-- } while (depth && end < text.length)
+    loops.push(text.slice(at, end))
+  }
+  ok(loops.length && loops.every(l => !/call \$__(is_str_key|add_slow|dyn_set)/.test(l)), 'the stride adds as a number')
 })

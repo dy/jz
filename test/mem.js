@@ -3,7 +3,7 @@ import test from 'tst'
 import { is, ok, almost, throws } from 'tst/assert.js'
 import jz, { compile } from '../index.js'
 import { i64ToF64, instantiate } from '../interop.js'
-import { onWasi, onKernel, adaptI64, levels } from './_matrix.js'
+import { onWasi, onKernel, adaptI64, levels, belowOpt } from './_matrix.js'
 import { oracle } from './util.js'
 
 // interop's instantiate (not raw WebAssembly.instantiate): a module whose
@@ -1181,6 +1181,40 @@ test('host array handles: element writes invalidate closed element proofs', () =
 })
 
 
+// The host may write into what a result holds. An array the program reads
+// again after the call, through an object a module binding or a capture keeps,
+// opens its elements; one that only the fresh result holds keeps its proofs
+// (a decoder's `{ channelData, sampleRate }` stores typed).
+test('host array handles: a fresh result\'s arrays keep their element proofs, a retained one\'s open', () => {
+  const src = `export const decode = (n) => {
+    const ch = Array.from({ length: 2 }, () => new Float32Array(n))
+    for (let c = 0; c < 2; c++) for (let x = ch[c], i = 0; i < n; i++) x[i] = i * 0.5 + c
+    return { channelData: ch, sampleRate: 44100 }
+  }`
+  ok(!/call \$__arr_typed_obj_set_idx/.test(compile(src, { wat: true })), 'the channel stores are typed')
+  for (const optimize of levels(0, 2, 3)) {
+    const m = jz(src, { optimize }), got = m.exports.decode(3)
+    is([...got.channelData[0]], [0, 0.5, 1]); is([...got.channelData[1]], [1, 1.5, 2]); is(got.sampleRate, 44100)
+    const r = jz('let last=null;export const make=()=>{const o={a:[1,2]};last=o;return o};export const value=()=>last.a[0]+1', { optimize })
+    r.memory.write(r.instance.exports.make(), { a: ['late'] })
+    is(r.exports.value(), 'late1', 'an object a module binding keeps opens its arrays')
+  }
+})
+
+// The retention walk takes each value a retained object holds beside its slots
+// on its own: the parameter object of K-weighting keeps its coefficient pair and
+// its state list side by side, and joined they would share one element kind.
+test('host array handles: a retained object\'s side properties keep their own kinds', () => {
+  const src = `let k = { fs: 44100 }, out = new Float64Array(1)
+    let design = (p) => { if (!p._sos) p._sos = [{ b0: 0.5, a1: 0.25 }, { b0: 0.75, a1: 0.125 }]; return p }
+    let step = (x) => { let [c, d] = design(k)._sos, st = k.states ??= [], s = st[0] ??= new Float64Array(2), y = 0
+      for (let i = 0; i < x.length; i++) { y = c.b0 * x[i] - c.a1 * s[0] + d.b0; s[0] = y }
+      out[0] = y; return out }
+    export let f = () => step(new Float64Array([1, 2, 3]))[0]`
+  for (const optimize of levels(0, 2, 3)) is(jz(src, { optimize }).exports.f(), 1.890625, `O${optimize}`)
+  if (!belowOpt(2)) ok(!/call \$__add_slow/.test(compile(src, { wat: true })), 'the coefficients stay numbers')
+})
+
 test('host allocator: alignment preserves unsigned addresses above 2 GiB', () => {
   const memory = new WebAssembly.Memory({ initial: 32769, maximum: 32769 })
   const mem = jz.memory(memory)
@@ -1664,4 +1698,72 @@ test('reset: a store of a number into an object made at start saves nothing', ()
       is(x.exports.read(), round * 4 + ':null', `O${optimize}, round ${round}: the count stays, the field that named the round's memory reads as before`)
     }
   }
+})
+
+test('reset: local object aliases retain undo records when they can name older storage', () => {
+  if (onWasi()) return
+  const holders = {
+    branch: `let o = { cur: null }; if (n) o = st; o.cur = [n]`,
+    capture: `let o = { cur: null }; const choose = () => { o = st }; choose(); o.cur = [n]`,
+    factory: `const get = () => st; const o = get(); o.cur = [n]`,
+    nested: `const o = { inner: st }; o.inner.cur = [n]`,
+    shadow: `let o = { cur: null }; { const o = st; o.cur = [n] }; o.cur = [0]`,
+  }
+  for (const [name, holder] of Object.entries(holders)) for (const optimize of levels(0, 1, 2, 3)) {
+    const src = `const st = { cur: null }
+      export const put = n => { ${holder}; return n }
+      export const read = () => st.cur === null ? -1 : st.cur[0]
+      export const churn = n => { const a = new Float64Array(64); a.fill(n); return a[0] }`
+    const m = jz(src, { optimize })
+    for (let n = 1; n <= 3; n++) {
+      is(m.exports.put(n), n)
+      m.exports.churn(n)
+      is(m.exports.read(), n, `${name} keeps the field before reset at O${optimize}`)
+      m.memory.reset()
+      m.exports.churn(100)
+      is(m.exports.read(), -1, `${name} restores the field at O${optimize}`)
+    }
+  }
+})
+
+// A raw BigInt may have exactly a boxed pointer's bits. Reset must inspect
+// only fields that received heap values, leaving neighboring raw cells alone.
+test('reset: object undo records preserve neighboring raw BigInt fields', () => {
+  if (onWasi()) return
+  const initial = 9222386874436448256n
+  const src = `const st = { cur: null, b: ${initial}n }
+    export function f(n) { st.cur = [n]; return n }
+    export function change() { st.b += 1n; return st.b }
+    export function bigint() { return st.b }
+    export function read() { return st.cur === null ? 0 : st.cur[0] }`
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const m = jz(src, { optimize })
+    for (let round = 1; round <= 3; round++) {
+      is(m.exports.f(round), round)
+      is(m.exports.change(), initial + BigInt(round))
+      m.memory.reset()
+      is(m.exports.read(), 0)
+      is(m.exports.bigint(), initial + BigInt(round), `raw bits survive reset at ${optimize}`)
+    }
+  }
+})
+
+// A module whose static data ends between the host allocator's pointer cell
+// (HEAP.PTR_ADDR, layout.js) and HEAP.START (the exponentials' 1024-byte table,
+// module/math/trig-tables.js EXP2_TAB, is the one such table) exports a heap of its
+// own, so a host allocation leaves the data intact: it wrote its pointer over the
+// table's last tail, and Math.exp moved by an ulp on 71 of these 400 arguments.
+test('mem: a host allocation leaves static data up to HEAP.START intact', async () => {
+  const { exports, memory, module } = instantiate(compile(`export let f = (a, o, n) => { for (let i = 0; i < n; i++) o[i] = Math.exp(a[i]) }
+export let g = (x) => Math.exp(x)`))
+  // the arguments that read the table's last entry, 2^(63/64)
+  const xs = Array.from({ length: 400 }, (_, i) => (62.5 + i / 400) * Math.LN2 / 64)
+  const before = xs.map(x => exports.g(x))
+  const n = 4096, a = memory.Float64Array(new Float64Array(n).fill(0.5)), o = memory.Float64Array(new Float64Array(n))
+  exports.f(a, o, n)
+  memory.reset()
+  memory.Float64Array(new Float64Array(n))
+  const moved = xs.filter((x, i) => !Object.is(exports.g(x), before[i]))
+  is(moved.length, 0, `exp after a host allocation differs at ${moved.slice(0, 3).join(', ')}`)
+  ok(WebAssembly.Module.exports(module).some(e => e.name === '__heap'), 'the module keeps its heap pointer in a global of its own')
 })

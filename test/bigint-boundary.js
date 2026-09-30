@@ -43,6 +43,27 @@ const i64Hex = bits => '0x' + hx8(Number((bits >> 32n) & 0xFFFFFFFFn)) + hx8(Num
 // handle.
 const PAYLOADS = [0x8000000000000000n, 0n, 0xFFFFFFFFFFFFFFFFn, -1n, 1n, 0x7FF7FFFFFFFFFFFFn, 0xFFF8000000000000n]
 const COLLIDING = [0x7FF8000000000000n, 0x7FF8000200000000n, 0x7FFFFFFFFFFFFFFFn]
+
+test('BigInt field results preserve their carrier across multiple object layouts', () => {
+  const values = [0n, 1n, -1n, ...COLLIDING]
+  for (const optimize of levels(0, 1, 2, 3)) {
+    const branches = values.map((v, i) => `if (k === ${i}) return { field${i}: 0, value: ${v}n }`).join(';')
+    const exports = run(`
+      function pick(k) { ${branches}; return { field0: 0, value: 0n } }
+      function read(k) { return pick(k).value }
+      export function direct(k) { return read(k) }
+      export function bracket(k) { return pick(k)['value'] }
+      export function stored(k) { return [pick(k).value] }
+      export function added(k) { return pick(k).value + 1n }
+    `, optimize)
+    for (let k = 0; k < values.length; k++) {
+      is(exports.direct(k), values[k], `direct, O${optimize}, ${k}`)
+      is(exports.bracket(k), values[k], `bracket, O${optimize}, ${k}`)
+      is(exports.stored(k)[0], values[k], `stored, O${optimize}, ${k}`)
+      is(exports.added(k), BigInt.asIntN(64, values[k] + 1n), `arithmetic, O${optimize}, ${k}`)
+    }
+  }
+})
 const section = (wasm, name) => {
   const [bytes] = WebAssembly.Module.customSections(new WebAssembly.Module(wasm), name)
   return bytes ? JSON.parse(new TextDecoder().decode(bytes)) : []
@@ -57,6 +78,25 @@ const boundary = (wasm, name) => {
 }
 const calls = (fn, payloads) => payloads.map((p, i) => `export let f${i} = () => ${fn}(${p}n)\n`).join('')
 const LAYOUT = 'export const LAYOUT = { A: 1, NAN: 0x7FF8000000000000n }\nexport let f = () => i64Hex(LAYOUT.NAN).length\n'
+
+test('bigint boundary: host-only arithmetic parameters retain BigInt evidence', () => {
+  const src = `const mask = 127n, config = { mask: 127n }
+    const value = () => mask
+    export const left = n => Number(n & mask)
+    export const right = n => Number(mask & n)
+    export const field = n => Number(n & config.mask)
+    export const call = n => Number(n & value())`
+  for (const level of levels(0, 1, 2, 3, 'size')) {
+    const ex = run(src, level)
+    for (const name of ['left', 'right', 'field', 'call']) {
+      for (const n of [300n, 300n, 0n, -1n, 0x7ff8000500000000n, 0x7fffffffffffffffn])
+        is(ex[name](n), Number(n & 127n), `${name}(${n}), O${level}`)
+      for (const n of [300, null, true, undefined, '300'])
+        throws(() => ex[name](n), TypeError, `${name} rejects ${String(n)}, O${level}`)
+      is(ex[name](300n), 44, `${name} after throws, O${level}`)
+    }
+  }
+})
 
 test('bigint boundary: an exported function read only in BigInt arithmetic keeps its BigInt argument, from the program and from the host', () => {
   if (onKernel()) return

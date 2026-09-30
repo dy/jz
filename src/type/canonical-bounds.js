@@ -32,8 +32,9 @@ export const idxKey = (recv, idx) => recv + '\x00' + (typeof idx === 'string' ? 
 /** Step expression of a `for` that increments `name` by exactly 1. */
 export function isUnitIncrement(step, name) {
   if (!Array.isArray(step)) return false
+  if (step[0] === 'postfix') step = step[1]
   if (step[0] === '++' && step[1] === name) return true
-  // postfix `i++` in value position lowers to `(++i) - 1`
+  // An explicitly spelled subtraction still performs the same update.
   if (step[0] === '-' && Array.isArray(step[1]) && step[1][0] === '++'
       && step[1][1] === name && intLiteralValue(step[2]) === 1) return true
   return false
@@ -41,8 +42,9 @@ export function isUnitIncrement(step, name) {
 
 export function isUnitDecrement(step, name) {
   if (!Array.isArray(step)) return false
+  if (step[0] === 'postfix') step = step[1]
   if (step[0] === '--' && step[1] === name) return true
-  // postfix `i--` in value position lowers to `(--i) + 1`
+  // An explicitly spelled addition still performs the same update.
   if (step[0] === '+' && Array.isArray(step[1]) && step[1][0] === '--'
       && step[1][1] === name && intLiteralValue(step[2]) === 1) return true
   return false

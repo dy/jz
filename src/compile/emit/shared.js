@@ -11,6 +11,16 @@ import { dataDependentFlag, hasExpensiveOp, isPureIR, resolveValType } from '../
 import { valTypeOf } from '../../kind.js'
 import { VAL, lookupValType, repOf } from '../../reps.js'
 import { plannedTypedStorageCtor } from '../typed-storage-plan.js'
+import { isNullable } from '../../summary/index.js'
+import { inBoundsArrIdx } from '../../type/canonical-bounds.js'
+
+/** An in-bounds read is present only if the array's elements are too. */
+export function isPresentArrayElement(source) {
+  if (!Array.isArray(source) || source[0] !== '[]' || typeof source[1] !== 'string' || typeof source[2] !== 'string') return false
+  if (!inBoundsArrIdx(ctx).has(source[1] + '\x00' + source[2])) return false
+  const elem = ctx.summary?.at(ctx.func.current).elemKindOf(source[1])
+  return elem != null && !isNullable(elem)
+}
 
 /** Captured receivers retain the facts their builtin emitter consumes. */
 export function copyReceiverFacts(source, target) {

@@ -36,8 +36,11 @@ const TREES = [
     '[";",["let","a"],["=",["[]","x"],"y"]]'],
   ['a\n(b)',
     '["()","a","b"]'],
+  // the one tree that departs from subscript's: a postfix `++` takes no line
+  // terminator before it (ECMA-262 §13.4, a restricted production; §12.10.1),
+  // so the `++` starts the next statement, as Node reads it
   ['a = b\n++c',
-    '[";",["=","a",["++","b",null]],"c"]'],
+    '[";",["=","a","b"],["++","c"]]'],
   ['let f = () => {\n  a\n  b\n}\nf()',
     '[";",["let",["=","f",["=>",["()",null],["{}",[";","a","b"]]]]],["()","f",null]]'],
   ['for (let i = 0; i < 3; i++) {\n  a\n  b\n}\nc',

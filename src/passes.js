@@ -94,6 +94,14 @@ export const PASS_NAMES = [
   // reads MUST be listed here — an unlisted name is `undefined !== false` and
   // silently runs at O0, breaking the representation-free reference tier.
   // test/passes.js greps every gate read against this list + TUNING_KEYS.
+  'declareUnseenKeys',        // a key stored on objects nothing asks for their keys: a slot of their literals (plan/declare-unseen-keys.js)
+  'promoteLoopFields',        // a field a loop reads and writes through one receiver: a local for the loop (plan/loop-fields.js)
+  'callChosenFunctions',      // a local holding one of several functions and only called: the choice of direct calls (plan/chosen-calls.js)
+  'specializeCalledArgs',     // a parameter only called, given a named function: a copy calling it by name (plan/called-args.js)
+  'hoistObjectReads',         // a key a loop reads of an object the function made and only reads: one read where it is made (plan/object-reads.js)
+  'versionIntegralLoops',     // a loop indexing by numbers of unknown integrality: a copy over their int32s where they are ones (plan/integral-loops.js), speed-for-size
+  'unswitchLoops',            // a loop testing a name it never writes: a copy for each answer (plan/unswitch-loops.js), speed-for-size
+  'splitLoopKinds',           // a loop reading a name of several kinds, a typed array among them: a copy where it holds that array (plan/kind-split.js), speed-for-size
   'loadCSE',                  // straight-line typed element-load CSE (compile-level, pre-analyze)
   'intDivLower',              // i32/i32 constant-divisor strength lowering
   'forInUnroll',              // for-in over a static schema → key-literal-substituted body copies

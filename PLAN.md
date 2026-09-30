@@ -6,6 +6,33 @@ passing conformance, speed, size and memory gates. README owns the public
 contract; CONTRIBUTING owns compiler invariants. This file holds the decisions
 that shaped the tree, the work left before release and the latest gate reading.
 
+## Release status, September 29
+
+**V1 remains blocked by release validation and recursive bootstrap.** Candidate
+29's fresh ordinary kernel passes 20 medium-corpus functional cases and nine
+reuse checks. Compiling the complete compiler graph still exhausts the 4 GiB
+Wasm address space after closure analysis. Its completed core rerun passes
+5,175 of 5,176 tests (200,286 assertions). The sole failure is a typed-method
+size regression: 3,777 B against the unchanged 3,578 B limit.
+The integrated fix removes reset saves for provably fresh objects, producing
+3,457 B with zero retained bytes over 100 calls. Closure cleanup and prefix
+flattening now preserve captured bindings. Their combined sweep passes 676
+tests / 76,537 assertions; poisoned memory checks pass 46 tests on each host.
+The full core and matrix still need a fresh run after this integration.
+
+The experimental arena/reach profile exposed a signed block-type encoding
+defect in locked watr 5.11.8. An encoder-only copy passes the complete native
+dependency suite. Its fresh kernel passes 20 functional and nine reuse checks,
+but recursive compilation still exhausts 4 GiB after dynamic-table resolution.
+Defaults and dependencies have not changed. Import lint, public types and the file audit pass on candidate
+29; no complete matrix pass is recorded. Fresh conformance, the complete
+hosted suite, and reference speed/size/memory certification remain open.
+
+Source maps, Floatbeat, strict entry/types, and package integrations have targeted
+validation. Their final-candidate checks and the remaining audio/math/library
+work are tracked in [the v1 completion ledger](.work/v1.md). The dated evidence
+below belongs to its recorded snapshots, not the current working tree.
+
 ## Release status, September 27
 
 **V1 is not ready to tag, and the claim reading is still September 26's.**

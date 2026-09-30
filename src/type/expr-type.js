@@ -39,6 +39,7 @@ const typedElemCtorOf = (name, locals) => typedStorageNameCtor(ctx, name, locals
 // element can exceed signed-i32 range). The +/-/*/% rules widen these to f64 so `U[i] + 1`
 // near 2^32 doesn't wrap; bitwise/store consumers are ToInt32-exact and keep the i32 bits.
 const isUnsignedI32Expr = (e, locals) => typeof e === 'string' ? !!repOf(e)?.unsigned : Array.isArray(e) && (
+  ((e[0] === '(' || e[0] === ',') && isUnsignedI32Expr(e[e.length - 1], locals)) ||
   e[0] === '>>>' ||
   (e[0] === '()' && typeof e[1] === 'string' && ctx.funcs.map?.get(e[1])?.sig?.unsignedResult === true) ||
   (e[0] === '[]' && typeof e[1] === 'string' && (typedElemAux(typedElemCtorOf(e[1], locals)) & 7) === 5)
@@ -92,6 +93,13 @@ export function exprType(expr, locals, valTypes, strict, bodyRoot, readPresent) 
 
   const op = expr[0]
   const arity = expr.length - 1
+  // Grouping and comma prefixes do not change the final value's carrier.
+  if (op === '(' || op === ',') {
+    const value = expr[expr.length - 1]
+    // A wrapped uint32 does not carry a bare declaration's unsigned flag.
+    // Keep its full magnitude in scalar storage.
+    return isUnsignedI32Expr(value, locals) ? 'f64' : exprType(value, locals, valTypes, strict, bodyRoot, readPresent)
+  }
   if (op == null) return exprType(expr[1], locals, valTypes, strict, bodyRoot, readPresent) // literal [, value]
 
   // Statically evaluable to -0 (e.g. -1 * 0) — i32 would lose the sign.
@@ -278,7 +286,7 @@ export function exprType(expr, locals, valTypes, strict, bodyRoot, readPresent) 
     // to f64 and round-tripping i32↔f64 every iteration.
     if (typeof expr[1] === 'string') {
       const f = ctx.funcs.map?.get(expr[1])
-      if (f?.sig?.results?.length === 1 && f.sig.results[0] === 'i32' && f.sig.ptrKind == null) return 'i32'
+      if (f?.sig?.results?.length === 1 && f.sig.results[0] === 'i32' && f.sig.ptrKind == null) return readPresent && f.sig.unsignedResult ? 'f64' : 'i32'
       if (f?.sig?.results?.length === 1 && f.sig.results[0] === 'v128') return 'v128'   // SIMD helper
     }
   }

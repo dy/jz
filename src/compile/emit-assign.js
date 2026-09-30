@@ -11,7 +11,7 @@ import { OPTF } from '../ctx.js'
  * @module compile/emit-assign
  */
 
-import { ctx, err, inc, warnDeopt, PTR, LAYOUT, setLinkDemand } from '../ctx.js'
+import { ctx, err, strictCode, inc, warnDeopt, PTR, LAYOUT, setLinkDemand } from '../ctx.js'
 import { T, ACCESSOR_SET } from '../ast.js'
 import { classAccessor, classesWith, lacksSlot } from './emit/class-dispatch.js'
 import { staticPropertyKey, staticIndexKey, staticObjectProps, inlineArraySid, structLiteralFields, inplaceKey, intExprRange } from '../static.js'
@@ -19,50 +19,41 @@ import { packedI32, structInline } from '../abi/index.js'
 import { i64Hex, encodePtrHi, OBJECT_SCHEMA_HI_MASK, objectSchemaGuardHex } from '../../layout.js'
 import { recordDynFnTableWrite, recordImperativeClosureTableWrite } from './dyn-closure-tables.js'
 import { isPresentNumber, valTypeOf, shapeOf } from '../kind.js'
-import { NUMBER } from '../summary/kind.js'
+import { K, NUMBER, bitOf as summaryBitOf, tagOf as summaryTagOf, tagsOf as summaryTagsOf, NULL_BITS as SUMMARY_NULL_BITS } from '../summary/kind.js'
+import { errorCodeLiteral, ERR } from '../../err-codes.js'
 import { VAL, lookupValType, repOf } from '../reps.js'
 import {
-  typed, asF64, asI32, asI64, temp, tempI32, withTemp, block64,
+  typed, asF64, asI32, asI64, keyIndex, temp, tempI32, withTemp, block64,
   ptrOffsetIR, fwdOffsetIR, ptrTypeEq, boxedAddr, writeVar, isGlobal, isBoundName, isLiteralStr,
   usesDynProps, needsDynShadow, mkPtrIR, undefExpr,
   freshId, boxBigInt, isNullish, throwTypeErrorIR,
 } from '../ir.js'
-import { emit, storedValue, storedValueNarrow, storedFieldValue } from '../bridge.js'
+import { emit, idx as emitIndex, storedValue, storedValueNarrow, storedFieldValue } from '../bridge.js'
 import { REP_EDGE_BOX, representationProgramHasBigint, representationStorageWriteAction } from './representation-plan.js'
-import { plannedTypedStorageInfo } from './typed-storage-plan.js'
+import { plannedTypedStorageInfo, plannedTypedPayloadInfo } from './typed-storage-plan.js'
 import { typedIdxProven, inBoundsArrIdx } from '../type.js'
 import { trySlotUpdate } from './slot-update.js'
 import { durableArrSnapNode, durableObjSnapNode, hasDurableReset } from '../../module/collection/durable.js'
-
-// A field stored into an object the module made as it started names, after
-// a reset, memory the reset freed, where the value is one a call made: the
-// round's first such store saves the object's slots (module/collection/
-// durable.js durableObjSnapNode), and the reset reads them back. A number
-// names no memory. A store into the frame's own fresh object is none of
-// these: the frame census (analyze/frame-effects.js) lists the stores that
-// may leave a heap value in storage not the frame's own, `node` among them
-// or not; with no census every store may.
-const mayDangle = (node, val) => {
-  if (!hasDurableReset()) return false
-  const vt = valTypeOf(val)
-  if (vt === VAL.NUMBER || vt === VAL.BOOL) return false
-  const sites = ctx.plans.escapeSites
-  return sites == null || !Array.isArray(node) || sites.has(ctx.plans.siteOrigin?.get(node) ?? node)
-}
-/** The store of slot `slot` of the object at `base` (an i32 expression, read
- *  once), saved first where `dangles` and the value, a local's read, names
- *  memory of the round as the store runs. */
-const fieldStore = (base, slot, value, dangles) => {
-  if (!dangles) return [ctx.abi.object.ops.store(base, slot, value)]
-  inc('__durable_obj_snap', '__is_eph_bits')
-  const b = tempI32('dob')
-  return [['local.set', `$${b}`, base], durableObjSnapNode(b, value), ctx.abi.object.ops.store(['local.get', `$${b}`], slot, value)]
-}
 
 // Boxed-bool-aware store value: booleans persist as their tagged atom. Now
 // THE chokepoint, promoted to bridge.js (research.md §Carrier invariant) — every
 // module/*.js consumer imports the same `storedValue` this file does, instead
 // of hand-reimplementing the unsound `carrierF64(node, emit(node))` half.
+
+// Updating an existing object's tagged slot may install a pointer into this
+// round's arena. Save durable slots before that first store; numeric and raw
+// BigInt carriers name no allocation and must never be interpreted as tags.
+function storeObjectField(base, slot, value, source, sid = null, receiver = null) {
+  const kind = valTypeOf(source)
+  if (!hasDurableReset() || typeof receiver === 'string' && ctx.func.freshObjects?.has(receiver) || kind === VAL.NUMBER || kind === VAL.BOOL ||
+      sid != null && ctx.schema.slotRawBigint.get(sid)?.has(slot))
+    return ctx.abi.object.ops.store(base, slot, value)
+  const off = tempI32('ob')
+  inc('__durable_obj_snap', '__is_eph_bits')
+  return ['block', ['local.set', `$${off}`, base],
+    durableObjSnapNode(off, value, slot),
+    ctx.abi.object.ops.store(['local.get', `$${off}`], slot, value)]
+}
 
 // Integer array-index key: '3' → 3; rejects non-canonical and 2³²−1.
 function arrayIndexKey(key) {
@@ -105,7 +96,7 @@ function storeArrayPayload(arrExpr, idxNode, valueExpr, persist) {
   const helper = ['local.set', `$${arrTmp}`, ['call', '$__arr_set_idx_ptr', ['i64.reinterpret_f64', arrG], idxG, valG]]
   const body = [
     ['local.set', `$${arrTmp}`, arrExpr],
-    ['local.set', `$${idxTmp}`, asI32(typed(idxNode, 'f64'))],
+    ['local.set', `$${idxTmp}`, keyIndex(typed(idxNode, 'f64'))],
     ['local.set', `$${valTmp}`, valueExpr],
   ]
   if (ctx.transform.optimize?.leanRuntime) body.push(helper)
@@ -162,7 +153,7 @@ const isPureChain = (n) => typeof n === 'string' || (Array.isArray(n) && (n[0] =
 function ensureDynSetAllowed(arr) {
   const arrLabel = typeof arr === 'string' ? arr : '<expr>'
   warnDeopt('deopt-dyn-write', `dynamic property write \`${arrLabel}[…] = …\` couldn't resolve a static type — it falls back to a runtime hash store (~2× slower than a typed/slot write, far worse in a hot loop). Use a literal key, a numeric typed-array index, or a Map for genuinely dynamic keys.`)
-  if (!ctx.transform.strict) return
+  if (!strictCode()) return
   err(`strict mode: dynamic property assignment \`${arrLabel}[<expr>] = ...\` falls back to __dyn_set. Use a literal key or known array/typed-array numeric index, or pass { strict: false }.`)
 }
 
@@ -181,16 +172,32 @@ function ensureDynSetAllowed(arr) {
  *  is also step 7b's HASH fallback) that applies it uniformly. */
 function dynSetCall(arr, keyExpr, valueExpr) {
   ensureDynSetAllowed(arr)
-  inc('__dyn_set')
+  const setter = valTypeOf(arr) === VAL.HASH ? '__hash_set_value' : '__dyn_set'
+  inc(setter)
+  // A computed key can name `length` or an index and relocate an array.
+  // Like the numeric writer, refresh its binding after the dynamic setter;
+  // own-current reads rely on every grow doing this. The key/value may have
+  // rebound a non-owned receiver, in which case that newer binding wins.
+  if (typeof arr === 'string' && valTypeOf(arr) === VAL.ARRAY) {
+    const recvTmp = temp('dsa'), valTmp = temp('dsv')
+    const recv = typed(['local.get', `$${recvTmp}`], 'f64')
+    const persist = persistBindingPtr(arr, mkPtrIR(PTR.ARRAY, 0, fwdOffsetIR(recv)))
+    return block64(
+      ['local.set', `$${recvTmp}`, asF64(emit(arr))],
+      ['local.set', `$${valTmp}`, ['f64.reinterpret_i64', ['call', `$${setter}`, asI64(recv), asI64(keyExpr), asI64(valueExpr)]]],
+      repOf(arr)?.ownCurrent ? persist
+        : ['if', ['i64.eq', asI64(asF64(emit(arr))), asI64(recv)], ['then', persist]],
+      ['local.get', `$${valTmp}`])
+  }
   if (typeof arr === 'string' && ctx.func.i32HashLocals?.has(arr)) {
     const valTmp = temp()
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${valTmp}`, valueExpr],
-      ['drop', ['call', '$__dyn_set', asI64(emit(arr)), asI64(keyExpr),
+      ['drop', ['call', `$${setter}`, asI64(emit(arr)), asI64(keyExpr),
         ['i64.extend_i32_u', asI32(typed(['local.get', `$${valTmp}`], 'f64'))]]],
       ['local.get', `$${valTmp}`]], 'f64')
   }
-  return typed(['f64.reinterpret_i64', ['call', '$__dyn_set', asI64(emit(arr)), asI64(keyExpr), asI64(valueExpr)]], 'f64')
+  return typed(['f64.reinterpret_i64', ['call', `$${setter}`, asI64(emit(arr)), asI64(keyExpr), asI64(valueExpr)]], 'f64')
 }
 
 /** Runtime fork by key kind: string keys go to `__dyn_set`, numeric keys go through
@@ -201,7 +208,7 @@ function dispatchByKeyKind(arr, keyExpr, valueExpr, numericIR) {
   return block64(
     ['local.set', `$${keyTmp}`, keyExpr],
     ['if', ['result', 'f64'], ['call', '$__is_str_key', ['i64.reinterpret_f64', ['local.get', `$${keyTmp}`]]],
-      ['then', ['f64.reinterpret_i64', ['call', '$__dyn_set', asI64(emit(arr)), ['i64.reinterpret_f64', ['local.get', `$${keyTmp}`]], asI64(valueExpr)]]],
+      ['then', dynSetCall(arr, typed(['local.get', `$${keyTmp}`], 'f64'), valueExpr)],
       ['else', numericIR(['local.get', `$${keyTmp}`])]])
 }
 
@@ -209,7 +216,7 @@ function dispatchByKeyKind(arr, keyExpr, valueExpr, numericIR) {
  * ARRAY relocation, packed TypedArray width, OBJECT/HASH sidecar, and optional
  * EXTERNAL branches; keeping that fork out of a hot loop also gives the
  * Float64 unswitch one canonical call shape to eliminate. */
-function emitPolymorphicElementStore(arrExpr, idxI32, valueExpr, valueDomain, persist, mayBeObject) {
+function emitPolymorphicElementStore(arrExpr, index, valueExpr, valueDomain, persist, mayBeObject) {
   ctx.module.include('typedarray')
   setLinkDemand('typedarray')
   setLinkDemand('typedRuntime')
@@ -220,7 +227,7 @@ function emitPolymorphicElementStore(arrExpr, idxI32, valueExpr, valueDomain, pe
   const objTmp = temp('asu'), idxTmp = tempI32('asi'), ptrTmp = temp('asp'), valTmp = temp()
   return block64(
     ['local.set', `$${objTmp}`, asF64(arrExpr)],
-    ['local.set', `$${idxTmp}`, idxI32],
+    ['local.set', `$${idxTmp}`, keyIndex(index)],
     ['local.set', `$${valTmp}`, valueExpr],
     ['local.set', `$${ptrTmp}`, ['call', `$${runtimeStore}`,
       ['i64.reinterpret_f64', ['local.get', `$${objTmp}`]],
@@ -298,7 +305,7 @@ function tryInplaceReplaceStore(arr, idx, val) {
     const hT = tempI32('iph'), kT = tempI32('ipk'), aTb = temp('ipa')
     const miss = ['block', ['result', 'f64'],
       ['local.set', `$${aTb}`, asF64(emit(arr))],
-      ['local.set', `$${kT}`, asI32(emit(idx))],
+      ['local.set', `$${kT}`, emitIndex(idx)],
       ['local.set', `$${hT}`, ['call', '$__alloc_hdr', ['i32.const', 0], ['i32.const', ops.allocSlots(schema.length)]]],
       ...slots.map((slot, i) => ops.store(['local.get', `$${hT}`], slot, ['local.get', `$${vTs[i]}`])),
       storeArrayPayload(typed(['local.get', `$${aTb}`], 'f64'), ['f64.convert_i32_s', ['local.get', `$${kT}`]],
@@ -328,7 +335,7 @@ function tryInplaceReplaceStore(arr, idx, val) {
   // first order shipped that divergence at every optimize level).
   return typed(['block', ['result', 'f64'],
     ['local.set', `$${aTb}`, asF64(emit(arr))],
-    ['local.set', `$${kT}`, asI32(emit(idx))],
+    ['local.set', `$${kT}`, emitIndex(idx)],
     ...parsed.values.map((v, i) => ['local.set', `$${vTs[i]}`, storedValue(v)]),
     ['local.set', `$${eT}`, reuse ?? ['call', '$__arr_idx', ['i64.reinterpret_f64', ['local.get', `$${aTb}`]], ['local.get', `$${kT}`]]],
     ['if', ['result', 'f64'],
@@ -393,7 +400,7 @@ function tryStructInlineReplaceStore(arr, idx, val) {
   if (!alias) inc('__ptr_offset')
   const cellIdx = cpe === 1 ? ['local.get', `$${kT}`] : ['i32.mul', ['local.get', `$${kT}`], ['i32.const', cpe]]
   const body = [
-    ['local.set', `$${kT}`, asI32(emit(idx))],
+    ['local.set', `$${kT}`, emitIndex(idx)],
     ...(boxT ? [['local.set', `$${boxT}`, asF64(emit(arr))]] : []),
     // packed values are int32-exact by the slotI32Certain census. Non-packed
     // cells: CARRIER PROGRAM §15/§16 — the same per-schema slotBigintBoxedBySid
@@ -435,11 +442,32 @@ function tryStructInlineReplaceStore(arr, idx, val) {
       ['else', undefExpr()]]], 'f64'))
 }
 
+// A store on a primitive throws in strict code (every jz module is strict):
+// the receiver, the key and the value evaluate, then the TypeError. A receiver
+// the summary proves a Number, String, Boolean or BigInt (or nullish) throws
+// here; a receiver that may also be an object decides in __dyn_set.
+const PRIMITIVE_TAGS = summaryBitOf(K.NUMBER) | summaryBitOf(K.STRING) | summaryBitOf(K.BOOL) | summaryBitOf(K.BIGINT)
+function primitiveStore(obj, key, val) {
+  const k = ctx.summary?.at(ctx.func.current).kindOfExpr(obj)
+  if (k == null || k === 0 || summaryTagOf(k) === K.ANY) return null
+  const tags = summaryTagsOf(k) & ~SUMMARY_NULL_BITS
+  if (!tags || (tags & ~PRIMITIVE_TAGS)) return null
+  ctx.runtime.throws = true
+  const code = errorCodeLiteral(ERR.PRIMITIVE_PROPERTY)
+  return typed(['block', ['result', 'f64'],
+    ['drop', asF64(emit(obj))],
+    ...(key == null ? [] : [['drop', asF64(emit(key))]]),
+    ['drop', storedValue(val)],
+    ['global.set', '$__jz_last_err_bits', ['i64.reinterpret_f64', ['f64.const', code]]],
+    ['throw', '$__jz_err', ['f64.const', code]]], 'f64')
+}
+
 export function emitElementAssign(arr, idx, val, node = null) {
-  const dangles = mayDangle(node ?? ctx.error.node, val)
-  // A static object key is a field write, with the same carrier and setter
-  // semantics as dot syntax. Keep expression receivers on that one path too.
-  if (isLiteralStr(idx) && ctx.summary?.at(ctx.func.current).objectSidOfExpr(arr) != null)
+  const prim = primitiveStore(arr, idx, val)
+  if (prim) return prim
+  // Static object fields and array length use the same carrier, setter and
+  // resize semantics as dot syntax, including expression receivers.
+  if (isLiteralStr(idx) && (idx[1] === 'length' || ctx.summary?.at(ctx.func.current).objectSidOfExpr(arr) != null))
     return emitPropertyAssign(arr, idx[1], val)
   // 0. `obj.prop[idx] = val` where `obj`'s type is fully unknown (so `obj`
   // could be a host EXTERNAL object at runtime) — `__ext_prop` (interop.js)
@@ -598,7 +626,7 @@ export function emitElementAssign(arr, idx, val, node = null) {
     const slot = ctx.schema.slotOf(arr, litKey)
     if (slot >= 0 && !(ctx.types.anyDelete && mayBeDeleted(arr)))
       return withTemp(valueExpr, t => [
-        ...fieldStore(ptrOffsetIR(asF64(emit(arr)), lookupValType(arr) || VAL.OBJECT), slot, ['local.get', `$${t}`], dangles),
+        storeObjectField(ptrOffsetIR(asF64(emit(arr)), lookupValType(arr) || VAL.OBJECT), slot, ['local.get', `$${t}`], val, null, arr),
         ['local.get', `$${t}`]])
   }
   // 2b. A receiver of a few possible shapes (the summary's shape set, module/
@@ -619,7 +647,7 @@ export function emitElementAssign(arr, idx, val, node = null) {
           const off = ['i32.wrap_i64', ['i64.and', bits(), ['i64.const', LAYOUT.OFFSET_MASK]]]
           chain = ['if',
             ['i64.eq', ['i64.and', bits(), ['i64.const', OBJECT_SCHEMA_HI_MASK]], ['i64.const', objectSchemaGuardHex(sid)]],
-            ['then', ...fieldStore(off, slot, val(), dangles)],
+            ['then', storeObjectField(off, slot, val(), null, null, arr)],
             ['else', chain]]
         }
         return [chain, val()]
@@ -651,7 +679,9 @@ export function emitElementAssign(arr, idx, val, node = null) {
   //    Also fires for a nested `arr[c]` receiver whose array's elements are typed
   //    arrays of a known ctor (codec `ch[c][i] = …` channelData scatter) — the
   //    `.typed:[]=` emitter resolves the element ctor and inlines the store.
-  const plannedTypedReceiver = plannedTypedStorageInfo(ctx, arr)
+  // A receiver that may be missing stores as its payload's kind, behind the
+  // store's own rejection of the missing one (`.typed:[]=`'s `nullable`).
+  const plannedTypedReceiver = plannedTypedStorageInfo(ctx, arr) ?? plannedTypedPayloadInfo(ctx, arr)
   if (ctx.core.emit['.typed:[]='] &&
       (valTypeOf(arr) === VAL.TYPED || plannedTypedReceiver)) {
     if (!numericKey) {
@@ -677,7 +707,7 @@ export function emitElementAssign(arr, idx, val, node = null) {
     // guessing from raw payload magnitude.
     inc('__typed_set_idx_tagged')
     return typed(['call', '$__typed_set_idx_tagged',
-      asI64(emit(arr)), asI32(emit(idx)), runtimeTypedValueExpr(), ['i32.const', valueDomain]], 'f64')
+      asI64(emit(arr)), emitIndex(idx), runtimeTypedValueExpr(), ['i32.const', valueDomain]], 'f64')
   }
 
   // 6. Boxed schema array — payload pointer is stored at the receiver's payload offset.
@@ -750,15 +780,15 @@ export function emitElementAssign(arr, idx, val, node = null) {
     inc('__dyn_set', '__is_str_key')
     const persist = typeof arr === 'string' ? persistBinding(arr) : null
     return dispatchByKeyKind(arr, keyExpr, valueExpr, keyNode =>
-      emitPolymorphicElementStore(emit(arr), asI32(typed(keyNode, 'f64')), runtimeTypedValueExpr(), valueDomain, persist, mayBeObject))
+      emitPolymorphicElementStore(emit(arr), keyIndex(typed(keyNode, 'f64')), runtimeTypedValueExpr(), valueDomain, persist, mayBeObject))
   }
 
   // 9. Opaque receiver (non-string expr) or string-named with unknown VT — pure
   //    __ptr_type dispatch (no key-kind fork: key is provably numeric here).
   if (typeof arr !== 'string')
-    return emitPolymorphicElementStore(emit(arr), asI32(emit(idx)), runtimeTypedValueExpr(), valueDomain, null, mayBeObject)
+    return emitPolymorphicElementStore(emit(arr), emitIndex(idx), runtimeTypedValueExpr(), valueDomain, null, mayBeObject)
   if (knownArrVT == null)
-    return emitPolymorphicElementStore(emit(arr), asI32(emit(idx)), runtimeTypedValueExpr(), valueDomain, persistBinding(arr), mayBeObject)
+    return emitPolymorphicElementStore(emit(arr), emitIndex(idx), runtimeTypedValueExpr(), valueDomain, persistBinding(arr), mayBeObject)
 
   // Default: known-VT receiver that isn't ARRAY/TYPED/OBJECT special — raw f64.store.
   return withTemp(valueExpr, t => [
@@ -831,7 +861,8 @@ function accessorStore(obj, prop, val) {
 }
 
 export function emitPropertyAssign(obj, prop, val, raw = false) {
-  const dangles = mayDangle(ctx.error.node, val)
+  const prim = primitiveStore(obj, null, val)
+  if (prim) return prim
   if (!raw && ctx.transform.accessorNames?.has(prop)) {
     // a class's setter is a function of the receiver (class-dispatch.js);
     // any other receiver keeps the slot paths of accessorStore
@@ -874,7 +905,7 @@ export function emitPropertyAssign(obj, prop, val, raw = false) {
         ['local.set', `$${recvTmp}`, asF64(emit(obj))],
         ['local.set', `$${valTmp}`, storedValue(val)],
         ['if', ['i32.and', ['f64.ne', recv, recv], ptrTypeEq(recv, PTR.ARRAY)],
-          ['then', ['drop', ['call', '$__arr_set_length', ['i64.reinterpret_f64', recv], asI32(typed(value, 'f64'))]]],
+          ['then', ['drop', ['call', '$__arr_set_length', ['i64.reinterpret_f64', recv], ['i64.reinterpret_f64', value]]]],
           ['else', ['drop', ['call', '$__dyn_set', ['i64.reinterpret_f64', recv], asI64(emit(['str', prop])), ['i64.reinterpret_f64', value]]]]],
         value)
     }
@@ -883,17 +914,17 @@ export function emitPropertyAssign(obj, prop, val, raw = false) {
       const arrTmp = `${T}aln${freshId(ctx)}`
       const nTmp = `${T}alv${freshId(ctx)}`
       ctx.func.locals.set(arrTmp, 'f64')
-      ctx.func.locals.set(nTmp, 'i32')
+      ctx.func.locals.set(nTmp, 'f64')
       // Write the relocated pointer back to a simple var receiver so later
       // reads skip the forwarding hop; complex receivers stay correct via it.
       const persist = typeof obj === 'string' ? persistBindingPtr(obj, ['local.get', `$${arrTmp}`]) : null
       const body = [
         ['local.set', `$${arrTmp}`, asF64(emit(obj))],
-        ['local.set', `$${nTmp}`, asI32(emit(val))],
-        ['local.set', `$${arrTmp}`, ['call', '$__arr_set_length', ['i64.reinterpret_f64', ['local.get', `$${arrTmp}`]], ['local.get', `$${nTmp}`]]],
+        ['local.set', `$${nTmp}`, storedValue(val)],
+        ['local.set', `$${arrTmp}`, ['call', '$__arr_set_length', ['i64.reinterpret_f64', ['local.get', `$${arrTmp}`]], ['i64.reinterpret_f64', ['local.get', `$${nTmp}`]]]],
       ]
       if (persist) body.push(persist)
-      body.push(['f64.convert_i32_s', ['local.get', `$${nTmp}`]])
+      body.push(['local.get', `$${nTmp}`])
       return block64(...body)
     }
   }
@@ -948,7 +979,7 @@ export function emitPropertyAssign(obj, prop, val, raw = false) {
         // byte-identical then).
         const boxed = ctx.schema.slotBigintBoxedBySid?.(vaProbe.ptrAux, prop)
         return withTemp(storedFieldValue(val, vaProbe.ptrAux, prop, boxed), t => [
-          ...fieldStore(ptrOffsetIR(asF64(emit(obj)), VAL.OBJECT), si, ['local.get', `$${t}`], dangles),
+          storeObjectField(ptrOffsetIR(asF64(emit(obj)), VAL.OBJECT), si, ['local.get', `$${t}`], val, vaProbe.ptrAux, obj),
           ['local.get', `$${t}`]])
       }
     }
@@ -973,12 +1004,12 @@ export function emitPropertyAssign(obj, prop, val, raw = false) {
       // RHS unconditionally once, then the next `f64.load` at this fixed
       // offset read the pointer's bits raw.
       const sid = ctx.schema.idOf(obj)
-      const wide = needsDynShadow(obj, sid) || ctx.core.includes.has('__dyn_set')
+      const wide = needsDynShadow(obj, sid) || (ctx.core.includes.has('__dyn_set') || ctx.core.includes.has('__dyn_set_own'))
       const boxed = wide || (sid != null && ctx.schema.slotBigintBoxedBySid?.(sid, prop))
       const va = emit(obj), vv = storedFieldValue(val, sid, prop, boxed), t = temp()
       return block64(
         ['local.set', `$${t}`, vv],
-        ...fieldStore(ptrOffsetIR(asF64(va), lookupValType(obj) || VAL.OBJECT), idx, ['local.get', `$${t}`], dangles),
+        storeObjectField(ptrOffsetIR(asF64(va), lookupValType(obj) || VAL.OBJECT), idx, ['local.get', `$${t}`], val, sid, obj),
         ['local.get', `$${t}`])
     }
   }
@@ -988,9 +1019,14 @@ export function emitPropertyAssign(obj, prop, val, raw = false) {
   // propsPtr) while `a.b.c` reads the schema slot — different memory, so the
   // value was lost (read returned the stale slot). This is what corrupted the
   // self-compile `ctx.func.X = …` writes (e.g. finallyStack), dropping try/finally.
-  if (typeof obj !== 'string') {
-    const sid = ctx.summary?.at(ctx.func.current).objectSidOfExpr(obj)
-    const sh = shapeOf(obj)
+  // A binding the summary shapes but that may be nullish (an element of a
+  // holey array) holds no layout of its own; its reads take the summary's
+  // with a nullish test, and so does its write.
+  const nameSid = typeof obj === 'string' && ctx.schema.idOf(obj) == null && !ctx.schema.poisoned?.has(obj)
+    ? ctx.summary?.at(ctx.func.current).objectSidOfExpr(obj) : null
+  if (typeof obj !== 'string' || nameSid != null) {
+    const sid = typeof obj === 'string' ? nameSid : ctx.summary?.at(ctx.func.current).objectSidOfExpr(obj)
+    const sh = typeof obj === 'string' ? null : shapeOf(obj)
     const names = sid != null ? ctx.schema.list[sid] : sh?.val === VAL.OBJECT ? sh.names : null
     if (names) {
       const i = names.indexOf(prop)
@@ -999,12 +1035,14 @@ export function emitPropertyAssign(obj, prop, val, raw = false) {
       if (i >= 0) {
         const receiver = temp('ref'), value = temp()
         const get = () => typed(['local.get', `$${receiver}`], 'f64')
+        // a binding's carrier stays wide where a dynamic reader may meet it, as the layout's own path above keeps it
+        const wide = typeof obj === 'string' && (needsDynShadow(obj, sid) || ctx.core.includes.has('__dyn_set')) ? true : undefined
         return block64(
           ['local.set', `$${receiver}`, asF64(emit(obj))],
-          ['local.set', `$${value}`, sid != null ? storedFieldValue(val, sid, prop) : storedValue(val)],
+          ['local.set', `$${value}`, sid != null ? storedFieldValue(val, sid, prop, wide) : storedValue(val)],
           ...(ctx.summary?.at(ctx.func.current).mayBeNullishExpr(obj) !== false
             ? [['if', isNullish(get()), ['then', ['drop', throwTypeErrorIR()]]]] : []),
-          ...fieldStore(ptrOffsetIR(get(), VAL.OBJECT), i, ['local.get', `$${value}`], dangles),
+          storeObjectField(ptrOffsetIR(get(), VAL.OBJECT), i, ['local.get', `$${value}`], val, sid, obj),
           ['local.get', `$${value}`])
       }
     }
@@ -1026,7 +1064,8 @@ export function emitPropertyAssign(obj, prop, val, raw = false) {
     if (objType == null && ctx.transform.targetProfile.envImports) {
       setLinkDemand('external')
     }
-    inc('__hash_set')
+    const setter = objType === VAL.HASH ? '__hash_set_local' : '__hash_set'
+    inc(setter)
     // `__hash_set` returns the (possibly reallocated) HASH pointer, which must be
     // written back into `obj`. But JS `(obj.prop = v)` evaluates to `v`, not the
     // object — so capture the value and return it. This only diverges in value
@@ -1037,7 +1076,7 @@ export function emitPropertyAssign(obj, prop, val, raw = false) {
     return withTemp(storedValue(val), t => {
       const tget = ['local.get', `$${t}`]
       const setCall = typed(['f64.reinterpret_i64',
-        ['call', '$__hash_set', asI64(emit(obj)), keyBits, ['i64.reinterpret_f64', tget]]], 'f64')
+        ['call', `$${setter}`, asI64(emit(obj)), keyBits, ['i64.reinterpret_f64', tget]]], 'f64')
       const writeback = isGlobal(obj) ? ['global.set', `$${obj}`, setCall]
         // Closure-captured (boxed) locals store at the cell address, not the slot.
         : ctx.func.boxed?.has(obj) ? writeVar(obj, setCall, true)

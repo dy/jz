@@ -6,7 +6,7 @@
 
 import { ctx, err } from '../../ctx.js'
 import {
-  asF64, asI32, boxBigInt, fromI64, rawBigInt, isConst, maybeUnboxBigInt, readI64, readVar, toNumF64, typed, writeVar,
+  asF64, asI32, asI64, boxBigInt, deferBigintBox, fromI64, rawBigInt, isConst, maybeUnboxBigInt, readI64, readVar, temp, tempI32, toNumF64, typed, writeVar,
 } from '../../ir.js'
 import { valTypeOf } from '../../kind.js'
 import { VAL } from '../../reps.js'
@@ -14,7 +14,8 @@ import { typedIdxProven } from '../../type.js'
 import { REP_EDGE_BOX, REP_EDGE_REJECT, representationProgramHasBigint, representationUnaryUpdateAction } from '../representation-plan.js'
 import { plannedTypedStorageInfo } from '../typed-storage-plan.js'
 import { emit } from './dispatch.js'
-import { numericStep, hasBigintDomain } from './bigint.js'
+import { numericStep, hasBigintDomain, bigintResult } from './bigint.js'
+import { throughReference, putReference } from './assignment.js'
 import { K, hasTag } from '../../summary/kind.js'
 import { unbounded } from '../../summary/contract.js'
 
@@ -47,10 +48,39 @@ function wrapTruncatingTypedElemName(name) {
   return info != null && WRAP_TRUNCATING_TYPED_CTORS.has(info.name)
 }
 export const incdecOps = {
+  // Preserve ToNumeric's old value before the store. Recovering it with an
+  // inverse operation loses information when the new float rounds or wraps.
+  postfix: (update, self) => {
+    if (ctx.func._expect === 'void') return emit(update, 'void')
+    if ((update[0] === '++' || update[0] === '--') && typeof update[1] === 'string' && valTypeOf(update[1]) === VAL.NUMBER) {
+      const value = readVar(update[1])
+      if (value.type === 'i32' && value.ptrKind == null) {
+        const old = tempI32('post')
+        const result = typed(['block', ['result', 'i32'], ['local.set', `$${old}`, value],
+          emit(update, 'void'), ['local.get', `$${old}`]], 'i32')
+        if (value.unsigned) result.unsigned = true
+        return result
+      }
+    }
+    const old = temp('post')
+    const step = ref => {
+      const value = [update[2][0], ref, old]
+      ctx.plans.compoundOf.set(value, ref)
+      return value
+    }
+    const next = update[0] === '='
+      ? typeof update[1] === 'string'
+        ? emit(['=', update[1], step(update[1])])
+        : throughReference(update[1], update[2], ref => putReference(ref, step(ref)))
+      : emit([update[0], update[1], old])
+    const result = typed(['block', ['result', 'f64'], ['drop', asF64(next)], ['local.get', `$${old}`]], 'f64')
+    if (valTypeOf(update) === VAL.BIGINT) return bigintResult(asI64(result), self)
+    return representationProgramHasBigint(ctx) ? deferBigintBox(result, () => result) : result
+  },
   // === Increment/Decrement ===
-  // Postfix resolved in prepare: i++ → (++i) - 1
+  // The optional old-value local belongs to the postfix wrapper above.
 
-  ...Object.fromEntries([['++', 'add'], ['--', 'sub']].map(([op, fn]) => [op, name => {
+  ...Object.fromEntries([['++', 'add'], ['--', 'sub']].map(([op, fn]) => [op, (name, old) => {
     if (typeof name === 'string' && isConst(name)) err(`Assignment to const '${name}' — const bindings can't be reassigned after initialization; declare it with let instead`)
     const void_ = ctx.func._expect === 'void'
     const v = readVar(name)
@@ -69,32 +99,24 @@ export const incdecOps = {
     const repAction = representationUnaryUpdateAction(ctx, name)
     if (valTypeOf(name) === VAL.BIGINT || repAction !== REP_EDGE_REJECT) {
       const current = repAction !== REP_EDGE_REJECT ? maybeUnboxBigInt(asF64(v)) : readI64(name, v)
-      const rawBits = [`i64.${fn}`, current, ['i64.const', 1]]
+      const rawBits = [`i64.${fn}`, saveBigint(current, old), ['i64.const', 1]]
       return writeVar(name, repAction === REP_EDGE_BOX ? boxBigInt(rawBits) : fromI64(rawBits), void_)
     }
     const k = ctx.summary?.at(ctx.func.current).kindOfExpr(name)
     if (hasBigintDomain(name) || k != null && hasTag(k, K.BIGINT) && !unbounded(k))
-      return writeVar(name, numericStep(name, fn), void_)
+      return writeVar(name, numericStep(name, fn, old), void_)
     // The step takes the binding's number: one that may hold a missing value
     // steps from NaN, not from the payload of its undefined.
-    if (v.type !== 'i32') return writeVar(name, typed([`f64.${fn}`, toNumF64(name, v), ['f64.const', 1]], 'f64'), void_)
+    if (old || v.type !== 'i32') return writeVar(name, typed([`f64.${fn}`, saveNumber(toNumF64(name, v), old), ['f64.const', 1]], 'f64'), void_)
     return writeVar(name, typed([`i32.${fn}`, v, ['i32.const', 1]], 'i32'), void_)
   }])),
 
-  // Member `.`/`[]` increment/decrement's WRITE half — prepare's dedicated
-  // unary op (index.js '++'/'--'): "n, incremented/decremented by one, in
-  // whatever kind it already is" (`n` is always a `.`/`[]` node here — bare
-  // names use the readVar/writeVar table entry just above). A proven-BIGINT
-  // member takes the exact i64.const-1 arithmetic that entry uses. Anything
-  // else reconstructs and re-emits the spelled-out `n + 1`/`n - 1` shape —
-  // byte-identical to what this op replaced (ToNumber coercion, string-
-  // dispatch fallback, etc. all still live in the binary '+'/'-' handlers,
-  // just reached one level of indirection later): this op only ever changes
-  // codegen on the BIGINT-gated path.
-  ...Object.fromEntries([['+1', '+', 'add'], ['-1', '-', 'sub']].map(([op, sym, fn]) => [op, n => {
+  // A member update applies ToNumeric before stepping. Its primitive kind
+  // may change (Boolean/String → Number), while BigInt stays exact.
+  ...Object.fromEntries([['+1', 'add'], ['-1', 'sub']].map(([op, fn]) => [op, (n, old) => {
     if (valTypeOf(n) === VAL.BIGINT)
-      return rawBigInt(fromI64([`i64.${fn}`, readI64(n, emit(n)), ['i64.const', 1]]))
-    if (representationProgramHasBigint(ctx) && valTypeOf(n) == null) return numericStep(n, fn)
+      return rawBigInt(fromI64([`i64.${fn}`, saveBigint(readI64(n, emit(n)), old), ['i64.const', 1]]))
+    if (representationProgramHasBigint(ctx) && (valTypeOf(n) == null || valTypeOf(n) === VAL.OBJECT)) return numericStep(n, fn, old)
     // Self-referential typed-int-element increment (`count[d]++` — the
     // histogram/bucket-fill idiom): `n` is ALWAYS the exact same '[]' member
     // node this op's result is written straight back into (prepare's own
@@ -112,10 +134,13 @@ export const incdecOps = {
     // side of a NOT-provably-in-bounds member emits a guarded/select form
     // instead of a bare `i32.load`, so an unproven index just falls through
     // to the general path below, unchanged).
-    if (Array.isArray(n) && n[0] === '[]' && typeof n[1] === 'string' &&
+    if (!old && Array.isArray(n) && n[0] === '[]' && typeof n[1] === 'string' &&
         wrapTruncatingTypedElemName(n[1]) && typedIdxProven(n[1], n[2], n))
       return typed([`i32.${fn}`, asI32(emit(n)), ['i32.const', 1]], 'i32')
-    return emit([sym, n, [, 1]])
+    return typed([`f64.${fn}`, saveNumber(toNumF64(n, emit(n)), old), ['f64.const', 1]], 'f64')
   }])),
 
 }
+
+const saveNumber = (value, old) => old ? ['local.tee', `$${old}`, asF64(value)] : value
+const saveBigint = (value, old) => old ? ['i64.reinterpret_f64', saveNumber(fromI64(value), old)] : value

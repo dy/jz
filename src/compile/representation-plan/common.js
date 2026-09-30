@@ -206,23 +206,25 @@ export const JOIN_OPS = new Set(['?:', '&&', '||', '??'])
 export const CONDITIONAL_ASSIGN_OPS = new Set(['&&=', '||=', '??='])
 
 export const DEF_RHS = 0, DEF_OWNER = 1
-export function collectDefs(body) {
-  const defs = new Map()
-  const add = (name, rhs, owner, slot) => {
+export function collectDefs(body, params = []) {
+  const defs = new Map(), nestedDefs = []
+  const add = (name, rhs, owner, nested = false) => {
     if (typeof name !== 'string') return
+    if (nested) { nestedDefs.push([name, rhs, owner]); return }
     let list = defs.get(name)
     if (!list) { list = []; defs.set(name, list) }
     list.push([rhs, owner])
   }
-  const walk = (node, root = false) => {
+  const walk = (node, root = false, nested = false) => {
     if (!Array.isArray(node)) return
     const op = node[0]
-    if (Array.isArray(op)) { for (let i = 0; i < node.length; i++) walk(node[i]); return }
-    if (!root && op === '=>') return
+    if (Array.isArray(op)) { for (let i = 0; i < node.length; i++) walk(node[i], false, nested); return }
+    nested ||= !root && op === '=>'
     if (op === 'let' || op === 'const') {
       // Prepared declarations carry both a binder token and its `=` init
       // (`['let', name, ['=', name, rhs]]`). The binder is not a second
       // undefined write when an initializer for that same BindingId exists.
+      // The recursive assignment walk below records each initializer once.
       const initialized = new Set()
       for (let i = 1; i < node.length; i++) {
         const decl = node[i]
@@ -230,17 +232,20 @@ export function collectDefs(body) {
       }
       for (let i = 1; i < node.length; i++) {
         const decl = node[i]
-        if (typeof decl === 'string') { if (!initialized.has(decl)) add(decl, null, node, i) }
-        else if (Array.isArray(decl) && decl[0] === '=') add(decl[1], decl[2], decl, 2)
+        if (typeof decl === 'string') { if (!initialized.has(decl)) add(decl, null, node, nested) }
       }
     } else if (ASSIGN_OPS.has(op) && typeof node[1] === 'string') {
-      add(node[1], op === '=' || CONDITIONAL_ASSIGN_OPS.has(op) ? node[2] : node, node, 2)
+      add(node[1], op === '=' || CONDITIONAL_ASSIGN_OPS.has(op) ? node[2] : node, node, nested)
     } else if ((op === '++' || op === '--') && typeof node[1] === 'string') {
-      add(node[1], node, node, 1)
+      add(node[1], node, node, nested)
     }
-    for (let i = 1; i < node.length; i++) walk(node[i])
+    for (let i = 1; i < node.length; i++) walk(node[i], false, nested)
   }
   walk(body, true)
+  // Binding IDs are unique across prepared scopes. Include a nested closure's
+  // writes to this frame's names, while leaving its own locals in that scope.
+  const owned = new Set([...defs.keys(), ...params.map(p => p.name)])
+  for (const [name, rhs, owner] of nestedDefs) if (owned.has(name)) add(name, rhs, owner)
   return defs
 }
 

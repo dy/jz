@@ -9,7 +9,7 @@ import { UNDEF_NAN, NULL_NAN } from '../interop.js'
 import prepare, { GLOBALS } from '../src/prepare/index.js'
 import { ctx, reset } from '../src/ctx.js'
 import { targetProfileFor } from '../src/session.js'
-import { emit, emitter, emitBoolStr as bool, emitIndex as idx, buildArrayWithSpreads as spread, emitIdentitySafe } from '../src/compile/emit.js'
+import { emitter, emissionHooks } from '../src/compile/emit.js'
 import { analyzeValTypes, analyzeIntCertain, analyzeBody } from '../src/compile/analyze.js'
 import { repOf, updateRep, VAL } from '../src/reps.js'
 import { T } from '../src/ast.js'
@@ -733,7 +733,8 @@ test('array-destructure behavior: destructured nullable-bigint element keeps kin
 test('array-elem kind census: BigInt array literal element carries arrayElemValType BIGINT at the 2^62 boundary', () => {
   if (onKernel()) return   // kernel: inspect never reaches through jz.compile (see array-destructure note above)
   const HI = 4611686018427387903n // 2^62 - 1, host-JS-authority
-  const locals = inspectLocals(`export let f = () => { let a = [${HI}n]; return a[0] }`)
+  // (read at a position only the run knows, the list stays a list)
+  const locals = inspectLocals(`export let f = () => { let a = [${HI}n]; return a[0] + a[a.length - 1] }`)
   const rep = Object.entries(locals).find(([k]) => k === 'a' || k.startsWith('a' + T))?.[1]
   is(rep?.arrayElemValType, VAL.BIGINT)
 })
@@ -914,14 +915,15 @@ test('typed-narrow: receiver unbox after .map on TYPED', () => {
 })
 
 test('typed-narrow: codegen — .map receiver is i32 + static load', () => {
-  const w = wat(`
+  // coalescing off: a slot shared with a temp would name the receiver otherwise
+  const w = jz.compile(`
     let mk = () => new Float64Array([1.5, 2.5, 3.5])
     export let f = (i) => {
       let a = mk()
       let b = a.map(x => x + 10)
       return b[i] + b[0]
     }
-  `)
+  `, { wat: true, optimize: { watr: false, coalesceLocals: false } })
   const body = fnBody(w, 'f')
   ok(body, '$f present')
   // multi-use receiver so the local survives propagateLocals — exercises the unbox decision on the surviving slot
@@ -972,7 +974,7 @@ test('typed-narrow: .map on Int32Array preserves distinct elem aux', () => {
 // rep entry"). `paramVals` mirrors what narrowSignatures pre-seeds in the real
 // pipeline — needed only for tests that exercise `.length` / receiver-typed.
 function runAnalyze(code, paramVals) {
-  reset(emitter, GLOBALS, { emit, bool, idx, spread, emitIdentitySafe })
+  reset(emitter, GLOBALS, emissionHooks())
   // reset() alone (unlike beginSession) leaves targetProfile at its null default —
   // modules the analyzer pulls in (e.g. module/math.js) read it unconditionally.
   ctx.transform.targetProfile = targetProfileFor(ctx.transform.host)
@@ -1129,7 +1131,7 @@ test('intCertain: transitive — j = i + 1 follows i', () => {
 // anything to read. Seeded AFTER `ctx.func.locals` resolves binding names
 // (BindingId totality) so plain source spellings translate correctly.
 function runAnalyzeMayBeUndefined(code, dynWriteVarNames) {
-  reset(emitter, GLOBALS, { emit, bool, idx, spread, emitIdentitySafe })
+  reset(emitter, GLOBALS, emissionHooks())
   ctx.transform.targetProfile = targetProfileFor(ctx.transform.host)
   // these read what a second write does to a binding: the source's bindings stay whole
   ctx.transform.optimize = { splitBindings: false }
@@ -1196,7 +1198,7 @@ test('mayBeUndefined: an empty Map read is absent', () => {
 })
 
 test('censusMaybeUndefinedKind: bare-name REP fallback answers only when BOTH mayBeUndefined and presentVal are set', () => {
-  reset(emitter, GLOBALS, { emit, bool, idx, spread, emitIdentitySafe })
+  reset(emitter, GLOBALS, emissionHooks())
   ctx.transform.targetProfile = targetProfileFor(ctx.transform.host)
   prepare(parse('let f = () => 0'))
   updateRep('probeBoth', { presentVal: VAL.NUMBER, mayBeUndefined: true })
@@ -1231,7 +1233,7 @@ test('censusMaybeUndefinedKind: bare-name REP fallback answers only when BOTH ma
 // does (reps.js `presentVal` doc comment, analyze.js `setPresentVal`).
 // ============================================================================
 function runAnalyzePresentVal(code, dynWriteVarNames) {
-  reset(emitter, GLOBALS, { emit, bool, idx, spread, emitIdentitySafe })
+  reset(emitter, GLOBALS, emissionHooks())
   ctx.transform.targetProfile = targetProfileFor(ctx.transform.host)
   // these read what a second write does to a binding: the source's bindings stay whole
   ctx.transform.optimize = { splitBindings: false }

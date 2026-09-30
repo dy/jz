@@ -35,7 +35,7 @@ export const wat = (code, opts = {}) => compile(code, { ...opts, wat: true })
 /** The same module evaluated by the host: every `export` binding of `src`, as
  *  Node computes it. The differential oracle — "valid jz = valid JS". */
 export function oracle(src) {
-  const pairs = [...src.matchAll(/\bexport\s+(?:async\s+)?(?:let|const|var|function\s*\*?|class)\s+([A-Za-z_$][\w$]*)/g)].map(m => [m[1], m[1]])
+  const pairs = [...src.matchAll(/\bexport\s+(?:async\s+)?(?:let|const|var|function\s*\*?|class)\s+([\p{ID_Start}$_][\p{ID_Continue}$\u200c\u200d]*)/gu)].map(m => [m[1], m[1]])
   for (const m of src.matchAll(/\bexport\s*\{([^}]*)\}/g))
     for (const part of m[1].split(',')) { const as = part.trim().split(/\s+as\s+/); if (as[0]) pairs.push([as[as.length - 1], as[0]]) }
   const body = src.replace(/\bexport\s*\{[^}]*\}\s*;?/g, '').replace(/\bexport\s+default\s+/g, '').replace(/\bexport\s+(?=(?:async\s+)?(?:let|const|var|function|class)\b)/g, '')

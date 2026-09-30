@@ -35,7 +35,7 @@ import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
 import { belowOpt, onKernel, onWasi, withBigintStrict, levels } from './_matrix.js'
 import jz from '../index.js'
-import { run } from './util.js'
+import { run, oracle } from './util.js'
 import { parse as watTree, callsOutside } from '../scripts/wat-probe.mjs'
 import { dictValueKindOf, mapValueKindOf } from '../src/kind.js'
 import { ctx } from '../src/ctx.js'
@@ -45,9 +45,11 @@ import { I32_MIN, I32_MAX } from '../src/ast.js'
 
 const count = (wat, re) => (wat.match(re) || []).length
 
+// The negative length-dispatch pins keep helpers outlined so they inspect
+// inference independently of the final inliner. Runtime parity is pinned below.
+
 // ───────────────────────────────────────────────────────────── body-walk evidence
 
-// A frame that releases what it made as it returns leaves a call watr inlines: the `__length` pins read the body before watr.
 test('notStringEvidence: index-write does not erase ordinary object .length', () => {
   // An index write excludes primitive String, but not OBJECT/HASH/EXTERNAL
   // array-likes. The general property Get must remain.
@@ -56,7 +58,7 @@ test('notStringEvidence: index-write does not erase ordinary object .length', ()
       for (let i = 0; i < xs.length; i++) xs[i] = v
       return xs.length
     }
-  `, { wat: true, optimize: { watr: false } })
+  `, { wat: true, optimize: { watr: { inlineOnce: false } } })
   ok(count(wat, /\$__length\b/g) >= 1, 'expected general __length property dispatch')
 })
 
@@ -65,7 +67,7 @@ test('notStringEvidence: pure-read (no write) keeps __length poly', () => {
   // read must stay polymorphic (xs could be a string).
   const wat = jz.compile(`
     export const readlen = (xs) => xs.length
-  `, { wat: true, optimize: { watr: false } })
+  `, { wat: true, optimize: { watr: { inlineOnce: false } } })
   ok(count(wat, /\$__length\b/g) >= 1, 'expected __length on pure read')
 })
 
@@ -79,7 +81,7 @@ test('notStringEvidence: stringy-evidence (typeof) disqualifies even with write'
       xs[0] = v
       return xs.length
     }
-  `, { wat: true, optimize: { watr: false } })
+  `, { wat: true, optimize: { watr: { inlineOnce: false } } })
   ok(count(wat, /\$__length\b/g) >= 1, 'expected __length when stringy disqualifies')
 })
 
@@ -162,7 +164,7 @@ test('extractRefinements: post-typeof-string still permits object .length', () =
       if (typeof xs === 'string') return 0
       return xs.length
     }
-  `, { wat: true, optimize: { watr: false } })
+  `, { wat: true, optimize: { watr: { inlineOnce: false } } })
   if (!onKernel()) ok(count(wat, /\$__length\b/g) >= 1, 'flow narrowing keeps general property dispatch')
 })
 
@@ -228,11 +230,12 @@ test('paramReps val: consistent ARRAY callers fold to direct header read', () =>
   // `.length` becomes a direct memory load of the header word (no helper).
   // Inspect jz output without watr — `inlineOnce` would fuse `$lenOf` away,
   // erasing the helper-resolved header-load and leaving the test ambiguous.
+  // Source inlining also removes this callee; retain it to inspect its ABI.
   const wat = jz.compile(`
     const lenOf = (xs) => xs.length
     export const a = () => lenOf([1, 2, 3])
     export const b = () => lenOf([4, 5, 6, 7])
-  `, { wat: true, optimize: { watr: false } })
+  `, { wat: true, optimize: { watr: false, sourceInline: false } })
   is(count(wat, /\$__length\b/g), 0)
   is(count(wat, /\$__len\b/g), 0)
   // Body should contain a direct header load (i32.load at base - 8; a never-
@@ -254,7 +257,7 @@ test('paramReps val: caller disagreement forces __length poly', () => {
     export const a = () => lenOf([1, 2, 3])
     export const b = () => lenOf('foo')
     export const c = (v) => lenOf(v)
-  `, { wat: true, optimize: { sourceInline: false, watr: false } })
+  `, { wat: true, optimize: { sourceInline: false, watr: { inlineOnce: false } } })
   ok(count(wat, /\$__length\b/g) >= 1, 'sticky-null val should keep __length')
 })
 
@@ -280,7 +283,7 @@ test('paramReps val: an untyped forwarded arg keeps a default param polymorphic'
   const wat = jz.compile(`
     const g = (a = []) => a.length
     export const f = (x) => g(x)
-  `, { wat: true, optimize: { watr: false } })
+  `, { wat: true, optimize: { watr: { inlineOnce: false } } })
   ok(count(wat, /\$__length\b/g) >= 1, 'untyped forwarded arg must keep __length poly')
 })
 
@@ -1024,74 +1027,51 @@ test('module global kinds: an exported let keeps its kind; the host stores a num
   num.n.value = 20; is(num.twice(), 40, 'the host stores a number')
 })
 
-// ─────────────────────────────────── typed-array index arithmetic stays i32
-//
-// A subscript is truncated to i32 at the memory boundary, so integer index math —
-// including a literal term, the `+ 1` / `(j + 1)` of a bilinear/stencil gather —
-// must compile to i32 ops, never an f64 round-trip (convert_i32 … f64.mul/add …
-// trunc_sat). A prepare-wrapped literal `[null, 1]` used to bail the WHOLE index
-// to f64 (tryI32Index rejected the Array-shaped literal before its int-literal
-// check), dragging marble's hot bilinear sample ~1.6× behind JS.
-test('typed-array index with a literal term stays pure i32 (marble regression)', () => {
-  // `resize` writes the width, so it stays a global the gather reads; a width that
-  // holds one number for good reads as the number, below.
-  const gather = (width) => {
-    const wat = jz.compile(`
-    let arr = new Float64Array(64)
-    ${width}
-    export let gather = (fx, fy) => {
-      let i = fx | 0, j = fy | 0
-      return arr[j*W + i] + arr[j*W + i + 1] + arr[(j+1)*W + i] + arr[(j+1)*W + i + 1]
+// A literal term must not force proven integer index arithmetic through f64.
+// Unbounded products and sums keep their Number value instead of wrapping to
+// an unrelated element. That distinction applies to typed and plain arrays.
+test('array index arithmetic preserves overflow for unbounded coordinates', () => {
+  for (const width of ['let W=8', 'let W=8; export const resize=w=>{W=w|0}']) {
+    const src=`const arr=new Float64Array(64).fill(3); ${width}
+      export const gather=(fx,fy)=>{let i=fx|0,j=fy|0;
+        return arr[j*W+i]+arr[j*W+i+1]+arr[(j+1)*W+i]+arr[(j+1)*W+i+1]}`
+    for (const optimize of levels(0,2,3)) {
+      const got=jz(src,{optimize}).exports,want=oracle(src)
+      for (const w of [8,65536,-1,0,8]) {
+        got.resize?.(w);want.resize?.(w)
+        for (const [x,y] of [[0,0],[0,0],[1,1],[-1,0],[0,536870912],[0,-536870912],[-2147483648,-2147483648]])
+          is(got.gather(x,y),want.gather(x,y),`${width}: ${x},${y}, width ${w}, O${optimize}`)
+      }
     }
-  `, { wat: true })
-    const at = wat.indexOf('(func $gather')
-    return wat.slice(at, wat.indexOf('(func', at + 6))
   }
-  const fn = gather('let W = 8\n    export let resize = (w) => { W = w | 0 }')
-  is(count(fn, /i32\.trunc_sat_f64_s/g), 0, 'no f64→i32 index truncation in the gather')
-  is(count(fn, /f64\.convert_i32_s/g), 0, 'index terms stay i32 — no i32→f64 widening')
-  // Row offsets are i32 muls, never the guarded f64.mul ToInt32 round-trip.
-  is(count(fn, /f64\.mul\b/g), 0, 'no f64 multiply on the index path')
-  // hoistAddrBase now CSEs the shared `j*W` base between the two same-row reads
-  // (`arr[j*W+i]` + `arr[j*W+i+1]` collapse to one base + offset=8), so the two
-  // distinct row offsets need ≥2 i32.muls — fewer than the un-CSE'd 4, still all i32.
-  ok(count(fn, /i32\.mul\b/g) >= 2, 'each distinct row offset (j*W, (j+1)*W) computed with i32.mul')
-  const held = gather('let W = 8')
-  is(count(held, /i32\.trunc_sat_f64_s|f64\.convert_i32_s|f64\.mul\b/g), 0, 'a width of one number: the index stays i32')
-  is(count(held, /global\.get \$W\b/g), 0, 'a width of one number: the width is not read')
-  if (!belowOpt(2)) is(count(held, /i32\.mul\b/g), 0, 'a width of one number: a row offset is a shift')
+  const src=`export const f=(arr,jj,xx)=>{let j=jj|0,x=xx|0,W=4;
+    return arr[j*W+x]+arr[j*W+x+1]+arr[(j+1)*W+x]}`
+  for (const optimize of levels(0,2,3)) {
+    const got=jz(src,{optimize}).exports,want=oracle(src)
+    for (const arr of [[1,2,3,4,5,6],new Float64Array([1,2,3,4,5,6])])
+      for (const [j,x] of [[0,0],[0,0],[1,0],[1073741824,0],[-1073741824,0],[-1,4]])
+        is(got.f(arr,j,x),want.f(arr,j,x),`plain/typed receiver ${j},${x}, O${optimize}`)
+  }
 })
 
-test('plain-array index with a literal term stays pure i32 (sibling of marble)', () => {
-  // The non-typed ARRAY read path (module/array.js) computed its index with a bare
-  // `asI32(emit(idx))` — the same f64 round-trip on `a[j*W + x + 1]`. Routed through
-  // emitIndex so integer index math narrows to i32 there too. i32 index leaves
-  // (`jj|0`/`xx|0`) so the only f64 risk would be the index lowering itself.
-  const wat = jz.compile(`
-    export let f = (arr, jj, xx) => {
-      let j = jj | 0, x = xx | 0, W = 4
-      return arr[j*W + x] + arr[j*W + x + 1] + arr[(j+1)*W + x]
-    }
-  `, { wat: true })
-  const at = wat.indexOf('(func $f')
-  const fn = wat.slice(at, wat.indexOf('(func', at + 6))
-  is(count(fn, /i32\.trunc_sat_f64_s/g), 0, 'plain-array index stays i32 — no f64 truncation')
-  // Re-audit #5 finding #1 (2026-07-30): `arr` here is an unknown receiver, so
-  // each read now guards the receiver's pointer kind (ARRAY/TYPED keeps this
-  // i32 arithmetic verbatim; OBJECT/HASH takes a ToPropertyKey dyn-props read
-  // instead of silently returning undefined). The dyn-props cold arm needs a
-  // genuine boxed f64 number for the key — `j` is an unbounded param (`jj|0`),
-  // so `j*W` is no longer a provable-safe i32 product (P0-2 ledger: `mulFitsI32`
-  // used to admit "one operand ≤2^22" alone, which could wrap `i32.mul` past
-  // i32 range and corrupt exactly this kind of bare numeric key; fixed to
-  // require a magnitude bound on BOTH operands). The cold key is now built as a
-  // genuine `f64.mul`/`f64.add` over each leaf's OWN convert — two
-  // f64.convert_i32_s per read (`j` and `x`, or `j+1` and `x`), not one — the
-  // index ARITHMETIC itself (j*W+x) never round-trips through f64; only the
-  // unproven-receiver guard's cold key does.
-  const dynGetCalls = count(fn, /call \$__dyn_get_(?:expr|any)\b/g)
-  is(count(fn, /f64\.convert_i32_s/g), dynGetCalls * 2,
-    'plain-array index terms stay i32 (f64.convert_i32_s appears 2:1 — one per key leaf — with the unproven-receiver dyn-props guard)')
+test('typed-array index with bounded literal terms stays pure i32', () => {
+  const wat=jz.compile(`let arr=new Float64Array(64),W=8
+    export const gather=(fx,fy)=>{let i=fx&7,j=fy&7;
+      return arr[j*W+i]+arr[j*W+i+1]+arr[(j+1)*W+i]+arr[(j+1)*W+i+1]}`,{wat:true})
+  const at=wat.indexOf('(func $gather'),fn=wat.slice(at,wat.indexOf('(func',at+6))
+  is(count(fn,/i32\.trunc_sat_f64_s|f64\.convert_i32_s|f64\.mul\b/g),0,'proven index arithmetic has no float round trip')
+  is(count(fn,/global\.get \$W\b/g),0,'constant width is not read')
+  if(!belowOpt(2)) is(count(fn,/i32\.mul\b/g),0,'power-of-two width uses shifts')
+})
+
+test('plain-array index with bounded literal terms stays pure i32', () => {
+  const wat=jz.compile(`export const f=(arr,jj,xx)=>{let j=jj&65535,x=xx&65535,W=4;
+    return arr[j*W+x]+arr[j*W+x+1]+arr[(j+1)*W+x]}`,{wat:true})
+  const at=wat.indexOf('(func $f'),fn=wat.slice(at,wat.indexOf('(func',at+6))
+  is(count(fn,/i32\.trunc_sat_f64_s|f64\.mul\b/g),0,'bounded indices need no float multiply or index conversion')
+  // The unknown receiver can be an object: its property key still crosses boxed.
+  const dynGetCalls=count(fn,/call \$__dyn_get_(?:expr|any)\b/g)
+  is(count(fn,/f64\.convert_i32_s/g),dynGetCalls,'only the computed property key widens')
 })
 
 // A `& m`-masked operand is provably ≤ m, but `t` itself is an unbounded loop
@@ -1404,6 +1384,32 @@ test('safe control: index-use counters with no unresolved bare escape keep i32 s
   // `f` is export-wrapper-inlined ($__inlNN_s), same mangling as the other
   // inlined-name tests in this file — match either the plain or mangled form.
   ok(fnAcc.includes('$s i32)') || fnAcc.includes('_s i32)'), 'ToInt32-rooted accumulator `s` stays i32 storage despite a bare, uncompared return')
+})
+
+// A loop's test on its counter compares it with a constant (`while (--i)` with
+// 0, `while (i--)`, preserving the pre-update value): the counter it governs
+// keeps i32 storage as a `for (; i < n; )` counter does (fourier-transform's
+// magnitude loop, `let i = N >>> 1; while (--i)`), and a `>>> 0` counter above
+// 2^31 still reads its unsigned value.
+test('safe control: a counter a loop tests keeps i32 storage', () => {
+  const loops = {
+    pre: 'let i = N >>> 1; while (--i)',
+    post: 'let i = N >>> 1; while (i--)',
+    for: 'for (let i = N >> 1; i--;)',
+    do: 'let i = N >>> 1; do',
+  }
+  for (const [k, head] of Object.entries(loops)) {
+    const body = '{ const r = a[i], m = a[N - i]; o[i] = Math.sqrt(r * r + m * m) }'
+    const src = `let x = new Float64Array(64).map((_, i) => (i * 37) % 11 - 5), out = new Float64Array(32)
+      let mag = (a, o) => { const N = a.length; ${k === 'do' ? `${head} ${body} while (--i)` : `${head} ${body}`}; return o }
+      export let f = () => mag(x, out).join()`
+    const wat = jz.compile(src, { wat: true, optimize: 2 })
+    const fn = wat.slice(wat.indexOf('(func $f'), wat.indexOf('(func', wat.indexOf('(func $f') + 6))
+    ok(/[$_]i i32\)/.test(fn) && !/[$_]i f64\)/.test(fn), `${k}: the counter is an i32 local`)
+    for (const optimize of levels(0, 2)) is(run(src, { optimize }).f(), oracle(src).f(), `${k}: agrees with JavaScript at ${optimize}`)
+  }
+  const unsigned = `export let f = (x) => { let i = x >>> 0, s = 0, k = 0; while (i-- && k++ < 3) s += i; return s }`
+  is(run(unsigned).f(-1), 4294967294 + 4294967293 + 4294967292, 'a >>> 0 counter above 2^31 reads its unsigned value')
 })
 
 // FALSE-POSITIVE PRECISION FIX (2026-08-03, the reference-refresh top-priority
@@ -2276,14 +2282,15 @@ test('val-kind dichotomy: a number-or-object parameter is cloned per kind, and a
     const f = (x) => { if (x.isV) te[0] = x.k; else te[0] = x; return te[0] }
     const g = () => f(5)
     const h = () => f(new V(7))
-    export const run = () => g() + h() * 10 + (te[0] + 1) * 100`
-  is(jz(src, { optimize: 2 }).exports.run(), 875)
+    export const value = () => g() + h() * 10 + (te[0] + 1) * 100`
+  is(jz(src, { optimize: 2 }).exports.value(), 875)
   if (belowOpt(2)) return
-  const w = jz.compile(src, { optimize: 2, wat: true })
-  // pre-watr: `h` releases what it made as it returns, so its call of the clone is one watr inlines
-  const clones = jz.compile(src, { optimize: { level: 2, watr: false }, wat: true })
+  // the calls kept whole (spliced, each copy reads its own argument's kind); pre-watr,
+  // since `h` releases what it made as it returns, so its call of the clone is one watr inlines
+  const clones = jz.compile(src, { optimize: { level: 2, sourceInline: false, watr: false }, wat: true })
   ok(/\(func \$f\$number\b/.test(clones) && /\(func \$f\$object\b/.test(clones), 'one clone per argument kind')
-  is((w.match(/__to_num|__add_slow|__is_str_key/g) || []).length, 0, 'the array element stays a number: no conversion or string dispatch')
+  for (const text of [jz.compile(src, { optimize: { level: 2, sourceInline: false }, wat: true }), jz.compile(src, { optimize: 2, wat: true })])
+    is((text.match(/__to_num|__add_slow|__is_str_key/g) || []).length, 0, 'the array element stays a number: no conversion or string dispatch')
 })
 
 test('narrowMutatedParams: monotone int-mutated param promotes to i32 param+result (cursor-through-helper)', () => {
@@ -3042,38 +3049,30 @@ test('receiver-HASH: consumer wiring — the classified receiver reads through t
   ok(!/\$__dyn_get\b/.test(wat), 'expected no generic __dyn_get/__dyn_get_t chain — the receiver kind is already proven')
 })
 
-test('receiver-HASH: does NOT fire when a schema-slot write exists (dot-write literal creates a merged schema)', () => {
-  // `rec.x = 5` is a dot-write to the SAME global elsewhere in the program —
-  // materializeAutoBoxSchemas (plan/index.js, later than this pass) binds a
-  // real schema onto `rec` from that fact (programFacts.propMap), so the
-  // allocator's OWN merged-schema check is non-empty by emission time even
-  // though it read empty at this pass's (earlier) point — the propMap guard
-  // must exclude `rec` here to stay consistent with that later state.
-  const src = `
-    export let rec = {}
+// A module `{}` whose keys functions add is the dictionary its literal
+// allocates (plan/scope.js classifyHashDictGlobals): no box binds a schema onto
+// it from the keys the program writes, so a dot-write beside a computed-key
+// write, or a dot-write alone, keeps it a dictionary, and its keys, `in` and
+// JSON are the ones JavaScript reports.
+test('receiver-HASH: a module literal whose keys functions add is a dictionary, dot-written or not', () => {
+  const cases = [
+    [`export let rec = {}
     export let put = (k, v) => { rec[k] = v }
     export let touch = () => { rec.x = 5 }
-    put('a', 1)
-  `
-  jz.compile(src, { wat: true })
-  is(ctx.scope.globalValTypes?.get('rec'), undefined,
-    'a dot-write anywhere disqualifies — the allocator will bind a real schema, not HASH')
-})
-
-test('receiver-HASH: does NOT fire when the name is absent from dynWriteVars (no computed-key write anywhere)', () => {
-  // `bag` is only ever dot-written (`bag.x = 5`) — never through a computed
-  // key — so it never enters dynWriteVars at all; the allocator's own
-  // predicate requires dynWriteVars membership, and this pass must agree.
-  // Nor does moduleGlobalKinds claim it: a payload-less object (the summary
-  // names no schema for an empty literal) is the schema plan's to bind once
-  // the dot-write gives it one (plan/scope.js, `894764cd`).
-  const src = `
-    export let bag = {}
+    export let view = () => JSON.stringify(rec) + Object.keys(rec).join() + ('x' in rec)
+    put('a', 1)`, 'rec'],
+    [`export let bag = {}
     export let touch = () => { bag.x = 5 }
-  `
-  jz.compile(src, { wat: true })
-  is(ctx.scope.globalValTypes?.get('bag'), undefined,
-    'no computed-key write anywhere — dynWriteVars never gains the name, so no HASH claim, and no object claim before its schema')
+    export let view = () => JSON.stringify(bag) + Object.keys(bag).join() + ('x' in bag)`, 'bag'],
+  ]
+  for (const [src, name] of cases) {
+    jz.compile(src, { wat: true })
+    is(ctx.scope.globalValTypes?.get(name), VAL.HASH, `${name} allocates a dictionary`)
+    const want = oracle(src), got = run(src)
+    const before = [want.view(), got.view()]
+    want.touch(); got.touch()
+    is([before[1], got.view()], [before[0], want.view()], `${name} reads as JavaScript's object before and after the dot-write`)
+  }
 })
 
 // ───────────────────────────────────────────────────────────── constIntExpr: i32 boundary clamp

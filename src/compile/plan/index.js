@@ -12,7 +12,7 @@
  *      themselves are seeded by prepare via `infer.recordGlobalRep`.)
  *   2. collectProgramFacts — sweep arrow bodies for typed-elem usage, key sets,
  *      loop depth, control-transfer shapes; rerun if hot inlining changes the AST.
- *   3. materializeAutoBoxSchemas / resolveClosureWidth — settle layout decisions.
+ *   3. resolveClosureWidth: settle layout decisions.
  *   4. Whole-program narrowing (skipped on simple programs):
  *        - narrowSignatures — pick a specialization per function from call sites
  *        - specializeBimorphicTyped — split typed-elem hot paths into two variants
@@ -37,7 +37,7 @@ import { buildProgramIndex, releaseLiftedAddressTakenNames } from '../program-in
 import narrowSignatures, {
   specializeBimorphicTyped, specializeValKindDichotomy, speculateTypedParams, refineDynKeys,
   applyJsstringBoundaryCarrierStandalone, seedResultKinds,
-  strictBoundaryTypeCheck, applyExportTypedArrayAbi,
+  strictBoundaryTypeCheck, applyExportTypedArrayAbi, splitByListKinds,
 } from '../narrow.js'
 
 import { optimizing } from './common.js'
@@ -47,11 +47,21 @@ import { solveRepresentationBoundaries } from '../representation-plan.js'
 import {
   moduleGlobalKinds, unboxConstTypedGlobals, inferModuleIntGlobals, dropUnreadGlobals,
   flattenFuncNamespaces, devirtGlobalCalls, devirtClassCalls, classifyHashDictGlobals,
-  materializeAutoBoxSchemas, resolveClosureWidth, canSkipWholeProgramNarrowing,
+  resolveClosureWidth, canSkipWholeProgramNarrowing,
   holdModuleNumbers, resolveHeldMethods, holdModuleRegexes,
 } from './scope.js'
 import { declareWrittenKeys } from './declare-written-keys.js'
-import { indexArrayPatterns } from './index-array-patterns.js'
+import { indexArrayPatterns, splitMapPairs } from './index-array-patterns.js'
+import { resetBindingUsesCache, resetMutationNamesCache } from '../analyze-scans.js'
+import { declareUnseenKeys } from './declare-unseen-keys.js'
+import { versionIntegralLoops } from './integral-loops.js'
+import { unswitchLoops } from './unswitch-loops.js'
+import { splitLoopKinds } from './kind-split.js'
+import { callChosenFunctions } from './chosen-calls.js'
+import { specializeCalledArgs } from './called-args.js'
+import { hoistObjectReads } from './object-reads.js'
+import { promoteLoopFields, loopFieldCandidates } from './loop-fields.js'
+import { foldKindTests } from './fold-kind-tests.js'
 import { inlineHotInternalCalls, inlineLocalLambdas, specializeFixedRestCalls } from './inline.js'
 import { laneRecordParams } from './lanes.js'
 import { bindNestedRowLengths, unrollRowLenPadLoops, splitCharScanLoops } from './loops.js'
@@ -87,7 +97,14 @@ export default function plan(ast, profiler, summarize) {
     return _facts
   }
   const sweep = (name, pass) => {
-    if (t(name, pass)) { _dirty = true; getFactStore().revision++ }
+    if (t(name, pass)) {
+      _dirty = true
+      getFactStore().revision++
+      // A pass may edit an existing body. Identity-keyed scans belong to the
+      // old tree even when a later pass never asks for whole-program facts.
+      resetBindingUsesCache()
+      resetMutationNamesCache()
+    }
   }
 
   // The module globals' kinds are the summary's, whole-program from the start:
@@ -95,13 +112,23 @@ export default function plan(ast, profiler, summarize) {
   t('moduleGlobalKinds', () => moduleGlobalKinds(ctx.summary))
   t('unboxConstTypedGlobals', unboxConstTypedGlobals)
   sweep('inferModuleIntGlobals', () => inferModuleIntGlobals(ast))
+  // A test the summary decided folds with the arm it never takes. What that arm
+  // passed on then joins no kind, which may decide further tests.
+  for (let round = 0; round < 4; round++) {
+    if (!t('foldKindTests', foldKindTests)) break
+    _dirty = true; getFactStore().revision++
+    ctx.summary = summarize()
+  }
 
   facts()
+  // A call the sweeps below inline leaves no site for the boundary check after
+  // narrowing; the sources' own call sites are checked here too.
+  t('strictBoundaryTypeCheck', () => strictBoundaryTypeCheck(facts()))
   // Receiver-HASH global classification (.work/archive/todo.md §deletion-sweep):
   // fill `ctx.scope.globalValTypes` with VAL.HASH for module-level `{}`-decl
   // dict globals module/object.js's allocator already tags HASH at the
-  // pointer level (identical predicate — target's merged schema empty +
-  // dynWriteVars membership) — a pure FILL (`.has()`-guarded, see
+  // pointer level (identical predicate: target's merged schema empty +
+  // dynWriteVars or literal-key write membership), a pure FILL (`.has()`-guarded, see
   // classifyHashDictGlobals doc), so it can run this early: before
   // flattenFuncNamespaces/devirtGlobalCalls, using the just-collected
   // programFacts.dynWriteVars directly (`ctx.types.dynWriteVars` isn't
@@ -110,12 +137,16 @@ export default function plan(ast, profiler, summarize) {
   // Function-namespace SROA — dissolve reassigned `f.prop` slots into module
   // globals before inlining/narrowing, so all downstream passes see plain
   // globals instead of the dynamic property machinery.
-  sweep('flattenFuncNamespaces', () => flattenFuncNamespaces(ast))
+  sweep('flattenFuncNamespaces', () => flattenFuncNamespaces(ast, facts().propMap))
   // A literal-key write outside a literal-bound name's layout becomes a
   // declared slot of that literal (flattened function properties included).
   sweep('declareWrittenKeys', () => declareWrittenKeys(ast))
   // A name that holds a method of `Object.prototype` is the method where it is called.
   sweep('resolveHeldMethods', () => resolveHeldMethods(ast))
+  // A key stored on objects nothing asks for their keys becomes a declared
+  // slot of their literals too, the literals their values join sharing one layout.
+  ctx.summary = summarize()
+  if (t('declareUnseenKeys', () => declareUnseenKeys(ast))) { _dirty = true; getFactStore().revision++; ctx.summary = summarize() }
   // Devirtualize calls through init-constant function globals (closure
   // devirtualization) — must follow the SROA above, which creates the globals.
   sweep('devirtGlobalCalls', () => devirtGlobalCalls(ast))
@@ -125,6 +156,9 @@ export default function plan(ast, profiler, summarize) {
   sweep('indexArrayPatterns', indexArrayPatterns)
   sweep('bindNestedRowLengths', bindNestedRowLengths)
   sweep('unrollRowLenPadLoops', unrollRowLenPadLoops)
+  // Reject invalid strict call boundaries before inlining removes their sites.
+  // The later check still validates the settled and specialized signatures.
+  if (ctx.transform.strict) strictBoundaryTypeCheck(facts())
   // The call-inlining family (`inlineHotInternalCalls` self-gates on `sourceInline`)
   // is a pure speed optimization — the un-inlined calls emit correctly. Scalar
   // replacement (`scalarize*`) and array promotion gate on `optimizing()`: off only
@@ -136,7 +170,12 @@ export default function plan(ast, profiler, summarize) {
   // its own (`generator = arguments[ 0 ]`) is a parameter called, ahead of the splices.
   const aliases = optimizing() && ctx.transform.optimize.aliases === true
   if (aliases) sweep('resolveAliases', resolveAliases)
-  sweep('inlineHotInternalCalls', () => inlineHotInternalCalls(facts(), ast))
+  // A local holding one of several functions and only called: a choice of direct calls.
+  sweep('callChosenFunctions', () => callChosenFunctions(ast))
+  // A parameter only called, given a named function: a copy that calls it by name.
+  sweep('specializeCalledArgs', () => specializeCalledArgs(facts(), ast))
+  let spliced = false
+  sweep('inlineHotInternalCalls', () => (spliced = inlineHotInternalCalls(facts(), ast)))
   // A spliced call's statements are statements of its caller's lists, and its seams
   // are names for one value: the bindings split, then each alias reads what it stands for.
   // A parameter the spliced body writes is bound to the literal the site passed:
@@ -147,7 +186,15 @@ export default function plan(ast, profiler, summarize) {
   sweep('unrollRowLenPadLoops', unrollRowLenPadLoops)
   sweep('inlineLocalLambdas', inlineLocalLambdas)
   sweep('specializeFixedRestCalls', () => specializeFixedRestCalls(facts()))
+  // Private entry pairs lower to column snapshots, like array patterns lower
+  // to indexed reads. No observable pair identity is removed.
+  sweep('splitMapPairs', splitMapPairs)
+  // A key a loop reads of an object the function made and only reads: read once where it is made.
+  sweep('hoistObjectReads', hoistObjectReads)
   if (optimizing()) {
+    // A field a loop reads and writes through one receiver, in a local for the
+    // loop; the loops inlining left name what it spliced, so the summary looks again.
+    if (loopFieldCandidates()) { ctx.summary = summarize(); sweep('promoteLoopFields', () => promoteLoopFields(ast)) }
     // After inlining, so a stride passed as a literal is one: the loops then
     // read over their trip number, the form every later pass takes.
     sweep('guardConstants', guardConstants)
@@ -168,6 +215,16 @@ export default function plan(ast, profiler, summarize) {
     // form rather than `new Int32Array(N)`, but the ordering keeps the door open).
     sweep('promoteIntArrayLiterals', promoteIntArrayLiterals)
     sweep('scalarizeTypedArrays', () => scalarizeFunctionTypedArrays(facts()))
+    // The loops versioned below read the summary; a closure a splice copied (a
+    // factory's callback in the function that called the factory) has no view
+    // in the one taken before the splice, so it looks again.
+    if (spliced) ctx.summary = summarize()
+    // A loop testing a name it never writes: a copy for each answer.
+    sweep('unswitchLoops', unswitchLoops)
+    // A loop reading a name of several kinds, a typed array among them: a copy where it holds that array.
+    sweep('splitLoopKinds', () => splitLoopKinds(facts()))
+    // A loop indexing by numbers of unknown integrality: a copy over their int32s, where they are ones.
+    sweep('versionIntegralLoops', () => versionIntegralLoops(facts()))
   }
   const programFacts = facts()
   // A module global's declaration-time literal length holds only while nothing
@@ -210,7 +267,6 @@ export default function plan(ast, profiler, summarize) {
   // Always-on (core-simplification-audit.md §4(ii) slice 7 — measured <0.03 ms/compile,
   // see assertProgramFactsShape's own doc for the numbers).
   assertProgramFactsShape(programFacts, 'post-programIndex')
-  t('materializeAutoBoxSchemas', () => materializeAutoBoxSchemas(programFacts))
   t('resolveClosureWidth', () => resolveClosureWidth(programFacts))
   if (canSkipWholeProgramNarrowing(programFacts)) {
     // Freeze point (.work/archive/program-facts-split.md §7): narrowSignatures never runs
@@ -256,6 +312,8 @@ export default function plan(ast, profiler, summarize) {
   // previously untyped boundary parameter; established contracts are skipped.
   while (t('applyExportTypedArrayAbi', () => applyExportTypedArrayAbi(programFacts.paramReps, programFacts.callSites, programFacts.programIndex.addressTaken)))
     ctx.summary = summarize()
+  // A list of typed arrays reaching one function in several kinds: a copy per kind.
+  while (t('splitByListKinds', () => splitByListKinds(programFacts))) ctx.summary = summarize()
   t('narrowSignatures', () => narrowSignatures(programFacts, ast))
 
     // After narrowSignatures (params now carry ptrKind): mark typed-array params that every call

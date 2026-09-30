@@ -7,7 +7,8 @@
 // first, or an export the host can store to keeps its global.
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import { compile } from '../index.js'
+import { _compileInProcess as compile } from '../index.js'
+// These probes inspect the in-process summary; runtime checks still use the matrix target.
 import { ctx } from '../src/ctx.js'
 import { belowOpt, levels, onWasi } from './_matrix.js'
 import { funcWat, oracle, run, wat } from './util.js'

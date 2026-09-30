@@ -13,6 +13,34 @@ import { T } from '../src/ast.js'
 // jz() wires host imports needed by dynamic-property and full-runtime paths.
 const runHost = (code, opts) => jz(code, opts).exports
 
+test('closure: fractional writes invalidate captured integer facts', () => {
+  const src = `
+    function make() {
+      let value = 0
+      return step => {
+        value += step
+        return [value, Math.floor(value), Math.ceil(value), Math.trunc(value), Math.round(value)]
+      }
+    }
+    function oscillator() {
+      let phase = 0
+      return step => { phase += step; phase -= Math.floor(phase); return phase }
+    }
+    function pair() {
+      let value = 0
+      return [x => { value = x }, () => Math.floor(value)]
+    }
+    const next = make(), phase = oscillator(), access = pair()
+    export function main(step) {
+      access[0](step)
+      return [next(step), phase(step), access[1]()]
+    }
+  `
+  const ref = oracle(src), got = run(src)
+  for (const step of [0.1, 0.1, 1.1, -0.8, -2.5, 0, 3.75])
+    is(got.main(step), ref.main(step), `captured fractional step ${step}`)
+})
+
 test('fixed rest: mutations keep independent array storage', () => {
   const src = `function change(...xs) {
     const before = xs[0]
@@ -511,11 +539,9 @@ test('closure: captured ambiguous BOOL∪NUMBER merge preserves identity (kernel
   // {coerced false, real number 1} — never a genuine 0. Capturing `v` by a
   // closure reads a bare name, no expression shape left for
   // hasAmbiguousBoolMerge to see, so the false arm's identity used to be
-  // unrecoverable by the time module/function.js's env-slot store ran —
-  // fixed by emit.js's emitDecl minting a one-time identity-safe shadow
-  // local for a captured, ambiguous-merge decl (ctx.func.identityShadow),
-  // read back at the env-slot store instead of re-deriving from `v`'s
-  // already-collapsed bits.
+  // unrecoverable by the time module/function.js's env-slot store ran. `v`
+  // is a tagged binding now (kind.js boolTagged: the closure's read observes
+  // it): its own storage holds the atom, and the capture copies it.
   const src = `
     export let f = (x) => { let v = x > 0 && 1; const g = () => v; let arr = [g]; return arr[0]() }
     export let t = (x) => { let v = x > 0 && 1; const g = () => typeof v; let arr = [g]; return arr[0]() }
@@ -1317,7 +1343,9 @@ test('devirtGlobalCalls: raw arrow literal lifted through a bare ??=; value-use 
   const { go, value } = runHost(src)
   is(go(), 15)     // Σ(i+1), i=0..4 = 1+2+3+4+5
   is(value(), 10)  // g(9) through the generic closure param — g is still a real callable value
-  const w = wat(src)
+  // the host's closure trampoline (module/function.js __call_closure) calls
+  // through the table by design; the count is of the program's own calls
+  const w = wat(src).replace(/\(func \$__call_closure[\s\S]*?\n  \)/, '')
   // Exactly one call_indirect survives — keep()'s generic `h(9)` dispatch (h's
   // identity is a runtime parameter, genuinely unknowable). None come from
   // run()'s g(i): fnBody's fixed-window slice would bleed into keep()'s body
@@ -1325,27 +1353,12 @@ test('devirtGlobalCalls: raw arrow literal lifted through a bare ??=; value-use 
   is((w.match(/call_indirect/g) || []).length, 1, 'only keep() generic dispatch remains indirect')
 })
 
-// === call_indirect devirtualization (watr/optimize devirt) ===
-// `let f = c ? a : b; f(x)` — the candidate set is two closure constants, so
-// each call site becomes a guarded direct-call chain with the original
-// call_indirect kept as the fallback arm (zero-init/unknown flows unchanged).
-//
-// UPDATED (audit #10, this task): `f(i)`'s callee kind is unproven at jz's
-// own emission level (a ternary-bound closure local, not tracked as a
-// closure PROOF by valTypeOf) — it now gets the SAME nullish-receiver
-// TypeError guard as every other unresolved closure call (real JS: calling
-// undefined throws). That guard interposes an `if(isNullish)…else
-// call_indirect(…)` between reading `f`'s value and dispatching through it,
-// which breaks watr/optimize's own `devirt` pass's pattern match (a DIRECT
-// "closure-const select feeds a call_indirect" AST shape, node_modules/watr
-// src/optimize.js's `devirt` collector) — found live, not assumed: this
-// exact repro was checked with `git worktree` at pre-task HEAD, where the
-// pattern DOES match and devirt fires. A correctness fix and a speculative
-// devirt optimization on a specific unproven-callee shape are in genuine
-// tension here; correctness wins — devirt no longer fires for this shape,
-// call_indirect (now guarded for nullish) stays the only dispatch, and the
-// pin below shifts from "shape assertion" to "still runtime-correct".
-test('devirt: two-candidate closure local — no longer devirtualized (nullish-receiver guard interposes on the call_indirect operand), still runtime-correct', () => {
+// === call_indirect devirtualization ===
+// `let f = c ? a : b; f(x)`: a local holding one of two functions and only
+// called holds the chosen one's number instead, and each call is the choice
+// of direct calls (plan/chosen-calls.js): no table entry, no nullish guard on
+// a function value, and each callee inlinable.
+test('devirt: two-candidate closure local calls each candidate directly, runtime-correct', () => {
   const src = `
     let dbl = (x) => x * 2
     let sqr = (x) => x * x
@@ -1356,14 +1369,14 @@ test('devirt: two-candidate closure local — no longer devirtualized (nullish-r
       return s
     }`
   const w = jz.compile(src, { wat: true, optimize: 3 })
-  ok(/call_indirect/.test(w), 'call_indirect (now nullish-guarded) is the dispatch')
+  ok(!/call_indirect/.test(w), 'no indirect call: the chosen function is called directly')
   const { main } = run(src, { optimize: 3 })
   is(main(100, 1), 9900)   // 2*Σ0..99
   is(main(100, -1), 328350) // Σi²
   is(main(0, 1), 0)
 })
 
-test('devirt: size preset stays indirect (no byte growth)', () => {
+test('devirt: size preset calls the chosen function directly too, in fewer bytes than a table', () => {
   const src = `
     let dbl = (x) => x * 2
     let sqr = (x) => x * x
@@ -1372,7 +1385,8 @@ test('devirt: size preset stays indirect (no byte growth)', () => {
       return f(x)
     }`
   const w = jz.compile(src, { wat: true, optimize: 'size' })
-  ok(!/\(call \$\S*tramp/.test(w), 'size preset keeps the indirect call')
+  ok(!/\(call \$\S*tramp/.test(w) && !/call_indirect/.test(w), 'no trampoline, no indirect call')
+  ok(jz.compile(src, { optimize: 'size' }).length < jz.compile(src, { optimize: { level: 'size', callChosenFunctions: false } }).length, 'smaller than the table and its trampolines')
   const { main } = run(src, { optimize: 'size' })
   is(main(1, 21), 42)
   is(main(-1, 5), 25)
@@ -2205,14 +2219,16 @@ test('devirtGlobalCalls: the site calls the function; a global nothing reads dro
   const shapes = {
     called: [nz + `\nexport let go = (x) => { m.assign(x, W, 1, 0); return W[0] * 2 + W[1] }`, 6, []],
     alias: [nz + `\nconst nrm = m.assign\nexport let go = (x) => { nrm(x, W, 1, 0); return W[0] * 2 + W[1] }`, 6, []],
-    held: [nz + `\nconst keep = [m.assign]\nexport let go = (x) => { m.assign(x, W, 1, 0); return W[0] * 2 + W[1] + keep.length }`, 7, [`m${T}assign`]],
+    // read at a position only the run knows, the list holds the function (a constant one is its element's local)
+    held: [nz + `\nconst keep = [m.assign]\nexport let go = (x) => { m.assign(x, W, 1, 0); return W[0] * 2 + W[1] + (keep[x & 0] ? 1 : 0) }`, 7, [`m${T}assign`]],
     exported: [nz + `\nconst out = m.assign\nexport { out }\nexport let go = (x) => { m.assign(x, W, 1, 0); return W[0] * 2 + W[1] }`, 6, [`m${T}assign`, 'out']],   // `out` reads it, the host reads `out`
   }
   for (const [name, [src, want, kept]] of Object.entries(shapes)) {
     for (const optimize of levels(0, 2, 3)) is(runHost(src, { optimize }).go(3), want, `${name} at ${optimize}`)
-    const text = wat(src, { optimize: 0 })
+    // the host's closure trampoline (__call_closure, a function the host holds) calls through the table by design
+    const text = wat(src, { optimize: 0 }).replace(/\(func \$__call_closure[\s\S]*?\n  \)/, '')
     ok(/\(call \$nz/.test(text) && !/call_indirect/.test(text), `${name}: the site calls nz directly`)
-    is(JSON.stringify([...(ctx.funcs.globalDevirt?.keys() ?? [])]), JSON.stringify(kept), `${name}: the globals still holding nz`)
+    if (!onKernel()) is(JSON.stringify([...(ctx.funcs.globalDevirt?.keys() ?? [])]), JSON.stringify(kept), `${name}: the globals still holding nz`)
   }
 })
 
@@ -2251,4 +2267,120 @@ test('devirtGlobalCalls: a call through a global that holds a builtin is the bui
     ok(!/bw\d+_math_fround/.test(text), `${name}: the wrapper is not compiled`)
     if (!belowOpt(2)) ok(!/"_alloc"|\(start /.test(compile(src, { modules, jzify: true, optimize: 2, wat: true })), `${name}: no allocator and no start function`)
   }
+})
+
+// The same blind spot in a binding's own integer certainty (analyze/val-types.js
+// analyzeIntCertain): an integer-initialized binding a closure reassigns read
+// back raw, so `v * 2` skipped ToNumber on the string or Boolean the closure
+// stored ('x' came back as itself, true as the atom).
+test('closure: a value a closure writes into an integer binding converts at a numeric read', () => {
+  const src = `export let f = (k) => { let v = 0; let set = () => { v = k > 1 ? 'x' : k > 0 ? true : 3 }; set(); return v * 2 }`
+  const want = oracle(src).f
+  for (const optimize of levels(0, 2, 3)) {
+    const { f } = run(src, { optimize })
+    for (const k of [0, 1, 2]) is(f(k), want(k), `f(${k}) at ${optimize}`)
+  }
+})
+
+// A call through a choice of names is a choice of calls: `(c ? f : g)(x)` runs
+// as `c ? f(x) : g(x)`, in the same order, so neither function is held as a
+// value (no table, no trampoline) and each call is direct (encode-wav picks
+// its sample writer this way: `(float ? f32 : bitDepth === 24 ? i24 : i16)(…)`).
+test('closure: a call through a choice of functions calls the chosen one directly', () => {
+  const srcs = [
+    `function a(x, y) { return x + y } function b(x, y) { return x * y }\nexport let f = (c, x) => (c ? a : b)(x, 3)`,
+    `function a(x) { return x + 1 } function b(x) { return x * 2 } function d(x) { return -x }\nexport let f = (c, x) => (c > 1 ? a : c > 0 ? b : d)(x)`,
+    `let log = []\nfunction a(x) { log.push('a' + x); return 1 } function b(x) { log.push('b' + x); return 2 }\nlet pick = (c) => { log.push('pick'); return c }\nexport let f = (c, x) => { log.length = 0; (pick(c) ? a : b)(x); return log.join() }`,
+  ]
+  for (const src of srcs) {
+    const want = oracle(src).f
+    for (const optimize of levels(0, 2, 3)) { const { f } = run(src, { optimize }); for (const c of [0, 1, 2]) is(f(c, 4), want(c, 4), `f(${c}) at ${optimize}`) }
+    ok(!/call_indirect/.test(compile(src, { wat: true })), 'no indirect call')
+  }
+})
+
+// A callback a factory returns (`makeProcess(t)` → `(a, b) => …`) is a caller
+// of its own: a small function it calls in its loops is spliced into its body
+// as into a named function's, so the per-element call goes.
+test('closure: a small function a returned callback calls in its loop is spliced into it', () => {
+  const src = `function wrap(p) { return p - Math.floor(p / (2 * Math.PI) + 0.5) * (2 * Math.PI) }
+    function make(t) {
+      return function proc(a, b) {
+        let s = 0
+        for (let i = 0; i < a.length; i++) { b[i] = wrap(a[i] * t); let d = wrap(b[i] - a[i]); s += d }
+        return s
+      }
+    }
+    const p = make(3)
+    const a = new Float64Array(64), b = new Float64Array(64)
+    export let f = (k) => { for (let i = 0; i < 64; i++) a[i] = i * k; return p(a, b) + b[5] + wrap(k) }
+    export const g = (k) => { const q = make(k); return (x) => { let s = 0; for (let i = 0; i < 4; i++) { let w = wrap(x * i); s += w } return s + q(a, b) } }
+    export let h = (k, x) => g(k)(x)`
+  const js = oracle(src)
+  for (const optimize of levels(0, 2, 3)) {
+    const { f, h } = jz(src, { optimize }).exports
+    for (const k of [0, 0.7, 3, -2.5]) { is(f(k), js.f(k), `f(${k}) at ${optimize}`); is(h(k, k + 1), js.h(k, k + 1), `h(${k}) at ${optimize}`) }
+  }
+  if (belowOpt(2)) return
+  const text = wat(src, { optimize: 2 })
+  const closures = text.split('\n  (func ').filter(b => /^\$\W?closure/.test(b))
+  ok(closures.length && closures.every(b => !/call \$\W?wrap\b/.test(b)), 'no closure calls wrap')
+})
+
+// A kernel (a loop of its own) the callback calls stays a function of its own:
+// the engine warms it there, where spliced into a host's process() callback it
+// ran its loop inside everything else a block does, at half the speed.
+test('closure: a kernel a returned callback calls keeps its own function', () => {
+  const src = `function gain (d, p) { for (let i = 0; i < d.length; i++) d[i] = d[i] * p.g + p.o; return d }
+    const make = () => { const p = { g: 0.5, o: 0 }; return (d, g) => { p.g = g; p.o = 0.25; gain(d, p); return d[0] } }
+    const cb = make()
+    export let f = (n, g) => { const d = new Float64Array(n).fill(2); return cb(d, g) + d[n - 1] }`
+  const js = oracle(src)
+  for (const optimize of levels(0, 2, 3)) for (const [n, g] of [[1, 0.5], [7, -2]]) is(jz(src, { optimize }).exports.f(n, g), js.f(n, g), `f(${n}, ${g}) at ${optimize}`)
+  if (belowOpt(2)) return
+  // watr splices a one-caller function itself: the plan's own choice is read without it
+  const text = wat(src, { optimize: { level: 2, watr: false } })
+  ok(/\(func \$gain\b/.test(text) && text.split('\n  (func ').filter(b => /^\$\W?closure/.test(b)).every(b => !/\(loop/.test(b)), 'the loop stays in gain')
+})
+
+// Called in the callback's own loop (a kernel per channel, a heap push per bin),
+// the kernel splices there: the call is the per-iteration cost the splice removes.
+test('closure: a kernel a returned callback calls in its loop splices there', () => {
+  const src = `function gain (d, p) { for (let i = 0; i < d.length; i++) d[i] = d[i] * p.g + p.o; return d }
+    const make = () => { const p = { g: 0.5, o: 0 }; return (chs, g) => { p.g = g; p.o = 0.25; for (let c = 0; c < chs.length; c++) gain(chs[c], p); return chs[0][0] + chs[chs.length - 1][0] } }
+    const cb = make()
+    export let f = (n, g) => { const a = new Float64Array(n).fill(2), b = new Float64Array(n).fill(-1); return cb([a, b], g) + a[n - 1] + b[0] }`
+  const js = oracle(src)
+  for (const optimize of levels(0, 2, 3)) for (const [n, g] of [[1, 0.5], [7, -2]]) is(jz(src, { optimize }).exports.f(n, g), js.f(n, g), `f(${n}, ${g}) at ${optimize}`)
+  if (belowOpt(2)) return
+  const text = wat(src, { optimize: { level: 2, watr: false } })
+  ok(!/call \$gain\b/.test(text), 'no call of gain is left')
+})
+
+// A helper whose expression body reads its one parameter before anything but
+// literals (`lin2db(env(x))`, env a closure call with effects) splices with the
+// argument standing where the parameter is read: it runs where the call ran it.
+// A body that reads anything else first keeps the call, and so the order. The
+// order is the plan's, read without watr (whose macro pass had its own order bug,
+// fixed in watr's own tests).
+test('closure: a helper reading its parameter first splices with a call for its argument', () => {
+  const src = `let k = 1
+    const lin2db = (lin) => 20 * Math.log10(Math.max(Math.abs(lin), 1e-10))
+    const late = (a) => k * 10 + a
+    const bump = () => { k = 5; return 1 }
+    const env = (a) => { let e = 0; return (x) => { e += a * (Math.abs(x) - e); return e } }
+    const make = () => { const en = env(0.5); return (x, y) => { for (let i = 0; i < x.length; i++) y[i] = lin2db(en(x[i])); return y[x.length - 1] } }
+    const p = make()
+    export let f = (n) => { const x = new Float64Array(n).fill(0.25), y = new Float64Array(n); return p(x, y) }
+    export let g = () => { k = 1; return late(bump()) + lin2db(0.1) }`
+  for (const optimize of levels(0, 2, 3)) {
+    // p's envelope keeps its state across calls: a fresh host module per level
+    const js = oracle(src), m = jz(src, { optimize }).exports
+    for (const n of [1, 5]) is(m.f(n), js.f(n), `f(${n}) at ${optimize}`)
+    is(jz(src, { optimize: { level: optimize, watr: false } }).exports.g(), js.g(), `g at ${optimize}: bump runs before k is read`)
+  }
+  if (belowOpt(2)) return
+  // watr splices a one-caller function itself: the plan's own choice is read without it
+  const text = wat(src, { optimize: { level: 2, watr: false } })
+  ok(text.split('\n  (func ').filter(b => /^\$\W?closure/.test(b)).every(b => !/call \$\W?lin2db\b/.test(b)), 'no closure calls lin2db')
 })

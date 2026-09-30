@@ -10,27 +10,28 @@ import { STR_HCACHE_BIT, HEAP } from '../../../layout.js'
 import { ASSIGN_OPS, MUTATE_OPS, T, commaList, firstRefKind, isBlockBody, isReassigned, walkAst } from '../../ast.js'
 import { PTR, ctx, err, inc, emitArity, setLinkDemand } from '../../ctx.js'
 import {
-  callWithArgs, FALSE_NAN, MAX_CLOSURE_ARITY, TRUE_NAN, UNDEF_NAN, WASM_OPS, applyBigintRepresentationAction, asF64, asI32, asI64, asParamType, asPtrOffset, block64, boolBoxIR, boxBigInt, carrierF64, carrierF64Narrow, emitNum, extractF64Bits, flat, freshId, fromI64, isBoolAtom, isBoundName, isGlobal, boxedAddr, isLit, isNullish, isNullishLit, litVal, materializeDeferredBigint, mayYieldUndefOf, maybeUnboxBigInt, mkPtrIR, nullExpr, nullableBoolBoxIR, ptrOffsetIR, readVar, resolveValType, temp, tempI32, tempI64, toI32, toNumF64, toStrI64, truthyIR, typed, unboxBoolIR, undefExpr, valKindToPtr,
+  keyIndex, int32Bits, callWithArgs, FALSE_NAN, MAX_CLOSURE_ARITY, TRUE_NAN, WASM_OPS, applyBigintRepresentationAction, asF64, asI32, asI64, asParamType, asPtrOffset, block64, boolBoxIR, boxBigInt, carrierF64, carrierF64Narrow, emitNum, extractF64Bits, flat, fromI64, isBoundName, isGlobal, boxedAddr, isLit, isNullish, isNullishLit, litVal, materializeDeferredBigint, mayYieldUndefOf, maybeUnboxBigInt, mkPtrIR, nullExpr, nullableBoolBoxIR, ptrOffsetIR, readVar, resolveValType, temp, tempI32, tempI64, toI32, toNumF64, toStrI64, truthyIR, typed, unboxBoolIR, undefExpr, valKindToPtr,
 } from '../../ir.js'
-import { BIGINT_JOINT_BINARY_OPS, isPresentNumber, hasAmbiguousBoolMerge, nullishArm, valTypeOf } from '../../kind.js'
+import { BIGINT_JOINT_BINARY_OPS, isPresentNumber, hasAmbiguousBoolMerge, nullishArm, valTypeOf, boolTagged, mixedBoolKind } from '../../kind.js'
 import { VAL, lookupValType, repOf, repOfGlobal, numericStorage, mayBeUndefined } from '../../reps.js'
-import { nonNegIntLiteral } from '../../static.js'
+import { nonNegIntLiteral, staticPropertyKey, staticArrayElems, staticObjectProps, intExprRange } from '../../static.js'
 import { functionLength } from '../../function.js'
 import { exprType, isTerminator } from '../../type.js'
 import {
-  BINDING_USE_COMPUTED, BINDING_USE_DECLS, BINDING_USE_KEY, BINDING_USE_KIND, BINDING_USE_OP, BINDING_USE_OPTIONAL, BINDING_USE_USES, USE, scanBindingUses,
+  BINDING_USE_COMPUTED, BINDING_USE_DECLS, BINDING_USE_KEY, BINDING_USE_KIND, BINDING_USE_OPTIONAL, BINDING_USE_USES, USE, scanBindingUses,
 } from '../analyze-scans.js'
 import { withArrayLiteralEscape } from '../flow-state.js'
 import { arrayView, emitArrayViewDef, materializeArrayView } from '../array-view.js'
-import { mixedBoolKind } from '../analyze/body-facts.js'
 import { extractRefinements, withRefinements } from '../flow-types.js'
 import {
   JOIN_OPS, REP_EDGE_BOX, REP_EDGE_REJECT, REP_EDGE_UNBOX, representationBindingWriteAction, representationCallArgAction,
 } from '../representation-plan.js'
 import { CARRIER } from '../../summary/contract.js'
+import { DERIVED_PROP_MODULES } from '../../prop-modules.generated.js'
 import { SITE, allocatesNothing } from '../analyze/frame-effects.js'
 import { reachOn } from '../../../module/core/reach.js'
-import { CMP_SET, boolEagerBody, eagerSelectOK, isCanonicalBoolExpr, isCmp, selectOK } from './shared.js'
+import { GLOBAL_TYPEOF, builtinGlobalOf } from '../../prepare/state.js'
+import { CMP_SET, boolEagerBody, copyReceiverFacts, eagerSelectOK, isCanonicalBoolExpr, isCmp, selectOK } from './shared.js'
 import { K, NUMBER, hasTag, orAbsent, valOf, core as summaryCore, tagOf as summaryTagOf, tagsOf as summaryTagsOf, bitOf as summaryBitOf, NULL_BITS as SUMMARY_NULL_BITS } from '../../summary/kind.js'
 
 
@@ -44,7 +45,7 @@ import { K, NUMBER, hasTag, orAbsent, valOf, core as summaryCore, tagOf as summa
 // where an appended trailing element would corrupt the operand list.
 // `[]` hands its node to the element read: an access node carries its own
 // occurrence's bounds proof (type/interval-proof.js).
-const SELF_AWARE_OPS = new Set(['u-', '~', '[]', ...BIGINT_JOINT_BINARY_OPS, ...JOIN_OPS])
+const SELF_AWARE_OPS = new Set(['u-', '~', '[]', 'postfix', ...BIGINT_JOINT_BINARY_OPS, ...JOIN_OPS])
 
 // Host globals auto-imported as `(import "env" "name" (global … i64))` when
 // referenced as a value. Drained from ctx.core.hostGlobals at assembly.
@@ -58,27 +59,14 @@ const HOST_GLOBALS = new Set(['WebAssembly', 'globalThis', 'self', 'window', 'gl
 // also depends on staying canonical.
 const isHoistTemp = (name) => typeof name === 'string' && name.startsWith(T + 'inl') && name.endsWith('_h')
 
-/** Stringify a VAL.BOOL operand to "true"/"false" (f64 string pointer). The
- *  boolean rides the cheap 0/1 carrier, so we runtime-select between the two
- *  interned literals; a constant operand folds to a single literal downstream. */
+/** Stringify a boolean through the shared conversion, preserving a checked
+ *  read's missing value. Present booleans select the two interned literals. */
 export const emitBoolStr = (node) =>
-  typed(['select', asF64(emit(['str', 'true'])), asF64(emit(['str', 'false'])), truthyIR(emit(node))], 'f64')
+  typed(['f64.reinterpret_i64', toStrI64(node, emit(node))], 'f64')
 
-/**
- * Emit an array-index expression in i32 arithmetic. A subscript is truncated to
- * i32 at the memory boundary regardless, so `+`/`-`/`*` over i32-typed leaves are
- * computed with wrapping i32 ops instead of the f64 round-trip
- * (`convert_i32 … f64.mul/add … trunc_sat_f64_s`) that `*` of two non-literal
- * i32s would otherwise force (see analyze.js exprType `*`).
- *
- * Correctness: i32 +/-/* preserve the residue mod 2^32, so the result equals the
- * expression's true integer value mod 2^32 — even if an intermediate product
- * overflows. Any valid index is in [0, 2^30) ⊂ [-2^31, 2^31), where two's
- * complement reproduces the true value exactly; out-of-range indices are OOB
- * (already UB — jz truncates the index to i32 at the boundary either way). Bails
- * to the f64 path for any non-i32 leaf (an f64 leaf may be fractional, where
- * trunc-then-add ≠ add-then-trunc) or non-{+,-,*} operator.
- */
+/** Compute the ToInt32 residue of an integer expression using word operations.
+ * Index consumers must separately prove the full result fits; a coercing local
+ * write deliberately takes the residue, including overflow. */
 const I32_INDEX_OP = { '+': 'i32.add', '-': 'i32.sub', '*': 'i32.mul' }
 function tryI32Index(e) {
   // Integer literal first — a prepare-wrapped literal `[null, k]` (and a const-int
@@ -99,31 +87,66 @@ function tryI32Index(e) {
   }
   return exprType(e, ctx.func.locals) === 'i32' ? asI32(emit(e)) : null
 }
-export const emitIndex = (index) => {
-  const direct = tryI32Index(index)
+// An integer-valued key: an integer literal, an i32 or integer-certain name,
+// and + - * over them. No fraction, no NaN: it truncates to its index exactly,
+// and one past the i32 range saturates past every length.
+const WHOLE_OPS = new Set(['+', '-', '*'])
+const wholeKey = (e) => {
+  if (typeof e === 'string') return exprType(e, ctx.func.locals) === 'i32' || repOf(e)?.intCertain === true
+  if (!Array.isArray(e)) return false
+  if (e[0] == null) return Number.isInteger(e[1])
+  return WHOLE_OPS.has(e[0]) && e.length === 3 && wholeKey(e[1]) && wholeKey(e[2])
+}
+export const emitIndex = (index, whole = false) => {
+  // Wrapping arithmetic is equivalent only when the full result fits.
+  // Otherwise, e.g. 65536 * 65536 would address element zero.
+  const range = Array.isArray(index) && I32_INDEX_OP[index[0]] ? intExprRange(index) : null
+  const exact = whole || !Array.isArray(index) || !I32_INDEX_OP[index[0]] ||
+    range && range[0] >= -2147483648 && range[1] <= 2147483647
+  const direct = exact && tryI32Index(index)
   if (direct) return direct
-  // Direct nested reads can pass their check bit without reboxing. Stored
-  // reads take the same fallback below: a missing value is no index,
-  // even though the machine's saturating conversion would yield zero.
+  const proven = whole
+  whole ||= wholeKey(index)
+  // `x ± k` with k an i32 and x a name: the key is an integer exactly when x
+  // is (a boxed x makes both NaN), so the test reads x alone, where a loop
+  // over k leaves it invariant (`a[o + i]`, o read from an offsets table).
+  // An x past the i32 range names no element either: with |k| < 2^31 the sum
+  // could come back only for an array of 2^31 elements.
+  if (!whole && Array.isArray(index) && (index[0] === '+' || index[0] === '-') && index.length === 3) {
+    const [, l, r] = index, i32 = e => exprType(e, ctx.func.locals) === 'i32' || Array.isArray(e) && e[0] == null && (e[1] | 0) === e[1]
+    const x = i32(r) ? l : i32(l) && index[0] === '+' ? r : null
+    if (typeof x === 'string') {
+      const t = temp('ix'), ok = tempI32('ixv'), xs = asF64(emit(x)), get = ['local.get', `$${t}`]
+      const out = typed(['block', ['result', 'i32'],
+        ['local.set', `$${ok}`, ['f64.eq', ['f64.convert_i32_s', int32Bits(xs)], xs]],
+        ['local.set', `$${t}`, asF64(emit(index))],
+        ['select', ['i32.trunc_sat_f64_s', get], ['i32.const', -1], ['local.get', `$${ok}`]]], 'i32')
+      out.indexValid = ['local.get', `$${ok}`]
+      return out
+    }
+  }
   const nested = Array.isArray(index) && index[0] === '[]'
-  if (!nested && typeof index !== 'string') return asI32(emit(index))
   if (nested) ctx.types.indexConsumer = (ctx.types.indexConsumer || 0) + 1
   let value
   try { value = emit(index) } finally { if (nested) ctx.types.indexConsumer-- }
-  if (value?.indexValid) {
-    // The checked typed read's own miss bit, materialized after the read: the
-    // same -1 for every consumer, and the bit itself for the typed read's guard.
-    const out = typed(['select', asI32(value), ['i32.const', -1], value.indexValid], 'i32')
-    out.indexValid = value.indexValid
+  if (value?.type === 'i32' && !value.indexValid) return value
+  // `whole`: a proof already holds the key to a present integer (the interval
+  // walk models integer values only).
+  // A constant folds exactly in keyIndex; a runtime value saturates (asI32's
+  // ToInt32 would wrap 2^32 + 1 to 1).
+  if (whole && !(Array.isArray(value) && value[0] === 'f64.const')) {
+    if (proven) return typed(['i32.trunc_sat_f64_s', asF64(value)], 'i32')
+    // An integer-certain name may hold NaN (`Math.floor` of one, `Infinity -
+    // Infinity`), which names no element, where the truncation reads index 0.
+    const t = temp('ix'), get = ['local.get', `$${t}`]
+    const out = typed(['block', ['result', 'i32'], ['local.set', `$${t}`, asF64(value)],
+      ['select', ['i32.trunc_sat_f64_s', get], ['i32.const', -1], ['f64.eq', get, get]]], 'i32')
+    out.indexValid = ['f64.eq', get, get]
     return out
   }
-  // Preserve absence; real NaN retains the documented i32-index coercion.
-  if (value?.type === 'i32') return asI32(value)
-  const t = temp('ix')
-  return typed(['block', ['result', 'i32'], ['local.set', `$${t}`, asF64(value)],
-    ['select', asI32(typed(['local.get', `$${t}`], 'f64')), ['i32.const', -1],
-      ['i64.ne', ['i64.reinterpret_f64', ['local.get', `$${t}`]], ['i64.const', UNDEF_NAN]]]], 'i32')
+  return keyIndex(value)
 }
+
 
 /**
  * True when `e` is a pure integer `+`/`-`/`*` tree whose leaves are all i32-typed
@@ -174,9 +197,59 @@ function kindTruthyIR(node, ir) {
 }
 
 /** Coerce an AST node to an i32 boolean, folding && / || at the boolean boundary. */
+// In a condition, an inherited builtin method is truthy without constructing a
+// first-class function. Use the method registry's concrete receiver families;
+// registration for some other family does not make a plain object's field exist.
+const METHOD_RECEIVERS = [[VAL.MAP, PTR.MAP], [VAL.SET, PTR.SET], [VAL.ARRAY, PTR.ARRAY],
+  [VAL.TYPED, PTR.TYPED], [VAL.STRING, PTR.STRING]]
+function builtinMethodCondition(node) {
+  if (!Array.isArray(node)) return null
+  const op = node[0], indexed = op === '[]' || op === '?.[]'
+  if (!indexed && op !== '.' && op !== '?.') return null
+  const prop = indexed ? staticPropertyKey(node[2]) : node[2]
+  if (typeof prop !== 'string') return null
+  const families = METHOD_RECEIVERS.filter(([kind]) => {
+    const key = kind === VAL.ARRAY && !ctx.core.emit[`.${kind}:${prop}`] && DERIVED_PROP_MODULES[prop]?.includes('array')
+      ? `.${prop}` : `.${kind}:${prop}`
+    return ctx.core.emit[key] && !ctx.core.getters.has(key)
+  })
+  if (!families.length) return null
+  const recv = temp('method'), tag = tempI32('methodTag')
+  const value = asF64(emit(node[1]))
+  copyReceiverFacts(node[1], recv)
+  const fallback = truthyIR(emit([op, recv, node[2]]))
+  let condition = ['i32.const', 0]
+  for (const [, ptr] of families)
+    condition = ['i32.or', condition, ['i32.eq', ['local.get', `$${tag}`], ['i32.const', ptr]]]
+  const own = families.some(([kind]) => !ctx.summary || ctx.summary.memberMayBeOwnOn(prop, kind))
+  if (own) {
+    ctx.module.include('collection')
+    inc('__dyn_has')
+    condition = ['if', ['result', 'i32'], condition,
+      ['then', ['i32.eqz', ['call', '$__dyn_has',
+        ['i64.reinterpret_f64', ['local.get', `$${recv}`]], asI64(emit(['str', prop]))]]],
+      ['else', ['i32.const', 0]]]
+  }
+  inc('__ptr_type')
+  return typed(['block', ['result', 'i32'],
+    ['local.set', `$${recv}`, value],
+    ['local.set', `$${tag}`, ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${recv}`]]]],
+    ['if', ['result', 'i32'], condition, ['then', ['i32.const', 1]], ['else', fallback]]], 'i32')
+}
+
 export function toBool(node) {
   const op = Array.isArray(node) ? node[0] : null
+  if (op === '(') return toBool(node[1])
+  if (op === '.' || op === '[]' || op === '()' || op === '?.' || op === '?.[]') {
+    const lifted = liftOptionalChain(node, true)
+    if (lifted) return lifted
+  }
+  const method = builtinMethodCondition(node)
+  if (method) return method
   if (CMP_SET.has(op)) return emit(node)
+  // Canonical boolean chains already have value-preserving range fusion in
+  // their emitters. Keep that shared lowering at a condition boundary too.
+  if ((op === '&&' || op === '||') && isCanonicalBoolExpr(node)) return emit(node)
   // A negation asks the operand's boolean and flips it: no value is built.
   if (op === '!' && node.length === 2) return typed(['i32.eqz', toBool(node[1])], 'i32')
   if (op === '__eager&&' || op === '__eager||') {
@@ -403,7 +476,6 @@ export function tryConcatChain(a, b, selfAccum, bufTarget) {
     inc('__str_length', '__str_copy')
     bT[k] = tempI64('cc')
     seq.push(['local.set', `$${bT[k]}`,
-      vt === VAL.STRING ? ['i64.reinterpret_f64', asF64(v)] :
       vt === VAL.BOOL ? ['i64.reinterpret_f64', emitBoolStr(n)] :
       toStrI64(n, v)])   // OBJECT (compile-time ToPrimitive), NUMBER, unknown
     seq.push(['local.set', `$${lT[k]}`, ['call', '$__str_length', ['local.get', `$${bT[k]}`]]])
@@ -533,67 +605,29 @@ function tryConcatBufferDecl(name, init) {
  *  same inlining emitSchemaSlotGuarded does for OBJECT. */
 export const TYPED_HI_MASK = '0xFFFFFFFF00000000'
 
-// Loud identity-escape REJECT for a BOOL∪NUMBER-ambiguous merge landing in a
-// plain (non-boxed) local — README.md "Known limitations": "Ambiguous
-// boolean∪number locals whose stored identity would escape reject at compile
-// time (truthiness-only uses compile fine); full support needs a tagged
-// Boolean carrier plan." `expr`'s own VT rule (kind.js hasAmbiguousBoolMerge)
-// took the BOOL-vs-NUMBER benign-coercion branch — sound for arithmetic
-// (`cond && 1` used as a number), unsound the moment `name`'s STORED value is
-// later read back for its own identity (typeof, strict-eq): the raw 0/1
-// carrier can't be told apart from a genuine coerced-false/true. Scans EVERY
-// use of `name` in the enclosing function body, not just the ones downstream
-// of this one assignment — the ambiguity lives in the BINDING's storage, so a
-// later `typeof name` sees exactly the same collapsed bits regardless of
-// which assignment produced them. A plain truthiness test (`if(name)`,
-// `!name`, `name ? : `) stays exempt — only typeof and other identity-
-// observing uses are unsupported; a captured (closure) use is handled by its
-// own identity-shadow box, not this reject. Shared by emitDecl (the original
-// call site, decl-with-init) and the plain-assignment '=' handler below (the
-// audit's BOOL_CARRIER family — `let x; x = false ?? 1`/`x = b && 1` skipped
-// this REJECT entirely, silently keeping the wrong raw NUMBER carrier).
-//
-// USE.REASSIGN is ALSO exempt, same as CAPTURE — a WRITE to `name` (this
-// very assignment included: scanBindingUses records every `x = …` target as
-// a REASSIGN "use" of x) is never itself an identity-OBSERVING read. Without
-// this exemption the plain-assignment call site below always saw its own
-// assignment statement as a disqualifying "use" and rejected UNCONDITIONALLY
-// — even `let x; x = false ?? 1; return x ? 1 : 0` (pure truthiness
-// downstream, which the decl-path's `let x = false ?? 1; return x ? 1 : 0`
-// correctly accepts) — a real over-rejection caught by this fix's own test
-// suite (test/errors.js "does NOT reject … truthiness"), not by the audit.
-export function rejectAmbiguousBoolIdentity(name, expr) {
-  if (typeof name !== 'string' || !hasAmbiguousBoolMerge(expr) || boolTaggedBinding(name)) return
-  const summary = scanBindingUses(ctx.func.body).get(name)
-  const uses = summary ? summary[BINDING_USE_USES] : []
-  const unsupported = uses.some(use =>
-    use[BINDING_USE_KIND] !== USE.CAPTURE && use[BINDING_USE_KIND] !== USE.REASSIGN &&
-    !(use[BINDING_USE_KIND] === USE.BOOL_TEST && use[BINDING_USE_OP] !== 'typeof'))
-  if (unsupported)
-    err(`Binding '${name}' can be both Boolean and Number, but its stored carrier erases that identity — use the merge expression directly or normalize with Boolean()/Number()`)
-}
-
-/** A binding that holds a Boolean beside another kind (`let v; if (k) v =
- *  true; else v = 1`, `let x = c && 1`) and whose reads observe its identity
- *  (a return, a `typeof`, a strict compare, a store: the numeric demand pass
- *  denied it a number) carries the Boolean as its atom: every store boxes it
- *  (boolCarrier), the storage is the tagged f64 (analyze/body-facts.js Pass
- *  E), and the reads take the dynamic forms a mixed kind already takes. A
- *  binding some plan typed as one concrete non-Boolean kind is not tagged;
- *  rejectAmbiguousBoolIdentity keeps the correct-or-reject contract there. */
-export function boolTaggedBinding(name) {
-  if (typeof name !== 'string') return false
-  const view = ctx.summary?.at(ctx.func.current)
-  if (!view) return false
-  return mixedBoolKind(view.kindOfExpr(name)) && !view.numericDemand(name) && lookupValType(name) == null
-}
-
-/** The value a store into `name` lands: a Boolean's atom for a tagged binding. */
+/** The value a store into `name` lands. A binding that holds a Boolean beside
+ *  another kind (`let v; if (k) v = true; else v = 1`, `let x = c && 1`)
+ *  carries its Booleans as atoms where a read may observe which (kind.js
+ *  boolTagged): every store boxes a Boolean, a merge keeps its Boolean arm
+ *  boxed (emitIdentitySafe), the storage is the tagged f64
+ *  (analyze/body-facts.js Pass E), a Boolean store records no flow fact
+ *  (setFlowVal), and the reads take the forms a mixed kind takes, a numeric
+ *  one converting the atoms (ir/coerce.js toNumF64). A binding every read of
+ *  which converts keeps the raw carrier and holds numbers: a value that may
+ *  carry an atom (a field, an element, a result) lands as its ToNumber. */
 export function boolCarrier(name, node, ir) {
-  if (!boolTaggedBinding(name) || valTypeOf(node) !== VAL.BOOL) return ir
+  if (typeof name !== 'string') return ir
+  if (!boolTagged(name)) {
+    const view = ctx.summary?.at(ctx.func.current)
+    return view && ir.type === 'f64' && mixedBoolKind(view.bindingKindOf(name)) && view.numericDemand(name) && valTypeOf(node) !== VAL.NUMBER
+      ? toNumF64(node, ir) : ir
+  }
+  if (valTypeOf(node) !== VAL.BOOL) return ir
   const k = ctx.summary.at(ctx.func.current).kindOfExpr(node)
   return k & SUMMARY_NULL_BITS ? nullableBoolBoxIR(ir) : boolBoxIR(ir)
 }
+/** `node` emitted as the value a store into the binding `name` lands (boolCarrier). */
+export const bindingStore = (name, node) => boolCarrier(name, node, boolTagged(name) && hasAmbiguousBoolMerge(node) ? emitIdentitySafe(node) : emit(node))
 
 /** Emit let/const initializations as typed local.set instructions. */
 // A typed element the emitter loaded bare (its index proven inside the array),
@@ -652,6 +686,8 @@ export function emitDecl(...inits) {
       // NaN-box undef sentinel — and wasm zero-inits locals anyway, so a 0 init is
       // equivalent for the assigned-before-read pattern that earns i32.
       result.push(['local.set', `$${i}`, ctx.func.locals.get(i) === 'i32' ? ['i32.const', 0] : undef])
+      const shadow = ctx.func.numShadow?.get(i)
+      if (shadow) result.push(['local.set', `$${shadow}`, ['f64.const', 'nan']])
       continue
     }
     if (!Array.isArray(i) || i[0] !== '=') continue
@@ -678,8 +714,13 @@ export function emitDecl(...inits) {
     // they init to undefined so a read before the write matches JS.
     const flatDecl = ctx.func.flatObjects?.get(name)
     if (flatDecl && Array.isArray(init) && (init[0] === '{}' || init[0] === '[' || init[0] === '[]')) {
+      // The values are this declaration's own: an unrolled copy of a loop
+      // body declares the literal with its counter replaced (`{ a: i }` is
+      // `{ a: 1 }` in the second copy), not as the census read it.
+      const own = init[0] === '{}' ? staticObjectProps(init.slice(1)) : { names: flatDecl.names, values: staticArrayElems(init) }
+      const valueOf = own?.values ? new Map(own.names.map((k, j) => [k, own.values[j]])) : null
       for (let j = 0; j < flatDecl.names.length; j++) {
-        const v = flatDecl.values[j]
+        const v = valueOf ? valueOf.get(flatDecl.names[j]) : flatDecl.values[j]
         // research.md §Carrier invariant: a flat/SRoA field local is the same
         // untyped boxed-value slot a heap object's schema store is (module/
         // object.js's storedValue, now bridge.js's chokepoint) — the previous
@@ -745,6 +786,8 @@ export function emitDecl(...inits) {
     // receiver — param types are settled only by emit time — and on plain-local
     // carriers (boxed/global escape); any miss falls back to the copying slice.
     let viewInit = null
+    const scratch = ctx.memory.fixed && ctx.memory.scratch.get(ctx.func.current)?.get(init)
+    if (scratch) viewInit = ctx.core.emit['#fixedTyped'](init[1].slice(4), scratch)
     if (ctx.func.sliceViews?.has(name) && !ctx.func.boxed.has(name) && !isGlobal(name)
         && Array.isArray(init) && init[0] === '()'
         && Array.isArray(init[1]) && init[1][0] === '.' && init[1][2] === 'slice') {
@@ -796,66 +839,18 @@ export function emitDecl(...inits) {
     if (!viewInit && typeof name === 'string' && Array.isArray(init) && init[0] === '?:' &&
         ((valTypeOf(init[2]) === VAL.BIGINT && nullishArm(init[3])) || (valTypeOf(init[3]) === VAL.BIGINT && nullishArm(init[2]))))
       (ctx.func.taggedLocals ??= new Set()).add(name)
-    // Closure-capture identity shadow (kind.js hasAmbiguousBoolMerge; extends
-    // 756ae10f's formatter box-at-consumer pattern to the closure-capture
-    // consumer — test/kernel-oracle.js's PENDING-FIX 'captured-then-read'
-    // row). A captured `let v = cond && 1`-shaped local's OWN value collapses
-    // to a raw NUMBER the instant it's stored (valTypeOf(init) already reads
-    // NUMBER post-merge, per hasAmbiguousBoolMerge's own doc) — by the time
-    // module/function.js's env-slot-store loop reads `v` (a bare name, no
-    // expression shape left to inspect), the boolean identity is
-    // unrecoverable from the bits alone (0 is bit-identical whether it came
-    // from coerced-false or a genuine number arm — emitIdentitySafe's doc
-    // explains why only re-deriving via the ORIGINAL control flow is sound).
-    // So the box has to happen HERE, at the one point `init` is safely
-    // evaluated once — gated on capturedNames (analyze-scans.js's
-    // boxedCaptures pre-scan: captured-anywhere, broader than the mutation-
-    // gated ctx.func.boxed) so the branch below is DEAD for every decl that
-    // isn't both captured AND ambiguous — provably byte-identical to today's
-    // plain `emit(init)` for everything else, including (verified live, not
-    // assumed — see the self-build gate) every decl in scripts/self.js's own
-    // source, keeping this clear of the decl-init WALL a few lines up
-    // (storedValue/argIR swapped in HERE, unconditionally, reshaped the
-    // self-compiled kernel's own codegen enough to miscompile — research.md
-    // §Carrier invariant). identityShadowName, once set, publishes to
-    // ctx.func.identityShadow for module/function.js's ctx.closure.make to
-    // read back at the env-slot store — see that file's own comment there.
-    const ambiguousIdentity = typeof name === 'string' && hasAmbiguousBoolMerge(init)
-    if (ambiguousIdentity && !neverEscapes) rejectAmbiguousBoolIdentity(name, init)
-    const identityCapture = ambiguousIdentity && ctx.func.capturedNames?.has(name)
-    // A tagged Boolean binding (boolTaggedBinding): a merge keeps its Boolean
-    // arm boxed (emitIdentitySafe), a Boolean initializer boxes below.
-    const tagged = !identityCapture && !neverEscapes && boolTaggedBinding(name)
-    let identityShadowName = null
+    // A tagged Boolean binding (boolTagged): a merge keeps its Boolean arm
+    // boxed (emitIdentitySafe), a Boolean initializer boxes below. A closure
+    // capturing it copies the atom; an untagged one every read of which
+    // converts holds the numeric image, in the closure as well.
+    const tagged = !neverEscapes && boolTagged(name)
     let val = viewInit || withArrayLiteralEscape(neverEscapes, () => {
-      if (!identityCapture) {
-        if (ctx.func.localReps?.get(name)?.arrayCap != null && Array.isArray(init) && init[0] === '[')
-          return ctx.core.emit['[capacity'](name, init.slice(1))
-        return tagged && ambiguousIdentity ? emitIdentitySafe(init) : emit(init)
-      }
-      identityShadowName = `${T}idbox_${name}`
-      ctx.func.locals.set(identityShadowName, 'f64')
-      // Single evaluation: emitIdentitySafe(init) runs exactly once, teed
-      // into the shadow local. Every further use below is a cheap,
-      // repeatable local.get — no re-emission of `init`, so a side effect in
-      // `init` (a call, say) fires once, matching plain emit(init)'s own
-      // contract.
-      const setShadow = ['local.set', `$${identityShadowName}`, asF64(emitIdentitySafe(init))]
-      const shadowRef = typed(['local.get', `$${identityShadowName}`], 'f64')
-      // Derive the plain-number form this decl's OWN local (and every other
-      // consumer of `val` below) needs, from that SAME single evaluation:
-      // isBoolAtom/unboxBoolIR recognize the boxed TRUE/FALSE atom and
-      // extract its bit; anything else is already the correct number
-      // (emitIdentitySafe's own invariant — see its doc comment).
-      const unboxed = typed(['select',
-        ['f64.convert_i32_s', unboxBoolIR(shadowRef)],
-        shadowRef,
-        isBoolAtom(shadowRef)], 'f64')
-      return typed(['block', ['result', 'f64'], setShadow, unboxed], 'f64')
+      if (ctx.func.localReps?.get(name)?.arrayCap != null && Array.isArray(init) && init[0] === '[')
+        return ctx.core.emit['[capacity'](name, init.slice(1))
+      return tagged && hasAmbiguousBoolMerge(init) ? emitIdentitySafe(init) : emit(init)
     })
-    if (identityShadowName) (ctx.func.identityShadow ??= new Map()).set(name, identityShadowName)
     val = applyBigintRepresentationAction(val, init, representationBindingWriteAction(ctx, name, init))
-    if (tagged && !viewInit) val = boolCarrier(name, init, val)
+    if (!viewInit) val = boolCarrier(name, init, val)
     if (isObjLit) ctx.schema.targetStack.pop()
     // Record the declared name's valTypeOf(init) into the flow overlay right after
     // emitting init — not just for sibling `let`s in the same block (emitBlockBody used
@@ -955,8 +950,11 @@ export function emitDecl(...inits) {
     const localType = ctx.func.locals.get(name) || 'f64'
     const ptrKind = repOf(name)?.ptrKind
     // A binding the summary lets be absent, initialized from an element the
-    // emitter loaded without a check: this definition holds a number.
-    if (localType === 'f64' && presentElement(val) && mayBeUndefined(name)) (ctx.func.presentInits ??= []).push(name)
+    // emitter loaded without a check: this definition holds a number. One
+    // whose elements may be null or undefined themselves (`[undefined]`
+    // beside `[{ b0 }]`) holds whatever the element holds.
+    if (localType === 'f64' && presentElement(val) && mayBeUndefined(name) &&
+        !hasTag(ctx.summary?.at(ctx.func.current)?.kindOfExpr(name) ?? 0, K.NULLISH)) (ctx.func.presentInits ??= []).push(name)
     // ptrKind inheritance for alias-init decls is predicted at PLAN time
     // (inheritPtrAliases — slice-4 P1); emit only asserts parity here.
     // Miss (val carries a ptrKind the plan didn't predict) means the predictor
@@ -1027,30 +1025,12 @@ export function emitDecl(...inits) {
     const zeroInit = isLit(coerced) && coerced[1] === 0 && !Object.is(coerced[1], -0) && !ctx.func.stack.length
     if (!zeroInit || ctx.func.zeroInitSeen?.has(name)) {
       result.push(['local.set', `$${name}`, coerced])
+      const shadow = ctx.func.numShadow?.get(name)
+      if (shadow) result.push(['local.set', `$${shadow}`, toNumF64(init, typed(['local.get', `$${name}`], 'f64'))])
       // Record the def node (by reference, not a copy) so stripCanon's single-use
       // hoist-temp lookup (see isHoistTemp above) can mutate it in place later.
       if (localType === 'f64' && isHoistTemp(name)) (ctx.func.hoistTempDefs ??= new Map()).set(name, coerced)
     } else (ctx.func.zeroInitSeen ??= new Set()).add(name)
-
-    const schemaId = ctx.schema.idOf?.(name)
-    if (ctx.func.localProps?.has(name) && schemaId != null) {
-      const schema = ctx.schema.resolve(name)
-      if (schema?.[0] === '__inner__') {
-        inc('__alloc_hdr', '__mkptr')
-        const bt = `${T}bx${freshId(ctx)}`
-        ctx.func.locals.set(bt, 'i32')
-        const innerName = `${name}${T}inner`
-        ctx.func.locals.set(innerName, 'f64')
-        result.push(
-          ['local.set', `$${innerName}`, ['local.get', `$${name}`]],
-          ['local.set', `$${bt}`, ['call', '$__alloc_hdr', ['i32.const', 0], ['i32.const', Math.max(1, schema.length)]]],
-          ['f64.store', ['local.get', `$${bt}`], ['local.get', `$${name}`]],
-          // A property the program adds later reads `undefined` until it does.
-          ...schema.slice(1).map((_, j) =>
-            ['f64.store', ['i32.add', ['local.get', `$${bt}`], ['i32.const', (j + 1) * 8]], undefExpr()]),
-          ['local.set', `$${name}`, mkPtrIR(PTR.OBJECT, schemaId, ['local.get', `$${bt}`])])
-      }
-    }
   }
   return result.length === 0 ? null : result.length === 1 ? result[0] : result
 }
@@ -1071,6 +1051,9 @@ export function emitVoid(node) {
 // reassignment statement.
 function setFlowVal(name, vt, expr, value) {
   if (!ctx.func.localValTypesOverlay || !isBoundName(name)) return
+  // A captured cell can change in user code between operands of one
+  // expression. Its joined kind remains valid; one store's kind does not.
+  if (ctx.func.boxed?.has(name)) { ctx.func.localValTypesOverlay.delete(name); return }
   // A name reassigned somewhere inside a LOOP body (while/do/for/for-in/for-of,
   // at any nesting depth within it) carries NO overlay fact anywhere in this
   // block, ever: a loop's body is emitted once but RUNS repeatedly, so a fact
@@ -1084,9 +1067,11 @@ function setFlowVal(name, vt, expr, value) {
   // nestedWritesOf's doc comment for why those invalidate position-sensitively
   // instead, in emitBlockBody's own per-statement loop.
   if (ctx.func.flowValBlocked?.has(name)) return
-  // A tagged Boolean binding reads through its mixed kind at every use: a
-  // flow fact of one store's kind would read its atom as a raw number.
-  if (boolTaggedBinding(name)) { ctx.func.localValTypesOverlay?.delete(name); return }
+  // A tagged Boolean binding (boolTagged) holds a Boolean as its atom: a flow
+  // fact that the value is a Boolean, or a number where a Boolean merge's
+  // arm may be its atom, would read the atom as a raw number. A store of
+  // another kind (an array, a number) is that kind until the next.
+  if (boolTagged(name) && (vt === VAL.BOOL || hasAmbiguousBoolMerge(expr))) { ctx.func.localValTypesOverlay?.delete(name); return }
   const k = value?.checkedNumRead || vt === VAL.NUMBER && mayYieldUndefOf(expr, value) ? orAbsent(NUMBER)
     : value?.presentNumRead || vt === VAL.NUMBER && isPresentNumber(ctx, expr) ? NUMBER : ctx.summary?.at(ctx.func.current).kindOfExpr(expr)
   // A nullable BigInt operation also produces Number on its absent arm.
@@ -1179,6 +1164,19 @@ const elementUses = (n, out) => {
   return out
 }
 
+/** The names statement `s` proves present, among `checked` (the receivers the
+ *  emitter checked, throwing for a missing one, while it emitted `s`): read or
+ *  stored through on every path, bindings nothing assigns. */
+export const provedPresent = (s, checked) => {
+  const out = []
+  if (!checked?.length || !ctx.func.body) return out
+  for (const [name] of elementUses(s, new Map())) {
+    if (!checked.includes(name) || ctx.func.refinements?.get(name)?.notNullish) continue
+    if (isGlobal(name) ? ctx.scope.consts?.has(name) : !ctx.func.boxed?.has(name) && !isReassigned(ctx.func.body, name)) out.push(name)
+  }
+  return out
+}
+
 export function emitBlockBody(node) {
   const inner = node[1]
   const stmts = Array.isArray(inner) && inner[0] === ';' ? inner.slice(1) : [inner]
@@ -1200,6 +1198,10 @@ export function emitBlockBody(node) {
   const loopBlocked = new Set()
   const flatWrites = stmts.map(s => nestedWritesOf(s, loopBlocked))
   frame.flowValBlocked = loopBlocked
+  // A name this block proves present reads so to the summary's consumers too
+  // (the query layer's `present` mark, as flow-types.js withRefinements sets it).
+  const view = ctx.summary?.at(frame.current), presented = []
+  const markPresent = (name) => { if (view?.present && !view.isPresent(name)) { view.present(name); presented.push(name) } }
   try {
     for (let i = 0; i < stmts.length; i++) {
       const s = stmts[i]
@@ -1225,6 +1227,7 @@ export function emitBlockBody(node) {
         if (!bound) continue
         accumulated.push([name, cur])
         ;(ctx.func.refinements ??= new Map()).set(name, { ...cur, notNullish: true, ...(keep ? { saved: true } : null) })
+        markPresent(name)
       }
       // A declaration initialized from a present element (emitDecl) holds a
       // number for the rest of this block, while nothing below assigns it.
@@ -1241,23 +1244,10 @@ export function emitBlockBody(node) {
           refinements.set(name, cur ? { ...cur, notNullish: true } : { notNullish: true })
         }
       }
-      // Sibling statements after an unconditional return/throw/break/continue
-      // (or a nested `{}`/`;`-block whose OWN last statement is one) are
-      // UNREACHABLE — real JS never evaluates them, so a reference inside
-      // one never actually ReferenceErrors either (the read never happens).
-      // Stop walking the rest of THIS statement list rather than emit (and
-      // wrongly reject, per src/compile/emit.js's bare-identifier-fallback
-      // reject — see that fallback's own comment) code that can never run.
-      // isTerminator (src/type.js) is the same "always exits via return/
-      // throw/break/continue" predicate this function already trusts for
-      // post-terminator type-refinement, just below — reused, not
-      // reinvented. Narrower than full reachability (an `if/else` where
-      // BOTH arms terminate isn't recognized as unconditional here, matching
-      // isTerminator's own existing scope) but sound as far as it goes: a
-      // false negative here just re-walks code that's actually fine to skip
-      // (the wall-protocol default — reject only fires for something truly
-      // unresolved), never a false positive that skips reachable code.
-      if (isTerminator(s)) break
+      // Constant branch folding may expose a return or throw that the source
+      // statement's shape did not prove. Neither form can reach the next
+      // statement, whose reads and type checks must remain unevaluated.
+      if (isTerminator(s) || isTerminator(out[out.length - 1])) break
       // Position-sensitive invalidation FIRST, re-record SECOND: stmts[i]'s
       // own top-level target (if any) is the authoritative post-statement
       // state and must win over a same-statement nested self-write (e.g. a
@@ -1304,6 +1294,7 @@ export function emitBlockBody(node) {
   } finally {
     frame.localValTypesOverlay = prevValOverlay
     frame.flowValBlocked = prevFlowBlocked
+    for (const name of presented) view.unpresent(name)
     // Restore prior refinements on block exit.
     for (let i = accumulated.length - 1; i >= 0; i--) {
       const [name, prev] = accumulated[i]
@@ -1358,11 +1349,14 @@ export function emitIdentitySafe(node) {
 }
 export function emitIdentitySafeArms(node) {
   const [op] = node
+  if (op === '(') return emitIdentitySafe(node[1])
+  if (op === ',') return block64(...node.slice(1, -1).flatMap(emitVoid),
+    asF64(emitIdentitySafe(node[node.length - 1])))
   if (op === '?:') {
     const [, a, b, c] = node
-    const ca = emit(a)
+    const ca = toBool(a)
     if (isLit(ca)) { const v = litVal(ca), truthy = v !== 0 && v === v; markDropped(truthy ? c : b); return truthy ? emitIdentitySafe(b) : emitIdentitySafe(c) }
-    const cond = truthyIR(ca)
+    const cond = ca
     const thenRefs = extractRefinements(a, new Map(), true)
     const elseRefs = extractRefinements(a, new Map(), false)
     const vb = withRefinements(thenRefs, b, () => emitIdentitySafe(b))
@@ -1433,10 +1427,10 @@ export function emitIdentitySafeArms(node) {
 }
 
 /** Hoist `headExpr` into a temp, evaluate it once, and yield `body(t)` when the
- *  temp is non-nullish, else `undefined`. Shared by every `?.`-shaped optional
+ *  temp is non-nullish, else `otherwise` (undefined by default). Shared by every `?.`-shaped optional
  *  emitter (chain-lift, `?.`, `?.[]`, `?.()` via `evalOnce` + this helper) so
  *  the nullish-guard scaffold stays in one place. */
-function withNullGuard(headExpr, body, tag = 'ng') {
+function withNullGuard(headExpr, body, tag = 'ng', otherwise = undefExpr()) {
   const t = temp(tag)
   // asF64 on the taken arm: the continuation may come back i32-narrowed (an
   // int-certain slot read at O0 kept its raw i32), and the f64-typed if would
@@ -1446,7 +1440,7 @@ function withNullGuard(headExpr, body, tag = 'ng') {
     ['if', ['result', 'f64'],
       ['i32.eqz', isNullish(['local.get', `$${t}`])],
       ['then', asF64(body(t))],
-      ['else', undefExpr()]])
+      ['else', otherwise]])
 }
 
 /** Closure-TABLE call-site PARAM lattice — resolution side. Called once, when
@@ -1490,11 +1484,12 @@ export function resolveClosureTableParamLattice(arrName, elements) {
 // with that optional replaced by a regular access. The single guard short-circuits the
 // whole continuation. Nested optionals further inside the chain are left intact and
 // handle their own short-circuiting on recursion.
-function liftOptionalChain(node) {
+function liftOptionalChain(node, condition = false, receiver = null, missing = null) {
   const path = []
   let cur = node
   while (Array.isArray(cur) && (cur[0] === '.' || cur[0] === '[]' || cur[0] === '()' ||
                                  cur[0] === '?.' || cur[0] === '?.[]' || cur[0] === '?.()')) {
+    if (cur[0] === '(') break
     path.push(cur)
     cur = cur[1]
   }
@@ -1518,48 +1513,70 @@ function liftOptionalChain(node) {
   const boxedTypedReduce = opt[0] === '?.' && opt[2] === 'reduce' && optIdx >= 1 && path[optIdx - 1][0] === '()' &&
     summaryTagOf(summaryCore(ctx.summary?.at(ctx.func.current)?.kindOfExpr(path[optIdx - 1]) ?? 0)) === K.BIGINT &&
     ctx.summary.at(ctx.func.current).typedPayloadCtorOfExpr(opt[1]) != null
-  const view = ctx.summary?.at(ctx.func.current)
-  let head = opt[1], receiver = null, setup = null
-  if (ctx.closure.receiver && opt[0] === '?.()' && Array.isArray(head) && ['.', '?.', '[]', '?.[]'].includes(head[0])) {
-    receiver = temp('ocrecv')
-    setup = ['local.set', `$${receiver}`, asF64(emit(head[1]))]
-    view.alias(receiver, head[1], false)
-    head = [head[0], receiver, head[2]]
-  }
-  try {
-    const guarded = withNullGuard(asF64(emit(head)), t => {
-      // The temp holds the head's present value: the continuation resolves a
-      // Map's method or an object's slot through the head's own kind.
-      // Only a head of one concrete value kind seeds the temp (an object with
-      // its shape known): a union or an unknown shape keeps the generic reads.
-      // A BigInt keeps its representation plan: the temp holds a boxed carrier
-      // no plan describes, so it stays untyped there.
-      const view = ctx.summary?.at(ctx.func.current)
-      const headKind = view?.kindOfExpr(opt[1])
-      const headVt = view && headKind && !hasTag(headKind, K.BIGINT) ? valOf(summaryCore(headKind)) : null
-      const seed = headVt && (headVt !== VAL.OBJECT || view.objectSidOfExpr(opt[1]) != null)
-      if (seed) { view.alias(t, opt[1]); ctx.func.localValTypesOverlay.set(t, headVt) }
-      let rebuilt = opt[0] === '?.'   ? ['.',  t, opt[2]]
-                  : opt[0] === '?.[]' ? ['[]', t, opt[2]]
-                                      : ['()', t, opt.length < 3 ? null : opt.length === 3 ? opt[2] : [',', ...opt.slice(2)], receiver]
-      for (let i = optIdx - 1; i >= 0; i--) rebuilt = [path[i][0], rebuilt, ...path[i].slice(2)]
-      // The arm joins the undefined atom, so the continuation crosses tagged:
-      // a BOOL (a Set's `has`, a class method's result) as its atom, a raw
-      // BigInt payload (a class function's, a typed reduce's) boxed; its type
-      // resolves while the alias holds.
-      try {
-        const result = emit(rebuilt)
-        return boxedTypedReduce || result.bigintRaw === true ? asF64(boxBigInt(asI64(result)))
-          : carrierF64Narrow(rebuilt, materializeDeferredBigint(result))
-      } finally { if (seed) view.unalias(t) }
-    }, 'oc')
-    return setup ? block64(setup, guarded) : guarded
-  } finally { if (receiver) view.unalias(receiver) }
+  let head = opt[1], callReceiver = null
+  while (Array.isArray(head) && head[0] === '(') head = head[1]
+  if (ctx.closure.receiver && opt[0] === '?.()' && Array.isArray(head) && ['.', '?.', '[]', '?.[]'].includes(head[0]))
+    callReceiver = temp('ocrecv')
+  const headIR = callReceiver ? emitReference(head, callReceiver) : emit(opt[1])
+  const guarded = withNullGuard(asF64(headIR), t => {
+    // The temp holds the head's present value: the continuation resolves a
+    // Map's method or an object's slot through the head's own kind.
+    // Only a head of one concrete value kind seeds the temp (an object with
+    // its shape known): a union or an unknown shape keeps the generic reads.
+    // A BigInt keeps its representation plan: the temp holds a boxed carrier
+    // no plan describes, so it stays untyped there.
+    const view = ctx.summary?.at(ctx.func.current)
+    const headKind = view?.kindOfExpr(opt[1])
+    const headVt = view && headKind && !hasTag(headKind, K.BIGINT) ? valOf(summaryCore(headKind)) : null
+    const seed = headVt && (headVt !== VAL.OBJECT || view.objectSidOfExpr(opt[1]) != null)
+    if (seed) { view.alias(t, opt[1]); ctx.func.localValTypesOverlay.set(t, headVt) }
+    let rebuilt = opt[0] === '?.'   ? ['.',  t, opt[2]]
+                : opt[0] === '?.[]' ? ['[]', t, opt[2]]
+                                    : ['()', t, opt.length < 3 ? null : opt.length === 3 ? opt[2] : [',', ...opt.slice(2)], callReceiver]
+    for (let i = optIdx - 1; i >= 0; i--) rebuilt = [path[i][0], rebuilt, ...path[i].slice(2)]
+    // The arm joins the undefined atom, so the continuation crosses tagged:
+    // a BOOL (a Set's `has`, a class method's result) as its atom, a raw
+    // BigInt payload (a class function's, a typed reduce's) boxed; its type
+    // resolves while the alias holds.
+    try {
+      if (condition) return asF64(toBool(rebuilt))
+      const result = receiver ? emitReference(rebuilt, receiver)
+        : (missing && liftOptionalChain(rebuilt, false, null, missing)) || emit(rebuilt)
+      return boxedTypedReduce || result.bigintRaw === true ? asF64(boxBigInt(asI64(result)))
+        : carrierF64Narrow(rebuilt, materializeDeferredBigint(result))
+    } finally { if (seed) view.unalias(t) }
+  }, 'oc', missing ? asF64(emit(missing)) : undefExpr())
+  return condition ? truthyIR(guarded) : guarded
+}
+
+// A grouped optional member still calls a present method through normal dispatch.
+// When its chain short-circuits, the outer call evaluates arguments and throws.
+export function emitGroupedCall(callee, args) {
+  while (Array.isArray(callee) && callee[0] === '(') callee = callee[1]
+  if (!Array.isArray(callee) || !['.', '[]', '?.', '?.[]'].includes(callee[0])) return null
+  return liftOptionalChain(['()', callee, args], false, null, ['()', [null, undefined], args])
+}
+
+// A method reference carries its receiver through grouping and optional chains.
+// Capture the final member's base once; a short-circuited chain leaves the
+// function undefined, so arguments still run before the call throws.
+export function emitReference(node, receiver) {
+  if (!Array.isArray(node)) return emit(node)
+  if (node[0] === '(') return emitReference(node[1], receiver)
+  const lifted = liftOptionalChain(node, false, receiver)
+  if (lifted) return lifted
+  if (!['.', '[]', '?.', '?.[]'].includes(node[0])) return emit(node)
+  const value = asF64(emit(node[1])), view = ctx.summary?.at(ctx.func.current)
+  view?.alias(receiver, node[1], false)
+  try { return block64(['local.set', `$${receiver}`, value], emit([node[0], receiver, node[2]])) }
+  finally { view?.unalias(receiver) }
 }
 
 /**
  * Emit single AST node to typed WASM IR.
  * Every returned node has .type = 'i32' | 'f64'.
+ * A node is the current one while it emits (ctx.js), its position the current
+ * position when it has one; the enclosing ones are current again after.
  * @param {import('../../prepare/module-resolve.js').ASTNode} node
  * @returns {Array} typed WASM S-expression
  */
@@ -1573,6 +1590,17 @@ function liftOptionalChain(node) {
 // the emitter made in place (emit-assign.js `inPlace`) lowers nothing.
 const LOGICAL_ASSIGN = new Set(['??=', '||=', '&&='])
 export function emit(node, expect) {
+  if (!Array.isArray(node)) return emitNode(node, expect)
+  const at = ctx.error, outerNode = at.node, outerLoc = at.loc
+  at.node = node
+  if (node.loc != null) at.loc = node.loc
+  const ir = emitSite(node, expect)
+  at.node = outerNode
+  at.loc = outerLoc
+  if (!ctx.transform.sourceMap || node.sourceLoc == null || !Array.isArray(ir)) return ir
+  return Object.assign(ir.slice(), ir, { sourceLoc: node.sourceLoc })
+}
+function emitSite(node, expect) {
   if (remarking > 0 && Array.isArray(node)) { const mark = REMARKS.get(node); if (mark !== undefined) return remarked(node, expect, mark) }
   if (!ctx.plans.escapeFlag || !Array.isArray(node) || !ctx.plans.escapeSites?.has(node) || LOGICAL_ASSIGN.has(node[0])) return emitNode(node, expect)
   markInstrumented(node)
@@ -1714,7 +1742,11 @@ export function siteFlag(node, target = undefined, held = null) {
   if (reachOn() && typeof name === 'string' && moduleBinding([node[0], name])) return ROOT
   if (kind === SITE.CELL) return noted(holderFlag(name, kind), node)
   if (kind === SITE.ARG) { const a = node[2]; target = a == null ? null : Array.isArray(a) && a[0] === ',' ? a[1] : a }
-  else if (kind !== SITE.ZERO) { const t = node[1]; target = Array.isArray(t) && (t[0] === '.' || t[0] === '[]') ? t[1] : null }
+  else if (kind !== SITE.ZERO) {
+    let t = node[1]
+    while (Array.isArray(t) && t[0] === '(') t = t[1]
+    target = Array.isArray(t) && (t[0] === '.' || t[0] === '?.' || t[0] === '[]') ? t[1] : null
+  }
   return noted(holderFlag(target, kind, held), node)
 }
 const heapTop = () => typed(ctx.memory.shared ? ['i32.load', ['i32.const', HEAP.PTR_ADDR]] : ['global.get', '$__heap'], 'i32')
@@ -1797,10 +1829,6 @@ export const withEscapeFlag = (ir, flag = flagToZero()) => {
 
 function emitNode(node, expect) {
   ctx.func._expect = expect || null
-  if (Array.isArray(node)) {
-    ctx.error.node = node
-    if (node.loc != null) ctx.error.loc = node.loc
-  }
   if (node == null) return null
   // Boolean literals carry VAL.BOOL for type observation (valTypeOf reads the
   // AST), but their working representation is the plain number 0/1 — identical
@@ -1962,6 +1990,11 @@ function emitNode(node, expect) {
     // consistent error family and the test262 runner's existing
     // 'is not in scope' skip-message allowlist keeps classifying it as a
     // clean structural reject, not a miscompile.
+    // A builtin global jz resolves at compile time holds no value to pass.
+    const builtin = builtinGlobalOf(node)
+    if (builtin) err(GLOBAL_TYPEOF[builtin] === 'object'
+      ? `'${builtin}' as a value is not supported: jz resolves a builtin namespace at compile time and holds no object for it; call or read its members in place`
+      : `'${builtin}' as a value is not supported: jz resolves a builtin function or constructor where it is called and holds no function object for it; wrap the call in an arrow`)
     err(`'${node}' is not in scope — jz has no runtime identifier resolution, so an undeclared reference must be rejected at compile time (JS would throw ReferenceError here); declare '${node}', fix the spelling, or import it`)
   }
   if (!Array.isArray(node)) return typed(['f64.const', 0], 'f64')
@@ -1999,6 +2032,9 @@ function emitNode(node, expect) {
     const v = node[1]
     return v === undefined ? undefExpr() : v === null ? nullExpr() : emit(v)
   }
+
+  // A retained parenthesis ends the inner optional chain before its consumer.
+  if (op === '(') return emit(node[1])
 
   // Optional-chain continuation: `a?.b.c` → if `a` nullish then undefined else `a.b.c`.
   // Lift before dispatch so the regular `.` / `[]` / `()` handler sees the rebuilt chain

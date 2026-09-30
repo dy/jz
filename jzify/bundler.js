@@ -5,7 +5,7 @@
 
 import {
   handlerArgs, rewriteChildren, JZ_BLOCK_OPS, bindingOf, cloneNode, nodeEqual, descriptorProps,
-  literalString, collectBareRefs, moduleStmts, someDeep, isZeroLiteral, extractParams,
+  literalString, collectBareRefs, moduleStmts, someDeep, isZeroLiteral, extractParams, withLoc,
 } from '../src/ast.js'
 
 export function foldStaticExportHelpers(ast) {
@@ -124,7 +124,9 @@ function objectBuiltinKey(node) {
 const containsCall = (node, ok) =>
   someDeep(node, n => Array.isArray(n) && n[0] === '()' && typeof n[1] === 'string' && ok(n[1]))
 
-function rewriteBundlerAliases(node, aliases, interopBindings) {
+// What a node rewrites to stands at its source position (ast.js withLoc).
+function rewriteBundlerAliases(node, aliases, interopBindings) { return withLoc(rewriteBundlerAliasesNode(node, aliases, interopBindings), node) }
+function rewriteBundlerAliasesNode(node, aliases, interopBindings) {
   if (!Array.isArray(node)) return node
   const rec = n => rewriteBundlerAliases(n, aliases, interopBindings)
 
@@ -173,7 +175,8 @@ function rewriteBundlerAliases(node, aliases, interopBindings) {
   return node.map((part, i) => i === 0 ? part : rec(part))
 }
 
-function replaceInteropReads(node, bindings) {
+function replaceInteropReads(node, bindings) { return withLoc(replaceInteropReadsNode(node, bindings), node) }
+function replaceInteropReadsNode(node, bindings) {
   if (typeof node === 'string' && bindings.has(node)) return cloneNode(bindings.get(node))
   if (!Array.isArray(node)) return node
   if (node[0] === '=' && typeof node[1] === 'string') return ['=', node[1], replaceInteropReads(node[2], bindings)]
@@ -272,7 +275,8 @@ function getterReturnExpr(node) {
   return body
 }
 
-function replaceStaticExportReads(node, rewrites) {
+function replaceStaticExportReads(node, rewrites) { return withLoc(replaceStaticExportReadsNode(node, rewrites), node) }
+function replaceStaticExportReadsNode(node, rewrites) {
   if (node == null || typeof node !== 'object' || !Array.isArray(node)) return node
   if ((node[0] === '.' || node[0] === '?.') && typeof node[1] === 'string' && typeof node[2] === 'string') {
     const value = rewrites.get(`${node[1]}.${node[2]}`)

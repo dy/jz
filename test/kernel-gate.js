@@ -5,16 +5,17 @@
 // way a gate could turn green without earning it. No real kernel is built here;
 // the build transaction itself is test/self-build.js's.
 import test from 'tst'
-import { is, ok } from 'tst/assert.js'
+import { is, ok, throws } from 'tst/assert.js'
 import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, relative } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { compile } from '../index.js'
 import { PROGRAMS } from '../scripts/kernel-gate-corpus.js'
 import { deriveStatus, judgeMemory, judgeSpeed, median, validateReport } from '../scripts/kernel-gate-judge.mjs'
+import { graphEntries, contentHash } from '../scripts/graph-provenance.mjs'
 import { onKernel } from './_matrix.js'
 
 const ROOT = new URL('..', import.meta.url).pathname
@@ -30,6 +31,65 @@ const fixture = (body, readers = true) => compile((readers ? READERS : '') + `ex
 const GARBAGE = 'return new Uint8Array([1, 2, 3])'
 const withDir = (fn) => { const dir = mkdtempSync(join(tmpdir(), 'jz-gate-')); try { return fn(dir) } finally { rmSync(dir, { recursive: true, force: true }) } }
 const manifestOf = (path) => JSON.parse(readFileSync(path, 'utf8'))
+
+test('kernel gate: graph fingerprints survive checkout moves and retain source and edge changes', () => {
+  if (onKernel()) return
+  const graph = root => ({
+    code: `import { f } from '${root}/src/a.js'\nexport { f }`,
+    modules: {
+      [`${root}/src/a.js`]: `export { f } from '${root}/src/b.js'\nexport const load = () => import('${root}/src/b.js')`,
+      [`${root}/src/b.js`]: 'export const f = x => x + 1',
+    },
+  })
+  const fingerprint = (root, g = graph(root)) => contentHash(graphEntries(g, path => relative(root, path)))
+  const a = '/checkout/a', b = '/another/checkout/b'
+  const original = fingerprint(a)
+  is(original, fingerprint(b), 'both module keys and rewritten imports are independent of the checkout')
+  const changed = graph(a)
+  changed.modules[`${a}/src/b.js`] = 'export const f = x => x + 2'
+  ok(original !== fingerprint(a, changed), 'a source change invalidates the graph')
+  const edge = graph(a)
+  edge.code = edge.code.replace('/src/a.js', '/src/b.js')
+  ok(original !== fingerprint(a, edge), 'a different imported module invalidates the graph')
+  const literal = graph(a)
+  literal.code += `\nexport const path = '${a}/src/a.js'`
+  const literalOther = graph(b)
+  literalOther.code += `\nexport const path = '${b}/src/a.js'`
+  ok(fingerprint(a, literal) !== fingerprint(b, literalOther), 'ordinary path strings retain their runtime values')
+  const external = graph(a)
+  external.code += "\nimport 'external-a'"
+  const externalOther = graph(a)
+  externalOther.code += "\nimport 'external-b'"
+  ok(fingerprint(a, external) !== fingerprint(a, externalOther), 'external specifiers retain their identities')
+  const reordered = graph(a)
+  reordered.modules = Object.fromEntries(Object.entries(reordered.modules).reverse())
+  is(original, fingerprint(a, reordered), 'insertion order is irrelevant')
+  throws(() => graphEntries(graph(a), () => 'same.js'), /Duplicate canonical module key/, 'ambiguous canonical keys cannot be attested')
+})
+
+test('kernel gate: failed builds retain the original cause after the source context', () => {
+  if (onKernel()) return
+  withDir(dir => {
+    const output = join(dir, 'gate.json')
+    const diagnostic = Array.from({ length: 20 }, (_, i) => `source context ${i}`).join('\n') + '\nCAUSE: original codegen failure'
+    const r = spawnSync(process.execPath, ['--input-type=module', '-e', `
+      import cp from 'node:child_process'
+      import { syncBuiltinESMExports } from 'node:module'
+      const spawn = cp.spawnSync
+      cp.spawnSync = (cmd, args, opts) => args?.[0]?.endsWith('/scripts/self-compile-build.mjs')
+        ? { status: 1, stderr: ${JSON.stringify(diagnostic)} } : spawn(cmd, args, opts)
+      syncBuiltinESMExports()
+      process.argv = [process.execPath, ${JSON.stringify(RUNNER)}, '--build', '--gate', 'functional', '--json', ${JSON.stringify(output)}]
+      await import(${JSON.stringify(pathToFileURL(RUNNER).href)})
+    `], { cwd: ROOT, encoding: 'utf8', timeout: 60_000 })
+    if (r.error) throw r.error
+    is(r.status, 1)
+    const report = manifestOf(output)
+    is(report.status.build, 'red')
+    ok(report.kernel.error.includes(diagnostic), 'the manifest preserves the entire build diagnostic')
+    ok(r.stderr.includes('CAUSE: original codegen failure'), 'the console names the underlying cause too')
+  })
+})
 
 test('kernel gate: the corpus expectations are what Node computes for each source', async () => {
   if (onKernel()) return
@@ -147,6 +207,19 @@ test('kernel gate: provenance: a sidecar attests the bytes it names, for the gra
     m = (run(['--kernel', join(dir, 'k.wasm'), '--gate', 'sequences', '--json', join(dir, 'c.json')]), manifestOf(join(dir, 'c.json')))
     is(m.kernel.origin, 'attested'); is(m.kernel.matchesRunner, true); is(m.status.sequences, 'red'); is(m.certified, false)
     ok(typeof m.runnerProvenance.graphSha256 === 'string' && m.runnerProvenance.graphSha256.length === 64 && m.runnerProvenance.watr.files > 0 && Array.isArray(m.runnerProvenance.dirtySources), 'the runner records its own graph, dependency content and dirty sources')
+    is(m.runnerProvenance.profile.optimize.snapshotInit, true, 'the complete optimizer profile is attested')
+    is(m.runnerProvenance.profile.optimize.collectionInitCap, 2, 'compiler allocation policy is attested')
+    for (const env of [
+      {JZ_SELF_COMPILE_SNAPSHOT:'0'}, {JZ_SELF_COMPILE_OPT:'3'},
+      {JZ_SELF_COMPILE_OPT:'{"level":1,"arenaRewind":true}'},
+      {JZ_HELPER_COUNTERS:'1'}, {JZ_HELPER_SITES:'set_add'},
+    ]) {
+      run(['--kernel', join(dir, 'k.wasm'), '--gate', 'sequences', '--json', join(dir, 'profile.json')], env)
+      const changed = manifestOf(join(dir, 'profile.json'))
+      is(changed.kernel.matchesRunner, false, JSON.stringify(env) + ' cannot reuse the default-profile attestation')
+      is(changed.certified, false)
+    }
+
   })
 })
 

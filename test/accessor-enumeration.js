@@ -6,7 +6,7 @@
 // level, on fresh module state. Value-returning exports use f: WASI reserves
 // a zero-argument run as its void command entry.
 import test from 'tst'
-import { is, ok } from 'tst/assert.js'
+import { is, ok, throws } from 'tst/assert.js'
 import jz, { compile } from '../index.js'
 import { levels } from './_matrix.js'
 import { oracle } from './util.js'
@@ -16,6 +16,49 @@ const agree = (cases) => {
     is(jz(src, { optimize }).exports.entry(...args), oracle(src).entry(...args), `${name} O${optimize}`)
 }
 const O = `{ a: 1, get g() { return 7 }, set s(v) { this.a = v } }`
+
+test('literal accessors: dynamic layouts reject instead of exposing internal slots', () => {
+  for (const props of [
+    '[k]: 1, get g() { return 7 }', 'get g() { return 7 }, [k]: 1',
+    '[k]: 1, set g(v) {}', '...x, get g() { return 7 }',
+    'get g() { return 7 }, ...x', '...x, set g(v) {}',
+  ]) for (const optimize of levels(0, 2, 3))
+    throws(() => compile(`export function f(k) { const x = {}; x[k] = 1; return {${props}} }`, { optimize }),
+      /object literal accessors require statically known property names/)
+  agree([
+    ['known spread with accessor', `export const entry = () => { const o = { ...{ a: 1 }, get g() { return 7 } }; return JSON.stringify([o.g, Object.keys(o)]) }`],
+    ['dynamic spread copies accessor values', `export const entry = k => { const x = {}; x[k] = 1; const o = { ...x, ...{ get g() { return 7 } } }; return JSON.stringify([o.g, Object.keys(o)]) }`, ['a']],
+  ])
+})
+
+test('literal accessors: dynamic spread copies visible keys and reads each getter once', () => agree([
+  ...['false', 'true'].map(cond => ['conditional ' + cond, `export const entry = k => {
+    let calls = 0; const x = {}; x[k] = 1
+    const o = { ...x, ...(${cond} && { 2: 20, a: 3, get 1() { calls++; return 10 }, set z(v) {} }) }
+    return JSON.stringify([Object.keys(o), Object.values(o), calls])
+  }`, ['b']]),
+  ['getter effects precede later properties', `export const entry = k => {
+    let calls = 0; const x = {}; x[k] = 1
+    const o = { ...x, ...{ get g() { calls++; return 7 } }, after: calls }
+    return JSON.stringify([o.g, o.g, o.after, calls, Object.keys(o)])
+  }`, ['a']],
+]))
+
+test('literal accessors: dynamic spread preserves throws and repeated-call state', () => {
+  const src = `let calls = 0, after = 0
+    export function entry(k, fail) {
+      const x = {}; x[k] = 1
+      try {
+        const o = { ...x, ...{ get g() { calls++; if (fail) throw 11; return calls } }, after: ++after }
+        return [o.g, o.g, o.after, calls, Object.keys(o).join()].join('|')
+      } catch (e) { return ['throw', e, calls, after].join('|') }
+    }`
+  for (const optimize of levels(0, 2, 3)) {
+    const got = jz(src, { optimize }).exports, want = oracle(src)
+    for (const [k, fail] of [['a', false], ['a', false], ['', true], ['g', false], ['', false]])
+      is(got.entry(k, fail), want.entry(k, fail), `${k}, throw=${fail}, O${optimize}`)
+  }
+})
 
 test('literal accessors: the builtins list and read them by name', () => agree([
   // each listed `g__get`/`s__set`, read the getter's closure, or dropped the key

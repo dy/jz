@@ -4,24 +4,23 @@
  * @module compile/emit/arithmetic
  */
 
-import { representationProgramHasBigint } from '../representation-plan.js'
 import { ctx, inc, LAYOUT } from '../../ctx.js'
-import { asF64, asI32, asI64, block64, coerceNullishToNum, emitNum, f64rem, isGlobal, isLit, isPostfix, isPureIR, litVal, readI64, temp, toNumF64, toStrI64, typed, withTemp } from '../../ir.js'
+import { asF64, asI32, asI64, block64, coerceNullishToNum, emitNum, f64rem, isGlobal, isLit, isPureIR, litVal, readI64, temp, toNumF64, toStrI64, typed, withTemp } from '../../ir.js'
 import { MUTATE_OPS, some } from '../../ast.js'
 import { censusMaybeUndefined, censusMaybeUndefinedKind, numericDenied, valTypeOf } from '../../kind.js'
 import { VAL, mayBeUndefined } from '../../reps.js'
 import { negRangeFitsI32 } from '../../static.js'
-import { K, core, hasTag, tagsOf, tagOf, paramOf, UNKNOWN, isPostfixRecovery } from '../../summary/kind.js'
+import { K, core, hasTag, tagsOf, tagOf, paramOf, UNKNOWN } from '../../summary/kind.js'
 import { exprType, inBoundsArrIdx } from '../../type.js'
 import { storedValue } from '../../bridge.js'
 import {
-  bigIntDivIR, bigIntDomainsCanMix, bigIntJointDispatch, bigIntOperand, bigIntUnary, bigintMemberAssignTarget, bigintMixReject, bigintResult, computedBoxOf, hasBigintDomain, numericStep,
+  bigIntDivIR, bigIntDomainsCanMix, bigIntJointDispatch, bigIntOperand, bigIntUnary, bigintMixReject, bigintResult, computedBoxOf, hasBigintDomain,
 } from './bigint.js'
 import { emit, emitBoolStr, tryConcatChain } from './dispatch.js'
 import {
   addBoundedFaithful, addFitsI32, addLiteralFitsI32, addRangeFitsI32, i32Mag, mulBoundedFaithful, mulFitsI32, mulRangeFitsI32, subLiteralFitsI32, subRangeFitsI32,
 } from './i32-bounds.js'
-import { foldOperandPure, isI32Num, isLit1, isNumArm, isSideEffectFree } from './shared.js'
+import { foldOperandPure, isI32Num, isNumArm, isSideEffectFree } from './shared.js'
 
 
 // Peel an emitted operand back to its raw i32 value when it carries one: a value already
@@ -66,7 +65,7 @@ const widensUnsigned = (v) => v.unsigned && !v.wrapSafe
 // so the inner per-op canon (local.set + select + f64.ne, ~3 ops) is dead on the
 // critical path. This is THE gap that put sqrt-heavy kernels ~23% behind V8
 // (julia/raymarcher/boids); stripping it makes them match native JS.
-const stripCanon = (v) => {
+export const stripCanon = (v) => {
   if (!v) return v
   if (v.canonOf != null) return typed(v.canonOf, 'f64')
   // A NaN-canon nested in the VALUE arm of a `select` / `(if result f64)` is equally
@@ -163,10 +162,6 @@ const foldConst = (va, vb, fn, guard) =>
   isLit(va) && isLit(vb) && !va.unsigned && !vb.unsigned && (!guard || guard(litVal(vb)))
     ? emitNum(fn(litVal(va), litVal(vb))) : null
 
-// Postfix recovery computes a fresh raw i64 after the update: the one
-// BigInt-domain result rule (bigintResult) materializes it as the ordinary
-// BigInt arithmetic branches below do.
-const postfixBigint = bigintResult
 // A bare name the numeric demand pass denied a number, whose kind admits a
 // string (an unknown kind admits every kind the host may pass).
 const mayBeString = (node) => {
@@ -242,25 +237,7 @@ const genericAdd = (a, b, slowOnly = false) => {
 export const arithmeticOps = {
   // === Arithmetic (type-preserving) ===
 
-  // Postfix in void: (++i)-1 / (--i)+1 → just ++i / --i
   '+': (a, b, self) => {
-    if (ctx.func._expect === 'void' && isPostfix(a, '--', b)) return emit(a, 'void')
-    // Postfix `n--` value-position recovery `(--n) + 1`: prepare wraps the '--'
-    // in an outer `+ 1` to hand back the OLD value. The literal `1` here is a
-    // compiler-synthesized correction constant, not a user-facing operand — it
-    // must never trip bigintMixReject's TypeError (that guard exists for genuine
-    // source-level BigInt/Number mixing). When n is proven BIGINT, '--' has
-    // already produced the correctly-typed i64 result (see the '++'/'--' table
-    // entry above); recover the old value with the same i64.add-by-constant
-    // shape instead of falling into the generic BIGINT-mix check below.
-    if (isPostfix(a, '--', b) && valTypeOf(a) === VAL.BIGINT)
-      return postfixBigint(['i64.add', readI64(a, emit(a)), ['i64.const', 1]], self)
-    // Member BIGINT `obj.p++`'s postfix OLD-value recovery — see
-    // bigintMemberAssignTarget above.
-    if (isLit1(b) && bigintMemberAssignTarget(a))
-      return postfixBigint(['i64.add', readI64(a, emit(a)), ['i64.const', 1]], self)
-    if (representationProgramHasBigint(ctx) && isPostfixRecovery('+', a, b) && valTypeOf(a) == null)
-      return numericStep(a, 'add')
     // A self-accumulation `a = a + …` lets the concat bump-EXTEND `a` in place (a is dead-after).
     // Read it for THIS concat, then clear so nested operands (not the accumulation target) stay fresh.
     const selfAccum = typeof a === 'string' && a === ctx.func._selfAccumConcat
@@ -475,18 +452,6 @@ export const arithmeticOps = {
     return typed(['f64.add', stripCanon(toNumF64(a, va)), stripCanon(toNumF64(b, vb))], 'f64')
   },
   '-': (a, b, self) => {
-    if (ctx.func._expect === 'void' && isPostfix(a, '++', b)) return emit(a, 'void')
-    // Postfix `n++` value-position recovery `(++n) - 1` — mirror of the '+'
-    // handler's `(--n) + 1` case just above; see its comment for why this
-    // bypasses bigintMixReject (compiler-synthesized constant, not a source mix).
-    if (isPostfix(a, '++', b) && valTypeOf(a) === VAL.BIGINT)
-      return postfixBigint(['i64.sub', readI64(a, emit(a)), ['i64.const', 1]], self)
-    // Member BIGINT `obj.p--`'s postfix OLD-value recovery — see
-    // bigintMemberAssignTarget above ('+').
-    if (isLit1(b) && bigintMemberAssignTarget(a))
-      return postfixBigint(['i64.sub', readI64(a, emit(a)), ['i64.const', 1]], self)
-    if (representationProgramHasBigint(ctx) && isPostfixRecovery('-', a, b) && valTypeOf(a) == null)
-      return numericStep(a, 'sub')
     // §14 point 4: joint runtime-domain dispatch (see bigIntDomain's own doc
     // comment) — binary form only; `b === undefined` here is unary minus
     // (reached through this same table entry, see the plain OR-gate below),

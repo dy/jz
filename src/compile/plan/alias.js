@@ -11,8 +11,9 @@
  *
  * `b` is `a` when
  *   - every definition of `b` is the name `a`, and nothing else writes `b`;
- *   - `a` is a parameter nothing writes or a binding with one definition, its
- *     declaration, so what `b` took is what `a` holds;
+ *   - `a` is a parameter nothing writes, a local defined only by its declaration,
+ *     or a module binding proved constant after initialization (including a
+ *     settled function target), so what `b` took is what `a` holds;
  *   - `b` is declared with `a` or assigned before every read on every path
  *     (summary/definite.js): no read finds it undefined;
  *   - no closure mentions `b`: a closure reads at a time of its own.
@@ -229,15 +230,21 @@ const aliasesIn = (f) => {
   scan(body, false)
   if (f.defaults) for (const d of Object.values(f.defaults)) scan(d, true)
 
-  const stable = (a) => !written.has(a) && (params.has(a) ? !defs.has(a) && a !== f.rest : declared.has(a) && !bare.has(a) && defs.get(a)?.length === 1)
+  const stable = (a) => !written.has(a) && (params.has(a) ? !defs.has(a) && a !== f.rest
+    : declared.has(a) ? !bare.has(a) && defs.get(a)?.length === 1
+    : (ctx.scope.consts?.has(a) || ctx.funcs.globalDevirt?.has(a)) && !defs.has(a))
   let assigned = null
   const to = new Map()
+  // An immutable literal object cannot take a nullish fallback. This also
+  // exposes the alias introduced by the destructuring receiver check.
+  const sourceOf = v => isArr(v) && v[0] === '??' && typeof v[1] === 'string' &&
+    stable(v[1]) && !captured.has(v[1]) && defs.get(v[1])?.[0]?.[0] === '{}' ? v[1] : v
   for (const b of declared) {
     if (captured.has(b) || written.has(b) || params.has(b)) continue
     const l = defs.get(b)
     if (!l?.length) continue
-    const a = l[0]
-    if (typeof a === 'string' ? a === b || !l.every(v => v === a) || !stable(a) : !decider(a) || !l.every(v => decider(v) && JSON.stringify(v) === JSON.stringify(a))) continue
+    const a = sourceOf(l[0])
+    if (typeof a === 'string' ? a === b || !l.every(v => sourceOf(v) === a) || !stable(a) : !decider(a) || !l.every(v => decider(v) && JSON.stringify(v) === JSON.stringify(a))) continue
     if (bare.has(b) && !(assigned ??= definitelyAssigned(body)).has(b)) continue
     to.set(b, a)
   }

@@ -38,7 +38,7 @@ function reachableStdlib(sec) {
   const stdlib = ctx.core.stdlib
   const reach = new Set(), stack = []
   // Track every reached name (module-namespace `math.sin` included), but only follow
-  // those with a stdlib template. Names match `$foo`, `$__foo`, `$math.sin_core` — the
+  // those with a stdlib template. Names match `$foo`, `$__foo`, `$math.sin` — the
   // dotted module funcs are the ones the `$__`-only regex used to miss, pruning live code.
   const add = (name) => { if (!reach.has(name)) { reach.add(name); if (stdlib[name] != null) stack.push(name) } }
   const scanIR = (node) => {
@@ -72,7 +72,7 @@ function reachableStdlib(sec) {
 // (PPC_CALL2). These are the ONLY helpers appendLateStdlib may add; restricting to them avoids
 // touching helpers that live in other module sections (ext-stdlib, imports) where a blind
 // referenced-but-absent scan would wrongly re-append and duplicate them.
-const LATE_VEC_HELPERS = new Set(['math.sin2', 'math.cos2', 'math.pow2', 'math.atan2_2', 'math.hypot_2', 'math.log_v', 'math.exp_v', 'math.exp2_v', 'math.cbrt_v', 'math.fifthroot_v',
+const LATE_VEC_HELPERS = new Set(['math.sin2', 'math.cos2', 'math.pow2', 'math.atan2_2', 'math.hypot_2', 'math.log_v', 'math.exp_v', 'math.exp2_v', 'math.cbrt_v', 'math.pow_fifths_v', 'math.pow_b_v',
   // math.pow_fold (scalar) is normally eager-included by emitPow's own const-exponent fold (which
   // always `inc()`s it before the vectorizer ever runs, under optimize.crPow — see module/math.js).
   // It's ALSO listed here for the one path where that eager inc doesn't fire: a genuine runtime
@@ -176,7 +176,7 @@ export function pullStdlib(sec) {
   //    so memory can't be gated on allocation alone.
   // Explicit rewind (including an empty checkpoint) needs the arena's reset mark.
   const ALLOC_FUNCS = ['__alloc', '__alloc_hdr', '__alloc_hdr_n', '__clear']
-  const needsAlloc = strPoolLen() > 0 || ALLOC_FUNCS.some(a => reachable.has(a)) ||
+  let needsAlloc = strPoolLen() > 0 || ALLOC_FUNCS.some(a => reachable.has(a)) ||
     // shared memory memory.init's the static region into __alloc'd space at start
     !!(ctx.memory.shared && dataLen() > 0)
   // Memory ops can be emitted *inline* into user/start funcs (a heap-path char read
@@ -233,8 +233,12 @@ export function pullStdlib(sec) {
   // reachability is exact. Base globals register in staticI32GlobalInits so a
   // later static-prefix strip shifts them like every other static offset.
   ctx.runtime.lazySpans = []
+  // `fn` owns the table, or a list of functions that each read it: it lands when one is in,
+  // and stays while any is live
   const injectTable = (fn, global, bytes) => {
-    if (!ctx.core.includes.has(fn) || !bytes) return false
+    const fns = Array.isArray(fn) ? fn : [fn]
+    const owner = fns.find(f => ctx.core.includes.has(f))
+    if (!owner || !bytes) return false
     const start = dataLen()
     dataAlign(8)
     // Shared memory: the table lands via memory.init at a runtime base, so the
@@ -245,7 +249,7 @@ export function pullStdlib(sec) {
     if (ctx.memory.shared && !ctx.scope.globals.has('__staticBase')) declGlobal('__staticBase', 'i32')
     dataPush(bytes)
     ;(ctx.runtime.staticI32GlobalInits ??= []).push(global)
-    ctx.runtime.lazySpans.push({ fn: '$' + fn, global, start, base, bytes })
+    ctx.runtime.lazySpans.push({ fn: '$' + owner, fns: fns.map(f => '$' + f), global, start, base, bytes })
     return true
   }
   // prevent double-injection on re-entry (null-sentinel; jz forbids delete)
@@ -255,14 +259,30 @@ export function pullStdlib(sec) {
   // the SAME owning function since the shared kernel always needs both tables together.
   if (injectTable('math.pow_transcend', 'math.pow_log2_tbl', ctx.runtime.powLog2Table)) ctx.runtime.powLog2Table = null
   if (injectTable('math.pow_transcend', 'math.pow_exp2_tbl', ctx.runtime.powExp2Table)) ctx.runtime.powExp2Table = null
-  // The 2^(j/64) table both exponentials and pow reduce to (module/math/trig-tables.js EXP2_TAB): whichever is in injects it once.
-  if (injectTable('math.exp2', 'math.exp2_tbl', ctx.runtime.exp2Table)) ctx.runtime.exp2Table = null
-  if (injectTable('math.exp', 'math.exp2_tbl', ctx.runtime.exp2Table)) ctx.runtime.exp2Table = null
-  // pow's runtime kernel (the default one; crPow's has tables of its own) reads both
-  if (ctx.runtime.powLogTable) {
-    if (injectTable('math.pow_core', 'math.exp2_tbl', ctx.runtime.exp2Table)) ctx.runtime.exp2Table = null
-    if (injectTable('math.pow_core', 'math.pow_log_tbl', ctx.runtime.powLogTable)) ctx.runtime.powLogTable = null
+  // 2/π's bits for sin, cos and tan past 2^24 (module/math.js $math.rem_pio2, Payne–Hanek)
+  if (injectTable('math.rem_pio2', 'math.pio2_tbl', ctx.runtime.pio2Table)) ctx.runtime.pio2Table = null
+  // The 2^(j/64) table both exponentials and pow reduce to (module/math/trig-tables.js
+  // EXP2_TAB), and pow's log table: pow's default kernel (inline in $math.pow; crPow's has
+  // tables of its own) and $math.pow_b read the first, $math.pow the second.
+  const powKernel = !!ctx.runtime.powLogTable
+  if (injectTable(powKernel ? ['math.exp2', 'math.exp', 'math.pow', 'math.pow_b'] : ['math.exp2', 'math.exp'], 'math.exp2_tbl', ctx.runtime.exp2Table)) ctx.runtime.exp2Table = null
+  if (powKernel && injectTable('math.pow', 'math.pow_log_tbl', ctx.runtime.powLogTable)) ctx.runtime.powLogTable = null
+  // The math kernels' constants (module/math.js kc): the words the kernels in the program
+  // read, renumbered in the order they first name them, so a program carries its own
+  // kernels' constants and no others (a late mirror, LATE_VEC_HELPERS, counts as in)
+  if (ctx.runtime.mathKc) {
+    const users = ctx.runtime.mathKcUsers.filter(f => ctx.core.includes.has(f) || LATE_VEC_HELPERS.has(f))
+    const word = /offset=(\d+) \(global\.get \$math\.kc\)/g, at = new Map()
+    for (const f of users) ctx.core.stdlib[f].replace(word, (m, k) => { if (!at.has(k)) at.set(k, at.size * 8); return m })
+    const bytes = new Uint8Array(at.size * 8)
+    for (const [k, to] of at) bytes.set(ctx.runtime.mathKc.subarray(+k, +k + 8), to)
+    for (const f of users) ctx.core.stdlib[f] = ctx.core.stdlib[f].replace(word, (m, k) => `offset=${at.get(k)} (global.get $math.kc)`)
+    if (at.size) injectTable(users, 'math.kc', bytes)
+    ctx.runtime.mathKc = null
   }
+  // a table injected above is static data the shared-memory start copies into __alloc'd
+  // space too, where the program had none of its own (Math.exp alone)
+  if (ctx.memory.shared && dataLen() > 0) needsAlloc = true
   if (!needsAlloc) { ctx.scope.globals.delete('__heap'); ctx.scope.globals.delete('__heap_reset') }
   if (needsMemory && ctx.module.modules.core) {
     if (needsAlloc) {
@@ -419,7 +439,7 @@ export function pullStdlib(sec) {
       // other's addition (a program can need both: dyn-props AND durable-growth
       // relocation both reach here independent of each other).
       const resets = []
-      if (ctx.core.includes.has('__dyn_set')) {
+      if ((ctx.core.includes.has('__dyn_set') || ctx.core.includes.has('__dyn_set_own'))) {
         // The table and its membership filter return to what `__start` left
         // (the snapshot sweep above): a property a function was given at
         // init has no header to live in, so the table built there is its
@@ -485,9 +505,13 @@ export function pullStdlib(sec) {
       // Global-snapshot restores (see the sweep above) join the same rebuilt body.
       // Order is free — restores touch only globals + the durable slab, which the
       // rewind never moves — but bookkeeping-then-rewind-then-restore reads naturally.
-      if (resets.length || globalRestores.length) ctx.core.stdlib['__clear'] = `(func $__clear
-          (global.set $__heap (global.get $__heap_reset))
-          ${[...resets, ...globalRestores].join('\n          ')})`
+      if (resets.length || globalRestores.length) {
+        const clear = ctx.core.stdlib['__clear']
+        // Preserve the allocator's rewind operation: shared heaps keep their
+        // pointer in linear memory and have neither owned-heap global.
+        ctx.core.stdlib['__clear'] = clear.slice(0, clear.lastIndexOf(')')) +
+          '\n' + [...resets, ...globalRestores].join('\n') + ')'
+      }
     }
     // Initial pages must cover the static data segment (it loads at instantiation), not
     // just the default 1 — otherwise a module whose constants exceed 64 KiB emits a data

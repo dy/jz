@@ -49,10 +49,19 @@ const FLIP = { eq: 'eq', ne: 'ne', lt: 'gt', gt: 'lt', le: 'ge', ge: 'le' }
 
 /** The first test of a guard: the innermost condition of its `&&` chain. */
 const firstTest = c => {
+  const zeros = []
   while (isArr(c) && c[0] === 'if' && c.length === 5 && isArr(c[1]) && c[1][0] === 'result' && c[1][1] === 'i32' &&
-      isArr(c[3]) && c[3][0] === 'then' && isArr(c[4]) && c[4][0] === 'else' && c[4].length === 2 && isI32Const(c[4][1]) && constNum(c[4][1]) === 0)
-    c = c[2]
-  return c
+      isArr(c[3]) && c[3][0] === 'then' && isArr(c[4]) && c[4][0] === 'else' && c[4].length === 2) {
+    const z = c[4][1], condition = c[2]
+    if (isI32Const(z) && constNum(z) === 0) c = condition
+    else if (z?.[0] === 'local.get' && condition?.[0] === 'local.tee' && z[1] === condition[1]) {
+      // Value-preserving && writes its false predicate even when no body
+      // runs. A skipped span must leave the same zero in that local.
+      zeros.push(condition[1])
+      c = condition[2]
+    } else break
+  }
+  return { test: c, zeros }
 }
 
 /** Whether `addr` moves `stride` bytes per step of `x` over terms the loop leaves alone. */
@@ -127,7 +136,7 @@ export function tryPrefilter(bl, fnLocals, freshIdRef) {
   const writes = new Set()
   walkAst(stmt, { enter: n => { if ((n[0] === 'local.set' || n[0] === 'local.tee') && typeof n[1] === 'string') writes.add(n[1]) } })
   if (writes.has(incVar) || (boundLocal && writes.has(boundLocal))) return null
-  const t = laneTest(firstTest(stmt[1]), incVar, writes)
+  const first = firstTest(stmt[1]), t = laneTest(first.test, incVar, writes)
   if (!t) return null
 
   const id = freshIdRef.next++
@@ -138,7 +147,8 @@ export function tryPrefilter(bl, fnLocals, freshIdRef) {
     ['loop', `$__pf_loop${id}`,
       ['br_if', `$__pf_brk${id}`, ['i32.ge_s', x(), ['local.get', end]]],
       ['if', ['i32.eqz', ['local.tee', mask, [`${t.shape}.bitmask`, t.test]]],
-        ['then', step(['i32.const', t.lanes]), ['br', `$__pf_loop${id}`]]],
+        ['then', ...first.zeros.map(name => ['local.set', name, ['i32.const', 0]]),
+          step(['i32.const', t.lanes]), ['br', `$__pf_loop${id}`]]],
       ['local.set', stop, ['i32.add', x(), ['i32.const', t.lanes]]],
       step(['i32.ctz', ['local.get', mask]]),
       ['loop', `$__pf_in${id}`,

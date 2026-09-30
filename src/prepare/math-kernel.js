@@ -25,7 +25,7 @@
  * @module prepare/math-kernel
  */
 
-import { PI, INV_PI, HALF_PI, SIN_C, COS_C, EXPM1_C, LOG_C, EXP2_TAB, EXP2_Q, EXP_Q, EXP_L1, EXP_L2, POW_LOG_TAB, POW_LOG_A, POW_LN2HI, POW_LN2LO, polyTree } from '../../module/math/trig-tables.js'
+import { PI, HALF_PI, PIO2_CW, INV_PIO2, ROUND_MAGIC, CW_LIMIT, SIN_C, COS_C, ATAN_C, ASIN_C, EXPM1_C, LOG_C, EXP2_TAB, EXP2_Q, EXP_Q, EXP_L1, EXP_L2, POW_LOG_TAB, POW_LOG_A, POW_LN2HI, POW_LN2LO, polyTree, fifthFold } from '../../module/math/trig-tables.js'
 
 // ---- bit-level helpers (i64.reinterpret_f64 / f64.reinterpret_i64) ----
 const _buf = new ArrayBuffer(8)
@@ -61,42 +61,39 @@ function nearest(x) {
 const horner = (cs, v) => polyTree(cs, { konst: (c) => c, mul: (a, b) => a * b, add: (a, b) => a + b }, v)
 
 
-function sinCore(x) {
-  if (Number.isNaN(x)) return x
-  if (Math.abs(x) === Infinity) return NaN
-  if (Math.abs(x) < 2 ** -27) return x
-  let q = nearest(x * INV_PI)
-  let r = x - q * PI
-  if (Math.abs(r) > HALF_PI) {
-    const q2 = nearest(r * INV_PI)
-    r = r - q2 * PI
-    q = q + q2
-  }
-  q = q - 2 * nearest(q * 0.5)
-  const r2 = r * r
-  r = r * horner(SIN_C, r2)
-  if (Math.abs(q) > 0.5) r = -r
-  return Math.min(Math.max(r, -1), 1)
+// $math.sin, $math.cos and $math.tan: x = n·π/2 + r by the four-part Cody–Waite
+// reduction, then sin(r) or cos(r) by n's parity, negated by its second bit. Past 2^24
+// the runtime reduces by Payne–Hanek in 64-bit integer arithmetic, which the compiler
+// compiled by itself (its BigInt is 64-bit) could not mirror: a call there is left
+// for run time (undefined), as is any argument that is no number.
+const [H1, H2, H3, H4] = PIO2_CW
+let RK = 0, RR = 0
+function reduceTrig(x) {
+  const t = x * INV_PIO2 + ROUND_MAGIC, n = t - ROUND_MAGIC
+  RR = x - n * H1 - n * H2 - n * H3 - n * H4
+  RK = n & 3
 }
-
-function cosCore(x) {
-  if (Number.isNaN(x)) return x
-  if (Math.abs(x) === Infinity) return NaN
-  let q = nearest(x * INV_PI)
-  let r = x - q * PI
-  if (Math.abs(r) > HALF_PI) {
-    const q2 = nearest(r * INV_PI)
-    r = r - q2 * PI
-    q = q + q2
-  }
-  q = q - 2 * nearest(q * 0.5)
-  const r2 = r * r
-  r = horner(COS_C, r2)
-  if (Math.abs(q) > 0.5) r = -r
-  return Math.min(Math.max(r, -1), 1)
+function quadrant(k, r) {
+  const z = r * r
+  const v = k & 1 ? horner(COS_C, z) : r * horner(SIN_C, z)
+  return k & 2 ? -v : v
 }
-
-function tan(x) { return sinCore(x) / cosCore(x) }
+function sin(x) {
+  if (!(Math.abs(x) < CW_LIMIT)) return x - x === 0 ? undefined : NaN
+  reduceTrig(x)
+  return quadrant(RK, RR)
+}
+function cos(x) {
+  if (!(Math.abs(x) < CW_LIMIT)) return x - x === 0 ? undefined : NaN
+  reduceTrig(x)
+  return quadrant(RK + 1, RR)
+}
+function tan(x) {
+  if (!(Math.abs(x) < CW_LIMIT)) return x - x === 0 ? undefined : NaN
+  reduceTrig(x)
+  const z = RR * RR, s = RR * horner(SIN_C, z), c = horner(COS_C, z)
+  return RK & 1 ? -c / s : s / c
+}
 
 // 2^e for the table kernels: one exponent build for a normal e, two factors at the edges.
 function expScale(p, e) {
@@ -177,24 +174,65 @@ function log10_(x) {
 }
 
 function log1p(x) {
+  if (!(x > -1)) return x === -1 ? -Infinity : NaN
   if (x === Infinity) return Infinity
   const u = 1 + x
   if (u === 1) return x
-  return (log(u) * x) / (u - 1)
+  return log(u) * (x / (u - 1))
 }
 
-/** Fully-constant `Math.pow`/`**` fold, mirroring emitPow's own constant-arg
- *  branches exactly (module/math.js `emitPow`) — NOT the general runtime
- *  `$math.pow`, because emit.js already special-cases fully-literal operands
- *  before ever reaching that call: an integer |n|<=16 exponent square-and-
- *  multiplies (foldPow), exponent 0.5 is f64.sqrt, and everything else is
- *  host `Math.pow` (emit.js's own constant fold, line ~358). Folding earlier
- *  at the source level with this SAME 3-way split reproduces exactly what
- *  compiling the unfolded expression already does today — zero new divergence. */
+/** Fully-constant `Math.pow`/`**` fold: the lowering module/math.js's emitPow gives
+ *  a constant exponent, computed now, so a fold and a run of the same expression
+ *  agree bit for bit: an integer |n| ≤ 16 square-and-multiplies (foldPow), 0.5 is
+ *  f64.sqrt, a k/5 exponent in (0, 5) is $math.pow_fifths, base 2 is $math.exp2,
+ *  and everything else is $math.pow. */
 function pow(a, b) {
   if (Number.isInteger(b) && Math.abs(b) <= 16) return powInt(a, b)
   if (b === 0.5) return Math.sqrt(a)
+  if (b > 0 && b < 5 && !Number.isInteger(b) && Number.isInteger(b * 5)) { const f = fifthFold(b); return powFifths(a, b, f.lo, f.hi) }
+  if (a === 2 && !Number.isInteger(b)) return exp2(b)
   return powRuntime(a, b)
+}
+
+// $math.fifthroot: the bit-hack seed (the bits ÷ 5 as an integer), three Newton steps and
+// a correcting fourth
+function fifthroot(v) {
+  if (!Number.isFinite(v)) return v
+  if (v === 0) return 0
+  let s = 1
+  if (v < 2.2250738585072014e-308) { v = v * 1.2676506002282294e30; s = 9.5367431640625e-07 }
+  let t = bitsF64(f64Bits(v) / 5n + 0x3325E66666666800n), q = 0
+  for (let i = 0; i < 3; i++) { q = t * t; t = (4 * t + v / (q * q)) * 0.2 }
+  q = t * t
+  t = t + (v / (q * q) - t) * 0.2
+  return t * s
+}
+// $math.pow_fifths: x^p·fifthroot(x^r) on [lo, hi]; past it the fold on x' = x·2^(−5j),
+// scaled by 2^(jk) in two factors and corrected for c's own rounding on the 2^(5j) part
+function fifthsFold(x, p, r) {
+  const x2 = x * x
+  const v = fifthroot(r < 2.5 ? (r > 1.5 ? x2 : x) : (r > 3.5 ? x2 * x2 : x2 * x))
+  if (p < 0.5) return v
+  return (p < 2.5 ? (p > 1.5 ? x2 : x) : (p > 3.5 ? x2 * x2 : x2 * x)) * v
+}
+function powFifths(x, c, lo, hi) {
+  const p = Math.floor(c), r = nearest(c * 5) - p * 5
+  if ((x - lo) * (hi - x) >= 0) return fifthsFold(x, p, r)
+  if (!(x > 0)) return x === 0 ? 0 : x === -Infinity ? Infinity : NaN
+  if (x === Infinity) return x
+  let e = 0
+  if (x < 2.2250738585072014e-308) { x = x * 18446744073709551616; e = -64 }
+  const b = f64Bits(x)
+  e += Number((b >> 52n) & 0x7ffn) - 1023
+  const j = nearest(e * 0.2), ji = Math.trunc(j)
+  let v = fifthsFold(bitsF64((b & 0xfffffffffffffn) | (BigInt(e - ji * 5 + 1023) << 52n)), p, r)
+  const s0 = 4 * c + c, bb = s0 - 4 * c
+  const s = (s0 - nearest(c * 5)) + ((4 * c - (s0 - bb)) + (c - bb))
+  v = v * (1 + s * Math.LN2 * j)
+  let jk = ji * Math.trunc(nearest(c * 5))
+  jk = jk > 1100 ? 1100 : jk < -1100 ? -1100 : jk
+  const h = Math.floor(jk / 2)
+  return v * 2 ** h * 2 ** (jk - h)
 }
 
 // The runtime `$math.pow` (module/math.js), operation for operation, so a fold
@@ -215,10 +253,10 @@ function powRuntime(x, y) {
   if (x === 1) return 1
   if (y === 1) return x
   if (Number.isInteger(y) && Math.abs(y) <= 16) {
-    let ax = Math.abs(x), n = Math.abs(y), res = 1
-    const neg = (x < 0 || Object.is(x, -0)) && (n & 1) === 1
-    while (n > 0) { if (n & 1) res = res * ax; ax = ax * ax; n >>= 1 }
-    if (y < 0) res = 1 / res
+    const n0 = Math.abs(y), neg = (x < 0 || Object.is(x, -0)) && (n0 & 1) === 1
+    const sqMul = (ax) => { let n = n0, res = 1; while (n > 0) { if (n & 1) res = res * ax; ax = ax * ax; n >>= 1 } return res }
+    let res = sqMul(Math.abs(x))
+    if (y < 0) res = res >= 2 ** -1022 && res < Infinity ? 1 / res : sqMul(1 / Math.abs(x))
     return neg ? -res : res
   }
   if (Math.abs(x) === Infinity) { const r = y > 0 ? Infinity : 0; return x < 0 && oddInteger(y) ? -r : r }
@@ -231,7 +269,14 @@ function powCore(x, y) {
   if (y === 0.5) return Math.sqrt(x)
   const ay = Math.abs(y)
   if (ay < 2 ** -65) return x > 1 ? 1 + y : 1 - y
-  if (ay >= 2 ** 63) return (x > 1) === (y > 0) ? Infinity : 0
+  if (ay >= 2 ** 63) return x === 1 ? 1 : (x > 1) === (y > 0) ? Infinity : 0
+  const [lhi, llo] = powLog(x)
+  return powExp(y, lhi, llo)
+}
+/** log(x) for x > 0 finite as $math.pow's kernel takes it, a double-double split for the
+ *  product with y: [lhi, llo], lhi's low 26 bits clear. For a constant base the compiler
+ *  takes it here and $math.pow_b runs the rest (powExp). */
+function powLog(x) {
   let ix = bitsOf(x)
   if (ix < 0x0010000000000000n) ix = BigInt.asUintN(64, bitsOf(x * 2 ** 52) - (52n << 52n))
   const tmp = BigInt.asIntN(64, ix - 0x3fe6955500000000n)
@@ -248,8 +293,12 @@ function powCore(x, y) {
   const p = ar3 * (POW_LOG_A[1] + (r * POW_LOG_A[2] + ar2 * (POW_LOG_A[3] + (r * POW_LOG_A[4] + ar2 * (POW_LOG_A[5] + r * POW_LOG_A[6])))))
   const lo = lo1 + lo2 + lo3 + lo4 + p
   const lg = hi + lo, tail = hi - lg + lo
+  const lhi = ofBits(bitsOf(lg) & 0xfffffffff8000000n)
+  return [lhi, lg - lhi + tail]
+}
+// y·(lhi + llo) = ehi + elo, then exp(ehi + elo): the kernel's steps after log(x)
+function powExp(y, lhi, llo) {
   const yhi = ofBits(bitsOf(y) & 0xfffffffff8000000n), ylo = y - yhi
-  const lhi = ofBits(bitsOf(lg) & 0xfffffffff8000000n), llo = lg - lhi + tail
   const ehi = yhi * lhi, elo = ylo * lhi + y * llo
   const ax = Math.abs(ehi)
   if (ax < 2 ** -54) return 1 + ehi
@@ -268,90 +317,117 @@ function powCore(x, y) {
 }
 function powInt(a, n) {
   if (n === 0) return 1
-  let sq = a, res = null
-  for (let m = Math.abs(n); m > 0; m >>= 1) {
-    if (m & 1) res = (res === null) ? sq : res * sq
-    if (m >> 1) sq = sq * sq
+  const chain = (sq) => {
+    let res = null
+    for (let m = Math.abs(n); m > 0; m >>= 1) {
+      if (m & 1) res = (res === null) ? sq : res * sq
+      if (m >> 1) sq = sq * sq
+    }
+    return res
   }
-  return n < 0 ? 1 / res : res
+  const p = chain(a)
+  if (n > 0) return p
+  if (n === -1) return 1 / p
+  // the reciprocal of a^|n|, or where that leaves the normal doubles, the reciprocal's power
+  return Math.abs(p) < Infinity && Math.abs(p) >= 2 ** -1022 ? 1 / p : chain(1 / a)
 }
 
+// $math.atan: three intervals on |x|, at most one division, the polynomial, x's sign
 function atan(x) {
   if (Number.isNaN(x)) return x
-  if (x === 0) return x
-  let t = Math.abs(x)
-  let off = 0
-  let flip = false
-  if (t > 1) { t = 1 / t; flip = true }
-  if (t > 0.41421356237309503) {
-    t = (t - 0.41421356237309503) / (1 + 0.41421356237309503 * t)
-    off = 0.39269908169872414
+  const a = Math.abs(x)
+  let t = a, o = 0
+  if (a > Math.SQRT2 - 1) {
+    if (a <= Math.SQRT2 + 1) { t = (a - 1) / (a + 1); o = PI / 4 }
+    else { t = -1 / a; o = HALF_PI }
   }
-  const u = t * t
-  let r = off + t * (0.99999999939667072 + u * (-0.33333307625846248 + u * (0.19998216947828790 + u * (-0.14240083011830104 + u * (0.10573479828448784 + u * (-0.060347904072425573))))))
-  if (flip) r = HALF_PI - r
-  return copysign(r, x)
+  return copysign(o + t * horner(ATAN_C, t * t), x)
 }
 
+// $math.asin / $math.acos: the kernel at x up to ½, at √((1 − |x|)/2) past it
+const asinK = (a) => a * horner(ASIN_C, a * a)
 function asin(x) {
-  if (Math.abs(x) > 1) return NaN
-  const ax = Math.abs(x)
-  const a = ax <= 0.5 ? ax : Math.sqrt(0.5 * (1 - ax))
-  const u = a * a
-  let r = a + (a * u) * (0.16666666715486264 + u * (0.074999892151409259 + u * (0.044648555271317079 + u * (0.030259196387355945 + u * (0.023661273034955098 + u * (0.010472588920432560 + u * 0.031028862087420162))))))
-  if (ax > 0.5) r = HALF_PI - 2 * r
-  return copysign(r, x)
+  const a = Math.abs(x)
+  if (!(a <= 1)) return NaN
+  if (a <= 0.5) return copysign(asinK(a), x)
+  return copysign(HALF_PI - 2 * asinK(Math.sqrt(0.5 * (1 - a))), x)
+}
+function acos(x) {
+  const a = Math.abs(x)
+  if (!(a <= 1)) return NaN
+  if (a <= 0.5) return HALF_PI - asinK(x)
+  const r = 2 * asinK(Math.sqrt(0.5 * (1 - a)))
+  return x > 0 ? r : PI - r
 }
 
-function acos(x) { return HALF_PI - asin(x) }
-
+// $math.atan2: NaN, the infinite quadrant table and the zero cases, then atan(y/x) ± π
 function atan2(y, x) {
   if (Number.isNaN(x)) return x
   if (Number.isNaN(y)) return y
+  if (Math.abs(y) === Infinity && Math.abs(x) === Infinity) return copysign(x > 0 ? PI / 4 : 3 * PI / 4, y)
   if (x === 0) {
-    if (y === 0) return copysign((x < 0 || Object.is(x, -0)) ? PI : 0, y)
+    if (y === 0) return copysign(copysign(1, x) < 0 ? PI : 0, y)
     return y > 0 ? HALF_PI : -HALF_PI
   }
   if (x >= 0) return atan(y / x)
-  return y >= 0 ? atan(y / x) + PI : atan(y / x) - PI
+  return copysign(1, y) > 0 ? atan(y / x) + PI : atan(y / x) - PI
 }
 
+// $math.sinh, $math.cosh, $math.tanh: expm1 near 0, e^|x| past 1, and past e^|x|'s
+// overflow (½e^(|x|/2))·e^(|x|/2)
+const EXP_MAX = 709.782712893384
 function sinh(x) {
-  if (x === 0) return x
-  let ex = exp(Math.abs(x))
-  ex = 0.5 * (ex - 1 / ex)
-  return x < 0 ? -ex : ex
+  if (x === 0 || Number.isNaN(x)) return x
+  const a = Math.abs(x)
+  let ex
+  if (a < 1) { const t = expm1(a); ex = (t * (t + 2)) / (2 * (t + 1)) }
+  else if (a > EXP_MAX) { const t = exp(0.5 * a); ex = (0.5 * t) * t }
+  else { ex = exp(a); ex = 0.5 * (ex - 1 / ex) }
+  return copysign(ex, x)
 }
 
 function cosh(x) {
-  const ex = exp(Math.abs(x))
+  if (Number.isNaN(x)) return x
+  const a = Math.abs(x)
+  if (a > EXP_MAX) { const t = exp(0.5 * a); return (0.5 * t) * t }
+  const ex = exp(a)
   return 0.5 * (ex + 1 / ex)
 }
 
 function tanh(x) {
   if (x === 0) return x
   if (Math.abs(x) > 22) return x < 0 ? -1 : 1
-  let e2x = exp(2 * Math.abs(x))
-  e2x = (e2x - 1) / (e2x + 1)
-  return x < 0 ? -e2x : e2x
+  let e = expm1(2 * Math.abs(x))
+  e = e / (e + 2)
+  return x < 0 ? -e : e
 }
 
+// $math.asinh, $math.acosh, $math.atanh: fdlibm's forms on jz's log, log1p and sqrt
 function asinh(x) {
-  if (!Number.isFinite(x)) return x
-  if (x === 0) return x
-  return log(x + Math.sqrt(x * x + 1))
+  let a = Math.abs(x)
+  if (!(a < Infinity) || a < 2 ** -28) return x
+  if (a > 2 ** 28) a = log(a) + Math.LN2
+  else if (a > 2) a = log(2 * a + 1 / (Math.sqrt(a * a + 1) + a))
+  else { const t = a * a; a = log1p(a + t / (1 + Math.sqrt(1 + t))) }
+  return copysign(a, x)
 }
 
 function acosh(x) {
-  if (x === Infinity) return Infinity
-  if (x < 1) return NaN
-  return log(x + Math.sqrt(x * x - 1))
+  if (!(x >= 1)) return NaN
+  if (x >= 2 ** 28) return log(x) + Math.LN2
+  if (x > 2) return log(2 * x - 1 / (x + Math.sqrt(x * x - 1)))
+  const t = x - 1
+  return log1p(t + Math.sqrt(2 * t + t * t))
 }
 
 function atanh(x) {
-  if (x === 0) return x
-  if (Math.abs(x) === Infinity) return NaN
-  return 0.5 * log((1 + x) / (1 - x))
+  const a = Math.abs(x)
+  if (!(a < 1)) return a === 1 ? copysign(Infinity, x) : NaN
+  if (a < 2 ** -28) return x
+  let t
+  if (a < 0.5) { t = a + a; t = 0.5 * log1p(t + (t * a) / (1 - a)) }
+  else t = 0.5 * log1p((a + a) / (1 - a))
+  return copysign(t, x)
 }
 
 // fdlibm s_cbrt.c, the twin of module/math.js's `math.cbrt` kernel.
@@ -382,10 +458,15 @@ function cbrt(x) {
 // N-ary like Math.hypot, folded as the SAME left-chained 2-ary calls the runtime
 // emitter builds (module/math.js `math.hypot`) so constant folds stay bit-equal to
 // the compiled chain: () → +0, (x) → abs(x), (a,b,…) → hypot2(hypot2(a,b),…).
+// hypot2 is $math.hypot: an infinity first, then the squares scaled by 2^±600 when
+// the larger magnitude is past 2^±500.
 function hypot2(x, y) {
-  if (Math.abs(x) === Infinity) return Infinity
-  if (Math.abs(y) === Infinity) return Infinity
-  return Math.sqrt(x * x + y * y)
+  if (Math.abs(x) === Infinity || Math.abs(y) === Infinity) return Infinity
+  let ax = Math.abs(x), ay = Math.abs(y), s = 1
+  const big = Math.max(ax, ay)
+  if (big >= 2 ** 500) { s = 2 ** 600; ax = ax * 2 ** -600; ay = ay * 2 ** -600 }
+  else if (big <= 2 ** -500) { s = 2 ** -600; ax = ax * 2 ** 600; ay = ay * 2 ** 600 }
+  return s * Math.sqrt(ax * ax + ay * ay)
 }
 function hypot(...vs) {
   if (vs.length === 0) return 0
@@ -398,9 +479,7 @@ function hypot(...vs) {
 /** Pure bit-exact-vs-kernel transcendentals — dispatched by `math.<name>` key
  *  (matches the resolved callee jz's prepare already produces for `Math.foo`). */
 export const MATH_KERNEL = {
-  'math.sin': sinCore, 'math.sin_core': sinCore,
-  'math.cos': cosCore, 'math.cos_core': cosCore,
-  'math.tan': tan,
+  'math.sin': sin, 'math.cos': cos, 'math.tan': tan,
   'math.exp2': exp2, 'math.exp': exp, 'math.expm1': expm1,
   'math.log': log, 'math.log2': log2_, 'math.log10': log10_, 'math.log1p': log1p,
   'math.atan': atan, 'math.asin': asin, 'math.acos': acos, 'math.atan2': atan2,
@@ -408,5 +487,10 @@ export const MATH_KERNEL = {
   'math.asinh': asinh, 'math.acosh': acosh, 'math.atanh': atanh,
   'math.cbrt': cbrt, 'math.hypot': hypot,
 }
-/** `Math.pow`/`**` — special-cased 3-way split (see `pow` doc above), not a plain unary kernel entry. */
+/** `Math.pow`/`**` with both operands constant: the lowering a constant exponent takes
+ *  (see `pow` above), not a plain unary kernel entry. */
 export const powFold = pow
+/** `$math.pow` itself, as a runtime exponent reaches it. */
+export { powRuntime }
+/** A constant base's log for `$math.pow_b` (module/math.js emitPow). */
+export { powLog }

@@ -9,8 +9,8 @@ import jz, { compile, _compileInProcess } from '../index.js'
 import { ctx } from '../src/ctx.js'
 import { K, kind, join, orNull, tagOf, paramOf, isNullable, hasTag, UNKNOWN } from '../src/summary/index.js'
 import { T as MARK } from '../src/ast.js'
-import { onKernel, OPT_LEVEL, levels } from './_matrix.js'
-import { oracle } from './util.js'
+import { onKernel, OPT_LEVEL, levels, belowOpt } from './_matrix.js'
+import { funcWat, oracle } from './util.js'
 
 // Bindings carry prepare's scope suffix; find one by function and bare name.
 const binding = (fn, bare) => {
@@ -23,11 +23,14 @@ const binding = (fn, bare) => {
 }
 const kindOf = (fn, bare) => ctx.summary.at(fn).kindOf(binding(fn, bare))
 const sidOf = (props) => ctx.schema.list.findIndex(s => s.join() === props.join())
+// The layout a literal of these keys ends with: its own keys first, then any a
+// later store declares in it (plan/declare-unseen-keys.js).
+const layoutFrom = (props) => ctx.schema.list.findLastIndex(s => props.every((p, i) => s[i] === p))
 // The summary read after a compile is of the program the plan rewrote; these tests
 // pin the source's own functions, so the inliner is off (the speed tier splices callees)
 // and so is the record-parameter lane pass (it replaces a field-reading callee).
 // The kinds read here are the summary's own: no source inlining, no clone per argument kind (a parameter is the join of every call site's argument)
-const summarize = (src) => { _compileInProcess(src, { optimize: { level: OPT_LEVEL, sourceInline: false, inlineFns: false, laneRecords: false, valKindClones: false } }); return ctx.summary }
+const summarize = (src) => { _compileInProcess(src, { optimize: { level: OPT_LEVEL, sourceInline: false, inlineFns: false, laneRecords: false, valKindClones: false, aliases: false } }); return ctx.summary }
 
 test('summary: callbacks passed to escaped callees contribute their calls', () => {
   for (const declaration of ['function invoke(cb) { return cb() }', 'const invoke = cb => cb()']) {
@@ -413,6 +416,48 @@ test('summary: array constructions own cells; concat, splice, split, JSON.parse 
   is(tagOf(kindOf('g', 'v')), K.NUMBER, 'a parameter after a spread argument takes the elements'); ok(hasTag(kindOf('g', 'v'), K.NULLISH), 'or nothing')
 })
 
+test('summary: iterator protocols preserve values from distinct providers and generators', () => {
+  const src = `class Rows {
+      constructor(items) { this.items=items }
+      [Symbol.iterator]() { return this.items[Symbol.iterator]() }
+    }
+    function* numbers(n) { yield {v:n}; yield {v:n+1} }
+    function* words(s) { yield {v:s}; yield {v:s+'!'} }
+    function* flags() { yield {v:true}; yield {v:false} }
+    function* bigs() { yield {v:9221823924482867200n}; yield {v:-2n} }
+    export function f(n) {
+      const a=new Rows([{v:n},{v:n+2}]), b=new Rows([{v:'x'},{v:'y'}])
+      const nums=[...a], text=Array.from(b)
+      const generated=[...numbers(n)], labels=[...words('z')], booleans=[...flags()], bigints=[...bigs()]
+      nums[0].v+=3
+      return [nums[0].v,nums[1].v,text[0].v,text[1].v,generated[0].v,generated[1].v,labels[0].v,labels[1].v,booleans[0].v,booleans[1].v,bigints[0].v,bigints[1].v]
+    }`
+  for (const optimize of levels(0,1,2,3,'size')) {
+    const {f}=jz(src,{optimize}).exports, reference=oracle(src)
+    for(const n of [2,-3,11,2]) is(f(n),reference.f(n),`independent iterator values, O${optimize}`)
+  }
+})
+
+test('summary codegen: scalar allocation helpers preserve local and retained receivers', () => {
+  for (const result of ['', 'return n * 2', 'return n > 0']) {
+    const src = `let held = {buf: null}
+      const init = (o, n) => { o.buf = new Float64Array([n, n + 1]); ${result} }
+      export const local = n => { const o={buf:null}; const r=init(o,n); return [o.buf[1],r] }
+      export const keep = n => init(held,n)
+      export const read = () => held.buf[1]
+      export const churn = n => new Float64Array(n).length`
+    for (const optimize of levels(0,1,2,3,'size')) {
+      const actual = jz(src,{optimize}).exports, reference = oracle(src)
+      for (const n of [3,-2,11]) {
+        is(actual.local(n),reference.local(n),`local receiver, ${result}, O${optimize}`)
+        is(actual.keep(n),reference.keep(n),`retained receiver, ${result}, O${optimize}`)
+        actual.churn(256)
+        is(actual.read(),reference.read(),'the stored buffer survives later allocation')
+      }
+    }
+  }
+})
+
 test('summary codegen: a typed field read through a parameter, a factory, a class, a method closure lowers to typed storage', () => {
   if (onKernel()) return
   const shapes = {
@@ -449,7 +494,8 @@ test('summary codegen: a method called through an array of instances, an exporte
     export const run = (n) => { const input = new Float64Array(n); input[1] = 2; return render(input, mkChain(n, 3))[1] }`
   // level 2: below it the method's dispatcher, dead here, is not shaken
   if (OPT_LEVEL === 2) ok(!/__dyn_get|__hash|__to_str/.test(compile(src, { wat: true })), 'the method comes from the element\'s schema slot, the method parameter is a typed array')
-  is(jz(src).exports.run(4), 2 * 0.5 * 1.5 * 2.5)
+  const { exports: api, memory } = jz(src)
+  is(api.run(4), 2 * 0.5 * 1.5 * 2.5)
   // Nullish receiver checks retain the private error signal: 3060 → 3132 B.
   // A control build omitting only those checks restores 3060; keep the same slack.
   // Known-array reads and lengths take their forwarding hop inline in the
@@ -457,7 +503,15 @@ test('summary codegen: a method called through an array of instances, an exporte
   // The `jz:brand` custom section names the class for interop: 3184 → 3235 B.
   // The unknown constructor argument's array arm converts each element (a
   // nullish or boolean atom to its number, any other box NaN): 3235 → 3332 B.
-  if (OPT_LEVEL === 2) ok(compile(src).length < 3372, `the typed tier's size class (${compile(src).length} B)`)
+  // Escape tracking adds 210 B against 6f069d30 (3328 → 3538 B), and frees
+  // the complete call frame: 100 calls retained 33600 B before, zero now.
+  // Preserve the existing 40 B slack; benchmark size caps are independent.
+  if (OPT_LEVEL === 2) {
+    const mark = memory.used
+    for (let i = 0; i < 100; i++) is(api.run(4), 3.75)
+    is(memory.used, mark, 'temporary chains leave no retained allocation')
+    ok(compile(src).length < 3578, `the typed tier's size class (${compile(src).length} B)`)
+  }
   // An exported class: its constructor parameter is read only through a slot
   // every read of which multiplies, so the f64 boundary is the coercion.
   const cls = `export class Gain { constructor(n, gain) { this.buf = new Float32Array(n); this.gain = gain }
@@ -472,7 +526,8 @@ test('summary codegen: a method called through an array of instances, an exporte
   // The same required receiver check adds 72 B to the exported-class case.
   // The `jz:brand` custom section names the exported class for interop: 2072 → 2084 B.
   // The constructor argument's array arm converts each element: 2084 → 2171 B.
-  if (OPT_LEVEL === 2) ok(compile(cls).length < 2211, `bytes: ${compile(cls).length}`)
+  // The conditional arena cleanup adds 205 B and releases 80 B per call.
+  if (OPT_LEVEL === 2) ok(compile(cls).length < 2450, `bytes: ${compile(cls).length}`)
 })
 
 test('summary: a module global is the join of every store; the declaration\'s claim yields', () => {
@@ -517,9 +572,11 @@ test('summary: a numeric-compatible parameter arrives as a number (README.md#exp
 
 test('summary: a parameter read before its reassignment has its incoming kind', () => {
   // subscript's parse: `cur = s` precedes `s = expr()`, so `cur` is the argument's string.
-  _compileInProcess(`let cur = ''; const parse = (s) => (cur = s, s = [1, 2], s.length); export const run = () => parse('abc') + cur.length`)
+  const src = `let cur = ''; const parse = (s) => (cur = s, s = [1, 2], s.length); export const run = () => parse('abc') + cur.length`
+  summarize(src)
   is(ctx.scope.globalValTypes.get('cur'), 'string')
   is(tagOf(kindOf('parse', 's')), K.ANY, 'the parameter itself joins its reassignment')
+  is(jz(src).exports.run(), 5, 'the optimized call preserves the incoming string before reassignment')
   // A loop that assigns the parameter, and a closure that does, end the region.
   const loop = jz(`const h = (p) => { let a = p; for (let i = 0; i < 2; i++) { a = a + p; p = 'x' } return a }; export const f = () => h(1)`)
   is(loop.exports.f(), '2x')
@@ -631,7 +688,8 @@ test('summary: a literal is allocated as the runtime allocates it; emission read
 })
 
 test('summary: an absent tag joins a union without widening it; a callback drops its surplus arguments', () => {
-  summarize(`export const f = () => { const a = [4611686018427387903n]; a[0]++; return a[0] }`)
+  // (read once at a position only the run knows, the list stays a list)
+  summarize(`export const f = () => { const a = [4611686018427387903n]; a[0]++; return a[0] + a[a.length - 1] }`)
   const held = ctx.summary.at('f').kindOfExpr(['[]', binding('f', 'a'), 0])
   ok(hasTag(held, K.BIGINT) && !hasTag(held, K.NUMBER) && !hasTag(held, K.ABSENT), 'inside the literal\'s count the element is there, and stays a BigInt')
   summarize(`export const f = (i) => { const a = [4611686018427387903n]; a[i]++; const b = [1n, 2n]; const m = b.map(x => x + 1n); return a[i] + m[i] }`)
@@ -824,6 +882,24 @@ test('summary: a wrapper hands back what its closure argument returns', () => {
   for (const level of levels(0, 2)) is(jz(src, { optimize: level }).exports.f(), oracle(src).f(), `O${level}`)
 })
 
+test('summary: a lost shape\'s member reached through a value of several kinds is called there', () => {
+  // `any` joins the record with an array: the record's shape is lost, yet its
+  // member stays the one closure `rec.f` holds. A call through `any` binds it,
+  // and a read through `any` hands it where the summary cannot follow: either
+  // way the array `b` passes reaches `f` beside the typed array `a` passes.
+  for (const use of ['any.f([10, 20, 30])', '{ let g = any.f; return g([10, 20, 30]) }']) {
+    const src = `let rec = { f: (x) => x[0] + x.length }
+export let a = () => rec.f(new Float64Array([1, 2]))
+let any = null
+export let set = (v) => { any = v ? rec : [1]; return 1 }
+export let b = () => ${use}`
+    for (const optimize of levels(0, 2, 3)) {
+      const m = jz(src, { optimize }).exports
+      is([m.a(), m.set(1), m.b()], [3, 1, 13], `${use} at ${optimize}`)
+    }
+  }
+})
+
 test('summary: Object.assign onto a shape stores each source slot; a shape beside primitives keeps its identity', () => {
   const src = `export const f = (flag) => {
     const target = { a: 1, b: 2 }, extra = flag ? { a: 3, c: 4 } : { a: 5, d: 6 }
@@ -834,8 +910,8 @@ test('summary: Object.assign onto a shape stores each source slot; a shape besid
     return target.a + n
   }`
   summarize(src)
-  is(tagOf(ctx.summary.fieldKind(sidOf(['a', 'b']), 'a')), K.NUMBER, 'a source slot stores into the target slot')
-  ok(!ctx.summary.opaqueSchema(sidOf(['a', 'b'])), 'the target keeps its shape')
+  is(tagOf(ctx.summary.fieldKind(layoutFrom(['a', 'b']), 'a')), K.NUMBER, 'a source slot stores into the target slot')
+  ok(!ctx.summary.opaqueSchema(layoutFrom(['a', 'b'])), 'the target keeps its shape')
   is(tagOf(kindOf('f', 'n')), K.NUMBER, 'a record joined with a boolean is read through the join')
   for (const level of levels(0, 2)) is(jz(src, { optimize: level }).exports.f(true), oracle(src).f(true), `O${level}`)
 })
@@ -851,7 +927,7 @@ test('summary: object stores wait for factory targets and descriptors', () => {
       function descriptor() { return { value: 2 } }
       export function f() { const o = ${update}; return o.x + o.buf.length }`
     summarize(src)
-    const sid = sidOf(['x', 'buf'])
+    const sid = layoutFrom(['x', 'buf'])
     ok(!ctx.summary.opaqueSchema(sid), update + ': factory target keeps its shape')
     is(tagOf(ctx.summary.fieldKind(sid, 'x')), K.NUMBER, 'updated field stays numeric')
     is(ctx.summary.fieldTypedCtor(sid, 'buf'), 'new.Float32Array', 'unwritten buffer stays typed')
@@ -972,4 +1048,205 @@ test('specialization: forwarding alone does not earn a kind clone', () => {
     if (!onKernel()) is(ctx.funcs.list.some(f => f.name.startsWith('forward$')), specialized, body)
     for (const n of [0, 3, 3, -1]) is(f(n), expected(n), body)
   }
+})
+
+// A method call through a receiver the summary joined (an object beside a
+// number: a mixed cell) or lost (the unknown kind: every promise's value slot
+// holds what the other promises settle with too) runs the closure the shapes
+// hold under the name. It ran none: the string `set` stores into the captured
+// binding went unseen, and `inc` added it as a number ('x' + 1 read 'x').
+test('summary: a method call through a joined or an awaited receiver runs its closure', async () => {
+  const body = `{ let s = 0; let o = { set: () => { s = 'x' }, get: () => s, inc: () => { s = s + 1; return s } }; return c ? o : 1 }`
+  const tail = `let inst = null
+export let set = () => inst.set()
+export let get = () => inst.get()
+export let inc = () => inst.inc()`
+  for (const src of [
+    `let mk = (c) => ${body}\n${tail}\nexport let init = async () => { inst = mk(1); return 1 }`,
+    `let mk = async (c) => ${body}\n${tail}\nexport let init = async () => { inst = await mk(1); return 1 }`,
+  ]) {
+    const want = oracle(src)
+    await want.init()
+    const expect = [want.inc(), want.set(), want.get(), want.inc(), want.get()]
+    for (const optimize of levels(0, 2, 3)) {
+      const got = jz(src, { optimize }).exports
+      await got.init()
+      is([got.inc(), got.set(), got.get(), got.inc(), got.get()], expect, `${src.slice(9, 14)} at ${optimize}`)
+    }
+  }
+})
+
+// `Array.isArray(x) ? x : [x]` over a field set on first use: the wrapping arm
+// holds what is no array, so the list of records never joins a list of lists.
+// A member path is narrowed only in an arm that neither calls nor stores.
+test('summary: Array.isArray narrows a name, and a member path in an arm that cannot change it', () => {
+  const lists = `const mkSos = (k) => [{ b0: k, a1: 2 }, { b0: k + 1, a1: 3 }]
+    const params = { fs: 1 }, other = { fs: 2 }
+    const bump = (o) => { o.coefs = { b0: 100, a1: 0 }; return 0 }`
+  const shapes = {
+    path: `export let f = (x) => { if (!params._sos) { params._sos = mkSos(1); params.coefs = params._sos }
+      let coefs = Array.isArray(params.coefs) ? params.coefs : [params.coefs]; let y = 0
+      for (let i = 0; i < coefs.length; i++) y += coefs[i].b0 * x + coefs[i].a1; return y }`,
+    name: `export let f = (x) => { if (!params._sos) { params._sos = mkSos(2); params.coefs = params._sos }
+      const c0 = params.coefs; let coefs = Array.isArray(c0) ? c0 : [c0]; let y = 0
+      for (let i = 0; i < coefs.length; i++) y += coefs[i].b0 * x; return y }`,
+    changed: `export let f = (x) => { if (x > 5) other.coefs = mkSos(3)
+      let coefs = Array.isArray(other.coefs) ? (bump(other), [other.coefs]) : [other.coefs]; let y = 0
+      for (let i = 0; i < coefs.length; i++) y += (coefs[i] ? coefs[i].b0 : -1) * x; return y }`,
+  }
+  for (const [name, body] of Object.entries(shapes)) {
+    const src = `${lists}\n${body}`, js = oracle(src)
+    for (const optimize of levels(0, 2, 3)) { const { f } = jz(src, { optimize }).exports; for (const x of [2, 7, 2]) is(f(x), js.f(x), `${name}: f(${x}) at ${optimize}`) }
+    if (name === 'changed' || belowOpt(2)) continue
+    const warnings = []
+    compile(src, { optimize: 2, warnings: w => warnings.push(w) })
+    ok(!warnings.some(w => w.code === 'shape-lost'), `${name}: the records keep their shape`)
+  }
+})
+
+// `if (!(data instanceof Float32Array)) return stream(opts(data))` beside
+// `batch(data, opts(o))`, `data` a channel read from a list (a Float32Array or
+// missing): where the test fails `data` is no Float32Array, so the options
+// record never joins a typed array, keeps its shape, and the batch's cursor
+// stays a number (an element store, no string key). A typed array of another
+// kind, a buffer (a SharedArrayBuffer is no ArrayBuffer) and an unknown class
+// keep their kinds on the failing side.
+test('summary: instanceof narrows a name on both sides of its test', () => {
+  const src = `function opts(o) { let n = o?.size ?? 8; let h = o?.hop ?? (n >> 2); return { ...o, n, h } }
+    function stream(o) { return o.n * 1000 + o.h }
+    function batch(d, o) {
+      const out = new Float64Array(d.length + 4 * o.n); let pos = 0
+      for (let f = 0; f < 3; f++) { for (let i = 0; i < o.n; i++) out[pos + i] += d[i]; pos += o.h }
+      let s = 0; for (let i = 0; i < out.length; i++) s += out[i] * (i + 1); return s }
+    function run(data, o) {
+      if (!(data instanceof Float32Array)) return stream(opts(data))
+      return batch(data, opts(o))
+    }
+    const chans = [new Float32Array(16).map((_, i) => i % 5), new Float32Array(16).fill(0.5)]
+    export let f = (c, size) => run(chans[c], { size, rate: 48000 })
+    const other = [new Float64Array([3, 4]), new Uint8Array([5]), new ArrayBuffer(8), [6, 7], new Map([[1, 2]])]
+    const kindOf = (x) => { if (!(x instanceof Float32Array)) { if (x instanceof Float64Array) return x[1]; if (x instanceof Array) return x[0] * 10; if (x instanceof Map) return x.get(1) * 100; if (x instanceof ArrayBuffer) return x.byteLength * 1000; return x === undefined ? -1 : x.length * 10000 } return -2 }
+    export let g = (i) => kindOf(other[i])`
+  const js = oracle(src)
+  for (const optimize of levels(0, 2, 3)) {
+    const { f, g } = jz(src, { optimize }).exports
+    for (const [c, size] of [[0, 8], [1, 4], [2, 8], [0, 6]]) is(f(c, size), js.f(c, size), `f(${c}, ${size}) at ${optimize}`)
+    for (const i of [0, 1, 2, 3, 4, 5]) is(g(i), js.g(i), `g(${i}) at ${optimize}`)
+  }
+  summarize(src)
+  ok(tagOf(kindOf('opts', 'o') & ~(hasTag(kindOf('opts', 'o'), K.ABSENT) ? kind(K.ABSENT) : 0)) === K.OBJECT, 'the options record keeps its object kind')
+  if (belowOpt(2)) return
+  const warnings = []
+  const text = compile(src, { optimize: 2, wat: true, warnings: w => warnings.push(w) })
+  ok(!warnings.some(w => w.code === 'shape-lost'), 'the options record keeps its shape')
+  // the loops of batch, wherever the inliner put them (beside opts' spread, which copies keys by name)
+  const holder = funcWat(text, 'batch') || funcWat(text, 'f$exp')
+  const loops = []
+  for (let at = holder.indexOf('(loop'); at >= 0; at = holder.indexOf('(loop', at + 1)) {
+    let depth = 0, end = at
+    do { const c = holder[end++]; if (c === '(') depth++; else if (c === ')') depth-- } while (depth && end < holder.length)
+    loops.push(holder.slice(at, end))
+  }
+  const stores = loops.filter(l => /f64\.store/.test(l))
+  ok(stores.length && stores.every(l => !/call \$__(dyn_set|dyn_get\b|is_str_key|add_slow)/.test(l)), 'the overlap-add stores by a numeric index')
+})
+
+// A member path tested against null in a conditional whose arm neither calls
+// nor stores reads what the test read: `params.x1 != null ? params.x1 : 0` is a
+// Number, the filter state a kernel reads back from its record, which a loop
+// then carries without converting. A getter runs again on the second read, so
+// an accessor's name keeps its kind.
+test('summary: a member tested against null reads as present in the arm', () => {
+  const src = `function k (d, q) {
+      let a = q.x1 != null ? q.x1 : 0, b = null != q.y1 ? q.y1 : 0, c = q.z1 == null ? 0 : q.z1
+      for (let i = 0; i < d.length; i++) { const y = d[i] - a + 0.5 * b + c; a = d[i]; b = y; d[i] = y }
+      q.x1 = a; q.y1 = b; q.z1 = c; return d[d.length - 1] }
+    const p = { fs: 1 }
+    let n = 0
+    const o = { get v() { n++; return n % 2 ? 5 : null } }
+    export let f = () => { const d = new Float64Array([1, 3, 6]); return k(d, p) + k(d, p) * 100 + (p.x1 ?? -1) * 10000 }
+    export let g = () => { let s = 0; for (let i = 0; i < 6; i++) { const v = o.v != null ? o.v : 7; s = s * 10 + (v === null ? 9 : v) } return s }`
+  summarize(src)
+  for (const name of ['a', 'b', 'c']) {
+    const kd = kindOf('k', name)
+    ok(tagOf(kd) === K.NUMBER && !hasTag(kd, K.NULLISH), `${name} is a Number`)
+  }
+  const js = oracle(src)
+  for (const optimize of levels(0, 2, 3)) {
+    const m = jz(src, { optimize }).exports
+    is(m.f(), js.f(), `f at ${optimize}`)
+    is(m.g(), js.g(), `the getter's second read at ${optimize}`)
+  }
+})
+
+// Where `x instanceof Float32Array` holds, x is a Float32Array, owned or a
+// view: a binding made from it there reads its elements as Float32, whatever
+// else x may hold elsewhere (a string, a list).
+test('summary: a typed array class test proves the element kind', () => {
+  const src = `export let f = (k) => { let x = k ? new Float32Array([1, 2]) : k === 0 ? 'ab' : [3, 4]
+    if (x instanceof Float32Array) { const y = x; return y[1] + y.length } return -1 }`
+  summarize(src)
+  const view = ctx.summary.at('f')
+  const y = kindOf('f', 'y')
+  is(tagOf(y), K.TYPED, 'the binding is a typed array')
+  ok(view.typedPayloadCtorOfExpr(binding('f', 'y'))?.startsWith('new.Float32Array'), 'of Float32 elements')
+  for (const optimize of levels(0, 2)) is(jz(`export let f = (k) => { let x = k ? new Float32Array([1, 2]) : k === 0 ? 'ab' : [3, 4]
+    if (x instanceof Float32Array) { const y = x; return y[1] + y.length } return -1 }`, { optimize }).exports.f(1), 4, `O${optimize}`)
+})
+
+// A statement that always leaves ends its list: what follows never runs. The
+// dispatch `if (data instanceof Float32Array) return fn(data, opts)`, decided
+// for a Float32Array and folded to its arm, leaves the channel-list and
+// stream arms after a return; walked, their callbacks would hand `fn` values
+// of any kind, and the kernel it wraps would read its samples by a generic
+// element lookup.
+test('summary: nothing after a statement that always leaves reaches a kind', () => {
+  const src = `function energy(data, opts) {
+      let s = 0, w = opts.w
+      for (let i = 0; i + w <= data.length; i++) { let c = 0; for (let j = 0; j < w; j++) c += data[i + j] * data[i + j]; s += c }
+      return s }
+    function wrap(fn) {
+      return function run(data, opts) {
+        if (data instanceof Float32Array) return fn(data, opts)
+        if (Array.isArray(data)) return data.map((ch) => fn(ch, opts))
+        return (chunk) => fn(chunk, data) } }
+    const shift = wrap(energy)
+    const buf = new Float32Array(64)
+    export let f = (k, w) => { for (let i = 0; i < 64; i++) buf[i] = ((i * 7 + k) % 11) / 4 - 1; return shift(buf, { w }) }
+    function tail(x) { return inner(x) + k; function inner(y) { return y * 2 } var k = 3 }
+    function sw(v) { switch (v) { case 1: return 'a'; case 2: v = 5; case 3: return 'c' + v; default: break } return 'd' }
+    function loop(a) { for (let i = 0; i < 3; i++) { if (i === a) break; continue; a = 'x' } return a }
+    export let g = (x) => tail(x) + sw(x) + loop(x)`
+  const js = oracle(src)
+  for (const optimize of levels(0, 2, 3)) {
+    const { f, g } = jz(src, { optimize }).exports
+    for (const [k, w] of [[0, 4], [3, 8], [5, 1]]) is(f(k, w), js.f(k, w), `f(${k}, ${w}) at ${optimize}`)
+    for (const x of [0, 1, 2, 3, 5]) is(g(x), js.g(x), `g(${x}) at ${optimize}`)
+  }
+  if (belowOpt(2)) return
+  const text = compile(src, { optimize: 2, wat: true })
+  const fns = text.split('\n  (func ').filter(b => b.split('\n')[0].endsWith('energy'))
+  ok(fns.length && fns.every(b => !/call \$__(typed_idx|dyn_get|str_idx|is_str_key|add_slow)/.test(b)), 'the kernel reads its samples as a Float32Array')
+})
+
+// An element of a list of fixed length read by a counter its loop bounds by
+// that list's own length (`for (let c = 0; c < inp.length; c++) f(inp[c])`)
+// is present: `f`'s parameter holds what the list holds, never undefined, so
+// a test of what it is (`data instanceof Float32Array`) is decided.
+test('summary: a counter bounded by a fixed list\'s length reads its elements present', () => {
+  const src = `function energy(data) { let s = 0; for (let i = 0; i < data.length; i++) s += data[i] * data[i]; return s }
+    function run(data) {
+      if (!(data instanceof Float32Array)) return (chunk) => chunk ? energy(chunk) : 0
+      return energy(data)
+    }
+    let inputs = []
+    export let setup = (n) => { inputs[0] = [new Float32Array(n), new Float32Array(n)]; for (let i = 0; i < n; i++) { inputs[0][0][i] = i % 3; inputs[0][1][i] = 1 } }
+    export let f = () => { const inp = inputs[0]; let s = 0; for (let c = 0; c < inp.length; c++) s += run(inp[c]); return s }`
+  const js = oracle(src)
+  for (const optimize of levels(0, 2, 3)) {
+    const m = jz(src, { optimize }).exports
+    for (const n of [4, 9]) { js.setup(n); m.setup(n); is(m.f(), js.f(), `f() after setup(${n}) at ${optimize}`) }
+  }
+  summarize(src)
+  ok(!hasTag(kindOf('run', 'data'), K.ABSENT), 'the element read is present')
 })

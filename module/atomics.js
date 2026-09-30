@@ -17,6 +17,7 @@ import { valTypeOf } from '../src/kind.js'
 import { emit, deps } from '../src/bridge.js'
 import { inc, err, PTR } from '../src/ctx.js'
 import { VAL } from '../src/reps.js'
+import { typedCtorName } from '../src/typed-provenance.js'
 import { errorCodeLiteral, ERR } from '../err-codes.js'
 
 export default (ctx) => {
@@ -60,8 +61,9 @@ export default (ctx) => {
       ctor = ctx.func.localTypedElemsOverlay?.get(arr) ?? ctx.func.typedElem?.get(arr)
         ?? ctx.func.localReps?.get(arr)?.typedCtor          // narrowed param facts (typed default-arg seed)
         ?? ctx.scope?.globalTypedElem?.get(arr)
-    if (ctor === 'new.Int32Array' || ctor === 'new.Int32Array.view') return 'i32'
-    if (ctor === 'new.BigInt64Array' || ctor === 'new.BigInt64Array.view') return 'i64'
+    // the address helper reads a view's descriptor at run time: owned or a view alike
+    if (typedCtorName(ctor) === 'Int32Array') return 'i32'
+    if (typedCtorName(ctor) === 'BigInt64Array') return 'i64'
     err(`Atomics: receiver must be a proven Int32Array or BigInt64Array (shared-memory v1 contract) — got ${typeof arr === 'string' ? `'${arr}' (${ctor ?? 'unproven'})` : 'an expression'}`)
   }
 
@@ -131,14 +133,20 @@ export default (ctx) => {
 
   // wait(arr, i, value, timeoutMs?) → 'ok' | 'not-equal' | 'timed-out'
   // (static strings 9/10/11). Timeout converts ms → ns; absent/Infinity →
-  // -1 (infinite). Only valid off the main thread on a SHARED memory — a
+  // -1 (infinite); negative finite values become zero. Requires SHARED memory — a
   // non-shared memory traps, the wasm analogue of the host's TypeError.
   ctx.core.emit['Atomics.wait'] = (arr, i, value, timeout) => {
     const w = recvWidth(arr)
     inc('__static_str')
-    const tmo = timeout === undefined
-      ? ['i64.const', -1]
-      : ['i64.trunc_sat_f64_s', ['f64.mul', toNumF64(timeout, emit(timeout)), ['f64.const', 1e6]]]
+    let tmo = ['i64.const', -1]
+    if (timeout !== undefined) {
+      const t = temp('waitTimeout'), get = () => ['local.get', `$${t}`]
+      tmo = ['block', ['result', 'i64'],
+        ['local.set', `$${t}`, toNumF64(timeout, emit(timeout))],
+        ['if', ['result', 'i64'], ['i32.or', ['f64.ne', get(), get()], ['f64.eq', get(), ['f64.const', 'inf']]],
+          ['then', ['i64.const', -1]],
+          ['else', ['i64.trunc_sat_f64_s', ['f64.mul', ['f64.max', get(), ['f64.const', 0]], ['f64.const', 1e6]]]]]]
+    }
     return typed(['call', '$__static_str',
       ['i32.add', ['i32.const', 9],
         [w === 'i64' ? 'memory.atomic.wait64' : 'memory.atomic.wait32', addr(arr, i, w), val(value, w), tmo]]], 'f64')

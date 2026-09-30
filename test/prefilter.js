@@ -2,7 +2,9 @@
 // span of lanes; spans where no lane holds are stepped over, and the loop's own
 // statement runs from the first lane that holds to the end of its span.
 import test from 'tst'
-import { ok } from 'tst/assert.js'
+import { is, ok } from 'tst/assert.js'
+import { compile as compileWat } from 'watr'
+import { tryPrefilter } from '../src/optimize/vectorize/prefilter.js'
 import { levels } from './_matrix.js'
 import { agree, wat } from './util.js'
 
@@ -34,6 +36,34 @@ export let f = (density, n) => {
 
 const SIZES = [0, 1, 2, 15, 16, 17, 18, 32, 33, 47, 100, 699, 700]
 const DENSITIES = [0, 1, 2, 3, 16, 17, 97]
+
+test('prefilter: skipped spans retain the saved false predicate', () => {
+  const build = vector => {
+    const get = name => ['local.get', name], num = n => ['i32.const', n]
+    const stmt = ['if', ['if', ['result', 'i32'],
+      ['local.tee', '$saved', ['i32.eq', ['i32.load8_u', get('$i')], num(1)]],
+      ['then', num(1)], ['else', get('$saved')]], ['then', ['call', '$work']]]
+    const loop = ['block', '$done', ['loop', '$loop',
+      ['br_if', '$done', ['i32.ge_s', get('$i'), get('$n')]], stmt,
+      ['local.set', '$i', ['i32.add', get('$i'), num(1)]], ['br', '$loop']]]
+    const lifted = vector ? tryPrefilter({ incVar: '$i', bound: get('$n'), boundLocal: '$n', body: [stmt], preamble: [], blockNode: loop }, new Map(), { next: 0 }) : null
+    if (vector) ok(lifted, 'the saved-predicate form is recognized')
+    const module = ['module', ['memory', ['export', '"memory"'], '1'], ['func', '$work'],
+      ['func', '$f', ['export', '"f"'], ['param', '$n', 'i32'], ['result', 'i32'],
+        ['local', '$i', 'i32'], ['local', '$saved', 'i32'], ...(lifted?.newLocalDecls ?? []),
+        ['local.set', '$saved', num(77)], lifted?.wrapper ?? loop, get('$saved')]]
+    return new WebAssembly.Instance(new WebAssembly.Module(compileWat(module))).exports
+  }
+  const scalar = build(false), vector = build(true)
+  for (const marks of [[], [0], [15], [16], [31], [0, 16, 32]]) {
+    for (const instance of [scalar, vector]) {
+      const bytes = new Uint8Array(instance.memory.buffer)
+      bytes.fill(0)
+      for (const i of marks) bytes[i] = 1
+    }
+    for (const n of [0, 1, 15, 16, 17, 32, 33]) is(vector.f(n), scalar.f(n), `${marks}: n=${n}`)
+  }
+})
 
 test('prefilter: a sparse byte guard over heavy work scans by spans', () => {
   const src = scan({})

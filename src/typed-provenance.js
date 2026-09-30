@@ -4,7 +4,8 @@
  * One cycle-free authority for the concrete TypedArray constructor carried by
  * an expression. Analysis, kind inference, and emission all consume this file;
  * none re-walk method chains independently. Constructor strings use the
- * compiler's canonical form (`new.Float32Array`, optional `.view`).
+ * compiler's canonical form (`new.Float32Array`, optional `.view`, or
+ * `.anyview` for an array of the constructor that may be owned or a view).
  */
 
 const TYPED_FAMILY_CTORS = new Set([
@@ -25,7 +26,13 @@ const RECEIVER_TYPED_RESULT_METHODS = new Set([
 export const TYPED_CTOR_CONFLICT = Symbol('typed ctor conflict')
 
 const stripTypedView = ctor =>
-  typeof ctor === 'string' && ctor.endsWith('.view') ? ctor.slice(0, -5) : ctor
+  typeof ctor !== 'string' ? ctor : ctor.endsWith('.anyview') ? ctor.slice(0, -8) : ctor.endsWith('.view') ? ctor.slice(0, -5) : ctor
+
+/** The constructor a constructor string names, without its view state. */
+export const typedCtorBase = stripTypedView
+
+/** A constructor string's view state: true a view, false owned, null either. */
+export const typedCtorView = ctor => ctor.endsWith('.anyview') ? null : ctor.endsWith('.view')
 
 /** Numeric keys address typed elements; every other property has independent storage. */
 export const typedElementKey = (key, numeric = false) => {
@@ -64,7 +71,10 @@ export function typedElemCtor(rhs) {
 const joinCtor = (a, b) => {
   if (a === TYPED_CTOR_CONFLICT || b === TYPED_CTOR_CONFLICT) return TYPED_CTOR_CONFLICT
   if (a == null || b == null) return null
-  return a === b ? a : TYPED_CTOR_CONFLICT
+  if (a === b) return a
+  // owned and view arrays of one constructor: its elements, the view bit read at run time
+  const base = stripTypedView(a)
+  return base === stripTypedView(b) && isTypedArrayCtor(base) ? base + '.anyview' : TYPED_CTOR_CONFLICT
 }
 
 export const TYPED_SOURCE_NAME = 0

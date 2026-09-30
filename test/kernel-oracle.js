@@ -715,7 +715,9 @@ export let f = (s) => g(s) === false`
 // from `v`'s already-spent bits. A captured-name consumer OTHER than the
 // closure env-slot (e.g. a bare name hitting a container store) is a
 // different, still-open instance of the same root and out of this row's
-// scope.
+// scope. Since replaced: such a binding is tagged (kind.js boolTagged) and
+// holds the atom itself, for every consumer; the shadow and its
+// capturedNames census are gone.
 //
 // DIRECT/INLINED BARE RETURN, a WALL sibling — NOT the CLOSURE CAPTURE
 // consumer above, and NOT a native/kernel divergence (PROBED 2026-08-21,

@@ -2,7 +2,53 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import jz, { compile } from '../index.js'
-import { run } from './util.js'
+import { oracle, run } from './util.js'
+import { belowOpt, levels, onWasi, ownedLevels } from './_matrix.js'
+
+test('destruct: object rest copies dynamic own properties after defaults', () => {
+  const src = `
+    export function rest(o) { const {a = 3, ...r} = o; return [a, r] }
+    export function assign(o) { let a, r; ({a, ...r} = o); return [a, r] }
+    export function effects() {
+      let calls = 0
+      let source = {get a() { calls += 1; return undefined }, get b() { calls += 10; return 8 }, c: 9}
+      const key = {toString() { calls += 100; return 'a' }}
+      const {[key]: value = (source = {b: 40}, 7), ...r} = source
+      return [value, r, calls, source.b]
+    }
+    export function removed() {
+      const source = {a: undefined, b: 2, c: 3}; let key = 'b'
+      const {a = (delete source[key], 7), ...r} = source
+      return [a, r]
+    }
+    export function nullish(source) {
+      let effects = 0
+      try { const {[(effects++, 'a')]: value, ...r} = source; return [value, r, effects] }
+      catch (e) { return [e.name, effects] }
+    }
+    export function empty(source) { try { const {} = source; return 1 } catch (e) { return e.name } }
+    export function duplicate(source) { const {a:x, a:y, ...r} = source; return [x,y,r] }
+  `
+  const own = src + `export function owned() { return [
+    rest({a:1,b:2}), assign({b:8,nested:{x:7}}), duplicate({a:1,b:2}),
+    rest([1,2,3]), assign('abc'), duplicate(5), rest(true),
+    nullish(null), nullish(undefined), nullish({a:7,b:8}), empty(null), empty(undefined), empty({})
+  ] }`
+  const got = run(own), ref = oracle(own)
+  is(got.owned(), ref.owned(), 'module-owned values and nullish patterns')
+  for (const name of ['effects', 'removed']) is(got[name](), ref[name](), name)
+  if (onWasi()) return // the WASI entry has no host-object bridge
+  for (const value of [{a: 1, b: 2}, {b: 8, nested: {x: 7}}, [1,2,3], 'abc', 5, true])
+    for (const name of ['rest', 'assign', 'duplicate']) is(got[name](value), ref[name](value), `${name}: ${JSON.stringify(value)}`)
+  for (const value of [null, undefined, {a: 7, b: 8}])
+    for (const name of ['nullish', 'empty']) is(got[name](value), ref[name](value), `${name}: ${JSON.stringify(value)}`)
+  const make = () => Object.create({inherited: 3}, {
+    a: {enumerable: true, get() { return 7 }},
+    b: {enumerable: true, get() { return 8 }},
+    hidden: {value: 9},
+  })
+  is(got.rest(make()), ref.rest(make()), 'own enumerable values from a host object')
+})
 
 // ============================================
 // Array destructuring
@@ -760,8 +806,10 @@ test('for-in destructuring head: key string destructures with per-iteration bind
 // ============================================
 
 // An array pattern over a value the summary proves an array reads it by
-// index: no cursor record, no protocol calls, no unwinding. Any other source
-// (a collection, a string, a value that may be nullish) keeps the protocol.
+// index: no cursor record, no protocol calls, no unwinding. An array that may
+// be missing reads the same way behind a test that hands the missing value to
+// the protocol's open, which throws. Any other source (a collection, a string)
+// keeps the protocol.
 test('destruct: a pattern over a proven array reads by index', () => {
   const opener = (src) => (compile(src, { wat: true, optimize: 'speed' }).match(/__it_(open|pull|step)/g) || []).length
   ok(opener(`export let f = (p) => { const [a, b, ...r] = p; return a + b + r.length }`) > 0, 'an export\'s untyped parameter keeps the protocol')
@@ -794,7 +842,8 @@ test('destruct: a pattern over a proven array reads by index', () => {
   is(jz(set, { optimize: 'speed' }).exports.f(), 45)
   const maybe = `let src = (w) => w ? [1, 2] : null
     export let f = (w) => { const [a, b] = src(w); return a + b }`
-  ok(opener(maybe) > 0, 'a source that may be nullish keeps the protocol (it throws)')
+  const steps = (src) => (compile(src, { wat: true, optimize: 'speed' }).match(/__it_(pull|step)/g) || []).length
+  is(steps(maybe), 0, 'an array that may be nullish reads by index behind the open\'s test')
   const inst = jz(maybe, { optimize: 'speed' })
   is(inst.exports.f(1), 3)
   let threw = null
@@ -818,12 +867,13 @@ test('destruct: a default that runs code between two steps keeps the protocol', 
 // A rest copies the remainder without calling anything of the array's: an
 // own `slice` stored on an array keeps the protocol, which never calls it.
 test('destruct: a rest never calls an array\'s own slice', () => {
-  const own = `export let f = () => { const a = [1, 2]; a.slice = () => [9]; const [...r] = a; return r[0] * 10 + r.length }`
-  // pre-watr: the records' functions release what they made as they return, so watr inlines them into `f`
-  ok(/__it_(open|pull|step|rest|close)/.test(compile(own, { wat: true, optimize: { level: 'speed', watr: false } })), 'the protocol stays where slice may be the array\'s own')
+  const own = `export let f = () => { let calls = 0; const a = [1, 2]; a.slice = () => { calls++; return [9] }; const [...r] = a; return r[0] * 10 + r.length + calls * 100 }`
+  // Inspect the lowering before either inliner removes its protocol calls.
+  const shape = { wat: true, optimize: { level: 3, sourceInline: false, watr: false } }
+  ok(/__it_(open|pull|step|rest|close)/.test(compile(own, shape)), 'the protocol stays where slice may be the array\'s own')
   is(jz(own, { optimize: 'speed' }).exports.f(), 12)
   const plain = `export let f = () => { const a = [1, 2, 3]; const [, ...r] = a; return r[0] * 10 + r.length }`
-  ok(!/__it_(open|pull|step|rest|close)/.test(compile(plain, { wat: true, optimize: 'speed' })), 'a program without an own slice reads the rest by index')
+  ok(!/__it_(open|pull|step|rest|close)/.test(compile(plain, shape)), 'a program without an own slice reads the rest by index')
   is(jz(plain, { optimize: 'speed' }).exports.f(), 22)
 })
 
@@ -839,4 +889,146 @@ test('destruct: rejecting an indexed rest preserves every preceding pull', () =>
     const inst = jz(src, { optimize: 'speed' })
     for (let i = 0; i < 2; i++) is(inst.memory.read(inst.exports.f()), expected, `${pattern} = ${input}, call ${i}`)
   }
+})
+
+test('destruct: bounded Map entry pairs read by index and preserve value identities', () => {
+  const src = `export function f(n) {
+    const m = new Map()
+    for (let i=0;i<n;i++) m.set(i, {v: i + 0.5})
+    if (n > 2) { m.delete(1); m.set(1, {v: 30}) }
+    let sum=0, order=0
+    for (const [key, value] of m) {
+      value.v += key
+      sum += value.v
+      order = order * 10 + key
+    }
+    return sum * 10000 + order
+  }`
+  const ref = oracle(src)
+  for (const optimize of ownedLevels(false, 1, 2, 3, 'size')) {
+    const p = run(src, { optimize })
+    for (const n of [0, 1, 4, 2, 0, 4]) is(p.f(n), ref.f(n), `${optimize}: ${n} entries`)
+  }
+  const shape = compile(src, { wat: true, optimize: { level: 1, sourceInline: false, watr: false } })
+  ok(!/__it_(open|pull|step)/.test(shape), 'Map pairs need no pattern cursor')
+})
+
+test('destruct: Map entry defaults, missing tuple positions and nested failures follow Node', () => {
+  const src = `export function values() {
+    const m = new Map([[null, undefined], [undefined, null], [2n, 3n]])
+    let s = ''
+    for (const [a = 'key', b = 'value', c = 'end', ...rest] of m)
+      s += typeof a + ':' + String(a) + '/' + typeof b + ':' + String(b) + '/' + c + rest.length + ';'
+    return s
+  }
+  export function effect() {
+    let calls=0, sum=0
+    const m=new Map([[1,undefined],[2,5]])
+    for (const [k, v = (calls++, 3)] of m) sum += k + v
+    return sum * 10 + calls
+  }
+  export function nested(flag) {
+    const m = new Map([[1, flag ? [2,3] : undefined]])
+    try { for (const [k, [a,b]] of m) return k+a+b }
+    catch(e) { return e.name }
+  }
+  export function mixed(flag) {
+    const src = flag ? new Map([[1,2]]) : [undefined]
+    try { for (const [a,b] of src) return a+b }
+    catch(e) { return e.name }
+  }`
+  const ref = oracle(src)
+  for (const optimize of ownedLevels(false, 1, 2, 3, 'size')) {
+    const p = run(src, { optimize })
+    for (let repeat=0;repeat<2;repeat++) {
+      is(p.values(), ref.values(), `${optimize}: value kinds`)
+      is(p.effect(), ref.effect(), `${optimize}: effectful default`)
+      for (const flag of [0,1]) {
+        is(p.nested(flag), ref.nested(flag), `${optimize}: nested ${flag}`)
+        is(p.mixed(flag), ref.mixed(flag), `${optimize}: mixed ${flag}`)
+      }
+    }
+  }
+})
+
+test('destruct: private Map entries preserve evaluation, labels and nested iteration', () => {
+  const src = `export function f(n) {
+    const m = new Map(), other = new Map([[2,3],[4,5]])
+    for (let i=0;i<n;i++) m.set(i, i+1)
+    let calls=0, sum=0
+    const choose=()=>{calls++;return m}
+    outer: for (const [k,v] of choose()) {
+      for (const [a,b] of other) {
+        if (k===1) continue outer
+        sum+=k+v+a+b
+      }
+      if (k===3) break outer
+    }
+    return [sum,calls]
+  }`
+  const ref=oracle(src)
+  for (const optimize of ownedLevels(0,1,2,3,'size')) {
+    const p=run(src,{optimize})
+    for (const n of [0,1,2,5,0,3]) is(p.f(n),ref.f(n), `${optimize}: ${n} entries`)
+  }
+})
+
+test('destruct: observable Map entry identities keep their pairs', () => {
+  const cases = [
+    `const rows=[]; for (const row of m) rows.push(row); rows[0][1]=9; return [rows,m.get(1)]`,
+    `const reads=[]; for (const row of m) reads.push(()=>row); return [reads[0]()===reads[0](),reads[0]()===reads[1](),reads[1]()]`,
+    `let sum=0; for (const row of m) { const alias=row; alias[0]=8;sum+=row[0]+alias[1] };return sum`,
+    `let s='';for (const row of m) for(let i=0;i<3;i++)s+=String(row[i])+'/';return s`,
+  ]
+  for (const body of cases) {
+    const src=`export function f(){const m=new Map([[1,2],[3,4]]);${body}}`, ref=oracle(src)
+    for (const optimize of ownedLevels(0,1,2,3,'size')) {
+      const p=run(src,{optimize})
+      is(p.f(),ref.f(),`${optimize}: ${body}`)
+      is(p.f(),ref.f(),'repeat')
+    }
+  }
+})
+
+test('destruct: private Map columns retain the original entry snapshot', () => {
+  const src=`export function f(){
+    const m=new Map([[1,2],[3,4]]);let s=0
+    for(const [k,v] of m){m.set(3,40);m.set(5,6);s+=k+v}
+    return [s,m.size,m.get(3)]
+  }`
+  // Collection iteration is a documented snapshot in jz.
+  const ref=oracle(src.replace('of m)', 'of [...m])'))
+  for(const optimize of ownedLevels(0,1,2,3,'size')){
+    const p=run(src,{optimize})
+    is(p.f(),ref.f(),`${optimize}: snapshot precedes every body write`)
+    is(p.f(),ref.f(),'repeat')
+  }
+})
+
+test('destruct: Map iteration ignores own key and value methods', () => {
+  for(const own of ['m.keys=()=>[99]', 'm.values=()=>[88]', "Object.defineProperty(m,'size',{value:0})"]){
+    const src=`export function f(){
+      const m=new Map([[1,2],[3,4]]);${own}
+      let s=0;for(const [k,v] of m)s+=k+v
+      return s
+    }`
+    const ref=oracle(src)
+    for(const optimize of ownedLevels(0,1,2,3,'size'))is(run(src,{optimize}).f(),ref.f(),`${own}, O${optimize}`)
+  }
+})
+
+// A pattern over a field that may be missing hands only a missing value to the
+// protocol's open (which throws for it): the lists it holds keep their records'
+// shapes, and the reads through them take the slots.
+test('destruct: a pattern over a maybe-missing field keeps what the lists hold', () => {
+  const src = `const mk = (n, k) => { const r = []; for (let i = 0; i < n; i++) r.push({ b0: i * k, a1: k }); return r }
+    const bands = (n) => { const b = []; b.push(mk(n, 1)); b.push(mk(n, 2).concat(mk(n, 3).map(s => ({ ...s })))); return b }
+    const params = { fs: 1 }
+    export let run = (n) => { if (!params._s) params._s = bands(n); let [lo, hi] = params._s; let y = 0; for (let i = 0; i < lo.length; i++) y += lo[i].b0 + hi[i].a1 + hi[i + n].b0; return y }`
+  const js = oracle(src)
+  for (const optimize of levels(0, 2, 3)) is(jz(src, { optimize }).exports.run(3), js.run(3), `O${optimize}`)
+  if (belowOpt(2)) return
+  const warnings = []
+  compile(src, { optimize: 2, warnings: w => warnings.push(w) })
+  ok(!warnings.some(w => w.code === 'shape-lost'), 'no shape is lost')
 })

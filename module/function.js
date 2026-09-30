@@ -15,7 +15,7 @@ import { emit, storedValue, storedValuePlanned } from '../src/bridge.js'
 import { constNumExpr } from '../src/static.js'
 import { isReassigned } from '../src/ast.js'
 import { findFreeVars } from '../src/compile/analyze.js'
-import { REP_EDGE_REJECT, representationClosureArgAction } from '../src/compile/representation-plan.js'
+import { BIGINT_REP_CLOSED, BIGINT_REP_BOXED, BIGINT_REP_RAW, REP_EDGE_REJECT, representationActiveMaterializedRep, representationClosureArgAction } from '../src/compile/representation-plan.js'
 import { T } from '../src/ast.js'
 import { lookupValType, repOf } from '../src/reps.js'
 import { PTR, LAYOUT, inc, err, declGlobal, setLinkDemand, registerGetter } from '../src/ctx.js'
@@ -23,18 +23,21 @@ import { reachOn } from './core/reach.js'
 import { functionLength } from '../src/function.js'
 import { dataLen, dataPush } from '../src/static-data.js'
 
-const topLevelIntConsts = (body) => {
+const topLevelIntConsts = (body, captures) => {
+  if (!captures.length) return null
   const inner = Array.isArray(body) && body[0] === '{}' ? body[1] : body
-  const stmts = Array.isArray(inner) && inner[0] === ';' ? inner.slice(1) : []
-  const out = new Map()
-  for (const stmt of stmts) {
+  if (!Array.isArray(inner) || inner[0] !== ';') return null
+  let out = null
+  for (let s = 1; s < inner.length; s++) {
+    const stmt = inner[s]
     if (!Array.isArray(stmt) || (stmt[0] !== 'const' && stmt[0] !== 'let')) continue
     for (let i = 1; i < stmt.length; i++) {
       const decl = stmt[i]
       if (!Array.isArray(decl) || decl[0] !== '=' || typeof decl[1] !== 'string') continue
+      if (!captures.includes(decl[1])) continue
       if (stmt[0] === 'let' && isReassigned(body, decl[1])) continue
       const v = constNumExpr(decl[2])
-      if (Number.isInteger(v) && v >= -2147483648 && v <= 2147483647) out.set(decl[1], v)
+      if (Number.isInteger(v) && v >= -2147483648 && v <= 2147483647) (out ||= new Map()).set(decl[1], v)
     }
   }
   return out
@@ -72,6 +75,23 @@ export default (ctx) => {
       (i32.load8_u (i32.add ${base}
         (i32.wrap_i64 (i64.and (i64.shr_u (local.get $fn) (i64.const ${LAYOUT.AUX_SHIFT})) (i64.const ${LAYOUT.AUX_MASK}))))))`
   }
+  // The host's call of a closure it holds (interop.js reads one as a JS
+  // function). Values cross as i64 bits, as every boxed boundary value does.
+  // `argc` counts the host's arguments; past the inline lanes a rest
+  // parameter reads them from `spill`, the host's array of all of them (a
+  // spread call's $__closure_spill).
+  ctx.core.stdlib.__call_closure = () => {
+    const lanes = Array.from({ length: ctx.closure.width ?? MAX_CLOSURE_ARITY }, (_, i) => i)
+    return `(func $__call_closure (export "__call_closure") (param $clos i64) (param $argc i32) (param $spill i32) (param $this i64)${lanes.map(i => ` (param $a${i} i64)`).join('')} (result i64)
+      ${ctx.scope.globals.has('__closure_spill') ? '(global.set $__closure_spill (local.get $spill))' : ''}
+      (i64.reinterpret_f64 (call_indirect (type $ftN)
+        (f64.reinterpret_i64 (local.get $clos))
+        (local.get $argc)
+        ${lanes.map(i => `(f64.reinterpret_i64 (local.get $a${i}))`).join(' ')}
+        ${ctx.closure.receiver ? '(f64.reinterpret_i64 (local.get $this))' : ''}
+        (i32.wrap_i64 (i64.and (i64.shr_u (local.get $clos) (i64.const ${LAYOUT.AUX_SHIFT})) (i64.const ${LAYOUT.AUX_MASK}))))))`
+  }
+
   registerGetter('.closure:length', fn => {
     inc('__closure_length')
     return typed(['call', '$__closure_length', asI64(emit(fn))], 'i32')
@@ -94,7 +114,7 @@ export default (ctx) => {
     // one cloned after it ran): link reads a resolved call's targets by it.
     ;(ctx.closure.summaryId ??= new Map()).set(fnName, ctx.summary?.closureIdOfBody?.(body))
 
-    const localIntConsts = ctx.func.body ? topLevelIntConsts(ctx.func.body) : new Map()
+    const localIntConsts = ctx.func.body ? topLevelIntConsts(ctx.func.body, captures) : null
     const captureIntConsts = new Map()
     for (const name of captures) {
       // Third fallback: a depth≥2 capture chain whose constant was
@@ -104,7 +124,7 @@ export default (ctx) => {
       // carries it forward regardless, since the ancestor's own
       // seedClosureFrame already republished its fold into this frame's
       // localReps before this arrow's capture set is derived.
-      const v = ctx.scope.constInts?.get(name) ?? localIntConsts.get(name) ?? repOf(name)?.intConst
+      const v = ctx.scope.constInts?.get(name) ?? localIntConsts?.get(name) ?? repOf(name)?.intConst
       if (v != null && !ctx.func.boxed?.has(name)) captureIntConsts.set(name, v)
     }
     const envCaptures = captureIntConsts.size ? captures.filter(name => !captureIntConsts.has(name)) : captures
@@ -138,7 +158,10 @@ export default (ctx) => {
     // must keep that fact inside the body, or the body's own write facts
     // would let it evaporate at the capture boundary.
     const captureMayBeUndefineds = new Set()
+    const captureBigintReps = new Map()
     for (const name of envCaptures) {
+      const carrier = representationActiveMaterializedRep(ctx, name)
+      if (carrier === (BIGINT_REP_RAW | BIGINT_REP_CLOSED) || carrier === (BIGINT_REP_BOXED | BIGINT_REP_CLOSED)) captureBigintReps.set(name, carrier)
       const vt = lookupValType(name)
       if (vt != null) captureValTypes.set(name, vt)
       const schemaId = ctx.schema.idOf(name)
@@ -203,6 +226,7 @@ export default (ctx) => {
       intCertain: captureIntCertain.size ? captureIntCertain : null,
       nullables: captureNullables.size ? captureNullables : null,
       mayBeUndefineds: captureMayBeUndefineds.size ? captureMayBeUndefineds : null,
+      bigintReps: captureBigintReps.size ? captureBigintReps : null,
       valTypes: captureValTypes.size ? captureValTypes : null,
       schemaVars: captureSchemaVars.size ? captureSchemaVars : null,
       typedElems: captureTypedElems.size ? captureTypedElems : null,
@@ -244,20 +268,9 @@ export default (ctx) => {
         const cell = ['local.get', `$${ctx.func.boxed.get(envCaptures[i])}`]
         block.push(walked ? ['i64.store', addr, ['i64.extend_i32_u', cell]] : ['i32.store', addr, cell])
       }
-      else {
-        // Identity-safe capture shadow (src/compile/emit.js's emitDecl,
-        // ctx.func.identityShadow — see its own comment there): a captured,
-        // ambiguous BOOL∪NUMBER-merge decl (`let v = cond && 1`) already
-        // computed and teed its boxed TRUE/FALSE-atom-or-number form once,
-        // at declaration time — read it back here instead of a fresh
-        // `emit(name)`, which would only ever see the collapsed raw bits
-        // (the merge's own valTypeOf reads NUMBER post-collapse, so a bare
-        // name reference carries no ambiguity signal of its own by this
-        // point — kind.js hasAmbiguousBoolMerge only recognizes the ORIGINAL
-        // expression shape, never a name that merely holds its result).
-        const shadow = ctx.func.identityShadow?.get(envCaptures[i])
-        block.push(['f64.store', addr, shadow ? ['local.get', `$${shadow}`] : asF64(emit(envCaptures[i]))])
-      }
+      // A Boolean-or-Number binding the closure observes holds its atoms
+      // itself (kind.js boolTagged): the capture copies the value.
+      else block.push(['f64.store', addr, asF64(emit(envCaptures[i]))])
     }
     block.push(mkPtrIR(PTR.CLOSURE, tableIdx, ['local.get', `$${t}`]))
 

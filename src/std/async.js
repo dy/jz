@@ -17,6 +17,10 @@
  * @module std/async
  */
 
+/** A promise's fields, in layout order: the summary names the promise an
+ *  async function returns by this record (src/summary/index.js promiseAt). */
+export const PROMISE_KEYS = ['__p', 'st', 'rs', 'val', 'cbs', 'then', 'catch', 'finally']
+
 export default `
 export let __mt = []
 export let __drain = () => {
@@ -78,6 +82,10 @@ export let __await = (v, ok, err) => {
     __p_sub(__p_resolve(v), (st, x) => { if (st === 1) ok(x); else err(x) })
   else { __mt.push(() => ok(v)) }
 }
+// The value an await of \`a\` resumes its machine with (jzify/generators.js):
+// \`v\`, what the driver below sends, is the settled value of \`a\`, which the
+// program summary reads off \`a\` (src/summary/index.js awaited).
+export let __awaited = (a, v) => v
 export let __async_run = (it) => {
   let p = __p_new()
   let onstep = (r) => {

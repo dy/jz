@@ -134,36 +134,28 @@ export const registerDurableLog = () => {
     (i32.store offset=12 (local.get $rec) (i32.load (i32.sub (local.get $off) (i32.const 4))))
     (memory.copy (i32.add (local.get $rec) (i32.const 16)) (local.get $off) (i32.shl (local.get $len) (i32.const 3)))
     (global.set $__durable_arr_log (local.get $rec)))`
-  // An object's record, its address marked odd (\`__durable_obj_snap\`), holds
-  // as many cells as its header's capacity.
-  // The object twin of the array's snapshot: a field of an object the module
-  // made as it started, overwritten by a call with a value of the round,
-  // names memory the reset frees. The round's first such store saves the
-  // object's slots, all its capacity holds, and the heal below puts back those
-  // that name memory of the round as the reset runs: a field a call pointed at
-  // what it made reads as before the store, one that holds a number keeps it.
-  // The bit is the array's own, one per address.
-  // What it allocates is the round's, whatever frame the store ran in: the
-  // escape flag goes down to the object, older than every frame, so none
-  // restores over the record, its site a census one or a kernel's arm.
+  // An object field's undo record shares the array log and address bitmap.
+  // Only a store of an ephemeral pointer needs one. Recording that field,
+  // rather than scanning the whole object, never interprets a neighboring
+  // raw BigInt's bits as a pointer. The marked address names one saved cell.
+  // Its allocation belongs to the round even when a nested frame made it.
   ctx.core.stdlib['__durable_obj_snap'] = () => `(func $__durable_obj_snap (param $off i32)
-    (local $cell i32) (local $bit i32) (local $cap i32) (local $rec i32)
+    (local $cell i32) (local $bit i32) (local $size i32) (local $rec i32)
     (if (i32.eqz (global.get $__durable_arr_seen))
       (then
-        (local.set $cap (i32.add (i32.shr_u (global.get $__heap_reset) (i32.const 6)) (i32.const 1)))
-        (global.set $__durable_arr_seen (call $__alloc (local.get $cap)))
-        (memory.fill (global.get $__durable_arr_seen) (i32.const 0) (local.get $cap))))
+        (local.set $size (i32.add (i32.shr_u (global.get $__heap_reset) (i32.const 6)) (i32.const 1)))
+        (global.set $__durable_arr_seen (call $__alloc (local.get $size)))
+        (memory.fill (global.get $__durable_arr_seen) (i32.const 0) (local.get $size))))
     (local.set $cell (i32.add (global.get $__durable_arr_seen) (i32.shr_u (local.get $off) (i32.const 6))))
     (local.set $bit (i32.shl (i32.const 1) (i32.and (i32.shr_u (local.get $off) (i32.const 3)) (i32.const 7))))
     (if (i32.and (i32.load8_u (local.get $cell)) (local.get $bit)) (then (return)))
     (i32.store8 (local.get $cell) (i32.or (i32.load8_u (local.get $cell)) (local.get $bit)))
-    (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))
-    (local.set $rec (call $__alloc (i32.add (i32.const 16) (i32.shl (local.get $cap) (i32.const 3)))))
+    (local.set $rec (call $__alloc (i32.const 24)))
     (i32.store (local.get $rec) (global.get $__durable_arr_log))
     (i32.store offset=4 (local.get $rec) (i32.or (local.get $off) (i32.const 1)))
-    (i32.store offset=8 (local.get $rec) (i32.load (i32.sub (local.get $off) (i32.const 8))))
-    (i32.store offset=12 (local.get $rec) (local.get $cap))
-    (memory.copy (i32.add (local.get $rec) (i32.const 16)) (local.get $off) (i32.shl (local.get $cap) (i32.const 3)))
+    (i32.store offset=8 (local.get $rec) (i32.const 0))
+    (i32.store offset=12 (local.get $rec) (i32.const 1))
+    (i64.store offset=16 (local.get $rec) (i64.load (local.get $off)))
     (global.set $__durable_arr_log (local.get $rec))${ctx.scope.globals.has('__esc') ? `
     (call $__esc_at (local.get $off))` : ''})`
   ctx.core.stdlib['__durable_arr_heal'] = () => `(func $__durable_arr_heal
@@ -175,7 +167,7 @@ export const registerDurableLog = () => {
       (local.set $len (i32.load offset=8 (local.get $rec)))
       (if (i32.and (local.get $off) (i32.const 1))
         (then${ctx.core.includes.has('__durable_obj_snap') ? `
-          ;; an object: the slots that name memory of the round, each as the record holds it
+          ;; an object field: restore its saved value only while it names the round's memory
           (local.set $off (i32.and (local.get $off) (i32.const -2)))
           (local.set $i (i32.shl (i32.load offset=12 (local.get $rec)) (i32.const 3)))
           (block $slots (loop $slot

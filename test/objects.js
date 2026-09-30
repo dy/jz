@@ -418,9 +418,9 @@ test('schema writes through aliases keep an existing dynamic sidecar coherent', 
   is(f(), 2)
 })
 
-// A name whose objects are minted elsewhere takes no merged or auto-boxed
-// layout (ctx.schema.unknownInit: materializeAutoBoxSchemas, prepare's
-// inferAssignSchema): `const alias = ns.inner` replaced its box with the
+// A name whose objects are minted elsewhere takes no merged layout
+// (ctx.schema.unknownInit: prepare's inferAssignSchema; a box once took it
+// too): `const alias = ns.inner` replaced its box with the
 // inner object's pointer and `alias.f = b` then stored at the box's slot
 // offset into a 1-slot object; `Object.assign(o, {b, c})` on a parameter
 // slot-copied by the merged {b, c} into the caller's {a} object (`p.a` read
@@ -1137,6 +1137,58 @@ test('Object.entries: runtime dispatch — non-object receiver returns empty', (
 // Without an own emit handler the call falls through to __ext_call and the
 // resulting wasm requires JS host imports, defeating the host:'wasi' target.
 
+test('hasOwnProperty: direct results keep boolean identity and own overrides', () => {
+  const sources = [
+    `const o={a:undefined}; export let f=k=>o.hasOwnProperty(k)`,
+    `export let f=k=>({a:undefined}).hasOwnProperty(k)`,
+    `const o={a:1}; const has=k=>o.hasOwnProperty(k); export let f=k=>has(k)`,
+    `const o={hasOwnProperty:k=>7}; export let f=k=>o.hasOwnProperty(k)`,
+    `const o={get hasOwnProperty(){return k=>7}}; export let f=k=>o.hasOwnProperty(k)`,
+    `const o={a:1}; o['hasOwnProperty']=k=>7; export let f=k=>o.hasOwnProperty(k)`,
+    `export let f=k=>{const o=k==='a'?{hasOwnProperty:()=>7}:k==='getter'?{x:1,get hasOwnProperty(){return ()=>false}}:{missing:1};return o.hasOwnProperty(k)}`,
+    `export let f=k=>{let calls=0;const o={hasOwnProperty:3};try{o.hasOwnProperty(calls++)}catch(e){return [calls,e.name]}}`,
+    `export let f=k=>{let events=0;const methods={m(n){events=events*10+3;return this.x+n}};let o={x:3,get hasOwnProperty(){events=events*10+1;return methods.m}};const next={x:10};const value=o.hasOwnProperty((events=events*10+2,o=next,2));return [value,events,o.x]}`,
+  ]
+  for (const source of sources) for (const optimize of levels(0, 2, 3)) {
+    const got = jz(source, { optimize }).exports, want = oracle(source)
+    for (const key of ['a', 'missing', 'getter']) is(got.f(key), want.f(key), `${key} at ${optimize}: ${source}`)
+  }
+})
+
+test('own methods: computed deletion restores inherited dispatch', () => {
+  for (const name of ['hasOwnProperty', 'toString', 'valueOf']) for (const prop of [`${name}:()=>7`, `get ${name}(){return ()=>7}`, `${name}:undefined`]) {
+    const source = `export function f(k){const o={a:1,${prop}};delete o[k];try{const v=o.${name}('a');return v===o?'receiver':v}catch(e){return e.name}}`
+    const expected = oracle(source)
+    for (const optimize of levels(0, 2, 3)) {
+      const got = jz(source, { optimize }).exports
+      for (const key of [name, 'missing', 'a']) is(got.f(key), expected.f(key), `${prop}, delete ${key}, O${optimize}`)
+    }
+  }
+})
+
+test('inherited object methods keep ignored argument effects and receiver identity', () => {
+  for (const body of [
+    `let calls=0;const o={valueOf(){calls++;return 7}};const v=o.toString(calls++);return [v,calls]`,
+    `let calls=0;const o={valueOf(){calls++;return 7}};const v=o.toString();return [v,calls]`,
+    `let calls=0;const o={toString(){calls++;return 'text'}};const v=o.valueOf(calls++);return [v===o,calls]`,
+    `let o={a:1};const first=o;const value=o.valueOf(o={b:2});return [value===first,o.b]`,
+  ]) {
+    const source = `export function f(){${body}}`, expected = oracle(source).f()
+    for (const optimize of levels(0, 2, 3)) is(jz(source, { optimize }).exports.f(), expected, `O${optimize}: ${body}`)
+  }
+})
+
+test('method receivers: nullish rejection precedes ignored arguments', () => {
+  for (const name of ['toString', 'valueOf']) for (const args of ['', 'events++']) {
+    const source = `export function f(k){let events=0;const o=k?null:{a:1};try{o.${name}(${args});return events}catch(e){return [e.name,events]}}`
+    const expected = oracle(source)
+    for (const optimize of levels(0, 2, 3)) {
+      const got = jz(source, { optimize }).exports
+      for (const missing of [false, true]) is(got.f(missing), expected.f(missing), `${name}(${args}), missing=${missing}, O${optimize}`)
+    }
+  }
+})
+
 test('hasOwnProperty: present key on fixed-shape OBJECT folds to true', () => {
   const { f } = run(`export let f = () => {
     const x = {a: 1, b: 2}
@@ -1591,6 +1643,36 @@ test('static literal: mutation through Map storage (use-count record shape)', ()
       return a.gets * 100 + a.sets * 10 + b.sets
     }`)
   is(f(), 201)  // a: gets 2 sets 0 · b: sets 1
+})
+
+// A key added to one instance is a mutation too: the literal's own names are
+// never written, but the summary sees a key stored beside its slots
+// (summary/query.js grownSchema), and each evaluation allocates.
+test('static literal: a key added to one instance does not show on the next', () => {
+  const { f, g } = run(`
+    let mk = () => ({ fs: 1, k: 2 })
+    export let f = () => { let a = mk(); a.extra = 5; let b = mk(); return [a === b, b.extra, a.extra].join() }
+    let seen = (o) => o
+    export let g = () => { let a = seen(mk()); a['late'] = 3; return mk().late === undefined }`)
+  is(f(), 'false,,5')
+  is(g(), true)
+})
+
+// A key Object.assign or Object.defineProperty copies in is a store of that
+// name: a literal holding it is written, and each evaluation allocates
+// (summary assignedProps, merged into writtenProps).
+test('static literal: a key a builtin stores into does not show on the next evaluation', () => {
+  for (const body of ['let p={x:1,y:5};const before=p.y;Object.assign(p,{y:2});return before',
+    'let p={x:1,y:5};const before=p.y;const s={y:2};Object.assign(p,s);return before',
+    'let p={x:1};p={x:3};const before=p.y;Object.assign(p,{y:2});return before',
+    "let p={x:1,y:5};const before=p.y;Object.defineProperty(p,'y',{value:2});return before"])
+    for (const optimize of levels(0, 2, 3)) {
+      const { f } = run(`export let f = () => { ${body} }`, { optimize })
+      is(String(f()) + String(f()), body.includes('p={x:3}') ? 'undefinedundefined' : '55', `${body} at ${optimize}`)
+    }
+  const { f } = run(`const mk = () => ({ x: 1, y: 5 })
+    export let f = () => { const p = mk(); const before = p.y; Object.assign(p, { y: 2 }); return before }`)
+  is(f() + f(), 10)
 })
 
 test('static literal: read-only literals keep the shared static instance', () => {
@@ -2545,4 +2627,51 @@ test('Object.defineProperties: a literal map of descriptors defines each propert
   let msg = null
   try { compile(`export let f = () => { const d = { a: { value: 1 } }; return Object.defineProperties({}, d).a }`) } catch (e) { msg = e.message }
   ok(msg != null && /defineProperties.*literal/.test(msg), `a non-literal map is rejected: ${JSON.stringify(msg?.slice(0, 100))}`)
+})
+
+// A binding that may be nullish holds no layout of its own (summary sidOf):
+// an element of a holey array (`new Array(n)` filled by a loop, a TTA
+// decoder's channel states). Its reads take the summary's layout with a
+// nullish test; its stores, `ch.k--` among them, write the same slot, not a
+// dynamic property beside it, and throw where the receiver is missing.
+test('a store through an element of a holey array writes its layout\'s slot', () => {
+  const src = `let mk = (s) => ({ a: 1, b: s, k: 10 })
+let chans = new Array(3)
+for (let c = 0; c < 2; c++) chans[c] = mk(c)
+let upd = (ch, v) => { ch.a = (ch.a + v) >>> 0; if (ch.k > 0 && ch.a < 5) ch.k--; else ch.k++; return ch.b + ch.k }
+let put = (ch, v) => { ch.k = v; return ch }
+export let f = (v) => { let s = 0; for (let c = 0; c < 2; c++) s += upd(chans[c], v); return s }
+export let g = (v) => { let s = 0; for (let r = 0; r < 4; r++) s += f(v + r); return s + chans[0].k * 100 + chans[1].a }
+export let h = (i) => { try { put(chans[i], 7); return chans[i].k } catch (e) { return e instanceof TypeError ? 'TypeError' : 'other' } }`
+  for (const optimize of levels(0, 2, 'speed')) {
+    const js = oracle(src), mod = jz(src, { optimize }).exports
+    is(mod.g(1), js.g(1), `the slots hold what JavaScript holds at ${optimize}`)
+    is(mod.h(0), js.h(0), `a store through a present element at ${optimize}`)
+    is(mod.h(2), 'TypeError', `a store through a hole throws at ${optimize}`)
+  }
+  ok(!compile(src, { optimize: 2, wat: true }).includes('$__dyn_set'), 'every store takes the slot')
+})
+
+// A field read through an expression whose objects the summary names by one
+// layout (a list's element, two literals of one shape) is that layout's slot.
+test('objects: a field of a list element of one layout reads its slot', () => {
+  const src = `export let f = (c) => { const it = [{ b0: c, a1: 2 }, { b0: 1, a1: c }]; let y = 0; for (let i = 0; i < it.length; i++) y += it[i].b0 * it[i].a1; return y }`
+  const js = oracle(src)
+  for (const optimize of levels(0, 2, 3)) is(jz(src, { optimize }).exports.f(3), js.f(3), `O${optimize}`)
+  if (belowOpt(2)) return
+  ok(!/\$__dyn_get|\$__hash_get|\$__schema_slot/.test(compile(src, { optimize: 2, wat: true })), 'no runtime lookup')
+})
+
+test('objects: a field read through an element that may be undefined throws where JS does', () => {
+  // a present element loaded without a check is a number of a numeric array only: `[undefined]` beside `[{ b0 }]` holds undefined
+  const src = `function g (cs) { let c = cs[0]; return c.b0 }
+    function h (cs) { let c = cs[0]; let b = c.b0; return 5 }
+    const P = [{ b0: 1 }]
+    export let f = () => g([undefined]), k = () => h([undefined]), ok = () => g(P) + h(P)`
+  for (const optimize of levels(0, 2, 3)) {
+    const m = jz(src, { optimize }).exports
+    throws(() => m.f(), `the read throws at ${optimize}`)
+    throws(() => m.k(), `an unused read throws too at ${optimize}`)
+    is(m.ok(), 6, `an object element reads its field at ${optimize}`)
+  }
 })

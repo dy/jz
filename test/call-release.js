@@ -388,6 +388,145 @@ for (const optimize of levels(2, 3))
     both('update', 1); both('snapshot'); exports._clear(); both('update', 4); both('snapshot')
   })
 
+test('call release: an abandoned conditional frame preserves earlier escapes', () => {
+  const src = `const st = { value: null, other: null }
+    const leaf = n => {
+      const a = new Float64Array(40); a[0] = n
+      if (n > 0) throw new Error('stop')
+      if (n < 0) st.other = [n]
+      return a[0] + 10
+    }
+    const middle = n => { st.value = [n, n + 1]; return leaf(n) + 1 }
+    export const call = n => { try { return middle(n) } catch (e) { return -1 } }
+    export const read = () => st.value === null ? 'null' : st.value.join(',')
+    export const churn = n => { const a = new Float64Array(200); for (let i = 0; i < a.length; i++) a[i] = n; return a[99] }`
+  for (const level of levels(false, 1, 2, 3, 'size')) {
+    // Keep the throwing frame: inlining it masks the missing escape-history join.
+    const optimize = level === false ? false : { level, sourceInline: false }
+    const want = oracle(src), { exports } = jz(src, { optimize })
+    for (const n of [0, 1, 2, -1, 3, 0, 4]) {
+      is(exports.call(n), want.call(n), `${level}: call ${n}`)
+      exports.churn(44)
+      is(exports.read(), want.read(), `${level}: retained state after ${n}`)
+    }
+  }
+})
+
+test('call release: a boxed result releases numeric calls and preserves heap results', () => {
+  const src = `export const sum = a => { let n = 0; for (const x of a) n += x; return n }
+    export const rest = (...a) => { let n = 0; for (const x of a) n += x; return n }
+    export const nested = a => { const n = sum(a); return n + n }`
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const want = oracle(src), { exports: got, memory } = jz(src, { optimize })
+    for (const name of ['sum', 'rest', 'nested']) {
+      const call = (mod, a) => name === 'rest' ? mod[name](...a) : mod[name](a)
+      for (const a of [[1,2,3], ['a sufficiently long string', ' and another'], [4,5], [NaN], [Infinity]])
+        is(call(got, a), call(want, a), `${name} mixed results, O${optimize}`)
+      is(growth(memory, () => call(got, [1,2,3])), 0, `${name} numeric calls, O${optimize}`)
+    }
+  }
+})
+
+test('call release: a boxed heap result survives an outlined escaping callee', () => {
+  const source = `const state = { last: null }
+    export function mixed(n) {
+      state.last = [n]
+      const out = n < 0 ? [n, n + 1] : n
+      const scratch = []
+      for (let i = 0; i < 100; i++) scratch.push([i, n])
+      return out
+    }
+    export function nested(n) {
+      const out = mixed(n)
+      const scratch = []
+      for (let i = 0; i < 100; i++) scratch.push([i, n])
+      return [out, state.last[0], scratch.length]
+    }
+    export const read = () => state.last[0]`
+  for (const level of levels(0, 1, 2, 3, 'size')) {
+    const want = oracle(source)
+    const { exports: got } = jz(source, { optimize: { level, sourceInline: false, watr: false } })
+    for (const n of [1, -1, NaN, -8, 8, -1]) {
+      is(got.mixed(n), want.mixed(n), `direct result, O${level}`)
+      is(got.nested(n), want.nested(n), `result after caller allocation, O${level}`)
+      is(got.read(), want.read(), `retained root, O${level}`)
+    }
+  }
+})
+
+test('call release: a numeric dynamic result does not release a retained argument', () => {
+  const src = `let saved
+    export const sum = (a, keep) => { let n = 0; for (const x of a) n += x; if (keep) saved = a; return n }
+    export const read = () => saved`
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const { exports: got, memory } = jz(src, { optimize })
+    is(got.sum([3,4,5], true), 12)
+    const held = memory.used
+    ok(held > 0, `retained argument, O${optimize}`)
+    is(growth(memory, () => got.sum([8,9,10], false)), 0, `temporary calls, O${optimize}`)
+    is(got.read(), [3,4,5], `retained contents, O${optimize}`)
+    is(memory.used >= held, true, `retained storage, O${optimize}`)
+  }
+})
+
+test('retained record updates stay numeric beside an exported record of the same layout', () => {
+  const src = `let saved
+    export const step = n => { const o = {x:n}, a = o; saved = a; a.x++; return saved.x }
+    export const record = n => { const o = {x:n}; let r = o; return r }
+    export const read = () => saved.x`
+  for (const optimize of levels(0, 1, 2, 3)) {
+    const want = oracle(src), { exports: got } = jz(src, { optimize })
+    for (const n of [0,4,-3,0.25,100,NaN,Infinity]) {
+      is(got.step(n), want.step(n), `step ${n}, O${optimize}`)
+      is(got.record(n), want.record(n), `separate result ${n}, O${optimize}`)
+      is(got.read(), want.read(), `retained state ${n}, O${optimize}`)
+    }
+  }
+})
+
+test('call release: a class allocation survives its last method call then releases with the caller', () => {
+  const src = `export class Gain {
+    constructor(n, gain) { this.buf = new Float32Array(n); this.gain = gain }
+    process() { const b = this.buf, g = this.gain; for (let i = 0; i < b.length; i++) b[i] *= g; return b[0] }
+  }
+  export const run = (n, gain) => {
+    const g = new Gain(n, gain); g.buf[0] = 2; g.process(); return g.process()
+  }
+  export const retained = n => new Gain(n, 0.5)`
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const { exports: got, memory } = jz(src, { optimize })
+    is(got.run(8, 0.5), 0.5, `last method reads live storage, O${optimize}`)
+    const kept = got.retained(8)
+    kept.buf[0] = 12
+    is(growth(memory, () => got.run(8, 0.5)), 0, `scalar calls leave no allocations, O${optimize}`)
+    is(kept.buf[0], 12, `a returned instance stays live, O${optimize}`)
+  }
+})
+
+// A returned JS view names its bytes directly: a newly made descriptor over
+// older storage does not require retaining this call's argument copies.
+test('call release: views of older storage release copied arguments and new descriptors', () => {
+  const src = `const old = new Float64Array([3, 4])
+    export function owned(a) { if (!a.length) return old; return old }
+    export function slice(a) { return old.subarray(0, a.length ? 1 : 2) }
+    export function data(a) { return new DataView(old.buffer, old.byteOffset, a.length ? 8 : 16) }
+    export function nested(a) { return { view: old.subarray(0, a.length ? 1 : 2) } }
+    export function churn(n) { const t = new Float64Array(64); t.fill(n); return t[0] }`
+  for (const optimize of levels(2, 3)) {
+    const { exports: m, memory } = jz(src, { optimize })
+    for (const name of ['owned', 'slice', 'data', 'nested']) {
+      const before = memory.used, saved = []
+      for (let i = 0; i < 12; i++) saved.push(m[name]([1, 2, 3]))
+      is(memory.used - before, 0, `${name} keeps no fresh storage at ${optimize}`)
+      m.churn(9)
+      for (const result of saved) {
+        const view = name === 'nested' ? result.view : result
+        is(view instanceof DataView ? view.getFloat64(0, true) : view[0], 3)
+      }
+    }
+  }
+})
+
 // An arm a literal decides against is dropped by the emitter, its stores
 // with it: a site the census listed there is no escape. A frame that counted
 // it as an escape at no instruction kept everything it made on every call.
@@ -429,3 +568,30 @@ for (const optimize of levels(2, 3, 'size'))
     let n = 6
     is(growth(memory, () => exports.process(n++)), 0, `a call keeps nothing for the arm it never runs at ${optimize}`)
   })
+
+
+test('call release: dropped short-circuit stores do not retain scratch frames', () => {
+  for (const gate of [
+    '(order / 2) % 2 && (st.a = [n])',
+    '(1 - (order / 2) % 2) || (st.a = [n])',
+    '(order / 2) % 2 ? st.a = [n] : 0',
+  ]) for (const optimize of levels(2, 3, 'size')) for (const order of [4, 2]) {
+    const src = `const st = { a: null }
+      function step(order, n) {
+        if (st.a === null) st.a = [3];
+        ${gate};
+        const tmp = new Float64Array(20 + (n & 3)); tmp[0] = st.a[0]
+        return tmp[0] + tmp.length
+      }
+      export const run = n => step(${order}, n)
+      export const churn = n => { const a = new Float64Array(200); a.fill(n); return a[99] }
+      export const read = () => st.a[0]`
+    const want = oracle(src), { exports: e, memory } = jz(src, { optimize })
+    for (const n of [0, 0, 7, 0]) {
+      is(e.run(n), want.run(n), `${gate}, order ${order}, O${optimize}`)
+      is(e.churn(9), 9)
+      is(e.read(), want.read(), 'retained state survives scratch reuse')
+    }
+    if (order === 4) is(growth(memory, () => e.run(7)), 0, 'the discarded store is no escape')
+  }
+})

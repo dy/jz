@@ -1260,7 +1260,12 @@ function runTest(src, isAsync) {
   if (isAsync) code = `${ASYNC_DONE_SHIM}\n${ASSERT_HARNESS}\n${code}`
 
   try {
-    const inst = jz(code, { jzify: true })
+    // The CanBlockIsTrue flag asks the harness for a blocking-capable agent.
+    // Wasm waits require the module's actual linear memory to be shared.
+    const canBlock = /flags:\s*\[[^\]]*\bCanBlockIsTrue\b/.test(src)
+    const inst = jz(code, { jzify: true, ...(canBlock ? {
+      sharedMemory: true, memory: new WebAssembly.Memory({ initial: 4, maximum: 64, shared: true }),
+    } : {}) })
     if (inst.exports._run) inst.exports._run()
     if (isAsync) {
       return (async () => {
@@ -1470,7 +1475,7 @@ if (!isMainThread) {
     console.error(`\nFAIL: ${results.fail} in-scope failure(s) — fix, or add to EXPECTED_FAIL_* if out of scope`)
     process.exit(1)
   }
-  if (results.pass < baseline) {
+  if (!FILTER && results.pass < baseline) {
     console.error(`\nFAIL: pass count ${results.pass} below baseline ${baseline}`)
     process.exit(1)
   }

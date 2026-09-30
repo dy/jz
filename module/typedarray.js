@@ -9,17 +9,17 @@ import print from 'watr/print'
  * @module typed
  */
 
-import { typed, asF64, asI32, asI32Sat, asI64, toInt32, toNumF64, coerceNullishToNum, coerceAtomsToNum, NULL_NAN, TRUE_NAN, FALSE_NAN, allocPtr, boxBigInt, rawBigInt, deferBigintBox, isBigIntBox, mkPtrIR, ptrOffsetIR, ptrTypeEq, temp, tempI32, tempI64, undefExpr, throwTypeErrorIR, truthyIR, isLit, isConst, isPureIR, litVal, freshId, readI64MayUnbox, readI64, unboxBigInt, maybeUnboxBigInt, fromI64, isNullish } from '../src/ir.js'
+import { typed, asF64, asI32, asI32Sat, asI64, toInt32, f64Range, toNumF64, coerceNullishToNum, coerceAtomsToNum, NULL_NAN, TRUE_NAN, FALSE_NAN, allocPtr, boxBigInt, rawBigInt, deferBigintBox, isBigIntBox, mkPtrIR, ptrOffsetIR, ptrTypeEq, temp, tempI32, tempI64, undefExpr, throwTypeErrorIR, truthyIR, isLit, isConst, isPureIR, litVal, freshId, readI64MayUnbox, readI64, unboxBigInt, maybeUnboxBigInt, fromI64, isNullish } from '../src/ir.js'
 import { isReassigned, T, ASSIGN_OPS, walkAst, some, every, REFS_THROUGH_ARROWS } from '../src/ast.js'
 import { emit, idx, deps, call, positionArgs } from '../src/bridge.js'
 import { strHashLiteral } from './collection.js'
 import { valTypeOf } from '../src/kind.js'
-import { K, TAGS, NULL_BITS, NUMBER, STRING, hasTag, tagOf, tagsOf, bitOf } from '../src/summary/kind.js'
-import { typedIdxProven, idxKey } from '../src/type.js'
-import { constIntExpr } from '../src/static.js'
+import { K, TAGS, NULL_BITS, NUMBER, STRING, hasTag, tagOf, tagsOf, bitOf, typedElemKind } from '../src/summary/kind.js'
+import { typedIdxProven, typedIdxWhole, idxKey, exprType } from '../src/type.js'
+import { constIntExpr, intExprRange } from '../src/static.js'
 import { VAL, lookupValType, repOf } from '../src/reps.js'
 import { nanPrefixHex, TYPED_ELEM_NAMES, TYPED_ELEM_CODE, TYPED_ELEM_VIEW_FLAG, TYPED_ELEM_BIGINT_FLAG, TYPED_ELEM_F16_FLAG, TYPED_ELEM_CLAMPED_FLAG, DATA_VIEW_AUX, DATA_VIEW_FLAG, encodeTypedElemAux } from '../layout.js'
-import { err, inc, PTR, LAYOUT, registerGetter, setLinkDemand, getFactStore } from '../src/ctx.js'
+import { err, inc, PTR, LAYOUT, HEAP, registerGetter, setLinkDemand, getFactStore } from '../src/ctx.js'
 import { errorCodeLiteral, ERR } from '../err-codes.js'
 import { representationProgramHasBigint } from '../src/compile/representation-plan.js'
 import { plannedTypedStorageCtor, plannedTypedStorageInfo, plannedTypedPayloadInfo } from '../src/compile/typed-storage-plan.js'
@@ -27,6 +27,7 @@ import { isNullable } from '../src/summary/kind.js'
 import { activeBoundsAssumption } from '../src/type/canonical-bounds.js'
 import { requireReceiverWat } from './core/error-object.js'
 import { captureCallback, makeCallback, idxArg } from './array/callback.js'
+import { heapScratch, mergeSortIR } from './array/sort.js'
 import { callbackSetup, isUndefinedNode } from './array/from.js'
 
 const _NAN_BITS = nanPrefixHex()
@@ -69,13 +70,15 @@ const staticStorageLen = (ctx, lenExpr) => {
   if (!ctx.func.atModuleScope || ctx.memory.shared || ctx.func.stack.some(f => f.loop)) return null
   return nonNegIntLiteral(lenExpr)
 }
-const staticStoragePtr = (aux, byteLen) => {
+const staticStoragePtr = (aux, byteLen, slot) => {
+  if (slot?.offset != null) return mkPtrIR(PTR.TYPED, aux, ['i32.const', slot.offset])
   dataAlign(16)
   const hdrOff = dataLen()
   const hdr = new Uint8Array(16), dv = new DataView(hdr.buffer)
   dv.setInt32(8, byteLen, true); dv.setInt32(12, byteLen, true)
   dataPush(hdr)
   dataPush(new Uint8Array(byteLen))
+  if (slot) slot.offset = hdrOff + 16
   return mkPtrIR(PTR.TYPED, aux, ['i32.const', hdrOff + 16])
 }
 
@@ -100,7 +103,8 @@ export default (ctx) => {
     __typed_reverse: ['__len', '__typed_get_idx', '__typed_set_idx'],
     __typed_copyWithin: ['__len', '__clamp_idx', '__ptr_aux', '__typed_shift', '__typed_data'],
     __typed_set_rt: ['__len', '__ptr_type', '__ptr_aux', '__typed_same_bytes', '__typed_shift', '__typed_data', '__typed_idx', '__typed_set_idx'],
-    __typed_sort: ['__len', '__typed_get_idx', '__typed_set_idx'],
+    __typed_sort: ['__len', '__typed_isort', '__typed_sort_digit', '__ptr_aux', '__typed_shift', '__typed_data', '__alloc'],
+    __typed_isort: ['__len', '__typed_get_idx', '__typed_set_idx'],
     __subarray: ['__ptr_aux', '__ptr_offset', '__typed_shift', '__typed_data', '__len', '__mkptr', '__alloc', '__clamp_idx'],
     __typed_slice_rt: ['__ptr_aux', '__typed_shift', '__typed_data', '__len', '__mkptr', '__alloc_hdr_n', '__clamp_idx'],
   })
@@ -277,6 +281,21 @@ export default (ctx) => {
     (local.set $dst (call $__alloc_hdr_n (local.get $byteLen) (local.get $byteLen) (i32.const 1)))
     (memory.copy (local.get $dst) (i32.add (local.get $src) (i32.shl (local.get $lo) (local.get $shift))) (local.get $byteLen))
     (call $__mkptr (i32.const ${PTR.TYPED}) (i32.and (local.get $aux) (i32.const 119)) (local.get $dst)))`
+
+  // A declaration's proved scratch placement uses the same static writer as
+  // module state. Clear at the construction site, preserving JS zeroing.
+  ctx.core.emit['#fixedTyped'] = (name, slot) => {
+    const bytes = slot.len * STRIDE[TYPED_ELEM_CODE[name]]
+    if (bytes > STATIC_TYPED_MAX_BYTES) return null
+    setLinkDemand('typedarray')
+    if (name === 'Float16Array') setLinkDemand('f16')
+    if (name === 'Uint8ClampedArray') setLinkDemand('clamped')
+    const ptr = () => staticStoragePtr(typedAux(name), bytes, slot)
+    // Distinct IR nodes per use: the static-prefix pass rebases each pointer
+    // in place, so sharing one subtree would shift later slots twice.
+    return typed(['block', ['result', 'f64'],
+      ['memory.fill', ptrOffsetIR(ptr()), ['i32.const', 0], ['i32.const', bytes]], ptr()], 'f64')
+  }
 
   // Constructor: new Float64Array(len) | new F64Array(arr) | new F64Array(buf) | new F64Array(buf, off, len)
   for (const [name, elemType] of Object.entries(TYPED_ELEM_CODE)) {
@@ -506,8 +525,9 @@ export default (ctx) => {
       // shifted count would otherwise wrap into a short or corrupt allocation.
       const shift = SHIFT[elemType]
       const staticLen = staticStorageLen(ctx, lenExpr)
-      if (staticLen != null && (staticLen << shift) <= STATIC_TYPED_MAX_BYTES)
-        return typed(staticStoragePtr(aux, staticLen << shift), 'f64')
+      const staticBytes = staticLen == null ? null : staticLen * (2 ** shift)
+      if (staticBytes != null && staticBytes <= STATIC_TYPED_MAX_BYTES)
+        return typed(staticStoragePtr(aux, staticBytes), 'f64')
       const lenL = tempI32('tan')
       const out = allocPtr({ type: PTR.TYPED, aux,
         len: ['i32.shl', ['local.get', `$${lenL}`], ['i32.const', shift]], stride: 1, tag: 'ta' })
@@ -1277,6 +1297,9 @@ export default (ctx) => {
       // a typed array's elements, a string's characters, an iterable's values.
       const view = ctx.summary.at(ctx.func.current), kind = view.kindOfExpr(src)
       if (bigint || tagOf(kind) === K.ARRAY && !isNullable(kind)) return fromArray(src, fl)
+      // A typed array of numbers lists its elements: the constructor's copy of
+      // it, one memory.copy or one conversion loop, with no list between.
+      if (tagOf(kind) === K.TYPED && !isNullable(kind) && typedElemKind(kind) === NUMBER) return ctx.core.emit[`new.${name}`](src)
       ctx.module.include('array')
       const t = tagOf(kind)
       return fromArray(['()', 'Array.from', src], fl, t === K.STRING ? STRING : t === K.TYPED ? view.elemOfKind(kind) : null)
@@ -1384,9 +1407,37 @@ export default (ctx) => {
   const typedBase = (objIR) => objIR.ptrKind != null && objIR.ptrKind !== VAL.ARRAY
     ? objIR
     : ['i32.wrap_i64', ['i64.and', ['i64.reinterpret_f64', asF64(objIR)], ['i64.const', LAYOUT.OFFSET_MASK]]]
-  const typedDataAddr = (objIR, isView) => isView
-    ? ['i32.load', ['i32.add', typedBase(objIR), ['i32.const', 4]]]
+  // A receiver that may be owned or a view (isView null) reads its view bit
+  // off the pointer, which such a receiver always keeps boxed (layout.js
+  // TYPED_ELEM_ANY_VIEW_FLAG): `pick(base, view)` builds from the offset and
+  // that bit, the pointer read once.
+  const anyView = (objIR, pick) => {
+    const once = Array.isArray(objIR) && (objIR[0] === 'local.get' || objIR[0] === 'global.get') && objIR.length === 2
+    const t = once ? null : tempI64('tav')
+    const bits = () => once ? ['i64.reinterpret_f64', asF64(typed([objIR[0], objIR[1]], objIR.type ?? 'f64'))] : ['local.get', `$${t}`]
+    const ir = pick(() => ['i32.wrap_i64', ['i64.and', bits(), ['i64.const', LAYOUT.OFFSET_MASK]]],
+      () => ['i32.and', ['i32.wrap_i64', ['i64.shr_u', bits(), ['i64.const', 32]]], ['i32.const', TYPED_ELEM_VIEW_FLAG]])
+    return once ? ir : ['block', ['result', 'i32'], ['local.set', `$${t}`, ['i64.reinterpret_f64', asF64(objIR)]], ir]
+  }
+  // The data: at the offset, or at a view descriptor's word at 4 (an owned
+  // array's select loads from address 0, its value dropped).
+  const typedDataAddr = (objIR, isView) => isView == null
+    ? anyView(objIR, (base, view) => ['select', ['i32.load', ['select', ['i32.add', base(), ['i32.const', 4]], ['i32.const', 0], view()]], base(), view()])
+    : isView ? ['i32.load', ['i32.add', typedBase(objIR), ['i32.const', 4]]]
     : typedBase(objIR)
+  // The byte length's word: 8 below the data, or a view descriptor's first.
+  const byteLenAddr = (objIR, isView) => isView == null
+    ? anyView(objIR, (base, view) => ['select', base(), ['i32.sub', base(), ['i32.const', 8]], view()])
+    : isView ? typedBase(objIR) : ['i32.sub', typedBase(objIR), ['i32.const', 8]]
+
+  // A typed array's length where its element kind is known (resolveElem: a
+  // name or any expression the plan types, present): the byte length's word,
+  // shifted by the element width. A DataView or an open kind keeps __length.
+  ctx.core.emit['__typed_len'] = (arr) => {
+    const r = resolveElem(arr)
+    if (!r) return null
+    return typed(['f64.convert_i32_s', ['i32.shr_u', ['i32.load', byteLenAddr(emit(arr), r.isView)], ['i32.const', SHIFT[r.et]]]], 'f64')
+  }
 
   // A typed receiver never relocates: decode its offset directly, then use
   // aux for element width and view indirection in both raw readers and writers.
@@ -1602,11 +1653,110 @@ export default (ctx) => {
           (i32.shl (local.get $count) (local.get $k)))))
     (f64.reinterpret_i64 (local.get $ptr)))`
 
-  // .sort() — default numeric order (insertion sort, stable). NaN sorts to the end,
-  // -0 before +0 (the equal-value tiebreak via signed-bit compare). BigInt arrays are
-  // compared as signed i64 on their exact bits. A user comparator is handled inline by
-  // the .typed:sort emitter (this helper is the no-argument numeric path).
+  // .sort(): default numeric order, stable: NaN sorts to the end, -0 before +0,
+  // BigInt arrays compare as signed i64 on their exact bits. A user comparator is
+  // handled inline by the .typed:sort emitter (this helper is the no-argument path).
+  // A short array takes the insertion sort below. A longer one sorts by a byte-wise
+  // LSD radix over a key that orders the raw bits as the values: an integer as
+  // itself (a signed one with its sign bit flipped), a float with its sign bit set
+  // when positive and every bit flipped when negative, a NaN above everything. Each
+  // pass moves the elements stably between the array and a scratch copy on the heap,
+  // which own memory takes back after; a byte every element shares is no pass.
+  const heapTop = ctx.memory.shared ? `(i32.load (i32.const ${HEAP.PTR_ADDR}))` : '(global.get $__heap)'
+  const heapSet = (v) => ctx.memory.shared ? '' : `(global.set $__heap ${v})`
   ctx.core.stdlib['__typed_sort'] = `(func $__typed_sort (param $ptr i64) (result f64)
+    (local $aux i32) (local $len i32) (local $sh i32) (local $w i32) (local $code i32) (local $kind i32)
+    (local $a i32) (local $src i32) (local $dst i32) (local $cnt i32) (local $save i32)
+    (local $pass i32) (local $i i32) (local $d i32) (local $sum i32) (local $t i32)
+    (local $x i64) (local $k i64) (local $sign i64) (local $mask i64) (local $abs i64) (local $inf i64)
+    (local.set $len (call $__len (local.get $ptr)))
+    (if (i32.le_s (local.get $len) (i32.const 32)) (then (return (call $__typed_isort (local.get $ptr)))))
+    (local.set $aux (call $__ptr_aux (local.get $ptr)))
+    (local.set $code (i32.and (local.get $aux) (i32.const 7)))
+    (local.set $sh (call $__typed_shift (local.get $code)))
+    (local.set $w (i32.shl (i32.const 1) (local.get $sh)))
+    ;; kind: 0 unsigned, 1 signed, 2 float
+    (local.set $kind
+      (if (result i32) (i32.and (local.get $aux) (i32.const ${TYPED_ELEM_F16_FLAG})) (then (i32.const 2))
+        (else (if (result i32) (i32.and (local.get $aux) (i32.const ${TYPED_ELEM_BIGINT_FLAG})) (then (i32.const 1))
+          (else (if (result i32) (i32.ge_u (local.get $code) (i32.const 6)) (then (i32.const 2))
+            (else (i32.xor (i32.and (local.get $code) (i32.const 1)) (i32.const 1)))))))))
+    (local.set $sign (i64.shl (i64.const 1) (i64.extend_i32_u (i32.sub (i32.shl (local.get $w) (i32.const 3)) (i32.const 1)))))
+    (local.set $mask (i64.sub (i64.shl (local.get $sign) (i64.const 1)) (i64.const 1)))
+    (if (i32.eq (local.get $w) (i32.const 8)) (then (local.set $mask (i64.const -1))))
+    ;; the float's infinity: its exponent bits all set, no mantissa
+    (local.set $inf (if (result i64) (i32.eq (local.get $w) (i32.const 8)) (then (i64.const 0x7FF0000000000000))
+      (else (if (result i64) (i32.eq (local.get $w) (i32.const 4)) (then (i64.const 0x7F800000)) (else (i64.const 0x7C00))))))
+    (local.set $a (call $__typed_data (local.get $ptr)))
+    (local.set $save ${heapTop})
+    (local.set $dst (call $__alloc (i32.shl (local.get $len) (local.get $sh))))
+    (local.set $cnt (call $__alloc (i32.const 1024)))
+    (local.set $src (local.get $a))
+    (block $passes (loop $next
+      (br_if $passes (i32.ge_u (local.get $pass) (local.get $w)))
+      (memory.fill (local.get $cnt) (i32.const 0) (i32.const 1024))
+      ;; count the digits of this pass
+      (local.set $i (i32.const 0))
+      (block $cd (loop $cl
+        (br_if $cd (i32.ge_u (local.get $i) (local.get $len)))
+        (local.set $d (call $__typed_sort_digit (local.get $src) (local.get $i) (local.get $sh) (local.get $kind) (local.get $sign) (local.get $mask) (local.get $inf) (local.get $pass)))
+        (local.set $t (i32.add (local.get $cnt) (i32.shl (local.get $d) (i32.const 2))))
+        (i32.store (local.get $t) (i32.add (i32.load (local.get $t)) (i32.const 1)))
+        (local.set $i (i32.add (local.get $i) (i32.const 1)))
+        (br $cl)))
+      ;; a digit every element shares moves nothing
+      (if (i32.ne (i32.load (i32.add (local.get $cnt) (i32.shl (local.get $d) (i32.const 2)))) (local.get $len))
+        (then
+          ;; counts to starting offsets
+          (local.set $sum (i32.const 0)) (local.set $i (i32.const 0))
+          (block $pd (loop $pl
+            (br_if $pd (i32.ge_u (local.get $i) (i32.const 256)))
+            (local.set $t (i32.add (local.get $cnt) (i32.shl (local.get $i) (i32.const 2))))
+            (local.set $d (i32.load (local.get $t)))
+            (i32.store (local.get $t) (local.get $sum))
+            (local.set $sum (i32.add (local.get $sum) (local.get $d)))
+            (local.set $i (i32.add (local.get $i) (i32.const 1)))
+            (br $pl)))
+          ;; move each element to its digit's next slot, in order
+          (local.set $i (i32.const 0))
+          (block $md (loop $ml
+            (br_if $md (i32.ge_u (local.get $i) (local.get $len)))
+            (local.set $d (call $__typed_sort_digit (local.get $src) (local.get $i) (local.get $sh) (local.get $kind) (local.get $sign) (local.get $mask) (local.get $inf) (local.get $pass)))
+            (local.set $t (i32.add (local.get $cnt) (i32.shl (local.get $d) (i32.const 2))))
+            (memory.copy (i32.add (local.get $dst) (i32.shl (i32.load (local.get $t)) (local.get $sh)))
+              (i32.add (local.get $src) (i32.shl (local.get $i) (local.get $sh))) (local.get $w))
+            (i32.store (local.get $t) (i32.add (i32.load (local.get $t)) (i32.const 1)))
+            (local.set $i (i32.add (local.get $i) (i32.const 1)))
+            (br $ml)))
+          (local.set $t (local.get $src)) (local.set $src (local.get $dst)) (local.set $dst (local.get $t))))
+      (local.set $pass (i32.add (local.get $pass) (i32.const 1)))
+      (br $next)))
+    (if (i32.ne (local.get $src) (local.get $a))
+      (then (memory.copy (local.get $a) (local.get $src) (i32.shl (local.get $len) (local.get $sh)))))
+    ${heapSet('(local.get $save)')}
+    (f64.reinterpret_i64 (local.get $ptr)))`
+
+  // The byte of an element's sort key a radix pass reads (see __typed_sort).
+  ctx.core.stdlib['__typed_sort_digit'] = `(func $__typed_sort_digit (param $base i32) (param $i i32) (param $sh i32) (param $kind i32)
+    (param $sign i64) (param $mask i64) (param $inf i64) (param $pass i32) (result i32)
+    (local $at i32) (local $x i64)
+    (local.set $at (i32.add (local.get $base) (i32.shl (local.get $i) (local.get $sh))))
+    (local.set $x
+      (if (result i64) (i32.eq (local.get $sh) (i32.const 3)) (then (i64.load (local.get $at)))
+        (else (if (result i64) (i32.eq (local.get $sh) (i32.const 2)) (then (i64.load32_u (local.get $at)))
+          (else (if (result i64) (i32.eq (local.get $sh) (i32.const 1)) (then (i64.load16_u (local.get $at)))
+            (else (i64.load8_u (local.get $at)))))))))
+    (local.set $x
+      (if (result i64) (i32.eq (local.get $kind) (i32.const 1)) (then (i64.xor (local.get $x) (local.get $sign)))
+        (else (if (result i64) (i32.eqz (local.get $kind)) (then (local.get $x))
+          (else (if (result i64) (i64.gt_u (i64.and (local.get $x) (i64.xor (local.get $sign) (local.get $mask))) (local.get $inf))
+            (then (local.get $mask))
+            (else (if (result i64) (i64.ne (i64.and (local.get $x) (local.get $sign)) (i64.const 0))
+              (then (i64.and (i64.xor (local.get $x) (i64.const -1)) (local.get $mask)))
+              (else (i64.or (local.get $x) (local.get $sign)))))))))))
+    (i32.wrap_i64 (i64.and (i64.shr_u (local.get $x) (i64.extend_i32_u (i32.shl (local.get $pass) (i32.const 3)))) (i64.const 255))))`
+
+  ctx.core.stdlib['__typed_isort'] = `(func $__typed_isort (param $ptr i64) (result f64)
     (local $isbig i32) (local $len i32) (local $i i32) (local $j i32) (local $saved f64) (local $nb f64)
     (local.set $isbig (i32.and (call $__ptr_aux (local.get $ptr)) (i32.const ${TYPED_ELEM_BIGINT_FLAG})))
     (local.set $len (call $__len (local.get $ptr)))
@@ -1685,40 +1835,39 @@ export default (ctx) => {
       inc('__typed_sort')
       return typed(['call', '$__typed_sort', asI64(arrValIR)], 'f64')
     }
+    // With a comparator: the elements out into a scratch of doubles, merge
+    // sorted stably by the comparator (module/array/sort.js), and written back.
     inc('__len', '__typed_get_idx', '__typed_elem_arg', '__typed_set_idx')
     const arrL = temp('tsa'), cbL = temp('tsf')
-    const len = tempI32('tsn'), i = tempI32('tsi'), j = tempI32('tsj')
-    const cur = temp('tsc'), nb = temp('tsb')
+    const len = tempI32('tsn'), i = tempI32('tsi'), buf = tempI32('tsb'), tmp = tempI32('tst')
     const id = freshId(ctx)
-    const oE = `$tsoe${id}`, oL = `$tsol${id}`, iE = `$tsie${id}`, iL = `$tsil${id}`
-    const ptr = () => ['i64.reinterpret_f64', ['local.get', `$${arrL}`]]
+    const get = (n) => ['local.get', `$${n}`]
+    const ptr = () => ['i64.reinterpret_f64', get(arrL)]
     // The comparator's operands enter its slots as closure arguments (a BigInt boxed).
     const argOf = v => typedElemArg(ptr(), v)
-    const jp1 = ['i32.add', ['local.get', `$${j}`], ['i32.const', 1]]
+    const at = (k) => ['i32.add', get(buf), ['i32.shl', get(k), ['i32.const', 3]]]
+    const scratch = heapScratch(buf, ['i32.shl', get(len), ['i32.const', 4]])
+    const each = (tag, body) => [['local.set', `$${i}`, ['i32.const', 0]],
+      ['block', `$${tag}d${id}`, ['loop', `$${tag}${id}`,
+        ['br_if', `$${tag}d${id}`, ['i32.ge_s', get(i), get(len)]],
+        ...body,
+        ['local.set', `$${i}`, ['i32.add', get(i), ['i32.const', 1]]],
+        ['br', `$${tag}${id}`]]]]
+    const after = (a, b) => ['f64.gt',
+      asF64(ctx.closure.call(typed(get(cbL), 'f64'), [argOf(typed(['f64.load', a], 'f64')), argOf(typed(['f64.load', b], 'f64'))])),
+      ['f64.const', 0]]
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${arrL}`, asF64(arrValIR)],
       ['local.set', `$${cbL}`, asF64(emit(fn))],
       ['local.set', `$${len}`, ['call', '$__len', ptr()]],
-      ['local.set', `$${i}`, ['i32.const', 1]],
-      ['block', oE, ['loop', oL,
-        ['br_if', oE, ['i32.ge_s', ['local.get', `$${i}`], ['local.get', `$${len}`]]],
-        ['local.set', `$${cur}`, ['call', '$__typed_get_idx', ptr(), ['local.get', `$${i}`]]],
-        ['local.set', `$${j}`, ['i32.sub', ['local.get', `$${i}`], ['i32.const', 1]]],
-        ['block', iE, ['loop', iL,
-          ['br_if', iE, ['i32.lt_s', ['local.get', `$${j}`], ['i32.const', 0]]],
-          ['local.set', `$${nb}`, ['call', '$__typed_get_idx', ptr(), ['local.get', `$${j}`]]],
-          // Break unless cmp(neighbor, cur) > 0. f64.gt is false for NaN (spec NaN-as-0).
-          ['br_if', iE, ['i32.eqz', ['f64.gt',
-            asF64(ctx.closure.call(typed(['local.get', `$${cbL}`], 'f64'),
-              [argOf(typed(['local.get', `$${nb}`], 'f64')), argOf(typed(['local.get', `$${cur}`], 'f64'))])),
-            ['f64.const', 0]]]],
-          ['drop', ['call', '$__typed_set_idx', ptr(), jp1, ['local.get', `$${nb}`]]],
-          ['local.set', `$${j}`, ['i32.sub', ['local.get', `$${j}`], ['i32.const', 1]]],
-          ['br', iL]]],
-        ['drop', ['call', '$__typed_set_idx', ptr(), jp1, ['local.get', `$${cur}`]]],
-        ['local.set', `$${i}`, ['i32.add', ['local.get', `$${i}`], ['i32.const', 1]]],
-        ['br', oL]]],
-      ['local.get', `$${arrL}`]], 'f64')
+      ['if', ['i32.gt_s', get(len), ['i32.const', 1]], ['then',
+        ...scratch.take,
+        ['local.set', `$${tmp}`, ['i32.add', get(buf), ['i32.shl', get(len), ['i32.const', 3]]]],
+        ...each('tsg', [['f64.store', at(i), ['call', '$__typed_get_idx', ptr(), get(i)]]]),
+        mergeSortIR(buf, tmp, len, 3, after),
+        ...each('tsw', [['drop', ['call', '$__typed_set_idx', ptr(), get(i), ['f64.load', at(i)]]]]),
+        scratch.release]],
+      get(arrL)], 'f64')
   }
   ctx.core.emit['.typed:sort'] = (arr, fn) => emitTypedSort(emit(arr), fn)
 
@@ -1749,15 +1898,13 @@ export default (ctx) => {
   const leanLen = (arr, et, isView) => {
     const staticLen = staticTypedLen(arr)
     if (staticLen != null) return ['i32.const', staticLen]
-    const lenIR = () => ['i32.shr_u',
-      ['i32.load', isView ? typedBase(emit(arr)) : ['i32.sub', typedBase(emit(arr)), ['i32.const', 8]]],
-      ['i32.const', SHIFT[et]]]
+    const lenIR = () => ['i32.shr_u', ['i32.load', byteLenAddr(emit(arr), isView)], ['i32.const', SHIFT[et]]]
     if (!(ctx.transform.optFlags & OPTF.leanCheckedIdx) ||
         typeof arr !== 'string' ||
         !ctx.func.current?.params?.some(p => p.name === arr) ||
         !ctx.func.body || isReassigned(ctx.func.body, arr)) return lenIR()
     const memo = (ctx.func.lenHoist ??= new Map())
-    const key = `${arr} ${SHIFT[et]}${isView ? 'v' : ''}`
+    const key = `${arr} ${SHIFT[et]}${isView == null ? 'a' : isView ? 'v' : ''}`
     let h = memo.get(key)
     if (!h) {
       h = { t: tempI32('tlen'), init: lenIR() }
@@ -1876,7 +2023,9 @@ export default (ctx) => {
   }
 
   ctx.core.emit['.typed:[]'] = (arr, i, node = null) => {
-    const r = resolveElem(arr)
+    // Under a versioning guard the receiver is present (the guard tested it):
+    // one that may be missing reads as its payload's kind.
+    const r = resolveElem(arr, typeof arr === 'string' && activeBoundsAssumption(ctx, arr, i))
     if (r == null) return null // open ctor: array.js uses the tagged runtime reader
     const { et, isView, isBigInt } = r
     // idxKey builds a string (JSON.stringify for expression indices) — price
@@ -1891,10 +2040,11 @@ export default (ctx) => {
       rd.valKind = VAL.NUMBER
       return rd
     }
-    const proven = typedIdxProven(arr, i, node) || (key != null && ctx.types.rmwBounds?.has(key))
+    const integral = exprType(i, ctx.func.locals) === 'i32' || (typeof i === 'string' && repOf(i)?.intCertain) || intExprRange(i) != null
+    const proven = typedIdxProven(arr, i, node) || (integral && key != null && ctx.types.rmwBounds?.has(key))
     const loadOf = (off) => elemLoadIR(r, off)
     if (!proven) {
-      const bundleIn = typedBundleGuard(arr, i)
+      const bundleIn = integral ? typedBundleGuard(arr, i) : null
       // (A $__typed_idx call per site was tried for the size tier and REVERTED:
       // the helper + its __len/__ptr_offset chain cost ~+900 B while these
       // kernels have 1-3 unproven sites — inline wins until many sites share it.)
@@ -1956,8 +2106,7 @@ export default (ctx) => {
       const ti = tempI32('tbi'), tin = tempI32('tbn')
       const staticLen = staticTypedLen(arr)
       const lenIR = staticLen != null ? ['i32.const', staticLen] : ['i32.shr_u',
-        ['i32.load', isView ? typedBase(emit(arr)) : ['i32.sub', typedBase(emit(arr)), ['i32.const', 8]]],
-        ['i32.const', SHIFT[et]]]
+        ['i32.load', byteLenAddr(emit(arr), isView)], ['i32.const', SHIFT[et]]]
       const off = ['i32.add', typedDataAddr(emit(arr), isView),
         ['i32.shl', ['select', ['local.get', `$${ti}`], ['i32.const', 0], ['local.get', `$${tin}`]],
           ['i32.const', SHIFT[et]]]]
@@ -1983,8 +2132,9 @@ export default (ctx) => {
       return rd
     }
     const objIR = emit(arr), post = postIncI32Index(i)
-    const nestedIndex = Array.isArray(i) && i[0] === '[]'
-    let vi = post?.value ?? idx(i), indexPre = null, indexValid = nestedIndex ? vi.indexValid : null
+    // A proven range still reads undefined for a key that names no element
+    // (emitIndex's bit): a nested read's miss, a fraction, NaN.
+    let vi = post?.value ?? idx(i, typedIdxWhole(arr, i, node)), indexPre = null, indexValid = vi.indexValid ?? null
     if (!post && indexValid) {
       const ti = tempI32('tbi')
       indexPre = ['local.set', `$${ti}`, vi]
@@ -2113,7 +2263,17 @@ export default (ctx) => {
     let vi, indexEffects = false
     if (!proven) inc('__len')
     if (post) { pre.push(...post.pre); vi = post.value }
-    else if (proven) vi = idx(i)
+    else if (proven) {
+      // A proven range still needs the key to name an element (emitIndex):
+      // the store runs behind the key's own bit, read after the index.
+      vi = idx(i, typedIdxWhole(arr, i, node))
+      if (vi.indexValid) {
+        const ti = tempI32('tbi'), valid = vi.indexValid
+        pre.push(['local.set', `$${ti}`, vi])
+        vi = ['local.get', `$${ti}`]
+        vi.indexValid = valid
+      }
+    }
     else {
       const ti = tempI32('tbi'), emittedIdx = idx(i)
       indexEffects = !pureStorable(emittedIdx)
@@ -2197,8 +2357,7 @@ export default (ctx) => {
         const receiver = temp('tref')
         pre.unshift(['local.set', `$${receiver}`, asF64(objIR)])
         objIR = typed(['local.get', `$${receiver}`], 'f64')
-        savedLength = ['i32.shr_u', ['i32.load', isView ? typedBase(objIR)
-          : ['i32.sub', typedBase(objIR), ['i32.const', 8]]], ['i32.const', SHIFT[et]]]
+        savedLength = ['i32.shr_u', ['i32.load', byteLenAddr(objIR, isView)], ['i32.const', SHIFT[et]]]
       }
     }
     if (nullable) {
@@ -2212,18 +2371,19 @@ export default (ctx) => {
       valIR = typed(['local.get', `$${value}`], 'f64')
     }
     const off = ['i32.add', typedDataAddr(objIR, isView), ['i32.shl', vi, ['i32.const', SHIFT[et]]]]
+    // The stored value's number (ToNumber, a valueOf's among them) for every
+    // element kind, taken before the index is tested as a store takes it; the
+    // assignment's own value is the value before it. Null where the value is
+    // a number already.
+    const numberOf = (reread) => toNumF64(val, valIR) === valIR ? null : ctx.core.stdlib['__to_num'] ? toNumF64(val, reread) : coerceNullishToNum(reread)
     if (r.isF16 || r.isClamped) {
       // conversion is not a truncation — always through the kernel (RTNE /
       // ToUint8Clamp); the i32Backed shortcut below would store raw low bits
-      const vt = temp('tw')
-      const conv = elemStoreIR(r, off, ['local.get', `$${vt}`])
-      return typed(void_ ? ['block', ...pre,
-        ['local.set', `$${vt}`, asF64(valIR)],
-        guard(conv)]
-        : ['block', ['result', 'f64'], ...pre,
-        ['local.set', `$${vt}`, asF64(valIR)],
-        guard(conv),
-        ['local.get', `$${vt}`]], void_ ? 'void' : 'f64')
+      const vt = temp('tw'), nt = temp('twn'), number = numberOf(typed(['local.get', `$${vt}`], 'f64'))
+      const conv = elemStoreIR(r, off, ['local.get', `$${number ? nt : vt}`])
+      const take = [['local.set', `$${vt}`, asF64(valIR)], ...(number ? [['local.set', `$${nt}`, asF64(number)]] : [])]
+      return typed(void_ ? ['block', ...pre, ...take, guard(conv)]
+        : ['block', ['result', 'f64'], ...pre, ...take, guard(conv), ['local.get', `$${vt}`]], void_ ? 'void' : 'f64')
     }
     if (isBigInt) {
       // Typed storage needs the raw i64 payload. A materialized union can carry
@@ -2375,15 +2535,16 @@ export default (ctx) => {
         guard([STORE[et], off, ['local.get', `$${v32}`]]),
         [(et & 1) ? 'f64.convert_i32_u' : 'f64.convert_i32_s', ['local.get', `$${v32}`]]], void_ ? 'void' : 'f64')
     }
-    const vt = temp('tw')
-    const i32val = toInt32(['local.get', `$${vt}`])
-    return typed(void_ ? ['block', ...pre,
-      ['local.set', `$${vt}`, asF64(valIR)],
-      guard([STORE[et], off, i32val])]
-      : ['block', ['result', 'f64'], ...pre,
-      ['local.set', `$${vt}`, asF64(valIR)],
-      guard([STORE[et], off, i32val]),
-      ['local.get', `$${vt}`]], void_ ? 'void' : 'f64')
+    // The conversion reads the value's temp, which knows no range; the value
+    // itself may (an integer element's difference, a miss arm's NaN): within
+    // ±2^63 the inline wrap is exact ToInt32 (ir/numeric.js toInt32).
+    const vt = temp('tw'), get = ['local.get', `$${vt}`], range = f64Range(asF64(valIR), null, true)
+    if (range) get.range = range
+    const number = numberOf(typed(['local.get', `$${vt}`], 'f64')), nt = number ? temp('twn') : null
+    const i32val = toInt32(number ? ['local.get', `$${nt}`] : get)
+    const take = [['local.set', `$${vt}`, asF64(valIR)], ...(number ? [['local.set', `$${nt}`, asF64(number)]] : [])]
+    return typed(void_ ? ['block', ...pre, ...take, guard([STORE[et], off, i32val])]
+      : ['block', ['result', 'f64'], ...pre, ...take, guard([STORE[et], off, i32val]), ['local.get', `$${vt}`]], void_ ? 'void' : 'f64')
   }
 
   // TypedArray.prototype.set(source, offset = 0). A typed source of the same byte
@@ -3164,8 +3325,10 @@ export default (ctx) => {
       ['local.set', `$${arrL}`, receiver],
       ...positions.setup,
       ['local.set', `$${srcOff}`, typedBase(typed(['local.get', `$${arrL}`], 'f64'))],
-      ['local.set', `$${data}`, isView ? off4(4) : ['local.get', `$${srcOff}`]],
-      ['local.set', `$${root}`, isView ? off4(8) : ['local.get', `$${srcOff}`]],
+      ['local.set', `$${data}`, typedDataAddr(typed(['local.get', `$${arrL}`], 'f64'), isView)],
+      ['local.set', `$${root}`, isView == null
+        ? anyView(typed(['local.get', `$${arrL}`], 'f64'), (base, view) => ['select', ['i32.load', ['select', ['i32.add', base(), ['i32.const', 8]], ['i32.const', 0], view()]], base(), view()])
+        : isView ? off4(8) : ['local.get', `$${srcOff}`]],
       ['local.set', `$${len}`, ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${arrL}`]]]],
       ['local.set', `$${lo}`, ['call', '$__clamp_idx', positions.index(0), ['local.get', `$${len}`]]],
       ['local.set', `$${hi}`, ['call', '$__clamp_idx', positions.index(1, ['local.get', `$${len}`]), ['local.get', `$${len}`]]],

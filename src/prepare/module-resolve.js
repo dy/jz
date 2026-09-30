@@ -10,15 +10,15 @@ import { VAL } from '../reps.js'
 import { STD_SOURCES } from '../std/index.js'
 import { ctx, err } from '../ctx.js'
 import { isFuncRef } from '../ir.js'
-import { TIMER_NAMES, hasModule, includeModule } from '../autoload.js'
+import { TIMER_NAMES, hasModule, includeForNamedCall, includeModule } from '../autoload.js'
 import { observeNodeFacts } from '../compile/program-facts.js'
-import { handlerArgs, walkAst } from '../ast.js'
-import { hasFunc } from './closure-lift.js'
+import { T, handlerArgs, walkAst } from '../ast.js'
+import { shadowsBuiltin } from './closure-lift.js'
 import { stringValue } from './const-fold.js'
 import { patternItems } from './destructure.js'
 import { staticString } from './literals.js'
 import { isDeclared, resolveScope } from './scope.js'
-import { GLOBALS, NS_CTORS, builtinMemberKey, scopes } from './state.js'
+import { NS_CTORS, builtinMemberKey, scopes } from './state.js'
 
 
 
@@ -168,9 +168,10 @@ export function validateCoalesceMixing(n) {
 // `NS.hasOwnProperty("member")` is a compile-time question: jz models a
 // builtin namespace as a set of emit keys, so a member is owned iff jz emits
 // it — plus the universal constructor trio for constructor namespaces.
-function namespaceHasOwn(mod, name, member) {
+function namespaceHasOwn(mod, member) {
+  includeForNamedCall(`${mod}.${member}`)
   if (ctx.core.emit[`${mod}.${member}`] != null) return true
-  return NS_CTORS.has(name) && (member === 'prototype' || member === 'length' || member === 'name')
+  return NS_CTORS.has(mod) && (member === 'prototype' || member === 'length' || member === 'name')
 }
 
 /** Pure syntactic extraction of `{ a, b: c }` → `[[target, member], …]` (handles
@@ -206,6 +207,7 @@ export function namespaceMemberAliases(pattern, mod) {
   const aliases = []
   for (const [target, member] of pairs) {
     const key = `${mod}.${member}`
+    includeForNamedCall(key)
     if (ctx.core.emit[key] == null) return null
     aliases.push([target, key])
   }
@@ -262,23 +264,23 @@ export function foldImportMetaResolve(callee, args) {
 export function foldNamespaceIntrospection(callee, args) {
   if (!Array.isArray(callee) || callee[0] !== '.') return undefined
   const [, obj, prop] = callee
-  if (obj === 'Array' && prop === 'isArray') {
+  if (prop === 'isArray' && !shadowsBuiltin(obj) && namespaceModOf(obj) === 'Array') {
     const cargs = handlerArgs(args)
     const a0 = cargs.length === 1 ? cargs[0] : null
     // Fold to boolean `false`, not number 0 — `Array.isArray(Math) === false`
     // must be true, and prepare keeps boolean identity (see the true/false
     // literal notes at prep()).
-    if (typeof a0 === 'string' && GLOBALS[a0] && !(scopes.length && isDeclared(a0)) && !hasFunc(a0))
+    if (typeof a0 === 'string' && !shadowsBuiltin(a0) && namespaceModOf(a0))
       return [, false]
   }
-  if (prop === 'hasOwnProperty' && typeof obj === 'string' && !(scopes.length && isDeclared(obj))) {
-    const mod = ctx.scope.chain[obj]
-    if (mod && !mod.includes('.') && hasModule(mod)) {
+  if (prop === 'hasOwnProperty' && typeof obj === 'string' && !shadowsBuiltin(obj)) {
+    const mod = namespaceModOf(obj)
+    if (mod) {
       const cargs = handlerArgs(args)
       const member = cargs.length === 1 ? stringValue(cargs[0]) : null
       // Include the module so its emit keys (the namespace's member set) are
       // registered; unreferenced emitters/data dead-strip in compile.
-      if (member != null) { includeModule(mod); return [, namespaceHasOwn(mod, obj, member) ? 1 : 0] }
+      if (member != null) { includeModule(mod); return [, namespaceHasOwn(mod, member)] }
     }
   }
   return undefined
@@ -292,7 +294,8 @@ export function foldNamespaceIntrospection(callee, args) {
 // function values — so a bare reference must not pull in the callable-value
 // (function table / closure) machinery.
 export const INTRINSIC_CALLEES = new Set([
-  '__iter_arr', '__keys_ro', '__heap_mark', '__heap_large', '__park_begin', '__park_rewind',
+  T + 'key',
+  '__iter_arr', '__keys_ro', '__object_rest', '__heap_mark', '__heap_large', '__park_begin', '__park_rewind',
   '__park_write_u8', '__park_write_u32', '__park_write_f64', '__park_write_i64', '__park_write_str', '__park_finish',
   '__park_read_u8', '__park_read_u32', '__park_read_f64', '__park_read_i64', '__park_read_str',
 ])

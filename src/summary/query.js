@@ -1,6 +1,6 @@
 /** Read-only summary queries. This module has no access to solver transfers. */
-import { ACCESSOR_GET, ACCESSOR_SET, CLASS_T, isBrand, schemaKey, isArrayIndexKey } from '../ast.js'
-import { encodeTypedElemAux, ctorFromElemAux } from '../../layout.js'
+import { ACCESSOR_GET, ACCESSOR_SET, CLASS_T, isBrand, schemaKey, isArrayIndexKey, spreadExclusions } from '../ast.js'
+import { encodeTypedElemAux, ctorFromElemAux, TYPED_ELEM_VIEW_FLAG, TYPED_ELEM_ANY_VIEW_FLAG } from '../../layout.js'
 import { ATOMICS_VALUE_OPS, builtinCalleeVal, methodValType } from '../kind-traits.js'
 import { VAL } from '../reps.js'
 import { typedElementKey } from '../typed-provenance.js'
@@ -9,14 +9,17 @@ import { ITER_RECORD_KEYS } from '../std/iter-helpers.js'
 
 import {
   K, kind, tagOf, paramOf, isNullable, hasTag, join, valOf, kindOfVal, core, UNKNOWN,
-  ANY, NUMBER, STRING, BOOL, BIGINT, NULLISH, orAbsent, plus, arith, typedStore, typedAux, typedElemKind, typedMethodKind, isPostfixRecovery, logicalMask, selectKind,
-  TYPED_CTOR, isCount, ARRAY_METHODS, NUMBER_OPS, BOOL_OPS, bitOf, TAGS, NULL_BITS } from './kind.js'
+  ANY, NUMBER, STRING, BOOL, BIGINT, NULLISH, orAbsent, plus, arith, typedStore, typedAux, typedElemKind, typedMethodKind, logicalMask, selectKind,
+  TYPED_CTOR, isCount, ARRAY_METHODS, OBJECT_PROTO_METHODS, objectProtoResult, NUMBER_OPS, BOOL_OPS, bitOf, TAGS, NULL_BITS, outsideKind } from './kind.js'
+// Names every object has from its prototype: a read of one is never undefined.
+const INHERITED = new Set(['constructor', 'hasOwnProperty', 'isPrototypeOf', 'propertyIsEnumerable', 'toString', 'toLocaleString', 'valueOf',
+  '__defineGetter__', '__defineSetter__', '__lookupGetter__', '__lookupSetter__', '__proto__', 'length'])
 
 export function summaryQueries(facts, internal = false) {
   const { kinds, incoming, fields, results, receivers, closures, closuresByBody, declared, parent, nameKeys, forwards, siteResults,
-    scopeOfSig, scopeOfBody, scopeOfParams, cellUp, elems, tuples, lens, stores, built, grown, unknown, presentReads, paramRangesOf, cellProps, cellWild, closureSets, closureSetIds, cells, jsonKinds, unions, shapeUnions,
-    schemas, layouts, sitesByLayout, objectKinds, methods, sidByKey, funcNames, imports, numeric, strung, dynamicProps, builtinOwnProps, typedReadPresent, typedProps, typedPropsByAux, openSchemas, indexedSchemas,
-    sideProps, sideWild, wildProps, wildValues, pendingAll, keyedCells, cellShapes, cellLostObject, closureProps, escaped, iterSites, reached, defaultRuns } = facts
+    scopeOfSig, scopeOfBody, scopeOfParams, cellUp, elems, tuples, lens, stores, built, grown, unknown, presentReads, spreadSources, paramRangesOf, cellProps, cellWild, closureSets, closureSetIds, cells, jsonKinds, unions, shapeUnions,
+    schemas, layouts, sitesByLayout, foldedLayouts, objectKinds, methods, sidByKey, funcNames, imports, numeric, strung, dynamicProps, builtinOwnProps, typedReadPresent, typedProps, typedPropsByAux, openSchemas, indexedSchemas,
+    sideProps, sideWild, wildProps, wildValues, pendingAll, keyedCells, cellShapes, cellLostObject, closureProps, escaped, iterSites, reached, defaultRuns, boolKeys, storeBits, paramKeys } = facts
   // The solver owns union-find compression; querying a root never writes it.
   const cell = id => { while (cellUp[id] !== id) id = cellUp[id]; return id }
   const MIXABLE_TAGS = bitOf(K.HASH) | bitOf(K.OBJECT) | bitOf(K.NUMBER) | bitOf(K.STRING) | bitOf(K.BOOL) | bitOf(K.BIGINT)
@@ -98,7 +101,7 @@ export function summaryQueries(facts, internal = false) {
   const typedPropsOf = recv => {
     let out = elems[typedProps]
     if (typedAux(recv) === UNKNOWN) { for (const c of typedPropsByAux.values()) out = join(out, elems[c]) }
-    else { const c = typedPropsByAux.get(typedAux(recv)); if (c !== undefined) out = join(out, elems[c]) }
+    else { const c = typedPropsByAux.get(typedAux(recv) & ~(TYPED_ELEM_VIEW_FLAG | TYPED_ELEM_ANY_VIEW_FLAG)); if (c !== undefined) out = join(out, elems[c]) }
     return out
   }
   const builtinMethodResult = (recv, name) => {
@@ -137,7 +140,12 @@ export function summaryQueries(facts, internal = false) {
   const views = new Map()
   const view = scope => {
     let cached = views.get(scope)
-    if (cached) return cached
+    if (!cached) { cached = createView(scope); views.set(scope, cached) }
+    return cached
+  }
+  // A cache hit needs no closure environment. Keep the closures in a separate
+  // factory so repeated queries do not allocate its captured locals at entry.
+  const createView = scope => {
     // A name's key in this scope, resolved once: the demand pass and the
     // emitters ask at every read.
     const keys = new Map()   // name → key, or null for a name from outside the program
@@ -170,13 +178,14 @@ export function summaryQueries(facts, internal = false) {
     const aliasKind = a => a.present ? core(kindOfExpr(a.e)) : kindOfExpr(a.e)
     const readKind = name => aliases.has(name) ? aliasKind(aliases.get(name)) : present.has(name) ? core(readKey(keyOfAnywhere(name))) : readKey(keyOfAnywhere(name))
     const kindOfExpr = n => selectedExpr(n, 7)
+    const spreadSourceKind = (e, site) => canon(spreadSources.get(site) ?? kindOfExpr(e))
     const selectedExpr = (n, mask) => {
       const logical = Array.isArray(n) ? logicalMask(n[0]) : 0
       if (mask !== 7 && !logical) return selectKind(kindOfExpr(n), mask)
       if (typeof n === 'string') {
         if (aliases.has(n)) return aliasKind(aliases.get(n))
         const key = keyOfAnywhere(n)
-        if (key === null) return funcNames.has(n) ? kind(K.CLOSURE, closureSetIds.get(n) ?? UNKNOWN) : ANY
+        if (key === null) return funcNames.has(n) ? kind(K.CLOSURE, closureSetIds.get(n) ?? UNKNOWN) : outsideKind(n)
         const k = present.has(n) ? core(readKey(key)) : readKey(key)
         // a top-level `let f = (…) => …` is the function `f` (the walker's rule)
         return funcNames.has(n) && (tagOf(k) === K.NONE || (tagOf(k) === K.CLOSURE && paramOf(k) === UNKNOWN)) ? kind(K.CLOSURE, closureSetIds.get(n) ?? UNKNOWN) : k
@@ -190,8 +199,8 @@ export function summaryQueries(facts, internal = false) {
       if (op === 'bool') return BOOL
       if (op === 'bigint') return BIGINT
       if (op === '//') return kind(K.REGEX)
-      if (op === '{}' && n.length === 2 && n[1]?.[0] === '...') {
-        const source = kindOfExpr(n[1][1]), t = tagOf(source)
+      if (op === '{}' && n.length === 2 && n[1]?.[0] === '...' && !spreadExclusions(n[1])) {
+        const source = spreadSourceKind(n[1][1], n[1]), t = tagOf(source)
         if (t === K.NONE) return K.NONE
         if (!isNullable(source) && (t === K.OBJECT || t === K.HASH)) return source
       }
@@ -210,9 +219,9 @@ export function summaryQueries(facts, internal = false) {
           if (typeof p === 'string') add(p)
           else if (Array.isArray(p) && p[0] === ':' && typeof p[1] === 'string') { if (isBrand(p[1])) brand = p[1]; else add(p[1]) }
           else if (Array.isArray(p) && p[0] === '...') {
-            const source = kindOfExpr(p[1]), sid = layoutOf(source)
-            if (p[1]?.[0] === '&&' || isNullable(source) || sid === UNKNOWN || shapesOf(paramOf(source)).some(site => openSchemas.has(site)) || !schemas[sid]) return kind(K.HASH)
-            for (const name of schemas[sid]) add(name)
+            const source = spreadSourceKind(p[1], p), sid = layoutOf(source), skip = spreadExclusions(p)
+            if (p[1]?.[0] === '&&' || isNullable(source) || sid === UNKNOWN || shapesOf(paramOf(source)).some(site => openSchemas.has(site)) || !schemas[sid] || skip?.exprs.length) return kind(K.HASH)
+            for (const name of schemas[sid]) if (!skip?.names.includes(name)) add(name)
           } else return kind(K.HASH)
         }
         const sid = sidByKey.get(schemaKey(names, brand))
@@ -221,7 +230,7 @@ export function summaryQueries(facts, internal = false) {
         for (const site of sitesByLayout.get(sid) ?? []) k = merge(k, kind(K.OBJECT, site))
         return k === K.NONE ? kind(K.OBJECT) : k
       }
-      if (op === '()' && n.length === 2) return kindOfExpr(n[1])
+      if (op === '(' || op === '()' && n.length === 2) return kindOfExpr(n[1])
       if (op === '.' || op === '?.') {
         const r = kindOfExpr(n[1])
         if (op === '?.' && tagOf(core(r)) === K.NONE) return NULLISH
@@ -287,7 +296,7 @@ export function summaryQueries(facts, internal = false) {
       if (op === '?' || op === '?:') return merge(kindOfExpr(n[2]), kindOfExpr(n[3]))
       if (logical) return merge(selectedExpr(n[1], mask & logical), selectedExpr(n[2], mask))
       if (op === ',') return kindOfExpr(n[n.length - 1])
-      if (isPostfixRecovery(op, n[1], n[2])) return kindOfExpr(n[1])
+      if (op === 'postfix') return kindOfExpr(n[1])
       if (op === '+') return plus(kindOfExpr(n[1]), kindOfExpr(n[2]))
       if (NUMBER_OPS.has(op) || op === 'u-') { let k = n.length > 2 ? kindOfExpr(n[1]) : arith(op, kindOfExpr(n[1])); for (let i = 2; i < n.length; i++) k = arith(op, k, kindOfExpr(n[i])); return k }
       if (op === '+1' || op === '-1') return arith(op, kindOfExpr(n[1]))
@@ -307,6 +316,7 @@ export function summaryQueries(facts, internal = false) {
         if (i >= 0) return slotKind(paramOf(r), i)
         const gi = schemas[paramOf(r)].indexOf(getterOf(prop))
         if (gi >= 0) {
+          if (facts.deletable?.has(paramOf(r))) return ANY
           const g = slotKind(paramOf(r), gi)
           return tagOf(g) === K.CLOSURE && paramOf(g) !== UNKNOWN ? closureResult(paramOf(g)) : tagOf(g) === K.NONE ? K.NONE : ANY
         }
@@ -340,6 +350,8 @@ export function summaryQueries(facts, internal = false) {
     const methodResult = (r, name, n) => {
       const t = tagOf(r)
       if (t === K.NONE) return K.NONE
+      if ((t === K.HASH || dictOrObject(r) || (t === K.OBJECT && paramOf(r) === UNKNOWN)) && OBJECT_PROTO_METHODS.has(name) && !memberMayBeOwn(name))
+        return objectProtoResult(r, name)
       if (t === K.OBJECT && paramOf(r) !== UNKNOWN && paramOf(r) >= SET_BASE) { let k = K.NONE; for (const sid of shapesOf(paramOf(r))) k = merge(k, methodResult(kind(K.OBJECT, sid), name, n)); return k }
       if (t === K.OBJECT && paramOf(r) !== UNKNOWN && iterRecord(paramOf(r))) return siteResults.get(n) ?? ANY
       const fn = classMember(r, name)
@@ -348,8 +360,12 @@ export function summaryQueries(facts, internal = false) {
         if (fn) result = !memberMayBeOwn(name) ? results.has(fn) ? resultOfId(fn) : ANY : ANY
         else if (builtinReceiverMayHaveOwn(t, name)) result = ANY
         else if (t === K.OBJECT && paramOf(r) !== UNKNOWN) {
-          const i = schemas[paramOf(r)].indexOf(name), fk = i < 0 ? K.NONE : slotKind(paramOf(r), i)
-          result = tagOf(fk) === K.CLOSURE && paramOf(fk) !== UNKNOWN ? closureResult(paramOf(fk)) : tagOf(fk) === K.NONE ? K.NONE : ANY
+          const i = schemas[paramOf(r)].indexOf(name), getter = schemas[paramOf(r)].includes(getterOf(name))
+          const fk = i >= 0 ? slotKind(paramOf(r), i) : getter ? memberOf(r, name) : K.NONE
+          result = i < 0 && !getter && !memberMayBeOwn(name) && OBJECT_PROTO_METHODS.has(name)
+            ? objectProtoResult(r, name)
+            : tagOf(fk) === K.CLOSURE && paramOf(fk) !== UNKNOWN ? closureResult(paramOf(fk)) : tagOf(fk) === K.NONE ? K.NONE : ANY
+          if (facts.deletable?.has(paramOf(r)) && OBJECT_PROTO_METHODS.has(name)) result = merge(result, objectProtoResult(r, name))
         }
         else if (t === K.MAP && name === 'get') result = orAbsent(elemOf(r))
         else if (t === K.TYPED && typedMethodKind(name, r) !== null) result = typedMethodKind(name, r)
@@ -389,7 +405,7 @@ export function summaryQueries(facts, internal = false) {
       } else ck = kindOfExpr(callee)
       return tagOf(ck) === K.CLOSURE && paramOf(ck) !== UNKNOWN ? paramOf(ck) : null
     }
-    cached = {
+    return {
       kindOf: name => pub(readKind(name)), kindOfExpr: e => pub(kindOfExpr(e)), calleeOf, keyOfName: keyOf,
       // An emission temp holding the value of `e` (see `aliases`), present
       // (an optional chain's head past its guard) or as `e` reads (a
@@ -401,15 +417,31 @@ export function summaryQueries(facts, internal = false) {
       /** The name is present on the path being emitted (a guard proved it): its reads drop the nullish part. */
       present: (name) => { present.add(name) },
       unpresent: (name) => { present.delete(name) },
+      isPresent: (name) => present.has(name),
       // The result contract of the callable a call reaches, or null (contract.js).
       calleeContract: n => { const c = calleeOf(n); return c === null ? null : resultContract(c) },
       sidOf: name => { const k = readKind(name); return tagOf(k) === K.OBJECT && !isNullable(k) && publicSid(k) !== UNKNOWN ? publicSid(k) : null },
-      spreadSidOfExpr: e => { const k = kindOfExpr(e), sid = publicSid(k); return tagOf(k) === K.OBJECT && !isNullable(k) && sid !== UNKNOWN && !shapesOf(paramOf(k)).some(site => openSchemas.has(site)) ? sid : null },
+      // The one layout an object expression's value has when it is not missing; null when unknown or open.
+      targetSidOfExpr: e => { const k = core(kindOfExpr(e)), sid = publicSid(k); return tagOf(k) === K.OBJECT && sid !== UNKNOWN && !shapesOf(paramOf(k)).some(site => openSchemas.has(site)) ? sid : null },
+      spreadValOfExpr: (e, site) => valOf(spreadSourceKind(e, site)),
+      spreadSidOfExpr: (e, site) => { const k = spreadSourceKind(e, site), sid = publicSid(k); return tagOf(k) === K.OBJECT && !isNullable(k) && sid !== UNKNOWN && !shapesOf(paramOf(k)).some(site => openSchemas.has(site)) ? sid : null },
       // The member shapes of an object expression, a set's or the one shape, for a
       // guarded slot access; null when the shape is unknown or not an object.
       /** A function or closure a walk reached: the program runs it; the rest keep no kind. */
       reaches: id => reached?.has(id) === true,
       shapesOfExpr: e => { const k = kindOfExpr(e); return tagOf(core(k)) === K.OBJECT && paramOf(k) !== UNKNOWN ? [...new Set(shapesOf(paramOf(k)).map(sid => layouts[sid]))] : null },
+      // Construction identities stay private to the summary. Distinct layouts
+      // are not needed: two literals with the same fields can be disjoint.
+      objectsDisjoint: (a, b) => {
+        const ak = core(kindOfExpr(a)), bk = core(kindOfExpr(b))
+        if (tagOf(ak) !== K.OBJECT || tagOf(bk) !== K.OBJECT || paramOf(ak) === UNKNOWN || paramOf(bk) === UNKNOWN) return false
+        const as = shapesOf(paramOf(ak)), bs = shapesOf(paramOf(bk))
+        if (as.some(lostSchema) || bs.some(lostSchema)) return false
+        return as.every(x => bs.every(y => x !== y &&
+          (layouts[x] !== layouts[y] || !foldedLayouts.has(layouts[x]))))
+      },
+      // The construction sites an object expression's value comes from; null when unknown. Two values of disjoint sites are two objects.
+      sitesOfExpr: e => { const k = kindOfExpr(e); return tagOf(core(k)) === K.OBJECT && paramOf(k) !== UNKNOWN ? shapesOf(paramOf(k)) : null },
       // Payload queries preserve identity independently of nullish presence.
       objectSidOfExpr: e => { const k = kindOfExpr(e); return tagOf(core(k)) === K.OBJECT && publicSid(k) !== UNKNOWN ? publicSid(k) : null },
       // The object's layout is known and NOT certified closed: a store outside it
@@ -430,6 +462,19 @@ export function summaryQueries(facts, internal = false) {
           for (const key of sideProps.get(site)?.keys() ?? []) keys.add(key)
         }
         return [...keys]
+      },
+      // A member no object the receiver may be ever holds: every construction
+      // site is a plain literal (no class, no accessor, no iterator record) the
+      // summary keeps whole, whose layout lacks the name and which no store
+      // under it, under a computed name or from code the summary cannot see
+      // reaches, and the name is none an object inherits. The read is undefined.
+      absentMember: (e, prop) => {
+        if (typeof prop !== 'string' || INHERITED.has(prop) || memberMayBeOwn(prop)) return false
+        const k = kindOfExpr(e)
+        if (tagOf(k) !== K.OBJECT || paramOf(k) === UNKNOWN || isNullable(k)) return false
+        return shapesOf(paramOf(k)).every(site => !schemas[site].includes(prop) && !schemas[site].includes(getterOf(prop)) &&
+          !methods.get(site)?.size && !methods.get(layouts[site])?.size && !iterRecord(site) && !lostSchema(site) &&
+          !indexedSchemas?.has(site) && !openSchemas.has(site) && tagOf(sideOf(site, prop)) === K.NONE && !facts.foldedLayouts.has(layouts[site]))
       },
       openSidOfExpr: e => { const k = kindOfExpr(e), sid = publicSid(k); return tagOf(core(k)) === K.OBJECT && sid !== UNKNOWN && (isNullable(k) || shapesOf(paramOf(k)).some(site => openSchemas.has(site))) ? sid : null },
       typedCtorOf: name => { const k = readKind(name); return tagOf(k) === K.TYPED && typedAux(k) !== UNKNOWN && !isNullable(k) ? ctorFromElemAux(typedAux(k)) : null },
@@ -466,6 +511,20 @@ export function summaryQueries(facts, internal = false) {
       stringDemand: name => { const key = keyOfAnywhere(name); return key !== null && (typeof key === 'number' ? strung.has(key) : key.some(k => strung.has(k))) },
       numericDemand: name => { const key = keyOfAnywhere(name), isNumeric = k => numeric.get(k) === 2; return key !== null && (typeof key === 'number' ? isNumeric(key) : key.every(isNumeric)) },
       numericStorage: name => { const key = keyOf(name), k = readKind(name); return key !== null && numeric.get(key) === 2 && tagOf(core(k)) === K.NUMBER && hasTag(k, K.ABSENT) && !hasTag(k, K.NULLISH) },
+      // The binding's own kind, on every path: no guard's presence, no alias.
+      bindingKindOf: name => pub(readKey(keyOfAnywhere(name))),
+      // A Boolean reaches the binding (a store, a definition or an argument of
+      // a kind naming BOOL, or one Boolean by its syntax): bit 1; one of its
+      // stores may be another value by its syntax: bit 2.
+      boolStores: name => {
+        const key = keyOfAnywhere(name), bits = k => (boolKeys?.has(k) ? 1 : 0) | (storeBits?.get(k) ?? 0)
+        if (key === null) return 0
+        if (typeof key === 'number') return bits(key)
+        let b = 0
+        for (const k of key) b |= bits(k)
+        return b
+      },
+      isParam: name => { const key = keyOfAnywhere(name); return key !== null && (typeof key === 'number' ? paramKeys?.has(key) : key.some(k => paramKeys?.has(k))) === true },
       // The demand pass denied the binding a number: a read of it neither converts nor is compatible (a container store, a return), so its value keeps JS semantics for every kind the host may pass.
       numericDenied: name => { const key = keyOfAnywhere(name), denied = k => numeric.get(k) === false; return key !== null && (typeof key === 'number' ? denied(key) : key.some(denied)) },
       // Incoming arguments/defaults before any reassignment in the body.
@@ -495,9 +554,15 @@ export function summaryQueries(facts, internal = false) {
       mayBeNullishExpr: e => { const k = kindOfExpr(e); return hasTag(k, K.NULLISH) || hasTag(k, K.ABSENT) },
       typedCtorOfExpr: e => { const k = kindOfExpr(e); return tagOf(k) === K.TYPED && typedAux(k) !== UNKNOWN && !isNullable(k) ? ctorFromElemAux(typedAux(k)) : null },
       typedPayloadCtorOfExpr: e => { const k = kindOfExpr(e); return tagOf(core(k)) === K.TYPED && typedAux(k) !== UNKNOWN ? ctorFromElemAux(typedAux(k)) : null },
+      // A call of a name that holds one of several functions (`colors[c](n)`): the
+      // typed array constructor each of them returns, null for one that returns another kind.
+      callResultCtors: e => {
+        if (!Array.isArray(e) || e[0] !== '()') return null
+        const k = kindOfExpr(e[1])
+        if (tagOf(k) !== K.CLOSURE || paramOf(k) === UNKNOWN) return null
+        return membersOf(paramOf(k)).map(id => { const r = resultOfId(id); return tagOf(core(r)) === K.TYPED && typedAux(r) !== UNKNOWN ? ctorFromElemAux(typedAux(r)) : null })
+      },
     }
-    views.set(scope, cached)
-    return cached
   }
   // A callable identity: a function name or signature, a closure id or its
   // parameter node (its stable identity through emission), a frame carrying
@@ -548,10 +613,34 @@ export function summaryQueries(facts, internal = false) {
     holdsKind: tag => hasTag(kindUnion, tag),
     // The names that hold one number for good: name → the number.
     held: facts.held,
+    // The names a builtin stores into its target object (`Object.assign`).
+    assignedProps: facts.assignedProps,
     opaqueSchema: sid => opaqueLayouts.has(sid),
+    // Whether an object of the layout may gain a property beyond its slots: a
+    // key stored beside them, a computed store, or a hand-off to code the
+    // summary cannot see (a lost shape).
+    grownSchema: sid => (sitesByLayout.get(sid) ?? [sid]).some(site => (sideProps.get(site)?.size ?? 0) > 0 ||
+      (sideWild.get(site) ?? K.NONE) !== K.NONE || openSchemas.has(site) || facts.opaqueSchemas.has(site)),
     // A layout a `delete` can reach: a deleted receiver's, or any lost layout
     // once a delete went through a receiver of unknown shape.
     deletableSchema: sid => { deletableLayouts ??= new Set([...facts.deletable ?? []].map(s => layouts[s])); return deletableLayouts.has(sid) || (facts.deleteReach?.unknown === true && (opaqueLayouts.has(sid) || hostLayouts.has(sid))) },
+    // Construction sites (plan/declare-unseen-keys.js): the ones a literal
+    // node makes, whether an object of one can hold a key before its first
+    // store unseen (every holder is one the summary names, nothing asks it
+    // for its keys or deletes one, no store under a computed name reaches it),
+    // the names stored beside its layout in the order the walk met them, and
+    // the sets of sites values join (a shape set, a cell's shapes).
+    literalSites: node => { const k = objectKinds.get(node); return k !== undefined && tagOf(core(k)) === K.OBJECT && paramOf(k) !== UNKNOWN ? shapesOf(paramOf(k)) : [] },
+    keysUnseen: sid => !facts.keysSeen.has(sid) && !facts.opaqueSchemas.has(sid) && !facts.hostSchemas.has(sid) && !facts.deletable.has(sid) &&
+      !indexedSchemas.has(sid) && (sideWild.get(sid) ?? K.NONE) === K.NONE && !facts.foldedLayouts.has(layouts[sid]),
+    sideKeys: sid => [...(sideProps.get(sid)?.keys() ?? [])],
+    siteLayout: sid => layouts[sid],
+    joinedSites: () => {
+      const out = []
+      for (const id of shapeUnions.values()) if (id >= SET_BASE && id !== UNKNOWN) out.push(shapesOf(id))
+      for (const s of cellShapes.values()) out.push([...s])
+      return out
+    },
     fieldVal: (sid, prop) => valOf(fieldKind(sid, prop)),
     fieldTypedCtor: (sid, prop) => { const k = fieldKind(sid, prop); return tagOf(k) === K.TYPED && typedAux(k) !== UNKNOWN && !isNullable(k) ? ctorFromElemAux(typedAux(k)) : null },
     fieldSid: (sid, prop) => { const k = fieldKind(sid, prop); return tagOf(k) === K.OBJECT && paramOf(k) !== UNKNOWN && !isNullable(k) ? paramOf(k) : null },
@@ -568,5 +657,7 @@ export function summaryQueries(facts, internal = false) {
     typedPropertiesAbsent: () => elems[typedProps] === K.NONE && [...typedPropsByAux.values()].every(c => elems[c] === K.NONE),
     hasTypedFields: fields.some(a => a?.some(k => tagOf(k) === K.TYPED && typedAux(k) !== UNKNOWN && !isNullable(k))),
     escaped: facts.escaped,
+    /** The truth an `if` or `?:` test has on every run, or null. */
+    decisionOf: n => facts.decisions?.get(n) ?? null,
   }
 }

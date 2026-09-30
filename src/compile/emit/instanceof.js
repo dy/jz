@@ -9,7 +9,7 @@ import {
   OBJECT_SCHEMA_HI_MASK, TYPED_ELEM_NAMES, TYPED_ELEM_VIEW_FLAG, DATA_VIEW_FLAG, encodeTypedElemAux, objectSchemaGuardHex,
 } from '../../../layout.js'
 import { PTR, ctx, inc } from '../../ctx.js'
-import { asF64, emitNum, isPureIR, ptrTypeEq, temp, tempI32, typed } from '../../ir.js'
+import { asF64, asI64, emitNum, isPureIR, ptrTypeEq, temp, tempI32, typed } from '../../ir.js'
 import { valTypeOf } from '../../kind.js'
 import { K, hasTag } from '../../summary/kind.js'
 import { VAL, repOf } from '../../reps.js'
@@ -158,6 +158,10 @@ function emitErrorInstanceof(a, rhs) {
 
 export function emitInstanceof(a, rhs) {
   if (isBrand(rhs)) return classInstanceof(a, rhs)
+  if (rhs === 'Object') {
+    inc('__is_object')
+    return typed(['call', '$__is_object', asI64(emit(a))], 'i32')
+  }
   if (rhs in INSTANCEOF_TAG) return emitTagInstanceof(a, rhs)
   if (rhs === 'DataView' || TYPED_ELEM_NAMES.includes(rhs) || rhs === 'Float16Array' || rhs === 'Uint8ClampedArray') return emitTypedInstanceof(a, rhs)
   return emitErrorInstanceof(a, rhs)

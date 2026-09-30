@@ -312,10 +312,13 @@ export const isTaggedElemRead = node => {
   return recv === VAL.TYPED ? !isPresentNumber(ctx, node[2]) : recv !== VAL.OBJECT
 }
 
-export const readI64MayUnbox = node =>
-  (typeof node === 'string' && isTaggedLocal(node)) ||
-  isPlanTaggedBigint(node) || isSchemaSlotBigintPossible(node) || isBoxedStorageMethodRead(node) ||
-  isTaggedElemRead(node) || isTaggedCallResult(node)
+export const readI64MayUnbox = node => {
+  // Groups and sequences forward the final value's storage or call carrier.
+  while (Array.isArray(node) && (node[0] === ',' || node[0] === '(')) node = node[node.length - 1]
+  return (typeof node === 'string' && isTaggedLocal(node)) ||
+    isPlanTaggedBigint(node) || isSchemaSlotBigintPossible(node) || isBoxedStorageMethodRead(node) ||
+    isTaggedElemRead(node) || isTaggedCallResult(node)
+}
 
 export function readI64(node, emitted) {
   if (emitted && typeof emitted.bigintBox === 'function')

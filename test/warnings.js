@@ -10,6 +10,12 @@ function warningsFor(code, opts = {}) {
   return warnings.entries
 }
 
+test('fixed length: the advisory names the first cause an array keeps its checks by', () => {
+  const warnings = warningsFor(`const out = [0, 0, 0]\nexport const f = (k) => { out.push(k); return out[0] }`, { why: true })
+  const entry = warnings.find(e => e.code === 'array-open')
+  ok(entry && /3 elements/.test(entry.message) && /push/.test(entry.message), entry?.message)
+})
+
 test('warnings: no sink → no advisories emitted', () => {
   is(warningsFor('export let f = () => [1, 2, 3]').length, 0)
 })
@@ -46,7 +52,7 @@ test('warnings: an export whose calls keep nothing stays quiet, parameters and a
 })
 
 test('warnings: heap-per-call names what an export keeps and why', () => {
-  if (belowOpt(2)) return  // read off the rewind's verdict, which a level without the rewind does not reach
+  if (belowOpt(2)) return  // this advisory is emitted from the arena-rewind verdict
   const ws = warningsFor('import { log } from "env"\nexport let f = (n) => { const o = { x: n }; log(o); return 1 }', { imports: { env: { log() {} } } }).filter(w => w.code === 'heap-per-call')
   is(ws.length, 1)
   ok(/export 'f' keeps what it allocates/.test(ws[0].message) && /calls log, the host's/.test(ws[0].message), ws[0].message)
@@ -287,6 +293,35 @@ test('warnings: shape-lost names the first cause an object shape is lost by', ()
   const ws = warningsFor('export let f = (x) => { const o = { a: 1 }; const p = x || o; return p.a }').filter(e => e.code === 'shape-lost')
   is(ws.length, 1)
   ok(/\{a\}/.test(ws[0].message) && /joined with an unknown value/.test(ws[0].why) && ws[0].fn === 'f', `${ws[0].message} in ${ws[0].fn}`)
+})
+
+test('warnings: shape-loss reports layouts for distinct construction sites', () => {
+  const source = 'export const f = flag => { const a={x:1}, b={x:2}; return flag?a:b }'
+  const quiet = compile(source), warnings = {entries: []}
+  is(compile(source,{warnings}),quiet,'diagnostics preserve emitted bytes')
+  const lost = warnings.entries.filter(w => w.code === 'shape-lost')
+  is(lost.length,1,'the two construction sites share one reported layout')
+  is(lost[0].sid,0)
+  ok(/\{x\}/.test(lost[0].message),'the report uses the registered field names')
+})
+
+test('warnings: shape-lost names the layout of each construction site', () => {
+  // two literals of one layout are two sites; the second has no schema id of its own
+  const ws = warningsFor('export let f = (x, k) => { const o = k ? { a: 1 } : { a: 2 }; const p = x || o; return p.a }').filter(e => e.code === 'shape-lost')
+  ok(ws.length && ws.every(w => /\{a\}/.test(w.message)), ws.map(w => w.message).join('; '))
+})
+
+// A summary the compile supersedes may lose a shape the program keeps: here
+// the first, taken before the spread of a spread has a layout, reads `opts.hop`
+// as a value of any kind and loses `ctx` to the hook its test would call. The
+// advisory reports the summary emission reads (compile/index.js), where the
+// layout is named and the test decided.
+test('warnings: shape-lost reports what the emitted program loses, not an earlier summary', () => {
+  const src = `let settings = (o) => ({ ...o, size: 2048 })
+let run = (opts) => { const hop = opts.hop, fn = typeof hop === 'function' ? hop : null; const ctx = { a: 1, b: 2 }; let s = 0; for (let i = 0; i < 4; i++) { if (fn) ctx.a = fn(i, ctx); s += ctx.a * ctx.b + (fn ? 0 : hop) } return s }
+export let f = () => run({ ...settings({ hop: 512 }), complex: true })`
+  is(warningsFor(src).filter(e => e.code === 'shape-lost').map(e => e.message), [])
+  is(jz(src).exports.f(), 2056)
 })
 
 test('warnings: shape-loss diagnostics leave emitted code unchanged across compilations', () => {

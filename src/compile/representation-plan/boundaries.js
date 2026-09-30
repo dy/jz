@@ -143,7 +143,7 @@ const makeBoundaryData = (ctx, func, paramReps, options = {}) => {
     const current = mayBigint ? (generic ? BOXED_BIGINT : currentParamRep(rep, legacySemantic, uncovered, rawRow != null && rawRow.has(k))) : NO_BIGINT
     return {
       semantic,
-      observed,
+      observed: provenBigintOnly ? semKind(VAL.BIGINT, semanticNullish(observed)) : observed,
       current,
       target: targetRepFor(semantic, current),
       demand: demandFor(semantic),

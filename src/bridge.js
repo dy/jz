@@ -9,7 +9,7 @@
  */
 
 import { ctx, emitter, registerName } from './ctx.js'
-import { callWithArgs, typed, undefExpr, asF64, asI32, asI32Sat, asI64, applyBigintRepresentationAction, bigintEraseErr, bigintStrict, carrierF64, carrierF64Narrow, temp, tempI32, toNumF64, isUndef } from './ir.js'
+import { callWithArgs, typed, block64, undefExpr, asF64, asI32, asI32Sat, asI64, applyBigintRepresentationAction, bigintEraseErr, bigintStrict, carrierF64, carrierF64Narrow, temp, tempI32, toNumF64, isUndef } from './ir.js'
 import { isUndefinedLiteral } from './ast.js'
 import { REP_EDGE_BOX, REP_EDGE_REJECT, representationStorageWriteAction } from './compile/representation-plan.js'
 import { hasAmbiguousBoolMerge, valTypeOf } from './kind.js'
@@ -18,6 +18,7 @@ import { VAL } from './reps.js'
 export { emitter } from './ctx.js'
 
 export const emit = (...a) => ctx.bridge.emit(...a)
+export const emitReference = (...a) => ctx.bridge.emitReference(...a)
 // Identity-safe re-emission of an ambiguous BOOL-merge node (kind.js
 // hasAmbiguousBoolMerge, .work/archive/todo.md §deletion-sweep) — the
 // escape-site twin of `emit` for consumers (container/closure-arg boxing)
@@ -116,6 +117,15 @@ export function positionArgs(nodes) {
   } }
 }
 
+/** Zero-argument methods still evaluate supplied arguments after their receiver. */
+export function withIgnoredArgs(obj, ignored, build) {
+  if (!ignored.length) return build(obj)
+  const recv = temp('methodValue')
+  return block64(['local.set', `$${recv}`, asF64(storedValue(obj))],
+    ...ignored.map(arg => ['drop', asF64(emit(arg))]),
+    build(typed(['local.get', `$${recv}`], 'f64')))
+}
+
 export const bool = (...a) => ctx.bridge.bool(...a)
 /** Index expr → i32 IR. */
 export const idx = (...a) => ctx.bridge.idx(...a)
@@ -186,14 +196,6 @@ export const reg = (name, depNames, fn) => {
 export const tag = (handler, deps) => {
   handler.deps = deps
   return handler
-}
-
-/** `fast(firstArg)` → `core`, else `wrap`. Keeps wrap `.deps`. */
-export const dual = (wrap, core, fast) => {
-  const h = (a, ...rest) => (fast(a) ? core(a, ...rest) : wrap(a, ...rest))
-  h.deps = wrap.deps
-  h.argc = wrap.argc ?? wrap.length
-  return h
 }
 
 const cast = { I: asI64, F: asF64, i: asI32 }

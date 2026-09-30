@@ -6,11 +6,12 @@
  * @module ir/arrays
  */
 
-import { ctx, inc } from '../ctx.js'
+import { ctx, inc, PTR } from '../ctx.js'
 import { typed } from './tag.js'
 import { temp, tempI32, freshId } from './locals.js'
 import { mkPtrIR } from './pointers.js'
 import { asF64 } from './numeric.js'
+import { dataAlign, dataPush, dataLen, pushStaticSlots } from '../static-data.js'
 
 /** Slot address: element `idx` off `baseLocal`. Constant idx folds the `*8`. */
 export function slotAddr(baseLocal, idx) {
@@ -91,4 +92,29 @@ export function allocPtr({ type, aux = 0, len, cap, stride = 8, tag = 'ap' }) {
   const init = ['local.set', `$${local}`, ['call', '$' + helper, ...args]]
   const ptr = mkPtrIR(type, aux, ['local.get', `$${local}`])
   return { local, init, ptr }
+}
+
+/** Pack literal i64 slots as a static ARRAY into the data segment, returning a
+ *  folded ARRAY pointer to the first slot. The 16-byte header MUST match
+ *  __alloc_hdr (core.js): a zeroed dyn-props word at off-16, then len/cap at
+ *  off-8/-4. Heap arrays get that props word zeroed for free; a static array with
+ *  only an 8-byte header left off-16 pointing at adjacent data-segment bytes, so
+ *  for-in / named-prop lookup (which read off-16 as the props-sidecar pointer)
+ *  walked garbage → OOB (test262 built-ins/Object/keys sparse-array). */
+export function staticArrayPtr(slots) {
+  dataAlign(8)
+  const headerOff = dataLen()
+  const len = slots.length
+  const hdr = new Uint8Array(16); const dv = new DataView(hdr.buffer)
+  dv.setInt32(8, len, true); dv.setInt32(12, len, true)  // off-8: len, off-4: cap (props word at 0..7 stays 0)
+  dataPush(hdr)
+  pushStaticSlots(slots)
+  const ptr = mkPtrIR(PTR.ARRAY, 0, headerOff + 16)
+  // Compile-time identity for the static base/len read fold (see the saArr tag in
+  // the '[]' handler + optimize's foldStaticConstArrayReads): a const global bound
+  // to this literal reads elements with literal base/len instead of the
+  // __ptr_offset call + header load.
+  ptr.staticOff = headerOff + 16
+  ptr.staticLen = len
+  return ptr
 }

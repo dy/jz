@@ -3,7 +3,7 @@
 /** jz CLI — compile a JavaScript file to WebAssembly. */
 
 import { writeFileSync, mkdirSync } from 'fs'
-import { resolve, dirname } from 'path'
+import { resolve, dirname, basename } from 'path'
 import { pathToFileURL } from 'url'
 import { createRequire } from 'module'
 import { compile } from './index.js'
@@ -35,6 +35,7 @@ Options:
   --no-simd                 No auto-vectorization, for engines without SIMD
   --no-tail-call            No return_call, for engines without tail calls
   --names                   Emit the wasm name section for profilers
+  --source-map              Emit a debug build and adjacent .wasm.map
   --why                     Report loops and arenas the optimizer declined
   --wat                     Emit WAT text instead of binary
   -v, --version             Show version
@@ -81,7 +82,7 @@ function main() {
   if (args.includes('--version') || args.includes('-v')) return console.log(PKG.version)
   if (args.length === 0 || args.includes('--help') || args.includes('-h')) return console.log(HELP)
 
-  let inputFile = null, outputFile = null, wat = false, why = false
+  let inputFile = null, outputFile = null, wat = false, why = false, sourceMap = false
   let optimize, host, memory, define, names = false, noSimd = false, noTailCall = false
   for (let i = 0; i < args.length; i++) {
     const a = args[i]
@@ -89,6 +90,7 @@ function main() {
     else if (a === '--wat') wat = true
     else if (a === '--why') why = true
     else if (a === '--names') names = true
+    else if (a === '--source-map') sourceMap = true
     else if (a === '--no-simd') noSimd = true
     else if (a === '--no-tail-call') noTailCall = true
     else if (a === '--host') host = args[++i]
@@ -113,6 +115,7 @@ function main() {
   const warnings = { entries: [] }
   const result = compile(code, {
     wat, warnings, why, names,
+    ...(sourceMap && { sourceMap: { source: pathToFileURL(resolve(inputFile)).href, ...(outputFile !== '-' && !wat && { url: basename(outputFile) + '.map' }) } }),
     importMetaUrl: pathToFileURL(resolve(inputFile)).href,
     ...(optimize !== undefined && { optimize }),
     ...(host && { host }),
@@ -127,6 +130,7 @@ function main() {
   if (outputFile === '-') process.stdout.write(result)
   else {
     writeOut(outputFile, result)
+    if (result.sourceMap) writeOut(outputFile + '.map', JSON.stringify(result.sourceMap))
     console.log(`${inputFile} → ${outputFile} (${wat ? result.length + ' chars' : result.byteLength + ' bytes'})`)
   }
 }

@@ -15,7 +15,6 @@ import { intLiteralValue } from '../../static.js'
 import { extractRefinements, withRefinements } from '../flow-types.js'
 import { REP_EDGE_BOX, REP_EDGE_REJECT, representationJoinArmAction } from '../representation-plan.js'
 import { tagFnArrayDispatch } from './call.js'
-import { numericVal } from './comparisons.js'
 import { emit, markDropped, toBool } from './dispatch.js'
 import { REF_EQ_KINDS, boolEagerBody, eagerSelectOK, i32JoinRep, isCanonicalBoolExpr, isNumArm, selectOK } from './shared.js'
 
@@ -211,32 +210,13 @@ function combineFusedOr(gateNode, fusedIR) {
 export const logicalOps = {
   // === Logical ===
 
-  '!': a => {
-    // A logical operand is a boolean question: test it in place, no box.
-    if (Array.isArray(a) && (a[0] === '&&' || a[0] === '||' || a[0] === '!')) return typed(['i32.eqz', toBool(a)], 'i32')
-    const v = emit(a)
-    if (v.type === 'i32') return typed(['i32.eqz', v], 'i32')
-    // Unboxed pointer offsets: falsy iff zero offset.
-    if (v.ptrKind != null) return typed(['i32.eqz', v], 'i32')
-    // Known pointer-kinded operand: `!x` is just `x is nullish` (null/undefined).
-    // Excludes STRING — empty string '' is a valid (non-null) pointer but is falsy.
-    // VAL.BOOL rides the 0/1 numeric carrier (not a pointer), so normalize it to
-    // NUMBER and let it fall to the truthy path — `!false` must be `true`.
-    const vt = numericVal(resolveValType(a, valTypeOf, lookupValType))
-    if (vt && vt !== VAL.NUMBER && vt !== VAL.BIGINT && vt !== VAL.STRING) {
-      return isNullish(asF64(v))
-    }
-    // Route through truthyIR (not a bare __is_truthy) so a NUMBER operand uses the
-    // NaN-safe f64 test — `!(0/0)` must be `true` on every platform (x86's sign-set
-    // NaN would read as a truthy box through the bit-based __is_truthy).
-    return typed(['i32.eqz', truthyIR(v)], 'i32')
-  },
+  '!': a => typed(['i32.eqz', toBool(a)], 'i32'),
 
   '?:': (a, b, c, self) => {
     // Constant condition → emit only the live branch, but preserve the
     // materialized join's selected edge normalization. A logical or negated
     // condition is a boolean question: toBool tests its operands in place.
-    const ca = emit(a)
+    const ca = toBool(a)
     if (isLit(ca)) {
       const v = litVal(ca), truthy = v !== 0 && v === v, arm = truthy ? b : c
       markDropped(truthy ? c : b)
@@ -245,7 +225,7 @@ export const logicalOps = {
       if (action === REP_EDGE_REJECT) return emit(arm)
       return taggedArm(arm, applyBigintRepresentationAction(emit(arm), arm, action))
     }
-    const cond = truthyIR(ca)
+    const cond = ca
     // Flow-sensitive refinement: each arm sees narrowing consistent with `a` being truthy / falsy.
     const thenRefs = extractRefinements(a, new Map(), true)
     const elseRefs = extractRefinements(a, new Map(), false)
@@ -423,6 +403,7 @@ export const logicalOps = {
         const vb = withRefinements(refs, b, () => emit(b))
         return resolveValType(b, valTypeOf, lookupValType) === VAL.BOOL && resolveValType(a, valTypeOf, lookupValType) === VAL.NUMBER ? numericBoolArm(vb) : vb
       }
+      markDropped(b)
       return va
     }
     // a is truthy in the right-arm — narrow b accordingly. Matches `?:`'s then-arm threading
@@ -545,7 +526,7 @@ export const logicalOps = {
     // Constant-folded literal: pre-bind under falsy refinements (b runs only when a was falsy).
     if (isLit(va)) {
       const v = litVal(va)
-      if (v !== 0 && v === v) return va
+      if (v !== 0 && v === v) { markDropped(b); return va }
       const refs = extractRefinements(a, new Map(), false)
       const vb = withRefinements(refs, b, () => emit(b))
       return resolveValType(b, valTypeOf, lookupValType) === VAL.BOOL && resolveValType(a, valTypeOf, lookupValType) === VAL.NUMBER ? numericBoolArm(vb) : vb

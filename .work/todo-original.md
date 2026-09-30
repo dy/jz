@@ -12,19 +12,25 @@ for the full dissection of anything that needs it.
 * [ ] Beat all bench cases, all examples — the standing mandate (residual V2-class
   tails: shapes record layout, qoi branch-sched, sdf symbolic hull, ulam/raymarcher
   parity noise; tracked in `.work/archive/todo.md`).
-* [ ] sourcemaps
-* [ ] floatbeat
+* [x] sourcemaps — debugger validation recorded in `.work/v1.md`.
+* [x] floatbeat — browser/audio lifecycle validation recorded in `.work/v1.md`.
 * [x] color-space
 * [ ] audiojs
-* [ ] unplugin
-* [ ] hsluv wasm — https://www.hsluv.org/implementations/
+* [x] unplugin — five bundlers and packed consumers validated; see `.work/v1.md`.
+* [x] hsluv wasm — https://www.hsluv.org/implementations/; portable color-space package validated in `.work/v1.md`.
 * [ ] jz-strict minimal exported subset (less than 100-200kb if possible)
+
+## Targets
+
+* [ ] audiojs vs ffmpeg
+* [ ] three.js
+* [ ] math https://x.com/isaac_mason_/status/2103495293392367639?s=20
+* [ ] stdlib
 
 ## Post v1
 
 * [ ] Streaming encoder
 * [ ] Native lowering
-* [ ]
 
 ## Floatbeat (name TBD)
 

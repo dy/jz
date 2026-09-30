@@ -2,6 +2,7 @@
 // generic shape: an otherwise-unbounded machine-i32 coordinate is bounded by
 // conjuncts, the boolean is stored in a const, and a later branch reuses it.
 import test from 'tst'
+import parseWat from 'watr/parse'
 import { is, ok } from 'tst/assert.js'
 import jz, { compile } from '../index.js'
 import { onKernel, levels } from './_matrix.js'
@@ -181,14 +182,17 @@ const assertCompileHistoryIndependent = (src, predecessors, opts, label) => {
     ok(sameOutput(cold, warm), `${label}: matches cold output after a sibling compile`)
   }
 }
-const hasTypedBoundsTemp = wat => /\$[^\s)]*tb[in]\d*/.test(wat)
-// A checked typed access is marked by the `tbiN` index or `tbnN` in-bounds temp jz emits for it, or,
-// when propagation merges that temp into the index local, by the guard itself:
-// an unsigned compare against the constant length around the store.
-const CHECKED_STORE = /\(i32\.lt_u[\s\S]{0,400}?\(i32\.const \d+\)\s*\)\s*\(then\s*\((?:f32|f64|i32|i64)\.store/
-// A checked read that decides a branch loads under its guard alone (ir/numeric.js mapCheckedRead):
-// the unsigned compare against the constant length, then the load in its hit arm.
-const CHECKED_READ = /\(if\s*\(result (?:f32|f64|i32|i64)\)\s*\(i32\.lt_u[\s\S]{0,200}?\(i32\.const \d+\)\s*\)\s*\(then[\s\S]{0,200}?\((?:f32|f64|i32|i64)\.load/
+const hasTypedBoundsTemp = wat => /\$[^\s)]*(?:tb[in]|ixv)\d*/.test(wat)
+// Match the guard's tree, not a character window: exact f64 index validation
+// can sit between the unsigned bounds test and its load or store.
+const someWat = (n, test) => Array.isArray(n) && (test(n) || n.some(c => someWat(c, test)))
+const hasCheckedTypedAccess = wat => hasTypedBoundsTemp(wat) || parseWat(wat).some(f =>
+  Array.isArray(f) && f[0] === 'func' && /^\$(?!__)/.test(f[1]) && someWat(f, n => {
+    if (n[0] !== 'if') return false
+    const at = n[1]?.[0] === 'result' ? 2 : 1
+    return n[at]?.[0] === 'i32.lt_u' && n[at + 1]?.[0] === 'then' &&
+      someWat(n[at + 1], x => /^(?:f32|f64|i32|i64)\.(?:load|store)/.test(x[0]))
+  }))
 
 test('interval proof: control-flow joins retain unknown and out-of-bounds paths', () => {
   for (const branch of [
@@ -208,8 +212,6 @@ test('interval proof: control-flow joins retain unknown and out-of-bounds paths'
     }
   }
 })
-const userFuncs = wat => wat.split(/(?=\(func )/).filter(f => /^\(func \$(?!__)/.test(f)).join('\n')
-const hasCheckedTypedAccess = wat => hasTypedBoundsTemp(wat) || CHECKED_STORE.test(userFuncs(wat)) || CHECKED_READ.test(userFuncs(wat))
 
 const tableWalk = (table, edit = '', length = 4) => `
 function fill(a, n) {
@@ -382,6 +384,8 @@ test('interval proof: effects, stale facts, NaN, signed values, and aliasing sta
       ['call-mutated global', CALL_MUTATION, []],
       ['f64 NaN', F64_COORDS, [NaN, 1]],
       ['f64 signed', F64_COORDS, [-1, 1]],
+      ['f64 fractional', F64_COORDS, [1.5, 1]],
+      ['f64 fractional integral sum', F64_COORDS, [1, 0.25]],
       ['overflowing index', OVERFLOW_INDEX, [1, 3]],
       ['wrapping affine guard', AFFINE_WRAP_GUARD, [-2147483648, 1]],
     ]) {

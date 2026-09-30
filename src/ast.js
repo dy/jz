@@ -6,18 +6,49 @@
  * @module ast
  */
 
-/** Rebuild only the spine above changed children; unchanged nodes keep their identity. */
+/** An optional access in this reference chain, stopping at parentheses. */
+export function hasOptionalChain(node) {
+  while (Array.isArray(node) && ['.', '[]', '()', '?.', '?.[]', '?.()'].includes(node[0])) {
+    if (node[0] === '()' && node.length === 2) return false
+    if (node[0] === '?.' || node[0] === '?.[]' || node[0] === '?.()') return true
+    node = node[1]
+  }
+  return false
+}
+
+/** Rebuild only the spine above changed children; unchanged nodes keep their
+ *  identity, a rebuilt one its source position. */
 export const rewriteChildren = (node, visit, state) => {
   let out = null
   for (let i = 1; i < node.length; i++) {
     const child = visit(node[i], state)
-    if (child !== node[i] && !out) out = node.slice(0, i)
+    if (child !== node[i] && !out) { out = node.slice(0, i); if (node.loc != null) out.loc = node.loc }
     if (out) out.push(child)
   }
-  return out || node
+  return copyLoc(node, out || node)
 }
 
-/** Template placeholder in prepared AST (prepare.js). */
+/** A replacement keeps its source origin; a surviving child keeps its own. */
+export const copyLoc = (from, to) => {
+  if (Array.isArray(to)) {
+    if (to.loc == null && from?.loc != null) to.loc = from.loc
+    if (to.sourceLoc == null && from?.sourceLoc != null) to.sourceLoc = from.sourceLoc
+  }
+  return to
+}
+
+/** Mark only parsed user/module sources, never separately parsed runtime templates. */
+export const markSource = node => {
+  if (!Array.isArray(node)) return
+  if (node.loc != null) node.sourceLoc = node.loc
+  for (let i = 1; i < node.length; i++) markSource(node[i])
+}
+
+/** A node written in place of `from` stands at its source position; returns `node`. */
+export const withLoc = (node, from) => copyLoc(from, node)
+
+/** The prefix of every name the compiler mints. A private-use character is
+ *  no identifier character (src/parse.js), so no source name can take it. */
 export const T = '\uE000'
 
 /** What the parser noted on a node beside its children (its position) goes to
@@ -26,9 +57,8 @@ export const noted = (from, to) => { for (const k of Object.keys(from)) if (!(k 
 export const copyNode = (n) => noted(n, n.slice())
 
 // jzify's class namespace (jzify/names.js): the names a class lowers to
-// (`P\uE003len`, the receiver `\uE003self0`) may appear in lowered source
-// (the source-level lowering), so they take a private-use character the parser accepts
-// rather than the reserved prefix T.
+// (`P\uE003len`, the receiver `\uE003self0`) take a private-use character of
+// their own, apart from T's names and, like them, from any source name.
 export const CLASS_T = '\uE003'
 // A class instance's literal carries its class as a property named with the
 // class namespace (`{ x, y, [BRAND + id]: undefined }`): every pass sees one
@@ -37,6 +67,14 @@ export const CLASS_T = '\uE003'
 // lives in the schema id, as an Error's does (module/schema.js).
 export const BRAND = CLASS_T + 'class'
 export const isBrand = (name) => typeof name === 'string' && name.startsWith(BRAND)
+
+// A declaration a lowering moved ahead of the statement that initializes it
+// (a generator's locals, hoisted out of its steps: jzify/generators.js) leads
+// with a binding of this name: the bindings after it hold no value until that
+// statement runs, as a `let` in its temporal dead zone, so the declaration
+// defines none (the program summary's `decl`).
+export const TDZ = '\uE005'
+export const isTdzDecl = (n) => Array.isArray(n) && n[0] === 'let' && typeof n[1] === 'string' && n[1].startsWith(TDZ)
 
 /** Prepared undefined literal, including the empty literal form. */
 export const isUndefinedLiteral = node =>
@@ -48,6 +86,14 @@ export const isUndefinedLiteral = node =>
  *  emit's emitTypeofCmp and flow-types' refinements dispatch on the codes).
  *  Null-proto: prepare indexes it with arbitrary user strings — a plain literal
  *  would leak `constructor`/`toString` through the lookup. */
+/** An int32 loop copy's guard `typeof x === 'number'` (plan/integral-loops.js),
+ *  in the string form prepare folds every source typeof test out of (to its
+ *  TYPEOF code), so a clone of the loop keeps it recognizable: the compiler
+ *  asks, the program does not, and a numeric reading of x is no less numeric
+ *  for it (summary demand, counting names). */
+export const numberGuard = (name) => ['===', ['typeof', name], ['str', 'number']]
+export const isNumberGuard = (n) => Array.isArray(n) && n[0] === '===' && Array.isArray(n[1]) && n[1][0] === 'typeof' &&
+  typeof n[1][1] === 'string' && Array.isArray(n[2]) && n[2][0] === 'str' && n[2][1] === 'number'
 export const TYPEOF = Object.freeze(Object.assign(Object.create(null), {
   number: -1, string: -2, undefined: -3, boolean: -4, object: -5, 'function': -6, bigint: -7,
 }))
@@ -109,6 +155,24 @@ export const isBlockBody = (body) =>
 // === AST node classifiers ===
 
 export const isLiteralStr = idx => Array.isArray(idx) && idx[0] === 'str' && typeof idx[1] === 'string'
+
+/** The keys an object literal's spread item skips. An object rest is the
+ *  spread of its source without the keys its pattern named (the excluded
+ *  names ES RestBindingInitialization hands CopyDataProperties):
+ *  `{a, [k]: b, ...r} = o` binds `r` to `['{}', ['...', o, ['str', 'a'], kTemp]]`,
+ *  `kTemp` holding the key `k` evaluated to, as a string. Static keys come
+ *  back in `names`, runtime ones as the expressions in `exprs`; null for a
+ *  plain spread. */
+export const spreadExclusions = (p) => {
+  if (p.length < 3) return null
+  const names = [], exprs = []
+  for (let i = 2; i < p.length; i++) {
+    const k = p[i]
+    if (Array.isArray(k) && (k[0] === 'str' || k[0] == null) && typeof k[1] === 'string') names.push(k[1])
+    else exprs.push(k)
+  }
+  return { names, exprs }
+}
 
 /** A canonical array-index property key: `"0"`, `"1"`, … below 2^32 - 1 (ES 6.1.7). */
 const ARRAY_INDEX_KEY = /^(?:0|[1-9]\d*)$/

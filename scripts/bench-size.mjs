@@ -11,16 +11,14 @@
 // Each case is compiled the same way on every side: the whole program as a
 // standalone wasm module (host services as small env imports, allocator off).
 import { execFileSync, spawnSync } from 'node:child_process'
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync, statSync } from 'node:fs'
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { compile } from '../index.js'
-import { LOWERED_CASES } from '../bench/_lib/graph.js'
+import { compileJzAt, compileJzSelf } from '../bench/_lib/compile.js'
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)))
 const BENCH = join(ROOT, 'bench')
-const LIB = join(BENCH, '_lib')
 const TMP = mkdtempSync(join(tmpdir(), 'jz-size-'))
 process.on('exit', () => { try { rmSync(TMP, { recursive: true, force: true }) } catch {} })
 
@@ -32,40 +30,11 @@ const args = process.argv.slice(2)
 const asJson = args.includes('--json')
 const requested = args.filter(a => !a.startsWith('-'))
 
-const benchlibHostSource = () => {
-  const src = readFileSync(join(LIB, 'benchlib.js'), 'utf8')
-  const out = src.replace(`export let printResult = (medianUs, checksum, samples, stages, runs) => {
-  console.log(\`median_us=\${medianUs} checksum=\${checksum} samples=\${samples} stages=\${stages} runs=\${runs}\`)
-}`, `export let printResult = (medianUs, checksum, samples, stages, runs) => {
-  env.logResult(medianUs, checksum, samples, stages, runs)
-}`)
-  if (out === src) throw Error('failed to patch benchlib printResult')
-  return out
-}
-
-const watrModuleSources = () => ({
-  './watr-compile.js': `import compileWatr from '../../node_modules/watr/src/compile.js'\nexport const compile = (src) => compileWatr(src)\n`,
-  '../../node_modules/watr/src/compile.js': readFileSync(join(ROOT, 'node_modules/watr/src/compile.js'), 'utf8'),
-  './encode.js': readFileSync(join(ROOT, 'node_modules/watr/src/encode.js'), 'utf8'),
-  './const.js': readFileSync(join(ROOT, 'node_modules/watr/src/const.js'), 'utf8'),
-  './parse.js': readFileSync(join(ROOT, 'node_modules/watr/src/parse.js'), 'utf8'),
-  './util.js': readFileSync(join(ROOT, 'node_modules/watr/src/util.js'), 'utf8'),
-})
-
-// jz: compile the bench source as a standalone, size-tuned wasm module.
 const jzCompileSize = id => {
-  const isWatr = id === 'watr'
-  const code = readFileSync(join(BENCH, id, `${id}.js`), 'utf8')
-  return compile(code, {
-    jzify: isWatr || LOWERED_CASES.has(id),
-    modules: { '../_lib/benchlib.js': benchlibHostSource(), ...(isWatr ? watrModuleSources() : {}) },
-    imports: {
-      env: { logResult: { params: 5 } },
-      performance: { now: { params: 0, returns: 'number' } },
-    },
-    optimize: 'size',
-    alloc: false,
-  })
+  if (id !== 'jz') return compileJzAt({ id, js: join(BENCH, id, `${id}.js`) }, { level: 'size' })
+  const out = join(TMP, 'jz.wasm')
+  compileJzSelf(null, out)
+  return readFileSync(out)
 }
 
 // AS: smallest the toolchain can do — -Oz, iterate binaryen to fixpoint.
@@ -76,7 +45,11 @@ const asCompileSize = id => {
   try {
     execFileSync('asc', [src, '-Oz', '--converge', '--runtime', 'stub', '--noAssert', '-o', out], { stdio: 'pipe' })
     return statSync(out).size
-  } catch { return null }
+  } catch (e) {
+    console.error(`${id}: AssemblyScript compilation failed: ${e.message}`)
+    process.exitCode = 1
+    return null
+  }
 }
 
 
@@ -103,17 +76,18 @@ for (const id of cases) if (!allCases.includes(id)) { console.error(`unknown cas
 const fmtB = b => b == null ? '—' : b < 1024 ? `${b} B` : b < 1048576 ? `${(b / 1024).toFixed(1)} kB` : `${(b / 1048576).toFixed(2)} MB`
 const pct = (a, b) => a == null || b == null ? '—' : `${((1 - a / b) * 100).toFixed(1)}%`
 
+const printRow = r => console.log(`SIZE ${r.id} jz=${r.jz ?? ''} jz_wasmopt=${r.jzOpt ?? ''} as=${r.as ?? ''}`)
 const rows = []
 for (const id of cases) {
   let jz = null, jzOpt = null
-  try { const w = jzCompileSize(id); jz = w.byteLength ?? Buffer.byteLength(w); jzOpt = wasmOptSize(w) } catch (e) { jz = null }
+  try { const w = jzCompileSize(id); jz = w.byteLength ?? Buffer.byteLength(w); jzOpt = wasmOptSize(w) } catch (e) { console.error(`${id}: jz compilation failed: ${e.message}`); process.exitCode = 1 }
   const as = asCompileSize(id)
-  rows.push({ id, jz, jzOpt, as })
+  const row = { id, jz, jzOpt, as }
+  rows.push(row)
+  if (asJson) printRow(row)
 }
 
-if (asJson) {
-  for (const r of rows) console.log(`SIZE ${r.id} jz=${r.jz ?? ''} jz_wasmopt=${r.jzOpt ?? ''} as=${r.as ?? ''}`)
-} else {
+if (!asJson) {
   console.log(`wasm size (smaller is better) — jz uses optimize:'size'`)
   if (!HAS_ASC) console.log('  note: asc not found — AssemblyScript column blank')
   if (!HAS_WASMOPT) console.log('  note: wasm-opt not found — headroom column blank')

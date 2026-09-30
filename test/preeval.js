@@ -138,6 +138,23 @@ test('value: Math.* constant folds match the actual compiled+executed kernel', (
   }
 })
 
+test('value: atan2 folding preserves signed zeros and infinite quadrants', () => {
+  const words=['NaN','-Infinity','-1','-0','0','1','Infinity']
+  const pairs=[]
+  for(const y of words)for(const x of words)
+    if(!Number.isFinite(Number(y)) || !Number.isFinite(Number(x)) || Number(y)===0 || Number(x)===0)pairs.push([y,x])
+  const src=`export let literal=()=>[${pairs.map(([y,x])=>`Math.atan2(${y},${x})`).join(',')}];
+    export let runtime=(y,x)=>Math.atan2(y,x)`
+  for(const optimize of levels(0,1,2,3,'size')){
+    const ex=jz(src,{optimize}).exports, folded=ex.literal()
+    for(let i=0;i<pairs.length;i++){
+      const [y,x]=pairs[i].map(Number), want=Math.atan2(y,x)
+      ok(Object.is(folded[i],want),`O${optimize}: folded atan2(${pairs[i]})`)
+      ok(Object.is(folded[i],ex.runtime(y,x)),'folded and runtime values agree, including zero sign')
+    }
+  }
+})
+
 test('value: Math.pow / ** constant fold — exact 3-way split emit.js already uses for literal args', () => {
   // Integer |n|<=16 exponent: square-and-multiply (module/math.js foldPow) — same
   // algorithm the WAT emitter already runs for a literal base + literal small int

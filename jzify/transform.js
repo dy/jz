@@ -3,7 +3,8 @@
  * @module jzify/transform
  */
 
-import { rewriteChildren, JZ_BLOCK_OPS, LABEL_BODY_OPS, ACCESSOR_GET, ACCESSOR_SET, objectLiteralEntries } from '../src/ast.js'
+import { rewriteChildren, withLoc, JZ_BLOCK_OPS, LABEL_BODY_OPS, ACCESSOR_GET, ACCESSOR_SET, objectLiteralEntries } from '../src/ast.js'
+import { ctx, err } from '../src/ctx.js'
 import { isDestructurePat } from './hoist-vars.js'
 import { foldPrototypeStores } from './classes.js'
 import { ERR_CLASS_NAMES } from '../err-codes.js'
@@ -14,41 +15,38 @@ const TYPED_ARRAYS = new Set(['Float64Array','Float32Array','Float16Array','Int3
   'Int16Array','Uint16Array','Int8Array','Uint8Array','Uint8ClampedArray',
   'ArrayBuffer','BigInt64Array','BigUint64Array','DataView'])
 
-// RHS names the SOUND core machinery (prepare's 'instanceof' handler + emit.js's
-// emitInstanceof, error-object-design.md (git history) §4) already supports — mirrors prepare/
-// index.js:83's INSTANCEOF_ALLOW verbatim (same two upstream arrays, same four
-// tag names) so default and strict mode can never drift on which RHS is sound.
-// If CORE_INSTANCEOF_ALLOW drifts from prepare's INSTANCEOF_ALLOW, this file's
-// own 'instanceof' handler goes back to answering every one of these itself via
-// a broad shape guess (staticInstanceofFold + a permissive `typeof===object`
-// fallback) BEFORE prepare's sound handler ever sees the node — default mode
-// then never reaches the tag/schema/range machinery strict mode uses, so
-// `new TypeError(x) instanceof RangeError` wrongly answers `true` there.
+// Runtime tags distinguish these constructors, including sibling Error classes.
+// Keep them in prepare/emit instead of folding them by broad object shape.
 const CORE_INSTANCEOF_ALLOW = new Set(['Array', 'Map', 'Set', 'ArrayBuffer', 'DataView', ...TYPED_ELEM_NAMES, 'Float16Array', 'Uint8ClampedArray', ...ERR_CLASS_NAMES])
 
 const isProto = n => Array.isArray(n) && n[0] === '.' && Array.isArray(n[1]) && n[1][0] === '.' && n[1][2] === 'prototype'
 const groupedName = node => typeof node === 'string' ? node
   : Array.isArray(node) && node[0] === '()' && node.length === 2 ? groupedName(node[1]) : null
 
-function staticInstanceofFold(val, ctor) {
+// `spelled`: `ctor` names the constructor itself (a builtin, class, function
+// or import), so its spelling tells it apart from another. Otherwise it is a
+// variable holding one, and only what holds for any constructor folds.
+function staticInstanceofFold(val, ctor, spelled) {
   if (typeof ctor !== 'string' || !Array.isArray(val)) return null
-  if (val[0] === '()' && val.length === 2) return staticInstanceofFold(val[1], ctor)
-  // ctor === 'Array' never reaches here — CORE_INSTANCEOF_ALLOW routes it to the
-  // core (which folds `[] instanceof Array` itself, via valTypeOf) before the
-  // 'instanceof' handler below ever calls this function.
-  if (val[0] === '[]' && val.length <= 2) return ctor === 'Object'
-  if (val[0] === '{}') return ctor === 'Object'
-  if (val[0] === '//') return ctor === 'RegExp' || ctor === 'Object'
+  if (val[0] === '()' && val.length === 2) return staticInstanceofFold(val[1], ctor, spelled)
   if (val[0] === 'new') {
     const inner = val[1]
     const cname = Array.isArray(inner) && inner[0] === '()' && inner.length > 2
       ? groupedName(inner[1]) : groupedName(inner)
-    if (cname) return cname === ctor || (cname !== 'Object' && ctor === 'Object')
+    if (cname === ctor) return true
+    if (cname && spelled) return cname !== 'Object' && ctor === 'Object'
   }
   if (val[0] == null && val.length === 2) {
     const v = val[1]
     if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean' || v == null) return false
   }
+  if (!spelled) return null
+  // ctor === 'Array' never reaches here: CORE_INSTANCEOF_ALLOW routes it to the
+  // core (which folds `[] instanceof Array` itself, via valTypeOf) before the
+  // 'instanceof' handler below ever calls this function.
+  if (val[0] === '[]' && val.length <= 2) return ctor === 'Object'
+  if (val[0] === '{}') return ctor === 'Object'
+  if (val[0] === '//') return ctor === 'RegExp' || ctor === 'Object'
   return null
 }
 
@@ -65,16 +63,26 @@ function dedupeRedecls(stmts) {
       if (seen.has(n)) { if (Array.isArray(d) && d[0] === '=') reassign.push(['=', d[1], d[2]]) }
       else { seen.add(n); keep.push(d) }
     }
-    if (keep.length > 1) out.push(keep)
+    if (keep.length > 1) out.push(withLoc(keep, s))
     for (const r of reassign) out.push(r)
   }
   return out
 }
 
+// A name declared by several functions of one scope is bound to the last of
+// them before any code runs (§10.2.11 FunctionDeclarationInstantiation): the
+// earlier ones never become its value.
+function lastDeclared(decls) {
+  const nameOf = d => Array.isArray(d) && d[0] === 'const' && Array.isArray(d[1]) && d[1][0] === '=' && typeof d[1][1] === 'string' ? d[1][1] : null
+  const last = new Map()
+  decls.forEach((d, i) => { const n = nameOf(d); if (n != null) last.set(n, i) })
+  return last.size === decls.length ? decls : decls.filter((d, i) => { const n = nameOf(d); return n == null || last.get(n) === i })
+}
+
 function functionBodyBlock(body) {
   if (Array.isArray(body) && body[0] === '{}') return body
-  if (Array.isArray(body) && body[0] === ';') return ['{}', body]
-  return ['{}', [';', body]]
+  if (Array.isArray(body) && body[0] === ';') return withLoc(['{}', body], body)
+  return withLoc(['{}', [';', body]], body)
 }
 
 const arrowParams = params => Array.isArray(params) && params[0] === '()' ? params : ['()', params]
@@ -89,6 +97,7 @@ const arrowParams = params => Array.isArray(params) && params[0] === '()' ? para
  * @param {() => Function} opts.lowerClass
  * @param {() => Function} opts.lowerObjectLiteralThis
  * @param {(name:string) => boolean} opts.shadowsBuiltin
+ * @param {(name:string) => boolean} opts.isValue  its nearest declaration binds a value
  * @param {(node:Array) => any} opts.enterBuiltinScope  enter the node's builtin scope; returns the prior
  * @param {(prior:any) => void} opts.leaveBuiltinScope
  */
@@ -147,7 +156,9 @@ export function createTransform(opts) {
   // as one in the body does. Pattern targets stay as they are.
   const transformParams = (params) => inFunction(() =>
     Array.isArray(params) && params[0] === '()' ? ['()', transformPattern(params[1])] : transformPattern(params))
-  function wrapArrowBody(body) {
+  // A function body stands where its source did: the position a fault in the function falls back to (ctx.js here).
+  function wrapArrowBody(body) { return withLoc(arrowBodyBlock(body), body) }
+  function arrowBodyBlock(body) {
     const t = inFunction(() => transformScope(body))
     if (!Array.isArray(t)) return ['{}', [';', t]]
     if (t[0] === ';') return ['{}', t]
@@ -171,9 +182,11 @@ export function createTransform(opts) {
     ['let', name], ['=', name, value], ['return', name]
   ]]]], null]
 
-  function hoistFnDecl(name, params, body) {
+  // A declared function's binding (`const name = value`) stands where the declaration `fn` does.
+  const bindFn = (name, value, fn) => withLoc(['const', withLoc(['=', name, withLoc(value, fn)], fn)], fn)
+  function hoistFnDecl(name, params, body, fn) {
     const [p2, b2] = lowerArguments(params, functionBodyBlock(body))
-    const decl = ['const', ['=', name, ['=>', transformParams(p2), wrapArrowBody(b2)]]]
+    const decl = bindFn(name, ['=>', transformParams(p2), withLoc(wrapArrowBody(b2), fn)], fn)
     decl._hoisted = true
     return decl
   }
@@ -200,9 +213,11 @@ export function createTransform(opts) {
     return inner
   }
 
+  // A node is the current position while it lowers (ctx.js), and what it lowers to stands at its place.
   function transformScope(node) {
-    const prior = enterBuiltinScope(node)
-    try { return transformScopeInner(node) } finally { leaveBuiltinScope(prior) }
+    const prior = enterBuiltinScope(node), outer = ctx.error.loc
+    if (Array.isArray(node) && node.loc != null) ctx.error.loc = node.loc
+    try { return withLoc(transformScopeInner(node), node) } finally { leaveBuiltinScope(prior); ctx.error.loc = outer }
   }
 
   function transformScopeInner(node) {
@@ -211,13 +226,13 @@ export function createTransform(opts) {
     const op = node[0]
     const args = takeScopeArgs(node)
     try {
-    if (op === 'function' && args[0]) return hoistFnDecl(...args)
+    if (op === 'function' && args[0]) return hoistFnDecl(args[0], args[1], args[2], node)
     if (op === 'function*' && args[0] && _gen)
-      return ['const', ['=', args[0], _gen.lowerGenerator(args[1], args[2])]]
+      return bindFn(args[0], _gen.lowerGenerator(args[1], args[2]), node)
     if (op === 'async' && Array.isArray(args[0]) && args[0][0] === 'function' && args[0][1] && _gen?.lowerAsync)
-      return ['const', ['=', args[0][1], transform(_gen.lowerAsync(args[0][2], args[0][3]))]]
+      return bindFn(args[0][1], transform(_gen.lowerAsync(args[0][2], args[0][3])), node)
     if (op === 'async' && Array.isArray(args[0]) && args[0][0] === 'function*' && args[0][1] && _gen?.lowerAsyncGen)
-      return ['const', ['=', args[0][1], transform(_gen.lowerAsyncGen(args[0][2], args[0][3]))]]
+      return bindFn(args[0][1], transform(_gen.lowerAsyncGen(args[0][2], args[0][3])), node)
     if (op === 'class' && args[0]) return lowerClassDecl(...args)
     if (op === 'using') return lowerUsing(args, [])
 
@@ -228,23 +243,23 @@ export function createTransform(opts) {
       for (let i = 0; i < stmts.length; i++) {
         const stmt = stmts[i]
         if (Array.isArray(stmt) && stmt[0] === 'function' && stmt[1]) {
-          hoisted.push(hoistFnDecl(stmt[1], stmt[2], stmt[3]))
+          hoisted.push(hoistFnDecl(stmt[1], stmt[2], stmt[3], stmt))
           continue
         }
         if (Array.isArray(stmt) && stmt[0] === 'function*' && stmt[1] && _gen) {
-          hoisted.push(['const', ['=', stmt[1], _gen.lowerGenerator(stmt[2], stmt[3])]])
+          hoisted.push(bindFn(stmt[1], _gen.lowerGenerator(stmt[2], stmt[3]), stmt))
           continue
         }
         // async function DECLARATION — hoists like any function declaration.
         if (Array.isArray(stmt) && stmt[0] === 'async' && Array.isArray(stmt[1]) &&
             stmt[1][0] === 'function' && stmt[1][1] && _gen?.lowerAsync) {
-          hoisted.push(['const', ['=', stmt[1][1], transform(_gen.lowerAsync(stmt[1][2], stmt[1][3]))]])
+          hoisted.push(bindFn(stmt[1][1], transform(_gen.lowerAsync(stmt[1][2], stmt[1][3])), stmt))
           continue
         }
         // async GENERATOR declaration — same hoisting, tagged-yield machine.
         if (Array.isArray(stmt) && stmt[0] === 'async' && Array.isArray(stmt[1]) &&
             stmt[1][0] === 'function*' && stmt[1][1] && _gen?.lowerAsyncGen) {
-          hoisted.push(['const', ['=', stmt[1][1], transform(_gen.lowerAsyncGen(stmt[1][2], stmt[1][3]))]])
+          hoisted.push(bindFn(stmt[1][1], transform(_gen.lowerAsyncGen(stmt[1][2], stmt[1][3])), stmt))
           continue
         }
         if (Array.isArray(stmt) && stmt[0] === 'class' && stmt[1]) {
@@ -291,7 +306,7 @@ export function createTransform(opts) {
         (s[0] === 'import' || (s[0] === ',' && Array.isArray(s[1]) && s[1][0] === 'import'))
       const imports = rest.filter(isImportStmt)
       const nonImports = rest.filter(s => !isImportStmt(s))
-      const all = dedupeRedecls([...imports, ...hoisted, ...nonImports])
+      const all = dedupeRedecls([...imports, ...lastDeclared(hoisted), ...nonImports])
       return all.length === 0 ? null : all.length === 1 ? all[0] : [';', ...all]
     }
 
@@ -320,7 +335,7 @@ export function createTransform(opts) {
   const wrapArg = (a) => (Array.isArray(a) && a[0] === '...' && wrapSpreadDrain(a)) || transform(a)
 
   const handlers = {
-    // async function/arrow → (...aa) => __async_run((function* …)(...aa))
+    // async function/arrow → (a, b) => __async_run((function* (a, b) …)(a, b))
     'async'(inner) {
       if (!_gen?.lowerAsync || !Array.isArray(inner)) return
       if (inner[0] === 'function*' || inner[0] === 'function') {
@@ -352,10 +367,10 @@ export function createTransform(opts) {
     },
 
     '()'(callee, ...rest) {
-      // a dynamic import inside a function body has no static graph position
-      // (the module-level `await import('x')` hoists, index.js)
+      // an `import()` of a literal specifier hoisted (index.js hoistDynamicImports);
+      // a specifier computed at run time names no module of the graph
       if (callee === 'import' && !shadowsBuiltin('import'))
-        throw new Error('jzify: dynamic import() inside a function body is not supported – jz resolves the module graph at compile time; use a static import, or a module-level `await import(\'x\')` with a literal specifier')
+        err('jzify: import() takes one string literal – jz resolves the module graph at compile time, so a specifier computed at run time names no module (and import options are unsupported); write `import(\'./x.js\')`')
       // Promise API rides the async runtime (`jz:async`): new Promise(fn)
       // arrives here as a plain call (the `new` handler unwraps unknown
       // ctors), statics by name.
@@ -385,7 +400,7 @@ export function createTransform(opts) {
             ...entries.map(e => ['()', ['.', 'Object', 'defineProperty'], [',', t, [null, e[1]], e[2]]]),
             ['return', t]]]], a[0]])
         }
-        throw new Error('jzify: `Object.defineProperties(o, map)` lowers to one `Object.defineProperty` per key, so `map` must be an object literal with literal keys – spell the calls out otherwise')
+        err('jzify: `Object.defineProperties(o, map)` lowers to one `Object.defineProperty` per key, so `map` must be an object literal with literal keys – spell the calls out otherwise')
       }
       // URLSearchParams rides the jz-source std module `jz:usp` (src/std/usp.js);
       // `new URLSearchParams(x)` unwraps to this same call via the `new` handler.
@@ -528,7 +543,7 @@ export function createTransform(opts) {
       // a store the prototype fold left (classes.js foldPrototypeStores): a class, lowered either way, has no prototype to take it
       if (Array.isArray(lhs) && (lhs[0] === '.' || lhs[0] === '[]') && Array.isArray(lhs[1]) && lhs[1][0] === '.' && lhs[1][2] === 'prototype'
           && typeof lhs[1][1] === 'string' && opts.isClass(lhs[1][1]))
-        throw new Error('jzify: ' + JC.prototypeStore)
+        err('jzify: ' + JC.prototypeStore)
       // a static accessor of a class of this module: the slot function on the class (classes.js)
       if (Array.isArray(lhs) && lhs[0] === '.' && typeof lhs[1] === 'string' && typeof lhs[2] === 'string' && opts.classStaticAccessor(lhs[1], lhs[2] + ACCESSOR_SET))
         return ['()', ['.', lhs[1], lhs[2] + ACCESSOR_SET], transform(rhs)]
@@ -574,13 +589,12 @@ export function createTransform(opts) {
 
     'instanceof'(val, ctor) {
       const rawName = groupedName(ctor)
-      // A syntax-only shape fold has no prototype authority for a shadowed RHS.
-      // Preserve the operation so prepare can reject it cleanly.
-      if (typeof rawName === 'string' && shadowsBuiltin(rawName))
-        return ['instanceof', transform(val), transform(ctor)]
-      // A class of this module lowered to a schema: the brand names it (classes.js).
+      // A known user class keeps its identity even when named like a builtin.
       const brand = typeof rawName === 'string' ? opts.classBrand(rawName) : null
       if (brand) return ['instanceof', transform(val), brand]
+      // Other shadowed values have no builtin prototype authority.
+      if (typeof rawName === 'string' && shadowsBuiltin(rawName))
+        return ['instanceof', transform(val), transform(ctor)]
       // promise-shape probe — promises are fixed-shape objects, no ctor chain
       if (ctor === 'Promise' && _gen) {
         const t0 = transform(val)
@@ -592,14 +606,7 @@ export function createTransform(opts) {
         const t0 = transform(val)
         return ['&&', ['===', ['typeof', t0], [null, 'object']], ['!=', ['.', t0, 'next'], [null, null]]]
       }
-      // function-shape probe — the permissive `typeof===object` fallback
-      // (this handler's own last line, below) always answers false for a
-      // closure/named-function value (its typeof is 'function', not
-      // 'object'), so `someClosure instanceof Function` silently read false
-      // instead of true (confirmed live). Every jz-representable callable
-      // value's typeof is exactly 'function' (no other kind claims it), so
-      // this is exact, not a guess — same shape of fix as the Promise/
-      // Iterator probes just above, one hint value instead of two.
+      // Every representable callable reports typeof 'function'.
       if (ctor === 'Function') {
         const t0 = transform(val)
         return ['===', ['typeof', t0], [null, 'function']]
@@ -609,11 +616,13 @@ export function createTransform(opts) {
       // Array/Map/Set/TypedArray/ArrayBuffer/Error-family: hand off to the sound
       // core machinery instead of guessing here (see CORE_INSTANCEOF_ALLOW above)
       // — same op, same RHS, same answer as strict mode.
-      if (name === 'SharedArrayBuffer' || typeof name === 'string' && CORE_INSTANCEOF_ALLOW.has(name))
+      if (name === 'Object' || name === 'SharedArrayBuffer' || typeof name === 'string' && CORE_INSTANCEOF_ALLOW.has(name))
         return ['instanceof', t, name]
-      const fold = staticInstanceofFold(val, name)
-      if (fold != null) return [null, fold]
-      return ['===', ['typeof', t], [null, 'object']]
+      const spelled = !(typeof name === 'string' && opts.isValue(name))
+      const fold = spelled && name === 'RegExp' ? staticInstanceofFold(val, name, spelled) : null
+      if (fold != null) return [',', t, [null, fold]]
+      // Prepare owns namespace aliases and rejects unsupported constructor values.
+      return ['instanceof', t, transform(ctor)]
     },
 
     'do'(body, cond) {
@@ -708,18 +717,18 @@ export function createTransform(opts) {
 
     'export'(inner) {
       if (Array.isArray(inner) && inner[0] === 'function' && inner[1]) {
-        return ['export', hoistFnDecl(inner[1], inner[2], inner[3])]
+        return ['export', hoistFnDecl(inner[1], inner[2], inner[3], inner)]
       }
       // `export function* g` / `export async function f` / `export async function* g`:
       // the same const bindings the statement-level hoist makes, exported
       if (Array.isArray(inner) && inner[0] === 'function*' && inner[1] && _gen)
-        return ['export', ['const', ['=', inner[1], _gen.lowerGenerator(inner[2], inner[3])]]]
+        return ['export', bindFn(inner[1], _gen.lowerGenerator(inner[2], inner[3]), inner)]
       if (Array.isArray(inner) && inner[0] === 'async' && Array.isArray(inner[1]) && inner[1][1]) {
         const fn = inner[1]
         if (fn[0] === 'function' && _gen?.lowerAsync)
-          return ['export', ['const', ['=', fn[1], transform(_gen.lowerAsync(fn[2], fn[3]))]]]
+          return ['export', bindFn(fn[1], transform(_gen.lowerAsync(fn[2], fn[3])), inner)]
         if (fn[0] === 'function*' && _gen?.lowerAsyncGen)
-          return ['export', ['const', ['=', fn[1], transform(_gen.lowerAsyncGen(fn[2], fn[3]))]]]
+          return ['export', bindFn(fn[1], transform(_gen.lowerAsyncGen(fn[2], fn[3])), inner)]
       }
       if (Array.isArray(inner) && inner[0] === 'class' && inner[1]) {
         const decl = lowerClassDecl(inner[1], inner[2], inner[3])
@@ -731,7 +740,7 @@ export function createTransform(opts) {
         // (the default-alias resolver renames the func but not in-body call sites),
         // so the function is dropped. Exporting NAME as a named binding makes prepare
         // mangle it and resolve self-calls correctly; alias `default` to it.
-        const decl = hoistFnDecl(inner[1][1], inner[1][2], inner[1][3])
+        const decl = hoistFnDecl(inner[1][1], inner[1][2], inner[1][3], inner[1])
         return [';', ['export', decl], ['export', ['{}', ['as', inner[1][1], 'default']]]]
       }
       if (Array.isArray(inner) && inner[0] === 'default' && Array.isArray(inner[1]) && inner[1][0] === 'class' && inner[1][1]) {
@@ -742,8 +751,9 @@ export function createTransform(opts) {
   }
 
   function transform(node) {
-    const prior = enterBuiltinScope(node)
-    try { return transformInner(node) } finally { leaveBuiltinScope(prior) }
+    const prior = enterBuiltinScope(node), outer = ctx.error.loc
+    if (Array.isArray(node) && node.loc != null) ctx.error.loc = node.loc
+    try { return withLoc(transformInner(node), node) } finally { leaveBuiltinScope(prior); ctx.error.loc = outer }
   }
 
   function transformInner(node) {

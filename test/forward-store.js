@@ -4,9 +4,27 @@
 // stores the chain overwrites go. What could alias, call, branch or loop between a
 // store and a load keeps the memory round trip.
 import test from 'tst'
-import { is } from 'tst/assert.js'
+import { is, ok } from 'tst/assert.js'
 import { belowOpt, levels } from './_matrix.js'
 import { agree, funcWat, wat } from './util.js'
+import { forwardStores } from '../src/optimize/forward-store.js'
+
+test('store forwarding: expressions without forwarding candidates take linear traversal work', () => {
+  const visits = depth => {
+    let probes = 0
+    const node = (...items) => new Proxy(items, { get(target, key) {
+      if (key === '0') probes++
+      return target[key]
+    } })
+    let value = node('local.get', '$x')
+    for (let i = 0; i < depth; i++) value = node('f64.add', value, node('f64.const', 1))
+    const fn = node('func', '$f', node('param', '$x', 'f64'), node('result', 'f64'), value)
+    forwardStores(fn)
+    return probes
+  }
+  const small = visits(128), large = visits(256)
+  ok(large < small * 3, `doubling expression depth needs fewer than 3× opcode reads (${small} → ${large})`)
+})
 
 const chain = `const out = [0, 0, 0], a = [1, 2, 3], b = [4, 5, 6]
   const add = (o, x, y) => { o[0] = x[0] + y[0]; o[1] = x[1] + y[1]; o[2] = x[2] + y[2]; return o }

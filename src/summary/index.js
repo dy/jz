@@ -48,11 +48,12 @@
  *
  * @module summary
  */
-import { MUTATE_OPS, EXACT_MATH, extractParams, isBrand, returnExprs, ACCESSOR_GET, ACCESSOR_SET, CLASS_T, TYPEOF, typeofPredicate, canonicalKeyOrder, schemaKey, isArrayIndexKey, layoutView, ENUM_DATA } from '../ast.js'
-import { encodeTypedElemAux, TYPED_ELEM_CODE } from '../../layout.js'
+import { MUTATE_OPS, EXACT_MATH, extractParams, isBrand, returnExprs, ACCESSOR_GET, ACCESSOR_SET, CLASS_T, TYPEOF, isNumberGuard, typeofPredicate, canonicalKeyOrder, schemaKey, isArrayIndexKey, layoutView, ENUM_DATA, isTdzDecl, spreadExclusions } from '../ast.js'
+import { encodeTypedElemAux, TYPED_ELEM_CODE, TYPED_ELEM_VIEW_FLAG, TYPED_ELEM_ANY_VIEW_FLAG, ctorFromElemAux, TYPED_ELEM_BIGINT_FLAG } from '../../layout.js'
 import { ITER_RECORD_KEYS } from '../std/iter-helpers.js'
+import { PROMISE_KEYS } from '../std/async.js'
 import { VAL } from '../reps.js'
-import { typedElementKey } from '../typed-provenance.js'
+import { typedElementKey, typedCtorName } from '../typed-provenance.js'
 import { ATOMICS_VALUE_OPS, builtinCalleeVal, methodValType } from '../kind-traits.js'
 import { summaryQueries } from './query.js'
 import { buildResultContracts, unbounded } from './contract.js'
@@ -63,8 +64,8 @@ export { CARRIER, PRESENCE, contractVal, unbounded } from './contract.js'
 import {
   K, UNKNOWN, bitOf, TAGS, NULL_BITS, kind, tagOf, paramOf, hasTag, isNullable,
   ANY, NUMBER, STRING, BOOL, BIGINT, NULLISH, ABSENT, core, orAbsent, join,
-  valOf, kindOfVal, TYPED_CTOR, TYPED_STATIC, isCount, ARRAY_METHODS, NUMBER_OPS, BOOL_OPS,
-  plus, arith, typedStore, typedAux, typedElemKind, typedMethodKind, isPostfixRecovery, logicalMask, selectKind,
+  valOf, kindOfVal, TYPED_CTOR, TYPED_STATIC, isCount, ARRAY_METHODS, OBJECT_PROTO_METHODS, objectProtoResult, NUMBER_OPS, BOOL_OPS,
+  plus, arith, typedStore, typedAux, typedElemKind, typedMethodKind, logicalMask, selectKind, outsideKind,
 } from './kind.js'
 export { K, UNKNOWN, kind, tagOf, paramOf, isNullable, tagsOf, hasTag, orNull, join, valOf, valsOf, core } from './kind.js'
 
@@ -74,12 +75,35 @@ const PURE_BUILTINS = /^(Object\.(keys|values|entries|freeze|isFrozen|getOwnProp
 // A builtin that neither stores its arguments nor runs a method of theirs:
 // they keep their shapes. `Object.freeze` is the identity (module/object.js).
 const KEEPING_BUILTINS = /^(Object\.(keys|freeze|isFrozen|getOwnPropertyNames|getPrototypeOf|hasOwn|is)|Array\.isArray|Boolean|Symbol(\.\w+)?)$/
+// The calls that read an object's own key set, or make it another's (a copy's
+// keys, a prototype's), without handing it on (the rest escape it).
+const KEY_READERS = new Set(['Object.keys', 'Object.values', 'Object.getOwnPropertyNames', 'Object.hasOwn', 'Object.freeze', 'Object.isFrozen', 'Object.isSealed', 'Object.isExtensible',
+  'Object.assign', 'Object.defineProperty', 'Object.defineProperties', 'Object.setPrototypeOf', 'Object.create', '__keys_ro', '__keys_dyn'])
+// Of those, the ones that only store into their first argument: its keys are
+// written, never read (a store to a declared key and to a missing one leave
+// the same object).
+const KEY_TARGETS = new Set(['Object.assign', 'Object.defineProperty', 'Object.defineProperties'])
 
 const BIND = CLASS_T + 'bind'
+// The runtime's helpers the summary answers at their call nodes: an iterator
+// minted or drained (iterFrom, iterMk, iterDrain), a machine driven, a
+// promise rejected, an await's settled value (promiseAt, awaited). What one
+// returns is read off its call, never its body, so a call of one stays one.
+const ITER_FROM = /\$__it_from$/, ITER_MK = /\$__it_mk$/, ITER_DRAIN = /\$__it_drain$/, ITER_ARR = /\$__it_arr$/
+const ASYNC_RUN = /\$__async_run$/, AWAITED = /\$__awaited$/, REJECT = /\$__p_reject$/
+// one pattern, the seven's alternatives: the compiler compiles itself, which resolves a regex where it is written
+const AT_CALL = /\$__(it_from|it_mk|it_drain|it_arr|async_run|awaited|p_reject)$/
+export const answeredAtCall = (name) => AT_CALL.test(name)
 const STRING_METHODS = new Set(['slice', 'substring', 'substr', 'trim', 'trimStart', 'trimEnd', 'toUpperCase', 'toLowerCase', 'padStart', 'padEnd', 'repeat', 'replace', 'replaceAll', 'concat', 'normalize', 'at', 'charAt'])
 const STRING_NUMBER_METHODS = new Set(['charCodeAt', 'codePointAt', 'indexOf', 'lastIndexOf', 'search', 'localeCompare'])
 const STRING_BOOL_METHODS = new Set(['includes', 'startsWith', 'endsWith'])
 const PRIMITIVE_METHODS = new Set([...STRING_METHODS, ...STRING_NUMBER_METHODS, ...STRING_BOOL_METHODS, 'split', 'at', 'charAt', 'match', 'matchAll', 'toString', 'valueOf', 'toLocaleString', 'toFixed', 'toPrecision', 'toExponential', 'toLocaleUpperCase', 'toLocaleLowerCase', 'isWellFormed', 'toWellFormed', 'constructor', 'length'])
+const SPAN_BINARY = new Set(['&', '+', '-', '*', '%', '|', '<<'])
+const RANGE_BINARY = new Set(['+', '-', '*', '/'])
+
+// These helpers carry call-site result facts; keep their call boundary through planning.
+const MODELED_RESULT = /\$__it_(from|mk|drain|arr)$/
+export const hasModeledResult = name => MODELED_RESULT.test(name)
 
 /** Summarize the prepared program: `ast` the entry module's statements and `inits` the bundled
  *  modules' (run first), `funcs` the function records, `schemas` the schema prop lists, `imports`
@@ -88,7 +112,7 @@ const PRIMITIVE_METHODS = new Set([...STRING_METHODS, ...STRING_NUMBER_METHODS, 
  *  string (`JSON.parse(SRC)` parses it). An exported global keeps its kind: the host
  *  can store only a number through its f64 export, which a number global takes and no other
  *  kind could take; a closure the host can reach through it may be called with anything. */
-export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchema = () => undefined, classes, accessors = null, hidden = null, exported, imports, hostGlobals = [], moduleGlobals = new Map(), constString = () => null, constStrings = () => null, onLose = null, onOpen = null, liftedProp = () => null }) {
+export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchema = () => undefined, classes, accessors = null, hidden = null, exported, imports, hostGlobals = [], moduleGlobals = new Map(), constString = () => null, constStrings = () => null, onLose = null, onOpen = null, liftedProp = () => null, guardedClone = () => null }) {
   // Layouts determine storage; construction sites determine aliasing. Keep
   // separate slot facts for unrelated objects with identical property names.
   schemas = schemas.map(props => props.slice())
@@ -281,11 +305,16 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   // member the join to ANY erases (`n = BigInt(n)` on one path of a parameter
   // of every kind), kept for the result contract's certain-return walk.
   const certainKeys = new Set()
+  // A binding a Boolean reaches beside the unknown kind, which names every tag
+  // and so cannot say it: the emitter keeps its Booleans as atoms (the kind of
+  // a union of named tags says so itself).
+  const boolKeys = new Set()
   const raise = (values, key, k, quiet = false) => {
     const old = values[key] ?? K.NONE; let nk = merge(old, k, quiet)
     if ((values[key] ?? K.NONE) !== old) nk = merge(values[key], nk, true)   // the join raised the binding itself (an escaped closure's parameter)
     if (nk !== (values[key] ?? K.NONE)) { values[key] = nk; changed = true }
     if (values === kinds && hasTag(k, K.BIGINT) && !unbounded(k)) certainKeys.add(key)
+    if (values === kinds && hasTag(k, K.BOOL) && (k & TAGS) !== TAGS) boolKeys.add(key)
     // The base key joins the contexts quietly while no walk reads it (the
     // emitter of the one function does); an initializer walked under the
     // join as well raises it as the walk does, so the two agree on one form.
@@ -295,12 +324,12 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     // The iterator helpers answer at their call nodes (iterFrom, iterDrain):
     // their bodies run over sources without identity, and a return of one
     // whose kind is unknown would lose the record layout every mint shares.
-    if (typeof key === 'string' && (ITER_FROM.test(key) || ITER_MK.test(key) || ITER_DRAIN.test(key) || ITER_ARR.test(key))) return
+    if (typeof key === 'string' && hasModeledResult(key)) return
     if (escaped.has(key)) escape(k)
     const old = results.get(key) ?? K.NONE, nk = merge(old, k)
     if (nk !== old) { results.set(key, nk); changed = true }
   }
-  const raiseSlot = (sid, i, k) => { if (hostSchemas.has(sid)) { retain(k); escapeToHost(k) } if ((opaqueSchemas.has(sid) || hostSchemas.has(sid)) && !lostReadPrecise(schemas[sid][i])) losingAs('stored into an object whose shape is lost', escape, k); const a = slots(sid), old = a[i]; let nk = merge(old, k); if (a[i] !== old) nk = merge(a[i], nk, true); if (nk !== a[i]) { a[i] = nk; changed = true; forFolded(sid, s => raiseSlot(s, i, nk)) } }
+  const raiseSlot = (sid, i, k) => { if (hostSchemas.has(sid)) { if (retainedSchemas.has(sid)) retain(k); escapeToHost(k) } if ((opaqueSchemas.has(sid) || hostSchemas.has(sid)) && !lostReadPrecise(schemas[sid][i])) losingAs('stored into an object whose shape is lost', escape, k); const a = slots(sid), old = a[i]; let nk = merge(old, k); if (a[i] !== old) nk = merge(a[i], nk, true); if (nk !== a[i]) { a[i] = nk; changed = true; forFolded(sid, s => raiseSlot(s, i, nk)) } }
   // A layout with more construction sites than a shape set holds is one shape:
   // its sites fold into it, and a fact raised on any of them reaches them all.
   const foldedLayouts = new Set()
@@ -321,6 +350,8 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       const fi = iterSites.get(site)
       if (fi) { const fl = iterSites.get(l); iterSites.set(l, fl ? { src: merge(fl.src, fi.src), elem: merge(fl.elem, fi.elem) } : { src: fi.src, elem: fi.elem }) }
     }
+    // A folded promise layout holds every promise, the runtime's own among them: none answers for its value.
+    if (l === PROMISE_LAYOUT) for (const site of promiseSites.keys()) promiseSites.set(site, ANY)
   }
   const NO_SLOTS = []
   const openSchemas = new Set()
@@ -347,6 +378,15 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   // any other shape needs no presence-mask update (emit-assign.js).
   const deletable = new Set()
   const deleteReach = { unknown: false }
+  // The names a builtin stores into its target (`Object.assign(p, { y })`, a
+  // literal-keyed `Object.defineProperty`): member stores no `p.y =` spells.
+  const assignedProps = new Set()
+  // The shapes whose own key set an operation reads: Object.keys and its kin,
+  // for-in's key list, `in`, hasOwnProperty, a spread of several sources. On
+  // any other shape a key that holds undefined reads as a missing one does
+  // (plan/declare-unseen-keys.js). A lost shape's key set is read by code
+  // the summary cannot see (lostSchema).
+  const keysSeen = new Set()
   const wildProps = new Map()   // literal name → the values stored under it through a receiver of unknown shape
   const lostSchema = (sid) => opaqueSchemas.has(sid) || hostSchemas.has(sid)
   /** An object kind whose every shape the summary can enumerate. */
@@ -360,7 +400,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   const sideByProp = new Map()   // name → kind stored beside any shape's slots
   const sideOf = (sid, prop) => merge(sideProps.get(sid)?.get(prop) ?? K.NONE, sideWild.get(sid) ?? K.NONE)
   const anySideOf = (sid) => { let k = sideWild.get(sid) ?? K.NONE; for (const pk of sideProps.get(sid)?.values() ?? []) k = merge(k, pk); return k }
-  const sideLost = (sid, k) => { if (hostSchemas.has(sid)) { retain(k); escapeToHost(k) } if (lostSchema(sid)) losingAs('stored into an object whose shape is lost', escape, k) }
+  const sideLost = (sid, k) => { if (hostSchemas.has(sid)) { if (retainedSchemas.has(sid)) retain(k); escapeToHost(k) } if (lostSchema(sid)) losingAs('stored into an object whose shape is lost', escape, k) }
   const raiseSide = (sid, prop, k) => {
     sideLost(sid, k)
     let m = sideProps.get(sid); if (!m) sideProps.set(sid, m = new Map())
@@ -430,10 +470,15 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   const cellLostObject = new Set()    // cell roots holding objects of unknown shape
   const NO_SHAPES = new Set()
   const shapesInCell = (c) => cellShapes.get(c) ?? NO_SHAPES
+  const seeKeys = (k) => {
+    if (tagOf(core(k)) === K.OBJECT && paramOf(k) !== UNKNOWN) for (const sid of shapesOf(paramOf(k))) keysSeen.add(sid)
+    else if (celled(k)) for (const sid of shapesInCell(cell(paramOf(k)))) keysSeen.add(sid)
+  }
   const addCellShapes = (c, sids) => { let s = cellShapes.get(c); if (!s) cellShapes.set(c, s = new Set()); for (const sid of sids) if (!s.has(sid)) { s.add(sid); changed = true } }
   const addCellLost = (c) => { if (!cellLostObject.has(c)) { cellLostObject.add(c); changed = true } }
   const elems = []               // cell root → element kind
   const hostSchemas = new Set() // host-visible objects store tagged fields
+  const retainedSchemas = new Set() // objects reachable across calls, through globals or captures
   const hostArrays = new Set()   // arrays exposed to host writes
   const retainedArrays = new Set() // arrays reachable across calls, through globals or captures
   const hostClosures = new Set() // callable results the host can receive
@@ -464,6 +509,14 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   // length (a counter's span), by node: the query has no loop in view and
   // reads them present through this set.
   const presentReads = new Set()
+  // Spread storage depends on the source at this occurrence, including guards.
+  // Emit must use the same facts instead of re-reading a whole-function binding.
+  const spreadSources = new Map()
+  const spreadSource = p => {
+    const k = expr(p[1])
+    spreadSources.set(p, merge(spreadSources.get(p) ?? K.NONE, k))
+    return k
+  }
   const lenCell = (arr) => tagOf(core(arr)) === K.ARRAY && paramOf(arr) !== UNKNOWN ? cell(paramOf(arr)) : -1
   // A change of either fact asks for another round: a read kinded under a
   // count that a later statement of the round opens is kinded again. The
@@ -505,10 +558,11 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     if (!Array.isArray(e)) return null
     const op = e[0]
     if (op == null) return Number.isInteger(e[1]) ? [e[1], e[1]] : null
-    if (op === '()' && e.length === 2) return spanOf(e[1], scope)
+    if ((op === '(' || op === '()' && e.length === 2)) return spanOf(e[1], scope)
     if (e.length !== 3) return null
     // A typed array's length is its count for good.
     if (op === '.' && e[2] === 'length' && typeof e[1] === 'string') { const len = typedLenOf(scope ?? MODULE, e[1]); return len === null ? null : [len, len] }
+    if (!SPAN_BINARY.has(op)) return null
     const a = spanOf(e[1], scope), b = spanOf(e[2], scope)
     // A mask keeps any value inside it: ToInt32 of the other operand, whatever it is, then the bits.
     const mask = (m) => m && m[0] === m[1] && m[0] >= 0 && m[0] <= 0x7fffffff ? [0, m[0]] : null
@@ -533,7 +587,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     if (!Array.isArray(e)) return null
     const op = e[0]
     if (op == null) return typeof e[1] === 'number' && Number.isFinite(e[1]) ? [e[1], e[1]] : null
-    if (op === '()' && e.length === 2) return rangeOf(e[1])
+    if ((op === '(' || op === '()' && e.length === 2)) return rangeOf(e[1])
     if (op === 'u-' && e.length === 2) { const a = rangeOf(e[1]); return a && [-a[1], -a[0]] }
     if (op === '?:' && e.length === 4) { const a = rangeOf(e[2]), b = rangeOf(e[3]); return a && b && [Math.min(a[0], b[0]), Math.max(a[1], b[1])] }
     if (op === '()' && typeof e[1] === 'string' && e[1].startsWith('Math.')) {
@@ -555,7 +609,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
         default: return null
       }
     }
-    if (e.length !== 3) return null
+    if (e.length !== 3 || !RANGE_BINARY.has(op)) return null
     const a = rangeOf(e[1]), b = rangeOf(e[2])
     if (!a || !b) return null
     let lo, hi
@@ -606,9 +660,11 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     let spread = false
     for (let i = 0; i < names.length; i++) {
       if (i < n && kspread[base + i]) spread = true
-      const r = spread || i >= n || args === null || openArgs.has(`${name}#${i}`) ? null : rangeOf(argAt(args, i))
       const prev = entry.ranges[i]
+      // An unbounded argument already opens this position for the round.
+      // Later bounds cannot narrow it, so do not build and discard their hulls.
       if (prev === null) continue
+      const r = spread || i >= n || args === null || openArgs.has(`${name}#${i}`) ? null : rangeOf(argAt(args, i))
       entry.ranges[i] = prev === undefined || r === null ? r : [Math.min(prev[0], r[0]), Math.max(prev[1], r[1])]
     }
   }
@@ -685,7 +741,8 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   elems.push(K.NONE); cellUp.push(typedProps)
   const typedPropsByAux = new Map()
   const typedPropsCell = (aux) => { let c = typedPropsByAux.get(aux); if (c === undefined) { c = elems.length; elems.push(K.NONE); cellUp.push(c); typedPropsByAux.set(aux, c) } return c }
-  const typedAuxOf = (k) => tagOf(k) === K.TYPED ? typedAux(k) : UNKNOWN
+  // one cell per element kind: a view and an owned array of it share their properties' kinds
+  const typedAuxOf = (k) => tagOf(k) === K.TYPED && typedAux(k) !== UNKNOWN ? typedAux(k) & ~(TYPED_ELEM_VIEW_FLAG | TYPED_ELEM_ANY_VIEW_FLAG) : UNKNOWN
   const typedPropsCellOf = (k) => typedAuxOf(k) === UNKNOWN ? typedProps : typedPropsCell(typedAuxOf(k))
   const typedPropsOf = (k) => {
     let out = elems[typedProps]
@@ -901,13 +958,14 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   const lostReadPrecise = (prop) => !(foreignObjects || foreignProps.has(prop) || memberMayBeOwn(prop) || membersByName.has(prop) || membersByName.has(getterOf(prop)))
   const loseShape = (sid) => {
     if (opaqueSchemas.has(sid)) return
-    if (onLose) onLose(sid, losing ?? 'escaped', current, site)
+    if (onLose) onLose(layouts[sid], losing ?? 'escaped', current, site)
     opaqueSchemas.add(sid); changed = true
     poisonLost(sid)
     schemas[sid].forEach((p, i) => { if (!lostReadPrecise(p)) escape(slots(sid)[i]) })
     for (const [p, k] of sideProps.get(sid) ?? []) if (!lostReadPrecise(p)) escape(k)
     escape(sideWild.get(sid) ?? K.NONE)
     if (iterFacts(sid)) escape(iterElem(sid))
+    if (promiseSites.has(sid)) escape(promiseSites.get(sid))
     forFolded(sid, loseShape)
   }
   // A typed array's named properties come from stores the walk sees, or from
@@ -973,14 +1031,19 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     }
     else if (t === K.OBJECT) for (const sid of shapesOf(p)) {
       if (seen.has(sid) || hostSchemas.has(sid)) continue
-      if (onLose && !opaqueSchemas.has(sid)) onLose(sid, 'handed to the host', current, site)
+      if (onLose && !opaqueSchemas.has(sid)) onLose(layouts[sid], 'handed to the host', current, site)
       seen.add(sid); hostSchemas.add(sid); changed = true
       forFolded(sid, s => escapeToHost(kind(K.OBJECT, s), seen))
       poisonLost(sid)
       if (iterFacts(sid)) escapeToHost(iterElem(sid), seen)
+      if (promiseSites.has(sid)) { retain(promiseSites.get(sid)); escapeToHost(promiseSites.get(sid), seen) }
+      // The host may write into what the object holds: an array the program
+      // reads again after the call (one a retained object holds, retain below)
+      // opens its elements; one only this result holds keeps its proofs.
       const row = slots(sid)
-      for (let i = 0; i < row.length; i++) { retain(row[i]); escapeToHost(row[i], seen) }
-      const side = anySideOf(sid); retain(side); escapeToHost(side, seen)
+      for (let i = 0; i < row.length; i++) escapeToHost(row[i], seen)
+      for (const k of sideProps.get(sid)?.values() ?? []) escapeToHost(k, seen)
+      escapeToHost(sideWild.get(sid) ?? K.NONE, seen)
     }
   }
   // Returning a fresh local array cannot change its earlier reads. Only a
@@ -1012,8 +1075,11 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       if (hostArrays.has(c)) raiseElem(k, ANY)
     } else if (t === K.OBJECT) for (const sid of shapesOf(p)) {
       if (seen.has(sid)) continue
-      seen.add(sid)
+      seen.add(sid); retainedSchemas.add(sid)
       for (const s of slots(sid)) retain(s, seen)
+      // each value stored beside the slots on its own: joined, two arrays would share one cell
+      for (const k of sideProps.get(sid)?.values() ?? []) retain(k, seen)
+      retain(sideWild.get(sid) ?? K.NONE, seen)
     }
   }
   // A parameter's incoming kind, the join of its arguments alone: a read of
@@ -1030,6 +1096,11 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     let set = passiveMemo.get(scope)
     if (set) return set
     passiveMemo.set(scope, set = new Set())
+    return scanPassiveParams(scope, names, defaults, set)
+  }
+  // Allocate the recursive walk's closure only on a cache miss. The common
+  // lookup has no captured locals or per-call environment.
+  const scanPassiveParams = (scope, names, defaults, set) => {
     const body = typeof scope === 'string' ? funcByName.get(scope)?.body : closureBodies[scope]
     if (body == null || !names.length) return set
     // Publish only after the walk. Recursive calls see the empty placeholder.
@@ -1133,6 +1204,26 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   }
   const escapeArgValues = (base, n) => { for (let i = 0; i < n; i++) escape(ks[base + i]) }
   const escapeArgs = (base, n) => losingAs('passed to a call the summary cannot see through', escapeArgValues, base, n)
+  // A typed-guard clone (narrow/specialize.js) runs where a call's guarded
+  // arguments are typed arrays of its constructor, and nowhere else (no static
+  // call names it): it receives the call's arguments, each guarded one as that
+  // typed array. A call whose guarded argument cannot be one never reaches it.
+  const bindGuarded = (spec, base, n) => {
+    const g = funcByName.get(spec.clone)
+    if (!g) return
+    const b = sp
+    for (let i = 0; i < n; i++) {
+      let k = ks[base + i]
+      const guard = spec.guards.find(x => x.k === i)
+      if (guard) {
+        if (tagOf(k) !== K.ANY && !hasTag(k, K.TYPED)) { sp = b; return }
+        k = kind(K.TYPED, guard.aux)
+      }
+      pushK(k, kspread[base + i])
+    }
+    bind(spec.clone, paramNamesOf(g), b, n, g.defaults)
+    sp = b
+  }
   /** `callee(k0, …frame)`: the frame's kinds behind a receiver, in a frame of their own. */
   const callWith = (callee, k0, base = 0, n = 0) => {
     const b = sp
@@ -1279,7 +1370,6 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   // A generator object is the same record, minted by `__it_mk(next, return,
   // throw)` (jzify/generators.js) with the machine's own closures: a site per
   // mint keeps each generator's results its own.
-  const ITER_FROM = /\$__it_from$/, ITER_MK = /\$__it_mk$/
   const ITER_LAYOUT = sidByKey.get(schemaKey(ITER_RECORD_KEYS, null))
   const RESULT_LAYOUT = sidByKey.get(schemaKey(['value', 'done'], null))
   const iterSites = new Map()   // record site → { src, elem, next, ret, thr }: the source read by position, elements of no source, a machine's closures
@@ -1363,7 +1453,6 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   // array of its elements. `__it_drain` passes any other value through to the
   // spread; `__it_arr` copies an indexed value or a collection's snapshot
   // view, and an array-like by its length.
-  const ITER_DRAIN = /\$__it_drain$/, ITER_ARR = /\$__it_arr$/
   const drainedOf = (node, w, base) => {
     const out = arrayOf(node, K.NONE)
     raiseElem(out, iterFacts(sidOf(w)) ? iterElem(sidOf(w)) : member('.', method(w, 'next', base, 0, null), 'value'))
@@ -1385,6 +1474,85 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     else r = copy ? arrayFrom(node, base, 1) : src
     siteResults.set(node, r)
     return r
+  }
+  // Runtime protocol bodies need the receiver layouts to resolve their own
+  // method calls. Erasing the layout also admitted unrelated cursor records
+  // and their unknown next slots. Fold construction identities into the
+  // shared layout, keeping the method and field facts conservatively joined.
+  const protocolKind = k => {
+    if (tagOf(k) !== K.OBJECT || paramOf(k) === UNKNOWN) return k | UNKNOWN
+    let r = K.NONE
+    for (const sid of shapesOf(paramOf(k))) {
+      const layout = layouts[sid]
+      foldLayout(layout)
+      r = merge(r, (k & ~UNKNOWN) | layout)
+    }
+    return r
+  }
+  // An async function is `(…) => __async_run(M(…))` (jzify/async.js): the
+  // runtime's promise, which it settles with what the machine M completes
+  // with (a `{ value, done: true }` step), adopting a promise or a thenable;
+  // one whose parameters throw returns `__p_reject(e)`, which never fulfills.
+  // Every promise is the runtime's one literal, whose `val` slot joins every
+  // settlement in the program: the summary names each such promise by its
+  // call node, a site of that layout (std/async PROMISE_KEYS) with the
+  // runtime literal's slots, and keeps beside it the value it fulfills with.
+  // An await resumes its machine with its operand's settled value,
+  // `__awaited(a, v)` (jzify/generators.js): the operand itself when it is no
+  // thenable, a named promise's value, anything for a promise the program
+  // made another way or a thenable. The runtime stores into a promise only
+  // through its own references, never through one the summary names here.
+  const PROMISE_LAYOUT = sidByKey.get(schemaKey(PROMISE_KEYS, null))
+  const promiseSites = new Map()   // promise site → the value it fulfills with
+  const doneSites = new Set()      // `{ value, done: true }` literal sites: the completions of a machine
+  const slotOf = (sid, prop) => { const i = schemas[sid].indexOf(prop); return i < 0 ? K.NONE : slots(sid)[i] }
+  // An object whose `then` the runtime may call, or that it takes for one of its promises.
+  const thenable = (sid) => layouts[sid] === PROMISE_LAYOUT || schemas[sid].includes('then') || schemas[sid].includes('__p') ||
+    schemas[sid].includes(getterOf('then')) || classMember(kind(K.OBJECT, sid), 'then') !== null || memberMayBeOwn('then') ||
+    tagOf(sideOf(sid, 'then')) !== K.NONE || lostSchema(sid) && (wildProps.has('then') || pendingAll)
+  /** The value an await of a value of kind `k` resumes with (std/async `__await`, which takes a function for a value). */
+  const awaited = (k) => {
+    const t = tagOf(k)
+    if (t === K.NONE || t === K.NULLISH || t === K.ABSENT || t === K.NUMBER || t === K.STRING || t === K.BOOL || t === K.BIGINT || t === K.CLOSURE || t === K.DATE || t === K.BUFFER) return k
+    if ((t === K.ARRAY || t === K.TYPED || t === K.MAP || t === K.SET || t === K.REGEX) && !builtinReceiverMayHaveOwn(t, 'then') && !builtinReceiverMayHaveOwn(t, '__p')) return k
+    if (t !== K.OBJECT || paramOf(k) === UNKNOWN) return ANY
+    let r = k & NULL_BITS ? (k & NULL_BITS) | UNKNOWN : K.NONE
+    for (const sid of shapesOf(paramOf(k))) {
+      const f = promiseSites.get(canonSid(sid))
+      if (f !== undefined) r = merge(r, f)
+      else if (thenable(sid)) return ANY
+      else r = merge(r, kind(K.OBJECT, sid))
+    }
+    return r
+  }
+  /** What a machine completes with: the `value` of its `next` and `throw` steps' `{ value, done: true }` results. */
+  const completion = (m) => {
+    if (tagOf(m) === K.NONE) return K.NONE   // no kind yet: a round before the machine's factory ran
+    if (tagOf(m) !== K.OBJECT || paramOf(m) === UNKNOWN) return ANY
+    let steps = K.NONE
+    for (const sid of shapesOf(paramOf(m))) {
+      const f = iterFacts(sid)
+      for (const c of f ? [f.next, f.thr] : [slotOf(sid, 'next'), slotOf(sid, 'throw')]) {
+        if (tagOf(c) === K.NONE) continue
+        if (!knownClosure(c)) return ANY
+        steps = merge(steps, closureResult(paramOf(c)))
+      }
+    }
+    if (tagOf(steps) === K.NONE) return K.NONE
+    if (tagOf(steps) !== K.OBJECT || paramOf(steps) === UNKNOWN) return ANY
+    let r = K.NONE
+    for (const sid of shapesOf(paramOf(steps))) if (doneSites.has(sid)) r = merge(r, slotOf(sid, 'value'))
+    return r
+  }
+  /** The promise named at `node`, fulfilled with `v`; `own` is the runtime's own (its literal's slots). */
+  const promiseAt = (node, v, own) => {
+    if (PROMISE_LAYOUT === undefined || foldedLayouts.has(PROMISE_LAYOUT) || tagOf(own) !== K.OBJECT || paramOf(own) === UNKNOWN) return own
+    const sid = objectSite(node, PROMISE_LAYOUT)
+    if (sid < 0 || shapesOf(paramOf(own)).includes(sid)) return own
+    for (const s of shapesOf(paramOf(own))) slots(s).forEach((k, i) => raiseSlot(sid, i, k))
+    const f = promiseSites.get(sid), nf = f === undefined ? v : merge(f, v)
+    if (nf !== f) { promiseSites.set(sid, nf); changed = true }
+    return kind(K.OBJECT, sid)
   }
   const call = (callee, base, n, node = null) => {
     if (typeof callee === 'string') {
@@ -1422,8 +1590,9 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
         // number, a boolean, a closure, a dictionary), yields nothing: the
         // kinds are monotone, so answering ANY here would stand forever.
         if (t === K.NONE || !iterable(src) || t === K.OBJECT) return K.NONE
+        // The iteration throws on a missing source, so what it iterates is present.
         const arr = node ? iterArray(node, src) : null
-        if (arr !== null) return arr
+        if (arr !== null) return core(arr)
         if (t === K.MAP) { escape(keysOf(src)); escape(elemOf(src)) }
         return t === K.MAP || t === K.SET || t === K.STRING ? kind(K.ARRAY) : ANY
       }
@@ -1435,7 +1604,24 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
         const r = ITER_FROM.test(callee) ? iterFrom(node, base, n) : ITER_MK.test(callee) ? iterMk(node, base, n) : iterDrain(node, base, n, ITER_ARR.test(callee))
         const f = funcByName.get(callee)
         if (f && escaped.has(callee)) escapeArgs(base, n)
-        else if (f) { const b = sp; for (let i = 0; i < n; i++) pushK(ks[base + i] | UNKNOWN, kspread[base + i]); bind(callee, paramNamesOf(f), b, n, f.defaults); sp = b }
+        else if (f) { const b = sp; for (let i = 0; i < n; i++) pushK(protocolKind(ks[base + i]), kspread[base + i]); bind(callee, paramNamesOf(f), b, n, f.defaults); sp = b }
+        return r
+      }
+      // The async runtime's answers at its call nodes (promiseAt, awaited): the
+      // driver runs over the machine itself, `__awaited` over kinds without identity.
+      if (node && (ASYNC_RUN.test(callee) || REJECT.test(callee) || AWAITED.test(callee)) && funcByName.has(callee)) {
+        const f = funcByName.get(callee)
+        let r
+        if (AWAITED.test(callee)) {
+          r = awaited(n ? ks[base] : NULLISH)
+          if (escaped.has(callee)) escapeArgs(base, n)
+          else { const b = sp; for (let i = 0; i < n; i++) pushK(ks[base + i] | UNKNOWN, kspread[base + i]); bind(callee, paramNamesOf(f), b, n, f.defaults); sp = b }
+        } else {
+          bind(callee, paramNamesOf(f), base, n, f.defaults)
+          const own = resultAt(callee, base, n, node)
+          r = escaped.has(callee) ? own : promiseAt(node, REJECT.test(callee) ? K.NONE : awaited(completion(n ? ks[base] : K.NONE)), own)
+        }
+        siteResults.set(node, r)
         return r
       }
       if (callee === '__keys_ro' || callee === '__keys_dyn') return kind(K.ARRAY)
@@ -1443,6 +1629,8 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       const f = funcByName.get(callee)
       if (f) {
         bind(callee, paramNamesOf(f), base, n, f.defaults, f.rest || !n || escaped.has(callee) ? null : initContextFor(callee, ks[base]), node ? node[2] : null)
+        const spec = guardedClone(callee)
+        if (spec) bindGuarded(spec, base, n)
         return resultAt(callee, base, n, node)
       }
       const key = keyOf(callee), k = key === null ? undefined : kinds[key]
@@ -1498,8 +1686,8 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
           if (knownShapes(s) && !kspread[base + i]) for (const sid of shapesOf(paramOf(s))) {
             const sl = slots(sid)
             for (const tsid of shapesOf(paramOf(target))) {
-              schemas[sid].forEach((p, j) => storeMember(tsid, p, sl[j]))
-              for (const [p, k] of sideProps.get(sid) ?? []) storeMember(tsid, p, k)
+              schemas[sid].forEach((p, j) => { assignedProps.add(p); storeMember(tsid, p, sl[j]) })
+              for (const [p, k] of sideProps.get(sid) ?? []) { assignedProps.add(p); storeMember(tsid, p, k) }
               const w = sideWild.get(sid) ?? K.NONE; if (w !== K.NONE) { openSchema(tsid); raiseAllSlots(tsid, w); raiseSideWild(tsid, w) }
             }
           }
@@ -1516,6 +1704,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
         if (tagOf(d) === K.NONE) return target
         const v = tagOf(d) === K.OBJECT && paramOf(d) !== UNKNOWN ? core(member('.', d, 'value')) : ANY
         const kn = args(node[2])[1], k = Array.isArray(kn) && (kn[0] === 'str' || kn[0] == null) && typeof kn[1] === 'string' ? kn[1] : null
+        if (k != null) assignedProps.add(k)
         if (k != null && knownShapes(target)) for (const sid of shapesOf(paramOf(target))) storeMember(sid, k, v)
         else if (tagOf(target) === K.OBJECT) poisonAll(target, k != null ? STRING : key, v)
         else escapeObject(target)
@@ -1556,6 +1745,11 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   const scanForwards = (id, body, params, defaults) => {
     if (!params || fwdScanned.has(body)) return
     fwdScanned.add(body)
+    findForwards(id, body, params, defaults)
+  }
+  // The structural scan runs once per body. Keep its recursive closures out
+  // of the cached path taken by every subsequent fixpoint round.
+  const findForwards = (id, body, params, defaults) => {
     const bad = new Set(reassignedIn(body, params, defaults))
     const index = (name) => { const i = typeof name === 'string' ? params.indexOf(name) : -1; return i >= 0 && !bad.has(name) ? i : -1 }
     const site = (e) => {
@@ -1650,8 +1844,23 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   // The properties a number, a boolean or a BigInt has: `x.p` of one outside them is undefined.
   const PRIMITIVE_METHODS = new Set(['toString', 'toFixed', 'toExponential', 'toPrecision', 'valueOf', 'toLocaleString', 'constructor'])
   const decided = (c) => {
+    if (typeof c === 'string') return truthyTest(c)
     if (!Array.isArray(c)) return undefined
     const op = c[0]
+    if (op === '()' && c.length === 2) return decided(c[1])   // grouping
+    if (op === '!') { const t = decided(c[1]); return typeof t === 'boolean' ? !t : t }
+    // `&&` false where either operand is, `||` true where either is: the other
+    // operand only decides which falsy (truthy) value the test sees
+    if (op === '&&' || op === '||') {
+      const a = decided(c[1]), b = decided(c[2]), stop = op === '||'
+      if (a === stop || b === stop) return stop
+      if (a === 'pending' || b === 'pending') return 'pending'
+      return a === !stop && b === !stop ? !stop : undefined
+    }
+    if (op === 'instanceof' && typeof c[1] === 'string' && typeof c[2] === 'string') return instanceTest(c[1], c[2])
+    const tp = typeofPredicateOf(c)
+    if (tp) { const t = typeofTest(tp.name, typeof tp.code === 'string' ? tp.code : TYPEOF_NAME[tp.code]); return typeof t === 'boolean' && !tp.eq ? !t : t }
+    if (op === '()' && c.length === 3 && c[1] === 'Array.isArray' && typeof c[2] === 'string') return instanceTest(c[2], 'Array')
     // `x.p` of a value that is a number, a boolean or a BigInt (a missing one
     // throws) is undefined: false, so `if (x.isVector3)` given a number walks
     // its else arm alone (the clone narrow/specialize.js gives the method).
@@ -1664,28 +1873,90 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     }
     if (op !== '===' && op !== '!==' && op !== '==' && op !== '!=') return undefined
     const x = isNullishLiteral(c[2]) ? c[1] : isNullishLiteral(c[1]) ? c[2] : null
-    if (typeof x !== 'string') return undefined
-    const key = keyOf(x)
+    // An argument read by position out of a rest parameter (`arg[0] === undefined`,
+    // the default of a parameter the lowering packed: jzify/arguments.js) is
+    // decided by what every call passes there, the parameter's tuple: missing
+    // past the fewest arguments a call passes.
+    const at = Array.isArray(x) && x[0] === '[]' && typeof x[1] === 'string' && Array.isArray(x[2]) && x[2][0] == null && Number.isInteger(x[2][1]) && x[2][1] >= 0 ? x[2][1] : -1
+    if (typeof x !== 'string' && at < 0) return undefined
+    const key = keyOf(at < 0 ? x : x[1])
     if (key === null) return undefined
-    const k = kinds[key]
+    const row = at < 0 ? null : rowOf(kinds[key] ?? K.NONE)
+    if (at >= 0 && (!row || row.min === undefined)) return row && paramKeys.has(key) ? 'pending' : undefined
+    const k = at < 0 ? kinds[key] : at < row.length ? row[at] : ABSENT
     if (k == null || tagOf(k) === K.NONE) return paramKeys.has(key) ? 'pending' : undefined
     const t = tagOf(k)
     if (t === K.ANY) return undefined
     let eq
     if (!hasTag(k, K.NULLISH) && !hasTag(k, K.ABSENT)) eq = false
     else if ((t === K.NULLISH || t === K.ABSENT) && (op === '==' || op === '!=')) eq = true
-    // a parameter no call passes an argument for is undefined itself: equal
-    // to undefined, unequal to null (`if (n11 !== undefined) this.set(n11, …)`
-    // in Matrix4's constructor forwards nothing when every `new Matrix4()` gives none)
-    else if ((t === K.NULLISH || t === K.ABSENT) && paramKeys.has(ctxBase[key] ?? key) && !argBound.has(key)) eq = isUndefinedLiteral(isNullishLiteral(c[2]) ? c[2] : c[1])
+    else if (t === K.ABSENT && at >= 0) eq = isUndefinedLiteral(isNullishLiteral(c[2]) ? c[2] : c[1])
+    // a named parameter no call passes an argument for is undefined itself:
+    // equal to undefined, unequal to null (`if (n11 !== undefined) this.set(n11, …)`
+    // in Matrix4's constructor forwards nothing when every `new Matrix4()` gives none);
+    // a position of packed arguments has its row above, `null` there as it is
+    else if ((t === K.NULLISH || t === K.ABSENT) && at < 0 && paramKeys.has(ctxBase[key] ?? key) && !argBound.has(key)) eq = isUndefinedLiteral(isNullishLiteral(c[2]) ? c[2] : c[1])
     else return undefined
     return op === '===' || op === '==' ? eq : !eq
   }
-  const OBJECT_PROTO_METHODS = new Set(['hasOwnProperty', 'isPrototypeOf', 'propertyIsEnumerable', 'toString', 'toLocaleString', 'valueOf'])
-  // What a method of `Object.prototype` answers on an object that holds no member of the
-  // name: a truth value from the three tests, the receiver from `valueOf`, a string.
+  // `x instanceof C` of a built-in class C, `Array.isArray(x)`: false where no
+  // value of x has C's tag, true where every value is one (a typed array of C's
+  // element kind, owned or a view). BigInt64Array and BigUint64Array share an aux.
+  const INSTANCE_TAGS = new Map([['Array', K.ARRAY], ['Map', K.MAP], ['Set', K.SET], ['ArrayBuffer', K.BUFFER],
+    ...['Int8Array', 'Uint8Array', 'Uint8ClampedArray', 'Int16Array', 'Uint16Array', 'Int32Array', 'Uint32Array',
+      'Float16Array', 'Float32Array', 'Float64Array', 'BigInt64Array', 'BigUint64Array'].map(c => [c, K.TYPED])])
+  const instanceTest = (name, cls) => {
+    const tag = INSTANCE_TAGS.get(cls)
+    if (tag == null) return undefined
+    const key = keyOf(name)
+    if (key === null) return undefined
+    const k = kinds[key]
+    if (k == null || tagOf(k) === K.NONE) return paramKeys.has(key) ? 'pending' : undefined
+    if (!hasTag(k, tag)) return false
+    if (isNullable(k) || tagOf(core(k)) !== tag) return undefined
+    if (tag !== K.TYPED) return true
+    const aux = typedAux(k)
+    if (aux === UNKNOWN || aux & TYPED_ELEM_BIGINT_FLAG) return undefined
+    const own = typedCtorName(ctorFromElemAux(aux))
+    return own == null ? undefined : own === cls
+  }
+  // A name as a test: false where it only ever holds null or undefined, true
+  // where it only holds objects of any kind (a number, a string, a Boolean
+  // or a BigInt may be falsy).
+  const TRUTHY_TAGS = TAGS & ~(NULL_BITS | bitOf(K.NUMBER) | bitOf(K.STRING) | bitOf(K.BOOL) | bitOf(K.BIGINT))
+  const truthyTest = (name) => {
+    const key = keyOf(name)
+    if (key === null) return undefined
+    const k = kinds[key]
+    if (k == null || tagOf(k) === K.NONE) return paramKeys.has(key) ? 'pending' : undefined
+    const tags = k & TAGS
+    return (tags & ~NULL_BITS) === 0 ? false : (tags & ~TRUTHY_TAGS) === 0 ? true : undefined
+  }
+  // What each `if` and `?:` test decided on every walk: its truth where all
+  // agree, null where one leaves it open (the plan drops a decided test's
+  // other arm, plan/fold-kind-tests.js).
+  const decisions = new Map()
+  const decide = (n, truth) => {
+    if (truth === 'pending') return   // no call has bound the test's parameter yet: a later round decides
+    const t = typeof truth === 'boolean' ? truth : null
+    if (!decisions.has(n)) decisions.set(n, t)
+    else if (decisions.get(n) !== t) decisions.set(n, null)
+  }
+  // `typeof x === t`: false where no value of x has a tag answering t, true
+  // where every value's does. The nullish tag holds null ('object') and
+  // undefined ('undefined') alike, so it decides neither of those two.
+  const typeofTest = (name, t) => {
+    const may = TYPEOF_TAGS[t]
+    if (may === undefined) return undefined
+    const key = keyOf(name)
+    if (key === null) return undefined
+    const k = kinds[key]
+    if (k == null || tagOf(k) === K.NONE) return paramKeys.has(key) ? 'pending' : undefined
+    const tags = k & TAGS, sure = t === 'object' || t === 'undefined' ? may & ~bitOf(K.NULLISH) : may
+    return (tags & may) === 0 ? false : (tags & ~sure) === 0 ? true : undefined
+  }
+  // The tests of `Object.prototype`: a truth value whatever the receiver's kind.
   const OBJECT_PROTO_TESTS = new Set(['hasOwnProperty', 'propertyIsEnumerable', 'isPrototypeOf'])
-  const protoResult = (name, recv) => OBJECT_PROTO_TESTS.has(name) ? BOOL : name === 'valueOf' ? recv : STRING
   const builtinReceiverTag = t => t === K.ARRAY || t === K.TYPED ||
     t === K.MAP || t === K.SET || t === K.REGEX || t === K.CLOSURE
   const markBuiltinOwn = (t, prop) => {
@@ -1856,6 +2127,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   }
   const method = (recv, name, base, n, node = null) => {
     const t = tagOf(recv)
+    if (name === 'hasOwnProperty' || name === 'propertyIsEnumerable') seeKeys(recv)
     // `f.m(…)` on a function `f` whose property `m` prepare lifted to the
     // function `f$m` (a class's static, a parser's table): that function is
     // called, as the emitter calls it (method-dispatch.js tryFnPropCall).
@@ -1870,7 +2142,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     // An Object.prototype method on a dictionary, a mixed value or an object
     // of unknown shape sees its arguments and retains nothing.
     if ((t === K.HASH || dictOrObject(recv) || (t === K.OBJECT && paramOf(recv) === UNKNOWN)) && OBJECT_PROTO_METHODS.has(name) && !memberMayBeOwn(name))
-      return protoResult(name, recv)
+      return objectProtoResult(recv, name)
     // One of its tests on a value of several kinds answers a truth value whatever the kind
     // (`own( o, k )` called with an object, an array and a string), as the emitter types it.
     if (t === K.ANY && OBJECT_PROTO_TESTS.has(name) && !memberMayBeOwn(name)) return BOOL
@@ -1904,6 +2176,13 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     const classFn = classMember(recv, name)
     if (classFn) { const r = callWith(classFn, core(recv), base, n); if (memberMayBeOwn(name)) escapeArgs(base, n); return memberResult(recv, name, r) }
     const candidates = callCandidates(recv, name, base, n)
+    // A shape beside primitives (`merge`'s mixed cell: a factory's object in a
+    // promise's value beside the numbers other promises settle with) calls the
+    // closure its shapes hold under the name, as a read of it answers (`member`).
+    if (dictOrObject(recv)) {
+      const fk = member('.', recv, name)
+      if (tagOf(fk) === K.CLOSURE && paramOf(fk) !== UNKNOWN) return merge(candidates, callClosure(paramOf(fk), base, n, node, recv))
+    }
     // A proven builtin receiver still permits an own data property to shadow
     // its prototype method. The packed summary does not retain per-instance
     // sidecar values, so decline to ANY rather than assert the builtin result.
@@ -1924,9 +2203,10 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       if (iterFacts(sid)) return iterMethod(node, sid, name, base, n)
       if (i >= 0 || schemas[sid].includes(getterOf(name))) {
         const fk = i >= 0 ? slots(sid)[i] : member('.', recv, name)
-        if (tagOf(fk) === K.CLOSURE && paramOf(fk) !== UNKNOWN) return callClosure(paramOf(fk), base, n, node, recv)
+        const inherited = deletable.has(sid) && OBJECT_PROTO_METHODS.has(name) ? objectProtoResult(recv, name) : K.NONE
+        if (tagOf(fk) === K.CLOSURE && paramOf(fk) !== UNKNOWN) return merge(inherited, callClosure(paramOf(fk), base, n, node, recv))
         // a slot holding nothing yet, or only nullish, is a call that throws
-        if (tagOf(core(fk)) === K.NONE) return K.NONE
+        if (tagOf(core(fk)) === K.NONE) return inherited
         escapeArgs(base, n)
         return ANY
       }
@@ -1942,8 +2222,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
         escapeArgs(base, n)
         return ANY
       }
-      // an object of a known shape answers as one of an unknown shape does
-      return OBJECT_PROTO_METHODS.has(name) ? protoResult(name, recv) : K.NONE
+      return OBJECT_PROTO_METHODS.has(name) ? objectProtoResult(recv, name) : K.NONE
     }
     // A member of an object of a shape the summary lost is one of the
     // program's own: a class member of the name (the candidates above) or a
@@ -1956,6 +2235,11 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       if (tagOf(fk) === K.CLOSURE && paramOf(fk) !== UNKNOWN) return merge(candidates, callClosure(paramOf(fk), base, n, node, recv))
       if (tagOf(core(fk)) === K.NONE) return candidates
     }
+    // A value of unknown or several kinds may be such an object too (an
+    // awaited value: every promise's value slot holds what the host settles):
+    // the closure a shape holds under the name runs, and the arguments still
+    // reach whatever else the value may be (below).
+    if (t === K.ANY && hasTag(recv, K.OBJECT)) { const fk = lostObjectRead(name, false); if (tagOf(fk) === K.CLOSURE && paramOf(fk) !== UNKNOWN) callClosure(paramOf(fk), base, n, node, recv) }
     if (t === K.TYPED) {
       const same = typedMethodKind(name, recv)
       if (same !== null) { if (name === 'map' || name === 'filter' || name === 'sort') escapeArgs(base, n); return same }
@@ -2115,6 +2399,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   // or a computed key is shaped by its sources, each round.
   const NO_SID = -1, DYNAMIC_LITERAL = -2
   const literalSids = new Map()   // `{}` node → sid, NO_SID (its own shape, unregistered) or DYNAMIC_LITERAL
+  const unnamed = new Map()       // schema key → the names of a spread's layout no literal registers
   const literalSid = (n) => {
     let sid = literalSids.get(n)
     if (sid === undefined) {
@@ -2148,8 +2433,8 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     // The single-source lowering clones its runtime representation. A clone
     // may share conservative content facts without sharing runtime storage;
     // a source with an accessor copies its values instead (below).
-    if (n.length === 2 && n[1]?.[0] === '...') {
-      const source = expr(n[1][1]), t = tagOf(source)
+    if (n.length === 2 && n[1]?.[0] === '...' && !spreadExclusions(n[1])) {
+      const source = spreadSource(n[1]), t = tagOf(source)
       if (t === K.NONE) return K.NONE
       if (!viewed(source)) return !isNullable(source) && (t === K.OBJECT || t === K.HASH) ? source : cellOf(n, K.HASH, ANY)
     }
@@ -2163,19 +2448,30 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
         else add(p[1], init?.has(p[1]) && isNullishLit(p[2]) ? K.NONE : expr(p[2]))
       } else if (typeof p === 'string') add(p, expr(p))
       else if (Array.isArray(p) && p[0] === '...') {
-        const source = expr(p[1]), ids = tagOf(source) === K.OBJECT && paramOf(source) !== UNKNOWN ? shapesOf(paramOf(source)) : [], sourceSid = ids[0]
+        const source = spreadSource(p), ids = tagOf(source) === K.OBJECT && paramOf(source) !== UNKNOWN ? shapesOf(paramOf(source)) : [], sourceSid = ids[0]
+        // the copy holds the keys the source has (a lone source's copy is its kind: its readers mark it)
+        seeKeys(source)
+        // An object rest skips the keys its pattern named; one known only at
+        // run time leaves the copy a dictionary (module/object.js mergeSpreadNames).
+        const skip = spreadExclusions(p)
+        if (skip) for (const e of skip.exprs) expr(e)
+        const put = (name, value) => { if (!skip?.names.includes(name)) add(name, value) }
         // An unsolved source is not an open dictionary. Still visit every
         // initializer, but defer the layout instead of irreversibly escaping
         // its known sibling values during an early solver round.
         if (tagOf(source) === K.NONE) { pending = true; continue }
+        // A source that only ever holds null or undefined spreads no key: the
+        // copy stays a dictionary (its keys are known at run time), its named
+        // entries the other sources' and the literal's own.
+        if (tagOf(source) === K.NULLISH || tagOf(source) === K.ABSENT) { dynamic = true; continue }
         // A dictionary source fills a dictionary: its named entries, its
         // entries under unknown names, and the fields of the shapes it carries.
         if (p[1]?.[0] !== '&&' && !isNullable(source) && isDict(source) && !cellLostObject.has(cell(paramOf(source)))) {
           const c = cell(paramOf(source))
           dynamic = true
-          if (keyedCells.has(c)) { for (const [name, k] of cellProps.get(c) ?? []) add(name, k); wildKind = merge(wildKind, cellWild.get(c) ?? K.NONE) }
+          if (keyedCells.has(c)) { for (const [name, k] of cellProps.get(c) ?? []) put(name, k); wildKind = merge(wildKind, cellWild.get(c) ?? K.NONE) }
           else wildKind = merge(wildKind, elemOf(source))
-          for (const sid of shapesInCell(c)) { if (openSchemas.has(sid) || lostSchema(sid)) { wildKind = ANY; continue } for (const [key, k] of ownEntries(sid)) add(key, k) }
+          for (const sid of shapesInCell(c)) { if (openSchemas.has(sid) || lostSchema(sid)) { wildKind = ANY; continue } for (const [key, k] of ownEntries(sid)) put(key, k) }
           continue
         }
         // Conditional insertion uses a dictionary even when every present
@@ -2190,23 +2486,23 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
         if (isNullable(source) || ids.some(sid => openSchemas.has(sid))) {
           dynamic = true
           for (const sid of ids) {
-            for (const [key, k] of ownEntries(sid)) add(key, k)
-            for (const [name, k] of sideProps.get(sid) ?? []) add(name, k)
+            for (const [key, k] of ownEntries(sid)) put(key, k)
+            for (const [name, k] of sideProps.get(sid) ?? []) put(name, k)
             if (sideWild.has(sid)) wildKind = merge(wildKind, sideWild.get(sid))
           }
           continue
         }
         // Sources of different layouts fill a dictionary: the entry under a
         // name is what the sources holding it store, absent for the others.
-        if (ids.some(sid => layouts[sid] !== layouts[sourceSid])) {
+        if (ids.some(sid => layouts[sid] !== layouts[sourceSid]) || skip?.exprs.length) {
           dynamic = true
           const own = ids.map(sid => new Map(ownEntries(sid)))
           const keys = new Set(); for (const m of own) for (const key of m.keys()) keys.add(key)
-          for (const key of keys) { let value = K.NONE; for (const m of own) value = merge(value, m.has(key) ? m.get(key) : ABSENT); add(key, value) }
+          for (const key of keys) { let value = K.NONE; for (const m of own) value = merge(value, m.has(key) ? m.get(key) : ABSENT); put(key, value) }
           continue
         }
         const own = ids.map(ownEntries)
-        own[0].forEach(([key], j) => { let value = K.NONE; for (const entries of own) value = merge(value, entries[j][1]); add(key, value) })
+        own[0].forEach(([key], j) => { let value = K.NONE; for (const entries of own) value = merge(value, entries[j][1]); put(key, value) })
       } else {
         if (Array.isArray(p)) for (let j = 1; j < p.length; j++) escape(expr(p[j]))
         dynamic = true; wildKind = ANY
@@ -2227,6 +2523,10 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     }
     const layout = sidByKey.get(schemaKey(names, brand)), sid = layout === undefined ? -1 : objectSite(n, layout)
     if (sid < 0) {
+      // A layout no literal names (its sources' shapes known here only): the
+      // compile names it for the next summary (compile/index.js), the layout
+      // the emitter builds (module/object.js mergeSpreadNames).
+      if (layout === undefined && !brand) unnamed.set(schemaKey(names, null), names)
       for (const [, v] of writes) escape(v)
       // A spread's representation still depends on its sources.
       return kind(K.OBJECT) | bitOf(K.HASH)
@@ -2237,6 +2537,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   /** A static literal: each value into its slot, or escaped when the registry has not named the shape. */
   const staticLiteral = (n, sid) => {
     sid = objectSite(n, sid)
+    if (sid >= 0 && layouts[sid] === RESULT_LAYOUT && !doneSites.has(sid) && n.some(p => Array.isArray(p) && p[0] === ':' && p[1] === 'done' && Array.isArray(p[2]) && p[2][0] == null && p[2][1] === true)) doneSites.add(sid)
     const init = definite.get(n)
     for (let i = 1; i < n.length; i++) {
       const p = n[i]
@@ -2247,6 +2548,13 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     }
     // A static literal has its own shape even when the registry has not named it.
     if (sid === NO_SID) return kind(K.OBJECT)
+    // A binding's schema may hold fields the program adds later (`let st = {}`,
+    // then `st.history = []`): the literal leaves them undefined until then.
+    if (schemas[sid].length > n.length - 1) {
+      const named = new Set()
+      for (let i = 1; i < n.length; i++) named.add(typeof n[i] === 'string' ? n[i] : n[i][1])
+      schemas[sid].forEach((name, i) => { if (!named.has(name)) raiseSlot(sid, i, ABSENT) })
+    }
     return objectKind(n, sid)
   }
   /** A member read `recv.prop` (`op`: `.` or `?.`). */
@@ -2261,6 +2569,13 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     if (pendingAll) k = merge(k, wildValues)
     for (const [sid, i] of byProp.get(prop) ?? NO_SLOTS) k = merge(k, slots(sid)[i])
     return k
+  }
+  // A read that answers with no kind a later use can follow: the value a lost
+  // shape holds under the name is used where the summary cannot see (the
+  // escape `loseShape` spares a name `lostObjectRead` answers).
+  const escapeLostReads = (prop) => {
+    for (const [sid, i] of byProp.get(prop) ?? NO_SLOTS) if (lostSchema(sid)) escape(slots(sid)[i])
+    escape(sideByProp.get(prop) ?? K.NONE)
   }
   const member = (op, recv, prop) => {
     const t = tagOf(recv)
@@ -2279,11 +2594,13 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       if (shadowed) { callWith(binderOf(shadowed), core(recv)); return optionalResult(op, recv, ANY) }
       if (i >= 0) return optionalResult(op, recv, slots(paramOf(recv))[i])
       const gi = schemas[paramOf(recv)].indexOf(getterOf(prop))
-      // a deleted accessor reads as absent, or as whatever a store added under its name
-      if (gi >= 0 && deletable.has(paramOf(recv))) return optionalResult(op, recv, ANY)
       if (gi >= 0) {
         const g = slots(paramOf(recv))[gi]
-        return optionalResult(op, recv, knownClosure(g) ? callClosure(paramOf(g), sp, 0, null, recv) : tagOf(g) === K.NONE ? K.NONE : ANY)
+        const value = knownClosure(g) ? callClosure(paramOf(g), sp, 0, null, recv) : tagOf(g) === K.NONE ? K.NONE : ANY
+        // Deletion may expose a later data property. Still reach the getter
+        // and its returned closures on paths where the accessor survives.
+        if (deletable.has(paramOf(recv))) { escape(value); return optionalResult(op, recv, ANY) }
+        return optionalResult(op, recv, value)
       }
       // a class's getter, or a method read as a value: bound by its binder
       const getter = classMember(recv, getterOf(prop))
@@ -2310,6 +2627,9 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       return optionalResult(op, recv, k)
     }
     if (t === K.OBJECT) return optionalResult(op, recv, lostObjectRead(prop))
+    // A value of several kinds may be an object of a shape the join lost: a
+    // lost shape's value of the name read through it leaves the summary.
+    if (t === K.ANY && hasTag(recv, K.OBJECT)) escapeLostReads(prop)
     if (t === K.HASH) return optionalResult(op, recv, orAbsent(hashPropOf(recv, prop)))
     if (isCount(prop, recv)) return optionalResult(op, recv, NUMBER)
     if (prop === 'buffer' && t === K.TYPED) return optionalResult(op, recv, kind(K.BUFFER))
@@ -2338,7 +2658,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     if (typeof n === 'number') return NUMBER
     if (typeof n === 'string') {
       const key = keyOf(n)
-      if (key === null) return funcByName.has(n) ? kind(K.CLOSURE, closureSet([n])) : ANY  // a name from outside the program
+      if (key === null) return funcByName.has(n) ? kind(K.CLOSURE, closureSet([n])) : outsideKind(n)  // a name from outside the program
       if (bindingScope[key] !== (current ?? MODULE)) {
         let keys = captures.get(current)
         if (!keys) captures.set(current, keys = new Set())
@@ -2381,7 +2701,8 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       const recv = receiver(n[1]), prop = n[2]
       if (op === '?.' && tagOf(core(recv)) === K.NONE) return NULLISH
       if (typeof prop !== 'string') { expr(prop); return optionalResult(op, recv, tagOf(recv) === K.NONE ? K.NONE : ANY) }
-      return member(op, recv, prop)
+      const k = member(op, recv, prop), pk = op === '.' && rtop ? pathKey(n) : null, pmask = pk === null ? undefined : refined.get(pk)
+      return pmask === undefined ? k : refine(k, pmask)
     }
     if (op === '[]') {
       const recv = receiver(n[1]), idx = n[2], t = tagOf(recv)
@@ -2401,6 +2722,8 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
         // An index the fixed length holds reads an element, never past the end.
         const span = spanOf(idx)
         if (span && span[0] >= 0 && span[1] < fixedLen(recv)) { presentReads.add(n); return entryOf(recv, ik) }
+        // So does a counter the loop bounds by the array's own length (`c < inp.length`).
+        if (typeof idx === 'string' && typeof n[1] === 'string' && lenBounds.get(idx) === keyOf(n[1]) && stable(n[1], current ?? MODULE) && fixedLen(recv) >= 0) { presentReads.add(n); return entryOf(recv, ik) }
         presentReads.delete(n)
         return orAbsent(entryOf(recv, ik))
       }
@@ -2417,18 +2740,23 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       }
       return ANY
     }
+    if (op === '(') return expr(n[1])
     if (op === '()' || op === '?.()') {
       if (n.length === 2 && op === '()') return expr(n[1])  // a grouping `(e)`: a call always carries its argument slot
-      const callee = n[1], base = pushArgs(op === '?.()' ? [',', ...n.slice(2)] : n[2]), count = sp - base
+      const callee = n[1]
+      // The receiver is evaluated before arguments can reassign its binding.
+      const memberCall = Array.isArray(callee) && (callee[0] === '.' || callee[0] === '?.') && typeof callee[2] === 'string'
+      const recv = memberCall ? receiver(callee[1]) : null
+      const base = pushArgs(op === '?.()' ? [',', ...n.slice(2)] : n[2]), count = sp - base
+      if (KEY_READERS.has(callee)) for (let i = KEY_TARGETS.has(callee) ? 1 : 0; i < count; i++) seeKeys(ks[base + i])
       let r
       // An optional call: a callee of no kind yet calls nothing, a nullish one answers undefined.
       let optional = null
       if (op === '?.()') {
-        optional = Array.isArray(callee) && (callee[0] === '.' || callee[0] === '?.') && typeof callee[2] === 'string' ? member(callee[0], receiver(callee[1]), callee[2]) : expr(callee)
+        optional = memberCall ? member(callee[0], recv, callee[2]) : expr(callee)
         if (tagOf(optional) === K.NONE) { sp = base; return K.NONE }
       }
-      if (Array.isArray(callee) && (callee[0] === '.' || callee[0] === '?.') && typeof callee[2] === 'string') {
-        const recv = receiver(callee[1])
+      if (memberCall) {
         r = optionalResult(callee[0], recv, method(recv, callee[2], base, count, n))
       }
       else if (callee === 'new.Map') r = mapOf(n, base, count)
@@ -2462,7 +2790,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       return optional !== null && (hasTag(optional, K.NULLISH) || hasTag(optional, K.ABSENT)) ? join(r, NULLISH) : r
     }
     if (MUTATE_OPS.has(op)) return assign(op, n[1], n[2])
-    if (isPostfixRecovery(op, n[1], n[2])) return expr(n[1])
+    if (op === 'postfix') return expr(n[1])
     if (op === '+') return plus(expr(n[1]), expr(n[2]))
     if (NUMBER_OPS.has(op) || op === 'u-') { let k = n.length > 2 ? expr(n[1]) : arith(op, expr(n[1])); for (let i = 2; i < n.length; i++) k = arith(op, k, expr(n[i])); return k }
     if (op === '+1' || op === '-1') return arith(op, expr(n[1]))  // a member's ++/-- (prepare)
@@ -2470,7 +2798,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     if (BOOL_OPS.has(op)) {
       // Loose equality, ordering and property-key tests may coerce their values.
       const passive = op === '!' || op === '===' || op === '!=='
-      for (let i = 1; i < n.length; i++) passive ? selectedExpr(n[i], 0) : expr(n[i])
+      for (let i = 1; i < n.length; i++) { const k = passive ? selectedExpr(n[i], 0) : expr(n[i]); if (op === 'in' && i === 2) seeKeys(k) }
       return BOOL
     }
     if (logical) {
@@ -2486,13 +2814,14 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     if (op === '?' || op === '?:') {
       selectedExpr(n[1], 0)
       const truth = decided(n[1])
+      decide(n, truth)
       if (truth === 'pending') return K.NONE
       branch++
       const mark = rtop
-      proves(n[1], true)
+      pathProofs = still(n[2]); proves(n[1], true); pathProofs = false
       const a = truth === false ? K.NONE : selectedExpr(n[2], mask)
       unwind(mark)
-      proves(n[1], false)
+      pathProofs = still(n[3]); proves(n[1], false); pathProofs = false
       const b = truth === true ? K.NONE : selectedExpr(n[3], mask)
       unwind(mark)
       branch--
@@ -2707,7 +3036,9 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   // A declaration without a value is absent until assigned (`let buf; export
   // const setup = () => buf = new Float64Array(n)`: a read before `setup` is one
   // the program does not mean to make), unless its function assigns it before
-  // every read (definite.js): that one never shows what it was declared with.
+  // every read (definite.js): that one never shows what it was declared with,
+  // nor does one a lowering moved ahead of the statements initializing its
+  // bindings (src/ast.js TDZ).
   const assignedFirst = new Map()   // function or closure → its bare declarations assigned before every read
   // The module's own: its statements run once, in order, and a function runs
   // where one names it or, called by the host, after they end, so a name a
@@ -2716,20 +3047,36 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   let assignedModule = null
   const moduleAssigned = () => {
     if (assignedModule) return assignedModule
-    const mentioned = new Map()   // function name → the names its frame mentions, through the functions it names
+    const mentioned = new Map()   // function name → the names its own frame mentions
     const scan = (n, out) => { if (typeof n === 'string') out.add(n); else if (Array.isArray(n) && n[0] !== 'str') for (let i = 1; i < n.length; i++) scan(n[i], out) }
-    for (const f of funcs) { const s = new Set(); scan(f.body, s); if (f.defaults) for (const d of Object.values(f.defaults)) scan(d, s); mentioned.set(f.name, s) }
-    for (let grew = true; grew;) { grew = false; for (const s of mentioned.values()) for (const x of [...s]) { const t = mentioned.get(x); if (t && t !== s) for (const y of t) if (!s.has(y)) { s.add(y); grew = true } } }
+    for (const f of funcs) { const s = new Set(); scan(f.body, s); if (f.defaults) for (const d of Object.values(f.defaults)) scan(d, s); mentioned.set(f.name, [...s]) }
+    // Walk only the frames a read reaches. Reuse the work list and generation
+    // marks across reads; no function retains a transitive set of all names.
+    const seen = new Map(), pending = []
+    let generation = 0
+    const visit = (roots, read) => {
+      generation++
+      const enqueue = name => {
+        const names = mentioned.get(name)
+        if (!names || seen.get(name) === generation) return
+        seen.set(name, generation); pending.push(names)
+      }
+      for (const root of roots) enqueue(root)
+      while (pending.length) for (const name of pending.pop()) { read(name); enqueue(name) }
+    }
     const later = new Set()
+    // The union is identical before or after transitive expansion: every
+    // reachable mention already belongs to one of these frames.
     for (const s of mentioned.values()) for (const x of s) later.add(x)
-    assignedModule = definitelyAssigned([';', ...tops], name => mentioned.get(name), later)
+    assignedModule = definitelyAssigned([';', ...tops], (name, read) => visit([name], read), later)
     // A class member or an accessor runs where a member is read, stored or
     // called, and that names no function (`a.k` before `V.prototype.k = v`
     // reads the member's binding through its getter): what such a function
     // reads, through the functions it names, keeps its absence.
-    const unnamed = (fn) => { for (const x of mentioned.get(fn) ?? []) assignedModule.delete(x) }
-    for (const f of funcs) if (f.name.includes(CLASS_T) || f.name.endsWith(ACCESSOR_GET) || f.name.endsWith(ACCESSOR_SET)) unnamed(f.name)
-    if (classes) for (const e of classes.values()) for (const fn of e.methods.values()) unnamed(fn)
+    const unnamed = []
+    for (const f of funcs) if (f.name.includes(CLASS_T) || f.name.endsWith(ACCESSOR_GET) || f.name.endsWith(ACCESSOR_SET)) unnamed.push(f.name)
+    if (classes) for (const e of classes.values()) for (const fn of e.methods.values()) unnamed.push(fn)
+    visit(unnamed, name => assignedModule.delete(name))
     return assignedModule
   }
   const bare = (name) => {
@@ -2739,9 +3086,10 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     return names.has(name) ? K.NONE : ABSENT
   }
   const decl = (n) => {
+    const tdz = isTdzDecl(n)
     for (let i = 1; i < n.length; i++) {
       const d = n[i]
-      if (typeof d === 'string') declare(d, bare(d))
+      if (typeof d === 'string') declare(d, tdz ? K.NONE : bare(d))
       else if (Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string') {
         if (n[0] === 'const') {
           if (Array.isArray(d[2]) && d[2][0] == null && Number.isInteger(d[2][1])) ints.set(d[1], d[2][1])
@@ -2796,6 +3144,23 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   const MODULE = ''
   const nameKeys = new Map()         // name → binding ids (one, or a function and its specialized variants)
   const writes = []                 // collected beside declarations; one initializer proves a fixed extent
+  // The stores of a binding by their syntax, in every body, walked or not: a
+  // body no walk reaches keeps no kind, and its bindings answer by these
+  // (`storeBits`): 1 a store that may be a Boolean, 2 one that may be another
+  // value (a declaration without one holds undefined; a parameter what a call passes).
+  const storeWrites = []            // [scope, name, bits]
+  // A Boolean by its syntax: a literal, a comparison, a predicate builtin (`Array.isArray`).
+  const bool = (e) => e[0] === 'bool' || (e[0] == null && typeof e[1] === 'boolean') || BOOL_OPS.has(e[0]) ||
+    (e[0] === '()' && e.length === 3 && typeof e[1] === 'string' && builtinCalleeVal(e[1]) === VAL.BOOL)
+  // May be a Boolean: one, or a merge with one for an arm.
+  const boolish = (e) => Array.isArray(e) && (bool(e) ||
+    ((e[0] === '&&' || e[0] === '||' || e[0] === '??' || e[0] === '=') && (boolish(e[1]) || boolish(e[2]))) ||
+    (e[0] === '?:' && (boolish(e[2]) || boolish(e[3]))) || ((e[0] === ',' || e[0] === '()' && e.length === 2) && boolish(e[e.length - 1])))
+  // Only a Boolean: one, or a merge of them.
+  const onlyBool = (e) => Array.isArray(e) && (bool(e) ||
+    ((e[0] === '&&' || e[0] === '||' || e[0] === '??') && onlyBool(e[1]) && onlyBool(e[2])) || (e[0] === '=' && onlyBool(e[2])) ||
+    (e[0] === '?:' && onlyBool(e[2]) && onlyBool(e[3])) || ((e[0] === ',' || e[0] === '()' && e.length === 2) && onlyBool(e[e.length - 1])))
+  const storeBitsOf = (e) => e === undefined ? 2 : (boolish(e) ? 1 : 0) | (onlyBool(e) ? 0 : 2)
   const declareIn = (scope, name) => {
     let d = declared.get(scope)
     if (!d) declared.set(scope, d = new Map())
@@ -2821,7 +3186,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     if (op === 'let' || op === 'const') {
       for (let i = 1; i < n.length; i++) {
         const d = n[i], name = typeof d === 'string' ? d : d?.[0] === '=' ? d[1] : null
-        if (typeof name === 'string') { declareIn(scope, name); writes.push(typeof d === 'string' ? [scope, name, null, true] : [scope, name, d[2]]) }
+        if (typeof name === 'string') { declareIn(scope, name); writes.push(typeof d === 'string' ? [scope, name, null, true] : [scope, name, d[2]]); storeWrites.push([scope, name, storeBitsOf(typeof d === 'string' ? undefined : d[2])]) }
         if (Array.isArray(d)) collect(d[2], scope)
       }
       return
@@ -2838,7 +3203,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       return
     }
     else if (op === 'catch' && typeof n[2] === 'string') declareIn(scope, n[2])
-    if (MUTATE_OPS.has(op) && typeof n[1] === 'string') writes.push([scope, n[1], straight && scope === MODULE && op === '=' ? n[2] : null])
+    if (MUTATE_OPS.has(op) && typeof n[1] === 'string') { writes.push([scope, n[1], straight && scope === MODULE && op === '=' ? n[2] : null]); storeWrites.push([scope, n[1], op === '=' || op === '||=' || op === '&&=' || op === '??=' ? storeBitsOf(n[2]) : 2]) }
     // Writes make an empty literal a dictionary unless it has a materialized schema.
     if (MUTATE_OPS.has(op) && Array.isArray(n[1]) && (n[1][0] === '[]' || n[1][0] === '.')) { let root = n[1][1]; while (Array.isArray(root) && root[0] === '[]') root = root[1]; if (typeof root === 'string') dictUses.push([scope, root]) }
     if (op === '()' && n[1] === 'Object.assign') { const t = args(n[2])[0]; if (typeof t === 'string') dictUses.push([scope, t]) }
@@ -2901,6 +3266,9 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       if (!initWrites.has(name)) raise(kinds, key, NULLISH)
     }
   current = null
+  const storeBits = new Map()        // binding id → the bits of its stores by syntax
+  for (const key of paramKeys) storeBits.set(key, 2)
+  for (const [scope, name, bits] of storeWrites) { const key = keyOf(name, scope); if (key !== null) storeBits.set(key, (storeBits.get(key) ?? 0) | bits) }
   // A binding's one definition: its declaration's value, or the one value a
   // statement of the module assigns it where no read sees it unassigned
   // (`let HIGH` then `HIGH = 1`: the bare declaration writes nothing a read finds).
@@ -3060,11 +3428,14 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     if (op === 'let' || op === 'const') return decl(n)
     if (op === 'return') { if (current != null) raiseResult(current, n.length > 1 ? expr(n[1]) : NULLISH); return }
     if (op === ';' || op === '{}') {
-      // A guard that leaves (`if (x == null) return`) proves its names for the statements after it.
+      // A guard that leaves (`if (x == null) return`) proves its names for the
+      // statements after it; a statement that always leaves ends the list:
+      // what follows it never runs, so none of its values reach anything.
       const mark = rtop
       for (let i = 1; i < n.length; i++) {
         noteDefinite(n, i); stmt(n[i])
         const st = n[i]
+        if (exits(st)) break
         if (Array.isArray(st) && st[0] === 'if' && st[3] == null && exits(st[2])) proves(st[1], false)
       }
       unwind(mark)
@@ -3086,6 +3457,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     if (op === 'if') {
       selectedExpr(n[1], 0)
       const truth = decided(n[1])
+      decide(n, truth)
       if (truth === 'pending') return
       branch++
       const mark = rtop
@@ -3163,16 +3535,39 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   const refined = new Map() // binding id → the tag bits its kind is read within
   const rKeys = [], rPriors = []
   let rtop = 0
-  const refineName = (name, mask) => {
-    const key = keyOf(name)
+  const refineName = (name, mask) => refineKey(keyOf(name), mask)
+  const refineKey = (key, mask) => {
     if (key === null) return
     const prior = refined.get(key)
     if (rtop === rKeys.length) { rKeys.push(key); rPriors.push(prior) } else { rKeys[rtop] = key; rPriors[rtop] = prior }
     rtop++
-    refined.set(key, (prior ?? TAGS) & mask)
+    refined.set(key, (prior ?? (TAGS | UNKNOWN)) & mask)
   }
   const unwind = (mark) => { while (rtop > mark) { rtop--; const key = rKeys[rtop], prior = rPriors[rtop]; if (prior === undefined) refined.delete(key); else refined.set(key, prior) } }
-  const refine = (k, mask) => { const r = k & (mask | UNKNOWN); return (r & TAGS) === 0 ? 0 : r }
+  // A mask's tags keep those of the kind; its own parameter, where it has one
+  // (a typed array's element kind a class test proves), fills an unknown one:
+  // no element kind, or a number of one of several (a Float32Array or a Float64Array).
+  const refine = (k, mask) => {
+    let r = k & ((mask & TAGS) | UNKNOWN)
+    const p = mask & UNKNOWN
+    if (p !== 0 && typedAux(r) === UNKNOWN) r = (r & TAGS) | p
+    return (r & TAGS) === 0 ? 0 : r
+  }
+  // A member path (`params.coefs`: a binding and literal keys) a test refines
+  // inside an arm of a conditional that neither calls nor stores, so nothing
+  // can change what the path holds before the arm reads it.
+  // a data property's: a getter runs on each read, so two reads of its name need not agree
+  const pathKey = (n) => {
+    const keys = []
+    while (Array.isArray(n) && n[0] === '.' && typeof n[2] === 'string') { keys.push(n[2]); n = n[1] }
+    if (typeof n !== 'string' || !keys.length || !keys.every(dataProperty)) return null
+    const key = keyOf(n)
+    return key === null ? null : '\0' + key + '\0' + keys.reverse().join('\0')
+  }
+  const STILL = new Set(['()', '?.()', 'new', 'delete', 'await', 'yield', '++', '--', '+1', '-1'])
+  const still = (n) => !Array.isArray(n) || n[0] == null || n[0] === 'str' || n[0] === '=>' ||
+    (!STILL.has(n[0]) && !MUTATE_OPS.has(n[0]) && n.every((c, i) => i === 0 || still(c)))
+  let pathProofs = false
   const NOT_NULLISH = TAGS & ~NULL_BITS
   const TYPEOF_TAGS = {
     number: bitOf(K.NUMBER), string: bitOf(K.STRING), boolean: bitOf(K.BOOL), bigint: bitOf(K.BIGINT), function: bitOf(K.CLOSURE),
@@ -3192,6 +3587,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   // under such a guard is a number, not the parameter's own value: libm's
   // `if ( isnan( x ) ) { return x; }` keeps the export's f64 contract.
   const NO_NAMES = new Set()
+  const intersectNames = (a, b) => { const out = new Set(); for (const name of a) if (b.has(name)) out.add(name); return out }
   const numericPredicates = new Map()   // function name → the parameter indices its true result proves numbers
   const isNumLit = (b) => typeof b === 'number' || b === 'Infinity' || b === 'NaN' ||
     (Array.isArray(b) && ((b[0] == null && typeof b[1] === 'number') || b[0] === 'nan' || ((b[0] === 'u-' || b[0] === '-') && b.length === 2 && isNumLit(b[1]))))
@@ -3199,11 +3595,11 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     if (!Array.isArray(c)) return NO_NAMES
     const op = c[0]
     if (op === '!') return numericProofs(c[1], !when, isNum)
-    if (op === '()' && c.length === 2) return numericProofs(c[1], when, isNum)
+    if ((op === '(' || op === '()' && c.length === 2)) return numericProofs(c[1], when, isNum)
     if (op === '&&' || op === '||' || op === '__eager&&' || op === '__eager||') {   // prepare's eager forms are the same tests
       const a = numericProofs(c[1], when, isNum), b = numericProofs(c[2], when, isNum)
       if ((op === '&&' || op === '__eager&&') === when) return !a.size ? b : !b.size ? a : new Set([...a, ...b])
-      return a.size && b.size ? new Set([...a].filter(name => b.has(name))) : NO_NAMES
+      return a.size && b.size ? intersectNames(a, b) : NO_NAMES
     }
     if (!when) return NO_NAMES
     if (op === '!==' && typeof c[1] === 'string' && c[1] === c[2]) return new Set([c[1]])
@@ -3216,13 +3612,14 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       let proven = numericPredicates.get(c[1])
       if (proven === undefined) {
         numericPredicates.set(c[1], proven = [])   // a predicate calling itself proves nothing
-        const f = funcByName.get(c[1]), params = (f.sig?.params ?? []).map(p => p.name)
+        const f = funcByName.get(c[1]), params = f.sig?.params ?? []
         let body = f.body
         if (Array.isArray(body) && body[0] === '{}') body = body[1]
         if (Array.isArray(body) && body[0] === ';') body = body.length === 2 ? body[1] : null
         if (Array.isArray(body) && body[0] === 'return') body = body[1]
         const names = numericProofs(body, true, isNum)
-        proven = params.map((name, i) => names.has(name) ? i : -1).filter(i => i >= 0)
+        proven = []
+        for (let i = 0; i < params.length; i++) if (names.has(params[i].name)) proven.push(i)
         numericPredicates.set(c[1], proven)
       }
       if (!proven.length) return NO_NAMES
@@ -3241,6 +3638,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     if (Array.isArray(b) && b[0] === ';' && b.length === 2) b = b[1]
     return Array.isArray(b) && b[0] === 'return' && Array.isArray(b[1]) && b[1][0] === 'bool' && b[1][1] === 1
   }
+  const allFlags = (id, prop) => { for (const sid of shapesOf(id)) if (!flagOf(sid, prop)) return false; return true }
   /** Push what the condition `c` proves when it is `when`. */
   const proves = (c, when) => {
     if (typeof c === 'string') { if (when) refineName(c, NOT_NULLISH); return }
@@ -3249,7 +3647,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     // `(d = ops[i++])` as a condition: the assigned name is truthy on the path it guards.
     if (op === '=' && typeof c[1] === 'string') { if (when) refineName(c[1], NOT_NULLISH); return }
     if (op === '!') { proves(c[1], !when); return }
-    if (op === '()' && c.length === 2) { proves(c[1], when); return }
+    if ((op === '(' || op === '()' && c.length === 2)) { proves(c[1], when); return }
     if ((op === '&&' && when) || (op === '||' && !when)) { proves(c[1], when); proves(c[2], when); return }
     // `x.p` as a condition (`if (x.isVector3)`): true, `x` is no nullish
     // value; false, `x` is none of its objects when every object it may hold
@@ -3262,10 +3660,34 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       if (when) { refineName(c[1], NOT_NULLISH); return }
       // the parameter names the shapes only where the object is the kind's one heap tag
       const k = expr(c[1]), id = paramOf(k)
-      if (tagOf(core(k)) === K.OBJECT && id !== UNKNOWN && shapesOf(id).every(sid => flagOf(sid, c[2]))) refineName(c[1], TAGS & ~bitOf(K.OBJECT))
+      if (tagOf(core(k)) === K.OBJECT && id !== UNKNOWN && allFlags(id, c[2])) refineName(c[1], TAGS & ~bitOf(K.OBJECT))
       return
     }
     for (const name of numericProofs(c, when, isNumberHere)) refineName(name, bitOf(K.NUMBER))
+    // `Array.isArray(x)`: an array where it holds, anything else where it fails
+    if (op === '()' && c[1] === 'Array.isArray' && c.length === 3) {
+      const mask = when ? bitOf(K.ARRAY) : TAGS & ~bitOf(K.ARRAY)
+      if (typeof c[2] === 'string') refineName(c[2], mask)
+      else if (pathProofs) refineKey(pathKey(c[2]), mask)
+      return
+    }
+    // `x instanceof C` of a built-in class C: a value of C's kind where it
+    // holds; where it fails, none of that kind when every value of it is a C
+    // (an Array, a Map, a Set, a typed array of C's own element kind). A
+    // SharedArrayBuffer shares the buffer kind, so a buffer stays.
+    if (op === 'instanceof' && typeof c[1] === 'string' && typeof c[2] === 'string') {
+      const tag = INSTANCE_TAGS.get(c[2])
+      if (tag == null) return
+      // a typed array of C's element kind, owned or a view: its elements read by that kind
+      if (when) { const aux = tag === K.TYPED ? encodeTypedElemAux(c[2], false) : null; refineName(c[1], bitOf(tag) | (aux == null ? 0 : aux | TYPED_ELEM_VIEW_FLAG | TYPED_ELEM_ANY_VIEW_FLAG)); return }
+      if (tag === K.BUFFER) return
+      if (tag === K.TYPED) {
+        const key = keyOf(c[1]), aux = key === null || kinds[key] == null ? UNKNOWN : typedAux(kinds[key])
+        if (aux === UNKNOWN || aux & TYPED_ELEM_BIGINT_FLAG || typedCtorName(ctorFromElemAux(aux)) !== c[2]) return
+      }
+      refineName(c[1], TAGS & ~bitOf(tag))
+      return
+    }
     const tp = typeofPredicateOf(c)
     if (tp) {
       const bits = TYPEOF_TAGS[typeof tp.code === 'string' ? tp.code : TYPEOF_NAME[tp.code]]
@@ -3278,10 +3700,20 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       }
       return
     }
-    if (typeof c[1] !== 'string' || !isNullishRef(c[2])) return
+    // a name, or a member path in an arm that neither calls nor stores
+    // (`params.x1 != null ? params.x1 : 0`: the arm reads what the test read)
+    const [subject, other] = isNullishRef(c[2]) ? [c[1], c[2]] : isNullishRef(c[1]) ? [c[2], c[1]] : [null, null]
+    if (other == null) return
+    const refineSubject = typeof subject === 'string' ? (mask) => refineName(subject, mask)
+      : pathProofs ? (mask) => refineKey(pathKey(subject), mask) : null
+    if (!refineSubject) return
     // A strict comparison excludes only one sentinel. NULLISH includes both,
     // so its other member must survive (as with the typeof inverse above).
-    if (op === '!=' && when || op === '==' && !when) refineName(c[1], NOT_NULLISH)
+    if (op === '!=' && when || op === '==' && !when) refineSubject(NOT_NULLISH)
+    // Equal to a nullish value, loosely or strictly, the name is one: what the
+    // path does with it (a missing source handed to the protocol that throws
+    // for it) reaches none of its other kinds.
+    if ((op === '==' || op === '===') && when || (op === '!=' || op === '!==') && !when) refineSubject(NULL_BITS)
   }
   /** The statement leaves its list: a return, throw, break or continue; a block ending in one; an
    *  `if` both of whose branches do; a `try` whose block and every catch do (or whose finally does). */
@@ -3372,12 +3804,13 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   }
   const queryFacts = {
     kinds, incoming, fields, results, closures, declared, parent, nameKeys, forwards, siteResults, receivers,
-    scopeOfSig, scopeOfBody, scopeOfParams, cellUp, elems, tuples, lens, stores, built, grown, unknown, presentReads, paramRangesOf, cellProps, cellWild, closureSets, closureSetIds, cells, jsonKinds, closuresByBody, unions, shapeUnions,
-    schemas, layouts, sitesByLayout, objectKinds, methods, sidByKey,
+    scopeOfSig, scopeOfBody, scopeOfParams, cellUp, elems, tuples, lens, stores, built, grown, unknown, presentReads, spreadSources, paramRangesOf, cellProps, cellWild, closureSets, closureSetIds, cells, jsonKinds, closuresByBody, unions, shapeUnions,
+    schemas, layouts, sitesByLayout, foldedLayouts, objectKinds, methods, sidByKey,
     funcNames: new Set(funcByName.keys()), imports: new Map(imports),
-    numeric, strung, dynamicProps, builtinOwnProps, escaped, typedReadPresent, typedProps, typedPropsByAux, openSchemas, indexedSchemas, hostSchemas, opaqueSchemas, deletable, deleteReach,
-    sideProps, sideWild, wildProps, wildValues, pendingAll, keyedCells, cellShapes, cellLostObject, closureProps, iterSites, reached, defaultRuns,
+    numeric, strung, dynamicProps, builtinOwnProps, escaped, typedReadPresent, typedProps, typedPropsByAux, openSchemas, indexedSchemas, hostSchemas, opaqueSchemas, deletable, deleteReach, assignedProps, keysSeen,
+    sideProps, sideWild, wildProps, wildValues, pendingAll, keyedCells, cellShapes, cellLostObject, closureProps, iterSites, reached, defaultRuns, decisions,
     held,
+    boolKeys, storeBits, paramKeys,
     contracts: null,   // the result contracts, built at the freeze below
   }
   const queries = summaryQueries(queryFacts, true)
@@ -3479,14 +3912,14 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   let provenNumeric = null
   const provenRead = (v) => typeof v === 'string' && provenNumeric?.has(v)
   const isNumberExprHere = (b) => { if (typeof b !== 'string') return false; const k = kindOfExpr(b); return tagOf(core(k)) === K.NUMBER && !hasTag(k, K.NULLISH) && !hasTag(k, K.ABSENT) }
-  const under = (names, body, fn) => {
-    if (!names.size) return fn()
+  const under = (names, body) => {
+    if (!names.size) return run(body)
     const assigned = new Set()
     assignsIn(body, assigned)
     const prior = provenNumeric
     provenNumeric = new Set(prior ?? [])
     for (const name of names) if (!assigned.has(name)) provenNumeric.add(name)
-    fn()
+    run(body)
     provenNumeric = prior
   }
   const provenArm = (arm, names, cx, into) => { if (typeof arm === 'string' && (names.has(arm) || provenNumeric?.has(arm))) useOf(arm, COMPAT); else useOf(arm, cx, into) }
@@ -3506,8 +3939,8 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     if (op == null || op === 'str' || op === 'bool' || op === 'nan') return
     if (op === '=>') { const prior = provenNumeric; provenNumeric = null; demand(n[2]); provenNumeric = prior; return }
     if (op === ';' || (op === '{}' && isBlock(n))) { for (let i = 1; i < n.length; i++) run(n[i]); return }
-    if (op === 'if') { demand(n[1]); under(numericProofs(n[1], true, isNumberExprHere), n[2], () => run(n[2])); under(numericProofs(n[1], false, isNumberExprHere), n[3], () => run(n[3])); return }
-    if (op === 'while') { demand(n[1]); under(numericProofs(n[1], true, isNumberExprHere), n[2], () => run(n[2])); return }
+    if (op === 'if') { demand(n[1]); under(numericProofs(n[1], true, isNumberExprHere), n[2]); under(numericProofs(n[1], false, isNumberExprHere), n[3]); return }
+    if (op === 'while') { demand(n[1]); under(numericProofs(n[1], true, isNumberExprHere), n[2]); return }
     if (op === 'return') {
       if (n.length > 1) { if (provenRead(n[1])) useOf(n[1], COMPAT); else if (current != null) useOf(n[1], FLOW, resultKey(current)); else demand(n[1]) }
       return
@@ -3553,6 +3986,8 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     // For number|undefined locals, equality with a definite number cannot
     // distinguish undefined from numeric NaN. Other kinds still require the
     // compatible (non-coercing) contract: null/boolean identity must survive.
+    // a loop copy's guard asks the type for the compiler: no read of the program's
+    if (isNumberGuard(n)) { useOf(n[1][1], NEUTRAL); return }
     if (op === '==' || op === '!=' || op === '===' || op === '!==') {
       // `x !== x` holds for NaN alone: of a number it reads the number, of any other kind nothing.
       if (typeof n[1] === 'string' && n[1] === n[2]) { useOf(n[1], COMPAT); return }
@@ -3564,14 +3999,15 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       useOf(n[1], eqCx(n[1], n[2])); useOf(n[2], eqCx(n[2], n[1])); return
     }
     if (op === ',') { for (let i = 1; i < n.length - 1; i++) demand(n[i]); useOf(n[n.length - 1], cx, into); return }
-    if (op === '()' && n.length === 2) { useOf(n[1], cx, into); return }
+    if ((op === '(' || op === '()' && n.length === 2)) { useOf(n[1], cx, into); return }
     if (op === '()') {
       const callee = n[1], as = n[2], count = argCount(as)
       if (typeof callee === 'string') {
         // Math takes numbers, except sumPrecise, which takes an iterable.
         if ((callee.startsWith('Math.') || callee.startsWith('math.')) && !callee.endsWith('.sumPrecise')) { for (let i = 0; i < count; i++) useOf(argAt(as, i), NUM); return }
         const f = funcByName.get(callee)
-        if (f && !escaped.has(callee)) { readResult(callee, cx, into); for (let i = 0; i < count; i++) { const p = f.sig.params[i]; if (p && !p.rest) useOf(argAt(as, i), FLOW, keyIn(callee, p.name)); else demand(argAt(as, i)) } return }
+        // A parameter with a default tells undefined from the NaN ToNumber makes of it: a plain read.
+        if (f && !escaped.has(callee)) { readResult(callee, cx, into); for (let i = 0; i < count; i++) { const p = f.sig.params[i]; if (p && !p.rest && f.defaults?.[p.name] == null) useOf(argAt(as, i), FLOW, keyIn(callee, p.name)); else demand(argAt(as, i)) } return }
       }
       // A closure binding by name, or the closure set a callee expression
       // reads (`TABLE[k](…)`): each member's parameter is a flow target; a
@@ -3583,13 +4019,13 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
         if (members.length === 1) {
           const id = members[0], names = callableParams(id)
           if (!escaped.has(id)) readResult(id, cx, into)
-          for (let i = 0; i < count; i++) { const name = i < names.length ? names[i] : null; if (!escaped.has(id) && name != null) useOf(argAt(as, i), FLOW, keyIn(id, name)); else demand(argAt(as, i)) }
+          for (let i = 0; i < count; i++) { const name = i < names.length ? names[i] : null; if (!escaped.has(id) && name != null && callableDefaults(id)?.[name] == null) useOf(argAt(as, i), FLOW, keyIn(id, name)); else demand(argAt(as, i)) }
           return
         }
         const ids = members.filter(id => !escaped.has(id))
         for (const id of ids) readResult(id, cx, into)
         for (let i = 0; i < count; i++) {
-          const keys = ids.map(id => callableParams(id)[i] != null ? keyIn(id, callableParams(id)[i]) : null)
+          const keys = ids.map(id => callableParams(id)[i] != null && callableDefaults(id)?.[callableParams(id)[i]] == null ? keyIn(id, callableParams(id)[i]) : null)
           if (ids.length && keys.every(k => k !== null)) useOf(argAt(as, i), FLOW, keys); else demand(argAt(as, i))
         }
         return
@@ -3632,6 +4068,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   const fixpoint = () => rounds(() => {
     changed = false
     grown.clear()   // the init pushes are counted afresh by every round's walk
+    spreadSources.clear() // join the source kinds from this round's reachable contexts
     for (const f of funcs) {
       if (exported(f) || hostClosures.has(f.name) || escaped.has(f.name) || f.sig.dispatcher) reach(f.name)   // a dispatcher is called by emitted code
       if (!reached.has(f.name)) continue
@@ -3696,9 +4133,9 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   })
   const seeded = [...seedable].filter(p => (entryNumeric.has(p) || isCompatible(p)) && tagOf(kinds[p] ?? K.NONE) === K.ANY)
   if (seeded.length) {
-    kinds.length = 0; incoming.length = 0; fields.length = 0; objectKinds.clear(); opaqueSchemas.clear(); hostSchemas.clear(); hostArrays.clear(); retainedArrays.clear(); hostClosures.clear(); results.clear(); escaped.clear(); certainKeys.clear(); for (let i = 0; i < elems.length; i++) { elems[i] = K.NONE; cellUp[i] = i }
-    tuples.clear(); lens.clear(); stores.clear(); built.clear(); grown.clear(); unknown.clear(); presentReads.clear(); argRanges.clear(); roundArgs.clear(); moved.clear(); openArgs.clear()
-    pendingAll = false; pendingIndexed = false; wildValues = K.NONE; wildProps.clear(); sideProps.clear(); sideWild.clear(); closureProps.clear(); sideByProp.clear(); foreignObjects = false; foreignProps.clear(); deletable.clear(); deleteReach.unknown = false
+    kinds.length = 0; incoming.length = 0; fields.length = 0; objectKinds.clear(); decisions.clear(); opaqueSchemas.clear(); hostSchemas.clear(); retainedSchemas.clear(); hostArrays.clear(); retainedArrays.clear(); hostClosures.clear(); results.clear(); escaped.clear(); certainKeys.clear(); boolKeys.clear(); for (let i = 0; i < elems.length; i++) { elems[i] = K.NONE; cellUp[i] = i }
+    tuples.clear(); lens.clear(); stores.clear(); built.clear(); grown.clear(); unknown.clear(); presentReads.clear(); spreadSources.clear(); argRanges.clear(); roundArgs.clear(); moved.clear(); openArgs.clear()
+    pendingAll = false; pendingIndexed = false; wildValues = K.NONE; wildProps.clear(); sideProps.clear(); sideWild.clear(); closureProps.clear(); sideByProp.clear(); foreignObjects = false; foreignProps.clear(); deletable.clear(); deleteReach.unknown = false; keysSeen.clear()
     seed(seeded)
     fixpoint()
   }
@@ -3737,6 +4174,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   })
   const dispatcher = new Set(funcs.filter(f => f.sig?.dispatcher === true).map(f => f.name))
   const published = summaryQueries(queryFacts)
+  published.unnamedLayouts = [...unnamed.values()]
   queryFacts.contracts = buildResultContracts({
     results: new Map([...results.keys()].map(key => [key, published.resultOf(key)])), funcs, closureCount: closureBodies.length, closureSets, setBase: SET_BASE, membersOf, certain, returns,
     direct: name => !exportedNames.has(name) && !escaped.has(name) && !closureSetIds.has(name) && !dispatcher.has(name),

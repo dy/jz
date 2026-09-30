@@ -67,9 +67,9 @@ function tryOuterStrip(blockNode, fnLocals, freshIdRef, enabled, outer) {
     }
     if (op === 'call') {
       const v2 = PPC_CALL2[n[1]]
-      if (v2 && n.length === 3) { const a = liftOS(n[2]); return a && ['call', v2, a] }
-      if (v2 && n.length === 4) { const a = liftOS(n[2]), b = liftOS(n[3]); return (a && b) ? ['call', v2, a, b] : null }
-      return null
+      if (!v2 || n.length < 3) return null
+      const args = n.slice(2).map(a => liftOS(a))
+      return args.every(Boolean) ? ['call', v2, ...args] : null
     }
     if (op === 'if') {
       if (!isArr(n[1]) || n[1][0] !== 'result' || n[1][1] !== 'f64') return null
@@ -281,10 +281,11 @@ function tryIteratedReduce(blockNode, fnLocals, freshIdRef, enabled, outer) {
     }
     if (op === 'call') {
       const v2 = PPC_CALL2[n[1]]
-      if (!v2) return null
-      if (n.length === 3) { const a = lift(n[2]); if (!a) return null; sawHeavy = true; return ['call', v2, a] }
-      if (n.length === 4) { const a = lift(n[2]), b = lift(n[3]); if (!a || !b) return null; sawHeavy = true; return ['call', v2, a, b] }
-      return null
+      if (!v2 || n.length < 3) return null
+      const args = n.slice(2).map(a => lift(a))
+      if (!args.every(Boolean)) return null
+      sawHeavy = true
+      return ['call', v2, ...args]
     }
     if (op === 'if') {
       if (!isArr(n[1]) || n[1][0] !== 'result' || n[1][1] !== 'f64') return null

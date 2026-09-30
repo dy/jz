@@ -107,10 +107,10 @@
  * `writesOuter` and `callsUnknown` over every call; `arenaUnsafe` over the
  * calls that run on every call of the caller (`unguarded`), any other call to
  * such a callee making the caller's frame conditional, as a callee that
- * `keeps` or runs sites does. The transitive facts also carry `callees`,
- * every known function a call reaches, so a consumer can ask what the reached
- * code mentions (the declared-keys pass asks whether a call between a literal
- * and its store can reach the literal's name). A loop is clean when its own
+ * `keeps` or runs sites does. The facts retain direct `callees`; frameReaches
+ * walks those edges when a consumer needs to inspect reached code (the
+ * declared-keys pass checks whether an intervening call can see a literal).
+ * A loop is clean when its own
  * census is, it calls nothing the census cannot name, and every callee it
  * reaches neither escapes nor runs a site. Everything here is a conservative
  * census: an unrecognized shape counts as an effect, never as its absence.
@@ -203,10 +203,10 @@ function rebinds(n, name) {
 // plus the numeric/string globals whose results are fresh values or scalars,
 // and the lane operations (module/simd.js), which compute on values wasm
 // holds outside the heap. `math.` is the prepared spelling of `Math.`.
-const PURE_CALLEES = /^((f32x4|f64x2|i32x4|v128)\.\w+|crypto\.(getRandomValues|randomUUID)|readStdin|Object\.(keys|values|entries|isFrozen|isSealed|isExtensible|freeze|seal|preventExtensions|create|getOwnPropertyDescriptor|getOwnPropertyNames|getPrototypeOf|hasOwn|is|fromEntries|groupBy)|Map\.groupBy|JSON\.(stringify|parse)|Array\.(isArray|of|from)|ArrayBuffer\.isView|((Int|Uint|Float|BigInt|BigUint)(8|16|32|64)(Clamped)?Array|Float16Array)\.(from|fromBase64|fromHex)|console\.\w+|[Mm]ath\.\w+|Number(\.\w+)?|String(\.\w+)?|Boolean|BigInt(\.\w+)?|Symbol(\.\w+)?|Atomics\.\w+|RegExp\.escape|Date\.now|performance\.now|isNaN|isFinite|parseInt|parseFloat|structuredClone|Date\.UTC|Date\.parse|atob|btoa|(en|de)codeURI(Component)?)$/
+const PURE_CALLEES = /^(__object_rest|(f32x4|f64x2|i32x4|v128)\.\w+|crypto\.(getRandomValues|randomUUID)|Object\.(keys|values|entries|isFrozen|isSealed|isExtensible|freeze|seal|preventExtensions|create|getOwnPropertyDescriptor|getOwnPropertyNames|getPrototypeOf|hasOwn|is|fromEntries|groupBy)|Map\.groupBy|JSON\.(stringify|parse)|Array\.(isArray|of|from)|ArrayBuffer\.isView|((Int|Uint|Float|BigInt|BigUint)(8|16|32|64)(Clamped)?Array|Float16Array)\.(from|fromBase64|fromHex)|console\.\w+|[Mm]ath\.\w+|Number(\.\w+)?|String(\.\w+)?|Boolean|BigInt(\.\w+)?|Symbol(\.\w+)?|Atomics\.\w+|RegExp\.escape|Date\.now|performance\.now|isNaN|isFinite|parseInt|parseFloat|structuredClone|Date\.UTC|Date\.parse|atob|btoa|(en|de)codeURI(Component)?)$/
 // Pure callees that read a literal's getters (module/schema.js viewsOn) while
 // they list its properties; JSON.stringify also calls toJSON (emit/to-json.js).
-const ENUMERATING = /^(Object\.(values|entries)|JSON\.stringify|structuredClone)$/
+const ENUMERATING = /^(__object_rest|Object\.(values|entries)|JSON\.stringify|structuredClone)$/
 const runsGetters = (name) => viewsOn() && ENUMERATING.test(name) || name === 'JSON.stringify' && !!ctx.funcs.runtimeRoots?.has(TO_JSON)
 
 // Callees whose result is a scalar: no allocation.
@@ -254,7 +254,7 @@ const TYPED_FROM = /^((Int|Uint|Float|BigInt|BigUint)(8|16|32|64)(Clamped)?Array
 // (arithmetic, bitwise, relational) and ToPrimitive (`+`, templates, loose equality).
 const CONVERTING_OPS = new Set([...NUMBER_OPS, ...COMPOUND_NUMERIC_OPS, ...RELATIONAL_OPS, 'u-', 'u+', '+', '+=', 'strcat', '==', '!='])
 // Pure callees that convert no argument.
-const NON_CONVERTING = /^(Array\.(isArray|of|from)|Object\.(is|getPrototypeOf|isFrozen|keys|values|entries|getOwnPropertyNames)|Boolean|Date\.now|performance\.now)$/
+const NON_CONVERTING = /^(__object_rest|Array\.(isArray|of|from)|Object\.(is|getPrototypeOf|isFrozen|keys|values|entries|getOwnPropertyNames)|Boolean|Date\.now|performance\.now)$/
 // Constructors that convert their arguments (a typed array each element of an array source).
 const CONVERTING_CTORS = /^(Date|String|Number|BigInt|(Int|Uint|Float|BigInt|BigUint)(8|16|32|64)(Clamped)?Array|Float16Array)$/
 const TYPED_CTORS = /^((Int|Uint|Float|BigInt|BigUint)(8|16|32|64)(Clamped)?Array|Float16Array)$/
@@ -275,7 +275,7 @@ const WRITE_METHODS = new Set(['fill', 'copyWithin', 'reverse',
 const GROW_METHODS = new Set(['push', 'unshift', 'splice', 'pop', 'shift', 'add', 'delete', 'clear', 'set', 'setPrototypeOf'])
 // Builtins whose result is storage they make, and the methods of an array, a
 // typed array or a string that hand out a copy.
-const MAKES = /^(Array\.(of|from)|Object\.(keys|values|entries|fromEntries)|((Int|Uint|Float|BigInt|BigUint)(8|16|32|64)(Clamped)?Array|Float16Array)\.(of|from)|structuredClone)$/
+const MAKES = /^(__object_rest|Array\.(of|from)|Object\.(keys|values|entries|fromEntries)|((Int|Uint|Float|BigInt|BigUint)(8|16|32|64)(Clamped)?Array|Float16Array)\.(of|from)|structuredClone)$/
 const COPY_METHODS = new Set(['slice', 'concat', 'map', 'filter', 'flat', 'flatMap', 'toSorted', 'toReversed', 'toSpliced', 'with', 'split'])
 // Those of them that store nothing and free no storage.
 const SHRINK_METHODS = new Set(['delete', 'clear', 'pop', 'shift'])
@@ -512,7 +512,7 @@ function census(view, roots, declRoots, params, typedParams = NO_NAMES, conditio
   // receivers its stores may grow; `siteAsked`: the assignments that ask
   // their value whether a running call made it.
   const out = { writesOuter: false, arenaUnsafe: false, keeps: false, flagged: false, unsited: false, allocates: false, callsUnknown: false, runsAccessor: false, why: null, keepsWhy: null,
-    callees: new Set(), unguarded: new Set(), closures: new Set(), closureCalls: [], sites: new Set(), siteWhy: null, siteKinds: new Map(), siteGrows: new Set(), siteGrown: new Set(), siteAsked: new Set(), siteNames: new Map(), siteWhys: new Map(), inline: new Set() }
+    callees: new Set(), unguarded: new Set(), closures: new Set(), closureCalls: [], sites: new Set(), siteWhy: null, siteKinds: new Map(), siteGrows: new Set(), siteGrown: new Set(), siteAsked: new Set(), siteNames: new Map(), siteWhys: new Map(), inline: new Set(), freshObjects: null }
   // The node the walk stands on: an escape found there is a site of it.
   let at = null
   // Branches and early returns around it: nonzero where it may not run on a call.
@@ -569,6 +569,12 @@ function census(view, roots, declRoots, params, typedParams = NO_NAMES, conditio
     const cur = decl.get(name)
     if (!declared) assigned.add(name)
     if (!declared && cur == null) return
+    // Object literals allocate in this call, after the reset boundary. Keep
+    // this narrower than freshInit: a user constructor or Object(existing)
+    // can return older storage. Every write must keep the literal origin.
+    if (declared && cur == null && (init === undefined || isObjectLiteral(init)))
+      (out.freshObjects ??= new Set()).add(name)
+    else if (init !== undefined && !isObjectLiteral(init)) out.freshObjects?.delete(name)
     if (declared && cur == null && isArr(init) && (init[0] === '.' || init[0] === '[]') && init.length === 3) reads.set(name, init); else reads.delete(name)
     if (init === undefined) { if (cur == null) decl.set(name, 'fresh'); return }   // bare `let x`
     const fresh = freshInit(init)
@@ -600,6 +606,8 @@ function census(view, roots, declRoots, params, typedParams = NO_NAMES, conditio
     for (let i = 1; i < n.length; i++) scanDecls(n[i], nested || inner)
   }
   for (const r of declRoots) scanDecls(r, false)
+  if (out.freshObjects) for (const name of out.freshObjects)
+    if (params.has(name) || writtenNested.has(name)) out.freshObjects.delete(name)
   // A write from a nested function to a name the scope does not declare is a
   // write to a shared cell of an enclosing scope: outer, like the name itself.
   const freshLocal = (name) => isName(name) && decl.get(name) === 'fresh' && !params.has(name) && !writtenNested.has(name)
@@ -772,6 +780,7 @@ function census(view, roots, declRoots, params, typedParams = NO_NAMES, conditio
     else if (!NON_CONVERTING.test(name)) list.forEach((a, j) => { if (j !== i) convert(a) })
   }
   const call = (callee, args, node) => {
+    while (isArr(callee) && callee[0] === '(') callee = callee[1]
     if (isName(callee)) {
       const c = ctorOf(callee)
       if (c !== null) {
@@ -783,6 +792,9 @@ function census(view, roots, declRoots, params, typedParams = NO_NAMES, conditio
       }
       if (knownFunc(callee)) { reach(callee); return }
       if (localArrow(callee)) { scanArrow(arrows.get(callee)); return }
+      // Registered SIMD intrinsics use registers only. Their argument
+      // expressions are still walked below, including calls that allocate.
+      if (/^(f32x4|f64x2|i32x4|v128)\./.test(callee) && ctx.core?.emit?.[callee] != null) return
       // for…of's source (prepare/handlers.js): an array, a typed array or a
       // string passes through, a Set or a Map is copied into a fresh array;
       // any other iterable runs its own iterator. for…in's key list reads keys.
@@ -816,7 +828,7 @@ function census(view, roots, declRoots, params, typedParams = NO_NAMES, conditio
       }
       return unknownCall('call ' + callee)
     }
-    if (isArr(callee) && callee[0] === '.' && isName(callee[2])) {
+    if (isArr(callee) && (callee[0] === '.' || callee[0] === '?.') && isName(callee[2])) {
       const [, recv, method] = callee
       const key = isName(recv) ? `${recv}.${method}` : null
       if (key && PURE_CALLEES.test(key)) return pure(key, args)
@@ -1066,8 +1078,8 @@ function arrowsIn(n, found) {
 /**
  * Transitive facts over the direct call graph, for every function in
  * `funcs`. Returns Map<name, facts>, each `{ writesOuter, arenaUnsafe, keeps,
- * flagged, unsited, callsUnknown, callees, why, loops }`: `callees` every
- * known function a call reaches, `allocates` whether the function or a callee
+ * flagged, unsited, callsUnknown, callees, why, loops }`: `callees` the direct
+ * call edges, `allocates` whether the function or a callee
  * allocates, `flagged` whether code the frame runs may lower the escape flag,
  * `unsited` whether an escape of it has no node the emitter could flag,
  * `loops` the body nodes of the loops whose iteration lets no allocation
@@ -1100,7 +1112,7 @@ export function transitiveFrameEffects(funcs, roots = null) {
   for (const [id, o] of closureOwn) nodes.set(closureKey(id), o)
   const facts = new Map()
   for (const [name, o] of nodes) facts.set(name, { writesOuter: o.writesOuter, arenaUnsafe: o.arenaUnsafe, keeps: o.keeps, flagged: o.flagged, unsited: o.unsited, callsUnknown: o.callsUnknown, runsAccessor: o.runsAccessor, allocates: o.allocates,
-    why: o.why, keepsWhy: o.keepsWhy, siteWhy: o.siteWhy, callees: new Set(o.callees), loops: new Set() })
+    why: o.why, keepsWhy: o.keepsWhy, siteWhy: o.siteWhy, callees: o.callees, loops: new Set(), freshObjects: o.freshObjects ?? null })
   const spell = (c) => c.startsWith('\0') ? c.slice(1) : c
   // The arena facts of a callee (a function by name, a closure by its key),
   // `every`: reached on every call of the caller. A host's function is
@@ -1136,7 +1148,6 @@ export function transitiveFrameEffects(funcs, roots = null) {
         if (w && !f.writesOuter) { f.writesOuter = true; changed = true }
         if (joinArena(f, c, g, o.unguarded.has(c))) changed = true
         if (k && !f.callsUnknown) { f.callsUnknown = true; changed = true }
-        if (g) for (const cc of g.callees) if (!f.callees.has(cc)) { f.callees.add(cc); changed = true }
       }
       // A resolved call runs one of its closures: it escapes on every call where each of them does.
       for (const { ids, every } of o.closureCalls ?? []) {
@@ -1163,4 +1174,19 @@ export function transitiveFrameEffects(funcs, roots = null) {
       if (!l.arenaUnsafe && !l.closures?.size && (l.allocates || [...l.callees].some(c => facts.get(c)?.allocates)) && [...l.callees].every(clean)) f.loops.add(body)
   }
   return facts
+}
+
+/** Test the starting function and its reachable callees without materializing
+ * a transitive name set for every function in the program. */
+export function frameReaches(frames, name, matches) {
+  const seen = new Set(), pending = [name]
+  while (pending.length) {
+    const next = pending.pop()
+    if (seen.has(next)) continue
+    seen.add(next)
+    if (matches(next)) return true
+    const callees = frames.get(next)?.callees
+    if (callees) for (const callee of callees) if (!seen.has(callee)) pending.push(callee)
+  }
+  return false
 }

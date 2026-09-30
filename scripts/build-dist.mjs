@@ -25,6 +25,8 @@ import { stripWatTemplates } from './wat-strip.mjs'
 import { resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { compile } from '../index.js'
+import strictCompile from '../strict.js'
+import { gzipSync } from 'node:zlib'
 import { specializeInvariants, resolveSelfCompileBuild } from './build-profile.mjs'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
@@ -86,6 +88,27 @@ console.log('wrote dist/jz.js  ', kb(jsOut))
   console.log('  wat-strip parity: 3 probes byte-identical')
 }
 
+// The strict entry owns no host runtime or full-JavaScript lowering code.
+const strictOut = resolve(OUT, 'strict.js')
+const strictBuild = await build({
+  entryPoints: [resolve(ROOT, 'strict.js')], bundle: true, minify: true,
+  format: 'esm', platform: 'neutral', target: 'es2022', legalComments: 'none',
+  plugins: [releaseSource], metafile: true, outfile: strictOut,
+})
+for (const path of Object.keys(strictBuild.metafile.inputs)) {
+  if (/(^|\/)jzify\/|(^|\/)interop\.js$/.test(path))
+    throw new Error(`strict compiler includes an excluded layer: ${path}`)
+}
+const strictDist = (await import(strictOut)).compile
+for (const source of [
+  'export const f = x => x * x + 1',
+  'export const f = n => { const a = new Float64Array(32); for (let i = 0; i < 32; i++) a[i] = i * n; return a[3] }',
+]) {
+  const a = strictCompile(source), b = strictDist(source)
+  if (Buffer.compare(Buffer.from(a), Buffer.from(b))) throw new Error('strict bundle differs from its source')
+}
+console.log('wrote dist/strict.js', kb(strictOut), `(${(gzipSync(readFileSync(strictOut)).length / 1024).toFixed(1)} kB gzip); 2 parity probes pass`)
+
 // ── dist/interop.js — minified jz/interop bridge (host runtime, no compiler) ──
 const interopOut = resolve(OUT, 'interop.js')
 await build({
@@ -119,14 +142,8 @@ if (spraeEntry) {
 if (process.argv.includes('--js-only')) process.exit(0)
 
 // ── dist/jz.wasm — the jz compiler, compiled to wasm by jz (full self-compile) ───
-// Config resolution (CARRIER_BOX injection, region-arena × inlinePtrOffsetFast
-// gate, compiler-runtime collection compaction) lives in
-// scripts/build-profile.mjs's resolveSelfCompileBuild — shared
-// with scripts/self-compile-build.mjs (architecture re-audit item 2, .work/archive/todo.md)
-// so the two self-compile build entry points cannot drift on either mechanism.
-// Match self-compile-build.mjs's measured release profile: this artifact is a
-// compiler executable, not a size-distributed web asset. O3 keeps its warm
-// compile geomean decisively below the same pipeline on V8.
+// Both builders use the shared bootstrap configuration, including diagnostic
+// overrides. The hosted compiler still honors each program's requested profile.
 const wasmOut = resolve(OUT, 'jz.wasm')
 const profile = resolveSelfCompileBuild()
 const wasm = compile(profile.graph.code, {
@@ -135,6 +152,8 @@ const wasm = compile(profile.graph.code, {
   memory: profile.memory,
   optimize: profile.optimize,
   _compactCollections: profile.compactCollections,
+  helperCounters: profile.helperCounters,
+  helperCallsites: profile.helperCallsites,
 })
 new WebAssembly.Module(wasm)  // validate before writing
 writeFileSync(wasmOut, wasm)

@@ -44,6 +44,14 @@
  * @module emit
  */
 
-export { emit, toBool, emitIdentitySafe, emitVoid, emitBlockBody, emitBoolStr, emitIndex, resolveClosureTableParamLattice } from './emit/dispatch.js'
+import { emit, emitReference, emitIdentitySafe, emitBoolStr, emitIndex } from './emit/dispatch.js'
+import { buildArrayWithSpreads } from './emit/call-args.js'
+
+export { emit, emitReference, toBool, emitIdentitySafe, emitVoid, emitBlockBody, emitBoolStr, emitIndex, resolveClosureTableParamLattice, bindingStore } from './emit/dispatch.js'
 export { buildArrayWithSpreads } from './emit/call-args.js'
 export { emitter } from './emit/index.js'
+
+// Both compiler hosts bind the same bridge after module initialization.
+export function emissionHooks() {
+  return { emit, emitReference, bool: emitBoolStr, idx: emitIndex, spread: buildArrayWithSpreads, emitIdentitySafe }
+}

@@ -20,6 +20,11 @@ import {
 } from './index.js'
 import { pureKernel } from './pure-funcs.js'
 
+// A runtime helper's cold half, split off so the engine inlines the hot head
+// (module/core.js `__rem`, its long division `__rem_div`): the single-caller
+// inliner would splice it back.
+const OUT_OF_LINE = ['$__rem_div']
+
 /**
  * Compute the watr optimizer options for a resolved jz `optimize` config (see
  * `resolveOptimize`) — the single source of truth for "which watr passes does THIS
@@ -48,6 +53,9 @@ export function programPins(cfg) {
     // A loop its caller had no room for stays a function (plan/inline.js): the
     // single-caller inliner has no bound of its own.
     ...[...ctx.plans.keptKernels ?? []].map(name => `$${name}`),
+    // A runtime throw only leaves: spliced into its one caller, a hot loop's
+    // cold arm would carry the error's allocation and stores.
+    ...[...ctx.runtime.throwHelpers].filter(name => ctx.core.includes.has(name.slice(1))),
     ...(cfg._vectorizedFnNames?.size
       ? [...cfg._vectorizedFnNames].filter(name => ctx.funcs.map.get(name.slice(1))?.exported)
       : []),
@@ -125,7 +133,7 @@ export function resolveWatrOpts(cfg, { funcCount = 0, boundaryPins = [] } = {}) 
   // mirrors) so watr's inline passes don't dissolve the call nodes the lift needs. The protection
   // policy lives here in jz — watr just honours the `pin` list (no jz names hardcoded in watr).
   if (watrOpts === true) watrOpts = {}
-  watrOpts.pin = watrOpts.pin ? [...watrOpts.pin, ...SIMD_PINNED] : SIMD_PINNED
+  watrOpts.pin = watrOpts.pin ? [...watrOpts.pin, ...SIMD_PINNED, ...OUT_OF_LINE] : [...SIMD_PINNED, ...OUT_OF_LINE]
   // Partial unrolling overlaps branch latency in compact codecs, but duplicates
   // too many cold compiler/parser loops in large module graphs and loses the
   // warm self-compile I-cache race. Users may still opt in explicitly.
@@ -475,6 +483,26 @@ export function watrTail(module, cfg, {
   // then reads the function the source wrote.
   if (cfg.splitBindings !== false) time('shareSplitSlots', () => { for (const n of legalized) shareSplitSlots(n) })
   const watrOpts = resolveWatrOpts(cfg, { funcCount, boundaryPins })
+  // watr 5.11.8's stripmut counts only Wasm writes. Exported mutable globals
+  // are also writable by the host (heap/escape marks in particular), so its
+  // proof is unavailable for a module with that boundary.
+  if (watrOpts) {
+    const exports = new Set(legalized.filter(n => n?.[0] === 'export' && n[2]?.[0] === 'global').map(n => n[2][1]))
+    if (legalized.some(n => n?.[0] === 'global' && n[2]?.[0] === 'mut' && (exports.has(n[1]) || n.some(c => c?.[0] === 'export')))) {
+      watrOpts.stripmut = false
+      // Keep constant propagation for private, unwritten globals. The host
+      // boundary counts as a possible write, exactly like a global.set.
+      const written = new Set(exports)
+      const scan = n => {
+        if (!Array.isArray(n)) return
+        if (n[0] === 'global.set' || n[0] === 'global' && n.some(c => c?.[0] === 'export')) written.add(n[1])
+        for (let i = 0; i < n.length; i++) scan(n[i])
+      }
+      scan(legalized)
+      for (const n of legalized)
+        if (n?.[0] === 'global' && n[2]?.[0] === 'mut' && !written.has(n[1])) n[2] = n[2][1]
+    }
+  }
   // The math runtime depends only on its operands and cannot trap (its loads read constant
   // tables, its truncations are guarded): value numbering and scheduling treat its calls
   // like arithmetic.

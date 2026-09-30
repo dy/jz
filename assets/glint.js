@@ -28,7 +28,7 @@ if (document.querySelector('html.paper')) {
   ruler = { el, gradient: el.querySelector('radialGradient'), path: el.querySelector('path'), defs: el.querySelector('defs') }
 }
 
-// Subtract a soft alpha mask: a fractional-pixel inner edge without the square erosion kernel.
+// Erode once and subtract: a true inside edge, without lighting, offsets or displaced glyphs.
 const inset = (el, rect) => {
   if (!masks.has(el)) {
     const filter = document.createElementNS('http://www.w3.org/2000/svg', 'filter'), id = `ink-outline-${maskId++}`
@@ -36,12 +36,12 @@ const inset = (el, rect) => {
     filter.setAttribute('primitiveUnits', 'objectBoundingBox')
     filter.setAttribute('x', '-10%'); filter.setAttribute('y', '-50%')
     filter.setAttribute('width', '120%'); filter.setAttribute('height', '200%')
-    filter.innerHTML = '<feGaussianBlur in="SourceAlpha" result="inside"/><feComposite in="SourceGraphic" in2="inside" operator="out"/><feComponentTransfer><feFuncA type="linear" slope="4"/></feComponentTransfer>'
+    filter.innerHTML = '<feMorphology in="SourceAlpha" operator="erode" result="inside"/><feComposite in="SourceGraphic" in2="inside" operator="out"/>'
     ruler.defs.append(filter)
     el.style.filter = `url(#${id})`
-    masks.set(el, { filter, blur: filter.querySelector('feGaussianBlur') })
+    masks.set(el, { filter, erosion: filter.querySelector('feMorphology') })
   }
-  masks.get(el).blur.setAttribute('stdDeviation', `${.6 / (rect.width || 1)} ${.6 / (rect.height || 1)}`)
+  masks.get(el).erosion.setAttribute('radius', `${1.1 / (rect.width || 1)} ${1.1 / (rect.height || 1)}`)
 }
 
 // Keep the real text selectable; its inert twin paints only the reflected outline.
@@ -61,6 +61,10 @@ const title = el => {
     for (const node of outline.querySelectorAll('[id]')) node.removeAttribute('id')
     el.append(outline)
     el.classList.add('reflect-title')
+  }
+  if (el.matches('.metrics b')) {
+    const outline = el.querySelector('.title-outline')
+    if (outline.textContent !== fill.textContent) outline.textContent = fill.textContent
   }
   return fill
 }
@@ -108,9 +112,9 @@ const layout = () => {
       boxes.get(el).rect = el.getBoundingClientRect()
     }
     for (const el of document.querySelectorAll('a')) glare(el)
-    ink = [...document.querySelectorAll('h1.title, footer .legal > :not(a)')]
+    ink = [...document.querySelectorAll('h1.title, .metrics b, footer .legal > :not(a)')]
       .filter(el => el.textContent.trim()).map(el => {
-        const heading = el.matches('h1.title')
+        const heading = el.matches('h1.title, .metrics b')
         const paint = heading ? title(el) : el
         if (!heading) el.classList.add('reflect-text')
         const rect = paint.getBoundingClientRect()

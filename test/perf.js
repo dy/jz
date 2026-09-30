@@ -875,8 +875,10 @@ test('codegen: load-CSE preserves expression order and scoped index proofs', () 
     ['zero-trip guard does not dominate', `for(let j=0;j<n;j++)a[2]=j;let i=0,b=i+n;let x=a[i];a[b]=7;let y=a[i];return x+y`, 8],
     ['reassigned alias', `for(let j=0;j<2;j++){let i=0,b=i+1;b=i;let x=a[i];a[b]=7;let y=a[i];return x+y}`, 8],
     ['changed alias base', `let i=0,b=i+1;i=1;let x=a[i];a[b]=7;let y=a[i];return x+y`, 9],
-    ['word-index wrap', `const bound=4294967296;for(let j=0;j<bound;j++){let i=0,b=i+bound;let x=a[i];a[b]=7;return x+a[i]}`, 8],
-    ['unbounded word displacement', `const bound=n+4294967296;for(let j=0;j<bound;j++){let i=0,b=i+bound;let x=a[i];a[b]=7;return x+a[i]}`, 8],
+    ['large numeric index stays out of bounds', `const bound=4294967296;for(let j=0;j<bound;j++){let i=0,b=i+bound;let x=a[i];a[b]=7;return x+a[i]}`, 2],
+    ['word-index wrap', `const bound=4294967296;for(let j=0;j<bound;j++){let i=0,b=(i+bound)|0;let x=a[i];a[b]=7;return x+a[i]}`, 8],
+    ['unbounded numeric displacement', `const bound=n+4294967296;for(let j=0;j<bound;j++){let i=0,b=i+bound;let x=a[i];a[b]=7;return x+a[i]}`, 2],
+    ['unbounded word displacement', `const bound=n+4294967296;for(let j=0;j<bound;j++){let i=0,b=(i+bound)|0;let x=a[i];a[b]=7;return x+a[i]}`, 8],
   ]
   for (const [name, body, expected] of cases) for (const optimize of [2, 'speed']) {
     const src = `let a=new Float64Array([1,2,3]);function g(n){a[0]=5;return n>0?g(n-1):0}export function f(n){${body}}`
@@ -2018,10 +2020,8 @@ const golden = (name, src, expected) => test(`golden size: ${name}`, () => {
 
 // Numeric-compatible fields stay in scalar lanes without linking string coercion.
 golden('known-shape object', 'export let f = (x) => { let p = { x: x, y: x * 2, z: x + 1 }; return p.x + p.y + p.z }', 55)
-// Computed keys retain dynamic-property storage and schema-aware lookup.
-// The escape sites of a dynamic store (optimize/arena-rewind.js) and the reset's log of an object made at start
-// (module/core/durable-log.js `__durable_obj_snap`, its heal) ride with the store: 13689 -> 14273 -> 14382.
-golden('unknown/dynamic object', 'export let f = (k) => { let p = {}; p[k] = 1; p.b = 2; return p[k] + p.b }', 14382)
+// A proven dictionary writes its own table; computed keys still coerce at runtime.
+golden('unknown/dynamic object', 'export let f = (k) => { let p = {}; p[k] = 1; p.b = 2; return p[k] + p.b }', 10603)
 // Parsing and formatting now share the power generator and unsigned product.
 // Keep this closure/string-dispatch fixture's behavior beside its tighter size pin.
 const parserFixture = `export let f = (s) => {

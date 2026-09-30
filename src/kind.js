@@ -22,5 +22,5 @@ export {
 } from './kind/dict-census.js'
 export { shapeOf } from './kind/shape.js'
 export {
-  hasAmbiguousBoolMerge, valTypeOf, isPresentNumber, shapeOfObjectLiteralAst, numericDenied,
+  hasAmbiguousBoolMerge, valTypeOf, isPresentNumber, shapeOfObjectLiteralAst, numericDenied, mixedBoolKind, holdsBoolBeside, boolTagged,
 } from './kind/val-type-of.js'

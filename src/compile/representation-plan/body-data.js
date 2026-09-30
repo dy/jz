@@ -23,6 +23,10 @@ const NON_BIGINT_OPS = new Set([
   'typeof', '!', '>', '<', '>=', '<=', '==', '!=', '===', '!==', 'u+', '>>>',
   'str', 'bool', 'new', 'delete', 'in', 'instanceof',
 ])
+// A producer query carries the three-bit representation plus one readiness bit.
+// Keep this transient fact scalar: fixpoint queries must not allocate records.
+const PRODUCER_REP = 7, PRODUCER_READY = 8
+
 const joinArms = node => node[0] === '?:' ? [node[2], node[3]] : [node[1], node[2]]
 
 // Static bracket keys use the same slot reader as dot access (module/array.js).
@@ -84,7 +88,7 @@ const edgeMaterializable = (source, target, node, sourceReady = false) => {
 }
 
 function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
-  const defs = collectDefs(body)
+  const { defs, bindings } = options
   const provenance = options.provenance
   const summary = ctx.summary?.at(sig)
   const taintedNames = options.localProvenance?.names || provenance?.namesByFunc.get(identity)
@@ -204,7 +208,7 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
     // to noBigintSemantic's coarse all-kinds set (which widens an enclosing
     // BigInt join).
     if (nullishArm(node)) out = packSemantic(0, true, true)
-    else if (node[0] === ',') out = semanticOf(node[node.length - 1])
+    else if ((node[0] === ',' || node[0] === '(')) out = semanticOf(node[node.length - 1])
     else if (node[0] === '?:') out = joinSem(semanticJoinArm(node[2]), semanticJoinArm(node[3]))
     else if (node[0] === '&&' || node[0] === '||' || node[0] === '??')
       out = joinSem(semanticJoinArm(node[1]), semanticJoinArm(node[2]))
@@ -267,7 +271,7 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
   let semanticChanged = true
   while (semanticChanged) {
     semanticChanged = false
-    for (const [name, list] of defs) {
+    for (const [name, list] of bindings) {
       let next = params.has(name) ? semanticNames.get(name) : semBottom()
       for (const def of list) {
         const value = def[DEF_RHS] == null
@@ -327,7 +331,7 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
     if (isBigintOrigin(node)) out = RAW_BIGINT
     else if (node[0] === '()' && calleeNameOf(node) && directCallBoundary(ctx, calleeNameOf(node)))
       out = directCallRep(calleeNameOf(node))
-    else if (node[0] === ',') out = currentOf(node[node.length - 1])
+    else if ((node[0] === ',' || node[0] === '(')) out = currentOf(node[node.length - 1])
     else if (node[0] === '=') out = memberReceiver(node[1]) != null ? memberStorageRep(ctx, node[1]) : currentOf(node[2])
     else {
       const recv = memberReceiver(node)
@@ -357,7 +361,7 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
   while (representationChanged) {
     representationChanged = false
     nodeCurrent.clear()
-    for (const [name, list] of defs) {
+    for (const [name, list] of bindings) {
       let out = params.has(name) ? (currentNames.get(name) ?? ANY_BIGINT) : null
       for (const def of list) {
         const next = def[DEF_RHS] == null ? NO_BIGINT : currentOf(def[DEF_RHS])
@@ -368,8 +372,12 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
     }
   }
   nodeCurrent.clear()
+  for (const [name, rep] of options.captures ?? []) {
+    if (!semanticNames.has(name)) semanticNames.set(name, semanticFromRep(localReps?.get(name)))
+    currentNames.set(name, rep)
+  }
   for (const [name, sem] of semanticNames)
-    targetNames.set(name, targetRepFor(sem, currentNames.get(name) ?? ANY_BIGINT))
+    targetNames.set(name, options.captures?.get(name) ?? targetRepFor(sem, currentNames.get(name) ?? ANY_BIGINT))
 
   const addEdge = (kind, source, target, _detail, host = false) => {
     const action = kind === 'return' ? returnEdgeAction(source, target) : edgeAction(source, target, host)
@@ -380,7 +388,9 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
     return action
   }
 
-  const plannedSeen = new WeakSet()
+  // One insertion order for planned nodes, reused by every materialization pass.
+  // Array iteration also visits nodes first planned while a pass is running.
+  const plannedNodes = []
   const plannedOf = node => {
     const sem = semanticOf(node)
     if (excludesBigint(sem)) return NO_BIGINT
@@ -407,18 +417,16 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
       } else target = targetRepFor(sem, currentOf(node))
     }
     nodeTarget.set(node, target)
-    if (!plannedSeen.has(node)) {
-      plannedSeen.add(node)
-      if (node[0] === '?:') {
-        addEdge('join-arm', plannedOf(node[2]), target, node)
-        addEdge('join-arm', plannedOf(node[3]), target, node)
-      } else if (node[0] === '&&' || node[0] === '||' || node[0] === '??') {
-        addEdge('join-arm', plannedOf(node[1]), target, node)
-        addEdge('join-arm', plannedOf(node[2]), target, node)
-      } else {
-        const current = currentOf(node)
-        if (!normalizedElsewhere && current !== target) addEdge('result', current, target, node)
-      }
+    plannedNodes.push(node)
+    if (node[0] === '?:') {
+      addEdge('join-arm', plannedOf(node[2]), target, node)
+      addEdge('join-arm', plannedOf(node[3]), target, node)
+    } else if (node[0] === '&&' || node[0] === '||' || node[0] === '??') {
+      addEdge('join-arm', plannedOf(node[1]), target, node)
+      addEdge('join-arm', plannedOf(node[2]), target, node)
+    } else {
+      const current = currentOf(node)
+      if (!normalizedElsewhere && current !== target) addEdge('result', current, target, node)
     }
     return target
   }
@@ -565,9 +573,9 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
   if (options.generic || valueAbiIdentity) for (const [name, k] of params)
     if (targetNames.get(name) === BOXED_BIGINT) valueAbiParamCandidates.add(k)
 
-  const materializedNames = new Set()
+  const materializedNames = new Set(options.captures?.keys())
   const exportedIdentity = isExported(ctx, identity)
-  for (const [name, list] of defs) {
+  for (const [name, list] of bindings) {
     if (ctx.scope.globals?.has(name)) continue
     const paramIndex = params.get(name)
     if (paramIndex != null && boundary.covered !== true && !exportedIdentity && !valueAbiParamCandidates.has(paramIndex)) continue
@@ -617,9 +625,9 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
   const materializedJoins = new WeakSet()
   const emittedCandidate = node => {
     // Match semanticOf/currentOf: discarded operands cannot erase readiness.
-    while (Array.isArray(node) && node[0] === ',') node = node[node.length - 1]
+    while (Array.isArray(node) && (node[0] === ',' || node[0] === '(')) node = node[node.length - 1]
     if (typeof node === 'string') {
-      if (materializedNames.has(node)) return { rep: targetNames.get(node) ?? ANY_BIGINT, ready: true }
+      if (materializedNames.has(node)) return ((targetNames.get(node) ?? ANY_BIGINT) | PRODUCER_READY)
       const k = params.get(node)
       if (k != null) {
         // Closure-forwarding slice: a param's boundary-level readiness is
@@ -635,25 +643,25 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
         // one — same fact, different boundary shape.
         const boundaryReady = hostBoxParams.has(k) || closureBoxParams.has(k)
         if ((boundary.covered === true && boundary.params[k]?.stable === true) || boundaryReady)
-          return { rep: targetNames.get(node) ?? ANY_BIGINT, ready: true }
+          return ((targetNames.get(node) ?? ANY_BIGINT) | PRODUCER_READY)
       }
     }
     if (Array.isArray(node)) {
-      if (materializedJoins.has(node)) return { rep: nodeTarget.get(node) ?? ANY_BIGINT, ready: true }
-      if (isStorageReadProducer(node)) return { rep: currentOf(node), ready: true }
+      if (materializedJoins.has(node)) return ((nodeTarget.get(node) ?? ANY_BIGINT) | PRODUCER_READY)
+      if (isStorageReadProducer(node)) return (currentOf(node) | PRODUCER_READY)
       if (node[0] === '()') {
         // A direct callee's contract names the carrier its return edges
         // convert to: the call is a ready producer of that carrier.
         const calleeName = calleeNameOf(node)
         const claim = calleeName ? directCallClaim(calleeName) : null
-        if (claim != null) return { rep: claim, ready: true }
+        if (claim != null) return (claim | PRODUCER_READY)
         // A closure's contract, or the closure ABI's any slot for a callee
         // the summary cannot name: the boxed carrier, ready by construction.
         const rep = callRep(node)
-        if (rep === BOXED_BIGINT) return { rep, ready: true }
+        if (rep === BOXED_BIGINT) return (rep | PRODUCER_READY)
       }
     }
-    return { rep: currentOf(node), ready: false }
+    return currentOf(node)
   }
   // A definite-BigInt arithmetic result is a fresh raw i64 once its operands'
   // carriers are decided: an origin, a ready producer, a materialized name,
@@ -662,18 +670,42 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
   // joint dispatch, which the raw result then boxes). Without this the
   // self-referencing def kept `value` unmaterialized, its reads untagged and
   // the OR ran on a box's bits.
-  const freshBigintProducer = (node, name) => {
+  const freshBigintProducer = (node, name, names = materializedNames) => {
     if (!Array.isArray(node) || !NUMERIC_VALUE_OPS.has(node[0]) || !definiteBigint(semanticOf(node))) return false
     for (let i = 1; i < node.length; i++) {
       const operand = node[i]
       if (operand == null || isBigintOrigin(operand)) continue
-      if (typeof operand === 'string') { if (operand === name || materializedNames.has(operand)) continue; return false }
+      if (typeof operand === 'string') { if (operand === name || names.has(operand)) continue; return false }
       if (!Array.isArray(operand)) continue
-      if (emittedCandidate(operand).ready || freshBigintProducer(operand, name)) continue
+      if ((emittedCandidate(operand) & PRODUCER_READY) || freshBigintProducer(operand, name, names)) continue
       return false
     }
     return true
   }
+  // Copies can form a cycle through a reassigned parameter (m = n; n = m).
+  // Prove the whole tagged component together: every other incoming value
+  // must already have a materializable edge. Remove an unproven writer and
+  // its dependents before publishing any carrier fact.
+  const copies = new Map()
+  for (const [name, list] of bindings) {
+    if (materializedNames.has(name) || ctx.scope.globals?.has(name) || targetNames.get(name) !== BOXED_BIGINT) continue
+    const k = params.get(name)
+    if (k == null || boundary.covered === true || exportedIdentity || valueAbiParamCandidates.has(k)) copies.set(name, list)
+  }
+  for (let changed = true; changed;) {
+    changed = false
+    for (const [name, list] of copies) if (!list.every(def => {
+      const rhs = def[DEF_RHS]
+      if (rhs == null) return true
+      const op = def[DEF_OWNER]?.[0]
+      if (op !== '=' && !CONDITIONAL_ASSIGN_OPS.has(op) && !NUMERIC_VALUE_OPS.has(op)) return false
+      if (typeof rhs === 'string' && copies.has(rhs)) return true
+      if (freshBigintProducer(rhs, name, copies)) return true
+      const source = emittedCandidate(rhs)
+      return edgeMaterializable(source & PRODUCER_REP, BOXED_BIGINT, rhs, !!(source & PRODUCER_READY))
+    })) { copies.delete(name); changed = true }
+  }
+  for (const [name] of copies) materializedNames.add(name)
   // A join's own position — direct result expression, named-local RHS, or
   // any other operand — is irrelevant to whether it materializes: the plan
   // owns the join's carrier independent of where its value flows next (the
@@ -687,8 +719,8 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
   const joinArmsMaterializable = (node, target) => {
     const [armA, armB] = joinArms(node)
     const left = emittedCandidate(armA), right = emittedCandidate(armB)
-    return edgeMaterializable(left.rep, target, armA, left.ready) &&
-      edgeMaterializable(right.rep, target, armB, right.ready)
+    return edgeMaterializable(left & PRODUCER_REP, target, armA, !!(left & PRODUCER_READY)) &&
+      edgeMaterializable(right & PRODUCER_REP, target, armB, !!(right & PRODUCER_READY))
   }
   let materializing = true
   while (materializing) {
@@ -696,7 +728,8 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
     let joinChanged = true
     while (joinChanged) {
       joinChanged = false
-      for (const [node, planned] of nodeTarget) {
+      for (const node of plannedNodes) {
+        const planned = nodeTarget.get(node)
         if (materializedJoins.has(node) || !JOIN_OPS.has(node[0]) || planned !== BOXED_BIGINT) continue
         if (joinArmsMaterializable(node, planned)) {
           materializedJoins.add(node)
@@ -721,7 +754,8 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
     // precondition is the node's OWN target being BOXED_BIGINT (already
     // computed above by plannedOf's generic branch) — no arm-by-arm proof, so
     // no iteration is needed.
-    for (const [node, target] of nodeTarget) {
+    for (const node of plannedNodes) {
+      const target = nodeTarget.get(node)
       if (materializedJoins.has(node) || target !== BOXED_BIGINT) continue
       // The summary result channel outranks a stale expression-local union: an
       // exact BigInt return uses the raw result lane, and the static emitter does
@@ -748,7 +782,7 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
         (valTypeOf(arg) ?? summary?.valOfExpr(arg)) === VAL.BIGINT && !maybeAbsentBigint(arg))
       const taggedJoint = !bothExactBigint && BIGINT_JOINT_BINARY_OPS.has(op) && operands.every(arg => {
         const candidate = emittedCandidate(arg), sem = semanticOf(arg)
-        return (candidate.ready && candidate.rep === BOXED_BIGINT) || definiteBigint(sem) || excludesBigint(sem)
+        return ((candidate & PRODUCER_READY) !== 0 && (candidate & PRODUCER_REP) === BOXED_BIGINT) || definiteBigint(sem) || excludesBigint(sem)
       }) && operands.some(arg => canBeBigint(semanticOf(arg)))
       if (!sentinelUnary && !sentinelJoint && !taggedJoint) continue
       materializedJoins.add(node)
@@ -763,11 +797,11 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
     let namesChanged = true
     while (namesChanged) {
       namesChanged = false
-      for (const [name, list] of defs) {
+      for (const [name, list] of bindings) {
         if (materializedNames.has(name) || ctx.scope.globals?.has(name)) continue
         const paramIndex = params.get(name)
         if (paramIndex != null && boundary.covered !== true && !exportedIdentity && !valueAbiParamCandidates.has(paramIndex)) continue
-        if (!list.some(def => def[DEF_RHS] != null && emittedCandidate(def[DEF_RHS]).ready)) continue
+        if (!list.some(def => def[DEF_RHS] != null && (emittedCandidate(def[DEF_RHS]) & PRODUCER_READY))) continue
         const target = targetNames.get(name) ?? ANY_BIGINT
         if (list.every(def => {
           if (def[DEF_RHS] == null) return true
@@ -775,8 +809,8 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
           // (`v += 1n`) reads the current carrier and writes a fresh raw result.
           const ownerOp = def[DEF_OWNER]?.[0]
           if (ownerOp !== '=' && !CONDITIONAL_ASSIGN_OPS.has(ownerOp) && !NUMERIC_VALUE_OPS.has(ownerOp)) return false
-          const source = freshBigintProducer(def[DEF_RHS], name) ? { rep: RAW_BIGINT, ready: true } : emittedCandidate(def[DEF_RHS])
-          return edgeMaterializable(source.rep, target, def[DEF_RHS], source.ready || isStorageReadProducer(def[DEF_RHS]))
+          const source = freshBigintProducer(def[DEF_RHS], name) ? (RAW_BIGINT | PRODUCER_READY) : emittedCandidate(def[DEF_RHS])
+          return edgeMaterializable(source & PRODUCER_REP, target, def[DEF_RHS], !!(source & PRODUCER_READY) || isStorageReadProducer(def[DEF_RHS]))
         })) {
           materializedNames.add(name)
           namesChanged = true
@@ -793,7 +827,7 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
   // stays; when an arm cannot, the join stays unmaterialized. Boxing it
   // would hand the binding's raw reads a pointer. Decided once the fixpoint
   // has settled, since the binding's own readiness followed the join's.
-  for (const [name, list] of defs) {
+  for (const [name, list] of bindings) {
     if (materializedNames.has(name) || ctx.scope.globals?.has(name)) continue
     for (const def of list) {
       const join = def[DEF_RHS]
@@ -811,7 +845,8 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
   // temporary caches above are build-time solver state and do not remain
   // reachable from the published plan.
   const nodeFacts = new Map()
-  for (const [node, target] of nodeTarget) {
+  for (const node of plannedNodes) {
+    const target = nodeTarget.get(node)
     const semantic = semanticOf(node)
     if (!canBeBigint(semantic)) continue
     const current = currentOf(node)
@@ -820,7 +855,7 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
   const packedSemantics = new Map()
   const keptCurrent = new Map(), keptTarget = new Map()
   for (const [name, semantic] of semanticNames) {
-    if (!canBeBigint(semantic)) continue
+    if (!canBeBigint(semantic) && !options.captures?.has(name)) continue
     packedSemantics.set(name, semantic)
     keptCurrent.set(name, currentNames.get(name) ?? ANY_BIGINT)
     keptTarget.set(name, targetNames.get(name) ?? ANY_BIGINT)
@@ -855,14 +890,19 @@ export function mintRepresentationPlan(ctx, identity, sig, body, localReps, opti
   const prior = ctx.plans.representations.get(identity)
   if (prior && ctx.plans.representationData.get(prior)?.body)
     throw new Error(`RepresentationPlan already published for ${identity?.name || '<anonymous>'}`)
+  // Provenance and representation solve the same immutable definition set.
+  // Keep its pairs across fixpoint rounds instead of rematerializing Map entries.
+  const defs = collectDefs(body, sig?.params), bindings = [...defs]
   const localProvenance = options.generic && program.provenance
-    ? deriveLocalProvenance(sig, body, localReps, program.provenance, ctx.summary?.at(identity))
+    ? deriveLocalProvenance(sig, body, localReps, program.provenance, ctx.summary?.at(identity), bindings)
     : null
   const planOptions = {
     ...options,
     provenance: program.provenance,
     localProvenance,
     localReps,
+    defs,
+    bindings,
   }
   const handle = ensureBoundary(ctx, identity, sig, planOptions)
   const record = ctx.plans.representationData.get(handle)

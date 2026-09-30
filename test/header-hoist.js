@@ -81,3 +81,10 @@ test('header hoist: a reset restores the array the loop stored into', () => {
     is(exports.run(64), first, 'round 2 answers the same')
   }
 })
+
+test('header hoist: an array held as its elements\' locals has no header to save before the loop', () => {
+  // at level 0 the array is its elements' locals (analyze's flat objects), and the save named an array no local held
+  const src = `export function run (n) { let s = [0, 0]; for (let i = 0; i < n; i++) { s[0] = s[0] + 1; s[1] = s[0] * 2 } return s[0] + s[1] }`
+  const host = oracle(src).run
+  for (const optimize of levels(0, 2, 3)) for (const n of [3, 0]) is(jz(src, { optimize }).exports.run(n), host(n), `run(${n}) at ${optimize}`)
+})

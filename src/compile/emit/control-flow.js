@@ -4,7 +4,7 @@
  * @module compile/emit/control-flow
  */
 
-import { encodePtrHi, i64Hex } from '../../../layout.js'
+import { encodePtrHi, i64Hex, TYPED_ELEM_VIEW_FLAG, TYPED_ELEM_ANY_VIEW_FLAG } from '../../../layout.js'
 import { enumKeys } from '../../../module/schema.js'
 import {
   T, MUTATE_OPS, constLiteralHoistable, hasLabeledContinueTo, hasOwnBreakOrContinue, hasOwnContinue, isConstLiteral, isReassigned, some, walkAst,
@@ -23,7 +23,7 @@ import {
 import { withControlFrame, withPendingLabel, withSchemaSpeculation } from '../flow-state.js'
 import { extractRefinements, inferSchemaBranch, mergeRefinement, withRefinements } from '../flow-types.js'
 import { plannedTypedStorageInfo } from '../typed-storage-plan.js'
-import { emit, emitVoid, markDropped, toBool } from './dispatch.js'
+import { emit, emitVoid, markDropped, provedPresent, toBool } from './dispatch.js'
 import { loopGuardHi } from './i32-bounds.js'
 import { emitFinalizers } from './statements.js'
 import { isNullable } from '../../summary/kind.js'
@@ -425,8 +425,9 @@ function durableLoopArrays(init, cond, step, body) {
   const view = ctx.summary?.at(ctx.func.current)
   const out = []
   for (const name of names) {
-    // A binding the body or the head declares does not exist before the loop.
-    if (ctx.func.boxed?.has(name) || containsDeclOf(body, name) || (init != null && containsDeclOf(init, name)) ||
+    // A binding the body or the head declares does not exist before the loop,
+    // and one held as its elements' locals (ctx.func.flatObjects) has no array.
+    if (ctx.func.boxed?.has(name) || ctx.func.flatObjects?.has(name) || containsDeclOf(body, name) || (init != null && containsDeclOf(init, name)) ||
         isReassigned(body, name) || (init != null && isReassigned(init, name)) ||
         (cond != null && isReassigned(cond, name)) || (step != null && isReassigned(step, name))) continue
     if (isGlobal(name) && !ctx.scope.consts?.has(name)) continue
@@ -441,12 +442,8 @@ export const controlFlowOps = {
   // === Control flow ===
 
   'if': (cond, then, els) => {
-    // A logical or negated condition is a boolean question, not a value:
-    // toBool tests each operand in place (the value form boxed the operand
-    // the `&&` yields, then tested the box generically).
-    const boolShape = Array.isArray(cond) && (cond[0] === '&&' || cond[0] === '||' || cond[0] === '!')
     // Dead branch elimination: constant condition → emit only the live branch
-    const ce = boolShape ? toBool(cond) : emit(cond)
+    const ce = toBool(cond)
     if (isLit(ce)) {
       const v = litVal(ce), truthy = v !== 0 && v === v
       markDropped(truthy ? els : then)
@@ -539,6 +536,14 @@ export const controlFlowOps = {
   // The arm takes `init` only to prove its counter facts and emits the loop proper alone.
   'for': (init, cond, step, body, entered = false) => {
     if (body === undefined) return err('for-in/for-of not supported')
+    // A receiver the initializer checked present (`l = data.length`) stays so
+    // through the loop: the initializer runs before every test, body and step.
+    const initPresent = (checkedFrom) => {
+      const refs = new Map()
+      for (const name of provedPresent(init, ctx.func.checkedRecv?.slice(checkedFrom)))
+        refs.set(name, { ...ctx.func.refinements?.get(name), notNullish: true })
+      return refs
+    }
     // An enclosing labeled statement (`outer: for …`) hands its label down so `continue outer`
     // can target this loop's continue point. The immediately-enclosed loop consumes it.
     const myLabel = ctx.func.pendingLabel; ctx.func.pendingLabel = null
@@ -585,7 +590,9 @@ export const controlFlowOps = {
         // so the counters' own step arithmetic (`j++, k += step`) stays integer too.
         const topCounterRefs = counterRefinements(topFacts)
         const result = []
+        const checkedFrom = ctx.func.checkedRecv?.length ?? 0
         if (init != null) result.push(...emitVoid(init))
+        const initRefs = init != null ? initPresent(checkedFrom) : new Map()
         const i64c = (n) => ['i64.const', n]
         const ext = (ir) => ['i64.extend_i32_s', ir]
         const conjs = []
@@ -658,11 +665,12 @@ export const controlFlowOps = {
           const checked = len => absent ? ['if', ['result', 'i64'], isNullish(asF64(emit(recv))),
             ['then', ['i64.const', 0]], ['else', len]] : len
           const aux = plannedTypedStorageInfo(ctx, recv)?.aux
-          if (aux == null) {
+          // owned or a view, read off a named pointer below; any other form asks __len
+          if (aux == null || aux & TYPED_ELEM_ANY_VIEW_FLAG && typeof recv !== 'string') {
             inc('__len')
             return checked(['i64.extend_i32_u', ['call', '$__len', ['i64.reinterpret_f64', asF64(emit(recv))]]])
           }
-          const et = aux & 7, isView = (aux & 8) !== 0
+          const et = aux & 7, isView = (aux & 8) !== 0, anyView = (aux & TYPED_ELEM_ANY_VIEW_FLAG) !== 0
           const shift = (aux & 16) ? 3 : et <= 1 ? 0 : et <= 3 ? 1 : et <= 6 ? 2 : 3
           // A ptr-NARROWED receiver (typed param/local carried as a raw i32
           // offset) IS the base — asF64 on it would coerce the offset
@@ -678,8 +686,14 @@ export const controlFlowOps = {
           const base = narrowed
             ? recvIR
             : ['i32.wrap_i64', ['i64.and', ['i64.reinterpret_f64', asF64(recvIR)], ['i64.const', LAYOUT.OFFSET_MASK]]]
-          return checked(['i64.extend_i32_u', ['i32.shr_u',
-            ['i32.load', isView ? base : ['i32.sub', base, ['i32.const', 8]]], ['i32.const', shift]]])
+          // Owned or a view (a name, never narrowed: layout.js): the view bit off
+          // the pointer picks the descriptor's word or the one below the data.
+          if (anyView && narrowed) { inc('__len'); return checked(['i64.extend_i32_u', ['call', '$__len', ['i64.reinterpret_f64', asF64(emit(recv))]]]) }
+          const lenAt = anyView
+            ? ['select', base, ['i32.sub', ['i32.wrap_i64', ['i64.and', ['i64.reinterpret_f64', asF64(emit(recv))], ['i64.const', LAYOUT.OFFSET_MASK]]], ['i32.const', 8]],
+              ['i32.and', ['i32.wrap_i64', ['i64.shr_u', ['i64.reinterpret_f64', asF64(emit(recv))], ['i64.const', 32]]], ['i32.const', TYPED_ELEM_VIEW_FLAG]]]
+            : isView ? base : ['i32.sub', base, ['i32.const', 8]]
+          return checked(['i64.extend_i32_u', ['i32.shr_u', ['i32.load', lenAt], ['i32.const', shift]]])
         }
         // one guard covers the whole NEST — each level contributes its own max-iv
         // and extent conjuncts (nested recognizers need the BARE nest in the fast
@@ -726,7 +740,8 @@ export const controlFlowOps = {
           for (const c of vs.cands) {
             if (!isNullable(ctx.summary?.at(ctx.func.current).kindOfExpr(c.recv)) || freeRefs.get(c.recv)?.val) continue
             conjs.push(['i32.eqz', isNullish(asF64(emit(c.recv)))])
-            freeRefs.set(c.recv, { val: VAL.TYPED })
+            // present in the fast arm: its reads take the kind without the missing part
+            freeRefs.set(c.recv, { val: VAL.TYPED, notNullish: true })
           }
           // max iv as i64. An 'f64' bound (untyped param, unknown box) converts via
           // ceil (`<`: the max int iv under B) / floor (`<=`) + trunc_sat — never
@@ -801,6 +816,18 @@ export const controlFlowOps = {
           // non-unit monotone stride: positivity is the soundness condition
           if (vs.stepBy?.name != null)
             conjs.push(['i64.ge_s', slotI64(vs.stepBy.name, vs.stepBy.kind), i64c(1)])
+          // A strided iv stops at the last value its stride reaches below the
+          // bound, entry + ⌊(max − entry) / stride⌋·stride: taking the bound for
+          // it put a butterfly's far access past the length (the split-radix
+          // FFT's `i0 += id` loops), and the guard never held. A stride the
+          // conjunct above rejects divides as 1 here, the guard failing anyway.
+          if (vs.stepBy && vs.stepBy.lit !== 1) {
+            const entry = levelInfo.get(vs).entryIR()
+            const stride = vs.stepBy.lit != null ? i64c(vs.stepBy.lit)
+              : ['select', slotI64(vs.stepBy.name, vs.stepBy.kind), i64c(1), ['i64.ge_s', slotI64(vs.stepBy.name, vs.stepBy.kind), i64c(1)]]
+            result.push(['local.set', `$${maxIv}`, ['i64.add', entry,
+              ['i64.mul', ['i64.div_s', ['i64.sub', ['local.get', `$${maxIv}`], entry], stride], stride]]])
+          }
           // one extent conjunct pair per (recv, a, slots) group: hi = a*maxIv+Σkᵢ·slotᵢ
           // +maxC < len, plus lo = a*entry+Σkᵢ·slotᵢ+minC ≥ 0 — folded when the static
           // start proves it, read from the live iv local otherwise (top level only)
@@ -839,7 +866,9 @@ export const controlFlowOps = {
           // A monotone cursor spans entry..entry+K*trips. Like affine groups,
           // all offsets on one receiver need only the lowest and highest check.
           for (const g of cursorGroups.values()) {
-            const entry = slotI64(g.cursor, 'i32'), info = levelInfo.get(vs)
+            // an f64 cursor takes the slot's integral and magnitude conjuncts: a
+            // fractional entry advanced by whole steps names no element
+            const entry = slotI64(g.cursor, exprType(g.cursor, ctx.func.locals) === 'i32' ? 'i32' : 'f64'), info = levelInfo.get(vs)
             const trips = ['i64.add', ['i64.sub', ['local.get', `$${info.maxIv}`], info.entryIR()], i64c(1)]
             const lo = g.minC < 0 ? ['i64.add', entry, i64c(g.minC)] : entry
             let hi = ['i64.add', entry, ['i64.mul', i64c(g.K), trips]]
@@ -971,11 +1000,11 @@ export const controlFlowOps = {
         // topCounterRefs (the counter's own [lo, hi], unconditional) wraps BOTH
         // arms; freeRefs (bound-name magnitude, sound only once the guard has
         // passed) wraps the fast arm alone — see comments above each.
-        const fast = withRefinements(topCounterRefs, body,
-          () => freeRefs.size ? withRefinements(freeRefs, body, emitArm) : emitArm())
+        const fast = withRefinements(initRefs, body, () => withRefinements(topCounterRefs, body,
+          () => freeRefs.size ? withRefinements(freeRefs, body, emitArm) : emitArm()))
         ctx.types.assumedBounds = saved
         ctx.types.assumedConstHull = savedHull
-        const checked = withRefinements(topCounterRefs, body, emitArm)
+        const checked = withRefinements(initRefs, body, () => withRefinements(topCounterRefs, body, emitArm))
         const stmts = (r) => Array.isArray(r[0]) ? r : [r]
         result.push(['if', typed(guard, 'i32'),
           ['then', ...stmts(fast)],
@@ -1006,7 +1035,9 @@ export const controlFlowOps = {
     // cell (sets frame.loopFresh; emitDecl then stores rather than re-allocates).
     const freshBoxed = emitLoopFreshBoxed(body, frame)
     const result = []
+    const checkedFrom = ctx.func.checkedRecv?.length ?? 0
     if (init != null && !entered) result.push(...emitVoid(init))
+    const initRefs = init != null && !entered ? initPresent(checkedFrom) : new Map()
     for (const lit of preLoopLits) result.push(...emitVoid(lit))   // allocate hoisted literals once
     // A durable array the body stores into by a name the loop never reassigns
     // is saved for the reset before the loop (module/collection/durable.js):
@@ -1064,10 +1095,11 @@ export const controlFlowOps = {
     // own hull (a second map for the same name would replace its lower bound).
     const bodyRefs = counterRefinements(facts)
     if (condForLoop) extractRefinements(condForLoop, bodyRefs, true)
+    for (const [name, fact] of initRefs) bodyRefs.set(name, bodyRefs.has(name) ? { ...bodyRefs.get(name), ...fact } : fact)
     const emitLoopBody = () => withRefinements(bodyRefs, body, () => withRefinements(savedRefs, body, () => emitVoid(body)))
     const loopBody = []
     if (condForLoop) loopBody.push(['br_if', brk, ['i32.eqz',
-      withRefinements(testRefinements(facts), condForLoop, () => toBool(condForLoop))]])
+      withRefinements(initRefs, condForLoop, () => withRefinements(testRefinements(facts), condForLoop, () => toBool(condForLoop)))]])
     loopBody.push(...freshBoxed)
     if (needsCont) loopBody.push(['block', cont, ...emitLoopBody()])
     else loopBody.push(...emitLoopBody())
@@ -1075,7 +1107,7 @@ export const controlFlowOps = {
       const map = loopGuardHi()
       if (guardHadPrev) map.set(guardName, guardPrev); else map.delete(guardName)
     }
-    if (step) loopBody.push(...emitVoid(step))
+    if (step) loopBody.push(...withRefinements(initRefs, step, () => emitVoid(step)))
     loopBody.push(['br', loop])
     const loopBlockNode = ['block', brk, ['loop', loop, ...loopBody]]
     // Per-iteration arena rewind (compile/analyze/frame-effects.js): an iteration

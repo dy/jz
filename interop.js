@@ -3,7 +3,7 @@
  *
  * Importable as `jz/interop` without pulling the compiler, parser, or watr —
  * use this to run prebuilt jz wasm from a host that doesn't need to compile.
- * Sole external dependency: `./wasi.js`.
+ * Dependencies contain only host linking, layout, errors and text decoding.
  *
  * Marshals NaN-boxed `f64` values across the boundary: bump-allocated heap
  * blobs (strings, arrays, typed arrays, objects), schema transport for
@@ -27,10 +27,10 @@
 import { wasi, attachTimers } from './wasi.js'
 import { HEAP, PTR, FIELD, encodePtrHi, decodePtrType, decodePtrAux, ATOM, ATOM_HI, LAYOUT, DATA_VIEW_FLAG, DATA_VIEW_AUX, TYPED_ELEM_VIEW_FLAG, ctorFromElemAux, HIDDEN_PROPERTY_SEQ } from './layout.js'
 import { ERROR_CODE_HI, ERR_INFO } from './err-codes.js'
+import { decodeUtf8 } from './utf8.js'
 
 // UTF-8 codecs for Wasm metadata. String values use lossless UTF-16 marshalling.
-const TEXT_ENC = new TextEncoder()
-const TEXT_DEC = new TextDecoder('utf-8', { ignoreBOM: true })
+const TEXT_DEC = { decode: decodeUtf8 }
 
 // ── WASI linking ────────────────────────────────────────────────────────────
 
@@ -128,11 +128,14 @@ const sectionReader = (bytes) => {
 const MASK32 = 0xffffffffn
 // Reinterpret for GENUINE numbers (and freshly-built boxes leaving JS): `_f64` only ever
 // holds a real number here, never a live NaN-box, so there is nothing for JSC to purify.
-const _buf = new ArrayBuffer(8), _u32 = new Uint32Array(_buf), _f64 = new Float64Array(_buf)
-export const f64ToI64 = (n) => { _f64[0] = n; return (BigInt(_u32[1]) << 32n) | BigInt(_u32[0] >>> 0) }
-export const i64ToF64 = (b) => { _u32[0] = Number(b & MASK32); _u32[1] = Number((b >> 32n) & MASK32); return _f64[0] }
+// The bits cross through one 8-byte cell (a BigInt stored takes its value mod 2^64):
+// shifting and masking a BigInt allocates at every step, several per argument.
+const _buf = new ArrayBuffer(8), _u32 = new Uint32Array(_buf), _f64 = new Float64Array(_buf), _u64 = new BigUint64Array(_buf)
+export const f64ToI64 = (n) => { _f64[0] = n; return _u64[0] }
+export const i64ToF64 = (b) => { _u64[0] = b; return _f64[0] }
 
-const hi32 = (b) => Number((b >> 32n) & MASK32)
+const hi32 = (b) => { _u64[0] = b; return _u32[1] }
+const lo32 = (b) => { _u64[0] = b; return _u32[0] }
 // A NaN-box is a sign-0 quiet NaN — high u32 carries jz's 0x7FF8 prefix. The
 // mask MUST include the sign bit (0xFFF80000, not 0x7FF80000): a plain host
 // BigInt's 64-bit two's-complement sign-extension sets hi32's top 12 prefix
@@ -183,8 +186,8 @@ const encodeSSO = (s) => {
 // Accept either the i64 carrier (BigInt, canonical) or a legacy f64 NaN-box (intact on V8 —
 // e.g. an adaptI64 result, or user code holding a pre-i64 pointer) — normalize before decode.
 const asBits = (p) => typeof p === 'bigint' ? p : f64ToI64(p)
-export const ptr = (type, aux, offset) => (BigInt(encodePtrHi(type, aux)) << 32n) | BigInt(offset >>> 0)
-export const offset = (p) => Number(asBits(p) & MASK32)
+export const ptr = (type, aux, offset) => { _u32[1] = encodePtrHi(type, aux); _u32[0] = offset; return _u64[0] }
+export const offset = (p) => lo32(asBits(p))
 export const type = (p) => decodePtrType(hi32(asBits(p)))
 export const aux = (p) => decodePtrAux(hi32(asBits(p)))
 
@@ -200,12 +203,15 @@ const decodeSSO = (b) => {
 // Memory-free decode of an i64-bits boundary value: numbers pass through, a box becomes
 // its atom / SSO string. Exactly the forms a *memoryless* module can carry (no linear
 // memory → no heap string/array/object). Heap-carrying modules route through `mem.read`.
-const decode = v => {
-  if (Array.isArray(v)) return v.map(decode)   // multi-value tuple — each lane is an i64-carrier (memoryless)
+// `fnOf` reads a closure as a JS function (wrap's reader): a module with no
+// heap holds closures too, one that captures nothing needs none.
+const decode = (v, fnOf = null) => {
+  if (Array.isArray(v)) return v.map(x => decode(x, fnOf))   // multi-value tuple, each lane an i64-carrier (memoryless)
   if (typeof v === 'number') { if (v === v) return v; v = f64ToI64(v) }  // f64 NaN-box (intact on V8) → bits
   else if (typeof v !== 'bigint') return v     // already-decoded JS value
   if (!isBox(v)) return i64ToF64(v)            // non-NaN bits → number
   if (type(v) === 4 && (aux(v) & LAYOUT.SSO_BIT)) return decodeSSO(v)
+  if (type(v) === 10 && fnOf) return fnOf(v)
   if (offset(v) === 0) {
     if (v === NULL_NAN) return null
     if (v === UNDEF_NAN) return undefined
@@ -407,6 +413,8 @@ export const memory = (src) => {
   // changes when the module compiled with other ids), committed as a whole
   Object.assign(mem, mergeTables(mem, mod ? moduleTables(mod) : NO_TABLES))
   if (wasmExports?.__view_data) mem.viewData = wasmExports.__view_data
+  if (wasmExports?.__obj_props) mem.objProps = wasmExports.__obj_props
+  if (wasmExports?.__obj_deleted) mem.objDeleted = wasmExports.__obj_deleted
 
   // If already enhanced, just update bindings (new module compiled into same memory)
   if (_enhanced.has(mem)) {
@@ -648,8 +656,29 @@ export const memory = (src) => {
     return ptr(6, sid, raw)
   }
 
-  mem.read = function(p) {
-    if (Array.isArray(p)) return p.map(v => mem.read(v))  // multi-value tuple
+  // The live entries of a HASH (7), SET (8) or MAP (9) at `off` in insertion
+  // order, as __coll_order walks them: a durable-heap tombstone is no key.
+  const liveSlots = (off, t) => {
+    const m = dv(), cap = m.getInt32(off - 4, true), stride = t === 8 ? 16 : 24, slots = []
+    for (let i = 0; i < cap; i++) {
+      const slot = off + i * stride, hash = m.getBigUint64(slot, true)
+      if (hash && (t !== 7 || Number(hash >> 32n) !== HIDDEN_PROPERTY_SEQ) && m.getBigUint64(slot + 8, true) !== 0x7FF87FFFFFFFFFFFn)
+        slots.push([Number(hash >> 32n), slot])
+    }
+    return slots.sort((a, b) => a[0] - b[0]).map(([, slot]) => slot)
+  }
+  // A dictionary's [key, value] pairs, the box followed past a grow.
+  const hashEntries = (bits, fnOf = null) => {
+    const m = dv()
+    let off = offset(bits)
+    while (m.getInt32(off - 4, true) === -1) off = m.getUint32(off - 8, true)
+    return liveSlots(off, 7).map(slot => [mem.read(m.getBigInt64(slot + 8, true), fnOf), mem.read(m.getBigInt64(slot + 16, true), fnOf)])
+  }
+
+  // `fnOf` reads a closure as a JS function that calls it (wrap's per-instance
+  // reader: a closure's table index names a function of the module that made it).
+  mem.read = function(p, fnOf = null) {
+    if (Array.isArray(p)) return p.map(v => mem.read(v, fnOf))  // multi-value tuple
     if (typeof p === 'number') {
       if (p === p) return p              // genuine number passthrough (NaN fails ===)
       p = f64ToI64(p)                    // f64 NaN-box (intact on V8) → bits; decode below
@@ -671,9 +700,10 @@ export const memory = (src) => {
       if (a === 5) return true
     }
     if (t === 11 && mem._extMap) return mem._extMap[off]
+    if (t === 10 && fnOf) return fnOf(p)
     if (t === 1) {  // ARRAY
       const len = m.getInt32(off - 8, true), out = new Array(len)
-      for (let i = 0; i < len; i++) out[i] = mem.read(m.getBigInt64(off + i * 8, true))
+      for (let i = 0; i < len; i++) out[i] = mem.read(m.getBigInt64(off + i * 8, true), fnOf)
       return out
     }
     if (t === 3) {  // TYPED
@@ -718,43 +748,43 @@ export const memory = (src) => {
       // An object literal's accessor reads through its getter: the module
       // copies such an object's data into a dictionary, decoded below.
       // Error transport reads its stored message before constructing the host Error.
-      if (mem.views?.has(a) && mem.viewData && !mem.errorSidToClass?.has(a)) return mem.read(mem.viewData(p))
+      if (mem.views?.has(a) && mem.viewData && !mem.errorSidToClass?.has(a)) return mem.read(mem.viewData(p), fnOf)
       const keys = mem.schemas[a]
       if (!keys) { if (off >= mem._above) mem._held = true; return p }
       const obj = {}
+      // A deleted slot keeps undefined and a bit of the mask (layout.js
+      // deletedSlotWat): from slot 31 on one sticky bit covers the undefined ones.
+      const mask = mem.objDeleted ? mem.objDeleted(p) : 0
       for (let i = 0; i < keys.length; i++) {
         const rule = mem.fieldContracts[a]?.[i], raw = m.getBigInt64(off + i * 8, true)
+        if (mask && (i < 31 ? (mask >>> i) & 1 : (mask >>> 31) & 1 && raw === UNDEF_NAN)) continue
         if (rule?.[2] === 8) throw new TypeError('jz: field ' + keys[i] + ' has ambiguous raw BigInt storage; use distinct object shapes')
-        let value = rule?.[2] === 4 ? raw : mem.read(raw)
+        let value = rule?.[2] === 4 ? raw : mem.read(raw, fnOf)
         if (value != null && rule && (rule[0] & ~FIELD.NULLISH) === FIELD.BOOL) value = !!value
         obj[keys[i]] = value
       }
+      // A property stored outside the layout (through an alias, a destructuring
+      // target, a helper's parameter) is in the object's dictionaries: its
+      // header's, then the one a durable object's offset keys (module
+      // __obj_props). A later one's value replaces an earlier one's in place.
+      if (mem.objProps) for (const which of [0, 1]) {
+        const d = mem.objProps(p, which)
+        if (d) for (const [key, value] of hashEntries(d, fnOf)) obj[key] = value
+      }
+      fnOf?.owners.set(obj, p)
       return obj
     }
     if (t >= 7 && t <= 9) {  // HASH / SET / MAP share the insertion sequence.
-      const cap = m.getInt32(off - 4, true), stride = t === 8 ? 16 : 24, slots = []
-      for (let i = 0; i < cap; i++) {
-        const slot = off + i * stride, hash = m.getBigUint64(slot, true)
-        // Match __coll_order: a durable-heap tombstone is not a live key.
-        if (hash && (t !== 7 || Number(hash >> 32n) !== HIDDEN_PROPERTY_SEQ) && m.getBigUint64(slot + 8, true) !== 0x7FF87FFFFFFFFFFFn)
-          slots.push([Number(hash >> 32n), slot])
-      }
-      slots.sort((a, b) => a[0] - b[0])
-      const out = t === 7 ? {} : t === 8 ? new Set() : new Map()
-      for (const [, slot] of slots) {
-        const key = mem.read(m.getBigInt64(slot + 8, true))
-        if (t === 8) out.add(key)
-        else {
-          const value = mem.read(m.getBigInt64(slot + 16, true))
-          if (t === 7) out[key] = value
-          else out.set(key, value)
-        }
-      }
+      if (t === 8) return new Set(liveSlots(off, t).map(slot => mem.read(m.getBigInt64(slot + 8, true), fnOf)))
+      const entries = liveSlots(off, t).map(slot => [mem.read(m.getBigInt64(slot + 8, true), fnOf), mem.read(m.getBigInt64(slot + 16, true), fnOf)])
+      if (t !== 7) return new Map(entries)
+      const out = Object.fromEntries(entries)
+      fnOf?.owners.set(out, p)
       return out
     }
     // a handle on the module's memory, held as the view of a typed array is
     if (t !== 0 && off >= mem._above) mem._held = true
-    return i64ToF64(p)  // canonical NaN-number / CLOSURE / unknown — reinterpret to f64
+    return i64ToF64(p)  // canonical NaN-number, a CLOSURE without a reader, unknown: reinterpret to f64
   }
 
   mem.write = function(p, data) {
@@ -923,7 +953,7 @@ export const wrap = (memSrc, inst, state) => {
   // wrapper's rewind is the only one.
   // `ask`: those whose result may be a heap value, which the frame keeps and
   // the wrapper releases once it holds a copy.
-  const releases = new Set(), flagged = new Set(), hostReleased = new Set()
+  const releases = new Set(), flagged = new Set(), hostReleased = new Set(), numberResult = new Set()
   const releaseBytes = customSection(mod, 'jz:release')
   if (releaseBytes) {
     try {
@@ -931,6 +961,7 @@ export const wrap = (memSrc, inst, state) => {
       for (const n of r.release) releases.add(n)
       for (const n of r.flag ?? []) flagged.add(n)
       for (const n of [...r.host ?? [], ...r.ask ?? []]) hostReleased.add(n)
+      for (const n of r.number ?? []) { releases.add(n); hostReleased.add(n); numberResult.add(n) }
     } catch { /* ignore */ }
   }
   const esc = realInst.exports.__esc, setBase = realInst.exports.__base, survive = realInst.exports.__survive
@@ -1043,7 +1074,7 @@ export const wrap = (memSrc, inst, state) => {
   // this fix (not the named repro, not chased here).
   const readRet = (r) => {
     if (Array.isArray(r)) return r.map(readRet)
-    const decoded = mem.read(r)
+    const decoded = mem.read(r, fnOf)
     const errClassName = errorSidClassOf(r)
     return errClassName != null ? new (globalThis[errClassName] ?? Error)(decoded.message) : decoded
   }
@@ -1129,6 +1160,34 @@ export const wrap = (memSrc, inst, state) => {
     wrapped.thrown = value
     throw wrapped
   }
+  // A closure the host holds (an export's result, a host call's argument)
+  // reads as a JS function calling it through the module's trampoline, as an
+  // export call runs: arguments wrapped, the result read, a throw decoded, a
+  // promise adopted. Called as a method of an object read from the module,
+  // it takes that object as `this`. Past the inline lanes a rest parameter
+  // reads the whole argument list from an array.
+  const callClosure = mem ? realInst.exports.__call_closure : null
+  const lanes = callClosure ? callClosure.length - 4 : 0
+  const closureArg = (v) => typeof v === 'bigint' && !isBox(v) && mem.BigInt ? mem.BigInt(v) : v
+  // The call keeps its heap as an export that releases nothing does (a closure
+  // has no `jz:release` of its own), and what it kept holds the heap of the
+  // call around it (`enter`/`leave` below); a module with no heap has neither.
+  const fnOf = callClosure ? Object.assign((clos) => function (...args) {
+    const mark = mem.scalar ? null : enter(false)
+    let returned = false
+    try {
+      const n = args.length, a = new Array(lanes)
+      for (let i = 0; i < lanes; i++) a[i] = i < n ? bits(mem.wrapVal(closureArg(args[i]))) : UNDEF_NAN
+      const spill = n > lanes && mem.Array ? offset(mem.Array(args.map((v, i) => i < lanes ? undefined : closureArg(v)))) : 0
+      if (lastErrBitsWritable) lastErrBits.value = 0n
+      const ret = callClosure(clos, n, spill, fnOf.owners.get(this) ?? UNDEF_NAN, ...a)
+      returned = true
+      return finishRet(ret, readRet)
+    } catch (error) {
+      decodeThrown(error)
+    } finally { if (mark) leave(mark, false, false, returned) }
+  }, { owners: new WeakMap() }) : null
+  if (state) state.fnOf = fnOf
   const exports = {}
   // A call that crosses as it is. Every parameter is a number on its own lane
   // (no slot of the i64, externref or host-BigInt lanes, no typed slot, no
@@ -1242,8 +1301,8 @@ export const wrap = (memSrc, inst, state) => {
       // any host array, and what the call writes goes back into that buffer.
       // A box is an i64 carrier or the legacy f64 NaN carrier (a NaN number).
       if (jzBuffer) {
-        const view = mem.read(x)
-        if (!(view instanceof Ctor) || (aux(x) & TYPED_ELEM_VIEW_FLAG)) { if (writes) back = { box: x }; x = Ctor.from(view) }
+        // its kind is in its box: a view is made only to convert it
+        if (argKind(x) !== key || (aux(x) & TYPED_ELEM_VIEW_FLAG)) { if (writes) back = { box: x }; x = Ctor.from(mem.read(x)) }
       } else {
         if (writes && x != null && typeof x === 'object') back = hostBack(x)
         x = x instanceof Ctor ? x : Ctor.from(x)
@@ -1432,11 +1491,11 @@ export const wrap = (memSrc, inst, state) => {
           // A proven raw-BigInt result stays raw; tagged results set `r` and
           // take the generic decoder.
           if (typeof ret === 'bigint' && !(ie && ie.r)) return ret
-          return decode(ret)
+          return decode(ret, fnOf)
         } catch (e) { decodeThrown(e) }
       }
       exports[name] = plainLanes(ie, ext, hostAbi) && !asyncMod
-        ? crossing(fn, general, (ret) => typeof ret === 'bigint' && !(ie && ie.r) ? ret : decode(ret), always, idle) : general
+        ? crossing(fn, general, (ret) => typeof ret === 'bigint' && !(ie && ie.r) ? ret : decode(ret, fnOf), always, idle) : general
     }
     return exports
   }
@@ -1463,10 +1522,10 @@ export const wrap = (memSrc, inst, state) => {
       const ext = extExp.get(name)
       const ie = i64Exp.get(name)
       const hostAbi = hostAbiExp.get(name)
-      const release = releases.has(name), flag = flagged.has(name)
+      const release = releases.has(name), flag = flagged.has(name), numeric = numberResult.has(name)
       exports[name] = (...args) => {
         const writeBack = [], mark = enter(flag)
-        let returned = false
+        let returned = false, scalar = !numeric
         try {
           const a = args.slice(0, fixed).map(i64Arg(ie, ext, memWrapVal, hostAbi, name, writeBack))
           while (a.length < fixed) { const i = a.length; a.push(ie && ie.p.has(i) ? UNDEF_NAN : undefined) }
@@ -1475,6 +1534,7 @@ export const wrap = (memSrc, inst, state) => {
           // audit-#8 P1-1 belt-and-braces — see the scalar-module wrapper above.
           if (lastErrBitsWritable) lastErrBits.value = 0n
           const ret = fn.apply(null, a)
+          if (numeric) { const n = typeof ret === 'bigint' ? i64ToF64(ret) : ret; scalar = typeof n === 'number' && n === n }
           returned = true
           if (writeBack.length) copyBack(writeBack)
           const host = hostOf(writeBack, ret)
@@ -1483,23 +1543,24 @@ export const wrap = (memSrc, inst, state) => {
           return settled(mark, ret)
         } catch (error) {
           decodeThrown(error)
-        } finally { leave(mark, release, flag, returned) }
+        } finally { leave(mark, release && scalar, flag, returned) }
       }
     } else if (typeof fn === 'function') {
       const ext = extExp.get(name)
       const ie = i64Exp.get(name)
       const hostAbi = hostAbiExp.get(name)
       const len = fn.length
-      const release = releases.has(name), flag = flagged.has(name)
+      const release = releases.has(name), flag = flagged.has(name), numeric = numberResult.has(name)
       const general = (...args) => {
         while (args.length < len) args.push(undefined)
         const writeBack = [], mark = enter(flag)
-        let returned = false
+        let returned = false, scalar = !numeric
         try {
           const a = args.map(i64Arg(ie, ext, memWrapVal, hostAbi, name, writeBack))
           // audit-#8 P1-1 belt-and-braces — see the scalar-module wrapper above.
           if (lastErrBitsWritable) lastErrBits.value = 0n
           const ret = fn.apply(null, a)
+          if (numeric) { const n = typeof ret === 'bigint' ? i64ToF64(ret) : ret; scalar = typeof n === 'number' && n === n }
           returned = true
           if (writeBack.length) copyBack(writeBack)
           const host = hostOf(writeBack, ret)
@@ -1508,7 +1569,7 @@ export const wrap = (memSrc, inst, state) => {
           return settled(mark, ret)
         } catch (error) {
           decodeThrown(error)
-        } finally { leave(mark, release, flag, returned) }
+        } finally { leave(mark, release && scalar, flag, returned) }
       }
       // Numbers only, and nothing for the host to release: no copy of an
       // argument, and a frame that gives back what it allocated by itself, or
@@ -1667,7 +1728,7 @@ const prepareInterop = (opts) => {
     return (prop in extRecv(objBig, prop, 'membership test')) ? 1 : 0
   }
   opts._interp.__ext_set = (objBig, propBig, valBig) => {
-    const v = state.mem.read(valBig)
+    const v = state.mem.read(valBig, state.fnOf)
     // A typed array (or DataView) the module stores on a host object keeps its
     // identity: the property holds a live view of the module's storage, and a
     // read of it back into the module (wrapVal) is that storage again, so
@@ -1684,7 +1745,7 @@ const prepareInterop = (opts) => {
   opts._interp.__ext_call = (objBig, propBig, argsBig) => {
     const prop = state.mem.read(propBig)
     const obj = extRecv(objBig, prop, 'method call')
-    const args = state.mem.read(argsBig)
+    const args = state.mem.read(argsBig, state.fnOf)
     // Method keys are normalized before this boundary; undefined marks a direct call.
     if (prop === undefined) {
       if (typeof obj !== 'function') throw new TypeError('Host value is not callable')
@@ -1714,7 +1775,7 @@ const installDefaultEnvImports = (mod, imports, state) => {
     if (imports.env[name] || !WEB_GLOBALS.has(name)) continue
     const host = globalThis[name]
     if (typeof host !== 'function') continue
-    imports.env[name] = (...args) => hostRet(state, host(...args.map(a => state.mem ? state.mem.read(a) : decode(a))))
+    imports.env[name] = (...args) => hostRet(state, host(...args.map(a => state.mem ? state.mem.read(a, state.fnOf) : decode(a, state.fnOf))))
   }
   if (envFns.has('print') && !imports.env.print) {
     const buf = ['', '', '']  // fd 0/1/2 line buffers
@@ -1781,11 +1842,11 @@ const installDefaultEnvImports = (mod, imports, state) => {
       return parseInt(s, radix || undefined)
     }
   }
-  // host: 'js' timer wiring. Wasm calls env.setTimeout/clearTimeout; we drive
-  // callbacks back via the exported __invoke_closure trampoline (state.invoke).
+  // host: 'js' timer wiring. Wasm calls env.setTimeout/clearTimeout; we call
+  // the callback back as any closure the host holds (state.fnOf, read at the
+  // first fire: a timer armed by the module's init runs before wrap sets it).
   // Each id maps to a cancel thunk so set/clear share state without tagging.
-  // env.setTimeout receives cbPtr as i64 bits (BigInt) — see module/timer.js;
-  // __invoke_closure also takes i64 now, so the BigInt feeds it directly.
+  // env.setTimeout receives cbPtr as i64 bits (BigInt), see module/timer.js.
   if (envFns.has('setTimeout') || envFns.has('clearTimeout')) {
     const cancel = new Map()
     let nextId = 1
@@ -1793,7 +1854,8 @@ const installDefaultEnvImports = (mod, imports, state) => {
       const id = nextId++
       // after each timer callback: drain microtasks + settle host promises
       // parked on async exports (state.afterTick set by wrap for async modules)
-      const fire = () => { state.invoke?.(cbBig); state.afterTick?.() }
+      let cb
+      const fire = () => { (cb ??= state.fnOf?.(cbBig))?.(); state.afterTick?.() }
       if (repeat) {
         const h = setInterval(fire, delayMs)
         cancel.set(id, () => clearInterval(h))
@@ -1811,13 +1873,13 @@ const installDefaultEnvImports = (mod, imports, state) => {
   }
   // requestAnimationFrame wiring: real rAF where the host has one; a 16 ms
   // timer elsewhere (Node) so frame-driven modules still run — the callback
-  // receives a real timestamp either way via __invoke_closure1.
+  // receives a real timestamp either way.
   if (envFns.has('requestAnimationFrame') || envFns.has('cancelAnimationFrame')) {
     const cancel = new Map()
     let nextId = 1
     if (envFns.has('requestAnimationFrame') && !imports.env.requestAnimationFrame) imports.env.requestAnimationFrame = (cbBig) => {
       const id = nextId++
-      const fire = (t) => { cancel.delete(id); state.invoke1?.(cbBig, t); state.afterTick?.() }
+      const fire = (t) => { cancel.delete(id); state.fnOf?.(cbBig)(t); state.afterTick?.() }
       const raf = globalThis.requestAnimationFrame
       if (typeof raf === 'function') {
         const h = raf(fire)
@@ -1860,8 +1922,8 @@ const jssProbeNative = () => {
       0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,        // header
       0x01, 0x06, 0x01, 0x60, 0x01, 0x6f, 0x01, 0x7f,        // type: (externref)→i32
       0x02, 0x18, 0x01,                                       // import section
-      0x0f, ...TEXT_ENC.encode('wasm:js-string'),             // mod name
-      0x06, ...TEXT_ENC.encode('length'),                     // name
+      0x0f, ...Array.from('wasm:js-string', c => c.charCodeAt(0)),             // mod name
+      0x06, ...Array.from('length', c => c.charCodeAt(0)),                     // name
       0x00, 0x00,                                             // kind=func, type=0
     ])
     const mod = new WebAssembly.Module(bytes, { builtins: ['js-string'] })
@@ -1903,7 +1965,7 @@ const buildImports = (mod, opts, state) => {
         imports[modName][name] = (...args) => {
           // i64 carrier: args arrive as BigInt bits (box) or number; decode with integer
           // ops — never materialize a box as f64. Return the i64 bits of the wrapped result.
-          const decoded = args.map(a => state.mem ? state.mem.read(a) : decode(a))
+          const decoded = args.map(a => state.mem ? state.mem.read(a, state.fnOf) : decode(a, state.fnOf))
           return hostRet(state, fn.call(fns, ...decoded))
         }
     }
@@ -1944,11 +2006,6 @@ const finishInstantiation = (mod, inst, imports, needsWasi, opts, state) => {
   // before _setMemory above). Called for ANY module exporting it, imports or not:
   // a hostless wasi module (no console/Date use) still needs its init run.
   inst.exports._initialize?.()
-
-  // Trampoline used by env.setTimeout/clearTimeout to fire scheduled closures.
-  state.invoke = inst.exports.__invoke_closure || null
-  // One-arg variant — env.requestAnimationFrame passes the frame timestamp.
-  state.invoke1 = inst.exports.__invoke_closure1 || null
 
   // Drive WASM timer queue via JS scheduling (non-blocking, no-op if absent).
   attachTimers(inst)

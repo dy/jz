@@ -11,7 +11,8 @@ import { ctx } from '../ctx.js'
 import { isI32 } from '../ast.js'
 import { VAL, lookupValType, repOf, repOfGlobal, numericStorage } from '../reps.js'
 import { intExprRange } from '../static.js'
-import { numberStorageValue, toNumF64 } from './coerce.js'
+import { numberStorageValue, toNumF64, coerceNullishToNum } from './coerce.js'
+import { isNumericIR } from './classify.js'
 import { typed } from './tag.js'
 import { temp, tempI32 } from './locals.js'
 import { asF64, asI32, toI32 } from './numeric.js'
@@ -60,19 +61,27 @@ export function needsDynShadow(target, sid) {
 // === Variable storage abstraction ===
 // Centralizes the boxed/global/local 3-way dispatch (used by =, ++/--, +=, etc.)
 
-/** Check if name is a module-scope global (not shadowed by local/param). */
+// These predicates run for every storage lookup. Scan the short parameter list
+// directly, without creating a captured callback for each query.
+const isParam = name => {
+  const params = ctx.func.current?.params
+  if (params == null) return undefined
+  for (let i = 0; i < params.length; i++) if (params[i].name === name) return true
+  return false
+}
 
 /** Bound in the current function frame — a declared local or a parameter. */
 export const isBoundName = name =>
-  ctx.func.locals?.has(name) || ctx.func.current?.params?.some(p => p.name === name)
+  ctx.func.locals?.has(name) || isParam(name)
 
+/** Check if name is a module-scope global (not shadowed by local/param). */
 export function isGlobal(name) {
-  return ctx.scope.globals.has(name) && !ctx.func.locals?.has(name) && !ctx.func.current?.params?.some(p => p.name === name)
+  return ctx.scope.globals.has(name) && !ctx.func.locals?.has(name) && !isParam(name)
 }
 
 /** Check if assigning to name would violate const. Only applies when not shadowed. */
 export function isConst(name) {
-  return ctx.scope.consts?.has(name) && !ctx.func.locals?.has(name) && !ctx.func.current?.params?.some(p => p.name === name)
+  return ctx.scope.consts?.has(name) && !ctx.func.locals?.has(name) && !isParam(name)
 }
 
 /** Get i32 memory address for a boxed variable's cell. Cell locals are always i32. */
@@ -217,6 +226,10 @@ export function writeVar(name, valIR, void_, source) {
   // already READ the fact (via boundedHi, before this write emitted) stays
   // sound — only what's emitted AFTER this write loses it.
   ctx.types.loopGuardHi?.delete(name)
+  // Nested assignments also end the previous value fact. Their enclosing
+  // expression may read the binding before the block driver runs again.
+  // A direct declaration/statement publishes its new fact after this write.
+  ctx.func.localValTypesOverlay?.delete(name)
   if (ctx.func.boxed?.has(name)) {
     const addr = boxedAddr(name)
     // i32-narrowed cell: store the raw i32 (mirrors the integer-global write
@@ -288,6 +301,15 @@ export function writeVar(name, valIR, void_, source) {
         ['local.set', dollar(name), numberStorageValue(ref)], ref], 'f64')
     }
     coerced = source === undefined ? numberStorageValue(valIR) : toNumF64(source, valIR)
+  }
+  // A numeric shadow (compile/num-shadow.js) takes the value's ToNumber.
+  const shadow = t === 'f64' ? ctx.func.numShadow?.get(name) : null
+  if (shadow) {
+    const ref = typed(['local.get', dollar(name)], 'f64')
+    const num = source !== undefined ? toNumF64(source, ref)
+      : coerced.type === 'i32' || isNumericIR(coerced) ? ref : coerceNullishToNum(ref)
+    const set = [['local.set', dollar(name), coerced], ['local.set', `$${shadow}`, num]]
+    return void_ ? typed(['block', ...set], 'void') : typed(['block', ['result', 'f64'], ...set, ref], 'f64')
   }
   if (void_) return typed(['local.set', dollar(name), coerced], 'void')
   const teeNode = typed(['local.tee', dollar(name), coerced], t)

@@ -1,5 +1,5 @@
 /**
- * BigInt joint-domain dispatch: static domain classification (bigIntDomain/isBigIntCarrierBits/bigIntDomainsCanMix/numLiteralNode/bigintMixReject), the runtime-forked binary dispatch (bigIntJointDispatch/computedBoxOf), and the i64 operand/shift/member-assign helpers (bigIntOperand/bigIntUnary/bigIntShiftIR/bigintMemberAssignTarget). Used by Assignment's compoundAssign, Arithmetic's +, -, *, / and %, Bitwise's ~/&/|/^/<</>>, and Comparisons' cmpOp.
+ * BigInt domain classification, arithmetic and ToNumeric updates.
  *
  * @module compile/emit/bigint
  */
@@ -7,9 +7,9 @@
 import { fold } from 'watr/optimize'
 import { errorCodeLiteral, ERR } from '../../../err-codes.js'
 import { isReassigned } from '../../ast.js'
-import { ctx, err } from '../../ctx.js'
+import { ctx, err, inc } from '../../ctx.js'
 import {
-  asF64, asI64, boxBigInt, coerceNullishToNum, deferBigintBox, fromI64, rawBigInt, isBigIntBox, isPlanTaggedBigint, isSchemaSlotBigintPossible, isTaggedElemRead, isUndef, materializeDeferredBigint, maybeUnboxBigInt, readI64, temp, tempI32, tempI64, throwErrorIR, toNumF64, typed,
+  asF64, asI64, boxBigInt, coerceNullishToNum, deferBigintBox, fromI64, rawBigInt, isBigIntBox, isPlanTaggedBigint, isSchemaSlotBigintPossible, isTaggedElemRead, isUndef, materializeDeferredBigint, maybeUnboxBigInt, objectToPrimitive, readI64, temp, tempI32, tempI64, throwErrorIR, toNumF64, typed,
 } from '../../ir.js'
 import { censusMaybeUndefined, censusMaybeUndefinedKind, valTypeOf } from '../../kind.js'
 import { VAL } from '../../reps.js'
@@ -103,6 +103,10 @@ export function bigintMixReject(op, a, b) {
 //              heuristic's own scoping note below for why both restrictions
 //              (never-reassigned AND exported-function-only) are required.
 function bigIntDomain(node) {
+  // The feature proof applies to every domain consumer, including the raw
+  // arithmetic fallback. A host-visible schema alone cannot introduce a
+  // BigInt path in a program whose representation plan excludes BigInt.
+  if (!representationProgramHasBigint(ctx)) return 'skip'
   const view = ctx.summary?.at(ctx.func.current)
   const vt = valTypeOf(node) ?? view?.valOfExpr(node)
   const summaryKind = view?.kindOfExpr(node) ?? K.NONE
@@ -117,8 +121,6 @@ function bigIntDomain(node) {
   // Tagged storage does not add a BigInt member to a proven Number domain.
   // Captured Map reads can be Number|undefined while using a tagged carrier;
   // probing its tags invents a BigInt arm (also breaking ~ / ~~ on absence).
-  // Keep explicit BigInt producer handling below: normalized postfix recovery
-  // uses a synthetic Number 1 whose summary alone describes ordinary JS math.
   // A mixed Number/BigInt parameter is normalized by RepresentationPlan:
   // Number stays raw f64, BigInt is a PTR.BIGINT cell. This exact tag is the
   // runtime evidence an internal (non-exported) helper previously discarded,
@@ -252,7 +254,6 @@ const mayConcatenate = node => {
 const mirrorsPartner = (domA, domB) =>
   (isFlagged(domA) && isUnresolved(domB)) || (isFlagged(domB) && isUnresolved(domA))
 export function bigIntDomainsCanMix(a, b, allowUnresolved) {
-  if (!representationProgramHasBigint(ctx)) return false
   const domA = bigIntDomain(a), domB = bigIntDomain(b)
   // A flagged operand beside an unresolved one takes the joint dispatch
   // whatever the partner: the unconditional i64 path the callers fall to
@@ -558,32 +559,19 @@ export function bigIntShiftIR(op, av, bv) {
       ['else', shift(op === '<<' ? 'shl' : 'shr_s', getB)]]]
 }
 
-// Member `.`/`[]` increment/decrement's postfix OLD-value recovery. Prepare
-// (index.js '++'/'--') has no dedicated increment NODE for a member target
-// the way bare names do (the '++'/'--' table entries below are name-based,
-// via readVar/writeVar) — the write itself is the DEDICATED '+1'/'-1' unary
-// op handled by its own table entry further down (unambiguous: no parser or
-// other pass ever produces that op, so it needs no mix-check bypass at all).
-// Postfix wraps that write with the SAME plain-literal ∓1 recovery the
-// bare-name path uses (`['-', ['=', n, ['+1', n]], [,1]]` etc.) — matched here
-// exactly like the bare-name isPostfix bypass just above: only prepare's own
-// transform nests an assignment in this exact position, so treating it as the
-// compiler's own correction constant (not a user-facing mix) is sound by the
-// same permissive-by-construction argument as the bare-name case.
-export function bigintMemberAssignTarget(a) {
-  return Array.isArray(a) && a[0] === '=' && Array.isArray(a[1]) &&
-    Array.isArray(a[2]) && (a[2][0] === '+1' || a[2][0] === '-1') &&
-    (a[1][0] === '.' || a[1][0] === '[]') && valTypeOf(a[1]) === VAL.BIGINT ? a : null
-}
-
 // ToNumeric for an update whose operand can be either Number or BigInt.
-// A tagged slot stays tagged across both the store and postfix recovery.
-export function numericStep(node, fn) {
+// A tagged slot stays tagged across the store and the saved postfix result.
+export function numericStep(node, fn, old) {
   const t = temp('step'), value = typed(['local.get', `$${t}`], 'f64')
+  const primitive = ctx.funcs.runtimeRoots.has('__jz_tp_num')
+  if (primitive) inc('__is_object', '__to_num')
+  const number = primitive ? ['call', '$__to_num', asI64(value)] : toNumF64(node, value)
   const result = typed(['block', ['result', 'f64'],
     ['local.set', `$${t}`, asF64(materializeDeferredBigint(emit(node)))],
+    ...(primitive ? [['if', ['call', '$__is_object', asI64(value)], ['then',
+      ['local.set', `$${t}`, ['f64.reinterpret_i64', objectToPrimitive(value, 'number')]]]]] : []),
     ['if', ['result', 'f64'], isBigIntBox(value),
-      ['then', boxBigInt([`i64.${fn}`, maybeUnboxBigInt(value), ['i64.const', 1]])],
-      ['else', [`f64.${fn}`, toNumF64(node, value), ['f64.const', 1]]]]], 'f64')
+      ['then', ...(old ? [['local.set', `$${old}`, value]] : []), boxBigInt([`i64.${fn}`, maybeUnboxBigInt(value), ['i64.const', 1]])],
+      ['else', [`f64.${fn}`, old ? ['local.tee', `$${old}`, number] : number, ['f64.const', 1]]]]], 'f64')
   return deferBigintBox(result, () => result)
 }

@@ -77,26 +77,29 @@ const mapStatements = (n, visit) => {
 /** `body` without the locals nothing reads, where all that is stored to them is names and literals. */
 export const dropUnreadLocals = (body) => {
   const declared = new Set(), read = new Set(), kept = new Set()
-  const scan = (n, stmt) => {
+  const scan = (n, stmt, nested = false) => {
     if (typeof n === 'string') { read.add(n); return }
     if (!isArr(n) || n[0] === 'str') return
+    // mapStatements does not enter closures or remove standalone control-arm
+    // stores. Their bindings must survive, including a capture only written.
+    if (n[0] === '=>') nested = true
     if (n[0] === 'let' || n[0] === 'const') {
       for (let i = 1; i < n.length; i++) {
         const d = n[i]
-        if (typeof d === 'string') declared.add(d)
-        else if (isArr(d) && d[0] === '=' && typeof d[1] === 'string') { declared.add(d[1]); if (!inertValue(d[2])) kept.add(d[1]); scan(d[2], false) }
-        else scan(d, false)
+        const bindings = nested || !stmt ? kept : declared
+        if (typeof d === 'string') bindings.add(d)
+        else if (isArr(d) && d[0] === '=' && typeof d[1] === 'string') { bindings.add(d[1]); if (!inertValue(d[2])) kept.add(d[1]); scan(d[2], false, nested) }
+        else scan(d, false, nested)
       }
       return
     }
     // a store that is a statement of its own binds; any other mention reads
-    if (n[0] === '=' && typeof n[1] === 'string' && stmt) { if (!inertValue(n[2])) kept.add(n[1]); scan(n[2], false); return }
-    if (n[0] === '.' || n[0] === '?.') { scan(n[1], false); return }
-    if (n[0] === ':') { scan(n[2], false); return }
-    const list = n[0] === ';' || n[0] === '{}'
-    for (let i = 1; i < n.length; i++) scan(n[i], list || ((n[0] === 'if' || n[0] === 'for' || n[0] === 'while' || n[0] === 'label') && i > 1))
+    if (n[0] === '=' && typeof n[1] === 'string' && stmt) { if (nested || !inertValue(n[2])) kept.add(n[1]); scan(n[2], false, nested); return }
+    if (n[0] === '.' || n[0] === '?.') { scan(n[1], false, nested); return }
+    if (n[0] === ':') { scan(n[2], false, nested); return }
+    for (let i = 1; i < n.length; i++) scan(n[i], n[0] === ';', nested)
   }
-  scan(body, true)
+  scan(body, false)
   const dead = new Set([...declared].filter(name => !read.has(name) && !kept.has(name) && name.includes(T)))
   if (!dead.size) return body
   return mapStatements(body, (s) => {

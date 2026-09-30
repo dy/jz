@@ -62,11 +62,8 @@ export function captureFuncInspect(func, facts, programFacts) {
   }
 }
 
-/** Proofs about emitted exports, including their transitive runtime helpers.
- *  true means proved; null means unknown. This inspection never changes codegen.
- *  Work counts Wasm instructions, not time, and excludes host marshalling/init.
- */
-export function captureRuntimeInspect(module, sharedMemory = false) {
+/** Shared call/effect census of emitted code, including runtime helpers. */
+export function runtimeGraph(module, sharedMemory = false) {
   const funcs = new Map(), exports = [], records = new Map()
   // The closure table is closed when nothing outside the module can reach or
   // change it: declared here, neither imported nor exported, never written. A
@@ -85,10 +82,16 @@ export function captureRuntimeInspect(module, sharedMemory = false) {
     else if (n[0] === 'table') {
       table = true
       if (n.some(c => Array.isArray(c) && (c[0] === 'export' || c[0] === 'import'))) tableOpen = true
-    } else if (n[0] === 'import' && n.some(c => Array.isArray(c) && c[0] === 'table')) tableOpen = true
+    } else if (n[0] === 'import') {
+      if (n.some(c => Array.isArray(c) && c[0] === 'table')) tableOpen = true
+      const f = n.find(c => Array.isArray(c) && c[0] === 'func')
+      if (f) funcs.set(f[1], ['func', f[1], ['import', n[1], n[2]], ...f.slice(2)])
+    }
   }
-  for (const n of module) if (Array.isArray(n) && n[0] === 'elem')
+  for (const n of module) if (Array.isArray(n) && n[0] === 'elem') {
     for (const c of n) if (typeof c === 'string' && funcs.has(c)) entries.add(c)
+    walkAst(n, { enter: c => { if (c[0] === 'ref.func') entries.add(c[1]) } })
+  }
   for (const [name, fn] of funcs) {
     const rec = { calls: new Set(), allocation: false, unknown: false, indirect: false }
     walkAst(fn, { enter: n => {
@@ -104,9 +107,16 @@ export function captureRuntimeInspect(module, sharedMemory = false) {
   }
   const closed = table && !tableOpen
   for (const rec of records.values()) if (rec.indirect) {
-    if (closed) for (const e of entries) rec.calls.add(e)
+    if (closed && entries.size) for (const e of entries) rec.calls.add(e)
     else rec.unknown = true
   }
+  return { funcs, exports, records, closed, entries }
+}
+
+/** true means proved; null means unknown. Counts instructions, not latency.
+ * Excludes initialization and host marshalling; never changes codegen. */
+export function captureRuntimeInspect(module, sharedMemory = false) {
+  const { funcs, exports, records, closed, entries } = runtimeGraph(module, sharedMemory)
   const costs = new Map()
   const cost = (name, visiting = new Set()) => {
     if (costs.has(name)) return costs.get(name)

@@ -16,6 +16,7 @@
  */
 
 import { ctx } from '../ctx.js'
+import { spreadExclusions } from '../ast.js'
 import { VAL } from '../reps.js'
 import { ERR_CLASS_NAMES, ERR_SCHEMA_PROPS } from '../../err-codes.js'
 
@@ -166,9 +167,9 @@ function conditionalSpreadGroup(node) {
  *  Mirrors module/object.js `resolveSchema` so kind inference predicts the same
  *  OBJECT-vs-HASH decision emitObjectSpread makes (kept here to keep kind.js
  *  cycle-free — it must not import the object stdlib module). */
-function spreadSchema(obj) {
+function spreadSchema(obj, site) {
   if (ctx.summary) {
-    const sid = ctx.summary.at(ctx.func.current).spreadSidOfExpr(obj)
+    const sid = ctx.summary.at(ctx.func.current).spreadSidOfExpr(obj, site)
     return sid == null ? null : ctx.schema.list[sid]
   }
   // A parameter's compile-time schema is an inferred/union guess (and is unbound
@@ -217,7 +218,8 @@ export function spreadMergeResolves(props) {
       // Conditional presence requires the HASH representation; a fixed slot
       // cannot distinguish absent from present-with-undefined.
       if (group) return false
-      if (!spreadSchema(p[1])) return false
+      // an object rest skipping a computed key copies at run time (mergeSpreadNames)
+      if (!spreadSchema(p[1], p) || spreadExclusions(p)?.exprs.length) return false
     }
   }
   return true

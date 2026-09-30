@@ -7,9 +7,9 @@
 import { callWithArgs } from '../../ir.js'
 import { encodePtrHi, i64Hex } from '../../../layout.js'
 import {
-  PARAM_DEFAULT, PARAM_KIND, PARAM_NAME, PARAM_PATTERN, T, classifyParam, commaList, extractParams, walkAst,
+  PARAM_DEFAULT, PARAM_KIND, PARAM_NAME, PARAM_PATTERN, T, classifyParam, commaList, extractParams, hasOptionalChain, walkAst,
 } from '../../ast.js'
-import { LAYOUT, OPTF, PTR, ctx, err, inc, setLinkDemand } from '../../ctx.js'
+import { LAYOUT, OPTF, PTR, ctx, err, inc, setLinkDemand, emitArity } from '../../ctx.js'
 import { includeForArrayAccess } from '../../autoload.js'
 import {
   MAX_CLOSURE_ARITY, allocPtr, asF64, carrierF64, freshId, isBoundName, ptrTypeEq, reconstructArgsWithSpreads, temp, tempI32, typed, undefExpr,
@@ -21,7 +21,7 @@ import { findFreeVars } from '../analyze.js'
 import { recordClosureCallRepresentations, representationCallArgAction } from '../representation-plan.js'
 import { plannedTypedStorageCtor } from '../typed-storage-plan.js'
 import { attachSigMeta, buildArrayWithSpreads, emitNonCallable, materializeMulti, materializeMultiIR, parseCallArgs } from './call-args.js'
-import { TYPED_HI_MASK, argIR, coerceArg, emit, emitCallArgs, emitIdentitySafe, emitVoid } from './dispatch.js'
+import { TYPED_HI_MASK, argIR, coerceArg, emit, emitReference, emitGroupedCall, emitCallArgs, emitIdentitySafe, emitVoid } from './dispatch.js'
 import { emitMethodCall } from './method-dispatch.js'
 
 
@@ -72,6 +72,7 @@ function emitSpeculativeCall(callee, spec, argNodes, func) {
 /** Builtin / module-emitter call: `Math.max(...)`, `JSON.parse(...)`, etc. The
  *  emitter accepts the same `...args` flat shape as the AST (with `['...', x]`
  *  spread markers re-inserted in original position). */
+const VARIADIC_MATH = new Set(['math.max', 'math.min', 'math.hypot'])
 function emitBuiltinCall(callee, parsed) {
   if (parsed.hasSpread) {
     const allArgs = []
@@ -83,7 +84,10 @@ function emitBuiltinCall(callee, parsed) {
     while (ni < parsed.normal.length) allArgs.push(parsed.normal[ni++])
     return ctx.core.emit[callee](...allArgs)
   }
-  return ctx.core.emit[callee](...parsed.normal)
+  // Math reads an argument left out as undefined, as JS passes it: `Math.atan2(y)` is
+  // atan2(y, NaN). max, min and hypot take any number of them.
+  const n = callee.startsWith('math.') && !VARIADIC_MATH.has(callee) ? emitArity(ctx.core.emit[callee], callee) ?? 0 : 0
+  return ctx.core.emit[callee](...parsed.normal, ...Array.from({ length: n - parsed.normal.length }, () => [, undefined]))
 }
 
 /** Direct call to a known top-level user function — emits `(call $callee args)`.
@@ -284,9 +288,11 @@ function recordClosureTableCallSite(arrName, argNodes) {
 /** Generic closure call: callee is a value holding a NaN-boxed closure pointer.
  *  Uniform convention: fn.call packs all args into an array and trampolines. */
 function emitGenericClosureCall(callee, parsed, thisArg = null) {
+  let member = callee
+  while (Array.isArray(member) && member[0] === '(') member = member[1]
   const kind = ctx.summary.kindOfExpr(callee)
   const open = valTypeOf(callee) !== VAL.CLOSURE && tagOf(core(kind)) !== K.CLOSURE
-  const nullable = censusMaybeUndefined(callee) ||
+  const nullable = (member !== callee && hasOptionalChain(member)) || censusMaybeUndefined(callee) ||
     (tagOf(core(kind)) === K.CLOSURE && isNullable(kind))
   const arrName = !open && !parsed.hasSpread && Array.isArray(callee) && callee[0] === '[]' && typeof callee[1] === 'string'
     ? callee[1] : null
@@ -295,14 +301,10 @@ function emitGenericClosureCall(callee, parsed, thisArg = null) {
       ctx.scope.imperativeClosureTableLatticeCandidates?.has(arrName)))
     recordClosureTableCallSite(arrName, parsed.normal)
   let ir, calleeIR, receiver = thisArg == null ? null : asF64(emit(thisArg))
-  const prefix = []
-  if (ctx.closure.receiver && Array.isArray(callee) && callee[0] === '[]') {
-    const t = temp('recv'), view = ctx.summary.at(ctx.func.current)
-    prefix.push(['local.set', `$${t}`, asF64(emit(callee[1]))])
+  if (thisArg == null && ctx.closure.receiver && Array.isArray(member) && ['.', '[]', '?.', '?.[]'].includes(member[0])) {
+    const t = temp('recv')
     receiver = typed(['local.get', `$${t}`], 'f64')
-    view.alias(t, callee[1], false)
-    try { calleeIR = asF64(emit(['[]', t, callee[2]])) }
-    finally { view.unalias(t) }
+    calleeIR = asF64(emitReference(member, t))
   } else calleeIR = asF64(emit(callee))
   if (!open || !ctx.transform.targetProfile.envImports) {
     const args = parsed.hasSpread
@@ -334,10 +336,9 @@ function emitGenericClosureCall(callee, parsed, thisArg = null) {
     ir = typed(['block', ['result', 'f64'], ...setup,
       ['if', ['result', 'f64'], ptrTypeEq(recv, PTR.EXTERNAL),
         ['then', ['f64.reinterpret_i64', ['call', '$__ext_call',
-          ['i64.reinterpret_f64', recv], ['i64.reinterpret_f64', undefExpr()], ['i64.reinterpret_f64', arrayIR]]]],
+          ['i64.reinterpret_f64', recv], ['i64.reinterpret_f64', receiver ?? undefExpr()], ['i64.reinterpret_f64', arrayIR]]]],
         ['else', ctx.closure.call(recv, args, parsed.hasSpread, true, receiver)]]], 'f64')
   }
-  if (prefix.length) ir = typed(['block', ['result', 'f64'], ...prefix, ir], 'f64')
   return dvName ? tagFnArrayDispatch(ir, dvName) : ir
 }
 
@@ -424,6 +425,11 @@ export const callOps = {
     if (typeof callee === 'string' && ctx.funcs.globalDevirt?.has(callee)) {
       callee = ctx.funcs.globalDevirt.get(callee)
       callee = ctx.funcs.builtinWrapped?.get(callee) ?? callee
+    }
+
+    if (thisArg == null && Array.isArray(callee) && callee[0] === '(') {
+      const grouped = emitGroupedCall(callee, callArgs)
+      if (grouped) return grouped
     }
 
     if (Array.isArray(callee) && callee[0] === '.')  return emitMethodCall(callee, parsed, callArgs, optional)

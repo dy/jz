@@ -21,8 +21,9 @@ test('array load cse: plain numeric elements survive writes to typed storage', (
   if (belowOpt(2)) return
   const loads = loadCSE => {
     // The reads alone: no store forwarded, and `out` kept in memory (a static array
-    // only constants index is registers, which leaves the plain reads to any CSE).
-    const text = wat(kernel, { optimize: { level: 2, loadCSE, forwardStores: false, staticScratch: false, vectorizeLaneLocal: false } })
+    // only constants index is registers, and so is a Float64Array's constant-index
+    // element a loop stores numbers into, which leaves the plain reads to any CSE).
+    const text = wat(kernel, { optimize: { level: 2, loadCSE, forwardStores: false, staticScratch: false, vectorizeLaneLocal: false, promoteLoopFields: false } })
     return (funcWat(text, 'f$exp') || funcWat(text, 'f')).match(/f64\.load/g)?.length || 0
   }
   const cached = loads(true)

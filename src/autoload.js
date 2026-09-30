@@ -2,11 +2,12 @@
 
 import { ctx, err, setFeature, verifyEmitIntegrity } from './ctx.js'
 import * as mods from '../module/index.js'
+import { T } from './ast.js'
 import { DERIVED_PROP_MODULES } from './prop-modules.generated.js'
 
 const dict = obj => Object.assign(Object.create(null), obj)
 
-const MOD_ALIAS = { Number: 'number', Array: 'array', Object: 'object', Symbol: 'symbol', JSON: 'json', Date: 'date', BigInt: 'number', Error: 'core', TextEncoder: 'string', TextDecoder: 'string', Atomics: 'atomics',
+const MOD_ALIAS = { Number: 'number', Array: 'array', Object: 'object', Symbol: 'symbol', JSON: 'json', Date: 'date', BigInt: 'number', Error: 'core', TextEncoder: 'string', TextDecoder: 'string', Atomics: 'atomics', performance: 'console',
   // SIMD intrinsic namespaces (f32x4/i32x4/f64x2/v128) all live in the `simd` module.
   f32x4: 'simd', i32x4: 'simd', f64x2: 'simd', v128: 'simd' }
 
@@ -140,6 +141,7 @@ const OP_MODULES = {
 const TYPED_CTORS =['Float64Array','Float32Array','Float16Array','Int32Array','Uint32Array','Int16Array','Uint16Array','Int8Array','Uint8Array','Uint8ClampedArray','BigInt64Array','BigUint64Array','ArrayBuffer','DataView']
 
 const CALL_MODULES = dict({
+  [T + 'key']: ['core', 'string'],
   __hide_member: ['core', 'collection', 'string'],
   ArrayBuffer: ['core', 'typedarray'],
   DataView: ['core', 'typedarray'],

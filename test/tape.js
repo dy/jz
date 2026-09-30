@@ -7,6 +7,7 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { compile } from '../index.js'
+import encodeWat from 'watr/compile'
 import { T, NONE, resetTape, fromWat, toWat, verify, walk, intern, node, str, push, replace, reserve } from '../src/ir/tape.js'
 import { treeshake } from '../src/link/treeshake.js'
 import { orderFuncs } from '../src/link/order.js'
@@ -263,6 +264,28 @@ test('arena rewind on the tape: save at entry, restore around every return and t
   const [c] = onTape(commented, root => arenaRewind(root, { rewindable: new Map([['$t', 'i32']]), heapAddr: null }))
   ok(same(c[1], ['func', '$t', ['result', 'i32'], ';; header\n', ['local', '$x', 'i32'], ['local', save, 'i32'], ['local', `$${MARK}arena_ret0`, 'i32'], ['local.set', save, ['global.get', '$__heap']],
     ['local.set', `$${MARK}arena_ret0`, ['call', '$__alloc', ['i32.const', 8]]], ['global.set', '$__heap', ['local.get', save]], ['local.get', `$${MARK}arena_ret0`]]), 'comment atoms: transparent in the header, dropped after the last instruction')
+})
+
+test('arena rewind on the tape: a return inside another return operand runs cleanup', () => {
+  const m = ['module',
+    ['memory', 1],
+    ['global', '$__heap', ['export', '"heap"'], ['mut', 'i32'], ['i32.const', 1024]],
+    ['func', '$__alloc', ['param', '$n', 'i32'], ['result', 'i32'], ['local', '$old', 'i32'],
+      ['local.set', '$old', ['global.get', '$__heap']],
+      ['global.set', '$__heap', ['i32.add', ['local.get', '$old'], ['local.get', '$n']]],
+      ['local.get', '$old']],
+    ['func', '$f', ['export', '"f"'], ['param', '$early', 'i32'], ['result', 'i32'],
+      ['drop', ['call', '$__alloc', ['i32.const', 32]]],
+      ['return', ['block', ['result', 'i32'],
+        ['if', ['local.get', '$early'], ['then', ['return', ['i32.const', 17]]]],
+        ['i32.const', 23]]]],
+  ]
+  const [out] = onTape(m, root => arenaRewind(root, { rewindable: new Map([['$f', 'i32']]), heapAddr: null }))
+  const { f, heap } = new WebAssembly.Instance(new WebAssembly.Module(encodeWat(out))).exports
+  for (const early of [0, 1, 1, 0]) {
+    is(f(early), early ? 17 : 23)
+    is(heap.value, 1024, 'both exits release the allocation')
+  }
 })
 
 test('locals sort on the tape: by type under 128 declarations, the hottest in the one-byte zone above; params stay', () => {

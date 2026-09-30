@@ -6,6 +6,7 @@ import { I32_MIN, I32_MAX, RELATIONAL_OPS, isBrand, isReassigned } from './ast.j
 import { ctx } from './ctx.js'
 import { repOf, VAL } from './reps.js'
 import { TYPED_ELEM_CODE } from '../layout.js'
+import { typedCtorName } from './typed-provenance.js'
 
 // A loop guard's relational operators.
 
@@ -159,7 +160,7 @@ export function intExprRange(n) {
     if (len != null) return [len, len]
     const raw = typedCtorRawOf(n[1])
     if (raw != null) {
-      const bare = raw.endsWith('.view') ? raw.slice(4, -5) : raw.slice(4)
+      const bare = typedCtorName(raw)
       const code = TYPED_ELEM_CODE[bare]
       const width = code != null ? TYPED_ELEM_BYTE_WIDTH[code] : null
       if (width != null) {
@@ -235,12 +236,10 @@ export function intExprRange(n) {
     if (k != null && k > 0 && !a && ((Array.isArray(n[1]) && n[1][0] === '>>>' && n[1].length === 3)
         || (typeof n[1] === 'string' && repOf(n[1])?.unsigned === true))) return [0, k - 1]
   }
-  // `++x`/`--x` as an expression VALUE is always the NEW (post-mutation) value at
-  // this AST layer — postfix `x++`'s old-value form is `(++x) - 1` (ast.js), so a
-  // bare `++`/`--` node is uniformly prefix semantics: operand's range, shifted by
-  // ±1. Lets a loop counter's own forCounterRange hull (emit.js) reach the counter's
-  // OWN in-body step-expression arithmetic (e.g. a comma-step dual-IV header's
-  // dropped post-increment value), not just bare reads of the name elsewhere.
+  // Postfix yields the operand's old numeric value; prefix yields the update.
+  if (op === 'postfix' && Array.isArray(n[1]) &&
+      (n[1][0] === '++' || n[1][0] === '--') && typeof n[1][1] === 'string')
+    return intExprRange(n[1][1])
   if ((op === '++' || op === '--') && n.length === 2 && typeof n[1] === 'string') {
     const a = intExprRange(n[1])
     return a ? (op === '++' ? [a[0] + 1, a[1] + 1] : [a[0] - 1, a[1] - 1]) : null
@@ -429,12 +428,10 @@ export function forCounterRange(init, cond, step, name, rangeOf = intExprRange) 
   const initExpr = counterInit(init, name)
   if (initExpr == null) return null
   const posConst = (e) => { const k = constIntExpr(e); return k != null && k > 0 }
-  // A comma-sequenced step (`j++, k += step`) — postfix `j++`'s VALUE is
-  // `(++j) - 1` at this AST layer (the old value), but the WRITE that matters
-  // for the range proof is the inner `++j`; unwrap that value-sugar before
-  // testing the mutation shape. `--x`'s postfix twin is `(--x) + 1`.
+  // Only the mutation matters in a discarded loop step.
   const unwrapPostfixVal = (e) =>
-    Array.isArray(e) && e[0] === '-' && e.length === 3 && Array.isArray(e[1]) && e[1][0] === '++' && constIntExpr(e[2]) === 1 ? e[1]
+    Array.isArray(e) && e[0] === 'postfix' ? e[1]
+    : Array.isArray(e) && e[0] === '-' && e.length === 3 && Array.isArray(e[1]) && e[1][0] === '++' && constIntExpr(e[2]) === 1 ? e[1]
     : Array.isArray(e) && e[0] === '+' && e.length === 3 && Array.isArray(e[1]) && e[1][0] === '--' && constIntExpr(e[2]) === 1 ? e[1]
     : e
   // mutOp: the '++'/'--' unary that moves `name` one unit in the guard's own

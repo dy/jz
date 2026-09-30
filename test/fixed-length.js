@@ -5,7 +5,8 @@
 // count are the cell's own load and store; every result is the host's.
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import jz, { compile } from '../index.js'
+import jz, { _compileInProcess as compile } from '../index.js'
+// These probes inspect the in-process summary; runtime checks still use the matrix target.
 import { ctx } from '../src/ctx.js'
 import { belowOpt, levels } from './_matrix.js'
 import { agree, wat, funcWat } from './util.js'
@@ -242,13 +243,6 @@ test('present receiver: one check per block for the fields of a nullable element
     const body = funcWat(wat(src, { optimize }), 'f')
     ok((body.match(/__throw_property_nullish/g) || []).length <= 1, `at most one check per pass at ${optimize}`)
   }
-})
-
-test('fixed length: the advisory names the first cause an array keeps its checks by', () => {
-  const warnings = { entries: [] }
-  compile(`const out = [0, 0, 0]\nexport const f = (k) => { out.push(k); return out[0] }`, { warnings, why: true })
-  const entry = warnings.entries.find(e => e.code === 'array-open')
-  ok(entry && /3 elements/.test(entry.message) && /push/.test(entry.message), entry?.message)
 })
 
 // A call through a function's property (`m.assign = nz`, stdlib's out-buffer

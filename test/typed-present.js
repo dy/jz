@@ -7,10 +7,11 @@
 // the count stays number-or-undefined, and the callee sees the undefined.
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import { compile } from '../index.js'
+import jz, { _compileInProcess as compile } from '../index.js'
+// These probes inspect the in-process summary; runtime checks still use the matrix target.
 import { ctx } from '../src/ctx.js'
 import { K, hasTag, tagOf } from '../src/summary/kind.js'
-import { belowOpt, levels } from './_matrix.js'
+import { belowOpt, levels, onWasi } from './_matrix.js'
 import { agree, funcWat, wat } from './util.js'
 
 // The kind the callee's parameter is bound to, as the summary holds it: 'number' or 'number|undefined'.
@@ -95,5 +96,50 @@ test('typed presence: a word of a float through a view of its buffer', () => {
   for (const [name, src] of Object.entries(absent)) {
     for (const optimize of levels(0, 2, 3)) agree(src, 'f', [1.5], { optimize }, `${name} at ${optimize}`)
     ok(paramKind(src.replace('export let f = (x) => hw(x) + hw(x * 2)', G + 'export let f = (x) => g(hw(x)) + g(hw(x * 2))')) !== 'number', `${name}: the word is not proven a number`)
+  }
+})
+
+
+test('typed indices: fractional and non-finite reads and writes keep element storage untouched', () => {
+  const body = `a[i] = 9; return [a[0], a[1], a[2], a[i]]`
+  const src = `export const owned = i => { const a = new Float32Array([2,4,6]); ${body} }
+    export const supplied = (a,i) => { ${body} }
+    export const either = (i,wide) => { const a = wide ? new Float64Array([2,4,6]) : new Float32Array([2,4,6]); ${body} }`
+  for (const optimize of levels(0, 2, 3)) {
+    const { exports: got } = jz(src, { optimize })
+    for (const i of [0.5, 1.5, -0.5, NaN, Infinity, -Infinity, 2 ** 32, 3, -1, -0, 0, 1, 2]) {
+      const a = new Float32Array([2,4,6]); a[i] = 9
+      const want = [a[0], a[1], a[2], a[i]]
+      is(got.owned(i), want, `owned ${i}, O${optimize}`)
+      is(got.either(i, false), want, `f32 ${i}, O${optimize}`)
+      is(got.either(i, true), want, `f64 ${i}, O${optimize}`)
+      if (!onWasi()) {
+        const host = new Float32Array([2,4,6])
+        is(got.supplied(host, i), want, `host ${i}, O${optimize}`)
+        is(Array.from(host), Array.from(a), `host writeback ${i}, O${optimize}`)
+      }
+    }
+  }
+})
+
+test('typed indices: fractional loop bounds do not prove element presence', () => {
+  const src = `export const scan = start => {
+    const a = new Float64Array([2,4,6]); let present = 0
+    for (let i = start; i < a.length; i++) {
+      if (a[i] !== undefined) present++
+      a[i] = 9
+    }
+    return [present, a[0], a[1], a[2]]
+  }
+  export const effects = () => {
+    const a = new Float32Array([2,4,6]); let calls = 0
+    const key = () => { calls = calls * 10 + 1; return 0.5 }
+    const value = () => { calls = calls * 10 + 2; return 9 }
+    const result = a[key()] = value()
+    return [calls, result, a[0], a[1], a[2]]
+  }`
+  for (const optimize of levels(0, 2, 3)) {
+    for (const start of [0,0.25,1,1.5,NaN,Infinity]) agree(src, 'scan', [start], { optimize }, `start ${start}, O${optimize}`)
+    agree(src, 'effects', [], { optimize }, `key and RHS order, O${optimize}`)
   }
 })

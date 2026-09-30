@@ -20,7 +20,7 @@ import { callContractOf } from '../representation-plan.js'
 import { CARRIER } from '../../summary/contract.js'
 import { K, tagOf, isNullable } from '../../summary/index.js'
 import { emit } from '../../bridge.js'
-import { inBoundsArrIdx } from '../../type/canonical-bounds.js'
+import { isPresentArrayElement } from './shared.js'
 
 const BIND = CLASS_T + 'bind'
 const isAccessorSlot = (name) => name.endsWith(ACCESSOR_GET) || name.endsWith(ACCESSOR_SET)
@@ -48,8 +48,7 @@ const receiverClass = (obj) => {
   if (k == null || tagOf(k) !== K.OBJECT) return null
   const entries = view.shapesOfExpr(obj)?.map(classOfSid)
   if (!entries?.length || !entries.every(e => e)) return null
-  const inBounds = Array.isArray(obj) && obj[0] === '[]' && typeof obj[1] === 'string' && typeof obj[2] === 'string' && inBoundsArrIdx(ctx).has(obj[1] + '\x00' + obj[2])
-  return { entries, nullable: isNullable(k) && !inBounds }
+  return { entries, nullable: isNullable(k) && !isPresentArrayElement(obj) }
 }
 /** Whether the summary lists the receiver's member layouts and no class owns any of them. */
 const knownNonInstance = (obj) => {
@@ -203,6 +202,17 @@ export function classMemberIn(obj, name) {
 /** `a instanceof C`: the pointer carries the schema id of C or of a class deriving from C. */
 export function classInstanceof(a, brand) {
   const entry = classes()?.get(brand)
+  if (entry?.nominal) {
+    ctx.module.include('collection')
+    ctx.module.include('string')
+    inc('__is_object', '__dyn_get_any')
+    const t = temp('inst')
+    return typed(['block', ['result', 'i32'], ['local.set', `$${t}`, asF64(emit(a))],
+      ['if', ['result', 'i32'], ['call', '$__is_object', ['i64.reinterpret_f64', ['local.get', `$${t}`]]],
+        ['then', ['i64.eq', ['call', '$__dyn_get_any', ['i64.reinterpret_f64', ['local.get', `$${t}`]], asI64(emit(['str', entry.nominal]))],
+          ['i64.reinterpret_f64', ['f64.const', 1]]]],
+        ['else', ['i32.const', 0]]]], 'i32')
+  }
   const derives = (e) => { for (let c = e; c; c = c.base ? classes().get(c.base) : null) if (c === entry) return true; return false }
   const sids = entry ? [...classes().values()].filter(derives).map(sidOf).filter(sid => sid != null) : []
   const t = temp('inst')

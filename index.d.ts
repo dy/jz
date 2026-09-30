@@ -34,6 +34,9 @@ export interface MemoryOptions {
   maximum?: number
   shared?: boolean
   import?: boolean
+  /** Require selected Wasm exports to use fixed storage: no heap allocation,
+   * growth, host calls, recursion or tracing. Excludes JS host marshalling. */
+  fixed?: readonly string[]
 }
 
 /**
@@ -55,6 +58,26 @@ export interface OptimizeOptions {
   [pass: string]: unknown
 }
 
+export interface SourceMapOptions {
+  /** Entry source name or URL; defaults to input.js. */
+  source?: string
+  /** External map URL; false omits the URL section. Default: inline data URL. */
+  url?: string | false
+}
+
+export interface SourceMap {
+  version: 3
+  sources: string[]
+  sourcesContent: (string | null)[]
+  names: string[]
+  /** Generated columns are absolute Wasm byte offsets on line zero. */
+  mappings: string
+}
+
+export interface CompiledWasm extends Uint8Array {
+  sourceMap?: SourceMap
+}
+
 export interface CompileOptions {
   /** Static ES imports to bundle: `{ './dep.js': 'export let x = 1' }`. */
   modules?: Record<string, string>
@@ -72,6 +95,8 @@ export interface CompileOptions {
   randomSeed?: number | boolean
   /** Emit the wasm `name` section for profilers and debuggers. */
   names?: boolean
+  /** Statement source map and function names. Selects optimize: false; other tiers reject. */
+  sourceMap?: boolean | SourceMapOptions
   /** Return WAT text instead of the binary. */
   wat?: boolean
   /** Sink or callback for compiler advisories. */
@@ -153,8 +178,8 @@ export default jz
 export { jz }
 
 export function compile(code: string, opts: CompileOptions & { wat: true }): string
-export function compile(code: string, opts?: CompileOptions & { wat?: false }): Uint8Array
-export function compile(code: string, opts?: CompileOptions): Uint8Array | string
+export function compile(code: string, opts?: CompileOptions & { wat?: false }): CompiledWasm
+export function compile(code: string, opts?: CompileOptions): CompiledWasm | string
 
 export function instantiate(
   module: WebAssembly.Module | Uint8Array | ArrayBuffer,

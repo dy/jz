@@ -63,6 +63,25 @@ test('test workers: automatic count is bounded by memory and CPUs, explicit valu
   for (const v of ['', '0', '-1', '1.5', 'NaN', 'Infinity']) throws(() => testJobs(v, 100))
 })
 
+test('test reporter: BigInt failures preserve later failures and the final result', () => {
+  const fixture = `import test from ${JSON.stringify(import.meta.resolve('tst'))};
+    import { is } from ${JSON.stringify(import.meta.resolve('tst/assert.js'))};
+    test('scalar BigInt', () => is(7n, 8n));
+    test('nested BigInt array', () => is([1, [2n]], [1, [3n]]));
+    test('after failures', () => is(1, 1));`
+  const source = `import { runFiles } from './test/_run.js';
+    const r = await runFiles([${JSON.stringify('data:text/javascript,' + encodeURIComponent(fixture))}]);
+    console.log('failures=' + r.failed.length); process.exitCode = r.failed.length ? 1 : 0;`
+  const r = spawnSync(process.execPath, ['--input-type=module', '-e', source], {
+    cwd: root, env: clean({ TST_FORMAT: 'tap', TST_GREP: undefined, TST_BAIL: undefined }), encoding: 'utf8', timeout: 30000,
+  })
+  is(r.status, 1)
+  ok(r.stdout.includes('"7n"') && r.stdout.includes('"3n"'), 'both assertion values print')
+  ok(r.stdout.includes('ok 3 - after failures'), 'reporting continues after each failure')
+  ok(r.stdout.includes('failures=2'), 'the runner returns all failures')
+  is(r.stderr, '')
+})
+
 test('test collection: batched checkpoints and forced final cleanup', () => {
   let calls = 0
   const collect = collector(() => calls++)

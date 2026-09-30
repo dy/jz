@@ -13,7 +13,7 @@ import { ctx, inc, PTR, LAYOUT, OPTF } from '../ctx.js'
 import { ERR_CLASS_NAMES, ERR, errorCodeLiteral } from '../../err-codes.js'
 import { ptrBits, i64Hex, OBJECT_SCHEMA_HI_MASK, objectSchemaGuardHex } from '../../layout.js'
 import { VAL, repOf, numericStorage, mayBeUndefined } from '../reps.js'
-import { valTypeOf, censusMaybeUndefined, censusMaybeUndefinedKind, numericDenied } from '../kind.js'
+import { valTypeOf, censusMaybeUndefined, censusMaybeUndefinedKind, numericDenied, boolTagged, mixedBoolKind } from '../kind.js'
 import { intExprRange } from '../static.js'
 import { K, bitOf, hasTag, tagOf, NULL_BITS, TAGS, NUMBER_OPS } from '../summary/kind.js'
 import { COMPOUND_NUMERIC_OPS } from '../kind-traits.js'
@@ -23,7 +23,7 @@ import { temp, tempI32, tempI64, block64 } from './locals.js'
 import { ptrTypeEq } from './pointers.js'
 import { asF64, asI64 } from './numeric.js'
 import { isPlanTaggedBigint, isPlanRawBigint, materializeDeferredBigint, readI64 } from './bigint.js'
-import { NULL_NAN, UNDEF_NAN, TRUE_NAN, FALSE_NAN, undefExpr, truthyIR } from './sentinels.js'
+import { NULL_NAN, UNDEF_NAN, TRUE_NAN, FALSE_NAN, undefExpr, truthyIR, nullableBoolBoxIR } from './sentinels.js'
 import { PURE_F64_OPS, isLit, isNumericIR } from './classify.js'
 
 const TAG_MASK_HEX = i64Hex(BigInt(LAYOUT.TAG_MASK) << BigInt(LAYOUT.TAG_SHIFT))
@@ -75,7 +75,7 @@ function inheritedObjectString(value) {
  *  runtime roots only in a program that defines toString or valueOf. */
 export const TO_PRIMITIVE = { string: '__jz_tp_str', number: '__jz_tp_num' }
 
-function objectToPrimitive(v, hint) {
+export function objectToPrimitive(v, hint) {
   const name = hint === 'string' ? TO_PRIMITIVE.string : TO_PRIMITIVE.number
   if (!ctx.funcs.runtimeRoots.has(name)) return inheritedObjectString(v)
   const recv = temp('tpr')
@@ -237,7 +237,14 @@ const coerceNullishToStr = (valIR) => {
  *  non-literal values pass through uncoerced — except bindings flagged
  *  maybeNullish, which get a runtime nullish coerce (null-flow correctness). */
 export function toNumF64(node, v) {
+  // Source literals stay constant even when emit interns their sentinel in
+  // a global. Recognize them before asking whether a runtime helper is loaded.
+  if (Array.isArray(node) && node[0] == null && node.length === 2 && node[1] == null)
+    return typed(['f64.const', node[1] === null ? 0 : 'nan'], 'f64')
   if (numericStorage(node)) return asF64(v)
+  // A local whose ToNumber rides in a shadow (compile/num-shadow.js).
+  const shadow = typeof node === 'string' ? ctx.func.numShadow?.get(node) : null
+  if (shadow) { const r = typed(['local.get', `$${shadow}`], 'f64'); r.valKind = VAL.NUMBER; return r }
   // An i32 node carrying `.ptrKind` is an *unboxed pointer* (object/array local),
   // not a number — skipping coercion would reinterpret pointer bits as an f64.
   // Only a plain i32 (loop counter, `x|0`) is genuinely already-numeric.
@@ -421,16 +428,18 @@ export function toNumF64(node, v) {
     (v[0] === 'call' && typeof v[1] === 'string' && v[1].startsWith('$math.')) ||
     ((v[0] === 'block' || v[0] === 'if') && isNumericIR(v))
   )) return v
-  // A bare name the numeric demand pass denied a number (a read of it
-  // neither converts nor is compatible) keeps JS semantics for every kind
-  // the host may pass through an `any` parameter (a string, a boolean,
-  // null): the summary's kind decides between the full ToNumber, the number
-  // module included, and an inline fold of the nullish and boolean atoms.
-  if (!ctx.core.stdlib['__to_num'] && ctx.summary && numericDenied(node)) {
+  // A possible nonnumeric value still converts when no earlier proof applied.
+  // The summary decides between full ToNumber and a fold of nullish/boolean
+  // atoms; a demand for numeric use alone says nothing about stored values.
+  const atoms = !ctx.core.stdlib['__to_num'] && ctx.summary != null &&
+    (typeof node === 'string' ? boolTagged(node) : mixedBoolKind(ctx.summary.at(ctx.func.current).kindOfExpr(node)))
+  if (!ctx.core.stdlib['__to_num'] && ctx.summary) {
     const k = ctx.summary.at(ctx.func.current).kindOfExpr(node)
     const nonNumeric = k & ~(bitOf(K.NUMBER) | bitOf(K.BOOL) | NULL_BITS) & TAGS
+    // Numeric use does not prove numeric storage: a Number/object union
+    // still invokes valueOf, even if every read asks for a number.
     if (nonNumeric !== 0) ctx.module.include('number')
-    else if ((k & (bitOf(K.BOOL) | NULL_BITS)) !== 0) {
+    else if (atoms || numericDenied(node) && (k & (bitOf(K.BOOL) | NULL_BITS)) !== 0) {
       const t = temp('atom')
       return typed(['block', ['result', 'f64'], ['local.set', `$${t}`, asF64(v)], coerceAtomsToNum(typed(['local.get', `$${t}`], 'f64'))], 'f64')
     }
@@ -500,58 +509,27 @@ export function numberStorageValue(v) {
 export function toStrI64(node, v) {
   const vt = valTypeOf(node)
   const summaryNullable = ctx.summary?.at(ctx.func.current)?.mayBeNullishExpr(node) === true
-  // STRING-census widening (.work/archive/todo.md §deletion-sweep):
-  // mirrors toNumF64's NUMBER-census widening for the
-  // STRING case. Two shapes both currently fall all the way through to the
-  // fully generic `__to_str` dynamic dispatch at the bottom of this function
-  // whenever `censusMaybeUndefined(node)` is true: a decl/param-hopped
-  // STRING-census claim (`vt` stays permanently null — `val`
-  // never carries a census claim for that shape; `censusMaybeUndefinedKind`
-  // proves it instead, via `presentVal`/`val` fallback) and a param whose
-  // ordinary `val` fold happens to land STRING (the one shape where `vt`
-  // itself already proves it, mirroring toNumF64's own "the param case,
-  // where `val` IS `vt`'s own source"). The generic `__to_str` stdlib
-  // helper's own UNDEF_NAN branch already renders "undefined", so this is a
-  // pure codegen improvement, value-neutral — route both through a cheap
-  // 2-branch sentinel dispatch (coerceNullishToStr, above) instead of the
-  // full dynamic dispatch call.
+  // Container element kinds describe stored values; a checked read may still
+  // answer undefined. Preserve that absence before taking scalar shortcuts.
+  const missing = censusMaybeUndefined(node) || mayMissValue(node, v)
   const censusStr = vt == null && censusMaybeUndefinedKind(node) === VAL.STRING
-  if ((vt === VAL.STRING || censusStr) && censusMaybeUndefined(node)) {
-    // As above, key conversion and lookup run once before sentinel tests.
-    if (typeof node !== 'string') {
+  if (vt === VAL.STRING || censusStr) {
+    if (!missing && !summaryNullable) return asI64(v)
+    if (!summaryNullable) {
       const t = tempI64('cns')
       return typed(['block', ['result', 'i64'],
         ['local.set', `$${t}`, asI64(v)],
         coerceNullishToStr(typed(['local.get', `$${t}`], 'i64'))], 'i64')
     }
-    return coerceNullishToStr(asI64(v))
+    inc('__to_str')
+    return typed(['call', '$__to_str', asI64(v)], 'i64')
   }
-  // ToString(string) is the identity — no coercion needed, no __to_str call.
-  // Without this, a proven-string operand (a template-literal interpolation
-  // `${s}`, module/string.js strcat's partStrI64) still paid for the fully
-  // generic __to_str dispatch, dragging its NUMBER arm's Ryu float formatter
-  // (__ftoa/__ftoa_shortest/__ryu_*) into any module with a dynamic template
-  // literal — even one that never stringifies a number.
-  // maybeUndefined join (.work/archive/todo.md §deletion-sweep §1/Slice 5): a
-  // dict-census STRING claim (every value ever WRITTEN through `name[k]=v`
-  // was a string) is, same as the NUMBER claim toNumF64 already guards,
-  // "every value ever written" — NOT "this key exists". An absent key reads
-  // real `undefined` at runtime regardless of the census's claimed kind, so
-  // `vt === VAL.STRING` here can be TRUE while `v`'s actual bits are
-  // UNDEF_NAN. Module/string.js's `bind('String', …)` calls THIS function
-  // believing it already routes maybeUndefined-flagged reads through the
-  // general __to_str path (its own comment: "falls through to the LAST
-  // branch... already correct") — true for a NUMBER-kind census (that
-  // belief is what motivated skipping the __ftoa arm), but INVARIANT: this
-  // STRING-kind identity fast-return must be GUARDED, not an unconditional
-  // early return ABOVE that same LAST branch — an unguarded version lets a
-  // STRING-census absent key hit IT first: `asI64(v)` reinterprets
-  // the raw UNDEF_NAN bits as if they were a valid string i64, which decodes
-  // back out as the bare `undefined` VALUE, not the string `"undefined"`
-  // (breaks both String() and template-literal interpolation). Guarded at
-  // THIS chokepoint (not the caller) so every caller (String(), strcat's
-  // per-part loop) inherits it.
-  if (vt === VAL.STRING && !censusMaybeUndefined(node)) return asI64(v)
+  if (vt === VAL.BOOL) {
+    if (!missing && !summaryNullable)
+      return typed(['select', ssoStrI64('true'), ssoStrI64('false'), truthyIR(v)], 'i64')
+    inc('__to_str')
+    return typed(['call', '$__to_str', asI64(nullableBoolBoxIR(v))], 'i64')
+  }
   // A statically-proven BigInt may deliberately use the raw i64 carrier.
   // Generic __to_str cannot infer that carrier from its f64 interpretation
   // (7n looks like the finite subnormal 3.5e-323), so format the mathematical

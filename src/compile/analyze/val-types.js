@@ -3,11 +3,12 @@ import { DBG_INVARIANTS } from '../../debug.js'
 import { OPTF, ctx } from '../../ctx.js'
 import { ASSIGN_OPS, MUTATE_OPS } from '../../ast.js'
 import { VAL, repOf, updateRep } from '../../reps.js'
-import { valTypeOf, shapeOf } from '../../kind.js'
+import { valTypeOf, shapeOf, boolTagged } from '../../kind.js'
 import { intExprRange, objLiteralSchemaId } from '../../static.js'
 import { isCondExpr, intCertainMap } from '../../type.js'
 import { makeTypedTracker, joinReassignedTypedLens, dropDisagreeingTypedDefs } from './trackers.js'
 import { analyzeBody } from './body-facts.js'
+import { findMutations, hasSingleInitializer } from '../analyze-scans.js'
 import { K, tagOf, hasTag, valOf, core, ANY } from '../../summary/kind.js'
 
 /** True iff `name` appears in `body` ONLY as the receiver of an indexed read
@@ -281,15 +282,6 @@ export function analyzeValTypes(body) {
     if (!Array.isArray(node)) return
     const op = node[0]
     if (op === '=>') return  // don't leak inner-closure val types
-    // Collect Object.assign(name, …) sites for the post-walk boxed-schema
-    // predictor (slice-4 P3) — decided AFTER the walk so the target's FINAL
-    // val kind matches what emit reads.
-    if (op === '()' && node[1] === 'Object.assign') {
-      let aa = node.slice(2)
-      if (aa.length === 1 && Array.isArray(aa[0]) && aa[0][0] === ',') aa = aa[0].slice(1)
-      if (typeof aa[0] === 'string' && aa.length > 1)
-        objAssignSites.push({ target: aa[0], sources: aa.slice(1) })
-    }
     if (op === 'let' || op === 'const') {
       for (let i = 1; i < node.length; i++) {
         const a = node[i]
@@ -336,26 +328,11 @@ export function analyzeValTypes(body) {
           if (domain) (ctx.func.leanHashDomains ??= new Map()).set(a[1], domain)
         }
         setVal(a[1])
-        // Closed integer hull for never-reassigned decls whose init the range
-        // evaluator can bound (masks, ternary hulls, bounded products) — chains
-        // through earlier ranged decls via intExprRange's repOf hook. Feeds the
-        // i32-provability of products and div-by-2^k strength reduction (the
-        // delayline q16 chain: raw = lfo & 0x1ffff → tri → dq stays i32).
-        //
-        // This is the SAME predicate analyzeBody's own processDecl stamps
-        // EARLY, during its (possibly cache-skipped) body walk. DBG_INVARIANTS asserts the redundancy claim that justifies
-        // leaving that early stamp as-is rather than threading ranges through
-        // an explicit BodyFacts slice: whenever processDecl already stamped a
-        // range for this name (cache miss ran it, ctx.func.localReps wasn't
-        // reset since), THIS unconditional re-derivation must land the exact
-        // same bound — same rhs, same walk order, same repOf-chained bounds
-        // for earlier decls (ctx.func.localReps is never touched between the
-        // two stamps within one function's own compile turn). See session.js's
-        // DEPS table / analyzeBody's cache doc for why a genuine STALE hit
-        // (skipping the early stamp) is harmless: this line still fires
-        // unconditionally and fills the gap.
+        // A single initializer bounds its binding for the whole body. Unrolling
+        // can copy a declaration under one name; no individual copy owns its
+        // range. Share the same lifetime proof with the early body walk.
         const declRange = intExprRange(a[2])
-        if (declRange && Number.isFinite(declRange[0]) && Number.isFinite(declRange[1]) && writeCount(body, a[1], 0) === 0) {
+        if (declRange && Number.isFinite(declRange[0]) && Number.isFinite(declRange[1]) && hasSingleInitializer(body, a[1])) {
           if (DBG_INVARIANTS) {
             const prior = repOf(a[1])?.range
             if (prior && (prior[0] !== declRange[0] || prior[1] !== declRange[1]))
@@ -451,65 +428,29 @@ export function analyzeValTypes(body) {
       if (vt === VAL.OBJECT) bindObjSchema(node[1], node[2])
       return
     }
-    // Track property assignments for auto-boxing: x.prop = val
-    if (op === '=' && Array.isArray(node[1]) && node[1][0] === '.' && typeof node[1][1] === 'string') {
-      const [, obj, prop] = node[1]
-      const vt = getVal(obj)
-      if ((vt === VAL.NUMBER || vt === VAL.BIGINT) && ctx.func.locals?.has(obj) && ctx.schema.register) {
-        if (!ctx.func.localProps) ctx.func.localProps = new Map()
-        if (!ctx.func.localProps.has(obj)) ctx.func.localProps.set(obj, new Set())
-        ctx.func.localProps.get(obj).add(prop)
-      }
-    }
     for (let i = 1; i < node.length; i++) walk(node[i])
   }
-  const objAssignSites = []
   walk(body)
   dropDisagreeingTypedDefs(body, n => ctx.func.typedElem?.get(n), n => ctx.func.typedElem?.delete(n),
     n => ctx.func.typedLen?.delete(n), n => paramSeeds.get(n) ?? null)
   joinReassignedTypedLens(body, n => ctx.func.typedElem?.has(n) ?? false,
     n => ctx.func.typedLen?.get(n) ?? ctx.scope.globalTypedLen?.get(n) ?? null,
     (n, l) => (ctx.func.typedLen ??= new Map()).set(n, l))
-
-  // Slice-4 P3 predictor: `Object.assign(x, …)` onto a non-OBJECT binding
-  // (boxed primitive / array carrier) allocates an `__inner__` record at emit;
-  // the schema BINDING is plan state — register + bind here, mirroring
-  // module/object.js's emit site (which now asserts instead of writing).
-  // Post-walk so the target's FINAL val kind matches what emit reads; the
-  // shared ctx.schema.resolveExpr keeps source resolution identical to emit's.
-  for (const { target, sources } of objAssignSites) {
-    const vt = repOf(target)?.val
-    if (!vt || vt === VAL.OBJECT || !ctx.schema.resolveExpr) continue
-    const allProps = []
-    let known = true
-    for (const src of sources) {
-      const s = ctx.schema.resolveExpr(src)
-      if (!s) { known = false; break }
-      for (const p of s) if (!allProps.includes(p)) allProps.push(p)
-    }
-    if (!known) continue   // emit errs on unknown-source schemas — nothing to bind
-    const sid = ctx.schema.register(['__inner__', ...allProps])
-    // Extern-write belt: source slot values copied in at emit, unseen by censuses.
-    ctx.schema.externSlotSids?.add(sid)
-    updateRep(target, { schemaId: sid })
-  }
-
-  // Register boxed schemas for local variables with property assignments
-  if (ctx.func.localProps) {
-    for (const [name, props] of ctx.func.localProps) {
-      if (ctx.schema.idOf(name) != null) continue
-      const schema = ['__inner__', ...props]
-      const sid = ctx.schema.register(schema)
-      updateRep(name, { schemaId: sid })
-    }
-  }
 }
 
 /** Forward-propagate `intCertain` on local bindings. Fixpoint lives in type.js.
  *  Threads the settled slot census as the `.prop`-read resolver — without it a
  *  binding built from an int-certain slot (`const x = hitX ? p.x : nx`) stayed
- *  uncertain and every consumer re-paid the ToNumber guard. */
+ *  uncertain and every consumer re-paid the ToNumber guard. A binding a
+ *  nested closure assigns has that write among its definitions: a read after
+ *  the closure ran sees what it stored (a Boolean, a string), not the integer
+ *  the body's own definitions give it. */
 export function analyzeIntCertain(body) {
+  // A captured binding's initializer is only one of its definitions. Include
+  // writes in nested closures before publishing integer facts to consumers
+  // such as Math.floor and to the closure's own representation snapshot.
+  const captured = new Set()
+  findMutations(body, ctx.func.locals, captured)
   const slotIntOf = ctx.schema?.slotIntCertainAt
     ? (obj, prop) => {
       const id = ctx.schema.idOf?.(obj)
@@ -519,7 +460,7 @@ export function analyzeIntCertain(body) {
       return ctx.schema.slotIntCertainAt(obj, prop)
     }
     : undefined
-  for (const [name, intC] of intCertainMap(body, undefined, slotIntOf)) {
-    if (intC) updateRep(name, { intCertain: true })
+  for (const [name, intC] of intCertainMap(body, captured, slotIntOf)) {
+    if (intC && !boolTagged(name)) updateRep(name, { intCertain: true })
   }
 }

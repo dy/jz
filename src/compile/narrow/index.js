@@ -168,7 +168,7 @@ export default function narrowSignatures(programFacts, ast) {
     callerParamFacts,
     // runArrElemFixpoint mutates these named context channels in place.
     callerElems: undefined, paramFacts: undefined,
-    calleeParamNames: undefined, _teOverlay: null, _lastArgMiss: false,
+    calleeParamNames: undefined, _lastArgMiss: false,
   }
   const siteState = cs => {
     const { callee, argList, callerFunc } = cs
@@ -192,7 +192,6 @@ export default function narrowSignatures(programFacts, ast) {
     sharedSiteState.calleeParamNames = paramNames
     sharedSiteState.callerElems = undefined
     sharedSiteState.paramFacts = undefined
-    sharedSiteState._teOverlay = null
     sharedSiteState._lastArgMiss = false
     return sharedSiteState
   }
@@ -269,7 +268,14 @@ export default function narrowSignatures(programFacts, ast) {
     if (RECUR_INT_OPS.has(n[0])) return n.slice(1).every(c => isRecurIntExpr(c, pnames, callerLocals))
     return false
   }
-  const summaryTypedElems = (summary) => ({ size: 1, has: (n) => summary.typedCtorOf(n) != null, get: (n) => summary.typedCtorOf(n) })
+  // Like the site record, this view is consumed synchronously. Reuse its
+  // methods across sites and sweeps; each query still reads the current
+  // caller's summary, without retaining a fact from an earlier site.
+  const summaryTypedElems = {
+    size: 1,
+    has: n => sharedSiteState.callerSummary.typedCtorOf(n) != null,
+    get: n => sharedSiteState.callerSummary.typedCtorOf(n),
+  }
   const argWasmType = (arg, state) => {
     // Recursive self-call: an arg built only from the callee's own params + already-i32 locals +
     // int constants (`f(n - 1)`, `f(n - 1 - i)`) is i32 IFF those params are i32 — a fixpoint
@@ -279,8 +285,7 @@ export default function narrowSignatures(programFacts, ast) {
     // arg `f(n)` is already skipped wholesale in runCallsiteLattice.)
     if (state.callee === state.callerFunc?.name &&
         isRecurIntExpr(arg, state.calleeParamNames, state.callerLocals)) return 'i32'
-    if (!state._teOverlay) state._teOverlay = summaryTypedElems(state.callerSummary)
-    const wt = withTypedElemOverlay(state._teOverlay, () => exprType(arg, state.callerLocals))
+    const wt = withTypedElemOverlay(summaryTypedElems, () => exprType(arg, state.callerLocals))
     // An i32-typed BARE NAME that carries a POINTER kind in the caller (a local
     // or param already narrowed to an unboxed i32 offset) is NOT integer
     // evidence: narrowing the callee's param to plain i32 on it makes every

@@ -9,9 +9,10 @@ import { i64Hex, nanPrefixHex } from '../../../layout.js'
 import { T, TYPEOF } from '../../ast.js'
 import { LAYOUT, PTR, ctx, inc, ssoBitI64Hex } from '../../ctx.js'
 import {
-  asF64, asI32, asI32Sat, asI64, carrierF64, emitNum, freshId, isBoolAtom, isLit, isLiteralStr, isNull, isNullish, isNullishLit, isPlanRawBigint, isPlanTaggedBigint, isUndef, litVal, nullableBoolBoxIR, numberNanIR, ptrTypeEq, readI64, resolveValType, temp, tempI32, tempI64, toNumF64, truthyIR, typed, unboxBigInt,
+  asF64, asI32, asI64, carrierF64, emitNum, freshId, isBoolAtom, isLit, isLiteralStr, isNull, isNullish, isNullishLit, isPlanRawBigint, isPlanTaggedBigint, isUndef, litVal, nullableBoolBoxIR, numberNanIR, ptrTypeEq, readI64, resolveValType, temp, tempI32, tempI64, toNumF64, truthyIR, typed, unboxBigInt,
 } from '../../ir.js'
 import { censusMaybeUndefined, hasAmbiguousBoolMerge, valTypeOf } from '../../kind.js'
+import { K, core, hasTag, tagOf } from '../../summary/kind.js'
 import { VAL, lookupValType, repOf, repOfGlobal } from '../../reps.js'
 import { foldIntCompare } from '../../ir/numeric.js'
 import { nonNegIntLiteral } from '../../static.js'
@@ -20,7 +21,9 @@ import { numLiteralNode } from './bigint.js'
 import { emit, emitIdentitySafe, emitIdentitySafeArms } from './dispatch.js'
 import { numberOrMissing } from './arithmetic.js'
 import { emitInstanceof } from './instanceof.js'
+import { representationProvesBigint } from '../representation-plan.js'
 import { REF_EQ_KINDS, foldOperandPure, stringOps } from './shared.js'
+import { positionArgs } from '../../bridge.js'
 
 
 /** Emit typeof comparison: typeof x == typeCode → type-aware check. */
@@ -28,6 +31,8 @@ function emitTypeofCmp(a, b, cmpOp) {
   let typeofExpr, code
   if (Array.isArray(a) && a[0] === 'typeof' && typeof b === 'number') { typeofExpr = a[1]; code = b }
   else if (Array.isArray(a) && a[0] === 'typeof' && Array.isArray(b) && b[0] == null) { typeofExpr = a[1]; code = b[1] }
+  // a test the compiler writes after prepare folded the program's to codes (ast.js numberGuard)
+  else if (Array.isArray(a) && a[0] === 'typeof' && Array.isArray(b) && b[0] === 'str' && TYPEOF[b[1]] != null) { typeofExpr = a[1]; code = TYPEOF[b[1]] }
   else return null
   if (typeof code !== 'number') return null
 
@@ -65,7 +70,8 @@ function emitTypeofCmp(a, b, cmpOp) {
   const foldConst = (k) => foldOperandPure(typeofExpr)
     ? typed(['i32.const', k], 'i32')
     : typed(['block', ['result', 'i32'], ['drop', va], ['i32.const', k]], 'i32')
-  const vt = ambiguous || planTaggedBigint ? null : resolveValType(typeofExpr, valTypeOf, lookupValType)
+  const vt = ambiguous ? null : representationProvesBigint(ctx, typeofExpr) ? VAL.BIGINT
+    : planTaggedBigint ? null : resolveValType(typeofExpr, valTypeOf, lookupValType)
   // Raw Boolean/BigInt carriers can look like Numbers or any pointer tag.
   // Their proven semantic kind decides ALL typeof comparisons, not just the
   // matching one. Keep the already-emitted operand's effects in every fold.
@@ -273,28 +279,28 @@ function emitSubstringEqCmp(a, b, negate = false) {
   // still mis-evaluated after fixing sliceEmitter alone — a `.slice(...) !== other`
   // comparison compiles through fusion here, never reaching sliceEmitter at all).
   const TO_END = ['i32.const', 0x7FFFFFFF]
+  const positions = positionArgs(args)
   let startIR, endIR
   if (method === 'substr' && args[1] != null) {
     // substr's 2nd arg is a length: end = start + length, so start reads twice.
     const s = tempI32('subS')
-    startIR = ['local.tee', `$${s}`, args[0] == null ? ['i32.const', 0] : asI32Sat(emit(args[0]))]
-    endIR = ['i32.add', ['local.get', `$${s}`], asI32Sat(emit(args[1]))]
+    startIR = ['local.tee', `$${s}`, positions.index(0)]
+    endIR = ['i32.add', ['local.get', `$${s}`], positions.index(1, TO_END)]
   } else {
-    startIR = args[0] == null ? ['i32.const', 0] : asI32Sat(emit(args[0]))
-    endIR = args[1] == null ? TO_END : asI32Sat(emit(args[1]))
+    startIR = positions.index(0)
+    endIR = positions.index(1, TO_END)
   }
 
   const finish = expr => negate ? ['i32.eqz', expr] : expr
 
-  if (callIsLeft)
-    return typed(finish(['call', `$${helper}`, asI64(emit(recv)), startIR, endIR, asI64(emit(other))]), 'i32')
-
-  // `other` is the source-left operand — evaluate it first to preserve order.
-  const o = temp('subO')
+  // Evaluate the receiver and all arguments before position coercion, just as
+  // the materializing method does. The comparison's left operand stays first.
+  const r = tempI64('subR'), o = callIsLeft ? null : tempI64('subO')
   return typed(['block', ['result', 'i32'],
-    ['local.set', `$${o}`, asF64(emit(other))],
-    finish(['call', `$${helper}`, asI64(emit(recv)), startIR, endIR,
-      ['i64.reinterpret_f64', ['local.get', `$${o}`]]])], 'i32')
+    ...(callIsLeft ? [] : [['local.set', `$${o}`, asI64(emit(other))]]),
+    ['local.set', `$${r}`, asI64(emit(recv))], ...positions.setup,
+    finish(['call', `$${helper}`, ['local.get', `$${r}`], startIR, endIR,
+      callIsLeft ? asI64(emit(other)) : ['local.get', `$${o}`]])], 'i32')
 }
 
 // A VAL.BOOL value can ride either the cheap 0/1 numeric carrier or, after it has
@@ -481,11 +487,18 @@ function emitLooseEq(a, b, negate, strict) {
     const fa = temp('numeq'), fb = temp('numeq')
     const faG = ['local.get', `$${fa}`], fbG = ['local.get', `$${fb}`]
     const numEq = typed(['f64.eq', faG, fbG], 'i32')
+    // ABSENT adds undefined only. Numeric element reads cannot produce null;
+    // explicit nullish joins and unknown summaries retain both atom checks.
+    const absentOnly = n => {
+      const k = ctx.summary?.at(ctx.func.current)?.kindOfExpr(n)
+      return k != null && tagOf(core(k)) === K.NUMBER && !hasTag(k, K.NULLISH)
+    }
+    const absentA = absentOnly(a), absentB = absentOnly(b)
+    const undefEq = typed(['i32.and', isUndef(faG), isUndef(fbG)], 'i32')
     const sentinelEq = strict
-      ? typed(['i32.or',
-          typed(['i32.and', isUndef(faG), isUndef(fbG)], 'i32'),
+      ? absentA || absentB ? undefEq : typed(['i32.or', undefEq,
           typed(['i32.and', isNull(faG), isNull(fbG)], 'i32')], 'i32')
-      : typed(['i32.and', isNullish(faG), isNullish(fbG)], 'i32')
+      : typed(['i32.and', (absentA ? isUndef : isNullish)(faG), (absentB ? isUndef : isNullish)(fbG)], 'i32')
     const eqExpr = typed(['i32.or', numEq, sentinelEq], 'i32')
     return typed(['block', ['result', 'i32'],
       ['local.set', `$${fa}`, asF64(va)],
@@ -685,7 +698,9 @@ function emitStrictEq(a, b, negate) {
 
 /** Comparison op factory with constant folding. */
 const cmpOp = (i32op, f64op, fn) => (a, b) => {
-  const va = emit(a), vb = emit(b)
+  // A Boolean in its f64 carrier may be its atom: compare its number (ToNumber).
+  const boolNum = (n, v) => v.type === 'f64' && resolveValType(n, valTypeOf, lookupValType) === VAL.BOOL ? toNumF64(n, v) : v
+  const va = boolNum(a, emit(a)), vb = boolNum(b, emit(b))
   // Skip the const-fold for `.unsigned` operands: `litVal` is the signed bit pattern
   // (-1, not 4294967295), so folding the order would be wrong. Fall through to the
   // f64 widen path below, which converts each operand by its own signedness.

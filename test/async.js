@@ -1,5 +1,6 @@
 // async/await v1 (plain-jz promise runtime on the generator machinery):
-// `async fn` lowers to (...aa) => __async_run((function* (params){ await→yield })(...aa));
+// `async fn` lowers to (a, b) => __async_run((function* (a, b){ body })(a, b)), an await
+// suspending the machine as a yield does;
 // promises are fixed-shape objects with then/catch/finally closure props; the
 // microtask queue drains at host boundaries (export return, timer tick) and
 // the interop wrapper adopts promise-shaped returns into HOST Promises —

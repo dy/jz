@@ -31,6 +31,21 @@ const BASELINE = join(import.meta.dirname, 'perf-ratchet.json')
 // These are required JS exceptions, not a lost optimization; timing, Watr/JSON
 // binary-size ceilings and memory caps stay unchanged.
 
+// An index key's units (2026-09-29) are read in the key's own form, packed
+// short string or heap array, decided once before the parse loop, where the
+// loop called __char_at per unit: 30 more loop nodes in __str_arr_idx and
+// __typed_str_idx, and where watr inlines the first into
+// __arr_typed_obj_set_idx (buf +150, slice +2400, condref +1200). A
+// per-function comparison shows no other body changed; each unit is a load
+// or a shift, not a call.
+
+// A short integer's string (2026-09-29) packs its digits into the pointer in
+// __i32_to_str's own digit loop, with no scratch buffer, __itoa or __mkstr
+// pass: 27 loop nodes per module that formats one, in the helper and where
+// watr inlines it into __arr_typed_obj_set_idx's loop (buf +135, slice +216,
+// condref +1080). A per-function comparison against the tree before it shows
+// no other body changed. String(16000) went from 51 to 10 ns.
+
 // Reset-log reuse adds 26 loop nodes to __durable_slot_log in each of the
 // 40 condref modules (+1040). Comparing with only that helper reverted proved
 // all other 1657 function bodies unchanged. The baseline includes this required
@@ -139,6 +154,13 @@ const loopBodyOps = (wat) => {
 // unchanged, buf's `buf[i] = buf[i]` included. The bench corpus sizes and
 // timings are gated on their own.
 
+// Typed numeric indices (2026-09-29): unproven fractional/NaN keys no
+// longer truncate into an element. The slice corpus reads offsets from host
+// arrays: validating those keys adds 712 nodes in $f$exp and 448 in its
+// Float32Array variant, 69086 -> 70246. An isolated 40-seed comparison finds
+// no changed loop counts in any other function. Proven integer indices keep
+// their direct path. Timing, binary-size and memory caps remain unchanged.
+// Performance-branch history; combined counts still require measurement.
 // Release by reach (2026-09-29): a program whose exported frame may keep what
 // it stored links the walk from what its escapes wrote into (module/core/
 // reach.js). Its loops run once per call that ran an escape, none per
@@ -152,6 +174,34 @@ const loopBodyOps = (wat) => {
 // other function's count is unchanged. Measured, a loop that stores a fresh
 // array into one receiver made at start runs 2.6 -> 3.2 ns an iteration, one
 // that stores into 64 receivers in turn 5.1 -> 5.3.
+// Number keys that name no element (2026-09-28): `a[o + i] = v` with o read
+// from a host array stored into a[trunc(o + i)] for a fractional o, where
+// JavaScript drops the store. The key's own test (emit/dispatch.js keyIndex) is
+// what the checked arm pays; the versioned arm takes the key whole (its guard
+// tests o integral), and so do integer-valued keys: slice 68598 → 68974, the
+// other categories unchanged.
+// A sum with a side of unknown kind (2026-09-28) is a number only where the
+// program cannot concatenate (kind/val-type-of.js addsAsNumber): the corpus's
+// slice programs index `a[o + i]` with `o` an element of a host array, which
+// may be a string ('1' + 0 is '10'), so the store keeps its general key path
+// behind the integer-key fast path and links its helpers, whose loops this
+// count includes: slice 68974 -> 109288, every other category unchanged. The
+// optimistic NUMBER it replaces sent `o.name + 1 + 2` through f64 arithmetic
+// on the string's box ('x1', not 'x12').
+// Both of the above together (2026-09-29): release by age asks the slice
+// store's value and moves its growth check on the general key path the sum
+// keeps: slice 109288 -> 109880, every other category unchanged.
+// An index key's int32 test truncates through i64 (2026-09-29, compile/emit/
+// dispatch.js int32Bits): `i32.wrap_i64 (i64.trunc_sat_f64_s x)` is one node
+// more than `i32.trunc_sat_f64_s x` and one arm64 instruction where the i32
+// truncation is a rounding, a round trip and an out-of-line saturation arm.
+// Eight slice programs test one such key in a loop: 109880 -> 109888, every
+// other category unchanged.
+// The changes above, on main's tree of 2026-09-29 (797ec1ec): main's own
+// counts plus the deltas they made on the tree they were measured on, buf
+// +285, condref +2280, and slice +44954: the general key path's helpers now
+// carry main's reset log (`__durable_slot_log`) and the heal loops of
+// `_clear`, 1536 more than on the tree before; every other category is main's.
 
 // An object made at start is saved before the round's first store into it
 // of a value that names memory of the round (2026-09-29, module/core/

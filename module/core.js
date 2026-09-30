@@ -11,8 +11,8 @@ import print from 'watr/print'
  * @module core
  */
 
-import { typed, asF64, asI32, asI64, NULL_NAN, UNDEF_NAN, TOMB_NAN, FALSE_NAN, TRUE_NAN, temp, tempI32, usesDynProps, ptrOffsetIR, ptrTypeEq, isNullish, isUndef, valKindToPtr, sidecarOverride, undefExpr, cloneIR, boxBigInt, unboxBigInt, isPlanTaggedBigint, throwTypeErrorIR, valueTruthyIR } from '../src/ir.js'
-import { emit, emitIdentitySafe, spread, deps, wat } from '../src/bridge.js'
+import { typed, asF64, asI32, asI64, NULL_NAN, UNDEF_NAN, TOMB_NAN, FALSE_NAN, TRUE_NAN, temp, tempI32, usesDynProps, ptrOffsetIR, ptrTypeEq, isNullish, isUndef, valKindToPtr, sidecarOverride, undefExpr, cloneIR, boxBigInt, unboxBigInt, deferBigintBox, isPlanTaggedBigint, throwTypeErrorIR, valueTruthyIR } from '../src/ir.js'
+import { emit, emitReference, emitIdentitySafe, spread, deps, wat } from '../src/bridge.js'
 import { reconstructArgsWithSpreads } from '../src/ir.js'
 import { valTypeOf, shapeOf, hasAmbiguousBoolMerge } from '../src/kind.js'
 import { ACCESSOR_GET, COMPARE_OPS, isBrand } from '../src/ast.js'
@@ -71,7 +71,10 @@ export default (ctx) => {
     __eq: () => ['__str_eq', '__ptr_type', '__is_nullish', ...(representationProgramHasBigint(ctx) ? ['__bigint_eq', '__ptr_offset'] : []),
       ...(ctx.core.stdlib['__to_num'] ? ['__to_num'] : []), ...(ctx.core.stdlib['__to_str'] ? ['__is_object', '__to_prim_dflt'] : [])],
     __to_prim_dflt: ['__ptr_type', '__to_str'],
-    __cmp: ['__is_object', '__ptr_type', '__ptr_aux', '__to_prim_dflt', '__is_str_key', '__str_cmp', '__to_num'],
+    __cmp: () => ['__is_object', '__ptr_type', '__ptr_aux', '__to_prim_dflt', '__is_str_key', '__str_cmp', '__to_num', ...(representationProgramHasBigint(ctx) ? ['__is_bigint_box', '__cmp_i64', '__cmp_i64_num', '__bigint_side', '__ptr_offset'] : [])],
+    __bigint_side: ['__to_num', '__is_str_key'],
+    __is_bigint_box: ['__ptr_type'],
+    __cmp_i64_num: ['__cmp_i64'],
     __add_slow: () => ['__ptr_type', '__is_object', '__to_prim_dflt', '__is_str_key', '__str_concat_fresh',
       ...(representationProgramHasBigint(ctx) ? ['__box_bigint', '__ptr_offset'] : [])],
     __eq_strict: ['__str_eq', '__ptr_type', '__ptr_offset'],
@@ -108,6 +111,8 @@ export default (ctx) => {
     __length_prop_num: () => ['__to_num',
       ...(lengthNeedsDynArm() ? [ctx.linkDemand.external ? '__dyn_get_any_t_h' : '__dyn_get_expr_t_h'] : [])],
     __throw_property_nullish: ['__alloc_hdr', '__mkptr'],
+    // the long division is its own function, the common case answered inline
+    __rem: ['__rem_div'],
     __throw_not_callable: ['__alloc_hdr', '__mkptr'],
     __alloc: ['__memgrow'],
     __alloc_hdr: ['__alloc'],
@@ -115,7 +120,7 @@ export default (ctx) => {
     __hash_keys_ro: ['__ptr_offset', '__prop_order', '__alloc_hdr', '__mkptr'],
     __coll_order: ['__alloc'],
     __prop_order: () => ['__alloc', ...(ctx.core.stdlib['__char_at'] ? ['__is_str_key', '__str_index_key'] : [])],
-    __str_index_key: ['__str_length', '__char_at'],
+    __str_index_key: ['__str_length'],
     // Durable-receiver global-table merge (see __obj_clone's body) pulls in
     // __ihash_get_local/__is_nullish only when collection.js's dyn-props
     // machinery is actually part of this build (mirrors json.js's __json_obj
@@ -456,7 +461,19 @@ export default (ctx) => {
   //   halve back down to |b|. Every step (×2, ×0.5, aligned subtraction) is
   //   exact in f64, so the remainder is bit-identical to JS. Sign follows the
   //   dividend (copysign), matching `(-5)%3 === -2`, `5%(-3) === 2`, `-0%3 === -0`.
+  // `__rem` itself answers a dividend below twice the divisor, a ring buffer's
+  // wrap (`(p + 1) % n`, `(x % n + n) % n`): below it the dividend, from it one
+  // subtraction, exact since |b| <= |a| <= 2|b|. A NaN, an infinity or a zero
+  // divisor fails both tests. Small enough for the engine to inline, it leaves
+  // the division to `__rem_div`.
   ctx.core.stdlib['__rem'] = `(func $__rem (param $a f64) (param $b f64) (result f64)
+    (local $x f64) (local $y f64)
+    (if (f64.lt (local.tee $x (f64.abs (local.get $a))) (local.tee $y (f64.abs (local.get $b))))
+      (then (return (local.get $a))))
+    (if (f64.lt (local.get $x) (f64.mul (local.get $y) (f64.const 2)))
+      (then (return (f64.copysign (f64.sub (local.get $x) (local.get $y)) (local.get $a)))))
+    (call $__rem_div (local.get $a) (local.get $b)))`
+  ctx.core.stdlib['__rem_div'] = `(func $__rem_div (param $a f64) (param $b f64) (result f64)
     (local $x f64) (local $y f64)
     (if (f64.ne (local.get $a) (local.get $a)) (then (return (local.get $a))))
     (if (f64.ne (local.get $b) (local.get $b)) (then (return (local.get $b))))
@@ -466,6 +483,16 @@ export default (ctx) => {
       (then (return (f64.div (f64.const 0) (f64.const 0)))))
     (if (i32.or (f64.eq (local.get $y) (f64.const inf)) (f64.lt (local.get $x) (local.get $y)))
       (then (return (local.get $a))))
+    ;; integers, the dividend below 2^53 (a ring buffer's index, a counter by a runtime
+    ;; length): x − trunc(x/y)·y is exact. The quotient's rounding error is below
+    ;; x·2^-53/y < 1/y, the least distance from x/y to an integer it is not, so
+    ;; trunc takes the true quotient's, and the product and difference are integers
+    ;; below 2^53.
+    (if (i32.and (f64.lt (local.get $x) (f64.const 9007199254740992))
+          (i32.and (f64.eq (f64.trunc (local.get $x)) (local.get $x)) (f64.eq (f64.trunc (local.get $y)) (local.get $y))))
+      (then (return (f64.copysign
+        (f64.sub (local.get $x) (f64.mul (f64.trunc (f64.div (local.get $x) (local.get $y))) (local.get $y)))
+        (local.get $a)))))
     (block $up (loop $ul
       (br_if $up (f64.gt (f64.mul (local.get $y) (f64.const 2)) (local.get $x)))
       (local.set $y (f64.mul (local.get $y) (f64.const 2)))
@@ -582,12 +609,45 @@ export default (ctx) => {
           : `(call $__to_prim_dflt (local.get $${v}))`})))`).join('')}
     (if (i32.and (call $__is_str_key (local.get $a)) (call $__is_str_key (local.get $b)))
       (then (return (f64.convert_i32_s (call $__str_cmp (local.get $a) (local.get $b))))))
+    ${representationProgramHasBigint(ctx) ? `(if (call $__is_bigint_box (local.get $a))
+      (then (return (if (result f64) (call $__is_bigint_box (local.get $b))
+        (then (call $__cmp_i64 (i64.load (call $__ptr_offset (local.get $a))) (i64.load (call $__ptr_offset (local.get $b)))))
+        (else (call $__cmp_i64_num (i64.load (call $__ptr_offset (local.get $a))) (call $__bigint_side (local.get $b))))))))
+    (if (call $__is_bigint_box (local.get $b))
+      (then (return (f64.neg (call $__cmp_i64_num (i64.load (call $__ptr_offset (local.get $b))) (call $__bigint_side (local.get $a)))))))` : ''}
     (local.set $x (call $__to_num (local.get $a)))
     (local.set $y (call $__to_num (local.get $b)))
     (if (f64.eq (local.get $x) (local.get $y)) (then (return (f64.const 0))))
     (if (f64.lt (local.get $x) (local.get $y)) (then (return (f64.const -1))))
     (if (f64.gt (local.get $x) (local.get $y)) (then (return (f64.const 1))))
     (f64.const nan))`
+
+  // A BigInt's box, as the relational path tests it.
+  ctx.core.stdlib['__is_bigint_box'] = `(func $__is_bigint_box (param $v i64) (result i32)
+    (i32.and (f64.ne (f64.reinterpret_i64 (local.get $v)) (f64.reinterpret_i64 (local.get $v)))
+      (i32.eq (call $__ptr_type (local.get $v)) (i32.const ${PTR.BIGINT}))))`
+  ctx.core.stdlib['__cmp_i64'] = `(func $__cmp_i64 (param $x i64) (param $y i64) (result f64)
+    (if (result f64) (i64.lt_s (local.get $x) (local.get $y)) (then (f64.const -1))
+      (else (f64.convert_i32_u (i64.gt_s (local.get $x) (local.get $y))))))`
+  // The other side of a comparison with a BigInt as a number: a string reads as a
+  // BigInt literal, so one naming no integer is unordered (NaN).
+  ctx.core.stdlib['__bigint_side'] = `(func $__bigint_side (param $v i64) (result f64)
+    (local $n f64)
+    (local.set $n (call $__to_num (local.get $v)))
+    (if (result f64) (i32.and (call $__is_str_key (local.get $v)) (f64.ne (local.get $n) (f64.trunc (local.get $n))))
+      (then (f64.const nan)) (else (local.get $n))))`
+  // A BigInt against a number, exactly (ES2024 7.2.13 step 4): NaN is unordered, a
+  // number past the i64 range is beyond every BigInt jz holds, else the integer
+  // parts compare and then the number's fraction.
+  ctx.core.stdlib['__cmp_i64_num'] = `(func $__cmp_i64_num (param $x i64) (param $y f64) (result f64)
+    (local $t f64) (local $k i64)
+    (if (f64.ne (local.get $y) (local.get $y)) (then (return (f64.const nan))))
+    (if (f64.ge (local.get $y) (f64.const 9223372036854775808)) (then (return (f64.const -1))))
+    (if (f64.lt (local.get $y) (f64.const -9223372036854775808)) (then (return (f64.const 1))))
+    (local.set $t (f64.trunc (local.get $y)))
+    (local.set $k (i64.trunc_f64_s (local.get $t)))
+    (if (i64.ne (local.get $x) (local.get $k)) (then (return (call $__cmp_i64 (local.get $x) (local.get $k)))))
+    (f64.neg (f64.copysign (f64.convert_i32_u (f64.ne (local.get $y) (local.get $t))) (f64.sub (local.get $y) (local.get $t)))))`
 
   // The `+` operator for two carriers that are not both numbers (ES2024
   // 13.15.3): ToPrimitive both, concatenate if either is a string, else add
@@ -1871,7 +1931,7 @@ export default (ctx) => {
     const view = ctx.summary?.at(ctx.func.current), k = view?.kindOfExpr(obj)
     if (k == null || summaryTagOf(k) !== K.OBJECT || (typeof obj === 'string' ? lookupValType(obj) : valTypeOf(obj)) !== VAL.OBJECT) return null
     const layouts = view.shapesOfExpr(obj)
-    if (!layouts || layouts.length < 2) return null
+    if (!layouts?.length) return null
     let slot = -1, i32Certain = false, bigintProven = false
     for (const sid of layouts) {
       const i = ctx.schema.list[sid]?.indexOf(prop) ?? -1
@@ -1953,9 +2013,17 @@ export default (ctx) => {
       if (common) {
         const base = typed(['i32.wrap_i64', ['i64.reinterpret_f64', va]], 'i32')
         base.ptrKind = VAL.OBJECT
-        return emitSchemaSlotRead(base, common.slot, common.i32Certain, common.bigintProven)
+        const load = emitSchemaSlotRead(base, common.slot, common.i32Certain, false)
+        // The union's storage is boxed even when its common slot can unbox.
+        // Keep that producer available to return/storage edges, as checked
+        // typed reads do; numeric consumers can take the raw payload.
+        return common.bigintProven ? deferBigintBox(unboxBigInt(load), () => load) : load
       }
     }
+    // No object the receiver may be ever holds the name: undefined, the
+    // receiver still evaluated for what it does.
+    if (schemaIdx < 0 && ctx.summary?.at(ctx.func.current)?.absentMember?.(obj, prop))
+      return typeof obj === 'string' ? undefExpr() : typed(['block', ['result', 'f64'], ['drop', va], undefExpr()], 'f64')
     if (schemaIdx >= 0) {
       // A precise schema id proves this is a fixed-size OBJECT allocation, not
       // an ARRAY value that may have relocated. Extract the payload offset from
@@ -2111,7 +2179,7 @@ export default (ctx) => {
   const lengthNeedsDynArm = () =>
     ctx.core.stdlib[ctx.linkDemand.external ? '__dyn_get_any_t_h' : '__dyn_get_expr_t_h'] != null &&
     (ctx.linkDemand.external || ctx.schema?.list?.length > 0 || ctx.core.includes.has('__hash_new') ||
-     ctx.core.includes.has('__dyn_set') || ctx.core.includes.has('__hash_set'))
+     (ctx.core.includes.has('__dyn_set') || ctx.core.includes.has('__dyn_set_own')) || ctx.core.includes.has('__hash_set'))
 
   const lengthTagIR = `(i32.wrap_i64 (i64.and (i64.shr_u (local.get $bits) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK})))`
   const arrayLengthIR = `(block (result f64)
@@ -2289,14 +2357,20 @@ export default (ctx) => {
         if (typeof obj === 'string') (ctx.func.checkedRecv ??= []).push(obj)
         // A receiver whose only missing value is absence tests for undefined alone.
         const missing = hasTag(receiverKind, K.NULLISH) ? isNullish : isUndef
-        if (typeof obj === 'string' && value[0] === 'local.get' && value[1] === `$${obj}`)
+        // Past the test a name is present: the read takes its present kind
+        // (`d.length` of a typed array that may be missing reads the header).
+        const same = typeof obj === 'string' && value[0] === 'local.get' && value[1] === `$${obj}`
+        const view = typeof obj === 'string' ? ctx.summary?.at(ctx.func.current) : null, mark = view?.present && !view.isPresent(obj)
+        if (mark) view.present(obj)
+        let read
+        try { read = asF64(readHoistedProp(obj, prop, same ? obj : t, raw)) } finally { if (mark) view.unpresent(obj) }
+        if (same)
           return typed(['block', ['result', 'f64'],
-            ['if', missing(value), ['then', ['drop', throwTypeErrorIR()]]],
-            asF64(readHoistedProp(obj, prop, obj, raw))], 'f64')
+            ['if', missing(value), ['then', ['drop', throwTypeErrorIR()]]], read], 'f64')
         return typed(['block', ['result', 'f64'],
           ['local.set', `$${t}`, value],
           ['if', missing(typed(['local.get', `$${t}`], 'f64')), ['then', ['drop', throwTypeErrorIR()]]],
-          asF64(readHoistedProp(obj, prop, t, raw))], 'f64')
+          read], 'f64')
       }
     }
     // `C.prototype` of a class (a factory closure): jz classes have no
@@ -2407,6 +2481,9 @@ export default (ctx) => {
       // off the raw offset (no forwarding follow).
       if (vt === VAL.ARRAY && typeof obj === 'string' && liveArrayBinding(obj))
         return typed(['f64.convert_i32_s', ['i32.load', ['i32.sub', arrayBaseIR(obj), ['i32.const', 8]]]], 'f64')
+      // A typed array whose element kind the plan knows, whatever the receiver
+      // expression (`c.b.length` of a field): the byte length's word, shifted.
+      if (vt === VAL.TYPED || vt == null) { const n = ctx.core.emit['__typed_len']?.(obj); if (n) return n }
       const arrayOrTyped = vt == null && rep?.recvArrTyped === true
       // jsstring carrier: keep the externref-typed IR so emitLengthAccess can
       // dispatch to `wasm:js-string.length` instead of forcing through f64.
@@ -2533,8 +2610,11 @@ export default (ctx) => {
     if (obj !== t) copyReceiverFacts(obj, t)
     const rep = typeof obj === 'string' ? repOf(obj) : null
     const vt = typeof obj === 'string' ? lookupValType(obj) : valTypeOf(obj)
-    if (prop === 'length')
-      return emitLengthAccess(['local.get', `$${t}`], vt, vt == null && rep?.recvArrTyped === true)
+    if (prop === 'length') {
+      // A typed array whose element kind the plan knows reads its header's length word.
+      const n = vt === VAL.TYPED && obj === t ? ctx.core.emit['__typed_len']?.(obj) : null
+      return n ?? emitLengthAccess(['local.get', `$${t}`], vt, vt == null && rep?.recvArrTyped === true)
+    }
     // Type-specific + module-registered property getters (`.size`, `.byteLength`,
     // `.regex:source`, …) — the SAME getter dispatch the plain `.` emitter runs
     // (only entries tagged via `getter()` fire; untagged `.values`/`.pop` stay a
@@ -2642,13 +2722,11 @@ export default (ctx) => {
       }
       return asF64(callResult)
     })
-    if (ctx.closure.receiver && Array.isArray(callee) && ['.', '?.', '[]', '?.[]'].includes(callee[0])) {
-      const t = temp('orecv'), view = ctx.summary.at(ctx.func.current)
-      const source = asF64(emit(callee[1]))
-      view.alias(t, callee[1], false)
-      try { return typed(['block', ['result', 'f64'], ['local.set', `$${t}`, source],
-        invoke([callee[0], t, callee[2]], typed(['local.get', `$${t}`], 'f64'))], 'f64') }
-      finally { view.unalias(t) }
+    let member = callee
+    while (Array.isArray(member) && member[0] === '(') member = member[1]
+    if (ctx.closure.receiver && Array.isArray(member) && ['.', '?.', '[]', '?.[]'].includes(member[0])) {
+      const t = temp('orecv')
+      return invoke(asF64(emitReference(member, t)), typed(['local.get', `$${t}`], 'f64'))
     }
     return invoke(callee)
   }

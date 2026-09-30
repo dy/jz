@@ -130,14 +130,6 @@ export function boxedCaptures(body, params = NO_NAMES, captures = NO_NAMES) {
   const markArrowCaptures = (node, assignTarget) => {
     const captures = []
     findFreeVars(node, new Set(), captures, outerScope)
-    // Record EVERY captured name (mutated or not) — src/compile/emit.js's
-    // emitDecl consults this to decide whether a captured, ambiguous
-    // BOOL∪NUMBER-merge init (kind.js hasAmbiguousBoolMerge) needs an
-    // identity-safe shadow for the closure's env-slot store (module/
-    // function.js ctx.closure.make, the 'value'-mode capture copy). Broader
-    // than `boxed` below (mutation-gated, cell storage) by design — this is
-    // capture-status ALONE, independent of mutation.
-    for (const v of captures) (ctx.func.capturedNames ??= new Set()).add(v)
     if (captures.length === 0) return
     const captureSet = new Set(captures)
     const boxed = new Set()
@@ -222,7 +214,7 @@ export const BINDING_USE_CALLEE = 5
 export const BINDING_USE_ARG_INDEX = 6   // CALL_ARG: the argument's position
 export const BINDING_USE_NULL_CMP = 7
 export const BINDING_USE_OP = 8
-export const BINDING_USE_STORE = 1 // BARE RHS only: discarded assignment's destination
+export const BINDING_USE_STORE = 1 // BARE RHS only: initializer/discarded assignment destination (local name or element)
 // A comparison or step a missing element read as zero leaves unchanged: the
 // comparison answers undefined and zero alike, the step runs only where a
 // test excluded both (checked integer reads, analyze/body-facts.js).
@@ -307,6 +299,11 @@ const boolTest = (op) => {
 export const BINDING_USE_DECLS = 0
 export const BINDING_USE_INIT = 1
 export const BINDING_USE_USES = 2
+/** A binding's initializer can describe its whole lifetime only when it has
+ * one declaration and no later write, including writes through closures. */
+export const hasSingleInitializer = (body, name) =>
+  scanBindingUses(body).get(name)?.[BINDING_USE_DECLS] === 1 && !isReassigned(body, name)
+
 // Self-compile-only: see resetProgramFactsCache (program-facts.js) — a fresh
 // factStore (src/session.js) swaps in a fresh WeakMap each session so a
 // warm-instance compile-clear-compile loop never reads a dangling arena
@@ -337,7 +334,11 @@ export function scanBindingUses(body, trackNames) {
     const hit = bindingUses.get(body)
     if (hit) return hit
   }
+  return collectBindingUses(body, trackNames, bindingUses)
+}
 
+// Cache hits never need the mutually recursive scanners' captured cells.
+function collectBindingUses(body, trackNames, bindingUses) {
   const summary = new Map()                    // name → [decls, initRhs, uses]
   const slot = (name) => {
     let s = summary.get(name)
@@ -404,7 +405,8 @@ export function scanBindingUses(body, trackNames) {
           } else {
             walk(lhs, inClosure)                // pattern — computed keys/defaults are real uses
           }
-          val(rhs, inClosure)
+          if (!inClosure && typeof lhs === 'string' && typeof rhs === 'string') use(rhs, USE.BARE, [USE.BARE, lhs])
+          else val(rhs, inClosure)
         } else walk(d, inClosure)
       }
       return
@@ -442,7 +444,7 @@ export function scanBindingUses(body, trackNames) {
         return
       }
       assignTarget(node[1], op !== '=')
-      if (op === '=' && discarded && typeof node[2] === 'string' && node[1]?.[0] === '[]') {
+      if (op === '=' && discarded && typeof node[2] === 'string' && (typeof node[1] === 'string' || node[1]?.[0] === '[]')) {
         use(node[2], USE.BARE, [USE.BARE, node[1]])
       } else val(node[2])
       return
@@ -934,8 +936,8 @@ export const isFreshArrayCtor = (rhs) =>
 /**
  * Narrow uint32 accumulator locals to unsigned i32. A local qualifies when its
  * initializer is a non-negative integer literal in [0, 2^32) or itself a
- * `(…) >>> k` or proven-present Uint32 read, and every reassignment is also
- * an unsigned shift or proven Uint32 read. That WRITE invariant proves the
+ * `(…) >>> k`, a proven-present Uint32 read or an unsigned-result call,
+ * and every reassignment has the same proof. That WRITE invariant proves the
  * local always holds a canonical uint32 bit pattern (ToUint32 is idempotent:
  * re-masking an already-masked value is a no-op), independent of how the
  * local is later read. Names that escape the invariant itself (closures — a
@@ -962,7 +964,9 @@ function narrowUint32In(body, locals, states, isTypedU32) {
       : Array.isArray(e) && e[0] == null && typeof e[1] === 'number' ? e[1] : NaN
     return Number.isInteger(v) && v >= 0 && v < 4294967296
   }
-  const isU32 = e => Array.isArray(e) && (e[0] === '>>>' || isTypedU32?.(e))
+  const isU32 = e => Array.isArray(e) && (e[0] === '>>>' || isTypedU32?.(e) ||
+    (e[0] === '()' && typeof e[1] === 'string' && ctx.funcs.map.get(e[1])?.sig.unsignedResult === true) ||
+    ((e[0] === '(' || e[0] === ',') && isU32(e[e.length - 1])))
   const banNames = n => {
     if (typeof n === 'string') states.set(n, 0)
     else if (Array.isArray(n)) for (let i = 1; i < n.length; i++) banNames(n[i])
@@ -1127,14 +1131,28 @@ const mathFnName = (callee) =>
 // entry at prepare time (only named function/arrow bindings are), so it stays
 // an inline `=>` node in the enclosing body and would be invisible to a scan
 // that stops there. See collectBareEscapes' own crossClosure doc.
+// A loop's test on its counter (`while (--i)`, `for (; n; n--)`, `while (i--)`,
+// wrapped in `postfix` by prepare, a do-while's `while (flag || --i)`)
+// compares it with a constant: the same governing comparison as `i < n`.
+function testedCounters(test, add) {
+  if (typeof test === 'string') return add(test)
+  if (!Array.isArray(test)) return
+  if (test[0] === 'postfix') return testedCounters(test[1], add)
+  if ((test[0] === '--' || test[0] === '++') && typeof test[1] === 'string') return add(test[1])
+  if ((test[0] === '+' || test[0] === '-') && test.length === 3 && constIntExpr(test[2]) != null) return testedCounters(test[1], add)
+  if (test[0] === '&&' || test[0] === '||' || test[0] === '!') for (let i = 1; i < test.length; i++) testedCounters(test[i], add)
+}
 function collectComparedNames(body, crossClosure) {
   let names = null
+  const add = (name) => { (names ||= new Set()).add(name) }
   const enter = (node) => {
     if (node[0] === '=>') { if (crossClosure) walkAst(node[2], { enter }); return false }
     if (COMPARE_OPS.has(node[0])) {
-      if (typeof node[1] === 'string') (names ||= new Set()).add(node[1])
-      if (typeof node[2] === 'string') (names ||= new Set()).add(node[2])
+      if (typeof node[1] === 'string') add(node[1])
+      if (typeof node[2] === 'string') add(node[2])
     }
+    if (node[0] === 'while') testedCounters(node[1], add)
+    else if (node[0] === 'for') testedCounters(node[2], add)
   }
   walkAst(body, { enter })
   return names || EMPTY_SCAN_SET
@@ -1245,6 +1263,7 @@ function bareEscapeScan(body, crossClosure, compared, wide, keepEdges) {
     if (op === 'if') { walk(node[1], 'value'); walk(node[2], 'stmt'); walk(node[3], 'stmt'); return }
     if (op === 'for') { walk(node[1], 'stmt'); walk(node[2], 'value'); walk(node[3], 'stmt'); walk(node[4], 'stmt'); return }
     if (op === 'while') { walk(node[1], 'value'); walk(node[2], 'stmt'); return }
+    if (op === 'postfix') { walk(node[1], mode); return }
     if ((op === '++' || op === '--') && typeof node[1] === 'string') {
       if (mode === 'value') escape(node[1])
       return
@@ -1491,6 +1510,32 @@ export function stampBodyRanges(body, readPresent, typedLens) {
     }
     return intExprRange(n)
   }
+  // A write `j = (j + 1) % K` by a positive literal K: taking j within the
+  // remainder's own bound, its dividend (sums and products of j, literals and
+  // names of finite hulls) stays finite, so from j's finite first value on
+  // every value it takes is below K.
+  const hullOver = (n, self, bound) => {
+    if (typeof n === 'string') return n === self ? bound : repOf(n)?.range ?? null
+    const c = constNumExpr(n)
+    if (Number.isFinite(c)) return [c, c]
+    if (!Array.isArray(n)) return null
+    const a = hullOver(n[1], self, bound), b = n.length > 2 ? hullOver(n[2], self, bound) : null
+    if (!a || (n.length > 2 && !b)) return null
+    if (n[0] === 'u+' && n.length === 2) return a
+    if (n[0] === 'u-' || (n[0] === '-' && n.length === 2)) return [-a[1], -a[0]]
+    if (n[0] === '+') return [a[0] + b[0], a[1] + b[1]]
+    if (n[0] === '-') return [a[0] - b[1], a[1] - b[0]]
+    if (n[0] === '*') { const p = [a[0] * b[0], a[0] * b[1], a[1] * b[0], a[1] * b[1]]; return [Math.min(...p), Math.max(...p)] }
+    return null
+  }
+  const defRangeOf = (name, n) => {
+    const r = rangeOf(n)
+    if (r || !Array.isArray(n) || n[0] !== '%' || n.length !== 3) return r
+    const k = constIntExpr(n[2])
+    if (k == null || k <= 0) return null
+    const h = hullOver(n[1], name, [1 - k, k - 1])
+    return h && Math.abs(h[0]) <= 2 ** 53 && Math.abs(h[1]) <= 2 ** 53 ? [1 - k, k - 1] : null
+  }
   const regions = [body], proofs = new Map(), defs = new Map(), declared = new Set(), bad = new Set()
   const addDef = (name, rhs) => {
     if (typeof name !== 'string') return
@@ -1577,7 +1622,7 @@ export function stampBodyRanges(body, readPresent, typedLens) {
       if (!declared.has(name) || bad.has(name) || repOf(name)?.range) continue
       let lo = Infinity, hi = -Infinity, known = true
       for (const rhs of values) {
-        const r = rangeOf(rhs)
+        const r = defRangeOf(name, rhs)
         if (!r) { known = false; break }
         lo = Math.min(lo, r[0]); hi = Math.max(hi, r[1])
       }

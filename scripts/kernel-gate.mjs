@@ -41,6 +41,7 @@ import { cpus, loadavg, tmpdir } from 'node:os'
 import { dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { deriveStatus, judgeMemory, judgeSpeed, validateReport } from './kernel-gate-judge.mjs'
+import { graphEntries as canonicalGraphEntries, contentHash } from './graph-provenance.mjs'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const GATES = ['functional', 'sequences', 'recursive', 'memory', 'speed']
@@ -269,14 +270,13 @@ const relKey = (p) => {
   if (watrReal && p.startsWith(watrReal + '/')) return 'node_modules/watr/' + p.slice(watrReal.length + 1)
   return relative(ROOT, p)
 }
-const contentHash = (entries) => sha(entries.sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([k, v]) => `${k}\0${Buffer.byteLength(v, 'utf8')}\0${v}`).join('\0'))
-const graphEntries = [['scripts/self.js', profile.graph.code], ...Object.entries(profile.graph.modules).map(([p, s]) => [relKey(p), s])]
+const graphEntries = canonicalGraphEntries(profile.graph, relKey)
 const graphSha256 = contentHash(graphEntries)
 const watrEntries = graphEntries.filter(([k]) => k.startsWith('node_modules/watr/'))
 const watrDir = join(ROOT, 'node_modules/watr')
 const watrPkg = existsSync(join(watrDir, 'package.json')) ? JSON.parse(readFileSync(join(watrDir, 'package.json'), 'utf8')) : null
 const watrGit = (() => { try { const r = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: watrDir, encoding: 'utf8' }); return r.status === 0 && existsSync(join(watrDir, '.git')) ? r.stdout.trim() : null } catch { return null } })()
-const profileId = { optimize: profile.optimize?.level ?? profile.optimize, memory: profile.memory, compactCollections: profile.compactCollections, defines: profile.defines }
+const profileId = { optimize: profile.optimize, memory: profile.memory, compactCollections: profile.compactCollections, defines: profile.defines, helperCounters: profile.helperCounters, helperCallsites: profile.helperCallsites }
 // The working tree: tracked changes (staged or not) and untracked files among the sources the self graph reads.
 const SOURCE_ROOTS = ['src/', 'module/', 'jzify/', 'scripts/', 'index.js', 'interop.js', 'package.json']
 const isSource = (p) => SOURCE_ROOTS.some(r => p === r || p.startsWith(r))
@@ -309,7 +309,7 @@ try {
     const t0 = Date.now()
     let built
     try { built = privateBuild(ROOT, 'scripts/self-compile-build.mjs', [], { label: 'self-compile build', prefix: 'jz-kernel-gate-build-' }) }
-    catch (e) { manifest.kernel = { source: 'fresh', status: 'red', error: e.message.split('\n').slice(0, 12).join('\n'), buildMs: Date.now() - t0 }; manifest.status = { build: 'red' }; console.error(`kernel build failed: ${e.message.split('\n')[0]}`); finish(1) }
+    catch (e) { manifest.kernel = { source: 'fresh', status: 'red', error: e.message, buildMs: Date.now() - t0 }; manifest.status = { build: 'red' }; console.error(`kernel build failed: ${e.message}`); finish(1) }
     kernelBytes = built.bytes
     manifest.kernel = { source: 'fresh', origin: 'attested', buildMs: built.ms, attestation: attestationOf(kernelBytes), matchesRunner: true }
     if (flag('--keep-kernel')) { const kp = resolve(flag('--keep-kernel')); writeFileSync(kp, kernelBytes); writeFileSync(kp + '.build.json', JSON.stringify(manifest.kernel.attestation, null, 2)); manifest.kernel.kept = kp }
@@ -359,6 +359,7 @@ try {
   if (process.env.JZ_KERNEL_GATE_WORKER) manifest.testOnlyWorker = process.env.JZ_KERNEL_GATE_WORKER
   for (const g of gates) {
     if (g === 'memory') continue   // derived from the other gates' cases below
+    console.error(`kernel-gate: running ${g}`)
     const t0 = Date.now()
     const r = spawnSync(process.execPath, [workerScript, '--worker', g, '--kernel', kernelPath, '--corpus', size, '--levels', levels.join(','),
       '--speed-tolerance', String(speedTolerance), '--load-limit', String(loadLimit), ...(baselineKernel ? ['--baseline-kernel', baselineKernel.path] : [])],

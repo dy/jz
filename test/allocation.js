@@ -24,6 +24,68 @@ export let probe = (n) => { const h0 = __heap_mark(); let s = 0; for (let i = 0;
 }
 const zero = (out, what) => { for (const level in out) is(out[level], 0, `${what} allocates ${out[level]} bytes per call at O${level}`) }
 
+test('allocation: empty collection iteration needs no snapshot storage', () => {
+  const source = `const s = new Set(), m = new Map(), a = [], out = new Set()
+    function choose(mode) { return mode === 0 ? s : mode === 1 ? m : a }
+    function visit(mode) { for (const value of choose(mode)) out.add(value) }
+    export function probe(mode, count) {
+      const start = __heap_mark()
+      for (let i = 0; i < count; i++) { visit(mode); out.clear() }
+      return __heap_mark() - start
+    }
+    export function values(mode, fill) {
+      s.clear(); m.clear(); a.length = 0
+      if (fill) { s.add(7); m.set('key', 9); a.push(11) }
+      return JSON.stringify([...choose(mode)])
+    }
+    export function copies(mode) {
+      const src = choose(mode), first = [...src], second = [...src]
+      const keys = src.keys(), other = src.keys()
+      first.push(23)
+      return JSON.stringify([first, second, keys === other])
+    }`
+  for (const optimize of levels(0, 1, 2, 3)) {
+    const ex = jz(source, { optimize }).exports
+    for (const mode of [0, 1, 2]) {
+      is(ex.probe(mode, 0), 0)
+      is(ex.probe(mode, 1000), 0, `O${optimize}: empty iterable ${mode} allocates nothing`)
+      is(ex.values(mode, true), ['[7]', '[["key",9]]', '[11]'][mode])
+      is(ex.values(mode, false), '[]')
+      is(ex.probe(mode, 1000), 0, 'a cleared collection reuses the empty view')
+      is(ex.copies(mode), '[[23],[],false]', 'spread copies and public iterators keep distinct identities')
+      is(ex.probe(mode, 1000), 0, 'mutating a spread copy cannot change the internal empty view')
+    }
+  }
+})
+
+test('allocation: private Map entry columns avoid allocating each pair', () => {
+  const src=`const m=new Map()
+    export function fill(n){m.clear();for(let i=0;i<n;i++)m.set(i,i+1)}
+    export function probe(){
+      const start=__heap_mark();let s=0
+      for(const [k,v] of m)s+=k+v
+      const used=__heap_mark()-start
+      return [s,used]
+    }
+    export function count(){
+      const start=__heap_mark();let s=0
+      for(const pair of m)s+=pair.length
+      const used=__heap_mark()-start
+      return [s,used]
+    }`
+  for(const level of levels(0,1,2,3,'size')){
+    const ex=jz(src,{optimize:{level,arenaRewind:false,arenaReach:false}}).exports
+    for(const n of [0,1,17,100,0]){
+      ex.fill(n)
+      const [sum,bytes]=ex.probe()
+      is(sum,n*n,`${level}: ${n} entries`)
+      if(n) ok(bytes<=24*n+40,`${bytes} bytes for two columns, without per-entry arrays`)
+      else is(bytes,0,'an empty Map needs no snapshot storage')
+      is(ex.count(),[2*n,0],'pair lengths require no snapshot columns')
+    }
+  }
+})
+
 test('allocation: empty builders keep a small reserve and preserve aliases across growth', () => {
   const source = `let a = [], alias = a, previous = a
     export function empty(mode, count) {

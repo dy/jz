@@ -25,7 +25,7 @@
 
 import { ctx } from '../../ctx.js'
 import {
-  some, walkAst, rewriteChildren, T, stmtList, refsName, REFS_IN_EXPR, REFS_THROUGH_ARROWS, ASSIGN_OPS, MUTATE_OPS, isReassigned, hasControlTransfer,
+  some, walkAst, rewriteChildren, T, stmtList, refsName, REFS_IN_EXPR, REFS_THROUGH_ARROWS, ASSIGN_OPS, COMPARE_OPS, MUTATE_OPS, ACCESSOR_GET, ACCESSOR_SET, isReassigned, hasControlTransfer,
 } from '../../ast.js'
 import { freshId } from '../../ir.js'
 import {
@@ -37,6 +37,7 @@ import {
 import { VAL } from '../../reps.js'
 import { includeModule } from '../../autoload.js'
 import { analyzeBody, setFuncBody } from '../analyze.js'
+import { scanBindingUses, USE, BINDING_USE_DECLS, BINDING_USE_INIT, BINDING_USE_USES, BINDING_USE_KIND, BINDING_USE_NULL_CMP, BINDING_USE_STORE } from '../analyze-scans.js'
 import {
   isSimpleArg, fixedScalarTypedArray, fixedTypedArraysInBody, maxScalarTypedArrayLen, freshTypedArrayLocals,
   collectBindings,
@@ -64,10 +65,14 @@ const coerceAST = (kind, expr) => {
 const maxScalarTypedLoopUnroll = () => ctx.transform.optimize?.scalarTypedLoopUnroll ?? 16
 const maxScalarTypedNestedUnroll = () => ctx.transform.optimize?.scalarTypedNestedUnroll ?? 128
 
-const scalarArrayElems = (expr) => {
+// A list's elements, or null for a spread or a hole. Bound to locals they
+// evaluate once each, in order, as into the list: any expression (an inlined
+// tuple's `[s.l, s.b, h]`). Folded into each read (`simple`), only one that
+// reads the same wherever it is copied.
+const scalarArrayElems = (expr, simple = true) => {
   if (!Array.isArray(expr) || expr[0] !== '[') return null
   const elems = expr.slice(1)
-  if (elems.some(e => e == null || (Array.isArray(e) && e[0] === '...') || !isSimpleArg(e))) return null
+  if (elems.some(e => e == null || (Array.isArray(e) && e[0] === '...') || (simple && !isSimpleArg(e)))) return null
   return elems
 }
 
@@ -76,10 +81,18 @@ const scalarObjectProps = (expr, simple = true) => {
   // a literal of no members declares nothing: every read of it finds nothing (`opts = {}`, the default of an options parameter)
   const props = expr.length === 1 ? { names: [], values: [], brand: null } : staticObjectProps(expr.slice(1))
   if (!props) return null
+  // A slot under a class member's name can be absent and fall back to its
+  // method/accessor. A scalar value cannot preserve that member dispatch.
+  const cls = props.brand ? ctx.transform.classes?.get(props.brand) : null
+  if (cls && props.names.some(k => cls.methods.has(k) || cls.methods.has(k + ACCESSOR_GET) || cls.methods.has(k + ACCESSOR_SET))) return null
   const seen = new Set()
   for (let i = 0; i < props.names.length; i++) {
     const name = props.names[i]
-    if (seen.has(name) || (simple && !isSimpleArg(props.values[i]))) return null
+    const value = props.values[i]
+    // Lowered class factories initialize slots with undefined before assigning
+    // their defaults. Like null, it is a pure scalar initializer.
+    const nullish = Array.isArray(value) && value[0] == null && value[1] == null
+    if (seen.has(name) || (simple && !isSimpleArg(value) && !nullish)) return null
     seen.add(name)
   }
   return props
@@ -119,6 +132,13 @@ const safeScalarArrayUse = (node, name, len, parentOp = null) => {
   return true
 }
 
+// A member's step (prepare's `m = +1 m`, which keeps the operand's kind) on
+// a slot that became a name is the name's own step, `++name`: the postfix
+// recovery around it (`(++x) - 1`) is then the one every emitter knows, a
+// BigInt's included.
+const nameStep = (n) => Array.isArray(n) && n[0] === '=' && typeof n[1] === 'string' && Array.isArray(n[2]) &&
+  (n[2][0] === '+1' || n[2][0] === '-1') && n[2][1] === n[1] ? [n[2][0] === '+1' ? '++' : '--', n[1]] : n
+
 const rewriteScalarArrayUses = (node, arrays) => {
   if (!Array.isArray(node) || !arrays.size) return node
   const op = node[0]
@@ -145,7 +165,7 @@ const rewriteScalarArrayUses = (node, arrays) => {
     }
     return out || node
   }
-  return rewriteChildren(node, rewriteScalarArrayUses, arrays)
+  return nameStep(rewriteChildren(node, rewriteScalarArrayUses, arrays))
 }
 
 // What every object inherits: a read of one of these names finds it, whatever the literal declares.
@@ -157,23 +177,64 @@ const INHERITED = new Set(['constructor', '__proto__', 'hasOwnProperty', 'isProt
 // brand): a name it does not declare is the class's to answer.
 const readable = (key, keys) => keys.has(key) || !(INHERITED.has(key) || keys.branded)
 
-const safeScalarObjectUse = (node, name, keys, statement = false) => {
+// These locals observe presence alone. Their other definitions keep their values;
+// a scalarized record can supply any non-nullish value instead of its identity.
+const NULL_EQUAL_OPS = new Set(['==', '!=', '===', '!=='])
+const scalarObjectFacts = (body) => {
+  const bindings = scanBindingUses(body)
+  const names = new Set()
+  const aliases = new Map()
+  const stable = b => b?.[BINDING_USE_DECLS] === 1 && !b[BINDING_USE_USES].some(u =>
+    u[BINDING_USE_KIND] === USE.REASSIGN || u[BINDING_USE_KIND] === USE.CAPTURE)
+  for (const [name, b] of bindings) {
+    const source = b[BINDING_USE_INIT]
+    if (typeof source === 'string' && stable(b) && stable(bindings.get(source))) aliases.set(name, source)
+    if (b[BINDING_USE_DECLS] === 1 && b[BINDING_USE_USES].every(u =>
+      u[BINDING_USE_KIND] === USE.REASSIGN ||
+      u[BINDING_USE_KIND] === USE.COMPARE && u[BINDING_USE_NULL_CMP] ||
+      u[BINDING_USE_KIND] === USE.BARE && typeof u[BINDING_USE_STORE] === 'string')) names.add(name)
+  }
+  // The census includes relational comparisons and read/modify/write operations.
+  // Both observe more than nullishness, even when the stored result is discarded.
+  if (names.size) walkAst(body, { enter: n => {
+    if (n[0] === '=>') return false
+    if (MUTATE_OPS.has(n[0]) && n[0] !== '=') names.delete(n[1])
+    if (COMPARE_OPS.has(n[0]) && !NULL_EQUAL_OPS.has(n[0])) {
+      names.delete(n[1]); names.delete(n[2])
+    }
+  } })
+  // A copy preserves presence only when every downstream reader does too.
+  let changed = true
+  while (changed) {
+    changed = false
+    for (const name of names) if (bindings.get(name)[BINDING_USE_USES].some(u =>
+      u[BINDING_USE_KIND] === USE.BARE && !names.has(u[BINDING_USE_STORE]))) {
+      names.delete(name); changed = true
+    }
+  }
+  return { nullish: names, aliases }
+}
+
+const safeScalarObjectUse = (node, name, keys, statement = false, nullish = null, aliases = null) => {
   if (typeof node === 'string') return node !== name
   if (!Array.isArray(node)) return true
   const op = node[0]
   if (op === '=>' && refsName(node, name, REFS_IN_EXPR)) return false
+  if (op === 'delete' && refsName(node, name, REFS_IN_EXPR)) return false
+  if (op === '=' && statement && node[2] === name && (nullish?.has(node[1]) || aliases?.has(node[1]))) return true
   // a call of a name nothing declares throws: the call stays with its object
   if ((op === '()' || op === '?.()') && Array.isArray(node[1]) && (node[1][0] === '.' || node[1][0] === '?.' || node[1][0] === '[]') && node[1][1] === name) {
     const key = node[1][0] === '[]' ? staticPropertyKey(node[1][2]) : node[1][2]
     if (key == null || !keys.has(key)) return false
   }
   if (ASSIGN_OPS.has(op) && node[1] === name) {
+    if (op === '=' && aliases?.has(name)) return true // its sole, immutable alias initializer
     if (op !== '=' || !statement) return false
     const props = scalarObjectProps(node[2], false)
     return props != null && props.names.length === keys.size && props.names.every(k => keys.has(k))
-      && props.values.every(v => safeScalarObjectUse(v, name, keys))
+      && props.values.every(v => safeScalarObjectUse(v, name, keys, false, nullish, aliases))
   }
-  if (declaresName(node, name)) return false
+  if (declaresName(node, name) && !aliases?.has(name)) return false
   if (MUTATE_OPS.has(op) && Array.isArray(node[1]) && (node[1][0] === '.' || node[1][0] === '?.' || node[1][0] === '[]') && node[1][1] === name) {
     const key = node[1][0] === '[]' ? staticPropertyKey(node[1][2]) : node[1][2]
     if (key == null || !keys.has(key)) return false   // a store of a name nothing declares adds it
@@ -185,10 +246,10 @@ const safeScalarObjectUse = (node, name, keys, statement = false) => {
   }
   if (op === '...' && node[1] === name) return false
   for (let i = 1; i < node.length; i++) {
-    const stmt = op === ';' || (op === '{}' && node.length === 2)
+    const stmt = op === ';' || op === 'let' || op === 'const' || (op === '{}' && node.length === 2)
       || (op === 'for' && i === 4) || (op === 'while' && i === 2)
       || (op === 'if' && i >= 2)
-    if (!safeScalarObjectUse(node[i], name, keys, stmt)) return false
+    if (!safeScalarObjectUse(node[i], name, keys, stmt, nullish, aliases)) return false
   }
   return true
 }
@@ -196,6 +257,7 @@ const safeScalarObjectUse = (node, name, keys, statement = false) => {
 const rewriteScalarObjectUses = (node, objects) => {
   if (!Array.isArray(node) || !objects.size) return node
   const op = node[0]
+  if (op === '=' && objects.has(node[2])) return ['=', node[1], [null, 1]]
   if (op === '=' && objects.has(node[1])) {
     const props = scalarObjectProps(node[2], false), fields = objects.get(node[1])
     // Evaluate every new field before replacing the old record. This preserves
@@ -214,7 +276,7 @@ const rewriteScalarObjectUses = (node, objects) => {
     const fields = objects.get(node[1])
     return key != null ? (fields.get(key) ?? [, undefined]) : node
   }
-  return rewriteChildren(node, rewriteScalarObjectUses, objects)
+  return nameStep(rewriteChildren(node, rewriteScalarObjectUses, objects))
 }
 
 const typedArraySlotIndex = (node, len) => {
@@ -710,7 +772,7 @@ const scalarizeArrayLiteralSeq = (seq) => {
     if (!Array.isArray(stmt) || (stmt[0] !== 'let' && stmt[0] !== 'const') || stmt.length !== 2) continue
     const decl = stmt[1]
     if (!Array.isArray(decl) || decl[0] !== '=' || typeof decl[1] !== 'string') continue
-    const elems = scalarArrayElems(decl[2])
+    const elems = scalarArrayElems(decl[2], false)
     if (!elems) continue
     let ok = true
     for (let j = 0; j < stmts.length && ok; j++) {
@@ -746,33 +808,82 @@ const scalarizeArrayLiteralSeq = (seq) => {
   return [';', ...out]
 }
 
-const scalarizeObjectLiteralSeq = (seq) => {
+/** The literal every path through `st` assigns to `name` before reading it
+ *  (`name = {…}`, a block ending so, an `if` whose two arms both do, with the
+ *  same keys), or null. */
+const assignsLiteral = (st, name) => {
+  if (!Array.isArray(st)) return null
+  if (st[0] === '=' && st[1] === name) {
+    const props = scalarObjectProps(st[2], false)
+    return props && !refsName(st[2], name, REFS_THROUGH_ARROWS) ? props : null
+  }
+  if (st[0] === '{}' && st.length === 2) return assignsLiteral(st[1], name)
+  if (st[0] === ';') {
+    for (let i = 1; i < st.length; i++) {
+      const props = assignsLiteral(st[i], name)
+      if (props) return props
+      if (refsName(st[i], name, REFS_THROUGH_ARROWS) || hasControlTransfer(st[i])) return null
+    }
+    return null
+  }
+  if (st[0] === 'if' && st.length === 4 && !refsName(st[1], name, REFS_THROUGH_ARROWS)) {
+    const a = assignsLiteral(st[2], name), b = a && assignsLiteral(st[3], name)
+    return b && a.names.length === b.names.length && a.names.every(k => b.names.includes(k)) ? a : null
+  }
+  return null
+}
+
+const scalarizeObjectLiteralSeq = (seq, facts) => {
   if (!Array.isArray(seq) || seq[0] !== ';') return seq
   let changed = false
   const stmts = []
   for (let i = 1; i < seq.length; i++) {
-    const stmt = scalarizeObjectLiterals(seq[i])
+    const stmt = scalarizeObjectLiterals(seq[i], facts)
     if (stmt !== seq[i]) changed = true
-    stmts.push(stmt)
+    // A destructuring declaration can bind its source record and its fields
+    // together. Keep initializer order while exposing the record candidate.
+    if (Array.isArray(stmt) && (stmt[0] === 'let' || stmt[0] === 'const') && stmt.length > 2 &&
+        stmt.slice(1).some(d => Array.isArray(d) && d[0] === '=' && scalarObjectProps(d[2]))) {
+      stmts.push(...stmt.slice(1).map(d => [stmt[0], d]))
+      changed = true
+    } else stmts.push(stmt)
   }
 
   const candidates = new Map()
   for (let i = 0; i < stmts.length; i++) {
     const stmt = stmts[i]
     if (!Array.isArray(stmt) || (stmt[0] !== 'let' && stmt[0] !== 'const') || stmt.length !== 2) continue
+    // `let c` the next statement assigns a literal on every path: `if (…) c = {…}
+    // else c = {…}`, each arm's literal of the same keys. Nothing reads it before.
+    if (typeof stmt[1] === 'string') {
+      const props = assignsLiteral(stmts[i + 1], stmt[1])
+      if (!props) continue
+      const keys = new Set(props.names)
+      if (stmts.every((st, j) => j === i || safeScalarObjectUse(st, stmt[1], keys, true)))
+        candidates.set(stmt[1], { index: i, op: 'let', props, aliases: new Set(), bare: true })
+      continue
+    }
     const decl = stmt[1]
     if (!Array.isArray(decl) || decl[0] !== '=' || typeof decl[1] !== 'string') continue
     const props = scalarObjectProps(decl[2])
     if (!props) continue
+    const aliases = new Set(), names = new Set([decl[1]])
+    let added = true
+    while (added) {
+      added = false
+      for (const [alias, source] of facts.aliases) if (!names.has(alias) && names.has(source)) {
+        aliases.add(alias); names.add(alias); added = true
+      }
+    }
     const keys = new Set(props.names)
     keys.branded = props.brand != null
     let ok = true
     for (let j = 0; j < stmts.length && ok; j++) {
       if (j === i) continue
-      ok = safeScalarObjectUse(stmts[j], decl[1], keys, true)
+      for (const name of names) if (!safeScalarObjectUse(stmts[j], name, keys, true, facts.nullish, aliases)) { ok = false; break }
     }
     if (!ok) continue
-    candidates.set(decl[1], { index: i, op: stmt[0], props })
+    candidates.set(decl[1], { index: i, op: stmt[0], props, aliases })
   }
   if (!candidates.size) return changed ? [';', ...stmts] : seq
 
@@ -783,6 +894,7 @@ const scalarizeObjectLiteralSeq = (seq) => {
       fields.set(c.props.names[i], `${name}${T}obj${freshId(ctx)}_${i}`)
     }
     objects.set(name, fields)
+    for (const alias of c.aliases) objects.set(alias, fields)
   }
 
   const out = []
@@ -791,7 +903,8 @@ const scalarizeObjectLiteralSeq = (seq) => {
     if (entry) {
       const [, c] = entry
       const fields = objects.get(entry[0])
-      if (c.props.names.length) {
+      if (c.bare) out.push(['let', ...fields.values()])
+      else if (c.props.names.length) {
         out.push([c.op, ...c.props.names.map((prop, k) =>
           ['=', fields.get(prop), rewriteScalarObjectUses(c.props.values[k], objects)])])
       }
@@ -803,14 +916,14 @@ const scalarizeObjectLiteralSeq = (seq) => {
   return [';', ...out]
 }
 
-function scalarizeObjectLiterals(node) {
+function scalarizeObjectLiterals(node, facts) {
   if (!Array.isArray(node)) return node
   if (node[0] === '=>') {
-    const body = scalarizeObjectLiterals(node[2])
+    const body = scalarizeObjectLiterals(node[2], scalarObjectFacts(node[2]))
     return body === node[2] ? node : [node[0], node[1], body]
   }
-  if (node[0] === ';') return scalarizeObjectLiteralSeq(node)
-  return rewriteChildren(node, scalarizeObjectLiterals)
+  if (node[0] === ';') return scalarizeObjectLiteralSeq(node, facts)
+  return rewriteChildren(node, scalarizeObjectLiterals, facts)
 }
 
 // === Whole-program constant fold of module-scope aggregate literals ===
@@ -1135,11 +1248,9 @@ const _NUMERIC_INDEX_OPS = new Set(['-', '*', '/', '%', '&', '|', '^', '<<', '>>
 // Returns true when `key` is provably a numeric index at plan time: an integer
 // literal, a local name whose val-type is VAL.NUMBER in `valTypes`, or a
 // compound expression that always produces a number (arithmetic/bitwise ops).
-// Mirrors the `idxNumericName` / `intIndexIR` guard in emit so that the same
-// index shapes that skip `__is_str_key` at emit-time also pass here. Used by
-// `_disqualifyPromotion` to gate index reads: a non-numeric key on a promoted
-// Int32Array NaN-coerces to 0 (trunc_sat_f64_s(NaN) = 0) instead of returning
-// undefined — the correct JS behaviour for an out-of-range or string index.
+// Numeric keys share the array/typed-array index check, including rejection
+// of fractions and NaN. Keep other keys out of storage promotion: ordinary
+// and integer-indexed objects have different named-property semantics.
 const _isNumericKey = (key, valTypes) => {
   if (key == null) return false
   if (nonNegIntLiteral(key) != null) return true           // literal integer
@@ -1238,11 +1349,8 @@ const _disqualifyPromotion = (node, candidates, disqualified, initSet, valTypes)
   }
 
   // Index read `name[k]` — TYPED-safe only when the key is provably numeric.
-  // A string or unknown key on a promoted Int32Array would NaN-coerce to 0
-  // (i32.trunc_sat_f64_s(NaN) = 0) instead of returning undefined — silently
-  // wrong. Mirror the `idxNumericName` / `intIndexIR` guard in emit: disqualify
-  // the candidate unless `k` is an integer literal, a VAL.NUMBER local, or an
-  // expression that always produces a Number (bitwise/arithmetic ops).
+  // Preserve named-property semantics by disqualifying unknown/string keys.
+  // The shared emitter validates numeric keys without truncating them.
   if (op === '[]' && typeof node[1] === 'string' && candidates.has(node[1])) {
     _disqualifyPromotion(node[2], candidates, disqualified, initSet, valTypes)
     if (!_isNumericKey(node[2], valTypes)) disqualified.add(node[1])
@@ -1488,7 +1596,7 @@ export const scalarizeFunctionObjectLiterals = () => {
     while (guard++ < 4) {
       // The use validator proves nonescape and supported replacement together;
       // the general escape census intentionally treats every reassignment as escape.
-      const body = scalarizeObjectLiterals(func.body)
+      const body = scalarizeObjectLiterals(func.body, scalarObjectFacts(func.body))
       if (body === func.body) break
       setFuncBody(func, body)
       changed = true

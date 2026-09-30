@@ -3,7 +3,7 @@
 // the copies are what makes the index a literal. A loop whose counter reaches
 // none stays a loop, whatever it holds.
 import test from 'tst'
-import { ok } from 'tst/assert.js'
+import { is, ok } from 'tst/assert.js'
 import jz from '../index.js'
 import { belowOpt, levels } from './_matrix.js'
 import { oracle, wat } from './util.js'
@@ -67,4 +67,11 @@ test('scalar unroll: a counter that indexes the array still copies', () => {
   if (belowOpt(2)) return
   for (const optimize of [2, 3])
     ok(loops(stages('4'), optimize) < loops(stages('m'), optimize), `the stage loop is written out at ${optimize}`)
+})
+
+test('scalar unroll: a literal a written-out loop body declares reads its own counter', () => {
+  // the field locals took the values the census read, the counter unreplaced (0 in every copy)
+  const src = `export let run = (q) => { let s = 0; for (let i = 0; i < 3; i++) { let d = { a: (0.5 + i) / q, b: i }, a = d.a; s += a + d.b } return s }`
+  const host = oracle(src).run
+  for (const optimize of levels(0, 2, 3)) is(jz(src, { optimize }).exports.run(3), host(3), `run(3) at ${optimize}`)
 })

@@ -14,6 +14,84 @@ import { levels } from './_matrix.js'
 import { oracle } from './util.js'
 
 const LEVELS = levels(false, 1, 2)
+test('bigint tag: copy cycles preserve parameter and local carriers', () => {
+  const copies = [
+    'let m = n; n = m',
+    'let m = n; let k = m; n = k',
+    'let m = n; n = m; n += 1n',
+    'let m = n; for (let i = 0; i < 3; i++) { n = m; m = n }',
+    'let m = n; const write = () => { n = m }; write()',
+    'let m = n; const write = () => { const inner = () => { n = m }; inner() }; write()',
+    'const write = () => { n += 1n }; write()',
+  ]
+  for (const copy of copies) {
+    const src = `const f = n => {
+        if (typeof n === 'bigint') { ${copy}; return Number(n & 127n) }
+        return n & 127
+      }
+      const values = [300n, 300, 0n, -1n, 0x7ff8000200000000n,
+        0x7fffffffffffffffn, -0x8000000000000000n, NaN, null, true, undefined]
+      export const run = k => f(values[k])
+      export const literals = () => [f(300n), f(300), f(-1n)]`
+    const want = oracle(src)
+    for (const optimize of levels(0, 1, 2, 3, 'size')) {
+      const got = jz(src, { optimize }).exports
+      is(got.literals(), want.literals(), `literal callers, O${optimize}: ${copy}`)
+      for (const k of [0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, -1, 0])
+        is(got.run(k), want.run(k), `reused dynamic caller ${k}, O${optimize}: ${copy}`)
+    }
+  }
+})
+
+test('bigint tag: shared captured cells retain their carrier through writes and throws', () => {
+  const src = `const make = n => {
+    const write = (v, bad) => { n = v; if (bad) throw new TypeError('stop') }
+    const read = () => typeof n === 'bigint' ? Number(n & 127n) : String(n)
+    return { write, read }
+  }
+  const cell = make(300n)
+  const values = [300n, 300, 0n, -1n, 0x7ff8000500000000n, null, true, undefined]
+  export const read = () => cell.read()
+  export const run = (k, bad) => { cell.write(values[k], bad); return cell.read() }
+  export const raw = () => {
+    let n = 0x7ff8000500000000n
+    const read = () => n
+    const write = () => { n = -1n }
+    const before = read(); write(); return [before, read()]
+  }`
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const want = oracle(src), got = jz(src, { optimize }).exports
+    is(got.read(), want.read(), `initial captured parameter, O${optimize}`)
+    is(got.raw(), want.raw(), `raw payload matching a box tag, O${optimize}`)
+    for (const k of [0, 0, 1, 2, 3, 4, 5, 6, 7, 8, -1, 0]) {
+      is(got.run(k, false), want.run(k, false), `shared write ${k}, O${optimize}`)
+      throws(() => got.run(k, true), TypeError, `throw after write ${k}, O${optimize}`)
+      throws(() => want.run(k, true), TypeError)
+      is(got.read(), want.read(), `read after throw ${k}, O${optimize}`)
+    }
+  }
+})
+
+test('bigint tag: tagged copies retain kind changes and recovery after a throw', () => {
+  const src = `export const run = (k, bad) => {
+    let n = [300n, 300, null, true, undefined, '300'][k]
+    let m = n; n = m
+    if (bad) throw new TypeError('stop')
+    if (typeof n === 'bigint') return Number(n & 127n)
+    if (typeof n === 'string') return n + ':text'
+    return String(n)
+  }`
+  const want = oracle(src)
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const got = jz(src, { optimize }).exports
+    for (const k of [0, 0, 1, 2, 3, 4, 5, 6, -1, 0]) {
+      is(got.run(k, false), want.run(k, false), `value ${k}, O${optimize}`)
+      throws(() => got.run(k, true), TypeError, `throw ${k}, O${optimize}`)
+      is(got.run(k, false), want.run(k, false), `after throw ${k}, O${optimize}`)
+    }
+  }
+})
+
 // A Map that holds a BigInt somewhere gives its reads the tagged domain.
 const SRC = `const m = new Map()
 export let seed = () => { m.set('big', 5n); return 0 }
@@ -355,5 +433,17 @@ test('bigint tag: a raw direct result into every boxed consumer, and a boxed pro
       const { f } = jz(source, { optimize }).exports
       for (const k of [0, 1]) { const want = host(k); is(f(k), typeof want === 'bigint' ? BigInt.asIntN(64, want) : want, `${shape} ${v} f(${k}) (O${optimize || 0})`) }
     }
+  }
+})
+
+// A relational comparison that reaches the generic path with a BigInt compares it
+// as one (ES2024 7.2.13): BigInt against BigInt by value, against a number
+// exactly (fraction and range included), against a string as a BigInt literal.
+test('bigint compare: <, >, <=, >= through values of several kinds agree with JS', () => {
+  const src = `export let f = (i, j) => { const v = [5n, -3n, 7, 5, 5.5, 4.5, NaN, 'x', '5', '5.5', 10n, 4611686018427387904n, 9.3e18, -9.3e18, -Infinity, Infinity]; const a = v[i], b = v[j]; return (a < b ? 1 : 0) + (a > b ? 2 : 0) + (a <= b ? 4 : 0) + (a >= b ? 8 : 0) }`
+  const want = oracle(src).f
+  for (const optimize of levels(0, 2)) {
+    const { f } = jz(src, { optimize }).exports
+    for (let i = 0; i < 16; i++) for (let j = 0; j < 16; j++) is(f(i, j), want(i, j), `v[${i}] against v[${j}] at ${optimize}`)
   }
 })

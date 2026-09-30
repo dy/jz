@@ -22,8 +22,8 @@ import { MUTATE_OPS } from '../ast.js'
 const LOGICAL_ASSIGN = new Set(['||=', '&&=', '??='])
 
 /** The names `body` declares bare and assigns before every read, nested closures' own aside.
- *  For the module's statements: `reach` gives the names a function's frame
- *  mentions (through the functions it names), since a function named where a
+ *  For the module's statements: `reach(name, read)` visits the names a function's
+ *  frame mentions transitively, since a function named where a
  *  binding is not yet assigned may run from there on, and what it reads is
  *  read there; `later` are the names read once the statements have ended (a
  *  function the host calls), which every path to the end must have assigned. */
@@ -45,8 +45,7 @@ export function definitelyAssigned(body, reach = null, later = null) {
   const read = (name, a) => {
     if (a === null) return
     if (bare.has(name) && !a.has(name)) bare.delete(name)
-    const via = reach?.(name)
-    if (via) for (const x of via) if (bare.has(x) && !a.has(x)) bare.delete(x)
+    if (reach && bare.size) reach(name, x => { if (bare.has(x) && !a.has(x)) bare.delete(x) })
   }
   const mentions = (n, a) => {
     if (typeof n === 'string') read(n, a)

@@ -36,12 +36,13 @@ import { TIMER_NAMES, includeForCallableValue, includeForTimerRuntime, includeMo
 import { T, walkAst } from '../ast.js'
 import { MUTATING_ARRAY_METHODS } from './const-fold.js'
 import { prep } from './handlers.js'
-import { normalizeIdents, scanReassignedTopLevel } from './ident-purity.js'
+import { scanReassignedTopLevel } from './ident-purity.js'
 import { hoistIndexedConstLiterals, seedStaticGlobalAssignments } from './literals.js'
 import { validateCoalesceMixing } from './module-resolve.js'
 import { fuseSparseMapReads } from './sparse-map.js'
 import { prepState, resetPrepState } from './state.js'
 import { splitReassigned } from './split-bindings.js'
+import { settleModules } from './module-eval.js'
 import { frameNode } from '../function.js'
 
 
@@ -115,12 +116,12 @@ export default function prepare(node) {
   if (node === '') node = [';']
   ctx.module.ast = node
   validateCoalesceMixing(node)  // ES2020: reject unparenthesized `??` mixed with `||`/`&&`
-  normalizeIdents(node)
   fuseSparseMapReads(node)  // AST-level fusion; needs pre-resolution shape — defined at end of file
   seedStaticGlobalAssignments(node)
   node = hoistIndexedConstLiterals(node)
   prepState.reassignedTopLevel = scanReassignedTopLevel(node)
   let ast = prep(node)
+  settleModules(prep)
   ast = wrapBuiltinValues(ast)
   // Top-level functions referenced as first-class values (e.g. `let o = { fn: g }`,
   // `arr.push(g)`, `return g`) need trampoline emission, which depends on the fn

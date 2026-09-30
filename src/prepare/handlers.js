@@ -17,9 +17,10 @@
  */
 
 import { lowerIteratorPattern, hasArrayPattern } from '../iterator-pattern.js'
-import { ctx, declGlobal, derive, emitArity, err, setFeature } from '../ctx.js'
+import { addSource, ctx, declGlobal, derive, emitArity, err, setFeature } from '../ctx.js'
+import { INTRINSIC_ARITY } from '../builtin-signatures.js'
 import { createFunction } from '../function.js'
-import { MUTATE_OPS, PARAM_DEFAULT, PARAM_KIND, PARAM_NAME, PARAM_PATTERN, REFS_THROUGH_ARROWS, STMT_OPS, T, TYPEOF, alwaysReturns, classifyParam, cloneNode, collectParamNames, extractParams, handlerArgs, isBrand, refsName, walkAst } from '../ast.js'
+import { copyLoc, markSource, MUTATE_OPS, PARAM_DEFAULT, PARAM_KIND, PARAM_NAME, PARAM_PATTERN, REFS_THROUGH_ARROWS, STMT_OPS, T, TYPEOF, accessorOf, alwaysReturns, classifyParam, cloneNode, collectParamNames, extractParams, handlerArgs, hasOptionalChain, isBrand, refsName, walkAst, withLoc, isArrayIndexKey } from '../ast.js'
 import { COLLECTION_CTORS, CTORS, hasModule, includeForArrayAccess, includeForArrayLiteral, includeForCallableValue, includeForGenericMethod, includeForNamedCall, includeForNumericCoercion, includeForObjectLiteral, includeForObjectPattern, includeForOp, includeForProperty, includeForRuntimeCtor, includeForStringOnly, includeForStringValue, includeMods, includeModule } from '../autoload.js'
 import { censusShapedNode } from '../kind.js'
 import { REJECT_IDENTS, rejectHandlers } from '../op-policy.js'
@@ -35,8 +36,9 @@ import { mintLocal, scanReassignedTopLevel, writtenNames } from './ident-purity.
 import { bindStaticConst, bindStaticGlobal, deleteStaticGlobal, hoistIndexedConstLiterals, invalidateMutatedArray, staticString, staticStringArrayValues, staticStringExpr, stringArrayValues } from './literals.js'
 import { INTRINSIC_CALLEES, addHostImport, builtinAliasKeyOf, bundledSource, foldImportMetaResolve, foldNamespaceIntrospection, importMetaUrl, isBundledModule, isImportMeta, isImportMetaProp, moduleAstFor, namespaceMemberAliases, namespaceMemberAssigns, namespaceModOf, recordModuleInitFacts, resolveImportMeta } from './module-resolve.js'
 import { bindSchema, censusUnknownInitDecl, inferAssignSchema, objLiteralSid } from './schema.js'
+import { importEdge, namespaceValue } from './module-eval.js'
 import { bindingNames, bodyCapturesName, collectLoopDeclNames, declareGlobal, inlineArrayLen, isDeclared, markLoopLocal, mintForScope, popScope, prescanBlockDecls, pushScope, resolveScope, substIdents, withLoopLocalNames } from './scope.js'
-import { CONSTANTS, ERR_CLASS_SET, F64_CONSTANTS, GLOBALS, INSTANCEOF_ALLOW, NS_CTORS, SIMD_NS, STATIC_CONSTS, arrowWrites, assignedStaticGlobals, builtinMemberKey, freshPrepareId, funcLocalNames, funcValueNames, loopLocalNames, mutatedArrayNames, ownerStack, prepState, promiseRecvNames, renameSerial, scopes, staticConstScopes, withResolversRecvNames } from './state.js'
+import { CONSTANTS, ERR_CLASS_SET, F64_CONSTANTS, GLOBALS, INSTANCEOF_ALLOW, NS_CTORS, NS_OBJECTS, SIMD_NS, STATIC_CONSTS, arrowWrites, assignedStaticGlobals, builtinMemberKey, freshPrepareId, funcLocalNames, funcValueNames, loopLocalNames, mutatedArrayNames, ownerStack, prepState, promiseRecvNames, renameSerial, scopes, staticConstScopes, withResolversRecvNames, BUILTIN_FNS, GLOBAL_TYPEOF, builtinGlobalOf } from './state.js'
 
 
 // Avoid materializing `node.slice(1)` at every recursive dispatch. Nearly all
@@ -59,7 +61,27 @@ const hasHostImport = (mod, name) => {
   return typeof spec === 'number' || !!spec
 }
 
+// Module export names may be quoted strings or keyword IdentifierNames. The
+// parser represents the latter's true/false/null/undefined spellings as literals.
+const moduleName = node => {
+  if (typeof node === 'string') return node
+  if (Array.isArray(node) && (node[0] === 'bool' || node[0] == null &&
+      (typeof node[1] === 'string' || node[1] == null))) return staticPropertyKey(node)
+  return err('Invalid module export name — use an identifier or string literal')
+}
+
+/** Lower one node. A written node is the current position while it lowers
+ *  (ctx.js), and what it lowers to stands at its place. */
 export function prep(node) {
+  if (!Array.isArray(node) || node.loc == null) return prepNode(node)
+  const outer = ctx.error.loc
+  ctx.error.loc = node.loc
+  const out = withLoc(prepNode(node), node)
+  ctx.error.loc = outer
+  return out
+}
+
+function prepNode(node) {
   if (Array.isArray(node) && node[0] === 'this') { ctx.closure.receiver = true; return node }
   if (Array.isArray(node)) includeForOp(node[0])
   // Whole-program "does a BigInt value ever get constructed" flag — the ONLY two
@@ -195,7 +217,6 @@ export function prep(node) {
       } })
     }
   }
-  if (Array.isArray(node) && node.loc != null) ctx.error.loc = node.loc
   if (node == null) return [, 0] // null/undefined → 0 literal
   // Keep boolean identity (was folded to 1/0). The working representation is
   // still i32/f64 0/1 — emit lowers the raw boolean — but valTypeOf now reads
@@ -210,9 +231,6 @@ export function prep(node) {
       // A bare #name ident outside its class body: the `#field in obj` brand check
       // (or a leaked private name). Reject with intent, not "not in scope".
       if (node[0] === '#') err(`private name '${node}' not supported — jz has no class-based private fields (no #field declarations, no #field in obj brand checks); use a plain property with a naming convention instead, e.g. this._${node.slice(1)}`)
-      // Boolean/Number as a value (`.filter(Boolean)`, `.map(Number)`): an arrow applying the conversion.
-      if (node === 'Boolean') { includeForCallableValue(); return prep(['=>', 'x', ['!', ['!', 'x']]]) }
-      if (node === 'Number') { includeForCallableValue(); return prep(['=>', 'x', ['()', 'Number', 'x']]) }
       // Block locals shadow module imports/globals, even when the local keeps the same name.
       if (scopes.length && isDeclared(node)) return resolveScope(node)
       // A user top-level binding (`let Math = …`) shadows a same-named builtin
@@ -223,8 +241,22 @@ export function prep(node) {
       // Host numeric constant (`Math.PI` etc.) → fold to its f64 literal. Placed after the
       // local/user-global checks above so a same-named binding still shadows it.
       if (ctx.scope.hostConsts && node in ctx.scope.hostConsts) return [, ctx.scope.hostConsts[node]]
+      // A source module's namespace as a value (`import()`'s result, an
+      // `import * as ns` passed on): its namespace object (module-eval.js).
+      if (ctx.module.namespaces?.[node]) return namespaceValue(ctx.module.namespaces[node])
       const resolved = ctx.scope.chain[node]
       if (resolved?.includes('.')) return resolved
+      // A builtin global, when the chain holds its own entry: a user function
+      // of its name (`let parseInt = (s) => …`) takes it; Boolean/Number as a
+      // value (`.filter(Boolean)`, `.map(Number)`) is an arrow applying the
+      // conversion; any other function stays itself, not the module its entry
+      // names.
+      if (resolved === GLOBALS[node] && GLOBAL_TYPEOF[node]) {
+        if (hasFunc(node)) return node
+        if (node === 'Boolean') { includeForCallableValue(); return prep(['=>', 'x', ['!', ['!', 'x']]]) }
+        if (node === 'Number') { includeForCallableValue(); return prep(['=>', 'x', ['()', 'Number', 'x']]) }
+        if (BUILTIN_FNS.has(node)) return node
+      }
       // Cross-module import: mangled name (e.g. __util_js$clone)
       if (resolved && resolved !== node) return resolved
       // Block scope: resolve renames
@@ -250,6 +282,9 @@ export function prep(node) {
     const name = writeName
     const aliasKey = builtinAliasKeyOf(name)
     if (aliasKey) err(`Cannot reassign '${name}' — bound to builtin '${aliasKey}' via alias/destructuring; builtin-namespace bindings are compile-time only, not writable storage. Declare a fresh local instead, or reference '${aliasKey}' directly`)
+    const namespace = !shadowsBuiltin(name) && namespaceModOf(name)
+    if (namespace && namespace !== name)
+      err(`Cannot reassign '${name}' — builtin namespace aliases have no runtime storage`)
     // Assignment to a const binding is a compile error (ES: runtime TypeError).
     // Resolve through the live block scopes so a shadowing `let` of the same
     // name stays writable; module-level consts are guarded by emit's isConst.
@@ -265,10 +300,15 @@ export function prep(node) {
     return [, node[1]]  // number literal
   }
   const handler = handlers[op]
-  if (handler) return callHandler(handler, node)
+  if (handler) {
+    const out = copyLoc(node, callHandler(handler, node))
+    if (ctx.transform.sourceMap && out?.[0] === '=>' && out.sourceLoc != null)
+      out[2] = copyLoc(out, Array.isArray(out[2]) ? out[2] : [',', out[2]])
+    return out
+  }
   const out = [op]
   for (let i = 1; i < node.length; i++) out.push(prep(node[i]))
-  return out
+  return copyLoc(node, out)
 }
 
 // Grouping preserves both a reference's identity and an expression's value.
@@ -291,12 +331,27 @@ function renestSoleCommaArg(args) {
   return args
 }
 
+// `(c ? f : g)(args)` as `c ? f(args) : g(args)`, for a choice (grouped, nested)
+// whose every leaf is a name and arguments that are names or literals, so the copy
+// in each arm costs nothing; null otherwise.
+const choiceOfCalls = (callee, args) => {
+  const bare = (n) => Array.isArray(n) && n[0] === '()' && n.length === 2 ? bare(n[1]) : n
+  const names = (n) => { n = bare(n); return typeof n === 'string' || (Array.isArray(n) && n[0] === '?' && n.length === 4 && names(n[2]) && names(n[3])) }
+  const c = bare(callee)
+  if (!Array.isArray(c) || c[0] !== '?' || !names(c)) return null
+  const list = args.length === 1 && Array.isArray(args[0]) && args[0][0] === ',' ? args[0].slice(1) : args
+  if (!list.every(a => a == null || typeof a === 'string' || (Array.isArray(a) && a[0] == null && a.length === 2))) return null
+  const call = (n) => { n = bare(n); return typeof n === 'string' ? ['()', n, ...args.map(cloneNode)] : ['?', n[1], call(n[2]), call(n[3])] }
+  return call(c)
+}
+
 const handlers = {
   ...rejectHandlers(err),
   // Spread operator: [...expr] in arrays, f(...args) in calls, {...obj} in objects
-  '...'(expr) {
+  // An object rest's spread carries the keys it skips (ast.js spreadExclusions).
+  '...'(expr, ...excluded) {
     includeForArrayLiteral()
-    return ['...', prep(expr)]
+    return ['...', prep(expr), ...excluded.map(prep)]
   },
 
   'debugger': () => null,
@@ -550,13 +605,15 @@ const handlers = {
   },
 
   // Import
-  'import'(fromNode) {
+  // `lazy`: the namespace an `import()` reads (jzify hoistDynamicImports), its
+  // module evaluated on that read unless a static import reaches it (module-eval.js).
+  'import'(fromNode, lazy) {
     // Bare side-effect: `import './sub.js'` → AST is ['import', [null, 'path']]
     if (Array.isArray(fromNode) && fromNode[0] == null && typeof fromNode[1] === 'string')
       return handlers['from'](null, fromNode)
     if (!Array.isArray(fromNode) || fromNode[0] !== 'from')
       return err('Dynamic import() not supported: jz resolves the module graph at compile time — use a static top-level import statement instead')
-    return handlers['from'](fromNode[1], fromNode[2])
+    return handlers['from'](fromNode[1], fromNode[2], lazy === 'lazy')
   },
 
   // Mixed default+named import `import d, { n } from 'm'` — jessie emits it as a
@@ -577,9 +634,12 @@ const handlers = {
     return [',', ...items.map(prep)]
   },
 
-  'from'(specifiers, source) {
+  'from'(specifiers, source, lazy = false) {
     const mod = source?.[1]
     if (!mod || typeof mod !== 'string') return err(`Invalid import source ${JSON.stringify(source)} — the module specifier after \`from\` must be a string literal`)
+    if (lazy && !isBundledModule(mod)) err(ctx.module.hostImports?.[mod] || hasModule(mod)
+      ? `import('${mod}'): only a source module (the \`modules\` option, or a file) can be imported dynamically`
+      : `import('${mod}'): unknown module; provide it via { modules: { '${mod}': source } }`)
 
     // Host imports override built-ins for named imports
     const hostMod = ctx.module.hostImports?.[mod]
@@ -590,7 +650,7 @@ const handlers = {
         const items = (Array.isArray(inner) && inner[0] === ',' ? inner.slice(1) : [inner]).filter(x => x != null)
         const builtinItems = []
         for (const item of items) {
-          const name = typeof item === 'string' ? item : item[1]
+          const name = moduleName(typeof item === 'string' ? item : item[1])
           const alias = typeof item === 'string' ? item : item[2]
           const spec = hostMod[name]
           if (hasHostImport(mod, name)) {
@@ -628,7 +688,7 @@ const handlers = {
         const items = (Array.isArray(inner) && inner[0] === ',' ? inner.slice(1) : [inner]).filter(x => x != null)
         for (const item of items)
           if (typeof item === 'string') bind(item)
-          else if (Array.isArray(item) && item[0] === 'as') bind(item[1], item[2])
+          else if (Array.isArray(item) && item[0] === 'as') bind(moduleName(item[1]), item[2])
           else err(`Invalid import specifier: ${JSON.stringify(item)} — each named import must be a plain identifier or an \`x as y\` rename`)
       }
       return null
@@ -637,6 +697,7 @@ const handlers = {
     // Tier 2: Source module (bundling)
     if (isBundledModule(mod)) {
       const resolved = prepareModule(mod, bundledSource(mod))
+      importEdge(mod, lazy)
       // Default import: import name from 'mod' → bind to default export
       if (typeof specifiers === 'string') {
         const mangled = resolved.exports.get('default')
@@ -658,7 +719,7 @@ const handlers = {
         if (inner == null) return null
         const items = (Array.isArray(inner) && inner[0] === ',' ? inner.slice(1) : [inner]).filter(x => x != null)
         for (const item of items) {
-          const name = typeof item === 'string' ? item : item[1]
+          const name = moduleName(typeof item === 'string' ? item : item[1])
           const alias = typeof item === 'string' ? item : item[2]
           const mangled = resolved.exports.get(name)
           if (!mangled) err(`'${name}' is not exported from '${mod}' — check the module's export list`)
@@ -687,7 +748,7 @@ const handlers = {
         if (inner == null) return null
         const items = (Array.isArray(inner) && inner[0] === ',' ? inner.slice(1) : [inner]).filter(x => x != null)
         for (const item of items) {
-          const name = typeof item === 'string' ? item : item[1]
+          const name = moduleName(typeof item === 'string' ? item : item[1])
           const alias = typeof item === 'string' ? item : item[2]
           const spec = hostMod[name]
           if (!hasHostImport(mod, name)) err(`'${name}' not declared in host module '${mod}' — add it to { imports: { '${mod}': {...} } }`)
@@ -772,7 +833,9 @@ const handlers = {
   'export': decl => {
     if (Array.isArray(decl) && (decl[0] === 'let' || decl[0] === 'const'))
       for (const i of decl.slice(1))
-        if (Array.isArray(i) && i[0] === '=') {
+        // `export let idx, cur, parse = …`: a declarator with no value is exported all the same
+        if (typeof i === 'string') ctx.funcs.exports[i] = true
+        else if (Array.isArray(i) && i[0] === '=') {
           if (typeof i[1] === 'string') ctx.funcs.exports[i[1]] = true
           // `export let { a, b: c } = …` / `export let [x, y] = …` — every
           // BoundName of the declaration is an export (ES §16.2.3.2). Surfaced
@@ -795,6 +858,7 @@ const handlers = {
       // Source module re-export
       if (isBundledModule(mod)) {
         const resolved = prepareModule(mod, bundledSource(mod))
+        importEdge(mod)
         if (decl[1] === '*') {
           // export * from './mod' → register all exports. A local export of the
           // same name shadows the star's (ES: star exports never override local
@@ -802,18 +866,18 @@ const handlers = {
           for (const [name, mangled] of resolved.exports) {
             if (name !== 'default' && !(name in ctx.funcs.exports)) ctx.funcs.exports[name] = mangled
           }
-        } else if (Array.isArray(decl[1]) && decl[1][0] === 'as' && decl[1][1] === '*' && typeof decl[1][2] === 'string') {
+        } else if (Array.isArray(decl[1]) && decl[1][0] === 'as' && decl[1][1] === '*') {
           // export * as ns from './mod' → the name is a namespace: an importer
           // binds it like `import * as ns` and resolves `ns.member` statically.
-          ctx.funcs.exports[decl[1][2]] = resolved.exports
+          ctx.funcs.exports[moduleName(decl[1][2])] = resolved.exports
         } else if (Array.isArray(decl[1]) && decl[1][0] === '{}') {
           // export { a, b as c } from './mod'
           const inner = decl[1][1]
           if (inner == null) return null
           const items = (Array.isArray(inner) && inner[0] === ',' ? inner.slice(1) : [inner]).filter(x => x != null)
           for (const item of items) {
-            const name = typeof item === 'string' ? item : item[1]
-            const alias = typeof item === 'string' ? item : item[2]
+            const name = moduleName(typeof item === 'string' ? item : item[1])
+            const alias = moduleName(typeof item === 'string' ? item : item[2])
             const mangled = resolved.exports.get(name)
             if (!mangled) err(`'${name}' is not exported from '${mod}' — check the module's export list`)
             ctx.funcs.exports[alias] = mangled
@@ -832,7 +896,7 @@ const handlers = {
           const resolved = ctx.scope.chain[item]
           ctx.funcs.exports[item] = (resolved && resolved !== item) ? resolved : item
         } else if (Array.isArray(item) && item[0] === 'as') {
-          const [, source, alias] = item
+          const source = item[1], alias = moduleName(item[2])
           const resolved = ctx.scope.chain[source]
           ctx.funcs.exports[alias] = (resolved && resolved !== source) ? resolved : source
         }
@@ -928,6 +992,9 @@ const handlers = {
       else
         preparedBody = ['{}', [';', ...prefix, ['return', preparedBody]]]
     }
+    // A function body always has a position, its own or else the nearest
+    // written one around the arrow: a fault anywhere in the function falls back to it (ctx.js here).
+    if (Array.isArray(preparedBody) && preparedBody.loc == null) preparedBody.loc = Array.isArray(body) && body.loc != null ? body.loc : ctx.error.loc
     const inner = nextParams.length === 0 ? null : nextParams.length === 1 ? nextParams[0] : [',', ...nextParams]
     const result = ['=>', Array.isArray(params) && params[0] === '()' ? ['()', inner] : inner, preparedBody]
     popScope()
@@ -954,13 +1021,19 @@ const handlers = {
   // which is emit's concern. Without this, `obj?.m(…)` reaches emit missing the
   // `.m` emitter and falls to the dynamic path that needs an unincluded module.
   '?.'(obj, prop) { includeForProperty(prop); return ['?.', prep(obj), prop] },
-  '?.[]'(obj, idx) { includeForArrayAccess(); return ['?.[]', prep(obj), prep(idx)] },
+  '?.[]'(obj, idx) {
+    includeForArrayAccess()
+    const key = typeof idx === 'string' ? staticStringExpr(idx) : null
+    return ['?.[]', prep(obj), key != null ? staticString(key) : prep(idx)]
+  },
   '?.()'(callee, callArgs) {
     // Parser wraps multi-args in a comma list, like '()'. Unwrap so emit gets flat positional args.
     const items = callArgs == null ? []
       : Array.isArray(callArgs) && callArgs[0] === ',' ? callArgs.slice(1)
       : [callArgs]
-    return ['?.()', prep(callee), ...items.map(prep)]
+    let target = normalizeMethodCallee(prep(callee))
+    while (Array.isArray(target) && target[0] === '(') target = target[1]
+    return ['?.()', target, ...items.map(prep)]
   },
   // Boolean literals NaN-box as f64 — typeof at runtime returns 'number'. Fold here so the JS-spec value survives.
   // Unresolvable bare refs fold to 'undefined' via staticTypeofString (spec §13.5.3) —
@@ -1018,33 +1091,17 @@ const handlers = {
   // Ternary: parser emits '?' not '?:'
   '?'(cond, then, els) { return ['?:', prep(stripBoolNot(cond)), prep(then), prep(els)] },
 
-  // ++/-- prefix vs postfix: parser sends trailing null for postfix
-  // Postfix i++ = (++i) - 1: increment happens, arithmetic recovers old value.
-  // Property obj.prop++ has no dedicated ++ node (the ++ emitter is name-based),
-  // so it lowers to `obj.prop = <'+1'|'-1'> obj.prop` — a DEDICATED unary op
-  // (not the spelled-out `obj.prop + 1`) meaning exactly "the operand,
-  // incremented/decremented by one, in whatever kind it already is" (kind-
-  // preserving, see kind.js VT['+1']/VT['-1'] — the member sibling of the
-  // '++'/'--' unary rule already used for bare names). Deliberately NOT the
-  // binary `['+', n, [,1]]` shape a genuine `obj.p += 1` ALSO desugars to (at
-  // emit time) — that shape is structurally ambiguous (bigintMixReject can't
-  // tell "prepare's own correction constant" apart from "user wrote += 1",
-  // and only one of them may bypass the BigInt/Number mix check), whereas
-  // `'+1'`/`'-1'` is an op no parser or other pass ever produces, so it is
-  // unambiguously ours. The outer ∓1 postfix-recovery wrapper keeps the plain
-  // literal shape (`['-', inc, [,1]]`) — same permissive-by-construction
-  // bypass the bare-name postfix recovery already uses just below in emit.js
-  // (isPostfix), since only prepare's OWN transform can nest an assignment
-  // there.
+  // Keep postfix distinct from source arithmetic: it saves ToNumeric's old
+  // value before the update, including values whose float increment rounds.
   '++'(a, _post) {
     const n = prep(a)
     const inc = Array.isArray(n) && (n[0] === '.' || n[0] === '[]') ? ['=', n, ['+1', n]] : ['++', n]
-    return _post !== undefined ? ['-', inc, [, 1]] : inc
+    return _post !== undefined ? ['postfix', inc] : inc
   },
   '--'(a, _post) {
     const n = prep(a)
     const dec = Array.isArray(n) && (n[0] === '.' || n[0] === '[]') ? ['=', n, ['-1', n]] : ['--', n]
-    return _post !== undefined ? ['+', dec, [, 1]] : dec
+    return _post !== undefined ? ['postfix', dec] : dec
   },
 
   // Regex literal: ['//','pattern','flags?'] → include regex module, pass through
@@ -1066,7 +1123,15 @@ const handlers = {
   // Function call or grouping parens
 '()'(callee, ...args) {
     // Grouping: (expr) → ['()', expr] with no args. Call: f() → ['()', 'f', null] with null arg.
-    if (args.length === 0) return prep(callee)
+    if (args.length === 0) {
+      const boundary = hasOptionalChain(callee), value = prep(callee)
+      return boundary ? ['(', value] : value
+    }
+    // A call through a choice of names is a choice of calls: `(c ? f : g)(x)` evaluates
+    // c, the name, then x, as `c ? f(x) : g(x)` does, and a name's call has no receiver
+    // either way. Each name is then called directly, never held as a value.
+    const chosen = choiceOfCalls(callee, args)
+    if (chosen) return prep(chosen)
     if (typeof callee === 'string' && REJECT_IDENTS[callee]) err(REJECT_IDENTS[callee])
 
     // Compile-time folds: the callee names something resolvable now. Each fold
@@ -1132,16 +1197,22 @@ const handlers = {
       if (Array.isArray(inner) && inner[0] === ',') { const items = inner.slice(1); return ['[', ...items.map(item => item == null ? [, undefined] : prep(item))] }
       return ['[', prep(inner)]
     }
-    if (typeof args[0] === 'string' && ctx.module.namespaces?.[args[0]]) {
+    if (typeof args[0] === 'string' && !shadowsBuiltin(args[0]) && ctx.module.namespaces?.[args[0]]) {
+      const members = ctx.module.namespaces[args[0]]
+      const literal = Array.isArray(args[1]) && (args[1][0] == null || args[1][0] === 'bool')
+        ? staticPropertyKey(args[1]) : null
+      if (literal != null) return members.get(literal) ?? [, undefined]
       includeForStringOnly()
-      const key = prep(args[1])
-      const exports = [...ctx.module.namespaces[args[0]].entries()]
+      // Evaluate and coerce the key once, even for an empty namespace. Read
+      // live export bindings only after the key's effects have completed.
+      const key = `${T}nk${freshPrepareId()}`
+      const exports = [...members.entries()]
       let fallback = [, undefined]
       for (let i = exports.length - 1; i >= 0; i--) {
         const [name, resolved] = exports[i]
-        fallback = ['?:', ['==', key, ['str', name]], resolved, fallback]
+        fallback = ['?:', ['===', key, [null, name]], resolved, fallback]
       }
-      return fallback
+      return prep(['()', ['=>', key, fallback], ['()', T + 'key', args[1]]])
     }
     includeForArrayAccess()
     // A key that is a static string (`o[KEY]` after `const KEY = 'k'`) is the
@@ -1223,6 +1294,8 @@ const handlers = {
     const isComputed = p => Array.isArray(p) && p[0] === ':'
       && typeof p[1] !== 'string' && staticPropertyKey(p[1]) == null
     if (items.some(isComputed)) {
+      if (ctx.transform.literalAccessorNames?.size && items.some(p => Array.isArray(p) && p[0] === ':' && accessorOf(rawKey(p), ctx.transform.literalAccessorNames)))
+        err('object literal accessors require statically known property names')
       const tmp = `${T}o${freshPrepareId()}`
       // These expressions re-enter prep: keys use parser literals, not lowered strings.
       const assigns = items.map(p => {
@@ -1524,10 +1597,8 @@ const handlers = {
         err(`.${prop} is not supported on a function value — jz has no general function-object reflection`)
     }
     // Source module namespace: import * as X → X.prop resolved to mangled name
-    if (typeof obj === 'string' && ctx.module.namespaces?.[obj]) {
-      const mangled = ctx.module.namespaces[obj].get(prop)
-      if (mangled) return mangled
-    }
+    if (typeof obj === 'string' && ctx.module.namespaces?.[obj])
+      return ctx.module.namespaces[obj].get(prop) ?? [, undefined]
     includeForProperty(prop)
     return ['.', prep(obj), prop]
   },
@@ -1605,7 +1676,7 @@ const handlers = {
     }
 
     const mod = ctx.scope.chain[name]
-    if (typeof name === 'string' && mod && mod !== name && !mod.includes('.')) includeModule(mod)
+    if (typeof name === 'string' && mod && mod !== name && hasModule(mod)) includeModule(mod)
     // Unknown or shadowed constructor: route through normal call preparation so
     // host-import ABI boxing and local resolution are preserved. jzify already
     // strips `new` from known safe constructors.
@@ -1616,21 +1687,10 @@ const handlers = {
     return ['new', prep(ctor), ...args.map(prep)]
   },
 
-  // instanceof (.work/archive/todo.md §deletion-sweep §4) — jz has no prototype chain, so RHS support
-  // is a closed allowlist (INSTANCEOF_ALLOW above), not general reflection. Strict-mode
-  // source (which skips jzify) reaches this handler directly on every raw `instanceof`
-  // node. Default-mode source reaches it too, for every RHS this file's INSTANCEOF_ALLOW
-  // supports: jzify/transform.js's own 'instanceof' handler passes those through as
-  // `['instanceof', val, name]` instead of answering them itself — a broad shape probe
-  // in jzify cannot distinguish sibling classes (e.g. it would answer
-  // `new TypeError(x) instanceof RangeError` wrongly), so this sound handler must be
-  // the one to decide any RHS in INSTANCEOF_ALLOW. jzify keeps its OWN
-  // Promise/Iterator shape-probes (this file rejects both
-  // RHS names — jz-level semantics, not core ones) and its permissive `typeof===object`
-  // fallback for every RHS outside INSTANCEOF_ALLOW (Object/RegExp/user-class names —
-  // default mode stays permissive there, unlike strict's loud reject below).
-  // RHS may arrive as a bare name ('Array') or, if parenthesized (`x instanceof (Array)`),
-  // as a length-2 grouping call node (['()', 'Array']) — same shape 'new' unwraps above.
+  // Constructors resolve by runtime tags or class brands. jzify handles the
+  // Promise/Iterator/Function probes; unknown constructor values reject here.
+  // Parentheses preserve a named RHS and builtin namespace aliases resolve
+  // through the active scope before deciding which tag to test.
   'instanceof'(lhs, rhs) {
     // A user class lowered to a schema (jzify/classes.js): its brand names it.
     if (isBrand(rhs)) return ['instanceof', prep(lhs), rhs]
@@ -1638,7 +1698,10 @@ const handlers = {
       : (Array.isArray(rhs) && rhs[0] === '()' && rhs.length === 2 && typeof rhs[1] === 'string') ? rhs[1]
       : null
     const shadowed = rawName != null && shadowsBuiltin(rawName)
-    const name = rawName === 'SharedArrayBuffer' && !shadowed ? 'ArrayBuffer' : rawName
+    const name = !shadowed && namespaceModOf(rawName) === 'Object' ? 'Object'
+      : rawName === 'SharedArrayBuffer' && !shadowed ? 'ArrayBuffer' : rawName
+    if (name === 'Object' && !shadowed && !ctx.transform.strict)
+      return ['instanceof', prep(lhs), name]
     if (name == null || shadowed || !INSTANCEOF_ALLOW.has(name))
       err(`instanceof: unsupported right-hand side (got ${JSON.stringify(rawName ?? rhs)}); ` +
           `jz has no prototype chain; instanceof works only for Array, Map, Set, ` +
@@ -1647,14 +1710,42 @@ const handlers = {
     return ['instanceof', prep(lhs), name]
   }
 }
-// Constant fold typeof for known builtin namespaces (e.g. Math.exp). prep(x) resolves Math.exp → 'math.exp'.
+// The builtin global a bare name denotes, or null: the global itself when no
+// binding took its name, or the one a namespace alias (`const M = Math`) names.
+// Resolves as prep()'s bare-identifier branch does.
+function builtinGlobalNamed(x) {
+  if (typeof x !== 'string') return null
+  const local = scopes.length && isDeclared(x)
+  if (!local && (ctx.scope.userGlobals?.has?.(x) || ctx.module.namespaces?.[x])) return null
+  const key = local ? resolveScope(x) : ctx.scope.chain[x]
+  if (!local && key === GLOBALS[x] && GLOBAL_TYPEOF[x]) return shadowsBuiltin(x) ? null : x
+  return typeof key === 'string' && key !== x && hasModule(key) ? builtinGlobalOf(key) : null
+}
+// Constant fold typeof for builtin globals and their members (e.g. Math.exp). prep(x) resolves Math.exp → 'math.exp'.
 function staticTypeofString(x) {
+  const builtin = builtinGlobalNamed(x)
+  if (builtin) return GLOBAL_TYPEOF[builtin]
   // Spec §13.5.3: unresolvable bare ref → 'undefined'.
   if (isUnresolvableBareIdent(x)) return 'undefined'
-  // Bare callable global: parseInt, parseFloat, isNaN, isFinite, Error, BigInt, etc.
-  if (typeof x === 'string' && !ctx.func?.locals?.has(x) && GLOBALS[x] && emitArity(ctx.core.emit?.[x], x) > 0) return 'function'
+  if (Array.isArray(x) && (x[0] === '.' || x[0] === '[]') &&
+      typeof x[1] === 'string' && !shadowsBuiltin(x[1])) {
+    const member = x[0] === '.' ? x[2] : staticPropertyKey(x[2])
+    const ns = namespaceModOf(x[1]) || x[1]
+    if (typeof member === 'string' && INTRINSIC_ARITY[ns + '.' + member] != null) return 'function'
+  }
+  // Constructor namespaces are functions even before their lazy emitters load.
+  // A local, parameter, import or user global with that name keeps its own type.
+  if (typeof x === 'string' && !shadowsBuiltin(x)) {
+    const ns = namespaceModOf(x) || x
+    if (NS_CTORS.has(ns)) return 'function'
+    if (NS_OBJECTS.has(ns)) return 'object'
+    // Bare callable globals load their registration just as named calls do.
+    if (GLOBALS[x] && hasModule(GLOBALS[x])) includeModule(GLOBALS[x])
+    if (GLOBALS[x] && emitArity(ctx.core.emit?.[x], x) > 0) return 'function'
+  }
   const px = prep(x)
-  if (typeof px === 'string' && px.includes('.') && emitArity(ctx.core.emit?.[px], px) > 0) return 'function'
+  if (typeof px === 'string' && px.includes('.') &&
+      (INTRINSIC_ARITY[px] != null || emitArity(ctx.core.emit?.[px], px) > 0)) return 'function'
   return null
 }
 function resolveTypeof(node) {
@@ -1694,6 +1785,11 @@ function prepStrictEq(op, a, b) {
 function prepStatement(node) {
   const stmt = ungroup(node)
   if (Array.isArray(stmt) && stmt[0] === '=') {
+    // Repeating a mutable namespace alias's current value has no effect.
+    // Value-position assignments still reject: constructors have no runtime box.
+    const lhs = ungroup(stmt[1]), rhs = ungroup(stmt[2])
+    const ns = !shadowsBuiltin(lhs) && namespaceModOf(lhs)
+    if (ns && ns !== lhs && !shadowsBuiltin(rhs) && namespaceModOf(rhs) === ns) return null
     const scalar = scalarArrayDestruct(stmt[1], stmt[2])
     if (scalar) return scalar
   }
@@ -1813,74 +1909,87 @@ function expandDestruct(pattern, source, out, decls = null, srcLen = null) {
   }
 
   includeForObjectPattern()
-  const items = patternItems(pattern[1])
-
-  // Collect explicit keys and detect rest pattern
-  let restTarget = null
-  const explicitKeys = []
-  for (const item of items) {
-    if (item == null) continue
-    if (Array.isArray(item) && item[0] === '...') { restTarget = item[1]; continue }
-    if (typeof item === 'string') explicitKeys.push(item)
-    else if (Array.isArray(item) && item[0] === '=') { if (typeof item[1] === 'string') explicitKeys.push(item[1]) }
-    else if (Array.isArray(item) && item[0] === ':') explicitKeys.push(item[1])
+  includeForNamedCall('TypeError')
+  // RequireObjectCoercible precedes computed keys and defaults, even when
+  // the pattern is empty. The source has already been captured once.
+  const message = decls ? [, 'Cannot destructure null or undefined'] : ['str', 'Cannot destructure null or undefined']
+  const checked = `${T}d${freshPrepareId()}`
+  if (decls) decls.push(checked)
+  let fail = ['()', ['=>', null, ['{}', ['throw', ['()', 'TypeError', message]]]], null]
+  if (!decls) fail = prep(fail)
+  out.push(['=', checked, ['??', source, fail]])
+  source = checked
+  const items = patternItems(pattern[1]).filter(item => item != null)
+  const rest = items.at(-1)?.[0] === '...' ? items.pop()[1] : null
+  // A declaration's nodes are final here, prepped as they are made; the
+  // assignment form preps its whole lowering afterwards.
+  const prepped = (node) => decls ? node : prep(node)
+  const temp = () => { const t = `${T}d${freshPrepareId()}`; if (decls) decls.push(t); return t }
+  // A computed key `[e]: target`, unless it folds to a constant.
+  const computedOf = (item) => {
+    const key = Array.isArray(item) && item[0] === ':' ? item[1] : null
+    return Array.isArray(key) && key[0] === '[]' && key.length === 2 && staticPropertyKey(key) == null ? key[1] : null
   }
+  // RequireObjectCoercible (ES BindingInitialization of an object pattern):
+  // the read of a named key throws on a nullish source by itself; a pattern
+  // that begins otherwise (a rest, a computed key, nothing) tests the source
+  // before anything runs.
+  if (!items.length || computedOf(items[0]) != null)
+    out.push(prepped(['if', ['||', ['===', source, [null, null]], ['===', source, [null, undefined]]],
+      ['throw', ['new', ['()', 'TypeError', [null, 'Cannot destructure null or undefined']]]]]))
 
+  // The rest skips the keys the pattern names (CopyDataProperties' excluded
+  // names): a static key as its string, a computed one as the temp holding
+  // the property key it evaluated to.
+  const excluded = []
   for (const item of items) {
-    if (item == null) continue
-    if (Array.isArray(item) && item[0] === '...') continue  // handled below
-
-    if (typeof item === 'string') {
-      pushPatternAssign(item, ['.', source, item], out, decls)
+    // `a` and `a = dflt` (pushPatternAssign's `=` case: undefined-only default) read `a`.
+    if (typeof item === 'string' || item[0] === '=' && typeof item[1] === 'string') {
+      const key = typeof item === 'string' ? item : item[1]
+      excluded.push([null, key])
+      pushPatternAssign(item, ['.', source, key], out, decls)
       continue
     }
-
-    if (Array.isArray(item) && item[0] === '=') {
-      // Route through pushPatternAssign's `=` case: undefined-only default.
-      if (typeof item[1] === 'string')
-        pushPatternAssign(item, ['.', source, item[1]], out, decls)
-      continue
-    }
-
-    if (Array.isArray(item) && item[0] === ':') {
-      const key = item[1]
-      const computedKey = Array.isArray(key) && key[0] === '[]' && key.length === 2 ? key[1] : null
-      if (computedKey) includeForArrayAccess()
-      // Numeric key (`{ 0: v, length: z } = arr`) — an index read, not a dot-key:
-      // the static-key path hashes STRING keys only (and arrays index natively).
-      // The parser yields the key as a literal node `[null, 0]` (raw number in
-      // synthesized shapes).
-      const numKey = typeof key === 'number' ? key
-        : Array.isArray(key) && key.length === 2 && key[0] == null && typeof key[1] === 'number' ? key[1]
-        : null
-      const read = computedKey ? ['[]', source, computedKey]
-        : numKey != null ? (includeForArrayAccess(), ['[]', source, [, numKey]])
-        : ['.', source, key]
-      pushPatternAssign(item[2], read, out, decls)
-      continue
-    }
-  }
-
-  // Object rest: {x, ...rest} = obj → rest = {remaining props from source schema}
-  if (restTarget) {
-    const srcSchema = typeof source === 'string' && ctx.schema.resolve(source)
-    if (srcSchema) {
-      const remaining = srcSchema.filter(k => !explicitKeys.includes(k))
-      if (remaining.length) {
-        const restProps = remaining.map(k => [':', k, ['.', source, k]])
-        const restObj = ['{}', remaining.length === 1 ? restProps[0] : [',', ...restProps]]
-        // Register schema for the rest variable so property access works
-        // (poisoned names stay out of the shared channel).
-        if (typeof restTarget === 'string' && !ctx.schema.poisoned?.has(restTarget))
-          ctx.schema.vars.set(restTarget, ctx.schema.register(remaining))
-        pushPatternAssign(restTarget, restObj, out, decls)
-      } else {
-        pushPatternAssign(restTarget, ['{}'], out, decls)
+    if (item[0] !== ':') continue
+    const key = item[1]
+    let computed = computedOf(item), read
+    if (computed != null) {
+      includeForArrayAccess()
+      // The key evaluates first: before a member target's reference, which
+      // pushPatternAssign snapshots ahead of the read, and with a rest once,
+      // to the property key the read and the rest share (ToPropertyKey).
+      const target = Array.isArray(item[2]) && item[2][0] === '=' ? item[2][1] : item[2]
+      if (rest != null || Array.isArray(target) && (target[0] === '.' || target[0] === '[]' && target.length === 3)) {
+        const raw = temp()
+        out.push(['=', raw, computed])
+        computed = raw
+        if (rest != null) {
+          const k = temp()
+          out.push(['=', k, prepped(['()', 'String', raw])])
+          excluded.push(computed = k)
+        }
       }
+      read = ['[]', source, computed]
+    } else if (Array.isArray(key) && key[0] === '[]') {
+      includeForArrayAccess()
+      excluded.push([null, staticPropertyKey(key)])
+      read = ['[]', source, key[1]]
     } else {
-      err('Object rest (...) requires source with known schema — destructure the object before passing to function, or use explicit property access')
+      // A quoted or numeric key is a literal node `[null, k]` (a raw number in
+      // synthesized shapes). A number or an array index reads by index
+      // (`{ 0: v, length: z } = arr`): the static-key path hashes STRING keys
+      // only, and arrays index natively.
+      const lit = Array.isArray(key) && key.length === 2 && key[0] == null ? key[1] : key
+      excluded.push([null, String(lit)])
+      read = typeof lit === 'number' || isArrayIndexKey(lit) ? (includeForArrayAccess(), ['[]', source, [, +lit]]) : ['.', source, lit]
     }
+    pushPatternAssign(item[2], read, out, decls)
   }
+
+  // Object rest: `{a, ...r} = o` binds `r` to the spread of `o` without `a`,
+  // whatever `o` is: a known layout copies its slots, anything else its own
+  // enumerable keys at run time (module/object.js emitObjectSpread).
+  if (rest != null) pushPatternAssign(rest, prepped(['{}', ['...', source, ...excluded]]), out, decls)
 }
 
 /** Something writes the binding `name` being declared here: the module's
@@ -2043,8 +2152,10 @@ function prepDecl(op, ...inits) {
     return prep([';', ...inits.flatMap(i => Array.isArray(i) && i[0] === '=' && hasArrayPattern(i[1])
       ? [['let', ...collectParamNames([i[1]])], ['=', i[1], i[2]]]
       : [[op, i]])])
-  const rest = []
+  const rest = [], declLoc = ctx.error.loc
   for (const i of inits) {
+    // each declarator is the current position while it lowers (the statement's prep restores the outer one)
+    ctx.error.loc = Array.isArray(i) && i.loc != null ? i.loc : declLoc
     if (Array.isArray(i) && i[0] === '()' && typeof i[1] === 'string' && Array.isArray(i[2]) && i[2][0] === '=' && isDestructPattern(i[2][1])) {
       if (rest.length === 0 && inits.length === 1) return [';', [op, i[1]], prep(i[2])]
       err('destructuring assignment after declaration must be a separate statement — e.g. write `let x = f(); ({a, b} = x)` as two statements, not one declarator')
@@ -2132,6 +2243,7 @@ function prepDecl(op, ...inits) {
       // (identity self-map through the shadow path) and must stay a value copy.
       if (typeof normed === 'string' && normed !== name && hasModule(normed)
           && typeof init === 'string' && !shadowsBuiltin(init)) {
+        if (op === 'const' && bindingWritten(name)) err(`Assignment to constant '${name}' (TypeError in JS)`)
         registerBuiltinAlias(name, normed); continue
       }
     }
@@ -2221,7 +2333,7 @@ function prepDecl(op, ...inits) {
       // element's static type tag (e.g. `let [, x] = strs` resolves `x` to the
       // same STRING that `strs[1]` would) — a copy temp drops the array's
       // element-type shape and `typeof x` would degrade to 'undefined'.
-      if (typeof normed === 'string') {
+      if (typeof normed === 'string' && name[0] !== '{}') {
         expandDestruct(name, normed, rest)
         continue
       }
@@ -2376,6 +2488,18 @@ function prepDecl(op, ...inits) {
       rest.push(['=', declName, normed])
     }
   }
+  // A pattern's coercibility test (expandDestruct) is a statement between
+  // its declarators: the declaration splits around it.
+  const isTest = (d) => Array.isArray(d) && d[0] === 'if'
+  if (rest.some(isTest)) {
+    const stmts = []
+    for (const d of rest) {
+      if (isTest(d)) stmts.push(d)
+      else if (stmts.at(-1)?.[0] === op) stmts.at(-1).push(d)
+      else stmts.push([op, d])
+    }
+    return [';', ...stmts]
+  }
   return rest.length ? [op, ...rest] : null
 }
 
@@ -2490,7 +2614,7 @@ function foldJsonReviver(callee, args) {
       return val
     }
     return r("", walk(JSON.parse(s)))
-  })`)
+  })`, 'jz', null)
   // Fresh structural copy per site — prep mutates/renames in place.
   // (cloneNode, not structuredClone: the self-compile kernel compiles this file
   // and structuredClone is not a jz builtin.)
@@ -2506,6 +2630,18 @@ function foldJsonReviver(callee, args) {
 // reviver returning undefined ASSIGNS undefined instead of deleting the
 // property (jz fixed-shape objects delete only dictionary keys).
 let jsonReviveTemplate = null
+
+// A constant computed method name has the same call reference as dot syntax.
+// Keep grouping until the call decides whether it ends an optional chain.
+function normalizeMethodCallee(node) {
+  if (!Array.isArray(node)) return node
+  if (node[0] === '(') return ['(', normalizeMethodCallee(node[1])]
+  if (node[0] !== '[]' && node[0] !== '?.[]') return node
+  const key = staticStringExpr(node[2])
+  if (key == null) return node
+  includeForProperty(key)
+  return [node[0] === '[]' ? '.' : '?.', node[1], key]
+}
 
 function resolveCallee(callee, args) {
   if (typeof callee === 'string') {
@@ -2561,7 +2697,7 @@ function resolveCallee(callee, args) {
     return prep(callee)
   }
   includeForCallableValue()
-  return prep(callee)
+  return normalizeMethodCallee(prep(callee))
 }
 
 function defFunc(name, node) {
@@ -2611,13 +2747,14 @@ function defFunc(name, node) {
 
   // Prepend destructuring to body (body is already prepped, so prefix needs prep too)
   if (bodyPrefix.length) {
-    const preppedPrefix = bodyPrefix.map(prep).filter(x => x != null)
+    const preppedPrefix = bodyPrefix.map(prep).filter(x => x != null), written = body
     if (Array.isArray(body) && body[0] === '{}' && Array.isArray(body[1]) && body[1][0] === ';')
       body = ['{}', [';', ...preppedPrefix, ...body[1].slice(1)]]
     else if (Array.isArray(body) && body[0] === '{}')
       body = ['{}', [';', ...preppedPrefix, body[1]]]
     else
       body = ['{}', [';', ...preppedPrefix, ['return', body]]]
+    withLoc(body, written)
   }
 
   const sig = { params, results: detectResults(body) }
@@ -2626,6 +2763,7 @@ function defFunc(name, node) {
   // Sub-module `export let X` is just a re-importable symbol — staying internal
   // unlocks treeshake + type specialization once main stops referencing it.
   const exported = !!ctx.funcs.exports[name] && ctx.module.moduleStack.length === 0
+  if (ctx.module.inStd) sig.std = true
   const funcInfo = createFunction(name, body, sig, exported, hasDefaults ? defaults : null, hasRest[0] ?? null)
   ctx.funcs.list.push(funcInfo)
   ctx.funcs.names.add(name)
@@ -2686,19 +2824,30 @@ export function prepareImports(ast) {
 export function programModuleAsts(ast) {
   const out = [ast], seen = new Set()
   for (let i = 0; i < out.length; i++) {
-    for (const { spec } of ctx.transform.jzify?.imports?.(out[i]) ?? []) {
+    const specs = [...(ctx.transform.jzify?.imports?.(out[i]) ?? []).map(({ spec }) => spec), ...ctx.transform.jzify?.dynamicImports?.(out[i]) ?? []]
+    for (const spec of specs) {
       if (seen.has(spec) || spec.startsWith('jz:') || !isBundledModule(spec)) continue
       seen.add(spec)
       let m = moduleAstFor(spec)
       if (m === undefined) {
         if (!ctx.transform.parse) continue
-        m = ctx.transform.parse(bundledSource(spec))
+        m = parseModule(spec, bundledSource(spec))
         ;(ctx.module.importAsts ??= []).push([spec, m])
       }
       out.push(m)
     }
   }
   return out
+}
+/** A bundled module's source parsed with its positions placed after the
+ *  sources before it (ctx.js addSource), so an error or advisory at any node
+ *  the lowering keeps (an inlined body's, a clone's) names this module and its
+ *  line. The compiler's own `jz:` modules keep none: a fault inside one names
+ *  the program's construct that brought it in. */
+const parseModule = (spec, source) => {
+  const ast = ctx.transform.parse(source, 'jz', spec.startsWith('jz:') ? null : addSource(spec, source))
+  if (ctx.transform.sourceMap) markSource(ast)
+  return ast
 }
 /** The mangled name an import of `name` from an already prepared `spec` binds;
  *  null for a host import, a built-in module, a missing export or a module not
@@ -2736,6 +2885,7 @@ function prepareModule(specifier, source) {
     const base = sanitized.replace(/_(js|mjs|jz)$/, '').match(/[a-zA-Z0-9]+$/)?.[0] ?? ''
     prefix = `m${id}_${base.slice(-16)}`
   }
+  ;(ctx.module.prefixes ??= new Set()).add(prefix)   // a message shows `m0_x$name` as written (ctx.js shown)
 
   // Save caller state
   const savedScope = ctx.scope.chain, savedExports = ctx.funcs.exports, savedNamespaces = ctx.module.namespaces
@@ -2770,19 +2920,7 @@ function prepareModule(specifier, source) {
   let ast = moduleAstFor(specifier)
   if (ast === undefined) {
     if (!ctx.transform.parse) err('compile-time module bundling requires ctx.transform.parse (injected by the jz pipeline)')
-    ast = ctx.transform.parse(source)
-  }
-  // The module's source positions follow the program's: every `loc` of its
-  // AST is shifted past the sources before it, so an error or advisory at
-  // any node the lowering keeps (an inlined body's, a clone's) names this
-  // module and its line (ctx.js locate).
-  if (typeof source === 'string' && ctx.error.src != null && Array.isArray(ast) && !ctx.module.locBases?.has(ast)) {
-    const parts = ctx.error.parts ??= []
-    const base = (parts.length ? parts[parts.length - 1].end : ctx.error.src.length) + 1
-    parts.push({ file: specifier, base, end: base + source.length, src: source })
-    ;(ctx.module.locBases ??= new WeakSet()).add(ast)
-    const shift = (n) => { if (!Array.isArray(n)) return; if (typeof n.loc === 'number') n.loc += base; for (let i = 1; i < n.length; i++) shift(n[i]) }
-    shift(ast)
+    ast = parseModule(specifier, source)
   }
   if (ctx.transform.jzify) { prepareImports(ast); ast = ctx.transform.jzify(ast, { importedBinding, std: ctx.module.inStd }) }
   ast = hoistIndexedConstLiterals(ast)
@@ -2796,11 +2934,14 @@ function prepareModule(specifier, source) {
   prepState.reassignedTopLevel = savedReassigned
   prepState.depth = savedDepth
 
-  // Collect exports: rename exported funcs with prefix
-  const moduleExports = new Map()
+  // Collect exports: rename exported funcs with prefix. `moduleExports` is the
+  // rename map (every binding of the module, by its local name); `exported` is
+  // what an importer or a namespace sees: the module's exports alone.
+  const moduleExports = new Map(), exported = new Map()
   const exportLocal = (exportName, localName) => {
     const mangled = `${prefix}$${localName}`
     moduleExports.set(exportName, mangled)
+    exported.set(exportName, mangled)
     // Aliased export (`export { helper as poles }`, `export default helper`):
     // exportName ('poles'/'default') is what IMPORTERS see, but in-module call
     // sites still reference the ORIGINAL local name ('helper') verbatim — the
@@ -2829,11 +2970,11 @@ function prepareModule(specifier, source) {
       continue
     }
     // Namespace re-export (`export * as ns from`): the map passes through as is.
-    if (val instanceof Map) { moduleExports.set(name, val); continue }
+    if (val instanceof Map) { moduleExports.set(name, val); exported.set(name, val); continue }
     // Re-export alias: export { x } from './mod' → pass through inner module's mangled name
     if (typeof val === 'string') {
       if (val.startsWith(prefix + '$')) {
-        moduleExports.set(name, val)
+        moduleExports.set(name, val); exported.set(name, val)
         continue
       }
       // Re-export of a binding imported from another module: val already carries
@@ -2842,14 +2983,14 @@ function prepareModule(specifier, source) {
       // original mangled name. Pass through verbatim.
       if (val.includes('$') &&
           (ctx.funcs.list.some(f => f.name === val) || ctx.scope.globals.has(val))) {
-        moduleExports.set(name, val)
+        moduleExports.set(name, val); exported.set(name, val)
         continue
       }
       if (ctx.funcs.list.some(f => f.name === val || f.name === `${prefix}$${val}`) || ctx.scope.globals.has(val) || ctx.scope.globals.has(`${prefix}$${val}`)) {
         exportLocal(name, val)
         continue
       }
-      moduleExports.set(name, val)
+      moduleExports.set(name, val); exported.set(name, val)
       continue
     }
     exportLocal(name, name)
@@ -2859,12 +3000,12 @@ function prepareModule(specifier, source) {
     const alias = ctx.funcs.exports['default']
     if (moduleExports.has(alias)) {
       // Already renamed as a named export
-      moduleExports.set('default', moduleExports.get(alias))
+      moduleExports.set('default', moduleExports.get(alias)); exported.set('default', moduleExports.get(alias))
     } else if (alias.startsWith(prefix + '$') || (alias.includes('$') &&
         (ctx.funcs.list.some(f => f.name === alias) || ctx.scope.globals.has(alias)))) {
       // A module-level binding is declared under this module's prefix already, and
       // one imported from another module carries that module's: pass it through.
-      moduleExports.set('default', alias)
+      moduleExports.set('default', alias); exported.set('default', alias)
     } else {
       // Not a named export — rename the function/global. `export default helper`
       // is itself an aliased export (exportName 'default' vs localName `alias`),
@@ -2952,7 +3093,8 @@ function prepareModule(specifier, source) {
     recordModuleInitFacts(moduleInit)
   }
 
-  const result = { exports: moduleExports }
+  // what module-eval.js reads: the namespace, the mangling prefix, the statements
+  const result = { exports: exported, spec: specifier, prefix, init: moduleInit }
   ctx.module.resolvedModules.set(specifier, result)
   // a std module's host-boundary contract (`__mt_drain`, `__p_state`, …)
   // is read off the instance by plain name: re-export it from the program

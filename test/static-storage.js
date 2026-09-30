@@ -5,7 +5,7 @@
 // was this placement; production carried ~330 bytes of allocator around the same
 // loops.
 import test from 'tst'
-import { is, ok } from 'tst/assert.js'
+import { is, ok, throws } from 'tst/assert.js'
 import jz, { compile } from '../index.js'
 import { instantiate } from '../interop.js'
 import { onKernel, levels } from './_matrix.js'
@@ -149,4 +149,14 @@ test('static storage: larger than the cap or dynamic in length still allocates',
   ok(/\$__alloc/.test(dyn), 'runtime length: heap')
   const { exports } = instantiate(compile(`const t = new Float64Array(65536); export let f = (i) => { t[i] = i; return t[i] }`))
   is(exports.f(65535), 65535)
+})
+
+test('static storage: byte counts cannot wrap into the static-placement cap', () => {
+  // These counts shift to a negative size, zero, or eight bytes in i32
+  // arithmetic. All exceed JZ's allocation ceiling and must reach its runtime
+  // size guard, without requesting a huge backing store during the test.
+  for (const length of [268435456, 536870912, 536870913]) for (const optimize of levels(0, 2, 3, 'size')) {
+    const wasm = compile(`const a=new Float64Array(${length}); export function read(i){return a[i]}`, { optimize })
+    throws(() => instantiate(wasm), /unreachable/i, `${optimize}: reject ${length} elements during initialization`)
+  }
 })

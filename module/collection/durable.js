@@ -208,24 +208,24 @@ export const durableArrSnapNode = (base) => {
     ['then', ['if', unsaved, ['then', ['call', '$__durable_arr_snap', b]]]]]
 }
 
-// The object twins of durableArrSnapIR and durableArrSnapNode, for the store
-// of a field into an object the module made as it started: the round's first
-// saves the object's slots (core/durable-log.js `__durable_obj_snap`), and a
-// reset reads them back. A number names no memory: an emitted store asks only
-// for a value that may be a heap pointer (compile/emit-assign.js), and saves,
-// as a kernel's arm does, only for one that is and names memory of the round
-// (`val` its bits, `value` a local read of it).
-export const durableObjSnapIR = (base, val) => {
+// A tagged object field receives a pointer into this round's arena: record
+// its prior value once. The address bitmap is shared with array snapshots;
+// an odd record address distinguishes a field from an array header.
+// Callers pass an already evaluated value so getters and RHS effects run once.
+export const durableObjSnapIR = (base, val, slot) => {
   if (!hasDurableReset()) return ''
   return `
     (if (i32.lt_u (local.get $${base}) ${heapResetWat()})
-      (then (if (call $__is_eph_bits (local.get $${val})) (then (call $__durable_obj_snap (local.get $${base}))))))`
+      (then (if (call $__is_eph_bits (local.get $${val}))
+        (then (call $__durable_obj_snap (i32.add (local.get $${base}) (i32.shl (local.get $${slot}) (i32.const 3))))))))`
 }
-export const durableObjSnapNode = (base, value = null) => {
+export const durableObjSnapNode = (base, value, slot) => {
   if (!hasDurableReset()) return ['nop']
-  const b = ['local.get', `$${base}`], snap = ['call', '$__durable_obj_snap', b]
+  const b = ['local.get', `$${base}`]
+  const addr = slot === 0 ? b : ['i32.add', b, ['i32.const', slot * 8]]
   return ['if', ['i32.lt_u', b, ['global.get', '$__heap_reset']],
-    ['then', value === null ? snap : ['if', ['call', '$__is_eph_bits', ['i64.reinterpret_f64', value]], ['then', snap]]]]
+    ['then', ['if', ['call', '$__is_eph_bits', ['i64.reinterpret_f64', value]],
+      ['then', ['call', '$__durable_obj_snap', addr]]]]]
 }
 
 // Value-write sibling of durableFwdLogIR: an EPHEMERAL boxed value stored into a

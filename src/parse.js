@@ -1,5 +1,5 @@
 /**
- * jz's parser entry — subscript's jessie dialect with one jz-specific override.
+ * jz's parser entry — subscript's Jessie dialect with source-text and literal adapters.
  *
  * `NaN` parses to the self-describing `['nan']` marker rather than subscript's
  * default `[, NaN]` value-literal. A raw number-NaN (0x7FF8…) is ambiguous with
@@ -13,51 +13,240 @@
  * literal and needs no override.
  */
 import { parse as jessieParse, token } from 'subscript/feature/jessie'
-import { lookup, idx, cur, skip, err, prec } from 'subscript/parse'
+import { lookup, idx, cur, skip, err, prec, seek, expr, word } from 'subscript/parse'
 import { fromRadixDigits, toDecimalString, truncateLimbs } from './bignum.js'
 import { validateEarlyErrors } from './early-errors.js'
+import { here, where } from './ctx.js'
+import { asciiPart, idStart, idPart, lineEnd, isSpace } from './unicode.js'
 
-// Strip a leading `#!` shebang line before subscript sees it. subscript registers the
-// shebang via `parse.comment['#!']='\n'` (feature/shebang.js) on a literal-seeded object,
-// then enumerates it — a cross-module dynamic-extension of a fixed-schema object that the
-// self-compile kernel doesn't surface (the added key is stored but unenumerated). An explicit
-// strip is the conventional parser responsibility anyway (Node, V8 do the same), is
-// host/kernel-identical, and is independent of object-model internals.
-// subscript's ASI layer (feature/asi.js) tracks the "no LineTerminator here"
-// restricted-production flag (`parse.newline`, consulted by break/continue/
-// return/yield/postfix-++/--'s own keyword handlers) by rescanning each
-// whitespace run parse.space() just skipped for LF (`\n`) only. ES2026's
-// LineTerminator production (§12.4) is LF | CR | LS | PS: a lone CR (`\r`
-// U+000D, not part of a CRLF pair) is skipped as ordinary whitespace WITHOUT
-// setting parse.newline, so e.g. `break\rLABEL` parses as a labeled break
-// instead of ASI-splitting into an unlabeled break followed by a new
-// statement (confirmed live — test262 language/statements/break+continue
-// line-terminators.js: LF/LS/PS already flip parse.newline correctly, only a
-// bare CR is missed; LS/PS reach the right outcome by a different route —
-// their codepoint sits above subscript's core whitespace ceiling, so the
-// base skip loop halts there and the stalled identifier match falls through
-// to the same unlabeled-break result by construction, not via the newline
-// flag). Compose one more wrapper on top of asi.js's parse.space — same
-// "layer another override onto subscript's shared mutable parser state"
-// pattern as the NaN/true/false/BigInt token overrides below — to also flag
-// CR. jessieParse (imported above) and subscript/parse.js's own `parse` are
-// the same shared singleton object (feature/jessie re-exports it verbatim),
-// so no separate import is needed; `idx`/`cur` (imported above) are live
-// bindings that already reflect the position parse.space() just advanced to.
-// No rest/spread here (`(...args) => … asiSpace(...args)`): jz's own
-// self-compile kernel rejects a spread call into a function it proves
-// non-variadic ("Spread not supported in calls to non-variadic function"),
-// and asi.js's parse.space is exactly that (fixed 2-param `(cc, from)`,
-// both immediately overwritten on entry — see its own body — so it is
-// ALWAYS called with zero arguments in practice; every real call site in
-// this codebase, subscript's own included, calls it as `parse.space()`).
-// Zero-arg wrapper matches that actual calling convention exactly.
+// IdentifierName (§12.7). subscript takes every code unit from U+00C0 but ×
+// and ÷ for a name character: it missed ª µ º (ID_Start) and · (ID_Continue),
+// and took whitespace, line terminators, symbols and punctuation for letters.
+// parse.id answers the length of the name character at idx, 0 when there is
+// none: an ASCII letter, digit, `$` or `_`; a `\uXXXX` or `\u{X…}` escape; a
+// code point of ID_Start, or of ID_Continue where a name continues; an astral
+// one as its surrogate pair. Asked about another position (the character
+// after a keyword), it answers whether that code unit can continue a name.
+const hex = c => c >= 48 && c <= 57 ? c - 48 : (c |= 32) >= 97 && c <= 102 ? c - 87 : -1
+const high = c => c >= 0xd800 && c <= 0xdbff, low = c => c >= 0xdc00 && c <= 0xdfff
+const pair = (h, l) => (h - 0xd800) * 1024 + l - 0xdc00 + 0x10000
+// The escape at i: its length, its code point left in escCp; 0 when it is none.
+let escCp = 0
+const escapeAt = (i) => {
+  if (cur.charCodeAt(i + 1) !== 117) return 0
+  let n = i + 2, cp = 0, h
+  if (cur.charCodeAt(n) === 123) {
+    while ((h = hex(cur.charCodeAt(++n))) >= 0) if ((cp = cp * 16 + h) > 0x10ffff) return 0
+    if (n === i + 3 || cur.charCodeAt(n) !== 125) return 0
+    escCp = cp
+    return n - i + 1
+  }
+  for (let k = 0; k < 4; k++) { if ((h = hex(cur.charCodeAt(n + k))) < 0) return 0; cp = cp * 16 + h }
+  escCp = cp
+  return 6
+}
+// Whether the code unit before i ends a name character: a name continues at i.
+const continues = (i) => {
+  const c = cur.charCodeAt(i - 1)
+  if (c === 125) {   // `}` closing a `\u{X…}` escape
+    let j = i - 2
+    while (hex(cur.charCodeAt(j)) >= 0) j--
+    return cur.charCodeAt(j) === 123 && cur.charCodeAt(j - 1) === 117 && cur.charCodeAt(j - 2) === 92
+  }
+  if (low(c)) return high(cur.charCodeAt(i - 2)) && idPart(pair(cur.charCodeAt(i - 2), c))
+  return i > 0 && idPart(c)
+}
+// A character that cannot begin a name (a digit, a combining mark) stands only where one continues.
+const nameChar = (cp, i, len) => idStart(cp) || idPart(cp) && continues(i) ? len : 0
+const escapedChar = (i) => { const len = escapeAt(i); return len ? nameChar(escCp, i, len) : 0 }
+jessieParse.id = c => {
+  if (c < 128) return asciiPart(c) ? 1 : c !== 92 ? 0 : cur.charCodeAt(idx) === 92 ? escapedChar(idx) : 1
+  if (c !== cur.charCodeAt(idx)) return high(c) || idPart(c) ? 1 : 0
+  if (high(c)) return low(cur.charCodeAt(idx + 1)) ? nameChar(pair(c, cur.charCodeAt(idx + 1)), idx, 2) : 0
+  return nameChar(c, idx, 1)
+}
+
+// WhiteSpace, LineTerminator and comments (§12.2–12.4). subscript's core skips
+// every code unit up to U+0020 (controls too), comment.js ends a `//` comment
+// at LF alone, and the ASI layer (feature/asi.js) flags a line break for LF
+// alone. The layer on top owns the comments (comment.js keeps none), skips the
+// space separators, NBSP, ZWNBSP, LS and PS, refuses a control character, and
+// flags `parse.newline` for a CR, LS or PS, and for a line terminator inside a
+// block comment, for the restricted productions (`break\rL` is two
+// statements). It keeps the gap before the token it stops at: where the gap
+// began (the end of the token before) and whether a line terminator is in it.
+// A zero-argument wrapper: the kernel rejects a spread into asi.js's
+// fixed-arity space.
+jessieParse.comment = {}
+let gapFrom = -1, gapEnd = -1, gapLine = false
 const asiSpace = jessieParse.space
 jessieParse.space = () => {
-  const from = idx
-  const cc = asiSpace()
-  for (let i = from; i < idx; i++) if (cur.charCodeAt(i) === 13) { jessieParse.newline = true; break }
-  return cc
+  const start = idx
+  let line = false
+  for (;;) {
+    const from = idx
+    const cc = asiSpace()
+    for (let i = from; i < idx; i++) {
+      const c = cur.charCodeAt(i)
+      if (lineEnd(c)) { line = true; if (c === 13) jessieParse.newline = true }
+      else if (c !== 59 && !isSpace(c)) err('Unexpected character', i)
+    }
+    if (cc === 47 && cur.charCodeAt(idx + 1) === 47) {
+      let i = idx + 2
+      while (i < cur.length && !lineEnd(cur.charCodeAt(i))) i++
+      seek(i)
+    } else if (cc === 47 && cur.charCodeAt(idx + 1) === 42) {
+      // an unterminated one runs to the end; the early errors name it
+      const close = cur.indexOf('*/', idx + 2), end = close < 0 ? cur.length : close
+      for (let i = idx + 2; i < end; i++) if (lineEnd(cur.charCodeAt(i))) { jessieParse.newline = line = true; break }
+      seek(close < 0 ? end : end + 2)
+    } else if (cc >= 0xa0 && isSpace(cc)) {
+      if (cc === 0x2028 || cc === 0x2029) jessieParse.newline = line = true
+      skip()
+    } else {
+      if (idx > start) { gapFrom = start; gapEnd = idx; gapLine = line }
+      return cc
+    }
+  }
+}
+
+// Statement separation (§12.10): a statement that ends in an expression or a
+// declarator needs `;` before the next one, or a line terminator between. The
+// ASI layer splits two statements wherever its line flag is up, and the flag
+// stays up past the line that raised it and goes up at every `}`: `a = b c`
+// after any line break, `x = () => {} y` and `debugger(x)` each read as two
+// statements. A split stands when a line terminator precedes the next
+// statement, or when the statement before ended itself: with the `}` of a
+// block, a declaration, a try or switch, or a control statement's braced body,
+// or with the `)` of a do-while. Bodies come unwrapped from their braces, so
+// the enter/exit hooks keep where the brace group closed last opened: a body
+// lying past it was braced.
+const opens = [], groups = []
+let closedOpen = -1, closedAt = -1, groupDepth = 0, declDepth = -1, arrowDepth = -1, classDepth = -1
+const asiEnter = jessieParse.enter, asiExit = jessieParse.exit
+jessieParse.enter = (p, end) => {
+  asiEnter()
+  if (end) { groups.push(end); groupDepth++ }
+  else { groups.length = 0; groupDepth = 0; declDepth = arrowDepth = classDepth = -1 }
+  if (end === 125) opens.push(idx - 1)
+}
+jessieParse.exit = (p, end) => {
+  asiExit(p, end)
+  if (end) { groups.pop(); groupDepth-- }
+  if (end === 125) { closedOpen = opens.length ? opens.pop() : -1; closedAt = idx - 1 }
+}
+// switch.js consumes its body's braces itself and fires only the exit: a mark
+// stands for the opening the exit takes.
+const switchOp = lookup[115]?.ops?.find(d => d.op === 'switch')
+if (switchOp) {
+  const parseSwitch = switchOp.map
+  switchOp.map = (a) => {
+    opens.push(-1)
+    const depth = opens.length, outer = groupDepth
+    groups.push(125); groupDepth++
+    try {
+      const r = parseSwitch(a)
+      if (opens.length === depth) opens.pop()
+      return r
+    } finally { groups.length = groupDepth = outer }
+  }
+}
+// The least source position in a node, Infinity where none is kept.
+const firstLoc = (n) => {
+  if (!Array.isArray(n)) return Infinity
+  let at = typeof n.loc === 'number' ? n.loc : Infinity
+  for (let i = 1; i < n.length; i++) { const c = firstLoc(n[i]); if (c < at) at = c }
+  return at
+}
+const CONTROL = new Set(['if', 'for', 'for await', 'while', 'with', ':'])
+const bodyOf = st => st[0] === 'if' && st.length > 3 ? st[3] : st[2]
+const isFn = n => Array.isArray(n) && (n[0] === 'function' || n[0] === 'function*' || n[0] === 'class' ||
+  n[0] === 'async' && Array.isArray(n[1]) && (n[1][0] === 'function' || n[1][0] === 'function*'))
+// Whether statement `st` ended with the `}` of the brace group opened at `open`.
+// A class member splits like a statement: a method or accessor ends in its body.
+const endsInBrace = (st, open) => {
+  for (;;) {
+    if (!Array.isArray(st)) return true   // no brace of its own: the braces were a body's around it
+    const op = st[0]
+    if (op === '{}' || op === 'try' || op === 'switch' || op === 'get' || op === 'set' || isFn(st)) return true
+    if (op === 'static') { st = st[1]; continue }
+    if (op === 'export') return isFn(st[1]) || Array.isArray(st[1]) && st[1][0] === 'default' && isFn(st[1][1])
+    if (!CONTROL.has(op)) return false
+    st = bodyOf(st)
+    if (st == null || firstLoc(st) > open) return true   // an empty or braced body
+  }
+}
+// Whether statement `st` ended with the `)` of a do-while (ASI inserts `;` after it on one line).
+const endsInDo = (st) => {
+  for (;;) {
+    if (!Array.isArray(st)) return false
+    if (st[0] === 'do') return true
+    if (!CONTROL.has(st[0])) return false
+    st = bodyOf(st)
+  }
+}
+// Where the token before the one at `at` ends: -1 behind a line terminator,
+// -2 where the gap was skipped before a backtrack and is not known here.
+const endBefore = (at) => {
+  if (gapEnd === at) return gapLine ? -1 : gapFrom - 1
+  const c = cur.charCodeAt(at - 1)
+  return isSpace(c) || c === 47 ? -2 : at - 1
+}
+// Whether statement `st`, whose last token ends at `end` (endBefore), stands
+// apart from the next; `closed`/`open` are the brace group closed last then. A
+// `}` the hooks did not see close (none is known) cannot be told apart: it stands.
+const separated = (st, end, closed, open) => {
+  if (end < 0) return true
+  const prev = cur.charCodeAt(end)
+  if (prev === 41) return endsInDo(st)
+  return prev === 125 && (end !== closed || endsInBrace(st, open))
+}
+// A postfix `++`/`--` takes no line terminator before it (§15.13, a restricted
+// production), and no statement ends in one. After either the `++` starts the
+// next statement: `x`, a line break, `++y` is `x; ++y`, which the ASI layer
+// read as `x++; y`.
+const prefixOnly = (st, at, cc) => {
+  if (cur.charCodeAt(at + 1) !== cc) return false
+  const end = endBefore(at)
+  return end === -1 || end >= 0 && end === closedAt && cur.charCodeAt(end) === 125 && endsInBrace(st, closedOpen)
+}
+// Statements meet in two places: where the ASI layer splits one off at the
+// statement level, and where a statement body parsed at `body` precedence (a
+// control statement's, a case's) ends and its caller reads on, a new case
+// statement or the `while` of a do-while. The first place two meet unseparated
+// is kept, and reported once the early errors had their say: theirs name the
+// fault more precisely where they apply (`if (a) x = 1 else …`).
+// A statement that begins at the statement-list level (`lvl`) owes nothing to
+// the `;` before it: the ASI layer's `;`-then-line-break flag, left up by an
+// empty statement, would end its operands (`;` LF `return 1` returned nothing).
+// A template after a tag reads the layer's line flag, which stays up past the
+// line that raised it: a tag on any later line lost its template (`f` then
+// `` `x` `` read as two statements). There the flag answers for the gap before
+// the template: a line terminator, or the `}` of the group closed last. Other
+// splits the stale flag makes stay, for the early errors to name first.
+let joinedAt = -1
+
+// A label heads any statement (§14.13). subscript's handler takes the control
+// keywords, and the property `:` reads the rest as an expression, where a
+// statement keyword is a name: `L: var x = 1` read `L: var` then `x = 1`.
+const LABELED = ['var', 'return', 'throw', 'break', 'continue', 'debugger', 'with']
+token(':', 19, a => typeof a === 'string' && (jessieParse.space(), LABELED.some(w => word(w))) && [':', a, expr(lvl)])   // the property `:`'s precedence
+
+// An escaped name means its decoded one (§12.7.1): `\u0061` and `a` are one
+// binding, `o.\u{62}` reads `b`. Early errors read the raw spelling first (an
+// escaped keyword is no keyword); every later stage sees the decoded name.
+// Literal values `[, v]` and regular expressions keep their text.
+const IDESC = /\\u\{([0-9a-fA-F]+)\}|\\u([0-9a-fA-F]{4})/g
+const decodeIdent = s => s.includes('\\u')
+  ? s.replace(IDESC, (_, b, p) => String.fromCodePoint(parseInt(b || p, 16)))
+  : s
+const decodeNames = node => {
+  if (!Array.isArray(node) || node[0] == null || node[0] === '//') return
+  for (let i = 1; i < node.length; i++) {
+    const v = node[i]
+    if (typeof v === 'string') node[i] = decodeIdent(v)
+    else decodeNames(v)
+  }
 }
 
 // A statement list is read by one call, a statement per pass. subscript's
@@ -73,16 +262,48 @@ jessieParse.space = () => {
 const LVL = prec.asi ?? prec[';'], ONE = LVL - .25, STMT = (prec[';'] ?? 5) + 1
 const baseStep = jessieParse._baseStep
 const isNode = a => Array.isArray(a) || typeof a === 'string'
-const isStmt = n => Array.isArray(n) && (prec[n[0]] <= STMT || (n[0] === '{}' && isStmt(n[1])))
-// A line terminator right before idx, only whitespace between.
-const lineBreak = () => {
-  for (let i = idx - 1; i >= 0; i--) {
-    const c = cur.charCodeAt(i)
-    if (c > 32) return false
-    if (c === 10) return true
-  }
-  return false
+const isMethod = n => Array.isArray(n) && (n[0] === ':' && isFn(n[2]) || n[0] === 'get' || n[0] === 'set' ||
+  (n[0] === 'static' || n[0] === 'async') && isMethod(n[1]))
+const isStmt = n => Array.isArray(n) && (prec[n[0]] <= STMT || (n[0] === '{}' && isStmt(n[1])) ||
+  groupDepth === classDepth && isMethod(n))
+// A class method ends at its body, even before a computed member on the same
+// line. The identical property form in an object literal still needs a comma.
+const readClass = lookup[99]
+lookup[99] = (a, p, op) => {
+  if (a || !word('class')) return readClass(a, p, op)
+  const outer = classDepth
+  classDepth = groupDepth + 1
+  try { return readClass(a, p, op) } finally { classDepth = outer }
 }
+// A declaration with no initializer ends before a new-line expression:
+// `let a\n(x)` is two statements. Initializers and ordinary expressions keep
+// call/index continuations across any line terminator. Group depth prevents
+// a comma inside an initializer's argument list from looking like a binding.
+for (const name of ['let', 'const', 'var']) {
+  const c = name.charCodeAt(0), read = lookup[c]
+  lookup[c] = (a, p, op) => {
+    if (a || !word(name)) return read(a, p, op)
+    const outer = declDepth
+    declDepth = groupDepth
+    try { return read(a, p, op) } finally { declDepth = outer }
+  }
+}
+const arrowRule = lookup[61].ops.find(d => d.op === '=>'), readArrow = arrowRule.map
+arrowRule.map = a => {
+  const outer = arrowDepth
+  arrowDepth = jessieParse.space() === 123 ? groupDepth : -1
+  try { return readArrow(a) } finally { arrowDepth = outer }
+}
+// A block-bodied arrow is complete before the next line's expression. Its
+// braces are a body, whereas an object literal can still be called/indexed.
+const endsInArrow = a => {
+  if (!Array.isArray(a)) return false
+  if (a[0] === 'async') return endsInArrow(a[1])
+  if (a[0] === '=' || a[0] === ',') return endsInArrow(a[a.length - 1])
+  return a[0] === '=>' && a[2]?.[0] === '{}' || a[0] === '{}' && arrowDepth === groupDepth
+}
+const bareDeclarator = (a, p) => declDepth === groupDepth && (p === prec[','] - 1 || p === prec[',']) &&
+  typeof (Array.isArray(a) && a[0] === ',' ? a[a.length - 1] : a) === 'string'
 let more = false
 const asi = (a, p, expr) => {
   if (p >= LVL) return
@@ -106,28 +327,80 @@ jessieParse.step = (a, p, cc, expr) => {
   if (jessieParse.semi && p >= LVL) return false
   if (a && !isNode(a)) return null
   if (isNode(a)) {
-    const brk = (cc === 91 || cc === 40) && lineBreak()
-    if (jessieParse.semi ||
-      (cc === 91 && (brk || isStmt(a))) ||
-      (cc === 40 && (isStmt(a) || (brk && p >= LVL))))
+    const continuation = cc === 91 || cc === 40 || cc === 96
+    if (continuation && endBefore(idx) === -1 && (bareDeclarator(a, p) || endsInArrow(a))) return asi(a, p, expr) ?? null
+    if (jessieParse.semi || (cc === 91 || cc === 40) && isStmt(a))
       return asi(a, p, expr) ?? null
   }
   const nl = jessieParse.newline
   return baseStep(a, p, cc, expr) ?? (isNode(a) && nl ? asi(a, p, expr) ?? null : null)
 }
 
-const parse = (src, sourceType = 'jz') => {
+const lvl = prec.asi ?? prec[';'], body = lvl + .5
+const asiStep = jessieParse.step
+jessieParse.step = (a, p, cc, expr) => {
+  if (!Array.isArray(a) && typeof a !== 'string') { if (p < lvl) jessieParse.semi = false; return asiStep(a, p, cc, expr) }
+  const list = a[0] === ';' && Array.isArray(a), n = list ? a.length : 0, last = list ? a[n - 1] : a, at = idx
+  if ((cc === 43 || cc === 45) && prefixOnly(last, at, cc)) return jessieParse.asi(a, p, expr) ?? null
+  // the gap before this token, read before a split parses on past it
+  const end = endBefore(at), closed = closedAt, open = closedOpen
+  if (cc === 96 && end !== -2) jessieParse.newline = isStmt(last) ||
+    end === -1 && (bareDeclarator(last, p) || endsInArrow(last)) ||
+    p < lvl && groups.at(-1) !== 41 && groups.at(-1) !== 93 && closed >= 0 &&
+    (end === -1 ? gapFrom - 1 : end) === closed && cur.charCodeAt(closed) === 125 && endsInBrace(last, open)
+  const semi = jessieParse.semi, wasMore = more
+  const r = asiStep(a, p, cc, expr)
+  // the list layer split `a` off (a new list headed by it, the list grown, or the
+  // statement it reads ended with another to follow), or a body ended
+  if (joinedAt < 0 && !semi && cc !== 59 && cc !== 125 &&
+      (r ? list ? r === a && a.length > n : r !== a && Array.isArray(r) && r[0] === ';' && r[1] === a : (more && !wasMore) || p === body) &&
+      !separated(last, end, closed, open)) joinedAt = at
+  return r
+}
+
+// Positions (ctx.js): a bundled module's shift past the sources before it;
+// a source the compiler writes (base null) keeps none.
+const place = (node, base) => {
+  if (!Array.isArray(node)) return
+  if (typeof node.loc === 'number') node.loc = base == null ? undefined : node.loc + base
+  for (let i = 1; i < node.length; i++) place(node[i], base)
+}
+// subscript reports where it stopped as `line:column` in its message.
+const stoppedAt = (message, src) => {
+  const m = / at ([0-9]+):([0-9]+)\n/.exec(message)
+  if (!m) return { message, at: idx }
+  let at = 0
+  for (let line = +m[1]; line > 1; line--) at = src.indexOf('\n', at) + 1
+  return { message: message.slice(0, m.index), at: at + +m[2] - 1 }
+}
+
+/** Source text to its AST. `base` places the source among the compile's
+ *  (ctx.js addSource): 0 for the program, null for text the compiler wrote. */
+const parse = (src, sourceType = 'jz', base = 0) => {
+  // A leading `#!` line is a comment (Node, V8). Blanked, not cut, so every
+  // offset still indexes the source as written. subscript's own shebang.js
+  // registration went with parse.comment's entries.
   if (typeof src === 'string' && src.charCodeAt(0) === 35 && src.charCodeAt(1) === 33) {
-    const nl = src.indexOf('\n')
-    src = nl < 0 ? '' : src.slice(nl)
+    src = src.replace(/^#![^\n\r\u2028\u2029]*/, text => ' '.repeat(text.length))
   }
-  // subscript's line-comment terminator is hard-coded to LF. ECMAScript gives
-  // a lone CR the same line-terminator meaning; normalize only lone CR (CRLF
-  // already reaches subscript's LF) and preserve string length/AST offsets.
-  // The original spelling still goes to lexical validation below.
+  // A lone CR ends a line as LF does; a template reads it as LF (§12.9.6).
+  // Same length, so AST offsets stand. The original spelling still goes to
+  // lexical validation below.
   const parseSource = typeof src === 'string' && src.includes('\r') ? src.replace(/\r(?!\n)/g, '\n') : src
-  const ast = jessieParse(parseSource)
-  validateEarlyErrors(ast, src, sourceType)
+  let ast
+  joinedAt = gapFrom = gapEnd = closedOpen = closedAt = -1
+  opens.length = 0
+  try {
+    ast = jessieParse(parseSource)
+    validateEarlyErrors(ast, src, sourceType, base)
+    if (joinedAt >= 0) err('Expected ; or a line break before this statement', joinedAt)
+  } catch (e) {
+    if (!(e instanceof SyntaxError)) throw e
+    const stop = stoppedAt(e.message, parseSource), at = where(base == null ? here() : base + stop.at)
+    throw SyntaxError(at ? stop.message + at : e.message)
+  }
+  decodeNames(ast)
+  if (base !== 0) place(ast, base)
   return ast
 }
 

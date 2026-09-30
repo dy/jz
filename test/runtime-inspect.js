@@ -77,10 +77,27 @@ test('runtime inspection: the native host keeps its closure table closed', () =>
   if (onKernel()) return
   const src = 'export const make = (k) => (x) => x * k\nlet f = make(2)\nexport function apply(x){ return f(x) }\nexport function swap(k){ f = make(k) }'
   const native = inspect(src, { host: 'native' }), js = inspect(src)
-  is(native.apply.noAllocation, true, 'native: the closure call resolves through the closed table')
-  is(native.apply.noHostCalls, true)
+  is(native.apply.noHostCalls, true, 'native: the closure call resolves through the closed table')
+  is(native.apply.noAllocation, null, 'the polymorphic closure still reaches numeric coercion and arena writes')
+  is(js.apply.noHostCalls, null, 'js: the exported table can contain a host function')
   is(js.apply.noAllocation, null, 'js: the exported table stays reachable from outside')
   const wat = compile(src, { host: 'native', wat: true })
   ok(!/__jz_table/.test(wat), 'native exports no table')
   ok(/__jz_table/.test(compile(src, { wat: true })), 'js still exports it')
+})
+
+test('runtime inspection: imported and expression table entries cannot hide effects', () => {
+  const base = ['module',
+    ['type', '$t', ['func']], ['table', 2, 'funcref'],
+    ['import', '"host"', '"f"', ['func', '$host', ['type', '$t']]],
+    ['func', '$local'],
+    ['func', '$f', ['export', '"f"'], ['call_indirect', ['type', '$t'], ['i32.const', 0]]]]
+  for (const elem of [
+    ['elem', ['i32.const', 0], 'func', '$host', '$local'],
+    ['elem', ['i32.const', 0], 'funcref', ['ref.func', '$host'], ['ref.func', '$local']],
+  ]) {
+    const f = captureRuntimeInspect([...base, elem]).f
+    is(f.noAllocation, null); is(f.noHostCalls, null); is(f.boundedWork, null)
+  }
+  is(captureRuntimeInspect(base).f.noHostCalls, null, 'an empty table proves no target')
 })

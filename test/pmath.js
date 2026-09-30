@@ -4,10 +4,8 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { join } from 'node:path'
-import { compile } from '../index.js'
 import { instantiate } from '../interop.js'
-import { resolveModuleGraph } from '../src/resolve.js'
-import { graphSources } from '../bench/_lib/graph.js'
+import { compileJzAt } from '../bench/_lib/compile.js'
 
 const ROOT = join(import.meta.dirname, '..')
 const PIN = process.env.JZ_MATH_PIN === '1'
@@ -16,16 +14,7 @@ const median = xs => xs.toSorted((a, b) => a - b)[xs.length >> 1]
 
 for (const [id, checksum] of Object.entries(CASES)) test(`pmath: ${id} agrees with Node across repeated calls`, async () => {
   const entry = join(ROOT, 'bench', id, `${id}.js`)
-  const { code, modules } = graphSources({ id, js: entry }, resolveModuleGraph)
-  // The timing harness uses the same output-only adapter. Library code and
-  // workload remain identical; the host receives numbers instead of a line.
-  const lib = join(ROOT, 'bench/_lib/benchlib.js'), original = modules[lib]
-  modules[lib] = original.replace(
-    'console.log(`median_us=${medianUs} checksum=${checksum} samples=${samples} stages=${stages} runs=${runs}`)',
-    'env.logResult(medianUs, checksum, samples, stages, runs)')
-  ok(modules[lib] !== original, 'bench output adapter installed')
-  const bytes = compile(code, { modules, host: 'js', optimize: 'speed', alloc: false,
-    imports: { env: { logResult: { params: 5 } }, performance: { now: { params: 0, returns: 'number' } } } })
+  const bytes = compileJzAt({ id, js: entry }, { level: 'speed' })
   let wa, js
   const { exports: wasm } = instantiate(bytes, { imports: {
     env: { logResult: (us, sum, samples, stages, runs) => { wa = [us, sum >>> 0, samples, stages, runs] } },

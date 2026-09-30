@@ -4,7 +4,9 @@
  */
 
 import { VAL } from './reps.js'
+import { ACCESSOR_GET } from './ast.js'
 import { TYPED_ELEM_CODE } from '../layout.js'
+import { typedCtorName } from './typed-provenance.js'
 import { summaryTypedCtor, typedStorageCtorFromContext } from './typed-context.js'
 import { contractVal } from './summary/contract.js'
 import { valOf } from './summary/kind.js'
@@ -38,6 +40,7 @@ const BOOL_METHODS = new Set([
 ])
 
 const CALLEE_VAL = {
+  '__object_rest': VAL.HASH,
   'new.Set': VAL.SET,
   'new.Map': VAL.MAP,
   'new.Date': VAL.DATE,
@@ -168,7 +171,9 @@ export function methodValType(method, obj, objType, ctx) {
   // family can carry an own method with that name. Passing a null `obj` asks
   // specifically for the prototype builtin's contract (used by a fallback
   // arm after an explicit sidecar probe).
-  if (obj != null && (ctx?.summary?.memberMayBeOwn(method) ||
+  const ownSlot = obj != null && ctx?.summary?.at(ctx.func.current).shapesOfExpr(obj)?.some(sid =>
+    ctx.schema.list[sid]?.some(p => p === method || p === method + ACCESSOR_GET))
+  if (obj != null && (ownSlot || ctx?.summary?.memberMayBeOwn(method) ||
       ctx?.summary?.memberMayBeOwnOn(method, objType)) &&
       (objType === VAL.ARRAY || objType === VAL.TYPED || objType === VAL.MAP ||
        objType === VAL.SET || objType === VAL.REGEX || objType === VAL.CLOSURE ||
@@ -187,7 +192,8 @@ export function methodValType(method, obj, objType, ctx) {
     if (objType === VAL.ARRAY) return VAL.ARRAY
     return null
   }
-  if (method === 'push') return VAL.ARRAY
+  // push answers the array's new length
+  if (method === 'push') return objType === VAL.ARRAY ? VAL.NUMBER : null
   if ((method === 'shift' || method === 'pop') && typeof obj === 'string') {
     const elemVt = ctx.func.localReps?.get(obj)?.arrayElemValType
     if (elemVt) return elemVt
@@ -219,6 +225,8 @@ export function methodValType(method, obj, objType, ctx) {
     if (objType === VAL.DATE) return VAL.NUMBER
     return objType ?? null
   }
+  // an array's or typed array's text (the summary's solver rule for `join`, summary/index.js)
+  if ((method === 'join' || method === 'toString' || method === 'toLocaleString') && (objType === VAL.ARRAY || objType === VAL.TYPED)) return VAL.STRING
   if (BOOL_METHODS.has(method)) return VAL.BOOL
   if ((method === 'has' || method === 'delete') && (objType === VAL.MAP || objType === VAL.SET)) return VAL.BOOL
   if (STRING_METHODS.has(method)) return VAL.STRING
@@ -268,8 +276,7 @@ export function propValType(prop, objType, ctor) {
 
 export function typedCtorElemValType(ctor) {
   if (!ctor) return null
-  const isView = ctor.endsWith('.view')
-  const name = isView ? ctor.slice(4, -5) : ctor.slice(4)
+  const name = typedCtorName(ctor)
   if (TYPED_ELEM_CODE[name] == null) return null
   return name === 'BigInt64Array' || name === 'BigUint64Array' ? VAL.BIGINT : VAL.NUMBER
 }

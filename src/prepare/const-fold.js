@@ -17,19 +17,8 @@ export const stripBoolNot = c => {
   while (Array.isArray(c) && c[0] === '!' && Array.isArray(c[1]) && c[1][0] === '!') c = c[1][1]
   return c
 }
-// In a statement (value-discarded) position, postfix `x++`/`x--` is lowered to `(++x) − 1` /
-// `(--x) + 1` to recover the old value — but nobody reads it, so drop the ∓1 and keep the bare
-// increment. (`obj.p++` lowers via `obj.p = obj.p + 1`, also wrapped.) Cleaner AST for the loop/
-// recurrence passes; codegen already discarded the ∓1, so this is purely canonicalization.
-const isOne = n => Array.isArray(n) && n[0] == null && n[1] === 1
-export const dropDeadPostfix = s => {
-  if (Array.isArray(s) && s.length === 3 && isOne(s[2]) && Array.isArray(s[1])) {
-    const inner = s[1][0]
-    if ((s[0] === '-' && (inner === '++' || inner === '=')) ||
-        (s[0] === '+' && (inner === '--' || inner === '='))) return s[1]
-  }
-  return s
-}
+// A discarded postfix value needs only the update; keep canonical loop steps.
+export const dropDeadPostfix = s => Array.isArray(s) && s[0] === 'postfix' ? s[1] : s
 // Constant-condition `if` at STATEMENT level folds to its live arm (dual of the
 // '?:' emitter's literal-condition fold, but at prep — the proper level: the dead
 // arm's code never reaches analysis/emission at all). `litTruth` is deliberately

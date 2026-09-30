@@ -1,8 +1,8 @@
 import test from 'tst'
 import { is, ok, almost } from 'tst/assert.js'
-import { evaluate, run } from './util.js'
+import { evaluate, run, oracle, funcWat } from './util.js'
 import jz, { compile } from '../index.js'
-import { onKernel } from './_matrix.js'
+import { onKernel, levels, belowOpt } from './_matrix.js'
 import { scalarCase } from './_scalar-core-cases.js'
 
 // Math module tests - comprehensive coverage of all Math.* methods
@@ -51,7 +51,7 @@ test('canon-strip: sqrt/min/max feeding f64 arithmetic sheds the NaN-canon selec
   const selects = (wat.match(/select/g) || []).length
   is(selects, 0, 'no NaN-canon select when the sqrt result feeds f64.add')
   // log(log(x)): inner log canon also stripped (math-call arg is ToNumber'd + NaN-safe).
-  const wlog = jz.compile(`export const f = (x) => Math.log(Math.log(x))`, { wat: true })
+  const wlog = funcWat(jz.compile(`export const f = (x) => Math.log(Math.log(x))`, { wat: true }), 'f')
   is((wlog.match(/select/g) || []).length, 0, 'no canon select for log feeding log')
 })
 
@@ -67,6 +67,28 @@ test('canon-strip soundness: NaN-canon preserved where the result can escape unt
     'NaN through arithmetic is still typeof number')
   is(run(`export const f = (s) => Math.sqrt(s + 1.0) + Math.sqrt(s + 2.0)`).f(2), Math.sqrt(3) + Math.sqrt(4),
     'arithmetic sum of sqrts matches JS exactly')
+})
+
+test('canon-strip: a compound assignment sheds its operand\'s NaN guard as the binary form does', () => {
+  // `s += Math.sqrt(x)` is `s = s + Math.sqrt(x)`: the sum carries a NaN on and is guarded
+  // where it escapes, so the guard on the root is dead under +=, -=, *= and /= as under +.
+  const src = `export const f = (xs, n) => {
+    let s = 0, p = 1, q = 0, d = 64
+    for (let i = 0; i < n; i++) { s += Math.sqrt(xs[i]); p *= Math.max(xs[i], 0.5); q -= Math.min(xs[i], 2); d /= -xs[i] }
+    return [s, p, q, d, typeof s, s === s]
+  }`
+  const want = oracle(src).f
+  const same = (a, b) => Object.is(a, b) || (a !== a && b !== b)
+  for (const optimize of levels(0, 2, 3)) {
+    const { f } = jz(src, { optimize }).exports
+    for (const xs of [[1, 4, 9, 2.5], [1, -4, 9, 2.5], [NaN, 3], [-1], [0.25, -0, 16]]) {
+      const got = f(new Float64Array(xs), xs.length), exp = want(new Float64Array(xs), xs.length)
+      ok(got.length === exp.length && got.every((v, i) => same(v, exp[i])), `O${optimize} [${xs}]: ${got} (JS: ${exp})`)
+    }
+  }
+  if (belowOpt(2)) return
+  const wat = funcWat(jz.compile(`export const f = (n) => { let s = 0, q = 1; for (let i = 0; i < n; i++) { const x = (i % 200) * 0.37 - 30; s += Math.sqrt(x); q *= -x } return s + q }`, { wat: true }), 'f')
+  is((wat.match(/f64\.const nan/g) || []).length, 0, 'no NaN guard on s += Math.sqrt(x) or q *= -x')
 })
 
 test('Math.abs', async () => {
@@ -985,4 +1007,40 @@ test('exp2 and exp within 0.75 ulp of a 200-bit reference across their range', (
   is(e2(NaN), NaN); is(e2(1025), Infinity); is(e2(-1080), 0); is(e2(0), 1); is(e2(10), 1024)
   is(e(NaN), NaN); is(e(710), Infinity); is(e(-746), 0); is(e(0), 1)
   ok(Number.isFinite(e(709.782712893384)) && e(709.782712893384) > 1.79e308, 'largest finite exp')
+})
+
+
+test('trig reduction preserves the residual and sign near multiples of pi', () => {
+  const src = `export const sine = x => Math.sin(x)
+    export const cosine = x => Math.cos(x)
+    export const folded = () => [Math.sin(Math.PI), Math.sin(3*Math.PI)]
+    export const lane = (x,y) => f64x2.lane(f64x2.sin(f64x2.lanes(x,y)), 0)`
+  for (const optimize of levels(0, 2, 3)) {
+    const e = jz(src, { optimize }).exports
+    for (const q of [-1048576, -1001, -3, -1, 1, 3, 1001, 1048576]) {
+      const root = q*Math.PI
+      for (const x of [root, root + Math.abs(root)*Number.EPSILON, root - Math.abs(root)*Number.EPSILON]) {
+        const want = Math.sin(x), got = e.sine(x)
+        is(Math.sign(got), Math.sign(want), `sign near ${q}pi, O${optimize}`)
+        ok(Math.abs(got-want) <= 2e-19 + Math.abs(want)*1e-9, `residual near ${q}pi, O${optimize}`)
+        is(e.lane(x, -x), got, `scalar/SIMD reduction, O${optimize}`)
+        ok(Math.abs(e.cosine(x)-Math.cos(x)) <= 2e-15)
+      }
+    }
+    is(e.folded(), [e.sine(Math.PI), e.sine(3*Math.PI)], 'folding uses the same reduction')
+    for (const x of [0, -0, Number.MIN_VALUE, -Number.MIN_VALUE]) is(e.sine(x), x)
+  }
+})
+
+// An argument left out is undefined, as JS passes it: NaN to a function of fixed
+// arity, whether the call runs or folds, and nothing to max, min and hypot.
+test('Math: every function called with its arguments left out agrees with JS', () => {
+  // one argument given: only where the one left out decides the result (a unary one is its kernel's)
+  const names = Object.getOwnPropertyNames(Math).filter(k => typeof Math[k] === 'function' && k !== 'random')
+  for (const k of names) for (const call of [`Math.${k}()`, ...(Math[k].length > 1 ? [`Math.${k}(y)`] : [])]) {
+    const src = `export let f = (y) => ${call}`
+    let got
+    try { got = jz(src).exports.f(2) } catch (e) { got = 'throws: ' + e.message.split('\n')[0] }
+    ok(Object.is(got, new Function('y', 'return ' + call)(2)), `${call}: ${got}`)
+  }
 })

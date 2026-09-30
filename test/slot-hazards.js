@@ -19,7 +19,7 @@
  */
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import jz from '../index.js'
+import jz, { _compileInProcess } from '../index.js'
 import { ctx } from '../src/ctx.js'
 import { run, oracle } from './util.js'
 import { initSchema } from '../module/schema.js'
@@ -123,6 +123,18 @@ export let main = () => {
   return Math.floor(o.n / 2)
 }`
   for (const optimize of LEVELS) is(run(int, { optimize }).main(), 3, `O${optimize}: int compound exact`)
+})
+
+// `++o.k` and `o.k++` reach the census as prepare's step `o.k = +1 o.k`: the
+// sum with 1, so a counter slot stays integral (a ring index `if (++c.i >= c.n) c.i = 0`).
+test('slot-hazards: an increment of a slot keeps it integral', () => {
+  const src = `const c = { i: 0, n: 7, buf: new Float64Array(7) }
+export let run = (reps) => { let s = 0; for (let r = 0; r < reps; r++) { s += c.buf[c.i]; c.buf[c.i] = r * 0.5; if (++c.i >= c.n) c.i = 0 } return s + c.i++ }`
+  const js = oracle(src)
+  for (const optimize of LEVELS) is(run(src, { optimize }).run(40), js.run(40), `O${optimize}`)
+  _compileInProcess(src, { optimize: 2 })
+  const sid = ctx.schema.list.findIndex(l => l.join() === 'i,n,buf')
+  ok(ctx.schema.slotIntLevels.get(sid)?.[0] >= 1, 'the counter slot is integral')
 })
 
 test('slot-hazards: plain string write clashes the literal NUMBER kind', () => {
@@ -484,5 +496,34 @@ export let supplied = () => f({ y: 9, x: 6 })`
     const e = run(src, { optimize })
     is(e.omitted(), 1, `O${optimize}: omitted arg takes the default's layout`)
     is(e.supplied(), 6, `O${optimize}: supplied arg reads its OWN layout`)
+  }
+})
+
+test('slot-hazards: a parameter the body reassigns keeps its caller\'s value in the census', () => {
+  // The census read each body's definitions against the current function's
+  // parameters, not the body's own: `v`, given 1 or 2 on a path, was an
+  // integer, and `q.w` truncated the caller's 7.5 to 7 (at O0, where the
+  // census reads a function the emitter has not entered).
+  const src = `
+const one = (v, k) => { if (k > 0) v = 1; let q = { w: v }; return q.w }
+const two = (v, k) => { if (k > 1) v = 2; let q = { w: v }; return q.w * 2 }
+export let main = (k, n) => [one(n, k), two(n, k)]`
+  const want = oracle(src).main
+  for (const optimize of LEVELS) for (const args of [[0, 7.5], [1, 7.5], [2, 7.5]])
+    is(run(src, { optimize }).main(...args), want(...args), `O${optimize}: main(${args})`)
+})
+
+// A store in a closure writes the slot its maker's literal made: a callback a
+// factory returns sets `p.o = 0.25` on `{ g: 0.5, o: 0 }`, and a function it
+// hands `p` to read the slot as an integer, truncated to 0.
+test('slot-hazards: a closure store poisons the integer census of its maker literal', () => {
+  const src = `function gain (d, p) { for (let i = 0; i < d.length; i++) d[i] = d[i] * p.g + p.o; return d }
+    const make = () => { const p = { g: 0.5, o: 0 }; return (d, g) => { p.g = g; p.o = 0.25; gain(d, p); return d[0] } }
+    const cb = make()
+    export let f = (n, g) => { const d = new Float64Array(n).fill(2); const r = cb(d, g); return r * 1000 + d[n - 1] }`
+  const js = oracle(src)
+  for (const optimize of levels(0, 2, 3)) {
+    const { f } = run(src, { optimize })
+    for (const [n, g] of [[1, 0.5], [3, -2]]) is(f(n, g), js.f(n, g), `f(${n}, ${g}) at ${optimize}`)
   }
 })

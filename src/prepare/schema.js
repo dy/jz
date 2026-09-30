@@ -6,7 +6,7 @@
  * @module prepare/schema
  */
 
-import { isBrand } from '../ast.js'
+import { isBrand, spreadExclusions } from '../ast.js'
 import { enumKeys } from '../../module/schema.js'
 import { ctx } from '../ctx.js'
 import { assignSid, declInitUnknown } from './state.js'
@@ -26,9 +26,11 @@ export function objLiteralSid(prhs) {
     } else if (p?.[0] === '...') {
       const sid = typeof p[1] === 'string' ? ctx.schema.idOf(p[1]) : objLiteralSid(p[1])
       const props = sid == null ? null : ctx.schema.list[sid]
-      if (!props) return null
+      // an object rest skips its pattern's keys; a computed one is known at run time only
+      const skip = spreadExclusions(p)
+      if (!props || skip?.exprs.length) return null
       // a spread copies values: an accessor is the data key it defines (module/schema.js enumView)
-      for (const name of enumKeys(props)) add(name)
+      for (const name of enumKeys(props)) if (!skip?.names.includes(name)) add(name)
     } else return null
   }
   return names.length || brand ? ctx.schema.register(names, brand) : null

@@ -33,10 +33,12 @@
  * A field of an object is cached the same way (`fieldOf`): `e.type` tested against four names
  * by four inlined guards is one load. The receiver is a binding, the field a slot of every
  * layout the summary lists for it (no accessor on any of them). A store of a field of that
- * name through any receiver reaches it (two bindings may hold one object), a computed-key
+ * name reaches it unless the summary proves disjoint construction sites; a computed-key
  * store into a receiver that may be an object reaches every field, and a call that may write
  * outer storage, a user conversion and a reassignment of the receiver flush as for elements.
  * An element store into an array or a typed array leaves fields alone: separate storage.
+ * Conditional arms inherit field and plain-array reads from their test; only reads surviving both arms
+ * remain available afterwards. This also handles early returns lowered to result assignments.
  *
  * Runs post-analyze (purity known) and pre-emit, mutating the body. Purely conservative.
  */
@@ -46,6 +48,7 @@ import { NUMERIC_BINARY_OPS, NUMERIC_UNARY_OPS } from '../kind-traits.js'
 import { scanBindingUses, USE, BINDING_USE_DECLS, BINDING_USE_INIT, BINDING_USE_USES, BINDING_USE_KIND } from './analyze-scans.js'
 import { unitIncVar } from './loop-model.js'
 import { counterInit, intExprRange } from '../static.js'
+import { typedCtorView } from '../typed-provenance.js'
 
 /** Receiver storage families; typed receivers use their constructor name. */
 export const UNTYPED = 'untyped'
@@ -158,24 +161,39 @@ export function provablyDiffer(idx, idx2, F, scope) {
   return false
 }
 
-// The expression a statement evaluates first, when the path to it runs through
-// first operands alone: the test of an `if`, the first operand of an operator,
-// a declaration's or an assignment's value. Null past anything else (a call,
-// a store through a receiver, a second declarator).
-const HEAD_OPS = new Set(['if', '?:', '||', '&&', '??', '__eager||', '__eager&&', 'return', 'throw', '!', 'typeof', 'u-', 'u+', '~',
-  '===', '!==', '==', '!=', '<', '>', '<=', '>=', '+', '-', '*', '/', '%', '**', '&', '|', '^', '<<', '>>', '>>>', 'in', 'instanceof'])
-const headOf = (stmt) => {
-  let n = stmt
-  for (;;) {
-    if (!isArr(n)) return null
+// The field reads a statement evaluates before it applies any operation: the
+// reads its first steps make, in order, of names, literals and fields (the
+// first operand of an `if`, a condition or an operator, then an operator's
+// other operands, a declaration's or an assignment's value, an element read's
+// or store's receiver and index). No store, call, conversion or throw comes
+// before them, so each is read by a `const` declared before the statement,
+// in the same order, with the value it reads in place.
+const LAZY_OPS = new Set(['if', '?:', '||', '&&', '??', '__eager||', '__eager&&', 'return', 'throw', 'in', 'instanceof'])
+const EAGER_OPS = new Set(['!', 'typeof', 'u-', 'u+', '~',
+  '===', '!==', '==', '!=', '<', '>', '<=', '>=', '+', '-', '*', '/', '%', '**', '&', '|', '^', '<<', '>>', '>>>'])
+const pureHeads = (stmt) => {
+  const out = new Set()
+  // true while the statement has only read names, literals and fields
+  const walk = (n) => {
+    if (!isArr(n)) return true
     const op = n[0]
-    if (op === '.') return n
-    if ((op === 'let' || op === 'const') && n.length === 2 && isArr(n[1]) && n[1][0] === '=' && isName(n[1][1])) n = n[1][2]
-    else if (op === '=' && isName(n[1])) n = n[2]
-    else if (op === '()' && n.length === 2) n = n[1]   // a grouping
-    else if (HEAD_OPS.has(op)) n = n[1]
-    else return null
+    if (op == null || op === 'str') return true
+    if (op === '.' && isName(n[1]) && isName(n[2])) { out.add(n); return true }
+    if (op === '()' && n.length === 2) return walk(n[1])   // a grouping
+    if (op === '.') walk(n[1])
+    else if (op === '[]' && n.length === 3) walk(n[1]) && walk(n[2])
+    else if (op === 'let' || op === 'const') { if (isArr(n[1]) && n[1][0] === '=' && isName(n[1][1])) walk(n[1][2]) }
+    else if (op === '=') {
+      const lhs = n[1]
+      const target = isName(lhs) || isArr(lhs) && (lhs[0] === '[]' && lhs.length === 3 ? walk(lhs[1]) && walk(lhs[2]) : lhs[0] === '.' && (isName(lhs[1]) || walk(lhs[1])))
+      if (target) walk(n[2])
+    }
+    else if (LAZY_OPS.has(op)) walk(n[1])
+    else if (EAGER_OPS.has(op)) { for (let i = 1; i < n.length; i++) if (!walk(n[i])) break }
+    return false
   }
+  walk(stmt)
+  return out
 }
 
 /**
@@ -193,13 +211,14 @@ const headOf = (stmt) => {
  *                    accessor, no length, a receiver the summary holds to objects. Such a
  *                    read is cached like an element: a second `e.type` with no store of a
  *                    `type` and no writing call between reads the first one's value. The
- *                    first read is the one its statement evaluates first (headOf), so the
- *                    cache is a `const` declared before that statement.
+ *                    first read is one its statement evaluates before any change (pureHeads),
+ *                    so the cache is a `const` declared before that statement.
  * @param mayStoreField (recv) => boolean: a computed-key store into `recv` may write a field
  * @param disjointArrays (a, b) => boolean: the summary proves the arrays cannot alias
+ * @param objectsDisjoint (a, b) => boolean: no construction site can reach both receivers
  * @returns number of loads eliminated
  */
-export function cseLoads(body, storageOf, freshName, isNumeric, isReadonlyCall = null, runsUserCode = null, fieldOf = null, mayStoreField = null, disjointArrays = null) {
+export function cseLoads(body, storageOf, freshName, isNumeric, isReadonlyCall = null, runsUserCode = null, fieldOf = null, mayStoreField = null, disjointArrays = null, objectsDisjoint = null) {
   if (!isArr(body)) return 0
   const F = indexFacts(body)
   let eliminated = 0
@@ -208,7 +227,7 @@ export function cseLoads(body, storageOf, freshName, isNumeric, isReadonlyCall =
   const survives = (e, recv, idx2, scope) => isName(recv) && (storageOf(recv) === UNTYPED ||
     disjointArrays?.(e.arr, recv) ||
     (typedCtor(recv) != null && (typedCtor(recv) === ARRAY) !== (e.ctor === ARRAY)) ||
-    (recv === e.arr || !e.ctor.endsWith('.view') && typedCtor(recv) === e.ctor) && provablyDiffer(e.idxNode, idx2, F, scope))
+    (recv === e.arr || typedCtorView(e.ctor) === false && typedCtor(recv) === e.ctor) && provablyDiffer(e.idxNode, idx2, F, scope))
 
   // A branch arm that leaves the sequence and stores nothing: the statements
   // after an `if (C) break` run only when C ran and fell through.
@@ -235,18 +254,45 @@ export function cseLoads(body, storageOf, freshName, isNumeric, isReadonlyCall =
     const shared = []   // entries a second read joined: one load at the first occurrence
     const inserts = []   // { at: stmtIdx, binding }
 
-    let head = null   // the expression the statement being read evaluates first
+    let heads = null   // the field reads the statement being read evaluates before any operation
+    let order = 0      // the order of the field reads that start a cache
+    let skipTyped = false   // preserve typed reduction idioms across conditional statements
     const flush = () => avail.clear()
     const invalidateVar = (name) => { for (const [k, e] of avail) if (e.arr === name || e.idxVars.has(name)) avail.delete(k) }
-    // A store of a field `prop` reaches that field of every object; one under a
-    // computed key (`prop` null) reaches any field.
-    const invalidateField = (prop) => { for (const [k, e] of avail) if (e.field != null && (prop == null || e.field === prop)) avail.delete(k) }
+    // Equal field names may share storage unless the summary proves distinct
+    // construction sites. A computed key can reach any field of that receiver.
+    const invalidateField = (prop, recv) => {
+      for (const [k, e] of avail) if (e.field != null && (prop == null || e.field === prop) &&
+        !objectsDisjoint?.(e.arr, recv)) avail.delete(k)
+    }
     // A named store can truncate a plain array through .length (or write a
     // numeric property). Typed-array elements have no corresponding alias.
     const invalidateArrays = () => { for (const [k, e] of avail) if (e.ctor === ARRAY) avail.delete(k) }
 
     const reads = (node, parent, pi, si, noCseKey = null) => {
       if (!isArr(node) || node[0] === 'str') return
+      if (node[0] === 'if') {
+        // Extending field availability through branches must not rewrite
+        // conditional typed-element reductions: their checked-load/value conversion
+        // remains the vectorizer's canonical input.
+        const outerSkipTyped = skipTyped
+        skipTyped = true
+        for (const [k, e] of avail) if (e.field == null && e.ctor !== ARRAY) avail.delete(k)
+        reads(node[1], node, 1, si, noCseKey)
+        if (avail.size) { // each arm's own sequence is also visited separately
+          const before = new Map(avail)
+          reads(node[2], node, 2, si, noCseKey)
+          const then = new Map(avail)
+          avail.clear()
+          for (const [k, e] of before) avail.set(k, e)
+          if (node.length > 3) reads(node[3], node, 3, si, noCseKey)
+          // Only the same dominating read surviving both arms is available
+          // afterwards. Branch-local first reads remain in their own arm.
+          for (const [k, e] of avail) if (then.get(k) !== e) avail.delete(k)
+        }
+        skipTyped = outerSkipTyped
+        return
+      }
       if (node[0] === 'delete') {
         for (let i = 1; i < node.length; i++) reads(node[i], node, i, si)
         flush()
@@ -283,7 +329,7 @@ export function cseLoads(body, storageOf, freshName, isNumeric, isReadonlyCall =
       // read what was available before them. A load first read in an operand
       // that may not run is that operand's own; what an operand invalidated is
       // gone after the expression whichever operand ran.
-      if ((node[0] === '||' || node[0] === '&&' || node[0] === '??' || node[0] === '?:' || node[0] === 'if') && node.length >= 3) {
+      if ((node[0] === '||' || node[0] === '&&' || node[0] === '??' || node[0] === '?:') && node.length >= 3) {
         reads(node[1], node, 1, si, noCseKey)
         const before = new Map(avail)
         for (let i = 2; i < node.length; i++) {
@@ -317,15 +363,15 @@ export function cseLoads(body, storageOf, freshName, isNumeric, isReadonlyCall =
         if (runsUserCode?.(node)) flush()
         if (lhs[0] === '[]') {
           for (const [k, e] of avail) if (e.field == null && !survives(e, lhs[1], lhs[2], seq)) avail.delete(k)
-          if (!mayStoreField || mayStoreField(lhs[1])) invalidateField(isArr(lhs[2]) && lhs[2][0] === 'str' ? lhs[2][1] : null)
-        } else { invalidateField(isName(lhs[2]) ? lhs[2] : null); invalidateArrays() }
+          if (!mayStoreField || mayStoreField(lhs[1])) invalidateField(isArr(lhs[2]) && lhs[2][0] === 'str' ? lhs[2][1] : null, lhs[1])
+        } else { invalidateField(isName(lhs[2]) ? lhs[2] : null, lhs[1]); invalidateArrays() }
         return
       }
       if ((node[0] === '++' || node[0] === '--' || node[0] === 'delete') && isArr(node[1]) && (node[1][0] === '.' || node[1][0] === '?.' || node[1][0] === '[]')) {
         const lhs = node[1]
         reads(lhs[1], lhs, 1, si)
         if (lhs[0] === '[]') { reads(lhs[2], lhs, 2, si); flush() }
-        else { invalidateField(isName(lhs[2]) ? lhs[2] : null); invalidateArrays() }
+        else { invalidateField(isName(lhs[2]) ? lhs[2] : null, lhs[1]); invalidateArrays() }
         return
       }
       // A field of an object: cached like an element, its receiver the binding.
@@ -340,11 +386,12 @@ export function cseLoads(body, storageOf, freshName, isNumeric, isReadonlyCall =
           eliminated++
           return
         }
-        if (node === head) avail.set(key, { arr: node[1], field: node[2], read: node, idxVars: new Set(), firstStmt: si, occ: [{ parent, idx: pi, numeric }] })
+        if (heads.has(node)) avail.set(key, { arr: node[1], field: node[2], read: node, idxVars: new Set(), firstStmt: si, order: order++, occ: [{ parent, idx: pi, numeric }] })
         return
       }
       const ctor = node[0] === '[]' && isName(node[1]) && stableIdx(node[2], runsUserCode) && !runsUserCode?.(node) ? typedCtor(node[1], node) : null
       if (ctor && (ctor !== ARRAY || isNumeric(node[2]))) {
+        if (skipTyped && ctor !== ARRAY) return
         const arr = node[1], key = slotKey(arr, node[2])
         if (key === noCseKey) return
         // A Number|undefined read consumed arithmetically normalizes its miss
@@ -379,7 +426,7 @@ export function cseLoads(body, storageOf, freshName, isNumeric, isReadonlyCall =
     for (let si = 1; si < seq.length; si++) {
       const s = seq[si]
       if (!isArr(s)) continue
-      head = headOf(s)
+      heads = pureHeads(s)
       if (CONTROL.has(s[0])) {
         // `if (C) break`: C runs on every path to the next statement and the
         // arm stores nothing, so C's loads stay available (the sift loop's
@@ -394,7 +441,7 @@ export function cseLoads(body, storageOf, freshName, isNumeric, isReadonlyCall =
       if (e.field != null) {
         // The statement evaluates this read first: a declaration before it holds the value.
         const read = ['.', e.arr, e.field], temp = freshName(read)
-        inserts.push({ at: e.firstStmt, binding: ['const', ['=', temp, read]] })
+        inserts.push({ at: e.firstStmt, order: e.order, binding: ['const', ['=', temp, read]] })
         for (const o of e.occ) o.parent[o.idx] = temp
         continue
       }
@@ -405,14 +452,16 @@ export function cseLoads(body, storageOf, freshName, isNumeric, isReadonlyCall =
       // The first load dominates every use; the initializer is unobservable.
       // A numeric zero avoids introducing an artificial absent value into
       // otherwise numeric storage. A checked load still preserves its miss.
-      inserts.push({ at: e.firstStmt, binding: allNumeric || isNumeric(read) ? ['let', ['=', temp, [null, 0]]] : ['let', temp] })
+      inserts.push({ at: e.firstStmt, order: -1, binding: allNumeric || isNumeric(read) ? ['let', ['=', temp, [null, 0]]] : ['let', temp] })
       for (let i = 0; i < e.occ.length; i++) {
         const o = e.occ[i]
         const value = i ? temp : ['=', temp, cached]
         o.parent[o.idx] = o.numeric && !allNumeric ? ['u+', value] : value
       }
     }
-    inserts.sort((a, b) => b.at - a.at)
+    // Last position first; at one position the last read first, so the field
+    // reads before a statement keep the order the statement read them in.
+    inserts.sort((a, b) => b.at - a.at || b.order - a.order)
     for (const ins of inserts) seq.splice(ins.at, 0, ins.binding)
   }
 

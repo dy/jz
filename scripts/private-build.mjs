@@ -17,7 +17,15 @@ import { join } from 'node:path'
  * @param {{ label?: string, prefix?: string, timeout?: number }} [opts]
  * @returns {{ bytes: Buffer, ms: number, stdout: string, stderr: string }}
  */
-export function privateBuild(root, script, args = [], { label = 'private build', prefix = 'jz-private-build-', timeout = 1_200_000 } = {}) {
+export function privateBuild(root, script, args = [], { label = 'private build', prefix = 'jz-private-build-', timeout } = {}) {
+  // Every kernel builder shares the same override, including attested gates.
+  // Resolve it per transaction so independent builds do not capture old settings.
+  if (timeout === undefined) {
+    const limit = process.env.JZ_SELF_BUILD_TIMEOUT
+    timeout = limit ? Number(limit) : 1_200_000
+    if (!Number.isSafeInteger(timeout) || timeout <= 0)
+      throw new Error('JZ_SELF_BUILD_TIMEOUT must be a positive integer in milliseconds')
+  }
   const dir = mkdtempSync(join(tmpdir(), prefix))
   const out = join(dir, 'jz.wasm')
   const t0 = Date.now()

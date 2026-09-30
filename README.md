@@ -58,14 +58,35 @@ memory.used                               // 0: the call kept nothing it allocat
 | `imports` | Host modules for `import { fn } from "mod"`: functions, constants, or a whole namespace such as `Math`. |
 | `define` | Compile-time constants injected as bindings, `{ DEBUG: false, N: 1024 }`. |
 | `host` | `'js'` (default), `'wasi'` for standalone runtimes, `'native'` for the wasm2c lane. |
-| `memory` | Initial pages, a `WebAssembly.Memory` or `jz.memory()` shared between modules, or `{ initial, maximum, shared, import }`. |
+| `memory` | Initial pages, a `WebAssembly.Memory` or `jz.memory()` shared between modules, or `{ initial, maximum, shared, import, fixed }`. `fixed: ['process']` requires named Wasm exports to use fixed storage. |
 | `optimize` | `true` (default), `'speed'`, `'size'`, `false`, or an object: `{ level, simd, tailCall, exceptions, alloc }` for engines without SIMD or tail calls and for raw standalone modules. |
 | `randomSeed` | Number for a reproducible `Math.random`. |
 | `names` | Emit the wasm name section for profilers and debuggers. |
+| `sourceMap` | Debug build with statement locations and function names, through the JavaScript API or CLI. `true` embeds the map; `{ source, url }` names the entry and an external map URL. The returned bytes also expose `.sourceMap`. Selects `optimize: false`; optimized maps and maps from the Wasm-hosted compiler are not supported. |
 | `wat` | Return WAT text instead of bytes. |
 | `warnings` | Sink `{ entries }` or callback for advisories: dynamic fallbacks, heap growth. |
 | `why` | Also report each loop the vectorizer and each arena the rewind declined; a `warnings` sink alone reports each property read left dynamic, each class kept as closures and the first cause an object shape is lost by. |
 </details>
+
+## Strict compiler
+
+`jz/strict` exports `compile` (also the default export). It accepts the canonical
+subset: `let`/`const`, arrow functions and structured control flow. It rejects
+`var`, function declarations, classes, `switch` and unresolved dynamic fallbacks.
+Use `jz/interop` to instantiate its output.
+
+```js
+import compile from 'jz/strict'
+import { instantiate } from 'jz/interop'
+
+const wasm = compile('export const square = x => x * x')
+const { exports } = instantiate(wasm)
+exports.square(7) // 49
+```
+
+It shares the main compiler's options, diagnostics and optimization pipeline.
+The standalone `dist/strict.js` excludes the JavaScript lowering layer and host
+runtime. Its current bundle is about 2.65 MiB minified / 758 KiB gzip.
 
 ## CLI
 
@@ -78,6 +99,7 @@ jz kernel.js -o out.wasm    # custom output, - for stdout
 jz kernel.js -O3            # fastest code; -Os smallest; -O0 none
 jz kernel.js --host wasi    # standalone WASI module
 jz kernel.js --why          # what the optimizer declined, and why
+jz kernel.js --source-map   # debug build + kernel.wasm.map, with source content
 ```
 
 `jz --help` lists the rest: `-D`, `--memory`, `--no-simd`, `--no-tail-call`, `--names`, and `-O '{…}'` for the optimize object.
@@ -101,8 +123,10 @@ See [all examples](https://jz.js.org/examples/).
 
 - **Runtime code:** `eval`, `Function`, `with`.
 - **Reflection:** `Proxy`, `Reflect`, property descriptors, prototype chains and `__proto__`.
-- **Module dynamics:** top-level `await`, `import()`.
+- **Object accessors:** getters/setters need a fixed property layout; mixing them with runtime-computed keys or a spread of unknown keys is unsupported.
+- **Module dynamics:** top-level `await` other than `await import('./x.js')`, and `import()` of a specifier computed at run time. A literal `import('./x.js')` bundles `x.js`, which evaluates at the first `import()` unless a static import loaded it.
 - **Platform:** DOM, Node modules, `Intl`, `Temporal`.
+- **Builtins as values:** `f(Math)`, `[Map]`, `xs.map(parseInt)`. `typeof Math` answers; members (`xs.map(Math.sqrt)`), `Number`, `Boolean` and the typed-array constructors are values.
 
 Modern JavaScript is supported: classes, generators, async/await, destructuring,
 BigInt, typed arrays, Map/Set, RegExp, Date, JSON, timers and the Web codecs.
@@ -113,9 +137,10 @@ Where behaviour differs from JS:
 - **In-place array arguments.** An exported function that stores into an array argument and reads it back takes a Float64Array, a Float32Array or an Array there, which round as JS rounds them; another kind throws a TypeError.
 - **Float sums in lanes.** From optimize level 2, a loop that sums floats may add in two lanes: the last digits of the sum can differ.
 - **Bitwise operands under 2^63.** `|`, `&`, `^`, `~`, the shifts and `Math.imul` convert an operand of magnitude under 2^63 as JS does. A larger one reads as -1, or as 0 when negative, where JS takes it modulo 2^32: `1e300 | 0` is -1. A store to an integer typed array converts exactly at any magnitude.
-- **BigInt is 64-bit.** It wraps past its range and has no `**`.
+- **Math within 50 ulp of V8.** Measured against V8's results: `sin`, `cos`, `tan` up to 49 ulp, `asin`, `acos` 38, `atan`, `atan2` 10, exponentials, logarithms, hyperbolics and `hypot` 5, `pow` 11, a constant `** 2.4`-style exponent 40; `sqrt` and `cbrt` agree. A test comparing them bit for bit needs a tolerance. `x ** 0.5` is `Math.sqrt(x)`, so `(-Infinity) ** 0.5` is NaN.
+- **BigInt is 64-bit.** It wraps past its range and has no `**`. `BigInt64Array` and `BigUint64Array` share one representation: a value of either passes `instanceof` for both, and `.constructor` of either reads undefined.
 - **No holes.** `[1, , 3]` and a write past the end fill the gap with `undefined` elements: `1 in a`, `Object.keys` and `forEach` see them.
-- **32-bit element indices.** Use finite integer array indices. Numeric index expressions can truncate to i32; `a[NaN]` can read `a[0]` instead of `undefined`.
+- **32-bit element indices.** An array holds up to 2³¹−1 elements. A store under a number that is not an index (`a[1.5] = v`, `a[-1] = v`) is dropped, where JavaScript gives the array a named property.
 - **Regexes compile at build time.** `new RegExp(pattern)` needs a literal; `\p{…}`, `d` and `v` flags are unsupported.
 - **ASCII case, UTC dates.** No locale or timezone tables: case conversion is ASCII, `normalize` returns its input, Date getters use UTC.
 - **Fixed shapes.** Object fields are slots resolved at compile time; `Object.freeze` does nothing and errors carry `name` and `message` only.
@@ -148,17 +173,21 @@ the host, so the caller sees its changes; a typed array the module stores on it
 is a view of the module's memory, read back as the same array (the host's view
 detaches if the memory grows). A JZ buffer (`memory.Float64Array(n)`,
 `memory.Float32Array(n)`) is the storage itself, so hand hot loops one of those
-instead of copying per call.
+instead of copying per call. A function the module returns, or stores on a host
+object, reaches the host as a function that calls back into it.
 
 ```js
 const { exports } = jz`
   export const greet = s => s.length
   export const point = (x, y) => ({ x, y })
   export const rgb = c => [c, c * 0.5, c * 0.2]
+  export const counter = () => { let n = 0; return { next: () => ++n } }
 `
 exports.greet('hello')   // 5
 exports.point(3, 4)      // { x: 3, y: 4 }
 exports.rgb(100)         // [100, 50, 20]
+const c = exports.counter()
+c.next(); c.next()       // 2
 ```
 
 Host functions come in through `imports`; a tagged template inlines values and
@@ -218,6 +247,39 @@ Memory that cannot grow, past `memory: { maximum }`, the 4 GiB of wasm32 or
 the engine's limit, throws the RangeError of an allocation, which the program
 can catch; after a `memory.reset()` the module runs again.
 
+For DSP, `memory: { fixed: ['process'] }` checks the final Wasm call graph:
+the selected exports and their typed variants must run without heap allocation,
+memory growth, host calls, recursion or reachability tracing. Initialization
+can allocate persistent state. An export whose memory behavior cannot be proved
+is a compile error with the failing call path.
+
+```js
+const { instance, memory } = jz(`
+  export function process(a) {
+    const tmp = new Float32Array(128)
+    for (let i = 0; i < 128; i++) tmp[i] = a[i] * 0.5
+    for (let i = 0; i < 128; i++) a[i] = tmp[127 - i]
+  }
+`, { memory: { fixed: ['process'] } })
+
+const input = memory.Float64Array(new Float64Array(128)) // prepare once
+instance.exports.process(input) // borrowed storage through the raw Wasm ABI
+```
+
+The compiler places eligible local typed arrays in the selected functions and
+their named helpers in reusable scratch storage,
+clears them at each construction, and shares equal-layout slots across disjoint
+lifetimes. It currently handles constant sizes up to 64 KiB per array with
+numeric indexed accesses and length reads; escaping buffers retain their normal
+allocation and cannot pass the fixed-memory check. Storage belongs to one
+instance, so imported and shared memories are rejected.
+
+Fixed mode disables `arenaReach` for the module. General mode can use that
+runtime walk to find how far an escaping call's heap can rewind. The fixed
+guarantee covers Wasm execution, excluding JS argument/result marshalling and
+OS scheduling; it is not an audio-deadline guarantee. Prepare buffers before
+processing and use the matching raw exports when the host must avoid marshalling.
+
 `jz.memory()` creates one memory for several modules, so one can read what
 another allocated:
 
@@ -267,6 +329,8 @@ JavaScript's bounds checks.
 <details>
 <summary><strong>How do I inspect or debug the output?</strong></summary>
 
+- A rejected program names the construct that faulted: its module (when there
+  are several), line and column, and the source line.
 - `jz kernel.js --wat` or `compile(src, { wat: true })` prints the WAT. Search
   for `v128` to confirm vectorization and for `__dyn_get` or `__ext_call` to find
   dynamic fallbacks.
@@ -305,7 +369,7 @@ JavaScript's bounds checks.
 
 JZ is experimental and pre-1.0: pin a version and re-test upgrades. CI runs the
 core suite, selected test262 tests, the benchmark gate and a self-compile
-(`npm run test:self` builds `dist/jz.wasm`, the compiler compiled by itself).
+(`npm run test:self` builds and tests a fresh compiler in a temporary directory).
 The same WASM lowers to native through wasm2c; see the
 [native pipeline](scripts/native/README.md).
 
@@ -316,7 +380,7 @@ Adoption is ejectable: remove the JZ build step and the source remains JavaScrip
 ## Stability
 
 Pre-1.0. The package entry points `jz`, `compile`, `instantiate` and
-`jz/interop`, the options above and the CLI flags are the contract; removing or
+`jz/interop` and `jz/strict`, the options above and the CLI flags are the contract; removing or
 changing them takes a major version. Error classes and codes are stable within
 a major. Accepted programs preserve JavaScript values, exceptions and
 evaluation order at every optimization level, outside the differences listed

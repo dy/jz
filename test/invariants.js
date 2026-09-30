@@ -19,7 +19,7 @@ import { ctx, reset } from '../src/ctx.js'
 import { DBG_INVARIANTS, assertCtxInvariants, resetInvariants, assertFeatureWrite, assertLinkDemandWrite } from '../src/debug.js'
 import { createActiveFunction } from '../src/compile/active-function.js'
 import { analyzeBody, reanalyzeBody, setFuncBody, clearBodyFacts } from '../src/compile/analyze.js'
-import { emit, emitter, emitBoolStr as bool, emitIndex as idx, buildArrayWithSpreads as spread, emitIdentitySafe } from '../src/compile/emit.js'
+import { emitter, emissionHooks } from '../src/compile/emit.js'
 import { GLOBALS } from '../src/prepare/index.js'
 import { run, wat } from './util.js'
 import { onKernel, levels } from './_matrix.js'
@@ -145,13 +145,13 @@ test('invariant: shared power generator reconstructs every decimal entry exactly
 
 test('invariant: module-scope const name tracked in ctx.scope.consts', () => {
   if (onKernel()) return  // kernel: compile runs inside the wasm; the host's ctx.scope is never populated, so this white-box internal-state probe can't apply on the self-compile leg
-  reset(emitter, GLOBALS, { emit, bool, idx, spread, emitIdentitySafe })
+  reset(emitter, GLOBALS, emissionHooks())
   compile('const X = 10; export let f = () => X')
   ok(ctx.scope.consts?.has('X'), 'const X should be tracked in ctx.scope.consts')
 })
 
 test('invariant: let does not appear in ctx.scope.consts', () => {
-  reset(emitter, GLOBALS, { emit, bool, idx, spread, emitIdentitySafe })
+  reset(emitter, GLOBALS, emissionHooks())
   compile('let x = 10; export let f = () => x')
   ok(!ctx.scope.consts?.has('x'), 'let x should NOT be in ctx.scope.consts')
 })
@@ -246,7 +246,7 @@ test('invariant: division always produces f64 result', () => {
 
 test('invariant: a signature retype invalidates a cached body on its next read', () => {
   if (onKernel()) return
-  reset(emitter, GLOBALS, { emit, bool, idx, spread, emitIdentitySafe })
+  reset(emitter, GLOBALS, emissionHooks())
   compile('export let f = (a) => a + 1')
   const func = ctx.funcs.map.get('f'), prior = ctx.func.current
   ctx.func.current = func.sig
@@ -263,7 +263,7 @@ test('invariant: a signature retype invalidates a cached body on its next read',
 
 test('invariant: explicit body mutation seams refresh cached facts', () => {
   if (onKernel()) return
-  reset(emitter, GLOBALS, { emit, bool, idx, spread, emitIdentitySafe })
+  reset(emitter, GLOBALS, emissionHooks())
   compile('export let f = (a) => a + 1')
   const func = ctx.funcs.map.get('f')
   ctx.func.current = func.sig
@@ -977,7 +977,8 @@ test('invariant: member-property calls are ProgramIndex edges and roots', () => 
     'let ns = (x) => x',
     'ns.parse = (s) => helper(s) + 1',
     'export let use = (s) => ns.parse(s)',
-  ].join('\n'))
+    // the call is a direct call of `ns$parse` from the plan on: unspliced, it stays an edge
+  ].join('\n'), { optimize: { sourceInline: false } })
   const index = ctx.plans.programIndex
   const reach = name => index.isGraphReachable(index.graphFunctionIdOfName(name))
   ok(index.graphFunctionIdOfName('ns$parse') >= 0, 'the function property lifts to a graph node')
@@ -1309,7 +1310,7 @@ test('invariant: in-process inspection preserves the selected execution compiler
 
 // Exercise developer diagnostics independently of the compiler's debug setting.
 test('debug lifecycle: repeated sessions, drift and failed-session recovery', () => {
-  const bridge = Object.fromEntries(['emit','bool','idx','spread','emitIdentitySafe'].map(k => [k, () => {}]))
+  const bridge = Object.fromEntries(['emit','emitReference','bool','idx','spread','emitIdentitySafe'].map(k => [k, () => {}]))
   const fresh = () => ({
     core: { includes: new Set(), emit: {} }, module: {}, scope: {},
     funcs: { list: [], names: new Set(), map: new Map(), multiProp: new Map() },
@@ -1338,6 +1339,7 @@ test('debug lifecycle: repeated sessions, drift and failed-session recovery', ()
   c.func.current = { name: 'f' }; assertCtxInvariants(c, 'pre-emit')
   throws(() => end(c), /active function record/)
   throws(() => resetInvariants({}), /bridge hook 'emit' missing/)
+  throws(() => resetInvariants({ ...bridge, emitReference: undefined }), /bridge hook 'emitReference' missing/)
   c = fresh(); begin(c); end(c)
   resetInvariants(bridge)
   ok(true, 'a fresh empty session completes after every failure kind')
@@ -1361,9 +1363,64 @@ test('debug lifecycle: real compiles retain semantics across shape changes and e
     try { jz('export function f( {') } catch {}
     values.push(jz(sources[0]).exports.f())
     console.log(JSON.stringify(values))
-  `], { env: { ...process.env, JZ_DEBUG_INVARIANTS: '1' }, encoding: 'utf8', timeout: 30000 })
+  `], { env: { ...process.env, JZ_TEST_TARGET: '', JZ_DEBUG_INVARIANTS: '1' }, encoding: 'utf8', timeout: 180000 })
   is(child.status, 0, child.stderr)
   is(JSON.parse(child.stdout), [...Array(3).fill([0,0,0,3,4,4,4,5]).flat(),0], 'A → A → different shapes → closures → error → A, every tier')
+})
+
+test('invariant: inlining and cleanup preserve binding storage and evaluation order', () => {
+  const entry = new URL('../index.js', import.meta.url).href
+  const child = spawnSync(process.execPath, ['--input-type=module', '-e', `
+    import assert from 'node:assert/strict'
+    import jz from ${JSON.stringify(entry)}
+    const cases = [
+      ['export function f(x){let unused=0;let set=()=>{unused=x};set();return x}', 7],
+      ['function make(){let unused=0;return x=>{unused=x;return x+1}} export function f(x){return make()(x)}', 8],
+      ['function make(x){let held=x;return ()=>held} export function f(x){const read=make(x);x=20;return read()}', 7],
+      ['function make(){let current=0;return x=>{current=x;return current}} export function f(x){return make()(x)}', 7],
+      ['function make(x){return v=>{x=v;return x}} export function f(){const g=make(0);return g(7)}', 7],
+      ['function make(x){return ()=>++x} export function f(){const g=make(0);return [g(),g()]}', [1,2]],
+      ['function make(x=0){return ()=>{x=7;return x}} export function f(){return make()()}', 7],
+      ['function make(x){return ()=>()=>{x+=1;return x}} export function f(){const g=make(0)();return [g(),g()]}', [1,2]],
+      ['function g(x,y=(x=3)){return x+y} export function f(){return g(0)}', 6],
+      ['function g(x,y=++x){return [x,y]} export function f(){return g(0)}', [1,1]],
+      ['function g(x,y=(x=3)){return x+y} export function f(){let n=0;const a=g(n);return [a,n]}', [6,0]],
+      ['function g(x,y=(x=3)){return x+y} export function f(){return g(0,4)}', 4],
+      ['let n=2;function g(x){n=4;return x} export function f(){return g(n)}', 2],
+      ['let n=2;function update(){n=4;return 0} function g(x,y=update()){return x} export function f(){return g(n)}', 2],
+      ['function g(a,x=a[0],y=(a[0]=4)){return x} export function f(){const a=new Float64Array([2]);return g(a)}', 2],
+      ['let n=2;function h(){n=4;return 0} function g(x){return h()+x} export function f(){return g(n)}', 2],
+      ['let n=2;function g(x,y){return x+y} export function f(){const o={valueOf(){n=4;return 1}};return g(o,n)}', 3],
+      ['function g(x,y){return [x,y]} export function f(){let n=2;return g(n,n++)}', [2,2]],
+      ['function g(x){return 0} export function f(){let n=0;const o={valueOf(){n++;return 1}};g(o+1);return n}', 1],
+      ['function g(x,y){return x+y} export function f(){let n=2;const o={valueOf(){n=4;return 1}};const v=g(n,o+1);return [v,n]}', [4,4]],
+      ['let ticks=0;function next(){return ++ticks} function g(x){return x+1} export function f(){ticks=0;let i=0,s=0;while(i<4){if(i++&1)s=g(next())}return [s,ticks]}', [3,2]],
+      ['let ticks=0;function next(){return ++ticks} function g(x){return x+1} export function f(){ticks=0;let i=0,s=0;while(i<4){if(i++&1){const v=g(next());s+=v}}return [s,ticks]}', [5,2]],
+      ['let ticks=0;function g(x){ticks++;return x+1} export function f(){ticks=0;let i=0,s=0;while(i++<3){if(false)g(ticks)}return [s,ticks]}', [0,0]],
+      ['let ticks=0;function g(x){return x+1} export function f(){ticks=0;let s=0;for(let i=0;i<4;i++)s+=(i&1)?g(++ticks):0;return [s,ticks]}', [5,2]],
+      ['function g(x){return x+1} export function f(){let n=1;return [n++ + g(n++),n]}', [4,3]],
+      ['export function f(x){const a=new Float64Array(40);for(let i=0;i<8;i++){const c=i*5;a[c]=c*x}let s=0;for(let i=0;i<40;i++)s+=a[i];return s}', 980],
+      ['function g(x){return x+1} function* gen(n){for(let i=0;i<n;i++)yield i} export function f(){return [...gen(g(2))].join("-")}', '0-1-2'],
+      ['export function f(){let x="abc";return (x=[1,2],x.length)}', 2],
+      ['export function f(){let x="abc";return (x=[1,2],x.length)+x.length}', 4],
+      ['export function f(){let x=[1,2];return (x="abc",x.length)}', 3],
+      ['export function f(b){let x="abc";return (b?(()=>{x=[1,2]})():0,x.length)}', 2],
+      ['export function f(){let x=[1,2];const change=()=>{x="abc"};return (change(),x.length)}', 3],
+      ['function g(x){return x>>>0} export function f(){let v=g(-1);return [v,v+1,v%3]}', [4294967295,4294967296,0]],
+      ['export function f(){let n=0;const v=(n++,4294967295>>>0);return [v,v+1,v%3,n]}', [4294967295,4294967296,0,1]],
+      ['function g(x){return x+1} export function f(){return g(-0)*-0}', -0],
+      ['export function f(x){let unused=0;const make=()=>{let inner=0;return ()=>{unused=x;inner=x}};make()();return x}', 7],
+      ['export function f(x){let unused=0;const set=(v=(unused=x))=>v;return set()}', 7],
+      ['export function f(x){let unused=0;for(let i=0;i<x;i++)unused=i;if(x)unused=x;return x}', 7],
+      ['function* gen(){yield 4} export function f(){const it=gen();return [it.next(7).value,it.next(8).done]}', [4,true]],
+    ]
+    for (const optimize of [0,1,2,3,'size']) for (const [source, expected] of cases) {
+      const ref = Function(source.replaceAll('export ', '') + ';return f')()
+      assert.deepEqual(ref(7), expected)
+      assert.deepEqual(jz(source, { optimize }).exports.f(7), expected)
+    }
+  `], { env: { ...process.env, JZ_TEST_TARGET: '', JZ_DEBUG_INVARIANTS: '1' }, encoding: 'utf8', timeout: 180000 })
+  is(child.status, 0, child.stderr || child.error?.message || 'every emitted write has a declared binding')
 })
 
 
@@ -1374,7 +1431,7 @@ test('invariant: aggregate folding preserves untouched subtrees and bodies', () 
     [['[', [null, 7]], ['[]', 'table', [null, 0]], 7],
     [['{}', [':', 'x', [null, 9]]], ['.', 'table', 'x'], 9],
   ]) {
-    reset(emitter, GLOBALS, { emit, bool, idx, spread, emitIdentitySafe })
+    reset(emitter, GLOBALS, emissionHooks())
     const stable = ['[', [null, 3], [null, 4]]
     const original = ['return', ['[', read, stable]]
     const before = JSON.stringify(original)

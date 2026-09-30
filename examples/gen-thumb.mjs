@@ -117,7 +117,7 @@ const WARMUP = { diffusion: 320, nbody: 380, metaballs: 70, attractors: 200,
                  buddhabrot: 120, lorenz: 320, pendulum: 250, fern: 150, ising: 140, dwa: 95,
                  rule30: 480, epicycles: 130, percolation: 120, schrodinger: 1150,
                  sandpile: 1000, fireflies: 433, bz: 260, magnet: 250, pathtracer: 450, ocean: 90,
-                 spectra: 120 }[name] ?? 1
+                 spectra: 120, 'threejs-math': 90 }[name] ?? 1
 for (let f = 0; f < WARMUP; f++) {
   if (name === 'swarm' && exports.setTarget)               // the page's idle Lissajous stand-in for the cursor
     exports.setTarget(0.5 + 0.32 * Math.sin(f / 60 * 0.23), 0.5 + 0.3 * Math.sin(f / 60 * 0.37 + 1))

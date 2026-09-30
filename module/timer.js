@@ -3,11 +3,12 @@
  *
  * Two host-mode lowerings:
  *
- *   `host: 'js'` (default): emit `env.setTimeout(cb: f64, delay: f64, repeat: i32) -> f64`
+ *   `host: 'js'` (default): emit `env.setTimeout(cb: i64, delay: f64, repeat: i32) -> f64`
  *     and `env.clearTimeout(id: f64) -> f64`. The JS host (interop.js) drives both
  *     via global setTimeout/setInterval and calls back into wasm through the
- *     exported `__invoke_closure(clos: i64) -> f64` trampoline. No queue, no
- *     polling — the host's event loop does the scheduling.
+ *     exported `__call_closure` trampoline (module/function.js), the host's call
+ *     of any closure it holds. No queue, no polling: the host's event loop does
+ *     the scheduling.
  *
  *   `host: 'wasi'`: pure-WASM timer queue using WASI clock_time_get for
  *     deadlines. Runs inline after __start (or via __timer_loop on wasmtime/
@@ -33,28 +34,15 @@ import { inc, err, LAYOUT, declGlobal } from '../src/ctx.js'
 const MAX_TIMERS = 64
 const ENTRY_SIZE = 40
 
-// Shared "fire a NaN-boxed closure with 0 args" trampoline. Funcref index lives
-// in upper 16 bits of the pointer payload; remaining $ftN slots get UNDEF_NAN.
-// Closure is also passed as $__env so captures resolve via env-load.
-// `exported` adds (export "__invoke_closure") so the JS host can call it.
-const invokeClosureFn = (exported, receiver) => `(func $__invoke_closure${exported ? ' (export "__invoke_closure")' : ''} (param $clos i64) (result f64)
+// The WASI queue's "fire a NaN-boxed closure with 0 args" trampoline. Funcref
+// index lives in the pointer's aux bits; every $ftN slot gets UNDEF_NAN, as
+// many as the settled closure width (read when the template is realized, after
+// plan fixed it). Closure is also passed as $__env so captures resolve via env-load.
+const invokeClosureFn = (ctx) => `(func $__invoke_closure (param $clos i64) (result f64)
   (call_indirect (type \$ftN)
     (f64.reinterpret_i64 (local.get $clos))
     (i32.const 0)
-    ${Array.from({length: MAX_CLOSURE_ARITY + (receiver ? 1 : 0)}, () => `(f64.const nan:${UNDEF_NAN})`).join('\n    ')}
-    (i32.wrap_i64 (i64.and
-      (i64.shr_u (local.get $clos) (i64.const ${LAYOUT.AUX_SHIFT}))
-      (i64.const ${LAYOUT.AUX_MASK})))))`
-
-// One-arg variant: first $ftN slot carries a real f64 (the rAF timestamp),
-// the rest pad UNDEF_NAN. Exported so the host frame loop can pass the
-// DOMHighResTimeStamp through to the callback.
-const invokeClosure1Fn = (exported, receiver) => `(func $__invoke_closure1${exported ? ' (export "__invoke_closure1")' : ''} (param $clos i64) (param $a0 f64) (result f64)
-  (call_indirect (type \$ftN)
-    (f64.reinterpret_i64 (local.get $clos))
-    (i32.const 0)
-    (local.get $a0)
-    ${Array.from({length: MAX_CLOSURE_ARITY - 1 + (receiver ? 1 : 0)}, () => `(f64.const nan:${UNDEF_NAN})`).join('\n    ')}
+    ${Array.from({length: (ctx.closure.width ?? MAX_CLOSURE_ARITY) + (ctx.closure.receiver ? 1 : 0)}, () => `(f64.const nan:${UNDEF_NAN})`).join('\n    ')}
     (i32.wrap_i64 (i64.and
       (i64.shr_u (local.get $clos) (i64.const ${LAYOUT.AUX_SHIFT}))
       (i64.const ${LAYOUT.AUX_MASK})))))`
@@ -68,28 +56,6 @@ const setupWasi = (ctx) => {
     __timer_tick: ['__time_ns', '__timer_dispatch'],
     __timer_loop: ['__time_ns', '__timer_dispatch'],
   })
-
-  // Force closure ABI width to MAX_CLOSURE_ARITY so __timer_dispatch's
-  // call_indirect always matches the $ftN type (env, argc, a0..a7). Stays
-  // HERE, at module init time, unconditional — unlike the four effects below
-  // (inc/hostImport/declGlobal, all correctly demand-gated), this is a
-  // WIDTH-POLICY decision that must apply BEFORE any closure body in the
-  // program gets compiled, not merely before __invoke_closure's OWN
-  // call_indirect: a closure literal minted earlier in emission order than
-  // the first setTimeout/setInterval/clearTimeout/clearInterval call site
-  // would already have its param list fixed at whatever width was in force
-  // at MINT time, and a call_indirect through a narrower-than-expected
-  // callee is a genuine type mismatch, not a size nit — confirmed by trying
-  // the lazy version first: `wasmtime` rejected the compiled output outright
-  // ("type mismatch: expected i32, found f64" — a real, invalid-wasm
-  // regression, not a byte-count difference). Harmless as an eager-load
-  // divergence source: once `$ftN` itself is properly demand-gated
-  // (src/wat/assemble.js finalizeClosureTable, this branch's own earlier
-  // fix), a program with NO reachable call_indirect never emits `$ftN` at
-  // all, so this width value is moot dead data whenever it doesn't matter —
-  // it only ever surfaces in output when `$ftN` is ALSO genuinely needed,
-  // where it's a legitimate (if slightly wide) ABI choice, not a purity bug.
-  ctx.closure.floor = MAX_CLOSURE_ARITY
 
   // Demand-driven WASI timer runtime bring-up — the OTHER three were
   // unconditional here (module init time), forcing __timer_init/__timer_tick/
@@ -278,7 +244,7 @@ const setupWasi = (ctx) => {
       ;; Loop
       (br $poll))))`
 
-  ctx.core.stdlib['__invoke_closure'] = () => invokeClosureFn(false, ctx.closure.receiver)
+  ctx.core.stdlib['__invoke_closure'] = () => invokeClosureFn(ctx)
 
   // Emitter: setTimeout(closure, delay) → timer_id
   ctx.core.emit['setTimeout'] = (closureExpr, delayExpr) => {
@@ -324,10 +290,6 @@ const setupWasi = (ctx) => {
 }
 
 const setupJsHost = (ctx) => {
-  // Timer callbacks are invoked through __invoke_closure, which always pads to
-  // MAX_CLOSURE_ARITY. Set the ABI floor before plan() resolves $ftN width.
-  ctx.closure.floor = MAX_CLOSURE_ARITY
-
   // env.setTimeout's cb param is i64 (NaN-box bits) to dodge V8's f64 NaN
   // canonicalization at the wasm→JS boundary (same reason as env.print —
   // see module/console.js header). delay is a real numeric f64 (no NaN-box
@@ -337,11 +299,9 @@ const setupJsHost = (ctx) => {
   const needClearTimeout = () => hostImport('env', 'clearTimeout',
     ['func', '$__clear_timeout', ['param', 'f64'], ['result', 'f64']])
 
-  ctx.core.stdlib['__invoke_closure'] = () => invokeClosureFn(true, ctx.closure.receiver)
-
   const emitSet = (closureExpr, delayExpr, repeat) => {
     needSetTimeout()
-    inc('__invoke_closure')
+    inc('__call_closure')
     return typed(['call', '$__set_timeout',
       ['i64.reinterpret_f64', asF64(emit(closureExpr))],
       asF64(emit(delayExpr)),
@@ -359,17 +319,15 @@ const setupJsHost = (ctx) => {
 
   // requestAnimationFrame(cb) / cancelAnimationFrame(id) — the same env-service
   // shape as setTimeout: the host schedules (real rAF in browsers, a 16 ms
-  // timer fallback elsewhere — interop.js) and fires the callback through the
-  // exported __invoke_closure1 trampoline with the frame timestamp.
+  // timer fallback elsewhere, interop.js) and calls the callback through
+  // __call_closure with the frame timestamp.
   const needRaf = () => hostImport('env', 'requestAnimationFrame',
     ['func', '$__raf', ['param', 'i64'], ['result', 'f64']], true)
   const needCancelRaf = () => hostImport('env', 'cancelAnimationFrame',
     ['func', '$__craf', ['param', 'f64'], ['result', 'f64']])
-  ctx.core.stdlib['__invoke_closure1'] = () => invokeClosure1Fn(true, ctx.closure.receiver)
-
   ctx.core.emit['requestAnimationFrame'] = (cbExpr) => {
     needRaf()
-    inc('__invoke_closure1')
+    inc('__call_closure')
     return typed(['call', '$__raf', ['i64.reinterpret_f64', asF64(emit(cbExpr))]], 'f64')
   }
   ctx.core.emit['cancelAnimationFrame'] = (idExpr) => {

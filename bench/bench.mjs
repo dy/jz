@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { compileJzAt, compileJzSelf, watrModuleSources } from './_lib/compile.js'
 import { GRAPH_CASES, LOWERED_CASES, HOST_ADAPTERS, graphSources } from './_lib/graph.js'
 import { execFileSync, spawnSync } from 'node:child_process'
 import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
@@ -500,59 +501,6 @@ const compileJzW2c = c => {
   execFileSync('node', [join(ROOT, 'cli.js'), c.js, '--host', 'wasi', '-O', JSON.stringify(optimize), '-o', w2cWasmPath(c)], { cwd: BENCH_DIR, stdio: 'pipe' })
 }
 
-const benchlibHostSource = () => {
-  const src = readFileSync(join(LIB, 'benchlib.js'), 'utf8')
-  const out = src.replace(`export let printResult = (medianUs, checksum, samples, stages, runs) => {
-  console.log(\`median_us=\${medianUs} checksum=\${checksum} samples=\${samples} stages=\${stages} runs=\${runs}\`)
-}`, `export let printResult = (medianUs, checksum, samples, stages, runs) => {
-  env.logResult(medianUs, checksum, samples, stages, runs)
-}`)
-  if (out === src) throw Error('failed to patch benchlib printResult for jz')
-  return out
-}
-
-const watrModuleSources = () => ({
-  './watr-compile.js': `import compileWatr from '../../node_modules/watr/src/compile.js'\nexport const compile = (src) => compileWatr(src)\n`,
-  '../../node_modules/watr/src/compile.js': readFileSync(join(ROOT, 'node_modules/watr/src/compile.js'), 'utf8'),
-  './encode.js': readFileSync(join(ROOT, 'node_modules/watr/src/encode.js'), 'utf8'),
-  './const.js': readFileSync(join(ROOT, 'node_modules/watr/src/const.js'), 'utf8'),
-  './parse.js': readFileSync(join(ROOT, 'node_modules/watr/src/parse.js'), 'utf8'),
-  './util.js': readFileSync(join(ROOT, 'node_modules/watr/src/util.js'), 'utf8'),
-})
-
-// Build a case's host wasm at a given optimize level. `level: 'speed'` is the
-// row's timed/run build; `level: 'size'` is the -Os build the size column reads.
-// Both offload formatting via env.logResult (the benchlibHostSource patch), so
-// the comparison to AS — which offloads via @external logLine — is like-for-like.
-const compileJzAt = (c, optimize, compiler = compile) => {
-  const isWatr = c.id === 'watr'
-  // Graph cases resolve their whole import graph (GRAPH_CASES), then swap the
-  // real benchlib for the env.logResult-patched host build.
-  const isGraph = GRAPH_CASES.has(c.id)
-  let code, modules, hostImports = {}
-  if (isGraph) {
-    ;({ code, modules, imports: hostImports } = graphSources(c, resolveModuleGraph))
-    modules[resolve(LIB, 'benchlib.js')] = benchlibHostSource()
-  } else {
-    code = readFileSync(c.js, 'utf8')
-    modules = {
-      '../_lib/benchlib.js': benchlibHostSource(),
-      ...(isWatr ? watrModuleSources() : {}),
-    }
-  }
-  return compiler(code, {
-    jzify: isWatr || isGraph || LOWERED_CASES.has(c.id),
-    modules,
-    imports: {
-      ...hostImports,
-      env: { logResult: { params: 5 } },
-      performance: { now: { params: 0, returns: 'number' } },
-    },
-    optimize,
-    alloc: false,
-    ...caseMemory(c),
-  })
-}
 
 const compileJzHost = (c, compiler = compile, path = jzHostWasmPath(c)) => {
   // All benches compile at level 'speed' — full watr inlining + L3 cap/hash
@@ -570,43 +518,8 @@ const compileJzSize = (c, compiler = compile, path = jzSizeWasmPath(c)) => {
   writeFileSync(path, compileJzAt(c, { level: 'size' }, compiler))
 }
 
-// Part 3 (jz×jz self-compile row): the `jz` CASE under the `jz` TARGET is the one
-// self-referential cell — jz compiling bench/jz/jz.js, which pulls in the
-// WHOLE compiler (scripts/self.js) as source, then RUNS the result, which
-// itself compiles 3 more programs 45 times over (bench/jz/jz.js's own memory
-// note: the host build already watermarks ~0.5 GB with no intermediate free).
-// Every other (case,target) pair's prep runs IN bench.mjs's own process
-// (compileJzHost/compileJzSize above, or the other targets' execFileSync
-// calls) because it's cheap; this one is NOT — the actual unlock is the
-// region-arena allocator (concurrent work, .work/evidence.md §Region arena),
-// which today's bump-and-never-free allocator doesn't have. Until it lands,
-// this compile can legitimately take minutes and/or the resulting module can
-// legitimately trap (verified live: a full compile+run took ~4-6 minutes and
-// the run ended in a real V8 `RangeError: Maximum call stack size exceeded`
-// — a clean, catchable failure, not a crash).
-//
-// Running that IN-PROCESS (like every other cell) would mean a bad day here
-// (OOM, a true hang) takes the WHOLE bench run down with it. So this one
-// cell's PREP is its own child process (bench/_lib/compile-jz-self.mjs,
-// --max-old-space-size caps its heap explicitly) under a generous but finite
-// wall-clock timeout — any failure mode (OOM kill, timeout, a thrown
-// compile-time error) becomes one honest `{ status: 'fail', reason }` row via
-// tryRun's own try/catch, exactly like any other case's compile failure. The
-// RUN step (run-jz-host.mjs) was already its own subprocess via runProc, so
-// the V8 RangeError above already surfaces cleanly with zero extra work.
-//
-// The moment the region build lands, nothing here needs to change — this
-// cell should just start succeeding (and, once it's reliably fast, folding
-// back into compileJzHost's normal in-process path is the natural follow-up).
-const JZ_SELF_HOST_TIMEOUT_MS = 10 * 60 * 1000
-const compileJzSelfIsolated = c => {
-  const r = spawnSync('node', ['--max-old-space-size=8192', join(LIB, 'compile-jz-self.mjs'), jzHostWasmPath(c), jzSizeWasmPath(c)],
-    { cwd: BENCH_DIR, encoding: 'utf8', timeout: JZ_SELF_HOST_TIMEOUT_MS })
-  if (r.error?.code === 'ETIMEDOUT' || (r.signal && !r.status))
-    throw new Error(`jz×jz self-compile compile did not finish within ${JZ_SELF_HOST_TIMEOUT_MS / 1000}s (killed via ${r.signal || 'timeout'}) — expected until the region-arena allocator lands (today's bump allocator never frees; this compile's working set grows unbounded). See bench/README's self-compile lab-row note.`)
-  if (r.status !== 0)
-    throw new Error(`jz×jz self-compile compile failed: ${(r.stderr || r.stdout || '').trim().slice(0, 500)}`)
-}
+// Isolate the compiler graph; a failed build must not abort other benchmark rows.
+const compileJzSelfIsolated = c => compileJzSelf(jzHostWasmPath(c), jzSizeWasmPath(c))
 
 const flatInputs = new Set()
 const writeFlat = (c, { nativePerformance = false, nativeGlobals = false } = {}) => {
@@ -1369,6 +1282,8 @@ const FMA_CHECKSUMS = {
   nbody: 587496398, lorenz: 1903597547, raytrace: 2776628753,
   // Native Go and Porffor arm64; disabling only FMA restores 1711808418 in both.
   resample: [3397518485, 3638658781],
+  // Native Go arm64; -gcflags=-d=fmahash=n restores each strict reference.
+  gainclass: 359062747, slices: 3246044915, delayline: 2056124083,
 }
 // New cases need an independent oracle before their first measured snapshot.
 // entity agrees across native C, Node, JZ, Go-Wasm and Porffor (2026-09-24).

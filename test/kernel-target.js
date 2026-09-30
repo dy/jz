@@ -35,7 +35,12 @@ const gc = vm.runInNewContext('gc')
 v8.setFlagsFromString('--no-expose-gc')
 const GC_EVERY = process.env.JZ_KERNEL_GC_EVERY == null ? 4 : Number(process.env.JZ_KERNEL_GC_EVERY)
 let compileCount = 0
-const reclaim = () => { if (GC_EVERY && ++compileCount % GC_EVERY === 0) gc() }
+const freshSelf = () => {
+  // Count attempts before allocating: a throwing compile must release just as
+  // a successful one does, after the previous instance has left its stack.
+  if (GC_EVERY && ++compileCount % GC_EVERY === 0) gc()
+  return instantiate(getSelfModule(), { memory: 8192 })
+}
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const SELF = join(ROOT, 'dist/jz.wasm')
@@ -129,6 +134,8 @@ const optJSONFor = (self, opts) => {
 }
 
 export const compileViaKernel = (code, opts = {}) => {
+  if (opts.sourceMap)
+    throw new Error('Source maps require the JavaScript compiler API or CLI; the Wasm compiler ABI does not return debug metadata')
   if (opts.inspect || opts.profile)
     throw new Error('Analysis inspection and compiler profiles require the in-process compiler; the Wasm target does not expose host compiler state')
   // Compile-time advisories: the kernel runs the same advise passes and returns the
@@ -136,7 +143,7 @@ export const compileViaKernel = (code, opts = {}) => {
   // Done on its own fresh instance, then we fall through to produce the bytes/WAT
   // (jz() compiles AND instantiates while reading advisories off the result).
   if (opts.warnings || typeof opts.whyNotRewind === 'function') {
-    const w = instantiate(getSelfModule(), { memory: 8192 })
+    const w = freshSelf()
     const entries = JSON.parse(w.memory.read(w.exports.compileWarnings(w.memory.String(code), opts.strict ? 1 : 0, optJSONFor(w, opts), modulesJSONFor(w, opts), hostFor(w, opts), sourceTypeFor(w, opts), buildJSONFor(w, opts))))
     if (opts.warnings) {
       opts.warnings.entries ||= []
@@ -145,9 +152,8 @@ export const compileViaKernel = (code, opts = {}) => {
     }
     if (typeof opts.whyNotRewind === 'function')
       for (const entry of entries) if (entry.code === 'rewind-why-not') opts.whyNotRewind('$' + entry.fn, entry.reason)
-    reclaim()
   }
-  const self = instantiate(getSelfModule(), { memory: 8192 })
+  const self = freshSelf()
   // `--wat` IS supported on this leg via the wasm's `compileWat` export: same
   // source→compileAst(prepare(ast)) pipeline, but watr/print of the WAT IR instead of
   // byte encoding. White-box `compile(src,{wat:true}).match(...)` codegen-shape tests
@@ -163,7 +169,6 @@ export const compileViaKernel = (code, opts = {}) => {
     // (watOptimize + the optimizeFunc 'post' pass), so the self-compile emits the same
     // WAT IR native does. Explicit optimize:false / 0 stays off.
     const wat = self.memory.read(self.exports.compileWat(self.memory.String(code), opts.strict ? 1 : 0, optJSONFor(self, opts), modulesJSONFor(self, opts), hostFor(self, opts), sourceTypeFor(self, opts), buildJSONFor(self, opts)))
-    reclaim()
     return wat
   }
   // The wasm parses + lowers internally; `strict` skips jzify (rejecting full-JS
@@ -182,6 +187,5 @@ export const compileViaKernel = (code, opts = {}) => {
   // 512 MB instance for as long as the caller holds the bytes — the reclaim gc
   // could never free anything. slice() detaches the result onto its own buffer.
   const bytes = (bin instanceof Uint8Array ? bin : new Uint8Array(bin)).slice()
-  reclaim()
   return bytes
 }

@@ -1,14 +1,14 @@
 // A field read twice with no store of that field and no writing call between
 // is read once (compile/cse-load.js fieldOf): `e.type` tested against four
-// names is one load and four compares. A store of the field through any
-// receiver, a computed-key store into an object, a call that may write, an
+// names is one load and four compares. A store through a receiver that may
+// alias, a computed-key store into that object, a call that may write, an
 // accessor of the name on one of the receiver's layouts, and a reassignment of
 // the receiver each end the first read's reach.
 import test from 'tst'
 import { ok } from 'tst/assert.js'
 import jz from '../index.js'
 import { belowOpt, levels } from './_matrix.js'
-import { oracle, wat } from './util.js'
+import { oracle, wat, funcWat } from './util.js'
 
 const agrees = (src, args, label) => {
   const host = oracle(src)
@@ -72,4 +72,127 @@ test('field cse: the guards of one event read its type once', () => {
   const count = (text) => (text.match(/\$__dyn_get/g) || []).length
   const on = wat(guards, { optimize: 2 }), off = wat(guards, { optimize: { level: 2, loadCSE: false } })
   ok(count(on) < count(off), `fewer reads with the cache (${count(on)} against ${count(off)})`)
+})
+
+test('field cse: branch traversal preserves typed-array reductions', () => {
+  for (const [cmp, op] of [['>', 'pmax'], ['<', 'pmin']]) {
+    const src = `let a = new Float64Array(17)
+export const put = (i, x) => { a[i] = x }
+export const peak = n => {
+  let m = 1, i = 0
+  while (i < n) { if (a[i] ${cmp} m) m = a[i]; i++ }
+  return m * 1
+}`
+    const host = oracle(src), mod = jz(src, { optimize: 'speed' }).exports
+    const values = [NaN, -0, 0, 4, -7, 3, NaN, 2, 8, -9, 5, 1, 6, -2, 7, Infinity, -Infinity]
+    values.forEach((x, i) => { host.put(i, x); mod.put(i, x) })
+    for (const n of [-1, 0, 1, 2, 15, 16, 17, 19])
+      ok(Object.is(mod.peak(n), host.peak(n)), `${op}: empty, odd, NaN and missing elements, n=${n}`)
+    ok(wat(src, { optimize: 'speed' }).includes(`f64x2.${op}`), `${op}: the conditional reduction still vectorizes`)
+  }
+})
+
+const distinct = `let left, right
+export const f = (n) => {
+  const a = { x: n }, b = { x: n + 1 }
+  left = a; right = b
+  const before = a.x
+  b.x = before + 2
+  const after = a.x
+  return before + after + right.x
+}`
+
+test('field cse: stores to distinct objects with the same layout keep cached reads', () => {
+  agrees(distinct, [[0], [1], [7]], 'distinct')
+  if (belowOpt(2)) return
+  const loads = o => (funcWat(wat(distinct, { optimize: o }), 'f').match(/f64\.load\b/g) || []).length
+  const on = loads(2), off = loads({ level: 2, loadCSE: false })
+  ok(on < off, `fewer loads across the unrelated store (${on} against ${off})`)
+})
+
+test('field cse: joined aliases, computed stores and rebound receivers', () => {
+  agrees(`let keep
+export const alias = (n) => {
+  const a = { x: n }, b = n > 1 ? a : { x: 5 }; keep = a
+  const before = a.x; b.x = 20; const after = a.x
+  return before * 100 + after
+}
+export const key = (n) => {
+  const a = { x: n, y: 1 }, b = n > 1 ? a : { x: 5, y: 6 }; keep = a
+  const before = a.x; b[n % 2 ? 'x' : 'y'] = 20; const after = a.x
+  return before * 100 + after
+}
+export const rebind = (n) => {
+  let a = { x: n }; const b = { x: 8 }; keep = a
+  const before = a.x; a = b; b.x++; const after = a.x
+  return before * 100 + after
+}
+export const branches = (n) => {
+  const a = { x: n }, b = n > 1 ? a : { x: 5 }; keep = a
+  let result = 0
+  if (a.x > 0) {
+    b.x += 10
+    if (a.x > 10) result = a.x
+  } else { b.x = 2; result = a.x }
+  const after = a.x
+  return result * 100 + after
+}
+export const firstInArm = (n) => {
+  const a = { x: n }, b = { x: n + 1 }; keep = a
+  let result = 0
+  if (n > 1) { const before = a.x; b.x++; result = before + a.x }
+  else { a.x = 30; result = a.x }
+  const after = a.x
+  return result * 100 + after
+}`, [[0], [1], [2], [7]], 'aliasing')
+})
+
+test('field cse: conditional reads preserve skipped and throwing null receivers', () => {
+  agrees(`let keep
+export const f = n => {
+  const a = n > 0 ? { x: 3 } : null, b = { x: 1 }; keep = b
+  let step = 0, sum = 0
+  try {
+    if (n > 0) { const first = a.x; step = 1; b.x = 8; sum = first + a.x }
+    else if (n === 0) { const first = a.x; step = 2; b.x = 9; sum = first + a.x }
+    return sum * 100 + b.x * 10 + step
+  } catch (e) { return (e instanceof TypeError ? 900 : 0) + b.x * 10 + step }
+}`, [[-1], [0], [1], [7]], 'skip, throw before store, or reuse after disjoint store')
+})
+
+// A ring buffer's cursor record: `c.b` and `c.p` are read by the declaration's
+// element read and again by the element store and the cursor's own step, with
+// only `c.f` stored between. Each field read the statement evaluates before any
+// store, call or condition is one read; an element store through `c.b`, a
+// typed array, writes no field.
+const ring = `const mkBank = () => [7, 5].map(n => ({ b: new Float64Array(n), p: 0, f: 0.5 }))
+const get = (c) => c.p
+export let run = (n) => { const bank = mkBank(); let out = 0
+  for (let i = 0; i < n; i++) for (let c of bank) {
+    let y = c.b[c.p]
+    c.f = y * 0.25 + c.f * 0.75
+    c.b[c.p] = i * 0.5 + 0.8 * c.f
+    c.p = (c.p + 1) % c.b.length
+    out += y }
+  return out }
+export let ends = (n) => { const c = mkBank()[n & 1], d = { self: null, p: 3 }; d.self = d
+  const a = get(c) + c.p, b = n > 1 && c.p > 0 ? c.p : -1
+  c.b[c.p] = (c.p = 0) + c.p
+  const e = d.p; d.self['p'] = 9
+  return a * 1000 + b * 100 + c.p * 10 + e + d.p }`
+
+test('field cse: a cursor record read by a statement before any change', () => agrees(ring, [[0], [3], [11]], 'ring'))
+
+test('field cse: the cursor and the buffer are read once an iteration', () => {
+  if (belowOpt(2)) return
+  const text = wat(ring, { optimize: 2 })
+  const loops = []
+  for (let at = text.indexOf('(loop'); at >= 0; at = text.indexOf('(loop', at + 1)) {
+    let depth = 0, end = at
+    do { const c = text[end++]; if (c === '(') depth++; else if (c === ')') depth-- } while (depth && end < text.length)
+    loops.push(text.slice(at, end))
+  }
+  const inner = loops.filter(l => !/\(loop/.test(l.slice(5)) && /f64\.store offset=16/.test(l))
+  ok(inner.length > 0, 'found the loop over the bank')
+  for (const l of inner) ok((l.match(/f64\.load offset=8/g) || []).length === 1, `one read of the cursor, not ${(l.match(/f64\.load offset=8/g) || []).length}`)
 })
