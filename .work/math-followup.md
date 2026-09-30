@@ -210,8 +210,10 @@ What still costs in `quatmul` and `fabrik`, in order, each a general class:
    stores to other module arrays: forwarding forgets them because it cannot prove
    `a`, `out`, `inv` distinct. Needs a distinct-allocation fact for module-const
    arrays (a `global.get` leaf whose initializer allocates), then the ~10 loads per
-   iteration go. `cseScalarLoad`'s `fn.cseLoadBases` is the existing oracle of that
-   kind; it does not reach the hoisted `$__li*` bases.
+   iteration go. This requires an allocation-identity proof carried through the
+   hoisted `$__li*` bases. `cseScalarLoad`'s `fn.cseLoadBases` is a read-only,
+   storage-kind-disjoint whitelist, not proof that two arrays of the same kind
+   have separate allocations; it cannot supply that identity.
 2. `invert`'s early return puts its stores in both arms of a diamond; forwarding
    across the join needs a `select` of the two arms' values (`.work` item 2 above).
 3. The remaining `polytri` cost is in `between`, `intersectProp`, `diagonalie`
