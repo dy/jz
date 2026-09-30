@@ -5,7 +5,7 @@
  */
 
 import { ERR } from '../../../err-codes.js'
-import { ctx, err } from '../../ctx.js'
+import { ctx } from '../../ctx.js'
 import { asF64, asI32, emitNum, isLit, litVal, toI32, toInt32, toNumF64, typed } from '../../ir.js'
 import { intExprRange, intLiteralValue, int32 } from '../../static.js'
 import { exprType } from '../../type.js'
@@ -70,13 +70,10 @@ export const bitwiseOps = {
   '~':   (a, self) => {
     if (Array.isArray(a) && a[0] === '~') {
       const inner = a[1]
-      // ~~x === x for BigInt; the int32-truncation fold below is number-only.
-      // A nullable BigInt would need a runtime BigInt/Number result join.
-      if (hasBigintDomain(inner)) {
-        if (ctx.summary?.at(ctx.func.current)?.mayBeNullishExpr(inner))
-          err('~~ on a nullable BigInt value is not supported; branch on nullishness first')
-        return emit(inner)
-      }
+      // BigInt keeps its payload; every Number-domain value takes ToInt32.
+      // Use the unary domain join for nullable and mixed operands too.
+      if (hasBigintDomain(inner))
+        return bigIntUnary(inner, v => v, v => ['f64.convert_i32_s', toInt32(v)], computedBoxOf(self))
       const iv = emit(inner)
       return isLit(iv) ? emitNum(int32(litVal(iv))) : typed(toI32(isI32Num(iv) ? iv : toNumF64(inner, iv)), 'i32')
     }

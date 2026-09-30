@@ -14,6 +14,30 @@ import { levels } from './_matrix.js'
 import { oracle } from './util.js'
 
 const LEVELS = levels(false, 1, 2)
+
+test('bigint tag: nested unary operations preserve mixed and missing values with one read', () => {
+  for (const expression of ['~~VALUE', '-~VALUE', '~(-VALUE)', '-(-VALUE)']) {
+    const src = `
+      const values = [300n, 300, -1n, 0n, 0x7ff8000200000000n, 3.75,
+        -0, 4294967295, NaN, Infinity, null, undefined, '12', true]
+      let reads = 0
+      function read(k) { reads++; return values[k] }
+      export function probe(k) { return ${expression.replace('VALUE', 'read(k)')} }
+      export function count() { return reads }
+      export function absent(k) { const a = [17n]; return ${expression.replace('VALUE', 'a[k]')} }
+    `
+    for (const optimize of levels(0, 1, 2, 3, 'size')) {
+      const expected = oracle(src), actual = jz(src, { optimize }).exports
+      for (const k of [0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, -1, 0]) {
+        is(actual.probe(k), expected.probe(k), `${expression}: mixed value ${k}, O${optimize}`)
+        is(actual.count(), expected.count(), 'one operand evaluation')
+      }
+      for (const k of [0, 1, 1, -1, 0])
+        is(actual.absent(k), expected.absent(k), `${expression}: nullable BigInt ${k}, O${optimize}`)
+    }
+  }
+})
+
 test('bigint tag: copy cycles preserve parameter and local carriers', () => {
   const copies = [
     'let m = n; n = m',

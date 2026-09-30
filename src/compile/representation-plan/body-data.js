@@ -532,22 +532,14 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
   // 3 is the plain `[]`/`.member` read (currentOf/plannedOf's `recv` branch)
   // — both producers, same physical guarantee, one predicate.
   //
-  // NARROWED to a genuinely storage-TRACKED receiver (regression found live,
-  // FULL suite: array-destructure's `let [a, b] = [1, BigInt(v)]` desugars
-  // to `let d0 = [1, BigInt(v)]; let a = d0[0]; let b = d0[1]` — `d0[1]` IS
-  // a `[]` member read, but `d0` is an ARRAY-LITERAL temp, never `.push`/
-  // `.set`-mutated, so the "write side always boxes" physical guarantee this
-  // predicate exists to name was never actually established for it — a
-  // literal's own construction path is free to choose a different internal
-  // layout (unboxed, when every element's kind is statically known) with no
-  // obligation to box uniformly. `provenance.storage`/`.bigintTyped` (this
-  // file's own solveBigintProvenance, already the authority exprMay's
-  // identical STORAGE_READ_METHODS/`[]` branches consult) is the precise,
-  // already-computed signal for "this receiver is real, mutation-tracked
-  // storage" — reusing it here closes the gap with no new analysis.
+  // Ordinary array elements are tagged slots, including read-only literals.
+  // Destructuring's private arrayVars temporaries are the exception: their
+  // statically indexed elements may retain raw carriers (module/array.js).
+  // Mutation-tracked containers and typed arrays keep their existing proof.
   const isStorageReadProducer = node => {
     if (!Array.isArray(node)) return false
     const isTrackedStorage = recv => Array.isArray(recv) && recv[0] === '[' ||
+      (valTypeOf(recv) === VAL.ARRAY && !ctx.schema.arrayVars?.has(recv)) ||
       valTypeOf(recv) === VAL.TYPED || summary?.valOfExpr(recv) === VAL.TYPED ||
       (typeof recv === 'string' &&
        ((localStorage && localStorage.has(recv)) || (provenance && provenance.storage.has(recv)) ||
@@ -615,7 +607,13 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
     for (const [name, k] of params) {
       const ready = boundary.params[k]?.stable === true || materializedNames.has(name)
       if (!(ready && targetNames.get(name) === BOXED_BIGINT)) continue
-      if (exportedIdentity && !hostBoxParams.has(k)) { hostBoxParams.add(k); grew = true }
+      // Body writes can require a tagged binding even when its incoming value
+      // crosses a numeric boundary. Only the settled i64 ingress can box host
+      // BigInts; a numeric lane already supplies a valid Number carrier.
+      const p = sig.params[k]
+      if (exportedIdentity && !p.jsstring && (p.boundaryI64 || p.ptrKind != null) && !hostBoxParams.has(k)) {
+        hostBoxParams.add(k); grew = true
+      }
       if (closureAbiIdentity && !closureBoxParams.has(k)) { closureBoxParams.add(k); grew = true }
     }
     return grew
@@ -739,21 +737,10 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
       }
     }
 
-    // Census-shaped unary '-'/'~' and joint-binary result nodes. Reuses the
-    // SAME `materializedJoins` set as the JOIN_OPS
-    // fixpoint above — every consumer (emittedCandidate, materializedNames'
-    // propagation pass, the emitters' computedBoxOf) already asks that one
-    // Set, so admitting a new node shape into it is the whole wiring; no
-    // new consumer-side plumbing. NOT a
-    // fixpoint (single pass, no `while`, unlike JOIN_OPS above): a JOIN_OPS
-    // node's arms can be ARBITRARY sub-expressions (a name, a call, another
-    // join) whose OWN readiness may only settle on a later round — but
-    // bigIntUnary/bigIntJointDispatch (emit.js) always compute their "real
-    // bigint" branch fresh from the operand's raw i64 bits, unconditionally,
-    // regardless of any OTHER binding's materialization state. The only
-    // precondition is the node's OWN target being BOXED_BIGINT (already
-    // computed above by plannedOf's generic branch) — no arm-by-arm proof, so
-    // no iteration is needed.
+    // Unary and binary numeric results share the join materialization set.
+    // Each emitter computes its BigInt arm from raw bits and boxes it when
+    // the plan requests a tagged result. Nested unary producers become ready
+    // through this same fixpoint, like joins and their binding copies.
     for (const node of plannedNodes) {
       const target = nodeTarget.get(node)
       if (materializedJoins.has(node) || target !== BOXED_BIGINT) continue
@@ -769,6 +756,16 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
           (censusMaybeUndefinedKind(arg) === VAL.BIGINT || summary?.mayBeNullishExpr(arg) === true)
       }
       const sentinelUnary = (op === 'u-' || op === '~') && maybeAbsentBigint(node[1])
+      // A unary result can feed another unary result: after the inner join,
+      // its missing arm is Number, not absence. Plan that producer before
+      // asking whether its tagged carrier is ready, as for binary operands.
+      let taggedUnary = false
+      if (op === 'u-' || op === '~') {
+        plannedOf(node[1])
+        const candidate = emittedCandidate(node[1])
+        taggedUnary = canBeBigint(semanticOf(node[1])) &&
+          (candidate & PRODUCER_READY) !== 0 && (candidate & PRODUCER_REP) === BOXED_BIGINT
+      }
       const operands = [node[1], node[2]]
       const sentinelJoint = BIGINT_JOINT_BINARY_OPS.has(op) &&
         operands.some(maybeAbsentBigint) && operands.every(arg =>
@@ -784,7 +781,7 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
         const candidate = emittedCandidate(arg), sem = semanticOf(arg)
         return ((candidate & PRODUCER_READY) !== 0 && (candidate & PRODUCER_REP) === BOXED_BIGINT) || definiteBigint(sem) || excludesBigint(sem)
       }) && operands.some(arg => canBeBigint(semanticOf(arg)))
-      if (!sentinelUnary && !sentinelJoint && !taggedJoint) continue
+      if (!sentinelUnary && !taggedUnary && !sentinelJoint && !taggedJoint) continue
       materializedJoins.add(node)
       materializing = true
     }

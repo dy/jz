@@ -27,6 +27,7 @@ import { onKernel, levels } from './_matrix.js'
 const HEX = 'const _hx8 = n => n.toString(16).padStart(8, "0")\n'
 const I64HEX = 'i64Hex = bits => "0x" + _hx8(Number((bits >> 32n) & 0xFFFFFFFFn)) + _hx8(Number(bits & 0xFFFFFFFFn))\n'
 const run = (src, level) => instantiate(compile(src, { optimize: level }), { memory: 64 }).exports
+
 // The JS oracle, the same source evaluated by the host.
 const hx8 = n => n.toString(16).padStart(8, '0')
 const i64Hex = bits => '0x' + hx8(Number((bits >> 32n) & 0xFFFFFFFFn)) + hx8(Number(bits & 0xFFFFFFFFn))
@@ -43,6 +44,32 @@ const i64Hex = bits => '0x' + hx8(Number((bits >> 32n) & 0xFFFFFFFFn)) + hx8(Num
 // handle.
 const PAYLOADS = [0x8000000000000000n, 0n, 0xFFFFFFFFFFFFFFFFn, -1n, 1n, 0x7FF7FFFFFFFFFFFFn, 0xFFF8000000000000n]
 const COLLIDING = [0x7FF8000000000000n, 0x7FF8000200000000n, 0x7FFFFFFFFFFFFFFFn]
+
+test('bigint boundary: reassigned numeric locals preserve the incoming parameter lane', () => {
+  const src = `export let discarded = (p, q) => {
+    for (let i = 0; i < 29; i++) { let v = ~q; q = 0 }
+    p = q ? 0 : q >> p; return 0
+  }
+  export let observed = (p, q, n) => {
+    for (let i = 0; i < n; i++) { let v = ~q; q = 0 }
+    p = q ? 0 : q >> p; return p
+  }`
+  const host = Function(src.replaceAll('export let ', 'let ') + ';return {discarded, observed}')()
+  const outcome = (fn, args) => { try { return ['value', fn(...args)] } catch (e) { return ['error', e.name] } }
+  const values = [0, -0, -1, 3.75, 2147483648, NaN, Infinity]
+  for (const level of levels(0, 1, 2, 3, 'size')) {
+    const ex = run(src, level)
+    for (const name of ['discarded', 'observed']) for (const n of [0, 1, 2])
+      for (const p of values) for (const q of [0, 3, -1]) {
+        const args = [p, q, n]
+        is(outcome(ex[name], args), outcome(host[name], args), `${name}(${args}) at ${level}`)
+      }
+    // These numeric-only ingress slots have no BigInt evidence. A later
+    // binding's tagged target must not advertise them as accepting BigInts.
+    for (const name of ['discarded', 'observed']) for (const p of [0n, 300n, -1n])
+      throws(() => ex[name](p, 0, 1), e => e instanceof TypeError, `${name} rejects unsupported BigInt ingress at ${level}`)
+  }
+})
 
 test('BigInt field results preserve their carrier across multiple object layouts', () => {
   const values = [0n, 1n, -1n, ...COLLIDING]
