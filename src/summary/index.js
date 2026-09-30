@@ -631,8 +631,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   // (query.js paramRangesOf).
   const argRanges = new Map()   // function name → { ranges: ([lo, hi] | null)[] }, the settled hulls of the last round
   const roundArgs = new Map()    // this round's, recorded afresh
-  const moved = new Map()        // `${fn}#${i}` → rounds its hull changed in
-  const openArgs = new Set()     // positions that changed four rounds over
+  const moved = new Map()        // function name → each position's bound-change count; four opens it
   // A function the host, a dispatcher or a caller the walk never sees may
   // call receives anything: it has no hull.
   const openCaller = (name, f) => exported(f) || hostClosures.has(name) || escaped.has(name) || !!f.sig.dispatcher
@@ -664,7 +663,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       // An unbounded argument already opens this position for the round.
       // Later bounds cannot narrow it, so do not build and discard their hulls.
       if (prev === null) continue
-      const r = spread || i >= n || args === null || openArgs.has(`${name}#${i}`) ? null : rangeOf(argAt(args, i))
+      const r = spread || i >= n || args === null || moved.get(name)?.[i] >= 4 ? null : rangeOf(argAt(args, i))
       entry.ranges[i] = prev === undefined || r === null ? r : [Math.min(prev[0], r[0]), Math.max(prev[1], r[1])]
     }
   }
@@ -678,9 +677,11 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
         const p = prev?.[i] ?? null
         if (r === p || (r && p && r[0] === p[0] && r[1] === p[1])) return
         changed = true
-        const k = `${name}#${i}`, m = (moved.get(k) ?? 0) + 1
-        moved.set(k, m)
-        if (m >= 4) { openArgs.add(k); entry.ranges[i] = null }
+        let moves = moved.get(name)
+        if (!moves) moved.set(name, moves = [])
+        const m = (moves[i] ?? 0) + 1
+        moves[i] = m
+        if (m >= 4) entry.ranges[i] = null
       })
     }
     for (const name of argRanges.keys()) if (!roundArgs.has(name)) changed = true
@@ -2701,7 +2702,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       const recv = receiver(n[1]), prop = n[2]
       if (op === '?.' && tagOf(core(recv)) === K.NONE) return NULLISH
       if (typeof prop !== 'string') { expr(prop); return optionalResult(op, recv, tagOf(recv) === K.NONE ? K.NONE : ANY) }
-      const k = member(op, recv, prop), pk = op === '.' && rtop ? pathKey(n) : null, pmask = pk === null ? undefined : refined.get(pk)
+      const k = member(op, recv, prop), pk = op === '.' && pathDepth ? pathKey(n) : null, pmask = pk === null ? undefined : refined.get(pk)
       return pmask === undefined ? k : refine(k, pmask)
     }
     if (op === '[]') {
@@ -3014,14 +3015,14 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   // binding the plan named (`parse.comment = {…}`, `parse.comment ??= {…}`).
   const boundLiteral = (d) => {
     if (!Array.isArray(d)) return null
-    if ((d[0] === 'let' || d[0] === 'const') && d.length === 2 && Array.isArray(d[1]) && d[1][0] === '=' && typeof d[1][1] === 'string') return [d[1][1], d[1][2]]
-    if ((d[0] === '=' || d[0] === '??=') && typeof d[1] === 'string') return [d[1], d[2]]
+    if ((d[0] === 'let' || d[0] === 'const') && d.length === 2 && Array.isArray(d[1]) && d[1][0] === '=' && typeof d[1][1] === 'string') return d[1]
+    if ((d[0] === '=' || d[0] === '??=') && typeof d[1] === 'string') return d
     return null
   }
   const noteDefinite = (list, from) => {
     const bound = boundLiteral(list[from])
     if (!bound) return
-    const [name, lit] = bound
+    const name = bound[1], lit = bound[2]
     if (!Array.isArray(lit) || lit[0] !== '{}' || lit.length < 2 || definiteSeen.has(lit)) return
     definiteSeen.add(lit)
     let nullish = false
@@ -3532,18 +3533,19 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   // ends it at its head; a closure's body starts without any. A proof is
   // pushed on one stack and unwound to the mark taken before it, restoring
   // the prior masks in reverse.
-  const refined = new Map() // binding id → the tag bits its kind is read within
+  const refined = new Map() // binding id or member path → the tag bits its kind is read within
   const rKeys = [], rPriors = []
-  let rtop = 0
+  let rtop = 0, pathDepth = 0
   const refineName = (name, mask) => refineKey(keyOf(name), mask)
   const refineKey = (key, mask) => {
     if (key === null) return
     const prior = refined.get(key)
     if (rtop === rKeys.length) { rKeys.push(key); rPriors.push(prior) } else { rKeys[rtop] = key; rPriors[rtop] = prior }
     rtop++
+    if (typeof key === 'string') pathDepth++
     refined.set(key, (prior ?? (TAGS | UNKNOWN)) & mask)
   }
-  const unwind = (mark) => { while (rtop > mark) { rtop--; const key = rKeys[rtop], prior = rPriors[rtop]; if (prior === undefined) refined.delete(key); else refined.set(key, prior) } }
+  const unwind = (mark) => { while (rtop > mark) { rtop--; const key = rKeys[rtop], prior = rPriors[rtop]; if (typeof key === 'string') pathDepth--; if (prior === undefined) refined.delete(key); else refined.set(key, prior) } }
   // A mask's tags keep those of the kind; its own parameter, where it has one
   // (a typed array's element kind a class test proves), fills an unknown one:
   // no element kind, or a number of one of several (a Float32Array or a Float64Array).
@@ -3663,7 +3665,8 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       if (tagOf(core(k)) === K.OBJECT && id !== UNKNOWN && allFlags(id, c[2])) refineName(c[1], TAGS & ~bitOf(K.OBJECT))
       return
     }
-    for (const name of numericProofs(c, when, isNumberHere)) refineName(name, bitOf(K.NUMBER))
+    const numeric = numericProofs(c, when, isNumberHere)
+    if (numeric.size) for (const name of numeric) refineName(name, bitOf(K.NUMBER))
     // `Array.isArray(x)`: an array where it holds, anything else where it fails
     if (op === '()' && c[1] === 'Array.isArray' && c.length === 3) {
       const mask = when ? bitOf(K.ARRAY) : TAGS & ~bitOf(K.ARRAY)
@@ -3702,18 +3705,19 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     }
     // a name, or a member path in an arm that neither calls nor stores
     // (`params.x1 != null ? params.x1 : 0`: the arm reads what the test read)
-    const [subject, other] = isNullishRef(c[2]) ? [c[1], c[2]] : isNullishRef(c[1]) ? [c[2], c[1]] : [null, null]
-    if (other == null) return
-    const refineSubject = typeof subject === 'string' ? (mask) => refineName(subject, mask)
-      : pathProofs ? (mask) => refineKey(pathKey(subject), mask) : null
-    if (!refineSubject) return
+    const subject = isNullishRef(c[2]) ? c[1] : isNullishRef(c[1]) ? c[2] : null
+    if (subject == null) return
     // A strict comparison excludes only one sentinel. NULLISH includes both,
     // so its other member must survive (as with the typeof inverse above).
-    if (op === '!=' && when || op === '==' && !when) refineSubject(NOT_NULLISH)
+    let mask
+    if (op === '!=' && when || op === '==' && !when) mask = NOT_NULLISH
     // Equal to a nullish value, loosely or strictly, the name is one: what the
     // path does with it (a missing source handed to the protocol that throws
     // for it) reaches none of its other kinds.
-    if ((op === '==' || op === '===') && when || (op === '!=' || op === '!==') && !when) refineSubject(NULL_BITS)
+    if ((op === '==' || op === '===') && when || (op === '!=' || op === '!==') && !when) mask = NULL_BITS
+    if (mask === undefined) return
+    if (typeof subject === 'string') refineName(subject, mask)
+    else if (pathProofs) refineKey(pathKey(subject), mask)
   }
   /** The statement leaves its list: a return, throw, break or continue; a block ending in one; an
    *  `if` both of whose branches do; a `try` whose block and every catch do (or whose finally does). */
@@ -3746,7 +3750,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   }
   const defaultNames = new Map()   // a defaults record → its parameter names, listed once
   const defaultNamesOf = (defaults) => { let l = defaultNames.get(defaults); if (!l) defaultNames.set(defaults, l = Object.keys(defaults)); return l }
-  const reset = () => { pre.clear(); refined.clear(); post.clear(); constRanges.clear(); branch = 0; rtop = 0 }
+  const reset = () => { pre.clear(); refined.clear(); post.clear(); constRanges.clear(); branch = 0; rtop = 0; pathDepth = 0 }
   const walkFunction = (key, body, params, defaults) => {
     current = key
     reset()
@@ -4134,7 +4138,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   const seeded = [...seedable].filter(p => (entryNumeric.has(p) || isCompatible(p)) && tagOf(kinds[p] ?? K.NONE) === K.ANY)
   if (seeded.length) {
     kinds.length = 0; incoming.length = 0; fields.length = 0; objectKinds.clear(); decisions.clear(); opaqueSchemas.clear(); hostSchemas.clear(); retainedSchemas.clear(); hostArrays.clear(); retainedArrays.clear(); hostClosures.clear(); results.clear(); escaped.clear(); certainKeys.clear(); boolKeys.clear(); for (let i = 0; i < elems.length; i++) { elems[i] = K.NONE; cellUp[i] = i }
-    tuples.clear(); lens.clear(); stores.clear(); built.clear(); grown.clear(); unknown.clear(); presentReads.clear(); spreadSources.clear(); argRanges.clear(); roundArgs.clear(); moved.clear(); openArgs.clear()
+    tuples.clear(); lens.clear(); stores.clear(); built.clear(); grown.clear(); unknown.clear(); presentReads.clear(); spreadSources.clear(); argRanges.clear(); roundArgs.clear(); moved.clear()
     pendingAll = false; pendingIndexed = false; wildValues = K.NONE; wildProps.clear(); sideProps.clear(); sideWild.clear(); closureProps.clear(); sideByProp.clear(); foreignObjects = false; foreignProps.clear(); deletable.clear(); deleteReach.unknown = false; keysSeen.clear()
     seed(seeded)
     fixpoint()

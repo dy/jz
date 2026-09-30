@@ -43,6 +43,26 @@ test('parameter hull: an unbounded call, a widening recursion, an escaped functi
     export const p = (v) => { m.assign(v, W, 5); return W.length + m(v)[0] }`, 'nz')), JSON.stringify([null, null, [0, 5]]), 'a call through a property joins the hull with the direct call\'s')
 })
 
+test('parameter hull: widening is independent for each function and argument position', () => {
+  const sources = [
+    `function f(x, y) { return x > 8 ? y : f(x + 1, y) }
+     function g(x, y) { return y > 8 ? x : g(x, y + 1) }
+     export function t() { return f(0, 2) + g(3, 0) }`,
+    `function f(x, y) { return y > 8 ? x : f(x, y + 1) }
+     function g(x, y) { return x > 8 ? y : g(x + 1, y) }
+     export function t() { return f(2, 0) + g(0, 3) }`,
+  ]
+  const expected = [
+    [[null, [2, 2]], [[3, 3], null]],
+    [[[2, 2], null], [null, [3, 3]]],
+  ]
+  for (const i of [0, 0, 1, 0]) {
+    is(ranges(sources[i], 'f'), expected[i][0], `f in program ${i}`)
+    is(ranges(sources[i], 'g'), expected[i][1], `g in program ${i}`)
+    for (const optimize of levels(0, 1, 2, 3, 'size')) agree(sources[i], 't', [], { optimize })
+  }
+})
+
 // Every channel that binds a function's parameters notes the call's arguments
 // (summary `bind`): a call through a table or a function's property joins the
 // hull like a direct call; one that cannot align them (`.call`, `.apply`, a

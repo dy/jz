@@ -1095,8 +1095,8 @@ test('summary: Array.isArray narrows a name, and a member path in an arm that ca
       for (let i = 0; i < coefs.length; i++) y += (coefs[i] ? coefs[i].b0 : -1) * x; return y }`,
   }
   for (const [name, body] of Object.entries(shapes)) {
-    const src = `${lists}\n${body}`, js = oracle(src)
-    for (const optimize of levels(0, 2, 3)) { const { f } = jz(src, { optimize }).exports; for (const x of [2, 7, 2]) is(f(x), js.f(x), `${name}: f(${x}) at ${optimize}`) }
+    const src = `${lists}\n${body}`
+    for (const optimize of levels(0, 2, 3)) { const js = oracle(src), { f } = jz(src, { optimize }).exports; for (const x of [2, 7, 2]) is(f(x), js.f(x), `${name}: f(${x}) at ${optimize}`) }
     if (name === 'changed' || belowOpt(2)) continue
     const warnings = []
     compile(src, { optimize: 2, warnings: w => warnings.push(w) })
@@ -1171,11 +1171,43 @@ test('summary: a member tested against null reads as present in the arm', () => 
     const kd = kindOf('k', name)
     ok(tagOf(kd) === K.NUMBER && !hasTag(kd, K.NULLISH), `${name} is a Number`)
   }
-  const js = oracle(src)
   for (const optimize of levels(0, 2, 3)) {
-    const m = jz(src, { optimize }).exports
+    const js = oracle(src), m = jz(src, { optimize }).exports
     is(m.f(), js.f(), `f at ${optimize}`)
     is(m.g(), js.g(), `the getter's second read at ${optimize}`)
+  }
+})
+
+test('summary: nested member guards restore outer facts and end before later reads', () => {
+  const src = `const state = { a: null, b: null }
+    function read(q) {
+      if (!q) return [0, 'no receiver']
+      const value = q.a != null ? (q.b != null ? q.a + q.b : q.a) : -1
+      const after = q.b
+      return [value, after]
+    }
+    export function f(mode) {
+      state.a = mode ? 4 : null; state.b = mode === 1 ? 9 : null
+      return read(mode === 3 ? null : state)
+    }`
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const js = oracle(src), { f } = jz(src, { optimize }).exports
+    for (const mode of [0, 1, 1, 2, 3, 0, 1]) is(f(mode), js.f(mode), `mode ${mode} at ${optimize}`)
+  }
+  summarize(src)
+  ok(hasTag(kindOf('read', 'after'), K.NULLISH), 'the later field read retains its nullish result')
+})
+
+test('summary: nullish guards keep strict and loose comparisons distinct in either order', () => {
+  const arms = []
+  for (const op of ['==', '!=', '===', '!==']) for (const sentinel of ['null', 'undefined']) {
+    for (const condition of [`v ${op} ${sentinel}`, `${sentinel} ${op} v`]) arms.push(`${condition} ? v : 'other'`)
+  }
+  const src = `function read(v) { return [${arms.join(',')}] }
+    export function f(mode) { return read(mode === 0 ? null : mode === 1 ? undefined : mode === 2 ? 0 : 'x') }`
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const js = oracle(src), { f } = jz(src, { optimize }).exports
+    for (const mode of [0, 0, 1, 2, 3, 0]) is(f(mode), js.f(mode), `mode ${mode} at ${optimize}`)
   }
 })
 
