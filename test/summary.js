@@ -595,11 +595,11 @@ test('summary: a numeric-compatible parameter arrives as a number (README.md#exp
 
 test('summary: a parameter read before its reassignment has its incoming kind', () => {
   // subscript's parse: `cur = s` precedes `s = expr()`, so `cur` is the argument's string.
-  const src = `let cur = ''; const parse = (s) => (cur = s, s = [1, 2], s.length); export const run = () => parse('abc') + cur.length`
+  const src = `let cur = ''; const parse = (s) => (cur = s, s = [1, 2], s.length); export const f = () => parse('abc') + cur.length`
   summarize(src)
   is(ctx.scope.globalValTypes.get('cur'), 'string')
   is(tagOf(kindOf('parse', 's')), K.ANY, 'the parameter itself joins its reassignment')
-  is(jz(src).exports.run(), 5, 'the optimized call preserves the incoming string before reassignment')
+  is(jz(src).exports.f(), 5, 'the optimized call preserves the incoming string before reassignment')
   // A loop that assigns the parameter, and a closure that does, end the region.
   const loop = jz(`const h = (p) => { let a = p; for (let i = 0; i < 2; i++) { a = a + p; p = 'x' } return a }; export const f = () => h(1)`)
   is(loop.exports.f(), '2x')
