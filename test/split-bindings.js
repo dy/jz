@@ -17,6 +17,8 @@ import { oracle, run, wat } from './util.js'
 const ARGS = [[1, 3], [5, 3], [-2, 3], [0.5, -7], [1e3, 0]]
 
 const programs = {
+  'a split binding split again after folding an arm': 'export let f = (x, y) => { y = -x; let v = y; if (Math.round(3)) { y = v ? 0 : v } else { y = 0 } return ~y }',
+  'a split binding split again with its old value still live': 'export let f = (x, y) => { y = -x; let v = y; if (Math.round(3)) { y = v ? x + 1 : v } else { y = 0 } return y + v }',
   'a parameter reassigned, compounds after it': 'export let f = (x, y) => { x = x < 0 ? -x : x; y += x; x *= 2; return x + y }',
   'a float, then its integer part, then a shift': 'export let f = (x) => { let y = x * 0.5; y = y | 0; y = y >>> 3; return y }',
   'a binding declared bare, assigned after': 'export let f = (x) => { let h; h = x | 0; h &= 0xff; return h }',
@@ -230,4 +232,3 @@ test('split bindings: a rewritten statement keeps its source position', () => {
   const positioned = (n) => !Array.isArray(n) || n[0] == null || (typeof n.loc === 'number' && n.slice(1).every(positioned))
   ok(list.slice(3).every(positioned), 'the statements renamed inside keep every node\'s position')
 })
-

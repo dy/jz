@@ -32,7 +32,15 @@ export function shareSplitSlots(fn) {
     if (!isArr(d) || (d[0] !== 'param' && d[0] !== 'local') || typeof d[1] !== 'string' || d.length !== 3) continue
     types.set(d[1], d[2])
     const m = d[0] === 'local' && SPLIT.exec(d[1])
-    if (m) { let c = chains.get(m[1]); if (!c) chains.set(m[1], c = []); c.push([+m[2], d[1]]) }
+    if (m) {
+      // A later split can extend an earlier split's name. All descendants
+      // share one lifetime census, so no rename targets a removed local.
+      let root = m[1], parent
+      while ((parent = SPLIT.exec(root))) root = parent[1]
+      let c = chains.get(root)
+      if (!c) chains.set(root, c = [])
+      c.push([+m[2], d[1]])
+    }
   }
   if (!chains.size) return false
   const tracked = new Set()
