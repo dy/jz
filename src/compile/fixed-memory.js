@@ -26,6 +26,9 @@ export function configureFixedMemory(names) {
   // A certification must not depend on a runtime reachability walk. Keep the
   // ordinary frame/loop rewinds for general exports in the same module.
   ctx.transform.optimize.arenaReach = false
+  // Guarded-view specialization creates a descriptor. Keep the checked
+  // receiver access so this optimization cannot introduce an allocation.
+  ctx.transform.optimize.guardViews = false
 }
 
 const selected = func => {

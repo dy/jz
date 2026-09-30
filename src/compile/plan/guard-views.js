@@ -12,11 +12,11 @@
  *
  *     if (!(a instanceof Float32Array)) throw new TypeError('…')
  *     const a' = new Float32Array(a.buffer, a.byteOffset, a.length)
- *     … a'[i] … a'.length … weld(a') …
+ *     … a'[i] … a'.length … weld(a) …
  *
  * A declaration of known constructor is what every typed analysis already
- * follows (element width, bounds versioning, vectorization, the argument kinds
- * of the callees it is passed to), so the guard needs no analysis of its own.
+ * follows (element width, bounds versioning, vectorization), so the guard
+ * needs no analysis of its own.
  * The guard still runs on `a` and still leaves as written for any other value.
  * The view shares the storage: a write through it is a write to `a`.
  *

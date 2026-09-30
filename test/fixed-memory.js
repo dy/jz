@@ -130,6 +130,27 @@ test('fixed memory: borrowed host buffers and hidden typed variants allocate not
   }
 })
 
+test('fixed memory: typed guards keep borrowed receivers allocation-free', () => {
+  if (onKernel()) return
+  const src = `export function process(a) {
+    if (!(a instanceof Float32Array)) return -1
+    return a[0]
+  }`
+  for (const optimize of [0, 1, 2, 3, 'size']) {
+    const p = jz(src, options(optimize))
+    const empty = p.memory.Float32Array([]), a = p.memory.Float32Array([1]), b = p.memory.Float32Array([7, 8, 9])
+    const other = p.memory.Float64Array([4]), used = p.memory.used, bytes = p.memory.buffer.byteLength
+    for (let round = 0; round < 32; round++) {
+      for (const [ptr, want] of [[empty, undefined], [a, 1], [a, 1], [b, 7], [a, 1], [other, -1], [null, -1]])
+        is(p.exports.process(ptr), want, `${optimize}, round ${round}`)
+    }
+    is(p.memory.used, used, 'no retained allocation')
+    is(p.memory.buffer.byteLength, bytes, 'no growth')
+    const { inspect } = compile(src, { ...options(optimize), inspect: true })
+    is(inspect.runtime.process.noAllocation, true, 'the final call graph allocates nothing')
+  }
+})
+
 test('fixed memory: disjoint lifetimes share storage while overlapping lifetimes keep distinct slots', () => {
   if (onKernel()) return
   const sequential = `export function process(n) {

@@ -627,7 +627,9 @@ test on its parameter withdrew. The guard runs as written and the view is
 another object, so only numeric elements and storage properties use the view.
 Calls, methods, named keys and identity uses retain the original value: a callee
 or callback can observe which array it receives. Reassigned or undeclared
-bindings and guards inside loops keep their original reads. An `instanceof`
+bindings and guards inside loops keep their original reads. Fixed-memory
+modules disable this specialization because its view descriptor allocates;
+their checked receiver accesses retain the final no-allocation proof. An `instanceof`
 test of a typed constructor is the program's word that a typed array may
 arrive, from the host or from a value of unknown kind: it includes the typed
 module and demands the element helpers' width dispatch, which `__typed_idx`

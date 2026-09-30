@@ -155,8 +155,8 @@ export default function plan(ast, profiler, summarize) {
   sweep('devirtClassCalls', devirtClassCalls)
   // An array pattern over a proven array reads it by index, no cursor.
   sweep('indexArrayPatterns', indexArrayPatterns)
-  // A typed array a guard proves is read through a view of its constructor,
-  // before inlining hands it to the callees it is passed to.
+  // Storage reads of a guarded typed array use a view of its constructor;
+  // calls and identity uses retain the original receiver.
   if (ctx.transform.optimize?.guardViews) sweep('viewGuardedTyped', viewGuardedTyped)
   sweep('bindNestedRowLengths', bindNestedRowLengths)
   sweep('unrollRowLenPadLoops', unrollRowLenPadLoops)
