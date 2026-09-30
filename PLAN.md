@@ -6,32 +6,45 @@ passing conformance, speed, size and memory gates. README owns the public
 contract; CONTRIBUTING owns compiler invariants. This file holds the decisions
 that shaped the tree, the work left before release and the latest gate reading.
 
-## Release status, September 29
+## Release status, September 30
 
-**V1 remains blocked by release validation and recursive bootstrap.** Candidate
-29's fresh ordinary kernel passes 20 medium-corpus functional cases and nine
-reuse checks. Compiling the complete compiler graph still exhausts the 4 GiB
-Wasm address space after closure analysis. Its completed core rerun passes
-5,175 of 5,176 tests (200,286 assertions). The sole failure is a typed-method
-size regression: 3,777 B against the unchanged 3,578 B limit.
-The integrated fix removes reset saves for provably fresh objects, producing
-3,457 B with zero retained bytes over 100 calls. Closure cleanup and prefix
-flattening now preserve captured bindings. Their combined sweep passes 676
-tests / 76,537 assertions; poisoned memory checks pass 46 tests on each host.
-The full core and matrix still need a fresh run after this integration.
+**V1 remains blocked by recursive bootstrap and incomplete release gates.**
+Consolidated candidate 38 passes the full core suite: 5,516 tests and 212,195
+assertions. It combines main's memory fixes, the performance branch and the v1
+work. Main's release protocol, held views and nested-return restoration remain;
+fixed-memory compilation and the receiver-only array-growth rule are retained.
+The local integration branch preserves both parent histories.
 
-The experimental arena/reach profile exposed a signed block-type encoding
-defect in locked watr 5.11.8. An encoder-only copy passes the complete native
-dependency suite. Its fresh kernel passes 20 functional and nine reuse checks,
-but recursive compilation still exhausts 4 GiB after dynamic-table resolution.
-Defaults and dependencies have not changed. Import lint, public types and the file audit pass on candidate
-29; no complete matrix pass is recorded. Fresh conformance, the complete
-hosted suite, and reference speed/size/memory certification remain open.
+Candidate 39 fixes public constant injection: negative zero, quoted keys,
+sparse-array length, cycle rejection and adjacent negative template values.
+The public API sweep passes 27 tests / 349 assertions, with the new regressions
+also passing on WASI. Fresh browser bundles, public types, import lint and
+Floatbeat/landing interaction checks pass. The strict bundle is still 2.9 MB
+(814 kB gzip), above the optional minimal-bundle target.
+
+Candidate 40 removes a numeric-coercion import cycle and builds a fresh ordinary
+Wasm compiler (22,359,665 bytes). Recursive compilation still exhausts the
+4 GiB heap after held-method planning. An arena/reach build is diagnostic;
+ordinary defaults have not changed. The remaining matrix, conformance, extended,
+fuzz and complete hosted-suite checks have not all passed on this candidate.
+
+The validation dependency includes the three prepared watr 5.11.9 fixes:
+exception-handler ordering, argument evaluation order and signed block-type
+encoding. Its complete native and compiled tests pass; a clean offline package
+consumer checks all shipped encoders. It remains unpublished, and the jz
+registry dependency is still 5.11.8. A clean registry installation is therefore
+still a release gate.
+
+Color-space passes all 702 directed conversion pairs and standalone execution
+in Wasmer; unplugin passes its five-bundler integration suite. FormantShift
+processes 256 blocks with exact output and no ongoing heap growth; dewow also
+has exact output and zero ongoing growth in the checked renders. These checks
+do not certify the entire audio corpus or the standing speed claims. Fresh
+reference-machine performance evidence remains open.
 
 Source maps, Floatbeat, strict entry/types, and package integrations have targeted
-validation. Their final-candidate checks and the remaining audio/math/library
-work are tracked in [the v1 completion ledger](.work/v1.md). The dated evidence
-below belongs to its recorded snapshots, not the current working tree.
+validation. The complete result ledger is [.work/v1.md](.work/v1.md). Dated evidence
+below belongs to its recorded snapshots, not every later working-tree change.
 
 ## Release status, September 27
 
