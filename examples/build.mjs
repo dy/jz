@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url'
 // why burningship shipped a scalar .wasm and ran slower than JS.
 export const OPT = { optimize: 'speed' }
 
-/** Compile examples/<name>/<name>.js → examples/<name>/<name>.wasm (a single artifact). */
+/** Build a named example through its custom builder or default kernel. */
 export function buildExample(name) {
   const dir = join(fileURLToPath(new URL('.', import.meta.url)), name)
   const build = join(dir, 'build.mjs')

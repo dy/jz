@@ -9,7 +9,7 @@
 
 import { DBG_INVARIANTS } from '../src/debug.js'
 import { dataAlign, dataPush, dataLen, pushStaticSlots } from '../src/static-data.js'
-import { staticArrayPtr, typed, asF64, asI64, asI32, NULL_NAN, UNDEF_NAN, TRUE_NAN, FALSE_NAN, temp, tempI32, tempI64, block64, ptrTypeEq, dispatchByPtrType, allocPtr, needsDynShadow, mkPtrIR, extractF64Bits, slotAddr, elemLoad, elemStore, freshId, undefExpr, isNullish } from '../src/ir.js'
+import { staticArrayPtr, typed, asF64, asI64, asI32, NULL_NAN, UNDEF_NAN, TRUE_NAN, FALSE_NAN, temp, tempI32, tempI64, block64, ptrTypeEq, dispatchByPtrType, allocPtr, needsDynShadow, mkPtrIR, extractF64Bits, slotAddr, elemStore, freshId, undefExpr, isNullish } from '../src/ir.js'
 import { emit, storedValue, storedFieldValue, withIgnoredArgs, deps } from '../src/bridge.js'
 import { valTypeOf, shapeOf } from '../src/kind.js'
 import { VAL, lookupValType, repOf } from '../src/reps.js'
