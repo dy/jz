@@ -977,7 +977,8 @@ test('invariant: member-property calls are ProgramIndex edges and roots', () => 
     'let ns = (x) => x',
     'ns.parse = (s) => helper(s) + 1',
     'export let use = (s) => ns.parse(s)',
-  ].join('\n'))
+    // the call is a direct call of `ns$parse` from the plan on: unspliced, it stays an edge
+  ].join('\n'), { optimize: { sourceInline: false } })
   const index = ctx.plans.programIndex
   const reach = name => index.isGraphReachable(index.graphFunctionIdOfName(name))
   ok(index.graphFunctionIdOfName('ns$parse') >= 0, 'the function property lifts to a graph node')
