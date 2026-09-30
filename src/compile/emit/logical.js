@@ -16,7 +16,7 @@ import { extractRefinements, withRefinements } from '../flow-types.js'
 import { REP_EDGE_BOX, REP_EDGE_REJECT, representationJoinArmAction } from '../representation-plan.js'
 import { tagFnArrayDispatch } from './call.js'
 import { numericVal } from './comparisons.js'
-import { emit, toBool } from './dispatch.js'
+import { emit, markDropped, toBool } from './dispatch.js'
 import { REF_EQ_KINDS, boolEagerBody, eagerSelectOK, i32JoinRep, isCanonicalBoolExpr, isNumArm, selectOK } from './shared.js'
 
 
@@ -238,7 +238,8 @@ export const logicalOps = {
     // condition is a boolean question: toBool tests its operands in place.
     const ca = emit(a)
     if (isLit(ca)) {
-      const v = litVal(ca), arm = (v !== 0 && v === v) ? b : c
+      const v = litVal(ca), truthy = v !== 0 && v === v, arm = truthy ? b : c
+      markDropped(truthy ? c : b)
       const action = ctx.func._arrayLiteralNeverEscapes ? REP_EDGE_REJECT
         : representationJoinArmAction(ctx, self, arm)
       if (action === REP_EDGE_REJECT) return emit(arm)

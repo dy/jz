@@ -387,3 +387,45 @@ for (const optimize of levels(2, 3))
     both('update', 0); both('snapshot'); exports._clear(); both('churn', 1024); both('snapshot'); exports._clear()
     both('update', 1); both('snapshot'); exports._clear(); both('update', 4); both('snapshot')
   })
+
+// An arm a literal decides against is dropped by the emitter, its stores
+// with it: a site the census listed there is no escape. A frame that counted
+// it as an escape at no instruction kept everything it made on every call.
+// The crossover of a filter network inverts a band only at some orders; the
+// export splices it with a literal order and the inversion is no code.
+for (const optimize of levels(2, 3, 'size'))
+  test(`call release: a store in an arm a literal decides against is no escape, at ${optimize}`, () => {
+    const src = `const st = { sos: null }
+      function biquad(f) { return { b0: f, b1: f * 2, b2: f * 3, a1: f * 4, a2: f * 5 } }
+      function lr(order, f, fs) { const low = [], high = []; for (let k = 0; k < order / 2; k++) { low.push(biquad(f / fs)); high.push(biquad(fs / f)) } return { low, high } }
+      function crossover(freqs, order, fs) {
+        const bands = []
+        for (let i = 0; i <= freqs.length; i++) {
+          if (i === 0) bands.push(lr(order, freqs[0], fs).low)
+          else if (i === freqs.length) bands.push(lr(order, freqs[i - 1], fs).high)
+          else { let hp = lr(order, freqs[i - 1], fs).high, lp = lr(order, freqs[i], fs).low; bands.push(hp.concat(lp)) }
+        }
+        if ((order / 2) % 2) {
+          for (let i = 1; i < bands.length; i += 2) {
+            let sos = bands[i].slice()
+            let c = sos[0]
+            sos[0] = { ...c, b0: -c.b0, b1: -c.b1, b2: -c.b2 }
+            bands[i] = sos
+          }
+        }
+        return bands
+      }
+      function energy(a) { let s = 0; for (let i = 0; i < a.length; i++) s += a[i] * a[i]; return s }
+      export function process(n) {
+        if (st.sos === null) st.sos = crossover([n + 100], 4, 48000)
+        const tmp = new Float64Array(64 + (n & 7))
+        for (let i = 0; i < tmp.length; i++) tmp[i] = st.sos[1][0].b0 * i
+        return energy(tmp) + st.sos.length
+      }
+      export const read = () => st.sos[1][0].b0 + st.sos[0][0].a2`
+    const want = oracle(src), { exports, memory } = jz(src, { optimize })
+    for (let i = 0; i < 6; i++) is(exports.process(i), want.process(i), `process(${i})`)
+    is(exports.read(), want.read(), 'the bands the first call kept read back')
+    let n = 6
+    is(growth(memory, () => exports.process(n++)), 0, `a call keeps nothing for the arm it never runs at ${optimize}`)
+  })

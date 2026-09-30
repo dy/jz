@@ -946,8 +946,10 @@ export function assemble(ast, profiler) {
   const unflagged = (sites) => sites != null && [...sites].some(n => !ctx.plans.instrumented?.has(n))
   for (const [name, id] of ctx.closure.summaryId ?? [])
     if (id === undefined || !ctx.plans.closureSites?.has(id) || ctx.plans.closureUnsited?.has(id) || unflagged(ctx.plans.closureSites.get(id))) { unsafe.add(`$${name}`); entry.add(`$${name}`) }
+  // A function the frozen graph does not reach is neither analyzed nor
+  // emitted (one spliced into its every caller): no frame, and no report.
   for (const f of ctx.funcs.list) {
-    if (f.raw || ctx.memory.atomic) continue
+    if (f.raw || ctx.memory.atomic || !reachableForLowering(f)) continue
     const frame = f.frame
     if (frame == null || frame.unsited || unflagged(frame.sites)) {
       unsafe.add(`$${f.name}`); entry.add(`$${f.name}`)

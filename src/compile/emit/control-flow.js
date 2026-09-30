@@ -23,7 +23,7 @@ import {
 import { withControlFrame, withPendingLabel, withSchemaSpeculation } from '../flow-state.js'
 import { extractRefinements, inferSchemaBranch, mergeRefinement, withRefinements } from '../flow-types.js'
 import { plannedTypedStorageInfo } from '../typed-storage-plan.js'
-import { emit, emitVoid, toBool } from './dispatch.js'
+import { emit, emitVoid, markDropped, toBool } from './dispatch.js'
 import { loopGuardHi } from './i32-bounds.js'
 import { emitFinalizers } from './statements.js'
 import { isNullable } from '../../summary/kind.js'
@@ -449,6 +449,7 @@ export const controlFlowOps = {
     const ce = boolShape ? toBool(cond) : emit(cond)
     if (isLit(ce)) {
       const v = litVal(ce), truthy = v !== 0 && v === v
+      markDropped(truthy ? els : then)
       if (truthy) return emitVoid(then)
       if (els != null) return emitVoid(els)
       return null

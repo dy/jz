@@ -7,7 +7,7 @@
 import { DBG_INVARIANTS } from '../../debug.js'
 import print from 'watr/print'
 import { STR_HCACHE_BIT, HEAP } from '../../../layout.js'
-import { ASSIGN_OPS, MUTATE_OPS, T, commaList, firstRefKind, isBlockBody, isReassigned } from '../../ast.js'
+import { ASSIGN_OPS, MUTATE_OPS, T, commaList, firstRefKind, isBlockBody, isReassigned, walkAst } from '../../ast.js'
 import { PTR, ctx, err, inc, emitArity, setLinkDemand } from '../../ctx.js'
 import {
   callWithArgs, FALSE_NAN, MAX_CLOSURE_ARITY, TRUE_NAN, UNDEF_NAN, WASM_OPS, applyBigintRepresentationAction, asF64, asI32, asI64, asParamType, asPtrOffset, block64, boolBoxIR, boxBigInt, carrierF64, carrierF64Narrow, emitNum, extractF64Bits, flat, freshId, fromI64, isBoolAtom, isBoundName, isGlobal, boxedAddr, isLit, isNullish, isNullishLit, litVal, materializeDeferredBigint, mayYieldUndefOf, maybeUnboxBigInt, mkPtrIR, nullExpr, nullableBoolBoxIR, ptrOffsetIR, readVar, resolveValType, temp, tempI32, tempI64, toI32, toNumF64, toStrI64, truthyIR, typed, unboxBoolIR, undefExpr, valKindToPtr,
@@ -1361,7 +1361,7 @@ export function emitIdentitySafeArms(node) {
   if (op === '?:') {
     const [, a, b, c] = node
     const ca = emit(a)
-    if (isLit(ca)) { const v = litVal(ca); return (v !== 0 && v === v) ? emitIdentitySafe(b) : emitIdentitySafe(c) }
+    if (isLit(ca)) { const v = litVal(ca), truthy = v !== 0 && v === v; markDropped(truthy ? c : b); return truthy ? emitIdentitySafe(b) : emitIdentitySafe(c) }
     const cond = truthyIR(ca)
     const thenRefs = extractRefinements(a, new Map(), true)
     const elseRefs = extractRefinements(a, new Map(), false)
@@ -1632,6 +1632,13 @@ const noted = (flag, node) => {
 }
 /** The site (or the site a clone of it copies) is flagged where it is emitted. */
 export const markInstrumented = (node) => ctx.plans.instrumented.add(ctx.plans.siteOrigin?.get(node) ?? node)
+/** What the emitter drops (an arm a literal decides against) never runs: a
+ *  site in it is no escape, and counts as flagged (compile/index.js reads a
+ *  site the emitter never flagged as an escape at no instruction). */
+export const markDropped = (node) => {
+  const sites = ctx.plans.escapeSites
+  if (sites) walkAst(node, { enter: (n) => { if (sites.has(n)) markInstrumented(n) } })
+}
 const flagToZero = () => ['global.set', '$__esc', ['i32.const', 0]]
 // A module binding assigned a value: no memory is written, and the value is
 // itself the way into what the call made. Its site runs after the value is
