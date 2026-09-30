@@ -9,11 +9,14 @@ that shaped the tree, the work left before release and the latest gate reading.
 ## Release status, September 30
 
 **V1 remains blocked by recursive bootstrap and incomplete release gates.**
-Consolidated candidate 38 passes the full core suite: 5,516 tests and 212,195
+Consolidated candidate 41 passes the full core suite: 5,520 tests and 212,270
 assertions. It combines main's memory fixes, the performance branch and the v1
 work. Main's release protocol, held views and nested-return restoration remain;
 fixed-memory compilation and the receiver-only array-growth rule are retained.
-The local integration branch preserves both parent histories.
+The local integration branch preserves both parent histories. Candidate 43 adds
+the latest performance commit and fixes its integration with parameter defaults,
+nested closures and fresh call-graph facts. Its focused sweep passes 53 tests
+and 782 assertions; its complete release battery is in progress.
 
 Candidate 39 fixes public constant injection: negative zero, quoted keys,
 sparse-array length, cycle rejection and adjacent negative template values.
@@ -22,11 +25,15 @@ also passing on WASI. Fresh browser bundles, public types, import lint and
 Floatbeat/landing interaction checks pass. The strict bundle is still 2.9 MB
 (814 kB gzip), above the optional minimal-bundle target.
 
-Candidate 40 removes a numeric-coercion import cycle and builds a fresh ordinary
-Wasm compiler (22,359,665 bytes). Recursive compilation still exhausts the
-4 GiB heap after held-method planning. An arena/reach build is diagnostic;
-ordinary defaults have not changed. The remaining matrix, conformance, extended,
-fuzz and complete hosted-suite checks have not all passed on this candidate.
+The numeric-coercion import cycle is fixed. Candidate 42 builds a fresh ordinary
+Wasm compiler (22,357,874 bytes); summary fingerprint and temporary-allocation
+fixes reduce its first recursive summary pass from 628 MB to 482 MB. Recursive
+compilation reaches loop-unswitch planning, then still exhausts the 4 GiB heap.
+Candidate 43 repeats that recursive failure with a fresh compiler. Ordinary build
+defaults have not changed. Fresh round-trip and parity/oracle gates pass on
+candidate 43; the forced-checkpoint gate passes on candidate 41. The remaining matrix, conformance,
+extended, fuzz and complete hosted-suite checks have not all passed on the latest
+candidate.
 
 The validation dependency includes the three prepared watr 5.11.9 fixes:
 exception-handler ordering, argument evaluation order and signed block-type

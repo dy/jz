@@ -542,6 +542,26 @@ test('self-compile: summary fingerprints use linear storage for named records', 
   }
 })
 
+test('self-compile: repeated guards avoid temporary analysis closures and member paths', () => {
+  const s = getSelf()
+  for (const count of [0, 512, 512, 128, 0, 512]) {
+    const parts = Math.ceil(count / 64)
+    const source = Array.from({ length: parts }, (_, part) =>
+      `function part${part}(input) { let sum = 0;` +
+      Array.from({ length: Math.min(64, count - part * 64) }, (_, j) =>
+        `if (input != null) sum += input.value + ${part * 64 + j};`).join('') + 'return sum; }').join('') +
+      `export function main(x, mode) { const input = mode ? { value: x } : null; return ${Array.from({ length: parts }, (_, i) => `part${i}(input)`).join('+') || '0'}; }`
+    const out = s.exports.default(s.memory.String(source), 0, s.memory.String('1'))
+    const bytes = new Uint8Array(s.memory.read(out))
+    const summary = phaseDeltas(readMarks(s)).find(p => p.name === 'summary')
+    ok(summary && summary.bytes < 128 * 1024 + count * 896,
+      `${count} guards: first summary uses ${summary?.bytes} bytes`)
+    const { main } = instantiate(bytes).exports
+    for (const [x, mode] of [[0, 0], [2, 1], [-3, 1], [0, 0], [2, 1]])
+      is(main(x, mode), count && mode ? count * x + count * (count - 1) / 2 : 0)
+  }
+})
+
 test('self-compile: heap marks name their phases, reset per call, and stay readable after a failed compile', () => {
   const s = getSelf()
   const src = 'let inc = x => x + 1; export let main = () => inc(10)'
