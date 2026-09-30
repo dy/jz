@@ -213,6 +213,15 @@ const loopBodyOps = (wat) => {
 // (+384, +56), condref 92125 -> 94325 (+1920, +280). No loop of a program
 // changed; the numeric categories are unchanged.
 
+// Consolidation (2026-09-30): restore perf-rb6 293db798's measured buf
+// 17288 and slice 116552 thresholds; the merge had retained older values.
+// Its condref threshold was 96605; the consolidated tree emits 85265, so
+// retain that gain. Per-function comparison attributes the drop to string
+// helpers; buf only exchanges __arr_set_idx_ptr for __arr_typed_set_idx.
+// The consolidated slice (121648) and fgather (14400) still exceed these
+// limits. Keep them red: slice inlines more generic store work, and fgather
+// pays the full-range index check on idx+1. Do not hide those remaining costs.
+
 // Total loop-body ops across the fixed corpus, per category. Deterministic.
 const measure = (categories = Object.keys(CATEGORIES)) => {
   const totals = {}
