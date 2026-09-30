@@ -1327,6 +1327,11 @@ export const materializeAutoBoxSchemas = (programFacts) => {
     // made `if (x) o.b = 2` declare `b` on every object of the literal: `in`,
     // hasOwnProperty, Object.keys and for-in all reported it before the store.
     if (ctx.schema.vars.has(name)) continue
+    // A function's box is its property record, reached through its name; the
+    // function's value stays the callable. A function taken as a value (an
+    // argument, an element, an alias) is read through that value: its
+    // properties keep the closure-keyed dynamic path, which every alias reaches.
+    if (ctx.funcs.names.has(name) && programFacts.programIndex?.addressTaken.has(name)) continue
     const valueProps = [...props].filter(prop => !ctx.funcs.names.has(`${name}$${prop}`))
     if (!valueProps.length) continue
     const allProps = [...props]

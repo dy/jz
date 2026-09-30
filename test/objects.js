@@ -443,6 +443,40 @@ test('a foreign-minted name gets no merged layout: writes through it stay in bou
   is(g(), 19)
 })
 
+// A function's auto-box is its property record, reached through its name; the
+// function's value is the callable. A function taken as a value (an argument,
+// an element, an alias) is read through that value, so its properties keep
+// the closure-keyed dynamic path: typeof, a call and a property read through
+// the value answer what the host answers.
+test('a function with properties taken as a value stays callable, typeof function', () => {
+  const src = `
+    function isObjectLike(v) { return v !== null && typeof v === 'object' }
+    var main_default = isObjectLike
+    function arrayfcn(predicate) {
+      if (typeof predicate !== 'function') throw new TypeError('not a function: ' + predicate)
+      return (arr) => { for (var i = 0; i < arr.length; i++) if (!predicate(arr[i])) return false; return true }
+    }
+    var isObjectLikeArray = arrayfcn(main_default)
+    main_default.isObjectLikeArray = isObjectLikeArray
+    var lib_default = main_default
+    export let every = () => lib_default.isObjectLikeArray([{}, []]) ? 1 : 0
+    function f(v) { return v + 1 }
+    f.tag = 7
+    const readTag = (p) => p.tag
+    const callIt = (p) => p(1)
+    const typeOf = (p) => typeof p
+    const arr = [f]
+    export let viaParam = () => readTag(f) * 100 + callIt(f) * 10 + (typeOf(f) === 'function' ? 1 : 0)
+    export let viaElement = () => arr[0](1) * 10 + (typeof arr[0] === 'function' ? 1 : 0)
+    export let own = () => f.tag + f(1)
+  `
+  const host = oracle(src)
+  for (const optimize of [0, 'speed']) {
+    const got = run(src, { jzify: true, optimize })
+    for (const k of ['every', 'viaParam', 'viaElement', 'own']) is(got[k](), host[k](), `${k} O${optimize}`)
+  }
+})
+
 test('Regression: property read does not call method emitter with same name', () => {
   const { f } = run(`export let f = () => {
     let item = {}
