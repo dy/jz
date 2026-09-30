@@ -443,7 +443,7 @@ test('collection enumeration includes named properties on owned storage and view
     export function f(mode, value, key) {
       const a = mode === 0 ? new Int32Array(0) : mode === 1 ? new Int32Array([5, 7])
         : mode === 2 ? data.subarray(1) : mode === 3 ? held
-        : mode === 4 ? new DataView(new ArrayBuffer(8)) : mode === 5 ? new Set([1]) : new Map([[1, 2]])
+        : mode === 4 ? new DataView(new ArrayBuffer(8)) : mode === 5 ? new Set([1]) : mode === 6 ? new Map([[1, 2]]) : new ArrayBuffer(8)
       a.first = value; a.second = undefined; a['01'] = 9
       if (value === 0) delete a[key]
       const keys = []; for (const k in a) keys.push(k)
@@ -452,8 +452,30 @@ test('collection enumeration includes named properties on owned storage and view
     }`
   for (const optimize of levels(0, 1, 2, 3, 'size')) {
     const f = jz(src, { optimize }).exports.f, js = oracle(src).f
-    for (const mode of [0, 1, 2, 3, 4, 5, 6, 3, 2, 0]) for (const value of [1, 1, 0, 2])
+    for (const mode of [0, 1, 2, 3, 4, 5, 6, 7, 7, 3, 2, 0]) for (const value of [1, 1, 0, 2])
       is(f(mode, value, 'second'), js(mode, value, 'second'), `O${optimize}, mode=${mode}, value=${value}`)
+  }
+})
+
+test('runtime enumeration distinguishes numeric payloads and nullish copy sources', () => {
+  const src = `export function f(x) {
+    let calls = 0; const results = [], bigint = typeof x === 'bigint' ? x === 7n : false
+    function get() { calls++; return x }
+    try { results.push(Object.keys(get())) } catch (e) { results.push(e.name) }
+    try { results.push(Object.values(get())) } catch (e) { results.push(e.name) }
+    try { results.push(Object.entries(get())) } catch (e) { results.push(e.name) }
+    const keys = []; for (const key in get()) keys.push(key)
+    const copy = Object.assign({}, get()), spread = {...get()}
+    return JSON.stringify([results, keys, copy, spread, calls, bigint])
+  }`
+  const values = [null, undefined, 0, -0, NaN, Infinity, -Infinity, true, false, 7n, '', 'ab', 'ab', null]
+  // Finite Number fraction bits can match each runtime pointer tag while
+  // their low word is an invalid address. None may enter a pointer reader.
+  for (let tag = 0; tag < 12; tag++) values.push(i64ToF64(0x3ff00000fffffff0n | (BigInt(tag) << 47n)))
+  const js = oracle(src).f
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const f = jz(src, { optimize }).exports.f
+    for (const value of values) is(f(value), js(value), `O${optimize}: ${String(value)}`)
   }
 })
 

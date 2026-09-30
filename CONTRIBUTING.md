@@ -236,7 +236,10 @@ must retain those possible values instead of proving the read absent.
 
 Collection enumeration shares the ordered property walk with plain objects.
 Array and typed-array indices precede named properties; initialized and runtime
-property tables merge without duplicate keys. Typed views have no sidecar header.
+property tables merge without duplicate keys. Typed views and ArrayBuffers have
+no sidecar header and use their global property table. Runtime dispatch checks
+numeric values before reading pointer tags. Public enumeration rejects nullish
+receivers; copies, spread and for-in keep their empty-source semantics.
 Copies read indexed values only within the indexed-value buffer, then use named
 property lookup. This preserves metadata on compiler IR arrays copied with
 `Object.assign([], node)` under both compiler hosts.

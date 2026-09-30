@@ -2336,7 +2336,7 @@ export default (ctx) => {
     ;; receiver's enumeration without touching its site cache's key – move the
     ;; epoch. Not gated on the props≠oldProps rekey below: an insert into an
     ;; EXISTING per-object hash skips it. An ARRAY or CLOSURE receiver's props
-    ;; never enumerate (for-in lists an array's indices), so those inserts –
+    ;; do not use this enumeration cache, so those inserts –
     ;; subscript's node.loc = at on every parsed node – leave the caches.
     (if (i32.eq (local.get $type) (i32.const ${PTR.OBJECT}))
       (then (global.set $__enumc_epoch (i32.add (global.get $__enumc_epoch) (i32.const 1)))))

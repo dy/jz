@@ -394,19 +394,24 @@ export default (ctx) => {
   // and a string's indices, as keys (mode 0), values (1) or [key, value]
   // entries (2); a DataView and any other kind have no indexed entries.
   // idxEnum appends collection properties stored outside their indexed data.
-  deps({ __idx_enum: ['__ptr_type', '__ptr_aux', '__ptr_offset', '__len', '__str_len', '__to_str', '__typed_idx', '__str_idx', '__alloc_hdr', '__mkptr'],
-    __idx_values: ['__idx_enum', '__ptr_type', '__ptr_offset'] })
+  deps({ __enum_type: ['__ptr_type'], __idx_enum: ['__enum_type', '__ptr_aux', '__ptr_offset', '__len', '__str_len', '__to_str', '__typed_idx', '__str_idx', '__alloc_hdr', '__mkptr'],
+    __idx_values: ['__idx_enum', '__enum_type', '__ptr_offset'] })
+  // A finite Number's fraction bits can look like any pointer tag. Classify
+  // numbers before dispatch so enumeration never reads them as heap addresses.
+  ctx.core.stdlib['__enum_type'] = `(func $__enum_type (param $v i64) (result i32)
+    (if (result i32) (f64.eq (f64.reinterpret_i64 (local.get $v)) (f64.reinterpret_i64 (local.get $v)))
+      (then (i32.const -1)) (else (call $__ptr_type (local.get $v)))))`
   // The payload of an index-keyed receiver's values (__idx_enum mode 1), 0 for any other kind.
   ctx.core.stdlib['__idx_values'] = `(func $__idx_values (param $v i64) (result i32)
     (local $t i32)
-    (local.set $t (call $__ptr_type (local.get $v)))
+    (local.set $t (call $__enum_type (local.get $v)))
     (if (result i32) (i32.or (i32.eq (local.get $t) (i32.const ${PTR.ARRAY}))
           (i32.or (i32.eq (local.get $t) (i32.const ${PTR.TYPED})) (i32.eq (local.get $t) (i32.const ${PTR.STRING}))))
       (then (call $__ptr_offset (i64.reinterpret_f64 (call $__idx_enum (local.get $v) (i32.const 1)))))
       (else (i32.const 0))))`
   ctx.core.stdlib['__idx_enum'] = `(func $__idx_enum (param $v i64) (param $mode i32) (result f64)
     (local $t i32) (local $n i32) (local $i i32) (local $base i32) (local $out i32) (local $pair i32) (local $k f64) (local $e f64)
-    (local.set $t (call $__ptr_type (local.get $v)))
+    (local.set $t (call $__enum_type (local.get $v)))
     (if (i32.eq (local.get $t) (i32.const ${PTR.ARRAY}))
       (then (local.set $n (call $__len (local.get $v))) (local.set $base (call $__ptr_offset (local.get $v)))))
     (if (i32.eq (local.get $t) (i32.const ${PTR.TYPED}))
@@ -1578,6 +1583,15 @@ function hashEntriesFromTemp(t) {
     out.ptr]
 }
 
+// Public enumeration rejects runtime nullish inputs. Copy/spread and for-in
+// use the same dispatcher without this check: their nullish sources are empty.
+function requireEnumReceiver(t) {
+  ctx.runtime.throws = true
+  return ['if', isNullish(['local.get', `$${t}`]), ['then',
+    ['global.set', '$__jz_last_err_bits', ['i64.reinterpret_f64', ['f64.const', errorCodeLiteral(ERR.OBJECT_NULLISH)]]],
+    ['throw', '$__jz_err', ['f64.const', errorCodeLiteral(ERR.OBJECT_NULLISH)]]]]
+}
+
 // Type-unknown receiver: bind the value, branch on ptr-type. HASH walks the
 // probe table; OBJECT loads the schema's key array (registered statically at
 // compile time or lazily at runtime by JSON.parse via __jp_schema_get); other
@@ -1588,12 +1602,12 @@ function emitRuntimeKeys(obj, ro) {
   const t = temp('rk')
   return typed(['block', ['result', 'f64'],
     ['local.set', `$${t}`, asF64(emit(obj))],
-    runtimeKeysFromTemp(t, 'rk', ro)], 'f64')
+    ...(ro ? [] : [requireEnumReceiver(t)]), runtimeKeysFromTemp(t, 'rk', ro)], 'f64')
 }
 
 function runtimeKeysFromTemp(t, tag, ro) {
   if (ctx.memory.shared) ro = false  // see emitKeysGeneric — no enum cache under shared memory
-  inc('__ptr_type')
+  inc('__enum_type')
   // Ensure the schema table global exists even in programs that never use
   // JSON.parse or compile-time schemas — the OBJECT arm reads it at runtime
   // and the watr resolver requires the symbol to be declared. Declaring is not
@@ -1605,7 +1619,7 @@ function runtimeKeysFromTemp(t, tag, ro) {
   ctx.runtime.schemaTblConsumed = true
   const tt = tempI32(`${tag}t`)
   return ['block', ['result', 'f64'],
-    ['local.set', `$${tt}`, ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
+    ['local.set', `$${tt}`, ['call', '$__enum_type', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
     ['if', ['result', 'f64'],
       ['i32.eq', ['local.get', `$${tt}`], ['i32.const', PTR.HASH]],
       // for-in (ro): serve the shared enum-cache array — see emitHashKeysRO.
@@ -1625,20 +1639,20 @@ function runtimeKeysFromTemp(t, tag, ro) {
 const idxEnum = (t, mode) => {
   ctx.module.include('string')
   ctx.module.include('collection')
-  inc('__idx_enum', '__ptr_type', '__ptr_aux')
+  inc('__idx_enum', '__enum_type', '__ptr_aux')
   const named = mode === 0 ? objectKeysFromTemp(t, false, true, mode)
     : mode === 1 ? objectValuesFromTemp(t, mode) : objectEntriesFromTemp(t, mode)
   const own = ['if', ['result', 'f64'],
-    [PTR.ARRAY, PTR.TYPED, PTR.SET, PTR.MAP].map(type =>
-      ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${t}`]]], ['i32.const', type]])
+    [PTR.ARRAY, PTR.TYPED, PTR.SET, PTR.MAP, PTR.BUFFER].map(type =>
+      ['i32.eq', ['call', '$__enum_type', ['i64.reinterpret_f64', ['local.get', `$${t}`]]], ['i32.const', type]])
       .reduce((a, b) => ['i32.or', a, b]),
     ['then', named],
     ['else', ['call', '$__idx_enum', ['i64.reinterpret_f64', ['local.get', `$${t}`]], ['i32.const', mode]]]]
   if (!demandHostReceiver()) return own
   // a host object lists its own (collection.js __ext_enum)
   ctx.module.include('collection')
-  inc('__ext_enum', '__ptr_type')
-  return ['if', ['result', 'f64'], ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${t}`]]], ['i32.const', PTR.EXTERNAL]],
+  inc('__ext_enum', '__enum_type')
+  return ['if', ['result', 'f64'], ['i32.eq', ['call', '$__enum_type', ['i64.reinterpret_f64', ['local.get', `$${t}`]]], ['i32.const', PTR.EXTERNAL]],
     ['then', ['f64.reinterpret_i64', ['call', '$__ext_enum', ['i64.reinterpret_f64', ['local.get', `$${t}`]], ['i32.const', mode]]]],
     ['else', own]]
 }
@@ -1650,14 +1664,15 @@ function emitIndexed(obj, mode) {
 }
 
 function emitRuntimeValues(obj) {
-  inc('__ptr_type')
+  inc('__enum_type')
   if (!ctx.scope.globals.has('__schema_tbl'))
     declGlobal('__schema_tbl', 'i32')
   ctx.runtime.schemaTblConsumed = true
   const t = temp('rv'), tt = tempI32('rvt')
   return typed(['block', ['result', 'f64'],
     ['local.set', `$${t}`, asF64(emit(obj))],
-    ['local.set', `$${tt}`, ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
+    requireEnumReceiver(t),
+    ['local.set', `$${tt}`, ['call', '$__enum_type', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
     ['if', ['result', 'f64'],
       ['i32.eq', ['local.get', `$${tt}`], ['i32.const', PTR.HASH]],
       ['then', hashValuesFromTemp(t)],
@@ -1682,14 +1697,15 @@ const copiedValue = (s, valsBase, i, key) => ['if', ['result', 'i64'],
   ['else', ['call', '$__dyn_get_any', ['i64.reinterpret_f64', ['local.get', `$${s}`]], ['i64.reinterpret_f64', ['local.get', `$${key}`]]]]]
 
 function emitRuntimeEntries(obj) {
-  inc('__ptr_type')
+  inc('__enum_type')
   if (!ctx.scope.globals.has('__schema_tbl'))
     declGlobal('__schema_tbl', 'i32')
   ctx.runtime.schemaTblConsumed = true
   const t = temp('re'), tt = tempI32('ret')
   return typed(['block', ['result', 'f64'],
     ['local.set', `$${t}`, asF64(emit(obj))],
-    ['local.set', `$${tt}`, ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
+    requireEnumReceiver(t),
+    ['local.set', `$${tt}`, ['call', '$__enum_type', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
     ['if', ['result', 'f64'],
       ['i32.eq', ['local.get', `$${tt}`], ['i32.const', PTR.HASH]],
       ['then', hashEntriesFromTemp(t)],
@@ -1794,7 +1810,7 @@ export function walkObjectProperties(env, onStatic, onDynamic, local) {
 // not read; the site's own cache holds that list and no other. `indexed`
 // seeds the result with indexed elements, then appends the same ordered
 // sidecar properties. Arrays have a header even in static data; typed views
-// have no header and keep their named properties in the global table.
+// and buffers have no sidecar and keep named properties in the global table.
 function emitEnumerateObject(t, emitStaticStore, emitDynStore, ro, dynOnly = false, indexed = null) {
   inc('__alloc_hdr', '__ptr_offset', '__prop_order', '__str_index_key', '__str_eq')
   ctx.module.include('string')
@@ -1897,9 +1913,11 @@ function emitEnumerateObject(t, emitStaticStore, emitDynStore, ro, dynOnly = fal
             ['local.set', `$${dnG}`, ['i32.load', ['i32.sub', ['local.get', `$${poffG}`], ['i32.const', 8]]]]]]]]
   ] : []
   const hasHeader = () => indexed == null ? ['i32.const', 1] :
-    ['i32.or',
-      ['i32.ne', ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${t}`]]], ['i32.const', PTR.TYPED]],
-      ['i32.eqz', ['i32.and', ['call', '$__ptr_aux', ['i64.reinterpret_f64', ['local.get', `$${t}`]]], ['i32.const', 8]]]]
+    ['i32.and',
+      ['i32.ne', ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${t}`]]], ['i32.const', PTR.BUFFER]],
+      ['i32.or',
+        ['i32.ne', ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${t}`]]], ['i32.const', PTR.TYPED]],
+        ['i32.eqz', ['i32.and', ['call', '$__ptr_aux', ['i64.reinterpret_f64', ['local.get', `$${t}`]]], ['i32.const', 8]]]]]
   const raw = ['i32.wrap_i64', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]
   return ['block', `$oed${id}`, ['result', 'f64'],
     ...(indexed == null ? [] : [
