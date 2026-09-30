@@ -503,6 +503,25 @@ test('jzify: folds esbuild CommonJS interop Object helper aliases', () => {
   is(_run(), 42)
 })
 
+test('jzify: the bundler-helper fold keeps a counted head\'s empty parts', () => {
+  // A `for` head is the tuple `[';', init, test, step]`; a bundle's Object
+  // reflection alias turns the fold on, and the fold read every `;` as a
+  // statement list: dropping the head's empty parts made `for (k = 1; ; )`
+  // loop on `k = 1` and `for (; ; k += 1)` test the step.
+  const src = `
+    var __defProp = Object.defineProperty;
+    export let noTest = (n) => { var k; var sum; sum = 0; for (k = 1; ; ) { sum += k; if (sum > n) break; k += 1 } return sum }
+    export let noInit = (n) => { var k = 1, sum = 0; for (; k <= n; ) { sum += k; k += 1 } return sum }
+    export let stepOnly = (n) => { var k = 1, sum = 0; for (; ; k += 1) { sum += k; if (k >= n) break } return sum }
+    export let bare = (n) => { var k = 1, sum = 0; for (;;) { sum += k; if (k >= n) break; k += 1 } return sum }
+  `
+  const host = oracle(src)
+  for (const optimize of [0, 'speed']) {
+    const got = run(src, { jzify: true, optimize })
+    for (const f of ['noTest', 'noInit', 'stepOnly', 'bare']) is(got[f](10), host[f](10), `${f} O${optimize}`)
+  }
+})
+
 test('jzify: groups conditional array spread as [...(cond ? a : b)]', () => {
   const exports = runJzify(`export let _run = () => {
     let yes = [1, 2]
