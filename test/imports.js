@@ -674,20 +674,20 @@ test('host override: string return value', () => {
   is(exports.f(), 'ok!')
 })
 
-test('host global behind a dead guard arm never imports', () => {
+test('typeof guards distinguish live host globals from absent ones', () => {
   // Guard chains with a leading dynamic operand: `x || typeof g === 'undefined' || g.member`.
   // resolveTypeof folds the middle arm to `true` for a global one host has and another lacks
   // (`process`); prep's dead-arm fold must then drop the g.member read even though the literal
   // sits nested one level deep (left-associativity) — so typeof-guarded debug hooks compile
   // with a clean import section and self-compile builds (whose runner provides no env.process)
-  // still instantiate. `globalThis` every host has: its typeof is 'object' at compile time, the
-  // arm behind `typeof globalThis === "undefined"` is the dead one, and the read imports the
-  // host global (a library resolves its global object by that test).
-  const wasm = compile(
-    'let f = (c) => { if (!c || typeof globalThis === "undefined" || !globalThis.__DBG) return 0; return 1 }; export let g = () => f(1)')
+  // still instantiate. `globalThis` has static typeof 'object', so its read stays live
+  // and imports the JS host global. WASI rejects that unbound reference.
+  const src = 'let f = (c) => { if (!c || typeof globalThis === "undefined" || !globalThis.__DBG) return 0; return 1 }; export let g = () => f(1)'
+  const wasm = compile(src, { host: 'js' })
   const names = WebAssembly.Module.imports(new WebAssembly.Module(wasm)).map(i => `${i.module}.${i.name}`)
   ok(names.includes('env.globalThis'), 'the read of globalThis is live: env.globalThis imported')
-  is(jz('let f = (c) => { if (!c || typeof globalThis === "undefined" || !globalThis.__DBG) return 0; return 1 }; export let g = () => f(1)').exports.g(), 0, 'and the hook reads the host: no __DBG there')
+  is(jz(src, { host: 'js' }).exports.g(), 0, 'and the hook reads the host: no __DBG there')
+  throws(() => compile(src, { host: 'wasi' }), /reference to host global `globalThis`/, 'WASI has no implicit JavaScript host global')
   const pw = compile(
     'const D = typeof process !== "undefined" && !!process.env; let h = (c) => { if (c && typeof process !== "undefined" && process.env.X) return 1; return 0 }; export let g = () => h(1) + (D ? 10 : 0)')
   const names2 = WebAssembly.Module.imports(new WebAssembly.Module(pw)).map(i => `${i.module}.${i.name}`)
