@@ -13,6 +13,7 @@
   and argument evaluation for inherited methods.
 - Preserve writable parameters, locals and closure captures during cleanup and expression inlining.
 - Preserve argument evaluation order through defaults, coercions, branches and loops.
+- Preserve callbacks and mode arguments read or written by parameter defaults and nested closures.
 - Keep unsigned helper results, SIMD arguments and mutable captured values correctly typed.
 - Preserve missing elements when converting checked array reads to strings.
 - Reduce snapshot allocation for Map entries whose identity is unobservable.
@@ -26,6 +27,7 @@
 - Keep optional-method receiver handling consistent in the Wasm-hosted compiler.
 - Avoid quadratic store-forwarding traversal in expressions without memory candidates.
 - Reduce compiler analysis memory by sharing module facts, definition scans, and direct call edges.
+- Build summary fingerprints with linear storage and avoid temporary guard allocations.
 - Copy long template fragments from the string pool instead of emitting thousands of literal stores.
 - Handle Unicode identifiers, whitespace and line terminators without changing literal contents.
 - Preserve element shapes through custom iterator protocols and report valid layout names in diagnostics.

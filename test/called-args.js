@@ -9,7 +9,7 @@ import { oracle, wat } from './util.js'
 
 const res = (f) => { try { return f() } catch (e) { return 'throws ' + e.constructor.name } }
 const agrees = (src, calls) => {
-  for (const optimize of levels(0, 2, 3)) {
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
     const js = oracle(src), m = jz(src, { optimize }).exports
     for (const [name, ...args] of calls) {
       const a = res(() => js[name](...args)), b = res(() => m[name](...args))
@@ -68,6 +68,35 @@ test('called args: a parameter used otherwise, or a name that may change, keeps 
   agrees(`const inc = x => x + 1, dec = x => x - 1
     function ap (x, f = dec) { return f(x) }
     export let run = (x) => ap(x, inc) + ap(x)`, [['run', 3]])
+})
+
+test('called args: other parameter defaults can read, capture or reassign the specialized argument', () => {
+  for (const params of ['x = f(3)', 'x = (f = dec)(3)']) agrees(`
+    function inc(x) { return x + 1 }
+    function dec(x) { return x - 1 }
+    function ap(f, ${params}) { return f(x) }
+    export function run(supplied) { return supplied ? ap(inc, 7) : ap(inc) }`,
+  [['run', 0], ['run', 0], ['run', 1], ['run', 0]])
+  for (const value of ['f', 'x => f(x)']) agrees(`
+    function inc(x) { return x + 1 }
+    function ap(f, other = ${value}) { return f(2) + other(3) }
+    export function run() { return ap(inc) }`, [['run'], ['run']])
+  agrees(`function pick(mode, x = (mode = 'b')) { return mode === 'a' ? 1 : 2 }
+    export function run(supplied) { return supplied ? pick('a', 7) : pick('a') }`,
+  [['run', 0], ['run', 0], ['run', 1], ['run', 0]])
+})
+
+test('called args: nested closures keep captured argument values and writes', () => {
+  for (const [getter, call] of [['() => [f][0]', 'get()(3)'], ['() => () => f', 'get()()(3)']]) agrees(`
+    function inc(x) { return x + 1 }
+    function ap(f) { const get = ${getter}; return f(2) + ${call} }
+    export function run() { return ap(inc) }`, [['run'], ['run']])
+  agrees(`function pick(mode) {
+      const change = () => { mode = 'b' }
+      if (mode === 'a') change()
+      return mode === 'b' ? 2 : 1
+    }
+    export function run() { return pick('a') }`, [['run'], ['run']])
 })
 
 // A mode string per call site: the copy reads the literal, its tests decide and

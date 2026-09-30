@@ -9,7 +9,7 @@
  * inlinable like any other call; `around(t, dt, 0.5, ramp)` gets its own.
  *
  * The parameter is read nowhere but as a callee and written nowhere (no
- * closure mentions it, no default fills it); the argument names a function
+ * closure or parameter default mentions it); the argument names a function
  * declaration nothing assigns and nothing in the function shadows, so the
  * name reads the same function in the copy as the value did. The copy's
  * sites pass `undefined` in its place: reading a function's name does
@@ -27,7 +27,7 @@
  * @module compile/plan/called-args
  */
 import { ctx } from '../../ctx.js'
-import { T, ASSIGN_OPS, callArgs, setCallArgs, some, walkAst } from '../../ast.js'
+import { T, ASSIGN_OPS, callArgs, setCallArgs, walkAst, refsName, REFS_IN_EXPR } from '../../ast.js'
 import { frameRoots } from '../../function.js'
 import { materializeVariant } from '../variant.js'
 import { invalidateBodies } from '../analyze.js'
@@ -38,7 +38,7 @@ import { clonePlain, collectBindings, nodeSize } from './common.js'
 const onlyCalled = (node, name, calls) => {
   if (typeof node === 'string') return node !== name
   if (!Array.isArray(node) || node[0] === 'str' || node[0] == null) return true
-  if (node[0] === '=>') return !some(node, n => n.includes(name))
+  if (node[0] === '=>') return !refsName(node, name, REFS_IN_EXPR)
   if (node[0] === '.' || node[0] === '?.') return onlyCalled(node[1], name, calls)
   let i = 1
   if (node[0] === '()' && node[1] === name) { calls.push(node); i = 2 }
@@ -68,7 +68,7 @@ const testedString = (node, name) => {
   let tested = false, ok = true
   walkAst(node, { enter: (n) => {
     if (!ok) return false
-    if (n[0] === '=>') { if (some(n, m => m.includes(name))) ok = false; return false }
+    if (n[0] === '=>') { if (refsName(n, name, REFS_IN_EXPR)) ok = false; return false }
     if ((ASSIGN_OPS.has(n[0]) || n[0] === '++' || n[0] === '--') && n[1] === name) ok = false
     if (EQ_OPS.has(n[0]) && ((n[1] === name && strOf(n[2]) != null) || (n[2] === name && strOf(n[1]) != null))) tested = true
   } })
@@ -140,8 +140,11 @@ export const specializeCalledArgs = (programFacts, ast) => {
       const locals = new Set()
       collectBindings(func.body, locals)
       const small = nodeSize(func.body) <= MAX_BODY
+      const defaults = Object.values(func.defaults || {})
       func.sig.params.forEach((p, k) => {
         if (p.name === func.rest || func.defaults?.[p.name] != null || locals.has(p.name)) return
+        // Defaults run before the copied body and keep their original expressions.
+        if (defaults.some(d => refsName(d, p.name, REFS_IN_EXPR))) return
         const calls = []
         if (onlyCalled(func.body, p.name, calls) && calls.length) (out ??= new Map()).set(k, { param: p.name, fn: true })
         else if (small && testedString(func.body, p.name)) (out ??= new Map()).set(k, { param: p.name, fn: false })

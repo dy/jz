@@ -23,7 +23,7 @@
  * @module compile/plan/chosen-calls
  */
 import { ctx } from '../../ctx.js'
-import { ASSIGN_OPS, isBlockBody, some, walkAst } from '../../ast.js'
+import { ASSIGN_OPS, isBlockBody, walkAst, refsName, REFS_IN_EXPR } from '../../ast.js'
 import { frameRoots } from '../../function.js'
 import { invalidateBodies } from '../analyze.js'
 import { invalidateProgramFactsCache } from '../program-facts.js'
@@ -54,7 +54,7 @@ const onlyCalled = (node, name, calls, decl) => {
   if (node === decl) return onlyCalled(decl[2], name, calls, decl)
   if (typeof node === 'string') return node !== name
   if (!Array.isArray(node) || node[0] === 'str' || node[0] == null) return true
-  if (node[0] === '=>') return !some(node, n => n.includes(name))
+  if (node[0] === '=>') return !refsName(node, name, REFS_IN_EXPR)
   if (node[0] === '.' || node[0] === '?.') return onlyCalled(node[1], name, calls, decl)
   let i = 1
   if (node[0] === '()' && node[1] === name) { calls.push(node); i = 2 }
@@ -122,7 +122,7 @@ export const callChosenFunctions = (ast) => {
       if (!onlyCalled(func.body, name, calls, d) || !calls.length) continue
       const fns = [...new Set(leaves)]
       // each call's arguments are copied whole: none holds another call of the name
-      if (calls.some(c => nodeSize(c) * (fns.length - 1) > MAX_COPY || c.slice(2).some(a => some(a, n => n.includes(name))))) continue
+      if (calls.some(c => nodeSize(c) * (fns.length - 1) > MAX_COPY || c.slice(2).some(a => refsName(a, name, REFS_IN_EXPR)))) continue
       assigned ??= assignedNames(ast)
       if (fns.some(f => assigned.has(f))) continue
       const index = new Map(fns.map((f, i) => [f, i]))

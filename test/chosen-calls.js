@@ -79,6 +79,17 @@ test('chosen calls: every place a call stands, and locals left as values', () =>
     ['reassigned', 1, 3], ['reassigned', 1, 9], ['reassigned', 0, 9], ['captured', 1, 2], ['captured', 0, 2], ['shadowed', 1, 1], ['shadowed', 0, 1]])
 })
 
+test('chosen calls: nested closures retain the selected function value', () => {
+  for (const [getter, call] of [['() => [f][0]', 'get()(3)'], ['() => () => f', 'get()()(3)']]) {
+    const src = `function inc(x) { return x + 1 } function dec(x) { return x - 1 }
+      export function run(t) { let f = t ? inc : dec; const get = ${getter}; return f(2) + ${call} }`
+    for (const optimize of levels(0, 1, 2, 3, 'size')) {
+      const js = oracle(src), m = jz(src, { optimize }).exports
+      for (const t of [0, 0, 1, 0]) is(m.run(t), js.run(t), `${getter}, ${t} at ${optimize}`)
+    }
+  }
+})
+
 test('chosen calls: a string, a property or a key spelling a function leaves it inlinable', () => {
   const body = `function sq (x, y) { let a = x * x + y, b = a * 3 - x; return { p: a + b, q: b - a } }`
   const loop = (extra) => `${body} export let f = (o) => { let s = 0; for (let i = 0; i < 9; i++) { let r = sq(i, s % 7); s += r.p - r.q } return s ${extra} }`

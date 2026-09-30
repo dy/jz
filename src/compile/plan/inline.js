@@ -45,6 +45,7 @@ import {
 import { materializeVariant } from '../variant.js'
 import { isExported } from '../func-exports.js'
 import { frameNode } from '../../function.js'
+import { liveFunctions } from './scratch.js'
 
 // Returns { prefix, value } where prefix is the substituted body statements
 // (excluding any trailing `return X`), and value is the substituted return
@@ -930,13 +931,13 @@ export const inlineHotInternalCalls = (programFacts, ast) => {
   // the summary cannot name (class-dispatch.js): the function stays for them
   // whatever the splice does, so they are no sites of it.
   const synthesized = (f) => !!f && (f.sig?.dispatcher === true || f.name.endsWith(BIND))
-  const live = ctx.summary?.at('')
+  const { live } = liveFunctions(programFacts)
   const sitesByCallee = new Map()
   for (const cs of programFacts.callSites) {
     if (synthesized(cs.callerFunc)) continue
-    // Unreachable callers emit no copies. Counting them against the size
-    // budget can keep a small setter outlined and its live receiver on the heap.
-    if (cs.callerFunc && live?.reaches(cs.callerFunc.name) === false) continue
+    // Use the current call graph: specialization can add callers after the
+    // last semantic summary. Unreachable callers consume no copy budget.
+    if (cs.callerFunc && !live.has(cs.callerFunc.name)) continue
     const list = sitesByCallee.get(cs.callee)
     if (list) list.push(cs); else sitesByCallee.set(cs.callee, [cs])
   }
