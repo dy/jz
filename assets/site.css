@@ -125,15 +125,45 @@ html.paper:not(.jz-saver):not(.jz-embed) .ruler-refl { display: block; }
 
 /* Futura (the brand face) for every title, site-wide. */
 h1, h2, h3, h4, h5, h6 { font-family: var(--font); }
-/* A two-step mask keeps the edge inside each glyph. Padding preserves descenders. */
-.reflect-title { display: grid; }
-.reflect-title > span { grid-area: 1 / 1; text-box: inherit; padding-block: .25em; margin-block: -.25em; }
-.title-outline { visibility: hidden; pointer-events: none; user-select: none;
-  color: light-dark(#000, #fff); }
-.title-lit > .title-fill {
-  mask-image: radial-gradient(ellipse 150px 100px at var(--light-x) var(--light-y), transparent 22%, #000 85%); }
-.title-lit > .title-outline { visibility: visible;
-  mask-image: radial-gradient(ellipse 230px 170px at var(--light-x) var(--light-y), #000 45%, rgb(0 0 0 / .8) 65%, transparent); }
+/* The brushed rim and elliptical silver reflection follow the same cursor light. */
+.reflect-title { display: grid; position: relative; font-variant-ligatures: none; }
+.reflect-title > span { grid-area: 1 / 1; text-box: inherit; padding: .25em; margin: -.25em; }
+.title-outline { visibility: hidden; pointer-events: none; user-select: none; }
+.reflect-title[data-metal-ready="true"] > .title-fill { -webkit-text-fill-color: transparent; }
+.reflect-title[data-metal-ready="true"] > .title-outline { visibility: visible; }
+.metal-face {
+  mask-image: radial-gradient(ellipse 480px 180px at var(--fill-x, 50%) var(--fill-y, 50%), #000, #000e 50%, transparent),
+    radial-gradient(ellipse 360px 120px at var(--fill-x, 50%) calc(200% - var(--fill-y, 50%)), #0006, transparent);
+  opacity: var(--light-active, 0);
+  pointer-events: none;
+}
+.reflect-title { --fill-x: calc(var(--light-x, 0px) + .25em); --fill-y: calc(var(--light-y, -160px) + .25em); }
+.title-outline {
+  -webkit-text-fill-color: transparent;
+  background: repeating-linear-gradient(0deg, #ffffff18 0 .5px, #0000000d .5px 1px, transparent 1px 2.5px),
+    linear-gradient(145deg, light-dark(#111, #fff), light-dark(#353b44, #edf0f5) 48%, light-dark(#111, #cbd2dc));
+  background-clip: text; -webkit-background-clip: text;
+}
+.reflect-title:focus-visible > .metal-face { opacity: 1; mask-image: none; }
+.title-metal { position: absolute; pointer-events: none; user-select: none; }
+.title-metal i {
+  position: absolute; display: block; mask-size: 100% 100%; mask-repeat: no-repeat;
+  --metal-angle: atan2(calc(var(--light-x, 0px) - var(--gx)), calc(var(--gy) - var(--light-y, -160px)));
+  background: repeating-linear-gradient(0deg, #ffffff26 0 .5px, #0000001a .5px 1px, transparent 1px 2.5px),
+    conic-gradient(from var(--metal-angle) at var(--cx) var(--cy),
+      #f4f6f9, #b3bac4 55deg, #626974 110deg, #a4acb6 155deg,
+      #e9edf3 185deg, #707783 250deg, #bac2ce 315deg, #f4f6f9);
+}
+:root[data-theme="light"] .reflect-title > .title-metal { filter: brightness(.55); }
+.metal-logo > .metal-face { position: absolute; inset: auto; margin: 0; opacity: 1; mask-image: none; }
+.metal-logo > .title-metal { z-index: 1; }
+@media (hover: none), (prefers-reduced-motion: reduce) {
+  .reflect-title > .metal-face { opacity: 1; mask-image: none; }
+}
+@media (forced-colors: active) {
+  .reflect-title[data-metal-ready="true"] > .title-fill { -webkit-text-fill-color: CanvasText; }
+  .title-metal, .title-outline { visibility: hidden !important; }
+}
 .reflect-text { -webkit-text-fill-color: color-mix(in srgb, currentColor,
   light-dark(#000, #fff) calc(var(--light-power, 0) * 35%)); }
 /* A quick wipe reaches the normal hover color and holds it until the pointer leaves. */
@@ -152,8 +182,6 @@ h1, h2, h3, h4, h5, h6 { font-family: var(--font); }
 .metrics .stat:is(:hover, :focus-visible) .lab { background-position: 0% 0; }
 @media (prefers-reduced-motion: reduce) {
   .glare-ink, .metrics .lab, .glare-icon::before { transition: none; }
-  .title-lit > .title-fill { mask-image: none; }
-  .title-lit > .title-outline { visibility: hidden; }
 }
 
 /* Page title — one face and one place on every page: the display size, caps --title-top under the menu ruler
@@ -177,8 +205,6 @@ h1, h2, h3, h4, h5, h6 { font-family: var(--font); }
 @media (forced-colors: active) {
   :root.outline-selection ::selection { background: Highlight !important; color: HighlightText !important; }
   .selection-outline { display: none; }
-  .title-lit > .title-fill { mask-image: none; }
-  .title-lit > .title-outline { visibility: hidden; }
   .glare-ink, .metrics .lab { background: none; -webkit-text-fill-color: currentColor; }
   .glare-icon::before { display: none; }
   .glare-icon svg { visibility: visible; }
@@ -197,8 +223,7 @@ h1, h2, h3, h4, h5, h6 { font-family: var(--font); }
 .masthead.fixed { position: fixed; top: 0; left: 0; right: 0; z-index: 200; margin-top: 0; padding-top: 20px; }
 .masthead .logo { display: flex; align-items: center; line-height: 0; flex: 0 0 auto; }
 
-/* A fixed silver face; the square and inner letter edge share the cursor light. */
-.logo-ink-edge { mix-blend-mode: screen; }
+/* Square rims and brushed letter contours share the cursor light. */
 :is(.logo, footer .wordmark), .reflect-box { position: relative; isolation: isolate; }
 .logo { align-self: flex-start; }
 :is(.logo, footer .wordmark) > :is(img, svg) { position: relative; z-index: 1; }

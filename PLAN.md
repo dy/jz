@@ -16,7 +16,11 @@ fixed-memory compilation and the receiver-only array-growth rule are retained.
 The local integration branch preserves both parent histories. Candidate 43 adds
 the latest performance commit and fixes its integration with parameter defaults,
 nested closures and fresh call-graph facts. Its focused sweep passes 53 tests
-and 782 assertions; its complete release battery is in progress.
+and 782 assertions. Candidate 45 adds a reusable export census in summary
+analysis; its semantic sweep passes 116 tests / 31,647 assertions. The full
+core/matrix battery is in progress. The prior core attempt stopped after
+2,568 passes because its sandbox blocked a local HTTP server; the new run has
+the required localhost access.
 
 Candidate 39 fixes public constant injection: negative zero, quoted keys,
 sparse-array length, cycle rejection and adjacent negative template values.
@@ -29,9 +33,11 @@ The numeric-coercion import cycle is fixed. Candidate 42 builds a fresh ordinary
 Wasm compiler (22,357,874 bytes); summary fingerprint and temporary-allocation
 fixes reduce its first recursive summary pass from 628 MB to 482 MB. Recursive
 compilation reaches loop-unswitch planning, then still exhausts the 4 GiB heap.
-Candidate 43 repeats that recursive failure with a fresh compiler. Ordinary build
-defaults have not changed. Fresh round-trip and parity/oracle gates pass on
-candidate 43; the forced-checkpoint gate passes on candidate 41. The remaining matrix, conformance,
+Candidate 45 repeats that recursive failure with a fresh 22,358,437-byte compiler.
+The export census reduces sampled native allocations from 1,488 to 1,203 MiB,
+but barely changes the Wasm heap; it does not close the bootstrap limit. Ordinary
+build defaults have not changed. Fresh parity/oracle and forced-checkpoint gates
+pass on candidate 45. The remaining matrix, conformance,
 extended, fuzz and complete hosted-suite checks have not all passed on the latest
 candidate.
 
@@ -48,6 +54,11 @@ processes 256 blocks with exact output and no ongoing heap growth; dewow also
 has exact output and zero ongoing growth in the checked renders. These checks
 do not certify the entire audio corpus or the standing speed claims. Fresh
 reference-machine performance evidence remains open.
+
+The newer shared-site title treatment, engine switch and popup positioning
+are reconciled. All 25 site tests / 483 assertions pass, as do real-browser
+checks of Floatbeat, desktop/mobile layout, popup bounds, keyboard focus,
+Escape/refocus, reduced motion and forced colors.
 
 Source maps, Floatbeat, strict entry/types, and package integrations have targeted
 validation. The complete result ledger is [.work/v1.md](.work/v1.md). Dated evidence

@@ -28,13 +28,14 @@ async function glint({ count = 1, reduced = false, fine = true, failure = 'http'
   const motion = { matches: reduced, addEventListener: (_, fn) => listen('motion', fn) }
   const mouse = { matches: fine, addEventListener: (_, fn) => listen('mouse', fn) }
   const classes = new Set()
-  const doc = { dataset: { theme: 'dark' }, classList: { contains: name => classes.has(name) }, clientWidth: 1000, clientHeight: 800, addEventListener: listen }
+  const doc = { dataset: { theme: 'dark' }, style: node().style, classList: { contains: name => classes.has(name) }, clientWidth: 1000, clientHeight: 800, addEventListener: listen }
   const gradient = node(), path = node(), defs = node()
   const ruler = { ...node(), querySelector: name => ({ path, defs }[name] || gradient) }
   const sides = { left: '20px', width: '161px' }
   const rules = [{ left: 0, right: 1000, top: 320, width: 1000 }], tables = [], controls = []
   let id = 0, measurements = 0, clickLoads = 0
   const src = readFileSync(join(root, 'assets/glint.js'), 'utf8')
+    .replace("import { metal, logoMetal } from './title-metal.js'", 'const metal = () => {}, logoMetal = () => {}')
     .replace('import.meta.url', JSON.stringify('https://jz.test/assets/glint.js'))
     .replace("import('./grid-click.js')", 'loadClicks()')
   const { light } = await runInNewContext(`(async () => {${src}\nreturn { light }})()`, {
@@ -215,7 +216,7 @@ test('site: buttons use the logo bevel and tables remain matte', async () => {
   ok(button.children[0].style.background.includes('rgb(0 0 0 /'), 'light mode uses the same bevel in black')
 })
 
-test('site: title and stat inner outlines track the light and live values without changing FAQ or JZ', async () => {
+test('site: brushed title rims share the cursor light without filters or stat effects', async () => {
   const text = (kind, width = 100, height = 16) => {
     const classes = new Set(), rect = { left: 20, top: 40, width, height, bottom: 40 + height }
     const fill = { textContent: 'Examples', getBoundingClientRect: () => rect }
@@ -229,57 +230,120 @@ test('site: title and stat inner outlines track the light and live values withou
   }
   const title = text('h1.title'), stat = text('.metrics b'), faq = text('h2'), logo = text('.logo-letters'), textNodes = [title, stat, faq, logo]
   const g = await glint({ paper: true, count: 0, textNodes }); g.drain()
-  const lit = () => title.classList.contains('title-lit')
+  is(g.doc.style['--light-active'], '0', 'silver faces rest as outlines without a pointer')
   const at = (x, y) => Math.abs(parseFloat(title.style['--light-x']) - x) + Math.abs(parseFloat(title.style['--light-y']) - y) < .15
-  ok(!lit(), 'resting title retains its native fill')
-  g.move(20, 40); g.drain()
-  ok(lit(), 'nearby pointer reveals the outline')
+  ok(at(480, -200), 'resting titles share the overhead light')
   g.move(70, 48); g.drain()
+  is(g.doc.style['--light-active'], '1', 'the radial fill uses the same live pointer as the rim')
   ok(at(50, 8), 'reflection uses local CSS pixels')
   const measured = g.measurements()
   g.move(70, 48); is(g.drain(), 1, 'repeated pointer position settles in one frame')
   is(g.measurements(), measured, 'pointer movement reuses measured geometry')
   title.rect.left = 40; title.rect.top = 20; g.emit('scroll'); g.drain()
   ok(at(30, 28), 'scroll remeasures the paint box')
-  ok(stat.classList.contains('title-lit'), 'stat figures share the title x-ray')
-  for (const el of [faq, logo]) {
-    ok(!el.classList.contains('title-lit'), 'FAQ and JZ stay solid')
+  for (const el of [stat, faq, logo])
     is(Object.keys(el.style), ['setProperty'], 'unrelated glyphs receive no paint updates')
-  }
-  const filter = g.defs.children[1]
-  is(filter.attrs.primitiveUnits, 'objectBoundingBox', 'inner-edge dimensions work across browser coordinate systems')
-  const [rx, ry] = filter.parts.feMorphology.attrs.radius.split(' ').map(Number)
-  ok(Math.abs(rx * 100 - 1.1) + Math.abs(ry * 16 - 1.1) < 1e-12, 'erosion stays just over one CSS pixel to survive WebKit rounding')
   for (const value of ['2.36×', '2.36×', '1.04×']) {
-    stat.fill.textContent = value; g.emit('mutate'); g.drain()
-    is(stat.outline.textContent, value, 'the decorative outline follows the real stat value')
-    is(g.defs.children.length, 2, 'value changes reuse existing masks')
+    stat.textContent = value; g.emit('mutate'); g.drain()
+    is(g.defs.children.length, 0, 'text updates never allocate SVG blur filters')
   }
-  g.emit('pointerleave'); g.drain(); ok(!lit(), 'leaving restores the title fill')
-  g.move(70, 48); g.drain(); g.move(900, 600); g.drain()
-  ok(!lit(), 'moving elsewhere clears the cutout')
+  g.emit('pointerleave'); g.drain()
+  is(g.doc.style['--light-active'], '0', 'leaving clears the radial fill')
+  ok(at(460, -180), 'leaving resets the resting reflection')
   g.move(70, 48); g.drain(); g.motion.matches = true; g.emit('motion'); g.drain()
-  ok(!lit(), 'live reduced motion restores the fill')
+  is(g.doc.style['--light-active'], '0', 'reduced motion disables pointer-driven fill')
+  ok(at(460, -180), 'reduced motion restores static lighting')
   g.move(70, 48); is(g.frames.size, 0, 'reduced motion does not animate')
-  g.motion.matches = false; g.emit('motion'); g.move(70, 48); g.drain()
-  title.rect.width = 0; title.rect.height = 0; g.emit('resize'); g.drain()
-  ok(!lit(), 'collapsed titles shed their cutout')
-  ok(!JSON.stringify(title.style).match(/NaN|Infinity/), 'zero-size paint boxes retain finite coordinates')
-  title.rect.width = 100; title.rect.height = 16; title.rect.top = 900; title.rect.bottom = 916
-  g.emit('scroll'); g.drain(); ok(!lit(), 'offscreen titles stay unmasked')
-  title.rect.top = 40; title.rect.bottom = 56
-  title.dataset.titleStyle = 'outline'; g.emit('pointerleave'); g.drain()
-  ok(at(460, -200), 'outline study returns to the same overhead light as the rulers')
-  g.mouse.matches = false; g.emit('mouse'); g.drain()
-  title.dataset.titlePreview = 'true'; g.emit('mutate'); g.drain()
-  ok(lit() && at(50, 8), 'touch and keyboard preview place a stationary light at the title center')
-  for (const mode of ['outline', 'outline', 'fill', 'prism', 'current']) {
-    title.dataset.titleStyle = mode; g.emit('mutate'); g.drain()
-    ok(lit() && at(50, 8), `${mode}: switching styles keeps the preview light stable`)
-    is(g.defs.children.length, 1, 'switching styles reuses the existing title layers')
+  g.motion.matches = false; g.emit('motion'); g.drain()
+  for (const [width, top] of [[0, 20], [100, 900]]) {
+    title.rect.width = width; title.rect.top = top; title.rect.bottom = top + 16
+    g.emit('resize'); g.drain(); g.move(120, 130); g.drain()
+    ok(at(460, -180), 'hidden and offscreen titles retain their last finite light coordinates')
+    g.emit('pointerleave'); g.drain()
   }
-  title.dataset.titlePreview = 'false'; g.emit('mutate'); g.drain()
-  ok(!lit() && at(460, -200), 'clearing preview returns to the resting light')
+})
+
+test('site: silver contours rebuild for text, fonts and wrapping, never for the moving light', async () => {
+  const events = new Map(), frames = [], strokes = [], cuts = [], ranges = []
+  const listen = (name, fn) => events.set(name, fn)
+  const rect = { left: 90, top: 190, width: 200, height: 50 }
+  const node = { textContent: 'A', left: 100, top: 190 }
+  const nodes = [node], style = { fontStyle: 'normal', fontWeight: '500', fontSize: '42px', fontFamily: 'Futura', letterSpacing: '-.42px', fontKerning: 'auto' }
+  let separator = ''
+  const fill = { getBoundingClientRect: () => rect, get textContent() { return nodes.map(n => n.textContent).join('') },
+    get innerHTML() { return nodes.map(n => n.textContent).join(separator) } }
+  const face = { innerHTML: 'A', querySelectorAll: () => [] }
+  let ready = false, serial = 0
+  const title = { dataset: {}, children: [], querySelector: selector => selector === '.title-outline' ? face : ready ? fill : null,
+    style: { setProperty(k, v) { this[k] = v } }, addEventListener: listen,
+    getBoundingClientRect: () => ({ left: 100, top: 200, width: 200, height: 50 }),
+    append(el) { this.children.push(el); el.isConnected = true } }
+  const ctx = { scale() {}, measureText: () => ({ fontBoundingBoxAscent: 30, actualBoundingBoxAscent: 24,
+    actualBoundingBoxDescent: 6, actualBoundingBoxLeft: 0, actualBoundingBoxRight: 18 }),
+    strokeText: (...args) => strokes.push(args),
+    fillText(...args) { cuts.push([this.globalCompositeOperation, ...args]) } }
+  const src = readFileSync(join(root, 'assets/title-metal.js'), 'utf8').replaceAll('export function', 'function')
+  const env = {
+    document: { createElement: tag => tag === 'canvas' ? { getContext: () => ctx, toDataURL: () => `data:image/png;base64,${++serial}` } :
+      { style: {}, setAttribute(k, v) { this[k] = v }, replaceChildren(...els) { this.children = els } },
+      createTreeWalker: () => { let i = 0; return { nextNode: () => nodes[i++] } },
+      createRange: () => { let n, start; return {
+        setStart(node, offset) { n = node; start = offset }, setEnd(node, offset) { ranges.push([start, offset]) },
+        getBoundingClientRect: () => ({ left: n.left + start * 20, top: n.top, width: 20, height: 40 }) } },
+      fonts: { ready: Promise.resolve(), addEventListener: listen } },
+    CSS: { supports: () => true }, NodeFilter: { SHOW_TEXT: 4 }, devicePixelRatio: 2,
+    ResizeObserver: class { constructor(fn) { listen('layout', fn) } observe() {} },
+    MutationObserver: class { constructor(fn) { this.fn = fn } observe(target, options) {
+      is({ ...options }, { childList: true, characterData: true, subtree: true }, 'cursor style attributes do not rebuild letter masks')
+      listen('mutate', this.fn)
+    } },
+    getComputedStyle: () => style, addEventListener: listen,
+    requestAnimationFrame: fn => { frames.push(fn); return 1 }, title,
+  }
+  const flush = () => { while (frames.length) frames.shift()() }
+  runInNewContext(`(() => {${src}\nmetal(title)})()`, env); await Promise.resolve(); flush()
+  is(title.children.length, 0, 'waits for the shared title layers to exist')
+  ready = true; events.get('mutate')(); flush()
+  const layer = title.children[0], a = layer.children[0]
+  is(strokes, [['A', 2, 32]], 'smallest title draws one glyph with space for its outer edge')
+  is(cuts, [['destination-out', 'A', 2, 32]], 'subtracts the same glyph to leave a transparent interior')
+  ok(a.style.cssText.includes('width:24px;height:44px'), 'mask includes padding for the outside stroke and descenders')
+  ok(a.style.cssText.includes('--gx:9px;--gy:11px'), 'light origin accounts for the title padding offset')
+  is([layer['aria-hidden'], layer.inert], ['true', true], 'visual masks add no duplicate accessible text or focus targets')
+  for (const event of ['mutate', 'layout', 'resize']) events.get(event)()
+  is(frames.length, 1, 'layout notifications coalesce'); flush()
+  is(layer.children[0], a, 'same text and layout retain the exact cached mask')
+  node.textContent = 'B'; events.get('mutate')(); flush()
+  is(strokes.at(-1)[0], 'B', 'a different same-sized glyph rebuilds its contour')
+  is(face.innerHTML, 'B', 'the silver fill changes with the contour')
+  node.textContent = ''; events.get('mutate')(); flush()
+  is([layer.children.length, title.dataset.metalReady], [0, 'false'], 'empty text clears stale contours and restores the native fallback')
+  is(face.innerHTML, '', 'empty text also clears the silver fill')
+  node.textContent = 'A'; nodes.push({ textContent: 'g', left: 100, top: 230 }); rect.height = 90
+  events.get('layout')(); flush()
+  is(layer.children.length, 2, 'wrapped text keeps both lines')
+  ok(layer.children[1].style.cssText.includes('top:38px'), 'descender line uses its actual native line position')
+  separator = '<br>'; events.get('mutate')(); flush()
+  is(face.innerHTML, 'A<br>g', 'markup-only edits preserve line breaks in the silver fill')
+  const count = strokes.length
+  events.get('loadingdone')(); flush()
+  is(strokes.length, count + 2, 'font loading rebuilds even when the family name and dimensions stay the same')
+  rect.width = 0; events.get('layout')(); flush()
+  is(title.dataset.metalReady, 'false', 'a hidden title discards obsolete geometry')
+  rect.width = 200; node.textContent = '𝑥'; nodes.length = 1
+  events.get('layout')(); flush()
+  is(ranges.at(-1), [0, 2], 'a surrogate pair is measured as one complete character')
+  is(strokes.at(-1)[0], '𝑥', 'revealing the title rebuilds its new glyph')
+  is(title.children.length, 1, 'all rebuilds reuse one decorative layer')
+  env.title = { dataset: {} }
+  env.document.createElement = () => ({ getContext: () => null })
+  runInNewContext(`(() => {${src}\nmetal(title)})()`, env)
+  is(frames.length, 0, 'unavailable canvas leaves native text intact')
+  is(env.title.dataset, {}, 'unavailable canvas never hides the native text')
+  env.CSS.supports = () => false
+  env.document.createElement = () => { throw Error('unsupported paint must not allocate masks') }
+  runInNewContext(`(() => {${src}\nmetal(title)})()`, env)
+  is(env.title.dataset, {}, 'missing gradient math also retains the native text')
 })
 
 test('site: selection outlines merge inline fragments, follow scroll, clear, and leave editors native', () => {
@@ -434,7 +498,7 @@ test('site: click bursts clear on light mode or a hidden tab, then resume only o
 
 // Run the page's grid controller, mocking only browser/engine boundaries. The numeric
 // simulation's JS/WASM parity is covered by grid-current.js; these tests pin its lifecycle.
-function gridDemo({ failure, gate = Promise.resolve(), hidden = false, width = 160, height = 240, dpr = 1 } = {}) {
+function gridDemo({ failure, gate = Promise.resolve(), hidden = false, width = 160, height = 240, dpr = 1, viewport = 1280, wordRight = 300, wordTop = 260 } = {}) {
   const events = new Map(), frames = new Map(), sizes = [], draws = []
   const listen = (name, fn) => events.set(name, [...events.get(name) || [], fn])
   const emit = (name, event) => events.get(name)?.forEach(fn => fn(event))
@@ -446,17 +510,22 @@ function gridDemo({ failure, gate = Promise.resolve(), hidden = false, width = 1
       this.px.fill(mode === 'wasm' ? 11 : 22)
     },
   })
-  const wasm = engine('wasm'), js = engine('js'), summary = { focus() {} }, description = {}
-  const picker = { disabled: true, options: [{}], addEventListener: listen }, stats = { textContent: 'Loading…' }
-  const info = { open: true, style: { setProperty(k, v) { this[k] = v } }, querySelector: s => s === 'summary' ? summary : description, contains: () => false, addEventListener: listen }
+  const wasm = engine('wasm'), js = engine('js'), summary = { focus() { this.focused = true },
+    getBoundingClientRect: () => ({ left: parseFloat(info.style.left), right: parseFloat(info.style.left) + 24,
+      top: parseFloat(info.style.top) - ctx.scrollY, bottom: parseFloat(info.style.top) - ctx.scrollY + 24 }) }, description = {}
+  const picker = { disabled: true, value: 'wasm', setAttribute(k, v) { this[k] = String(v) }, addEventListener: listen }, stats = { textContent: 'Loading…' }
+  const pop = { style: {}, get offsetWidth() { return Math.min(240, ctx.root.clientWidth - 32) },
+    get offsetHeight() { return Math.min(180, ctx.root.clientHeight - 32) },
+    getBoundingClientRect() { return { width: this.offsetWidth, height: this.offsetHeight } } }
+  const info = { open: true, style: { setProperty(k, v) { this[k] = v } }, querySelector: s => s === 'summary' ? summary : s === '.grid-pop' ? pop : description, contains: () => false, addEventListener: listen }
   const canvas = { style: {}, getBoundingClientRect: () => rect, getContext: () => failure === 'canvas' ? null : {
     createImageData: (w, h) => ({ data: new Uint8ClampedArray(w * h * 4) }), putImageData: img => draws.push(new Uint32Array(img.data.buffer)[0]),
   } }
   const nodes = { 'grid-current': canvas, 'grid-info': info, 'grid-engine': picker, 'grid-stats': stats,
-    'hero-wasm': { getBoundingClientRect: () => ({ right: 300, top: 40, height: 40 }) } }
+    'hero-wasm': { getBoundingClientRect: () => ({ right: wordRight, top: wordTop - ctx.scrollY, height: 40 }) } }
   let id = 0
   const ctx = {
-    $: key => nodes[key], root: { dataset: { theme: 'dark' } },
+    $: key => nodes[key], root: { dataset: { theme: 'dark' }, clientWidth: viewport, clientHeight: 800 },
     document: { hidden, addEventListener: listen, querySelector: () => ({ getBoundingClientRect: () => ({ bottom: rect.height - ctx.scrollY }) }) }, addEventListener: listen,
     performance: { now: () => 1 }, devicePixelRatio: dpr, scrollY: 0,
     getComputedStyle: () => ({ backgroundPositionX: '160px' }),
@@ -478,9 +547,9 @@ function gridDemo({ failure, gate = Promise.resolve(), hidden = false, width = 1
   const source = html.slice(html.indexOf("const cv = $('grid-current')"), html.indexOf('// ── dev tuning panel'))
     .replace('await import(u)', 'await loadJS()').replace("await import('./dist/jz.js')", 'await loadWasm()')
   const api = runInNewContext(`(() => {${source}\nreturn { boot, sync }})()`, ctx)
-  return { ...api, ctx, picker, stats, info, summary, description, canvas, rect, sizes, draws, frames, emit,
+  return { ...api, ctx, picker, stats, info, pop, summary, description, canvas, rect, sizes, draws, frames, emit,
     tick: (now = 1000) => { const batch = [...frames.values()]; frames.clear(); batch.forEach(fn => fn(now)) },
-    select: mode => { picker.value = mode; emit('change') },
+    select: mode => { if (picker.value !== mode) emit('click') },
   }
 }
 
@@ -505,7 +574,68 @@ test('site: grid engines reuse buffers through WASM → WASM → JS → WASM and
   g.emit('visible', [{ isIntersecting: true }]); await g.sync(); g.tick()
   is(g.draws.at(-1), 11, 'returning to the header resumes the chosen engine')
   is(g.canvas.style.height, '240px', 'automatic canvas ends at the header boundary')
-  is([g.info.style.left, g.info.style.top, g.info.style['--info-drop']], ['302px', '36px', '52px'], 'superscript info follows WASM; its popover clears the word')
+  is([g.info.style.left, g.info.style.top], ['302px', '256px'], 'superscript info follows WASM')
+})
+
+test('site: grid info opens above-right and shifts only to clear viewport edges', async () => {
+  const position = g => {
+    const anchor = g.summary.getBoundingClientRect()
+    return [anchor.left + parseFloat(g.pop.style.left), anchor.bottom - parseFloat(g.pop.style.bottom) - g.pop.getBoundingClientRect().height]
+  }
+  for (const [viewport, wordRight, wordTop, left, top] of [
+    [1280, 300, 260, 334, 68], [590, 300, 260, 334, 68],
+    [589, 300, 260, 333, 68], [200, 175, 260, 16, 68],
+    [260, 10, 260, 16, 68], [1280, 300, 30, 334, 16],
+    [1280, 300, 800, 334, 604],
+  ]) {
+    const g = gridDemo({ viewport, wordRight, wordTop }); await g.boot()
+    const [x, y] = position(g)
+    is([x, y], [left, top], `${viewport}px viewport / ${wordRight},${wordTop} anchor: placement`)
+    ok(x >= 16 && x + g.pop.offsetWidth <= viewport - 16, 'panel stays within both viewport edges')
+    ok(y >= 16 && y + g.pop.offsetHeight <= g.ctx.root.clientHeight - 16, 'panel stays within top and bottom viewport edges')
+  }
+  const g = gridDemo(); await g.boot()
+  g.emit('toggle'); is(position(g), [334, 68], 'repeating open preserves the position')
+  g.ctx.root.clientWidth = 589; g.emit('resize'); g.emit('timer')
+  is(position(g), [333, 68], 'resize shifts one pixel left without dropping the panel over the stats')
+  g.ctx.scrollY = 200; g.emit('scroll')
+  is(position(g), [333, 16], 'scroll clamps the open panel to the top viewport inset')
+  const measure = g.pop.getBoundingClientRect
+  g.pop.getBoundingClientRect = () => ({ width: 239.5, height: 180.25 })
+  g.emit('toggle')
+  is(position(g), [333.5, 16], 'fractional browser dimensions preserve the exact viewport inset')
+  g.pop.getBoundingClientRect = measure
+  g.emit('keydown', { key: 'Escape' })
+  is([g.info.open, g.summary.focused], [false, true], 'Escape closes and restores focus')
+  const closed = { ...g.pop.style }; g.ctx.scrollY = 0; g.emit('scroll')
+  is(g.pop.style, closed, 'a closed panel does no positioning work')
+  g.ctx.root.clientWidth = 900; g.info.open = true; g.emit('toggle')
+  is(position(g), [334, 68], 'reopening restores the above-right placement')
+  g.ctx.scrollY = 200; g.ctx.root.clientHeight = 160; g.emit('resize'); g.emit('timer')
+  is(position(g), [334, 16], 'short viewports keep the height-constrained panel inside the screen')
+  g.emit('pointerdown', { target: {} })
+  is(g.info.open, false, 'outside click closes the panel')
+  g.ctx.root.clientHeight = 800
+  for (const [scroll, open] of [[279.5, true], [280, false], [900, false]]) {
+    g.ctx.scrollY = scroll; g.info.open = true; g.emit('scroll')
+    is(g.info.open, open, `scroll ${scroll}: panel closes when its anchor fully leaves the top edge`)
+  }
+  g.ctx.scrollY = 0
+  for (const [height, open] of [[256.5, true], [256, false]]) {
+    g.ctx.root.clientHeight = height; g.info.open = true; g.emit('toggle')
+    is(g.info.open, open, `${height}px viewport: panel closes when its anchor fully leaves the bottom edge`)
+  }
+})
+
+test('site: JS/JZ switch reports its engine and separates frame stats with a comma', async () => {
+  const g = gridDemo(); await g.boot()
+  is([g.picker.disabled, g.picker['aria-checked']], [false, 'true'], 'ready switch starts on JZ')
+  g.tick(1000); g.tick(1600)
+  is(g.stats.textContent, '0.00 ms/frame, 3 fps', 'readout uses a comma between values')
+  g.emit('click'); g.tick()
+  is([g.picker.value, g.picker['aria-checked'], g.draws.at(-1)], ['js', 'false', 22], 'click selects JS in the UI and renderer')
+  g.emit('click'); g.tick()
+  is([g.picker.value, g.picker['aria-checked'], g.draws.at(-1)], ['wasm', 'true', 11], 'next click restores JZ')
 })
 
 test('site: grid backing store stays on an integer grid at low and high display scales', async () => {
@@ -529,7 +659,7 @@ test('site: grid boot races, missing source, missing canvas and unsupported WASM
     if (failure === 'wasm' || failure === 'boxed') {
       is(g.picker.value, 'js', `${failure}: JS selected`)
       is(g.draws, [22], `${failure}: the JS buffer reaches the canvas`)
-      is(g.picker.options[0].disabled, true, `${failure}: unavailable WASM cannot be selected`)
+      is([g.picker.disabled, g.picker['aria-checked']], [true, 'false'], `${failure}: switch stays on JS when WASM is unavailable`)
       is(g.description.textContent, 'This header animation runs the same JavaScript source.', `${failure}: no false WASM claim`)
     } else {
       is(g.stats.textContent, 'Grid unavailable', `${failure}: failure is visible`)

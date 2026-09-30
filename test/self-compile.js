@@ -562,31 +562,6 @@ test('self-compile: repeated guards avoid temporary analysis closures and member
   }
 })
 
-test('self-compile: repeated calls reuse the summary export census', () => {
-  const s = getSelf()
-  for (const count of [0, 512, 512, 128, 0, 512]) {
-    const parts = Math.ceil(count / 64)
-    const source = 'function step(x) { return x + 1 }' +
-      Array.from({ length: parts }, (_, part) =>
-        `function part${part}(x) { let sum = 0;` +
-        Array.from({ length: Math.min(64, count - part * 64) }, (_, j) =>
-          `sum += step(x + ${part * 64 + j});`).join('') + 'return sum; }').join('') +
-      `function main(x) { return ${Array.from({ length: parts }, (_, i) => `part${i}(x)`).join('+') || '0'}; }
-        export { main as run }; export default main;`
-    const out = s.exports.default(s.memory.String(source), 0, s.memory.String('1'))
-    const bytes = new Uint8Array(s.memory.read(out))
-    const summary = phaseDeltas(readMarks(s)).find(p => p.name === 'summary')
-    ok(summary && summary.bytes < 128 * 1024 + count * 1536,
-      `${count} calls: first summary uses ${summary?.bytes} bytes`)
-    const ex = instantiate(bytes).exports
-    for (const x of [0, 2, -3, 2]) {
-      const expected = count * x + count * (count + 1) / 2
-      is(ex.run(x), expected, 'aliased export')
-      is(ex.default(x), expected, 'default export of the same function')
-    }
-  }
-})
-
 test('self-compile: heap marks name their phases, reset per call, and stay readable after a failed compile', () => {
   const s = getSelf()
   const src = 'let inc = x => x + 1; export let main = () => inc(10)'

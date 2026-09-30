@@ -1,3 +1,5 @@
+import { metal, logoMetal } from './title-metal.js'
+
 // One cursor light for rulers, outlines and reflective ink.
 const root = document.documentElement, radius = 320
 const edge = el => {
@@ -8,8 +10,7 @@ const edge = el => {
   return { el, ring }
 }
 const logos = [...document.querySelectorAll('.logo, footer .wordmark')].map(edge)
-const boxes = new Map(), masks = new Map()
-let maskId = 0
+const boxes = new Map()
 const motion = matchMedia('(prefers-reduced-motion: reduce)')
 const mouse = matchMedia('(hover: hover) and (pointer: fine)')
 const field = { x: innerWidth / 2, y: -160 }
@@ -25,26 +26,10 @@ if (document.querySelector('html.paper')) {
     <stop offset="1" stop-color="currentColor" stop-opacity="0"/>
   </radialGradient></defs><path fill="none" stroke="url(#ruler-light)" stroke-width="1"/>`
   document.body.append(el)
-  ruler = { el, gradient: el.querySelector('radialGradient'), path: el.querySelector('path'), defs: el.querySelector('defs') }
+  ruler = { el, gradient: el.querySelector('radialGradient'), path: el.querySelector('path') }
 }
 
-// Erode once and subtract: a true inside edge, without lighting, offsets or displaced glyphs.
-const inset = (el, rect) => {
-  if (!masks.has(el)) {
-    const filter = document.createElementNS('http://www.w3.org/2000/svg', 'filter'), id = `ink-outline-${maskId++}`
-    filter.setAttribute('id', id)
-    filter.setAttribute('primitiveUnits', 'objectBoundingBox')
-    filter.setAttribute('x', '-10%'); filter.setAttribute('y', '-50%')
-    filter.setAttribute('width', '120%'); filter.setAttribute('height', '200%')
-    filter.innerHTML = '<feMorphology in="SourceAlpha" operator="erode" result="inside"/><feComposite in="SourceGraphic" in2="inside" operator="out"/>'
-    ruler.defs.append(filter)
-    el.style.filter = `url(#${id})`
-    masks.set(el, { filter, erosion: filter.querySelector('feMorphology') })
-  }
-  masks.get(el).erosion.setAttribute('radius', `${1.1 / (rect.width || 1)} ${1.1 / (rect.height || 1)}`)
-}
-
-// Keep the real text selectable; its inert twin paints only the reflected outline.
+// Keep real text selectable; its inert twin carries the radial silver reflection.
 const title = el => {
   let fill = el.querySelector('.title-fill')
   if (!fill) {
@@ -55,18 +40,14 @@ const title = el => {
   }
   if (!el.querySelector('.title-outline')) {
     const outline = fill.cloneNode(true)
-    outline.className = 'title-outline'
+    outline.className = 'title-outline metal-face'
     outline.setAttribute('aria-hidden', 'true')
     outline.setAttribute('inert', '')
     for (const node of outline.querySelectorAll('[id]')) node.removeAttribute('id')
     el.append(outline)
     el.classList.add('reflect-title')
+    metal(el)
   }
-  if (el.matches('.metrics b')) {
-    const outline = el.querySelector('.title-outline')
-    if (outline.textContent !== fill.textContent) outline.textContent = fill.textContent
-  }
-  return fill
 }
 const glare = el => {
   if (el.classList.contains('glare-link') || el.matches('.logo, .wordmark, .report, .install')) return
@@ -90,8 +71,6 @@ const glare = el => {
 }
 const layout = () => {
   if (ruler) {
-    for (const [el, { filter }] of masks) if (!el.isConnected) { filter.remove(); masks.delete(el) }
-    for (const logo of logos) if (logo.outline) inset(logo.outline, logo.outline.getBoundingClientRect())
     const { clientWidth: width, clientHeight: height } = root
     const sides = getComputedStyle(document.body, '::before')
     const left = document.body.getBoundingClientRect().left + parseFloat(sides.left)
@@ -112,13 +91,12 @@ const layout = () => {
       boxes.get(el).rect = el.getBoundingClientRect()
     }
     for (const el of document.querySelectorAll('a')) glare(el)
-    ink = [...document.querySelectorAll('h1.title, .metrics b, footer .legal > :not(a)')]
+    ink = [...document.querySelectorAll('h1.title, footer .legal > :not(a)')]
       .filter(el => el.textContent.trim()).map(el => {
-        const heading = el.matches('h1.title, .metrics b')
-        const paint = heading ? title(el) : el
+        const heading = el.matches('h1.title')
+        if (heading) title(el)
         if (!heading) el.classList.add('reflect-text')
-        const rect = paint.getBoundingClientRect()
-        if (heading) inset(el.querySelector('.title-outline'), rect)
+        const rect = el.getBoundingClientRect()
         return { el, heading, rect }
       })
   }
@@ -141,6 +119,7 @@ const frame = () => {
   raf = 0
   if (root.classList.contains('jz-saver') || root.classList.contains('jz-embed')) return
   if (dirty) layout()
+  root.style.setProperty('--light-active', pointer && mouse.matches && !motion.matches ? '1' : '0')
   const target = pointer && mouse.matches && !motion.matches ? pointer : { x: innerWidth / 2, y: -160 }
   field.x = motion.matches ? target.x : field.x + (target.x - field.x) * .2
   field.y = motion.matches ? target.y : field.y + (target.y - field.y) * .2
@@ -157,27 +136,16 @@ const frame = () => {
     const { x, y, power } = illumination(rect)
     item.ring.style.opacity = .3 + .7 * power
     light(item, x, y)
-    if (item.shine) {
-      item.shine.setAttribute('cx', (field.x - rect.left) * 630 / rect.width)
-      item.shine.setAttribute('cy', (field.y - rect.top) * 630 / rect.height)
-      item.shine.setAttribute('r', radius * 630 / rect.width)
+    if (item.metal) {
+      item.el.style.setProperty('--light-x', `${field.x - rect.left}px`)
+      item.el.style.setProperty('--light-y', `${field.y - rect.top}px`)
     }
   }
   for (const { el, heading, rect } of ink) {
-    if (!rect.width || !rect.height || rect.bottom < 0 || rect.top >= innerHeight) {
-      if (heading) el.classList.remove('title-lit')
-      continue
-    }
+    if (!rect.width || !rect.height || rect.bottom < 0 || rect.top >= innerHeight) continue
     if (heading) {
-      const preview = el.dataset.titlePreview === 'true'
-      const dx = preview ? rect.width / 2 : field.x - rect.left, dy = preview ? rect.height / 2 : field.y - rect.top
-      const distance = Math.hypot(Math.max(-dx, 0, dx - rect.width), Math.max(-dy, 0, dy - rect.height))
-      const nearby = preview || !!pointer && mouse.matches && !motion.matches && distance < 230
-      el.classList.toggle('title-lit', nearby)
-      if (nearby || el.dataset.titleStyle) {
-        el.style.setProperty('--light-x', `${dx.toFixed(1)}px`)
-        el.style.setProperty('--light-y', `${dy.toFixed(1)}px`)
-      }
+      el.style.setProperty('--light-x', `${(field.x - rect.left).toFixed(1)}px`)
+      el.style.setProperty('--light-y', `${(field.y - rect.top).toFixed(1)}px`)
     } else el.style.setProperty('--light-power', illumination(rect).power.toFixed(3))
   }
   if (painted && Math.abs(target.x - field.x) + Math.abs(target.y - field.y) > .1) schedule()
@@ -208,12 +176,12 @@ if (ruler) {
   new ResizeObserver(invalidate).observe(document.body)
   new MutationObserver(invalidate).observe(root, { attributes: true, attributeFilter: ['data-theme', 'class'] })
   new MutationObserver(invalidate).observe(document.body, {
-    childList: true, subtree: true, attributes: true, attributeFilter: ['disabled', 'hidden', 'data-title-style', 'data-title-preview'],
+    childList: true, subtree: true, attributes: true, attributeFilter: ['disabled', 'hidden'],
   })
 }
 schedule()
 
-// The mark stays filled: a fixed silver face with a subtle reflection confined to its inner edge.
+// Derive both letter contours from the canonical SVG, including the stroked Z.
 if (logos.length) try {
   const response = await fetch(new URL('../jz.svg', import.meta.url))
   if (!response.ok) throw new Error('Logo unavailable')
@@ -222,27 +190,12 @@ if (logos.length) try {
   for (const [i, logo] of logos.entries()) {
     const img = logo.el.querySelector('img')
     if (!img) continue
-    const svg = document.importNode(source, true), ns = svg.namespaceURI
+    const svg = document.importNode(source, true)
     svg.setAttribute('role', 'img'); svg.setAttribute('aria-label', img.alt || 'JZ')
     svg.setAttribute('focusable', 'false')
-    const defs = document.createElementNS(ns, 'defs'), face = `logo-face-${i}`, shine = `logo-shine-${i}`
-    defs.innerHTML = `<linearGradient id="${face}" x2=".65" y2="1"><stop stop-color="#fff"/>
-      <stop offset=".5" stop-color="#e7eaee"/><stop offset="1" stop-color="#cbd2dc"/></linearGradient>
-      <radialGradient id="${shine}" gradientUnits="userSpaceOnUse"><stop stop-color="white"/>
-      <stop offset="1" stop-color="white" stop-opacity="0"/></radialGradient>`
-    const edge = document.createElementNS(ns, 'g')
-    edge.setAttribute('class', 'logo-ink-edge')
-    for (const path of [...svg.querySelectorAll('path')]) {
-      const paint = path.getAttribute('fill') === 'white' ? 'fill' : path.getAttribute('stroke') === 'white' ? 'stroke' : null
-      if (!paint) continue
-      const outline = path.cloneNode(true)
-      outline.setAttribute(paint, `url(#${shine})`); edge.append(outline)
-      path.setAttribute(paint, `url(#${face})`)
-    }
-    svg.prepend(defs)
-    if (ruler) { svg.append(edge); logo.outline = edge }
     img.replaceWith(svg)
-    logo.shine = defs.querySelector('radialGradient')
+    logoMetal(svg, logo.el, i)
+    logo.metal = true
   }
   invalidate()
 } catch { /* Keep the canonical image if its silver enhancement cannot load. */ }
