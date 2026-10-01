@@ -349,7 +349,10 @@ function buildBaseParamOf(fn, bodyStart, distinctParams) {
         seen.delete(name)
         return
       }
-      if (!PURE_LICM_OPS.has(op)) { bad = true; return }
+      // An emitted conversion may stage its operand in a value block. Trace
+      // every statement's origins as well as the result; this does not make
+      // those statements pure or permit a load/call to supply an offset.
+      if (op !== 'block' && op !== 'result' && op !== 'local.set' && op !== 'local.tee' && !PURE_LICM_OPS.has(op)) { bad = true; return }
       for (let i = 1; i < n.length; i++) visit(n[i])
     }
     visit(addr)

@@ -960,7 +960,9 @@ census when deduplication removes copies or introduces a temporary. Each loop
 checks private writes against it without rescanning the whole function.
 JZ uses watr's instruction-effect classifier for every memory-write family;
 unknown write targets block alias-dependent motion. Buffer origins follow
-single-definition locals and closed scalar recurrences; other origins remain
+single-definition locals and closed scalar recurrences. Conversion blocks may
+stage an index in local scratch: origin tracing visits every statement and the
+result, still rejecting loads, calls and conflicting roots. Other origins remain
 unknown. Allocating
 helpers cannot be speculated before zero-trip loops or crossed by allocator-global
 reads.

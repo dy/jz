@@ -39,6 +39,46 @@ test('LICM Float32: fixed distinct input cells have the same motion as Float64',
   }
 })
 
+test('LICM: address origins pass through conversion scratch, retaining unknown effects', () => {
+  if (onKernel()) return // Exercises the host IR pass and its proof metadata.
+  const staged = `(block (result i32) (local.set $scratch (local.get $i))
+    (select (i32.trunc_sat_f64_s (local.get $scratch)) (i32.const -1)
+      (f64.eq (local.get $scratch) (local.get $scratch))))`
+  const teed = `(block (result i32)
+    (select (i32.trunc_sat_f64_s (local.tee $scratch (local.get $i))) (i32.const -1)
+      (f64.eq (local.get $scratch) (local.get $scratch))))`
+  for (const width of [32, 64]) for (const [name, offset, hoists] of [
+    ['set', staged, true], ['tee', teed, true],
+    ['load', '(block (result i32) (local.set $k (i32.load (i32.const 0))) (local.get $k))', false],
+    ['call', '(block (result i32) (local.set $k (call $offset)) (local.get $k))', false],
+    ['overwrite', '(block (result i32) (local.set $b (local.get $a)) (i32.const 0))', false],
+  ]) {
+    const lane = `f${width}`, value = width === 32 ? '(f32.demote_f64 (local.get $value))' : '(local.get $value)'
+    const read = `(${lane}.load (local.get $a))`, answer = width === 32 ? `(f64.promote_f32 ${read})` : read
+    const ast = parseWat(`(module (memory 1)
+      (func $offset (result i32) (i32.const 0))
+      (func $f (export "f") (param $a i32) (param $b i32) (param $n i32) (param $value f64) (result f64)
+        (local $i f64) (local $scratch f64) (local $k i32) (local $sum f64)
+        (${lane}.store (local.get $a) ${value})
+        (block $exit (loop $loop
+          (br_if $exit (f64.ge (local.get $i) (f64.convert_i32_s (local.get $n))))
+          (${lane}.store (i32.add (local.get $b) (i32.shl ${offset} (i32.const ${width === 32 ? 2 : 3})))
+            ${width === 32 ? '(f32.demote_f64 (local.get $i))' : '(local.get $i)'})
+          (local.set $sum (f64.add (local.get $sum) ${answer}))
+          (local.set $i (f64.add (local.get $i) (f64.const 1))) (br $loop)))
+        (local.get $sum)))`)
+    const fn = find(ast, '$f'), before = instantiate(ast)
+    fn.distinctParams = new Set(['$a', '$b'])
+    fn.fixedTypedBytes = new Map([['$a', width / 8]])
+    hoistInvariantLoop(fn)
+    const loads = loopCount(fn, n => n[0] === `${lane}.load`)
+    is(loads, hoists ? 0 : 1, `${lane} ${name}: only a closed numeric origin permits the hoist`)
+    const after = instantiate(ast)
+    for (const count of [0, 1, 4, 4, 0, 2]) for (const v of [-0, 0, 1.25, -3, Infinity, -Infinity, NaN])
+      ok(Object.is(after(32, 128, count, v), before(32, 128, count, v)), `${lane} ${name}, ${count}/${v}`)
+  }
+})
+
 test('LICM Float32: a read-only helper needs an extent but no pairwise alias relation', () => {
   const src = `function kernel(a, n) {
     let s = 0
