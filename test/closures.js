@@ -1786,6 +1786,80 @@ test('closures: for-head let captures per-iteration binding', () => {
   is(run(`export let f = () => { let fs = []; for (let i = 0; i < 2; i++) for (let j = 0; j < 2; j++) fs.push(() => i * 10 + j); return fs[0]() + fs[3]() }`).f(), 11)
 })
 
+test('closures: for-head initialization writes the original captured bindings', () => {
+  for (const setup of ['let bump=()=>{}', 'let bump=()=>{k=4294967296}']) {
+    const src = `const a=new Float64Array([2,3,5,7]);export function f(mode){
+      const out=[];let last=99;
+      for(let j=0,k=0,init=(mode===1?k=4294967296:0);j<3;j++,last=(k+=1)){
+        ${setup};if(mode===2)k=4294967296;if(mode===3)bump();out.push(k,a[k])
+      }return[out,last]}`
+    const expected = oracle(src).f
+    for (const optimize of levels(0, 1, 2, 3, 'size')) {
+      const actual = jz(src, { optimize }).exports.f
+      for (const mode of [0,0,1,2,3,0]) is(actual(mode), expected(mode), `O${optimize}, ${setup}, ${mode}`)
+    }
+  }
+})
+
+test('closures: for-head initializer closures retain their own environment', () => {
+  const sources = [
+    `export function f(n){const fs=[],log=[];let get;
+      for(let i=(log.push(1),0),j=(log.push(2),i+10),init=(get=()=>i,0);i<n;i++,j++){
+        fs.push(()=>[i,j]);if(i===0)i+=1
+      }return[log,get(),fs.map(f=>f())]}`,
+    `export function f(n){const fs=[];
+      for(let i,j=(i=0);i<n;i++)fs.push(()=>i);
+      return fs.map(f=>f())}`,
+    `export function f(n){const fs=[];let get;
+      for(let i=0,j=(get=((i)=>()=>i)(17),i+1);i<n;i++)fs.push(()=>[i,j]);
+      return[get(),fs.map(f=>f())]}`,
+    `export function f(n){let get;
+      for(let i=0,j=(get=()=>i,0);i<n;i++){}
+      return get()}`,
+    `export function f(n){let get;const fs=[];
+      for(let i=0,j=0,k=(get=()=>j,0);i<n;i++,j++)fs.push(()=>i);
+      return[get(),fs.map(f=>f())]}`,
+    `let get;const fs=[];
+      for(let i=0,j=0,k=(get=()=>j,0);i<3;i++,j++)fs.push(()=>i);
+      export function f(n){return[n,get(),fs.map(f=>f())]}`,
+    `export function f(n){const fs=[];
+      outer:for(let i=0,j=(i=2);i<n;i++){
+        fs.push(()=>i);if(i<3)continue outer;break outer
+      }return fs.map(f=>f())}`,
+    `const fs=[];for(let i=0,j=(i=2);i<4;i++)fs.push(()=>i);
+      export function f(n){return[n,fs.map(f=>f())]}`
+  ]
+  for (const src of sources) for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const expected = oracle(src).f, actual = jz(src, { optimize }).exports.f
+    for (const n of [0,4,4,1,3,0]) is(actual(n), expected(n), `O${optimize}, n=${n}`)
+  }
+})
+
+test('closures: for-head initializer copies retain Number values', () => {
+  const src = `export function f(start){const fs=[];let get;
+    for(let i=start,j=(get=()=>i,0);i<2;i++)fs.push(()=>i);
+    return[get(),fs.map(f=>f())]}`
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const expected = oracle(src).f, actual = jz(src, { optimize }).exports.f
+    for (const start of [0,-0,.5,4294967296,NaN,Infinity,1,0])
+      is(actual(start), expected(start), `O${optimize}, start=${start}`)
+  }
+})
+
+test('closures: throwing for-head initializers preserve order and reuse', () => {
+  const src = `export function f(fail){const log=[],fs=[];
+    const start=()=>{log.push(2);if(fail)throw new Error('head');return 2};
+    try{
+      for(let i=(log.push(1),0),j=(i=start()),k=(log.push(3),j+1);i<4;i++)fs.push(()=>[i,k]);
+      return[log,fs.map(f=>f()),'ok']
+    }catch(e){return[log,fs.map(f=>f()),e.message]}
+  }`
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const expected = oracle(src).f, actual = jz(src, { optimize }).exports.f
+    for (const fail of [0,0,1,0,1,0]) is(actual(fail), expected(fail), `O${optimize}, fail=${fail}`)
+  }
+})
+
 // A parameter default belongs to its arrow: a loop binding only a default reads
 // is captured (a fresh binding per iteration), and a top-level function only a
 // default reassigns stays a mutable binding, neither lifted nor devirtualized

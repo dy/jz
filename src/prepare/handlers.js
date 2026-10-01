@@ -1346,9 +1346,9 @@ const handlers = {
     // ES §14.7.4.7 CreatePerIterationEnvironment: a `let` declared in a classic
     // for-HEAD gets a FRESH binding each iteration when closures capture it —
     // `for (let i…) fns.push(() => i)` must capture 0,1,2, not the final value.
-    // Lower to the copy-in/copy-out shape (only when a body arrow actually
-    // references the head var — pay-per-capture):
-    //   for (let __i = 0; __i < n; __i++) { let i = __i; …body…; __i = i }
+    // Lower to the copy-in/copy-out shape when a body or initializer arrow
+    // references the head var — pay-per-capture:
+    //   { let i = 0; for (let __i = i; __i < n; __i++) { let i = __i; …body…; __i = i } }
     // The body-`let` then rides the existing per-iteration fresh-cell machinery
     // (emitLoopFreshBoxed). Known edge, accepted: a closure inside the COND or
     // STEP itself captures the carrier, not the per-iteration binding.
@@ -1357,21 +1357,20 @@ const handlers = {
       for (let i = 1; i < head[1].length; i++) {
         const d = head[1][i]
         const nm = typeof d === 'string' ? d : (Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string' ? d[1] : null)
-        if (nm && bodyCapturesName(body, nm)) captured.push(nm)
+        if (nm && (bodyCapturesName(body, nm) || bodyCapturesName(head[1], nm))) captured.push(nm)
       }
       if (captured.length) {
         const carrier = new Map(captured.map(n => [n, `${n}${T}pi${freshPrepareId()}`]))
         const renamed = (n) => substIdents(n, carrier)
-        const decl = ['let', ...head[1].slice(1).map(d => {
-          if (typeof d === 'string') return carrier.get(d) ?? d
-          if (Array.isArray(d) && d[0] === '=' && carrier.has(d[1])) return ['=', carrier.get(d[1]), d[2]]
-          return d
-        })]
+        // Evaluate the complete declaration in its original lexical scope.
+        // Later initializers may read/write earlier bindings or capture them;
+        // changing only a declaration's name disconnects those operations.
+        const decl = ['let', ...captured.map(n => ['=', carrier.get(n), n])]
         const newHead = [';', decl, renamed(head[2]), renamed(head[3]), ...head.slice(4).map(renamed)]
         const copyIn = ['let', ...captured.map(n => ['=', n, carrier.get(n)])]
         const copyOut = captured.map(n => ['=', carrier.get(n), n])
         const newBody = ['{}', [';', copyIn, body, ...copyOut]]
-        return handlers['for'](newHead, newBody)
+        return prep(['{}', [';', head[1], ['for', newHead, newBody]]])
       }
     }
     pushScope()

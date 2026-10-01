@@ -377,6 +377,9 @@ all references. Allocation enters a conditional arm only when every reference
 is inside it. Shared cells stay before the branch, and loop capture handling
 keeps ownership of per-iteration cells. A skipped closure branch allocates no
 storage for its captured locals.
+Captured for-head declarations evaluate together in their original lexical
+scope before iteration carriers are initialized. Later initializer writes and
+closures retain that initial environment; each body still gets fresh cells.
 
 Static aggregate probes retain their emitted field/element IR. If any value
 fails the static-data check, runtime construction reuses that IR; it never
