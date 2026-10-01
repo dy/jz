@@ -995,6 +995,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   const closureOwn = (recv) => tagOf(recv) === K.CLOSURE && paramOf(recv) !== UNKNOWN && !membersOf(paramOf(recv)).some(id => escaped.has(id))
   const raiseClosureProp = (recv, prop, k) => {
     for (const id of membersOf(paramOf(recv))) {
+      if (escaped.has(id)) escape(k)
       let m = closureProps.get(id); if (!m) closureProps.set(id, m = new Map())
       const old = m.get(prop) ?? K.NONE, nk = merge(old, k)
       if (nk !== old) { m.set(prop, nk); changed = true }
@@ -1019,6 +1020,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     if (t === K.ARRAY && prop === 'length') { openLen(arr, 'length written as a property'); raiseElem(arr, ABSENT) }
     if (t !== K.ARRAY) raiseElem(arr, k, false, true)
     const c = cell(paramOf(arr)); let m = cellProps.get(c)
+    if (cellWild.get(c) === ANY) escape(k)
     if (!m) cellProps.set(c, m = new Map())
     const old = m.get(prop) ?? K.NONE, nk = merge(old, k)
     if (nk !== old) { m.set(prop, nk); changed = true }
@@ -1120,7 +1122,16 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     if (celled(k)) {
       openLen(k, losing ?? 'held where the summary cannot see')
       invalidateTuple(k); const id = cell(paramOf(k)), e = elems[id]; if (setCells.has(id)) enumerateKeys(id); if (e !== ANY) { elems[id] = ANY; changed = true; escape(e) }
-      if (tagOf(k) === K.ARRAY || hasTag(k, K.HASH)) { const w = cellWild.get(id) ?? K.NONE; if (w !== ANY) { for (const pk of cellProps.get(id)?.values() ?? []) escape(pk); escape(cellNumeric.get(id) ?? K.NONE); escape(w); raiseWild(k, ANY) } }
+      if (tagOf(k) === K.ARRAY || hasTag(k, K.HASH)) {
+        const w = cellWild.get(id) ?? K.NONE
+        if (w !== ANY) {
+          // Named/numeric properties can point back to this cell too. Mark
+          // their top value before following those edges, as for elements.
+          cellWild.set(id, ANY); changed = true
+          for (const pk of cellProps.get(id)?.values() ?? []) escape(pk)
+          escape(cellNumeric.get(id) ?? K.NONE); escape(w)
+        }
+      }
       if (cellShapes.has(id)) { for (const sid of cellShapes.get(id)) loseShape(sid); addCellLost(id) }
       if (tagOf(k) === K.MAP) { enumerateKeys(id); const kk = mapKeys.get(id) ?? K.NONE; if (kk !== ANY) { mapKeys.set(id, ANY); changed = true; escape(kk) } }
     }

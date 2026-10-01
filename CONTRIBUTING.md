@@ -2979,8 +2979,11 @@ escapes only the fields a read through an unknown receiver cannot answer
 precisely (a foreign object, a class member or a dynamic store bears the
 name); the others keep their values, since a store through such a read
 reaches the summary. A raise folds in a value the join's own effects moved
-(a lost element escaping its array) rather than writing over it. The emitter
-calls a member directly when every layout of the receiver resolves it to one
+(a lost element escaping its array) rather than writing over it. Escape analysis
+marks element and named-property domains before following their edges,
+so self and mutual cycles terminate. Later named stores into an escaped array
+or closure also escape their values; visitation order cannot narrow their callers.
+The emitter calls a member directly when every layout of the receiver resolves it to one
 function, and reads a field every member layout holds in one slot as that
 slot (`commonSlot`), so a method inherited by a class family runs on prefix
 layouts without a guard. A call of a name no slot holds runs the closure the

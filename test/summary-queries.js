@@ -783,6 +783,29 @@ test('summary queries: an unknown callback cannot escape queried array or closur
   is([...summary.escaped], escaped, 'nor mark a closure as escaped')
 })
 
+test('summary queries: cyclic property escapes terminate and include later stores', () => {
+  const decl=(name,value)=>['const',['=',name,value]]
+  const funcs=['leaf','carrier'].map(name=>({name,sig:{params:[{name:'x'}]},body:'x'}))
+  const options={funcs,schemas:[],brandOf:()=>null,imports:new Map(),exported:()=>false}
+  const read=['.','a','fn']
+  let retained
+  for(const form of ['named','numeric','computed','mutual','closure','named'])for(const early of [false,true]){
+    const init=form==='closure'?'carrier':['[']
+    const edge=form==='numeric'?['[]','a',lit(-1)]:form==='computed'?['[]','a','key']:['.','a','self']
+    const expose=['()','unknown','a']
+    const ast=[';',decl('a',init),decl('b',['[']),...(early?[expose]:[]),
+      ['=',edge,form==='mutual'?'b':'a'],...(form==='mutual'?[['=',['.','b','back'],'a']]:[]),
+      ['=',read,'leaf'],...(!early?[expose]:[]),['()','leaf',lit(7)]]
+    const summary=summarize(ast,options)
+    is(summary.escaped.has('leaf'),true,`${form}/${early}: a callable beside the cycle escapes`)
+    is(summary.at('leaf').paramKindOf('x'),kind(K.ANY),`${form}/${early}: callers may pass any value`)
+    if(form!=='closure')is(summary.kindOfExpr(read),kind(K.ANY),'a later read keeps the escaped property domain')
+    retained??=summary
+    is(retained.at('leaf').paramKindOf('x'),kind(K.ANY),'later cycle shapes preserve the retained reader')
+  }
+  is(summarize(null,options).escaped.size,0,'zero-work summary has no earlier escape')
+})
+
 test('summary queries: query order does not change retained facts or later answers', () => {
   const { summary, params } = program()
   const queries = [
