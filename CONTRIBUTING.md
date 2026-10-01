@@ -230,6 +230,9 @@ become boxed dispatch roots only when settled receiver kinds admit collections.
 Their capture-free closures keep canonical identity without module initialization.
 Intrinsic constructor and tag identities keep shadowed builtins from changing
 receiver checks.
+Generic derived classes call captured base methods with their instance as the
+ordinary receiver; schema methods retain their explicit first receiver argument.
+This also admits native Map/Set base methods without rebinding user methods.
 Map construction validates each entry object and reads its properties in key,
 value order. Entry getters retain ordinary call effects and can change the
 source array's live iteration length. Native Map copies keep their table path.

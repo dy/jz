@@ -515,3 +515,27 @@ test('held collection method demand follows helpers, defaults and closure scopes
     for(const [got,want] of retained)is(got.f(4),want.f(4),`retained compiler result O${optimize}`)
   }
 })
+
+
+test('collection subclasses pass their receiver to captured super methods', () => {
+  const src = `let trace='';
+    class M extends Map{set(k,v){trace+='m';return super.set(k,v+1)}
+      clear(){trace+='c';super.clear();return this.size}}
+    class N extends M{set(k,v){trace+='n';return super.set(k,v+2)}}
+    class S extends Set{add(v){trace+='s';return super.add(v+1)}}
+    export function f(n){trace='';const m=new N(),s=new S();
+      for(let i=0;i<n;i++){m.set(i,i);s.add(i)}
+      const out=[Array.from(m.entries()),Array.from(s.values()),trace,m.size,s.size];
+      out.push(m.clear(),m.size,trace);return out}
+    export function ordinary(n){class A{constructor(){this.v=1}add(n){this.v+=n;return this.v}}
+      class B extends A{add(n){return super.add(n)+1}}
+      const b=new B();return[b.add(n),b.add(n),b.v]}`
+  for(const optimize of levels(0,1,2,3,'size')){
+    const got=jz(src,{optimize}).exports,want=oracle(src),retained=[]
+    for(const n of [0,0,1,3,0,1]){
+      const value=got.f(n),expected=want.f(n);is(value,expected,`super O${optimize}, ${n}`)
+      retained.push([value,expected]);is(got.ordinary(n),want.ordinary(n),`bound base O${optimize}, ${n}`)
+    }
+    for(const [value,expected] of retained)is(value,expected,`retained super O${optimize}`)
+  }
+})

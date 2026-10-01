@@ -200,9 +200,10 @@ function collectSuperMethodCalls(node, out = new Set()) {
 }
 
 // `recv`, when given, is passed as the first argument: the base's method is a
-// shared function taking the receiver (the struct lowering below).
-function rewriteSuperMethodCalls(node, baseMethodVars, recv) { return withLoc(rewriteSuperMethodCallsNode(node, baseMethodVars, recv), node) }
-function rewriteSuperMethodCallsNode(node, baseMethodVars, recv) {
+// shared function taking the receiver (the struct lowering below). Captured
+// method values use the ordinary call receiver instead.
+function rewriteSuperMethodCalls(node, baseMethodVars, recv, callReceiver = false) { return withLoc(rewriteSuperMethodCallsNode(node, baseMethodVars, recv, callReceiver), node) }
+function rewriteSuperMethodCallsNode(node, baseMethodVars, recv, callReceiver) {
   if (!Array.isArray(node)) return node
   if (node[0] === 'function' || node[0] === 'class') return node
   if (node[0] === '()') {
@@ -210,11 +211,11 @@ function rewriteSuperMethodCallsNode(node, baseMethodVars, recv) {
     if (name) {
       const fn = baseMethodVars.get(name)
       if (!fn) jzifyError(`super.${name} is not available on the base class`)
-      const args = node.slice(2).map(n => rewriteSuperMethodCalls(n, baseMethodVars, recv))
-      return ['()', fn, ...(recv ? [withReceiver(args[0], recv)] : args)]
+      const args = node.slice(2).map(n => rewriteSuperMethodCalls(n, baseMethodVars, recv, callReceiver))
+      return ['()', callReceiver ? ['.', fn, 'call'] : fn, ...(recv ? [withReceiver(args[0], recv)] : args)]
     }
   }
-  return node.map(n => rewriteSuperMethodCalls(n, baseMethodVars, recv))
+  return node.map(n => rewriteSuperMethodCalls(n, baseMethodVars, recv, callReceiver))
 }
 
 // A call's argument node with `recv` prepended: `null` → recv, `a` → `[',', recv, a]`.
@@ -659,17 +660,17 @@ function lowerClass(name, heritage, body, hoists, trailers) {
       stmts.push(['let', ['=', v, ['.', self, mname]]])
     }
     for (const [fname, init] of fields)
-      stmts.push(['=', ['.', self, fname], init != null ? transform(renameThis(rewriteSuperMethodCalls(init, superMethodVars), self)) : UNDEF])
+      stmts.push(['=', ['.', self, fname], init != null ? transform(renameThis(rewriteSuperMethodCalls(init, superMethodVars, self, true), self)) : UNDEF])
     for (const [mname, mparams, mbody, kind] of methods) {
       if (mname.endsWith(ACCESSOR_GET) || mname.endsWith(ACCESSOR_SET)) recordAccessor(mname.slice(0, -ACCESSOR_GET.length), true)
-      stmts.push(['=', ['.', self, mname], methodValue(mparams, rewriteSuperMethodCalls(mbody, superMethodVars), kind, self)])
+      stmts.push(['=', ['.', self, mname], methodValue(mparams, rewriteSuperMethodCalls(mbody, superMethodVars, self, true), kind, self)])
       stmts.push(['()', '__hide_member', [',', self, ['str', mname]]])
     }
     if (ctorMember) {
       stmts.push(['=', ['.', self, 'constructor'], cls])
       stmts.push(['()', '__hide_member', [',', self, ['str', 'constructor']]])
     }
-    ctorBody = rewriteSuperMethodCalls(ctorBody, superMethodVars)
+    ctorBody = rewriteSuperMethodCalls(ctorBody, superMethodVars, self, true)
     if (defaultArgs) params = ['()', defaultArgs.length === 1 ? defaultArgs[0] : [',', ...defaultArgs]]
   } else {
     stmts.push(['let', ['=', self, lit]])
