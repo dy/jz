@@ -106,6 +106,10 @@ before re-summary when every source has a closed, non-null, undeletable layout.
 No binding or accessor can expose that target before the copy finishes. Bound
 targets require the existing proof that nobody observes their key set; prepare
 never adds copied keys speculatively. Conditional source keys keep ordinary storage.
+Collection constructors and structuredClone stage ignored arguments before
+consuming the input. Grouping captures the iterable and callback before checking
+callability or starting iteration. Missing required arguments use the ordinary
+undefined/error path; they must not reach emission as absent compiler nodes.
 Copies snapshot keys before invoking getters, then test each saved key's current
 presence and read its current value. Getter deletion/reinsertion and target
 setters can change later reads; a cached slot/value is not a presence proof.

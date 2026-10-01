@@ -2180,6 +2180,35 @@ test('groupBy: Object.groupBy / Map.groupBy', () => {
   is(j(`export let f = () => { let t = new Float64Array([1,2,3]); return Map.groupBy(t, x => x > 1 ? 1 : 0).get(1).length }`), 2)  // typed source
 })
 
+test('collections: arguments finish before construction, callback checks and grouping', () => {
+  const source = `let trace='',values=[];
+    function items(map,count){trace+='i';values=map?[[1,3]]:[3];if(!count)values=[];return values}
+    function extra(map,fail){trace+='e';if(fail)throw 17;if(values.length)values[0]=map?[1,9]:9;return 0}
+    function callback(fail){trace+='c';if(fail===1)throw 23;return fail===2?null:(x=>{trace+='b';return x%2})}
+    export function construct(map,count,fail){trace='';try{
+      const out=map?new Map(items(true,count),extra(true,fail)):new Set(items(false,count),extra(false,fail));
+      return [[...out],trace]}catch(e){return [e,trace]}}
+    export function group(map,count,fail){trace='';try{
+      const out=map?Map.groupBy(items(false,count),callback(fail),extra(false,fail===3)):
+        Object.groupBy(items(false,count),callback(fail),extra(false,fail===3));
+      return [map?[...out]:Object.entries(out),trace]}catch(e){return [typeof e==='number'?e:e.name,trace]}}
+    export function nullish(map,absent){trace='';const input=absent?undefined:null;
+      const out=map?new Map(input,(trace+='e')):new Set(input,(trace+='e'));return[out.size,trace]}
+    export function missing(map){try{return map?Map.groupBy():Object.groupBy()}catch(e){return e.name}}`
+  const expected=oracle(source)
+  for(const optimize of levels(0,1,2,3,'size')){
+    const got=jz(source,{optimize}).exports
+    for(const map of [false,true]){
+      for(const [count,fail] of [[0,0],[1,0],[1,0],[1,1],[0,1],[1,0]])
+        is(got.construct(map,count,fail),expected.construct(map,count,fail),`${optimize}: constructor ${map}/${count}/${fail}`)
+      for(const [count,fail] of [[0,0],[1,0],[1,0],[1,1],[1,2],[0,2],[1,3],[1,0]])
+        is(got.group(map,count,fail),expected.group(map,count,fail),`${optimize}: group ${map}/${count}/${fail}`)
+      for(const absent of [false,true])is(got.nullish(map,absent),expected.nullish(map,absent),'nullish constructors still evaluate arguments')
+      is(got.missing(map),expected.missing(map),'missing groupBy arguments throw')
+    }
+  }
+})
+
 // structuredClone (2026-07-11, Ring 2): deep arena clone — cycles terminate,
 // diamond sharing (incl. a buffer shared by views) is preserved, Map keys AND
 // values clone, Set/Map keep insertion order, Dates clone via their branded
@@ -2193,6 +2222,28 @@ test('structuredClone: deep copy + isolation', () => {
   is(j(`export let f = () => { let a = [1,[2,3]]; let b = structuredClone(a); b[1][0] = 9; return a[1][0] }`), 2)
   is(j(`export let f = () => { let o = {x: 1, y: {z: 2}}; let c = structuredClone(o); c.y.z = 9; return o.y.z + c.x }`), 3)
   is(j(`export let f = () => { let o = {x: 5, y: "s"}; let c = structuredClone(o); return c.y + c.x }`), 's5')
+})
+
+test('structuredClone: arguments finish before getters and preserve throwing argument order', async () => {
+  const source = `let trace='',value=3;
+    const obj={get x(){trace+='g';return value}};
+    function first(){trace+='v';return obj}
+    function options(fail){trace+='o';value=9;if(fail)throw 17;return {}}
+    function extra(){trace+='e';return 0}
+    export function f(fail){trace='';value=3;
+      try{const out=structuredClone(first(),options(fail),extra());return [trace,out.x]}
+      catch(e){return [trace,e]}}
+    export function primitive(){trace='';const out=structuredClone(true,(extra(),{}));return [out,trace]}
+    export function empty(){try{structuredClone();return false}catch(e){return e.name==='TypeError'}}
+    export function absent(){return structuredClone(undefined)===undefined}`
+  const expected = await oracle(source)
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const got = jz(source, { optimize }).exports
+    for (const fail of [0, 0, 1, 0]) is(got.f(fail), expected.f(fail), `${optimize}: A/A/error/A argument sequence`)
+    is(got.primitive(), expected.primitive(), `${optimize}: staged primitive identity`)
+    is(got.empty(), expected.empty(), `${optimize}: missing required value`)
+    is(got.absent(), expected.absent(), `${optimize}: explicit undefined`)
+  }
 })
 test('structuredClone: identity — cycles and diamond sharing', () => {
   const j = (code) => jz(code).exports.f()

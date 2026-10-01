@@ -14,8 +14,8 @@
 
 import print from 'watr/print'
 import { representationProgramHasBigint } from '../src/compile/representation-plan.js'
-import { staticArrayPtr, throwErrorIR, typed, asF64, asI64, asI32, UNDEF_NAN, TOMB_NAN, temp, tempI32, tempI64, allocPtr, mkPtrIR, ptrTypeEq, boxedPtrTypeEq, elemStore, arrayValue, elemLoad, boolBoxIR, freshId, callWithArgs, numberNanIR } from '../src/ir.js'
-import { emit, deps, call, storedValue } from '../src/bridge.js'
+import { staticArrayPtr, throwErrorIR, typed, asF64, asI64, asI32, UNDEF_NAN, TOMB_NAN, temp, tempI32, tempI64, allocPtr, mkPtrIR, ptrTypeEq, boxedPtrTypeEq, elemStore, arrayValue, elemLoad, boolBoxIR, freshId, callWithArgs, numberNanIR, undefExpr } from '../src/ir.js'
+import { emit, deps, call, storedValue, withIgnoredArgs } from '../src/bridge.js'
 import { valTypeOf } from '../src/kind.js'
 import { VAL, lookupValType } from '../src/reps.js'
 import { isLiteralStr, ACCESSOR_GET, ACCESSOR_SET } from '../src/ast.js'
@@ -497,7 +497,7 @@ export default (ctx) => {
 
   // === Set ===
 
-  ctx.core.emit['new.Set'] = (iterExpr) => {
+  ctx.core.emit['new.Set'] = (iterExpr, ...ignored) => withIgnoredArgs(iterExpr, ignored, iterExpr => {
     setLinkDemand('set')
     if (iterExpr == null) {
       const out = allocPtr({ type: PTR.SET, len: 0, cap: initCap, stride: SET_ENTRY + lane, tag: 'set' })
@@ -543,7 +543,7 @@ export default (ctx) => {
         ['local.set', `$${iL}`, ['i32.add', ['local.get', `$${iL}`], ['i32.const', 1]]],
         ['br', `$l_${iL}`]]],
       ['local.get', `$${setL}`]], 'f64')
-  }
+  })
 
   ctx.core.emit['.add'] = call('__set_add', 'II', 'i64')
 
@@ -701,7 +701,7 @@ export default (ctx) => {
 
   // === Map ===
 
-  ctx.core.emit['new.Map'] = (iterExpr) => {
+  ctx.core.emit['new.Map'] = (iterExpr, ...ignored) => withIgnoredArgs(iterExpr, ignored, iterExpr => {
     setLinkDemand('map')
     if (iterExpr == null) {
       const out = allocPtr({ type: PTR.MAP, len: 0, cap: initCap, stride: MAP_ENTRY + lane, tag: 'map' })
@@ -721,7 +721,7 @@ export default (ctx) => {
       ['call', '$__map_from', ['i64.reinterpret_f64',
         ['if', ['result', 'f64'], ['i32.and', ['f64.ne', value, value], ptrTypeEq(value, PTR.MAP)],
           ['then', value], ['else', asF64(normalized)]]]]], 'f64')
-  }
+  })
 
   ctx.core.emit['.set'] = call('__map_set', 'III', 'i64')
   ctx.core.emit[`.${VAL.MAP}:set`] = (map, key, value, ...ignored) =>
@@ -823,7 +823,7 @@ export default (ctx) => {
   // boxed value). Buckets are plain arrays appended in iteration order. The
   // source normalizes through __iter_arr (Array/String/TypedArray pass through,
   // Set→keys, Map→entries) and reads elements via the polymorphic __typed_idx.
-  const emitGroupBy = (isMap) => (items, fn) => {
+  const emitGroupBy = (isMap) => (items = undefExpr(), fn = undefExpr(), ...ignored) => {
     const read = representationProgramHasBigint(ctx) ? '__typed_idx_tagged' : '__typed_idx'
     inc('__iter_arr', '__len', read, '__arr_push1')
     inc(...(isMap ? ['__map_set', '__map_get'] : ['__hash_new', '__hash_set', '__hash_get', '__to_key']))
@@ -842,12 +842,14 @@ export default (ctx) => {
     const set = isMap ? '$__map_set' : '$__hash_set'
     ctx.runtime.throws = true
     return typed(['block', ['result', 'f64'],
-      ['local.set', `$${recv}`, asF64(emit(['()', '__iter_arr', [',', items]]))],
-      ['local.set', `$${cb}`, asF64(emit(fn))],
+      ['local.set', `$${recv}`, storedValue(items)],
+      ['local.set', `$${cb}`, storedValue(fn)],
+      ...ignored.map(arg => ['drop', asF64(emit(arg))]),
       // spec GroupBy step 2: IsCallable(callbackfn) — throw before iterating,
       // not an indirect-call trap mid-loop
-      ['if', ['i32.eqz', ptrTypeEq(typed(['local.get', `$${cb}`], 'f64'), PTR.CLOSURE)],
+      ['if', ['i32.eqz', boxedPtrTypeEq(typed(['local.get', `$${cb}`], 'f64'), PTR.CLOSURE)],
         ['then', ['global.set', '$__jz_last_err_bits', ['i64.reinterpret_f64', ['f64.const', errorCodeLiteral(ERR.GROUP_BY_CALLBACK)]]], ['throw', '$__jz_err', ['f64.const', errorCodeLiteral(ERR.GROUP_BY_CALLBACK)]]]],
+      ['local.set', `$${recv}`, iterArray(typed(['local.get', `$${recv}`], 'f64'), items)],
       ['local.set', `$${result}`, initResult],
       ['local.set', `$${len}`, ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${recv}`]]]],
       ['local.set', `$${i}`, ['i32.const', 0]],
@@ -1069,7 +1071,8 @@ export default (ctx) => {
   }
 
   // structuredClone(value[, options]) — options.transfer ignored (see above).
-  ctx.core.emit['structuredClone'] = (val, _opts) => {
+  ctx.core.emit['structuredClone'] = (val, ...ignored) => {
+    if (val === undefined) return throwErrorIR('TypeError', 'structuredClone requires a value')
     ctx.module.include('object')
     includeCopyKeys()
     inc('__sclone')
@@ -1080,7 +1083,7 @@ export default (ctx) => {
     ctx.runtime.schemaTblConsumed = true
     // storedValue: a bare boolean arg rides as a 0/1 carrier — box it to the
     // TRUE/FALSE atom so the clone round-trips `true`, not the number 1.
-    return typed(['call', '$__sclone', storedValue(val)], 'f64')
+    return withIgnoredArgs(val, ignored, value => typed(['call', '$__sclone', storedValue(value)], 'f64'))
   }
 
   // Generated Map probe functions
@@ -2907,10 +2910,10 @@ export default (ctx) => {
   // (no copy). `valTypeOf(['()','__iter_arr',x])` (src/kind.js) mirrors this:
   // Set/Map → ARRAY, everything else → x's own type, so the downstream `arr[i]`
   // / `.length` dispatch stays statically typed.
-  ctx.core.emit['__iter_arr'] = (src) => {
+  const iterArray = (src, proof = src) => {
     const view = ctx.summary?.at(ctx.func.current)
-    const nullish = view?.mayBeNullishExpr(src) === true
-    const vt = valTypeOf(src), typedArray = vt === VAL.TYPED && view?.typedPayloadCtorOfExpr(src) != null
+    const nullish = view?.mayBeNullishExpr(proof) === true
+    const vt = valTypeOf(proof), typedArray = vt === VAL.TYPED && view?.typedPayloadCtorOfExpr(proof) != null
     if (!nullish && (vt === VAL.ARRAY || typedArray))
       return asF64(emit(src))
     const stringPoints = ir => { ctx.module.include('string'); inc('__str_points'); return ['call', '$__str_points', ['i64.reinterpret_f64', ir]] }
@@ -2953,6 +2956,8 @@ export default (ctx) => {
                 ['i32.eqz', ['i32.and', ['call', '$__ptr_aux', ['i64.reinterpret_f64', ['local.get', `$${t}`]]], ['i32.const', DATA_VIEW_FLAG]]]]],
               ['then', ['local.get', `$${t}`]], ['else', throwErrorIR('TypeError', 'value is not iterable')]]]]]]]]], 'f64')
   }
+
+  ctx.core.emit['__iter_arr'] = iterArray
 
   // Constructor-tolerant iterable normalization: ES's Set/Map CONSTRUCTORS
   // treat a nullish iterable as "skip iteration" (new Set(undefined) is an
