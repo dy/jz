@@ -437,12 +437,10 @@ test('inferArrElemSchema: inline array-literal arguments retain boxed record lay
   if (belowOpt(1)) return
   // subscript's register(d) → dispatch([d, ...]) shape, minus the spread: an
   // array literal built AND passed in one expression (never bound to a local
-  // first) whose sole element is a caller PARAM. `d`'s own schemaId comes from
-  // build's callers (both {x,y} object literals), so inferArrElemSchema's
-  // array-literal branch DOES resolve `[d]`'s element through
-  // state.callerParamFacts('schemaId') the same way the plain `schemaId`
-  // mergeRule does — dispatch's `ops` param genuinely gets arrayElemSchema
-  // (every element IS that schema; the fact itself is sound).
+  // first) whose sole element is a caller PARAM. The summary follows `d`'s
+  // schema through build's callers (both {x,y} object literals), so dispatch's
+  // `ops` parameter gets that element schema. Every element has the same
+  // schema; the fact itself is sound.
   //
   // An element is a boxed object pointer, not an inline record cell. Reading
   // it as a cell once returned -655360 instead of 6. A direct schema read is
