@@ -12,6 +12,68 @@ const check = (src, args, reference = src) => {
   }
 }
 
+test('source inlining: lifted calls preserve implicit conversion and getter order', () => {
+  for (const operation of [
+    'const a=recv()[key],b=recv()[key];return[a,b,trace]',
+    'const a=+value,b=recv()[0];return[a,b,trace]',
+    'const a=value.x,b=recv()[0];return[a,b,trace]',
+    'const out=[0];out[key]=recv()[0];return[out[0],trace]',
+  ]) check(`export function f(mode){let trace='';
+    function recv(){trace+='r';return[7]}
+    const key={toString(){trace+='k';if(mode)throw 9;return '0'}};
+    const value={valueOf(){trace+='v';if(mode)throw 9;return 3},
+      get x(){trace+='g';if(mode)throw 9;return 4}};
+    try {${operation}} catch(e){return[e,trace]}
+  }`, [0,0,1,0,1,0])
+})
+
+test('source inlining: callee conversions and getters preserve preceding reads', () => {
+  for (const operation of ['+value', 'value.y']) for (const read of ['x', 'state.x']) check(`
+    export function f(mode) {
+      let x=1, trace=''; const state={x:1}; const value=17;
+      const input={valueOf(){x=9;state.x=9;trace+='v';if(mode)throw 7;return 2},
+        get y(){x=9;state.x=9;trace+='g';if(mode)throw 7;return 2}};
+      function helper(value){const n=${operation};return n+1}
+      try {return [${read},helper(input),trace,value]}
+      catch(e){return [e,x,state.x,trace,value]}
+    }
+  `, [0,0,1,0,1,0])
+  // Named candidates reached through another candidate use their own scopes;
+  // a call outside that inventory may write any captured binding.
+  for (const declaration of [
+    'function helper(value){const n=inner(value);return n+1}',
+    'const helper=value=>{const n=inner(value);return n+1}',
+  ]) check(`
+    let x=1;
+    function inner(value){return +value}
+    export function f(mode){
+      x=1;const value=17;
+      const input={valueOf(){x=9;if(mode)throw 7;return 2}};
+      ${declaration}
+      try{return [x,helper(input),value]}catch(e){return[e,x,value]}
+    }
+  `, [0,0,1,0,1,0])
+})
+
+test('source inlining: an earlier read throws before the callee converts', () => {
+  check(`export function f(mode){
+    let calls=0;const first=mode?null:[1];
+    const input={valueOf(){calls++;return 2}};
+    function helper(value){const n=+value;return n+1}
+    try{return[first[0],helper(input),calls]}
+    catch(e){return[e.name,calls]}
+  }`, [0,0,1,0,1,0])
+})
+
+test('source inlining: a callee callback preserves earlier captured reads', () => {
+  for (const call of ['value()', 'value?.()']) check(`export function f(mode){
+    let x=1;
+    const input=()=>{x=9;if(mode)throw 7;return 2};
+    function helper(value){const n=${call};return n+1}
+    try{return[x,helper(input)]}catch(e){return[e,x]}
+  }`, [0,0,1,0,1,0])
+})
+
 test('numeric call arguments: captured Number/object unions convert at every use', () => {
   const src = `function twice(v) { return v * 2 + v * 3 }
     export function f(k) {

@@ -29,6 +29,7 @@
  */
 
 import { ctx } from '../../ctx.js'
+import { runsAccessor, runsConversion } from '../../evaluation-effects.js'
 import { mixesNumericKinds } from '../numeric-mix.js'
 import {
   callArgs, setCallArgs, some, walkAst, blockStmts, stmtList, T, CLASS_T, refsName, refsAny, REFS_IN_EXPR, MUTATE_OPS,
@@ -96,6 +97,7 @@ let warm = new Set()
 let loopsDeep = 0
 
 let callerView = null
+const implicitEffect = (n, view = callerView) => runsAccessor(view, n, true) || runsConversion(view, n, true)
 
 // The names the closures of `body` bind, renamed with the spliced body.
 const closureBindings = (body) => {
@@ -375,7 +377,7 @@ const stmtDeclName = (stmt) => {
 const plainTarget = (lhs) => Array.isArray(lhs) && typeof lhs[1] === 'string' &&
   (lhs[0] === '.' ? typeof lhs[2] === 'string' : lhs[0] === '[]' && lhs.length === 3 && (typeof lhs[2] === 'string' || isLiteral(lhs[2])))
 const lhsWrites = (n) => {
-  if (some(n, x => x[0] === '()' || x[0] === '?.()' || x[0] === 'new' || (MUTATE_OPS.has(x[0]) && typeof x[1] !== 'string'))) return true
+  if (some(n, x => x[0] === '()' || x[0] === '?.()' || x[0] === 'new' || implicitEffect(x) || (MUTATE_OPS.has(x[0]) && typeof x[1] !== 'string'))) return true
   const w = new Set()
   walkAst(n, { enter: x => { if (MUTATE_OPS.has(x[0]) && typeof x[1] === 'string') w.add(x[1]) } })
   return w.size ? w : false
@@ -404,7 +406,7 @@ const prefixCommutesWithLhs = (prefix, lhs) => {
   // A target that names its receiver and its key (`out[i] = f(x)`, `o.k = f(x)`)
   // reads no memory: a store in the prefix changes neither, a name it writes does.
   if (plainTarget(lhs)) {
-    if (some(body, x => (x[0] === '()' && !isPureCallee(x[1])) || x[0] === '?.()' || x[0] === 'new')) return false
+    if (some(body, x => (x[0] === '()' && !isPureCallee(x[1])) || x[0] === '?.()' || x[0] === 'new' || implicitEffect(x))) return false
     const w = new Set()
     walkAst(body, { enter: x => { if (MUTATE_OPS.has(x[0]) && typeof x[1] === 'string') w.add(x[1]) } })
     return !refsAny(lhs, w, REFS_IN_EXPR)
@@ -758,24 +760,36 @@ const hoistNestedCalls = (body, bodies, anywhere = bodies) => {
   // see the value before the callee's writes: `s.v * 1000 + bump(s)` keeps the
   // read first, so a callee that stores to memory, calls, or assigns a name read
   // stays in place.
-  // A body stores to memory, or calls past the candidates (whose bodies are followed).
-  const touchesMemory = (b, seen = new Set()) => some(b, n => n[0] === 'new' || (MUTATE_OPS.has(n[0]) && typeof n[1] !== 'string')
-    || (n[0] === '()' && (typeof n[1] !== 'string' || !bodies?.has(n[1]) || (!seen.has(n[1]) && touchesMemory(bodies.get(n[1]), seen.add(n[1]))))))
-  const assigns = (b, x, seen = new Set()) => some(b, n => (MUTATE_OPS.has(n[0]) && n[1] === x)
-    || (n[0] === '()' && typeof n[1] === 'string' && bodies?.has(n[1]) && !seen.has(n[1]) && assigns(bodies.get(n[1]), x, seen.add(n[1]))))
+  // User code in a getter/conversion has the same effects as an unknown call.
+  // The candidate's parameters belong to its own scope; argument expressions
+  // belong to the caller, even when a parameter shares a caller binding's name.
+  const viewOf = f => ctx.summary?.at(f.sig) ?? null
+  const touchesMemory = (b, view, seen = null) => some(b, n => n[0] === 'new' || n[0] === '?.()' || implicitEffect(n, view) || (MUTATE_OPS.has(n[0]) && typeof n[1] !== 'string')
+    || (n[0] === '()' && (typeof n[1] !== 'string' || !bodies.has(n[1]) || (!seen?.has(n[1]) && touchesMemory(bodies.get(n[1]).body, viewOf(bodies.get(n[1])), (seen ??= new Set()).add(n[1]))))))
+  const assigns = (b, x, view, seen = null) => some(b, n => n[0] === 'new' || n[0] === '?.()' || implicitEffect(n, view) || (MUTATE_OPS.has(n[0]) && n[1] === x)
+    || (n[0] === '()' && (typeof n[1] !== 'string' || !bodies.has(n[1]) || (!seen?.has(n[1]) && assigns(bodies.get(n[1]).body, x, viewOf(bodies.get(n[1])), (seen ??= new Set()).add(n[1]))))))
   // `whole`: an expression that moves as it stands (a conditional lifted to a statement), in place of a call and its body
   const commutes = (call, eff, whole = null) => {
     if (eff.seen === true) return false
     if (eff.seen === false && !eff.mem && !eff.reads.size) return true
-    const body = whole ?? bodies?.get(call[1])
+    const callee = whole ? null : bodies.get(call[1]), body = whole ?? callee?.body
     if (!body) return false
     // Moving the call also moves its arguments. An argument can update a
     // value already read by the surrounding expression even when the callee
     // only reads it, e.g. [x, pair(next())].
-    const b = whole ?? [';', ...callArgs(call), body]
-    if ((eff.seen !== false || eff.mem) && touchesMemory(b)) return false
-    if (eff.seen !== false) for (const x of eff.seen) if (refsName(b, x, REFS_IN_EXPR)) return false
-    for (const x of eff.reads) if (assigns(b, x)) return false
+    const args = whole ? null : callArgs(call), view = whole ? callerView : viewOf(callee)
+    if (eff.seen !== false || eff.mem) {
+      if (touchesMemory(body, view)) return false
+      if (args) for (const a of args) if (touchesMemory(a, callerView)) return false
+    }
+    if (eff.seen !== false) for (const x of eff.seen) {
+      if (refsName(body, x, REFS_IN_EXPR)) return false
+      if (args) for (const a of args) if (refsName(a, x, REFS_IN_EXPR)) return false
+    }
+    for (const x of eff.reads) {
+      if (assigns(body, x, view)) return false
+      if (args) for (const a of args) if (assigns(a, x, callerView)) return false
+    }
     return true
   }
   // A hoisted call relocates with its arguments: a candidate among them (itself
@@ -786,7 +800,7 @@ const hoistNestedCalls = (body, bodies, anywhere = bodies) => {
   const argCommutes = (a, eff) => {
     if (!Array.isArray(a) || a[0] === '=>' || a[0] === 'str') return true
     if (a[0] === '()' && typeof a[1] === 'string' && bodies.has(a[1])) return unitCommutes(a, eff)
-    if ((a[0] === '()' && !pureSIMDCall(a)) || a[0] === 'new' || MUTATE_OPS.has(a[0])) return clean(eff)
+    if ((a[0] === '()' && !pureSIMDCall(a)) || a[0] === 'new' || MUTATE_OPS.has(a[0]) || implicitEffect(a)) return clean(eff)
     return a.slice(1).every(c => argCommutes(c, eff))
   }
   const effState = (seen = false) => ({ seen, mem: false, reads: new Set() })
@@ -828,7 +842,7 @@ const hoistNestedCalls = (body, bodies, anywhere = bodies) => {
     }
     if (OPTIONAL_CHAIN.has(n[0])) {
       const out = [n[0], ...n.slice(1).map(c => hExpr(c, pre, true, eff))]
-      if (n[0] === '?.()') eff.seen = true  // optional CALL may run
+      if (n[0] === '?.()' || implicitEffect(n)) eff.seen = true
       return out
     }
     if (SHORT_CIRCUIT.has(n[0])) {
@@ -844,7 +858,7 @@ const hoistNestedCalls = (body, bodies, anywhere = bodies) => {
       return [n[0], hExpr(n[1], pre, cond, eff), ...n.slice(2).map(c => hExpr(c, pre, true, eff))]
     }
     const out = [n[0], ...n.slice(1).map(c => hExpr(c, pre, cond, eff))]
-    if (n[0] === '()' && !pureSIMDCall(n)) eff.seen = true  // an effectful call left in place is an opaque effect
+    if (n[0] === '()' && !pureSIMDCall(n) || implicitEffect(n)) eff.seen = true
     else if (MUTATE_OPS.has(n[0])) note(eff, typeof n[1] === 'string' ? new Set([n[1]]) : true)
     else if (n[0] === '.' || n[0] === '[]') eff.mem = true  // a read left in place sees the value before a later callee's store
     return out
@@ -1267,7 +1281,7 @@ export const inlineHotInternalCalls = (programFacts, ast) => {
     const blockBodies = new Map(), anywhere = new Set()
     if (speedTier && !isExprBody) for (const f of activeCandidates.values()) {
       if (exprActive.has(f.name)) continue
-      blockBodies.set(f.name, f.body)
+      blockBodies.set(f.name, f)
       if (leaves.has(f.name) && !hotOnly.has(f.name)) anywhere.add(f.name)
       // a loop that calls its argument lifts wherever it is called: the splice there is the argument's body
       if (fnSites.has(f.name)) anywhere.add(f.name)
@@ -1469,7 +1483,7 @@ const inlineLocalLambdasInBody = (getBody, setBody) => {
   }
   if (!decls.size) return false
 
-  const asFunc = info => ({ sig: { params: info.params.map(name => ({ name })) }, body: info.arrow[2] })
+  const asFunc = info => ({ sig: { params: info.params.map(name => ({ name })), scope: info.arrow[1] }, body: info.arrow[2] })
   // A small loop-free block body (`const rnd = () => { s ^= …; return s >>> 0 }`)
   // is reached in expression position by hoisting the call to a temp decl
   // first — the closure it would otherwise become (env cell, boxed capture,
@@ -1481,8 +1495,10 @@ const inlineLocalLambdasInBody = (getBody, setBody) => {
   for (;;) {
     const stmtCands = new Map(), exprCands = new Map(), bodies = new Map()
     for (const [name, info] of decls) {
-      (isBlockBody(info.arrow[2]) ? stmtCands : exprCands).set(name, asFunc(info))
-      if (hoistable(info)) bodies.set(name, info.arrow[2])
+      const func = asFunc(info)
+      const candidates = isBlockBody(info.arrow[2]) ? stmtCands : exprCands
+      candidates.set(name, func)
+      if (hoistable(info)) bodies.set(name, func)
     }
     let out = body, didChange = false
     if (bodies.size) {
@@ -1547,6 +1563,7 @@ export const inlineLocalLambdas = () => {
   let changed = false
   for (const func of ctx.funcs.list) {
     if (!func.body || func.raw) continue
+    callerView = ctx.summary?.at(func.sig) ?? null
     if (inlineLocalLambdasInBody(() => func.body, b => { func.body = b })) changed = true
     if (Array.isArray(func.body) && func.body[0] === '{}' && Array.isArray(func.body[1]) && inlineLambdasInLists(func.body[1], func.body)) changed = true
   }

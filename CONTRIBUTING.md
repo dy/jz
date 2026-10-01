@@ -3403,6 +3403,11 @@ with them where its own control is a list with one trailing return: a closure's 
 and locals are named anew with the body's, and a parameter a closure mentions is bound to a
 temp, never read as the caller's name. A closure's writes require mutable parameter storage
 even when the call supplies a literal or selects a literal default.
+Lifting a call preserves preceding reads and effects, including user code run
+implicitly by getters or primitive conversion. The effect scan reads arguments
+in the caller's scope and each candidate body in its own scope; a local lambda
+keeps its original parameter scope in its synthetic signature. Unknown calls
+can write captured bindings even when no assignment appears in the candidate.
 A lambda declared in a list of its own splices where it
 is called, where nothing outside the list mentions it. A loop that calls its parameter (a
 series summed from a generator, a continued fraction from its terms) splices at the speed
