@@ -343,6 +343,10 @@ its scratch initializer is zero.
 Index definitions
 come from the binding census and positive bounds apply only inside their strict
 loop guard. Every counter proof rejects additional writes in the loop step.
+Canonical array-bound scans use the queried function's summary view, including
+before emission has installed an active function. Primitive Math arguments
+preserve array lengths; getters, object conversion and unknown calls invalidate
+them. A nullable primitive still converts without invoking user code.
 Bounds queries use existing constant, mask, loop and occurrence proofs before
 requesting the whole-body interval interpreter. An occurrence proof never
 justifies an unproven twin with the same receiver and index.

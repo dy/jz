@@ -12,6 +12,7 @@ import { scanBoundedArrIdx } from '../src/type/canonical-bounds.js'
 import { typedIdxProven } from '../src/type/loop-versioning.js'
 import { ctx } from '../src/ctx.js'
 import { createActiveFunction } from '../src/compile/active-function.js'
+import { NUMBER, NULLISH, ABSENT, STRING, BOOL, ANY, K, kind, join } from '../src/summary/kind.js'
 
 test('interval proof: returning branches retain only the live continuation range', () => {
   for (const exit of ['return', 'throw']) for (const branch of [2, 3]) {
@@ -287,12 +288,24 @@ test('interval proof: canonical access nodes do not require structural keys', ()
     const body = ['for', ['let', ['=', 'i', start]], ['<', 'i', ['.', 'dst', 'length']], ['++', 'i'],
       [';', access, ['=>', 'x', captured]]]
     const nodes = new Set()
-    scanBoundedArrIdx(body, null, null, nodes)
+    scanBoundedArrIdx(body, null, null, nodes, { kindOfExpr: e => e === 'dst' ? kind(K.ARRAY) : NUMBER })
     is([...nodes], start < 0 ? [] : [access], 'only the direct read under a nonnegative induction is proven')
   }
   const nodes = new Set()
   scanBoundedArrIdx([';'], null, null, nodes)
   is(nodes.size, 0, 'an empty body supplies no proof')
+})
+
+test('interval proof: canonical bounds use their supplied function view for implicit calls', () => {
+  const access = ['[]', 'dst', 'i']
+  const loop = ['for', ['let', ['=', 'i', 0]], ['<', 'i', ['.', 'dst', 'length']], ['++', 'i'],
+    [';', ['()', 'math.imul', [',', 'value', [null, 1]]], access]]
+  for (const [value, pure] of [[NUMBER, true], [join(NUMBER, NULLISH), true], [ABSENT, true],
+    [STRING, true], [BOOL, true], [ANY, false], [kind(K.OBJECT), false], [NUMBER, true]]) {
+    const nodes = new Set()
+    scanBoundedArrIdx(loop, null, null, nodes, { kindOfExpr: e => e === 'value' ? value : NUMBER })
+    is(nodes.has(access), pure, `primitive conversion cannot resize an array, kind ${value}`)
+  }
 })
 
 test('interval proof: scalar and missing-access results do not require an access-proof sink', () => {

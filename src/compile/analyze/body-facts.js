@@ -284,7 +284,7 @@ function computeBodyFacts(body, bodyFacts, elemOrigin, storage) {
   const readPresent = e => {
     if (!presentKeys) {
       presentKeys = new Set()
-      if (typedReads.length) scanBoundedArrIdx(body, null, null, presentNodes)
+      if (typedReads.length) scanBoundedArrIdx(body, null, null, presentNodes, summary)
       const lens = n => locals.has(n) ? typedLens?.get(n) ?? null
         : ctx.func.typedLen?.get(n) ?? ctx.scope.globalTypedLen?.get(n) ?? null
       const entry = new Map()

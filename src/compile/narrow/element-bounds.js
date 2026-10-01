@@ -161,7 +161,7 @@ export function proveElementBounds(programFacts) {
   for (const [f, b] of bodies) {
     if (![...b.arrays.values()].some(r => r.good)) continue
     const present = new Set()
-    scanBoundedArrIdx(f.body, null, null, present)
+    scanBoundedArrIdx(f.body, null, null, present, ctx.summary?.at(f.sig))
     const readOf = e => {
       e = unwrap(e)
       // An initializer's presence proof says nothing about whether it ran.

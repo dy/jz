@@ -14,7 +14,7 @@ import { isReassigned, some, walkAst, hasOptionalChain, MUTATE_OPS, callArgs } f
 import { ctx, getFactStore } from '../ctx.js'
 import { intLiteralValue, constIntExpr, intExprRange, counterInit } from '../static.js'
 import { NUMBER } from '../summary/kind.js'
-import { runsAccessor, runsConversion } from '../evaluation-effects.js'
+import { runsAccessor, runsConversion, primitiveKind } from '../evaluation-effects.js'
 
 /** Structural key for a `recv[idx]` site — the assumedBounds channel between the
  *  versioning scan and typedIdxProven. JSON is structural, so the key matches even
@@ -194,7 +194,7 @@ function preservesArrayBounds(root, view) {
       const callee = n[1]
       if (op === '()' && typeof callee === 'string') {
         if (ctx.funcs.map?.get(callee)?.frame?.writesOuter === false) return false
-        if (callee.startsWith('math.') && callArgs(n).every(a => view?.kindOfExpr(a) === NUMBER)) return false
+        if (callee.startsWith('math.') && callArgs(n).every(a => primitiveKind(view, a))) return false
       }
       return true
     }
@@ -212,7 +212,7 @@ function preservesArrayBounds(root, view) {
  *  `[0, recv.length)` by an enclosing canonical loop `for (let i = C; i < recv.length;
  *  i++)`. Same loop contract as `scanBoundedLoops` (charCodeAt) — sibling proof for
  *  the ARRAY indexed-read fast path in `module/array.js`. */
-export function scanBoundedArrIdx(node, set, litSet, nodes) {
+export function scanBoundedArrIdx(node, set, litSet, nodes, view = ctx.summary?.at(ctx.func.current)) {
   if (!Array.isArray(node)) return
   if (node[0] === 'for' && node.length === 5) {
     const [, init, cond, step, body] = node
@@ -231,7 +231,6 @@ export function scanBoundedArrIdx(node, set, litSet, nodes) {
         && !isReassigned(body, idx) && !isReassigned(body, recv)
         && (boundVar == null || !isReassigned(body, boundVar))
         && !redeclaresName(body, idx)) {
-      const view = ctx.summary?.at(ctx.func.current)
       if (preservesArrayBounds(body, view) && preservesArrayBounds(cond, view) &&
           (boundVar == null || preservesArrayBounds(init, view)))
         collectBoundedArrIdx(body, recv, idx, set, nodes)
@@ -270,7 +269,7 @@ export function scanBoundedArrIdx(node, set, litSet, nodes) {
       }
     }
   }
-  for (let k = 1; k < node.length; k++) scanBoundedArrIdx(node[k], set, litSet, nodes)
+  for (let k = 1; k < node.length; k++) scanBoundedArrIdx(node[k], set, litSet, nodes, view)
 }
 
 /** Set of `"recv\x00idx"` keys for `recv[idx]` reads in the current function proven

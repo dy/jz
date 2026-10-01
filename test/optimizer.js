@@ -6415,6 +6415,8 @@ test('array bounds: aliases, calls, coercions and later initializers cannot keep
     method: `for (let i=0;i<a.length;i++) { a.pop(); reads++; return a[i].x }`,
     accessor: `const o = {get value(){a.length=0;return 0}}; for (let i=0;i<a.length;i++) { reads+=o.value+1; return a[i].x }`,
     conversion: `const o = {valueOf(){a.length=0;return 0}}; for (let i=0;i<a.length;i++) { reads+=+o+1; return a[i].x }`,
+    mathConversion: `const o = {valueOf(){a.length=0;return 1}}; for (let i=0;i<a.length;i++) { reads+=Math.imul(o,1); return a[i].x }`,
+    mathAccessor: `const o = {get value(){a.length=0;return 1}}; for (let i=0;i<a.length;i++) { reads+=Math.imul(o.value,1); return a[i].x }`,
     hoisted: `for (let i=0,len=a.length,cut=(a.length=0);i<len;i++) { reads++; return a[i].x }`,
     counter: `for (let i=0,cut=(i=-1);i<a.length;i++) { reads++; return a[i].x }`,
     charCounter: `const s='x'; for (let i=0,cut=(i=-1);i<s.length;i++) return s.charCodeAt(i)`,

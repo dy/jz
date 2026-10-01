@@ -99,7 +99,7 @@ export function unionInlinePass(programFacts) {
     // the one grammar verifies (and later registers) both.
     const cursor = new Map(cursorParams)     // name → key
     const inbCursorPairs = new Set()
-    scanBoundedArrIdx(body, inbCursorPairs, new Map())
+    scanBoundedArrIdx(body, inbCursorPairs, new Map(), null, summary)
     const tagAlias = new Map()               // tagLocal → { obj, prop }
     const declSeen = new Set()
     const shadowed = new Set()               // param names shadow-declared in the body
