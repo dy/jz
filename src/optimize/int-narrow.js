@@ -373,6 +373,15 @@ export function narrowInts(fn, assume = null, expand = true) {
     return null
   }
 
+  // A sum with an operand that cannot be -0 erases the other's zero sign.
+  // Its bounded integer arithmetic can then use i32 even when the same
+  // expression returned alone must preserve -0. Require a net conversion win.
+  const summand = (e, other) => {
+    if (!isArr(e) || !(e[0] in ARITH) || !fitsI32(at(e)) || !at(other) || at(other).nz) return null
+    const t = tally(e)
+    return t.cost + 1 < t.gain + t.held ? ['f64.convert_i32_s', I(e, 'i32')] : null
+  }
+
   /** `n` in its own type: integer consumers read integer forms, a narrowed
    *  local converts where f64 code reads it. */
   const F = n => {
@@ -448,6 +457,10 @@ export function narrowInts(fn, assume = null, expand = true) {
       const x = widthOf(n[1], n[2])
       did = true
       return [x + '.' + CMP[op], I(n[1], x), I(n[2], x)]
+    }
+    if (op === 'f64.add' && n.length === 3) {
+      const a = summand(n[1], n[2]), b = summand(n[2], n[1])
+      if (a || b) { did = true; return ['f64.add', a ?? F(n[1]), b ?? F(n[2])] }
     }
     // A remainder f64 code reads: the integers' remainder, converted, under
     // the sign of the dividend (the zero of a negative dividend is -0).

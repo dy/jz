@@ -15,6 +15,57 @@ const count = (text, op) => (text.match(new RegExp(`\\(${op.replace('.', '\\.')}
 const shapes = (src, check) => { if (!belowOpt(2)) check(wat(src)) }
 const ARGS = [0, 1, 2, 3, 5, 7, -1, -3, 16, 100, 2147483647, -2147483648, 0.5, NaN]
 
+test('int-narrow: bounded products narrow only when their sum erases zero sign', () => {
+  for (const [loadA, loadB, fits] of [['8_s', '8_s', true], ['16_s', '16_u', true], ['16_u', '16_u', false]]) {
+    const product = `(f64.mul (f64.convert_i32_s (i32.load${loadA} (i32.const 0)))
+      (f64.convert_i32_s (i32.load${loadB} (i32.const 4))))`
+    for (const [other, safe] of [['(f64.const 0)', true], ['(f64.const -0)', false],
+      ['(local.get $z)', false], ['(f64.abs (local.get $z))', false],
+      ['(f64.abs (f64.convert_i32_s (local.get $x)))', true]]) for (const left of [false, true]) {
+      const src = `(module (memory 1)
+        (func $f (export "f") (param $x i32) (param $y i32) (param $z f64) (result f64)
+          (i32.store (i32.const 0) (local.get $x)) (i32.store (i32.const 4) (local.get $y))
+          (f64.add ${left ? other : product} ${left ? product : other})))`
+      const ir = parseWat(src), fn = ir.find(n => n[0] === 'func')
+      const before = new WebAssembly.Instance(new WebAssembly.Module(encodeWat(ir))).exports.f
+      narrowInts(fn)
+      is(JSON.stringify(fn).includes('i32.mul'), fits && safe, `${loadA}/${loadB}, ${other}, left=${left}`)
+      const after = new WebAssembly.Instance(new WebAssembly.Module(encodeWat(ir))).exports.f
+      for (const [x, y] of [[0, -1], [-1, 0], [0, 0], [-128, 127], [-32768, 65535], [65535, 65535]])
+        for (const z of [-0, 0, -1, 1, NaN, Infinity, -Infinity])
+          ok(Object.is(after(x, y, z), before(x, y, z)), 'exact Number result, including both zero signs')
+    }
+    const ir = parseWat(`(module (memory 1) (func $f (export "f") (result f64) ${product}))`)
+    narrowInts(ir.find(n => n[0] === 'func'))
+    ok(!JSON.stringify(ir).includes('i32.mul'), 'a bare product retains its potentially observable zero sign or wide magnitude')
+  }
+})
+
+test('int-narrow: a narrowed sum evaluates its operands once in order', () => {
+  for (const left of [false, true]) {
+    const other = '(f64.convert_i32_s (call $tick (i32.const 3)))'
+    const product = `(f64.mul
+      (f64.convert_i32_s (i32.load8_s (call $tick (i32.const 1))))
+      (f64.convert_i32_s (i32.load8_s (call $tick (i32.const 2)))))`
+    const ir = parseWat(`(module (memory 1) (global $events (mut i32) (i32.const 0))
+      (func $tick (param $v i32) (result i32)
+        (global.set $events (i32.add (i32.mul (global.get $events) (i32.const 10)) (local.get $v))) (local.get $v))
+      (func $f (export "f") (param $x i32) (param $y i32) (result f64)
+        (global.set $events (i32.const 0))
+        (i32.store8 (i32.const 1) (local.get $x)) (i32.store8 (i32.const 2) (local.get $y))
+        (f64.add ${left ? other : product} ${left ? product : other}))
+      (func (export "events") (result i32) (global.get $events)))`)
+    const fn = ir.find(n => n[0] === 'func' && n[1] === '$f')
+    narrowInts(fn)
+    ok(JSON.stringify(fn).includes('i32.mul'), 'the product narrows even with effectful addresses')
+    const run = new WebAssembly.Instance(new WebAssembly.Module(encodeWat(ir))).exports
+    for (const [x, y] of [[0, -1], [0, -1], [-3, 7], [127, -128], [0, -1]]) {
+      is(run.f(x, y), 3 + x * y, 'A → A → B → A values')
+      is(run.events(), left ? 312 : 123, 'each operand executes once, in source order')
+    }
+  }
+})
+
 test('int-narrow: an index made of an element, its remainders and its quotient', () => {
   const src = `export function f(n) {
   const table = new Int32Array(64)

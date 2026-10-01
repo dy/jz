@@ -4667,8 +4667,9 @@ test('range-narrowing: ToInt32 of a bounded value through a reused local drops t
 
 test('int narrowing: bounded typed-array element products use i32.mul (faithful), bit-exact', () => {
   // `int8[i] * int8[j]` (and i8/u8/i16 pairs, plus i16×u16) — the int-conv / correlation /
-  // quantised-MAC shape — has a product that provably fits SIGNED i32, so i32.mul == the true
-  // value in every consumer context. Rides the i32 ABI (one op, no convert→f64.mul→convert
+  // quantised-MAC shape — has a product that provably fits SIGNED i32. Its sum from +0
+  // erases the product's possible -0, permitting i32.mul in this consumer context.
+  // Rides the i32 ABI (one op, no convert→f64.mul→convert
   // round-trip) on V8 / JSC / wasmtime alike. u16×u16 (65535² > 2^31) must STAY f64 — unfaithful.
   const i8sum = `export let f = (n) => {
     const a = new Int8Array(64); const b = new Int8Array(64)

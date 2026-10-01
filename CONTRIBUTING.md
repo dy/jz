@@ -1928,6 +1928,11 @@ code add, weighted by loop depth; a value that may be -0 narrows only where
 every read is an integer consumer's. A test the intervals decide folds to its
 answer, and `i32.and`/`i32.or` fold only over operands that are 0 or 1: the
 same operators combine flag words.
+An addition whose other operand cannot be -0 may also read a bounded integer
+subexpression through i32: that sum erases the subexpression's zero sign.
+The existing interval facts supply this proof, and the rewrite must remove
+more conversions than it adds. A bare product, an unknown other operand, or
+an out-of-i32 product keeps its floating semantics.
 
 A loop is compiled twice where its values decide its types
 (`optimize/specialize.js`, the `specializeLoops` pass, off in the `size`
