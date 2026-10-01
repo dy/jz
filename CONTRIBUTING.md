@@ -2721,8 +2721,10 @@ unknown or host callee). Parameter defaults run in the frame before the body:
 the census, like every scan of what a function reads, writes, reassigns or
 captures, walks `frameRoots(fn)` (`src/function.js`: the defaults, then the
 body; `frameNode` as one statement list), and an arrow keeps its defaults in
-its parameter list. A default runs only where its argument is missing, so the
-summary treats its writes as conditional. A store into a fresh local aggregate, a binding
+its parameter list. Mutable parameter cells are seeded before any default runs;
+a default closure captures that cell and a default assignment updates it, in
+parameter order, just as on the indirect closure entry path. A default runs
+only where its argument is missing, so the summary treats its writes as conditional. A store into a fresh local aggregate, a binding
 declared in the body whose every write is a literal or a `new`, is a store into
 fresh memory. A nested function's writes count wherever it is made, a
 declaration's initializer included. A callback a builtin runs (an array

@@ -16,6 +16,47 @@ const agree = (cases) => {
   }
 }
 
+test('param defaults: captured parameter cells exist before their default closures', () => {
+  const cases = [
+    [`export function value(w,r,change=()=>{w--}){let sum=0,x=0;while(x<w){
+      let k=-r;while(k<=r){let xi=x+k;if(xi<0)xi=0;else if(xi>=w)xi=w-1;sum+=xi;k++}
+      change();x++}return [sum,x,w]}`, [[6,1],[6,1],[0,1],[3,0],[6,1]]],
+    [`export function value(a=2,get=()=>a,set=v=>{a=v}){
+      const before=get();set('next');const text=get();set(undefined);return [before,text,get()]}`,
+      [[],[],[0],[null],[undefined],[9],[]]],
+    [`export function value(a=2,g=()=>++a,b=g()){return [a,b,g()]}`,
+      [[],[],[0],[9],[]]],
+    [`export function value(read=()=>b,b=7){b++;return [read(),b]}`,
+      [[],[],[undefined,0],[undefined,9],[]]],
+    [`export function value(g=()=>g){const old=g;const before=g()===g;g=()=>7;
+      return [before,old()===g,g()]}`, [[],[],[]]],
+    [`export function value(a=new Int32Array([7]),g=()=>{a=new Int32Array([9])}){
+      const before=a[0];g();return [before,a[0]]}`, [[],[],[new Int32Array(0)],[new Int32Array([2,3])],[]]],
+    [`export function value(a='abcdefghi',g=()=>{a='z'}){
+      const before=a.charCodeAt(0);g();return [before,a.charCodeAt(0)]}`, [[],[],[''],['short'],[]]],
+    [`export function value(a=false,g=()=>a){const before=g();a=true;return [before,g()]}`,
+      [[],[],[false],[0],[null],[]]],
+  ]
+  for (const [src, args] of cases) for (const level of levels(0, 1, 2, 3, 'size')) {
+    const got = jz(src, { optimize: { level, sourceInline: false } }).exports.value
+    const ref = oracle(src).value
+    for (const input of args) is(got(...input), ref(...input), `O${level}: ${src.slice(0,65)}, ${input}`)
+  }
+})
+
+test('param defaults: retained captures survive repeated, changed and throwing initialization', () => {
+  const src = `let held=()=>-1;
+    function fail(){throw 9}
+    function make(a=3,save=()=>a,b=(a<0?fail():0)){a++;held=save;return a}
+    export function value(x){try{return [make(x),held()]}catch(e){return [e,held()]}}`
+  for (const level of levels(0, 1, 2, 3, 'size')) {
+    const got = jz(src, { optimize: { level, sourceInline: false } }).exports.value
+    const ref = oracle(src).value
+    for (const x of [-1,undefined,undefined,-1,8,0,undefined])
+      is(got(x), ref(x), `O${level}, input=${x}: prior retained closure survives an initializer throw`)
+  }
+})
+
 test('param defaults: a default\'s use of a parameter keeps it from the numeric boundary', () => agree([
   // the summary's numeric demand read only bodies (the host coerced 'abc' to NaN)
   ['member use', `export const value = (a, b = a.length) => (a > 0 ? 1 : 2) + b`, ['abc']],

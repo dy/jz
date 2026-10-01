@@ -9,7 +9,7 @@ import { i64Hex, typedElemAux, TYPED_ELEM_VIEW_FLAG } from '../../layout.js'
 import { STRIDE } from '../../module/typedarray/elem-tables.js'
 import {
   typed, asF64, asI32, asPtrOffset, asParamType, nullableBoolBoxIR, ptrTypeEq, undefExpr,
-  isUndef, isGlobal, dollar, tcoTailRewrite, applyBigintRepresentationAction,
+  isUndef, isGlobal, boxedAddr, dollar, tcoTailRewrite, applyBigintRepresentationAction,
 } from '../ir.js'
 import { core, isNullable, K, tagOf } from '../summary/kind.js'
 import { restoreActiveFunction, publishLoopRewinds } from './active-function.js'
@@ -209,6 +209,23 @@ export function emitFunc(func, functionPlan, programFacts, arrayGlobals) {
   fn.push(...sig.params.map(p => ['param', dollar(p.name), p.type]))
   fn.push(...sig.results.map(t => ['result', t]))
 
+  // A default closure captures the parameter cell too. Allocate and seed all
+  // parameter cells before defaults run; default writes update that same cell.
+  const boxedParamInits = []
+  const paramNames = new Set(sig.params.map(p => p.name))
+  for (const p of sig.params) {
+    if (ctx.func.boxed.has(p.name)) {
+      const cell = ctx.func.boxed.get(p.name)
+      ctx.func.locals.set(cell, 'i32')
+      ;(ctx.func.preboxed ??= new Set()).add(p.name)
+      const lget = typed(['local.get', `$${p.name}`], p.type)
+      if (p.ptrKind != null) lget.ptrKind = p.ptrKind
+      boxedParamInits.push(
+        ['local.set', `$${cell}`, ['call', '$__alloc', ['i32.const', 8]]],
+        ['f64.store', ['local.get', `$${cell}`], asF64(lget)])
+    }
+  }
+
   // Default params: ES spec says default applies only when arg is `undefined`
   // (or missing). `null`, `0`, `false`, etc. all skip the default.
   // Emitted here (registers any `charCodeAt` decomposition the default's
@@ -238,26 +255,13 @@ export function emitFunc(func, functionPlan, programFacts, arrayGlobals) {
     // (e.g. subscript's `dispatch(ops, tail, fn = (a, …) => {…})`) is the fact
     // proveClosureFactory needs to see through `dispatch`'s forwarded return.
     recordParamClosureDefault(name, pname, emittedDefVal)
-    defaultInits.set(pname,
-      ['if', isUndef(typed(['local.get', `$${pname}`], 'f64')),
-        ['then', ['local.set', `$${pname}`, t === 'f64' ? asF64(emittedDefVal) : asI32(emittedDefVal)]]])
+    const boxed = ctx.func.boxed.has(pname)
+    const current = boxed ? ['f64.load', boxedAddr(pname)] : typed(['local.get', `$${pname}`], 'f64')
+    const store = boxed ? ['f64.store', boxedAddr(pname), asF64(emittedDefVal)]
+      : ['local.set', `$${pname}`, t === 'f64' ? asF64(emittedDefVal) : asI32(emittedDefVal)]
+    defaultInits.set(pname, ['if', isUndef(current), ['then', store]])
   }
 
-  // Box params that are mutably captured: allocate cell, copy param value
-  const boxedParamInits = []
-  const paramNames = new Set(sig.params.map(p => p.name))
-  for (const p of sig.params) {
-    if (ctx.func.boxed.has(p.name)) {
-      const cell = ctx.func.boxed.get(p.name)
-      ctx.func.locals.set(cell, 'i32')
-      ;(ctx.func.preboxed ??= new Set()).add(p.name)
-      const lget = typed(['local.get', `$${p.name}`], p.type)
-      if (p.ptrKind != null) lget.ptrKind = p.ptrKind
-      boxedParamInits.push(
-        ['local.set', `$${cell}`, ['call', '$__alloc', ['i32.const', 8]]],
-        ['f64.store', ['local.get', `$${cell}`], asF64(lget)])
-    }
-  }
   // Remaining boxed locals (non-params) get a fresh null-init cell, before the
   // first statement that mentions one (placePreboxedLocalInits) or at entry.
   const preboxedLocalInits = placePreboxedLocalInits(emitPreboxedLocalInits(name => paramNames.has(name)), block ? body : null)
@@ -328,12 +332,12 @@ export function emitFunc(func, functionPlan, programFacts, arrayGlobals) {
     const fallthrough = endsWithReturn ? []
       : sig.results.length === 1 && sig.results[0] === 'f64' ? [undefExpr()]
       : sig.results.map(t => [`${t}.const`, 0])
-    fn.push(...paramInits, ...boxedParamInits, ...preboxedLocalInits, ...cursorUnboxInits, ...stmts, ...fallthrough)
+    fn.push(...boxedParamInits, ...paramInits, ...preboxedLocalInits, ...cursorUnboxInits, ...stmts, ...fallthrough)
   } else if (multi) {
     const values = emitVoid(['return', body])
     const paramInits = collectParamInits()
     for (const [l, t] of ctx.func.locals) fn.push(['local', dollar(l), t])
-    fn.push(...paramInits, ...boxedParamInits, ...preboxedLocalInits, ...values, ['unreachable'])
+    fn.push(...boxedParamInits, ...paramInits, ...preboxedLocalInits, ...values, ['unreachable'])
   } else {
     // Top-level twin of emitFunc's 'return'-statement mixedAtomReturn admission
     // and emitClosureBody's expression-body site: a non-block arrow body
@@ -369,7 +373,7 @@ export function emitFunc(func, functionPlan, programFacts, arrayGlobals) {
       : sig.ptrKind != null ? asPtrOffset(ir, sig.ptrKind) : asParamType(ir, sig.results[0])
     const paramInits = collectParamInits()
     for (const [l, t] of ctx.func.locals) fn.push(['local', dollar(l), t])
-    fn.push(...paramInits, ...boxedParamInits, ...preboxedLocalInits, tcoTailRewrite(finalIR, sig.results[0]))
+    fn.push(...boxedParamInits, ...paramInits, ...preboxedLocalInits, tcoTailRewrite(finalIR, sig.results[0]))
   }
 
   // The locals that hold a view of a buffer: its descriptor is written once,
