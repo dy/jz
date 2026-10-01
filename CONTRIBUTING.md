@@ -167,6 +167,17 @@ Their Boolean results follow the boundary-wrapper rule: i32 carries raw 0/1,
 while f64 may already contain an atom and needs `__is_truthy` before boxing.
 Comparing a boxed false with numeric zero turns it into true; recursive named
 callbacks, including the JSON literal validator, depend on this distinction.
+Object enumeration and bulk field copies publish tagged field-storage demand
+for the source and destination layouts. This keeps a BigInt's identity when
+`Object.values`, `Object.entries`, `Object.assign` or spread removes its
+original slot identity, while preserving the objects' static shapes. An
+unknown receiver's computed read or enumeration also exposes every reachable
+field value, so nested objects cannot keep raw fields after their identities
+are lost. `Object.entries` retains the same joined value kind as
+`Object.values`, paired with its string key.
+Array property stores also feed length analysis: a numeric key can extend the
+array, `length` can resize it, and an unknown key can do either. The same
+transfer serves assignments and bulk property copies such as `Object.assign`.
 Known-local arithmetic folds in the same propagation pass; JZ only selects
 this policy with its existing `hoistConstantPool` option.
 Exact cast identities have one owner in watr: JZ calls `simplifyCast` during

@@ -587,6 +587,10 @@ export function summaryQueries(facts, internal = false) {
   let deletableLayouts = null
   const hostLayouts = new Set([...facts.hostSchemas].map(sid => layouts[sid]))
   const opaqueLayouts = new Set([...facts.opaqueSchemas].map(sid => layouts[sid]))
+  // A bulk field copy keeps the shape, but the copied payload must stand on
+  // its own in an array, dictionary or another layout. Source and destination
+  // layouts therefore agree on tagged BigInt slots before either is emitted.
+  const copiedLayouts = new Set([...facts.copiedSchemas].map(sid => layouts[sid]))
   // Joined receivers can reach generic reads, so their BigInt slots stay tagged.
   for (const id of shapeUnions.values()) if (id !== UNKNOWN)
     for (const sid of shapesOf(id)) opaqueLayouts.add(layouts[sid])
@@ -617,6 +621,7 @@ export function summaryQueries(facts, internal = false) {
     // The names a builtin stores into its target object (`Object.assign`).
     assignedProps: facts.assignedProps,
     opaqueSchema: sid => opaqueLayouts.has(sid),
+    copiedSchema: sid => copiedLayouts.has(sid),
     // Whether an object of the layout may gain a property beyond its slots: a
     // key stored beside them, a computed store, or a hand-off to code the
     // summary cannot see (a lost shape).

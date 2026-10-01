@@ -9,6 +9,89 @@ import { i64ToF64 } from '../interop.js'
 import { onWasi, belowOpt, levels } from './_matrix.js'
 import { run, oracle, cases } from './util.js'
 
+test('object enumeration preserves BigInt identity and ordinary field values', () => {
+  const fields = `const o = {a:1n, b:0n, c:-1n, d:0x7FF8000500000000n,
+    e:5e-324, f:false, g:null, h:undefined};`
+  for (const body of [
+    `${fields} return Object.values(o).map(v => [typeof v, v])`,
+    `${fields} return Object.entries(o).map(p => [p[0], typeof p[1], p[1]])`,
+    `${fields} return [Object.keys(o), o.a + 1n]`,
+    `const o = {a:1n}; o.a = 2n; const v = Object.values(o); return [o.a + 1n, v[0], typeof v[0]]`,
+    `const o = {a:1n}; const v = Object.values(o); o.a = 2n; return [v[0], o.a]`,
+    `let seen = 0; const o = {get a() { seen++; return 1n }};
+      const v = Object.values(o); return [seen, v[0], typeof v[0]]`,
+    `return Object.values([1n, 0n, 5e-324]).map(v => [typeof v, v])`,
+    `return [Object.values({}), Object.entries({}), Object.keys({})]`,
+  ]) {
+    const src = `export function f() { ${body} }`, expected = oracle(src).f()
+    for (const optimize of levels(0, 1, 2, 3, 'size')) {
+      const f = jz(src, {optimize}).exports.f
+      is(f(), expected, `O${optimize}: ${body}`)
+      is(f(), expected, `O${optimize}: repeat`)
+    }
+  }
+})
+
+test('object enumeration through unknown receivers retains nested BigInt leaves', () => {
+  for (const read of ['Object.values(v).some(has)', 'Object.entries(v).some(p => has(p[1]))',
+    'Object.keys(v).some(k => has(v[k]))']) {
+    const src = `
+      const has = v => typeof v === 'bigint' || (Array.isArray(v) ? v.some(has)
+        : !!v && typeof v === 'object' && ${read});
+      export const f = n => has([{}, {a:1}, {a:{}}, {a:{b:1}}, {a:[1]},
+        {a:{b:1n}}, {a:[{b:1n}]}, {a:null}, [], [false], 0n][n]);
+    `
+    const expected = oracle(src).f
+    for (const optimize of levels(0, 1, 2, 3, 'size')) {
+      const f = jz(src, {optimize}).exports.f
+      for (const n of [0, 1, 2, 2, 3, 4, 5, 6, 7, 8, 9, 10, 2, 5])
+        is(f(n), expected(n), `${read}, case ${n}, O${optimize}`)
+    }
+  }
+})
+
+test('bulk object copies preserve BigInt field carriers across layouts', () => {
+  for (const body of [
+    `const o = {a:1n}; return Object.assign({}, o).a === 1n`,
+    `const o = {a:1n}; const p = Object.assign({a:2n, b:2}, o); return [p.a === 1n, p.a + 1n, p.b]`,
+    `const o = {a:1n}; const p = {...o, b:2}; return [p.a === 1n, p.a + 1n, p.b]`,
+    `const o = {a:1n}; const p = {b:2, ...o}; return [p.a === 1n, p.a + 1n, p.b]`,
+    `const o = {a:1n, b:2}; const {b, ...p} = o; return [p.a === 1n, p.a + 1n, b]`,
+    `const a = Object.assign([], {'0':1n}); return [a[0], typeof a[0]]`,
+    `let count = 0; const o = {get a() { count++; return 1n }};
+      const p = Object.assign({}, o); return [count, p.a, typeof p.a]`,
+    `const o = {a:1n}; const p = {...o, b:2}; p.a = 3n;
+      return [p.a + 1n, o.a + 1n, Object.values(p).map(v => typeof v)]`,
+    `const p = {a:0n}; Object.assign(p, {a:5e-324}); const first = [typeof p.a, p.a];
+      Object.assign(p, {a:1n}); return [first, typeof p.a, p.a]`,
+    `const o = {a:1n}; const p = {...o, a:5e-324}; return [typeof p.a, p.a]`,
+    `const p = {a:5e-324, ...{a:1n}}; return [typeof p.a, p.a]`,
+  ]) {
+    const src = `export function f() { ${body} }`, expected = oracle(src).f()
+    for (const optimize of levels(0, 1, 2, 3, 'size')) {
+      const f = jz(src, {optimize}).exports.f
+      is(f(), expected, `O${optimize}: ${body}`)
+      is(f(), expected, `O${optimize}: repeat`)
+    }
+  }
+})
+
+test('array property copies invalidate bounds when indices or length change', () => {
+  for (const body of [
+    `const a = []; Object.assign(a, {'0':7}); return [a[0], a.length]`,
+    `const a = [1]; Object.assign(a, {'0':7}); return [a[0], a.length]`,
+    `const a = []; const source = {}; source[n ? '0' : '2'] = 7;
+      Object.assign(a, source); return [a.length, a[0], a[1], a[2]]`,
+    `const a = [1, 2]; Object.assign(a, {length:n}); return [a.length, a[0], a[1]]`,
+  ]) {
+    const src = `export function f(n) { ${body} }`, expected = oracle(src).f
+    for (const optimize of levels(0, 1, 2, 3, 'size')) {
+      const f = jz(src, {optimize}).exports.f
+      for (const n of [0, 0, 1, 2, 0]) is(f(n), expected(n), `n=${n}, O${optimize}: ${body}`)
+    }
+  }
+})
+
 test('nullable property receivers throw before reading or writing memory', () => {
   for (const absent of ['undefined', 'null']) for (const access of ['o.b', 'o[k]', 'o[0]', 'o.length', 'o.b = 7', 'o[k] = 7', 'o[0] = 7', 'o.b++']) {
     const src = `export function f(c, k) {

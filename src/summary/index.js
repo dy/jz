@@ -77,7 +77,7 @@ const PURE_BUILTINS = /^(Object\.(keys|values|entries|freeze|isFrozen|getOwnProp
 const KEEPING_BUILTINS = /^(Object\.(keys|freeze|isFrozen|getOwnPropertyNames|getPrototypeOf|hasOwn|is)|Array\.isArray|Boolean|Symbol(\.\w+)?)$/
 // The calls that read an object's own key set, or make it another's (a copy's
 // keys, a prototype's), without handing it on (the rest escape it).
-const KEY_READERS = new Set(['Object.keys', 'Object.values', 'Object.getOwnPropertyNames', 'Object.hasOwn', 'Object.freeze', 'Object.isFrozen', 'Object.isSealed', 'Object.isExtensible',
+const KEY_READERS = new Set(['Object.keys', 'Object.values', 'Object.entries', 'Object.getOwnPropertyNames', 'Object.hasOwn', 'Object.freeze', 'Object.isFrozen', 'Object.isSealed', 'Object.isExtensible',
   'Object.assign', 'Object.defineProperty', 'Object.defineProperties', 'Object.setPrototypeOf', 'Object.create', '__keys_ro', '__keys_dyn'])
 // Of those, the ones that only store into their first argument: its keys are
 // written, never read (a store to a declared key and to a missing one leave
@@ -419,6 +419,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   // (plan/declare-unseen-keys.js). A lost shape's key set is read by code
   // the summary cannot see (lostSchema).
   const keysSeen = new Set()
+  const copiedSchemas = new Set() // fields copied without their original slot identity
   const wildProps = new Map()   // literal name → the values stored under it through a receiver of unknown shape
   const lostSchema = (sid) => opaqueSchemas.has(sid) || hostSchemas.has(sid)
   /** An object kind whose every shape the summary can enumerate. */
@@ -505,6 +506,10 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   const seeKeys = (k) => {
     if (tagOf(core(k)) === K.OBJECT && paramOf(k) !== UNKNOWN) for (const sid of shapesOf(paramOf(k))) keysSeen.add(sid)
     else if (celled(k)) for (const sid of shapesInCell(cell(paramOf(k)))) keysSeen.add(sid)
+  }
+  const copyFields = (k) => {
+    if (tagOf(core(k)) === K.OBJECT && paramOf(k) !== UNKNOWN) for (const sid of shapesOf(paramOf(k))) copiedSchemas.add(sid)
+    else if (celled(k)) for (const sid of shapesInCell(cell(paramOf(k)))) copiedSchemas.add(sid)
   }
   const addCellShapes = (c, sids) => { let s = cellShapes.get(c); if (!s) cellShapes.set(c, s = new Set()); for (const sid of sids) if (!s.has(sid)) { s.add(sid); changed = true } }
   const addCellLost = (c) => { if (!cellLostObject.has(c)) { cellLostObject.add(c); changed = true } }
@@ -938,8 +943,18 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   const hashPropOf = (h, prop) => { const c = cell(paramOf(h)); if (!keyedCells.has(c)) return elemOf(h); return join(cellProps.get(c)?.get(prop) ?? K.NONE, cellWild.get(c) ?? K.NONE) }
   const propOf = (arr, prop) => { const c = cell(paramOf(arr)); return join(isArrayIndexKey(prop) ? elemOf(arr) : cellProps.get(c)?.get(prop) ?? K.NONE, cellWild.get(c) ?? K.NONE) }
   const anyPropOf = (arr) => { const c = cell(paramOf(arr)); let k = join(elemOf(arr), cellWild.get(c) ?? K.NONE); for (const pk of cellProps.get(c)?.values() ?? []) k = join(k, pk); return k }
-  const raiseProp = (arr, prop, k) => { const t = tagOf(arr); if (!(t === K.ARRAY || isDict(arr)) || paramOf(arr) === UNKNOWN) return; if (t === K.ARRAY && isArrayIndexKey(prop)) { raiseElem(arr, k); return } if (t !== K.ARRAY) raiseElem(arr, k, false, true); const c = cell(paramOf(arr)); let m = cellProps.get(c); if (!m) cellProps.set(c, m = new Map()); const old = m.get(prop) ?? K.NONE, nk = merge(old, k); if (nk !== old) { m.set(prop, nk); changed = true } }
-  const raiseWild = (arr, k) => { const t = tagOf(arr); if (!(t === K.ARRAY || isDict(arr)) || paramOf(arr) === UNKNOWN) return; raiseElem(arr, k, false, true); const c = cell(paramOf(arr)); const old = cellWild.get(c) ?? K.NONE, nk = merge(old, k); if (nk !== old) { cellWild.set(c, nk); changed = true } }
+  const raiseProp = (arr, prop, k) => {
+    const t = tagOf(arr)
+    if (!(t === K.ARRAY || isDict(arr)) || paramOf(arr) === UNKNOWN) return
+    if (t === K.ARRAY && isArrayIndexKey(prop)) { storeAt(arr, prop); raiseElem(arr, k); return }
+    if (t === K.ARRAY && prop === 'length') openLen(arr, 'length written as a property')
+    if (t !== K.ARRAY) raiseElem(arr, k, false, true)
+    const c = cell(paramOf(arr)); let m = cellProps.get(c)
+    if (!m) cellProps.set(c, m = new Map())
+    const old = m.get(prop) ?? K.NONE, nk = merge(old, k)
+    if (nk !== old) { m.set(prop, nk); changed = true }
+  }
+  const raiseWild = (arr, k) => { const t = tagOf(arr); if (!(t === K.ARRAY || isDict(arr)) || paramOf(arr) === UNKNOWN) return; if (t === K.ARRAY) openLen(arr, 'stored under an unknown property'); raiseElem(arr, k, false, true); const c = cell(paramOf(arr)); const old = cellWild.get(c) ?? K.NONE, nk = merge(old, k); if (nk !== old) { cellWild.set(c, nk); changed = true } }
   // A map's keys: stored by `set`, handed out only by enumeration (keys(),
   // entries(), forEach, iteration, a copy). A key kept in a map is lost when
   // the map enumerates or is itself lost, not when it is stored.
@@ -2474,6 +2489,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     // a source with an accessor copies its values instead (below).
     if (n.length === 2 && n[1]?.[0] === '...' && !spreadExclusions(n[1])) {
       const source = spreadSource(n[1]), t = tagOf(source)
+      copyFields(source)
       if (t === K.NONE) return K.NONE
       if (!viewed(source)) return !isNullable(source) && (t === K.OBJECT || t === K.HASH) ? source : cellOf(n, K.HASH, ANY)
     }
@@ -2490,6 +2506,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
         const source = spreadSource(p), ids = tagOf(source) === K.OBJECT && paramOf(source) !== UNKNOWN ? shapesOf(paramOf(source)) : [], sourceSid = ids[0]
         // the copy holds the keys the source has (a lone source's copy is its kind: its readers mark it)
         seeKeys(source)
+        copyFields(source)
         // An object rest skips the keys its pattern named; one known only at
         // run time leaves the copy a dictionary (module/object.js mergeSpreadNames).
         const skip = spreadExclusions(p)
@@ -2571,6 +2588,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       return kind(K.OBJECT) | bitOf(K.HASH)
     }
     for (const [name, value] of writes) raiseSlot(sid, schemas[sid].indexOf(name), value)
+    copiedSchemas.add(sid)
     return objectKind(n, sid)
   }
   /** A static literal: each value into its slot, or escaped when the registry has not named the shape. */
@@ -2616,6 +2634,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     for (const [sid, i] of byProp.get(prop) ?? NO_SLOTS) if (lostSchema(sid)) escape(slots(sid)[i])
     escape(sideByProp.get(prop) ?? K.NONE)
   }
+  const escapeLostFields = () => { for (const prop of byProp.keys()) escapeLostReads(prop) }
   const member = (op, recv, prop) => {
     const t = tagOf(recv)
     // A read through a nullish receiver throws (the optional form answers undefined).
@@ -2772,11 +2791,12 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       if (t === K.OBJECT && paramOf(recv) !== UNKNOWN) { let k = K.NONE; for (const sid of shapesOf(paramOf(recv))) { for (const s of slots(sid)) k = merge(k, s); k = merge(k, anySideOf(sid)) } return orAbsent(k) }
       if (dictOrObject(recv)) {
         const c = cell(paramOf(recv))
-        if (cellLostObject.has(c)) return ANY
+        if (cellLostObject.has(c)) { escapeLostFields(); return ANY }
         let k = elemOf(recv)
         for (const sid of shapesInCell(c)) { for (const s of slots(sid)) k = merge(k, s); k = merge(k, anySideOf(sid)) }
         return orAbsent(k)
       }
+      if (hasTag(recv, K.OBJECT)) escapeLostFields()
       return ANY
     }
     if (op === '(') return expr(n[1])
@@ -2788,6 +2808,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       const recv = memberCall ? receiver(callee[1]) : null
       const base = pushArgs(op === '?.()' ? [',', ...n.slice(2)] : n[2]), count = sp - base
       if (KEY_READERS.has(callee)) for (let i = KEY_TARGETS.has(callee) ? 1 : 0; i < count; i++) seeKeys(ks[base + i])
+      if (callee === 'Object.assign') for (let i = 0; i < count; i++) copyFields(ks[base + i])
       let r
       // An optional call: a callee of no kind yet calls nothing, a nullish one answers undefined.
       let optional = null
@@ -2801,18 +2822,27 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       else if (callee === 'new.Map') r = mapOf(n, base, count)
       else if (callee === 'new.Set') r = setOf(n, base, count)
       else if (callee === '__iter_arr' || (typeof callee === 'string' && ITER_STEP.test(callee))) r = call(callee, base, count, n)
-      else if (callee === 'Object.keys' || callee === 'Object.values') {
+      else if (callee === 'Object.keys' || callee === 'Object.values' || callee === 'Object.entries') {
         const source = count ? ks[base] : ANY, t = tagOf(source)
         let value = callee === 'Object.keys' ? STRING : ANY
-        if (callee === 'Object.values') {
+        if (callee !== 'Object.keys') {
+          // Enumeration hands fields to generic array slots. Require tagged
+          // field storage without losing the source's precise shape.
+          copyFields(source)
           if (t === K.NONE || t === K.NULLISH || t === K.ABSENT) value = K.NONE
           else if (sidOf(source) !== UNKNOWN && !openSchemas.has(sidOf(source))) {
             value = K.NONE
-            for (const slot of slots(sidOf(source))) value = merge(value, slot)
+            for (const [, slot] of ownEntries(sidOf(source))) value = merge(value, slot)
           } else if (t === K.HASH) value = elemOf(source)
           else if (t === K.ARRAY) value = merge(elemOf(source), anyPropOf(source))
+          else if (hasTag(source, K.OBJECT)) {
+            // A receiver of lost shape can expose every field, not just one
+            // named property. Lose those fields' identities as a generic
+            // member read does, including nested objects handed to callbacks.
+            escapeLostFields()
+          }
         }
-        r = arrayOf(n, value)
+        r = arrayOf(n, callee === 'Object.entries' ? tuplePair(n, STRING, value) : value)
       }
       else if (callee === 'new.Array' || callee === 'Array') r = arrayCtor(n, base, count)
       else if (callee === 'Array.of') r = arrayOfArgs(n, base, count)
@@ -3856,7 +3886,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     scopeOfSig, scopeOfBody, scopeOfParams, cellUp, elems, tuples, lens, stores, built, grown, unknown, presentReads, spreadSources, paramRangesOf, cellProps, cellWild, closureSets, closureSetIds, cells, jsonKinds, closuresByBody, unions, shapeUnions,
     schemas, layouts, sitesByLayout, foldedLayouts, objectKinds, methods, sidByKey,
     funcNames: new Set(funcByName.keys()), imports: new Map(imports),
-    numeric, strung, dynamicProps, builtinOwnProps, escaped, typedReadPresent, typedProps, typedPropsByAux, openSchemas, indexedSchemas, hostSchemas, opaqueSchemas, deletable, deleteReach, assignedProps, keysSeen,
+    numeric, strung, dynamicProps, builtinOwnProps, escaped, typedReadPresent, typedProps, typedPropsByAux, openSchemas, indexedSchemas, hostSchemas, opaqueSchemas, copiedSchemas, deletable, deleteReach, assignedProps, keysSeen,
     sideProps, sideWild, wildProps, wildValues, pendingAll, keyedCells, cellShapes, cellLostObject, closureProps, iterSites, reached, defaultRuns, decisions,
     held,
     boolKeys, storeBits, paramKeys,
@@ -4181,7 +4211,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   if (seeded.length) {
     kinds.length = 0; incoming.length = 0; fields.length = 0; objectKinds.clear(); decisions.clear(); opaqueSchemas.clear(); hostSchemas.clear(); retainedSchemas.clear(); hostArrays.clear(); retainedArrays.clear(); hostClosures.clear(); results.clear(); escaped.clear(); certainKeys.clear(); boolKeys.clear(); for (let i = 0; i < elems.length; i++) { elems[i] = K.NONE; cellUp[i] = i }
     tuples.clear(); lens.clear(); stores.clear(); built.clear(); grown.clear(); unknown.clear(); presentReads.clear(); spreadSources.clear(); argRanges.clear(); roundArgs.clear(); moved.clear()
-    pendingAll = false; pendingIndexed = false; wildValues = K.NONE; wildProps.clear(); sideProps.clear(); sideWild.clear(); closureProps.clear(); sideByProp.clear(); foreignObjects = false; foreignProps.clear(); deletable.clear(); deleteReach.unknown = false; keysSeen.clear()
+    pendingAll = false; pendingIndexed = false; wildValues = K.NONE; wildProps.clear(); sideProps.clear(); sideWild.clear(); closureProps.clear(); sideByProp.clear(); foreignObjects = false; foreignProps.clear(); deletable.clear(); deleteReach.unknown = false; keysSeen.clear(); copiedSchemas.clear()
     seed(seeded)
     fixpoint()
   }
