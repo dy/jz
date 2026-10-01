@@ -85,7 +85,10 @@ and finalizer emission. A block must pass the shared return-path proof before
 selecting multiple results; a possible fallthrough needs to carry undefined.
 Native method wrappers use internal tag predicates and runtime brand errors.
 Preparing an unused wrapper therefore does not add source-level BigInt or throw
-demand; its error data and exception support follow actual emission.
+demand; its error data and exception support follow actual emission. Their
+receiver parameter joins the closure ABI only when a reader is reachable;
+explicitly held prototype methods retain it. Strict compilation keeps its
+ordinary dynamic-read rejection before selecting a native method reader.
 Try, catch and finally bodies establish their block declarations before closures
 are prepared, including parser bodies represented as bare statement lists. Recursive
 and forward-capturing closures therefore share the block's renamed bindings.

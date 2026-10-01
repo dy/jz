@@ -706,7 +706,10 @@ test('computed collection method demand resets across retained compiles', () => 
       is(wat.includes('br_computed'),false,`unrelated key domain has no computed reader O${optimize}`)
       is(wat.includes('_Map_get'),false,`unrelated key domain has no method wrapper O${optimize}`)
       is(wat.includes('(export "__call_closure")'),false,`inactive readers have no host closure bridge O${optimize}`)
+      is(wat.includes('(param $__this '),false,`inactive readers do not widen closure receiver ABI O${optimize}`)
     }
+    const closures=jz.compile(`export function f(k){const fs=[x=>x+1,x=>x*2];return fs[k&1](k)}`,{optimize,wat:true,watr:false})
+    is(closures.includes('(param $__this '),false,`source closures keep their ABI after inactive readers O${optimize}`)
   }
 })
 

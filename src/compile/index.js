@@ -231,7 +231,10 @@ export function assemble(ast, profiler) {
   if (computedReader) computedReader.active = hasCollectionSite(computedReader)
   for (const reader of methodReaders?.values() ?? []) {
     reader.active = computedReader?.active || hasCollectionSite(reader)
-    if (reader.active) ctx.funcs.runtimeRoots.add(reader.name)
+    if (reader.active) {
+      ctx.funcs.runtimeRoots.add(reader.name)
+      ctx.closure.receiver = true
+    }
     reader.sites = null
   }
   // Include imported functions for call resolution (e.g. template interpolations).

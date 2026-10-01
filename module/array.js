@@ -951,7 +951,7 @@ export default (ctx) => {
     if (litKey != null && vt !== VAL.ARRAY && vt !== VAL.TYPED && vt !== VAL.STRING)
       return emit(['.', arr, litKey])
     const methodReader = ctx.funcs.builtinMethodReaders?.get(null)
-    if (methodReader?.active && !numericKey && (vt == null || vt === VAL.MAP || vt === VAL.SET))
+    if (!strictCode() && methodReader?.active && !numericKey && (vt == null || vt === VAL.MAP || vt === VAL.SET))
       return emit(['()', methodReader.name, [',', arr, idx]])
     // emitIndex (not bare asI32(emit)) narrows integer index arithmetic — incl. a
     // literal term like the `+1` of `a[i*W + x + 1]` — to i32 ops instead of the

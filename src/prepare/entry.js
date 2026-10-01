@@ -58,6 +58,7 @@ const COLLECTION_METHODS = new Map([
 ])
 const wrapBuiltinValues = (ast) => {
   const wrappers = new Map()
+  let receiver = ctx.closure.receiver
   const inits = []
   const sourceFuncs = ctx.funcs.list.slice()
   const methodReaders = new Map()
@@ -157,7 +158,10 @@ const wrapBuiltinValues = (ast) => {
     if (!read || reference) return n
     const prop = op === '.' || op === '?.' ? n[2] : n[2][1]
     const ctor = typeof n[1] === 'string' && n[1].endsWith('.prototype') ? n[1].slice(0, -10) : null
-    if (ctor && COLLECTION_METHODS.get(prop)?.includes(ctor)) return methodFor(ctor, prop)
+    if (ctor && COLLECTION_METHODS.get(prop)?.includes(ctor)) {
+      receiver = true
+      return methodFor(ctor, prop)
+    }
     readerFor(prop)?.sites.push([scope, n[1]])
     return n
   }
@@ -167,6 +171,9 @@ const wrapBuiltinValues = (ast) => {
     if (f.body) f.body = visit(f.body, false, f.name)
     if (f.defaults) for (const name of Object.keys(f.defaults)) f.defaults[name] = visit(f.defaults[name], false, f.name)
   }
+  // Prepared readers are only candidates until their receiver kinds settle.
+  // Their `this` nodes must not widen the ABI of unrelated source closures.
+  ctx.closure.receiver = receiver
   if (!inits.length) return ast
   return Array.isArray(ast) && ast[0] === ';' ? [';', ...inits, ...ast.slice(1)] : [';', ...inits, ast]
 }
