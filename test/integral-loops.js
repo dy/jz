@@ -89,8 +89,8 @@ test('integral loops: loop guards add no coercions and retain an integer fast co
 })
 
 test('integral loops: every cursor and count agrees with JS, integral or not', () => {
-  const js = oracle(fir)
   for (const optimize of levels(0, 2, 3)) {
+    const js = oracle(fir)
     const m = jz(fir, { optimize }).exports
     for (const [p, taps] of [[0, 5], [3, 9], [2.5, 5], [-0, 5], [NaN, 4], [2 ** 31, 3], [-1, 5], [4, 0], [1, 2.5], [-3, 7]]) {
       js.set(p, taps); m.set(p, taps)
@@ -183,8 +183,8 @@ export let run = (k) => {
 }`
 
 test('integral loops: a state of unknown kind agrees with JS, a number or not', () => {
-  const js = oracle(biquad)
   for (const optimize of levels(0, 2, 3)) {
+    const js = oracle(biquad)
     const { run } = jz(biquad, { optimize }).exports
     for (const k of [0, 1, 2, 5]) is(run(k), js.run(k), `run(${k}) at ${optimize}`)
   }
