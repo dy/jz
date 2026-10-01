@@ -92,6 +92,7 @@ export const DERIVED_PROP_MODULES = Object.assign(Object.create(null), {
   "padEnd": ["string"],
   "padStart": ["string"],
   "pop": ["array"],
+  "prototype": ["core"],
   "push": ["array"],
   "reduce": ["array", "typedarray"],
   "reduceRight": ["array"],
