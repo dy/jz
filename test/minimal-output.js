@@ -5,6 +5,7 @@
 // guard against the boilerplate creeping back. Baseline: smaller than AssemblyScript.
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
+import parseWat from 'watr/parse'
 import { compile } from '../index.js'
 import { onWasi, onKernel, levels } from './_matrix.js'
 import { scalarCase } from './_scalar-core-cases.js'
@@ -401,13 +402,10 @@ test('minimal: typed-array reads skip the forwarding follow', () => {
   is(jz(src).exports.f(2), 240, 'typed array still computes correctly')  // 2*sum(0..15) = 2*120
 })
 
-// === Numeric Array(n) sheds the ToNumber / string-format subsystem ===
-// An `Array(n)` every store into which is a Number holds numbers (the program summary's
-// cell: `Array(n)` is holes, each index write joins its kind), so its `a[i]` reads skip
-// __to_num — the same win a numeric array LITERAL already gets, now for the dominant
-// construct-then-fill kernel shape (`let a = Array(n); for(..) a[i] = …`). Without it every
-// untyped index drags the full __to_num → __to_str → __ftoa/__itoa/__skipws string battery:
-// a 4–17× bloat over the typed-array form (the REPL "Array swap" cliff).
+// === Numeric Array(n) loops skip ToNumber / string formatting ===
+// Numeric cells carry Number-or-undefined reads: holes become NaN in arithmetic.
+// General Number indices still need a named-property fallback outside the element
+// domain. Pin the direct numeric loop paths, not the cold helpers' mere presence.
 const NUMERIC_FILL = {
   'arithmetic fill': 'export let f=(n)=>{let a=Array(n); for(let i=0;i<n;i++)a[i]=(i%13)-6; let s=0; for(let i=0;i<n;i++)s+=a[i]*a[i]; return s|0}',
   'bare numeric-local write': 'export let f=(n)=>{let a=Array(n); for(let i=0;i<n;i++){let v=i*0.5+1; a[i]=v} let s=0; for(let i=0;i<n;i++)s+=a[i]; return s|0}',
@@ -415,22 +413,57 @@ const NUMERIC_FILL = {
   'new Array(n) ctor': 'export let f=(n)=>{let a=new Array(n); for(let i=0;i<n;i++)a[i]=i&7; let s=0; for(let i=0;i<n;i++)s+=a[i]; return s|0}',
 }
 const STRINGY = ['__to_num', '__to_str', '__str_concat', '__ftoa', '__itoa', '__skipws', '__static_str']
+const irSome = (node, pred) => Array.isArray(node) && (pred(node) || node.some(c => irSome(c, pred)))
+const numericFillLoops = w => {
+  const loops = []
+  for (const f of parseWat(w)) if (f?.[0] === 'func' && /^\$f(?:\$|$)/.test(f[1]))
+    irSome(f, n => { if (n[0] === 'loop') loops.push(n); return false })
+  return loops
+}
 for (const [name, src] of Object.entries(NUMERIC_FILL)) {
   test(`minimal: numeric Array(n) (${name}) skips ToNumber/string`, () => {
     if (skip) return
     for (const O of levels(0, 2)) {
-      const w = wat(src, O)
-      for (const h of STRINGY) ok(!w.includes(`$${h} `) && !w.includes(`$${h})`),
-        `${name} @O${O}: a numeric Array(n) must not pull ${h}`)
+      const loops = numericFillLoops(wat(src, O))
+      const numeric = n => !irSome(n, x => x[0] === 'call' && STRINGY.includes(x[1]?.slice(1)))
+      const wordCounter = n => O === 0 || irSome(n.find(x => x?.[0] === 'br_if'),
+        x => x[0] === 'i32.ge_s' || x[0] === 'i32.ge_u')
+      ok(loops.some(n => numeric(n) && wordCounter(n) && irSome(n, x => x[0] === 'f64.store')),
+        `${name} @O${O}: direct numeric fill needs no ToNumber/string call`)
+      ok(loops.some(n => numeric(n) && wordCounter(n) && irSome(n, x => x[0] === 'f64.load') && irSome(n, x => x[0] === 'f64.add')),
+        `${name} @O${O}: direct numeric reads feed native addition without ToNumber/string calls`)
     }
   })
 }
-// And the elision is value-correct (the read still yields the stored Number; holes are 0).
+// Stored Numbers remain numeric; an unwritten hole still yields undefined.
 test('minimal: numeric Array(n) narrowing preserves results', () => {
   if (skip) return
   is(jz(NUMERIC_FILL['arithmetic fill']).exports.f(64), 874, 'arithmetic-fill sum of squares')
   is(jz('export let f=()=>{let a=Array(4); a[0]=5; a[1]=6; let s=0; for(let i=0;i<4;i++)s+=a[i]; return s}').exports.f(), NaN, 'unwritten holes read undefined: NaN through the sum, as JS')
 })
+test('minimal: numeric Array(n) loops preserve boundary and reuse results', () => {
+  const answer = (fn, ...args) => { try { return ['value', fn(...args)] } catch (e) { return ['error', e.name] } }
+  for (const O of levels(0, 1, 2, 3, 'size')) for (const [name, src] of Object.entries(NUMERIC_FILL)) {
+    const got = jz(src, { optimize: O }).exports.f, want = oracle(src).f
+    for (const n of [0, -0, 1, 3, 13, 64, 3, 3, 0, -1, 1.5, NaN, Infinity, 4294967296])
+      is(answer(got, n), answer(want, n), `${name} @O${O}: ${String(n)}`)
+  }
+})
+
+test('minimal: numeric array reads keep named-key and value-coercion fallbacks', () => {
+  const src = `export function f(k, value) {
+    const a = Array(2); a[0] = 3; a[k] = value
+    return [typeof a[k], a[k] * 2, a[0], a.length, Object.keys(a)]
+  }`
+  const answer = (fn, ...args) => { try { return ['value', fn(...args)] } catch (e) { return ['error', e.name] } }
+  for (const O of levels(0, 1, 2, 3, 'size')) {
+    const got = jz(src, { optimize: O }).exports.f, want = oracle(src).f
+    for (const k of [0, -0, 1, -1, 1.5, NaN, Infinity, -Infinity, 4294967295, 4294967296, 4294967297, 'length', 'named', -1, 0])
+      for (const value of [7, '7', undefined, null])
+        is(answer(got, k, value), answer(want, k, value), `named/coerced read @O${O}: ${String(k)}, ${String(value)}`)
+  }
+})
+
 // SOUNDNESS: the moment an array could hold a non-Number, narrowing must NOT fire — else
 // `+` would compile to f64.add on a string pointer. The cell joins the store in a callee
 // through the parameter, and the string store in the body.
