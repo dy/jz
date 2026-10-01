@@ -11,7 +11,7 @@
  * must poison the sid back to the plain layout.
  */
 import test from 'tst'
-import { is, ok } from 'tst/assert.js'
+import { is, ok, throws } from 'tst/assert.js'
 import jz, { compile } from '../index.js'
 import { ctx } from '../src/ctx.js'
 import { run, oracle } from './util.js'
@@ -230,11 +230,9 @@ export let main = () => {
   both(src)
 })
 
-test('struct-inline: OOB replace store neither traps nor corrupts (drop contract)', () => {
-  // i == length: JS extends; the packed arm drops the write (the checked
-  // typed-store contract). Deviation pinned deliberately: length and the
-  // neighbors must stay intact — never memory corruption. The cursor read at
-  // the same OOB index is the carrier's existing unchecked-read deviation.
+test('struct-inline: an absent replace receiver throws before the store and recovers', () => {
+  // The RHS reads p.x before the assignment can extend ps. At i == length,
+  // p is undefined: a packed carrier must preserve the property-read error.
   const src = `
 const init = () => {
   const ps = []
@@ -251,10 +249,15 @@ export let main = (n) => {
   }
   return (ps.length * 100 + ps[0].x + ps[1].x) | 0
 }`
-  const w = run(src, { optimize: true })
-  const call = w.exports?.main ?? w.main
-  is(call(2), 206, 'in-bounds replaces land (1+1, 3+1 → 206)')
-  is(call(3), 206, 'i==len write is dropped: length stays 2, elements intact')
+  const host = oracle(src).main
+  throws(() => host(3), /undefined/, 'the source throws on the first absent receiver')
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const w = run(src, { optimize }), call = w.exports?.main ?? w.main
+    for (const n of [0, 1, 2, 2, 0, 2]) {
+      is(call(n), host(n), `O${optimize}: ${n} replacements preserve the fields and length`)
+      throws(() => call(3), /undefined/, 'the absent receiver throws before the store')
+    }
+  }
 })
 
 test('struct-inline: inplace idx evaluation order (a[i++] = {…} sees post-increment values)', () => {
