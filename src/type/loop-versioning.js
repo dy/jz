@@ -15,6 +15,7 @@ import { ctx, getFactStore } from '../ctx.js'
 import { isNullable, core, NUMBER } from '../summary/kind.js'
 import { repOf, repOfGlobal } from '../reps.js'
 import { typedStorageNameCtor } from '../typed-context.js'
+import { typedElemCtor } from '../typed-provenance.js'
 import { intLiteralValue, intExprRange, constIntExpr } from '../static.js'
 import {
   idxKey, typedIndexKnown, activeBoundsAssumption, redeclaresName, collectDecls, lengthRecv,
@@ -66,8 +67,8 @@ const SAME_LENGTH_TYPED_METHODS = new Set(['map', 'toReversed', 'toSorted', 'wit
 export function typedStaticLen(rhs) {
   if (Array.isArray(rhs) && rhs[0] === '()' && Array.isArray(rhs[1]) && rhs[1][0] === '.' &&
       SAME_LENGTH_TYPED_METHODS.has(rhs[1][2])) return typedStaticLen(rhs[1][1])
-  if (!Array.isArray(rhs) || rhs[0] !== '()' || typeof rhs[1] !== 'string' || !rhs[1].startsWith('new.')) return null
-  if (!rhs[1].endsWith('Array') || rhs[1] === 'new.ArrayBuffer') return null
+  const ctor = typedElemCtor(rhs)
+  if (!ctor || !ctor.endsWith('Array')) return null
   const args = rhs[2]
   if (args === undefined) return 0
   if (Array.isArray(args) && args[0] === ',') return null        // view form

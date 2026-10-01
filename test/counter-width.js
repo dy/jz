@@ -4,6 +4,7 @@ import { run, oracle } from './util.js'
 import { levels, onKernel } from './_matrix.js'
 import { parse, loopCount } from '../scripts/wat-probe.mjs'
 import { forCounterBounds, forCounterRange, intExprRange } from '../src/static.js'
+import { typedStaticLen } from '../src/type/loop-versioning.js'
 
 const compare = (source, inputs) => {
   for (const optimize of levels(0, 1, 2, 3, 'size')) {
@@ -180,4 +181,17 @@ test('counter width: unsigned shift tightens only within one monotone word inter
     [[-1, 1], 1, [0, 2147483647]], [[-1, 1], 0, null],
     [[0, 4294967296], 1, [0, 2147483647]], [[64, 64], 33, [32, 32]],
   ]) is(intExprRange(['>>>', 'countdown_shift_input', [null, shift]], () => input), expected, `${input} >>> ${shift}`)
+})
+
+
+test('counter width: exact typed constructor identity owns static method-chain lengths', () => {
+  compare(`function Float64Array(n) { return { length: n + 1 } }
+    export function f() { const a = new Float64Array(4); return a.length }`, [[]])
+  if (onKernel()) return
+  for (const ctor of ['Array', 'MyArray', 'ArrayBuffer', 'DataView']) {
+    const source = ['()', 'new.' + ctor, [null, 4]]
+    is(typedStaticLen(source), null, `${ctor}: no typed constructor length`)
+    is(typedStaticLen(['()', ['.', source, 'map'], 'callback']), null, `${ctor}: no typed method length`)
+  }
+  is(typedStaticLen(['()', ['.', ['()', 'new.Float64Array', [null, 4]], 'map'], 'callback']), 4, 'known typed constructor retains its count')
 })
