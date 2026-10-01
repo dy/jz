@@ -107,6 +107,9 @@ checks cannot redirect packed cells through ordinary object loads. Effectful
 keys capture receiver identity first and resolve forwarding after the key.
 Dynamic property-key reads retain ordinary boxed arrays because their dispatch
 cannot interpret inline record cells.
+An initializer emitted as a proved pointer establishes presence for its local
+binding just as a proved element read does. Captures and later writes reject
+this block-scoped fact; a checked cursor keeps its possible undefined value.
 IR clones retain schema-liveness tags on every copied producer. Method dispatch
 can replace a constructor's original tree with its clone; losing that tag makes
 the linker omit live object fields and Error brands from host metadata.

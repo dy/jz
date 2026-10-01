@@ -946,10 +946,11 @@ export function emitDecl(...inits) {
     const localType = ctx.func.locals.get(name) || 'f64'
     const ptrKind = repOf(name)?.ptrKind
     // A binding the summary lets be absent, initialized from an element the
-    // emitter loaded without a check: this definition holds a number. One
-    // whose elements may be null or undefined themselves (`[undefined]`
+    // emitter loaded without a check or a proved pointer: this definition is
+    // present. One whose elements may be null or undefined themselves (`[undefined]`
     // beside `[{ b0 }]`) holds whatever the element holds.
-    if (localType === 'f64' && presentElement(val) && mayBeUndefined(name) &&
+    if (localType === 'f64' && !ctx.func.boxed?.has(name) &&
+        (presentElement(val) || val.ptrKind != null || val.srcPtrKind != null) && mayBeUndefined(name) &&
         !hasTag(ctx.summary?.at(ctx.func.current)?.kindOfExpr(name) ?? 0, K.NULLISH)) (ctx.func.presentInits ??= []).push(name)
     // ptrKind inheritance for alias-init decls is predicted at PLAN time
     // (inheritPtrAliases — slice-4 P1); emit only asserts parity here.
@@ -1222,8 +1223,8 @@ export function emitBlockBody(node) {
         ;(ctx.func.refinements ??= new Map()).set(name, { ...cur, notNullish: true, ...(keep ? { saved: true } : null) })
         markPresent(name)
       }
-      // A declaration initialized from a present element (emitDecl) holds a
-      // number for the rest of this block, while nothing below assigns it.
+      // A declaration initialized from a present element or pointer (emitDecl)
+      // holds a present value in this block while nothing below assigns it.
       if (frame.presentInits && frame.presentInits.length > presentFrom) {
         const declared = Array.isArray(s) && (s[0] === 'let' || s[0] === 'const')
         for (const name of frame.presentInits.splice(presentFrom)) {

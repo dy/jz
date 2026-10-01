@@ -560,6 +560,20 @@ test('packed bounds: direct projections evaluate their index once and recover', 
   verify(src)
 })
 
+test('packed bounds: initialized pointer presence ends at a binding write or capture', () => {
+  for (const mutation of ['if(flag)p=undefined', 'const clear=()=>{p=undefined};if(flag)clear()',
+    'if(flag){p=undefined}else{p={x:7,y:8}}']) {
+    const src = `export function main(flag){const a=[];a.push({x:3,y:4});
+      for(let i=0;i<a.length;i++){let p=a[i];${mutation};try{return p.x+p.y}catch(e){return e instanceof TypeError?'missing':'wrong'}}
+      return 0}`
+    const js = oracle(src)
+    for (const optimize of levels(0,1,2,3,'size')) {
+      const wasm = run(src, {optimize})
+      for (const flag of [0,0,1,0,1]) is(wasm.main(flag),js.main(flag), `${mutation}, O${optimize}, flag=${flag}`)
+    }
+  }
+})
+
 test('packed bounds: union cursor checks absence before discriminant and helper projection', () => {
   const src = `
     function rows() { const a=[]; a.push({kind:0,x:3,y:5}); a.push({kind:1,z:7}); return a }

@@ -863,7 +863,8 @@ test('minimal: a direct cursor-read discriminant admits the union carrier', () =
   const w = wat(src, 'size')
   ok(!w.includes('__dyn_get'), 'no dynamic property reads')
   ok(w.includes('call $__arr_push_slot'), 'packed union pushes')
-  is(run(src, { optimize: 'size' }).f(1000), jsFn(src, 'f')(1000))
+  const wasm = run(src, { optimize: 'size' }).f, js = jsFn(src, 'f')
+  for (const n of [0,0,1,4,1000,3,0]) is(wasm(n), js(n), `cursor stream length ${n}`)
   const bytes = compile(src, { optimize: 'size', alloc: false }).length
   ok(bytes <= 1203, `record-stream cursor: ${bytes} B (recorded 1203)`)
 })
