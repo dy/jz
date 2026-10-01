@@ -32,7 +32,7 @@ export function summaryQueries(facts, internal = false) {
   // length (index.js `lens`): the literals' count, every stored index under it.
   const fixedLen = k => {
     if (tagOf(core(k)) !== K.ARRAY || paramOf(k) === UNKNOWN) return null
-    const c = cell(paramOf(k)), n = lens.get(c)
+    const c = cell(paramOf(k)), n = lens[c]
     return n >= 0 && !(stores.get(c) >= n) ? n : null
   }
   const NO_SLOTS = []
@@ -504,7 +504,7 @@ export function summaryQueries(facts, internal = false) {
       frozenLenOf: name => {
         const k = readKind(name)
         if (tagOf(core(k)) !== K.ARRAY || paramOf(k) === UNKNOWN) return null
-        const c = cell(paramOf(k)), n = built.get(c), g = grown.get(c)
+        const c = cell(paramOf(k)), n = built[c], g = grown.get(c)
         if (!(n >= 0) || unknown.has(c) || (g && g.name !== name)) return null
         const len = n + (g?.n ?? 0)
         return stores.get(c) >= len ? null : len
@@ -533,7 +533,7 @@ export function summaryQueries(facts, internal = false) {
       // a kind naming BOOL, or one Boolean by its syntax): bit 1; one of its
       // stores may be another value by its syntax: bit 2.
       boolStores: name => {
-        const key = keyOfAnywhere(name), bits = k => (boolKeys?.has(k) ? 1 : 0) | (storeBits?.get(k) ?? 0)
+        const key = keyOfAnywhere(name), bits = k => (boolKeys?.has(k) ? 1 : 0) | (storeBits?.[k] ?? 0)
         if (key === null) return 0
         if (typeof key === 'number') return bits(key)
         let b = 0

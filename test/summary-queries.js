@@ -42,6 +42,29 @@ test('summary queries: internal readers leave complete cached public views acros
   is(retained.kindOf('value'), kind(K.NUMBER), 'empty work does not alter the retained view')
 })
 
+test('summary queries: cell lengths preserve zero, joins, init growth and retained snapshots', () => {
+  const options = { funcs: [], schemas: [], brandOf: () => null, imports: new Map(), exported: () => false }
+  const decl = (name, value) => ['const', ['=', name, value]]
+  const array = n => ['[', ...Array.from({ length: n }, (_, i) => lit(i))]
+  const names = ['fixed', 'alias', 'empty', 'grown', 'joined', 'written']
+  const lengths = q => names.map(name => [q.fixedLenOf(name), q.frozenLenOf(name)])
+  let retained
+  for (const n of [2, 2, 0, 2]) {
+    const q = summarize([';', decl('map', ['()', 'new.Map', null]),
+      decl('fixed', array(n)), decl('alias', 'fixed'), decl('empty', array(0)),
+      decl('grown', array(0)), ['()', ['.', 'grown', 'push'], lit(9)],
+      decl('joined', ['?:', 'missing', array(n), array(n + 1)]),
+      decl('written', array(n)), ['=', ['[]', 'written', lit(n)], lit(9)]], options)
+    is(lengths(q), [[n, n], [n, n], [0, 0], [null, 1], [null, null], [null, null]],
+      'dense cells distinguish fixed aliases, mixed extents, counted growth and a final-boundary store')
+    retained ??= q
+    is(lengths(retained), [[2, 2], [2, 2], [0, 0], [null, 1], [null, null], [null, null]],
+      'A → A → different B → A leaves published facts unchanged')
+  }
+  is(summarize(null, options).fixedLenOf('fixed'), null, 'empty work has no earlier cell')
+  is(retained.fixedLenOf('fixed'), 2, 'empty work preserves the retained cell')
+})
+
 test('summary queries: lazy traversal scratch preserves aliases, cycles and zero extents', () => {
   const options = { funcs: [], schemas: [], brandOf: () => null, imports: new Map(), exported: () => false }
   const decl = (name, value) => ['const', ['=', name, value]]

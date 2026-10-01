@@ -541,8 +541,9 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   // built by anything but a literal has no entry and is as open. `stores`
   // holds the greatest literal index stored at, read beside the count so the
   // order the walk meets a store and its array in does not matter.
+  // Counts use the same dense cell ids as `elems`; sparse stores stay a map.
   const LEN_OPEN = -1
-  const lens = new Map()         // cell root → count | LEN_OPEN
+  const lens = []                // dense cell root → count | LEN_OPEN
   const stores = new Map()       // cell root → greatest literal index stored at
   // An array frozen after module init: built at a count (`built`, the literals'
   // count as `lens` had it before any push), grown only by pushes at the top
@@ -551,7 +552,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   // round), and never resized in any other way (`unknown`). The binding holds
   // its final pointer, so a read through it after init needs no forwarding
   // follow and knows the length.
-  const built = new Map()        // cell root → count | LEN_OPEN
+  const built = []               // dense cell root → count | LEN_OPEN
   const grown = new Map()        // cell root → { n, name }: init pushes' count and the one name they went through
   const unknown = new Set()      // cell roots resized in a way no count follows
   const trips = []               // the trip counts of the counted loops being walked
@@ -573,20 +574,20 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   // count that a later statement of the round opens is kinded again. The
   // first cause a counted cell opens by is the advisory's (`onOpen`).
   const setLen = (c, n, why) => {
-    const old = lens.get(c)
+    const old = lens[c]
     if (old === n) return
     if (onOpen && old >= 0) onOpen(old, why, current, site)
-    lens.set(c, n); changed = true
+    lens[c] = n; changed = true
   }
   const fixLen = (c, n) => {
-    const old = lens.get(c); setLen(c, old === undefined || old === n ? n : LEN_OPEN, onOpen ? `built at ${n} elements elsewhere` : null)
-    const was = built.get(c), next = was === undefined || was === n ? n : LEN_OPEN
-    if (was !== next) built.set(c, next)
+    const old = lens[c]; setLen(c, old === undefined || old === n ? n : LEN_OPEN, onOpen ? `built at ${n} elements elsewhere` : null)
+    const was = built[c], next = was === undefined || was === n ? n : LEN_OPEN
+    if (was !== next) built[c] = next
   }
   /** The array's length may change: by a counted init push (`counted`) or in a way no count follows. */
   const openLen = (arr, why, counted = false) => { const c = lenCell(arr); if (c >= 0) { setLen(c, LEN_OPEN, why); if (!counted) unknown.add(c) } }
   /** The fixed length of the array `arr` holds, -1 where it may change or differ. */
-  const fixedLen = (arr) => { const c = lenCell(arr), n = c < 0 ? -1 : lens.get(c); return n >= 0 && !(stores.get(c) >= n) ? n : -1 }
+  const fixedLen = (arr) => { const c = lenCell(arr), n = c < 0 ? -1 : lens[c]; return n >= 0 && !(stores.get(c) >= n) ? n : -1 }
   // The integers an index can be, `[lo, hi]`: a literal, a constant, the
   // counter of a counted loop while its body is walked, and sums, products,
   // remainders and masks of those. null where the walk cannot bound it.
@@ -802,10 +803,10 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     const span = typeof idx === 'string' && isArrayIndexKey(idx) ? [+idx, +idx] : spanOf(idx)
     // A store can skip positions beyond the constructed count. Those cells
     // are absent even when every value explicitly stored is a Number/object.
-    if (!span || lens.get(c) == null || lens.get(c) < 0 || span[1] > lens.get(c)) raiseElem(arr, ABSENT)
+    if (!span || lens[c] == null || lens[c] < 0 || span[1] > lens[c]) raiseElem(arr, ABSENT)
     if (!span || span[0] < 0) { setLen(c, LEN_OPEN, 'stored at an index the walk cannot bound'); unknown.add(c) }
     else if (!(stores.get(c) >= span[1])) {
-      if (onOpen && lens.get(c) >= 0 && span[1] >= lens.get(c)) onOpen(lens.get(c), `stored at index ${span[1]}`, current, site)
+      if (onOpen && lens[c] >= 0 && span[1] >= lens[c]) onOpen(lens[c], `stored at index ${span[1]}`, current, site)
       stores.set(c, span[1]); changed = true
     }
   }
@@ -936,11 +937,11 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     const ra = tuples.get(a), rb = tuples.get(b), rows = !!(ra && rb && ra.length === rb.length)
     if (!rows) { invalidateTuple(kind(K.ARRAY, a)); invalidateTuple(kind(K.ARRAY, b)) }
     cellUp[b] = a; changed = true
-    const la = lens.get(a) ?? LEN_OPEN, lb = lens.get(b) ?? LEN_OPEN
-    if (la !== lb) { if (onOpen && (la >= 0 || lb >= 0)) onOpen(Math.max(la, lb), lb < 0 || la < 0 ? 'joined with an array whose length may change' : `joined with an array of ${Math.min(la, lb)} elements`, current, site); lens.set(a, LEN_OPEN) }
+    const la = lens[a] ?? LEN_OPEN, lb = lens[b] ?? LEN_OPEN
+    if (la !== lb) { if (onOpen && (la >= 0 || lb >= 0)) onOpen(Math.max(la, lb), lb < 0 || la < 0 ? 'joined with an array whose length may change' : `joined with an array of ${Math.min(la, lb)} elements`, current, site); lens[a] = LEN_OPEN }
     if (stores.get(b) > (stores.get(a) ?? -1)) stores.set(a, stores.get(b))
-    const ba = built.get(a) ?? LEN_OPEN, bb = built.get(b) ?? LEN_OPEN
-    built.set(a, ba === bb ? ba : LEN_OPEN)
+    const ba = built[a] ?? LEN_OPEN, bb = built[b] ?? LEN_OPEN
+    built[a] = ba === bb ? ba : LEN_OPEN
     if (unknown.has(b)) unknown.add(a)
     const ga = grown.get(a), gb = grown.get(b)
     if (gb) { if (!ga) grown.set(a, gb); else if (ga.name === gb.name) ga.n += gb.n; else unknown.add(a) }
@@ -3423,21 +3424,21 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     }
   }
   current = null
-  const storeBits = new Map()        // binding id → the bits of its stores by syntax
-  for (const key of paramKeys) storeBits.set(key, 2)
+  const storeBits = []               // dense binding id → the bits of its stores by syntax
+  for (const key of paramKeys) storeBits[key] = 2
   for (let i = 0; i < writes.length; i += 5) {
     const key = keyOf(writes[i + 1], writes[i])
-    if (key !== null) storeBits.set(key, (storeBits.get(key) ?? 0) | writes[i + 4])
+    if (key !== null) storeBits[key] = (storeBits[key] ?? 0) | writes[i + 4]
   }
   // A binding's one definition: its declaration's value, or the one value a
   // statement of the module assigns it where no read sees it unassigned
   // (`let HIGH` then `HIGH = 1`: the bare declaration writes nothing a read finds).
-  const definitions = new Map()
+  const definitions = []             // dense binding id → one definition, null after another write
   const unseen = (scope, name, bare) => bare === true && scope === MODULE && moduleAssigned().has(name)
   for (let i = 0; i < writes.length; i += 5) {
     const scope = writes[i], name = writes[i + 1], value = writes[i + 2], bare = writes[i + 3]
     const key = keyOf(name, scope)
-    if (key !== null && !unseen(scope, name, bare)) definitions.set(key, definitions.has(key) || value == null ? null : [scope, value])
+    if (key !== null && !unseen(scope, name, bare)) definitions[key] = definitions[key] !== undefined || value == null ? null : [scope, value]
   }
   // Only a single object-literal definition or a name alias can participate in
   // `onlyRead`. Other bindings cannot reach that proof, so their mentions need
@@ -3451,7 +3452,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       if (typeof c === 'string') {
         const keys = nameKeys.get(c)
         if (keys?.length !== 1) continue
-        const value = definitions.get(keys[0])?.[1]
+        const value = definitions[keys[0]]?.[1]
         if (typeof value !== 'string' && !(Array.isArray(value) && value[0] === '{}')) continue
         let l = nameSites.get(c); if (!l) nameSites.set(c, l = [])
         l.push(n, i, up)
@@ -3467,7 +3468,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   // (an argument, a store, a computed key, a value handed on) may write it.
   const soleKey = (name) => { const keys = nameKeys.get(name); return keys?.length === 1 ? keys[0] : null }
   const onlyRead = (name, seen) => {
-    const key = soleKey(name), def = key === null ? null : definitions.get(key)
+    const key = soleKey(name), def = key === null ? null : definitions[key]
     if (!def || seen.has(key)) return false
     seen.add(key)
     const sites = nameSites.get(name)
@@ -3484,7 +3485,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     let root = name, def = null
     for (const seen = new Set(); ;) {
       const key = soleKey(root)
-      def = key === null || seen.has(key) ? null : definitions.get(key)
+      def = key === null || seen.has(key) ? null : definitions[key]
       if (!def) return null
       seen.add(key)
       if (typeof def[1] !== 'string') break
@@ -3497,7 +3498,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   const fieldOf = (lit, prop) => { for (let i = 1; i < lit.length; i++) { const p = lit[i]; if (Array.isArray(p) && p[0] === ':' && p[1] === prop) return p[2]; if (p === prop) return p } return undefined }
   const staticValue = (scope, node, seen = null) => {
     if (typeof node === 'string') {
-      const key = keyOf(node, scope), def = definitions.get(key)
+      const key = keyOf(node, scope), def = definitions[key]
       if (!def || seen?.has(key)) return null
       ;(seen ??= new Set()).add(key)
       return staticValue(def[0], def[1], seen)
@@ -3525,7 +3526,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   // Any number a name holds for good is what a module name's reads fold to (compile/plan/scope.js).
   const held = new Map()
   for (const [name, keys] of nameKeys) {
-    const def = keys.length === 1 ? definitions.get(keys[0]) : null
+    const def = keys.length === 1 ? definitions[keys[0]] : null
     if (!def) continue
     const v = staticValue(def[0], def[1])
     if (Number.isInteger(v)) ints.set(name, v)
@@ -3543,7 +3544,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   const TYPED_BYTES = [1, 1, 2, 2, 4, 4, 4, 8]   // by TYPED_ELEM_CODE
   const typedShapeOf = (scope, e, seen = null) => {
     if (typeof e === 'string') {
-      const key = keyOf(e, scope), def = key === null ? undefined : definitions.get(key)
+      const key = keyOf(e, scope), def = key === null ? undefined : definitions[key]
       if (!def || seen?.has(key)) return null
       ;(seen ??= new Set()).add(key)
       return typedShapeOf(def[0], def[1], seen)
@@ -3574,7 +3575,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   const stable = (name, scope) => {
     for (let s = scope; ; s = parent.get(s) ?? MODULE) {   // the binding's own key (`definitions` is keyed without an init context)
       const key = keyIn(s, name)
-      if (key !== undefined) { const def = definitions.get(key); return def === undefined || def !== null }
+      if (key !== undefined) { const def = definitions[key]; return def === undefined || def !== null }
       if (s === MODULE) return false
     }
   }
@@ -3753,8 +3754,8 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   }
   const TYPEOF_NAME = Object.fromEntries(Object.entries(TYPEOF).map(([name, code]) => [code, name]))
   const isNullishRef = (v) => isNullishLit(v) || v === 'undefined' || v === 'null'
-  const typeofPredicates = new Map()   // condition node → its typeof predicate, or null, read once
-  const typeofPredicateOf = (c) => { let tp = typeofPredicates.get(c); if (tp === undefined) typeofPredicates.set(c, tp = typeofPredicate(c)); return tp }
+  const typeofPredicates = new Map()   // only predicates allocate; other conditions are cheap shape misses
+  const typeofPredicateOf = (c) => { let tp = typeofPredicates.get(c); if (tp === undefined) { tp = typeofPredicate(c); if (tp) typeofPredicates.set(c, tp) } return tp }
   // The names a condition proves numbers when it is `when`: `x !== x` holds
   // for NaN alone and `x === 0.0` for a number alone (a strict test against a
   // number); a call of a predicate whose body is such a test of its parameter
@@ -4426,7 +4427,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   if (seeded.length) {
     if (losses) losses.length = 0
     kinds.length = 0; incoming.length = 0; fields.length = 0; objectKinds.clear(); decisions.clear(); opaqueSchemas.clear(); hostSchemas.clear(); retainedSchemas.clear(); hostArrays.clear(); retainedArrays.clear(); hostClosures.clear(); results.clear(); escaped.clear(); certainKeys.clear(); boolKeys.clear(); for (let i = 0; i < elems.length; i++) { elems[i] = K.NONE; cellUp[i] = i }
-    tuples.clear(); lens.clear(); stores.clear(); built.clear(); grown.clear(); unknown.clear(); presentReads.clear(); spreadSources.clear(); argRanges.clear(); roundArgs.clear(); argumentEntries.length = 0; moved.clear()
+    tuples.clear(); lens.length = 0; stores.clear(); built.length = 0; grown.clear(); unknown.clear(); presentReads.clear(); spreadSources.clear(); argRanges.clear(); roundArgs.clear(); argumentEntries.length = 0; moved.clear()
     pendingAll = false; pendingIndexed = false; wildValues = K.NONE; wildProps.clear(); sideProps.clear(); sideWild.clear(); closureProps.clear(); sideByProp.clear(); foreignObjects = false; foreignProps.clear(); lostFieldsRead = 0; deletable.clear(); deleteReach.unknown = false; keysSeen.clear(); copiedSchemas.clear()
     seed(seeded)
     fixpoint()

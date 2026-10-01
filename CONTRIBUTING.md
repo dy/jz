@@ -100,6 +100,10 @@ callback parameters. It reuses the
 summary's settled cell identity and existing demand lattice; unknown readers,
 unmodeled copying methods, escaped arrays and callback defaults prevent numeric
 seeding. A concat argument that might itself be an array also keeps its identity.
+Summary length columns use the same dense cell ids as element kinds;
+definition and store-kind columns use binding ids. Sparse stores keep their map. Published readers retain their own columns across
+later summaries. The typeof-predicate cache retains successful structural matches only;
+nonmatching conditions need no stored record.
 Boolean values that may be absent use the tagged carrier, just like nullable
 BigInts. A payload kind cannot erase absence when projecting a binding into
 local or captured-cell storage; callback writes and their enclosing reads
