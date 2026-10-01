@@ -223,6 +223,10 @@ Integer-store shortcuts prove numeric carriers, not merely an i32 representation
 pointers still need ToNumber. Clamping requires the original signed magnitude;
 a Uint32 word with its high bit set cannot use the signed-word clamp. An observed
 assignment preserves its original RHS, including object identity and undefined.
+Loop division/remainder counters require guarded Number inputs: a positive
+signed-word divisor, a nonnegative signed-word entry excluding -0, and a stable
+bound that keeps the final increment in range. Fractional, wide or coercing
+inputs keep the original loop; generated local names are not codegen evidence.
 SIMD conversion peeling and late integer conversion share the same proof of
 the guard, both arms and their captured operand. An existing exact conversion
 keeps one magnitude guard; lowering it again adds no guards or temporaries.

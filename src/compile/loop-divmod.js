@@ -9,9 +9,9 @@
 // This pass replaces the per-iteration division with incremental i32 counters in a
 // unit-stride loop: the column `cx` increments by 1 and wraps to 0 at `w`, bumping
 // the row `cy`. No division survives in the body, so the whole index chain stays
-// i32. Fully sound — counters are pure increment (the divisor-zero question never
-// arises), and if `w == 0` the loop's `i < w*h` guard never admits an iteration, so
-// the one-time seed `(i%w)|0` (NaN→0) is unused.
+// i32. Entry guards require positive integer divisors and nonnegative integer
+// counters whose final increment stays in range; every other Number or coercing
+// input keeps the original loop.
 //
 // Recognized (post-prepare AST): a `while` whose body increments one IV `i` by +1
 // exactly once, reads `['%', i, w]` and/or `['|', ['/', i, w], LIT0]` with `w`
@@ -20,6 +20,8 @@
 // hole = undefined), so literal tests use `== null`; created literals are bare numbers.
 
 import { litN, normalizeLoop, rewriteBlocks, freshLoopId, soleUnitInc, loopHazards } from './loop-model.js'
+import { some } from '../ast.js'
+import { ctx } from '../ctx.js'
 
 const isMod = (n, i, w) => Array.isArray(n) && n[0] === '%' && n[1] === i && n[2] === w
 const isFloorDiv = (n, i, w) =>
@@ -46,6 +48,8 @@ function tryReduce(stmt, cm) {
   const inc = soleUnitInc(lbody)
   if (!inc) return null
   const { iv, ivIdx } = inc
+  if (!Array.isArray(cond) || (cond[0] !== '<' && cond[0] !== '<=') || cond[1] !== iv || typeof cond[2] !== 'string') return null
+  const bound = cond[2]
 
   // a single invariant divisor `w` (`i % w` / `(i/w)|0` all share it)
   let w = null
@@ -66,7 +70,9 @@ function tryReduce(stmt, cm) {
   // soundness: w invariant, iv written ONLY by the increment (both incl. closure
   // writes — a call in the loop can invoke a mutating `=>`), no outer continue
   const hz = loopHazards(cm, lbody)
-  if (hz.mutated(w) || hz.mutated(iv, ivIdx)) return null
+  if (hz.mutated(w) || hz.mutated(bound) || hz.mutated(iv, ivIdx)) return null
+  if ([iv, w, bound].some(name => ctx.scope.globalTypes?.has(name) && !ctx.scope.consts?.has(name))) return null
+  if (some(lbody, n => n[0] === '=>')) return null
   if (hasOuterContinue(lbody)) return null
 
   const id = freshLoopId()
@@ -87,13 +93,18 @@ function tryReduce(stmt, cm) {
     }
   }
   const fast = ['while', replace(cond, iv, w, cx, cy), newBody]
-  // The counters track i%w only when w>0 AND i>=0: w<=0 gives NaN / a negative-divisor
-  // modulo, and i<0 makes i%w negative (JS modulo takes the dividend's sign) — neither
-  // follows the 0..w-1 +1-wrap the counters model. A one-time `w>0 && i>=0` guard (i is
-  // the IV's entry value; it only increments, so it stays ≥0) keeps the fast i32 path
-  // for the universal positive-dimension, forward-counting case and falls back to the
-  // unmodified loop otherwise — sound for any w, any start.
-  return [['if', ['&&', ['>', w, 0], ['>=', iv, 0]], ['{}', [';', seed, fast]], stmt]]
+  // Word counters preserve remainder/quotient only for positive integer w
+  // and a nonnegative integer i, including its final increment. Guard Number
+  // identity before coercion so fractional, wide, -0 and object inputs retain
+  // the original operations and their evaluation order in the fallback.
+  const number = name => ['===', ['typeof', name], ['str', 'number']]
+  const word = name => ['&&', number(name), ['===', name, ['|', name, 0]]]
+  const tests = [word(w), ['>', w, 0], word(iv), ['>=', iv, 0],
+    ['||', ['!==', iv, 0], ['>', ['/', 1, iv], 0]], number(bound),
+    ['<=', bound, cond[0] === '<' ? 2147483647 : 2147483646]]
+  const guard = tests.reduce((a, b) => ['&&', a, b])
+  return [['if', guard, ['{}', [';', seed, fast]], stmt]]
+
 }
 
 export function strengthReduceLoopDivMod(body, cm) {

@@ -4127,17 +4127,21 @@ test('loop-SR: grid kernel (both i%w and (i/w)|0) is bit-exact ON vs OFF across 
 })
 
 test('loop-SR: fires (counter local emitted at speed, absent when disabled)', () => {
-  // Codegen-SHAPE assertion only. Under the self-compile kernel the loop-IV-div/mod strength
-  // reduction doesn't fire (the kernel's prepared AST drives `tryReduce`'s pattern match
-  // to a different lowering — every helper it uses round-trips correctly, so the output is
-  // bit-exact, just not strength-reduced). Correctness is what matters and is covered by the
-  // sibling `loop-SR: grid kernel … bit-exact ON vs OFF` test (which passes on the kernel —
-  // ON and OFF agree because neither path strength-reduces). Skip the shape check there; it's
-  // not a miscompile, and is tracked as a self-compile inference divergence to close separately.
   if (onKernel()) return
   const src = `export let f=(w,h)=>{ let n=w*h,i=0,a=0; while(i<n){ let x=i%w; let y=(i/w)|0; a=(a+x+y)|0; i++ } return a|0 }`
-  ok(/lsrx/.test(jz.compile(src, { wat: true, optimize: 'speed' })), 'counter present')
-  ok(!/lsrx/.test(jz.compile(src, { wat: true, optimize: { level: 'speed', loopIVDivMod: false } })), 'absent when off')
+  // Local coalescing can reuse the original iv's name for a new counter.
+  // Pin the work removed from the fast loop, independent of local spelling.
+  const loops = optimize => {
+    const found=[]
+    const fn=parse(src,optimize).find(n=>n?.[0]==='func' && n.some(x=>x?.[0]==='export' && x[1]==='"f"'))
+    walk(fn, n => { if(n[0]==='loop') found.push(n) })
+    return found
+  }
+  const divisions = loop => count(loop,n=>/^(?:f64|i32|i64)\.(?:div|rem)/.test(n[0]) || n[0]==='call' && /__rem/.test(n[1]))
+  const on=loops('speed'),off=loops({level:'speed',loopIVDivMod:false})
+  ok(on.some(loop=>divisions(loop)===0 && count(loop,n=>n[0]==='i32.add')>0),'fast loop advances counters without division or remainder')
+  ok(off.length>0 && off.every(loop=>divisions(loop)>0),'disabled transform keeps division/remainder in every loop')
+
 })
 
 test('loop-SR: w==0 with a w-independent bound (exposes i%0=NaN) falls back, stays exact', () => {
@@ -4172,6 +4176,49 @@ test('loop-SR: workflow-found — negative IV start / negative non-multiple star
     `export let f=(w,h)=>{ let n=w*h,i=0,a=0; let dec=()=>{w=w-1}; while(i<n){ let x=i%w; a=(a*31+x)|0; if((i&3)===0)dec(); i++ } return a|0 }`,
     `export let f=(w,h)=>{ let n=w*h,i=0,a=0; let mutW=null; mutW=()=>{w=w-1}; while(i<n){ let x=i%w; a=(a*31+x)|0; mutW(); i++ } return a|0 }`,
   ]) for (const w of [2, 3, 5, 7, 16, 0, -2, -3]) for (const h of [1, 3, 8]) is(lsrOn(src)(w, h), lsrOff(src)(w, h), `w=${w} h=${h}`)
+})
+
+test('loop-SR: fractional, wide and signed-zero inputs preserve Number semantics and effects', () => {
+  const src = `export function f(start,n,w) {
+    let i=start,a=0,last=0
+    while(i<n) { let x=i%w; let y=(i/w)|0; last=x; a=(a+x+y)|0; i++ }
+    return [a,i,last,1/last]
+  }`
+  const cases=[[0,6,1.5],[0,10,2.5],[0,2,.5],[0,5,3],[0,5,3],
+    [-0,1,2],[.5,3,2],[-2,2,3],[2147483646,2147483649,3],
+    [4294967294,4294967297,3],[0,4,4294967296],[0,4,0],[0,4,NaN],[0,4,Infinity],[1,0,2],[0,5,3]]
+  for(const compare of ['<','<=']) {
+    const source=src.replace('i<n',`i${compare}n`), expected=oracle(source)
+    for(const optimize of levels(0,1,2,3,'size')) {
+      const actual=run(source,{optimize})
+      for(const args of cases) is(actual.f(...args),expected.f(...args),`${compare}, O${optimize}: ${args}`)
+    }
+  }
+  const effect = `export function f(n,kind) {
+    let calls=0, sum=0
+    const o={valueOf(){calls++;return 2}}
+    let w=kind===1?o:2, i=kind===2?o:0, end=kind===3?o:n
+    while(i<end){let x=i%w;let y=(i/w)|0;sum=(sum+x+y)|0;i++}
+    return [sum,calls]
+  }`
+  const ref=oracle(effect)
+  for(const optimize of levels(0,1,2,3,'size')) {
+    const actual=run(effect,{optimize})
+    for(const args of [[0,1],[4,1],[4,2],[0,2],[4,3],[0,1]])
+      is(actual.f(...args),ref.f(...args),`O${optimize}: coercion ${args}`)
+  }
+})
+
+test('loop-SR: escaped reads and callee writes keep the original counter domain', () => {
+  const cases=[
+    `export function f(){let i=0,w=2;const out=[];while(i<3){out.push(()=>i%w);i++}w=3;return out[0]()}`,
+    `let w=2;function change(){w=3}export function f(){w=2;let i=0,s=0;while(i<4){let x=i%w;s+=x;change();i++}return s}`,
+    `let n=4;function change(){n=2}export function f(){n=4;let i=0,w=2,s=0;while(i<n){let x=i%w;s+=x;change();i++}return s}`,
+  ]
+  for(const src of cases) for(const optimize of levels(0,1,2,3,'size')) {
+    const actual=run(src,{optimize:{level:optimize,sourceInline:false}}),expected=oracle(src)
+    for(let repeat=0;repeat<2;repeat++)is(actual.f(),expected.f(),`O${optimize}, repeat=${repeat}`)
+  }
 })
 
 // ── Array-recurrence unroll (arr[j-1]/arr[j] DP/scan → scalar carry + ×2 unroll) ──
