@@ -321,6 +321,11 @@ Integer-storage proofs count a bare declaration's implicit undefined unless the
 summary proves assignment before every read. Conditional local and captured
 writes cannot erase that initial value. Captured cells also require every write
 to fit signed i32 exactly; integer arithmetic alone can overflow or produce -0.
+Arithmetic reads preserve the original Number magnitude, including through
+assignment and copy chains whose only final use is a word conversion. An
+unbounded recurrence can cross 2^53 and round before that conversion; wrapping
+its storage early changes the answer. Closed word hulls still keep i32, and
+the existing guarded i64 loop copy preserves exact arithmetic until fallback.
 Installed typed lengths may narrow an earlier width-based range; the invariant
 check rejects widening a range that another pass may already have consumed.
 

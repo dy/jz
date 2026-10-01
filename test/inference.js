@@ -1271,15 +1271,34 @@ test('addFitsI32 keeps the i32.add/i32.sub fast path when the sum is genuinely r
   const fWrap = run('export let f = (a, b) => { let x = a | 0, y = b | 0; return (x + y) | 0 }').f
   is(fWrap(2147483647, 2147483647), ((2147483647 | 0) + (2147483647 | 0)) | 0, 'wrapped value matches JS ToInt32 semantics')
 
-  // The classic `i = i + 1` loop-counter idiom (plain assignment into an
-  // i32-typed local, NOT a bare escape) must ALSO stay a single i32.add —
-  // the ratchet-critical case that drove writeVar's asI32→toI32 switch.
+  // The guarded counter stays a word. Its unbounded accumulator must retain
+  // Number rounding even though only its final word escapes; a guarded i64
+  // copy may compute exactly until the original f64 loop must take over.
   const watLoop = jz.compile(
     'export let f = (n) => { let i = 0, s = 0; while (i < n) { s = s + i; i = i + 1 } return s | 0 }',
     { wat: true, optimize: 2 })
   const atL = watLoop.indexOf('(func $f')
   const fnL = watLoop.slice(atL, watLoop.indexOf('(func', atL + 6))
-  is(count(fnL, /f64\.add/g), 0, 'loop-counter increment and accumulator stay i32.add, no f64 round-trip')
+  let fastLoop
+  walk(parseWat(watLoop), n => { if (!fastLoop && n[0] === 'loop') fastLoop = JSON.stringify(n) })
+  ok(fastLoop?.includes('i32.add') && fastLoop.includes('i64.add'), 'the guarded counter and accumulator use integer adds')
+  ok(!fastLoop.includes('f64.add'), 'the exact integer copy has no floating addition')
+  ok(fnL.includes('f64.add'), 'the fallback preserves Number rounding after the exact-integer boundary')
+})
+
+test('integer storage: final word consumers preserve rounding across arithmetic recurrences', () => {
+  for (const step of ['s=s+s+1', 's+=s+1', 'const t=s; s=t+t+1', 's=s*2+1', 's*=2; s++']) {
+    for (const global of [false, true]) {
+      const src = `${global ? 'let s=1;' : ''} export function f(n){${global ? 's=1' : 'let s=1'};
+        for(let i=0;i<n;i++){${step}} return s|0}`
+      const js = oracle(src).f
+      for (const optimize of levels(0, 1, 2, 3, 'size')) {
+        const f = run(src, { optimize }).f
+        for (const n of [0, 0, -1, NaN, 1, 2.5, 31, 32, 51, 52, 53, 54, 60, 1])
+          is(f(n), js(n), `${global ? 'module' : 'local'} ${step}, O${optimize}, n=${n}`)
+      }
+    }
+  }
 })
 
 // P0-2 SIBLING #2, SAME LEDGER ENTRY: compoundAssign's `*=`/`+=`/`-=` fast

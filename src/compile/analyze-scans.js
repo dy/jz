@@ -1100,10 +1100,8 @@ const AFFINE_INDEX_OPS = new Set(['+', '-', '*', '<<', 'u-'])
 // numeric magnitude. The walk distinguishes these two roots below.
 const ESCAPE_SAFE_ROOT_OPS = new Set(['&', '|', '^', '~', '<<', '>>', '>>>', '<', '>', '<=', '>=', '==', '!=', '===', '!=='])
 
-// Assignment forms whose RHS merely feeds the TARGET's OWN storage — no
-// magnitude proof needed for the feeder, because the write's wrap-consistency
-// is the TARGET var's own qualification to prove (this is exactly what the
-// backprop fixpoint below already trusts for these same four ops).
+// Copies propagate their destination's demand. Arithmetic also reads the
+// original Number: rounding beyond 2^53 changes even its eventual low word.
 const ESCAPE_EDGE_OPS = new Set(['=', '+=', '-=', '*='])
 
 // Compound-assignment sugar for a ToInt32-rooted binary op — `x ^= y` is
@@ -1198,7 +1196,7 @@ function bareEscapeScan(body, crossClosure, wide, keepEdges) {
     if (op === 'while') { walk(node[1], 'value'); walk(node[2], 'stmt'); return }
     if (op === 'postfix') { walk(node[1], mode); return }
     if ((op === '++' || op === '--') && typeof node[1] === 'string') {
-      if (mode === 'value') escape(node[1])
+      escape(node[1])
       return
     }
     if (op === '[]' && !isLiteralStr(node[2])) { walk(node[1], 'value'); walk(node[2], 'value'); return }
@@ -1228,13 +1226,13 @@ function bareEscapeScan(body, crossClosure, wide, keepEdges) {
     }
     if (ESCAPE_EDGE_OPS.has(op) && typeof node[1] === 'string') {
       edge(node[1], node[2])
-      if (mode === 'value' && op !== '=') escape(node[1])
-      walk(node[2], mode === 'stmt' ? 'edge' : mode)
+      if (op !== '=') escape(node[1])
+      walk(node[2], op !== '=' ? 'value' : mode === 'stmt' ? 'edge' : mode)
       return
     }
     if (ESCAPE_ROOT_EDGE_OPS.has(op) && typeof node[1] === 'string') { walk(node[2], 'idx'); return }
     if ((mode === 'idx' || mode === 'cmp' || mode === 'edge') && (op === ',' || AFFINE_INDEX_OPS.has(op))) {
-      for (let i = 1; i < node.length; i++) walk(node[i], mode)
+      for (let i = 1; i < node.length; i++) walk(node[i], op === ',' ? mode : 'value')
       return
     }
     mode = 'value'   // fell out of an idx/edge-affine chain (or already were in 'value' mode)
