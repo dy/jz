@@ -15,6 +15,7 @@ import { findBodyStart, buildRefcount, nextLocalId } from '../ir.js'
 import { T, walkAst } from '../ast.js'
 import { hoistInvariants, isMemWrite } from 'watr/optimize'
 import { pureKernel } from './pure-funcs.js'
+import { TYPED_ELEM_VIEW_FLAG } from '../../layout.js'
 
 /**
  * Hoist `(call $__ptr_offset (local.get $X))` to a function-entry snapshot
@@ -408,6 +409,44 @@ const viewWord = (node, views) => {
   return (at === 0 || at === 4) && Array.isArray(a) && a[0] === 'local.get' && typeof a[1] === 'string' && views.has(a[1]) ? a : null
 }
 
+// Mixed owned/view receivers keep their box. Match typedarray.js's complete
+// data select, not its load alone: for an owned array that load reads address
+// zero, whose value may change but is discarded. Both data and length are
+// immutable for a present typed array, including an empty one. Requiring the
+// same receiver in every operand also preserves the select's eager safety.
+const mixedTypedWord = (node, present) => {
+  if (!present?.size) return null
+  const constant = (n, op, value) => Array.isArray(n) && n.length === 2 && n[0] === op && Number(n[1]) === value
+  const box = n => Array.isArray(n) && n[0] === 'i64.reinterpret_f64' && n.length === 2 &&
+    n[1]?.[0] === 'local.get' && n[1].length === 2 && present.has(n[1][1]) ? n[1][1] : null
+  const base = n => {
+    if (!Array.isArray(n) || n[0] !== 'i32.wrap_i64' || n.length !== 2) return null
+    n = n[1]
+    if (n?.[0] === 'i64.and' && n.length === 3 && constant(n[2], 'i64.const', LAYOUT.OFFSET_MASK)) n = n[1]
+    return box(n)
+  }
+  const flag = n => {
+    if (n?.[0] !== 'i32.and' || n.length !== 3 || !constant(n[2], 'i32.const', TYPED_ELEM_VIEW_FLAG)) return null
+    n = n[1]
+    if (n?.[0] !== 'i32.wrap_i64' || n.length !== 2) return null
+    n = n[1]
+    return n?.[0] === 'i64.shr_u' && n.length === 3 && constant(n[2], 'i64.const', 32) ? box(n[1]) : null
+  }
+  if (node[0] === 'select' && node.length === 4) {
+    const name = base(node[2]), load = node[1]
+    if (!name || flag(node[3]) !== name || load?.[0] !== 'i32.load' || load.length !== 2) return null
+    const addr = load[1], add = addr?.[1]
+    if (addr?.[0] === 'select' && addr.length === 4 && constant(addr[2], 'i32.const', 0) && flag(addr[3]) === name &&
+        add?.[0] === 'i32.add' && add.length === 3 && base(add[1]) === name && constant(add[2], 'i32.const', 4)) return name
+  }
+  if (node[0] === 'i32.load' && node.length === 2) {
+    const addr = node[1], sub = addr?.[2], name = base(addr?.[1])
+    if (name && addr?.[0] === 'select' && addr.length === 4 && flag(addr[3]) === name &&
+        sub?.[0] === 'i32.sub' && sub.length === 3 && base(sub[1]) === name && constant(sub[2], 'i32.const', 8)) return name
+  }
+  return null
+}
+
 // The address a stable-header local holds: the local itself where it is a
 // pointer, the low word of its box where the binding is assigned more than
 // once and stays an f64 (`let a = new Float32Array(n)`, grown later). A box
@@ -490,6 +529,10 @@ function computeLoopInvariance(loopNode, { distinctParams, baseParamOf, allowPri
     }
     // A view's descriptor word: no store of the program writes it, so it is
     // invariant with the local that holds the view.
+    if (op === 'select' || op === 'i32.load') {
+      const name = mixedTypedWord(node, presentTyped)
+      if (name) return pureGiven(['local.get', name], bound)
+    }
     if (op === 'i32.load') { const view = viewWord(node, views); if (view) return pureGiven(view, bound) }
     if ((op === 'f64.load' || op === 'i32.load') && node.length === 2) {
       // An address a hoist left in a local of its own (`$__li = ptr - 8`) is

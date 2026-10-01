@@ -25,6 +25,7 @@ import { representationProgramHasBigint } from '../src/compile/representation-pl
 import { plannedTypedStorageCtor, plannedTypedStorageInfo, plannedTypedPayloadInfo } from '../src/compile/typed-storage-plan.js'
 import { isNullable } from '../src/summary/kind.js'
 import { activeBoundsAssumption } from '../src/type/canonical-bounds.js'
+import { frameNode } from '../src/function.js'
 import { requireReceiverWat } from './core/error-object.js'
 import { captureCallback, makeCallback, idxArg } from './array/callback.js'
 import { heapScratch, mergeSortIR } from './array/sort.js'
@@ -87,7 +88,7 @@ export default (ctx) => {
   deps({
     __byte_length: ['__ptr_type', '__ptr_offset', '__ptr_aux'],
     __byte_offset: ['__ptr_type', '__ptr_offset', '__ptr_aux'],
-    __typed_prop_get: ['__len', '__byte_length', '__byte_offset', '__ptr_aux', '__str_eq', '__mkptr'],
+    __typed_prop_get: ['__len', '__byte_length', '__byte_offset', '__to_buffer', '__typed_shift', '__ptr_aux', '__str_eq', '__mkptr'],
     __to_buffer: ['__ptr_type', '__ptr_offset', '__ptr_aux', '__mkptr'],
     __typed_set_idx: () => ['__ptr_aux', '__ptr_type', '__to_int32',
       ...(ctx.linkDemand.f16 ? ['__f64_to_f16'] : []), ...(ctx.linkDemand.clamped ? ['__u8_clamp'] : [])],
@@ -722,13 +723,19 @@ export default (ctx) => {
     const start = dataLen()
     const body = `(func $__typed_prop_get
     (param $ptr i64) (param $key i64) (param $h i32) (param $miss i64) (result i64)
-    ${[['length', '__len'], ['byteLength', '__byte_length'], ['byteOffset', '__byte_offset']].map(([name, helper]) => {
+    ${[
+      ['length', '(f64.convert_i32_u (call $__len (local.get $ptr)))'],
+      ['byteLength', '(f64.convert_i32_u (call $__byte_length (local.get $ptr)))'],
+      ['byteOffset', '(f64.convert_i32_u (call $__byte_offset (local.get $ptr)))'],
+      ['buffer', '(call $__to_buffer (local.get $ptr))'],
+      ['BYTES_PER_ELEMENT', '(f64.convert_i32_u (i32.shl (i32.const 1) (call $__typed_shift (i32.and (call $__ptr_aux (local.get $ptr)) (i32.const 7)))))'],
+    ].map(([name, value]) => {
       const key = print(asI64(emit(['str', name])))
       return `(if (i32.eq (local.get $h) (i32.const ${strHashLiteral(name)}))
         (then (if (call $__str_eq (local.get $key) ${key})
-          (then ${name === 'length' ? `(if (i32.and (call $__ptr_aux (local.get $ptr)) (i32.const ${DATA_VIEW_FLAG}))
+          (then ${name === 'length' || name === 'BYTES_PER_ELEMENT' ? `(if (i32.and (call $__ptr_aux (local.get $ptr)) (i32.const ${DATA_VIEW_FLAG}))
             (then (return (local.get $miss))))` : ''}
-            (return (i64.reinterpret_f64 (f64.convert_i32_u (call $${helper} (local.get $ptr)))))))))`
+            (return (i64.reinterpret_f64 ${value}))))))`
     }).join('\n')}
     (local.get $miss))`
     if (dataLen() > start) ctx.runtime.reclaimSpans.push({ fn: '$__typed_prop_get', start, end: dataLen() })
@@ -2001,7 +2008,7 @@ export default (ctx) => {
   // `i32.lt_u` folds the negative case in (a negative i32 is a huge u32). The
   // checked result is number|undefined, so it carries NO valKind tag.
   // Elem-count for a checked site. A TypedArray's length is immutable, so for
-  // a stable PARAM receiver (readable at entry, never reassigned in the body)
+  // a stable PARAM receiver (readable after its default, never reassigned)
   // the shifted count materializes ONCE as a function-entry local shared by
   // every checked read/write guard of that receiver — the size-tier
   // complement of the speed tier's loop hoists (drained by collectParamInits,
@@ -2023,12 +2030,18 @@ export default (ctx) => {
     if (!(ctx.transform.optFlags & OPTF.leanCheckedIdx) ||
         typeof arr !== 'string' ||
         !ctx.func.current?.params?.some(p => p.name === arr) ||
-        !ctx.func.body || isReassigned(ctx.func.body, arr)) return lenIR()
+        !ctx.func.body) return lenIR()
+    const func = ctx.funcs.map.get(ctx.closure.emitting)
+    if (func?.sig !== ctx.func.current || isReassigned(frameNode(func), arr)) return lenIR()
+    // A body guard can prove presence only after entry. The cache reads the
+    // header in the prologue, so require the frozen incoming/default kind.
+    const kind = ctx.summary?.at(func.sig).paramKindOf(arr)
+    if (kind == null || tagOf(kind) !== K.TYPED || isNullable(kind)) return lenIR()
     const memo = (ctx.func.lenHoist ??= new Map())
     const key = `${arr} ${SHIFT[et]}${isView == null ? 'a' : isView ? 'v' : ''}`
     let h = memo.get(key)
     if (!h) {
-      h = { t: tempI32('tlen'), init: lenIR() }
+      h = { arr, t: tempI32('tlen'), init: lenIR() }
       memo.set(key, h)
     }
     return ['local.get', `$${h.t}`]

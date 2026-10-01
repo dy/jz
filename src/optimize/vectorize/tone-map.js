@@ -254,7 +254,7 @@ export function tryToneMap(bl, fnLocals, freshIdRef, enabled) {
     if (op === 'select' && expr.length === 4) {
       const inf = matchInfCanonTone(expr)
       if (inf) { const a = liftV(inf); if (ctx.fail) return null; return ['i32x4.trunc_sat_f64x2_s_zero', a] }
-      return liftSel(expr[1], expr[2], expr[3])
+      return liftSel(expr[1], expr[2], expr[3], true)
     }
     if (op === 'if' && isArr(expr[1]) && expr[1][0] === 'result' && isArr(expr[3]) && expr[3][0] === 'then' && isArr(expr[4]) && expr[4][0] === 'else')
       return liftSel(expr[3][1], expr[4][1], expr[2])
@@ -296,11 +296,13 @@ export function tryToneMap(bl, fnLocals, freshIdRef, enabled) {
       '16', '17', '18', '19', '20', '21', '22', '23', mask, ['v128.const', 'i32x4', '0', '0', '0', '0']]
   }
 
-  // `cond ? a : b` → bitselect(a, b, mask(cond)); mask in the branch's lane width.
-  function liftSel(a, b, cond) {
+  // Select evaluates a, b, then cond; if evaluates cond first. Preserve that
+  // order when a value operand tees a local read by the comparison.
+  function liftSel(a, b, cond, conditionLast = false) {
     const m = liftMask(cond, toneWidth(a)); if (ctx.fail) return null
     const av = liftV(a); if (ctx.fail) return null
     const bv = liftV(b); if (ctx.fail) return null
+    if (conditionLast) return ['v128.bitselect', av, bv, m]
     const mt = freshMask()
     return ['block', ['result', 'v128'], ['local.set', mt, m], ['v128.bitselect', av, bv, ['local.get', mt]]]
   }

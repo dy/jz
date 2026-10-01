@@ -8,9 +8,9 @@
 // neighbour here. An integer-certain name may hold NaN (`Math.floor` of one),
 // which names no element either (compile/emit/dispatch.js emitIndex).
 import test from 'tst'
-import { ok } from 'tst/assert.js'
+import { is, ok } from 'tst/assert.js'
 import { belowOpt, levels } from './_matrix.js'
-import { agree, funcWat, wat } from './util.js'
+import { agree, funcWat, oracle, run, wat } from './util.js'
 
 const src = `let t = new Float32Array(4); t[0] = 1; t[1] = 2; t[2] = 3; t[3] = 4
 let b = [1, 2, 3, 4]
@@ -44,5 +44,26 @@ test('index key: a key of unknown integrality tests its int32 through the i64 tr
   for (const name of ['get', 'put']) {
     const f = funcWat(text, name + '$exp') || funcWat(text, name)
     ok(/i64\.trunc_sat_f64_s/.test(f) && !/i32\.trunc_sat_f64_s/.test(f), `${name}: the i64 truncation, no saturating i32 one`)
+  }
+})
+
+test('index key: signed integer offsets keep word arithmetic without wrapping into an element', () => {
+  const src = `const a = new Float64Array([10, 20, 30, 40])
+    export function plus(n) { const i = n | 0; return a[i + 1] }
+    export function minus(n) { const i = n | 0; return a[i - 1] }
+    export function product(n) { const i = n | 0; return a[i * 65536] }
+    export function unsigned(n) { const i = n >>> 0; return a[i + 1] }
+    export function rounded(n) { const i = n | 0; if (i === 2147483647) return a[(i * i + 1) - i * i]; return -1 }
+    export function put(n, v) { const i = n | 0; a[i + 1] = v; return a[0] + a[1] * 10 + a[2] * 100 + a[3] * 1000 }`
+  for (const optimize of levels(0, 2, 3, 'size')) {
+    const host = oracle(src), actual = run(src, { optimize })
+    for (const n of [0, 0, 1, 2, 3, -1, -2, 65536, -65536, 2147483647, -2147483648, 4294967295, 4294967296, NaN, Infinity]) {
+      for (const name of ['plus', 'minus', 'product', 'unsigned', 'rounded']) is(actual[name](n), host[name](n), `${name}(${n}), ${optimize}`)
+      is(actual.put(n, n & 255), host.put(n, n & 255), `put(${n}), ${optimize}`)
+    }
+    if (optimize >= 2 && !belowOpt(2)) {
+      const text = wat(src, { optimize }), f = funcWat(text, 'plus$exp') || funcWat(text, 'plus')
+      ok(!/i64\.add|f64\.add|i32\.trunc_sat/.test(f), `plus: the input and offset stay in word arithmetic, ${optimize}`)
+    }
   }
 })

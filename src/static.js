@@ -116,8 +116,9 @@ export function constIntExpr(node) {
  *  models the range-bearing operators: masks (`x & m` ⇒ [0, m]), unsigned
  *  shifts, ternary hulls, and ± / * interval arithmetic. The canonical range
  *  evaluator — narrow's typed-value-range walk and emit's i32-provability
- *  (product safety, power-of-two division strength reduction) share it. */
-export function intExprRange(n) {
+ *  (product safety, power-of-two division strength reduction) share it.
+ *  `nameRange` supplies a caller's bounds when a binding has no stored hull. */
+export function intExprRange(n, nameRange = null) {
   const c = constIntExpr(n)
   if (c != null && Number.isInteger(c)) return [c, c]
   if (typeof n === 'string') {
@@ -126,7 +127,7 @@ export function intExprRange(n) {
     // stamping never sees refinements (they install only during emit), so decl
     // range reps stay context-free.
     const rf = ctx.func?.refinements?.get(n)
-    const rep = repOf(n)?.range
+    const rep = repOf(n)?.range ?? nameRange?.(n)
     let lo = rep ? rep[0] : -Infinity, hi = rep ? rep[1] : Infinity
     if (rf?.rlo != null && rf.rlo > lo) lo = rf.rlo
     if (rf?.rhi != null && rf.rhi < hi) hi = rf.rhi
@@ -134,14 +135,14 @@ export function intExprRange(n) {
   }
   if (!Array.isArray(n)) return null
   const op = n[0]
-  if (op === 'u+' && n.length === 2) return intExprRange(n[1])
+  if (op === 'u+' && n.length === 2) return intExprRange(n[1], nameRange)
   // A present typed element retains the all-writers hull proved for its
   // receiver. A possible miss is undefined, not an integer in that hull.
   if (op === '[]' && n.length === 3 && typeof n[1] === 'string') {
     const rep = repOf(n[1]), range = rep?.arrayElemRange
     if (!range) return null
     const len = ctx.func?.typedLen?.get(n[1]) ?? rep.arrayLen
-    const index = intExprRange(n[2])
+    const index = intExprRange(n[2], nameRange)
     return len != null && index && index[0] >= 0 && index[1] < len ? range : null
   }
   // A typed array's `.length` (element count) is bounded by wasm32's own hard
@@ -170,18 +171,18 @@ export function intExprRange(n) {
     }
   }
   if (op === '?:' && n.length === 4) {
-    const a = intExprRange(n[2]), b = intExprRange(n[3])
+    const a = intExprRange(n[2], nameRange), b = intExprRange(n[3], nameRange)
     return a && b ? [Math.min(a[0], b[0]), Math.max(a[1], b[1])] : null
   }
   if (op === '|' && n.length === 3 && constIntExpr(n[2]) === 0) {
     const x = n[1]
     let a
     if (Array.isArray(x) && x[0] === '/' && x.length === 3) {
-      const v = intExprRange(x[1]), d = constNumExpr(x[2])
+      const v = intExprRange(x[1], nameRange), d = constNumExpr(x[2])
       if (!v || !Number.isFinite(d) || d === 0) return null
       const lo = Math.trunc(v[0] / d), hi = Math.trunc(v[1] / d)
       a = [Math.min(lo, hi), Math.max(lo, hi)]
-    } else a = intExprRange(x)
+    } else a = intExprRange(x, nameRange)
     // ToInt32 is monotone only inside one signed word; a wrapped hull must
     // stay unknown. Keeping the quotient bound also bounds its later products.
     return a && a[0] >= I32_MIN && a[1] <= I32_MAX ? a : null
@@ -194,7 +195,7 @@ export function intExprRange(n) {
     if (m != null && m >= 0 && m <= 0x7fffffff) return [0, m]
     // A non-negative word operand bounds the result the same way: `&` only
     // clears its bits (`x & (63 & y)` is [0, 63]).
-    const a = intExprRange(n[1]), b = intExprRange(n[2])
+    const a = intExprRange(n[1], nameRange), b = intExprRange(n[2], nameRange)
     const ha = a && a[0] >= 0 && a[1] <= 0x7fffffff ? a[1] : Infinity
     const hb = b && b[0] >= 0 && b[1] <= 0x7fffffff ? b[1] : Infinity
     if (Math.min(ha, hb) !== Infinity) return [0, Math.min(ha, hb)]
@@ -212,20 +213,20 @@ export function intExprRange(n) {
     const sh = constIntExpr(n[2])
     if (sh != null) {
       const s = sh & 31
-      const a = intExprRange(n[1])
+      const a = intExprRange(n[1], nameRange)
       return a && a[0] >= I32_MIN && a[1] <= I32_MAX
         ? [a[0] >> s, a[1] >> s] : [I32_MIN >> s, I32_MAX >> s]
     }
   }
   if ((op === 'u-' || op === '-') && n.length === 2) {
-    const a = intExprRange(n[1])
+    const a = intExprRange(n[1], nameRange)
     return a ? [-a[1], -a[0]] : null
   }
   // `x % K` by a positive literal on an integer-hulled dividend: the
   // remainder takes the dividend's sign and stays below K (a `>>>`/`&` form
   // is non-negative by the rules above, so `(s >>> 8) % 6` is [0, 5]).
   if (op === '%' && n.length === 3) {
-    const k = constIntExpr(n[2]), a = intExprRange(n[1])
+    const k = constIntExpr(n[2]), a = intExprRange(n[1], nameRange)
     if (k != null && k > 0 && a) {
       if (a[0] >= 0) return [0, Math.min(a[1], k - 1)]
       if (a[1] <= 0) return [Math.max(a[0], 1 - k), 0]
@@ -239,13 +240,13 @@ export function intExprRange(n) {
   // Postfix yields the operand's old numeric value; prefix yields the update.
   if (op === 'postfix' && Array.isArray(n[1]) &&
       (n[1][0] === '++' || n[1][0] === '--') && typeof n[1][1] === 'string')
-    return intExprRange(n[1][1])
+    return intExprRange(n[1][1], nameRange)
   if ((op === '++' || op === '--') && n.length === 2 && typeof n[1] === 'string') {
-    const a = intExprRange(n[1])
+    const a = intExprRange(n[1], nameRange)
     return a ? (op === '++' ? [a[0] + 1, a[1] + 1] : [a[0] - 1, a[1] - 1]) : null
   }
   if ((op === '+' || op === '-' || op === '*') && n.length === 3) {
-    const a = intExprRange(n[1]), b = intExprRange(n[2])
+    const a = intExprRange(n[1], nameRange), b = intExprRange(n[2], nameRange)
     if (!a || !b) return null
     if (op === '+') return [a[0] + b[0], a[1] + b[1]]
     if (op === '-') return [a[0] - b[1], a[1] - b[0]]

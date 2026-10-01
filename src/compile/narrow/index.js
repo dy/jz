@@ -24,7 +24,7 @@ import { ctx, err, getFactStore } from '../../ctx.js'
 import { withTypedElemOverlay } from '../flow-state.js'
 import { I32_MIN, I32_MAX } from '../../ir.js'
 import { staticArrayLen } from '../../static.js'
-import { exprType, typedElemCtor, typedStaticLen } from '../../type.js'
+import { exprType, typedStaticLen } from '../../type.js'
 import { VAL } from '../../reps.js'
 import { ctorFromElemAux } from '../../../layout.js'
 import { K, tagOf, paramOf, valOf, valsOf, hasTag, core, UNKNOWN } from '../../summary/index.js'
@@ -33,7 +33,8 @@ import { inferArrElemSchemaSet } from '../infer.js'
 import { RECUR_INT_OPS, assertValKindConsistent, buildCallerTypedLenCtx, resetParamWasmFacts, createPhaseState } from './caller-ctx.js'
 import { applyI32ParamSpecialization, validateTypedLenParams, validateLenBoundOfParams, validateIntConstParams, substituteIntConstParams, applyPointerParamAbi, narrowableFuncs, applyTypedPointerParamAbi } from './param-abi.js'
 import { narrowI32Results, seedResultKinds, narrowPointerResults, narrowReturnArrayElemSets } from './results.js'
-import { inferInternalArrayLengths, inferTypedValueRanges, boundedByCallerLength, inferNumericRanges } from './summaries.js'
+import { inferInternalArrayLengths, inferTypedValueRanges, boundedByCallerLength, inferNumericRanges, inferElementParamRanges } from './summaries.js'
+import { proveElementBounds } from './element-bounds.js'
 import { jsstringEnabled, applyJsstringBoundaryCarrier } from './jsstring-carrier.js'
 import { isExported } from '../func-exports.js'
 
@@ -124,8 +125,8 @@ export default function narrowSignatures(programFacts, ast) {
   const phase = createPhaseState()
   const { callerCtx } = phase
   const internalArrayLengths = inferInternalArrayLengths()
-  const storeRanges = inferNumericRanges(paramReps, callSites, callerCtx, addressTaken, ast, internalArrayLengths)
-  const typedValueRanges = inferTypedValueRanges(storeRanges)
+  let storeRanges = inferNumericRanges(paramReps, callSites, callerCtx, addressTaken, ast, internalArrayLengths)
+  let typedValueRanges = inferTypedValueRanges(storeRanges)
   // One per-binding representation row owns the settled array facts.
   programFacts.arrayReps = new Map()
   for (const func of ctx.funcs.list) {
@@ -220,6 +221,17 @@ export default function narrowSignatures(programFacts, ast) {
       if (!state) continue
       applySiteRules(state, rules)
     }
+  }
+  // A rejected forwarding parameter invalidates every downstream use of that
+  // fact. One sweep depends on function order and can leave stale theorems.
+  const validateCallsiteLattice = rules => {
+    let changed = false
+    do {
+      latticeMeet.changed = false
+      runCallsiteLattice(rules)
+      changed ||= latticeMeet.changed
+    } while (latticeMeet.changed)
+    return changed
   }
 
   const poison = field => r => { if (r[field] !== null) { r[field] = null; latticeMeet.changed = true } }
@@ -325,9 +337,9 @@ export default function narrowSignatures(programFacts, ast) {
   ]
   // Transitive propagation down call chains: iterate a *soft* merge — propagate
   // known facts, treat "can't tell yet" as skip (no poison) — to a fixpoint,
-  // then one *hard* validating sweep that poisons params whose call sites still
-  // can't be proven (genuinely-untyped args).
-  const runArrElemFixpoint = (field, inferFn, elemsCtxMap) => {
+  // then close *hard* validation over every forwarding edge whose incoming
+  // sites still can't be proven (genuinely-untyped args).
+  const runArrElemFixpoint = (field, inferFn, elemsCtxMap, validate = null) => {
     // Extends `state` in place rather than allocating a fresh object per call
     // (this runs inside the hottest worklist loop of the self-hosted kernel).
     const infer = (arg, _k, state) => {
@@ -342,9 +354,9 @@ export default function narrowSignatures(programFacts, ast) {
       apply(r, arg, k, state) { bump(r, infer(arg, k, state)) },
     }
     do { changed = false; runCallsiteLattice([soft]) } while (changed)
-    latticeMeet.changed = false
-    runCallsiteLattice([mergeRule(field, infer)])
-    return any || latticeMeet.changed
+    if (validate) validate()
+    const rejected = validateCallsiteLattice([mergeRule(field, infer)])
+    return any || rejected
   }
   const runArrSetFixpoint = () => runArrElemFixpoint('arrayElemSchemaSet', inferArrElemSchemaSet, phase.callerElems('arrElemSchemaSets'))
   // OBJECT-param closed union: `measure(rows[i])` — every call site passes an
@@ -504,43 +516,8 @@ export default function narrowSignatures(programFacts, ast) {
       },
     }])
   }
-  runCallsiteLattice([mergeRule('arrayLen', (arg, _k, state) => arrayLenAtSite(arg, state))])
+  validateCallsiteLattice([mergeRule('arrayLen', (arg, _k, state) => arrayLenAtSite(arg, state))])
 
-  // Fresh typed-array element hulls: propagate fill-helper effects into later
-  // compute helpers. Unknown sites poison; known sites union, since all call
-  // paths remain within the resulting closed interval.
-  const rangeAtSite = (arg, state) => {
-    if (typeof arg === 'string')
-      return typedValueRanges.locals.get(state.callerFunc)?.get(arg)
-        ?? state.callerParamFacts('arrayElemRange')?.get(arg)
-        ?? null
-    const ctor = typedElemCtor(arg)
-    return ctor && typedStaticLen(arg) != null ? typedValueRanges.initialRange(arg, ctor) : null
-  }
-  const mergeRange = (r, v) => {
-    if (r.arrayElemRange === null || !v) { r.arrayElemRange = null; return false }
-    const next = typedValueRanges.hull(r.arrayElemRange, v)
-    const changed = !r.arrayElemRange || next[0] !== r.arrayElemRange[0] || next[1] !== r.arrayElemRange[1]
-    r.arrayElemRange = next
-    return changed
-  }
-  let rangeChanged = true
-  while (rangeChanged) {
-    rangeChanged = false
-    runCallsiteLattice([{
-      missing: poison('arrayElemRange'),
-      apply(r, arg, _k, state) {
-        const v = rangeAtSite(arg, state)
-        // During the soft fixpoint, unresolved forwarded params are neutral.
-        if (v && mergeRange(r, v)) rangeChanged = true
-      },
-    }])
-  }
-  // Hard validation: one unresolved live site invalidates the theorem.
-  runCallsiteLattice([{
-    missing: poison('arrayElemRange'),
-    apply(r, arg, _k, state) { mergeRange(r, rangeAtSite(arg, state)) },
-  }])
   // E3: pointer-kind result narrowing — once valResult is set, lift the wasm
   // return type to i32 + ptrKind/ptrAux when aux is statically resolvable.
   narrowPointerResults(funcsWithNarrowableResult, paramReps, sitesByCallee)
@@ -561,11 +538,34 @@ export default function narrowSignatures(programFacts, ast) {
     if (typeof arg === 'string') return cx.callerElems?.get(arg) ?? cx.paramFacts?.get(arg) ?? null
     return typedStaticLen(arg)
   }
-  runArrElemFixpoint('typedLen', inferTypedLen, callerTypedLenCtx)
   // A length without a settled ctor is unusable evidence (the receiver never
   // takes the typed read path) and a length on a host-reachable or rebound
   // param is unsound — same exclusion discipline as intConst.
-  validateTypedLenParams(paramReps, addressTaken)
+  runArrElemFixpoint('typedLen', inferTypedLen, callerTypedLenCtx,
+    () => validateTypedLenParams(paramReps, addressTaken))
+
+  // Close the range cycle after static lengths have settled: element reads
+  // bound scalar arguments, those arguments bound stores, and every writer
+  // together bounds the next element read. Every intermediate fact is already
+  // sound. A bounded refinement budget may forgo precision on a long cyclic
+  // graph; it cannot publish an unfinished optimistic proof.
+  for (let round = 0, changed = true; round < 8 && changed; round++) {
+    changed = inferElementParamRanges(paramReps, callSites, addressTaken, typedValueRanges)
+    storeRanges = inferNumericRanges(paramReps, callSites, callerCtx, addressTaken, ast,
+      internalArrayLengths, callerTypedLenCtx, typedValueRanges.locals)
+    const next = inferTypedValueRanges(storeRanges)
+    for (const [func, ranges] of next.locals) for (const [name, r] of ranges) {
+      const before = typedValueRanges.locals.get(func)?.get(name)
+      if (!before || r[0] !== before[0] || r[1] !== before[1]) changed = true
+    }
+    typedValueRanges = next
+  }
+  // Local representations consume the same settled all-writers facts.
+  for (const [func, ranges] of typedValueRanges.locals) for (const [name, arrayElemRange] of ranges) {
+    let reps = programFacts.arrayReps.get(func)
+    if (!reps) programFacts.arrayReps.set(func, reps = new Map())
+    reps.set(name, { ...reps.get(name), arrayElemRange })
+  }
 
   // PARAM LENGTH-BOUND relation (ledger-performance.md §6.1): does param k's
   // value never exceed param r's runtime `.length`? Extends the SAME
@@ -686,6 +686,7 @@ export default function narrowSignatures(programFacts, ast) {
   // A parameter fixed to one integer reads as the integer: the summary of what
   // emission sees is built anew (compile/index.js summarizeProgram).
   if (substituteIntConstParams(paramReps, addressTaken)) getFactStore().revision++
+  proveElementBounds(programFacts)
 
   if (DBG_INVARIANTS) assertValKindConsistent(paramReps)
 }

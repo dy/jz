@@ -555,6 +555,23 @@ Immutable literal tables share the existing no-write/no-escape proof with
 scalar argument and store analysis. Deletion and return/throw/yield aliases
 invalidate that proof, including forwarded helper parameters. Length, capacity
 and element bounds travel together as settled per-binding representation facts.
+Static lengths, stored-element hulls and scalar argument hulls refine one another
+across direct calls. Each refinement uses every incoming site and every writer;
+an unresolved path remains unknown. A constructor passed directly to a helper
+includes that helper's writes and defaults, not just its initial zeroes. Exposing
+the buffer, capturing or storing an array inside another container invalidates
+its private-storage proof. Rejected length facts propagate through all forwarding
+helpers before any length is folded.
+
+Runtime-sized index buffers have a separate relational proof
+(`narrow/element-bounds.js`). Zero initialization, own-index stores and same-array
+copies preserve the invariant that every present element indexes its own buffer.
+Only integer storage that preserves or lowers a valid index qualifies. A complete
+direct-call alias census rejects other writers and escapes; equal stable allocation
+counts across every caller let another typed buffer share that index domain.
+The source read still needs its own canonical presence proof. Only the exact
+dependent access receives a bounds proof: scalar aliases, returned buffers,
+sentinel postconditions and unequal affine lengths are not inferred here.
 The interval interpreter spans the full signed word; overflowing transfers
 become unknown. Integer payloads alone never prove bounded accumulation.
 Counted reductions combine element bounds with the trip count, including every
@@ -579,6 +596,10 @@ join their hulls and every write must be covered. Escaping arithmetic values
 propagate backward through local copies. Explicit word conversions still wrap.
 SIMD narrowing preserves the scalar conversion: direct saturating instructions
 can lift directly, while modular conversions run per lane before packing.
+SIMD `select` preserves Wasm's value/value/condition evaluation order, including
+temporary writes in either value. An `if` still evaluates its condition first.
+The two-lane `cbrt` follows the scalar kernel's operations and rounding exactly;
+zero, subnormal or nonfinite lanes use the scalar fallback.
 Local and result storage also reuse those presence proofs. A missing integer
 element keeps its undefined value through copies and returns; using it as an
 index must not read element zero. A binding read from such an element holds its
@@ -604,6 +625,12 @@ do not imply equal numbers across signed and unsigned domains.
 Checked reads share one lowering for integer conversion and comparison:
 conversion maps absence to zero; comparison keeps the answer for undefined.
 Dependent index reads use branches to avoid address clamps on serial load chains.
+Index arithmetic can keep its low word when its hull lies in [-2^31, 2^32):
+unsigned bounds tests reject both negative words and values past the length.
+Typed allocations cap byte counts below 2^31. The shared `intExprRange` query
+accepts the emitter's carrier bounds for names, and every intermediate must
+stay within exact Number integers; a large rounded product cannot cancel into
+a small index and borrow this proof (`test/index-key.js`).
 A comparison that turns the branch-free read into a branch drops the clamp:
 the load runs under the guard, where the clamp selects the index
 (`mapCheckedRead`), and the bound is the constant of a length the binding
@@ -614,6 +641,11 @@ Saturating integer conversions opt into the shared floating range query's
 NaN-aware mode. It bounds numeric outcomes while admitting NaN, which converts
 to zero, so checked integer reads need no arbitrary-number conversion helper.
 The ordinary range query still proves finiteness; infinity remains unknown.
+Integer narrowing clamps a proved finite integer to i32 in integer registers,
+evaluating its operand once and testing only the sides its hull can exceed.
+This preserves saturation without an i64-to-f64 round trip (`test/int-narrow.js`).
+The size tier retains the compact conversion through the existing
+`inlineToNum: false` policy for per-site numeric-conversion expansion.
 Ranges obtained from a local's definition include its implicit zero value:
 the write may be conditional, and arithmetic can make that skipped-write path
 differ from the definition's value before integer conversion.
@@ -660,6 +692,12 @@ A typed receiver of settled element kind reads
 its element count from its header in `.length`, `subarray` and `sort` (a
 reassigned binding included, when every constructor agrees); a DataView, of no
 element kind, keeps the runtime dispatch.
+Cached parameter lengths initialize after that parameter's default and before
+later defaults that may read it. Only a frozen nonnullable typed parameter kind
+proves the entry read safe; a guard inside the body cannot. Reassignment anywhere
+in the parameter defaults or body disables that cache. Computed typed-property
+reads share the inherited `buffer` and `BYTES_PER_ELEMENT` accessors; DataView has neither indexed length
+nor bytes per element.
 
 Typed constructor provenance describes storage, not presence. A field or index
 result needs a separate non-nullish proof before pointer unboxing: the
@@ -1878,6 +1916,14 @@ assigned more than once stays a box; its length is read through the low word
 of the box and leaves a loop like a pointer's, where the binding always holds
 an array (`fn.presentTyped`: the header of a binding that may hold none is
 read where the loop reads it, so a loop that runs no round reads nothing).
+The same presence proof admits the canonical mixed owned/view descriptor
+selects. Every base and view-bit operand must come from that same unchanged
+binding. LICM moves the complete data select: its owned arm eagerly reads
+address zero but discards that value, so moving the load by itself would be
+unsound. Empty arrays still have valid descriptors; possibly absent receivers,
+mixed selectors and bindings changed in the loop retain their loads.
+`test/licm-typed-views.js` pins those cases, including mutations through calls,
+zero-trip loops and descriptor reads that must still trap when executed.
 `a.subarray(lo, hi).sort()` whose result nobody reads sorts the range in place
 and allocates no view (`module/typedarray.js`). A call spliced at its site
 binds to a temporary only the parameters its body writes and the arguments

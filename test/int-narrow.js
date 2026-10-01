@@ -260,6 +260,28 @@ test('int-narrow: saturating i64 conversions keep their actual magnitude', () =>
   for (const c of [0, 0, 1, 0]) is(after(c), before(c), `saturated magnitude, c=${c}`)
 })
 
+test('int-narrow: wide integer indices saturate without a floating round trip', () => {
+  for (const [op, by] of [['add', 1], ['sub', 1], ['mul', 3], ['add', 4294967296]]) {
+    const src = `(module (global $calls (mut i32) (i32.const 0))
+      (func $f (export "f") (param $n i32) (result i32)
+        (i32.trunc_sat_f64_s (block (result f64)
+          (global.set $calls (i32.add (global.get $calls) (i32.const 1)))
+          (f64.${op} (f64.convert_i32_s (local.get $n)) (f64.const ${by})))))
+      (func (export "calls") (result i32) (global.get $calls)))`
+    for (const expand of [true, false]) {
+      const ir = parseWat(src), before = new WebAssembly.Instance(new WebAssembly.Module(encodeWat(ir))).exports
+      const fn = ir.find(n => n[0] === 'func' && n[1] === '$f')
+      narrowInts(fn, null, expand)
+      is(JSON.stringify(fn).includes('trunc_sat_f64'), !expand, `${op} ${by}: compact saturation retained only without expansion`)
+      const after = new WebAssembly.Instance(new WebAssembly.Module(encodeWat(ir))).exports
+      for (const n of [0, 0, 1, -1, 2, -2, 715827882, 715827883, -715827882, -715827883, 2147483646, 2147483647, -2147483647, -2147483648]) {
+        is(after.f(n), before.f(n), `${op} ${by}, n=${n}, expand=${expand}`)
+        is(after.calls(), before.calls(), `${op} ${by}, n=${n}, expand=${expand}: operand evaluated once`)
+      }
+    }
+  }
+})
+
 test('int-narrow: guard refinements follow later operand writes', () => {
   const bodies = [
     'if (x < (x = (n + 1) & 7)) return x === 7; return 3',

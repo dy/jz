@@ -569,10 +569,10 @@ export function liftExprV(expr, ctx) {
     }
     // General `select(X, Y, COND)` (wasm: X if COND else Y) — jz lowers a value
     // ternary `COND ? X : Y` to this when both arms are cheap/pure. Lift to
-    // v128.bitselect(X, Y, mask) like the `if` form below — valid for EVERY lane type
-    // (i32 included: COND maps via LANE_COMPARE[laneType], NaN is irrelevant). Both
-    // arms are lane-pure (recursion forbids stores/sets) and trap-free, so evaluating
-    // both then selecting is sound. f32 lane promotes operands → f64.* compare → f32x4.
+    // v128.bitselect(X, Y, mask), preserving select's X → Y → COND order:
+    // a value operand can tee a local the comparison reads. Unlike `if`,
+    // select evaluates both values before its condition. f32 comparisons map
+    // their promoted operands back to f32x4 under the precision relaxation.
     if (expr.length === 4) {
       const cond = expr[3]
       const cmpOp = isArr(cond) && ctx.laneType === 'f32' && typeof cond[0] === 'string' && cond[0].startsWith('f64.') ? 'f32.' + cond[0].slice(4) : (isArr(cond) ? cond[0] : null)
@@ -582,11 +582,7 @@ export function liftExprV(expr, ctx) {
       const y = liftExprV(expr[2], ctx); if (ctx.fail) return null
       const ca = liftExprV(cond[1], ctx); if (ctx.fail) return null
       const cb = liftExprV(cond[2], ctx); if (ctx.fail) return null
-      const mtmp = `$__mask${ctx.freshIdRef.next++}`
-      ctx.extraLocals.push(['local', mtmp, 'v128'])
-      return ['block', ['result', 'v128'],
-        ['local.set', mtmp, [cmpSimd, ca, cb]],
-        ['v128.bitselect', x, y, ['local.get', mtmp]]]
+      return ['v128.bitselect', x, y, [cmpSimd, ca, cb]]
     }
     return liftFail(ctx, 'non-canonical select (not a NaN-canon idiom)')
   }

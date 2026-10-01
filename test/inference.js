@@ -1963,14 +1963,21 @@ test('result i32-narrowing: a typed-array-element return narrows to i32 (post-ty
 test('param VAL.NUMBER: a helper fed typed-array-PARAM elements skips __to_num', () => {
   if (onWasi()) return  // wasi run-reserved locals rename; the param type is the portable assertion
   // Two call sites keep `lin` standalone (single-caller inline would hide the param proof).
-  const wat = jz.compile(`
+  const src = `
     let lin = (c) => c <= 0.04045 ? c / 12.92 : (c + 0.055) * 1.5
     let run = (src, dst, n) => { let i = 0; while (i < n) { dst[i] = lin(src[i]) + lin(src[i] + 1); i++ } }
-    export let main = () => { let s = new Float64Array(64), d = new Float64Array(64); run(s, d, 64); return d[3] }
-  `, { wat: true, optimize: { level: 'speed', sourceInline: false } })
+    export let main = (v) => { let s = new Float64Array(64), d = new Float64Array(64); s[3] = v; run(s, d, 64); return d[3] }
+  `
+  // Unknown fractional values exercise numeric-kind propagation, rather than
+  // letting the all-zero allocation prove the helper's arguments are integers.
+  const optimize = { level: 'speed', sourceInline: false }
+  const wat = jz.compile(src, { wat: true, optimize })
   const lin = wat.match(/\(func \$lin\b[\s\S]*?\n  \)/)[0]
   ok(/\(param \$c f64\)/.test(lin), 'lin param stays f64')
   ok(!/\$__to_num/.test(lin), 'lin param is numeric (fed Float64Array-param elements) — no __to_num coercion')
+  const actual = jz(src, { optimize }).exports.main, expected = oracle(src).main
+  for (const value of [0, 0, 0.5, -1, 1.25, NaN, Infinity, 0])
+    is(actual(value), expected(value), `fractional helper input ${value}`)
 })
 
 // Soundness: the typed-array-element propagation must fire ONLY for a provably-TYPED receiver.

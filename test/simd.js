@@ -11,6 +11,8 @@ import encodeWat from 'watr/compile'
 import { vectorizeLaneLocal } from '../src/optimize/vectorize/index.js'
 import { simdBound, matchBlockLoop } from '../src/optimize/vectorize/scaffold.js'
 import { tryGatherMap } from '../src/optimize/vectorize/gather-map.js'
+import { tryVectorize } from '../src/optimize/vectorize/map.js'
+import { tryToneMap } from '../src/optimize/vectorize/tone-map.js'
 import { matchIntMinMaxReduce } from '../src/optimize/vectorize/idioms.js'
 import { ATOM, atomNanHex } from '../layout.js'
 import { GATHER_MAP_KERNEL as GATHER_MAP, BOUNDED_GATHER_KERNEL } from './_optimizer-kernels.js'
@@ -29,6 +31,56 @@ const hasV128 = (w) =>
   /v128\.load|v128\.store|i32x4\.|i64x2\.|f32x4\.|f64x2\.|v128\.(and|or|xor)/.test(w)
 
 const GATHER_OPT = { level: 'speed', sourceInline: false }
+
+for (const mixed of [false, true]) test(`SIMD select operand order: ${mixed ? 'mixed' : 'integer'} lanes evaluate values before the condition`, () => {
+  if (onKernel()) return // Exercise the host IR lifters directly.
+  const load = '(i32.load (i32.add (local.get $a) (i32.shl (local.get $i) (i32.const 2))))'
+  const value = mixed ? `(i32.trunc_sat_f64_s (f64.add (f64.convert_i32_s ${load}) (f64.const 0.5)))` : load
+  const tree = parseWat(`(module (memory (export "memory") 1)
+    (func $f (export "f") (param $a i32) (param $b i32) (param $n i32)
+      (local $i i32) (local $x i32) (local $y i32)
+      (block $done (loop $loop
+        (br_if $done (i32.eqz (i32.lt_s (local.get $i) (local.get $n))))
+        (i32.store (i32.add (local.get $b) (i32.shl (local.get $i) (i32.const 2)))
+          (select (i32.add (local.tee $x ${value}) (i32.const 0))
+            (local.tee $y (i32.add (local.get $x) (i32.const 17)))
+            (i32.gt_s (local.get $y) (i32.const 20))))
+        (local.set $i (i32.add (local.get $i) (i32.const 1))) (br $loop)))))`)
+  const original = encodeWat(tree), fn = tree.find(n => n[0] === 'func')
+  const locals = new Map(fn.filter(n => n[0] === 'local' || n[0] === 'param').map(n => [n[1], n[2]]))
+  const loop = matchBlockLoop(fn.at(-1))
+  const plan = mixed ? tryToneMap(loop, locals, { next: 0 }, true)
+    : tryVectorize(loop, locals, { next: 0 }, new Map(), new Map())
+  ok(plan, 'the select is lifted')
+  fn.splice(fn.length - 1, 1, ...plan.newLocalDecls, plan.wrapper)
+  const before = new WebAssembly.Instance(new WebAssembly.Module(original)).exports
+  const after = new WebAssembly.Instance(new WebAssembly.Module(encodeWat(tree))).exports
+  for (const count of [0, 1, 2, 3, 4, 7, 8, 9, 9, 0, 3]) {
+    for (const e of [before, after]) {
+      const data = new Int32Array(e.memory.buffer)
+      data.fill(-99); data.set([-30, -17, -1, 0, 1, 3, 4, 5, 20], 8)
+      e.f(32, 128, count)
+    }
+    is([...new Int32Array(after.memory.buffer, 128, 10)], [...new Int32Array(before.memory.buffer, 128, 10)],
+      `count ${count}: both value operands run before the comparison; tail stays untouched`)
+  }
+})
+
+test('SIMD clamped stores saturate at signed and byte boundaries across vector groups', () => {
+  for (const base of [-260, -4, 0, 250, 255, 256, 2147483647]) {
+    const src = `export function f(n) {
+      const a = new Uint8ClampedArray(n & 1023)
+      for (let i = 0; i < a.length; i++) a[i] = (i + ${base}) | 0
+      return a
+    }`
+    const expected = oracle(src).f
+    for (const level of levels(0, 2, 3, 'size')) {
+      const f = jz(src, { optimize: { level } }).exports.f
+      for (const count of [0, 1, 2, 3, 4, 15, 16, 17, 255, 256, 257, 259, 260, 511])
+        is([...f(count)], [...expected(count)], `O${level}, count ${count}, base ${base}`)
+    }
+  }
+})
 
 test('SIMD strip bounds: signed limits preserve empty ranges and complete lane groups', () => {
   for (const lanes of [2, 4, 8, 16]) for (const overread of [0, 2]) {
@@ -414,6 +466,50 @@ test('SIMD AoS - stride-3 transcendentals (cbrt/exp/pow) vectorize, bit-exact, o
   const w = wat(src, SIMD_OPT)
   ok(hasV128(w), 'transcendental map lifts to v128')
   ok(/math\.cbrt_v/.test(w), 'cbrt lifts to its f64x2 mirror')
+})
+
+test('SIMD cbrt preserves scalar bits across normal boundaries and exceptional lanes', () => {
+  const src = `
+    const input = new Float64Array(1024), output = new Float64Array(1024)
+    export const put = (i, x) => { input[i] = x }
+    export const scalar = x => Math.cbrt(x)
+    export const get = i => output[i]
+    export const map = n => { for (let i = 0; i < n; i++) output[i] = Math.cbrt(input[i]) }
+  `
+  const e = runVec(src, { optimize: { level: 3 } })
+  if (!belowOpt(2) && !onKernel()) {
+    const fn = funcWat(wat(src, { optimize: { level: 3 } }), 'math.cbrt_v')
+    ok(fn.includes('i64x2.mul') && fn.includes('f64x2.div'), 'normal lanes run the two-wide seed and Newton step')
+    ok(fn.includes('call $math.cbrt'), 'exceptional lanes retain the scalar fallback')
+  }
+  const normal = 2 ** -1022
+  const edges = [0, -0, Number.MIN_VALUE, -Number.MIN_VALUE,
+    normal - Number.MIN_VALUE, normal, normal + Number.MIN_VALUE,
+    -normal + Number.MIN_VALUE, -normal, -normal - Number.MIN_VALUE,
+    1 - Number.EPSILON / 2, 1, 1 + Number.EPSILON, -1, 8, -27,
+    Number.MAX_VALUE, -Number.MAX_VALUE, Infinity, -Infinity, NaN]
+  const values = edges.flatMap(x => [8, x, x, -27, x, x])
+  const bits = new DataView(new ArrayBuffer(8))
+  let seed = 0x63bf918d
+  const next = () => { seed ^= seed << 13; seed ^= seed >>> 17; seed ^= seed << 5; return seed >>> 0 }
+  for (let i = 0; i < 512; i++) {
+    bits.setUint32(0, next(), true)
+    bits.setUint32(4, next(), true)
+    const x = bits.getFloat64(0, true)
+    if (Number.isFinite(x)) values.push(x)
+  }
+  const expected = new Float64Array(1024)
+  // Empty and single-element maps, both sides of a pair boundary, an odd tail,
+  // then reuse the same instance for A → A → different B → A.
+  for (const [input, n] of [[values, 0], [values, 1], [values, 2], [values, 3],
+    [values, values.length - 1], [values, values.length], [values, values.length],
+    [values.toReversed(), values.length], [values, values.length]]) {
+    for (let i = 0; i < input.length; i++) e.put(i, input[i])
+    e.map(n)
+    for (let i = 0; i < n; i++) expected[i] = e.scalar(input[i])
+    for (let i = 0; i <= n; i++)
+      ok(Object.is(e.get(i), expected[i]), `count ${n}, lane ${i}: scalar bits, including signed zero`)
+  }
 })
 
 test('SIMD AoS - constant-exponent pow lifts per lane through the pow kernel (bit-exact with scalar)', () => {

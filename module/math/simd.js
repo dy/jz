@@ -1,15 +1,8 @@
 /**
  * f64x2 SIMD transcendentals: sin2/cos2/pow2/pow_fold_v/atan2_2/hypot_2/
- * cbrt_v/pow_fifths_v/log_v/exp2_v/exp_v. pow2 is a true two-wide kernel
- * (both lanes through one pass of the scalar kernel's operations); the
- * others were a pure move from module/math.js
- * (pipeline-minimality) — delimited by the original author's own comment
- * banner ("f64x2 SIMD sin/cos — both lanes through one polynomial"). No
- * back-reference from math.js: every consumer of these WAT functions
- * reaches them by name (src/optimize/vectorize.js's PPC_CALL2 lifts), never
- * a JS symbol, so this file is a pure one-way leaf off math/trig-tables.js
- * (its own local helpers splat/i64s/horner2 – used only here – plus the
- * shared reduction constants and coefficients math.js's scalar kernels use).
+ * cbrt_v/pow_fifths_v/log_v/exp2_v/exp_v. Fast paths retain the scalar kernel's
+ * operations per lane; exceptional lanes use the scalar helper. Consumers
+ * reach these functions by name through PPC_CALL2, never by a JS symbol.
  *
  * @module math/simd
  */
@@ -237,13 +230,34 @@ export const registerMathSimd = () => {
     (f64x2.replace_lane 1
       (f64x2.splat (call $math.hypot (f64x2.extract_lane 0 (local.get $x)) (f64x2.extract_lane 0 (local.get $y))))
       (call $math.hypot (f64x2.extract_lane 1 (local.get $x)) (f64x2.extract_lane 1 (local.get $y)))))`, ['math.hypot'])
-  // cbrt/pow_fifths: same per-lane scalar repack (their scalar bodies are branchy exponent-split +
-  // Newton, no cheap 2-lane poly). BIT-EXACT by construction. Unlocks the Oklab/OkLCh path (3 cbrt
-  // per pixel) and the sRGB/Rec.709 `x**(k/5)` gamma so their surrounding f64x2 arithmetic vectorizes.
+  // cbrt: the scalar kernel's normal finite path two lanes wide. The high-word
+  // seed divides by 3 as x*0xaaaaaaab >> 33, exact for unsigned 32-bit x.
+  // Keep the scalar polynomial's grouping, rounding and Newton step unchanged;
+  // either exceptional lane sends both through the scalar helper.
   wat('math.cbrt_v', `(func $math.cbrt_v (param $x v128) (result v128)
-    (f64x2.replace_lane 1
-      (f64x2.splat (call $math.cbrt (f64x2.extract_lane 0 (local.get $x))))
-      (call $math.cbrt (f64x2.extract_lane 1 (local.get $x)))))`, ['math.cbrt'])
+    (local $t v128) (local $r v128) (local $s v128)
+    (if (i32.eqz (i64x2.all_true (v128.and
+        (f64x2.ge (f64x2.abs (local.get $x)) ${splat(2 ** -1022)})
+        (f64x2.lt (f64x2.abs (local.get $x)) ${splat('inf')}))))
+      (then (return (f64x2.replace_lane 1
+        (f64x2.splat (call $math.cbrt (f64x2.extract_lane 0 (local.get $x))))
+        (call $math.cbrt (f64x2.extract_lane 1 (local.get $x)))))))
+    (local.set $t (v128.or (v128.and (local.get $x) ${i64s('0x8000000000000000')})
+      (i64x2.shl (i64x2.add (i64x2.shr_u (i64x2.mul
+        (v128.and (i64x2.shr_u (local.get $x) (i32.const 32)) ${i64s(0x7fffffff)}) ${i64s(0xaaaaaaab)})
+        (i32.const 33)) ${i64s(715094163)}) (i32.const 32))))
+    (local.set $r (f64x2.mul (f64x2.mul (local.get $t) (local.get $t)) (f64x2.div (local.get $t) (local.get $x))))
+    (local.set $t (f64x2.mul (local.get $t) (f64x2.add
+      (f64x2.add ${splat(1.87595182427177009643)} (f64x2.mul (local.get $r)
+        (f64x2.add ${splat(-1.88497979543377169875)} (f64x2.mul (local.get $r) ${splat(1.621429720105354466140)}))))
+      (f64x2.mul (f64x2.mul (f64x2.mul (local.get $r) (local.get $r)) (local.get $r))
+        (f64x2.add ${splat(-0.758397934778766047437)} (f64x2.mul (local.get $r) ${splat(0.145996192886612446982)}))))))
+    (local.set $t (v128.and (i64x2.add (local.get $t) ${i64s(0x80000000)}) ${i64s('0xffffffffc0000000')}))
+    (local.set $s (f64x2.mul (local.get $t) (local.get $t)))
+    (local.set $r (f64x2.div (local.get $x) (local.get $s)))
+    (local.set $r (f64x2.div (f64x2.sub (local.get $r) (local.get $t))
+      (f64x2.add (f64x2.add (local.get $t) (local.get $t)) (local.get $r))))
+    (f64x2.add (local.get $t) (f64x2.mul (local.get $t) (local.get $r))))`, ['math.cbrt'])
   // $math.pow_fifths two lanes wide: x^r and x^p two-wide, the fifth root a scalar call a lane
   // (the Newton steps divide), exactly the scalar helper's operations; a lane outside [lo, hi]
   // sends both through the scalar helper. c, lo and hi are the fold's constants, splat.

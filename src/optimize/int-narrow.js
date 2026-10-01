@@ -219,12 +219,13 @@ export function integerPlan(fn, assume = null, regions = null) {
 }
 
 /** Carry the integer-valued f64 locals of `fn` in integer registers. `assume`
- *  is the entry facts of specialized loops (int-range.js). Returns whether the
- *  function changed. */
+ *  is the entry facts of specialized loops (int-range.js). `expand` permits
+ *  integer clamps in place of compact saturating conversions. Returns whether
+ *  the function changed. */
 // The same read twice: one node, or two reads of one local.
 const sameRead = (p, q) => p === q || (Array.isArray(p) && Array.isArray(q) && p[0] === 'local.get' && q[0] === 'local.get' && p[1] === q[1])
 
-export function narrowInts(fn, assume = null) {
+export function narrowInts(fn, assume = null, expand = true) {
   if (!isArr(fn) || fn[0] !== 'func') return false
   const plan = integerPlan(fn, assume)
   if (!plan) return false
@@ -243,7 +244,7 @@ export function narrowInts(fn, assume = null) {
 
   const widthOf = (...es) => es.every(e => fitsI32(at(e))) ? 'i32' : 'i64'
   const as = (node, from, to) => from === to ? node : to === 'i64' ? ['i64.extend_i32_s', node] : ['i32.wrap_i64', node]
-  const konst = (c, w) => w === 'i32' ? ['i32.const', int32(c)] : ['i64.const', String(c + 0)]
+  const konst = (c, w) => w === 'i32' ? ['i32.const', int32(c)] : ['i64.const', String(Number(c) + 0)]
   // The truncation of a value that stays f64: exact, the value is an integer.
   const truncated = (node, w) => w === 'i64' ? ['i64.trunc_sat_f64_s', node] : ['i32.wrap_i64', ['i64.trunc_sat_f64_s', node]]
   const divisor = (x, k) => widthOf(x) === 'i32' && Math.abs(k) < 2 ** 31 ? 'i32' : 'i64'
@@ -338,15 +339,29 @@ export function narrowInts(fn, assume = null) {
     return t.cost <= t.gain + t.held + (es.length === 1 ? 1 : 0)
   }
   const heldRead = e => isArr(e) && (e[0] === 'local.get' || e[0] === 'local.tee') && early.has(e[1])
+  // A proved integer may exceed i32: clamp its integer form, rather than
+  // convert it to f64 solely to saturate it back. The operand runs once,
+  // before either comparison; the interval removes an unnecessary side.
+  const saturateI32 = e => {
+    const v = at(e), name = temp('i64'), get = ['local.get', name]
+    let out = ['i32.wrap_i64', ['local.tee', name, I(e, 'i64')]]
+    if (v.lo < -2147483648) out = ['select', ['i32.const', -2147483648], out, ['i64.lt_s', get, ['i64.const', '-2147483648']]]
+    if (v.hi > 2147483647) out = ['select', ['i32.const', 2147483647], out, ['i64.gt_s', get, ['i64.const', '2147483647']]]
+    return out
+  }
   // The operand of a truncation in its integer form, or null: an integer, a
   // quotient, or a conditional of integers and NaN.
-  // `to` is the consumer: 'i64', 'i32' (saturating: the value must fit) or
+  // `to` is the consumer: 'i64', 'i32' (saturating) or
   // 'low' (the low word of the i64 truncation).
   const truncates = (e, to) => {
     if (!isArr(e)) return null
     const w = to === 'low' ? 'i32' : to
     if (heldRead(e)) return I(e, w)
-    if (whole(e)) return (to !== 'i32' || fitsI32(at(e))) && takes(e) ? I(e, w) : null
+    if (whole(e)) {
+      if (!takes(e)) return null
+      if (to === 'i32' && !fitsI32(at(e))) return expand ? saturateI32(e) : null
+      return I(e, w)
+    }
     const q = e[0] === 'f64.div' && quotientOf(['f64.trunc', e])
     if (q && whole(q.x)) {
       const v = at(q.x)

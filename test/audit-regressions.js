@@ -7,6 +7,7 @@ import { funcWat, oracle, agree } from './util.js'
 import { ctx } from '../src/ctx.js'
 import { dictCapacity } from '../src/static.js'
 import { stringHash } from '../src/string-data.js'
+import parseWat from 'watr/parse'
 
 const TIERS = levels(0, 2, 'speed', 'size')
 
@@ -163,20 +164,39 @@ test('audit: cursor guards join offsets and retain negative-offset checks', () =
   const src = `function scan(a,n,start){let r=start|0,s=0;
       for(let i=0;i<n;i++){s+=a[r+-1]+a[r]+a[r+1];r++}return s}
     export function run(n,len,start){const a=new Float64Array(len);
-      for(let i=0;i<len;i++)a[i]=i+1;return scan(a,n,start)}`
+      for(let i=0;i<len;i++)a[i]=i+1;return scan(a,n,start)}
+    export function step(n){const a=new Float64Array([10,20,30]);let i=n|0;
+      const v=a[i++ + -1];return (v===undefined?-1000:v)+i*10}`
   const js = oracle(src)
   for (const optimize of TIERS) {
     const wasm = jz(src, { optimize }).exports
-    for (const args of [[0, 0, 0], [0, 4, 1], [1, 4, 0], [1, 4, 1], [2, 4, 1], [3, 4, 1], [4, 9, 2], [1, 4, -1]])
+    for (const args of [[0, 0, 0], [0, 4, 1], [1, 4, 0], [1, 4, 1], [2, 4, 1], [3, 4, 1], [4, 9, 2], [1, 4, -1],
+      [0, 0, -2147483648], [1, 4, -2147483648], [1, 4, 2147483647], [2, 4, 2147483647]])
       is(wasm.run(...args), js.run(...args), `${optimize}: ${args}`)
+    for (const n of [0, 0, 1, 2, 3, 0, 2147483647, -2147483648])
+      is(wasm.step(n), js.step(n), `${optimize}: step(${n}) evaluates its index once`)
   }
   if (!onKernel()) {
     // pre-watr: `run` releases what it made as it returns, so its call of `scan` is one watr inlines;
     // one loop: its int32 copy (plan/integral-loops.js) guards its own extents alike
     const wat = funcWat(compile(src, { optimize: { level: 'speed', watr: false, versionIntegralLoops: false }, wat: true }), 'scan')
     ok(wat.length > 0, 'inspect cursor extents before backend inlining')
-    is((wat.match(/i64\.lt_s/g) || []).length, 1, 'one upper extent for all cursor offsets')
-    is((wat.match(/i64\.ge_s/g) || []).length, 1, 'one lower extent for all cursor offsets')
+    // Saturating conversions in the checked twin can compare against the
+    // signed-word endpoints too. Count only the loop's entry condition.
+    const entry = parseWat(wat).find(n => Array.isArray(n) && n[0] === 'if')
+    ok(entry, 'cursor loop has an entry guard')
+    const guard = JSON.stringify(entry[1])
+    is((guard.match(/i64\.lt_s/g) || []).length, 1, 'one upper extent for all cursor offsets')
+    is((guard.match(/i64\.ge_s/g) || []).length, 1, 'one lower extent for all cursor offsets')
+    const addresses = []
+    const loads = n => {
+      if (!Array.isArray(n)) return
+      if (n[0] === 'f64.load') addresses.push(n[n.length - 1])
+      for (let i = 1; i < n.length; i++) loads(n[i])
+    }
+    loads(entry[2])
+    is(addresses.length, 3, 'inspect all cursor reads in the fast arm')
+    ok(addresses.every(a => !/trunc_sat_f64_s|i64\.lt_s/.test(JSON.stringify(a))), 'proved negative offsets use word arithmetic in the fast arm')
   }
 })
 

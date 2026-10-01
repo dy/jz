@@ -8,6 +8,8 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import jz, { compile } from '../index.js'
+import parseWat from 'watr/parse'
+import { count, walk } from '../scripts/wat-probe.mjs'
 import { onKernel, levels } from './_matrix.js'
 import { funcWat, oracle } from './util.js'
 
@@ -96,9 +98,40 @@ test('sentinel guard: the pop, the scan and the read after the scan run unchecke
   // guard `k <= N - 1`, the suffix guard after it
   ok(/\(i32\.(ge|lt)_s \(local\.get \$[^\s)]*k[^\s)]*\) \(i32\.const 1\)\)/.test(guarded), 'the pop tests k >= 1')
   ok(new RegExp(`\\(i32\\.le_s \\(local\\.get \\$[^\\s)]*k[^\\s)]*\\) \\(i32\\.const ${N - 1}\\)\\)`).test(guarded), `the scan and its suffix test k <= ${N - 1}`)
-  // every checked read of the unguarded build survives only in the slow copies
-  is(missArms(guarded), missArms(plain), 'the slow copies keep every original check')
+  // The suffix's slow arm knows k >= N: both v[k] and f[v[k]] are missing.
+  // Their numeric uses fold to NaN instead of retaining redundant checks.
+  let suffix
+  walk(parseWat(guarded), n => {
+    if (n[0] === 'if' && n[1]?.[0] === 'i32.le_s' && n[1][1]?.[0] === 'local.get' &&
+        /k/.test(n[1][1][1]) && n[1][2]?.[0] === 'i32.const' && Number(n[1][2][1]) === N - 1) suffix = n
+  })
+  ok(suffix, 'the suffix retains its fast and slow arms')
+  if (suffix) {
+    ok(count(suffix[2], n => n[0] === 'i32.load') > 0, 'the fast suffix reads v[k]')
+    ok(count(suffix[2], n => n[0] === 'f64.load') > 0, 'the fast suffix gathers f[v[k]]')
+    is(count(suffix[2], n => n[0] === 'if'), 0, 'the fast suffix has no element checks')
+    is(count(suffix[3], n => n[0] === 'i32.load' || n[0] === 'f64.load'), 0, 'the slow suffix performs neither known-missing read')
+    ok(count(suffix[3], n => n[0] === 'f64.const' && n[1] === 'nan') > 0, 'the slow suffix keeps numeric NaN')
+  }
+  ok(missArms(guarded) < missArms(plain), 'known misses fold while other slow reads keep their checks')
   ok(missArms(plain) > 0, 'the unguarded kernel checks its cursor reads')
+})
+
+test('sentinel guard: a suffix past the cursor boundary keeps both missing numeric reads', () => {
+  const src = `export function probe(start, limit) {
+    const z = new Float64Array([0, 1, 2, Infinity])
+    const v = new Int32Array([0, 1, 2]), f = new Float64Array([2, 3, 5])
+    let k = start & 7
+    while (z[k + 1] < limit) k++
+    const dq = 1 - v[k]
+    return [k, dq * dq + f[v[k]], v[k] === undefined]
+  }`
+  const native = oracle(src).probe
+  for (const optimize of [...levels(0, 2, 3, 'size'), GUARDS_OFF]) {
+    const probe = jz(src, { optimize }).exports.probe
+    for (const start of [0, 1, 2, 3, 7, 0, 3]) for (const limit of [0, 1, 3, NaN, Infinity])
+      is(probe(start, limit), native(start, limit), `${JSON.stringify(optimize)}: ${start}/${limit}`)
+  }
 })
 
 test('sentinel guard: the size tier copies nothing', () => {

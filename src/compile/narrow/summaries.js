@@ -13,7 +13,7 @@
 
 import { ctx } from '../../ctx.js'
 import {
-  returnExprs, callArgs, ASSIGN_OPS, refsName, carriesName, REFS_THROUGH_ARROWS, walkAst, isReassigned,
+  returnExprs, callArgs, ASSIGN_OPS, MUTATE_OPS, refsName, carriesName, REFS_THROUGH_ARROWS, walkAst, isReassigned,
 } from '../../ast.js'
 import {
   staticArrayElems, staticArrayLen, hull, typedValueLiteral, typedValueExprRange,
@@ -25,16 +25,31 @@ import { enterActiveFunction, restoreActiveFunction } from '../active-function.j
 import { isExported } from '../func-exports.js'
 import { analyzeBody } from '../analyze.js'
 import { VAL } from '../../reps.js'
-import { K, kind } from '../../summary/index.js'
+import { K, kind, core } from '../../summary/index.js'
 import { typedElementKey, typedCtorBase } from '../../typed-provenance.js'
 import { scanBindingUses, USE, BINDING_USE_DECLS, BINDING_USE_INIT, BINDING_USE_USES, BINDING_USE_KIND } from '../analyze-scans.js'
 import { frameNode } from '../../function.js'
+
+// An array can escape directly or inside a container. Element/property reads
+// consume it without carrying its identity; backing-buffer exposure is checked
+// separately by the typed-storage census.
+const carries = (n, name) => {
+  if (carriesName(n, name)) return true
+  if (!Array.isArray(n)) return false
+  const op = n[0]
+  if (op === '?:') return carries(n[2], name) || carries(n[3], name)
+  if (op === '&&' || op === '||' || op === '??') return carries(n[1], name) || carries(n[2], name)
+  if (op === ',') return carries(n[n.length - 1], name)
+  if (op === '(' || op === '()' && n.length === 2 || op === '...') return carries(n[1], name)
+  if (op === '=' || op === ':') return carries(n[2], name)
+  return (op === '[' || op === '{}') && n.slice(1).some(v => carries(v, name))
+}
 
 // Reuse the bounds interpreter at call sites. Start at unknown and refine only
 // when EVERY incoming site proves a hull. Each intermediate result is sound;
 // a bounded worklist budget can forgo precision without trusting an unfinished
 // optimistic fixpoint. Indirect/synthetic calls stay unknown.
-export function inferNumericRanges(paramReps, callSites, callerCtx, addressTaken, ast, arrays) {
+export function inferNumericRanges(paramReps, callSites, callerCtx, addressTaken, ast, arrays, typedLens = null, elements = null) {
   const outgoing = new Map(), incoming = new Map(), observed = new Map(), stores = new Map()
   const hasKind = (f, kind) => {
     for (const r of paramReps.get(f.name)?.values() ?? []) if (r.val === kind || r.presentVal === kind) return true
@@ -81,7 +96,17 @@ export function inferNumericRanges(paramReps, callSites, callerCtx, addressTaken
       ctx.func.localReps = new Map()
       for (const [name, arrayElemRange] of arrays.elementRanges.get(caller) || [])
         ctx.func.localReps.set(name, { arrayElemRange })
-      scanIntervalIdx(body, null, name => arrays.locals.get(caller)?.get(name) ?? null, null, calls, entry, writes)
+      for (const [name, arrayElemRange] of elements?.get(caller) || [])
+        ctx.func.localReps.set(name, { arrayElemRange })
+      const lens = new Map()
+      for (let k = 0; k < (caller?.sig.params.length ?? 0); k++) {
+        const name = caller.sig.params[k].name, r = reps?.get(k)
+        if (r?.arrayElemRange) ctx.func.localReps.set(name, { arrayElemRange: r.arrayElemRange })
+        if (r?.typedLen != null) lens.set(name, r.typedLen)
+        else if (r?.arrayLen != null) lens.set(name, r.arrayLen)
+      }
+      scanIntervalIdx(body, null, name => lens.get(name) ?? typedLens?.get(caller)?.get(name)
+        ?? arrays.locals.get(caller)?.get(name) ?? null, null, calls, entry, writes)
     } finally { restoreActiveFunction(ctx, prev) }
     stores.set(caller, writes)
     const targets = new Set()
@@ -141,7 +166,7 @@ export function inferInternalArrayLengths() {
   const refs = (n, name) => refsName(n, name, REFS_THROUGH_ARROWS)
   const pushCount = (n, arr) => {
     if (!Array.isArray(n)) return n === arr ? null : 0
-    if (n[0] === '=>') return refs(n, arr) ? null : 0
+    if (n[0] === '=>' || n[0] === '?.()') return refs(n, arr) ? null : 0
     if (n[0] === '()') {
       if (Array.isArray(n[1]) && n[1][0] === '.' && n[1][1] === arr)
         return n[1][2] === 'push' && callArgs(n).length > 0 && !callArgs(n).some(a => (Array.isArray(a) && a[0] === '...') || refs(a, arr))
@@ -158,7 +183,7 @@ export function inferInternalArrayLengths() {
       return refs(n, arr) ? null : 0
     if (n[0] === 'return' || n[0] === 'throw' || n[0] === 'break' || n[0] === 'continue') return null
     if (ASSIGN_OPS.has(n[0]) || n[0] === '++' || n[0] === '--') {
-      if (n[1] === arr || refs(n[1], arr) || carriesName(n[2], arr)) return null
+      if (n[1] === arr || refs(n[1], arr) || carries(n[2], arr)) return null
     }
     let total = 0
     for (let i = 1; i < n.length; i++) {
@@ -232,6 +257,7 @@ export function inferInternalArrayLengths() {
         return false
       }
       if (n[0] === '()' && (refs(n[1], arr) || callArgs(n).some(a => refs(a, arr)))) { bad = true; return false }
+      if (n[0] === '?.()' && refs(n, arr)) { bad = true; return false }
       if (n !== defNode && (ASSIGN_OPS.has(n[0]) || n[0] === '++' || n[0] === '--') &&
           (n[1] === arr || refs(n[1], arr) || refs(n[2], arr))) { bad = true; return false }
       if (n[0] === 'return' && n[1] === arr) return false
@@ -246,11 +272,12 @@ export function inferInternalArrayLengths() {
   // Length-preserving parameter summaries let a caller retain a local length
   // fact across known reader helpers. Any alias, closure capture, return,
   // indexed/property write, method call, or unknown call poisons the summary.
-  const carries = carriesName
   const funcs = ctx.funcs.list.filter(f => !f.raw && Array.isArray(f.body))
   const safeParams = new Map(funcs.map(f => [f.name, f.sig.params.map(() => true)]))
   for (const f of funcs) {
     const ps = new Map(f.sig.params.map((p, i) => [p.name, i])), safe = safeParams.get(f.name)
+    for (const d of Object.values(f.defaults || {}))
+      for (const [name, k] of ps) if (carries(d, name)) safe[k] = false
     // a parameter default runs in the frame: its resizes and escapes count
     walkAst(frameNode(f), { enter: n => {
       if (n[0] === '=>') { for (const [name, k] of ps) if (refs(n, name)) safe[k] = false; return false }
@@ -258,6 +285,7 @@ export function inferInternalArrayLengths() {
         if (n[1] === name || carries(n[2], name) || (Array.isArray(n[1]) && refs(n[1], name))) safe[k] = false
       }
       if (n[0] === 'delete') for (const [name, k] of ps) if (refs(n[1], name)) safe[k] = false
+      if (n[0] === '?.()') for (const [name, k] of ps) if (refs(n, name)) safe[k] = false
       if (n[0] === 'return' || n[0] === 'throw' || n[0] === 'yield')
         for (const [name, k] of ps) if (carries(n[1], name)) safe[k] = false
       if (n[0] === '()') {
@@ -314,6 +342,7 @@ export function inferInternalArrayLengths() {
             (n[1] === name || carries(n[2], name) || (Array.isArray(n[1]) && refs(n[1], name)))) { ok = false; return }
         if ((n[0] === 'delete' && refs(n[1], name)) ||
             ((n[0] === 'return' || n[0] === 'throw' || n[0] === 'yield') && carries(n[1], name))) { ok = false; return }
+        if (n[0] === '?.()' && refs(n, name)) { ok = false; return }
         if (n[0] === '()') {
           const args = callArgs(n), callee = typeof n[1] === 'string' ? n[1] : null
           if (refs(n[1], name)) { ok = false; return }
@@ -370,9 +399,10 @@ export function inferTypedValueRanges(storeRanges) {
     if (!lim || !r || !Number.isFinite(r[0]) || !Number.isFinite(r[1])) return null
     return r[0] >= lim[0] && r[1] <= lim[1] ? [...r] : [...lim]
   }
-  const initialRange = (rhs, ctor) => {
+  const initialRange = (rhs, ctor, scope) => {
     const args = rhs?.[2]
-    if (args == null || literal(args) != null) return [0, 0]
+    if (args == null || literal(args) != null ||
+        args[0] !== ',' && scope?.kindOfExpr(args) === kind(K.NUMBER)) return [0, 0]
     const elems = staticArrayElems(args)
     if (!elems) return null
     let out = null
@@ -384,9 +414,12 @@ export function inferTypedValueRanges(storeRanges) {
     return out || [0, 0]
   }
   const mentions = (n, name) => refsName(n, name, REFS_THROUGH_ARROWS)
-  // Expressions that can evaluate to the array object itself. Element/property
-  // reads merely consume it and must not be mistaken for aliases.
-  const carries = carriesName
+  // Exposing the backing buffer permits writes through an unrelated view.
+  // An arbitrary member key can read that buffer too; numeric element reads
+  // and the three scalar storage properties cannot expose storage.
+  const exposesBuffer = (n, name, scope) => n[1] === name &&
+    ((n[0] === '.' || n[0] === '?.') && !['length', 'byteLength', 'byteOffset'].includes(n[2]) ||
+     (n[0] === '[]' || n[0] === '?.[]') && !typedElementKey(n[2], core(scope.kindOfExpr(n[2])) === kind(K.NUMBER)))
   const funcs = ctx.funcs.list.filter(f => !f.raw && Array.isArray(f.body))
   const summaries = new Map()
   for (const f of funcs) summaries.set(f.name, f.sig.params.map(() => ({ range: null, writes: false, bad: false })))
@@ -420,7 +453,9 @@ export function inferTypedValueRanges(storeRanges) {
   function computeDirectEffects() {
     for (const f of funcs) {
       const ps = new Map(f.sig.params.map((p, i) => [p.name, i]))
-      const sum = summaries.get(f.name)
+      const sum = summaries.get(f.name), scope = ctx.summary.at(f.sig)
+      for (const d of Object.values(f.defaults || {}))
+        for (const [name, k] of ps) if (carries(d, name)) sum[k].bad = true
       const walk = (n, inClosure = false) => {
         if (!Array.isArray(n)) return
         const closure = inClosure || n[0] === '=>'
@@ -428,16 +463,20 @@ export function inferTypedValueRanges(storeRanges) {
           for (const [name, k] of ps) if (mentions(n, name)) sum[k].bad = true
           return
         }
-        if (ASSIGN_OPS.has(n[0]) && Array.isArray(n[1]) && n[1][0] === '[]' && ps.has(n[1][1])) {
+        for (const [name, k] of ps) if (exposesBuffer(n, name, scope)) sum[k].bad = true
+        // Optional calls are not part of the direct-call effect graph.
+        if (n[0] === '?.()') for (const [name, k] of ps) if (mentions(n, name)) sum[k].bad = true
+        if (MUTATE_OPS.has(n[0]) && Array.isArray(n[1]) && n[1][0] === '[]' && ps.has(n[1][1])) {
           const s = sum[ps.get(n[1][1])], r = writeRange(f, n)
           s.writes = true
           if (!r) s.bad = true; else s.range = hull(s.range, r)
         }
         // Aliases/returns escape the receiver; element/property reads do not.
         if (n[0] === 'return' || n[0] === 'throw' || n[0] === 'yield') for (const [name, k] of ps) if (carries(n[1], name)) sum[k].bad = true
-        if (ASSIGN_OPS.has(n[0])) for (const [name, k] of ps) {
+        if (MUTATE_OPS.has(n[0])) for (const [name, k] of ps) {
           if (n[1] === name || carries(n[2], name)) sum[k].bad = true
-          if (Array.isArray(n[1]) && n[1][0] !== '[]' && mentions(n[1], name)) sum[k].bad = true
+          if (Array.isArray(n[1]) && (n[1][0] !== '[]' ? mentions(n[1], name)
+            : n[1][1] !== name && mentions(n[1][1], name))) sum[k].bad = true
         }
         if (n[0] === '()') {
           const args = callArgs(n)
@@ -493,6 +532,8 @@ export function inferTypedValueRanges(storeRanges) {
     const locals = new Map()
     for (const f of funcs) {
       const ranges = new Map(), ctors = new Map(), poisoned = new Set(), freshDefs = new Set()
+      const scope = ctx.summary.at(f.sig)
+      const bindings = scanBindingUses(frameNode(f))
       const merge = (name, r) => {
         if (poisoned.has(name)) return
         if (!r) { poisoned.add(name); ranges.delete(name); return }
@@ -505,8 +546,11 @@ export function inferTypedValueRanges(storeRanges) {
         }
         if (n[0] === 'let' || n[0] === 'const') for (let i = 1; i < n.length; i++) {
           const d = n[i]
-          if (Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string' && typedStaticLen(d[2]) != null) {
-            const ctor = typedElemCtor(d[2]), init = initialRange(d[2], ctor)
+          if (Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string') {
+            const binding = bindings.get(d[1])
+            if (binding?.[BINDING_USE_DECLS] !== 1 || binding[BINDING_USE_USES].some(u =>
+              u[BINDING_USE_KIND] === USE.REASSIGN || u[BINDING_USE_KIND] === USE.CAPTURE)) continue
+            const ctor = typedElemCtor(d[2]), init = ctor && initialRange(d[2], ctor, scope)
             if (ctor && init) {
               ranges.set(d[1], init)
               ctors.set(d[1], ctor)
@@ -514,12 +558,15 @@ export function inferTypedValueRanges(storeRanges) {
             }
           }
         }
-        if (ASSIGN_OPS.has(n[0])) {
+        for (const name of [...ranges.keys()]) if (exposesBuffer(n, name, scope)) merge(name, null)
+        if (n[0] === '?.()') for (const name of [...ranges.keys()]) if (mentions(n, name)) merge(name, null)
+        if (MUTATE_OPS.has(n[0])) {
           if (Array.isArray(n[1]) && n[1][0] === '[]' && ranges.has(n[1][1]))
             merge(n[1][1], storedRange(ctors.get(n[1][1]), writeRange(f, n)))
           for (const name of [...ranges.keys()]) {
             if (!freshDefs.has(n) && (n[1] === name || carries(n[2], name))) merge(name, null)
-            if (Array.isArray(n[1]) && n[1][0] !== '[]' && mentions(n[1], name)) merge(name, null)
+            if (Array.isArray(n[1]) && (n[1][0] !== '[]' ? mentions(n[1], name)
+              : n[1][1] !== name && mentions(n[1][1], name))) merge(name, null)
           }
         }
         if (n[0] === 'return' || n[0] === 'throw' || n[0] === 'yield') for (const name of [...ranges.keys()]) if (carries(n[1], name)) merge(name, null)
@@ -543,7 +590,64 @@ export function inferTypedValueRanges(storeRanges) {
   computeDirectEffects()
   propagateCallForwarding()
   const locals = computeLocalRanges()
-  return { locals, summaries, hull, initialRange }
+  // A constructor passed directly has no caller binding whose invariant can
+  // include the callee's writes. Close that invariant here, before publishing
+  // it on a parameter (including writes in defaults and forwarded helpers).
+  const constructedRange = (arg, caller, callee, k) => {
+    const effect = summaries.get(callee)?.[k], ctor = typedElemCtor(arg)
+    if (!ctor || !effect || effect.bad) return null
+    const initial = initialRange(arg, ctor, ctx.summary.at(caller?.sig ?? ''))
+    if (!initial) return null
+    if (!effect.writes) return initial
+    const writes = storedRange(ctor, effect.range)
+    return writes && hull(initial, writes)
+  }
+  return { locals, constructedRange }
+}
+
+// Start at unknown and publish a parameter hull only after every incoming
+// site has a sound whole-lifetime hull. A missing/opaque path stays unknown,
+// including through arbitrarily long forwarding chains. Each published fact
+// is valid immediately; recursion may lose precision, never require an
+// optimistic fact to be retracted after another function has consumed it.
+export function inferElementParamRanges(paramReps, callSites, addressTaken, values) {
+  const incoming = new Map()
+  for (const cs of callSites) {
+    const f = ctx.funcs.map.get(cs.callee)
+    if (!f?.body || f.raw || isExported(f) || addressTaken.has(f.name)) continue
+    if (!incoming.has(f)) incoming.set(f, [])
+    incoming.get(f).push(cs)
+  }
+  let changed = true, any = false
+  while (changed) {
+    changed = false
+    for (const [f, sites] of incoming) for (let k = 0; k < f.sig.params.length; k++) {
+      const p = f.sig.params[k]
+      if (f.defaults?.[p.name] != null || (f.rest && k === f.sig.params.length - 1) || isReassigned(frameNode(f), p.name)) continue
+      let range
+      for (const cs of sites) {
+        const arg = cs.argList[k]
+        let v = null
+        if (!cs.synthetic && arg != null) {
+          if (typeof arg === 'string') {
+            v = values.locals.get(cs.callerFunc)?.get(arg)
+            if (!v && cs.callerFunc) {
+              const at = cs.callerFunc.sig.params.findIndex(p => p.name === arg)
+              v = paramReps.get(cs.callerFunc.name)?.get(at)?.arrayElemRange
+            }
+          } else v = values.constructedRange(arg, cs.callerFunc, f.name, k)
+        }
+        if (!v) { range = null; break }
+        range = hull(range, v)
+      }
+      const r = ensureParamRep(paramReps, f.name, k)
+      if (range && (!r.arrayElemRange || range[0] !== r.arrayElemRange[0] || range[1] !== r.arrayElemRange[1])) {
+        r.arrayElemRange = range
+        changed = any = true
+      }
+    }
+  }
+  return any
 }
 
 // ============================================================================

@@ -317,6 +317,8 @@ test('interval proof: table mutation, missing entries and word boundaries stay c
     tableWalk('[1, 2, 3, 2147483647]', 'table[2] = 1.5'),
     tableWalk('[1, 2, 3, 2147483647]', 'let key = n & 3; delete table[key]'),
     tableWalk('[1, 2, 3, 2147483647]', 'function erase(p, key) { delete p[key] }; erase(table, n & 3)'),
+    tableWalk('[1, 2, 3, 2147483647]', 'function edit(p, q = p) { q[2] = -1 }; edit(table)'),
+    tableWalk('[1, 2, 3, 2147483647]', 'function edit(p, q = { p }) { q.p[2] = -1 }; edit(table)'),
     tableWalk('[1, 2, 3, 2147483647]', 'function leak(p) { throw p }; try { leak(table) } catch (p) { p[2] = -1 }'),
   ]
   for (const optimize of levels(0, 2, 3, 'size')) for (const src of sources) {
@@ -331,6 +333,316 @@ test('interval proof: table ranges do not survive a different compilation', () =
   const other = tableWalk('[1, 2, 3, -2147483648]')
   for (const optimize of levels(0, 2, 3, 'size'))
     assertCompileHistoryIndependent(src, [src, other, tableWalk('[]'), other], { optimize }, `O${optimize} table bounds`)
+})
+
+const relayedElements = length => `
+function seed(a, n) {
+  for (let i = 0; i < a.length; i++) a[i] = (i + (n & 3)) & ${Math.max(0, length - 1)}
+}
+function put(a, k, value) { a[k] = value }
+function relay(a, b) { for (let i = 0; i < a.length; i++) put(b, i, a[i]) }
+function read(a, k) { return a[a[k]] }
+function checksum(a) {
+  let sum = 0
+  for (let i = 0; i < a.length; i++) sum = sum * 7 + read(a, i)
+  return sum
+}
+export function f(n) {
+  const a = new Int32Array(${length}), b = new Int32Array(${length})
+  seed(a, n); relay(a, b); return checksum(b)
+}`
+
+test('interval proof: element and scalar bounds cross calls and return to typed storage', () => {
+  for (const length of [0, 1, 4]) {
+    const src = relayedElements(length), native = oracle(src).f
+    for (const level of levels(0, 2, 3, 'size')) {
+      const f = jz(src, { optimize: { level, sourceInline: false } }).exports.f
+      for (const n of [0, 0, 1, 3, 4, -1, 0])
+        is(f(n), native(n), `O${level}: ${length} elements, offset ${n}`)
+    }
+  }
+  if (onKernel()) return
+  const src = relayedElements(4), optimize = { level: 'speed', sourceInline: false, watr: false }
+  const { functions } = compile(src, { optimize, inspect: true }).inspect
+  is(functions.put.params[1].range, [0, 3], 'the caller counter bounds the store index')
+  is(functions.put.params[2].range, [0, 3], 'a bounded element becomes a bounded scalar parameter')
+  is(functions.read.params[0].arrayElemRange, [0, 3], 'the scalar parameter bounds the destination elements')
+  is(functions.read.params[1].range, [0, 3], 'the final helper receives the complete counted index hull')
+  const body = funcWat(compile(src, { optimize, wat: true }), 'read')
+  ok(body.includes('i32.load'), 'the dependent element reads remain live')
+  ok(!body.includes('i32.lt_u'), 'both dependent reads use the bounds propagated through calls')
+})
+
+test('interval proof: callee writes join allocation ranges before proving dependent reads', () => {
+  const sources = [
+    `function get(a) { a[0] = 7; return a[a[0]] ?? -1 }
+     export function f() { return get(new Int32Array(4)) }`,
+    `function get(a) { const alias = a; alias[0] = 7; return a[a[0]] ?? -1 }
+     export function f() { return get(new Int32Array(4)) }`,
+    `function change(a) { a[0] = 7 }
+     function get(a) { change(a); return a[a[0]] ?? -1 }
+     export function f() { return get(new Int32Array(4)) }`,
+    `function get(a, b = (a[0] = 7)) { return a[a[0]] ?? -1 }
+     export function f() { return get(new Int32Array(4)) }`,
+    `function get(a, b = a) { b[0] = 7; return a[a[0]] ?? -1 }
+     export function f() { return get(new Int32Array(4)) }`,
+    `function get(a, b = { a }) { b.a[0] = 7; return a[a[0]] ?? -1 }
+     export function f() { return get(new Int32Array(4)) }`,
+    `function get(a) { return a[a[0]] ?? -1 }
+     export function f() {
+       const a = new Int32Array(4), b = new Int32Array(a.buffer)
+       b[0] = 7; return get(a)
+     }`,
+    `function get(a) { return a[a[0]] ?? -1 }
+     export function f() {
+       const a = new Int32Array(4), b = new Int32Array(a?.['buffer'])
+       b[0] = 7; return get(a)
+     }`,
+    `function get(a) { const alias = a ?? new Int32Array(0); alias[0] = 7; return a[a[0]] ?? -1 }
+     export function f() { return get(new Int32Array(4)) }`,
+    `function get(a) { return a[a[0]] ?? -1 }
+     function edit(box) { box.a[0] = 7 }
+     export function f() {
+       const a = new Int32Array(4), box = { a }
+       edit(box); return get(a)
+     }`,
+    `function get(a) { return a[a[0]] ?? -1 }
+     export function f() {
+       const change = () => { a[0] = 7 }
+       const a = new Int32Array(4)
+       change(); return get(a)
+     }`,
+  ]
+  for (const step of ['a[0]++', '++a[0]', 'a[0]--', '--a[0]'])
+    sources.push(`function get(a) { a[0] = ${step.includes('++') ? 3 : 0}; ${step}; return a[a[0]] ?? -1 }
+      export function f() { return get(new Int32Array(4)) }`)
+  for (const [i, src] of sources.entries()) {
+    const native = oracle(src).f
+    for (const level of levels(0, 2, 3, 'size')) {
+      const f = jz(src, { optimize: { level, sourceInline: false } }).exports.f
+      is(f(), native(), `O${level}: callee write ${i}`)
+      is(f(), native(), `O${level}: repeated callee write ${i}`)
+    }
+  }
+})
+
+test('interval proof: conditional receivers and optional calls cannot hide typed writes', () => {
+  const bodies = [
+    `function edit(k, ...rest) { rest[k][0] = 7 }
+     export function f(n) { const a = new Int32Array(4); edit(n & 1, a, a); return get(a) }`,
+    `function edit(k, a, b) { (k ? a : b)[0] = 7 }
+     export function f(n) {
+       const a = new Int32Array(4), b = new Int32Array(4)
+       edit(n & 1, a, b); return [get(a), get(b)]
+     }`,
+    `export function f(n) {
+       const a = new Int32Array(4), b = new Int32Array(4);
+       (n & 1 ? a : b)[0] = 7; return [get(a), get(b)]
+     }`,
+    `function edit(a) { a[0] = 7 }
+     function forward(a) { edit?.(a) }
+     export function f(n) { const a = new Int32Array(4); forward(a); return get(a) }`,
+    `function edit(a) { a[0] = 7 }
+     export function f(n) { const a = new Int32Array(4); edit?.(a); return get(a) }`,
+    `function edit(a) { a[0] = 7 }
+     function forward(a, enabled) { const write = enabled ? edit : null; write?.(a) }
+     export function f(n) { const a = new Int32Array(4); forward(a, n & 1); return get(a) }`,
+  ]
+  for (const [i, body] of bodies.entries()) {
+    const src = `function get(a) { return a[a[0]] ?? -1 }\n${body}`, native = oracle(src).f
+    for (const level of levels(0, 2, 3, 'size')) {
+      const f = jz(src, { optimize: { level, sourceInline: false } }).exports.f
+      for (const n of [0, 0, 1, 0, 1])
+        is(f(n), native(n), `O${level}: hidden writer ${i}, selector ${n}`)
+    }
+  }
+})
+
+test('interval proof: optional calls invalidate plain-array length invariants', () => {
+  const bodies = [
+    `function forward(a) { grow?.(a) }
+     export function f() { const a = [1]; forward(a); return length(a) }`,
+    `export function f() { const a = [1]; grow?.(a); return length(a) }`,
+    `function make() { const a = [1]; grow?.(a); return a }
+     export function f() { return length(make()) }`,
+  ]
+  for (const [i, body] of bodies.entries()) {
+    const src = `function grow(a) { a.push(7) }
+      function length(a) { return a.length }\n${body}`, native = oracle(src).f
+    for (const level of levels(0, 2, 3, 'size')) {
+      const f = jz(src, { optimize: { level, sourceInline: false } }).exports.f
+      is(f(), native(), `O${level}: optional array growth ${i}`)
+      is(f(), native(), `O${level}: repeated optional array growth ${i}`)
+    }
+  }
+})
+
+test('interval proof: parameter length caches follow defaults and reject rebinding', () => {
+  const sources = [
+    `function get(a, b = a, c = b[3]) { return [b[0], c, b[b[0]] ?? -1] }
+     export function f(n) {
+       const a = new Int32Array(n)
+       if (n) a[0] = 7
+       return [get(a), get(a, new Int32Array([1, 2, 3, 4])), get(a)]
+     }`,
+    `function get(a, b = (a = new Int32Array([1, 2, 3, 4]))) { return [a[0], a[3]] }
+     export function f(n) { return get(new Int32Array(n)) }`,
+  ]
+  for (const [i, src] of sources.entries()) {
+    const native = oracle(src).f
+    for (const level of levels(0, 2, 3, 'size')) for (const watr of [false, true]) {
+      const f = jz(src, { optimize: { level, sourceInline: false, watr } }).exports.f
+      for (const n of [0, 1, 1, 4, 0])
+        is(f(n), native(n), `O${level}, watr=${watr}: default sequence ${i}, length ${n}`)
+    }
+  }
+})
+
+test('interval proof: nullable parameter lengths stay behind their presence guards', () => {
+  const sources = [
+    `function read(a) { if (!a) return -2; return a[a[0]] ?? -1 }
+     export function f(mode, n) { if (mode) var a = new Int32Array(n); return read(a) }`,
+    `function read(a) { if (!a) return -2; return a[a[0]] ?? -1 }
+     export function f(mode, n) {
+       const a = mode === 0 ? null : mode === 1 ? undefined : new Int32Array(n)
+       return read(a)
+     }`,
+    `function read(a, enabled) { if (!enabled) return -2; return a[a[0]] ?? -1 }
+     export function f(mode, n) { return read(mode ? new Int32Array(n) : undefined, mode) }`,
+    `function read(a = new Int32Array(0)) { if (!a) return -2; return a[a[0]] ?? -1 }
+     export function f(mode, n) {
+       if (mode === 0) return read(null)
+       if (mode === 1) return read()
+       return read(new Int32Array(n))
+     }`,
+  ]
+  for (const [i, src] of sources.entries()) {
+    const native = oracle(src).f
+    for (const level of levels(0, 2, 3, 'size')) for (const watr of [false, true]) {
+      const f = jz(src, { optimize: { level, sourceInline: false, watr } }).exports.f
+      for (const [mode, n] of [[0, 0], [0, 1], [1, 0], [2, 0], [2, 1], [2, 4], [0, 4], [2, 4]])
+        is(f(mode, n), native(mode, n), `O${level}, watr=${watr}: nullable receiver ${i}, mode ${mode}, length ${n}`)
+    }
+  }
+})
+
+test('interval proof: an unknown incoming array opens every forwarded element range', () => {
+  const src = `
+    function get(a) { return a[a[0]] ?? -1 }
+    function forward(a) { return get(a) }
+    export function f(x) {
+      const b = new Int32Array(4); b[0] = x
+      return [forward(new Int32Array(4)), forward(b)]
+    }`
+  for (const source of [src, src.replace('forward(new Int32Array(4)), forward(b)', 'forward(b), forward(new Int32Array(4))')]) {
+    const native = oracle(source).f
+    for (const level of levels(0, 2, 3, 'size')) {
+      const f = jz(source, { optimize: { level, sourceInline: false } }).exports.f
+      for (const x of [0, 0, 3, 4, 7, -1, 2147483647, 0])
+        is(f(x), native(x), `O${level}: mixed incoming elements, value ${x}`)
+    }
+    if (!onKernel()) {
+      const optimize = { level: 'speed', sourceInline: false, watr: false }
+      const get = funcWat(compile(source, { optimize, wat: true }), 'get')
+      ok(hasCheckedTypedAccess(`(module ${get})`), 'the dependent read remains checked after forwarding an unknown writer')
+    }
+  }
+})
+
+test('interval proof: forwarded lengths include dynamic, reassigned and defaulted arrays', () => {
+  const bodies = [
+    `export function f(n) {
+       const a = Array(n).fill(1)
+       return [forward([1]), forward(a), forward([1])]
+     }`,
+    `function get(a, b) { a = b; return forward(a) }
+     export function f(n) { return get(new Int32Array(1), new Int32Array(n)) }`,
+    `function get(a = new Int32Array(1)) { return forward(a) }
+     export function f(n) { return [get(), get(new Int32Array(n)), get()] }`,
+  ]
+  for (const [i, body] of bodies.entries()) {
+    const src = `function length(a) { return a.length }
+      function forward(a) { return length(a) }\n${body}`, native = oracle(src).f
+    for (const level of levels(0, 2, 3, 'size')) {
+      const f = jz(src, { optimize: { level, sourceInline: false } }).exports.f
+      for (const n of [0, 1, 1, 4, 8, 0, 1])
+        is(f(n), native(n), `O${level}: length sequence ${i}, length ${n}`)
+    }
+  }
+})
+
+test('typed named properties: computed keys preserve buffer aliases and inherited accessors', () => {
+  const src = `export function f(n, key) {
+    key = String(key)
+    const a = new Int32Array(n)
+    const view = new Int32Array(a.buffer, n ? 4 : 0, n ? n - 1 : 0)
+    const buffer = view?.['buffer'], alias = new Int32Array(buffer)
+    if (n) alias[n - 1] = 7
+    const data = new DataView(buffer), value = view[key]
+    return [a[n - 1] ?? -1, a['buffer'].byteLength,
+      view['length'], view['byteLength'], view['byteOffset'], view['BYTES_PER_ELEMENT'],
+      data['byteLength'], data['byteOffset'], data['length'], data['BYTES_PER_ELEMENT'],
+      value instanceof ArrayBuffer ? value.byteLength : value]
+  }`
+  const native = oracle(src).f
+  for (const level of levels(0, 2, 3, 'size')) {
+    const f = jz(src, { optimize: { level, sourceInline: false } }).exports.f
+    for (const n of [0, 1, 1, 4, 0])
+      for (const key of ['buffer', 'BYTES_PER_ELEMENT', 'length', 'byteLength', 'byteOffset', 'buffer\0', 'BYTES_PER_ELEMENT\0', 'unknown'])
+        is(f(n, key), native(n, key), `O${level}: ${n} elements, property ${JSON.stringify(key)}`)
+  }
+})
+
+test('typed named properties: element widths agree for every typed storage kind', () => {
+  const ctors = ['Int8Array', 'Uint8Array', 'Uint8ClampedArray', 'Int16Array', 'Uint16Array',
+    'Int32Array', 'Uint32Array', 'Float16Array', 'Float32Array', 'Float64Array', 'BigInt64Array', 'BigUint64Array']
+    .filter(name => typeof globalThis[name] === 'function')
+  const src = ctors.map((name, i) => `export function f${i}(n, key) {
+    key = String(key)
+    const a = new ${name}(n)
+    const view = new ${name}(a.buffer, n ? ${globalThis[name].BYTES_PER_ELEMENT} : 0, n ? n - 1 : 0)
+    return [a[key], view[key], a.BYTES_PER_ELEMENT, view?.['BYTES_PER_ELEMENT']]
+  }`).join('\n')
+  const native = oracle(src)
+  for (const level of levels(0, 2, 3, 'size')) {
+    const wasm = jz(src, { optimize: { level, sourceInline: false } }).exports
+    for (const [i, name] of ctors.entries()) for (const n of [0, 1, 4])
+      is(wasm[`f${i}`](n, 'BYTES_PER_ELEMENT'), native[`f${i}`](n, 'BYTES_PER_ELEMENT'), `O${level}: ${name}, length ${n}`)
+  }
+})
+
+test('interval proof: scalar relay bounds include missing values, defaults and reassignment', () => {
+  const bodies = [
+    ['missing read', `function relay(a, k) { return get(a, a[k]) }
+      export function f(x) { const a = new Int32Array([1, 2, 3, 0]); return relay(a, x) }`],
+    ['default parameter', `function relay(a, k = 7) { return get(a, k) }
+      export function f(x) { const a = new Int32Array([1, 2, 3, 0]); return [relay(a, 0), relay(a)] }`],
+    ['reassigned parameter', `function relay(a, k, x) { k = x; return get(a, k) }
+      export function f(x) { const a = new Int32Array([1, 2, 3, 0]); return relay(a, 0, x) }`],
+    ['closure-assigned parameter', `function relay(a, k, x) { const change = () => { k = x }; change(); return get(a, k) }
+      export function f(x) { const a = new Int32Array([1, 2, 3, 0]); return relay(a, 0, x) }`],
+    ['stored wrapping', `function put(a, value) { a[0] = value }
+      export function f(x) { const a = new Int8Array([0, 11, 22, 33]); put(a, x); return get(a, a[0]) }`],
+    ['empty array', `function relay(a) { return get(a, a[0]) }
+      export function f(x) { return relay(new Int32Array(0)) }`],
+  ]
+  for (const [name, body] of bodies) {
+    const src = `function get(a, k) { return a[k] ?? -1 }\n${body}`, native = oracle(src).f
+    for (const level of levels(0, 2, 3, 'size')) {
+      const f = jz(src, { optimize: { level, sourceInline: false } }).exports.f
+      for (const x of [0, 0, 1, 3, 4, -1, 7, 127, 128, 255, 256, 257, 0])
+        is(f(x), native(x), `O${level}: ${name}, value ${x}`)
+    }
+  }
+})
+
+test('interval proof: relayed element facts are independent of prior compilations', () => {
+  if (onKernel()) return
+  const src = relayedElements(4)
+  const other = src.replace('a[i] = (i + (n & 3)) & 3', 'a[i] = n')
+  for (const level of levels(0, 2, 3, 'size'))
+    assertCompileHistoryIndependent(src, [src, other, relayedElements(0), src],
+      { optimize: { level, sourceInline: false } }, `O${level}: relayed elements`)
 })
 
 const INPUTS = [

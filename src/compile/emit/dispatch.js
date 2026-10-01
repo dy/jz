@@ -15,7 +15,7 @@ import {
 } from '../../ir.js'
 import { BIGINT_JOINT_BINARY_OPS, isPresentNumber, hasAmbiguousBoolMerge, nullishArm, valTypeOf, boolTagged, mixedBoolKind } from '../../kind.js'
 import { VAL, lookupValType, repOf, repOfGlobal, numericStorage, mayBeUndefined } from '../../reps.js'
-import { nonNegIntLiteral, staticPropertyKey, staticArrayElems, staticObjectProps, intExprRange } from '../../static.js'
+import { nonNegIntLiteral, constIntExpr, staticPropertyKey, staticArrayElems, staticObjectProps, intExprRange } from '../../static.js'
 import { functionLength } from '../../function.js'
 import { exprType, isTerminator } from '../../type.js'
 import {
@@ -68,19 +68,25 @@ export const emitBoolStr = (node) =>
  * Index consumers must separately prove the full result fits; a coercing local
  * write deliberately takes the residue, including overflow. */
 const I32_INDEX_OP = { '+': 'i32.add', '-': 'i32.sub', '*': 'i32.mul' }
-function tryI32Index(e) {
+const indexWordRange = name => exprType(name, ctx.func.locals) === 'i32'
+  ? repOf(name)?.unsigned ? [0, 4294967295] : [-2147483648, 2147483647] : null
+function tryI32Index(e, exact = false) {
   // Integer literal first — a prepare-wrapped literal `[null, k]` (and a const-int
   // name) is itself an Array, so the operator dispatch below would reject it and
   // bail the WHOLE index to the f64 round-trip. The classic victim is the `+ 1` /
   // `(j + 1)` of a bilinear/stencil gather (`a[(j+1)*W + i + 1]`): one literal leaf
   // forced `convert_i32 … f64.mul/add … trunc_sat_f64_s` across every term.
-  const lit = nonNegIntLiteral(e)
+  const lit = constIntExpr(e)
   if (lit != null) return typed(['i32.const', lit], 'i32')
   if (Array.isArray(e)) {
     const inner = I32_INDEX_OP[e[0]]
     if (inner && e[2] != null) {
-      const a = tryI32Index(e[1]); if (a == null) return null
-      const b = tryI32Index(e[2]); if (b == null) return null
+      // Every intermediate must agree with JS integer arithmetic: a large
+      // rounded product can cancel into a small final hull.
+      const range = exact && intExprRange(e, indexWordRange)
+      if (exact && (!range || range[0] < -9007199254740991 || range[1] > 9007199254740991)) return null
+      const a = tryI32Index(e[1], exact); if (a == null) return null
+      const b = tryI32Index(e[2], exact); if (b == null) return null
       return typed([inner, a, b], 'i32')
     }
     return null
@@ -98,12 +104,13 @@ const wholeKey = (e) => {
   return WHOLE_OPS.has(e[0]) && e.length === 3 && wholeKey(e[1]) && wholeKey(e[2])
 }
 export const emitIndex = (index, whole = false) => {
-  // Wrapping arithmetic is equivalent only when the full result fits.
-  // Otherwise, e.g. 65536 * 65536 would address element zero.
-  const range = Array.isArray(index) && I32_INDEX_OP[index[0]] ? intExprRange(index) : null
+  // An unsigned bounds test rejects negative words and positive values past
+  // 2^31 alike. A hull within [-2^31, 2^32) therefore keeps its low word;
+  // beyond it, e.g. 65536 * 65536 would wrap into element zero.
+  const range = Array.isArray(index) && I32_INDEX_OP[index[0]] ? intExprRange(index, indexWordRange) : null
   const exact = whole || !Array.isArray(index) || !I32_INDEX_OP[index[0]] ||
-    range && range[0] >= -2147483648 && range[1] <= 2147483647
-  const direct = exact && tryI32Index(index)
+    range && range[0] >= -2147483648 && range[1] < 4294967296
+  const direct = exact && tryI32Index(index, true)
   if (direct) return direct
   const proven = whole
   whole ||= wholeKey(index)

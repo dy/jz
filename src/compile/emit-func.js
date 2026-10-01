@@ -274,10 +274,6 @@ export function emitFunc(func, functionPlan, programFacts, arrayGlobals) {
     // answer is loop-invariant for a stable-global receiver — resolve it once.
     // Mirrors sidecarOverride's arm: primitives (real numbers, strings) can
     // never carry an own override, so only NaN-boxed non-STRING receivers probe.
-    // Function-invariant typed lens (module/typedarray.js leanLen): a stable
-    // PARAM receiver's element count, shared by every checked read/write guard.
-    if (ctx.func.lenHoist) for (const h of ctx.func.lenHoist.values())
-      inits.push(['local.set', `$${h.t}`, h.init])
     if (ctx.func.probeHoist) for (const ph of ctx.func.probeHoist.values()) {
       const g = () => ['i64.reinterpret_f64', ph.recvIR()]
       inits.push(
@@ -294,6 +290,10 @@ export function emitFunc(func, functionPlan, programFacts, arrayGlobals) {
     for (const p of sig.params) {
       const di = defaultInits.get(p.name)
       if (di) inits.push(di)
+      // A cached typed length reads the initialized parameter, and later
+      // defaults may already use that cache for their own checked reads.
+      if (ctx.func.lenHoist) for (const h of ctx.func.lenHoist.values())
+        if (h.arr === p.name) inits.push(['local.set', `$${h.t}`, h.init])
       const dec = ctx.func.charDecomp?.get(p.name)
       if (dec) inits.push(...emitCharDecompPrologue(dec))
     }
