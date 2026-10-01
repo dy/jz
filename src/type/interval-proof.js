@@ -139,7 +139,7 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
   }
   const constInt = (e) => {
     const n = intLiteralValue(e)
-    if (n != null) return n
+    if (n != null) return Object.is(n, -0) ? null : n
     if (typeof e === 'string' && !env.has(e) && !closureWrites.has(e)) {
       const ci = ctx.scope?.constInts?.get?.(e)
       if (ci != null && isI32(ci)) return ci
@@ -196,7 +196,12 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
       visit(e)
       return env.get(x) ?? null
     }
-    if (e.length === 2 && (op === '-' || op === 'u-')) { const v = ev(x); return ipOk(v) && v ? [-v[1], -v[0]] : null }
+    if (e.length === 2 && (op === '-' || op === 'u-')) {
+      const v = ev(x)
+      // Call hulls may authorize signed-word storage. A zero input negates to
+      // -0, which an ordinary magnitude interval cannot distinguish from +0.
+      return ipOk(v) && (v[1] < 0 || v[0] > 0) ? [-v[1], -v[0]] : null
+    }
     if (op === '?:' && e.length === 4) {   // join of both arms, each under its refinement
       visit(x)
       const saved = new Map(env)
@@ -236,6 +241,7 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
     if (op === '+') r = [A[0] + B[0], A[1] + B[1]]
     else if (op === '-') r = [A[0] - B[1], A[1] - B[0]]
     else if (op === '*') {
+      if (A[0] <= 0 && A[1] >= 0 && B[0] < 0 || B[0] <= 0 && B[1] >= 0 && A[0] < 0) return null
       const p = [A[0] * B[0], A[0] * B[1], A[1] * B[0], A[1] * B[1]]
       r = [Math.min(...p), Math.max(...p)]
     }

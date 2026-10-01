@@ -1891,6 +1891,30 @@ test('param i32-narrowing: scalar param fed integer typed-array elements narrows
   ok(/\(param \$hash i32\)/.test(grad), 'grad hash param narrows to i32 (fed a local bound to an Int32 param element)')
 })
 
+test('param i32-narrowing: call hulls preserve zero signs through every producer', () => {
+  for (const expr of ['-n', 'n * -1', '-1 * n', 'n / -2', '(-n) % 2', '(-n) * 0', '(n ? -n : -0)', '-0']) {
+    const src = `function take(x) { return [x, 1 / x] }
+      function forward(x) { return take(x) }
+      export function value(m) { const n = m & 3; return [take(${expr}), forward(${expr})] }`
+    const want = oracle(src)
+    for (const level of levels(0, 1, 2, 3, 'size')) {
+      const got = jz(src, { optimize: { level, sourceInline: false } }).exports
+      for (const n of [0, 1, 2, 3, 0, 0, 1]) is(got.value(n), want.value(n), `${expr}, O${level}, ${n}`)
+    }
+  }
+})
+
+test('param i32-narrowing: nonzero sign-changing arguments retain integer storage', () => {
+  if (onKernel()) return
+  for (const expr of ['-n', 'n * -1', '-1 * n']) {
+    const src = `function take(x) { return x }
+      export function value(m) { const n = (m & 3) + 1; return take(${expr}) }`
+    const tree = parseWat(jz.compile(src, { wat: true, optimize: { sourceInline: false, watr: false } }))
+    const take = tree.find(n => n[0] === 'func' && n[1] === '$take')
+    ok(take?.some(n => n[0] === 'param' && n[1] === '$x' && n[2] === 'i32'), `${expr}: the nonzero argument remains a signed word`)
+  }
+})
+
 test('param i32-narrowing: recursive arguments preserve width rather than integer closure', () => {
   for (const expr of ['n + 1', 'n - 1', 'n * 2', '-n', 'n >>> 0', 'n % 2', 'n + 2147483648', '(n + 1) | 0', 'n >>> 1']) {
     const src = `function recur(n, done) { if (done) return n; return recur(${expr}, 1) }

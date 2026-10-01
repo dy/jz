@@ -695,7 +695,9 @@ The source read still needs its own canonical presence proof. Only the exact
 dependent access receives a bounds proof: scalar aliases, returned buffers,
 sentinel postconditions and unequal affine lengths are not inferred here.
 The interval interpreter spans the full signed word; overflowing transfers
-become unknown. Body analysis can request complete scalar binding hulls from
+become unknown. Its call hulls may authorize integer parameter storage, so
+negative-zero literals and sign-changing transfers that can produce negative
+zero also become unknown; a magnitude bound alone cannot preserve that value. Body analysis can request complete scalar binding hulls from
 that same walk, before storage widening and vectorization. Only stable loop
 passes contribute; every read and write joins, including initializers and final
 updates. Missing entries and unknown writes reject a hull, and captured bindings
