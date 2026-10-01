@@ -11,6 +11,29 @@ import { oracle, funcWat } from './util.js'
 
 const run = (body) => jz('export let f = () => {' + body + '}', { jzify: true }).exports.f()
 
+test('dictionary literals: replacement and repeated declarations preserve retained identities', () => {
+  const sources = [
+    `const keys=['a','b','c','d','e','f'];let dict={};const saved=[];
+      export function f(n){saved.push(dict);dict={};
+        for(let i=0;i<n;i++)dict[keys[i]]=i+1;
+        return [JSON.stringify(dict),Object.keys(dict),dict.a,saved.map(x=>JSON.stringify(x))]}`,
+    `export function f(n){const saved=[];let dict={};
+      for(let i=0;i<n;i++){saved.push(dict);dict={};dict['k'+i]=i+1}
+      return [JSON.stringify(dict),saved.map(x=>JSON.stringify(x))]}`,
+    `export function f(n){const saved=[];
+      for(let i=0;i<n;i++){const dict={};dict['k'+i]=i+1;saved.push(dict)}
+      return saved.map(x=>JSON.stringify(x))}`,
+    `export function f(n){const saved=[];
+      for(let i=0;i<n;i++){const dict={},key='k'+i;dict[key]=i+1;saved.push(()=>dict[key]|0)}
+      return saved.map(read=>read())}`,
+  ]
+  for (const src of sources) for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const expected = oracle(src), actual = jz(src, { optimize }).exports
+    for (const n of [0,1,6,6,2,0,1])
+      is(actual.f(n), expected.f(n), `O${optimize}, n=${n}, case ${sources.indexOf(src)}`)
+  }
+})
+
 test('computed reads capture receiver before key effects and coercion', () => {
   for (const [first,next] of [['[3]','[7]'], ['new Float32Array([3])','new Float32Array([7])'],
     ['new Float64Array([3])','new Float64Array([7])'], ['"abc"','"xyz"'], ['{0:3}','{0:7}']]) {

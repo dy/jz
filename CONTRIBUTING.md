@@ -2008,6 +2008,9 @@ counter's EXTENT, entry on one side and loop bound on the other
 rather than reading it.
 
 Ephemeral dictionaries use the same zeroed header allocator as other collections.
+Empty-literal reassignment uses the binding's planned layout, just as declaration
+does. Clearing a prior table requires a private local receiver: bare aliases,
+closure references and module bindings keep fresh allocation identities.
 A count dictionary the census proves i32-lean keeps the raw word in its slots
 and reads it with a bare wrap, so every store path encodes the value the same
 way (`emit-assign.js` `dynSetValueI64`), the runtime key-kind dispatch's string

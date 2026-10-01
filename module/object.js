@@ -21,6 +21,7 @@ import { deletedMaskIR, deletedSlotIR, HEAP, DATA_VIEW_FLAG, nanPrefixHex } from
 import { enumView, enumKeys, viewsOn, enumViewsOn, ENUM_DATA, ENUM_GET } from './schema.js'
 import { ACCESSOR_CALL } from '../src/compile/emit/accessor-call.js'
 import { demandHostReceiver } from '../src/compile/func-exports.js'
+import { isGlobal } from '../src/ir/vars.js'
 import { durableObjSnapNode, hasDurableReset } from './collection/durable.js'
 
 // Object.prototype.toString tag per value category. Matches what JS engines
@@ -84,7 +85,11 @@ export default (ctx) => {
           (ctx.types.dynWriteVars?.has(target) || writtenAsRecord)) {
         ctx.module.include('collection')
         const domain = ctx.func.leanHashDomains?.get(target)
-        const old = asI64(emit(target))
+        // Clearing a previous allocation is legal only when no alias or
+        // closure can retain it. The lean-use census proves that for locals;
+        // globals remain observable from other functions and host calls.
+        const reuse = !ctx.func.atModuleScope && !isGlobal(target) && ctx.func.leanHashLocals?.has(target)
+        const old = reuse ? asI64(emit(target)) : ['i64.const', 0]
         inc('__hash_reuse_eph')
         // The dict decision is made at PLAN time (analyze's dynWriteVars +
         // empty-merged gate stamps VAL.HASH on both decl and `=` paths) —

@@ -1,7 +1,7 @@
 /** Project settled value and presence facts; derive physical storage constraints. */
 import { DBG_INVARIANTS } from '../../debug.js'
 import { OPTF, ctx } from '../../ctx.js'
-import { ASSIGN_OPS, MUTATE_OPS } from '../../ast.js'
+import { ASSIGN_OPS, MUTATE_OPS, refsName, REFS_IN_EXPR } from '../../ast.js'
 import { VAL, repOf, updateRep } from '../../reps.js'
 import { valTypeOf, shapeOf, boolTagged } from '../../kind.js'
 import { intExprRange, objLiteralSchemaId } from '../../static.js'
@@ -30,7 +30,8 @@ function dictWalkLean(body, name) {
     if (typeof n === 'string') { if (n === name) return false; continue }
     if (!Array.isArray(n)) continue
     const op = n[0]
-    if (op === '=>' || op === 'str') continue
+    if (op === '=>') { if (refsName(n, name, REFS_IN_EXPR)) return false; continue }
+    if (op === 'str') continue
     // WRITE/RMW target `name[k] (op)= v`: the ephemeral-slot upsert serves it.
     // Inside the RHS, the RMW's OWN read (structurally equal to the target —
     // emit-assign's _rmwStructEq fuses exactly that) is part of the same slot

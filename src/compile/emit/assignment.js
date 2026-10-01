@@ -235,7 +235,7 @@ export const assignmentOps = {
     // Literal reassignment adopts the same settled layout as declaration.
     // Without the target, a reordered literal allocates its own schema while
     // subsequent binding reads still use the planned field offsets.
-    const objectLiteral = Array.isArray(val) && val[0] === '{}' && val.length > 1
+    const objectLiteral = Array.isArray(val) && val[0] === '{}'
     let ev
     if (objectLiteral) ctx.schema.targetStack.push({ name, active: true })
     try { ev = withInitializerScope(selfAccum ? name : null, () => tagged && hasAmbiguousBoolMerge(val) ? emitIdentitySafe(val) : emit(val)) }
