@@ -513,7 +513,7 @@ function fixedTypedLoad(fn) {
   }
 }
 
-function computeLoopInvariance(loopNode, { distinctParams, baseParamOf, allowPrivateSets = false, stableHeaderNames = null, presentArrays = null, presentTyped = null, defs = null, views = null, fixedLoad = null }) {
+function computeLoopInvariance(loopNode, { distinctParams, baseParamOf, allowPrivateSets = false, stableHeaderNames = null, presentArrays = null, presentTyped = null, defs = null, views = null, fixedLoad = null, scopedLoad = null }) {
   const presentNames = presentArrays || stableHeaderNames
     ? new Set([...(presentArrays ?? []), ...(stableHeaderNames ?? [])]) : null
   const headerSafe = ctx.scope.headerSafeFuncs ?? null
@@ -583,7 +583,7 @@ function computeLoopInvariance(loopNode, { distinctParams, baseParamOf, allowPri
       if (name) return pureGiven(['local.get', name], bound)
     }
     if (op === 'i32.load') { const view = viewWord(node, views); if (view) return pureGiven(view, bound) }
-    if (((op === 'f64.load' || op === 'i32.load') && node.length === 2) || (op === 'f32.load' && fixedLoad?.(node))) {
+    if (((op === 'f64.load' || op === 'i32.load') && node.length === 2) || (op === 'f32.load' && (fixedLoad?.(node) || scopedLoad?.(node)))) {
       // An address a hoist left in a local of its own (`$__li = ptr - 8`) is
       // the address its one write computes.
       const addr = node[node.length - 1]
@@ -897,6 +897,22 @@ export function hoistInvariantLoop(fn) {
   const defs = presentArrays || stableHeaderNames ? singleDefs(fn, bodyStart) : null
   const hardOpCache = new Map()
   const fixedLoad = fixedTypedLoad(fn)
+  // Parent links are an occurrence proof, not a function-wide load license.
+  // A moved read can climb inner loops only while its owning loop remains a
+  // strict ancestor of the destination. Missing/rebuilt metadata fails closed.
+  let parents = null
+  if (fn.hasBoundsOwners) {
+    const own = (node, parent = null, scoped = false) => {
+      if (!Array.isArray(node)) return
+      if (node[0] === 'loop') {
+        scoped ||= node.boundsOwner != null
+        if (scoped) (parents ??= new Map()).set(node, parent)
+        parent = node
+      }
+      for (let i = 1; i < node.length; i++) own(node[i], parent, scoped)
+    }
+    own(fn)
+  }
   hoistInvariants(fn, {
     prefix: '$__li',
     callType: callee => {
@@ -905,7 +921,13 @@ export function hoistInvariantLoop(fn) {
       return null
     },
     analyze: (loop, nested) => {
-      const { pureGiven, hasV128 } = computeLoopInvariance(loop, { distinctParams, baseParamOf, stableHeaderNames, presentArrays, presentTyped: fn.presentTyped || null, defs, views: fn.viewNames || null, fixedLoad })
+      const scopedLoad = parents ? node => {
+        if (node.boundsOwner == null) return false
+        for (let at = parents.get(loop); at; at = parents.get(at))
+          if (at.boundsOwner === node.boundsOwner) return true
+        return false
+      } : null
+      const { pureGiven, hasV128 } = computeLoopInvariance(loop, { distinctParams, baseParamOf, stableHeaderNames, presentArrays, presentTyped: fn.presentTyped || null, defs, views: fn.viewNames || null, fixedLoad, scopedLoad })
       return (node, bound) => ((nested && !hasV128) || hasHardOp(node, hardOpCache) || isPtrBaseDecode(node)) && pureGiven(node, bound)
     },
   })

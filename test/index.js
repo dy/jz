@@ -94,6 +94,7 @@ const TESTS = [
   'element-bounds',
   'licm-typed-views',
   'licm-float32',
+  'licm-loop-bounds',
   'flow-range',
   'store-merge',
   'const-seed',

@@ -24,7 +24,7 @@ import { errorCodeLiteral, ERR } from '../err-codes.js'
 import { representationProgramHasBigint } from '../src/compile/representation-plan.js'
 import { plannedTypedStorageCtor, plannedTypedStorageInfo, plannedTypedPayloadInfo } from '../src/compile/typed-storage-plan.js'
 import { isNullable } from '../src/summary/kind.js'
-import { activeBoundsAssumption } from '../src/type/canonical-bounds.js'
+import { activeBoundsAssumption, activeBoundsFrame } from '../src/type/canonical-bounds.js'
 import { frameNode } from '../src/function.js'
 import { requireReceiverWat } from './core/error-object.js'
 import { captureCallback, makeCallback, idxArg } from './array/callback.js'
@@ -2165,7 +2165,8 @@ export default (ctx) => {
   ctx.core.emit['.typed:[]'] = (arr, i, node = null) => {
     // Under a versioning guard the receiver is present (the guard tested it):
     // one that may be missing reads as its payload's kind.
-    const r = resolveElem(arr, typeof arr === 'string' && activeBoundsAssumption(ctx, arr, i))
+    const boundsOwner = typeof arr === 'string' ? activeBoundsFrame(ctx, arr, i) : null
+    const r = resolveElem(arr, boundsOwner != null)
     if (r == null) return null // open ctor: array.js uses the tagged runtime reader
     const { et, isView, isBigInt } = r
     // idxKey builds a string (JSON.stringify for expression indices) — price
@@ -2287,6 +2288,12 @@ export default (ctx) => {
     }
     const off = ['i32.add', typedDataAddr(objIR, isView), ['i32.shl', vi, ['i32.const', SHIFT[et]]]]
     const loadIR = loadOf(off)
+    // This guard proves the cell throughout its owning loop body. Motion may
+    // leave an inner loop, but must stop inside this exact emitted owner.
+    if (et === 6 && !indexValid && boundsOwner) {
+      ctx.func.boundsMotion = boundsOwner.boundsMotion = true
+      loadIR[1].boundsOwner = boundsOwner.loop
+    }
     // A post-increment read of an integer element keeps the convert outermost
     // (`convert(block (result i32) pre… load)`), so an integer store or `|0`
     // consumer peels it back to the raw i32 exactly as for a plain read.

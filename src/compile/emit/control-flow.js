@@ -1115,6 +1115,7 @@ export const controlFlowOps = {
     if (step) loopBody.push(...withRefinements(initRefs, step, () => emitVoid(step)))
     loopBody.push(['br', loop])
     const loopBlockNode = ['block', brk, ['loop', loop, ...loopBody]]
+    if (frame.boundsMotion) loopBlockNode[2].boundsOwner = frame.loop
     // Per-iteration arena rewind (compile/analyze/frame-effects.js): an iteration
     // that lets no allocation escape and builds a value restores the heap pointer
     // at its start, so its temporaries never accumulate. Recorded here on

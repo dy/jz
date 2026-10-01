@@ -888,8 +888,8 @@ LICM extraction is shared through watr's `hoistInvariants`: traversal, private-l
 checks, structural deduplication and temporary typing have one owner. JZ supplies
 per-loop invariance and speculation-safety proofs for its helper calls and memory
 representations, plus profitability policy. Watr's standalone proof remains
-conservative about memory and calls. Proofs are invocation-local callbacks over
-Wasm instructions, never properties attached to instruction arrays. JZ still calls
+conservative about memory and calls. Watr receives invocation-local proof callbacks
+over Wasm instructions. JZ still calls
 the shared engine before and after address rewriting; watr calls it after inlining.
 Those distinct maturity points remain necessary for current lowering patterns.
 The shared engine counts local references once per function and updates that
@@ -906,7 +906,16 @@ owned parameter as a separate no-trap proof. The entire load must fit, including
 its memory offset; distinct-buffer facts separately rule out loop writes and
 calls that could change it. Unknown extents, views and rebound pointers retain
 their reads. Single-precision arithmetic follows the same nontrapping rules as
-double precision. This does not infer extents for rebound scratch allocations.
+double precision. This fixed-extent rule does not infer capacities for rebound
+scratch allocations.
+A versioned loop's existing extent guard separately allows Float32 scratch reads
+to leave a nested loop. Emission marks each raw read with the exact emitted loop
+that owns its bounds proof. LICM accepts it only while that owner remains a strict
+ancestor of the destination, its address is invariant, and calls/stores cannot
+change the cell. The read stops inside the guarded outer iteration, including
+when the inner loop runs zero times. Copied loops retain local ownership; missing
+metadata fails closed. A function-level demand flag avoids the ancestry walk for
+ordinary bodies, but never licenses a load. No runtime guard or late pass is added.
 
 Value numbering and statement scheduling are watr's (`valueNumber`, `schedule`),
 run once before its rounds; jz enables them (`valueNumber`, `scheduleStatements`

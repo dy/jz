@@ -57,6 +57,7 @@ export function createActiveFunction({
     finallyStack: null,
     pendingLabel: null,
     refinements: null,
+    boundsMotion: false, // emission produced loop-owned load metadata; a traversal demand, never a load proof
     versioned: null,      // Set<loop body> already typed-bounds versioned under this frame
     flowValBlocked: null,
 
@@ -149,7 +150,7 @@ export function isInactiveFunction(ctx) {
     unallocated(frame.sliceViews) && unallocated(frame.arrayViews) && frame.restView === null && unallocated(frame.leanHashLocals) && unallocated(frame.i32HashLocals) &&
     unallocated(frame.leanHashDomains) && unallocated(frame.preboxed) && frame.preboxInits === null &&
     Array.isArray(frame.stack) && frame.stack.length === 0 && frame.inTry === false &&
-    frame.finallyStack === null && frame.pendingLabel === null && unallocated(frame.refinements) &&
+    frame.finallyStack === null && frame.pendingLabel === null && unallocated(frame.refinements) && !frame.boundsMotion &&
     frame.flowValBlocked === null && frame.repsFrozen === false && unallocated(frame.p1Predicted) &&
     emptyMap(frame.localValTypesOverlay) && frame.localTypedElemsOverlay === null &&
     unallocated(frame.closureAux) && frame.directClosures === null && unallocated(frame.zeroInitSeen) &&

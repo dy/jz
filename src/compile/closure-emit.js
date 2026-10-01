@@ -417,6 +417,7 @@ export function emitClosureBody(cb, functionPlan) {
   // I: Skip trailing fallback when last statement is return
   // Implicit fall-through return is `undefined` per JS spec, not 0.
   if (block && !(bodyIR.at(-1)?.[0] === 'return' || bodyIR.at(-1)?.[0] === 'return_call')) fn.push(undefExpr())
+  if (ctx.func.boundsMotion) fn.hasBoundsOwners = true
   publishLoopRewinds(ctx, cb.name)
   return fn
   } finally {

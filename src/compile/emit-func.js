@@ -378,6 +378,7 @@ export function emitFunc(func, functionPlan, programFacts, arrayGlobals) {
   for (const l of [...ctx.func.locals.keys(), ...sig.params.map(p => p.name)])
     if (plannedTypedStorageInfo(ctx, l)?.isView) views.add(dollar(l))
   if (views.size) fn.viewNames = views
+  if (ctx.func.boundsMotion) fn.hasBoundsOwners = true
   publishLoopRewinds(ctx, name)
   return fn
   } finally {

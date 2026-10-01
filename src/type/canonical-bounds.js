@@ -417,12 +417,13 @@ export function maxAdvanceBudget(root, name, { constInt, evRange, closureWrites,
 }
 
 /** A guarded extent proof applies only inside its versioned loop. */
-export function activeBoundsAssumption(ctx, recv, idx) {
+export function activeBoundsFrame(ctx, recv, idx) {
   // a versioned assumption is scoped to its OWNING loop: honored only while that
   // loop's frame is on the emission stack (a textual twin of the access OUTSIDE
   // the loop sees the cursor past its bound and must stay checked)
   const owner = ctx.types.assumedBounds?.get(idxKey(recv, idx))
-  if (owner != null && ctx.func.stack?.some(f => f.bodyNode === owner)) return true
+  const frame = owner == null ? null : ctx.func.stack?.find(f => f.bodyNode === owner)
+  if (frame) return frame
   // 4b. per-RECEIVER guarded const hull — the value-level twin of the key channel.
   //     The versioned guard proved every CONSTANT extent ≤ hull.max < recv.length,
   //     so any read whose index is a compile-time constant within the hull is
@@ -431,12 +432,14 @@ export function activeBoundsAssumption(ctx, recv, idx) {
   //     AST-JSON assumption keys break under those; the receiver name + value do
   //     not. Same owner-frame scoping as the key channel.
   const hull = ctx.types.assumedConstHull?.get(recv)
-  if (hull != null && ctx.func.stack?.some(f => f.bodyNode === hull.owner)) {
-    const v = constIntExpr(idx)
-    if (v != null && v >= 0 && v <= hull.max) return true
+  if (hull != null) {
+    const frame = ctx.func.stack?.find(f => f.bodyNode === hull.owner)
+    if (frame) { const v = constIntExpr(idx); if (v != null && v >= 0 && v <= hull.max) return frame }
   }
-  return false
+  return null
 }
+
+export const activeBoundsAssumption = (ctx, recv, idx) => activeBoundsFrame(ctx, recv, idx) != null
 
 /** Read existing index proofs without invoking the interval interpreter. */
 export function typedIndexKnown(ctx, recv, idx) {
