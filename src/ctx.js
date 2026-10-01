@@ -589,15 +589,6 @@ export function reset(proto, globals, bridge) {
     dateSid: null,
     ensureDateSid: null,
     targetStack: [],
-                          // element AST nodes (the array sibling of `vars` above).
-                          // NOT content-deduped like the object schema list: arrays
-                          // have no structural identity to safely share a program-wide
-                          // id by (every same-length array literal would collide onto
-                          // one id). Populated only for compiler-synthesized decl-
-                          // destructure temps (prepare/index.js prepDecl), which are
-                          // single-write and non-escaping by construction — read by
-                          // kind.js valTypeOf's VT['[]'] to recover an element's kind
-                          // through `let [a, b] = [1, BigInt(v)]`-shaped destructuring.
     slotConstInts: new Map(), // schemaId → Array<int | null | undefined>
                               //   integer discriminants observed at every source
                               //   literal construction of a schema. null means
