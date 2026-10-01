@@ -99,8 +99,6 @@ export function optimizeFunc(fn, cfg, globalTypes, reachableWrites) {
   // After the address hoists: a chained kernel's out-parameter results stay in the locals
   // that staged them, and the stores the chain overwrites go.
   if (!cfg || cfg.forwardStores !== false) forwardStores(fn)
-  // After the peephole walk: it matches the ToInt32 sinks in their final shape.
-  if (cfg && cfg.wideAccumulator === true) wideAccumulator(fn)
   if (!cfg || cfg.promoteGlobals !== false) promoteGlobals(fn, globalTypes, reachableWrites)
   if (cfg && cfg.vectorizeLaneLocal === true) {
     // Vectorization is jz LOWERING — it always runs pre-watr (never in a post-watr
@@ -137,6 +135,8 @@ export function optimizeFunc(fn, cfg, globalTypes, reachableWrites) {
     // iteration in hot dot/sum-style reduction loops.
     foldV128Memargs(fn)
   }
+  // After the lift: scalar accumulator copies otherwise hide the original loop scaffold.
+  if (cfg && cfg.wideAccumulator === true) wideAccumulator(fn)
   // After the lift: the vectorizer reads a conditional update in its branch form.
   if (cfg && cfg.guardedUpdate === true) foldGuardedUpdates(fn)
   // After the unswitch and the lift: the accesses they left to the helpers.

@@ -862,6 +862,31 @@ test('SIMD f32x4 - conditional (ternary/select) vectorizes + correct', () => {
   }`, { optimize: 'speed' }).exports.m(), (-1)*1000 + 1*100 + (-4)*10 + 4) // -1,1,-4,4
 })
 
+test('SIMD numeric arms preserve present values and normalize actual missing values', () => {
+  for (const input of ['new Float64Array([-0, 0, -2, 3, NaN, Infinity, -Infinity])',
+    'new Float32Array([-0, 0, -2, 3, NaN, Infinity, -Infinity])',
+    '[, -0, undefined, NaN, -2, 3, Infinity]']) {
+    const src = `export function map(n, choose) {
+      const a = ${input}; a[2] = a[0]
+      const out = new Float64Array(n)
+      for (let i = 0; i < n; i++) {
+        const first = a[i], v = first
+        out[i] = choose ? (v > 0 ? v : 0) : v
+      }
+      return out
+    }`
+    const expected = oracle(src).map
+    for (const level of levels(0, 1, 2, 3, 'size')) {
+      const actual = jz(src, { optimize: { level } }).exports.map
+      for (const [n, choose] of [[0, 0], [0, 1], [1, 0], [2, 1], [7, 0], [7, 0], [9, 0], [9, 1], [3, 0], [7, 0]]) {
+        const got = actual(n, choose), want = expected(n, choose)
+        is(got.length, want.length, `O${level}: length ${n}, arm ${choose}`)
+        for (let i = 0; i < n; i++) ok(Object.is(got[i], want[i]), `O${level}: ${input}, ${n}/${choose}, lane ${i}`)
+      }
+    }
+  }
+})
+
 test('SIMD f64x2 - general conditional select vectorizes (bit-exact)', () => {
   // relu `v>0?v:0` — a general value-select, lifts to bitselect with no precision
   // change (f64 lane needs no relaxedSimd).

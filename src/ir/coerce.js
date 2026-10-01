@@ -273,7 +273,7 @@ export function toNumF64(node, v) {
   const readKind = ctx.summary?.at(ctx.func.current).kindOfExpr(node) ?? K.NONE
   if ((readKind & TAGS) === (bitOf(K.NUMBER) | bitOf(K.ABSENT)) ||
       Array.isArray(node) && node[0] === '[]' && typeof node[1] === 'string' && repOf(node[1])?.arrayHoles) {
-    return v.presentNumRead || isNumericIR(v) ? asF64(v) : missToNaN(v)
+    return v.presentNumRead || !mayMissValue(node, v) ? asF64(v) : missToNaN(v)
   }
   const vt = valTypeOf(node)
   if (vt === VAL.BIGINT || vt == null && isPlanRawBigint(node)) {

@@ -597,7 +597,8 @@ holds (one that normalizes on write, or that a guard or its definition holds
 present, is a number), an element by how the emitter loaded it, an operator by
 its own result (a sum's helper calls return the sum). `a[i] > m ? a[i] : m`
 over an index in range is two numbers and converts nothing, which the lane
-lifts read as the select they take. A
+lifts read as the select they take. The Number-or-absent shortcut uses this same
+arm and binding proof, so it retains normalization only for actual missing values. A
 Float32Array store converts its value as a Float64Array's does: the payload
 survives the demotion and the promotion of a read. A string's character past
 its end is absent in the summary (`orAbsent(STRING)`), so an identity test of
@@ -3924,3 +3925,6 @@ An unrelated local read as a float declines only its own integer carrier;
 the remaining carriers are rechecked from the original loop. Structural tests
 verify each widened loop never reads its original float accumulator, allowing
 independent float counters to keep their comparisons and conversions.
+Accumulator versioning runs after SIMD lowering: its bailout scaffold must not
+hide a Number loop from lane recognition. Scalar tails and loops that remain
+scalar still receive the same guarded integer optimization.
