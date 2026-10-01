@@ -715,7 +715,10 @@ Dependent index reads use branches to avoid address clamps on serial load chains
 Index-only locals still preserve their full Number magnitude: an out-of-bounds
 access is a valid missing read or ignored store, not proof that its index fits.
 Only the existing closed signed-i32 value hull can promote an affine index local;
-small downstream results cannot bound their arithmetic feeders. The shared
+small downstream results cannot bound their arithmetic feeders. The producer's
+presence and zero-sign requirements still govern storage and propagate through
+copies. A proved uint32 writer whose complete hull fits signed i32 uses that
+signed representation directly, retaining ordinary bounded arithmetic. The shared
 counter-width query accepts a positive bounded variable step and includes its
 largest final overshoot, while trip-count consumers still require an exact step.
 A nonnegative integer entry and a bounded integer square limit expose the

@@ -1011,6 +1011,13 @@ function narrowUint32In(body, locals, states, isTypedU32) {
     const t = locals.get(nm)
     if (t !== 'i32' && t !== 'f64') continue
     locals.set(nm, 'i32')
+    // The writer proof excludes -0. If its complete hull also fits signed
+    // i32, ordinary signed consumers preserve every value without widening.
+    const range = repOf(nm)?.range
+    if (range && range[0] >= 0 && range[1] <= 2147483647) {
+      updateRep(nm, { unsigned: undefined })
+      continue
+    }
     ;(result ||= new Set()).add(nm)
   }
   return result || EMPTY_SCAN_SET

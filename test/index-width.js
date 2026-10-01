@@ -99,3 +99,23 @@ test('index width: a boxed cell type belongs only to its active storage map', ()
     is(exprType('value', new Map([['value', 'f64']])), 'f64', 'another body cannot borrow the active cell width')
   } finally { frame.locals = locals; frame.boxed = boxed; frame.cellTypes = cellTypes }
 })
+
+
+test('index width: bounded magnitude never discards a producer negative zero', () => {
+  for (const expression of ['-(k & 7)', '(k & 7) * -1', '((k & 7) - 3) * (k & 1)', '-((k & 7) - 3)', '((k & 7) - 3) % 3']) {
+    const source = `export function f(k) { const a = new Float64Array([2]); let i = ${expression}, j = i; const stored = new Float64Array([j]); return [i, 1 / i, 1 / stored[0], a[j]] }`
+    for (const optimize of levels(0, 1, 2, 3, 'size')) {
+      const actual = run(source, { optimize }), expected = oracle(source)
+      for (const k of [0, 1, 2, 3, 4, 7, -1]) is(actual.f(k), expected.f(k), `${expression}, ${k}, O${optimize}`)
+    }
+  }
+})
+
+
+test('index width: reassigned and captured bounded indices retain both zero signs', () => {
+  for (const storage of ['local', 'captured', 'global']) {
+    const source = storage === 'global' ? `let i = 0; const a = new Float64Array([2]); export function f(k) { i = -(k & 7); return [i, 1/i, a[i]] }`
+      : `export function f(k) { const a = new Float64Array([2]); let i = 0; ${storage === 'captured' ? 'const set = () => { i = -(k & 7) }; set()' : 'i = -(k & 7)'}; return [i, 1/i, a[i]] }`
+    compare(source, [[0], [0], [3], [0], [-1]])
+  }
+})

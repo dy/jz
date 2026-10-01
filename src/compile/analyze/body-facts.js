@@ -624,7 +624,6 @@ function widenLocalTypes(body, locals, readPresent, unsignedLocals, wordLocals) 
 
   // Width lost by a typed read or unsigned value must propagate through
   // copies/arithmetic, even when an index use would otherwise permit wrapping.
-  const valueWide = new Set()
   let uses
   const wordStore = wordStoreOf(body, locals)
   const wordUse = u => u[BINDING_USE_KIND] === USE.WORD || wordStore(u)
@@ -643,10 +642,8 @@ function widenLocalTypes(body, locals, readPresent, unsignedLocals, wordLocals) 
       const binding = uses.get(name), reads = binding?.[BINDING_USE_USES]
       if (binding?.[BINDING_USE_DECLS] === 1 && reads?.length && reads.every(u => wordUse(u) || missUse(u))) return false
     }
-    const exact = exprType(rhs, locals) !== 'f64' ||
-      (typeof rhs === 'string' ? valueWide.has(rhs) : some(rhs, n => n.some(x => typeof x === 'string' && valueWide.has(x))))
-    if (exact) valueWide.add(name)
-    if (!exact && keepI32(name)) return false
+    // A closed magnitude hull cannot override the producer's zero-sign or
+    // presence proof. Explicit word-only consumers were handled above.
     locals.set(name, 'f64')
     return true
   }
