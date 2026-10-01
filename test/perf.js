@@ -1,7 +1,7 @@
 // Performance regression tests — jz WASM must be competitive with JS
 import test from 'tst'
 import { ok, is } from 'tst/assert.js'
-import { belowOpt, onWasi, onKernel } from './_matrix.js'
+import { belowOpt, levels, onWasi, onKernel } from './_matrix.js'
 import jz, { compile } from '../index.js'
 import { HELPER_SITE_PREFIX } from '../src/helper-counters.js'
 import parseWat from 'watr/parse'
@@ -644,35 +644,39 @@ test('codegen: no-arg scalar allocator rewinds heap on return', () => {
   is(after, before, 'heap pointer should be unchanged across rewound scalar calls')
 })
 
-test('codegen: integer loop counter stays i32 even against an f64 param bound', () => {
-  const wat = compile('export let f = (n) => { let acc = 0|0; for (let i = 0; i < n; i++) acc = (acc + i) | 0; return acc|0 }', { wat: true })
-  // An affine integer counter (intCertain) stays i32 even when compared to an f64
-  // param bound: widening it to f64 would make the increment AND the body
-  // arithmetic f64 (and pull a heavy per-iter ToInt32 on every `|0`) — measured
-  // ~18× vs V8. Keeping it i32 costs only one `f64.lt convert(i) n` in the compare.
-  // Sound for n ≤ 2^31; n > 2^31 is the asm.js-style integer contract.
-  // (The exported body is boundary-wrapped+inlined, so the counter local may be
-  // renamed `$__inlN_i` — match any name ending in `i`.)
-  ok(/\(local \$(?:\w+_)?i i32\)/.test(wat) && !/\(local \$(?:\w+_)?i f64\)/.test(wat),
-    'integer loop counter i stays i32 against an f64 param bound')
+test('codegen: guarded integer counter keeps a full Number fallback', () => {
+  const src = 'export let f = (n) => { let acc = 0|0; for (let i = 0; i < n; i++) acc = (acc + i) | 0; return acc|0 }'
+  const wat = compile(src, { wat: true })
+  let fast
+  walkWat(parseWat(wat), n => { if (!fast && n[0] === 'loop') fast = n })
+  // An arbitrary bound cannot authorize wrapped storage. The guarded copy
+  // removes conversions from the hot loop; the original keeps Number semantics.
+  ok(/\(local \$\S*i\S*int\d+ i32\)/.test(wat), 'the guarded counter has an integer local')
+  ok(/i32\.(?:lt|ge)_s/.test(JSON.stringify(fast)), 'the fast loop compares integers')
+  let conversions=0
+  walkWat(fast,n=>{if(/^(?:f64\.add|[if]64\.trunc|i32\.trunc)/.test(n[0]))conversions++})
+  is(conversions,0,'the fast loop adds and accumulates without float conversions')
+  ok(/\(local \$\S*i f64\)/.test(wat), 'the original counter preserves full Number values')
+  const host = oracle(src).f
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const f = jz(src, {optimize}).exports.f
+    for (const n of [0, -0, 3, 3.5, -4294967296, NaN, -Infinity, 3, 0]) is(f(n), host(n), `O${optimize}: bound ${n}`)
+  }
 })
 
-test('codegen: f64-bound counter used as a fully-i32 array index stays i32', () => {
+test('codegen: guarded global-bound array indices stay integer in the fast arm', () => {
   if (onWasi()) return  // wasi: run-reserved renames locals
-  // Idiomatic hot loop: counter compared to an f64 global bound, but used as an
-  // affine array index. A valid wasm32 byte-offset must fit i32 and an affine
-  // index is monotone in the counter, so it provably stays in i32 range — jz keeps
-  // it i32 (direct indexing, zero per-access trunc_sat) instead of widening. This
-  // is the compiler-inferred form of the manual `let n = N | 0` hoist, so idiomatic
-  // source runs at int speed with no rewrite.
+  // Using a Number as an index proves no width. The stable global's guarded
+  // snapshot establishes the fast counter's complete lifetime instead.
   const wat = compile(`
     let N = 0; let x;
     export let init = (k) => { N = k; x = new Float64Array(k); return x; };
     export let run = () => { let i = 0; while (i < N) { x[i] = x[i] * 2.0; i++; } };
   `, { wat: true })
   const run = wat.match(/\(func \$run[\s\S]*?\n  \)/)?.[0] || ''
-  ok(run.includes('(local $i i32)'), 'index counter stays i32 against an f64 global bound')
-  is((run.match(/trunc_sat_f64_s|trunc_f64_s/g) || []).length, 0, 'no per-access trunc_sat')
+  ok(/\(local \$i\S*int\d+ i32\)/.test(run), 'the guarded index counter stays i32')
+  is((firstLoopArm(run).match(/trunc_sat_f64_s|trunc_f64_s/g) || []).length, 0, 'no per-access trunc_sat in the integer arm')
+  ok(run.includes('(local $i f64)'), 'the fallback retains the original counter')
 })
 
 test('codegen: nested-loop index seeded from an outer counter narrows transitively', () => {
@@ -1199,56 +1203,51 @@ test('codegen: f64-strided index does NOT force its counter to i32', () => {
   ok(run.includes('(local $y f64)'), 'counter behind an f64-strided index still widens to f64')
 })
 
-test('codegen: integer-global inference narrows numeric globals, demoting only on proof', () => {
-  // Purpose-focused code: a size/stride/index global is an integer unless an
-  // assignment *proves* it fractional. `N`, `half` (a `>>>`), `width`, `offset`
-  // (a product of i32 globals) → i32; `bSi` (`2.0 / n`) and `scale` (refs the
-  // fractional `bSi`) → f64. No annotations, all inferred from the assignments.
-  //
-  // The four integer candidates are each read as a LOOP BOUND below (comparison-
-  // governed) — the real-world consumption shape this inference exists for (this
-  // file's own payoff a few lines down: `i < N` pure-i32, `mem[y*w]` a fully-i32
-  // index), not a bare, uncompared sum. A bare, ungoverned read of an unbounded
-  // param-derived global (the ORIGINAL `N + half + bSi + width + offset + scale`
-  // accessor here) is exactly the module-global bare-escape shape .work/archive/todo.md's
-  // 2026-08-03 fix demotes to f64 (the module-global twin of KNOWN GAP #1,
-  // src/compile/plan/scope.js `inferModuleIntGlobals`) — this test asserted on
-  // that now-corrected-unsound behavior, so the accessor is rewritten to the
-  // sound, representative shape rather than the fix being relaxed.
+test('codegen: global storage requires a complete integer-width proof', () => {
+  // A loop comparison observes the whole Number, including fractions and wide
+  // values. Only half's unsigned shift proves signed-word magnitude here.
   const decl = (wat, g) => {
     const lines = wat.split('\n')
     const i = lines.findIndex(l => new RegExp(`global \\$${g}\\b`).test(l))
     return i < 0 ? '' : lines[i + 1].trim()
   }
-  const wat = compile(`
+  const src = `
     let N = 0, half = 0, bSi = 0, width = 0, offset = 0, scale = 0;
     let mem;
     export let init = (n, w, h) => {
       N = n; half = n >>> 1; bSi = 2.0 / n;
       width = w; offset = width * h; scale = bSi * 2;
-      mem = new Float64Array(4096);
+      mem = new Float64Array(8).fill(1);
     };
     export let sum = () => {
       let s = 0.0;
-      for (let i = 0; i < N; i++) s += mem[i];
-      for (let i = 0; i < half; i++) s += mem[i];
-      for (let i = 0; i < width; i++) s += mem[i];
-      for (let i = 0; i < offset; i++) s += mem[i];
+      for (let i = 0; i < N; i++) { s += mem[i]; if(i===4)break }
+      for (let i = 0; i < half; i++) { s += mem[i]; if(i===4)break }
+      for (let i = 0; i < width; i++) { s += mem[i]; if(i===4)break }
+      for (let i = 0; i < offset; i++) { s += mem[i]; if(i===4)break }
       return s + bSi + scale;
     };
-  `, { wat: true })  // reader export keeps the globals live under watr's export-rooted liveness
-  is(decl(wat, 'N'), '(mut i32)', 'N (param assign) → i32')
+  `
+  const wat = compile(src, {wat:true})
+  is(decl(wat, 'N'), '(mut f64)', 'N preserves the entire parameter')
   is(decl(wat, 'half'), '(mut i32)', 'half (>>> shift) → i32')
-  is(decl(wat, 'width'), '(mut i32)', 'width (param assign) → i32')
-  is(decl(wat, 'offset'), '(mut i32)', 'offset (product of i32 globals) → i32')
+  is(decl(wat, 'width'), '(mut f64)', 'width preserves fractions and wide bounds')
+  is(decl(wat, 'offset'), '(mut f64)', 'offset preserves the full product')
   is(decl(wat, 'bSi'), '(mut f64)', 'bSi (2.0 / n) stays f64 — provably fractional')
   is(decl(wat, 'scale'), '(mut f64)', 'scale (refs fractional bSi) stays f64 via fixpoint')
+  const host=oracle(src)
+  for (const optimize of levels(0,1,2,3,'size')) {
+    const got=jz(src,{optimize}).exports
+    for(const args of [[0,0,0],[3,2,2],[2.5,1.5,2],[4294967296,4294967296,2],[-4294967296,-1,2],[NaN,NaN,1],[Infinity,1,1],[3,2,2],[0,0,0]]) {
+      got.init(...args);host.init(...args)
+      is(got.sum(),host.sum(),`O${optimize}: globals from ${args}`)
+    }
+  }
 })
 
-test('codegen: i32 global bound makes the loop guard pure-i32 (no per-iter convert)', () => {
+test('codegen: a guarded global snapshot makes the fast loop guard pure-i32', () => {
   if (onWasi()) return  // wasi: run-reserved renames locals
-  // The payoff of integer-global inference: with `N` an i32 global, `i < N` is a
-  // pure i32 compare — no `f64.convert_i32_s` widening the counter each iteration.
+  // The original global remains f64; a proven snapshot supplies the word bound.
   const wat = compile(`
     let N = 0; let x;
     export let init = (k) => { N = k; x = new Float64Array(k); return x; };
@@ -1259,7 +1258,7 @@ test('codegen: i32 global bound makes the loop guard pure-i32 (no per-iter conve
   // the pure-i32 compare this pin demands; the property is NO f64 widening per iter.
   ok(/i32\.(lt|ge)_s/.test(run), 'guard is a pure-i32 compare')
   ok(!run.includes('f64.convert_i32_s'), 'no per-iteration i32→f64 widening in run')
-  ok(run.includes('(local $i i32)'), 'loop counter stays i32 against the i32 global bound')
+  ok(/\(local \$i\S*int\d+ i32\)/.test(run), 'the guarded loop counter stays i32')
 })
 
 test('codegen: typed-array global base decode hoists out of the stencil loop', () => {
