@@ -37,7 +37,7 @@ import { bindStaticConst, bindStaticGlobal, deleteStaticGlobal, hoistIndexedCons
 import { INTRINSIC_CALLEES, addHostImport, builtinAliasKeyOf, bundledSource, foldImportMetaResolve, foldNamespaceIntrospection, importMetaUrl, isBundledModule, isImportMeta, isImportMetaProp, moduleAstFor, namespaceMemberAliases, namespaceMemberAssigns, namespaceModOf, recordModuleInitFacts, resolveImportMeta } from './module-resolve.js'
 import { bindSchema, censusUnknownInitDecl, inferAssignSchema, objLiteralSid } from './schema.js'
 import { importEdge, namespaceValue } from './module-eval.js'
-import { bindingNames, bodyCapturesName, collectLoopDeclNames, declareGlobal, inlineArrayLen, isDeclared, markLoopLocal, mintForScope, popScope, prescanBlockDecls, pushScope, resolveScope, substIdents, withLoopLocalNames } from './scope.js'
+import { bindingNames, bodyCapturesName, collectLoopDeclNames, declareGlobal, inlineArrayLen, isDeclared, markLoopLocal, mintForScope, popScope, prescanBlockDecls, pushScope, resolveScope, withLoopLocalNames } from './scope.js'
 import { CONSTANTS, ERR_CLASS_SET, F64_CONSTANTS, GLOBALS, INSTANCEOF_ALLOW, NS_CTORS, NS_OBJECTS, SIMD_NS, STATIC_CONSTS, arrowWrites, assignedStaticGlobals, builtinMemberKey, freshPrepareId, funcLocalNames, funcValueNames, loopLocalNames, mutatedArrayNames, ownerStack, prepState, promiseRecvNames, renameSerial, scopes, staticConstScopes, withResolversRecvNames, BUILTIN_FNS, GLOBAL_TYPEOF, builtinGlobalOf } from './state.js'
 
 
@@ -387,7 +387,16 @@ const handlers = {
     err('delete not supported on a static key: object shape is fixed — use a computed key with a variable (`delete obj[k]`) if the key must vary at runtime')
   },
   'in'(key, obj) { return ['in', prep(key), prep(obj)] },
-  'label'(name, body) { return ['label', name, prepStatement(body)] },
+  'label'(name, body) {
+    const labels = [name]
+    while (Array.isArray(body) && body[0] === 'label') { labels.push(body[1]); body = body[2] }
+    // Stacked labels name the same statement. One canonical target also
+    // gives every labelled continue the loop's single continuation point.
+    if (labels.length > 1) body = collapseLabelTargets(body, labels, name)
+    const out = Array.isArray(body) && body[0] === 'for'
+      ? withLoc(handlers['for'](body[1], body[2], name), body) : prepStatement(body)
+    return ['label', name, out]
+  },
 
   // Destructuring assignment: [a, ...b] = expr or {x, y} = expr
   '='(lhs, rhs) {
@@ -1341,36 +1350,28 @@ const handlers = {
     return result
   },
 
-  // For loop
-  'for'(head, body) {
-    // ES §14.7.4.7 CreatePerIterationEnvironment: a `let` declared in a classic
-    // for-HEAD gets a FRESH binding each iteration when closures capture it —
-    // `for (let i…) fns.push(() => i)` must capture 0,1,2, not the final value.
-    // Lower to the copy-in/copy-out shape when a body or initializer arrow
-    // references the head var — pay-per-capture:
-    //   { let i = 0; for (let __i = i; __i < n; __i++) { let i = __i; …body…; __i = i } }
-    // The body-`let` then rides the existing per-iteration fresh-cell machinery
-    // (emitLoopFreshBoxed). Known edge, accepted: a closure inside the COND or
-    // STEP itself captures the carrier, not the per-iteration binding.
+  // A captured for-head has three environments: the initial declaration,
+  // then fresh cells for the first test/body, then fresh cells before each
+  // update/test/body. A body continue joins the copy-out after its finalizers.
+  'for'(head, body, label = null) {
     if (Array.isArray(head) && head[0] === ';' && Array.isArray(head[1]) && head[1][0] === 'let') {
       const captured = []
       for (let i = 1; i < head[1].length; i++) {
         const d = head[1][i]
         const nm = typeof d === 'string' ? d : (Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string' ? d[1] : null)
-        if (nm && (bodyCapturesName(body, nm) || bodyCapturesName(head[1], nm))) captured.push(nm)
+        if (nm && (bodyCapturesName(body, nm) || bodyCapturesName(head, nm))) captured.push(nm)
       }
       if (captured.length) {
         const carrier = new Map(captured.map(n => [n, `${n}${T}pi${freshPrepareId()}`]))
-        const renamed = (n) => substIdents(n, carrier)
-        // Evaluate the complete declaration in its original lexical scope.
-        // Later initializers may read/write earlier bindings or capture them;
-        // changing only a declaration's name disconnects those operations.
-        const decl = ['let', ...captured.map(n => ['=', carrier.get(n), n])]
-        const newHead = [';', decl, renamed(head[2]), renamed(head[3]), ...head.slice(4).map(renamed)]
+        const first = `${T}first${freshPrepareId()}`, done = `${T}next${freshPrepareId()}`
+        const decl = ['let', ...captured.map(n => ['=', carrier.get(n), n]), ['=', first, [null, true]]]
         const copyIn = ['let', ...captured.map(n => ['=', n, carrier.get(n)])]
         const copyOut = captured.map(n => ['=', carrier.get(n), n])
-        const newBody = ['{}', [';', copyIn, body, ...copyOut]]
-        return prep(['{}', [';', head[1], ['for', newHead, newBody]]])
+        const next = ['if', first, ['=', first, [null, false]], head[3]]
+        const test = head[2] == null ? null : ['if', ['!', head[2]], ['break']]
+        const run = ['label', done, capturedLoopContinues(body, done, label)]
+        const newBody = ['{}', [';', copyIn, next, test, run, ...copyOut]]
+        return prep(['{}', [';', head[1], decl, ['for', [';', null, null, null], newBody]]])
       }
     }
     pushScope()
@@ -1796,6 +1797,37 @@ function prepStrictEq(op, a, b) {
   const r = resolveTypeof([op, a, b])
   if (r[0] !== op) return prep(r)            // folded to a literal — re-prep is safe
   return [op, prep(r[1]), prep(r[2])]        // keep strict op; prep operands only
+}
+
+function collapseLabelTargets(node, labels, target) {
+  if (!Array.isArray(node) || node[0] == null || node[0] === 'str' || node[0] === '=>') return node
+  if ((node[0] === 'continue' || node[0] === 'break') && labels.includes(node[1]))
+    return withLoc([node[0], target], node)
+  let out = null
+  for (let i = 1; i < node.length; i++) {
+    const child = collapseLabelTargets(node[i], labels, target)
+    if (child !== node[i] && !out) out = node.slice(0, i)
+    if (out) out.push(child)
+  }
+  return out ? withLoc(out, node) : node
+}
+
+// A continue to this loop finishes the current body, including finally,
+// before copying its cells. Nested loops own bare continues; labelled ones
+// can cross them. Closures and literal contents are separate syntax domains.
+function capturedLoopContinues(node, done, label, nested = false) {
+  if (!Array.isArray(node) || node[0] == null || node[0] === 'str' || node[0] === '=>') return node
+  const op = node[0]
+  if (op === 'continue' && (node[1] == null ? !nested : node[1] === label))
+    return withLoc(['break', done], node)
+  const inner = nested || op === 'for' || op === 'while' || op === 'do'
+  let out = null
+  for (let i = 1; i < node.length; i++) {
+    const child = capturedLoopContinues(node[i], done, label, inner)
+    if (child !== node[i] && !out) out = node.slice(0, i)
+    if (out) out.push(child)
+  }
+  return out ? withLoc(out, node) : node
 }
 
 // An ignored assignment can scalarize a tuple; a value-position assignment

@@ -390,7 +390,11 @@ keeps ownership of per-iteration cells. A skipped closure branch allocates no
 storage for its captured locals.
 Captured for-head declarations evaluate together in their original lexical
 scope before iteration carriers are initialized. Later initializer writes and
-closures retain that initial environment; each body still gets fresh cells.
+closures retain that initial environment. Each iteration creates fresh cells
+before its update, condition and body. A continue exits a labelled body region,
+runs its finalizers, then copies the values for the next iteration. Labelled
+blocks do not intercept bare loop transfers; stacked labels share their loop
+while object-property colons remain in the expression grammar.
 
 Static aggregate probes retain their emitted field/element IR. If any value
 fails the static-data check, runtime construction reuses that IR; it never

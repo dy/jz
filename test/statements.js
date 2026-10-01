@@ -1496,6 +1496,34 @@ test('statements: labeled block with break', () => {
   is(run(`export let f = () => { let n = 0; outer: for (let i = 0; i < 3; i++) { for (let j = 0; j < 3; j++) { if (j === 1) continue outer; n++ } } return n }`).f(), 3)
 })
 
+test('statements: bare loop transfers cross labelled blocks and run finalizers', () => {
+  const sources = [
+    `export function f(n){let i=0;const out=[];
+      while(i<n){try{tag:{i++;if(i===2)continue;if(i===3)break;out.push(i)}}finally{out.push(-i)}}
+      return[out,i]}`,
+    `export function f(n){const out=[];
+      outer:for(let i=0;i<n;i++){if(i<3)tag:{if(i===1)continue;out.push(i)}else other:{break}}
+      return out}`,
+    `export function f(n){let i=0;const out=[];
+      do{tag:{i++;if(i===2)continue;out.push(i);if(i===3)break}}while(i<n);
+      return[out,i]}`,
+    `export function f(n){const out=[];
+      a:b:for(let i=0;i<n;i++){for(let j=0;j<2;j++){out.push(i,j);if(j===0)continue a}break b}
+      return out}`
+  ]
+  for (const src of sources) for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const expected = oracle(src).f, actual = jz(src, { optimize }).exports.f
+    for (const n of [0,4,4,1,3,0]) is(actual(n), expected(n), `O${optimize}, n=${n}`)
+  }
+})
+
+test('statements: chained loop labels retain validation and object-key domains', () => {
+  throws(() => compile(`export function f(){a:b:{continue a}}`), /does not name a loop/)
+  throws(() => compile(`export function f(){a:a:while(true){break a}}`), /duplicate label/)
+  throws(() => compile(`export function f(){a:if(true)for(;;){continue a}}`), /does not name a loop/)
+  is(run(`export function f(){const x={a:{b:{c:3}}};return x.a.b.c}`).f(),3)
+})
+
 // The '{}' node is OVERLOADED: `['{}',[':',…]]` is both a single-prop literal
 // and a single-labeled-statement block. Labels of blocks are recognized ONLY
 // in statement positions — an object prop whose value is a literal must never

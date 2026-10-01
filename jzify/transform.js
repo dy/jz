@@ -213,6 +213,16 @@ export function createTransform(opts) {
     return inner
   }
 
+  // A control body is a statement position even when it contains only one
+  // labelled statement. Object-property colons use the expression path.
+  function transformStatement(node) {
+    if (Array.isArray(node) && node[0] === ':' && typeof node[1] === 'string')
+      return withLoc(['label', node[1], transformStatement(node[2])], node)
+    if (Array.isArray(node) && node[0] === '{}' && node.length === 2 && node[1]?.[0] === ':')
+      return transform(withLoc(['{}', [';', node[1]]], node))
+    return transform(node)
+  }
+
   // A node is the current position while it lowers (ctx.js), and what it lowers to stands at its place.
   function transformScope(node) {
     const prior = enterBuiltinScope(node), outer = ctx.error.loc
@@ -278,7 +288,7 @@ export function createTransform(opts) {
         // props `k: {…}` never label.
         if (Array.isArray(stmt) && stmt[0] === ':' && typeof stmt[1] === 'string' &&
             Array.isArray(stmt[2]) && stmt[2][0] === '{}') {
-          rest.push(['label', stmt[1], transform(stmt[2])])
+          rest.push(['label', stmt[1], transformStatement(stmt[2])])
           continue
         }
         const t = transform(stmt)
@@ -534,7 +544,7 @@ export function createTransform(opts) {
 
     ':'(label, body) {
       if (typeof label === 'string' && Array.isArray(body) && LABEL_BODY_OPS.has(body[0]))
-        return ['label', label, transform(body)]
+        return ['label', label, transformStatement(body)]
     },
 
     '='(lhs, rhs) {
@@ -624,11 +634,23 @@ export function createTransform(opts) {
       return ['instanceof', t, transform(ctor)]
     },
 
+    'if'(cond, then, els) {
+      const out = ['if', transform(cond), transformStatement(then)]
+      if (els != null) out.push(transformStatement(els))
+      return out
+    },
+    'while'(cond, body) { return ['while', transform(cond), transformStatement(body)] },
+    'try'(body, ...clauses) {
+      return ['try', transformStatement(body), ...clauses.map(c => c[0] === 'catch'
+        ? ['catch', transform(c[1]), transformStatement(c[2])]
+        : ['finally', transformStatement(c[1])])]
+    },
+
     'do'(body, cond) {
       const flag = names.doFlag()
       return [';',
         ['let', ['=', flag, [null, true]]],
-        ['while', ['||', flag, transform(cond)], ['{}', [';', ['=', flag, [null, false]], transform(body)]]]]
+        ['while', ['||', flag, transform(cond)], ['{}', [';', ['=', flag, [null, false]], transformStatement(body)]]]]
     },
 
     // The classic for-head `[';', init, cond, step]` is a fixed 3-slot structure,
@@ -661,7 +683,7 @@ export function createTransform(opts) {
       // 'of-idx' — the protocol fork's array arm: plain indexed for-of, no re-fork.
       if (Array.isArray(head) && head[0] === 'of-idx') {
         const t = transform(['of', head[1], head[2]])
-        return ['for', t, transform(body)]
+        return ['for', t, transformStatement(body)]
       }
       // for-of over an UNKNOWN source in an iterator-minting program → runtime
       // protocol fork (probe once, drive next() lazily, else indexed path).
@@ -670,7 +692,7 @@ export function createTransform(opts) {
       if (Array.isArray(head) && head[0] === ';' && Array.isArray(head[1]) && head[1][0] === 'using')
         return lowerUsing(head[1].slice(1), [['for', [';', null, head[2], head[3]], body]])
       if (Array.isArray(head) && head[0] === ';')
-        return ['for', [';', ...head.slice(1).map(s => s == null ? s : transform(s))], transform(body)]
+        return ['for', [';', ...head.slice(1).map(s => s == null ? s : transform(s))], transformStatement(body)]
       // for-in with a DESTRUCTURING decl head (`for (let [x, y = d] in o)` —
       // the KEY STRING destructures): bind the key to a temp and let the
       // ordinary let-pattern lowering handle it at the body top. Patterns are
@@ -688,7 +710,7 @@ export function createTransform(opts) {
             [';', [decl[0], ['=', pat, t]], ...bodyStmts]])
         }
       }
-      return ['for', transform(head), transform(body)]
+      return ['for', transform(head), transformStatement(body)]
     },
 
     // A bare statement sequence is a block scope too. `parse` only wraps

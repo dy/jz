@@ -146,7 +146,7 @@ export const STMT_OPS = new Set([';', 'let', 'const', 'return', 'if', 'for', 'wh
 export const JZ_BLOCK_OPS = new Set([...STMT_OPS, 'var', 'do', 'function', 'class', 'import', 'export', 'label', 'case', 'default'])
 
 /** Valid labeled-statement bodies in jzify. */
-export const LABEL_BODY_OPS = new Set([';', 'if', 'for', 'while', 'do', 'switch', 'try', 'throw'])
+export const LABEL_BODY_OPS = new Set([':', ';', 'if', 'for', 'while', 'do', 'switch', 'try', 'throw'])
 
 /** Distinguish a function block body `{ … }` from an expression object literal `({a:1})`. */
 export const isBlockBody = (body) =>

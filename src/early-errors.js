@@ -1141,9 +1141,10 @@ const validateRegExp = (pattern, flags = '') => {
   }
 }
 
-const isIteration = node => isNode(node) && (
-  node[0] === 'for' || node[0] === 'for await' || node[0] === 'while' || node[0] === 'do'
-)
+const isIteration = node => {
+  while (isNode(node) && node[0] === ':' && typeof node[1] === 'string') node = node[2]
+  return isNode(node) && (node[0] === 'for' || node[0] === 'for await' || node[0] === 'while' || node[0] === 'do')
+}
 
 const classMember = raw => {
   const loc = raw?.loc

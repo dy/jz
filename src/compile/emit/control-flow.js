@@ -11,7 +11,7 @@ import {
 isArrayIndexKey, RELATIONAL_OPS } from '../../ast.js'
 import { LAYOUT, PTR, ctx, err, inc, getFactStore } from '../../ctx.js'
 import {
-  asF64, asI32, freshId, isBoundName, isGlobal, isLit, isNullish, litVal, loopTop, readVar, temp, tempI32, tempI64, truthyIR, typed, undefExpr,
+  asF64, asI32, freshId, isBoundName, isGlobal, isLit, isNullish, litVal, readVar, temp, tempI32, tempI64, truthyIR, typed, undefExpr,
 } from '../../ir.js'
 import { durableArrSnapNode, hasDurableReset } from '../../../module/collection/durable.js'
 import { VAL, lookupValType, repOf } from '../../reps.js'
@@ -1150,15 +1150,19 @@ export const controlFlowOps = {
   },
   'break': (label) => {
     const idx = label == null
-      ? ctx.func.stack.length - 1
+      ? ctx.func.stack.findLastIndex(frame => frame.loop !== undefined)
       : ctx.func.stack.findLastIndex(frame => frame.label === label)
     if (label != null && idx < 0) err(`break label '${label}' is not in scope — check the spelling, or add a matching \`${label}:\` around an enclosing loop/block`)
-    const target = (idx >= 0 ? ctx.func.stack[idx] : loopTop()).brk
+    const target = idx >= 0 ? ctx.func.stack[idx].brk : null
     if (!target) err(`break label '${label}' is not in scope`)
     return [...emitFinalizers(idx + 1), ['br', target]]
   },
   'continue': (label) => {
-    if (label == null) return [...emitFinalizers(ctx.func.stack.length), ['br', loopTop().loop]]
+    if (label == null) {
+      const idx = ctx.func.stack.findLastIndex(frame => frame.loop != null)
+      if (idx < 0) err('continue outside loop')
+      return [...emitFinalizers(idx + 1), ['br', ctx.func.stack[idx].loop]]
+    }
     // Labeled continue: target the continue point of the loop that adopted this label.
     const idx = ctx.func.stack.findLastIndex(f => f.contLabel === label)
     if (idx < 0) err(`continue label '${label}' is not in scope — check the spelling, or add a matching \`${label}:\` around an enclosing loop`)

@@ -1860,6 +1860,93 @@ test('closures: throwing for-head initializers preserve order and reuse', () => 
   }
 })
 
+test('closures: captured loop continues finish their own iteration', () => {
+  const sources = [
+    `export function f(n){const fs=[];
+      for(let i=0;i<n;i++){fs.push(()=>i);i++;if(i<3)continue}
+      return fs.map(f=>f())}`,
+    `export function f(n){const fs=[];
+      outer:for(let i=0;i<n;i++){for(let j=0;j<2;j++){fs.push(()=>[i,j]);i++;continue outer}}
+      return fs.map(f=>f())}`,
+    `export function f(n){const fs=[];
+      a:b:for(let i=0;i<n;i++){fs.push(()=>i);i++;if(i<3)continue a;break b}
+      return fs.map(f=>f())}`,
+    `export function f(n){const fs=[];
+      for(let i=0;i<n;i++){for(let j=0;j<3;j++){fs.push(()=>[i,j]);j++;continue}}
+      return fs.map(f=>f())}`,
+    `export function f(n){const fs=[];
+      for(let i=0;i<n;i++){inside:{fs.push(()=>i);i++;if(i<3)continue;break}}
+      return fs.map(f=>f())}`,
+    `export function f(n){const fs=[];
+      for(let i=0;i<n;i++){switch(i){case 0:fs.push(()=>i);i++;continue;default:fs.push(()=>i);break}}
+      return fs.map(f=>f())}`,
+    `export function f(n){const fs=[];
+      for(let i=0;;){fs.push(()=>i);if(++i>=n)break;continue}
+      return fs.map(f=>f())}`
+  ]
+  for (const src of sources) for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const expected = oracle(src).f, actual = jz(src, { optimize }).exports.f
+    for (const n of [0,4,4,1,3,0]) is(actual(n), expected(n), `O${optimize}, n=${n}`)
+  }
+})
+
+test('closures: captured loop exits run finalizers before copying cells', () => {
+  const src = `export function f(mode,n){const fs=[],log=[];let status='ok';
+    try{outer:for(let i=0;i<n;i++){
+      fs.push(()=>i);
+      try{
+        if(mode===1)continue;
+        if(mode===2)break;
+        if(mode===3)throw new Error('body');
+        if(mode===4)return[fs.map(f=>f()),log,'return'];
+        if(mode===5)for(let j=0;j<1;j++)continue outer;
+      }finally{i++;log.push(i)}
+    }}catch(e){status=e.message}
+    return[fs.map(f=>f()),log,status]
+  }`
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const expected = oracle(src).f, actual = jz(src, { optimize }).exports.f
+    for (const [mode,n] of [[0,0],[0,4],[1,4],[1,4],[2,4],[3,4],[4,4],[5,4],[0,1],[3,0],[0,4]])
+      is(actual(mode,n), expected(mode,n), `O${optimize}, ${mode}/${n}`)
+  }
+})
+
+test('closures: captured loop update test and body share the current cells', () => {
+  const sources = [
+    `export function f(n){let initial;const tests=[],steps=[],bodies=[];
+      for(let i=(initial=()=>i++,0);(tests.push(()=>i),i<n);(steps.push(()=>i),i++)){
+        bodies.push(()=>i);if(i===0)i++;if(i===2)continue
+      }
+      return[initial(),tests.map(f=>f()),steps.map(f=>f()),bodies.map(f=>f()),initial(),tests.map(f=>f())]}`,
+    `export function f(n){const tests=[],steps=[],bodies=[];
+      for(let i=0;(i++,tests.push(()=>i),i<n);(steps.push(()=>i),i++))bodies.push(()=>i);
+      return[tests.map(f=>f()),steps.map(f=>f()),bodies.map(f=>f())]}`,
+    `export function f(n){const fs=[];
+      for(let i=0;i<n;(fs.length?fs[0]():0),i++)fs.push(()=>++i);
+      return fs.map(f=>f())}`,
+    `const tests=[],steps=[],bodies=[];let initial;
+      for(let i=(initial=()=>i++,0);(tests.push(()=>i),i<3);(steps.push(()=>i),i++))bodies.push(()=>i);
+      export function f(n){return[n,initial(),tests.map(f=>f()),steps.map(f=>f()),bodies.map(f=>f())]}`
+  ]
+  for (const src of sources) for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const expected = oracle(src).f, actual = jz(src, { optimize }).exports.f
+    for (const n of [0,4,4,1,3,0]) is(actual(n), expected(n), `O${optimize}, n=${n}`)
+  }
+})
+
+test('closures: captured loop header throws retain the last environment', () => {
+  const src = `export function f(mode){const tests=[],steps=[],bodies=[];let status='ok';
+    const fail=()=>{throw new Error('header')};
+    try{for(let i=0;(tests.push(()=>i),mode===1?fail():i<3);(steps.push(()=>i),i++,mode===2?fail():0))bodies.push(()=>i)}
+    catch(e){status=e.message}
+    return[tests.map(f=>f()),steps.map(f=>f()),bodies.map(f=>f()),status]
+  }`
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const expected = oracle(src).f, actual = jz(src, { optimize }).exports.f
+    for (const mode of [0,0,1,2,0]) is(actual(mode), expected(mode), `O${optimize}, mode=${mode}`)
+  }
+})
+
 // A parameter default belongs to its arrow: a loop binding only a default reads
 // is captured (a fresh binding per iteration), and a top-level function only a
 // default reassigns stays a mutable binding, neither lifted nor devirtualized
