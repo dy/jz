@@ -14,6 +14,7 @@ import { VAL } from '../../src/reps.js'
 import { ctx, err, inc, PTR } from '../../src/ctx.js'
 import { dataLen } from '../../src/static-data.js'
 import { errorCodeLiteral, ERR, ERR_CLASS_NAMES } from '../../err-codes.js'
+import { nanPrefixHex, nanPrefixMaskHex } from '../../layout.js'
 
 // Runtime receiver checks use the private error-code transport. They must not
 // register a schema merely because a dynamic access might throw.
@@ -29,10 +30,11 @@ export function requireReceiverWat(value) {
 // A primitive holds no property of its own and strict code cannot give it one:
 // a store on a Number (a real number or a NaN), a String, a Boolean or a
 // BigInt throws. `value` is an i64 local read; `type` its i32 tag local. Nullish
-// receivers take requireReceiverWat's throw first.
+// receivers take requireReceiverWat's throw first. A Number's negative or
+// signaling NaN payload may contain any tag; only the complete prefix is a box.
 export function requireObjectWat(value, type) {
   const code = errorCodeLiteral(ERR.PRIMITIVE_PROPERTY)
-  return `(if (i32.or (f64.eq (f64.reinterpret_i64 ${value}) (f64.reinterpret_i64 ${value}))
+  return `(if (i32.or (i64.ne (i64.and ${value} (i64.const ${nanPrefixMaskHex()})) (i64.const ${nanPrefixHex()}))
       (i32.or (i32.eq ${type} (i32.const ${PTR.ATOM}))
         (i32.or (i32.eq ${type} (i32.const ${PTR.STRING})) (i32.eq ${type} (i32.const ${PTR.BIGINT})))))
     (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${code})))

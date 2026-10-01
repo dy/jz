@@ -218,8 +218,8 @@ function dispatchByKeyKind(arr, keyExpr, valueExpr, numericIR) {
 }
 
 /** Outlined runtime element store for an opaque receiver. The helper owns the
- * ARRAY relocation, packed TypedArray width, OBJECT/HASH sidecar, and optional
- * EXTERNAL branches; keeping that fork out of a hot loop also gives the
+ * ARRAY relocation, packed TypedArray width and ordinary own-property storage;
+ * keeping that fork out of a hot loop also gives the
  * Float64 unswitch one canonical call shape to eliminate. */
 function emitPolymorphicElementStore(arrExpr, index, valueExpr, valueDomain, persist, mayBeObject) {
   if (mayBeObject) demandHostReceiver()

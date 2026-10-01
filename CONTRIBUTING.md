@@ -166,6 +166,11 @@ also retain the receiver across value conversion. Uncaptured private bindings
 keep their existing index proofs when no operand writes them. Property-key
 conversion precedes a strict primitive-write error, after RHS evaluation;
 nullish receivers reject before key conversion.
+Unknown numeric receivers retain ordinary own-property writes on collections,
+buffers and closures through the shared property store. Primitive rejection
+checks the complete boxed-value prefix before tag dispatch, so a numeric NaN's
+payload cannot masquerade as object storage. Proven array/typed stores keep
+their existing element path.
 Pure Number arithmetic over unchanged private bindings needs no key snapshot.
 When a key must be saved, its numeric carrier, unsigned interpretation and
 current range travel with the value. A proven typed access can tighten that

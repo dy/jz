@@ -20,7 +20,7 @@ import { ctx, inc, err, strictCode, warnDeopt, PTR, LAYOUT, followForwardingWat,
 import { strHashLiteral, dynPropsFilterSetIR, durableFwdLogIR, durableArrSnapIR, durableArrSnapNode } from './collection.js'
 import { hasDurableReset } from './collection/durable.js'
 import { errorCodeLiteral, ERR } from '../err-codes.js'
-import { requireReceiverWat } from './core/error-object.js'
+import { requireReceiverWat, requireObjectWat } from './core/error-object.js'
 import { runsAccessor, runsConversion } from '../src/evaluation-effects.js'
 import { DATA_VIEW_FLAG, nanPrefixHex } from '../layout.js'
 
@@ -184,8 +184,7 @@ export default (ctx) => {
     __arr_set_idx_ptr: ['__arr_grow', '__ptr_offset', ...(needsDurableFwdLog() ? ['__durable_arr_snap'] : [])],
     __arr_typed_set_idx: () => ['__ptr_type', '__ptr_aux', '__len', '__arr_set_idx_ptr',
       representationProgramHasBigint(ctx) || ctx.core.includes.has('__typed_set_idx_tagged') ? '__typed_set_idx_tagged' : '__typed_set_idx'],
-    __arr_typed_obj_set_idx: () => ['__is_nullish', '__arr_typed_set_idx', '__ptr_type', '__dyn_set_own', '__i32_to_str',
-      ...(ctx.linkDemand.external ? ['__ext_set'] : [])],
+    __arr_typed_obj_set_idx: ['__is_nullish', '__arr_typed_set_idx', '__ptr_type', '__dyn_set_own', '__i32_to_str'],
     __arr_push1: ['__arr_grow_known', '__ptr_offset_fwd', ...(needsDurableFwdLog() ? ['__durable_arr_snap'] : [])],
     __arr_push_slot: ['__arr_grow_known', '__ptr_offset_fwd', ...(needsDurableFwdLog() ? ['__durable_arr_snap'] : [])],
     __arr_set_length: ['__arr_grow_known', '__ptr_offset', '__ptr_type', '__to_num', '__to_int32', ...(needsDurableFwdLog() ? ['__durable_arr_snap'] : [])],
@@ -510,28 +509,21 @@ export default (ctx) => {
       (f64.reinterpret_i64 (local.get $ptr)))`
   }
 
-  // Object-capable sibling, pulled only when receiver analysis cannot exclude
-  // OBJECT/HASH. The expensive key/string helpers were already required by
+  // Property-capable sibling, pulled unless analysis proves ARRAY/TYPED.
+  // Other objects use their ordinary own properties. Key/string helpers serve
   // that fallback; outlining keeps their dispatch out of the hot loop body.
   ctx.core.stdlib['__arr_typed_obj_set_idx'] = () => {
     return `(func $__arr_typed_obj_set_idx (param $ptr i64) (param $i i32) (param $val f64) (param $domain i32) (result f64)
     (local $t i32)
     (local.set $t (call $__ptr_type (local.get $ptr)))
     ${requireReceiverWat('(local.get $ptr)')}
+    ${requireObjectWat('(local.get $ptr)', '(local.get $t)')}
     (if (i32.or (i32.eq (local.get $t) (i32.const ${PTR.ARRAY}))
                 (i32.eq (local.get $t) (i32.const ${PTR.TYPED})))
       (then (return (call $__arr_typed_set_idx (local.get $ptr) (local.get $i) (local.get $val) (local.get $domain)))))
-    (if (i32.or (i32.eq (local.get $t) (i32.const ${PTR.OBJECT}))
-                (i32.eq (local.get $t) (i32.const ${PTR.HASH})))
-      (then
-        (drop (call $__dyn_set_own (local.get $ptr)
-          (i64.reinterpret_f64 (call $__i32_to_str (local.get $i)))
-          (i64.reinterpret_f64 (local.get $val))))
-        (return (f64.reinterpret_i64 (local.get $ptr)))))
-    ${ctx.linkDemand.external ? `(if (i32.eq (local.get $t) (i32.const ${PTR.EXTERNAL}))
-      (then (drop (call $__ext_set (local.get $ptr)
-        (i64.reinterpret_f64 (call $__i32_to_str (local.get $i)))
-        (i64.reinterpret_f64 (local.get $val))))))` : ''}
+    (drop (call $__dyn_set_own (local.get $ptr)
+      (i64.reinterpret_f64 (call $__i32_to_str (local.get $i)))
+      (i64.reinterpret_f64 (local.get $val))))
     (f64.reinterpret_i64 (local.get $ptr)))`
   }
 

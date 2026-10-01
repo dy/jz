@@ -22,6 +22,59 @@ const agree = (cases) => {
   }
 }
 
+test('member targets: unknown numeric receivers preserve ordinary own-property stores', () => {
+  const source = `'use strict';export function f(mode){
+    const values=[{},[],new Map(),new Set(),new Date(0),new ArrayBuffer(2),()=>7,
+      new Float64Array(2),undefined,null,7.25,'x',true,13n,Symbol()];
+    const o=values[mode];let result,error='';
+    try{result=o[2]=13}catch(e){error=e.name}
+    return error?[error]:[result,o[2],typeof o==='function'?[]:Object.keys(o)]
+  }`
+  for(const optimize of levels(0,1,2,3,'size')) {
+    const got=jz(source,{optimize}).exports,want=oracle(source)
+    for(const mode of [0,0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,2,0])
+      is(got.f(mode),want.f(mode),`numeric own store O${optimize}, receiver ${mode}`)
+  }
+  const retained=`const values=[new Map(),new Set(),new ArrayBuffer(2)];
+    export function f(mode,write){const o=values[mode];
+      if(write){const value=mode===0?13n:mode===1?false:undefined;const result=o[0]=value;
+        return[result===value,o[0]===value,typeof o[0]]}
+      return[o[0],Object.keys(o)]}`
+  for(const optimize of levels(0,1,2,3,'size')) {
+    const got=jz(retained,{optimize}).exports,want=oracle(retained)
+    for(const [mode,write] of [[0,0],[0,1],[0,0],[0,0],[1,1],[2,1],[1,0],[2,0],[0,0]])
+      is(got.f(mode,write),want.f(mode,write),`retained numeric own store O${optimize}, ${mode}/${write}`)
+  }
+})
+
+test('member targets: NaN payload tags cannot donate object property storage', () => {
+  const source = `'use strict';
+    export function numeric(hi,mode){
+      const raw=new Uint32Array([305419896,hi]),values=[{},new Float64Array(raw.buffer)[0]];
+      const o=values[mode];let trace='';
+      try{const result=o[(trace+='k',2)]=(trace+='r',13);return[result,o[2],trace]}
+      catch(e){return[e.name,trace]}
+    }
+    export function computed(hi,mode,fail){
+      const raw=new Uint32Array([305419896,hi]),values=[{},new Float64Array(raw.buffer)[0]];
+      const o=values[mode];let trace='';
+      const key={toString(){trace+='c';if(fail)throw 7;return 'field'}};
+      try{const result=o[(trace+='k',key)]=(trace+='r',13);return[result,o.field,trace]}
+      catch(e){return[e===7?7:e.name,trace]}
+    }`
+  const want=oracle(source)
+  for(const optimize of [0,1,2,3,'size']) {
+    const got=jz(source,{optimize:{level:optimize,sourceInline:false}}).exports
+    const words=[0x7ff80000,0x7ff00000,0xfff00000,0x401d0000,
+      ...Array.from({length:16},(_,tag)=>(0xfff80000|(tag<<15))>>>0)]
+    for(const hi of words) for(const mode of [1,1,0,1]) {
+      is(got.numeric(hi,mode),want.numeric(hi,mode),`numeric key O${optimize}, ${hi}, ${mode}`)
+      for(const fail of [false,true])
+        is(got.computed(hi,mode,fail),want.computed(hi,mode,fail),`key conversion O${optimize}, ${hi}, ${mode}, ${fail}`)
+    }
+  }
+})
+
 test('member targets: saved numeric keys keep their value across RHS mutations and throws', () => {
   for (const array of ['[2,3]', 'new Float64Array([2,3])']) for (const captured of [false, true]) {
     const source = `export function f(start, next, mode) {
