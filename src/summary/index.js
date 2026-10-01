@@ -211,16 +211,32 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   // set past CLOSURE_SET_MAX members escapes them all instead (a wrapper's
   // callback parameter collects every callback the program passes it).
   const SET_BASE = 1 << 15, SET_MAX = 64, CLOSURE_SET_MAX = 1024
-  const closureSets = [], closureSetIds = new Map()
+  const closureSets = [], closureSetIds = new Map(), closureSetNext = []
   const singles = []             // closure id → [id], the one-member list, allocated once
   const membersOf = (id) => id >= SET_BASE ? closureSets[id - SET_BASE] : singles[id] ?? (singles[id] = [id])
   const closureSet = (ids) => {
-    const key = ids.length === 1 && typeof ids[0] === 'string' ? ids[0] : JSON.stringify(ids)
-    let id = closureSetIds.get(key)
-    if (id === undefined) {
-      if (SET_BASE + closureSets.length >= UNKNOWN) { for (const member of ids) escapeId(member); return UNKNOWN }
-      id = SET_BASE + closureSets.length; closureSets.push(ids); closureSetIds.set(key, id)
+    // Named singletons keep their direct lookup. Other sets use a numeric
+    // bucket, with exact member equality so collisions cannot join identities.
+    let key = ids.length === 1 && typeof ids[0] === 'string' ? ids[0] : ids.length
+    if (typeof key === 'number') for (const member of ids) {
+      if (typeof member === 'number') key = Math.imul(key ^ member, 16777619)
+      else {
+        for (let i = 0; i < member.length; i++) key = Math.imul(key ^ member.charCodeAt(i), 16777619)
+        key = Math.imul(key ^ member.length, 16777619)
+      }
     }
+    const head = closureSetIds.get(key)
+    let id = head
+    while (id !== undefined) {
+      const prior = closureSets[id - SET_BASE]
+      let same = prior.length === ids.length
+      for (let i = 0; same && i < ids.length; i++) same = prior[i] === ids[i]
+      if (same) return id
+      id = closureSetNext[id - SET_BASE]
+    }
+    if (SET_BASE + closureSets.length >= UNKNOWN) { for (const member of ids) escapeId(member); return UNKNOWN }
+    id = SET_BASE + closureSets.length
+    closureSetNext.push(head); closureSets.push(ids); closureSetIds.set(key, id)
     return id
   }
   const namedClosure = name => closureSetIds.get(name) ?? closureSet([name])

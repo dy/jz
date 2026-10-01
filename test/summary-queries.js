@@ -362,6 +362,37 @@ test('summary queries: held fields require every alias to remain read-only and u
   }
 })
 
+test('summary queries: closure-set hash collisions retain distinct canonical identities', () => {
+  // These sorted member sets collide under the numeric bucket hash. Equality
+  // must inspect every member, including after another set becomes its head.
+  const first = [9, 32, 73, 109], second = [45, 49, 55, 98]
+  const decl = (name, value) => ['const', ['=', name, value]]
+  const choose = names => names.reduce((a, b) => ['?:', 'missing', a, b])
+  let retained, retainedId
+  for (const reverse of [false, false, true, false]) {
+    const closures = Array.from({ length: 110 }, (_, i) => ['=>', [',', 'x'], ['+', 'x', lit(i)]])
+    const funcs = ['named', 'λ'].map(name => ({ name, sig: { params: [{ name: 'x' }] }, body: 'x' }))
+    const a = reverse ? second : first, b = reverse ? first : second
+    const ast = [';', ...closures.map((fn, i) => decl('f' + i, fn)),
+      decl('first', choose(a.map(i => 'f' + i))), decl('second', choose(b.map(i => 'f' + i))),
+      decl('again', choose([...a].reverse().map(i => 'f' + i))),
+      decl('mixed', choose(['named', 'f0', 'λ'])), decl('mixedAgain', choose(['λ', 'f0', 'named']))]
+    const q = summarize(ast, { funcs, schemas: [], brandOf: () => null, imports: new Map(), exported: () => false })
+    const id = name => q.calleeOf(['()', name, lit(1)])
+    is(q.closureMembers(id('first')), a, 'the first bucket member keeps its exact targets')
+    is(q.closureMembers(id('second')), b, 'the colliding set keeps its own targets')
+    is(id('first') === id('second'), false, 'a hash collision is not a callable identity')
+    is(id('again'), id('first'), 'reverse insertion finds the earlier canonical identity past a collision')
+    is(q.closureMembers(id('mixed')), [0, 'named', 'λ'], 'numeric and named members preserve their distinct types')
+    is(id('mixedAgain'), id('mixed'), 'named and numeric members intern independently of join order')
+    if (!retained) { retained = q; retainedId = id('first') }
+    is(retained.closureMembers(retainedId), first, 'later summaries leave retained collision chains unchanged')
+  }
+  const empty = summarize(null, { funcs: [], schemas: [], brandOf: () => null, imports: new Map(), exported: () => false })
+  is(empty.calleeOf(['()', 'first', null]), null, 'empty work retains no earlier interned set')
+  is(retained.closureMembers(retainedId), first, 'empty work preserves the retained first set')
+})
+
 test('summary queries: closure unions retain their members through the capacity boundary and reuse', () => {
   let retained
   for (const count of [0, 1, 1023, 1024, 1025, 1025, 1]) {
