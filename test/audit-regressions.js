@@ -198,14 +198,19 @@ test('audit: cursor guards join offsets and retain negative-offset checks', () =
       const guard = JSON.stringify(entry[1])
       is((guard.match(/i64\.lt_s/g) || []).length, 1, 'one upper extent for all cursor offsets')
       is((guard.match(/i64\.ge_s/g) || []).length, 1, 'one lower extent for all cursor offsets')
-      const addresses = []
-      const loads = n => {
+      const addresses = [], loops = []
+      const loads = (n, loop) => {
         if (!Array.isArray(n)) return
-        if (n[0] === 'f64.load') addresses.push(n[n.length - 1])
-        for (let i = 1; i < n.length; i++) loads(n[i])
+        if (n[0] === 'loop') { loop = []; loops.push(loop) }
+        if (n[0] === 'f64.load') { addresses.push(n[n.length - 1]); loop?.push(n[n.length - 1]) }
+        for (let i = 1; i < n.length; i++) loads(n[i], loop)
       }
       loads(entry[2])
-      is(addresses.length, 3, 'inspect all cursor reads in each fast arm')
+      // A wide cursor copy may add its own Number fallback behind the shared
+      // extent guard. Each actual loop must still read exactly three elements.
+      ok(loops.length > 0, 'inspect actual cursor loops in the extent arm')
+      for (const loop of loops) is(loop.length, 3, 'three cursor reads per loop')
+      is(addresses.length, loops.length * 3, 'no cursor reads outside those loops')
       if (addresses.every(a => !/trunc_sat_f64_s|i64\.lt_s/.test(JSON.stringify(a)))) wordArms++
     }
     is(wordArms, 1, 'proved negative offsets use word arithmetic in the cursor copy')
