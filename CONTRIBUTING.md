@@ -134,6 +134,9 @@ nullish receivers reject before key conversion.
 Ordinary-array stores reuse the canonical loop bounds proof at every tier;
 skipping interval analysis does not discard a proved element key. Calls and
 coercions that can resize an alias invalidate that proof.
+Resolved class-method calls use the same transitive `writesOuter` fact as
+direct calls. Their receiver and arguments are still scanned for getters,
+coercions and nested calls; an own override leaves the target unresolved.
 Prepared computed deletes keep receiver and key as separate operands. Binding,
 numeric-buffer and frame-effect scans must visit both; key conversion can call
 user code, throw, and publish storage. The surrounding handler stays live.

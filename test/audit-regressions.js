@@ -1100,6 +1100,33 @@ test('audit: dead class-call guards leave no error-message data', () => {
   }
 })
 
+test('audit: canonical class loops retain argument, override and missing-receiver effects', () => {
+  const src = `let rows;
+    class Box { run(x) { return x + 1 } }
+    function cut() { rows.length = 0; return 0 }
+    export function probe(mode) {
+      rows = [new Box(), new Box()];
+      if (mode === 2) rows[0].run = x => { cut(); return x };
+      if (mode === 4) rows = [{get run(){cut();return x=>x+1}},new Box()];
+      if (mode === 5) rows[1] = null;
+      if (mode === 6) rows.length = 3;
+      const arg = {valueOf(){return cut()}};
+      let v = 0;
+      try {
+        for (let i = 0; i < rows.length; i++) {
+          v = rows[i].run(mode === 1 ? cut() : mode === 3 ? +arg : 0);
+          v += rows[i].run(v);
+        }
+        return v;
+      } catch(e) { return e.name }
+    }`
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const got = jz(src, { optimize }).exports, want = oracle(src)
+    for (const mode of [0, 0, 1, 0, 2, 0, 3, 0, 4, 0, 5, 0, 6, 0])
+      is(got.probe(mode), want.probe(mode), `O${optimize}: effect ${mode}, followed by recovery`)
+  }
+})
+
 test('audit: catch without a binding does not materialize an Error', () => {
   const src='export function f(s){try{JSON.parse(s);return 1}catch{return 7}}'
   for (const optimize of TIERS) {

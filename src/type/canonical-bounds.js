@@ -192,9 +192,10 @@ function preservesArrayBounds(root, view) {
     const op = n[0]
     if (op === '()' || op === '?.()' || op === 'new') {
       const callee = n[1]
-      if (op === '()' && typeof callee === 'string') {
-        if (ctx.funcs.map?.get(callee)?.frame?.writesOuter === false) return false
-        if (callee.startsWith('math.') && callArgs(n).every(a => primitiveKind(view, a))) return false
+      if (op === '()') {
+        const target = typeof callee === 'string' ? callee : view?.calleeOf?.(n)
+        if (typeof target === 'string' && ctx.funcs.map?.get(target)?.frame?.writesOuter === false) return false
+        if (typeof callee === 'string' && callee.startsWith('math.') && callArgs(n).every(a => primitiveKind(view, a))) return false
       }
       return true
     }
