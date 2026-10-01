@@ -2191,6 +2191,11 @@ Its branches retain completed environments and share one hull join. Range pairs
 are immutable, so unchanged bounds survive a join without another allocation.
 Compile-time bitwise and integer-store folds share exact ToInt32 conversion;
 large constants reduce modulo 2^32 before the compiler's runtime i64 boundary.
+DataView calls capture arguments before offset/value conversion. ToIndex uses
+semantic Number evidence for its signed-word shortcut, never a pointer's i32
+storage; wider offsets retain unsigned wasm32 bits until the bounds check.
+Setters apply ToNumber or strict ToBigInt before checking the view's extent,
+including OOB writes, and the shared setter family also owns Float16 conversion.
 Runtime typed stores, DataView, Atomics values and UTF-16 unit construction
 share exact ToInt32 lowering. Proven ranges keep direct conversions; unknown
 values recover their low word from the IEEE significand beyond the i64 range.

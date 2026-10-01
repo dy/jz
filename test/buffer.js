@@ -6,8 +6,91 @@ import { is, ok, throws } from 'tst/assert.js'
 import jz from '../index.js'
 import { levels } from './_matrix.js'
 import { oracle, funcWat } from './util.js'
+import encodeWat from 'watr/compile'
 
 // === Allocation + byteLength ===
+
+test('DataView BigInt setters apply ToBigInt before bounds and retain payloads', () => {
+  for (const signed of [true, false]) {
+    // Read signed bits for both setters: jz's documented BigInt domain is i64.
+    const set = signed ? 'setBigInt64' : 'setBigUint64', get = 'getBigInt64'
+    const src = `const dv=new DataView(new ArrayBuffer(8));
+      function value(mode){if(mode===0)return 7n;if(mode===1)return -1n;if(mode===2)return 0x7ffa800012345678n;
+        if(mode===3)return '17';if(mode===4)return true;if(mode===5)return false;if(mode===6)return 7;
+        if(mode===7)return null;if(mode===8)return undefined;if(mode===9)return Symbol.for('dv');
+        if(mode===10)return 'bad';if(mode===11)return {valueOf(){return 9n}};return {valueOf(){return 9}}}
+      export function f(mode,offset,le){try{const result=dv.${set}(offset,value(mode),le);
+        return[result,dv.${get}(0,le)]}catch(e){return[e.name,dv.${get}(0,le)]}}
+      export function raw(offset){const value=0x7ffa800012345678n;dv.${set}(offset,value,true);return dv.${get}(0,true)}
+      export function capture(){let value=3n;const offset={valueOf(){value=9n;return 0}};
+        dv.${set}(offset,value,true);return[dv.${get}(0,true),value]}
+      export function empty(mode){try{new DataView(new ArrayBuffer(0)).${set}(0,value(mode));return 'ok'}catch(e){return e.name}}`
+    for (const optimize of levels(0, 1, 2, 3, 'size')) {
+      const want = oracle(src), got = jz(src, { optimize: { level: optimize, sourceInline: false } }).exports
+      for (const le of [true, false]) for (const mode of [0,0,1,2,3,4,5,6,7,8,9,10,11,12,0]) {
+        for (const offset of [0,1,-1,NaN,.5,-.5,Infinity,4294967296,0])
+          is(got.f(mode,offset,le), want.f(mode,offset,le), `${set} O${optimize}, mode${mode}, offset${offset}`)
+        is(got.empty(mode), want.empty(mode), 'zero length still converts before checking bounds')
+      }
+      for (const offset of [0,0,-0,0]) is(got.raw(offset), want.raw(offset), 'proved BigInt payload keeps raw bits')
+      is(got.capture(), want.capture(), 'offset conversion cannot replace the already-evaluated value')
+    }
+  }
+})
+
+test('DataView arguments finish before offset and value conversion', () => {
+  const methods = ['setInt8','setUint32','setFloat64','setBigInt64']
+  if (typeof DataView.prototype.setFloat16 === 'function') methods.push('setFloat16')
+  for (const method of methods) {
+    const bigint = method === 'setBigInt64'
+    const src = `export function f(offset,fail){let log='';const dv=new DataView(new ArrayBuffer(8));
+      function step(letter,n){log+=letter;if(fail===n)throw n}
+      function recv(){step('r',1);return dv}
+      function off(){step('o',2);return {valueOf(){step('i',6);return offset}}}
+      function val(){step('v',3);return {valueOf(){step('c',7);return ${bigint ? '9n' : '9'}}}}
+      function le(){step('e',4);return {valueOf(){throw 99}}}
+      function extra(){step('x',5);return 0}
+      try{const result=recv().${method}(off(),val(),le(),extra());return[result,log,dv.getUint8(0)]}
+      catch(e){return[e.name||e,log,dv.getUint8(0)]}}
+      export function missing(){const dv=new DataView(new ArrayBuffer(8));try{return[dv.${method}(),dv.getFloat64(0)]}catch(e){return e.name}}`
+    const want = oracle(src)
+    for (const optimize of levels(0,1,2,3,'size')) {
+      const got = jz(src, { optimize }).exports
+      is(got.missing(), want.missing(), 'missing arguments follow the same conversions')
+      for (const offset of [0,0,1,8,-1,NaN,Infinity,0]) for (const fail of [0,1,2,3,4,5,6,7,0])
+        is(got.f(offset,fail),want.f(offset,fail),`${method} argument/coercion order O${optimize}`)
+    }
+  }
+})
+
+test('DataView ToIndex preserves the unsigned wasm32 offset before bounds', () => {
+  const text = jz.compile('export function f(x){return new DataView(new ArrayBuffer(8)).getUint8(x)}', { wat: true, optimize: 0 })
+  const bytes = encodeWat(`(module (tag $__jz_err (param f64)) (global $__jz_last_err_bits (mut i64) (i64.const 0))
+    ${funcWat(text,'__dv_index')} (export "index" (func $__dv_index)))`)
+  const {index} = new WebAssembly.Instance(new WebAssembly.Module(bytes)).exports
+  for (const n of [0,-0,NaN,.5,-.5,1,2147483647,2147483648,4294967294,4294967295,4294967296,9007199254740991,0])
+    is(index(n) >>> 0, Math.min(Number.isNaN(n) ? 0 : Math.trunc(n),4294967295) >>> 0, 'ToIndex retains unsigned bits or an always-OOB saturation')
+  for (const n of [-1,Infinity,-Infinity,9007199254740992]) throws(() => index(n))
+  is(index(1),1,'valid work resumes after an index error')
+})
+
+test('DataView getters convert object offsets after evaluating remaining arguments', () => {
+  for (const method of ['getUint8','getFloat64', ...(typeof DataView.prototype.getFloat16 === 'function' ? ['getFloat16'] : [])]) {
+    const src = `export function f(offset,fail){let log='';const dv=new DataView(new ArrayBuffer(8));
+      const index={valueOf(){log+='i';if(fail===2)throw 2;return offset}};
+      function endian(){log+='e';if(fail===1)throw 1;return true}
+      function extra(){log+='x';return 0}
+      try{return[dv.${method}(index,endian(),extra()),log]}catch(e){return[e.name||e,log]}}
+      export function missing(){return new DataView(new ArrayBuffer(8)).${method}()}`
+    const want = oracle(src)
+    for (const optimize of levels(0,1,2,3,'size')) {
+      const got = jz(src, { optimize }).exports
+      is(got.missing(),want.missing(),'missing offset means zero')
+      for (const offset of [0,0,-1,1,8,NaN,Infinity,4294967296,0]) for (const fail of [0,1,2,0])
+        is(got.f(offset,fail),want.f(offset,fail),`${method} offset coercion O${optimize}`)
+    }
+  }
+})
 
 test('new ArrayBuffer(n) — basic allocation + byteLength', () => {
   const { exports } = jz(`

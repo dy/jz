@@ -866,10 +866,8 @@ export default (ctx) => {
     (local.get $r))`
   const bswap64I64 = (v) => { inc('__bswap64'); return ['call', '$__bswap64', v] }
 
-  // DV float reads return raw f64 bits, which may be non-canonical NaN (sign-flipped
-  // or with payload). jz's `__eq` fast path only treats canonical NaN (0x7FF8…0000)
-  // as NaN, so non-canonical NaN would break `v !== v` semantics. Canonicalize here
-  // (cheap: 4 wasm ops) so `getFloat32`/`getFloat64` return a real-spec NaN value.
+  // A float payload can collide with a positive quiet pointer box. Preserve its
+  // Number domain before a DataView result reaches a generic value consumer.
   ctx.core.stdlib['__canon_nan'] = `(func $__canon_nan (param $v f64) (result f64)
     (select
       (f64.reinterpret_i64 (i64.const ${_NAN_BITS}))
@@ -900,16 +898,44 @@ export default (ctx) => {
           (f64.lt (local.get $idx) (f64.const 0))
           (f64.gt (local.get $idx) (f64.const 9007199254740991)))
       (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${errorCodeLiteral(ERR.DATAVIEW_INDEX_RANGE)}))) (throw $__jz_err (f64.const ${errorCodeLiteral(ERR.DATAVIEW_INDEX_RANGE)}))))
-    (i32.trunc_sat_f64_s (local.get $idx)))`
+    (i32.trunc_sat_f64_u (local.get $idx)))`
 
   // ToIndex the DV byte offset, throwing RangeError on a negative/oversized value.
   // The offset is ToNumber-coerced first (per ToIndex) so a Symbol byte offset
   // raises a TypeError instead of silently truncating to 0.
-  const dvIndex = (offNode) => {
+  const dvIndex = (offNode, value = emit(offNode)) => {
     ctx.runtime.throws = true
+    if (value.type === 'i32' && !value.unsigned &&
+        (valTypeOf(offNode) === VAL.NUMBER || valTypeOf(offNode) === VAL.BOOL)) {
+      const name = tempI32('dvi')
+      return typed(['block', ['result', 'i32'], ['local.set', `$${name}`, value],
+        ['if', ['i32.lt_s', ['local.get', `$${name}`], ['i32.const', 0]],
+          ['then', ['global.set', '$__jz_last_err_bits', ['i64.reinterpret_f64', ['f64.const', errorCodeLiteral(ERR.DATAVIEW_INDEX_RANGE)]]],
+            ['throw', '$__jz_err', ['f64.const', errorCodeLiteral(ERR.DATAVIEW_INDEX_RANGE)]]]],
+        ['local.get', `$${name}`]], 'i32')
+    }
     inc('__dv_index')
-    return typed(['call', '$__dv_index', toNumF64(offNode, emit(offNode))], 'i32')
+    return typed(['call', '$__dv_index', toNumF64(offNode, value)], 'i32')
   }
+
+  // Argument evaluation finishes before ToIndex/ToNumber/ToBigInt. A temporary
+  // holding a generic value uses its own boxed facts, not the source's raw ABI.
+  const dvArgument = (node, bigint = false) => {
+    node ??= [, undefined]
+    const numeric = valTypeOf(node) === VAL.NUMBER || valTypeOf(node) === VAL.BOOL
+    const raw = bigint && tagsOf(ctx.summary?.at(ctx.func.current).kindOfExpr(node) ?? 0) === bitOf(K.BIGINT)
+    const value = raw ? readI64(node, emit(node)) : numeric ? emit(node) : storedValue(node)
+    const word = numeric && value.type === 'i32' && !value.unsigned
+    const name = raw ? tempI64('dva') : word ? tempI32('dva') : temp('dva')
+    return { node: numeric ? node : name, raw,
+      setup: ['local.set', `$${name}`, raw || word ? value : asF64(value)],
+      value: typed(['local.get', `$${name}`], raw ? 'i64' : word ? 'i32' : 'f64') }
+  }
+  const dvBounds = (index, size, viewSize) => ['if', ['i32.or',
+    ['i32.lt_u', viewSize, ['i32.const', size]],
+    ['i32.gt_u', index, ['i32.sub', viewSize, ['i32.const', size]]]],
+    ['then', ['global.set', '$__jz_last_err_bits', ['i64.reinterpret_f64', ['f64.const', errorCodeLiteral(ERR.DATAVIEW_OFFSET_OOB)]]],
+      ['throw', '$__jz_err', ['f64.const', errorCodeLiteral(ERR.DATAVIEW_OFFSET_OOB)]]]]
 
   // A DataView receiver resolves to its 16-byte descriptor pointer
   // [byteLen:i32][dataOff:i32][parentOff:i32]. get/set hoist this once, then
@@ -924,30 +950,11 @@ export default (ctx) => {
   // access would run past the view. elementSize moves to the static side of the
   // compare so a saturated/huge index can't overflow the i32 addition. viewSize is
   // read live from the descriptor, so the check holds for every DataView receiver.
-  const dvIndexChecked = (offNode, size, viewSize) => {
-    ctx.runtime.throws = true
+  const dvIndexChecked = (offNode, size, viewSize, value) => {
     const idxT = tempI32('dvb')
-    const offIR = emit(offNode)
-    // Fast path: a proven-i32 byte offset (a loop-advanced `p`, `i*2`, a `|0` value)
-    // carries no fraction/NaN/negative-from-ToNumber surprise, so it skips the f64
-    // ToIndex round-trip and the `__dv_index` CALL — the dominant per-sample cost in
-    // DataView-based codec loops. An i32 range (`<0`) + bounds (`>viewSize-size`)
-    // check is all the spec needs here; this lowers `dv.getInt16(p,true)` to one
-    // `i32.load16_s`, matching the explicit-typed-view path.
-    if (offIR.type === 'i32') {
-      return typed(['block', ['result', 'i32'],
-        ['local.set', `$${idxT}`, offIR],
-        ['if', ['i32.or',
-            ['i32.lt_s', ['local.get', `$${idxT}`], ['i32.const', 0]],
-            ['i32.gt_s', ['local.get', `$${idxT}`], ['i32.sub', viewSize, ['i32.const', size]]]],
-          ['then', ['global.set', '$__jz_last_err_bits', ['i64.reinterpret_f64', ['f64.const', errorCodeLiteral(ERR.DATAVIEW_OFFSET_OOB_FAST)]]], ['throw', '$__jz_err', ['f64.const', errorCodeLiteral(ERR.DATAVIEW_OFFSET_OOB_FAST)]]]],
-        ['local.get', `$${idxT}`]], 'i32')
-    }
-    inc('__dv_index')
     return typed(['block', ['result', 'i32'],
-      ['local.set', `$${idxT}`, typed(['call', '$__dv_index', toNumF64(offNode, offIR)], 'i32')],
-      ['if', ['i32.gt_s', ['local.get', `$${idxT}`], ['i32.sub', viewSize, ['i32.const', size]]],
-        ['then', ['global.set', '$__jz_last_err_bits', ['i64.reinterpret_f64', ['f64.const', errorCodeLiteral(ERR.DATAVIEW_OFFSET_OOB)]]], ['throw', '$__jz_err', ['f64.const', errorCodeLiteral(ERR.DATAVIEW_OFFSET_OOB)]]]],
+      ['local.set', `$${idxT}`, dvIndex(offNode, value)],
+      dvBounds(['local.get', `$${idxT}`], size, viewSize),
       ['local.get', `$${idxT}`]], 'i32')
   }
 
@@ -957,75 +964,47 @@ export default (ctx) => {
     setInt8: ['i32.store8', 'i32', 1],   setUint8: ['i32.store8', 'i32', 1],
     setInt16: ['i32.store16', 'i32', 2], setUint16: ['i32.store16', 'i32', 2],
     setInt32: ['i32.store', 'i32', 4],   setUint32: ['i32.store', 'i32', 4],
+    setFloat16: ['i32.store16', 'f16', 2],
     setFloat32: ['f32.store', 'f32', 4], setFloat64: ['f64.store', 'f64', 8],
     setBigInt64: ['i64.store', 'i64', 8], setBigUint64: ['i64.store', 'i64', 8],
   }
   for (const [method, [storeOp, valType, size]] of Object.entries(DV_SET)) {
-    ctx.core.emit[`.${method}`] = (dv, off, val, leNode) => {
-      // Snapshot this closure's OWN captures into locals BEFORE any nested emit
-      // call below (emit(off)/emit(val)/emit(leNode)) can recurse into a SIBLING
-      // DataView closure from the SAME Object.entries(DV_SET) loop (e.g.
-      // `dv.setFloat64(0, dv.setInt32(4, 1))`) — self-compile closure-capture-after-
-      // nested-emit class (.work/archive/todo.md §TYPED-INDEX / §KERNEL LEG ZERO
-      // FAILS): a captured storeOp/valType/size re-read after a
-      // nested emit() can observe the OTHER iteration's values once this file is
-      // kernel-compiled. The rest of this closure reads the locals, never the
-      // free variables, so it is immune regardless of what off/val/leNode nest.
-      const op = storeOp, vt = valType, sz = size
-      // Resolve the receiver's descriptor once; the store reads dataOff/byteLen from it.
-      const desc = tempI32('dvD')
-      const fin = (body) => typed(['block', ['result', 'f64'],
-        ['local.set', `$${desc}`, dvDescriptor(dv)], body, undefExpr()], 'f64')
-      const addr = ['i32.add', dvDataOff(desc), dvIndexChecked(off, sz, dvViewSize(desc))]
-      // Coerce value into the wasm value type the store op consumes. Non-BigInt
-      // stores ToNumber the value first (per SetViewValue) so a Symbol value
-      // raises a TypeError and a string value parses instead of truncating to 0.
+    ctx.core.emit[`.${method}`] = (dv, off, val, leNode, ...ignored) => {
+      // Snapshot loop captures before a nested argument emitter can re-enter.
+      const op = storeOp, half = valType === 'f16', vt = half ? 'i32' : valType, sz = size
+      const desc = tempI32('dvD'), index = tempI32('dvi')
+      const receiver = dvDescriptor(dv)
+      const offset = dvArgument(off), input = dvArgument(val, vt === 'i64'), endian = dvArgument(leNode)
+      const extras = ignoredArguments(ignored)
       let v
-      if (vt === 'i64') v = typed(['i64.reinterpret_f64', asF64(emit(val))], 'i64')
-      else if (vt === 'f64') v = asF64(toNumF64(val, emit(val)))
-      else if (vt === 'f32') v = typed(['f32.demote_f64', asF64(toNumF64(val, emit(val)))], 'f32')
-      // ES ToIntN (SetViewValue) for the integer stores: asI32's saturating
-      // trunc stored INT32_MAX for dv.setInt32(0, 4e9) — spec wraps mod 2^32.
-      else v = toInt32(asF64(toNumF64(val, emit(val))))
-
-      if (sz === 1) return fin([op, addr, v])
-
-      // For BE we byte-swap the integer payload; floats route through bitcast i↔f.
-      const swap = (iVal) => sz === 2 ? bswap16I32(iVal) : sz === 4 ? bswap32I32(iVal) : bswap64I64(iVal)
-      const beStore = () => {
-        if (vt === 'f32') {
-          const swapped = typed(['f32.reinterpret_i32', swap(typed(['i32.reinterpret_f32', v], 'i32'))], 'f32')
-          return [op, addr, swapped]
+      if (vt === 'i64') {
+        if (input.raw) v = input.value
+        else {
+          ctx.module.include('number'); ctx.runtime.throws = true; inc('__to_bigint_strict')
+          v = ['i64.reinterpret_f64', ['call', '$__to_bigint_strict', asI64(input.value)]]
         }
-        if (vt === 'f64') {
-          const swapped = typed(['f64.reinterpret_i64', bswap64I64(typed(['i64.reinterpret_f64', v], 'i64'))], 'f64')
-          return [op, addr, swapped]
-        }
-        return [op, addr, swap(v)]
+      } else {
+        const number = asF64(toNumF64(input.node, input.value))
+        if (half) { inc('__f64_to_f16'); v = ['call', '$__f64_to_f16', number] }
+        else if (vt === 'f64') v = number
+        else if (vt === 'f32') v = ['f32.demote_f64', number]
+        else v = toInt32(number)
       }
-
+      const value = vt === 'i64' ? tempI64('dvsv') : vt === 'i32' ? tempI32('dvsv') : temp('dvsv')
+      if (vt === 'f32') ctx.func.locals.set(value, 'f32')
+      const get = typed(['local.get', `$${value}`], vt)
+      const swap = bits => sz === 2 ? bswap16I32(bits) : sz === 4 ? bswap32I32(bits) : bswap64I64(bits)
+      const swapped = () => vt === 'f32' ? ['f32.reinterpret_i32', swap(['i32.reinterpret_f32', get])]
+        : vt === 'f64' ? ['f64.reinterpret_i64', swap(['i64.reinterpret_f64', get])] : swap(get)
+      const addr = ['i32.add', dvDataOff(desc), ['local.get', `$${index}`]]
       const le = staticLE(leNode)
-      if (le === true) return fin([op, addr, v])
-      if (le === false) return fin(beStore())
-      // Dynamic: hoist value + addr into temps so each branch can re-use.
-      const aT = tempI32('dvsa')
-      const vLoc = vt === 'i64' ? tempI64('dvsv') : vt === 'i32' ? tempI32('dvsv') : temp('dvsv')
-      // Re-declare with correct type for f32 (temp() defaults to f64).
-      if (vt === 'f32') ctx.func.locals.set(vLoc, 'f32')
-      const leT = tempI32('dvsle')
-      return fin(['block',
-        ['local.set', `$${aT}`, addr],
-        ['local.set', `$${vLoc}`, v],
-        ['local.set', `$${leT}`, truthyIR(emit(leNode))],
-        ['if',
-          ['local.get', `$${leT}`],
-          ['then', [op, ['local.get', `$${aT}`], typed(['local.get', `$${vLoc}`], vt)]],
-          ['else', (() => {
-            const refV = typed(['local.get', `$${vLoc}`], vt)
-            if (vt === 'f32') return [op, ['local.get', `$${aT}`], typed(['f32.reinterpret_i32', swap(typed(['i32.reinterpret_f32', refV], 'i32'))], 'f32')]
-            if (vt === 'f64') return [op, ['local.get', `$${aT}`], typed(['f64.reinterpret_i64', bswap64I64(typed(['i64.reinterpret_f64', refV], 'i64'))], 'f64')]
-            return [op, ['local.get', `$${aT}`], swap(refV)]
-          })()]]])
+      const store = sz === 1 || le === true ? [op, addr, get] : le === false ? [op, addr, swapped()]
+        : ['if', truthyIR(endian.value), ['then', [op, addr, get]], ['else', [op, addr, swapped()]]]
+      return typed(['block', ['result', 'f64'],
+        ['local.set', `$${desc}`, receiver], offset.setup, input.setup, endian.setup, ...extras,
+        ['local.set', `$${index}`, dvIndex(offset.node, offset.value)],
+        ['local.set', `$${value}`, v],
+        dvBounds(['local.get', `$${index}`], sz, dvViewSize(desc)), store, undefExpr()], 'f64')
     }
   }
 
@@ -1039,7 +1018,7 @@ export default (ctx) => {
     getBigInt64: ['i64.load', 'i64', 8, true], getBigUint64: ['i64.load', 'i64', 8, false],
   }
   for (const [method, [loadOp, resultType, size, signed]] of Object.entries(DV_GET)) {
-    ctx.core.emit[`.${method}`] = (dv, off, leNode) => {
+    ctx.core.emit[`.${method}`] = (dv, off, leNode, ...ignored) => {
       // Snapshot this closure's OWN captures into locals BEFORE any nested emit
       // call below (emit(off)/emit(leNode)) can recurse into a SIBLING DataView
       // closure from the SAME Object.entries(DV_GET) loop (e.g.
@@ -1052,10 +1031,11 @@ export default (ctx) => {
       // what off/leNode nest.
       const op = loadOp, rt = resultType, sz = size, sg = signed
       // Resolve the receiver's descriptor once; the load reads dataOff/byteLen from it.
-      const desc = tempI32('dvD')
+      const desc = tempI32('dvD'), receiver = dvDescriptor(dv)
+      const offset = dvArgument(off), endian = dvArgument(leNode), extras = ignoredArguments(ignored)
       const fin = (body) => typed(['block', ['result', 'f64'],
-        ['local.set', `$${desc}`, dvDescriptor(dv)], asF64(body)], 'f64')
-      const addr = ['i32.add', dvDataOff(desc), dvIndexChecked(off, sz, dvViewSize(desc))]
+        ['local.set', `$${desc}`, receiver], offset.setup, endian.setup, ...extras, asF64(body)], 'f64')
+      const addr = ['i32.add', dvDataOff(desc), dvIndexChecked(offset.node, sz, dvViewSize(desc), offset.value)]
 
       // Convert a wasm-typed raw value back into the f64 ABI return. Float reads
       // canonicalize NaN (see __canon_nan) so downstream `v !== v` works.
@@ -1099,7 +1079,7 @@ export default (ctx) => {
       const leT = tempI32('dvgle')
       return fin(typed(['block', ['result', 'f64'],
         ['local.set', `$${aT}`, addr],
-        ['local.set', `$${leT}`, truthyIR(emit(leNode))],
+        ['local.set', `$${leT}`, truthyIR(endian.value)],
         ['if', ['result', 'f64'],
           ['local.get', `$${leT}`],
           ['then', asF64(toF64(typed([op, ['local.get', `$${aT}`]], rt)))],
@@ -1127,10 +1107,11 @@ export default (ctx) => {
   // DataView.getFloat16 / setFloat16 (ES2025) — the 2-byte binary16 payload
   // around the same descriptor/bounds/LE machinery as get/setUint16, with the
   // core conversion kernels at the value edge.
-  ctx.core.emit['.getFloat16'] = (dv, off, leNode) => {
+  ctx.core.emit['.getFloat16'] = (dv, off, leNode, ...ignored) => {
     inc('__f16_to_f64')
-    const desc = tempI32('dvD')
-    const addr = ['i32.add', dvDataOff(desc), dvIndexChecked(off, 2, dvViewSize(desc))]
+    const desc = tempI32('dvD'), receiver = dvDescriptor(dv)
+    const offset = dvArgument(off), endian = dvArgument(leNode), extras = ignoredArguments(ignored)
+    const addr = ['i32.add', dvDataOff(desc), dvIndexChecked(offset.node, 2, dvViewSize(desc), offset.value)]
     const cvt = (raw16) => typed(['call', '$__f16_to_f64', raw16], 'f64')
     const le = staticLE(leNode)
     let body
@@ -1140,40 +1121,16 @@ export default (ctx) => {
       const aT = tempI32('dvga'), leT = tempI32('dvgle')
       body = typed(['block', ['result', 'f64'],
         ['local.set', `$${aT}`, addr],
-        ['local.set', `$${leT}`, truthyIR(emit(leNode))],
+        ['local.set', `$${leT}`, truthyIR(endian.value)],
         ['if', ['result', 'f64'], ['local.get', `$${leT}`],
           ['then', cvt(['i32.load16_u', ['local.get', `$${aT}`]])],
           ['else', cvt(bswap16I32(typed(['i32.load16_u', ['local.get', `$${aT}`]], 'i32')))]]], 'f64')
     }
     return typed(['block', ['result', 'f64'],
-      ['local.set', `$${desc}`, dvDescriptor(dv)],
+      ['local.set', `$${desc}`, receiver], offset.setup, endian.setup, ...extras,
       asF64(body)], 'f64')
   }
 
-  ctx.core.emit['.setFloat16'] = (dv, off, val, leNode) => {
-    inc('__f64_to_f16')
-    const desc = tempI32('dvD'), aT = tempI32('dvsa'), vT = tempI32('dvsv16')
-    const addr = ['i32.add', dvDataOff(desc), dvIndexChecked(off, 2, dvViewSize(desc))]
-    const le = staticLE(leNode)
-    const store = (bits) => ['i32.store16', ['local.get', `$${aT}`], bits]
-    const bitsLE = ['local.get', `$${vT}`]
-    const bitsBE = () => bswap16I32(typed(['local.get', `$${vT}`], 'i32'))
-    let storeIR
-    if (le === true) storeIR = store(bitsLE)
-    else if (le === false) storeIR = store(bitsBE())
-    else {
-      const leT = tempI32('dvsle')
-      storeIR = ['block',
-        ['local.set', `$${leT}`, truthyIR(emit(leNode))],
-        ['if', ['local.get', `$${leT}`], ['then', store(bitsLE)], ['else', store(bitsBE())]]]
-    }
-    return typed(['block', ['result', 'f64'],
-      ['local.set', `$${desc}`, dvDescriptor(dv)],
-      ['local.set', `$${aT}`, addr],
-      ['local.set', `$${vT}`, ['call', '$__f64_to_f16', asF64(emit(val))]],
-      storeIR,
-      undefExpr()], 'f64')
-  }
 
   // TypedArray.from(arr) — convert regular array to typed array
   for (const [name, elemType] of Object.entries(TYPED_ELEM_CODE)) {
