@@ -29,7 +29,7 @@ import { valTypeOf, hasAmbiguousBoolMerge, censusMaybeUndefined, isPresentNumber
 import { VAL } from '../src/reps.js'
 import { ctx, inc, PTR, LAYOUT, err, declGlobal } from '../src/ctx.js'
 import { dataAlign, dataPush, dataLen, strPoolPush } from '../src/static-data.js'
-import { ssoBitI64Hex, sliceBitI64Hex, i64Hex, hcacheBitI64Hex, ptrNanHex, STR_INTERN_BIT, STR_HCACHE_BIT } from '../layout.js'
+import { ssoBitI64Hex, sliceBitI64Hex, hcacheBitI64Hex, ptrNanHex, STR_INTERN_BIT, STR_HCACHE_BIT } from '../layout.js'
 import { errorCodeLiteral, ERR } from '../err-codes.js'
 import { stringBytes, stringHash } from '../src/string-data.js'
 import { representationProgramHasBigint } from '../src/compile/representation-plan.js'
@@ -1032,12 +1032,12 @@ export default (ctx) => {
   // Canonical property keys are strings or Symbols. Only strings compare by
   // contents; a Symbol's payload is an identity, never a string-memory offset.
   wat('__key_eq', `(func $__key_eq (param $a i64) (param $b i64) (result i32)
-    (if (i64.eq (local.get $a) (local.get $b)) (then (return (i32.const 1))))
+    ${lean ? '' : '(if (i64.eq (local.get $a) (local.get $b)) (then (return (i32.const 1))))'}
     (if (result i32)
-      (i64.eq (i64.and (i64.and (local.get $a) (local.get $b))
-        (i64.const ${i64Hex(BigInt(LAYOUT.TAG_MASK) << BigInt(LAYOUT.TAG_SHIFT))}))
-        (i64.const ${i64Hex(BigInt(PTR.STRING) << BigInt(LAYOUT.TAG_SHIFT))}))
-      (then (call $__str_eq (local.get $a) (local.get $b))) (else (i32.const 0))))`)
+      (i32.eq (i32.and (i32.wrap_i64 (i64.shr_u (i64.and (local.get $a) (local.get $b))
+        (i64.const ${LAYOUT.TAG_SHIFT}))) (i32.const ${LAYOUT.TAG_MASK})) (i32.const ${PTR.STRING}))
+      (then (call $__str_eq (local.get $a) (local.get $b)))
+      (else ${lean ? '(i64.eq (local.get $a) (local.get $b))' : '(i32.const 0)'})))`)
 
   // ToPropertyKey has a string hint but preserves a Symbol primitive, including
   // one returned by a user conversion method. Ordinary String conversion does not.

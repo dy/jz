@@ -207,8 +207,6 @@ const keyEq = (fullEq) =>
         (i64.eq (i64.load offset=8 (local.get $slot)) (local.get $key))
         (then (i32.const 1))
         (else ${fullEq}))`
-const propEqG = keyEq('(call $__key_eq (i64.load offset=8 (local.get $slot)) (local.get $key))')
-const sameValueZeroEqG = keyEq('(call $__same_value_zero (i64.load offset=8 (local.get $slot)) (local.get $key))')
 
 import { collectionLaneBytes, genRehash, genUpsert, genLookup, genDelete, genUpsertGrow, genEphemeralSlotUpsert, genEphemeralFixedSlot, genLookupStrict, genUpsertStrictPrehashed } from './collection/upsert.js'
 import { includeCopyKeys } from './object.js'
@@ -224,6 +222,12 @@ export default (ctx) => {
   // Size tier: `__str_hash` links its plain walk and the probes call it
   // instead of inlining its fast arms (module/collection/upsert.js).
   const lean = !!ctx.transform.optimize?.leanRuntime
+  // Both shared comparators already decide bit identity. Size mode calls that
+  // entry once; speed mode keeps its inline identity shortcut before the call.
+  const propEq = '(call $__key_eq (i64.load offset=8 (local.get $slot)) (local.get $key))'
+  const valueEq = '(call $__same_value_zero (i64.load offset=8 (local.get $slot)) (local.get $key))'
+  const propEqG = lean ? propEq : keyEq(propEq)
+  const sameValueZeroEqG = lean ? valueEq : keyEq(valueEq)
   // The inline-cache handoff globals (buildObjectSchemaArm → optimize/devirt.js).
   if (!lean) { declGlobal('__ic_found_hi', 'i64'); declGlobal('__ic_found_slot', 'i32') }
   // Feature-gated deps: EXTERNAL-dependent symbols are only pulled when linkDemand.external.
@@ -1194,7 +1198,8 @@ export default (ctx) => {
     (local.set $aux (i32.wrap_i64 (i64.and (i64.shr_u (local.get $s) (i64.const ${LAYOUT.AUX_SHIFT})) (i64.const ${LAYOUT.AUX_MASK}))))
     (if (i32.eqz (local.get $t))
       (then (return (i32.or (i32.mul (i32.xor (local.get $aux) (local.get $off)) (i32.const 0x9E3779B9)) (i32.const 2)))))
-    (if (i32.and (i32.eq (local.get $t) (i32.const ${PTR.STRING})) (i32.shr_u (local.get $aux) (i32.const 14)))
+    ;; Property keys are canonical strings or atoms. The atom arm returned.
+    (if (i32.shr_u (local.get $aux) (i32.const 14))
       (then
         (local.set $h (i32.mul
           (i32.xor (local.get $off) (i32.mul (i32.xor (i32.and (local.get $aux) (i32.const 0x1FFF)) (i32.const 0x9E3779B9)) (i32.const 0x85EBCA6B)))
@@ -1202,7 +1207,7 @@ export default (ctx) => {
         (local.set $h (i32.xor (local.get $h) (i32.shr_u (local.get $h) (i32.const 15)))))
       (else
         (local.set $h (i32.const 0x811c9dc5))
-        (if (i32.and (i32.eq (local.get $t) (i32.const ${PTR.STRING})) (i32.ge_u (local.get $off) (i32.const 4)))
+        (if (i32.ge_u (local.get $off) (i32.const 4))
           (then (local.set $len (call $__str_length (local.get $s)))))
         (block $dh (loop $lh
           (br_if $dh (i32.ge_s (local.get $i) (local.get $len)))

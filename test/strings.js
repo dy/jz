@@ -1259,6 +1259,29 @@ test('concat: retained builder values stay immutable across appends', () => {
 // call). If the two hash functions ever disagree for the same SSO bits, the probe silently
 // misses instead of erroring, so this is exercised for every producer × every collection
 // (Map/Set/HASH-object) × lengths 1-6.
+test('plain key walks preserve strings, Symbol identity and numeric collection equality', () => {
+  const src=`export function f(mode) {
+    const first=Symbol('same'),second=Symbol('same'),shared=Symbol.for('shared')
+    const text=mode?'prefix_Ω_long_key_suffix':'prefix_long_key_suffix'
+    const sliced=text.slice(7,-7), keys=[first,second,shared,'same','','a','abcdef',sliced,'long_key',0,-0,NaN,true,null,undefined,1n]
+    const counts={},map=new Map(),set=new Set()
+    for(let i=0;i<keys.length;i++){const key=keys[i];counts[key]=i+1;map.set(key,i+1);set.add(key)}
+    const out=[]
+    for(let i=0;i<keys.length;i++){const key=keys[i];out.push(counts[key],map.get(key),set.has(key))}
+    out.push(counts.long_key,counts[first],counts[second],map.get(Symbol.for('shared')),set.has(Symbol('same')))
+    delete counts[first];map.delete(first);set.delete(first)
+    out.push(first in counts,second in counts,map.has(first),map.has(second),set.has(first),set.has(second))
+    counts[first]=71;map.set(first,72);set.add(first)
+    let effects=0;const key={toString(){effects++;return mode?'Ω_long_key':'long_key'}}
+    counts[key]=81;out.push(counts[key],effects,counts[first],map.get(first),set.has(first),map.size,set.size)
+    return out
+  }`
+  for(const optimize of levels(0,1,2,3,'size')) {
+    const host=oracle(src),got=jz(src,{optimize}).exports
+    for(const mode of [0,0,1,0]) is(got.f(mode),host.f(mode),`O${optimize}: unchanged, changed and reused key domains`)
+  }
+})
+
 test('SSO hash mix: literal-prehashed probe finds a same-content key from every producer', () => {
   const producers = {
     literal: (k) => `"${k}"`,

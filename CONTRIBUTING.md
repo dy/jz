@@ -129,6 +129,10 @@ hooks run once and may return a Symbol; hashing and equality then preserve its
 whole identity without interpreting payload bits as string addresses. Public
 string enumeration omits Symbols, while object copies and rest retain them in
 own-key order. Structured cloning retains only string-keyed properties.
+Size-tier probes leave identity comparison to the shared key/Map comparator
+instead of duplicating it at each call. The compact string hash classifies
+atoms once; its remaining canonical property keys are strings. String/Symbol
+hash values and the speed tier's inline shortcuts stay unchanged.
 Symbol factories evaluate every argument before converting the description;
 conversion getters, fallback methods and errors follow the string hint even
 though descriptions are not retained. Ignored arguments keep their effects.
