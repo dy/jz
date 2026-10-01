@@ -39,7 +39,8 @@ function emitSpeculativeCall(callee, spec, argNodes, func) {
   for (let k = 0; k < params.length; k++) {
     if (k < argNodes.length) {
       const ir = coerceArg(argIR(argNodes[k]), params[k], argNodes[k],
-        representationCallArgAction(ctx, argNodes[k], func, k))
+        representationCallArgAction(ctx, argNodes[k], func, k),
+        func)
       // Temp width follows the PARAM's ABI (coerceArg's contract), not the IR
       // tag — pointer-ABI coercions (`__ptr_offset`) come back untagged i32.
       const pt = params[k].ptrKind != null || params[k].type === 'i32' ? 'i32' : 'f64'

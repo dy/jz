@@ -1,16 +1,17 @@
 /**
- * NAN_MINTING/canonNum/canonArm (the NaN-canon trio), the range-check fusion (rangeBound/fuseRangeCheck{,Or}/combineFusedAnd/Or) plus the !/?:/&&/||/??/void/( emitter properties.
+ * Number-carrier joins, range-check fusion and logical emitter properties.
  *
  * @module compile/emit/logical
  */
 
 import { OPTF, ctx } from '../../ctx.js'
 import {
-  applyBigintRepresentationAction, asF64, bigintEraseErr, bigintStrict, block64, boolBoxIR, flat, isLit, isNullish, litVal, resolveValType, temp, tempI32, truthyIR, typed, undefExpr,
+  applyBigintRepresentationAction, numberCarrierIR, isNumericIR, asF64, bigintEraseErr, bigintStrict, block64, boolBoxIR, flat, isLit, isNullish, litVal, resolveValType, temp, tempI32, truthyIR, typed, undefExpr,
   NULL_NAN, UNDEF_NAN,
 } from '../../ir.js'
 import { valTypeOf } from '../../kind.js'
 import { VAL, lookupValType } from '../../reps.js'
+import { NUMBER } from '../../summary/kind.js'
 import { intLiteralValue } from '../../static.js'
 import { extractRefinements, withRefinements } from '../flow-types.js'
 import { REP_EDGE_BOX, REP_EDGE_REJECT, representationJoinArmAction } from '../representation-plan.js'
@@ -19,38 +20,12 @@ import { emit, markDropped, toBool } from './dispatch.js'
 import { REF_EQ_KINDS, boolEagerBody, eagerSelectOK, i32JoinRep, isCanonicalBoolExpr, isCmp, isNumArm, selectOK } from './shared.js'
 
 
-// f64 arithmetic that can MINT a sign-nondeterministic NaN (0/0, ∞−∞, 0·∞, x%0): on x86
-// these are 0xFFF8…, on arm 0x7FF8…. sqrt/min/max/neg are NOT here — they canon at their
-// own emit (math.js / unary `-`), so they reach canonNum already canonical.
-const NAN_MINTING = new Set(['f64.div', 'f64.add', 'f64.sub', 'f64.mul'])
-
-const canonNum = (node) => {
-  // Fold a possibly-non-canonical NaN to the canonical number-NaN before it reaches a
-  // bit-comparing consumer (__is_truthy / untyped === / typeof), which match the canonical
-  // NaN by bits and so misread x86's 0xFFF8 as truthy. ONLY an un-canon'd NaN-minting
-  // arithmetic op can carry such a value — literals, i32-conversions, opaque locals/calls
-  // (canonical by the canon-at-source invariant) and already-canon'd shapes don't — so
-  // skipping everything else keeps the size win. (The broken middle ground was
-  // `02873d0`'s `isNumericIR` skip, which dropped canon for f64.div too → x86 miscompile.)
-  const arith = Array.isArray(node) &&
-    (NAN_MINTING.has(node[0]) || (node[0] === 'call' && node[1] === '$__rem'))
-  if (!arith) return node
-  const t = temp('cn')
-  return typed(['block', ['result', 'f64'],
-    ['local.set', `$${t}`, node],
-    ['select',
-      ['f64.const', 'nan'],
-      ['local.get', `$${t}`],
-      ['f64.ne', ['local.get', `$${t}`], ['local.get', `$${t}`]]]], 'f64')
-}
-
-// One arm of a two-arm f64 merge (?:, ??, ||, &&) whose result may be bit-tested while
-// untyped. Canon (canonNum, a no-op unless the arm is NaN-minting arithmetic) ONLY a
-// LONE numeric arm: when both arms are numeric the merge is value-typed NUMBER and read
-// NaN-by-value (no canon); when the other arm is opaque the result is untyped, so a
-// non-canonical NaN here would be misread by __is_truthy — fold it. A pointer arm
-// (isNum=false) is never touched (canon would destroy its NaN-box).
-const canonArm = (f, isNum, otherNum) => isNum && !otherNum ? canonNum(f) : f
+// A join stays raw only when the other arm is also a present Number. Nullable
+// numeric payloads are generic carriers: normalize the proven Number arm, never
+// the undefined member carried by a checked read or a previously stored value.
+const canonArm = (node, value, other, otherValue) =>
+  isNumericIR(otherValue) || otherValue.presentNumRead || ctx.summary?.at(ctx.func.current).kindOfExpr(other) === NUMBER
+    ? value : numberCarrierIR(node, value)
 
 // A literal `undefined` or `null`, as emitted: never the value of `||` or `??`, whose right
 // side is then the value (`opts.tolerance || EPS` over a literal that declares no tolerance,
@@ -67,7 +42,7 @@ const rightOf = (a, b, sense) => {
 // identity a raw 0/1 beside a box would erase (`c ? 1n : true`), as the
 // unmaterialized BOOL∪other merges below already box theirs.
 const taggedArm = (arm, ir) =>
-  resolveValType(arm, valTypeOf, lookupValType) === VAL.BOOL ? boolBoxIR(ir) : asF64(ir)
+  resolveValType(arm, valTypeOf, lookupValType) === VAL.BOOL ? boolBoxIR(ir) : asF64(numberCarrierIR(arm, ir))
 
 // A BOOL arm beside a NUMBER arm carries its ToNumber image (VT's BOOL∪NUMBER
 // rule): a raw i32 0/1, or its conversion, already is that image. A boxed atom
@@ -181,10 +156,10 @@ function combineFusedAnd(gateNode, fusedIR) {
   }
   const t = temp()
   const numA = isNumArm(vg, gateNode)
-  const teed = typed(['local.tee', `$${t}`, canonArm(asF64(vg), numA, true)], 'f64')
+  const teed = typed(['local.tee', `$${t}`, canonArm(gateNode, asF64(vg), null, fusedIR)], 'f64')
   if (numA) teed.valKind = VAL.NUMBER
   return typed(['if', ['result', 'f64'], truthyIR(teed),
-    ['then', canonArm(asF64(fusedIR), true, numA)],
+    ['then', canonArm(null, asF64(fusedIR), gateNode, vg)],
     ['else', ['local.get', `$${t}`]]], 'f64')
 }
 
@@ -205,7 +180,7 @@ function combineFusedOr(gateNode, fusedIR) {
   if (numA) teed.valKind = VAL.NUMBER
   return typed(['if', ['result', 'f64'], truthyIR(teed),
     ['then', ['local.get', `$${t}`]],
-    ['else', canonArm(asF64(fusedIR), true, numA)]], 'f64')
+    ['else', canonArm(null, asF64(fusedIR), gateNode, vg)]], 'f64')
 }
 export const logicalOps = {
   // === Logical ===
@@ -342,7 +317,7 @@ export const logicalOps = {
       n.valKind = VAL.NUMBER
       return n
     }
-    const branchB = canonArm(fb, numericB, numericC), branchC = canonArm(fc, numericC, numericB)
+    const branchB = canonArm(b, fb, c, vc), branchC = canonArm(c, fc, b, vb)
     const markNumeric = (n) => {
       if (numericB && numericC) n.valKind = VAL.NUMBER
       return n
@@ -485,15 +460,14 @@ export const logicalOps = {
     const numA = isNumArm(fa, a)
     let vb = emitRight()
     if (vtB === VAL.BOOL && vtA === VAL.NUMBER) vb = numericBoolArm(vb)
-    const numB = isNumArm(vb, b)
     // `a` is the else-arm result (returned when falsy — incl NaN), so canon a lone-numeric
     // `a` before the tee: `$t` then feeds both the result and the cond canonically.
-    const teed = typed(['local.tee', `$${t}`, canonArm(asF64(fa), numA, numB)], 'f64')
-    // A numeric left arm tests truthiness NaN-by-value (not __is_truthy, which mis-reads
-    // x86's sign-set NaN as truthy) — tag it so truthyIR takes that path.
+    const teed = typed(['local.tee', `$${t}`, canonArm(a, asF64(fa), b, vb)], 'f64')
+    // A numeric left arm tests truthiness by value, including pointer-looking
+    // NaN payloads that remain raw in a uniform Number join.
     if (numA) teed.valKind = VAL.NUMBER
     return typed(['if', ['result', 'f64'], truthyIR(teed),
-      ['then', canonArm(asF64(vb), numB, numA)],
+      ['then', canonArm(b, asF64(vb), a, va)],
       ['else', ['local.get', `$${t}`]]], 'f64')
   },
 
@@ -596,7 +570,6 @@ export const logicalOps = {
     const numA = isNumArm(fa, a)
     let vb = emitRight()
     if (vtB === VAL.BOOL && vtA === VAL.NUMBER) vb = numericBoolArm(vb)
-    const numB = isNumArm(vb, b)
     // `a` (then-arm) is returned only when truthy — hence never NaN — so it needs no canon;
     // the cond's NaN-safety comes from the valKind tag. Only the else (b) arm can surface
     // as a numeric NaN.
@@ -604,11 +577,12 @@ export const logicalOps = {
     if (numA) teed.valKind = VAL.NUMBER   // numeric left arm: NaN-safe truthiness (see `&&`)
     return typed(['if', ['result', 'f64'], truthyIR(teed),
       ['then', ['local.get', `$${t}`]],
-      ['else', canonArm(asF64(vb), numB, numA)]], 'f64')
+      ['else', canonArm(b, asF64(vb), a, va)]], 'f64')
   },
 
   // a ?? b: returns b only if a is nullish
   '??': (a, b, self) => {
+    if (ctx.summary?.at(ctx.func.current).kindOfExpr(a) === NUMBER) { markDropped(b); return emit(a) }
     // Plan-materialized BigInt∪other join (C5b) — see '&&'s comment. `??`'s
     // condition is nullishness, not truthiness, but the same tee-before-box
     // discipline applies: test on `a`'s raw value, box only the arm that
@@ -643,14 +617,13 @@ export const logicalOps = {
     }
     if (vtA === VAL.BOOL && vtB === VAL.NUMBER) va = numericBoolArm(va)
     if (vtB === VAL.BOOL && vtA === VAL.NUMBER) vb = numericBoolArm(vb)
-    const numA = isNumArm(va, a), numB = isNumArm(vb, b)
     // Both arms can surface as the (untyped) result — `a` when non-nullish (a NaN is not
     // nullish, so it IS returned), `b` otherwise. Canon a lone-numeric arm; `a` before the
-    // tee so `local.get $t` is canonical. The cond is isNullish, robust to non-canon NaN.
+    // tee so `local.get $t` is canonical. A present Number skipped this guard above.
     return typed(['if', ['result', 'f64'],
-      ['i32.eqz', isNullish(['local.tee', `$${t}`, canonArm(asF64(va), numA, numB)])],
+      ['i32.eqz', isNullish(['local.tee', `$${t}`, canonArm(a, asF64(va), b, vb)])],
       ['then', ['local.get', `$${t}`]],
-      ['else', canonArm(asF64(vb), numB, numA)]], 'f64')
+      ['else', canonArm(b, asF64(vb), a, va)]], 'f64')
   },
 
   'void': a => {

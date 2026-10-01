@@ -17,8 +17,10 @@ import { ERROR_CODE_HI, ERR_CLASS_NAMES, ERR_INFO } from '../../err-codes.js'
 import { ctx, inc, PTR, LAYOUT } from '../ctx.js'
 import { VAL, lookupValType } from '../reps.js'
 import { valTypeOf } from '../kind.js'
+import { NUMBER } from '../summary/kind.js'
 import { atomNanHex, nanPrefixHex, nanPrefixMaskHex, i64Hex } from '../../layout.js'
 import { typed } from './tag.js'
+import { isNumericIR } from './classify.js'
 import { temp, tempI64 } from './locals.js'
 import { asF64, asI64 } from './numeric.js'
 import { bigintStrict, bigintEraseErr } from './bigint.js'
@@ -96,6 +98,48 @@ export function numberNanIR(get) {
     ['i64.eqz', ['i64.and', bits, ['i64.const', TAG_AUX_MASK]]]]]
 }
 
+/** A Number entering a generic value slot cannot retain pointer-looking NaN
+ *  bits. Uniform numeric computation and typed storage do not use this edge. */
+function canonicalNumberIR(value) {
+  if (value.type === 'i32' || value.numberCanonical || value[0] === 'f64.const' && typeof value[1] === 'number' ||
+      /^f64\.convert_i(?:32|64)_[su]$/.test(value[0])) return value
+  const name = temp('cn'), get = ['local.get', `$${name}`]
+  const out = typed(['block', ['result', 'f64'], ['local.set', `$${name}`, asF64(value)],
+    ['select', ['f64.const', 'nan'], get, ['f64.ne', get, get]]], 'f64')
+  out.numberCanonical = true
+  return out
+}
+
+/** Preserve a checked read's undefined arm while normalizing its Number arm. */
+export function numberCarrierIR(node, value) {
+  if (value.type === 'i32' || value.numberArmsCanonical) return value
+  if (value.checkedNumRead) {
+    const missing = n => n?.[0] === 'f64.const' && n[1] === `nan:${UNDEF_NAN}`
+    const hit = n => {
+      if (missing(n)) return n
+      if (n[0] === 'block') {
+        const tail = hit(n[n.length - 1])
+        return tail && [...n.slice(0, -1), tail]
+      }
+      if (n[0] === 'if' && n.length === 5 && n[3]?.[0] === 'then' && n[3].length === 2 &&
+          n[4]?.[0] === 'else' && n[4].length === 2 && missing(n[4][1]))
+        return [...n.slice(0, 3), ['then', canonicalNumberIR(typed(n[3][1], 'f64'))], n[4]]
+      if (n[0] === 'select' && n.length === 4 && missing(n[2]))
+        return ['select', canonicalNumberIR(typed(n[1], 'f64')), n[2], n[3]]
+      return null
+    }
+    const normalized = hit(value)
+    if (!normalized) return value
+    const result = typed(normalized, 'f64')
+    result.checkedNumRead = true
+    result.numberArmsCanonical = true
+    if (value.indexValid) result.indexValid = value.indexValid
+    return result
+  }
+  return value.presentNumRead || isNumericIR(value) || ctx.summary?.at(ctx.func.current).kindOfExpr(node) === NUMBER
+    ? canonicalNumberIR(value) : value
+}
+
 /** Materialize the boxed-boolean carrier from a 0/1-valued expression: a select
  *  of the two atom literals, or the literal itself when the input folds to a
  *  constant. Used only at observation/escape sites — never in branch or
@@ -128,7 +172,8 @@ export function nullableBoolBoxIR(e) {
 /** Value-preserving f64 carrier for a value entering an untyped slot — container
  *  stores, collection keys/values, dyn-prop writes, generic call args. A boolean
  *  keeps its identity as the TRUE/FALSE atom box (typeof/String/strict-eq survive
- *  the round-trip); everything else takes the plain asF64 box. Never use in branch
+ *  the round-trip); a proven Number canonicalizes its NaN before entering this
+ *  slot. Other values retain their carrier. Never use in branch
  *  or arithmetic position — truthyIR/toNumF64 own those (raw 0/1 there by design).
  *  Callers emit(node) ONCE and pass both (emitting per-arm inside a ternary wrapped
  *  by different coercions is the self-host-fragile shape — see emit.js 'return'). */
@@ -140,7 +185,7 @@ export function carrierF64(node, emitted, kind = 'collection') {
   if (bigintStrict() && valTypeOf(node) === VAL.BIGINT &&
       !(Array.isArray(node) && node[0] === '?:'))
     bigintEraseErr(kind, typeof node === 'string' ? node : 'this expression')
-  return asF64(emitted)
+  return asF64(numberCarrierIR(node, emitted))
 }
 
 /** BOOL-preserving carrier for statically narrow slots. BigInt edges are

@@ -9,7 +9,7 @@
  */
 
 import { ctx, emitter, registerName } from './ctx.js'
-import { callWithArgs, typed, block64, undefExpr, asF64, asI32, asI32Sat, asI64, applyBigintRepresentationAction, bigintEraseErr, bigintStrict, carrierF64, carrierF64Narrow, temp, tempI32, toNumF64, isUndef } from './ir.js'
+import { callWithArgs, typed, block64, undefExpr, asF64, asI32, asI32Sat, asI64, applyBigintRepresentationAction, bigintEraseErr, bigintStrict, carrierF64, carrierF64Narrow, numberCarrierIR, temp, tempI32, toNumF64, isUndef } from './ir.js'
 import { isUndefinedLiteral } from './ast.js'
 import { REP_EDGE_BOX, REP_EDGE_REJECT, representationStorageWriteAction } from './compile/representation-plan.js'
 import { hasAmbiguousBoolMerge, valTypeOf } from './kind.js'
@@ -52,7 +52,7 @@ export const storedValuePlanned = (node, action) => {
   if (hasAmbiguousBoolMerge(node)) return emitIdentitySafe(node)
   const emitted = emit(node)
   if (valTypeOf(node) === VAL.BOOL) return carrierF64(node, emitted)
-  return asF64(applyBigintRepresentationAction(emitted, node, action))
+  return asF64(numberCarrierIR(node, applyBigintRepresentationAction(emitted, node, action)))
 }
 
 export const storedValue = node => {

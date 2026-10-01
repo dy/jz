@@ -9,7 +9,7 @@ import { i64Hex, typedElemAux, TYPED_ELEM_VIEW_FLAG } from '../../layout.js'
 import { STRIDE } from '../../module/typedarray/elem-tables.js'
 import {
   typed, asF64, asI32, asPtrOffset, asParamType, nullableBoolBoxIR, ptrTypeEq, undefExpr,
-  isUndef, isGlobal, boxedAddr, dollar, tcoTailRewrite, applyBigintRepresentationAction,
+  isUndef, isGlobal, boxedAddr, dollar, tcoTailRewrite, applyBigintRepresentationAction, numberCarrierIR,
 } from '../ir.js'
 import { core, isNullable, K, tagOf } from '../summary/kind.js'
 import { restoreActiveFunction, publishLoopRewinds } from './active-function.js'
@@ -369,6 +369,8 @@ export function emitFunc(func, functionPlan, programFacts, arrayGlobals) {
     // Final carrier conversion can allocate a temp (for example ToInt32's
     // evaluate-once Infinity guard). Build it before freezing the local
     // declarations, just like default and parameter prologues above.
+    if (!resultBool && sig.ptrKind == null && sig.results[0] === 'f64' &&
+        (func.valResult !== VAL.NUMBER || func.valResultMayBeUndefined)) ir = numberCarrierIR(body, ir)
     const finalIR = resultBool ? ir
       : sig.ptrKind != null ? asPtrOffset(ir, sig.ptrKind) : asParamType(ir, sig.results[0])
     const paramInits = collectParamInits()

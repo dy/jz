@@ -11,7 +11,7 @@ import { STR_HCACHE_BIT, HEAP } from '../../../layout.js'
 import { ASSIGN_OPS, MUTATE_OPS, T, commaList, firstRefKind, isBlockBody, isReassigned, walkAst } from '../../ast.js'
 import { PTR, ctx, err, inc, emitArity, setLinkDemand } from '../../ctx.js'
 import {
-  keyIndex, int32Bits, callWithArgs, FALSE_NAN, MAX_CLOSURE_ARITY, TRUE_NAN, WASM_OPS, applyBigintRepresentationAction, asF64, asI32, asI64, asParamType, asPtrOffset, block64, boolBoxIR, boxBigInt, carrierF64, carrierF64Narrow, emitNum, extractF64Bits, flat, fromI64, isBoundName, isGlobal, boxedAddr, boxedPtrTypeEq, isLit, isNullish, isNullishLit, litVal, materializeDeferredBigint, mayYieldUndefOf, maybeUnboxBigInt, mkPtrIR, nullExpr, nullableBoolBoxIR, ptrOffsetIR, readVar, resolveValType, temp, tempI32, tempI64, toI32, toNumF64, toStrI64, truthyIR, typed, unboxBoolIR, undefExpr, valKindToPtr,
+  keyIndex, int32Bits, callWithArgs, FALSE_NAN, MAX_CLOSURE_ARITY, TRUE_NAN, WASM_OPS, applyBigintRepresentationAction, asF64, asI32, asI64, asParamType, asPtrOffset, block64, boolBoxIR, boxBigInt, carrierF64, numberCarrierIR, carrierF64Narrow, emitNum, extractF64Bits, flat, fromI64, isBoundName, isGlobal, boxedAddr, boxedPtrTypeEq, isLit, isNullish, isNullishLit, litVal, materializeDeferredBigint, mayYieldUndefOf, maybeUnboxBigInt, mkPtrIR, nullExpr, nullableBoolBoxIR, ptrOffsetIR, readVar, resolveValType, temp, tempI32, tempI64, toI32, toNumF64, toStrI64, truthyIR, typed, unboxBoolIR, undefExpr, valKindToPtr,
 } from '../../ir.js'
 import { BIGINT_JOINT_BINARY_OPS, isPresentNumber, hasAmbiguousBoolMerge, nullishArm, valTypeOf, boolTagged, mixedBoolKind } from '../../kind.js'
 import { VAL, lookupValType, repOf, repOfGlobal, numericStorage, mayBeUndefined } from '../../reps.js'
@@ -317,11 +317,13 @@ const nodeIsNullishBigintMerge = (node) => Array.isArray(node) && node[0] === '?
  *  into an UNTYPED f64 param crosses as its TRUE/FALSE atom box — the callee
  *  treats that slot as an opaque value, so identity (typeof/String/strict-eq)
  *  must survive. A val-known param (narrow stamped `p.val`) keeps the raw 0/1
- *  ABI its body assumes; i32/pointer params are numeric positions. `ir` must
+ *  ABI its body assumes. Number arguments normalize only for generic or
+ *  nullable parameters, including an active default's incoming undefined lane.
+ *  i32/pointer params retain their representation. `ir` must
  *  already be argIR(node)'s result (or ptrKind-appropriate) — this function
  *  itself never emits, only coerces, so it cannot re-decide emit vs
  *  emitIdentitySafe after the fact (see argIR's comment). */
-export function coerceArg(ir, param, node, repAction = REP_EDGE_REJECT) {
+export function coerceArg(ir, param, node, repAction = REP_EDGE_REJECT, func = null) {
   if (param?.ptrKind != null) {
     // PTR.OBJECT never forwards (FORWARDING_MASK — only ARRAY/HASH/SET/MAP
     // headers relocate on growth), so the offset extracts inline instead of
@@ -365,9 +367,13 @@ export function coerceArg(ir, param, node, repAction = REP_EDGE_REJECT) {
           ['else', boxBigInt(asI64(tGet))]]], 'f64')
     }
   }
-  if (node !== undefined && (param == null || (param.type !== 'i32' && param.val == null)) &&
-      valTypeOf(node) === VAL.BOOL)
-    return carrierF64(node, ir)
+  const view = func && ir.type !== 'i32' && ctx.summary?.at(func.sig)
+  const generic = view && (view.kindOfExpr(param?.name) !== NUMBER ||
+    func.defaults && Object.hasOwn(func.defaults, param?.name) && view.defaultMayRun(param.name))
+  if (node !== undefined) {
+    if (param == null || param.type !== 'i32' && param.val == null) return carrierF64(node, ir)
+    if (param.type !== 'i32' && generic) return asParamType(numberCarrierIR(node, ir), param.type)
+  }
   return asParamType(ir, param?.type)
 }
 
@@ -388,7 +394,7 @@ function padArgs(args, params) {
  *  coercion then arity padding. Used at every direct-call site. */
 export function emitCallArgs(argNodes, params, func) {
   return padArgs(argNodes.map((a, k) =>
-    coerceArg(argIR(a), params[k], a, representationCallArgAction(ctx, a, func, k))), params)
+    coerceArg(argIR(a), params[k], a, representationCallArgAction(ctx, a, func, k), func)), params)
 }
 
 /** Fuse `a + b` when it tops a string-concat chain of ≥3 leaves: evaluate
@@ -847,6 +853,7 @@ export function emitDecl(...inits) {
     }
     val = applyBigintRepresentationAction(val, init, representationBindingWriteAction(ctx, name, init))
     if (!viewInit) val = boolCarrier(name, init, val)
+    if (val.type !== 'i32' && ctx.summary?.at(ctx.func.current).kindOfExpr(name) !== NUMBER) val = numberCarrierIR(init, val)
     if (isObjLit) ctx.schema.targetStack.pop()
     // Record the declared name's valTypeOf(init) into the flow overlay right after
     // emitting init — not just for sibling `let`s in the same block (emitBlockBody used
@@ -1357,8 +1364,8 @@ export function emitIdentitySafeArms(node) {
     const vc = withRefinements(elseRefs, c, () => emitIdentitySafe(c))
     const vtbM = resolveValType(b, valTypeOf, lookupValType)
     const vtcM = resolveValType(c, valTypeOf, lookupValType)
-    const fb = vtbM === VAL.BOOL ? boolBoxIR(vb) : asF64(vb)
-    const fc = vtcM === VAL.BOOL ? boolBoxIR(vc) : asF64(vc)
+    const fb = vtbM === VAL.BOOL ? boolBoxIR(vb) : asF64(numberCarrierIR(b, vb))
+    const fc = vtcM === VAL.BOOL ? boolBoxIR(vc) : asF64(numberCarrierIR(c, vc))
     const ib = ['i64.reinterpret_f64', fb], ic = ['i64.reinterpret_f64', fc]
     const bits = selectOK(cond, fb, fc)
       ? ['select', ib, ic, cond]
@@ -1372,7 +1379,7 @@ export function emitIdentitySafeArms(node) {
     const vtA = resolveValType(a, valTypeOf, lookupValType)
     const vtB = resolveValType(b, valTypeOf, lookupValType)
     const fb0 = withRefinements(refs, b, () => emitIdentitySafe(b))
-    const fb = vtB === VAL.BOOL ? boolBoxIR(fb0) : asF64(fb0)
+    const fb = vtB === VAL.BOOL ? boolBoxIR(fb0) : asF64(numberCarrierIR(b, fb0))
     if (vtA === VAL.BOOL) {
       // A Boolean left operand is its own condition: one raw i32 test, the
       // atom materialized only for the arm that yields the operand itself
@@ -1394,7 +1401,7 @@ export function emitIdentitySafeArms(node) {
         : typed(['if', ['result', 'f64'], cond, ['then', own], ['else', fb]], 'f64')
     }
     const t = temp()
-    const fa = asF64(va)
+    const fa = asF64(numberCarrierIR(a, va))
     const generic = truthyIR(typed(['local.tee', `$${t}`, fa], 'f64'))
     const teedCond = Array.isArray(generic) && generic[0] === 'call' && generic[1] === '$__is_truthy'
       ? typed(['block', ['result', 'i32'], ['local.set', `$${t}`, fa], kindTruthyIR(a, typed(['local.get', `$${t}`], 'f64')) ?? typed(['call', '$__is_truthy', ['i64.reinterpret_f64', ['local.get', `$${t}`]]], 'i32')], 'i32')
@@ -1409,9 +1416,9 @@ export function emitIdentitySafeArms(node) {
     const vtA = resolveValType(a, valTypeOf, lookupValType)
     const vtB = resolveValType(b, valTypeOf, lookupValType)
     const t = temp()
-    const fa = vtA === VAL.BOOL ? boolBoxIR(va) : asF64(va)
+    const fa = vtA === VAL.BOOL ? boolBoxIR(va) : asF64(numberCarrierIR(a, va))
     const fb0 = emitIdentitySafe(b)
-    const fb = vtB === VAL.BOOL ? boolBoxIR(fb0) : asF64(fb0)
+    const fb = vtB === VAL.BOOL ? boolBoxIR(fb0) : asF64(numberCarrierIR(b, fb0))
     return typed(['if', ['result', 'f64'],
       ['i32.eqz', isNullish(['local.tee', `$${t}`, fa])],
       ['then', ['local.get', `$${t}`]],
@@ -1424,8 +1431,9 @@ export function emitIdentitySafeArms(node) {
  *  temp is non-nullish, else `otherwise` (undefined by default). Shared by every `?.`-shaped optional
  *  emitter (chain-lift, `?.`, `?.[]`, `?.()` via `evalOnce` + this helper) so
  *  the nullish-guard scaffold stays in one place. */
-function withNullGuard(headExpr, body, tag = 'ng', otherwise = undefExpr()) {
+function withNullGuard(headExpr, body, tag = 'ng', otherwise = undefExpr(), present = false) {
   const t = temp(tag)
+  if (present) return block64(['local.set', `$${t}`, headExpr], asF64(body(t)))
   // asF64 on the taken arm: the continuation may come back i32-narrowed (an
   // int-certain slot read at O0 kept its raw i32), and the f64-typed if would
   // fail validation ("type error in fallthru: expected f64, got i32").
@@ -1537,9 +1545,9 @@ function liftOptionalChain(node, condition = false, receiver = null, missing = n
       const result = receiver ? emitReference(rebuilt, receiver)
         : (missing && liftOptionalChain(rebuilt, false, null, missing)) || emit(rebuilt)
       return boxedTypedReduce || result.bigintRaw === true ? asF64(boxBigInt(asI64(result)))
-        : carrierF64Narrow(rebuilt, materializeDeferredBigint(result))
+        : numberCarrierIR(rebuilt, carrierF64Narrow(rebuilt, materializeDeferredBigint(result)))
     } finally { if (seed) view.unalias(t) }
-  }, 'oc', missing ? asF64(emit(missing)) : undefExpr())
+  }, 'oc', missing ? asF64(emit(missing)) : undefExpr(), ctx.summary?.at(ctx.func.current).kindOfExpr(opt[1]) === NUMBER)
   return condition ? truthyIR(guarded) : guarded
 }
 

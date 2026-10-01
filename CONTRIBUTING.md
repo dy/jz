@@ -69,8 +69,11 @@ Generic numeric NaN checks share one predicate across classification, conversion
 truthiness, equality and typed search. It requires an actual NaN before accepting
 a payload outside the complete box prefix or inside reserved ATOM/aux=0 space.
 Signaling/negative NaNs stay numeric; infinities and real pointer/atom boxes do not.
-Positive quiet payloads that collide with a live box still require a Number-domain
-proof at their producer, never a guessed tag at the generic consumer.
+Positive quiet payloads that collide with a live box are normalized when a proven
+Number enters a generic slot, mixed join, nullable result or parameter with an
+active default. Checked reads normalize only their present arm. Uniform Number
+parameters, results and typed stores retain their bits; `typeof` and nullish
+checks use their semantic Number proof. No generic consumer guesses a lost kind.
 Guarded scalar updates are converted to selects in watr using Wasm types,
 after JZ lowers the original branches with their settled representation facts.
 The statement scheduler orders adjacent integer min/max updates so an input

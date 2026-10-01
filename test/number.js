@@ -570,3 +570,79 @@ test('number formatting: integers render as their digits, the 2^53 edge included
     is(got.key(-3, 2), host.key(-3, 2), `key at ${optimize}`)
   }
 })
+
+test('Number generic boundaries canonicalize box-looking NaNs without changing numeric transport', () => {
+  const src=`function raw(hi,lo){const a=new Float64Array(1),w=new Uint32Array(a.buffer);w[0]=lo;w[1]=hi;return a[0]}
+    function see(v){let big;try{big=BigInt(v)}catch(e){big=e.name}
+      return[typeof v,Number.isNaN(v),typeof v==='number',typeof v==='bigint',typeof v==='undefined',Boolean(v),String(v),v===v,big]}
+    function result(hi,lo,mode){if(mode)return 'text';return raw(hi,lo)}
+    function defaulted(v=4){return v}
+    function numeric(v){return[typeof v,typeof v==='number',typeof v==='bigint',Number.isNaN(v),Boolean(v),String(v),String(v??1),v?.toString(),v==null,v===undefined]}
+    let saved='initial';
+    export function f(hi,lo,mode){const v=raw(hi,lo), a=[mode?'text':v],o={v:mode?'text':v};
+      let local='text';if(!mode)local=v;saved=local;
+      const bool=mode?true:v,big=mode?7n:v,missing=mode?undefined:v,nil=mode?null:v;
+      return[see(a[0]),see(o.v),see(local),see(saved),see(bool),see(big),see(missing),see(nil),see(result(hi,lo,mode))]}
+    export function direct(hi,lo,mode){if(mode)return see('text');return see(raw(hi,lo))}
+    export function plain(hi,lo){return numeric(raw(hi,lo))}
+    export function defaults(hi,lo){const v=raw(hi,lo),arrow=(x=5)=>x;return[defaulted(),defaulted(v),arrow(),arrow(v)]}
+    export function copy(hi,lo){const a=new Float64Array(1);a[0]=raw(hi,lo);return Array.from(new Uint32Array(a.buffer))}
+    export function joinedCopy(hi,lo,yes){const a=new Float64Array(1),v=raw(hi,lo);a[0]=yes?v:(raw(hi,lo)??0);return Array.from(new Uint32Array(a.buffer))}`
+  const want=oracle(src)
+  const words=[[0,0],[0x80000000,0],[0x3ff00000,0],[0x7ff00000,0],[0xfff00000,0],
+    [0x7ff00000,1],[0xfffa8000,0x12345678],...[1,2,4,5,16].map(aux=>[0x7ff80000+aux,0]),
+    ...Array.from({length:16},(_,tag)=>[0x7ff80000+tag*0x8000,0x12345678])]
+  for(const optimize of levels(0,1,2,3,'size')){
+    const got=jz(src,{optimize:{level:optimize,sourceInline:false}}).exports
+    for(const [hi,lo]of [...words,...words.slice(0,3)]){
+      for(const mode of [0,0,1,0]){
+        is(got.f(hi,lo,mode),want.f(hi,lo,mode),`generic ${hi.toString(16)}:${lo.toString(16)} mode${mode} O${optimize}`)
+        is(got.direct(hi,lo,mode),want.direct(hi,lo,mode),`direct mixed argument O${optimize}`)
+      }
+      is(got.plain(hi,lo),want.plain(hi,lo),`uniform Number observations O${optimize}`)
+      is(got.defaults(hi,lo),want.defaults(hi,lo),`numeric defaults accept missing values but not NaN payloads O${optimize}`)
+      is(got.copy(hi,lo),[lo,hi],`uniform Number return and typed store retain every bit O${optimize}`)
+      for(const yes of [false,true])is(got.joinedCopy(hi,lo,yes),[lo,hi],`uniform Number joins retain every bit O${optimize}`)
+    }
+  }
+})
+
+test('Number nullable boundaries retain missing arms and evaluate reads once', () => {
+  const src=`let reads=0;
+    function see(v){return[typeof v,Number.isNaN(v),typeof v==='number',typeof v==='undefined',Boolean(v),String(v)]}
+    export function f(hi,lo,k,mode){const a=new Float64Array(1),w=new Uint32Array(a.buffer);w[0]=lo;w[1]=hi;
+      const v=a[+k];let local=mode?'text':v;const o=mode?null:{v};
+      return[see(a[+k]),see(v),see(local),see(o?.v),see(v??'missing'),see(v||'falsey'),see(v&&'truthy')]}
+    function value(a,k,fail){reads++;if(fail)throw 17;return a[k]}
+    export function effects(hi,lo,k,fail){reads=0;const a=new Float64Array(1),w=new Uint32Array(a.buffer);w[0]=lo;w[1]=hi;
+      try{return[see(value(a,+k,fail)),reads]}catch(e){return[e,reads]}}`
+  const want=oracle(src)
+  for(const optimize of levels(0,1,2,3,'size')){
+    const got=jz(src,{optimize:{level:optimize,sourceInline:false}}).exports
+    for(const hi of [0x7ff80002,0x7ff88000,0x7ffa8000,0x80000000,0x3ff00000]){
+      for(const k of [0,0,1,-1,.5,0])for(const mode of [0,1,0])
+        is(got.f(hi,0,k,mode),want.f(hi,0,k,mode),`nullable payload ${hi.toString(16)} key${k} mode${mode} O${optimize}`)
+      for(const [k,fail]of [[0,false],[0,false],[0,true],[1,false],[0,false]])
+        is(got.effects(hi,0,k,fail),want.effects(hi,0,k,fail),`read effects/error recovery O${optimize}`)
+    }
+  }
+})
+
+test('Number container and closure boundaries preserve identity across retained calls', () => {
+  const src=`function raw(hi,lo){const a=new Float64Array(1),w=new Uint32Array(a.buffer);w[0]=lo;w[1]=hi;return a[0]}
+    function see(v){return[typeof v,Number.isNaN(v),Boolean(v),String(v)]}
+    function returned(hi,lo,mode){return mode?'text':raw(hi,lo)}
+    const kept=[],map=new Map();let cell='initial';
+    export function save(hi,lo,mode){let captured=mode?'text':raw(hi,lo);const read=()=>captured;
+      kept.push(read);cell=captured;map.set('value',captured);const a=[];a.push(captured);const o={};o['value']=captured;
+      const arrow=()=>mode?'text':raw(hi,lo);return[see(read()),see(cell),see(map.get('value')),see(a[0]),see(o.value),see(arrow()),see(returned(hi,lo,mode))]}
+    export function read(i){return see(kept[i]())}`
+  for(const optimize of levels(0,1,2,3,'size')){
+    const want=oracle(src),got=jz(src,{optimize:{level:optimize,sourceInline:false}}).exports
+    const inputs=[[0x7ffa8000,0x12345678,0],[0x7ffa8000,0x12345678,0],[0,0,1],[0x7ff80002,0,0],[0x80000000,0,0]]
+    for(let i=0;i<inputs.length;i++){
+      is(got.save(...inputs[i]),want.save(...inputs[i]),`container/closure save${i} O${optimize}`)
+      for(let j=0;j<=i;j++)is(got.read(j),want.read(j),`retained closure ${j} after${i} O${optimize}`)
+    }
+  }
+})

@@ -35,7 +35,7 @@ import { registerReach, reachOn, REACH_DEPS } from './core/reach.js'
 import { hasExternalIngress } from '../src/compile/func-exports.js'
 import { representationProgramHasBigint } from '../src/compile/representation-plan.js'
 import { errorCodeLiteral, ERR } from '../err-codes.js'
-import { bitOf, hasTag, isNullable, K, tagOf as summaryTagOf, core as summaryCore } from '../src/summary/kind.js'
+import { bitOf, hasTag, isNullable, K, NUMBER, tagOf as summaryTagOf, core as summaryCore } from '../src/summary/kind.js'
 import { inBoundsArrIdx } from '../src/type/canonical-bounds.js'
 
 const NAN_BITS = nanPrefixHex()
@@ -2647,7 +2647,9 @@ export default (ctx) => {
   const evalOnce = (value, useFn, otherwise = undefExpr()) => {
     const t = temp()
     const va = asF64(emit(value))
-    return optionalGuard(t, va, useFn(t), otherwise)
+    return ctx.summary?.at(ctx.func.current).kindOfExpr(value) === NUMBER
+      ? typed(['block', ['result', 'f64'], ['local.set', `$${t}`, va], asF64(useFn(t))], 'f64')
+      : optionalGuard(t, va, useFn(t), otherwise)
   }
 
   // Optional chaining: obj?.prop → undefined if obj is nullish, else obj.prop.
@@ -2807,6 +2809,7 @@ export default (ctx) => {
     // VAL.BOOL covers boolean literals, comparisons, `!` and bindings inferred
     // boolean; isBoolExpr additionally catches `Boolean(x)` and parenthesized forms.
     if (valTypeOf(a) === VAL.BOOL || isBoolExpr(a)) return emit([',', a, ['str', 'boolean']])
+    if (ctx.summary?.at(ctx.func.current).kindOfExpr(a) === NUMBER) return emit([',', a, ['str', 'number']])
     if (!ctx.runtime.typeofStrs) {
       // 'bigint': CARRIER PROGRAM Slice 3 (.work/archive/carrier-representation-design.md
       // §7, layout-kinds.js registry's 'typeof' finding) — a boxed BigInt the

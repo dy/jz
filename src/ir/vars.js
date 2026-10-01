@@ -14,6 +14,8 @@ import { intExprRange } from '../static.js'
 import { numberStorageValue, toNumF64, coerceNullishToNum } from './coerce.js'
 import { isNumericIR } from './classify.js'
 import { typed } from './tag.js'
+import { numberCarrierIR } from './sentinels.js'
+import { NUMBER } from '../summary/kind.js'
 import { temp, tempI32 } from './locals.js'
 import { asF64, asI32, toI32 } from './numeric.js'
 
@@ -212,6 +214,7 @@ export function readVar(name) {
 /** Write variable value. void_ → local.set (no result); otherwise → local.tee.
  *  valIR is raw emit result — coerced to f64 for boxed/global, to local type for locals. */
 export function writeVar(name, valIR, void_, source) {
+  if (valIR.type !== 'i32' && ctx.summary?.at(ctx.func.current).kindOfExpr(name) !== NUMBER) valIR = numberCarrierIR(source, valIR)
   // Loop-guard hull channel invalidation (emit.js's loopGuardHi/boundedHi,
   // sort lever): a `while(name < bound)`-derived upper-bound fact for `name`
   // is only valid until the FIRST write to `name` — writeVar is the single

@@ -12,7 +12,7 @@ import {
   applyBigintRepresentationAction, asF64, asI32, asI64, carrierF64, emitNum, freshId, isBoolAtom, isLit, isLiteralStr, isNull, isNullish, isNullishLit, isPlanRawBigint, isPlanTaggedBigint, isUndef, litVal, nullableBoolBoxIR, numberNanIR, ptrTypeEq, boxedPtrTypeEq, readI64, resolveValType, temp, tempI32, tempI64, toNumF64, truthyIR, typed, unboxBigInt,
 } from '../../ir.js'
 import { censusMaybeUndefined, hasAmbiguousBoolMerge, valTypeOf } from '../../kind.js'
-import { K, core, hasTag, tagOf } from '../../summary/kind.js'
+import { K, NUMBER, core, hasTag, tagOf } from '../../summary/kind.js'
 import { VAL, lookupValType, repOf, repOfGlobal } from '../../reps.js'
 import { foldIntCompare } from '../../ir/numeric.js'
 import { nonNegIntLiteral } from '../../static.js'
@@ -67,6 +67,8 @@ function emitTypeofCmp(a, b, cmpOp) {
   // Raw Boolean/BigInt carriers can look like Numbers or any pointer tag.
   // Their proven semantic kind decides ALL typeof comparisons, not just the
   // matching one. Keep the already-emitted operand's effects in every fold.
+  if (!ambiguous && ctx.summary?.at(ctx.func.current).kindOfExpr(typeofExpr) === NUMBER)
+    return foldConst((code === TYPEOF.number) === eq ? 1 : 0)
   if (vt === VAL.BOOL || vt === VAL.BIGINT) {
     const typeCode = vt === VAL.BOOL ? TYPEOF.boolean : TYPEOF.bigint
     return foldConst((code === typeCode) === eq ? 1 : 0)

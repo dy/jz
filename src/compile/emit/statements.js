@@ -6,7 +6,7 @@
 
 import { ctx, err } from '../../ctx.js'
 import {
-  materializeErrorIR, applyBigintRepresentationAction, asParamType, asPtrOffset, block64, carrierF64Narrow, freshId, nullableBoolBoxIR, tcoTailRewrite, temp, tempI32, tempI64, typed, undefExpr,
+  materializeErrorIR, applyBigintRepresentationAction, asParamType, asPtrOffset, block64, carrierF64Narrow, numberCarrierIR, freshId, nullableBoolBoxIR, tcoTailRewrite, temp, tempI32, tempI64, typed, undefExpr,
 } from '../../ir.js'
 import { ASSIGN_OPS, REFS_THROUGH_ARROWS, refsName } from '../../ast.js'
 import { K, bitOf, tagOf, tagsOf } from '../../summary/kind.js'
@@ -391,6 +391,9 @@ export const statementOps = {
     // regardless of what it IS, but a proven-uniform-BIGINT export would take
     // the OTHER, `needsBox`-shaped ABI instead) — so its wrapper already takes
     // the dynamic/tagged result ABI a box is correct for.
+    if (!resultBool && pk == null && rt === 'f64' &&
+        (ctx.func.boxedResult || ctx.func.valResult !== VAL.NUMBER || ctx.func.valResultMayBeUndefined))
+      emitted = numberCarrierIR(expr, emitted)
     const ir = resultBool ? emitted
       : pk != null ? asPtrOffset(emitted, pk)
       : boxes ? (ambiguous ? emitted : carrierF64Narrow(expr, emitted, 'return'))
