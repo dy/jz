@@ -20,6 +20,7 @@ import { asF64, asI32, toI32 } from './numeric.js'
 export function usesDynProps(vt) {
   return vt === VAL.ARRAY || vt === VAL.STRING || vt === VAL.CLOSURE
     || vt === VAL.TYPED || vt === VAL.SET || vt === VAL.MAP || vt === VAL.REGEX
+    || vt === VAL.DATE || vt === VAL.BUFFER
 }
 
 /** May a computed-key access (`obj[expr]`, a dynamic write) reach this object?

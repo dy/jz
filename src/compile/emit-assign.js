@@ -785,7 +785,8 @@ function emitElementStore(arr, idx, val, node) {
   //     closure local, or into a function name that is no binding at all.
   const closureReceiver = knownArrVT === VAL.CLOSURE ||
     (typeof arr === 'string' && knownArrVT == null && ctx.funcs.names.has(arr) && !isBoundName(arr))
-  if (knownArrVT === VAL.OBJECT || knownArrVT === VAL.HASH || closureReceiver) return dynSetCall(arr, keyExpr, valueExpr)
+  if (knownArrVT === VAL.OBJECT || knownArrVT === VAL.HASH || usesDynProps(knownArrVT) || closureReceiver)
+    return dynSetCall(arr, keyExpr, valueExpr)
 
   // Exclude objects only when every call site proves ARRAY or TYPED, the same
   // class proof used by element reads. Write syntax's weaker `notString`

@@ -201,3 +201,17 @@ test('member targets: primitive write errors follow property-key conversion', ()
     }
   }
 })
+
+test('member targets: native sidecars retain identity and Symbol stores', () => {
+  for(const init of ['new Date(10)','new Map()','new Set()','new ArrayBuffer(8)']) {
+    const src=`export function f(mode){
+      const object=${init},alias=object,key=Symbol('value');
+      object[key]=7;object.value=11;alias[mode?'extra':'value']=13;
+      return[object===alias,object[key],object.value,object.extra,alias[key]]
+    }`
+    for(const optimize of [0,1,2,3,'size']) {
+      const got=jz(src,{optimize}).exports.f,want=oracle(src).f
+      for(const mode of [0,0,1,0])is(got(mode),want(mode),`O${optimize}, ${init}, ${mode}`)
+    }
+  }
+})
