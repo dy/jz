@@ -221,11 +221,16 @@ export function assemble(ast, profiler) {
   ctx.summary = summarizeProgram()
   // A syntactic method name alone does not make its native value reachable.
   // Root the prepared reader only when a receiver's settled kind admits it.
-  for (const reader of ctx.funcs.builtinMethodReaders?.values() ?? []) {
-    reader.active = reader.sites.some(([scope, recv]) => {
-      const kind = ctx.summary.at(scope).kindOfExpr(recv)
-      return hasTag(kind, K.MAP) || hasTag(kind, K.SET)
-    })
+  const methodReaders = ctx.funcs.builtinMethodReaders
+  const computedReader = methodReaders?.get(null)
+  const hasCollectionSite = reader => reader.sites.some(([scope, recv, key]) => {
+    if (key !== undefined && tagOf(ctx.summary.at(scope).kindOfExpr(key)) === K.NUMBER) return false
+    const kind = ctx.summary.at(scope).kindOfExpr(recv)
+    return hasTag(kind, K.MAP) || hasTag(kind, K.SET)
+  })
+  if (computedReader) computedReader.active = hasCollectionSite(computedReader)
+  for (const reader of methodReaders?.values() ?? []) {
+    reader.active = computedReader?.active || hasCollectionSite(reader)
     if (reader.active) ctx.funcs.runtimeRoots.add(reader.name)
     reader.sites = null
   }
@@ -576,10 +581,6 @@ export function assemble(ast, profiler) {
     stdlib: [],     // stdlib functions
     customs: [],    // custom sections + exports
   }
-  // A closure whose callers are unknown may be held by the host (an export's
-  // result, a host object's property or argument): the host calls it through
-  // the exported trampoline.
-  if (ctx.summary?.escaped?.size && ctx.core.stdlib.__call_closure) inc('__call_closure')
   // Uniform closure convention: (env f64, argc i32, a0..a{MAX-1} f64) → f64.
   // argc = actual arg count passed; missing slots padded with UNDEF_NAN at caller.
   // Rest-param bodies pack slots a[fixedParams..argc-1] into their rest array.
@@ -631,6 +632,10 @@ export function assemble(ast, profiler) {
     sec.elem.push(['elem', ['i32.const', 0], 'func', ...ctx.closure.table.map(n => `$${n}`)])
 
   timePhase(profiler, 'buildStart', () => buildStartFn(ast, sec, closureFuncs, compilePendingClosures))
+  // Only emitted closures can reach the host. Prepared but inactive readers
+  // may have escaped summary IDs without materializing any callable value.
+  // Module initialization can mint the first closure, so decide after it emits.
+  if (ctx.closure.table?.length && ctx.summary?.escaped?.size && ctx.core.stdlib.__call_closure) inc('__call_closure')
 
   // dyn-closure-tables.js: every function AND module init has now emitted, so
   // callSites/paramClosureDefaults/directReturnClosures are complete — resolve

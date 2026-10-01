@@ -601,12 +601,13 @@ test('frame effects: a builtin called by name is listed by what it keeps', () =>
     'break', 'continue', 'this', 'typeof', 'str', 'strcat', 'delete', 'in', 'navigator.hardwareConcurrency'])
   // the host keeps the callback it schedules and what a request or a file is handed; the rest the emitter alone calls
   const KEEPS = new Set(['setTimeout', 'setInterval', 'clearTimeout', 'clearInterval', 'requestAnimationFrame', 'cancelAnimationFrame', 'fetch', 'fs.read', 'fs.write',
-    '__raw_prop', '__data_prop', '__raw_local', '__iter_arr_ctor', '__typed_len', '__park_begin', '__park_finish', '__park_rewind',
+    '__raw_prop', '__data_prop', '__data_key', '__raw_local', '__iter_arr_ctor', '__typed_len', '__park_begin', '__park_finish', '__park_rewind',
     ...['u8', 'u32', 'f64', 'i64', 'str'].flatMap(t => ['__park_write_' + t, '__park_read_' + t])])
   const names = Object.keys(ctx.core.emit).filter(k => !k.includes(':') && /^[A-Za-z_$]/.test(k) && !SYNTAX.has(k))
   ok(names.length > 200, `the runtime's names are read: ${names.length}`)
   is(names.filter(n => !listedBuiltin(n) && !KEEPS.has(n)).join(' '), '', 'every name is listed, or kept on purpose')
   is([...KEEPS].filter(n => listedBuiltin(n) || ctx.core.emit[n] == null).join(' '), '', 'and no name is kept that is listed, or gone')
+  ok(listedBuiltin('\uE000key'), 'canonical property-key conversion keeps only its conversion effects')
   // Each of these kept a call's memory while the census took it for an escape.
   const kept = {
     'a lane operation': `export function f(n) { const t = [n, n + 1, 'k' + n + 'zzzzzzzzzzzzzzzzzz']; let x = f32x4.splat(n); x = f32x4.add(x, x); return (f32x4.lane(x, 0) + t[2].length) | 0 }`,
@@ -1253,6 +1254,34 @@ test('frame effects: Map entry getters retain their writes and published values'
     for (const mode of [0, 0, 1, 0]) {
       is(got.f(mode), want.f(mode), `O${optimize}: entry getter invalidates the old load`)
       is(got.churn(), want.churn(), 'a published getter allocation survives later allocation')
+    }
+  }
+})
+
+test('frame effects: computed collection readers retain fallback getter effects', () => {
+  const src = `let saved;
+    export function f(n,key){key=String(key);const obj=n?{get other(){saved=[n,n+1];return n}}:new Map();return obj[key]}
+    export function read(){return saved[1]}
+    export function churn(){return new Float64Array(100).length}`
+  if(!onKernel()){
+    _compileInProcess(src,{optimize:0,sourceInline:false})
+    const reader=ctx.funcs.builtinMethodReaders.get(null)
+    const effects=transitiveFrameEffects(ctx.funcs.list).get(reader.name)
+    ok(effects.writesOuter && effects.runsAccessor, 'raw computed fallback retains accessor effects')
+    _compileInProcess(`function read(obj,key){return obj[key]}
+      export function f(obj,key){key=String(key);return read(obj,key)}
+      export function native(){return read(new Map(),'size')}`,{optimize:0,sourceInline:false})
+    const hostReader=ctx.funcs.builtinMethodReaders.get(null)
+    const hostEffects=transitiveFrameEffects(ctx.funcs.list).get(hostReader.name)
+    if(ctx.transform.targetProfile.envImports)
+      ok(hostEffects.writesOuter && hostEffects.runsAccessor, 'an unknown receiver retains host getter effects without a source getter')
+  }
+  for(const optimize of levels(0,1,2,3,'size')){
+    const got=jz(src,{optimize,sourceInline:false}).exports,want=oracle(src)
+    for(const n of [1,1,3,7,1]){
+      is(got.f(n,'other'),want.f(n,'other'),`getter O${optimize}, ${n}`)
+      got.churn();want.churn()
+      is(got.read(),want.read(),`saved getter allocation O${optimize}, ${n}`)
     }
   }
 })

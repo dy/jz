@@ -104,6 +104,24 @@ const wrapBuiltinValues = (ast) => {
     ;(ctx.funcs.builtinMethodReaders ||= new Map()).set(prop, reader)
     return reader
   }
+  const computedReader = () => {
+    if (methodReaders.has(null)) return methodReaders.get(null)
+    const name = `${T}br_computed`, recv = `${T}receiver`, key = `${T}property`
+    const reader = { name, sites: [] }; methodReaders.set(null, reader)
+    const body = [
+      ['if', ['!', ['||', receiverIs(recv, 'Map'), receiverIs(recv, 'Set')]], ['return', ['__data_key', recv, key]]],
+      ['=', key, ['()', T + 'key', key]],
+    ]
+    for (const prop of COLLECTION_METHODS.keys()) {
+      readerFor(prop)
+      body.push(['if', ['===', key, ['str', prop]], ['return', ['.', recv, prop]]])
+    }
+    body.push(['return', ['__data_key', recv, key]])
+    declare(name, [',', recv, key], ['{}', [';', ...body]])
+    ctx.funcs.list[ctx.funcs.list.length - 1].sig.dispatcher = true
+    ctx.funcs.builtinMethodReaders.set(null, reader)
+    return reader
+  }
   const isBuiltinValue = (s) => typeof s === 'string' && s.indexOf('.') > 0
     && ctx.core.emit[s] != null && emitArity(ctx.core.emit[s], s) > 0 && !ctx.funcs.names.has(s)
   const wrapperFor = (name) => {
@@ -129,8 +147,12 @@ const wrapBuiltinValues = (ast) => {
         if ((op === '.' || op === '?.') && i === 2) continue
         if (op === ':' && i === 1) continue
         if (isBuiltinValue(child)) n[i] = wrapperFor(child)
-      } else n[i] = visit(child, (op === '()' || op === '?.()' || op === 'delete' || MUTATE_OPS.has(op)) && i === 1, op === '=>' ? n[2] : scope)
+      } else n[i] = visit(child, i === 1 && (op === '()' || op === '?.()') ? 'call'
+        : i === 1 && (op === 'delete' || MUTATE_OPS.has(op)) ? 'write' : false, op === '=>' ? n[2] : scope)
     }
+    if (reference !== 'write' && (op === '[]' || op === '?.[]') && n.length === 3 && n[2]?.[0] !== 'str' &&
+        !(Array.isArray(n[2]) && n[2][0] == null))
+      computedReader().sites.push([scope, n[1], n[2]])
     const read = op === '.' || op === '?.' ||
       (op === '[]' || op === '?.[]') && n.length === 3 && n[2]?.[0] === 'str'
     if (!read || reference) return n

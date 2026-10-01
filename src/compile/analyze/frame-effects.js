@@ -203,7 +203,7 @@ function rebinds(n, name) {
 // plus the numeric/string globals whose results are fresh values or scalars,
 // and the lane operations (module/simd.js), which compute on values wasm
 // holds outside the heap. `math.` is the prepared spelling of `Math.`.
-const PURE_CALLEES = /^(__object_rest|Function|readStdin|(f32x4|f64x2|i32x4|v128)\.\w+|crypto\.(getRandomValues|randomUUID)|Object\.(keys|values|entries|isFrozen|isSealed|isExtensible|freeze|seal|preventExtensions|create|getOwnPropertyDescriptor|getOwnPropertyNames|getPrototypeOf|hasOwn|is|fromEntries|groupBy)|Map\.groupBy|JSON\.(stringify|parse)|Array\.(isArray|of|from)|ArrayBuffer\.isView|((Int|Uint|Float|BigInt|BigUint)(8|16|32|64)(Clamped)?Array|Float16Array)\.(from|fromBase64|fromHex)|console\.\w+|[Mm]ath\.\w+|Number(\.\w+)?|String(\.\w+)?|Boolean|BigInt(\.\w+)?|Symbol(\.\w+)?|Atomics\.\w+|RegExp\.escape|Date\.now|performance\.now|isNaN|isFinite|parseInt|parseFloat|structuredClone|Date\.UTC|Date\.parse|atob|btoa|(en|de)codeURI(Component)?)$/
+const PURE_CALLEES = /^(\uE000key|__object_rest|Function|readStdin|(f32x4|f64x2|i32x4|v128)\.\w+|crypto\.(getRandomValues|randomUUID)|Object\.(keys|values|entries|isFrozen|isSealed|isExtensible|freeze|seal|preventExtensions|create|getOwnPropertyDescriptor|getOwnPropertyNames|getPrototypeOf|hasOwn|is|fromEntries|groupBy)|Map\.groupBy|JSON\.(stringify|parse)|Array\.(isArray|of|from)|ArrayBuffer\.isView|((Int|Uint|Float|BigInt|BigUint)(8|16|32|64)(Clamped)?Array|Float16Array)\.(from|fromBase64|fromHex)|console\.\w+|[Mm]ath\.\w+|Number(\.\w+)?|String(\.\w+)?|Boolean|BigInt(\.\w+)?|Symbol(\.\w+)?|Atomics\.\w+|RegExp\.escape|Date\.now|performance\.now|isNaN|isFinite|parseInt|parseFloat|structuredClone|Date\.UTC|Date\.parse|atob|btoa|(en|de)codeURI(Component)?)$/
 // Pure callees that read a literal's getters (module/schema.js viewsOn) while
 // they list its properties; JSON.stringify also calls toJSON (emit/to-json.js).
 const ENUMERATING = /^(__object_rest|Object\.(values|entries)|JSON\.stringify|structuredClone)$/
@@ -935,7 +935,13 @@ function census(view, roots, declRoots, params, typedParams = NO_NAMES, conditio
       return
     }
     if (op === '.') { const fns = accessorFunctions(n[2], n[1], n[2] + ACCESSOR_GET); if (fns === null) unknownCall('accessor ' + n[2]); else reaches(fns) }
-    if (runsAccessor(view, n)) { out.runsAccessor = true; unknownCall('accessor') }
+    if (runsAccessor(view, op === '__data_key' ? ['[]', n[1], n[2]] : n)) { out.runsAccessor = true; unknownCall('accessor') }
+    // A raw keyed fallback can also reach a host getter. Public parameter
+    // carriers are not settled here; only a concrete receiver kind rules it out.
+    if (op === '__data_key' && ctx.transform.targetProfile.envImports) {
+      const tag = view ? tagOf(view.kindOfExpr(n[1])) : K.ANY
+      if (tag === K.ANY || tag === K.NONE) { out.runsAccessor = true; unknownCall('host accessor') }
+    }
     // From a branch's first arm on, and past a statement that may return, the
     // rest may not run; a loop's body and step run no times as well as many.
     const loop = op === 'for' || op === 'while'

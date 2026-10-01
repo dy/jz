@@ -242,6 +242,11 @@ allocation and super-method identities cannot be captured by shadowed names.
 Local family metadata follows lexical declaration scopes; local bound methods
 are not module dispatcher targets. Population captures the selected adder before
 opening the iterator and closes unfinished iteration after entry/adder errors.
+Computed collection method reads use the same own-property, accessor and native
+method dispatch as literal reads. Their key is converted once after receiver
+capture; prepared readers are rooted only for settled collection-capable sites
+whose key may name a method. Numeric-only keys and unrelated receiver kinds
+do not retain native wrappers.
 Map construction validates each entry object and reads its properties in key,
 value order. Entry getters retain ordinary call effects and can change the
 source array's live iteration length. Native Map copies keep their table path.

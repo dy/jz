@@ -8,7 +8,7 @@ import test, { is } from 'tst'
 import { throws } from 'tst/assert.js'
 import jz from '../index.js'
 import { run, oracle } from './util.js'
-import { levels } from './_matrix.js'
+import { levels, onWasi } from './_matrix.js'
 
 test('for-of reads the live array length through direct and helper mutations', () => {
   const src = `
@@ -613,5 +613,122 @@ test('collection subclass initializers retain captured local scopes and shadowed
     for(const [value,expected] of retained)is(value,expected,`retained local O${optimize}`)
     is(got.custom(),want.custom(),`shadowed constructor O${optimize}`)
     for(const n of [0,1,0])is(got.shadow(n,n),want.shadow(n,n),`shadowed native family O${optimize}`)
+  }
+})
+
+test('computed collection method values preserve identity, calls and own properties', () => {
+  const src = `export function f(which,key){key=String(key);const m=new Map([['a',3]]),s=new Set(['a']);
+    const recv=which?s:m,fn=recv[key];let value;
+    if(typeof fn!=='function')return[typeof fn,fn];
+    if(key==='forEach'){value=[];fn.call(recv,(v,k)=>value.push([v,k]))}
+    else if(key==='entries'||key==='keys'||key==='values')value=Array.from(fn.call(recv));
+    else{value=fn.call(recv,'a',9);if(value===recv)value='receiver'}
+    return[typeof fn,fn.length,fn===recv[key],value,Array.from(m.entries()),Array.from(s.values())]}
+    export function own(mode,key){key=String(key);const m=new Map([['a',4]]);
+      if(mode===1)m.get=undefined;if(mode===2)m.get=7;if(mode===3)m.get=()=>8;
+      if(mode===4)m.get=0x7ff8000200000000n;
+      const fn=m[key];return typeof fn==='function'?fn.call(m,'a'):fn}
+    export function direct(key){key=String(key);return new Map([['a',3]])[key]('a')}
+    class M extends Map{get get(){return k=>super.get(k)+2}}
+    export function getter(key){key=String(key);const m=new M([['a',4]]);return m[key].call(m,'a')}
+    export function symbol(){const m=new Map(),key=Symbol('get');m['Symbol(get)']=9;
+      return[m[key],m['Symbol(get)'],typeof m['get']]}`
+  for(const optimize of levels(0,1,2,3,'size')){
+    const got=jz(src,{optimize,sourceInline:false}).exports,want=oracle(src)
+    for(const which of [0,1])for(const key of ['get','get','set','add','has','delete','clear','keys','values','entries','forEach','size','missing','get'])
+      is(got.f(which,key),want.f(which,key),`computed O${optimize}, ${which}/${key}`)
+    for(const mode of [0,0,1,2,3,4,0])is(got.own(mode,'get'),want.own(mode,'get'),`own O${optimize}, ${mode}`)
+    for(const key of ['get','has','delete','get'])is(got.direct(key),want.direct(key),`direct O${optimize}, ${key}`)
+    is(got.getter('get'),want.getter('get'),`getter O${optimize}`)
+    is(got.symbol(),want.symbol(),`symbol key is not its description O${optimize}`)
+  }
+})
+
+test('computed collection readers preserve ordinary and external getter fallbacks', () => {
+  const src = `let reads=0;
+    function read(obj,key){return obj[key]}
+    export function f(mode){reads=0;const obj={get other(){reads++;if(mode===2)throw 7;return 9}};
+      try{return[read(mode?obj:new Map(),'other'),reads]}catch(e){return[e,reads]}}
+    export function host(obj,key){key=String(key);return obj[key]}`
+  for(const optimize of levels(0,1,2,3,'size')){
+    const got=jz(src,{optimize,sourceInline:false}).exports,want=oracle(src)
+    for(const mode of [0,1,1,2,1,0])is(got.f(mode),want.f(mode),`fallback O${optimize}, ${mode}`)
+    if(!onWasi()){
+      let reads=0
+      const obj={get other(){reads++;return 11},get get(){reads++;return 12}}
+      for(const key of ['other','other','get','missing','other']){
+        const before=reads;is(got.host(obj,key),key==='missing'?undefined:key==='get'?12:11,`host key O${optimize}, ${key}`)
+        is(reads-before,key==='missing'?0:1,`one host getter O${optimize}, ${key}`)
+      }
+    }
+  }
+})
+
+test('computed collection reads retain receiver, optional boundaries and coercion order', () => {
+  const src = `let trace='';
+    export function f(mode){trace='';let m=new Map([['x',3]]),old=m;
+      const key={toString(){trace+='k';m=new Map([['x',9]]);if(mode===2)throw 7;return 'get'}};
+      function receiver(){trace+='r';return mode===1?null:m}
+      try{const fn=receiver()[key];return[fn.call(old,'x'),trace,m.get('x')]}
+      catch(e){return[e instanceof TypeError?'TypeError':e,trace,m.get('x')]}}
+    export function optional(mode){trace='';const m=mode?new Map():null;
+      function key(){trace+='k';return 'get'}
+      try{return[m?.[key()].length,trace]}catch(e){return['TypeError',trace]}}
+    export function bad(mode){trace='';const m=new Map(),key=mode?'get':'set',fn=m[key];
+      function arg(){trace+='a';return 1}
+      try{return[fn.call({},arg()),trace]}catch(e){return[e instanceof TypeError,trace]}}`
+  for(const optimize of levels(0,1,2,3,'size')){
+    const got=jz(src,{optimize,sourceInline:false}).exports,want=oracle(src)
+    for(const mode of [0,0,1,2,0])is(got.f(mode),want.f(mode),`capture O${optimize}, ${mode}`)
+    for(const mode of [0,1,0,1])is(got.optional(mode),want.optional(mode),`optional O${optimize}, ${mode}`)
+    for(const mode of [0,1,0])is(got.bad(mode),want.bad(mode),`brand O${optimize}, ${mode}`)
+  }
+})
+
+test('computed collection method demand resets across retained compiles', () => {
+  const a = `function read(m,k){return m[k]}function make(){return new Map([['x',7]])}
+    export function f(key){key=String(key);const m=make(),fn=read(m,key);return typeof fn==='function'?fn.call(m,'x'):fn}`
+  const b = `export function f(key){key=String(key);return {get:3,size:9}[key]}`
+  const shadow = `function String(){return 'wrong'}
+    export function f(n){const m=new Map([['x',4]]),key=n?'get':'has';return m[key].call(m,'x')}`
+  for(const optimize of levels(0,1,2,3,'size')){
+    const retained=[]
+    for(const src of [a,a,b,a]){
+      const got=jz(src,{optimize,sourceInline:false}).exports,want=oracle(src)
+      for(const key of ['get','get','size','missing','get'])is(got.f(key),want.f(key),`demand O${optimize}, ${key}`)
+      retained.push([got,want])
+    }
+    for(const [got,want] of retained)is(got.f('get'),want.f('get'),`retained computed O${optimize}`)
+    const got=jz(shadow,{optimize}).exports,want=oracle(shadow)
+    for(const n of [0,0,1,0])is(got.f(n),want.f(n),`shadowed String O${optimize}, ${n}`)
+    for(const src of [b,`export function f(k){const m=new Map();return m[+k]}`]){
+      const wat=jz.compile(src,{optimize,wat:true,watr:false})
+      is(wat.includes('br_computed'),false,`unrelated key domain has no computed reader O${optimize}`)
+      is(wat.includes('_Map_get'),false,`unrelated key domain has no method wrapper O${optimize}`)
+      is(wat.includes('(export "__call_closure")'),false,`inactive readers have no host closure bridge O${optimize}`)
+    }
+  }
+})
+
+test('computed collection readers retain bridges for module-init and returned closures', () => {
+  const src = `const held=n=>n+2;
+    function named(n){return n+3}
+    export function read(key){key=String(key);return {get:1}[key]}
+    export function initial(){return held}
+    export function declared(){return named}
+    export function captured(n){return x=>x+n}
+    export function native(){return new Map().get}`
+  for(const optimize of levels(0,1,2,3,'size')){
+    const got=jz(src,{optimize,sourceInline:false}).exports,want=oracle(src),retained=[]
+    for(const read of ['initial','declared']){
+      const fn=got[read](),ref=want[read]()
+      for(const n of [0,0,3,-1,0])is(fn(n),ref(n),`returned ${read} O${optimize}, ${n}`)
+      retained.push([fn,ref])
+    }
+    for(const n of [0,4,0]){const fn=got.captured(n),ref=want.captured(n);is(fn(3),ref(3),`captured O${optimize}, ${n}`)}
+    for(const [fn,ref] of retained)is(fn(9),ref(9),`retained host closure O${optimize}`)
+    const fn=got.native()
+    is(typeof fn,'function',`returned native wrapper O${optimize}`)
+    throws(()=>fn('x'),TypeError,`returned unbound native wrapper preserves its brand check O${optimize}`)
   }
 })

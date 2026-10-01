@@ -12,7 +12,7 @@ import print from 'watr/print'
  */
 
 import { typed, asF64, asI32, asI64, NULL_NAN, UNDEF_NAN, TOMB_NAN, FALSE_NAN, TRUE_NAN, temp, tempI32, usesDynProps, ptrOffsetIR, ptrTypeEq, isNullish, isUndef, valKindToPtr, sidecarOverride, undefExpr, cloneIR, boxBigInt, unboxBigInt, deferBigintBox, isPlanTaggedBigint, throwTypeErrorIR, valueTruthyIR } from '../src/ir.js'
-import { emit, emitReference, emitIdentitySafe, spread, deps, wat } from '../src/bridge.js'
+import { emit, emitReference, emitIdentitySafe, storedValue, spread, deps, wat } from '../src/bridge.js'
 import { reconstructArgsWithSpreads } from '../src/ir.js'
 import { valTypeOf, shapeOf, hasAmbiguousBoolMerge } from '../src/kind.js'
 import { ACCESSOR_GET, COMPARE_OPS, isBrand } from '../src/ast.js'
@@ -2345,6 +2345,10 @@ export default (ctx) => {
   // The native method-value readers have already checked own membership;
   // their fallback reads data without recursively selecting a method value.
   ctx.core.emit['__data_prop'] = (obj, prop) => emitPropAccess(emit(obj), obj, prop[1])
+  ctx.core.emit['__data_key'] = (obj, key) => {
+    if (ctx.transform.targetProfile.envImports && hasExternalIngress()) setLinkDemand('external')
+    return emitDynGetAnyTyped(storedValue(obj), asI64(storedValue(key)), null)
+  }
   ctx.core.emit['.'] = (obj, prop) => dotRead(obj, prop, false)
   const dotRead = (obj, prop, raw) => {
     // A rest slot view's length is its argument count (compile/rest-view.js).
