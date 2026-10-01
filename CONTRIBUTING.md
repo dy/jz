@@ -378,6 +378,10 @@ scope caches, alias refinements and retained-reader behavior stay independent.
 Published parameter hulls are settled read-only records. Queries reuse their
 vectors without capturing the solver or consulting mutable function signatures;
 a later dispatcher change belongs to the next summary.
+Typed-read presence also publishes settled binding lengths and scalar constants,
+not initializer or return-body traversal callbacks. The solver retains occurrence
+proofs for loop reads; fresh index nodes use the shared pure span transfer over
+those records. Later AST changes affect only a new summary.
 The held-object proof records mentions only for single object-literal definitions
 and name aliases. Every use of those candidates still counts; primitive, array
 and reassigned bindings cannot enter that proof and need no occurrence lists.

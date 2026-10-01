@@ -1,10 +1,11 @@
 /** Read-only summary queries. This module has no access to solver transfers. */
-import { ACCESSOR_GET, ACCESSOR_SET, CLASS_T, isBrand, schemaKey, isArrayIndexKey, spreadExclusions } from '../ast.js'
+import { ACCESSOR_GET, ACCESSOR_SET, EXACT_MATH, CLASS_T, isBrand, schemaKey, isArrayIndexKey, spreadExclusions } from '../ast.js'
 import { encodeTypedElemAux, ctorFromElemAux, TYPED_ELEM_VIEW_FLAG, TYPED_ELEM_ANY_VIEW_FLAG } from '../../layout.js'
 import { ATOMICS_VALUE_OPS, builtinCalleeVal, methodValType } from '../kind-traits.js'
 import { VAL } from '../reps.js'
 import { typedElementKey } from '../typed-provenance.js'
 import { NONE_CONTRACT, readContract } from './contract.js'
+import { SPAN_BINARY, spanBinary } from './span.js'
 import { ITER_RECORD_KEYS } from '../std/iter-helpers.js'
 
 import {
@@ -18,7 +19,7 @@ const INHERITED = new Set(['constructor', 'hasOwnProperty', 'isPrototypeOf', 'pr
 export function summaryQueries(facts, internal = false) {
   const { kinds, incoming, fields, results, receivers, closures, closuresByBody, declared, parent, nameKeys, forwards, siteResults,
     scopeOfSig, scopeOfBody, scopeOfParams, cellUp, elems, tuples, lens, stores, built, grown, unknown, presentReads, spreadSources, paramRanges, cellProps, cellWild, cellNumeric, hostArrays, retainedArrays, closureSets, closureSetIds, cells, jsonKinds, unions, shapeUnions,
-    schemas, layouts, sitesByLayout, foldedLayouts, objectKinds, methods, sidByKey, funcNames, imports, numeric, strung, dynamicProps, builtinOwnProps, typedReadPresent, typedProps, typedPropsByAux, openSchemas, indexedSchemas,
+    schemas, layouts, sitesByLayout, foldedLayouts, objectKinds, methods, sidByKey, funcNames, imports, numeric, strung, dynamicProps, builtinOwnProps, typedReadPresent: solverTypedReadPresent, typedLengths, scalarValues, scalarFields, typedProps, typedPropsByAux, openSchemas, indexedSchemas,
     sideProps, sideWild, wildProps, wildValues, pendingAll, keyedCells, cellShapes, cellLostObject, closureProps, escaped, iterSites, reached, defaultRuns, boolKeys, storeBits, paramKeys } = facts
   // The solver owns union-find compression; querying a root never writes it.
   const cell = id => { while (cellUp[id] !== id) id = cellUp[id]; return id }
@@ -142,6 +143,53 @@ export function summaryQueries(facts, internal = false) {
   const ALL_TAGS = TAGS & ~NULL_BITS
   let kindUnion = 0
   for (const k of kinds) if (k != null && (k & ALL_TAGS) !== ALL_TAGS) kindUnion |= k
+  // Memoized literal hulls belong to this reader, not the solver's traversal.
+  let points = null
+  const point = value => {
+    points ??= new Map()
+    let range = points.get(value)
+    if (!range) points.set(value, range = [value, value])
+    return range
+  }
+  const scalar = (n, keyOf) => {
+    if (typeof n === 'number') return n
+    if (typeof n === 'string') {
+      const key = keyOf(n)
+      return typeof nameKeys.get(n) === 'number' && nameKeys.get(n) === key ? facts.held.get(n) ?? null : scalarValues?.get(key) ?? null
+    }
+    if (!Array.isArray(n)) return null
+    if (n[0] == null) return typeof n[1] === 'number' ? n[1] : null
+    if (n[0] === '.' && typeof n[1] === 'string') return scalarFields?.get(keyOf(n[1]))?.get(n[2]) ?? null
+    if (n[0] !== '()' || n.length !== 3 || !EXACT_MATH.has(n[1])) return null
+    const values = []
+    for (const arg of args(n[2])) {
+      const value = scalar(arg, keyOf)
+      if (value === null) return null
+      values.push(value)
+    }
+    const value = EXACT_MATH.get(n[1])(...values)
+    return value === value ? value : null
+  }
+  const span = (n, keyOf) => {
+    if (Array.isArray(n)) {
+      if (n[0] === '(' || n[0] === '()' && n.length === 2) return span(n[1], keyOf)
+      if (n[0] === '.' && n[2] === 'length' && typeof n[1] === 'string') {
+        const length = typedLengths?.get(keyOf(n[1]))
+        return length == null ? null : point(length)
+      }
+      if (n.length === 3 && SPAN_BINARY.has(n[0])) return spanBinary(n[0], span(n[1], keyOf), span(n[2], keyOf))
+    }
+    const value = scalar(n, keyOf)
+    return Number.isInteger(value) ? point(value) : null
+  }
+  const typedReadPresent = (scope, n, keyOf) => {
+    if (internal) return solverTypedReadPresent(scope, n)
+    if (typeof n[1] !== 'string') return false
+    const length = typedLengths.get(keyOf(n[1]))
+    if (length == null) return false
+    const range = span(n[2], keyOf)
+    return range !== null && range[0] >= 0 && range[1] < length
+  }
   const views = new Map()
   const view = scope => {
     let cached = views.get(scope)
@@ -261,7 +309,7 @@ export function summaryQueries(facts, internal = false) {
         }
         if (t === K.OBJECT && paramOf(r) !== UNKNOWN) { let k = K.NONE; for (const sid of shapesOf(paramOf(r))) { for (const s of slots(sid)) k = merge(k, s); k = merge(k, anySideOf(sid)) } return orAbsent(k) }
         if (t === K.TYPED) return !typedElementKey(n[2], kindOfExpr(n[2]) === NUMBER) ? core(kindOfExpr(n[2])) === NUMBER ? orAbsent(merge(typedElemKind(r), typedPropsOf(r))) : ANY
-          : typedReadPresent(scope, n) || presentReads.has(n) ? typedElemKind(r) : orAbsent(typedElemKind(r))
+          : typedReadPresent(scope, n, keyOf) || presentReads.has(n) ? typedElemKind(r) : orAbsent(typedElemKind(r))
         return t === K.HASH ? orAbsent(elemOf(r)) : t === K.ARRAY ? orAbsent(entryOf(r, kindOfExpr(n[2]))) : t === K.STRING ? orAbsent(STRING) : ANY
       }
       if (op === '()' && typeof n[1] === 'string') {
@@ -516,7 +564,7 @@ export function summaryQueries(facts, internal = false) {
       paramRangesOf: name => paramRanges.get(name)?.ranges ?? null,
       // A typed element read the summary holds inside the array's count: its
       // index needs no bounds test and its value is never the undefined of a miss.
-      presentTypedRead: n => Array.isArray(n) && n[0] === '[]' && tagOf(kindOfExpr(n[1])) === K.TYPED && typedElementKey(n[2], kindOfExpr(n[2]) === NUMBER) && (typedReadPresent(scope, n) || presentReads.has(n)),
+      presentTypedRead: n => Array.isArray(n) && n[0] === '[]' && tagOf(kindOfExpr(n[1])) === K.TYPED && typedElementKey(n[2], kindOfExpr(n[2]) === NUMBER) && (typedReadPresent(scope, n, keyOf) || presentReads.has(n)),
       // The element cell's own kind: presence included, no absent member for a read past the end.
       elemKindOf: name => { const k = readKind(name); return celled(k) ? pub(elemOf(k)) : null },
       arrayDenseOfExpr: node => {

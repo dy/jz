@@ -48,6 +48,7 @@
  *
  * @module summary
  */
+import { SPAN_BINARY, spanBinary } from './span.js'
 import { MUTATE_OPS, EXACT_MATH, extractParams, isBrand, returnExprs, ACCESSOR_GET, ACCESSOR_SET, CLASS_T, TYPEOF, isNumberGuard, typeofPredicate, canonicalKeyOrder, schemaKey, isArrayIndexKey, layoutView, ENUM_DATA, isTdzDecl, spreadExclusions } from '../ast.js'
 import { encodeTypedElemAux, TYPED_ELEM_CODE, TYPED_ELEM_VIEW_FLAG, TYPED_ELEM_ANY_VIEW_FLAG, ctorFromElemAux, TYPED_ELEM_BIGINT_FLAG, DATA_VIEW_FLAG } from '../../layout.js'
 import { ITER_RECORD_KEYS } from '../std/iter-helpers.js'
@@ -97,10 +98,8 @@ const STRING_METHODS = new Set(['slice', 'substring', 'substr', 'trim', 'trimSta
 const STRING_NUMBER_METHODS = new Set(['charCodeAt', 'codePointAt', 'indexOf', 'lastIndexOf', 'search', 'localeCompare'])
 const STRING_BOOL_METHODS = new Set(['includes', 'startsWith', 'endsWith'])
 const PRIMITIVE_METHODS = new Set([...STRING_METHODS, ...STRING_NUMBER_METHODS, ...STRING_BOOL_METHODS, 'split', 'at', 'charAt', 'match', 'matchAll', 'toString', 'valueOf', 'toLocaleString', 'toFixed', 'toPrecision', 'toExponential', 'toLocaleUpperCase', 'toLocaleLowerCase', 'isWellFormed', 'toWellFormed', 'constructor', 'length'])
-const SPAN_BINARY = new Set(['&', '+', '-', '*', '%', '|', '<<'])
 const RANGE_BINARY = new Set(['+', '-', '*', '/'])
 const memberBefore = (a, b) => typeof a === typeof b ? a < b : typeof a === 'number'
-const maskSpan = m => m && m[0] === m[1] && m[0] >= 0 && m[0] <= 0x7fffffff ? [0, m[0]] : null
 
 // These helpers carry call-site result facts; keep their call boundary through planning.
 const MODELED_RESULT = /\$__it_(from|mk|drain|arr)$/
@@ -651,18 +650,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     if (op === '.' && e[2] === 'length' && typeof e[1] === 'string') { const len = typedLenOf(scope ?? MODULE, e[1]); return len === null ? null : pointRange(len) }
     if (!SPAN_BINARY.has(op)) return null
     const a = spanOf(e[1], scope, integral), b = spanOf(e[2], scope, integral)
-    // A mask keeps any value inside it: ToInt32 of the other operand, whatever it is, then the bits.
-    if (op === '&') return maskSpan(b) ?? maskSpan(a)
-    if (!a || !b) return null
-    let lo, hi
-    if (op === '+') { lo = a[0] + b[0]; hi = a[1] + b[1] }
-    else if (op === '-') { lo = a[0] - b[1]; hi = a[1] - b[0] }
-    else if (op === '*') { const p = [a[0] * b[0], a[0] * b[1], a[1] * b[0], a[1] * b[1]]; lo = Math.min(...p); hi = Math.max(...p) }
-    else if (op === '%' && a[0] >= 0 && b[0] > 0) { lo = 0; hi = Math.min(a[1], b[1] - 1) }
-    else if (op === '|' && b[0] === 0 && b[1] === 0 && a[0] >= -0x80000000 && a[1] <= 0x7fffffff) { lo = a[0]; hi = a[1] }   // `e | 0` of an i32 interval (prepare's typed `.length | 0`)
-    else if (op === '<<' && a[0] === a[1] && b[0] === b[1]) { lo = hi = a[0] << b[0] }   // a constant size (`1 << 20`)
-    else return null
-    return Number.isSafeInteger(lo) && Number.isSafeInteger(hi) ? [lo, hi] : null
+    return spanBinary(op, a, b)
   }
   // The finite interval a numeric expression stays in: a literal, an integer
   // name or a counter (spanOf), arithmetic on those, a rounding or `Math`
@@ -4517,6 +4505,44 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     return marked
   })
   const dispatcher = new Set(funcs.filter(f => f.sig?.dispatcher === true).map(f => f.name))
+  // Published readers keep values, never the solver's closures or mutable
+  // initializer/function ASTs. Occurrence proofs remain in presentReads;
+  // these binding facts also answer fresh constant-index nodes after rewrites.
+  const typedLengths = new Map(), scalarValues = new Map(), scalarFields = new Map()
+  for (const [scope, names] of declared) for (const [name, key] of names) {
+    if (tagOf(kinds[key]) !== K.TYPED) continue
+    const len = typedLenOf(scope, name)
+    if (len !== null) typedLengths.set(key, len)
+  }
+  if (typedLengths.size) for (const [name, keys] of nameKeys) {
+    if (typeof keys !== 'number') {
+      for (const key of keys) {
+        const def = definitions[key]
+        if (!def) continue
+        const value = staticValue(def[0], def[1])
+        if (typeof value === 'number') scalarValues.set(key, value)
+      }
+    } else if (tagOf(kinds[keys]) === K.OBJECT) {
+      const init = definitions[keys]?.[1]
+      if (typeof init !== 'string' && !(Array.isArray(init) && init[0] === '{}')) continue
+      const lit = heldLiteral(name)
+      if (!lit) continue
+      const fields = new Map()
+      let numeric = false, duplicate = false
+      for (let i = 1; i < lit.length; i++) {
+        const p = lit[i], prop = typeof p === 'string' ? p : p[1]
+        if (fields.has(prop)) { duplicate = true; break }
+        const value = staticValue(MODULE, typeof p === 'string' ? p : p[2])
+        if (typeof value === 'number') numeric = true
+        fields.set(prop, typeof value === 'number' ? value : null)
+      }
+      if (numeric && !duplicate) scalarFields.set(keys, fields)
+    }
+  }
+  queryFacts.typedReadPresent = null
+  queryFacts.typedLengths = typedLengths
+  queryFacts.scalarValues = scalarValues
+  queryFacts.scalarFields = scalarFields
   const published = summaryQueries(queryFacts)
   published.unnamedLayouts = [...unnamed.values()]
   queryFacts.contracts = buildResultContracts({

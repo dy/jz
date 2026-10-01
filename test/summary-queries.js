@@ -142,6 +142,80 @@ test('summary queries: lazy traversal scratch preserves aliases, cycles and zero
   is(read(retained, 'copy', 1), kind(K.NUMBER), 'failed and empty summaries preserve the retained reader')
 })
 
+test('summary queries: typed read presence owns settled extents and constants', () => {
+  const decl = (name, value) => ['const', ['=', name, value]]
+  const call = (name, arg) => ['()', name, arg]
+  const options = { funcs: [], schemas: [['index']], brandOf: () => null, imports: new Map(), exported: () => false }
+  const number = kind(K.NUMBER), optional = join(number, kind(K.ABSENT))
+  const check = (q, name, index, present, why) => {
+    // Each query constructs a fresh read, outside the solver's occurrence set.
+    is(q.presentTypedRead(['[]', name, index]), present, why)
+    is(q.kindOfExpr(['[]', name, index]), present ? number : optional, why + ' kind')
+  }
+  let retained
+  for (const length of [4, 4, 0, 4]) {
+    const size = lit(length), direct = lit(length), index = lit(1), field = lit(2), returned = lit(length)
+    const funcs = [{ name: 'make', sig: { params: [] }, body: call('new.Int32Array', returned) }]
+    const ast = [';', decl('size', size), decl('index', index),
+      decl('holder', ['{}', [':', 'index', field]]), decl('aliasHolder', 'holder'),
+      decl('a', call('new.Float64Array', 'size')), decl('alias', 'a'), decl('direct', call('new.Float64Array', direct)),
+      decl('view', call('new.Uint32Array', ['.', 'alias', 'buffer'])),
+      decl('made', call('make', null))]
+    const q = summarize(ast, { ...options, funcs })
+    for (const n of ['a', 'alias', 'direct', 'made']) {
+      check(q, n, lit(0), length > 0, n + ': first element includes the empty boundary')
+      check(q, n, 'index', length > 1, n + ': a held constant remains present')
+      check(q, n, lit(length), false, n + ': the final boundary remains absent')
+    }
+    check(q, 'view', lit(length * 2 - 1), length > 0, 'buffer views use their own element width')
+    check(q, 'view', lit(length * 2), false, 'view final boundary remains absent')
+    check(q, 'a', ['-', ['.', 'a', 'length'], lit(1)], length > 0, 'fresh length arithmetic')
+    check(q, 'a', ['&', 'unknown', lit(3)], length > 0, 'fresh masked index')
+    check(q, 'a', ['.', 'aliasHolder', 'index'], length > 2, 'immutable object field')
+    check(q, 'a', call('math.floor', lit(1.9)), length > 1, 'exact Math expression')
+    for (const bad of [-1, 1.5, NaN, Infinity]) check(q, 'a', lit(bad), false, 'invalid numeric key')
+    size[1] = 0; direct[1] = 0; index[1] = 100; field[1] = 100; returned[1] = 0
+    check(q, 'a', 'index', length > 1, 'retained reader ignores initializer mutation')
+    check(q, 'direct', lit(0), length > 0, 'retained reader ignores inline allocation mutation')
+    check(q, 'a', ['.', 'aliasHolder', 'index'], length > 2, 'retained reader owns field values')
+    check(q, 'made', lit(0), length > 0, 'retained reader ignores return-body mutation')
+    const next = summarize(ast, { ...options, funcs })
+    check(next, 'a', lit(0), false, 'a new summary sees the changed extent')
+    check(next, 'direct', lit(0), false, 'a new summary sees the changed inline extent')
+    check(next, 'made', lit(0), false, 'a new summary sees the changed return')
+    retained ??= q
+    check(retained, 'a', 'index', true, 'A → A → B → A leaves the first reader intact')
+  }
+  is(summarize(null, options).presentTypedRead(['[]', 'a', lit(0)]), false, 'empty work has no prior typed binding')
+  check(retained, 'made', lit(0), true, 'empty work preserves retained return facts')
+})
+
+test('summary queries: settled typed presence respects scoped constants and mutable bindings', () => {
+  const decl = (name, value) => ['const', ['=', name, value]]
+  const array = n => ['()', 'new.Int32Array', lit(n)]
+  const funcs = [0, 4].map((index, i) => ({ name: 'read' + i, sig: { params: [{ name: 'unknown' }] }, body:
+    ['{}', [';', decl('index', lit(index)), decl('local', array(2)),
+      ['let', ['=', 'changed', lit(0)]], ['=', 'changed', 'unknown'],
+      ['let', ['=', 'rebound', array(2)]], ['=', 'rebound', array(0)],
+      ['return', ['[]', 'local', 'index']]]] }))
+  const q = summarize([';', decl('index', lit(1)), decl('moduleArray', array(2))],
+    { funcs, schemas: [], brandOf: () => null, imports: new Map(), exported: () => true })
+  for (let i = 0; i < funcs.length; i++) {
+    const view = q.at('read' + i)
+    is(view.presentTypedRead(['[]', 'local', 'index']), i === 0, 'a fresh read uses its own scoped constant')
+    is(view.presentTypedRead(['[]', 'local', 'unknown']), false, 'an exported parameter has no constant proof')
+    is(view.presentTypedRead(['[]', 'local', 'changed']), false, 'another write removes a constant proof')
+    is(view.presentTypedRead(['[]', 'rebound', lit(0)]), false, 'another receiver write removes the extent')
+    is(view.presentTypedRead(['[]', 'moduleArray', lit(1)]), true, 'a scoped read keeps a visible module extent')
+  }
+  is(q.presentTypedRead(['[]', 'moduleArray', 'index']), true, 'the module binding remains distinct from same-named locals')
+  for (const values of [['unknown', lit(0), 'unknown'], [lit(0), 'unknown']]) {
+    const duplicates = summarize([';', decl('a', array(2)), decl('record', ['{}', ...values.map(v => [':', 'index', v])])],
+      { funcs: [], schemas: [['index']], brandOf: () => null, imports: new Map(), exported: () => false })
+    is(duplicates.presentTypedRead(['[]', 'a', ['.', 'record', 'index']]), false, 'duplicate fields cannot publish a stale numeric value')
+  }
+})
+
 test('summary queries: stored-property provenance leaves unknown typed reads open', () => {
   const options = { funcs: [{ name: 'read', sig: { params: [{ name: 'key' }] }, body: ['[]', 'a', 'key'] }],
     schemas: [], brandOf: () => null, imports: new Map(), exported: () => true }
