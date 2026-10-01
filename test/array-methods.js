@@ -15,6 +15,67 @@ function run(code) {
 // jz()-based helper for regression tests that need full host wiring.
 const runHost = (code, opts) => jz(code, opts).exports
 
+test('array concat: scalar arguments retain identity and only arrays spread', () => {
+  const src = `export function f(x) { return [1].concat(x) }
+    export function numeric(x) { const a = [1].concat(x); return [a.length, a[1] * 2] }
+    export function mixed() { return [].concat(true, false, 7n, undefined, null, 'ab',
+      new Int16Array([3, 4]), {x: 5}, [6, 7], []) }
+    export function nullable(flag) { const x = flag ? [2, 3] : undefined; return [1].concat(x) }
+    export function holes() { const a = [, undefined, 3]; const b = a.concat([, 4], undefined);
+      return [b, Object.keys(b), 0 in b, 1 in b, 3 in b, 5 in b] }
+    export function empty() { const a = []; const b = a.concat(); b.push(3); return [a, b, a === b] }`
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const got = jz(src, { optimize }).exports, want = oracle(src), retained = []
+    for (const x of [[], [], [3, 4], '4', undefined, null, false, true, 0, -0, NaN, Infinity, {x: 3}, new Int16Array([2, 4]), [5]]) {
+      const result = got.f(x), expected = want.f(x)
+      is(result, expected, `concat argument O${optimize}`); retained.push([result, expected])
+    }
+    for (const x of [[3, 4], '4', [], 7, null, false, [5]]) is(got.numeric(x), want.numeric(x), 'unknown array-or-scalar keeps flattening identity')
+    for (const flag of [0, 0, 1, 0, 1]) is(got.nullable(flag), want.nullable(flag), 'missing argument value is a present undefined element')
+    is(got.mixed(), want.mixed()); is(got.holes(), want.holes()); is(got.empty(), want.empty())
+    for (const [result, expected] of retained) is(result, expected, 'later calls leave prior copies intact')
+  }
+})
+
+test('array concat: arguments run once before lengths and copies are observed', () => {
+  const src = `export function f(mode) { let calls = 0; let a = [1]; let b = [2]; const old = a;
+      function arg() { calls++; a.push(3); b.push(4); if (mode === 1) for (let i = 0; i < 64; i++) b.push(i);
+        if (mode === 2) { a.length = 0; b.length = 1 } if (mode === 3) a = [9]; if (mode === 4) b = [9]; return 5 }
+      const result = a.concat(b, arg()); return [result, old, a, b, calls] }
+    let count = 0;
+    export function fail(bad) { const a = [1]; function arg() { count++; if (bad) throw new Error('concat argument'); return [2] }
+      return [a.concat(arg()), count] }
+    export function reset() { count = 0 }`
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const got = jz(src, { optimize }).exports, want = oracle(src)
+    for (const mode of [0, 0, 1, 2, 3, 4, 0]) is(got.f(mode), want.f(mode), `argument order O${optimize}`)
+    got.reset(); want.reset()
+    for (const bad of [0, 0, 1, 0, 1, 0]) {
+      if (bad) { throws(() => got.fail(bad), /concat argument/); throws(() => want.fail(bad), /concat argument/) }
+      else is(got.fail(bad), want.fail(bad), 'error-to-valid reuse')
+    }
+  }
+})
+
+test('array concat: spreads evaluate completely before concatenation and empty spreads copy', () => {
+  const src = `export function f(mode) { const a = [1], b = [2]; let calls = 0;
+      function tail() { calls++; a.push(3); b.push(4); return mode ? [5] : [] }
+      return [a.concat(...[b], ...tail()), calls] }
+    export function empty() { const a = [1]; const b = a.concat(...[]); b[0] = 7; return [a, b, a === b] }
+    export function values(xs) { return [1].concat(...xs) }
+    export function string() { let log = ''; const x = { toString() { log += 'c'; return 'x' } };
+      function tail() { log += 'a'; return ['y'] } const s = 's'.concat(...[x], ...tail()); return [s, log] }`
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const got = jz(src, { optimize }).exports, want = oracle(src)
+    for (const mode of [0, 0, 1, 0]) is(got.f(mode), want.f(mode), `spread order O${optimize}`)
+    for (const xs of [[], [], [2, 3], [[2, 3], 'ab', undefined], [,,4], [[, 3]], [], ['z']])
+      is(got.values(xs), want.values(xs), 'spread values and holes')
+    for (const invalid of [null, undefined]) { throws(() => got.values(invalid)); throws(() => want.values(invalid)) }
+    is(got.values([[8], 'z']), want.values([[8], 'z']), 'valid spread after iteration errors')
+    is(got.empty(), want.empty()); is(got.string(), want.string(), 'all arguments run before string conversion')
+  }
+})
+
 test('array literals: compact storage preserves growth, aliases and named properties', () => {
   const src = `let box, alias
     export function make(x) { const a = [x]; alias = a; box = {a}; return box }

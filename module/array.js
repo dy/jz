@@ -2735,72 +2735,43 @@ export default (ctx) => {
       out.ptr], 'f64')
   }
 
-  // .concat(...others) → concatenate arrays
+  // .concat(...others) copies array cells, but appends every other value once.
   ctx.core.emit['.array:concat'] = (arr, ...others) => {
-    const len = tempI32('len'), pos = tempI32('pos')
-    const recv = hoistArrayValue(arr)
-    const va = recv.value
-    const out = allocPtr({ type: PTR.ARRAY, len: ['local.get', `$${len}`], tag: 'res' })
-    const result = out.local
-
-    // Calculate total length
-    const body = [
-      recv.setup,
-      ['local.set', `$${len}`, ['call', '$__len', ['i64.reinterpret_f64', va]]],
-    ]
-
-    const otherVals = []
+    const recv = hoistArrayValue(arr), len = tempI32('concatLen'), pos = tempI32('concatPos')
+    const body = [recv.setup], sources = [{ value: recv.value, array: true }]
+    // All argument expressions run before concat observes any source length.
     for (const other of others) {
-      const vo = asF64(emit(other))
-      otherVals.push(vo)
-      body.push(['local.set', `$${len}`, ['i32.add', ['local.get', `$${len}`], ['call', '$__len', ['i64.reinterpret_f64', vo]]]])
+      const name = temp('concatArg'), value = typed(['local.get', `$${name}`], 'f64')
+      body.push(['local.set', `$${name}`, storedValue(other)])
+      const vt = valTypeOf(other)
+      sources.push({ value, array: vt === VAL.ARRAY ? true : vt ? false : null })
     }
-
-    body.push(out.init)
-
-    // Copy source array
-    const srcOff = tempI32('co')
-    body.push(
-      ['local.set', `$${pos}`, ['i32.const', 0]],
-      ['local.set', `$${len}`, ['call', '$__len', ['i64.reinterpret_f64', va]]],
-      ['local.set', `$${srcOff}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', va]]]
-    )
-    const id = freshId(ctx)
-    body.push(
-      ['block', `$done${id}`, ['loop', `$loop${id}`,
-        ['br_if', `$done${id}`, ['i32.ge_s', ['local.get', `$${pos}`], ['local.get', `$${len}`]]],
-        ['f64.store',
-          ['i32.add', ['local.get', `$${result}`], ['i32.shl', ['local.get', `$${pos}`], ['i32.const', 3]]],
-          ['f64.load', ['i32.add', ['local.get', `$${srcOff}`], ['i32.shl', ['local.get', `$${pos}`], ['i32.const', 3]]]]],
-        ['local.set', `$${pos}`, ['i32.add', ['local.get', `$${pos}`], ['i32.const', 1]]],
-        ['br', `$loop${id}`]]]
-    )
-
-    // Copy each other array
-    const offset = tempI32('off')
-    body.push(['local.set', `$${offset}`, ['call', '$__len', ['i64.reinterpret_f64', va]]])
-
-    const otherOff = tempI32('co2')
-    for (let i = 0; i < otherVals.length; i++) {
-      const vo = otherVals[i]
-      const id2 = freshId(ctx)
-      body.push(
-        ['local.set', `$${pos}`, ['i32.const', 0]],
-        ['local.set', `$${len}`, ['call', '$__len', ['i64.reinterpret_f64', vo]]],
-        ['local.set', `$${otherOff}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', vo]]],
-        ['block', `$done${id2}`, ['loop', `$loop${id2}`,
-          ['br_if', `$done${id2}`, ['i32.ge_s', ['local.get', `$${pos}`], ['local.get', `$${len}`]]],
-          ['f64.store',
-            ['i32.add', ['local.get', `$${result}`], ['i32.shl', ['i32.add', ['local.get', `$${offset}`], ['local.get', `$${pos}`]], ['i32.const', 3]]],
-            ['f64.load', ['i32.add', ['local.get', `$${otherOff}`], ['i32.shl', ['local.get', `$${pos}`], ['i32.const', 3]]]]],
-          ['local.set', `$${pos}`, ['i32.add', ['local.get', `$${pos}`], ['i32.const', 1]]],
-          ['br', `$loop${id2}`]]],
-        ['local.set', `$${offset}`, ['i32.add', ['local.get', `$${offset}`], ['local.get', `$${len}`]]]
-      )
+    inc('__len', '__ptr_offset')
+    body.push(['local.set', `$${len}`, ['i32.const', 0]])
+    for (const source of sources) {
+      const { value, array } = source
+      const count = tempI32('concatCount')
+      source.count = ['local.get', `$${count}`]
+      if (array === null) {
+        const flag = tempI32('concatArray')
+        body.push(['local.set', `$${flag}`, ['i32.and', ['f64.ne', value, value], ptrTypeEq(value, PTR.ARRAY)]])
+        source.test = ['local.get', `$${flag}`]
+      }
+      const size = ['call', '$__len', ['i64.reinterpret_f64', value]]
+      body.push(['local.set', `$${count}`, array === true ? size : array === false ? ['i32.const', 1]
+        : ['if', ['result', 'i32'], source.test, ['then', size], ['else', ['i32.const', 1]]]],
+        ['local.set', `$${len}`, ['i32.add', ['local.get', `$${len}`], source.count]])
     }
-
-    body.push(out.ptr)
-    return typed(['block', ['result', 'f64'], ...body], 'f64')
+    const out = allocPtr({ type: PTR.ARRAY, len: ['local.get', `$${len}`], tag: 'concat' })
+    body.push(out.init, ['local.set', `$${pos}`, ['i32.const', 0]])
+    for (const { value, array, test, count } of sources) {
+      const dest = ['i32.add', ['local.get', `$${out.local}`], ['i32.shl', ['local.get', `$${pos}`], ['i32.const', 3]]]
+      const copy = ['memory.copy', dest, ['call', '$__ptr_offset', ['i64.reinterpret_f64', value]], ['i32.shl', count, ['i32.const', 3]]]
+      const append = ['f64.store', dest, value]
+      body.push(array === true ? copy : array === false ? append : ['if', test, ['then', copy], ['else', append]],
+        ['local.set', `$${pos}`, ['i32.add', ['local.get', `$${pos}`], count]])
+    }
+    return typed(['block', ['result', 'f64'], ...body, out.ptr], 'f64')
   }
   // Unqualified alias so an untyped-receiver `.concat` gets emit's runtime
   // string-vs-array ptr-type branch (string → `.string:concat`, array → this),

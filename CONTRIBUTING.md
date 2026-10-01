@@ -135,6 +135,10 @@ Boxed arrays use the existing private `TOMB_NAN` atom for an absent slot;
 explicit `undefined` keeps its own value atom. Construction, skipped stores,
 length growth and deletion preserve that distinction. Indexed value reads
 normalize absence; reflection and property-callback iteration check occupancy.
+Concat captures all arguments before reading source lengths, copies arrays,
+and appends other values without conversion. Spreads finish argument evaluation
+before the first copy or string conversion; an empty spread still makes a fresh
+array. Ordinary array concatenation uses raw cell copies.
 Raw copies (slice, concat, reverse and structured cloning) retain holes;
 value copies (spread, Array.from and change-by-copy methods) densify them.
 The settled element kind's ABSENT bit is the shared density proof: proven

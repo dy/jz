@@ -445,25 +445,19 @@ function emitAsValue(fn) {
   return withExpectedValue(null, fn)
 }
 
-/** Methods whose variadic arguments compose successive results (concat). */
+/** Concat observes sources only after its whole argument list is evaluated. */
 function emitVariadicSpreadMethodCall(objArg, parsed, methodEmitter) {
-  const acc = temp('spreadResult')
-  const ir = [['local.set', `$${acc}`, asF64(emit(objArg))]]
-  let batch = []
-  const flushBatch = () => {
-    if (!batch.length) return
-    ir.push(['local.set', `$${acc}`, asF64(emitAsValue(() => methodEmitter(acc, ...batch)))])
-    batch = []
-  }
-  for (const item of reconstructArgsWithSpreads(parsed.normal, parsed.spreads)) {
-    if (Array.isArray(item) && item[0] === '__spread') {
-      flushBatch()
-      ir.push(...emitSpreadElementLoop(item[1], (arr, idx) => [
-        ['local.set', `$${acc}`, asF64(emitAsValue(() => methodEmitter(acc, ['[]', arr, idx])))],
-      ]))
-    } else batch.push(item)
-  }
-  flushBatch()
+  const recv = temp('spreadRecv'), args = temp('spreadArgs'), acc = temp('spreadResult')
+  const ir = [
+    ['local.set', `$${recv}`, storedValue(objArg)],
+    ['local.set', `$${args}`, buildArrayWithSpreads(reconstructArgsWithSpreads(parsed.normal, parsed.spreads))],
+  ]
+  copyReceiverFacts(objArg, recv)
+  ctx.func.localValTypesOverlay.set(args, VAL.ARRAY)
+  ir.push(['local.set', `$${acc}`, asF64(emitAsValue(() => methodEmitter(recv)))],
+    ...emitSpreadElementLoop(args, (arr, idx) => [
+      ['local.set', `$${acc}`, asF64(emitAsValue(() => methodEmitter(acc, ['[]', arr, idx])))],
+    ]))
   return block64(...ir, ['local.get', `$${acc}`])
 }
 
