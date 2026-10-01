@@ -1842,6 +1842,31 @@ test('static literal: mutation through Map storage (use-count record shape)', ()
   is(f(), 201)  // a: gets 2 sets 0 · b: sets 1
 })
 
+test('static literal: replacing array elements cannot mutate a factory constant', () => {
+  const src = `const init = () => {
+    const ps = []
+    ps.push({x: 1, y: 2})
+    ps.push({x: 3, y: 4})
+    return ps
+  }
+  export function f(n, fail) {
+    const ps = init(), k = n | 0
+    for (let i = 0; i < k; i++) {
+      const p = ps[i]
+      ps[i] = {x: (p.x + 1) | 0, y: p.y}
+    }
+    if (fail) throw Error('replace')
+    return ps.length * 100 + ps[0].x + ps[1].x
+  }`
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const { f } = run(src, { optimize })
+    for (const n of [0, 1, 2, 2, 0, 1]) {
+      is(f(n, 0), 204 + n, `O${optimize}: ${n} replacements start from fresh fields`)
+      throws(() => f(n, 1), /replace/, 'a thrown call cannot change the next factory result')
+    }
+  }
+})
+
 // A key added to one instance is a mutation too: the literal's own names are
 // never written, but the summary sees a key stored beside its slots
 // (summary/query.js grownSchema), and each evaluation allocates.

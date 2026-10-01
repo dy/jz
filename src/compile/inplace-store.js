@@ -313,6 +313,11 @@ export function scanInplaceStores(programFacts) {
   const out = new Map()
   for (const [key, v] of verdict) if (v) out.set(key, v)
   ctx.schema.inplaceStores = out
+  // Reusing an element writes its old object's fields even though the source
+  // only assigns the array slot. Its literal producer must allocate afresh:
+  // a shared static literal would retain these writes across factory calls.
+  for (const c of candidates) if (out.has(inplaceKey(c.arrName, c.lit)))
+    for (const prop of ctx.schema.list[c.sid]) programFacts.writtenProps.add(prop)
   if (DBG) console.error('[inplace]', 'candidates:', candidates.length, 'aliases:', aliases.length, 'poisoned:', [...poisoned], 'poisonAll:', poisonAll, 'eligible:', candidates.filter(c => out.has(c.lit)).length)
   return out
 }

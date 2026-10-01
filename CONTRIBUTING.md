@@ -306,6 +306,10 @@ Array and TypedArray writers classify a coerced key before choosing elements or
 named properties. A computed store captures its receiver, key and RHS in that
 order, then coerces the held key once. Array growth writes back only while the
 receiver binding still denotes that captured array.
+An accepted in-place element replacement also contributes its field writes to
+the existing property-mutation census. Constant object factories of that shape
+must allocate per evaluation; sharing their static payload would retain a prior
+call's replacements.
 
 Collection enumeration shares the ordered property walk with plain objects.
 Array and typed-array indices precede named properties; initialized and runtime
