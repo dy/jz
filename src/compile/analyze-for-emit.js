@@ -189,9 +189,18 @@ export function analyzeFuncForEmit(func, programFacts) {
   // where the call-site lattice above saw nothing (a class method's receiver,
   // called through the class dispatch; a callee the census never named).
   const summary = ctx.summary?.at(sig)
-  if (summary) for (const p of sig.params) {
+  const paramBounds = summary?.paramRangesOf(name)
+  if (summary) for (let i = 0; i < sig.params.length; i++) {
+    const p = sig.params[i]
     if (p.rest || func.defaults?.[p.name] || isReassigned(frameNode(func), p.name)) continue
     seedSummaryParam(p.name, summary)   // a parameter already typed by the call lattice still takes the summary's exact shape
+    // The ABI proves integrality; a signed-word hull preserves its magnitude
+    // even on tiers that skip the separate caller interval walk. Wider source
+    // values may wrap at a word-only ABI and cannot keep their original hull.
+    const bound = paramBounds?.[i]
+    if (p.type === 'i32' && summary.valOf(p.name) === VAL.NUMBER && bound &&
+        bound[0] >= I32_MIN && bound[1] <= I32_MAX)
+      updateRep(p.name, { range: bound })
   }
   // Caller-side nullability: a NO-DEFAULT param observes the UNDEF pad whenever a
   // site omits its position (narrow's missing rule poisons r.val) or when callers

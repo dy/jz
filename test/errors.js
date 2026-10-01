@@ -1326,12 +1326,16 @@ test('instanceof: primitive wrapper probes include nullish values and primitive 
     for (const name of ['Number', 'Boolean', 'String'])
       for (const optimize of levels(0, 2, 3)) {
         const src = `const values = ${values}; let calls = 0;
-          function next(i) { calls++; return values[i] }
+          function next(i) { calls++; return values[+i] }
           export function f(i) { return [next(i) instanceof ${name}, calls] }`
         const f = jz(src, { optimize }).exports.f
         let calls = 0
         for (const i of [-1, 0, 0, 1, 2, 3, 4, 5, 6]) is(f(i), [false, ++calls], `${name}(${i}) at ${optimize}`)
       }
+  // An unconstrained key can also name constructor or an inherited method.
+  // The primitive-only wrapper rule cannot fold that read to false.
+  throws(`const values=[null,undefined,0,false,'',1n];
+    export function f(i){return values[i] instanceof Number}`, 'requires a proven primitive input', 'unknown keys stay unproven')
 })
 
 // A binding that holds a constructor (`var OBJECT = Object`, `const Q = K`)

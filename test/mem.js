@@ -1193,8 +1193,16 @@ test('host array handles: a fresh result\'s arrays keep their element proofs, a 
   }`
   ok(!/call \$__arr_typed_obj_set_idx/.test(compile(src, { wat: true })), 'the channel stores are typed')
   for (const optimize of levels(0, 2, 3)) {
-    const m = jz(src, { optimize }), got = m.exports.decode(3)
-    is([...got.channelData[0]], [0, 0.5, 1]); is([...got.channelData[1]], [1, 1.5, 2]); is(got.sampleRate, 44100)
+    const m = jz(src, { optimize }), kept = []
+    for (const n of [0, 1, 3, 3, 5, 0, 1]) {
+      const got = m.exports.decode(n)
+      for (let c = 0; c < 2; c++)
+        is([...got.channelData[c]], Array.from({length:n}, (_, i) => i * 0.5 + c), `channel ${c}, length ${n}`)
+      is(got.sampleRate, 44100)
+      kept.push([got, n])
+    }
+    for (const [got, n] of kept) for (let c = 0; c < 2; c++)
+      is([...got.channelData[c]], Array.from({length:n}, (_, i) => i * 0.5 + c), 'later calls preserve earlier fresh results')
     const r = jz('let last=null;export const make=()=>{const o={a:[1,2]};last=o;return o};export const value=()=>last.a[0]+1', { optimize })
     r.memory.write(r.instance.exports.make(), { a: ['late'] })
     is(r.exports.value(), 'late1', 'an object a module binding keeps opens its arrays')

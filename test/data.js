@@ -575,6 +575,25 @@ test('summary result carriers preserve BigInt payloads, absence, and arithmetic 
   }
 })
 
+test('BigInt storage provenance: unknown keys preserve unary domains through receiver expressions', () => {
+  for (const receiver of ['[9221120245631025152n,7n]',
+    'new BigInt64Array([9221120245631025152n,7n])',
+    'new BigUint64Array([9221120245631025152n,7n]).subarray(0)',
+    'new Int32Array([1])']) {
+    const src = `export function f(key,objectKey){let trace='';
+      function recv(){trace+='r';const a=${receiver};a.extra=7n;return a}
+      const k=objectKey?{toString(){trace+='k';return key}}:key;
+      const a=-recv()[k],b=~recv()[k],c=-~recv()[k];
+      return [a,b,c,typeof a,typeof b,trace]}`
+    for (const optimize of levels(0,1,2,3,'size')) {
+      const expected=oracle(src),actual=jz(src,{optimize}).exports
+      for (const key of [0,0,1,'0','1',-1,2,'length','missing','extra',0])
+        for (const objectKey of [false,true])
+          is(actual.f(key,objectKey),expected.f(key,objectKey),`${receiver}, key=${key}, wrapped=${objectKey}, O${optimize}`)
+    }
+  }
+})
+
 test('typed reads evaluate receiver and index once across present, empty, and boundary reads', () => {
   const src = `
     let trace = 0
@@ -4581,6 +4600,24 @@ test('RepresentationPlan: unrelated records share storage without poisoning call
   is(useA(), 20)
   is(pick(1), 'oops')
   is(pick(0), [10, 20, 30])
+})
+
+test('parameter index bounds preserve reassignment, missing calls and named numeric properties', () => {
+  const src=`const a=[10,20];a[-1]=3;a[0.5]=4;a[4294967295]=5;a[4294967296]=6;
+    function fixed(list,i){return list[i]}
+    function changed(list,i,mode){if(mode)i=-1;return list[i]}
+    function captured(list,i,mode){function change(){i=0.5}if(mode)change();return list[i]}
+    function maybe(list,i){return list[i]}
+    function wide(list,i){return list[i]}
+    function word(list,i){const k=i|0;return [k>=0&&k<2?list[k]:-7,k]}
+    export function expose(){return a}
+    export function f(mode){return [fixed(a,1),changed(a,1,mode),captured(a,1,mode),
+      mode?maybe(a):maybe(a,1),wide(a,4294967295),wide(a,4294967296),
+      word(a,4294967296),word(a,4294967297),word(a,2147483648),word(a,-4294967295)]}`
+  for(const optimize of levels(0,1,2,3,'size')) {
+    const got=jz(src,{optimize}).exports,want=oracle(src)
+    for(const mode of [0,0,1,0,1])is(got.f(mode),want.f(mode),`parameter lifetime O${optimize}, mode=${mode}`)
+  }
 })
 
 test("RepresentationPlan: `.`-property-read schemaId resolution is pass-order-independent — swapping a 3-function forwarding chain's declaration order yields byte-identical WAT", () => {

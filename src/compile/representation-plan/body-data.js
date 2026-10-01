@@ -534,14 +534,17 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
   //
   // Ordinary array elements are tagged slots, including read-only literals
   // and synthetic destructuring arrays. Typed arrays retain their own carrier.
+  const isTrackedStorage = recv => {
+    if (Array.isArray(recv) && recv[0] === '[') return true
+    const vt = valTypeOf(recv)
+    if (vt === VAL.ARRAY || vt === VAL.TYPED) return true
+    const settled = summary?.valOfExpr(recv)
+    return settled === VAL.ARRAY || settled === VAL.TYPED || typeof recv === 'string' &&
+      ((localStorage && localStorage.has(recv)) || (provenance && provenance.storage.has(recv)) ||
+        (provenance && provenance.bigintTyped.has(recv)))
+  }
   const isStorageReadProducer = node => {
     if (!Array.isArray(node)) return false
-    const isTrackedStorage = recv => Array.isArray(recv) && recv[0] === '[' ||
-      valTypeOf(recv) === VAL.ARRAY ||
-      valTypeOf(recv) === VAL.TYPED || summary?.valOfExpr(recv) === VAL.TYPED ||
-      (typeof recv === 'string' &&
-       ((localStorage && localStorage.has(recv)) || (provenance && provenance.storage.has(recv)) ||
-        (provenance && provenance.bigintTyped.has(recv)) || summary?.valOf(recv) === VAL.TYPED))
     const recv = memberReceiver(node)
     // A semantically proven BigInt slot (possibly absent) has the carrier
     // memberStorageRep names even when its receiver is another expression.

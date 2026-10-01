@@ -75,6 +75,28 @@ test('summary queries: lazy traversal scratch preserves aliases, cycles and zero
   is(read(retained, 'copy', 1), kind(K.NUMBER), 'failed and empty summaries preserve the retained reader')
 })
 
+test('summary queries: stored-property provenance leaves unknown typed reads open', () => {
+  const options = { funcs: [{ name: 'read', sig: { params: [{ name: 'key' }] }, body: ['[]', 'a', 'key'] }],
+    schemas: [], brandOf: () => null, imports: new Map(), exported: () => true }
+  let retained
+  for (const value of [7n, 7n, 'changed', 7n]) {
+    const stored = kind(typeof value === 'bigint' ? K.BIGINT : K.STRING)
+    for (const ctor of [null, 'Int32Array', 'BigInt64Array']) {
+      const element = kind(ctor === 'BigInt64Array' ? K.BIGINT : K.NUMBER)
+      const array = ['[', lit(ctor === 'BigInt64Array' ? 1n : 1)]
+      const init = ctor ? ['()', 'new.' + ctor, array] : array
+      const summary = summarize([';', ['const', ['=', 'a', init]],
+        ['=', ['.', 'a', 'extra'], lit(value)]], options)
+      const q = summary.at('read'), receiver = q.kindOfExpr('a')
+      is(q.elemOfKind(receiver), ctor ? kind(K.ANY) : element, 'the existing element query keeps its default contract')
+      is(q.elemOfKind(receiver, true), join(element, stored), 'provenance includes independently stored named values')
+      if (ctor) is(q.kindOfExpr(['[]', 'a', 'key']), kind(K.ANY), 'a fully unknown key still has an open read kind')
+      retained ??= q
+      is(retained.elemOfKind(retained.kindOfExpr('a'), true), join(kind(K.NUMBER), kind(K.BIGINT)), 'later queries preserve a retained storage view')
+    }
+  }
+})
+
 test('summary queries: declaration census keeps scope, missing writes and cold Boolean stores', () => {
   const options = { schemas: [['HIGH']], brandOf: () => null, imports: new Map(), exported: () => false }
   const build = value => {

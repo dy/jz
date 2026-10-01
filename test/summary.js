@@ -902,6 +902,27 @@ test('summary: tuples expose nested objects and callables to host effects', () =
   is(tagOf(ctx.summary.resultOf('read')), K.ANY, 'a retained nested array can be changed between calls')
 })
 
+test('summary: fresh numeric properties stay precise until an import or retained alias can write', () => {
+  const fresh = `export function make(key){const a=[1,2];a[-1]='edge';const value=a[+key];return {a,value}}`
+  const retained = `let held;export function make(){held=[1,2];return held}export function read(key){return held[+key]}`
+  let saved
+  for (const src of [fresh,fresh,retained,fresh]) {
+    const summary=summarize(src)
+    if(src===fresh) {
+      const value=kindOf('make','value')
+      is(hasTag(value,K.NUMBER),true,'fresh numeric keys retain their numeric elements')
+      is(hasTag(value,K.STRING),true,'fresh numeric keys include named numeric properties')
+      is(hasTag(value,K.ABSENT),true,'a missing numeric property remains absent')
+      is(value,join(join(kind(K.NUMBER),kind(K.STRING)),kind(K.ABSENT)),'returning a fresh array does not poison its earlier reads')
+      saved ??= summary
+    } else is(tagOf(summary.resultOf('read')),K.ANY,'a retained host array admits later arbitrary writes')
+    ok(tagOf(saved.resultOf('make'))===K.OBJECT,'later summaries preserve the earlier result reader')
+  }
+  _compileInProcess(`import edit from 'host';export function read(key){const a=[1,2];edit(a);return a[+key]}`,
+    {host:'js',optimize:{level:0,sourceInline:false},imports:{host:{default:()=>0}}})
+  is(tagOf(ctx.summary.resultOf('read')),K.ANY,'an import may change numeric properties during the call')
+})
+
 test('summary: cyclic host graphs retain nested arrays and callables', () => {
   const src = `function identity(v) { return v }
     const state = { items: [1], call: identity, next: null }

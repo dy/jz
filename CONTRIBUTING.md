@@ -159,9 +159,18 @@ Only a present Number key restricts write effects to numeric properties;
 nullish keys can change named slots. Only integer Number keys in `0..2^32-2`
 address elements; other Numbers name properties, so the summary retains a
 separate numeric-property domain through array joins, escapes and host exposure.
+A fresh result cannot be mutated by the host before it returns: numeric properties
+open only when the host can reach a retained alias, including an import argument.
+An open indexed-read kind still retains BigInt producer provenance from known
+stored elements and own properties; it does not prove the whole read a BigInt.
+Array-valued receiver expressions share named arrays' tagged storage readiness.
 Reads and writes retain the original key for ToPropertyKey unless an integer
 index proof authorizes truncation. Integer endpoints of a parameter hull do not
-prove every argument integral. Packed replacement requires a present cursor or
+prove every argument integral. An i32 parameter ABI can supply integrality,
+but its incoming magnitude is reused only within signed-word bounds and while
+the parameter is never reassigned, including through a nested closure. Wider
+source magnitudes cannot describe a word-converted payload.
+Packed replacement requires a present cursor or
 an unconditional projection before the store; caught and optional projections
 cannot justify dropping an append or property write. The ordinary boxed path
 keeps those operations and their evaluation order.

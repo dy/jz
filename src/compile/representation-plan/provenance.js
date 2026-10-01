@@ -260,7 +260,14 @@ export function solveBigintProvenance(ctx, programFacts, ast) {
   // is evidence; the unbounded ANY proves nothing. An element read stays with
   // the storage census: a literal array's layout is its own.
   const summaryMayBigint = (node, func) => {
-    const k = ctx.summary?.at(func?.sig ?? '').kindOfExpr(node) ?? 0
+    const view = ctx.summary?.at(func?.sig ?? '')
+    let k = view?.kindOfExpr(node) ?? 0
+    // An unknown key may select a named property as well as an element. Its
+    // open read kind does not erase a BigInt stored in the receiver.
+    if (summaryTagsOf(k) === summaryTagsOf(summaryKind(SUMMARY_KIND.ANY)) && node[0] === '[]') {
+      const recv = view.kindOfExpr(node[1])
+      k = view.elemOfKind(recv, true)
+    }
     return summaryTagsOf(k) !== summaryTagsOf(summaryKind(SUMMARY_KIND.ANY)) && summaryHasTag(k, SUMMARY_KIND.BIGINT)
   }
   const exprMay = (node, func, localNames) => {

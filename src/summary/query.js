@@ -17,7 +17,7 @@ const INHERITED = new Set(['constructor', 'hasOwnProperty', 'isPrototypeOf', 'pr
 
 export function summaryQueries(facts, internal = false) {
   const { kinds, incoming, fields, results, receivers, closures, closuresByBody, declared, parent, nameKeys, forwards, siteResults,
-    scopeOfSig, scopeOfBody, scopeOfParams, cellUp, elems, tuples, lens, stores, built, grown, unknown, presentReads, spreadSources, paramRangesOf, cellProps, cellWild, cellNumeric, hostArrays, closureSets, closureSetIds, cells, jsonKinds, unions, shapeUnions,
+    scopeOfSig, scopeOfBody, scopeOfParams, cellUp, elems, tuples, lens, stores, built, grown, unknown, presentReads, spreadSources, paramRangesOf, cellProps, cellWild, cellNumeric, hostArrays, retainedArrays, closureSets, closureSetIds, cells, jsonKinds, unions, shapeUnions,
     schemas, layouts, sitesByLayout, foldedLayouts, objectKinds, methods, sidByKey, funcNames, imports, numeric, strung, dynamicProps, builtinOwnProps, typedReadPresent, typedProps, typedPropsByAux, openSchemas, indexedSchemas,
     sideProps, sideWild, wildProps, wildValues, pendingAll, keyedCells, cellShapes, cellLostObject, closureProps, escaped, iterSites, reached, defaultRuns, boolKeys, storeBits, paramKeys } = facts
   // The solver owns union-find compression; querying a root never writes it.
@@ -79,7 +79,7 @@ export function summaryQueries(facts, internal = false) {
     return result
   }
   const propOf = (arr, prop) => { const c = cell(paramOf(arr)); return merge(merge(isArrayIndexKey(prop) ? elemOf(arr) : cellProps.get(c)?.get(prop) ?? K.NONE, String(+prop) === prop ? cellNumeric.get(c) ?? K.NONE : K.NONE), cellWild.get(c) ?? K.NONE) }
-  const numericPropsOf = arr => { const c = cell(paramOf(arr)); if (hostArrays.has(c)) return ANY; let k = merge(cellNumeric.get(c) ?? K.NONE, cellWild.get(c) ?? K.NONE); for (const [name, pk] of cellProps.get(c) ?? []) if (String(+name) === name) k = merge(k, pk); return k }
+  const numericPropsOf = arr => { const c = cell(paramOf(arr)); if (hostArrays.has(c) && retainedArrays.has(c)) return ANY; let k = merge(cellNumeric.get(c) ?? K.NONE, cellWild.get(c) ?? K.NONE); for (const [name, pk] of cellProps.get(c) ?? []) if (String(+name) === name) k = merge(k, pk); return k }
   const anyPropOf = arr => { const c = cell(paramOf(arr)); let k = merge(merge(elemOf(arr), cellNumeric.get(c) ?? K.NONE), cellWild.get(c) ?? K.NONE); for (const pk of cellProps.get(c)?.values() ?? []) k = merge(k, pk); return k }
   // A keyed dictionary's entry by name: the solver's hashPropOf.
   const hashPropOf = (h, prop) => { const c = cell(paramOf(h)); if (!keyedCells.has(c)) return elemOf(h); return join(cellProps.get(c)?.get(prop) ?? K.NONE, cellWild.get(c) ?? K.NONE) }
@@ -547,7 +547,15 @@ export function summaryQueries(facts, internal = false) {
       paramKindOf: name => { const key = keyOf(name); return key === null ? K.NONE : pub(canon(incoming[key] ?? K.NONE)) },
       // Whether some call lets the parameter's default run (a missing or possibly undefined argument, an unseen caller).
       defaultMayRun: name => { const key = keyOf(name); return key === null || !defaultRuns || defaultRuns.has(key) },
-      elemOfKind: k => pub(elemOf(k)),
+      // Named storage supplies producer provenance, not the complete read
+      // kind: an unknown key can also select a builtin or be absent.
+      elemOfKind: (k, properties = false) => {
+        if (properties) {
+          if (tagOf(k) === K.TYPED) return pub(merge(typedElemKind(k), typedPropsOf(k)))
+          if (tagOf(k) === K.ARRAY && paramOf(k) !== UNKNOWN) return pub(anyPropOf(k))
+        }
+        return pub(elemOf(k))
+      },
       valOf: name => valOf(readKind(name)),
       // A layout's class member by slot name (`x`, `x__get`, `x__set`); null when its class has none or it is no class's.
       layoutMember: (sid, name) => methods.get(sid)?.get(name) ?? null,
