@@ -726,6 +726,34 @@ test('summary spreads: a schema does not exclude properties added through aliase
     is(instantiate(compile(src, { optimize })).exports.f(), js(), `O${optimize}`)
 })
 
+test('summary spreads: entry snapshots preserve duplicate keys and interleaved alias writes', () => {
+  let retained
+  for (const value of [300n, 300n, 'changed', 300n]) {
+    const literal = typeof value === 'bigint' ? value + 'n' : JSON.stringify(value)
+    const src = `export function f(key, mode) {
+      let calls = 0
+      const first = mode ? { value: 1, keep: 2 } : {}
+      const alias = first
+      const getter = { get value() { calls++; return ${literal} } }
+      const copy = { ...first,
+        marker: (alias[key] = ${literal}, alias.keep = 4, 7),
+        ...first, ...(mode ? getter : {}), value: ${literal} }
+      return [Object.keys(copy), Object.values(copy), Object.entries(copy),
+        first[key], copy.value, copy.keep, calls]
+    }`
+    const js = oracle(src).f
+    for (const level of levels(0, 2)) {
+      const run = instantiate(compile(src, { optimize: level })).exports.f
+      for (const [key, mode] of [['value', 0], ['value', 1], ['extra', 1], ['', 1], ['extra', 0], ['value', 1]])
+        is(run(key, mode), js(key, mode), `O${level}: duplicate/spread/key=${JSON.stringify(key)}/mode=${mode}`)
+      throws(() => compile('export const copy = { value: 0, ...{}, value: 1 }'), /duplicate object keys mixed with spread/, 'unsupported static duplicates fail before later reuse')
+      retained ??= run
+      const original = oracle(src.replaceAll(literal, '300n')).f
+      is(retained('extra', 1), original('extra', 1), 'later compiles preserve an earlier copy implementation')
+    }
+  }
+})
+
 test('summary spreads: pending sources retain known sibling shapes', () => {
   const src = `const defaults=Object.freeze({number:{x:1},array:{x:2}})
     const carriers=Object.freeze({number:{x:3},array:{x:4}})

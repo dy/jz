@@ -512,6 +512,8 @@ Immutable point ranges share storage within each summary, preserving both zero s
 a repeated argument reuses its existing hull when the bounds do not change.
 Mixed object joins use numeric pair keys. Shape-union cache hits stay outside the
 closure factory that builds a new member list, avoiding discarded environments.
+Spread analysis snapshots keys and kinds in flat private lists, preserving the
+read-before-merge order without allocating a tuple for each copied field.
 Flow-sensitive assignment and refinement facts use those same IDs in sparse
 collections, reset per function; branch rollback stores IDs as well. Dense
 arrays for these sparse facts increased allocation without improving throughput.
