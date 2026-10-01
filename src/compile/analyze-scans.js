@@ -1407,12 +1407,30 @@ export function stampLoopCounterRanges(body) {
       } })
     }
     if (decls.get(name) !== 1 || isReassigned(loopBody, name) || isReassigned(cond, name) || closureWrites(body, name)) return
-    const range = forCounterBounds(init, cond, step, name, e => intExprRange(e, n => {
+    const rangeOf = e => intExprRange(e, n => {
       const binding = scanBindingUses(body).get(n)
       return hasSingleInitializer(body, n) ? intExprRange(binding[BINDING_USE_INIT]) : null
-    }))
+    })
+    const range = forCounterBounds(init, cond, step, name, rangeOf)
     if (!range || range.test[0] < -2147483648 || range.test[1] > 2147483647) return
     updateRep(name, { range: range.test })
+    // Other loop-local counters move at the same bounded number of step
+    // evaluations. Bound both directions separately, including the final
+    // update: an index's body-only hull cannot authorize its stored width.
+    if (!range.step || range.step <= 0) return
+    const trips = Math.floor((range[1] - range[0]) / range.step) + 1
+    for (const decl of lets) if (Array.isArray(decl) && decl[0] === 'let') for (let i = 1; i < decl.length; i++) {
+      const d = decl[i], other = Array.isArray(d) && d[0] === '=' ? d[1] : null
+      if (typeof other !== 'string' || other === name || decls.get(other) !== 1 ||
+          isReassigned(loopBody, other) || isReassigned(cond, other) || closureWrites(body, other)) continue
+      const entry = counterInit(init, other), start = entry != null ? rangeOf(entry) : null
+      const delta = start && collectStepRange(step, other, rangeOf)
+      if (!delta || !Number.isInteger(start[0]) || !Number.isInteger(start[1]) ||
+          !Number.isInteger(delta.P) || !Number.isInteger(delta.N)) continue
+      const lo = start[0] - trips * delta.N, hi = start[1] + trips * delta.P
+      if (Number.isInteger(lo) && Number.isInteger(hi) && lo >= -2147483648 && hi <= 2147483647)
+        updateRep(other, { range: [lo, hi] })
+    }
   } })
 }
 

@@ -378,6 +378,50 @@ test('secondary counter ranges reject additional step writes', () => {
   }
 })
 
+test('secondary counter ranges retain every entry and terminal step', () => {
+  for (const entry of ['0', '-0', '0.5', '2147483646', '-2147483647'])
+    for (const step of ['(s & 7) + 1', '-((s & 7) + 1)', 's']) {
+      const src = `const a=new Float64Array([2,3,5,7,11,13,17,19]);
+        export function f(n,s){const out=[];let last=99;
+          for(let j=0,k=${entry};j<4;j++,last=(k+=${step})){
+            if(j>=n)break;out.push(k,1/k,a[k])
+          }return[out,last]}`
+      const expected = oracle(src).f
+      for (const optimize of levels(0, 1, 2, 3, 'size')) {
+        const actual = jz(src, { optimize }).exports.f
+        for (const [n, s] of [[0,1],[4,1],[4,1],[1,.5],[3,-.5],[4,2147483647],[4,4294967296],[2,NaN],[0,Infinity],[4,2]])
+          is(actual(n,s), expected(n,s), `O${optimize}, ${entry}/${step}, ${n}/${s}`)
+      }
+    }
+})
+
+test('secondary counter ranges reject initializer and body writes', () => {
+  const src = `const a=new Float64Array([2,3,5,7]);export function f(mode){
+    const out=[];let last=99;
+    for(let j=0,k=0,init=(mode===1?k=4294967296:0);j<3;j++,last=(k+=1)){
+      if(mode===2)k=4294967296;out.push(k,a[k])
+    }return[out,last]}`
+  const expected = oracle(src).f
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const actual = jz(src, { optimize }).exports.f
+    for (const mode of [0,0,1,2,0]) is(actual(mode), expected(mode), `O${optimize}, ${mode}`)
+  }
+})
+
+test('secondary counter ranges retain dependent and opposing steps', () => {
+  for (const step of ['k+=k', 'k+=q,q+=q', 'k+=1,k-=2', 'k+=2,k-=1']) {
+    const src = `export function f(n){const out=[];let last=0;
+      for(let j=0,k=1073741824,q=1073741824;j<4;j++,${step},last=k){
+        if(j>=n)break;out.push(k)
+      }return[out,last]}`
+    const expected = oracle(src).f
+    for (const optimize of levels(0, 1, 2, 3, 'size')) {
+      const actual = jz(src, { optimize }).exports.f
+      for (const n of [0,4,4,1,3,0]) is(actual(n), expected(n), `O${optimize}, ${step}, ${n}`)
+    }
+  }
+})
+
 test('SIMD gather - a secondary counter strides a read, bit-exact across strides', () => {
   // `k += s` beside `j++`: the read of src[k] gathers lane by lane; its range (k0 + t·s over
   // the trip count) also proves the read in bounds, so no checked twin is emitted.

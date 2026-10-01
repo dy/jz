@@ -691,6 +691,10 @@ offsets retain signed entries. The original loop handles other inputs. Every
 subsequent cursor write still needs the complete lifetime proof before narrowing.
 Counted reductions combine element bounds with the trip count, including every
 intermediate step. Counter proofs reject additional writes in the loop header.
+Loop-local secondary counters can borrow that bounded step count before storage
+is selected. Their complete hull includes initial and terminal values and bounds
+positive and negative motion separately; other header, body or closure writes
+reject it. Fractional or overflowing motion keeps Number storage.
 Loop facts have one producer: the `for` emitter derives them once per loop it
 emits (`loopFacts`, `src/compile/loop-model.js`), under the refinements that loop
 is emitted in: the counter's hull and step, each secondary counter's range
