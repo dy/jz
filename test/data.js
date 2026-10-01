@@ -2167,7 +2167,7 @@ test('Regression (Root F): RUNTIME-variable typed index — OOB reads undefined,
 
 
 // ES2024 Object.groupBy / Map.groupBy (2026-07-11, Ring 2): buckets are arrays
-// in iteration order; Object.groupBy keys via ToPropertyKey (string), result is
+// in iteration order; Object.groupBy keys via ToPropertyKey (string/Symbol), result is
 // a dictionary; Map.groupBy keys by SameValueZero (objects stay identity keys).
 test('groupBy: Object.groupBy / Map.groupBy', () => {
   const j = (code) => jz(code).exports.f()
@@ -2178,6 +2178,126 @@ test('groupBy: Object.groupBy / Map.groupBy', () => {
   is(j(`export let f = () => { let ka = {n:1}, kb = {n:2}; let g = Map.groupBy([1,2,3], x => x < 3 ? ka : kb); return g.get(ka).length * 10 + g.get(kb).length }`), 21)  // identity keys
   is(j(`export let f = () => Map.groupBy([], x => x).size`), 0)
   is(j(`export let f = () => { let t = new Float64Array([1,2,3]); return Map.groupBy(t, x => x > 1 ? 1 : 0).get(1).length }`), 2)  // typed source
+})
+
+test('groupBy: native array iteration observes callback growth and shrinking', () => {
+  const source = `export function f(map, mode) {
+    const a = mode === 0 ? [] : [1, 2, 3]; let calls = 0
+    const callback = (value, index) => {
+      calls++
+      if (index === 0 && mode === 1) a.push(4)
+      if (index === 0 && mode === 2) a.length = 1
+      if (index === 0 && mode === 3) throw 17
+      return 'k'
+    }
+    try { const result = map ? Map.groupBy(a, callback) : Object.groupBy(a, callback)
+      return [map ? result.get('k') : result.k, calls]
+    } catch (e) { return [e, calls] }
+  }`
+  const expected = oracle(source)
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const got = jz(source, { optimize }).exports
+    for (const map of [false, true]) for (const mode of [0, 1, 1, 2, 3, 1, 0])
+      is(got.f(map, mode), expected.f(map, mode), `${optimize}: ${map}/${mode} live length and repeated/error reuse`)
+  }
+})
+
+test('groupBy: protocol iteration closes callback failures and preserves step errors', () => {
+  const source = `let trace = ''
+    function iterable(mode) { let index = 0; return {
+      [Symbol.iterator]() { trace += 'o'; return {
+        next() { trace += 'n'; if (mode === 3) throw 11; if (mode === 10) return 3
+          const i = index++
+          return { get done() { trace += 'd'; if (mode === 4) throw 12; return i >= 2 },
+            get value() { trace += 'v'; if (mode === 5) throw 13; return i + 1 } }
+        },
+        get return() { trace += 'r'; if (mode === 6) throw 21; if (mode === 8) return 3
+          return function() { trace += 'R'; if (mode === 7) throw 22; return mode === 9 ? 3 : {} }
+        }
+      } }
+    } }
+    export function f(map, mode) { trace = ''
+      const callback = (value, index) => { trace += 'c'; if (mode === 1 || mode >= 6 && mode <= 9) throw 7
+        return mode === 2 ? { toString() { trace += 'k'; throw 9 } } : index % 2 }
+      try { const result = map ? Map.groupBy(iterable(mode), callback) : Object.groupBy(iterable(mode), callback)
+        return [map ? [...result.values()] : Object.values(result), trace]
+      } catch (e) { return [typeof e === 'number' ? e : e.name, trace] }
+    }
+    export function callable(map, missing) { trace = ''; const items = {
+      get [Symbol.iterator]() { trace += 'g'; throw 19 }
+    }; try { if (missing) { if (map) Map.groupBy(); else Object.groupBy() }
+      else { if (map) Map.groupBy(items, null); else Object.groupBy(items, null) }
+      return ['wrong', trace]
+    } catch (e) { return [e.name, trace] } }`
+  const expected = oracle(source)
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const got = jz(source, { optimize }).exports
+    for (const map of [false, true]) {
+      for (const mode of [0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 0])
+        is(got.f(map, mode), expected.f(map, mode), `${optimize}: ${map}/${mode} protocol and original abrupt completion`)
+      for (const missing of [false, true])
+        is(got.callable(map, missing), expected.callable(map, missing), 'callback check precedes iterator getter')
+    }
+  }
+})
+
+test('groupBy: held builtins share scoped protocol and property-key conversion', () => {
+  const source = `const held = Object.groupBy, computed = Object['groupBy']
+    const namespace = Object, aliased = namespace.groupBy
+    const {groupBy: destructured} = Map
+    const maps = Map, mapAlias = maps.groupBy, mapComputed = Map['groupBy'], mapHeld = Map.groupBy
+    function items(n) { return { [Symbol.iterator]() { let i = 0; return {
+      next() { return {done: i >= n, value: ++i} }
+    } } } }
+    export function f(kind, n) {
+      const fn = kind === 0 ? held : kind === 1 ? computed : kind === 2 ? aliased :
+        kind === 3 ? destructured : kind === 4 ? mapAlias : kind === 5 ? mapComputed : mapHeld
+      const result = fn(items(n), x => 'k')
+      return kind >= 3 ? result.get('k') : result.k
+    }
+    export function key(map, symbol) { let trace = ''; const s = Symbol('group')
+      const k = { toString() { trace += 'k'; return symbol ? s : 'x' } }
+      const out = map ? Map.groupBy(items(2), () => k) : Object.groupBy(items(2), () => k)
+      return [map ? out.get(k) : out[symbol ? s : 'x'], trace]
+    }
+    function local(Object, Map) { return [Object.groupBy(3), Map['groupBy'](4)] }
+    export function shadow() { return local({groupBy: x => x + 10}, {groupBy: x => x + 20}) }
+    export function constructor() { const m = new Map([[1, 2]]); return [m.size, m.get(1), m instanceof Map] }
+    export function customArray() { const a = [1, 2, 3]
+      a[Symbol.iterator] = () => { let i = 0; return {next() { return {done: i++ > 0, value: 9} }} }
+      return Object.groupBy(a, () => 'k').k
+    }`
+  const expected = oracle(source)
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const got = jz(source, {optimize}).exports
+    for (const kind of [0, 1, 2, 3, 4, 5, 6]) for (const n of [0, 2, 2, 1, 0])
+      is(got.f(kind, n), expected.f(kind, n), `${optimize}: held ${kind}/${n}`)
+    for (const map of [false, true]) for (const symbol of [false, true])
+      is(got.key(map, symbol), expected.key(map, symbol), 'ToPropertyKey once per item; Map preserves its key')
+    is(got.shadow(), expected.shadow(), 'ordinary bindings named Object/Map remain ordinary values')
+    is(got.constructor(), expected.constructor(), 'namespace registration preserves construction and brand')
+    is(got.customArray(), expected.customArray(), 'own iterator overrides the native array cursor')
+  }
+})
+
+test('groupBy: module initializers load the shared iterator before use and reset between compilations', () => {
+  const source = `import {value} from './group.js'; export const f = () => value`
+  const moduleFor = n => `const O = Object; export const value = O.groupBy({
+    [Symbol.iterator]() { let i = 0; return {next() { return {done: i++ > 0, value: ${n}} }} }
+  }, () => 'k').k[0]`
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const retained = []
+    for (const n of [7, 7, 11, 7]) {
+      const got = jz(source, {optimize, modules: {'./group.js': moduleFor(n)}}).exports
+      is(got.f(), n, 'dependency initialization follows iterator-pool initialization')
+      retained.push([got, n])
+      jz('', {optimize})
+      throws(() => jz('export const broken = )', {optimize}), 'a parse error does not preserve protocol state')
+    }
+    for (const [got, n] of retained) is(got.f(), n, 'later compiles do not change an earlier instance')
+    const simple = compile(`export const f = () => Object.groupBy([1, 2], x => 'k').k.length`, {optimize, wat: true})
+    ok(!simple.includes('jz_iter'), 'native-only grouping does not pull protocol records')
+  }
 })
 
 test('collections: arguments finish before construction, callback checks and grouping', () => {

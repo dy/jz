@@ -295,6 +295,7 @@ export function foldNamespaceIntrospection(callee, args) {
 // (function table / closure) machinery.
 export const INTRINSIC_CALLEES = new Set([
   T + 'key',
+  '__to_property_key',
   '__iter_arr', '__keys_ro', '__object_rest', '__heap_mark', '__heap_large', '__park_begin', '__park_rewind',
   '__park_write_u8', '__park_write_u32', '__park_write_f64', '__park_write_i64', '__park_write_str', '__park_finish',
   '__park_read_u8', '__park_read_u32', '__park_read_f64', '__park_read_i64', '__park_read_str',

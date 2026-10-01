@@ -185,6 +185,7 @@ export const GLOBALS = Object.assign(Object.create(null), {
   Number: 'Number',
   Array: 'Array',
   Object: 'Object',
+  Map: 'Map',
   Symbol: 'Symbol',
   JSON: 'JSON',
   Date: 'Date',

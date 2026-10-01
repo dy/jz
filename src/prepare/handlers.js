@@ -235,7 +235,7 @@ function prepNode(node) {
       // (or a leaked private name). Reject with intent, not "not in scope".
       if (node[0] === '#') err(`private name '${node}' not supported — jz has no class-based private fields (no #field declarations, no #field in obj brand checks); use a plain property with a naming convention instead, e.g. this._${node.slice(1)}`)
       // Block locals shadow module imports/globals, even when the local keeps the same name.
-      if (scopes.length && isDeclared(node)) return resolveScope(node)
+      if (scopes.length && isDeclared(node)) return sourceBuiltin(resolveScope(node))
       // A user top-level binding (`let Math = …`) shadows a same-named builtin
       // namespace seeded into the scope chain (`Math → math`). Resolve to the
       // user global, not the builtin. (Mangled globals drop their original name
@@ -248,7 +248,7 @@ function prepNode(node) {
       // `import * as ns` passed on): its namespace object (module-eval.js).
       if (ctx.module.namespaces?.[node]) return namespaceValue(ctx.module.namespaces[node])
       const resolved = ctx.scope.chain[node]
-      if (resolved?.includes('.')) return resolved
+      if (resolved?.includes('.')) return sourceBuiltin(resolved)
       // A builtin global, when the chain holds its own entry: a user function
       // of its name (`let parseInt = (s) => …`) takes it; Boolean/Number as a
       // value (`.filter(Boolean)`, `.map(Number)`) is an arrow applying the
@@ -1226,6 +1226,10 @@ const handlers = {
       }
       return prep(['()', ['=>', key, fallback], ['()', T + 'key', args[1]]])
     }
+    if (typeof args[0] === 'string' && !shadowsBuiltin(args[0]) && namespaceModOf(args[0])) {
+      const member = staticStringExpr(args[1])
+      if (member != null) return handlers['.'](args[0], member)
+    }
     includeForArrayAccess()
     // A key that is a static string (`o[KEY]` after `const KEY = 'k'`) is the
     // literal key: the read or store is the slot access `o.k` compiles to.
@@ -1599,7 +1603,7 @@ const handlers = {
       // object does; a call of it still errs (the call handler names its key itself).
       if (prop !== 'prototype' && ctx.core.emit[key] === undefined && !includeForNamedCall(key) && ctx.core.emit[key] === undefined) return [, undefined]
       if (emitArity(ctx.core.emit[key], key) > 0) includeForCallableValue()
-      return key
+      return sourceBuiltin(key)
     }
     // The prototype of a builtin constructor no module serves as a namespace
     // (`Boolean.prototype`, where the bare name is the conversion): the dotted
@@ -2744,9 +2748,9 @@ function resolveCallee(callee, args) {
     const resolved = local ? null : ctx.scope.chain[callee]
     if (local) {
       includeForCallableValue()
-      return resolveScope(callee)
+      return sourceBuiltin(resolveScope(callee))
     }
-    if (resolved?.includes('.')) return resolved
+    if (resolved?.includes('.')) return sourceBuiltin(resolved)
     if (resolved && hasFunc(resolved)) return resolved
     // A function of the target held in a name the program declared, through any names
     // (`var Sym = Symbol; var ctor = Sym; ctor('a')`, `var P = parseInt`): the call the
@@ -2767,7 +2771,7 @@ function resolveCallee(callee, args) {
     }
     if (prepState.depth > 0 && !resolved && !INTRINSIC_CALLEES.has(callee) && !ctx.funcs.exports[callee] && !ctx.module.imports.some(i => i[3]?.[1] === `$${callee}`))
       includeForCallableValue()
-    return callee
+    return sourceBuiltin(callee)
   }
   if (Array.isArray(callee) && callee[0] === '.') {
     const [, obj, prop] = callee
@@ -2789,11 +2793,11 @@ function resolveCallee(callee, args) {
       addHostImport(obj, prop, alias, spec)
       return alias
     }
-    if (key && includeForNamedCall(key)) return key
+    if (key && includeForNamedCall(key)) return sourceBuiltin(key)
     if (includeForGenericMethod(prop)) return prep(callee)
     const mod = namespaceModOf(obj)
     if (mod)
-      return (includeModule(mod), mod + '.' + prop)
+      return (includeModule(mod), sourceBuiltin(mod + '.' + prop))
     return prep(callee)
   }
   includeForCallableValue()
@@ -2955,6 +2959,16 @@ const parseModule = (spec, source) => {
 export function importedBinding(spec, name) {
   if (name == null || hasHostImport(spec, name)) return null
   return ctx.module.resolvedModules.get(spec)?.exports.get(name) ?? null
+}
+
+// Resolve protocol-aware builtins only after ordinary lexical/namespace
+// resolution. Loading here keeps the runtime initializer before its caller,
+// including a grouping operation in an imported module's initializer.
+function sourceBuiltin(name) {
+  if ((name === 'Object.groupBy' || name === 'Map.groupBy') &&
+      !ctx.module.inStd && ctx.transform.jzify?.iteratorProtocol?.())
+    return prepareModule('jz:iter', bundledSource('jz:iter')).exports.get(name === 'Map.groupBy' ? '__it_group_map' : '__it_group_object')
+  return name
 }
 
 function prepareModule(specifier, source) {

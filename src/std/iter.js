@@ -148,4 +148,35 @@ export let __it_set_into = (out, source) => {
   __it_close(r, false)
   return out
 }
+
+// GroupBy consumes each item before asking for the next one. Callback and
+// key-conversion failures close an unfinished iterator; step failures have
+// already marked the shared record done and must not call return().
+const group = (source, callback, map) => {
+  if (source == null) throw new TypeError('value is not iterable')
+  if (typeof callback !== 'function') throw new TypeError('group callback is not callable')
+  const r = __it_open(source)
+  const out = map ? new Map() : Object.create(null)
+  let i = 0
+  try {
+    while (!r.done) {
+      if (i >= 9007199254740991) throw new TypeError('too many iterator values')
+      const value = __it_step(r)
+      if (r.done) break
+      const selected = callback(value, i++)
+      const key = map ? selected : __to_property_key(selected)
+      let bucket = map ? out.get(key) : out[key]
+      if (bucket === undefined) {
+        bucket = []
+        if (map) out.set(key, bucket)
+        else out[key] = bucket
+      }
+      bucket.push(value)
+    }
+  } catch (e) { __it_close(r, true); throw e }
+  __it_close(r, false)
+  return out
+}
+export let __it_group_object = (source, callback) => group(source, callback, false)
+export let __it_group_map = (source, callback) => group(source, callback, true)
 `

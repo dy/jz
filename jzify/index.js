@@ -548,6 +548,8 @@ jzify.imports = (ast) => importsOf(implicitStdImports(ast))
 /** The specifiers the module's `import()` calls name: modules of the graph
  *  that only a lazy namespace import reaches (prepare/module-eval.js). */
 jzify.dynamicImports = dynamicImportsOf
+// Prepare resolves namespace aliases after this same graph-wide witness.
+jzify.iteratorProtocol = () => iterProto.program
 /** The program's iterator producers, read off every module's parsed AST
  *  before any is lowered: each module then lowers for-of and spreads under
  *  the graph's producers, not its own. Resets the witness per compile. */

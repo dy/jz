@@ -113,6 +113,12 @@ Collection constructors and structuredClone stage ignored arguments before
 consuming the input. Grouping captures the iterable and callback before checking
 callability or starting iteration. Missing required arguments use the ordinary
 undefined/error path; they must not reach emission as absent compiler nodes.
+Native grouping reloads array length between callbacks. Programs with an
+iterator producer use the existing open/step/close records, so callback or
+property-key conversion errors close the iterator while step errors do not.
+Prepare resolves direct, held and namespace-aliased grouping through that same
+graph witness; its ordinary module loader initializes the records before an
+imported caller. Native-only grouping keeps the direct collection emitter.
 Copies snapshot keys before invoking getters, then test each saved key's current
 presence and read its current value. Getter deletion/reinsertion and target
 setters can change later reads; a cached slot/value is not a presence proof.

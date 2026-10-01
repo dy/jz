@@ -1806,10 +1806,12 @@ export default (ctx) => {
   bind('.string:normalize', (str) => asF64(emit(str)))
   // Property keys preserve symbol atoms; every other value takes the shared
   // string-hint conversion, including user toString/valueOf hooks.
-  bind(T + 'key', value => {
+  const propertyKey = value => {
     inc('__to_key')
     return typed(['f64.reinterpret_i64', ['call', '$__to_key', asI64(storedValue(value))]], 'f64')
-  })
+  }
+  bind(T + 'key', propertyKey)
+  bind('__to_property_key', propertyKey)
   bind('.normalize', (val) => {
     inc('__to_str')
     return typed(['f64.reinterpret_i64', ['call', '$__to_str', asI64(emit(val))]], 'f64')
