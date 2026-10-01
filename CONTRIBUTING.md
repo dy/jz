@@ -100,6 +100,10 @@ callback parameters. It reuses the
 summary's settled cell identity and existing demand lattice; unknown readers,
 unmodeled copying methods, escaped arrays and callback defaults prevent numeric
 seeding. A concat argument that might itself be an array also keeps its identity.
+Boolean values that may be absent use the tagged carrier, just like nullable
+BigInts. A payload kind cannot erase absence when projecting a binding into
+local or captured-cell storage; callback writes and their enclosing reads
+must agree on that carrier.
 Closure bodies contribute demand only in their own frame. An assignment's
 original value also flows to its expression reader, independently of the
 stored slot; scalarization must preserve that observation.

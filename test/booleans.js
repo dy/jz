@@ -5,7 +5,7 @@
 // The second half pins boolean IDENTITY across untyped carriers — the
 // self-compile mother bug.
 import test from 'tst'
-import { is, ok } from 'tst/assert.js'
+import { is, ok, throws } from 'tst/assert.js'
 import jz from '../index.js'
 import { run, oracle } from './util.js'
 import { onKernel, levels } from './_matrix.js'
@@ -49,6 +49,51 @@ test('bool identity: nullable accumulator retains boolean stores', () => {
       const f = run(src, {optimize}).f
       for (const [n, fail] of [[0, -1], [3, -1], [3, -1], [3, 1], [0, 0], [3, -1]])
         is(f(n, fail), expected(n, fail), `${init}: O${optimize}, n=${n}, fail=${fail}`)
+    }
+  }
+})
+
+test('bool identity: absent locals and captured callback writes retain Boolean atoms', () => {
+  const src = `export function f(n) { const a = [n]; let value;
+      a.forEach(x => { value = x === '4' }); return [value, a[0] * 2] }
+    export function empty(n, run) { const a = run ? [n] : []; let value;
+      a.forEach(x => { value = x === '4' }); return [value, typeof value, value === true, value === false] }
+    export function local(k) { let value; if (k) value = k > 1;
+      return [value, typeof value, value === true, value === false, String(value), +value] }
+    export function element(k) { const a = [true, false]; let value = a[k];
+      const read = () => value; return [read(), typeof value, value === true, value === false] }`
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const got = jz(src, { optimize }).exports, want = oracle(src), retained = []
+    for (const n of ['4', '4', '5', 4, undefined, null, '4']) {
+      const result = got.f(n); retained.push([result, want.f(n)])
+      is(result, want.f(n), `captured callback O${optimize}`)
+    }
+    for (const [n, run] of [['4', 0], ['4', 0], ['4', 1], ['5', 1], ['4', 0], ['4', 1]])
+      is(got.empty(n, run), want.empty(n, run), `zero-work callback O${optimize}`)
+    for (const k of [0, 0, 1, 2, -1, 0, 2]) {
+      is(got.local(k), want.local(k), `nullable local O${optimize}`)
+      is(got.element(k), want.element(k), `nullable element O${optimize}`)
+    }
+    for (const [result, expected] of retained) is(result, expected, 'later calls preserve prior Boolean results')
+  }
+})
+
+test('bool identity: retained absent capture survives write, error and reset', () => {
+  const src = `let state;
+    export function init() { let value; state = { read: () => value,
+      write: x => { if (x < 0) throw new Error('negative'); value = x > 0 }, clear: () => { value = undefined } } }
+    export function read() { return [state.read(), typeof state.read(), state.read() === true, state.read() === false] }
+    export function write(x) { state.write(x) }
+    export function clear() { state.clear() }`
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const got = jz(src, { optimize }).exports, want = oracle(src)
+    for (let i = 0; i < 2; i++) {
+      got.init(); want.init(); is(got.read(), want.read(), `absent initial capture O${optimize}`)
+      for (const x of [1, 1, 0, 1]) { got.write(x); want.write(x); is(got.read(), want.read(), 'write/change/repeat') }
+      throws(() => got.write(-1), /negative/); throws(() => want.write(-1), /negative/)
+      is(got.read(), want.read(), 'throw leaves the prior Boolean intact')
+      got.clear(); want.clear(); is(got.read(), want.read(), 'reset restores undefined')
+      got.write(0); want.write(0); is(got.read(), want.read(), 'a valid write after error and reset keeps false')
     }
   }
 })
