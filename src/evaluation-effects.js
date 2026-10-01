@@ -65,6 +65,8 @@ export function runsConversion(view, node, beforeEmit = false) {
   const op = node[0]
   if (CONVERTING_OPS.has(op)) { for (let i = 1; i < node.length; i++) if (!primitiveKind(view, node[i])) return true; return false }
   if ((op === '[]' || op === '?.[]') && node.length === 3) return !primitiveKind(view, node[2])   // ToPropertyKey
+  if (op === 'delete') return node.length === 3 ? !primitiveKind(view, node[2])
+    : node[1]?.[0] === '[]' && !primitiveKind(view, node[1][2])
   if ((op === '=' || op === '||=' || op === '&&=' || op === '??=') && !primitiveKind(view, node[2])) {
     const lhs = node[1]
     if (lhs?.[0] === '[]' && mayBeTyped(view, lhs[1])) return true

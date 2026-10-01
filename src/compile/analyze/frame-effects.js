@@ -901,9 +901,13 @@ function census(view, roots, declRoots, params, typedParams = NO_NAMES, conditio
     }
     // A delete may move the receiver's properties to storage of their own.
     if (op === 'delete') {
-      const t = n[1], member = isArr(t) && (t[0] === '.' || t[0] === '[]')
+      const t = n[1], flat = n.length === 3, member = flat || isArr(t) && (t[0] === '.' || t[0] === '[]')
+      const recv = flat ? t : member ? t[1] : t
       if (!member) escape('delete')
-      else if (!freshLocal(t[1])) escape('delete', readable(t[1]) ? SITE.RECV : SITE.ZERO, { older: olderName(t[1]) })
+      else if (!freshLocal(recv)) escape('delete', readable(recv) ? SITE.RECV : SITE.ZERO, { older: olderName(recv) })
+      walkExpr(recv)
+      if (flat) walkExpr(n[2])
+      else if (member && t[0] === '[]') walkExpr(t[2])
       return
     }
     if (op === '()') {

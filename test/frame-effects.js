@@ -30,6 +30,29 @@ const growth = (memory, call, calls = 200, settle = 1) => { for (let i = 0; i < 
 // Each `(loop …)` span of a body, by its parentheses.
 const loopSpans = (wat) => [...wat.matchAll(/\(loop/g)].map(({ index }) => { let d = 0, j = index; do { d += wat[j] === '(' ? 1 : wat[j] === ')' ? -1 : 0; j++ } while (d > 0); return wat.slice(index, j) })
 
+test('frame effects: delete operand calls and key conversion retain published storage', () => {
+  for (const operation of ['delete out[key]', 'delete receiver()[key]', 'delete out[makeKey()]']) {
+    const src=`let kept;
+      function save(n){kept=new Float64Array([n,n+1])}
+      export function f(mode){const out={x:1};
+        const key=${operation.includes('receiver()') ? "mode?'missing':'x'" : "{toString(){save(mode+7);if(mode===2)throw 7;return 'x'}}"};
+        function receiver(){save(mode+17);return out}
+        function makeKey(){save(mode+27);return 'x'}
+        try{${operation};return out.x}catch(e){return e}}
+      export function churn(n){return new Float64Array(n).length}
+      export function peek(i){return kept[i]}`
+    for (const optimize of levels(0,1,2,3,'size')) {
+      const got=jz(src,{optimize}).exports, want=oracle(src)
+      for (const mode of [0,0,1,2,0,2]) {
+        is(got.f(mode),want.f(mode),`${operation} O${optimize}, ${mode}`)
+        got.churn(128)
+        is(got.peek(0),want.peek(0),'published first element survives churn')
+        is(got.peek(1),want.peek(1),'published second element survives churn')
+      }
+    }
+  }
+})
+
 test('frame effects: optional mutations retain grown collection storage', () => {
   for (const [init, method, args, size, read] of [
     ['new Set()', 'add', 'k', 'size', 'has(k)'],

@@ -131,6 +131,9 @@ also retain the receiver across value conversion. Uncaptured private bindings
 keep their existing index proofs when no operand writes them. Property-key
 conversion precedes a strict primitive-write error, after RHS evaluation;
 nullish receivers reject before key conversion.
+Prepared computed deletes keep receiver and key as separate operands. Binding,
+numeric-buffer and frame-effect scans must visit both; key conversion can call
+user code, throw, and publish storage. The surrounding handler stays live.
 An initializer emitted as a proved pointer establishes presence for its local
 binding just as a proved element read does. Captures and later writes reject
 this block-scoped fact; a checked cursor keeps its possible undefined value.

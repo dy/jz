@@ -869,7 +869,7 @@ export function paramNumericArrayLike(body, name, _seen = new Set(), params = nu
         return
       }
     }
-    if (op === 'delete') { if (Array.isArray(node[1]) && names.has(node[1][1])) { ok = false; return } }
+    if (op === 'delete' && names.has(node.length === 3 ? node[1] : node[1]?.[1])) { ok = false; return }
     if (op === '[]' && node.length === 3 && names.has(node[1])) {
       if (!numericIndex(node[2])) { ok = false; return }
       used = true; reads = true; walk(node[2]); return

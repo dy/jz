@@ -1104,6 +1104,26 @@ test('delete: leaves other keys intact', () => {
   is(f('a'), 2)
 })
 
+test('delete: computed keys retain their bindings, conversion and catch effects', () => {
+  const cases = [
+    `export function f(mode){const key={toString(){return mode?'missing':'x'}};
+      const o={x:1};delete o[key];return [o.x,'x' in o]}`,
+    `export function f(mode){let trace='',out={x:1};const old=out;
+      const key={toString(){trace+='k';out={x:9};if(mode===2)throw 7;return mode?'missing':'x'}};
+      try{delete out[key];return[old.x,out.x,trace]}
+      catch(e){return[e,old.x,out.x,trace]}}`,
+    `export function f(mode){let trace='',out={x:1};const old=out;
+      function recv(){trace+='r';return out}
+      function key(){trace+='k';out={x:9};if(mode===2)throw 7;return mode?'missing':'x'}
+      try{delete recv()[key()];return[old.x,out.x,trace]}
+      catch(e){return[e,old.x,out.x,trace]}}`,
+  ]
+  for (let i=0;i<cases.length;i++) for (const optimize of levels(0,1,2,3,'size')) {
+    const src=cases[i], got=jz(src,{optimize}).exports, want=oracle(src)
+    for (const mode of [0,0,1,2,0,2]) is(got.f(mode),want.f(mode),`delete reference ${i} O${optimize}, ${mode}`)
+  }
+})
+
 test('delete: literal-key form rejected (fixed schema)', () => {
   let err
   try { compile(`export let f = () => { let o = {x: 1}; delete o.x; return o.x }`) }

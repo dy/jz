@@ -456,7 +456,11 @@ function collectBindingUses(body, trackNames, bindingUses) {
     }
     if (op === 'delete') {
       const t = node[1]
-      if (Array.isArray(t) && (t[0] === '.' || t[0] === '?.' || t[0] === '[]') && typeof t[1] === 'string') {
+      if (node.length === 3) {                 // prepared: ['delete', receiver, key]
+        if (typeof t === 'string') use(t, USE.DELETE_MEMBER)
+        else val(t)
+        val(node[2])
+      } else if (Array.isArray(t) && (t[0] === '.' || t[0] === '?.' || t[0] === '[]') && typeof t[1] === 'string') {
         use(t[1], USE.DELETE_MEMBER)
         if (t[0] === '[]' && t[2] != null) val(t[2])
       } else val(t)

@@ -31,6 +31,9 @@ function canThrow(body, seen = new Set()) {
   if (!Array.isArray(body)) return false
   const op = body[0]
   if (op === 'throw') return true
+  // Prepared delete stores receiver/key as separate operands. Nullish bases,
+  // key conversion and non-configurable properties can throw without a call.
+  if (op === 'delete') return true
   // BigInt arithmetic can throw without a call in this subtree: division by
   // zero, and a Number beside a BigInt at runtime (the joint dispatch's
   // TypeError) in every arithmetic, bitwise and shift operator and its
