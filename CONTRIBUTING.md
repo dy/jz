@@ -125,6 +125,12 @@ checks cannot redirect packed cells through ordinary object loads. Effectful
 keys capture receiver identity first and resolve forwarding after the key.
 Dynamic property-key reads retain ordinary boxed arrays because their dispatch
 cannot interpret inline record cells.
+Plain member writes capture a mutable receiver and key before RHS calls,
+getters or conversions can replace them. Typed element and array-length stores
+also retain the receiver across value conversion. Uncaptured private bindings
+keep their existing index proofs when no operand writes them. Property-key
+conversion precedes a strict primitive-write error, after RHS evaluation;
+nullish receivers reject before key conversion.
 An initializer emitted as a proved pointer establishes presence for its local
 binding just as a proved element read does. Captures and later writes reject
 this block-scoped fact; a checked cursor keeps its possible undefined value.

@@ -65,16 +65,34 @@ export function runsConversion(view, node, beforeEmit = false) {
   const op = node[0]
   if (CONVERTING_OPS.has(op)) { for (let i = 1; i < node.length; i++) if (!primitiveKind(view, node[i])) return true; return false }
   if ((op === '[]' || op === '?.[]') && node.length === 3) return !primitiveKind(view, node[2])   // ToPropertyKey
-  if ((op === '=' || op === '||=' || op === '&&=' || op === '??=') &&
-      node[1]?.[0] === '[]' && mayBeTyped(view, node[1][1])) return !primitiveKind(view, node[2])
+  if ((op === '=' || op === '||=' || op === '&&=' || op === '??=') && !primitiveKind(view, node[2])) {
+    const lhs = node[1]
+    if (lhs?.[0] === '[]' && mayBeTyped(view, lhs[1])) return true
+    // ArraySetLength converts its value too, after evaluating the reference
+    // and RHS. A valueOf can rebind that reference or mutate other state.
+    const bracket = lhs?.[0] === '[]'
+    const length = lhs?.[0] === '.' && lhs[2] === 'length' || bracket &&
+      (lhs[2]?.[0] === 'str' ? lhs[2][1] === 'length' : !nonStringPrimitive(view, lhs[2]))
+    if (length && mayHaveTag(view, lhs[1], K.ARRAY)) return true
+  }
   if (op === 'in') return !primitiveKind(view, node[1])
   return false
 }
 
+// Only strings and non-primitives can name an array's length property.
+function nonStringPrimitive(view, key) {
+  if (!view) return typeof key === 'number'
+  let k
+  try { k = view.kindOfExpr(key) } catch { return false }
+  return k != null && tagsOf(k) !== 0 && (tagsOf(k) & ~(PRIMITIVE_BITS & ~bitOf(K.STRING))) === 0
+}
+
 /** The receiver may hold a typed array, whose element store converts the value. */
-export function mayBeTyped(view, recv) {
+export function mayBeTyped(view, recv) { return mayHaveTag(view, recv, K.TYPED) }
+
+function mayHaveTag(view, recv, tag) {
   if (!view) return true
   let k
   try { k = view.kindOfExpr(recv) } catch { return true }
-  return k == null || tagOf(k) === K.ANY || tagOf(k) === K.NONE || hasTag(k, K.TYPED)
+  return k == null || tagOf(k) === K.ANY || tagOf(k) === K.NONE || hasTag(k, tag)
 }

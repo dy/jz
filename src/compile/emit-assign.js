@@ -11,6 +11,7 @@ import { OPTF } from '../ctx.js'
  * @module compile/emit-assign
  */
 
+import { primitiveKind } from '../evaluation-effects.js'
 import { ctx, err, strictCode, inc, warnDeopt, PTR, LAYOUT, setLinkDemand } from '../ctx.js'
 import { T, ACCESSOR_SET } from '../ast.js'
 import { classAccessor, classesWith, lacksSlot } from './emit/class-dispatch.js'
@@ -19,7 +20,7 @@ import { packedI32, structInline } from '../abi/index.js'
 import { i64Hex, encodePtrHi, OBJECT_SCHEMA_HI_MASK, objectSchemaGuardHex } from '../../layout.js'
 import { recordDynFnTableWrite, recordImperativeClosureTableWrite } from './dyn-closure-tables.js'
 import { isPresentNumber, valTypeOf, shapeOf } from '../kind.js'
-import { K, NUMBER, bitOf as summaryBitOf, tagOf as summaryTagOf, tagsOf as summaryTagsOf, NULL_BITS as SUMMARY_NULL_BITS } from '../summary/kind.js'
+import { K, NUMBER, kindOfVal, bitOf as summaryBitOf, tagOf as summaryTagOf, tagsOf as summaryTagsOf, NULL_BITS as SUMMARY_NULL_BITS } from '../summary/kind.js'
 import { errorCodeLiteral, ERR } from '../../err-codes.js'
 import { VAL, lookupValType, repOf } from '../reps.js'
 import {
@@ -445,16 +446,26 @@ function tryStructInlineReplaceStore(arr, idx, val) {
 // here; a receiver that may also be an object decides in __dyn_set.
 const PRIMITIVE_TAGS = summaryBitOf(K.NUMBER) | summaryBitOf(K.STRING) | summaryBitOf(K.BOOL) | summaryBitOf(K.BIGINT)
 function primitiveStore(obj, key, val) {
-  const k = ctx.summary?.at(ctx.func.current).kindOfExpr(obj)
-  if (k == null || k === 0 || summaryTagOf(k) === K.ANY) return null
+  let k = ctx.summary?.at(ctx.func.current).kindOfExpr(obj)
+  // A staged reference is an emitter temp outside the source summary. Its
+  // existing value-kind overlay still proves a primitive target.
+  if (k == null || k === 0 || summaryTagOf(k) === K.ANY) k = kindOfVal(valTypeOf(obj))
+  if (summaryTagOf(k) === K.ANY) return null
   const tags = summaryTagsOf(k) & ~SUMMARY_NULL_BITS
   if (!tags || (tags & ~PRIMITIVE_TAGS)) return null
   ctx.runtime.throws = true
   const code = errorCodeLiteral(ERR.PRIMITIVE_PROPERTY)
+  const converts = key != null && !primitiveKind(ctx.summary?.at(ctx.func.current), key)
+  const recv = converts ? temp('pr') : null, heldKey = converts ? temp('pk') : null
+  if (converts) inc('__to_str')
   return typed(['block', ['result', 'f64'],
-    ['drop', asF64(emit(obj))],
-    ...(key == null ? [] : [['drop', asF64(emit(key))]]),
+    recv ? ['local.set', `$${recv}`, asF64(emit(obj))] : ['drop', asF64(emit(obj))],
+    ...(key == null ? [] : [heldKey ? ['local.set', `$${heldKey}`, storedValue(key)] : ['drop', asF64(emit(key))]]),
     ['drop', storedValue(val)],
+    // PutValue rejects a nullish base first. Other primitives still perform
+    // ToPropertyKey, whose user code/error precedes the strict write error.
+    ...(converts ? [['if', ['i32.eqz', isNullish(typed(['local.get', `$${recv}`], 'f64'))], ['then',
+      ['drop', ['call', '$__to_str', ['i64.reinterpret_f64', ['local.get', `$${heldKey}`]]]]]]] : []),
     ['global.set', '$__jz_last_err_bits', ['i64.reinterpret_f64', ['f64.const', code]]],
     ['throw', '$__jz_err', ['f64.const', code]]], 'f64')
 }

@@ -5,8 +5,9 @@
  */
 
 import { ctx, err, inc } from '../../ctx.js'
+import { isReassigned } from '../../ast.js'
 import {
-  applyBigintRepresentationAction, asF64, boxBigInt, f64rem, fromI64, isConst, isGlobal, isNullish, isNullishLit, readI64, readVar, temp, throwTypeErrorIR, toNumF64, toStrI64, truthyIR, typed, writeVar,
+  applyBigintRepresentationAction, asF64, boxBigInt, f64rem, fromI64, isBoundName, isConst, isGlobal, isNullish, isNullishLit, readI64, readVar, temp, throwTypeErrorIR, toNumF64, toStrI64, truthyIR, typed, writeVar,
 } from '../../ir.js'
 import { hasAmbiguousBoolMerge, valTypeOf, boolTagged } from '../../kind.js'
 import { VAL, repOf } from '../../reps.js'
@@ -20,6 +21,7 @@ import { I64_ARITH_OP, bigIntDivIR, bigIntDomainsCanMix, bigIntOperand, bigintMi
 import { emit, emitIdentitySafe, boolCarrier, toBool, markInstrumented, whereNew, withEscapeFlag, siteFlag, bindingStore } from './dispatch.js'
 import { emitArrayViewDef } from '../array-view.js'
 import { privateStringBuilder } from '../analyze-scans.js'
+import { runsAccessor, runsConversion } from '../../evaluation-effects.js'
 import { isSideEffectFree } from './shared.js'
 import { stripCanon } from './arithmetic.js'
 import {
@@ -31,17 +33,22 @@ import {
 // GetValue and the RHS. Both read and write use that reference. Plain writes
 // leave key coercion to the store, after the RHS. Primitive keys keep their
 // index representation; temps retain the receiver's type/layout facts.
-const readsAccessor = (n) => {
+const implicitEffect = (n, view) => {
   if (!Array.isArray(n)) return false
-  if ((n[0] === '.' || n[0] === '?.') && typeof n[2] === 'string' && ctx.transform.accessorNames?.has(n[2])) return true
-  for (let i = 1; i < n.length; i++) if (readsAccessor(n[i])) return true
+  if (runsAccessor(view, n, true) || runsConversion(view, n, true)) return true
+  for (let i = 1; i < n.length; i++) if (implicitEffect(n[i], view)) return true
   return false
 }
-const effectful = (n) => Array.isArray(n) && (!isSideEffectFree(n) || readsAccessor(n))
+const effectful = (n) => Array.isArray(n) && (!isSideEffectFree(n) || implicitEffect(n, ctx.summary?.at(ctx.func.current)))
 function stagedReference(name, update = true, rhs) {
   if (!Array.isArray(name) || (name[0] !== '.' && name[0] !== '[]')) return null
   const pre = []
   const stage = (node, tag, always = false, key = false) => {
+    // User code cannot replace an uncaptured private binding. Keep its
+    // original index/receiver proofs unless an operand itself writes it.
+    if (always && !key && typeof node === 'string' &&
+        (isConst(node) || isBoundName(node) && !ctx.func.boxed?.has(node)) &&
+        !isReassigned(rhs, node) && !(name[0] === '[]' && isReassigned(name[2], node))) always = false
     if (!always && !effectful(node)) return node
     const h = temp(tag)
     const vt = valTypeOf(node)
@@ -80,8 +87,8 @@ function stagedReference(name, update = true, rhs) {
   const keyKind = name[0] === '[]' ? valTypeOf(name[2]) : null
   const coercingKey = update && name[0] === '[]' && (keyKind == null ||
     ![VAL.NUMBER, VAL.STRING, VAL.BOOL, VAL.BIGINT].includes(keyKind))
-  const rhsEffect = update && effectful(rhs)
-  const keyEffect = coercingKey || update && name[0] === '[]' && (effectful(name[2]) || rhsEffect)
+  const rhsEffect = effectful(rhs) || !update && runsConversion(ctx.summary?.at(ctx.func.current), ['=', name, rhs], true)
+  const keyEffect = name[0] === '[]' && (coercingKey || effectful(name[2]) || rhsEffect)
   const recv = stage(name[1], 'ref', keyEffect || rhsEffect)
   const key = keyEffect ? stage(name[2], 'key', coercingKey || rhsEffect, coercingKey) : name[2]
   return pre.length ? { ref: [name[0], recv, key], pre } : null
@@ -210,7 +217,7 @@ export const assignmentOps = {
     // and writes through the same reference.
     if (Array.isArray(name) && (name[0] === '[]' || name[0] === '.')) {
       const update = Array.isArray(val) && (val[0] === '+1' || val[0] === '-1')
-      const staged = stagedReference(name, update)
+      const staged = stagedReference(name, update, val)
       if (staged) {
         const value = update ? [val[0], staged.ref] : val
         return afterStaging(staged.pre, putReference(staged.ref, value))
