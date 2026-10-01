@@ -45,6 +45,48 @@ test('interval proof: rounding identities and bounded shift counts preserve exac
   } } finally { ctx.func = prior }
 })
 
+test('interval proof: zero-count signed shifts establish complete counter bounds', () => {
+  const prior = ctx.func
+  try { for (const op of ['|', '>>']) {
+    const inside = ['()', 'take', 'i'], after = ['()', 'take', 'i']
+    const body = [';', ['let', ['=', 'bound', [op, ['()', 'input', 'n'], 0]], ['=', 'i', 0]],
+      ['while', ['<', 'i', 'bound'], [';', inside, ['++', 'i']]], after]
+    ctx.func = createActiveFunction({ body })
+    for (const n of [null, [0, 0], [3, 3], null]) {
+      const calls = new Map([[inside, undefined], [after, undefined]])
+      const bindings = new Map([['bound', undefined], ['i', undefined]])
+      scanIntervalIdx(body, null, () => null, null, calls, new Map([['n', n]]), null, null, bindings)
+      is(bindings.get('bound'), [-2147483648, 2147483647], `${op}: an unknown call result becomes a word`)
+      is(bindings.get('i'), [0, 2147483647], `${op}: the stored counter includes its final landing`)
+      is(calls.get(inside), [[0, 2147483646]], `${op}: the body excludes the bound`)
+      is(calls.get(after), [[0, 2147483647]], `${op}: zero work and completed work share the exit hull`)
+    }
+  } } finally { ctx.func = prior }
+
+  const src = `let calls = 0
+    function input(n) { calls++; return n }
+    export function f(n) {
+      calls = 0; const stop = input(n) >> 0; let i = 0
+      while (i < stop && i < 5) i++
+      return [stop, i, calls]
+    }
+    export function effect(n) {
+      let limit = 3; const stop = (limit = n) >> 0; let i = 0
+      while (i < stop && i < 5) i++
+      return [stop, limit, i]
+    }`
+  const host = oracle(src)
+  for (const level of levels(0, 1, 2, 3, 'size')) {
+    const mod = jz(src, { optimize: { level, sourceInline: false } }).exports
+    for (const n of [undefined, null, -0, 0, NaN, Infinity, -Infinity, -1, 1, 3.75,
+      -2147483648, 2147483647, 2147483648, 4294967300, 3, 3, 0]) {
+      is(mod.f(n), host.f(n), `O${level}, ${String(n)}: convert the call once before the loop`)
+      const want = host.effect(n), got = mod.effect(n)
+      ok(got.every((x, i) => Object.is(x, want[i])), `O${level}, ${String(n)}: preserve the assigned value before conversion`)
+    }
+  }
+})
+
 test('interval proof: revisited loop syntax reads live entries and each scan owns its state', () => {
   const read=['[]','a','j'], call=['()','take','j']
   const init=['let',['=','j','seed']], cond=['<','j',['+','seed',2]]

@@ -242,7 +242,7 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
     // visit so its env effects and access proofs are processed, value unknown
     if (e.length !== 3 || !ARITH.has(op)) { visit(e); return null }
     // ToInt32 establishes a signed word even when its input is unknown.
-    if (op === '|' && intLiteralValue(y) === 0) { const v = ev(x); return ipOk(v) ? v : [I32_MIN, I32_MAX] }
+    if ((op === '|' || op === '>>') && intLiteralValue(y) === 0) { const v = ev(x); return ipOk(v) ? v : [I32_MIN, I32_MAX] }
     // A pure comparison can use exact integer arithmetic beyond one word,
     // e.g. n-1 with n an int32. Its own bindings still have signed-word hulls.
     const wideArith = wide && (op === '+' || op === '-' || op === '*')

@@ -745,6 +745,9 @@ The interval interpreter spans the full signed word; overflowing transfers
 become unknown. Its call hulls may authorize integer parameter storage, so
 negative-zero literals and sign-changing transfers that can produce negative
 zero also become unknown; a magnitude bound alone cannot preserve that value.
+Both `x | 0` and `x >> 0` establish the same signed-word interval after evaluating
+their input. A checked runtime loop bound therefore keeps its counter narrow
+before SIMD lowering, even when the rounded input has no prior interval.
 Control-flow snapshots store only known ranges. A separate binding census keeps
 unknown parameters, declarations and writes from revealing cached outer constants;
 joins retain only names known on every edge. Body analysis can request complete
