@@ -375,7 +375,7 @@ export default (ctx) => {
       // byte layout (sameBytes) is one memory.copy; a source of another static
       // kind converts through inline loads; a typed source of unknown kind (`s`
       // null) asks its aux byte at runtime, then copies, or converts through
-      // __typed_idx. An argument whose kind is open altogether (`probe` false:
+      // the in-bounds typed reader. An argument whose kind is open altogether (`probe` false:
       // the runtime dispatch below, one arm of four) only converts: the probe
       // would weigh on every `new Float64Array(n)` sized by a parameter. Stores
       // convert to THIS constructor's kind: `new Float64Array(int32Arr)` converts.
@@ -402,8 +402,10 @@ export default (ctx) => {
           const sp = tempI32('tcp')
           body = [['local.set', `$${sp}`, typedDataAddr(srcIR, s.isView)], ...loop(typed(elemLoadIR(s, at(sp, SHIFT[s.et])), 'f64'))]
         } else {
-          inc('__typed_idx')
-          const convert = loop(typed(['call', '$__typed_idx', srcPtr, ['local.get', `$${ci}`]], 'f64'))
+          // The receiver is typed on this arm and the loop owns its fixed
+          // extent; only aux/element dispatch remains, including view offsets.
+          inc('__typed_get_idx')
+          const convert = loop(typed(['call', '$__typed_get_idx', srcPtr, ['local.get', `$${ci}`]], 'f64'))
           if (!probe) body = convert
           else {
             inc('__typed_same_bytes', '__ptr_aux', '__typed_data')

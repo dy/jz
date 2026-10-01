@@ -2069,7 +2069,9 @@ golden('typed-array loop', `export let f = (arr) => {
   let s = 0
   for (let i = 0; i < buf.length; i++) s += buf[i] * 2
   return s
-}`, 1645)
+}`, 1532)
+// 1729→1532: a typed copy already owns its source kind and extent; its dynamic
+// element reader needs only aux/view dispatch, not generic Array/missing checks.
 // 1545→1645: the array arm converts each element (a nullish or boolean atom to
 // its number, any other box NaN) instead of copying the box into the Float64Array.
 // 1466→1545: the boundary copy's element dispatch inlines at level 2 (+65), and the

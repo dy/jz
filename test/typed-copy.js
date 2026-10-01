@@ -100,3 +100,26 @@ test('typed copy: a same-bytes copy is one memory.copy, no element loop', () => 
   ok(/memory\.fill/.test(kernels), 'fill has the memory.fill path')
   ok((kernels.match(/memory\.copy/g) || []).length >= 2 && !/typed_get_idx/.test(kernels), 'copyWithin is a byte move, no element read')
 })
+
+test('typed copy: a closed source extent needs only runtime element-kind dispatch', () => {
+  const shape = `export function copy(a) { return new Float64Array(a) }`
+  const text = wat(shape, { optimize: { level: 2, watr: false } })
+  const body = funcWat(text, 'copy')
+  ok(body.includes('call $__typed_get_idx'), 'the typed arm uses the existing in-bounds aux/view reader')
+  ok(!body.includes('call $__typed_idx '), 'the typed copy loop does not repeat generic receiver/bounds checks')
+
+  const src = `export function f(mode, count) {
+    const a = new Float64Array([-8, -0, NaN, Infinity, -Infinity, 3.5]),
+      b = new Uint32Array([7, 4294967295, 2147483648, 3, 4, 5])
+    const source = mode ? b.subarray(1, count + 1) : a.subarray(1, count + 1)
+    const copy = new Float64Array(source)
+    source[0] = 91
+    return [copy.length, copy[0], copy[1], copy[2], source[0]]
+  }`
+  const host = oracle(src).f
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const f = run(src, { optimize }).f
+    for (const [mode, count] of [[0, 0], [1, 0], [0, 1], [0, 4], [0, 4], [1, 4], [0, 4]])
+      is(f(mode, count), host(mode, count), `O${optimize}: kind ${mode}, view count ${count}`)
+  }
+})

@@ -613,6 +613,11 @@ evaluation, and staged writes retain their original source occurrence for the
 all-writers census while using the captured receiver at runtime.
 
 
+Typed-array constructor copies capture the source and its fixed length before
+copying. Their dynamic element-kind arm uses the existing in-bounds typed reader:
+aux/view dispatch remains, while generic receiver and missing-index checks do not.
+The copy performs no user calls and never aliases its source (`test/typed-copy.js`).
+
 Array joining captures length before separator conversion and reads elements
 through the checked, tagged reader. Each conversion runs once, in order; a
 second pass copies those strings into one result. Input strings remain immutable.
