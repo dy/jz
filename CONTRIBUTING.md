@@ -685,6 +685,12 @@ The ordinary range query still proves finiteness; infinity remains unknown.
 Integer narrowing clamps a proved finite integer to i32 in integer registers,
 evaluating its operand once and testing only the sides its hull can exceed.
 This preserves saturation without an i64-to-f64 round trip (`test/int-narrow.js`).
+Checked typed-array accesses carry a wide integer key through their bounds test:
+compare it unsigned with the zero-extended length and use its low word only for
+the guarded address. Capture the key once before a store's RHS, retain a possible
+NaN/missing-key bit, and leave rounded arithmetic to the existing integer proof
+(`test/typed-wide-index.js`). This avoids signed-i32 clamps without assuming a
+signed length ceiling.
 The size tier retains the compact conversion through the existing
 `inlineToNum: false` policy for per-site numeric-conversion expansion.
 Ranges obtained from a local's definition include its implicit zero value:

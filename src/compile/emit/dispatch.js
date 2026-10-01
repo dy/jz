@@ -103,7 +103,7 @@ const wholeKey = (e) => {
   if (e[0] == null) return Number.isInteger(e[1])
   return WHOLE_OPS.has(e[0]) && e.length === 3 && wholeKey(e[1]) && wholeKey(e[2])
 }
-export const emitIndex = (index, whole = false) => {
+export const emitIndex = (index, whole = false, wide = false) => {
   // An unsigned bounds test rejects negative words and positive values past
   // 2^31 alike. A hull within [-2^31, 2^32) therefore keeps its low word;
   // beyond it, e.g. 65536 * 65536 would wrap into element zero.
@@ -137,6 +137,21 @@ export const emitIndex = (index, whole = false) => {
   let value
   try { value = emit(index) } finally { if (nested) ctx.types.indexConsumer-- }
   if (value?.type === 'i32' && !value.indexValid) return value
+  // A checked typed-array access can compare an integer key with the full
+  // unsigned length before using its low word as an address. Keep that value
+  // once: saturating to i32 first needs two clamps around every wide scale.
+  // The existing integer pass lowers exact arithmetic inside this conversion;
+  // rounded arithmetic keeps its f64 evaluation. NaN still names no element.
+  if (wide && whole && range && Number.isSafeInteger(range[0]) && Number.isSafeInteger(range[1])) {
+    const t = temp('ix'), w = tempI64('ixw'), get = ['local.get', `$${t}`]
+    const out = typed(['block', ['result', 'i32'],
+      ['local.set', `$${t}`, asF64(value)],
+      ['local.set', `$${w}`, ['i64.trunc_sat_f64_s', get]],
+      ['i32.wrap_i64', ['local.get', `$${w}`]]], 'i32')
+    out.indexWide = ['local.get', `$${w}`]
+    out.indexValid = ['f64.eq', get, get]
+    return out
+  }
   // `whole`: a proof already holds the key to a present integer (the interval
   // walk models integer values only).
   // A constant folds exactly in keyIndex; a runtime value saturates (asI32's

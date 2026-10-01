@@ -33,6 +33,12 @@ import { callbackSetup, isUndefinedNode } from './array/from.js'
 
 const _NAN_BITS = nanPrefixHex()
 
+// Wide keys are captured once by emitIndex. Their unsigned comparison rejects
+// negative and overflowing indices without first clamping to a signed word.
+const indexInRange = (wide, index, len) => wide
+  ? ['i64.lt_u', wide, ['i64.extend_i32_u', len]]
+  : ['i32.lt_u', index, len]
+
 
 const typedAux = (name, isView = false) => encodeTypedElemAux(name, isView)
 // The element kind of an aux: every bit but the view bit (the DataView bit stays,
@@ -2202,18 +2208,23 @@ export default (ctx) => {
         // Preserve the old zero-metadata path for ordinary reads. Only a read
         // currently serving as another index pays to materialize its miss bit.
         if (!ctx.types.indexConsumer) {
+          const innerIdx = idx(i, false, true)
           const valid = bundleIn
-            ? ['block', ['result', 'i32'], ['local.set', `$${ti}`, idx(i)], bundleIn]
-            : ['i32.lt_u', ['local.tee', `$${ti}`, idx(i)], leanLen(arr, et, isView)]
-          const makeRead = value => typed(['if', ['result', 'f64'], valid,
+            ? ['block', ['result', 'i32'], ['local.set', `$${ti}`, innerIdx], bundleIn]
+            : innerIdx.indexWide
+              ? ['block', ['result', 'i32'], ['local.set', `$${ti}`, innerIdx],
+                indexInRange(innerIdx.indexWide, ['local.get', `$${ti}`], leanLen(arr, et, isView))]
+              : ['i32.lt_u', ['local.tee', `$${ti}`, innerIdx], leanLen(arr, et, isView)]
+          const condition = innerIdx.indexWide && innerIdx.indexValid ? ['i32.and', valid, innerIdx.indexValid] : valid
+          const makeRead = value => typed(['if', ['result', 'f64'], condition,
             ['then', value], ['else', undefExpr()]], 'f64')
           const rd = makeRead(loadIR)
           if (!isBigInt) rd.checkedNumRead = true
           else deferBigintBox(rd, () => makeRead(boxBigInt(asI64(typed(loadIR, 'f64')))))
           return rd
         }
-        const tin = tempI32('tbn'), innerIdx = idx(i), innerValid = innerIdx.indexValid
-        const ownValid = bundleIn || ['i32.lt_u', ['local.get', `$${ti}`], leanLen(arr, et, isView)]
+        const tin = tempI32('tbn'), innerIdx = idx(i, false, true), innerValid = innerIdx.indexValid
+        const ownValid = bundleIn || indexInRange(innerIdx.indexWide, ['local.get', `$${ti}`], leanLen(arr, et, isView))
         const condition = innerValid ? ['i32.and', innerValid, ownValid] : ownValid
         const makeRead = value => typed(['block', ['result', 'f64'],
           ['local.set', `$${ti}`, innerIdx],
@@ -2249,9 +2260,9 @@ export default (ctx) => {
       const loadIR = loadOf(off)
       // The index emission (emitIndex) demanded the inner read's miss bit for
       // the nested-read shape; an absent inner index is no element here either.
-      const innerIdx = idx(i)
+      const innerIdx = idx(i, false, true)
       const innerValid = innerIdx.indexValid ?? null
-      const ownValid = bundleIn || ['i32.lt_u', ['local.get', `$${ti}`], lenIR]
+      const ownValid = bundleIn || indexInRange(innerIdx.indexWide, ['local.get', `$${ti}`], lenIR)
       const setup = [
         ['local.set', `$${ti}`, innerIdx],
         ['local.set', `$${tin}`, innerValid ? ['i32.and', innerValid, ownValid] : ownValid],
@@ -2409,19 +2420,20 @@ export default (ctx) => {
       }
     }
     else {
-      const ti = tempI32('tbi'), emittedIdx = idx(i)
+      const ti = tempI32('tbi'), emittedIdx = idx(i, false, true)
       indexEffects = !pureStorable(emittedIdx)
       pre.push(['local.set', `$${ti}`, emittedIdx])
       vi = ['local.get', `$${ti}`]
-      if (nestedIndex && emittedIdx.indexValid) vi.indexValid = emittedIdx.indexValid
+      if ((nestedIndex || emittedIdx.indexWide) && emittedIdx.indexValid) vi.indexValid = emittedIdx.indexValid
+      if (emittedIdx.indexWide) vi.indexWide = emittedIdx.indexWide
     }
     // Wrap a store statement in the bounds guard on the unproven path. The value
     // temp is set OUTSIDE the guard (spec: RHS evaluates regardless).
-    const inheritedValid = vi.indexValid
+    const inheritedValid = vi.indexValid, wideIndex = vi.indexWide
     let savedLength
     const guard = (store) => {
       if (proven && !inheritedValid) return store
-      const inRange = proven ? inheritedValid : ['i32.lt_u', vi, savedLength ?? leanLen(arr, et, isView)]
+      const inRange = proven ? inheritedValid : indexInRange(wideIndex, vi, savedLength ?? leanLen(arr, et, isView))
       const condition = inheritedValid && !proven ? ['i32.and', inheritedValid, inRange] : inRange
       return ['if', condition, ['then', store]]
     }
