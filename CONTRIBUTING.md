@@ -2815,7 +2815,10 @@ closures where the summary cannot follow them; `includes`, `indexOf` and
 cell of its own whose elements are the row's positions from a literal start,
 and any other name on an array is a property beside the elements; shape sets
 of up to 64 layouts. A layout with more construction sites folds to its layout
-in every union, including unions formed before the fold. A spread of sources whose layouts the summary knows makes
+in every union, including unions formed before the fold. New shape unions collect
+canonical members in one private array before sorting; folding rebuilds that array
+without changing retained member lists or allocating intermediate Sets and maps.
+A spread of sources whose layouts the summary knows makes
 a layout no literal may name: the summary lists it (`unnamedLayouts`), and
 the compile names it and summarizes again until a spread of such a literal
 makes none new, before the plan decides anything from the summary, so the

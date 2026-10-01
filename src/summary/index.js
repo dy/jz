@@ -278,11 +278,18 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   }
   // The cache hit above has no captured locals. Only a new union builds the
   // member list and the closure used if that list exceeds the shape limit.
+  const appendShapes = (out, sites) => {
+    for (let i = 0; i < sites.length; i++) {
+      const sid = canonSid(sites[i])
+      if (!out.includes(sid)) out.push(sid)
+    }
+    return out
+  }
   const createShapeUnion = (a, b, pair) => {
-    let id, ids = [...new Set([...shapesOf(a), ...shapesOf(b)].map(canonSid))].sort((x, y) => x - y)
+    let id, ids = appendShapes(appendShapes([], shapesOf(a)), shapesOf(b)).sort((x, y) => x - y)
     if (ids.length > SET_MAX) {
-      for (const l of new Set(ids.map(sid => layouts[sid]))) foldLayout(l)
-      ids = [...new Set(ids.map(canonSid))].sort((x, y) => x - y)
+      for (const sid of ids) foldLayout(layouts[sid])
+      ids = appendShapes([], ids).sort((x, y) => x - y)
     }
     if (ids.length === 1) id = ids[0]
     else if (ids.length > SET_MAX || SET_BASE + closureSets.length >= UNKNOWN) { losingAs('joined with more shapes than the summary keeps', () => { for (const sid of ids) loseShape(sid) }); id = UNKNOWN }

@@ -14,6 +14,34 @@ const lit = value => [null, value]
 const typed = ['()', 'new.BigInt64Array', lit(0)]
 const reduce = (callback, initial) => ['()', ['.', typed, 'reduce'], [',', callback, initial]]
 
+test('summary queries: canonical shape unions keep order, aliases and folded members', () => {
+  const options = { funcs: [], schemas: [['value'], ['value', 'extra']], brandOf: () => null, imports: new Map(), exported: () => false }
+  const decl = (name, value) => ['const', ['=', name, value]]
+  let retained, retainedSites
+  for (const count of [4, 4, 64, 65, 4]) {
+    const names = Array.from({ length: count }, (_, i) => 'r' + i)
+    const choose = list => list.reduce((a, b) => ['?:', 'missing', a, b])
+    const ast = [';', ...names.map((name, i) => decl(name, ['{}', [':', 'value', lit(i)],
+      ...(i % 2 ? [[':', 'extra', lit(true)]] : [])])),
+    decl('forward', choose(names)), decl('reverse', choose([...names].reverse())),
+    decl('repeated', choose([...names, ...names].reverse())), decl('alias', 'reverse'),
+    ['=', ['.', 'alias', 'value'], lit(9n)]]
+    const q = summarize(ast, options)
+    const sites = q.sitesOfExpr('forward')
+    is(sites, [...new Set(sites)].sort((a, b) => a - b), `${count}: members are sorted and unique`)
+    is(q.sitesOfExpr('reverse'), sites, `${count}: reverse joins have the same canonical members`)
+    is(q.sitesOfExpr('repeated'), sites, `${count}: duplicate joins add no member`)
+    is(q.sitesOfExpr('alias'), sites, `${count}: an alias preserves every possible member`)
+    is(sites.length, count > 64 ? 2 : count, `${count}: only capacity overflow folds to the two layouts`)
+    for (const name of names) is(hasTag(q.kindOfExpr(['.', name, 'value']), K.BIGINT), true,
+      `${count}: a write through the union reaches ${name}`)
+    if (!retained) { retained = q; retainedSites = sites.slice() }
+    is(retained.sitesOfExpr('forward'), retainedSites, 'later folds leave a retained reader unchanged')
+  }
+  is(summarize(null, options).sitesOfExpr('forward'), null, 'empty work has no union from the previous summary')
+  is(retained.sitesOfExpr('forward'), retainedSites, 'empty work leaves the retained union unchanged')
+})
+
 test('summary queries: internal readers leave complete cached public views across repeated summaries', () => {
   let retained
   for (const value of [7, 7, 'changed', 7]) {
