@@ -269,9 +269,13 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     a = canonSid(a); b = canonSid(b)
     if (a === b) return a
     const pair = a * 65536 + b
-    let id = shapeUnions.get(pair)
-    if (id !== undefined) return id
-    let ids = [...new Set([...shapesOf(a), ...shapesOf(b)].map(canonSid))].sort((x, y) => x - y)
+    const id = shapeUnions.get(pair)
+    return id === undefined ? createShapeUnion(a, b, pair) : id
+  }
+  // The cache hit above has no captured locals. Only a new union builds the
+  // member list and the closure used if that list exceeds the shape limit.
+  const createShapeUnion = (a, b, pair) => {
+    let id, ids = [...new Set([...shapesOf(a), ...shapesOf(b)].map(canonSid))].sort((x, y) => x - y)
     if (ids.length > SET_MAX) {
       for (const l of new Set(ids.map(sid => layouts[sid]))) foldLayout(l)
       ids = [...new Set(ids.map(canonSid))].sort((x, y) => x - y)
@@ -298,7 +302,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       const da = isDict(a), db = isDict(b)
       if ((da || db) && (j & TAGS & ~NULL_BITS & ~MIXABLE_TAGS) === 0) {
         const c = da && db ? unify(paramOf(a), paramOf(b)) : cell(paramOf(da ? a : b))
-        if (!(da && db)) { const o = da ? b : a; if (tagOf(o) === K.OBJECT && paramOf(o) !== UNKNOWN) addCellShapes(c, shapesOf(paramOf(o))); else if (hasTag(o, K.OBJECT)) addCellLost(c) }
+        if (!(da && db)) addCellObject(c, da ? b : a)
         return (j & ~UNKNOWN) | c
       }
       // A shape beside primitives (`typeof x === 'string' && fn`, `found || false`)
@@ -306,18 +310,22 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       // join reaches the shape, as through a dictionary that may hold it.
       if ((j & TAGS & ~NULL_BITS & ~MIXABLE_TAGS) === 0 && (sidOf(a) !== UNKNOWN || sidOf(b) !== UNKNOWN || tagOf(a) === K.OBJECT && paramOf(a) !== UNKNOWN || tagOf(b) === K.OBJECT && paramOf(b) !== UNKNOWN)) {
         const c = mixedCell(a, b)
-        for (const o of [a, b]) { if (tagOf(o) === K.OBJECT && paramOf(o) !== UNKNOWN) addCellShapes(c, shapesOf(paramOf(o))); else if (hasTag(o, K.OBJECT)) addCellLost(c) }
+        addCellObject(c, a); addCellObject(c, b)
         return (j & ~UNKNOWN) | bitOf(K.HASH) | c
       }
       lose(a, b); lose(b, a)
     }
     return j
   }
-  const mixedCells = new Map()   // the joined pair → its cell
+  const mixedCells = new Map()   // smaller kind → Map(larger kind → its cell)
   const mixedCell = (a, b) => {
-    const key = a + '|' + b
-    let id = mixedCells.get(key)
-    if (id === undefined) { id = elems.length; elems.push(K.NONE); cellUp.push(id); mixedCells.set(key, id); mixedCells.set(b + '|' + a, id) }
+    // Joins replay every round. Keep numeric keys instead of formatting the
+    // same pair each time; ordering gives both operand orders one entry.
+    if (a > b) { const prior = a; a = b; b = prior }
+    let pairs = mixedCells.get(a)
+    if (!pairs) mixedCells.set(a, pairs = new Map())
+    let id = pairs.get(b)
+    if (id === undefined) { id = elems.length; elems.push(K.NONE); cellUp.push(id); pairs.set(b, id) }
     return cell(id)
   }
   // Why a shape is being lost, for the advisory (`onLose`): the outermost
@@ -514,6 +522,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   }
   const addCellShapes = (c, sids) => { let s = cellShapes.get(c); if (!s) cellShapes.set(c, s = new Set()); for (const sid of sids) if (!s.has(sid)) { s.add(sid); changed = true } }
   const addCellLost = (c) => { if (!cellLostObject.has(c)) { cellLostObject.add(c); changed = true } }
+  const addCellObject = (c, k) => { if (tagOf(k) === K.OBJECT && paramOf(k) !== UNKNOWN) addCellShapes(c, shapesOf(paramOf(k))); else if (hasTag(k, K.OBJECT)) addCellLost(c) }
   const elems = []               // cell root → element kind
   const hostSchemas = new Set() // host-visible objects store tagged fields
   const retainedSchemas = new Set() // objects reachable across calls, through globals or captures
@@ -580,13 +589,22 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   const ints = new Map()         // a name declared once as an integer literal → its value
   const spans = new Map()        // the counters of the loops being walked → [lo, hi]
   const constRanges = new Map()  // binding id → the interval captured by this frame's const initializer
+  // Bounds are immutable. Repeated literal/constant reads share their point
+  // interval, within this summary alone; mutable expression facts stay live.
+  const points = new Map(), negativeZero = [-0, -0]
+  const pointRange = value => {
+    if (Object.is(value, -0)) return negativeZero
+    let range = points.get(value)
+    if (!range) points.set(value, range = [value, value])
+    return range
+  }
   // `scope`: the function the expression is read in; the counters are the
   // walk's own, so another scope's expression reads its hull alone.
   const spanOf = (e, scope = current) => {
-    if (typeof e === 'number') return Number.isInteger(e) ? [e, e] : null
+    if (typeof e === 'number') return Number.isInteger(e) ? pointRange(e) : null
     if (typeof e === 'string') {
       const v = ints.get(e)
-      if (v !== undefined) return [v, v]
+      if (v !== undefined) return pointRange(v)
       const span = scope === current ? spans.get(e) : undefined
       if (span) return span
       // A parameter's hull, the round before's (`out[offset + stride]` in an
@@ -596,11 +614,11 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     }
     if (!Array.isArray(e)) return null
     const op = e[0]
-    if (op == null) return Number.isInteger(e[1]) ? [e[1], e[1]] : null
+    if (op == null) return Number.isInteger(e[1]) ? pointRange(e[1]) : null
     if ((op === '(' || op === '()' && e.length === 2)) return spanOf(e[1], scope)
     if (e.length !== 3) return null
     // A typed array's length is its count for good.
-    if (op === '.' && e[2] === 'length' && typeof e[1] === 'string') { const len = typedLenOf(scope ?? MODULE, e[1]); return len === null ? null : [len, len] }
+    if (op === '.' && e[2] === 'length' && typeof e[1] === 'string') { const len = typedLenOf(scope ?? MODULE, e[1]); return len === null ? null : pointRange(len) }
     if (!SPAN_BINARY.has(op)) return null
     const a = spanOf(e[1], scope), b = spanOf(e[2], scope)
     // A mask keeps any value inside it: ToInt32 of the other operand, whatever it is, then the bits.
@@ -620,11 +638,11 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   // name or a counter (spanOf), arithmetic on those, a rounding or `Math`
   // bound of one, the hull of a conditional. null where the walk cannot bound it.
   const rangeOf = (e) => {
-    if (typeof e === 'number') return Number.isFinite(e) ? [e, e] : null
+    if (typeof e === 'number') return Number.isFinite(e) ? pointRange(e) : null
     if (typeof e === 'string') return spanOf(e) ?? constRanges.get(keyOf(e)) ?? (typeof current === 'string' ? paramRangeOf(current, e) : null)
     if (!Array.isArray(e)) return null
     const op = e[0]
-    if (op == null) return typeof e[1] === 'number' && Number.isFinite(e[1]) ? [e[1], e[1]] : null
+    if (op == null) return typeof e[1] === 'number' && Number.isFinite(e[1]) ? pointRange(e[1]) : null
     if ((op === '(' || op === '()' && e.length === 2)) return rangeOf(e[1])
     if (op === 'u-' && e.length === 2) { const a = rangeOf(e[1]); return a && [-a[1], -a[0]] }
     if (op === '?:' && e.length === 4) { const a = rangeOf(e[2]), b = rangeOf(e[3]); return a && b && [Math.min(a[0], b[0]), Math.max(a[1], b[1])] }
@@ -704,7 +722,11 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       // Later bounds cannot narrow it, so do not build and discard their hulls.
       if (prev === null) continue
       const r = spread || i >= n || args === null || moved.get(name)?.[i] >= 4 ? null : rangeOf(argAt(args, i))
-      entry.ranges[i] = prev === undefined || r === null ? r : [Math.min(prev[0], r[0]), Math.max(prev[1], r[1])]
+      if (prev === undefined || r === null) entry.ranges[i] = r
+      else {
+        const lo = Math.min(prev[0], r[0]), hi = Math.max(prev[1], r[1])
+        if (!Object.is(lo, prev[0]) || !Object.is(hi, prev[1])) entry.ranges[i] = [lo, hi]
+      }
     }
   }
   // At a round's end: a hull that changed changes the summary; one that has
@@ -3504,7 +3526,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     const len = typedLenOf(scope, node[1])
     if (len === null) return false
     const i = staticValue(scope, idx)
-    const span = spanOf(idx) ?? (Number.isInteger(i) ? [i, i] : null)
+    const span = spanOf(idx) ?? (Number.isInteger(i) ? pointRange(i) : null)
     return span !== null && span[0] >= 0 && span[1] < len
   }
   const stmt = (n) => {

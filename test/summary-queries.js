@@ -61,6 +61,46 @@ test('summary queries: alternating argument hull buffers preserve late calls and
   }
 })
 
+test('summary queries: repeated point ranges preserve signed zero and late bounds', () => {
+  const options = { schemas: [], brandOf: () => null, imports: new Map(), exported: () => false }
+  let retained
+  for (const end of [7, 7, 19, 7]) {
+    const funcs = ['positive', 'negative', 'both', 'spread', 'missing'].map(name => ({ name,
+      sig: { params: [{ name: 'x' }] }, body: 'x' }))
+    const call = (name, value) => ['()', name, lit(value)]
+    const ast = [';', call('positive', 0), call('negative', -0), call('both', 0), call('both', -0),
+      ...Array.from({ length: 32 }, () => call('spread', 3)), call('spread', end),
+      call('missing', 0), ['()', 'missing', null]]
+    const summary = summarize(ast, { ...options, funcs })
+    const ranges = name => summary.at('').paramRangesOf(name)
+    is(ranges('positive').map(r => r.map(v => Object.is(v, 0))), [[true, true]], 'positive zero keeps both signs')
+    is(ranges('negative').map(r => r.map(v => Object.is(v, -0))), [[true, true]], 'negative zero keeps both signs')
+    is(Object.is(ranges('both')[0][0], -0), true, 'a mixed-zero hull keeps its lower sign')
+    is(Object.is(ranges('both')[0][1], 0), true, 'a mixed-zero hull keeps its upper sign')
+    is(ranges('spread'), [[3, end]], 'repeated identical calls do not hide a later bound')
+    is(ranges('missing'), [null], 'a later missing argument opens a previously exact point')
+    retained ??= summary
+    is(retained.at('').paramRangesOf('spread'), [[3, 7]], 'subsequent summaries leave published bounds intact')
+  }
+  is(summarize(null, { ...options, funcs: [] }).unnamedLayouts, [], 'zero work has no retained range state')
+})
+
+test('summary queries: repeated record and primitive joins retain both operand orders', () => {
+  for (const value of [300n, 300n, 'changed', 300n]) {
+    const source = `export function read(flag) {
+      let first = { value: ${typeof value === 'bigint' ? value + 'n' : JSON.stringify(value)} };
+      let left = first; left = flag ? left : 0;
+      let right = 0; right = flag ? first : right;
+      let joined = flag ? left : right;
+      return joined ? joined.value : undefined;
+    }`
+    const exports = instantiate(compile(source, { optimize: 0 })).exports
+    is(exports.read(1), value, 'the object keeps its field through repeated mixed joins')
+    is(exports.read(0), undefined, 'the primitive arm remains absent')
+    is(exports.read(1), value, 'the object result survives an intervening primitive call')
+  }
+})
+
 test('summary queries: held fields require every alias to remain read-only and unambiguous', () => {
   const options = { funcs: [], schemas: [['HIGH']], brandOf: () => null, imports: new Map(), exported: () => false }
   const read = ['.', 'alias', 'HIGH']

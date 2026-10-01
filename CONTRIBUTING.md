@@ -508,6 +508,10 @@ Solver and query views cache immutable singleton identity lists per summary.
 Numeric-demand rounds reuse callable target lists after kinds and escapes settle,
 and visit parameter defaults and bodies without temporary frame records. Argument
 hulls alternate current and previous buffers; published summaries own their buffers.
+Immutable point ranges share storage within each summary, preserving both zero signs;
+a repeated argument reuses its existing hull when the bounds do not change.
+Mixed object joins use numeric pair keys. Shape-union cache hits stay outside the
+closure factory that builds a new member list, avoiding discarded environments.
 Flow-sensitive assignment and refinement facts use those same IDs in sparse
 collections, reset per function; branch rollback stores IDs as well. Dense
 arrays for these sparse facts increased allocation without improving throughput.
