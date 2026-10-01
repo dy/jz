@@ -88,6 +88,9 @@ hooks run once and may return a Symbol; hashing and equality then preserve its
 whole identity without interpreting payload bits as string addresses. Public
 string enumeration omits Symbols, while object copies and rest retain them in
 own-key order. Structured cloning retains only string-keyed properties.
+Symbol factories evaluate every argument before converting the description;
+conversion getters, fallback methods and errors follow the string hint even
+though descriptions are not retained. Ignored arguments keep their effects.
 Native method wrappers use internal tag predicates and runtime brand errors.
 Preparing an unused wrapper therefore does not add source-level BigInt or throw
 demand; its error data and exception support follow actual emission. Their

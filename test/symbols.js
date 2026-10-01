@@ -48,6 +48,27 @@ test('Symbol: identity carry skips interned atoms and exhaustion never wraps', (
 
 // === Basic Symbol creation ===
 
+test('Symbol: description conversion follows argument evaluation and preserves throws', () => {
+  const src=`export function f(mode){
+    let trace='';const symbol=Symbol('inner');
+    const description={get toString(){trace+='g';if(mode===2)throw 7;
+      return function(){trace+='s';return mode===3?symbol:mode===4||mode===5?{}:'ok'}},
+      valueOf(){trace+='v';return mode===5?symbol:'fallback'}};
+    function first(){trace+='a';if(mode===1)throw 9;return mode===6?symbol:mode===7?undefined:description}
+    function extra(){trace+='b';if(mode===8)throw 11;return {toString(){trace+='!';return 'unused'}}}
+    try{const result=Symbol(first(),extra());return[typeof result,trace]}
+    catch(e){return[typeof e==='number'?e:e.name,trace]}
+  }`
+  const ignored=`export function f(mode){let trace='';function extra(){trace+='e';if(mode)throw 7;return 0}
+    try{return[Symbol.for('key',extra())===Symbol.for('key'),trace]}catch(e){return[e,trace]}}`
+  for(const optimize of levels(0,1,2,3,'size')) {
+    for(const source of [src,ignored]) {
+      const got=jz(source,{optimize}).exports,want=oracle(source)
+      for(const mode of [0,0,1,2,3,4,5,6,7,8,0])is(got.f(mode),want.f(mode),`O${optimize}, conversion ${mode}`)
+    }
+  }
+})
+
 test('Symbol: unique per call', () => {
   const { f } = jz(`export let f = () => {
     let s1 = Symbol('x')

@@ -19,8 +19,10 @@
  * @module symbol
  */
 
-import { mkPtrIR, typed, tempI64, throwErrorIR } from '../src/ir.js'
+import { mkPtrIR, typed, asI64, tempI64, throwErrorIR, undefExpr } from '../src/ir.js'
 import { err, inc, PTR, declGlobal } from '../src/ctx.js'
+import { emit, storedValue, withIgnoredArgs } from '../src/bridge.js'
+import { primitiveKind } from '../src/evaluation-effects.js'
 import { atomNanHex, TOMB_NAN, SYMBOL_MIN } from '../layout.js'
 
 // fix/wrong-values-3: exported — module/json.js's __json_omit needs this
@@ -51,24 +53,37 @@ export default (ctx) => {
   }
 
   declGlobal('__symbol_id', 'i64', atomNanHex(RESERVED))
-  ctx.core.emit['Symbol'] = (nameExpr) => {
-    const id = tempI64('symbol')
-    return typed(['block', ['result', 'f64'],
-      ['local.set', `$${id}`, ['i64.add', ['global.get', '$__symbol_id'], ['i64.const', 1]]],
-      // A carry must skip the zero-offset domain owned by Symbol.for.
-      ['if', ['i32.eqz', ['i32.wrap_i64', ['local.get', `$${id}`]]],
-        ['then', ['local.set', `$${id}`, ['i64.add', ['local.get', `$${id}`], ['i64.const', 1]]]]],
-      ['if', ['i64.ge_u', ['local.get', `$${id}`], ['i64.const', TOMB_NAN]],
-        ['then', ['drop', throwErrorIR('RangeError', 'Symbol identity space exhausted')]]],
-      ['global.set', '$__symbol_id', ['local.get', `$${id}`]],
-      ['f64.reinterpret_i64', ['local.get', `$${id}`]]], 'f64')
+  ctx.core.emit['Symbol'] = (nameExpr, ...ignored) => {
+    const primitive = nameExpr === undefined || primitiveKind(ctx.summary?.at(ctx.func.current), nameExpr)
+    return withIgnoredArgs(nameExpr ?? undefExpr(), ignored, value => {
+      const id = tempI64('symbol')
+      const description = []
+      if (nameExpr !== undefined) {
+        if (primitive) description.push(['drop', emit(value)])
+        else {
+          inc('__to_key', '__is_symbol')
+          description.push(['if', ['call', '$__is_symbol', ['call', '$__to_key', asI64(storedValue(value))]],
+            ['then', ['drop', throwErrorIR('TypeError', 'Cannot convert a Symbol value to a string')]]])
+        }
+      }
+      return typed(['block', ['result', 'f64'],
+        ...description,
+        ['local.set', `$${id}`, ['i64.add', ['global.get', '$__symbol_id'], ['i64.const', 1]]],
+        // A carry must skip the zero-offset domain owned by Symbol.for.
+        ['if', ['i32.eqz', ['i32.wrap_i64', ['local.get', `$${id}`]]],
+          ['then', ['local.set', `$${id}`, ['i64.add', ['local.get', `$${id}`], ['i64.const', 1]]]]],
+        ['if', ['i64.ge_u', ['local.get', `$${id}`], ['i64.const', TOMB_NAN]],
+          ['then', ['drop', throwErrorIR('RangeError', 'Symbol identity space exhausted')]]],
+        ['global.set', '$__symbol_id', ['local.get', `$${id}`]],
+        ['f64.reinterpret_i64', ['local.get', `$${id}`]]], 'f64')
+    })
   }
 
   // Symbol.for('name') → interned atom (same name = same ID)
-  ctx.core.emit['Symbol.for'] = (nameExpr) => {
+  ctx.core.emit['Symbol.for'] = (nameExpr, ...ignored) => {
     // Name must be a string literal at compile time
     if (!Array.isArray(nameExpr) || nameExpr[0] !== 'str')
       err('Symbol.for requires a string literal')
-    return mkPtrIR(PTR.ATOM, internAtom(nameExpr[1]), 0)
+    return withIgnoredArgs(nameExpr, ignored, () => mkPtrIR(PTR.ATOM, internAtom(nameExpr[1]), 0))
   }
 }
