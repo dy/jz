@@ -169,6 +169,11 @@ canonical bits rather than source spellings and skips literals too cheap to pool
 The downstream watr workflow builds and tests with the same current JZ package.
 See [PLAN.md](PLAN.md) for remaining gates and DSP evidence.
 
+Native and Wasm-hosted compiler entries share memory-option configuration.
+The kernel ABI carries page limits and distinct imported/shared flags; the
+host retains the actual Memory object. Every compile resets this policy,
+including empty input and calls after invalid limits are rejected.
+
 A declaration supplies a whole-body integer range only when it is the binding's
 sole initializer and no code reassigns it. Copied declarations after unrolling
 retain their individual values without publishing one copy's range for all.

@@ -43,6 +43,23 @@ test('self-compile: build a fresh compiler', () => {
   is(typeof instantiate(compileViaSelf('')).exports.main, 'undefined', 'empty source has no user entry')
 })
 
+test('self-compile: memory configuration resets across empty, repeated and changed inputs', () => {
+  const s = instantiate(selfBytes(), { memory: 8192 })
+  const source = 'export function f(n) { return new Uint8Array(n & 7).length }'
+  const owned = { memory: 2, maxMemory: 8 }
+  for (const code of ['', source, source, 'export function g() { return "different" }', source, '']) {
+    for (const options of [owned, { ...owned, importMemory: true }, { ...owned, sharedMemory: true }, owned, {}]) {
+      const wat = s.memory.read(s.exports.compileWat(s.memory.String(code), 0, s.memory.String('2'), 0, 0, 0, s.memory.String(JSON.stringify(options))))
+      is(wat === compile(code, { ...options, optimize: 2, host: 'js', wat: true }), true, 'same instance, memory policy and exact output')
+    }
+  }
+  throws(() => s.exports.compileWat(s.memory.String(source), 0, 0, 0, 0, 0,
+    s.memory.String('{"memory":4,"maxMemory":2}')), /below the initial/)
+  const out = s.exports.default(s.memory.String(source), 0, s.memory.String('2'))
+  const bytes = s.memory.read(out).slice()
+  is(instantiate(bytes).exports.f(3), 3, 'a default-memory compile runs after a rejected limit')
+})
+
 // Sample programs the self-compile compiler must lower correctly. Each tuple is
 // [label, source, expected-main()-result]. Picked to cover the major
 // emit paths (arith, calls, loops, strings, arrays, objects, closures).

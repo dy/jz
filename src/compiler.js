@@ -54,7 +54,7 @@ import watrPrint from "watr/print";
 import { ctx, err, warn, setLinkDemand, flushWarnings } from './ctx.js'
 import { GLOBALS } from './prepare/index.js'
 import { frontHalf } from './front.js'
-import { configureDiagnostics, beginSession } from './session.js'
+import { configureDiagnostics, configureMemory, beginSession } from './session.js'
 import compile, { tailFacts } from './compile/index.js'
 import { emitter, emissionHooks } from './compile/emit.js'
 import { watrTail } from './optimize/watr-tail.js'
@@ -270,23 +270,8 @@ const setupCtx = (code, opts, jzify) => {
     emitter, globals: GLOBALS, hooks: emissionHooks(),
     source: code, optimize: opts.optimize, warnings: opts.warnings, strict: opts.strict, host: opts.host, alloc: opts.alloc,
   })
-  if (typeof opts.memory === 'number') ctx.memory.pages = opts.memory
-  else if (opts.memory) ctx.memory.shared = true
-  if (opts.importMemory) ctx.memory.shared = true   // import env.memory instead of exporting own
-  // True cross-thread sharing (Workers v1): import env.memory declared with the
-  // wasm `shared` memtype and switch the heap bump to atomic RMW. Distinct from
-  // importMemory — a plain imported (non-shared) Memory must NOT declare shared
-  // or linking fails in the other direction.
-  if (opts.sharedMemory) { ctx.memory.shared = true; ctx.memory.atomic = true }
+  configureMemory(opts)
   configureFixedMemory(opts.fixedMemory)
-  if (opts.maxMemory != null) {
-    if (!Number.isInteger(opts.maxMemory) || opts.maxMemory < 1)
-      err(`opts.maxMemory must be a positive integer page count (each page is 64 KiB); got ${opts.maxMemory}`)
-    const initialPages = ctx.memory.pages || 1
-    if (opts.maxMemory < initialPages)
-      err(`opts.maxMemory (${opts.maxMemory}) is below the initial memory size (${initialPages} pages)`)
-    ctx.memory.max = opts.maxMemory
-  }
   if (opts.modules) ctx.module.importSources = opts.modules
   if (opts.imports) {
     ctx.module.hostImports = opts.imports

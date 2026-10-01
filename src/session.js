@@ -8,15 +8,15 @@
  * natively left to GC, native reset name-uids the kernel initially missed —
  * both directions of drift are documented in each file's history).
  *
- * Host-specific configuration (memory pages, imports marshaling, transform
- * injection, feature flags) stays with each caller — it is per-host POLICY,
+ * Host-specific configuration (imports marshaling, transform injection,
+ * feature flags) stays with each caller — it is per-host POLICY,
  * not session lifecycle. The fuller CompileSession object (counters,
  * diagnostics, TargetProfile) grows here; this is the seam.
  *
  * @module src/session
  */
 import { DBG_INVARIANTS, assertCtxInvariants } from './debug.js'
-import { ctx, reset, initWarnings, optFlagsOf, warn } from './ctx.js'
+import { ctx, reset, initWarnings, optFlagsOf, warn, err } from './ctx.js'
 import { clearDollar } from './ir.js'
 import { resolveOptimize } from './optimize/index.js'
 import { resetNameUids } from 'watr/optimize'
@@ -282,6 +282,22 @@ export function beginSession({ emitter, globals, hooks, source, optimize, warnin
   return ctx.transform.optimize
 }
 
+/** Normalized memory options have the same meaning in both compiler hosts. */
+export function configureMemory({ memory, importMemory, sharedMemory, maxMemory }) {
+  if (typeof memory === 'number') ctx.memory.pages = memory
+  else if (memory) ctx.memory.shared = true
+  if (importMemory) ctx.memory.shared = true
+  // Importing an ordinary Memory does not imply atomic cross-thread storage.
+  if (sharedMemory) { ctx.memory.shared = true; ctx.memory.atomic = true }
+  if (maxMemory != null) {
+    if (!Number.isInteger(maxMemory) || maxMemory < 1)
+      err(`opts.maxMemory must be a positive integer page count (each page is 64 KiB); got ${maxMemory}`)
+    const initialPages = ctx.memory.pages || 1
+    if (maxMemory < initialPages)
+      err(`opts.maxMemory (${maxMemory}) is below the initial memory size (${initialPages} pages)`)
+    ctx.memory.max = maxMemory
+  }
+}
 
 /** Shared diagnostic policy for the native and Wasm compiler entry points. */
 export function configureDiagnostics({ whyNotSimd, whyNotRewind }) {

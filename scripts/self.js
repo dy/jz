@@ -17,7 +17,7 @@ import watrPrint from 'watr/print'
 import { ctx, initWarnings, setLinkDemand } from '../src/ctx.js'
 import prepare, { GLOBALS } from '../src/prepare/index.js'
 import { frontHalf } from '../src/front.js'
-import { beginSession, configureDiagnostics } from '../src/session.js'
+import { beginSession, configureDiagnostics, configureMemory } from '../src/session.js'
 import { assemble, linkAssembled, tailFacts } from '../src/compile/index.js'
 
 import { emitter, emissionHooks } from '../src/compile/emit.js'
@@ -68,6 +68,7 @@ function setupSelf(strict, optJSON, modulesJSON, host, buildJSON) {
   if (modulesJSON) ctx.module.importSources = JSON.parse(modulesJSON)
   if (build) {
     configureDiagnostics(build)
+    configureMemory(build)
     if (build.imports) {
       ctx.module.hostImports = build.imports
       for (const mod of Object.values(build.imports))
@@ -75,7 +76,6 @@ function setupSelf(strict, optJSON, modulesJSON, host, buildJSON) {
           if (typeof mod[name] === 'string') mod[name] = Number(mod[name])
     }
     if (build.externalImports) setLinkDemand('external')
-    if (typeof build.memory === 'number') ctx.memory.pages = build.memory
     if (build.compactCollections) ctx.transform.compactCollections = true
   }
 }

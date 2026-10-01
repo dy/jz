@@ -7,8 +7,9 @@
  * pins/pointer-repair and O2 output silently diverged).
  */
 import test from 'tst'
-import { is } from 'tst/assert.js'
+import { is, throws } from 'tst/assert.js'
 import { compile } from '../index.js'
+import { instantiate } from '../interop.js'
 import { compileViaKernel } from './kernel-target.js'
 import { onWasi, levels } from './_matrix.js'
 import { CORPUS } from './_kernel-corpus.js'
@@ -61,6 +62,32 @@ import { CORPUS } from './_kernel-corpus.js'
 // schema gets minted, and dict is back to genuine byte-identity --
 // reverified after the narrowing landed, not assumed.
 const PARITY_TODO = new Set()
+
+test('kernel parity: owned, imported and shared memory preserve options and returned values', () => {
+  const src = `export function f(n) {
+    const a = new Uint8Array(n & 7)
+    return ['prefix-' + n, a.length, a[0]]
+  }`
+  for (const optimize of levels(0, 2, 3)) {
+    const cases = [null, false, true, false, true, null]
+    for (let i = 0; i < cases.length; i++) {
+      const shared = cases[i], imported = shared !== null
+      const memory = imported ? new WebAssembly.Memory({ initial: 2, maximum: 8, shared }) : null
+      const descriptor = { initial: 2, maximum: 8, ...(imported ? { import: true, shared } : {}) }
+      const opts = { optimize, host: 'js', memory: imported && i < 3 ? memory : descriptor }
+      const wat = compileViaKernel(src, { ...opts, wat: true })
+      is(wat === compile(src, { ...opts, wat: true }), true, `memory case ${i}, O${optimize}: WAT parity`)
+      const bytes = compileViaKernel(src, opts)
+      const p = instantiate(bytes, imported ? { memory } : {})
+      for (const n of [0, 1, 1, 6, 0])
+        is(p.exports.f(n), ['prefix-' + n, n & 7, n & 7 ? 0 : undefined], `memory case ${i}, O${optimize}: n=${n}`)
+    }
+  }
+  for (const maximum of [0, -1, 1.5, NaN, Infinity, -Infinity])
+    throws(() => compileViaKernel(src, { memory: { maximum } }), /positive integer page count/)
+  throws(() => compileViaKernel(src, { memory: { initial: 4, maximum: 2 } }), /below the initial/)
+  is(instantiate(compileViaKernel(src)).exports.f(0), ['prefix-0', 0, undefined], 'ordinary compilation after rejected limits')
+})
 
 for (const opt of levels(0, 2, 3)) {
   test(`kernel parity: byte-identical WAT at O${opt}`, () => {

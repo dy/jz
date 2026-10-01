@@ -13,7 +13,8 @@
 // (kernel-parity, kernel-oracle) gets a fresh private build through the shared
 // transaction (test/_self-build.js), never dist.
 //
-// Supported options (strict, optimize, modules, host, sourceType, memory, alloc, warnings, WAT)
+// Supported options (strict, optimize, modules, host, sourceType, memory limits,
+// imported/shared memory, alloc, warnings, WAT)
 // travel through scripts/self.js's compiler ABI. Native-only inspection hooks
 // do not reach the wasm compiler.
 import { readFileSync, existsSync } from 'node:fs'
@@ -22,6 +23,7 @@ import { dirname, join } from 'node:path'
 import v8 from 'node:v8'
 import vm from 'node:vm'
 import { instantiate } from '../interop.js'
+import { normalizeOptions } from '../src/compiler.js'
 import { selfBytes } from './_self-build.js'
 
 // Reclaim dead kernel instances. Each compile gets a FRESH 8192-page instance
@@ -99,7 +101,7 @@ const modulesJSONFor = (self, opts) =>
 const hostFor = (self, opts) => opts.host ? self.memory.String(opts.host) : 0
 const sourceTypeFor = (self, opts) => opts.sourceType ? self.memory.String(opts.sourceType) : 0
 const buildJSONFor = (self, opts) => {
-  if (!opts.imports && opts.alloc == null && typeof opts.memory !== 'number' && opts._compactCollections == null && !opts.whyNotRewind && !opts.whyNotSimd) return 0
+  if (!opts.imports && opts.alloc == null && opts.memory == null && !opts.importMemory && !opts.sharedMemory && opts.maxMemory == null && opts._compactCollections == null && !opts.whyNotRewind && !opts.whyNotSimd) return 0
   let imports, externalImports = false
   if (opts.imports) {
     imports = Object.create(null)
@@ -119,6 +121,9 @@ const buildJSONFor = (self, opts) => {
   // Implementations stay in the host; only signatures and constants travel.
   return self.memory.String(JSON.stringify({
     alloc: opts.alloc, memory: typeof opts.memory === 'number' ? opts.memory : undefined,
+    importMemory: !!opts.importMemory || !!opts.memory && typeof opts.memory !== 'number',
+    sharedMemory: !!opts.sharedMemory,
+    maxMemory: typeof opts.maxMemory === 'number' && !Number.isFinite(opts.maxMemory) ? String(opts.maxMemory) : opts.maxMemory,
     compactCollections: opts._compactCollections,
     whyNotRewind: !!opts.whyNotRewind, whyNotSimd: !!opts.whyNotSimd,
     imports, externalImports,
@@ -134,6 +139,7 @@ const optJSONFor = (self, opts) => {
 }
 
 export const compileViaKernel = (code, opts = {}) => {
+  opts = normalizeOptions(opts)
   if (opts.sourceMap)
     throw new Error('Source maps require the JavaScript compiler API or CLI; the Wasm compiler ABI does not return debug metadata')
   if (opts.inspect || opts.profile)
