@@ -35,6 +35,9 @@ test('word local: initializer products keep Number rounding before taking the wo
     `export function f(k) { let x=k|0; x*=x; return x|0 }`,
     `export function f(k) { const x=k|0; let h=x*x; const a=new Int32Array(1);a[0]=h;return a[0] }`,
     `export function f() { let x=2147483647;x*=2147483647;return x|0 }`,
+    `function g(text) { let h=text*2+1;return h|0 } export function f(k) {return g(''+k)}`,
+    `export function f(k) {let effects=0;const x={valueOf(){effects++;return k}};let h=x*2+1;return[h|0,effects]}`,
+
   ]
   for (const optimize of levels(0, 1, 2, 3, 'size')) for (const src of sources) {
     const actual=run(src,{optimize}).f, expected=oracle(src).f

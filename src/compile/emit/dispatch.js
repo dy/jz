@@ -67,7 +67,7 @@ export const emitBoolStr = (node) =>
 /** Compute a checked index with word operations. Every intermediate must
  * remain an exactly represented integer before the final bounds proof. */
 const I32_INDEX_OP = { '+': 'i32.add', '-': 'i32.sub', '*': 'i32.mul' }
-const indexWordRange = name => exprType(name, ctx.func.locals) === 'i32'
+const indexWordRange = name => exprType(name, ctx.func.locals) === 'i32' && lookupValType(name) === VAL.NUMBER
   ? repOf(name)?.unsigned ? [0, 4294967295] : [-2147483648, 2147483647] : null
 function tryI32Index(e) {
   // Integer literal first — a prepare-wrapped literal `[null, k]` (and a const-int
@@ -90,7 +90,7 @@ function tryI32Index(e) {
     }
     return null
   }
-  return exprType(e, ctx.func.locals) === 'i32' ? asI32(emit(e)) : null
+  return exprType(e, ctx.func.locals) === 'i32' && lookupValType(e) === VAL.NUMBER ? asI32(emit(e)) : null
 }
 export const emitIndex = (index, whole = false, wide = false) => {
   // An unsigned bounds test rejects negative words and positive values past
@@ -995,10 +995,13 @@ export function emitDecl(...inits) {
       // as no decl-init call site fed a BOOL local through storedValue; named + fixed
       // here so the decl-init WALL's storedValue substitution stops corrupting BOOL
       // locals narrowed to i32 storage (research.md §Carrier invariant, MECHANISM C).
+      // Reuse the checked-index arithmetic proof for a word destination:
+      // every intermediate stays exact before its final ToInt32. If any
+      // product can round, keep the already-emitted Number calculation.
       coerced = localType === 'v128' ? val : localType === 'f64' ? asF64(val)
         : val.type === 'i32' ? val
         : valTypeOf(init) === VAL.BOOL ? unboxBoolIR(val)
-        : toI32(val)
+        : Array.isArray(init) && I32_INDEX_OP[init[0]] ? tryI32Index(init) ?? toI32(val) : toI32(val)
     }
     // `let x = 0` at function scope is normally elided — WASM zero-inits locals. But loop
     // unrolling flattens iteration bodies into one scope, so the 2nd+ `let x = 0` are

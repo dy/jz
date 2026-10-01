@@ -386,7 +386,7 @@ export function typedValueExprRange(n) {
 // guard (`i + 3 <= n`, base64's `encode`/`decode` shape — INDUCTION-VARIABLE
 // FACT project, see .work/archive/todo.md) reuse the identical lo/hi arithmetic as a
 // bare-name guard, just against a bound pre-shifted by `-K`.
-function nameShift(expr, name) {
+export function nameShift(expr, name) {
   if (expr === name) return 0
   if (!Array.isArray(expr) || expr.length !== 3) return null
   if (expr[0] === '+') {

@@ -192,9 +192,14 @@ calculation. Empty signed ranges remain empty even beside INT_MIN; widening
 loads require their complete read span before subtracting extra lanes.
 Small loop helpers enter exported loops only after their callees have expanded,
 so the size budget includes the work being moved out of a tierable function.
-Word-local initializers use the shared IR conversion and exact-arithmetic proof.
-A word destination permits final wrapping, but never removes Number rounding
-from a product before that conversion; checked indices keep their separate bounds proof.
+Word-local initializers reuse the checked-index exact-arithmetic proof when
+all source leaves are semantic Numbers; other values use the shared IR conversion.
+Every intermediate must remain an exact Number integer before final wrapping,
+so a rounded product cannot cancel into a small result and donate word arithmetic.
+Pure comparison bounds may use safe integer intermediates beyond one word without
+publishing them as word storage. Guarded name±constant bounds use the exact signed
+word preimage; a finite float hull still needs its integrality check. Conditional
+private indices require an exact proof for both arms.
 Integer-store shortcuts prove numeric carriers, not merely an i32 representation:
 pointers still need ToNumber. Clamping requires the original signed magnitude;
 a Uint32 word with its high bit set cannot use the signed-word clamp. An observed

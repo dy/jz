@@ -164,7 +164,7 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
     return null
   }
   const ARITH = new Set(['+', '-', '*', '<<', '>>', '>>>', '&', '%', '|', '^'])
-  const ev = (e) => {
+  const ev = (e, wide = false) => {
     if (typeof e === 'string') recordBinding(e, closureWrites.has(e) ? null : env.get(e))
     const n = constInt(e)
     if (n != null) return [n, n]
@@ -197,7 +197,7 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
     }
     // Grouping and numeric conversion preserve a proven integer interval.
     // Load-CSE uses unary plus when its temporary needs a Number carrier.
-    if (e.length === 2 && (op === '()' || op === 'u+')) return ev(x)
+    if (e.length === 2 && (op === '()' || op === 'u+')) return ev(x, wide)
     // Save the old hull before transferring a postfix update, exactly once.
     if (op === 'postfix' && Array.isArray(x) &&
         (x[0] === '++' || x[0] === '--') && typeof x[1] === 'string') {
@@ -243,7 +243,10 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
     if (e.length !== 3 || !ARITH.has(op)) { visit(e); return null }
     // ToInt32 establishes a signed word even when its input is unknown.
     if (op === '|' && intLiteralValue(y) === 0) { const v = ev(x); return ipOk(v) ? v : [I32_MIN, I32_MAX] }
-    const A = ev(x), B = ev(y)
+    // A pure comparison can use exact integer arithmetic beyond one word,
+    // e.g. n-1 with n an int32. Its own bindings still have signed-word hulls.
+    const wideArith = wide && (op === '+' || op === '-' || op === '*')
+    const A = ev(x, wideArith), B = ev(y, wideArith)
     if (!A || !B) {
       // a const mask bounds one-sidedly even when the other side is unknown
       if (op === '&') {
@@ -283,7 +286,7 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
     // and the bit-reversal cursor `j ^= bit` staying inside its field.
     else if ((op === '|' || op === '^') && A[0] >= 0 && B[0] >= 0) r = [0, fieldAbove(Math.max(A[1], B[1]))]
     else if (op === '%' && B[0] === B[1] && B[0] > 0 && A[0] >= 0) r = [0, Math.min(A[1], B[0] - 1)]
-    return ipOk(r) ? r : null
+    return ipOk(r) || wideArith && r && r.every(Number.isSafeInteger) ? r : null
   }
   // condition refinement for if-arms: `name < K` / `name >= K` … over a known name.
   // The lhs also admits the AFFINE form `name ± c` (`inl_i + 3 <= N` — the strided
@@ -314,7 +317,7 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
     let rLo = constInt(r), rHi = rLo
     if (rLo == null && rE) { rLo = rE[0]; rHi = rE[1] }
     if (rLo == null && Array.isArray(r) && pureExpr(r)) {
-      const rr = ev(r)
+      const rr = ev(r, true)
       if (rr) { rLo = rr[0]; rHi = rr[1] }
     }
     if (rLo == null) return null
@@ -1077,7 +1080,7 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
       const [, c, wbody] = n
       let iv = null, entry = null, brange = null
       if (Array.isArray(c) && c[0] === '<' && typeof c[1] === 'string' && wbody != null) {
-        entry = env.get(c[1]); brange = c[2] != null ? ev(c[2]) : null
+        entry = env.get(c[1]); brange = c[2] != null ? ev(c[2], pureExpr(c[2])) : null
         if (entry && brange && !loopMutable(c[1]) && ivMonotoneInc(wbody, c[1]) && !redeclaresName(wbody, c[1])
             && boundInvariant(c[2], wbody)) iv = c[1]
       }
@@ -1256,7 +1259,8 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
     if (op === '()' || op === 'new') {   // a call may reassign module globals
       if (calls?.has(n) && op === '()') {
         visit(n[1])
-        const values = callArgs(n).map(ev)
+        const values = []
+        for (const arg of callArgs(n)) values.push(ev(arg))
         if (recording) {
           const prev = calls.get(n)
           calls.set(n, prev ? values.map((v, k) => v && prev[k]

@@ -15,7 +15,7 @@ import {
 } from '../../ir.js'
 import { durableArrSnapNode, hasDurableReset } from '../../../module/collection/durable.js'
 import { VAL, lookupValType, repOf } from '../../reps.js'
-import { constIntExpr, constNumExpr, intExprRange, intLiteralValue, counterInit, mulRangesKeepZeroSign } from '../../static.js'
+import { constIntExpr, constNumExpr, intExprRange, intLiteralValue, counterInit, mulRangesKeepZeroSign, nameShift } from '../../static.js'
 import { loopFacts, counterRefinements, testRefinements } from '../loop-model.js'
 import {
   MAX_NESTED_FOR_UNROLL, MAX_SMALL_FOR_UNROLL, SLOT_OPS, cloneWithSubst, containsDeclOf, containsKnownTypedArrayIndex, containsNestedClosure, containsNestedLoop, exprType, idxKey, nestedSmallLoopBudget, smallConstForTripCount, versionableTypedNest,
@@ -162,7 +162,12 @@ function proveGuardedWords(entries, proofs, defs, init, cond, step, body) {
       return ctx.func.locals.get(e) === 'i32' && lookupValType(e) === VAL.NUMBER && !repOf(e)?.unsigned
         ? intExprRange(e) ?? [-2147483648, 2147483647] : null
     }
-    if (!Array.isArray(e) || e.length !== 3 || e[0] !== '+' && e[0] !== '-' && e[0] !== '*') return null
+    if (!Array.isArray(e)) return null
+    if (e[0] === '?:' && e.length === 4) {
+      const a = exactRange(e[2]), b = exactRange(e[3])
+      return a && b ? [Math.min(a[0], b[0]), Math.max(a[1], b[1])] : null
+    }
+    if (e.length !== 3 || e[0] !== '+' && e[0] !== '-' && e[0] !== '*') return null
     const a = exactRange(e[1]), b = exactRange(e[2])
     if (!a || !b || e[0] === '*' && !mulRangesKeepZeroSign(a, b)) return null
     const products = e[0] === '*' ? [a[0] * b[0], a[0] * b[1], a[1] * b[0], a[1] * b[1]] : null
@@ -799,24 +804,10 @@ export const controlFlowOps = {
         // and extent conjuncts (nested recognizers need the BARE nest in the fast
         // arm, and one guard per nest beats one per row)
         const levelInfo = new Map()
-        // Bound-name MAGNITUDE lever: a level's
-        // `f64`-kind bound is commonly an invariant EXPRESSION over a free name this
-        // guard never separately proves (`w - 1` — the 1px-border stencil interior;
-        // `w`/`h` trace to a resize(w,h) runtime param, genuinely unbounded
-        // statically — versionableTypedFor's own doc, type.js). The existing
-        // `|bound value| ≤ 2^31` conjunct below bounds the COMPOSED expression, not
-        // the free name alone, so it can't license i32 arithmetic on `w` itself
-        // (subRangeFitsI32/addRangeFitsI32, emit.js, read intExprRange(name) — null
-        // today). A dedicated per-name conjunct — same idiom as the SLOT
-        // integrality check just below (`f64.eq(v, f64.floor(v))` + a magnitude
-        // cap) — proves a REAL, closed hull for the name, fed through
-        // withRefinements (flow-types.js) for exactly the fast arm's own
-        // re-emission: the SAME channel forCounterRange (this file's loop-counter
-        // lever) uses for a proven counter range. `tryStencil`'s `boundPureInv`
-        // (src/optimize/vectorize.js) wants a raw i32.sub bound chain — this is
-        // what supplies it. ±2^30 (not the full i32 range) leaves headroom for a
-        // small-literal adjustment on EITHER side (`w-1` and `w+1` alike) while
-        // still being a genuine runtime-checked magnitude, not an assumption.
+        // A composed bound can fit even when its free name lacks the range
+        // needed to emit the arithmetic as words. Refine those names only in
+        // the guarded arm. Shifted names get precise thresholds below; the
+        // existing magnitude limit leaves headroom for other expressions.
         const BOUND_NAME_MAG = 1 << 30
         const freeRefs = new Map()
         // Mirrors invariantIdxExpr's OWN grammar (type.js) exactly — the grammar
@@ -881,36 +872,22 @@ export const controlFlowOps = {
             result.push(['local.set', `$${maxIv}`,
               adj ? ['i64.add', ext(asI32(emit(vs.bound))), i64c(adj)] : ext(asI32(emit(vs.bound)))])
           }
-          // Bound-name magnitude lever (see doc above levelInfo): every free NAME
-          // this bound reads that lacks a magnitude proof ALREADY gets its own
-          // integral+magnitude conjunct and a durable [lo,hi] refinement — for
-          // EITHER bKind: exprType's own (type.js) magnitude check can already
-          // classify a bound like `w-1` as 'i32' (bKind, driving the i64-extend
-          // branch above) while the CODEGEN path for that same expression
-          // (emit.js's `-` operator, `subRangeFitsI32`) independently declines —
-          // exprType and the runtime arithmetic fits-gate are two different
-          // consumers of intExprRange, and only the SECOND is what the fast arm's
-          // own re-emission of `cond`/`body` (below) actually calls. Gated on
-          // intExprRange (not exprType/storage type): `w`/`h` here are typically
-          // ALREADY i32-STORED via the separate, deliberately-scoped
-          // "comparison-governed, sound for n≤2^31" storage-typing tolerance
-          // (collectBareEscapes/widenLocalTypes) — real for bit-storage (the cell
-          // re-truncates every write) but NOT a magnitude proof (c8700daa's own
-          // explicit rejection of reusing it as one) — so intExprRange(name) is
-          // still null regardless of bKind, and the fits-gate still declines
-          // `w-1` without this. A BARE-NAME bound (`vs.bound` itself a string —
-          // `i < N`) needs none of this: a comparison between two i32-typed
-          // operands is unconditionally safe (no addFitsI32-style overflow to
-          // prove), so the conjunct would be pure overhead — skip it (confirmed
-          // by test/perf.js's own "no per-iteration i32→f64 widening" pin, which
-          // an unconditional walk broke by adding an unused guard-setup convert).
+          // The fast bound's arithmetic also needs a closed hull for each
+          // free name. An affine name±constant gets the exact signed-word
+          // preimage; other expressions retain the existing magnitude guard.
+          // A bare-name comparison performs no arithmetic and needs no guard.
           if (typeof vs.bound !== 'string') for (const nm of boundFreeNames(vs.bound, new Set())) {
-            if (freeRefs.has(nm) || intExprRange(nm) != null) continue
+            const range = intExprRange(nm), shift = nameShift(vs.bound, nm)
+            const rlo = Number.isSafeInteger(shift) ? Math.max(-2147483648, -2147483648 - shift) : -BOUND_NAME_MAG
+            const rhi = Number.isSafeInteger(shift) ? Math.min(2147483647, 2147483647 - shift) : BOUND_NAME_MAG
+            const whole = exprType(nm, ctx.func.locals) === 'i32' && lookupValType(nm) === VAL.NUMBER
+            if (freeRefs.has(nm) || whole && range && range[0] >= rlo && range[1] <= rhi) continue
             const nF = temp('tvw')
             result.push(['local.set', `$${nF}`, asF64(emit(nm))])
             conjs.push(['f64.eq', ['local.get', `$${nF}`], ['f64.floor', ['local.get', `$${nF}`]]])
-            conjs.push(['f64.le', ['f64.abs', ['local.get', `$${nF}`]], ['f64.const', BOUND_NAME_MAG]])
-            freeRefs.set(nm, { rlo: -BOUND_NAME_MAG, rhi: BOUND_NAME_MAG })
+            conjs.push(['f64.ge', ['local.get', `$${nF}`], ['f64.const', rlo]])
+            conjs.push(['f64.le', ['local.get', `$${nF}`], ['f64.const', rhi]])
+            freeRefs.set(nm, { rlo, rhi })
           }
           levelInfo.set(vs, { maxIv, entryIR: () => vs.startC != null ? i64c(vs.startC) : slotI64(vs.iv, vs.ivKind) })
           // non-unit monotone stride: positivity is the soundness condition

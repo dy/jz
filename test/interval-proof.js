@@ -45,6 +45,30 @@ test('interval proof: rounding identities and bounded shift counts preserve exac
   } } finally { ctx.func = prior }
 })
 
+test('interval proof: pure shifted bounds keep word storage separate from their intermediates', () => {
+  for (const [op, insideWant, exitWant] of [
+    ['-', [1, 2147483645], [1, 2147483646]],
+    ['+', [1, 2147483647], null],
+  ]) {
+    const inside = ['()', 'take', 'i'], after = ['()', 'take', 'i']
+    const scalar = ['()', 'take', [',', 0, ['-', ['+', 'n', 1], 1]]]
+    const body = [';', ['let', ['=', 'i', 1]],
+      ['while', ['<', 'i', [op, 'n', 1]], [';', inside, ['++', 'i']]], after, scalar]
+    const prior = ctx.func, globals = ctx.scope.globalTypes
+    ctx.func = createActiveFunction({ body })
+    ctx.scope.globalTypes = new Map()
+    try {
+      const calls = new Map([[inside, undefined], [after, undefined], [scalar, undefined]]), bindings = new Map([['i', undefined]])
+      scanIntervalIdx(body, null, () => null, null, calls,
+        new Map([['n', [-2147483648, 2147483647]]]), null, null, bindings)
+      is(calls.get(inside), [insideWant], `${op}: the body excludes the bound`)
+      is(calls.get(after), [exitWant], `${op}: the final increment remains visible`)
+      is(bindings.get('i'), exitWant, `${op}: a wide landing cannot narrow the binding`)
+      is(calls.get(scalar), [[0, 0], null], 'wide intermediate mode never enters scalar call arguments')
+    } finally { ctx.func = prior; ctx.scope.globalTypes = globals }
+  }
+})
+
 test('interval proof: unknown bindings survive sparse control-flow snapshots', () => {
   const cases = [
     ['bare declaration', ['let', 'x'], null],

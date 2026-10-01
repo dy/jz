@@ -4219,6 +4219,47 @@ test('SIMD general-reduce safety - second independent loop-carried accumulator n
 // scoped (unrelated fill/checksum loops in the same program use `&`/`+`, never `^`) so a stray
 // incidental vectorization elsewhere can't false-pass the check.
 
+test('SIMD general-stencil: guarded row arithmetic preserves boundary values and reuse', () => {
+  const src = `export function f(width, row, start, empty) {
+    const a = new Int32Array(empty ? 0 : 8), out = new Int32Array(empty ? 0 : 8)
+    for(let k=0;k<a.length;k++)a[k]=k*7-11
+    const w=+width, y=+row
+    let x=+start, count=0, sum=0
+    while(x<w-1) {
+      const c=y*w+x
+      out[c]=a[c-1]^a[c]^a[c+1]
+      sum=(sum^out[c])|0
+      x++
+      if(++count===4)break
+    }
+    return [sum,x,count,out[0],out[1],out[7]]
+  }
+  export function fractional(width) {
+    const n=+width, a=new Int32Array(16), out=new Int32Array(16)
+    for(let k=0;k<16;k++)a[k]=k*7-11
+    let x=0, sum=0
+    if(n>=0 && n<=16) while(x<n-1) {
+      out[x]=a[x]^a[x+1]
+      sum=(sum+out[x])|0
+      x++
+    }
+    return [x,sum,out[0],out[1],out[14]]
+  }`
+  const expected = oracle(src)
+  const cases = [[8,0,1],[8,0,1],[3,1,0],[8,0,1],
+    [0,0,0],[1,0,-0],[2,0,0],[8,-0,0],[8,.5,1],[8,0,.5],
+    [2147483647,0,2147483643],[2147483648,0,2147483644],
+    [4294967296,0,4294967292],[-2147483648,1,-2147483652],
+    [Infinity,0,0],[NaN,0,0],[8,NaN,0],[8,Infinity,0]]
+  for (const optimize of levels(0,1,2,3,'size')) {
+    const actual=run(src,{optimize})
+    for (const args of cases) for(const empty of [0,1])
+      is(actual.f(...args,empty),expected.f(...args,empty),`O${optimize}: ${args}, empty=${empty}`)
+    for(const n of [0,-0,.5,1,1.5,2.5,2.5,15.5,16,16.5,NaN,Infinity,2.5])
+      is(actual.fractional(n),expected.fractional(n),`O${optimize}: a bounded ${n} need not be integral`)
+  }
+})
+
 test('SIMD general-stencil i32 - 2-D 5-point row-base (out[c]=a[c-W]^a[c+W]^a[c-1]^a[c+1]^a[c]), separate arrays, vectorizes, bit-exact', () => {
   const src = `export let main = (WIn) => {
     const W = WIn | 0, H = 16, N = W * H
