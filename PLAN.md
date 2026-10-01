@@ -6,6 +6,56 @@ passing conformance, speed, size and memory gates. README owns the public
 contract; CONTRIBUTING owns compiler invariants. This file holds the decisions
 that shaped the tree, the work left before release and the latest gate reading.
 
+## Blocker work, October 1
+
+All handed-over compiler branches are consolidated on local main. The subsequent
+blocker fixes are being verified on the isolated `v1-blockers` branch; active
+benchmark/site edits in the shared checkout remain with their owner. V1 is not
+ready to tag. The dated sections below retain the evidence for earlier snapshots.
+
+The four hosted correctness failures recorded below are fixed. Shared memory
+configuration reaches both compiler entries; live array iteration and boxed
+Boolean callbacks preserve their native semantics; object enumeration/copying
+keeps BigInt carriers. Focused native checks pass 393 tests / 5,057 assertions,
+and the fresh kernel3 passes 28 hosted tests / 16,038 assertions. Full gates for
+the combined final candidate are still required.
+
+The 40,000-character literal now compiles with exact native/hosted results at
+O0/O1/O2/O3. Linear watr data codecs also fix a demonstrated UTF-8 packing error.
+Memory, fixed-memory, codec and reuse checks pass 22 tests / 2,442 assertions.
+The shared benchmark host adapter resolves the unavailable stdlib runners;
+both return their expected checksums. FFT is now 1,668 B and slices 1,349 B,
+below their unchanged AssemblyScript references of 1,758 B and 1,657 B.
+
+The remaining release blockers are:
+
+- Recursive compilation: kernel3 completes 64 phases, then exhausts 4 GiB after
+  `splitByListKinds`. Nine completed summaries allocate 2.43 GB. Batching unknown
+  field escapes restores native bootstrap time from 830.6 to 194.8 seconds;
+  this does not establish recursive completion. Live caller-fact queries reduce
+  a measured 64-parameter/128-site narrowing case from 12.1 to 6.45 MB.
+- Dependency release: the complete, tested watr 5.11.9 tarball awaits publication
+  approval. JZ still declares and locks 5.11.8. Publication, the dependency bump
+  and a clean registry installation gate must precede release.
+- Correctness certification: run the full native matrix, conformance, extended,
+  fresh bootstrap/hosted and poisoned-memory gates on one frozen final candidate.
+  Focused passes and earlier full gates do not certify the later changes.
+- Performance and memory evidence: regenerate complete reference measurements
+  with current compiler/dependency provenance and valid machine state, close the
+  remaining leadership/RSS failures, and meet rival coverage for the full corpus.
+  The old partial results cannot establish which compiler gaps remain today.
+- JSC: the latest Mikk artifact is 76,451 B, with exact output/reuse checks under
+  Node and Bun. A balanced 120-round local diagnostic shows no measurable speed
+  gain: Node 21.03 ms versus JavaScript 32.55; Bun 20.84 versus JavaScript 16.72.
+  Load was 8–9. Fewer bounds conversions and smaller output have not closed this
+  gap, and these timings are not reference-machine release evidence.
+
+Front-end review also found repeated lowering of nested array literals. Keeping
+the completed child walk reduces an eight-level literal's innermost visits from
+256 to one. Regressions cover exact values, holes, source positions, generator
+captures, repeated calls and error recovery; affected suites pass 69 tests /
+370 assertions. The next ordinary kernel must include this change too.
+
 ## Element ranges, September 30
 
 Static array lengths, all-writer element intervals and scalar argument intervals
