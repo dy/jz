@@ -349,7 +349,7 @@ test('property copies reach nested dynamically named getters', () => {
 
 test('property copies recheck host descriptors without reading skipped getters', () => {
   if(onWasi() || onKernel())return
-  const symbol=Symbol.for('copy-presence-host'),referenced={kept:29}
+  const symbol=Symbol.for('copy-presence-host'),referenced={kept:29},array=[37]
   const callable=new Proxy(function(){return 31},{get(fn,key,receiver){
     if(key==='name'||key==='length')throw new Error('copied callable metadata')
     return Reflect.get(fn,key,receiver)}})
@@ -364,7 +364,7 @@ test('property copies recheck host descriptors without reading skipped getters',
       source.added=23
       return 7},toString:9,get b(){log.push('getter:b');return 11}}
     Object.defineProperty(source,'hidden',{value:17,enumerable:false,configurable:true})
-    source[symbol]=19;source.fn=callable;source.ref=referenced
+    source[symbol]=19;source.fn=callable;source.ref=referenced;source.array=array
     const proxy=new Proxy(source,{
       ownKeys(obj){log.push('keys');return Reflect.ownKeys(obj)},
       getOwnPropertyDescriptor(obj,key){log.push('descriptor:'+String(key));
@@ -384,7 +384,9 @@ test('property copies recheck host descriptors without reading skipped getters',
         let want
         try{want=operation.startsWith('Object')?Object.assign({},expected.proxy):{...expected.proxy}}
         catch(e){want=[e.name,e.message]}
-        is(got(),want,`${operation}, host mode=${mode}, O${optimize}`)
+        const result=got()
+        is(result,want,`${operation}, host mode=${mode}, O${optimize}`)
+        if(mode!==5 && mode!==6)ok(result.fn===callable && result.ref===referenced && result.array===array,'copies retain exact callable/object/array identities')
         is(actual.log,expected.log,`${operation}, descriptor/get order mode=${mode}, O${optimize}`)
       }
     }
