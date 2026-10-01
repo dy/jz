@@ -1542,7 +1542,8 @@ test('in: a closed schema answers dynamic membership structurally, without __dyn
   const wat = compile(src, { optimize: 3, wat: true })
   ok(!wat.includes('(func $__dyn_get') && !wat.includes('$__dyn_has'), 'closed-schema membership does not pull the dynamic getter family')
   ok(!wat.includes('$__dyn_props'), 'closed-schema membership does not pull sidecar/global dynamic-property storage')
-  ok(wat.includes('$__str_eq'), 'a long schema name uses content equality')
+  // Helper selection belongs to emission; watr may inline the selected helper.
+  ok(compile(src, { optimize: { level: 3, watr: false }, wat: true }).includes('$__str_eq'), 'a long schema name uses content equality')
 
   const ssoWat = compile(`export let f = (k) => {
     let o = { nil: null, undef: undefined }
@@ -1579,7 +1580,7 @@ test('in: open, aliased, deleted, and large schemas retain runtime membership di
     const src = `export let f = (k) => { ${body} }`
     for (const optimize of levels(0, 2, 3))
       is(jz(src, { optimize }).exports.f(key), expected, `O${optimize}: ${name}`)
-    ok(compile(src, { optimize: 3, wat: true }).includes('$__dyn_has'),
+    ok(compile(src, { optimize: { level: 3, watr: false }, wat: true }).includes('$__dyn_has'),
       `${name} bypasses the closed-schema path`)
   }
   // A literal-key write outside the layout declares the key in the literal
@@ -1696,7 +1697,7 @@ test('in: inferred-schema aliases cannot bypass source-side shape mutations', ()
   ]
   for (const [name, src] of cases) for (const optimize of levels(0, 2, 3)) {
     is(jz(src, { optimize }).exports.f('added'), true, `O${optimize}: ${name}`)
-    ok(compile(src, { optimize, wat: true }).includes('$__dyn_has'),
+    ok(compile(src, { optimize: { level: optimize, watr: false }, wat: true }).includes('$__dyn_has'),
       `O${optimize}: ${name} retains runtime dispatch`)
   }
 })
