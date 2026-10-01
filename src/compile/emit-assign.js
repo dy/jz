@@ -470,7 +470,27 @@ function primitiveStore(obj, key, val) {
     ['throw', '$__jz_err', ['f64.const', code]]], 'f64')
 }
 
+// Host property reads copy ordinary arrays. Keep the mutated copy on its
+// captured owner; native containers already share their storage.
+function externalFieldWriteback(obj, prop, value) {
+  if (ctx.transform.targetProfile.envImports) setLinkDemand('external')
+  inc('__hash_set')
+  const owner = asF64(emit(obj))
+  return ['if', ptrTypeEq(owner, PTR.EXTERNAL), ['then',
+    ['drop', ['call', '$__hash_set', asI64(owner), asI64(emit(['str', prop])), asI64(emit(value))]]]]
+}
+
 export function emitElementAssign(arr, idx, val, node = null) {
+  const out = emitElementStore(arr, idx, val, node)
+  const owner = ctx.func.externalFieldRefs?.get(arr)
+  if (!owner) return out
+  const post = externalFieldWriteback(owner[0], owner[1], arr)
+  if (out?.type === 'void') return typed(['block', out, post], 'void')
+  const result = temp('ear')
+  return block64(['local.set', `$${result}`, asF64(out)], post, ['local.get', `$${result}`])
+}
+
+function emitElementStore(arr, idx, val, node) {
   const prim = primitiveStore(arr, idx, val)
   if (prim) return prim
   const indexRange = intExprRange(idx)
@@ -497,11 +517,9 @@ export function emitElementAssign(arr, idx, val, node = null) {
   // current). Then write the (possibly-relocated) mutated container back onto
   // the SAME property via `__hash_set` — the same general dynamic-property-set
   // primitive a plain `obj.prop = val` on an unknown-type receiver already
-  // uses below, whose own type guard (genUpsertGrow, module/collection.js)
-  // dispatches HASH natively, EXTERNAL to `__ext_set`, anything else to
-  // `__dyn_set` — so a genuinely native (non-external) receiver, whose
-  // property read already returned the live pointer with nothing to write
-  // back, just re-stores the same pointer (idempotent). `mem.read` (interop.js)
+  // uses below. Only EXTERNAL owners need this write-back: native property
+  // reads already share storage, and invoking their setters would be wrong.
+  // `mem.read` (interop.js)
   // already recursively decodes an ARRAY pointer back to a real JS array on
   // the host side, so this round-trips correctly, including one level of
   // array-of-arrays nesting.
@@ -511,17 +529,12 @@ export function emitElementAssign(arr, idx, val, node = null) {
     ctx.func.locals.set(objTmp, 'f64')
     ctx.func.locals.set(arrTmp, 'f64')
     ctx.func.locals.set(resultTmp, 'f64')
-    if (ctx.transform.targetProfile.envImports) setLinkDemand('external')
-    inc('__hash_set')
     const storeIR = emitElementAssign(arrTmp, idx, val)
     return block64(
       ['local.set', `$${objTmp}`, asF64(emit(obj))],
       ['local.set', `$${arrTmp}`, asF64(emit(['.', objTmp, prop]))],
       ['local.set', `$${resultTmp}`, storeIR],
-      ['drop', ['call', '$__hash_set',
-        ['i64.reinterpret_f64', ['local.get', `$${objTmp}`]],
-        asI64(emit(['str', prop])),
-        ['i64.reinterpret_f64', ['local.get', `$${arrTmp}`]]]],
+      externalFieldWriteback(objTmp, prop, arrTmp),
       ['local.get', `$${resultTmp}`])
   }
   // structInline receivers first: once structInlinePass committed the sid

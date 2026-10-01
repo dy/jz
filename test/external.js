@@ -2,6 +2,7 @@ import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
 import jz, { compile } from '../index.js'
 import { onWasi, levels } from './_matrix.js'
+import { oracle } from './util.js'
 
 // Helper: compile and run
 function run(code, imports = {}) {
@@ -220,14 +221,55 @@ test('Return external object from JZ', () => {
 // `obj`'s type is unresolved — performs the normal (copy-based) element write,
 // then writes the resulting (possibly-relocated) container back onto the SAME
 // property via `__hash_set`, whose existing type guard already dispatches
-// EXTERNAL receivers to `__ext_set` (and is a same-pointer no-op for a genuinely
-// native OBJECT/HASH receiver, whose property read was never a copy to begin
-// with). `mem.read` (interop.js) already recursively decodes an ARRAY pointer
+// EXTERNAL receivers to `__ext_set`. Native OBJECT/HASH receivers already
+// share storage, so their fields need no write-back. `mem.read` (interop.js)
+// already recursively decodes an ARRAY pointer
 // back into a real JS array, so the round-trip is correct including one level of
 // array-of-arrays nesting (see test/objects.js's two sibling fixes, same root
 // cause). Live instance: noise-reduction/deplosive.js `params._lfDetS[0] = lfEnv`
 // — envelope-detector state never survived a streaming chunk boundary, silently
 // restarting from zero each call.
+test('staged external field writes retain their owner, result and evaluation order', () => {
+  if (onWasi()) return
+  const src = `export function f(o, mode, index) {
+    let trace = ''; const original = o
+    function receiver() { trace += 'r'; if(mode===3)throw 9; return o }
+    function key() { trace += 'k'; if(mode===2)throw 8; return index }
+    function value() { trace += 'v'; if(mode===1)throw 7; o={state:[99]}; return [7,9] }
+    try { const result = receiver().state[key()] = value(); return [result, trace, original.state[index]] }
+    catch(e) { return [e===7, trace] }
+  }`
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const actual = jz(src, { optimize }).exports.f, expected = oracle(src).f
+    for (const initial of [[], [1], null, undefined]) {
+      const a = {state: initial?.slice()}, b = {state: initial?.slice()}
+      if (initial === null) a.state = b.state = null
+      for (const [mode, index] of [[0,0], [0,0], [1,2], [2,1], [3,1], [0,5], [0,0]]) {
+        is(actual(a, mode, index), expected(b, mode, index), `O${optimize}: result/order mode ${mode}, index ${index}`)
+        is(a, b, 'the captured host owner contains the same nested value')
+      }
+    }
+  }
+})
+
+test('staged external field updates persist every reference operator', () => {
+  if (onWasi()) return
+  for (const operation of ['receiver().state[key()] = 9', 'receiver().state[key()] += 2',
+    'receiver().state[key()]++', '++receiver().state[key()]', 'receiver().state[key()] ||= 5']) {
+    const src = `export function f(o) { let trace='';
+      function receiver(){trace+='r';return o} function key(){trace+='k';return 0}
+      const result=${operation}; return [result,trace,o.state[0]] }`
+    for (const optimize of levels(0, 1, 2, 3, 'size')) {
+      const actual = jz(src, { optimize }).exports.f, expected = oracle(src).f
+      const a = {state:[0]}, b = {state:[0]}
+      for (let i=0; i<3; i++) {
+        is(actual(a), expected(b), `O${optimize}: ${operation}, call ${i}`)
+        is(a, b, 'the host sees the completed update')
+      }
+    }
+  }
+})
+
 test('indexed write through an external-object field persists', () => {
   if (onWasi()) return  // wasi: external object
   const { step } = run(`
@@ -242,6 +284,50 @@ test('indexed write through an external-object field persists', () => {
   is(step(o), 21)
   is(step(o), 42)  // must see persisted o._s[0] = 21 from the first call
   is(o._s[0], 42)  // and the host-side object must hold the written value
+})
+
+test('logical host field updates write back only on the assignment arm', () => {
+  if (onWasi()) return
+  for (const op of ['||=', '&&=', '??=']) {
+    const src = `export function f(o) { return o.state[0] ${op} 9 }`
+    for (const optimize of levels(0,1,2,3,'size')) {
+      const { exports: { f }, memory } = jz(src, { optimize })
+      for (const value of [0, 2, null, undefined]) {
+        let gets=0, sets=0, state=[value]
+        const o = { get state(){gets++;return state}, set state(v){sets++;state=v} }
+        const writes = op === '||=' ? !value : op === '&&=' ? !!value : value == null
+        is(f(memory.External(o)), writes ? 9 : value, `O${optimize}: ${op} ${value}`)
+        is(gets, 1, 'GetValue reads the host property once')
+        is(sets, writes ? 1 : 0, 'only an actual store commits its copied container')
+        is(state[0], writes ? 9 : value, 'short circuit preserves the host value')
+      }
+    }
+  }
+})
+
+test('staged native field updates preserve getter storage without invoking its setter', () => {
+  const src = `export function update(o){return o.state[0] += 2}
+    export function f(){let gets=0,sets=0;const a=[3];
+      const o={get state(){gets++;return a},set state(v){sets++;throw 7}};
+      return [update(o),gets,sets,a[0]]}`
+  for (const optimize of levels(0,1,2,3,'size')) {
+    const f = jz(src, { optimize }).exports.f
+    is(f(), [5,1,0,5], `O${optimize}: the getter's array is already shared`)
+    is(f(), [5,1,0,5], 'a fresh instance retains no previous staged owner')
+  }
+})
+
+test('staged host field stores retain BigInt assignment results', () => {
+  if (onWasi()) return
+  const src = 'export function f(o){return o.state[0]=0x7ff8000500000000n}'
+  for (const optimize of levels(0,1,2,3,'size')) {
+    const { exports: { f }, memory } = jz(src, { optimize })
+    for (let i=0; i<2; i++) {
+      const o={state:[0]}
+      is(f(memory.External(o)), 0x7ff8000500000000n, `O${optimize}: boxed result bits survive write-back`)
+      is(o.state, [0x7ff8000500000000n], 'the host retains the same BigInt value')
+    }
+  }
 })
 
 // A typed array stored onto an EXTERNAL object was a LIVE VIEW into the module's

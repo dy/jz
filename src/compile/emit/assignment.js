@@ -43,6 +43,7 @@ const effectful = (n) => Array.isArray(n) && (!isSideEffectFree(n) || implicitEf
 function stagedReference(name, update = true, rhs) {
   if (!Array.isArray(name) || (name[0] !== '.' && name[0] !== '[]')) return null
   const pre = []
+  let writeback = null
   const stage = (node, tag, always = false, key = false) => {
     // Primitive literals keep the same value across all operand effects.
     if (Array.isArray(node) && (node[0] == null || node[0] === 'str')) return node
@@ -53,6 +54,15 @@ function stagedReference(name, update = true, rhs) {
         (isConst(node) || (isBoundName(node) || ctx.func.flatObjects?.has(node)) && !ctx.func.boxed?.has(node)) &&
         !isReassigned(rhs, node) && !(name[0] === '[]' && isReassigned(name[2], node))) always = false
     if (!always && !effectful(node)) return node
+    // Staging a host field's copied container also retains its owner. The
+    // eventual store must write back to that owner, even if the RHS replaces
+    // the original binding. Preserve the ordinary reference evaluation order.
+    if (tag === 'ref' && name[0] === '[]' && Array.isArray(node) &&
+        node[0] === '.' && typeof node[2] === 'string' && valTypeOf(node[1]) == null) {
+      const owner = stage(node[1], 'owner', true)
+      node = ['.', owner, node[2]]
+      writeback = [owner, node[2]]
+    }
     const h = temp(tag)
     const vt = valTypeOf(node)
     if (vt) {
@@ -92,8 +102,11 @@ function stagedReference(name, update = true, rhs) {
     ![VAL.NUMBER, VAL.STRING, VAL.BOOL, VAL.BIGINT].includes(keyKind))
   const rhsEffect = effectful(rhs) || !update && runsConversion(ctx.summary?.at(ctx.func.current), ['=', name, rhs], true)
   const keyEffect = name[0] === '[]' && (coercingKey || effectful(name[2]) || rhsEffect)
-  const recv = stage(name[1], 'ref', keyEffect || rhsEffect)
+  // Read-modify-write uses the same container for GetValue and PutValue.
+  // Even a syntactically plain field can invoke a host getter at runtime.
+  const recv = stage(name[1], 'ref', keyEffect || rhsEffect || update && Array.isArray(name[1]))
   const key = keyEffect ? stage(name[2], 'key', coercingKey || rhsEffect, coercingKey) : name[2]
+  if (writeback) (ctx.func.externalFieldRefs ??= new Map()).set(recv, writeback)
   return pre.length ? { ref: [name[0], recv, key], pre } : null
 }
 const afterStaging = (pre, out) => out?.type ? typed(['block', ['result', out.type], ...pre, out], out.type) : ['block', ...pre, ...(out ? [out] : [])]

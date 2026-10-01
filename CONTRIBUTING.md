@@ -3976,6 +3976,11 @@ independent storage, so mutating one result cannot change a later result.
 
 Plain arrays retained by the host have open element types. Typed arrays retain
 their storage policy; fresh arrays can specialize while being constructed.
+An indexed store through a host object's array-valued field commits the copied
+container back to its captured owner. Reference staging retains that owner with
+the receiver temporary; only the actual store performs the write-back, so a
+short-circuited logical assignment or a thrown operand does not invoke a setter.
+Native containers already share storage and require no write-back.
 Allocations round upward to eight-byte alignment without signed address
 truncation. Allocation may grow memory and invalidate views: retain handles and
 reacquire views through `memory.read()`.

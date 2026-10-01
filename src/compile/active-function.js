@@ -65,6 +65,7 @@ export function createActiveFunction({
     p1Predicted: null,
     localValTypesOverlay: new Map(),
     localTypedElemsOverlay: null,
+    externalFieldRefs: null,  // captured host owners of staged container reads; only a store writes them back
 
     closureAux: null,
     directClosures,
@@ -151,7 +152,7 @@ export function isInactiveFunction(ctx) {
     Array.isArray(frame.stack) && frame.stack.length === 0 && frame.inTry === false &&
     frame.finallyStack === null && frame.pendingLabel === null && unallocated(frame.refinements) && !frame.boundsMotion &&
     frame.flowValBlocked === null && frame.repsFrozen === false && unallocated(frame.p1Predicted) &&
-    emptyMap(frame.localValTypesOverlay) && frame.localTypedElemsOverlay === null &&
+    emptyMap(frame.localValTypesOverlay) && frame.localTypedElemsOverlay === null && frame.externalFieldRefs === null &&
     unallocated(frame.closureAux) && frame.directClosures === null && unallocated(frame.zeroInitSeen) &&
     unallocated(frame.maybeNullish) && unallocated(frame.numShadow) && unallocated(frame.taggedLocals) &&
     frame.boxedResult === false && frame.valResult === null && frame.mixedAtomReturn === false &&
