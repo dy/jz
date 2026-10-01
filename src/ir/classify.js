@@ -67,6 +67,14 @@ export const isPureIR = n => {
   return true
 }
 
+/** Whether evaluating an IR expression can assign this local. */
+export function writesLocal(n, name) {
+  if (!Array.isArray(n)) return false
+  if ((n[0] === 'local.set' || n[0] === 'local.tee') && n[1] === name) return true
+  for (let i = 1; i < n.length; i++) if (writesLocal(n[i], name)) return true
+  return false
+}
+
 // Ops PURE_OPS admits into `select` (no trap, no effect) but whose LATENCY is high
 // enough that eagerly computing an arm that would otherwise be skipped can lose to a
 // well-predicted branch: f64.div and f64.sqrt are non-pipelined/10-40+ cycles on most

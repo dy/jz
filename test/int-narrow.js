@@ -15,6 +15,86 @@ const count = (text, op) => (text.match(new RegExp(`\\(${op.replace('.', '\\.')}
 const shapes = (src, check) => { if (!belowOpt(2)) check(wat(src)) }
 const ARGS = [0, 1, 2, 3, 5, 7, -1, -3, 16, 100, 2147483647, -2147483648, 0.5, NaN]
 
+test('int-narrow: removing selected bits closes a signed-word recurrence', () => {
+  for (const saved of [false, true]) for (const commuted of [false, true]) {
+    const word = '(i32.trunc_sat_f64_s (local.get $v))'
+    const mask = `(i32.and ${commuted ? '(local.get $mask)' : word} ${commuted ? word : '(local.get $mask)'})`
+    const ir = parseWat(`(module (func $f (export "f") (param $x i32) (param $mask i32) (param $n i32)
+      (result f64) (local $v f64) (local $bits i32) (local $i i32)
+      (local.set $v (f64.convert_i32_s (local.get $x)))
+      (block $done (loop $again
+        (br_if $done (i32.ge_s (local.get $i) (local.get $n)))
+        ${saved ? `(local.set $bits ${mask})` : ''}
+        (local.set $v (f64.sub (local.get $v) (f64.convert_i32_s ${saved ? '(local.get $bits)' : mask})))
+        (local.set $i (i32.add (local.get $i) (i32.const 1))) (br $again))) (local.get $v)))`)
+    const before = new WebAssembly.Instance(new WebAssembly.Module(encodeWat(ir))).exports.f
+    const fn = ir.find(n => n[0] === 'func')
+    narrowInts(fn)
+    ok(fn.some(n => n[0] === 'local' && n[1] === '$v' && n[2] === 'i32'), 'the recurrence has a proved complete signed-word hull')
+    ok(!JSON.stringify(fn).includes('f64.sub'), 'bit removal computes in an integer register')
+    const after = new WebAssembly.Instance(new WebAssembly.Module(encodeWat(ir))).exports.f
+    for (const x of [0, 0, 1, -1, 2147483647, -2147483648, -2147483647, 0x55555555])
+      for (const mask of [0, 1, -1, -2147483648, 0x55555555]) for (const n of [0, 1, 3])
+        is(after(x, mask, n), before(x, mask, n), `saved=${saved}, commuted=${commuted}: ${x}, ${mask}, ${n}`)
+  }
+})
+
+test('int-narrow: bit removal preserves wide inputs, zero signs and changed reads', () => {
+  const sources = [
+    `export function f(x,m) { return x - (x & m) }`,
+    `export function f(x,m) { const b = x & -x; return x - b }`,
+    `export function f(k,m) { let x=k|0; return [x - ((x=7) & x), x] }`,
+    `export function f(k,m) { let x=k|0; const b=x&(x=7); x=x-b; return x }`,
+    `export function f(k,m) { let x=k|0; const b=x&((x=-2147483648),1); x=x-b; return x }`,
+    `export function f(k,m) { let x=k|0, b=x&m; x=2147483647; x=x-b; return x }`,
+    `export function f(k,m) { let x=k|0, b=0; if(m) b=x&m; x=x-b; return x }`,
+    `export function f(k,m) { let x=k|0, events=0; const mask=()=>{events++;x=7;return m};
+      const b=x&mask(); return [x-b, events, x] }`,
+  ]
+  for (const src of sources) {
+    const host = oracle(src).f
+    for (const optimize of [0, 1, 2, 3, 'size']) {
+      const f = run(src, { optimize: { level: optimize, sourceInline: false } }).f
+      for (const [x, mask] of [[0,0], [0,0], [-0,-1], [1,-1], [-1,1], [2147483647,-1], [-2147483648,7],
+        [2147483648,-1], [-2147483649,1], [4294967296,-1], [0.5,1], [NaN,1], [Infinity,1], [-Infinity,-1], [0,0]])
+        is(f(x,mask), host(x,mask), `O${optimize}: ${x}, ${mask}`)
+    }
+  }
+})
+
+test('int-narrow: a shared subtraction node does not acquire another occurrence\'s mask', () => {
+  const ir = parseWat(`(module (func $f (export "f") (param $x i32) (result f64) (local $v f64) (local $bits i32)
+    (local.set $v (f64.convert_i32_s (local.get $x)))
+    (block (result f64)
+      (local.set $bits (i32.and (i32.trunc_sat_f64_s (local.get $v)) (i32.const 1)))
+      (local.set $v (f64.sub (local.get $v) (f64.convert_i32_s (local.get $bits))))
+      (local.set $v (f64.const -2147483648)) (local.set $bits (i32.const 1))
+      (local.set $v (f64.sub (local.get $v) (f64.convert_i32_s (local.get $bits))))
+      (local.get $v))))`)
+  const fn = ir.find(n => n[0] === 'func'), block = fn.find(n => n[0] === 'block')
+  block[6] = block[3] // identical node, distinct occurrences with different preceding writes
+  const before = new WebAssembly.Instance(new WebAssembly.Module(encodeWat(ir))).exports.f
+  narrowInts(fn)
+  const after = new WebAssembly.Instance(new WebAssembly.Module(encodeWat(ir))).exports.f
+  for (const x of [0,0,1,-1,2147483647,-2147483648,0])
+    is(after(x), before(x), 'the later occurrence preserves -2147483649')
+})
+
+test('int-narrow: low-bit scans retain exact iteration counts and source effects', () => {
+  const src = `function scan(k) {
+    let x=k|0, count=0, checksum=0
+    while(x!==0) { const b=x&-x; x=x-b; count++; checksum=(checksum^b)|0 }
+    return [count, checksum, x]
+  }
+  export function f(k) { return scan(k) }`
+  const host = oracle(src).f
+  for (const optimize of [0, 1, 2, 3, 'size']) {
+    const f = run(src, { optimize: { level: optimize, sourceInline: false } }).f
+    for (const k of [0,0,1,7,-1,-2147483648,2147483647,0x55555555,0xaaaaaaaa,0])
+      is(f(k), host(k), `O${optimize}: zero-work / A → A → B → A, ${k}`)
+  }
+})
+
 test('int-narrow: decided readback guards retain saved values and operand order', () => {
   const comparisons = [
     '(f64.eq (f64.convert_i32_s (local.tee $saved (call $tick (local.get $x)))) (f64.convert_i32_s (local.get $saved)))',

@@ -2105,6 +2105,11 @@ word's conversion agrees with its readback, and finite values exclude special
 floating-point exponents. Division over one-sided denominator intervals respects
 negative zero, interior `0 / 0` and negative underflow; a numeric zero endpoint
 alone never proves the sign of a reciprocal.
+Subtracting selected bits, `x - (x & mask)`, preserves a proved signed word
+without borrowing across bits. The interval walk uses that identity to close
+bit-removal recurrences, including a mask saved by the immediately preceding
+assignment when its producer cannot change `x`. Unknown, wide or negative-zero
+inputs and intervening writes keep ordinary Number arithmetic.
 A comparison refines only reads that later guard operands have not overwritten;
 this applies through eager compound tests and negation. Arms hull at their join,
 and a loop head is the hull of its entry

@@ -26,7 +26,7 @@
 // time, every loop from the head it had: the walks are as many as the heads
 // take to settle, whatever the nesting. Only the last walk records.
 
-import { isPureIR } from '../ir/classify.js'
+import { isPureIR, writesLocal } from '../ir/classify.js'
 
 const isArr = Array.isArray
 
@@ -229,6 +229,47 @@ const readsSaved = (x, y) => {
     x = x[2]
   }
   return isArr(x) && x[0] === 'local.get' && x[1] === y[1]
+}
+// The ToInt32 read of a saved signed word. Its exact-conversion guard
+// excludes +Infinity, which the proved word cannot be. The select must be
+// inert, so neither its other arm nor its test can change the local first.
+const wordRead = (n, name, converted) => {
+  if (n?.[0] === 'select' && n.length === 4) {
+    const c = n[3]
+    if (converted || c?.[0] !== 'f64.ne' || c[1]?.[0] !== 'local.get' || c[1][1] !== name || numConst(c[2]) !== Infinity || !pure(n)) return false
+    n = n[1]
+  }
+  if (!converted) {
+    if (n?.[0] === 'i32.wrap_i64' && n[1]?.[0] === 'i64.trunc_sat_f64_s') n = n[1][1]
+    else if (n?.[0] === 'i32.trunc_sat_f64_s') n = n[1]
+    else return false
+  }
+  return n?.[0] === 'local.get' && n[1] === name
+}
+// Subtracting selected bits clears them without borrowing: x-(x&mask) is
+// x&~mask for signed words. A tee may retain the mask for subsequent uses.
+const clearsBits = (x, y, stack) => {
+  const converted = x?.[0] === 'f64.convert_i32_s'
+  if (converted) x = x[1]
+  if (x?.[0] !== 'local.get' || y?.[0] !== 'f64.convert_i32_s') return false
+  let mask = y[1]
+  while (mask?.[0] === 'local.tee') mask = mask[2]
+  if (mask?.[0] === 'local.get') {
+    // A separately saved mask must be the immediately preceding statement.
+    // The current plain assignment has no earlier operand that could change
+    // x, and the producer itself must leave x untouched. Branches, loops and
+    // intervening statements deliberately supply no alias proof.
+    const statement = stack[stack.length - 2], parent = stack[stack.length - 3]
+    if (statement?.[0] !== 'local.set' || statement[2] !== stack[stack.length - 1] ||
+        parent?.[0] !== 'loop' && parent?.[0] !== 'block') return false
+    const at = parent.indexOf(statement)
+    if (at < 1 || parent.lastIndexOf(statement) !== at) return false
+    const previous = parent[at - 1]
+    if (previous?.[0] !== 'local.set' || previous[1] !== mask[1] || previous[1] === x[1] || previous[2]?.[0] !== 'i32.and' || writesLocal(previous[2], x[1])) return false
+    mask = previous[2]
+  }
+  if (mask?.[0] !== 'i32.and') return false
+  return wordRead(mask[1], x[1], converted) || pure(mask[1]) && wordRead(mask[2], x[1], converted)
 }
 // The values each way of reading back holds exactly.
 const BACK = { whole: [-Infinity, Infinity], i32: [-(2 ** 31), 2 ** 31 - 1], u32: [0, 2 ** 32 - 1], i64: [-(2 ** 63), 2 ** 63] }
@@ -623,6 +664,8 @@ export function intRanges(fn, bodyStart, assume = null, regions = null) {
         const sub = op.endsWith('sub')
         const lo = sub ? a.lo - b.hi : a.lo + b.lo, hi = sub ? a.hi - b.lo : a.hi + b.hi
         if (op[0] === 'i' && !(lo >= -LIMIT && hi <= LIMIT)) return null
+        if (op === 'f64.sub' && fitsI32(a) && !a.nz && clearsBits(x, y, stack))
+          return val(Math.max(a.lo >= 0 ? 0 : I32.lo, lo), Math.min(a.lo >= 0 ? a.hi : I32.hi, hi))
         // -0 + -0, and -0 - 0, are the sums that give -0.
         return arith(lo, hi, a, b, sub ? a.nz && b.lo <= 0 && b.hi >= 0 : a.nz && b.nz)
       }

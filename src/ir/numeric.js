@@ -8,6 +8,7 @@
 import { ctx, err, inc, OPTF } from '../ctx.js'
 import { I32_MIN, I32_MAX, isLeaf, nodeEqual } from '../ast.js'
 import { typed } from './tag.js'
+import { writesLocal } from './classify.js'
 import { ATOM, atomNanHex } from '../../layout.js'
 import { temp, tempI32 } from './locals.js'
 import { boxPtrIR, valKindToPtr } from './pointers.js'
@@ -344,13 +345,6 @@ export const narrowI32 = (x, isRoot) => {
     return { node, maxAbs: 2 ** 31, faithful: c !== -1 }
   }
   return null
-}
-
-function writesLocal(n, name) {
-  if (!Array.isArray(n)) return false
-  if ((n[0] === 'local.set' || n[0] === 'local.tee') && n[1] === name) return true
-  for (let i = 1; i < n.length; i++) if (writesLocal(n[i], name)) return true
-  return false
 }
 
 // Conservative VALUE-RANGE for a pure f64 expression tree: returns { lo, hi } bounding
