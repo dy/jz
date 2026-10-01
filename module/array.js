@@ -8,11 +8,11 @@
  * @module array
  */
 
-import { throwErrorIR, numberNanIR, typed, asF64, asI64, asI32, keyIndex, UNDEF_NAN, TOMB_NAN, temp, tempI32, allocPtr, staticArrayPtr, arrayLoop, arrayValue, deferBigintBox, elemStore, throwTypeErrorIR, truthyIR, extractF64Bits, slotAddr, isLiteralStr, resolveValType, undefExpr, ptrTypeEq, isPureIR, freshId, isNullish, isUndef, toStrI64, fwdOffsetIR } from '../src/ir.js'
+import { throwErrorIR, numberNanIR, typed, asF64, asI64, asI32, keyIndex, UNDEF_NAN, TOMB_NAN, temp, tempI32, allocPtr, staticArrayPtr, arrayLoop, arrayValue, deferBigintBox, elemStore, throwTypeErrorIR, truthyIR, extractF64Bits, slotAddr, isLiteralStr, resolveValType, isGlobal, undefExpr, ptrTypeEq, isPureIR, freshId, isNullish, isUndef, toStrI64, fwdOffsetIR } from '../src/ir.js'
 import { inBoundsArrIdx, typedIdxProven, wholeKey } from '../src/type.js'
 import { emit, spread, deps, idx as emitIndex, storedValue, storedValuePlanned, positionArgs } from '../src/bridge.js'
 import { censusMaybeUndefinedKind, isPresentNumber, valTypeOf } from '../src/kind.js'
-import { extractParams, classifyParam, PARAM_NAME, ASSIGN_OPS, isArrayIndexKey } from '../src/ast.js'
+import { extractParams, classifyParam, PARAM_NAME, ASSIGN_OPS, isArrayIndexKey, isReassigned, some } from '../src/ast.js'
 import { staticPropertyKey, staticObjectProps, inlineArraySid, inlineArrayUnion, staticIndexKey, intLiteralValue, structLiteralFields, intExprRange } from '../src/static.js'
 import { VAL, lookupValType, lookupNotString, isDisjointFrom, KIND_UNIVERSE, mayBeUndefined, repOf, repOfGlobal } from '../src/reps.js'
 import { structInline } from '../src/abi/index.js'
@@ -21,6 +21,7 @@ import { strHashLiteral, dynPropsFilterSetIR, durableFwdLogIR, durableArrSnapIR,
 import { hasDurableReset } from './collection/durable.js'
 import { errorCodeLiteral, ERR } from '../err-codes.js'
 import { requireReceiverWat } from './core/error-object.js'
+import { runsAccessor, runsConversion } from '../src/evaluation-effects.js'
 import { DATA_VIEW_FLAG, nanPrefixHex } from '../layout.js'
 
 const NAN_BITS = nanPrefixHex()
@@ -32,7 +33,6 @@ import { restViewRead } from '../src/compile/rest-view.js'
 import { core, hasTag, isNullable, K, NUMBER, tagOf, valOf } from '../src/summary/kind.js'
 import { activeBoundsAssumption } from '../src/type/canonical-bounds.js'
 import { hasExternalIngress } from '../src/compile/func-exports.js'
-import { runsAccessor, runsConversion } from '../src/compile/analyze/frame-effects.js'
 import { callbackLoop, hoistArrayValue, makeCallback, callbackElem, callbackArgReps, idxArg, arrArg, callbackReadsArray } from './array/callback.js'
 import { arrayFromEmit } from './array/from.js'
 import { registerEarlyExit } from './array/early-exit.js'
@@ -730,15 +730,22 @@ export default (ctx) => {
         return typeof arr === 'string'
           ? undefExpr()
           : typed(['block', ['result', 'f64'], ['drop', asF64(emit(arr))], undefExpr()], 'f64') }
+    const scope = ctx.summary?.at(ctx.func.current)
+    // A key's evaluation or coercion may rebind a named receiver too. A
+    // callee can reach only captured/module bindings; ordinary local keys
+    // preserve the receiver identity used by the loop proofs.
+    const changing = typeof arr === 'string' && (isReassigned(idx, arr) ||
+      (ctx.func.boxed?.has(arr) || isGlobal(arr)) &&
+        (runsConversion(scope, ['[]', arr, idx]) || some(idx, n =>
+          n[0] === 'new' || (n[0] === '()' || n[0] === '?.()') && n.length > 2 || runsAccessor(scope, n) || runsConversion(scope, n))))
     // Hoist non-identifier arr so side-effecting sources (e.g. `foo.shift()[i]`) execute once.
     // The rest of the handler inlines `emit(arr)` into multiple IR positions, which would
     // otherwise re-execute the source expression per use at runtime.
-    if (nullable || typeof arr !== 'string' && !(Array.isArray(arr) && arr[0] === 'local.get')) {
+    if (nullable || changing || typeof arr !== 'string' && !(Array.isArray(arr) && arr[0] === 'local.get')) {
       // Past the nullish check below the receiver is its payload kind: a
       // typed array that may be unset (`let x; … x = new Float64Array(n)`)
       // still indexes as a typed array, with an i32 index, not through the
       // generic keyed read.
-      const scope = ctx.summary?.at(ctx.func.current)
       const view = nullable ? scope : null
       const vtArr = valTypeOf(arr) ?? (view ? valOf(core(view.kindOfExpr(arr))) : null)
       // A receiver that is itself an element read whose one missing value is

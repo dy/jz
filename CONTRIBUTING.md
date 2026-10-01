@@ -1001,7 +1001,11 @@ typed-array reads keep the actual receiver tag unless presence is proven; catch
 elimination must also consult presence even when the payload kind is known.
 Nullable direct reads guard the receiver while retaining their schema/element
 loads. Dot reads preserve plain local identity for dispatch caching; computed
-reads capture the receiver before evaluating the key. Speculative loop extents
+reads capture the receiver before evaluating the key. A named receiver also
+needs that capture when the key assigns it, or key evaluation/coercion can call
+code that reaches its captured cell or module binding. The existing expression
+capture carries the same payload facts and keeps null rejection ahead of key
+coercion. Pure numeric keys retain their direct binding identity. Speculative loop extents
 treat a missing buffer as empty, so a zero-work call does not inspect its header.
 Only an executed access throws. Versioned loops prove receiver presence separately
 from index extents; presence alone cannot remove an out-of-range check. Guard

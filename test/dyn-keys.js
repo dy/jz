@@ -11,6 +11,45 @@ import { oracle, funcWat } from './util.js'
 
 const run = (body) => jz('export let f = () => {' + body + '}', { jzify: true }).exports.f()
 
+test('computed reads capture receiver before key effects and coercion', () => {
+  for (const [first,next] of [['[3]','[7]'], ['new Float32Array([3])','new Float32Array([7])'],
+    ['new Float64Array([3])','new Float64Array([7])'], ['"abc"','"xyz"'], ['{0:3}','{0:7}']]) {
+    const src=`export function f(mode,missing){
+      const first=${first},next=${next};let a=missing?undefined:first,trace=0;
+      const change=()=>{trace=trace*10+2;a=next;return 0};
+      const key={valueOf(){trace=trace*10+3;a=next;if(mode===5)throw new Error('key');return 0}};
+      const accessor={get index(){trace=trace*10+4;a=next;return 0}};
+      let value;
+      try {
+        if(mode===0)value=a[(trace=trace*10+1,a=next,0)];
+        else if(mode===1)value=a[change()];
+        else if(mode===2)value=a[key];
+        else if(mode===3)value=a[accessor.index];
+        else if(mode===6||mode===7){const fn=mode===6?change:null;value=a[fn?.()];}
+        else value=a[(trace=trace*10+1,key)];
+      } catch(e){return [e.name,trace,a===next,first[0]]}
+      return [value,trace,a===next,first[0]];
+    }`
+    const js=oracle(src).f
+    for(const optimize of levels(0,1,2,3,'size')) {
+      const f=jz(src,{optimize}).exports.f
+      for(const [mode,missing] of [[0,false],[0,false],[1,false],[2,false],[3,false],[4,false],[5,false],[6,false],[7,false],
+        [0,true],[1,true],[2,true],[3,true],[4,true],[5,true],[6,true],[7,true],[0,false]])
+        is(f(mode,missing),js(mode,missing), `${first}, mode=${mode}, missing=${missing}, O${optimize}`)
+    }
+  }
+})
+
+test('computed reads retain module receiver identity across a key call', () => {
+  const src=`let a=[3];const next=[7];let calls=0;
+    function key(){calls++;a=next;return 0}
+    export function f(skip){a=[3];calls=0;const fn=skip?null:key;const value=a[fn?.()];return[value,a[0],calls]}`
+  for(const optimize of levels(0,1,2,3,'size')) {
+    const f=jz(src,{optimize}).exports.f
+    for(const skip of [false,false,true,false])is(f(skip),skip?[undefined,3,0]:[3,7,1], `O${optimize}, skip=${skip}`)
+  }
+})
+
 test('ordinary array Number keys require integrality independently of branch bounds', () => {
   const src=`export function read(k){k=+k;const a=[1,2];a[0.5]=7;
       if(k>=0&&k<2)return a[k];return -1}
