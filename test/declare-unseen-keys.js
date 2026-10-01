@@ -10,8 +10,8 @@ import { belowOpt, levels } from './_matrix.js'
 import { funcWat, oracle, wat } from './util.js'
 
 const agree = (src, calls) => {
-  const want = oracle(src)
   for (const optimize of levels(0, 2, 3)) {
+    const want = oracle(src)
     const got = jz(src, { optimize }).exports
     for (const [name, ...args] of calls) {
       const a = want[name](...args), b = got[name](...args)
