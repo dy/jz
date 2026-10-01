@@ -10,7 +10,7 @@ import {
   applyBigintRepresentationAction, asF64, asI32, boxBigInt, f64rem, fromI64, isBoundName, isConst, isGlobal, isNullish, isNullishLit, readI64, readVar, temp, throwTypeErrorIR, toNumF64, toStrI64, truthyIR, typed, writeVar,
 } from '../../ir.js'
 import { hasAmbiguousBoolMerge, valTypeOf, boolTagged, isPresentNumber } from '../../kind.js'
-import { VAL, repOf, updateRep } from '../../reps.js'
+import { VAL, repOf } from '../../reps.js'
 import { intExprRange } from '../../static.js'
 import { wholeKey, typedIdxProven } from '../../type.js'
 import { emitElementAssign, emitPropertyAssign } from '../emit-assign.js'
@@ -107,7 +107,8 @@ function stagedReference(name, update = true, rhs) {
       // that fixed-extent fact even when the source counter has advanced.
       if (extent != null)
         range = [Math.max(0, range?.[0] ?? 0), Math.min(extent - 1, range?.[1] ?? extent - 1)]
-      if (range || value.unsigned) updateRep(h, { range, unsigned: !!value.unsigned })
+      if (range || value.unsigned)
+        (ctx.func.refinements ??= new Map()).set(h, { rlo: range?.[0], rhi: range?.[1], unsigned: !!value.unsigned })
     }
     pre.push(['local.set', `$${h}`, word ? asI32(value) : asF64(value)])
     // GetValue rejects a nullish base after evaluating the key expression,

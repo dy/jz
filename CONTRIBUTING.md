@@ -177,6 +177,8 @@ current range travel with the value. A proven typed access can tighten that
 snapshot to the fixed extent even when a postincrement's complete counter hull
 includes its terminal value; RHS effects still see the original evaluation
 order (`test/member-targets.js`, the AoS and codec cursor regressions).
+Saved-key ranges and unsigned carriers live in emission refinements; creating a
+temporary never mutates the function's frozen representation plan.
 Ordinary-array stores reuse the canonical loop bounds proof at every tier;
 skipping interval analysis does not discard a proved element key. Calls and
 coercions that can resize an alias invalidate that proof.

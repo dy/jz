@@ -179,7 +179,7 @@ export function readVar(name) {
   // convert_i32_u (the i32 bit pattern is an unsigned value), not _s. `.wrapSafe`
   // marks it as the always-ToUint32-sunk kind so the arithmetic widening guards
   // keep it on the i32 path — wrapping is its intended semantics, not a leak.
-  if (t === 'i32' && rep?.unsigned) { node.unsigned = true; node.wrapSafe = true }
+  if (t === 'i32' && (rep?.unsigned || ctx.func.refinements?.get(name)?.unsigned)) { node.unsigned = true; node.wrapSafe = true }
   if (rep?.ptrKind != null) {
     node.ptrKind = rep.ptrKind
     // closureAux: emission-minted table idx for an unboxed CLOSURE local (slice-4 P2) —
