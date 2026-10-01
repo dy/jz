@@ -8,6 +8,8 @@ import jz, { compile } from '../index.js'
 import { levels, onKernel } from './_matrix.js'
 import { oracle, funcWat } from './util.js'
 import { genProgram } from '../scripts/perf-corpus.mjs'
+import parseWat from 'watr/parse'
+import { walkAst } from '../src/ast.js'
 
 const fn = (body) => `export function f(n,p,a){${body}}`
 const PROGRAMS = {
@@ -43,20 +45,32 @@ test('wide accumulator: every shape matches JS at every tier and regime', () => 
   }
 })
 
-test('wide accumulator: the clone converts nothing per iteration; the size tier keeps one loop', () => {
+test('wide accumulator: the clone never reads its float carrier; the size tier keeps one loop', () => {
   if (onKernel()) return
   const count = (text, re) => (text.match(re) || []).length
   for (const name of ['seed15', 'seed29', 'bail', 'ring', 'sum', 'twoSteps', 'fromParam', 'pair', 'early', 'whileSink']) {
     const src = PROGRAMS[name]
     const versioned = funcWat(compile(src, { optimize: { level: 2, watr: false, wideAccumulator: true }, wat: true }), 'f')
-    const plain = funcWat(compile(src, { optimize: { level: 2, watr: false, wideAccumulator: false }, wat: true }), 'f')
     const carriers = count(versioned, /\(local \$__wa\d+ i64\)/g)
     ok(carriers >= 1, `${name}: carried as i64`)
-    // The versioned body keeps every original conversion (the fallback loop) and adds
-    // at most one entry round-trip per carrier (int-narrow decides the round-trip of a
-    // value the intervals know an integer): the fast clone itself converts nothing.
-    const before = count(plain, /i64\.trunc_sat_f64_s/g), after = count(versioned, /i64\.trunc_sat_f64_s/g)
-    ok(after >= before && after <= before + 2 * carriers, `${name}: no conversion inside the fast loop (${after} of ${before} + ${2 * carriers})`)
+    // Each restore names its original and widened carrier. The widened loop
+    // must never read the original: even a conversion hidden in an update is
+    // forbidden. Independent float locals may still need their own conversions.
+    const ir = parseWat(versioned), originals = new Map(), loops = []
+    walkAst(ir, { enter: n => {
+      if (n[0] === 'local.set' && n[2]?.[0] === 'f64.convert_i64_s' && /^\$__wa\d+$/.test(n[2][1]?.[1])) originals.set(n[2][1][1], n[1])
+      if (n[0] === 'loop') loops.push(n)
+    } })
+    const covered = new Set()
+    for (const loop of loops) {
+      const reads = new Set()
+      walkAst(loop, { enter: n => { if (n[0] === 'local.get') reads.add(n[1]) } })
+      for (const [wide, original] of originals) if (reads.has(wide)) {
+        covered.add(wide)
+        ok(!reads.has(original), `${name}: ${wide}'s loop never reads ${original}`)
+      }
+    }
+    is(covered.size, carriers, `${name}: every widened carrier is checked`)
     ok(/i64\.(add|sub)/.test(versioned), `${name}: integer update`)
     ok(!/\$__wa\d+/.test(compile(src, { optimize: 'size', wat: true })), `${name}: size tier is not versioned`)
   }
@@ -84,6 +98,23 @@ test('wide accumulator: a guard temporary read after the loop remains live', () 
   for (const optimize of levels(0, 2, 3, 'size')) {
     const got = jz(src, { optimize }).exports.f
     for (const n of [0, 1, 4, 1000]) is(got(n, 7), want(n, 7), `${optimize} n=${n}`)
+  }
+})
+
+test('wide accumulator: a float-tested cursor leaves an independent integer carrier eligible', () => {
+  const src = `export function f(n,p,start){let acc=0,i=+start;
+    while(i<n){acc+=(p^i)|0;i+=1}return [acc,i]}`
+  const want = oracle(src).f
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const got = jz(src, { optimize }).exports.f
+    for (const args of [[0,7,0], [4,7,0], [4,7,0], [1.5,2147483647,0.25],
+      [3,-2147483648,-0], [3,7,NaN], [3,7,Infinity], [3,7,4], [4,7,0]])
+      is(got(...args), want(...args), `${optimize}: ${args.join(',')}`)
+  }
+  if (!onKernel()) {
+    const wat = funcWat(compile(src, { optimize: { level: 2, watr: false, versionIntegralLoops: false }, wat: true }), 'f')
+    is((wat.match(/\(local \$__wa\d+ i64\)/g) || []).length, 1, 'only the integer accumulator is carried')
+    ok(/f64\.lt/.test(wat), 'the cursor retains its Number comparison')
   }
 })
 

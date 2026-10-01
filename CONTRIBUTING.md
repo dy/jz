@@ -3681,3 +3681,7 @@ not a ToInt32 read is present: the carried update alone shortens the chain. It r
 range. Exception handlers, negative-zero constants, numeric local aliases and
 live guard temporaries decline the transformation. The default and size tiers
 retain one loop; their structural size/work budgets are unchanged.
+An unrelated local read as a float declines only its own integer carrier;
+the remaining carriers are rechecked from the original loop. Structural tests
+verify each widened loop never reads its original float accumulator, allowing
+independent float counters to keep their comparisons and conversions.

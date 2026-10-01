@@ -31,9 +31,9 @@
  * The header check bails to the ORIGINAL loop at the same iteration with the
  * f64 value restored, so an accumulator that outgrows 2⁵³ (where JS rounds)
  * continues under f64 semantics from that point: no trip-count proof, and
- * zero-trip loops, early exits and any trip count behave as before. Declined
- * when the accumulator is read any other way inside the loop (a plain f64 use,
- * a `local.tee`), updated inside a nested loop, or when a branch leaves the
+ * zero-trip loops, early exits and any trip count behave as before. A carrier
+ * is declined when read any other way inside the loop (a plain f64 use,
+ * a `local.tee`) or updated inside a nested loop; the loop is declined when a branch leaves the
  * loop past its enclosing block (the restore would be skipped). V8's JIT
  * speculates such accumulators as int32 from feedback; this is the ahead-of-
  * time proof of the same thing. Level 2 and above: the loop body is duplicated,
@@ -117,11 +117,12 @@ export function wideAccumulator(fn) {
         if (t?.self) leaves.set(n[1], (leaves.get(n[1]) ?? 0) + t.k); else bad.add(n[1])
       }
     } })
-    const names = [...leaves.keys()].filter(name => !bad.has(name))
+    let names = [...leaves.keys()].filter(name => !bad.has(name))
     if (!names.length) return
     const wide = new Map(names.map(name => [name, `$__wa${id++}`]))
     // Rewrite a clone: every read of a candidate must be its own update or sit under a sink.
     let ok = true, sinkLeaves = 0
+    const rejected = new Set()
     const dropped = new Map()   // guard temps whose only read was the select's re-read
     const accOf = (n) => !isArr(n) ? null
       : n[0] === 'local.get' ? (wide.has(n[1]) ? n[1] : null)
@@ -138,8 +139,8 @@ export function wideAccumulator(fn) {
       : n[0] === 'f64.const' ? ['i32.const', n[1] | 0]
       : [n[0] === 'f64.add' ? 'i32.add' : 'i32.sub', mk32(n[1]), mk32(n[2])]
     const rw = (n) => {
-      if (!isArr(n) || !ok) return n
-      if (n[0] === 'local.get' && wide.has(n[1])) { ok = false; return n }
+      if (!isArr(n)) return n
+      if (n[0] === 'local.get' && wide.has(n[1])) { rejected.add(n[1]); return n }
       if (n[0] === 'local.set' && wide.has(n[1])) return ['local.set', wide.get(n[1]), mk64(n[2])]
       const e = int32Operand(n)
       if (e != null) {
@@ -155,8 +156,18 @@ export function wideAccumulator(fn) {
       for (let i = 1; i < n.length; i++) out.push(rw(n[i]))
       return out
     }
-    const clone = rw(loop)
-    if (!ok) return
+    let clone
+    for (;;) {
+      clone = rw(loop)
+      if (!rejected.size) break
+      // A counter read by a float comparison does not disqualify an unrelated
+      // integer accumulator. Rebuild from the original loop after removing
+      // rejected carriers, so their reads and writes retain f64 semantics.
+      for (const name of rejected) wide.delete(name)
+      names = names.filter(name => wide.has(name))
+      if (!names.length) return
+      rejected.clear(); dropped.clear(); sinkLeaves = 0
+    }
     // A deleted tee may feed code after this loop. Only its own guard reads
     // may disappear; the census includes every read in the whole function.
     for (const [t, count] of dropped) if (reads.get(t) !== count) ok = false
