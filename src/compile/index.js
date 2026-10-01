@@ -38,7 +38,7 @@ import { beginAssignedMemo, endAssignedMemo } from '../ast.js'
 import {
   structInlinePass, unionInlinePass, clearBodyFacts,
 } from './analyze.js'
-import { invalidateBindingUsesCache, resetBindingUsesCache } from './analyze-scans.js'
+import { invalidateBindingUsesCache, resetBindingUsesCache, scanBindingUses } from './analyze-scans.js'
 import { VAL } from '../reps.js'
 import { representationHostBoxesParam } from './representation-plan.js'
 import { unboxAdmittedCursors } from './analyze/ptr-eligibility.js'
@@ -711,14 +711,19 @@ export function assemble(ast, profiler) {
     if (isExported(f)) {
       const tag = []
       const val = []
+      const skip = []
+      // The shared census follows default expressions and captured uses too.
+      // A write also keeps the slot conservative; only absent uses are ignored.
+      const uses = scanBindingUses([';', frameNode(f)], new Set(f.sig.params.map(p => p.name)))
       for (let i = 0; i < f.sig.params.length; i++) {
+        if (!uses.has(f.sig.params[i].name)) skip.push(i)
         if (!representationHostBoxesParam(ctx, f, i)) continue
         tag.push(i)
         const p = f.sig.params[i]
         if (!p.rest && paramValueOnly(frameNode(f), p.name)) val.push(i)
       }
-      if (tag.length) for (const exportName of exportNamesOf(f.name))
-        lateHostAbi.push(val.length ? { name: exportName, tag, val } : { name: exportName, tag })
+      if (tag.length || skip.length) for (const exportName of exportNamesOf(f.name))
+        lateHostAbi.push({ name: exportName, ...(tag.length ? { tag } : {}), ...(val.length ? { val } : {}), ...(skip.length ? { skip } : {}) })
     }
   }
   for (const [name, val] of Object.entries(ctx.funcs.exports)) {
@@ -943,7 +948,9 @@ export function assemble(ast, profiler) {
   // interop.js rejects a plain bigint rest element exactly like an unmarked
   // fixed slot. A rest parameter is never `val`. A slot in neither `raw` nor
   // `tag` — the overwhelming common case — carries no BigInt evidence of any
-  // kind: reject.
+  // kind: reject. `skip` lists parameters with no use in the complete frame's
+  // binding-use census. Interop supplies a neutral carrier without converting
+  // the host value, while preserving undefined so parameter defaults still run.
   const hostAbiExports = lateFacts.hostAbi
   if (hostAbiExports.length)
     sec.customs.push(['@custom', '"jz:hostabi"', `"${JSON.stringify(hostAbiExports).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`])

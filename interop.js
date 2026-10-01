@@ -1009,7 +1009,9 @@ export const wrap = (memSrc, inst, state) => {
   // elements (never true today — no evidence source exists for host-populated
   // rest elements). A slot in neither `raw` nor `tag` has no evidence of any
   // kind: i64Arg (below) rejects a plain bigint there instead of guessing
-  // from the absence.
+  // from the absence. `skip` names slots the complete binding-use census
+  // never observes: they cross without conversion, preserving only undefined
+  // so a default initializer still runs when due.
   // jz:release — exports whose calls keep nothing they allocate or are handed
   // (optimize/arena-rewind.js): the wrapper rewinds the heap to where it stood
   // before the arguments were copied in. `flag`: those whose frames run escape
@@ -1035,7 +1037,7 @@ export const wrap = (memSrc, inst, state) => {
   if (hostAbiBytes) {
     try {
       for (const e of JSON.parse(td.decode(hostAbiBytes)))
-        hostAbiExp.set(e.name, { raw: new Set(e.raw || []), tag: new Set(e.tag || []), val: new Set(e.val || []), rest: !!e.rest })
+        hostAbiExp.set(e.name, { raw: new Set(e.raw || []), tag: new Set(e.tag || []), val: new Set(e.val || []), skip: new Set(e.skip || []), rest: !!e.rest })
     } catch { /* ignore */ }
   }
   const mem = memory(memSrc)
@@ -1263,10 +1265,11 @@ export const wrap = (memSrc, inst, state) => {
   // nothing. `begin` answers whether the call may cross so (a call made while
   // another runs tells it what it kept: the general path), `end` runs after
   // it, a throw included.
-  const plainLanes = (ie, ext, hostAbi) => !ext && !hostAbi && !(ie && (ie.p.size || ie.t || ie.v))
-  const crossing = (fn, general, settle, begin, end) => {
+  const plainLanes = (ie, ext, hostAbi) => !ext && !(hostAbi && (hostAbi.raw.size || hostAbi.tag.size || hostAbi.rest)) && !(ie && (ie.p.size || ie.t || ie.v))
+  const crossing = (fn, general, settle, begin, end, skip) => {
     const big = (x) => typeof x === 'bigint'
     const out = (r) => (typeof r === 'number' && r === r) || r === undefined ? r : settle(r)
+    const skip0 = skip?.has(0), skip1 = skip?.has(1), skip2 = skip?.has(2)
     switch (fn.length) {
       case 0: return () => {
         if (!begin()) return general()
@@ -1274,16 +1277,22 @@ export const wrap = (memSrc, inst, state) => {
         try { return out(fn()) } catch (e) { threw = true; decodeThrown(e) } finally { end(threw) }
       }
       case 1: return (a) => {
+        if (skip0 && a !== undefined) a = 0
         if (big(a) || !begin()) return general(a)
         let threw = false
         try { return out(fn(a)) } catch (e) { threw = true; decodeThrown(e) } finally { end(threw) }
       }
       case 2: return (a, b) => {
+        if (skip0 && a !== undefined) a = 0
+        if (skip1 && b !== undefined) b = 0
         if (big(a) || big(b) || !begin()) return general(a, b)
         let threw = false
         try { return out(fn(a, b)) } catch (e) { threw = true; decodeThrown(e) } finally { end(threw) }
       }
       case 3: return (a, b, c) => {
+        if (skip0 && a !== undefined) a = 0
+        if (skip1 && b !== undefined) b = 0
+        if (skip2 && c !== undefined) c = 0
         if (big(a) || big(b) || big(c) || !begin()) return general(a, b, c)
         let threw = false
         try { return out(fn(a, b, c)) } catch (e) { threw = true; decodeThrown(e) } finally { end(threw) }
@@ -1298,6 +1307,9 @@ export const wrap = (memSrc, inst, state) => {
   // pure-scalar modules, `mem.wrapVal` for heap modules. The box never materializes
   // as f64, so JSC can't canonicalize it.
   const i64Arg = (ie, ext, box, hostAbi, name, writeBack, shared = writeBack && new Map()) => (x, i) => {
+    // An unused slot still distinguishes missing/undefined for its default.
+    // No read means no ToNumber, boxing, getter or backing-store copy is due.
+    if (hostAbi?.skip.has(i)) return ie?.p.has(i) ? x === undefined ? UNDEF_NAN : 0n : x === undefined ? undefined : 0
     if (ext?.has(i)) return x === undefined && ext.def?.has(i) ? ext.def.get(i) : x
     // A BigInt is a value at a `val` slot whatever its bits (the function reads
     // the parameter only as a scalar, so no handle belongs there); elsewhere
@@ -1550,6 +1562,7 @@ export const wrap = (memSrc, inst, state) => {
       const hostAbi = hostAbiExp.get(name)
       const len = fn.length
       const general = (...args) => {
+        if (args.length > len) args.length = len
         while (args.length < len) args.push(undefined)
         // audit-#8 P1-1 belt-and-braces: decodeThrown already consumes the marker
         // on every decode, and every in-wasm catch/finally now consumes it too
@@ -1566,7 +1579,7 @@ export const wrap = (memSrc, inst, state) => {
         } catch (e) { decodeThrown(e) }
       }
       exports[name] = plainLanes(ie, ext, hostAbi) && !asyncMod
-        ? crossing(fn, general, (ret) => typeof ret === 'bigint' && !(ie && ie.r) ? ret : mem.read(ret, fnOf), always, idle) : general
+        ? crossing(fn, general, (ret) => typeof ret === 'bigint' && !(ie && ie.r) ? ret : mem.read(ret, fnOf), always, idle, hostAbi?.skip) : general
     }
     return exports
   }
@@ -1600,7 +1613,7 @@ export const wrap = (memSrc, inst, state) => {
         try {
           const a = args.slice(0, fixed).map(i64Arg(ie, ext, memWrapVal, hostAbi, name, writeBack))
           while (a.length < fixed) { const i = a.length; a.push(ie && ie.p.has(i) ? UNDEF_NAN : undefined) }
-          const restArr = mem.Array(args.slice(fixed).map(restElemArg(hostAbi, name)))   // BigInt box (i64 carrier)
+          const restArr = hostAbi?.skip.has(fixed) ? 0n : mem.Array(args.slice(fixed).map(restElemArg(hostAbi, name)))
           a.push(ie && ie.p.has(fixed) ? restArr : i64ToF64(restArr))
           // audit-#8 P1-1 belt-and-braces — see the scalar-module wrapper above.
           if (lastErrBitsWritable) lastErrBits.value = 0n
@@ -1623,6 +1636,7 @@ export const wrap = (memSrc, inst, state) => {
       const len = fn.length
       const release = releases.has(name), flag = flagged.has(name), numeric = numberResult.has(name)
       const general = (...args) => {
+        if (args.length > len) args.length = len
         while (args.length < len) args.push(undefined)
         const writeBack = [], mark = enter(flag)
         let returned = false, scalar = !numeric
@@ -1648,7 +1662,7 @@ export const wrap = (memSrc, inst, state) => {
       // would have to know what it kept; it counts as one that runs (a host
       // function it calls may call back), and one that threw leaves no mark.
       exports[name] = plainLanes(ie, ext, hostAbi) && !asyncMod && !(release && hostReleased.has(name))
-        ? crossing(fn, general, (ret) => typeof ret === 'bigint' && !(ie && ie.r) ? ret : readRet(ret), running, ran) : general
+        ? crossing(fn, general, (ret) => typeof ret === 'bigint' && !(ie && ie.r) ? ret : readRet(ret), running, ran, hostAbi?.skip) : general
     } else {
       exports[name] = fn
     }

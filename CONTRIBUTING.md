@@ -4106,7 +4106,12 @@ the closure table, `jz:hostabi`, `jz:i64exp`, `jz:schema`, `jz:fields`,
 policy, regression-tested in `test/abi.js` but not cross-release-stable. Use
 `jz/interop`'s `instantiate()` or pin the exact compiler version when
 implementing a raw host. BigInt arguments require compiler-emitted slot
-evidence; unsupported slots throw `TypeError`. Kernel byte identity is not
+evidence when the slot is used; unsupported slots throw `TypeError`. The
+shared binding-use census marks wholly unused parameters in `jz:hostabi.skip`.
+The wrapper supplies neutral carriers without reading or converting those
+arguments, preserving undefined for default initializers. It also skips unused
+rest packing and arguments beyond a non-rest function's arity. Defaults and
+captured reads participate in the census (`test/interop.js`). Kernel byte identity is not
 promised across releases. The low-level interop helpers (`wrap`, `coerce`, bit
 conversions, pointer/tag accessors, NaN constants, `toModule`, `wrapVal`,
 `alloc`, `allocTyped`) exist at runtime but are not declared in the public types.
@@ -4115,7 +4120,7 @@ conversions, pointer/tag accessors, NaN constants, `toModule`, `wrapVal`,
 
 - DataView indexed own properties are unsupported; indexed writes reject.
   Unextended views have no `.length` or indexed elements.
-- Rest-parameter BigInt elements lack boundary evidence and reject.
+- Used rest-parameter BigInt elements lack boundary evidence and reject.
 - Array patterns share lazy pulls, undefined-only defaults and IteratorClose on
   early completion or binding errors. Native Map/Set views are snapshots.
   Indexed values cannot override their iterator.

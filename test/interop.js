@@ -19,6 +19,86 @@ import { compile as wasm } from 'watr'
 
 // ── subpath surface ─────────────────────────────────────────────────────────
 
+test('interop: unused host parameters do not convert or copy their arguments', () => {
+  const src=`export function one(k){return 7}
+    export function two(k,v){return v}
+    export function three(a,b,c){return b}
+    export function four(a,b,c,d){return b}
+    export function heap(k,v){return [v,v+1]}
+    export function rest(v,...unused){return [v]}
+    export function text(k){return 'k'}`
+  for(const optimize of levels(0,1,2,3,'size')) {
+    const got=interop.instantiate(compile(src,{optimize})).exports
+    let touched=0
+    const hostile={get valueOf(){touched++;throw 9},get toString(){touched++;throw 8}}
+    const array=[1];Object.defineProperty(array,0,{get(){touched++;throw 7}})
+    for(const value of [Symbol('ignored'),1n,-1n,0x7ffb000000000001n,hostile,array,null,undefined]) {
+      is(got.one(value),7,`one O${optimize}`)
+      is(got.two(value,7),7,`two O${optimize}`)
+      is(got.three(value,7,value),7,`three O${optimize}`)
+      is(got.four(value,7,value,value),7,`general O${optimize}`)
+      is(got.heap(value,7),[7,8],`heap O${optimize}`)
+      is(got.rest(7,value,value),[7],`unused rest O${optimize}`)
+      is(got.text(value),'k',`literal name O${optimize}`)
+      is(got.heap(value,7,value),[7,8],`ignored extra O${optimize}`)
+    }
+    is(touched,0,`no argument read O${optimize}`)
+    let trace=''
+    const argument=()=>{trace+='a';return hostile}, result=()=>{trace+='b';return 7}
+    is(got.two(argument(),result()),7,`arguments evaluated O${optimize}`)
+    is(trace,'ab',`argument order O${optimize}`)
+    throws(()=>got.two((()=>{throw 6})(),result()),e=>e===6,`argument error O${optimize}`)
+    is(got.two(Symbol(),7),7,`reuse O${optimize}`)
+  }
+})
+
+test('interop: unused ingress preserves defaults and live parameter observations', () => {
+  const src=`let calls=0,fail=0;function init(){calls++;if(fail)throw 9;return 1}
+    export function setup(n){fail=n}
+    export function ignored(k=init(),v=7){return [v,calls]}
+    export function type(k){return typeof k}
+    export function capture(k){const read=()=>typeof k;return read()}
+    export function fromDefault(k,v=k){return typeof v}
+    export function key(k){const o={};o[k]=7;return o[k]}
+    export function numeric(k){return k*2}`
+  for(const optimize of levels(0,1,2,3,'size')) {
+    const got=interop.instantiate(compile(src,{optimize})).exports,want=oracle(src)
+    for(const value of [Symbol(),undefined,null,1n,undefined])
+      is(got.ignored(value,7),want.ignored(value,7),`default presence O${optimize}`)
+    got.setup(1);want.setup(1)
+    throws(()=>got.ignored(),e=>e.thrown===9,`default throws O${optimize}`)
+    throws(()=>want.ignored(),e=>e===9)
+    got.setup(0);want.setup(0)
+    is(got.ignored(),want.ignored(),`default reuse O${optimize}`)
+    for(const value of [Symbol(),7,null,undefined])for(const name of ['type','capture','fromDefault','key'])
+      is(got[name](value),want[name](value),`live ${name} O${optimize}`)
+    let count=0
+    is(got.numeric({valueOf(){count++;return 3}}),6,`live conversion O${optimize}`)
+    is(count,1,`live conversion once O${optimize}`)
+    throws(()=>got.numeric({valueOf(){throw 8}}),e=>e===8,`live conversion throws O${optimize}`)
+    is(got.numeric(4),8,`live conversion reuse O${optimize}`)
+  }
+})
+
+test('interop: ignored extras leave arguments, rest and default captures observable', () => {
+  const src=`export function zero(){return 7}
+    export function arity(){return arguments.length}
+    export function indexed(){return typeof arguments[2]}
+    export function named(a){return [arguments.length,typeof arguments[1],a]}
+    export function rest(v,...xs){return [xs.length,typeof xs[0],v]}
+    export function captured(k,read=()=>typeof k){return read()}`
+  for(const optimize of levels(0,1,2,3,'size')) {
+    const got=interop.instantiate(compile(src,{optimize})).exports,want=oracle(src)
+    const hostile={valueOf(){throw 9},toString(){throw 8}}
+    is(got.zero(Symbol(),hostile,1n),7,`zero arity ignores extras O${optimize}`)
+    for(const tail of [[],[Symbol()],[hostile,Symbol(),null]]) {
+      for(const name of ['arity','indexed','named','rest'])
+        is(got[name](7,...tail),want[name](7,...tail),`argument observation ${name} O${optimize}`)
+      is(got.captured(tail[0]),want.captured(tail[0]),`default capture O${optimize}`)
+    }
+  }
+})
+
 test('interop: grown collections decode live entries in insertion order', () => {
   const src = `
     export function array(n){const a=[];for(let i=0;i<n;i++)a.push('k'+i);return a}
