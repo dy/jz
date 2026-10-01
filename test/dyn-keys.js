@@ -6,6 +6,8 @@
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
 import jz, { compile } from '../index.js'
+import parseWat from 'watr/parse'
+import { walkAst } from '../src/ast.js'
 import { onKernel, withBigintStrict, levels, belowOpt } from './_matrix.js'
 import { oracle, funcWat } from './util.js'
 
@@ -1043,15 +1045,36 @@ test('cursor guards take the exact extent of a read before the round\'s advance'
     let k = 0; for (let i = 0; i < n; i++) { if (a[i] === 4) continue; k++; out[k] = a[i] } return k * 1000 + out[1] + out[n] }`
   for (const src of [pre, post]) for (const optimize of [0, 2, 3]) {
     const wasm = jz(src, { optimize }).exports, expected = oracle(src)
-    for (const n of [0, 1, 3, 8]) is(wasm.run(n), expected.run(n), `${optimize} n=${n}`)
+    for (const n of [0, 1, 3, 8, 8, 3.5, -0, 0, 1]) is(wasm.run(n), expected.run(n), `${optimize} n=${n}`)
   }
   if (!onKernel()) {
     const guard = src => funcWat(compile(src, { optimize: { level: 'speed', watr: false }, wat: true }), 'run')
-    // (the extent is k + maxIv, one round fewer than k + (maxIv + 1); the constants fold)
-    const flat = src => guard(src).replace(/\s+\)/g, ')').replace(/\s+/g, ' ')
-    // (a temp's name carries the emitter's private-use mark before its stem)
-    ok(/\(local\.get \$k[^\s)]*\)\)\)\) \(local\.tee \$[^\s)]*?tvq\d+ /.test(flat(pre)), 'a read before the advance: the rounds gone by')
-    ok(/\(local\.get \$k[^\s)]*\)\)\)\) \(i64\.add \(local\.tee \$[^\s)]*?tvq\d+ /.test(flat(post)), 'a read after the advance: one round more')
+    // Copy propagation may separate the bound/cursor definitions from the
+    // comparison. Check the actual extent, not adjacency of their temporary tees.
+    for (const [src, advance] of [[pre, 0], [post, 1]]) {
+      const ir = parseWat(guard(src)), definitions = new Map(), extents = []
+      walkAst(ir, { enter: n => {
+        if (n[0] === 'local.set' && /(?:tvq|tvm)\d+$/.test(n[1])) {
+          const values = definitions.get(n[1]) || []; values.push(n[2]); definitions.set(n[1], values)
+        }
+        if (n[0] === 'i64.lt_s' && n[1]?.[0] === 'i64.add' &&
+            n[1][2]?.[0] === 'local.get' && /tvm\d+$/.test(n[1][2][1])) extents.push(n[1])
+      } })
+      ok(extents.length > 0, 'the cursor has a hoisted extent guard')
+      for (const extent of extents) {
+        const rounds = advance ? extent[1][1] : extent[1], cursor = extent[2]
+        ok(rounds?.[0] === 'local.get' && /tvq\d+$/.test(rounds[1]), 'extent uses the completed-round bound')
+        is(extent, ['i64.add', advance ? ['i64.add', rounds, ['i64.const', '1']] : rounds, cursor],
+          advance ? 'a read after the advance: one round more' : 'a read before the advance: the rounds gone by')
+        const boundDefs = definitions.get(rounds[1]) || []
+        ok(boundDefs.length > 0 && boundDefs.every(v => v[0] === 'i64.add' &&
+          v[2]?.[0] === 'i64.const' && Number(v[2][1]) === -1 && JSON.stringify(v[1]).includes('f64.ceil')),
+        'the round bound reserves the final increment: ceil(n) - 1')
+        const cursorDefs = definitions.get(cursor[1]) || []
+        ok(cursorDefs.length > 0 && cursorDefs.every(v => JSON.stringify(v).includes('["local.get","$k"]')),
+          'the extent starts at the original cursor')
+      }
+    }
   }
 })
 
