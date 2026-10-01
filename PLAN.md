@@ -29,35 +29,14 @@ below their unchanged AssemblyScript references of 1,758 B and 1,657 B.
 
 The remaining release blockers are:
 
-- Recursive compilation: ordinary kernel6 at `8cb08e55` passes all nine reuse
-  and recovery cases, but still exhausts 4 GiB after `splitByListKinds`. Deferring
-  scalar proofs for metadata-only queries cuts the first `collectFacts` from
-  885.4 MB to 159.6 MB; the last completed phase falls from 4.130 GB to
-  3.340 GB. The next caller-context pass accounts for 4.839 GB of cumulative
-  sampled native allocation; known-only interval snapshots cut it to 1.036 GB
-  and copied map entries from 8.89 million to 0.71 million. Native allocation
-  is not Wasm retained heap: a fresh recursive gate must confirm completion.
-  Kernel7's build at `414a4fbb` exposed a captured-loop scope regression before
-  that gate. Its fix preserves the original body block below the synthetic
-  continue label; native/WASI lifecycle checks each pass 20 tests / 1,032 assertions.
-  Kernel8 at `68570f7b` then builds successfully and passes all nine sequence
-  checks. Its recursive run still exhausts 4 GiB after the same phase, whose
-  retained heap is 3.349 GB. The ordinary artifact is 24,571,236 bytes, SHA-256
-  `91214de30f2157fdf7860124f5d18245b9c6a98e1b2c45149266fba0a25d0bd9`.
-  Sparse snapshots alone do not resolve this blocker.
-  Kernel9 at `3315c340` includes the interval visitor allocation refactor.
-  It also passes all nine sequence checks, but recursive compilation still
-  exhausts 4 GiB after `splitByListKinds`, at 3.378 GB retained after that phase.
-  The ordinary artifact is 24,936,393 bytes, SHA-256
-  `076b8003d40b90210e1fad713525c15ac6c3c5153e90fe7799a8ac4d0448e972`.
-  Native sampled allocation fell 10.6%; this did not establish hosted headroom.
-  Wasm call-site profiling counts 36.6 million array-header allocations and
-  10.6 million ordering-buffer allocations before exhaustion (counts, not bytes).
-  An isolated O1 build with `arenaRewind` and `arenaReach` enabled gets through
-  planning, but still exhausts 4 GiB immediately afterward. Its retained heap
-  after planning is 4.218 GB; the first frontend stage falls to 480 MB.
-  The release-pass diagnostic passes all nine reuse cases and is not an ordinary
-  release artifact. O0/O1's interval-analysis budget is the next experiment.
+- Recursive compilation: kernel18 at `7968fc4f` builds fresh and passes all
+  nine reuse/recovery sequences, but still exhausts 4 GiB after publishing
+  parameter ABIs. The heap reaches 4,082,653,440 bytes before code emission,
+  down 27,275,328 bytes from kernel16. The artifact is 26,692,199 bytes,
+  SHA-256 prefix `26cd173169b2`. Private census-table reuse is included; the
+  block-prescan defect it exposed is fixed. A sampled Wasm allocation profile
+  is next; native Map-clear allocation samples do not describe this runtime's
+  in-place clear. Recursive completion remains a release blocker.
 - Dependency release: the complete, tested watr 5.11.9 tarball awaits publication
   approval. JZ still declares and locks 5.11.8. Publication, the dependency bump
   and a clean registry installation gate must precede release.
@@ -68,11 +47,16 @@ The remaining release blockers are:
   with current compiler/dependency provenance and valid machine state, close the
   remaining leadership/RSS failures, and meet rival coverage for the full corpus.
   The old partial results cannot establish which compiler gaps remain today.
-- JSC: the latest Mikk artifact is 76,451 B, with exact output/reuse checks under
-  Node and Bun. A balanced 120-round local diagnostic shows no measurable speed
-  gain: Node 21.03 ms versus JavaScript 32.55; Bun 20.84 versus JavaScript 16.72.
-  Load was 8–9. Fewer bounds conversions and smaller output have not closed this
-  gap, and these timings are not reference-machine release evidence.
+- JSC and Mikk regression: same-dependency checks isolate the main regression
+  to source loop versioning at `9b98e9b7`. A general filter for impossible typed
+  extent guards restores useful IR specialization: a paired Bun probe improves
+  36.720 to 22.031 ms, while JavaScript takes 15.941 ms. The candidate grows
+  72,705 to 115,153 bytes, so copy cost remains under review before landing.
+  A private watr local-slot fix removes another 5,563 bytes with exact output
+  and no measured timing change; it is not in the prepared dependency package.
+  Suppressing outer copies loses 8.8 ms and is rejected. The broader checked-loop
+  and short-circuit proposals remain held without evidence of a speed gain.
+  These local measurements diagnose regressions; they are not release evidence.
 
 The kernel4 frontend probes confirm the nested-array and repeated-index fixes:
 a twelve-level array literal falls from 863,568 to 277,152 allocated bytes;
@@ -88,14 +72,33 @@ keeps computed array-key coercion order. Direct native/WASI regressions cover
 missing values, signed boundaries, wide products, empty loops and repeated calls.
 Sound bounded-loop optimization proofs are being restored where those changes
 removed unsupported shortcuts; performance assertions remain reviewable.
-The latest full core run on `acc1d730` passed 5,844 of 5,897 tests, with 53
-failures. It predates the while-cursor, shared shift typing, FFT guard,
-fractional gather and independent wide-accumulator fixes now passing focused
-checks; this is an inventory, not certification of the later candidate.
-Rechecking the original failing tests after the next fixes gives 28 passes and
-24 failures (one renamed test is verified separately). The remaining failures
-include unresolved optimization proofs; no assertion or performance cap is
-waived on the strength of that focused run.
+The latest full core diagnostic on frozen `c57af10f` passes 6,081 of 6,099
+cases (278,140 assertions), with 18 failures. Subsequent focused fixes restore
+numeric-key and extent facts after reference staging, stride-3 SIMD, codec
+cursor budgets, constructor copy dispatch, native host-field write-back and
+conditional counter narrowing. Callee-aware extent preservation reduces the
+Gain-chain fixture to 3,294 bytes
+before the computed-reader integration; dormant reader demand now keeps excess
+exception/BigInt support, and that separate size regression is under repair.
+Generated registry freshness and two tests' obsolete whole-module proof assumptions are repaired.
+The counter pass-order and splice signed-zero failures are fixed in focused
+checks. The splice cause was an implicit-return escape omitted from module
+element and helper parameter-length proofs. Full-candidate checks remain active.
+Additional boundary regressions pin derived collection constructor order,
+computed method values, typed-method coercion and retained returned closures.
+Final full gates remain required.
+The unchanged offset-index, RGBA and mirror SIMD bars pass. Packed cursor
+initialization preserves a proved pointer's presence, reducing the record-stream
+fixture from 1,420 to 1,148 bytes against its unchanged 1,203-byte limit.
+Arithmetic recurrences retain Number rounding beyond 2^53; bounded fast copies
+still use integer arithmetic. Math conversion/evaluation order, nullable Boolean
+identity, dynamic concat, and observed typed-store assignment results now have
+passing native/WASI regression coverage. Argument settlement has 60 passing
+summary-query groups on both hosts. Existing-key table updates retain allocation
+headroom and reduce focused module sizes by 9–75 bytes.
+The integer-loop operation ratchet retains its 647 hot-operation ceiling and
+accounts separately for the required cold Number fallback. Nine other operation
+ratchet failures remain under investigation; they have not been rebaselined.
 Subsequent fixes preserve source
 locations through loop copies, bound secondary counters, retain shared literal
 objects across in-place replacement, and check absent packed-array receivers.
