@@ -222,6 +222,68 @@ test('summary: kinds flow through calls, fields and results; the host boundary i
   is(jz(`export const get = (k) => { const a = [10, 20, 30]; return a[k] }`).exports.get('1.0'), undefined, "a['1.0'] is no element")
 })
 
+test('summary: numeric demand follows array cells through aliases and callback frames', () => {
+  const cases = [
+    `export function f(n) { const a = [0]; a[0] = n; return a[0] * 2 }`,
+    `export function f(n) { const a = [n]; return a[0] * 2 }`,
+    `export function f(n) { const a = [1, 2, 3], b = a; b[0] = n;
+      a.forEach((x, i) => { a[i] = x * 2 }); let s = 0;
+      for (let i = 0; i < a.length; i++) s += a[i]; return s }`,
+    `export function f(n) { const a = [1]; a.push(n); a.unshift(n * 2); return a[0] + a[2] * 2 }`,
+    `export function f(n) { const a = [1].concat([n]); return a[1] * 2 }`,
+    `function write(a, v) { a[0] = v }
+     function read(a) { return a[0] * 2 }
+     export function f(n) { const a = [0]; write(a, n); return read(a) }`,
+  ]
+  for (const src of cases) {
+    if (!onKernel()) { summarize(src); is(tagOf(kindOf('f', 'n')), K.NUMBER, 'stored parameter has only numeric readers') }
+    for (const optimize of levels(0, 1, 2, 3, 'size')) {
+      const got = jz(src, { optimize }).exports.f, want = oracle(src).f
+      for (const n of [0, 0, 4, -0, -3, NaN, Infinity, 0]) is(got(n), want(n), `array numeric flow O${optimize}, n=${n}`)
+    }
+  }
+})
+
+test('summary: array demand preserves identity, escapes, defaults and assignment results', () => {
+  const cases = [
+    `export function f(n) { const a = [n]; const v = a[0] * 2; return [a, v] }`,
+    `export function f(n) { const a = [n], b = a.slice(); return [b[0], a[0] * 2] }`,
+    `export function f(n) { const a = [n]; let value;
+      a.forEach(x => { value = typeof x }); return [value, a[0] * 2] }`,
+    `export function f(n) { const a = [n]; let value;
+      a.forEach(x => { value = x === '4' ? 'same' : 'other' }); return [value, a[0] * 2] }`,
+    `export function f(n) { const a = [n]; let value;
+      a.forEach((x = 5) => { value = x * 2 }); return value }`,
+    `export function f(n) { const a = [1]; const value = (a[0] = n); return [value, a[0] * 2] }`,
+    `export function f(n) { const a = [n]; return [String(a), a[0] * 2] }`,
+    `export function f(n) { const a = [n]; let value;
+      a.forEach((x, i, source) => { value = typeof source[i]; x * 2 }); return [value, a[0] * 2] }`,
+    `export function f(n) { const a = [n]; let value;
+      a.forEach(x => { const read = () => typeof a[0]; value = read(); x * 2 }); return [value, a[0] * 2] }`,
+    `export function f(n) { let value, saved; saved = (value = n); return [saved, value * 2] }`,
+
+  ]
+  for (const src of cases) {
+    if (!onKernel()) { summarize(src); is(tagOf(kindOf('f', 'n')), K.ANY, `a nonconverting reader prevents numeric seeding: ${src}`) }
+    for (const optimize of levels(0, 1, 2, 3, 'size')) {
+      const got = jz(src, { optimize }).exports.f, want = oracle(src).f
+      for (const n of ['4', '4', undefined, null, false, 3, '4']) is(got(n), want(n), `array identity O${optimize}, n=${n}`)
+    }
+  }
+  const concat = `export function f(n) { const a = [1].concat(n); return [a.length, a[1] * 2] }`
+  if (!onKernel()) { summarize(concat); is(tagOf(kindOf('f', 'n')), K.ANY, 'concat must preserve array-versus-scalar identity') }
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const got = jz(concat, { optimize }).exports.f, want = oracle(concat).f
+    for (const n of [[], [], [3], [3, 4], []]) is(got(n), want(n), `concat argument O${optimize}`)
+  }
+  const bigint = `export function f(n) { if (typeof n === 'bigint' && n < 0n) return ['negative', n]; const a = [n]; let same;
+    a.forEach(x => { same = x === 2n ? 'same' : 'other' }); return [same, a[0]] }`
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const got = jz(bigint, { optimize }).exports.f, want = oracle(bigint).f
+    for (const n of [2n, 2n, 3n, 0, undefined, 2n]) is(got(n), want(n), `BigInt identity O${optimize}`)
+  }
+})
+
 test('summary: result kinds keep payload, presence, typed elements, and resolved method producers separate', () => {
   summarize(`
     function sub(a, b) { return a - b }

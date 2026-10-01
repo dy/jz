@@ -94,6 +94,15 @@ retain captures; alias/local passes can remove copies after proving their
 sources stay unchanged. Closure splices do not inherit the parent's binding proof.
 Expression calls keep captures in a sequence at their evaluation point. Inlining
 never moves initializers out of branches or loops; the IR optimizer owns motion.
+Numeric demand follows ordinary array cells through binding aliases, indexed
+stores and reads, append/prepend stores, `concat` copies, and known `forEach`
+callback parameters. It reuses the
+summary's settled cell identity and existing demand lattice; unknown readers,
+unmodeled copying methods, escaped arrays and callback defaults prevent numeric
+seeding. A concat argument that might itself be an array also keeps its identity.
+Closure bodies contribute demand only in their own frame. An assignment's
+original value also flows to its expression reader, independently of the
+stored slot; scalarization must preserve that observation.
 Every variable write invalidates its earlier flow kind immediately, including
 assignments nested in expressions. The next operand cannot read a stale kind.
 Captured mutable cells keep their joined kind because a call can change them

@@ -3956,13 +3956,14 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   // per function. A parameter with no read at all stays ANY, its value
   // resting where the host may read it back. A slot read through a receiver
   // of unknown shape may be any slot of that name.
-  const numeric = new Map()   // binding id or `sid\0prop` → NUM: every read converts; COMPAT: or is a `+` operand; false: one read is neither
+  const numeric = new Map()   // binding, object slot or array cell → NUM: every read converts; COMPAT: or is a `+` operand; false: one read is neither
   const strung = new Set()    // the keys read as a string (STR below)
-  const OTHER = 0, COMPAT = 1, NUM = 2, FLOW = 3, NEUTRAL = 4   // NEUTRAL: a read that is no evidence
+  const OTHER = 0, COMPAT = 1, NUM = 2, FLOW = 3, NEUTRAL = 4, RECEIVER = 6   // NEUTRAL: a read that is no evidence
   // A read as a string: of a member a number has not (`x.slice( 1 )`). It denies like OTHER, and
   // flows back through what made the value: a copy, a call's argument, the operands of a `+`
   // (`x = s + s; x.slice( 1 )` concatenates, so `s` is used as a string).
   const STR = 5
+  // RECEIVER observes identity/length without reading stored array values.
   const NUMBER_MEMBERS = new Set(['toFixed', 'toPrecision', 'toExponential', 'toString', 'toLocaleString', 'valueOf', 'constructor'])
   // Capture structural metadata once. A retained reader must not consult
   // a subsequent compilation's registry through brandOf/classes.
@@ -4021,6 +4022,27 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     if (t === K.OBJECT && paramOf(r) !== UNKNOWN) return slotKeyList(paramOf(r), prop)
     return propKeyList(prop)
   }
+  // Array aliases share the solver's settled cell. Demand can flow through
+  // its stored values, but observing/copying the aggregate itself denies it.
+  // Escaped cells and unknown named properties have readers outside this walk.
+  const elementKeys = new Map()
+  const elementKey = (r) => {
+    if (tagOf(r) !== K.ARRAY || paramOf(r) === UNKNOWN) return null
+    const c = cell(paramOf(r))
+    if (tagOf(elems[c]) !== K.ANY || hostArrays.has(c) || cellWild.has(c)) return null
+    let key = elementKeys.get(c)
+    if (key === undefined) elementKeys.set(c, key = 'elem\0' + c)
+    return key
+  }
+  const arrayUse = (r, cx, into) => {
+    const key = elementKey(r)
+    if (key === null || cx === RECEIVER) return
+    // A binding copy is another receiver of this same cell, not a copy of
+    // its contents. Other aggregate flows need their own reader contract.
+    if (cx === FLOW && typeof into === 'number' && elementKey(kinds[into]) === key) return
+    deny(key)
+  }
+  const indexedKey = (recv, idx) => typedElementKey(idx, kindOfExpr(idx) === NUMBER) ? elementKey(recv) : null
   let demandChanged = false
   const deny = (key) => { if (numeric.get(key) !== false) { numeric.set(key, false); demandChanged = true } }
   const string = (key) => { deny(key); if (!strung.has(key)) { strung.add(key); demandChanged = true } }
@@ -4046,15 +4068,17 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     if (typeof n === 'string') {
       const key = keyOf(n)
       if (key === null) return
+      arrayUse(kinds[key] ?? K.NONE, cx, into)
+      if (cx === RECEIVER) cx = OTHER
       const level = cx === FLOW ? (strungInto(into) ? STR : demandOf(into)) : cx
       if (level !== NEUTRAL) useKey(key, level)
       return
     }
     if (!(Array.isArray(n) && (n[0] === '.' || n[0] === '?.') && typeof n[2] === 'string')) { demand(n, cx, into); return }
-    demand(n[1], NUMBER_MEMBERS.has(n[2]) ? OTHER : STR)
+    demand(n[1], n[2] === 'length' && tagOf(kindOfExpr(n[1])) === K.ARRAY ? RECEIVER : NUMBER_MEMBERS.has(n[2]) ? OTHER : STR)
     const keys = slotKeysOf(n[1], n[2])
     if (!keys.length) return
-    const level = cx === FLOW ? demandOf(into) : cx
+    const level = cx === FLOW ? demandOf(into) : cx === RECEIVER ? OTHER : cx
     if (level === NEUTRAL) return
     for (const key of keys) useKey(key, level)
   }
@@ -4090,8 +4114,8 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     provenNumeric = prior
   }
   const provenArm = (arm, names, cx, into) => { if (typeof arm === 'string' && (names.has(arm) || provenNumeric?.has(arm))) useOf(arm, COMPAT); else useOf(arm, cx, into) }
-  /** A statement: a call there leaves its result unread. */
-  const run = (n) => { if (Array.isArray(n) && n[0] === '()' && n.length > 2) demand(n, NEUTRAL); else demand(n) }
+  /** A statement: calls and stores there leave their result unread. */
+  const run = (n) => { if (Array.isArray(n) && (n[0] === '=' || n[0] === '()' && n.length > 2)) demand(n, NEUTRAL); else demand(n) }
   const isStringExpr = (e) => tagOf(kindOfExpr(e)) === K.STRING
   const isBigintExpr = (e) => tagOf(kindOfExpr(e)) === K.BIGINT
   const isNumberExpr = (e) => typeof e === 'number' || (Array.isArray(e) && ((e[0] == null && typeof e[1] === 'number') || NUMBER_OPS.has(e[0]) || e[0] === 'u-' || e[0] === 'u+' || (e[0] === '.' && e[2] === 'length'))) || tagOf(kindOfExpr(e)) === K.NUMBER
@@ -4129,7 +4153,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     if (!Array.isArray(n)) return
     const op = n[0]
     if (op == null || op === 'str' || op === 'bool' || op === 'nan') return
-    if (op === '=>') { const prior = provenNumeric; provenNumeric = null; demand(n[2]); provenNumeric = prior; return }
+    if (op === '=>') return   // its body and defaults are walked in its own frame
     if (op === ';' || (op === '{}' && isBlock(n))) { for (let i = 1; i < n.length; i++) run(n[i]); return }
     if (op === 'if') { demand(n[1]); under(numericProofs(n[1], true, isNumberExprHere), n[2]); under(numericProofs(n[1], false, isNumberExprHere), n[3]); return }
     if (op === 'while') { demand(n[1]); under(numericProofs(n[1], true, isNumberExprHere), n[2]); return }
@@ -4138,6 +4162,16 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       return
     }
     if (op === '.' || op === '?.') { if (typeof n[2] === 'string') useOf(n, cx, into); else { demand(n[1]); demand(n[2]) } return }
+    if (op === '[') {
+      const r = kindOfExpr(n), key = elementKey(r)
+      arrayUse(r, cx, into)
+      for (let i = 1; i < n.length; i++) {
+        const item = n[i]
+        if (key !== null && item?.[0] !== '...') useOf(item, FLOW, key)
+        else demand(item)
+      }
+      return
+    }
     if (op === '{}' && isLiteral(n)) {
       // A literal's value flows into its slot; a shorthand `{ g }` reads `g`.
       const sid = sidOf(kindOfExpr(n))
@@ -4149,10 +4183,19 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     }
     if (op === 'let' || op === 'const') { for (let i = 1; i < n.length; i++) { const d = n[i]; if (Array.isArray(d) && d[0] === '=') { if (provenRead(d[2])) useOf(d[2], COMPAT); else if (typeof d[1] === 'string') useOf(d[2], FLOW, keyOf(d[1])); else demand(d[2]) } } return }
     if (op === '=') {
+      // A store also yields its original RHS. That result can be observed
+      // independently of the destination's converting readers.
+      if (cx !== NEUTRAL) useOf(n[2], cx, into)
       const t = n[1]
       if (typeof t === 'string') { if (provenRead(n[2])) useOf(n[2], COMPAT); else useOf(n[2], FLOW, keyOf(t)); return }
       if (Array.isArray(t) && t[0] === '.' && typeof t[2] === 'string') { demand(t[1]); const keys = slotKeysOf(t[1], t[2]); if (keys.length) useOf(n[2], FLOW, keys); else demand(n[2]); return }
-      if (Array.isArray(t) && t[0] === '[]') { const r = kindOfExpr(t[1]); demand(t[1]); index(t[2], r); demand(n[2], tagOf(r) === K.TYPED && typedElemKind(r) === NUMBER && typedElementKey(t[2], kindOfExpr(t[2]) === NUMBER) ? NUM : OTHER); return }
+      if (Array.isArray(t) && t[0] === '[]') {
+        const r = kindOfExpr(t[1]), key = indexedKey(r, t[2])
+        demand(t[1], key === null ? OTHER : RECEIVER); index(t[2], r)
+        if (key !== null) useOf(n[2], FLOW, key)
+        else demand(n[2], tagOf(r) === K.TYPED && typedElemKind(r) === NUMBER && typedElementKey(t[2], kindOfExpr(t[2]) === NUMBER) ? NUM : OTHER)
+        return
+      }
       demand(t); demand(n[2]); return
     }
     // `+` and `+=` convert a number, a boolean or a nullish operand and concatenate a string; against a string operand the other is a string.
@@ -4169,7 +4212,12 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     if (op === '+') { const num = tagOf(core(kindOfExpr(n[1]))) === K.NUMBER && tagOf(core(kindOfExpr(n[2]))) === K.NUMBER; useOf(n[1], isStringExpr(n[2]) || isBigintExpr(n[2]) ? OTHER : num ? NUM : COMPAT); useOf(n[2], isStringExpr(n[1]) || isBigintExpr(n[1]) ? OTHER : num ? NUM : COMPAT); return }
     // A relational compare converts against a number; two strings compare as strings, so an unknown pair is compatible.
     if (op === '<' || op === '<=' || op === '>' || op === '>=') { useOf(n[1], relCx(n[2])); useOf(n[2], relCx(n[1])); return }
-    if (op === '[]') { useOf(n[1], OTHER); index(n[2], kindOfExpr(n[1])); return }
+    if (op === '[]') {
+      const r = kindOfExpr(n[1]), key = indexedKey(r, n[2])
+      useOf(n[1], key === null ? OTHER : RECEIVER); index(n[2], r)
+      if (key !== null) { const level = cx === FLOW ? (strungInto(into) ? STR : demandOf(into)) : cx; if (level !== NEUTRAL) useKey(key, level) }
+      return
+    }
     // A value-carrying operator reads its arms in the context of its own read;
     // `??` tests its left arm for nullish, which ToNumber would make NaN.
     if (op === '?' || op === '?:') { demand(n[1]); provenArm(n[2], numericProofs(n[1], true, isNumberExprHere), cx, into); provenArm(n[3], numericProofs(n[1], false, isNumberExprHere), cx, into); return }
@@ -4189,6 +4237,41 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     if ((op === '(' || op === '()' && n.length === 2)) { useOf(n[1], cx, into); return }
     if (op === '()') {
       const callee = n[1], as = n[2], count = argCount(as)
+      if (callee?.[0] === '.' && (callee[2] === 'push' || callee[2] === 'unshift' || callee[2] === 'concat') && !builtinReceiverMayHaveOwn(K.ARRAY, callee[2])) {
+        const recv = kindOfExpr(callee[1]), concat = callee[2] === 'concat', key = elementKey(concat ? kindOfExpr(n) : recv)
+        let spread = false
+        for (let i = 0; i < count; i++) if (isSpread(argAt(as, i))) spread = true
+        if (tagOf(recv) === K.ARRAY && key !== null && !spread) {
+          demand(callee[1], RECEIVER)
+          if (concat) {
+            arrayUse(kindOfExpr(n), cx, into)
+            const from = elementKey(recv)
+            if (from !== null) useKey(from, strungInto(key) ? STR : demandOf(key))
+          }
+          for (let i = 0; i < count; i++) {
+            const arg = argAt(as, i), r = kindOfExpr(arg)
+            if (concat && tagOf(r) === K.ARRAY) {
+              demand(arg, RECEIVER)
+              const from = elementKey(r)
+              if (from !== null) useKey(from, strungInto(key) ? STR : demandOf(key))
+            } else if (concat && hasTag(r, K.ARRAY)) demand(arg)
+            else useOf(arg, FLOW, key)
+          }
+          return
+        }
+      }
+      if (callee?.[0] === '.' && callee[2] === 'forEach' && !builtinReceiverMayHaveOwn(K.ARRAY, 'forEach')) {
+        const recv = kindOfExpr(callee[1]), key = elementKey(recv), cb = kindOfExpr(argAt(as, 0))
+        if (key !== null && tagOf(cb) === K.CLOSURE && paramOf(cb) !== UNKNOWN) {
+          const targets = demandTargets(paramOf(cb)), params = demandParams(targets, 0)
+          if (params && targets.ids.length === membersOf(paramOf(cb)).length) {
+            demand(callee[1], RECEIVER)
+            useKey(key, strungInto(params) ? STR : demandOf(params))
+            for (let i = 0; i < count; i++) demand(argAt(as, i))
+            return
+          }
+        }
+      }
       if (typeof callee === 'string') {
         // Math takes numbers, except sumPrecise, which takes an iterable.
         if ((callee.startsWith('Math.') || callee.startsWith('math.')) && !callee.endsWith('.sumPrecise')) { for (let i = 0; i < count; i++) useOf(argAt(as, i), NUM); return }

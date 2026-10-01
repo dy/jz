@@ -1,9 +1,10 @@
 // Array methods: map, filter, reduce, forEach, find, indexOf, includes, slice
 import test from 'tst'
+import parseWat from 'watr/parse'
 import { is, ok, throws } from 'tst/assert.js'
 import jz, { compile } from '../index.js'
 import { onWasi, onKernel, adaptI64, levels } from './_matrix.js'
-import { parse, has } from '../scripts/wat-probe.mjs'
+import { parse, has, callsOutside } from '../scripts/wat-probe.mjs'
 import { oracle, cases, funcWat } from './util.js'
 
 function run(code) {
@@ -2492,8 +2493,10 @@ test('element kind: an array every store into which is a number reads numbers wi
   }
   for (const [name, src] of Object.entries(cases)) {
     for (const optimize of levels(0, 2)) {
-      const wat = compile(src, { wat: true, optimize })
-      ok(!/\$__to_num[ )]/.test(wat), `${name} O${optimize}: no ToNumber on the element read`)
+      const tree = parseWat(compile(src, { wat: true, optimize: { level: optimize, watr: false, inlineFns: false } }))
+      // Inspect before helper inlining: a generic numeric-key store can link ArraySetLength's conversion
+      // helper. It says nothing about these element reads or callback operands.
+      is(callsOutside(tree, ['$__to_num'], /^\$__/), 0, `${name} O${optimize}: no ToNumber in the entry or callbacks`)
     }
     const host = oracle(src).f
     is(jz(src).exports.f(4), host(4), `${name}: value`)
