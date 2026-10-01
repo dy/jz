@@ -218,6 +218,7 @@ test('summary queries: repeated record and primitive joins retain both operand o
 
 test('summary queries: held fields require every alias to remain read-only and unambiguous', () => {
   const options = { funcs: [], schemas: [['HIGH']], brandOf: () => null, imports: new Map(), exported: () => false }
+  const decl = (name, value) => ['const', ['=', name, value]]
   const read = ['.', 'alias', 'HIGH']
   const ast = [';', ['const', ['=', 'limits', ['{}', [':', 'HIGH', lit(7)]]]],
     ['const', ['=', 'alias', 'limits']], ['const', ['=', 'high', read]]]
@@ -225,6 +226,14 @@ test('summary queries: held fields require every alias to remain read-only and u
     ['empty', null, [], false],
     ['read', ast, [], true],
     ['read again', ast, [], true],
+    ['unrelated primitive and array bindings', [';', ...ast.slice(1),
+      decl('number', lit(3)), decl('numberAlias', 'number'),
+      decl('array', ['[', 'numberAlias']), decl('first', ['[]', 'array', lit(0)])], [], true],
+    ['alias chain', [';', ...ast.slice(1, 3), decl('second', 'alias'),
+      decl('high', ['.', 'second', 'HIGH'])], [], true],
+    ['alias rebound to primitive', [';', ...ast.slice(1), ['=', 'alias', lit(3)]], [], false],
+    ['root rebound to array', [';', ...ast.slice(1), ['=', 'limits', ['[', lit(3)]]], [], false],
+    ['alias copied into array', [';', ...ast.slice(1), decl('values', ['[', 'alias'])], [], false],
     ['write through alias', [';', ...ast.slice(1), ['=', read, lit(9)]], [], false],
     ['increment root', [';', ...ast.slice(1), ['++', ['.', 'limits', 'HIGH']]], [], false],
     ['escape alias', [';', ...ast.slice(1), ['()', 'unknown', 'alias']], [], false],

@@ -207,6 +207,9 @@ need no literal-builder environment. Alias and presence refinements remain live.
 Solver query views expose only expression kinds, binding keys and call targets.
 The full emission interface is created for published views, after solving; its
 scope caches, alias refinements and retained-reader behavior stay independent.
+The held-object proof records mentions only for single object-literal definitions
+and name aliases. Every use of those candidates still counts; primitive, array
+and reassigned bindings cannot enter that proof and need no occurrence lists.
 Memory page limits are validated before either compiler host encodes options.
 Assembly also rejects static data that would require more than the maximum.
 The hosted compiler applies the same fixed-memory scratch and final-code proofs;

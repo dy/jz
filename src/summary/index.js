@@ -3434,15 +3434,20 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     const key = keyOf(name, scope)
     if (key !== null && !unseen(scope, name, bare)) definitions.set(key, definitions.has(key) || value == null ? null : [scope, value])
   }
-  // Mentions of uniquely declared names, the only ones `onlyRead` can prove:
-  // flat triples of holder node, child index and the holder's parent.
+  // Only a single object-literal definition or a name alias can participate in
+  // `onlyRead`. Other bindings cannot reach that proof, so their mentions need
+  // no occurrence records. Keep every use of the candidates, including writes.
+  // Records are flat triples of holder node, child index and its parent.
   const nameSites = new Map()
   const mention = (n, up) => {
     if (!Array.isArray(n) || n[0] === 'str') return
     for (let i = 1; i < n.length; i++) {
       const c = n[i]
       if (typeof c === 'string') {
-        if (nameKeys.get(c)?.length !== 1) continue
+        const keys = nameKeys.get(c)
+        if (keys?.length !== 1) continue
+        const value = definitions.get(keys[0])?.[1]
+        if (typeof value !== 'string' && !(Array.isArray(value) && value[0] === '{}')) continue
         let l = nameSites.get(c); if (!l) nameSites.set(c, l = [])
         l.push(n, i, up)
       }
