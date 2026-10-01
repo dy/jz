@@ -1984,7 +1984,9 @@ the same way in place of that arm. An f64 local the copy reads as an integer
 is tested on entry (it equals its own truncation and its magnitude is within
 2^51), except one whose low word is taken as an address: that is a box. The
 copy's locals are its own (`$name.f<id>`), so the integer pass types them by
-the copy's values alone; the copies made where a read leaves run once and
+the copy's values alone. An outward branch restores every written copy:
+fallthrough liveness cannot describe a destination that skips an enclosing
+copy's write-back. The copies made where a read leaves run once and
 weigh nothing in that choice (`cold`), beyond the sign of a zero they would
 show. A copy that narrows nothing is dropped (one that tests no read has to
 narrow more to stay), the checked twin of a versioned loop is never copied

@@ -6,15 +6,70 @@
 // is a differential against the host, over arguments that stay in the arrays and
 // arguments that leave them; the WAT shows the copy.
 import test from 'tst'
-import { ok } from 'tst/assert.js'
-import { agree, wat } from './util.js'
+import { is, ok } from 'tst/assert.js'
+import { agree, oracle, run, wat } from './util.js'
 import { belowOpt } from './_matrix.js'
+import parseWat from 'watr/parse'
+import encodeWat from 'watr/compile'
+import { specializeLoops } from '../src/optimize/specialize.js'
+import { narrowInts } from '../src/optimize/int-narrow.js'
 
 const count = (text, op) => (text.match(new RegExp(`\\(${op.replace('.', '\\.')}[\\s)]`, 'g')) || []).length
 const copies = (text) => (text.match(/\(loop \$[^\s)]*\.f\d+[\s)]/g) || []).length
 const shapes = (src, check) => { if (!belowOpt(2)) check(wat(src)) }
 const SIZES = [0, 1, 2, 3, 5, 7, 16, 100]
 const ANY = [...SIZES, -1, -3, 0.5, 2.75, NaN, -0, 1e9]
+
+test('specialize: nested copies restore all live values on outward branches', () => {
+  const condition = `(f64.gt (local.tee $p (f64.convert_i32_s
+    (i32.rem_s (i32.trunc_sat_f64_s (f64.add (local.get $p) (f64.const 3)))
+      (i32.const 7)))) (local.get $x))`
+  for (const jump of [`(br_if $out ${condition})`, `(if ${condition} (then (br $out)))`]) {
+    const ast = parseWat(`(module
+      (func $f (export "f") (param $x f64) (param $n f64) (result f64)
+        (local $k i32) (local $i f64) (local $s f64) (local $p f64)
+        (local.set $s (local.get $x))
+        (local.set $p (f64.const 7))
+        (block $out (block $end (loop $outer
+          (br_if $end (i32.ge_s (local.get $k) (i32.const 3)))
+          (local.set $i (f64.const 0))
+          (block $stop (loop $inner
+            (br_if $stop (i32.eqz (f64.lt (local.get $i) (local.get $n))))
+            (br_if $out (f64.lt (local.get $x) (f64.const 0)))
+            ${jump}
+            (local.set $s (f64.add (local.get $s) (local.get $p)))
+            (local.set $i (f64.add (local.get $i) (f64.const 1)))
+            (br $inner)))
+          (local.set $k (i32.add (local.get $k) (i32.const 1)))
+          (br $outer))))
+        (f64.add (f64.mul (local.get $s) (f64.const 10)) (local.get $p))))`)
+    const instantiate = () => new WebAssembly.Instance(new WebAssembly.Module(encodeWat(ast))).exports.f
+    const before = instantiate(), fn = ast.find(n => n[0] === 'func')
+    const assumptions = specializeLoops(fn)
+    ok(JSON.stringify(fn).includes('.f0.f1'), 'the regression exercises a copy inside another copy')
+    const copied = instantiate()
+    narrowInts(fn, assumptions)
+    const narrowed = instantiate()
+    for (const [x, n] of [[0, 6], [0, 6], [4, 3], [20, 5], [0, 0], [0, -1], [0, 6],
+      [-1, 1], [0.5, 2.5], [-0, 1], [NaN, 3], [3, NaN], [Infinity, 1]]) {
+      ok(Object.is(copied(x, n), before(x, n)), `copy: ${x}, ${n}`)
+      ok(Object.is(narrowed(x, n), before(x, n)), `narrowed: ${x}, ${n}`)
+    }
+    is(narrowed(0, 6), 3, 'the first taken branch publishes its tee assignment')
+  }
+})
+
+test('specialize: labelled break and continue keep nested copy state across calls', () => {
+  for (const jump of ['break', 'continue']) {
+    const source = `export function f(x,n) { let s=x,p=0
+      out: for(let k=0;k<3;k++) { for(let i=0;i<n;i++) {
+        p=(p+3)%7; if(p>x) ${jump} out; s+=p
+      }} return s*10+p }`
+    const actual = run(source), expected = oracle(source)
+    for (const [x, n] of [[0, 6], [0, 6], [4, 3], [20, 5], [0, 0], [0, -1], [0, 6], [0.5, 2.5]])
+      is(actual.f(x, n), expected.f(x, n), `${jump}, ${x}/${n}`)
+  }
+})
 
 test('specialize: a counter that starts from a number', () => {
   const src = `export function f(n) {

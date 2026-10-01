@@ -591,18 +591,20 @@ export function specializeLoops(fn) {
       guardList.push({ name, own: own.get(name), tests })
     }
     const facts = new Map(assumed.map(name => [name, { lo: -ASSUMED, hi: ASSUMED, int: true, nz: false, nan: false }]))
-    const enter = [], leave = []
+    const enter = [], leave = [], exit = []
     for (const [name, mine] of own) {
       if (entering.has(name)) enter.push(['local.set', mine, get(name)])
       if (written.has(name) && leaving.has(name)) leave.push(['local.set', name, get(mine)])
+      if (written.has(name) && outward.size) exit.push(['local.set', name, get(mine)])
     }
-    // Leaving past the region: the locals go back first.
-    if (outward.size && leave.length) {
+    // Fallthrough liveness does not describe an outward branch's destination.
+    // Restore every written copy there, including an enclosing copy's exits.
+    if (exit.length) {
       const guardOut = (n) => {
         if (!isArr(n)) return n
         for (let i = 1; i < n.length; i++) n[i] = guardOut(n[i])
-        if (n[0] === 'br' && outward.has(n[1])) return ['block', ...leave.map(clone), n]
-        if (n[0] === 'br_if' && outward.has(n[1])) return ['if', n[2], ['then', ...leave.map(clone), ['br', n[1]]]]
+        if (n[0] === 'br' && outward.has(n[1])) return ['block', ...exit.map(clone), n]
+        if (n[0] === 'br_if' && outward.has(n[1])) return ['if', n[2], ['then', ...exit.map(clone), ['br', n[1]]]]
         return n
       }
       guardOut(copy)
