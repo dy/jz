@@ -28,6 +28,27 @@ test('call release: memory.used reads the heap the calls and the host keep', () 
   is(memory.used, 0, 'a reset returns it to 0')
 })
 
+test('call release: returned closures keep their environments across later calls', () => {
+  const src = `export function make(n) { return x => x + n }
+    export function nested(n) { return {items:[x => x + n]} }
+    export function collection(n) { return new Map([['read', x => x + n]]) }
+    export function counter(n) { return () => ++n }
+    export function scratch(n) { const a=new Float64Array(n); a.fill(7); return a[0] }
+    export function empty() { return () => 11 }`
+  for (const optimize of levels(0,1,2,3,'size')) {
+    const {exports: got}=jz(src,{optimize}), want=oracle(src)
+    const held=[], expected=[]
+    for (const n of [4,4,0,-3,12]) {
+      for (const read of [e=>e.make(n), e=>e.nested(n).items[0], e=>e.collection(n).get('read'), e=>e.counter(n), e=>e.empty()]) {
+        held.push(read(got)); expected.push(read(want))
+      }
+      is(got.scratch(32),want.scratch(32),`O${optimize}: scratch after ${n}`)
+      for(let i=0;i<held.length;i++)for(const x of [0,9,-2])
+        is(held[i](x),expected[i](x),`O${optimize}: retained closure ${i}, ${x}`)
+    }
+  }
+})
+
 test('call release: delayed initialization establishes the used-memory baseline', () => {
   throws(() => jz(`const state = globalThis.JSON.parse('['); export const read = () => state`, { host: 'js' }), /JSON/)
   const instances = []

@@ -708,7 +708,10 @@ export const memory = (src) => {
       if (a === 5) return true
     }
     if (t === 11 && mem._extMap) return mem._extMap[off]
-    if (t === 10 && fnOf) return fnOf(p)
+    if (t === 10 && fnOf) {
+      if (off >= mem._above) mem._held = true
+      return fnOf(p)
+    }
     if (t === 1) {  // ARRAY
       const len = m.getInt32(off - 8, true), out = new Array(len)
       for (let i = 0; i < len; i++) {
