@@ -91,7 +91,11 @@ function tryI32Index(e) {
   }
   return exprType(e, ctx.func.locals) === 'i32' && lookupValType(e) === VAL.NUMBER ? asI32(emit(e)) : null
 }
-export const emitIndex = (index, whole = false, wide = false) => {
+// `whole` proves a present integer, not its magnitude. `wide` retains a safe
+// full integer for a following bounds check. `bounded` supplies the stronger
+// proof for this typed access: its key lies in [0, receiver.length). It may
+// discard upper bits only together with `whole`, never from range alone.
+export const emitIndex = (index, whole = false, wide = false, bounded = false) => {
   // An unsigned bounds test rejects negative words and positive values past
   // 2^31 alike. A hull within [-2^31, 2^32) therefore keeps its low word;
   // beyond it, e.g. 65536 * 65536 would wrap into element zero.
@@ -125,6 +129,10 @@ export const emitIndex = (index, whole = false, wide = false) => {
   let value
   try { value = emit(index) } finally { if (nested) ctx.types.indexConsumer-- }
   if (value?.type === 'i32' && !value.indexValid) return value
+  // The caller proves this exact typed access in bounds. Together with the
+  // whole-key proof, its index lies in [0, 2^32): keep that address's low word.
+  // Individual arithmetic intermediates still retain their Number semantics.
+  if (bounded && proven) return typed(['i32.wrap_i64', ['i64.trunc_sat_f64_s', asF64(value)]], 'i32')
   // A checked typed-array access can compare an integer key with the full
   // unsigned length before using its low word as an address. Keep that value
   // once: saturating to i32 first needs two clamps around every wide scale.

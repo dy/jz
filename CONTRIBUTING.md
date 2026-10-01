@@ -923,6 +923,13 @@ the guarded address. Capture the key once before a store's RHS, retain a possibl
 NaN/missing-key bit, and leave rounded arithmetic to the existing integer proof
 (`test/typed-wide-index.js`). This avoids signed-i32 clamps without assuming a
 signed length ceiling.
+An access with both occurrence-specific extent and whole-key proofs already
+establishes a present integer in `[0, receiver.length)`, hence below `2^32`
+for memory32. Its address takes the low word directly. A whole-key proof alone
+never permits that conversion: an unchecked `2^32` must not become element zero.
+The source index still evaluates once; only the existing exact-intermediate
+integer proof may replace its arithmetic. This removes saturation from guarded
+offset windows without narrowing their unproved fallback or changing its checks.
 The size tier retains the compact conversion through the existing
 `inlineToNum: false` policy for per-site numeric-conversion expansion.
 Ranges obtained from a local's definition include its implicit zero value:
