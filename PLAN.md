@@ -35,8 +35,33 @@ The remaining release blockers are:
   down 27,275,328 bytes from kernel16. The artifact is 26,692,199 bytes,
   SHA-256 prefix `26cd173169b2`. Private census-table reuse is included; the
   block-prescan defect it exposed is fixed. A sampled Wasm allocation profile
-  is next; native Map-clear allocation samples do not describe this runtime's
-  in-place clear. Recursive completion remains a release blocker.
+  identified temporary shape-union collections and serialized member-list keys.
+  Canonical union construction and exact numeric-hash interning remove those
+  temporaries. A compiled 256-member growing/repeated interner probe falls from
+  1,870,096 to 386,776 retained bytes with identical results. This is a focused
+  measurement. Kernel19 (`eb29dc64`) confirms a 124,749,024-byte pre-emission
+  reduction, reaching 3,957,904,416 bytes at the last completed phase. Its fresh
+  26,775,197-byte artifact (SHA-256 prefix `2317f131330b`) passes nine reuse
+  sequences but still exhausts 4 GiB during emission. Kernel20 enables the
+  existing arena rewind in the O1 build on the same source and dependency:
+  all nine sequences pass, and pre-emission use falls another 244,208,032 bytes
+  to 3,713,696,384, but recursive emission still exhausts 4 GiB. The default O1
+  preset remains unchanged. Old-result age checks now work independently of
+  the reachability walk when rewind is enabled; a poisoned five-tier release
+  sweep passes 53 groups / 27,002 assertions. Kernel21 (`ade4ac8e`, private
+  watr release4) passes all nine sequences and reaches named-function emission:
+  3,473,445,144 bytes before emission and 4,181,418,480 after `emitFuncs`, then
+  OOM during closure emission. Its artifact is 27,329,724 bytes, SHA-256 prefix
+  `004f39463bd2`. Later frame analysis retains numeric closure identities and
+  one immutable row snapshot through convergence; focused tests pass 59 groups
+  / 5,551 assertions. The next measurement includes these changes together.
+  Kernel22 (`cc762e66`) includes those changes, settled parameter hulls, numeric
+  string indexing and impossible-loop-copy pruning. All nine sequences pass;
+  recursion still fails after `emitFuncs`: 3,471,078,376 bytes before emission,
+  4,181,100,024 after it, then the 4 GiB ceiling. The fresh artifact is
+  27,429,790 bytes, SHA-256 prefix `574f243a3b9f`. The small combined reduction
+  does not resolve this blocker. A published typed-read callback still reaches
+  mutable solver inputs; replacing it with settled facts is under review.
 - Dependency release: the complete, tested watr 5.11.9 tarball awaits publication
   approval. JZ still declares and locks 5.11.8. Publication, the dependency bump
   and a clean registry installation gate must precede release.
@@ -53,9 +78,11 @@ The remaining release blockers are:
   36.720 to 22.031 ms, while JavaScript takes 15.941 ms. The candidate grows
   72,705 to 115,153 bytes, so copy cost remains under review before landing.
   A private watr local-slot fix removes another 5,563 bytes with exact output
-  and no measured timing change; it is not in the prepared dependency package.
-  Suppressing outer copies loses 8.8 ms and is rejected. The broader checked-loop
-  and short-circuit proposals remain held without evidence of a speed gain.
+  and no measured timing change; it is included in private release4.
+  Suppressing outer copies loses 8.8 ms and is rejected. The broad checked-loop
+  proposal remains held. Short-circuit refinement and intersected entry bounds
+  are included after a nested-loop probe shrank from 3,514 to 2,802 bytes
+  with unchanged native/WASI answers; no timing gain is claimed.
   These local measurements diagnose regressions; they are not release evidence.
 
 The kernel4 frontend probes confirm the nested-array and repeated-index fixes:
@@ -77,16 +104,28 @@ cases (278,140 assertions), with 18 failures. Subsequent focused fixes restore
 numeric-key and extent facts after reference staging, stride-3 SIMD, codec
 cursor budgets, constructor copy dispatch, native host-field write-back and
 conditional counter narrowing. Callee-aware extent preservation reduces the
-Gain-chain fixture to 3,294 bytes
-before the computed-reader integration; dormant reader demand now keeps excess
-exception/BigInt support, and that separate size regression is under repair.
+Gain-chain fixture to 3,294 bytes. Dormant native readers no longer add exception,
+BigInt or receiver-ABI demand; the integrated fixture remains 3,294 bytes.
 Generated registry freshness and two tests' obsolete whole-module proof assumptions are repaired.
 The counter pass-order and splice signed-zero failures are fixed in focused
 checks. The splice cause was an implicit-return escape omitted from module
 element and helper parameter-length proofs. Full-candidate checks remain active.
 Additional boundary regressions pin derived collection constructor order,
 computed method values, typed-method coercion and retained returned closures.
-Final full gates remain required.
+Symbol factories now retain identity across repeated calls, property tables,
+host arguments and arena resets. String-hint description conversion preserves
+argument effects and errors; fresh descriptions remain a documented limitation.
+The frozen `a2c05dd0` core rerun finished with 6,150 of 6,160 tests passing
+(285,170 assertions). Nine failures now have focused fixes: strict computed
+reads, dormant receiver ABI demand, four transitive WAT controls, source closure
+identity queries, inline export roots and transient saved-key proofs. The
+remaining wrong result is traced to watr sinking a branch-capable checked load
+past a store-address side effect. Private release4 fixes that ordering and
+preserves numeric branch depths during block removal. Its native and compiled
+suites pass 358 project groups, 38 propagation groups and 268 official spec
+groups; all 37 installed package files match the checked build. The package
+SHA-256 is `f5cab85f9a4eb8d2a327e3d104d33eba7185d7c4fc01398f9920b0f93f258ba4`.
+It has not been published. The combined candidate still needs its full gate.
 The unchanged offset-index, RGBA and mirror SIMD bars pass. Packed cursor
 initialization preserves a proved pointer's presence, reducing the record-stream
 fixture from 1,420 to 1,148 bytes against its unchanged 1,203-byte limit.
@@ -114,6 +153,41 @@ advances the tested counter. Module counters and mutable module bounds cannot
 supply those loop theorems, because calls and coercions can write them. The
 unchanged byte-copy size test now passes at 438 B (limit 475 B).
 The combined final core matrix and bootstrap gates are not yet complete.
+
+The next frozen core diagnostic (`15a7e087`) passes 6,177 of 6,211 tests,
+with 291,453 assertions. Of its 34 failures, 26 were an unused public Symbol
+counter added by eager module loading. The counter now follows factory demand;
+interned-only modules keep host registry identity without it. Focused Symbol
+and eager parity checks pass 47 groups / 301 assertions. Six stale test
+assumptions are repaired: supported RegExp instanceof, a spread closure's own
+WAT, three inlined membership helpers, and strict module oracle semantics.
+The property-owner registry was regenerated for RegExp.toString. The remaining
+size failure is fixed without changing its limit: the dictionary-count module
+falls from 2,520 to 2,465 bytes against 2,466, by sharing canonical key equality.
+These fixes need a new full combined run.
+
+Object copies and structuredClone now preserve saved-key order and current
+property presence while running getters once. StructuredClone additionally
+snapshots Map/Set entries, preserves array holes and named fields, and memoizes
+cycles before descending. Focused native/WASI clone tests pass 23 groups with
+1,800 / 1,620 assertions. The general traversal adds code: the O2 plain-object
+fixture grows from 9,660 to 25,188 bytes, and the array fixture from 6,752 to
+24,036 bytes. Demand-based reduction remains work; no size cap was relaxed.
+Host property reads preserve unbound function identity and caught host exceptions
+retain their original values. Generic numeric NaN classification now shares one
+predicate across conversions, truthiness and equality; focused native/WASI tests
+pass 3 groups / 940 assertions each. BigInt typed stores convert unknown values
+before bounds checks and preserve catch behavior and assignment results: the
+native five-tier focus passes 3 groups / 834 assertions, with matching WASI
+coverage and 2,332 nullable-receiver assertions. Known Number/raw-BigInt fixture
+bytes are unchanged; generic conversion grows one O2 fixture by 714 bytes and a
+previously incorrect Number-or-string fixture by 6,686 bytes. DataView setters,
+Map/Set NaN keys and well-known Symbol reflection remain under review.
+
+The proposed scalar operation-ratchet accounting change is uncommitted and
+excluded from frozen gates. It preserves entered-loop ceilings but increases
+total-operation caps; automatic approval review rejected committing it without
+explicit approval. The existing ratchet remains the release bar.
 
 ## Element ranges, September 30
 
