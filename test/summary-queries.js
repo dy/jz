@@ -252,6 +252,26 @@ test('summary queries: layout discovery restarts leave complete and retained rea
   is(retained.at('').kindOfExpr(['.', 'c', 'a']), kind(K.NUMBER), 'an error preserves a retained reader')
 })
 
+test('summary queries: published argument hulls do not consult mutable function inputs', () => {
+  const funcs = ['closed', 'open'].map(name => ({ name,
+    sig: { params: [{ name: 'x' }], dispatcher: name === 'open' }, body: 'x' }))
+  const options = { funcs, schemas: [], brandOf: () => null, imports: new Map(), exported: () => false }
+  const ast = [';', ['()', 'closed', lit(3)], ['()', 'open', lit(7)]]
+  const first = summarize(ast, options)
+  const hull = first.paramRangesOf('closed')
+  is(hull, [[3, 3]], 'closed calls publish their finite hull')
+  is(first.paramRangesOf('closed') === hull, true, 'a repeated query borrows its settled vector')
+  is(first.paramRangesOf('open'), null, 'a dispatcher has no incoming bound')
+  funcs[0].sig.dispatcher = true
+  funcs[1].sig.dispatcher = false
+  const second = summarize(ast, options)
+  is(second.paramRangesOf('closed'), null, 'the next solve sees the changed dispatcher')
+  is(second.paramRangesOf('open'), [[7, 7]], 'the next solve can close the former dispatcher')
+  is(first.paramRangesOf('closed'), [[3, 3]], 'changed input metadata cannot open a retained reader')
+  is(first.paramRangesOf('open'), null, 'changed input metadata cannot close a retained reader')
+  is(first.paramRangesOf('missing'), null, 'an unknown function has no inherited hull')
+})
+
 test('summary queries: alternating argument hull buffers preserve late calls and prior summaries', () => {
   let retained
   for (const last of [7, 7, 19, 7]) {

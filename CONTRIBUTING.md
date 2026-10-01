@@ -346,6 +346,9 @@ need no literal-builder environment. Alias and presence refinements remain live.
 Solver query views expose only expression kinds, binding keys and call targets.
 The full emission interface is created for published views, after solving; its
 scope caches, alias refinements and retained-reader behavior stay independent.
+Published parameter hulls are settled read-only records. Queries reuse their
+vectors without capturing the solver or consulting mutable function signatures;
+a later dispatcher change belongs to the next summary.
 The held-object proof records mentions only for single object-literal definitions
 and name aliases. Every use of those candidates still counts; primitive, array
 and reassigned bindings cannot enter that proof and need no occurrence lists.

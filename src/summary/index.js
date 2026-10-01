@@ -732,7 +732,6 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     const i = paramNamesOf(f).indexOf(name)
     return i < 0 ? null : argRanges.get(fn)?.ranges[i] ?? null
   }
-  const paramRangesOf = (fn) => { const f = funcByName.get(fn); return !f || openCaller(fn, f) ? null : argRanges.get(fn)?.ranges.map(r => r ?? null) ?? null }
   // Every bind of a named function's parameters notes the call's arguments
   // (`bind`): the argument list aligned with the parameters, or null where
   // the channel cannot name them (a callback, `.call`/`.apply`, a member
@@ -4033,7 +4032,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   }
   const queryFacts = {
     kinds, incoming, fields, results, closures, declared, parent, nameKeys, forwards, siteResults, receivers,
-    scopeOfSig, scopeOfBody, scopeOfParams, cellUp, elems, tuples, lens, stores, built, grown, unknown, presentReads, spreadSources, paramRangesOf, cellProps, cellWild, cellNumeric, hostArrays, retainedArrays, closureSets, closureSetIds, cells, jsonKinds, closuresByBody, unions, shapeUnions,
+    scopeOfSig, scopeOfBody, scopeOfParams, cellUp, elems, tuples, lens, stores, built, grown, unknown, presentReads, spreadSources, paramRanges: argRanges, cellProps, cellWild, cellNumeric, hostArrays, retainedArrays, closureSets, closureSetIds, cells, jsonKinds, closuresByBody, unions, shapeUnions,
     schemas, layouts, sitesByLayout, foldedLayouts, objectKinds, methods, sidByKey,
     funcNames: new Set(funcByName.keys()), imports: new Map(imports),
     numeric, strung, dynamicProps, builtinOwnProps, escaped, typedReadPresent, typedProps, typedPropsByAux, openSchemas, indexedSchemas, hostSchemas, opaqueSchemas, copiedSchemas, deletable, deleteReach, assignedProps, keysSeen,
@@ -4485,6 +4484,9 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   // Resolve union-find roots once before publishing. Readers never compress
   // paths or borrow the solver's mutable current scope.
   for (let id = 0; id < cellUp.length; id++) cellUp[id] = cell(id)
+  // Publish settled hull records, not a closure over the solver and mutable
+  // function inputs. No later round writes these buffers; queries borrow them.
+  for (const f of funcs) if (openCaller(f.name, f)) argRanges.delete(f.name)
   // The result contracts (contract.js), from the settled results. A return
   // whose own kind names BigInt among a bounded set, through its joins and its
   // calls to such callables, is a BigInt member the join to ANY erased

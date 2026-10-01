@@ -17,7 +17,7 @@ const INHERITED = new Set(['constructor', 'hasOwnProperty', 'isPrototypeOf', 'pr
 
 export function summaryQueries(facts, internal = false) {
   const { kinds, incoming, fields, results, receivers, closures, closuresByBody, declared, parent, nameKeys, forwards, siteResults,
-    scopeOfSig, scopeOfBody, scopeOfParams, cellUp, elems, tuples, lens, stores, built, grown, unknown, presentReads, spreadSources, paramRangesOf, cellProps, cellWild, cellNumeric, hostArrays, retainedArrays, closureSets, closureSetIds, cells, jsonKinds, unions, shapeUnions,
+    scopeOfSig, scopeOfBody, scopeOfParams, cellUp, elems, tuples, lens, stores, built, grown, unknown, presentReads, spreadSources, paramRanges, cellProps, cellWild, cellNumeric, hostArrays, retainedArrays, closureSets, closureSetIds, cells, jsonKinds, unions, shapeUnions,
     schemas, layouts, sitesByLayout, foldedLayouts, objectKinds, methods, sidByKey, funcNames, imports, numeric, strung, dynamicProps, builtinOwnProps, typedReadPresent, typedProps, typedPropsByAux, openSchemas, indexedSchemas,
     sideProps, sideWild, wildProps, wildValues, pendingAll, keyedCells, cellShapes, cellLostObject, closureProps, escaped, iterSites, reached, defaultRuns, boolKeys, storeBits, paramKeys } = facts
   // The solver owns union-find compression; querying a root never writes it.
@@ -513,7 +513,7 @@ export function summaryQueries(facts, internal = false) {
       // The finite interval each parameter of a function receives over every
       // call the walk binds (index.js `argRanges`), null per position a call
       // leaves unbounded; null for a function the host or a dispatcher may call.
-      paramRangesOf,
+      paramRangesOf: name => paramRanges.get(name)?.ranges ?? null,
       // A typed element read the summary holds inside the array's count: its
       // index needs no bounds test and its value is never the undefined of a miss.
       presentTypedRead: n => Array.isArray(n) && n[0] === '[]' && tagOf(kindOfExpr(n[1])) === K.TYPED && typedElementKey(n[2], kindOfExpr(n[2]) === NUMBER) && (typedReadPresent(scope, n) || presentReads.has(n)),
