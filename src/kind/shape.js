@@ -141,6 +141,7 @@ export function shapeOf(expr) {
         : Array.isArray(k) && k[0] === 'str' ? k[1] : undefined
       if (typeof lit === 'string' && !/^(0|[1-9][0-9]*)$/.test(lit)) return null
       if (lit === undefined && ctx.summary?.at(ctx.func.current).valOfExpr(k) !== VAL.NUMBER) return null
+      if (!ctx.summary?.at(ctx.func.current).arrayNumericPropertiesAbsent(expr[1])) return null
       return parent.elem || null
     }
   }

@@ -115,7 +115,15 @@ name `length`, a method or an own property; solver and read-only queries join
 those kinds before projecting a field. Local schema and JSON-shape propagation
 must retain that distinction, including when an indexed result is captured.
 Only a present Number key restricts write effects to numeric properties;
-nullish keys can change named slots.
+nullish keys can change named slots. Only integer Number keys in `0..2^32-2`
+address elements; other Numbers name properties, so the summary retains a
+separate numeric-property domain through array joins, escapes and host exposure.
+Reads and writes retain the original key for ToPropertyKey unless an integer
+index proof authorizes truncation. Integer endpoints of a parameter hull do not
+prove every argument integral. Packed replacement requires a present cursor or
+an unconditional projection before the store; caught and optional projections
+cannot justify dropping an append or property write. The ordinary boxed path
+keeps those operations and their evaluation order.
 Losing an object layout uses the summary's effectful merge, so dynamically read
 BigInt fields retain self-describing storage.
 Array `for…of` loops capture their source once and reread its length each step.

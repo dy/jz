@@ -721,15 +721,16 @@ export default (ctx) => {
     if (typeof arr === 'string' && ctx.func.restView?.has(arr)) return restViewRead(ctx.func.restView.get(arr), idx)
     const nullable = isNullable(ctx.summary?.at(ctx.func.current).kindOfExpr(arr)) &&
       !(typeof arr === 'string' && (repOf(arr)?.ptrKind != null || ctx.func.refinements?.get(arr)?.val != null || activeBoundsAssumption(ctx, arr, idx)))
-    // A literal NEGATIVE index on an array, a typed array or a string is out of
-    // range → undefined (JS semantics), never a raw `payload + (-1)*8` load that
+    // A literal NEGATIVE index on a typed array or a string is out of
+    // range → undefined, never a raw `payload + (-1)*8` load that
     // reads heap before the allocation. A side-effecting receiver still
     // evaluates. On any other receiver `o[-1]` reads the property "-1"
     // (ToPropertyKey): the generic paths below stringify the key. Mirrors
     // VT['[]'] returning null for the same case.
     { const li = intLiteralValue(idx)
       const rvt = typeof arr === 'string' ? lookupValType(arr) : valTypeOf(arr)
-      if (!nullable && li != null && li < 0 && (rvt === VAL.ARRAY || rvt === VAL.TYPED || rvt === VAL.STRING))
+      if (!nullable && li != null && li < 0 && (rvt === VAL.TYPED || rvt === VAL.STRING ||
+          rvt === VAL.ARRAY && ctx.summary?.at(ctx.func.current).arrayNumericPropertiesAbsent(arr)))
         return typeof arr === 'string'
           ? undefExpr()
           : typed(['block', ['result', 'f64'], ['drop', asF64(emit(arr))], undefExpr()], 'f64') }
@@ -979,6 +980,11 @@ export default (ctx) => {
       inc('__dyn_get_expr')
       return ['f64.reinterpret_i64', ['call', '$__dyn_get_expr', ['i64.reinterpret_f64', objExpr], ['i64.reinterpret_f64', keyExpr]]]
     }
+    // Numbers outside the array-index domain name own properties. Keep their
+    // original value for ToPropertyKey; keyIndex's -1 sentinel loses it.
+    const keyRange = numericKey ? intExprRange(idx) : null
+    const elementKey = keyRange && keyRange[0] >= 0 && keyRange[1] < 0xffffffff
+    const numericProps = !elementKey && !ctx.summary?.at(ctx.func.current).arrayNumericPropertiesAbsent(arr)
     const stringLoad = () => (inc('__str_idx'), ['call', '$__str_idx', ['i64.reinterpret_f64', ptrExpr], vi])
     // A numeric index on an unknown receiver is array/typed access by design — kept
     // lean (no OBJECT/HASH dyn-get fork): an object with numeric keys is a degenerate
@@ -1003,14 +1009,14 @@ export default (ctx) => {
     // walk and its call frame were the price of every element read there.
     // `ptrExpr` is a plain read (the receiver was hoisted above); the index
     // lands in a temp once.
-    const arrayFast = (slow) => {
+    const arrayFast = (slow, index = vi, receiver = ptrExpr) => {
       const off = tempI32('ao'), ix = tempI32('ax')
       inc('__ptr_offset_fwd')
       return ['block', ['result', 'f64'],
-        ['local.set', `$${ix}`, vi],
+        ['local.set', `$${ix}`, index],
         ['if', ['result', 'f64'],
-          ['i32.and', ptrTypeEq(ptrExpr, PTR.ARRAY),
-            ['i32.ge_u', ['local.tee', `$${off}`, ['i32.wrap_i64', ['i64.reinterpret_f64', ptrExpr]]], ['i32.const', 8]]],
+          ['i32.and', ptrTypeEq(receiver, PTR.ARRAY),
+            ['i32.ge_u', ['local.tee', `$${off}`, ['i32.wrap_i64', ['i64.reinterpret_f64', receiver]]], ['i32.const', 8]]],
           ['then',
             ['if', ['i32.eq', ['i32.load', ['i32.sub', ['local.get', `$${off}`], ['i32.const', 4]]], ['i32.const', -1]],
               ['then', ['local.set', `$${off}`, ['call', '$__ptr_offset_fwd', ['local.get', `$${off}`]]]]],
@@ -1020,12 +1026,32 @@ export default (ctx) => {
               ['else', undefExpr()]]],
           ['else', slow(['local.get', `$${ix}`])]]]
     }
+    // Keep the existing direct array load for exact word indices. Only the
+    // other arm needs ToPropertyKey, with receiver identity captured before
+    // an effectful key and forwarding resolved afterwards.
+    const arrayPropertyLoad = key => {
+      ctx.module.include('collection')
+      if (ctx.transform.optimize?.leanRuntime) return opaqueDynExprLoad(ptrExpr, key)
+      const recv = temp('apr'), kt = temp('apk'), ki = tempI32('api')
+      const r = typed(['local.get', `$${recv}`], 'f64'), k = typed(['local.get', `$${kt}`], 'f64')
+      return ['block', ['result', 'f64'],
+        ['local.set', `$${recv}`, ptrExpr], ['local.set', `$${kt}`, key],
+        ['if', ['result', 'f64'], ['i32.ge_s', ['local.tee', `$${ki}`, keyIndex(k)], ['i32.const', 0]],
+          ['then', arrayFast(ix => ['call', `$${runtimeElemRead}`, ['i64.reinterpret_f64', r], ix], ['local.get', `$${ki}`], r)],
+          ['else', opaqueDynExprLoad(r, k)]]]
+    }
+    if (vt === VAL.ARRAY && keyType !== VAL.STRING && numericProps)
+      return typed(arrayPropertyLoad(storedValue(idx)), 'f64')
     // The size tier keeps the helper's own dispatch (`leanRuntime`, the tier
     // that links the runtime lean): the inline arm is ~50 ops per site, 14 KB of
     // watr's size build for a walker's reads the speed build alone is timed on.
-    const arrayLoad = ctx.transform.optimize?.leanRuntime
+    const indexedLoad = ctx.transform.optimize?.leanRuntime
       ? ['block', ['result', 'f64'], ['call', `$${runtimeElemRead}`, ['i64.reinterpret_f64', ptrExpr], vi]]
       : arrayFast(ix => ['call', `$${runtimeElemRead}`, ['i64.reinterpret_f64', ptrExpr], ix])
+    const arrayLoad = vt == null && numericProps
+      ? ['if', ['result', 'f64'], ptrTypeEq(ptrExpr, PTR.ARRAY),
+        ['then', arrayPropertyLoad(storedValue(idx))], ['else', indexedLoad]]
+      : indexedLoad
     const emitDynamicKeyDispatch = (objExpr, numericLoad) => {
       const keyTmp = temp()
       // All boxed keys (and NaN) need ToPropertyKey. The dynamic helper owns
@@ -1336,9 +1362,14 @@ export default (ctx) => {
         // the gap where this fallback silently read undefined through __typed_idx's
         // unrelated __len-bounds-check arm. Mirrored below for the sibling
         // proven-NUMBER-key case (receiver kind, not key kind, decides the fork).
+        const numericIndexed = numericProps
+          ? ['if', ['result', 'f64'], ptrTypeEq(ptrExpr, PTR.ARRAY),
+            ['then', arrayPropertyLoad(keyExpr)],
+            ['else', ['call', `$${runtimeElemRead}`, ['i64.reinterpret_f64', ptrExpr], keyI32]]]
+          : ['call', `$${runtimeElemRead}`, ['i64.reinterpret_f64', ptrExpr], keyI32]
         const typedOrDyn = ['if', ['result', 'f64'],
           ['i32.or', ptrTypeEq(ptrExpr, PTR.ARRAY), ptrTypeEq(ptrExpr, PTR.TYPED)],
-          ['then', ['call', `$${runtimeElemRead}`, ['i64.reinterpret_f64', ptrExpr], keyI32]],
+          ['then', numericIndexed],
           ['else', opaqueDynExprLoad(ptrExpr, keyExpr)] ]
         if (ctx.module.modules['string'] && !notString) {
           return ['if', ['result', 'f64'],

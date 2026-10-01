@@ -35,7 +35,7 @@
  * path, so runtime aliens stay bit-exact).
  */
 import { ctx } from '../ctx.js'
-import { refsName } from '../ast.js'
+import { refsName, hasOptionalChain } from '../ast.js'
 import { analyzeValueFacts } from './analyze.js'
 import { staticObjectProps, inplaceKey } from '../static.js'
 import { VAL } from '../reps.js'
@@ -274,6 +274,20 @@ export function scanInplaceStores(programFacts) {
     return false
   }
 
+  // A packed replacement cannot append or create a property. An unconditional
+  // cursor projection first throws for an absent element; a conditional one
+  // does not establish that precondition. Boxed stores need no such proof.
+  const projects = (n, name) => {
+    if (!Array.isArray(n)) return false
+    const op = n[0]
+    if ((op === '.' || op === '[]' || op === '()') && hasOptionalChain(n[1])) return projects(n[1], name)
+    if (op === '.' || op === '[]') { if (n[1] === name) return true }
+    if (op === 'if' || op === '?:' || op === '&&' || op === '||' || op === '??' || op === '?.' || op === '?.[]' || op === '?.()') return projects(n[1], name)
+    if (op === '=>' || op === 'for' || op === 'while' || op === 'do' || op === 'try' || op === 'catch' || op === 'finally' || op === 'switch' || op === 'str') return false
+    for (let i = 1; i < n.length; i++) if (projects(n[i], name)) return true
+    return false
+  }
+
   // Verdicts are CONTENT-keyed (see inplaceKey): body transforms between this
   // sweep and its consumers (analyzeFuncForEmit's loop rewrites, emit-time
   // inlining) rebuild trees, so node identity does not survive. Sound for the
@@ -301,13 +315,18 @@ export function scanInplaceStores(programFacts) {
       let pure = true
       for (let i = a.declIdx + 1; i < c.stmtIdx && pure; i++)
         pure = !impureBetween(c.block[i], c.idxName, c.arrName)
-      if (pure) { reuse = { alias: a.name, idx: a.idx }; break }
+      if (pure) {
+        let requiresElement = projects(c.lit, a.name)
+        for (let i = a.declIdx + 1; i < c.stmtIdx && !requiresElement; i++) requiresElement = projects(c.block[i], a.name)
+        reuse = { alias: a.name, idx: a.idx, requiresElement }; break
+      }
     }
     // meet across same-content sites: validity ANDs; reuse must agree exactly
     const prev = verdict.get(key)
     if (!ok || prev === false) verdict.set(key, false)
     else if (prev === undefined) verdict.set(key, reuse ?? { alias: null })
     else if (prev.alias !== (reuse?.alias ?? null) || (prev.alias && prev.idx !== reuse.idx)) verdict.set(key, { alias: null })
+    else if (prev.requiresElement && !reuse?.requiresElement) prev.requiresElement = false
     if (ok && DBG) console.error('[inplace-ok]', c.fn.name, c.arrName, 'sid', c.sid, reuse ? 'reuse ' + reuse.alias : '')
   }
   const out = new Map()

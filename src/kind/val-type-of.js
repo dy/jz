@@ -307,7 +307,8 @@ VT['[]'] = (args) => {
   if (recvVt === VAL.STRING) return VAL.STRING
   // Element facts describe numeric indices, not arbitrary property keys:
   // an array's string key can read its length, a method, or an own property.
-  if (recvVt === VAL.ARRAY && !typedElementKey(args[1], isPresentNumber(ctx, args[1]))) return null
+  if (recvVt === VAL.ARRAY && (!typedElementKey(args[1], isPresentNumber(ctx, args[1])) ||
+      !ctx.summary?.at(ctx.func.current).arrayNumericPropertiesAbsent(args[0]))) return null
   // Indexed read on a known Array<VAL> receiver: bind by rep.arrayElemValType,
   // the program summary's element cell (every store in the program joined),
   // stamped by analyzeValTypes on a local, emitFunc's preseed on a parameter,

@@ -91,6 +91,7 @@ export function unionInlinePass(programFacts) {
     }
     if (!uArr.size && !cursorParams.size) return
     const summary = ctx.summary?.at(func.sig)
+    for (const [name, key] of uArr) if (!summary?.arrayNumericPropertiesAbsent(name)) black.add(key)
     if (uArr.size) uArraysByFunc.set(func.sig, uArr)
 
     // `const t = o.PROP` aliases (discriminant reads) + `const o = a[i]`

@@ -164,11 +164,15 @@ export function structInlinePass(programFacts) {
         ctx.funcs.map?.get(expr[1])?.arrayElemSchema === sid
     }
     const summary = ctx.summary?.at(func.sig)
+    // Packed cells have no boxed side-property store. A Number key alone
+    // does not prove an element: negative/fractional/wide keys name properties.
+    for (const [name, sid] of arrName) if (!summary?.arrayNumericPropertiesAbsent(name)) black.add(sid)
     const numericIndex = e => tagOf(core(summary?.kindOfExpr(e) ?? K.NONE)) === K.NUMBER
     const isUserCall = (e) => Array.isArray(e) && e[0] === '()' && typeof e[1] === 'string'
 
     // Pass 1 — collect `const p = a[i]` cursors; drop on name clash / re-decl.
     const cursor = new Map()        // name → sid
+    const presentCursor = new Set() // the saved element is present before replacement
     const declSeen = new Set()
     walkAst(body, { enter: node => {
       if (node[0] === '=>') return false
@@ -183,7 +187,7 @@ export function structInlinePass(programFacts) {
               typeof rhs[1] === 'string' && arrName.has(rhs[1]) && !isStrLit(rhs[2])) {
             const sid = arrName.get(rhs[1])
             if (!numericIndex(rhs[2]) || cursor.has(name) || arrName.has(name)) black.add(sid)
-            else cursor.set(name, sid)
+            else { cursor.set(name, sid); if (!summary.mayBeNullishExpr(rhs)) presentCursor.add(name) }
           }
         }
       }
@@ -322,15 +326,14 @@ export function structInlinePass(programFacts) {
       // idiom. Handled iff the whole-program alias sweep (scanInplaceStores)
       // proved every same-content store safe (content-keyed — node identity
       // does not survive analyzeFuncForEmit's loop rewrites) WITH target-
-      // binding reuse: a same-index tracked cursor precedes the store, so the
-      // replace idiom is separated from append-builders (`out[len] = {…}`),
-      // which stay on the plain layout where extend keeps JS semantics. A
+      // binding reuse: a same-index tracked cursor precedes the store. It is
+      // either proven present or unconditionally projected before replacement;
+      // optional projections cannot rule out an append/property write. A
       // value-position `x = (a[i] = {…})` poisons the sid inside the sweep
       // itself (its `[]` target walks as a value read), so a surviving verdict
-      // implies statement position. Index must be an int-certain name — a
-      // fractional/negative index is a sidecar PROPERTY write in JS, which the
-      // inline arm cannot express (it drops OOB writes like the checked typed
-      // store). Emit lowers via emit-assign's tryStructInlineReplaceStore.
+      // implies statement position. The index must be int-certain, and the
+      // array's side-property census must be empty. Emit lowers via
+      // emit-assign's tryStructInlineReplaceStore.
       if (op === '=' && Array.isArray(node[1]) && node[1][0] === '[]' && node[1].length === 3 &&
           typeof node[1][1] === 'string' && arrName.has(node[1][1])) {
         const sid = arrName.get(node[1][1])
@@ -339,7 +342,7 @@ export function structInlinePass(programFacts) {
           ? ctx.schema.inplaceStores?.get(inplaceKey(node[1][1], rhs)) : null
         const idxIntCertain = typeof idx === 'string' &&
           functionPlanRepField(ctx, functionPlan, idx, 'intCertain') === true
-        const ok = idxIntCertain && entry != null && entry.alias != null && entry.idx === idx &&
+        const ok = idxIntCertain && entry != null && (presentCursor.has(entry.alias) || entry.requiresElement) && entry.idx === idx &&
           objLiteralSchemaId(rhs) === sid
         if (!ok) {
           if (DBG) console.error('[inlarr-store-reject]', func.name, node[1][1], 'sid', sid,

@@ -200,15 +200,16 @@ function dynSetCall(arr, keyExpr, valueExpr, receiver = null) {
   return typed(['f64.reinterpret_i64', ['call', `$${setter}`, asI64(receiver ?? emit(arr)), asI64(keyExpr), asI64(valueExpr)]], 'f64')
 }
 
-/** Boxed keys need ToPropertyKey; ordinary numbers retain the indexed path. */
+/** Keys outside the nonnegative word-index domain retain ToPropertyKey. */
 function dispatchByKeyKind(arr, keyExpr, valueExpr, numericIR) {
   ensureDynSetAllowed(arr)
+  ctx.module.include('collection')
   const objTmp = temp('dko'), keyTmp = temp()
   const receiver = typed(['local.get', `$${objTmp}`], 'f64')
   return block64(
     ['local.set', `$${objTmp}`, asF64(emit(arr))],
     ['local.set', `$${keyTmp}`, keyExpr],
-    ['if', ['result', 'f64'], ['f64.ne', ['local.get', `$${keyTmp}`], ['local.get', `$${keyTmp}`]],
+    ['if', ['result', 'f64'], ['i32.lt_s', keyIndex(typed(['local.get', `$${keyTmp}`], 'f64')), ['i32.const', 0]],
       ['then', dynSetCall(arr, typed(['local.get', `$${keyTmp}`], 'f64'), valueExpr, receiver)],
       ['else', numericIR(['local.get', `$${keyTmp}`], receiver)]])
 }
@@ -356,14 +357,10 @@ function tryInplaceReplaceStore(arr, idx, val) {
  *  non-cursor path — the receiver box spill FIRST, then the slot values (they
  *  may read the old element's fields: `a[i] = {x: p.y, y: p.x}` swaps).
  *
- *  Bounds: one `cellIdx < physLen` u-compare. In-bounds → K stores; anything
- *  else — i ≥ length (JS: array-extend) or a negative int-certain index
- *  (JS: sidecar property) — DROPS the write, the same contract as the
- *  checked-by-default typed store (OOB writes ignored). By then JS itself
- *  would have thrown at the cursor's `p.x` projection (undefined.x), which
- *  the carrier's unchecked cursor read already deviates on; the analyzer only
- *  accepts stores preceded by a same-index cursor read (reuse verdict), so
- *  append-idiom builders (`out[out.length] = {…}`) stay on the plain layout.
+ *  Bounds: one `cellIdx < physLen` u-compare. Admission proves the saved
+ *  element present, or requires an unconditional projection before replacement
+ *  that throws if it is absent. Thus a completed RHS can only replace a cell;
+ *  appends and side-property writes keep the boxed layout and its generic store.
  *  No grow call exists in the arm, so loop-invariant base hoists stay sound.
  *
  *  Address: with the sweep's target-binding reuse, the cursor IS the cell
@@ -465,6 +462,8 @@ function primitiveStore(obj, key, val) {
 export function emitElementAssign(arr, idx, val, node = null) {
   const prim = primitiveStore(arr, idx, val)
   if (prim) return prim
+  const indexRange = intExprRange(idx)
+  const indexOnly = isPresentNumber(ctx, idx) && indexRange != null && indexRange[0] >= 0 && indexRange[1] <= 0x7fffffff
   // Static object fields and array length use the same carrier, setter and
   // resize semantics as dot syntax, including expression receivers.
   if (isLiteralStr(idx) && (idx[1] === 'length' || ctx.summary?.at(ctx.func.current).objectSidOfExpr(arr) != null))
@@ -517,7 +516,7 @@ export function emitElementAssign(arr, idx, val, node = null) {
   if (sIn) return sIn
   const rmw = trySlotUpdate(arr, idx, val)
   if (rmw) return rmw
-  const inplace = (ctx.transform.optFlags & OPTF.inplaceStore) ? tryInplaceReplaceStore(arr, idx, val) : null
+  const inplace = indexOnly && (ctx.transform.optFlags & OPTF.inplaceStore) ? tryInplaceReplaceStore(arr, idx, val) : null
   if (inplace) return inplace
   // SRoA flat object/array: `o['k'] = x` / `a[2] = x` → `local.set $o#i` (no
   // heap store). Checked EARLY, before keyExpr/valueExpr below, so `val`
@@ -544,15 +543,15 @@ export function emitElementAssign(arr, idx, val, node = null) {
   const void_ = ctx.func._expect === 'void'
   const keyType = valTypeOf(idx)
   const numericKey = keyType === VAL.NUMBER && isPresentNumber(ctx, idx)
-  if (!numericKey && (valTypeOf(arr) === VAL.TYPED || valTypeOf(arr) == null)) {
+  // Only proved element indices bypass property-key dispatch. A numeric
+  // payload can be fractional, negative, wide or absent.
+  const useRuntimeKeyDispatch = (!numericKey || !indexOnly && valTypeOf(arr) !== VAL.TYPED) && keyType !== VAL.STRING
+  if ((!numericKey || useRuntimeKeyDispatch) && (valTypeOf(arr) === VAL.TYPED || valTypeOf(arr) == null)) {
     ctx.module.include('typedarray')
     ctx.module.include('collection')
     ctx.module.include('string')
     setLinkDemand('typedProperties')
   }
-  // A numeric payload does not exclude an absent value. Only a present Number
-  // can bypass ToPropertyKey; nullish, boolean and pointer boxes retain it.
-  const useRuntimeKeyDispatch = !numericKey && keyType !== VAL.STRING
   // storedValue (not asF64(emit(idx))): the universal computed-key emit site
   // feeding $__dyn_set — an 18th unswept MECHANISM A site (.work/archive/todo.md
   // §deletion-sweep). storedValue already returns f64-typed IR in every

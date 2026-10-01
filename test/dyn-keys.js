@@ -11,6 +11,152 @@ import { oracle, funcWat } from './util.js'
 
 const run = (body) => jz('export let f = () => {' + body + '}', { jzify: true }).exports.f()
 
+test('ordinary array Number keys read own properties without truncation', () => {
+  const src = `export function f(k){k=+k;const a=[{x:3}];
+    a['-1']={y:4,x:7};a['1.5']=11n;a.NaN='saved';a.Infinity=true;
+    a['-Infinity']=null;a['4294967295']=17;a['4294967296']=19;a['1e+21']=23;
+    return [a[k],typeof a[k],a.length]}
+    export function field(k){k=+k;const a=[{x:3}];a['-1']={y:4,x:7};return a[k].x}
+    export function literal(){const a=[3];a['-1']=7;return a[-1]}`
+  const expected = oracle(src)
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const actual = jz(src, { optimize, sourceInline: false }).exports
+    for (const key of [-1,-1,0,-0,1,1.5,NaN,Infinity,-Infinity,4294967295,4294967296,1e21,-1])
+      is(actual.f(key), expected.f(key), `${key}, O${optimize}`)
+    for (const key of [-1,-1,0,-0,-1]) is(actual.field(key),expected.field(key), `projection ${key}, O${optimize}`)
+    is(actual.literal(),7,`literal negative, O${optimize}`)
+  }
+})
+
+test('ordinary array Number keys write elements and named properties through aliases', () => {
+  const src = `export function f(k,mode){k=+k;const a=[0,0,0],alias=a;
+    const values=[7,'saved',9n,false,{x:13}],value=values[mode];
+    const assigned=(a[k]=value);
+    return [assigned,a[k],a[String(k)],alias[k],a.length,Object.keys(a).join(',')]}`
+  const expected = oracle(src).f
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const actual = jz(src, { optimize }).exports.f
+    for (const key of [0,-0,1,3,-1,-1.5,NaN,Infinity,-Infinity,4294967295,4294967296,1e21])
+      for (const mode of [0,0,1,2,3,4,0])
+        is(actual(key,mode),expected(key,mode), `${key}, mode=${mode}, O${optimize}`)
+  }
+})
+
+test('ordinary array Number keys preserve reference and RHS order across relocation', () => {
+  const src = `export function f(k){k=+k;let events=0;const original=[3];let target=original;
+    function base(){events=events*10+1;return target}
+    function key(){events=events*10+2;return k}
+    function value(){events=events*10+3;target=[99];for(let i=0;i<80;i++)original.push(i);return 17}
+    const assigned=(base()[key()]=value());
+    return [assigned,original[k],target[0],original.length,events]}
+    export function read(k){k=+k;let events=0;const a=[3];a[String(k)]=17;
+      function key(){events++;for(let i=0;i<80;i++)a.push(i);return k}
+      return [a[key()],events,a.length]}`
+  const expected=oracle(src)
+  for(const optimize of levels(0,1,2,3,'size')) {
+    const actual=jz(src,{optimize,sourceInline:false}).exports
+    for(const key of [-1,-1,0,1.5,NaN,4294967295,1e21,0])
+      for(const name of ['f','read']) is(actual[name](key),expected[name](key),`${name} ${key}, O${optimize}`)
+  }
+})
+
+test('ordinary array Number keys keep typed-array invalid-index conversions distinct', () => {
+  const src=`function store(a,k,v){return a[k]=v}
+    export function f(k,mode){k=+k;const a=mode?[0,0]:new Int32Array(2);let calls=0;
+      const value={valueOf(){calls++;return 7}},assigned=store(a,k,value);
+      return [assigned===value,a[k]===value,calls,typeof a[k],mode?0:a[0]]}`
+  const expected=oracle(src).f
+  for(const optimize of levels(0,1,2,3,'size')) {
+    const actual=jz(src,{optimize,sourceInline:false}).exports.f
+    for(const key of [0,0,1,-1,1.5,NaN,Infinity,4294967295,0])
+      for(const mode of [0,1,0]) is(actual(key,mode),expected(key,mode),`${key} mode=${mode}, O${optimize}`)
+  }
+})
+
+
+test('ordinary array Number keys keep conditional record projections lazy', () => {
+  const src=`export function f(k,flag){const a=[];a.push({x:1});const i=k|0,p=a[i];
+    a[i]={x:flag?p.x:7};return [a[i].x,a.length]}`
+  const expected=oracle(src).f
+  for(const optimize of levels(0,1,2,3,'size')) {
+    const actual=jz(src,{optimize}).exports.f
+    for(const key of [-1,-1,0,1,3,-1]) {
+      is(actual(key,0),expected(key,0),`${key} no projection, O${optimize}`)
+      if(key!==0) throws(()=>actual(key,1),TypeError,`${key} absent projection, O${optimize}`)
+      else is(actual(key,1),expected(key,1),`existing projection, O${optimize}`)
+      is(actual(0,0),expected(0,0),`reuse after ${key}, O${optimize}`)
+    }
+  }
+})
+
+test('ordinary array Number keys preserve fractional helper inputs inside integral endpoint hulls', () => {
+  const src=`function get(a,k){return a[k].x}
+    export function f(){const a=[{x:2},{x:3}];a[0.5]={y:1,x:7};
+      return [get(a,0),get(a,0.5),get(a,1)]}`
+  const expected=oracle(src).f()
+  for(const optimize of levels(0,1,2,3,'size')) {
+    const actual=jz(src,{optimize,sourceInline:false}).exports.f
+    is(actual(),expected,`O${optimize}`);is(actual(),expected,`repeat O${optimize}`)
+  }
+})
+
+test('ordinary array Number keys keep conditional fixed-index appends on boxed cells', () => {
+  for(const key of [0,1,3]) {
+    const src=`export function f(flag){const a=[];a.push({x:1});const i=${key},p=a[i];
+      a[i]={x:flag?p.x:7};return [a[i].x,a.length]}`
+    const expected=oracle(src).f
+    for(const optimize of levels(0,1,2,3,'size')) {
+      const actual=jz(src,{optimize}).exports.f
+      is(actual(0),expected(0),`${key} no projection, O${optimize}`)
+      if(key) throws(()=>actual(1),TypeError,`${key} absent projection, O${optimize}`)
+      else is(actual(1),expected(1),`existing projection, O${optimize}`)
+      is(actual(0),expected(0),`reuse ${key}, O${optimize}`)
+    }
+  }
+})
+
+test('ordinary array Number keys do not turn optional or caught projections into presence', () => {
+  for(const before of ['try{p.x}catch{}', 'const ignored=flag&&p.x',
+    'const holder=flag?{a:[1]}:null;const ignored=holder?.a[p.x]']) {
+    const src=`export function f(flag){const a=[];a.push({x:1});const i=1,p=a[i];
+      ${before};a[i]={x:7};return [a[i].x,a.length]}`
+    const expected=oracle(src).f
+    for(const optimize of levels(0,1,2,3,'size')) {
+      const actual=jz(src,{optimize}).exports.f
+      is(actual(0),expected(0),`${before}, O${optimize}`)
+      is(actual(0),expected(0),`repeat ${before}, O${optimize}`)
+    }
+  }
+})
+
+test('ordinary array Number keys preserve compound updates, deletion and key conversion order', () => {
+  const src=`export function f(k){k=+k;const a=[0];a[String(k)]=3;
+      const previous=a[k]++,current=(a[k]+=4),removed=delete a[k];
+      return [previous,current,removed,a[k],a.length]}
+    export function order(){let events='';const a=[],key={toString(){events+='k';return '-1'}};
+      function value(){events+='v';return 7}a[key]=value();return [events,a[-1]]}`
+  const expected=oracle(src)
+  for(const optimize of levels(0,1,2,3,'size')) {
+    const actual=jz(src,{optimize}).exports
+    for(const key of [-1,-1,0,1.5,NaN,Infinity,-Infinity,4294967295,1e21,-1])
+      is(actual.f(key),expected.f(key),`${key}, O${optimize}`)
+    is(actual.order(),expected.order(),`conversion order O${optimize}`)
+    is(actual.order(),expected.order(),`repeat conversion O${optimize}`)
+  }
+})
+
+test('ordinary array Number keys preserve direct proved element loops', () => {
+  const src=`export function f(){const a=[1,2,3,4];for(let i=0;i<a.length;i++)a[i]=i+1;return a[3]}`
+  for(const optimize of levels(0,1,2,3,'size')) {
+    const {f}=jz(src,{optimize}).exports
+    is(f(),4,`O${optimize}`);is(f(),4,`repeat O${optimize}`)
+    if(!onKernel()) {
+      const body=funcWat(compile(src,{optimize,wat:true}),'f')
+      ok(!/call \$__dyn_(?:get|set)/.test(body),`proved indices stay direct, O${optimize}`)
+    }
+  }
+})
+
 test('array property projections distinguish dynamic length from object elements', () => {
   const src = `function rows(){const a=[];a.push({x:3,y:4});a.push({x:5,y:6});return a}
     export function f(k){k=String(k);const a=rows();return a[k].x}

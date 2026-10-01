@@ -600,7 +600,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   }
   // `scope`: the function the expression is read in; the counters are the
   // walk's own, so another scope's expression reads its hull alone.
-  const spanOf = (e, scope = current) => {
+  const spanOf = (e, scope = current, integral = false) => {
     if (typeof e === 'number') return Number.isInteger(e) ? pointRange(e) : null
     if (typeof e === 'string') {
       const v = ints.get(e)
@@ -609,18 +609,20 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       if (span) return span
       // A parameter's hull, the round before's (`out[offset + stride]` in an
       // out-buffer callee every call passes literals to): integral bounds only.
+      // An integer-ended hull can contain fractional arguments; an element-key
+      // proof needs a singleton unless syntax already established integrality.
       const hull = typeof scope === 'string' ? paramRangeOf(scope, e) : null
-      return hull && Number.isInteger(hull[0]) && Number.isInteger(hull[1]) ? hull : null
+      return hull && Number.isInteger(hull[0]) && Number.isInteger(hull[1]) && (!integral || hull[0] === hull[1]) ? hull : null
     }
     if (!Array.isArray(e)) return null
     const op = e[0]
     if (op == null) return Number.isInteger(e[1]) ? pointRange(e[1]) : null
-    if ((op === '(' || op === '()' && e.length === 2)) return spanOf(e[1], scope)
+    if ((op === '(' || op === '()' && e.length === 2)) return spanOf(e[1], scope, integral)
     if (e.length !== 3) return null
     // A typed array's length is its count for good.
     if (op === '.' && e[2] === 'length' && typeof e[1] === 'string') { const len = typedLenOf(scope ?? MODULE, e[1]); return len === null ? null : pointRange(len) }
     if (!SPAN_BINARY.has(op)) return null
-    const a = spanOf(e[1], scope), b = spanOf(e[2], scope)
+    const a = spanOf(e[1], scope, integral), b = spanOf(e[2], scope, integral)
     // A mask keeps any value inside it: ToInt32 of the other operand, whatever it is, then the bits.
     if (op === '&') return maskSpan(b) ?? maskSpan(a)
     if (!a || !b) return null
@@ -762,10 +764,10 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   const loopCounter = (n) => {
     const init = n[1], test = n[2], step = n[3]
     if (!Array.isArray(init) || init[0] !== 'let' || init.length !== 2 || !Array.isArray(init[1]) || init[1][0] !== '=' || typeof init[1][1] !== 'string') return null
-    const name = init[1][1], from = spanOf(init[1][2])
+    const name = init[1][1], from = spanOf(init[1][2], current, true)
     if (!from || !Array.isArray(test) || (test[0] !== '<' && test[0] !== '<=') || test[1] !== name) return null
     if (!Array.isArray(step) || step[1] !== name) return null
-    const by = step[0] === '++' ? 1 : step[0] === '+=' ? spanOf(step[2])?.[0] : null
+    const by = step[0] === '++' ? 1 : step[0] === '+=' ? spanOf(step[2], current, true)?.[0] : null
     if (!(by > 0) || assignedIn(n[4]).includes(name)) return null
     return { name, from, test }
   }
@@ -937,6 +939,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     if (cellLostObject.has(b)) addCellLost(a)
     const pb = cellProps.get(b); if (pb) for (const [prop, k] of pb) raiseProp(kind(K.ARRAY, a), prop, k)
     if (cellWild.has(b)) raiseWild(kind(K.ARRAY, a), cellWild.get(b))
+    if (cellNumeric.has(b)) raiseNumeric(kind(K.ARRAY, a), cellNumeric.get(b))
     if (setCells.has(b)) setCells.add(a)
     if (enumerated.has(b)) enumerateKeys(a)
     if (heldKeys.has(b)) for (const k of heldKeys.get(b)) holdKey(a, k)
@@ -966,14 +969,16 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   }
   const closurePropOf = (recv, prop) => { let k = K.NONE; for (const id of membersOf(paramOf(recv))) k = merge(k, closureProps.get(id)?.get(prop) ?? K.NONE); return k }
   const cellWild = new Map()    // cell root → kind stored under a computed string key
+  const cellNumeric = new Map() // cell root → kind stored under a Number key, possibly outside array indices
   // A dictionary built by a literal with a spread or a computed key: its
   // entries are known by name (cellProps) or under an unknown name (cellWild),
   // so a read by a literal name is that name's entries alone.
   const keyedCells = new Set()
   const raiseWildCell = (c, k) => { const old = cellWild.get(c) ?? K.NONE, nk = merge(old, k); if (nk !== old) { cellWild.set(c, nk); changed = true } }
   const hashPropOf = (h, prop) => { const c = cell(paramOf(h)); if (!keyedCells.has(c)) return elemOf(h); return join(cellProps.get(c)?.get(prop) ?? K.NONE, cellWild.get(c) ?? K.NONE) }
-  const propOf = (arr, prop) => { const c = cell(paramOf(arr)); return join(isArrayIndexKey(prop) ? elemOf(arr) : cellProps.get(c)?.get(prop) ?? K.NONE, cellWild.get(c) ?? K.NONE) }
-  const anyPropOf = (arr) => { const c = cell(paramOf(arr)); let k = merge(elemOf(arr), cellWild.get(c) ?? K.NONE); for (const pk of cellProps.get(c)?.values() ?? []) k = merge(k, pk); return k }
+  const propOf = (arr, prop) => { const c = cell(paramOf(arr)); return merge(merge(isArrayIndexKey(prop) ? elemOf(arr) : cellProps.get(c)?.get(prop) ?? K.NONE, String(+prop) === prop ? cellNumeric.get(c) ?? K.NONE : K.NONE), cellWild.get(c) ?? K.NONE) }
+  const numericPropsOf = arr => { const c = cell(paramOf(arr)); if (hostArrays.has(c)) return ANY; let k = merge(cellNumeric.get(c) ?? K.NONE, cellWild.get(c) ?? K.NONE); for (const [name, pk] of cellProps.get(c) ?? []) if (String(+name) === name) k = merge(k, pk); return k }
+  const anyPropOf = (arr) => { const c = cell(paramOf(arr)); let k = merge(merge(elemOf(arr), cellNumeric.get(c) ?? K.NONE), cellWild.get(c) ?? K.NONE); for (const pk of cellProps.get(c)?.values() ?? []) k = merge(k, pk); return k }
   const raiseProp = (arr, prop, k) => {
     const t = tagOf(arr)
     if (!(t === K.ARRAY || isDict(arr)) || paramOf(arr) === UNKNOWN) return
@@ -1028,11 +1033,22 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   const entryOf = (arr, ik) => {
     const t = tagOf(ik)
     if (paramOf(arr) === UNKNOWN) return ANY
-    if (ik === NUMBER) return elemOf(arr)
+    if (ik === NUMBER) return merge(elemOf(arr), numericPropsOf(arr))
     if (t === K.NONE) return K.NONE
     return merge(anyPropOf(arr), join(NUMBER, kind(K.CLOSURE)))
   }
-  const raiseEntry = (arr, ik, k) => { const t = tagOf(ik); if (ik === NUMBER) raiseElem(arr, k); else if (t === K.STRING) raiseWild(arr, k); else if (t !== K.NONE) { raiseElem(arr, k); raiseWild(arr, k) } }
+  const raiseNumeric = (arr, k) => {
+    const c = cell(paramOf(arr)), old = cellNumeric.get(c) ?? K.NONE, nk = merge(old, k)
+    if (nk !== old) { cellNumeric.set(c, nk); changed = true }
+    raiseElem(arr, k)
+  }
+  const raiseEntry = (arr, ik, k, idx) => {
+    const t = tagOf(ik), r = ik === NUMBER ? spanOf(idx, current, true) : null
+    if (r && r[0] >= 0 && r[1] < 0xffffffff) raiseElem(arr, k)
+    else if (ik === NUMBER) raiseNumeric(arr, k)
+    else if (t === K.STRING) raiseWild(arr, k)
+    else if (t !== K.NONE) { raiseElem(arr, k); raiseWild(arr, k) }
+  }
   /** A value the summary no longer follows: a closure's callers become unknown, an array's elements too. */
   // A lost shape's fields are read through receivers the summary cannot
   // name: their values are lost with it (`raiseSlot` loses later stores).
@@ -1071,7 +1087,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     if (celled(k)) {
       openLen(k, losing ?? 'held where the summary cannot see')
       invalidateTuple(k); const id = cell(paramOf(k)), e = elems[id]; if (setCells.has(id)) enumerateKeys(id); if (e !== ANY) { elems[id] = ANY; changed = true; escape(e) }
-      if (tagOf(k) === K.ARRAY || hasTag(k, K.HASH)) { const w = cellWild.get(id) ?? K.NONE; if (w !== ANY) { for (const pk of cellProps.get(id)?.values() ?? []) escape(pk); escape(w); raiseWild(k, ANY) } }
+      if (tagOf(k) === K.ARRAY || hasTag(k, K.HASH)) { const w = cellWild.get(id) ?? K.NONE; if (w !== ANY) { for (const pk of cellProps.get(id)?.values() ?? []) escape(pk); escape(cellNumeric.get(id) ?? K.NONE); escape(w); raiseWild(k, ANY) } }
       if (cellShapes.has(id)) { for (const sid of cellShapes.get(id)) loseShape(sid); addCellLost(id) }
       if (tagOf(k) === K.MAP) { enumerateKeys(id); const kk = mapKeys.get(id) ?? K.NONE; if (kk !== ANY) { mapKeys.set(id, ANY); changed = true; escape(kk) } }
     }
@@ -1109,6 +1125,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       if (t === K.MAP) escapeToHost(mapKeys.get(c) ?? K.NONE, seen)
       if (t === K.ARRAY) {
         for (const v of cellProps.get(c)?.values() ?? []) escapeToHost(v, seen)
+        escapeToHost(cellNumeric.get(c) ?? K.NONE, seen)
         escapeToHost(cellWild.get(c) ?? K.NONE, seen)
         hostArrays.add(c)
         setLen(c, LEN_OPEN, 'handed to the host'); unknown.add(c)
@@ -1153,6 +1170,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       for (const v of tuples.get(c) ?? []) retain(v, seen)
       retain(elems[c], seen)
       for (const v of cellProps.get(c)?.values() ?? []) retain(v, seen)
+      retain(cellNumeric.get(c) ?? K.NONE, seen)
       retain(cellWild.get(c) ?? K.NONE, seen)
       if (t === K.MAP || setCells.has(c)) for (const k of heldKeys.get(c) ?? []) retain(k, seen)
       if (t === K.MAP) retain(mapKeys.get(c) ?? K.NONE, seen)
@@ -2826,10 +2844,10 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
         const i = typeof idx === 'number' ? idx : Array.isArray(idx) && idx[0] == null ? idx[1] : null
         if (row && Number.isInteger(i) && i >= 0) return row[i] ?? ABSENT
         // An index the fixed length holds reads an element, never past the end.
-        const span = spanOf(idx)
-        if (span && span[0] >= 0 && span[1] < fixedLen(recv)) { presentReads.add(n); return entryOf(recv, ik) }
+        const span = spanOf(idx, current, true)
+        if (span && span[0] >= 0 && span[1] < fixedLen(recv)) { presentReads.add(n); return elemOf(recv) }
         // So does a counter the loop bounds by the array's own length (`c < inp.length`).
-        if (typeof idx === 'string' && typeof n[1] === 'string' && lenBounds.get(idx) === keyOf(n[1]) && stable(n[1], current ?? MODULE) && fixedLen(recv) >= 0) { presentReads.add(n); return entryOf(recv, ik) }
+        if (typeof idx === 'string' && typeof n[1] === 'string' && lenBounds.get(idx) === keyOf(n[1]) && stable(n[1], current ?? MODULE) && fixedLen(recv) >= 0) { presentReads.add(n); return elemOf(recv) }
         presentReads.delete(n)
         return orAbsent(entryOf(recv, ik))
       }
@@ -3024,7 +3042,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       if (literalKeyOf(idx) !== null) return assign(op, ['.', target[1], literalKeyOf(idx)], value)
       const ik = expr(idx)
       if (ik !== K.NONE && hasTag(recv, K.TYPED) && !typedElementKey(idx, ik === NUMBER)) raise(elems, typedPropsCellOf(recv), v)
-      if (t === K.ARRAY) { if (paramOf(recv) !== UNKNOWN) { storeAt(recv, idx); raiseEntry(recv, ik, v) } else escape(v) }
+      if (t === K.ARRAY) { if (paramOf(recv) !== UNKNOWN) { storeAt(recv, idx); raiseEntry(recv, ik, v, idx) } else escape(v) }
       else if (t === K.HASH) { if (paramOf(recv) !== UNKNOWN) raiseWild(recv, v); else escape(v) }
       else if (dictOrObject(recv)) { const c = cell(paramOf(recv)); raiseWild(recv, v); for (const sid of shapesInCell(c)) { raiseAllSlots(sid, v); raiseSideWild(sid, v) } if (cellLostObject.has(c)) poisonAll(recv, ik, v) }
       else if (t === K.TYPED) {
@@ -3945,7 +3963,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   }
   const queryFacts = {
     kinds, incoming, fields, results, closures, declared, parent, nameKeys, forwards, siteResults, receivers,
-    scopeOfSig, scopeOfBody, scopeOfParams, cellUp, elems, tuples, lens, stores, built, grown, unknown, presentReads, spreadSources, paramRangesOf, cellProps, cellWild, closureSets, closureSetIds, cells, jsonKinds, closuresByBody, unions, shapeUnions,
+    scopeOfSig, scopeOfBody, scopeOfParams, cellUp, elems, tuples, lens, stores, built, grown, unknown, presentReads, spreadSources, paramRangesOf, cellProps, cellWild, cellNumeric, hostArrays, closureSets, closureSetIds, cells, jsonKinds, closuresByBody, unions, shapeUnions,
     schemas, layouts, sitesByLayout, foldedLayouts, objectKinds, methods, sidByKey,
     funcNames: new Set(funcByName.keys()), imports: new Map(imports),
     numeric, strung, dynamicProps, builtinOwnProps, escaped, typedReadPresent, typedProps, typedPropsByAux, openSchemas, indexedSchemas, hostSchemas, opaqueSchemas, copiedSchemas, deletable, deleteReach, assignedProps, keysSeen,

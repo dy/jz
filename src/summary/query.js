@@ -17,7 +17,7 @@ const INHERITED = new Set(['constructor', 'hasOwnProperty', 'isPrototypeOf', 'pr
 
 export function summaryQueries(facts, internal = false) {
   const { kinds, incoming, fields, results, receivers, closures, closuresByBody, declared, parent, nameKeys, forwards, siteResults,
-    scopeOfSig, scopeOfBody, scopeOfParams, cellUp, elems, tuples, lens, stores, built, grown, unknown, presentReads, spreadSources, paramRangesOf, cellProps, cellWild, closureSets, closureSetIds, cells, jsonKinds, unions, shapeUnions,
+    scopeOfSig, scopeOfBody, scopeOfParams, cellUp, elems, tuples, lens, stores, built, grown, unknown, presentReads, spreadSources, paramRangesOf, cellProps, cellWild, cellNumeric, hostArrays, closureSets, closureSetIds, cells, jsonKinds, unions, shapeUnions,
     schemas, layouts, sitesByLayout, foldedLayouts, objectKinds, methods, sidByKey, funcNames, imports, numeric, strung, dynamicProps, builtinOwnProps, typedReadPresent, typedProps, typedPropsByAux, openSchemas, indexedSchemas,
     sideProps, sideWild, wildProps, wildValues, pendingAll, keyedCells, cellShapes, cellLostObject, closureProps, escaped, iterSites, reached, defaultRuns, boolKeys, storeBits, paramKeys } = facts
   // The solver owns union-find compression; querying a root never writes it.
@@ -78,15 +78,16 @@ export function summaryQueries(facts, internal = false) {
     for (const member of membersOf(id)) result = join(result, canon(resultOfId(member)))
     return result
   }
-  const propOf = (arr, prop) => { const c = cell(paramOf(arr)); return join(isArrayIndexKey(prop) ? elemOf(arr) : cellProps.get(c)?.get(prop) ?? K.NONE, cellWild.get(c) ?? K.NONE) }
-  const anyPropOf = arr => { const c = cell(paramOf(arr)); let k = join(elemOf(arr), cellWild.get(c) ?? K.NONE); for (const pk of cellProps.get(c)?.values() ?? []) k = join(k, pk); return k }
+  const propOf = (arr, prop) => { const c = cell(paramOf(arr)); return join(join(isArrayIndexKey(prop) ? elemOf(arr) : cellProps.get(c)?.get(prop) ?? K.NONE, String(+prop) === prop ? cellNumeric.get(c) ?? K.NONE : K.NONE), cellWild.get(c) ?? K.NONE) }
+  const numericPropsOf = arr => { const c = cell(paramOf(arr)); if (hostArrays.has(c)) return ANY; let k = join(cellNumeric.get(c) ?? K.NONE, cellWild.get(c) ?? K.NONE); for (const [name, pk] of cellProps.get(c) ?? []) if (String(+name) === name) k = join(k, pk); return k }
+  const anyPropOf = arr => { const c = cell(paramOf(arr)); let k = join(join(elemOf(arr), cellNumeric.get(c) ?? K.NONE), cellWild.get(c) ?? K.NONE); for (const pk of cellProps.get(c)?.values() ?? []) k = join(k, pk); return k }
   // A keyed dictionary's entry by name: the solver's hashPropOf.
   const hashPropOf = (h, prop) => { const c = cell(paramOf(h)); if (!keyedCells.has(c)) return elemOf(h); return join(cellProps.get(c)?.get(prop) ?? K.NONE, cellWild.get(c) ?? K.NONE) }
   // Solver bottom means an index has no evidence, not that an emitted read is
   // absent. Unlike the solver's pending transfer, a query must retain entries.
   const entryOf = (arr, ik) => {
     if (paramOf(arr) === UNKNOWN) return ANY
-    if (ik === NUMBER) return elemOf(arr)
+    if (ik === NUMBER) return join(elemOf(arr), numericPropsOf(arr))
     return join(anyPropOf(arr), join(NUMBER, kind(K.CLOSURE)))
   }
   const classMember = (recv, name) => { const sid = layoutOf(recv); return sid !== UNKNOWN ? methods.get(sid)?.get(name) ?? null : null }
@@ -256,7 +257,7 @@ export function summaryQueries(facts, internal = false) {
           if (row && Number.isInteger(i) && i >= 0) return row[i] ?? kind(K.ABSENT)
           // An index the fixed length holds reads an element, never past the end:
           // a literal under it, or a read the solver's walk found inside it.
-          if ((Number.isInteger(i) && i >= 0 && i < fixedLen(r)) || presentReads.has(n)) return entryOf(r, kindOfExpr(idx))
+          if ((Number.isInteger(i) && i >= 0 && i < fixedLen(r)) || presentReads.has(n)) return elemOf(r)
         }
         if (t === K.OBJECT && paramOf(r) !== UNKNOWN) { let k = K.NONE; for (const sid of shapesOf(paramOf(r))) { for (const s of slots(sid)) k = merge(k, s); k = merge(k, anySideOf(sid)) } return orAbsent(k) }
         if (t === K.TYPED) return !typedElementKey(n[2], kindOfExpr(n[2]) === NUMBER) ? core(kindOfExpr(n[2])) === NUMBER ? orAbsent(merge(typedElemKind(r), typedPropsOf(r))) : ANY
@@ -558,6 +559,7 @@ export function summaryQueries(facts, internal = false) {
       },
       // valOf deliberately declines nullable kinds; payload queries do not.
       valOfExpr: e => valOf(kindOfExpr(e)),
+      arrayNumericPropertiesAbsent: e => { const k = core(kindOfExpr(e)); return tagOf(k) === K.ARRAY && paramOf(k) !== UNKNOWN && numericPropsOf(k) === K.NONE },
       mayBeNullishExpr: e => { const k = kindOfExpr(e); return hasTag(k, K.NULLISH) || hasTag(k, K.ABSENT) },
       typedCtorOfExpr: e => { const k = kindOfExpr(e); return tagOf(k) === K.TYPED && typedAux(k) !== UNKNOWN && !isNullable(k) ? ctorFromElemAux(typedAux(k)) : null },
       typedPayloadCtorOfExpr: e => { const k = kindOfExpr(e); return tagOf(core(k)) === K.TYPED && typedAux(k) !== UNKNOWN ? ctorFromElemAux(typedAux(k)) : null },
