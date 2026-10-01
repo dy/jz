@@ -6,7 +6,120 @@ passing conformance, speed, size and memory gates. README owns the public
 contract; CONTRIBUTING owns compiler invariants. This file holds the decisions
 that shaped the tree, the work left before release and the latest gate reading.
 
-## Release status, September 30
+## Element ranges, September 30
+
+Static array lengths, all-writer element intervals and scalar argument intervals
+now refine one another across direct calls. Each incoming call must establish the
+fact. Runtime-sized private index buffers also carry an equal-length relation
+through direct helper parameters; zero initialization, own-index stores and
+same-buffer copies preserve it. Unknown writers, aliases, backing-buffer exposure,
+optional calls and escaped allocation-count receivers retain checks.
+
+Review also corrected conditional/rest writes, parameter defaults and nullable
+length-cache reads, computed typed-array accessors, SIMD select operand order,
+and integer literal normalization. Mixed owned/view descriptor words now hoist
+as complete expressions under a present-receiver proof. Word-index arithmetic
+retains full overflow and intermediate-rounding checks; wide integer saturation
+avoids floating round trips when per-site conversion expansion is enabled. The
+size tier retains compact conversions. The compatible two-lane cbrt change is
+included from audiojs-math without changing the selected scalar Math contract.
+
+The current three.js PR source is 22,357 bytes, SHA-256
+`b263693a9a1c993d1e69675a77bb9f167b2fd76fc010abf1a25dab2ad6a09da9`.
+It is the same unmodified input for each compiler. With prepared dependencies,
+main at 8066a3e7 emits 78,936 bytes; the candidate emits 77,682. Tangents agree
+bit for bit with JavaScript under Node and Bun for empty/single-triangle inputs,
+both ShaderBall meshes, 20,000 random triangles, and repeated/changed inputs.
+Rotating 120-run probes including host copies give Node 22.91 -> 19.25 ms
+(JavaScript 29.18), Bun 20.95 -> 19.61 ms (JavaScript 14.90). These are local
+diagnostics; JSC remains faster. The original a4e3da3a build remains smaller
+and faster than consolidated main, whose additional correctness handling is
+retained. The earlier consolidation measurement below used a different port and is not
+a comparable reading of this PR source.
+
+The remaining element-proof gaps are returned allocation summaries, symbolic
+element domains with sentinels, dominated scalar copies and affine/divisible
+lengths, filtered initialized prefixes, resized scratch capacities, and DFS stack
+occupancy. Remaining guards alone do not explain or quantify the full JSC gap.
+
+A comparison with a4e narrows one immediate follow-up: the normal face-derivative
+fast loop has 544 instruction nodes in a4e, 637 in main and 740 in this candidate.
+All execute the same 15 float loads and 26 float multiplies. The candidate removes
+the descriptor reloads (12 -> 3), but expands 18 saturations into 36 integer
+comparisons. The existing preheader already bounds the three triangleVertices
+counter-based indices; carrying that occurrence proof into integer lowering
+would remove their redundant clamps. Element-derived position/texcoord indices
+need wide bounds comparisons before wrapping, preserving tee side effects.
+Across the kernel, in-loop integer loads fall from 417 to 222 (a4e: 207).
+These static counts locate work; they do not measure its runtime contribution.
+
+A new review finding also reproduces on untouched 8066a3e7 at O0/O2/O3/size:
+Object.defineProperty can shadow a typed array's length in JavaScript, but jz
+continues reading the internal length. For a four-element sizes array shadowed
+with length 1 between two allocations, Node returns [1,4,1,-2991], jz [4,4,4,9].
+The new relational proof rejects the escaped size receiver, pinned by
+`element bounds: escaped size receivers cannot establish equal allocation lengths`.
+The existing behavior falls under README's unsupported property-descriptor
+reflection semantics. It is not a new supported-surface regression; the new
+analysis still rejects that escaped receiver conservatively.
+
+Validation on candidate c3bf85f7, with the prepared watr fixes and subscript 10.8.1:
+
+- Core: default 5,740 tests / 227,053 assertions. O0 5,584 / 157,185;
+  O3 with invariants 5,600 / 167,429; WASI 5,642 / 212,318. The latter three
+  preceded the final test-only lifetime pin and unused-import cleanup; the
+  added lifetime test also passed all five tiers under WASI (90 assertions).
+- Import lint and public types pass. Poisoned range suites: 45 / 2,727.
+- Language conformance: 3,222 positive cases, 4,045 required rejections,
+  zero unexpected failures/accepted invalid programs, two unchanged expected
+  async-ordering divergences. Builtins: 904 passes, zero unexpected failures,
+  43 unchanged expected failures.
+- Three.js: 3 / 90. Integration: default 179 / 1,793; O0 and O3 each
+  74 / 589; WASI 77 / 357. All pass.
+- Generated native: 37 / 102; WASI: 37 / 92. All pass. The previously red
+  fgather loop-body instruction count now meets its unchanged 12,560 limit.
+- Every example and the browser assets build.
+- The claims gate retains exactly its 15 baseline failure categories (7 pass,
+  2 skip): stale/missing reference evidence, memory/RSS, rival coverage, parity
+  evidence, native lowering, and speed/size leadership. No bar was changed.
+
+The measured benchmark passes 258/277 checks (597 assertions). Remaining
+failures are speed leadership, two strict AS size comparisons, TinyGo build
+coverage, and two unavailable stdlib timings. This is not a passing v1 performance
+gate. The speed geomeans are jz/V8 0.500, jz/C 0.682 and jz/AS 0.486; artifact
+size geomean is jz/AS 0.775. Floatbeat and example timing checks pass. These
+loaded-machine readings do not replace committed reference evidence.
+
+Deterministic comparison against untouched 8066a3e7 confirms both size failures
+already exist: FFT is byte-identical at 1,806 B (AS: 1,758); slices improves
+1,721 -> 1,709 B (AS: 1,657). The blur speed artifact is also byte-identical.
+Fresh baseline and candidate builds both reproduce stdlib-special's out-of-bounds
+trap at the same top two function indices/offsets, and stdlib-dists' missing
+env.globalThis import in the benchmark harness. None is a new candidate failure.
+The watr size artifact grows 139 B to 314,913, below its unchanged 320,000 cap.
+
+An alternating, warmed baseline/candidate check of the changed speed binaries
+retains identical checksums. Candidate/baseline median runtime ratios are noise
+0.860, stdlib-ddot 0.998 and watr 1.001 (12 alternating measured pairs after two
+warmups). It does not close the broad benchmark's speed gaps or certify cold/tier-up
+performance. Artifacts and raw pairs: /private/tmp/jz-element-bench-audit-r5/;
+stdlib failure reproductions: /private/tmp/jz-stdlib-audit-20260930/.
+Ecosystem performance checks pass (2 tests / 4 assertions).
+
+Fresh bootstrap builds 24,061,484 bytes in 204 seconds. Round-trip passes
+85 / 2,932; O0/O2/O3 parity and oracles pass 15 / 750; checkpoint passes
+9 / 112. The hosted suite passes 4,908 / 4,912 tests (197,594 assertions);
+its four failures match the existing concat-memory, JSON folding/property-order
+and nullable BigInt unary cases listed below. Recursive compilation reaches
+the same 4 GiB heap limit after `plan:splitByListKinds`; it remains red. The retained ordinary kernel
+is /private/tmp/jz-element-r5-ordinary.wasm, SHA-256
+9a65c87103894d14e0fb6c9ca15f13bffa18ef85559d09aaba516192d168ebc7.
+Final source and dependency digests match their frozen manifests.
+The r4/r5 source manifests and logs are under /private/tmp/jz-element-gate-r4*
+and /private/tmp/jz-element-gate-r5*. r4's conformance legs were deliberately
+interrupted after lint found the unused import; r5 reran both successfully.
+
+## Earlier consolidation, September 30
 
 **The perf, stdlib, memory and mikktspace handovers are consolidated locally
 on main at `ce77709c`. V1 is not ready to tag.** Main retains perf `293db798`,
