@@ -2908,3 +2908,42 @@ test('defineProperty: a descriptor without value defines the key as undefined', 
       return [has(), 'x' in o, o.x === undefined, o.a, k in o, o[k] === undefined].join(' ') }`
   for (const optimize of [0, 2, 3, 'size']) is(jz(src, { optimize }).exports.f('z'), 'true true true 1 true true', `at ${optimize}`)
 })
+
+test('Object.assign preserves literal target layout with unknown source keys', () => {
+  const src=`const symbol=Symbol('copy')
+    function copy(source){return Object.assign({seed:1},source)}
+    export function f(mode,key,value){
+      const sources=[{},[],new Map(),new Set(),new ArrayBuffer(2)],source=sources[mode|0]
+      source[key]=value;source[symbol]=17
+      const out=copy(source),mixed=Object.assign({seed:1},{first:3},source,{last:5})
+      const empty=Object.assign({},source),skipped=Object.assign({seed:1},null,undefined,source)
+      return [out.seed,out[key],out[symbol],Object.keys(out),mixed.seed,mixed.first,mixed[key],mixed.last,
+        empty[key],empty[symbol],skipped.seed,skipped[key]]
+    }
+    export function minimal(){const source={};source.b=11;source[2]=13;
+      const out=Object.assign({seed:1},source);return [out.seed,out.b,out[2]]}
+    export function empty(){return [Object.assign({seed:1}).seed,Object.keys(Object.assign({},null,undefined))]}`
+  for(const optimize of levels(0,1,2,3,'size')){
+    const got=jz(src,{optimize,sourceInline:false}).exports,want=oracle(src)
+    is(got.minimal(),want.minimal(),`O${optimize} original nonempty target`)
+    is(got.empty(),want.empty(),`O${optimize} no work and skipped sources`)
+    for(const args of [[0,'b',11],[0,'b',11],[1,'2',13],[2,'a',17],[3,'seed',23],[4,'extra',0],[0,'seed',7]])
+      is(got.f(...args),want.f(...args),`O${optimize} dynamic source ${args.join(',')}`)
+  }
+})
+
+test('Object.assign preserves known layouts and recovers after dynamic getter errors', () => {
+  const src=`export function f(fail){
+    let reads=0
+    const source={get value(){reads++;if(fail)throw new TypeError('copy');return 0x7ff8000200000000n}}
+    source.extra=9
+    try{const out=Object.assign({seed:1},source);return [out.seed,out.value,out.extra,reads]}
+    catch(e){return [e.name,e.message,reads]}
+  }
+  export function known(){const source={a:17};const out=Object.assign({seed:1},source);return[out.seed,out.a]}`
+  for(const optimize of levels(0,1,2,3,'size')){
+    const got=jz(src,{optimize,sourceInline:false}).exports,want=oracle(src)
+    is(got.known(),want.known(),`O${optimize} known source positive`)
+    for(const fail of [false,false,true,false,true,false])is(got.f(fail),want.f(fail),`O${optimize} error/recovery ${fail}`)
+  }
+})

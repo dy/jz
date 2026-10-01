@@ -712,7 +712,10 @@ export default (ctx) => {
     // wrong here) — so any source key absent from the target literal silently
     // had no slot to land in (`Object.assign({}, {a:1})` produced a 0-slot
     // object; JS gives `{a:1}`).
-    if (Array.isArray(target) && target[0] === '{}' && !enumView(literalProps(target).filter(p => Array.isArray(p) && p[0] === ':').map(p => p[1])))
+    // An unknown source can make spread choose dictionary storage; the assign
+    // result still promises its original target layout. Keep that target in place.
+    if (Array.isArray(target) && target[0] === '{}' && sources.every(s => copiedSchema(s)) &&
+        !enumView(literalProps(target).filter(p => Array.isArray(p) && p[0] === ':').map(p => p[1])))
       return emitObjectSpread([...literalProps(target), ...sources.map(s => ['...', s])])
     // A target that is no plain object (an array, a function, a collection,
     // a dictionary) keeps its identity: the copied keys are its own

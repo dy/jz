@@ -83,6 +83,9 @@ Equal-width literal tuples in every arm of a conditional use the existing
 multiple-result ABI. Expression and statement returns share element boxing
 and finalizer emission. A block must pass the shared return-path proof before
 selecting multiple results; a possible fallthrough needs to carry undefined.
+Object.assign retains its target's planned layout. Only fully known source
+layouts allow a fresh literal target to use the object-spread constructor;
+unknown keys copy through ordinary property storage on the original target.
 Property tables share a canonical String-or-Symbol key conversion. String-hint
 hooks run once and may return a Symbol; hashing and equality then preserve its
 whole identity without interpreting payload bits as string addresses. Public
