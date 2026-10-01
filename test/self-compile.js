@@ -600,6 +600,32 @@ test('self-compile: repeated guards avoid temporary analysis closures and member
   }
 })
 
+test('self-compile: layout restarts avoid completing discarded summaries', () => {
+  const s = getSelf(), previous = new Map()
+  const empty = s.exports.default(s.memory.String(''), 0, s.memory.String('1'))
+  is(typeof instantiate(new Uint8Array(s.memory.read(empty))).exports.main, 'undefined', 'empty input has no entry')
+  for (const count of [0, 64, 64, 16, 0, 64]) {
+    const source = Array.from({ length: count }, (_, i) =>
+      `function part${i}(x){return ${i === count - 1 ? 'x*2' : `part${i + 1}(x)`}}`).join('') +
+      `function copy(x){return {...x,b:2}}function second(x){return {...copy(x),c:3}}
+      export function main(x){const out=second({a:x});return ${count ? 'part0(out.a)' : 'out.a'}+out.b+out.c}`
+    const out = s.exports.default(s.memory.String(source), 0, s.memory.String('1'))
+    const bytes = new Uint8Array(s.memory.read(out))
+    const allocated = phaseDeltas(readMarks(s)).filter(p => p.name === 'summary').reduce((n, p) => n + p.bytes, 0)
+    // 64 callees plus two discovered layouts: 11,178,600 B before batching,
+    // 5,836,896 B after. The 6.5 MiB limit leaves room for ordinary metadata.
+    ok(allocated < 512 * 1024 + count * 96 * 1024,
+      `${count} callees and two discovered layouts: summaries use ${allocated} bytes`)
+    const { main } = instantiate(bytes).exports
+    for (const x of [0, 2, -3, 2]) is(main(x), (count ? x * 2 : x) + 5)
+    if (previous.has(count)) is(bytes, previous.get(count), 'repeated and interleaved compilations emit identical bytes')
+    else previous.set(count, bytes)
+    if (count === 16) throws(() => s.exports.default(s.memory.String('export function broken( {')))
+  }
+  for (const [count, bytes] of previous)
+    is(instantiate(bytes).exports.main(3), (count ? 6 : 3) + 5, 'retained output executes after changed input and an error')
+})
+
 test('self-compile: nested dispatch tables reuse closure union storage', () => {
   const s = getSelf(), previous = new Map()
   for (const count of [0, 64, 64, 16, 0, 64]) {
