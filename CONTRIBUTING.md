@@ -102,6 +102,9 @@ including SIMD lanes and the full magnitude of unsigned helper results.
 Array `for…of` loops capture their source once and reread its length each step.
 Appends, shrinking and writes through called helpers remain visible, including
 new nodes added while the compiler solves representation plans.
+Memory page limits are validated before either compiler host encodes options.
+The hosted compiler applies the same fixed-memory scratch and final-code proofs;
+their selected export and owner names survive its arena checkpoints as plain data.
 Tagged BigInt copies are solved together when bindings refer back to each other.
 Every incoming write must preserve or normalize the component's carrier before
 its representation becomes a read fact. This includes nested closures' writes

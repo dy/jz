@@ -8,7 +8,6 @@ const oracle = src => new Function(src.replaceAll('export ', '') + '; return pro
 const tiers = [0, 2, 3, 'size']
 
 test('fixed memory: local DSP scratch is reused and reinitialized at every tier', () => {
-  if (onKernel()) return // public memory options are supplied by the host compiler
   const src = `let history = new Float64Array(128)
     export function process(n, gain) {
       const tmp = new Float32Array(128)
@@ -26,16 +25,17 @@ test('fixed memory: local DSP scratch is reused and reinitialized at every tier'
     }
     is(p.memory.buffer.byteLength, bytes, 'no growth')
     is(p.memory.used, used, 'no retained allocation')
-    const { wasm, inspect } = compile(src, { ...options(optimize), inspect: true })
-    ok(WebAssembly.validate(wasm))
-    is(inspect.runtime.process.noAllocation, true)
-    is(inspect.runtime.process.noHostCalls, true)
+    if (!onKernel()) {
+      const { wasm, inspect } = compile(src, { ...options(optimize), inspect: true })
+      ok(WebAssembly.validate(wasm))
+      is(inspect.runtime.process.noAllocation, true)
+      is(inspect.runtime.process.noHostCalls, true)
+    }
     ok(!compile(src, { ...options(optimize), wat: true }).includes('$__survive'), 'no tracing runtime')
   }
 })
 
 test('fixed memory: scratch construction inside loops preserves zeroing and independent buffers', () => {
-  if (onKernel()) return
   const src = `export function process(n) {
     const a = new Float64Array(32)
     let sum = 0
@@ -54,7 +54,6 @@ test('fixed memory: scratch construction inside loops preserves zeroing and inde
 })
 
 test('fixed memory: numeric storage kinds preserve coercions and bounds', () => {
-  if (onKernel()) return
   for (const ctor of ['Int8Array', 'Uint8Array', 'Uint8ClampedArray', 'Int16Array', 'Uint16Array', 'Int32Array', 'Uint32Array', 'Float32Array', 'Float64Array']) {
     const src = `export function process(i, x) { const a = new ${ctor}(32); a[i] = x; return a[i] }`
     const ref = oracle(src), p = jz(src, options(2))
@@ -64,7 +63,6 @@ test('fixed memory: numeric storage kinds preserve coercions and bounds', () => 
 })
 
 test('fixed memory: zero, one element and the 64 KiB boundary preserve reads and zeroing', () => {
-  if (onKernel()) return
   for (const length of [0, 1, 8192]) for (const optimize of tiers) {
     const src = `export function process(i, x) {
       const a = new Float64Array(${length})
@@ -83,7 +81,6 @@ test('fixed memory: zero, one element and the 64 KiB boundary preserve reads and
 })
 
 test('fixed memory: named sizes and helper calls keep each live allocation distinct', () => {
-  if (onKernel()) return
   const src = `const N=128
     function step(n) {
       const a=new Float64Array(N), b=new Int8Array(N)
@@ -109,7 +106,6 @@ test('fixed memory: named sizes and helper calls keep each live allocation disti
 })
 
 test('fixed memory: borrowed host buffers and hidden typed variants allocate nothing in Wasm', () => {
-  if (onKernel()) return
   const src = `export function process(a) {
     const t = new Float32Array(128)
     for(let i=0;i<128;i++) t[i]=a[i]*0.5
@@ -131,7 +127,6 @@ test('fixed memory: borrowed host buffers and hidden typed variants allocate not
 })
 
 test('fixed memory: typed guards keep borrowed receivers allocation-free', () => {
-  if (onKernel()) return
   const src = `export function process(a) {
     if (!(a instanceof Float32Array)) return -1
     return a[0]
@@ -146,13 +141,14 @@ test('fixed memory: typed guards keep borrowed receivers allocation-free', () =>
     }
     is(p.memory.used, used, 'no retained allocation')
     is(p.memory.buffer.byteLength, bytes, 'no growth')
-    const { inspect } = compile(src, { ...options(optimize), inspect: true })
-    is(inspect.runtime.process.noAllocation, true, 'the final call graph allocates nothing')
+    if (!onKernel()) {
+      const { inspect } = compile(src, { ...options(optimize), inspect: true })
+      is(inspect.runtime.process.noAllocation, true, 'the final call graph allocates nothing')
+    }
   }
 })
 
 test('fixed memory: disjoint lifetimes share storage while overlapping lifetimes keep distinct slots', () => {
-  if (onKernel()) return
   const sequential = `export function process(n) {
     const a=new Float64Array(4096); a[0]=n; let sum=a[0]
     const b=new Float64Array(4096); sum+=b[0]; b[0]=n+1; return sum+b[0]
@@ -175,7 +171,6 @@ test('fixed memory: disjoint lifetimes share storage while overlapping lifetimes
 })
 
 test('fixed memory: escaping storage, unknown keys and growing state are refused', () => {
-  if (onKernel()) return
   const cases = [
     'export function process(n){return new Float64Array(n)}',
     'export function process(){const a=new Float64Array(128);return a}',
@@ -190,7 +185,6 @@ test('fixed memory: escaping storage, unknown keys and growing state are refused
 })
 
 test('fixed memory: host reentry and non-tail recursive scratch are refused', () => {
-  if (onKernel()) return
   const recurse = `export function process(n){const a=new Float64Array(128);a[0]=n;return n>0 ? process(n-1)+a[0] : a[0]}`
   throws(() => compile(recurse, options(0)), /recursive call/)
   const host = `import { tick } from 'host'; export function process(n){const a=new Float64Array(128);a[0]=n;tick();return a[0]}`
@@ -207,7 +201,6 @@ test('fixed memory: host reentry and non-tail recursive scratch are refused', ()
 })
 
 test('fixed memory: export aliases, configuration errors and compile-state isolation', () => {
-  if (onKernel()) return
   const src = 'function f(n){const a=new Float64Array(128);a[n & 127]=n;return a[n & 127]} export { f as process }'
   is(jz(src, options(2)).exports.process(7), 7)
   for (const fixed of [true, '', [], [3], [null], ['']])

@@ -77,6 +77,7 @@ import { paramValueOnly } from './param-numeric.js'
 import { ensureThrowRuntime } from './throw-runtime.js'
 import { buildInternTable } from './intern-table.js'
 import { captureFuncInspect } from './func-inspect.js'
+import { fixedMemoryFacts } from './fixed-memory.js'
 import { isBoundaryWrapped, synthesizeBoundaryWrappers } from './boundary-wrap.js'
 import { analyzeFuncForEmit } from './analyze-for-emit.js'
 import { emitFunc, presentArrayGlobals } from './emit-func.js'
@@ -115,6 +116,7 @@ export function tailFacts(cfg) {
     lazyDataSpans: ctx.runtime.lazySpans,
     staticDataSpan: ctx.runtime.staticPrefixSpan,
     stableGlobals: stablePtrGlobalNames(),
+    fixedMemory: fixedMemoryFacts(),
   }
 }
 

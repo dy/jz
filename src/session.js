@@ -16,7 +16,7 @@
  * @module src/session
  */
 import { DBG_INVARIANTS, assertCtxInvariants } from './debug.js'
-import { ctx, reset, initWarnings, optFlagsOf, warn, err } from './ctx.js'
+import { ctx, reset, initWarnings, optFlagsOf, warn } from './ctx.js'
 import { clearDollar } from './ir.js'
 import { resolveOptimize } from './optimize/index.js'
 import { resetNameUids } from 'watr/optimize'
@@ -282,21 +282,29 @@ export function beginSession({ emitter, globals, hooks, source, optimize, warnin
   return ctx.transform.optimize
 }
 
+/** Reject invalid wasm32 limits before an ABI can round or erase them. */
+export function validateMemory({ memory, maxMemory }) {
+  if (memory != null && typeof memory !== 'object' &&
+      (!Number.isInteger(memory) || memory < 0 || memory > 65536))
+    throw new RangeError(`opts.memory initial size must be a non-negative integer page count no greater than 65536 (each page is 64 KiB); got ${memory}`)
+  if (maxMemory == null) return
+  if (!Number.isInteger(maxMemory) || maxMemory < 1 || maxMemory > 65536)
+    throw new RangeError(`opts.maxMemory must be a positive integer page count no greater than 65536 (each page is 64 KiB); got ${maxMemory}`)
+  const initialPages = typeof memory === 'number' ? memory || 1 : 1
+  if (maxMemory < initialPages)
+    throw new RangeError(`opts.maxMemory (${maxMemory}) is below the initial memory size (${initialPages} pages)`)
+}
+
 /** Normalized memory options have the same meaning in both compiler hosts. */
-export function configureMemory({ memory, importMemory, sharedMemory, maxMemory }) {
+export function configureMemory(options) {
+  validateMemory(options)
+  const { memory, importMemory, sharedMemory, maxMemory } = options
   if (typeof memory === 'number') ctx.memory.pages = memory
   else if (memory) ctx.memory.shared = true
   if (importMemory) ctx.memory.shared = true
   // Importing an ordinary Memory does not imply atomic cross-thread storage.
   if (sharedMemory) { ctx.memory.shared = true; ctx.memory.atomic = true }
-  if (maxMemory != null) {
-    if (!Number.isInteger(maxMemory) || maxMemory < 1)
-      err(`opts.maxMemory must be a positive integer page count (each page is 64 KiB); got ${maxMemory}`)
-    const initialPages = ctx.memory.pages || 1
-    if (maxMemory < initialPages)
-      err(`opts.maxMemory (${maxMemory}) is below the initial memory size (${initialPages} pages)`)
-    ctx.memory.max = maxMemory
-  }
+  if (maxMemory != null) ctx.memory.max = maxMemory
 }
 
 /** Shared diagnostic policy for the native and Wasm compiler entry points. */

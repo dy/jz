@@ -83,10 +83,47 @@ test('kernel parity: owned, imported and shared memory preserve options and retu
         is(p.exports.f(n), ['prefix-' + n, n & 7, n & 7 ? 0 : undefined], `memory case ${i}, O${optimize}: n=${n}`)
     }
   }
-  for (const maximum of [0, -1, 1.5, NaN, Infinity, -Infinity])
+  for (const initial of [-1, 0.5, NaN, Infinity, -Infinity, 65537, '2', true])
+    for (const memory of [initial, { initial }])
+      throws(() => compileViaKernel(src, { memory }), /non-negative integer page count/)
+  for (const maximum of [0, -1, 1.5, NaN, Infinity, -Infinity, 65537])
     throws(() => compileViaKernel(src, { memory: { maximum } }), /positive integer page count/)
   throws(() => compileViaKernel(src, { memory: { initial: 4, maximum: 2 } }), /below the initial/)
   is(instantiate(compileViaKernel(src)).exports.f(0), ['prefix-0', 0, undefined], 'ordinary compilation after rejected limits')
+})
+
+test('kernel parity: fixed-memory rejects unsafe final code and recovers to ordinary compilation', () => {
+  const cases = [
+    ['dynamic allocation', 'export function f(n){return new Float64Array(n).length}', /heap allocation or memory growth/],
+    ['escaping constant allocation', 'export function f(){return new Float64Array(4)}', /heap allocation or memory growth/],
+    ['growing state', 'let a=[];export function f(n){a.push(n);return a.length}', /heap allocation or memory growth/],
+    ['host call', 'import {tick} from "host";export function f(){return tick()}', /host or unresolved call/],
+    ['recursive scratch', 'export function f(n){const a=new Float64Array(4);a[0]=n;return n>0?f(n-1)+a[0]:a[0]}', /recursive call/],
+    ['recursive scratch in another caller', 'function step(n){const a=new Float64Array(4);a[0]=n;return n>0?step(n-1)+a[0]:a[0]}export function f(){return step(0)}export function outside(n){return step(n)}', /recursive call/],
+  ]
+  const opts = { host: 'js', optimize: 0, memory: { fixed: ['f'] }, imports: { host: { tick: () => 1 } } }
+  for (const [name, src, reason] of cases) {
+    throws(() => compile(src, opts), reason, `${name}: native proof`)
+    throws(() => compileViaKernel(src, opts), reason, `${name}: hosted proof`)
+  }
+  const src = 'export function f(n){return new Float64Array(n).length}'
+  is(instantiate(compileViaKernel(src)).exports.f(2), 2, 'the default compiler remains usable after rejected contracts')
+})
+
+test('kernel parity: fixed scratch preserves zeroing, repeated calls and changed contracts', () => {
+  const src = 'export function f(i,x){const a=new Float64Array(4);a[i]=x;return a[0]+a[1]}'
+  for (const optimize of levels(0, 2, 3)) {
+    const opts = { optimize, host: 'js', memory: { fixed: ['f'] } }
+    is(compileViaKernel(src, { ...opts, wat: true }), compile(src, { ...opts, wat: true }), `fixed scratch WAT, O${optimize}`)
+    const p = instantiate(compileViaKernel(src, opts)), used = p.memory.used, bytes = p.memory.buffer.byteLength
+    for (const [i, x, expected] of [[0, 7, 7], [0, 7, 7], [1, 11, 11], [3, 4, 0], [4, 9, 0], [-1, 2, 0], [0, 0, 0]])
+      is(p.exports.f(i, x), expected, `scratch[${i}], O${optimize}`)
+    is(p.memory.used, used, 'no retained allocation')
+    is(p.memory.buffer.byteLength, bytes, 'no growth')
+    const other = 'export function g(n){const a=new Int8Array(4);a[0]=n;return a[0]}'
+    is(instantiate(compileViaKernel(other, { optimize, memory: { fixed: ['g'] } })).exports.g(257), 1, 'a different contract and element layout')
+    is(instantiate(compileViaKernel(src, opts)).exports.f(1, 13), 13, 'original contract after a changed program')
+  }
 })
 
 for (const opt of levels(0, 2, 3)) {

@@ -65,6 +65,23 @@ test('options: memory descriptor sets initial and maximum pages', () => {
   throws(() => compile(HEAP, { memory: { initial: 10, maximum: 4 } }), /below the initial/)
 })
 
+test('options: invalid memory limits reject before encoding and leave later compiles intact', () => {
+  for (const initial of [NaN, Infinity, -Infinity, -1, 0.5, 65537, '2', true]) {
+    for (const memory of [initial, { initial }])
+      throws(() => compile(HEAP, { memory }), /non-negative integer page count/, `initial ${String(initial)}`)
+  }
+  for (const maximum of [NaN, Infinity, -Infinity, -1, 0, 0.5, 65537, '2', true])
+    throws(() => compile(HEAP, { memory: { maximum } }), /positive integer page count/, `maximum ${String(maximum)}`)
+  // Zero requests no extra pages; runtime storage still supplies its minimum.
+  for (const initial of [0, 1, 1, 2, 0]) {
+    const p = jz(HEAP, { memory: { initial, maximum: 4 } })
+    is(p.memory.buffer.byteLength, Math.max(1, initial) * 65536)
+    is(p.exports.f(1), 1.5)
+  }
+  ok(flat(compile(HEAP, { wat: true, memory: { initial: 65536, maximum: 65536 } })).includes('65536 65536'), 'the wasm32 upper boundary remains valid without allocating it in the test')
+  is(jz(HEAP).exports.f(1), 1.5, 'default options after explicit limits and rejected values')
+})
+
 test('options: memory descriptor imports env.memory', () => {
   const wat = flat(compile(HEAP, { wat: true, memory: { initial: 2, import: true } }))
   ok(wat.includes('(import "env" "memory" (memory 2'), 'memory imported from env')

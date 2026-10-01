@@ -19,6 +19,7 @@ import prepare, { GLOBALS } from '../src/prepare/index.js'
 import { frontHalf } from '../src/front.js'
 import { beginSession, configureDiagnostics, configureMemory } from '../src/session.js'
 import { assemble, linkAssembled, tailFacts } from '../src/compile/index.js'
+import { configureFixedMemory, verifyFixedScratch, verifyFixedMemory } from '../src/compile/fixed-memory.js'
 
 import { emitter, emissionHooks } from '../src/compile/emit.js'
 import { watrTail } from '../src/optimize/watr-tail.js'
@@ -69,6 +70,7 @@ function setupSelf(strict, optJSON, modulesJSON, host, buildJSON) {
   if (build) {
     configureDiagnostics(build)
     configureMemory(build)
+    configureFixedMemory(build.fixedMemory)
     if (build.imports) {
       ctx.module.hostImports = build.imports
       for (const mod of Object.values(build.imports))
@@ -254,7 +256,9 @@ function compileModule(source, strict, optJSON, modulesJSON, host, sourceType, b
   const module = linkAssembled(assembled, stageMarks)
   markStage(STAGE_EMIT)
   markTape(T.n, T.op.length)
+  verifyFixedScratch(module, facts.fixedMemory)
   const optimized = optimizeTail(module, cfg, facts)
+  verifyFixedMemory(optimized, facts.fixedMemory)
   markStage(STAGE_OPTIMIZE)
   const checkpointed = __heap_large(heapMark) ? checkpoint(optimized) : optimized
   markStage(STAGE_CHECKPOINT)

@@ -115,34 +115,42 @@ const prover = (records, allocation) => {
   return visit
 }
 
+/** The emitted owners and selected exports are all the final proof retains. */
+export function fixedMemoryFacts() {
+  if (!ctx.memory.fixed) return null
+  const names = new Set(ctx.memory.fixed), owners = new Set()
+  for (const f of ctx.funcs.list) if (exportNamesOf(f.name).some(n => names.has(n)))
+    for (const v of f.boundaryVariants || []) names.add(v.exportName)
+  for (const placements of ctx.memory.scratch.values()) for (const slot of placements.values())
+    if (slot.offset != null) owners.add(slot.owner)
+  return { names: [...names], owners: [...owners] }
+}
+
 /** Before Wasm inlining can erase a scratch owner's identity, prove its storage
  * safe in EVERY call context, including callers outside the selected exports. */
-export function verifyFixedScratch(module) {
-  if (!ctx.memory.fixed) return
+export function verifyFixedScratch(module, facts) {
+  if (!facts) return
   const { records } = runtimeGraph(module, false), visit = prover(records, false)
-  for (const placements of ctx.memory.scratch.values()) for (const slot of placements.values()) {
-    if (slot.offset == null || !records.has(slot.owner)) continue // no emitted storage/body
-    const reason = visit(slot.owner, [slot.owner])
-    if (reason) err(`memory.fixed cannot certify ${reason}`)
+  for (const owner of facts.owners) {
+    if (!records.has(owner)) continue // no emitted body
+    const reason = visit(owner, [owner])
+    if (reason) throw new Error(`memory.fixed cannot certify ${reason}`)
   }
 }
 
 /** Validate final emitted code, including all helpers and boundary variants. */
-export function verifyFixedMemory(module) {
-  if (!ctx.memory.fixed) return
+export function verifyFixedMemory(module, facts) {
+  if (!facts) return
   const memory = module.find(n => Array.isArray(n) && n[0] === 'memory')
   const limits = memory?.filter(n => typeof n === 'number')
   if (limits?.length > 1 && limits[0] > limits[1])
-    err(`memory.fixed needs ${limits[0]} initial pages, exceeding memory.maximum (${limits[1]})`)
+    throw new Error(`memory.fixed needs ${limits[0]} initial pages, exceeding memory.maximum (${limits[1]})`)
   const { exports, records } = runtimeGraph(module, false)
   const targets = new Map(exports), visit = prover(records, true)
-  const names = new Set(ctx.memory.fixed)
-  for (const f of ctx.funcs.list) if (exportNamesOf(f.name).some(n => names.has(n)))
-    for (const v of f.boundaryVariants || []) names.add(v.exportName)
-  for (const name of names) {
+  for (const name of facts.names) {
     const target = targets.get(name)
-    if (!target) err(`memory.fixed: '${name}' is not a function export`)
+    if (!target) throw new Error(`memory.fixed: '${name}' is not a function export`)
     const reason = visit(target, [name])
-    if (reason) err(`memory.fixed cannot certify ${reason}`)
+    if (reason) throw new Error(`memory.fixed cannot certify ${reason}`)
   }
 }

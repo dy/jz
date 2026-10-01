@@ -55,6 +55,9 @@ test('self-compile: memory configuration resets across empty, repeated and chang
   }
   throws(() => s.exports.compileWat(s.memory.String(source), 0, 0, 0, 0, 0,
     s.memory.String('{"memory":4,"maxMemory":2}')), /below the initial/)
+  for (const memory of [-1, 0.5, 65537, 'Infinity'])
+    throws(() => s.exports.compileWat(s.memory.String(source), 0, 0, 0, 0, 0,
+      s.memory.String(JSON.stringify({ memory }))), /non-negative integer page count/)
   const out = s.exports.default(s.memory.String(source), 0, s.memory.String('2'))
   const bytes = s.memory.read(out).slice()
   is(instantiate(bytes).exports.f(3), 3, 'a default-memory compile runs after a rejected limit')

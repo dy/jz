@@ -54,7 +54,7 @@ import watrPrint from "watr/print";
 import { ctx, err, warn, setLinkDemand, flushWarnings } from './ctx.js'
 import { GLOBALS } from './prepare/index.js'
 import { frontHalf } from './front.js'
-import { configureDiagnostics, configureMemory, beginSession } from './session.js'
+import { configureDiagnostics, configureMemory, validateMemory, beginSession } from './session.js'
 import compile, { tailFacts } from './compile/index.js'
 import { emitter, emissionHooks } from './compile/emit.js'
 import { watrTail } from './optimize/watr-tail.js'
@@ -184,6 +184,7 @@ export const normalizeOptions = (opts) => {
   } else if (m instanceof WebAssembly.Memory && typeof SharedArrayBuffer !== 'undefined' && m.buffer instanceof SharedArrayBuffer) {
     o.sharedMemory = true   // a shared Memory links only against the `shared` memtype
   }
+  validateMemory(o)
   const opt = o.optimize
   if (opt && typeof opt === 'object') {
     const { simd, tailCall, exceptions, alloc, ...passes } = opt
@@ -395,7 +396,8 @@ const compilePipeline = (code, opts = {}, jzify) => {
   }
 
   const cfg = ctx.transform.optimize
-  verifyFixedScratch(module)
+  const facts = tailFacts(cfg)
+  verifyFixedScratch(module, facts.fixedMemory)
   // The shared final-optimizer tail (src/optimize/watr-tail.js): watr options +
   // watr (the sole generic fixpoint, once) + the ONE narrow post-watr proof
   // repair (hoistGlobalPtrOffset — watr's inliner can merge stable-pointee
@@ -404,7 +406,7 @@ const compilePipeline = (code, opts = {}, jzify) => {
   // NO post-watr generic optimizer — re-running jz's leaf pipeline here
   // miscompiled (dropped a reassigned-param tee, corrupted divergent-escape
   // SIMD). Shared VERBATIM with scripts/self.js so kernel output cannot drift.
-  const optimized = watrTail(module, cfg, { ...tailFacts(cfg), time })
+  const optimized = watrTail(module, cfg, { ...facts, time })
   // Snapshot the final, optimized module: run hermetic init once, bake its
   // globals/heap, and remove the spent start. With stable function indices the
   // probe's encoded bodies become the final binary; otherwise the baked AST
@@ -414,7 +416,7 @@ const compilePipeline = (code, opts = {}, jzify) => {
     snapshot = time('snapshotInit', () => snapshotInit(optimized, watrCompile, !opts.wat))
     if (!snapshot && opts.warnings) warn('snapshot-declined', 'init snapshot declined (host-touching, timer, or shared-memory init) — compiled without it')
   }
-  verifyFixedMemory(optimized)
+  verifyFixedMemory(optimized, facts.fixedMemory)
   if (opts.inspect) ctx.inspect.runtime = captureRuntimeInspect(optimized, ctx.memory.atomic)
   const mapContents = mapOptions ? annotateSource(optimized, originalSource, ctx.error.parts, mapOptions, prefix.length, opts.wat) : null
   try {

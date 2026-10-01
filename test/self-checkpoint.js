@@ -93,8 +93,9 @@ const memoryBytes = k => k.instance.exports.memory.buffer.byteLength
 const OPT = k => k.memory.String('2')
 // Compile through the kernel and copy the output out of its memory at once: the
 // next compile, `_clear()` or a rewind may reuse the bytes' place.
-const compileOn = (k, src) => {
-  const out = k.exports.default(k.memory.String(src), 0, OPT(k))
+const compileOn = (k, src, build, optimize = 2) => {
+  const out = k.exports.default(k.memory.String(src), 0, k.memory.String(JSON.stringify(optimize)), 0, 0, 0,
+    build ? k.memory.String(JSON.stringify(build)) : 0)
   const bin = k.memory.read(out)
   const bytes = new Uint8Array(bin instanceof Uint8Array ? bin : new Uint8Array(bin))
   if (!WebAssembly.validate(bytes)) throw new Error('compile returned invalid wasm')
@@ -109,6 +110,29 @@ const A = 'export let main = () => 3 + 4 * 5', A_OUT = 23
 // wrapper is where the checkpoint had never produced a valid module.
 const B = 'let inc = x => x + 1; export let main = () => { const v = inc(10); return v }', B_OUT = 11
 const C = 'const xs = [1, 2, 3]; export let main = () => "hello".length + xs.length + xs[1]', C_OUT = 10
+
+test('checkpoint: fixed-memory proofs retain selected exports and scratch owners across the rewind', () => {
+  const { normal, forced } = kernels(), build = { fixedMemory: ['main'] }
+  const src = 'export function main(n){const a=new Float64Array(4);a[n&3]=n;return a[0]+a[1]}'
+  const expected = compileOn(normal, src, build)
+  const actual = compileOn(forced, src, build)
+  ok(same(actual, expected), 'fixed code is byte-identical across the checkpoint')
+  const p = instantiate(actual), used = p.memory.used
+  for (const n of [0, 1, 1, 3, 4, 0]) is(p.exports.main(n), (n & 3) < 2 ? n : 0)
+  is(p.memory.used, used, 'scratch remains fixed')
+  for (const bad of [
+    'export function main(n){return new Float64Array(n).length}',
+    'export function main(){return new Float64Array(4)}',
+    'let a=[];export function main(n){a.push(n);return a.length}',
+    'export function main(n){const a=new Float64Array(4);a[0]=n;return n>0?main(n-1)+a[0]:a[0]}',
+    'function step(n){const a=new Float64Array(4);a[0]=n;return n>0?step(n-1)+a[0]:a[0]}export function main(){return step(0)}export function outside(n){return step(n)}',
+  ]) {
+    throws(() => compileOn(normal, bad, build, 0), /memory.fixed cannot certify/)
+    throws(() => compileOn(forced, bad, build, 0), /memory.fixed cannot certify/)
+    ok(same(compileOn(forced, src, build), expected), 'the fixed proof recovers after rejection')
+  }
+  is(run(compileOn(forced, A)), A_OUT, 'ordinary compilation after fixed contracts')
+})
 
 test('checkpoint: the forced kernel parks, rewinds, unparks and encodes; its output is the fresh kernel\'s, byte for byte', () => {
   const { normal, forced } = kernels()

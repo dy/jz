@@ -101,7 +101,7 @@ const modulesJSONFor = (self, opts) =>
 const hostFor = (self, opts) => opts.host ? self.memory.String(opts.host) : 0
 const sourceTypeFor = (self, opts) => opts.sourceType ? self.memory.String(opts.sourceType) : 0
 const buildJSONFor = (self, opts) => {
-  if (!opts.imports && opts.alloc == null && opts.memory == null && !opts.importMemory && !opts.sharedMemory && opts.maxMemory == null && opts._compactCollections == null && !opts.whyNotRewind && !opts.whyNotSimd) return 0
+  if (!opts.imports && opts.alloc == null && opts.memory == null && !opts.importMemory && !opts.sharedMemory && opts.maxMemory == null && opts.fixedMemory == null && opts._compactCollections == null && !opts.whyNotRewind && !opts.whyNotSimd) return 0
   let imports, externalImports = false
   if (opts.imports) {
     imports = Object.create(null)
@@ -123,7 +123,8 @@ const buildJSONFor = (self, opts) => {
     alloc: opts.alloc, memory: typeof opts.memory === 'number' ? opts.memory : undefined,
     importMemory: !!opts.importMemory || !!opts.memory && typeof opts.memory !== 'number',
     sharedMemory: !!opts.sharedMemory,
-    maxMemory: typeof opts.maxMemory === 'number' && !Number.isFinite(opts.maxMemory) ? String(opts.maxMemory) : opts.maxMemory,
+    maxMemory: opts.maxMemory,
+    fixedMemory: opts.fixedMemory,
     compactCollections: opts._compactCollections,
     whyNotRewind: !!opts.whyNotRewind, whyNotSimd: !!opts.whyNotSimd,
     imports, externalImports,
