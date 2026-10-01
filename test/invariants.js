@@ -297,6 +297,7 @@ test('invariant: division always produces f64 result', () => {
 // seams cover AST and ambient changes. Global invalidation includes anonymous
 // bodies, not just the named function registry.
 
+// Reset has no optimization profile; these probes explicitly request interval proofs.
 test('invariant: value facts defer storage work and upgrade without changing query order', () => {
   if (onKernel()) return
   for (const source of [
@@ -311,6 +312,7 @@ test('invariant: value facts defer storage work and upgrade without changing que
     'const a=new Int32Array(4); let i=0; while(i<4){const v=a[i]; i++}',
   ]) for (const active of [false, true]) {
     reset(emitter, GLOBALS, emissionHooks())
+    ctx.transform.optimize = { intervalRanges: true }
     const body = parse(source)
     ctx.func = createActiveFunction({ body: active ? body : null })
     const cold = analyzeBody(body)
@@ -334,6 +336,7 @@ test('invariant: value facts defer storage work and upgrade without changing que
 test('invariant: deferred storage facts share signature and body invalidation', () => {
   if (onKernel()) return
   reset(emitter, GLOBALS, emissionHooks())
+  ctx.transform.optimize = { intervalRanges: true }
   const body = parse('let i=0; while(i<64)i++; i')
   const sig = { params: [{ name: 'p', type: 'f64' }], results: ['f64'] }
   ctx.func = createActiveFunction({ body, sig })

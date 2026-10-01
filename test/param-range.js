@@ -73,7 +73,10 @@ test('parameter hull: widening is independent for each function and argument pos
 test('parameter hull: every call channel joins the hull, the host opens it', () => {
   is(JSON.stringify(ranges(`function esc(a) { return a * 2 }
     const fs = [esc]
-    export const u = (i) => fs[i](3) + esc(1)`, 'esc')), JSON.stringify([[1, 3]]), 'a table call joins the hull')
+    export const u = (i) => fs[+i](3) + esc(1)`, 'esc')), JSON.stringify([[1, 3]]), 'a table call joins the hull')
+  is(ranges(`function esc(a) { return a * 2 }
+    const fs = [esc]
+    export const u = (i) => fs[i](3) + esc(1)`, 'esc'), null, 'an arbitrary property key can expose an unknown callable')
   is(JSON.stringify(ranges(`function nz(v, out, s, o) { out[o] = v; out[o + s] = 0; return out }
     function m(v) { return nz(v, [0, 0], 1, 0) }
     m.assign = nz

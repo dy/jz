@@ -75,7 +75,8 @@ test('split bindings: an integer assigned after a float is held as one', () => {
   const conversions = (text) => (text.match(/i64\.trunc_sat_f64_s/g) || []).length
   const split = wat(src, { optimize: 3 }), whole = wat(src, { optimize: { level: 3, splitBindings: false } })
   is(conversions(split), 1, 'one conversion from the float')
-  ok(!/f64\.convert_i32_s/.test(split), 'no integer goes back through a float')
+  is((split.match(/f64\.convert_i32_[su]/g) || []).length, 1, 'only the export converts back to Number')
+  ok(/\(f64\.convert_i32_[su]\s+\(i32\.shr_u/.test(split), 'the final shift stays integer through the export conversion')
   ok(conversions(whole) > 1, 'the binding left whole converts again')
 })
 

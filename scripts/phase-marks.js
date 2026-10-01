@@ -32,7 +32,7 @@ export const PHASE_NAMES = [
   'buildStart', 'resolveDynFnTables', 'pullStdlib', 'optimizeModule', 'link',
   'plan:moduleGlobalKinds', 'plan:unboxConstTypedGlobals', 'plan:inferModuleIntGlobals', 'plan:strictBoundaryTypeCheck', 'plan:foldKindTests', 'plan:collectFacts',
   'plan:classifyHashDictGlobals', 'plan:flattenFuncNamespaces', 'plan:declareWrittenKeys', 'plan:declareUnseenKeys', 'plan:devirtGlobalCalls', 'plan:devirtClassCalls', 'plan:indexArrayPatterns', 'plan:viewGuardedTyped',
-  'plan:bindNestedRowLengths', 'plan:unrollRowLenPadLoops', 'plan:callChosenFunctions', 'plan:specializeCalledArgs', 'plan:inlineHotInternalCalls', 'plan:inlineLocalLambdas',
+  'plan:bindNestedRowLengths', 'plan:peelClampedStencil', 'plan:unrollRowLenPadLoops', 'plan:callChosenFunctions', 'plan:specializeCalledArgs', 'plan:inlineHotInternalCalls', 'plan:inlineLocalLambdas',
   'plan:specializeFixedRestCalls', 'plan:splitMapPairs', 'plan:hoistObjectReads', 'plan:promoteLoopFields', 'plan:guardConstants', 'plan:canonicalizeCountedLoops', 'plan:splitCharScan', 'plan:laneRecordParams', 'plan:scalarizeModuleScratch', 'plan:resolveAliases', 'plan:splitSplicedBindings', 'plan:propagateConstants', 'plan:resolveHeldMethods', 'plan:scalarizeArrayLiterals', 'plan:scalarizeObjectLiterals',
   'plan:promoteIntArrayLiterals', 'plan:scalarizeTypedArrays', 'plan:unswitchLoops', 'plan:splitLoopKinds', 'plan:versionIntegralLoops', 'plan:synthesizeComputedDispatchCallSites',
   'plan:synthesizeMemberDispatchCallSites', 'plan:releaseLiftedAddressTakenNames', 'plan:buildProgramIndex', 'plan:dropUnreadGlobals',

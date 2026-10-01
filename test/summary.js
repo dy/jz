@@ -1270,10 +1270,10 @@ test('summary: instanceof narrows a name on both sides of its test', () => {
       return batch(data, opts(o))
     }
     const chans = [new Float32Array(16).map((_, i) => i % 5), new Float32Array(16).fill(0.5)]
-    export let f = (c, size) => run(chans[c], { size, rate: 48000 })
+    export let f = (c, size) => run(chans[+c], { size, rate: 48000 })
     const other = [new Float64Array([3, 4]), new Uint8Array([5]), new ArrayBuffer(8), [6, 7], new Map([[1, 2]])]
     const kindOf = (x) => { if (!(x instanceof Float32Array)) { if (x instanceof Float64Array) return x[1]; if (x instanceof Array) return x[0] * 10; if (x instanceof Map) return x.get(1) * 100; if (x instanceof ArrayBuffer) return x.byteLength * 1000; return x === undefined ? -1 : x.length * 10000 } return -2 }
-    export let g = (i) => kindOf(other[i])`
+    export let g = (i) => kindOf(other[+i])`
   const js = oracle(src)
   for (const optimize of levels(0, 2, 3)) {
     const { f, g } = jz(src, { optimize }).exports
@@ -1282,6 +1282,8 @@ test('summary: instanceof narrows a name on both sides of its test', () => {
   }
   summarize(src)
   ok(tagOf(kindOf('opts', 'o') & ~(hasTag(kindOf('opts', 'o'), K.ABSENT) ? kind(K.ABSENT) : 0)) === K.OBJECT, 'the options record keeps its object kind')
+  summarize(src.replace('chans[+c]', 'chans[c]'))
+  is(tagOf(kindOf('opts', 'o')), K.ANY, 'an arbitrary channel key can select a non-element property')
   if (belowOpt(2)) return
   const warnings = []
   const text = compile(src, { optimize: 2, wat: true, warnings: w => warnings.push(w) })

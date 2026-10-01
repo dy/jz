@@ -281,7 +281,8 @@ test('audit: call range census preserves evaluation order and poisons unknown si
   ]
   for (const [name, body, args, range] of rows) {
     const src = `function h(n){return n*4} export function f(flag){${body}}`
-    const wasm = jz(src, { optimize: 0 }).exports
+    // Exercise this proof pass without unrelated O2 rewrites or inlining.
+    const wasm = jz(src, { optimize: { level:0, intervalRanges:true } }).exports
     const rep = ctx.plans.programIndex.parameterAbiOf(ctx.funcs.map.get('h'))?.get(0)
     is(rep?.range ?? null, range, name)
     is(wasm.f(...args), oracle(src).f(...args), `${name}: JS parity`)

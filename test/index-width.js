@@ -79,7 +79,9 @@ test('index width: bounded affine locals retain integer indexing', () => {
   compare(source, [[0], [1], [15], [-1], [2147483647], [4294967295], [0]])
   if (onKernel()) return
   const tree = parse(source, { level: 2, watr: false })
-  ok(loopCount(tree, n => n[0] === 'i32.mul') > 0, 'the bounded affine product is an integer instruction')
+  ok(loopCount(tree, n => n[0] === 'i32.mul' || n[0] === 'i32.shl' &&
+    n[1]?.[0] === 'local.get' && n[2]?.[0] === 'i32.const' && Number(n[2][1]) === 1) > 0,
+  'the bounded affine product is an integer multiply or its strength-reduced shift')
   is(loopCount(tree, n => n[0] === 'f64.mul'), 0, 'the bounded index needs no floating product')
   is(loopCount(tree, n => n[0] === 'i32.trunc_sat_f64_s'), 0, 'the bounded index needs no per-access float conversion')
 })
