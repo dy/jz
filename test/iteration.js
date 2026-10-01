@@ -5,8 +5,86 @@
 // they were caught. Known-vt receivers pay nothing — the guard lives only in
 // __iter_arr's unknown-receiver arm (module/collection.js).
 import test, { is } from 'tst'
-import { run } from './util.js'
+import { run, oracle } from './util.js'
 import { levels } from './_matrix.js'
+
+test('for-of reads the live array length through direct and helper mutations', () => {
+  const src = `
+    export function grow(n) {
+      const a = n ? [1] : []
+      function append(x) { a.push(x) }
+      const out = []
+      for (const x of a) {
+        out.push(x)
+        if (x < n) append(x + 1)
+      }
+      return out
+    }
+    export function shrink(n) {
+      const a = [1, 2, 3, 4], alias = a, out = []
+      function resize() { alias.length = n }
+      for (const x of a) {
+        out.push(x)
+        if (x === 1) resize()
+      }
+      return out
+    }
+    export function direct() {
+      const a = [1], out = []
+      for (const x of a) {
+        if (x < 3) { a.push(x + 1); continue }
+        out.push(x)
+        break
+      }
+      return out
+    }
+    export function planned() {
+      const nodes = [['~', ['~', 0]]], seen = new WeakSet()
+      function plan(node) { nodes.push(node) }
+      let n = 0
+      for (const node of nodes) {
+        if (Array.isArray(node[1])) plan(node[1])
+        seen.add(node)
+        n++
+      }
+      return [n, seen.has(nodes[1])]
+    }
+  `
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const actual = run(src, { optimize }), expected = oracle(src)
+    for (const n of [0, 1, 1, 4, 2, 0, 4]) {
+      is(actual.grow(n), expected.grow(n), `append ${n}, O${optimize}`)
+      is(actual.shrink(n), expected.shrink(n), `shrink ${n}, O${optimize}`)
+    }
+    is(actual.direct(), expected.direct(), `continue and break, O${optimize}`)
+    is(actual.planned(), expected.planned(), `newly planned nodes, O${optimize}`)
+  }
+})
+
+test('for-of captures its source once while observing holes and later element writes', () => {
+  const src = `
+    export function f(mode) {
+      let source = [1, 2], calls = 0
+      const original = source, out = []
+      function read() { calls++; return source }
+      for (const x of read()) {
+        out.push(x)
+        if (out.length === 1) {
+          source = [9]
+          if (mode === 1) original[2] = 3
+          if (mode === 2) { original.length = 4; original[3] = 4 }
+          if (mode === 3) { original[1] = 5; original.length = 1 }
+        }
+      }
+      return [calls, out, source, original]
+    }
+  `
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const actual = run(src, { optimize }), expected = oracle(src)
+    for (const mode of [0, 0, 1, 2, 3, 0])
+      is(actual.f(mode), expected.f(mode), `source capture ${mode}, O${optimize}`)
+  }
+})
 
 test('for-of over nullish throws (catchable), iterables unaffected', async () => {
   const SRC = `

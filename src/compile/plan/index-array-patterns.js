@@ -160,20 +160,20 @@ const indexPattern = (list, at, view, present) => {
 }
 
 // A normalized Map loop traverses a fresh, dense snapshot of entry pairs.
-// Its private index is below the captured length, so the pair read cannot
+// Its private index is below the snapshot's length, so the pair read cannot
 // be absent. Keep the proof local to that loop and refuse escaped snapshots,
 // writes to their storage, changed bounds, or rebound pair bindings.
 const presentMapPairs = (loop, view, getBindings) => {
   const init = loop[1], cond = loop[2], step = loop[3], body = loop[4]
-  if (init?.[0] !== 'let' || init.length !== 4 || cond?.[0] !== '<' || step?.[0] !== '++') return null
-  const [snapshot, counter, bound] = init.slice(1)
-  if (snapshot?.[0] !== '=' || counter?.[0] !== '=' || bound?.[0] !== '=') return null
-  const arr = snapshot[1], idx = counter[1], len = bound[1], source = snapshot[2], length = bound[2]
-  if (typeof arr !== 'string' || typeof idx !== 'string' || typeof len !== 'string' ||
+  if (init?.[0] !== 'let' || init.length !== 3 || cond?.[0] !== '<' || step?.[0] !== '++') return null
+  const [snapshot, counter] = init.slice(1)
+  if (snapshot?.[0] !== '=' || counter?.[0] !== '=') return null
+  const arr = snapshot[1], idx = counter[1], source = snapshot[2], length = cond[2]
+  if (typeof arr !== 'string' || typeof idx !== 'string' ||
       calleeOf(source) !== '__iter_arr' || counter[2]?.[0] != null || counter[2]?.[1] !== 0 ||
       length?.[0] !== '|' || length[1]?.[0] !== '.' || length[1][1] !== arr || length[1][2] !== 'length' || length[2]?.[0] != null || length[2]?.[1] !== 0 ||
-      cond[1] !== idx || cond[2] !== len || step[1] !== idx ||
-      tagOf(view.kindOfExpr(source[2])) !== K.MAP || isReassigned(body, idx) || isReassigned(body, len)) return null
+      cond[1] !== idx || step[1] !== idx ||
+      tagOf(view.kindOfExpr(source[2])) !== K.MAP || isReassigned(body, idx)) return null
   const bindings = getBindings(), use = bindings.get(arr)
   if (use?.[BINDING_USE_DECLS] !== 1 || !use[BINDING_USE_USES].every(u =>
     u[BINDING_USE_KIND] === USE.MEMBER_R && (u[BINDING_USE_OP] === '[]' || u[BINDING_USE_KEY] === 'length'))) return null
@@ -281,7 +281,9 @@ const splitMapLoop = (loop, body, view, bindings) => {
   // Capture the Map once and skip snapshot storage for an empty collection.
   // The columns are ordinary arrays, initialized only on the nonempty path.
   const map = `${T}entryMap${freshId(ctx)}`
-  init[3][2] = ['|', ['.', lengthColumn || map, lengthColumn ? 'length' : 'size'], [null, 0]]
+  const len = `${T}entryLen${freshId(ctx)}`
+  init.push(['=', len, ['|', ['.', lengthColumn || map, lengthColumn ? 'length' : 'size'], [null, 0]]])
+  loop[2][2] = len
   const defs = []
   for (let i = 0; i < 2; i++) if (columns[i]) defs.push(['=', columns[i], ['()', ['.', map, i ? 'values' : 'keys']]])
   init.splice(1, 1, ...defs)

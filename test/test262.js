@@ -506,11 +506,9 @@ function shouldSkipBase(content, rel = '') {
     return 'private method reference write TypeError not synthesized (jzify lowers #methods as fields)'
   // Mapped-arguments index aliasing (writes through arguments[i] alias params).
   if (rel.includes('/for-of/arguments-mapped-aliasing')) return 'mapped arguments aliasing outside jz arguments model'
-  // for-of iterates by index over a hoisted snapshot; mutating the collection
-  // mid-iteration doesn't extend/shorten the walk (documented divergence in
-  // prepare's for-of lowering). The -contract/-expand files test exactly that.
-  if (rel.includes('/for-of/') && /-(contract|expand)\.js$|\/for-of\/set\.js$/.test(rel))
-    return 'for-of live-iteration mutation contract (documented divergence: snapshot/index iteration)'
+  // Map/Set normalization still snapshots entries; arrays use a live bound.
+  if (/\/for-of\/(map|set)(?:-(?:contract|expand))+\.js$|\/for-of\/set\.js$/.test(rel))
+    return 'Map/Set for-of live-iteration mutation contract (snapshot iteration)'
   // Member-expression targets in for-of heads / destructuring patterns
   // (`for (obj.x of …)`, `[o.x] = arr` inside a for-of head) — recorded
   // small-lowering gap (.work/archive/todo.md, extension-surface archive).

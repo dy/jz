@@ -1439,26 +1439,23 @@ const handlers = {
       r = ['for', init ? prep(init) : null, cond ? prep(cond) : null, step ? dropDeadPostfix(prepStatement(step)) : null, dropDeadPostfix(prepStatement(body))]
       if (addedLoopLocals) for (const nm of addedLoopLocals) loopLocalNames.delete(nm)
     } else if (Array.isArray(head) && head[0] === 'of') {
-      // for (let x of arr) → hoist arr (if non-trivial) and arr.length once, iterate by index.
-      // Divergence from JS: mutating arr during iteration won't extend/shorten the loop.
-      // jz philosophy: explicit > implicit; mutation during iteration is a code smell.
+      // Capture the iterable once, then read its current length each step.
+      // Array iterators observe appended entries and stop after a shrink.
       const [, decl, src] = head
       const isDeclHead = Array.isArray(decl) && (decl[0] === 'let' || decl[0] === 'const')
       // `for ((x) of …)` — unwrap a cover-parenthesized target (mirrors for-in).
       let ofLhs = decl; while (Array.isArray(ofLhs) && ofLhs[0] === '()' && ofLhs.length === 2) ofLhs = ofLhs[1]
       const varName = isDeclHead ? decl[1] : ofLhs
       const idx = `${T}i${freshPrepareId()}`
-      const lenVar = `${T}len${freshPrepareId()}`
       const arrVar = `${T}arr${freshPrepareId()}`
       // Normalize the source to an index-iterable once: a Set→keys / Map→[k,v]
       // array, while an Array/String/TypedArray passes through untouched (no
       // copy). Without this, `coll[i]` on a Set/Map reads raw open-addressing
       // slot words instead of live entries.
-      // Wrap .length in `| 0` so the hoisted bound is i32 even for unknown
-      // receivers (same rationale as the for-cond hoist above).
+      // Keep the live bound i32 even for unknown receivers, as above.
       const lenE = ['|', ['.', arrVar, 'length'], [, 0]]
-      const decls = ['let', ['=', arrVar, ['()', '__iter_arr', src]], ['=', idx, [, 0]], ['=', lenVar, lenE]]
-      const cond = ['<', idx, lenVar]
+      const decls = ['let', ['=', arrVar, ['()', '__iter_arr', src]], ['=', idx, [, 0]]]
+      const cond = ['<', idx, lenE]
       const step = ['++', idx]
       // Decl head (`for (let x of …)`) takes a fresh per-iteration binding;
       // ASSIGNMENT head (`for (x of …)`, `for ([a] of …)`, `for (o.x of …)`,

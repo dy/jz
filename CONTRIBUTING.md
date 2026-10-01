@@ -99,6 +99,9 @@ assignments nested in expressions. The next operand cannot read a stale kind.
 Captured mutable cells keep their joined kind because a call can change them
 between operands. Grouped sequences preserve their final value's carrier,
 including SIMD lanes and the full magnitude of unsigned helper results.
+Array `for…of` loops capture their source once and reread its length each step.
+Appends, shrinking and writes through called helpers remain visible, including
+new nodes added while the compiler solves representation plans.
 Tagged BigInt copies are solved together when bindings refer back to each other.
 Every incoming write must preserve or normalize the component's carrier before
 its representation becomes a read fact. This includes nested closures' writes
