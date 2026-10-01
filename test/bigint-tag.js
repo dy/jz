@@ -15,6 +15,48 @@ import { oracle } from './util.js'
 
 const LEVELS = levels(false, 1, 2)
 
+test('bigint tag: callbacks keep nested storage and join carrier plans', () => {
+  const bodies = ['[name, 0x7ff8000200000000n + BigInt(i)]',
+    '[name, -0x7ff8000200000000n]',
+    '[name, i ? 0x7ff8000200000000n : 17n]',
+    '[name, i ? 0x7ff8000200000000n : 3]',
+    '({name, payload: {value: i ? 0x7ff8000200000000n : null}})']
+  for (const body of bodies) {
+    const src = `export function probe(n) {
+      return ['a', 'b'].slice(0, n).map((name, i) => ${body})
+    }`
+    for (const optimize of levels(0, 1, 2, 3, 'size')) {
+      const expected = oracle(src), actual = jz(src, { optimize }).exports
+      for (const n of [0, 1, 1, 2, 0, 2])
+        is(actual.probe(n), expected.probe(n), `nested callback n=${n}, O${optimize}: ${body}`)
+    }
+  }
+})
+
+test('bigint tag: callback ABI retains unknown inputs and recovers after coercion errors', () => {
+  const src = `
+    const values = [0x7ff8000200000000n, 3, null, undefined, '12', false]
+    const bits = new Map(Object.values({a: 'a', b: 'b'}).map((name, i) =>
+      [name, 0x7ff8000200000000n + BigInt(i)]))
+    export function entries() { return [bits.get('a'), bits.get('b'), bits.get('missing')] }
+    export function probe(k) { return [values[k]].map(value => [value, typeof value]) }
+    export function numeric(k) { return [values[k]].map(value => +value) }
+    export function keep(n) { return [0n, 1n, -1n].slice(0, n).filter(value => value) }
+  `
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const expected = oracle(src), actual = jz(src, { optimize }).exports
+    for (const k of [1, 1, 0, 2, 3, 4, 5, 6, -1, 0, 1]) {
+      is(actual.entries(), expected.entries(), `Map callback entry, O${optimize}`)
+      is(actual.probe(k), expected.probe(k), `unknown callback k=${k}, O${optimize}`)
+      if (k === 0) {
+        throws(() => expected.numeric(k), TypeError)
+        throws(() => actual.numeric(k), TypeError)
+      } else is(actual.numeric(k), expected.numeric(k), `callback recovery k=${k}, O${optimize}`)
+    }
+    for (const n of [0, 1, 1, 3, 0, 3]) is(actual.keep(n), expected.keep(n), `filter n=${n}, O${optimize}`)
+  }
+})
+
 test('bigint tag: literal destructuring uses tagged storage and planned arithmetic results', () => {
   const src = `
     export function literal() {

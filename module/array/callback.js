@@ -21,10 +21,12 @@ import { emit, storedValue } from '../../src/bridge.js'
 import { valTypeOf } from '../../src/kind.js'
 import { typedCtorElemValType } from '../../src/kind-traits.js'
 import { plannedTypedStorageCtor } from '../../src/compile/typed-storage-plan.js'
+import { representationProgramHasBigint } from '../../src/compile/representation-plan.js'
 import { extractParams, refsName, REFS_IN_EXPR, T } from '../../src/ast.js'
 import { VAL, lookupValType } from '../../src/reps.js'
 import { ctx, PTR } from '../../src/ctx.js'
 import { valOf as summaryValOf } from '../../src/summary/index.js'
+import { K, hasTag } from '../../src/summary/kind.js'
 
 // Callback methods retain the initial bound and observe receiver mutations.
 const SKIP_MISSING = {}
@@ -78,6 +80,22 @@ function isPureExpr(node) {
   return true
 }
 
+// Substitution rebuilds nodes without their frozen representation-plan facts.
+// Only inline values whose settled kinds exclude BigInt; the normal closure
+// path retains the plan for every nested storage and join edge.
+function hasInlineCarriers(node, view) {
+  if (node == null || typeof node === 'number') return true
+  if (!view) return false
+  if (Array.isArray(node) && node[0] === ':') return hasInlineCarriers(node[2], view)
+  const kind = view.kindOfExpr(node)
+  if (!kind || hasTag(kind, K.BIGINT)) return false
+  if (!Array.isArray(node) || node[0] == null || node[0] === 'str') return true
+  if (node[0] === '.' || node[0] === '?.') return hasInlineCarriers(node[1], view)
+  for (let i = node[0] === '()' && typeof node[1] === 'string' ? 2 : 1; i < node.length; i++)
+    if (!hasInlineCarriers(node[i], view)) return false
+  return true
+}
+
 // Substitute variable references in a pure expression. Skips property names on `.` / `?.`
 // and object-literal keys on `:`. Body must be pre-checked with isPureExpr.
 function substExpr(node, mapping) {
@@ -109,7 +127,8 @@ export function makeCallback(fn, argReps, elem = null, thisArg) {
   if (Array.isArray(fn) && fn[0] === '=>') {
     const raw = extractParams(fn[1])
     const body = fn[2]
-    if (raw.every(p => typeof p === 'string') && isPureExpr(body)) {
+    if (raw.every(p => typeof p === 'string') && isPureExpr(body) &&
+        (!representationProgramHasBigint(ctx) || hasInlineCarriers(body, ctx.summary?.at(fn[1])))) {
       const usedParams = raw.map(p => exprUses(body, p))
       // `call` yields the body's value in its own form (an i32 boolean stays
       // i32 for a test); `stored` yields the container store's form (a

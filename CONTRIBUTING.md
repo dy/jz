@@ -134,6 +134,11 @@ name a property. Synthetic destructuring arrays use those same tagged writes
 and reads; the normal scalarization pass can erase their storage when proved.
 Unary operations unbox their input and honor the planned result carrier,
 so exact BigInt results stay raw until their consuming storage edge boxes them.
+The array callback emitter substitutes expression bodies only when their values
+exclude BigInt, or the whole program excludes it. Unknown or BigInt-bearing
+bodies retain the normal closure ABI and its nested storage/join plan; rebuilding
+their syntax is not a transfer of those proofs. Numeric callback kernels keep
+the existing inline path.
 Array `for…of` loops capture their source once and reread its length each step.
 Appends, shrinking and writes through called helpers remain visible, including
 new nodes added while the compiler solves representation plans.
