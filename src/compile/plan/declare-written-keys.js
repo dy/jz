@@ -22,21 +22,25 @@
  * any name that also takes a non-literal value (a parameter, a call result, a
  * destructuring target, an alias): a write through such a name may reach an
  * object of another layout.
+ * An anonymous data-literal assign target is the exception: no binding or
+ * accessor can expose it before copying finishes, so closed undeletable sources
+ * can declare their guaranteed keys in that literal before re-summary.
  *
  * @module compile/plan/declare-written-keys
  */
 
 import { ctx } from '../../ctx.js'
-import { MUTATE_OPS, isBrand, isLiteralStr, isArrayIndexKey, walkAst, some, extractParams, collectParamNames, refsName, REFS_IN_EXPR } from '../../ast.js'
+import { MUTATE_OPS, isBrand, isLiteralStr, isArrayIndexKey, accessorOf, commaList, walkAst, some, extractParams, collectParamNames, refsName, REFS_IN_EXPR } from '../../ast.js'
+import { enumKeys } from '../../../module/schema.js'
 import { invalidateProgramFactsCache } from '../program-facts.js'
 import { transitiveFrameEffects, frameReaches } from '../analyze/frame-effects.js'
 import { frameRoots } from '../../function.js'
 
 const STRUCTURAL = new Set(['length', '__proto__'])
 
-/** The keys of a static, non-empty object literal, or null. */
-const literalKeys = (n) => {
-  if (!Array.isArray(n) || n[0] !== '{}' || n.length < 2) return null
+/** The keys of a static object literal, or null; bound empty literals stay dictionaries. */
+const literalKeys = (n, empty = false) => {
+  if (!Array.isArray(n) || n[0] !== '{}' || !empty && n.length < 2) return null
   const keys = []
   for (let i = 1; i < n.length; i++) {
     const p = n[i]
@@ -49,6 +53,28 @@ const literalKeys = (n) => {
 
 export const declareWrittenKeys = (ast) => {
   if (!ctx.schema.register) return false
+  let changed = false
+  // An anonymous data literal cannot be observed before assign returns. Its
+  // closed sources supply these keys on every successful copy, so declare the
+  // slots before re-summary, while argument staging still precedes all copies.
+  const assignLiteral = (args, scope) => {
+    const target = args[0], own = literalKeys(target, true)
+    const view = own && ctx.summary?.at(scope)
+    if (!view || !own || own.some(k => STRUCTURAL.has(k) || accessorOf(k, ctx.transform.literalAccessorNames))) return
+    const keys = [...own]
+    for (let i = 1; i < args.length; i++) {
+      const sid = view.spreadSidOfExpr(args[i])
+      if (sid == null || ctx.summary.deletableSchema(sid)) return
+      for (const k of enumKeys(ctx.schema.list[sid])) {
+        if (STRUCTURAL.has(k)) return
+        if (!keys.includes(k)) keys.push(k)
+      }
+    }
+    if (keys.length === own.length) return
+    for (let i = own.length; i < keys.length; i++) target.push([':', keys[i], [, undefined]])
+    ctx.schema.register(keys)
+    changed = true
+  }
   const defs = new Map()     // name → { lits: [[node, keys]], other }
   const writes = new Map()   // name → Set<key>, in program order
   const dict = new Set()     // names with a computed-key write or an Object.assign
@@ -70,7 +96,7 @@ export const declareWrittenKeys = (ast) => {
     if (!s) writes.set(name, s = new Set())
     s.add(key)
   }
-  const census = (root) => walkAst(root, { enter: (n) => {
+  const census = (root, scope = null) => walkAst(root, { enter: (n) => {
     const op = n[0]
     if (MUTATE_OPS.has(op)) {
       const t = n[1]
@@ -80,8 +106,15 @@ export const declareWrittenKeys = (ast) => {
         else if (t[0] === '[]' && t.length === 3 && typeof t[1] === 'string') { if (isLiteralStr(t[2])) write(t[1], t[2][1]); else dict.add(t[1]) }
       }
     }
-    else if (op === '()' && n[1] === 'Object.assign') { const t = Array.isArray(n[2]) && n[2][0] === ',' ? n[2][1] : n[2]; if (typeof t === 'string') dict.add(t) }
-    else if (op === '=>') for (const p of collectParamNames(extractParams(n[1]))) other(p)
+    else if (op === '()' && n[1] === 'Object.assign') {
+      const args = n.length === 3 ? commaList(n[2]) : n.slice(2)
+      if (typeof args[0] === 'string') dict.add(args[0]); else assignLiteral(args, scope)
+    }
+    else if (op === '=>') {
+      for (const p of collectParamNames(extractParams(n[1]))) other(p)
+      census(n[1], n[1]); census(n[2], n[1])
+      return false
+    }
     else if (op === 'catch') { other(n[1]); other(n[2]) }
   } })
   census(ast)
@@ -89,7 +122,7 @@ export const declareWrittenKeys = (ast) => {
   for (const fn of ctx.funcs.list) {
     for (const p of fn.sig?.params ?? []) other(p.name)
     if (fn.rest) other(fn.rest)
-    if (fn.body && !fn.raw) for (const r of frameRoots(fn)) census(r)
+    if (fn.body && !fn.raw) for (const r of frameRoots(fn)) census(r, fn.sig)
   }
 
   // A key may only be declared in the literal when its store is DEFINITE: it
@@ -203,7 +236,6 @@ export const declareWrittenKeys = (ast) => {
   stmtList([...(ctx.module.moduleInits ?? []).flatMap(stmtsOf), ...stmtsOf(ast)])
   for (const fn of ctx.funcs.list) if (fn.body && !fn.raw) walkLists(fn.body)
 
-  let changed = false
   for (const [name, d] of defs) {
     if (d.other || !d.lits.length || dict.has(name)) continue
     if (ctx.schema.poisoned?.has(name) || ctx.schema.unknownInit?.has(name)) continue

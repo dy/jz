@@ -583,8 +583,7 @@ export function reset(proto, globals, bridge) {
                            //   binding — prepare's censusUnknownInitDecl). No plan
                            //   step may give such a name a merged layout: its
                            //   objects carry their own sid, and a slot store by a
-                           //   layout they do not have lands past their fields
-                           //   (inferAssignSchema).
+                           //   layout they do not have lands past their fields.
     register: null,
     find: null,
     regexSids: new Map(),   // schema id → [pattern, flags] for boxed RegExp instances

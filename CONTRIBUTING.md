@@ -88,6 +88,11 @@ properties. Summary aliases retain closed layouts through this staging; unknown
 keys copy through ordinary property storage on the original target. A fresh
 literal target keeps its planned layout too: replacing the call with a spread
 constructor would interleave source getters with later argument evaluation.
+The existing written-key planner can extend an anonymous data-literal target
+before re-summary when every source has a closed, non-null, undeletable layout.
+No binding or accessor can expose that target before the copy finishes. Bound
+targets require the existing proof that nobody observes their key set; prepare
+never adds copied keys speculatively. Conditional source keys keep ordinary storage.
 Property tables share a canonical String-or-Symbol key conversion. String-hint
 hooks run once and may return a Symbol; hashing and equality then preserve its
 whole identity without interpreting payload bits as string addresses. Public

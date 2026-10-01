@@ -1,6 +1,6 @@
 /**
  * Object-literal and declaration schema tracking: bindSchema/
- * censusUnknownInitDecl/objLiteralSid/inferAssignSchema — the "track
+ * censusUnknownInitDecl/objLiteralSid — the "track
  * schemas" concern from the pass's own header contract.
  *
  * @module prepare/schema
@@ -71,37 +71,4 @@ export function censusUnknownInitDecl(name, ownLiteral = false) {
   declInitUnknown.add(name)
   if (!ownLiteral) ctx.schema.unknownInit?.add(name)
   if (ctx.schema.vars.has(name)) { ctx.schema.vars.delete(name); ctx.schema.poisoned?.add(name) }
-}
-/** Merge source schemas into target via Object.assign for compile-time schema
- *  inference. The merged schema is the layout the target's own literal adopts
- *  at construction (module/object.js honors it), so only a binding minted by
- *  its own literal can take it: a parameter, a call result or a destructure
- *  target (ctx.schema.unknownInit) holds objects minted elsewhere, and a slot
- *  copy by a schema they do not carry lands past their fields. Such a target
- *  keeps no schema and the assign takes the dynamic path. */
-export function inferAssignSchema(callNode) {
-  // After prep, args may be comma-grouped: ['()', callee, [',', target, s1, s2]]
-  let assignArgs = callNode.slice(2)
-  if (assignArgs.length === 1 && Array.isArray(assignArgs[0]) && assignArgs[0][0] === ',')
-    assignArgs = assignArgs[0].slice(1)
-  const [target, ...sources] = assignArgs
-  if (typeof target !== 'string' || ctx.schema.unknownInit?.has(target)) return
-  const existingId = ctx.schema.vars.get(target)
-  const merged = existingId != null ? [...ctx.schema.list[existingId]] : []
-  for (const src of sources) {
-    let srcProps
-    if (Array.isArray(src) && src[0] === '{}')
-      srcProps = src.slice(1).filter(p => Array.isArray(p) && p[0] === ':').map(p => p[1])
-    else if (typeof src === 'string') {
-      const srcId = ctx.schema.vars.get(src)
-      if (srcId != null) srcProps = ctx.schema.list[srcId]
-    }
-    // the keys a source copies, and the target's own: an accessor is the
-    // property it defines (module/schema.js enumKeys), which the target's
-    // setter takes rather than a slot beside it
-    if (srcProps) for (const p of enumKeys(srcProps)) if (!enumKeys(merged).includes(p)) merged.push(p)
-  }
-  // Poisoned names stay out of the shared channel.
-  if (merged.length && !ctx.schema.poisoned?.has(target))
-    ctx.schema.vars.set(target, ctx.schema.register(merged))
 }

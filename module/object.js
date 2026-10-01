@@ -145,7 +145,7 @@ export default (ctx) => {
       if (Array.isArray(p) && p[0] === ':') { if (isBrand(p[1])) brand = p[1]; else { names.push(p[1]); values.push(p[2]) } }
     }
 
-    // Use variable's merged schema if available (from Object.assign inference),
+    // Use the variable's planned schema if available (from declared-key planning),
     // else register the literal's own schema. The merged schema is adopted only
     // when it is a *superset* of the literal's own fields — a legitimate
     // accumulation (`let o = {}; o.x = …`) always contains every literal key.

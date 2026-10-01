@@ -35,7 +35,7 @@ import { arrayLiteralItems, isDestructPattern, patternItems, simpleArrayPatternI
 import { mintLocal, scanReassignedTopLevel, writtenNames } from './ident-purity.js'
 import { bindStaticConst, bindStaticGlobal, deleteStaticGlobal, hoistIndexedConstLiterals, invalidateMutatedArray, staticString, staticStringArrayValues, staticStringExpr, stringArrayValues } from './literals.js'
 import { INTRINSIC_CALLEES, addHostImport, builtinAliasKeyOf, bundledSource, foldImportMetaResolve, foldNamespaceIntrospection, importMetaUrl, isBundledModule, isImportMeta, isImportMetaProp, moduleAstFor, namespaceMemberAliases, namespaceMemberAssigns, namespaceModOf, recordModuleInitFacts, resolveImportMeta } from './module-resolve.js'
-import { bindSchema, censusUnknownInitDecl, inferAssignSchema, objLiteralSid } from './schema.js'
+import { bindSchema, censusUnknownInitDecl, objLiteralSid } from './schema.js'
 import { importEdge, namespaceValue } from './module-eval.js'
 import { bindingNames, bodyCapturesName, collectLoopDeclNames, declareGlobal, inlineArrayLen, isDeclared, markLoopLocal, mintForScope, popScope, prescanBlockDecls, pushScope, resolveScope, withLoopLocalNames } from './scope.js'
 import { CONSTANTS, ERR_CLASS_SET, F64_CONSTANTS, GLOBALS, INSTANCEOF_ALLOW, NS_CTORS, NS_OBJECTS, SIMD_NS, STATIC_CONSTS, arrowWrites, assignedStaticGlobals, builtinMemberKey, freshPrepareId, funcLocalNames, funcValueNames, loopLocalNames, mutatedArrayNames, ownerStack, prepState, promiseRecvNames, renameSerial, scopes, staticConstScopes, withResolversRecvNames, BUILTIN_FNS, GLOBAL_TYPEOF, builtinGlobalOf } from './state.js'
@@ -1189,8 +1189,6 @@ const handlers = {
     }
 
     const result = preppedArgs.length ? ['()', callee, ...preppedArgs] : ['()', callee, null]
-
-    if (callee === 'Object.assign' && ctx.schema.register) inferAssignSchema(result)
 
     // `S.push(…)` / `S.sort()` / … mutate the receiver — end its static-array
     // fact before any later fold consumes the pre-mutation values.

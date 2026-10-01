@@ -14,7 +14,7 @@
  *   3. Extract       — arrow functions → ctx.funcs.list with sig
  *   4. Normalize     — ++/-- → +=/-=, unary ± disambiguation, for-head flattening
  *   5. Auto-import   — Math/Array/etc usage triggers includeModule(...)
- *   6. Track schemas — object literals, Object.assign inference (inferAssignSchema)
+ *   6. Track schemas — object literals and binding layout consensus
  *
  * Each handler may touch multiple concerns, but helpers keep each concern self-contained.
  * Unhandled ops fall through to recursive prep() of their children.

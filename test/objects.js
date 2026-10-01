@@ -582,7 +582,7 @@ test('schema writes through aliases keep an existing dynamic sidecar coherent', 
 })
 
 // A name whose objects are minted elsewhere takes no merged layout
-// (ctx.schema.unknownInit: prepare's inferAssignSchema; a box once took it
+// (ctx.schema.unknownInit; earlier prepare-time schema growth took a box
 // too): `const alias = ns.inner` replaced its box with the
 // inner object's pointer and `alias.f = b` then stored at the box's slot
 // offset into a 1-slot object; `Object.assign(o, {b, c})` on a parameter
@@ -3025,6 +3025,56 @@ test('Object.assign literal results own their copy dependencies', () => {
       const f=jz(src,{optimize}).exports.f
       is(f(),expected,`O${optimize}: ${body}`)
       is(f(),expected,`repeat O${optimize}: ${body}`)
+    }
+  }
+})
+
+test('Object.assign plans anonymous closed target layouts before copying', () => {
+  for (const body of [
+    `return Object.assign({},{x:n})`,
+    `return Object.assign({seed:n},{x:n+1})`,
+    `const out=Object.assign({seed:n},{2:n+1},{0:n+2,z:7});return [out.seed,out[0],out[2],Object.keys(out)]`,
+    `const out=Object.assign({seed:n},{x:0x7ff8000200000000n},{x:17n,y:3});return [out.seed,out.x,out.y,Object.keys(out)]`,
+    `let log='';function later(){log+='a';return {y:n+1}}
+      const out=Object.assign({seed:n},{get x(){log+='g';return n}},later());return [out,log]`,
+    `function defaults(a=Object.assign({seed:1},{x:2})){return a}
+      const copy=source=>Object.assign({seed:n},source);return [defaults(),copy({x:n+1})]`,
+    `let log='';function value(v){log+=v;return v}
+      const out=Object.assign({z:value('a'),z:value('b'),a:1},{x:n});return [out,log,Object.keys(out)]`,
+    `let log='';const source={get x(){log+='g';if(n<0)throw new TypeError('copy');return n}}
+      try{const out=Object.assign({seed:1},source);return [out,log]}
+      catch(e){return [e.name,e.message,log]}`,
+  ]) {
+    const src=`export function f(n){${body}}`,expected=oracle(src).f
+    for (const optimize of levels(0,1,2,3,'size')) {
+      const f=jz(src,{optimize}).exports.f
+      for (const n of [0,0,7,-1,0]) is(f(n),expected(n),`O${optimize}, n=${n}: ${body}`)
+    }
+  }
+  const src=`export function f(n){return Object.assign({seed:n},{x:n+1})}`
+  for (const optimize of levels(0,1,2,3,'size'))
+    ok(!compile(src,{optimize,wat:true}).includes('$__dyn_set'),`closed anonymous target stores slots O${optimize}`)
+  const retained=`const kept=[];export function f(n){const out=Object.assign({},{x:n});kept.push(out);return kept.map(v=>v.x)}`
+  for (const optimize of levels(0,1,2,3,'size')) {
+    const f=jz(retained,{optimize}).exports.f,expected=oracle(retained).f
+    for (const n of [0,0,7,-1,0]) is(f(n),expected(n),`retained copies O${optimize}, n=${n}`)
+  }
+})
+
+test('Object.assign target planning preserves observable and conditional key sets', () => {
+  for (const body of [
+    `const target={seed:1};const out=Object.assign(target,{get a(){return Object.keys(target).join()}},{b:2});return [out.a,Object.keys(out)]`,
+    `let held;const out=Object.assign(held={seed:1},{get a(){return Object.keys(held).join()}},{b:2});return [out.a,Object.keys(out)]`,
+    `let seen='';const out=Object.assign({set a(v){seen=Object.keys(this).join()}},{a:1,b:2});return [seen,Object.keys(out)]`,
+    `const source=mode?{x:7}:null;const out=Object.assign({seed:1},source);return [out,Object.hasOwn(out,'x')]`,
+    `const source={x:7,y:9};function later(){delete source[mode?'x':'y'];return {z:3}}
+      const out=Object.assign({seed:1},source,later());return [out,Object.keys(out)]`,
+    `const source={x:7};if(mode)source.extra=9;const out=Object.assign({seed:1},source);return [out,Object.keys(out)]`,
+  ]) {
+    const src=`export function f(mode){${body}}`,expected=oracle(src).f
+    for (const optimize of levels(0,1,2,3,'size')) {
+      const f=jz(src,{optimize}).exports.f
+      for (const mode of [0,0,1,0,1]) is(f(mode),expected(mode),`O${optimize}, mode=${mode}: ${body}`)
     }
   }
 })

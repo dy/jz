@@ -257,7 +257,7 @@ export function analyzeValTypes(body) {
   // 0 for a direct `let`/`const` decl (the initializer is not counted as a
   // write). A polymorphically reassigned holder keeps dynamic dispatch.
   // A name already in `ctx.schema.vars` carries a prepare-phase schema
-  // (Object.assign merge via `inferAssignSchema`, destructure tracking) that
+  // (literal bindings and destructure tracking) that
   // supersedes the bare-literal one — binding here would shadow the merged
   // schema (rep schemaId wins over `ctx.schema.vars` in `idOf`).
   function bindObjSchema(name, rhs, expectWrites = 1) {
