@@ -699,6 +699,7 @@ export function reset(proto, globals, bridge) {
     throws: false,
     userThrows: false,  // user wrote `throw`/`try`/`catch`/`finally` — keep runtime declared
                         // even when all throws are dead-code-eliminated (JS-side ABI contract).
+    hostThrows: false,  // reachable host imports can enter the source exception transport
     staticPtrSlots: null,  // [byteOffset] data-segment slots holding NaN-boxed ptrs (host relocates); lazy-init in ir.js
     staticDataLen: 0,      // byte length of the address-0 static string block (seeded by module/number staticStr)
     typeofStrs: null,      // [str] interned typeof result strings; lazy-init in module/core `typeof`

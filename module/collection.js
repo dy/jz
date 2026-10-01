@@ -419,6 +419,7 @@ export default (ctx) => {
   // same hazard as env.print / env.setTimeout (see module/console.js header).
   // i32 returns (has/set) and arg shapes stay; only boxed-pointer carriers move.
   ctx.core.stdlib['__ext_prop'] = '(import "env" "__ext_prop" (func $__ext_prop (param i64 i64) (result i64)))'
+  ctx.core.stdlib['__ext_is_error'] = '(import "env" "__ext_is_error" (func $__ext_is_error (param i64 i32) (result i32)))'
   ctx.core.stdlib['__ext_has_iterator'] = '(import "env" "__ext_has_iterator" (func $__ext_has_iterator (param i64) (result i32)))'
   ctx.core.stdlib['__ext_delete'] = '(import "env" "__ext_delete" (func $__ext_delete (param i64 i64) (result i32)))'
   ctx.core.stdlib['__ext_has'] = '(import "env" "__ext_has" (func $__ext_has (param i64 i64) (result i32)))'
@@ -426,6 +427,8 @@ export default (ctx) => {
   ctx.core.stdlib['__ext_enum'] = '(import "env" "__ext_enum" (func $__ext_enum (param i64 i32) (result i64)))'
   ctx.core.stdlib['__ext_set'] = '(import "env" "__ext_set" (func $__ext_set (param i64 i64 i64) (result i32)))'
   ctx.core.stdlib['__ext_call'] = '(import "env" "__ext_call" (func $__ext_call (param i64 i64 i64) (result i64)))'
+  ctx.core.stdlib['__ext_invoke'] = '(import "env" "__ext_invoke" (func $__ext_invoke (param i64 i64 i64) (result i64)))'
+  ctx.core.stdlib['__ext_method'] = '(import "env" "__ext_method" (func $__ext_method (param i64 i64) (result i64)))'
   // Hash function: simple f64 → i32 hash
   // Mix high mantissa bits into low buckets. XOR alone sends consecutive
   // integer-valued doubles to the same probe chain in power-of-two tables.

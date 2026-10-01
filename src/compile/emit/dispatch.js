@@ -11,7 +11,7 @@ import { STR_HCACHE_BIT, HEAP } from '../../../layout.js'
 import { ASSIGN_OPS, MUTATE_OPS, T, commaList, firstRefKind, isBlockBody, isReassigned, walkAst } from '../../ast.js'
 import { PTR, ctx, err, inc, emitArity, setLinkDemand } from '../../ctx.js'
 import {
-  keyIndex, int32Bits, callWithArgs, FALSE_NAN, MAX_CLOSURE_ARITY, TRUE_NAN, WASM_OPS, applyBigintRepresentationAction, asF64, asI32, asI64, asParamType, asPtrOffset, block64, boolBoxIR, boxBigInt, carrierF64, carrierF64Narrow, emitNum, extractF64Bits, flat, fromI64, isBoundName, isGlobal, boxedAddr, isLit, isNullish, isNullishLit, litVal, materializeDeferredBigint, mayYieldUndefOf, maybeUnboxBigInt, mkPtrIR, nullExpr, nullableBoolBoxIR, ptrOffsetIR, readVar, resolveValType, temp, tempI32, tempI64, toI32, toNumF64, toStrI64, truthyIR, typed, unboxBoolIR, undefExpr, valKindToPtr,
+  keyIndex, int32Bits, callWithArgs, FALSE_NAN, MAX_CLOSURE_ARITY, TRUE_NAN, WASM_OPS, applyBigintRepresentationAction, asF64, asI32, asI64, asParamType, asPtrOffset, block64, boolBoxIR, boxBigInt, carrierF64, carrierF64Narrow, emitNum, extractF64Bits, flat, fromI64, isBoundName, isGlobal, boxedAddr, boxedPtrTypeEq, isLit, isNullish, isNullishLit, litVal, materializeDeferredBigint, mayYieldUndefOf, maybeUnboxBigInt, mkPtrIR, nullExpr, nullableBoolBoxIR, ptrOffsetIR, readVar, resolveValType, temp, tempI32, tempI64, toI32, toNumF64, toStrI64, truthyIR, typed, unboxBoolIR, undefExpr, valKindToPtr,
 } from '../../ir.js'
 import { BIGINT_JOINT_BINARY_OPS, isPresentNumber, hasAmbiguousBoolMerge, nullishArm, valTypeOf, boolTagged, mixedBoolKind } from '../../kind.js'
 import { VAL, lookupValType, repOf, repOfGlobal, numericStorage, mayBeUndefined } from '../../reps.js'
@@ -1509,7 +1509,7 @@ function liftOptionalChain(node, condition = false, receiver = null, missing = n
     ctx.summary.at(ctx.func.current).typedPayloadCtorOfExpr(opt[1]) != null
   let head = opt[1], callReceiver = null
   while (Array.isArray(head) && head[0] === '(') head = head[1]
-  if (ctx.closure.receiver && opt[0] === '?.()' && Array.isArray(head) && ['.', '?.', '[]', '?.[]'].includes(head[0]))
+  if ((ctx.closure.receiver || ctx.transform.targetProfile.envImports && valTypeOf(head) !== VAL.CLOSURE) && opt[0] === '?.()' && Array.isArray(head) && ['.', '?.', '[]', '?.[]'].includes(head[0]))
     callReceiver = temp('ocrecv')
   const headIR = callReceiver ? emitReference(head, callReceiver) : emit(opt[1])
   const guarded = withNullGuard(asF64(headIR), t => {
@@ -1560,9 +1560,20 @@ export function emitReference(node, receiver) {
   const lifted = liftOptionalChain(node, false, receiver)
   if (lifted) return lifted
   if (!['.', '[]', '?.', '?.[]'].includes(node[0])) return emit(node)
+  const external = ctx.transform.targetProfile.envImports && valTypeOf(node[1]) == null
   const value = asF64(emit(node[1])), view = ctx.summary?.at(ctx.func.current)
   view?.alias(receiver, node[1], false)
-  try { return block64(['local.set', `$${receiver}`, value], emit([node[0], receiver, node[2]])) }
+  try {
+    let read = emit([node[0], receiver, node[2]])
+    if (external) {
+      ctx.module.include('collection'); inc('__ext_method'); setLinkDemand('external')
+      const key = node[0] === '.' || node[0] === '?.' ? ['str', node[2]] : ['()', T + 'key', node[2]]
+      read = ['if', ['result', 'f64'], boxedPtrTypeEq(['local.get', `$${receiver}`], PTR.EXTERNAL),
+        ['then', ['f64.reinterpret_i64', ['call', '$__ext_method',
+          ['i64.reinterpret_f64', ['local.get', `$${receiver}`]], asI64(emit(key))]]], ['else', asF64(read)]]
+    }
+    return block64(['local.set', `$${receiver}`, value], read)
+  }
   finally { view?.unalias(receiver) }
 }
 

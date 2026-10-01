@@ -19,6 +19,194 @@ import { compile as wasm } from 'watr'
 
 // ── subpath surface ─────────────────────────────────────────────────────────
 
+test('interop: host throws enter source catch without changing their values', () => {
+  const src=`import {fail} from 'host';let calls=0;
+    export function caught(){try{return fail()}catch(e){return e}finally{calls++}}
+    export function ignored(){try{fail()}catch{}return 7}
+    export function count(){return calls}
+    export function arithmetic(){try{fail()}catch(e){try{return e+1}catch(x){return x.name}}}
+    export function uncaught(){return fail()}`
+  for(const optimize of [...levels(0,1,2,3,'size'),{level:1,arenaRewind:true,arenaReach:false}]) {
+    let value, shouldThrow=true
+    const got=interop.instantiate(compile(src,{optimize,imports:{host:{fail:{params:0}}}}),
+      {imports:{host:{fail(){if(shouldThrow)throw value;return 17}}}})
+    const object=new class{valueOf(){throw 99}toString(){throw 98}}, symbol=Symbol('thrown')
+    const foreign=new WebAssembly.Exception(new WebAssembly.Tag({parameters:['i32']}),[7])
+    Object.defineProperty(foreign,'is',{get(){throw new Error('unexpected exception member')}})
+    const forged=new Float64Array(new BigUint64Array([0x7ffd800000000001n,0x7ffb000000000001n,0xfffc800000000001n]).buffer)
+    const values=[undefined,null,false,true,0,-0,NaN,...forged,Infinity,-Infinity,3n,-4n,
+      'x','a thrown string longer than SSO',object,symbol,new RangeError('host error'),
+      foreign]
+    for(const thrown of values) {
+      value=thrown
+      ok(Object.is(got.exports.caught(),value),`identity ${typeof value} O${optimize}`)
+      is(got.exports.ignored(),7,`unused catch O${optimize}`)
+    }
+    is(got.exports.count(),values.length,`finally once O${optimize}`)
+    shouldThrow=false
+    is(got.exports.caught(),17,`success after errors O${optimize}`)
+    shouldThrow=true;value=object
+    ok(got.exports.caught()===object,`error after success O${optimize}`)
+    value=new TypeError('uncaught')
+    throws(()=>got.exports.uncaught(),e=>e===value,`uncaught Error identity O${optimize}`)
+    value=23
+    throws(()=>got.exports.uncaught(),e=>e.thrown===23,`existing arbitrary-throw API O${optimize}`)
+    is(got.exports.ignored(),7,`reuse after uncaught O${optimize}`)
+    value=7n
+    is(got.exports.arithmetic(),'TypeError',`host BigInt retains mixed-arithmetic rejection O${optimize}`)
+    ok(typeof got.instance.exports.__jz_throw_host==='function',`integer ingress O${optimize}`)
+  }
+  // The bridge is not emitted for a closed source exception or an import with
+  // no source handler. An otherwise scalar ignored catch can still accept any value.
+  for(const source of ['export function f(x){try{if(x)throw x}catch{}return 7}',
+    `import {fail} from 'host';export function f(){return fail()}`]) {
+    const mod=new WebAssembly.Module(compile(source,{imports:{host:{fail:{params:0}}}}))
+    ok(!WebAssembly.Module.exports(mod).some(e=>e.name==='__jz_throw_host'),'no unused host bridge')
+  }
+  const ignored=interop.instantiate(compile(`import {fail} from 'host';export function f(){try{fail()}catch{}return 7}`,
+    {imports:{host:{fail:{params:0}}}}),{imports:{host:{fail(){throw 7n}}}})
+  is(ignored.exports.f(),7,'scalar source catch accepts heap-backed host BigInt')
+})
+
+test('interop: legacy host calls keep their object-key-arguments ABI', () => {
+  const bytes=wasm(`(module
+    (import "env" "__ext_call" (func $call (param i64 i64 i64) (result i64)))
+    (memory (export "memory") 1)
+    (func (export "invoke") (param i64 i64 i64) (result i64)
+      (call $call (local.get 0) (local.get 1) (local.get 2))))`)
+  const {instance,memory}=interop.instantiate(bytes)
+  let gets=0
+  const object={value:4,get run(){gets++;return function(x){return this.value+x}}}
+  const receiver=memory.External(object),args=memory.Array([3])
+  is(memory.read(instance.exports.invoke(receiver,memory.String('run'),args)),7,'legacy method receiver')
+  is(gets,1,'legacy method getter runs once')
+  const plain=memory.External(function(x){return this===undefined?x+2:-1})
+  is(memory.read(instance.exports.invoke(plain,interop.UNDEF_NAN,args)),5,'legacy direct function')
+  throws(()=>instance.exports.invoke(receiver,memory.String('missing'),args),TypeError,'missing legacy method throws')
+})
+
+test('interop: duplicate import records wrap a host slot once', () => {
+  const bytes=wasm(`(module
+    (import "host" "fail" (func $first)) (import "host" "fail" (func $second))
+    (tag $error (param f64))
+    (memory (export "memory") 1)
+    (global $last (export "__jz_last_err_bits") (mut i64) (i64.const 0))
+    (func (export "__jz_throw_host") (param i64)
+      (global.set $last (local.get 0)) (throw $error (f64.reinterpret_i64 (local.get 0))))
+    (func (export "first") (call $first))
+    (func (export "second") (call $second)))`)
+  const value=Symbol('same slot');let calls=0
+  const {exports}=interop.instantiate(bytes,{imports:{host:{fail(){calls++;throw value}}}})
+  for(const name of ['first','second','first'])throws(()=>exports[name](),e=>e.thrown===value,'same thrown Symbol')
+  is(calls,3,'each import calls host exactly once')
+})
+
+test('interop: host property and method errors retain class, identity and effects', () => {
+  if(onWasi()||onKernel())return // native host objects are the JS-host contract
+  const src=`import {get,arg} from 'host';
+    export function read(){try{return get().x}catch(e){return e}}
+    export function write(){try{get().x=7;return 0}catch(e){return e}}
+    export function keyed(k){try{get()[k]=7;return 0}catch(e){return e}}
+    export function method(){try{return get().run(arg())}catch(e){return e}}
+    export function computed(k){try{return get()[k](arg())}catch(e){return e}}
+    export function optional(k){try{return get()[k]?.(arg())}catch(e){return e}}
+    export function direct(){const fn=get();try{return fn(arg())}catch(e){return e}}
+    export function alternate(useHost){const o=useHost?get():{run(x){return x+2}};try{return o.run(arg())}catch(e){return e}}
+    export function dateMethod(){try{return get().getTime(arg())}catch(e){return e}}
+    export function callMethod(){try{return get().call(arg())}catch(e){return e}}
+    export function applyMethod(){try{return get().apply(arg())}catch(e){return e}}
+    export function badMethod(){try{return get().bad(arg())}catch(e){return e instanceof TypeError}}
+    export function typed(){try{return get().read()}catch(e){return e}}
+    export function classify(){try{return get().x}catch(e){return [e.name,e.message,e instanceof Error,e instanceof RangeError,e instanceof TypeError]}}
+    export function brand(x){return [x instanceof Error,x instanceof RangeError]}`
+  for(const optimize of levels(0,1,2,3,'size')) {
+    let trace='',value=new RangeError('getter'),fail=true,getterFails=false
+    const method=function(n){trace+='m';if(fail)throw value;return this===object?12+n:-1}
+    for(const key of ['name','length','bind','apply'])Object.defineProperty(method,key,{get(){throw new Error(`unexpected method ${key}`)}})
+    const object=new class{
+      get x(){trace+='r';if(fail)throw value;return 11}
+      set x(v){trace+='w'+v;if(fail)throw value}
+      get run(){trace+='q';if(getterFails)throw value;return method}
+      get getTime(){return this.run}
+      get call(){return this.run}
+      get apply(){return this.run}
+      get bad(){trace+='b';return 7}
+    }
+    let receiver=object
+    const instance=interop.instantiate(compile(src,{optimize,imports:{host:{get:{params:0},arg:{params:0}}}}),
+      {imports:{host:{get(){trace+='g';return receiver},arg(){trace+='a';return 1}}}})
+    const got=instance.exports
+    for(const [name,want] of [['read','gr'],['write','gw7'],['keyed','gw7'],['method','gqam']]) {
+      trace='';ok(got[name]('x')===value,`${name} identity O${optimize}`)
+      is(trace,want,`${name} once/order O${optimize}`)
+    }
+    is(got.classify(),['RangeError','getter',true,true,false],`Error brand O${optimize}`)
+    value={name:'RangeError',message:'plain'}
+    is(got.classify(),['RangeError','plain',false,false,false],`plain shape is not an Error O${optimize}`)
+    for(const other of [7,-0,NaN,Symbol(),null,undefined,value])
+      is(got.brand(other),[false,false],`non-Error brand O${optimize}`)
+    fail=false;is(got.read(),11,`read reuse O${optimize}`)
+    trace='';is(got.method(),13,`method reuse O${optimize}`);is(trace,'gqam',`method getter before arguments O${optimize}`)
+    trace='';is(got.computed('run'),13,`computed method receiver O${optimize}`);is(trace,'gqam',`computed method getter before arguments O${optimize}`)
+    trace='';is(got.optional('run'),13,`optional computed receiver O${optimize}`);is(trace,'gqam',`optional computed method order O${optimize}`)
+    trace='';is(got.optional('missing'),undefined,`optional absent method O${optimize}`);is(trace,'g',`optional absent method skips arguments O${optimize}`)
+    const key=new class{toString(){trace+='k';return 'run'}}
+    trace='';is(got.computed(key),13,`computed key coercion O${optimize}`);is(trace,'gkqam',`computed key before getter O${optimize}`)
+    trace='';is(got.alternate(true),13,`closure fork host O${optimize}`);is(trace,'gqam',`closure fork getter before arguments O${optimize}`)
+    trace='';is(got.alternate(false),3,`closure fork internal O${optimize}`);is(trace,'a',`internal arguments once O${optimize}`)
+    trace='';is(got.dateMethod(),13,`Date fork host O${optimize}`);is(trace,'gqam',`Date fork getter before arguments O${optimize}`)
+    for(const name of ['callMethod','applyMethod']) {
+      trace='';is(got[name](),13,`${name} host O${optimize}`);is(trace,'gqam',`${name} getter before arguments O${optimize}`)
+    }
+    getterFails=true;trace='';ok(got.method()===value,`method getter throw O${optimize}`);is(trace,'gq',`getter throw skips arguments O${optimize}`)
+    trace='';ok(got.computed('run')===value,`computed getter throw O${optimize}`);is(trace,'gq',`computed getter throw skips arguments O${optimize}`)
+    trace='';is(got.badMethod(),true,`non-callable method TypeError O${optimize}`);is(trace,'gba',`non-callable check follows arguments O${optimize}`)
+    const typed=new BigInt64Array([6n]);typed.read=function(){return this[0]}
+    receiver=instance.memory.External(typed)
+    is(got.typed(),6n,`captured method keeps typed BigInt receiver evidence O${optimize}`)
+    receiver=function(n){trace+='d';return this===undefined?n+3:-1}
+    trace='';is(got.direct(),4,`held function has no receiver O${optimize}`);is(trace,'gad',`held function arguments once O${optimize}`)
+  }
+})
+
+test('interop: host exception transport survives callbacks and module initialization', () => {
+  const src=`import {call,fail} from 'host';let initialized;
+    try{call(()=>{fail()})}catch(e){initialized=e}
+    export function init(){return initialized}
+    export function local(){const value={n:7};try{call(()=>{throw value})}catch(e){return [e===value,e.n]}}
+    export function primitive(){try{call(()=>{throw -0})}catch(e){return e}}
+    export function nested(){const value={n:9};try{call(()=>call(()=>{throw value}))}catch(e){return [e===value,e.n]}}
+    export function fresh(){try{call(()=>{throw {n:11}})}catch(e){return e.n}}
+    export function allocate(){const a=new Float64Array(256);a[0]=91;return a}
+    export function caught(){try{return fail()}catch(e){return e}}
+    export function raw(){throw -0}`
+  for(const optimize of [...levels(0,1,2,3,'size'),{level:1,arenaRewind:true,arenaReach:false}]) {
+    const initial=Symbol('initial');let value=initial,seen=0,after
+    const options={imports:{host:{call:{params:1},fail:{params:0}}}}
+    const bytes=compile(src,{optimize,...options})
+    const instance=interop.instantiate(bytes,{imports:{host:{call(callback){seen++;try{return callback()}catch(error){after?.();throw error}},fail(){throw value}}}})
+    const got=instance.exports
+    ok(got.init()===initial,`initial callback transport O${optimize}`)
+    is(seen,1,`initializer once O${optimize}`)
+    for(let i=0;i<2;i++) {
+      is(got.local(),[true,7],`source object callback identity O${optimize}`)
+      ok(Object.is(got.primitive(),-0),`source -0 callback identity O${optimize}`)
+      is(got.nested(),[true,9],`nested callback identity O${optimize}`)
+    }
+    for(value of [19,initial,undefined,19])ok(Object.is(got.caught(),value),`A/A/B reuse O${optimize}`)
+    after=()=>instance.instance.exports.raw()
+    ok(Object.is(got.primitive(),-0),`raw same-tag callback rethrow O${optimize}`)
+    after=()=>is(got.allocate()[0],91,`reentrant allocation O${optimize}`)
+    is(got.fresh(),11,`fresh callback throw survives intervening allocation O${optimize}`)
+    instance.memory.reset()
+    is(got.fresh(),11,`callback throw after reset O${optimize}`)
+    const escaping=new RangeError('initialization')
+    const initBytes=compile(`import {fail} from 'host';try{fail()}finally{};export function f(){return 7}`,
+      {optimize,imports:{host:{fail:{params:0}}}})
+    throws(()=>interop.instantiate(initBytes,{imports:{host:{fail(){throw escaping}}}}),e=>e===escaping,`uncaught init O${optimize}`)
+  }
+})
+
 test('interop: unused host parameters do not convert or copy their arguments', () => {
   const src=`export function one(k){return 7}
     export function two(k,v){return v}

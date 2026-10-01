@@ -1402,6 +1402,20 @@ Unused generated error signals disappear at link; explicit source throws retain
 the host channel. Generated Wasm and interop must
 be rebuilt together when this internal transport changes.
 
+Source handlers also catch synchronous host imports. Modules needing that edge
+export an i64 throw entry; interop preserves the bits until Wasm reinterprets them
+and raises the existing tag. Host objects remain external handles, including
+Errors, so catching one preserves its identity and native Error brand. A bound
+catch admits BigInt in the representation census even without a source literal
+(488 bytes for the minimal O2 numeric-catch control; bindingless catches are unchanged).
+The codec and callback wrappers are installed before deferred module initialization.
+Reentrant source throws retain their original bits only during the active host
+call, avoiding a second object copy when a host callback rethrows them. Raw
+same-instance exceptions retain the existing exported tag. Imported slots are
+wrapped once even if multiple import records name them. Host method reads capture
+the callable before arguments, then `__ext_invoke` receives that callable and its
+receiver; `__ext_call` retains the object/key/arguments ABI of older modules.
+
 Coercion distinguishes absence from an own non-callable value through the
 existing property-presence probe. Only absence selects an inherited method. Calls evaluate their receiver, property and
 arguments once, in source order, before checking callability. Nullish member reads

@@ -27,6 +27,8 @@ test('features.external OFF: pure scalar — no __ext_* imports', () => {
   is(hasImport(w, '__ext_has'), false)
   is(hasImport(w, '__ext_set'), false)
   is(hasImport(w, '__ext_call'), false)
+  is(hasImport(w, '__ext_method'), false)
+  is(hasImport(w, '__ext_invoke'), false)
 })
 
 test('features.external OFF: schema object — no __ext_* imports', () => {
@@ -103,10 +105,11 @@ test('features.external ON: untyped .prop write — __ext_set import present', (
   is(hasImport(w, '__ext_set'), true)
 })
 
-test('features.external ON: untyped method call — __ext_call import present', () => {
+test('features.external ON: untyped method call captures and invokes a host member', () => {
   if (onWasi()) return  // wasi: external object
   const w = wat(`export let f = (o) => o.m()`)
-  is(hasImport(w, '__ext_call'), true)
+  is(hasImport(w, '__ext_method'), true)
+  is(hasImport(w, '__ext_invoke'), true)
 })
 
 test('features.external ON: HOST_GLOBALS reference — __ext_prop import present', () => {

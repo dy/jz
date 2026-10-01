@@ -26,7 +26,7 @@
 
 import { wasi, attachTimers } from './wasi.js'
 import { HEAP, PTR, FIELD, encodePtrHi, decodePtrType, decodePtrAux, ATOM, ATOM_HI, LAYOUT, SYMBOL_MIN, TOMB_NAN, DATA_VIEW_FLAG, DATA_VIEW_AUX, TYPED_ELEM_VIEW_FLAG, ctorFromElemAux, HIDDEN_PROPERTY_SEQ } from './layout.js'
-import { ERROR_CODE_HI, ERR_INFO } from './err-codes.js'
+import { ERROR_CODE_HI, ERR_INFO, ERR_CLASS_NAMES } from './err-codes.js'
 import { decodeUtf8 } from './utf8.js'
 
 // UTF-8 codecs for Wasm metadata. String values use lossless UTF-16 marshalling.
@@ -1215,6 +1215,7 @@ export const wrap = (memSrc, inst, state) => {
         const wrapped = new Ctor(value.message)
         wrapped.cause = error
         wrapped.thrown = value
+        if (state?.inHost) (state.caught ??= new WeakMap()).set(wrapped, errBits)
         throw wrapped
       }
     }
@@ -1225,6 +1226,7 @@ export const wrap = (memSrc, inst, state) => {
       : new Error(typeof value === 'string' ? value : String(value))
     wrapped.cause = error
     wrapped.thrown = value
+    if (state?.inHost) (state.caught ??= new WeakMap()).set(wrapped, errBits)
     throw wrapped
   }
   // A closure the host holds (an export's result, a host call's argument)
@@ -1754,6 +1756,32 @@ const hostRet = (state, ret, bigintEvidence = false) => {
 // (module/web.js lowers bare `fetch(...)` etc. to env imports under host:'js').
 const WEB_GLOBALS = new Set(['fetch'])
 
+// Exception values and captured call references cross by identity. Unlike a
+// generic host return, these edges also admit an arbitrary BigInt value.
+const hostValue = (state, value) => typeof value === 'number' ? (value === value ? value : NaN)
+  : typeof value === 'bigint' ? state.mem.BigInt(value)
+  : value !== null && (typeof value === 'object' || typeof value === 'function') ? state.mem.External(value)
+  : state.mem.wrapVal(value)
+
+// Every synchronous host import shares the source exception boundary. A callback
+// reentering this instance may already have decoded a source throw for JS: during
+// this host call only, retain its original bits so a rethrow preserves identity.
+const catchingImport = (state, fn) => function (...args) {
+  const previous = state.caught
+  state.caught = null
+  state.inHost = (state.inHost || 0) + 1
+  try { return Reflect.apply(fn, this, args) }
+  catch (value) {
+    // A raw export can reenter this instance without the JS decoding wrapper.
+    // Its own exception already carries the source value in the right tag.
+    if (value instanceof WebAssembly.Exception && state.errTag && WebAssembly.Exception.prototype.is.call(value, state.errTag)) throw value
+    const prior = value != null && (typeof value === 'object' || typeof value === 'function')
+      ? state.caught?.get(value) : undefined
+    const boxed = prior !== undefined ? prior : hostValue(state, value)
+    state.raise(bits(boxed))
+  } finally { state.inHost--; state.caught = previous }
+}
+
 const prepareInterop = (opts) => {
   // the host references of a memory are one table for every module sharing
   // it: an index one module hands out resolves through another's import
@@ -1791,6 +1819,10 @@ const prepareInterop = (opts) => {
     const obj = extRecv(objBig, Symbol.iterator, 'iterator-method test')
     const method = obj[Symbol.iterator]
     return method == null ? 0 : 1
+  }
+  opts._interp.__ext_is_error = (objBig, kind) => {
+    const Ctor = globalThis[ERR_CLASS_NAMES[kind]]
+    return state.extMap[offset(objBig)] instanceof Ctor ? 1 : 0
   }
   // JSON.stringify's walker met a host object: the host's text, each line
   // indented to the walker's depth, or undefined where the host writes none.
@@ -1831,21 +1863,27 @@ const prepareInterop = (opts) => {
     extRecv(objBig, prop, 'property write')[prop] = v
     return 1
   }
-  opts._interp.__ext_call = (objBig, propBig, argsBig) => {
-    const prop = state.mem.read(propBig)
-    const obj = extRecv(objBig, prop, 'method call')
-    const args = state.mem.read(argsBig, state.fnOf)
-    // Method keys are normalized before this boundary; undefined marks a direct call.
-    if (prop === undefined) {
-      if (typeof obj !== 'function') throw new TypeError('Host value is not callable')
-      return hostRet(state, Reflect.apply(obj, undefined, args))
-    }
-    if (typeof obj[prop] !== 'function')
-      throw new Error(`'${prop}' is not a function on this host ${obj?.constructor?.name ?? 'object'}`)
-    const value = obj[prop].apply(obj, args)
+  // Get the callable before source arguments run; callability is checked after
+  // them. Do not bind here: Function.bind observes the function's name/length.
+  opts._interp.__ext_method = (objBig, propBig) => {
+    const prop = state.mem.read(propBig), obj = extRecv(objBig, prop, 'method call')
+    return bits(hostValue(state, obj[prop]))
+  }
+  const invoke = (fn, obj, args) => {
+    if (typeof fn !== 'function') throw new TypeError('Host value is not callable')
+    const value = Reflect.apply(fn, obj, args)
     const bigTyped = typeof value === 'bigint' &&
       (obj instanceof BigInt64Array || obj instanceof BigUint64Array)
     return hostRet(state, value, bigTyped)
+  }
+  opts._interp.__ext_invoke = (fnBig, recvBig, argsBig) => invoke(
+    state.mem.read(fnBig, state.fnOf), state.mem.read(recvBig, state.fnOf), state.mem.read(argsBig, state.fnOf))
+  // Older compiled modules pass receiver/key/arguments to this import. Keep
+  // that ABI distinct from the captured callable/receiver/arguments above.
+  opts._interp.__ext_call = (objBig, propBig, argsBig) => {
+    const prop = state.mem.read(propBig), obj = extRecv(objBig, prop, 'method call')
+    const args = state.mem.read(argsBig, state.fnOf)
+    return invoke(prop === undefined ? obj : obj[prop], prop === undefined ? undefined : obj, args)
   }
   return state
 }
@@ -2087,6 +2125,18 @@ const buildImports = (mod, opts, state) => {
       imports.env[imp.name] = new WebAssembly.Global({ value: 'i64', mutable: false }, ptr(11, 0, id))
     }
   }
+  if (WebAssembly.Module.exports(mod).some(e => e.name === '__jz_throw_host')) {
+    const wrapped = new Map()
+    for (const imp of WebAssembly.Module.imports(mod)) if (imp.kind === 'function') {
+      const ns = imports[imp.module], fn = ns?.[imp.name]
+      if (typeof fn !== 'function') continue
+      let names = wrapped.get(ns)
+      if (!names) wrapped.set(ns, names = new Set())
+      if (names.has(imp.name)) continue
+      names.add(imp.name)
+      ns[imp.name] = catchingImport(state, fn)
+    }
+  }
   return { imports, needsWasi }
 }
 
@@ -2098,7 +2148,6 @@ const finishInstantiation = (mod, inst, imports, needsWasi, opts, state) => {
   // a hostless wasi module (no console/Date use) still needs its init run. A JS-host
   // module whose init reaches the host (a host global, a member of a host value)
   // ships the same export, called below once its memory is readable.
-  if (needsWasi) inst.exports._initialize?.()
 
   // Drive WASM timer queue via JS scheduling (non-blocking, no-op if absent).
   attachTimers(inst)
@@ -2108,16 +2157,21 @@ const finishInstantiation = (mod, inst, imports, needsWasi, opts, state) => {
   const memSrc = { module: mod, instance: inst, exports: { ...inst.exports, memory: rawMemory }, extMap: state.extMap }
   const enhanced = memory(memSrc)
   state.mem = enhanced
+  state.raise = inst.exports.__jz_throw_host
+  state.errTag = inst.exports.__jz_err
+  // Install closure decoding before init too: an initializer can call a host
+  // function which synchronously invokes a compiled callback.
+  const exports = wrap(memSrc, undefined, state)
   state.flushPrint?.()
-  if (!needsWasi && inst.exports._initialize) {
-    inst.exports._initialize()
+  if (inst.exports._initialize) {
+    exports._initialize()
     enhanced._markBase?.()
   }
   // A memoryless module keeps a minimal reader internally (state.mem, for decoding
   // its SSO/atom boundary values), but the result's `.memory` stays null — the
   // module genuinely exposes no linear memory. `jz.memory(result)` still hands back
   // a usable reader on demand.
-  return { exports: wrap(memSrc, undefined, state), memory: enhanced?.scalar ? null : enhanced, instance: inst, module: mod }
+  return { exports, memory: enhanced?.scalar ? null : enhanced, instance: inst, module: mod }
 }
 
 /**

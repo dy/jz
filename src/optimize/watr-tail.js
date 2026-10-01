@@ -358,7 +358,8 @@ function legalizeReactorInit(module) {
 // keeps its `start` section and instantiates bare.
 const HOST_ENV_GLOBALS = new Set(['WebAssembly', 'globalThis', 'self', 'window', 'global', 'process'])
 const initTouchesHost = (module) => module.some(n => Array.isArray(n) && n[0] === 'import' && n[1] === '"env"' &&
-  typeof n[2] === 'string' && (HOST_ENV_GLOBALS.has(n[2].slice(1, -1)) || n[2].startsWith('"__ext_')))
+  typeof n[2] === 'string' && (HOST_ENV_GLOBALS.has(n[2].slice(1, -1)) || n[2].startsWith('"__ext_'))) ||
+  !!findFuncByName(module, '$__jz_throw_host')
 
 export function legalizeForTarget(module, targetProfile) {
   if (!targetProfile?.commandEntry) {

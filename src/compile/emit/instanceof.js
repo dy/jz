@@ -18,6 +18,7 @@ import { emit } from './dispatch.js'
 import { storedValue } from '../../bridge.js'
 import { classInstanceof } from './class-dispatch.js'
 import { isBrand } from '../../ast.js'
+import { hasExternalIngress } from '../func-exports.js'
 
 
 // === instanceof (.work/archive/todo.md §deletion-sweep §4) ===
@@ -140,24 +141,32 @@ function emitErrorInstanceof(a, rhs) {
   // OR-chain over every class the program actually constructs (base 'Error'), or
   // a single tag+sid compare for one specific class. `used` (ctx.features.errorClasses,
   // src/prepare/index.js's whole-program scan) is null whenever no Error class is
-  // EVER constructed — dead code, fold to false rather than emit an always-false
+  // EVER constructed — without external ingress, fold to false rather than emit an always-false
   // compare (mirrors ir.js toStrI64's ctx.features.error gate). A SPECIFIC class
   // that is never constructed anywhere is equally sound to fold false: no runtime
   // pointer could ever carry a sid that was never minted — one level more precise
   // than the old shared-sid design's blanket `ctx.features.error` gate.
   const used = ctx.features.errorClasses
-  if (!used || (rhs !== 'Error' && !used.has(rhs))) return foldInstanceof(emit(a), false)
+  const external = hasExternalIngress()
+  const own = used && (rhs === 'Error' || used.has(rhs))
+  if (!own && !external) return foldInstanceof(emit(a), false)
   const t = temp('einst')
   const bits = () => ['i64.reinterpret_f64', typed(['local.get', `$${t}`], 'f64')]
   const tagEq = (sid) => typed(['i64.eq', ['i64.and', bits(), ['i64.const', OBJECT_SCHEMA_HI_MASK]], ['i64.const', objectSchemaGuardHex(sid)]], 'i32')
-  const body = rhs === 'Error'
+  let body = !own ? ['i32.const', 0] : rhs === 'Error'
     // ERR_CLASS_NAMES' fixed order (not Set insertion order — see the ctx.features.errorClasses
     // ctx.js comment): the emitted OR-chain must depend only on WHICH classes the
     // program constructs, not the incidental order the AST walk first saw them in.
     ? ERR_CLASS_NAMES.filter(c => used.has(c)).map(c => tagEq(ctx.schema.errorSid(c))).reduce((x, y) => typed(['i32.or', x, y], 'i32'))
     : tagEq(ctx.schema.errorSid(rhs))
+  if (external) {
+    ctx.module.include('collection'); inc('__ext_is_error')
+    body = ['if', ['result', 'i32'], boxedPtrTypeEq(['local.get', `$${t}`], PTR.EXTERNAL),
+      ['then', ['call', '$__ext_is_error', bits(), ['i32.const', ERR_CLASS_NAMES.indexOf(rhs)]]],
+      ['else', body]]
+  }
   return typed(['block', ['result', 'i32'],
-    ['local.set', `$${t}`, asF64(emit(a))],
+    ['local.set', `$${t}`, storedValue(a)],
     body], 'i32')
 }
 

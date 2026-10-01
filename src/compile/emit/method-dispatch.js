@@ -316,18 +316,19 @@ function unresolvedDateMethod(obj, method, parsed) {
   if (parsed.hasSpread && !noArgs)
     err(`Spread arguments on Date method .${method}() with a non-Date or unresolved receiver are unsupported — spread's runtime-determined argument count can't preserve .${method}()'s optional-argument defaults; call with explicit positional arguments, or narrow the receiver to a provably-Date value first`)
   const recv = temp('dateRecv'), argv = temp('dateArgs'), pt = tempI32('datePt')
+  const hostMethod = ctx.transform.targetProfile.envImports ? temp('dateMethod') : null
   const argTemps = parsed.hasSpread ? [] : parsed.normal.map(() => temp('dateArg'))
   inc('__ptr_type')
   let nonDate = throwTypeErrorIR('call')
   if (ctx.transform.targetProfile.envImports) {
     includeForRuntimeKeyIteration()
-    inc('__ext_call')
+    inc('__ext_method', '__ext_invoke')
     setLinkDemand('external')
     nonDate = typed(['if', ['result', 'f64'],
       ['i32.eq', ['local.get', `$${pt}`], ['i32.const', PTR.EXTERNAL]],
-      ['then', ['f64.reinterpret_i64', ['call', '$__ext_call',
+      ['then', ['f64.reinterpret_i64', ['call', '$__ext_invoke',
+        ['i64.reinterpret_f64', ['local.get', `$${hostMethod}`]],
         ['i64.reinterpret_f64', ['local.get', `$${recv}`]],
-        ['i64.reinterpret_f64', asF64(emit(['str', method]))],
         ['i64.reinterpret_f64', ['local.get', `$${argv}`]]]]],
       ['else', nonDate]], 'f64')
   }
@@ -336,9 +337,12 @@ function unresolvedDateMethod(obj, method, parsed) {
     ? reconstructArgsWithSpreads(parsed.normal, parsed.spreads)
     : argNames
   const dispatch = block64(
+    ['local.set', `$${pt}`, ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${recv}`]]]],
+    ...(hostMethod ? [['if', ['i32.eq', ['local.get', `$${pt}`], ['i32.const', PTR.EXTERNAL]],
+      ['then', ['local.set', `$${hostMethod}`, ['f64.reinterpret_i64', ['call', '$__ext_method',
+        ['i64.reinterpret_f64', ['local.get', `$${recv}`]], asI64(emit(['str', method]))]]]]]] : []),
     ...argTemps.map((name, i) => ['local.set', `$${name}`, asF64(storedValue(parsed.normal[i]))]),
     ['local.set', `$${argv}`, asF64(buildArrayWithSpreads(arrayArgs))],
-    ['local.set', `$${pt}`, ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${recv}`]]]],
     dateAuxFallback(recv, method,
       (r, emitter) => emitArity(emitter) <= 1 ? emitter(r) : emitter(r, ...argNames), nonDate, pt))
   return block64(
@@ -734,8 +738,8 @@ function tryGenericEmitter({ obj, method, parsed, vt, callMethod }) {
 
 // 11. Dynamic property function call on non-external values. Two emission shapes:
 // (1) closure-only fork — receiver carries no PTR.EXTERNAL (sidecar-bearing static
-//     types OR wasi target, where __ext_call doesn't exist); and (2) full fork
-//     adding a PTR.EXTERNAL → __ext_call leg for opaque js receivers.
+//     types OR wasi target, where __ext_invoke doesn't exist); and (2) full fork
+//     adding a PTR.EXTERNAL → __ext_invoke leg for opaque js receivers.
 // Gated on ctx.module.demanded.has('fn'), not bare ctx.closure.call truthiness:
 // the latter only proves the `fn` module is LOADED, which eager preload
 // (region-arena / opts._eagerStdlib) makes true for every compile regardless
@@ -795,9 +799,14 @@ function tryDynamicPropCall({ obj, method, parsed, vt, callMethod, optional = fa
     }
     const closureOnly = slot >= 0 || usesDynProps(vt) || !ctx.transform.targetProfile.envImports
     if (slot >= 0) inc('__ptr_type'); else inc('__dyn_get_expr', '__ptr_type')
-    if (!closureOnly) { inc('__ext_call'); setLinkDemand('external') }
+    if (!closureOnly) {
+      inc('__ext_method', '__ext_invoke'); setLinkDemand('external')
+      propRead = typed(['if', ['result', 'f64'], ptrTypeEq(['local.get', `$${objTmp}`], PTR.EXTERNAL),
+        ['then', ['f64.reinterpret_i64', ['call', '$__ext_method', bits, asI64(emit(['str', method]))]]],
+        ['else', propRead]], 'f64')
+    }
     // The closure leg passes its arguments inline (the closure ABI's slots);
-    // only a spread call, or the host leg's `__ext_call`, needs them as an
+    // only a spread call, or the host leg's `__ext_invoke`, needs them as an
     // array. Arguments are evaluated once before the callability check,
     // after the receiver and the property read (JS order), and each leg
     // reads the temps: the array is built inside the host leg alone.
@@ -822,9 +831,9 @@ function tryDynamicPropCall({ obj, method, parsed, vt, callMethod, optional = fa
     const missing = throwTypeErrorIR('call')
     const fallback = closureOnly ? missing
       : ['if', ['result', 'f64'], ptrTypeEq(['local.get', `$${objTmp}`], PTR.EXTERNAL),
-          ['then', ['f64.reinterpret_i64', ['call', '$__ext_call',
+          ['then', ['f64.reinterpret_i64', ['call', '$__ext_invoke',
+            ['i64.reinterpret_f64', ['local.get', `$${propTmp}`]],
             ['i64.reinterpret_f64', ['local.get', `$${objTmp}`]],
-            ['i64.reinterpret_f64', asF64(emit(['str', method]))],
             ['i64.reinterpret_f64', extArrayIR]]]],
           ['else', missing]]
     let dispatch = ['if', ['result', 'f64'], ptrTypeEq(['local.get', `$${propTmp}`], PTR.CLOSURE),
@@ -845,10 +854,9 @@ function tryDynamicPropCall({ obj, method, parsed, vt, callMethod, optional = fa
       ...(slot < 0 && (vt == null || censusMaybeUndefined(obj))
         ? [['if', isNullish(typed(['local.get', `$${objTmp}`], 'f64')), ['then', ['drop', throwTypeErrorIR()]]]]
         : []),
-      ...(borrow ? setup : []),
       ['local.set', `$${propTmp}`, propRead],
       ...(optional ? [['if', ['result', 'f64'], isNullish(typed(['local.get', `$${propTmp}`], 'f64')),
-        ['then', undefExpr()], ['else', block64(...(borrow ? [] : setup), dispatch)]]] : [...(borrow ? [] : setup), dispatch]))
+        ['then', undefExpr()], ['else', block64(...setup, dispatch)]]] : [...setup, dispatch]))
   }
 }
 
@@ -874,10 +882,10 @@ function externalMethodFallback({ obj, method, parsed }) {
         ['else', emitNonCallable(obj, parsed, recv())]]], 'f64')
   }
   if (strictCode())
-    err(`strict mode: method call \`${typeof obj === 'string' ? obj : '<expr>'}.${method}(...)\` on a value of unknown type falls through to host \`__ext_call\`. Annotate the receiver type or pass { strict: false }.`)
+    err(`strict mode: method call \`${typeof obj === 'string' ? obj : '<expr>'}.${method}(...)\` on a value of unknown type falls through to host \`__ext_invoke\`. Annotate the receiver type or pass { strict: false }.`)
   // RequireObjectCoercible (ES 13.3 — the nullish-receiver
   // check) must run BEFORE the target-capability branch below chooses
-  // host `__ext_call` dispatch vs the wasi no-op stub — a member-access
+  // host `__ext_invoke` dispatch vs the wasi no-op stub — a member-access
   // semantic, not a dispatch-strategy detail. The nullish check
   // originally lived AFTER the `!envImports` early return a few lines down:
   // under host:'wasi' (envImports always false) that return fired first on
@@ -893,21 +901,21 @@ function externalMethodFallback({ obj, method, parsed }) {
   // byte-identical path below, unaffected by this fix.
   const mayBeUndef = censusMaybeUndefined(obj)
   const dispatch = (recv) => {
-    // Under wasi there is no host `__ext_call` — the call lowers to a
+    // Under wasi there is no host `__ext_invoke` — the call lowers to a
     // no-op returning `undefined`. This is by-design so polymorphic code
     // can target js and wasi from one source; users who want fail-fast
     // pass `strict: true` (handled above).
     if (!ctx.transform.targetProfile.envImports) return undefExpr()
-    warnDeopt('deopt-method', `method call \`${typeof obj === 'string' ? obj : '<expr>'}.${method}(…)\` on a value whose type couldn't be resolved dispatches through the JS host (\`__ext_call\`) — a wasm→JS round-trip per call, orders of magnitude slower than a direct call. Restructure so the receiver's type is provable, or keep it off the hot path.`)
+    warnDeopt('deopt-method', `method call \`${typeof obj === 'string' ? obj : '<expr>'}.${method}(…)\` on a value whose type couldn't be resolved dispatches through the JS host (\`__ext_invoke\`) — a wasm→JS round-trip per call, orders of magnitude slower than a direct call. Restructure so the receiver's type is provable, or keep it off the hot path.`)
     includeForRuntimeKeyIteration()
-    inc('__ext_call')
+    inc('__ext_method', '__ext_invoke')
     setLinkDemand('external')
     const combined = reconstructArgsWithSpreads(parsed.normal, parsed.spreads)
     const arrayIR = buildArrayWithSpreads(combined)
-    return typed(['f64.reinterpret_i64', ['call', '$__ext_call',
-      ['i64.reinterpret_f64', recv],
-      ['i64.reinterpret_f64', asF64(emit(['str', method]))],
-      ['i64.reinterpret_f64', arrayIR]]], 'f64')
+    const held = temp('hostReceiver'), bits = ['i64.reinterpret_f64', ['local.get', `$${held}`]]
+    return block64(['local.set', `$${held}`, recv], ['f64.reinterpret_i64', ['call', '$__ext_invoke',
+      ['call', '$__ext_method', bits, asI64(emit(['str', method]))], bits,
+      ['i64.reinterpret_f64', arrayIR]]])
   }
   if (!mayBeUndef) return dispatch(asF64(emit(obj)))
   // Evaluate the receiver once, guard first, THEN pick the host/no-op
@@ -975,7 +983,7 @@ function tryClassMethodCall(c) {
  *    9. Unknown / guessed-ARRAY runtime ptr-type fork over string/typed vs generic
  *    10. Generic emitter (with collection/strIndex arity guards + object shadow)
  *    11. Dynamic property closure call (with PTR.EXTERNAL fallback if non-wasi)
- *    12. External method fallback via __ext_call (or undefined under wasi)
+ *    12. External method fallback via __ext_invoke (or undefined under wasi)
  */
 export function emitMethodCall(callee, parsed, callArgs, optional = false) {
   const [, obj, method] = callee

@@ -18,4 +18,13 @@ export const ensureThrowRuntime = (sec) => {
   if (ctx.transform.alloc !== false &&
       !sec.tags.some(t => Array.isArray(t) && t[0] === 'export' && t[1] === '"__jz_last_err_bits"'))
     sec.tags.push(['export', '"__jz_last_err_bits"', ['global', '$__jz_last_err_bits']])
+  // The host passes integer bits; crossing as f64 would canonicalize boxed NaNs
+  // on some engines. The throw itself uses the same private tag as source code.
+  if (ctx.runtime.hostThrows) {
+    sec.tags.push(['export', '"__jz_err"', ['tag', '$__jz_err']])
+    sec.funcs.push(['func', '$__jz_throw_host',
+    ['export', '"__jz_throw_host"'], ['param', '$value', 'i64'],
+    ['global.set', '$__jz_last_err_bits', ['local.get', '$value']],
+    ['throw', '$__jz_err', ['f64.reinterpret_i64', ['local.get', '$value']]]])
+  }
 }

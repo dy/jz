@@ -64,7 +64,9 @@ export function observeNodeFacts(node, f) {
   // RepresentationPlan v2 reach bit: folded into this existing universal
   // walk so proving a program BigInt-free costs no second AST traversal.
   // Module-init callers use the same observer, making the fact graph-complete.
-  if (op === 'bigint' || op === 'typeof' || (op === '()' && (
+  // A caught value can come from a host call, not only a source constructor.
+  // Its boxed BigInt arm must survive even in source with no BigInt literals.
+  if (op === 'bigint' || op === 'typeof' || op === 'catch' && typeof args[1] === 'string' || (op === '()' && (
       (typeof args[0] === 'string' && (args[0] === 'BigInt' || args[0].startsWith('BigInt.') ||
         args[0].startsWith('new.BigInt64Array') || args[0].startsWith('new.BigUint64Array'))) ||
       (Array.isArray(args[0]) && typeof args[0][2] === 'string' &&

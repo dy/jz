@@ -176,6 +176,11 @@ export function pullStdlib(sec) {
   //    so memory can't be gated on allocation alone.
   // Explicit rewind (including an empty checkpoint) needs the arena's reset mark.
   const ALLOC_FUNCS = ['__alloc', '__alloc_hdr', '__alloc_hdr_n', '__clear']
+  // Even an ignored catch can receive a long string or BigInt from the host.
+  // Its boundary codec needs memory, without forcing Wasm allocator helpers.
+  ctx.runtime.hostThrows = ctx.runtime.userThrows && ctx.transform.alloc !== false &&
+    (sec.imports.some(n => n[0] === 'import' && n[3]?.[0] === 'func') ||
+      [...reachable].some(n => /^\s*\(import /.test(realize(n))))
   let needsAlloc = strPoolLen() > 0 || ALLOC_FUNCS.some(a => reachable.has(a)) ||
     // shared memory memory.init's the static region into __alloc'd space at start
     !!(ctx.memory.shared && dataLen() > 0)
@@ -189,7 +194,7 @@ export function pullStdlib(sec) {
   // linear memory (e.g. to marshal host values in), independent of what the wasm itself
   // reaches — honour it even for an otherwise-memoryless program.
   const explicitMemory = ctx.memory.pages > 0 || !!ctx.memory.shared
-  const needsMemory = needsAlloc || explicitMemory ||
+  const needsMemory = needsAlloc || explicitMemory || ctx.runtime.hostThrows ||
     dataLen() > (ctx.runtime.staticDataLen || 0) ||
     reachable.has('__ptr_type') ||
     [...reachable].some(n => MEM_OPS.test(realize(n))) ||

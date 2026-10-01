@@ -12,8 +12,7 @@ import print from 'watr/print'
  */
 
 import { typed, asF64, asI32, asI64, NULL_NAN, UNDEF_NAN, TOMB_NAN, FALSE_NAN, TRUE_NAN, temp, tempI32, usesDynProps, ptrOffsetIR, ptrTypeEq, boxedPtrTypeEq, isNullish, isUndef, valKindToPtr, sidecarOverride, undefExpr, cloneIR, boxBigInt, unboxBigInt, deferBigintBox, isPlanTaggedBigint, throwTypeErrorIR, throwErrorIR, valueTruthyIR } from '../src/ir.js'
-import { emit, emitReference, emitIdentitySafe, storedValue, spread, deps, wat } from '../src/bridge.js'
-import { reconstructArgsWithSpreads } from '../src/ir.js'
+import { emit, emitReference, emitIdentitySafe, storedValue, deps, wat } from '../src/bridge.js'
 import { valTypeOf, shapeOf, hasAmbiguousBoolMerge } from '../src/kind.js'
 import { ACCESSOR_GET, COMPARE_OPS, isBrand } from '../src/ast.js'
 import { classAccessor, classMethodValue } from '../src/compile/emit/class-dispatch.js'
@@ -2759,29 +2758,16 @@ export default (ctx) => {
     }
     if (!ctx.closure.call) err('`fn?.()` optional call on a closure value needs jz\'s closure-call runtime, which this program never linked in — call a closure unconditionally at least once elsewhere in the file')
     const invoke = (ref, receiver = null) => evalOnce(ref, (t) => {
-      // Spread args: mirror the regular `()` emitter — reconstruct the args array
-      // and route through `closure.call(_, [arrayIR], prebuiltArray=true)`. Without
-      // this, the raw `['...', expr]` node falls through to the bare spread emitter
-      // and errors as "Spread (...) can only be used in function/method calls".
-      const hasSpread = args.some(a => Array.isArray(a) && a[0] === '...')
-      let callResult
-      if (hasSpread) {
-        const normal = [], spreads = []
-        for (const a of args) {
-          if (Array.isArray(a) && a[0] === '...') spreads.push({ pos: normal.length, expr: a[1] })
-          else normal.push(a)
-        }
-        const combined = reconstructArgsWithSpreads(normal, spreads)
-        const arrayIR = spread(combined)
-        callResult = ctx.closure.call(typed(['local.get', `$${t}`], 'f64'), [arrayIR], true, false, receiver)
-      } else {
-        callResult = ctx.closure.call(typed(['local.get', `$${t}`], 'f64'), args, false, false, receiver)
-      }
-      return asF64(callResult)
+      // The nonnull value still may be a host function or non-callable. Reuse
+      // ordinary call dispatch, including its receiver and spread evaluation.
+      const view = ctx.summary?.at(ctx.func.current)
+      view?.alias(t, callee, true)
+      try { return asF64(ctx.core.emit['()'](t, args.length ? [',', ...args] : null, receiver)) }
+      finally { view?.unalias(t) }
     })
     let member = callee
     while (Array.isArray(member) && member[0] === '(') member = member[1]
-    if (ctx.closure.receiver && Array.isArray(member) && ['.', '?.', '[]', '?.[]'].includes(member[0])) {
+    if ((ctx.closure.receiver || ctx.transform.targetProfile.envImports && valTypeOf(callee) !== VAL.CLOSURE) && Array.isArray(member) && ['.', '?.', '[]', '?.[]'].includes(member[0])) {
       const t = temp('orecv')
       return invoke(asF64(emitReference(member, t)), typed(['local.get', `$${t}`], 'f64'))
     }

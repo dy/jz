@@ -341,7 +341,7 @@ function emitGenericClosureCall(callee, parsed, thisArg = null) {
       ctx.scope.imperativeClosureTableLatticeCandidates?.has(arrName)))
     recordClosureTableCallSite(arrName, parsed.normal)
   let ir, calleeIR, receiver = thisArg == null ? null : asF64(emit(thisArg))
-  if (thisArg == null && ctx.closure.receiver && Array.isArray(member) && ['.', '[]', '?.', '?.[]'].includes(member[0])) {
+  if (thisArg == null && (ctx.closure.receiver || open && ctx.transform.targetProfile.envImports) && Array.isArray(member) && ['.', '[]', '?.', '?.[]'].includes(member[0])) {
     const t = temp('recv')
     receiver = typed(['local.get', `$${t}`], 'f64')
     calleeIR = asF64(emitReference(member, t))
@@ -353,7 +353,7 @@ function emitGenericClosureCall(callee, parsed, thisArg = null) {
     ir = ctx.closure.call(calleeIR, args, parsed.hasSpread, open || nullable, receiver)
   } else {
     includeForArrayAccess()
-    inc('__ext_call', '__ptr_type')
+    inc('__ext_invoke', '__ptr_type')
     setLinkDemand('external')
     // The host ABI shares evaluation with the compiled-call branch; only a
     // host call materializes the inline arguments as a host-readable array.
@@ -375,7 +375,7 @@ function emitGenericClosureCall(callee, parsed, thisArg = null) {
     }
     ir = typed(['block', ['result', 'f64'], ...setup,
       ['if', ['result', 'f64'], ptrTypeEq(recv, PTR.EXTERNAL),
-        ['then', ['f64.reinterpret_i64', ['call', '$__ext_call',
+        ['then', ['f64.reinterpret_i64', ['call', '$__ext_invoke',
           ['i64.reinterpret_f64', recv], ['i64.reinterpret_f64', receiver ?? undefExpr()], ['i64.reinterpret_f64', arrayIR]]]],
         ['else', ctx.closure.call(recv, args, parsed.hasSpread, true, receiver)]]], 'f64')
   }
