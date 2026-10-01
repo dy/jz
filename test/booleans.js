@@ -19,6 +19,23 @@ const wat = (code) => jz.compile(code, { wat: true, optimize: { watr: false } })
 // The export thunk's boolean box: a select of the two atoms (boolBoxIR).
 const boxesResult = (code) => /\(func \$f\$exp[\s\S]*?\(select\s+\(f64\.const nan:0x7FF8000500000000\)\s+\(f64\.const nan:0x7FF8000400000000\)/.test(wat(code))
 
+test('bool identity: named recursive callbacks preserve raw and boxed false results', () => {
+  const src = `
+    const has = v => v === 42 || (Array.isArray(v) ? v.some(has)
+      : !!v && typeof v === 'object' && Object.values(v).some(has));
+    export const f = n => has([{}, {a:1}, {a:{}}, {a:{b:1}}, {a:[1]},
+      {a:{b:42}}, {a:[{b:42}]}, {a:null}, [], [false], 42][n]);
+  `
+  const expected = oracle(src).f
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const f = run(src, {optimize}).f
+    // Empty containers, nested false, matching leaves, and repeated calls
+    // exercise both primitive and boxed Boolean returns through the same ABI.
+    for (const n of [0, 1, 2, 2, 3, 4, 5, 6, 7, 8, 9, 10, 2, 5])
+      is(f(n), expected(n), `case ${n}, O${optimize}`)
+  }
+})
+
 test('bool identity: nullable accumulator retains boolean stores', () => {
   for (const init of ['null', 'undefined']) {
     const src = `export function f(n, fail) {

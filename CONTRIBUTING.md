@@ -163,6 +163,10 @@ Public adapters use the ordinary small-function inline budget; larger workers
 remain shared. Internal dispatch trampolines retain the speed-tier budget.
 Named-function trampolines use direct-call argument coercion, so narrowed pointer
 parameters extract their offset instead of numerically converting a NaN box.
+Their Boolean results follow the boundary-wrapper rule: i32 carries raw 0/1,
+while f64 may already contain an atom and needs `__is_truthy` before boxing.
+Comparing a boxed false with numeric zero turns it into true; recursive named
+callbacks, including the JSON literal validator, depend on this distinction.
 Known-local arithmetic folds in the same propagation pass; JZ only selects
 this policy with its existing `hoistConstantPool` option.
 Exact cast identities have one owner in watr: JZ calls `simplifyCast` during

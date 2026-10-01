@@ -1924,10 +1924,10 @@ function emitNode(node, expect) {
           // number, silently losing the pointer (a Map came back as e.g. 480360.0,
           // so a caller's `for…of`/`.size` saw a number and read nothing).
           const ptrResult = func?.sig.ptrKind != null
-          // A BOOL-result func carries 0/1 in its raw ABI; the closure ABI is a
-          // boxed-value position, so rebox to the true/false ATOM — the exact
-          // mirror of the boundary wrapper (index.js resultBool). Without it a
-          // field-held function's `=== true` / typeof observed a plain number.
+          // An i32 BOOL result carries 0/1; f64 can already hold a boolean atom
+          // (for example a dispatched `.some()` result). Normalize both with
+          // the boundary wrapper's rule before boxing for the closure ABI:
+          // f64.ne(boxedFalse, 0) would incorrectly turn false into true.
           const boolResult = !ptrResult && func?.valResult === VAL.BOOL && !func?.valResultMayBeUndefined
           // A raw-i64 result (a direct-only BigInt function's contract) is
           // boxed here, once, at the producer: the closure ABI's slot is an
@@ -1938,7 +1938,7 @@ function emitNode(node, expect) {
           const wrapped = ptrResult
             ? `(call $__mkptr (i32.const ${valKindToPtr(func.sig.ptrKind)}) (i32.const ${func.sig.ptrAux ?? 0}) ${callExpr})`
             : boolResult
-              ? `(select (f64.const nan:${TRUE_NAN}) (f64.const nan:${FALSE_NAN}) ${resType === 'i32' ? `(i32.ne ${callExpr} (i32.const 0))` : `(f64.ne ${callExpr} (f64.const 0))`})`
+              ? `(select (f64.const nan:${TRUE_NAN}) (f64.const nan:${FALSE_NAN}) ${resType === 'i32' ? `(i32.ne ${callExpr} (i32.const 0))` : `(call $__is_truthy (i64.reinterpret_f64 ${callExpr}))`})`
               : rawBigintResult
                 ? `(call $__box_bigint ${callExpr})`
               : resType === 'i32'
@@ -1947,7 +1947,7 @@ function emitNode(node, expect) {
                   ? `(f64.reinterpret_i64 ${callExpr})`
                   : callExpr
           ctx.core.stdlib[trampolineName] = `(func $${trampolineName} ${paramDecls.join(' ')} (result f64) ${restLocals}${restPrelude}${wrapped})`
-          inc(trampolineName, ...(ptrResult ? ['__mkptr'] : []), ...(rawBigintResult ? ['__box_bigint'] : []), ...(restIdx >= 0 ? ['__alloc_hdr', '__mkptr'] : []))
+          inc(trampolineName, ...(ptrResult ? ['__mkptr'] : []), ...(boolResult && resType !== 'i32' ? ['__is_truthy'] : []), ...(rawBigintResult ? ['__box_bigint'] : []), ...(restIdx >= 0 ? ['__alloc_hdr', '__mkptr'] : []))
         }
       }
       // ctx.closure.mint (not a bare table.push) — same funcIdx-alignment
