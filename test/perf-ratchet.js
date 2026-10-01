@@ -14,11 +14,12 @@
 //
 // "Ratchet, don't backslide" (docs/CONTRIBUTING.md). Run standalone or via the suite.
 import test from 'tst'
-import { ok } from 'tst/assert.js'
+import { ok, is } from 'tst/assert.js'
 import { readFileSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import jz from '../index.js'
 import parseWat from 'watr/parse'
+import encodeWat from 'watr/compile'
 import { CATEGORIES, genProgram } from '../scripts/perf-corpus.mjs'
 import { onWasi } from './_matrix.js'
 
@@ -111,10 +112,10 @@ const BASELINE = join(import.meta.dirname, 'perf-ratchet.json')
 // that block holds (the loop's own exit). The copy's guards and the tests
 // ahead of it are counted.
 const isLoop = (n) => Array.isArray(n) && n[0] === 'loop'
-const loopBodyOps = (wat) => {
+const loopBodyOps = (tree, entered) => {
   let count = 0
   const walk = (n, inLoop) => {
-    if (!Array.isArray(n)) return
+    if (!Array.isArray(n) || n[0] === 'loop' && entered && !entered.has(n)) return
     const here = inLoop || n[0] === 'loop'
     if (here && typeof n[0] === 'string') count++
     let end = n[0] === 'block' && /^\$__wa\d+d$/.test(n[1]) ? n.length - 1 : n.length
@@ -127,9 +128,45 @@ const loopBodyOps = (wat) => {
       for (let k = 1; k < c.length - 1; k++) walk(c[k], here)
     }
   }
-  walk(parseWat(wat), false)
+  walk(tree, false)
   return count
 }
+
+// Identify the loops selected by real entry guards, after all codegen passes.
+// Instrument only a temporary assembly: counters never enter the measured tree.
+// This handles both if/else and block/br_if forms without guessing from names or
+// ignoring arbitrary fallback arms. Total loop cost remains independently capped.
+const enteredLoopOps = (tree, calls) => {
+  const loops = [], entered = new Set()
+  const walk = n => {
+    if (!Array.isArray(n)) return
+    if (n[0] === 'loop') {
+      const id = loops.length
+      let body = typeof n[1] === 'string' ? 2 : 1
+      while (Array.isArray(n[body]) && ['type', 'param', 'result'].includes(n[body][0])) body++
+      loops.push([n, body])
+      n.splice(body, 0, ['call', '$__ratchet_enter', ['i32.const', id]])
+    }
+    for (const c of n) walk(c)
+  }
+  walk(tree)
+  tree.splice(1, 0, ['import', '"ratchet"', '"enter"', ['func', '$__ratchet_enter', ['param', 'i32']]])
+  let binary
+  try { binary = encodeWat(tree) }
+  finally { tree.splice(1, 1); for (const [loop, body] of loops) loop.splice(body, 1) }
+  const { exports } = new WebAssembly.Instance(new WebAssembly.Module(binary), {
+    ratchet: { enter: id => entered.add(loops[id][0]) }
+  })
+  for (const args of calls) exports.f(...args)
+  return loopBodyOps(tree, entered)
+}
+
+// Correct Number counters need a guarded integer loop plus a full-Number
+// fallback. Across the same 40 int seeds the entered integer loops remain 647
+// nodes; the additional fallback costs 702. Preserve 647 as the fast-path cap,
+// and also cap the existing overall proxy at 1349. Inputs cover no work, positive integer
+// and fractional bounds; fallback presence cannot dilute the fast-path bar.
+const INT_CALLS = [[0, 3, 5, 7], [4, 3, 5, 7], [3.5, -1, 0, 7]]
 
 // Specialized loops (2026-09-29): a loop whose reads may miss, or whose
 // numbers are integers the emitter could not prove, runs in a copy that tests
@@ -246,12 +283,15 @@ const loopBodyOps = (wat) => {
 const measure = (categories = Object.keys(CATEGORIES)) => {
   const totals = {}
   for (const cat of categories) {
-    let sum = 0
+    let sum = 0, entered = 0
     for (let s = 1; s <= SEEDS; s++) {
-      try { sum += loopBodyOps(jz.compile(genProgram(cat, s), { optimize: 2, wat: true })) }
-      catch (cause) { throw new Error(`perf corpus ${cat}, seed ${s} failed to compile`, { cause }) }
+      try {
+        const tree = parseWat(jz.compile(genProgram(cat, s), { optimize: 2, wat: true }))
+        sum += loopBodyOps(tree)
+        if (cat === 'int') entered += enteredLoopOps(tree, INT_CALLS)
+      } catch (cause) { throw new Error(`perf corpus ${cat}, seed ${s} failed to compile or execute`, { cause }) }
     }
-    totals[cat] = sum
+    totals[cat] = cat === 'int' ? { total: sum, entered } : sum
   }
   return totals
 }
@@ -270,9 +310,28 @@ if (process.argv.includes('--update')) {
     test(`perf-ratchet: ${cat} loop-body op count ≤ baseline (machine-independent codegen gate)`, () => {
       if (onWasi()) return
       const count = measure([cat])[cat]
-      ok(count <= base[cat],
-        `${cat}: ${count} loop-body ops > baseline ${base[cat]} (+${count - base[cat]}) — a codegen regression ` +
+      const limit = base[cat]
+      ok(typeof limit === 'number' ? count <= limit : count.total <= limit.total && count.entered <= limit.entered,
+        `${cat}: ${JSON.stringify(count)} loop-body ops exceed baseline ${JSON.stringify(limit)} — a codegen regression ` +
         `(a hot-loop optimization stopped firing?). If intentional, justify and re-baseline: node test/perf-ratchet.js --update`)
     })
   }
 }
+
+
+test('perf-ratchet: entered costs retain both branch accounting and the original tree', () => {
+  const tree = parseWat(`(module (func (export "f") (param $mode i32)
+    (if (local.get $mode)
+      (then (loop $fast (drop (i32.const 1))))
+      (else (loop $slow (drop (i32.add (i32.const 1) (i32.const 2))))))))`)
+  const original = JSON.stringify(tree), total = loopBodyOps(tree)
+  is(enteredLoopOps(tree, [[1], [1]]), 3, 'the selected loop, counted once across repeated calls')
+  is(enteredLoopOps(tree, [[0]]), 5, 'the other entry selects its own loop')
+  is(enteredLoopOps(tree, [[1], [0]]), total, 'different entries retain the union of selected loops')
+  is(enteredLoopOps(tree, []), 0, 'no calls select no loop')
+  is(JSON.stringify(tree), original, 'instrumentation leaves no imported function or calls in the measured tree')
+  const early = parseWat('(module (func (export "f") (loop (return))))')
+  is(enteredLoopOps(early, [[]]), 2, 'an unlabeled loop records entry before an early return')
+  const result = parseWat('(module (func (export "f") (drop (loop (result i32) (i32.const 9)))))')
+  is(enteredLoopOps(result, [[]]), loopBodyOps(result), 'a result loop keeps its type declaration before the entry call')
+})

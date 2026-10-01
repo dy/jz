@@ -1,5 +1,5 @@
 {
-  "int": 647,
+  "int": { "total": 1349, "entered": 647 },
   "float": 784,
   "mixed": 1148,
   "cond": 581,
