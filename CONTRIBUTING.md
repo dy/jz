@@ -105,6 +105,9 @@ new nodes added while the compiler solves representation plans.
 Array-literal lowering keeps its completed child walk even when no spread needs
 rewriting. Falling back after transforming children repeats work at every nested
 literal and can repeat stateful lowerings; holes and child locations stay intact.
+Summary queries build unseen object-literal shapes in their own helper. Its
+captured name list belongs only to that fallback, so scalar expression queries
+need no literal-builder environment. Alias and presence refinements remain live.
 Memory page limits are validated before either compiler host encodes options.
 Assembly also rejects static data that would require more than the maximum.
 The hosted compiler applies the same fixed-memory scratch and final-code proofs;

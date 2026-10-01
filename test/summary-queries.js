@@ -14,6 +14,26 @@ const lit = value => [null, value]
 const typed = ['()', 'new.BigInt64Array', lit(0)]
 const reduce = (callback, initial) => ['()', ['.', typed, 'reduce'], [',', callback, initial]]
 
+test('summary queries: unseen literal shapes follow live aliases without changing scalar reads', () => {
+  const object = props => ['{}', ...props.map(name => [':', name, lit(1)])]
+  const schemas = [['a'], ['b'], ['a', 'tail'], ['b', 'tail']]
+  const ast = [';', ...['a', 'b', 'ca', 'cb'].map((name, i) => ['const', ['=', name, object(schemas[i])]]),
+    ['const', ['=', 'x', lit(7)]]]
+  const options = { funcs: [], schemas, brandOf: () => null, imports: new Map(), exported: () => false }
+  const summary = summarize(ast, options), q = summary.at('')
+  const unseen = ['{}', ['...', 'alias'], [':', 'tail', lit(0)]]
+  for (const name of ['a', 'a', 'b', 'a']) {
+    q.alias('alias', name)
+    is(q.kindOfExpr(unseen), q.kindOf('c' + name), 'a retained literal query reads the current alias')
+    is(q.kindOfExpr(['{}', 'a', [':', 'a', lit(2)]]), q.kindOf('a'), 'shorthand and duplicate keys share one layout')
+    is(q.kindOfExpr('x'), kind(K.NUMBER), 'literal builders do not affect scalar facts')
+    q.unalias('alias')
+    is(q.kindOfExpr(unseen), kind(K.HASH), 'an unbound spread keeps the unknown layout')
+  }
+  summarize(null, { ...options, schemas: [] })
+  is(q.kindOfExpr('x'), kind(K.NUMBER), 'a later empty summary leaves the reader intact')
+})
+
 test('summary queries: layout discovery restarts leave complete and retained readers independent', () => {
   const options = { funcs: [], schemas: [['a']], brandOf: () => null, imports: new Map(), exported: () => false }
   const input = value => [';',

@@ -179,6 +179,28 @@ export function summaryQueries(facts, internal = false) {
     const readKind = name => aliases.has(name) ? aliasKind(aliases.get(name)) : present.has(name) ? core(readKey(keyOfAnywhere(name))) : readKey(keyOfAnywhere(name))
     const kindOfExpr = n => selectedExpr(n, 7)
     const spreadSourceKind = (e, site) => canon(spreadSources.get(site) ?? kindOfExpr(e))
+    // Only an unseen object literal needs a captured name builder. Keeping it
+    // here avoids a closure environment on every ordinary expression query.
+    const literalKindOf = n => {
+      const names = []
+      let brand = null
+      const add = name => { if (!names.includes(name)) names.push(name) }
+      for (let i = 1; i < n.length; i++) {
+        const p = n[i]
+        if (typeof p === 'string') add(p)
+        else if (Array.isArray(p) && p[0] === ':' && typeof p[1] === 'string') { if (isBrand(p[1])) brand = p[1]; else add(p[1]) }
+        else if (Array.isArray(p) && p[0] === '...') {
+          const source = spreadSourceKind(p[1], p), sid = layoutOf(source), skip = spreadExclusions(p)
+          if (p[1]?.[0] === '&&' || isNullable(source) || sid === UNKNOWN || shapesOf(paramOf(source)).some(site => openSchemas.has(site)) || !schemas[sid] || skip?.exprs.length) return kind(K.HASH)
+          for (const name of schemas[sid]) if (!skip?.names.includes(name)) add(name)
+        } else return kind(K.HASH)
+      }
+      const sid = sidByKey.get(schemaKey(names, brand))
+      if (sid === undefined) return names.length === 0 ? kind(K.OBJECT) : kind(K.HASH)
+      let k = K.NONE
+      for (const site of sitesByLayout.get(sid) ?? []) k = merge(k, kind(K.OBJECT, site))
+      return k === K.NONE ? kind(K.OBJECT) : k
+    }
     const selectedExpr = (n, mask) => {
       const logical = Array.isArray(n) ? logicalMask(n[0]) : 0
       if (mask !== 7 && !logical) return selectKind(kindOfExpr(n), mask)
@@ -210,26 +232,7 @@ export function summaryQueries(facts, internal = false) {
       if (op === '{}' && objectKinds.has(n)) return objectKinds.get(n)
       if (op === '()' && n[1] === 'JSON.parse' && jsonKinds.has(n)) return canon(jsonKinds.get(n))
       if (op === '=>') { const id = closures.get(n) ?? closuresByBody.get(n[2]); return id === undefined || id >= UNKNOWN ? kind(K.CLOSURE) : kind(K.CLOSURE, id) }
-      if (op === '{}' && n.length > 1 && n.slice(1).every(p => typeof p === 'string' || Array.isArray(p) && (p[0] === ':' || p[0] === '...'))) {
-        const names = []
-        let brand = null
-        const add = name => { if (!names.includes(name)) names.push(name) }
-        for (let i = 1; i < n.length; i++) {
-          const p = n[i]
-          if (typeof p === 'string') add(p)
-          else if (Array.isArray(p) && p[0] === ':' && typeof p[1] === 'string') { if (isBrand(p[1])) brand = p[1]; else add(p[1]) }
-          else if (Array.isArray(p) && p[0] === '...') {
-            const source = spreadSourceKind(p[1], p), sid = layoutOf(source), skip = spreadExclusions(p)
-            if (p[1]?.[0] === '&&' || isNullable(source) || sid === UNKNOWN || shapesOf(paramOf(source)).some(site => openSchemas.has(site)) || !schemas[sid] || skip?.exprs.length) return kind(K.HASH)
-            for (const name of schemas[sid]) if (!skip?.names.includes(name)) add(name)
-          } else return kind(K.HASH)
-        }
-        const sid = sidByKey.get(schemaKey(names, brand))
-        if (sid === undefined) return names.length === 0 ? kind(K.OBJECT) : kind(K.HASH)
-        let k = K.NONE
-        for (const site of sitesByLayout.get(sid) ?? []) k = merge(k, kind(K.OBJECT, site))
-        return k === K.NONE ? kind(K.OBJECT) : k
-      }
+      if (op === '{}' && n.length > 1 && n.slice(1).every(p => typeof p === 'string' || Array.isArray(p) && (p[0] === ':' || p[0] === '...'))) return literalKindOf(n)
       if (op === '(' || op === '()' && n.length === 2) return kindOfExpr(n[1])
       if (op === '.' || op === '?.') {
         const r = kindOfExpr(n[1])
