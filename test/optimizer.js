@@ -1780,10 +1780,24 @@ test('typed-array address fusion: arr[i + k] uses one base plus offsets', () => 
       return a[i + 0] + a[i + 1] + a[i + 2] + a[i + 3]
     }
   `, { wat: true, optimize: { watr: false } })
-  ok(/\$__ab\d+/.test(wat), 'expected shared address-base local')
-  ok(/f64\.load offset=8[\s\S]*local\.get \$__ab\d+/.test(wat), 'expected i+1 as offset=8 from shared base')
-  ok(/f64\.load offset=16[\s\S]*local\.get \$__ab\d+/.test(wat), 'expected i+2 as offset=16 from shared base')
-  ok(/f64\.load offset=24[\s\S]*local\.get \$__ab\d+/.test(wat), 'expected i+3 as offset=24 from shared base')
+  const body = findFunc(parseWat(wat), '$main'), loads = []
+  walk(body, n => { if (n[0] === 'f64.load') loads.push(n) })
+  is(loads.length, 4, 'exactly four element loads')
+  const base = loads[0]?.at(-1)
+  is(base?.[0], 'local.tee', 'first load computes and saves the shared address')
+  is(count(base, n => n[0] === 'i32.shl'), 1, 'the element address scales once')
+  for (let i = 1; i < loads.length; i++) {
+    ok(loads[i].includes(`offset=${i * 8}`), `element ${i} uses its byte offset`)
+    is(loads[i].at(-1), ['local.get', base[1]], `element ${i} reads the same address local after slot reuse`)
+  }
+  const src = `const a=new Float64Array([${Array.from({length:64},(_,i)=>i*.5-7)}]);
+    export const main=idx=>{const i=idx&31;return a[i]+a[i+1]+a[i+2]+a[i+3]}`
+  const expected = oracle(src).main
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const actual = run(src, { optimize }).main
+    for (const idx of [0,0,1,31,32,-1,1.5,2147483648,4294967295,0])
+      is(actual(idx), expected(idx), `O${optimize}, shared address at ${idx}`)
+  }
 })
 
 test('known array at reads header length directly', () => {
