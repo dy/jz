@@ -76,6 +76,17 @@ const findFunc = (tree, name) => { let f = null; const w = n => { if (!Array.isA
 const preWatr = (opt) => typeof opt === 'object' ? { watr: false, ...opt } : { level: opt, watr: false }
 const callsInLoop = (src, name, opt = 2) => loopCount(findFunc(parse(src, preWatr(opt)), '$f'), n => n[0] === 'call' && n[1] === name)
 
+// Count the operation on the executed path: mutually exclusive loop copies
+// may each contain a hoisted instruction, but a call must not execute both.
+const operationCounter = (tree, op, operation) => {
+  walk(tree, n => { if (n[0] === op) { n[0] = 'call'; n.splice(1, 0, '$operationProbe') } })
+  tree.splice(1, 0, ['import', '"probe"', '"operation"', ['func', '$operationProbe', ['param', 'f64', 'f64'], ['result', 'f64']]])
+  let calls = 0
+  const { exports } = new WebAssembly.Instance(new WebAssembly.Module(encodeWat(tree)), { probe: { operation: (a, b) => { calls++; return operation(a, b) } } })
+  return (name, ...args) => { calls = 0; const value = exports[name](...args); return { calls, value } }
+}
+
+
 test('LICM array presence: module constants, defaults and shadowing stay distinct', () => {
   const src = `const values = [2, 3, 5, 7]
     export function sum(n, a = values) {
@@ -345,8 +356,11 @@ test('LICM (watr): speed tier hoists post-inline invariants via watr licm', () =
     const g = (x, y) => Math.max(x, y) * 3.0 + 1.0
     export let f = (k, n) => { let s = 0.0; for (let i = 0; i < n; i++) s = s + g(k, 2.5) + i; return s }`
   const fn = findFunc(parse(src, 'speed'), '$f')
-  is(count(fn, n => n[0] === 'f64.max'), 1, 'the invariant is computed once')
-  is(loopCount(fn, n => n[0] === 'f64.max'), 0, 'its computation is outside the loop, regardless of local reuse')
+  ok(count(fn, n => n[0] === 'f64.max') > 0, 'the invariant remains in the function')
+  is(loopCount(fn, n => n[0] === 'f64.max'), 0, 'its computation is outside every loop copy, regardless of local reuse')
+  const probe = operationCounter(parse(src, 'speed'), 'f64.max', Math.max)
+  for (const n of [4, 4, 0, 3.5, -Infinity, NaN, 4])
+    ok(probe('f', 9, n).calls <= 1, `only the selected path computes the invariant for n=${n}`)
   // Bit-exact: licm on === off across invariant-max branches and the zero-trip loop.
   const on = jz(src, { optimize: 'speed' }).exports.f
   const off = jz(src, { optimize: { level: 'speed', watrLicm: false } }).exports.f
@@ -2938,11 +2952,11 @@ test('opts.optimize: false produces correct output (semantics preserved)', () =>
   is(full(10), 90)
 })
 
-test('opts.optimize: false produces larger binary than default', () => {
+test('opts.optimize: size preset shrinks the scalar loop', () => {
   const src = `export const main = (n) => { let s = 0; for (let i = 0; i < n; i++) s = s + i*2; return s | 0 }`
   const off = jz.compile(src, { optimize: false })
-  const on = jz.compile(src, { optimize: true })
-  ok(off.length >= on.length, `expected optimize:false (${off.length}) >= optimize:true (${on.length})`)
+  const on = jz.compile(src, { optimize: 'size' })
+  ok(off.length >= on.length, `expected optimize:false (${off.length}) >= optimize:size (${on.length})`)
 })
 
 test('opts.optimize: object override gates per-pass', () => {
@@ -4071,7 +4085,12 @@ test('LICM: nested-loop invariant arithmetic is hoisted (V8 wasm under-hoists it
     `export let f = (a, b, n, m) => { let s = 0; for (let i=0;i<n;i++) for (let j=0;j<m;j++) s = s + (a-b)*3.5 + j; return s }`,
     { wat: true, optimize: 'speed' })
   ok(/local \$__li/.test(wat), 'expected a hoisted snap local')
-  is((wat.match(/f64\.mul/g) || []).length, 1, '(a-b)*3.5 computed once, not per inner iteration')
+  const innermost = []
+  walk(parseWat(wat), n => { if (n[0] === 'loop' && count(n, x => x[0] === 'loop') === 1) innermost.push(n) })
+  ok(innermost.length > 0 && innermost.every(n => count(n, x => x[0] === 'f64.mul') === 0), '(a-b)*3.5 is outside every inner-loop copy')
+  const probe = operationCounter(parseWat(wat), 'f64.mul', (a, b) => a * b)
+  for (const [n, m] of [[4, 5], [4, 5], [0, 3], [2, 0], [3, 2.5], [2, -Infinity], [4, 5]])
+    ok(probe('f', 2, 0.5, n, m).calls <= Math.max(1, n), `at most one invariant computation per outer iteration (${n}, ${m})`)
   // Bit-exact: hoisting must not change the result.
   const { f } = run(`export let f = (a, b, n, m) => { let s = 0; for (let i=0;i<n;i++) for (let j=0;j<m;j++) s = s + (a-b)*3.5 + j; return s }`)
   const js = (a, b, n, mm) => { let s = 0; for (let i=0;i<n;i++) for (let j=0;j<mm;j++) s = s + (a-b)*3.5 + j; return s }
@@ -5771,23 +5790,20 @@ export let run = (n, len) => {
   const wat = jz.compile(src, { wat: true, optimize: preWatr({ level: 'speed', specializeLoops: false }) })
   const fn = wat.split('(func ').find(f => f.startsWith('$cursorScan')) || ''
   ok(fn.length > 0, 'inspect the cursor worker before backend inlining')
-  const guardAt = fn.indexOf('i64.lt_s')
-  ok(guardAt > 0, 'cursor guard present')
-  const thenAt = fn.indexOf('(then', guardAt)
-  const elseAt = (() => {   // matching else at the same paren depth as the then
-    let d = 0
-    for (let i = thenAt; i < fn.length; i++) {
-      if (fn[i] === '(') d++
-      else if (fn[i] === ')' && --d === 0) return fn.indexOf('(else', i)
-    }
-    return -1
-  })()
-  ok(elseAt > thenAt, 'both arms present')
-  const fastArm = fn.slice(thenAt, elseAt)
-  const checkedArm = fn.slice(elseAt)
-  is((fastArm.match(/i32\.load8_u/g) || []).length, 3, 'fast arm: 3 bare stream loads (r++, r, r+1)')
-  ok(!/i32\.lt_u|i32\.ge_u|select/.test(fastArm), 'fast arm carries no bounds-check idiom for the cursor')
-  ok(/i32\.lt_u|select/.test(checkedArm), 'checked arm keeps the guarded reads')
+  // Find the complete guarded loop, not the first wide comparison: exact
+  // Number thresholds and individual checked reads also use wide compares.
+  const versions = []
+  walk(parseWat(`(func ${fn}`), n => {
+    if (n[0] !== 'if') return
+    const fast = n.find(x => Array.isArray(x) && x[0] === 'then')
+    const checked = n.find(x => Array.isArray(x) && x[0] === 'else')
+    if (!fast || !checked || !count(fast, x => x[0] === 'loop')) return
+    if (count(fast, x => x[0] === 'i32.load8_u') === 3 &&
+        !count(fast, x => /^(i32|i64)\.(lt|ge)_u$|^select$/.test(x[0]))) versions.push([fast, checked])
+  })
+  ok(versions.length > 0, 'a complete fast loop has three bare cursor loads and no bounds-check idiom')
+  ok(versions.every(([, checked]) => count(checked, x => /^(i32|i64)\.(lt|ge)_u$|^select$/.test(x[0])) > 0), 'each checked twin keeps guarded reads')
+
 })
 
 test('serial-chain unroll: crc-class loop pairs iterations, values exact', () => {

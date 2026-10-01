@@ -36,7 +36,8 @@ import { is, ok, throws } from 'tst/assert.js'
 import { belowOpt, onKernel, onWasi, withBigintStrict, levels } from './_matrix.js'
 import jz from '../index.js'
 import { run, oracle } from './util.js'
-import { parse as watTree, callsOutside } from '../scripts/wat-probe.mjs'
+import parseWat from 'watr/parse'
+import { parse as watTree, callsOutside, walk } from '../scripts/wat-probe.mjs'
 import { dictValueKindOf, mapValueKindOf } from '../src/kind.js'
 import { ctx } from '../src/ctx.js'
 import { VAL } from '../src/reps.js'
@@ -1093,9 +1094,15 @@ test('masked multiply narrows to i32 — bytebeat t*(m&63) deopt', () => {
     { wat: true })
   const at = wat.indexOf('(func $fill')
   const fn = wat.slice(at, wat.indexOf('(func', at + 6))
-  is(count(fn, /f64\.mul/g), 0, 'masked scale uses i32.mul, not f64.mul')
-  is(count(fn, /f64\.const Infinity/g), 0, 'no Infinity-canon guard in the i32 kernel')
-  ok(count(fn, /i32\.mul\b/g) >= 1, 'the t*(mask) product is an i32.mul')
+  const integerLoops = []
+  walk(parseWat(fn), node => {
+    if (node[0] !== 'loop') return
+    const text = JSON.stringify(node)
+    if (/i32\.mul\b/.test(text)) integerLoops.push(text)
+  })
+  ok(integerLoops.length > 0, 'the bounded t*(mask) product uses an i32.mul')
+  ok(integerLoops.every(loop => !/f64\.mul|f64\.const.{0,3}(Infinity|inf)/.test(loop)), 'every integer fast loop omits the floating product and Infinity guard')
+  ok(count(fn, /f64\.mul/g) > 0, 'the full Number fallback preserves wide-product rounding')
 })
 
 // P0-2 ledger (banked bug class #1, closed 2026-08-02): `mulFitsI32` (emit.js)
