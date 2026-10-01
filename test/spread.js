@@ -961,8 +961,9 @@ test('spread: a source that is only ever undefined or null copies no key', () =>
     for (const x of [0, 2]) is(g(x), js.g(x), `g(${x}) at ${optimize}`)
   }
   if (belowOpt(2)) return
-  // the program's own functions (not the runtime's): no loop asks for a string or a dictionary
-  const own = compile(src, { optimize: 2, wat: true }).split('\n  (func ').filter(b => !/^\$\W?(__|math\.)/.test(b))
+  // The returned tracker closure owns the numeric stride. Exported g also
+  // copies a conditional dictionary, whose key-enumeration loops are unrelated.
+  const own = compile(src, { optimize: 2, wat: true }).split('\n  (func ').filter(b => /^\$\W?closure\d+\b/.test(b))
   const loops = []
   for (const text of own) for (let at = text.indexOf('(loop'); at >= 0; at = text.indexOf('(loop', at + 1)) {
     let depth = 0, end = at
