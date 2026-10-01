@@ -9,8 +9,8 @@
 // keeps the f64.
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import { agree, run, wat, funcWat as funcWatOf } from './util.js'
-import { belowOpt } from './_matrix.js'
+import { agree, oracle, run, wat, funcWat as funcWatOf } from './util.js'
+import { belowOpt, levels } from './_matrix.js'
 
 const funcWat = (text, name) => funcWatOf(text, name) || funcWatOf(text, `${name}$exp`)
 /** The storage of the local `name` in `fn`, through any inlining prefix. */
@@ -27,6 +27,21 @@ const wide = (src, name = 'h') => { if (!belowOpt(2)) ok(storage(src, 'f', name)
 // infinities. Each kernel keeps them within (-2^63, 2^63), the span `|0` wraps
 // over (src/ir/numeric.js toI32): past it the dialect saturates, word or number.
 const NUMS = [0, 1, -1, 7.9, -7.9, 2147483647, 2147483648, 4294967295, 4294967296, 4294967297.5, -2147483649, 4e18, -4e18, -0, NaN, Infinity, -Infinity]
+
+test('word local: initializer products keep Number rounding before taking the word', () => {
+  const sources = [
+    `export function f(k) { const x=k|0; let h=x*x; return [h|0,h&255,h>>>0,Math.imul(h,3)] }`,
+    `export function f(k) { const x=k|0; let h=x*x-(x-1)*(x+1); return h|0 }`,
+    `export function f(k) { let x=k|0; x*=x; return x|0 }`,
+    `export function f(k) { const x=k|0; let h=x*x; const a=new Int32Array(1);a[0]=h;return a[0] }`,
+    `export function f() { let x=2147483647;x*=2147483647;return x|0 }`,
+  ]
+  for (const optimize of levels(0, 1, 2, 3, 'size')) for (const src of sources) {
+    const actual=run(src,{optimize}).f, expected=oracle(src).f
+    for (const k of [0,-0,1,-1,65537,67108865,94906265,94906266,2147483647,-2147483648,2147483647,0])
+      is(actual(k),expected(k),`O${optimize}: ${k}`)
+  }
+})
 
 test('word local: an FNV hash seeded above 2^31', () => {
   const src = `export let f = (n, k) => {

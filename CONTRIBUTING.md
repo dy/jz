@@ -147,6 +147,9 @@ calculation. Empty signed ranges remain empty even beside INT_MIN; widening
 loads require their complete read span before subtracting extra lanes.
 Small loop helpers enter exported loops only after their callees have expanded,
 so the size budget includes the work being moved out of a tierable function.
+Word-local initializers use the shared IR conversion and exact-arithmetic proof.
+A word destination permits final wrapping, but never removes Number rounding
+from a product before that conversion; checked indices keep their separate bounds proof.
 Integer-store shortcuts prove numeric carriers, not merely an i32 representation:
 pointers still need ToNumber. Clamping requires the original signed magnitude;
 a Uint32 word with its high bit set cannot use the signed-word clamp. An observed

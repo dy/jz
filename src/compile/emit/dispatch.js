@@ -64,13 +64,12 @@ const isHoistTemp = (name) => typeof name === 'string' && name.startsWith(T + 'i
 export const emitBoolStr = (node) =>
   typed(['f64.reinterpret_i64', toStrI64(node, emit(node))], 'f64')
 
-/** Compute the ToInt32 residue of an integer expression using word operations.
- * Index consumers must separately prove the full result fits; a coercing local
- * write deliberately takes the residue, including overflow. */
+/** Compute a checked index with word operations. Every intermediate must
+ * remain an exactly represented integer before the final bounds proof. */
 const I32_INDEX_OP = { '+': 'i32.add', '-': 'i32.sub', '*': 'i32.mul' }
 const indexWordRange = name => exprType(name, ctx.func.locals) === 'i32'
   ? repOf(name)?.unsigned ? [0, 4294967295] : [-2147483648, 2147483647] : null
-function tryI32Index(e, exact = false) {
+function tryI32Index(e) {
   // Integer literal first — a prepare-wrapped literal `[null, k]` (and a const-int
   // name) is itself an Array, so the operator dispatch below would reject it and
   // bail the WHOLE index to the f64 round-trip. The classic victim is the `+ 1` /
@@ -83,10 +82,10 @@ function tryI32Index(e, exact = false) {
     if (inner && e[2] != null) {
       // Every intermediate must agree with JS integer arithmetic: a large
       // rounded product can cancel into a small final hull.
-      const range = exact && intExprRange(e, indexWordRange)
-      if (exact && (!range || range[0] < -9007199254740991 || range[1] > 9007199254740991)) return null
-      const a = tryI32Index(e[1], exact); if (a == null) return null
-      const b = tryI32Index(e[2], exact); if (b == null) return null
+      const range = intExprRange(e, indexWordRange)
+      if (!range || range[0] < -9007199254740991 || range[1] > 9007199254740991) return null
+      const a = tryI32Index(e[1]); if (a == null) return null
+      const b = tryI32Index(e[2]); if (b == null) return null
       return typed([inner, a, b], 'i32')
     }
     return null
@@ -110,7 +109,7 @@ export const emitIndex = (index, whole = false, wide = false) => {
   const range = Array.isArray(index) && I32_INDEX_OP[index[0]] ? intExprRange(index, indexWordRange) : null
   const exact = whole || !Array.isArray(index) || !I32_INDEX_OP[index[0]] ||
     range && range[0] >= -2147483648 && range[1] < 4294967296
-  const direct = exact && tryI32Index(index, true)
+  const direct = exact && tryI32Index(index)
   if (direct) return direct
   const proven = whole
   whole ||= wholeKey(index)
@@ -169,27 +168,6 @@ export const emitIndex = (index, whole = false, wide = false) => {
   return keyIndex(value)
 }
 
-
-/**
- * True when `e` is a pure integer `+`/`-`/`*` tree whose leaves are all i32-typed
- * names/globals or integer literals — no calls, member reads, or indexed reads, so
- * emitting it twice (or in a different rep) is side-effect-free. Used to recognise
- * an i32-local initializer that `tryI32Index` can lower to native wrapping i32
- * arithmetic instead of the f64 round-trip (`convert … f64.mul/add … trunc_sat`).
- * The same residue-mod-2^32 argument as `tryI32Index`: ToInt32 of the exact integer
- * value equals two's-complement wrapping i32, so for an i32 destination the two are
- * bit-identical — even when an intermediate product overflows.
- */
-function isI32ArithTree(e) {
-  if (typeof e === 'number') return Number.isInteger(e)
-  if (typeof e === 'string') return exprType(e, ctx.func.locals) === 'i32'
-  if (!Array.isArray(e)) return false
-  const op = e[0]
-  if (op == null) return isI32ArithTree(e[1])                 // literal wrapper [, v]
-  if ((op === '+' || op === '-' || op === '*') && e[2] != null)
-    return isI32ArithTree(e[1]) && isI32ArithTree(e[2])
-  return false
-}
 
 // Scoped FlowState combinators live in ./flow-state.js.
 
@@ -1014,12 +992,6 @@ export function emitDecl(...inits) {
         (ctx.func.closureAux ??= new Map()).set(name, val.closureFuncIdx)
       coerced = val.ptrKind === ptrKind ? val
         : typed(['i32.wrap_i64', ['i64.reinterpret_f64', asF64(val)]], 'i32')
-    } else if (localType === 'i32' && val.type !== 'i32' && isI32ArithTree(init)) {
-      // Integer index feeder (`let idx = py*W + qx`) bound to an i32 local: compute
-      // it in native wrapping i32 instead of the f64 round-trip + trunc_sat. Bit-
-      // identical for an i32 destination (ToInt32 ≡ two's-complement wrap), and the
-      // i32.mul is hoistable when loop-invariant. Falls back to toI32 defensively.
-      coerced = tryI32Index(init) ?? toI32(val)
     } else {
       // val.type !== 'i32' here means val is f64-typed. That's either a genuine
       // NUMBER (emit(init) on an arithmetic/mixed expr — real ToInt32 applies) or,
