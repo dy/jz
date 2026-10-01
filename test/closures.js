@@ -1934,6 +1934,25 @@ test('closures: captured loop update test and body share the current cells', () 
   }
 })
 
+test('closures: captured loop bodies preserve recursive and shadowed bindings', () => {
+  const sources = [
+    `export function f(n){const fs=[];for(let i=0;i<n;i++){
+      const rec=d=>d?i+rec(d-1):0;fs.push(()=>rec(2))
+    }return fs.map(f=>f())}`,
+    `export function f(n){const fs=[];for(let i=0;i<n;i++){
+      const even=d=>d?odd(d-1):i,odd=d=>d?even(d-1):-i;
+      fs.push(()=>[even(2),odd(2)])
+    }return fs.map(f=>f())}`,
+    `export function f(n){const fs=[];for(let i=0;i<n;i++){
+      let i=10;const rec=d=>d?i+rec(d-1):0;fs.push(()=>rec(2));i++
+    }return fs.map(f=>f())}`,
+  ]
+  for (const src of sources) for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const expected = oracle(src).f, actual = jz(src, { optimize }).exports.f
+    for (const n of [0,1,3,3,2,0,3]) is(actual(n), expected(n), `O${optimize}, n=${n}`)
+  }
+})
+
 test('closures: captured loop header throws retain the last environment', () => {
   const src = `export function f(mode){const tests=[],steps=[],bodies=[];let status='ok';
     const fail=()=>{throw new Error('header')};

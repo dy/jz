@@ -403,6 +403,8 @@ scope before iteration carriers are initialized. Later initializer writes and
 closures retain that initial environment. Each iteration creates fresh cells
 before its update, condition and body. A continue exits a labelled body region,
 runs its finalizers, then copies the values for the next iteration. Labelled
+regions retain the original body's lexical block, including recursive and
+mutually recursive declarations and bindings shadowing the loop header. Labelled
 blocks do not intercept bare loop transfers; stacked labels share their loop
 while object-property colons remain in the expression grammar.
 

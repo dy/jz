@@ -33,10 +33,13 @@ The remaining release blockers are:
   and recovery cases, but still exhausts 4 GiB after `splitByListKinds`. Deferring
   scalar proofs for metadata-only queries cuts the first `collectFacts` from
   885.4 MB to 159.6 MB; the last completed phase falls from 4.130 GB to
-  3.340 GB. The first width-consuming caller-context pass remains under
-  investigation. Known-only interval snapshots now pass dense/sparse proof
-  equivalence and native/WASI regression checks, but their allocation effect
-  and the combined candidate still need a fresh recursive gate.
+  3.340 GB. The next caller-context pass accounts for 4.839 GB of cumulative
+  sampled native allocation; known-only interval snapshots cut it to 1.036 GB
+  and copied map entries from 8.89 million to 0.71 million. Native allocation
+  is not Wasm retained heap: a fresh recursive gate must confirm completion.
+  Kernel7's build at `414a4fbb` exposed a captured-loop scope regression before
+  that gate. Its fix preserves the original body block below the synthetic
+  continue label; native/WASI lifecycle checks each pass 20 tests / 1,032 assertions.
 - Dependency release: the complete, tested watr 5.11.9 tarball awaits publication
   approval. JZ still declares and locks 5.11.8. Publication, the dependency bump
   and a clean registry installation gate must precede release.
@@ -67,9 +70,11 @@ keeps computed array-key coercion order. Direct native/WASI regressions cover
 missing values, signed boundaries, wide products, empty loops and repeated calls.
 Sound bounded-loop optimization proofs are being restored where those changes
 removed unsupported shortcuts; performance assertions remain reviewable.
-The full core run on `76a762c9` passed 5,728 of 5,826 tests. A focused rerun of
-its 98 failures on `4408f771` passed 42 and retained 56; this is an inventory,
-not certification of the later candidate. Subsequent fixes preserve source
+The latest full core run on `acc1d730` passed 5,844 of 5,897 tests, with 53
+failures. It predates the while-cursor, shared shift typing, FFT guard,
+fractional gather and independent wide-accumulator fixes now passing focused
+checks; this is an inventory, not certification of the later candidate.
+Subsequent fixes preserve source
 locations through loop copies, bound secondary counters, retain shared literal
 objects across in-place replacement, and check absent packed-array receivers.
 While-loop copies now guard their complete entry and final landing; global

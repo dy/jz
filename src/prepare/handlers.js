@@ -1369,7 +1369,10 @@ const handlers = {
         const copyOut = captured.map(n => ['=', carrier.get(n), n])
         const next = ['if', first, ['=', first, [null, false]], head[3]]
         const test = head[2] == null ? null : ['if', ['!', head[2]], ['break']]
-        const run = ['label', done, capturedLoopContinues(body, done, label)]
+        // The parser may represent the original body as a bare statement
+        // list. Preserve its lexical block below the synthetic continue
+        // label so declarations are prescanned before recursive closures.
+        const run = ['label', done, withLoc(['{}', [';', capturedLoopContinues(body, done, label)]], body)]
         const newBody = ['{}', [';', copyIn, next, test, run, ...copyOut]]
         return prep(['{}', [';', head[1], decl, ['for', [';', null, null, null], newBody]]])
       }
