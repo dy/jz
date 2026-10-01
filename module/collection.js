@@ -12,8 +12,9 @@
  * @module collection
  */
 
+import print from 'watr/print'
 import { representationProgramHasBigint } from '../src/compile/representation-plan.js'
-import { staticArrayPtr, throwErrorIR, typed, asF64, asI64, asI32, UNDEF_NAN, TOMB_NAN, temp, tempI32, tempI64, allocPtr, mkPtrIR, ptrTypeEq, elemStore, arrayValue, elemLoad, boolBoxIR, freshId, callWithArgs } from '../src/ir.js'
+import { staticArrayPtr, throwErrorIR, typed, asF64, asI64, asI32, UNDEF_NAN, TOMB_NAN, temp, tempI32, tempI64, allocPtr, mkPtrIR, ptrTypeEq, boxedPtrTypeEq, elemStore, arrayValue, elemLoad, boolBoxIR, freshId, callWithArgs } from '../src/ir.js'
 import { emit, deps, call, storedValue } from '../src/bridge.js'
 import { valTypeOf } from '../src/kind.js'
 import { VAL, lookupValType } from '../src/reps.js'
@@ -1789,6 +1790,16 @@ export default (ctx) => {
   // same slot as its string form — o[97] ≡ o['97'] (JS spec). Writes stringify
   // (emit-assign's staticPropertyKey fold, __dyn_set below), so reads must too.
   ctx.core.stdlib['__dyn_get_t'] = () => `(func $__dyn_get_t (param $obj i64) (param $key i64) (param $type i32) (result i64)
+    ${ctx.core.stdlib.__str_idx ? `(local $f f64) (local $i i32)
+    ;; A primitive string's nonnegative word index is already its property key.
+    ;; The exact round trip accepts -0 as 0 and rejects fractions and saturation.
+    (if ${print(boxedPtrTypeEq(['f64.reinterpret_i64', ['local.get', '$obj']], PTR.STRING))}
+      (then
+        (local.set $f (f64.reinterpret_i64 (local.get $key)))
+        (local.set $i (i32.trunc_sat_f64_s (local.get $f)))
+        (if (i32.and (i32.ge_s (local.get $i) (i32.const 0))
+              (f64.eq (f64.convert_i32_s (local.get $i)) (local.get $f)))
+          (then (return (i64.reinterpret_f64 (call $__str_idx (local.get $obj) (local.get $i))))))))` : ''}
     ${ctx.linkDemand.typedProperties ? `(if (i32.and (i32.eq (local.get $type) (i32.const ${PTR.TYPED}))
           (i32.and (f64.ne (f64.reinterpret_i64 (local.get $obj)) (f64.reinterpret_i64 (local.get $obj)))
             (f64.eq (f64.reinterpret_i64 (local.get $key)) (f64.reinterpret_i64 (local.get $key)))))

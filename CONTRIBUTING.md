@@ -3339,6 +3339,16 @@ that wants the host's property keys takes them as strings (`key = '' + key`,
 JS's own ToPropertyKey); inside the program the summary knows a string key and
 the typed-array property semantics hold.
 
+The dynamic property reader checks a primitive STRING receiver and an exact
+nonnegative signed-word Number key before ToPropertyKey. Its float/integer
+round trip accepts `-0` as index zero, while fractions, saturation and nonnumeric
+keys retain ordinary key conversion. The existing checked string reader handles
+empty, SSO, heap and sliced strings. This avoids formatting numeric keys on every
+generic string read, including allocating long decimal keys for out-of-bounds
+reads; it does not infer an index from receiver tag bits alone.
+The known-string emitter uses the same boxed-key dispatch as array reads: a
+settled receiver kind does not prove that the key is numeric or skips its hooks.
+
 `charCodeAt` on a concatenation dissolved into raw (buf, len) locals reads
 16-bit units at `i << 1`; the byte-indexed read it had after the UTF-16 move
 was the strbuild checksum regression.

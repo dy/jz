@@ -6,12 +6,76 @@
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
 import jz, { compile } from '../index.js'
+import { f64ToI64 } from '../interop.js'
 import parseWat from 'watr/parse'
 import { walkAst } from '../src/ast.js'
 import { onKernel, withBigintStrict, levels, belowOpt } from './_matrix.js'
 import { oracle, funcWat } from './util.js'
 
 const run = (body) => jz('export let f = () => {' + body + '}', { jzify: true }).exports.f()
+
+test('dynamic string indices keep the complete property-key domain', () => {
+  const src=`export function read(value,key){return value[key]}
+    export function slice(value,key){return value.slice(1,-1)[key]}
+    export function object(key){return read({'0':7,'1':9,'-1':11,'0.5':13},key)}
+    export function bigKey(mode){return read('abc',[0n,1n,1234567n][mode])}`
+  const expected=oracle(src)
+  const keys=[-0,0,1,2,5,6,10,11,-1,.5,NaN,Infinity,-Infinity,
+    2147483647,2147483648,4294967295,4294967296,9007199254740991,
+    '0','1','-0','01','1.0','1e0','length','',null,undefined,false,true]
+  for(const optimize of levels(0,1,2,3,'size')) {
+    const actual=jz(src,{optimize}).exports
+    for(const value of ['', 'abc', 'abcdefghijk', 'a\u00e9\ud83d\ude00z', 'abc'])
+      for(const key of keys) for(const name of ['read','slice'])
+        is(actual[name](value,key),expected[name](value,key),`${name}, ${JSON.stringify(value)}, ${String(key)}, O${optimize}`)
+    // The same runtime dispatcher must retain ordinary property lookup.
+    for(const value of [7,-0,true,[3,5]])
+      for(const key of [0,-0,1,-1,.5,NaN,'length'])
+        is(actual.read(value,key),expected.read(value,key),`other receiver ${String(value)}, ${String(key)}, O${optimize}`)
+    for(const key of [0,-0,1,-1,.5,NaN,'length'])
+      is(actual.object(key),expected.object(key),`object receiver ${String(key)}, O${optimize}`)
+    for(const mode of [0,0,1,2,0])is(actual.bigKey(mode),expected.bigKey(mode),`BigInt key ${mode}, O${optimize}`)
+  }
+})
+
+test('dynamic string indices preserve receiver, key effects and throwing coercion', () => {
+  const src=`export function f(mode){let value='abcdefghijk',trace='';
+    function base(){trace+='b';return value}
+    function key(){trace+='k';value='changed';
+      if(mode===0)return -0;
+      if(mode===1)return 1234567;
+      if(mode===2)return Symbol('index');
+      return {toString(){trace+='s';if(mode===4)throw 'key';return '1'},valueOf(){trace+='v';return 0}}}
+    try{return[base()[key()],trace,value]}catch(e){return[e,trace,value]}}
+    export function nullish(){let calls=0;const key={toString(){calls++;return '0'}};
+      try{return null[key]}catch(e){return [e.name,calls]}}`
+  const expected=oracle(src)
+  for(const optimize of levels(0,1,2,3,'size')) {
+    const actual=jz(src,{optimize:{level:optimize,sourceInline:false}}).exports
+    for(const mode of [0,0,1,2,3,4,0])is(actual.f(mode),expected.f(mode),`mode ${mode}, O${optimize}`)
+    is(actual.nullish(),expected.nullish(),`nullish, O${optimize}`)
+  }
+})
+
+test('dynamic string indices do not allocate decimal property keys', () => {
+  const src=`export function f(s,key,n){let value;for(let i=0;i<n;i++)value=s[key];return value}`
+  for(const optimize of levels(0,1,2,3,'size')) {
+    const p=jz(src,{optimize:{level:optimize,arenaRewind:false}})
+    // Raw entry avoids the host wrapper's release, so it cannot hide loop scratch.
+    // Seven decimal digits exceed SSO; the former ToPropertyKey path kept 24 B/read.
+    for(let round=0;round<2;round++) {
+      p.memory.reset()
+      const s=p.memory.String('abcdefghijk'),other=p.memory.String('xyz')
+      for(const [value,key,n] of [[s,1234567,0],[s,1234567,1],[s,1234567,1000],
+        [s,1234567,1000],[other,1234567,1000],[s,-0,1],[s,10,1],[s,11,1],[s,1234567,0]]) {
+        const before=p.memory.used
+        const result=p.memory.read(p.instance.exports.f(value,f64ToI64(key),n))
+        is(result,n?(key===0?'a':key===10?'k':undefined):undefined,`result ${key}/${n}, reset ${round}, O${optimize}`)
+        is(p.memory.used-before,0,`no key allocation ${key}/${n}, reset ${round}, O${optimize}`)
+      }
+    }
+  }
+})
 
 test('dictionary literals: replacement and repeated declarations preserve retained identities', () => {
   const sources = [

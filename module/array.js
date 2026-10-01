@@ -1300,9 +1300,16 @@ export default (ctx) => {
         ['local.set', `$${baseTmp}`, ptrExpr],
         (['call', '$__arr_idx_known', ['i64.reinterpret_f64', ['local.get', `$${baseTmp}`]], vi])], 'f64')
     }
-    // Known string → single-char SSO string
-    if (vt === 'string')
+    // A Number key indexes a code unit. Boxed keys still need ToPropertyKey,
+    // even when the receiver's string kind is settled.
+    if (vt === 'string') {
+      if (useRuntimeKeyDispatch)
+        return emitDynamicKeyDispatch(ptrExpr, key => {
+          inc('__str_idx')
+          return ['call', '$__str_idx', ['i64.reinterpret_f64', ptrExpr], keyIndex(typed(key, 'f64'))]
+        })
       return typed(stringLoad(), 'f64')
+    }
     // Known typed-array (ctor unknown — bimorphic call sites). Skip str-key dispatch
     // since arr is provably never a string. Inner __typed_idx still ctor-dispatches.
     // Key narrowing: if idx is provably NUMBER (via lookupValType on the name), the
