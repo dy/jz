@@ -177,7 +177,9 @@ for the source and destination layouts. This keeps a BigInt's identity when
 original slot identity, while preserving the objects' static shapes. An
 unknown receiver's computed read or enumeration also exposes every reachable
 field value, so nested objects cannot keep raw fields after their identities
-are lost. `Object.entries` retains the same joined value kind as
+are lost. The summary batches that unknown-key effect once per kind round,
+revisiting newly discovered fields until stable and resetting before numeric
+reseeding; repeated reads do not rescan every schema. `Object.entries` retains the same joined value kind as
 `Object.values`, paired with its string key.
 Array property stores also feed length analysis: a numeric key can extend the
 array, `length` can resize it, and an unknown key can do either. The same

@@ -2643,7 +2643,10 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     for (const [sid, i] of byProp.get(prop) ?? NO_SLOTS) if (lostSchema(sid)) escape(slots(sid)[i])
     escape(sideByProp.get(prop) ?? K.NONE)
   }
-  const escapeLostFields = () => { for (const prop of byProp.keys()) escapeLostReads(prop) }
+  // An unknown-key read can expose any lost shape's fields. Record the effect
+  // once; after each kind round replay it over the latest fields and shapes.
+  let lostFieldsRead = false
+  const escapeLostFields = () => { lostFieldsRead = true }
   const member = (op, recv, prop) => {
     const t = tagOf(recv)
     // A read through a nullish receiver throws (the optional form answers undefined).
@@ -4201,6 +4204,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     const seen = new Set()
     for (const key of declared.get(MODULE)?.values() ?? []) retain(kinds[key] ?? K.NONE, seen)
     for (const id of hostClosures) for (const key of captures.get(id) ?? []) retain(kinds[key] ?? K.NONE, seen)
+    if (lostFieldsRead) for (const prop of byProp.keys()) escapeLostReads(prop)
     settleArgs()
     return changed
   })
@@ -4245,7 +4249,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   if (seeded.length) {
     kinds.length = 0; incoming.length = 0; fields.length = 0; objectKinds.clear(); decisions.clear(); opaqueSchemas.clear(); hostSchemas.clear(); retainedSchemas.clear(); hostArrays.clear(); retainedArrays.clear(); hostClosures.clear(); results.clear(); escaped.clear(); certainKeys.clear(); boolKeys.clear(); for (let i = 0; i < elems.length; i++) { elems[i] = K.NONE; cellUp[i] = i }
     tuples.clear(); lens.clear(); stores.clear(); built.clear(); grown.clear(); unknown.clear(); presentReads.clear(); spreadSources.clear(); argRanges.clear(); roundArgs.clear(); moved.clear()
-    pendingAll = false; pendingIndexed = false; wildValues = K.NONE; wildProps.clear(); sideProps.clear(); sideWild.clear(); closureProps.clear(); sideByProp.clear(); foreignObjects = false; foreignProps.clear(); deletable.clear(); deleteReach.unknown = false; keysSeen.clear(); copiedSchemas.clear()
+    pendingAll = false; pendingIndexed = false; wildValues = K.NONE; wildProps.clear(); sideProps.clear(); sideWild.clear(); closureProps.clear(); sideByProp.clear(); foreignObjects = false; foreignProps.clear(); lostFieldsRead = false; deletable.clear(); deleteReach.unknown = false; keysSeen.clear(); copiedSchemas.clear()
     seed(seeded)
     fixpoint()
     if (unnamed.size && registerLayouts?.([...unnamed.values()])) return null

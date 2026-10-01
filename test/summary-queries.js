@@ -851,6 +851,35 @@ test('summary objects: losing one allocation does not poison an unrelated record
   is(summary.fieldKind(0, 'value'), kind(K.ANY), 'the physical slot still accommodates either allocation')
 })
 
+test('summary reads: unknown keys revisit late nested fields across reseeding and reuse', () => {
+  for (const read of [null, ['[]', 'outside', 'key'], ['()', 'Object.values', 'outside'], ['()', 'Object.entries', 'outside']]) {
+    let retained
+    for (const value of [1n, 1n, 'changed', 1n]) for (const reseed of [false, true]) {
+      // Property order puts the innermost slots before their parent. Losing
+      // the outer shape must revisit children discovered by the later walk.
+      const ast = [';', ...(read ? [read, read] : []),
+        ['const', ['=', 'leaf', ['{}', [':', 'value', lit(value)]]]],
+        ['const', ['=', 'middle', ['{}', [':', 'child', 'leaf']]]],
+        ['const', ['=', 'outer', ['{}', [':', 'item', 'middle']]]],
+        ['const', ['=', 'lost', ['?', 'flag', 'outer', 'outside']]],
+      ]
+      const summary = summarize(ast, {
+        funcs: reseed ? [{ name: 'scale', sig: { params: [{ name: 'n' }] }, body: ['*', 'n', lit(2)] }] : [],
+        schemas: [['value'], ['child'], ['item']], brandOf: () => null, imports: new Map(), exported: () => true,
+      })
+      is(summary.opaqueSchema(0), !!read, 'an unknown field read exposes the late nested leaf')
+      is(summary.opaqueSchema(1), !!read, 'the intermediate object is exposed too')
+      is(summary.opaqueSchema(2), true, 'the outer object lost its shape at the unknown join')
+      is(summary.fieldKind(0, 'value'), kind(typeof value === 'bigint' ? K.BIGINT : K.STRING), 'the stored field kind survives')
+      if (reseed) is(summary.at('scale').kindOf('n'), kind(K.NUMBER), 'numeric demand reran kinds')
+      retained ??= summary
+      is(retained.fieldKind(0, 'value'), kind(K.BIGINT), 'later summaries do not mutate earlier readers')
+    }
+    is(summarize(null, { funcs: [], schemas: [], brandOf: () => null, imports: new Map(), exported: () => false }).unnamedLayouts,
+      [], 'empty work after the sequence retains no read effect')
+  }
+})
+
 test('summary stores: repeated effects replay on late host shapes and after numeric reseeding', () => {
   for (const early of [false, true]) for (const numericFirst of [false, true]) for (const reseed of [false, true]) {
     const record = ['const', ['=', 'a', ['{}', [':', '0', lit(1)], [':', 'value', lit(2)]]]]
