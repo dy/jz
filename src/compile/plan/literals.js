@@ -25,7 +25,7 @@
 
 import { ctx } from '../../ctx.js'
 import {
-  some, walkAst, rewriteChildren, T, stmtList, refsName, REFS_IN_EXPR, REFS_THROUGH_ARROWS, ASSIGN_OPS, COMPARE_OPS, MUTATE_OPS, ACCESSOR_GET, ACCESSOR_SET, isReassigned, hasControlTransfer,
+  callbackReadsArray, some, walkAst, rewriteChildren, T, stmtList, refsName, REFS_IN_EXPR, REFS_THROUGH_ARROWS, ASSIGN_OPS, COMPARE_OPS, MUTATE_OPS, ACCESSOR_GET, ACCESSOR_SET, isReassigned, hasControlTransfer,
 } from '../../ast.js'
 import { freshId } from '../../ir.js'
 import {
@@ -1222,6 +1222,7 @@ const _TYPED_SAFE_METHODS = new Set([
 // rely on; disqualify and let them write the TypedArray construction
 // themselves.
 const _TYPED_SAFE_PROPS = new Set(['length'])
+const _TYPED_CALLBACK_METHODS = new Set(['map', 'filter', 'forEach', 'reduce', 'find', 'findIndex', 'some', 'every'])
 
 // Returns the i32-range integer payload of an array-literal element, or null
 // if the element isn't a literal integer that fits in i32. Mirrors the shape
@@ -1325,6 +1326,9 @@ const _disqualifyPromotion = (node, candidates, disqualified, initSet, valTypes)
       // only when the callback provably yields numbers; anything else (object/
       // string/unknown call results) keeps the plain-array representation.
       else if (callee[2] === 'map' && !_numericCallbackBody(node[2])) disqualified.add(callee[1])
+      // The callback receives the original receiver, whose Array identity,
+      // writable length and element storage must survive when observed.
+      else if (_TYPED_CALLBACK_METHODS.has(callee[2]) && callbackReadsArray(node[2], callee[2] === 'reduce' ? 3 : 2)) disqualified.add(callee[1])
       // Walk method args (skip the receiver — already validated above).
       for (let i = 2; i < node.length; i++) _disqualifyPromotion(node[i], candidates, disqualified, initSet, valTypes)
       return

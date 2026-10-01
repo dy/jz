@@ -8,21 +8,23 @@
  *
  * @module array/early-exit
  */
-import { typed, temp, freshId, arrayLoop, truthyIR, UNDEF_NAN } from '../../src/ir.js'
+import { typed, temp, freshId, truthyIR, UNDEF_NAN } from '../../src/ir.js'
 import { ctx } from '../../src/ctx.js'
-import { hoistArrayValue, makeCallback, callbackArgReps, callbackElem, idxArg, arrArg } from './callback.js'
+import { callbackLoop, hoistArrayValue, makeCallback, callbackArgReps, callbackElem, idxArg, arrArg } from './callback.js'
 
 export const registerEarlyExit = () => {
   // Early-exit callback iterator: init value, exit test, value on match.
-  const earlyExitMethod = ({ tag, init, test, onMatch, reverse }) => (arr, fn, thisArg) => {
+  const earlyExitMethod = ({ tag, init, test, onMatch, reverse, visitMissing }) => (arr, fn, thisArg) => {
     const recv = hoistArrayValue(arr)
     const r = temp(tag)
     const exit = `$exit${freshId(ctx)}`
-    const cb = makeCallback(fn, callbackArgReps(arr), callbackElem(arr), thisArg)
-    const loop = arrayLoop(recv.value, (_ptr, _len, i, item) => [
+    const reps = callbackArgReps(arr), mayMiss = visitMissing && !recv.fixed
+    if (mayMiss) reps[0] = null
+    const cb = makeCallback(fn, reps, mayMiss ? null : callbackElem(arr), thisArg)
+    const loop = callbackLoop(recv, (_ptr, _len, i, item) => [
       ['if', test(cb, i, item, recv),
         ['then', ['local.set', `$${r}`, onMatch(cb, i, item)], ['br', exit]]]
-    ], undefined, undefined, reverse)
+    ], undefined, undefined, reverse, { visitMissing })
     return typed(['block', ['result', 'f64'],
       recv.setup,
       cb.setup, cb.check,
@@ -46,21 +48,21 @@ export const registerEarlyExit = () => {
   })
 
   ctx.core.emit['.findIndex'] = earlyExitMethod({
-    tag: 'fi',
+    tag: 'fi', visitMissing: true,
     init: ['f64.const', -1],
     test: (cb, i, item, recv) => truthyIR(cb.call([item, idxArg(cb, i), arrArg(cb, recv.value)])),
     onMatch: (_cb, i) => ['f64.convert_i32_s', ['local.get', `$${i}`]],
   })
 
   ctx.core.emit['.find'] = earlyExitMethod({
-    tag: 'ff',
+    tag: 'ff', visitMissing: true,
     init: ['f64.reinterpret_i64', ['i64.const', UNDEF_NAN]],
     test: (cb, i, item, recv) => truthyIR(cb.call([item, idxArg(cb, i), arrArg(cb, recv.value)])),
     onMatch: (_cb, _i, item) => item,
   })
 
   ctx.core.emit['.findLastIndex'] = earlyExitMethod({
-    tag: 'fli',
+    tag: 'fli', visitMissing: true,
     init: ['f64.const', -1],
     test: (cb, i, item, recv) => truthyIR(cb.call([item, idxArg(cb, i), arrArg(cb, recv.value)])),
     onMatch: (_cb, i) => ['f64.convert_i32_s', ['local.get', `$${i}`]],
@@ -68,7 +70,7 @@ export const registerEarlyExit = () => {
   })
 
   ctx.core.emit['.findLast'] = earlyExitMethod({
-    tag: 'fl',
+    tag: 'fl', visitMissing: true,
     init: ['f64.reinterpret_i64', ['i64.const', UNDEF_NAN]],
     test: (cb, i, item, recv) => truthyIR(cb.call([item, idxArg(cb, i), arrArg(cb, recv.value)])),
     onMatch: (_cb, _i, item) => item,

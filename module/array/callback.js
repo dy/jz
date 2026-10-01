@@ -16,7 +16,7 @@
  * @module array/callback
  */
 import { DBG_INVARIANTS } from '../../src/debug.js'
-import { typed, asF64, UNDEF_NAN, temp, throwTypeErrorIR, ptrTypeEq, undefExpr } from '../../src/ir.js'
+import { arrayLoop, typed, asF64, UNDEF_NAN, temp, throwTypeErrorIR, ptrTypeEq, undefExpr } from '../../src/ir.js'
 import { emit, storedValue } from '../../src/bridge.js'
 import { valTypeOf } from '../../src/kind.js'
 import { typedCtorElemValType } from '../../src/kind-traits.js'
@@ -26,11 +26,17 @@ import { VAL, lookupValType } from '../../src/reps.js'
 import { ctx, PTR } from '../../src/ctx.js'
 import { valOf as summaryValOf } from '../../src/summary/index.js'
 
+// Callback methods retain the initial bound and observe receiver mutations.
+const SKIP_MISSING = {}
+export const callbackLoop = (recv, body, len, ptr, reverse, options = SKIP_MISSING) =>
+  arrayLoop(recv.value, body, len, ptr, reverse, undefined, recv.fixed ? null : options)
+
 export function hoistArrayValue(arr) {
   const recv = temp('ar')
   return {
     setup: ['local.set', `$${recv}`, asF64(emit(arr))],
     value: typed(['local.get', `$${recv}`], 'f64'),
+    fixed: (ctx.summary?.at(ctx.func.current).fixedLenOfExpr(arr) ?? -1) >= 0,
   }
 }
 
@@ -225,15 +231,4 @@ export function idxArg(cb, i, slot = 1) {
 export function arrArg(cb, recvValue, slot = 2) {
   return cb.usedParams && !cb.usedParams[slot] ? null : recvValue
 }
-// Whether `fn` may read the array argument at `slot`. A literal arrow proves
-// the negative by its parameter list; any other callee may read it. A fused
-// pipeline (`a.map(f).filter(g)`) never materializes the intermediate array a
-// downstream callback would receive, so it fuses only when this is false.
-export function callbackReadsArray(fn, slot = 2) {
-  if (!Array.isArray(fn) || fn[0] !== '=>') return true
-  const params = extractParams(fn[1])
-  if (params.some(p => p == null)) return true   // a rest parameter can hold it
-  if (params.length <= slot) return false
-  const p = params[slot]
-  return typeof p !== 'string' || refsName(fn[2], p, REFS_IN_EXPR)
-}
+export { callbackReadsArray } from '../../src/ast.js'

@@ -652,6 +652,20 @@ export function extractParams(rawParams) {
   return p == null ? [] : Array.isArray(p) ? (p[0] === ',' ? p.slice(1) : [p]) : [p]
 }
 
+// Whether `fn` may read the array argument at `slot`. A literal arrow proves
+// the negative by its parameter list; any other callee may read it. A fused
+// pipeline cannot discard that receiver, nor may literal promotion change it
+// into a typed array, when a callback can observe its identity or mutate it.
+export function callbackReadsArray(fn, slot = 2) {
+  if (!Array.isArray(fn) || fn[0] !== '=>') return true
+  const params = extractParams(fn[1])
+  if (params.some(p => p == null || Array.isArray(p) && p[0] === '...')) return true   // a rest parameter can hold it
+  if (params.length <= slot) return false
+  const p = params[slot]
+  return typeof p !== 'string' || refsName(fn[2], p, REFS_IN_EXPR) ||
+    params.some((param, i) => i !== slot && refsName(param, p, REFS_IN_EXPR))
+}
+
 export const PARAM_KIND = 0
 export const PARAM_NAME = 1
 export const PARAM_DEFAULT = 2

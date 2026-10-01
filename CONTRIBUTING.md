@@ -102,6 +102,14 @@ including SIMD lanes and the full magnitude of unsigned helper results.
 Array `for…of` loops capture their source once and reread its length each step.
 Appends, shrinking and writes through called helpers remain visible, including
 new nodes added while the compiler solves representation plans.
+Array callback methods keep their initial iteration bound but refresh mutable
+storage before each read. Shrunk indices are skipped except by the find family,
+which visits them as undefined. Fixed-length proofs retain the direct loop.
+`flatMap` appends each callback result immediately, before another callback can
+mutate it; a proven pure callback retains exact-sized two-pass allocation.
+Pipeline fusion checks defaults, getters, coercions and seed evaluation with
+the existing effect queries. Literal typed-array promotion and fusion preserve the
+callback's original receiver whenever named or rest parameters can observe it.
 Array-literal lowering keeps its completed child walk even when no spread needs
 rewriting. Falling back after transforming children repeats work at every nested
 literal and can repeat stateful lowerings; holes and child locations stay intact.

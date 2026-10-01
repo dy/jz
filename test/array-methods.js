@@ -81,6 +81,190 @@ test('computed array writes refresh relocated storage without undoing a rebind',
   }
 })
 
+test('array callbacks: map preserves its initial length while source storage changes', () => {
+  const src = `export function value(n, mode) {
+    let calls = 0
+    const source = new Array(n).fill(1), alias = source
+    const mapped = source.map((v, i, a) => {
+      calls++
+      if (i === 0) {
+        if (mode === 1) a.length = 0
+        if (mode === 2) { for (let j = 0; j < 64; j++) a.push(j + 10); a[1] = 9 }
+        if (mode === 3) { a.length = 1; a.push(9, 10) }
+        if (mode === 4) { alias.length = 1; alias.push(8) }
+      }
+      return v + i
+    })
+    return [mapped.length, calls, source.length, mapped[0], mapped[1], mapped[n - 1]]
+  }`
+  const host = oracle(src)
+  for (const level of levels(0, 1, 2, 3, 'size')) {
+    const got = runHost(src, { optimize: level }), kept = []
+    for (const n of [0, 1, 4, 4, 0, 4]) for (const mode of [0, 1, 2, 3, 4]) {
+      const result = got.value(n, mode), expected = host.value(n, mode)
+      is(result, expected, `O${level}, length ${n}, mutation ${mode}`)
+      kept.push([result, expected])
+    }
+    for (const [result, expected] of kept) is(result, expected, 'later calls leave earlier returned values intact')
+  }
+})
+
+test('array callbacks: sibling methods use current presence within the original bound', () => {
+  const methods = ['filter', 'forEach', 'some', 'every', 'find', 'findIndex', 'findLast', 'findLastIndex', 'reduce', 'reduceRight', 'flatMap']
+  for (const method of methods) {
+    const fold = method === 'reduce' || method === 'reduceRight'
+    const answer = fold ? 'acc + (v || 0)' : method === 'filter' || method === 'every' ? 'true' : method === 'flatMap' ? '[v]' : 'false'
+    const src = `export function value(n, mode) {
+      const a = new Array(n).fill(1), log = []
+      const result = a.${method}((${fold ? 'acc, ' : ''}v, i, source) => {
+        if (log.length === 0) {
+          if (mode === 1) source.length = 1
+          if (mode === 2) { for (let j = 0; j < 64; j++) source.push(j + 10); source[1] = 9 }
+          if (mode === 3) { source.length = 1; source.push(8, 9) }
+        }
+        log.push(i, typeof v, v)
+        return ${answer}
+      }${fold ? ', 0' : ''})
+      return [log, a.length, ${method === 'forEach' ? '0' : method === 'filter' || method === 'flatMap' ? 'result.length, result[0], result[1]' : 'result'}]
+    }`
+    const host = oracle(src)
+    for (const level of levels(0, 1, 2, 3, 'size')) {
+      const got = runHost(src, { optimize: level })
+      for (const [n, mode] of [[0, 1], [1, 1], [4, 1], [4, 1], [4, 2], [4, 3], [0, 1], [4, 1]])
+        is(got.value(n, mode), host.value(n, mode), `${method}, O${level}, length ${n}, mutation ${mode}`)
+    }
+  }
+})
+
+test('array callbacks: flatMap flattens each returned alias before the next callback', () => {
+  const src = `export function value(n, mode) {
+    const a = new Array(n).fill(1), shared = [0], log = []
+    const result = a.flatMap((v, i, source) => {
+      log.push(i)
+      shared[0] = i + 1
+      if (mode === 1) return source
+      if (mode === 2) { source.length = 1; return undefined }
+      if (mode === 3) return i === 0 ? [] : [[i]]
+      return shared
+    })
+    return [result, log, shared, a]
+  }`
+  const host = oracle(src)
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const got = runHost(src, { optimize })
+    for (const n of [0, 1, 4, 4, 0, 4]) for (const mode of [0, 1, 2, 3])
+      is(got.value(n, mode), host.value(n, mode), `O${optimize}, length ${n}, result ${mode}`)
+  }
+})
+
+test('array callbacks: unseeded reductions skip removed indices and recover after empty input', () => {
+  for (const method of ['reduce', 'reduceRight']) {
+    const src = `export function value(n) {
+      let calls = 0
+      const source = new Array(n).fill(2)
+      const result = source.${method}((acc, v, i, a) => { calls++; a.length = 1; return acc + v })
+      return [result, calls, source.length]
+    }`
+    const host = oracle(src)
+    for (const level of levels(0, 1, 2, 3, 'size')) {
+      const got = runHost(src, { optimize: level })
+      for (const n of [1, 4, 4, 1, 4]) {
+        throws(() => got.value(0), /empty|reduce|TypeError/i, `${method}: empty input rejects before callback`)
+        is(got.value(n), host.value(n), `${method}, O${level}, length ${n}: next call recovers`)
+      }
+    }
+  }
+})
+
+test('array callbacks: pipeline stages complete before downstream mutations', () => {
+  const pipelines = [
+    'a.map(v => v * 2).reduce((acc, v) => { a.length = 1; return acc + v }, 0)',
+    'a.filter(v => v > 0).reduce((acc, v) => { a.length = 1; return acc + v }, 0)',
+    'a.filter(v => v > 0).forEach(v => { a.length = 1; out.push(v) })',
+    'a.map(v => v * 2).reduce((acc, v) => acc + v, (a.length = 0))',
+    'a.filter(v => v > 0).reduce((acc, v) => acc + v, (a.length = 0))',
+    'a.map((v, i, source, unused = tally++) => v).reduce((acc, v) => acc + v + tally, 0)',
+  ]
+  for (const pipeline of pipelines) {
+    const src = `export function value(n) {
+      const a = new Array(n).fill(2), out = []
+      let tally = 0
+      const result = ${pipeline}
+      return [${pipeline.includes('forEach') ? '0' : 'result'}, out, a.length]
+    }`
+    const host = oracle(src)
+    for (const optimize of levels(0, 1, 2, 3, 'size')) {
+      const got = runHost(src, { optimize })
+      for (const n of [0, 1, 4, 4, 0, 4])
+        is(got.value(n), host.value(n), `O${optimize}, length ${n}: ${pipeline}`)
+    }
+  }
+})
+
+test('array callbacks: getters and coercions keep pipeline order and error recovery', () => {
+  const pipelines = [
+    'a.map(v => v * 2).reduce((acc, v) => acc + v + box.x, 0)',
+    'a.filter(v => v > 0).map(v => v + box.x)',
+    'a.map(v => v * 2).filter(v => v > box[key])',
+    'a.filter(v => v > 0).reduce((acc, v) => acc + v + box, 0)',
+  ]
+  for (const pipeline of pipelines) {
+    const src = `export function value(n, fail) {
+      const a = new Array(n).fill(2), key = 'x'
+      let calls = 0
+      const box = {
+        get x() { a.length = 1; calls++; if (fail) throw Error('getter'); return 1 },
+        valueOf() { a.length = 1; calls++; if (fail) throw Error('conversion'); return 1 }
+      }
+      const result = ${pipeline}
+      return [result, calls, a.length]
+    }`
+    const host = oracle(src)
+    for (const optimize of levels(0, 1, 2, 3, 'size')) {
+      const got = runHost(src, { optimize })
+      is(got.value(0, 1), host.value(0, 1), 'empty pipeline runs no getter or conversion')
+      for (const n of [1, 4, 4, 0, 4]) {
+        is(got.value(n, 0), host.value(n, 0), `O${optimize}, length ${n}: ${pipeline}`)
+        if (n) throws(() => got.value(n, 1), /getter|conversion/, 'a thrown callback unwinds; the next call recovers')
+      }
+    }
+  }
+})
+
+test('array callbacks: pure numeric pipeline retains a single loop', () => {
+  const src = `export function value() {
+    const a = [1, 2, 3]
+    return [a.map((v, i) => v + i).reduce((acc, v) => acc + v, 0), Array.isArray(a)]
+  }`
+  for (const optimize of levels(0, 1, 2, 3, 'size'))
+    is(runHost(src, { optimize }).value(), [9, true])
+  if (!onKernel()) {
+    const wat = compile(src, { optimize: 0, watr: false, wat: true })
+    is((funcWat(wat, 'value').match(/\(loop\b/g) || []).length, 1, 'pure callbacks retain pipeline fusion')
+  }
+})
+
+test('array callbacks: observing the receiver prevents typed promotion and unsafe rest fusion', () => {
+  const src = `export function named() {
+    const a = [1, 2, 3], seen = []
+    a.find((v, i, source) => { if (i === 0) source.length = 1; seen.push(typeof v, Array.isArray(source)); return false })
+    return seen
+  }
+  export function rest() {
+    const a = [1, 2, 3], seen = []
+    a.find((...args) => { const source = args[2]; if (args[1] === 0) source.length = 1; seen.push(typeof args[0], Array.isArray(source)); return false })
+    return seen
+  }
+  export function fused() { return [1, 2, 3].map(v => v * 2).filter((...args) => args[2][0] === 2) }
+  export function defaults() { const a = [1, 2, 3]; const result = a.find((v, i, source, unused = (source.length = 1)) => false); return [result, a.length] }
+  export function folded() { const a = [1, 2, 3]; return a.reduce((acc, v, i, source) => acc + (Array.isArray(source) ? v : 100), 0) }`
+  const host = oracle(src)
+  for (const level of levels(0, 1, 2, 3, 'size')) {
+    const got = runHost(src, { optimize: level })
+    for (const name of ['named', 'rest', 'fused', 'defaults', 'folded', 'named']) is(got[name](), host[name](), `${name}, O${level}`)
+  }
+})
+
 // === .map ===
 
 test('.map: double', () => {

@@ -2126,12 +2126,14 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     const cb = argumentAt(base, n, 0)
     if (tagOf(cb) !== K.CLOSURE || paramOf(cb) === UNKNOWN) { escapeArgs(base, n); return ANY }
     for (let i = 2; i < n; i++) escape(ks[base + i])
-    const elem = elemOf(recv)
+    const mayMiss = fixedLen(recv) < 0
+    const finds = name === 'find' || name === 'findLast' || name === 'findIndex' || name === 'findLastIndex'
+    const elem = mayMiss && finds ? orAbsent(elemOf(recv)) : elemOf(recv)
     const b = sp
     pushK(elem); pushK(NUMBER); pushK(recv)
     const r = callClosure(paramOf(cb), b, 3, null, n > 1 ? ks[base + 1] : NULLISH)
     sp = b
-    if (name === 'map') { const out = arrayOf(node, r); raiseElem(out, r); return out }
+    if (name === 'map') { const item = mayMiss ? orAbsent(r) : r; const out = arrayOf(node, item); raiseElem(out, item); return out }
     if (name === 'flatMap') { const out = arrayOf(node, K.NONE); raiseElem(out, tagOf(r) === K.ARRAY ? elemOf(r) : r); return out }
     if (name === 'filter') return recv
     if (name === 'find' || name === 'findLast') return orAbsent(elem)
