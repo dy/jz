@@ -11,7 +11,7 @@ import print from 'watr/print'
  * @module core
  */
 
-import { typed, asF64, asI32, asI64, NULL_NAN, UNDEF_NAN, TOMB_NAN, FALSE_NAN, TRUE_NAN, temp, tempI32, usesDynProps, ptrOffsetIR, ptrTypeEq, boxedPtrTypeEq, isNullish, isUndef, valKindToPtr, sidecarOverride, undefExpr, cloneIR, boxBigInt, unboxBigInt, deferBigintBox, isPlanTaggedBigint, throwTypeErrorIR, throwErrorIR, valueTruthyIR } from '../src/ir.js'
+import { typed, asF64, asI32, asI64, NULL_NAN, UNDEF_NAN, TOMB_NAN, FALSE_NAN, TRUE_NAN, temp, tempI32, usesDynProps, ptrOffsetIR, ptrTypeEq, boxedPtrTypeEq, isNullish, isUndef, valKindToPtr, sidecarOverride, undefExpr, cloneIR, boxBigInt, unboxBigInt, deferBigintBox, isPlanTaggedBigint, throwTypeErrorIR, throwErrorIR, valueTruthyIR, numberNanIR } from '../src/ir.js'
 import { emit, emitReference, emitIdentitySafe, storedValue, deps, wat } from '../src/bridge.js'
 import { valTypeOf, shapeOf, hasAmbiguousBoolMerge } from '../src/kind.js'
 import { ACCESSOR_GET, COMPARE_OPS, isBrand } from '../src/ast.js'
@@ -190,13 +190,10 @@ export default (ctx) => {
   ctx.core.stdlib['__eq'] = () => `(func $__eq (param $a i64) (param $b i64) (result i32)
     (local $fa f64) (local $fb f64) (local $ta i32) (local $tb i32)
     ;; Fast path: bit equality covers identical pointers AND interned/SSO strings (same content
-    ;; → same bits). Failing universal-NaN test catches NaN===NaN→false. Saves the NaN-check
-    ;; pair (4 f64.eq) on the hottest case in watr (op === 'literal-string'). A number-NaN is
-    ;; *only ever* the canonical NAN_BITS here: math ops canonicalize at the source (the
-    ;; canon helper in module/math.js), so a non-canonical 0xFFF8.. pattern can only be a
-    ;; negative BigInt carrier — bit-identical to itself and correctly equal.
+    ;; → same bits). Numeric NaNs remain unequal even when their payloads match;
+    ;; generic BigInts already use the ordinary tagged carrier.
     (if (result i32) (i64.eq (local.get $a) (local.get $b))
-      (then (i64.ne (local.get $a) (i64.const ${NAN_BITS})))
+      (then (i32.eqz ${print(numberNanIR(['f64.reinterpret_i64', ['local.get', '$a']]))}))
       (else
         ;; Bits differ. JS loose ==: null == undefined is TRUE even though they're
         ;; bit-DISTINCT NaN-box sentinels (NULL_NAN ≠ UNDEF_NAN) — the fast bit-equality
@@ -242,7 +239,10 @@ export default (ctx) => {
               (then (return (call $__eq (call $__to_prim_dflt (local.get $a)) (local.get $b)))))
             (if (i32.and (call $__is_object (local.get $b))
                          (i32.and (i32.eqz (call $__is_object (local.get $a))) (i32.eqz (call $__is_nullish (local.get $a)))))
-              (then (return (call $__eq (local.get $a) (call $__to_prim_dflt (local.get $b))))))` : ''}${bigintMixedArm()}
+              (then (return (call $__eq (local.get $a) (call $__to_prim_dflt (local.get $b))))))` : ''}
+            ;; Object-to-primitive effects above still run beside a numeric NaN.
+            (if (i32.or ${print(numberNanIR(['local.get', '$fa']))} ${print(numberNanIR(['local.get', '$fb']))})
+              (then (return (i32.const 0))))${bigintMixedArm()}
             ;; CARRIER PROGRAM Slice 3 — registry-derived 'eq-identity' arm
             ;; (layout-kinds.js KIND_REGISTRY.BIGINT / FINDINGS[eq-identity]):
             ;; two independently-boxed BigInts compare by PAYLOAD content, not
@@ -259,10 +259,12 @@ export default (ctx) => {
   ctx.core.stdlib['__eq_strict'] = () => `(func $__eq_strict (param $a i64) (param $b i64) (result i32)
     (local $fa f64) (local $fb f64) (local $ta i32) (local $tb i32)
     (if (result i32) (i64.eq (local.get $a) (local.get $b))
-      (then (i64.ne (local.get $a) (i64.const ${NAN_BITS})))
+      (then (i32.eqz ${print(numberNanIR(['f64.reinterpret_i64', ['local.get', '$a']]))}))
       (else
         (local.set $fa (f64.reinterpret_i64 (local.get $a)))
         (local.set $fb (f64.reinterpret_i64 (local.get $b)))
+        (if (i32.or ${print(numberNanIR(['local.get', '$fa']))} ${print(numberNanIR(['local.get', '$fb']))})
+          (then (return (i32.const 0))))
         (if (result i32)
           (i32.and
             (f64.eq (local.get $fa) (local.get $fa))
@@ -284,6 +286,7 @@ export default (ctx) => {
     (local $f f64) (local $t i32)
     (local.set $f (f64.reinterpret_i64 (local.get $v)))
     (if (f64.eq (local.get $f) (local.get $f)) (then (return (f64.eq (local.get $n) (local.get $f)))))
+    (if ${print(numberNanIR(['local.get', '$f']))} (then (return (i32.const 0))))
     (if (i64.eq (local.get $v) (i64.const ${TRUE_NAN})) (then (return (f64.eq (local.get $n) (f64.const 1)))))
     (if (i64.eq (local.get $v) (i64.const ${FALSE_NAN})) (then (return (f64.eq (local.get $n) (f64.const 0)))))
     (local.set $t (call $__ptr_type (local.get $v)))${representationProgramHasBigint(ctx) ? `
@@ -2839,13 +2842,8 @@ export default (ctx) => {
     (local.set $f (f64.reinterpret_i64 (local.get $v)))
     (if (f64.eq (local.get $f) (local.get $f))
       (then (return (global.get $__tof_number))))
-    ;; Canonical JS NaN (0x7FF8000000000000) overlaps ATOM tag=0 aux=0 offset=0.
-    ;; That bit pattern is the math NaN value, not a tagged pointer — treat as "number".
-    ;; Negative-NaN bit patterns (sign bit set) don't match NAN_PREFIX so are uniquely numeric.
-    (if (i32.or
-          (i64.eq (local.get $v) (i64.const ${NAN_BITS}))
-          (i64.eq (i64.and (local.get $v) (i64.const 0xFFF0000000000000))
-                  (i64.const 0xFFF0000000000000)))
+    ;; Generic numeric NaNs use the same complete discriminator as Number.isNaN.
+    (if ${print(numberNanIR(['local.get', '$f']))}
       (then (return (global.get $__tof_number))))
     (if (i64.eq (local.get $v) (i64.const ${UNDEF_NAN}))
       (then (return (global.get $__tof_undefined))))

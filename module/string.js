@@ -23,7 +23,7 @@
 
 import print from 'watr/print'
 import { T } from '../src/ast.js'
-import { typed, boxedPtrTypeEq, asF64, asI32Sat, asI64, asPtrOffset, toInt32, NULL_NAN, UNDEF_NAN, FALSE_NAN, TRUE_NAN, mkPtrIR, temp, tempI32, toNumF64, toStrI64, MAX_CLOSURE_ARITY } from '../src/ir.js'
+import { typed, boxedPtrTypeEq, asF64, asI32Sat, asI64, asPtrOffset, toInt32, NULL_NAN, UNDEF_NAN, FALSE_NAN, TRUE_NAN, mkPtrIR, temp, tempI32, toNumF64, toStrI64, MAX_CLOSURE_ARITY, numberNanIR } from '../src/ir.js'
 import { emit, argIR, storedValue, positionArgs, withIgnoredArgs, bool, method, deps, general, wat, bind } from '../src/bridge.js'
 import { valTypeOf, hasAmbiguousBoolMerge, censusMaybeUndefined, isPresentNumber } from '../src/kind.js'
 import { VAL } from '../src/reps.js'
@@ -1061,8 +1061,8 @@ export default (ctx) => {
     ;; Not NaN → number, convert
     (if (f64.eq (local.get $f) (local.get $f))
       (then (return (i64.reinterpret_f64 (call $__ftoa (local.get $f) (i32.const 0) (i32.const 0))))))
-    ;; Negative NaNs are numeric even when their payload resembles a pointer tag.
-    (if (i64.lt_s (local.get $val) (i64.const 0))
+    ;; Numeric NaNs never donate pointer tag bits to string conversion.
+    (if ${print(numberNanIR(['local.get', '$f']))}
       (then (return (i64.reinterpret_f64 (call $__static_str (i32.const 0))))))
     (if (i64.eq (local.get $val) (i64.const ${NULL_NAN}))
       (then (return (i64.reinterpret_f64 (call $__static_str (i32.const 5))))))

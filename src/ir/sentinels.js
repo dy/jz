@@ -17,7 +17,7 @@ import { ERROR_CODE_HI, ERR_CLASS_NAMES, ERR_INFO } from '../../err-codes.js'
 import { ctx, inc, PTR, LAYOUT } from '../ctx.js'
 import { VAL, lookupValType } from '../reps.js'
 import { valTypeOf } from '../kind.js'
-import { atomNanHex, nanPrefixHex, i64Hex } from '../../layout.js'
+import { atomNanHex, nanPrefixHex, nanPrefixMaskHex, i64Hex } from '../../layout.js'
 import { typed } from './tag.js'
 import { temp, tempI64 } from './locals.js'
 import { asF64, asI64 } from './numeric.js'
@@ -82,28 +82,24 @@ export const nullExpr = () => typed(NULL_IR.slice(), 'f64')
 
 export const undefExpr = () => typed(UNDEF_IR.slice(), 'f64')
 
+const TAG_AUX_MASK = i64Hex((BigInt(LAYOUT.TAG_MASK) << BigInt(LAYOUT.TAG_SHIFT)) |
+  (BigInt(LAYOUT.AUX_MASK) << BigInt(LAYOUT.AUX_SHIFT)))
+
+/** A numeric NaN in the generic value carrier. `get` is a stable f64 read.
+ *  Exclude finite values/infinities first, then admit non-box NaNs and the
+ *  reserved ATOM/aux=0 numeric domain (with any low payload). Actual positive
+ *  quiet pointer-tag collisions need a Number-domain proof at their producer. */
+export function numberNanIR(get) {
+  const bits = ['i64.reinterpret_f64', get]
+  return ['i32.and', ['f64.ne', get, get], ['i32.or',
+    ['i64.ne', ['i64.and', bits, ['i64.const', nanPrefixMaskHex()]], ['i64.const', nanPrefixHex()]],
+    ['i64.eqz', ['i64.and', bits, ['i64.const', TAG_AUX_MASK]]]]]
+}
+
 /** Materialize the boxed-boolean carrier from a 0/1-valued expression: a select
  *  of the two atom literals, or the literal itself when the input folds to a
  *  constant. Used only at observation/escape sites — never in branch or
  *  arithmetic position. */
-// Sign+exponent mask isolating "negative NaN or -Infinity"; read only after
-// an f64.eq(v,v) self-check has failed (so -Infinity is excluded, leaving
-// negative NaN). Pointers and atoms are emitted sign-clear (nanPrefixMaskHex,
-// layout.js), so a sign-bit-set NaN can only be a genuine float NaN.
-const NEG_NAN_MASK = i64Hex(0xFFF0000000000000n)
-
-/** The NaN payload `get` (an f64 IR that failed `f64.eq(v, v)`) is the number
- *  NaN, not a box: the canonical box prefix (tag=ATOM aux=0, the one payload
- *  that legitimately means NaN) or any sign-bit-set NaN. Mirrors $__typeof's
- *  dynamic dispatch (module/core.js) bit-for-bit; `typeof x === 'number'` and
- *  `new Array(x)` test through it. */
-export function numberNanIR(get) {
-  const bits = ['i64.reinterpret_f64', get]
-  return ['i32.or',
-    ['i64.eq', bits, ['i64.const', nanPrefixHex()]],
-    ['i64.eq', ['i64.and', bits, ['i64.const', NEG_NAN_MASK]], ['i64.const', NEG_NAN_MASK]]]
-}
-
 export function boolBoxIR(e) {
   const i = truthyIR(e)
   if (Array.isArray(i) && i[0] === 'i32.const') return typed((i[1] ? TRUE_IR : FALSE_IR).slice(), 'f64')
@@ -200,13 +196,14 @@ export function valueTruthyIR(ref, bigint = false) {
   const value = ['local.get', ref[1]], bits = ['i64.reinterpret_f64', value]
   let boxed = ['i32.and',
     ['i32.and',
-      ['i32.and', ['i64.ne', bits, ['i64.const', nanPrefixHex()]], ['i64.ne', bits, ['i64.const', NULL_NAN]]],
+      ['i64.ne', bits, ['i64.const', NULL_NAN]],
       ['i32.and', ['i64.ne', bits, ['i64.const', UNDEF_NAN]], ['i64.ne', bits, ['i64.const', '0x7FFA400000000000']]]],
     ['i64.ne', bits, ['i64.const', FALSE_NAN]]]
   if (bigint) boxed = ['if', ['result', 'i32'],
     ['i32.eq', ['i32.and', ['i32.wrap_i64', ['i64.shr_u', bits, ['i64.const', LAYOUT.TAG_SHIFT]]], ['i32.const', LAYOUT.TAG_MASK]], ['i32.const', PTR.BIGINT]],
     ['then', ['i64.ne', ['i64.load', ['call', '$__ptr_offset', bits]], ['i64.const', 0]]],
     ['else', boxed]]
+  boxed = ['if', ['result', 'i32'], numberNanIR(value), ['then', ['i32.const', 0]], ['else', boxed]]
   // A branch, not a select: measured on the parser and the encoder, a select
   // that pays both arms every time ran 7% and 17% slower than the predicted
   // branch.
@@ -245,12 +242,13 @@ export function truthyIR(e) {
     // A boxed boolean (boolBoxIR) is as truthy as the condition it selects on.
     const cond = boolSelectCond(e)
     if (cond) return typed(cond, 'i32')
-    // Fold NaN-boxed pointer literals: UNDEF/NULL/canonical-NaN sentinels are falsy;
-    // all other NaN-boxed pointers (SSO strings, heap ptrs, etc.) are truthy.
+    // Known empty/absent atoms fold immediately. Other literal bits still need
+    // the shared numeric-NaN test; a reinterpret is not proof of a pointer.
     if (e[0] === 'f64.reinterpret_i64' && Array.isArray(e[1]) && e[1][0] === 'i64.const') {
       const bits = String(e[1][1])
       const FALSY = new Set([UNDEF_NAN, NULL_NAN, FALSE_NAN, nanPrefixHex(), '0x7FFA400000000000'])
-      return typed(['i32.const', FALSY.has(bits) ? 0 : 1], 'i32')
+      if (FALSY.has(bits)) return typed(['i32.const', 0], 'i32')
+      return typed(['i32.and', ['f64.ne', e, ['f64.const', 0]], ['i32.eqz', numberNanIR(e)]], 'i32')
     }
     // Fresh pointer constructors never produce nullish. Treat as always truthy.
     if (e[0] === 'call' && typeof e[1] === 'string' &&

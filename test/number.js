@@ -7,6 +7,69 @@ import { run, cases, wat, funcWat, oracle } from './util.js'
 import { levels, onWasi, onKernel } from './_matrix.js'
 import jz from '../index.js'
 import encodeWat from 'watr/compile'
+import { numberNanIR, truthyIR } from '../src/ir/sentinels.js'
+
+test('numeric NaN carrier predicate rejects infinities and preserves non-box payloads', () => {
+  const binary=encodeWat(['module', ['func', '$f', ['param', '$v', 'i64'], ['result', 'i32'],
+    numberNanIR(['f64.reinterpret_i64', ['local.get', '$v']])], ['export', '"f"', ['func', '$f']]])
+  const {f}=new WebAssembly.Instance(new WebAssembly.Module(binary)).exports
+  for(const bits of [0n,0x8000000000000000n,0x3ff0000000000000n,0x7ff0000000000000n,0xfff0000000000000n,
+    0x7ff8000100000000n,0x7ff8000200000000n,0x7ff8000400000000n,0x7ff8000500000000n,
+    0x7ff8001000000000n,0x7ff87fffffffffffn])is(f(bits),0,`non-NaN or atom ${bits.toString(16)}`)
+  for(let tag=0;tag<16;tag++){
+    const shift=BigInt(tag)<<47n
+    is(f(0x7ff0000012345678n|shift),1,`signaling payload ${tag}`)
+    is(f(0xfff8000012345678n|shift),1,`negative payload ${tag}`)
+    if(tag)is(f(0x7ff8000012345678n|shift),0,`actual positive quiet box ${tag}`)
+  }
+  for(const low of [0n,1n,0xffffffffn])is(f(0x7ff8000000000000n|low),1,'ATOM aux0 is numeric with any low payload')
+  const literals=[0n,0x8000000000000000n,0x3ff0000000000000n,0x7ff0000000000000n,0xfff0000000000000n,
+    0x7ff0000012345678n,0xfffa800012345678n,0x7ff8000000000001n,0x7ff8001000000000n]
+  const funcs=literals.map((bits,i)=>['func', `$f${i}`, ['export', `"f${i}"`], ['result','i32'],
+    truthyIR(['f64.reinterpret_i64', ['i64.const', '0x'+bits.toString(16)]])])
+  const literalExports=new WebAssembly.Instance(new WebAssembly.Module(encodeWat(['module',...funcs]))).exports
+  for(let i=0;i<literals.length;i++)is(literalExports[`f${i}`](),[0,0,1,1,1,0,0,0,1][i],`literal carrier truthiness ${i}`)
+})
+
+test('generic numeric NaNs retain classification, conversion and equality', () => {
+  const src=`function value(hi,mode){if(mode===1)return '12';if(mode===2)return null;if(mode===3)return undefined;
+    if(mode===4)return true;if(mode===5)return 7n;if(mode===6)return Symbol.for('nan control');
+    const raw=new Uint32Array([305419896,hi]);return new Float64Array(raw.buffer)[0]}
+    export function f(hi,mode){const v=value(hi,mode);let number,bigint,text;
+      try{number=Number(v)}catch(e){number=e.name}
+      try{bigint=BigInt(v)}catch(e){bigint=e.name}
+      try{text=typeof v==='symbol'?'symbol':String(v)}catch(e){text=e.name}
+      return[typeof v,Number.isNaN(v),Number.isFinite(v),Boolean(v),v===v,v==v,number,bigint,text,v===7,v==7n,
+        typeof v==='number',typeof v==='string',typeof v==='object',typeof v==='function',typeof v==='bigint',v==='12',v=='12']}
+    export function effects(hi,fail){const v=value(hi,0);let trace='';const obj={valueOf(){trace+='v';if(fail)throw 17;return 3}};
+      try{return[v==obj,obj==v,trace]}catch(e){return[e,trace]}}
+    export function parse(hi){const v=value(hi,0);return[parseFloat(v),parseInt(v),+v]}`
+  const want=oracle(src)
+  const words=[0x3ff00000,0x7ff00000,0x7ff08000,0x7ff28000,0x7ff30000,0x7ff80000,0xfff80000,0xfffa8000]
+  for(const optimize of levels(0,1,2,3,'size')){
+    const got=jz(src,{optimize:{level:optimize,sourceInline:false}}).exports
+    for(const hi of [...words,...words.slice(0,2)]){
+      for(const mode of [0,0,1,2,3,4,5,6,0])is(got.f(hi,mode),want.f(hi,mode),`generic payload ${hi.toString(16)}, mode${mode} O${optimize}`)
+      for(const fail of [false,true,false])is(got.effects(hi,fail),want.effects(hi,fail),`loose equality effects O${optimize}`)
+      is(got.parse(hi),want.parse(hi),`numeric parsing O${optimize}`)
+    }
+  }
+})
+
+test('typed includes tests the needle for NaN and keeps infinity unequal', () => {
+  for(const Ctor of ['Float64Array','Float32Array']){
+    const src=`export function f(x){const a=new ${Ctor}([NaN,3,-0]);return[a.includes(x),a.indexOf(x),a.lastIndexOf(x)]}
+      export function empty(x){const a=new ${Ctor}(0);return[a.includes(x),a.indexOf(x),a.lastIndexOf(x)]}`
+    const want=oracle(src)
+    for(const optimize of levels(0,1,2,3,'size')){
+      const got=jz(src,{optimize}).exports
+      for(const x of [NaN,NaN,-Infinity,Infinity,3,0,-0,undefined,null,'3',NaN]){
+        is(got.f(x),want.f(x),`${Ctor} needle ${String(x)} O${optimize}`)
+        is(got.empty(x),want.empty(x),`${Ctor} empty ${String(x)} O${optimize}`)
+      }
+    }
+  }
+})
 
 test("number formatting: shared modules preserve each other's retained strings", () => {
   if (onWasi() || onKernel()) return

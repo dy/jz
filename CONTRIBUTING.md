@@ -65,6 +65,12 @@ typed-array global snapshots cache their immutable allocation length with the
 base under that same write proof. A zero base produces a harmless zero length
 until the original receiver check runs, preserving zero-trip and nullish behavior.
 Fixed number-carrier peepholes call the carrier directly, without a session lookup.
+Generic numeric NaN checks share one predicate across classification, conversion,
+truthiness, equality and typed search. It requires an actual NaN before accepting
+a payload outside the complete box prefix or inside reserved ATOM/aux=0 space.
+Signaling/negative NaNs stay numeric; infinities and real pointer/atom boxes do not.
+Positive quiet payloads that collide with a live box still require a Number-domain
+proof at their producer, never a guessed tag at the generic consumer.
 Guarded scalar updates are converted to selects in watr using Wasm types,
 after JZ lowers the original branches with their settled representation facts.
 The statement scheduler orders adjacent integer min/max updates so an input

@@ -5,11 +5,11 @@
  * @module compile/emit/comparisons
  */
 
-import { i64Hex, nanPrefixHex } from '../../../layout.js'
+import { i64Hex } from '../../../layout.js'
 import { T, TYPEOF } from '../../ast.js'
 import { LAYOUT, PTR, ctx, inc, ssoBitI64Hex } from '../../ctx.js'
 import {
-  applyBigintRepresentationAction, asF64, asI32, asI64, carrierF64, emitNum, freshId, isBoolAtom, isLit, isLiteralStr, isNull, isNullish, isNullishLit, isPlanRawBigint, isPlanTaggedBigint, isUndef, litVal, nullableBoolBoxIR, numberNanIR, ptrTypeEq, readI64, resolveValType, temp, tempI32, tempI64, toNumF64, truthyIR, typed, unboxBigInt,
+  applyBigintRepresentationAction, asF64, asI32, asI64, carrierF64, emitNum, freshId, isBoolAtom, isLit, isLiteralStr, isNull, isNullish, isNullishLit, isPlanRawBigint, isPlanTaggedBigint, isUndef, litVal, nullableBoolBoxIR, numberNanIR, ptrTypeEq, boxedPtrTypeEq, readI64, resolveValType, temp, tempI32, tempI64, toNumF64, truthyIR, typed, unboxBigInt,
 } from '../../ir.js'
 import { censusMaybeUndefined, hasAmbiguousBoolMerge, valTypeOf } from '../../kind.js'
 import { K, core, hasTag, tagOf } from '../../summary/kind.js'
@@ -49,16 +49,8 @@ function emitTypeofCmp(a, b, cmpOp) {
   const eq = cmpOp === 'eq'
   // Trailing eqz-wrapper for atomic checks: `check` if eq, `!check` if ne.
   const wrap = check => typed(eq ? check : ['i32.eqz', check], 'i32')
-  // De-Morgan'd `(X && Y)` vs `(!X || !Y)` — kept explicit so WAT output is
-  // byte-identical to the previous inlined form (watopt may shape it differently).
-  const both = (X, Y) => typed(eq ? ['i32.and', X, Y] : ['i32.or', ['i32.eqz', X], ['i32.eqz', Y]], 'i32')
-  // "isPtr AND ptr_type == kind" — shared by typeof "string" / "function" /
-  // user-supplied positive PTR codes. The tee in isPtr caches v in `t` for reuse.
-  const isPtrKind = kind => {
-    const isPtr = ['f64.ne', ['local.tee', `$${t}`, va], ['local.get', `$${t}`]]
-    const isKind = ptrTypeEq(['local.get', `$${t}`], kind)
-    return both(isPtr, isKind)
-  }
+  // Full box-prefix/tag test, shared by every pointer-valued typeof branch.
+  const isPtrKind = kind => wrap(boxedPtrTypeEq(va, kind))
   // Static fold for known-VAL operands of "boolean"/"bigint" — saves a runtime branch.
   // Never trusted for an ambiguous merge: its collapsed NUMBER kind is exactly
   // the unsound fact this whole design routes around.
@@ -82,12 +74,7 @@ function emitTypeofCmp(a, b, cmpOp) {
   const staticFold = target => vt ? foldConst((vt === target) === eq ? 1 : 0) : null
 
   if (code === TYPEOF.number) {
-    // v===v alone is WRONG for the one payload that legitimately means "the number
-    // NaN": the canonical box prefix (tag=ATOM aux=0) that $__typeof (module/core.js)
-    // also carves out, plus any sign-bit-set NaN (pointers are always emitted
-    // sign-clear, so a negative NaN — e.g. x86's uncanonicalized 0/0 — can only be a
-    // real float NaN). Must mirror $__typeof's dynamic dispatch exactly, or
-    // `typeof NaN === 'number'` folds to false here while the general path says true.
+    // Share the generic dispatch's complete numeric-NaN test.
     const again = ['local.get', `$${t}`]
     return wrap(['i32.or', ['f64.eq', ['local.tee', `$${t}`, va], again], numberNanIR(again)])
   }
@@ -100,7 +87,8 @@ function emitTypeofCmp(a, b, cmpOp) {
     // Test null explicitly rather than admitting the whole ATOM family.
     inc('__ptr_type')
     const tt = `${T}${freshId(ctx)}`; ctx.func.locals.set(tt, 'i32')
-    const isPtr = ['f64.ne', ['local.tee', `$${t}`, va], ['local.get', `$${t}`]]
+    const isPtr = ['i32.and', ['f64.ne', ['local.tee', `$${t}`, va], ['local.get', `$${t}`]],
+      ['i32.eqz', numberNanIR(['local.get', `$${t}`])]]
     const heapKind = ['i32.and',
       ['i32.and',
         ['i32.ne', ['local.tee', `$${tt}`, ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]], ['i32.const', PTR.STRING]],
@@ -123,11 +111,6 @@ function emitTypeofCmp(a, b, cmpOp) {
     // (jz:hostabi's tag slot). Inline tag extraction preserves the memoryless
     // path. Both branches test the same tag, including boxes
     // originating from typed storage without a BigInt literal.
-    if (!ctx.features.bigint) {
-      const isPtr = ['f64.ne', ['local.tee', `$${t}`, va], ['local.get', `$${t}`]]
-      const tag = ['i64.and', ['i64.shr_u', ['i64.reinterpret_f64', ['local.get', `$${t}`]], ['i64.const', LAYOUT.TAG_SHIFT]], ['i64.const', LAYOUT.TAG_MASK]]
-      return both(isPtr, ['i64.eq', tag, ['i64.const', PTR.BIGINT]])
-    }
     return isPtrKind(PTR.BIGINT)
   }
   if (code >= 0) return isPtrKind(code)
@@ -352,9 +335,8 @@ const boolOrNullish = (n) => resolveValType(n, valTypeOf, lookupValType) === VAL
 // bits, which equal no payload.
 const bigintCarrier = (n, vt) => vt === VAL.BIGINT || isPlanRawBigint(n)
 
-// `$t` (an f64 local) holds a PTR.BIGINT box: a NaN-box with the tag. The
-// NaN test comes first; a Number's bits spell any tag.
-const boxTest = (get) => typed(['i32.and', ['f64.ne', get, get], ptrTypeEq(get, PTR.BIGINT)], 'i32')
+// A Number's payload can spell any tag; require the complete BigInt box prefix.
+const boxTest = (get) => typed(boxedPtrTypeEq(get, PTR.BIGINT), 'i32')
 
 // Equality with a BigInt carrier on at least one side. Two carriers compare
 // their payloads. One beside a partner of another kind (IsLooselyEqual
@@ -584,7 +566,7 @@ function emitLooseEq(a, b, negate, strict) {
   const eq = typed(['block', ['result', 'i32'],
     ['local.set', `$${ia}`, asI64(va)], ['local.set', `$${ib}`, asI64(vb)],
     ['if', ['result', 'i32'], ['i64.eq', aG, bG],
-      ['then', ['i64.ne', aG, ['i64.const', nanPrefixHex()]]],
+      ['then', ['i32.eqz', numberNanIR(['f64.reinterpret_i64', aG])]],
       ['else', ['if', ['result', 'i32'], ['i32.and', isSso(aG), isSso(bG)],
         ['then', ['i32.const', 0]],
         ['else', ['call', '$__eq_strict', aG, bG]]]]]], 'i32')

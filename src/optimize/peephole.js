@@ -11,15 +11,14 @@
 import { simplifyCast } from 'watr/optimize'
 import { LAYOUT, FORWARDING_MASK, ctx } from '../ctx.js'
 import { nanboxF64 } from '../abi/index.js'
-import { findBodyStart, isPureIR, hasExpensiveOp, f64Range, cloneIR, valueTruthyIR } from '../ir.js'
+import { findBodyStart, isPureIR, hasExpensiveOp, f64Range, cloneIR, valueTruthyIR, numberNanIR } from '../ir.js'
 import { foldIntCompare, narrowI32, int32Operand, guardedInt32Operand } from '../ir/numeric.js'
 import { isLeaf, walkAst } from '../ast.js'
 import { clearFlowRanges, tagFlowRanges } from './flow-range.js'
-import { nanPrefixHex, atomNanHex, STR_INTERN_BIT } from '../../layout.js'
+import { atomNanHex, STR_INTERN_BIT } from '../../layout.js'
 const TWO_63 = 2 ** 63
 
 const MEMOP = /^[fi](32|64)\.(load|store)(\d+(_[su])?)?$/
-const NAN_BITS = nanPrefixHex()
 const NULL_BITS = atomNanHex(1)
 const UNDEF_BITS = atomNanHex(2)
 
@@ -624,7 +623,7 @@ function walkRewrite(node, doInline, freshI64, freshF64, get, bigint, inlineTrut
       node._eqFast = true   // pre+post phases both run this walk — wrap once
       return ['if', ['result', 'i32'],
         ['i64.eq', a, b],
-        ['then', ['i64.ne', a, ['i64.const', NAN_BITS]]],
+        ['then', ['i32.eqz', numberNanIR(['f64.reinterpret_i64', a])]],
         ['else', node]]
     }
   }

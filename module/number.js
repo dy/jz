@@ -9,8 +9,9 @@
  * @module number
  */
 
-import { typed, asF64, asI32, asI64, toI32, toNumF64, NULL_NAN, UNDEF_NAN, FALSE_NAN, TRUE_NAN, temp, tempI32, tempI64, ptrTypeEq, truthyIR, readI64, isPlanRawBigint, materializeDeferredBigint, throwErrorIR, isNullish } from '../src/ir.js'
-import { ssoBitI64Hex, ptrNanHex, nanPrefixHex } from '../layout.js'
+import print from 'watr/print'
+import { typed, asF64, asI32, asI64, toI32, toNumF64, NULL_NAN, UNDEF_NAN, FALSE_NAN, TRUE_NAN, temp, tempI32, tempI64, ptrTypeEq, truthyIR, readI64, isPlanRawBigint, materializeDeferredBigint, throwErrorIR, isNullish, numberNanIR } from '../src/ir.js'
+import { ssoBitI64Hex, ptrNanHex } from '../layout.js'
 import { emit, storedValue, bool, deps, reg } from '../src/bridge.js'
 import { isReassigned, isUndefinedLiteral } from '../src/ast.js'
 import { dataPush, dataAlign, dataLen, hexBytes } from '../src/static-data.js'
@@ -39,9 +40,6 @@ import { errorCodeLiteral, ERR } from '../err-codes.js'
 // confirmed string, and only pass indices proven `< $len` (`__char_at` would
 // otherwise return its OOB 0; the inline load has no such guard).
 const SSO_BIT_I64 = ssoBitI64Hex()
-// Canonical NaN-box bit pattern (sign=0, tag=ATOM(0), aux=0) — same constant module/core.js's
-// $__typeof uses to recognize a genuine number-NaN vs a NaN-boxed pointer/atom.
-const NAN_BITS = nanPrefixHex()
 const SBASE_INIT = '(local.set $sbase (i32.wrap_i64 (i64.and (local.get $v) (i64.const 4294967295))))'
 
 // Decimal width of an unsigned i32; shared by sizing and writing.
@@ -1480,23 +1478,6 @@ export default (ctx) => {
   // class, so the plain arithmetic below it is exact and pays nothing extra.
   const nonNumberFalse = (x) => typed(['block', ['result', 'i32'], ['drop', asF64(emit(x))], ['i32.const', 0]], 'i32')
 
-  // Kind-unknown fallback for Number.isNaN only: the boxed-carrier ambiguity in (a)
-  // above still applies dynamically (a polymorphic value could be a boxed string/atom
-  // at runtime), so `x !== x` alone is necessary but not sufficient. Discriminate a
-  // genuine number-NaN from a boxed carrier the same way $__typeof does (module/
-  // core.js's $__typeof number branch — keep both in sync): the NaN-box prefix is
-  // always sign=0 with tag/aux bits set, so a real number's NaN is either the canonical
-  // NAN_BITS (tag=0/aux=0 — no live atom ever uses aux=0) or any NEGATIVE-signed NaN
-  // bit pattern (an uncanonicalized fresh float NaN can leave the sign bit set; a
-  // NaN-boxed pointer/atom never does — its prefix bits are fixed at sign=0). The (b)
-  // BigInt-vs-Number ambiguity (no tag distinguishes them at all when dynamically
-  // merged) is a pre-existing representation limitation shared with typeof's own
-  // dynamic path (typeof of a runtime-merged number∪bigint value already
-  // misreports "number") — out of scope here, not introduced by this fix.
-  const isNumNaNBits = (bitsLocal) => ['i32.or',
-    ['i64.eq', ['local.get', bitsLocal], ['i64.const', NAN_BITS]],
-    ['i64.eq', ['i64.and', ['local.get', bitsLocal], ['i64.const', '0xFFF0000000000000']], ['i64.const', '0xFFF0000000000000']]]
-
   // Proven numbers use a raw self-compare. Numeric unions with absence only
   // exclude null/undefined; unknown values require full NaN-box discrimination.
   // Map/dictionary number claims can include an absent key, so retain the
@@ -1513,12 +1494,8 @@ export default (ctx) => {
     // that proof instead of mistaking a numeric NaN payload for a heap tag.
     if (kind != null && tagOf(core(kind)) === K.NUMBER && isNullable(kind))
       return typed(['i32.and', raw, ['i32.eqz', isNullish(typed(['local.get', `$${t}`], 'f64'))]], 'i32')
-    const bits = tempI64('b')
-    return typed(['if', ['result', 'i32'], raw,
-      ['then', ['block', ['result', 'i32'],
-        ['local.set', `$${bits}`, ['i64.reinterpret_f64', ['local.get', `$${t}`]]],
-        isNumNaNBits(`$${bits}`)]],
-      ['else', ['i32.const', 0]]], 'i32')
+    return typed(['block', ['result', 'i32'], ['local.set', `$${t}`, v],
+      numberNanIR(['local.get', `$${t}`])], 'i32')
   }
 
   // No censusMaybeUndefined gate needed here (unlike emitIsNaN above): every
@@ -1594,6 +1571,7 @@ export default (ctx) => {
       (i32.or (i32.lt_s (local.get $radix) (i32.const 2)) (i32.gt_s (local.get $radix) (i32.const 36))))
       (then (return (f64.const nan))))
     (local.set $f (f64.reinterpret_i64 (local.get $str)))
+    (if ${print(numberNanIR(['local.get', '$f']))} (then (return (local.get $f))))
     ;; Number input takes ToString like any other value. In the plain-decimal range
     ;; (finite, 1e-6 ≤ |x| < 1e21, or ±0) ToString has no exponent, so parsing its
     ;; leading digits IS trunc — keep that as the fast path. Outside it ("1e+21",
@@ -1718,6 +1696,7 @@ export default (ctx) => {
     (local $f f64) (local $t i32)
     (local.set $f (f64.reinterpret_i64 (local.get $v)))
     (if (f64.eq (local.get $f) (local.get $f)) (then (return (local.get $f))))
+    (if ${print(numberNanIR(['local.get', '$f']))} (then (return (local.get $f))))
     (local.set $t (call $__ptr_type (local.get $v)))
     (if (i32.eq (local.get $t) (i32.const ${PTR.BIGINT}))
       (then (return (f64.convert_i64_s (i64.load (call $__ptr_offset (local.get $v)))))))
@@ -1736,6 +1715,7 @@ export default (ctx) => {
     ;; edge. Every non-NaN raw f64 here is therefore a genuine Number,
     ;; including subnormals; PTR.BIGINT is handled by the tagged arm below.
     (if (f64.eq (local.get $f) (local.get $f)) (then (return (local.get $f))))
+    (if ${print(numberNanIR(['local.get', '$f']))} (then (return (local.get $f))))
     (if (i64.eq (local.get $v) (i64.const ${NULL_NAN})) (then (return (f64.const 0))))
     (if (i64.eq (local.get $v) (i64.const ${UNDEF_NAN})) (then (return (f64.const nan))))
     (if (i64.eq (local.get $v) (i64.const ${FALSE_NAN})) (then (return (f64.const 0))))
@@ -1943,14 +1923,10 @@ export default (ctx) => {
     (local $t i32) (local $status i32) (local $result i64) (local $f f64)
     ;; The primitive conversion precedes Number/BigInt dispatch. A raw Number's
     ;; payload can spell a pointer tag, so inspect objects only in boxed space.
-    (if (i32.and (f64.ne (f64.reinterpret_i64 (local.get $v)) (f64.reinterpret_i64 (local.get $v)))
-          (i64.ne (i64.and (local.get $v) (i64.const 0xfff0000000000000)) (i64.const 0xfff0000000000000)))
-      (then (if (call $__is_object (local.get $v))
-        (then (local.set $v (call $__to_prim_num (local.get $v)))))))
+    (if (call $__is_object (local.get $v))
+      (then (local.set $v (call $__to_prim_num (local.get $v)))))
     (local.set $f (f64.reinterpret_i64 (local.get $v)))
-    (if (i32.or (f64.eq (local.get $f) (local.get $f))
-          (i32.or (i64.eq (local.get $v) (i64.const ${NAN_BITS}))
-            (i64.eq (i64.and (local.get $v) (i64.const 0xfff0000000000000)) (i64.const 0xfff0000000000000))))
+    (if (i32.or (f64.eq (local.get $f) (local.get $f)) ${print(numberNanIR(['local.get', '$f']))})
       (then (return (call $__num_to_bigint (local.get $f)))))
     (local.set $t (call $__ptr_type (local.get $v)))
     ;; ToBigInt(bigint) is the identity (ES2024 21.2.1.1 step 2b via BigInt()'s
@@ -1983,16 +1959,12 @@ export default (ctx) => {
   // primitive, then share the existing string/boolean/BigInt conversion.
   ctx.core.stdlib['__to_bigint_strict'] = () => `(func $__to_bigint_strict (param $v i64) (result f64)
     (local $t i32)
-    (if (i32.and (f64.ne (f64.reinterpret_i64 (local.get $v)) (f64.reinterpret_i64 (local.get $v)))
-          (i64.ne (i64.and (local.get $v) (i64.const 0xfff0000000000000)) (i64.const 0xfff0000000000000)))
-      (then
-        (if (call $__is_object (local.get $v))
-          (then
-            (local.set $v (call $__to_prim_num (local.get $v)))))))
+    (if (call $__is_object (local.get $v))
+      (then (local.set $v (call $__to_prim_num (local.get $v)))))
     (local.set $t (call $__ptr_type (local.get $v)))
     (if (i32.and (i32.and
           (f64.ne (f64.reinterpret_i64 (local.get $v)) (f64.reinterpret_i64 (local.get $v)))
-          (i64.ne (i64.and (local.get $v) (i64.const 0xfff0000000000000)) (i64.const 0xfff0000000000000)))
+          (i32.eqz ${print(numberNanIR(['f64.reinterpret_i64', ['local.get', '$v']]))}))
           (i32.or (i32.or (i32.eq (local.get $t) (i32.const ${PTR.STRING}))
                          (i32.eq (local.get $t) (i32.const ${PTR.BIGINT})))
             (i32.or (i64.eq (local.get $v) (i64.const ${TRUE_NAN}))
@@ -2035,6 +2007,7 @@ export default (ctx) => {
     (local.set $f (f64.reinterpret_i64 (local.get $v)))
     (if (f64.eq (local.get $f) (local.get $f))
       (then (return (call $__bigint_eq_num (local.get $b) (local.get $f)))))
+    (if ${print(numberNanIR(['local.get', '$f']))} (then (return (i32.const 0))))
     (if (i64.eq (local.get $v) (i64.const ${TRUE_NAN})) (then (return (i64.eq (local.get $b) (i64.const 1)))))
     (if (i64.eq (local.get $v) (i64.const ${FALSE_NAN})) (then (return (i64.eqz (local.get $b)))))
     (local.set $t (call $__ptr_type (local.get $v)))
@@ -2053,6 +2026,7 @@ export default (ctx) => {
     (local $result f64) (local $f f64) (local $mant i64) (local $sbase i32)
     (local.set $f (f64.reinterpret_i64 (local.get $v)))
     (if (f64.eq (local.get $f) (local.get $f)) (then (return (local.get $f))))
+    (if ${print(numberNanIR(['local.get', '$f']))} (then (return (local.get $f))))
     (local.set $t (call $__ptr_type (local.get $v)))
     ;; parseFloat first applies ToString, then parses the longest decimal prefix.
     ;; Unlike Number(), empty strings and non-decimal prefixes produce NaN/0
