@@ -125,7 +125,10 @@ an unconditional projection before the store; caught and optional projections
 cannot justify dropping an append or property write. The ordinary boxed path
 keeps those operations and their evaluation order.
 Losing an object layout uses the summary's effectful merge, so dynamically read
-BigInt fields retain self-describing storage.
+BigInt fields retain self-describing storage. Read-only property queries reuse
+already-interned shape unions instead of discarding them. A BigInt member read,
+including a nullable read through an expression receiver, supplies its storage
+carrier to join normalization before raw and boxed arms meet.
 Array `for…of` loops capture their source once and reread its length each step.
 Appends, shrinking and writes through called helpers remain visible, including
 new nodes added while the compiler solves representation plans.

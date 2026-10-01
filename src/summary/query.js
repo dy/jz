@@ -75,20 +75,20 @@ export function summaryQueries(facts, internal = false) {
   const resultOfId = (id) => join(results.get(id) ?? K.NONE, forwards.get(id)?.size ? ANY : K.NONE)
   const closureResult = id => {
     let result = K.NONE
-    for (const member of membersOf(id)) result = join(result, canon(resultOfId(member)))
+    for (const member of membersOf(id)) result = merge(result, canon(resultOfId(member)))
     return result
   }
-  const propOf = (arr, prop) => { const c = cell(paramOf(arr)); return join(join(isArrayIndexKey(prop) ? elemOf(arr) : cellProps.get(c)?.get(prop) ?? K.NONE, String(+prop) === prop ? cellNumeric.get(c) ?? K.NONE : K.NONE), cellWild.get(c) ?? K.NONE) }
-  const numericPropsOf = arr => { const c = cell(paramOf(arr)); if (hostArrays.has(c)) return ANY; let k = join(cellNumeric.get(c) ?? K.NONE, cellWild.get(c) ?? K.NONE); for (const [name, pk] of cellProps.get(c) ?? []) if (String(+name) === name) k = join(k, pk); return k }
-  const anyPropOf = arr => { const c = cell(paramOf(arr)); let k = join(join(elemOf(arr), cellNumeric.get(c) ?? K.NONE), cellWild.get(c) ?? K.NONE); for (const pk of cellProps.get(c)?.values() ?? []) k = join(k, pk); return k }
+  const propOf = (arr, prop) => { const c = cell(paramOf(arr)); return merge(merge(isArrayIndexKey(prop) ? elemOf(arr) : cellProps.get(c)?.get(prop) ?? K.NONE, String(+prop) === prop ? cellNumeric.get(c) ?? K.NONE : K.NONE), cellWild.get(c) ?? K.NONE) }
+  const numericPropsOf = arr => { const c = cell(paramOf(arr)); if (hostArrays.has(c)) return ANY; let k = merge(cellNumeric.get(c) ?? K.NONE, cellWild.get(c) ?? K.NONE); for (const [name, pk] of cellProps.get(c) ?? []) if (String(+name) === name) k = merge(k, pk); return k }
+  const anyPropOf = arr => { const c = cell(paramOf(arr)); let k = merge(merge(elemOf(arr), cellNumeric.get(c) ?? K.NONE), cellWild.get(c) ?? K.NONE); for (const pk of cellProps.get(c)?.values() ?? []) k = merge(k, pk); return k }
   // A keyed dictionary's entry by name: the solver's hashPropOf.
   const hashPropOf = (h, prop) => { const c = cell(paramOf(h)); if (!keyedCells.has(c)) return elemOf(h); return join(cellProps.get(c)?.get(prop) ?? K.NONE, cellWild.get(c) ?? K.NONE) }
   // Solver bottom means an index has no evidence, not that an emitted read is
   // absent. Unlike the solver's pending transfer, a query must retain entries.
   const entryOf = (arr, ik) => {
     if (paramOf(arr) === UNKNOWN) return ANY
-    if (ik === NUMBER) return join(elemOf(arr), numericPropsOf(arr))
-    return join(anyPropOf(arr), join(NUMBER, kind(K.CLOSURE)))
+    if (ik === NUMBER) return merge(elemOf(arr), numericPropsOf(arr))
+    return merge(anyPropOf(arr), merge(NUMBER, kind(K.CLOSURE)))
   }
   const classMember = (recv, name) => { const sid = layoutOf(recv); return sid !== UNKNOWN ? methods.get(sid)?.get(name) ?? null : null }
   // A property's accessor and binder names, built once per property.
@@ -274,7 +274,7 @@ export function summaryQueries(facts, internal = false) {
           const at = siteResults.get(n)
           if (at !== undefined) return at
           let r = K.NONE
-          for (const id of membersOf(paramOf(k))) r = join(r, results.has(id) ? resultOfId(id) : ANY)
+          for (const id of membersOf(paramOf(k))) r = merge(r, results.has(id) ? resultOfId(id) : ANY)
           return r
         }
         if (n[1] === 'Object.assign') { const t = kindOfExpr(args(n[2])[0]); if ((tagOf(t) === K.ARRAY || tagOf(t) === K.HASH || tagOf(t) === K.OBJECT) && paramOf(t) !== UNKNOWN) return t }   // the solver's rule: the target
@@ -349,7 +349,7 @@ export function summaryQueries(facts, internal = false) {
       // Function.prototype name reads as anything.
       if (t === K.CLOSURE && paramOf(r) !== UNKNOWN && !FUNCTION_PROTO.has(prop) && !membersOf(paramOf(r)).some(id => escaped.has(id))) {
         let k = K.NONE
-        for (const id of membersOf(paramOf(r))) k = join(k, closureProps.get(id)?.get(prop) ?? K.NONE)
+        for (const id of membersOf(paramOf(r))) k = merge(k, closureProps.get(id)?.get(prop) ?? K.NONE)
         return orAbsent(k)
       }
       return prop === 'buffer' && t === K.TYPED ? kind(K.BUFFER) : ANY

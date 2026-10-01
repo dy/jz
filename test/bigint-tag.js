@@ -38,6 +38,52 @@ test('bigint tag: nested unary operations preserve mixed and missing values with
   }
 })
 
+test('bigint tag: nested property reads keep settled shape unions and join carriers', () => {
+  const tails = ['a[k].x', '(0, a[k].x)', 'flag ? a[k].x : 0x7ff8000500000000n',
+    'flag ? 0x7ff8000500000000n : a[k].x', 'a[k].x || 0x7ff8000500000000n',
+    'a[k].x && 0x7ff8000500000000n', 'a[k].x ?? 11n']
+  for (const tail of tails) {
+    const src = `
+      function get(a, k, flag) { return ${tail} }
+      export function probe(flag) {
+        const a = [{ x: 0n }, { x: -1n }, { x: 0x7fffffffffffffffn }]
+        a[0.5] = { y: 1, x: 0x7ff8000200000000n }
+        a[-1] = { z: 2, x: -0x8000000000000000n }
+        return [get(a, 0, flag), get(a, 0.5, flag), get(a, 1, flag),
+          get(a, 2, flag), get(a, -1, flag)]
+      }
+    `
+    for (const optimize of levels(0, 1, 2, 3, 'size', { level: 2, sourceInline: false })) {
+      const expected = oracle(src), actual = jz(src, { optimize }).exports
+      for (const flag of [0, 0, 1, 0, 1])
+        is(actual.probe(flag), expected.probe(flag), `${tail}, ${JSON.stringify(optimize)}, flag=${flag}`)
+    }
+  }
+})
+
+test('bigint tag: nested nullable property joins retain absence and recover after throws', () => {
+  const src = `
+    let reads = 0
+    function get(a, k, flag) { reads++; return flag ? a[k].x : 0x7ff8000500000000n }
+    export function probe(k, flag) {
+      const a = [{ x: 2n }, { x: undefined }]
+      a[0.5] = { y: 1, x: 0x7ff8000200000000n }
+      return get(a, k, flag)
+    }
+    export function count() { return reads }
+  `
+  for (const optimize of levels(0, 1, 2, 3, 'size', { level: 2, sourceInline: false })) {
+    const expected = oracle(src), actual = jz(src, { optimize }).exports
+    for (const [k, flag] of [[0, 1], [0, 1], [1, 1], [0.5, 1], [3, 0], [3, 1], [0, 1]]) {
+      if (k === 3 && flag) {
+        throws(() => expected.probe(k, flag), TypeError)
+        throws(() => actual.probe(k, flag), TypeError)
+      } else is(actual.probe(k, flag), expected.probe(k, flag), `nullable k=${k}, flag=${flag}, ${JSON.stringify(optimize)}`)
+      is(actual.count(), expected.count(), 'one selected property read; same instance after an error')
+    }
+  }
+})
+
 test('bigint tag: copy cycles preserve parameter and local carriers', () => {
   const copies = [
     'let m = n; n = m',

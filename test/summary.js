@@ -32,6 +32,24 @@ const layoutFrom = (props) => ctx.schema.list.findLastIndex(s => props.every((p,
 // The kinds read here are the summary's own: no source inlining, no clone per argument kind (a parameter is the join of every call site's argument)
 const summarize = (src) => { _compileInProcess(src, { optimize: { level: OPT_LEVEL, sourceInline: false, inlineFns: false, laneRecords: false, valKindClones: false, aliases: false } }); return ctx.summary }
 
+test('summary: closure queries retain settled object unions through result and own-property projections', () => {
+  for (const own of [false, true]) {
+    const src = `function first() { return { x: 2n } }
+      function second() { return { y: 1, x: 7n } }
+      ${own ? 'first.data = { x: 3n }; second.data = { y: 1, x: 8n }' : ''}
+      export function f(flag) { const read = flag ? first : second; return ${own ? 'read.data.x' : 'read().x'} }`
+    _compileInProcess(src, { optimize: 0 })
+    const summary = ctx.summary, read = binding('f', 'read')
+    is(summary.at('f').kindOfExpr(['.', own ? ['.', read, 'data'] : ['()', read, null], 'x']), kind(K.BIGINT),
+      'read-only projection agrees with the solver result')
+    is(summary.resultOf('f'), kind(K.BIGINT))
+    for (const optimize of levels(0, 1, 2, 3, 'size')) {
+      const expected = oracle(src), actual = jz(src, { optimize }).exports
+      for (const flag of [0, 0, 1, 0]) is(actual.f(flag), expected.f(flag), `closure union O${optimize}`)
+    }
+  }
+})
+
 test('summary: callbacks passed to escaped callees contribute their calls', () => {
   for (const declaration of ['function invoke(cb) { return cb() }', 'const invoke = cb => cb()']) {
     const src = `${declaration}

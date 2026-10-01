@@ -11,7 +11,7 @@ import {
   RAW_BIGINT, REP_EDGE_BOX, REP_EDGE_HOST_BOX, REP_EDGE_KEEP, REP_EDGE_REJECT, REP_EDGE_TAG_BOX, REP_EDGE_UNBOX, STORAGE_READ_METHODS,
   bigintRepBits, bigintRepIsClosed, bitOfKind, callMember, canBeBigint, collectDefs, collectLocalClosures, contractRep,
   definiteBigint, edgeAction, excludesBigint, isBigintOrigin, isExported, joinRep, joinSem, memberReceiver,
-  noBigintSemantic, packSemantic, programPlanRecord, returnEdgeAction, sameSem, semAll, semBottom, semKind,
+  noBigintSemantic, onlyBigintKind, packSemantic, programPlanRecord, returnEdgeAction, sameSem, semAll, semBottom, semKind,
   semanticClosed, semanticFromRep, semanticObserved, targetRepFor,
 } from './common.js'
 import { boundaryDataOf, ensureBoundary } from './boundaries.js'
@@ -545,7 +545,9 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
        ((localStorage && localStorage.has(recv)) || (provenance && provenance.storage.has(recv)) ||
         (provenance && provenance.bigintTyped.has(recv)) || summary?.valOf(recv) === VAL.TYPED))
     const recv = memberReceiver(node)
-    if (recv != null) return isTrackedStorage(recv)
+    // A semantically proven BigInt slot (possibly absent) has the carrier
+    // memberStorageRep names even when its receiver is another expression.
+    if (recv != null) return onlyBigintKind(semanticOf(node)) || isTrackedStorage(recv)
     const cm = callMember(node)
     return !!cm && STORAGE_READ_METHODS.has(cm[2]) && isTrackedStorage(cm[1])
   }
