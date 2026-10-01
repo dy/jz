@@ -2012,7 +2012,9 @@ The interval interpreter also supplies call-argument and typed-store bounds.
 `intervalRanges` enables whole-binding hulls and the complete interprocedural
 scalar/element fixpoint at O2/O3/size. O0/O1 omit those optional certificates;
 typed-read presence, signed-zero/overflow vetoes and conservative ABI validation
-still run. An explicit pass override changes this compile-budget choice. No
+still run. Already proved summary bounds also retain the magnitude of signed-word
+parameters; the interval budget controls the separate caller solve, not these
+existing ABI facts. An explicit pass override changes this compile-budget choice. No
 source-size threshold or special compiler-input policy controls these proofs.
 Recursive scalar parameters use the existing call-graph components: private signed-
 word hypotheses must contain every external entry and every recursive argument.

@@ -18,6 +18,7 @@ import { HELPER_COUNTERS } from '../src/helper-counters.js'
 import { levels, onKernel } from './_matrix.js'
 import { resolveOptimize } from '../src/optimize/config.js'
 import { resolveModuleGraph } from '../src/resolve.js'
+import { ctx } from '../src/ctx.js'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -41,7 +42,9 @@ test('passes: interval fixpoints follow the compile budget without retaining cer
     is([runtime.exports.f(), runtime.exports.f()], [3, 3], `reuse ${JSON.stringify(profile)}`)
     if (onKernel()) continue
     const { put, read } = compile(src, { optimize, inspect: true }).inspect.functions
-    is(put.params[1].range, enabled ? [0, 3] : undefined, 'scalar argument certificate follows its pass')
+    is(ctx.plans.programIndex.parameterAbiOf('put')?.get(1)?.range,
+      enabled ? [0, 3] : undefined, 'the caller interval certificate follows its pass')
+    is(put.params[1].range, [0, 3], 'the ordinary summary retains the signed-word ABI magnitude at every tier')
     is(read.params[0].arrayElemRange, enabled ? [0, 3] : undefined, 'the entire all-writers cycle follows its pass')
   }
   const boundary = `function read(a, i) { return a[i] }
