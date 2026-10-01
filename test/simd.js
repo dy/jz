@@ -285,6 +285,94 @@ test('SIMD f64x2 - rounding ops (floor/ceil/trunc) lift, bit-exact at edges', ()
 // versioned behind one hoisted `|half| ≥ 2` check. Lanes compute the exact scalar sequence (no
 // reassociation, no fusion), so the result is bit-identical; half < 2 and odd tails run scalar.
 
+test('guarded index locals preserve Number values, cursor strides and repeated calls', () => {
+  const src = `const data = new Float64Array([2,3,5,7,11,13,17,19]);
+    export function run(n, base, stride) {
+      const out = new Float64Array(n); let seen = 0, last = 0;
+      for (let j=0,k=0; j<out.length; j++,k+=stride) {
+        const a=base+j, b=a+1;
+        out[j]=data[a]+data[b]+data[k]; seen=a;last=k;
+      }
+      return [out,seen,1/seen,last,1/last]
+    }`
+  const host = oracle(src)
+  const cases = [[0,0,1],[1,0,1],[8,0,1],[8,0,1],[8,1,0],[8,0,1],[0,0,1],
+    [1,-0,1],[8,0,-0],[8,0,0.5],[8,0,-1],[8,0,2147483648],[8,0,4294967296],
+    [8,0,NaN],[8,0,Infinity],[8,0.5,1],[8,-1,1],[8,2147483648,1],
+    [8,4294967296,1],[8,9007199254740992,1],[8,NaN,1],[8,Infinity,1]]
+  for (const optimize of levels(0,1,2,3,'size')) {
+    const got = jz(src,{optimize}).exports
+    for (const args of cases) is(got.run(...args),host.run(...args),`O${optimize}: ${args}`)
+  }
+})
+
+test('guarded index locals preserve signed zero, rounded intermediates and live exits', () => {
+  for (const expr of ['-0','-(base+j)','(base*2147483647+j)-base*2147483647','base+j']) {
+    const src = `const data=new Float64Array([2,3,5,7,11,13,17,19]);
+      export function run(n,base,mode) {const out=new Float64Array(n);let seen=0;
+        try {for(let j=0;j<out.length;j++){const index=${expr};out[j]=data[index];seen=1/index;
+          if(mode===1&&j===1)break;if(mode===2&&j===1)return[out,seen];if(mode===3&&j===1)throw 7;
+        }}catch(e){seen+=e}return[out,seen]}`
+    const host=oracle(src)
+    for(const optimize of levels(0,1,2,3,'size')) {
+      const got=jz(src,{optimize}).exports
+      for(const args of [[0,0,0],[8,0,0],[8,2147483647,0],[8,0,1],[8,0,2],[8,0,3],[8,0,0]])
+        is(got.run(...args),host.run(...args),`O${optimize}: ${expr} ${args}`)
+    }
+  }
+  const src=`const a=new Float64Array([2,3,5,7,11,13,17,19]);
+    export function run(n,step){let sum=0;for(var j=0,k=0;j<n;j++,k+=step)sum+=a[k];return[sum,k,1/k]}`
+  const host=oracle(src)
+  for(const optimize of levels(0,1,2,3,'size')) {
+    const got=jz(src,{optimize}).exports
+    for(const args of [[0,1],[1,1],[8,1],[8,0.5],[2,2147483647],[8,1]])
+      is(got.run(...args),host.run(...args),`O${optimize}: live cursor ${args}`)
+  }
+})
+
+test('guarded index extents use the completed loop initializer', () => {
+  for (const target of ['i','k']) {
+    const src=`const a=new Float64Array([2,3,5,7,11,13,17,19]);
+      export function run(n,x){let s=0;for(let i=0,k=0,l=(${target}=x);i<n;i++,k+=1)s+=a[k]+a[i];return s}`
+    const host=oracle(src)
+    for(const optimize of levels(0,1,2,3,'size')) {
+      const got=jz(src,{optimize}).exports
+      for(const args of [[0,0],[4,0],[4,1],[4,-0],[4,0.5],[4,4294967296],[4,NaN],[4,0]])
+        is(got.run(...args),host.run(...args),`O${optimize}: ${target} ${args}`)
+    }
+  }
+})
+
+test('guarded index extents retain rounding before cancellation', () => {
+  const src=`const data=new Float64Array(300).fill(7);
+    export function run(base){const out=new Float64Array(300);
+      for(let j=0;j<out.length;j++){const index=(base*2147483647+j)-base*2147483647;out[j]=data[index]}
+      return[out[0],out[255],out[256],out[257],out[299]]}`
+  const host=oracle(src)
+  for(const optimize of levels(0,1,2,3,'size')) {
+    const got=jz(src,{optimize}).exports
+    for(const base of [0,2147483647,2147483647,1,2147483647,0])
+      is(got.run(base),host.run(base),`O${optimize}: rounded ${base}`)
+  }
+})
+
+test('guarded index entries retain captures and per-access coercion', () => {
+  for(const setup of [
+    'let base=0;const advance=()=>{base++;effects++}',
+    'const base={valueOf(){effects++;return effects-1}};const advance=()=>{}'
+  ]) {
+    const src=`const data=new Float64Array([2,3,5,7,11,13,17,19]);
+      export function run(n){let effects=0;${setup};const out=new Float64Array(n);
+        for(let j=0;j<out.length;j++){const index=base+j;out[j]=data[index];advance()}
+        return[out,effects]}`
+    const host=oracle(src)
+    for(const optimize of levels(0,1,2,3,'size')) {
+      const got=jz(src,{optimize:{level:optimize,sourceInline:false}}).exports
+      for(const n of [0,1,8,8,1,8])is(got.run(n),host.run(n),`O${optimize}: n${n}, ${setup}`)
+    }
+  }
+})
+
 test('SIMD butterfly - radix-2 FFT inner loop strips 2-wide, bit-exact', () => {
   // The kernel takes typed-array PARAMS (the bench structure); N arrives as a param too — a
   // literal N constant-folds half/step and the tiny-FFT unroller takes the loop apart first.

@@ -47,7 +47,7 @@
  */
 import { ctx } from '../../ctx.js'
 import { includeModule } from '../../autoload.js'
-import { T, MUTATE_OPS, TYPEOF, numberGuard, some, walkAst, extractParams, collectParamName } from '../../ast.js'
+import { T, MUTATE_OPS, TYPEOF, numberGuard, some, walkAst, extractParams, collectParamName, isReassigned } from '../../ast.js'
 import { freshId } from '../../ir.js'
 import { cloneWithSubst } from '../../type.js'
 import { collectBindings, nodeSize } from './common.js'
@@ -93,9 +93,10 @@ const INT_ELEMENTS = /^(Int8|Uint8|Uint8Clamped|Int16|Uint16|Int32|Uint32)Array$
 const writesIn = (node) => {
   const out = new Map()
   const add = (name, v) => { const l = out.get(name); if (l) l.push(v); else out.set(name, [v]) }
-  walkAst(node, { enter: (n) => {
+  walkAst(node, { enter: (n, parent) => {
     if (n[0] === '=>') return false
     if (n[0] === 'let' || n[0] === 'const') { for (let i = 1; i < n.length; i++) { const d = n[i]; if (Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string') add(d[1], d[2]) } return }
+    if (parent?.[0] === 'let' || parent?.[0] === 'const') return
     if (typeof n[1] !== 'string' || !MUTATE_OPS.has(n[0])) return
     add(n[1], n[0] === '=' ? n[2] : STEPS.has(n[0]) ? n[2] : n[0] === '++' || n[0] === '--' || n[0] === '+1' || n[0] === '-1' ? [null, 1] : BITWISE.has(n[0].slice(0, -1)) ? [null, 0] : null)
   } })
@@ -312,10 +313,13 @@ const versionBody = (body, params, view, func, programFacts) => {
       const rounded = ['()', `math.${direction}`, n]
       const bound = ['>>', adjust ? ['+', rounded, [null, adjust]] : rounded, [null, 0]]
       const range = forCounterRange(loop[1], [comparison, counter, bound], loop[3], counter)
+      const values = bodyWrites.get(n)
+      const knownBound = intExprRange(n) ?? (!params.has(n) && values?.length === 1 && !isReassigned(body, n) ? intExprRange(values[0]) : null)
+      const alreadyBounded = knownBound && forCounterRange(loop[1], loop[2], loop[3], counter, e => e === n ? knownBound : intExprRange(e))
       if (loop[2][1] === counter && typeof n === 'string' && stableBound(n) && !loopWrites.has(n) &&
           !captured.has(counter) && !writesIn(loop[4]).has(counter) && init?.[0] == null &&
           range && range.test[0] >= -2147483648 && range.test[1] <= 2147483647 &&
-          !intExprRange(n) && !integralEntry(n)) counterBound = { name: n, bound, comparison, testAt: 2, min: -2147483648 - Math.min(0, adjust), max: 2147483647 - Math.max(0, adjust) }
+          !alreadyBounded && !intExprRange(n) && !integralEntry(n)) counterBound = { name: n, bound, comparison, testAt: 2, min: -2147483648 - Math.min(0, adjust), max: 2147483647 - Math.max(0, adjust) }
     }
     // A while counter has an observable entry outside the loop. Capture its
     // word only behind the same exact-entry guard, then reserve room for every

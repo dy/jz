@@ -16,9 +16,9 @@ import { isNullable, core, NUMBER } from '../summary/kind.js'
 import { repOf, repOfGlobal } from '../reps.js'
 import { typedStorageNameCtor } from '../typed-context.js'
 import { typedElemCtor } from '../typed-provenance.js'
-import { intLiteralValue, intExprRange, constIntExpr } from '../static.js'
+import { intLiteralValue, intExprRange, constIntExpr, counterInit } from '../static.js'
 import {
-  idxKey, typedIndexKnown, activeBoundsAssumption, redeclaresName, collectDecls, lengthRecv,
+  idxKey, typedIndexKnown, activeBoundsAssumption, redeclaresName, lengthRecv,
   isUnitIncrement,
 } from './canonical-bounds.js'
 import { intervalProvenIdx, intervalIdxRanges } from './interval-proof.js'
@@ -159,6 +159,11 @@ export function typedIdxProven(recv, idx, node = null) {
  *  kernel shapes: `i`, `3*i+1` (AoS), `j+half` via env (butterfly), `irow+kx`
  *  (conv), plain invariant `base` (a = 0). */
 export function affineIdxOfIV(idx, iv, body, env) {
+  // Each guard admits integer terms within ±2^31. Reassociation is valid
+  // only while every intermediate is exact in Number arithmetic: a later
+  // cancellation cannot recover low bits lost by an earlier wide product.
+  const exact = r => Number.isSafeInteger(Math.abs(r.bConst) + 2147483648 *
+    (Math.abs(r.a) + r.slots.reduce((sum, t) => sum + Math.abs(t.k), 0))) ? r : null
   const slotEq = (p, q) => p === q || (typeof p !== 'string' && typeof q !== 'string'
     && JSON.stringify(p) === JSON.stringify(q))
   const MAX_SLOTS = 2   // butterfly's `b = i + j + half` carries two symbolic terms
@@ -215,7 +220,7 @@ export function affineIdxOfIV(idx, iv, body, env) {
       const L = intLiteralValue(x) ?? intLiteralValue(y)
       if (L != null) {
         const t = aff(intLiteralValue(x) != null ? y : x)
-        if (t) return { a: t.a * L, slots: t.slots.map(u => ({ ...u, k: u.k * L })), bConst: t.bConst * L }
+        if (t) return exact({ a: t.a * L, slots: t.slots.map(u => ({ ...u, k: u.k * L })), bConst: t.bConst * L })
       }
       // fall through: a non-literal product (`y*w`) may still be an invariant slot
     }
@@ -225,7 +230,7 @@ export function affineIdxOfIV(idx, iv, body, env) {
         const s = op === '+' ? 1 : -1
         const slots = addSlots(l.slots, r.slots, s)
         if (slots.length <= MAX_SLOTS)
-          return { a: l.a + s * r.a, slots, bConst: l.bConst + s * r.bConst }
+          return exact({ a: l.a + s * r.a, slots, bConst: l.bConst + s * r.bConst })
       }
       // fall through to the whole-expr slot
     }
@@ -438,11 +443,9 @@ export function versionableTypedFor(init, cond, step, body, locals, entryHint = 
   // iv start: a static init decl (`for (let i = 0; …)`) folds the lo conjunct;
   // otherwise (while-shapes: `let i = 0; while (i < n) …`) the guard reads the
   // ENTRY value of iv at runtime — the extent math is entry-relative either way.
-  const decls = new Map()
-  collectDecls(init, decls)
   // entryHint: a sibling `let b = 0` right before a while — the nest scan's decl
   // tracking supplies the static entry the empty init slot can't
-  const startC = decls.has(iv) ? intLiteralValue(decls.get(iv)) : entryHint
+  const startC = init != null ? intLiteralValue(counterInit(init, iv)) : entryHint
   if (startC != null && startC < 0) return null   // statically-negative start: guard is dead weight
   // iv advance: a unit-increment step slot (for-loops), or — when the step slot is
   // empty — a SINGLE body write of shape `i = (i+LIT)|0` / `i = i+LIT` / `i += LIT` /
@@ -621,7 +624,7 @@ export function versionableTypedFor(init, cond, step, body, locals, entryHint = 
         if (typeof n[2] === 'string' && inds?.has(n[2])) {
           seen.add(key)
           cands.push({ recv: n[1], idx: n[2], ind: n[2], slope: inds.get(n[2]),
-            entryC: decls.has(n[2]) ? intLiteralValue(decls.get(n[2])) : null })
+            entryC: intLiteralValue(counterInit(init, n[2])) })
         } else {
           const aff = affineIdxOfIV(n[2], iv, body, env)
           // symbolic slots: i32-machine exprs are exact; any other rides the f64

@@ -375,15 +375,29 @@ export function specializeLoops(fn) {
 
     // Locals: what the region writes, what it reads, what is live around it.
     // (`boxes`: the locals whose low word the region takes, as the address a box holds)
-    const written = new Set(), readIn = new Set(), boxes = new Set()
+    const written = new Set(), loopReads = new Set(), boxes = new Set()
     const census = n => {
       if (!isArr(n)) return
       if (n[0] === 'local.set' || n[0] === 'local.tee') written.add(n[1])
-      else if (n[0] === 'local.get') readIn.add(n[1])
       else if (n[0] === 'i32.wrap_i64') { const x = bitsOf(n[1], null); if (x != null) boxes.add(x) }
       n.forEach(census)
     }
     census(region)
+    // An already guarded loop uses integer snapshots in its fast body. Reads
+    // used only to construct that guard (or in its checked twin) cannot pay
+    // for a second copy of the body. Their actual conversion costs remain in
+    // integerPlan; this only identifies useful speculative entry assumptions.
+    const readsLoop = n => {
+      if (!isArr(n) || n.checkedTwin === true || n.boundsSnapshot === true) return
+      if (n[0] === 'if' && n.some(c => isArr(c) && c.checkedTwin === true)) {
+        const arm = n.find(c => isArr(c) && c[0] === 'then')
+        if (arm) readsLoop(arm)
+        return
+      }
+      if (n[0] === 'local.get') loopReads.add(n[1])
+      for (let i = 1; i < n.length; i++) readsLoop(n[i])
+    }
+    readsLoop(loop)
     const entering = alive.get(region).in, leaving = alive.get(region).out
 
     const at0 = plan0.facts.entry.get(region)
@@ -396,7 +410,7 @@ export function specializeLoops(fn) {
     for (const name of written) if (types.get(name) === 'f64') own.set(name, name + tag)
     // an integer it only reads is carried in a local of its own as well
     const assumed = []
-    for (const name of entering) if (readIn.has(name) && types.get(name) === 'f64' && !known(name) && !boxes.has(name)) { assumed.push(name); if (!own.has(name)) own.set(name, name + tag) }
+    for (const name of entering) if (loopReads.has(name) && types.get(name) === 'f64' && !known(name) && !boxes.has(name)) { assumed.push(name); if (!own.has(name)) own.set(name, name + tag) }
     // a node of the copy → the node it copies; a node the region holds at two
     // places has two copies, and names no one place
     const twin = new Map(), times = new Map()

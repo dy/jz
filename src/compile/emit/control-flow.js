@@ -7,7 +7,7 @@
 import { encodePtrHi, i64Hex, TYPED_ELEM_VIEW_FLAG, TYPED_ELEM_ANY_VIEW_FLAG } from '../../../layout.js'
 import { enumKeys } from '../../../module/schema.js'
 import {
-  T, MUTATE_OPS, constLiteralHoistable, hasLabeledContinueTo, hasOwnBreakOrContinue, hasOwnContinue, isConstLiteral, isReassigned, some, walkAst,
+  T, MUTATE_OPS, constLiteralHoistable, hasLabeledContinueTo, hasOwnBreakOrContinue, hasOwnContinue, isConstLiteral, isReassigned, collectBareRefs, some, walkAst,
 isArrayIndexKey, RELATIONAL_OPS } from '../../ast.js'
 import { LAYOUT, PTR, ctx, err, inc, getFactStore } from '../../ctx.js'
 import {
@@ -15,7 +15,7 @@ import {
 } from '../../ir.js'
 import { durableArrSnapNode, hasDurableReset } from '../../../module/collection/durable.js'
 import { VAL, lookupValType, repOf } from '../../reps.js'
-import { constIntExpr, constNumExpr, intExprRange, intLiteralValue } from '../../static.js'
+import { constIntExpr, constNumExpr, intExprRange, intLiteralValue, counterInit, mulRangesKeepZeroSign } from '../../static.js'
 import { loopFacts, counterRefinements, testRefinements } from '../loop-model.js'
 import {
   MAX_NESTED_FOR_UNROLL, MAX_SMALL_FOR_UNROLL, SLOT_OPS, cloneWithSubst, containsDeclOf, containsKnownTypedArrayIndex, containsNestedClosure, containsNestedLoop, exprType, idxKey, nestedSmallLoopBudget, smallConstForTripCount, versionableTypedNest,
@@ -77,6 +77,11 @@ function freshenUnrolledScalarBindings(body, ir) {
   }
   if (!rename.size) return ir
 
+  return renameScalarBindings(ir, rename)
+}
+
+function renameScalarBindings(ir, rename) {
+
   // Lowering link upkeep (src/ir/control.js; found via its own shadow-assert,
   // vectorize.js's assertLoopPlanAgrees): this rename mutates local names IN
   // PLACE on the ALREADY-linked block node the nested loop's own 'for' emission
@@ -106,6 +111,77 @@ function freshenUnrolledScalarBindings(body, ir) {
   })
   for (const n of ir) rewrite(n)
   return ir
+}
+
+// A bounds guard can establish storage width for its fast arm without changing
+// the checked arm's Number locals. Only private declarations and stable entry
+// snapshots enter this map: no writeback or exceptional exit can expose a copy.
+function emitGuardedWords(words, emitArm) {
+  if (!words?.size) return emitArm()
+  const locals = ctx.func.locals, reps = ctx.func.localReps, saved = new Map(), rename = new Map(), entry = []
+  for (const [name, proof] of words) {
+    const fresh = `${T}gw${freshId(ctx)}_${name}`
+    rename.set(`$${name}`, `$${fresh}`)
+    saved.set(name, [locals.get(name), reps.get(name)])
+    locals.set(name, 'i32')
+    locals.set(fresh, 'i32')
+    reps.set(name, { ...reps.get(name), range: proof.range })
+    if (proof.entry) entry.push(['local.set', `$${fresh}`, ['i32.wrap_i64', proof.entry]])
+  }
+  let ir
+  try { ir = emitArm() }
+  finally {
+    for (const [name, [type, rep]] of saved) {
+      locals.set(name, type)
+      if (rep == null) reps.delete(name); else reps.set(name, rep)
+    }
+  }
+  return [...entry, ...renameScalarBindings(Array.isArray(ir[0]) ? ir : [ir], rename)]
+}
+
+function proveGuardedWords(entries, proofs, defs, init, cond, step, body) {
+  const words = new Map(entries), visiting = new Set()
+  let outsideNames = null
+  const outside = n => {
+    if (n === init || n === cond || n === step || n === body) return
+    if (typeof n === 'string') { if (proofs.has(n)) outsideNames.add(n) }
+    else if (Array.isArray(n)) for (let i = 1; i < n.length; i++) outside(n[i])
+  }
+  const isPrivate = name => {
+    if (!outsideNames) { outsideNames = new Set(); outside(ctx.func.body) }
+    return !outsideNames.has(name)
+  }
+  // Every intermediate must stay exact in Number arithmetic. A small final
+  // address alone does not prove this: a product may round before cancellation.
+  const exactRange = e => {
+    const literal = intLiteralValue(e)
+    if (literal != null) return Number.isSafeInteger(literal) && !Object.is(literal, -0) ? [literal, literal] : null
+    if (typeof e === 'string') {
+      if (words.has(e)) return words.get(e).range
+      if (proofs.has(e)) return prove(e)?.range ?? null
+      return ctx.func.locals.get(e) === 'i32' && lookupValType(e) === VAL.NUMBER && !repOf(e)?.unsigned
+        ? intExprRange(e) ?? [-2147483648, 2147483647] : null
+    }
+    if (!Array.isArray(e) || e.length !== 3 || e[0] !== '+' && e[0] !== '-' && e[0] !== '*') return null
+    const a = exactRange(e[1]), b = exactRange(e[2])
+    if (!a || !b || e[0] === '*' && !mulRangesKeepZeroSign(a, b)) return null
+    const products = e[0] === '*' ? [a[0] * b[0], a[0] * b[1], a[1] * b[0], a[1] * b[1]] : null
+    const r = e[0] === '+' ? [a[0] + b[0], a[1] + b[1]] : e[0] === '-' ? [a[0] - b[1], a[1] - b[0]] : [Math.min(...products), Math.max(...products)]
+    return r.every(Number.isSafeInteger) ? r : null
+  }
+  const prove = name => {
+    if (words.has(name)) return words.get(name)
+    const proof = proofs.get(name)
+    if (!proof || visiting.has(name)) return null
+    visiting.add(name)
+    const exact = proof.entry || exactRange(defs.get(name))
+    visiting.delete(name)
+    if (!exact || !isPrivate(name)) return null
+    words.set(name, proof)
+    return proof
+  }
+  for (const name of proofs.keys()) prove(name)
+  return words
 }
 
 function unrollSmallConstFor(init, cond, step, body) {
@@ -596,6 +672,23 @@ export const controlFlowOps = {
         const i64c = (n) => ['i64.const', n]
         const ext = (ir) => ['i64.extend_i32_s', ir]
         const conjs = []
+        const wordLocal = name => typeof name === 'string' && ctx.func.locals.get(name) === 'f64' &&
+          lookupValType(name) === VAL.NUMBER && !ctx.func.boxed?.has(name) && repOf(name)?.ptrKind == null && !repOf(name)?.unsigned
+        const wordLoop = levels.length === 1 && !containsNestedLoop(body) && !containsNestedClosure(body) &&
+          levels[0].cands.some(c => wordLocal(c.idx) || c.slots?.some(t => wordLocal(t.e)))
+        const wordEntries = wordLoop ? new Map() : null, wordProofs = wordLoop ? new Map() : null
+        const wordDefs = wordLoop ? new Map() : null, seenWords = wordLoop ? new Set() : null
+        if (wordLoop && (body[0] === ';' || body[0] === '{}')) for (let at = 1; at < body.length; at++) {
+          const n = body[at]
+          if (!Array.isArray(n)) continue
+          if (n[0] !== 'let' && n[0] !== 'const') { collectBareRefs(n, seenWords); continue }
+          for (let k = 1; k < n.length; k++) {
+            const d = n[k]
+            if (d?.[0] !== '=' || typeof d[1] !== 'string') continue
+            collectBareRefs(d[2], seenWords)
+            if (wordLocal(d[1])) wordDefs.set(d[1], wordDefs.has(d[1]) || isReassigned(body, d[1]) || seenWords.has(d[1]) ? null : d[2])
+          }
+        }
         // one evaluation per symbolic-offset slot (a stable name or an invariant pure
         // expr like `y*w`); an 'f64' slot adds `v integral ∧ |v| ≤ 2^31` conjuncts —
         // the int model of `a*iv + v` is exact only for integral v (trunc does NOT
@@ -612,12 +705,19 @@ export const controlFlowOps = {
             s = ['local.get', `$${nT}`]
           } else {
             const nF = temp('tvn')
-            result.push(['local.set', `$${nF}`, asF64(emit(slot))])
+            const snap = ['local.set', `$${nF}`, asF64(emit(slot))]
+            snap.boundsSnapshot = true
+            result.push(snap)
             conjs.push(['f64.eq', ['local.get', `$${nF}`], ['f64.floor', ['local.get', `$${nF}`]]])
             conjs.push(['f64.le', ['f64.abs', ['local.get', `$${nF}`]], ['f64.const', 2147483648]])
             const nT = tempI64('tvm')
             result.push(['local.set', `$${nT}`, ['i64.trunc_sat_f64_s', ['local.get', `$${nF}`]]])
             s = ['local.get', `$${nT}`]
+            if (wordLoop && wordLocal(slot) && !isReassigned(body, slot) && !isReassigned(step, slot) && !wordDefs.has(slot))
+              wordEntries.set(slot, { range: [-2147483648, 2147483647], entry: s, tests: [
+                ['i64.le_s', s, i64c(2147483647)],
+                ['i64.ne', ['i64.reinterpret_f64', ['local.get', `$${nF}`]], i64c(-9223372036854775808n)]
+              ] })
           }
           slots.set(key, s)
           return s
@@ -860,8 +960,9 @@ export const controlFlowOps = {
             }
             const gk = c.recv + '\x00' + c.a + '\x00' + c.slots.map(t => t.k + '*' + slotKey(t.e)).join('+')
             const g = groups.get(gk)
-            if (!g) groups.set(gk, { recv: c.recv, a: c.a, slots: c.slots, maxC: c.bConst, minC: c.bConst, anyPost: !!c.post })
+            if (!g) groups.set(gk, { recv: c.recv, a: c.a, slots: c.slots, maxC: c.bConst, minC: c.bConst, anyPost: !!c.post, names: wordLoop ? [c.idx] : null })
             else { g.maxC = Math.max(g.maxC, c.bConst); g.minC = Math.min(g.minC, c.bConst); if (c.post) g.anyPost = true }
+            if (g && wordLoop) g.names.push(c.idx)
           }
           // A monotone cursor spans entry..entry+K*trips; read before the round's
           // advance, entry..entry+K*(trips-1): a compaction into an output sized for
@@ -890,6 +991,8 @@ export const controlFlowOps = {
             let hi = slotSum(['i64.mul', i64c(g.a), g.a >= 0 ? ['local.get', `$${maxIv}`] : entryIR()], g.slots)
             if (hiC) hi = ['i64.add', hi, i64c(hiC)]
             conjs.push(['i64.lt_s', hi, len64Of(g.recv)])
+            if (wordLoop) for (const name of g.names) if (wordLocal(name) && wordDefs.get(name))
+              wordProofs.set(name, { range: [0, 2147483647], tests: [['i64.le_s', hi, i64c(2147483647)]] })
             // a ≥ 0 with a STATIC start: lo = a·startC+minC was validated
             // non-negative at candidate time (slotless), nothing to emit.
             if (g.a >= 0 && vs.startC != null && !g.slots.length) continue
@@ -916,6 +1019,15 @@ export const controlFlowOps = {
             conjs.push(['i64.lt_s', kE, len64])
             conjs.push(['i64.ge_s', ['local.get', `$${endT}`], i64c(0)])
             conjs.push(['i64.lt_s', ['local.get', `$${endT}`], len64Of(c.recv)])
+            const ownEntry = intLiteralValue(counterInit(init, c.ind))
+            if (wordLoop && wordLocal(c.ind) && ownEntry != null && ownEntry === c.entryC && !Object.is(ownEntry, -0)) {
+              const landing = ['i64.add', ['local.get', `$${endT}`], slope64]
+              wordProofs.set(c.ind, { range: [-2147483648, 2147483647], entry: kE, tests: [
+                ['i64.le_s', kE, i64c(2147483647)],
+                ['i64.le_s', ['local.get', `$${endT}`], i64c(2147483647)],
+                ['i64.ge_s', landing, i64c(-2147483648)], ['i64.le_s', landing, i64c(2147483647)]
+              ] })
+            }
           }
         }
         // FLAT-CURSOR endpoint guards: `j++` once per pixel across the nest —
@@ -951,6 +1063,8 @@ export const controlFlowOps = {
             conjs.push(['i64.lt_s', ['local.get', `$${endT}`], len64Of(c.recv)])
           }
         }
+        const words = wordLoop ? proveGuardedWords(wordEntries, wordProofs, wordDefs, init, cond, step, body) : null
+        if (words) for (const proof of words.values()) conjs.push(...proof.tests)
         let guard = conjs[0]
         for (let k = 1; k < conjs.length; k++) guard = ['i32.and', guard, conjs[k]]
         // arm-scoped assumption MAP key → OWNING loop body: an assumption is honored
@@ -1003,8 +1117,8 @@ export const controlFlowOps = {
         // topCounterRefs (the counter's own [lo, hi], unconditional) wraps BOTH
         // arms; freeRefs (bound-name magnitude, sound only once the guard has
         // passed) wraps the fast arm alone — see comments above each.
-        const fast = withRefinements(initRefs, body, () => withRefinements(topCounterRefs, body,
-          () => freeRefs.size ? withRefinements(freeRefs, body, emitArm) : emitArm()))
+        const fast = emitGuardedWords(words, () => withRefinements(initRefs, body, () => withRefinements(topCounterRefs, body,
+          () => freeRefs.size ? withRefinements(freeRefs, body, emitArm) : emitArm())))
         ctx.types.assumedBounds = saved
         ctx.types.assumedConstHull = savedHull
         const checked = withRefinements(initRefs, body, () => withRefinements(topCounterRefs, body, emitArm))

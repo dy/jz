@@ -3013,6 +3013,17 @@ lifts typed-array loops to WASM-SIMD. Recognizers are tried in order in its disp
 shared `matchBlockLoop` descriptor and returns a wrapper or `null` — a `null` is fail-safe (the loop
 stays scalar), so **never emit code you can't prove equivalent to the scalar loop.**
 
+Typed extent guards may give their fast arm fresh signed-word locals for
+stable integral entries, private affine index definitions, and secondary
+cursors whose final update also fits. The checked arm keeps its original
+Number locals. Every arithmetic intermediate must remain a safe integer;
+final address bounds cannot justify losing rounded products or negative zero.
+Captured bindings and live exits keep their original storage. Entry literals
+come from the completed loop initializer, including later declarator writes.
+Existing static bound proofs avoid redundant source copies, and guard setup
+alone cannot justify another speculative copy of the guarded body. The two
+unchanged FFT shape tests and `guarded index` oracles in `test/simd.js` pin this.
+
 Discipline (non-negotiable — these run in the default `speed` build that ships to everyone):
 
 - **Bit-exact.** Compile `{optimize:3}` vs `{optimize:3, noSimd:true}`, run N frames, compare output
