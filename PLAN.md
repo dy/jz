@@ -17,7 +17,7 @@ The four hosted correctness failures recorded below are fixed. Shared memory
 configuration reaches both compiler entries; live array iteration and boxed
 Boolean callbacks preserve their native semantics; object enumeration/copying
 keeps BigInt carriers. Focused native checks pass 393 tests / 5,057 assertions,
-and the fresh kernel3 passes 28 hosted tests / 16,038 assertions. Full gates for
+and kernel3 passes 28 hosted tests / 16,038 assertions. Full gates for
 the combined final candidate are still required.
 
 The 40,000-character literal now compiles with exact native/hosted results at
@@ -29,11 +29,12 @@ below their unchanged AssemblyScript references of 1,758 B and 1,657 B.
 
 The remaining release blockers are:
 
-- Recursive compilation: kernel3 completes 64 phases, then exhausts 4 GiB after
-  `splitByListKinds`. Nine completed summaries allocate 2.43 GB. Batching unknown
-  field escapes restores native bootstrap time from 830.6 to 194.8 seconds;
-  this does not establish recursive completion. Live caller-fact queries reduce
-  a measured 64-parameter/128-site narrowing case from 12.1 to 6.45 MB.
+- Recursive compilation: ordinary kernel4 at `d56ffdf9` passes all nine reuse
+  and recovery cases, but exhausts 4 GiB after `splitByListKinds`. Its frontend
+  uses 715.1 MB and its last completed phase 3.645 GB (kernel3: 3.873 GB).
+  Nine summaries still account for about 2.2 GB. The newer candidate includes
+  further allocation and correctness changes and needs a fresh kernel gate.
+  Local probes establish reduced allocation, not recursive completion.
 - Dependency release: the complete, tested watr 5.11.9 tarball awaits publication
   approval. JZ still declares and locks 5.11.8. Publication, the dependency bump
   and a clean registry installation gate must precede release.
@@ -50,11 +51,21 @@ The remaining release blockers are:
   Load was 8–9. Fewer bounds conversions and smaller output have not closed this
   gap, and these timings are not reference-machine release evidence.
 
-Front-end review also found repeated lowering of nested array literals. Keeping
-the completed child walk reduces an eight-level literal's innermost visits from
-256 to one. Regressions cover exact values, holes, source positions, generator
-captures, repeated calls and error recovery; affected suites pass 69 tests /
-370 assertions. The next ordinary kernel must include this change too.
+The kernel4 frontend probes confirm the nested-array and repeated-index fixes:
+a twelve-level array literal falls from 863,568 to 277,152 allocated bytes;
+128 repeated index expressions fall from 4,133,264 to 1,429,960 bytes. Outputs
+and artifact sizes match. The newer declaration census removes 105,658
+temporary record arrays from the same compiler graph's first summary.
+
+Boundary review found unsafe width assumptions beyond element ranges: using a
+number as an index or comparison operand does not prove signed int32 storage.
+The candidate preserves wide keys and captured values, checks full Number loop
+bounds, restores every live value on outward exits from nested loop copies, and
+keeps computed array-key coercion order. Direct native/WASI regressions cover
+missing values, signed boundaries, wide products, empty loops and repeated calls.
+Sound bounded-loop optimization proofs are being restored where those changes
+removed unsupported shortcuts; performance assertions remain reviewable.
+The combined final core matrix and bootstrap gates are not yet complete.
 
 ## Element ranges, September 30
 
