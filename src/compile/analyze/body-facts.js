@@ -536,7 +536,7 @@ function computeBodyFacts(body, bodyFacts, elemOrigin, storage) {
       (n, l) => { (typedLens ||= new Map()).set(n, l) })
     // Existing typed-read presence walks can collect scalar hulls for free.
     // Other bodies defer that work until a storage-width consumer asks for it.
-    const requestedHulls = hasLoop ? bindingRequests(body, locals, valTypes) : null
+    const requestedHulls = hasLoop && ctx.transform.optimize?.intervalRanges ? bindingRequests(body, locals, valTypes) : null
     if (storage || typedReads.length) bindingHulls = requestedHulls
     else deferredHulls = requestedHulls
     for (const read of typedReads) if (readPresent(read)) presentNodes.add(read)

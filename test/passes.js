@@ -16,8 +16,36 @@ import jz, { compile } from '../index.js'
 import { PASS_NAMES, TUNING_KEYS } from '../src/optimize/index.js'
 import { HELPER_COUNTERS } from '../src/helper-counters.js'
 import { levels, onKernel } from './_matrix.js'
+import { resolveOptimize } from '../src/optimize/config.js'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
+
+test('passes: interval fixpoints follow the compile budget without retaining certificates', () => {
+  const src = `function put(a, i, v) { a[i] = v }
+    function read(a, i) { return a[a[i]] }
+    export function f() { const a = new Int32Array(4);
+      for (let i = 0; i < 4; i++) put(a, i, i); return read(a, 3) }`
+  const profiles = [2, 1, 1, { level: 1, intervalRanges: true }, 0,
+    { level: 2, intervalRanges: false }, 3, 'size', 1]
+  for (const profile of profiles) {
+    const optimize = typeof profile === 'object' ? { ...profile, sourceInline: false } : { level: profile, sourceInline: false }
+    const enabled = resolveOptimize(optimize).intervalRanges
+    const runtime = jz(src, { optimize })
+    is([runtime.exports.f(), runtime.exports.f()], [3, 3], `reuse ${JSON.stringify(profile)}`)
+    if (onKernel()) continue
+    const { put, read } = compile(src, { optimize, inspect: true }).inspect.functions
+    is(put.params[1].range, enabled ? [0, 3] : undefined, 'scalar argument certificate follows its pass')
+    is(read.params[0].arrayElemRange, enabled ? [0, 3] : undefined, 'the entire all-writers cycle follows its pass')
+  }
+  const boundary = `function read(a, i) { return a[i] }
+    export function f(i) { const a = new Int32Array(4); a[0] = 7; a[3] = 9; return read(a, i) }`
+  for (const profile of profiles) {
+    const optimize = typeof profile === 'object' ? { ...profile, sourceInline: false } : { level: profile, sourceInline: false }
+    const { f } = jz(boundary, { optimize }).exports
+    for (const i of [0, 0, 3, 4, -1, .5, 4294967296, NaN, Infinity, -0, 0])
+      is(f(i), [7, 0, 0, 9][i], `${JSON.stringify(profile)} index ${i}`)
+  }
+})
 
 test('passes: global-write proof is shared and only built for a consumer', () => {
   const src = `let g = 1; const set = v => { g = v }

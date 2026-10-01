@@ -51,7 +51,13 @@ The remaining release blockers are:
   The ordinary artifact is 24,936,393 bytes, SHA-256
   `076b8003d40b90210e1fad713525c15ac6c3c5153e90fe7799a8ac4d0448e972`.
   Native sampled allocation fell 10.6%; this did not establish hosted headroom.
-  Allocation call-site profiling of the Wasm compiler is the next measurement.
+  Wasm call-site profiling counts 36.6 million array-header allocations and
+  10.6 million ordering-buffer allocations before exhaustion (counts, not bytes).
+  An isolated O1 build with `arenaRewind` and `arenaReach` enabled gets through
+  planning, but still exhausts 4 GiB immediately afterward. Its retained heap
+  after planning is 4.218 GB; the first frontend stage falls to 480 MB.
+  The release-pass diagnostic passes all nine reuse cases and is not an ordinary
+  release artifact. O0/O1's interval-analysis budget is the next experiment.
 - Dependency release: the complete, tested watr 5.11.9 tarball awaits publication
   approval. JZ still declares and locks 5.11.8. Publication, the dependency bump
   and a clean registry installation gate must precede release.
@@ -86,6 +92,10 @@ The latest full core run on `acc1d730` passed 5,844 of 5,897 tests, with 53
 failures. It predates the while-cursor, shared shift typing, FFT guard,
 fractional gather and independent wide-accumulator fixes now passing focused
 checks; this is an inventory, not certification of the later candidate.
+Rechecking the original failing tests after the next fixes gives 28 passes and
+24 failures (one renamed test is verified separately). The remaining failures
+include unresolved optimization proofs; no assertion or performance cap is
+waived on the strength of that focused run.
 Subsequent fixes preserve source
 locations through loop copies, bound secondary counters, retain shared literal
 objects across in-place replacement, and check absent packed-array receivers.

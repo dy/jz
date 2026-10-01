@@ -1811,6 +1811,11 @@ preserve writes to existing bindings and introduce only private temporary locals
 so changing loop arithmetic does not require rescanning all nested closures.
 
 The interval interpreter also supplies call-argument and typed-store bounds.
+`intervalRanges` enables whole-binding hulls and the complete interprocedural
+scalar/element fixpoint at O2/O3/size. O0/O1 omit those optional certificates;
+typed-read presence, signed-zero/overflow vetoes and conservative ABI validation
+still run. An explicit pass override changes this compile-budget choice. No
+source-size threshold or special compiler-input policy controls these proofs.
 Recursive scalar parameters use the existing call-graph components: private signed-
 word hypotheses must contain every external entry and every recursive argument.
 An unknown, missing, wide or negative-zero argument removes its hypothesis, and

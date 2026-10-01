@@ -127,8 +127,11 @@ export default function narrowSignatures(programFacts, ast) {
   const phase = createPhaseState()
   const { callerCtx } = phase
   const internalArrayLengths = inferInternalArrayLengths()
-  let storeRanges = inferNumericRanges(paramReps, callSites, callerCtx, addressTaken, ast, internalArrayLengths)
-  let typedValueRanges = inferTypedValueRanges(storeRanges)
+  // Interval fixpoints are optional positive certificates. Compile-budget
+  // tiers retain the kind/ABI census and checked reads without building them.
+  const intervalRanges = ctx.transform.optimize?.intervalRanges === true
+  let storeRanges = intervalRanges ? inferNumericRanges(paramReps, callSites, callerCtx, addressTaken, ast, internalArrayLengths) : null
+  let typedValueRanges = intervalRanges ? inferTypedValueRanges(storeRanges) : { locals: new Map() }
   // One per-binding representation row owns the settled array facts.
   programFacts.arrayReps = new Map()
   for (const func of ctx.funcs.list) {
@@ -536,7 +539,7 @@ export default function narrowSignatures(programFacts, ast) {
   // together bounds the next element read. Every intermediate fact is already
   // sound. A bounded refinement budget may forgo precision on a long cyclic
   // graph; it cannot publish an unfinished optimistic proof.
-  for (let round = 0, changed = true; round < 8 && changed; round++) {
+  for (let round = 0, changed = intervalRanges; round < 8 && changed; round++) {
     changed = inferElementParamRanges(paramReps, callSites, addressTaken, typedValueRanges)
     storeRanges = inferNumericRanges(paramReps, callSites, callerCtx, addressTaken, ast,
       internalArrayLengths, callerTypedLenCtx, typedValueRanges.locals)
