@@ -38,6 +38,38 @@ test('bigint tag: nested unary operations preserve mixed and missing values with
   }
 })
 
+test('bigint tag: opaque array keys keep unary numeric domains and their errors', () => {
+  const src = `
+    function values() {
+      const a = [17n, 0x7ff8000200000000n]
+      a[-1] = -1n; a[0.5] = '12'; a.extra = 0x7ff8000500000000n
+      return a
+    }
+    export function probe(k) {
+      k = String(k); const a = values()
+      return [~~a[k], -~a[k], ~(-a[k]), -(-a[k])]
+    }
+    export function number(k) { k = String(k); const a = values(); return +a[k] }
+    export function shift(k) { k = String(k); const a = values(); return a[k] >>> 0 }
+    export function empty(k) { k = String(k); const a = []; a.extra = 17n; return ~~a[k] }
+  `
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const expected = oracle(src), actual = jz(src, { optimize }).exports
+    for (const key of ['0', '0', '1', '-1', '0.5', 'length', 'extra', '2', '01', '0'])
+      is(actual.probe(key), expected.probe(key), `unary key=${key}, O${optimize}`)
+    for (const key of ['0', 'length', 'extra', '2', '0.5', 'length']) {
+      for (const name of ['number', 'shift']) {
+        if (key === '0' || key === 'extra') {
+          throws(() => expected[name](key), TypeError)
+          throws(() => actual[name](key), TypeError)
+        } else is(actual[name](key), expected[name](key), `${name} recovers, key=${key}, O${optimize}`)
+      }
+    }
+    for (const key of ['length', '0', 'extra', 'extra', 'missing', 'length'])
+      is(actual.empty(key), expected.empty(key), `empty array key=${key}, O${optimize}`)
+  }
+})
+
 test('bigint tag: nested property reads keep settled shape unions and join carriers', () => {
   const tails = ['a[k].x', '(0, a[k].x)', 'flag ? a[k].x : 0x7ff8000500000000n',
     'flag ? 0x7ff8000500000000n : a[k].x', 'a[k].x || 0x7ff8000500000000n',

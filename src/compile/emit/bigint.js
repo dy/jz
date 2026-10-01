@@ -125,8 +125,12 @@ function bigIntDomain(node) {
   // Number stays raw f64, BigInt is a PTR.BIGINT cell. This exact tag is the
   // runtime evidence an internal (non-exported) helper previously discarded,
   // causing arithmetic to reinterpret the box as a Number.
+  // Ordinary array slots remain tagged even when an opaque key also names
+  // length or a property. Private literal/destructuring slots can retain raw
+  // carriers and keep their existing semantic proof instead.
   if (summaryTag !== K.NUMBER && (isPlanTaggedBigint(node) ||
-      representationProgramHasBigint(ctx) && Array.isArray(node) && valTypeOf(node[1]) === VAL.TYPED && isTaggedElemRead(node) ||
+      Array.isArray(node) && (valTypeOf(node[1]) === VAL.TYPED ||
+        valTypeOf(node[1]) === VAL.ARRAY && !ctx.schema.arrayVars?.has(node[1])) && isTaggedElemRead(node) ||
       ((summaryOnlyNumberBigint || hostField) && isSchemaSlotBigintPossible(node)))) return 'tagged'
   if ((vt === VAL.BIGINT || summaryExactBigint) &&
       (censusMaybeUndefinedKind(node) === VAL.BIGINT || view?.mayBeNullishExpr(node))) return 'census'
