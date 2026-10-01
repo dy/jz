@@ -13,7 +13,7 @@
 
 import { ctx } from '../../ctx.js'
 import {
-  returnExprs, alwaysReturns, hasBareReturn, callArgs, ASSIGN_OPS, MUTATE_OPS, refsName, carriesName, REFS_THROUGH_ARROWS, walkAst, isReassigned,
+  returnExprs, alwaysReturns, hasBareReturn, isBlockBody, callArgs, ASSIGN_OPS, MUTATE_OPS, refsName, carriesName, REFS_THROUGH_ARROWS, walkAst, isReassigned,
 } from '../../ast.js'
 import {
   staticArrayElems, staticArrayLen, hull, typedValueLiteral, typedValueExprRange,
@@ -347,12 +347,14 @@ export function inferInternalArrayLengths() {
   // Length-preserving parameter summaries let a caller retain a local length
   // fact across known reader helpers. Any alias, closure capture, return,
   // indexed/property write, method call, or unknown call poisons the summary.
-  const funcs = ctx.funcs.list.filter(f => !f.raw && Array.isArray(f.body))
+  const funcs = ctx.funcs.list.filter(f => !f.raw && f.body != null)
   const safeParams = new Map(funcs.map(f => [f.name, f.sig.params.map(() => true)]))
   for (const f of funcs) {
     const ps = new Map(f.sig.params.map((p, i) => [p.name, i])), safe = safeParams.get(f.name)
     for (const d of Object.values(f.defaults || {}))
       for (const [name, k] of ps) if (carries(d, name)) safe[k] = false
+    if (!isBlockBody(f.body))
+      for (const [name, k] of ps) if (carries(f.body, name)) safe[k] = false
     // a parameter default runs in the frame: its resizes and escapes count
     walkAst(frameNode(f), { enter: n => {
       if (n[0] === '=>') { for (const [name, k] of ps) if (refs(n, name)) safe[k] = false; return false }
@@ -506,7 +508,7 @@ export function inferTypedValueRanges(storeRanges) {
     const args = callArgs(n)
     return args.length ? exprRange(args[0]) : [0, 0]
   }
-  const funcs = ctx.funcs.list.filter(f => !f.raw && Array.isArray(f.body))
+  const funcs = ctx.funcs.list.filter(f => !f.raw && f.body != null)
   const summaries = new Map()
   for (const f of funcs) summaries.set(f.name, f.sig.params.map(() => ({ range: null, writes: false, bad: false })))
 
@@ -542,6 +544,8 @@ export function inferTypedValueRanges(storeRanges) {
       const sum = summaries.get(f.name), scope = ctx.summary.at(f.sig)
       for (const d of Object.values(f.defaults || {}))
         for (const [name, k] of ps) if (carries(d, name)) sum[k].bad = true
+      if (!isBlockBody(f.body))
+        for (const [name, k] of ps) if (carries(f.body, name)) sum[k].bad = true
       const walk = (n, inClosure = false, parent = null) => {
         if (!Array.isArray(n)) return
         const closure = inClosure || n[0] === '=>'
@@ -657,7 +661,7 @@ export function inferTypedValueRanges(storeRanges) {
       if (locals.has(f === moduleFrame ? null : f)) return
       visiting.add(f)
       const results = f === moduleFrame || tagOf(ctx.summary.resultOf(f.name)) !== K.TYPED ||
-        !alwaysReturns(f.body) || hasBareReturn(f.body) ? [] : returnExprs(f.body)
+        isBlockBody(f.body) && (!alwaysReturns(f.body) || hasBareReturn(f.body)) ? [] : returnExprs(f.body)
       const resultName = results.length && typeof results[0] === 'string' && results.every(r => r === results[0]) ? results[0] : null
       const ranges = new Map(), ctors = new Map(), poisoned = new Set(), freshDefs = new Set(), inherited = new Set()
       const scope = f === moduleFrame ? moduleScope : ctx.summary.at(f.sig)
@@ -724,6 +728,10 @@ export function inferTypedValueRanges(storeRanges) {
           }
         }
       } })
+      // Expression-bodied arrows return their expression without a return node.
+      // Include those escapes even when the result is a container/union, not typed.
+      if (f !== moduleFrame && !isBlockBody(f.body)) for (const name of [...ranges.keys()])
+        if (carries(f.body, name) && !(name === resultName && !inherited.has(name))) merge(name, null)
       // A return transfers one unaliased fresh allocation. This is an entry
       // hull for each caller allocation, not a promise about later mutations.
       if (resultName && ranges.has(resultName) && !inherited.has(resultName))

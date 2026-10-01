@@ -901,7 +901,10 @@ the buffer, capturing or storing an array inside another container invalidates
 its private-storage proof. Rejected length facts propagate through all forwarding
 helpers before any length is folded.
 Private module typed arrays use the same all-writers census across every function,
-its defaults and module initialization. Exported bindings, escaped aliases and
+its defaults and module initialization. Expression-bodied arrows contribute their
+implicit return, including bare names and containers: an exported getter exposes
+the same storage as an explicit return. The ordinary-array length census shares
+that escape rule. Exported bindings, escaped aliases and
 backing buffers have no closed element hull; shadowed locals use their own binding
 identity. A static while-loop trip budget can bound signed additive recurrences
 by their total absolute movement. Delta operands need whole-loop facts, including

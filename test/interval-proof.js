@@ -1450,3 +1450,42 @@ test('interval proof: fill and fresh returns require their own intrinsic and cal
     for (const which of [0, 0, 1, 0]) is(f(which), host(which), `O${level}: callee identity ${which}`)
   }
 })
+
+test('interval proof: expression returns expose module element storage', () => {
+  for(const [body, unwrap] of [
+    ['X', x=>x], ['(0,X)', x=>x], ['which?X:X', x=>x],
+    ['[X]', x=>x[0]], ['({value:X})', x=>x.value],
+    ['forward(X)', x=>x],
+  ])for(const ctor of ['Float64Array','Int32Array']) {
+    const src=`const X=new ${ctor}(2),OUT=new Float64Array(2);
+      const forward=a=>a;export const view=which=>${body};export const result=()=>OUT;
+      function first(x){if(x!==x)return 0;if(x===Infinity||x===-Infinity)return -0;return x}
+      function second(x){if(x!==x)return 1;if(x===Infinity||x===-Infinity)return -1;return x*2}
+      export function run(){for(let i=0;i<2;i++)OUT[i]=first(X[i])+second(X[i])}`
+    for(const optimize of levels(0,1,2,3,'size')) {
+      const got=jz(src,{optimize}).exports,want=oracle(src)
+      for(const value of [-0,-0,0.25,2147483647,-2147483648,NaN,Infinity,-Infinity,3e-310,-0]) {
+        unwrap(got.view(1)).fill(value);unwrap(want.view(1)).fill(value)
+        got.run();want.run()
+        is([...got.result()],[...want.result()],`${ctor}, ${body}, O${optimize}, ${value}`)
+      }
+    }
+  }
+})
+
+test('interval proof: implicit parameter returns invalidate caller storage facts', () => {
+  for(const body of ['a','(0,a)','which?a:a','[a]','({value:a})']) {
+    const unwrap=body==='[a]'?'[0]':body==='({value:a})'?'.value':''
+    for(const init of ['[1]','new Int32Array(1)','new Float64Array(1)']) {
+      const src=`const forward=(a,which)=>${body};
+        function read(a){let out=0;for(let i=0;i<a.length;i++)out+=a[i];return out}
+        export function f(v){const a=${init};const b=forward(a,1)${unwrap};
+          b[0]=v;${init==='[1]'?'b.push(7);':''}return[read(a),a.length]}`
+      for(const level of levels(0,1,2,3,'size')) {
+        const opts={optimize:{level,sourceInline:false}},got=jz(src,opts).exports.f,want=oracle(src).f
+        for(const value of [1,1,0.25,2147483647,-2147483648,NaN,1])
+          is(got(value),want(value),`${init}, ${body}, O${level}, ${value}`)
+      }
+    }
+  }
+})
