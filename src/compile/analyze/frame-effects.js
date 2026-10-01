@@ -1073,10 +1073,11 @@ export function transitiveFrameEffects(funcs, roots = null, loops = true) {
   }
   for (const o of own.values()) { need(o); for (const l of o.loops ?? []) need(l.own) }
   while (pending.length) { const id = pending.pop(), o = closureEffectsOf(id); closureOwn.set(id, o); need(o) }
-  const nodes = new Map(own)
   // Function names are strings, closure identities are numbers. Keep those
   // disjoint keys through the fixpoint; spelling an edge allocates on every visit.
-  for (const [id, o] of closureOwn) nodes.set(id, o)
+  // This graph is only traversed. Snapshot its rows once, without another hash
+  // table or a fresh Map-entry snapshot on every hosted fixpoint round.
+  const nodes = [...own, ...closureOwn]
   const facts = new Map()
   for (const [name, o] of nodes) facts.set(name, { writesOuter: o.writesOuter, arenaUnsafe: o.arenaUnsafe, keeps: o.keeps, flagged: o.flagged, unsited: o.unsited, callsUnknown: o.callsUnknown, runsAccessor: o.runsAccessor, allocates: o.allocates,
     why: o.why, keepsWhy: o.keepsWhy, siteWhy: o.siteWhy, callees: o.callees, loops: new Set(), freshObjects: o.freshObjects ?? null })
@@ -1125,7 +1126,7 @@ export function transitiveFrameEffects(funcs, roots = null, loops = true) {
   }
   // A function literal a builtin calls in place: its sites are those of the scope around it.
   const inline = new Set()
-  for (const o of nodes.values()) { for (const a of o.inline ?? []) inline.add(a); for (const l of o.loops ?? []) for (const a of l.own.inline ?? []) inline.add(a) }
+  for (const [, o] of nodes) { for (const a of o.inline ?? []) inline.add(a); for (const l of o.loops ?? []) for (const a of l.own.inline ?? []) inline.add(a) }
   const called = (id) => inline.has(ctx.summary?.closureArrow?.(id))
   for (const key of closureOwn.keys()) facts.delete(key)
   for (const [name, o] of own) { const f = facts.get(name); f.closures = o.closures; f.sites = o.sites; f.siteKinds = o.siteKinds; f.siteGrows = o.siteGrows; f.siteGrown = o.siteGrown; f.siteAsked = o.siteAsked; f.siteNames = o.siteNames; f.siteWhys = o.siteWhys }

@@ -3083,6 +3083,8 @@ and repeated compilations must not alter previously returned facts.
 The transitive graph keeps named functions as string keys and closures as their
 numeric summary identities. Spell a closure name only for a diagnostic; building
 string keys on every fixpoint edge allocates temporary strings in the hosted compiler.
+Snapshot its immutable traversal rows once; only the result facts need a keyed
+lookup table. Repeated rounds must not rematerialize Map entry pairs.
 A store into a fresh local aggregate, a binding
 declared in the body whose every write is a literal or a `new`, is a store into
 fresh memory. A nested function's writes count wherever it is made, a
