@@ -33,7 +33,10 @@ import { numHashLiteral, MAP_ENTRY } from '../module/collection.js'
 import { PTR } from '../layout.js'
 import { KIND_REGISTRY, CONTENT_IDENTITY_ORDER, eqIdentityChain, sameValueZeroIdentityChain, mapHashStringArm, mapHashBigintArm } from '../layout-kinds.js'
 import { KIND_REGISTRY as KIND_REGISTRY_DOC, FINDINGS } from '../layout-kinds-doc.js'
-import { run, cases } from './util.js'
+import { run, cases, oracle } from './util.js'
+import { levels } from './_matrix.js'
+import parseWat from 'watr/parse'
+import encodeWat from 'watr/compile'
 
 
 // ============================================================================
@@ -315,6 +318,69 @@ test('identity-arm-divergence: $__same_value_zero survives a forced STRING-tag-a
   // an unboxed number, breaking `=== true` bit-comparisons on the same value elsewhere).
   is(ex.hasQ(sBits, craftedBits), 9221120254220959744n, '$__same_value_zero: no false-positive AND no OOB trap on the forced collision')
   is(ex.eqQ(craftedBits, keyBits), 9221120254220959744n, '$__eq agrees (false), unaffected — sanity cross-check')
+})
+
+const numericNaNPayloads = () => {
+  const values=[0x7ff8000000000000n,0x7ff8000000000001n,0x7ff80000ffffffffn]
+  for(let tag=0n;tag<16n;tag++) values.push(0x7ff0000000000001n|(tag<<47n),0xfff80000ffffffffn|(tag<<47n))
+  return values
+}
+
+test('Map key classifiers reject numeric payloads before boxed content comparisons', () => {
+  const src=`export function f(k){const map=new Map();map.set(7n,1);map.set('long string key',2);return map.has(k)}`
+  const tree=parseWat(compile(src,{wat:true,optimize:{level:0,watr:false}}))
+  // Export the actual helpers to force hash-collision comparisons independently
+  // of the probe's hash filter; numeric mantissas can alias either content tag.
+  for(const [name,fn] of [['hash','__map_hash'],['same','__same_value_zero']]) {
+    ok(tree.some(n=>n?.[0]==='func'&&n[1]==='$'+fn),`${fn} is the linked runtime helper`)
+    tree.push(['export',JSON.stringify(name),['func','$'+fn]])
+  }
+  const mod=instantiate(encodeWat(tree)),raw=mod.instance.exports,mem=mod.memory
+  const symbol=Symbol('same'),otherSymbol=Symbol('same')
+  const real=[mem.BigInt(7n),mem.String('long string key'),mem.wrapVal(symbol),mem.wrapVal(otherSymbol),
+    mem.wrapVal(null),mem.wrapVal(undefined),mem.wrapVal(false),mem.wrapVal(true)]
+  for(const bits of numericNaNPayloads()) {
+    is(raw.hash(bits),3,'all numeric NaNs share the canonical hash')
+    is(raw.same(bits,0x7ff8000000000000n),1,'distinct NaN payloads compare equal')
+    for(const box of real){is(raw.same(bits,box),0,'numeric NaN is not a boxed key');is(raw.same(box,bits),0,'comparison order is immaterial')}
+  }
+  for(const bits of [0x3ff20000ffffffffn,0x3ff28000ffffffffn,0x7ff0000000000000n,0xfff0000000000000n])
+    for(const box of real){is(raw.same(bits,box),0,'finite/infinite bits do not authorize payload loads');is(raw.same(box,bits),0,'boxed/numeric order stays distinct')}
+  is(raw.same(real[0],mem.BigInt(7n)),1,'BigInt content identity remains')
+  is(raw.same(real[1],mem.String('long string key')),1,'string content identity remains')
+  is(raw.same(real[2],mem.wrapVal(symbol)),1,'the same Symbol retains identity')
+  is(raw.same(real[2],real[3]),0,'equal Symbol descriptions do not equal identities')
+  is(raw.same(0n,0x8000000000000000n),1,'both zero signs share SameValueZero')
+})
+
+test('Map and Set unify numeric NaN payloads through updates, growth, errors and deletion', () => {
+  const src=`const map=new Map(),set=new Set();let serial=0
+    function state(k){return [map.get(k),map.has(k),set.has(k),map.size,set.size]}
+    function fail(){throw 9}
+    export function put(k){map.set(k,++serial);set.add(k);return state(k)}
+    export function get(k){return state(k)}
+    export function remove(k){return [map.delete(k),set.delete(k),...state(k)]}
+    export function error(k){try{map.set(fail(),99);return []}catch(e){return [e,...state(k)]}}
+    export function grow(){for(let i=0;i<40;i++){map.set(i,i+100);set.add(i)}return [map.size,set.size]}
+    export function controls(){
+      const a=Symbol('same'),b=Symbol('same'),keys=[Infinity,-Infinity,7n,a,b,'same',null,undefined,false,true]
+      for(let i=0;i<keys.length;i++){map.set(keys[i],i+200);set.add(keys[i])}
+      const out=[];for(let i=0;i<keys.length;i++)out.push(map.get(keys[i]),set.has(keys[i]))
+      return [out,map.has(Symbol('same')),set.has(Symbol('same')),map.size,set.size]
+    }`
+  const payloads=numericNaNPayloads()
+  for(const optimize of levels(0,1,2,3,'size')) {
+    const mod=jz(src,{optimize}),host=oracle(src),raw=mod.instance.exports
+    const check=(name,key) => is(mod.memory.read(raw[name](key)),host[name](NaN),`O${optimize} ${name}: ${key.toString(16)}`)
+    check('put',payloads[0]);check('put',payloads[0])
+    for(const key of payloads){check('put',key);check('get',payloads[0])}
+    is(mod.memory.read(raw.grow()),host.grow(),'growth keeps one numeric NaN key')
+    is(mod.memory.read(raw.controls()),host.controls(),'real atoms, BigInts, strings, infinities and numbers stay distinct')
+    for(const key of payloads)check('get',key)
+    check('error',payloads[1]);check('get',payloads[0])
+    check('remove',payloads.at(-1));check('remove',payloads[0])
+    check('put',payloads[0]);check('get',payloads[1])
+  }
 })
 
 test('Map hashes spread consecutive numeric keys and agree with literal probes', () => {

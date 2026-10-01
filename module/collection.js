@@ -14,7 +14,7 @@
 
 import print from 'watr/print'
 import { representationProgramHasBigint } from '../src/compile/representation-plan.js'
-import { staticArrayPtr, throwErrorIR, typed, asF64, asI64, asI32, UNDEF_NAN, TOMB_NAN, temp, tempI32, tempI64, allocPtr, mkPtrIR, ptrTypeEq, boxedPtrTypeEq, elemStore, arrayValue, elemLoad, boolBoxIR, freshId, callWithArgs } from '../src/ir.js'
+import { staticArrayPtr, throwErrorIR, typed, asF64, asI64, asI32, UNDEF_NAN, TOMB_NAN, temp, tempI32, tempI64, allocPtr, mkPtrIR, ptrTypeEq, boxedPtrTypeEq, elemStore, arrayValue, elemLoad, boolBoxIR, freshId, callWithArgs, numberNanIR } from '../src/ir.js'
 import { emit, deps, call, storedValue } from '../src/bridge.js'
 import { valTypeOf } from '../src/kind.js'
 import { VAL, lookupValType } from '../src/reps.js'
@@ -454,32 +454,28 @@ export default (ctx) => {
 
   ctx.core.stdlib['__same_value_zero'] = `(func $__same_value_zero (param $a i64) (param $b i64) (result i32)
     (local $fa f64) (local $fb f64) (local $ta i32) (local $tb i32)
-    (if (result i32) (i64.eq (local.get $a) (local.get $b))
-      (then (i32.const 1))
-      (else
-        (local.set $fa (f64.reinterpret_i64 (local.get $a)))
-        (local.set $fb (f64.reinterpret_i64 (local.get $b)))
-        (if (result i32)
-          (i32.and
-            (f64.eq (local.get $fa) (local.get $fa))
-            (f64.eq (local.get $fb) (local.get $fb)))
-          (then (f64.eq (local.get $fa) (local.get $fb)))
-          (else
-            (local.set $ta (i32.wrap_i64 (i64.and (i64.shr_u (local.get $a) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK}))))
-            (local.set $tb (i32.wrap_i64 (i64.and (i64.shr_u (local.get $b) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK}))))
-            ;; CARRIER PROGRAM Slice 3 — registry-derived 'eq-identity' arm
-            ;; (layout-kinds.js KIND_REGISTRY.BIGINT / FINDINGS[eq-identity]):
-            ;; SameValueZero dedup by BigInt VALUE, not pointer-bits — the
-            ;; __eq twin (module/core.js) of the same registry-column fix.
-            ${sameValueZeroIdentityChain()})))))`
+    (if (i64.eq (local.get $a) (local.get $b)) (then (return (i32.const 1))))
+    (local.set $fa (f64.reinterpret_i64 (local.get $a)))
+    (local.set $fb (f64.reinterpret_i64 (local.get $b)))
+    ;; Either non-NaN operand excludes boxed identity, even on a hash collision.
+    (if (i32.or (f64.eq (local.get $fa) (local.get $fa)) (f64.eq (local.get $fb) (local.get $fb)))
+      (then (return (f64.eq (local.get $fa) (local.get $fb)))))
+    (if ${print(numberNanIR(['local.get', '$fa']))}
+      (then (return ${print(numberNanIR(['local.get', '$fb']))})))
+    (if ${print(numberNanIR(['local.get', '$fb']))} (then (return (i32.const 0))))
+    ;; Both remaining NaNs are real boxes. Numeric NaN payload bits cannot
+    ;; select a string/BigInt dereference or alias a reserved atom/Symbol.
+    (local.set $ta (i32.wrap_i64 (i64.and (i64.shr_u (local.get $a) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK}))))
+    (local.set $tb (i32.wrap_i64 (i64.and (i64.shr_u (local.get $b) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK}))))
+    ${sameValueZeroIdentityChain()})`
 
   ctx.core.stdlib['__map_hash'] = `(func $__map_hash (param $v i64) (result i32)
     (local $f f64) (local $t i32) (local $h i32) (local $aux i32) (local $off i32)
     (local.set $f (f64.reinterpret_i64 (local.get $v)))
-    ;; Classify once: finite mantissas can alias tags, but only NaN boxes
-    ;; carry string or BigInt payloads. Ordinary numbers need no tag decode.
+    ;; Numeric NaNs share one bucket; only genuine boxes may decode a tag.
     (if (f64.ne (local.get $f) (local.get $f))
       (then
+        (if ${print(numberNanIR(['local.get', '$f']))} (then (return (i32.const 3))))
         (local.set $t (i32.wrap_i64 (i64.and (i64.shr_u (local.get $v) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK}))))
         ${mapHashStringArm(lean)}
         ${mapHashBigintArm()}

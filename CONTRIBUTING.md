@@ -1688,6 +1688,11 @@ callback arguments into a synthetic rest array. The legacy object-pattern and
 actual `arguments` paths retain argument-list packing.
 Map/Set lookups share insertion's
 capacity/forwarding check, without a separate general pointer decode.
+Map/Set key hashing and SameValueZero use the shared numeric-NaN predicate
+before tag dispatch. Signaling/negative NaNs and the numeric ATOM/aux-zero
+payload domain share NaN's hash and equality; non-NaN values never enter boxed
+content comparisons, even on a hash collision. Real Symbol and BigInt keys
+retain their identity/value contracts.
 Map/Set's ordinary and prehashed lookups share one probe generator with the
 prehashed dictionary readers, including missing-value sentinels, forwarding
 and external receivers. A prehashed lookup takes its hash
