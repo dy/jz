@@ -539,3 +539,79 @@ test('collection subclasses pass their receiver to captured super methods', () =
     for(const [value,expected] of retained)is(value,expected,`retained super O${optimize}`)
   }
 })
+
+test('collection subclasses install the most-derived methods before population and fields', () => {
+  const src = `let trace='';
+    class A extends Map {
+      base=(trace+='f',1)
+      constructor(source=[]){trace+='p';super(source);trace+='a'}
+      set(k,v){trace+='A'+String(this.base);return super.set(k,v+1)}
+    }
+    class B extends A {
+      child=(trace+='g',2)
+      constructor(source){trace+='q';super(source);trace+='b'}
+      set(k,v){trace+='B'+String(this.child);return super.set(k,v+2)}
+    }
+    class S extends Set {field=(trace+='f',3);add(v){trace+='s'+String(this.field);return super.add(v+1)}}
+    export function f(n){trace='';const entries=[];for(let i=0;i<n;i++)entries.push([i,i]);
+      const b=new B(entries);return[Array.from(b.entries()),trace,b.base,b.child,
+        b instanceof A,b instanceof B,b instanceof Map,b.constructor===B,Object.keys(b)]}
+    export function set(n){trace='';const values=[];for(let i=0;i<n;i++)values.push(i);
+      const s=new S(values);return[Array.from(s.values()),trace,s.field,s instanceof S,s instanceof Set]}`
+  for(const optimize of levels(0,1,2,3,'size')){
+    const got=jz(src,{optimize}).exports,want=oracle(src),retained=[]
+    for(const n of [0,0,1,3,0,1]){
+      const value=got.f(n),expected=want.f(n);is(value,expected,`population O${optimize}, ${n}`)
+      retained.push([value,expected]);is(got.set(n),want.set(n),`Set population O${optimize}, ${n}`)
+    }
+    for(const [value,expected] of retained)is(value,expected,`retained population O${optimize}`)
+  }
+})
+
+test('collection subclass constructors capture the adder before opening and close abrupt iteration', () => {
+  const src = `let trace='',mode=0;
+    class G extends Map {
+      get set(){trace+='g';if(mode===1)throw 1;if(mode===2)return 7;if(this.override)return this.override;
+        return (k,v)=>{trace+='s';if(mode===3||mode===7)throw 3;
+          if(mode===6)this.override=()=>{trace+='z'};return Map.prototype.set.call(this,k,v)}}
+    }
+    function source(){return{[Symbol.iterator](){trace+='o';let i=0;
+      return{next(){trace+='n';if(mode===4)throw 4;if(i++>(mode===6?1:0)||mode===9)return{done:true};
+        return{done:false,value:{get 0(){trace+='k';if(mode===5)throw 5;return 'x'},get 1(){trace+='v';return 7}}}},
+        return(){trace+='r';if(mode===7)throw 8;return{done:true}}}}}}
+    export function f(m){mode=m;trace='';try{const g=new G(m===8?null:source());return[Array.from(g.entries()),trace]}
+      catch(e){return[e instanceof TypeError?'TypeError':e,trace]}}
+    let input;
+    class Grow extends Map {set(k,v){if(k===0)input.push([2,8]);return super.set(k,v)}}
+    export function live(){input=[[0,3]];return Array.from(new Grow(input).entries())}`
+  for(const optimize of levels(0,1,2,3,'size')){
+    const got=jz(src,{optimize,sourceInline:false}).exports,want=oracle(src)
+    for(const mode of [0,0,1,0,2,0,3,0,4,0,5,0,6,7,8,9,0])is(got.f(mode),want.f(mode),`adder O${optimize}, ${mode}`)
+    is(got.live(),want.live(),`native live iteration O${optimize}`)
+    is(got.live(),want.live(),`native repeated live iteration O${optimize}`)
+  }
+})
+
+
+test('collection subclass initializers retain captured local scopes and shadowed class names', () => {
+  const src = `class M extends Map{set(k,v){return super.set(k,v+100)}}
+    class S extends Set{add(v){return super.add(v+100)}}
+    function first(n){class M extends Map{set(k,v){return super.set(k,v+n)}}class N extends M{}
+      const m=new N([['x',3]]);return[m.get('x'),m instanceof M,m instanceof N,m instanceof Map]}
+    function second(n){class M extends Set{add(v){return super.add(v+n)}}class N extends M{}
+      const s=new N([3]);return[Array.from(s.values()),s instanceof M,s instanceof N,s instanceof Set]}
+    export function f(n){return[first(n),second(n),new M([['x',1]]).get('x')]}
+    export function shadow(Map,Set){class D extends M{set(k,v){return super.set(k,v+1)}peek(){return super.get('x')}}
+      class T extends S{add(v){return super.add(v+1)}has(v){return super.has(v)}}
+      return[new D([['x',1]]).peek(),new T([1]).has(102)]}
+    export function custom(){class Map{constructor(source){this.source=source}read(){return this.source}}
+      class N extends Map{read(){return super.read()+1}}const n=new N(7);return n.read()}`
+  for(const optimize of levels(0,1,2,3,'size')){
+    const got=jz(src,{optimize}).exports,want=oracle(src),retained=[]
+    for(const n of [0,0,3,-1,0]){const value=got.f(n),expected=want.f(n);
+      is(value,expected,`local O${optimize}, ${n}`);retained.push([value,expected])}
+    for(const [value,expected] of retained)is(value,expected,`retained local O${optimize}`)
+    is(got.custom(),want.custom(),`shadowed constructor O${optimize}`)
+    for(const n of [0,1,0])is(got.shadow(n,n),want.shadow(n,n),`shadowed native family O${optimize}`)
+  }
+})

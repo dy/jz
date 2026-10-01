@@ -235,6 +235,13 @@ receiver checks.
 Generic derived classes call captured base methods with their instance as the
 ordinary receiver; schema methods retain their explicit first receiver argument.
 This also admits native Map/Set base methods without rebinding user methods.
+Known Map/Set-derived families reuse the receiver-first initializer chain: the
+most-derived factory allocates native storage and installs bound methods before
+running base population, field initializers and constructor bodies. Native
+allocation and super-method identities cannot be captured by shadowed names.
+Local family metadata follows lexical declaration scopes; local bound methods
+are not module dispatcher targets. Population captures the selected adder before
+opening the iterator and closes unfinished iteration after entry/adder errors.
 Map construction validates each entry object and reads its properties in key,
 value order. Entry getters retain ordinary call effects and can change the
 source array's live iteration length. Native Map copies keep their table path.

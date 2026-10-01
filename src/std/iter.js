@@ -112,13 +112,19 @@ const nativeIterable = v => !Object.hasOwn(v, '@@iterator') &&
     ArrayBuffer.isView(v) && !(v instanceof DataView))
 export let __it_map = (source) => {
   if (source == null || nativeIterable(source)) return new Map(source)
-  const out = new Map(), r = __it_open(source)
+  return __it_map_into(new Map(), source)
+}
+export let __it_map_into = (out, source) => {
+  if (source == null) return out
+  const adder = out.set
+  if (typeof adder !== 'function') throw new TypeError('collection adder is not callable')
+  const r = __it_open(source)
   try {
     while (!r.done) {
       const entry = __it_step(r)
       if (r.done) break
       if (entry == null || typeof entry !== 'object' && typeof entry !== 'function') throw new TypeError('iterator entry is not an object')
-      out.set(entry[0], entry[1])
+      adder.call(out, entry[0], entry[1])
     }
   } catch (e) { __it_close(r, true); throw e }
   __it_close(r, false)
@@ -126,11 +132,17 @@ export let __it_map = (source) => {
 }
 export let __it_set = (source) => {
   if (source == null || nativeIterable(source)) return new Set(source)
-  const out = new Set(), r = __it_open(source)
+  return __it_set_into(new Set(), source)
+}
+export let __it_set_into = (out, source) => {
+  if (source == null) return out
+  const adder = out.add
+  if (typeof adder !== 'function') throw new TypeError('collection adder is not callable')
+  const r = __it_open(source)
   try {
     while (!r.done) {
       const value = __it_step(r)
-      if (!r.done) out.add(value)
+      if (!r.done) adder.call(out, value)
     }
   } catch (e) { __it_close(r, true); throw e }
   __it_close(r, false)

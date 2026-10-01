@@ -31,7 +31,7 @@ const SHADOW_SENSITIVE = new Set([
 let builtinScopes = new WeakMap()
 let activeBuiltinScope = null
 // Every declared name: the shadow test filters by SHADOW_SENSITIVE, the
-// class lowering asks whether a name is the module's own (declaredAtModuleScope).
+// class lowering also resolves the nearest lexical declaration scope.
 const addBuiltinName = (scope, name) => {
   if (typeof name === 'string') scope.names.add(name)
 }
@@ -63,12 +63,8 @@ const scopeHasBuiltin = (scope, name) => {
   return false
 }
 const shadowsJzifyBuiltin = name => SHADOW_SENSITIVE.has(name) && scopeHasBuiltin(activeBuiltinScope, name)
-// The nearest declaration of `name` from the active scope is the module's own.
+const classBindingScope = name => { for (let s = activeBuiltinScope; s; s = s.parent) if (s.names.has(name)) return s; return null }
 const atModuleScope = () => activeBuiltinScope != null && activeBuiltinScope.parent == null
-const declaredAtModuleScope = (name) => {
-  for (let s = activeBuiltinScope; s; s = s.parent) if (s.names.has(name)) return s.parent == null
-  return false
-}
 // The nearest declaration of `name` from the active scope is a class.
 const declaredClass = (name) => {
   for (let s = activeBuiltinScope; s; s = s.parent) if (s.names.has(name)) return s.classes.has(name)
@@ -238,8 +234,8 @@ let transform, transformScope, transformParams
   normalizeCaseBody,
   transformSwitch: (...a) => transformSwitch(...a),
   lowerClass: () => lowerClass,
-  classBrand: (name) => declaredAtModuleScope(name) ? classBrand(name) : null,
-  classStaticAccessor: (name, slot) => declaredAtModuleScope(name) && classStaticAccessor(name, slot),
+  classBrand: (name) => classBrand(name),
+  classStaticAccessor: (name, slot) => classStaticAccessor(name, slot),
   isClass: declaredClass,
   isValue: declaredValue,
   lowerObjectLiteralThis: () => lowerObjectLiteralThis,
@@ -250,7 +246,7 @@ let transform, transformScope, transformParams
 bindTransform(transform)
 
 const constStrings = new Map()
-;({ lowerClass, lowerObjectLiteralThis, lowerObjectLiteralAccessors, classBrand, classStaticAccessor, resetClasses } = createClassLowering({ transform, names, JC, constStrings, atModuleScope, lowerArguments, readsConstructor: () => ctorUse.on }))
+;({ lowerClass, lowerObjectLiteralThis, lowerObjectLiteralAccessors, classBrand, classStaticAccessor, resetClasses } = createClassLowering({ transform, names, JC, constStrings, atModuleScope, lowerArguments, shadowsBuiltin: shadowsJzifyBuiltin, classBindingScope, readsConstructor: () => ctorUse.on }))
 const generatorNames = new Set()
 // Program mints iterator objects (generators anywhere, hand-rolled `next()`
 // members, `[Symbol.iterator]` methods) — gates the for-of protocol fork so

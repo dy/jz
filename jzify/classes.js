@@ -8,7 +8,7 @@ import { ctx, err, warn } from '../src/ctx.js'
 import { usesArguments } from './arguments.js'
 import { MAX_CLOSURE_ARITY } from '../src/ir.js'
 
-export function createClassLowering({ transform, names, JC, constStrings, atModuleScope, lowerArguments, readsConstructor }) {
+export function createClassLowering({ transform, names, JC, constStrings, atModuleScope, lowerArguments, readsConstructor, shadowsBuiltin, classBindingScope }) {
 // === class lowering ===
 //
 // A class is lowered to a factory arrow. Instance state is a plain object;
@@ -364,11 +364,14 @@ const methodValue = (params, body, kind, receiver) => {
 // too: a store to `C.prototype.p` (foldPrototypeStores below) and, where the
 // program reads one, `constructor` (the class, called as its factory).
 const structClasses = new Map()   // this module's classes by local name
+let localClasses = new WeakMap()   // lexical declaration scope → local native families
 let moduleImports = null          // the module's imports and the binding resolver (index.js), or null
 /** The class a name of this module denotes: one lowered here, or one imported
  *  from a module lowered before it (the imports prepared in source order, as
  *  ES evaluates them, up to the one that binds the name); null otherwise. */
 const resolveClass = (name) => {
+  const scope = classBindingScope(name)
+  if (scope?.parent) return localClasses.get(scope)?.get(name) ?? null
   const own = structClasses.get(name)
   if (own || !moduleImports) return own ?? null
   let mangled = null
@@ -384,7 +387,7 @@ const resolveClass = (name) => {
 }
 const methodFn = (cls, m) => `${cls}${CLASS_T}${m}`
 const INIT = CLASS_T + 'init', BIND = CLASS_T + 'bind'
-function lowerStruct({ name, base, ctorParams, ctorBody, methods, fields, statics, superMethods, hoists, trailers }) {
+function lowerStruct({ name, base, nativeCollection, ctorParams, ctorBody, methods, fields, statics, superMethods, hoists, trailers }) {
   const cls = name ?? names.classStatic()
   const id = ctx.transform.classId = (ctx.transform.classId ?? 0) + 1
   const brand = BRAND + id
@@ -399,11 +402,24 @@ function lowerStruct({ name, base, ctorParams, ctorBody, methods, fields, static
   for (const f of assigned) if (!own.includes(f)) own.push(f)
   const allFields = base ? [...base.fields, ...own.filter(f => !base.fields.includes(f))] : own
   const entry = { brand, name: cls, module: ctx.module.currentPrefix, factory: cls, init: methodFn(cls, INIT), fields: allFields, methods: new Map(base?.methods), base: base?.brand ?? null, staticAccessors: new Set(base?.staticAccessors) }
+  if (nativeCollection) { entry.nativeCollection = nativeCollection; entry.nominal = CLASS_T + 'instance' + id }
   for (const [mname] of methods) entry.methods.set(mname, methodFn(cls, mname))
-  structClasses.set(cls, entry)
-  ;(ctx.transform.classes ??= new Map()).set(brand, entry)
+  const localScope = nativeCollection && !atModuleScope() ? classBindingScope(cls) : null
+  if (localScope) {
+    let entries = localClasses.get(localScope)
+    if (!entries) localClasses.set(localScope, entries = new Map())
+    entries.set(cls, entry)
+  } else structClasses.set(cls, entry)
+  // Local bound methods are closure values, not module-level dispatch targets.
+  ;(ctx.transform.classes ??= new Map()).set(brand, localScope ? { ...entry, methods: new Map() } : entry)
   const superVars = new Map([...superMethods].map(m => [m, base?.methods.get(m)]))
-  for (const [m, fn] of superVars) if (!fn) jzifyError(`super.${m} is not available on the base class`)
+  for (const [m, fn] of superVars) if (!fn) {
+    if (!nativeCollection) jzifyError(`super.${m} is not available on the base class`)
+    const forward = methodFn(cls, CLASS_T + 'super' + m), args = names.classSuperArg(0)
+    superVars.set(m, forward)
+    hoists.push(['let', ['=', forward, transform(['=>', ['()', [',', self, ['...', args]]],
+      ['()', ['.', ['.', nativeCollection + '.prototype', m], 'apply'], [',', self, args]]])]])
+  }
   const rewrite = (node) => renameThis(rewriteSuperMethodCalls(node, superVars, self), self)
   const selfList = (params) => { const list = extractParams(arrowParams(params ?? null)); return list.length ? [',', self, ...list] : self }
   const withSelf = (params) => ['()', selfList(params)]
@@ -413,6 +429,7 @@ function lowerStruct({ name, base, ctorParams, ctorBody, methods, fields, static
     : kind === 'async' ? ['async', ['=>', withSelf(mparams), body]] : ['=>', withSelf(mparams), body])
   // The methods, each a function of the receiver, and a binder for a method read as a value.
   for (const [mname, params, body, kind] of methods) {
+    if (nativeCollection && (mname.endsWith(ACCESSOR_GET) || mname.endsWith(ACCESSOR_SET))) recordAccessor(mname.slice(0, -ACCESSOR_GET.length), true)
     const [mparams, mbody] = ownArguments(params, body)
     hoists.push(['let', ['=', methodFn(cls, mname), fnOf(kind, rewrite(mparams), block(rewrite(mbody)))]])
     const plist = extractParams(arrowParams(mparams ?? null))
@@ -423,20 +440,23 @@ function lowerStruct({ name, base, ctorParams, ctorBody, methods, fields, static
         ['()', methodFn(cls, mname), withReceiver(args.length === 0 ? null : args.length === 1 ? args[0] : [',', ...args], self)]]]]])
   }
   // The initializer: the base's first, then the field initializers, then the constructor body.
-  const split = base ? splitCtorSuper(ctorBody) : { args: null, body: ctorBody }
-  const forwarded = ctorParams == null && base ? Array.from({ length: DEFAULT_DERIVED_CTOR_ARITY }, (_, i) => names.classSuperArg(i)) : null
+  const derived = base || nativeCollection
+  const split = derived ? splitCtorSuper(ctorBody) : { args: null, body: ctorBody }
+  const forwarded = ctorParams == null && derived ? nativeCollection
+    ? [['...', names.classSuperArg(0)]]
+    : Array.from({ length: DEFAULT_DERIVED_CTOR_ARITY }, (_, i) => names.classSuperArg(i)) : null
   const ctorList = forwarded ?? (ctorParams == null ? [] : extractParams(rewrite(ctorParams)))
   const initStmts = []
   // The statements before `super(…)` run first, in the scope of the rest.
-  if (base && split.pre) initStmts.push(...split.pre)
-  if (base) {
+  if (derived && split.pre) initStmts.push(...split.pre)
+  if (derived) {
     // `super(a, b)` passes its arguments; a constructor without one, or none, forwards its own
     const given = split.args == null ? null : split.args.length === 0 || split.args[0] == null ? [] : Array.isArray(split.args[0]) && split.args[0][0] === ',' ? split.args[0].slice(1) : split.args
     const superArgs = given ?? ctorList.map(p => typeof p === 'string' ? p : Array.isArray(p) && p[0] === '...' ? p : Array.isArray(p) && p[0] === '=' && typeof p[1] === 'string' ? p[1] : null)
     if (superArgs.includes(null)) jzifyError('a derived class constructor with a destructured parameter must call super(…) itself')
-    initStmts.push(['()', base.init, [',', self, ...superArgs]])
+    initStmts.push(['()', base ? base.init : nativeCollection === 'Map' ? '__it_map_into' : '__it_set_into', [',', self, ...superArgs]])
   }
-  for (const [fname, init] of fields) if (init != null) initStmts.push(['=', ['.', self, fname], init])
+  for (const [fname, init] of fields) if (init != null || nativeCollection) initStmts.push(['=', ['.', self, fname], init ?? UNDEF])
   if (split.body != null) {
     let cb = split.body
     if (Array.isArray(cb) && cb[0] === '{}') cb = cb[1]
@@ -454,9 +474,21 @@ function lowerStruct({ name, base, ctorParams, ctorBody, methods, fields, static
     : Array.isArray(p) && p[0] === '=' && typeof p[1] === 'string' && !refsName(p[2], self, REFS_IN_EXPR) ? ['=', p[1], transform(p[2])] : names.classSuperArg(i))
   const fargs = fparams.map(p => Array.isArray(p) && p[0] === '=' ? p[1] : p)
   const props = [...allFields.map(f => [':', f, UNDEF]), [':', brand, UNDEF]]
-  const lit = ['{}', props.length === 1 ? props[0] : [',', ...props]]
+  const lit = nativeCollection ? ['()', 'new.' + nativeCollection, null] : ['{}', props.length === 1 ? props[0] : [',', ...props]]
+  const install = []
+  if (nativeCollection) {
+    for (const [mname, fn] of entry.methods) {
+      install.push(['=', ['.', self, mname], ['()', fn + BIND, self]],
+        ['()', '__hide_member', [',', self, ['str', mname]]])
+    }
+    for (let e = entry; e; e = ctx.transform.classes.get(e.base))
+      if (e.nominal) install.push(['=', ['.', self, e.nominal], [null, 1]],
+        ['()', '__hide_member', [',', self, ['str', e.nominal]]])
+    if (readsConstructor()) install.push(['=', ['.', self, 'constructor'], cls],
+      ['()', '__hide_member', [',', self, ['str', 'constructor']]])
+  }
   const factory = ['=>', ['()', fparams.length === 0 ? null : fparams.length === 1 ? fparams[0] : [',', ...fparams]], ['{}', [';',
-    ['let', ['=', self, lit]],
+    ['let', ['=', self, lit]], ...install,
     ['()', entry.init, [',', self, ...fargs]],
     ['return', self]]]]
   for (const [sname, value, kind] of statics) {
@@ -580,6 +612,10 @@ function lowerClass(name, heritage, body, hoists, trailers) {
       jzifyError(JC.superProp)
   }
   const base = typeof heritage === 'string' ? resolveClass(heritage) : null
+  const nativeCollection = base?.nativeCollection ??
+    ((heritage === 'Map' || heritage === 'Set') && !shadowsBuiltin(heritage) ? heritage : null)
+  if (nativeCollection && hoists && (statics.length === 0 || trailers))
+    return lowerStruct({ name, base, nativeCollection, ctorParams, ctorBody, methods, fields, statics, superMethods, hoists, trailers })
   if (structsOn && hoists && atModuleScope() && (heritage == null || base && !base.nominal) && (statics.length === 0 || trailers))
     return lowerStruct({ name, base, ctorParams, ctorBody, methods, fields, statics, superMethods, hoists, trailers })
   // The advisory names what kept the class from its schema lowering (`why`):
@@ -720,7 +756,7 @@ function lowerClass(name, heritage, body, hoists, trailers) {
   /** The module's classes are its own: cleared at every jzify entry, with the
    *  module's imports for the classes of others; `structs` false keeps every class a closure. */
   let structsOn = true
-  const resetClasses = (structs = true, imports = null) => { structClasses.clear(); structsOn = structs; moduleImports = imports }
+  const resetClasses = (structs = true, imports = null) => { structClasses.clear(); localClasses = new WeakMap(); structsOn = structs; moduleImports = imports }
   return { lowerClass, lowerObjectLiteralThis, lowerObjectLiteralAccessors, classBrand, classStaticAccessor, resetClasses }
 }
 
