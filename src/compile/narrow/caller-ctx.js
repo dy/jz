@@ -17,11 +17,6 @@ import { VAL } from '../../reps.js'
 
 export const PTR_ABI_KINDS = new Set([VAL.OBJECT, VAL.SET, VAL.MAP, VAL.BUFFER])
 
-// Integer-preserving ops: an expr over integers stays integer (ToInt32-consistent) through these.
-// Excludes /, %, ** (fractional). Used to recognize a recursive arg whose i32-ness follows from
-// its inputs' i32-ness (`f(n - 1)`), so it carries no independent type evidence.
-export const RECUR_INT_OPS = new Set(['+', '-', '*', 'u-', 'u+', '&', '|', '^', '<<', '>>', '>>>', '~'])
-
 // DBG-only (product-lattice Slice 4a, .work/archive/lattice-design.md §1.6): `val`
 // (the meet, sticky-null-poisonable) and `possibleKinds` (the existential
 // union) must never contradict — whenever a param's `val` has resolved to a
@@ -49,7 +44,9 @@ function buildCallerCtx() {
     // and is not cloned once per function.
     const callerLocals = makeMapOverlay(facts.locals)
     for (const p of func.sig.params) if (!callerLocals.has(p.name)) callerLocals.set(p.name, p.type)
-    callerCtx.set(func, { callerLocals })
+    // This view describes argument values, not the unsigned word carrier.
+    if (facts.unsignedLocals) for (const name of facts.unsignedLocals) callerLocals.set(name, 'f64')
+    callerCtx.set(func, { callerLocals, readPresent: facts.readPresent })
   }
   return callerCtx
 }
@@ -109,9 +106,12 @@ function refreshCallerLocals(callerCtx) {
       if (p.ptrKind === VAL.TYPED && p.ptrAux != null) { const c = ctorFromElemAux(p.ptrAux); if (c != null) te.set(p.name, c) }
     }
     ctx.func.typedElem = te
-    const fresh = reanalyzeBody(func.body).locals
+    const facts = reanalyzeBody(func.body), fresh = makeMapOverlay(facts.locals)
     for (const p of func.sig.params) if (!fresh.has(p.name)) fresh.set(p.name, p.type)
-    callerCtx.get(func).callerLocals = fresh
+    if (facts.unsignedLocals) for (const name of facts.unsignedLocals) fresh.set(name, 'f64')
+    const entry = callerCtx.get(func)
+    entry.callerLocals = fresh
+    entry.readPresent = facts.readPresent
   }
   } finally {
     // This pass owns a transient scratch map rather than shadowing an outer

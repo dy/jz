@@ -153,10 +153,10 @@ export function exprType(expr, locals, valTypes, strict, bodyRoot, readPresent) 
     if (typeof expr[1] === 'string' && ctx.schema?.slotI32CertainAt?.(expr[1], expr[2])) return 'i32'
     return 'f64'
   }
-  // Comparisons, logical-not, and unsigned shift always yield an i32 — a boolean,
-  // or a ToUint32 result. True even on BigInt operands (`>>>` throws on bigint, so
-  // it never reaches here with one).
-  if (CMP_OPS.has(op) || op === '>>>') return 'i32'
+  // Comparisons always yield i32. Unsigned shifts have an i32 payload, but
+  // lossless signed storage must preserve their full uint32 magnitude.
+  if (CMP_OPS.has(op)) return 'i32'
+  if (op === '>>>') return readPresent ? 'f64' : 'i32'
   // Bitwise & signed-shift: i32 on numbers, but f64 when operands are BigInt — the
   // result is a bigint carried in the i64-bits-as-f64 ABI, not a 32-bit int.
   if (SIGNED_BIT_OPS.has(op)) {

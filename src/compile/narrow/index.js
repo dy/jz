@@ -30,13 +30,15 @@ import { ctorFromElemAux } from '../../../layout.js'
 import { K, tagOf, paramOf, valOf, valsOf, hasTag, core, UNKNOWN } from '../../summary/index.js'
 import { ensureParamRep, mergeParamFact, latticeMeet } from '../../param-reps.js'
 import { inferArrElemSchemaSet } from '../infer.js'
-import { RECUR_INT_OPS, assertValKindConsistent, buildCallerTypedLenCtx, resetParamWasmFacts, createPhaseState } from './caller-ctx.js'
+import { assertValKindConsistent, buildCallerTypedLenCtx, resetParamWasmFacts, createPhaseState } from './caller-ctx.js'
 import { applyI32ParamSpecialization, validateTypedLenParams, validateLenBoundOfParams, validateIntConstParams, substituteIntConstParams, applyPointerParamAbi, narrowableFuncs, applyTypedPointerParamAbi } from './param-abi.js'
 import { narrowI32Results, seedResultKinds, narrowPointerResults, narrowReturnArrayElemSets } from './results.js'
 import { inferInternalArrayLengths, inferTypedValueRanges, boundedByCallerLength, inferNumericRanges, inferElementParamRanges } from './summaries.js'
 import { proveElementBounds } from './element-bounds.js'
 import { jsstringEnabled, applyJsstringBoundaryCarrier } from './jsstring-carrier.js'
 import { isExported } from '../func-exports.js'
+
+const NO_PRESENT_READS = new Set()
 
 /** The summary's kinds onto the parameter records of every function the
  *  call-site lattices see (a direct callee neither the host nor a value holder
@@ -178,7 +180,7 @@ export default function narrowSignatures(programFacts, ast) {
     callerParamFact,
     // runArrElemFixpoint mutates these named context channels in place.
     callerElems: undefined,
-    calleeParamNames: undefined, _lastArgMiss: false,
+    callerReadPresent: undefined, _lastArgMiss: false,
   }
   const siteState = cs => {
     const { callee, argList, callerFunc } = cs
@@ -193,7 +195,7 @@ export default function narrowSignatures(programFacts, ast) {
     sharedSiteState.restIdx = func.rest ? func.sig.params.length - 1 : -1
     sharedSiteState.callerLocals = ctxEntry.callerLocals
     sharedSiteState.callerSummary = ctx.summary.at(callerFunc?.sig)
-    sharedSiteState.calleeParamNames = paramIndices(func)
+    sharedSiteState.callerReadPresent = ctxEntry.readPresent ?? NO_PRESENT_READS
     sharedSiteState.callerElems = undefined
     sharedSiteState._lastArgMiss = false
     return sharedSiteState
@@ -270,18 +272,6 @@ export default function narrowSignatures(programFacts, ast) {
   // of the type query, so a param fed only such integer elements (dict's key `k` ← src[i],
   // threaded through Math.imul / === keys[h] / keys[h]=k) narrows to i32 instead of paying
   // convert + f64-compare + trunc round-trips through its probe loop.
-  // A value built ONLY from the callee's own params + already-i32 locals + integer constants via
-  // integer-preserving ops. Its i32-ness follows from its inputs' — for a recursive self-call it
-  // carries no INDEPENDENT evidence about whether the params are i32. Used for the optimism below.
-  const isRecurIntExpr = (n, pnames, callerLocals) => {
-    if (typeof n === 'string') return pnames.has(n) || callerLocals?.get?.(n) === 'i32'
-    if (typeof n === 'number') return Number.isInteger(n)
-    if (!Array.isArray(n)) return false
-    if (n[0] == null) return typeof n[1] === 'number' && Number.isInteger(n[1])           // boxed int literal
-    if (n[0] === 'local.get') return pnames.has(n[1]) || callerLocals?.get?.(n[1]) === 'i32'
-    if (RECUR_INT_OPS.has(n[0])) return n.slice(1).every(c => isRecurIntExpr(c, pnames, callerLocals))
-    return false
-  }
   // Like the site record, this view is consumed synchronously. Reuse its
   // methods across sites and sweeps; each query still reads the current
   // caller's summary, without retaining a fact from an earlier site.
@@ -291,15 +281,11 @@ export default function narrowSignatures(programFacts, ast) {
     get: n => sharedSiteState.callerSummary.typedCtorOf(n),
   }
   const argWasmType = (arg, state) => {
-    // Recursive self-call: an arg built only from the callee's own params + already-i32 locals +
-    // int constants (`f(n - 1)`, `f(n - 1 - i)`) is i32 IFF those params are i32 — a fixpoint
-    // identity carrying no INDEPENDENT type evidence. Optimistically type it i32 so the NON-
-    // recursive call sites decide: all i32 ⇒ the param narrows; any f64 ⇒ the meet still poisons
-    // it. Lets a plain decreasing recursion narrow with no `|0` source crutch. (The bare-identity
-    // arg `f(n)` is already skipped wholesale in runCallsiteLattice.)
-    if (state.callee === state.callerFunc?.name &&
-        isRecurIntExpr(arg, state.calleeParamNames, state.callerLocals)) return 'i32'
-    const wt = withTypedElemOverlay(summaryTypedElems, () => exprType(arg, state.callerLocals))
+    // A call boundary stores the actual value, including overflow, negative
+    // zero, unsigned magnitude and missing elements. Recursive arithmetic
+    // obeys the same width proof; being integer-valued is not an i32 identity.
+    const wt = withTypedElemOverlay(summaryTypedElems, () =>
+      exprType(arg, state.callerLocals, null, true, state.callerFunc?.body, state.callerReadPresent))
     // An i32-typed BARE NAME that carries a POINTER kind in the caller (a local
     // or param already narrowed to an unboxed i32 offset) is NOT integer
     // evidence: narrowing the callee's param to plain i32 on it makes every

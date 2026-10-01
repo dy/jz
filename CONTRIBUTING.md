@@ -3103,6 +3103,10 @@ arithmetic alone does not prove that: increments, multiplication, negation and
 unsigned shifts can leave the signed range. The mutation census includes nested
 closure writes; callers agreeing on i32 entry values cannot bound later updates.
 Explicit word operations keep the direct integer ABI (`test/inference.js`).
+Call arguments use the same lossless value proof. Recursive arithmetic does
+not inherit signed width from an integer entry; each incoming call must fit.
+Unsigned locals and results keep their positive magnitude, and absent typed
+elements remain undefined unless the callee itself asks for a word conversion.
 
 A parameter every call fixes to one integer reads as that integer in its body
 (`substituteIntConstParams`, narrow/param-abi.js, once the signatures settle; validated as

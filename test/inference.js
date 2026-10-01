@@ -1866,6 +1866,83 @@ test('param i32-narrowing: scalar param fed integer typed-array elements narrows
   ok(/\(param \$hash i32\)/.test(grad), 'grad hash param narrows to i32 (fed a local bound to an Int32 param element)')
 })
 
+test('param i32-narrowing: recursive arguments preserve width rather than integer closure', () => {
+  for (const expr of ['n + 1', 'n - 1', 'n * 2', '-n', 'n >>> 0', 'n % 2', 'n + 2147483648', '(n + 1) | 0', 'n >>> 1']) {
+    const src = `function recur(n, done) { if (done) return n; return recur(${expr}, 1) }
+      export function value(k) { return recur(k | 0, 0) }`
+    const want = oracle(src)
+    for (const level of levels(0, 1, 2, 3, 'size')) {
+      const got = jz(src, { optimize: { level, sourceInline: false } }).exports
+      for (const k of [2147483647, 2147483647, -2147483648, -1, 0, 1, 0, 2147483647])
+        is(got.value(k), want.value(k), `${expr}, O${level}, ${k}`)
+    }
+  }
+})
+
+test('param i32-narrowing: direct arguments preserve arithmetic, unsigned and missing values', () => {
+  for (const expr of ['n + 1', 'n - 1', 'n * 2', '-n', 'n >>> 0', '+(n >>> 0)', 'n ? n >>> 0 : -1', '(n, n >>> 0)', 'u(n)', 'a[n]', 'n & 255', 'n >>> 1']) {
+    const src = `function take(x) { return x }
+      function u(x) { return x >>> 0 }
+      function forward(n) { const a = new Int32Array([7]); return take(${expr}) }
+      export function value(k) { return forward(k | 0) }`
+    const want = oracle(src)
+    for (const level of levels(0, 1, 2, 3, 'size')) {
+      const got = jz(src, { optimize: { level, sourceInline: false } }).exports
+      for (const k of [0, 0, 1, -1, -2147483648, 2147483647, 0])
+        is(got.value(k), want.value(k), `${expr}, O${level}, ${k}`)
+    }
+  }
+})
+
+test('param i32-narrowing: all incoming sites preserve wide values through recursive forwarding', () => {
+  const src = `function take(n) { return n }
+    function first(n, done) { if (done) return n; return second(n + 1) }
+    function second(n) { return first(n, 1) }
+    export function value(k) {
+      const n = k | 0
+      return [take(1), take(n >>> 0), first(n, 0), take(1)]
+    }`
+  const want = oracle(src)
+  for (const level of levels(0, 1, 2, 3, 'size')) {
+    const got = jz(src, { optimize: { level, sourceInline: false } }).exports
+    for (const k of [0, 0, -1, 2147483647, -2147483648, 0])
+      is(got.value(k), want.value(k), `O${level}, ${k}: mixed and mutually recursive sites`)
+  }
+})
+
+test('param i32-narrowing: proved argument ranges and recursive identities keep i32', () => {
+  const src = `function bounded(x) { return x }
+    function identity(x, depth) { if (!depth) return x; return identity(x, (depth - 1) | 0) }
+    export function value(k) { return bounded((k & 255) + 1) + identity(k | 0, 2) }
+  `
+  const tree = parseWat(jz.compile(src, { wat: true, optimize: { sourceInline: false, watr: false } }))
+  for (const name of ['$bounded', '$identity']) {
+    const fn = tree.find(n => n[0] === 'func' && n[1] === name)
+    ok(fn?.some(n => n[0] === 'param' && n[1] === '$x' && n[2] === 'i32'), `${name}: exact argument remains an i32 parameter`)
+    ok(fn?.some(n => n[0] === 'result' && n[1] === 'i32'), `${name}: exact result remains i32`)
+  }
+  const want = oracle(src)
+  for (const level of levels(0, 1, 2, 3, 'size')) {
+    const got = jz(src, { optimize: { level, sourceInline: false } }).exports
+    for (const k of [0, 1, 1, -1, -2147483648, 2147483647, 0]) is(got.value(k), want.value(k), `O${level}, ${k}`)
+  }
+})
+
+test('param i32-narrowing: recursive boundary checks throw and recover with the exact value', () => {
+  const src = `function recur(n, done) {
+      if (done) { if (n > 2147483647) throw new Error('wide'); return n }
+      return recur(n + 1, 1)
+    }
+    export function value(k) { return recur(k | 0, 0) }`
+  for (const level of levels(0, 1, 2, 3, 'size')) {
+    const got = jz(src, { optimize: { level, sourceInline: false } }).exports
+    for (const k of [0, 1, 1, -2147483648, 0]) {
+      throws(() => got.value(2147483647), /wide/, `O${level}: full-width recursive argument reaches the guard`)
+      is(got.value(k), k + 1, `O${level}: successful call after error`)
+    }
+  }
+})
+
 // Recursive identity arg doesn't poison i32-narrowing. nqueens' `solve(all, cols, d1, d2)` is
 // recursive; `all` threads through unchanged (`solve(all, …)`) while the others recur as i32
 // bitwise exprs. The self-call's bare `all` arg must be treated as a fixpoint identity (no
