@@ -1661,6 +1661,11 @@ its origin, so the summary is rebuilt no more often than without it. A variant
 calls what its origin calls, from its own body: those calls join the call-site
 census, so a callee fed both kinds splits per kind (specializeBimorphicTyped)
 instead of going generic.
+Boxed arrays preserve holes across the host boundary: absent cells use the
+reserved tombstone, while present `undefined` uses its value atom. Encoding and
+staged writes test each index's presence; decoding leaves holes unassigned.
+Array copy-back deletes holes and writes present undefined, including nested
+arrays and storage reached through forwarding headers after memory growth.
 `jz:release` names the exports whose calls keep nothing, `flag` those that keep
 nothing when the escape flag stands at or above the host's mark: the host
 rewinds the heap to where it stood before it copied the arguments in, and

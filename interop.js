@@ -25,7 +25,7 @@
  */
 
 import { wasi, attachTimers } from './wasi.js'
-import { HEAP, PTR, FIELD, encodePtrHi, decodePtrType, decodePtrAux, ATOM, ATOM_HI, LAYOUT, DATA_VIEW_FLAG, DATA_VIEW_AUX, TYPED_ELEM_VIEW_FLAG, ctorFromElemAux, HIDDEN_PROPERTY_SEQ } from './layout.js'
+import { HEAP, PTR, FIELD, encodePtrHi, decodePtrType, decodePtrAux, ATOM, ATOM_HI, LAYOUT, TOMB_NAN, DATA_VIEW_FLAG, DATA_VIEW_AUX, TYPED_ELEM_VIEW_FLAG, ctorFromElemAux, HIDDEN_PROPERTY_SEQ } from './layout.js'
 import { ERROR_CODE_HI, ERR_INFO } from './err-codes.js'
 import { decodeUtf8 } from './utf8.js'
 
@@ -172,6 +172,8 @@ export const NULL_NAN = BigInt(ATOM_HI[ATOM.NULL]) << 32n
 export const UNDEF_NAN = BigInt(ATOM_HI[ATOM.UNDEF]) << 32n
 export const FALSE_NAN = BigInt(ATOM_HI[ATOM.FALSE]) << 32n
 export const TRUE_NAN = BigInt(ATOM_HI[ATOM.TRUE]) << 32n
+// Absent array cells have no own index; present undefined keeps UNDEF_NAN.
+const TOMB_BITS = BigInt(TOMB_NAN)
 
 // Coerce JS null/undefined → boxed atom (BigInt); everything else passes through.
 export const coerce = v => v === null ? NULL_NAN : v === undefined ? UNDEF_NAN : v
@@ -443,12 +445,12 @@ export const memory = (src) => {
   mem._setTop = setTop
 
   mem.Array = (data) => {
-    const n = data.length, off = hdr(n, n, n * 8)
+    const n = data.length, off = hdr(n, n, n * 8), source = Object(data)
     // Stage as i64 bits, not as JS Numbers: V8 may transition a JS Array holding
     // NaN-payload doubles to HOLEY_DOUBLE_ELEMENTS, which canonicalizes the NaN
     // payload to 0x7FF8000000000000 — destroying the type/offset bits.
     const wrapped = new BigInt64Array(n)
-    for (let i = 0; i < n; i++) wrapped[i] = bits(mem.wrapVal(data[i]))
+    for (let i = 0; i < n; i++) wrapped[i] = i in source ? bits(mem.wrapVal(source[i])) : TOMB_BITS
     const dst = new BigInt64Array(mem.buffer, off, n)
     for (let i = 0; i < n; i++) dst[i] = wrapped[i]
     return ptr(1, 0, off)
@@ -709,7 +711,10 @@ export const memory = (src) => {
     if (t === 10 && fnOf) return fnOf(p)
     if (t === 1) {  // ARRAY
       const len = m.getInt32(off - 8, true), out = new Array(len)
-      for (let i = 0; i < len; i++) out[i] = mem.read(m.getBigInt64(off + i * 8, true), fnOf)
+      for (let i = 0; i < len; i++) {
+        const value = m.getBigInt64(off + i * 8, true)
+        if (value !== TOMB_BITS) out[i] = mem.read(value, fnOf)
+      }
       return out
     }
     if (t === 3) {  // TYPED
@@ -804,8 +809,8 @@ export const memory = (src) => {
       // Recursive marshalling can grow memory. Commit only after all values
       // marshal, then reacquire the destination view. Failed staging leaves
       // destination contents/length intact; allocations are reclaimed by reset.
-      const staged = new BigInt64Array(length)
-      for (let i = 0; i < length; i++) staged[i] = bits(mem.wrapVal(data[i]))
+      const staged = new BigInt64Array(length), source = Object(data)
+      for (let i = 0; i < length; i++) staged[i] = i in source ? bits(mem.wrapVal(source[i])) : TOMB_BITS
       m = dv()
       for (let i = 0; i < staged.length; i++) m.setBigInt64(off + i * 8, staged[i], true)
       m.setInt32(off - 8, staged.length, true)
@@ -1388,6 +1393,12 @@ export const wrap = (memSrc, inst, state) => {
     if (Array.isArray(dst) && dst.length !== n) dst.length = n
     for (let i = 0; i < n && i < dst.length; i++) {
       const e = m.getBigInt64(off + i * 8, true)
+      if (e === TOMB_BITS) {
+        if (Array.isArray(dst)) delete dst[i]
+        else dst[i] = undefined
+        continue
+      }
+      if (e === UNDEF_NAN) { dst[i] = undefined; continue }
       if (!isBox(e)) { dst[i] = i64ToF64(e); continue }
       if (type(e) === 0 && aux(e) === 0 && offset(e) === 0) { dst[i] = NaN; continue }
       const c = cells?.[i], d = dst[i]
