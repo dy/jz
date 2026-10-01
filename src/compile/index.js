@@ -166,23 +166,32 @@ export function assemble(ast, profiler) {
   // seam: compile/analyze/body-facts.js, plan's sweeps), the registries beside it
   // by content, which is cheap. A summary built under the current key is still the
   // program's; JZ_DEBUG_INVARIANTS checks each reuse against its full inputs.
-  const summaryOf = (losses = ctx.warnings ? [] : null) => Object.assign(summarize(ast, {
-    inits: ctx.module.moduleInits, funcs: ctx.funcs.list, schemas: ctx.schema.list, brandOf: ctx.schema.brandOf, classes: ctx.transform.classes, accessors: ctx.transform.literalAccessorNames, hidden: ctx.schema.hidden, exported: isExported,
-    boundSchema: (name) => ctx.schema.poisoned?.has(name) ? undefined : ctx.schema.vars.get(name),   // the binding's schema a declared literal is allocated with (module/object.js `{}`)
-    imports: new Map(ctx.module.imports.filter(imp => imp[3]?.[0] === 'func').map(imp => imp[3][1].replace(/^\$/, '')).map(name => [name, ctx.module.hostImportValTypes.get(name) ?? null])),
-    hostGlobals: Object.entries(ctx.funcs.exports).map(([name, v]) => v === true ? name : v).filter(v => typeof v === 'string'),
-    // a function's property prepare lifted to a function of its own (`f.prop = arrow` at top level), unless the property is reassigned
-    liftedProp: (fn, prop) => { const lifted = `${fn}$${prop}`; return ctx.funcs.names.has(lifted) && !ctx.funcs.multiProp.has(`${fn}.${prop}`) ? lifted : null },
-    // a function's typed-guard clone, which its direct calls reach at run time (narrow/specialize.js)
-    guardedClone: (fn) => ctx.types.specFns?.get(fn) ?? null,
-    // `losses`: the first cause the summary loses each object shape by (its reads and stores are dynamic from then on)
-    onLose: losses && ((...loss) => losses.push(loss)),
-    // `why` only (a sink alone reports the shape and read advisories): the first cause an array built at a fixed count keeps its guards by
-    onOpen: ctx.warnings && (ctx.transform.whyNotRewind || ctx.transform.optimize?.whyNotSimd) ? (count, why, fn, site) => warn('array-open', `an array of ${count} elements keeps its length checks: ${why}`, { fn: typeof fn === 'string' ? fn : fn == null ? undefined : `closure ${fn}`, why, site: site == null ? undefined : JSON.stringify(site).slice(0, 120) }) : null,
-    moduleGlobals: ctx.scope.globals,
-    constStrings: jsonShapeStrings,
-    constString: (name) => ctx.scope.shapeStrs?.get(name) ?? ctx.scope.constStrs?.get(name) ?? null,   // a module const's folded string (kind/shape.js jsonConstString)
-  }), { losses })
+  const registerLayouts = layouts => {
+    const named = ctx.schema.list.length
+    for (const names of layouts) ctx.schema.register(names)
+    return ctx.schema.list.length !== named
+  }
+  const summaryOf = (discover = true, losses = ctx.warnings ? [] : null) => {
+    const summary = summarize(ast, {
+      inits: ctx.module.moduleInits, funcs: ctx.funcs.list, schemas: ctx.schema.list, brandOf: ctx.schema.brandOf, classes: ctx.transform.classes, accessors: ctx.transform.literalAccessorNames, hidden: ctx.schema.hidden, exported: isExported,
+      registerLayouts: discover ? registerLayouts : null,
+      boundSchema: (name) => ctx.schema.poisoned?.has(name) ? undefined : ctx.schema.vars.get(name),   // the binding's schema a declared literal is allocated with (module/object.js `{}`)
+      imports: new Map(ctx.module.imports.filter(imp => imp[3]?.[0] === 'func').map(imp => imp[3][1].replace(/^\$/, '')).map(name => [name, ctx.module.hostImportValTypes.get(name) ?? null])),
+      hostGlobals: Object.entries(ctx.funcs.exports).map(([name, v]) => v === true ? name : v).filter(v => typeof v === 'string'),
+      // a function's property prepare lifted to a function of its own (`f.prop = arrow` at top level), unless the property is reassigned
+      liftedProp: (fn, prop) => { const lifted = `${fn}$${prop}`; return ctx.funcs.names.has(lifted) && !ctx.funcs.multiProp.has(`${fn}.${prop}`) ? lifted : null },
+      // a function's typed-guard clone, which its direct calls reach at run time (narrow/specialize.js)
+      guardedClone: (fn) => ctx.types.specFns?.get(fn) ?? null,
+      // `losses`: the first cause the summary loses each object shape by (its reads and stores are dynamic from then on)
+      onLose: losses && ((...loss) => losses.push(loss)),
+      // `why` only (a sink alone reports the shape and read advisories): the first cause an array built at a fixed count keeps its guards by
+      onOpen: ctx.warnings && (ctx.transform.whyNotRewind || ctx.transform.optimize?.whyNotSimd) ? (count, why, fn, site) => warn('array-open', `an array of ${count} elements keeps its length checks: ${why}`, { fn: typeof fn === 'string' ? fn : fn == null ? undefined : `closure ${fn}`, why, site: site == null ? undefined : JSON.stringify(site).slice(0, 120) }) : null,
+      moduleGlobals: ctx.scope.globals,
+      constStrings: jsonShapeStrings,
+      constString: (name) => ctx.scope.shapeStrs?.get(name) ?? ctx.scope.constStrs?.get(name) ?? null,   // a module const's folded string (kind/shape.js jsonConstString)
+    })
+    return summary && Object.assign(summary, { losses })
+  }
   let built = null
   const nodeIds = DBG_INVARIANTS ? { of: new WeakMap(), next: 0 } : null
   const summaryKey = () => {
@@ -191,30 +200,21 @@ export function assemble(ast, profiler) {
     for (const [name, sid] of ctx.schema.vars) parts.push('|', name, '=', sid)
     return parts.join('')
   }
-  const summaryNow = () => {
+  // A discovered spread layout changes representation. Restart before
+  // spending the demand pass on facts the new layout replaces.
+  const summarizeProgram = () => {
     const key = summaryKey()
-    if (built?.key !== key) built = { key, summary: timePhase(profiler, 'summary', summaryOf), inputs: nodeIds && summaryInputs(ast, nodeIds) }
+    if (built?.key !== key) {
+      let summary = null
+      for (let round = 0; summary === null; round++) summary = timePhase(profiler, 'summary', () => summaryOf(round < 64))
+      built = { key: summaryKey(), summary, inputs: nodeIds && summaryInputs(ast, nodeIds) }
+    }
     else if (nodeIds) {
       const now = summaryInputs(ast, nodeIds).split('\n'), was = built.inputs.split('\n')
       const at = now.findIndex((line, i) => line !== was[i])
       if (at >= 0 || now.length !== was.length) throw new Error(`[summary] its inputs changed under an unchanged key, a rewrite that bypassed the mutation seams (compile/analyze/body-facts.js): ${(now[at] ?? '').slice(0, 160)}`)
     }
     return built.summary
-  }
-  // A spread of sources whose layouts the summary knows makes a layout no
-  // literal names: named, the next summary types the literal's fields, and a
-  // spread of that literal makes another (`{...stretch(o), complex: true}`).
-  // Every summary names them all, so what the plan decides from one agrees
-  // with the layout the emitter builds (module/object.js emitObjectSpread).
-  const summarizeProgram = () => {
-    let summary = summaryNow()
-    for (let round = 0; round < 64 && summary.unnamedLayouts.length; round++) {
-      const named = ctx.schema.list.length
-      for (const names of summary.unnamedLayouts) ctx.schema.register(names)
-      if (ctx.schema.list.length === named) break
-      summary = summaryNow()
-    }
-    return summary
   }
   ctx.summary = summarizeProgram()
   // Include imported functions for call resolution (e.g. template interpolations).

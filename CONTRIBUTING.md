@@ -496,6 +496,9 @@ Shape-loss diagnostics reuse the escape function; joins construct their reason
 only when an advisory sink needs it. Disabling advisories preserves all facts.
 Host-escape walks allocate a visited set only for values with reference edges.
 Solver and query views cache immutable singleton identity lists per summary.
+Numeric-demand rounds reuse callable target lists after kinds and escapes settle,
+and visit parameter defaults and bodies without temporary frame records. Argument
+hulls alternate current and previous buffers; published summaries own their buffers.
 Flow-sensitive assignment and refinement facts use those same IDs in sparse
 collections, reset per function; branch rollback stores IDs as well. Dense
 arrays for these sparse facts increased allocation without improving throughput.
@@ -514,6 +517,11 @@ spread positions and recursive forwarding retain conservative argument joins.
 The registry and summary share one schema key: a serialization of the brand
 and canonical property order. Delimiter characters inside valid JS string
 keys must never merge unrelated layouts.
+When compilation discovers a spread layout, it registers the layout and restarts
+the summary after kinds converge, before demand work. Discoveries are batched;
+restarting in the middle of convergence can multiply the number of summaries.
+Only the registry-owning caller can request this restart; ordinary summary readers
+receive complete facts, and later summaries cannot mutate earlier readers.
 
 A closure's own properties are facts of its site (`closureProps`): `fn.ops = ops`
 on a dispatcher stores the array's kind under the name for every instance of

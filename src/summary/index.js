@@ -57,7 +57,6 @@ import { typedElementKey, typedCtorName } from '../typed-provenance.js'
 import { ATOMICS_VALUE_OPS, builtinCalleeVal, methodValType } from '../kind-traits.js'
 import { summaryQueries } from './query.js'
 import { buildResultContracts, unbounded } from './contract.js'
-import { frameRoots } from '../function.js'
 import { definitelyAssigned } from './definite.js'
 export { CARRIER, PRESENCE, contractVal, unbounded } from './contract.js'
 
@@ -113,8 +112,10 @@ export const hasModeledResult = name => MODELED_RESULT.test(name)
  *  `hostGlobals` the module globals the host reads, `constString` a module const's folded
  *  string (`JSON.parse(SRC)` parses it). An exported global keeps its kind: the host
  *  can store only a number through its f64 export, which a number global takes and no other
- *  kind could take; a closure the host can reach through it may be called with anything. */
-export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchema = () => undefined, classes, accessors = null, hidden = null, exported, imports, hostGlobals = [], moduleGlobals = new Map(), constString = () => null, constStrings = () => null, onLose = null, onOpen = null, liftedProp = () => null, guardedClone = () => null }) {
+ *  kind could take; a closure the host can reach through it may be called with anything.
+ *  `registerLayouts`, when supplied, can name discovered layouts after kinds converge:
+ *  returning true requests a restart, and summarize returns null instead of publishing. */
+export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchema = () => undefined, classes, accessors = null, hidden = null, exported, imports, hostGlobals = [], moduleGlobals = new Map(), constString = () => null, constStrings = () => null, onLose = null, onOpen = null, registerLayouts = null, liftedProp = () => null, guardedClone = () => null }) {
   // Layouts determine storage; construction sites determine aliasing. Keep
   // separate slot facts for unrelated objects with identical property names.
   schemas = schemas.map(props => props.slice())
@@ -667,7 +668,8 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   // or a closure table may call takes anything: its hull is never asked for
   // (query.js paramRangesOf).
   const argRanges = new Map()   // function name → { ranges: ([lo, hi] | null)[] }, the settled hulls of the last round
-  const roundArgs = new Map()    // this round's, recorded afresh
+  const roundArgs = new Map()    // reusable buffers for the next round's arguments
+  let argumentRound = 0
   const moved = new Map()        // function name → each position's bound-change count; four opens it
   // A function the host, a dispatcher or a caller the walk never sees may
   // call receives anything: it has no hull.
@@ -692,7 +694,8 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     const f = funcByName.get(name)
     if (!f || openCaller(name, f)) return
     let entry = roundArgs.get(name)
-    if (!entry) roundArgs.set(name, entry = { ranges: names.map(() => undefined) })
+    if (!entry) roundArgs.set(name, entry = { ranges: names.map(() => undefined), round: argumentRound })
+    else if (entry.round !== argumentRound) { entry.ranges.fill(undefined); entry.round = argumentRound }
     let spread = false
     for (let i = 0; i < names.length; i++) {
       if (i < n && kspread[base + i]) spread = true
@@ -708,6 +711,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   // changed four rounds over opens. The round's hulls are then the settled ones.
   const settleArgs = () => {
     for (const [name, entry] of roundArgs) {
+      if (entry.round !== argumentRound) continue
       const prev = argRanges.get(name)?.ranges
       entry.ranges.forEach((r, i) => {
         if (r === undefined) r = entry.ranges[i] = null
@@ -721,10 +725,15 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
         if (m >= 4) entry.ranges[i] = null
       })
     }
-    for (const name of argRanges.keys()) if (!roundArgs.has(name)) changed = true
-    argRanges.clear()
-    for (const [name, entry] of roundArgs) argRanges.set(name, entry)
-    roundArgs.clear()
+    for (const name of argRanges.keys()) if (roundArgs.get(name)?.round !== argumentRound) { argRanges.delete(name); changed = true }
+    for (const [name, entry] of roundArgs) {
+      if (entry.round !== argumentRound) continue
+      let last = argRanges.get(name)
+      if (!last) argRanges.set(name, last = { ranges: [] })
+      const reusable = last.ranges
+      last.ranges = entry.ranges; entry.ranges = reusable
+    }
+    argumentRound++
   }
   /** A loop `for (let i = a; i < b; i += c)` whose body leaves `i` alone: the
    *  counter and the integers it takes in the body; null for any other loop. */
@@ -4013,6 +4022,26 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   }
   const argCount = (a) => a == null ? 0 : Array.isArray(a) && a[0] === ',' ? a.length - 1 : 1
   const argAt = (a, i) => Array.isArray(a) && a[0] === ',' ? a[i + 1] : a
+  // Kinds and escapes are settled before demand starts. Every round reads the
+  // same callable members and parameter keys; only their demanded levels move.
+  const callDemandTargets = new Map()
+  const demandTargets = (id) => {
+    let targets = callDemandTargets.get(id)
+    if (!targets) callDemandTargets.set(id, targets = { ids: membersOf(id).filter(id => !escaped.has(id)), params: [] })
+    return targets
+  }
+  const demandParams = (targets, i) => {
+    let keys = targets.params[i]
+    if (keys !== undefined) return keys
+    keys = targets.ids.length ? [] : null
+    for (const id of targets.ids) {
+      const name = callableParams(id)[i]
+      if (name == null || callableDefaults(id)?.[name] != null) { keys = null; break }
+      keys.push(keyIn(id, name))
+    }
+    targets.params[i] = keys
+    return keys
+  }
   const demand = (n, cx = OTHER, into = null) => {
     if (n == null || typeof n === 'number') return
     if (typeof n === 'string') { useOf(n, cx, into); return }
@@ -4099,11 +4128,11 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
           for (let i = 0; i < count; i++) { const name = i < names.length ? names[i] : null; if (!escaped.has(id) && name != null && callableDefaults(id)?.[name] == null) useOf(argAt(as, i), FLOW, keyIn(id, name)); else demand(argAt(as, i)) }
           return
         }
-        const ids = members.filter(id => !escaped.has(id))
-        for (const id of ids) readResult(id, cx, into)
+        const targets = demandTargets(paramOf(ck))
+        for (const id of targets.ids) readResult(id, cx, into)
         for (let i = 0; i < count; i++) {
-          const keys = ids.map(id => callableParams(id)[i] != null && callableDefaults(id)?.[callableParams(id)[i]] == null ? keyIn(id, callableParams(id)[i]) : null)
-          if (ids.length && keys.every(k => k !== null)) useOf(argAt(as, i), FLOW, keys); else demand(argAt(as, i))
+          const keys = demandParams(targets, i)
+          if (keys) useOf(argAt(as, i), FLOW, keys); else demand(argAt(as, i))
         }
         return
       }
@@ -4183,6 +4212,10 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   }
   seed([])
   fixpoint()
+  // Batch every layout the kind fixpoint discovers before restarting. A
+  // restart in the middle can discover only one layer of a call chain at a
+  // time, rebuilding the whole program once per layer.
+  if (unnamed.size && registerLayouts?.([...unnamed.values()])) return null
   // The demand pass, then the kinds again with the demanded and compatible
   // exported parameters NUMBER. A numeric-demanded parameter is read only
   // where a string would be converted anyway, so the f64 boundary is the
@@ -4192,17 +4225,18 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   // An expression body is the result itself. A callable that escaped is called,
   // and its result read, where no walk sees; an exported function's result
   // reaches the host as itself (`fib('1')` is '1'): both results are denied.
-  const frame = (scope, body, roots) => {
+  const frame = (scope, body, defaults) => {
     provenNumeric = null
     current = scope
     if (escaped.has(scope) || (typeof scope === 'string' && exportedNames.has(scope)) || hostClosures.has(scope)) deny(resultKey(scope))
-    for (const r of roots) { if (r === body && !isBlock(body)) useOf(body, FLOW, resultKey(scope)); else demand(r) }
+    if (defaults) for (const name of defaultNamesOf(defaults)) demand(defaults[name])
+    if (isBlock(body)) demand(body); else useOf(body, FLOW, resultKey(scope))
   }
   rounds(() => {
     demandChanged = false
     // a parameter default runs in the frame: its uses of the parameters count
-    for (const f of funcs) frame(f.name, f.body, frameRoots(f))
-    for (let id = 0; id < closureBodies.length; id++) frame(id, closureBodies[id], frameRoots({ body: closureBodies[id], defaults: closureDefaults[id] }))
+    for (const f of funcs) frame(f.name, f.body, f.defaults)
+    for (let id = 0; id < closureBodies.length; id++) frame(id, closureBodies[id], closureDefaults[id])
     current = null
     for (const top of tops) run(top)
     return demandChanged
@@ -4214,6 +4248,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     pendingAll = false; pendingIndexed = false; wildValues = K.NONE; wildProps.clear(); sideProps.clear(); sideWild.clear(); closureProps.clear(); sideByProp.clear(); foreignObjects = false; foreignProps.clear(); deletable.clear(); deleteReach.unknown = false; keysSeen.clear(); copiedSchemas.clear()
     seed(seeded)
     fixpoint()
+    if (unnamed.size && registerLayouts?.([...unnamed.values()])) return null
   }
 
   // Resolve union-find roots once before publishing. Readers never compress

@@ -14,6 +14,53 @@ const lit = value => [null, value]
 const typed = ['()', 'new.BigInt64Array', lit(0)]
 const reduce = (callback, initial) => ['()', ['.', typed, 'reduce'], [',', callback, initial]]
 
+test('summary queries: layout discovery restarts leave complete and retained readers independent', () => {
+  const options = { funcs: [], schemas: [['a']], brandOf: () => null, imports: new Map(), exported: () => false }
+  const input = value => [';',
+    ['const', ['=', 'a', ['{}', [':', 'a', lit(value)]]]],
+    ['const', ['=', 'b', ['{}', ['...', 'a'], [':', 'b', lit(2)]]]],
+    ['const', ['=', 'c', ['{}', ['...', 'b'], [':', 'c', lit(3)]]]],
+  ]
+  const plain = summarize(input(1), options)
+  is(plain.unnamedLayouts, [['a', 'b']], 'public summaries complete without a registry callback')
+  const refused = summarize(input(1), { ...options, registerLayouts: () => false })
+  is(refused.unnamedLayouts, plain.unnamedLayouts, 'a registry that adds nothing still gets complete facts')
+  let retained
+  for (const value of [1, 1, 'changed', 1]) {
+    const schemas = [['a']], restarts = []
+    let summary
+    do summary = summarize(input(value), { ...options, schemas, registerLayouts: layouts => {
+      const fresh = layouts.filter(names => !schemas.some(prior => prior.join() === names.join()))
+      schemas.push(...fresh)
+      if (fresh.length) restarts.push(fresh)
+      return fresh.length > 0
+    } })
+    while (summary === null)
+    is(restarts, [[['a', 'b']], [['a', 'b', 'c']]], 'nested spreads register one newly knowable layout at each restart')
+    is(summary.unnamedLayouts, [], 'the final reader has every discovered layout')
+    const expected = typeof value === 'number' ? K.NUMBER : K.STRING
+    is(summary.at('').kindOfExpr(['.', 'c', 'a']), kind(expected), 'the nested copy keeps its source kind')
+    retained ??= summary
+    is(retained.at('').kindOfExpr(['.', 'c', 'a']), kind(K.NUMBER), 'later restarts preserve earlier readers')
+  }
+  throws(() => summarize(input(1), { ...options, registerLayouts: () => { throw new Error('registry failure') } }), /registry failure/)
+  is(summarize(null, options).unnamedLayouts, [], 'empty work after an error has no leaked discovery state')
+  is(retained.at('').kindOfExpr(['.', 'c', 'a']), kind(K.NUMBER), 'an error preserves a retained reader')
+})
+
+test('summary queries: alternating argument hull buffers preserve late calls and prior summaries', () => {
+  let retained
+  for (const last of [7, 7, 19, 7]) {
+    const funcs = Array.from({ length: 12 }, (_, i) => ({ name: 'part' + i,
+      sig: { params: [{ name: 'x' }] }, body: i ? ['()', 'part' + (i - 1), 'x'] : 'x' }))
+    const ast = [';', ['()', 'part11', lit(3)], ['()', 'part11', lit(last)]]
+    const summary = summarize(ast, { funcs, schemas: [], brandOf: () => null, imports: new Map(), exported: () => false })
+    for (let i = 0; i < funcs.length; i++) is(summary.at('').paramRangesOf('part' + i), [[3, last]], 'argument bounds reach every callee')
+    retained ??= summary
+    is(retained.at('').paramRangesOf('part0'), [[3, 7]], 'a later summary cannot reuse a published hull buffer')
+  }
+})
+
 test('summary queries: held fields require every alias to remain read-only and unambiguous', () => {
   const options = { funcs: [], schemas: [['HIGH']], brandOf: () => null, imports: new Map(), exported: () => false }
   const read = ['.', 'alias', 'HIGH']
