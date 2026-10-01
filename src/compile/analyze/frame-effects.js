@@ -118,9 +118,9 @@
  * @module compile/analyze/frame-effects
  */
 import { ASSIGN_OPS, ACCESSOR_GET, ACCESSOR_SET, RELATIONAL_OPS, isFunctionNode, extractParams } from '../../ast.js'
-import { K, tagOf, hasTag, tagsOf, bitOf, valOf, core, NUMBER_OPS } from '../../summary/kind.js'
-import { COMPOUND_NUMERIC_OPS } from '../../kind-traits.js'
-import { TO_PRIMITIVE } from '../../ir.js'
+import { K, tagOf, hasTag, tagsOf, valOf, core, NUMBER_OPS } from '../../summary/kind.js'
+import { TO_PRIMITIVE, runsAccessor, runsConversion, primitiveKind, primitiveElements, mayBeTyped } from '../../evaluation-effects.js'
+export { runsAccessor, runsConversion } from '../../evaluation-effects.js'
 import { ctx } from '../../ctx.js'
 import { frameRoots } from '../../function.js'
 import { viewsOn } from '../../../module/schema.js'
@@ -248,11 +248,6 @@ const CALLBACK_METHODS = new Set(['forEach', 'map', 'filter', 'reduce', 'reduceR
 const callbackArg = (name) => name === 'Array.from' || name === 'Object.groupBy' || name === 'Map.groupBy' || TYPED_FROM.test(name) ? 1 : undefined
 const TYPED_FROM = /^((Int|Uint|Float|BigInt|BigUint)(8|16|32|64)(Clamped)?Array|Float16Array)\.from$/
 
-// Converting a value to a primitive runs user code when the program defines toString or
-// valueOf: the conversion is a call to the ToPrimitive function it lowers to (ir/coerce.js
-// TO_PRIMITIVE, runtime roots only then). Operators converting their operands: ToNumber
-// (arithmetic, bitwise, relational) and ToPrimitive (`+`, templates, loose equality).
-const CONVERTING_OPS = new Set([...NUMBER_OPS, ...COMPOUND_NUMERIC_OPS, ...RELATIONAL_OPS, 'u-', 'u+', '+', '+=', 'strcat', '==', '!='])
 // Pure callees that convert no argument.
 const NON_CONVERTING = /^(__object_rest|Array\.(isArray|of|from)|Object\.(is|getPrototypeOf|isFrozen|keys|values|entries|getOwnPropertyNames)|Boolean|Date\.now|performance\.now)$/
 // Constructors that convert their arguments (a typed array each element of an array source).
@@ -260,9 +255,6 @@ const CONVERTING_CTORS = /^(Date|String|Number|BigInt|(Int|Uint|Float|BigInt|Big
 const TYPED_CTORS = /^((Int|Uint|Float|BigInt|BigUint)(8|16|32|64)(Clamped)?Array|Float16Array)$/
 // Receiver methods that convert the receiver's elements (`[p].join()` runs p.toString).
 const CONVERTING_RECEIVER_METHODS = new Set(['join', 'toString', 'toLocaleString'])
-// Tags of values that convert without running user code.
-const PRIMITIVE_BITS = [K.NUMBER, K.STRING, K.BOOL, K.BIGINT, K.NULLISH, K.ABSENT].reduce((m, t) => m | bitOf(t), 0)
-
 // Receiver methods that write the receiver in place without changing its
 // storage: a write into outer storage, never a growth.
 const WRITE_METHODS = new Set(['fill', 'copyWithin', 'reverse',
@@ -337,28 +329,6 @@ function mayCarryFreshHeap(view, e) {
   return !scalarKind(view, e)
 }
 
-/** Whether evaluating `node` itself may run an object literal's getter or
- *  setter, in a program whose lowered code builds one (module/schema.js
- *  viewsOn): a member read or store of an accessor's name, a computed key, or
- *  a spread, over a receiver the summary does not prove holds no object. */
-export function runsAccessor(view, node) {
-  if (!isArr(node) || !viewsOn()) return false
-  const op = node[0]
-  if (op === '.' || op === '?.') return ctx.transform.literalAccessorNames.has(node[2]) && mayHoldObject(view, node[1])
-  if (op === '[]' || op === '?.[]') return node.length === 3 && mayHoldObject(view, node[1])
-  if (op === '{}') return node.some((p, i) => i > 0 && isArr(p) && (p[0] === '...' ? mayHoldObject(view, p[1])
-    : p[0] === ',' && p.some((q, j) => j > 0 && isArr(q) && q[0] === '...' && mayHoldObject(view, q[1]))))
-  return false
-}
-
-/** The summary does not prove the expression holds no object. */
-function mayHoldObject(view, e) {
-  if (!view) return true
-  let k
-  try { k = view.kindOfExpr(e) } catch { return true }
-  return k == null || tagOf(k) === K.ANY || tagOf(k) === K.NONE || hasTag(k, K.OBJECT)
-}
-
 /** The summary proves the expression a scalar (number, boolean, nullish). */
 function scalarKind(view, e) {
   if (!view) return false
@@ -372,41 +342,6 @@ function scalarKind(view, e) {
   return !hasTag(k, K.STRING) && !hasTag(k, K.OBJECT) && !hasTag(k, K.ARRAY) && !hasTag(k, K.CLOSURE) &&
     !hasTag(k, K.MAP) && !hasTag(k, K.SET) && !hasTag(k, K.HASH) && !hasTag(k, K.TYPED) && !hasTag(k, K.BIGINT) &&
     !hasTag(k, K.DATE) && !hasTag(k, K.REGEX) && !hasTag(k, K.BUFFER) && tagOf(k) !== K.ANY
-}
-
-/** The summary proves the expression a primitive: converting it runs no user code. */
-/** An array or typed array the summary proves holds only primitives. */
-function primitiveElements(view, e) {
-  if (!view) return false
-  let k
-  try { k = view.kindOfExpr(e) } catch { return false }
-  const t = k == null ? null : tagOf(k)
-  if (t === K.TYPED) return true
-  if (t !== K.ARRAY) return false
-  const el = view.elemOfKind(k)
-  return el != null && tagsOf(el) !== 0 && (tagsOf(el) & ~PRIMITIVE_BITS) === 0
-}
-
-function primitiveKind(view, e) {
-  if (!isArr(e) && !isName(e)) return true   // a number or bigint literal
-  if (isArr(e) && (e[0] == null || e[0] === 'str' || e[0] === 'bool')) return true
-  if (!view) return false
-  let k
-  try { k = view.kindOfExpr(e) } catch { return false }
-  return k != null && tagsOf(k) !== 0 && (tagsOf(k) & ~PRIMITIVE_BITS) === 0
-}
-
-/** Whether evaluating `node` itself, once its operands are values, may run a user
- *  toString/valueOf: a converting operator (or key conversion) over an operand the
- *  summary cannot prove primitive, in a program that defines those methods. */
-export function runsConversion(view, node) {
-  if (!isArr(node) || !ctx.funcs.runtimeRoots?.has(TO_PRIMITIVE.number)) return false
-  const op = node[0]
-  if (CONVERTING_OPS.has(op)) { for (let i = 1; i < node.length; i++) if (!primitiveKind(view, node[i])) return true; return false }
-  if ((op === '[]' || op === '?.[]') && node.length === 3) return !primitiveKind(view, node[2])   // ToPropertyKey
-  if (op === '=' && node[1]?.[0] === '[]' && mayBeTyped(view, node[1][1])) return !primitiveKind(view, node[2])
-  if (op === 'in') return !primitiveKind(view, node[1])
-  return false
 }
 
 /** The summary does not prove the expression holds no BigInt: arithmetic on one makes another. */
@@ -430,14 +365,6 @@ function fixedSlot(view, recv, prop) {
   let sids
   try { sids = view.shapesOfExpr(recv) } catch { return false }
   return !!sids?.length && sids.every(sid => view.layoutSlot(sid, prop))
-}
-
-/** The receiver may hold a typed array, whose element store converts the value. */
-function mayBeTyped(view, recv) {
-  if (!view) return true
-  let k
-  try { k = view.kindOfExpr(recv) } catch { return true }
-  return k == null || tagOf(k) === K.ANY || tagOf(k) === K.NONE || hasTag(k, K.TYPED)
 }
 
 /** The class functions a member reaches on the receiver's listed layouts: a

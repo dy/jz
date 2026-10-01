@@ -17,8 +17,15 @@ import { PASS_NAMES, TUNING_KEYS } from '../src/optimize/index.js'
 import { HELPER_COUNTERS } from '../src/helper-counters.js'
 import { levels, onKernel } from './_matrix.js'
 import { resolveOptimize } from '../src/optimize/config.js'
+import { resolveModuleGraph } from '../src/resolve.js'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
+
+test('passes: bounds and implicit-effect proofs do not import their IR consumers', () => {
+  const { modules } = resolveModuleGraph(join(ROOT, 'src/type/canonical-bounds.js'))
+  const emitters = Object.keys(modules).filter(p => p.endsWith('/src/ir.js') || p.includes('/src/ir/') || p.includes('/module/'))
+  is(emitters, [], 'a bounds proof is used by IR typing; importing emission creates a bootstrap cycle')
+})
 
 test('passes: interval fixpoints follow the compile budget without retaining certificates', () => {
   const src = `function put(a, i, v) { a[i] = v }

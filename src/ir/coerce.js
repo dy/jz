@@ -9,6 +9,7 @@
  * @module ir/coerce
  */
 
+import { TO_PRIMITIVE } from '../evaluation-effects.js'
 import { ctx, inc, PTR, LAYOUT, OPTF } from '../ctx.js'
 import { ERR_CLASS_NAMES, ERR, errorCodeLiteral } from '../../err-codes.js'
 import { ptrBits, i64Hex, OBJECT_SCHEMA_HI_MASK, objectSchemaGuardHex } from '../../layout.js'
@@ -73,7 +74,7 @@ function inheritedObjectString(value) {
 
 /** The prepared OrdinaryToPrimitive functions (compile/emit/to-primitive.js), by hint:
  *  runtime roots only in a program that defines toString or valueOf. */
-export const TO_PRIMITIVE = { string: '__jz_tp_str', number: '__jz_tp_num' }
+export { TO_PRIMITIVE } from '../evaluation-effects.js'
 
 export function objectToPrimitive(v, hint) {
   const name = hint === 'string' ? TO_PRIMITIVE.string : TO_PRIMITIVE.number

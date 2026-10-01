@@ -14,7 +14,7 @@ import { isReassigned, some, walkAst, hasOptionalChain, MUTATE_OPS, callArgs } f
 import { ctx, getFactStore } from '../ctx.js'
 import { intLiteralValue, constIntExpr, intExprRange, counterInit } from '../static.js'
 import { NUMBER } from '../summary/kind.js'
-import { runsAccessor, runsConversion } from '../compile/analyze/frame-effects.js'
+import { runsAccessor, runsConversion } from '../evaluation-effects.js'
 
 /** Structural key for a `recv[idx]` site — the assumedBounds channel between the
  *  versioning scan and typedIdxProven. JSON is structural, so the key matches even
