@@ -354,6 +354,20 @@ export let f = () => run({ ...settings({ hop: 512 }), complex: true })`
   is(jz(src).exports.f(), 2056)
 })
 
+test('warnings: numeric reseeding discards provisional shape losses only', () => {
+  const numeric = `export function f(n) { const a = [{x: 1}, {x: 2}]; let s = 0;
+    for (let i = 0; i < n; i++) s += a[i + n].x; return s }`
+  const lost = `const a = [{x: 1}, {x: 2}]; export function f(k) { return a[String(k)]?.x }
+    export function number(n) { return n * 2 }`
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    for (const src of [numeric, numeric, lost, numeric, 'export function empty() {}', lost]) {
+      const messages = warningsFor(src, {optimize}).filter(w => w.code === 'shape-lost')
+      if (src === lost) ok(messages.some(w => w.why === 'joined with an unknown value'), `real loss O${optimize}`)
+      else is(messages, [], `settled shape O${optimize}`)
+    }
+  }
+})
+
 test('warnings: shape-loss diagnostics leave emitted code unchanged across compilations', () => {
   const joined = 'export let f = (x) => { const o = { a: 1 }; const p = x || o; return p.a }'
   const hosted = 'const o = { items: [1], call: x => x, next: null }; o.next = o; export const f = () => o'

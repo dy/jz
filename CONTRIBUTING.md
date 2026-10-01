@@ -123,6 +123,9 @@ Numeric coercion preserves the emitter's present-read proof and folds a
 checked read's constant miss arm before considering the broader source kind.
 A sparse array's hit arm can still be absent and uses one undefined-to-NaN
 conversion; only a dense numeric array carries the checked-number shortcut.
+Shape-loss advisories describe the settled summary. Numeric entry contracts
+restart its kind solve, so discarded unknown-parameter escapes are discarded
+with their diagnostics; genuine losses from the final solve still report.
 Array element facts apply only to element reads. A dynamic string key can also
 name `length`, a method or an own property; solver and read-only queries join
 those kinds before projecting a field. Local schema and JSON-shape propagation
