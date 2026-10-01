@@ -103,6 +103,7 @@ Array `for…of` loops capture their source once and reread its length each step
 Appends, shrinking and writes through called helpers remain visible, including
 new nodes added while the compiler solves representation plans.
 Memory page limits are validated before either compiler host encodes options.
+Assembly also rejects static data that would require more than the maximum.
 The hosted compiler applies the same fixed-memory scratch and final-code proofs;
 their selected export and owner names survive its arena checkpoints as plain data.
 Tagged BigInt copies are solved together when bindings refer back to each other.

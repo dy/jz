@@ -87,6 +87,22 @@ test('options: memory descriptor imports env.memory', () => {
   ok(wat.includes('(import "env" "memory" (memory 2'), 'memory imported from env')
 })
 
+test('options: static data must fit memory.maximum before emitting a module', () => {
+  const literal = 'x'.repeat(40000)
+  const src = `export function f(){return ${JSON.stringify(literal)}}`
+  for (const maximum of [1, 1, 2, 2, 1, 2]) {
+    if (maximum === 1) throws(() => compile(src, { memory: { maximum } }), /exceeding memory.maximum/)
+    else {
+      const p = jz(src, { memory: { maximum } })
+      is(p.exports.f(), literal, 'large data fits two pages')
+      is(p.exports.f(), literal, 'same instance preserves its data')
+      is(p.memory.buffer.byteLength, 2 * 65536)
+    }
+  }
+  is(jz('export function f(){return "ok"}', { memory: { maximum: 1 } }).exports.f(), 'ok', 'small data after rejected large data')
+  is(jz(src).exports.f(), literal, 'ordinary compilation after a limited one')
+})
+
 test('options: shared memory, by descriptor or by a shared Memory object', () => {
   const byDesc = flat(compile(HEAP, { wat: true, memory: { initial: 2, maximum: 8, shared: true } }))
   ok(/\(import "env" "memory" \(memory [^)]*shared/.test(byDesc), 'descriptor links the shared memtype')

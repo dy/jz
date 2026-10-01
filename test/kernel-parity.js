@@ -92,6 +92,25 @@ test('kernel parity: owned, imported and shared memory preserve options and retu
   is(instantiate(compileViaKernel(src)).exports.f(0), ['prefix-0', 0, undefined], 'ordinary compilation after rejected limits')
 })
 
+test('kernel parity: static data respects maximum pages and failed assembly leaves no state', () => {
+  const literal = 'x'.repeat(40000)
+  const src = `export function f(){return ${JSON.stringify(literal)}}`
+  for (const compiler of [compile, compileViaKernel]) {
+    for (const maximum of [1, 1, 2, 1, 2]) {
+      const opts = { memory: { maximum } }
+      if (maximum === 1) throws(() => compiler(src, opts), /exceeding memory.maximum/)
+      else {
+        const p = instantiate(compiler(src, opts))
+        is(p.exports.f(), literal)
+        is(p.exports.f(), literal, 'same instance again')
+        is(p.memory.buffer.byteLength, 2 * 65536)
+      }
+    }
+    is(instantiate(compiler('export function f(){return "ok"}', { memory: { maximum: 1 } })).exports.f(), 'ok', 'smaller static data after assembly rejection')
+    is(instantiate(compiler(src)).exports.f(), literal, 'default maximum after bounded compilation')
+  }
+})
+
 test('kernel parity: fixed-memory rejects unsafe final code and recovers to ordinary compilation', () => {
   const cases = [
     ['dynamic allocation', 'export function f(n){return new Float64Array(n).length}', /heap allocation or memory growth/],

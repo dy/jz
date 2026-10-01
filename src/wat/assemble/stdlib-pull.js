@@ -521,6 +521,7 @@ export function pullStdlib(sec) {
     const dataPages = ctx.memory.shared ? 0 : Math.ceil(dataLen() / 65536)
     const pages = Math.max(ctx.memory.pages || 1, dataPages)
     const max = ctx.memory.max || 0   // 0 = no maximum (unbounded growth)
+    if (max && pages > max) err(`Static data needs ${pages} initial pages, exceeding memory.maximum (${max})`)
     // Truly-shared memory (opts.sharedMemory) declares the `shared` memtype —
     // the spec requires an explicit max there (default: the wasm32 page ceiling).
     // Plain imported memory (opts.importMemory / a Memory-valued opts.memory)
