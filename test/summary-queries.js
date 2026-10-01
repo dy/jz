@@ -14,6 +14,39 @@ const lit = value => [null, value]
 const typed = ['()', 'new.BigInt64Array', lit(0)]
 const reduce = (callback, initial) => ['()', ['.', typed, 'reduce'], [',', callback, initial]]
 
+test('summary queries: lazy traversal scratch preserves aliases, cycles and zero extents', () => {
+  const options = { funcs: [], schemas: [], brandOf: () => null, imports: new Map(), exported: () => false }
+  const decl = (name, value) => ['const', ['=', name, value]]
+  const call = (name, ...args) => ['()', name, args.length === 1 ? args[0] : [',', ...args]]
+  const read = (summary, name, index) => summary.kindOfExpr(['[]', name, lit(index)])
+  const optionalNumber = join(kind(K.NUMBER), kind(K.ABSENT))
+  let retained
+  for (const length of [2, 2, 0, 2]) {
+    const summary = summarize([';', decl('n', lit(length)), decl('alias', 'n'),
+      decl('minimum', call('math.min', 'alias', 'alias')), decl('zero', lit(-0)),
+      decl('negativeZero', call('math.min', 'zero', 'zero')), decl('unknown', 'missing'),
+      decl('cyclicA', 'cyclicB'), decl('cyclicB', 'cyclicA'),
+      decl('cyclicMath', call('math.min', 'cyclicA', lit(1))),
+      decl('array', call('new.Float64Array', 'alias')), decl('copy', 'array'),
+      decl('view', call('new.Uint32Array', ['.', 'copy', 'buffer']))], options)
+    is(summary.held.get('minimum'), length, 'Math arguments independently traverse a shared alias chain')
+    is(Object.is(summary.held.get('negativeZero'), -0), true, 'Math keeps the sign of zero')
+    is(summary.held.has('unknown'), false, 'a missing definition supplies no held value')
+    is(summary.held.has('cyclicA'), false, 'a cyclic definition supplies no held value')
+    is(summary.held.has('cyclicMath'), false, 'Math cannot turn a cyclic argument into a fact')
+    is(read(summary, 'copy', 0), length ? kind(K.NUMBER) : optionalNumber, 'an alias keeps zero and nonzero extents distinct')
+    is(read(summary, 'copy', length), optionalNumber, 'the final array boundary remains absent')
+    is(read(summary, 'view', length * 2 - 1), length ? kind(K.NUMBER) : optionalNumber, 'a buffer view derives its own element count')
+    is(read(summary, 'view', length * 2), optionalNumber, 'the final view boundary remains absent')
+    retained ??= summary
+    is(read(retained, 'copy', 1), kind(K.NUMBER), 'a changed summary leaves a retained extent intact')
+  }
+  throws(() => summarize(null, { ...options, funcs: [{ name: 'bad', sig: { params: [] }, body: null }],
+    exported: () => { throw new Error('query failure') } }), /query failure/)
+  is(summarize(null, options).held.size, 0, 'empty work after an error has no held values')
+  is(read(retained, 'copy', 1), kind(K.NUMBER), 'failed and empty summaries preserve the retained reader')
+})
+
 test('summary queries: declaration census keeps scope, missing writes and cold Boolean stores', () => {
   const options = { schemas: [['HIGH']], brandOf: () => null, imports: new Map(), exported: () => false }
   const build = value => {

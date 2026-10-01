@@ -3448,11 +3448,11 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   // `{ k: v, … }` of plain keys: no spread, no computed key, no accessor.
   const objectLiteral = (n) => { for (let i = 1; i < n.length; i++) { const p = n[i]; if (typeof p !== 'string' && !(Array.isArray(p) && p[0] === ':' && typeof p[1] === 'string')) return false } return n.length > 1 }
   const fieldOf = (lit, prop) => { for (let i = 1; i < lit.length; i++) { const p = lit[i]; if (Array.isArray(p) && p[0] === ':' && p[1] === prop) return p[2]; if (p === prop) return p } return undefined }
-  const staticValue = (scope, node, seen = new Set()) => {
+  const staticValue = (scope, node, seen = null) => {
     if (typeof node === 'string') {
       const key = keyOf(node, scope), def = definitions.get(key)
-      if (!def || seen.has(key)) return null
-      seen.add(key)
+      if (!def || seen?.has(key)) return null
+      ;(seen ??= new Set()).add(key)
       return staticValue(def[0], def[1], seen)
     }
     // a field of a literal held for good is what the literal wrote there
@@ -3461,13 +3461,15 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       return field === undefined ? null : staticValue(MODULE, field, seen)
     }
     // an exact function of `Math` over numbers held for good (`PI32 = Math.fround(3.14…)`)
-    if (Array.isArray(node) && node[0] === '()' && node.length === 3 && EXACT_MATH.has(node[1])) {
-      const args = Array.isArray(node[2]) && node[2][0] === ',' ? node[2].slice(1) : [node[2]]
-      const vals = args.map(a => staticValue(scope, a, new Set(seen)))
-      const v = vals.every(x => typeof x === 'number') ? EXACT_MATH.get(node[1])(...vals) : NaN
-      return v === v ? v : null
-    }
+    if (Array.isArray(node) && node[0] === '()' && node.length === 3 && EXACT_MATH.has(node[1])) return staticMathValue(scope, node, seen)
     return Array.isArray(node) && node[0] == null ? node[1] : typeof node === 'number' ? node : null
+  }
+  // Only this branch needs an argument callback's captured scope and visited names.
+  const staticMathValue = (scope, node, seen) => {
+    const args = Array.isArray(node[2]) && node[2][0] === ',' ? node[2].slice(1) : [node[2]]
+    const vals = args.map(a => staticValue(scope, a, seen ? new Set(seen) : null))
+    const v = vals.every(x => typeof x === 'number') ? EXACT_MATH.get(node[1])(...vals) : NaN
+    return v === v ? v : null
   }
   // An integer a name holds for good is known from the first round on: the
   // functions of a round walk ahead of the module's statements (whose
@@ -3492,11 +3494,11 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   // of one definition, a call of a function whose every return is such an
   // array (`x = uniform(N)`). null where unknown.
   const TYPED_BYTES = [1, 1, 2, 2, 4, 4, 4, 8]   // by TYPED_ELEM_CODE
-  const typedShapeOf = (scope, e, seen = new Set()) => {
+  const typedShapeOf = (scope, e, seen = null) => {
     if (typeof e === 'string') {
       const key = keyOf(e, scope), def = key === null ? undefined : definitions.get(key)
-      if (!def || seen.has(key)) return null
-      seen.add(key)
+      if (!def || seen?.has(key)) return null
+      ;(seen ??= new Set()).add(key)
       return typedShapeOf(def[0], def[1], seen)
     }
     if (!Array.isArray(e) || e[0] !== '()' || typeof e[1] !== 'string') return null
@@ -3514,6 +3516,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       return r && r[0] === r[1] && r[0] >= 0 ? { len: r[0], bytes: r[0] * size } : null
     }
     if (!funcByName.has(e[1])) return null
+    seen ??= new Set()   // return arms share one conservative traversal, as aliases do
     let shape = null
     for (const r of returnsOfFn(e[1])) { const s = r == null ? null : typedShapeOf(e[1], r, seen); if (s === null || (shape !== null && (s.len !== shape.len || s.bytes !== shape.bytes))) return null; shape = s }
     return shape

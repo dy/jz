@@ -539,6 +539,9 @@ read-before-merge order without allocating a tuple for each copied field.
 The declaration census shares one flat record per write for scope, initializer,
 missing-declaration and Boolean-store facts. Its dictionary roots use flat pairs;
 no per-write tuple or duplicated scope/name record survives the collection pass.
+Held-value and typed-extent queries allocate visited-name sets only when following
+a definition or return arms. Exact Math argument callbacks live in their own
+helper, so literal and unknown queries create no unused closure environment.
 Flow-sensitive assignment and refinement facts use those same IDs in sparse
 collections, reset per function; branch rollback stores IDs as well. Dense
 arrays for these sparse facts increased allocation without improving throughput.
