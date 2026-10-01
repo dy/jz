@@ -11,6 +11,19 @@ import { oracle, funcWat } from './util.js'
 
 const run = (body) => jz('export let f = () => {' + body + '}', { jzify: true }).exports.f()
 
+test('ordinary array Number keys require integrality independently of branch bounds', () => {
+  const src=`export function read(k){k=+k;const a=[1,2];a[0.5]=7;
+      if(k>=0&&k<2)return a[k];return -1}
+    export function write(k){k=+k;const a=[1,2];
+      if(k>=0&&k<2)a[k]=7;return [a[k],a[0],a[1],a.length]}`
+  const expected=oracle(src)
+  for(const optimize of levels(0,1,2,3,'size')) {
+    const actual=jz(src,{optimize}).exports
+    for(const key of [0.5,0.5,0,1,1.5,-1,2,NaN,-0,0.5])
+      for(const name of ['read','write']) is(actual[name](key),expected[name](key),`${name} ${key}, O${optimize}`)
+  }
+})
+
 test('ordinary array Number keys read own properties without truncation', () => {
   const src = `export function f(k){k=+k;const a=[{x:3}];
     a['-1']={y:4,x:7};a['1.5']=11n;a.NaN='saved';a.Infinity=true;

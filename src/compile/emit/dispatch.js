@@ -17,7 +17,7 @@ import { BIGINT_JOINT_BINARY_OPS, isPresentNumber, hasAmbiguousBoolMerge, nullis
 import { VAL, lookupValType, repOf, repOfGlobal, numericStorage, mayBeUndefined } from '../../reps.js'
 import { constIntExpr, staticPropertyKey, staticArrayElems, staticObjectProps, intExprRange } from '../../static.js'
 import { functionLength } from '../../function.js'
-import { exprType, isTerminator } from '../../type.js'
+import { exprType, wholeKey, isTerminator } from '../../type.js'
 import {
   BINDING_USE_COMPUTED, BINDING_USE_DECLS, BINDING_USE_KEY, BINDING_USE_KIND, BINDING_USE_OPTIONAL, BINDING_USE_USES, USE, scanBindingUses,
 } from '../analyze-scans.js'
@@ -91,16 +91,6 @@ function tryI32Index(e) {
     return null
   }
   return exprType(e, ctx.func.locals) === 'i32' ? asI32(emit(e)) : null
-}
-// An integer-valued key: an integer literal, an i32 or integer-certain name,
-// and + - * over them. No fraction, no NaN: it truncates to its index exactly,
-// and one past the i32 range saturates past every length.
-const WHOLE_OPS = new Set(['+', '-', '*'])
-const wholeKey = (e) => {
-  if (typeof e === 'string') return exprType(e, ctx.func.locals) === 'i32' || repOf(e)?.intCertain === true
-  if (!Array.isArray(e)) return false
-  if (e[0] == null) return Number.isInteger(e[1])
-  return WHOLE_OPS.has(e[0]) && e.length === 3 && wholeKey(e[1]) && wholeKey(e[2])
 }
 export const emitIndex = (index, whole = false, wide = false) => {
   // An unsigned bounds test rejects negative words and positive values past

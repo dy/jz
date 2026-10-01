@@ -61,7 +61,7 @@ export {
   isTerminator,
 } from './type/loop-unroll.js'
 export { intLevelMap, intCertainMap, intLevelChecker } from './type/int-certain.js'
-export { exprType } from './type/expr-type.js'
+export { exprType, wholeKey } from './type/expr-type.js'
 export { cloneWithSubst } from './type/clone.js'
 export {
   typedStaticLen, typedIdxProven, typedIdxWhole, SLOT_OPS, isCondExpr,

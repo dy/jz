@@ -9,7 +9,7 @@
  */
 
 import { throwErrorIR, numberNanIR, typed, asF64, asI64, asI32, keyIndex, UNDEF_NAN, temp, tempI32, allocPtr, staticArrayPtr, arrayLoop, deferBigintBox, elemStore, throwTypeErrorIR, truthyIR, extractF64Bits, slotAddr, isLiteralStr, resolveValType, undefExpr, ptrTypeEq, isPureIR, freshId, isNullish, isUndef, toStrI64, fwdOffsetIR } from '../src/ir.js'
-import { inBoundsArrIdx, typedIdxProven } from '../src/type.js'
+import { inBoundsArrIdx, typedIdxProven, wholeKey } from '../src/type.js'
 import { emit, spread, deps, idx as emitIndex, storedValue, storedValueNarrow, storedValuePlanned, positionArgs } from '../src/bridge.js'
 import { censusMaybeUndefinedKind, isPresentNumber, valTypeOf } from '../src/kind.js'
 import { extractParams, classifyParam, PARAM_NAME, ASSIGN_OPS, isArrayIndexKey } from '../src/ast.js'
@@ -983,7 +983,7 @@ export default (ctx) => {
     // Numbers outside the array-index domain name own properties. Keep their
     // original value for ToPropertyKey; keyIndex's -1 sentinel loses it.
     const keyRange = numericKey ? intExprRange(idx) : null
-    const elementKey = keyRange && keyRange[0] >= 0 && keyRange[1] < 0xffffffff
+    const elementKey = wholeKey(idx) && keyRange && keyRange[0] >= 0 && keyRange[1] < 0xffffffff
     const numericProps = !elementKey && !ctx.summary?.at(ctx.func.current).arrayNumericPropertiesAbsent(arr)
     const stringLoad = () => (inc('__str_idx'), ['call', '$__str_idx', ['i64.reinterpret_f64', ptrExpr], vi])
     // A numeric index on an unknown receiver is array/typed access by design — kept

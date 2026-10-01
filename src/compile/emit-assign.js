@@ -31,7 +31,7 @@ import {
 import { emit, idx as emitIndex, storedValue, storedValueNarrow, storedFieldValue } from '../bridge.js'
 import { REP_EDGE_BOX, representationProgramHasBigint, representationStorageWriteAction } from './representation-plan.js'
 import { plannedTypedStorageInfo, plannedTypedPayloadInfo } from './typed-storage-plan.js'
-import { typedIdxProven, inBoundsArrIdx } from '../type.js'
+import { typedIdxProven, inBoundsArrIdx, wholeKey } from '../type.js'
 import { trySlotUpdate } from './slot-update.js'
 import { durableArrSnapNode, durableObjSnapNode, hasDurableReset } from '../../module/collection/durable.js'
 
@@ -463,7 +463,7 @@ export function emitElementAssign(arr, idx, val, node = null) {
   const prim = primitiveStore(arr, idx, val)
   if (prim) return prim
   const indexRange = intExprRange(idx)
-  const indexOnly = isPresentNumber(ctx, idx) && indexRange != null && indexRange[0] >= 0 && indexRange[1] <= 0x7fffffff
+  const indexOnly = isPresentNumber(ctx, idx) && wholeKey(idx) && indexRange != null && indexRange[0] >= 0 && indexRange[1] <= 0x7fffffff
   // Static object fields and array length use the same carrier, setter and
   // resize semantics as dot syntax, including expression receivers.
   if (isLiteralStr(idx) && (idx[1] === 'length' || ctx.summary?.at(ctx.func.current).objectSidOfExpr(arr) != null))

@@ -292,3 +292,14 @@ export function exprType(expr, locals, valTypes, strict, bodyRoot, readPresent) 
   }
   return 'f64'
 }
+
+// An integer-valued key: an integer literal, an i32 or integer-certain name,
+// and + - * over them. No fraction, no NaN: it truncates to its index exactly,
+// and one past the i32 range saturates past every length.
+const WHOLE_OPS = new Set(['+', '-', '*'])
+export const wholeKey = (e) => {
+  if (typeof e === 'string') return exprType(e, ctx.func.locals) === 'i32' || repOf(e)?.intCertain === true
+  if (!Array.isArray(e)) return false
+  if (e[0] == null) return Number.isInteger(e[1])
+  return WHOLE_OPS.has(e[0]) && e.length === 3 && wholeKey(e[1]) && wholeKey(e[2])
+}
