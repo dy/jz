@@ -15,7 +15,7 @@ import { is, ok, throws } from 'tst/assert.js'
 import jz, { compile } from '../index.js'
 import { ctx } from '../src/ctx.js'
 import { run, oracle } from './util.js'
-import { levels } from './_matrix.js'
+import { levels, onKernel } from './_matrix.js'
 
 
 const both = (src, name = 'main') => {
@@ -524,4 +524,137 @@ test('union inline: reassigned cursor param fails closed, value exact', () => {
     }`
   const host = oracle(SRC).main()
   for (const optimize of levels(false, 'speed')) is(run(SRC, { optimize }).main(), host, `JS-exact (optimize:${optimize})`)
+})
+
+const cases = [0, 0, 1, 2, -1, 0.5, NaN, Infinity, 4294967296, 1, 0]
+const verify = src => {
+  const js = oracle(src)
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const wasm = run(src, { optimize: { level: optimize, sourceInline: false } })
+    for (const k of cases) {
+      is(wasm.main(k, 0), js.main(k, 0), `unused cursor ${k}, ${optimize}`)
+      if (k === 0 || k === 1) is(wasm.main(k, 1), js.main(k, 1), `projection ${k}, ${optimize}`)
+      else throws(() => wasm.main(k, 1), `missing projection ${k}, ${optimize}`)
+      is(wasm.main(0, 1), js.main(0, 1), `recovery ${k}, ${optimize}`)
+    }
+  }
+}
+
+for (const float of [false, true]) test(`packed bounds: ${float ? 'float' : 'integer'} cursor preserves absence until projection`, () => {
+  const src = `
+    function rows() { const a=[]; a.push({x:${float ? 1.5 : 1},y:2}); a.push({x:${float ? 3.5 : 3},y:4}); return a }
+    export function main(k, flag) { k=+k; const a=rows(); const p=a[k]; if(flag) return p.x+p.y; return 0 }
+  `
+  verify(src)
+  if (!onKernel()) {
+    compile(src, { optimize: 'size' })
+    ok(ctx.schema.inlineArray.size > 0, 'checked reads retain inline cells')
+  }
+})
+
+test('packed bounds: direct projections evaluate their index once and recover', () => {
+  const src = `
+    function rows() { const a=[]; a.push({x:1,y:2}); a.push({x:3,y:4}); return a }
+    export function main(k, flag) { k=+k; const a=rows(); if(flag) return a[k++].x*10+k; return 0 }
+  `
+  verify(src)
+})
+
+test('packed bounds: union cursor checks absence before discriminant and helper projection', () => {
+  const src = `
+    function rows() { const a=[]; a.push({kind:0,x:3,y:5}); a.push({kind:1,z:7}); return a }
+    function get(p) { return p.kind === 0 ? p.x+p.y : p.z }
+    export function main(k, flag) { k=+k; const a=rows(); const p=a[k]; if(flag) return get(p); return 0 }
+  `
+  verify(src)
+  if (!onKernel()) {
+    compile(src, { optimize: { level: 'size', sourceInline: false } })
+    is(ctx.schema.inlineUnion.size, 0, 'unbounded cursor calls retain the ordinary object ABI')
+  }
+})
+
+
+test('packed bounds: direct union projections retain packed cells with checked indices', () => {
+  const src = `
+    function rows() { const a=[]; a.push({kind:0,x:3,y:5}); a.push({kind:1,z:7}); return a }
+    export function main(k, flag) { k=+k; const a=rows(); if(flag) return a[k].kind; return 0 }
+  `
+  verify(src)
+  if (!onKernel()) {
+    compile(src, { optimize: 'size' })
+    ok(ctx.schema.inlineUnion.size > 0, 'checked direct reads retain packed union cells')
+  }
+})
+
+test('packed bounds: empty arrays and bracket projections preserve lazy absence', () => {
+  const src = `
+    function rows(n) { const a=[]; for(let i=0;i<n;i++) a.push({x:i+1,y:i+3}); return a }
+    export function main(n,k,flag) { const a=rows(n); const p=a[k]; if(flag) return p['x']+p['y']; return 0 }
+  `
+  const js = oracle(src)
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const wasm = run(src, { optimize: { level: optimize, sourceInline: false } })
+    for (const [n,k] of [[0,0],[0,0],[1,0],[1,1],[2,1],[2,-1],[0,0],[1,0]]) {
+      is(wasm.main(n,k,0), 0, `unused empty/changed cursor ${n},${k}, ${optimize}`)
+      if(k>=0&&k<n) is(wasm.main(n,k,1), js.main(n,k,1), `bracket projection ${n},${k}, ${optimize}`)
+      else throws(() => wasm.main(n,k,1), `missing bracket projection ${n},${k}, ${optimize}`)
+      is(wasm.main(1,0,1), js.main(1,0,1), `bracket recovery ${n},${k}, ${optimize}`)
+    }
+  }
+})
+
+
+test('packed bounds: index calls follow relocated receiver storage after evaluating the key', () => {
+  const src = `
+    let sink;
+    function rows(){const a=[];a.push({x:3,y:4});a.push({x:5,y:6});return a}
+    function grow(a){sink=new Array(1000).fill(2);for(let i=0;i<2048;i++)a.push({x:100+i,y:200+i});return 2049}
+    export function main(){const a=rows();return a[grow(a)].x}
+    export function retained(){return sink.length}
+  `
+  const js = oracle(src)
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const wasm = run(src, { optimize: { level: optimize, sourceInline: false } })
+    for(let i=0;i<3;i++) {
+      is(wasm.main(), js.main(), `relocated last cell ${i}, ${optimize}`)
+      is(wasm.retained(), js.retained(), `intervening allocation retained ${i}, ${optimize}`)
+    }
+  }
+})
+
+
+test('packed bounds: dynamic string keys retain ordinary property-key semantics', () => {
+  for(const union of [false,true]) {
+    const src = `
+      function rows(){const a=[];a.push({x:3,y:4});a.push({${union ? 'x:5,z:6,w:7' : 'x:5,y:6'}});return a}
+      export function main(k){k=String(k);const a=rows();return a[k].x}
+    `
+    const js = oracle(src)
+    for(const optimize of levels(0,1,2,3,'size')) {
+      const wasm=run(src,{optimize:{level:optimize,sourceInline:false}})
+      for(const key of ['0','0','1','2','-1','01','-0','0']) {
+        if(['0','1'].includes(key)) is(wasm.main(key),js.main(key), `property ${key}, union:${union}, ${optimize}`)
+        else throws(()=>wasm.main(key),`missing property ${key}, union:${union}, ${optimize}`)
+        is(wasm.main('0'),js.main('0'),`property recovery ${key}, union:${union}, ${optimize}`)
+      }
+    }
+  }
+})
+
+test('packed bounds: unhinted host keys preserve numeric and string element semantics', () => {
+  const src = `
+    function rows(){const a=[];a.push({x:3,y:4});a.push({x:5,y:6});return a}
+    export function main(k,flag){const a=rows();const p=a[k];if(flag)return p.x;return 0}
+  `
+  verify(src)
+  const js=oracle(src)
+  for(const optimize of levels(0,1,2,3,'size')) {
+    const wasm=run(src,{optimize:{level:optimize,sourceInline:false}})
+    for(const key of ['0','0','1','2','01','-0','0']) {
+      is(wasm.main(key,0),0,`unused host string ${key}, ${optimize}`)
+      if(key==='0'||key==='1') is(wasm.main(key,1),js.main(key,1),`host string ${key}, ${optimize}`)
+      else throws(()=>wasm.main(key,1),`missing host string ${key}, ${optimize}`)
+      is(wasm.main(0,1),js.main(0,1),`host key recovery ${key}, ${optimize}`)
+    }
+  }
 })

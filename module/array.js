@@ -803,6 +803,7 @@ export default (ctx) => {
       const wrapped = typed(['block', ['result', 'f64'], ...setup, asF64(result)], 'f64')
       if (result?.checkedNumRead) wrapped.checkedNumRead = true
       if (result?.presentRead) wrapped.presentRead = true
+      if (result?.cellI32) { wrapped.cellI32 = true; wrapped.unionKey = result.unionKey }
       if (result?.indexValid) wrapped.indexValid = result.indexValid
       if (result && typeof result.bigintBox === 'function')
         deferBigintBox(wrapped, () => typed(['block', ['result', 'f64'], ...setup, asF64(result.bigintBox())], 'f64'))
@@ -1116,10 +1117,20 @@ export default (ctx) => {
       const rep = typeof arr === 'string' ? ctx.func.localReps?.get(arr) ?? repOfGlobal(arr) : null
       const fixedLen = ctx.summary?.at(ctx.func.current)?.fixedLenOfExpr(arr) ?? (rep?.neverGrown === true ? rep.arrayLen ?? null : null)
       const neverGrown = fixedLen != null || rep?.neverGrown === true
-      const arrBase = () => neverGrown || (typeof arr === 'string' && currentBinding(arr))
-        ? ['i32.wrap_i64', ['i64.and', ['i64.reinterpret_f64', ptrExpr], ['i64.const', LAYOUT.OFFSET_MASK]]]
-        : ctx.transform.optimize?.leanRuntime ? (inc('__ptr_offset'), ['call', '$__ptr_offset', ['i64.reinterpret_f64', ptrExpr]])
-        : fwdOffsetIR(ptrExpr)
+      const arrBase = (pointer = ptrExpr, current = true) => neverGrown || (current && typeof arr === 'string' && currentBinding(arr))
+        ? ['i32.wrap_i64', ['i64.and', ['i64.reinterpret_f64', pointer], ['i64.const', LAYOUT.OFFSET_MASK]]]
+        : ctx.transform.optimize?.leanRuntime ? (inc('__ptr_offset'), ['call', '$__ptr_offset', ['i64.reinterpret_f64', pointer]])
+        : fwdOffsetIR(pointer)
+      const keyIsNum = numericKey
+      const stLen = keyIsNum && typeof arr === 'string' ? ctx.scope.staticArrs?.get(arr)?.len ?? ctx.scope.staticLitLens?.get(arr) : null
+      const staticProven = stLen != null && !!ctx.types.arrResized && !!ctx.types.nameEscapes
+        && !ctx.types.arrResized.has(arr) && !ctx.types.nameEscapes.has(arr)
+        && (range => range != null && range[0] >= 0 && range[1] < stLen)(intExprRange(idx))
+      const fixedProven = keyIsNum && fixedLen != null
+        && (range => range != null && range[0] >= 0 && range[1] < fixedLen)(intExprRange(idx))
+      const idxProvenInBounds = fixedProven || keyIsNum && typeof arr === 'string' && (staticProven ||
+        (typeof idx === 'string' && inBoundsArrIdx(ctx).has(arr + '\x00' + idx)) ||
+        (rep?.arrayLen != null && typedIdxProven(arr, idx)))
       // structInline Array<S>: element i is K consecutive inline f64 schema
       // cells — no per-row heap object, no stored element pointer. `arr[i]` is
       // the byte address of the element's first cell, returned as a first-class
@@ -1127,45 +1138,45 @@ export default (ctx) => {
       // `+field*8` off it. The narrower proved every use of this binding is one
       // structInline handles (src/analyze.js analyzeStructInline).
       const u = inlineArrayUnion(arr)
-      if (u != null) {
-        // Union cell cursor: BYTE-STRIDE records — element i lives at
-        // base + i·stride·4 (stride i32 fields, NO pad lane: a stride-5
-        // record is 20 B, not ⌈5/2⌉·8 = 24). The header len counts physical
-        // 8-byte cells (⌈n·s/8⌉ — alloc/grow untouched); the logical count
-        // recovers exactly as ⌊len·8/s⌋ for every s ≥ 8. Reads resolve
-        // per-branch via slotOf (refinement chain); the verifier proved
-        // every use resolves.
-        const strideB = u.stride * 4
-        const baseI32 = tempI32('ub')
-        const base = ['local.tee', `$${baseI32}`, arrBase()]
-        const cell = typed(typeof vi === 'number'
-          ? (vi === 0 ? base : ['i32.add', base, ['i32.const', vi * strideB]])
-          : ['i32.add', base, ['i32.mul', vi, ['i32.const', strideB]]], 'i32')
-        cell.ptrKind = VAL.OBJECT
-        cell.cellI32 = true
-        cell.unionKey = u.key
-        return cell
-      }
       const inlSid = inlineArraySid(arr)
-      if (inlSid != null) {
-        const baseI32 = tempI32('ab')
-        const K = ctx.schema.list[inlSid].length
-        const packed = ctx.schema.inlineCellI32?.has(inlSid)
-        const cell = typed(structInline(K, packed).ops.elemAddr(
-          ['local.tee', `$${baseI32}`, arrBase()],
-          vi), 'i32')
+      if (u != null || inlSid != null) {
+        const packed = u != null || ctx.schema.inlineCellI32?.has(inlSid)
+        const strideB = u ? u.stride * 4 : structInline(ctx.schema.list[inlSid].length, packed).cpe * 8
+        const pureIndex = isPureIR(vi), fast = idxProvenInBounds && pureIndex
+        const baseI32 = tempI32('ab'), idxI32 = fast ? null : tempI32('ai')
+        const base = fast ? ['local.tee', `$${baseI32}`, arrBase()] : ['local.get', `$${baseI32}`]
+        const index = fast ? vi : ['local.get', `$${idxI32}`]
+        const cell = typed(['i32.add', base, ['i32.mul', index, ['i32.const', strideB]]], 'i32')
         cell.ptrKind = VAL.OBJECT
-        cell.ptrAux = inlSid
-        // Packed i32 cells: slot access through this node (and through cursor
-        // locals bound to it — readVar re-derives via inlineCellCursors) must
-        // pick the packedI32 ops.
+        if (inlSid != null) cell.ptrAux = inlSid
         if (packed) cell.cellI32 = true
-        return cell
+        if (u) cell.unionKey = u.key
+        if (fast) return cell
+        // Evaluate the receiver before the key, but follow relocation after
+        // an effectful key. A call can grow this array or rebind its name.
+        const capture = pureIndex ? null : temp('ar')
+        const pre = pureIndex
+          ? [['local.set', `$${baseI32}`, arrBase()], ['local.set', `$${idxI32}`, vi]]
+          : [['local.set', `$${capture}`, ptrExpr], ['local.set', `$${idxI32}`, vi],
+            ['local.set', `$${baseI32}`, arrBase(['local.get', `$${capture}`], false)]]
+        if (idxProvenInBounds) return Object.assign(typed(['block', ['result', 'i32'], ...pre, cell], 'i32'),
+          { ptrKind: cell.ptrKind, ptrAux: cell.ptrAux, cellI32: cell.cellI32, unionKey: cell.unionKey })
+        // The header counts physical eight-byte cells. Keep absence boxed until
+        // a projection requires an object; merely saving an OOB cursor is valid.
+        const len = fixedLen != null ? ['i32.const', fixedLen]
+          : ['i32.div_u', ['i32.shl', ['i32.load', ['i32.sub', base, ['i32.const', 8]]], ['i32.const', 3]], ['i32.const', strideB]]
+        const throwing = node != null && node === ctx.func.throwAbsent
+        const rd = typed(['block', ['result', 'f64'], ...pre,
+          ['if', ['result', 'f64'], ['i32.lt_u', ['local.get', `$${idxI32}`], len],
+            ['then', asF64(cell)], ['else', throwing ? throwTypeErrorIR() : undefExpr()]]], 'f64')
+        if (packed) rd.cellI32 = true
+        if (u) rd.unionKey = u.key
+        if (throwing) rd.presentRead = true
+        return rd
       }
       // Known-ARRAY → __arr_idx (single forwarding follow + inline bounds check),
       // not __typed_idx (which does __len + __ptr_offset = two forwarding follows
       // plus type-dispatch overhead irrelevant for plain arrays).
-      const keyIsNum = numericKey
       // Inline fast path for any known plain ARRAY + numeric key: the type-tag
       // dispatch and bounds check inside __arr_idx(_known) are dead weight in hot
       // kernels — most visibly AST walkers doing `node[i]` over heterogeneous
@@ -1190,15 +1201,6 @@ export default (ctx) => {
       // A static const array's literal length bounds an index whose integer hull
       // stays under it (`[2, 4, 2, 9][t >> 17 & 3]`, a literal prepare hoisted to a
       // const): never resized nor aliased, its length is the literal's for good.
-      const stLen = keyIsNum && typeof arr === 'string' ? ctx.scope.staticArrs?.get(arr)?.len ?? ctx.scope.staticLitLens?.get(arr) : null
-      const staticProven = stLen != null && !!ctx.types.arrResized && !!ctx.types.nameEscapes
-        && !ctx.types.arrResized.has(arr) && !ctx.types.nameEscapes.has(arr)
-        && (range => range != null && range[0] >= 0 && range[1] < stLen)(intExprRange(idx))
-      const fixedProven = keyIsNum && fixedLen != null
-        && (range => range != null && range[0] >= 0 && range[1] < fixedLen)(intExprRange(idx))
-      const idxProvenInBounds = fixedProven || keyIsNum && typeof arr === 'string' && (staticProven ||
-        (typeof idx === 'string' && inBoundsArrIdx(ctx).has(arr + '\x00' + idx)) ||
-        (rep?.arrayLen != null && typedIdxProven(arr, idx)))
       // Tag reads whose receiver folded to a compile-time constant box: when the
       // decl registers the same bits as a STATIC array (ctx.scope.staticArrs) and
       // the program never resizes/aliases the name, optimize's

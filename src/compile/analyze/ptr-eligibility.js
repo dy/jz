@@ -103,7 +103,7 @@ export function unboxablePtrs(body, locals, boxed) {
         // schema 0, and a dynamic read then misses every other member's
         // props). Only a union the packed carrier admitted is unboxed: its
         // cursor is a cell address whose reads resolve statically.
-        return (r?.arrayElemSchemaSet?.length ?? 0) >= 2 && !!unionCursor
+        return (r?.arrayElemSchemaSet?.length ?? 0) >= 2 && !!unionCursor && presentElementRead(expr, r)
       }
       return false
     }
@@ -367,8 +367,8 @@ export function cseSafeLoadBases(body, locals, localReps) {
 
 /** Settle an admitted cursor's storage on its published plan: a local
  *  `const o = rows[i]` the inline registry admitted holds a packed-cell
- *  address, so it takes i32 storage with the OBJECT pointer kind, exactly
- *  what unboxablePtrs would have chosen had the verdict preceded analysis. */
+ *  address. Only proven-present cursors take raw i32 storage; an unbounded
+ *  read must retain the boxed undefined value until a projection checks it. */
 export function unboxAdmittedCursors(ctx, plan, func, cursors) {
   const data = ctx.plans.functionData.get(plan)
   if (!data) return
@@ -376,7 +376,8 @@ export function unboxAdmittedCursors(ctx, plan, func, cursors) {
   for (const name of cursors.keys()) {
     if (params.has(name) || data.boxed?.has(name) || data.locals.get(name) !== 'f64') continue
     const rep = data.localReps?.get(name)
-    if (rep?.val !== VAL.OBJECT || rep.ptrKind != null) continue
+    if (rep?.val !== VAL.OBJECT || rep.ptrKind != null ||
+        ctx.summary?.at(func.sig).mayBeNullishExpr(name) !== false) continue
     data.locals.set(name, 'i32')
     rep.ptrKind = VAL.OBJECT
   }

@@ -9,6 +9,7 @@
  */
 import { ASSIGN_OPS, walkAst, refsName, REFS_IN_EXPR } from '../../ast.js'
 import { ctx } from '../../ctx.js'
+import { K, core, tagOf } from '../../summary/kind.js'
 import { forEachFunctionPlanRep, functionPlanRepField } from '../function-plan.js'
 import { staticArrayElems, objLiteralSchemaId, inplaceKey } from '../../static.js'
 
@@ -162,6 +163,8 @@ export function structInlinePass(programFacts) {
       return expr[0] === '()' && typeof expr[1] === 'string' &&
         ctx.funcs.map?.get(expr[1])?.arrayElemSchema === sid
     }
+    const summary = ctx.summary?.at(func.sig)
+    const numericIndex = e => tagOf(core(summary?.kindOfExpr(e) ?? K.NONE)) === K.NUMBER
     const isUserCall = (e) => Array.isArray(e) && e[0] === '()' && typeof e[1] === 'string'
 
     // Pass 1 — collect `const p = a[i]` cursors; drop on name clash / re-decl.
@@ -179,7 +182,7 @@ export function structInlinePass(programFacts) {
           if (Array.isArray(rhs) && rhs[0] === '[]' && rhs.length === 3 &&
               typeof rhs[1] === 'string' && arrName.has(rhs[1]) && !isStrLit(rhs[2])) {
             const sid = arrName.get(rhs[1])
-            if (cursor.has(name) || arrName.has(name)) black.add(sid)
+            if (!numericIndex(rhs[2]) || cursor.has(name) || arrName.has(name)) black.add(sid)
             else cursor.set(name, sid)
           }
         }
@@ -188,10 +191,14 @@ export function structInlinePass(programFacts) {
     if (cursor.size) cursorsByFunc.set(func.sig, cursor)
 
     // A `['[]', arrName, idx]` element read of a tracked array → its sid.
-    const elemArrSid = (n) =>
-      Array.isArray(n) && n[0] === '[]' && n.length === 3 &&
-      typeof n[1] === 'string' && arrName.has(n[1]) && !isStrLit(n[2])
-        ? arrName.get(n[1]) : null
+    const elemArrSid = (n) => {
+      const sid = Array.isArray(n) && n[0] === '[]' && n.length === 3 &&
+        typeof n[1] === 'string' && arrName.has(n[1]) && !isStrLit(n[2]) ? arrName.get(n[1]) : null
+      // Dynamic property-key dispatch reads ordinary boxed array elements.
+      // Its string/unknown-key path cannot interpret inline record cells.
+      if (sid != null && !numericIndex(n[2])) black.add(sid)
+      return sid
+    }
 
     // Pass 2 — verify every occurrence is a structInline-handled use.
     const flag = (c) => {

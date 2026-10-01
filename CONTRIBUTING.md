@@ -99,6 +99,14 @@ assignments nested in expressions. The next operand cannot read a stale kind.
 Captured mutable cells keep their joined kind because a call can change them
 between operands. Grouped sequences preserve their final value's carrier,
 including SIMD lanes and the full magnitude of unsigned helper results.
+Packed object-array reads share ordinary array bounds proofs. An uncertain
+index carries boxed undefined until a field projection checks presence; layout
+admission alone never authorizes a raw pointer local. Receiver captures retain
+the packed slot layout, including common fields of admitted unions, so bounds
+checks cannot redirect packed cells through ordinary object loads. Effectful
+keys capture receiver identity first and resolve forwarding after the key.
+Dynamic property-key reads retain ordinary boxed arrays because their dispatch
+cannot interpret inline record cells.
 Array `for…of` loops capture their source once and reread its length each step.
 Appends, shrinking and writes through called helpers remain visible, including
 new nodes added while the compiler solves representation plans.

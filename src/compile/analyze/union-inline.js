@@ -9,6 +9,7 @@
  */
 import { ASSIGN_OPS, MUTATE_OPS } from '../../ast.js'
 import { ctx } from '../../ctx.js'
+import { K, core, tagOf } from '../../summary/kind.js'
 import { forEachFunctionPlanRep, functionPlanRepField } from '../function-plan.js'
 import { staticArrayElems, objLiteralSchemaId } from '../../static.js'
 import { scanBoundedArrIdx, isTerminator } from '../../type.js'
@@ -89,6 +90,7 @@ export function unionInlinePass(programFacts) {
       if (!cand.has(key)) cand.set(key, key.split(',').map(Number))
     }
     if (!uArr.size && !cursorParams.size) return
+    const summary = ctx.summary?.at(func.sig)
     if (uArr.size) uArraysByFunc.set(func.sig, uArr)
 
     // `const t = o.PROP` aliases (discriminant reads) + `const o = a[i]`
@@ -290,7 +292,8 @@ export function unionInlinePass(programFacts) {
         if (Array.isArray(o) && o[0] === '[]' && typeof o[1] === 'string' && uArr.has(o[1])) {
           const key = uArr.get(o[1])
           // no alias name → only union-agreeing props resolve
-          if (!(op === '.' && agreeSlot(cand.get(key), p) >= 0)) black.add(key)
+          if (!(op === '.' && agreeSlot(cand.get(key), p) >= 0 &&
+                tagOf(core(summary?.kindOfExpr(o[2]) ?? K.NONE)) === K.NUMBER)) black.add(key)
           verify(o[2], refs)
           return
         }

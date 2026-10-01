@@ -1983,6 +1983,13 @@ export default (ctx) => {
         if (i >= 0) schemaIdx = i
       }
     }
+    // Anonymous packed-union projections retain their admitted layout after
+    // the bounds check, even when unrelated schemas disagree on this key.
+    if (schemaIdx < 0 && va?.unionKey != null) {
+      const members = ctx.schema.inlineUnion.get(va.unionKey)?.sids
+      const i = members?.length ? ctx.schema.list[members[0]].indexOf(prop) : -1
+      if (i >= 0 && members.every(sid => ctx.schema.list[sid].indexOf(prop) === i)) schemaIdx = i
+    }
     // Dynamic/schema fallback synthesizes a string-key AST independently of
     // source autoload; own that emitter dependency here.
     ctx.module.include('string')
@@ -2352,7 +2359,7 @@ export default (ctx) => {
         const value = asF64(receiver)
         const t = temp()
         if (absentOnly && value.presentRead === true)
-          return typed(['block', ['result', 'f64'], ['local.set', `$${t}`, value], asF64(readHoistedProp(obj, prop, t, raw))], 'f64')
+          return typed(['block', ['result', 'f64'], ['local.set', `$${t}`, value], asF64(readHoistedProp(obj, prop, t, raw, receiver))], 'f64')
         // The block emitter holds a name checked here present past this statement.
         if (typeof obj === 'string') (ctx.func.checkedRecv ??= []).push(obj)
         // A receiver whose only missing value is absence tests for undefined alone.
@@ -2363,7 +2370,7 @@ export default (ctx) => {
         const view = typeof obj === 'string' ? ctx.summary?.at(ctx.func.current) : null, mark = view?.present && !view.isPresent(obj)
         if (mark) view.present(obj)
         let read
-        try { read = asF64(readHoistedProp(obj, prop, same ? obj : t, raw)) } finally { if (mark) view.unpresent(obj) }
+        try { read = asF64(readHoistedProp(obj, prop, same ? obj : t, raw, receiver)) } finally { if (mark) view.unpresent(obj) }
         if (same)
           return typed(['block', ['result', 'f64'],
             ['if', missing(value), ['then', ['drop', throwTypeErrorIR()]]], read], 'f64')
@@ -2555,6 +2562,7 @@ export default (ctx) => {
         const shaped = typed(['i32.wrap_i64', asI64(receiver)], 'i32')
         shaped.ptrKind = VAL.OBJECT
         shaped.ptrAux = sid
+        if (receiver.cellI32) { shaped.cellI32 = true; shaped.unionKey = receiver.unionKey }
         return emitPropAccess(shaped, obj, prop)
       }
     }
@@ -2606,7 +2614,7 @@ export default (ctx) => {
     return sid != null && ctx.schema.slotVTBySid(sid, prop) === VAL.BIGINT && ctx.schema.slotBigintRawAt(obj, prop)
       ? boxBigInt(asI64(value)) : value
   })
-  const readHoistedProp = (obj, prop, t, raw = false) => {
+  const readHoistedProp = (obj, prop, t, raw = false, layout = null) => {
     if (obj !== t) copyReceiverFacts(obj, t)
     const rep = typeof obj === 'string' ? repOf(obj) : null
     const vt = typeof obj === 'string' ? lookupValType(obj) : valTypeOf(obj)
@@ -2643,6 +2651,7 @@ export default (ctx) => {
       receiver.ptrKind = VAL.OBJECT
       receiver.ptrAux = sid
     }
+    if (layout?.cellI32) { receiver.cellI32 = true; receiver.unionKey = layout.unionKey }
     return emitPropAccess(receiver, obj, prop)
   }
 
