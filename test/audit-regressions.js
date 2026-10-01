@@ -1175,16 +1175,21 @@ test('audit: unsigned typed locals retain magnitude and comparison domains', () 
     'const v=a[i&3];return v===(i|0)',
     'const v=a[i&3];let w=v;w++;return w',
   ]
-  const src=bodies.map((body,k)=>`export function f${k}(i){const a=new Uint32Array([4294967295,2147483648,0,1]);${body}}`).join('\n')
+  const compare='export function compare(x){const u=x>>>0;return u>1}'
+  const src=bodies.map((body,k)=>`export function f${k}(i){const a=new Uint32Array([4294967295,2147483648,0,1]);${body}}`).join('\n')+'\n'+compare
   const js=oracle(src)
   for(const optimize of TIERS){
     const wasm=jz(src,{optimize}).exports
     for(let k=0;k<bodies.length;k++)for(const i of [0,0,1,2,3,-1,2147483647,0])
       ok(Object.is(wasm[`f${k}`](i),js[`f${k}`](i)), `${optimize}: ${bodies[k]}, i=${i}`)
+    for(const x of [-2147483649,-1,-0,0,1,1.5,2,2147483647,2147483648,4294967295,4294967296,NaN,Infinity,-Infinity])
+      is(wasm.compare(x),js.compare(x),`${optimize}: (uint32 ${x}) > 1`)
   }
   if(!onKernel()){
-    const wat=compile('export function f(x){const u=x>>>0;return u>1}',{optimize:2,wat:true})
-    ok(/i32\.(gt_u|ge_u)/.test(wat),'unsigned comparison stays in integer registers')
+    const wat=compile(compare,{optimize:2,wat:true})
+    // Zero-extension also permits a signed i64 comparison without a float
+    // round trip; the magnitude and sign boundary are checked above.
+    ok(/i32\.(gt_u|ge_u)|i64\.(gt_s|ge_s)\s+\(i64\.extend_i32_u/.test(wat),'unsigned comparison stays in integer registers')
     ok(!/f64\.convert_i32/.test(wat),'unsigned comparison needs no float conversion')
   }
 })
