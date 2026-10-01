@@ -29,13 +29,14 @@ below their unchanged AssemblyScript references of 1,758 B and 1,657 B.
 
 The remaining release blockers are:
 
-- Recursive compilation: ordinary kernel5 at `46878c72` passes all nine reuse
-  and recovery cases, but exhausts 4 GiB after `splitByListKinds`. Its frontend
-  uses 716.2 MB and its last completed phase 4.130 GB (kernel4: 3.645 GB).
-  Eight summaries improve on the earlier nine, but the new scalar-width proof
-  adds 885.4 MB in the first `collectFacts`. Profiling found 973 extra interval
-  walks producing only 33 useful hulls. Metadata-only queries must stop asking
-  for storage-width proofs; that allocation fix still needs a fresh kernel gate.
+- Recursive compilation: ordinary kernel6 at `8cb08e55` passes all nine reuse
+  and recovery cases, but still exhausts 4 GiB after `splitByListKinds`. Deferring
+  scalar proofs for metadata-only queries cuts the first `collectFacts` from
+  885.4 MB to 159.6 MB; the last completed phase falls from 4.130 GB to
+  3.340 GB. The first width-consuming caller-context pass remains under
+  investigation. Known-only interval snapshots now pass dense/sparse proof
+  equivalence and native/WASI regression checks, but their allocation effect
+  and the combined candidate still need a fresh recursive gate.
 - Dependency release: the complete, tested watr 5.11.9 tarball awaits publication
   approval. JZ still declares and locks 5.11.8. Publication, the dependency bump
   and a clean registry installation gate must precede release.
@@ -75,6 +76,13 @@ While-loop copies now guard their complete entry and final landing; global
 bound snapshots reject calls, accessors and observable coercion. Focused
 native/WASI boundary and reuse tests cover these changes. Remaining structural
 tests must distinguish proven fast paths from obsolete unconditional narrowing.
+Additional review fixed dynamic array keys reusing an element's object layout:
+`a["length"].x` now preserves undefined, and joined BigInt layouts retain their
+boxing obligations. Nullable keys also invalidate named-property facts. Local
+while cursors borrow a finite trip budget only when every continuing path
+advances the tested counter. Module counters and mutable module bounds cannot
+supply those loop theorems, because calls and coercions can write them. The
+unchanged byte-copy size test now passes at 438 B (limit 475 B).
 The combined final core matrix and bootstrap gates are not yet complete.
 
 ## Element ranges, September 30
