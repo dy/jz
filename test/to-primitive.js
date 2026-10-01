@@ -735,3 +735,102 @@ test('ToNumber: numeric parameter uses do not move conversions before execution'
     }
   `, [0,0,1,2,3,0,2])
 })
+
+test('Date coercion: own methods retain the requested hint and primitive type', () => {
+  for(const receiver of ['new Date(10)','{}']) {
+  const src = `export function f(mode){
+    let trace='';const d=${receiver};
+    d.valueOf=()=>{trace+='v';return mode===2?-0:mode===3?NaN:7};
+    d.toString=mode===1?undefined:()=>{trace+='s';return 9};
+    const out=[Number(d),+d,d*2,d<8,8>d,d>8,8<d,d+1,1+d,d==9,9==d,String(d)];
+    return[out,trace]
+  }`
+  for(const optimize of [0,1,2,3,'size']){
+    const got=jz(src,{optimize}).exports.f,want=oracle(src).f
+    for(const mode of [0,0,1,2,3,0])is(got(mode),want(mode),`O${optimize}, ${receiver} hint ${mode}`)
+  }
+  }
+})
+
+test('Date coercion: typed values honor own hooks before inherited methods', () => {
+  for(const ctor of ['Float64Array','BigInt64Array']) {
+    const src=`export function f(mode){
+      let trace='';const d=new Date(10),a=new ${ctor}(mode===6?0:2);
+      d.valueOf=mode===5?undefined:()=>{trace+='v';if(mode===3)throw 31;if(mode===4)throw 41;
+        return mode===0?7n:mode===1?-0:mode===2?NaN:11n};
+      d.toString=()=>{trace+='s';return '13'};
+      try{const result=a.fill(d);return[Array.from(a),trace,result===a]}
+      catch(e){return[Array.from(a),trace,typeof e==='number'?e:e.name]}
+    }`
+    for(const optimize of [0,1,2,3,'size']){
+      const got=jz(src,{optimize}).exports.f,want=oracle(src).f
+      for(const mode of [0,0,1,2,3,4,5,6,0])is(got(mode),want(mode),`O${optimize}, ${ctor} ${mode}`)
+    }
+  }
+  const src=`export function f(mode){
+    let trace='';const d=new Date(mode?NaN:10);
+    d.toString=()=>{trace+='s';throw 7};
+    try{const a=new Float64Array(1);a.fill(d);return[a[0],Number(d),trace]}
+    catch(e){return[e,trace]}
+  }`
+  for(const optimize of [0,1,2,3,'size']){
+    const got=jz(src,{optimize}).exports.f,want=oracle(src).f
+    for(const mode of [0,0,1,0])is(got(mode),want(mode),`O${optimize}, inherited valueOf ${mode}`)
+  }
+})
+
+test('Date coercion: relational BigInt uses number hint and keeps conversion errors', () => {
+  const src=`export function f(mode){
+    let trace='';const d=new Date(10);d.valueOf=()=>{trace+='v';if(mode===3)throw 7;
+      return mode===0?7n:mode===1?7:NaN};d.toString=()=>{trace+='s';return '20'};
+    try{return[d<8n,8n>d,d>8n,8n<d,d==20,20==d,trace]}
+    catch(e){return[e,trace]}
+  }`
+  for(const optimize of [0,1,2,3,'size']){
+    const got=jz(src,{optimize}).exports.f,want=oracle(src).f
+    for(const mode of [0,0,1,2,3,0])is(got(mode),want(mode),`O${optimize}, comparison ${mode}`)
+  }
+})
+
+test('Date coercion: explicit numeric constructors dispatch after primitive conversion', () => {
+  for(const ctor of ['Number','BigInt']) for(const receiver of ['new Date(10)','{}']) {
+    const src=`export function f(mode){
+      let trace='';const d=${receiver};
+      if(mode!==9)d.valueOf=()=>{trace+='v';if(mode===7)throw 17;
+        return mode===0?7n:mode===1?-0:mode===2?NaN:mode===3?'13':mode===4?true:
+          mode===5?Symbol('x'):mode===6?null:mode===8?1.5:{}};
+      d.toString=()=>{trace+='s';return '19'};
+      try{return[${ctor}(d),trace]}catch(e){return[typeof e==='number'?e:e.name,trace]}
+    }`
+    for(const optimize of [0,1,2,3,'size']){
+      const got=jz(src,{optimize}).exports.f,want=oracle(src).f
+      for(const mode of [0,0,1,2,3,4,5,6,7,8,9,10,0])
+        is(got(mode),want(mode),`O${optimize}, ${ctor}(${receiver}) ${mode}`)
+    }
+  }
+})
+
+test('Date coercion: inherited and boxed primitive BigInt constructors preserve errors', () => {
+  const src=`export function f(k){
+    const xs=[NaN,-NaN,Infinity,-Infinity,-0,1.5,7n,true,false,null,undefined,
+      Symbol('x'),'13','bad',new Date(10),new Date(NaN),new String('17'),[],[3],[1,2]];
+    try{return BigInt(xs[k])}catch(e){return e.name}
+  }`
+  for(const optimize of [0,1,2,3,'size']){
+    const got=jz(src,{optimize}).exports.f,want=oracle(src).f
+    for(const k of [0,0,...Array.from({length:20},(_,i)=>i),0])
+      is(got(k),want(k),`O${optimize}, boxed input ${k}`)
+  }
+})
+
+test('Date coercion: eager registration does not introduce a Date dependency', () => {
+  const ordinary=`export function f(){return Number({valueOf(){return 7}})}`
+  const date=`export function f(){const d=new Date(10);d.valueOf=()=>7;return +d}`
+  for(const optimize of [0,2])for(const src of [ordinary,ordinary,date,ordinary]) {
+    for(const eager of [false,true]) {
+      const opts={optimize,_eagerStdlib:eager};
+      is(jz(src,opts).exports.f(),7,`O${optimize}, eager ${eager}`)
+      if(src===ordinary)is(/\b__date_/.test(compile(src,{...opts,wat:true})),false,'no undemanded Date helper')
+    }
+  }
+})

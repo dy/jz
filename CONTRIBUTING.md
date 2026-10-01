@@ -1373,6 +1373,12 @@ both methods throws a TypeError. Programs without user methods retain the
 constant inherited tag. The two functions are runtime roots
 (`ctx.funcs.runtimeRoots`): address-taken, boxed ABI. Implicit coercions retain
 surrounding catches, since method calls only become explicit during emission.
+Date uses the same own-method lookup before its inherited timestamp or string
+method. Numeric conversion and relational operators request the number hint;
+addition and loose equality preserve Date's string default. Dictionary-backed
+objects use their runtime property owner in that chain. `Number()` accepts a
+BigInt primitive returned by a hook; `BigInt()` converts the primitive first,
+while typed BigInt stores reject Number primitives even for empty ranges.
 `+` with a heap operand of known kind concatenates unless a user conversion
 method may run. Loose `==` between a heap kind and a Number, String, Boolean
 or BigInt applies that same conversion before comparing primitive values.

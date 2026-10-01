@@ -1066,12 +1066,14 @@ export default (ctx) => {
     ;; inherited Object.prototype.toString tag. A dictionary is a plain object.
     (if (i32.eq (local.get $type) (i32.const ${PTR.OBJECT}))
       (then
-        ${ctx.module.modules.date && ctx.schema.dateSid != null ? `(if (i32.eq (call $__ptr_aux (local.get $val)) (i32.const ${ctx.schema.dateSid}))
+        ${ctx.funcs.runtimeRoots.has('__jz_tp_str') ? `(return (call $__to_str (i64.reinterpret_f64 (call $__jz_tp_str (f64.reinterpret_i64 (local.get $val))))))`
+          : ctx.module.modules.date && ctx.schema.dateSid != null ? `(if (i32.eq (call $__ptr_aux (local.get $val)) (i32.const ${ctx.schema.dateSid}))
           (then (return (i64.reinterpret_f64 (call $__date_to_string (f64.load (i32.wrap_i64 (local.get $val))))))))` : ''}
-        ${ctx.funcs.runtimeRoots.has('__jz_tp_str') ? `(return (call $__to_str (i64.reinterpret_f64 (call $__jz_tp_str (f64.reinterpret_i64 (local.get $val))))))` : ''}
         (return (i64.reinterpret_f64 (call $__static_str (i32.const 12))))))
     (if (i32.eq (local.get $type) (i32.const ${PTR.HASH}))
-      (then (return (i64.reinterpret_f64 (call $__static_str (i32.const 12))))))
+      (then ${ctx.funcs.runtimeRoots.has('__jz_tp_str')
+        ? '(return (call $__to_str (i64.reinterpret_f64 (call $__jz_tp_str (f64.reinterpret_i64 (local.get $val))))))'
+        : '(return (i64.reinterpret_f64 (call $__static_str (i32.const 12))))'}))
     (if (i32.eq (local.get $type) (i32.const ${PTR.MAP}))
       (then (return (i64.reinterpret_f64 (call $__static_str (i32.const 13))))))
     (if (i32.eq (local.get $type) (i32.const ${PTR.SET}))

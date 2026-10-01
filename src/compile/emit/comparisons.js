@@ -9,7 +9,7 @@ import { i64Hex, nanPrefixHex } from '../../../layout.js'
 import { T, TYPEOF } from '../../ast.js'
 import { LAYOUT, PTR, ctx, inc, ssoBitI64Hex } from '../../ctx.js'
 import {
-  asF64, asI32, asI64, carrierF64, emitNum, freshId, isBoolAtom, isLit, isLiteralStr, isNull, isNullish, isNullishLit, isPlanRawBigint, isPlanTaggedBigint, isUndef, litVal, nullableBoolBoxIR, numberNanIR, ptrTypeEq, readI64, resolveValType, temp, tempI32, tempI64, toNumF64, truthyIR, typed, unboxBigInt,
+  applyBigintRepresentationAction, asF64, asI32, asI64, carrierF64, emitNum, freshId, isBoolAtom, isLit, isLiteralStr, isNull, isNullish, isNullishLit, isPlanRawBigint, isPlanTaggedBigint, isUndef, litVal, nullableBoolBoxIR, numberNanIR, ptrTypeEq, readI64, resolveValType, temp, tempI32, tempI64, toNumF64, truthyIR, typed, unboxBigInt,
 } from '../../ir.js'
 import { censusMaybeUndefined, hasAmbiguousBoolMerge, valTypeOf } from '../../kind.js'
 import { K, core, hasTag, tagOf } from '../../summary/kind.js'
@@ -21,7 +21,7 @@ import { numLiteralNode } from './bigint.js'
 import { emit, emitIdentitySafe, emitIdentitySafeArms } from './dispatch.js'
 import { numberOrMissing } from './arithmetic.js'
 import { emitInstanceof } from './instanceof.js'
-import { representationProvesBigint } from '../representation-plan.js'
+import { representationProvesBigint, representationStorageWriteAction } from '../representation-plan.js'
 import { REF_EQ_KINDS, foldOperandPure, stringOps } from './shared.js'
 import { positionArgs } from '../../bridge.js'
 
@@ -715,6 +715,18 @@ const cmpOp = (i32op, f64op, fn) => (a, b) => {
   // the same i32 sign op as numeric (lt_s/gt_s/le_s/ge_s vs 0).
   const vta = numericVal(resolveValType(a, valTypeOf, lookupValType))
   const vtb = numericVal(resolveValType(b, valTypeOf, lookupValType))
+  // Date conversion may run own hooks and return either numeric domain.
+  // Keep its number hint in the shared primitive comparator, before selecting
+  // a BigInt payload or the timestamp-only fast path.
+  if ((vta === VAL.DATE || vtb === VAL.DATE) &&
+      (ctx.funcs.runtimeRoots.has('__jz_tp_num') || vta === VAL.BIGINT || vtb === VAL.BIGINT)) {
+    ctx.module.include('string')
+    ctx.module.include('number')
+    inc('__cmp')
+    return typed([`f64.${f64op}`, ['call', '$__cmp',
+      asI64(applyBigintRepresentationAction(carrierF64(a, va), a, representationStorageWriteAction(ctx, a))),
+      asI64(applyBigintRepresentationAction(carrierF64(b, vb), b, representationStorageWriteAction(ctx, b)))], ['f64.const', 0]], 'i32')
+  }
   if (vta === VAL.BIGINT || vtb === VAL.BIGINT) {
     // Literal-mixed compare is MATHEMATICAL per spec (BigInt vs Number) — 5n > 3
     // must not compare raw NaN-box bits. Coerce through f64 (exact for literal

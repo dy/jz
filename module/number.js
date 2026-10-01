@@ -407,12 +407,12 @@ export default (ctx) => {
     __ilen: [],
     __radix_str: ['__mkstr_scratch'],
     __num_radix: ['__ftoa', '__mkstr_scratch'],
-    __to_num: ['__char_at', '__str_length', '__pow10', '__dec_to_f64', '__to_str', '__skipws', '__ptr_aux', '__is_object'],
-    __number: ['__to_num', '__ptr_type', '__ptr_offset', '__ptr_aux'],
+    __to_num: ['__char_at', '__str_length', '__pow10', '__dec_to_f64', '__to_str', '__skipws', '__ptr_aux', '__is_object', '__to_prim_num'],
+    __number: ['__to_prim_num', '__to_num', '__ptr_type', '__ptr_offset', '__ptr_aux'],
     __skipws: ['__char_at', '__strws'],
     __str_to_bigint: ['__char_at', '__str_length'],
-    __to_bigint: ['__str_to_bigint', '__num_to_bigint', '__ptr_type', '__ptr_offset'],
-    __to_bigint_strict: ['__to_bigint', '__is_object', '__to_prim_dflt', '__ptr_type', '__ptr_aux'],
+    __to_bigint: ['__str_to_bigint', '__num_to_bigint', '__ptr_type', '__ptr_offset', '__is_object', '__to_prim_num'],
+    __to_bigint_strict: ['__to_bigint', '__is_object', '__to_prim_num', '__ptr_type'],
     __bigint_eq_num: [],
     __bigint_eq_str: ['__str_to_bigint'],
     __bigint_eq: ['__bigint_eq_num', '__bigint_eq_str', '__ptr_type', '__ptr_offset', '__is_object', '__to_prim_dflt'],
@@ -1721,11 +1721,8 @@ export default (ctx) => {
     (local.set $t (call $__ptr_type (local.get $v)))
     (if (i32.eq (local.get $t) (i32.const ${PTR.BIGINT}))
       (then (return (f64.convert_i64_s (i64.load (call $__ptr_offset (local.get $v)))))))
-    ${ctx.funcs.runtimeRoots.has('__jz_tp_num') ? `(if
-      ${ctx.module.modules.date && ctx.schema.dateSid != null
-        ? `(i32.and (i32.eq (local.get $t) (i32.const ${PTR.OBJECT})) (i32.ne (call $__ptr_aux (local.get $v)) (i32.const ${ctx.schema.dateSid})))`
-        : `(i32.eq (local.get $t) (i32.const ${PTR.OBJECT}))`}
-      (then (return (call $__number (i64.reinterpret_f64 (call $__jz_tp_num (local.get $f)))))))` : ''}
+    ${ctx.funcs.runtimeRoots.has('__jz_tp_num') ? `(if (i32.or (i32.eq (local.get $t) (i32.const ${PTR.OBJECT})) (i32.eq (local.get $t) (i32.const ${PTR.HASH})))
+      (then (return (call $__number (call $__to_prim_num (local.get $v))))))` : ''}
     (call $__to_num (local.get $v)))`
 
   ctx.core.stdlib['__to_num'] = () => `(func $__to_num (param $v i64) (result f64)
@@ -1755,13 +1752,9 @@ export default (ctx) => {
     (if (i32.eq (local.get $t) (i32.const ${PTR.BIGINT}))
       (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${errorCodeLiteral(ERR.BIGINT_TO_NUMBER)})))
         (throw $__jz_err (f64.const ${errorCodeLiteral(ERR.BIGINT_TO_NUMBER)}))))
-    ;; ToPrimitive(number) for an object: a Date is its time value; a user
-    ;; valueOf/toString goes through the prelude (compile/emit/to-primitive.js).
-    (if (i32.eq (local.get $t) (i32.const ${PTR.OBJECT}))
-      (then
-        ${ctx.module.modules.date && ctx.schema.dateSid != null ? `(if (i32.eq (call $__ptr_aux (local.get $v)) (i32.const ${ctx.schema.dateSid}))
-          (then (return (f64.load (i32.wrap_i64 (local.get $v))))))` : ''}
-        ${ctx.funcs.runtimeRoots.has('__jz_tp_num') ? `(return (call $__to_num (i64.reinterpret_f64 (call $__jz_tp_num (f64.reinterpret_i64 (local.get $v))))))` : ''}))
+    ;; ToPrimitive(number) shares own lookup and inherited Date methods.
+    (if (i32.or (i32.eq (local.get $t) (i32.const ${PTR.OBJECT})) (i32.eq (local.get $t) (i32.const ${PTR.HASH})))
+      (then (return (call $__to_num (call $__to_prim_num (local.get $v))))))
     ;; Non-string values go through ToString per JS spec, then re-check the
     ;; type in case ToString itself returned a non-string sentinel.
     (if (i32.ne (local.get $t) (i32.const ${PTR.STRING}))
@@ -1948,8 +1941,16 @@ export default (ctx) => {
   // and undefined are a TypeError.
   ctx.core.stdlib['__to_bigint'] = `(func $__to_bigint (param $v i64) (result f64)
     (local $t i32) (local $status i32) (local $result i64) (local $f f64)
+    ;; The primitive conversion precedes Number/BigInt dispatch. A raw Number's
+    ;; payload can spell a pointer tag, so inspect objects only in boxed space.
+    (if (i32.and (f64.ne (f64.reinterpret_i64 (local.get $v)) (f64.reinterpret_i64 (local.get $v)))
+          (i64.ne (i64.and (local.get $v) (i64.const 0xfff0000000000000)) (i64.const 0xfff0000000000000)))
+      (then (if (call $__is_object (local.get $v))
+        (then (local.set $v (call $__to_prim_num (local.get $v)))))))
     (local.set $f (f64.reinterpret_i64 (local.get $v)))
-    (if (f64.eq (local.get $f) (local.get $f))
+    (if (i32.or (f64.eq (local.get $f) (local.get $f))
+          (i32.or (i64.eq (local.get $v) (i64.const ${NAN_BITS}))
+            (i64.eq (i64.and (local.get $v) (i64.const 0xfff0000000000000)) (i64.const 0xfff0000000000000))))
       (then (return (call $__num_to_bigint (local.get $f)))))
     (local.set $t (call $__ptr_type (local.get $v)))
     ;; ToBigInt(bigint) is the identity (ES2024 21.2.1.1 step 2b via BigInt()'s
@@ -1967,7 +1968,8 @@ export default (ctx) => {
     (if (i64.eq (local.get $v) (i64.const ${TRUE_NAN})) (then (return (f64.reinterpret_i64 (i64.const 1)))))
     (if (i64.eq (local.get $v) (i64.const ${FALSE_NAN})) (then (return (f64.reinterpret_i64 (i64.const 0)))))
     (if (i32.ne (local.get $t) (i32.const ${PTR.STRING}))
-      (then (return (f64.reinterpret_i64 (i64.const 0)))))
+      (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${errorCodeLiteral(ERR.BIGINT_NULLISH)})))
+        (throw $__jz_err (f64.const ${errorCodeLiteral(ERR.BIGINT_NULLISH)}))))
     (call $__str_to_bigint (local.get $v))
     (local.set $status)
     (local.set $result)
@@ -1986,12 +1988,7 @@ export default (ctx) => {
       (then
         (if (call $__is_object (local.get $v))
           (then
-            ${ctx.module.modules.date && ctx.schema.dateSid != null ? `(if (i32.and
-              (i32.eq (call $__ptr_type (local.get $v)) (i32.const ${PTR.OBJECT}))
-              (i32.eq (call $__ptr_aux (local.get $v)) (i32.const ${ctx.schema.dateSid})))
-              (then (local.set $v (i64.load (i32.wrap_i64 (local.get $v)))))
-              (else (local.set $v (call $__to_prim_dflt (local.get $v)))))`
-              : `(local.set $v (call $__to_prim_dflt (local.get $v)))`}))))
+            (local.set $v (call $__to_prim_num (local.get $v)))))))
     (local.set $t (call $__ptr_type (local.get $v)))
     (if (i32.and (i32.and
           (f64.ne (f64.reinterpret_i64 (local.get $v)) (f64.reinterpret_i64 (local.get $v)))
@@ -2243,15 +2240,14 @@ export default (ctx) => {
       inc('__number')
       return typed(['call', '$__number', asI64(materializeDeferredBigint(v))], 'f64')
     }
-    if (vt === VAL.NUMBER || vt === VAL.BOOL || vt === VAL.STRING || vt === VAL.DATE)
+    if (vt === VAL.NUMBER || vt === VAL.BOOL || vt === VAL.STRING || vt === VAL.DATE && !ctx.funcs.runtimeRoots.has('__jz_tp_num'))
       return toNumF64(x, emit(x))
     inc('__number')
     return typed(['call', '$__number', asI64(storedValue(x))], 'f64')
   }
 
-  // BigInt(x) — f64→i64 conversion (reinterpret as BigInt-as-f64).
-  // For number input: truncate directly. For string / unknown: first coerce via __to_num
-  // (handles both decimal and hex string parse), then truncate.
+  // BigInt(x): exact Numbers use the integral-number check; other values
+  // take ToPrimitive(number), then Boolean, String or BigInt conversion.
   ctx.core.emit['BigInt'] = (x) => {
     // Every BigInt() path can fault: a non-integral Number is a RangeError and
     // a malformed String is a SyntaxError, both raised via $__jz_err.

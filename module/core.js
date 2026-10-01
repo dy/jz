@@ -70,8 +70,9 @@ export default (ctx) => {
   deps({
     __eq: () => ['__str_eq', '__ptr_type', '__is_nullish', ...(representationProgramHasBigint(ctx) ? ['__bigint_eq', '__ptr_offset'] : []),
       ...(ctx.core.stdlib['__to_num'] ? ['__to_num'] : []), ...(ctx.core.stdlib['__to_str'] ? ['__is_object', '__to_prim_dflt'] : [])],
-    __to_prim_dflt: ['__ptr_type', '__to_str'],
-    __cmp: () => ['__is_object', '__ptr_type', '__ptr_aux', '__to_prim_dflt', '__is_str_key', '__str_cmp', '__to_num', ...(representationProgramHasBigint(ctx) ? ['__is_bigint_box', '__cmp_i64', '__cmp_i64_num', '__bigint_side', '__ptr_offset'] : [])],
+    __to_prim_dflt: ['__ptr_type', '__ptr_aux', '__to_str'],
+    __to_prim_num: ['__ptr_type', '__ptr_aux', '__to_str'],
+    __cmp: () => ['__is_object', '__ptr_type', '__ptr_aux', '__to_prim_num', '__is_str_key', '__str_cmp', '__to_num', ...(representationProgramHasBigint(ctx) ? ['__is_bigint_box', '__cmp_i64', '__cmp_i64_num', '__bigint_side', '__ptr_offset'] : [])],
     __bigint_side: ['__to_num', '__is_str_key'],
     __is_bigint_box: ['__ptr_type'],
     __cmp_i64_num: ['__cmp_i64'],
@@ -593,9 +594,28 @@ export default (ctx) => {
   // through the prelude (compile/emit/to-primitive.js) when the program has
   // one, else the kind's inherited string. Callers pass a heap value.
   ctx.core.stdlib['__to_prim_dflt'] = () => `(func $__to_prim_dflt (param $v i64) (result i64)
-    ${ctx.funcs.runtimeRoots.has('__jz_tp_num') ? `(if (i32.eq (call $__ptr_type (local.get $v)) (i32.const ${PTR.OBJECT}))
+    ${ctx.module.modules.date && ctx.schema.dateSid != null ? `(if (i32.and
+      (i32.eq (call $__ptr_type (local.get $v)) (i32.const ${PTR.OBJECT}))
+      (i32.eq (call $__ptr_aux (local.get $v)) (i32.const ${ctx.schema.dateSid})))
+      (then (return ${ctx.funcs.runtimeRoots.has('__jz_tp_str')
+        ? '(i64.reinterpret_f64 (call $__jz_tp_str (f64.reinterpret_i64 (local.get $v))))'
+        : '(call $__to_str (local.get $v))'})))` : ''}
+    ${ctx.funcs.runtimeRoots.has('__jz_tp_num') ? `(if (i32.or (i32.eq (call $__ptr_type (local.get $v)) (i32.const ${PTR.OBJECT}))
+      (i32.eq (call $__ptr_type (local.get $v)) (i32.const ${PTR.HASH})))
       (then
         (return (i64.reinterpret_f64 (call $__jz_tp_num (f64.reinterpret_i64 (local.get $v)))))))` : ''}
+    (call $__to_str (local.get $v)))`
+
+  // Number-hint ToPrimitive. A program with user methods uses the prepared
+  // lookup chain; the direct Date time is only the no-override fallback.
+  ctx.core.stdlib['__to_prim_num'] = () => `(func $__to_prim_num (param $v i64) (result i64)
+    ${ctx.funcs.runtimeRoots.has('__jz_tp_num') ? `(if (i32.or (i32.eq (call $__ptr_type (local.get $v)) (i32.const ${PTR.OBJECT}))
+      (i32.eq (call $__ptr_type (local.get $v)) (i32.const ${PTR.HASH})))
+      (then (return (i64.reinterpret_f64 (call $__jz_tp_num (f64.reinterpret_i64 (local.get $v)))))))`
+      : ctx.module.modules.date && ctx.schema.dateSid != null ? `(if (i32.and
+          (i32.eq (call $__ptr_type (local.get $v)) (i32.const ${PTR.OBJECT}))
+          (i32.eq (call $__ptr_aux (local.get $v)) (i32.const ${ctx.schema.dateSid})))
+          (then (return (i64.load (i32.wrap_i64 (local.get $v))))))` : ''}
     (call $__to_str (local.get $v)))`
 
   // Relational slow path: evaluate both operands before entering, then
@@ -605,13 +625,7 @@ export default (ctx) => {
     (local $x f64) (local $y f64)
     ${['a', 'b'].map(v => `
     (if (call $__is_object (local.get $${v}))
-      (then (local.set $${v}
-        ${ctx.module.modules.date && ctx.schema.dateSid != null ? `(if (result i64)
-          (i32.and (i32.eq (call $__ptr_type (local.get $${v})) (i32.const ${PTR.OBJECT}))
-            (i32.eq (call $__ptr_aux (local.get $${v})) (i32.const ${ctx.schema.dateSid})))
-          (then (i64.load (i32.wrap_i64 (local.get $${v}))))
-          (else (call $__to_prim_dflt (local.get $${v}))))`
-          : `(call $__to_prim_dflt (local.get $${v}))`})))`).join('')}
+      (then (local.set $${v} (call $__to_prim_num (local.get $${v})))))`).join('')}
     (if (i32.and (call $__is_str_key (local.get $a)) (call $__is_str_key (local.get $b)))
       (then (return (f64.convert_i32_s (call $__str_cmp (local.get $a) (local.get $b))))))
     ${representationProgramHasBigint(ctx) ? `(if (call $__is_bigint_box (local.get $a))

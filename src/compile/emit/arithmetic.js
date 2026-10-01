@@ -194,8 +194,9 @@ const objectMayPrimitiveMethod = (node) => {
     || brand && ctx.transform.classes?.get(brand)?.methods.has(name)
     || ctx.summary.memberMayBeOwn(name))
 }
-const stringishOperand = (vt, n) => vt != null && (STRINGISH_KINDS.has(vt) || (vt === VAL.OBJECT && !objectMayPrimitiveMethod(n)))
-const dynamicObjectOperand = (vt, n) => vt === VAL.OBJECT && objectMayPrimitiveMethod(n)
+const stringishOperand = (vt, n) => vt != null && ((vt === VAL.OBJECT || vt === VAL.HASH || vt === VAL.DATE)
+  ? !objectMayPrimitiveMethod(n) : STRINGISH_KINDS.has(vt))
+const dynamicObjectOperand = (vt, n) => (vt === VAL.OBJECT || vt === VAL.HASH || vt === VAL.DATE) && objectMayPrimitiveMethod(n)
 
 // Whether `node` may evaluate to a missing value: a binding the summary lets be
 // absent or nullish, or an expression whose kind carries either.

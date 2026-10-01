@@ -47,9 +47,10 @@ export function synthesizeToPrimitive() {
     ctx.module.include('collection')
     ctx.module.include('string')
     ctx.runtime.schemaTblConsumed = true
-    inc('__dyn_get_t_hm')
-    return typed(['f64.reinterpret_i64', ['call', '$__dyn_get_t_hm', asI64(emit(r)), asI64(emit(propLit)),
-      ['i32.const', PTR.OBJECT], ['i32.const', stringHash(propLit[1])]]], 'f64')
+    inc('__dyn_get_t_hm', '__ptr_type')
+    const recv = asI64(emit(r))
+    return typed(['f64.reinterpret_i64', ['call', '$__dyn_get_t_hm', recv, asI64(emit(propLit)),
+      ['call', '$__ptr_type', recv], ['i32.const', stringHash(propLit[1])]]], 'f64')
   }
   ctx.core.emit.__tp_missing = (v) => typed(['i64.eq', asI64(emit(v)), ['i64.const', TOMB_NAN]], 'i32')
   ctx.core.emit.__tp_callable = (v) => ptrTypeEq(asF64(emit(v)), PTR.CLOSURE)
@@ -64,6 +65,20 @@ export function synthesizeToPrimitive() {
       ['global.set', '$__jz_last_err_bits', ['i64.reinterpret_f64', code]],
       ['throw', '$__jz_err', code]], 'f64')
   }
+  // Date's inherited methods participate only after an own method is absent.
+  // Both hints use this same chain; the order remains the caller's choice.
+  const date = ctx.module.demanded.has('date')
+  if (date) {
+    const sid = ctx.schema.ensureDateSid()
+    ctx.core.emit.__tp_isdate = r => {
+      inc('__ptr_aux')
+      const value = asF64(emit(r))
+      return typed(['i32.and', ptrTypeEq(value, PTR.OBJECT),
+        ['i32.eq', ['call', '$__ptr_aux', asI64(value)], ['i32.const', sid]]], 'i32')
+    }
+    ctx.core.emit.__tp_date_value = ctx.core.emit['.date:valueOf']
+    ctx.core.emit.__tp_date_string = ctx.core.emit['.date:toString']
+  }
   const call = (fn, arg) => ['()', fn, arg]
   const block = (...stmts) => ['{}', [';', ...stmts]]
   const accept = (value) => block(['=', V, value], ['if', ['__isprim', V], ['return', V]])
@@ -71,6 +86,8 @@ export function synthesizeToPrimitive() {
     // Only absence reaches inherited methods. A non-callable own slot skips
     // this method; an object result proceeds to the next lookup, after effects.
     let inherited = prop === 'toString' ? ['return', ['str', '[object Object]']] : block()
+    if (date) inherited = ['if', ['__tp_isdate', R],
+      ['return', call(prop === 'toString' ? '__tp_date_string' : '__tp_date_value', R)], inherited]
     for (const e of classesWith(prop).reverse())
       inherited = ['if', ['instanceof', R, e.brand], accept(call(e.methods.get(prop), R)), inherited]
     return block(['=', M, ['__tp_get', R, ['str', prop]]],

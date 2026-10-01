@@ -338,7 +338,7 @@ export function toNumF64(node, v) {
     if (typeof node !== 'string' && (mayYieldUndef(v) || mayMissValue(node, v))) return missToNaN(v)
     return asF64(v)
   }
-  if (vt === VAL.DATE) {
+  if (vt === VAL.DATE && !ctx.funcs.runtimeRoots.has(TO_PRIMITIVE.number)) {
     const ptr = v.ptrKind === VAL.DATE
       ? v
       : ['i32.wrap_i64', ['i64.reinterpret_f64', asF64(v)]]
@@ -350,7 +350,7 @@ export function toNumF64(node, v) {
   // yield non-primitives a TypeError is thrown. The chosen primitive still
   // flows through `__to_num` so a string return ("−7") is parsed. An abrupt
   // completion (throwing method) propagates through the closure call.
-  if (vt === VAL.OBJECT) {
+  if (vt === VAL.OBJECT || vt === VAL.DATE) {
     const prim = objectToPrimitive(v, 'number')
     if (prim) {
       // A user conversion can return any primitive, including BigInt or an
