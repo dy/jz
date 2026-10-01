@@ -97,8 +97,8 @@ function stagedReference(name, update = true, rhs) {
   return pre.length ? { ref: [name[0], recv, key], pre } : null
 }
 const afterStaging = (pre, out) => out?.type ? typed(['block', ['result', out.type], ...pre, out], out.type) : ['block', ...pre, ...(out ? [out] : [])]
-export const putReference = (ref, value) => ref[0] === '[]'
-  ? emitElementAssign(ref[1], ref[2], value) : emitPropertyAssign(ref[1], ref[2], value)
+export const putReference = (ref, value, source = ref) => ref[0] === '[]'
+  ? emitElementAssign(ref[1], ref[2], value, source) : emitPropertyAssign(ref[1], ref[2], value)
 /** Lower a compound member write through its staged reference: `build` receives the reference to read and write. */
 export function throughReference(name, rhs, build) {
   const staged = stagedReference(name, true, rhs)
@@ -223,7 +223,7 @@ export const assignmentOps = {
       const staged = stagedReference(name, update, val)
       if (staged) {
         const value = update ? [val[0], staged.ref] : val
-        return afterStaging(staged.pre, putReference(staged.ref, value))
+        return afterStaging(staged.pre, putReference(staged.ref, value, name))
       }
     }
     if (Array.isArray(name) && name[0] === '[]') return emitElementAssign(name[1], name[2], val, name)

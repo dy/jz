@@ -10,12 +10,43 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import jz from '../index.js'
-import { run } from './util.js'
+import { run, oracle } from './util.js'
+import { levels } from './_matrix.js'
 
 const SPEED = { level: 'speed', watr: false }
 const wat = (src, opts = SPEED) => jz.compile(src, { wat: true, optimize: opts })
 const callIndirectCount = (w) => (w.match(/call_indirect/g) || []).length
 const brTableCount = (w) => (w.match(/br_table/g) || []).length
+
+test('dyn-closure-tables: checked dispatch tags the outer call after argument effects', () => {
+  const cases = [
+    `const ops=[x=>x.length|0,x=>(x.length*2)|0];
+      function make(v){return ()=>v}
+      export function f(sel){const h=make('abc');return ops[sel&3](h())}`,
+    `const ops=[x=>x.length|0,x=>(x.length*2)|0];
+      function make(v,trace,fail){return ()=>{trace[0]+='h';if(fail)throw 'arg';return v}}
+      export function f(sel,fail){const trace=[''],h=make('abc',trace,fail);
+        try{return[ops[(trace[0]+='k',sel&3)](h()),trace[0]]}
+        catch(e){return[e instanceof TypeError?'TypeError':e,trace[0]]}}`,
+  ]
+  for (const src of cases) for (const level of levels(0,1,2,3,'size')) {
+    const got=run(src,{optimize:{level,sourceInline:false}}).f, want=oracle(src).f
+    for (const args of [[0,0],[0,0],[1,0],[0,1],[1,0]])
+      is(got(...args),want(...args),`O${level}, ${args}`)
+    if (src.includes('try')) for (const args of [[2,0],[2,1],[3,0],[0,0]])
+      is(got(...args),want(...args),`O${level}, missing callee/argument throw ${args}`)
+  }
+})
+
+test('dyn-closure-tables: open keys retain named values and the checked fallback', () => {
+  const src=`const ops=[x=>x|0,x=>(x*2)|0];ops.extra=()=>3.5;
+    export function f(sel,x){try{return ops[sel](x)}catch(e){return e instanceof TypeError?'TypeError':e}}`
+  const args=[[0,3.5],[0,3.5],[1,3.5],['extra',0],['length',0],[-1,0],[2,0],[0.5,0],[NaN,0],[0,3.5]]
+  for (const level of levels(0,1,2,3,'size')) {
+    const got=run(src,{optimize:{level}}).f, want=oracle(src).f
+    for(const input of args)is(got(...input),want(...input),`O${level}, ${input}`)
+  }
+})
 
 test('dyn-closure-tables: direct writes of the same arrow, different captured envs, devirt to br_table', () => {
   // Each setup(i, delta) call instantiates the SAME lexical arrow (one funcIdx)

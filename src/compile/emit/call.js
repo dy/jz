@@ -284,13 +284,15 @@ function tryDirectClosureCall(callee, parsed) {
  *  which happens in buildStartFn AFTER function bodies emit; so emit only marks
  *  the site (receiver name), and the rewrite runs in optimizeFunc where the
  *  facts are complete. */
-export const tagFnArrayDispatch = (ir, arrName) => {
+export const tagFnArrayDispatch = (ir, arrName, open = true) => {
   let ci = null
-  walkAst(ir, { enter: (n) => {
-    if (ci) return false
-    if (n[0] === 'call_indirect') { ci = n; return false }
+  // closure.call evaluates the callee and arguments before its final call.
+  // A checked call spills them first, so the first indirect call can belong
+  // to an argument. Postorder selects the outer call in both forms.
+  walkAst(ir, { exit: (n) => {
+    if (n[0] === 'call_indirect') ci = n
   } })
-  if (ci) ci.dvArr = arrName
+  if (ci) { ci.dvArr = arrName; ci.dvOpen = open }
   return ir
 }
 
@@ -332,10 +334,10 @@ function emitGenericClosureCall(callee, parsed, thisArg = null) {
   const open = valTypeOf(callee) !== VAL.CLOSURE && tagOf(core(kind)) !== K.CLOSURE
   const nullable = (member !== callee && hasOptionalChain(member)) || censusMaybeUndefined(callee) ||
     (tagOf(core(kind)) === K.CLOSURE && isNullable(kind))
-  const arrName = !open && !parsed.hasSpread && Array.isArray(callee) && callee[0] === '[]' && typeof callee[1] === 'string'
+  const arrName = !parsed.hasSpread && Array.isArray(callee) && callee[0] === '[]' && typeof callee[1] === 'string'
     ? callee[1] : null
   const dvName = (ctx.transform.optFlags & OPTF.devirtClosureTables) && arrName ? arrName : null
-  if (arrName && (ctx.scope.closureTableLatticeCandidates?.has(arrName) ||
+  if (!open && arrName && (ctx.scope.closureTableLatticeCandidates?.has(arrName) ||
       ctx.scope.imperativeClosureTableLatticeCandidates?.has(arrName)))
     recordClosureTableCallSite(arrName, parsed.normal)
   let ir, calleeIR, receiver = thisArg == null ? null : asF64(emit(thisArg))
@@ -377,7 +379,7 @@ function emitGenericClosureCall(callee, parsed, thisArg = null) {
           ['i64.reinterpret_f64', recv], ['i64.reinterpret_f64', receiver ?? undefExpr()], ['i64.reinterpret_f64', arrayIR]]]],
         ['else', ctx.closure.call(recv, args, parsed.hasSpread, true, receiver)]]], 'f64')
   }
-  return dvName ? tagFnArrayDispatch(ir, dvName) : ir
+  return dvName ? tagFnArrayDispatch(ir, dvName, open) : ir
 }
 
 /** Last-resort fallback: assume `(call $callee args)` against an import / unknown

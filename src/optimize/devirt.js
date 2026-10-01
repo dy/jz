@@ -641,7 +641,9 @@ export function devirtConstFnArrayCalls(fn, cfg) {
     }
     const sa = ctx.scope.staticArrs?.get(node.dvArr)
     const fns = ctx.scope.dvArmFns
-    const narrow = !!(sa && fns && ctx.types.arrResized && ctx.types.nameEscapes &&
+    // An arbitrary key can select a named method outside the element family.
+    // Its checked call may share identity dispatch, but not the elements' result width.
+    const narrow = !!(!node.dvOpen && sa && fns && ctx.types.arrResized && ctx.types.nameEscapes &&
       !ctx.types.arrResized.has(node.dvArr) && !ctx.types.nameEscapes.has(node.dvArr) &&
       cands.every(c => convertTopped(fns.get(`$${c.name}`))))
     const intOf = (v) => {

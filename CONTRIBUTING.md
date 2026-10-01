@@ -570,6 +570,11 @@ own rank and invalidates enumeration caches. No collection entry grows.
 Function arity is source arity (before a default or rest parameter), indexed by
 closure table slot independently of body deduplication. Its byte table is linked
 only when a length reader is reachable.
+Function-table dispatch can specialize the checked closure arm of an unknown-key
+call, retaining host and non-callable fallbacks. Named properties keep their own
+result domain. Dispatch metadata belongs to the outer call after callee/argument
+evaluation, and staged writes retain their original source occurrence for the
+all-writers census while using the captured receiver at runtime.
 
 
 Array joining captures length before separator conversion and reads elements

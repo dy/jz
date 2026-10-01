@@ -612,14 +612,17 @@ export function emitElementAssign(arr, idx, val, node = null) {
   // table — record this write's provenance (direct closure literal, or a call
   // to a function resolveDynFnTables can later prove is a closure factory) for
   // the program-wide same-body devirt proof. A no-op for every other array.
-  if (typeof arr === 'string' && ctx.scope.dynFnTableCandidates?.has(arr))
-    recordDynFnTableWrite(arr, val, valueExpr)
+  // Staging changes the runtime receiver to a saved temporary, but this is
+  // still the original source write for the all-writers census.
+  const tableName = typeof node?.[1] === 'string' ? node[1] : arr
+  if (typeof tableName === 'string' && ctx.scope.dynFnTableCandidates?.has(tableName))
+    recordDynFnTableWrite(tableName, val, valueExpr)
   // Closure-TABLE call-site PARAM lattice, IMPERATIVE-CONSTRUCTION class
   // (dyn-closure-tables.js scanImperativeClosureTableLatticeCandidates):
   // this write's emitted value IS the member resolveClosureTableParamLattice
   // merges call-site evidence into.
-  if (typeof arr === 'string' && ctx.scope.imperativeClosureTableLatticeCandidates?.has(arr))
-    recordImperativeClosureTableWrite(arr, valueExpr)
+  if (typeof tableName === 'string' && ctx.scope.imperativeClosureTableLatticeCandidates?.has(tableName))
+    recordImperativeClosureTableWrite(tableName, valueExpr)
   // Literal string key, or schema-known object receiver with a static key expression.
   const litKey = isLiteralStr(idx) ? idx[1]
     : typeof arr === 'string' && lookupValType(arr) === VAL.OBJECT ? staticPropertyKey(idx)
