@@ -96,9 +96,14 @@ VT['{}'] = (args) => {
   // silently misdispatch (fixed-slot / array index) and return undefined —
   // the bug this fixes.
   if (!spreadMergeResolves(args)) {
-    // `{ ...src }` with a single unresolvable spread aliases src: carry its
-    // type; an object rest (a spread skipping keys) copies into a HASH.
-    return args.length === 1 && Array.isArray(args[0]) && args[0][0] === '...' && !spreadExclusions(args[0]) ? valTypeOf(args[0][1]) : VAL.HASH
+    // A single object/dictionary source can keep its cloned representation.
+    // Other sources enumerate into a dictionary; a typed source never makes
+    // the new ordinary object a typed array.
+    if (args.length === 1 && args[0]?.[0] === '...' && !spreadExclusions(args[0])) {
+      const source = ctx.summary?.at(ctx.func.current).spreadValOfExpr(args[0][1], args[0]) ?? valTypeOf(args[0][1])
+      if (source === VAL.OBJECT || source === VAL.HASH) return source
+    }
+    return VAL.HASH
   }
   return null
 }

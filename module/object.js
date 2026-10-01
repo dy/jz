@@ -13,7 +13,7 @@ import { staticArrayPtr, typed, asF64, asI64, asI32, NULL_NAN, UNDEF_NAN, TOMB_N
 import { emit, storedValue, storedFieldValue, withIgnoredArgs, deps } from '../src/bridge.js'
 import { valTypeOf, shapeOf } from '../src/kind.js'
 import { VAL, lookupValType, repOf } from '../src/reps.js'
-import { ctx, err, inc, PTR, LAYOUT, declGlobal } from '../src/ctx.js'
+import { ctx, err, inc, PTR, LAYOUT, declGlobal, setLinkDemand } from '../src/ctx.js'
 import { isReassigned, MUTATE_OPS, some, isBrand, canonicalKeyOrder, spreadExclusions, accessorOf } from '../src/ast.js'
 import { staticObjectProps, dictCapacity } from '../src/static.js'
 import { errorCodeLiteral, ERR, ERR_CLASS_NAMES, ERR_SCHEMA_PROPS } from '../err-codes.js'
@@ -400,21 +400,12 @@ export default (ctx) => {
   // and a string's indices, as keys (mode 0), values (1) or [key, value]
   // entries (2); a DataView and any other kind have no indexed entries.
   // idxEnum appends collection properties stored outside their indexed data.
-  deps({ __enum_type: ['__ptr_type'], __idx_enum: ['__enum_type', '__ptr_aux', '__ptr_offset', '__len', '__str_len', '__to_str', '__typed_idx', '__str_idx', '__alloc_hdr', '__mkptr'],
-    __idx_values: ['__idx_enum', '__enum_type', '__ptr_offset'] })
+  deps({ __enum_type: ['__ptr_type'], __idx_enum: ['__enum_type', '__ptr_aux', '__ptr_offset', '__len', '__str_len', '__to_str', '__typed_idx', '__str_idx', '__alloc_hdr', '__mkptr'] })
   // A finite Number's fraction bits can look like any pointer tag. Classify
   // numbers before dispatch so enumeration never reads them as heap addresses.
   ctx.core.stdlib['__enum_type'] = `(func $__enum_type (param $v i64) (result i32)
     (if (result i32) (f64.eq (f64.reinterpret_i64 (local.get $v)) (f64.reinterpret_i64 (local.get $v)))
       (then (i32.const -1)) (else (call $__ptr_type (local.get $v)))))`
-  // The payload of an index-keyed receiver's values (__idx_enum mode 1), 0 for any other kind.
-  ctx.core.stdlib['__idx_values'] = `(func $__idx_values (param $v i64) (result i32)
-    (local $t i32)
-    (local.set $t (call $__enum_type (local.get $v)))
-    (if (result i32) (i32.or (i32.eq (local.get $t) (i32.const ${PTR.ARRAY}))
-          (i32.or (i32.eq (local.get $t) (i32.const ${PTR.TYPED})) (i32.eq (local.get $t) (i32.const ${PTR.STRING}))))
-      (then (call $__ptr_offset (i64.reinterpret_f64 (call $__idx_enum (local.get $v) (i32.const 1)))))
-      (else (i32.const 0))))`
   ctx.core.stdlib['__idx_enum'] = `(func $__idx_enum (param $v i64) (param $mode i32) (result f64)
     (local $count i32) (local $t i32) (local $n i32) (local $i i32) (local $base i32) (local $out i32) (local $pair i32) (local $k f64) (local $e f64)
     (local.set $t (call $__enum_type (local.get $v)))
@@ -939,9 +930,9 @@ function assignTargetGuard(target, name) {
 function emitObjectAssignDynamic(target, sources) {
   ctx.module.include('array')
   ctx.module.include('collection')
-  inc('__dyn_set', '__dyn_get_any', '__ptr_offset', '__len')
+  inc('__dyn_set', '__dyn_get_any', '__dyn_has', '__ptr_offset', '__len')
   const t = temp('oat'), s = temp('oas'), sBase = tempI32('oasb')
-  const keys = temp('oak'), keysBase = tempI32('oakb'), valsBase = tempI32('oavb'), len = tempI32('oan')
+  const keys = temp('oak'), keysBase = tempI32('oakb'), len = tempI32('oan')
   const i = tempI32('oai'), key = temp('oakey')
   const id = freshId(ctx)
   const setKey = (keyBits, valBits) =>
@@ -962,14 +953,14 @@ function emitObjectAssignDynamic(target, sources) {
     body.push(
       ['local.set', `$${keys}`, runtimeKeysFromTemp(s, 'oak', false, true)],
       ['local.set', `$${keysBase}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${keys}`]]]],
-      ['local.set', `$${valsBase}`, idxValuesBase(s)],
       ['local.set', `$${len}`, ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${keys}`]]]],
       ['local.set', `$${i}`, ['i32.const', 0]],
       ['block', `$oabrk${id}_${si}`, ['loop', `$oaloop${id}_${si}`,
         ['br_if', `$oabrk${id}_${si}`, ['i32.ge_s', ['local.get', `$${i}`], ['local.get', `$${len}`]]],
         ['local.set', `$${key}`, ['f64.load',
           ['i32.add', ['local.get', `$${keysBase}`], ['i32.shl', ['local.get', `$${i}`], ['i32.const', 3]]]]],
-        setKey(['i64.reinterpret_f64', ['local.get', `$${key}`]], copiedValue(s, valsBase, i, key)),
+        ['if', copiedPresent(s, key), ['then',
+          setKey(['i64.reinterpret_f64', ['local.get', `$${key}`]], copiedValue(s, key))]],
         ['local.set', `$${i}`, ['i32.add', ['local.get', `$${i}`], ['i32.const', 1]]],
         ['br', `$oaloop${id}_${si}`]]])
   }
@@ -1323,7 +1314,7 @@ function emitDynamicSpread(props, excluded = null) {
   ctx.module.include('collection')
   inc('__hash_new', '__hash_set_local', '__dyn_get_any', '__ptr_offset', '__len')
   const t = temp('dst'), s = temp('dss'), sBase = tempI32('dssb')
-  const keys = temp('dsk'), keysBase = tempI32('dskb'), valsBase = tempI32('dsvb'), len = tempI32('dsn')
+  const keys = temp('dsk'), keysBase = tempI32('dskb'), len = tempI32('dsn')
   const i = tempI32('dsi'), key = temp('dskey')
   const id = freshId(ctx)
   // The store may rehash and return a new pointer, so thread it back into $t;
@@ -1397,7 +1388,6 @@ function emitDynamicSpread(props, excluded = null) {
     body.push(
       ['local.set', `$${keys}`, runtimeKeysFromTemp(s, 'dsk', false, true)],
       ['local.set', `$${keysBase}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${keys}`]]]],
-      ['local.set', `$${valsBase}`, idxValuesBase(s)],
       ['local.set', `$${len}`, ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${keys}`]]]],
       ['local.set', `$${i}`, ['i32.const', 0]],
       ['block', `$dsbrk${id}_${pi}`, ['loop', `$dsloop${id}_${pi}`,
@@ -1407,7 +1397,8 @@ function emitDynamicSpread(props, excluded = null) {
         ['block', `$dsskip${id}_${pi}`,
           ...omit.map(k => ['br_if', `$dsskip${id}_${pi}`, ['call', '$__eq_strict', ['i64.reinterpret_f64', ['local.get', `$${key}`]], k]]),
 unless(['i64.reinterpret_f64', ['local.get', `$${key}`]], skip ? [...skip.names.map(n => ['str', n]), ...skip.exprs] : [],
-          setKey(['i64.reinterpret_f64', ['local.get', `$${key}`]], copiedValue(s, valsBase, i, key)))],
+          ['if', copiedPresent(s, key), ['then',
+            setKey(['i64.reinterpret_f64', ['local.get', `$${key}`]], copiedValue(s, key))]])],
         ['local.set', `$${i}`, ['i32.add', ['local.get', `$${i}`], ['i32.const', 1]]],
         ['br', `$dsloop${id}_${pi}`]]])
   }
@@ -1640,7 +1631,7 @@ const idxEnum = (t, mode, symbols = false) => {
   ctx.module.include('collection')
   inc('__ext_enum', '__enum_type')
   return ['if', ['result', 'f64'], ['i32.eq', ['call', '$__enum_type', ['i64.reinterpret_f64', ['local.get', `$${t}`]]], ['i32.const', PTR.EXTERNAL]],
-    ['then', ['f64.reinterpret_i64', ['call', '$__ext_enum', ['i64.reinterpret_f64', ['local.get', `$${t}`]], ['i32.const', mode]]]],
+    ['then', ['f64.reinterpret_i64', ['call', '$__ext_enum', ['i64.reinterpret_f64', ['local.get', `$${t}`]], ['i32.const', symbols ? 3 : mode]]]],
     ['else', own]]
 }
 
@@ -1669,19 +1660,30 @@ function emitRuntimeValues(obj) {
         ['else', idxEnum(t, 1)]]]]], 'f64')
 }
 
-// Index values use their dedicated readers; named keys appended after them
-// use ordinary property reads instead of running past the index-value buffer.
-const idxValuesBase = (s) => {
-  ctx.module.include('string')
-  inc('__idx_values')
-  return ['call', '$__idx_values', ['i64.reinterpret_f64', ['local.get', `$${s}`]]]
+// The key list is a snapshot; the values are not. A target setter or earlier
+// source getter can replace/delete a later value or relocate its storage.
+const copiedPresent = (s, key) => {
+  ctx.module.include('typedarray')
+  inc('__dyn_has')
+  setLinkDemand('typedProperties')
+  const obj = ['i64.reinterpret_f64', ['local.get', `$${s}`]], k = ['i64.reinterpret_f64', ['local.get', `$${key}`]]
+  const own = ['call', '$__dyn_has', obj, k]
+  if (!demandHostReceiver()) return own
+  inc('__ext_copy_has', '__ptr_type')
+  return ['if', ['result', 'i32'], ['i32.eq', ['call', '$__ptr_type', obj], ['i32.const', PTR.EXTERNAL]],
+    ['then', ['call', '$__ext_copy_has', obj, k]], ['else', own]]
 }
-const copiedValue = (s, valsBase, i, key) => ['if', ['result', 'i64'],
-  ['if', ['result', 'i32'], ['local.get', `$${valsBase}`],
-    ['then', ['i32.lt_u', ['local.get', `$${i}`], ['i32.load', ['i32.sub', ['local.get', `$${valsBase}`], ['i32.const', 8]]]]],
-    ['else', ['i32.const', 0]]],
-  ['then', ['i64.load', ['i32.add', ['local.get', `$${valsBase}`], ['i32.shl', ['local.get', `$${i}`], ['i32.const', 3]]]]],
-  ['else', ['call', '$__dyn_get_any', ['i64.reinterpret_f64', ['local.get', `$${s}`]], ['i64.reinterpret_f64', ['local.get', `$${key}`]]]]]
+const copiedValue = (s, key) => {
+  inc('__dyn_get_any', '__str_idx')
+  const obj = ['i64.reinterpret_f64', ['local.get', `$${s}`]], k = ['i64.reinterpret_f64', ['local.get', `$${key}`]]
+  const value = ['call', '$__dyn_get_any', obj, k]
+  if (!demandHostReceiver()) return value
+  // The raw host Get preserves copied function/object identity; binding a
+  // method here would also observe its name and length.
+  inc('__ext_method', '__ptr_type')
+  return ['if', ['result', 'i64'], ['i32.eq', ['call', '$__ptr_type', obj], ['i32.const', PTR.EXTERNAL]],
+    ['then', ['call', '$__ext_method', obj, k]], ['else', value]]
+}
 
 function emitRuntimeEntries(obj) {
   inc('__enum_type')
@@ -2046,7 +2048,7 @@ const objectKeysFromTemp = (t, ro, dynOnly = false, indexed = null, symbols = fa
       ['i64.load', ['i32.add', ['local.get', `$${slot}`], ['i32.const', 8]]]]], ro, dynOnly, indexed, symbols, own)
 
 // Object.values for an OBJECT — copy schema value (f64@base+i*8) then dyn value (f64@slot+16).
-const objectValuesFromTemp = (t, indexed = null) => emitEnumerateObject(t,
+const objectValuesFromTemp = (t, indexed = null) => viewedEnumeration(t, indexed, false, emitEnumerateObject(t,
   (env) => [
     ['f64.store',
       ['i32.add', ['local.get', `$${env.out}`], ['i32.shl', ['local.get', `$${env.o}`], ['i32.const', 3]]],
@@ -2054,12 +2056,12 @@ const objectValuesFromTemp = (t, indexed = null) => emitEnumerateObject(t,
   ({ out, o, slot }) => [
     ['f64.store',
       ['i32.add', ['local.get', `$${out}`], ['i32.shl', ['local.get', `$${o}`], ['i32.const', 3]]],
-      ['f64.load', ['i32.add', ['local.get', `$${slot}`], ['i32.const', 16]]]]], false, indexed != null, indexed)
+      ['f64.load', ['i32.add', ['local.get', `$${slot}`], ['i32.const', 16]]]]], false, indexed != null, indexed))
 
 // Object.entries for an OBJECT — alloc 2-slot ARRAY pair {key, value} for each
 // schema slot (key from src+i*8, value from base+i*8) then each dyn slot
 // (key@slot+8, value@slot+16) and box the pair into out[o*8].
-const objectEntriesFromTemp = (t, indexed = null) => emitEnumerateObject(t,
+const objectEntriesFromTemp = (t, indexed = null) => viewedEnumeration(t, indexed, true, emitEnumerateObject(t,
   (env) => [
     ['local.set', `$${env.pair}`, ['call', '$__alloc_hdr', ['i32.const', 2], ['i32.const', 2]]],
     ['i64.store', ['local.get', `$${env.pair}`],
@@ -2076,4 +2078,18 @@ const objectEntriesFromTemp = (t, indexed = null) => emitEnumerateObject(t,
       ['f64.load', ['i32.add', ['local.get', `$${slot}`], ['i32.const', 16]]]],
     ['f64.store',
       ['i32.add', ['local.get', `$${out}`], ['i32.shl', ['local.get', `$${o}`], ['i32.const', 3]]],
-      mkPtrIR(PTR.ARRAY, 0, ['local.get', `$${pair}`])]], false, indexed != null, indexed)
+      mkPtrIR(PTR.ARRAY, 0, ['local.get', `$${pair}`])]], false, indexed != null, indexed))
+
+// Value enumeration can run getters; a view copies a fixed key snapshot and
+// observes each later property's current presence/value. Plain layouts keep
+// their direct traversal.
+function viewedEnumeration(t, indexed, entries, plain) {
+  if (indexed != null || !viewsOn()) return plain
+  inc('__view_has', '__view_copy')
+  const h = temp('oeview')
+  return ['if', ['result', 'f64'], ['call', '$__view_has', ['i64.reinterpret_f64', ['local.get', `$${t}`]]],
+    ['then', ['block', ['result', 'f64'],
+      ['local.set', `$${h}`, ['f64.reinterpret_i64', ['call', '$__view_copy', ['i64.reinterpret_f64', ['local.get', `$${t}`]], ['i32.const', 0]]]],
+      entries ? hashEntriesFromTemp(h) : hashValuesFromTemp(h)]],
+    ['else', plain]]
+}

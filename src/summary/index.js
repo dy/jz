@@ -1811,8 +1811,8 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
         for (let i = 1; i < n; i++) {
           const s = ks[base + i]
           if (knownShapes(s) && !kspread[base + i]) for (const sid of shapesOf(paramOf(s))) {
-            const sl = slots(sid)
-            schemas[sid].forEach((p, j) => { if (tagOf(target) === K.HASH) raiseElem(target, sl[j]); else raiseProp(target, p, sl[j]) })
+            const entries = ownEntries(sid)
+            for (let j = 0; j < entries.length; j += 2) { if (tagOf(target) === K.HASH) raiseElem(target, entries[j + 1]); else raiseProp(target, entries[j], entries[j + 1]) }
             for (const [p, k] of sideProps.get(sid) ?? []) { if (tagOf(target) === K.HASH) raiseElem(target, k); else raiseProp(target, p, k) }
             const w = sideWild.get(sid) ?? K.NONE; if (w !== K.NONE) { if (tagOf(target) === K.HASH) raiseElem(target, w); else raiseWild(target, w) }
           }
@@ -1828,9 +1828,9 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
         for (let i = 1; i < n; i++) {
           const s = ks[base + i]
           if (knownShapes(s) && !kspread[base + i]) for (const sid of shapesOf(paramOf(s))) {
-            const sl = slots(sid)
+            const entries = ownEntries(sid)
             for (const tsid of shapesOf(paramOf(target))) {
-              schemas[sid].forEach((p, j) => { assignedProps.add(p); storeMember(tsid, p, sl[j]) })
+              for (let j = 0; j < entries.length; j += 2) { assignedProps.add(entries[j]); storeMember(tsid, entries[j], entries[j + 1]) }
               for (const [p, k] of sideProps.get(sid) ?? []) { assignedProps.add(p); storeMember(tsid, p, k) }
               const w = sideWild.get(sid) ?? K.NONE; if (w !== K.NONE) { openSchema(tsid); raiseAllSlots(tsid, w); raiseSideWild(tsid, w) }
             }
@@ -2576,9 +2576,34 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     // Flat key/kind pairs keep the complete value snapshot without allocating
     // a tuple and a flatMap wrapper for every field on every solver round.
     const entries = [], view = viewOf(sid)
-    if (view) { for (const e of view) if (!isBrand(e.key)) entries.push(e.key, e.kind === ENUM_DATA ? slots(sid)[e.slot] : ANY) }
+    if (view) { for (const e of view) if (!isBrand(e.key)) entries.push(e.key, e.kind === ENUM_DATA ? slots(sid)[e.slot] : member('.', kind(K.OBJECT, sid), e.key)) }
     else for (let j = 0; j < schemas[sid].length; j++) { const key = schemas[sid][j]; if (!isBrand(key)) entries.push(key, slots(sid)[j]) }
     return entries
+  }
+  // A deep copy invokes getters in every reachable value before cloning it.
+  // Follow settled cell/shape identities once, just as the copy's cycle map does.
+  const cloneReads = (k, seen) => {
+    k = canon(core(k))
+    if (seen.has(k)) return
+    seen.add(k)
+    copyFields(k)
+    if (tagOf(k) === K.OBJECT && paramOf(k) !== UNKNOWN) {
+      for (const sid of shapesOf(paramOf(k))) {
+        const entries = ownEntries(sid)
+        for (let i = 1; i < entries.length; i += 2) cloneReads(entries[i], seen)
+        for (const v of sideProps.get(sid)?.values() ?? []) cloneReads(v, seen)
+        cloneReads(sideWild.get(sid) ?? K.NONE, seen)
+      }
+    } else if (celled(k)) {
+      cloneReads(elemOf(k), seen)
+      if (tagOf(k) === K.MAP) cloneReads(keysOf(k), seen)
+      if (hasTag(k, K.HASH)) {
+        const c = cell(paramOf(k))
+        for (const v of cellProps.get(c)?.values() ?? []) cloneReads(v, seen)
+        cloneReads(cellWild.get(c) ?? K.NONE, seen)
+      }
+      for (const sid of shapesInCell(cell(paramOf(k)))) cloneReads(kind(K.OBJECT, sid), seen)
+    } else if (hasTag(k, K.OBJECT)) escapeLostFields()
   }
   const viewed = (source) => tagOf(source) === K.OBJECT && paramOf(source) !== UNKNOWN &&
     shapesOf(paramOf(source)).some(sid => viewOf(sid))
@@ -2639,7 +2664,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
           dynamic = true; wildKind = ANY
           continue
         }
-        if (isNullable(source) || ids.some(sid => openSchemas.has(sid))) {
+        if (isNullable(source) || ids.some(sid => openSchemas.has(sid) || deletable.has(sid) || deleteReach.unknown && lostSchema(sid))) {
           dynamic = true
           for (const sid of ids) {
             const entries = ownEntries(sid); for (let j = 0; j < entries.length; j += 2) put(entries[j], entries[j + 1])
@@ -2914,6 +2939,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       const base = pushArgs(op === '?.()' ? [',', ...n.slice(2)] : n[2]), count = sp - base
       if (KEY_READERS.has(callee)) for (let i = KEY_TARGETS.has(callee) ? 1 : 0; i < count; i++) seeKeys(ks[base + i])
       if (callee === 'Object.assign') for (let i = 0; i < count; i++) copyFields(ks[base + i])
+      if (callee === 'structuredClone' && count) cloneReads(ks[base], new Set())
       let r
       // An optional call: a callee of no kind yet calls nothing, a nullish one answers undefined.
       let optional = null

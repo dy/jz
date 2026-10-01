@@ -1838,7 +1838,11 @@ const prepareInterop = (opts) => {
   }
   opts._interp.__ext_enum = (objBig, mode) => {
     const obj = extRecv(objBig, 'keys', 'enumeration')
-    return bits(state.mem.wrapVal(mode === 0 ? Object.keys(obj) : mode === 1 ? Object.values(obj) : Object.entries(obj)))
+    return bits(state.mem.wrapVal(mode === 3 ? Reflect.ownKeys(obj) : mode === 0 ? Object.keys(obj) : mode === 1 ? Object.values(obj) : Object.entries(obj)))
+  }
+  opts._interp.__ext_copy_has = (objBig, propBig) => {
+    const prop = state.mem.read(propBig)
+    return Object.getOwnPropertyDescriptor(extRecv(objBig, prop, 'property copy'), prop)?.enumerable ? 1 : 0
   }
   opts._interp.__ext_has = (objBig, propBig) => {
     const prop = state.mem.read(propBig)

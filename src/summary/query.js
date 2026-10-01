@@ -436,7 +436,7 @@ export function summaryQueries(facts, internal = false) {
       // The one layout an object expression's value has when it is not missing; null when unknown or open.
       targetSidOfExpr: e => { const k = core(kindOfExpr(e)), sid = publicSid(k); return tagOf(k) === K.OBJECT && sid !== UNKNOWN && !shapesOf(paramOf(k)).some(site => openSchemas.has(site)) ? sid : null },
       spreadValOfExpr: (e, site) => valOf(spreadSourceKind(e, site)),
-      spreadSidOfExpr: (e, site) => { const k = spreadSourceKind(e, site), sid = publicSid(k); return tagOf(k) === K.OBJECT && !isNullable(k) && sid !== UNKNOWN && !shapesOf(paramOf(k)).some(site => openSchemas.has(site)) ? sid : null },
+      spreadSidOfExpr: (e, site) => { const k = spreadSourceKind(e, site), sid = publicSid(k); return tagOf(k) === K.OBJECT && !isNullable(k) && sid !== UNKNOWN && !shapesOf(paramOf(k)).some(site => openSchemas.has(site) || facts.deletable?.has(site) || facts.deleteReach?.unknown && lostSchema(site)) ? sid : null },
       // The member shapes of an object expression, a set's or the one shape, for a
       // guarded slot access; null when the shape is unknown or not an object.
       /** A function or closure a walk reached: the program runs it; the rest keep no kind. */

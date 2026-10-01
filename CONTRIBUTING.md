@@ -93,6 +93,16 @@ before re-summary when every source has a closed, non-null, undeletable layout.
 No binding or accessor can expose that target before the copy finishes. Bound
 targets require the existing proof that nobody observes their key set; prepare
 never adds copied keys speculatively. Conditional source keys keep ordinary storage.
+Copies snapshot keys before invoking getters, then test each saved key's current
+presence and read its current value. Getter deletion/reinsertion and target
+setters can change later reads; a cached slot/value is not a presence proof.
+Host copies snapshot all own string/Symbol keys, check each current enumerable
+descriptor without Get, then preserve the value's identity through the raw host read.
+Accessor value enumeration and clone decoding share that protocol, keeping the
+snapshot separate from the output because hash deletion relocates buckets.
+The summary reaches copied getters through its ordinary member-call authority;
+a deletable source cannot give a spread a fixed, always-present layout. Deep
+clones follow those effects through the existing object and cell identities.
 Property tables share a canonical String-or-Symbol key conversion. String-hint
 hooks run once and may return a Symbol; hashing and equality then preserve its
 whole identity without interpreting payload bits as string addresses. Public

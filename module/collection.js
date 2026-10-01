@@ -256,7 +256,8 @@ export default (ctx) => {
     __view_set: ['__view_find'],
     __view_del: ['__view_find'],
     __view_has: [],
-    __view_data: ['__hash_new', '__hash_set_local', '__ptr_type', '__ptr_offset', '__own_order', '__obj_props'],
+    __view_data: ['__view_copy'],
+    __view_copy: ['__hash_get_local_hm', '__hash_new', '__hash_set_local', '__ptr_type', '__ptr_offset', '__own_order', '__prop_order', '__obj_props', '__dyn_get_t_hm', '__dyn_get_t_h', '__str_hash'],
     __same_value_zero: ['__str_eq'],
     __map_hash: ['__hash', '__str_hash'],
     // '__durable_fwd_log' on __set_add/__map_set/__hash_set/__hash_set_local: an
@@ -326,8 +327,8 @@ export default (ctx) => {
     __ihash_get_local: ['__map_hash'],
     __ihash_set_local: () => ['__map_hash', '__alloc_hdr_n', '__mkptr', '__zomb_scan', '__coll_rehash', ...slotLogDeps()],
     __dyn_get_t: ['__dyn_get_t_h', '__str_hash', '__is_str_key', '__to_key'],
-    __dyn_get_t_h: () => [...(ctx.schema.regexSids.size ? ['__regex_prop'] : []), '__arr_value', ...viewDeps('__view_get'), ...builtinPropDeps(), '__schema_slot_h', '__ihash_get_local', '__key_eq', '__is_nullish', '__hash_get_local_h', '__hash_get_local_hm', '__str_arr_idx', '__str_length', '__ptr_aux', ...(ctx.core.stdlib['__str_idx'] ? ['__str_idx'] : []), ...(ctx.linkDemand.typedProperties ? ['__typed_str_idx', '__typed_prop_get', '__len', representationProgramHasBigint(ctx) ? '__typed_idx_tagged' : '__typed_idx'] : [])],
-    __dyn_get_t_hm: () => [...viewDeps('__view_get'), ...builtinPropDeps(), '__schema_slot_h', '__ihash_get_local', '__key_eq', '__is_nullish', '__hash_get_local_hm', '__str_arr_idx', '__str_length', '__ptr_aux', ...(ctx.linkDemand.typedProperties ? ['__typed_str_idx', '__typed_prop_get', '__len', representationProgramHasBigint(ctx) ? '__typed_idx_tagged' : '__typed_idx'] : [])],
+    __dyn_get_t_h: () => [...(ctx.schema.regexSids.size ? ['__regex_prop'] : []), '__arr_value', ...viewDeps('__view_get'), ...builtinPropDeps(), '__is_str_key', '__schema_slot_h', '__ihash_get_local', '__key_eq', '__is_nullish', '__hash_get_local_h', '__hash_get_local_hm', '__str_arr_idx', '__str_length', '__ptr_aux', ...(ctx.core.stdlib['__str_idx'] ? ['__str_idx'] : []), ...(ctx.linkDemand.typedProperties ? ['__typed_str_idx', '__typed_prop_get', '__len', representationProgramHasBigint(ctx) ? '__typed_idx_tagged' : '__typed_idx'] : [])],
+    __dyn_get_t_hm: () => [...viewDeps('__view_get'), ...builtinPropDeps(), '__is_str_key', '__schema_slot_h', '__ihash_get_local', '__key_eq', '__is_nullish', '__hash_get_local_hm', '__str_arr_idx', '__str_length', '__ptr_aux', ...(ctx.linkDemand.typedProperties ? ['__typed_str_idx', '__typed_prop_get', '__len', representationProgramHasBigint(ctx) ? '__typed_idx_tagged' : '__typed_idx'] : [])],
     __dyn_has: ['__dyn_get_t_hm', '__ptr_type', '__str_hash', '__is_str_key', '__to_key'],
     __dyn_get: ['__dyn_get_t', '__ptr_type'],
     __dyn_get_expr_t: ['__arr_value', '__dyn_get_t', '__hash_get_local', '__is_str_key', '__to_key', '__ptr_offset', '__ptr_offset_fwd'],
@@ -423,7 +424,9 @@ export default (ctx) => {
   ctx.core.stdlib['__ext_has_iterator'] = '(import "env" "__ext_has_iterator" (func $__ext_has_iterator (param i64) (result i32)))'
   ctx.core.stdlib['__ext_delete'] = '(import "env" "__ext_delete" (func $__ext_delete (param i64 i64) (result i32)))'
   ctx.core.stdlib['__ext_has'] = '(import "env" "__ext_has" (func $__ext_has (param i64 i64) (result i32)))'
-  // A host object's own enumerable keys (mode 0), values (1) or entries (2), a jz array (interop.js)
+  // A current own enumerable descriptor, without invoking its getter.
+  ctx.core.stdlib['__ext_copy_has'] = '(import "env" "__ext_copy_has" (func $__ext_copy_has (param i64 i64) (result i32)))'
+  // Own keys/values/entries (0/1/2), or all own string/Symbol keys (3), as a jz array.
   ctx.core.stdlib['__ext_enum'] = '(import "env" "__ext_enum" (func $__ext_enum (param i64 i32) (result i64)))'
   ctx.core.stdlib['__ext_set'] = '(import "env" "__ext_set" (func $__ext_set (param i64 i64 i64) (result i32)))'
   ctx.core.stdlib['__ext_call'] = '(import "env" "__ext_call" (func $__ext_call (param i64 i64 i64) (result i64)))'
@@ -1607,7 +1610,10 @@ export default (ctx) => {
   // undefined for a setter alone), then the keys a write added after the
   // literal, from its sidecar, in insertion order. A deleted field stays absent.
   // Bits in and out: the host passes a pointer as an i64, which keeps its payload.
-  ctx.core.stdlib['__view_data'] = () => `(func $__view_data (export "__view_data") (param $bits i64) (result i64)
+  ctx.core.stdlib['__view_data'] = `(func $__view_data (export "__view_data") (param $bits i64) (result i64)
+    (call $__view_copy (local.get $bits) (i32.const 1)))`
+  ctx.core.stdlib['__view_copy'] = () => `(func $__view_copy (param $bits i64) (param $symbols i32) (result i64)
+    (local $hash i32) (local $out i64) (local $side i64) (local $global i64) (local $key i64)
     (local $row i32) (local $keys i32) (local $map i32) (local $n i32) (local $i i32)
     (local $w i32) (local $off i32) (local $h i64) (local $val i64) (local $props i64) (local $poff i32) (local $slot i32)
     ${ctx.types.anyDelete ? '(local $dmask i32)' : ''}
@@ -1619,20 +1625,24 @@ export default (ctx) => {
     (local.set $map (i32.wrap_i64 (i64.and (i64.load offset=8 (local.get $row)) (i64.const ${LAYOUT.OFFSET_MASK}))))
     (local.set $n (i32.load (i32.sub (local.get $keys) (i32.const 8))))
     ${ctx.types.anyDelete ? `(local.set $dmask ${deletedMaskWat('$off')})` : ''}
+    (local.set $side (call $__obj_props (local.get $bits) (i32.const 0)))
+    (local.set $global (call $__obj_props (local.get $bits) (i32.const 1)))
     (local.set $h (i64.reinterpret_f64 (call $__hash_new)))
     (block $vd (loop $vl
       (br_if $vd (i32.ge_u (local.get $i) (local.get $n)))
       (local.set $w (i32.wrap_i64 (i64.trunc_f64_u (f64.load (i32.add (local.get $map) (i32.shl (local.get $i) (i32.const 3)))))))
       (local.set $slot (i32.and (local.get $w) (i32.const 0xffffff)))
       (local.set $val (i64.load (i32.add (local.get $off) (i32.shl (local.get $slot) (i32.const 3)))))
-      (local.set $w (i32.and (i32.shr_u (local.get $w) (i32.const 24)) (i32.const 3)))
       (if ${ctx.types.anyDelete ? `(i32.eqz ${deletedSlotWat('$dmask', '$slot', '$val')})` : '(i32.const 1)'} (then
-        ${viewsOn() ? `(if (i32.eq (local.get $w) (i32.const ${ENUM_GET}))
-          (then (local.set $val (i64.reinterpret_f64 (call $${ACCESSOR_CALL}
-            (f64.reinterpret_i64 (local.get $val)) (f64.reinterpret_i64 (local.get $bits)) (f64.reinterpret_i64 (i64.const ${UNDEF_NAN})))))))` : ''}
-        (if (i32.gt_u (local.get $w) (i32.const ${ENUM_GET})) (then (local.set $val (i64.const ${UNDEF_NAN}))))
-        (local.set $h (call $__hash_set_local (local.get $h)
-          (i64.load (i32.add (local.get $keys) (i32.shl (local.get $i) (i32.const 3)))) (local.get $val)))))
+        (local.set $key (i64.load (i32.add (local.get $keys) (i32.shl (local.get $i) (i32.const 3)))))
+        (local.set $hash (call $__str_hash (local.get $key)))
+        ;; A reinserted schema property takes its order from its sidecar record.
+        (if (i32.eqz (i32.or
+            (if (result i32) (i64.eqz (local.get $side)) (then (i32.const 0))
+              (else (i64.ne (call $__hash_get_local_hm (local.get $side) (local.get $key) (local.get $hash)) (i64.const ${TOMB_NAN}))))
+            (if (result i32) (i64.eqz (local.get $global)) (then (i32.const 0))
+              (else (i64.ne (call $__hash_get_local_hm (local.get $global) (local.get $key) (local.get $hash)) (i64.const ${TOMB_NAN}))))))
+          (then (local.set $h (call $__hash_set_local (local.get $h) (local.get $key) (i64.const ${UNDEF_NAN})))))))
       (local.set $i (i32.add (local.get $i) (i32.const 1)))
       (br $vl)))
     ;; then the properties outside the layout: the header's, then the table's
@@ -1643,18 +1653,37 @@ export default (ctx) => {
       (local.set $props (call $__obj_props (local.get $bits) (local.get $w)))
       (if (i64.ne (local.get $props) (i64.const 0)) (then
         (local.set $poff (call $__ptr_offset (local.get $props)))
-        (local.set $map (call $__own_order (local.get $poff) (i32.load (i32.sub (local.get $poff) (i32.const 4))) (i32.const 24)))
+        (local.set $map (if (result i32) (local.get $symbols)
+          (then (call $__own_order (local.get $poff) (i32.load (i32.sub (local.get $poff) (i32.const 4))) (i32.const 24)))
+          (else (call $__prop_order (local.get $poff) (i32.load (i32.sub (local.get $poff) (i32.const 4))) (i32.const 24)))))
         (local.set $n (global.get $__coll_order_n))
         (local.set $i (i32.const 0))
         (block $sd (loop $sl
           (br_if $sd (i32.ge_u (local.get $i) (local.get $n)))
           (local.set $slot (i32.load (i32.add (local.get $map) (i32.shl (local.get $i) (i32.const 2)))))
-          (local.set $h (call $__hash_set_local (local.get $h) (i64.load offset=8 (local.get $slot)) (i64.load offset=16 (local.get $slot))))
+          (local.set $h (call $__hash_set_local (local.get $h) (i64.load offset=8 (local.get $slot)) (i64.const ${UNDEF_NAN})))
           (local.set $i (i32.add (local.get $i) (i32.const 1)))
           (br $sl)))))
       (local.set $w (i32.add (local.get $w) (i32.const 1)))
       (br $pl)))
-    (local.get $h))`
+    ;; The complete key snapshot precedes every getter. Recheck presence and Get
+    ;; by key: earlier getters can delete/reinsert slots or grow property tables.
+    (local.set $poff (call $__ptr_offset (local.get $h)))
+    (local.set $map (call $__own_order (local.get $poff) (i32.load (i32.sub (local.get $poff) (i32.const 4))) (i32.const 24)))
+    (local.set $n (global.get $__coll_order_n))
+    (local.set $i (i32.const 0))
+    (local.set $out (i64.reinterpret_f64 (call $__hash_new)))
+    (block $done (loop $read
+      (br_if $done (i32.ge_u (local.get $i) (local.get $n)))
+      (local.set $slot (i32.load (i32.add (local.get $map) (i32.shl (local.get $i) (i32.const 2)))))
+      (local.set $val (i64.load offset=8 (local.get $slot)))
+      (local.set $hash (call $__str_hash (local.get $val)))
+      (if (i64.ne (call $__dyn_get_t_hm (local.get $bits) (local.get $val) (i32.const ${PTR.OBJECT}) (local.get $hash)) (i64.const ${TOMB_NAN}))
+        (then (local.set $out (call $__hash_set_local (local.get $out) (local.get $val)
+          (call $__dyn_get_t_h (local.get $bits) (local.get $val) (i32.const ${PTR.OBJECT}) (local.get $hash))))))
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (br $read)))
+    (local.get $out))`
   // The schema arm of a dynamic read, FIRST for an OBJECT receiver: a schema
   // field lives in its slot only (buildObjectSchemaSetArm's invariant), so a
   // read of a schema key is the slot and never probes a sidecar. A deleted
@@ -1785,11 +1814,11 @@ export default (ctx) => {
     const miss = `(i64.const ${missNan})`
     // Whether the key's first code unit is a digit, read in place: an
     // identifier key skips the canonical index parse.
-    const digitLead = `(i32.lt_u (i32.sub (if (result i32) (i64.ne (i64.and (local.get $key) (i64.const ${SSO_BIT_I64})) (i64.const 0))
+    const digitLead = `(if (result i32) (call $__is_str_key (local.get $key)) (then (i32.lt_u (i32.sub (if (result i32) (i64.ne (i64.and (local.get $key) (i64.const ${SSO_BIT_I64})) (i64.const 0))
               (then (i32.and (i32.wrap_i64 (local.get $key)) (i32.const 127)))
-              (else (i32.load16_u (i32.wrap_i64 (i64.and (local.get $key) (i64.const ${LAYOUT.OFFSET_MASK})))))) (i32.const 48)) (i32.const 10))`
+              (else (i32.load16_u (i32.wrap_i64 (i64.and (local.get $key) (i64.const ${LAYOUT.OFFSET_MASK})))))) (i32.const 48)) (i32.const 10))) (else (i32.const 0)))`
     // A string's canonical index key reads its code unit ('ab'['1']).
-    const strIndex = !presence && ctx.core.stdlib['__str_idx']
+    const strIndex = presence || ctx.core.stdlib['__str_idx']
     let fallback = ctx.linkDemand.typedProperties ? `(if (result i64)
       (i32.eq (local.get $type) (i32.const ${PTR.TYPED}))
       (then (call $__typed_prop_get (local.get $obj) (local.get $key) (local.get $h) ${miss}))
@@ -1845,7 +1874,7 @@ export default (ctx) => {
           (then
             (local.set $idx (call $__str_arr_idx (local.get $key)))
             (if (i32.lt_u (local.get $idx) (call $__str_length (local.get $obj)))
-              (then (return (i64.reinterpret_f64 (call $__str_idx (local.get $obj) (local.get $idx))))))))` : ''}
+              (then (return ${presence ? '(i64.const 0)' : '(i64.reinterpret_f64 (call $__str_idx (local.get $obj) (local.get $idx)))'})))))` : ''}
         (return ${miss})))
     (local.set $off (i32.wrap_i64 (i64.and (local.get $obj) (i64.const ${LAYOUT.OFFSET_MASK}))))
     ${buildObjectSchemaArm(presence)}
