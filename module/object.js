@@ -7,6 +7,8 @@
  * @module object
  */
 
+import print from 'watr/print'
+import { enterActiveFunction, restoreActiveFunction } from '../src/compile/active-function.js'
 import { DBG_INVARIANTS } from '../src/debug.js'
 import { dataAlign, dataPush, dataLen, pushStaticSlots } from '../src/static-data.js'
 import { staticArrayPtr, typed, asF64, asI64, asI32, NULL_NAN, UNDEF_NAN, TOMB_NAN, TRUE_NAN, FALSE_NAN, temp, tempI32, tempI64, block64, ptrTypeEq, dispatchByPtrType, allocPtr, needsDynShadow, mkPtrIR, extractF64Bits, slotAddr, elemStore, freshId, undefExpr, isNullish } from '../src/ir.js'
@@ -1584,6 +1586,18 @@ function emitRuntimeKeys(obj, ro, own = false) {
   return typed(['block', ['result', 'f64'],
     ['local.set', `$${t}`, asF64(emit(obj))],
     ...(ro ? [] : [requireEnumReceiver(t)]), runtimeKeysFromTemp(t, 'rk', ro, false, own)], 'f64')
+}
+
+// The clone walker needs the same key snapshot as source enumeration. Build
+// this raw helper before schema assembly, under its own complete local frame.
+export function includeCopyKeys() {
+  if (ctx.core.stdlib.__copy_keys) return
+  const previous = enterActiveFunction(ctx)
+  try {
+    const body = runtimeKeysFromTemp('value', 'copy', false)
+    const locals = [...ctx.func.locals].map(([name, type]) => ['local', '$' + name, type])
+    ctx.core.stdlib.__copy_keys = print(['func', '$__copy_keys', ['param', '$value', 'f64'], ['result', 'f64'], ...locals, body])
+  } finally { restoreActiveFunction(ctx, previous) }
 }
 
 function runtimeKeysFromTemp(t, tag, ro, symbols = false, own = false) {

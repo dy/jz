@@ -107,6 +107,16 @@ snapshot separate from the output because hash deletion relocates buckets.
 The summary reaches copied getters through its ordinary member-call authority;
 a deletable source cannot give a spread a fixed, always-present layout. Deep
 clones follow those effects through the existing object and cell identities.
+Structured cloning snapshots ordinary-object/Array keys and completes each
+recursive value read before taking the next current value. Its Array output
+starts with the source length and holes; named string keys share the same copy
+path. Map/Set instead snapshot their entries before recursion. Native internal
+slots clone separately, and Symbol values use the existing unclonable TypeError;
+Symbol property keys are excluded. Error clones retain the documented name/message
+model and deep-copy overwritten slot values; non-box NaN payloads remain numbers.
+`__copy_keys` reuses ordinary enumeration IR
+under a complete temporary emission frame before schema assembly, restoring the
+caller frame in `finally` and discarding the helper with each compile session.
 Property tables share a canonical String-or-Symbol key conversion. String-hint
 hooks run once and may return a Symbol; hashing and equality then preserve its
 whole identity without interpreting payload bits as string addresses. Public

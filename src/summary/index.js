@@ -2596,7 +2596,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     } else if (celled(k)) {
       cloneReads(elemOf(k), seen)
       if (tagOf(k) === K.MAP) cloneReads(keysOf(k), seen)
-      if (hasTag(k, K.HASH)) {
+      if (hasTag(k, K.ARRAY) || hasTag(k, K.HASH)) {
         const c = cell(paramOf(k))
         for (const v of cellProps.get(c)?.values() ?? []) cloneReads(v, seen)
         cloneReads(cellWild.get(c) ?? K.NONE, seen)

@@ -2183,7 +2183,7 @@ test('groupBy: Object.groupBy / Map.groupBy', () => {
 // structuredClone (2026-07-11, Ring 2): deep arena clone — cycles terminate,
 // diamond sharing (incl. a buffer shared by views) is preserved, Map keys AND
 // values clone, Set/Map keep insertion order, Dates clone via their branded
-// schema. Closures/host handles throw (DataCloneError). transfer is ignored.
+// schema. Closures/host handles use the clone TypeError. transfer is ignored.
 test('structuredClone: deep copy + isolation', () => {
   const j = (code) => jz(code).exports.f()
   is(j(`export let f = () => structuredClone(42.5)`), 42.5)
@@ -2209,9 +2209,142 @@ test('structuredClone: collections, dates, typed, buffers', () => {
   // two views over one buffer: the clone shares ONE cloned buffer, source untouched
   is(j(`export let f = () => { let buf = new ArrayBuffer(8); let a = new Int32Array(buf, 0, 2), b = new Int32Array(buf, 4, 1); let c = structuredClone([a, b]); c[0][1] = 42; return c[1][0] + ":" + new Int32Array(buf, 4, 1)[0] }`), '42:0')
 })
-test('structuredClone: DataCloneError on functions', () => {
+test('structuredClone: functions use the unclonable-value error', () => {
   const j = (code) => jz(code).exports.f()
   is(j(`export let f = () => { let fn = (x) => x; try { structuredClone({fn}); return "no-throw" } catch (e) { return "threw" } }`), 'threw')
+})
+
+test('structuredClone: recursive getters observe later current values from a saved key list', () => {
+  for(const [make,first,later] of [['[head,9]','0','1'],['{a:head,b:9}','a','b'],['{a:head,toString:9}','a','toString'],["Object.fromEntries([['a',head],['b',9]])",'a','b']]){
+    const src=`export function f(mode){let log='';let source;const head={get x(){log+='x';
+      if(mode===1)source['${later}']=17;
+      if(mode===2)delete source['${later}'];
+      if(mode===3){delete source['${later}'];source['${later}']=23}
+      if(mode===4){source.added=31;source['${later}']=undefined}
+      if(mode===5)throw new RangeError('nested');
+      ${make==='[head,9]'?"if(mode===6)source.length=0;if(mode===7){for(let i=0;i<40;i++)source.push(i);source[1]=29}":''}
+      return 7}};source=${make};
+      try{const out=structuredClone(source);return[Object.keys(out),out['${first}'].x,
+        Object.hasOwn(out,'${later}')?out['${later}']:undefined,out.added,log]}
+      catch(e){return[e.name,e.message,log]}}`
+    for(const optimize of levels(0,1,2,3,'size')){
+      const got=jz(src,{optimize,sourceInline:false}).exports.f,want=oracle(src).f
+      const kept=got(0),expected=want(0)
+      for(const mode of [0,0,1,2,3,4,5,6,7,0]){
+        // HTML StructuredSerializeInternal 26.4 snapshots keys. Node/Bun's dense
+        // Array fast path alone also copies named keys added during element recursion.
+        // https://html.spec.whatwg.org/multipage/structured-data.html#structuredserializeinternal
+        const expected=make==='[head,9]' && mode===4?[["0","1"],7,undefined,undefined,'x']:want(mode)
+        is(got(mode),expected,`${make}, mode=${mode}, O${optimize}`)
+      }
+      is(kept,expected,'a retained clone survives later calls')
+    }
+  }
+})
+
+test('structuredClone: arrays preserve holes and clone named string properties and cycles', () => {
+  const src=`export function f(k,mode){k=String(k);let log='';const side={kept:3,later:9};
+    const source=[1,,undefined],skip=Symbol.for('clone-skip');
+    source[k]={get x(){log+='x';if(mode===1){delete source['tail'];source.tail={v:17}};
+      if(mode===1)delete side['later'];if(mode===2){source.added=23;delete side['later'];side.later=17}
+      if(mode===3)throw new RangeError('array named');return 7}};
+    source.tail={v:9};source.self=source;source[skip]=Symbol('unclonable');
+    try{const out=structuredClone(source);return[Object.keys(out),out.length,0 in out,1 in out,2 in out,
+      out[2],out[k].x,out.tail.v,out.self===out,out[k]!==source[k],out[skip],out.added,log,Object.keys(side),side.later]}
+    catch(e){return[e.name,e.message,log]}}
+    export function empty(){const out=structuredClone([]);return[out.length,Object.keys(out)]}`
+  for(const optimize of levels(0,1,2,3,'size')){
+    const got=jz(src,{optimize,sourceInline:false}).exports,want=oracle(src)
+    is(got.empty(),want.empty(),`empty clone O${optimize}`)
+    for(const args of [['a',0],['a',0],['b',1],['b',2],['a',3],['a',0]])
+      is(got.f(...args),want.f(...args),`named clone ${args} O${optimize}`)
+  }
+})
+
+test('structuredClone: Symbol values throw while Symbol keys and native own fields stay excluded', () => {
+  const src=`export function f(mode){try{const value=mode===1?Symbol('x'):mode===2?{x:Symbol('x')}:
+      mode===3?new Map([[1,Symbol('x')]]):mode===4?new Set([Symbol('x')]):[null,undefined,false,true,-0,NaN,Infinity,7n];
+      return structuredClone(value)}catch(e){return 'caught'}}
+    export function rejection(){try{structuredClone(Symbol('bad'))}catch(e){return[e.name,e.message]}}
+    export function native(){let calls=0;const skip=Symbol.for('skip');const data={x:7};data[skip]=()=>{calls++;throw 9};
+      const d=new Date(17),r=/ab/gi,e=new TypeError('message'),m=new Map([[1,2]]),s=new Set([3]);
+      const extra={get observed(){calls++;return 29}};d.extra=extra;r.extra=extra;r.lastIndex=4;e.extra=extra;m.extra=extra;s.extra=extra;
+      const copied=structuredClone([data,d,r,e,m,s]);return[copied[0],calls,copied[1].getTime(),Object.keys(copied[1]),
+        copied[2].source,copied[2].flags,copied[2].lastIndex,Object.keys(copied[2]),copied[3].name,copied[3].message,
+        Object.keys(copied[3]),[...copied[4]],Object.keys(copied[4]),[...copied[5]],Object.keys(copied[5])]}`
+  for(const optimize of levels(0,1,2,3,'size')){
+    const got=jz(src,{optimize,sourceInline:false}).exports,want=oracle(src)
+    for(const mode of [0,0,1,2,3,4,0])is(got.f(mode),want.f(mode),`Symbol clone mode=${mode} O${optimize}`)
+    is(got.native(),want.native(),`native internal slots and Symbol keys O${optimize}`)
+    is(got.rejection(),['TypeError','could not be cloned'],'existing unclonable-value error transport')
+  }
+})
+
+test('structuredClone: Map and Set snapshot entries before recursively reading their values', () => {
+  for(const family of ['Map','Set']){
+    const src=`export function f(mode){let source;const first={get x(){
+      if(mode===1)${family==='Map'?"source.set('later',17)":"source.delete(9)"};
+      if(mode===2){source.clear();${family==='Map'?"source.set('new',23)":"source.add(23)"}}
+      if(mode===3)for(let i=0;i<40;i++)${family==='Map'?"source.set('new'+i,i)":"source.add(i+100)"};
+      if(mode===4)throw new RangeError('entry');
+      return 7}};source=${family==='Map'?"new Map([['first',first],['later',9]])":"new Set([first,9])"};
+      try{const out=structuredClone(source);return[...out]}catch(e){return[e.name,e.message]}}`
+    for(const optimize of levels(0,1,2,3,'size')){
+      const got=jz(src,{optimize,sourceInline:false}).exports.f,want=oracle(src).f
+      for(const mode of [0,0,1,2,3,4,0])is(got(mode),want(mode),`${family} snapshot mode=${mode} O${optimize}`)
+    }
+  }
+})
+
+test('structuredClone: supported Error slots remain isolated and share cloned cycles', () => {
+  // JZ's documented Error model carries name/message only. Overwritten slots
+  // retain the existing deep-copy contract instead of aliasing the source.
+  const src=`export function f(mode){const e=new TypeError('message'),value={v:7};
+    e.cause={ignored:9};e.extra={ignored:11};
+    if(mode===1){e.message=value;e.name=value}
+    if(mode===2)e.message=e;
+    if(mode===3)e.message=()=>7;
+    try{const out=structuredClone(e);
+      if(mode===1){out.message.v=17;return[out.message===out.name,out.message!==value,value.v,out.name.v,out.cause,out.extra]}
+      if(mode===2)return[out!==e,out.message===out,out.cause,out.extra];
+      return[out!==e,out.name,out.message,out.cause,out.extra]}
+    catch(error){return[error.name,error.message]}}`
+  for(const optimize of levels(0,1,2,3,'size')){
+    const f=jz(src,{optimize,sourceInline:false}).exports.f
+    const expected=[[true,'TypeError','message',undefined,undefined],
+      [true,true,7,17,undefined,undefined],[true,true,undefined,undefined],['TypeError','could not be cloned']]
+    for(const mode of [0,0,1,2,3,0])is(f(mode),expected[mode],`Error clone mode=${mode} O${optimize}`)
+  }
+})
+
+test('structuredClone: non-box NaN payloads stay numeric values', () => {
+  const src=`export function f(hi){const raw=new Uint32Array([305419896,hi]);
+    return structuredClone(new Float64Array(raw.buffer)[0])}`
+  const want=oracle(src).f
+  for(const optimize of levels(0,1,2,3,'size')){
+    const f=jz(src,{optimize}).exports.f
+    for(const hi of [0,0,0x3ff00000,0x7ff00000,0xfff00000,
+      ...Array.from({length:16},(_,tag)=>(0x7ff00000|(tag<<15))>>>0),
+      ...Array.from({length:16},(_,tag)=>(0xfff80000|(tag<<15))>>>0),0])
+      is(f(hi),want(hi),`numeric payload ${hi.toString(16)} O${optimize}`)
+  }
+})
+
+test('structuredClone: key helper restores caller locals and cold/warm compilation state', () => {
+  const a=`export function f(x){let before=x+1;const a={k:x},b=structuredClone(a);let after=x+2;
+    const c=structuredClone([b]);return[before,b.k,after,c[0].k]}`
+  const b=`export function plain(){return structuredClone({x:7}).x}
+    export function f(x){const a=[];a['named']={get x(){return x}};return structuredClone(a).named.x}`
+  for(const optimize of levels(0,1,2,3,'size')){
+    const first=compile(a,{optimize,wat:true})
+    for(const source of [a,b,a]){
+      const mod=jz(source,{optimize}).exports,got=mod.f,want=oracle(source).f
+      if(mod.plain)is(mod.plain(),7,'plain clone before the module\'s accessor clone')
+      for(const x of [0,0,7,-1,0])is(got(x),want(x),`caller-local lifecycle O${optimize}`)
+    }
+    throws(()=>compile('export function bad( {',{optimize}),Error,'failed compilation between valid clones')
+    is(compile(a,{optimize,wat:true}),first,`identical helper after A/A/B/error/A O${optimize}`)
+  }
 })
 
 // Insertion-order Map/Set (spec: ES OrdinaryMap/Set iteration order): the seq

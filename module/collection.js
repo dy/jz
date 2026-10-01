@@ -20,7 +20,7 @@ import { VAL, lookupValType } from '../src/reps.js'
 import { isLiteralStr, ACCESSOR_GET, ACCESSOR_SET } from '../src/ast.js'
 import { ctx, inc, PTR, LAYOUT, registerGetter, declGlobal, setLinkDemand } from '../src/ctx.js'
 import { stringHash } from '../src/string-data.js'
-import { OBJECT_SCHEMA_HI_MASK, STR_INTERN_BIT, STR_HCACHE_BIT, ssoBitI64Hex, encodePtrHi, i64Hex, deletedMaskWat, deletedSlotWat, markDeletedSlotWat, DATA_VIEW_FLAG, HIDDEN_PROPERTY_SEQ, DYN_CACHE_EMPTY } from '../layout.js'
+import { OBJECT_SCHEMA_HI_MASK, STR_INTERN_BIT, STR_HCACHE_BIT, ssoBitI64Hex, encodePtrHi, i64Hex, deletedMaskWat, deletedSlotWat, markDeletedSlotWat, DATA_VIEW_FLAG, HIDDEN_PROPERTY_SEQ, DYN_CACHE_EMPTY, nanPrefixHex, nanPrefixMaskHex } from '../layout.js'
 import { ssoEncode } from './string.js'
 import { errorCodeLiteral, ERR } from '../err-codes.js'
 import { requireReceiverWat, requireObjectWat, throwErrorWat } from './core/error-object.js'
@@ -28,7 +28,7 @@ import { sameValueZeroIdentityChain, mapHashStringArm, mapHashBigintArm } from '
 import { trySlotUpdate } from '../src/compile/slot-update.js'
 import { captureCallback } from './array/callback.js'
 import { demandHostReceiver } from '../src/compile/func-exports.js'
-import { ENUM_DATA, ENUM_GET, ownKeys, viewsOn, enumViewsOn, accessorTable } from './schema.js'
+import { ENUM_DATA, ENUM_GET, ownKeys, viewsOn, accessorTable } from './schema.js'
 import { ACCESSOR_CALL } from '../src/compile/emit/accessor-call.js'
 
 const SSO_BIT_I64 = ssoBitI64Hex()
@@ -210,6 +210,7 @@ const propEqG = keyEq('(call $__key_eq (i64.load offset=8 (local.get $slot)) (lo
 const sameValueZeroEqG = keyEq('(call $__same_value_zero (i64.load offset=8 (local.get $slot)) (local.get $key))')
 
 import { collectionLaneBytes, genRehash, genUpsert, genLookup, genDelete, genUpsertGrow, genEphemeralSlotUpsert, genEphemeralFixedSlot, genLookupStrict, genUpsertStrictPrehashed } from './collection/upsert.js'
+import { includeCopyKeys } from './object.js'
 import { classHasMember, classMemberIn } from '../src/compile/emit/class-dispatch.js'
 export { collectionLaneBytes }
 
@@ -278,8 +279,8 @@ export default (ctx) => {
     __set_has: () => ctx.linkDemand.external ? ['__map_hash', '__same_value_zero', '__ptr_offset', '__ptr_offset_fwd', '__ext_has'] : ['__map_hash', '__same_value_zero', '__ptr_offset', '__ptr_offset_fwd'],
     __set_delete: () => ['__map_hash', '__same_value_zero', ...relogDeps()],
     __sclone: ['__sclone_rec', '__mkptr', '__alloc_hdr_n'],
-    __sclone_rec: () => ['__ptr_type', '__ptr_offset', '__ptr_offset_fwd', '__ptr_aux', '__is_nullish', '__len', '__alloc', '__alloc_hdr_n', '__mkptr', '__map_get', '__map_set', '__set_add', '__coll_order', '__arr_from', '__obj_clone', '__sclone_hash_vals', ...(enumViewsOn() ? ['__view_has', '__view_data'] : [])],
-    __sclone_hash_vals: ['__sclone_rec', '__is_symbol', '__hash_del_local', '__mkptr'],
+    __sclone_rec: () => ['__ptr_type', '__ptr_offset', '__ptr_offset_fwd', '__ptr_aux', '__is_nullish', '__len', '__alloc', '__alloc_hdr_n', '__mkptr', '__map_get', '__map_set', '__set_add', '__coll_order', '__arr_fill', '__obj_clone', '__hash_new', '__is_symbol', '__sclone_properties'],
+    __sclone_properties: ['__copy_keys', '__sclone_rec', '__ptr_offset', '__len', '__dyn_has', '__dyn_get_any', '__dyn_set'],
     __map_set: () => [...(ctx.linkDemand.external ? ['__map_hash', '__same_value_zero', '__ptr_offset', '__ptr_offset_fwd', '__alloc_hdr_n', '__zomb_scan', '__coll_rehash', '__ext_set'] : ['__map_hash', '__same_value_zero', '__ptr_offset', '__ptr_offset_fwd', '__alloc_hdr_n', '__zomb_scan', '__coll_rehash']), ...(needsDurableFwdLog() ? ['__durable_fwd_log'] : []), ...slotLogDeps()],
     // Region-arena rebuild fix — MAP-shaped sibling of __set_add_h.
     __map_set_h: () => ['__same_value_zero', '__zomb_scan', ...slotLogDeps()],
@@ -875,18 +876,17 @@ export default (ctx) => {
 
   // === structuredClone — deep arena clone ===
   // Walks the value graph copying every mutable container: arrays, schema
-  // objects (incl. branded Dates), dictionary HASHes, Set/Map (insertion order
+  // objects, dictionary HASHes, Set/Map (insertion order
   // kept; Map keys AND values cloned, like the host), typed arrays, DataViews
   // and ArrayBuffers (a buffer shared by several views stays shared in the
   // clone). Numbers/atoms are immediate and strings immutable — passed through.
-  // Closures and host handles raise (the host's DataCloneError). The `transfer`
+  // Symbols, closures and host handles raise the existing clone TypeError. The `transfer`
   // option is out of model (arena memory has nothing to detach) and ignored.
   //
   // Identity memo: a real MAP keyed by boxed-pointer bits (SameValueZero on
   // non-string pointers ≡ bit identity) — cycles terminate, diamond sharing
-  // dedupes. Every clone target is allocated at its final capacity, so no fill
-  // can trigger a grow: memo'd pointers stay canonical and `===` identity
-  // inside the cloned graph holds bit-exactly. The memo itself may grow, but
+  // dedupes. Growing dictionary outputs retain their original forwarded pointer,
+  // so identity within a cloned graph stays bit-exact. The memo itself may grow, but
   // __map_set forward-marks, so a stale $memo in an outer frame still resolves.
 
   ctx.core.stdlib['__sclone'] = `(func $__sclone (param $v f64) (result f64)
@@ -894,27 +894,22 @@ export default (ctx) => {
       (i64.reinterpret_f64 (call $__mkptr (i32.const ${PTR.MAP}) (i32.const 0)
         (call $__alloc_hdr_n (i32.const 0) (i32.const ${initCap}) (i32.const ${MAP_ENTRY + lane}))))))`
 
-  // Deep-clone the values of a freshly copied HASH table, in place.
-  ctx.core.stdlib['__sclone_hash_vals'] = `(func $__sclone_hash_vals (param $off i32) (param $memo i64)
-    (local $cap i32) (local $i i32) (local $slot i32)
-    (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))
-    (block $d (loop $l
-      (br_if $d (i32.ge_s (local.get $i) (local.get $cap)))
-      (local.set $slot (i32.add (local.get $off) (i32.mul (local.get $i) (i32.const ${MAP_ENTRY}))))
-      (if (i32.and
-            (i64.ne (i64.load (local.get $slot)) (i64.const 0))
-            (i64.ne (i64.load offset=8 (local.get $slot)) (i64.const ${TOMB_NAN})))
-        (then
-          (if (call $__is_symbol (i64.load offset=8 (local.get $slot)))
-            (then (drop (call $__hash_del_local
-              (i64.reinterpret_f64 (call $__mkptr (i32.const ${PTR.HASH}) (i32.const 0) (local.get $off)))
-              (i64.load offset=8 (local.get $slot)))))
-            (else (i64.store offset=16 (local.get $slot)
-              (i64.reinterpret_f64 (call $__sclone_rec
-                (f64.reinterpret_i64 (i64.load offset=16 (local.get $slot)))
-                (local.get $memo))))))))
+  // Save keys, not values or hash-slot addresses: a nested getter may mutate
+  // any later source property before its recursive serialization begins.
+  ctx.core.stdlib.__sclone_properties = `(func $__sclone_properties (param $source i64) (param $out i64) (param $memo i64)
+    (local $keys i64) (local $base i32) (local $n i32) (local $i i32) (local $key i64)
+    (local.set $keys (i64.reinterpret_f64 (call $__copy_keys (f64.reinterpret_i64 (local.get $source)))))
+    (local.set $base (call $__ptr_offset (local.get $keys)))
+    (local.set $n (call $__len (local.get $keys)))
+    (block $done (loop $next
+      (br_if $done (i32.ge_u (local.get $i) (local.get $n)))
+      (local.set $key (i64.load (i32.add (local.get $base) (i32.shl (local.get $i) (i32.const 3)))))
+      (if (call $__dyn_has (local.get $source) (local.get $key)) (then
+        (drop (call $__dyn_set (local.get $out) (local.get $key)
+          (i64.reinterpret_f64 (call $__sclone_rec
+            (f64.reinterpret_i64 (call $__dyn_get_any (local.get $source) (local.get $key))) (local.get $memo)))))))
       (local.set $i (i32.add (local.get $i) (i32.const 1)))
-      (br $l))))`
+      (br $next))))`
 
   ctx.core.stdlib['__sclone_rec'] = () => {
     // Guarded: template expansion (pullStdlib) runs AFTER assemble's schema-table
@@ -922,16 +917,19 @@ export default (ctx) => {
     // back to 0 and every schema consumer would see an empty table.
     if (!ctx.scope.globals.has('__schema_tbl')) declGlobal('__schema_tbl', 'i32')
     return `(func $__sclone_rec (param $v f64) (param $memo i64) (result f64)
-    (local $bits i64) (local $t i32) (local $hit i64) (local $out f64) (local $side i64)
+    (local $bits i64) (local $t i32) (local $hit i64) (local $out f64)
     (local $src i32) (local $dst i32) (local $n i32) (local $cap i32) (local $i i32)
     (local $slot i32) (local $ord i32) (local $stride i32) (local $aux i32) (local $root i32) (local $newroot i32)
     ;; ordinary numbers (incl. ±Infinity) are immediate
     (if (f64.eq (local.get $v) (local.get $v)) (then (return (local.get $v))))
     (local.set $bits (i64.reinterpret_f64 (local.get $v)))
-    ;; negative-NaN bit patterns are numeric NaN, never boxes
-    (if (i64.eq (i64.and (local.get $bits) (i64.const 0xFFF0000000000000)) (i64.const 0xFFF0000000000000))
+    ;; Signaling and negative NaNs may carry any tag bits but are never boxes.
+    (if (i64.ne (i64.and (local.get $bits) (i64.const ${nanPrefixMaskHex()})) (i64.const ${nanPrefixHex()}))
       (then (return (local.get $v))))
     (local.set $t (call $__ptr_type (local.get $bits)))
+    ;; Symbols are unclonable values even though their property keys are skipped.
+    (if (call $__is_symbol (local.get $bits))
+      (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${errorCodeLiteral(ERR.CLONE_UNCLONEABLE)}))) (throw $__jz_err (f64.const ${errorCodeLiteral(ERR.CLONE_UNCLONEABLE)}))))
     ;; atoms (canonical NaN / undefined / null / booleans) + immutable strings +
     ;; immutable BigInt payload cells (CARRIER PROGRAM Slice 3, registry-derived
     ;; 'region-forwarding' arm — layout-kinds.js KIND_REGISTRY.BIGINT: never
@@ -942,65 +940,55 @@ export default (ctx) => {
     (if (i32.or (i32.eq (local.get $t) (i32.const ${PTR.ATOM}))
           (i32.or (i32.eq (local.get $t) (i32.const ${PTR.STRING})) (i32.eq (local.get $t) (i32.const ${PTR.BIGINT}))))
       (then (return (local.get $v))))
-    ;; functions / host handles: DataCloneError
+    ;; Functions / host handles use the same unclonable-value error.
     (if (i32.or (i32.eq (local.get $t) (i32.const ${PTR.CLOSURE})) (i32.eq (local.get $t) (i32.const ${PTR.EXTERNAL})))
       (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${errorCodeLiteral(ERR.CLONE_UNCLONEABLE)}))) (throw $__jz_err (f64.const ${errorCodeLiteral(ERR.CLONE_UNCLONEABLE)}))))
     ;; already cloned? (cycle / diamond sharing) — __map_get yields raw i64 bits
     (local.set $hit (call $__map_get (local.get $memo) (local.get $bits)))
     (if (i32.eqz (call $__is_nullish (local.get $hit))) (then (return (f64.reinterpret_i64 (local.get $hit)))))
 
-    (if (i32.eq (local.get $t) (i32.const ${PTR.ARRAY}))
-      (then
-        (local.set $out (call $__arr_from (local.get $bits)))
-        (drop (call $__map_set (local.get $memo) (local.get $bits) (i64.reinterpret_f64 (local.get $out))))
-        (local.set $dst (call $__ptr_offset (i64.reinterpret_f64 (local.get $out))))
-        (local.set $n (call $__len (local.get $bits)))
-        (block $ad (loop $al
-          (br_if $ad (i32.ge_s (local.get $i) (local.get $n)))
-          (local.set $slot (i32.add (local.get $dst) (i32.shl (local.get $i) (i32.const 3))))
-          (f64.store (local.get $slot) (call $__sclone_rec (f64.load (local.get $slot)) (local.get $memo)))
-          (local.set $i (i32.add (local.get $i) (i32.const 1)))
-          (br $al)))
-        (return (local.get $out))))
+    ;; Native internal-slot objects preserve their representation. Their own
+    ;; extra properties are not part of the structured clone format.
+    (if (i32.eq (local.get $t) (i32.const ${PTR.OBJECT})) (then
+      ${ctx.schema.dateSid != null ? `(if (i32.eq (call $__ptr_aux (local.get $bits)) (i32.const ${ctx.schema.dateSid}))
+        (then
+          (local.set $out (call $__obj_clone (local.get $v)))
+          (i64.store (i32.sub (call $__ptr_offset (i64.reinterpret_f64 (local.get $out))) (i32.const 16)) (i64.const 0))
+          (drop (call $__map_set (local.get $memo) (local.get $bits) (i64.reinterpret_f64 (local.get $out))))
+          (return (local.get $out))))` : ''}
+      ${ctx.schema.regexSids.size ? [...ctx.schema.regexSids.keys()].map(sid => `(if (i32.eq (call $__ptr_aux (local.get $bits)) (i32.const ${sid}))
+        (then
+          (local.set $out (call $__obj_clone (local.get $v)))
+          (local.set $dst (call $__ptr_offset (i64.reinterpret_f64 (local.get $out))))
+          (i64.store (i32.sub (local.get $dst) (i32.const 16)) (i64.const 0))
+          (f64.store (local.get $dst) (f64.const 0))
+          (drop (call $__map_set (local.get $memo) (local.get $bits) (i64.reinterpret_f64 (local.get $out))))
+          (return (local.get $out))))`).join('\n') : ''}
+      ${ctx.schema.errorSidEntries().size ? `(if ${errorSidTest('(call $__ptr_aux (local.get $bits))')}
+        (then
+          (local.set $out (call $__obj_clone (local.get $v)))
+          (local.set $dst (call $__ptr_offset (i64.reinterpret_f64 (local.get $out))))
+          (i64.store (i32.sub (local.get $dst) (i32.const 16)) (i64.const 0))
+          (drop (call $__map_set (local.get $memo) (local.get $bits) (i64.reinterpret_f64 (local.get $out))))
+          ;; The supported Error model retains name/message, including overwritten
+          ;; slot values. Memoize before recursion to preserve cycles and isolation.
+          (f64.store (local.get $dst) (call $__sclone_rec (f64.load (local.get $dst)) (local.get $memo)))
+          (f64.store offset=8 (local.get $dst) (call $__sclone_rec (f64.load offset=8 (local.get $dst)) (local.get $memo)))
+          (return (local.get $out))))` : ''}))
 
-    (if (i32.eq (local.get $t) (i32.const ${PTR.OBJECT}))
+    (if (i32.or (i32.eq (local.get $t) (i32.const ${PTR.ARRAY}))
+          (i32.or (i32.eq (local.get $t) (i32.const ${PTR.OBJECT})) (i32.eq (local.get $t) (i32.const ${PTR.HASH}))))
       (then
-        ${enumViewsOn() ? `;; a layout with a view clones what it enumerates (__view_data), but an
-        ;; Error stays an Error; memo first, so a getter answering its own object keeps the cycle
-        (if (i32.and (call $__view_has (local.get $bits))
-              (i32.eqz ${errorSidTest('(call $__ptr_aux (local.get $bits))')}))
+        (if (i32.eq (local.get $t) (i32.const ${PTR.ARRAY}))
           (then
-            (local.set $out (f64.reinterpret_i64 (call $__view_data (local.get $bits))))
-            (drop (call $__map_set (local.get $memo) (local.get $bits) (i64.reinterpret_f64 (local.get $out))))
-            (call $__sclone_hash_vals (call $__ptr_offset (i64.reinterpret_f64 (local.get $out))) (local.get $memo))
-            (return (local.get $out))))` : ''}
-        (local.set $out (call $__obj_clone (local.get $v)))
+            (local.set $n (call $__len (local.get $bits)))
+            (local.set $out (call $__mkptr (i32.const ${PTR.ARRAY}) (i32.const 0)
+              (call $__alloc_hdr_n (local.get $n) (local.get $n) (i32.const 8))))
+            (drop (call $__arr_fill (i64.reinterpret_f64 (local.get $out))
+              (f64.reinterpret_i64 (i64.const ${TOMB_NAN})) (i32.const 0) (local.get $n))))
+          (else (local.set $out (call $__hash_new))))
         (drop (call $__map_set (local.get $memo) (local.get $bits) (i64.reinterpret_f64 (local.get $out))))
-        ;; deep the schema slots — slot count via aux → schema table, like __obj_clone
-        (if (i32.ne (global.get $__schema_tbl) (i32.const 0))
-          (then (local.set $n (call $__len
-            (i64.load (i32.add (global.get $__schema_tbl) (i32.shl (call $__ptr_aux (local.get $bits)) (i32.const 3))))))))
-        (local.set $dst (call $__ptr_offset (i64.reinterpret_f64 (local.get $out))))
-        (block $od (loop $ol
-          (br_if $od (i32.ge_s (local.get $i) (local.get $n)))
-          (local.set $slot (i32.add (local.get $dst) (i32.shl (local.get $i) (i32.const 3))))
-          (f64.store (local.get $slot) (call $__sclone_rec (f64.load (local.get $slot)) (local.get $memo)))
-          (local.set $i (i32.add (local.get $i) (i32.const 1)))
-          (br $ol)))
-        ;; an Error's clone carries its class, message and name, no other property
-        ${ctx.schema.errorSidEntries().size ? `(if ${errorSidTest('(call $__ptr_aux (local.get $bits))')}
-          (then (i64.store (i32.sub (local.get $dst) (i32.const 16)) (i64.const 0)) (return (local.get $out))))` : ''}
-        ;; deep the dyn-props sidecar's values (__obj_clone already re-tabled it)
-        (local.set $side (i64.load (i32.sub (local.get $dst) (i32.const 16))))
-        (if (i32.eq (call $__ptr_type (local.get $side)) (i32.const ${PTR.HASH}))
-          (then (call $__sclone_hash_vals (call $__ptr_offset (local.get $side)) (local.get $memo))))
-        (return (local.get $out))))
-
-    (if (i32.eq (local.get $t) (i32.const ${PTR.HASH}))
-      (then
-        (local.set $out (call $__obj_clone (local.get $v)))
-        (drop (call $__map_set (local.get $memo) (local.get $bits) (i64.reinterpret_f64 (local.get $out))))
-        (call $__sclone_hash_vals (call $__ptr_offset (i64.reinterpret_f64 (local.get $out))) (local.get $memo))
+        (call $__sclone_properties (local.get $bits) (i64.reinterpret_f64 (local.get $out)) (local.get $memo))
         (return (local.get $out))))
 
     (if (i32.or (i32.eq (local.get $t) (i32.const ${PTR.SET})) (i32.eq (local.get $t) (i32.const ${PTR.MAP})))
@@ -1017,9 +1005,18 @@ export default (ctx) => {
         ;; __coll_order's header comment (core.js) for why they can disagree.
         (local.set $ord (call $__coll_order (local.get $src) (local.get $cap) (local.get $stride)))
         (local.set $n (global.get $__coll_order_n))
+        ;; Map/Set serialize a snapshot of entries, unlike ordinary objects'
+        ;; saved keys followed by current Gets. Nested getters may clear/grow them.
+        (local.set $dst (call $__alloc (i32.mul (local.get $n) (local.get $stride))))
+        (block $snapshotDone (loop $snapshot
+          (br_if $snapshotDone (i32.ge_u (local.get $i) (local.get $n)))
+          (memory.copy (i32.add (local.get $dst) (i32.mul (local.get $i) (local.get $stride)))
+            (i32.load (i32.add (local.get $ord) (i32.shl (local.get $i) (i32.const 2)))) (local.get $stride))
+          (local.set $i (i32.add (local.get $i) (i32.const 1))) (br $snapshot)))
+        (local.set $i (i32.const 0))
         (block $cd (loop $cl
           (br_if $cd (i32.ge_s (local.get $i) (local.get $n)))
-          (local.set $slot (i32.load (i32.add (local.get $ord) (i32.shl (local.get $i) (i32.const 2)))))
+          (local.set $slot (i32.add (local.get $dst) (i32.mul (local.get $i) (local.get $stride))))
           (if (i32.eq (local.get $t) (i32.const ${PTR.MAP}))
             (then (drop (call $__map_set (i64.reinterpret_f64 (local.get $out))
               (i64.reinterpret_f64 (call $__sclone_rec (f64.reinterpret_i64 (i64.load offset=8 (local.get $slot))) (local.get $memo)))
@@ -1072,6 +1069,8 @@ export default (ctx) => {
 
   // structuredClone(value[, options]) — options.transfer ignored (see above).
   ctx.core.emit['structuredClone'] = (val, _opts) => {
+    ctx.module.include('object')
+    includeCopyKeys()
     inc('__sclone')
     // __obj_clone/__sclone_rec read $__schema_tbl but only join includes via the
     // pullStdlib dep-closure — after assemble has already decided whether to build
