@@ -5,11 +5,11 @@
  */
 
 import { ctx, inc, LAYOUT } from '../../ctx.js'
-import { asF64, asI32, asI64, block64, coerceNullishToNum, emitNum, f64rem, isGlobal, isLit, isPureIR, litVal, readI64, temp, toNumF64, toStrI64, typed, withTemp } from '../../ir.js'
+import { asF64, asI32, asI64, block64, coerceNullishToNum, emitNum, f64rem, isGlobal, isLit, isPureIR, litVal, readI64, temp, tempI32, toNumF64, toStrI64, typed, withTemp } from '../../ir.js'
 import { MUTATE_OPS, some } from '../../ast.js'
 import { censusMaybeUndefined, censusMaybeUndefinedKind, numericDenied, valTypeOf } from '../../kind.js'
 import { VAL, mayBeUndefined } from '../../reps.js'
-import { negRangeFitsI32 } from '../../static.js'
+import { intExprRange, negRangeFitsI32 } from '../../static.js'
 import { K, core, hasTag, tagsOf, tagOf, paramOf, UNKNOWN } from '../../summary/kind.js'
 import { exprType, inBoundsArrIdx } from '../../type.js'
 import { storedValue } from '../../bridge.js'
@@ -583,7 +583,8 @@ export const arithmeticOps = {
       bigintMixReject('%', a, b)
       return bigintResult(bigIntDivIR('%', bigIntOperand(a), bigIntOperand(b)), self)
     }
-    const va = emit(a), vb = emit(b), _f = foldConst(va, vb, (a, b) => a % b, b => b !== 0)
+    const range = intExprRange(a), va = emit(a), divisorRange = intExprRange(b), vb = emit(b)
+    const _f = foldConst(va, vb, (a, b) => a % b, b => b !== 0)
     if (_f) return _f
     // ES remainder by zero is NaN; only the f64 path yields that (a - trunc(a/0)*0).
     // The i32.rem_s fast path traps on a zero divisor, so divert a literal-zero divisor.
@@ -605,8 +606,19 @@ export const arithmeticOps = {
     if (isLit(vb) && Number.isInteger(litVal(vb)) && Math.abs(litVal(vb)) < 2 ** 31 && !vb.unsigned) {
       const pa = isI32Num(va) && !va.unsigned ? va
         : Array.isArray(va) && va[0] === 'f64.convert_i32_s' && !va.unsigned
-          ? (Array.isArray(va[1]) ? typed(va[1], 'i32') : va[1]) : null
-      if (pa) return typed(['i32.rem_s', pa, ['i32.const', litVal(vb) | 0]], 'i32')
+          ? (Array.isArray(va[1]) ? typed(va[1], 'i32') : va[1])
+          : range && range[0] > 0 && range[1] <= 0x7fffffff
+            ? typed(['i32.trunc_sat_f64_s', toNumF64(a, va)], 'i32') : null
+      if (pa) {
+        const divisor = ['i32.const', litVal(vb) | 0]
+        if (range && range[0] >= 0) return typed(['i32.rem_s', pa, divisor], 'i32')
+        // An exact negative multiple produces -0 in JS. Preserve the original
+        // dividend once, including calls, while computing the remainder in i32.
+        const t = `$${tempI32('rem')}`
+        return typed(['f64.copysign',
+          ['f64.convert_i32_s', ['i32.rem_s', ['local.tee', t, pa], divisor]],
+          ['f64.convert_i32_s', ['local.get', t]]], 'f64')
+      }
     }
     // A uint32 dividend (`(s >>> 0) % K`, the xorshift draw) by a positive
     // literal is `i32.rem_u` on its bits, exact; the remainder is below K, so
@@ -618,6 +630,21 @@ export const arithmeticOps = {
         const r = typed(['i32.rem_u', pa, ['i32.const', litVal(vb) >>> 0 | 0]], 'i32')
         if (litVal(vb) > 2 ** 31) r.unsigned = true
         return r
+      }
+    }
+    // An integer interval excluding zero permits the same hardware remainder
+    // for runtime divisors. The operands must already have faithful i32 views;
+    // a range alone does not prove a possibly missing read is a number.
+    if (!isLit(vb) && divisorRange && divisorRange[0] > 0 && divisorRange[1] <= 0x7fffffff) {
+      const pa = peelI32(va), pb = peelI32(vb)
+      if (pa && pb) {
+        const unsigned = va.unsigned || va[0] === 'f64.convert_i32_u'
+        if (unsigned || range && range[0] >= 0)
+          return typed([unsigned ? 'i32.rem_u' : 'i32.rem_s', pa, pb], 'i32')
+        const t = `$${tempI32('rem')}`
+        return typed(['f64.copysign',
+          ['f64.convert_i32_s', ['i32.rem_s', ['local.tee', t, pa], pb]],
+          ['f64.convert_i32_s', ['local.get', t]]], 'f64')
       }
     }
     // Fast path: positive literal divisor → inline a - trunc(a/b) * b, signed

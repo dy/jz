@@ -1566,7 +1566,7 @@ export function stampBodyRanges(body, readPresent, typedLens) {
   const hullOver = (n, self, bound) => {
     if (typeof n === 'string') return n === self ? bound : repOf(n)?.range ?? null
     const c = constNumExpr(n)
-    if (Number.isFinite(c)) return [c, c]
+    if (Number.isInteger(c)) return [c, c]
     if (!Array.isArray(n)) return null
     const a = hullOver(n[1], self, bound), b = n.length > 2 ? hullOver(n[2], self, bound) : null
     if (!a || (n.length > 2 && !b)) return null
@@ -1575,6 +1575,8 @@ export function stampBodyRanges(body, readPresent, typedLens) {
     if (n[0] === '+') return [a[0] + b[0], a[1] + b[1]]
     if (n[0] === '-') return [a[0] - b[1], a[1] - b[0]]
     if (n[0] === '*') { const p = [a[0] * b[0], a[0] * b[1], a[1] * b[0], a[1] * b[1]]; return [Math.min(...p), Math.max(...p)] }
+    if (n[0] === '%' && b[0] > 0 && b[0] === b[1])
+      return [a[0] < 0 ? Math.max(a[0], 1 - b[0]) : 0, a[1] > 0 ? Math.min(a[1], b[0] - 1) : 0]
     return null
   }
   const defRangeOf = (name, n) => {
@@ -1676,6 +1678,13 @@ export function stampBodyRanges(body, readPresent, typedLens) {
         lo = Math.min(lo, r[0]); hi = Math.max(hi, r[1])
       }
       if (known && Number.isFinite(lo) && Number.isFinite(hi)) {
+        // Prove a nonnegative invariant against EVERY write, including the
+        // initializer. A ring begun at zero and incremented before wrapping
+        // stays nonnegative even though the remainder's generic hull is signed.
+        if (lo < 0 && hi >= 0 && values.every(rhs => {
+          const r = hullOver(rhs, name, [0, hi])
+          return r && r[0] >= 0 && !Object.is(r[0], -0) && r[1] <= hi
+        })) lo = 0
         updateRep(name, { range: [lo, hi] })
         changed = true
       }

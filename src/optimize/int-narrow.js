@@ -456,6 +456,11 @@ export function narrowInts(fn, assume = null, expand = true) {
       const x = divisor(r.x, r.k), v = at(r.x), conv = x === 'i32' ? 'f64.convert_i32_s' : 'f64.convert_i64_s'
       did = true
       if (v.lo >= 0 && !v.nz) return [conv, [x + '.rem_s', I(r.x, x), konst(r.k, x)]]
+      if (v.nz) {
+        const t = temp('f64')
+        return ['f64.copysign', [conv, [x + '.rem_s',
+          truncated(['local.tee', t, F(r.x)], x), konst(r.k, x)]], ['local.get', t]]
+      }
       const t = temp(x)
       return ['f64.copysign', [conv, [x + '.rem_s', ['local.tee', t, I(r.x, x)], konst(r.k, x)]], [conv, ['local.get', t]]]
     }

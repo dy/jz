@@ -1833,7 +1833,13 @@ intervals of `optimize/int-range.js`). Integers below 2^53 are exact in f64, so
 a sum, difference or product that stays within 2^52 is the same number in i64,
 its remainder by a constant is `rem_s`, its quotient under a truncation is
 `div_s`, and a comparison of two such values compares the integers. The
-interval walk follows the statements in evaluation order and keeps for every
+emitter also uses word remainders for positive runtime divisors with a proven
+integer interval. Signed dividends retain their sign when the result is zero;
+storage classification preserves that Number result, and a ToInt32 consumer
+can discard only the zero-sign correction. Cyclic remainder bounds may prove
+a nonnegative interval only when every write, including initialization, keeps
+it; fractional increments do not acquire an integer bound.
+The interval walk follows the statements in evaluation order and keeps for every
 i32, i64 and f64 local `{ lo, hi, int, nz, nan }`: the closed interval, whether
 the value is an integer, whether it may be -0, whether it may be NaN; no
 interval at all is any value, a box among them. Raw i64 constants and truncations

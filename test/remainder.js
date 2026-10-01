@@ -17,6 +17,32 @@ export let wrap = (x, n) => (x % n + n) % n
 export let ring = (n, len, steps) => { let buf = new Float64Array(len), p = 0, s = 0
   for (let i = 0; i < steps; i++) { buf[p] = i; s += buf[(p + len - 1) % len]; p = (p + 1) % n } return s + p }`
 
+test('remainder: integer dividends retain zero sign through returns, storage and updates', () => {
+  const source = `
+    export function direct(x) { return (x | 0) % 3 }
+    export function negative(x) { return (x | 0) % -3 }
+    export function local(x) { const r = (x | 0) % 3; return r }
+    export function update(x) { let r = x | 0; r %= 3; return r }
+    export function runtime(x, y) { let r = x | 0; r %= y | 0; return r }
+    export function truncated(x, y) { let r = x | 0; r %= y | 0; return r | 0 }
+    export function member(x) { const a = new Int32Array([x]); return a[0] % 3 }
+    export function effect(x) { let calls = 0; function next() { calls++; return x | 0 }
+      const r = next() % 3; return [r, calls] }
+  `
+  const host = oracle(source)
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const wasm = run(source, { optimize })
+    for (const x of [0, -0, -6, -6, 6, -1, 1, -2147483648, 2147483647, NaN, 0]) {
+      for (const name of ['direct', 'negative', 'local', 'update', 'member'])
+        ok(Object.is(wasm[name](x), host[name](x)), `${optimize}: ${name}(${x})`)
+      for (const y of [0, -1, 1, 3, -3, -2147483648]) for (const name of ['runtime', 'truncated'])
+        ok(Object.is(wasm[name](x, y), host[name](x, y)), `${optimize}: ${name}(${x}, ${y})`)
+      const got = wasm.effect(x), want = host.effect(x)
+      ok(Object.is(got[0], want[0]) && got[1] === 1, `${optimize}: dividend runs once`)
+    }
+  }
+})
+
 test('remainder: every pair of operands agrees with the host', () => {
   for (const optimize of levels(0, 2, 3)) {
     const host = oracle(src), m = run(src, { optimize })
@@ -27,6 +53,47 @@ test('remainder: every pair of operands agrees with the host', () => {
     is(bad, 0, `no pair disagrees at ${optimize}`)
     for (const [n, len, steps] of [[7, 7, 30], [5, 8, 30], [1, 3, 10], [0, 4, 6], [2.5, 4, 9]])
       ok(Object.is(m.ring(n, len, steps), host.ring(n, len, steps)), `ring(${n}, ${len}, ${steps}) at ${optimize}`)
+  }
+})
+
+test('remainder: positive runtime integer divisors use exact word arithmetic', () => {
+  const source = `
+    export function unsigned(x, y) { const d = (y & 255) + 1; const r = (x >>> 0) % d; return r }
+    export function signed(x, y) { return (x | 0) % ((y & 255) + 1) }
+    export function bounded(x, y) { const r = (x & 65535) % ((y & 255) + 1); return r }
+    export function order(x, y) { let a = x | 0; const r = a % ((a = y & 255) + 1); return [r, a] }
+  `
+  const host = oracle(source)
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const wasm = run(source, { optimize })
+    for (const x of [0, -0, -6, 6, -1, 2147483647, 2147483648, 4294967295, NaN])
+      for (const y of [0, 1, 2, 255, -1, 0]) {
+        for (const name of ['unsigned', 'signed', 'bounded'])
+          ok(Object.is(wasm[name](x, y), host[name](x, y)), `${optimize}: ${name}(${x}, ${y})`)
+        const got = wasm.order(x, y), want = host.order(x, y)
+        ok(Object.is(got[0], want[0]) && got[1] === want[1], `${optimize}: dividend precedes divisor assignment`)
+      }
+  }
+  const text = wat(source, { optimize: 0 })
+  ok(text.includes('i32.rem_u'), 'unsigned integer remainder is native')
+  ok(text.includes('i32.rem_s'), 'signed integer remainder is native')
+  for (const name of ['unsigned', 'signed', 'bounded'])
+    ok(!funcWat(text, name).includes('call $__rem'), `${name}: proved nonzero divisor needs no generic remainder helper`)
+})
+
+test('remainder: cyclic bounds preserve fractions and negative writes', () => {
+  const source = `
+    export function fraction(n) { let j = 0; for(let i = 0; i < n; i++) j = (j + 0.5) % 7; return j }
+    export function mixed(n) { let j = 0; for(let i = 0; i < n; i++) {
+      if (i === 2) j = -8; j = (j + 1) % 7
+    } return j }
+    export function zero(n) { let j = -0; for(let i = 0; i < n; i++) j = j % 7; return j }
+  `
+  const host = oracle(source)
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const wasm = run(source, { optimize })
+    for (const name of ['fraction', 'mixed', 'zero']) for (const n of [0, 1, 2, 3, 3, 4, 14, 15, 0])
+      ok(Object.is(wasm[name](n), host[name](n)), `${optimize}: ${name}(${n})`)
   }
 })
 

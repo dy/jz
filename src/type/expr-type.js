@@ -201,21 +201,23 @@ export function exprType(expr, locals, valTypes, strict, bodyRoot, readPresent) 
     }
     return bound(expr[1]) + bound(expr[2]) <= 0x7fffffff ? 'i32' : 'f64'
   }
-  // `%` is i32 only when emit takes the i32.rem_s path: both operands i32, neither
-  // unsigned, AND the divisor is a nonzero integer constant. A 0 or runtime divisor
-  // yields NaN via f64rem (f64), so result-narrowing must NOT see i32 here — else a
-  // NaN remainder gets i32.trunc_sat'd to 0. Mirrors the emit.js `%` guard exactly.
+  // `%` fits i32 only when its divisor cannot be zero and its dividend cannot
+  // produce -0. Mirror emission's constant and positive-interval proofs.
   if (op === '%') {
     const ta = exprType(expr[1], locals, valTypes, strict, bodyRoot, readPresent), tb = exprType(expr[2], locals, valTypes, strict, bodyRoot, readPresent)
     if (ta !== 'i32' || tb !== 'i32') return 'f64'
     // the divisor as a folded module-const expression (`MAXPTS - 20 + 1`) is a literal too
     const dv = staticValue(expr[2]) !== NO_VALUE ? staticValue(expr[2]) : (constIntExpr(expr[2]) ?? NO_VALUE)
     if (isUnsignedI32Expr(expr[2], locals)) return 'f64'
+    const divisorRange = intExprRange(expr[2])
+    const positiveDivisor = divisorRange && divisorRange[0] > 0 && divisorRange[1] <= 0x7fffffff
     // A uint32 dividend by a positive literal takes emit's `i32.rem_u` path;
     // the remainder is below the divisor, a signed i32 whenever K ≤ 2^31.
     if (isUnsignedI32Expr(expr[1], locals))
-      return (dv !== NO_VALUE && typeof dv === 'number' && Number.isInteger(dv) && dv > 0 && dv <= 0x80000000) ? 'i32' : 'f64'
-    return (dv !== NO_VALUE && typeof dv === 'number' && dv !== 0 && Number.isInteger(dv)) ? 'i32' : 'f64'
+      return positiveDivisor || (dv !== NO_VALUE && typeof dv === 'number' && Number.isInteger(dv) && dv > 0 && dv <= 0x80000000) ? 'i32' : 'f64'
+    const range = intExprRange(expr[1])
+    return range && range[0] >= 0 && (positiveDivisor || (dv !== NO_VALUE && typeof dv === 'number' &&
+      dv !== 0 && Number.isInteger(dv) && Math.abs(dv) < 0x80000000)) ? 'i32' : 'f64'
   }
   // Storage and emission share the same product proof: both the magnitude
   // and the zero sign must survive an i32 multiply.

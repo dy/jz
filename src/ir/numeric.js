@@ -285,6 +285,15 @@ export const narrowI32 = (x, isRoot) => {
   // plain f64 number with no further truncation to absorb the wrap.
   if (x.type === 'i32') return { node: x, maxAbs: maskBound(x), faithful: true }
   const op = x[0]
+  // A signed remainder already has its dividend's sign except at zero. The
+  // copysign restores -0 for Number consumers; ToInt32 erases that distinction.
+  // Keep the dividend's tee and divisor evaluation, dropping only its saved read.
+  if (op === 'f64.copysign' && x[1]?.[0] === 'f64.convert_i32_s' && x[2]?.[0] === 'f64.convert_i32_s') {
+    const rem = x[1][1], sign = x[2][1]
+    if (rem?.[0] === 'i32.rem_s' && rem[1]?.[0] === 'local.tee' &&
+        sign?.[0] === 'local.get' && sign[1] === rem[1][1] &&
+        !writesLocal(rem[2], sign[1])) return narrowI32(x[1])
+  }
   if (op === 'f64.convert_i32_s' || op === 'f64.convert_i32_u')
     // Peel — same as toI32's peephole. _u values ∈ [0, 2^32): the re-tag IS the
     // wrap (ring-compatible), but the i32 view differs from the JS value above
@@ -335,6 +344,13 @@ export const narrowI32 = (x, isRoot) => {
     return { node, maxAbs: 2 ** 31, faithful: c !== -1 }
   }
   return null
+}
+
+function writesLocal(n, name) {
+  if (!Array.isArray(n)) return false
+  if ((n[0] === 'local.set' || n[0] === 'local.tee') && n[1] === name) return true
+  for (let i = 1; i < n.length; i++) if (writesLocal(n[i], name)) return true
+  return false
 }
 
 // Conservative VALUE-RANGE for a pure f64 expression tree: returns { lo, hi } bounding
