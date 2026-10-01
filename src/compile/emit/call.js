@@ -14,7 +14,7 @@ import {
 import { LAYOUT, OPTF, PTR, ctx, err, inc, setLinkDemand, emitArity } from '../../ctx.js'
 import { includeForArrayAccess } from '../../autoload.js'
 import {
-  MAX_CLOSURE_ARITY, allocPtr, asF64, carrierF64, freshId, isBoundName, ptrTypeEq, reconstructArgsWithSpreads, temp, tempI32, typed, undefExpr,
+  MAX_CLOSURE_ARITY, allocPtr, asF64, carrierF64, freshId, isBoundName, isNumericIR, ptrTypeEq, reconstructArgsWithSpreads, temp, tempI32, typed, undefExpr,
 } from '../../ir.js'
 import { censusMaybeUndefined, hasAmbiguousBoolMerge, valTypeOf } from '../../kind.js'
 import { VAL } from '../../reps.js'
@@ -114,14 +114,18 @@ function emitBuiltinCall(callee, parsed) {
       const a = parsed.normal[i]
       if (i >= n) { setup.push(...emitVoid(a)); continue }
       const name = temp('arg')
-      setup.push(['local.set', `$${name}`, storedValue(a)])
+      const value = storedValue(a)
+      setup.push(['local.set', `$${name}`, value])
+      // A guarded read or conversion may be narrower than its source kind.
+      // Its captured value keeps that Number proof through operand conversion.
+      if (isNumericIR(value)) (ctx.func.refinements ??= new Map()).set(name, { val: VAL.NUMBER, notNullish: true })
       view?.alias(name, a, false)
       aliases.push(name); args.push(name)
     }
     while (args.length < n) args.push([, undefined])
     const value = ctx.core.emit[callee](...args)
     return setup.length ? typed(['block', ['result', value.type], ...setup, value], value.type) : value
-  } finally { for (const name of aliases) view?.unalias(name) }
+  } finally { for (const name of aliases) { view?.unalias(name); ctx.func.refinements?.delete(name) } }
 }
 
 /** Direct call to a known top-level user function — emits `(call $callee args)`.

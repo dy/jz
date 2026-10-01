@@ -1964,6 +1964,10 @@ unknown or BigInt operands capture their values first, and ignored arguments
 still run. Spreads materialize their argument values before conversion so a
 later argument or valueOf cannot change an earlier operand. Integer Math methods
 apply Number conversion before word wrapping, including throwing on BigInt.
+Captured Math operands retain Number facts already proved by their emitted value.
+Typed read/modify/write fusion validates the emitted RHS before committing its
+guard-local read: a remaining conversion call restores ordinary checked reads.
+Writes to compiler-owned scratch locals are pure when their values are pure.
 Schema-tag masks reuse the numeric constant evaluator.
 Internal parameter ranges narrow only when every incoming call proves them;
 exports, indirect calls, missing arguments and unknown writes retain checks.

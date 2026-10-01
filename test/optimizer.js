@@ -5415,6 +5415,43 @@ export let main = (i) => {
   for (const i of [-1, 0, 2, 3, 4, 99]) is(wasm(i), exportsJs.main(i), `RMW i=${i} exact including OOB`)
 })
 
+test('typed RMW: rejected conversion candidates retain checked reads and RHS effects', () => {
+  const src = `function step(a, i, x) { a[i] = Math.imul(a[i], x) }
+    export function f(mode, index) {
+      const a = new Int32Array([7, 11]); let trace = '';
+      const x = mode === 0 ? 3 : mode === 1 ? '3' : mode === 2 ? {valueOf(){trace += 'v';a[0] = 41;return 4}}
+        : mode === 3 ? undefined : mode === 4 ? 1n : {valueOf(){trace += 'e';throw new Error('operand')}};
+      try { step(a, +index, x); return [a[0], a[1], trace] }
+      catch(e) { return [e.name, a[0], a[1], trace] }
+    }
+    export function ignored(index) {
+      const a = new Int32Array([7, 11]); let calls = 0; const i = +index;
+      function extra(){calls++;a[0] = 41;return 0}
+      a[i] = Math.imul(a[i], 3, extra());
+      return [a[0], a[1], calls]
+    }
+    export function callback(index) {
+      const a = new Int32Array([7, 11]); let calls = 0; const i = +index;
+      function read(){calls++;a[0] = 19;return 5}
+      a[i] = (a[i] + read()) | 0;
+      return [a[0], a[1], calls]
+    }`
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const got = jz(src, { optimize, sourceInline:false }).exports, want = oracle(src)
+    const held = []
+    for (const mode of [0, 0, 1, 2, 3, 4, 5, 0]) for (const index of [-1, 0, 1, 2, 0]) {
+      const actual = got.f(mode, index), expected = want.f(mode, index)
+      is(actual, expected, `O${optimize}: mode ${mode}, index ${index}`)
+      held.push([actual, expected])
+    }
+    for (const [actual, expected] of held) is(actual, expected, 'later calls preserve prior results')
+    for (const index of [-1, 0, 1, 2, 0]) {
+      is(got.ignored(index), want.ignored(index), 'ignored arguments run after the read even for an ignored store')
+      is(got.callback(index), want.callback(index), 'a rejected zero-argument call preserves the original read and effects')
+    }
+  }
+})
+
 test('typed fetch bundle: static table length proves an interpreter fetch group', () => {
   const src = `
 const exec = (code, reg) => {

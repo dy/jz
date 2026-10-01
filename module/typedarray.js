@@ -2387,7 +2387,7 @@ export default (ctx) => {
     if (!Array.isArray(n)) return true
     const op = n[0]
     if (op === 'local.get' || op === 'global.get') return typeof n[1] === 'string'
-    if (op === 'local.tee') return typeof n[1] === 'string' && n[1].startsWith('$' + T) && pureStorable(n[2])
+    if (op === 'local.tee' || op === 'local.set') return typeof n[1] === 'string' && n[1].startsWith('$' + T) && pureStorable(n[2])
     if (op === 'select' || op === 'if' || op === 'block' || op === 'then' || op === 'else' || op === 'result')
       return n.slice(1).every(pureStorable)
     if (PURE_STORE_OP.test(op)) return n.slice(1).every(pureStorable)
@@ -2476,7 +2476,7 @@ export default (ctx) => {
        (val[0] === '()' && val.length > 2 && (val[1] === 'math.imul' ||
          (Array.isArray(val[1]) && val[1][0] === '.' && val[1][1] === 'Math' && val[1][2] === 'imul')))))
     const rmwKey = typeof arr === 'string' && typeof i === 'string' ? idxKey(arr, i) : null
-    const rmwCandidate = !nullable && !proven && void_ && et <= 5 && !r.isClamped && rmwKey != null &&
+    let rmwCandidate = !nullable && !proven && void_ && et <= 5 && !r.isClamped && rmwKey != null &&
       i32Rhs && hasSameRead(val) && safeRmwAst(val)
     let valIR, rmwAddr = null, rmwValue = null
     if (rmwCandidate) {
@@ -2487,6 +2487,10 @@ export default (ctx) => {
       forced.add(rmwKey)
       reads.set(rmwKey, rmwValue)
       try { valIR = emit(val) } finally { forced.delete(rmwKey); reads.delete(rmwKey) }
+      // The emitted RHS can still need a coercion call. A rejected candidate
+      // must restore checked reads instead of using its unloaded RMW scratch.
+      const word = i32Narrowed(valIR)
+      if (!word || !pureStorable(word)) { rmwCandidate = false; valIR = emit(val) }
     } else valIR = emit(val)
     // PutValue reads the key before the value. A key that reads what the value's
     // effects may store to (a global or an element a call changes, a local the
