@@ -93,6 +93,7 @@ const TESTS = [
   'interval-proof',
   'element-bounds',
   'licm-typed-views',
+  'licm-float32',
   'flow-range',
   'store-merge',
   'const-seed',

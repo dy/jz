@@ -895,6 +895,12 @@ single-definition locals and closed scalar recurrences; other origins remain
 unknown. Allocating
 helpers cannot be speculated before zero-trip loops or crossed by allocator-global
 reads.
+Float32 constant-cell reads use the settled byte extent of a present, unchanged
+owned parameter as a separate no-trap proof. The entire load must fit, including
+its memory offset; distinct-buffer facts separately rule out loop writes and
+calls that could change it. Unknown extents, views and rebound pointers retain
+their reads. Single-precision arithmetic follows the same nontrapping rules as
+double precision. This does not infer extents for rebound scratch allocations.
 
 Value numbering and statement scheduling are watr's (`valueNumber`, `schedule`),
 run once before its rounds; jz enables them (`valueNumber`, `scheduleStatements`

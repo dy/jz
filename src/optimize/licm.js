@@ -255,7 +255,7 @@ const CELL_PREFIX = '$' + T + 'cell_'
 // straight-line pattern match. So a subtree is hoisted only if it contains one.
 const HARD_OPS = new Set([
   'i64.trunc_sat_f64_s', 'i64.trunc_sat_f64_u', 'i32.trunc_sat_f64_s', 'i32.trunc_sat_f64_u',
-  'select', 'f64.load', 'i32.load', 'call',
+  'select', 'f64.load', 'f32.load', 'i32.load', 'call',
 ])
 // Cache subtree profitability within one invocation only. The driver rewrites
 // nodes between invocations; retaining these answers across that boundary is stale.
@@ -287,11 +287,14 @@ const isPtrBaseDecode = (n) =>
 const PURE_LICM_OPS = new Set([
   'f64.add', 'f64.sub', 'f64.mul', 'f64.div', 'f64.neg', 'f64.abs', 'f64.sqrt',
   'f64.min', 'f64.max', 'f64.ceil', 'f64.floor', 'f64.trunc', 'f64.nearest', 'f64.copysign',
+  'f32.add', 'f32.sub', 'f32.mul', 'f32.div', 'f32.neg', 'f32.abs', 'f32.sqrt',
+  'f32.min', 'f32.max', 'f32.ceil', 'f32.floor', 'f32.trunc', 'f32.nearest', 'f32.copysign',
   'i32.add', 'i32.sub', 'i32.mul', 'i32.and', 'i32.or', 'i32.xor',
   'i32.shl', 'i32.shr_s', 'i32.shr_u', 'i32.rotl', 'i32.rotr', 'i32.clz', 'i32.ctz', 'i32.popcnt', 'i32.eqz',
   'i64.add', 'i64.sub', 'i64.mul', 'i64.and', 'i64.or', 'i64.xor',
   'i64.shl', 'i64.shr_s', 'i64.shr_u', 'i64.rotl', 'i64.rotr', 'i64.eqz',
   'f64.eq', 'f64.ne', 'f64.lt', 'f64.gt', 'f64.le', 'f64.ge',
+  'f32.eq', 'f32.ne', 'f32.lt', 'f32.gt', 'f32.le', 'f32.ge',
   'i32.eq', 'i32.ne', 'i32.lt_s', 'i32.lt_u', 'i32.gt_s', 'i32.gt_u', 'i32.le_s', 'i32.le_u', 'i32.ge_s', 'i32.ge_u',
   'i64.eq', 'i64.ne', 'i64.lt_s', 'i64.lt_u', 'i64.gt_s', 'i64.gt_u', 'i64.le_s', 'i64.le_u', 'i64.ge_s', 'i64.ge_u',
   'f64.convert_i32_s', 'f64.convert_i32_u', 'f64.convert_i64_s', 'f64.convert_i64_u',
@@ -464,7 +467,53 @@ const stableBase = (n, names, present) => {
   return Array.isArray(n) && n[0] === 'local.get' && typeof n[1] === 'string' && names.has(n[1]) && (!boxed || present?.has(n[1]) === true)
 }
 
-function computeLoopInvariance(loopNode, { distinctParams, baseParamOf, allowPrivateSets = false, stableHeaderNames = null, presentArrays = null, presentTyped = null, defs = null, views = null }) {
+// Unlike invariance, speculation safety needs the whole access inside a live
+// allocation. Only unchanged owned parameters with a settled byte extent and
+// a literal byte displacement qualify. Following local definitions here would
+// additionally need dominance (a conditional initializer is not an address).
+function fixedTypedLoad(fn) {
+  const extents = fn.fixedTypedBytes
+  if (!extents?.size) return null
+  const changed = new Set()
+  walkAst(fn, { enter: n => { if (n[0] === 'local.set' || n[0] === 'local.tee') changed.add(n[1]) } })
+  const constant = n => {
+    if (!Array.isArray(n)) return null
+    if (n[0] === 'i32.const') {
+      const value = Number(n[1])
+      return Number.isInteger(value) && value >= -0x80000000 && value <= 0xffffffff ? value | 0 : null
+    }
+    if (n.length !== 3) return null
+    const a = constant(n[1]), b = constant(n[2])
+    if (a == null || b == null) return null
+    if (n[0] === 'i32.add') return (a + b) | 0
+    if (n[0] === 'i32.sub') return (a - b) | 0
+    if (n[0] === 'i32.mul') return Math.imul(a, b)
+    if (n[0] === 'i32.shl') return a << b
+    return null
+  }
+  const address = n => {
+    if (!Array.isArray(n)) return null
+    if (n[0] === 'local.get' && extents.has(n[1]) && !changed.has(n[1])) return { name: n[1], offset: 0 }
+    if (n[0] !== 'i32.add' || n.length !== 3) return null
+    const a = constant(n[1]), b = constant(n[2])
+    const base = a != null ? address(n[2]) : b != null ? address(n[1]) : null
+    if (!base) return null
+    const offset = base.offset + (a ?? b)
+    return offset >= 0 && offset <= 0xffffffff ? { name: base.name, offset } : null
+  }
+  return n => {
+    let i = 1, offset = 0
+    for (; typeof n[i] === 'string'; i++) {
+      if (n[i].startsWith('offset=')) offset += Number(n[i].slice(7))
+      else if (!n[i].startsWith('align=')) return false
+    }
+    if (i !== n.length - 1) return false
+    const a = address(n[i])
+    return !!a && Number.isInteger(offset) && offset >= 0 && a.offset + offset + 4 <= extents.get(a.name)
+  }
+}
+
+function computeLoopInvariance(loopNode, { distinctParams, baseParamOf, allowPrivateSets = false, stableHeaderNames = null, presentArrays = null, presentTyped = null, defs = null, views = null, fixedLoad = null }) {
   const presentNames = presentArrays || stableHeaderNames
     ? new Set([...(presentArrays ?? []), ...(stableHeaderNames ?? [])]) : null
   const headerSafe = ctx.scope.headerSafeFuncs ?? null
@@ -534,11 +583,16 @@ function computeLoopInvariance(loopNode, { distinctParams, baseParamOf, allowPri
       if (name) return pureGiven(['local.get', name], bound)
     }
     if (op === 'i32.load') { const view = viewWord(node, views); if (view) return pureGiven(view, bound) }
-    if ((op === 'f64.load' || op === 'i32.load') && node.length === 2) {
+    if (((op === 'f64.load' || op === 'i32.load') && node.length === 2) || (op === 'f32.load' && fixedLoad?.(node))) {
       // An address a hoist left in a local of its own (`$__li = ptr - 8`) is
       // the address its one write computes.
-      const held = Array.isArray(node[1]) && node[1][0] === 'local.get' ? defs?.get(node[1][1]) : null
-      const a = held != null && held !== MULTI && Array.isArray(held) && held[0] === 'i32.sub' && pureGiven(node[1], bound) ? held : node[1]
+      const addr = node[node.length - 1]
+      const held = Array.isArray(addr) && addr[0] === 'local.get' ? defs?.get(addr[1]) : null
+      const a = held != null && held !== MULTI && Array.isArray(held) && held[0] === 'i32.sub' && pureGiven(addr, bound) ? held : addr
+      // A fixed, addressable cell needs no alias relation when the loop cannot
+      // write memory or call anything. With writes, use the separate distinct
+      // buffer proof below, just as the double-precision lane does.
+      if (op === 'f32.load' && !hasAnyCall && !hasDirectStore && pureGiven(addr, bound)) return true
       if (Array.isArray(a) && a[0] === 'local.get' && typeof a[1] === 'string' && a[1].startsWith(CELL_PREFIX)
         && !hasAnyCall && !hasUnknownStore && !storedCells.has(a[1]) && (bound.has(a[1]) || !locals.has(a[1]))) return true
       // Length-HEADER load: `i32.load(i32.sub(local.get $X, i32.const 8))` where $X is a
@@ -842,6 +896,7 @@ export function hoistInvariantLoop(fn) {
   const presentArrays = fn.presentArrays || null
   const defs = presentArrays || stableHeaderNames ? singleDefs(fn, bodyStart) : null
   const hardOpCache = new Map()
+  const fixedLoad = fixedTypedLoad(fn)
   hoistInvariants(fn, {
     prefix: '$__li',
     callType: callee => {
@@ -850,7 +905,7 @@ export function hoistInvariantLoop(fn) {
       return null
     },
     analyze: (loop, nested) => {
-      const { pureGiven, hasV128 } = computeLoopInvariance(loop, { distinctParams, baseParamOf, stableHeaderNames, presentArrays, presentTyped: fn.presentTyped || null, defs, views: fn.viewNames || null })
+      const { pureGiven, hasV128 } = computeLoopInvariance(loop, { distinctParams, baseParamOf, stableHeaderNames, presentArrays, presentTyped: fn.presentTyped || null, defs, views: fn.viewNames || null, fixedLoad })
       return (node, bound) => ((nested && !hasV128) || hasHardOp(node, hardOpCache) || isPtrBaseDecode(node)) && pureGiven(node, bound)
     },
   })

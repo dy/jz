@@ -5,7 +5,8 @@ import { ctx, PTR, LAYOUT } from '../ctx.js'
 import { isBlockBody, returnExprs } from '../ast.js'
 import { hasAmbiguousBoolMerge } from '../kind.js'
 import { VAL } from '../reps.js'
-import { i64Hex } from '../../layout.js'
+import { i64Hex, typedElemAux, TYPED_ELEM_VIEW_FLAG } from '../../layout.js'
+import { STRIDE } from '../../module/typedarray/elem-tables.js'
 import {
   typed, asF64, asI32, asPtrOffset, asParamType, nullableBoolBoxIR, ptrTypeEq, undefExpr,
   isUndef, isGlobal, dollar, tcoTailRewrite, applyBigintRepresentationAction,
@@ -185,6 +186,16 @@ export function emitFunc(func, functionPlan, programFacts, arrayGlobals) {
   if (plannedStableHeaderNames) fn.stableHeaderNames = plannedStableHeaderNames
   if (presentArrays.size) fn.presentArrays = presentArrays
   if (presentTyped.size) fn.presentTyped = presentTyped
+  // A fixed, present owned parameter has an addressable byte extent on every
+  // call. LICM needs that extent separately from its no-alias proof: being
+  // unchanged does not make an out-of-bounds load safe before a zero-trip loop.
+  for (const p of sig.params) {
+    if (p.type !== 'i32' || p.ptrKind !== VAL.TYPED || !presentTyped.has(`$${p.name}`)) continue
+    const len = installedPlan.typedLen?.get(p.name), aux = typedElemAux(installedPlan.typedElem?.get(p.name))
+    if (aux == null || aux & TYPED_ELEM_VIEW_FLAG || !Number.isInteger(len) || len <= 0) continue
+    const bytes = len * STRIDE[aux & 7]
+    if (bytes <= 0x100000000) (fn.fixedTypedBytes ??= new Map()).set(`$${p.name}`, bytes)
+  }
   if (paramRanges.size) fn.paramRanges = paramRanges
   // Inline `(export ...)` attribute only for the syntactic inline-export
   // form (`export function foo`, snapshot in `func.exported` at defFunc
