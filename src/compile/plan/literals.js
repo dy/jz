@@ -287,7 +287,7 @@ const typedArraySlotIndex = (node, len) => {
 // `coerce` truthy ⇒ the array's element type truncates on store (Int*/Uint* views),
 // so in-place updates (`arr[i]++`, `arr[i] += x`) can't be a plain `slot`-op rewrite —
 // reject them and only scalarize plain `arr[i] = v` writes and `arr[i]` reads.
-const safeScalarTypedArrayUse = (node, name, len, coerce = '') => {
+const safeScalarTypedArrayUse = (node, name, len, coerce = '', discarded = false) => {
   if (typeof node === 'string') return node !== name
   if (!Array.isArray(node)) return true
   const op = node[0]
@@ -300,6 +300,9 @@ const safeScalarTypedArrayUse = (node, name, len, coerce = '') => {
   if (ASSIGN_OPS.has(op)) {
     if (node[1] === name) return false
     if (Array.isArray(node[1]) && node[1][0] === '[]' && node[1][1] === name) {
+      // A typed store returns its unconverted RHS, while a scalar assignment
+      // returns the converted slot value. Keep observed writes on memory.
+      if (!discarded) return false
       if (coerce && op !== '=') return false
       if (typedArraySlotIndex(node[1][2], len) == null) return false
       for (let i = 2; i < node.length; i++) if (!safeScalarTypedArrayUse(node[i], name, len, coerce)) return false
@@ -307,7 +310,12 @@ const safeScalarTypedArrayUse = (node, name, len, coerce = '') => {
     }
   }
   if (op === '...' && node[1] === name) return false
-  for (let i = 1; i < node.length; i++) if (!safeScalarTypedArrayUse(node[i], name, len, coerce)) return false
+  for (let i = 1; i < node.length; i++) {
+    const unused = op === ';' || op === '{}' && node.length === 2 ||
+      op === ',' && (i < node.length - 1 || discarded) || op === 'if' && i >= 2 ||
+      op === 'for' && i !== 2 || op === 'while' && i === 2 || op === 'do' && i === 1
+    if (!safeScalarTypedArrayUse(node[i], name, len, coerce, unused)) return false
+  }
   return true
 }
 
@@ -361,8 +369,8 @@ const rewriteScalarTypedArrayUses = (node, arrays) => {
     // f64 slots (coerce '') still apply the store's ToNumber via unary plus —
     // free for a provably numeric RHS, and it folds a checked read's undefined
     // arm to NaN (raw sentinel bits in the slot would read back as undefined)
-    return op === '=' ? ['=', slot, entry.coerce ? coerceAST(entry.coerce, rhs[0]) : ['u+', rhs[0]]]
-      : [op, slot, ...rhs]
+    const value = op === '=' ? rhs[0] : [op.slice(0, -1), slot, rhs[0]]
+    return ['=', slot, entry.coerce ? coerceAST(entry.coerce, value) : ['u+', value]]
   }
   return node.map((part, i) => i === 0 ? part : rewriteScalarTypedArrayUses(part, arrays))
 }
@@ -437,7 +445,7 @@ const scalarizeTypedArrayLiteralSeq = (seq) => {
       // a use inside a nested function is a use: the rewrite reaches it
       if (!refsName(stmts[j], decl[1], REFS_IN_EXPR)) continue
       captured ||= capturedByFunction(stmts[j], decl[1])
-      const safe = safeScalarTypedArrayUse(stmts[j], decl[1], len, coerce)
+      const safe = safeScalarTypedArrayUse(stmts[j], decl[1], len, coerce, true)
       hasSafeUse ||= safe
       hasUnsafeUse ||= !safe
       hasAliasUse ||= createsTypedArrayAlias(stmts[j], decl[1])
@@ -480,7 +488,7 @@ const scalarizeTypedArrayLiteralSeq = (seq) => {
     }
     const unsafe = []
     for (const [name, arr] of arrays) {
-      if (arr.mirrored && refsName(stmts[i], name) && !safeScalarTypedArrayUse(stmts[i], name, arr.len, arr.coerce)) unsafe.push([name, arr])
+      if (arr.mirrored && refsName(stmts[i], name) && !safeScalarTypedArrayUse(stmts[i], name, arr.len, arr.coerce, true)) unsafe.push([name, arr])
     }
     if (unsafe.length) {
       for (const [name, arr] of unsafe) out.push(...scalarTypedArrayStores(name, arr))

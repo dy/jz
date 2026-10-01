@@ -103,6 +103,11 @@ seeding. A concat argument that might itself be an array also keeps its identity
 Closure bodies contribute demand only in their own frame. An assignment's
 original value also flows to its expression reader, independently of the
 stored slot; scalarization must preserve that observation.
+Typed-array scalar replacement keeps observed writes on the memory path and
+converts discarded compound writes back to the element type. Conversion hooks
+run before bounds checks, including on an observed Float32/Float64 store whose
+index misses. Logical stores retain the same exception and mutation effects as
+plain stores, so surrounding catches, finally blocks and loop bounds stay live.
 Every variable write invalidates its earlier flow kind immediately, including
 assignments nested in expressions. The next operand cannot read a stale kind.
 Captured mutable cells keep their joined kind because a call can change them

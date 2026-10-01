@@ -15,6 +15,28 @@ import { compile } from '../index.js'
 import { levels } from './_matrix.js'
 import { oracle } from './util.js'
 
+test('logical stores retain conversion exceptions, finally and enclosing bound effects', () => {
+  for (const [op, init, index] of [['||=',0,0], ['&&=',1,0], ['??=',0,1]]) {
+    const src = `let stop=0,done=0; export function main(skip){stop=3;done=0;let calls=0;
+      const a=new Float64Array(1);a[0]=${init};
+      const v={valueOf(){calls++;stop=1;if(!skip)throw 7;return 2}};
+      let i=0;try{while(i<stop){a[${index}] ${op} v;i++}}
+      catch(e){return[e,calls,i,stop]}finally{done++}return[0,calls,i,stop]}
+      export function finalizations(){return done}
+      export function bounded(){stop=3;const a=new Float64Array(1);a[0]=${init};
+        const v={valueOf(){stop=1;return 2}};let i=0;while(i<stop){a[${index}] ${op} v;i++}return[i,stop]}`
+    const js=oracle(src)
+    for (const optimize of levels(0,1,2,3,'size')) {
+      const wasm=jz(src,{optimize}).exports
+      for(const skip of [0,0,1,0]) {
+        is(wasm.main(skip),js.main(skip), `${op}, O${optimize}, skip=${skip}`)
+        is(wasm.finalizations(),1, `${op} finally executes exactly once`)
+        is(wasm.bounded(),js.bounded(), `${op} bound effects, O${optimize}`)
+      }
+    }
+  }
+})
+
 const agrees = (src, calls, label) => {
   const host = oracle(src)
   for (const optimize of levels(0, 2, 3, 'size')) {
@@ -35,7 +57,7 @@ test('typed store: clamping preserves the magnitude of unsigned element reads', 
 })
 
 test('typed store: pointer carriers still coerce and assignments return the original value', () => {
-  for (const ctor of ['Int32Array', 'Uint32Array', 'Uint8ClampedArray']) {
+  for (const ctor of ['Int32Array', 'Uint32Array', 'Uint8ClampedArray', 'Float32Array', 'Float64Array']) {
     const src = `export function f(i) {
       const dst = new ${ctor}(1); let calls = 0;
       const value = { valueOf() { calls++; return 42 } };
@@ -61,14 +83,14 @@ test('typed store: pointer carriers still coerce and assignments return the orig
 })
 
 test('typed store: a throwing conversion runs before an invalid index but after a null receiver check', () => {
-  for (const ctor of ['Int32Array', 'Uint8ClampedArray', 'Float64Array']) {
+  for (const ctor of ['Int32Array', 'Uint8ClampedArray', 'Float32Array', 'Float64Array']) {
     const src = `let dst;
       export function f(i, missing, fail) {
         dst = missing ? null : new ${ctor}(1); let trace = '';
         function key() { trace += 'k'; return i }
         function rhs() { trace += 'r'; return { valueOf() { trace += 'v'; if (fail) throw 7; return 42 } } }
         let error = '';
-        try { dst[key()] = rhs(); trace += 's' } catch(e) { error = e === 7 ? 'seven' : e.name }
+        try { const value = (dst[key()] = rhs()); trace += typeof value === 'object' ? 's' : '?' } catch(e) { error = e === 7 ? 'seven' : e.name }
         return [trace, error, missing ? -1 : dst[0]];
       }`
     const expected = oracle(src).f

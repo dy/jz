@@ -46,10 +46,10 @@ function canThrow(body, seen = new Set()) {
   // Typed element assignment can throw during ToNumber/ToBigInt even for an
   // OOB index. Keep a surrounding catch visible; the typed emitter either
   // emits the supported runtime throw or rejects an unrepresentable catch.
-  if (op === '=' && Array.isArray(body[1]) && body[1][0] === '[]' && valTypeOf(body[1][1]) === VAL.TYPED) return true
+  if (ASSIGN_OPS.has(op) && Array.isArray(body[1]) && body[1][0] === '[]' && valTypeOf(body[1][1]) === VAL.TYPED) return true
   // ArraySetLength performs ToUint32 and ToNumber, then validates their
   // equality. A dynamic key can select length without a source-level call.
-  if (op === '=' && Array.isArray(body[1]) && (body[1][0] === '.' || body[1][0] === '[]') &&
+  if (ASSIGN_OPS.has(op) && Array.isArray(body[1]) && (body[1][0] === '.' || body[1][0] === '[]') &&
       (body[1][0] === '[]' || body[1][2] === 'length') &&
       (valTypeOf(body[1][1]) == null || valTypeOf(body[1][1]) === VAL.ARRAY)) return true
   // A store on a primitive throws (emit-assign.js primitiveStore, __dyn_set).

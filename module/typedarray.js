@@ -2608,8 +2608,8 @@ export default (ctx) => {
       // BITS in an f64 slot read back as `undefined` at the boundary where JS
       // stores (and reads back) NaN. The assignment's own VALUE (non-void
       // result) is the RHS pre-coercion per spec, so that path coerces a COPY
-      // at the store only (nullish-canon on the temp — no strings can hide in
-      // a no-__to_num program, so the sentinel canon IS full ToNumber there).
+      // without replacing the original RHS. Effectful conversion must precede
+      // the bounds check even when that check drops the store.
       const stored = toNumF64(val, valIR)
       if (void_) {
         if ((ctx.transform.optFlags & OPTF.leanCheckedIdx) && pureStorable(stored)) return typed(['block', ...pre,
@@ -2624,9 +2624,11 @@ export default (ctx) => {
       const storeV = stored === valIR ? reread
         : ctx.core.stdlib['__to_num'] ? toNumF64(val, reread)
         : coerceNullishToNum(reread)
+      const nt = pureStorable(storeV) ? null : temp('twn')
       return typed(['block', ['result', 'f64'], ...pre,
         ['local.set', `$${vt}`, asF64(valIR)],
-        guard(['f64.store', off, asF64(storeV)]),
+        ...(nt ? [['local.set', `$${nt}`, asF64(storeV)]] : []),
+        guard(['f64.store', off, nt ? ['local.get', `$${nt}`] : asF64(storeV)]),
         ['local.get', `$${vt}`]], 'f64')
     }
     if (et === 6) { // Float32Array
@@ -2647,9 +2649,11 @@ export default (ctx) => {
       const storeV = stored === valIR ? reread
         : ctx.core.stdlib['__to_num'] ? toNumF64(val, reread)
         : coerceNullishToNum(reread)
+      const nt = pureStorable(storeV) ? null : temp('twn')
       return typed(['block', ['result', 'f64'], ...pre,
         ['local.set', `$${vt}`, asF64(valIR)],
-        guard(['f32.store', off, ['f32.demote_f64', asF64(storeV)]]),
+        ...(nt ? [['local.set', `$${nt}`, asF64(storeV)]] : []),
+        guard(['f32.store', off, ['f32.demote_f64', nt ? ['local.get', `$${nt}`] : asF64(storeV)]]),
         ['local.get', `$${vt}`]], 'f64')
     }
     // Integer store: a value the integer ring holds stores its low bits, with no

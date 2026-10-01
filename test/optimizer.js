@@ -1608,6 +1608,31 @@ test('fixed Float64Array locals scalar-replace static slots', () => {
   is(run(src).main(), 8)
 })
 
+test('scalar typed stores preserve assignment results and convert compound writes', () => {
+  for (const Ctor of ['Float64Array', 'Float32Array', 'Int32Array', 'Uint8Array']) {
+    for (const expression of ['a[0]=value', 'a[0]+=value', 'a[0]||=value']) {
+      const src = `export function main(mode){let calls=0;const a=new ${Ctor}(1);
+        const value=mode===0?'4':mode===1?null:mode===2?undefined:mode===3?-0:mode===4?1.00000001:
+          mode===5?4294967297:mode===6?{valueOf(){calls++;return 3}}:{valueOf(){calls++;throw 7}};
+        try{const result=(${expression});return[typeof result,result===value,typeof result==='object'?'object':result,a[0],calls]}
+        catch(e){return['error',e,a[0],calls]}}`
+      const js = oracle(src).main
+      for (const optimize of levels(0,1,2,3,'size')) {
+        const f = run(src, {optimize}).main
+        for (const mode of [0,0,1,2,3,4,5,6,7,0]) is(f(mode),js(mode), `${Ctor} ${expression}, O${optimize}, mode=${mode}`)
+      }
+    }
+  }
+  // Discarded compound writes still convert concatenation to the stored number.
+  const src = `export function main(mode){const a=new Float64Array(1);const v=mode?'4':2;
+    a[0]+=v; a[0]+=v; return[a[0],typeof a[0]]}`
+  const js = oracle(src).main
+  for (const optimize of levels(0,1,2,3,'size')) {
+    const f=run(src,{optimize}).main
+    for (const mode of [0,0,1,0,1]) is(f(mode),js(mode), `discarded +=, O${optimize}, mode=${mode}`)
+  }
+})
+
 test('fixed Float64Array internal params scalar-replace unrolled slots', () => {
   const src = `
     const use = (a, b, out) => {

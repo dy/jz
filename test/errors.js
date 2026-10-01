@@ -1404,6 +1404,20 @@ test('host decode: runtime Array errors retain their schema through callback dis
   }
 })
 
+test('logical array length assignments keep RangeError catches and short-circuit effects', () => {
+  for (const [op, initial] of [['||=',0], ['&&=',1], ['??=',0]]) {
+    const src = `export function f(n){const a=[];a.length=${initial};let calls=0,done=0,result;
+      function value(){calls++;return n}
+      try{a.length ${op} value();result='ok'}catch(e){result=e.name}finally{done++}
+      return[result,a.length,calls,done]}`
+    const js=oracle(src).f
+    for(const optimize of levels(0,1,2,3,'size')) {
+      const f=jz(src,{optimize}).exports.f
+      for(const n of [0,0,2,-1,2.5,NaN,Infinity,4294967296,1]) is(f(n),js(n), `${op}, O${optimize}, ${n}`)
+    }
+  }
+})
+
 test('runtime Array errors: callback pipelines preserve typed catches and sibling errors', () => {
   const src = `
     function pipeline(n){return new Array(n).fill(1).map((v,i)=>v+i).reduce((a,b)=>a+b,0)}
