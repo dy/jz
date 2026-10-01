@@ -39,6 +39,15 @@ const indexInRange = (wide, index, len) => wide
   ? ['i64.lt_u', wide, ['i64.extend_i32_u', len]]
   : ['i32.lt_u', index, len]
 
+// A proved miss evaluates the reference and keeps undefined, including its
+// miss bit when the value serves as another typed array's index.
+const missingElementRead = (bigint, receiver, index) => {
+  const rd = typed(['block', ['result', 'f64'], ['drop', receiver], ['drop', index], undefExpr()], 'f64')
+  rd.indexValid = ['i32.const', 0]
+  if (!bigint) rd.checkedNumRead = true
+  return rd
+}
+
 
 const typedAux = (name, isView = false) => encodeTypedElemAux(name, isView)
 // The element kind of an aux: every bit but the view bit (the DataView bit stays,
@@ -2185,6 +2194,11 @@ export default (ctx) => {
     const proven = typedIdxProven(arr, i, node) || (integral && key != null && ctx.types.rmwBounds?.has(key))
     const loadOf = (off) => elemLoadIR(r, off)
     if (!proven) {
+      const recvKind = typeof arr === 'string' ? ctx.summary?.at(ctx.func.current).kindOfExpr(arr) : null
+      const presentName = recvKind != null && tagOf(recvKind) === K.TYPED && !isNullable(recvKind)
+      const len = staticTypedLen(arr), range = exprType(i, ctx.func.locals) === 'i32' ? intExprRange(i) : null
+      if (presentName && len != null && range && (range[1] < 0 || range[0] >= len))
+        return missingElementRead(isBigInt, emit(arr), emit(i))
       const bundleIn = integral ? typedBundleGuard(arr, i) : null
       // (A $__typed_idx call per site was tried for the size tier and REVERTED:
       // the helper + its __len/__ptr_offset chain cost ~+900 B while these
@@ -2210,6 +2224,8 @@ export default (ctx) => {
         // currently serving as another index pays to materialize its miss bit.
         if (!ctx.types.indexConsumer) {
           const innerIdx = idx(i, false, true)
+          if (presentName && innerIdx.indexValid?.[0] === 'i32.const' && innerIdx.indexValid[1] === 0)
+            return missingElementRead(isBigInt, emit(arr), innerIdx)
           const valid = bundleIn
             ? ['block', ['result', 'i32'], ['local.set', `$${ti}`, innerIdx], bundleIn]
             : innerIdx.indexWide
@@ -2225,6 +2241,8 @@ export default (ctx) => {
           return rd
         }
         const tin = tempI32('tbn'), innerIdx = idx(i, false, true), innerValid = innerIdx.indexValid
+        if (presentName && innerValid?.[0] === 'i32.const' && innerValid[1] === 0)
+          return missingElementRead(isBigInt, emit(arr), innerIdx)
         const ownValid = bundleIn || indexInRange(innerIdx.indexWide, ['local.get', `$${ti}`], leanLen(arr, et, isView))
         const condition = innerValid ? ['i32.and', innerValid, ownValid] : ownValid
         const makeRead = value => typed(['block', ['result', 'f64'],
@@ -2263,6 +2281,8 @@ export default (ctx) => {
       // the nested-read shape; an absent inner index is no element here either.
       const innerIdx = idx(i, false, true)
       const innerValid = innerIdx.indexValid ?? null
+      if (presentName && innerValid?.[0] === 'i32.const' && innerValid[1] === 0)
+        return missingElementRead(isBigInt, emit(arr), innerIdx)
       const ownValid = bundleIn || indexInRange(innerIdx.indexWide, ['local.get', `$${ti}`], lenIR)
       const setup = [
         ['local.set', `$${ti}`, innerIdx],

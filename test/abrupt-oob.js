@@ -36,6 +36,42 @@ const agree = (src) => {
 }
 const allSame = (vals) => vals.every(v => Object.is(v, vals[0]) || (typeof v === 'number' && typeof vals[0] === 'number' && Number.isNaN(v) && Number.isNaN(vals[0])))
 
+test('typed misses: proved absence preserves gathers, key effects and changed bounds', () => {
+  for (const ctor of ['Int32Array', 'Float32Array', 'Float64Array', 'BigInt64Array']) {
+    const zero = ctor === 'BigInt64Array' ? '0n' : '0'
+    const src = `export function probe(input, mode) {
+      const a = new ${ctor}([${zero}, ${zero}]), target = new Float64Array([7, 11])
+      let k = input | 0, hits = 0
+      const key = () => { hits++; return k }
+      if (k >= 2) {
+        if (mode === 1) k = 0
+        const value = a[k], gathered = target[a[k]]
+        return [value === undefined, Number(value), gathered, a[key()] === undefined, hits]
+      }
+      return [a[k] === undefined, Number(a[k]), target[a[k]], a[key()] === undefined, hits]
+    }`
+    const native = oracle(src).probe
+    for (const optimize of levels(0, 1, 2, 3, 'size')) {
+      const probe = jz(src, { optimize }).exports.probe
+      for (const k of [2, 2, 0, 1, -1, 2147483647, 2]) for (const mode of [0, 1])
+        is(probe(k, mode), native(k, mode), `${ctor} O${optimize}: ${k}/${mode}`)
+    }
+  }
+})
+
+test('typed misses: nullable receivers, undefined properties and changing views keep their semantics', () => {
+  const cases = [
+    `export function probe(mode) { const a = mode ? null : new Float64Array(0); try { return a[0] } catch (e) { return e instanceof TypeError } }`,
+    `export function probe(mode) { const a = new Float64Array([7]); a.undefined = 13; const index = new Int32Array(mode ? 0 : 1); return a[index[0]] }`,
+    `let a = new Float64Array(0); export function probe(mode) { a = new Float64Array(mode ? [7] : []); return a[0] }`,
+    `export function probe(mode) { const a = new Float64Array([7, 11]).subarray(mode); return [a[0], a[1], a[2]] }`,
+  ]
+  for (const src of cases) for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const native = oracle(src).probe, probe = jz(src, { optimize }).exports.probe
+    for (const mode of [0, 0, 1, 2, 0]) is(probe(mode), native(mode), `O${optimize}: ${src}`)
+  }
+})
+
 const CASES = {
   'while break exits with the mid-body state': `export let f = () => {
     let a = new Float64Array(2)

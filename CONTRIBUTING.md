@@ -111,6 +111,9 @@ must agree on that carrier.
 Closure bodies contribute demand only in their own frame. An assignment's
 original value also flows to its expression reader, independently of the
 stored slot; scalarization must preserve that observation.
+A fixed typed receiver and an integer range wholly outside it prove a missing read before an eager
+load is emitted. Receiver and index evaluation remain in order, and the missing
+index bit propagates through nested gathers. Nullable receivers keep checks.
 Typed-array scalar replacement keeps observed writes on the memory path and
 converts discarded compound writes back to the element type. Conversion hooks
 run before bounds checks, including on an observed Float32/Float64 store whose
