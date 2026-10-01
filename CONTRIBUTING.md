@@ -119,6 +119,10 @@ value copies (spread, Array.from and change-by-copy methods) densify them.
 The settled element kind's ABSENT bit is the shared density proof: proven
 dense reads and iteration keep their direct loads, while sparse reductions
 find the first present element before seeding their accumulator.
+Numeric coercion preserves the emitter's present-read proof and folds a
+checked read's constant miss arm before considering the broader source kind.
+A sparse array's hit arm can still be absent and uses one undefined-to-NaN
+conversion; only a dense numeric array carries the checked-number shortcut.
 Array element facts apply only to element reads. A dynamic string key can also
 name `length`, a method or an own property; solver and read-only queries join
 those kinds before projecting a field. Local schema and JSON-shape propagation

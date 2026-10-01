@@ -245,17 +245,6 @@ export function toNumF64(node, v) {
     if (v[1] === `nan:${UNDEF_NAN}`) return typed(['f64.const', 'nan'], 'f64')
     if (v[1] === `nan:${NULL_NAN}`) return typed(['f64.const', 0], 'f64')
   }
-  // Number|absent needs only undefined→NaN, including values carried through
-  // aliases and callback parameters. The settled kind excludes null, booleans,
-  // strings and objects, whose numeric conversion has other behavior.
-  const readKind = ctx.summary?.at(ctx.func.current).kindOfExpr(node) ?? K.NONE
-  if ((readKind & TAGS) === (bitOf(K.NUMBER) | bitOf(K.ABSENT)) ||
-      Array.isArray(node) && node[0] === '[]' && typeof node[1] === 'string' && repOf(node[1])?.arrayHoles) {
-    const t = temp('hole')
-    return typed(['block', ['result', 'f64'], ['local.set', `$${t}`, asF64(v)],
-      ['select', ['f64.const', 'nan'], ['local.get', `$${t}`],
-        ['i64.eq', ['i64.reinterpret_f64', ['local.get', `$${t}`]], ['i64.const', UNDEF_NAN]]]], 'f64')
-  }
   // Checked typed-array read (`.typed:[]` tags checkedNumRead): number|undefined
   // with the undefined confined to a CONSTANT miss arm. ToNumber of that arm
   // folds statically (undefined → canonical NaN) — the hit arm is already a
@@ -277,6 +266,14 @@ export function toNumF64(node, v) {
       if (Array.isArray(tail) && tail[0] === 'select')
         return typed([...v.slice(0, -1), ['select', tail[1], foldArm(tail[2]), tail[3]]], 'f64')
     }
+  }
+  // Number|absent needs only undefined→NaN, including values carried through
+  // aliases and callback parameters. The settled kind excludes null, booleans,
+  // strings and objects, whose numeric conversion has other behavior.
+  const readKind = ctx.summary?.at(ctx.func.current).kindOfExpr(node) ?? K.NONE
+  if ((readKind & TAGS) === (bitOf(K.NUMBER) | bitOf(K.ABSENT)) ||
+      Array.isArray(node) && node[0] === '[]' && typeof node[1] === 'string' && repOf(node[1])?.arrayHoles) {
+    return v.presentNumRead || isNumericIR(v) ? asF64(v) : missToNaN(v)
   }
   const vt = valTypeOf(node)
   if (vt === VAL.BIGINT || vt == null && isPlanRawBigint(node)) {

@@ -799,6 +799,7 @@ export default (ctx) => {
       } finally { if (!direct) scope?.unalias(h) }
       const wrapped = typed(['block', ['result', 'f64'], ...setup, asF64(result)], 'f64')
       if (result?.checkedNumRead) wrapped.checkedNumRead = true
+      if (result?.presentNumRead) wrapped.presentNumRead = true
       if (result?.presentRead) wrapped.presentRead = true
       if (result?.cellI32) { wrapped.cellI32 = true; wrapped.unionKey = result.unionKey }
       if (result?.indexValid) wrapped.indexValid = result.indexValid
@@ -1280,9 +1281,9 @@ export default (ctx) => {
         // array is heterogeneous, and tagging a string-element read would make
         // toNumF64 skip the full ToNumber ("hi" * 2 must be NaN, not the
         // pointer payload riding f64.mul to the boundary). Numeric-proven
-        // receivers get the fold (miss arm → canonical NaN); the rest keep
-        // the ordinary coercion path.
-        if (typeof arr === 'string' && ctx.func.localReps?.get(arr)?.arrayElemValType === VAL.NUMBER)
+        // dense receivers get the fold (miss arm → canonical NaN); a hole
+        // may also be undefined in the hit arm and keeps ordinary coercion.
+        if (dense && typeof arr === 'string' && ctx.func.localReps?.get(arr)?.arrayElemValType === VAL.NUMBER)
           rd.checkedNumRead = true
         return rd
       }

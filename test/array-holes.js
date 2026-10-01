@@ -2,7 +2,7 @@ import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
 import jz, { compile } from '../index.js'
 import { levels } from './_matrix.js'
-import { oracle } from './util.js'
+import { oracle, funcWat } from './util.js'
 
 const tiers = () => levels(0, 1, 2, 3, 'size')
 const signature = `function sig(a) { return [a.length, Object.keys(a), Object.values(a), Object.entries(a)] }`
@@ -220,4 +220,19 @@ test('array holes: materialized absent values remain present callback arguments'
         a.reduce((s, x) => s + (x === undefined ? 5 : x), 0), a.every(x => x !== undefined)];
     }`
   runCases(src, [0, 0, 1, 2, 3, 0].map(n => ['f', [n]]))
+})
+
+test('array holes: typed numeric reads fold only their missing arm', () => {
+  for (const Ctor of ['Float32Array', 'Float64Array', 'Int16Array']) {
+    const src = `const a = new ${Ctor}([1, 2, 3, 4]);
+      export function read(i) { return a[i] * 2 }
+      export function sum(offset, count) { let s = 0; for (let i = 0; i < count; i++) s += a[offset + i] * 2; return s }`
+    for (const optimize of tiers()) {
+      const js = oracle(src), wasm = jz(src, {optimize}).exports
+      for (const i of [0, 0, 3, 4, -1, .5, NaN, Infinity, 1]) is(wasm.read(i), js.read(i))
+      for (const args of [[0, 0], [0, 0], [0, 4], [1, 3], [3, 2], [-1, 2], [0, 4]]) is(wasm.sum(...args), js.sum(...args))
+      const wat = compile(src, {optimize, wat: true, watr: false})
+      ok(!/\(i64.eq\b/.test(funcWat(wat, 'read')), `${Ctor} O${optimize}: the miss arm folds without a sentinel comparison`)
+    }
+  }
 })
