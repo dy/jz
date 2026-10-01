@@ -954,8 +954,8 @@ test('spread: a source that is only ever undefined or null copies no key', () =>
     const m = new Float64Array(9).fill(0.5)
     export let f = (k) => { m[k & 7] = k; return t(m) + u(m) + Object.keys({ a: 1, ...null, ...undefined }).length }
     export let g = (x) => { const o = { a: 1, ...(x > 0 ? { b: x } : undefined) }; return Object.keys(o).join() + (o.b ?? -1) }`
-  const js = oracle(src)
   for (const optimize of levels(0, 2, 3)) {
+    const js = oracle(src)
     const { f, g } = jz(src, { optimize }).exports
     for (const k of [1, 2, 3]) is(f(k), js.f(k), `f(${k}) at ${optimize}`)
     for (const x of [0, 2]) is(g(x), js.g(x), `g(${x}) at ${optimize}`)
