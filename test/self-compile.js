@@ -626,6 +626,31 @@ test('self-compile: layout restarts avoid completing discarded summaries', () =>
     is(instantiate(bytes).exports.main(3), (count ? 6 : 3) + 5, 'retained output executes after changed input and an error')
 })
 
+test('self-compile: caller fact lookups avoid per-call-site parameter maps', () => {
+  const s = getSelf(), previous = new Map()
+  for (const [params, calls] of [[1, 0], [1, 128], [64, 128], [64, 128], [16, 128], [1, 0], [64, 128]]) {
+    const names = Array.from({ length: params }, (_, i) => 'p' + i)
+    const source = `function consume(a){return a[0]}function caller(${names.join(',')}){let sum=0;` +
+      Array.from({ length: calls }, (_, i) => `sum+=consume(p${i % params});`).join('') +
+      `return sum}export function main(x){const a=new Float64Array(1);a[0]=x;return caller(${names.map(() => 'a').join(',')})}`
+    const out = s.exports.default(s.memory.String(source), 0, s.memory.String('1'))
+    const bytes = new Uint8Array(s.memory.read(out))
+    const narrowing = phaseDeltas(readMarks(s)).find(p => p.name === 'plan:narrowSignatures')
+    // 64 parameters × 128 sites: 12,105,056 B with copied maps, 6,453,912 B
+    // with direct lookups. The 8.5 MiB limit allows ordinary metadata growth.
+    ok(narrowing && narrowing.bytes < 512 * 1024 + calls * 64 * 1024,
+      `${params} parameters, ${calls} sites: narrowing uses ${narrowing?.bytes} bytes`)
+    const { main } = instantiate(bytes).exports
+    for (const x of [0, 2, -3, 2]) is(main(x), calls ? x * calls : 0)
+    const key = params + ':' + calls
+    if (previous.has(key)) is(bytes, previous.get(key), 'repeated and interleaved compilations emit identical bytes')
+    else previous.set(key, bytes)
+    if (params === 16) throws(() => s.exports.default(s.memory.String('export function broken( {')))
+  }
+  for (const [key, bytes] of previous)
+    is(instantiate(bytes).exports.main(3), key.endsWith(':0') ? 0 : 384, 'retained output runs after changed input and an error')
+})
+
 test('self-compile: nested dispatch tables reuse closure union storage', () => {
   const s = getSelf(), previous = new Map()
   for (const count of [0, 64, 64, 16, 0, 64]) {
