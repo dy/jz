@@ -9,7 +9,7 @@ import {
   OBJECT_SCHEMA_HI_MASK, TYPED_ELEM_NAMES, TYPED_ELEM_VIEW_FLAG, DATA_VIEW_FLAG, encodeTypedElemAux, objectSchemaGuardHex,
 } from '../../../layout.js'
 import { PTR, ctx, inc, err, setLinkDemand } from '../../ctx.js'
-import { asF64, asI64, emitNum, isPureIR, ptrTypeEq, temp, tempI32, typed } from '../../ir.js'
+import { asF64, asI64, emitNum, isPureIR, boxedPtrTypeEq, temp, typed } from '../../ir.js'
 import { valTypeOf } from '../../kind.js'
 import { K, hasTag, tagsOf, bitOf, NULL_BITS } from '../../summary/kind.js'
 import { VAL, repOf } from '../../reps.js'
@@ -20,11 +20,8 @@ import { isBrand } from '../../ast.js'
 
 
 // === instanceof (.work/archive/todo.md §deletion-sweep §4) ===
-// Reached only from raw `instanceof` AST nodes surviving to emit — i.e. strict-mode
-// source (prepare's 'instanceof' handler is the sole producer; jzify's default-mode
-// lowering rewrites every `instanceof` shape to something else before compile ever
-// runs, so this dispatch never fires there — see that handler's own comment).
-// RHS is always a validated member of prepare's INSTANCEOF_ALLOW by this point.
+// Both source modes preserve native instanceof tests for the same emitter.
+// Prepare validates the constructor identity before this dispatch.
 
 /** Fold `a instanceof X` to a compile-time-known boolean while still evaluating `a`
  *  for any side effects (dropping a *value* the language spec still requires to be
@@ -62,7 +59,7 @@ function emitTagInstanceof(a, rhs) {
   const [wantVal, wantPtr] = INSTANCEOF_TAG[rhs]
   const vt = valTypeOf(a)
   if (vt != null && !mayBeMissing(a)) return foldInstanceof(emit(a), vt === wantVal)
-  return ptrTypeEq(asF64(emit(a)), wantPtr)
+  return boxedPtrTypeEq(asF64(emit(a)), wantPtr)
 }
 
 /** TypedArray ctors (the 8 TYPED_ELEM_NAMES, Float16Array and Uint8ClampedArray — see
@@ -86,7 +83,7 @@ function emitTypedInstanceof(a, rhs) {
   // (`new Int32Array(4)`) are both really `instanceof Int32Array` in JS; only the
   // element-type bits and the flags beside them (which the allowlist keeps
   // collision-free — see prepare's comment) are load-bearing for identity.
-  inc('__ptr_type', '__ptr_aux')
+  inc('__ptr_aux')
   // The test is the program's word that a typed array may arrive here, from the
   // host or from a value of unknown kind, though no constructor names one: the
   // arm it guards needs the typed emitters in place and the element helpers'
@@ -100,13 +97,12 @@ function emitTypedInstanceof(a, rhs) {
   // duplicate any side effects AND re-run the underlying WAT computation at
   // runtime (not just alias IR node identity — see emitSchemaSlotGuarded's
   // cloneIR comment for the identity half of this caution).
-  const tv = temp('einstv'), tt = tempI32('einstt')
+  const tv = temp('einstv')
   const bits = () => ['i64.reinterpret_f64', ['local.get', `$${tv}`]]
   return typed(['block', ['result', 'i32'],
     ['local.set', `$${tv}`, asF64(emit(a))],
-    ['local.set', `$${tt}`, ['call', '$__ptr_type', bits()]],
     ['if', ['result', 'i32'],
-      ['i32.eq', ['local.get', `$${tt}`], ['i32.const', PTR.TYPED]],
+      boxedPtrTypeEq(['local.get', `$${tv}`], PTR.TYPED),
       ['then', ['i32.eq',
         ['i32.and', ['call', '$__ptr_aux', bits()], ['i32.const', ~TYPED_ELEM_VIEW_FLAG]],
         ['i32.const', elemCode]]],

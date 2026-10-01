@@ -8,7 +8,7 @@
  * @module array
  */
 
-import { throwErrorIR, numberNanIR, typed, asF64, asI64, asI32, keyIndex, UNDEF_NAN, TOMB_NAN, temp, tempI32, allocPtr, staticArrayPtr, arrayLoop, arrayValue, deferBigintBox, elemStore, throwTypeErrorIR, truthyIR, extractF64Bits, slotAddr, isLiteralStr, resolveValType, isGlobal, undefExpr, ptrTypeEq, isPureIR, freshId, isNullish, isUndef, toStrI64, fwdOffsetIR } from '../src/ir.js'
+import { throwErrorIR, numberNanIR, typed, asF64, asI64, asI32, keyIndex, UNDEF_NAN, TOMB_NAN, temp, tempI32, allocPtr, staticArrayPtr, arrayLoop, arrayValue, deferBigintBox, elemStore, throwTypeErrorIR, truthyIR, extractF64Bits, slotAddr, isLiteralStr, resolveValType, isGlobal, undefExpr, ptrTypeEq, boxedPtrTypeEq, isPureIR, freshId, isNullish, isUndef, toStrI64, fwdOffsetIR } from '../src/ir.js'
 import { inBoundsArrIdx, typedIdxProven, wholeKey } from '../src/type.js'
 import { emit, spread, deps, idx as emitIndex, storedValue, storedValuePlanned, positionArgs } from '../src/bridge.js'
 import { censusMaybeUndefinedKind, isPresentNumber, valTypeOf } from '../src/kind.js'
@@ -218,11 +218,7 @@ export default (ctx) => {
       return isPureIR(v) ? typed(['i32.const', 1], 'i32')
         : typed(['block', ['result', 'i32'], ['drop', asF64(v)], ['i32.const', 1]], 'i32')
     }
-    const v = asF64(emit(x))
-    const t = temp('t')
-    return typed(['i32.and',
-      ['f64.ne', ['local.tee', `$${t}`, v], ['local.get', `$${t}`]],
-      ptrTypeEq(['local.get', `$${t}`], PTR.ARRAY)], 'i32')
+    return boxedPtrTypeEq(asF64(emit(x)), PTR.ARRAY)
   }
 
   ctx.core.emit['new.Array'] = (len) => {

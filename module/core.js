@@ -24,7 +24,7 @@ import { packedI32, structInline } from '../src/abi/index.js'
 import { VAL, lookupValType, repOf } from '../src/reps.js'
 import { ctx, err, inc, warnDeopt, PTR, LAYOUT, HEAP, FORWARDING_MASK, emitArity, followForwardingWat, declGlobal, registerGetter, setLinkDemand } from '../src/ctx.js'
 import { ptrOffsetFwdWat, deletedMaskWat, HIDDEN_PROPERTY_SEQ, ssoBitI64Hex } from '../layout.js'
-import { nanPrefixHex, OBJECT_SCHEMA_HI_MASK, objectSchemaGuardHex, TYPED_ELEM_BIGINT_FLAG, DATA_VIEW_FLAG, i64Hex } from '../layout.js'
+import { nanPrefixHex, nanPrefixMaskHex, OBJECT_SCHEMA_HI_MASK, objectSchemaGuardHex, TYPED_ELEM_BIGINT_FLAG, DATA_VIEW_FLAG, i64Hex } from '../layout.js'
 import { initSchema } from './schema.js'
 import { strHashLiteral, heapResetWat, durableLenLogIR, durableArrSnapIR, LENGTH_SSO_I64, MAP_ENTRY, collectionLaneBytes, stringIndexWat } from './collection.js'
 import { hasDurableReset } from './collection/durable.js'
@@ -704,7 +704,7 @@ export default (ctx) => {
 
   ctx.core.stdlib['__is_object'] = `(func $__is_object (param $p i64) (result i32)
     (local $t i32)
-    (if (f64.eq (f64.reinterpret_i64 (local.get $p)) (f64.reinterpret_i64 (local.get $p)))
+    (if (i64.ne (i64.and (local.get $p) (i64.const ${nanPrefixMaskHex()})) (i64.const ${NAN_BITS}))
       (then (return (i32.const 0))))
     (local.set $t (call $__ptr_type (local.get $p)))
     (i32.eqz (i32.and

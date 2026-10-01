@@ -9,7 +9,7 @@ import print from 'watr/print'
  * @module typed
  */
 
-import { typed, asF64, asI32, asI32Sat, asI64, toInt32, i32Narrowed, i32Word, f64Range, toNumF64, coerceNullishToNum, coerceAtomsToNum, numberNanIR, NULL_NAN, TRUE_NAN, FALSE_NAN, allocPtr, boxBigInt, rawBigInt, deferBigintBox, isBigIntBox, mkPtrIR, ptrOffsetIR, ptrTypeEq, temp, tempI32, tempI64, undefExpr, throwTypeErrorIR, truthyIR, isLit, isConst, isPureIR, litVal, freshId, readI64MayUnbox, readI64, unboxBigInt, maybeUnboxBigInt, fromI64, isNullish } from '../src/ir.js'
+import { typed, asF64, asI32, asI32Sat, asI64, toInt32, i32Narrowed, i32Word, f64Range, toNumF64, coerceNullishToNum, coerceAtomsToNum, numberNanIR, NULL_NAN, TRUE_NAN, FALSE_NAN, allocPtr, boxBigInt, rawBigInt, deferBigintBox, isBigIntBox, mkPtrIR, ptrOffsetIR, ptrTypeEq, boxedPtrTypeEq, temp, tempI32, tempI64, undefExpr, throwTypeErrorIR, truthyIR, isLit, isConst, isPureIR, litVal, freshId, readI64MayUnbox, readI64, unboxBigInt, maybeUnboxBigInt, fromI64, isNullish } from '../src/ir.js'
 import { isReassigned, T, ASSIGN_OPS, walkAst, some, every, REFS_THROUGH_ARROWS } from '../src/ast.js'
 import { emit, storedValue, idx, deps, call, positionArgs } from '../src/bridge.js'
 import { strHashLiteral } from './collection.js'
@@ -766,7 +766,7 @@ export default (ctx) => {
   ctx.core.emit['ArrayBuffer.isView'] = (v) => {
     if (v === undefined) return typed(['f64.const', 0], 'f64')
     const va = asF64(emit(v))
-    return typed(['f64.convert_i32_s', ptrTypeEq(va, PTR.TYPED)], 'f64')
+    return typed(['f64.convert_i32_s', boxedPtrTypeEq(va, PTR.TYPED)], 'f64')
   }
 
   // buf.slice(begin?, end?) on a BUFFER → fresh BUFFER with the byte range copied.

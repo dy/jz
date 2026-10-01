@@ -1147,6 +1147,11 @@ without the demand collapses to the array body, eight bytes per element. A
 store on a receiver the flow proves typed includes the module for the same
 reason before it consults the typed store emitter.
 
+Native kind predicates on unknown carriers use the full positive NaN-box prefix
+and pointer tag. Tag extraction alone cannot distinguish a pointer from finite
+Numbers or negative NaN payloads. The single masked comparison evaluates its
+operand once; typed constructor tests additionally compare the element/view aux.
+
 A typed array's default sort uses direct-width insertion for a known kind up
 to 32 elements. Longer arrays share main's stable byte-wise radix kernel;
 the generic and size paths use the same radix kernel after their short-array

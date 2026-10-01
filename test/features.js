@@ -363,7 +363,7 @@ test('Map: size', () => {
   is(f(), 3)
 })
 
-// === instanceof (jzify transforms to typeof / Array.isArray) ===
+// === instanceof ===
 
 function runJzify(code) {
   return jz(code, { jzify: true }).exports
@@ -404,6 +404,54 @@ test('instanceof jzify: Float64Array → typeof === object', () => {
     return x instanceof Float64Array
   }`)
   is(f(), true) // __is_typed is VAL.BOOL — the boundary marshals a real boolean, like host instanceof
+})
+
+test('instanceof: runtime native kinds reject Numbers with matching tag bits', () => {
+  const ctors = ['Array', 'Map', 'Set', 'ArrayBuffer', 'Int8Array', 'Uint8Array',
+    'Uint8ClampedArray', 'Int16Array', 'Uint16Array', 'Int32Array', 'Uint32Array',
+    'Float32Array', 'Float64Array', 'DataView', 'Object', 'Error', 'TypeError']
+  const constructions = ['[]', 'new Map()', 'new Set()', 'new ArrayBuffer(0)',
+    ...ctors.slice(4, 13).map(c => `new ${c}(0)`), 'new DataView(new ArrayBuffer(0))',
+    '{}', 'new Error("x")', 'new TypeError("x")',
+    'new Int32Array(new ArrayBuffer(16),4,2)', 'new Float64Array(3).subarray(1)',
+    'new DataView(new ArrayBuffer(16),4,8)', 'null', 'undefined', 'true', '"x"', '7n']
+  const src = `export function classify(x){return [${ctors.map(c => `x instanceof ${c}`).join(',')},
+      Array.isArray(x),ArrayBuffer.isView(x)]}
+    export function local(i){const values=[${constructions.join(',')}];return classify(values[i])}
+    export function bits(hi){const raw=new Uint32Array([305419896,hi]);
+      return classify(new Float64Array(raw.buffer)[0])}`
+  const ref = oracle(src)
+  const numbers = [0, -0, .5, -.5, ...Array.from({length:33}, (_,i) => i-16),
+    2**31, 2**32, Number.MAX_VALUE, Number.MIN_VALUE, Infinity, -Infinity, NaN, -NaN]
+  for (const level of levels(0, 1, 2, 3, 'size')) {
+    const got = run(src, { optimize: {level, sourceInline: false} })
+    for (const n of numbers) is(got.classify(n), ref.classify(n), `Number ${n} O${level}`)
+    for (const n of [undefined,null,false,true,'', 'x'])
+      is(got.classify(n), ref.classify(n), `primitive ${String(n)} O${level}`)
+    for (let i=0; i<constructions.length; i++)
+      is(got.local(i), ref.local(i), `${constructions[i]} O${level}`)
+    // Negative quiet NaNs remain Numbers regardless of the payload's tag bits.
+    for (let tag=0; tag<16; tag++) {
+      const hi=(0xfff80000 | (tag<<15)) >>> 0
+      is(got.bits(hi), ref.bits(hi), `negative NaN tag ${tag} O${level}`)
+    }
+    for(const hi of [0xfff98007,0xfff98040,0xfff98047])
+      is(got.bits(hi),ref.bits(hi),`negative typed/view aux ${hi} O${level}`)
+  }
+})
+
+test('instanceof: native kind predicates evaluate operands once and preserve throws', () => {
+  const src = `let calls=0
+    function value(mode){calls++;if(mode===2)throw 'boom';return mode?new Float64Array(0):7}
+    export function f(mode){calls=0;try{return [value(mode) instanceof Set,
+      value(mode) instanceof Float64Array,value(mode) instanceof Object,
+      Array.isArray(value(mode)),ArrayBuffer.isView(value(mode)),calls]}
+      catch(e){return [e,calls]}}`
+  const ref=oracle(src)
+  for(const optimize of levels(0,1,2,3,'size')) {
+    const got=run(src,{optimize})
+    for(const mode of [0,0,1,2,1,0]) is(got.f(mode),ref.f(mode), `once/throw/reuse ${mode} O${optimize}`)
+  }
 })
 
 test('instanceof: unknown constructor rejects instead of guessing from the receiver', () => {

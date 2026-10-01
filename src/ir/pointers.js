@@ -241,6 +241,18 @@ export function ptrTypeEq(f64Expr, ptr) {
   return typed(['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', f64Expr]], ['i32.const', ptr]], 'i32')
 }
 
+const BOXED_TYPE_MASK = i64Hex(LAYOUT.NAN_PREFIX_BITS | (1n << 63n) |
+  (BigInt(LAYOUT.TAG_MASK) << BigInt(LAYOUT.TAG_SHIFT)))
+
+/** Kind test for an arbitrary boxed-or-Number carrier. Unlike ptrTypeEq, this
+ *  also checks the positive quiet-NaN prefix: finite values and negative NaNs
+ *  can have the same tag bits. One masked compare evaluates the operand once. */
+export function boxedPtrTypeEq(f64Expr, ptr) {
+  return typed(['i64.eq',
+    ['i64.and', ['i64.reinterpret_f64', f64Expr], ['i64.const', BOXED_TYPE_MASK]],
+    ['i64.const', i64Hex(ptrBoxPrefixBigInt(ptr))]], 'i32')
+}
+
 /** Dispatch on `__ptr_type(bits)` — emits a right-leaning if/else chain over
  *  PTR constants. `cases` is `[[PTR.X, ir], …]`; `fallback` is the else IR.
  *  `resultType` defaults to `'f64'`; pass `null` for a void dispatch (e.g.
