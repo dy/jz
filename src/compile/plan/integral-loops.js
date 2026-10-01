@@ -47,7 +47,7 @@
  */
 import { ctx } from '../../ctx.js'
 import { includeModule } from '../../autoload.js'
-import { T, MUTATE_OPS, TYPEOF, numberGuard, some, walkAst, extractParams, collectParamName, isReassigned } from '../../ast.js'
+import { T, MUTATE_OPS, TYPEOF, numberGuard, some, walkAst, extractParams, collectParamName, isReassigned, callArgs } from '../../ast.js'
 import { freshId } from '../../ir.js'
 import { cloneWithSubst } from '../../type.js'
 import { collectBindings, nodeSize } from './common.js'
@@ -55,8 +55,8 @@ import { occursOutside } from './counted-loops.js'
 import { isExported } from '../func-exports.js'
 import { constIntExpr, forCounterRange, intExprRange } from '../../static.js'
 import { maxAdvanceBudget } from '../../type/canonical-bounds.js'
-import { runsAccessor, runsConversion } from '../analyze/frame-effects.js'
-import { K, core, hasTag, tagOf } from '../../summary/kind.js'
+import { runsAccessor, runsConversion } from '../../evaluation-effects.js'
+import { K, core, hasTag, tagOf, NUMBER } from '../../summary/kind.js'
 import { invalidateBodies } from '../analyze.js'
 import { invalidateProgramFactsCache } from '../program-facts.js'
 
@@ -296,8 +296,9 @@ const versionBody = (body, params, view, func, programFacts) => {
     // A module binding can supply the same snapshot as a local only when
     // the entire loop cannot run code that changes it between comparisons.
     const stableBound = n => outerOk(n) || typeof n === 'string' && ctx.scope.globals.has(n) &&
-      !loopWrites.has(n) && !some(loop, e => runsAccessor(view, e) || runsConversion(view, e) ||
-        e[0] === 'new' || (e[0] === '()' && e.length > 2))
+      !loopWrites.has(n) && !some(loop, e => runsAccessor(view, e, true) || runsConversion(view, e, true) ||
+        e[0] === 'new' || ((e[0] === '?.()' || e[0] === '()' && e.length > 2) &&
+          !(e[0] === '()' && typeof e[1] === 'string' && e[1].startsWith('math.') && callArgs(e).every(arg => core(kindOfExpr(arg)) === NUMBER))))
     // A counter's integer-valued updates do not prove its magnitude. Where a
     // stable numeric bound fits i32, round that bound once in a private copy;
     // the shared counter-range proof then includes its final increment. The

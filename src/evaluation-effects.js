@@ -15,8 +15,9 @@ const isName = x => typeof x === 'string'
  *  setter, in a program whose lowered code builds one (module/schema.js
  *  viewsOn): a member read or store of an accessor's name, a computed key, or
  *  a spread, over a receiver the summary does not prove holds no object. */
-export function runsAccessor(view, node) {
-  if (!isArr(node) || !ctx.schema.views) return false
+export function runsAccessor(view, node, beforeEmit = false) {
+  // Source planning precedes settleViews; its accessor census is already complete.
+  if (!isArr(node) || !(beforeEmit ? ctx.transform.literalAccessorNames?.size : ctx.schema.views)) return false
   const op = node[0]
   if (op === '.' || op === '?.') return ctx.transform.literalAccessorNames.has(node[2]) && mayHoldObject(view, node[1])
   if (op === '[]' || op === '?.[]') return node.length === 3 && mayHoldObject(view, node[1])
@@ -58,8 +59,9 @@ export function primitiveKind(view, e) {
 /** Whether evaluating `node` itself, once its operands are values, may run a user
  *  toString/valueOf: a converting operator (or key conversion) over an operand the
  *  summary cannot prove primitive, in a program that defines those methods. */
-export function runsConversion(view, node) {
-  if (!isArr(node) || !ctx.funcs.runtimeRoots?.has(TO_PRIMITIVE.number)) return false
+export function runsConversion(view, node, beforeEmit = false) {
+  // Source planning precedes synthesis of the runtime conversion functions.
+  if (!isArr(node) || !beforeEmit && !ctx.funcs.runtimeRoots?.has(TO_PRIMITIVE.number)) return false
   const op = node[0]
   if (CONVERTING_OPS.has(op)) { for (let i = 1; i < node.length; i++) if (!primitiveKind(view, node[i])) return true; return false }
   if ((op === '[]' || op === '?.[]') && node.length === 3) return !primitiveKind(view, node[2])   // ToPropertyKey

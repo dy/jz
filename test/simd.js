@@ -3734,6 +3734,28 @@ test('conv-column i16x8 - int8 conv2d strip-mines the output column, bit-exact +
 // symmetric fills (rfft's cepstrum log-magnitude: log_v computes both lanes
 // in one evaluation). Module-global receivers, the rfft shape; the scalar
 // remainder keeps the plain form.
+test('guarded module index snapshots preserve Number edges and module effects', () => {
+  const source = effect => `let offset=0,stop=0,calls=0;
+    function change(){calls++;offset=3;stop=2;return 0}
+    export function f(base,start,count,skip){
+      offset=+base;stop=+count;calls=0;let k=+start;
+      const a=new Float64Array(16),obj={get x(){return change()},valueOf(){return change()}};
+      const fn=skip?null:change;
+      while(k<stop){const value=Math.log(k+2);a[k]=value;a[offset-k]=value;${effect};k++}
+      return [a,offset,k,1/offset,calls,stop]
+    }`
+  for (const effect of ['0', 'change()', 'fn?.()', 'obj.x', '+obj']) {
+    const src=source(effect), expected=oracle(src).f
+    for (const optimize of levels(0,1,2,3,'size')) {
+      const f=jz(src,{optimize:{level:optimize,sourceInline:false}}).exports.f
+      for (const args of [[8,1,4,false],[8,1,4,false],[8.5,1,4,false],[-0,0,3,false],
+        [4294967296,0,3,false],[-2147483649,0,3,false],[NaN,0,3,false],[Infinity,0,3,false],
+        [8,-0,3,false],[8,0.5,3,false],[8,0,0,false],[8,1,4,true],[8,1,4,false]])
+        is(f(...args),expected(...args), `${effect}, O${optimize}, ${args}`)
+    }
+  }
+})
+
 test('SIMD mirror store - symmetric log fill vectorizes with swapped lanes, bit-exact', () => {
   const src = `
     let N = 0, half = 0

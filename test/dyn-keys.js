@@ -45,7 +45,7 @@ test('computed reads retain module receiver identity across a key call', () => {
     function key(){calls++;a=next;return 0}
     export function f(skip){a=[3];calls=0;const fn=skip?null:key;const value=a[fn?.()];return[value,a[0],calls]}`
   for(const optimize of levels(0,1,2,3,'size')) {
-    const f=jz(src,{optimize}).exports.f
+    const f=jz(src,{optimize:{level:optimize,sourceInline:false}}).exports.f
     for(const skip of [false,false,true,false])is(f(skip),skip?[undefined,3,0]:[3,7,1], `O${optimize}, skip=${skip}`)
   }
 })

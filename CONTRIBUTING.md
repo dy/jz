@@ -3175,6 +3175,14 @@ come from the completed loop initializer, including later declarator writes.
 Existing static bound proofs avoid redundant source copies, and guard setup
 alone cannot justify another speculative copy of the guarded body. The two
 unchanged FFT shape tests and `guarded index` oracles in `test/simd.js` pin this.
+A stable Number module binding may supply the same guarded word snapshot; the
+module storage remains unchanged, and the temporary local shadow ends with the
+fast arm. Numeric Math calls preserve it only when their operands cannot invoke
+user conversion. Source loop planning asks effect queries before emission has
+settled accessor views or synthesized conversion helpers, so those queries use
+source accessor facts and conservatively retain object-conversion effects.
+Optional calls are effects even when their AST carries no argument slot.
+
 
 Discipline (non-negotiable — these run in the default `speed` build that ships to everyone):
 

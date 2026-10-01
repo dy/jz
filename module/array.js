@@ -737,7 +737,7 @@ export default (ctx) => {
     const changing = typeof arr === 'string' && (isReassigned(idx, arr) ||
       (ctx.func.boxed?.has(arr) || isGlobal(arr)) &&
         (runsConversion(scope, ['[]', arr, idx]) || some(idx, n =>
-          n[0] === 'new' || (n[0] === '()' || n[0] === '?.()') && n.length > 2 || runsAccessor(scope, n) || runsConversion(scope, n))))
+          n[0] === 'new' || n[0] === '?.()' || n[0] === '()' && n.length > 2 || runsAccessor(scope, n) || runsConversion(scope, n))))
     // Hoist non-identifier arr so side-effecting sources (e.g. `foo.shift()[i]`) execute once.
     // The rest of the handler inlines `emit(arr)` into multiple IR positions, which would
     // otherwise re-execute the source expression per use at runtime.

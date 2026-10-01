@@ -14,7 +14,7 @@ import {
   asF64, asI32, freshId, isBoundName, isGlobal, isLit, isNullish, litVal, readVar, temp, tempI32, tempI64, truthyIR, typed, undefExpr,
 } from '../../ir.js'
 import { durableArrSnapNode, hasDurableReset } from '../../../module/collection/durable.js'
-import { VAL, lookupValType, repOf } from '../../reps.js'
+import { VAL, lookupValType, repOf, repOfGlobal } from '../../reps.js'
 import { constIntExpr, constNumExpr, intExprRange, intLiteralValue, counterInit, mulRangesKeepZeroSign, nameShift } from '../../static.js'
 import { loopFacts, counterRefinements, testRefinements } from '../loop-model.js'
 import {
@@ -27,6 +27,7 @@ import { emit, emitVoid, markDropped, provedPresent, toBool } from './dispatch.j
 import { loopGuardHi } from './i32-bounds.js'
 import { emitFinalizers } from './statements.js'
 import { isNullable } from '../../summary/kind.js'
+import { runsAccessor, runsConversion } from '../../evaluation-effects.js'
 
 
 // Flow-sensitive type refinement moved to ./flow-types.js (extractRefinements,
@@ -125,14 +126,14 @@ function emitGuardedWords(words, emitArm) {
     saved.set(name, [locals.get(name), reps.get(name)])
     locals.set(name, 'i32')
     locals.set(fresh, 'i32')
-    reps.set(name, { ...reps.get(name), range: proof.range })
+    reps.set(name, { ...(reps.get(name) ?? repOfGlobal(name)), range: proof.range })
     if (proof.entry) entry.push(['local.set', `$${fresh}`, ['i32.wrap_i64', proof.entry]])
   }
   let ir
   try { ir = emitArm() }
   finally {
     for (const [name, [type, rep]] of saved) {
-      locals.set(name, type)
+      if (type == null) locals.delete(name); else locals.set(name, type)
       if (rep == null) reps.delete(name); else reps.set(name, rep)
     }
   }
@@ -677,8 +678,20 @@ export const controlFlowOps = {
         const i64c = (n) => ['i64.const', n]
         const ext = (ir) => ['i64.extend_i32_s', ir]
         const conjs = []
-        const wordLocal = name => typeof name === 'string' && ctx.func.locals.get(name) === 'f64' &&
-          lookupValType(name) === VAL.NUMBER && !ctx.func.boxed?.has(name) && repOf(name)?.ptrKind == null && !repOf(name)?.unsigned
+        let implicitEffects
+        const wordLocal = name => {
+          if (typeof name !== 'string' || lookupValType(name) !== VAL.NUMBER || ctx.func.boxed?.has(name)) return false
+          const global = isGlobal(name), rep = global ? repOfGlobal(name) : repOf(name)
+          if ((global ? ctx.scope.globalTypes.get(name) : ctx.func.locals.get(name)) !== 'f64' || rep?.ptrKind != null || rep?.unsigned) return false
+          // Slot admission already proves the binding stable across explicit
+          // calls/writes. A module snapshot must also survive implicit user code.
+          if (global) {
+            const view = ctx.summary?.at(ctx.func.current)
+            implicitEffects ??= [cond, step, body].some(root => some(root, n => runsAccessor(view, n) || runsConversion(view, n)))
+            if (implicitEffects) return false
+          }
+          return true
+        }
         const wordLoop = levels.length === 1 && !containsNestedLoop(body) && !containsNestedClosure(body) &&
           levels[0].cands.some(c => wordLocal(c.idx) || c.slots?.some(t => wordLocal(t.e)))
         const wordEntries = wordLoop ? new Map() : null, wordProofs = wordLoop ? new Map() : null
