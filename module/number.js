@@ -412,6 +412,7 @@ export default (ctx) => {
     __skipws: ['__char_at', '__strws'],
     __str_to_bigint: ['__char_at', '__str_length'],
     __to_bigint: ['__str_to_bigint', '__num_to_bigint', '__ptr_type', '__ptr_offset'],
+    __to_bigint_strict: ['__to_bigint', '__is_object', '__to_prim_dflt', '__ptr_type', '__ptr_aux'],
     __bigint_eq_num: [],
     __bigint_eq_str: ['__str_to_bigint'],
     __bigint_eq: ['__bigint_eq_num', '__bigint_eq_str', '__ptr_type', '__ptr_offset', '__is_object', '__to_prim_dflt'],
@@ -1974,6 +1975,34 @@ export default (ctx) => {
       (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.reinterpret_i64 (i64.or (i64.const 0x7ff8000300000000) (i64.extend_i32_u (local.get $status))))))
         (throw $__jz_err (f64.reinterpret_i64 (i64.or (i64.const 0x7ff8000300000000) (i64.extend_i32_u (local.get $status)))))))
     (f64.reinterpret_i64 (local.get $result)))`
+
+  // ToBigInt used by BigInt typed storage differs from BigInt(): Numbers
+  // reject, even integral ones. Convert objects once before classifying the
+  // primitive, then share the existing string/boolean/BigInt conversion.
+  ctx.core.stdlib['__to_bigint_strict'] = () => `(func $__to_bigint_strict (param $v i64) (result f64)
+    (local $t i32)
+    (if (i32.and (f64.ne (f64.reinterpret_i64 (local.get $v)) (f64.reinterpret_i64 (local.get $v)))
+          (i64.ne (i64.and (local.get $v) (i64.const 0xfff0000000000000)) (i64.const 0xfff0000000000000)))
+      (then
+        (if (call $__is_object (local.get $v))
+          (then
+            ${ctx.module.modules.date && ctx.schema.dateSid != null ? `(if (i32.and
+              (i32.eq (call $__ptr_type (local.get $v)) (i32.const ${PTR.OBJECT}))
+              (i32.eq (call $__ptr_aux (local.get $v)) (i32.const ${ctx.schema.dateSid})))
+              (then (local.set $v (i64.load (i32.wrap_i64 (local.get $v)))))
+              (else (local.set $v (call $__to_prim_dflt (local.get $v)))))`
+              : `(local.set $v (call $__to_prim_dflt (local.get $v)))`}))))
+    (local.set $t (call $__ptr_type (local.get $v)))
+    (if (i32.and (i32.and
+          (f64.ne (f64.reinterpret_i64 (local.get $v)) (f64.reinterpret_i64 (local.get $v)))
+          (i64.ne (i64.and (local.get $v) (i64.const 0xfff0000000000000)) (i64.const 0xfff0000000000000)))
+          (i32.or (i32.or (i32.eq (local.get $t) (i32.const ${PTR.STRING}))
+                         (i32.eq (local.get $t) (i32.const ${PTR.BIGINT})))
+            (i32.or (i64.eq (local.get $v) (i64.const ${TRUE_NAN}))
+                    (i64.eq (local.get $v) (i64.const ${FALSE_NAN})))))
+      (then (return (call $__to_bigint (local.get $v)))))
+    (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${errorCodeLiteral(ERR.BIGINT_UNDEF_MIX)})))
+    (throw $__jz_err (f64.const ${errorCodeLiteral(ERR.BIGINT_UNDEF_MIX)})))`
 
   // IsLooselyEqual (ES2024 7.2.14) with a BigInt on one side, its payload
   // `b`: a Number compares mathematically (step 14; NaN and the infinities

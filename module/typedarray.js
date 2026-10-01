@@ -9,9 +9,9 @@ import print from 'watr/print'
  * @module typed
  */
 
-import { typed, asF64, asI32, asI32Sat, asI64, toInt32, i32Narrowed, i32Word, f64Range, toNumF64, coerceNullishToNum, coerceAtomsToNum, NULL_NAN, TRUE_NAN, FALSE_NAN, allocPtr, boxBigInt, rawBigInt, deferBigintBox, isBigIntBox, mkPtrIR, ptrOffsetIR, ptrTypeEq, temp, tempI32, tempI64, undefExpr, throwTypeErrorIR, truthyIR, isLit, isConst, isPureIR, litVal, freshId, readI64MayUnbox, readI64, unboxBigInt, maybeUnboxBigInt, fromI64, isNullish } from '../src/ir.js'
+import { typed, asF64, asI32, asI32Sat, asI64, toInt32, i32Narrowed, i32Word, f64Range, toNumF64, coerceNullishToNum, coerceAtomsToNum, numberNanIR, NULL_NAN, TRUE_NAN, FALSE_NAN, allocPtr, boxBigInt, rawBigInt, deferBigintBox, isBigIntBox, mkPtrIR, ptrOffsetIR, ptrTypeEq, temp, tempI32, tempI64, undefExpr, throwTypeErrorIR, truthyIR, isLit, isConst, isPureIR, litVal, freshId, readI64MayUnbox, readI64, unboxBigInt, maybeUnboxBigInt, fromI64, isNullish } from '../src/ir.js'
 import { isReassigned, T, ASSIGN_OPS, walkAst, some, every, REFS_THROUGH_ARROWS } from '../src/ast.js'
-import { emit, idx, deps, call, positionArgs } from '../src/bridge.js'
+import { emit, storedValue, idx, deps, call, positionArgs } from '../src/bridge.js'
 import { strHashLiteral } from './collection.js'
 import { valTypeOf } from '../src/kind.js'
 import { K, TAGS, NULL_BITS, NUMBER, STRING, hasTag, tagOf, tagsOf, bitOf, typedElemKind } from '../src/summary/kind.js'
@@ -110,6 +110,7 @@ export default (ctx) => {
     __typed_set_idx_tagged: () => ['__typed_set_idx', '__is_nullish', '__ptr_aux', '__ptr_type', '__ptr_offset', '__len', ...(ctx.core.stdlib['__to_num'] ? ['__to_num'] : [])],
     __typed_get_idx: () => ['__ptr_aux', ...(ctx.linkDemand.f16 ? ['__f16_to_f64'] : [])],
     __typed_elem_arg: ['__ptr_aux', '__box_bigint'],
+    __typed_value: ['__ptr_aux', '__to_num', '__to_bigint_strict'],
     // __clamp_idx is body-called by every range op (fill/copyWithin/subarray/slice). It has NO
     // other manual-dep edge in the whole stdlib, so it's reachable ONLY via resolveIncludes'
     // auto-scan — which diverges under self-compile (jz.wasm), dropping it ("Unknown func
@@ -1588,6 +1589,11 @@ export default (ctx) => {
       (then (drop (call $__typed_set_idx (local.get $ptr) (local.get $i) (local.get $raw)))))
     (local.get $v))`
 
+  ctx.core.stdlib['__typed_value'] = `(func $__typed_value (param $ptr i64) (param $v i64) (result f64)
+    (if (result f64) (i32.and (call $__ptr_aux (local.get $ptr)) (i32.const ${TYPED_ELEM_BIGINT_FLAG}))
+      (then (call $__to_bigint_strict (local.get $v)))
+      (else (call $__to_num (local.get $v)))))`
+
   // .fill(value, start?, end?) for typed arrays. The plain-array __arr_fill gates
   // on PTR.ARRAY and silently no-ops a typed receiver (the storage layout and
   // element width differ). The first element goes through the element-width-
@@ -1894,20 +1900,39 @@ export default (ctx) => {
       (br $ol)))
     (f64.reinterpret_i64 (local.get $ptr)))`
 
-  ctx.core.emit['.typed:fill'] = (arr, val, start, end) => {
+  const ignoredArguments = args => args.length ? args.map(arg => ['drop', asF64(emit(arg))]) : args
+
+  // Capture a value with its element-conversion authority before later argument
+  // emissions change flow facts. Unknown families retain the tagged value until
+  // the receiver chooses ToNumber or ToBigInt at runtime.
+  const typedValue = (r, source, receiver) => {
+    const value = temp('tv'), numeric = r ? !r.isBigInt : !representationProgramHasBigint(ctx)
+    const bigint = r?.isBigInt && tagsOf(ctx.summary?.at(ctx.func.current).kindOfExpr(source) ?? 0) === bitOf(K.BIGINT)
+    const input = bigint ? asF64(readI64(source, emit(source))) : asF64(numeric ? emit(source) : storedValue(source))
+    const get = typed(['local.get', `$${value}`], 'f64')
+    let converted
+    if (bigint) converted = get
+    else if (numeric) converted = asF64(toNumF64(source, get))
+    else {
+      ctx.module.include('number')
+      ctx.runtime.throws = true
+      inc(r?.isBigInt ? '__to_bigint_strict' : '__typed_value')
+      converted = r?.isBigInt
+        ? ['call', '$__to_bigint_strict', ['i64.reinterpret_f64', get]]
+        : ['call', '$__typed_value', receiver, ['i64.reinterpret_f64', get]]
+    }
+    return { setup: ['local.set', `$${value}`, input], converted }
+  }
+
+  ctx.core.emit['.typed:fill'] = (arr, val, start, end, ...ignored) => {
     inc('__typed_fill')
-    // A numeric array fills with the value's number, converted once before the
-    // fill (`fill('12')` stores 12). A BigInt array takes the value as it is, and
-    // so does an array of open kind in a program that holds BigInts.
-    const r = resolveElem(arr)
-    const numeric = r ? !r.isBigInt : !representationProgramHasBigint(ctx)
-    // ToIntegerOrInfinity position args (23.2.3.8 step 6/8) — asI32Sat, not asI32:
-    // __clamp_idx needs ±Infinity saturated to INT32_MAX/MIN (see src/ir.js).
-    return typed(['call', '$__typed_fill',
-      asI64(emit(arr)),
-      val == null ? undefExpr() : numeric ? asF64(toNumF64(val, emit(val))) : asF64(emit(val)),
-      start == null ? ['i32.const', 0] : asI32Sat(emit(start)),
-      end == null ? ['i32.const', 0x7FFFFFFF] : asI32Sat(emit(end))], 'f64')
+    const r = resolveElem(arr), recv = temp('tfr'), receiver = asF64(emit(arr))
+    const ptr = ['i64.reinterpret_f64', ['local.get', `$${recv}`]]
+    const value = typedValue(r, val ?? [, undefined], ptr), positions = positionArgs([start, end]), effects = ignoredArguments(ignored)
+    return typed(['block', ['result', 'f64'],
+      ['local.set', `$${recv}`, receiver], value.setup, ...positions.setup, ...effects,
+      ['call', '$__typed_fill', ptr, value.converted,
+        positions.index(0), positions.index(1, ['i32.const', 0x7FFFFFFF])]], 'f64')
   }
 
   // .reverse() / .copyWithin(...) for typed arrays. The plain-array helpers gate on
@@ -1918,15 +1943,14 @@ export default (ctx) => {
     return typed(['call', '$__typed_reverse', asI64(emit(arr))], 'f64')
   }
 
-  ctx.core.emit['.typed:copyWithin'] = (arr, target, start, end) => {
+  ctx.core.emit['.typed:copyWithin'] = (arr, target, start, end, ...ignored) => {
     inc('__typed_copyWithin')
-    // ToIntegerOrInfinity position args (23.2.3.4 step 3/5/7) — asI32Sat, not asI32:
-    // __clamp_idx needs ±Infinity saturated to INT32_MAX/MIN (see src/ir.js).
-    return typed(['call', '$__typed_copyWithin',
-      asI64(emit(arr)),
-      target == null ? ['i32.const', 0] : asI32Sat(emit(target)),
-      start == null ? ['i32.const', 0] : asI32Sat(emit(start)),
-      end == null ? ['i32.const', 0x7FFFFFFF] : asI32Sat(emit(end))], 'f64')
+    const recv = temp('tcr'), receiver = asF64(emit(arr)), positions = positionArgs([target, start, end]), effects = ignoredArguments(ignored)
+    return typed(['block', ['result', 'f64'],
+      ['local.set', `$${recv}`, receiver],
+      ...positions.setup, ...effects,
+      ['call', '$__typed_copyWithin', ['i64.reinterpret_f64', ['local.get', `$${recv}`]],
+        positions.index(0), positions.index(1), positions.index(2, ['i32.const', 0x7FFFFFFF])]], 'f64')
   }
 
   // .sort(compareFn?) for typed arrays. No argument → the numeric __typed_sort helper
@@ -2738,18 +2762,21 @@ export default (ctx) => {
   // beside a plain `new Uint8Array(16)`), the aux bytes decide at runtime in
   // __typed_set_rt. Every path throws the RangeError of a negative offset or a
   // source past the receiver's end (23.2.3.26).
-  ctx.core.emit['.typed:set'] = (arr, src, offset) => {
+  ctx.core.emit['.typed:set'] = (arr, src, offset, ...ignored) => {
     ctx.runtime.throws = true
     const r = resolveElem(arr), s = src === undefined ? null : resolveElem(src)
     const srcKind = src === undefined ? null : typeof src === 'string' ? lookupValType(src) : valTypeOf(src)
     const arrT = temp('tsa'), srcT = temp('tss'), off = tempI32('tso')
     const arrIR = typed(['local.get', `$${arrT}`], 'f64'), srcIR = typed(['local.get', `$${srcT}`], 'f64')
     const arrPtr = ['i64.reinterpret_f64', arrIR], srcPtr = ['i64.reinterpret_f64', srcIR]
+    const receiver = asF64(emit(arr)), source = src === undefined ? undefExpr() : asF64(emit(src))
+    const positions = positionArgs([offset]), effects = ignoredArguments(ignored)
     const setup = [
-      ['local.set', `$${arrT}`, asF64(emit(arr))],
-      ['local.set', `$${srcT}`, src === undefined ? undefExpr() : asF64(emit(src))],
-      // ToIntegerOrInfinity offset (step 4): saturated, so ±Infinity fails the range check.
-      ['local.set', `$${off}`, offset === undefined ? ['i32.const', 0] : asI32Sat(emit(offset))]]
+      ['local.set', `$${arrT}`, receiver],
+      ['local.set', `$${srcT}`, source],
+      ...positions.setup, ...effects,
+      // ToIntegerOrInfinity offset follows evaluation of both arguments.
+      ['local.set', `$${off}`, positions.index(0)]]
     if (!r || (!s && srcKind !== VAL.ARRAY)) {
       inc('__typed_set_rt')
       return typed(['block', ['result', 'f64'], ...setup,
@@ -3152,21 +3179,40 @@ export default (ctx) => {
     ['then', ['i32.add', ['local.get', `$${fiL}`], ['local.get', `$${len}`]]],
     ['else', ['local.get', `$${fiL}`]]]
 
-  ctx.core.emit['.typed:indexOf'] = (arr, val, fromIndex) => {
-    const found = tempI32('tif'), needle = temp('tin'), fiL = tempI32('tifx')
-    const loop = typedLoop(arr, (load, i, len, _ptr, exit) => {
-      const matched = ['f64.eq', load(), ['local.get', `$${needle}`]]
+  const typedSearchMatch = (r, load, needle, receiver, nanEqual = false) => {
+    const get = typed(['local.get', `$${needle}`], 'f64')
+    const number = nanEqual ? ['i32.or', ['f64.eq', load(), get],
+      ['i32.and', ['f64.ne', load(), load()], numberNanIR(get)]] : ['f64.eq', load(), get]
+    if (r && !r.isBigInt) return number
+    const bigint = ['if', ['result', 'i32'], isBigIntBox(get),
+      ['then', ['i64.eq', ['i64.reinterpret_f64', load()], unboxBigInt(get)]], ['else', ['i32.const', 0]]]
+    if (r?.isBigInt) return bigint
+    inc('__ptr_aux')
+    return ['if', ['result', 'i32'], ['i32.and', ['call', '$__ptr_aux', asI64(receiver)], ['i32.const', TYPED_ELEM_BIGINT_FLAG]],
+      ['then', bigint], ['else', number]]
+  }
+
+  ctx.core.emit['.typed:indexOf'] = (arr, val, fromIndex, ...ignored) => {
+    const r = resolveElem(arr), found = tempI32('tif'), needle = temp('tin'), fiL = tempI32('tifx')
+    const loop = typedLoop(arr, (load, i, len, _ptr, exit, receiver) => {
+      const matched = typedSearchMatch(r, load, needle, receiver)
       const cond = fromIndex == null ? matched
         : ['i32.and', ['i32.ge_s', ['local.get', `$${i}`], fromStart(fiL, len)], matched]
       return [['if', cond, ['then',
         ['local.set', `$${found}`, ['local.get', `$${i}`]], ['br', exit]]]]
     })
     if (!loop) return null
+    const input = asF64(storedValue(val ?? [, undefined])), positions = positionArgs([fromIndex]), effects = ignoredArguments(ignored)
     return typed(['block', ['result', 'f64'],
-      ['local.set', `$${needle}`, asF64(emit(val ?? [, undefined]))],
+      loop.setup[0],
+      ['local.set', `$${needle}`, input],
+      ...positions.setup, ...effects,
       ['local.set', `$${found}`, ['i32.const', -1]],
-      ...(fromIndex == null ? [] : [['local.set', `$${fiL}`, asI32Sat(emit(fromIndex))]]),
-      ...loop.setup,
+      ...loop.setup.slice(1, -1),
+      // Empty searches evaluate fromIndex but do not coerce it.
+      ...(fromIndex == null ? [] : [['if', ['local.get', `$${loop.len}`],
+        ['then', ['local.set', `$${fiL}`, positions.index(0)]]]]),
+      loop.setup[loop.setup.length - 1],
       ['f64.convert_i32_s', ['local.get', `$${found}`]]], 'f64')
   }
 
@@ -3176,45 +3222,52 @@ export default (ctx) => {
   // the common case. With a fromIndex the matcher additionally bounds i ≤ fromIndex
   // (negative counts from the end, resolved against the typedLoop len). NaN never
   // strict-equals (f64.eq), matching JS.
-  ctx.core.emit['.typed:lastIndexOf'] = (arr, val, fromIndex) => {
-    const found = tempI32('tlf'), needle = temp('tln'), fiL = tempI32('tlfi')
-    const loop = typedLoop(arr, (load, i, len) => {
-      const matched = ['f64.eq', load(), ['local.get', `$${needle}`]]
+  ctx.core.emit['.typed:lastIndexOf'] = (arr, val, fromIndex, ...ignored) => {
+    const r = resolveElem(arr), found = tempI32('tlf'), needle = temp('tln'), fiL = tempI32('tlfi')
+    const loop = typedLoop(arr, (load, i, len, _ptr, _exit, receiver) => {
+      const matched = typedSearchMatch(r, load, needle, receiver)
       if (fromIndex == null)
         return [['if', matched, ['then', ['local.set', `$${found}`, ['local.get', `$${i}`]]]]]
       return [['if', ['i32.and', ['i32.le_s', ['local.get', `$${i}`], fromStart(fiL, len)], matched],
         ['then', ['local.set', `$${found}`, ['local.get', `$${i}`]]]]]
     })
     if (!loop) return null
+    const input = asF64(storedValue(val ?? [, undefined])), positions = positionArgs([fromIndex]), effects = ignoredArguments(ignored)
     return typed(['block', ['result', 'f64'],
-      ['local.set', `$${needle}`, asF64(emit(val ?? [, undefined]))],
+      loop.setup[0],
+      ['local.set', `$${needle}`, input],
+      ...positions.setup, ...effects,
       ['local.set', `$${found}`, ['i32.const', -1]],
-      ...(fromIndex == null ? [] : [['local.set', `$${fiL}`, asI32Sat(emit(fromIndex))]]),
-      ...loop.setup,
+      ...loop.setup.slice(1, -1),
+      // Empty searches evaluate fromIndex but do not coerce it.
+      ...(fromIndex == null ? [] : [['if', ['local.get', `$${loop.len}`],
+        ['then', ['local.set', `$${fiL}`, positions.index(0)]]]]),
+      loop.setup[loop.setup.length - 1],
       ['f64.convert_i32_s', ['local.get', `$${found}`]]], 'f64')
   }
 
-  // .includes: like indexOf but NaN-equal-NaN (JS spec). Stash needle bits as
-  // i64 and compare via i64.eq so two NaNs with matching bit patterns match
-  // (f64.eq would say false).
-  ctx.core.emit['.typed:includes'] = (arr, val, fromIndex) => {
-    const found = tempI32('thf'), needle = temp('thn'), fiL = tempI32('thx')
-    const loop = typedLoop(arr, (load, i, len, _ptr, exit) => {
-      const matched = ['i32.or',
-        ['f64.eq', load(), ['local.get', `$${needle}`]],
-        ['i64.eq',
-          ['i64.reinterpret_f64', load()],
-          ['i64.reinterpret_f64', ['local.get', `$${needle}`]]]]
+  // .includes uses SameValueZero: genuine Number NaNs match each other,
+  // while a boxed primitive or object remains a different value.
+  ctx.core.emit['.typed:includes'] = (arr, val, fromIndex, ...ignored) => {
+    const r = resolveElem(arr), found = tempI32('thf'), needle = temp('thn'), fiL = tempI32('thx')
+    const loop = typedLoop(arr, (load, i, len, _ptr, exit, receiver) => {
+      const matched = typedSearchMatch(r, load, needle, receiver, true)
       const cond = fromIndex == null ? matched
         : ['i32.and', ['i32.ge_s', ['local.get', `$${i}`], fromStart(fiL, len)], matched]
       return [['if', cond, ['then', ['local.set', `$${found}`, ['i32.const', 1]], ['br', exit]]]]
     })
     if (!loop) return null
+    const input = asF64(storedValue(val ?? [, undefined])), positions = positionArgs([fromIndex]), effects = ignoredArguments(ignored)
     return typed(['block', ['result', 'f64'],
-      ['local.set', `$${needle}`, asF64(emit(val ?? [, undefined]))],
+      loop.setup[0],
+      ['local.set', `$${needle}`, input],
+      ...positions.setup, ...effects,
       ['local.set', `$${found}`, ['i32.const', 0]],
-      ...(fromIndex == null ? [] : [['local.set', `$${fiL}`, asI32Sat(emit(fromIndex))]]),
-      ...loop.setup,
+      ...loop.setup.slice(1, -1),
+      // Empty searches evaluate fromIndex but do not coerce it.
+      ...(fromIndex == null ? [] : [['if', ['local.get', `$${loop.len}`],
+        ['then', ['local.set', `$${fiL}`, positions.index(0)]]]]),
+      loop.setup[loop.setup.length - 1],
       ['f64.convert_i32_s', ['local.get', `$${found}`]]], 'f64')
   }
 
@@ -3452,27 +3505,29 @@ export default (ctx) => {
 
   // .with(index, value) — a COPY with one element replaced (receiver unchanged). Negative
   // index counts from the end; out of range throws RangeError ($__jz_err), per spec.
-  ctx.core.emit['.typed:with'] = (arr, index, value) => {
-    const copy = ctx.core.emit['.typed:slice'](arr)
-    if (!copy) return null
+  ctx.core.emit['.typed:with'] = (arr, index, value, ...ignored) => {
     ctx.runtime.throws = true
-    inc('__len', '__typed_set_idx')
-    const c = temp('twc'), idx = tempI32('twi'), len = tempI32('twl')
+    inc('__len', '__typed_slice_rt', '__typed_set_idx')
+    const r = resolveElem(arr), recv = temp('twr'), c = temp('twc'), v = temp('twv')
+    const idx = tempI32('twi'), len = tempI32('twl'), receiver = asF64(emit(arr))
+    const ptr = ['i64.reinterpret_f64', ['local.get', `$${recv}`]]
+    const positions = positionArgs([index]), replacement = typedValue(r, value ?? [, undefined], ptr), effects = ignoredArguments(ignored)
     return typed(['block', ['result', 'f64'],
-      ['local.set', `$${c}`, asF64(copy)],
-      ['local.set', `$${len}`, ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${c}`]]]],
-      // ToIntegerOrInfinity position arg (23.2.3.36 step 3) — asI32Sat, not asI32: an
-      // Infinity index must saturate to INT32_MAX (so the range check below throws, per
-      // spec) instead of asI32's wrap-to -1 (silently valid, resolving to len-1 — no throw).
-      ['local.set', `$${idx}`, asI32Sat(emit(index ?? [, undefined]))],
+      ['local.set', `$${recv}`, receiver], ...positions.setup, replacement.setup, ...effects,
+      ['local.set', `$${len}`, ['call', '$__len', ptr]],
+      ['local.set', `$${idx}`, positions.index(0)],
+      // The replacement converts even for an invalid index; copying follows
+      // both conversions, so their writes remain visible in untouched elements.
+      ['local.set', `$${v}`, replacement.converted],
       ['if', ['i32.lt_s', ['local.get', `$${idx}`], ['i32.const', 0]],
         ['then', ['local.set', `$${idx}`, ['i32.add', ['local.get', `$${idx}`], ['local.get', `$${len}`]]]]],
-      ['if', ['i32.or',
-          ['i32.lt_s', ['local.get', `$${idx}`], ['i32.const', 0]],
-          ['i32.ge_s', ['local.get', `$${idx}`], ['local.get', `$${len}`]]],
-        ['then', ['global.set', '$__jz_last_err_bits', ['i64.reinterpret_f64', ['f64.const', errorCodeLiteral(ERR.TYPED_WITH_INDEX)]]], ['throw', '$__jz_err', ['f64.const', errorCodeLiteral(ERR.TYPED_WITH_INDEX)]]]],
+      ['if', ['i32.or', ['i32.lt_s', ['local.get', `$${idx}`], ['i32.const', 0]],
+          ['i32.ge_u', ['local.get', `$${idx}`], ['local.get', `$${len}`]]],
+        ['then', ...throwCodeIR(ERR.TYPED_WITH_INDEX)]],
+      ['local.set', `$${c}`, ['call', '$__typed_slice_rt', ptr,
+        ['i32.const', 0], ['local.get', `$${len}`], ['i32.const', 1]]],
       ['drop', ['call', '$__typed_set_idx', ['i64.reinterpret_f64', ['local.get', `$${c}`]],
-        ['local.get', `$${idx}`], asF64(emit(value ?? [, undefined]))]],
+        ['local.get', `$${idx}`], ['local.get', `$${v}`]]],
       ['local.get', `$${c}`]], 'f64')
   }
 

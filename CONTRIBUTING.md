@@ -2916,18 +2916,24 @@ parameters, the slot census's included). A Boolean answers its own
 `toString` ("true", not "1": `.boolean:toString` for a Boolean receiver, an
 atom arm in the runtime method dispatch).
 
-A typed array's `fill` converts its value once for a numeric array (`fill('12')`
-stores 12), writes the first element through the element writer and doubles
-the filled run with `memory.copy` (`__typed_fill`): one body for every element
-kind, log2(n) copies for n elements.
+A typed array's `fill` captures all arguments, then converts its value once
+before its positions, even for an empty range. Numeric arrays use ToNumber;
+BigInt arrays use ToBigInt, which rejects Numbers. A proved present BigInt
+keeps its raw payload. The first element passes through the element writer;
+`memory.copy` doubles the filled run (`__typed_fill`), log2(n) copies for n
+elements. `with` converts its index and replacement before checking the index
+and copying, preserving mutations made by conversion hooks. Search arguments
+also evaluate before conversion, but an empty search never coerces fromIndex.
+Captured values cannot use the original local's live numeric shadow: only a
+direct read of that local may use its shadow.
 
 Every array position argument (fill, copyWithin, slice, splice, with, the
 search methods' fromIndex) is captured and coerced through `positionArgs`
 (`src/bridge.js`): ToIntegerOrInfinity converts a string, reads a Boolean as
 0/1, takes the default for undefined, saturates ±Infinity and throws a
 TypeError for a BigInt, after the receiver and earlier arguments are
-evaluated. `splice(...args)` reads start, count and inserts from the argument
-array at run time. A typed array constructor's argument is ToIndex for a
+evaluated. Typed set offsets share this path. `splice(...args)` reads start,
+count and inserts from the argument array at run time. A typed array constructor's argument is ToIndex for a
 primitive (the full ToNumber where the program links it, the atoms in place
 otherwise, a BigInt a TypeError), a copy or view for an array, typed array
 or buffer, an iteration for a Set or Map and `Array.from` for another object

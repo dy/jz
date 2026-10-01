@@ -230,8 +230,10 @@ export function toNumF64(node, v) {
   if (Array.isArray(node) && node[0] == null && node.length === 2 && node[1] == null)
     return typed(['f64.const', node[1] === null ? 0 : 'nan'], 'f64')
   if (numericStorage(node)) return asF64(v)
-  // A local whose ToNumber rides in a shadow (compile/num-shadow.js).
-  const shadow = typeof node === 'string' ? ctx.func.numShadow?.get(node) : null
+  // Only a read of the current local may use its numeric shadow. A captured
+  // value can outlive a later write to that local and must convert itself.
+  const shadow = typeof node === 'string' && v[0] === 'local.get' && v[1] === `$${node}`
+    ? ctx.func.numShadow?.get(node) : null
   if (shadow) { const r = typed(['local.get', `$${shadow}`], 'f64'); r.valKind = VAL.NUMBER; return r }
   // An i32 node carrying `.ptrKind` is an *unboxed pointer* (object/array local),
   // not a number — skipping coercion would reinterpret pointer bits as an f64.
