@@ -91,6 +91,8 @@ const TESTS = [
   'reachability-mutants',
   'self-families',
   'interval-proof',
+  'element-bounds',
+  'licm-typed-views',
   'flow-range',
   'store-merge',
   'const-seed',
