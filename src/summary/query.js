@@ -10,7 +10,7 @@ import { ITER_RECORD_KEYS } from '../std/iter-helpers.js'
 import {
   K, kind, tagOf, paramOf, isNullable, hasTag, join, valOf, valBesidePresence, kindOfVal, core, UNKNOWN,
   ANY, NUMBER, STRING, BOOL, BIGINT, NULLISH, orAbsent, plus, arith, typedStore, typedAux, typedElemKind, typedMethodKind, logicalMask, selectKind,
-  TYPED_CTOR, isCount, ARRAY_METHODS, OBJECT_PROTO_METHODS, objectProtoResult, NUMBER_OPS, BOOL_OPS, bitOf, TAGS, NULL_BITS, outsideKind } from './kind.js'
+  TYPED_CTOR, isCount, ARRAY_METHODS, OBJECT_PROTO_METHODS, objectProtoResult, NUMBER_OPS, BOOL_OPS, bitOf, TAGS, NULL_BITS, outsideKind, emptySpreadKind } from './kind.js'
 // Names every object has from its prototype: a read of one is never undefined.
 const INHERITED = new Set(['constructor', 'hasOwnProperty', 'isPrototypeOf', 'propertyIsEnumerable', 'toString', 'toLocaleString', 'valueOf',
   '__defineGetter__', '__defineSetter__', '__lookupGetter__', '__lookupSetter__', '__proto__', 'length'])
@@ -436,6 +436,7 @@ export function summaryQueries(facts, internal = false) {
       // The one layout an object expression's value has when it is not missing; null when unknown or open.
       targetSidOfExpr: e => { const k = core(kindOfExpr(e)), sid = publicSid(k); return tagOf(k) === K.OBJECT && sid !== UNKNOWN && !shapesOf(paramOf(k)).some(site => openSchemas.has(site)) ? sid : null },
       spreadValOfExpr: (e, site) => valOf(spreadSourceKind(e, site)),
+      emptySpreadOfExpr: (e, site) => emptySpreadKind(spreadSourceKind(e, site)),
       spreadSidOfExpr: (e, site) => { const k = spreadSourceKind(e, site), sid = publicSid(k); return tagOf(k) === K.OBJECT && !isNullable(k) && sid !== UNKNOWN && !shapesOf(paramOf(k)).some(site => openSchemas.has(site) || facts.deletable?.has(site) || facts.deleteReach?.unknown && lostSchema(site)) ? sid : null },
       // The member shapes of an object expression, a set's or the one shape, for a
       // guarded slot access; null when the shape is unknown or not an object.

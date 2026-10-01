@@ -98,6 +98,10 @@ presence and read its current value. Getter deletion/reinsertion and target
 setters can change later reads; a cached slot/value is not a presence proof.
 Host copies snapshot all own string/Symbol keys, check each current enumerable
 descriptor without Get, then preserve the value's identity through the raw host read.
+Object spread sources proved to be only null, undefined, Boolean, Number or
+BigInt contribute no keys and preserve the result's closed layout. The source
+expression still runs once in property order, including its effects and throws.
+String, object and unresolved source kinds retain their ordinary copy path.
 Accessor value enumeration and clone decoding share that protocol, keeping the
 snapshot separate from the output because hash deletion relocates buckets.
 The summary reaches copied getters through its ordinary member-call authority;
@@ -888,9 +892,9 @@ before it assigns) unless it may return, a stored null or undefined counts
 like any other value, and the proof ends for a caller where a callee's
 statement ended it: a method the constructor calls reads the fields assigned
 after the call as undefined, its own class's and a derived class's. A call through
-a binding the fixpoint knows only as nullish so far, and a spread of a nullish
-value, contribute nothing rather than escaping their operands: both throw at
-run time, and an escape is permanent. A loop's test guards its body the way an
+a binding the fixpoint knows only as nullish so far contributes nothing rather
+than escaping its operands: the call throws at run time, and an escape is
+permanent. A nullish object spread copies no keys. A loop's test guards its body the way an
 `if` guards its branch, and an assignment as a condition (`(d = ops[i++])`)
 proves the assigned name truthy: the emitter carries that as a `notNullish`
 refinement (`flow-types.js`), the query layer marks the name `present` for the

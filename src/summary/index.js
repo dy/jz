@@ -64,7 +64,7 @@ import {
   K, UNKNOWN, bitOf, TAGS, NULL_BITS, kind, tagOf, paramOf, hasTag, isNullable,
   ANY, NUMBER, STRING, BOOL, BIGINT, NULLISH, ABSENT, core, orAbsent, join,
   valOf, kindOfVal, TYPED_CTOR, TYPED_STATIC, isCount, ARRAY_METHODS, OBJECT_PROTO_METHODS, objectProtoResult, NUMBER_OPS, BOOL_OPS,
-  plus, arith, typedStore, typedAux, typedElemKind, typedMethodKind, logicalMask, selectKind, outsideKind,
+  plus, arith, typedStore, typedAux, typedElemKind, typedMethodKind, logicalMask, selectKind, outsideKind, emptySpreadKind,
 } from './kind.js'
 export { K, UNKNOWN, kind, tagOf, paramOf, isNullable, tagsOf, hasTag, orNull, join, valOf, valsOf, core } from './kind.js'
 
@@ -2616,7 +2616,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       const source = spreadSource(n[1]), t = tagOf(source)
       copyFields(source)
       if (t === K.NONE) return K.NONE
-      if (!viewed(source)) return !isNullable(source) && (t === K.OBJECT || t === K.HASH) ? source : cellOf(n, K.HASH, ANY)
+      if (!emptySpreadKind(source) && !viewed(source)) return !isNullable(source) && (t === K.OBJECT || t === K.HASH) ? source : cellOf(n, K.HASH, ANY)
     }
     const writes = [], names = [], init = definite.get(n)
     let brand = null, dynamic = false, pending = false, wildKind = K.NONE
@@ -2641,10 +2641,8 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
         // initializer, but defer the layout instead of irreversibly escaping
         // its known sibling values during an early solver round.
         if (tagOf(source) === K.NONE) { pending = true; continue }
-        // A source that only ever holds null or undefined spreads no key: the
-        // copy stays a dictionary (its keys are known at run time), its named
-        // entries the other sources' and the literal's own.
-        if (tagOf(source) === K.NULLISH || tagOf(source) === K.ABSENT) { dynamic = true; continue }
+        // A primitive with no own keys cannot open the result's layout.
+        if (emptySpreadKind(source)) continue
         // A dictionary source fills a dictionary: its named entries, its
         // entries under unknown names, and the fields of the shapes it carries.
         if (p[1]?.[0] !== '&&' && !isNullable(source) && isDict(source) && !cellLostObject.has(cell(paramOf(source)))) {

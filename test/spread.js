@@ -5,6 +5,74 @@ import { run, oracle, funcWat } from './util.js'
 import jz, { compile } from '../index.js'
 import { belowOpt, levels, onWasi } from './_matrix.js'
 
+test('spread: keyless primitives retain closed layouts and source effects', () => {
+  const source = `let order = 0
+    function source(n) {
+      order = order * 10 + 2
+      if (n < 0) throw 19
+      if (n === 0) return null
+      if (n === 1) return undefined
+      if (n === 2) return false
+      if (n === 3) return 42
+      return 7n
+    }
+    export function f(n) {
+      order = 0
+      try {
+        const o = { first: (order = order * 10 + 1), ...source(n), last: (order = order * 10 + 3) }
+        return [Object.keys(o).join(','), o.first, o.last, order]
+      } catch (e) { return ['throw', e, order] }
+    }`
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const f = run(source, { optimize }).f, ref = oracle(source).f
+    for (const n of [0, 0, 1, 2, 3, 4, -1, 0, 4])
+      is(f(n), ref(n), `O${optimize}: source ${n}, including reuse after throw`)
+  }
+  const closed = `function source(n) {
+    if (n === 0) return null
+    if (n === 1) return undefined
+    if (n === 2) return false
+    if (n === 3) return 42
+    return 7n
+  }
+  export function f(n) { return {first: 1, ...source(n), last: 3} }`
+  const wat = compile(closed, { optimize: { level: 2, watr: false }, wat: true })
+  ok(!/\$__(?:dyn_get|hash_new|obj_clone|view_copy)/.test(wat), 'keyless sources need no dictionary or copying runtime')
+})
+
+test('spread: the empty result is fresh for every keyless primitive', () => {
+  for (const value of ['null', 'undefined', 'false', '0', '-0', 'NaN', 'Infinity', '7n']) {
+    const source = `export function f() {
+      const a = {...${value}}, b = {...${value}}
+      a.x = 9
+      return [Object.keys(b).length, 'x' in b, a === b, a.x]
+    }
+    export function rest() {
+      try { const {...o} = ${value}; return Object.keys(o).length }
+      catch (e) { return 'throw' }
+    }`
+    for (const optimize of levels(0, 1, 2, 3, 'size')) {
+      const got = run(source, { optimize }), ref = oracle(source)
+      is(got.f(), ref.f(), `O${optimize}: ${value}`)
+      is(got.rest(), ref.rest(), `O${optimize}: rest of ${value}`)
+    }
+  }
+})
+
+test('spread: strings and objects beside keyless primitives retain their keys', () => {
+  const source = `const pick = n => n === 0 ? undefined : n === 1 ? 'ab' : n === 2 ? { x: 7 } : false
+    export function f(n) { const o = {...pick(n), last: 9}; return JSON.stringify(o) }
+    export function rest(n) {
+      try { const {...o} = pick(n); return JSON.stringify(o) }
+      catch (e) { return 'throw' }
+    }`
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const got = run(source, { optimize }), ref = oracle(source)
+    for (const n of [0, 0, 1, 2, 3, 0]) for (const name of ['f', 'rest'])
+      is(got[name](n), ref[name](n), `O${optimize}: ${name}(${n})`)
+  }
+})
+
 test('spread: a guarded nullable source keeps its nested field layout', () => {
   const source = `const parts = n => n.length > 1 ? {offset: 0, addr: n[0], value: n[1]} : null
     const wrap = n => {

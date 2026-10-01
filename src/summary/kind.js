@@ -26,6 +26,9 @@ export const paramOf = k => k & UNKNOWN
 export const isNullable = k => (k & NULL_BITS) !== 0 && (k & TAGS_NOT_NULL) !== 0 && tagOf(k) !== K.ANY
 export const tagsOf = k => k & TAGS
 export const hasTag = (k, tag) => (k & bitOf(tag)) !== 0
+// These primitives contribute no keys to an object spread. Bottom proves nothing.
+const EMPTY_SPREAD_TAGS = NULL_BITS | bitOf(K.NUMBER) | bitOf(K.BOOL) | bitOf(K.BIGINT)
+export const emptySpreadKind = k => (k & TAGS) !== 0 && (k & TAGS & ~EMPTY_SPREAD_TAGS) === 0
 export const ANY = kind(K.ANY), NUMBER = kind(K.NUMBER), STRING = kind(K.STRING), BOOL = kind(K.BOOL), BIGINT = kind(K.BIGINT), NULLISH = kind(K.NULLISH), ABSENT = kind(K.ABSENT)
 /** The kind of a name from outside the program: a Math constant (`Math.SQRT1_2`, lowered to `math.SQRT1_2`) is a number, anything else any value. */
 export const outsideKind = name => /^math\.[A-Z][A-Z0-9_]*$/.test(name) ? NUMBER : ANY

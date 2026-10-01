@@ -1110,7 +1110,9 @@ function resolveSchema(obj) {
 // mirroring spreadSchema in src/kind.js so both phases agree.
 function spreadSourceSchema(obj, site) {
   if (ctx.summary) {
-    const sid = ctx.summary.at(ctx.func.current).spreadSidOfExpr(obj, site)
+    const view = ctx.summary.at(ctx.func.current)
+    if (view.emptySpreadOfExpr(obj, site)) return []
+    const sid = view.spreadSidOfExpr(obj, site)
     return sid == null ? null : ctx.schema.list[sid]
   }
   if (typeof obj === 'string') {
@@ -1272,6 +1274,7 @@ function emitObjectSpread(props, _target = takeLiteralTarget()) {
         continue
       }
       const sSchema = spreadSourceSchema(p[1], p), view = enumView(sSchema), skip = spreadExclusions(p)?.names
+      if (!sSchema.length) { body.push(['drop', emit(p[1])]); continue }
       if (view) {
         // each key's value, once: an accessor through its getter (enumValue)
         const sv = temp('ospv')

@@ -171,7 +171,9 @@ function conditionalSpreadGroup(node) {
  *  cycle-free — it must not import the object stdlib module). */
 function spreadSchema(obj, site) {
   if (ctx.summary) {
-    const sid = ctx.summary.at(ctx.func.current).spreadSidOfExpr(obj, site)
+    const view = ctx.summary.at(ctx.func.current)
+    if (view.emptySpreadOfExpr(obj, site)) return []
+    const sid = view.spreadSidOfExpr(obj, site)
     return sid == null ? null : ctx.schema.list[sid]
   }
   // A parameter's compile-time schema is an inferred/union guess (and is unbound
