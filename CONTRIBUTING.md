@@ -717,7 +717,13 @@ counter-width query accepts a positive bounded variable step and includes its
 largest final overshoot, while trip-count consumers still require an exact step.
 A nonnegative integer entry and a bounded integer square limit expose the
 counter's equivalent linear bound; unknown or negative entries and fractional
-limits keep the original Number test (`test/counter-width.js`). Captured names
+limits keep the original Number test (`test/counter-width.js`). A countdown's
+sole decrement test supplies a complete hull only from a dominating positive
+integer initializer (nonnegative for postfix), with no other writes; the final
+zero or minus-one update belongs to that hull. Unsigned shifts retain a known
+operand interval only within one monotone word segment. Fresh typed-array
+method chains that preserve length carry their constructor's exact count.
+Captured names
 use their cell payload type, independently of the i32 pointer that addresses it.
 Actual word consumers retain their separate modulo conversion proof
 (`test/index-width.js`).

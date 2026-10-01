@@ -56,11 +56,16 @@ export function stableLoopNames(body, cond, step) {
   }
 }
 
-/** Static element count for `new T(<int literal>)` / `new T([literals…])`, or null
- *  for views (buffer, off, len), buffer/array copies, ternaries and computed sizes.
+const SAME_LENGTH_TYPED_METHODS = new Set(['map', 'toReversed', 'toSorted', 'with', 'fill', 'reverse', 'copyWithin', 'sort'])
+
+/** Static element count for `new T(<int literal>)` / `new T([literals…])` and
+ *  their length-preserving method chains, or null for views (buffer, off, len),
+ *  buffer/array copies, ternaries and computed sizes.
  *  Typed arrays are FIXED-LENGTH, so a binding's length is exactly as stable as its
  *  ctor — the tracker applies the same multi-def invalidation to both. */
 export function typedStaticLen(rhs) {
+  if (Array.isArray(rhs) && rhs[0] === '()' && Array.isArray(rhs[1]) && rhs[1][0] === '.' &&
+      SAME_LENGTH_TYPED_METHODS.has(rhs[1][2])) return typedStaticLen(rhs[1][1])
   if (!Array.isArray(rhs) || rhs[0] !== '()' || typeof rhs[1] !== 'string' || !rhs[1].startsWith('new.')) return null
   if (!rhs[1].endsWith('Array') || rhs[1] === 'new.ArrayBuffer') return null
   const args = rhs[2]

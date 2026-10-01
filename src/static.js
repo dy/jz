@@ -202,7 +202,15 @@ export function intExprRange(n, nameRange = null) {
   }
   if (op === '>>>' && n.length === 3) {
     const sh = constIntExpr(n[2])
-    if (sh != null && (sh & 31) !== 0) return [0, 0xFFFFFFFF >>> (sh & 31)]
+    if (sh != null) {
+      const shift = sh & 31, a = intExprRange(n[1], nameRange)
+      // ToUint32 is monotone within either half of one word, but crosses a
+      // discontinuity at zero for a signed interval. Otherwise use the full
+      // operator bound (only a nonzero shift fits signed integer storage).
+      if (a && (a[0] >= 0 && a[1] <= 0xFFFFFFFF || a[0] >= I32_MIN && a[1] < 0))
+        return [a[0] >>> shift, a[1] >>> shift]
+      if (shift !== 0) return [0, 0xFFFFFFFF >>> shift]
+    }
   }
   // `>>` is ToInt32 then a SIGNED shift: the result is always a genuine i32,
   // shifted — sound for ANY operand (even one with no known range of its own,

@@ -7,7 +7,7 @@ import { ASSIGN_OPS, COMPARE_OPS, MUTATE_OPS, effectiveWriteValue, ACCESSOR_GET,
 import { ctx, getFactStore } from '../ctx.js'
 import {
   staticObjectProps, staticArrayElems, staticIndexKey, staticValue, intExprRange, NO_VALUE,
-  constIntExpr, constNumExpr, guardCounterName, forCounterRange, forCounterBounds, typedCtorRawOf,
+  constIntExpr, constNumExpr, counterInit, guardCounterName, forCounterRange, forCounterBounds, typedCtorRawOf,
 } from '../static.js'
 import { exprType } from '../type.js'
 import { maxAdvanceBudget } from '../type/canonical-bounds.js'
@@ -1282,6 +1282,26 @@ function findOuterDeclInit(root, exclude, name) {
   return count === 1 ? found : null
 }
 
+// Find an initializer on the lexical path to this loop, in the current
+// enclosing iteration. A declaration inside a sibling branch does not dominate.
+function dominatingLoopInit(root, loop, name) {
+  const visit = (node, init) => {
+    if (node === loop) return init ?? null
+    if (!Array.isArray(node) || node[0] === '=>') return undefined
+    const sequence = node[0] === ';' || node[0] === '{}'
+    for (let i = 1; i < node.length; i++) {
+      const child = node[i], found = visit(child, init)
+      if (found !== undefined) return found
+      if (sequence && Array.isArray(child) && (child[0] === 'let' || child[0] === 'const'))
+        for (let k = 1; k < child.length; k++) {
+          const d = child[k]
+          if (Array.isArray(d) && d[0] === '=' && d[1] === name) init = d[2]
+        }
+    }
+  }
+  return visit(root, null) ?? null
+}
+
 /** Per-iteration motion: P/N bound all positive/negative steps, including
  *  intermediate values. Bound each direction separately: continue and short
  *  circuits can skip an opposing step. Nested loops, resets and shadows reject. */
@@ -1449,6 +1469,7 @@ export function stampBodyRanges(body, readPresent, typedLens) {
     return h && Math.abs(h[0]) <= 2 ** 53 && Math.abs(h[1]) <= 2 ** 53 ? [1 - k, k - 1] : null
   }
   const regions = [body], proofs = new Map(), defs = new Map(), declared = new Set(), bad = new Set()
+  let countdowns = null
   const addDef = (name, rhs) => {
     if (typeof name !== 'string') return
     if (!defs.has(name)) defs.set(name, [])
@@ -1472,7 +1493,7 @@ export function stampBodyRanges(body, readPresent, typedLens) {
   // A reduction inside an outer loop needs an initializer in that iteration.
   // Peeled regions may reuse binding names; join their independently proved
   // hulls, then require every write to belong to one of those regions.
-  const loops = new Set(['for', 'while'])
+  const loops = new Set(['for', 'while', 'do'])
   walkAst(body, { enter: node => {
     if (node[0] === '=>') {
       for (const name of collectAssignedNames(node, new Set())) bad.add(name)
@@ -1489,6 +1510,24 @@ export function stampBodyRanges(body, readPresent, typedLens) {
     }
     if (node[0] === '=') addDef(node[1], node[2])
     else if (MUTATE_OPS.has(node[0]) && typeof node[1] === 'string') bad.add(node[1])
+    if (loops.has(node[0])) {
+      const op = node[0], condition = node[op === 'for' || op === 'do' ? 2 : 1]
+      // A rightmost countdown test may be skipped (the first do-while
+      // iteration), but its false terminal value still exits this loop.
+      const short = Array.isArray(condition) && (condition[0] === '||' || condition[0] === '&&')
+      const cond = short ? condition[2] : condition
+      const post = Array.isArray(cond) && cond[0] === 'postfix'
+      const dec = post ? cond[1] : cond, name = Array.isArray(dec) && dec[0] === '--' ? dec[1] : null
+      const binding = typeof name === 'string' ? scanBindingUses(body).get(name) : null
+      if (binding?.[BINDING_USE_DECLS] === 1) {
+        const loopBody = node[op === 'for' ? 4 : op === 'do' ? 1 : 2]
+        const init = op === 'for' ? counterInit(node[1], name) : dominatingLoopInit(regions[regions.length - 1], node, name)
+        if (init != null && binding[BINDING_USE_INIT] === init && !(short && isReassigned(condition[1], name)) &&
+            !isReassigned(loopBody, name) && !(op === 'for' && isReassigned(node[3], name)) &&
+            !closureWrites(body, name) && !writesOutsideLoop(body, new Set([node]), name))
+          (countdowns ||= []).push([name, init, post])
+      }
+    }
     if (node[0] === 'for' && node.length === 5) {
       const [, init, cond, step, loopBody] = node
       const counterName = guardCounterName(cond)
@@ -1517,7 +1556,7 @@ export function stampBodyRanges(body, readPresent, typedLens) {
         }
       }
     }
-    if (loops.has(node[0])) regions.push(node[node[0] === 'for' ? 4 : 2])
+    if (loops.has(node[0])) regions.push(node[node[0] === 'for' ? 4 : node[0] === 'do' ? 1 : 2])
   }, exit: node => { if (loops.has(node[0])) regions.pop() } })
   for (const [name, proof] of proofs)
     if (!proof.ambiguous && !writesOutsideLoop(body, proof.loops, name)) {
@@ -1530,6 +1569,17 @@ export function stampBodyRanges(body, readPresent, typedLens) {
   let changed = true
   while (changed) {
     changed = false
+    if (countdowns) for (const [name, init, post] of countdowns) {
+      if (repOf(name)?.range) continue
+      const r = rangeOf(init)
+      // Prefix from zero runs away below zero; postfix tests the old value and
+      // performs one final decrement to -1. Entry and every visible update
+      // belong to this hull, including a break before the terminal test.
+      if (!r || !Number.isInteger(r[0]) || !Number.isInteger(r[1]) || Object.is(r[0], -0) ||
+          r[0] < (post ? 0 : 1) || r[1] > 2147483647) continue
+      updateRep(name, { range: [post ? -1 : 0, r[1]] })
+      changed = true
+    }
     for (const [name, values] of defs) {
       if (!declared.has(name) || bad.has(name) || repOf(name)?.range) continue
       let lo = Infinity, hi = -Infinity, known = true
