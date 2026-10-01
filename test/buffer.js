@@ -19,6 +19,28 @@ test('new ArrayBuffer(n) — basic allocation + byteLength', () => {
   is(exports.main(), 16)
 })
 
+test('ArrayBuffer allocation evaluates and coerces its length once', () => {
+  const src = `export function value(n, object) {
+    let calls = 0
+    function size() { calls++; return n }
+    const input = object ? { valueOf() { calls++; return n } } : null
+    try {
+      const b = new ArrayBuffer(object ? input : size())
+      return ['ok', b.byteLength, calls]
+    } catch (e) { return [e.name, calls] }
+  }`
+  const host = oracle(src)
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const got = jz(src, { optimize }).exports
+    for (const object of [0, 1]) {
+      for (const n of [0, 1, 4.5, 4.5, NaN, -0, -1, -Infinity, Infinity, 0, 4])
+        is(got.value(n, object), host.value(n, object), `O${optimize}, length ${n}, coercion ${object}`)
+      is(got.value(4294967296, object), ['RangeError', 1], 'unrepresentable byte count rejects after one evaluation')
+      is(got.value(4, object), ['ok', 4, 1], 'reusable instance recovers after the allocation limit')
+    }
+  }
+})
+
 test('unsupported buffer growth rejects cleanly', () => {
   const { fixed } = jz(`export let fixed = () => {
     let b = new SharedArrayBuffer(8)

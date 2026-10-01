@@ -116,6 +116,48 @@ test('Array constructor: a captured non-number stays one element and evaluates o
   }
 })
 
+test('constructors: a grouped comma stays one argument with ordered effects', () => {
+  const src = `export function value(n) {
+    let trace = 0
+    const a = new Array((((trace = trace * 10 + 1, n))))
+    const u = new Uint8Array(((trace = trace * 10 + 2, n)))
+    const b = new ArrayBuffer(((trace = trace * 10 + 3, n)))
+    const d = new Date(((trace = trace * 10 + 4, n)))
+    const s = new Set(((trace = trace * 10 + 5, [3, 4])))
+    const m = new Map(((trace = trace * 10 + 6, [[1, 2]])))
+    return [a.length, a[0], u.length, u[0], b.byteLength, d.getTime(), s.size, m.get(1), trace]
+  }
+  export function controls(n) {
+    let calls = 0
+    class Box { constructor(value) { this.value = value } }
+    const a = new Array((calls++, 1), (calls++, 2))
+    const b = new Box((((calls++, n))))
+    const view = new DataView(new ArrayBuffer(8), (calls++, 2), (calls++, 2))
+    const groups = Object.groupBy((calls++, [1, 2, 3]), v => v % 2)
+    return [a, b.value, view.byteOffset, view.byteLength, calls, new Array().length, new Uint8Array().length, groups[1]]
+  }
+  export function singleton(mode) {
+    let calls = 0
+    const a = Array((calls++, mode ? 3 : 'x'))
+    return [a.length, a[0], calls]
+  }
+  export function invalid(n) {
+    let calls = 0
+    try { new Array((calls++, n)); return ['ok', calls] }
+    catch (e) { return [e.name, calls] }
+  }`
+  const host = oracle(src)
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const got = runHost(src, { optimize })
+    for (const n of [0, 1, 4, 4, 0, 4]) {
+      is(got.value(n), host.value(n), `O${optimize}, length ${n}`)
+      is(got.controls(n), host.controls(n), 'multiple arguments and user constructors retain order')
+    }
+    for (const mode of [0, 1, 1, 0]) is(got.singleton(mode), host.singleton(mode), 'Array called without new keeps one grouped argument')
+    for (const n of [-1, 1.5, NaN, Infinity, 0, 4]) is(got.invalid(n), host.invalid(n), 'length validation observes the final value once')
+  }
+})
+
 test('array callbacks: map preserves its initial length while source storage changes', () => {
   const src = `export function value(n, mode) {
     let calls = 0

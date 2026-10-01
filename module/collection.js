@@ -510,7 +510,7 @@ export default (ctx) => {
       ['i32.le_u', ['local.get', `$${lenL}`], ['i32.const', initCap / 2]]]
     const out = allocPtr({ type: PTR.SET, len: 0, cap: capExpr, stride: SET_ENTRY + lane, tag: 'set' })
     return typed(['block', ['result', 'f64'],
-      ['local.set', `$${arrL}`, asF64(emit(['()', '__iter_arr_ctor', iterExpr]))],
+      ['local.set', `$${arrL}`, asF64(emit(['()', '__iter_arr_ctor', [',', iterExpr]]))],
       ['local.set', `$${lenL}`, ['i32.const', 0]],
       ['if', ['i32.eq',
           ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${arrL}`]]],
@@ -820,7 +820,7 @@ export default (ctx) => {
     const set = isMap ? '$__map_set' : '$__hash_set'
     ctx.runtime.throws = true
     return typed(['block', ['result', 'f64'],
-      ['local.set', `$${recv}`, asF64(emit(['()', '__iter_arr', items]))],
+      ['local.set', `$${recv}`, asF64(emit(['()', '__iter_arr', [',', items]]))],
       ['local.set', `$${cb}`, asF64(emit(fn))],
       // spec GroupBy step 2: IsCallable(callbackfn) — throw before iterating,
       // not an indirect-call trap mid-loop
@@ -2833,7 +2833,7 @@ export default (ctx) => {
   ctx.core.emit['__iter_arr_ctor'] = (src) => {
     const vt = ctx.summary?.at(ctx.func.current).mayBeNullishExpr(src) === true ? null : valTypeOf(src)
     if (vt === VAL.ARRAY || vt === VAL.STRING || vt === VAL.TYPED || vt === VAL.BUFFER || vt === VAL.SET || vt === VAL.MAP)
-      return emit(['()', '__iter_arr', src])
+      return emit(['()', '__iter_arr', [',', src]])
     inc('__is_nullish')
     const t = temp('iterc')
     return typed(['block', ['result', 'f64'],

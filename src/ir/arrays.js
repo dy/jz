@@ -11,6 +11,7 @@ import { typed } from './tag.js'
 import { temp, tempI32, freshId } from './locals.js'
 import { mkPtrIR } from './pointers.js'
 import { asF64 } from './numeric.js'
+import { isPureIR } from './classify.js'
 import { UNDEF_NAN } from './sentinels.js'
 import { dataAlign, dataPush, dataLen, pushStaticSlots } from '../static-data.js'
 
@@ -98,12 +99,21 @@ export function allocPtr({ type, aux = 0, len, cap, stride = 8, tag = 'ap' }) {
   // through the generic __alloc_hdr_n(len, cap, stride).
   const local = tempI32(tag)
   const irOf = v => typeof v === 'number' ? ['i32.const', v] : v
+  let capture
+  if (cap == null && typeof len !== 'number' && !isPureIR(len)) {
+    // The default capacity is the same evaluated length, not a second
+    // evaluation of a coercion/call/load used to compute that length.
+    const n = tempI32('len')
+    capture = ['local.set', `$${n}`, len]
+    len = ['local.get', `$${n}`]
+  }
   const args = [irOf(len), irOf(cap == null ? len : cap)]
   let helper
   if (stride === 8) helper = '__alloc_hdr'
   else { helper = '__alloc_hdr_n'; args.push(['i32.const', stride]) }
   inc(helper)
-  const init = ['local.set', `$${local}`, ['call', '$' + helper, ...args]]
+  const allocate = ['local.set', `$${local}`, ['call', '$' + helper, ...args]]
+  const init = capture ? ['block', capture, allocate] : allocate
   const ptr = mkPtrIR(type, aux, ['local.get', `$${local}`])
   return { local, init, ptr }
 }

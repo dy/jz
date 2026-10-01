@@ -1677,7 +1677,7 @@ const handlers = {
     // Wrap multi-arg ctor arg lists back into a single comma-group — the '()' op
     // expects callArgs as a single element (possibly comma-grouped).
     const wrapArgs = (args) => args.length === 0 ? [null]
-      : args.length === 1 ? [prep(args[0])]
+      : args.length === 1 ? renestSoleCommaArg(args).map(prep)
       : [[',', ...args.map(prep)]]
     if (builtinCtor && includeForRuntimeCtor(name)) {
       return ['()', `new.${name}`, ...wrapArgs(ctorArgs)]

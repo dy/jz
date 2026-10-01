@@ -113,6 +113,11 @@ callback's original receiver whenever named or rest parameters can observe it.
 Captured-local AST references belong to the base emitter table: array, typed
 array and collection lowerings may reuse an evaluated value independently of
 which language modules the current compilation loads.
+Constructor calls retain the same one-argument boundary as ordinary calls:
+a grouped comma evaluates left to right and passes only its final value.
+Forwarded unary iterator calls retain that boundary after preparation. Header
+allocation also captures an effectful length once before using it as capacity;
+the size check and any user coercion never run twice for one allocation.
 Array-literal lowering keeps its completed child walk even when no spread needs
 rewriting. Falling back after transforming children repeats work at every nested
 literal and can repeat stateful lowerings; holes and child locations stay intact.
