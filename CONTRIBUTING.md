@@ -220,6 +220,13 @@ and DataViews before an index loop begins. Known arrays, strings, typed arrays
 and collections retain their existing direct paths. Set construction skips only
 nullish inputs; typed elements passed into collections or grouping callbacks use
 the tagged element reader when BigInts are possible.
+Held Map and Set methods use shared prepared closures, with the ordinary call
+receiver ABI. Member reads keep their source optional-chain structure; own data
+properties and accessors take precedence over the native value. Runtime readers
+become boxed dispatch roots only when settled receiver kinds admit collections.
+Their capture-free closures keep canonical identity without module initialization.
+Intrinsic constructor and tag identities keep shadowed builtins from changing
+receiver checks.
 Map construction validates each entry object and reads its properties in key,
 value order. Entry getters retain ordinary call effects and can change the
 source array's live iteration length. Native Map copies keep their table path.

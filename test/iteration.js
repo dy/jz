@@ -365,3 +365,153 @@ test('iterator records accept callable objects and release records after empty b
     }
   }
 })
+
+test('held collection methods keep identity and receive the explicit call receiver', () => {
+  const src = `
+    const saved = new Map().set
+    function held(m, fn = m.get) { return fn }
+    export function f(n) {
+      const m = new Map(), other = new Map(), s = new Set(), otherSet = new Set()
+      const set = m.set, get = held(m), add = s['add'], has = otherSet.has
+      const out = [set === saved, set === other.set, add === otherSet.add,
+        s.keys === s.values, m.keys === m.values, typeof set, typeof add]
+      for (let i = 0; i < n; i++) {
+        out.push(set.call(other, i, BigInt(i) + 17n) === other)
+        out.push(add.apply(otherSet, [i]) === otherSet)
+      }
+      out.push(m.size, s.size, other.size, otherSet.size,
+        get.call(other, 0), get.call(other, n), has.call(otherSet, 0))
+      const keys = other.keys, values = other.values, entries = other.entries
+      out.push(Array.from(keys.call(other)), Array.from(values.call(other)), Array.from(entries.call(other)))
+      const del = other.delete, clear = otherSet.clear
+      out.push(del.call(other, 0), del.call(other, n), clear.call(otherSet), otherSet.size)
+      let total = 0
+      const each = other.forEach
+      each.call(other, (value, key) => { total += Number(value) + key })
+      out.push(total)
+      return out
+    }
+    export function prototype() {
+      const m = new Map(), s = new Set()
+      Map.prototype.set.call(m, 'x', 7)
+      Set.prototype.add.call(s, 8)
+      return [m.get('x'), s.has(8), m.set === Map.prototype.set, s.add === Set.prototype.add,
+        m.set.length,m.get.length,m.clear.length,m.forEach.length,s.add.length,s.keys.length]
+    }
+  `
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const got = jz(src, { optimize }).exports, want = oracle(src), retained = []
+    for (const n of [0, 1, 1, 4, 0, 4, 1]) {
+      const value = got.f(n), expected = want.f(n)
+      is(value, expected, `O${optimize}, n=${n}`)
+      retained.push([value, expected])
+    }
+    for (const [value, expected] of retained) is(value, expected, `retained O${optimize}`)
+    is(got.prototype(), want.prototype(), `prototype O${optimize}`)
+  }
+})
+
+test('held collection methods preserve own values, getters, receiver effects and optional reads', () => {
+  const src = `
+    let log = ''
+    class Own extends Map {
+      get set() { log += 'g'; return this.extra }
+    }
+    function read(value) { log += 'r'; return value }
+    export function f(mode) {
+      log = ''
+      const m = new Map()
+      let value = m
+      if (mode === 1) m.set = undefined
+      if (mode === 2) m.set = (key, value) => { log += 'c'; return key + value }
+      if (mode === 3) { value = new Own(); value.extra = (key, value) => { log += 'o'; return key + value } }
+      if (mode === 4) value = null
+      if (mode === 5) value = { get set() { log += 'p'; return 7 } }
+      const fn = read(value)?.set
+      let result = typeof fn
+      if (typeof fn === 'function') result = fn.call(value, 'x', 3)
+      return [result === value ? 'receiver' : result, log, m.size]
+    }
+    export function bracket(flag) {
+      const m = flag ? new Map() : undefined
+      return typeof m?.['set']
+    }
+  `
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const got = jz(src, { optimize }).exports, want = oracle(src)
+    for (const mode of [0, 0, 1, 2, 3, 4, 5, 0, 3]) is(got.f(mode), want.f(mode), `own O${optimize}, ${mode}`)
+    for (const flag of [0, 0, 1, 0, 1]) is(got.bracket(flag), want.bracket(flag), `optional O${optimize}, ${flag}`)
+  }
+})
+
+test('held collection methods reject incompatible receivers after evaluating arguments', () => {
+  const src = `
+    const m = new Map(), s = new Set()
+    export function f(mode) {
+      let log = ''
+      function arg(value) { log += 'a'; return value }
+      const set = m.set, add = s.add
+      try {
+        if (mode === 0) set(arg('x'), arg(3))
+        if (mode === 1) set.call(s, arg('x'), arg(3), arg(4))
+        if (mode === 2) add.call(m, arg(2))
+        if (mode === 3) set.call(null, arg('x'), arg(3))
+        if (mode === 4) add.call(7, arg(2))
+        if (mode === 5) add.call(17n, arg(2))
+        if (mode === 6) set.call(m, arg('x'), arg(3))
+        return ['ok', log, m.get('x')]
+      } catch (e) { return [e instanceof TypeError, log] }
+    }
+  `
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const got = jz(src, { optimize }).exports, want = oracle(src)
+    for (const mode of [0, 0, 1, 2, 3, 4, 5, 6, 0, 6]) is(got.f(mode), want.f(mode), `receiver O${optimize}, ${mode}`)
+  }
+})
+
+test('held collection method helpers do not resolve user shadowed builtin names', () => {
+  const src = `class Map { get() { return 3 } }
+    class Set { add() { return 4 } }
+    class TypeError { constructor() { throw 9 } }
+    export function f() { const a = new Map(), b = new Set(), get = a.get, add = b.add; return [get(), add()] }
+  `
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const got = jz(src, { optimize }).exports, want = oracle(src)
+    is(got.f(), want.f(), `shadow O${optimize}`)
+    is(got.f(), want.f(), `shadow repeat O${optimize}`)
+  }
+})
+
+test('held collection method reads preserve continued optional chains and grouped throws', () => {
+  const src = `export function f(flag){const m=flag?new Map():null;let grouped;
+    try{grouped=(m?.set).extra}catch(e){grouped=e instanceof TypeError}
+    return[typeof m?.set,m?.set.extra,typeof m?.['set'],m?.['set'].extra,grouped]}
+    export function own(){const m=new Map(),fn=m.set;fn.extra=7;return[m.set.extra,new Map().set.extra]}`
+  for(const optimize of levels(0,1,2,3,'size')){
+    const got=jz(src,{optimize}).exports,want=oracle(src)
+    for(const flag of [0,0,1,0,1])is(got.f(flag),want.f(flag),`chain O${optimize}, ${flag}`)
+    // Avoid mutating Node's shared native method from the oracle: the identity
+    // invariant here is the same method read through distinct receivers.
+    is(got.own(),[7,7],`method own field O${optimize}`)
+    is(got.f(1),['function',7,'function',7,7],`retained method own field O${optimize}`)
+    is(got.own(),[7,7],`repeated method own field O${optimize}`)
+  }
+})
+
+
+test('held collection method demand follows helpers, defaults and closure scopes across compiles', () => {
+  const a = `function make(){return new Map()}
+    function choose(m, fn=m.set){return fn}
+    export function f(n){const m=make(),read=()=>m.set,a=read(),b=choose(m);
+      a.call(m,'x',n);return[a===b,m.get('x'),typeof make().set]}`
+  const b = `export function f(n){const row={get:n},read=()=>row.get;return read()+2}`
+  for(const optimize of levels(0,1,2,3,'size')){
+    const retained=[]
+    for(const src of [a,a,b,a]){
+      const got=jz(src,{optimize,sourceInline:false}).exports,want=oracle(src)
+      for(const n of [0,0,7,-1,0])is(got.f(n),want.f(n),`scope O${optimize}, ${n}`)
+      retained.push([got,want])
+    }
+    for(const [got,want] of retained)is(got.f(4),want.f(4),`retained compiler result O${optimize}`)
+  }
+})

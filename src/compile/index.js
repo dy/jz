@@ -219,6 +219,16 @@ export function assemble(ast, profiler) {
     return built.summary
   }
   ctx.summary = summarizeProgram()
+  // A syntactic method name alone does not make its native value reachable.
+  // Root the prepared reader only when a receiver's settled kind admits it.
+  for (const reader of ctx.funcs.builtinMethodReaders?.values() ?? []) {
+    reader.active = reader.sites.some(([scope, recv]) => {
+      const kind = ctx.summary.at(scope).kindOfExpr(recv)
+      return hasTag(kind, K.MAP) || hasTag(kind, K.SET)
+    })
+    if (reader.active) ctx.funcs.runtimeRoots.add(reader.name)
+    reader.sites = null
+  }
   // Include imported functions for call resolution (e.g. template interpolations).
   // Also register a synthesized sig in func.map so emit's arity-aware branches see
   // the import's declared param count — needed for arg pad/truncate to match it.

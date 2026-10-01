@@ -258,5 +258,6 @@ export const registerErrorClasses = () => {
   // handler falls to the generic "unknown ctor → plain call" path — the same
   // ctx.core.emit['Error'] key a bare call resolves to. Correct per spec:
   // `Error(x)` without `new` also constructs a fresh Error.
-  for (const cls of ERR_CLASS_NAMES) ctx.core.emit[cls] = (msg) => buildErrorObject(cls, msg)
+  for (const cls of ERR_CLASS_NAMES)
+    ctx.core.emit[cls] = ctx.core.emit['new.' + cls] = (msg) => buildErrorObject(cls, msg)
 }

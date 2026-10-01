@@ -31,9 +31,9 @@
  * @module prepare
  */
 
-import { ctx, emitArity } from '../ctx.js'
+import { ctx, emitArity, PTR } from '../ctx.js'
 import { TIMER_NAMES, includeForCallableValue, includeForTimerRuntime, includeModule } from '../autoload.js'
-import { T, walkAst } from '../ast.js'
+import { T, MUTATE_OPS, walkAst } from '../ast.js'
 import { MUTATING_ARRAY_METHODS } from './const-fold.js'
 import { prep } from './handlers.js'
 import { scanReassignedTopLevel } from './ident-purity.js'
@@ -52,9 +52,58 @@ import { frameNode } from '../function.js'
 // top-level arrow of the builtin's arity, lifted like any user function, so
 // the closure machinery carries it. Callee positions and property keys are
 // not values. The wrapper is minted once per builtin.
+const COLLECTION_METHODS = new Map([
+  ['set', ['Map']], ['get', ['Map']], ['add', ['Set']],
+  ...['has', 'delete', 'clear', 'keys', 'values', 'entries', 'forEach'].map(name => [name, ['Map', 'Set']]),
+])
 const wrapBuiltinValues = (ast) => {
   const wrappers = new Map()
   const inits = []
+  const sourceFuncs = ctx.funcs.list.slice()
+  const methodReaders = new Map()
+  // These are compiler intrinsics, independent of same-named user bindings.
+  const receiverIs = (name, ctor) => ['&&', ['===', ['typeof', name], ['str', 'object']],
+    ['===', ['()', '__ptr_type', name], [null, PTR[ctor.toUpperCase()]]]]
+  const declare = (name, params, body) => {
+    const decl = prep(['const', ['=', name, ['=>', ['()', params], body]]])
+    if (decl != null) inits.push(decl)
+    return name
+  }
+  const methodFor = (ctor, prop) => {
+    if (ctor === 'Set' && prop === 'keys') prop = 'values'
+    const key = `.${ctor.toLowerCase()}:${prop}`
+    let name = wrappers.get(key)
+    if (name) return ['()', name, [',']]
+    includeModule('collection')
+    const native = ctx.core.emit[key] ? key : '.' + prop
+    name = `${T}bm${wrappers.size}_${ctor}_${prop}`
+    wrappers.set(key, name)
+    const params = Array.from({ length: emitArity(ctx.core.emit[native], '.' + prop) - 1 }, (_, i) => `${T}a${i}`)
+    const recv = `${T}receiver`
+    let result = ['()', native, [',', recv, ...params]]
+    if (prop === 'has' || prop === 'delete') result = ['!', ['!', result]]
+    if (prop === 'forEach') params[1] = ['=', params[1], []]
+    const wrapper = ['=>', ['()', params.length === 1 ? params[0] : [',', ...params]], ['{}', [';',
+      ['const', ['=', recv, ['this']]],
+      ['if', ['!', receiverIs(recv, ctor)], ['throw', ['()', 'new.TypeError', ['str', 'incompatible method receiver']]]],
+      ['return', result]]]]
+    declare(name, [','], ['{}', ['return', wrapper]])
+    return ['()', name, [',']]
+  }
+  const readerFor = prop => {
+    if (methodReaders.has(prop)) return methodReaders.get(prop)
+    const families = COLLECTION_METHODS.get(prop)
+    if (!families) return null
+    const name = `${T}br${methodReaders.size}_${prop}`, recv = `${T}receiver`
+    const reader = { name, sites: [] }; methodReaders.set(prop, reader)
+    const body = [['if', ['()', 'Object.hasOwn', [',', recv, ['str', prop]]], ['return', ['__data_prop', recv, ['str', prop]]]]]
+    for (const ctor of families) body.push(['if', receiverIs(recv, ctor), ['return', methodFor(ctor, prop)]])
+    body.push(['return', ['__data_prop', recv, ['str', prop]]])
+    declare(name, recv, ['{}', [';', ...body]])
+    ctx.funcs.list[ctx.funcs.list.length - 1].sig.dispatcher = true
+    ;(ctx.funcs.builtinMethodReaders ||= new Map()).set(prop, reader)
+    return reader
+  }
   const isBuiltinValue = (s) => typeof s === 'string' && s.indexOf('.') > 0
     && ctx.core.emit[s] != null && emitArity(ctx.core.emit[s], s) > 0 && !ctx.funcs.names.has(s)
   const wrapperFor = (name) => {
@@ -70,8 +119,8 @@ const wrapBuiltinValues = (ast) => {
     ;(ctx.funcs.builtinWrapped ||= new Map()).set(w, name)
     return w
   }
-  const visit = (n) => {
-    if (!Array.isArray(n) || n[0] == null || n[0] === 'str' || n[0] === '`' || n[0] === '//') return
+  const visit = (n, reference = false, scope = '') => {
+    if (!Array.isArray(n) || n[0] == null || n[0] === 'str' || n[0] === '`' || n[0] === '//') return n
     const op = n[0]
     for (let i = 1; i < n.length; i++) {
       const child = n[i]
@@ -80,12 +129,23 @@ const wrapBuiltinValues = (ast) => {
         if ((op === '.' || op === '?.') && i === 2) continue
         if (op === ':' && i === 1) continue
         if (isBuiltinValue(child)) n[i] = wrapperFor(child)
-      } else visit(child)
+      } else n[i] = visit(child, (op === '()' || op === '?.()' || op === 'delete' || MUTATE_OPS.has(op)) && i === 1, op === '=>' ? n[2] : scope)
     }
+    const read = op === '.' || op === '?.' ||
+      (op === '[]' || op === '?.[]') && n.length === 3 && n[2]?.[0] === 'str'
+    if (!read || reference) return n
+    const prop = op === '.' || op === '?.' ? n[2] : n[2][1]
+    const ctor = typeof n[1] === 'string' && n[1].endsWith('.prototype') ? n[1].slice(0, -10) : null
+    if (ctor && COLLECTION_METHODS.get(prop)?.includes(ctor)) return methodFor(ctor, prop)
+    readerFor(prop)?.sites.push([scope, n[1]])
+    return n
   }
-  visit(ast)
-  if (ctx.module.moduleInits) for (const mi of ctx.module.moduleInits) visit(mi)
-  for (const f of ctx.funcs.list) if (f.body) visit(f.body)
+  ast = visit(ast)
+  if (ctx.module.moduleInits) for (let i = 0; i < ctx.module.moduleInits.length; i++) ctx.module.moduleInits[i] = visit(ctx.module.moduleInits[i])
+  for (const f of sourceFuncs) {
+    if (f.body) f.body = visit(f.body, false, f.name)
+    if (f.defaults) for (const name of Object.keys(f.defaults)) f.defaults[name] = visit(f.defaults[name], false, f.name)
+  }
   if (!inits.length) return ast
   return Array.isArray(ast) && ast[0] === ';' ? [';', ...inits, ...ast.slice(1)] : [';', ...inits, ast]
 }

@@ -2271,8 +2271,9 @@ export default (ctx) => {
   const accessorRead = (obj, prop) => {
     const vt = typeof obj === 'string' ? lookupValType(obj) : valTypeOf(obj)
     // OBJECT, unknown, or CLOSURE (a class's static accessors live on its
-    // factory as dynamic properties); every other kind carries no accessors
-    if (vt != null && vt !== VAL.OBJECT && vt !== VAL.CLOSURE) return null
+    // factory as dynamic properties). Derived builtin classes can also install
+    // an accessor beside their native storage.
+    if (vt != null && vt !== VAL.OBJECT && vt !== VAL.CLOSURE && !ctx.transform.dynamicAccessorNames?.has(prop)) return null
     const getter = prop + ACCESSOR_GET
     // a class's getter is a function of the receiver (class-dispatch.js);
     // any other receiver keeps the slot paths below
@@ -2341,6 +2342,9 @@ export default (ctx) => {
     ['drop', asF64(emit(obj))], asF64(emit(['{}']))], 'f64'))
 
   ctx.core.emit['__raw_prop'] = (obj, prop) => dotRead(obj, prop, true)
+  // The native method-value readers have already checked own membership;
+  // their fallback reads data without recursively selecting a method value.
+  ctx.core.emit['__data_prop'] = (obj, prop) => emitPropAccess(emit(obj), obj, prop[1])
   ctx.core.emit['.'] = (obj, prop) => dotRead(obj, prop, false)
   const dotRead = (obj, prop, raw) => {
     // A rest slot view's length is its argument count (compile/rest-view.js).
@@ -2519,6 +2523,9 @@ export default (ctx) => {
     // method (which would materialize a view / run the probe).
     const ptRep = typeof obj === 'string' ? repOf(obj) : null
     const ptVt = summaryTagOf(receiverKind) === K.CLOSURE ? VAL.CLOSURE : ptRep ? ptRep.val : valTypeOf(obj)
+    const methodReader = ctx.funcs.builtinMethodReaders?.get(prop)
+    if (methodReader?.active && (ptVt == null || ptVt === VAL.MAP || ptVt === VAL.SET))
+      return emit(['()', methodReader.name, obj])
     if (ptVt) {
       const tpKey = `.${ptVt}:${prop}`
       const tpEmitter = ctx.core.emit[tpKey]
@@ -2655,9 +2662,12 @@ export default (ctx) => {
     // an accessor name reads through the hoisted temp's own `.` dispatch
     // (the runtime probe; the receiver is evaluated once either way)
     const sid = ctx.summary?.at(ctx.func.current).objectSidOfExpr(obj)
-    if (!raw && ctx.transform.accessorNames?.has(prop) && (vt == null || vt === VAL.OBJECT || vt === VAL.CLOSURE)
+    if (!raw && ctx.transform.accessorNames?.has(prop) && (vt == null || vt === VAL.OBJECT || vt === VAL.CLOSURE || ctx.transform.dynamicAccessorNames?.has(prop))
         && accessorHolders(obj, prop + ACCESSOR_GET) !== 0)
       return emit(['.', t, prop])
+    const methodReader = ctx.funcs.builtinMethodReaders?.get(prop)
+    if (methodReader?.active && (vt == null || vt === VAL.MAP || vt === VAL.SET))
+      return emit(['()', methodReader.name, t])
     let receiver = typed(['local.get', `$${t}`], 'f64')
     // The enclosing null check establishes presence. Retain the summary's
     // exact layout on this captured receiver, including raw BigInt fields.

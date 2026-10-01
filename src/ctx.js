@@ -107,6 +107,7 @@ function createFunctions() {
     exports: Object.create(null), // export names may shadow Object.prototype
     globalDevirt: null,
     builtinWrapped: null,   // a builtin's value wrapper (prepare/entry.js) → the builtin key it forwards to
+    builtinMethodReaders: null, // property name → prepared native method-value reader and receiver sites
     runtimeRoots: new Set(), // prepared functions called by runtime kernels
     // Fixed-rest variants precede ProgramIndex: { variant, origin, kind }.
     // ProgramIndex consumes this queue once; later variants register directly.
