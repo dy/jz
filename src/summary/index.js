@@ -2668,10 +2668,12 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     for (const [sid, i] of byProp.get(prop) ?? NO_SLOTS) if (lostSchema(sid)) escape(slots(sid)[i])
     escape(sideByProp.get(prop) ?? K.NONE)
   }
-  // An unknown-key read can expose any lost shape's fields. Record the effect
-  // once; after each kind round replay it over the latest fields and shapes.
-  let lostFieldsRead = false
-  const escapeLostFields = () => { lostFieldsRead = true }
+  // Number keys expose only canonical Number property names (including NaN
+  // and Infinity, but not "-0") and their getters. Other keys can expose
+  // every lost field.
+  // Replay the two effects once per kind round over late fields and shapes.
+  let lostFieldsRead = 0
+  const escapeLostFields = (numeric = false) => { lostFieldsRead |= numeric ? 1 : 2 }
   const member = (op, recv, prop) => {
     const t = tagOf(recv)
     // A read through a nullish receiver throws (the optional form answers undefined).
@@ -2828,12 +2830,12 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       if (t === K.OBJECT && paramOf(recv) !== UNKNOWN) { let k = K.NONE; for (const sid of shapesOf(paramOf(recv))) { for (const s of slots(sid)) k = merge(k, s); k = merge(k, anySideOf(sid)) } return orAbsent(k) }
       if (dictOrObject(recv)) {
         const c = cell(paramOf(recv))
-        if (cellLostObject.has(c)) { escapeLostFields(); return ANY }
+        if (cellLostObject.has(c)) { escapeLostFields(ik === NUMBER); return ANY }
         let k = elemOf(recv)
         for (const sid of shapesInCell(c)) { for (const s of slots(sid)) k = merge(k, s); k = merge(k, anySideOf(sid)) }
         return orAbsent(k)
       }
-      if (hasTag(recv, K.OBJECT)) escapeLostFields()
+      if (hasTag(recv, K.OBJECT)) escapeLostFields(ik === NUMBER)
       return ANY
     }
     if (op === '(') return expr(n[1])
@@ -4230,7 +4232,14 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     const seen = new Set()
     for (const key of declared.get(MODULE)?.values() ?? []) retain(kinds[key] ?? K.NONE, seen)
     for (const id of hostClosures) for (const key of captures.get(id) ?? []) retain(kinds[key] ?? K.NONE, seen)
-    if (lostFieldsRead) for (const prop of byProp.keys()) escapeLostReads(prop)
+    if (lostFieldsRead) for (const prop of byProp.keys()) {
+      let name = prop
+      if (!(lostFieldsRead & 2) && accessors?.size && prop.endsWith(ACCESSOR_GET)) {
+        const base = prop.slice(0, -ACCESSOR_GET.length)
+        if (accessors.has(base)) name = base
+      }
+      if (lostFieldsRead & 2 || String(+name) === name) escapeLostReads(prop)
+    }
     settleArgs()
     return changed
   })
@@ -4275,7 +4284,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   if (seeded.length) {
     kinds.length = 0; incoming.length = 0; fields.length = 0; objectKinds.clear(); decisions.clear(); opaqueSchemas.clear(); hostSchemas.clear(); retainedSchemas.clear(); hostArrays.clear(); retainedArrays.clear(); hostClosures.clear(); results.clear(); escaped.clear(); certainKeys.clear(); boolKeys.clear(); for (let i = 0; i < elems.length; i++) { elems[i] = K.NONE; cellUp[i] = i }
     tuples.clear(); lens.clear(); stores.clear(); built.clear(); grown.clear(); unknown.clear(); presentReads.clear(); spreadSources.clear(); argRanges.clear(); roundArgs.clear(); moved.clear()
-    pendingAll = false; pendingIndexed = false; wildValues = K.NONE; wildProps.clear(); sideProps.clear(); sideWild.clear(); closureProps.clear(); sideByProp.clear(); foreignObjects = false; foreignProps.clear(); lostFieldsRead = false; deletable.clear(); deleteReach.unknown = false; keysSeen.clear(); copiedSchemas.clear()
+    pendingAll = false; pendingIndexed = false; wildValues = K.NONE; wildProps.clear(); sideProps.clear(); sideWild.clear(); closureProps.clear(); sideByProp.clear(); foreignObjects = false; foreignProps.clear(); lostFieldsRead = 0; deletable.clear(); deleteReach.unknown = false; keysSeen.clear(); copiedSchemas.clear()
     seed(seeded)
     fixpoint()
     if (unnamed.size && registerLayouts?.([...unnamed.values()])) return null

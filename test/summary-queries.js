@@ -968,6 +968,65 @@ test('summary reads: unknown keys revisit late nested fields across reseeding an
   }
 })
 
+test('summary reads: numeric unknown keys expose Number names without opening named closures', () => {
+  const numeric = ['0', '-1', '1.5', 'NaN', 'Infinity', '-Infinity', '1e+21', '0.000001', '1e-7']
+  const named = ['', '-0', '01', '+1', '1.0', '1e21', ' 1', 'encode', 'undefined', 'null']
+  const props = [...numeric, ...named]
+  const funcs = props.map((_, i) => ({ name: 'f' + i, sig: { params: [{ name: 'x' }] }, body: 'x' }))
+  let retained
+  for (const [key, narrow, exact] of [
+    [lit(-0), true], [lit(NaN), true], [lit(Infinity), true], [['u+', 'outside'], true],
+    ['outside', false], [['?', 'flag', lit(0), lit(undefined)], false],
+    [['?', 'flag', lit(0), lit(null)], false], [['?', 'flag', lit(0), ['str', 'encode']], false],
+    [['str', '0'], false, '0'], [['str', '-0'], false, '-0'],
+  ]) for (const early of [false, true]) for (const reseed of [false, true]) {
+    const read = ['var', ['=', 'read', ['[]', 'outside', key]]]
+    const ast = [';', ...(early ? [read, read] : []),
+      ['const', ['=', 'o', ['{}', ...props.map((p, i) => [':', p, 'f' + i])]]],
+      ['const', ['=', 'lost', ['?', 'flag', 'o', 'outside']]],
+      ...funcs.map(f => ['()', f.name, lit(1)]), ...(early ? [] : [read, read]),
+    ]
+    const summary = summarize(ast, {
+      funcs: reseed ? [...funcs, { name: 'scale', sig: { params: [{ name: 'n' }] }, body: ['*', 'n', lit(2)] }] : funcs,
+      schemas: [props], brandOf: () => null, imports: new Map(), exported: f => f.name === 'scale',
+    })
+    for (let i = 0; i < props.length; i++) {
+      const exposed = exact === undefined ? !narrow || i < numeric.length : props[i] === exact
+      is(summary.escaped.has('f' + i), exposed, `${props[i]}: numeric=${narrow}, early=${early}, reseed=${reseed}`)
+      is(summary.at('f' + i).paramKindOf('x'), kind(exposed ? K.ANY : K.NUMBER), 'exposed closures admit unknown callers')
+    }
+    if (reseed) is(summary.at('scale').kindOf('n'), kind(K.NUMBER), 'numeric demand reran the effects')
+    retained ??= summary
+    is(retained.at('f' + numeric.length).paramKindOf('x'), kind(K.NUMBER), 'later broad effects leave the retained reader unchanged')
+  }
+})
+
+test('summary reads: numeric unknown keys invoke numeric getters and expose their results', () => {
+  const funcs = [
+    { name: 'numeric', sig: { params: [] }, body: 'leaf' },
+    { name: 'named', sig: { params: [] }, body: lit(0) },
+    { name: 'setter', sig: { params: [{ name: 'x' }] }, body: 'x' },
+    { name: 'leaf', sig: { params: [{ name: 'x' }] }, body: 'x' },
+  ]
+  const ast = [';',
+    ['const', ['=', 'o', ['{}', [':', '0__get', 'numeric'], [':', 'name__get', 'named'], [':', '0__set', 'setter']]]],
+    ['const', ['=', 'lost', ['?', 'flag', 'o', 'outside']]],
+    ['var', ['=', 'read', ['[]', 'outside', ['u+', 'key']]]],
+  ]
+  const summary = summarize(ast, { funcs, schemas: [['0__get', 'name__get', '0__set']],
+    brandOf: () => null, imports: new Map(), exported: () => false, accessors: new Set(['0', 'name']) })
+  is(summary.escaped.has('numeric'), true, 'the numeric getter may run through the unknown receiver')
+  is(summary.escaped.has('leaf'), true, 'its returned closure reaches an unknown caller')
+  is(summary.escaped.has('named'), false, 'a numeric key cannot invoke a named getter')
+  is(summary.escaped.has('setter'), false, 'reading the numeric property does not invoke its setter')
+  const broad = ['var', ['=', 'read', ['[]', 'outside', 'key']]]
+  for (const input of [[';', broad, ast], [';', ast, broad]]) {
+    const joined = summarize(input, { funcs, schemas: [['0__get', 'name__get', '0__set']],
+      brandOf: () => null, imports: new Map(), exported: () => false, accessors: new Set(['0', 'name']) })
+    for (const f of funcs) is(joined.escaped.has(f.name), true, 'numeric and arbitrary key effects accumulate in either order')
+  }
+})
+
 test('summary stores: repeated effects replay on late host shapes and after numeric reseeding', () => {
   for (const early of [false, true]) for (const numericFirst of [false, true]) for (const reseed of [false, true]) {
     const record = ['const', ['=', 'a', ['{}', [':', '0', lit(1)], [':', 'value', lit(2)]]]]
