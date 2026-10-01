@@ -117,7 +117,11 @@ const publishBindingHulls = hulls => {
   if (hulls) for (const name of hulls.keys()) {
     const range = hulls.get(name)
     if (!range) continue
-    updateRep(name, { range })
+    // Independent whole-binding proofs meet. A fractional recurrence may
+    // bound its word projection more tightly than the integer interpreter.
+    const prev = ctx.func.localReps?.get(name)?.range
+    if (prev && prev[0] >= range[0] && prev[1] <= range[1]) continue
+    updateRep(name, { range: prev ? [Math.max(prev[0], range[0]), Math.min(prev[1], range[1])] : range })
   }
 }
 

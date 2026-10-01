@@ -354,6 +354,27 @@ test('invariant: deferred storage facts share signature and body invalidation', 
   is(analyzeBody(body).locals.get('i'), 'f64', 'the replacement wide initializer cannot borrow the previous hull')
 })
 
+test('invariant: storage hull publication retains independent fractional projection proofs', () => {
+  if (onKernel()) return
+  for (const [start, step, expected] of [[1, 0.3103103103103103, [1, 10]],
+    [1, 0.3103103103103103, [1, 10]], [-1, -0.3103103103103103, [-10, -1]],
+    [20, 0.3103103103103103, [20, 29]], [1, 0.3103103103103103, [1, 10]]]) {
+    for (const deferred of [false, true]) {
+      reset(emitter, GLOBALS, emissionHooks())
+      const body = parse(`let phase=${start};for(let i=0;i<31;i++){const index=phase|0;phase+=${step}}`)
+      const loop = body[2]
+      body[2] = ['for', ...loop[1].slice(1), loop[2]]
+      ctx.func = createActiveFunction({ body })
+      if (deferred) analyzeValueFacts(body)
+      const facts = analyzeBody(body)
+      is(ctx.func.localReps.get('index').range, expected, `${deferred ? 'deferred' : 'cold'} ${start}, ${step}`)
+      is(facts.locals.get('phase'), 'f64', 'the recurrence retains Number arithmetic')
+      is(facts.locals.get('index'), 'i32', 'only the explicit word projection has integer storage')
+      ok(analyzeBody(body) === facts, 'repeated demand reuses the same completed proof')
+    }
+  }
+})
+
 test('invariant: a signature retype invalidates a cached body on its next read', () => {
   if (onKernel()) return
   reset(emitter, GLOBALS, emissionHooks())

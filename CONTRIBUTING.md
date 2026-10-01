@@ -175,6 +175,8 @@ Unconditional address caches retain that ownership proof until overwritten.
 Constant fractional recurrences use outward-rounded binary-grid bounds to prove
 their truncated indices. The accumulator keeps every original floating addition;
 unknown writes or a missing reset on a nested-loop entry decline the proof.
+Independent whole-binding hulls intersect when published, so the integer
+interpreter cannot widen a tighter fractional projection back to the full word.
 Accumulator hulls bound upward and downward motion separately; a skipped
 opposing step must never cancel motion across iterations.
 Vector maps, gathers, ramps, reductions and stencils share the span-bound
