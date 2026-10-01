@@ -97,7 +97,7 @@ test('kernel parity: static data respects maximum pages and failed assembly leav
   const src = `export function f(){return ${JSON.stringify(literal)}}`
   for (const compiler of [compile, compileViaKernel]) {
     for (const maximum of [1, 1, 2, 1, 2]) {
-      const opts = { memory: { maximum } }
+      const opts = { optimize: 0, memory: { maximum } }
       if (maximum === 1) throws(() => compiler(src, opts), /exceeding memory.maximum/)
       else {
         const p = instantiate(compiler(src, opts))
@@ -107,7 +107,7 @@ test('kernel parity: static data respects maximum pages and failed assembly leav
       }
     }
     is(instantiate(compiler('export function f(){return "ok"}', { memory: { maximum: 1 } })).exports.f(), 'ok', 'smaller static data after assembly rejection')
-    is(instantiate(compiler(src)).exports.f(), literal, 'default maximum after bounded compilation')
+    is(instantiate(compiler(src, { optimize: 0 })).exports.f(), literal, 'default maximum after bounded compilation')
   }
 })
 
