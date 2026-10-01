@@ -1,7 +1,8 @@
 /**
  * Symbol module — interned atoms via NaN-boxing.
  *
- * Type=0 (ATOM): aux=atomId, offset=0.
+ * Type=0 (ATOM): aux>=16. Interned atoms have offset=0; runtime identities
+ * use the remaining payloads, excluding the private absent-slot marker.
  *
  * Reserved atom IDs (0-15):
  *   0     = reserved
@@ -10,7 +11,7 @@
  *   3-15  = reserved
  *
  * User symbols start at ID 16.
- * Symbol('name')     → unique atom per call site (compile-time)
+ * Symbol('name')     → a fresh identity on every invocation
  * Symbol.for('name') → interned by name (same name = same ID across call sites)
  *
  * Symbols are compared by identity (ptr equality), not by name.
@@ -18,8 +19,9 @@
  * @module symbol
  */
 
-import { mkPtrIR } from '../src/ir.js'
-import { err, inc, PTR } from '../src/ctx.js'
+import { mkPtrIR, typed, tempI64, throwErrorIR } from '../src/ir.js'
+import { err, inc, PTR, declGlobal } from '../src/ctx.js'
+import { atomNanHex, TOMB_NAN } from '../layout.js'
 
 // fix/wrong-values-3: exported — module/json.js's __json_omit needs this
 // exact threshold to tell a genuine user Symbol apart from a canonical
@@ -34,8 +36,11 @@ export default (ctx) => {
     ctx.runtime.atom = { table: new Map(), next: RESERVED }
   }
 
-  /** Allocate a new unique atom ID. */
-  const nextAtom = () => ctx.runtime.atom.next++
+  /** Allocate an interned atom's auxiliary id; the low word stays zero. */
+  const nextAtom = () => {
+    if (ctx.runtime.atom.next > 0x7fff) err('Too many interned symbols')
+    return ctx.runtime.atom.next++
+  }
 
   /** Get or create interned atom ID for name. */
   const internAtom = (name) => {
@@ -45,8 +50,19 @@ export default (ctx) => {
     return id
   }
 
-  // Symbol('name') → unique atom (each call site gets a different ID)
-  ctx.core.emit['Symbol'] = (nameExpr) => mkPtrIR(PTR.ATOM, nextAtom(), 0)
+  declGlobal('__symbol_id', 'i64', atomNanHex(RESERVED))
+  ctx.core.emit['Symbol'] = (nameExpr) => {
+    const id = tempI64('symbol')
+    return typed(['block', ['result', 'f64'],
+      ['local.set', `$${id}`, ['i64.add', ['global.get', '$__symbol_id'], ['i64.const', 1]]],
+      // A carry must skip the zero-offset domain owned by Symbol.for.
+      ['if', ['i32.eqz', ['i32.wrap_i64', ['local.get', `$${id}`]]],
+        ['then', ['local.set', `$${id}`, ['i64.add', ['local.get', `$${id}`], ['i64.const', 1]]]]],
+      ['if', ['i64.ge_u', ['local.get', `$${id}`], ['i64.const', TOMB_NAN]],
+        ['then', ['drop', throwErrorIR('RangeError', 'Symbol identity space exhausted')]]],
+      ['global.set', '$__symbol_id', ['local.get', `$${id}`]],
+      ['f64.reinterpret_i64', ['local.get', `$${id}`]]], 'f64')
+  }
 
   // Symbol.for('name') → interned atom (same name = same ID)
   ctx.core.emit['Symbol.for'] = (nameExpr) => {
