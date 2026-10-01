@@ -249,6 +249,12 @@ Memory that cannot grow, past `memory: { maximum }`, the 4 GiB of wasm32 or
 the engine's limit, throws the RangeError of an allocation, which the program
 can catch; after a `memory.reset()` the module runs again.
 
+Host Number values remain numbers, including NaNs with custom payloads. Pass
+allocated memory by its bigint handle from `memory.Array`, `memory.Float64Array`
+or the other constructors. Raw `memory.read` and pointer codec helpers also
+accept legacy floating-point carriers; ordinary argument and value marshaling
+does not interpret Number payloads as handles.
+
 For DSP, `memory: { fixed: ['process'] }` checks the final Wasm call graph:
 the selected exports and their typed variants must run without heap allocation,
 memory growth, host calls, recursion or reachability tracing. Initialization

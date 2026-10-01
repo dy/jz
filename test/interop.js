@@ -670,6 +670,97 @@ test('interop: boxes carry as i64 BigInt, never an f64 NaN-box (JSC-safe codec)'
   is(exports.f(), 'hello world')                 // and the boxed result still decodes correctly
 })
 
+test('interop: semantic Number ingress does not decode NaN payloads as handles', () => {
+  const mem=interop.memory(),a=new Float64Array(1),w=new Uint32Array(a.buffer)
+  const nan=(hi,lo=0)=>{w[0]=lo;w[1]=hi;return a[0]}
+  const array=mem.Array([0,0]),seen=[]
+  for(const hi of [0x7ff80002,0x7ff80002,0x7ff98000,0x7fff8000,0xfff80002,0x7ff00001,0x7ff80002]){
+    const value=nan(hi)
+    ok(Number.isNaN(interop.coerce(value)),'semantic coercion retains a Number')
+    is(interop.f64ToI64(interop.coerce(value)),0x7ff8000000000000n,'semantic coercion canonicalizes the payload')
+    for(const ptr of [mem.Array([value]),mem.Hash({value}),mem.Object({value}),mem.Array([[value],{value}])]){
+      const out=mem.read(ptr)
+      const first=Array.isArray(out)?Array.isArray(out[0])?out[0][0]:out[0]:out.value
+      ok(Number.isNaN(first),'container round-trip retains numeric NaN')
+      seen.push(out)
+    }
+    mem.write(array,[value,undefined])
+    const out=mem.read(array)
+    ok(Number.isNaN(out[0]),'in-place write retains numeric NaN')
+    ok(Object.hasOwn(out,1)&&out[1]===undefined,'present undefined remains distinct')
+  }
+  ok(Number.isNaN(seen[0][0]),'earlier decoded values survive later allocations')
+  is(mem.read(mem.Array([])),[],'empty ingress')
+  const text=mem.String('legacy value'),legacy=interop.i64ToF64(text)
+  is(mem.read(legacy),'legacy value','raw read still accepts legacy floating carriers')
+  is([interop.type(legacy),interop.aux(legacy),interop.offset(legacy)],[interop.type(text),interop.aux(text),interop.offset(text)],'raw pointer helpers retain legacy bit decoding')
+  is(mem.read(mem.Array([text])),['legacy value'],'explicit bigint handles still cross semantic containers')
+  const raw=nan(0x7ff80002,17),ptr=mem.Float64Array(a)
+  is(interop.f64ToI64(mem.read(ptr)[0]),interop.f64ToI64(raw),'typed bulk transfer keeps every payload bit')
+  mem.write(ptr,a)
+  is(interop.f64ToI64(mem.read(ptr)[0]),interop.f64ToI64(raw),'typed writes keep every payload bit')
+  throws(()=>mem.write(array,{length:1,get 0(){throw Error('read')}}),/read/,'failed staging propagates its getter')
+  ok(Number.isNaN(mem.read(array)[0]),'failed staging leaves earlier storage intact')
+  mem.reset()
+  ok(Number.isNaN(mem.read(mem.Array([nan(0x7ff80002)]))[0]),'fresh allocation after reset')
+})
+
+test('interop: tagged arguments, closures and host returns keep numeric NaNs', () => {
+  if(onKernel())return
+  const src=`export function direct(v){return [typeof v,Number.isNaN(v),v]}
+    export function array(a){return [typeof a[0],Number.isNaN(a[0]),a[0]]}
+    export function object(o){return Object.values(o)}
+    export function rest(...v){return [typeof v[0],Number.isNaN(v[0]),v[0]]}
+    export function closure(){return v=>[typeof v,Number.isNaN(v),v]}
+    export function raw(v){const a=new Float64Array(1);a[0]=+v;const w=new Uint32Array(a.buffer);return [w[0],w[1]]}`
+  const cell=new Float64Array(1),words=new Uint32Array(cell.buffer)
+  for(const optimize of levels(0,1,2,3,'size')){
+    const r=jz(src,{optimize}),f=r.exports,c=f.closure()
+    const scalar=jz('export function kind(v){return typeof v}',{optimize})
+    for(const hi of [0x7ff80002,0x7ff80002,0x7ff98000,0xfff80002,0x7ff00001,0x7ff80002]){
+      words[0]=17;words[1]=hi;const v=cell[0],want=['number',true,NaN]
+      is(f.direct(v),want,`O${optimize} direct`)
+      is(f.array([v]),want,'ordinary array argument')
+      is(f.object(r.memory.Hash({value:v})),[NaN],'native dictionary argument')
+      if(!onWasi())is(f.object({value:v}),[NaN],'ordinary host object argument')
+      is(f.rest(v),want,'rest argument')
+      is(c(v),want,'retained closure argument')
+      is(scalar.exports.kind(v),'number','scalar module tagged ingress')
+      if(hi&0x80000)is(f.raw(v),[17,hi],'uniform Number lane and raw typed storage preserve quiet NaN bits')
+    }
+    for(const v of [undefined,null,true,'text',1,-0,Infinity,-Infinity])
+      is(f.direct(v),[typeof v,Number.isNaN(v),v],'other scalar domains retain identity')
+    if(!onWasi()){
+      let value=cell[0]
+      const host=jz(`import {read} from 'host';export function f(){const v=read();return [typeof v,Number.isNaN(v),v]}`,
+        {optimize,imports:{host:{read(){return value}}}})
+      is(host.exports.f(),['number',true,NaN],'host result enters semantic tagged lane')
+      value=-0;is(host.exports.f(),['number',false,-0],'changed host result')
+      value=cell[0];is(host.exports.f(),['number',true,NaN],'host result after changed call')
+    }
+  }
+})
+
+test('interop: typed argument dispatch requires explicit bigint handles', () => {
+  if(onKernel())return
+  const src='export function sum(a){let s=0;for(let i=0;i<a.length;i++)s+=a[i];return s}'
+  for(const optimize of levels(0,1,2,3,'size')){
+    const r=jz(src,{optimize}),f=r.exports.sum
+    const handle=r.memory.Float64Array([3,4]),fake=interop.i64ToF64(handle)
+    is(f(handle),7,`O${optimize} explicit typed handle`)
+    is(f(new Float64Array([3,4])),7,'native typed array')
+    // Number is not array-like. A single normalized slot takes Array.from's
+    // empty result; a typed overload may reject it before dispatch instead.
+    let out
+    try{out=f(fake)}catch(e){ok(e instanceof TypeError,'typed overload rejects a Number');out=0}
+    is(out,0,'a NaN payload never selects an existing typed allocation')
+    is(f(handle),7,'explicit handle remains valid after rejected/empty input')
+    is(f([]),0,'empty array')
+    is(f([1,2]),3,'changed input')
+    is(f(handle),7,'same-instance reuse')
+  }
+})
+
 // ── zero-copy I/O: allocTyped + Uint8Array memcpy ───────────────────────────
 
 test('interop: Uint8Array arg crosses via native memcpy (correct for stride-1)', () => {

@@ -78,6 +78,10 @@ Exact Number schema slots retain raw payloads. Enumeration, JSON and generic
 property dispatch normalize them using the settled per-slot Number contract;
 static guards and schema dispatch fast paths obey the same boundary. A lazy
 packed table serves runtime slots and follows ordinary static-data relocation.
+Host value marshaling likewise canonicalizes numeric NaNs before generic storage.
+High-level pointer inputs use bigint handles; a JavaScript Number never selects a
+typed allocation by its payload. Raw codec readers still accept legacy floating
+carriers, and uniform numeric arguments and typed byte copies keep their bits.
 Mixed slots normalize Number writes before storage, while Number-only slot copies
 retain their bits. Number property receivers normalize before generic tag tests.
 Guarded scalar updates are converted to selects in watr using Wasm types,

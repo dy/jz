@@ -175,8 +175,9 @@ export const TRUE_NAN = BigInt(ATOM_HI[ATOM.TRUE]) << 32n
 // Absent array cells have no own index; present undefined keeps UNDEF_NAN.
 const TOMB_BITS = BigInt(TOMB_NAN)
 
-// Coerce JS null/undefined → boxed atom (BigInt); everything else passes through.
-export const coerce = v => v === null ? NULL_NAN : v === undefined ? UNDEF_NAN : v
+// Semantic JS values enter the tagged lane here. Numbers cannot carry handles;
+// canonicalize NaNs before their payload can be mistaken for an atom or pointer.
+export const coerce = v => v === null ? NULL_NAN : v === undefined ? UNDEF_NAN : v !== v ? NaN : v
 
 // SSO-encode a string ≤6 ASCII chars to a NaN-box BigInt (no heap needed).
 // Mirrors mem.String's SSO branch. Used when marshaling a string into an i64-carrier
@@ -536,7 +537,7 @@ export const memory = (src) => {
     // A view the module left on a host object (`__ext_set`) is the module's own
     // storage, read back as itself.
     if (typeof v === 'object') { const own = mem._views?.get(v); if (own !== undefined) return own }
-    if (typeof v === 'number') return v
+    if (typeof v === 'number') return coerce(v)
     if (typeof v === 'boolean') return v ? TRUE_NAN : FALSE_NAN
     if (typeof v === 'string') return mem.String(v)
     if (typeof v === 'symbol') return mem._symbols.write(v)
@@ -1366,7 +1367,7 @@ export const wrap = (memSrc, inst, state) => {
       if (typedSlot?.endsWith('+') && !prior.back) { writeBack.push([hostBack(orig), prior.b]); prior.back = true }
       return prior.b
     }
-    const jzBuffer = (typeof x === 'bigint' && isBox(x)) || (typeof x === 'number' && x !== x)
+    const jzBuffer = typeof x === 'bigint' && isBox(x)
     if (typedSlot === 'Array+') {
       // A plain array the body may store into crosses as itself: an array or a
       // typed array takes its elements back; a DataView has none.
@@ -1378,7 +1379,8 @@ export const wrap = (memSrc, inst, state) => {
       // copy). A subarray of one (its box holds a descriptor, not the
       // elements) or a buffer of another kind converts through its view like
       // any host array, and what the call writes goes back into that buffer.
-      // A box is an i64 carrier or the legacy f64 NaN carrier (a NaN number).
+      // Explicit buffers use the public bigint pointer carrier. A Number NaN
+      // remains a Number even when its payload happens to resemble a pointer.
       if (jzBuffer) {
         // its kind is in its box: a view is made only to convert it
         if (argKind(x) !== key || (aux(x) & TYPED_ELEM_VIEW_FLAG)) { if (writes) back = { box: x }; x = Ctor.from(mem.read(x)) }
@@ -1691,7 +1693,7 @@ const ELEM_NAMES = ['Int8Array', 'Uint8Array', 'Int16Array', 'Uint16Array', 'Int
 // jz buffer by its box), 'Array' for any other object (Array.from reads it as
 // an array-like), null for anything else.
 const argKind = (x) => {
-  if ((typeof x === 'bigint' && isBox(x)) || (typeof x === 'number' && x !== x)) {
+  if (typeof x === 'bigint' && isBox(x)) {
     const t = type(x), a = aux(x)
     if (t === PTR.ARRAY) return 'Array'
     if (t !== PTR.TYPED || (a & DATA_VIEW_FLAG)) return null
