@@ -10,6 +10,8 @@ import jz from '../index.js'
 import { levels } from './_matrix.js'
 import { firstRefKind, MUTATE_OPS, extractParams, classifyParam, collectParamName, collectParamNames } from '../src/ast.js'
 import { findFreeVars } from '../src/compile/analyze-scans.js'
+import { numHashLiteral } from '../module/collection.js'
+import { oracle } from './util.js'
 
 const measure = (body, calls = 1000, warm = 10) => {
   const src = `${body}
@@ -23,6 +25,140 @@ export let probe = (n) => { const h0 = __heap_mark(); let s = 0; for (let i = 0;
   return out
 }
 const zero = (out, what) => { for (const level in out) is(out[level], 0, `${what} allocates ${out[level]} bytes per call at O${level}`) }
+
+test('allocation: collection replacement at the growth threshold preserves its table', () => {
+  const collisions = []
+  for (let i = 1; collisions.length < 25; i++) if ((numHashLiteral(i) & 31) === 0) collisions.push(i)
+  const source = `const collisionKeys = ${JSON.stringify(collisions)}, object = {}, mixedKeys = [NaN, -0, 'long string key', 7n, object, undefined, null, false]
+    let m = new Map(), s = new Set(), keys = collisionKeys, count = 0
+    export function init(n, mixed) {
+      m = new Map(); s = new Set(); keys = mixed ? mixedKeys : collisionKeys; count = n
+      for (let i = 0; i < n; i++) { m.set(keys[i], i); s.add(keys[i]) }
+    }
+    export function replace(rounds) {
+      const start = __heap_mark()
+      for (let r = 0; r < rounds; r++) for (let i = count - 1; i >= 0; i--) {
+        if (m.set(keys[i], i + rounds) !== m || s.add(keys[i]) !== s) throw new Error('identity')
+      }
+      return __heap_mark() - start
+    }
+    export function append() {
+      const start = __heap_mark(), key = keys[count]
+      m.set(key, count); s.add(key); count++
+      return __heap_mark() - start
+    }
+    export function remove() { if (count) { const key = keys[0]; m.delete(key); s.delete(key) } }
+    export function state() {
+      const values = [], setValues = []
+      for (const value of m.values()) values.push(value)
+      for (const key of s) setValues.push(m.get(key))
+      return JSON.stringify([m.size, s.size, values, setValues])
+    }`
+  for (const level of levels(0, 1, 2, 3, 'size')) for (const floor of [2, 8]) for (const compact of [false, true]) {
+    const e = jz(source, { optimize: { level, collectionInitCap: floor }, _compactCollections: compact }).exports
+    const ref = oracle(source.replaceAll('__heap_mark()', '0'))
+    for (const [n, mixed] of [[0, 0], [2, 0], [3, 0], [6, 0], [12, 0], [24, 0], [6, 1], [6, 1], [0, 0], [6, 0]]) {
+      e.init(n, mixed); ref.init(n, mixed)
+      for (const rounds of [0, 1, 3, 1]) {
+        is(e.replace(rounds), 0, `O${level} floor=${floor} compact=${compact}, size=${n}: replacements allocate nothing`)
+        ref.replace(rounds)
+        is(e.state(), ref.state(), 'replacement keeps size, key identity and insertion order')
+      }
+      const growth = e.append(); ref.append()
+      if (n === 6 || n === 12 || n === 24 || floor === 2 && (n === 2 || n === 3)) ok(growth > 0, 'a new key at the threshold still grows')
+      is(e.state(), ref.state(), 'new-key insertion retains every collision-chain entry')
+      e.remove(); ref.remove(); e.replace(2); ref.replace(2)
+      is(e.state(), ref.state(), 'delete and reinsert retain their new insertion order')
+    }
+  }
+})
+
+test('allocation: dictionary replacement and fused updates reuse threshold slots', () => {
+  const source = `const keys = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm']
+    export function replace(n, rounds, fused) {
+      const d = {}
+      for (let i = 0; i < n; i++) d[keys[i]] = i
+      const start = __heap_mark()
+      for (let r = 0; r < rounds; r++) for (let i = n - 1; i >= 0; i--) {
+        if (fused) d[keys[i]]++
+        else d[keys[i]] = i + rounds
+      }
+      const used = __heap_mark() - start
+      let sum = 0
+      for (let i = 0; i < n; i++) sum += d[keys[i]]
+      d[keys[n]] = 91
+      return [used, sum, d[keys[n]], n ? d[keys[0]] : -1]
+    }`
+  const ref = oracle(source.replaceAll('__heap_mark()', '0'))
+  for (const level of levels(0, 1, 2, 3, 'size')) for (const compact of [false, true]) {
+    const ex = jz(source, { optimize: { level, hashSmallInitCap: 2 }, _compactCollections: compact }).exports
+    for (const n of [0, 2, 3, 6, 12, 6, 0]) for (const rounds of [0, 1, 3]) for (const fused of [0, 1]) {
+      is(ex.replace(n, rounds, fused), ref.replace(n, rounds, fused), `O${level} compact=${compact}: dictionary size=${n}, rounds=${rounds}, fused=${fused}`)
+    }
+  }
+})
+
+test('allocation: a growable private dictionary updates existing slots without rehashing', () => {
+  const source = `export function count(n, rounds) {
+    const keys = [], d = {}
+    for (let i = 0; i < n; i++) {
+      keys.push('key' + i)
+      const k = keys[i]; d[k] = (d[k] | 0) + 1
+    }
+    const start = __heap_mark()
+    for (let r = 0; r < rounds; r++) for (let i = 0; i < keys.length; i++) {
+      const k = keys[i]; d[k] = (d[k] | 0) + 1
+    }
+    const used = __heap_mark() - start
+    let sum = 0
+    for (let i = 0; i < keys.length; i++) sum += d[keys[i]] | 0
+    keys.push('tail')
+    const k = keys[n]; d[k] = (d[k] | 0) + 1
+    return [used, sum, d[k] | 0]
+  }`
+  ok(/call \$__hash_slot_eph\b/.test(jz.compile(source, { wat: true, optimize: { level: 3, watr: false } })), 'the changing key domain uses the growable private probe')
+  const ref = oracle(source.replaceAll('__heap_mark()', '0'))
+  for (const level of levels(0, 1, 2, 3, 'size')) for (const compact of [false, true]) {
+    const ex = jz(source, { optimize: { level, hashSmallInitCap: 2 }, _compactCollections: compact }).exports
+    for (const n of [0, 2, 3, 6, 12, 6, 0]) for (const rounds of [0, 1, 3]) {
+      is(ex.count(n, rounds), ref.count(n, rounds), `O${level} compact=${compact}: private size=${n}, rounds=${rounds}`)
+    }
+  }
+})
+
+test('allocation: full tiny collections reuse healed slots after reset', () => {
+  const source = `const m = new Map(), s = new Set()
+    let keys = []
+    export function fill(round, n) {
+      keys = []
+      for (let i = 0; i < n; i++) {
+        const k = 'round-' + round + '-key-' + i
+        keys.push(k); m.set(k, i + 1); s.add(k)
+      }
+      return state()
+    }
+    export function replace() {
+      const start = __heap_mark()
+      for (let i = 0; i < keys.length; i++) { m.set(keys[i], i + 1); s.add(keys[i]) }
+      return __heap_mark() - start
+    }
+    export function state() {
+      let sum = 0
+      for (const key of s) sum += m.get(key)
+      return [m.size, s.size, sum]
+    }
+    export function churn() { return new Float64Array(128).length }`
+  for (const level of levels(0, 1, 2, 3, 'size')) for (const compact of [false, true]) {
+    const ex = jz(source, { optimize: { level, collectionInitCap: 2 }, _compactCollections: compact }).exports
+    for (const [round, n] of [[1, 2], [2, 2], [3, 0], [4, 2], [5, 3], [6, 2]]) {
+      is(ex.fill(round, n), [n, n, n * (n + 1) / 2], `O${level} compact=${compact}: live keys after healed round=${round}`)
+      is(ex.replace(), 0, 'updating a full table needs no new storage')
+      ex._clear(); ex.churn()
+      is(ex.state(), [0, 0, 0], 'reset removes ephemeral keys before the next probe')
+      ex._clear()
+    }
+  }
+})
 
 test('allocation: empty collection iteration needs no snapshot storage', () => {
   const source = `const s = new Set(), m = new Map(), a = [], out = new Set()

@@ -204,7 +204,7 @@ const revealProperty = () => ctx.linkDemand.hiddenMembers
  *  value at slot+16. hasExt: emit EXTERNAL fallthrough (call $__ext_set on non-matching
  *  type). Gated off → type mismatch just returns coll unchanged.
  *
- *  The table grows at 75% load by allocating a 2×/4× table (nextCapIR — tiered past
+ *  A missing key grows the table at 75% load by allocating a 2×/4× table (nextCapIR — tiered past
  *  GROW_QUAD_CAP), rehashing, and forward-marking the old header (cap=-1 sentinel, new
  *  offset at -8) — the array growth idiom. The boxed
  *  pointer the caller holds is returned UNCHANGED; future ops resolve it through
@@ -249,9 +249,46 @@ function genUpsert(name, entrySize, hashFn, eqExpr, expectedType, hasVal, hasExt
         (local.set $off (call $__ptr_offset_fwd (local.get $off)))
         (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))))
     (local.set $size (i32.load (i32.sub (local.get $off) (i32.const 8))))
-    ;; Grow at 75% load (size*4 >= cap*3): 2×/4× table (nextCapIR), rehash, forward-mark old header.
-    (if (i32.ge_s (i32.mul (local.get $size) (i32.const 4)) (i32.mul (local.get $cap) (i32.const 3)))
+    ;; Probe before growing: an update needs neither a new slot nor a new table.
+    (block $done (loop $retry
+    ${slotOnly ? keyHashIR(hashFn) : `(local.set $h (call ${hashFn} (local.get $key)))`}
+    ${probeStart(entrySize)}
+    ;; zombie-aware ${hasProbeLane() ? 'LANE ' : ''}probe (durable-slot heal, TOMB_NAN keys): a zombie keeps
+    ;; its stale hash in the ${hasProbeLane() ? 'lane' : 'entry word'}, so it is only NOTICED on a hash hit (key reads
+    ;; TOMB) — reuse still catches the dominant re-insert-same-key case, and the
+    ;; cap-tries fallback rescans for any zombie before giving up.
+    (block $grow (block $insert (loop $probe
+      ${probeHashLoad()}
+      (if (i32.eqz (local.get $hw))
+        (then
+          (if (local.get $zb)
+            (then ${useRememberedZombie()})
+            (else ${slotFromLane(entrySize)}))
+          (br $insert)))
+      (if (i32.eq (local.get $hw) (local.get $h))
+        (then
+          ${slotFromLane(entrySize)}
+          (if (i64.eq (i64.load offset=8 (local.get $slot)) (i64.const ${TOMB_NAN}))
+            (then (if (i32.eqz (local.get $zb))
+              (then ${rememberZombie()})))
+            (else (if ${eqExpr} ${onMatch})))))
+      ${probeNext(entrySize)}
+      (local.set $ztr (i32.add (local.get $ztr) (i32.const 1)))
+      (br_if $insert (i32.ge_s (local.get $ztr) (local.get $cap)))
+      (br $probe)))
+    (br_if $grow (i32.ge_s (i32.mul (local.get $size) (i32.const 4)) (i32.mul (local.get $cap) (i32.const 3))))
+    (if (i32.ge_s (local.get $ztr) (local.get $cap))
       (then
+        ${zombieRescan(entrySize)}
+        (local.set $slot (local.get $zb))
+        ${restoreZombieProbe()}))
+          ${seqStore()}
+          ${probeHashStore()}
+          (i64.store offset=8 (local.get $slot) (local.get $key))${durableEntryLogIR('slot', 'off')}${storeVal}
+          (i32.store (i32.sub (local.get $off) (i32.const 8))
+            (i32.add (i32.load (i32.sub (local.get $off) (i32.const 8))) (i32.const 1)))
+    (br $done))
+    ;; Only a missing key can reach the growth path.
         ${nextCapIR()}
         (local.set $newptr (call $__alloc_hdr_n (i32.const 0) (local.get $newcap) (i32.const ${collectionStride(entrySize)})))
         ${laneBaseInit('nlb', 'newcap', entrySize)}
@@ -280,47 +317,11 @@ function genUpsert(name, entrySize, hashFn, eqExpr, expectedType, hasVal, hasExt
         (i32.store (i32.sub (local.get $off) (i32.const 8)) (local.get $newptr))
         (i32.store (i32.sub (local.get $off) (i32.const 4)) (i32.const -1))
         (local.set $off (local.get $newptr))
-        (local.set $cap (local.get $newcap))))
-    ${slotOnly ? keyHashIR(hashFn) : `(local.set $h (call ${hashFn} (local.get $key)))`}
-    ${probeStart(entrySize)}
-    ;; zombie-aware ${hasProbeLane() ? 'LANE ' : ''}probe (durable-slot heal, TOMB_NAN keys): a zombie keeps
-    ;; its stale hash in the ${hasProbeLane() ? 'lane' : 'entry word'}, so it is only NOTICED on a hash hit (key reads
-    ;; TOMB) — reuse still catches the dominant re-insert-same-key case, and the
-    ;; cap-tries fallback rescans for any zombie before giving up.
-    (block $done (loop $probe
-      ${probeHashLoad()}
-      (if (i32.eqz (local.get $hw))
-        (then
-          (if (local.get $zb)
-            (then ${useRememberedZombie()})
-            (else ${slotFromLane(entrySize)}))
-          ${seqStore()}
-          ${probeHashStore()}
-          (i64.store offset=8 (local.get $slot) (local.get $key))${durableEntryLogIR('slot', 'off')}${storeVal}
-          (i32.store (i32.sub (local.get $off) (i32.const 8))
-            (i32.add (i32.load (i32.sub (local.get $off) (i32.const 8))) (i32.const 1)))
-          (br $done)))
-      (if (i32.eq (local.get $hw) (local.get $h))
-        (then
-          ${slotFromLane(entrySize)}
-          (if (i64.eq (i64.load offset=8 (local.get $slot)) (i64.const ${TOMB_NAN}))
-            (then (if (i32.eqz (local.get $zb))
-              (then ${rememberZombie()})))
-            (else (if ${eqExpr} ${onMatch})))))
-      ${probeNext(entrySize)}
-      (local.set $ztr (i32.add (local.get $ztr) (i32.const 1)))
-      (if (i32.ge_s (local.get $ztr) (local.get $cap))
-        (then
-          ${zombieRescan(entrySize)}
-          (local.set $slot (local.get $zb))
-          ${restoreZombieProbe()}
-          ${seqStore()}
-          ${probeHashStore()}
-          (i64.store offset=8 (local.get $slot) (local.get $key))${durableEntryLogIR('slot', 'off')}${storeVal}
-          (i32.store (i32.sub (local.get $off) (i32.const 8))
-            (i32.add (i32.load (i32.sub (local.get $off) (i32.const 8))) (i32.const 1)))
-          (br $done)))
-      (br $probe)))
+        (local.set $cap (local.get $newcap))
+    (local.set $zb (i32.const 0))
+    (local.set $zbl (i32.const 0))
+    (local.set $ztr (i32.const 0))
+    (br $retry)))
     ${slotOnly ? '(i32.add (local.get $slot) (i32.const 16))' : '(local.get $coll)'})`
 }
 
@@ -457,7 +458,7 @@ function genDelete(name, entrySize, hashFn, eqExpr, expectedType) {
     (i32.const 1))`
 }
 
-/** Generate growable upsert. Grows table at 75% load, rehashes, then inserts.
+/** Generate growable upsert. A missing key grows at 75% load, rehashes, then inserts.
  *  strict=true: reject wrong type.
  *  strict=false: EXTERNAL → __ext_set, other non-HASH types → __dyn_set (global props).
  *  The non-strict fallback is critical for untyped variables (e.g. arrays from
@@ -490,9 +491,49 @@ function genUpsertGrow(name, entrySize, hashFn, eqExpr, typeConst, strict = fals
         (local.set $off (call $__ptr_offset_fwd (local.get $off)))
         (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))))
     (local.set $size (i32.load (i32.sub (local.get $off) (i32.const 8))))
-    ;; Grow if load factor > 75%: size * 4 >= cap * 3
-    (if (i32.ge_s (i32.mul (local.get $size) (i32.const 4)) (i32.mul (local.get $cap) (i32.const 3)))
+    ;; Probe before growing: an update needs neither a new slot nor a new table.
+    (block $done (loop $retry
+    ;; Insert/update
+    (local.set $h (call ${hashFn} (local.get $key)))
+    ${probeStart(entrySize)}
+    ;; zombie-aware ${hasProbeLane() ? 'LANE ' : ''}probe (durable-slot heal, TOMB_NAN keys) — see genUpsert.
+    (block $grow (block $insert (loop $probe
+      ${probeHashLoad()}
+      (if (i32.eqz (local.get $hw))
+        (then
+          (if (local.get $zb)
+            (then ${useRememberedZombie()})
+            (else ${slotFromLane(entrySize)}))
+          (br $insert)))
+      (if (i32.eq (local.get $hw) (local.get $h))
+        (then
+          ${slotFromLane(entrySize)}
+          (if (i64.eq (i64.load offset=8 (local.get $slot)) (i64.const ${TOMB_NAN}))
+            (then (if (i32.eqz (local.get $zb))
+              (then ${rememberZombie()})))
+            (else (if ${eqExpr}
+              (then
+                ${revealProperty()}
+                (i64.store offset=16 (local.get $slot) (local.get $val))${durableSlotLogIR('slot', 16, 'val')}
+                (br $done)))))))
+      ${probeNext(entrySize)}
+      (local.set $ztr (i32.add (local.get $ztr) (i32.const 1)))
+      (br_if $insert (i32.ge_s (local.get $ztr) (local.get $cap)))
+      (br $probe)))
+    (br_if $grow (i32.ge_s (i32.mul (local.get $size) (i32.const 4)) (i32.mul (local.get $cap) (i32.const 3))))
+    (if (i32.ge_s (local.get $ztr) (local.get $cap))
       (then
+        ${zombieRescan(entrySize)}
+        (local.set $slot (local.get $zb))
+        ${restoreZombieProbe()}))
+          ${seqStore()}
+          ${probeHashStore()}
+          (i64.store offset=8 (local.get $slot) (local.get $key))${durableEntryLogIR('slot', 'off')}
+          (i64.store offset=16 (local.get $slot) (local.get $val))${durableSlotLogIR('slot', 16, 'val')}
+          (i32.store (i32.sub (local.get $off) (i32.const 8))
+            (i32.add (i32.load (i32.sub (local.get $off) (i32.const 8))) (i32.const 1)))
+    (br $done))
+    ;; Only a missing key can reach the growth path.
         ${nextCapIR()}
         (local.set $newptr (call $__alloc_hdr_n (i32.const 0) (local.get $newcap) (i32.const ${collectionStride(entrySize)})))
         ${laneBaseInit('nlb', 'newcap', entrySize)}
@@ -534,51 +575,11 @@ function genUpsertGrow(name, entrySize, hashFn, eqExpr, typeConst, strict = fals
           // (a local threaded via the return, or the global __dyn_props) is updated.
           : `(local.set $off (local.get $newptr))
         (local.set $cap (local.get $newcap))
-        (local.set $obj (i64.reinterpret_f64 (call $__mkptr (i32.const ${typeConst}) (i32.const 0) (local.get $newptr))))`}))
-    ;; Insert/update
-    (local.set $h (call ${hashFn} (local.get $key)))
-    ${probeStart(entrySize)}
-    ;; zombie-aware ${hasProbeLane() ? 'LANE ' : ''}probe (durable-slot heal, TOMB_NAN keys) — see genUpsert.
-    (block $done (loop $probe
-      ${probeHashLoad()}
-      (if (i32.eqz (local.get $hw))
-        (then
-          (if (local.get $zb)
-            (then ${useRememberedZombie()})
-            (else ${slotFromLane(entrySize)}))
-          ${seqStore()}
-          ${probeHashStore()}
-          (i64.store offset=8 (local.get $slot) (local.get $key))${durableEntryLogIR('slot', 'off')}
-          (i64.store offset=16 (local.get $slot) (local.get $val))${durableSlotLogIR('slot', 16, 'val')}
-          (i32.store (i32.sub (local.get $off) (i32.const 8))
-            (i32.add (i32.load (i32.sub (local.get $off) (i32.const 8))) (i32.const 1)))
-          (br $done)))
-      (if (i32.eq (local.get $hw) (local.get $h))
-        (then
-          ${slotFromLane(entrySize)}
-          (if (i64.eq (i64.load offset=8 (local.get $slot)) (i64.const ${TOMB_NAN}))
-            (then (if (i32.eqz (local.get $zb))
-              (then ${rememberZombie()})))
-            (else (if ${eqExpr}
-              (then
-                ${revealProperty()}
-                (i64.store offset=16 (local.get $slot) (local.get $val))${durableSlotLogIR('slot', 16, 'val')}
-                (br $done)))))))
-      ${probeNext(entrySize)}
-      (local.set $ztr (i32.add (local.get $ztr) (i32.const 1)))
-      (if (i32.ge_s (local.get $ztr) (local.get $cap))
-        (then
-          ${zombieRescan(entrySize)}
-          (local.set $slot (local.get $zb))
-          ${restoreZombieProbe()}
-          ${seqStore()}
-          ${probeHashStore()}
-          (i64.store offset=8 (local.get $slot) (local.get $key))${durableEntryLogIR('slot', 'off')}
-          (i64.store offset=16 (local.get $slot) (local.get $val))${durableSlotLogIR('slot', 16, 'val')}
-          (i32.store (i32.sub (local.get $off) (i32.const 8))
-            (i32.add (i32.load (i32.sub (local.get $off) (i32.const 8))) (i32.const 1)))
-          (br $done)))
-      (br $probe)))
+        (local.set $obj (i64.reinterpret_f64 (call $__mkptr (i32.const ${typeConst}) (i32.const 0) (local.get $newptr))))`}
+    (local.set $zb (i32.const 0))
+    (local.set $zbl (i32.const 0))
+    (local.set $ztr (i32.const 0))
+    (br $retry)))
     (local.get $obj))`
 }
 
@@ -639,8 +640,35 @@ function genEphemeralSlotUpsert(name, entrySize) {
         (local.set $off (call $__ptr_offset_fwd (local.get $off)))
         (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))))
     (local.set $size (i32.load (i32.sub (local.get $off) (i32.const 8))))
-    (if (i32.ge_s (i32.shl (local.get $size) (i32.const 2)) (i32.mul (local.get $cap) (i32.const 3)))
-      (then
+    (block $done (loop $retry
+    ${keyHashIR()}
+    ${startProbe}
+    (local.set $i (i32.const 0))
+    (block $grow (loop $probe
+      (local.set $hw ${loadProbeHash})
+      (if (i32.eqz (local.get $hw))
+        (then
+          (br_if $grow (i32.ge_s (i32.mul (local.get $size) (i32.const 4)) (i32.mul (local.get $cap) (i32.const 3))))
+          ${deriveSlot}
+          (i64.store (local.get $slot) (i64.extend_i32_u (local.get $h)))
+          (i64.store offset=8 (local.get $slot) (local.get $key))
+          (i64.store offset=16 (local.get $slot) (i64.const ${UNDEF_NAN}))
+          ${storeProbeLane}
+          (i32.store (i32.sub (local.get $off) (i32.const 8)) (i32.add (local.get $size) (i32.const 1)))
+          (br $done)))
+      (if (i32.eq (local.get $hw) (local.get $h))
+        (then
+          ${deriveSlot}
+          (br_if $done
+            (if (result i32)
+              (i64.eq (i64.load offset=8 (local.get $slot)) (local.get $key))
+              (then (i32.const 1))
+              (else (call $__str_eq (i64.load offset=8 (local.get $slot)) (local.get $key)))))))
+      ${nextProbe}
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (br_if $grow (i32.ge_u (local.get $i) (local.get $cap)))
+      (br $probe)))
+    ;; Only a missing key can reach the growth path.
         ${nextCapIR()}
         (local.set $newptr (call $__alloc_hdr_n (i32.const 0) (local.get $newcap) (i32.const ${collectionStride(entrySize)})))
         ${growBases}
@@ -667,30 +695,8 @@ function genEphemeralSlotUpsert(name, entrySize) {
         (i32.store (i32.sub (local.get $off) (i32.const 8)) (local.get $newptr))
         (i32.store (i32.sub (local.get $off) (i32.const 4)) (i32.const -1))
         (local.set $off (local.get $newptr))
-        (local.set $cap (local.get $newcap))))
-    ${keyHashIR()}
-    ${startProbe}
-    (block $done (loop $probe
-      (local.set $hw ${loadProbeHash})
-      (if (i32.eqz (local.get $hw))
-        (then
-          ${deriveSlot}
-          (i64.store (local.get $slot) (i64.extend_i32_u (local.get $h)))
-          (i64.store offset=8 (local.get $slot) (local.get $key))
-          (i64.store offset=16 (local.get $slot) (i64.const ${UNDEF_NAN}))
-          ${storeProbeLane}
-          (i32.store (i32.sub (local.get $off) (i32.const 8)) (i32.add (local.get $size) (i32.const 1)))
-          (br $done)))
-      (if (i32.eq (local.get $hw) (local.get $h))
-        (then
-          ${deriveSlot}
-          (br_if $done
-            (if (result i32)
-              (i64.eq (i64.load offset=8 (local.get $slot)) (local.get $key))
-              (then (i32.const 1))
-              (else (call $__str_eq (i64.load offset=8 (local.get $slot)) (local.get $key)))))))
-      ${nextProbe}
-      (br $probe)))
+        (local.set $cap (local.get $newcap))
+    (br $retry)))
     (i32.add (local.get $slot) (i32.const 16)))`
 }
 

@@ -1461,6 +1461,10 @@ every tag pattern and must never be interpreted as payload pointers.
 Dictionary and Map read/modify/write slots use the ordinary upsert generator:
 only a missing slot receives undefined; hits retain their value for the caller.
 Growth preserves header metadata, aliases, insertion order and durable logs.
+Every growable collection probes before testing its load threshold: replacing
+a Map or dictionary value and adding an existing Set key reuse the current
+entry even at 75% load. A missing key alone grows and retries the same probe;
+the bounded probe also handles a completely full minimum-capacity table.
 One shared lowering recognizes both `d[k] = f(d[k])` and
 `m.set(k, f(m.get(k)))`, proving safety and counting reads in one walk.
 Map methods must retain their builtin identities; Map keys keep their boxed
