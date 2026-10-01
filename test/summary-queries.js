@@ -432,6 +432,28 @@ test('summary queries: numeric demand keeps the first parameter separate from it
   is(summary.at('scale').kindOfExpr('missing'), kind(K.ANY))
 })
 
+test('summary queries: guarded demand reuses structural writes without carrying them across summaries', () => {
+  const arm = [';', ['return', 'x']]
+  const body = ['{}', [';', ['if', ['!==', 'x', 'x'], arm], ['return', ['*', 'x', lit(2)]]]]
+  const options = { funcs: [{ name: 'guarded', sig: { params: [{ name: 'x' }, { name: 'again' }] }, body }],
+    schemas: [], brandOf: () => null, imports: new Map(), exported: () => true }
+  const write = ['=', 'x', ['str', 'changed']]
+  const mutations = [null, null, write, ['if', 'again', write],
+    ['while', 'again', [';', write, ['=', 'again', lit(false)]]],
+    ['const', ['=', 'change', ['=>', [], write]]],
+    ['const', ['=', 'change', ['=>', [',', ['=', 'value', write]], 'value']]], null]
+  let retained
+  for (const mutation of mutations) {
+    arm.splice(1, arm.length - 1, ...(mutation ? [mutation] : []), ['return', 'x'])
+    const summary = summarize(null, options)
+    is(summary.at('guarded').paramKindOf('x'), kind(mutation ? K.ANY : K.NUMBER),
+      'direct, conditional, loop, capture and default writes invalidate the guarded return')
+    retained ??= summary
+    is(retained.at('guarded').paramKindOf('x'), kind(K.NUMBER), 'a later body revision leaves a published contract intact')
+  }
+  is(summarize(null, { ...options, funcs: [] }).at('').kindOf('x'), K.NONE, 'empty work has no earlier mutation list')
+})
+
 test('summary queries: default closures declare parameters and resolve their captured scope', () => {
   const params = [',', 'x']
   const fn = ['=>', params, ['*', 'x', 'n']]

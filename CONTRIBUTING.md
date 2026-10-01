@@ -348,6 +348,9 @@ and `Infinity`;
 This keeps unrelated named closures closed when a generic receiver is indexed
 by a numeric loop counter. `Object.entries` retains the same joined value kind as
 `Object.values`, paired with its string key.
+Guarded numeric demand shares the summary's structural mutation list with
+loop refinement. Revisited guard arms reuse that list; each new summary builds
+its own list, including writes in closures and their defaults.
 Array property stores also feed length analysis: a numeric key can extend the
 array, `length` can resize it, and an unknown key can do either. The same
 transfer serves assignments and bulk property copies such as `Object.assign`.

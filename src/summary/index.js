@@ -3691,7 +3691,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     if (MUTATE_OPS.has(n[0]) && typeof n[1] === 'string') out.add(n[1])
     for (let i = 1; i < n.length; i++) assignsIn(n[i], out)
   }
-  const assigned = new Map()   // loop or closure node → the names it assigns
+  const assigned = new Map()   // loop, closure or guarded arm → the names it assigns
   const assignedIn = (n) => { let l = assigned.get(n); if (!l) { const out = new Set(); assignsIn(n, out); assigned.set(n, l = [...out]) } return l }
   const loopAssigns = (n) => {
     for (const name of assignedIn(n)) {
@@ -4115,11 +4115,10 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   const isNumberExprHere = (b) => { if (typeof b !== 'string') return false; const k = kindOfExpr(b); return tagOf(core(k)) === K.NUMBER && !hasTag(k, K.NULLISH) && !hasTag(k, K.ABSENT) }
   const under = (names, body) => {
     if (!names.size) return run(body)
-    const assigned = new Set()
-    assignsIn(body, assigned)
+    const assigned = assignedIn(body)
     const prior = provenNumeric
     provenNumeric = new Set(prior ?? [])
-    for (const name of names) if (!assigned.has(name)) provenNumeric.add(name)
+    for (const name of names) if (!assigned.includes(name)) provenNumeric.add(name)
     run(body)
     provenNumeric = prior
   }
