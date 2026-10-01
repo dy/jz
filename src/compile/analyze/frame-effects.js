@@ -624,6 +624,20 @@ function census(view, roots, declRoots, params, typedParams = NO_NAMES, conditio
   // A typed array converts a source's elements: primitive elements run no user code.
   const convertElements = (e) => { if (converts && e !== undefined && !primitiveKind(view, e) && !primitiveElements(view, e)) conversion() }
 
+  // Map entry getters may run on any element, not just the first tuple slot.
+  // A direct Map copy and entries with no object/function kind have no accessor.
+  const mapEntries = (args) => {
+    if (!ctx.transform?.accessorNames?.has('0') && !ctx.transform?.accessorNames?.has('1')) return
+    const source = argList(args)[0]
+    if (source === undefined) return
+    const k = view?.kindOfExpr(source), t = k == null ? K.ANY : tagOf(k)
+    if (t === K.MAP) return
+    const entry = t === K.ARRAY || t === K.SET ? view.elemOfKind(k) : null
+    if (entry != null && tagsOf(entry) !== 0 && !hasTag(entry, K.OBJECT) && !hasTag(entry, K.CLOSURE)) return
+    out.runsAccessor = true
+    unknownCall('Map entry accessor')
+  }
+
   // A store into `recv`, of a value that may carry a heap pointer (`heap`):
   // fresh-local receivers are fresh memory; a nested path below a fresh local
   // (`o.a.b = v`) reaches storage the local's own stores placed there —
@@ -720,6 +734,7 @@ function census(view, roots, declRoots, params, typedParams = NO_NAMES, conditio
         if (knownFunc(c)) reach(c)
         else if (!FRESH_CTORS.test(c)) { unknownCall('call ' + callee); if (ctx.core?.emit?.[callee] != null) escape('call ' + callee) }   // a builtin's constructor not listed as fresh
         else if (CONVERTING_CTORS.test(c)) argList(args).forEach(TYPED_CTORS.test(c) ? convertElements : convert)
+        else if (c === 'Map') mapEntries(args)
         return
       }
       if (knownFunc(callee)) { reach(callee); return }
@@ -737,7 +752,7 @@ function census(view, roots, declRoots, params, typedParams = NO_NAMES, conditio
       }
       if (callee === '__keys_ro' || callee === '__keys_dyn') { allocates(); return }
       if (PURE_CALLEES.test(callee)) return pure(callee, args)
-      if (FRESH_CTORS.test(callee)) { allocates(); return }   // a constructor called plainly (`throw TypeError(m)`): fresh storage, no user code
+      if (FRESH_CTORS.test(callee)) { allocates(); if (callee === 'Map') mapEntries(args); return }   // constructors lowered to plain calls still read Map entries
       // a builtin writing into its first argument: a store into it
       if (WRITES_FIRST.test(callee)) { allocates(); const list = argList(args); return list.length ? store(list[0], anyHeap(list.slice(1)), true, false, true) : undefined }
       if (READS_POINTER.test(callee)) return
@@ -909,6 +924,7 @@ function census(view, roots, declRoots, params, typedParams = NO_NAMES, conditio
       if (isArr(inner) && inner[0] === '()') {
         if (!(isName(inner[1]) && (FRESH_CTORS.test(inner[1]) || knownFunc(inner[1])))) { if (isName(inner[1])) builtin(inner[1]); else unknownCall('new <expr>') }
         else if (knownFunc(inner[1])) reach(inner[1])
+        else if (inner[1] === 'Map') mapEntries(inner[2])
         walkExpr(inner[2])
       } else if (isName(inner)) { if (!(FRESH_CTORS.test(inner) || knownFunc(inner))) builtin(inner); else if (knownFunc(inner)) reach(inner) }
       else unknownCall('new <expr>')

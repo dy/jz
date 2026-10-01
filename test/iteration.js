@@ -206,3 +206,48 @@ test('iteration retains indexed, collection and custom protocol sources', () => 
     for (const n of [0, 0, 1, 3, 0, 2]) is(got.f(n), want.f(n), `O${optimize}: valid iterator ${n}`)
   }
 })
+
+
+test('Map construction validates iterable sources and object entries', () => {
+  const src = `export function f(which) {
+      const sources = [undefined, null, [], new Map(), '', new Int16Array(0),
+        3, false, 17n, 0x7ff8000100000000n, {}, new Date(0), new ArrayBuffer(0), new DataView(new ArrayBuffer(0)),
+        [3], [NaN], ['ab'], [null], [undefined], [,], new Int16Array([1]), new BigInt64Array([0x7ff8000100000000n]), 'ab',
+        [['a', 1], ['b', 2], ['a', 3]], [{0: 'a', 1: 2n}, {0: 'b'}],
+        new Set([['a', 1], ['b', 2]]), [new Int16Array([3, 4])], [new BigInt64Array([3n, 4n])],
+        [new DataView(new ArrayBuffer(8))]];
+      try { return [...new Map(sources[which])] } catch (e) { return [e.name, e instanceof TypeError] }
+    }
+    export function direct() { function pair(){}; pair[0] = 'fn'; pair[1] = 3;
+      return [...new Map([{0: 'key', 1: 7n}, pair])] }
+    export function invalid() { return new Map([3]) }`
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const got = jz(src, { optimize }).exports, want = oracle(src), retained = []
+    for (const which of [0, 0, ...Array.from({length: 29}, (_, i) => i), 23, 6, 23, 0]) {
+      const actual = got.f(which), expected = want.f(which)
+      is(actual, expected, `O${optimize}: constructor source ${which}`)
+      if (which >= 23) retained.push([actual, expected])
+    }
+    for (const [actual, expected] of retained) is(actual, expected, 'retained maps survive later failed construction')
+    throws(() => got.invalid(), TypeError); throws(() => want.invalid(), TypeError)
+    is(got.direct(), want.direct(), 'object pair fields preserve tagged BigInt identity after error')
+  }
+})
+
+test('Map construction reads entry properties in order and keeps its array iterator live', () => {
+  const src = `export function f(mode) { let log = ''; const entries = [];
+      const first = {get 0() { log += 'k'; if (mode === 0) entries.push(['c', 3]);
+          if (mode === 1) entries.length = 1; return 'a' },
+        get 1() { log += 'v'; if (mode === 2) throw new Error('entry'); return 1 } };
+      entries.push(first, {get 0(){log += 'K';return 'b'}, get 1(){log += 'V';if (mode === 3) throw new Error('later');return 2}});
+      try { return [[...new Map(entries)], log] } catch (e) { return [log, e.message, e instanceof Error] }
+    }
+    export function copy(n) { const source = new Map([['a', 1], ['b', 2], ['c', 3]]); source.note = 7;
+      if (n) source.delete('b'); const copy = new Map(source); copy.set('a', 5); copy.set('d', 4);
+      return [[...source], [...copy], copy.note, source.note] }`
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const got = jz(src, { optimize }).exports, want = oracle(src)
+    for (const mode of [0, 0, 1, 2, 3, 1, 0]) is(got.f(mode), want.f(mode), `O${optimize}: entry effects ${mode}`)
+    for (const n of [0, 0, 1, 0]) is(got.copy(n), want.copy(n), 'Map-copy fast path preserves order and independence')
+  }
+})

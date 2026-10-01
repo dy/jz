@@ -13,7 +13,7 @@ import { is, ok } from 'tst/assert.js'
 import jz, { compile, _compileInProcess } from '../index.js'
 import { resetTape, fromWat, toWat } from '../src/ir/tape.js'
 import { arenaRewind } from '../src/optimize/arena-rewind.js'
-import { listedBuiltin } from '../src/compile/analyze/frame-effects.js'
+import { listedBuiltin, transitiveFrameEffects } from '../src/compile/analyze/frame-effects.js'
 import { includeAllMods } from '../src/autoload.js'
 import { ctx } from '../src/ctx.js'
 import { levels, onKernel, belowOpt } from './_matrix.js'
@@ -1145,4 +1145,29 @@ const via = (o, h, buf) => { o.f?.(); return h?.(buf) }
 export const entry = () => { const buf = new Float64Array(2); buf[0] = 1; const o = { f: () => { buf[0] = 7; return 1 } }; return g(buf, o, (b) => { b[0] = 8; return 1 }) }`
   for (const between of ['const v = o.f?.()', 'const v = h?.(buf)', 'const v = o?.f?.()', 'const v = via(o, h, buf)'])
     for (const optimize of levels(0, 2, 3)) is(jz(src(between), { optimize }).exports.entry(), oracle(src(between)).entry(), `${between} O${optimize}`)
+})
+
+
+test('frame effects: Map entry getters retain their writes and published values', () => {
+  const src = `const a = new Float64Array([1]); let saved, fail = false;
+    const entries = [['first', 1], {get 0(){a[0] = 7; saved = {x: 9}; return 'key'}, get 1(){if (fail) throw new Error('entry');return 2}}];
+    function seed(){return new Map(entries).size}
+    export function plain(){return new Map([['key', 2]]).size}
+    export function copy(){const source = new Map([['key', 2]]); return new Map(source).size}
+    export function f(mode){fail = !!mode; a[0] = 1; const before = a[0];
+      try {const n = seed(); return [before, n, a[0]]} catch(e){return [before, e.message, a[0]]}}
+    export function churn(){const b = new Float64Array(32); return saved.x + b.length}`
+  if (!onKernel()) {
+    _compileInProcess(src, { sourceInline: false })
+    const frames = transitiveFrameEffects(ctx.funcs.list), facts = frames.get('seed')
+    ok(facts.writesOuter && facts.runsAccessor, 'constructor entry reads contribute implicit getter effects')
+    for (const name of ['plain', 'copy']) ok(!frames.get(name).runsAccessor, `${name} keeps its direct constructor path`)
+  }
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const got = jz(src, { optimize, sourceInline: false }).exports, want = oracle(src)
+    for (const mode of [0, 0, 1, 0]) {
+      is(got.f(mode), want.f(mode), `O${optimize}: entry getter invalidates the old load`)
+      is(got.churn(), want.churn(), 'a published getter allocation survives later allocation')
+    }
+  }
 })

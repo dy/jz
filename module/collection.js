@@ -23,7 +23,7 @@ import { stringHash } from '../src/string-data.js'
 import { OBJECT_SCHEMA_HI_MASK, STR_INTERN_BIT, STR_HCACHE_BIT, ssoBitI64Hex, encodePtrHi, i64Hex, deletedMaskWat, deletedSlotWat, markDeletedSlotWat, DATA_VIEW_FLAG, HIDDEN_PROPERTY_SEQ, DYN_CACHE_EMPTY } from '../layout.js'
 import { ssoEncode } from './string.js'
 import { errorCodeLiteral, ERR } from '../err-codes.js'
-import { requireReceiverWat, requireObjectWat } from './core/error-object.js'
+import { requireReceiverWat, requireObjectWat, throwErrorWat } from './core/error-object.js'
 import { sameValueZeroIdentityChain, mapHashStringArm, mapHashBigintArm } from '../layout-kinds.js'
 import { trySlotUpdate } from '../src/compile/slot-update.js'
 import { captureCallback } from './array/callback.js'
@@ -289,7 +289,9 @@ export default (ctx) => {
     __map_has_h: () => ctx.linkDemand.external ? ['__same_value_zero', '__ptr_offset', '__ptr_offset_fwd', '__ext_has'] : ['__same_value_zero', '__ptr_offset', '__ptr_offset_fwd'],
     __set_has_h: () => ctx.linkDemand.external ? ['__same_value_zero', '__ptr_offset', '__ptr_offset_fwd', '__ext_has'] : ['__same_value_zero', '__ptr_offset', '__ptr_offset_fwd'],
     __map_delete: () => ['__map_hash', '__same_value_zero', ...relogDeps()],
-    __map_from: ['__ptr_type', '__ptr_offset', '__ptr_offset_fwd', '__len', '__typed_idx', '__map_set', '__mkptr', '__alloc_hdr_n', '__coll_order'],
+    __map_from: () => ['__ptr_type', '__ptr_offset', '__ptr_offset_fwd', '__len', representationProgramHasBigint(ctx) ? '__typed_idx_tagged' : '__typed_idx', '__map_set', '__map_add_entry', '__mkptr', '__alloc_hdr_n', '__coll_order'],
+    __map_add_entry: () => ['__ptr_type', '__ptr_aux', '__map_set', '__dyn_get_expr', '__throw_map_entry', representationProgramHasBigint(ctx) ? '__typed_idx_tagged' : '__typed_idx'],
+    __throw_map_entry: ['__alloc_hdr', '__mkptr'],
     // own edge: __map_new's body calls $__alloc_hdr_n — auto-scan-only
     // reachability vanishes under self-compile (test/self-compile-includes.js)
     __map_new: ['__alloc_hdr_n'],
@@ -693,12 +695,20 @@ export default (ctx) => {
       const out = allocPtr({ type: PTR.MAP, len: 0, cap: initCap, stride: MAP_ENTRY + lane, tag: 'map' })
       return typed(['block', ['result', 'f64'], out.init, out.ptr], 'f64')
     }
-    // new Map(iterable): seed from another Map or an array of [key, value] pairs.
-    // Delegated to a stdlib helper (vs inlined like Set) — `new Map(x)` is heavily
-    // used (the compiler copies fact Maps per function), so one shared helper keeps
-    // output small. Non-Map/Array args yield an empty map (guarded in the helper).
+    // Keep a Map copy on its direct table path. Other sources use the same
+    // nullish-tolerant iterable check as Set before the entry reader runs.
     inc('__map_from')
-    return typed(['call', '$__map_from', asI64(emit(iterExpr))], 'f64')
+    ctx.runtime.throws = true
+    const vt = valTypeOf(iterExpr)
+    if (vt === VAL.MAP || vt === VAL.ARRAY)
+      return typed(['call', '$__map_from', asI64(storedValue(iterExpr))], 'f64')
+    const source = temp('mapSource'), value = ['local.get', `$${source}`]
+    const normalized = emit(['()', '__iter_arr_ctor', ['__raw_local', source]])
+    return typed(['block', ['result', 'f64'],
+      ['local.set', `$${source}`, storedValue(iterExpr)],
+      ['call', '$__map_from', ['i64.reinterpret_f64',
+        ['if', ['result', 'f64'], ['i32.and', ['f64.ne', value, value], ptrTypeEq(value, PTR.MAP)],
+          ['then', value], ['else', asF64(normalized)]]]]], 'f64')
   }
 
   ctx.core.emit['.set'] = call('__map_set', 'III', 'i64')
@@ -1070,12 +1080,32 @@ export default (ctx) => {
   ctx.core.stdlib['__map_has'] = () => genLookup('__map_has', MAP_ENTRY, '$__map_hash', sameValueZeroEqG, PTR.MAP, false, ctx.linkDemand.external)
   ctx.core.stdlib['__map_delete'] = genDelete('__map_delete', MAP_ENTRY, '$__map_hash', sameValueZeroEqG, PTR.MAP)
 
+  ctx.core.stdlib['__throw_map_entry'] = () => throwErrorWat(ctx, '__throw_map_entry', 'TypeError', 'Iterator value is not an entry object')
+  // Entries are objects, not necessarily arrays. Keep indexed pairs direct;
+  // ordinary property reads serve records and run their getters in 0,1 order.
+  ctx.core.stdlib['__map_add_entry'] = () => `(func $__map_add_entry (param $map i64) (param $entry i64) (result i64)
+    (local $t i32)
+    (local.set $t (call $__ptr_type (local.get $entry)))
+    (if (i32.or (f64.eq (f64.reinterpret_i64 (local.get $entry)) (f64.reinterpret_i64 (local.get $entry)))
+      (i32.or (i32.eq (local.get $t) (i32.const ${PTR.ATOM}))
+        (i32.or (i32.eq (local.get $t) (i32.const ${PTR.STRING})) (i32.eq (local.get $t) (i32.const ${PTR.BIGINT})))))
+      (then (call $__throw_map_entry)))
+    (if (i32.or (i32.eq (local.get $t) (i32.const ${PTR.ARRAY}))
+        (i32.and (i32.eq (local.get $t) (i32.const ${PTR.TYPED}))
+          (i32.eqz (i32.and (call $__ptr_aux (local.get $entry)) (i32.const ${DATA_VIEW_FLAG})))))
+      (then (return (call $__map_set (local.get $map)
+        (i64.reinterpret_f64 (call $${representationProgramHasBigint(ctx) ? '__typed_idx_tagged' : '__typed_idx'} (local.get $entry) (i32.const 0)))
+        (i64.reinterpret_f64 (call $${representationProgramHasBigint(ctx) ? '__typed_idx_tagged' : '__typed_idx'} (local.get $entry) (i32.const 1)))))))
+    (call $__map_set (local.get $map)
+      (call $__dyn_get_expr (local.get $entry) (i64.reinterpret_f64 (f64.const 0)))
+      (call $__dyn_get_expr (local.get $entry) (i64.reinterpret_f64 (f64.const 1)))))`
+
   // new Map(iterable) seeder. Source is another Map (copy live [key,val] slots) or
-  // an array of [key,value] pairs (`new Map([["a",1],…])`); any other arg yields an
-  // empty map. Pre-sizes cap to fit (smallest pow2 ≥ 2·n, floor initCap) so seeding
-  // never triggers a rehash. Occupied MAP slot ⇔ hash word ≠ 0 (genDelete shift-back
+  // an indexed iterable of entry objects; a nullish source makes an empty map.
+  // Pre-size for its initial length; an entry getter may append further entries.
+  // Occupied MAP slot ⇔ hash word ≠ 0 (genDelete shift-back
   // writes 0, leaving no tombstones — matches the rehash loop's own occupancy test).
-  ctx.core.stdlib['__map_from'] = `(func $__map_from (param $src i64) (result f64)
+  ctx.core.stdlib['__map_from'] = () => `(func $__map_from (param $src i64) (result f64)
     (local $map i64) (local $t i32) (local $off i32) (local $cap i32)
     (local $i i32) (local $n i32) (local $slot i32) (local $entry i64) (local $newcap i32) (local $ord i32) (local $dst i32)
     (local.set $t (call $__ptr_type (local.get $src)))
@@ -1084,7 +1114,7 @@ export default (ctx) => {
         (local.set $off (call $__ptr_offset (local.get $src)))
         (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))
         (local.set $n (i32.load (i32.sub (local.get $off) (i32.const 8)))))
-      (else (if (i32.eq (local.get $t) (i32.const ${PTR.ARRAY}))
+      (else (if (i32.or (i32.eq (local.get $t) (i32.const ${PTR.ARRAY})) (i32.eq (local.get $t) (i32.const ${PTR.TYPED})))
         (then (local.set $n (call $__len (local.get $src)))))))
     (local.set $newcap (select (i32.const ${initCap})
       (i32.shl (i32.const 1) (i32.sub (i32.const 32) (i32.clz
@@ -1116,14 +1146,12 @@ export default (ctx) => {
             (i64.load offset=16 (local.get $slot))))
           (local.set $i (i32.add (local.get $i) (i32.const 1)))
           (br $lm))))
-      (else (if (i32.eq (local.get $t) (i32.const ${PTR.ARRAY}))
+      (else (if (i32.or (i32.eq (local.get $t) (i32.const ${PTR.ARRAY})) (i32.eq (local.get $t) (i32.const ${PTR.TYPED})))
         (then
           (block $da (loop $la
-            (br_if $da (i32.ge_s (local.get $i) (local.get $n)))
-            (local.set $entry (i64.reinterpret_f64 (call $__typed_idx (local.get $src) (local.get $i))))
-            (local.set $map (call $__map_set (local.get $map)
-              (i64.reinterpret_f64 (call $__typed_idx (local.get $entry) (i32.const 0)))
-              (i64.reinterpret_f64 (call $__typed_idx (local.get $entry) (i32.const 1)))))
+            (br_if $da (i32.ge_u (local.get $i) (call $__len (local.get $src))))
+            (local.set $entry (i64.reinterpret_f64 (call $${representationProgramHasBigint(ctx) ? '__typed_idx_tagged' : '__typed_idx'} (local.get $src) (local.get $i))))
+            (local.set $map (call $__map_add_entry (local.get $map) (local.get $entry)))
             (local.set $i (i32.add (local.get $i) (i32.const 1)))
             (br $la)))))))
     (f64.reinterpret_i64 (local.get $map)))`
