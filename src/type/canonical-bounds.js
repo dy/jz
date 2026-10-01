@@ -10,7 +10,7 @@
  *
  * @module type/canonical-bounds
  */
-import { isReassigned, some, walkAst } from '../ast.js'
+import { isReassigned, some, walkAst, hasOptionalChain } from '../ast.js'
 import { ctx, getFactStore } from '../ctx.js'
 import { intLiteralValue, constIntExpr, intExprRange } from '../static.js'
 
@@ -293,7 +293,14 @@ const NO_LIT_BOUNDS = new Map()
  * stack cursor pushed once per outer iteration and popped by an inner scan
  * (the lower envelope's `k`) advances by at most 1.
  */
-export function maxAdvanceBudget(root, name, { constInt, evRange, closureWrites, MUTATE_OPS, upperOnly = false }) {
+export const maxAdvanceBudget = (root, name, options) => advanceBudget(root, name, options, false)
+
+// A lower bound counts only advances guaranteed on every normal body path.
+// Nested loops and abrupt edges require their own continuation analysis.
+export const minAdvanceBudget = (root, name, options) => advanceBudget(root, name, options, true)
+
+function advanceBudget(root, name, { constInt, evRange, closureWrites, MUTATE_OPS, upperOnly = false }, minimum) {
+  if (minimum && upperOnly) return null
   const stmts = Array.isArray(root) && (root[0] === ';' || root[0] === '{}') ? root.slice(1) : [root]
   const bodyDecls = new Map()
   for (const st of stmts) collectDecls(st, bodyDecls)
@@ -385,18 +392,24 @@ export function maxAdvanceBudget(root, name, { constInt, evRange, closureWrites,
     if (!Array.isArray(n)) return 0
     const op = n[0]
     if (op === '=>') return closureWrites.has(name) ? null : 0
+    if (minimum && (op === 'for' || op === 'while' || op === 'do' || op === 'switch' ||
+        op === 'try' || op === 'catch' || op === 'finally' || op === 'break' ||
+        op === 'continue' || op === 'return' || op === 'throw')) return null
+    // Optional operands may not run, even when their receiver does.
+    if (minimum && hasOptionalChain(n))
+      return isReassigned(n, name) ? null : 0
     if (MUTATE_OPS.has(op) && n[1] === name) return delta(n)
     if (op === 'if') {
       const c = eff(n[1]), a = eff(n[2]), b = n.length > 3 ? eff(n[3]) : 0
-      return c == null || a == null || b == null ? null : c + Math.max(a, b)
+      return c == null || a == null || b == null ? null : c + (minimum ? Math.min(a, b) : Math.max(a, b))
     }
     if (op === '?:') {
       const c = eff(n[1]), a = eff(n[2]), b = eff(n[3])
-      return c == null || a == null || b == null ? null : c + Math.max(a, b)
+      return c == null || a == null || b == null ? null : c + (minimum ? Math.min(a, b) : Math.max(a, b))
     }
-    if (op === '&&' || op === '||') {
+    if (op === '&&' || op === '||' || op === '??') {
       const a = eff(n[1]), b = eff(n[2])
-      return a == null || b == null ? null : a + Math.max(0, b)
+      return a == null || b == null ? null : a + (minimum ? Math.min(0, b) : Math.max(0, b))
     }
     if ((op === 'for' || op === 'while') && isReassigned(n, name)) {
       const head = op === 'for' ? eff(n[1]) : 0

@@ -5,6 +5,8 @@ import { levels, onKernel } from './_matrix.js'
 import { parse, loopCount } from '../scripts/wat-probe.mjs'
 import { forCounterBounds, forCounterRange, intExprRange } from '../src/static.js'
 import { typedStaticLen } from '../src/type/loop-versioning.js'
+import { minAdvanceBudget, maxAdvanceBudget } from '../src/type/canonical-bounds.js'
+import { MUTATE_OPS } from '../src/ast.js'
 import { scanIntervalIdx } from '../src/type/interval-proof.js'
 import { ctx } from '../src/ctx.js'
 import { createActiveFunction } from '../src/compile/active-function.js'
@@ -303,4 +305,123 @@ test('counter width: guarded words preserve mutation order and object coercion o
     }
     return [sum, cursor, N]
   }`, [[0], [1]])
+})
+
+
+test('counter width: companion while cursors need progress on every continuing path', () => {
+  const options = { constInt: x => typeof x === 'number' ? x : null,
+    evRange: x => typeof x === 'number' ? [x, x] : null, closureWrites: new Set(), MUTATE_OPS }
+  const cases = [
+    ['unit', ['++', 'i'], 1],
+    ['sequence', [';', ['++', 'i'], ['+=', 'i', 2]], 3],
+    ['branches', ['if', 'mode', ['++', 'i'], ['+=', 'i', 2]], 1],
+    ['conditional skip', ['if', 'mode', ['++', 'i']], 0],
+    ['short circuit', ['&&', 'mode', ['++', 'i']], 0],
+    ['nullish skip', ['??', 'mode', ['++', 'i']], 0],
+    ['optional call', ['?.()', 'fn', ['++', 'i']], null],
+    ['optional key', ['?.[]', 'obj', ['++', 'i']], null],
+    ['continued optional call', ['()', ['?.', 'obj', 'fn'], ['++', 'i']], null],
+    ['continued optional key', ['[]', ['?.', 'obj', 'a'], ['++', 'i']], null],
+    ['continue skips progress', [';', ['if', 'mode', ['continue']], ['++', 'i']], null],
+    ['break', [';', ['++', 'i'], ['break']], null],
+    ['nested loop', ['while', 'mode', ['++', 'i']], null],
+    ['decrement', ['--', 'i'], null],
+    ['unknown write', ['=', 'i', 'mode'], null],
+  ]
+  for (const [label, body, want] of cases)
+    is(minAdvanceBudget(body, 'i', options), want, label)
+  is(maxAdvanceBudget(['??', 'mode', ['++', 'i']], 'i', options), 1, 'optional advance still contributes to the upper budget')
+
+  const trial = (advance, start = 0, bound = 4, before = null) => {
+    const read = ['[]', 'a', ['postfix', ['++', 'op']]]
+    const body = [';', ['let', ['=', 'ip', 0], ['=', 'op', start]],
+      ['while', ['<', 'ip', bound], [';', ...(before ? [before] : []), read, advance]]]
+    const proven = new Set(), hulls = new Map([['op', undefined]])
+    const prior = ctx.func
+    ctx.func = createActiveFunction({ body })
+    try { scanIntervalIdx(body, proven, name => name === 'a' ? 4 : null, null, null, null, null, null, hulls) }
+    finally { ctx.func = prior }
+    return { hit: proven.has(read), hull: hulls.get('op') }
+  }
+  is(trial(['++', 'ip']), { hit: true, hull: [0, 4] }, 'post-increment read excludes the final landing')
+  const consts = ctx.scope.consts, constInts = ctx.scope.constInts, globals = ctx.scope.globalTypes
+  try {
+    ctx.scope.consts = new Set(['BOUND'])
+    ctx.scope.constInts = new Map([['BOUND', 4]])
+    ctx.scope.globalTypes = new Map([['BOUND', 'i32']])
+    is(trial(['++', 'ip'], 0, 'BOUND'), { hit: true, hull: [0, 4] }, 'an immutable module bound remains stable')
+  } finally { ctx.scope.consts = consts; ctx.scope.constInts = constInts; ctx.scope.globalTypes = globals }
+  is(trial(['if', 'mode', ['++', 'ip'], ['++', 'ip']]), { hit: true, hull: [0, 4] }, 'both arms make progress')
+  is(trial(['if', 'mode', ['++', 'ip']]), { hit: false, hull: null }, 'one skipped step removes the finite trip budget')
+  is(trial(['++', 'ip'], 2147483647), { hit: false, hull: null }, 'final landing outside int32 rejects narrowing')
+  is(trial(['++', 'ip'], -0), { hit: false, hull: null }, 'initial negative zero remains observable')
+  is(trial(['++', 'ip'], 0, 4, ['if', 'mode', ['continue']]), { hit: false, hull: null }, 'continue cannot hide unbounded companion advances')
+})
+
+test('counter width: bounded companion while cursors preserve outputs and final values', () => {
+  for (const bound of [0, 1, 4, 5]) for (const start of ['0', '-0', '2147483647']) {
+    const source = `export function f(mode) {
+      const a = new Uint8Array([3, 5, 7, 11]), out = new Uint8Array(4)
+      let ip = 0, op = ${start}, first = 1 / op
+      while (ip < ${bound}) {
+        out[op++] = a[ip]
+        if (mode) ip++; else ip++
+      }
+      return [out.join(), ip, op, first]
+    }`
+    compare(source, [[0], [0], [1], [0]])
+  }
+  // The first loop can skip its tested advance. The second must not inherit
+  // its companion's rejected range, and each invocation starts fresh.
+  compare(`export function f(mode) {
+    const a = new Uint8Array([3, 5, 7, 11]), out = new Uint8Array(8)
+    let ip = 0, op = 0
+    while (ip < 4) { out[op++] = a[ip]; if (mode || op > 4) ip++ }
+    let tail = op
+    while (ip < 6) { tail++; ip++ }
+    return [out.join(), ip, op, tail]
+  }`, [[0], [0], [1], [0]])
+})
+
+test('counter width: loop budgets cannot hide writes through module bindings', () => {
+  const prior = ctx.func, globals = ctx.scope.globalTypes
+  try {
+    for (const global of ['ip', 'op']) {
+      const read = ['[]', 'a', ['postfix', ['++', 'op']]]
+      const body = [';', ['=', 'ip', 0], ['=', 'op', 0],
+        ['while', ['<', 'ip', 4], [';', read, ['()', 'mutate', null], ['++', 'ip']]]]
+      ctx.func = createActiveFunction({ body })
+      ctx.scope.globalTypes = new Map([[global, 'f64']])
+      const proven = new Set(), hulls = new Map([['op', undefined]])
+      scanIntervalIdx(body, proven, name => name === 'a' ? 4 : null, null, null, null, null, null, hulls)
+      ok(!proven.has(read), `${global}: the call can invalidate the trip or cursor budget`)
+      is(hulls.get('op'), null, 'the complete lifetime remains unknown')
+    }
+  } finally { ctx.func = prior; ctx.scope.globalTypes = globals }
+
+  for (const head of ['while (ip < 4)', 'for (; ip < 4;)']) compare(`
+    let ip = 0, calls = 0
+    function mutate() { if (++calls < 8) ip = 0 }
+    export function f() {
+      ip = 0; calls = 0
+      const a = new Uint8Array([3, 5, 7, 11]); let op = 0, sum = 0
+      ${head} { sum += a[op++]; mutate(); ip++ }
+      return [sum, ip, op, calls]
+    }`, [[], [], []])
+  compare(`let op = 0
+    function mutate() { op = 4294967296 }
+    export function f() {
+      op = 0; let ip = 0, sum = 0
+      const a = new Uint8Array([3, 5, 7, 11])
+      while (ip < 4) { sum += a[op++]; mutate(); ip++ }
+      return [sum, ip, op]
+    }`, [[], [], []])
+  for (const head of ['while (ip < bound)', 'for (; ip < bound;)']) compare(`let bound = 4
+    function mutate() { bound = 8 }
+    export function f() {
+      bound = 4; let ip = 0, sum = 0
+      const a = new Uint8Array([3, 5, 7, 11])
+      ${head} { sum += a[ip]; mutate(); ip++ }
+      return [sum, ip]
+    }`, [[], [], []])
 })

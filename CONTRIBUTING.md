@@ -714,7 +714,13 @@ intermediate step. Counter proofs reject additional writes in the loop header.
 Loop-local secondary counters can borrow that bounded step count before storage
 is selected. Their complete hull includes initial and terminal values and bounds
 positive and negative motion separately; other header, body or closure writes
-reject it. Fractional or overflowing motion keeps Number storage.
+reject it. Fractional or overflowing motion keeps Number storage. A constant-bound
+while loop can also bound companion cursors when its tested counter advances on
+every continuing path. Path minima establish the trip budget; path maxima bound
+each companion's full lifetime, including its final increment. Optional operands,
+skipped advances, abrupt paths and nested control do not establish progress.
+Loop seeds reject module counters and mutable module bounds: a callee, getter or
+coercion can write them without a write node in the current body.
 Loop facts have one producer: the `for` emitter derives them once per loop it
 emits (`loopFacts`, `src/compile/loop-model.js`), under the refinements that loop
 is emitted in: the counter's hull and step, each secondary counter's range

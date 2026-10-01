@@ -13,7 +13,7 @@ import {
 import { ctx, getFactStore } from '../ctx.js'
 import { intLiteralValue } from '../static.js'
 import { exprType } from './expr-type.js'
-import { idxKey, redeclaresName, collectDecls, isUnitDecrement, maxAdvanceBudget } from './canonical-bounds.js'
+import { idxKey, redeclaresName, collectDecls, isUnitDecrement, maxAdvanceBudget, minAdvanceBudget } from './canonical-bounds.js'
 
 // === Static interval proof (typedIdxProven class 5) ===
 // A tiny abstract interpreter over integer INTERVALS for const-bound loop nests —
@@ -438,10 +438,14 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
   // admits iv past the entry bound — the seed then "proved" raw OOB reads
   // (dist-reproduced on every canonical loop form). Every name the bound reads
   // must be unwritten AND undeclared in the body.
+  // A callee, getter or coercion can write a module binding without a write
+  // node in this body. Loop theorems require an uncaptured local lifetime.
+  const loopMutable = name => closureWrites.has(name) || ctx.scope?.globalTypes?.has(name)
   const boundInvariant = (bexpr, body) => {
     if (bexpr == null) return false
     const s = new Set(); collectNames(bexpr, s)
-    for (const bn of s) if (isReassigned(body, bn) || redeclaresName(body, bn)) return false
+    for (const bn of s) if (closureWrites.has(bn) || ctx.scope?.globalTypes?.has(bn) && !ctx.scope?.consts?.has(bn) ||
+        isReassigned(body, bn) || redeclaresName(body, bn)) return false
     return true
   }
   // ABRUPT EDGES. A `break` reaches the loop's exit — and a `continue` its back
@@ -773,9 +777,9 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
           const start = dv != null ? constInt(dv) : null, afterInit = env.get(name)
           if (start != null && start >= 0 && !Object.is(start, -0) && delta > 0 &&
               afterInit && Object.is(afterInit[0], start) && Object.is(afterInit[1], start) &&
-              !closureWrites.has(name) && !isReassigned(cond, name) &&
+              !loopMutable(name) && !isReassigned(cond, name) &&
               !isReassigned(lbody, name) && !redeclaresName(lbody, name)) nonNegCounter = name
-          if (A != null && B != null && !isReassigned(lbody, name) && !redeclaresName(lbody, name)
+          if (A != null && B != null && !loopMutable(name) && !isReassigned(lbody, name) && !redeclaresName(lbody, name)
               && (cond[2] == null || boundInvariant(cond[2], lbody))
               && (down ? isUnitDecrement(step, name) : delta != null && delta > 0)) {
             iv = name
@@ -938,7 +942,7 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
         for (const incNode of stmts) {
           if (!Array.isArray(incNode)) continue
           const name = typeof incNode[1] === 'string' ? incNode[1] : null
-          if (!name || name === iv || closureWrites.has(name) || redeclaresName(lbody, name)) continue
+          if (!name || name === iv || loopMutable(name) || redeclaresName(lbody, name)) continue
           let delta = null
           if (incNode[0] === '++') delta = 1
           else if (incNode[0] === '+=') delta = constInt(incNode[2])
@@ -977,14 +981,14 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
         for (const name of changedNames) {
           const caps = indexCaps.get(name)
           if (!caps?.length) continue
-          if (name === iv || closureWrites.has(name) || redeclaresName(lbody, name)) continue
+          if (name === iv || loopMutable(name) || redeclaresName(lbody, name)) continue
           const entry = env.get(name), maxAdvance = advanceBudget(lbody, name)
           let h = entry && entry[0] >= 0 && maxAdvance != null && maxAdvance > 0
             ? [entry[0], entry[1] + trips * maxAdvance] : null
           // Try every non-negative changed counter as an amortization credit;
           // keep only a strictly tighter, fully verified potential budget.
           if (h && caps.some(L => h[1] >= L)) for (const credit of changedNames) {
-            if (credit === name || credit === iv || closureWrites.has(credit) || redeclaresName(lbody, credit)) continue
+            if (credit === name || credit === iv || loopMutable(credit) || redeclaresName(lbody, credit)) continue
             const ce = env.get(credit)
             if (!ce || ce[0] < 0) continue
             const K = potentialAdvance(lbody, name, credit)
@@ -1048,9 +1052,35 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
       let iv = null, entry = null, brange = null
       if (Array.isArray(c) && c[0] === '<' && typeof c[1] === 'string' && wbody != null) {
         entry = env.get(c[1]); brange = c[2] != null ? ev(c[2]) : null
-        if (entry && brange && ivMonotoneInc(wbody, c[1]) && !redeclaresName(wbody, c[1])
+        if (entry && brange && !loopMutable(c[1]) && ivMonotoneInc(wbody, c[1]) && !redeclaresName(wbody, c[1])
             && boundInvariant(c[2], wbody)) iv = c[1]
       }
+      // Every continuing body path advances the tested cursor. Its finite
+      // trip budget also bounds positive companion cursors, including the
+      // increment's final landing. A possible zero advance proves no budget.
+      const budgeted = []
+      if (iv && constInt(c[2]) != null) {
+        const changed = new Set()
+        walkAst(wbody, { enter: x => {
+          if (x[0] === '=>') return false
+          if (MUTATE_OPS.has(x[0]) && typeof x[1] === 'string' && x[1] !== iv &&
+              env.get(x[1]) && !loopMutable(x[1])) changed.add(x[1])
+        } })
+        const options = { constInt, evRange: ev, closureWrites, MUTATE_OPS }
+        const minimum = changed.size ? minAdvanceBudget(wbody, iv, options) : 0
+        const trips = minimum > 0 ? Math.max(0, Math.ceil((brange[1] - entry[0]) / minimum)) : 0
+        if (trips > 0) {
+          for (const name of changed) {
+            if (redeclaresName(wbody, name)) continue
+            const start = env.get(name)
+            const advance = maxAdvanceBudget(wbody, name, options)
+            const h = advance > 0 ? [start[0], start[1] + trips * advance] : null
+            if (ipOk(h)) budgeted.push([name, h])
+          }
+        }
+      }
+      const priorFacts = new Map(budgeted.map(([name]) => [name, activeFacts.get(name)]))
+      for (const [name, h] of budgeted) activeFacts.set(name, h)
       // WRAPPING-CURSOR invariant (`si = si + K; if (si >= C) si = 0` — the ring
       // index of table-driven maps): the pair is self-closing on [0, C-1], so an
       // entry inside that range keeps the name there for the WHOLE loop. Seeded
@@ -1073,7 +1103,7 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
           if (!e0 || e0[0] < 0 || e0[1] > M) continue
           let writes = 0
           walkAst(wbody, { enter: x => { if (MUTATE_OPS.has(x[0]) && x[1] === a2[1]) writes++ } })
-          if (writes === 1) wraps.push([a2[1], [0, M]])
+          if (writes === 1 && !loopMutable(a2[1])) wraps.push([a2[1], [0, M]])
         }
         for (let k = 1; k < stmts.length - 1; k++) {
           const a2 = stmts[k], b2 = stmts[k + 1]
@@ -1096,7 +1126,7 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
           // the pair must be the only writes (2 exact: the add and the reset)
           let writes = 0
           walkAst(wbody, { enter: x => { if (MUTATE_OPS.has(x[0]) && x[1] === nm) writes++ } })
-          if (writes !== 2) continue
+          if (writes !== 2 || loopMutable(nm)) continue
           if (C != null) wraps.push([nm, [0, C - 1]])
           // symbolic bound (`let SEQLEN = 5` — mutable): the invariant is
           // si ∈ [0, C-1] RELATIVE to C's runtime value — recorded as a symbolic
@@ -1113,6 +1143,7 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
       // interpreter `while (pc < N)` dispatch — shapes the single-kill walk
       // lost entirely.
       const seeds = () => {
+        for (const [name, h] of budgeted) setEnv(name, h)
         for (const [nm, r] of wraps) if (!closureWrites.has(nm)) env.set(nm, r)
         for (const [nm, h, incNode] of symWraps) if (!closureWrites.has(nm)) symEnv.set(nm, { h, incNode })
       }
@@ -1121,6 +1152,11 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
         if (iv) env.set(iv, [entry[0], brange[1] - 1])
         if (afterCond()) for (let k = 2; k < n.length; k++) visit(n[k])
       }, c)
+      for (const [name] of budgeted) {
+        const prior = priorFacts.get(name)
+        if (prior) activeFacts.set(name, prior)
+        else activeFacts.delete(name)
+      }
       // exit state: the head invariant where the test failed (already in env);
       // an iv stepping by more than one can pass its bound (`i += 2` exits at
       // B + 1), which the head invariant carries and a `[., B]` form did not.
