@@ -38,7 +38,7 @@ test('int-narrow: short-circuit conditions retain path bounds and current values
     const before = new WebAssembly.Instance(new WebAssembly.Module(encodeWat(ir))).exports.f
     narrowInts(fn)
     const after = new WebAssembly.Instance(new WebAssembly.Module(encodeWat(ir))).exports.f
-    for (const mode of [0, 1, -1]) for (const x of [0, 0, 2, -0, NaN, -8, 7, 7.5, -8.5, 100, Infinity, -Infinity, 0])
+    for (const mode of [0, 1, -1]) for (const x of [0, 0, 2, -0, NaN, -8, 7, 7.5, -8.5, 100, 2147483648, -(2 ** 32), 2 ** 52, Infinity, -Infinity, 0])
       ok(Object.is(after(x, mode), before(x, mode)), 'short-circuit values, zero signs and repeated calls agree')
   }
 })
@@ -81,6 +81,22 @@ test('int-narrow: nested fast loops reuse the established Number bound', () => {
   const actual = run(source), expected = oracle(source)
   for (const n of [0, 0, 1, 4, 3.5, -0, -1, NaN, 7, 0, 4])
     is(actual.f(n), expected.f(n), `the guarded path and Number fallback agree for ${n}`)
+})
+
+test('int-narrow: nested guarded loops retain wide bounds and final counter values', () => {
+  const source = `export function f(n) { let i=0,j=0,sum=0,steps=0
+    for(;i<n;i++) {
+      for(j=0;j<n;j++) { sum=(sum+i+j)|0; steps++; if(j===2)break }
+      if(i===2)break
+    }
+    return [sum,steps,i,j,n]
+  }`
+  const expected = oracle(source)
+  for (const optimize of [0, 1, 2, 3, 'size']) {
+    const actual = run(source, { optimize })
+    for (const n of [0,0,4,3.5,0.5,-0,-1,NaN,2147483647,2147483648,2 ** 32 + 0.5,2 ** 52,Infinity,-Infinity,4,0])
+      is(actual.f(n), expected.f(n), `O${optimize}: A → A → changed bound → A, ${n}`)
+  }
 })
 
 test('int-narrow: removing selected bits closes a signed-word recurrence', () => {
