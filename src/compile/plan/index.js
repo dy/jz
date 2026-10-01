@@ -115,11 +115,7 @@ export default function plan(ast, profiler, summarize) {
   sweep('inferModuleIntGlobals', () => inferModuleIntGlobals(ast))
   // A test the summary decided folds with the arm it never takes. What that arm
   // passed on then joins no kind, which may decide further tests.
-  for (let round = 0; round < 4; round++) {
-    if (!t('foldKindTests', foldKindTests)) break
-    _dirty = true; getFactStore().revision++
-    ctx.summary = summarize()
-  }
+  sweep('foldKindTests', foldKindTests)
 
   facts()
   // A call the sweeps below inline leaves no site for the boundary check after
@@ -147,6 +143,14 @@ export default function plan(ast, profiler, summarize) {
   // A key stored on objects nothing asks for their keys becomes a declared
   // slot of their literals too, the literals their values join sharing one layout.
   ctx.summary = summarize()
+  // Removing an already-decided arm preserves the earlier conservative facts.
+  // Share its invalidation with the intervening layout rewrites, then run
+  // the remaining fold rounds before the next pass reads the fresh summary.
+  for (let round = 1; round < 4; round++) {
+    if (!t('foldKindTests', foldKindTests)) break
+    _dirty = true; getFactStore().revision++
+    ctx.summary = summarize()
+  }
   if (t('declareUnseenKeys', () => declareUnseenKeys(ast))) { _dirty = true; getFactStore().revision++; ctx.summary = summarize() }
   // Devirtualize calls through init-constant function globals (closure
   // devirtualization) — must follow the SROA above, which creates the globals.

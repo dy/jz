@@ -105,6 +105,10 @@ new nodes added while the compiler solves representation plans.
 Array-literal lowering keeps its completed child walk even when no spread needs
 rewriting. Falling back after transforming children repeats work at every nested
 literal and can repeat stateful lowerings; holes and child locations stay intact.
+Decided-arm folding shares its first summary invalidation with the following
+namespace and layout rewrites. Those passes retain conservative prior facts;
+remaining fold rounds run against fresh summaries before unseen-key declaration.
+No analysis result is reused across an untracked semantic mutation.
 Summary queries build unseen object-literal shapes in their own helper. Its
 captured name list belongs only to that fallback, so scalar expression queries
 need no literal-builder environment. Alias and presence refinements remain live.

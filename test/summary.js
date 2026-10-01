@@ -1028,6 +1028,29 @@ test('summary: rebuilt only when the program changed', () => {
 })
 
 
+test('summary: decided arms share the namespace rewrite rebuild', () => {
+  const source = `function api(x) {
+    if (Array.isArray(x)) return x[0]
+    return api.state.value
+  }
+  api.state = { value: 3 }
+  api.state.value = 4
+  export function f(n) { return api([n]) + api.state.value }`
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    let retained
+    for (const value of [4, 4, 9, 4]) {
+      const src = source.replace('value = 4', `value = ${value}`), profile = {}
+      const actual = jz(src, { optimize: { level: optimize, sourceInline: false, inlineFns: false }, profile }).exports.f
+      const expected = oracle(src).f
+      if (!onKernel()) is(profile.entries.filter(e => e.name === 'summary').length, 2, 'the fold and namespace lowering share one fresh summary')
+      for (const n of [0, -0, 1, 1.5, NaN, Infinity]) is(actual(n), expected(n), `O${optimize}: ${value}/${n}`)
+      retained ??= actual
+      is(retained(2), 6, 'a later changed program preserves the earlier instance')
+    }
+  }
+})
+
+
 test('summary: carrier narrowing reuses semantics; typed ingress invalidates them', () => {
   if (onKernel()) return   // the kernel keeps no phase profile
   const cases = [
