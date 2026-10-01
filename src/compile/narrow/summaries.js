@@ -448,7 +448,7 @@ export function inferInternalArrayLengths() {
   return { funcLens, locals, safeParams, capacities, elementRanges }
 }
 
-// Whole-program typed-element hulls for fresh local typed arrays. A callee
+// Whole-program typed-element hulls for fresh local and module typed arrays. A callee
 // summary records only values written through each parameter; callers union
 // that effect with the fresh array's initial zero. This is deliberately not a
 // general alias analysis: aliases, external calls, returns, unknown writes, and
@@ -604,16 +604,41 @@ export function inferTypedValueRanges(storeRanges) {
   // param summaries above.
   function computeLocalRanges() {
     const locals = new Map()
-    for (const f of funcs) {
-      const ranges = new Map(), ctors = new Map(), poisoned = new Set(), freshDefs = new Set()
-      const scope = ctx.summary.at(f.sig)
-      const bindings = scanBindingUses(frameNode(f))
+    // Module allocations share the same all-writers census. Keep their effects
+    // separate until every frame has contributed; an earlier reader must not
+    // retain a hull that a later writer or escaping alias invalidates.
+    const moduleFrame = { body: [';', ctx.module.entryInit, ...(ctx.module.moduleInits ?? [])] }
+    const moduleBindings = scanBindingUses(moduleFrame.body), moduleScope = ctx.summary.at('')
+    const globalSeeds = new Map(), globalCtors = new Map(), globalRanges = new Map(), globalBad = new Set(), globalUses = new Map()
+    const exported = new Set()
+    for (const name in ctx.funcs.exports) exported.add(ctx.funcs.exports[name] === true ? name : ctx.funcs.exports[name])
+    for (const [name, binding] of moduleBindings) {
+      const slot = ctx.scope.globals.get(name)
+      if (!slot || slot.export != null || exported.has(name) || binding[BINDING_USE_DECLS] !== 1 || binding[BINDING_USE_USES].some(u =>
+        u[BINDING_USE_KIND] === USE.REASSIGN || u[BINDING_USE_KIND] === USE.CAPTURE)) continue
+      const init = binding[BINDING_USE_INIT], ctor = typedElemCtor(init)
+      const range = ctor && initialRange(init, ctor, moduleScope)
+      if (range) { globalSeeds.set(name, range); globalCtors.set(name, ctor); globalRanges.set(name, range) }
+    }
+    const frames = globalSeeds.size ? [moduleFrame, ...funcs] : funcs
+    for (const f of frames) {
+      const ranges = new Map(), ctors = new Map(), poisoned = new Set(), freshDefs = new Set(), inherited = new Set()
+      const scope = f === moduleFrame ? moduleScope : ctx.summary.at(f.sig)
+      for (const [name, range] of globalSeeds) if (scope.keyOfName(name) === moduleScope.keyOfName(name)) {
+        ranges.set(name, range); ctors.set(name, globalCtors.get(name)); inherited.add(name)
+      }
+      const bindings = f === moduleFrame ? moduleBindings : scanBindingUses(frameNode(f))
       const merge = (name, r) => {
         if (poisoned.has(name)) return
         if (!r) { poisoned.add(name); ranges.delete(name); return }
         ranges.set(name, hull(ranges.get(name), r))
       }
-      walkAst(f.body, { enter: n => {
+      walkAst(frameNode(f), { enter: n => {
+        if (globalSeeds.size) for (let i = 1; i < n.length; i++) if (typeof n[i] === 'string' && inherited.has(n[i])) {
+          let used = globalUses.get(f)
+          if (!used) globalUses.set(f, used = new Set())
+          used.add(n[i])
+        }
         if (n[0] === '=>') {
           for (const name of [...ranges.keys()]) if (mentions(n, name)) merge(name, null)
           return false
@@ -621,9 +646,11 @@ export function inferTypedValueRanges(storeRanges) {
         if (n[0] === 'let' || n[0] === 'const') for (let i = 1; i < n.length; i++) {
           const d = n[i]
           if (Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string') {
+            if (f === moduleFrame && !globalSeeds.has(d[1])) continue
             const binding = bindings.get(d[1])
             if (binding?.[BINDING_USE_DECLS] !== 1 || binding[BINDING_USE_USES].some(u =>
               u[BINDING_USE_KIND] === USE.REASSIGN || u[BINDING_USE_KIND] === USE.CAPTURE)) continue
+            if (f !== moduleFrame && globalSeeds.has(d[1])) { merge(d[1], null); continue }
             const ctor = typedElemCtor(d[2]), init = ctor && initialRange(d[2], ctor, scope)
             if (ctor && init) {
               ranges.set(d[1], init)
@@ -656,8 +683,15 @@ export function inferTypedValueRanges(storeRanges) {
           }
         }
       } })
-      locals.set(f, ranges)
+      for (const name of inherited) {
+        if (poisoned.has(name)) globalBad.add(name)
+        else globalRanges.set(name, hull(globalRanges.get(name), ranges.get(name)))
+        ranges.delete(name)
+      }
+      locals.set(f === moduleFrame ? null : f, ranges)
     }
+    for (const [f, names] of globalUses) for (const name of names) if (!globalBad.has(name))
+      locals.get(f === moduleFrame ? null : f).set(name, globalRanges.get(name))
     return locals
   }
 

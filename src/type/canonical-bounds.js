@@ -10,7 +10,7 @@
  *
  * @module type/canonical-bounds
  */
-import { isReassigned, some, walkAst, hasOptionalChain, MUTATE_OPS, callArgs } from '../ast.js'
+import { isReassigned, some, walkAst, hasOptionalChain, MUTATE_OPS, callArgs, refsName, REFS_THROUGH_ARROWS } from '../ast.js'
 import { ctx, getFactStore } from '../ctx.js'
 import { intLiteralValue, constIntExpr, intExprRange, counterInit } from '../static.js'
 import { NUMBER } from '../summary/kind.js'
@@ -330,7 +330,12 @@ export const maxAdvanceBudget = (root, name, options) => advanceBudget(root, nam
 // Nested loops and abrupt edges require their own continuation analysis.
 export const minAdvanceBudget = (root, name, options) => advanceBudget(root, name, options, true)
 
-function advanceBudget(root, name, { constInt, evRange, closureWrites, MUTATE_OPS, upperOnly = false }, minimum) {
+// Total absolute movement bounds every prefix too, so opposite-signed writes
+// cannot cancel away an intermediate overflow. The caller supplies closed
+// whole-loop ranges, never entry-only facts about a changing operand.
+export const maxMovementBudget = (root, name, options) => advanceBudget(root, name, options, false, true)
+
+function advanceBudget(root, name, { constInt, evRange, closureWrites, MUTATE_OPS, upperOnly = false }, minimum, absolute = false) {
   if (minimum && upperOnly) return null
   const stmts = Array.isArray(root) && (root[0] === ';' || root[0] === '{}') ? root.slice(1) : [root]
   const bodyDecls = new Map()
@@ -404,6 +409,21 @@ function advanceBudget(root, name, { constInt, evRange, closureWrites, MUTATE_OP
     return null
   }
   const delta = (n) => {
+    if (absolute) {
+      if (n[0] === '++' || n[0] === '--') return 1
+      let value = n[0] === '+=' || n[0] === '-=' ? n[2] : null
+      if (n[0] === '=' && Array.isArray(n[2])) {
+        const [, a, b] = n[2]
+        if ((n[2][0] === '+' || n[2][0] === '-') && a === name) value = b
+        else if (n[2][0] === '+' && b === name) value = a
+      }
+      if (value == null || refsName(value, name, REFS_THROUGH_ARROWS)) return null
+      // A body declaration need not dominate this write. Only facts closed
+      // over the whole body may supply an operand; do not substitute its init.
+      const r = evRange(value)
+      return r && Number.isInteger(r[0]) && Number.isInteger(r[1])
+        ? Math.max(Math.abs(r[0]), Math.abs(r[1])) : null
+    }
     if (n[0] === '++') return 1
     if (n[0] === '+=') { const d = constInt(n[2]); return d != null && d > 0 ? d : null }
     if (n[0] === '=' && Array.isArray(n[2]) && n[2][0] === '+') {
@@ -423,6 +443,8 @@ function advanceBudget(root, name, { constInt, evRange, closureWrites, MUTATE_OP
     if (!Array.isArray(n)) return 0
     const op = n[0]
     if (op === '=>') return closureWrites.has(name) ? null : 0
+    if (absolute && (op === 'for' || op === 'while' || op === 'do' || op === 'switch' || op === 'catch' || op === 'finally'))
+      return isReassigned(n, name) ? null : 0
     if (minimum && (op === 'for' || op === 'while' || op === 'do' || op === 'switch' ||
         op === 'try' || op === 'catch' || op === 'finally' || op === 'break' ||
         op === 'continue' || op === 'return' || op === 'throw')) return null

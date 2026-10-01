@@ -13,7 +13,7 @@ import {
 import { ctx, getFactStore } from '../ctx.js'
 import { intLiteralValue } from '../static.js'
 import { exprType } from './expr-type.js'
-import { idxKey, redeclaresName, collectDecls, isUnitDecrement, maxAdvanceBudget, minAdvanceBudget } from './canonical-bounds.js'
+import { idxKey, redeclaresName, collectDecls, isUnitDecrement, maxAdvanceBudget, minAdvanceBudget, maxMovementBudget } from './canonical-bounds.js'
 
 // === Static interval proof (typedIdxProven class 5) ===
 // A tiny abstract interpreter over integer INTERVALS for const-bound loop nests —
@@ -966,32 +966,6 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
       if (entry && brange && !loopMutable(c[1]) && ivMonotoneInc(wbody, c[1]) && !redeclaresName(wbody, c[1])
           && boundInvariant(c[2], wbody)) iv = c[1]
     }
-    // Every continuing body path advances the tested cursor. Its finite
-    // trip budget also bounds positive companion cursors, including the
-    // increment's final landing. A possible zero advance proves no budget.
-    const budgeted = []
-    if (iv && constInt(c[2]) != null) {
-      const changed = new Set()
-      walkAst(wbody, { enter: x => {
-        if (x[0] === '=>') return false
-        if (MUTATE_OPS.has(x[0]) && typeof x[1] === 'string' && x[1] !== iv &&
-            env.get(x[1]) && !loopMutable(x[1])) changed.add(x[1])
-      } })
-      const options = { constInt, evRange: ev, closureWrites, MUTATE_OPS }
-      const minimum = changed.size ? minAdvanceBudget(wbody, iv, options) : 0
-      const trips = minimum > 0 ? Math.max(0, Math.ceil((brange[1] - entry[0]) / minimum)) : 0
-      if (trips > 0) {
-        for (const name of changed) {
-          if (redeclaresName(wbody, name)) continue
-          const start = env.get(name)
-          const advance = maxAdvanceBudget(wbody, name, options)
-          const h = advance > 0 ? [start[0], start[1] + trips * advance] : null
-          if (ipOk(h)) budgeted.push([name, h])
-        }
-      }
-    }
-    const priorFacts = new Map(budgeted.map(([name]) => [name, activeFacts.get(name)]))
-    for (const [name, h] of budgeted) activeFacts.set(name, h)
     // WRAPPING-CURSOR invariant (`si = si + K; if (si >= C) si = 0` — the ring
     // index of table-driven maps): the pair is self-closing on [0, C-1], so an
     // entry inside that range keeps the name there for the WHOLE loop. Seeded
@@ -1038,7 +1012,7 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
         let writes = 0
         walkAst(wbody, { enter: x => { if (MUTATE_OPS.has(x[0]) && x[1] === nm) writes++ } })
         if (writes !== 2 || loopMutable(nm)) continue
-        if (C != null) wraps.push([nm, [0, C - 1]])
+        if (C != null) wraps.push([nm, [0, C - 1], [0, C - 1 + K]])
         // symbolic bound (`let SEQLEN = 5` — mutable): the invariant is
         // si ∈ [0, C-1] RELATIVE to C's runtime value — recorded as a symbolic
         // hull for reads BEFORE the increment (the versioning guard closes it
@@ -1046,6 +1020,54 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
         else symWraps.push([nm, { lo: 0, hiName: Cname, hiBias: -1, entryHi: prior?.entryHi ?? e0[1] }, a2])
       }
     }
+    // Every continuing body path advances the tested cursor. Its finite
+    // trip budget also bounds signed additive recurrences, including the
+    // increment's final landing. A possible zero advance proves no budget.
+    const budgeted = []
+    if (iv && constInt(c[2]) != null) {
+      const changed = new Set()
+      walkAst(wbody, { enter: x => {
+        if (x[0] === '=>') return false
+        if (MUTATE_OPS.has(x[0]) && typeof x[1] === 'string' && x[1] !== iv &&
+            env.get(x[1]) && !loopMutable(x[1])) changed.add(x[1])
+      } })
+      const options = { constInt, evRange: ev, closureWrites, MUTATE_OPS }
+      const minimum = changed.size ? minAdvanceBudget(wbody, iv, options) : 0
+      const trips = minimum > 0 ? Math.max(0, Math.ceil((brange[1] - entry[0]) / minimum)) : 0
+      if (trips > 0) {
+        let stepEnv
+        const stepRange = e => {
+          if (!stableRangeExpr(e)) return null
+          if (!stepEnv) {
+            stepEnv = new Map(env)
+            for (const name of stepEnv.keys()) if (loopMutable(name) || isReassigned(wbody, name) || redeclaresName(wbody, name)) stepEnv.delete(name)
+            for (const [name, h, whole = h] of wraps) if (ipOk(whole)) stepEnv.set(name, whole)
+            // A dependent write may follow this iteration’s increment. Its
+            // operand needs the whole cursor lifetime, including that landing.
+            const advance = maxAdvanceBudget(wbody, iv, options)
+            const whole = advance > 0 ? [entry[0], Math.max(entry[1], brange[1] - 1 + advance)] : null
+            if (ipOk(whole)) stepEnv.set(iv, whole)
+          }
+          const saved = env, wasRecording = recording
+          env = stepEnv; recording = false
+          try { return ev(e) }
+          finally { env = saved; recording = wasRecording }
+        }
+        for (const name of changed) {
+          if (redeclaresName(wbody, name)) continue
+          const start = env.get(name)
+          const advance = maxAdvanceBudget(wbody, name, options)
+          let h = advance > 0 ? [start[0], start[1] + trips * advance] : null
+          if (!ipOk(h)) {
+            const movement = maxMovementBudget(wbody, name, { ...options, evRange: stepRange })
+            if (movement != null) h = [start[0] - trips * movement, start[1] + trips * movement]
+          }
+          if (ipOk(h)) budgeted.push([name, h])
+        }
+      }
+    }
+    const priorFacts = new Map(budgeted.map(([name]) => [name, activeFacts.get(name)]))
+    for (const [name, h] of budgeted) activeFacts.set(name, h)
     // Body fixpoint (loopFixpoint below): the wrap/symWrap seeds are theorems
     // independent of the body, re-applied each pass; the monotone iv's body
     // range (entry lo up to the bound, the test having held) applies after

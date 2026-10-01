@@ -872,6 +872,14 @@ includes that helper's writes and defaults, not just its initial zeroes. Exposin
 the buffer, capturing or storing an array inside another container invalidates
 its private-storage proof. Rejected length facts propagate through all forwarding
 helpers before any length is folded.
+Private module typed arrays use the same all-writers census across every function,
+its defaults and module initialization. Exported bindings, escaped aliases and
+backing buffers have no closed element hull; shadowed locals use their own binding
+identity. A static while-loop trip budget can bound signed additive recurrences
+by their total absolute movement. Delta operands need whole-loop facts, including
+counter landing and ring-reset transients; body initializer syntax alone supplies
+no dominance proof. Every intermediate must fit the signed word before these
+hulls authorize storage (`test/interval-proof.js`).
 
 Runtime-sized index buffers have a separate relational proof
 (`narrow/element-bounds.js`). Zero initialization, own-index stores and same-array

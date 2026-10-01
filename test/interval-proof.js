@@ -5,7 +5,7 @@ import test from 'tst'
 import parseWat from 'watr/parse'
 import { is, ok } from 'tst/assert.js'
 import jz, { compile } from '../index.js'
-import { onKernel, levels } from './_matrix.js'
+import { onKernel, belowOpt, levels } from './_matrix.js'
 import { funcWat, oracle } from './util.js'
 import { scanIntervalIdx } from '../src/type/interval-proof.js'
 import { scanBoundedArrIdx } from '../src/type/canonical-bounds.js'
@@ -13,6 +13,122 @@ import { typedIdxProven } from '../src/type/loop-versioning.js'
 import { ctx } from '../src/ctx.js'
 import { createActiveFunction } from '../src/compile/active-function.js'
 import { NUMBER, NULLISH, ABSENT, STRING, BOOL, ANY, K, kind, join } from '../src/summary/kind.js'
+
+test('interval proof: signed recurrence budgets use whole-loop operands and every prefix', () => {
+  const prior = ctx.func
+  try { for (const [label, initial, step, advance, bound, expected] of [
+    ['signed elements', 0, ['+=','sum',['[]','src','cursor']], ['=','cursor',['&',['+','cursor',1],3]], 4, [-4,4]],
+    ['missing element', 0, ['+=','sum',['[]','src','cursor']], ['++','cursor'], 8, null],
+    ['changing step', 0, ['+=','sum','cursor'], ['*=','cursor',2], 4, null],
+    ['effectful step', 0, ['+=','sum',['postfix',['++','cursor']]], [';'], 4, null],
+    ['prefix overflow', 1, [';', ['+=','sum',2147483647],['-=','sum',2147483647]], [';'], 4, null],
+    ['negative zero', [null,-0], ['+=','sum',0], [';'], 4, null],
+    ['absent entry', null, ['+=','sum',1], [';'], 4, null],
+    ['zero work', 3, ['+=','sum',['[]','src','cursor']], ['++','cursor'], 0, [3,3]],
+  ]) {
+    const after=['()', 'take', 'sum'], bindings=new Map([['sum',undefined]]), calls=new Map([[after,undefined]])
+    const body=[';', ['let', initial==null?'sum':['=','sum',initial],['=','cursor',label==='changing step'?1:0],['=','iv',0]],
+      ['while',['<','iv',bound],[';',step,advance,['++','iv']]],after]
+    ctx.func=createActiveFunction({body})
+    ctx.func.typedElem=new Map([['src','new.Int32Array']])
+    ctx.func.localReps=new Map([['src',{arrayElemRange:[-1,1]}]])
+    scanIntervalIdx(body,null,name=>name==='src'?4:null,null,calls,null,null,null,bindings)
+    is(bindings.get('sum'),expected,label)
+  } } finally {ctx.func=prior}
+})
+
+test('interval proof: signed recurrence operands include transient counters and require dominance', () => {
+  const prior = ctx.func
+  try { for (const [label, statements] of [
+    ['increment before operand', [['+=','iv',2147483647],['+=','sum','iv']]],
+    ['conditional initializer', [['if','flag',['let',['=','delta',1]]],['+=','sum','delta'],['++','iv']]],
+    ['read before initializer', [['+=','sum','delta'],['let',['=','delta',1]],['++','iv']]],
+    ['paired ring transient', [['+=','cursor',2147483647],['if',['>=','cursor',4],['=','cursor',0]],['+=','sum','cursor'],['++','iv']]],
+  ]) {
+    const after=['()', 'take', 'sum'], bindings=new Map([['sum',undefined]]), calls=new Map([[after,undefined]])
+    const body=[';', ['let',['=','sum',1],['=','iv',0],['=','cursor',3]],
+      ['while',['<','iv',4],[';',...statements]],after]
+    ctx.func=createActiveFunction({body})
+    scanIntervalIdx(body,null,()=>null,null,calls,null,null,null,bindings)
+    is(bindings.get('sum'),null,label)
+  } } finally {ctx.func=prior}
+})
+
+test('interval proof: module element hulls retain a bounded signed accumulator', () => {
+  const src=`let DX=new Int32Array([1,0,-1,0]);export function f(){
+    let ax=0,dir=0,i=0;while(i<1000){ax+=DX[dir];dir=(dir+1)&3;i++}return ax}`
+  for(const optimize of levels(0,1,2,3,'size')){
+    const f=jz(src,{optimize}).exports.f
+    for(let i=0;i<3;i++)is(f(),0,`signed module accumulation O${optimize}`)
+  }
+  if(onKernel() || belowOpt(2))return
+  const wat=funcWat(compile(src,{wat:true}), 'f')
+  ok(!/f64\.add/.test(wat) && /\(local \$ax i32\)/.test(wat),'closed element hull and trip budget keep signed accumulation in i32')
+})
+
+test('interval proof: module element hulls include later writers and reject exposed storage', () => {
+  const walk=`export function f(){let s=0,j=0,i=0;while(i<8){s+=DX[j];j=(j+1)&3;i++}return s}`
+  const writers=[
+    `export function set(k){DX[0]=k}`,
+    `export function set(k){DX[0]=2147483647}`,
+    `export function set(k){let alias=DX;alias[0]=k}`,
+    `export function set(k){new Int32Array(DX.buffer)[0]=k}`,
+    `export function set(k){DX=new Int32Array([k,0,-1,0])}`,
+    `export function set(k,update=()=>{DX[0]=k}){update()}`,
+    `function write(a,k){a[0]=k}export function set(k){write(DX,k)}`,
+  ]
+  for(const optimize of levels(0,1,2,3,'size'))for(let i=0;i<writers.length;i++){
+    const src=`let DX=new Int32Array([1,0,-1,0]);${walk}${writers[i]}`
+    const got=jz(src,{optimize}).exports,want=oracle(src)
+    for(const n of [1,1,2147483647,-2147483648,0,1]){
+      got.set(n);want.set(n)
+      is(got.f(),want.f(),`module writer ${i} O${optimize}, ${n}`)
+    }
+  }
+})
+
+test('interval proof: module element hulls reject public views and module aliases', () => {
+  const walk=`export function f(){let s=0,j=0,i=0;while(i<8){s+=DX[j];j=(j+1)&3;i++}return s}`
+  for(const optimize of levels(0,1,2,3,'size'))for(const exported of [
+    'export const DX=new Int32Array([1,0,-1,0]);',
+    'const DX=new Int32Array([1,0,-1,0]);export {DX as table};',
+    'const DX=new Int32Array([1,0,-1,0]);export function table(){return DX}',
+  ]){
+    const src=exported+walk, got=jz(src,{optimize}), want=oracle(src)
+    const key=want.DX?'DX':'table', read=()=>{
+      if(typeof got.exports[key]==='function')return got.exports[key]()
+      const v=got.exports[key].value
+      return Number.isInteger(v)?new Int32Array(got.memory.buffer,v,4):got.memory.read(v)
+    }
+    for(const n of [1,1,2147483647,-2147483648,0,1]){
+      read()[0]=n
+      ;(typeof want[key]==='function'?want[key]():want[key])[0]=n
+      is(got.exports.f(),want.f(),`public module array O${optimize}, ${key}, ${n}`)
+    }
+  }
+  for(const optimize of levels(0,1,2,3,'size')){
+    const src=`const DX=new Int32Array([1,0,-1,0]);const alias=DX;${walk}
+      export function set(n){alias[0]=n}
+      export function shadow(n){const DX=new Int32Array([n,0,-1,0]);let s=0,j=0,i=0;while(i<8){s+=DX[j];j=(j+1)&3;i++}return s}
+      function helper(DX){let s=0,j=0,i=0;while(i<8){s+=DX[j];j=(j+1)&3;i++}return s}
+      export function parameter(n){return helper(new Int32Array([n,0,-1,0]))}`
+    const got=jz(src,{optimize}).exports,want=oracle(src)
+    for(const n of [1,1,2147483647,-2147483648,0,1]){
+      got.set(n);want.set(n)
+      for(const name of ['f','shadow','parameter'])is(got[name](n),want[name](n),`module aliases/shadow O${optimize}, ${name}, ${n}`)
+    }
+  }
+})
+
+test('interval proof: signed recurrence budgets preserve unknown and wide initial values', () => {
+  const src=`let DX=new Int32Array([1,0,-1,0]);export function f(seed,n){
+    let s=seed,j=0,i=0;while(i<n){s+=DX[j];j=(j+1)&3;i++}return[s,1/s]}`
+  for(const optimize of levels(0,1,2,3,'size')){
+    const got=jz(src,{optimize}).exports.f,want=oracle(src).f
+    for(const n of [0,1,2,4,8])for(const seed of [0,-0,2147483647,-2147483648,9007199254740992,Infinity,NaN])
+      is(got(seed,n),want(seed,n),`wide recurrence O${optimize}, ${seed}, ${n}`)
+  }
+})
 
 test('interval proof: returning branches retain only the live continuation range', () => {
   for (const exit of ['return', 'throw']) for (const branch of [2, 3]) {
