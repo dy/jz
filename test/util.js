@@ -74,7 +74,10 @@ export const cases = (rows, opts) => {
 /** One function's text out of a WAT module, by paren matching — slicing to the next
  *  `(func` would overrun into lifted closures and give false positives. */
 export function funcWat(text, name) {
-  const m = new RegExp(`\\(func \\$${name.replace(/[$]/g, '\\$')}(?=[\\s)])`).exec(text)
+  const escaped = name.replace(/[$]/g, '\\$')
+  // A function used only by an export can keep its body on the ABI entry.
+  const m = new RegExp(`\\(func \\$${escaped}(?=[\\s)])`).exec(text) ||
+    new RegExp(`\\(func \\$${escaped}\\$exp(?=[\\s)])`).exec(text)
   if (!m) return ''
   let depth = 0
   for (let i = m.index; i < text.length; i++) {
@@ -83,4 +86,3 @@ export function funcWat(text, name) {
   }
   return text.slice(m.index)
 }
-
