@@ -4,8 +4,21 @@ import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { levels } from './_matrix.js'
 import { agree, wat } from './util.js'
+import parseWat from 'watr/parse'
 
-const guards = text => (text.match(/f64\.const inf/g) || []).length
+// The converted value lives in the loop. A separate guarded counter copy may
+// convert ceil(n) before entering it; that bound is not the clamp's result.
+const guards = text => {
+  let count = 0
+  const visit = (node, inLoop = false) => {
+    if (!Array.isArray(node)) return
+    inLoop ||= node[0] === 'loop'
+    if (inLoop && node[0] === 'f64.const' && /^-?inf$/.test(String(node[1]))) count++
+    for (let i = 1; i < node.length; i++) visit(node[i], inLoop)
+  }
+  visit(parseWat(text))
+  return count
+}
 
 // The edge inputs ToInt32 distinguishes: NaN and ±∞ map to 0, large values wrap
 // (within the documented ±2^63 boundary), the rails clamp, signed zero and
