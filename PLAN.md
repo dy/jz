@@ -45,6 +45,13 @@ The remaining release blockers are:
   retained heap is 3.349 GB. The ordinary artifact is 24,571,236 bytes, SHA-256
   `91214de30f2157fdf7860124f5d18245b9c6a98e1b2c45149266fba0a25d0bd9`.
   Sparse snapshots alone do not resolve this blocker.
+  Kernel9 at `3315c340` includes the interval visitor allocation refactor.
+  It also passes all nine sequence checks, but recursive compilation still
+  exhausts 4 GiB after `splitByListKinds`, at 3.378 GB retained after that phase.
+  The ordinary artifact is 24,936,393 bytes, SHA-256
+  `076b8003d40b90210e1fad713525c15ac6c3c5153e90fe7799a8ac4d0448e972`.
+  Native sampled allocation fell 10.6%; this did not establish hosted headroom.
+  Allocation call-site profiling of the Wasm compiler is the next measurement.
 - Dependency release: the complete, tested watr 5.11.9 tarball awaits publication
   approval. JZ still declares and locks 5.11.8. Publication, the dependency bump
   and a clean registry installation gate must precede release.
