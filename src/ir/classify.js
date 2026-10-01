@@ -61,7 +61,11 @@ const PURE_OPS = new Set(['i32.const', 'f64.const', 'local.get', 'global.get',
   'select'])   // select of pure operands: both arms evaluate eagerly, no trap/effect — a nested
 
                // select chain (the branchless arm-update accumulator) stays select all the way
-export const isPureIR = n => Array.isArray(n) && PURE_OPS.has(n[0]) && n.slice(1).every(c => !Array.isArray(c) || isPureIR(c))
+export const isPureIR = n => {
+  if (!Array.isArray(n) || !PURE_OPS.has(n[0])) return false
+  for (let i = 1; i < n.length; i++) if (Array.isArray(n[i]) && !isPureIR(n[i])) return false
+  return true
+}
 
 // Ops PURE_OPS admits into `select` (no trap, no effect) but whose LATENCY is high
 // enough that eagerly computing an arm that would otherwise be skipped can lose to a

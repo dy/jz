@@ -4,7 +4,7 @@
 // remainders and truncated quotients are the integers' own. Every value is a
 // differential against the host; the WAT shows where the arithmetic runs.
 import test from 'tst'
-import { is, ok } from 'tst/assert.js'
+import { is, ok, throws } from 'tst/assert.js'
 import { agree, oracle, run, wat } from './util.js'
 import { belowOpt } from './_matrix.js'
 import parseWat from 'watr/parse'
@@ -14,6 +14,149 @@ import { narrowInts } from '../src/optimize/int-narrow.js'
 const count = (text, op) => (text.match(new RegExp(`\\(${op.replace('.', '\\.')}[\\s)]`, 'g')) || []).length
 const shapes = (src, check) => { if (!belowOpt(2)) check(wat(src)) }
 const ARGS = [0, 1, 2, 3, 5, 7, -1, -3, 16, 100, 2147483647, -2147483648, 0.5, NaN]
+
+test('int-narrow: decided readback guards retain saved values and operand order', () => {
+  const comparisons = [
+    '(f64.eq (f64.convert_i32_s (local.tee $saved (call $tick (local.get $x)))) (f64.convert_i32_s (local.get $saved)))',
+    '(f64.ne (f64.convert_i32_u (local.tee $saved (call $tick (local.get $x)))) (f64.convert_i32_u (local.get $saved)))',
+    '(i32.eq (local.tee $saved (call $tick (local.get $x))) (local.get $saved))',
+    '(i32.lt_s (i32.and (call $tick (i32.const 1)) (i32.const 255)) (i32.add (i32.and (call $tick (i32.const 2)) (i32.const 255)) (i32.const 512)))',
+  ]
+  for (const cmp of comparisons) {
+    const ir = parseWat(`(module (global $events (mut i32) (i32.const 0))
+      (func $tick (param $v i32) (result i32)
+        (global.set $events (i32.add (i32.mul (global.get $events) (i32.const 10)) (local.get $v))) (local.get $v))
+      (func $f (export "f") (param $x i32) (result i32) (local $saved i32) (local $answer i32)
+        (global.set $events (i32.const 0)) (local.set $answer ${cmp})
+        (i32.add (i32.mul (local.get $answer) (i32.const 10)) (local.get $saved)))
+      (func (export "events") (result i32) (global.get $events)))`)
+    const before = new WebAssembly.Instance(new WebAssembly.Module(encodeWat(ir))).exports
+    const fn = ir.find(n => n[0] === 'func' && n[1] === '$f')
+    narrowInts(fn)
+    ok(!JSON.stringify(fn).includes(cmp.slice(1, cmp.indexOf(' '))), 'the decided comparison is removed')
+    const after = new WebAssembly.Instance(new WebAssembly.Module(encodeWat(ir))).exports
+    for (const x of [0, 0, 1, -1, 2147483647, -2147483648, 0]) {
+      is(after.f(x), before.f(x), 'saved tee value survives A → A → B → A')
+      is(after.events(), before.events(), 'each operand executes once in order')
+    }
+  }
+})
+
+test('int-narrow: reciprocal guards distinguish positive, negative and unknown zero', () => {
+  const denominators = [
+    ['i32', '(f64.convert_i32_s (i32.and (local.get $x) (i32.const 7)))', true],
+    ['f64', '(local.get $x)', false],
+    ['f64', '(local.tee $copy (local.get $x))', false],
+    ['f64', '(f64.neg (f64.abs (local.get $x)))', false],
+  ]
+  for (const [type, denominator, decided] of denominators) {
+    const ir = parseWat(`(module (func $f (export "f") (param $x ${type}) (result i32) (local $copy f64)
+      (f64.gt (f64.div (f64.const 1) ${denominator}) (f64.const 0))))`)
+    const before = new WebAssembly.Instance(new WebAssembly.Module(encodeWat(ir))).exports.f
+    const fn = ir.find(n => n[0] === 'func')
+    narrowInts(fn)
+    is(JSON.stringify(fn).includes('f64.gt'), !decided, 'only a proved positive reciprocal loses its predicate')
+    const after = new WebAssembly.Instance(new WebAssembly.Module(encodeWat(ir))).exports.f
+    for (const x of [0, 0, -0, 1, -1, 0.25, -0.25, Number.MIN_VALUE, -Number.MIN_VALUE, 2147483647, -2147483648, Infinity, -Infinity, NaN, 0])
+      is(after(x), before(x), `zero sign, finite boundary and nonfinite input: ${x}`)
+  }
+})
+
+test('int-narrow: interval division retains an interior zero divided by zero', () => {
+  const ir = parseWat(`(module (func $f (export "f") (param $x i32) (param $y i32) (result i32) (local $v f64)
+    (f64.eq (local.tee $v (f64.div (f64.convert_i32_s (local.get $x))
+      (f64.convert_i32_s (i32.and (local.get $y) (i32.const 7))))) (local.get $v))))`)
+  const before = new WebAssembly.Instance(new WebAssembly.Module(encodeWat(ir))).exports.f
+  narrowInts(ir.find(n => n[0] === 'func'))
+  const after = new WebAssembly.Instance(new WebAssembly.Module(encodeWat(ir))).exports.f
+  for (const [x, y] of [[0, 0], [0, 0], [-1, 0], [1, 0], [0, 1], [-1, 7], [1, 7], [2147483647, 1], [-2147483648, 0], [0, 0]])
+    is(after(x, y), before(x, y), `interior zero, endpoints and reuse: ${x}/${y & 7}`)
+})
+
+test('int-narrow: an interior quotient may underflow to negative zero', () => {
+  const ir = parseWat(`(module (memory 1) (func $f (export "f") (param $x f64) (result f64)
+    (i32.store8 (i32.const 0) (i32.const 0)) (i32.store8 (i32.const 1) (i32.const -1))
+    (if (result f64) (i32.and (f64.ge (local.get $x) (f64.const 0)) (f64.le (local.get $x) (f64.const 2)))
+      (then (f64.add (f64.mul (f64.convert_i32_s (i32.load8_s (i32.const 0)))
+        (f64.convert_i32_s (i32.load8_s (i32.const 1))))
+        (f64.div (f64.sub (local.get $x) (f64.const 1)) (f64.const 1e308))))
+      (else (local.get $x)))))`)
+  const before = new WebAssembly.Instance(new WebAssembly.Module(encodeWat(ir))).exports.f
+  narrowInts(ir.find(n => n[0] === 'func'))
+  const after = new WebAssembly.Instance(new WebAssembly.Module(encodeWat(ir))).exports.f
+  for (const x of [1 - Number.EPSILON / 2, 1 - Number.EPSILON / 2, 0, 1, 2, 1 + Number.EPSILON, NaN, -0])
+    ok(Object.is(after(x), before(x)), `the sum retains its zero sign: ${x}`)
+})
+
+test('int-narrow: finite word guards reject special exponents without rejecting floats', () => {
+  for (const type of ['i32', 'f64']) for (const mask of [null, '0x7FF0000000000000', '0xFFF0000000000000']) {
+    const value = type === 'i32' ? '(f64.convert_i32_s (local.get $x))' : '(local.get $x)'
+    const bits = `(i64.reinterpret_f64 ${value})`
+    const ir = parseWat(`(module (func $f (export "f") (param $x ${type}) (result i32)
+      (i64.eq ${mask ? `(i64.and ${bits} (i64.const ${mask}))` : bits}
+        (i64.const ${mask ?? '0x7FF8000000000000'}))))`)
+    const before = new WebAssembly.Instance(new WebAssembly.Module(encodeWat(ir))).exports.f
+    const fn = ir.find(n => n[0] === 'func')
+    narrowInts(fn)
+    is(JSON.stringify(fn).includes('i64.eq'), type !== 'i32', 'only the finite word excludes every special exponent')
+    const after = new WebAssembly.Instance(new WebAssembly.Module(encodeWat(ir))).exports.f
+    for (const x of [0, 0, -0, 1, -1, 2147483647, -2147483648, Infinity, -Infinity, NaN, 0])
+      is(after(x), before(x), `special bits, type ${type}, mask ${mask}, value ${x}`)
+  }
+})
+
+test('int-narrow: late word guards preserve recursive values across reuse', () => {
+  const src = `function count(n) {
+    if (n <= 0) return 1
+    let s = 0, i = 0
+    while (i < n) { s += count(n - 1 - i); i++ }
+    return s & 0x3ffffff
+  }
+  export function value(k) { return count(k & 7) }`
+  const host = oracle(src).value
+  for (const optimize of [0, 1, 2, 3, 'size']) {
+    const f = run(src, { optimize: { level: optimize, sourceInline: false } }).value
+    for (const x of [0, 0, 1, 7, 3, -1, 2147483647, -2147483648, 0])
+      is(f(x), host(x), `O${optimize}: recursive zero-work / A → A → B → A, ${x}`)
+  }
+})
+
+test('int-narrow: constant comparisons retain traps and later operand writes', () => {
+  for (const value of [
+    '(i32.load8_u (local.get $x))',
+    '(i32.and (i32.div_s (i32.const 1) (local.get $x)) (i32.const 255))',
+    '(i32.and (i32.rem_s (i32.const 1) (local.get $x)) (i32.const 255))',
+    '(i32.and (i32.trunc_f64_s (f64.div (f64.const 1) (f64.convert_i32_s (local.get $x)))) (i32.const 255))',
+  ]) {
+    const ir = parseWat(`(module (memory 1) (func $f (export "f") (param $x i32) (result i32)
+      (i32.eq ${value} (i32.const 256))))`)
+    const before = new WebAssembly.Instance(new WebAssembly.Module(encodeWat(ir))).exports.f
+    narrowInts(ir.find(n => n[0] === 'func'))
+    const after = new WebAssembly.Instance(new WebAssembly.Module(encodeWat(ir))).exports.f
+    const bad = value.includes('load') ? 65536 : 0
+    throws(() => before(bad), WebAssembly.RuntimeError, 'original traps')
+    throws(() => after(bad), WebAssembly.RuntimeError, 'decided comparison retains the trap')
+    is(after(1), before(1), 'successful call after trap')
+  }
+  const conditional = parseWat(`(module (memory 1) (func $f (export "f") (param $x i32) (result i32)
+    (i32.eq (if (result i32) (local.get $x)
+      (then (i32.load8_u (i32.const 65536))) (else (i32.const 0))) (i32.const 256))))`)
+  narrowInts(conditional.find(n => n[0] === 'func'))
+  const f = new WebAssembly.Instance(new WebAssembly.Module(encodeWat(conditional))).exports.f
+  is(f(0), 0, 'untaken conditional load does not trap')
+  throws(() => f(1), WebAssembly.RuntimeError, 'taken conditional load still traps')
+  is(f(0), 0, 'zero-work call after trap')
+  for (const type of ['i32', 'f64']) {
+    const cv = x => type === 'i32' ? `(f64.convert_i32_s ${x})` : x
+    const ir = parseWat(`(module (func $f (export "f") (param $x ${type}) (param $y ${type}) (result i32)
+      (f64.eq ${cv('(local.get $x)')} ${cv('(local.tee $x (local.get $y))')})))`)
+    const before = new WebAssembly.Instance(new WebAssembly.Module(encodeWat(ir))).exports.f
+    narrowInts(ir.find(n => n[0] === 'func'))
+    const after = new WebAssembly.Instance(new WebAssembly.Module(encodeWat(ir))).exports.f
+    for (const [x, y] of [[0, 0], [0, 1], [1, 0], [-0, 0], [NaN, NaN], [Infinity, Infinity], [2147483647, -2147483648]])
+      is(after(x, y), before(x, y), 'a later assignment is not a read of the saved value')
+  }
+})
 
 test('int-narrow: bounded products narrow only when their sum erases zero sign', () => {
   for (const [loadA, loadB, fits] of [['8_s', '8_s', true], ['16_s', '16_u', true], ['16_u', '16_u', false]]) {

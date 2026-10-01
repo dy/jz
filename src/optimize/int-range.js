@@ -26,6 +26,8 @@
 // time, every loop from the head it had: the walks are as many as the heads
 // take to settle, whatever the nesting. Only the last walk records.
 
+import { isPureIR } from '../ir/classify.js'
+
 const isArr = Array.isArray
 
 export const LIMIT = 2 ** 52
@@ -173,9 +175,9 @@ export const plainNaN = n => {
   return (f64bits[0] & 0x7FFFFFFFFFFFFFFFn) === 0x7FF8000000000000n
 }
 
-export const pure = n => !isArr(n) || (n[0] !== 'local.set' && n[0] !== 'local.tee' && n[0] !== 'call' && n[0] !== 'call_indirect' && n[0] !== 'call_ref' &&
-  n[0] !== 'br' && n[0] !== 'br_if' && n[0] !== 'br_table' && n[0] !== 'global.set' && !LEAVES.has(n[0]) &&
-  !/\.store|^memory\.|^table\.|^atomic/.test(n[0]) && n.every(pure))
+// Discarding a decided operand needs both no effect and no trap. Use the
+// shared scalar IR authority; an unlisted operation remains evaluated.
+export const pure = n => !isArr(n) || isPureIR(n)
 const same = (a, b) => a === b || (isArr(a) && isArr(b) && a.length === b.length && a.every((x, i) => same(x, b[i]))) ||
   (!isArr(a) && !isArr(b) && String(a) === String(b))
 
@@ -212,6 +214,21 @@ export const readBack = (y, x) => {
     : out === 'f64.convert_i32_s' && inner === 'i32.trunc_sat_f64_s' ? 'i32'
     : out === 'f64.convert_i32_u' && inner === 'i32.trunc_sat_f64_u' ? 'u32'
     : out === 'f64.convert_i64_s' && inner === 'i64.trunc_sat_f64_s' ? 'i64' : null
+}
+// A conversion of a word and the same conversion of its saved value agree.
+// Only the left operand may write: the right reads the exact tee result, or
+// an unchanged local. Do not equate a saved read with a later assignment.
+const readsSaved = (x, y) => {
+  while (isArr(x) && isArr(y) && x[0] === y[0] && x.length === 2 && y.length === 2 &&
+    (x[0] === 'f64.convert_i32_s' || x[0] === 'f64.convert_i32_u' || x[0] === 'f64.convert_i64_s')) {
+    x = x[1]; y = y[1]
+  }
+  if (!isArr(y) || y[0] !== 'local.get') return false
+  while (isArr(x) && x[0] === 'local.tee') {
+    if (x[1] === y[1]) return true
+    x = x[2]
+  }
+  return isArr(x) && x[0] === 'local.get' && x[1] === y[1]
 }
 // The values each way of reading back holds exactly.
 const BACK = { whole: [-Infinity, Infinity], i32: [-(2 ** 31), 2 ** 31 - 1], u32: [0, 2 ** 32 - 1], i64: [-(2 ** 63), 2 ** 63] }
@@ -622,11 +639,17 @@ export function intRanges(fn, bodyStart, assume = null, regions = null) {
         return arith(lo, hi, a, b, a.nz || b.nz || (zero(a) && b.lo < 0) || (zero(b) && a.lo < 0))
       }
       case 'f64.div': {
-        const k = numConst(y)
         if (!a || !b) return null
-        if (k == null || k === 0 || !Number.isFinite(k) || none(a)) return NUMBER
-        const p = [a.lo / k, a.hi / k]
-        return val(Math.min(...p), Math.max(...p), false, a.nz || (a.lo <= 0 && a.hi >= 0), a.nan)
+        // A one-sided denominator has no reciprocal discontinuity. A zero
+        // endpoint is usable only when it is +0: -0 reverses infinity's sign.
+        if (none(a) || none(b) || !(b.lo > 0 || b.hi < 0 || b.lo >= 0 && !b.nz)) return NUMBER
+        const p = [a.lo / b.lo, a.lo / b.hi, a.hi / b.lo, a.hi / b.hi]
+        if (p.some(Number.isNaN)) return NUMBER
+        // Negative quotients may underflow to -0 between the endpoints;
+        // 0/0 may likewise be interior when the numerator spans zero.
+        return val(Math.min(...p), Math.max(...p), false,
+          a.nz || b.nz || a.lo < 0 && b.hi > 0 || a.hi >= 0 && b.lo < 0,
+          a.nan || b.nan || a.lo <= 0 && a.hi >= 0 && b.lo === 0)
       }
       case 'f64.neg': return a && (none(a) ? NAN : val(-a.hi, -a.lo, a.int, a.lo <= 0 && a.hi >= 0, a.nan))
       case 'f64.abs': return a && (none(a) ? NAN : val(a.lo > 0 ? a.lo : a.hi < 0 ? -a.hi : 0, Math.max(-a.lo, a.hi), a.int, false, a.nan))
@@ -687,6 +710,7 @@ export function intRanges(fn, bodyStart, assume = null, regions = null) {
       case 'i32.popcnt': case 'i32.clz': case 'i32.ctz': return val(0, 32)
     }
     if (op in F64_CMP) {
+      if ((op === 'f64.eq' || op === 'f64.ne') && real(a) && readsSaved(x, y)) return answer(op === 'f64.eq' ? 1 : 0)
       // A number that is never NaN equals itself, an integer its truncation:
       // the tests of what kind of value it is.
       const back = (op === 'f64.eq' || op === 'f64.ne') && readName(x) != null ? readBack(y, readName(x)) : null
@@ -696,10 +720,17 @@ export function intRanges(fn, bodyStart, assume = null, regions = null) {
       }
       return decide(F64_CMP[op], a, b)
     }
+    if ((op === 'i32.eq' || op === 'i32.ne' || op === 'i64.eq' || op === 'i64.ne') && readsSaved(x, y)) return answer(op.endsWith('.eq') ? 1 : 0)
     if (op === 'i64.eq' || op === 'i64.ne') {
       // A number's bits are no box's: the test for a boxed value fails.
       const box = constBits(y) ?? constBits(x), v = constBits(y) != null ? a : constBits(x) != null ? b : null
-      if (v?.of) return boxBits(box) && (v.mask == null || (box & v.mask) === box) ? answer(op === 'i64.eq' ? 0 : 1) : BOOL
+      if (v?.of) {
+        // A finite number has no all-ones exponent, including after a mask
+        // that retains that exponent. This also discharges stale NaN/infinity
+        // guards on a word already converted to f64.
+        const special = box != null && (box & EXPONENT) === EXPONENT && real(v.of) && Number.isFinite(v.of.lo) && Number.isFinite(v.of.hi)
+        return (boxBits(box) || special) && (v.mask == null || (box & v.mask) === box) ? answer(op === 'i64.eq' ? 0 : 1) : BOOL
+      }
       if (a?.of || b?.of) return BOOL
     }
     if (op in INT_CMP) return a?.of || b?.of ? BOOL : decide(INT_CMP[op], a, b)
@@ -776,7 +807,7 @@ export function intRanges(fn, bodyStart, assume = null, regions = null) {
   const env = envOf(new Map())
   let openSlots = null
   const open = () => { if (!openSlots) { openSlots = new Set(); for (const [name, i] of env.index) if (cyclic.has(name)) openSlots.add(i) } return openSlots }
-  for (const [name, type] of types) if (type === 'f64' || type === 'i32' || type === 'i64') bind(env, name, params.has(name) ? null : exact(0))
+  for (const [name, type] of types) if (type === 'f64' || type === 'i32' || type === 'i64') bind(env, name, params.has(name) ? type === 'i32' ? I32 : null : exact(0))
   const body = fn.slice(bodyStart)
   const walk = () => seq(body, { env: fork(env) })
   // Up: heads grow until a walk moves none (a bound still moving after two

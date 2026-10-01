@@ -394,8 +394,21 @@ export function narrowInts(fn, assume = null, expand = true) {
       did = true
       return op === 'local.tee' ? [N.get(n[1]) === 'i32' ? 'f64.convert_i32_s' : 'f64.convert_i64_s', w] : w
     }
-    // A test the intervals decide.
-    if (TEST.has(op) && av.has(n)) { const c = answered(n); if (c != null) { did = true; return ['i32.const', c] } }
+    // A decided test still evaluates its operands, including tees and traps.
+    // Keeping those children (rather than the original test) avoids repeating
+    // the comparison while preserving left-to-right evaluation exactly once.
+    if (TEST.has(op) && av.has(n)) {
+      const c = at(n)
+      if (c && !c.of && c.lo === c.hi) {
+        let effects = null
+        for (let i = 1; i < n.length; i++) if (isArr(n[i]) && !pure(n[i]))
+          (effects ??= ['block', ['result', 'i32']]).push(['drop', F(n[i])])
+        const value = ['i32.const', c.lo]
+        did = true
+        if (effects) { effects.push(value); return effects }
+        return value
+      }
+    }
     // A conditional whose test they decide is the arm it takes, after what
     // the test does on its way (a local it sets).
     if (op === 'if') {

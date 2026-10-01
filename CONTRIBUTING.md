@@ -2094,6 +2094,12 @@ i32, i64 and f64 local `{ lo, hi, int, nz, nan }`: the closed interval, whether
 the value is an integer, whether it may be -0, whether it may be NaN; no
 interval at all is any value, a box among them. Raw i64 constants and truncations
 have bounds only where Number endpoints represent their integers exactly.
+The walk seeds i32 parameters with their actual signed-word range. Decided
+comparisons retain operand writes, calls and traps in evaluation order. A saved
+word's conversion agrees with its readback, and finite values exclude special
+floating-point exponents. Division over one-sided denominator intervals respects
+negative zero, interior `0 / 0` and negative underflow; a numeric zero endpoint
+alone never proves the sign of a reciprocal.
 A comparison refines only reads that later guard operands have not overwritten;
 this applies through eager compound tests and negation. Arms hull at their join,
 and a loop head is the hull of its entry
