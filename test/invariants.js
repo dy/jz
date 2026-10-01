@@ -29,10 +29,29 @@ import { isExported } from '../src/compile/func-exports.js'
 import { parse } from '../src/parse.js'
 import { rewriteChildren } from '../src/ast.js'
 
+import jzify from '../jzify/index.js'
 import { canonicalizeObjectIdioms } from '../jzify/bundler.js'
 import { hoistVars } from '../jzify/hoist-vars.js'
 import { createTransform } from '../jzify/transform.js'
 import { foldStaticConstAggregates } from '../src/compile/plan/literals.js'
+
+test('invariant: well-known symbol lookup preserves ordinary computed keys across lowerings', () => {
+  for (const name of ['iterator', 'iterator', 'dispose', 'asyncIterator', 'iterator']) {
+    const member = ['.', 'Symbol', name], prop = '@@' + name
+    is(jzify(['[]', 'value', member]), ['.', 'value', prop], 'member access')
+    is(jzify(['{}', [':', ['[]', member], [null, 7]]]), ['{}', [':', prop, [null, 7]]], 'computed definition')
+    for (const op of ['=', '||=', '??=']) is(jzify([op, member, [null, 7]]), [null], 'well-known polyfill assignment')
+  }
+  for (const name of ['', '__proto__', 'hasOwnProperty', 'toString', 'unknown']) {
+    const access = ['[]', 'value', ['.', 'Symbol', name]]
+    is(jzify(structuredClone(access)), access, 'an unrecognized name remains an ordinary computed read')
+  }
+  for (const key of [null, [null, 0], [null, 'iterator'], 'key']) {
+    const access = ['[]', 'value', key]
+    is(jzify(structuredClone(access)), access, 'only a named Symbol member is canonicalized')
+  }
+  is(jzify(['[]']), ['[]'], 'empty input array')
+})
 
 test('invariant: nested array literals lower each element once', () => {
   const seen = new Map()

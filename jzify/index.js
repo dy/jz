@@ -270,8 +270,8 @@ bindGenerators({ lowerGenerator, desugarForOfGenerator, desugarForOfProtocol, lo
 transformSwitch = createSwitchLowering(transform, names)
 
 
-const isSymbolWellKnown = (n, which) => Array.isArray(n) && n[0] === '.' && n[1] === 'Symbol' && n[2] === which
-const WELL_KNOWN = { iterator: '@@iterator', dispose: '@@dispose', asyncIterator: '@@asyncIterator' }
+const WELL_KNOWN = new Map([['iterator', '@@iterator'], ['dispose', '@@dispose'], ['asyncIterator', '@@asyncIterator']])
+const symbolProp = n => Array.isArray(n) && n[0] === '.' && n[1] === 'Symbol' && WELL_KNOWN.get(n[2])
 // Iterator-helper method names (ES2025) — a CALL of one of these on any
 // receiver, in a program that mints iterators, gates decorated generator
 // objects (__it_mk). Fusable chains still fuse; this covers value positions.
@@ -300,16 +300,16 @@ function canonSymbols(node, bindings = false) {
     // a well-known symbol is a reserved prop with no slot to assign: the
     // polyfill `Symbol.dispose ||= Symbol('dispose')` is a no-op statement
     if (!shadowsJzifyBuiltin('Symbol') && (op === '||=' || op === '??=' || op === '=') &&
-        Object.keys(WELL_KNOWN).some(k => isSymbolWellKnown(node[1], k))) { node.splice(0, node.length, null); return node }
+        symbolProp(node[1])) { node.splice(0, node.length, null); return node }
     // computed key: [':', ['[]', Symbol.X], value]
     if (!shadowsJzifyBuiltin('Symbol') && op === ':' && Array.isArray(node[1]) && node[1][0] === '[]' && node[1].length === 2) {
-      for (const [k, prop] of Object.entries(WELL_KNOWN))
-        if (isSymbolWellKnown(node[1][1], k)) { node[1] = prop; if (prop === '@@iterator') iterProto.on = true }
+      const prop = symbolProp(node[1][1])
+      if (prop) { node[1] = prop; if (prop === '@@iterator') iterProto.on = true }
     }
     // access: ['[]', obj, Symbol.X] → ['.', obj, '@@X']
     if (!shadowsJzifyBuiltin('Symbol') && op === '[]' && node.length === 3) {
-      for (const [k, prop] of Object.entries(WELL_KNOWN))
-        if (isSymbolWellKnown(node[2], k)) { node[0] = '.'; node[2] = prop; if (prop === '@@iterator') iterProto.on = true }
+      const prop = symbolProp(node[2])
+      if (prop) { node[0] = '.'; node[2] = prop; if (prop === '@@iterator') iterProto.on = true }
     }
     for (let i = 1; i < node.length; i++) canonSymbols(node[i], bindings)
     // Do this before lowerings copy function bodies: the source scope census

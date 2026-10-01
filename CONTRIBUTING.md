@@ -2364,6 +2364,11 @@ method shorthand as it rejects `function` (the arrow property is the
 canonical spelling). Parameter defaults are transformed with the function
 (`transformParams`): a lowered form in a default value is lowered there too.
 
+Well-known symbol keys use a shared name lookup in the entry walk. Ordinary
+computed reads allocate no key list or pairs, and the walk has no captured
+per-node callback. Lexical shadows still bypass canonicalization; names absent
+from the lookup, including object-prototype names, keep their computed access.
+
 Strict mode's spelling rules (`==`, `!=`, `void` are prohibited) apply to
 the program, never to the `jz:` runtime modules the program's lowerings pull
 in (`ctx.module.inStd`, `src/prepare/handlers.js`): an array pattern in
