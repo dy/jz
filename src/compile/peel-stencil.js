@@ -17,31 +17,23 @@
 // BOUND is the SAME var as the loop bound and whose `k` is a tap-loop IV ranging
 // [-r, r] (`k = -r … k <= r`). Both hblur (peel the x-loop) and vblur (peel the
 // y-loop) match. Number literals are sparse-array holes (`n[0]` is undefined), so
-// literal tests use `== null`; created literals are bare numbers.
+// literal tests use `== null`; generated source literals retain that shape.
 
-import { ASSIGN_OPS, MUTATE_OPS, walkAst } from '../ast.js'
-import { litN, unitIncVar, normalizeLoop, rewriteBlocks, freshLoopId, loopHazards } from './loop-model.js'
+import { MUTATE_OPS, walkAst, some, numberGuard } from '../ast.js'
+import { ctx } from '../ctx.js'
+import { frameNode } from '../function.js'
+import { counterInit } from '../static.js'
+import { cloneWithSubst } from '../type.js'
+import { collectBindings } from './plan/common.js'
+import { invalidateBodies } from './analyze.js'
+import { invalidateProgramFactsCache } from './program-facts.js'
+import { litN, unitIncVar, normalizeLoop, rewriteBlocks, freshLoopId, loopHazards, closureMutatedVars } from './loop-model.js'
 
 const isVar = (n) => typeof n === 'string'
 
 // `k = -r`: prepared as ['u-', r] (unary minus) or ['-', 0, r].
 const negOf = (n) => Array.isArray(n) && n[0] === 'u-' ? n[1]
   : (Array.isArray(n) && n[0] === '-' && litN(n[1], 0) ? n[2] : null)
-
-// Every write to `iv` in `node` is a strictly-positive step (++iv / iv+=1 / iv=iv+1),
-// so iv advances monotonically — required so the three split loops partition [0,bound)
-// and the clamp-free interior never re-runs at an edge index. Any other write → false.
-function ivMonotonic(node, iv) {
-  if (!Array.isArray(node)) return true
-  if ((node[0] === '++' || node[0] === '--') && node[1] === iv) return node[0] === '++'
-  if (ASSIGN_OPS.has(node[0]) && node[1] === iv) {
-    if (node[0] === '+=' && litN(node[2], 1)) return true
-    if (node[0] === '=' && Array.isArray(node[2]) && node[2][0] === '+'
-      && ((node[2][1] === iv && litN(node[2][2], 1)) || (node[2][2] === iv && litN(node[2][1], 1)))) return true
-    return false   // any other assignment to iv (=, -=, *=, …) breaks monotonicity
-  }
-  return node.every(c => ivMonotonic(c, iv))
-}
 
 // Find, anywhere in `node`, a clamp `if (ci < 0) ci = 0; else if (ci >= B) ci = B-1`
 // over a var `ci` and bound var `B`. Returns { ci, bound } or null (first match).
@@ -79,21 +71,6 @@ function clampSource(node, ci) {
   return found
 }
 
-// The tap IV must range EXACTLY [-r, r]: a loop `while (t <= r)` AND `t` seeded to
-// `-r` (same `r`). Returns the radius var `r` only when both match; null otherwise.
-// Asymmetric / wider ranges would make xs=r, xe=bound-r unsound, so they bail.
-function tapRadius(loopBody, tap) {
-  let boundR = null, initR = null
-  walkAst(loopBody, { enter: n => {
-    // tap loop bound `k <= r`: while (cond at [1]) or for (cond at [2]).
-    const cond = n[0] === 'while' ? n[1] : n[0] === 'for' ? n[2] : null
-    if (Array.isArray(cond) && cond[0] === '<=' && cond[1] === tap && isVar(cond[2])) boundR = cond[2]
-    // tap init `k = -r` (a bare assignment, or inside the for's `let` init clause).
-    if (n[0] === '=' && n[1] === tap) { const neg = negOf(n[2]); if (isVar(neg)) initR = neg }
-  } })
-  return boundR != null && boundR === initR ? boundR : null
-}
-
 // Count every write (=, compound-assign, ++/--) to variable `v` in `node`.
 function countWrites(node, v) {
   let n = 0
@@ -101,32 +78,36 @@ function countWrites(node, v) {
   return n
 }
 
-// Count tap-shaped seeds (`tap = -r`) and bounds (`tap <= r`) in `body`. The peel is
-// sound only for a SINGLE tap loop; two loops sharing the tap var make tapRadius pick
-// the wrong (last-seen) radius, so xs=r/xe=bound-r no longer match the clamped loop.
-function tapStructures(body, tap) {
-  let seeds = 0, bounds = 0
-  walkAst(body, { enter: n => {
-    const cond = n[0] === 'while' ? n[1] : n[0] === 'for' ? n[2] : null
-    if (Array.isArray(cond) && cond[0] === '<=' && cond[1] === tap && isVar(cond[2])) bounds++
-    if (n[0] === '=' && n[1] === tap && isVar(negOf(n[2]))) seeds++
-  } })
-  return { seeds, bounds }
-}
+// Inspect statement lists without removing their lexical scopes from the output.
+const statements = n => n?.[0] === '{}' ? statements(n[1]) : n?.[0] === ';' ? n.slice(1) : [n]
+const assigned = (n, name) => n?.[0] === '=' && n[1] === name ? n[2]
+  : n?.[0] === 'let' || n?.[0] === 'const' ? counterInit(n, name) : null
 
-// True if `iv` is written anywhere INSIDE a nested loop within `body`. Then iv is not
-// constant across the tap accumulation (e.g. an `iv++` living inside the tap loop, so
-// the real outer step is 2r+1), and the per-outer-iteration peel is unsound.
-function ivWrittenInNestedLoop(body, iv) {
-  let found = false
-  const visit = (n, inLoop) => {
-    if (!Array.isArray(n)) return
-    if (inLoop && (MUTATE_OPS.has(n[0]) && n[1] === iv)) found = true
-    const deeper = inLoop || n[0] === 'while' || n[0] === 'for'
-    n.forEach(c => visit(c, deeper))
-  }
-  visit(body, false)
-  return found
+// The clamp immediately follows its source within one canonical tap loop. The
+// seed dominates that loop and its only update follows every tap: neither a
+// conditional seed nor an update before the clamp may donate [-r,r].
+function tapRadius(body, tap, clamp) {
+  let radius = null, loops = 0
+  walkAst(body, { enter: n => {
+    const L = normalizeLoop(n)
+    if (!L || L.cond?.[0] !== '<=' || L.cond[1] !== tap || !isVar(L.cond[2])) return
+    loops++
+    const r = L.cond[2], seq = statements(L.body)
+    const update = L.step ?? seq[seq.length - 1]
+    if (unitIncVar(update) !== tap || countWrites(L.body, tap) !== (L.step ? 0 : 1)) return
+    let seed = L.init && counterInit(L.init, tap)
+    if (!L.init) walkAst(body, { enter: parent => {
+      if (parent[0] !== ';') return
+      const at = parent.indexOf(n)
+      if (at > 1) seed = assigned(parent[at - 1], tap)
+    } })
+    if (negOf(seed) !== r) return
+    const at = seq.indexOf(clamp.node)
+    if (at < 1 || assigned(seq[at - 1], clamp.ci) == null) return
+    if (countWrites(body, tap) !== 2) return
+    radius = r
+  } })
+  return loops === 1 ? radius : null
 }
 
 // Drop the clamp `if` node from a (cloned) body, leaving the bare `ci = iv + k`.
@@ -145,13 +126,9 @@ function tryPeel(stmt, cm) {
   if (!Array.isArray(cond) || cond[0] !== '<' || !isVar(cond[1])) return null
   const iv = cond[1], bound = cond[2]
   // The `for` step must be the IV's strictly-positive +1 increment; a `while` increments in
-  // its body (validated below by ivMonotonic / the exactly-one-+1 checks).
+  // its body (validated below by the exactly-one-+1 checks).
   if (L.kind === 'for' && unitIncVar(step) !== iv) return null
   if (!isVar(bound) || !Array.isArray(body)) return null
-  // A loop whose body is a single statement (e.g. an outer row loop wrapping one
-  // inner loop — the vertical blur pass) isn't a `;` sequence; normalize it.
-  if (body[0] !== ';') body = [';', body]
-
   const clamp = findClamp(body)
   if (!clamp || clamp.bound !== bound) return null   // clamp bound must be this loop's bound
   const src = clampSource(body, clamp.ci)
@@ -159,7 +136,7 @@ function tryPeel(stmt, cm) {
   // ci = a + b: one operand is the loop IV, the other the tap IV
   const tap = src.a === iv ? src.b : src.b === iv ? src.a : null
   if (!tap) return null
-  const r = tapRadius(body, tap)
+  const r = tapRadius(body, tap, clamp)
   if (r == null) return null
 
   // The clamp var must be written EXACTLY three times: its `ci = iv+k` source and the
@@ -168,19 +145,15 @@ function tryPeel(stmt, cm) {
   // dropping the clamp in the interior (which assumes the guarded value is iv+k) is
   // unsound. Three is the exact count for a well-formed clamp; more ⇒ a mutation.
   if (countWrites(body, clamp.ci) !== 3) return null
-  // Exactly one tap loop (one seed, one bound): two loops sharing the tap var would let
-  // tapRadius pick the wrong radius.
-  const ts = tapStructures(body, tap)
-  if (ts.seeds !== 1 || ts.bounds !== 1) return null
-  // iv must be constant across the tap accumulation — not bumped inside the tap loop.
-  if (ivWrittenInNestedLoop(body, iv)) return null
-
-  // Soundness: iv advances monotonically (else the interior re-runs at an edge index),
-  // and bound/r are loop-invariant (else the once-computed xs/xe go stale mid-loop).
-  if (!ivMonotonic(body, iv)) return null
+  // Splitting a loop changes which loop an abrupt transfer would leave. Keep
+  // those loops intact, including closures that could retain a copied binding.
+  if (some(stmt, n => ['break', 'continue', 'return', 'throw', 'try', 'label', '=>', 'yield', 'await'].includes(n[0]))) return null
+  const seq = statements(body)
+  if (countWrites(body, iv) !== (step ? 0 : 1) || (!step && unitIncVar(seq[seq.length - 1]) !== iv)) return null
   const hz = loopHazards(cm, body)
   if (hz.mutated(bound) || hz.mutated(r)) return null
-  if (cm.has(iv)) return null  // closure-mutable IV → unsafe (direct writes vetted by ivMonotonic)
+  if ([iv, tap, clamp.ci].some(name => cm.has(name))) return null
+  if ([iv, bound, r, tap, clamp.ci].some(name => ctx.scope.globalTypes?.has(name) && !ctx.scope.consts?.has(name))) return null
 
   const id = freshLoopId()
   const xs = `__pks${id}`, xe = `__pke${id}`
@@ -188,18 +161,44 @@ function tryPeel(stmt, cm) {
   const seed = ['let',
     ['=', xs, ['?:', ['<', r, bound], r, bound]],
     ['=', xe, ['?:', ['>', ['-', bound, r], xs], ['-', bound, r], xs]]]
-  const interiorBody = dropClamp(body, clamp.node)
-  // for: append the step to each split loop's body; while: body already increments.
-  const mk = (B, bod) => ['while', ['<', iv, B], step ? [';', ...bod.slice(1), step] : bod]
-  const loops = [mk(xs, body), mk(xe, interiorBody), mk(bound, body)]
-  // Range theorem for the interval proof (typedIdxProven class 5): the peel's own
-  // bit-exactness argument — for interior iv, `ci = iv + k ∈ [0, bound-1]` WITHOUT
-  // the clamp. Stamped on the interior loop's FINAL body node (mk may rebuild it);
-  // the interval walk intersects ci's env writes with it while inside the subtree.
-  loops[1][2]._rangeFacts = [[clamp.ci, bound]]
-  return init ? [init, seed, ...loops] : [seed, ...loops]
+  // Each run owns its declarations; bindings outside the loop keep their
+  // identity. The original for-head scope surrounds its single initialization,
+  // the guard and either complete traversal.
+  const inner = new Set()
+  collectBindings(body, inner)
+  const mk = (B, middle) => {
+    const own = new Map([...inner].map(name => [name, `${name}$peel${freshLoopId()}`]))
+    const bod = cloneWithSubst(middle ? dropClamp(body, clamp.node) : body, new Map(), own)
+    const result = ['while', ['<', iv, B], step ? [';', bod, step] : bod]
+    if (middle) result[2]._rangeFacts = [[own.get(clamp.ci) ?? clamp.ci, bound]]
+    return result
+  }
+  const loops = [mk(xs, false), mk(xe, true), mk(bound, false)]
+  const word = name => ['&&', numberGuard(name), ['===', name, ['|', name, [null, 0]]]]
+  const guard = [word(iv), ['>=', iv, [null, 0]],
+    ['||', ['!==', iv, [null, 0]], ['>', ['/', [null, 1], iv], [null, 0]]],
+    word(bound), ['>=', bound, [null, 0]], word(r), ['>=', r, [null, 0]], ['<', r, [null, 2147483647]]]
+    .reduce((a, b) => ['&&', a, b])
+  const fallback = init ? ['for', null, cond, step, body] : stmt
+  const guarded = ['if', guard, ['{}', [';', seed, ...loops]], fallback]
+  return [init ? ['{}', [';', init, guarded]] : guarded]
+
 }
 
-export function peelClampedStencil(body, cm) {
-  return rewriteBlocks(body, stmt => tryPeel(stmt, cm))
+// Run before integral copies rewrite tap-loop tests. The planning sweep owns
+// program revision invalidation; each rewritten body drops its local caches.
+export function peelClampedStencil() {
+  if (ctx.transform.optimize?.clampPeel !== true) return false
+  let changed = false
+  for (const func of ctx.funcs.list) {
+    if (func.raw || !func.body) continue
+    const old = func.body, cm = closureMutatedVars(frameNode(func))
+    const body = rewriteBlocks(old, stmt => tryPeel(stmt, cm))
+    if (body === old) continue
+    func.body = body
+    invalidateProgramFactsCache(old)
+    invalidateBodies([old, body])
+    changed = true
+  }
+  return changed
 }

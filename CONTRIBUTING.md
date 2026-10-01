@@ -227,6 +227,15 @@ Loop division/remainder counters require guarded Number inputs: a positive
 signed-word divisor, a nonnegative signed-word entry excluding -0, and a stable
 bound that keeps the final increment in range. Fractional, wide or coercing
 inputs keep the original loop; generated local names are not codegen evidence.
+
+Stencil edge peeling runs before integral loop copies change canonical tap tests. Its
+Number guards prove nonnegative word extents and entries; the single tap seed
+must dominate the loop, with its unit update after the adjacent source/clamp.
+Each peeled run owns its declarations, while the for initializer keeps its
+original lexical scope. Abrupt transfers, captures and unstable bounds retain
+the original traversal. Planning invalidates both rewritten body caches and
+program facts before later proofs inspect the split.
+
 SIMD conversion peeling and late integer conversion share the same proof of
 the guard, both arms and their captured operand. An existing exact conversion
 keeps one magnitude guard; lowering it again adds no guards or temporaries.

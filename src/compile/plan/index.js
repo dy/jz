@@ -54,6 +54,7 @@ import { declareWrittenKeys } from './declare-written-keys.js'
 import { indexArrayPatterns, splitMapPairs } from './index-array-patterns.js'
 import { resetBindingUsesCache, resetMutationNamesCache } from '../analyze-scans.js'
 import { declareUnseenKeys } from './declare-unseen-keys.js'
+import { peelClampedStencil } from '../peel-stencil.js'
 import { versionIntegralLoops } from './integral-loops.js'
 import { unswitchLoops } from './unswitch-loops.js'
 import { splitLoopKinds } from './kind-split.js'
@@ -231,6 +232,8 @@ export default function plan(ast, profiler, summarize) {
     sweep('unswitchLoops', unswitchLoops)
     // A loop reading a name of several kinds, a typed array among them: a copy where it holds that array.
     sweep('splitLoopKinds', () => splitLoopKinds(facts()))
+    // Peel canonical tap domains before integral copies change their loop tests.
+    sweep('peelClampedStencil', peelClampedStencil)
     // A loop indexing by numbers of unknown integrality: a copy over their int32s, where they are ones.
     sweep('versionIntegralLoops', () => versionIntegralLoops(facts()))
   }

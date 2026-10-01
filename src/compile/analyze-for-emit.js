@@ -23,7 +23,6 @@ import { BIGINT_REP_BOXED, BIGINT_REP_RAW, mintRepresentationPlan, representatio
 import { mintTypedStoragePlan } from './typed-storage-plan.js'
 import { narrowBoundedSquare } from './loop-square.js'
 import { unrollRecurrence, unrollScalarChains, selectArmUpdatesIn } from './loop-recurrence.js'
-import { peelClampedStencil } from './peel-stencil.js'
 import { cseLoads, UNTYPED, ARRAY } from './cse-load.js'
 import { guardSentinels } from './sentinel-guard.js'
 import { splitTwins } from './twin-locals.js'
@@ -63,13 +62,12 @@ export function analyzeFuncForEmit(func, programFacts) {
   if (_o && isBlockBody(func.body)) {
     // Existing closure writes survive these rewrites; generated locals are private.
     // Share the census, then let ordinary type analysis handle the new arithmetic.
-    const cm = closureMutatedVars(func.body)
+    const cm = closureMutatedVars(frameNode(func))
     if (_o.loopIVDivMod !== false) func.body = strengthReduceLoopDivMod(func.body, cm)
     if (_o.loopSquare !== false) func.body = narrowBoundedSquare(func.body, cm)
     if (_o.unrollRecurrence !== false) func.body = unrollRecurrence(func.body, cm)
     if (_o.unrollScalarChain === true) func.body = unrollScalarChains(func.body, cm)
     if (_o.selectArmUpdates === true) func.body = selectArmUpdatesIn(func.body, cm)
-    if (_o.clampPeel !== false) func.body = peelClampedStencil(func.body, cm)
   }
 
   const { name, body, sig } = func

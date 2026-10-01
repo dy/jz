@@ -4536,18 +4536,32 @@ test('co-induction accumulator fact: base64 op-counter recovers i32 storage (IND
   ok(/\(local \$\S*op f64\)/.test(wOverflow), 'overflow-adjacent accumulator stays f64 (no unsound admission)')
 })
 
+// A peeled traversal has a tap loop with loads but no clamp conditional,
+// alongside edge loops that retain it. Source boundary names may be forwarded.
+const stencilPeels = (src, options = {}) => {
+  const fn = findFunc(parse(src, { level: 'speed', watr: false, ...options }), '$f')
+  let interior = false, edge = false
+  walk(fn, n => {
+    if (n[0] !== 'loop' || count(n, x => x[0] === 'loop') !== 1 || !count(n, x => x[0] === 'i32.load')) return
+    if (count(n, x => x[0] === 'if')) edge = true
+    else interior = true
+  })
+  return interior && edge
+}
+
 test('clamp-peel: stencil edge-peel fires + bit-exact + soundness guards bail', () => {
   // A real box-blur stencil (clamp xi=x+k to [0,w-1]) must split into clamp-free
   // interior + edges, bit-exact vs disabled, while dangerous variants (mutated iv /
   // bound / radius, asymmetric tap range) must bail rather than miscompile.
   const lex = (s, opt) => run(s, opt).f
   const ON = { optimize: 'speed' }, OFF = { optimize: { level: 'speed', clampPeel: false } }
-  const fires = (s) => /pks/.test(jz.compile(s, { wat: true, optimize: 'speed' }))
+  const fires = stencilPeels
   const A = 'let A=new Int32Array(4096);'
   const blur = `${A}export let f=(w,r)=>{let s=0,x=0;while(x<w){let a=0,k=-r;while(k<=r){let xi=x+k;if(xi<0)xi=0;else if(xi>=w)xi=w-1;a+=A[xi&4095];k++}s=(s+a)|0;x++}return s|0}`
   ok(fires(blur), 'legit stencil peels')
+  const blurOn = lex(blur, ON), blurOff = lex(blur, OFF)
   for (const w of [1, 2, 3, 7, 16, 64, 100]) for (const r of [0, 1, 2, 4, 8])
-    is(lex(blur, ON)(w, r), lex(blur, OFF)(w, r), `blur w=${w} r=${r}`)
+    is(blurOn(w, r), blurOff(w, r), `blur w=${w} r=${r}`)
 
   // guards must bail (and stay bit-exact) on: non-monotonic iv, mutated bound, asymmetric
   // tap, closure-mutated bound, plus — found by the adversarial panel — a clamp var
@@ -4568,7 +4582,8 @@ test('clamp-peel: stencil edge-peel fires + bit-exact + soundness guards bail', 
   }
   for (const [name, s] of Object.entries(danger)) {
     ok(!fires(s), `${name} must bail`)
-    for (const w of [3, 16, 64]) for (const r of [1, 2, 4]) is(lex(s, ON)(w, r), lex(s, OFF)(w, r), `${name} w=${w} r=${r}`)
+    const a = lex(s, ON), b = lex(s, OFF)
+    for (const w of [3, 16, 64]) for (const r of [1, 2, 4]) is(a(w, r), b(w, r), `${name} w=${w} r=${r}`)
   }
 })
 
@@ -4577,19 +4592,89 @@ test('clamp-peel: for-loop stencils (the bench shape) peel + bit-exact + guards 
   // must normalize them (init + 3 while-loops with the step re-appended), with the
   // same guards. A non-unit step must bail.
   const A = 'let A=new Int32Array(4096);'
-  // `$__pks` (peel-start boundary) marks a fired peel. (Was `$__pke`, but the
-  // peel-end local can now be fully forward-substituted / dead-store-eliminated away
-  // while the peel structure — start boundary + the 3 split loops — remains.)
-  const fires = (s) => /__pks/.test(jz.compile(s, { wat: true, optimize: 'speed' }))
+  const fires = stencilPeels
   const on = (s) => run(s, { optimize: 'speed' }).f, off = (s) => run(s, { optimize: { level: 'speed', clampPeel: false } }).f
   const forBlur = `${A}export let f=(w,r)=>{let s=0;for(let x=0;x<w;x++){let a=0;for(let k=-r;k<=r;k++){let xi=x+k;if(xi<0)xi=0;else if(xi>=w)xi=w-1;a+=A[xi&4095]}s=(s+a)|0}return s|0}`
   ok(fires(forBlur), 'for-loop stencil peels')
-  for (const w of [0, 1, 2, 3, 7, 8, 16, 64, 100]) for (const r of [0, 1, 2, 4, 8]) is(on(forBlur)(w, r), off(forBlur)(w, r), `forBlur w=${w} r=${r}`)
+  const forOn = on(forBlur), forOff = off(forBlur)
+  for (const w of [0, 1, 2, 3, 7, 8, 16, 64, 100]) for (const r of [0, 1, 2, 4, 8]) is(forOn(w, r), forOff(w, r), `forBlur w=${w} r=${r}`)
   const danger = {
     forStep2: `${A}export let f=(w,r)=>{let s=0;for(let x=0;x<w;x=x+2){let a=0;for(let k=-r;k<=r;k++){let xi=x+k;if(xi<0)xi=0;else if(xi>=w)xi=w-1;a+=A[xi&4095]}s=(s+a)|0}return s|0}`,
     forBoundMut: `${A}export let f=(w,r)=>{let s=0;for(let x=0;x<w;x++){let a=0;for(let k=-r;k<=r;k++){let xi=x+k;if(xi<0)xi=0;else if(xi>=w)xi=w-1;a+=A[xi&4095]}s=(s+a)|0;if(s>9000000)w=w-1}return s|0}`,
   }
-  for (const [n, s] of Object.entries(danger)) { ok(!fires(s), `${n} bails`); for (const w of [3, 16, 64]) for (const r of [1, 2, 4]) is(on(s)(w, r), off(s)(w, r), `${n} w=${w} r=${r}`) }
+  for (const [n, s] of Object.entries(danger)) { ok(!fires(s), `${n} bails`); const a = on(s), b = off(s); for (const w of [3, 16, 64]) for (const r of [1, 2, 4]) is(a(w, r), b(w, r), `${n} w=${w} r=${r}`) }
+})
+
+test('clamp-peel: guarded Number domains retain fractional, wide and zero-work behavior', () => {
+  const cases = [[0, 0, 1], [0, 1, 0], [0, 8, 2], [0, 8, 2],
+    [0, 2.5, 1], [.5, 4, 1], [-0, 3, 1], [0, 3, -0], [-2, 3, 1],
+    [0, 4, .5], [0, 4, -1], [0, 4, NaN], [0, NaN, 1],
+    [2147483646, 2147483649, 1], [4294967294, 4294967297, 0], [0, 8, 2]]
+  for (const kind of ['while', 'for']) {
+    const inner = `let k=-r;while(k<=r){let xi=x+k;if(xi<0)xi=0;else if(xi>=w)xi=w-1;sum+=xi;last=xi;taps++;k++}`
+    const src = `export function f(start,w,r){let sum=0,taps=0,last=0,x=start;
+      ${kind === 'while' ? `while(x<w){${inner};x++}` : `for(;x<w;x++){${inner}}`}
+      return [sum,x,taps,1/last]}`
+    const ref = Function(src.replace('export function', 'return function'))()
+    for (const optimize of levels(0, 2, 3, 'size', 'speed')) {
+      const got = run(src, { optimize }).f
+      for (const args of cases) is(got(...args), ref(...args), `${kind} O${optimize}, ${args}`)
+    }
+  }
+  const src = `export function f(mode){let effects=0,sum=0,x=0,w=3,r=1;
+    const o={valueOf(){effects++;if(mode===4)throw 7;return 2}};
+    if(mode===0)w=0;if(mode===1)w=o;if(mode===2)x=o;if(mode===3||mode===4)r=o;
+    try{while(x<w){let k=-r;while(k<=r){let xi=x+k;if(xi<0)xi=0;else if(xi>=w)xi=w-1;sum+=xi;k++}x++}}
+    catch(e){sum=e}return [sum,x,effects]}`
+  const ref = Function(src.replace('export function', 'return function'))()
+  for (const optimize of levels(0, 2, 3, 'size', 'speed')) {
+    const got = run(src, { optimize, sourceInline: false }).f
+    for (const mode of [0, 1, 2, 3, 4, 1]) is(got(mode), ref(mode), `effects O${optimize}, mode=${mode}`)
+  }
+})
+
+test('clamp-peel: closures from parameter defaults invalidate boundary snapshots', () => {
+  if (onKernel()) return
+  const src = `const a=new Int32Array(16);export function f(w,r,change=()=>{w--}){
+    let sum=0,x=0;while(x<w){let k=-r;while(k<=r){let xi=x+k;
+      if(xi<0)xi=0;else if(xi>=w)xi=w-1;sum+=a[xi&15];k++}change();x++}return sum}`
+  ok(!stencilPeels(src, { sourceInline: false }), 'the whole frame includes closures in defaults, not only statements in its body')
+})
+
+test('clamp-peel: the for initializer runs once in its original lexical scope', () => {
+  const src = `export function f(w,r){let starts=0,x=99,sum=0;
+    for(let x=(starts++,0);x<w;x++){let k=-r;while(k<=r){let xi=x+k;
+      if(xi<0)xi=0;else if(xi>=w)xi=w-1;sum+=xi;k++}}
+    return [sum,x,starts]}`
+  const ref = Function(src.replace('export function', 'return function'))()
+  for (const optimize of levels(0, 2, 3, 'size', 'speed')) {
+    const got = run(src, { optimize }).f
+    for (const args of [[8,2],[8,2],[0,1],[2.5,1],[3,.5],[8,2]])
+      is(got(...args), ref(...args), `O${optimize}, ${args}`)
+  }
+})
+
+test('clamp-peel: tap dominance, transfer targets and initializer scopes remain exact', () => {
+  const clamp = `let xi=x+k;if(xi<0)xi=0;else if(xi>=w)xi=w-1;sum+=xi`
+  const bodies = {
+    earlyStep: `let k=-r;while(k<=r){k++;${clamp}}`,
+    conditionalSeed: `let k=-3;if(mode)k=-r;while(k<=r){${clamp};k++}`,
+    afterTap: `let k=-r;while(k<=r){k++}${clamp}`,
+    breakOuter: `let k=-r;while(k<=r){${clamp};k++}if(x===2)break`,
+    continueOuter: `let k=-r;while(k<=r){${clamp};k++}if(x===2)continue`,
+    breakInner: `let k=-r;while(k<=r){${clamp};if(k===0)break;k++}`,
+    retained: `let k=-r;while(k<=r){${clamp};k++}hold=()=>x`,
+    returnOuter: `let k=-r;while(k<=r){${clamp};k++}if(x===2)return [sum,x]`,
+  }
+  for (const [name, body] of Object.entries(bodies)) {
+    const src = `export function f(mode){let sum=0,hold=()=>0,w=6,r=1,x=20;
+      for(let x=0;x<w;x++){${body}}return [sum,x+hold()]}`
+    const ref = Function(src.replace('export function', 'return function'))()
+    for (const optimize of levels(0, 2, 3, 'size', 'speed')) {
+      const got = run(src, { optimize, sourceInline: false }).f
+      for (const mode of [0, 1, 0]) is(got(mode), ref(mode), `${name} O${optimize}, mode=${mode}`)
+    }
+  }
 })
 
 test('forward-propagation: typed-array global swap must survive (double-buffer idiom)', () => {
