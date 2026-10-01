@@ -1061,7 +1061,7 @@ function arrowsIn(n, found) {
 export function transitiveFrameEffects(funcs, roots = null, loops = true) {
   const own = new Map()
   for (const f of funcs) if (!f.raw && f.body != null) own.set(f.name, frameEffectsOf(f, loops))
-  const closureOwn = new Map(), closureKey = (id) => '\0closure' + id
+  const closureOwn = new Map()
   const pending = []
   const want = (id) => { if (id !== undefined && !closureOwn.has(id)) { closureOwn.set(id, null); pending.push(id) } }
   const need = (o) => { for (const id of o.closures ?? []) want(id) }
@@ -1074,11 +1074,13 @@ export function transitiveFrameEffects(funcs, roots = null, loops = true) {
   for (const o of own.values()) { need(o); for (const l of o.loops ?? []) need(l.own) }
   while (pending.length) { const id = pending.pop(), o = closureEffectsOf(id); closureOwn.set(id, o); need(o) }
   const nodes = new Map(own)
-  for (const [id, o] of closureOwn) nodes.set(closureKey(id), o)
+  // Function names are strings, closure identities are numbers. Keep those
+  // disjoint keys through the fixpoint; spelling an edge allocates on every visit.
+  for (const [id, o] of closureOwn) nodes.set(id, o)
   const facts = new Map()
   for (const [name, o] of nodes) facts.set(name, { writesOuter: o.writesOuter, arenaUnsafe: o.arenaUnsafe, keeps: o.keeps, flagged: o.flagged, unsited: o.unsited, callsUnknown: o.callsUnknown, runsAccessor: o.runsAccessor, allocates: o.allocates,
     why: o.why, keepsWhy: o.keepsWhy, siteWhy: o.siteWhy, callees: o.callees, loops: new Set(), freshObjects: o.freshObjects ?? null })
-  const spell = (c) => c.startsWith('\0') ? c.slice(1) : c
+  const spell = (c) => typeof c === 'number' ? 'closure' + c : c
   // The arena facts of a callee (a function by name, a closure by its key),
   // `every`: reached on every call of the caller. A host's function is
   // flagged where it is called (link: it may keep what it is handed); any
@@ -1116,8 +1118,8 @@ export function transitiveFrameEffects(funcs, roots = null, loops = true) {
       }
       // A resolved call runs one of its closures: it escapes on every call where each of them does.
       for (const { ids, every } of o.closureCalls ?? []) {
-        const all = every && ids.every(id => facts.get(closureKey(id)).arenaUnsafe)
-        for (const id of ids) if (joinArena(f, closureKey(id), facts.get(closureKey(id)), all)) changed = true
+        const all = every && ids.every(id => facts.get(id).arenaUnsafe)
+        for (const id of ids) if (joinArena(f, id, facts.get(id), all)) changed = true
       }
     }
   }
@@ -1125,7 +1127,7 @@ export function transitiveFrameEffects(funcs, roots = null, loops = true) {
   const inline = new Set()
   for (const o of nodes.values()) { for (const a of o.inline ?? []) inline.add(a); for (const l of o.loops ?? []) for (const a of l.own.inline ?? []) inline.add(a) }
   const called = (id) => inline.has(ctx.summary?.closureArrow?.(id))
-  for (const key of closureOwn.keys()) facts.delete(closureKey(key))
+  for (const key of closureOwn.keys()) facts.delete(key)
   for (const [name, o] of own) { const f = facts.get(name); f.closures = o.closures; f.sites = o.sites; f.siteKinds = o.siteKinds; f.siteGrows = o.siteGrows; f.siteGrown = o.siteGrown; f.siteAsked = o.siteAsked; f.siteNames = o.siteNames; f.siteWhys = o.siteWhys }
   facts.closureCalls = new Map([...closureOwn].map(([id, o]) => [id, o.closures]))
   facts.closureSites = new Map([...closureOwn].map(([id, o]) => [id, called(id) ? new Set() : o.sites]))
