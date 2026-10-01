@@ -22,6 +22,23 @@ const agree = (cases) => {
   }
 }
 
+test('member targets: scalar-replaced receivers preserve effectful stores', () => {
+  const cases = [
+    `function next(n){if(n<0)throw 7;return n+1}
+      export function f(n){const o={x:n};try{o.x=next(n)}catch(e){return[o.x,e]}return[o.x]}`,
+    ...['o.x', "o['x']"].map(target =>
+      `function next(n){if(n<0)throw 7;return[n,n+1]}
+        export function f(n){const o={x:[n]};try{${target}=[...next(n)]}
+          catch(e){return[o.x,e]}return[o.x]}`),
+    `function next(n){if(n<0)throw 7;return n+1}
+      export function f(n){const a=[n];try{a[0]=next(n)}catch(e){return[a[0],e]}return[a[0]]}`,
+  ]
+  for (const src of cases) for (const level of [0,1,2,3,'size']) {
+    const got=jz(src,{optimize:{level,sourceInline:false}}).exports.f, want=oracle(src).f
+    for(const n of [1,1,0,5,-1,1])is(got(n),want(n),`O${level}, ${n}: ${src.slice(0,55)}`)
+  }
+})
+
 test('member targets: a destructuring assignment writes through member targets', () => agree([
   ['object pattern', `export let f = (o) => { let t = {}; ({a: t.x, b: t.y} = o); return t }`, { a: 1, b: 2 }],
   ['array pattern', `export let f = (arr) => { let t = {}, u = [0, 0]; let i = 1; [t.x, u[i]] = arr; return [t, u] }`, [7, 8]],

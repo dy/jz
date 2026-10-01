@@ -44,10 +44,13 @@ function stagedReference(name, update = true, rhs) {
   if (!Array.isArray(name) || (name[0] !== '.' && name[0] !== '[]')) return null
   const pre = []
   const stage = (node, tag, always = false, key = false) => {
+    // Primitive literals keep the same value across all operand effects.
+    if (Array.isArray(node) && (node[0] == null || node[0] === 'str')) return node
     // User code cannot replace an uncaptured private binding. Keep its
     // original index/receiver proofs unless an operand itself writes it.
+    // Scalar-replaced records remain bound through their field locals only.
     if (always && !key && typeof node === 'string' &&
-        (isConst(node) || isBoundName(node) && !ctx.func.boxed?.has(node)) &&
+        (isConst(node) || (isBoundName(node) || ctx.func.flatObjects?.has(node)) && !ctx.func.boxed?.has(node)) &&
         !isReassigned(rhs, node) && !(name[0] === '[]' && isReassigned(name[2], node))) always = false
     if (!always && !effectful(node)) return node
     const h = temp(tag)
