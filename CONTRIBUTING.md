@@ -2958,8 +2958,12 @@ identity; named singleton functions retain their string-key lookup. This avoids
 serializing each candidate list merely to find its existing identity.
 A spread of sources whose layouts the summary knows makes
 a layout no literal may name: the summary lists it (`unnamedLayouts`), and
-the compile names it and summarizes again until a spread of such a literal
-makes none new, before the plan decides anything from the summary, so the
+the compile names it before the plan consumes the summary. A discovery solve
+uses private, unbranded layouts to follow further spreads through calls and
+cycles in that same fixpoint. It publishes only property-name lists, then
+discards all private identities and restarts with registered layouts. A registry
+that declines the names gets the ordinary conservative solve without provisional
+layouts; callers without a registry keep that same behavior. Thus the
 plan and the emitter read the literal's fields in the layout `emitObjectSpread`
 builds. A class
 initializer (`C⟨init⟩`) called on one layout is walked for that layout under

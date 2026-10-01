@@ -114,7 +114,14 @@ export const hasModeledResult = name => MODELED_RESULT.test(name)
  *  kind could take; a closure the host can reach through it may be called with anything.
  *  `registerLayouts`, when supplied, can name discovered layouts after kinds converge:
  *  returning true requests a restart, and summarize returns null instead of publishing. */
-export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchema = () => undefined, classes, accessors = null, hidden = null, exported, imports, hostGlobals = [], moduleGlobals = new Map(), constString = () => null, constStrings = () => null, onLose = null, onOpen = null, registerLayouts = null, liftedProp = () => null, guardedClone = () => null }) {
+export function summarize(ast, options) {
+  const summary = solveSummary(ast, options)
+  // A registry may decline discovery. Re-run without provisional identities;
+  // no discarded solve can donate local layout IDs to a published reader.
+  return summary === false ? solveSummary(ast, { ...options, registerLayouts: null }) : summary
+}
+
+function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = () => undefined, classes, accessors = null, hidden = null, exported, imports, hostGlobals = [], moduleGlobals = new Map(), constString = () => null, constStrings = () => null, onLose = null, onOpen = null, registerLayouts = null, liftedProp = () => null, guardedClone = () => null }) {
   // Numeric entry contracts restart the kind solve. Report its final losses,
   // not the discarded unknown-parameter solve's intermediate escapes.
   const reportLose = onLose, losses = onLose ? [] : null
@@ -1962,7 +1969,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   // A class (jzify/classes.js): its members are functions of the receiver.
   // A receiver of one class calls its function; a receiver the summary
   // cannot name may be any class with the member, so each is called.
-  const classOfSid = (sid) => { const b = brandOf(layouts[sid]); return b ? classes?.get(b) ?? null : null }
+  const classOfSid = (sid) => { const layout = layouts[sid], b = layout < layoutCount ? brandOf(layout) : null; return b ? classes?.get(b) ?? null : null }
   const classMember = (recv, name) => sidOf(recv) !== UNKNOWN ? classOfSid(sidOf(recv))?.methods.get(name) ?? null : null
   // A property's accessor and binder names, built once per property.
   const getterNames = new Map(), setterNames = new Map(), binderNames = new Map()
@@ -2538,6 +2545,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   const NO_SID = -1, DYNAMIC_LITERAL = -2
   const literalSids = new Map()   // `{}` node → sid, NO_SID (its own shape, unregistered) or DYNAMIC_LITERAL
   const unnamed = new Map()       // schema key → the names of a spread's layout no literal registers
+  let provisional = false          // private discovery IDs require a canonical restart
   const literalSid = (n) => {
     let sid = literalSids.get(n)
     if (sid === undefined) {
@@ -2687,12 +2695,29 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       if (wildKind !== K.NONE) raiseWild(k, wildKind)
       return k
     }
-    const layout = sidByKey.get(schemaKey(names, brand)), sid = layout === undefined ? -1 : objectSite(n, layout)
+    const key = schemaKey(names, brand)
+    let layout = sidByKey.get(key)
+    if (layout === undefined && !brand) {
+      unnamed.set(key, names)
+      if (registerLayouts && schemas.length < SET_BASE) {
+        // This attempt only discovers names. Private IDs may sit after other
+        // construction sites; only the next solve uses registry layout IDs.
+        const props = canonicalKeyOrder(names)
+        layout = schemas.length
+        schemas.push(props); layouts.push(layout); sidByKey.set(key, layout)
+        for (let i = 0; i < props.length; i++) {
+          let entries = byProp.get(props[i])
+          if (!entries) byProp.set(props[i], entries = [])
+          entries.push([layout, i])
+        }
+        provisional = true; changed = true
+      }
+    }
+    const sid = layout === undefined ? -1 : objectSite(n, layout)
     if (sid < 0) {
       // A layout no literal names (its sources' shapes known here only): the
       // compile names it for the next summary (compile/index.js), the layout
       // the emitter builds (module/object.js mergeSpreadNames).
-      if (layout === undefined && !brand) unnamed.set(schemaKey(names, null), names)
       for (let i = 1; i < writes.length; i += 2) escape(writes[i])
       // A spread's representation still depends on its sources.
       return kind(K.OBJECT) | bitOf(K.HASH)
@@ -4432,7 +4457,10 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   // Batch every layout the kind fixpoint discovers before restarting. A
   // restart in the middle can discover only one layer of a call chain at a
   // time, rebuilding the whole program once per layer.
-  if (unnamed.size && registerLayouts?.([...unnamed.values()])) return null
+  if (unnamed.size && registerLayouts) {
+    if (registerLayouts([...unnamed.values()])) return null
+    if (provisional) return false
+  }
   // The demand pass, then the kinds again with the demanded and compatible
   // exported parameters NUMBER. A numeric-demanded parameter is read only
   // where a string would be converted anyway, so the f64 boundary is the
@@ -4466,7 +4494,10 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     pendingAll = false; pendingIndexed = false; wildValues = K.NONE; wildProps.clear(); sideProps.clear(); sideWild.clear(); closureProps.clear(); sideByProp.clear(); foreignObjects = false; foreignProps.clear(); lostFieldsRead = 0; deletable.clear(); deleteReach.unknown = false; keysSeen.clear(); copiedSchemas.clear()
     seed(seeded)
     fixpoint()
-    if (unnamed.size && registerLayouts?.([...unnamed.values()])) return null
+    if (unnamed.size && registerLayouts) {
+      if (registerLayouts([...unnamed.values()])) return null
+      if (provisional) return false
+    }
   }
 
   // Resolve union-find roots once before publishing. Readers never compress

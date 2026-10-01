@@ -314,7 +314,7 @@ test('summary queries: layout discovery restarts leave complete and retained rea
       return fresh.length > 0
     } })
     while (summary === null)
-    is(restarts, [[['a', 'b']], [['a', 'b', 'c']]], 'nested spreads register one newly knowable layout at each restart')
+    is(restarts, [[['a', 'b'], ['a', 'b', 'c']]], 'nested spreads register their transitive layouts in one batch')
     is(summary.unnamedLayouts, [], 'the final reader has every discovered layout')
     const expected = typeof value === 'number' ? K.NUMBER : K.STRING
     is(summary.at('').kindOfExpr(['.', 'c', 'a']), kind(expected), 'the nested copy keeps its source kind')
@@ -324,6 +324,105 @@ test('summary queries: layout discovery restarts leave complete and retained rea
   throws(() => summarize(input(1), { ...options, registerLayouts: () => { throw new Error('registry failure') } }), /registry failure/)
   is(summarize(null, options).unnamedLayouts, [], 'empty work after an error has no leaked discovery state')
   is(retained.at('').kindOfExpr(['.', 'c', 'a']), kind(K.NUMBER), 'an error preserves a retained reader')
+})
+
+test('summary queries: provisional spread layouts never become published schema identities', () => {
+  const brand = BRAND + 'LayoutDiscovery', decl = (name, value) => ['const', ['=', name, value]]
+  const record = value => ['{}', [':', brand, lit(true)], [':', 'a', lit(value)]]
+  const extend = (value, key) => ['{}', ['...', value], [':', key, lit(true)]]
+  const funcs = [
+    { name: 'one', sig: { params: [{ name: 'x' }] }, body: extend('x', 'b') },
+    { name: 'two', sig: { params: [{ name: 'x' }] }, body: extend(['()', 'one', 'x'], 'c') },
+    { name: 'three', sig: { params: [{ name: 'x' }] }, body: extend(['()', 'two', 'x'], 'd') },
+    { name: 'method', sig: { params: [{ name: 'self' }] }, body: lit(9n) },
+  ]
+  const classes = new Map([[brand, { methods: new Map([['method', 'method']]) }]])
+  const input = value => [';', ...Array.from({ length: 6 }, (_, i) => decl('site' + i, record(value))),
+    decl('alias', 'site5'), decl('result', ['()', 'three', 'alias']),
+    ['()', ['.', 'site0', 'method'], null]]
+  let retained
+  for (const value of [1, 1, 'changed', 1]) {
+    const schemas = [['a']], batches = [], ast = input(value)
+    const options = { funcs, schemas, classes, brandOf: sid => sid === 0 ? brand : null,
+      imports: new Map(), exported: () => false }
+    const discovery = summarize(ast, { ...options, registerLayouts: names => {
+      batches.push(names)
+      // Canonical ids 1..3 overlap private construction ids already minted
+      // for site1..site3. The discarded solve must not reinterpret either.
+      schemas.push(...names)
+      return true
+    } })
+    is(discovery, null, 'a solve containing provisional ids cannot publish a reader')
+    is(batches, [[['a', 'b'], ['a', 'b', 'c'], ['a', 'b', 'c', 'd']]], 'calls discover every transitive layout in one batch')
+    const summary = summarize(ast, options)
+    const known = summarize(ast, { ...options, schemas: [['a'], ['a', 'b'], ['a', 'b', 'c'], ['a', 'b', 'c', 'd']] })
+    is(summary.at('').sidOf('result'), 3, 'published identity uses the registry, not construction ids')
+    is(summary.kindOfExpr(['.', 'result', 'a']), kind(typeof value === 'number' ? K.NUMBER : K.STRING), 'field payload survives the restart')
+    is(summary.kindOfExpr('result'), known.kindOfExpr('result'), 'canonical solve matches explicit registered layouts')
+    is(summary.classCallee('result', 'method'), null, 'a spread does not inherit its source brand')
+    is(summary.classCallee('site5', 'method'), 'method', 'same-layout construction sites keep their original brand')
+    is(summary.kindOfExpr(['.', 'result', 'd']), kind(K.BOOL), 'deepest copy retains its own field')
+    retained ??= summary
+    is(retained.kindOfExpr(['.', 'result', 'a']), kind(K.NUMBER), 'A/A/B/A keeps the first completed reader')
+  }
+})
+
+test('summary queries: provisional discovery terminates cycles and declines to conservative facts', () => {
+  const decl = (name, value) => ['const', ['=', name, value]]
+  const extend = value => ['{}', ['...', value], [':', 'b', lit(2)]]
+  const funcs = [
+    { name: 'left', sig: { params: [{ name: 'x' }] }, body: ['?:', 'flag', ['()', 'right', 'x'], extend('x')] },
+    { name: 'right', sig: { params: [{ name: 'x' }] }, body: ['()', 'left', 'x'] },
+    { name: 'unseeded', sig: { params: [] }, body: extend(['()', 'unseeded', null]) },
+  ]
+  const input = [';', decl('seed', ['{}', [':', 'a', lit(7)]]),
+    decl('out', ['()', 'left', 'seed']), ['()', 'unseeded', null]]
+  const options = { funcs, schemas: [['a']], brandOf: () => null, imports: new Map(), exported: () => false }
+  const batches = [], conservative = summarize(input, options)
+  const refused = summarize(input, { ...options, registerLayouts: names => { batches.push(names); return false } })
+  is(batches, [[['a', 'b']]], 'a recursive spread adds each finite layout once')
+  is(refused.unnamedLayouts, conservative.unnamedLayouts, 'callback refusal returns the ordinary conservative discovery list')
+  is(refused.kindOfExpr('out'), conservative.kindOfExpr('out'), 'callback refusal cannot retain a provisional result kind')
+  is(refused.resultOf('unseeded'), conservative.resultOf('unseeded'), 'an ungrounded recursive spread stays unresolved')
+  const schemas = [['a']]
+  is(summarize(input, { ...options, schemas, registerLayouts: names => { schemas.push(...names); return true } }), null)
+  const settled = summarize(input, { ...options, schemas })
+  is(settled.at('').sidOf('out'), 1, 'the seeded cycle settles under its canonical id')
+  is(settled.kindOfExpr(['.', 'out', 'a']), kind(K.NUMBER), 'the recursive result preserves its original numeric field')
+  const partialSchemas = [['a']], layered = [';', ...input.slice(1), decl('next', ['{}', ['...', 'out'], [':', 'c', lit(true)]])]
+  const partial = summarize(layered, { ...options, schemas: partialSchemas, registerLayouts: names => {
+    partialSchemas.push(names[0])
+    return false
+  } })
+  const afterPartial = summarize(layered, { ...options, schemas: partialSchemas })
+  is(partial.at('').sidOf('out'), 1, 'even a declining registry may only publish its canonical registered ids')
+  is(partial.kindOfExpr('next'), afterPartial.kindOfExpr('next'), 'partially registered names cannot preserve later provisional ids')
+  is(partial.unnamedLayouts, [['a', 'b', 'c']], 'partial refusal reports only the remaining conservative layout')
+  const open = [';', ...input.slice(1), decl('unknown', extend('foreign'))]
+  const unknown = summarize(open, { ...options, schemas })
+  is(unknown.at('').sidOf('unknown'), null, 'an unknown source cannot acquire a fixed provisional layout')
+  is(unknown.unnamedLayouts, [], 'unknown keys do not become a guessed registry shape')
+  throws(() => summarize(input, { ...options, registerLayouts: () => { throw new Error('stop discovery') } }), /stop discovery/)
+  is(summarize(input, { ...options, schemas }).kindOfExpr('out'), settled.kindOfExpr('out'), 'failed discovery cannot contaminate the next solve')
+})
+
+test('summary spreads: transitive discovery preserves copies, recursion and reuse', () => {
+  const src = `class Seed { constructor(value) { this.a = value } }
+    function one(value) { return {...new Seed(value), b: 2} }
+    function two(value) { const first = one(value); return {...first, c: 3} }
+    function three(value) { return {...two(value), d: 4} }
+    function cycle(value, n) { return n > 0 ? cycle(value, n - 1) : {...three(value), e: 5} }
+    export function f(value, n, key) {
+      const a = cycle(value, n), b = {...a, f: 6}
+      a[key] = 9
+      return [Object.keys(b).join(','), b.a, b.e, b.f, b instanceof Seed, a[key]]
+    }`
+  const js = oracle(src).f
+  for (const level of levels(0, 1, 2, 3, 'size')) {
+    const f = instantiate(compile(src, { optimize: { level, sourceInline: false } })).exports.f
+    for (const args of [[7, 0, 'a'], [7, 0, 'a'], ['changed', 3, 'extra'], [7, 0, 'a']])
+      is(f(...args), js(...args), `O${level}: copied values, keys, unbranded identity and A/A/B/A`)
+  }
 })
 
 test('summary queries: published argument hulls do not consult mutable function inputs', () => {
