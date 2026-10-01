@@ -426,13 +426,30 @@ export function counterInit(init, name) {
 }
 
 export function forCounterRange(init, cond, step, name, rangeOf = intExprRange) {
+  return forCounterBoundsIn(init, cond, step, name, rangeOf, false)
+}
+
+/** The counter's complete width, allowing a bounded positive step magnitude.
+ *  A varying step has no exact stride: consumers needing trips/stride continue
+ *  to use forCounterRange. Its largest step still bounds the final overshoot. */
+export function forCounterBounds(init, cond, step, name, rangeOf = intExprRange) {
+  return forCounterBoundsIn(init, cond, step, name, rangeOf, true)
+}
+
+function forCounterBoundsIn(init, cond, step, name, rangeOf, rangedStep) {
   if (!Array.isArray(cond) || !RELATIONAL_OPS.has(cond[0])) return null
   const shift = nameShift(cond[1], name)
   if (shift == null) return null
   const increasing = cond[0] === '<' || cond[0] === '<='
   const initExpr = counterInit(init, name)
   if (initExpr == null) return null
-  const posConst = (e) => { const k = constIntExpr(e); return k != null && k > 0 }
+  const positive = e => {
+    const k = constIntExpr(e)
+    if (k != null && k > 0) return k
+    if (!rangedStep) return null
+    const r = rangeOf(e)
+    return r && Number.isSafeInteger(r[0]) && Number.isSafeInteger(r[1]) && r[0] > 0 ? r : null
+  }
   // Only the mutation matters in a discarded loop step.
   const unwrapPostfixVal = (e) =>
     Array.isArray(e) && e[0] === 'postfix' ? e[1]
@@ -445,18 +462,16 @@ export function forCounterRange(init, cond, step, name, rangeOf = intExprRange) 
   // swap (`K + name`) is a valid alternate spelling; `K - name` is a
   // DIFFERENT (decreasing-into-K) quantity, never a same-direction rewrite of
   // `name - K`, so it's deliberately excluded (the `arithOp === '+'` guard).
-  // Returns the step's own POSITIVE magnitude (not just a boolean) — the
-  // INDUCTION-VARIABLE FACT project's trip-count derivation needs it;
-  // existing callers only ever consumed the boolean truthiness, so this is
-  // additive.
+  // Exact-stride queries return a positive constant magnitude. Width-only
+  // queries may instead accept its closed positive integer hull.
   const stepMag = (s, mutOp, arithOp) => {
     s = unwrapPostfixVal(s)
     if (Array.isArray(s) && s[0] === mutOp && s[1] === name) return 1
-    if (Array.isArray(s) && s[0] === (mutOp === '++' ? '+=' : '-=') && s[1] === name && posConst(s[2])) return constIntExpr(s[2])
+    if (Array.isArray(s) && s[0] === (mutOp === '++' ? '+=' : '-=') && s[1] === name) return positive(s[2])
     if (Array.isArray(s) && s[0] === '=' && s[1] === name &&
         Array.isArray(s[2]) && s[2][0] === arithOp && s[2].length === 3 &&
-        ((s[2][1] === name && posConst(s[2][2])) || (arithOp === '+' && s[2][2] === name && posConst(s[2][1]))))
-      return constIntExpr(s[2][1] === name ? s[2][2] : s[2][1])
+        (s[2][1] === name || arithOp === '+' && s[2][2] === name))
+      return positive(s[2][1] === name ? s[2][2] : s[2][1])
     return null
   }
   const stepMatches = (s) => increasing ? stepMag(s, '++', '+') : stepMag(s, '--', '-')
@@ -476,9 +491,10 @@ export function forCounterRange(init, cond, step, name, rangeOf = intExprRange) 
   const hi = increasing ? boundRange[1] - (cond[0] === '<' ? 1 : 0) : initRange[1]
   if (!Number.isFinite(lo) || !Number.isFinite(hi) || lo > hi) return null
   const result = [lo, hi]
-  result.step = stepOK
+  result.step = typeof stepOK === 'number' ? stepOK : null
+  const maxStep = typeof stepOK === 'number' ? stepOK : stepOK[1]
   // At the guard the counter holds its initial value or a body value one step on.
-  result.test = increasing ? [lo, Math.max(initRange[1], hi + stepOK)] : [Math.min(initRange[0], lo - stepOK), hi]
+  result.test = increasing ? [lo, Math.max(initRange[1], hi + maxStep)] : [Math.min(initRange[0], lo - maxStep), hi]
   return result
 }
 

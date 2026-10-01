@@ -7,7 +7,7 @@ import { ASSIGN_OPS, COMPARE_OPS, MUTATE_OPS, effectiveWriteValue, ACCESSOR_GET,
 import { ctx, getFactStore } from '../ctx.js'
 import {
   staticObjectProps, staticArrayElems, staticIndexKey, staticValue, intExprRange, NO_VALUE,
-  constIntExpr, constNumExpr, guardCounterName, forCounterRange, typedCtorRawOf,
+  constIntExpr, constNumExpr, guardCounterName, forCounterRange, forCounterBounds, typedCtorRawOf,
 } from '../static.js'
 import { exprType } from '../type.js'
 import { maxAdvanceBudget } from '../type/canonical-bounds.js'
@@ -1361,7 +1361,7 @@ export function stampLoopCounterRanges(body) {
       } })
     }
     if (decls.get(name) !== 1 || isReassigned(loopBody, name) || isReassigned(cond, name) || closureWrites(body, name)) return
-    const range = forCounterRange(init, cond, step, name, e => intExprRange(e, n => {
+    const range = forCounterBounds(init, cond, step, name, e => intExprRange(e, n => {
       const binding = scanBindingUses(body).get(n)
       return hasSingleInitializer(body, n) ? intExprRange(binding[BINDING_USE_INIT]) : null
     }))

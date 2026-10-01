@@ -706,10 +706,15 @@ Dependent index reads use branches to avoid address clamps on serial load chains
 Index-only locals still preserve their full Number magnitude: an out-of-bounds
 access is a valid missing read or ignored store, not proof that its index fits.
 Only the existing closed signed-i32 value hull can promote an affine index local;
-small downstream results cannot bound their arithmetic feeders. Captured names
+small downstream results cannot bound their arithmetic feeders. The shared
+counter-width query accepts a positive bounded variable step and includes its
+largest final overshoot, while trip-count consumers still require an exact step.
+A nonnegative integer entry and a bounded integer square limit expose the
+counter's equivalent linear bound; unknown or negative entries and fractional
+limits keep the original Number test (`test/counter-width.js`). Captured names
 use their cell payload type, independently of the i32 pointer that addresses it.
-Actual word
-consumers retain their separate modulo conversion proof (`test/index-width.js`).
+Actual word consumers retain their separate modulo conversion proof
+(`test/index-width.js`).
 Index arithmetic can keep its low word when its hull lies in [-2^31, 2^32):
 unsigned bounds tests reject both negative words and values past the length.
 Typed allocations cap byte counts below 2^31. The shared `intExprRange` query

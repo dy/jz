@@ -142,6 +142,7 @@ const TESTS = [
   'typed-store',
   'typed-wide-index',
   'index-width',
+  'counter-width',
   'shift-precedence',
   'loop-step',
   'field-cse',

@@ -1,11 +1,6 @@
-// Bounded-square narrowing (src/compile/loop-square.js): `i*i` under an `i*i < CONST`
-// (CONST ≤ 2³⁰) guard is carried as i32 (rewritten to Math.imul) instead of f64 — the
-// Sieve-of-Eratosthenes shape `for(i; i*i<LIMIT; i++) for(j=i*i; j<LIMIT; j+=i) …`.
-//
-// Soundness rests on two facts, pinned below: (1) the guard constant ≤ 2³⁰ keeps the
-// product < 2³¹ even at the loop EXIT (where i*i is computed before the `<` test and
-// overshoots the bound), so Math.imul(i,i) == i*i; (2) the IV is +1-incremented and not
-// otherwise mutated. Outside that envelope the product MUST stay f64.
+// Bounded-square guards expose the equivalent bound of a nonnegative integer
+// counter. Ordinary range inference then narrows the body products and dependent
+// counters; unknown entries retain the original Number comparison.
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import jz, { compile } from '../index.js'
@@ -38,7 +33,7 @@ test('loopSquare: ablation — `i*i < CONST` (CONST ≤ 2³⁰) carries i32, not
   if (onKernel()) return  // kernel runs optimize:false; this inspects optimize:2 WAT
   const src = `export let f = () => { const c = new Int32Array(1000); for (let i = 2; i * i < 1000; i++) { c[i & 1023] = i } return 0 }`
   ok(loopHasF64Mul(src, { loopSquare: false }), 'control: f64.mul in loop with pass OFF')
-  ok(!loopHasF64Mul(src, 2), 'INVARIANT: no f64.mul in loop with pass ON (i*i → Math.imul)')
+  ok(!loopHasF64Mul(src, 2), 'INVARIANT: no f64.mul in loop with the canonical counter bound')
 })
 
 test('loopSquare: the whole sieve narrows — no f64.mul in any loop', () => {
