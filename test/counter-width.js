@@ -5,6 +5,9 @@ import { levels, onKernel } from './_matrix.js'
 import { parse, loopCount } from '../scripts/wat-probe.mjs'
 import { forCounterBounds, forCounterRange, intExprRange } from '../src/static.js'
 import { typedStaticLen } from '../src/type/loop-versioning.js'
+import { scanIntervalIdx } from '../src/type/interval-proof.js'
+import { ctx } from '../src/ctx.js'
+import { createActiveFunction } from '../src/compile/active-function.js'
 
 const compare = (source, inputs) => {
   for (const optimize of levels(0, 1, 2, 3, 'size')) {
@@ -194,4 +197,65 @@ test('counter width: exact typed constructor identity owns static method-chain l
     is(typedStaticLen(['()', ['.', source, 'map'], 'callback']), null, `${ctor}: no typed method length`)
   }
   is(typedStaticLen(['()', ['.', ['()', 'new.Float64Array', [null, 4]], 'map'], 'callback']), 4, 'known typed constructor retains its count')
+})
+
+
+test('counter width: interval binding hulls include every stable read and write', () => {
+  if (onKernel()) return
+  const loop = ['while', ['<', 'i', 4], ['++', 'i']]
+  const cases = [
+    ['landing', [';', ['let', ['=', 'i', 0]], loop, ['return', 'i']], [0, 7]],
+    ['zero work', [';', ['let', ['=', 'i', 5]], loop, ['return', 'i']], [5, 5]],
+    ['late unknown write', [';', ['let', ['=', 'i', 0]], loop, ['=', 'i', 'unknown']], null],
+    ['earlier missing read', [';', ['return', 'i'], ['let', ['=', 'i', 0]], loop], null],
+    ['bare declaration', [';', ['let', 'i'], ['=', 'i', 0], loop], null],
+    ['conditional initializer', [';', ['if', 'flag', ['let', ['=', 'i', 0]]], ['return', 'i']], null],
+    ['conditional receiver', [';', ['if', 'flag', ['let', ['=', 'i', 0]]], ['[]', 'i', 0]], null],
+    ['unknown step', [';', ['let', ['=', 'i', 0]], ['while', ['<', 'i', 4], ['+=', 'i', 'step']]], null],
+    ['overflowing final update', [';', ['let', ['=', 'i', 2147483647]], ['while', ['<=', 'i', 2147483647], ['++', 'i']]], null],
+    ['captured write', [';', ['let', ['=', 'i', 0]], ['=>', [], ['=', 'i', 1.5]], loop], null],
+    ['unknown destructured write', [';', ['let', ['=', 'i', 0]], ['=', ['[', 'i'], 'unknown']], null],
+    ['exceptional exit', [';', ['let', ['=', 'i', 0]], ['catch', [';', ['=', 'i', 2], ['()', 'call']], [';', ['return', 'i']]]], null],
+  ]
+  for (const [name, body, expected] of cases) {
+    const prior = ctx.func, bindings = new Map([['i', undefined]])
+    ctx.func = createActiveFunction({ body })
+    try { scanIntervalIdx(body, null, () => null, null, null, null, null, null, bindings) }
+    finally { ctx.func = prior }
+    is(bindings.get('i'), expected, name)
+  }
+})
+
+test('counter width: bounded while lifetimes retain integer storage before loop optimization', () => {
+  for (const limit of [0, 1, 31, 64]) {
+    const source = `export function f(stop) {
+      let i = 0, sum = 0
+      while (i < ${limit}) { if (i === stop) break; sum = (sum + i) | 0; i++ }
+      return [sum, i]
+    }`
+    compare(source, [[-1], [0], [1], [30], [64]])
+    if (!onKernel()) {
+      const tree = parse(source, { level: 2, watr: false })
+      is(loopCount(tree, n => n[0] === 'f64.add'), 0, `${limit}: the full counter stays integer`)
+      is(loopCount(tree, n => n[0] === 'f64.lt'), 0, `${limit}: the loop test stays integer`)
+    }
+  }
+})
+
+test('counter width: lifetime hulls reject overflow, missing entries and conditional wide writes', () => {
+  compare(`export function f(step, mode) {
+    let i = 2147483646, count = 0
+    while (i <= 2147483647) { i += step; if (mode) i = 4294967296; if (++count === 3) break }
+    return [i, count]
+  }`, [[0, 0], [1, 0], [2, 0], [0.5, 0], [NaN, 0], [1, 1]])
+  compare(`export function f(mode) {
+    if (mode) var i = 0
+    while (i < 4) i++
+    return [i, 1 / i]
+  }`, [[0], [1], [1], [0]])
+  compare(`export function f(mode) {
+    let i = 0
+    while (i < 4) { if (mode) { i = -0; break } i++ }
+    return [i, 1 / i]
+  }`, [[0], [1], [1], [0]])
 })

@@ -37,10 +37,12 @@ const RANGE_GUARD_OPS = new Set(['&&', '<', '<=', '>', '>=', '===', '!=='])
  *  Those maps preseed requested AST nodes with undefined; null means unknown.
  *  Repeated structural keys join conservatively across every occurrence.
  *  When provided, `out` receives a key string proven at every occurrence and each
- *  access NODE proven at its own position. `misses`, when given, maps each
- *  unproven access node of known length to [lo, hi, L]: the hull of its index
+ *  access NODE proven at its own position.
+ *  `bindings` requests whole-binding hulls by name; reads before a known
+ *  definition and any unknown write poison the result. Callers exclude captures.
+ *  `misses` maps each unproven access of known length to [lo, hi, L]: its hull
  *  over the walk (null bounds where unknown), for a guard to test. */
-export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = null, stores = null, misses = null) {
+export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = null, stores = null, misses = null, bindings = null) {
   // Branches retain their completed map and resume the saved entry map.
   // Range pairs are immutable, so unchanged bounds can be shared at joins.
   let env = new Map(entry)   // name → [lo, hi] | null (unknown)
@@ -59,6 +61,14 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
   // While-body fixpoint passes walk EXPLORATORILY — env may be transiently too
   // narrow, so proof/hull recording is suppressed until the stable final pass.
   let recording = true
+  const recordBinding = (name, value) => {
+    if (!recording || !bindings?.has(name)) return
+    const v = ipOk(value) ? value : null, prev = bindings.get(name)
+    if (prev === undefined) bindings.set(name, v)
+    else if (!v) bindings.set(name, null)
+    else if (prev && (v[0] < prev[0] || v[1] > prev[1]))
+      bindings.set(name, [Math.min(prev[0], v[0]), Math.max(prev[1], v[1])])
+  }
   const symEnv = new Map()   // name → { h: symbolic hull, incNode } — wrap cursors vs mutable bounds
   // Positive companion induction variables (`for (i += 3) { out[op] = …; op += 4 }`).
   // Unlike env's loop invariant, this hull is valid only BEFORE the companion's
@@ -68,8 +78,9 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
   // names written inside ANY closure in this body: a later call can change them at
   // any point — they never hold a trusted interval
   const closureWrites = new Set()
-  const needed = calls || stores ? new Set() : null
+  const needed = !out && (calls || stores || bindings) ? new Set() : null
   const collectClosureWrites = (n, inClosure) => {
+    if (typeof n === 'string') return bindings?.has(n) ?? false
     if (!Array.isArray(n)) return false
     const into = inClosure || n[0] === '=>'
     if (into && MUTATE_OPS.has(n[0])) {
@@ -124,6 +135,7 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
     if (closureWrites.has(name) || !ipOk(v)) v = null
     if (f) v = v ? [Math.max(v[0], f[0]), Math.min(v[1], f[1])] : f
     env.set(name, v)
+    recordBinding(name, v)
   }
   const constInt = (e) => {
     const n = intLiteralValue(e)
@@ -136,6 +148,7 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
   }
   const ARITH = new Set(['+', '-', '*', '<<', '>>', '>>>', '&', '%', '|', '^'])
   const ev = (e) => {
+    if (typeof e === 'string') recordBinding(e, closureWrites.has(e) ? null : env.get(e))
     const n = constInt(e)
     if (n != null) return [n, n]
     if (typeof e === 'string') return closureWrites.has(e) ? null : coupledEnv.get(e)?.h ?? env.get(e) ?? null
@@ -581,7 +594,10 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
     for (const s of lcF.breaks) hullInto(s)
   }
   const visit = (n, wrapEntry = null) => {
+    if (typeof n === 'string') { recordBinding(n, closureWrites.has(n) ? null : env.get(n)); return }
     if (!Array.isArray(n) || n[0] === '=>') return
+    if (n[0] == null || n[0] === 'str') return
+    if (n[0] === '.' || n[0] === '?.') { visit(n[1]); return }
     if (n._rangeFacts) return visitWithFacts(n)
     const op = n[0]
     if (op === ';' || op === '{}') {
@@ -607,6 +623,7 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
       return
     }
     if (op === '[]' && n.length === 3 && typeof n[1] === 'string') {
+      visit(n[1])
       const idxV = ev(n[2])
       const L = lens(n[1])
       const proven = L != null && idxV && idxV[0] >= 0 && idxV[1] < L
@@ -651,8 +668,8 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
             if (![...free].some(f => closureWrites.has(f))) boolDefs.set(d[1], { def: d[2], free })
           }
         }
-        else if (typeof d === 'string') { invalidateBool(d); env.set(d, null) }
-        else if (Array.isArray(d)) { visit(d); const s = new Set(); collectNames(d[0] === '=' ? d[1] : d, s); for (const x of s) { invalidateBool(x); env.set(x, null) } }
+        else if (typeof d === 'string') { invalidateBool(d); env.set(d, null); recordBinding(d, null) }
+        else if (Array.isArray(d)) { visit(d); const s = new Set(); collectNames(d[0] === '=' ? d[1] : d, s); for (const x of s) { invalidateBool(x); env.set(x, null); recordBinding(x, null) } }
       }
       return
     }
@@ -691,7 +708,7 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
         visit(n[1])   // records the member-write access proof (`out[idx] = …`)
         for (let k = 2; k < n.length; k++) visit(n[k])
         if (Array.isArray(n[1]) && n[1][0] !== '[]' && n[1][0] !== '.' && n[1][0] !== '?.') {
-          const s = new Set(); collectNames(n[1], s); for (const x of s) { invalidateBool(x); env.set(x, null) }
+          const s = new Set(); collectNames(n[1], s); for (const x of s) { invalidateBool(x); env.set(x, null); recordBinding(x, null) }
         }
       }
       return

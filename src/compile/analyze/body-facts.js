@@ -19,7 +19,7 @@ import { ctorFromElemAux, typedElemAux } from '../../../layout.js'
 import {
   findMutations, collectI32SafeIndexVars, collectF64StridedIndexVars, collectBareEscapes, narrowUint32, narrowWordLocals,
   scanObjectArrayFacts, isFreshArrayCtor, stampBodyRanges, stampLoopCounterRanges,
-  scanBindingUses, hasSingleInitializer, USE, BINDING_USE_DECLS, BINDING_USE_USES, BINDING_USE_KIND, BINDING_USE_STORE, BINDING_USE_OP, BINDING_USE_MISS,
+  scanBindingUses, hasSingleInitializer, USE, BINDING_USE_DECLS, BINDING_USE_INIT, BINDING_USE_USES, BINDING_USE_KIND, BINDING_USE_STORE, BINDING_USE_OP, BINDING_USE_MISS,
   invalidateBindingUsesCache, resetMutationNamesCache,
 } from '../analyze-scans.js'
 import { makeTypedTracker, joinReassignedTypedLens } from './trackers.js'
@@ -189,17 +189,18 @@ function computeBodyFacts(body, bodyFacts, elemOrigin) {
   // after the body's constructor/length tracker has settled. Canonical proofs
   // use node identity so an access outside the loop cannot borrow its bound.
   const typedReads = [], presentNodes = new Set()
-  let presentKeys
+  let presentKeys, bindingHulls, hasLoop = false
   const readPresent = e => {
     if (!presentKeys) {
       presentKeys = new Set()
-      scanBoundedArrIdx(body, null, null, presentNodes)
+      if (typedReads.length) scanBoundedArrIdx(body, null, null, presentNodes)
       const lens = n => locals.has(n) ? typedLens?.get(n) ?? null
         : ctx.func.typedLen?.get(n) ?? ctx.scope.globalTypedLen?.get(n) ?? null
       const entry = new Map()
       for (const p of ctx.func.current?.params || []) entry.set(p.name, ctx.func.localReps?.get(p.name)?.range ?? null)
-      scanIntervalIdx(body, presentKeys, lens, null, null, entry)
+      scanIntervalIdx(body, typedReads.length ? presentKeys : null, lens, null, null, entry, null, null, bindingHulls)
     }
+    if (!e) return false
     return presentNodes.has(e) || presentKeys.has(e) || presentKeys.has(idxKey(e[1], e[2])) || getFactStore().guardProven.has(e)
   }
 
@@ -333,6 +334,7 @@ function computeBodyFacts(body, bodyFacts, elemOrigin) {
     if (!Array.isArray(node)) return
     const op = node[0]
     if (op === '=>') return  // don't cross closure boundary
+    if (op === 'for' || op === 'while') hasLoop = true
     if (op === '[]' && node.length === 3 && typeof node[1] === 'string') {
       const aux = typedElemAux(typedStorageNameCtor(ctx, node[1], locals))
       if (aux != null && (aux & 7) <= 5 && !(aux & 32)) typedReads.push(node)
@@ -442,10 +444,27 @@ function computeBodyFacts(body, bodyFacts, elemOrigin) {
     walk(body)
     joinReassignedTypedLens(body, n => typedElems.has(n), n => typedLens?.get(n) ?? ctx.func.typedLen?.get(n) ?? ctx.scope.globalTypedLen?.get(n) ?? null,
       (n, l) => { (typedLens ||= new Map()).set(n, l) })
+    // Request only unresolved numeric locals in bodies with loops. The same
+    // interval walk supplies checked-read presence and complete binding hulls;
+    // no new walk/cache is allocated for straight-line or already bounded code.
+    const uses = hasLoop ? scanBindingUses(body) : null
+    if (uses) for (const name of uses.keys()) {
+      const binding = uses.get(name)
+      if (!locals.has(name) || binding[BINDING_USE_DECLS] !== 1 || binding[BINDING_USE_INIT] === undefined ||
+          ctx.func.localReps?.get(name)?.range ||
+          locals.get(name) !== 'i32' && valTypes.get(name) !== VAL.NUMBER ||
+          binding[BINDING_USE_USES].some(u => u[BINDING_USE_KIND] === USE.CAPTURE)) continue
+      ;(bindingHulls ||= new Map()).set(name, undefined)
+    }
     for (const read of typedReads) if (readPresent(read)) presentNodes.add(read)
+    if (bindingHulls && !presentKeys) readPresent(null)
     // Prove accumulator bounds and join every write to mutable scalars before
     // widening: an observed local needs its complete hull, not just its init.
     stampBodyRanges(body, presentNodes, typedLens)
+    if (bindingHulls) for (const name of bindingHulls.keys()) {
+      const range = bindingHulls.get(name)
+      if (range) updateRep(name, { range })
+    }
     unsignedLocals = narrowUint32(body, locals, e => e[0] === '[]' &&
       typeof e[1] === 'string' && (typedElemAux(typedStorageNameCtor(ctx, e[1], locals)) & 7) === 5 && presentNodes.has(e))
     for (const nm of unsignedLocals) updateRep(nm, { unsigned: true })

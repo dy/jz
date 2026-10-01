@@ -662,7 +662,13 @@ The source read still needs its own canonical presence proof. Only the exact
 dependent access receives a bounds proof: scalar aliases, returned buffers,
 sentinel postconditions and unequal affine lengths are not inferred here.
 The interval interpreter spans the full signed word; overflowing transfers
-become unknown. Integer payloads alone never prove bounded accumulation.
+become unknown. Body analysis can request complete scalar binding hulls from
+that same walk, before storage widening and vectorization. Only stable loop
+passes contribute; every read and write joins, including initializers and final
+updates. Missing entries and unknown writes reject a hull, and captured bindings
+are excluded. Requests are lazy, share typed-read presence analysis, and skip
+unrelated loops. Numeric bounds never override a producer's presence or signed-zero
+requirements. Integer payloads alone never prove bounded accumulation.
 Counted reductions combine element bounds with the trip count, including every
 intermediate step. Counter proofs reject additional writes in the loop header.
 Loop facts have one producer: the `for` emitter derives them once per loop it
