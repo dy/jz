@@ -13,6 +13,7 @@ import { exprType } from '../type.js'
 import { maxAdvanceBudget } from '../type/canonical-bounds.js'
 import { repOf, updateRep } from '../reps.js'
 import { typedElemAux } from '../../layout.js'
+import { NUMBER } from '../summary/kind.js'
 
 export function findFreeVars(node, bound, free, scope) {
   if (node == null) return
@@ -1727,6 +1728,9 @@ function collectI32SafeIndexVarsIn(body, locals, bareEscapesOf, defs) {
       for (let i = 1; i < node.length; i++) {
         const d = node[i]
         if (Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string') { addEdge(d[1], d[2]); addDef(d[1], d[2]) }
+        // The implicit undefined is a write too, unless the settled summary
+        // proves every read follows an assignment on all reaching paths.
+        else if (typeof d === 'string' && ctx.summary?.at(body).bindingKindOf(d) !== NUMBER) addDef(d, null)
       }
     } else if (op === '=' && typeof node[1] === 'string') { addEdge(node[1], node[2]); addDef(node[1], node[2]) }
     else if ((op === '+=' || op === '-=' || op === '*=') && typeof node[1] === 'string') { addEdge(node[1], node[2]); addDef(node[1], [op[0], node[1], node[2]]) }

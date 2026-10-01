@@ -1,7 +1,7 @@
 import { ctx } from '../ctx.js'
 import { T, isBlockBody, isReassigned, walkAst, MUTATE_OPS, ACCESSOR_GET, callArgs } from '../ast.js'
 import { constIntExpr } from '../static.js'
-import { intCertainMap } from '../type.js'
+import { intLevelMap } from '../type.js'
 import { typedElemAux } from '../../layout.js'
 import { VAL, updateRep } from '../reps.js'
 import { valTypeOf } from '../kind.js'
@@ -441,11 +441,11 @@ export function analyzeFuncForEmit(func, programFacts) {
   if (block) inheritPtrAliases(body, ctx.func.locals, ctx.func.boxed)
 
   // Closure-capture narrowing: a boxed var whose every defining RHS — owner
-  // body AND nested arrows — is integer-valued keeps its CELL in i32, so
-  // readVar/writeVar skip the f64↔i32 round-trip per access. Params are
+  // body AND nested arrows — is exactly representable as signed i32 keeps its
+  // CELL in i32, so readVar/writeVar skip the f64↔i32 round-trip. Params are
   // excluded: their cell is seeded from the raw f64 param value, which would
-  // desync an i32-read cell. Same asm.js-style range contract as plain
-  // intCertain locals.
+  // desync an i32-read cell. Integer-valued arithmetic alone proves neither
+  // its magnitude nor the absence of negative zero.
   //
   // `ctx.func.localReps.get(name).intCertain` (forward-propagated in analyze.js
   // via the plain, single-arg `intCertainMap(body)`) only sees defs in THIS
@@ -460,10 +460,10 @@ export function analyzeFuncForEmit(func, programFacts) {
   let cellTypes = null
   if (ctx.func.boxed.size) {
     const boxedNames = new Set(ctx.func.boxed.keys())
-    const capturedIntCertain = intCertainMap(body, boxedNames)
+    const capturedIntLevels = intLevelMap(body, boxedNames)
     for (const name of boxedNames) {
       if (sig.params.some(p => p.name === name)) continue
-      if (capturedIntCertain.get(name) === true) (cellTypes ??= new Set()).add(name)
+      if (capturedIntLevels.get(name) === 2) (cellTypes ??= new Set()).add(name)
     }
   }
 

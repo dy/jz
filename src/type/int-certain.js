@@ -15,6 +15,7 @@ import { propValType, CMP_OPS } from '../kind-traits.js'
 import { NO_VALUE, staticValue } from '../static.js'
 import { typedStorageNameCtor } from '../typed-context.js'
 import { typedElemAux } from '../../layout.js'
+import { NUMBER } from '../summary/kind.js'
 
 // === Integer-certainty fixpoint (shared by analyzeIntCertain + program-facts) ===
 
@@ -53,6 +54,7 @@ function collectIntDefs(body, capturedNames, defs) {
       for (let i = 1; i < n.length; i++) {
         const decl = n[i]
         if (Array.isArray(decl) && decl[0] === '=' && typeof decl[1] === 'string') pushDef(decl[1], decl[2], inArrow)
+        else if (typeof decl === 'string' && ctx.summary?.at(body).bindingKindOf(decl) !== NUMBER) pushDef(decl, null, inArrow)
       }
     } else if (op === '=' && typeof n[1] === 'string') {
       pushDef(n[1], n[2], inArrow)

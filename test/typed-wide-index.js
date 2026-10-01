@@ -9,6 +9,59 @@ const compare = (src, inputs) => {
   for (const args of inputs) is(actual.f(...args), expected.f(...args), args.join(', '))
 }
 
+test('typed indices: implicit undefined survives conditional assignments and reuse', () => {
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    for (const ctor of ['Float32Array', 'Float64Array', 'Int32Array', 'Uint32Array', 'Array']) {
+      const source = `export function f(mode) {
+        const a = ${ctor === 'Array' ? '[2, 3]' : `new ${ctor}([2, 3])`}
+        let index
+        if (mode) index = 0
+        const before = a[index]
+        let effects = 0
+        const assigned = a[index] = (effects++, 19)
+        return [before, assigned, a[0], a[index], effects]
+      }`
+      const actual = run(source, { optimize }), expected = oracle(source)
+      for (const mode of [0, 0, 1, 0, 2, 1, 0])
+        is(actual.f(mode), expected.f(mode), `${ctor}, ${optimize}, mode=${mode}`)
+    }
+  }
+})
+
+test('typed indices: assignment paths retain absence and total assignments', () => {
+  const bodies = [
+    'let x; if (mode) x = 0; return a[x]',
+    'let x; if (mode) x = 0; else x = 1; return a[x]',
+    'let x; if (!mode) return 7; x = 0; return a[x]',
+    'let x; for (let i = 0; i < mode; i++) x = 0; return a[x]',
+    'let x; try { if (!mode) throw 1; x = 0 } catch (e) {} return a[x]',
+    'let x; const assign = () => { x = 0 }; if (mode) assign(); return a[x]',
+    'let sum = 0; for (let i = 0; i < 3; i++) { let x; if (mode || i === 0) x = 0; sum += a[x] } return sum',
+  ]
+  for (const optimize of levels(0, 1, 2, 3, 'size')) for (const body of bodies) {
+    const source = `export function f(mode) { const a = new Float32Array([2, 3]); ${body} }`
+    const actual = run(source, { optimize }), expected = oracle(source)
+    for (const mode of [0, 0, 1, 3, 0])
+      is(actual.f(mode), expected.f(mode), `${optimize}, mode=${mode}: ${body}`)
+  }
+})
+
+test('captured integer cells: absence and magnitude survive uncalled and repeated writers', () => {
+  const bodies = [
+    'let x; const set = () => { x = 0 }; if (mode) set(); return x',
+    'let x = 4294967296; const set = () => { x = 4294967296 }; if (mode) set(); return x',
+    'let x = 2147483647; const step = () => { x++ }; for (let i = 0; i < mode; i++) step(); return x',
+    'let x = 0; const set = () => { x = -1 * x }; if (mode) set(); return x',
+    'let x = 2147483647; const step = () => { x = (x + 1) | 0 }; for (let i = 0; i < mode; i++) step(); return x',
+  ]
+  for (const optimize of levels(0, 1, 2, 3, 'size')) for (const body of bodies) {
+    const source = `export function f(mode) { ${body} }`
+    const actual = run(source, { optimize }), expected = oracle(source)
+    for (const mode of [0, 0, 1, 2, 0])
+      is(Object.is(actual.f(mode), expected.f(mode)), true, `${optimize}, mode=${mode}: ${body}`)
+  }
+})
+
 test('typed wide index: scaled gathers compare the full integer before addressing', () => {
   for (const ctor of ['Int32Array', 'Uint32Array']) compare(`export function f(n, len) {
     const indices = new ${ctor}(1); indices[0] = n

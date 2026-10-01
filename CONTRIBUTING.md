@@ -212,6 +212,10 @@ including empty input and calls after invalid limits are rejected.
 A declaration supplies a whole-body integer range only when it is the binding's
 sole initializer and no code reassigns it. Copied declarations after unrolling
 retain their individual values without publishing one copy's range for all.
+Integer-storage proofs count a bare declaration's implicit undefined unless the
+summary proves assignment before every read. Conditional local and captured
+writes cannot erase that initial value. Captured cells also require every write
+to fit signed i32 exactly; integer arithmetic alone can overflow or produce -0.
 Installed typed lengths may narrow an earlier width-based range; the invariant
 check rejects widening a range that another pass may already have consumed.
 
