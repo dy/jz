@@ -1876,6 +1876,11 @@ definition; unknown writes and nonfinite or overflowing endpoints reject it.
 This can remove a ToInt32 magnitude guard but never authorizes i32 storage.
 Intrinsic and user calls share excess-argument sequencing. Collection probes
 retain precomputed literal hashes while using the same boxed-value conversion.
+Math arguments finish evaluating before any operand converts to Number;
+unknown or BigInt operands capture their values first, and ignored arguments
+still run. Spreads materialize their argument values before conversion so a
+later argument or valueOf cannot change an earlier operand. Integer Math methods
+apply Number conversion before word wrapping, including throwing on BigInt.
 Schema-tag masks reuse the numeric constant evaluator.
 Internal parameter ranges narrow only when every incoming call proves them;
 exports, indirect calls, missing arguments and unknown writes retain checks.

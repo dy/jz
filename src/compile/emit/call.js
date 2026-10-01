@@ -5,6 +5,8 @@
  */
 
 import { callWithArgs } from '../../ir.js'
+import { storedValue } from '../../bridge.js'
+import { primitiveKind } from '../../evaluation-effects.js'
 import { encodePtrHi, i64Hex } from '../../../layout.js'
 import {
   PARAM_DEFAULT, PARAM_KIND, PARAM_NAME, PARAM_PATTERN, T, classifyParam, commaList, extractParams, hasOptionalChain, walkAst,
@@ -16,7 +18,7 @@ import {
 } from '../../ir.js'
 import { censusMaybeUndefined, hasAmbiguousBoolMerge, valTypeOf } from '../../kind.js'
 import { VAL } from '../../reps.js'
-import { K, core, tagOf, isNullable } from '../../summary/index.js'
+import { K, core, tagOf, hasTag, isNullable } from '../../summary/index.js'
 import { findFreeVars } from '../analyze.js'
 import { recordClosureCallRepresentations, representationCallArgAction } from '../representation-plan.js'
 import { plannedTypedStorageCtor } from '../typed-storage-plan.js'
@@ -75,6 +77,17 @@ function emitSpeculativeCall(callee, spec, argNodes, func) {
 const VARIADIC_MATH = new Set(['math.max', 'math.min', 'math.hypot'])
 function emitBuiltinCall(callee, parsed) {
   if (parsed.hasSpread) {
+    if (callee.startsWith('math.')) {
+      // Expansion finishes before conversion, and owns the values even when
+      // a later argument or valueOf mutates the original spread receiver.
+      const name = temp('args')
+      const source = buildArrayWithSpreads(reconstructArgsWithSpreads(parsed.normal, parsed.spreads))
+      ctx.func.localValTypesOverlay.set(name, VAL.ARRAY)
+      const args = VARIADIC_MATH.has(callee) ? [['...', name]]
+        : Array.from({ length: emitArity(ctx.core.emit[callee], callee) ?? 0 }, (_, i) => ['[]', name, [null, i]])
+      const value = ctx.core.emit[callee](...args)
+      return typed(['block', ['result', value.type], ['local.set', `$${name}`, asF64(source)], value], value.type)
+    }
     const allArgs = []
     let ni = 0
     for (const s of parsed.spreads) {
@@ -86,8 +99,29 @@ function emitBuiltinCall(callee, parsed) {
   }
   // Math reads an argument left out as undefined, as JS passes it: `Math.atan2(y)` is
   // atan2(y, NaN). max, min and hypot take any number of them.
-  const n = callee.startsWith('math.') && !VARIADIC_MATH.has(callee) ? emitArity(ctx.core.emit[callee], callee) ?? 0 : 0
-  return ctx.core.emit[callee](...parsed.normal, ...Array.from({ length: n - parsed.normal.length }, () => [, undefined]))
+  const math = callee.startsWith('math.'), fixed = math && !VARIADIC_MATH.has(callee)
+  const n = fixed ? emitArity(ctx.core.emit[callee], callee) ?? 0 : parsed.normal.length
+  const view = ctx.summary?.at(ctx.func.current)
+  // Call arguments finish evaluating before any Math operand is converted.
+  // A valueOf may write a later argument's source; ignored arguments still run.
+  const capture = math && (parsed.normal.length > n ||
+    parsed.normal.length > 1 && parsed.normal.some(a => !primitiveKind(view, a) || hasTag(view?.kindOfExpr(a) ?? -1, K.BIGINT)))
+  if (!capture) return ctx.core.emit[callee](...parsed.normal,
+    ...Array.from({ length: n - parsed.normal.length }, () => [, undefined]))
+  const args = [], setup = [], aliases = []
+  try {
+    for (let i = 0; i < parsed.normal.length; i++) {
+      const a = parsed.normal[i]
+      if (i >= n) { setup.push(...emitVoid(a)); continue }
+      const name = temp('arg')
+      setup.push(['local.set', `$${name}`, storedValue(a)])
+      view?.alias(name, a, false)
+      aliases.push(name); args.push(name)
+    }
+    while (args.length < n) args.push([, undefined])
+    const value = ctx.core.emit[callee](...args)
+    return setup.length ? typed(['block', ['result', value.type], ...setup, value], value.type) : value
+  } finally { for (const name of aliases) view?.unalias(name) }
 }
 
 /** Direct call to a known top-level user function — emits `(call $callee args)`.

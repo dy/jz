@@ -510,6 +510,66 @@ test('Math.imul', async () => {
   }
 })
 
+test('Math integer methods apply Number conversion before word wrapping', () => {
+  const src = `export function f(mode) {
+    let calls=0;
+    const value = mode===0 ? null : mode===1 ? undefined : mode===2 ? true : mode===3 ? '4294967297' :
+      mode===4 ? {valueOf(){calls++;return 4294967297}} : mode===5 ? {valueOf(){calls++;throw 7}} :
+      mode===6 ? 1n : mode===7 ? -0 : mode===8 ? Infinity : 2147483648;
+    let a,b;try{a=Math.imul(value,3)}catch(e){a=e instanceof TypeError?'TypeError':e}
+    try{b=Math.clz32(value)}catch(e){b=e instanceof TypeError?'TypeError':e}
+    return [a,b,calls]
+  }`
+  const expected=oracle(src)
+  for(const optimize of levels(0,1,2,3,'size')) {
+    const actual=run(src,{optimize})
+    for(const mode of [0,0,1,2,3,4,5,6,7,8,9,4]) is(actual.f(mode),expected.f(mode),`O${optimize}, mode=${mode}`)
+  }
+})
+
+test('Math arguments finish evaluating before conversion and ignored arguments still run', () => {
+  for(const expr of ['Math.imul(a,b())','Math.clz32(a,b())','Math.min(a,b())','Math.max(a,b())',
+    'Math.pow(a,b())','Math.atan2(a,b())','Math.hypot(a,b())','Math.abs(a,b())','Math.imul(a,later)']) {
+    const src=`export function f(mode){let log='',later=2;
+      const a={valueOf(){log+='a';later=8;if(mode===1)throw 7;return 3}};
+      function b(){log+='b';if(mode===2)throw 9;return 2}
+      let out;try{out=${expr}}catch(e){out=e}
+      return [out,log,later]}`
+    const expected=oracle(src)
+    for(const optimize of levels(0,1,2,3,'size')) {
+      const actual=run(src,{optimize})
+      for(const mode of [0,0,1,2,0]) {
+        const got=actual.f(mode), want=expected.f(mode), label=`${expr}, O${optimize}, mode=${mode}`
+        is(got.slice(1),want.slice(1),label)
+        almost(got[0],want[0],1e-14,label)
+      }
+    }
+  }
+})
+
+test('Math spreads snapshot argument values before conversion and preserve throwing order', () => {
+  for (const expr of ['Math.imul(1n,b())', 'Math.min(1n,b())', 'Math.pow(1n,b())',
+    'Math.max(...values,b())', 'Math.min(...values)', 'Math.hypot(...values,b())',
+    'Math.imul(...values,b())', 'Math.clz32(...values,b())']) {
+    const src=`export function f(mode){let log='';
+      const a={valueOf(){log+='a';if(mode===2)throw 7;return 3}};
+      const values=mode===0?[]:mode===3?[,2]:mode===4?[1n,2]:mode===5?['3',null]:[a,2];
+      function b(){log+='b';values[0]=8;if(mode===6)throw 9;return 2}
+      let out;try{out=${expr}}catch(e){out=e instanceof TypeError?'TypeError':e}
+      return [out,log]}`
+    const expected=oracle(src)
+    for (const optimize of levels(0,1,2,3,'size')) {
+      const actual=run(src,{optimize})
+      for (const mode of [0,0,1,2,3,4,5,6,1]) {
+        const got=actual.f(mode), want=expected.f(mode), label=`${expr}, O${optimize}, mode=${mode}`
+        is(got[1],want[1],label)
+        if (Number.isFinite(want[0])) almost(got[0],want[0],1e-14,label)
+        else is(got[0],want[0],label)
+      }
+    }
+  }
+})
+
 // ============================================
 // Type check functions
 // ============================================

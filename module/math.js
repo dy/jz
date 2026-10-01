@@ -148,8 +148,8 @@ export default (ctx) => {
   /** Emit array reduce with a WASM binary op (for Math.max(...arr), Math.min(...arr)) */
   function emitArrayReduce(wasmOp, arrExpr, initVal) {
     const acc = temp('mr')
-    const loop = arrayLoop(emit(arrExpr), (_ptr, _len, _i, item) => [
-      ['local.set', `$${acc}`, [wasmOp, ['local.get', `$${acc}`], asF64(item)]]
+    const loop = arrayLoop(emit(arrExpr), (_ptr, _len, i, item) => [
+      ['local.set', `$${acc}`, [wasmOp, ['local.get', `$${acc}`], toNumF64(['[]', arrExpr, i], item)]]
     ])
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${acc}`, ['f64.const', initVal]],
@@ -178,21 +178,6 @@ export default (ctx) => {
     if (a === undefined) return typed(['f64.const', ident], 'f64')
     // Spread: Math.min(...arr) — array contents unknown, keep canon
     if (!b && Array.isArray(a) && a[0] === '...') return canon(emitArrayReduce(op, a[1], ident))
-    // Mixed: Math.max(1e-12, ...scores) folds scalars and spread elements in
-    // order into one accumulator (a scalar operand still ToNumbers).
-    const all = b === undefined ? [a] : [a, b, ...rest]
-    if (all.some(x => Array.isArray(x) && x[0] === '...')) {
-      const acc = temp('mr')
-      const steps = []
-      for (const x of all) {
-        if (Array.isArray(x) && x[0] === '...')
-          steps.push(...arrayLoop(emit(x[1]), (_ptr, _len, _i, item) => [
-            ['local.set', `$${acc}`, [op, ['local.get', `$${acc}`], asF64(item)]]]))
-        else steps.push(['local.set', `$${acc}`, [op, ['local.get', `$${acc}`], toNumF64(x, emit(x))]])
-      }
-      return canon(typed(['block', ['result', 'f64'],
-        ['local.set', `$${acc}`, ['f64.const', ident]], ...steps, ['local.get', `$${acc}`]], 'f64'))
-    }
     const src = b === undefined ? [a] : [a, b, ...rest]
     const ev = src.map(x => emit(x))
     let r = typed([op, toNumF64(src[0], ev[0]),
@@ -334,10 +319,6 @@ export default (ctx) => {
   const powCall = emitter(['math.pow'], (a, b) => fn('math.pow', a, b))
   // Shared pow/** lowering.
   const emitPow = (a, b, allowExpPos) => {
-    // BigInt ** is real JS (2n ** 3n === 8n) but unimplemented — the f64 pow
-    // pipeline would reinterpret raw i64 bits. Reject instead of silent garbage.
-    if (valTypeOf(a) === VAL.BIGINT || valTypeOf(b) === VAL.BIGINT)
-      err('BigInt exponentiation (`**`) not supported — use a multiply loop or Number(x)')
     const n = constInt(b)
     if (n !== null && Math.abs(n) <= POW_FOLD_MAX) return foldPow(a, n)
     if (constNum(b) === 0.5) { const ir = typed(['f64.sqrt', toNumF64(a, emit(a))], 'f64'); return nonNegF64(ir[1]) ? ir : canon(ir) }
@@ -434,7 +415,12 @@ export default (ctx) => {
     return (inc('math.pow'), typed(['call', '$math.pow', irA, irB], 'f64'))
   }
   ctx.core.emit['math.pow'] = tag((a, b) => emitPow(a, b, true), powCall.deps)
-  ctx.core.emit['**'] = tag((a, b) => emitPow(a, b, true), powCall.deps)
+  ctx.core.emit['**'] = tag((a, b) => {
+    // BigInt ** is unsupported. Math.pow instead converts and throws TypeError.
+    if (valTypeOf(a) === VAL.BIGINT || valTypeOf(b) === VAL.BIGINT)
+      err('BigInt exponentiation (`**`) not supported — use a multiply loop or Number(x)')
+    return emitPow(a, b, true)
+  }, powCall.deps)
   reg('math.cbrt', ['math.cbrt'], a => fn('math.cbrt', a))
   reg('math.hypot', ['math.hypot'], (a, b, ...rest) => {
     if (a === undefined) return typed(['f64.const', 0], 'f64')
@@ -442,8 +428,8 @@ export default (ctx) => {
     // (hypot(hypot(a, b), c) is the same overflow-safe magnitude).
     if (!b && Array.isArray(a) && a[0] === '...') {
       const acc = temp('hy')
-      const loop = arrayLoop(emit(a[1]), (_ptr, _len, _i, item) => [
-        ['local.set', `$${acc}`, ['call', '$math.hypot', ['local.get', `$${acc}`], asF64(item)]]
+      const loop = arrayLoop(emit(a[1]), (_ptr, _len, i, item) => [
+        ['local.set', `$${acc}`, ['call', '$math.hypot', ['local.get', `$${acc}`], toNumF64(['[]', a[1], i], item)]]
       ])
       return typed(['block', ['result', 'f64'],
         ['local.set', `$${acc}`, ['f64.const', 0]],
@@ -465,8 +451,8 @@ export default (ctx) => {
   // skip the convert/trunc round-trip entirely.
   // Operands take ECMAScript ToInt32 (wrapping), not saturation — `Math.imul(x, k)`
   // with a literal k ≥ 2³¹ must wrap to negative, matching JS, not clamp to INT_MAX.
-  ctx.core.emit['math.clz32'] = a => typed(['i32.clz', toI32(emit(a))], 'i32')
-  ctx.core.emit['math.imul'] = (a, b) => typed(['i32.mul', toI32(emit(a)), toI32(emit(b))], 'i32')
+  ctx.core.emit['math.clz32'] = a => typed(['i32.clz', toI32(toNumF64(a, emit(a)))], 'i32')
+  ctx.core.emit['math.imul'] = (a, b) => typed(['i32.mul', toI32(toNumF64(a, emit(a))), toI32(toNumF64(b, emit(b)))], 'i32')
 
   registerMathRandom()
 
