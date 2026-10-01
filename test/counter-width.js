@@ -18,6 +18,57 @@ const compare = (source, inputs) => {
   }
 }
 
+test('counter width: conditional additive assignments bound both directions and skipped steps', () => {
+  for (const update of ['x = mode & 1 ? x + d : x - d', 'if (mode & 1) x = d + x; else x -= d']) {
+    const source = `function reduce(a, mode) {
+      let x = 0, r = 0
+      for (let i = 0; i < 8; i++) {
+        if (i === mode) continue
+        const d = a[r++]
+        ${update}
+        if (i === (mode >>> 8)) break
+      }
+      return [x, r]
+    }
+    export function f(mode) { return reduce(new Uint8Array([255, 0, 127, 1, 2, 3, 4, 5]), mode) }`
+    compare(source, [[0], [1], [0], [2], [257], [2048], [2049], [0]])
+    if (!onKernel()) {
+      const tree = parse(source, { level: 3, watr: false, sourceInline: false })
+      is(loopCount(tree, n => n[0] === 'f64.add' || n[0] === 'f64.sub'), 0, 'bounded signed steps retain integer arithmetic')
+    }
+  }
+})
+
+test('counter width: recurrence copies require initialization on the executing path', () => {
+  for (const declarations of [
+    'if (mode) { var d = a[0] }; x = x + d',
+    'x = x + d; var d = a[0]',
+    'let d = a[0]; if (mode) d = value; x = x + d',
+    'let d = a[0]; const change = () => { d = value }; if (mode) change(); x = x + d',
+  ]) compare(`export function f(mode, value) {
+      const a = new Uint8Array([7]); let x = 0
+      for (let i = 0; i < 2; i++) { ${declarations} }
+      return x
+    }`, [[0, 0], [1, 0.5], [1, 4294967296], [0, 0], [1, NaN]])
+})
+
+test('counter width: conditional recurrence proofs preserve missing, zero, wide and effectful values', () => {
+  for (const update of [
+    'x = mode ? x + d : x - d',
+    'x = (x = value, mode) ? x + d : x - d',
+    'x = mode ? x + (x = value) : x - d',
+  ]) compare(`export function f(mode, value, count) {
+      const a = new Float64Array([value]); let x = value
+      for (let i = 0; i < 2; i++) {
+        if (i >= count) break
+        const d = a[i]
+        ${update}
+      }
+      return [x, 1 / x]
+    }`, [[0, -0, 0], [1, -0, 1], [0, 0, 1], [1, 0.5, 1], [0, 2147483648, 1],
+      [1, 9007199254740992, 1], [1, 1, 2], [1, Infinity, 2], [0, -0, 0]])
+})
+
 test('counter width: square guards preserve their first test before any range theorem holds', () => {
   for (const start of ['65536', '-65536', '4294967296', '-1', '-0', '0.5', 'start']) {
     const source = `export function f(start) {

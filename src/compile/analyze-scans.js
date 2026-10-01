@@ -1357,11 +1357,13 @@ function collectStepRange(node, name, rangeOf, unit = 1) {
     if (op === '++') return { P: unit, N: 0 }
     if (op === '--') return { P: 0, N: unit }
     if (op === '+=' || op === '-=') {
-      const r = rangeOf(node[2])
+      if (refsName(node[2], name, REFS_IN_EXPR)) return null
+      const r = rangeOf(node[2], node)
       if (!r) return null
       const lo = op === '+=' ? r[0] : -r[1], hi = op === '+=' ? r[1] : -r[0]
       return { P: Math.max(0, hi), N: Math.max(0, -lo) }
     }
+    if (op === '=') return assignedStepRange(node[2], name, rangeOf, node)
     return null
   }
   if (op === 'let' || op === 'const') {
@@ -1384,8 +1386,7 @@ function collectStepRange(node, name, rangeOf, unit = 1) {
     const t = collectStepRange(node[2], name, rangeOf, unit)
     const e = node.length > 3 && node[3] !== undefined ? collectStepRange(node[3], name, rangeOf, unit) : { P: 0, N: 0 }
     if (t == null || e == null) return null
-    if (t.P !== e.P || t.N !== e.N) return null   // arms disagree — non-deterministic per-iteration motion
-    return t
+    return { P: Math.max(t.P, e.P), N: Math.max(t.N, e.N) }
   }
   if (op === 'for' || op === 'while' || op === '=>')
     return refsName(node, name, REFS_IN_EXPR) ? null : { P: 0, N: 0 }
@@ -1396,6 +1397,27 @@ function collectStepRange(node, name, rangeOf, unit = 1) {
     P += s.P; N += s.N
   }
   return { P, N }
+}
+
+// Assignment spelling of an additive recurrence. Every chosen arm must retain
+// the old value exactly once; no reassignment or extra self-read may hide in
+// the condition or the increment.
+function assignedStepRange(node, name, rangeOf, write) {
+  if (node === name) return { P: 0, N: 0 }
+  if (!Array.isArray(node)) return null
+  if (node[0] === '?:') {
+    if (isReassigned(node[1], name)) return null
+    const a = assignedStepRange(node[2], name, rangeOf, write), b = assignedStepRange(node[3], name, rangeOf, write)
+    return a && b ? { P: Math.max(a.P, b.P), N: Math.max(a.N, b.N) } : null
+  }
+  const op = node[0], left = node[1] === name
+  if (node.length !== 3 || !(op === '+' && (left || node[2] === name) || op === '-' && left)) return null
+  const value = node[left ? 2 : 1]
+  if (refsName(value, name, REFS_IN_EXPR)) return null
+  const r = rangeOf(value, write)
+  if (!r) return null
+  const lo = op === '+' ? r[0] : -r[1], hi = op === '+' ? r[1] : -r[0]
+  return { P: Math.max(0, hi), N: Math.max(0, -lo) }
 }
 
 // A name written inside any closure of `body` can change at any call.
@@ -1481,7 +1503,15 @@ function fractionalLoopRange(body, name, init, trips) {
 
 export function stampBodyRanges(body, readPresent, typedLens) {
   const fractional = new Map()
-  const rangeOf = n => {
+  const rangeOf = (n, at) => {
+    // The occurrence proof is available before the all-writers fixpoint below
+    // publishes local ranges. An immutable copy keeps that exact read's value;
+    // do not substitute arbitrary or mutable initializer expressions here.
+    if (at && typeof n === 'string' && !repOf(n)?.range) {
+      const init = scanBindingUses(body).get(n)?.[BINDING_USE_INIT]
+      if (Array.isArray(init) && init[0] === '[]' && readPresent?.has(init) &&
+          hasSingleInitializer(body, n) && dominatingLoopInit(body, at, n) === init) return rangeOf(init)
+    }
     if (Array.isArray(n) && typeof n[1] === 'string') {
       if (n[0] === '|' && constIntExpr(n[2]) === 0) {
         const r = fractional.get(n[1])

@@ -894,6 +894,12 @@ by their total absolute movement. Delta operands need whole-loop facts, includin
 counter landing and ring-reset transients; body initializer syntax alone supplies
 no dominance proof. Every intermediate must fit the signed word before these
 hulls authorize storage (`test/interval-proof.js`).
+Counted-loop recurrences bound positive and negative movement separately across
+conditional updates, including ordinary `x = test ? x + d : x - d` assignments.
+An immutable copied typed read can supply its occurrence's element hull only when
+its initializer dominates the update; skipped or later initializers cannot lend
+that bound. Every prefix and the final update remains in the storage proof
+(`test/counter-width.js`).
 
 A direct factory can transfer a fresh typed array's element hull to its caller.
 The producer must return only unaliased allocations; returned parameters, globals,
