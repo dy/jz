@@ -16,7 +16,8 @@
  */
 import { ctx, inc, PTR } from '../../ctx.js'
 import { createFunction } from '../../function.js'
-import { typed, asF64, asI64, ptrTypeEq, UNDEF_NAN, TOMB_NAN, TO_PRIMITIVE } from '../../ir.js'
+import { ACCESSOR_GET, ACCESSOR_SET } from '../../ast.js'
+import { typed, asF64, asI64, ptrTypeEq, boxedPtrTypeEq, UNDEF_NAN, TOMB_NAN, TO_PRIMITIVE } from '../../ir.js'
 import { emit } from '../../bridge.js'
 import { errorCodeLiteral, ERR } from '../../../err-codes.js'
 import { stringHash } from '../../string-data.js'
@@ -33,7 +34,9 @@ const classes = () => ctx.transform.classes
 const depth = (e) => { let d = 0; for (let c = e; c.base; c = classes().get(c.base)) d++; return d }
 /** Classes with a method `name`, most derived first, so an override wins its base. */
 const classesWith = (name) => classes()
-  ? [...classes().values()].filter(e => e.methods.has(name)).sort((a, b) => depth(b) - depth(a)) : []
+  ? [...classes().values()].filter(e => e.methods.has(name) ||
+      e.methods.has(name + ACCESSOR_GET) || e.methods.has(name + ACCESSOR_SET))
+    .sort((a, b) => depth(b) - depth(a)) : []
 
 /** The prelude adds direct class calls and intrinsic property probes, not new
  * source member accesses, so the shared census remains valid after synthesis. */
@@ -47,13 +50,18 @@ export function synthesizeToPrimitive() {
     ctx.module.include('collection')
     ctx.module.include('string')
     ctx.runtime.schemaTblConsumed = true
-    inc('__dyn_get_t_hm', '__ptr_type')
+    inc('__dyn_get_t_hm', '__dyn_get_t_h', '__ptr_type')
     const recv = asI64(emit(r))
-    return typed(['f64.reinterpret_i64', ['call', '$__dyn_get_t_hm', recv, asI64(emit(propLit)),
-      ['call', '$__ptr_type', recv], ['i32.const', stringHash(propLit[1])]]], 'f64')
+    const args = [recv, asI64(emit(propLit)), ['call', '$__ptr_type', recv], ['i32.const', stringHash(propLit[1])]]
+    // Presence preserves an absent method separately from an own undefined.
+    // The value lookup must then invoke any accessor, exactly once.
+    return typed(['f64.reinterpret_i64', ['if', ['result', 'i64'],
+      ['i64.eq', ['call', '$__dyn_get_t_hm', ...args], ['i64.const', TOMB_NAN]],
+      ['then', ['i64.const', TOMB_NAN]],
+      ['else', ['call', '$__dyn_get_t_h', ...args]]]], 'f64')
   }
   ctx.core.emit.__tp_missing = (v) => typed(['i64.eq', asI64(emit(v)), ['i64.const', TOMB_NAN]], 'i32')
-  ctx.core.emit.__tp_callable = (v) => ptrTypeEq(asF64(emit(v)), PTR.CLOSURE)
+  ctx.core.emit.__tp_callable = (v) => boxedPtrTypeEq(asF64(emit(v)), PTR.CLOSURE)
   ctx.core.emit.__tp_call = (v, r) => ctx.closure.call
     ? ctx.closure.call(typed(asF64(emit(v)), 'f64'), [], false, false, asF64(emit(r)))
     : typed(['f64.reinterpret_i64', ['i64.const', UNDEF_NAN]], 'f64')
@@ -88,8 +96,13 @@ export function synthesizeToPrimitive() {
     let inherited = prop === 'toString' ? ['return', ['str', '[object Object]']] : block()
     if (date) inherited = ['if', ['__tp_isdate', R],
       ['return', call(prop === 'toString' ? '__tp_date_string' : '__tp_date_value', R)], inherited]
-    for (const e of classesWith(prop).reverse())
-      inherited = ['if', ['instanceof', R, e.brand], accept(call(e.methods.get(prop), R)), inherited]
+    for (const e of classesWith(prop).reverse()) {
+      const getter = e.methods.get(prop + ACCESSOR_GET)
+      const method = getter ? block(['=', M, call(getter, R)],
+        ['if', ['__tp_callable', M], accept(['__tp_call', M, R])])
+        : e.methods.has(prop + ACCESSOR_SET) ? block() : accept(call(e.methods.get(prop), R))
+      inherited = ['if', ['instanceof', R, e.brand], method, inherited]
+    }
     return block(['=', M, ['__tp_get', R, ['str', prop]]],
       ['if', ['__tp_missing', M], inherited,
         ['if', ['__tp_callable', M], accept(['__tp_call', M, R])]])

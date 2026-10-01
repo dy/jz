@@ -403,7 +403,24 @@ function lowerStruct({ name, base, nativeCollection, ctorParams, ctorBody, metho
   const allFields = base ? [...base.fields, ...own.filter(f => !base.fields.includes(f))] : own
   const entry = { brand, name: cls, module: ctx.module.currentPrefix, factory: cls, init: methodFn(cls, INIT), fields: allFields, methods: new Map(base?.methods), base: base?.brand ?? null, staticAccessors: new Set(base?.staticAccessors) }
   if (nativeCollection) { entry.nativeCollection = nativeCollection; entry.nominal = CLASS_T + 'instance' + id }
-  for (const [mname] of methods) entry.methods.set(mname, methodFn(cls, mname))
+  // An own descriptor replaces the inherited descriptor as a whole. Clear
+  // siblings before adding this class's methods so its own getter/setter pair stays paired.
+  for (const [mname] of methods) {
+    const prop = mname.endsWith(ACCESSOR_GET) || mname.endsWith(ACCESSOR_SET)
+      ? mname.slice(0, -ACCESSOR_GET.length) : mname
+    entry.methods.delete(prop)
+    entry.methods.delete(prop + ACCESSOR_GET)
+    entry.methods.delete(prop + ACCESSOR_SET)
+  }
+  for (const [mname] of methods) {
+    if (mname.endsWith(ACCESSOR_GET) || mname.endsWith(ACCESSOR_SET))
+      entry.methods.delete(mname.slice(0, -ACCESSOR_GET.length))
+    else {
+      entry.methods.delete(mname + ACCESSOR_GET)
+      entry.methods.delete(mname + ACCESSOR_SET)
+    }
+    entry.methods.set(mname, methodFn(cls, mname))
+  }
   const localScope = nativeCollection && !atModuleScope() ? classBindingScope(cls) : null
   if (localScope) {
     let entries = localClasses.get(localScope)

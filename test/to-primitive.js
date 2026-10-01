@@ -12,6 +12,48 @@ const check = (src, args, reference = src) => {
   }
 }
 
+test('ToPrimitive: method getters run once in hint order and preserve absence', () => {
+  for (const hint of ['String(value)', 'Number(value)']) check(`
+    export function f(mode) {
+      let trace=''; const value={
+        get toString(){trace+='s'; if(mode===1)throw 7;
+          if(mode===2)return undefined;if(mode===7)return 7.25;
+          return function(){trace+='S';return mode===3?{}:'23'}},
+        get valueOf(){trace+='v'; if(mode===4)throw 9;
+          if(mode===5)return undefined;
+          return function(){trace+='V';return mode===6?{}:31}}
+      };
+      try{return [${hint},trace]}catch(e){return [typeof e==='number'?e:e.name,trace]}
+    }
+  `, [0,0,1,2,3,4,5,6,7,0])
+  check(`export function f(mode) {
+    let trace='';const value={get toString(){trace+='s';return undefined},
+      get valueOf(){trace+='v';return undefined}};
+    const key=mode?'toString':'valueOf';if(mode===1)delete value[key];
+    try{return[String(value),trace]}catch(e){return[e.name,trace]}
+  }`, [0,0,1,0,1])
+  check(`let trace='';class Value {
+      get toString(){trace+='s';return ()=>{trace+='S';return 'class'}}
+      get valueOf(){trace+='v';return ()=>{trace+='V';return 19}}
+    }
+    export function f(mode) {
+    trace='';const value=new Value();return[mode?Number(value):String(value),trace]
+  }`, [0,0,1,0,1])
+  for(const base of ["valueOf(){trace+='m';return 7}","get valueOf(){trace+='g';return ()=>7}"])
+    for(const own of ["valueOf(){trace+='M';return 9}","get valueOf(){trace+='G';return ()=>9}",
+      "set valueOf(v){trace+='W'}", "get valueOf(){trace+='G';return ()=>9} set valueOf(v){trace+='W'}"])
+      check(`let trace='';class Base{${base}}class Derived extends Base{${own}}
+        export function f(mode){trace='';const value=mode?new Base():new Derived();
+          try{return[Number(value),trace]}catch(e){return[e.name,trace]}}
+      `,[0,0,1,0,1])
+  for(const members of [
+    "get valueOf(){return ()=>7} valueOf(){return 9}",
+    "valueOf(){return 9} get valueOf(){return ()=>7}",
+    "get valueOf(){return ()=>7} valueOf(){return 9} set valueOf(v){}",
+    "set valueOf(v){} valueOf(){return 9} get valueOf(){return ()=>7}",
+  ])check(`class Value{${members}}export function f(){return Number(new Value())}`,[0,0])
+})
+
 test('source inlining: lifted calls preserve implicit conversion and getter order', () => {
   for (const operation of [
     'const a=recv()[key],b=recv()[key];return[a,b,trace]',

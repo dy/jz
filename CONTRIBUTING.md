@@ -3038,7 +3038,12 @@ method's, `Array.from`'s map function) is walked as part of the frame; a
 callback name resolves to its arrow only while no nested function rebinds it. In a program that defines
 `toString` or `valueOf`, converting a value the summary cannot prove primitive (an operator's
 operand, a property key, a builtin's argument, a typed element store) is a call to the
-ToPrimitive function it lowers to (`runsConversion`). The arena rewind (`src/optimize/arena-rewind.js`) restores the
+ToPrimitive function it lowers to (`runsConversion`). Accessor definitions contribute
+their public property names to that census. Conversion tests presence separately
+from reading a method, so an own undefined shadows the inherited method and a
+getter runs exactly once in hint order. Schema-class getters follow the same
+callability rule, which checks the complete boxed function tag.
+The arena rewind (`src/optimize/arena-rewind.js`) restores the
 heap pointer at return for any function with one result, parameters
 included, outright where nothing its frame may reach lowers the escape flag
 and by the flag otherwise (above). A result that may be a heap value (a

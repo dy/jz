@@ -232,6 +232,11 @@ export function classInstanceof(a, brand) {
 export function memberUses() {
   if (ctx.transform.memberUses) return ctx.transform.memberUses
   const called = new Set(), read = new Set(), written = new Set(), defined = new Set()
+  const define = name => {
+    defined.add(name)
+    if (typeof name === 'string' && isAccessorSlot(name))
+      defined.add(name.slice(0, -ACCESSOR_GET.length))
+  }
   // `o.m` and `o["m"]` name the member alike
   const memberOf = (n) => !Array.isArray(n) ? null
     : (n[0] === '.' || n[0] === '?.') && typeof n[2] === 'string' ? n[2]
@@ -239,7 +244,7 @@ export function memberUses() {
   const walk = (n) => {
     if (!Array.isArray(n)) return
     const op = n[0], m = n.length > 1 ? memberOf(n[1]) : null
-    if (op === ':' && typeof n[1] === 'string') defined.add(n[1])
+    if (op === ':' && typeof n[1] === 'string') define(n[1])
     // a call through a computed key, or an optional call, reads the member as a value first
     if ((op === '()' || op === '?.()') && m != null) { (n[1][0] === '[]' || op === '?.()' ? read : called).add(m); walk(n[1][1]); for (let i = 2; i < n.length; i++) walk(n[i]); return }
     if (MUTATE_OPS.has(op) && m != null) { written.add(m); if (op !== '=') read.add(m); walk(n[1][1]); for (let i = 2; i < n.length; i++) walk(n[i]); return }
@@ -250,8 +255,8 @@ export function memberUses() {
   for (const f of ctx.funcs.list) for (const r of frameRoots(f)) walk(r)
   walk(ctx.module.entryInit)
   for (const init of ctx.module.moduleInits ?? []) walk(init)
-  for (const props of ctx.schema.list) for (const prop of props) defined.add(prop)
-  for (const entry of classes()?.values() ?? []) for (const name of entry.methods.keys()) defined.add(name)
+  for (const props of ctx.schema.list) for (const prop of props) define(prop)
+  for (const entry of classes()?.values() ?? []) for (const name of entry.methods.keys()) define(name)
   return ctx.transform.memberUses = { called, read, written, defined }
 }
 
