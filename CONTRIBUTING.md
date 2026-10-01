@@ -767,6 +767,9 @@ only by word operators may convert once at the call boundary, as established
 by the binding-use census.
 Comparison emission and folding share one signedness proof: equal word bits
 do not imply equal numbers across signed and unsigned domains.
+An unsigned shift by a known nonzero masked count clears the high bit and
+proves signed storage width. Zero, unknown and modulo-32-zero counts retain
+the complete unsigned range.
 Checked reads share one lowering for integer conversion and comparison:
 conversion maps absence to zero; comparison keeps the answer for undefined.
 Dependent index reads use branches to avoid address clamps on serial load chains.

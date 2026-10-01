@@ -34,7 +34,7 @@
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
 import { belowOpt, onKernel, onWasi, withBigintStrict, levels } from './_matrix.js'
-import jz from '../index.js'
+import jz, { compile } from '../index.js'
 import { run, oracle } from './util.js'
 import parseWat from 'watr/parse'
 import { parse as watTree, callsOutside, walk } from '../scripts/wat-probe.mjs'
@@ -43,6 +43,31 @@ import { ctx } from '../src/ctx.js'
 import { VAL } from '../src/reps.js'
 import { constIntExpr, intLiteralValue } from '../src/static.js'
 import { I32_MIN, I32_MAX } from '../src/ast.js'
+
+test('integer width: only nonzero masked unsigned shifts prove signed storage', () => {
+  const shifts = [1, 31, 32, 33, -1, -32, 1.75, NaN, Infinity, -Infinity]
+  const src = `let ${shifts.map((_,i)=>`g${i}=0`).join(',')}, dynamic=0;
+    export function set(n,s){${shifts.map((s,i)=>`g${i}=n>>>(${s});`).join('')}dynamic=n>>>s}
+    export function read(){return [${shifts.map((_,i)=>`g${i}`).join(',')},dynamic]}`
+  const host = oracle(src)
+  for (const optimize of levels(0,1,2,3,'size')) {
+    const got=jz(src,{optimize}).exports
+    for(const n of [0,-0,-1,2147483647,2147483648,4294967295,4294967296,-4294967297,1.75,NaN,Infinity,0,-1]) {
+      for(const shift of [0,1,32,33,-1,NaN]) {
+        got.set(n,shift);host.set(n,shift)
+        is(got.read(),host.read(),`O${optimize}: ${n} shifted by ${shift}`)
+      }
+    }
+  }
+  if (!belowOpt(2)) {
+    const tree=parseWat(compile(src,{wat:true}))
+    for(const [i,shift] of shifts.entries()) {
+      const global=tree.find(n=>n[0]==='global'&&n[1]===`$g${i}`)
+      is(global?.[2],['mut',(shift&31)!==0?'i32':'f64'],`masked shift ${shift} determines storage width`)
+    }
+    is(tree.find(n=>n[0]==='global'&&n[1]==='$dynamic')?.[2],['mut','f64'],'an unknown count retains the full unsigned magnitude')
+  }
+})
 
 const count = (wat, re) => (wat.match(re) || []).length
 
