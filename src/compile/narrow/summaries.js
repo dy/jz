@@ -69,27 +69,24 @@ export function inferNumericRanges(paramReps, callSites, callerCtx, addressTaken
   const queue = ctx.funcs.list.filter(f => f.body && !f.raw &&
     (outgoing.has(f) || hasKind(f, VAL.TYPED) || analyzeValueFacts(f.body).typedElems.size))
   if (outgoing.has(null)) queue.push(null)
-  const queued = new Set(queue), visits = new Map()
-  for (let head = 0; head < queue.length; head++) {
-    const caller = queue[head], body = caller?.body ?? ast
-    queued.delete(caller)
-    const count = visits.get(caller) ?? 0
-    if (count >= 8) continue
-    visits.set(caller, count + 1)
+  // A private recursive proof uses this same interpreter/context, but never
+  // publishes its exploratory stores or changes the parameter rows it reads.
+  const scanCaller = (caller, hypotheses = null, collectStores = true) => {
+    const body = caller?.body ?? ast
     const entry = new Map(), reps = paramReps.get(caller?.name)
     for (let k = 0; k < (caller?.sig.params.length ?? 0); k++)
-      entry.set(caller.sig.params[k].name, reps?.get(k)?.range ?? null)
+      entry.set(caller.sig.params[k].name, hypotheses?.get(caller)?.get(k) ?? reps?.get(k)?.range ?? null)
     const calls = new Map((outgoing.get(caller) ?? []).filter(cs => !cs.synthetic).map(cs => [cs.node, undefined]))
-    const writes = new Map(), receivers = new Set(caller ? analyzeValueFacts(body).typedElems.keys() : [])
+    const writes = collectStores ? new Map() : null, receivers = new Set(collectStores && caller ? analyzeValueFacts(body).typedElems.keys() : [])
     for (let k = 0; k < (caller?.sig.params.length ?? 0); k++) {
       const r = reps?.get(k)
-      if (r?.val === VAL.TYPED || r?.presentVal === VAL.TYPED) receivers.add(caller.sig.params[k].name)
+      if (collectStores && (r?.val === VAL.TYPED || r?.presentVal === VAL.TYPED)) receivers.add(caller.sig.params[k].name)
     }
     if (receivers.size) walkAst(body, { enter: n => {
       if (n[0] === '=>') return false
       if (n[0] === '=' && Array.isArray(n[1]) && n[1][0] === '[]' && receivers.has(n[1][1])) writes.set(n, undefined)
     } })
-    if (!calls.size && !writes.size) continue
+    if (!calls.size && !writes?.size) return { calls, writes }
     const prev = enterActiveFunction(ctx, { sig: caller?.sig, body })
     try {
       ctx.func.locals = callerCtx.get(caller)?.callerLocals ?? new Map()
@@ -108,31 +105,108 @@ export function inferNumericRanges(paramReps, callSites, callerCtx, addressTaken
       scanIntervalIdx(body, null, name => lens.get(name) ?? typedLens?.get(caller)?.get(name)
         ?? arrays.locals.get(caller)?.get(name) ?? null, null, calls, entry, writes)
     } finally { restoreActiveFunction(ctx, prev) }
-    stores.set(caller, writes)
-    const targets = new Set()
-    for (const cs of outgoing.get(caller) ?? []) {
-      observed.set(cs, cs.synthetic ? null : calls.get(cs.node))
-      targets.add(ctx.funcs.map.get(cs.callee))
-    }
-    for (const f of targets) {
-      let changed = false
-      for (let k = 0; k < f.sig.params.length; k++) {
-        const p = f.sig.params[k]
-        if (f.defaults?.[p.name] != null || (f.rest && k === f.sig.params.length - 1) || isReassigned(frameNode(f), p.name)) continue
-        let range = undefined
-        for (const cs of incoming.get(f)) {
-          const v = observed.get(cs)?.[k]
-          if (!v || !Number.isFinite(v[0]) || !Number.isFinite(v[1]) || v[0] < -2147483648 || v[1] > 2147483647) { range = null; break }
-          range = hull(range, v)
+    return { calls, writes }
+  }
+  const queued = new Set(queue), visits = new Map()
+  let head = 0
+  const propagate = () => {
+    for (; head < queue.length; head++) {
+      const caller = queue[head]
+      queued.delete(caller)
+      const count = visits.get(caller) ?? 0
+      if (count >= 8) continue
+      visits.set(caller, count + 1)
+      const { calls, writes } = scanCaller(caller)
+      if (!calls.size && !writes.size) continue
+      stores.set(caller, writes)
+      const targets = new Set()
+      for (const cs of outgoing.get(caller) ?? []) {
+        observed.set(cs, cs.synthetic ? null : calls.get(cs.node))
+        targets.add(ctx.funcs.map.get(cs.callee))
+      }
+      for (const f of targets) {
+        let changed = false
+        for (let k = 0; k < f.sig.params.length; k++) {
+          const p = f.sig.params[k]
+          if (f.defaults?.[p.name] != null || (f.rest && k === f.sig.params.length - 1) || isReassigned(frameNode(f), p.name)) continue
+          let range = undefined
+          for (const cs of incoming.get(f)) {
+            const v = observed.get(cs)?.[k]
+            if (!v || !Number.isFinite(v[0]) || !Number.isFinite(v[1]) || v[0] < -2147483648 || v[1] > 2147483647) { range = null; break }
+            range = hull(range, v)
+          }
+          const r = ensureParamRep(paramReps, f.name, k)
+          if (range && (!r.range || range[0] !== r.range[0] || range[1] !== r.range[1])) {
+            r.range = range
+            changed = true
+          }
         }
-        const r = ensureParamRep(paramReps, f.name, k)
-        if (range && (!r.range || range[0] !== r.range[0] || range[1] !== r.range[1])) {
-          r.range = range
-          changed = true
+        if (changed && (outgoing.has(f) || stores.has(f)) && !queued.has(f)) { queue.push(f); queued.add(f) }
+      }
+    }
+  }
+  propagate()
+  // A recursive component has no acyclic first proof. Validate an induction
+  // privately: external entries are already proved words, and every internal
+  // edge must preserve a word under the proposed parameter hypotheses. Unknown
+  // edges remove hypotheses; no speculative row reaches a compiler consumer.
+  const index = ctx.plans.programIndex, graph = index?.getCallGraph()
+  const components = new Set()
+  if (graph) for (const f of incoming.keys()) {
+    const id = index.graphFunctionIdOfName(f.name), component = graph.componentOf[id]
+    if (id >= 0 && (graph.componentSize[component] > 1 || outgoing.get(f)?.some(cs => cs.callee === f.name)))
+      components.add(component)
+  }
+  const word = r => r && Number.isInteger(r[0]) && Number.isInteger(r[1]) &&
+    !Object.is(r[0], -0) && !Object.is(r[1], -0) && r[0] <= r[1] && r[0] >= -2147483648 && r[1] <= 2147483647
+  for (const component of [...components].sort((a, b) => a - b)) {
+    const members = new Set(), hypotheses = new Map()
+    const start = graph.componentStart[component], end = start + graph.componentSize[component]
+    let closed = true, seeded = false, remaining = 0
+    for (let at = start; at < end; at++) {
+      const f = index.graphFunctionById(graph.componentFunction[at])
+      if (!f?.body || f.raw || isExported(f) || addressTaken.has(f.name)) { closed = false; break }
+      members.add(f)
+    }
+    if (!closed) continue
+    for (const f of members) {
+      const sites = incoming.get(f)
+      if (!sites) continue
+      const candidates = new Map()
+      for (const cs of sites) if (!members.has(cs.callerFunc)) seeded = true
+      for (let k = 0; k < f.sig.params.length; k++) {
+        const p = f.sig.params[k], r = paramReps.get(f.name)?.get(k)
+        if (!r || r.range || r.val !== VAL.NUMBER && r.presentVal !== VAL.NUMBER ||
+            f.defaults?.[p.name] != null || f.rest && k === f.sig.params.length - 1 || isReassigned(frameNode(f), p.name)) continue
+        if (sites.some(cs => !members.has(cs.callerFunc) && !word(observed.get(cs)?.[k]))) continue
+        candidates.set(k, [-2147483648, 2147483647])
+      }
+      if (candidates.size) { hypotheses.set(f, candidates); remaining += candidates.size }
+    }
+    if (!seeded || !hypotheses.size) continue
+    let valid = false
+    for (let round = 0; round < 32; round++) {
+      const evidence = new Map()
+      for (const f of members) evidence.set(f, scanCaller(f, hypotheses, false).calls)
+      let removed = false
+      for (const [f, candidates] of hypotheses) for (const k of candidates.keys()) {
+        if (incoming.get(f).some(cs => !word(cs.synthetic ? null : members.has(cs.callerFunc)
+          ? evidence.get(cs.callerFunc)?.get(cs.node)?.[k] : observed.get(cs)?.[k]))) {
+          candidates.delete(k)
+          remaining--
+          removed = true
         }
       }
-      if (changed && (outgoing.has(f) || stores.has(f)) && !queued.has(f)) { queue.push(f); queued.add(f) }
+      if (!removed) { valid = true; break }
+      if (!remaining) break
     }
+    if (!valid) continue
+    for (const [f, candidates] of hypotheses) {
+      if (!candidates.size) continue
+      for (const [k, range] of candidates) ensureParamRep(paramReps, f.name, k).range = range
+      if (!queued.has(f)) { queue.push(f); queued.add(f) }
+    }
+    propagate()
   }
   return stores
 }

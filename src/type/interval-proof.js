@@ -8,7 +8,7 @@
  */
 import {
   I32_MIN, I32_MAX, isI32, isReassigned, MUTATE_OPS, ASSIGN_OPS as WRITE_OPS,
-  walkAst, some, someDeep, REFS_THROUGH_ARROWS, callArgs,
+  walkAst, some, someDeep, REFS_THROUGH_ARROWS, callArgs, alwaysReturns,
 } from '../ast.js'
 import { ctx, getFactStore } from '../ctx.js'
 import { intLiteralValue } from '../static.js'
@@ -189,6 +189,12 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
       const L = lens(x)
       if (L != null) return [L, L]
     }
+    // Rounding is identity on this domain's present, finite integers. Loop
+    // copies round a Number bound before committing its word conversion.
+    if (op === '()' && (x === 'math.ceil' || x === 'math.floor' || x === 'math.trunc' || x === 'math.round')) {
+      const args = callArgs(e)
+      if (args.length === 1) return ev(args[0])
+    }
     // Grouping and numeric conversion preserve a proven integer interval.
     // Load-CSE uses unary plus when its temporary needs a Number carrier.
     if (e.length === 2 && (op === '()' || op === 'u+')) return ev(x)
@@ -262,7 +268,12 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
       const p = [A[0] * B[0], A[0] * B[1], A[1] * B[0], A[1] * B[1]]
       r = [Math.min(...p), Math.max(...p)]
     }
-    else if (op === '<<' && B[0] === B[1] && B[0] >= 0 && B[0] <= 20) r = [A[0] * 2 ** B[0], A[1] * 2 ** B[0]]
+    else if (op === '<<' && B[0] >= 0 && B[1] <= 31) {
+      // Before signed wrap, an interval of masked counts scales each endpoint
+      // monotonically. The final word check rejects every wrapping result.
+      const lo = 2 ** B[0], hi = 2 ** B[1]
+      r = [Math.min(A[0] * lo, A[0] * hi), Math.max(A[1] * lo, A[1] * hi)]
+    }
     else if (op === '>>' && B[0] === B[1] && B[0] >= 0 && B[0] <= 31) r = [A[0] >> B[0], A[1] >> B[0]]
     else if (op === '>>>' && B[0] === B[1] && B[0] >= 0 && A[0] >= 0) r = [A[0] >>> B[0], A[1] >>> B[0]]
     else if (op === '&' && B[0] === B[1] && B[0] >= 0 && B[0] <= 0x7fffffff) r = [0, B[0]]
@@ -1219,8 +1230,10 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
       const rE = elseDead ? null : refine(c, true)
       if (rE && !closureWrites.has(rE[0])) env.set(rE[0], rE[1])
       if (elseB !== undefined && !elseDead) visit(elseB)
-      if (thenDead) return
-      if (elseDead) { env = afterThen; return }
+      // Only normally completing arms reach the following statement. A base
+      // case's return/throw must not erase the recursive step's live guard.
+      if (thenDead || alwaysReturns(thenB)) return
+      if (elseDead || alwaysReturns(elseB)) { env = afterThen; return }
       // join: both arms merge (min lo, max hi); known-in-one-arm-only joins unknown
       hullInto(afterThen)
       return

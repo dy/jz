@@ -13,6 +13,38 @@ import { typedIdxProven } from '../src/type/loop-versioning.js'
 import { ctx } from '../src/ctx.js'
 import { createActiveFunction } from '../src/compile/active-function.js'
 
+test('interval proof: returning branches retain only the live continuation range', () => {
+  for (const exit of ['return', 'throw']) for (const branch of [2, 3]) {
+    const call = ['()', 'take', ['-', 'n', 1]]
+    const arms = branch === 2 ? [[exit, 0], [';']] : [[';'], [exit, 0]]
+    const body = [';', ['if', [branch === 2 ? '<=' : '>', 'n', 0], ...arms], call]
+    const calls = new Map([[call, undefined]]), prior = ctx.func
+    ctx.func = createActiveFunction({ body })
+    try { scanIntervalIdx(body, null, () => null, null, calls, new Map([['n', [-2147483648, 2147483647]]])) }
+    finally { ctx.func = prior }
+    is(calls.get(call), [[0, 2147483646]], `${exit} in arm ${branch}: the continuation requires n > 0`)
+  }
+})
+
+test('interval proof: rounding identities and bounded shift counts preserve exact words', () => {
+  const examples = [
+    ...['ceil', 'floor', 'trunc', 'round'].map(name => [['()', 'math.' + name, 'n'], new Map([['n', [-7, 7]]]), [-7, 7]]),
+    [['()', 'math.ceil', [null, -0]], null, null],
+    [['()', 'math.floor', 'n'], new Map([['n', null]]), null],
+    [['<<', 1, 'n'], new Map([['n', [8, 11]]]), [256, 2048]],
+    [['<<', -1, 'n'], new Map([['n', [8, 11]]]), [-2048, -256]],
+    [['<<', 1, 'n'], new Map([['n', [30, 31]]]), null],
+    [['<<', 1, 'n'], new Map([['n', [0, 32]]]), null],
+  ]
+  const prior = ctx.func
+  try { for (const [arg, entry, expected] of examples) {
+    const call = ['()', 'take', arg], body = [';', call], calls = new Map([[call, undefined]])
+    ctx.func = createActiveFunction({ body })
+    scanIntervalIdx(body, null, () => null, null, calls, entry)
+    is(calls.get(call), [expected], JSON.stringify(arg))
+  } } finally { ctx.func = prior }
+})
+
 test('interval proof: unknown bindings survive sparse control-flow snapshots', () => {
   const cases = [
     ['bare declaration', ['let', 'x'], null],

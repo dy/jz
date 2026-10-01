@@ -1756,6 +1756,15 @@ preserve writes to existing bindings and introduce only private temporary locals
 so changing loop arithmetic does not require rescanning all nested closures.
 
 The interval interpreter also supplies call-argument and typed-store bounds.
+Recursive scalar parameters use the existing call-graph components: private signed-
+word hypotheses must contain every external entry and every recursive argument.
+An unknown, missing, wide or negative-zero argument removes its hypothesis, and
+validation repeats before any range is published. Exported or escaped components,
+reassigned/default/rest parameters and components with no external entry decline.
+Exhausting the validation budget publishes nothing. This proves parameter width,
+not a bound on recursive result accumulation. Return/throw arms contribute no
+fall-through state; rounding a proved integer preserves its hull, and a varying
+shift count preserves a hull only when every scaled endpoint still fits the word.
 A loop-local counter initialized to a nonnegative integer other than `-0`, then
 advanced only by a positive integer constant, keeps its sign even with an unknown
 upper bound. This lexical fact bounds `counter % K` for positive constant `K`;

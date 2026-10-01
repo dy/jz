@@ -1988,6 +1988,63 @@ test('param i32-narrowing: proved argument ranges and recursive identities keep 
   }
 })
 
+test('param i32-narrowing: mutual word invariants preserve guarded recursion', () => {
+  const src = `function first(n, x) { if (n <= 0) return x; return second(n - 1, x) }
+    function second(n, x) { if (n <= 0) return x; return first(n - 1, x) }
+    export function value(k, x) { return first(k & 7, x | 0) }`
+  const tree = parseWat(compile(src, { wat: true, optimize: { sourceInline: false, watr: false } }))
+  for (const name of ['$first', '$second']) {
+    const fn = tree.find(n => n[0] === 'func' && n[1] === name)
+    for (const p of ['$n', '$x']) ok(fn?.some(n => n[0] === 'param' && n[1] === p && n[2] === 'i32'), `${name} ${p}: every recursive edge preserves the word`)
+  }
+  const want = oracle(src)
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const got = jz(src, { optimize: { level: optimize, sourceInline: false } }).exports
+    for (const [n, x] of [[0, 0], [1, -0], [7, -2147483648], [7, -2147483648], [6, 2147483647], [2, 2147483648], [0, -1]])
+      is(got.value(n, x), want.value(n, x), `O${optimize}: ${n}, ${x}`)
+  }
+})
+
+test('param i32-narrowing: recursive hypotheses retain missing, captured and external entries', () => {
+  const sources = [
+    `function recur(x = -0, done = 0) { if (done) return x; return recur(x, 1) }
+      export function value(k) { return [recur(), recur(k | 0)] }`,
+    `function recur(x, done) { if (done) return x; return recur(x, 1) }
+      export function value(k) { return [recur(k | 0, 0), recur(), recur(-0, 0)] }`,
+    `export function recur(x, done) { if (done) return x; return recur(x, 1) }
+      export function value(k) { return recur(k | 0, 0) }`,
+    `function recur(x, done) { const change = () => { x = 2147483648 }; if (done) return x; change(); return recur(x, 1) }
+      export function value(k) { return recur(k | 0, 0) }`,
+    `function recur(x, done) { if (done) return x; return recur(x, 1) }
+      const callbacks = [recur]
+      export function value(k) { return [recur(k | 0, 0), callbacks[k & 0](2147483648, 0)] }`,
+  ]
+  for (const src of sources) {
+    const want = oracle(src)
+    for (const optimize of levels(0, 1, 2, 3, 'size')) {
+      const got = jz(src, { optimize: { level: optimize, sourceInline: false } }).exports
+      for (const k of [0, 0, 1, -1, -2147483648, 2147483647, 0]) {
+        is(got.value(k), want.value(k), `O${optimize}, ${k}`)
+        if (got.recur) for (const x of [undefined, -0, 2147483648, -2147483649, NaN])
+          is(got.recur(x, 0), want.recur(x, 0), `O${optimize}: host entry ${x}`)
+      }
+    }
+  }
+})
+
+test('param i32-narrowing: an unfinished recursive proof publishes no partial ranges', () => {
+  const count = 35
+  const src = Array.from({ length: count }, (_, i) =>
+    `function f${i}(x,d){if(d<=0)return x;return f${(i+1)%count}(${i===0?'x+1':'x'},(d-1)|0)}`).join('\n') +
+    `\nexport function value(k){return f0(k|0,40)}`
+  const want = oracle(src)
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const got = jz(src, { optimize: { level: optimize, sourceInline: false } }).exports
+    for (const k of [2147483647, 2147483647, -2147483648, -1, 0, 1, 0])
+      is(got.value(k), want.value(k), `O${optimize}, ${k}: overflow crosses the entire recursive component`)
+  }
+})
+
 test('param i32-narrowing: recursive boundary checks throw and recover with the exact value', () => {
   const src = `function recur(n, done) {
       if (done) { if (n > 2147483647) throw new Error('wide'); return n }
