@@ -267,10 +267,10 @@ export function assemble(ast, profiler) {
   // that exists before the call, and which let an allocation escape their
   // frame. Load CSE reads the first across calls (analyze-for-emit.js); the
   // arena rewind records below read the second, recomputed once variants exist.
-  const censusFrames = () => {
+  const censusFrames = (iterations = true) => {
     const loops = ctx.plans.rewindLoops = new WeakSet()
     ctx.plans.rewindLoopLabels = null
-    const facts = transitiveFrameEffects(ctx.funcs.list, [ast, ...(ctx.module.moduleInits ?? [])])
+    const facts = transitiveFrameEffects(ctx.funcs.list, [ast, ...(ctx.module.moduleInits ?? [])], iterations)
     ctx.plans.closureCalls = facts.closureCalls
     ctx.plans.closureSites = facts.closureSites
     ctx.plans.closureUnsited = facts.closureUnsited
@@ -332,7 +332,9 @@ export function assemble(ast, profiler) {
     ctx.plans.hasSites = any
     ctx.plans.instrumented = new WeakSet()
   }
-  timePhase(profiler, 'frameEffects', censusFrames)
+  // Load CSE and canonical bounds read function effects. Rewind proofs need
+  // the rewritten loops and are computed by the final census below.
+  timePhase(profiler, 'frameEffects', () => censusFrames(false))
 
   // Closure-table planning is post-plan so every scan sees the final AST.
   // Same-body indirect devirt (dyn-closure-tables.js): which module globals are

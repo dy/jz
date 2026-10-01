@@ -30,6 +30,31 @@ const growth = (memory, call, calls = 200, settle = 1) => { for (let i = 0; i < 
 // Each `(loop …)` span of a body, by its parentheses.
 const loopSpans = (wat) => [...wat.matchAll(/\(loop/g)].map(({ index }) => { let d = 0, j = index; do { d += wat[j] === '(' ? 1 : wat[j] === ')' ? -1 : 0; j++ } while (d > 0); return wat.slice(index, j) })
 
+test('frame effects: planning omits loop proofs without changing function effects', () => {
+  if (onKernel()) return
+  const src = `let kept = 0;
+    function touch(n) { kept = n }
+    function pure(n) { const a = new Float64Array(n); return a.length }
+    export function clean(n) { let s = 0; for (let i=0;i<n;i++) s += pure(i); return s }
+    export function write(n) { for (let i=0;i<n;i++) touch(i); return kept }
+    export function callback(f, n) { for (let i=0;i<n;i++) f?.(i) }
+    export function accessor(n) { const o = {get x(){touch(n);return n}}; return o.x }`
+  _compileInProcess(src, { optimize: { level: 2, sourceInline: false } })
+  const full = transitiveFrameEffects(ctx.funcs.list), planning = transitiveFrameEffects(ctx.funcs.list, null, false)
+  is([...planning.keys()], [...full.keys()], 'both modes cover the same functions')
+  for (const [name, f] of full) {
+    const p = planning.get(name)
+    for (const key of ['writesOuter', 'callsUnknown', 'runsAccessor', 'allocates', 'arenaUnsafe', 'keeps', 'flagged', 'unsited'])
+      is(p[key], f[key], `${name}: ${key}`)
+    is([...p.callees], [...f.callees], `${name}: direct call edges`)
+    is(p.loops.size, 0, `${name}: planning requests no iteration proof`)
+  }
+  ok(full.get('clean').loops.size > 0, 'the final census still proves the allocating loop can rewind')
+  ok(planning.get('write').writesOuter, 'transitive outer writes remain visible')
+  ok(planning.get('callback').callsUnknown, 'an optional callback retains unknown effects')
+  ok(planning.get('accessor').runsAccessor, 'implicit calls remain visible')
+})
+
 test('frame effects: delete operand calls and key conversion retain published storage', () => {
   for (const operation of ['delete out[key]', 'delete receiver()[key]', 'delete out[makeKey()]']) {
     const src=`let kept;

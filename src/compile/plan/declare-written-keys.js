@@ -142,7 +142,7 @@ export const declareWrittenKeys = (ast) => {
     return !fn?.body || names.some(n => frameRoots(fn).some(r => refsName(r, n, REFS_IN_EXPR)))
   }
   const reaches = (callee, names) => {
-    const f = (frames ??= transitiveFrameEffects(ctx.funcs.list)).get(callee)
+    const f = (frames ??= transitiveFrameEffects(ctx.funcs.list, null, false)).get(callee)
     return !f || f.callsUnknown || frameReaches(frames, callee, c => mentions(c, names))
   }
   const blind = (st, names) => {

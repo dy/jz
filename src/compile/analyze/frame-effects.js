@@ -971,7 +971,7 @@ function loopsOf(body) {
 }
 
 /** The function's own facts and, per loop, the iteration's. */
-function frameEffectsOf(func) {
+function frameEffectsOf(func, loops) {
   const body = func.body
   // the function's own view (keyed by its signature, as the emitter's), not the module's
   const view = ctx.summary?.at(func.sig ?? func.body)
@@ -986,7 +986,7 @@ function frameEffectsOf(func) {
   if (SCRATCH.has(func.name) && !out.keeps) { out.keeps = true; out.keepsWhy = 'lends what it made to a record' }
   // a loop's scope declares nothing of the function's: its parameters are
   // outer storage there (a block kept in one outlives the iteration)
-  out.loops = loopsOf(body).map(({ body: loopBody, roots }) => ({ body: loopBody, own: census(view, roots, [loopBody], NO_NAMES, typedParams) }))
+  out.loops = loops ? loopsOf(body).map(({ body: loopBody, roots }) => ({ body: loopBody, own: census(view, roots, [loopBody], NO_NAMES, typedParams) })) : []
   return out
 }
 
@@ -1045,11 +1045,12 @@ function arrowsIn(n, found) {
  * run, which link reads as the targets of the indirect calls they compile to;
  * `closureSites` its sites, none for a function literal a builtin calls in
  * place (the census of the scope around it walked it); `closureUnsited`
- * the closures with an escape at no node.
+ * the closures with an escape at no node. `loops` requests per-iteration
+ * rewind proofs; planning and pre-rewrite analysis need only function facts.
  */
-export function transitiveFrameEffects(funcs, roots = null) {
+export function transitiveFrameEffects(funcs, roots = null, loops = true) {
   const own = new Map()
-  for (const f of funcs) if (!f.raw && f.body != null) own.set(f.name, frameEffectsOf(f))
+  for (const f of funcs) if (!f.raw && f.body != null) own.set(f.name, frameEffectsOf(f, loops))
   const closureOwn = new Map(), closureKey = (id) => '\0closure' + id
   const pending = []
   const want = (id) => { if (id !== undefined && !closureOwn.has(id)) { closureOwn.set(id, null); pending.push(id) } }

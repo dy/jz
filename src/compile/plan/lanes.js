@@ -132,7 +132,7 @@ export function laneRecordParams(programFacts) {
     if (list) list.push(site); else sitesByCallee.set(site.callee, [site])
   }
   let frames = null
-  const writesNothingOuter = (func) => (frames ??= transitiveFrameEffects(ctx.funcs.list)).get(func.name)?.writesOuter === false
+  const writesNothingOuter = (func) => (frames ??= transitiveFrameEffects(ctx.funcs.list, null, false)).get(func.name)?.writesOuter === false
   for (const func of ctx.funcs.list.slice()) {
     if (func.raw || !func.body || func.rest || isExported(func) || addressTakenNames?.has(func.name)) continue
     const sites = sitesByCallee.get(func.name)
