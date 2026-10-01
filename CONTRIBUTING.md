@@ -694,7 +694,10 @@ ToUint32 (a bitwise operand, a Math.imul/clz32 argument, the value stored to an
 integer element of modular width) holds its word whatever number each write
 gives (`narrowWordLocals`, the `wordLocals` pass): the conversions are
 idempotent, so a hash seeded past 2^31 and stepped by Math.imul and `^` is an
-i32. A read that observes the number (a return, a comparison, a truthiness
+i32. Word demand follows direct local copies, including cycles and loop
+copy-in/write-back assignments. A rejected destination rejects every source
+feeding it; each copy must satisfy the same numeric-kind and use proof.
+A read that observes the number (a return, a comparison, a truthiness
 test, an index, an arithmetic step, a float or clamped store, a capture) keeps
 the f64 unless a complete range proves i32 storage. Neither a comparison nor
 truthiness proves the counter's width. Unit-step loops with stable numeric

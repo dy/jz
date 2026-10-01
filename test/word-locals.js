@@ -43,6 +43,56 @@ test('word local: initializer products keep Number rounding before taking the wo
   }
 })
 
+test('word local: copy chains and cycles keep words through loop entry and exit', () => {
+  const sources = [
+    `export function f(x,n) { let h=x*1.25;let a=h;let b=a;
+      for(let i=0;i<n;i++){h=(x+i)*1.25;a=h;b=a}
+      return(h|0)^(a<<3)^(b>>>1) }`,
+    `export function f(x,n) { let h=x*.5;let a=1.25;let b=2.75;
+      for(let i=0;i<n;i++){a=h;b=a;h=b;h=(x+i)*1.25}
+      return(h|0)^(a<<3)^(b>>>1) }`,
+  ]
+  for (const src of sources) {
+    for (const name of ['h', 'a', 'b']) word(src, name)
+    for (const optimize of levels(0, 1, 2, 3, 'size')) {
+      const actual = run(src, { optimize }).f, expected = oracle(src).f
+      for (const x of NUMS) for (const n of [0, 1, 3, 0]) is(actual(x, n), expected(x, n), `O${optimize}: ${x}/${n}`)
+    }
+  }
+})
+
+test('word local: one magnitude observer rejects every preceding copy', () => {
+  const sources = [
+    `export function f(x,n) { let h=x*1.25;let a=h;let b=a;
+      for(let i=0;i<n;i++){a=h;b=a;h=b}return[h|0,a&255,b] }`,
+    `export function f(x,n) { let h=x*1.25;let a=h;const read=()=>a;
+      for(let i=0;i<n;i++){h=(x+i)*1.25;a=h}return[h|0,read()] }`,
+    `export function f(x,n) { let h=x*1.25;let a=h;
+      for(let i=0;i<n;i++){h=(x+i)*1.25;a=h;a+=.5}return[h|0,a|0] }`,
+    `export function f(x,n) { let h=x*1.25;n=h;return n }`,
+    `let saved=0;export function f(x,n) { let h=x*1.25;saved=h;return saved }`,
+    `export function f(x,n) { let h=x*1.25;let a=0;return(a=h) }`,
+    `function observe(value){return value}export function f(x,n) { let h=x*1.25;return observe(h) }`,
+  ]
+  for (const src of sources) {
+    wide(src)
+    for (const optimize of levels(0, 1, 2, 3, 'size')) {
+      const actual = run(src, { optimize: { level: optimize, sourceInline: false } }).f, expected = oracle(src).f
+      for (const x of NUMS) for (const n of [0, 2, 0]) is(actual(x, n), expected(x, n), `O${optimize}: ${x}/${n}`)
+    }
+  }
+})
+
+test('word local: a copied product preserves Number rounding before its word', () => {
+  const src = `export function f(k,n) { const x=k|0;let h=x*x;let a=h;
+    for(let i=0;i<n;i++){a=h;h=a}return[h|0,a&255,a>>>0] }`
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const actual = run(src, { optimize }).f, expected = oracle(src).f
+    for (const k of [0, -0, 1, -1, 94906265, 94906266, 2147483647, -2147483648, 0])
+      for (const n of [0, 1, 3]) is(actual(k, n), expected(k, n), `O${optimize}: ${k}/${n}`)
+  }
+})
+
 test('word local: an FNV hash seeded above 2^31', () => {
   const src = `export let f = (n, k) => {
     let h = 2166136261

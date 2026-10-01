@@ -1029,7 +1029,9 @@ function narrowUint32In(body, locals, states, isTypedU32) {
  *
  * A read qualifies as a bitwise operand, a Math.imul/clz32 argument, the
  * implicit read of a bitwise compound assignment, or the value stored to an
- * integer element of modular width (`wordStore`). Anything that observes the
+ * integer element of modular width (`wordStore`), or a copy into another such
+ * local. Copy chains and cycles share the proof; a rejected destination rejects
+ * every name flowing into it. Anything that observes the
  * number keeps the f64: a return, a comparison, a truthiness test, an index
  * (`a[2 ** 32]` is no element), an arithmetic step, a float or clamped store, a
  * capture. One declaration only: a name declared twice is two bindings.
@@ -1037,13 +1039,22 @@ function narrowUint32In(body, locals, states, isTypedU32) {
 const WORD_ASSIGN_OPS = new Set(['=', '&=', '|=', '^=', '<<=', '>>=', '>>>='])
 const WORD_FNS = new Set(['math.imul', 'math.clz32'])
 export function narrowWordLocals(body, locals, isNumber, wordStore) {
-  let words = null
+  let words = null, copies = null
   for (const [name, s] of scanBindingUses(body)) {
-    if (locals.get(name) !== 'f64' || s[BINDING_USE_DECLS] !== 1 || s[BINDING_USE_INIT] === undefined || !isNumber(name)) continue
+    const type = locals.get(name)
+    if ((type !== 'f64' && type !== 'i32') || s[BINDING_USE_DECLS] !== 1 || s[BINDING_USE_INIT] === undefined || !isNumber(name)) continue
     let reads = 0
     for (const u of s[BINDING_USE_USES]) {
       const k = u[BINDING_USE_KIND]
       if (k === USE.REASSIGN) continue
+      if (k === USE.BARE && typeof u[BINDING_USE_STORE] === 'string') {
+        const target = u[BINDING_USE_STORE]
+        let sources = copies?.get(target)
+        if (!sources) (copies ||= new Map()).set(target, sources = [])
+        sources.push(name)
+        reads++
+        continue
+      }
       if (k !== USE.WORD && !(k === USE.CALL_ARG && WORD_FNS.has(u[BINDING_USE_CALLEE])) && !wordStore(u)) { reads = 0; break }
       reads++
     }
@@ -1056,6 +1067,14 @@ export function narrowWordLocals(body, locals, isNumber, wordStore) {
     if (n[0] === '=>') return false
     if (typeof n[1] === 'string' && MUTATE_OPS.has(n[0]) && !WORD_ASSIGN_OPS.has(n[0])) words.delete(n[1])
   } })
+  if (copies) {
+    const pending = []
+    for (const target of copies.keys()) if (!words.has(target)) pending.push(target)
+    while (pending.length) {
+      const sources = copies.get(pending.pop())
+      if (sources) for (const source of sources) if (words.delete(source)) pending.push(source)
+    }
+  }
   for (const name of words) {
     locals.set(name, 'i32')
     // A hull of the numbers written is no hull of their words.
