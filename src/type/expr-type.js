@@ -177,16 +177,11 @@ export function exprType(expr, locals, valTypes, strict, bodyRoot, readPresent) 
     if (vt == null && (censusShapedNode(expr[1]) || (arity > 1 && censusShapedNode(expr[2])))) return 'f64'
     return 'i32'
   }
-  // Preserve i32 if both operands i32. `strict` additionally requires a
-  // magnitude-bound proof the sum/difference fits signed i32 (P0-2 sibling,
-  // 2026-08-02) — needed ONLY by callers deciding whether a value may escape
-  // BARE with no further ToInt32 sink (tryI32Arith, emit.js). Every other
-  // caller (local/param storage-type decisions — the overwhelming majority)
-  // omits it: a value merely STORED i32 is safe regardless of magnitude,
-  // since every read of that storage re-applies the identical ToInt32
-  // conversion the write did — a magnitude-strict default here (measured,
-  // reverted) demoted 8/10 perf-ratchet benchmarks' hottest accumulator/
-  // index shapes from i32 to f64.
+  // Word-consuming queries can classify +/- by their operand carriers.
+  // Lossless results and call arguments additionally require a signed-width
+  // proof. Provisional local storage is checked against the binding's full
+  // magnitude-observing uses by widenLocalTypes before emission; integer
+  // operands alone never prove that their sum or difference fits one word.
   if (op === '+' || op === '-') {
     const ta = exprType(expr[1], locals, valTypes, strict, bodyRoot, readPresent)
     const tb = expr[2] != null ? exprType(expr[2], locals, valTypes, strict, bodyRoot, readPresent) : ta // unary: inherit
