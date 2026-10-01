@@ -311,16 +311,16 @@ export function recordGlobalRep(name, expr) {
 
 /** Infer arg closed elem-schema UNION as its canonical 'a,b,…' key. Sources:
  *  caller's body set census (Set values, `cx.callerElems`), caller's param fact
- *  (already canonical, `cx.paramFacts`), or a set-narrowed user fn return. */
+ *  (already canonical, `cx.callerParamFact`), or a set-narrowed user fn return. */
 export function inferArrElemSchemaSet(expr, cx) {
-  const callerElems = cx.callerElems, paramFacts = cx.paramFacts  // hoisted once: cx arrives through an indirect call
+  const callerElems = cx.callerElems, callerParamFact = cx.callerParamFact  // hoisted once: cx arrives through an indirect call
   const canon = (v) => v instanceof Set
     ? (v.size >= 2 ? [...v].sort((a, b) => a - b).join(',') : null)
     : typeof v === 'string' ? v : null
   if (typeof expr === 'string') {
     const v = canon(callerElems?.get(expr))
     if (v != null) return v
-    const p = canon(paramFacts?.get(expr))
+    const p = canon(callerParamFact(expr, 'arrayElemSchemaSet'))
     if (p != null) return p
     return null
   }

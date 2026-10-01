@@ -2130,6 +2130,51 @@ test('typedLen: disagreeing call sites poison the fact', () => {
   is(exports.go(0), 19, 'site-2 value exact')
 })
 
+test('caller facts: zero lengths and constants reach recursive forwarders', () => {
+  for (const ctor of ['new Float64Array(0)', '[]']) {
+    const src = `function left(a,n,zero){return n>zero?right(a,n-1,zero):a.length+zero}
+      function right(a,n,zero){return left(a,n,zero)}
+      export function go(n){return right(${ctor},n,0)}`
+    for (const optimize of levels(0, 1, 2, 3, 'size')) {
+      const { go } = jz(src, { optimize }).exports
+      for (const n of [0, 3, 3, 1, 0]) is(go(n), 0, `${ctor}: first parameter, zero length and constant at ${optimize}`)
+    }
+  }
+})
+
+test('caller facts: later conflicting and missing inputs reach every forwarding edge', () => {
+  const sources = [
+    `function read(a){return a.length}
+     function left(a,n){return n>0?right(a,n-1):read(a)}
+     function right(a,n){return n>0?left(a,n-1):read(a)}
+     export function go(k,n){return k?left(new Float64Array(0),n):right(new Float64Array(3),n)}`,
+    `function read(a){return a===undefined?-1:a.length}
+     function forward(a){return read(a)}
+     export function go(k,n){return k?forward(new Float64Array(0)):forward()}`,
+  ]
+  for (const source of [sources[0], sources[0], sources[1], sources[0]]) {
+    const want = oracle(source).go
+    for (const optimize of levels(0, 1, 2, 3, 'size')) {
+      const { go } = jz(source, { optimize }).exports
+      for (const [k, n] of [[0, 0], [1, 0], [0, 3], [1, 3], [0, 1]])
+        is(go(k, n), want(k, n), `forwarded input ${k}, depth ${n} at ${optimize}`)
+    }
+  }
+})
+
+test('caller facts: recursive schema unions keep the current caller and field', () => {
+  const source = `function read(row){return row.kind===0?row.a:row.b}
+    function left(rows,n,k){return n>0?right(rows,n-1,k):read(rows[k])}
+    function right(rows,n,k){return n>0?left(rows,n-1,k):read(rows[k])}
+    export function go(k,n){const rows=[{kind:0,a:7},{kind:1,b:11}];return left(rows,n,k)}`
+  const want = oracle(source).go
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const { go } = jz(source, { optimize }).exports
+    for (const [k, n] of [[0, 0], [1, 0], [0, 3], [1, 4], [0, 0]])
+      is(go(k, n), want(k, n), `schema ${k}, depth ${n} at ${optimize}`)
+  }
+})
+
 test('typedLen: exported callee never takes the call-site length', () => {
   // go calls read with a 4242-length array, but read is HOST-REACHABLE — a JS
   // caller can pass any array, so the length must stay a runtime read.

@@ -28,7 +28,7 @@ import { exprType, typedStaticLen } from '../../type.js'
 import { VAL } from '../../reps.js'
 import { ctorFromElemAux } from '../../../layout.js'
 import { K, tagOf, paramOf, valOf, valsOf, hasTag, core, UNKNOWN } from '../../summary/index.js'
-import { paramFactsOf, ensureParamRep, mergeParamFact, latticeMeet } from '../../param-reps.js'
+import { ensureParamRep, mergeParamFact, latticeMeet } from '../../param-reps.js'
 import { inferArrElemSchemaSet } from '../infer.js'
 import { RECUR_INT_OPS, assertValKindConsistent, buildCallerTypedLenCtx, resetParamWasmFacts, createPhaseState } from './caller-ctx.js'
 import { applyI32ParamSpecialization, validateTypedLenParams, validateLenBoundOfParams, validateIntConstParams, substituteIntConstParams, applyPointerParamAbi, narrowableFuncs, applyTypedPointerParamAbi } from './param-abi.js'
@@ -151,24 +151,33 @@ export default function narrowSignatures(programFacts, ast) {
     return (raw != null && Number.isInteger(raw) && raw >= I32_MIN && raw <= I32_MAX) ? raw : null
   }
 
-  // Per-call-site inference context for a narrowable callee. Rules consume it
-  // synchronously and never retain it, so reuse one stable record and one Map
-  // across every sweep (a fresh record per site was the largest HASH-sidecar
-  // source in self-hosted narrowing).
-  const paramFactsCache = new Map()
-  const paramNamesByFunc = new Map()
+  // Parameter names/order stay fixed during narrowing. Index them once, but
+  // read facts from the live lattice: a recursive edge may change them while
+  // the call-site sweep is still running.
+  const paramIndicesByFunc = new Map()
+  const paramIndices = func => {
+    let indices = paramIndicesByFunc.get(func)
+    if (!indices) {
+      indices = new Map()
+      for (let k = 0; k < func.sig.params.length; k++) indices.set(func.sig.params[k].name, k)
+      paramIndicesByFunc.set(func, indices)
+    }
+    return indices
+  }
+  // Rules consume this context synchronously and never retain it.
   let sharedSiteState
-  const callerParamFacts = key => {
-    const callerFunc = sharedSiteState.callerFunc
-    if (!paramFactsCache.has(key)) paramFactsCache.set(key, paramFactsOf(paramReps, callerFunc, key))
-    return paramFactsCache.get(key)
+  const callerParamFact = (name, key) => {
+    const func = sharedSiteState.callerFunc
+    if (!func) return undefined
+    const k = paramIndices(func).get(name)
+    return k == null ? undefined : paramReps.get(func.name)?.get(k)?.[key] ?? undefined
   }
   sharedSiteState = {
     callee: undefined, callerFunc: undefined, argList: undefined, func: undefined, restIdx: -1,
     callerLocals: undefined, callerSummary: undefined,
-    callerParamFacts,
+    callerParamFact,
     // runArrElemFixpoint mutates these named context channels in place.
-    callerElems: undefined, paramFacts: undefined,
+    callerElems: undefined,
     calleeParamNames: undefined, _lastArgMiss: false,
   }
   const siteState = cs => {
@@ -177,7 +186,6 @@ export default function narrowSignatures(programFacts, ast) {
     if (!func || isExported(func) || addressTaken.has(callee)) return null
     const ctxEntry = callerCtx.get(callerFunc)
     if (!ctxEntry) return null
-    paramFactsCache.clear()
     sharedSiteState.callee = callee
     sharedSiteState.callerFunc = callerFunc
     sharedSiteState.argList = argList
@@ -185,14 +193,8 @@ export default function narrowSignatures(programFacts, ast) {
     sharedSiteState.restIdx = func.rest ? func.sig.params.length - 1 : -1
     sharedSiteState.callerLocals = ctxEntry.callerLocals
     sharedSiteState.callerSummary = ctx.summary.at(callerFunc?.sig)
-    let paramNames = paramNamesByFunc.get(func)
-    if (!paramNames) {
-      paramNames = new Set(func.sig.params.map(p => p.name))
-      paramNamesByFunc.set(func, paramNames)
-    }
-    sharedSiteState.calleeParamNames = paramNames
+    sharedSiteState.calleeParamNames = paramIndices(func)
     sharedSiteState.callerElems = undefined
-    sharedSiteState.paramFacts = undefined
     sharedSiteState._lastArgMiss = false
     return sharedSiteState
   }
@@ -344,7 +346,6 @@ export default function narrowSignatures(programFacts, ast) {
     // (this runs inside the hottest worklist loop of the self-hosted kernel).
     const infer = (arg, _k, state) => {
       state.callerElems = elemsCtxMap.get(state.callerFunc)
-      state.paramFacts = state.callerParamFacts(field)
       return inferFn(arg, state)
     }
     let changed, any = false
@@ -371,11 +372,11 @@ export default function narrowSignatures(programFacts, ast) {
       if (Array.isArray(arg) && arg[0] === '[]' && typeof arg[1] === 'string') {
         const s = setsBy.get(state.callerFunc)?.get(arg[1])
         if (s instanceof Set && s.size >= 2) return [...s].sort((a, b) => a - b).join(',')
-        const p = state.callerParamFacts('arrayElemSchemaSet')?.get(arg[1])
+        const p = state.callerParamFact(arg[1], 'arrayElemSchemaSet')
         if (typeof p === 'string') return p
         return null
       }
-      if (typeof arg === 'string') return state.callerParamFacts('schemaIdSet')?.get(arg) ?? null
+      if (typeof arg === 'string') return state.callerParamFact(arg, 'schemaIdSet') ?? null
       return null
     }
     let changed, any = false
@@ -489,7 +490,7 @@ export default function narrowSignatures(programFacts, ast) {
   const arrayLenAtSite = (arg, state) => {
     if (typeof arg === 'string')
       return internalArrayLengths.locals.get(state.callerFunc)?.get(arg)
-        ?? state.callerParamFacts('arrayLen')?.get(arg)
+        ?? state.callerParamFact(arg, 'arrayLen')
         ?? null
     if (Array.isArray(arg) && arg[0] === '()' && typeof arg[1] === 'string')
       return internalArrayLengths.funcLens.get(arg[1]) ?? null
@@ -535,7 +536,7 @@ export default function narrowSignatures(programFacts, ast) {
   // Transitive via the same soft-fixpoint + hard-validate driver as the sets.
   const callerTypedLenCtx = buildCallerTypedLenCtx()
   const inferTypedLen = (arg, cx) => {
-    if (typeof arg === 'string') return cx.callerElems?.get(arg) ?? cx.paramFacts?.get(arg) ?? null
+    if (typeof arg === 'string') return cx.callerElems?.get(arg) ?? cx.callerParamFact(arg, 'typedLen') ?? null
     return typedStaticLen(arg)
   }
   // A length without a settled ctor is unusable evidence (the receiver never

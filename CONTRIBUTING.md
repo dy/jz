@@ -592,6 +592,10 @@ Immutable literal tables share the existing no-write/no-escape proof with
 scalar argument and store analysis. Deletion and return/throw/yield aliases
 invalidate that proof, including forwarded helper parameters. Length, capacity
 and element bounds travel together as settled per-binding representation facts.
+Call-site narrowing indexes each function's parameter names once and reads the
+mutable parameter lattice directly. It does not copy every caller fact into a
+Map for every call site. Recursive and later caller updates are visible on the
+next read. Result analyses keep their existing per-function named maps.
 Static lengths, stored-element hulls and scalar argument hulls refine one another
 across direct calls. Each refinement uses every incoming site and every writer;
 an unresolved path remains unknown. A constructor passed directly to a helper
