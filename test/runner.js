@@ -5,6 +5,22 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
+import { oracle } from './util.js'
+
+test('runner: the source oracle preserves module strictness and fresh state', async () => {
+  const source = `let count = 0
+    export function step() { return ++count }
+    export function receiver() { return (function () { return this === undefined })() }
+    export function write() { try { 'ab'[0] = 9; return 'stored' } catch (e) { return e.name } }
+    const alias = () => count
+    export { alias as read }`
+  const module = await import('data:text/javascript,' + encodeURIComponent(source))
+  const reference = oracle(source)
+  for (const key of ['receiver', 'write', 'step', 'step', 'read'])
+    is(reference[key](), module[key](), `${key} follows the actual module`)
+  is(oracle(source).read(), 0, 'another oracle starts from its own initialization')
+  is(oracle('').missing, undefined, 'zero exports produce an empty namespace')
+})
 
 function fixture(sources, env = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'jz-runner-'))

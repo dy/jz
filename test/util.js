@@ -39,7 +39,7 @@ export function oracle(src) {
   for (const m of src.matchAll(/\bexport\s*\{([^}]*)\}/g))
     for (const part of m[1].split(',')) { const as = part.trim().split(/\s+as\s+/); if (as[0]) pairs.push([as[as.length - 1], as[0]]) }
   const body = src.replace(/\bexport\s*\{[^}]*\}\s*;?/g, '').replace(/\bexport\s+default\s+/g, '').replace(/\bexport\s+(?=(?:async\s+)?(?:let|const|var|function|class)\b)/g, '')
-  return new Function(`${body}\nreturn { ${pairs.map(([k, v]) => k === v ? k : k + ': ' + v).join(', ')} }`)()
+  return new Function(`"use strict";\n${body}\nreturn { ${pairs.map(([k, v]) => k === v ? k : k + ': ' + v).join(', ')} }`)()
 }
 
 /** Assert that jz and the host agree on `exports[name](...args)`; returns the value. */
