@@ -15,7 +15,7 @@ import {
 } from '../../ir.js'
 import { BIGINT_JOINT_BINARY_OPS, isPresentNumber, hasAmbiguousBoolMerge, nullishArm, valTypeOf, boolTagged, mixedBoolKind } from '../../kind.js'
 import { VAL, lookupValType, repOf, repOfGlobal, numericStorage, mayBeUndefined } from '../../reps.js'
-import { nonNegIntLiteral, constIntExpr, staticPropertyKey, staticArrayElems, staticObjectProps, intExprRange } from '../../static.js'
+import { constIntExpr, staticPropertyKey, staticArrayElems, staticObjectProps, intExprRange } from '../../static.js'
 import { functionLength } from '../../function.js'
 import { exprType, isTerminator } from '../../type.js'
 import {

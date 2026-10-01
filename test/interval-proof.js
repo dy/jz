@@ -951,3 +951,26 @@ test('interval proof: a cursor that also falls keeps its rise budgeted', () => {
   if (onKernel()) return
   ok(!hasCheckedTypedAccess(compile(src, { optimize: NO_GUARDS, wat: true })), 'the stack store and read are unchecked')
 })
+
+test('typed named properties: returned buffers survive later allocations', () => {
+  const src = `function make(n, key) {
+    const a = new Int32Array(n)
+    a[0] = 42; a[n - 1] = 99
+    return a[String(key)]
+  }
+  function churn(n) { const a = new Int32Array(n); a.fill(7); return a[0] ?? 0 }
+  export function f(n, key) {
+    const buffer = make(n, key)
+    let total = 0
+    for (let i = 0; i < 20; i++) total += churn(n)
+    const view = new Int32Array(buffer)
+    return [view.length, view[0], view[n - 1], total]
+  }`
+  const expected = oracle(src).f
+  for (const level of levels(0, 1, 2, 3, 'size')) {
+    const f = jz(src, { optimize: { level, sourceInline: false } }).exports.f
+    for (const n of [0, 1, 1, 32, 0, 32])
+      for (const key of ['buffer', 'BYTES_PER_ELEMENT', 'buffer'])
+        is(f(n, key), expected(n, key), `O${level}: retained ${key}, length ${n}`)
+  }
+})
