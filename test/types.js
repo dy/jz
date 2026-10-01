@@ -599,9 +599,8 @@ test('slot-types: codegen — unrelated allocations sharing a layout keep precis
 // ============================================================================
 // Array-destructure kind preservation — `let [a, b] = [1, BigInt(v)]` used to
 // silently drop `b`'s VAL.BIGINT kind while the structurally identical object
-// form `let { b } = { b: BigInt(v) }` kept it (ctx.schema.arrayVars, the array
-// sibling of ctx.schema.vars, registered in prepare/index.js's decl-destructure
-// lowering; read by kind.js valTypeOf's VT['[]']). Direct kind pins read the
+// form `let { b } = { b: BigInt(v) }` kept it. Tuple positions in the program
+// summary preserve the same kinds. Direct kind pins read the
 // inferred local `val` off the public `compile(src, { inspect: true })` sink —
 // same mechanism test/types.js's runAnalyze harness exercises internally.
 // ============================================================================
@@ -654,8 +653,7 @@ test('array-destructure kind: OBJECT element survives (array-of-object literal)'
 })
 
 test('array-destructure kind: closure element still dispatches correctly (no elimination hazard)', () => {
-  // ctx.schema.arrayVars is kind-only (never drives SRoA elimination), so a
-  // closure-valued literal element must keep working exactly as before.
+  // The inferred element kind must preserve first-class callable identity.
   const { f } = run(`
     let inc = (x) => x + 1
     let dbl = (x) => x * 2

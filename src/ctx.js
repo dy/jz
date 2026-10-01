@@ -589,7 +589,6 @@ export function reset(proto, globals, bridge) {
     dateSid: null,
     ensureDateSid: null,
     targetStack: [],
-    arrayVars: new Map(), // synthetic destructure-temp name → prepped array-literal
                           // element AST nodes (the array sibling of `vars` above).
                           // NOT content-deduped like the object schema list: arrays
                           // have no structural identity to safely share a program-wide

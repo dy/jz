@@ -87,7 +87,6 @@ export function createActiveFunction({
     // Expression-dispatch scopes. They are fields rather than module globals so
     // recursive emission remains explicit and function-local.
     _expect: null,
-    _arrayLiteralNeverEscapes: false,
     _schemaSpecSlow: false,
     _selfAccumConcat: null,
   }
@@ -158,7 +157,7 @@ export function isInactiveFunction(ctx) {
     frame.boxedResult === false && frame.valResult === null && frame.mixedAtomReturn === false &&
     frame.charDecomp === null && frame.charDecompGlobals === false && frame.concatBufs === null &&
     frame.probeHoist === null && frame.lenHoist === null && frame.hoistTempDefs === null &&
-    frame._expect === null && frame._arrayLiteralNeverEscapes === false &&
+    frame._expect === null &&
     frame._schemaSpecSlow === false && frame._selfAccumConcat === null
 }
 

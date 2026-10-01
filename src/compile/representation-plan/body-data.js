@@ -532,14 +532,12 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
   // 3 is the plain `[]`/`.member` read (currentOf/plannedOf's `recv` branch)
   // — both producers, same physical guarantee, one predicate.
   //
-  // Ordinary array elements are tagged slots, including read-only literals.
-  // Destructuring's private arrayVars temporaries are the exception: their
-  // statically indexed elements may retain raw carriers (module/array.js).
-  // Mutation-tracked containers and typed arrays keep their existing proof.
+  // Ordinary array elements are tagged slots, including read-only literals
+  // and synthetic destructuring arrays. Typed arrays retain their own carrier.
   const isStorageReadProducer = node => {
     if (!Array.isArray(node)) return false
     const isTrackedStorage = recv => Array.isArray(recv) && recv[0] === '[' ||
-      (valTypeOf(recv) === VAL.ARRAY && !ctx.schema.arrayVars?.has(recv)) ||
+      valTypeOf(recv) === VAL.ARRAY ||
       valTypeOf(recv) === VAL.TYPED || summary?.valOfExpr(recv) === VAL.TYPED ||
       (typeof recv === 'string' &&
        ((localStorage && localStorage.has(recv)) || (provenance && provenance.storage.has(recv)) ||

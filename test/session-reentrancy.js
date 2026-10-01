@@ -241,7 +241,7 @@ test('FlowState multi-field and control-stack scopes restore on throw', () => {
   const frame = ctx.func
   let threw = false
   try {
-    withInitializerScope('x', true, () =>
+    withInitializerScope('x', () =>
       withControlFrame({ brk: '$probe', loop: '$probeLoop' }, control => {
         ok(ctx.func === frame && ctx.func.stack.at(-1) === control,
           'transaction and control scope mutate the same active record')
@@ -249,7 +249,7 @@ test('FlowState multi-field and control-stack scopes restore on throw', () => {
       }))
   } catch { threw = true }
   ok(threw && ctx.func === frame && frame.stack.length === 0 &&
-      frame._selfAccumConcat === null && frame._arrayLiteralNeverEscapes === false,
+      frame._selfAccumConcat === null,
     'throw restored every field and popped the owning control stack')
 })
 

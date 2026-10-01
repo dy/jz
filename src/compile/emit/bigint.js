@@ -126,11 +126,10 @@ function bigIntDomain(node) {
   // runtime evidence an internal (non-exported) helper previously discarded,
   // causing arithmetic to reinterpret the box as a Number.
   // Ordinary array slots remain tagged even when an opaque key also names
-  // length or a property. Private literal/destructuring slots can retain raw
-  // carriers and keep their existing semantic proof instead.
+  // length or a property.
   if (summaryTag !== K.NUMBER && (isPlanTaggedBigint(node) ||
       Array.isArray(node) && (valTypeOf(node[1]) === VAL.TYPED ||
-        valTypeOf(node[1]) === VAL.ARRAY && !ctx.schema.arrayVars?.has(node[1])) && isTaggedElemRead(node) ||
+        valTypeOf(node[1]) === VAL.ARRAY) && isTaggedElemRead(node) ||
       ((summaryOnlyNumberBigint || hostField) && isSchemaSlotBigintPossible(node)))) return 'tagged'
   if ((vt === VAL.BIGINT || summaryExactBigint) &&
       (censusMaybeUndefinedKind(node) === VAL.BIGINT || view?.mayBeNullishExpr(node))) return 'census'
@@ -482,10 +481,11 @@ export function bigIntUnary(node, mkI64, mkNumber, box) {
   const undefF64 = mkNumber(typed(['f64.const', 'nan'], 'f64'))
   if (bigIntDomain(node) === 'tagged') {
     const t = temp('unaryBig'), get = typed(['local.get', `$${t}`], 'f64')
+    const raw = mkI64(maybeUnboxBigInt(get))
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${t}`, asF64(materializeDeferredBigint(emit(node)))],
       ['if', ['result', 'f64'], isBigIntBox(get, t),
-        ['then', boxBigInt(mkI64(maybeUnboxBigInt(get)))],
+        ['then', box ? boxBigInt(raw) : rawBigInt(fromI64(raw))],
         // This arm has already excluded BigInt. The operand's coarse static
         // kind must not turn its Number result into a BigInt conversion error.
         ['else', mkNumber(toNumF64(null, coerceNullishToNum(get)))]]], 'f64')

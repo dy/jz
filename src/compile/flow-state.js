@@ -57,13 +57,6 @@ export function withSchemaSpeculation(value, fn) {
   finally { frame._schemaSpecSlow = previous }
 }
 
-export function withArrayLiteralEscape(value, fn) {
-  const frame = ctx.func, previous = frame._arrayLiteralNeverEscapes
-  frame._arrayLiteralNeverEscapes = value
-  try { return fn() }
-  finally { frame._arrayLiteralNeverEscapes = previous }
-}
-
 export function withCurrentFunction(value, fn) {
   const frame = ctx.func, previous = frame.current
   frame.current = value
@@ -95,15 +88,10 @@ export function withPendingLabel(value, fn) {
   finally { frame.pendingLabel = previous }
 }
 
-/** A binding initializer's emission scope: the self-accumulating concat target and the array-literal escape verdict, as one transaction. */
-export function withInitializerScope(selfAccumConcat, arrayLiteralNeverEscapes, fn) {
-  const frame = ctx.func
-  const previousConcat = frame._selfAccumConcat, previousEscape = frame._arrayLiteralNeverEscapes
+/** A binding initializer's self-accumulating concat target. */
+export function withInitializerScope(selfAccumConcat, fn) {
+  const frame = ctx.func, previous = frame._selfAccumConcat
   frame._selfAccumConcat = selfAccumConcat
-  frame._arrayLiteralNeverEscapes = arrayLiteralNeverEscapes
   try { return fn() }
-  finally {
-    frame._arrayLiteralNeverEscapes = previousEscape
-    frame._selfAccumConcat = previousConcat
-  }
+  finally { frame._selfAccumConcat = previous }
 }

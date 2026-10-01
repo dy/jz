@@ -21,7 +21,6 @@ import { exprType, wholeKey, isTerminator } from '../../type.js'
 import {
   BINDING_USE_COMPUTED, BINDING_USE_DECLS, BINDING_USE_KEY, BINDING_USE_KIND, BINDING_USE_OPTIONAL, BINDING_USE_USES, USE, scanBindingUses,
 } from '../analyze-scans.js'
-import { withArrayLiteralEscape } from '../flow-state.js'
 import { arrayView, emitArrayViewDef, materializeArrayView } from '../array-view.js'
 import { extractRefinements, withRefinements } from '../flow-types.js'
 import {
@@ -799,11 +798,6 @@ export function emitDecl(...inits) {
     // storage below. A generic argument carrier would box booleans before
     // numeric storage and change the ABI of captured values. Pointer metadata
     // describes the IR node's own storage; a boxed f64 is never an i32 offset.
-    // Destructuring's private array literal can keep raw element carriers;
-    // scope that flag to the initializer and its nested expression emitters.
-    const neverEscapes = !viewInit && typeof name === 'string' && Array.isArray(init) &&
-      init[0] === '[' && ctx.schema.arrayVars?.has(name)
-      ? true : ctx.func._arrayLiteralNeverEscapes
     // isTaggedLocal (ir.js): a decl initialized directly from a
     // ternary-nullish BIGINT merge (`let r = cond ? BigInt(x) : null`).
     // MUST replicate the '?:' handler's own (narrower) box condition below
@@ -836,12 +830,13 @@ export function emitDecl(...inits) {
     // boxed (emitIdentitySafe), a Boolean initializer boxes below. A closure
     // capturing it copies the atom; an untagged one every read of which
     // converts holds the numeric image, in the closure as well.
-    const tagged = !neverEscapes && boolTagged(name)
-    let val = viewInit || withArrayLiteralEscape(neverEscapes, () => {
+    const tagged = boolTagged(name)
+    let val = viewInit
+    if (!val) {
       if (ctx.func.localReps?.get(name)?.arrayCap != null && Array.isArray(init) && init[0] === '[')
-        return ctx.core.emit['[capacity'](name, init.slice(1))
-      return tagged && hasAmbiguousBoolMerge(init) ? emitIdentitySafe(init) : emit(init)
-    })
+        val = ctx.core.emit['[capacity'](name, init.slice(1))
+      else val = tagged && hasAmbiguousBoolMerge(init) ? emitIdentitySafe(init) : emit(init)
+    }
     val = applyBigintRepresentationAction(val, init, representationBindingWriteAction(ctx, name, init))
     if (!viewInit) val = boolCarrier(name, init, val)
     if (isObjLit) ctx.schema.targetStack.pop()

@@ -220,8 +220,7 @@ export const logicalOps = {
     if (isLit(ca)) {
       const v = litVal(ca), truthy = v !== 0 && v === v, arm = truthy ? b : c
       markDropped(truthy ? c : b)
-      const action = ctx.func._arrayLiteralNeverEscapes ? REP_EDGE_REJECT
-        : representationJoinArmAction(ctx, self, arm)
+      const action = representationJoinArmAction(ctx, self, arm)
       if (action === REP_EDGE_REJECT) return emit(arm)
       return taggedArm(arm, applyBigintRepresentationAction(emit(arm), arm, action))
     }
@@ -233,7 +232,7 @@ export const logicalOps = {
     const vc = withRefinements(elseRefs, c, () => emit(c))
     const repB = representationJoinArmAction(ctx, self, b)
     const repC = representationJoinArmAction(ctx, self, c)
-    if (!ctx.func._arrayLiteralNeverEscapes && repB !== REP_EDGE_REJECT && repC !== REP_EDGE_REJECT) {
+    if (repB !== REP_EDGE_REJECT && repC !== REP_EDGE_REJECT) {
       if (bigintStrict() && (repB === REP_EDGE_BOX || repC === REP_EDGE_BOX))
         bigintEraseErr('ternary-nullish', 'this ternary\'s BigInt arm')
       const fb = taggedArm(b, applyBigintRepresentationAction(vb, b, repB))
@@ -373,7 +372,7 @@ export const logicalOps = {
     // exactly as before — this check never changes non-bigint codegen.
     const repA0 = representationJoinArmAction(ctx, self, a)
     const repB0 = representationJoinArmAction(ctx, self, b)
-    if (!ctx.func._arrayLiteralNeverEscapes && repA0 !== REP_EDGE_REJECT && repB0 !== REP_EDGE_REJECT) {
+    if (repA0 !== REP_EDGE_REJECT && repB0 !== REP_EDGE_REJECT) {
       const va0 = emit(a)
       const t0 = temp()
       const teed0 = typed(['local.tee', `$${t0}`, asF64(va0)], 'f64')
@@ -506,7 +505,7 @@ export const logicalOps = {
     // (the common case) leaves every branch below byte-for-byte unchanged.
     const repA0 = representationJoinArmAction(ctx, self, a)
     const repB0 = representationJoinArmAction(ctx, self, b)
-    if (!ctx.func._arrayLiteralNeverEscapes && repA0 !== REP_EDGE_REJECT && repB0 !== REP_EDGE_REJECT) {
+    if (repA0 !== REP_EDGE_REJECT && repB0 !== REP_EDGE_REJECT) {
       const va0 = emit(a)
       const t0 = temp()
       const teed0 = typed(['local.tee', `$${t0}`, asF64(va0)], 'f64')
@@ -616,7 +615,7 @@ export const logicalOps = {
     // actually surfaces.
     const repA0 = representationJoinArmAction(ctx, self, a)
     const repB0 = representationJoinArmAction(ctx, self, b)
-    if (!ctx.func._arrayLiteralNeverEscapes && repA0 !== REP_EDGE_REJECT && repB0 !== REP_EDGE_REJECT) {
+    if (repA0 !== REP_EDGE_REJECT && repB0 !== REP_EDGE_REJECT) {
       const va0 = emit(a), vb0 = emit(b)
       const t0 = temp()
       const teed0 = typed(['local.tee', `$${t0}`, asF64(va0)], 'f64')

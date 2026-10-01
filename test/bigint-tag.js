@@ -15,6 +15,58 @@ import { oracle } from './util.js'
 
 const LEVELS = levels(false, 1, 2)
 
+test('bigint tag: literal destructuring uses tagged storage and planned arithmetic results', () => {
+  const src = `
+    export function literal() {
+      const [a, b] = [0x7ff8000200000000n, 17n]
+      return [a, b, ~~a, ~~b, -a, -b, a + 1n, b * 2n]
+    }
+    export function joins(flag) {
+      const [a, b, c] = [flag ? 0x7ff8000500000000n : null,
+        flag ? 17n : 3, flag && -1n]
+      return [a, b, c, a ?? 7n, ~~b, -b, ~~c, -c]
+    }
+    export function assignment(flag) {
+      let a, b; [a, b] = [flag ? 0x7ff8000200000000n : undefined, 17n]
+      return [a, b, a ?? b, -b]
+    }
+  `
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const expected = oracle(src), actual = jz(src, { optimize }).exports
+    for (const flag of [0, 0, 1, 0, 1]) {
+      is(actual.literal(), expected.literal(), `literal O${optimize}`)
+      is(actual.joins(flag), expected.joins(flag), `join ${flag}, O${optimize}`)
+      is(actual.assignment(flag), expected.assignment(flag), `assignment ${flag}, O${optimize}`)
+    }
+  }
+})
+
+test('bigint tag: destructuring defaults retain absence, evaluation order and error recovery', () => {
+  const src = `
+    let reads = 0
+    function value() { reads++; return 0x7ff8000200000000n }
+    export function probe(flag) {
+      const [a = value(), , b = -1n] = [flag ? 17n : undefined]
+      const [empty = 0n] = []
+      return [a, b, empty, ~~a, -b, reads]
+    }
+    export function invalid(flag) {
+      const [a] = [flag ? 17n : 3]
+      return +a
+    }
+  `
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const expected = oracle(src), actual = jz(src, { optimize }).exports
+    for (const flag of [0, 0, 1, 0, 1]) {
+      is(actual.probe(flag), expected.probe(flag), `defaults ${flag}, O${optimize}`)
+      if (flag) {
+        throws(() => expected.invalid(flag), TypeError)
+        throws(() => actual.invalid(flag), TypeError)
+      } else is(actual.invalid(flag), expected.invalid(flag), `valid after error, O${optimize}`)
+    }
+  }
+})
+
 test('bigint tag: nested unary operations preserve mixed and missing values with one read', () => {
   for (const expression of ['~~VALUE', '-~VALUE', '~(-VALUE)', '-(-VALUE)']) {
     const src = `

@@ -10,7 +10,7 @@
 
 import { throwErrorIR, numberNanIR, typed, asF64, asI64, asI32, keyIndex, UNDEF_NAN, temp, tempI32, allocPtr, staticArrayPtr, arrayLoop, deferBigintBox, elemStore, throwTypeErrorIR, truthyIR, extractF64Bits, slotAddr, isLiteralStr, resolveValType, undefExpr, ptrTypeEq, isPureIR, freshId, isNullish, isUndef, toStrI64, fwdOffsetIR } from '../src/ir.js'
 import { inBoundsArrIdx, typedIdxProven, wholeKey } from '../src/type.js'
-import { emit, spread, deps, idx as emitIndex, storedValue, storedValueNarrow, storedValuePlanned, positionArgs } from '../src/bridge.js'
+import { emit, spread, deps, idx as emitIndex, storedValue, storedValuePlanned, positionArgs } from '../src/bridge.js'
 import { censusMaybeUndefinedKind, isPresentNumber, valTypeOf } from '../src/kind.js'
 import { extractParams, classifyParam, PARAM_NAME, ASSIGN_OPS, isArrayIndexKey } from '../src/ast.js'
 import { staticPropertyKey, staticObjectProps, inlineArraySid, inlineArrayUnion, staticIndexKey, intLiteralValue, structLiteralFields, intExprRange } from '../src/static.js'
@@ -24,7 +24,6 @@ import { requireReceiverWat } from './core/error-object.js'
 import { DATA_VIEW_FLAG, nanPrefixHex } from '../layout.js'
 
 const NAN_BITS = nanPrefixHex()
-import { withArrayLiteralEscape } from '../src/compile/flow-state.js'
 import { withRefinements } from '../src/compile/flow-types.js'
 import { REP_EDGE_REJECT, representationProgramHasBigint, representationStorageWriteAction } from '../src/compile/representation-plan.js'
 import { plannedTypedStorageCtor } from '../src/compile/typed-storage-plan.js'
@@ -629,29 +628,8 @@ export default (ctx) => {
   const arrayLiteral = (elems, capacity = 0) => {
     const hasSpread = elems.some(e => Array.isArray(e) && e[0] === '...')
 
-    // An element is a tagged slot: a BigInt element is stored boxed here as
-    // by every other producer (the plan's storage-write edge), and read
-    // back through its i64 consumer's unbox (ir/bigint.js isTaggedElemRead).
-    // ctx.func._arrayLiteralNeverEscapes (emit.js '=' handler / emitDecl): a
-    // compiler-synthesized decl-destructure temp — narrow unconditionally
-    // regardless of per-element uniformity, since NO element of THIS array is
-    // ever read dynamically (destructuring resolves every index statically,
-    // kind.js ctx.schema.arrayVars) or crosses the host boundary; other
-    // emitters an element's own emission recurses into (e.g. the '?:'
-    // ternary-nullish handler's OWN box decision, emit.js) consult the SAME
-    // flag for the identical reason, so it must stay READABLE for the
-    // duration of each element's emission — see carrierF64Narrow's own doc
-    // comment (ir.js) and the ternary handler's own comment for both sites.
-    // Cleared ONLY around a NESTED array literal among `elems`
-    // (`let [a, b] = [1n, [2n, 3n]]`, `b` bound to the whole inner array): a
-    // real, independently-escaping value that must not inherit it.
-    const neverEscapes = ctx.func._arrayLiteralNeverEscapes
-    const elemStoredValue = neverEscapes ? storedValueNarrow : taggedStoredValue
-    const emitElem = (e) => {
-      if (!Array.isArray(e) || e[0] !== '[') return elemStoredValue(e)
-      return withArrayLiteralEscape(false, () => elemStoredValue(e))
-    }
-
+    // Synthetic destructuring arrays use the same tagged slots as ordinary
+    // literals. Proven scalarization can erase the array before emission.
     if (!hasSpread) {
       const len = elems.length
       let vals
@@ -667,7 +645,7 @@ export default (ctx) => {
         // asF64 folds i32.const → f64.const literally, so int-literal arrays also qualify.
         // storedValue: a bool literal folds to its TRUE/FALSE atom const — still
         // static-extractable, and the element keeps boolean identity in the segment.
-        vals = elems.map(e => emitElem(e))
+        vals = elems.map(taggedStoredValue)
         const slots = vals.map(v => extractF64Bits(v))
         if (slots.every(b => b !== null)) {
           const ptr = staticArrayPtr(slots)
@@ -690,7 +668,7 @@ export default (ctx) => {
       const a = allocArray(len, Math.max(len, minCap, capacity))
       const body = [...a.setup]
       for (let i = 0; i < len; i++)
-        body.push(['f64.store', slotAddr(a.local, i), vals ? vals[i] : emitElem(elems[i])])
+        body.push(['f64.store', slotAddr(a.local, i), vals ? vals[i] : taggedStoredValue(elems[i])])
       body.push(a.ptr)
       return typed(['block', ['result', 'f64'], ...body], 'f64')
     }

@@ -232,26 +232,13 @@ export const assignmentOps = {
     // census must prove a private builder before concat can extend its buffer.
     const selfAccum = Array.isArray(val) && val[0] === '+' && val[1] === name &&
       !isGlobal(name) && !ctx.func.atModuleScope && privateStringBuilder(ctx.func.body, name)
-    // Compiler-synthesized decl-destructure array-literal temp (prepare/index.js
-    // prepDecl, ctx.schema.arrayVars — kind.js's own doc comment on that map:
-    // "tmp is a compiler-synthesized, single-write, non-escaping carrier that
-    // only this destructure's own generated reads ever touch"). `tmp = […]`'s
-    // own elements never cross the host boundary and are never read via a
-    // registry-aware dynamic dispatch — module/array.js's array-literal
-    // emitter reads this flag to admit storedValueNarrow unconditionally
-    // (dropping its default per-element-uniformity gate, which a mixed-type
-    // destructure source like `let [a, b] = [1, BigInt(v)]` fails even though
-    // no reader here is ever dynamic). See carrierF64Narrow's own doc comment
-    // (ir.js) for the established pattern this mirrors.
-    const neverEscapes = Array.isArray(val) && val[0] === '[' && ctx.schema.arrayVars?.has(name)
-      ? true : ctx.func._arrayLiteralNeverEscapes
     // Literal reassignment adopts the same settled layout as declaration.
     // Without the target, a reordered literal allocates its own schema while
     // subsequent binding reads still use the planned field offsets.
     const objectLiteral = Array.isArray(val) && val[0] === '{}' && val.length > 1
     let ev
     if (objectLiteral) ctx.schema.targetStack.push({ name, active: true })
-    try { ev = withInitializerScope(selfAccum ? name : null, neverEscapes, () => tagged && hasAmbiguousBoolMerge(val) ? emitIdentitySafe(val) : emit(val)) }
+    try { ev = withInitializerScope(selfAccum ? name : null, () => tagged && hasAmbiguousBoolMerge(val) ? emitIdentitySafe(val) : emit(val)) }
     finally { if (objectLiteral) ctx.schema.targetStack.pop() }
     const repAction = representationBindingWriteAction(ctx, name, val)
     ev = applyBigintRepresentationAction(ev, val, repAction)
