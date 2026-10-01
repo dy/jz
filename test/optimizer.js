@@ -2642,9 +2642,9 @@ test('bounded fractional indices retain their original property keys', () => {
   }
 })
 
-test('fractional recurrence IR takes its trip bound from the loop facts and rejects numeric aliases', () => {
+test('fractional recurrence IR uses trip bounds or finite steps and rejects numeric aliases', () => {
   // The count of passes is the loop's lowering-link fact (loopFacts, src/compile/loop-model.js):
-  // a loop without one, like any loop the 'for' emitter did not produce, keeps its guards.
+  // Without one, constant-step rounding still proves a finite magnitude enclosure.
   for (const mode of ['bounded', 'alias', 'unlinked']) {
     const fn = parseWat(`(func $f (export "f") (param $again i32) (result i32)
       (local $p f64) (local $i i32) (local $s i32) (local $t f64)
@@ -2667,15 +2667,19 @@ test('fractional recurrence IR takes its trip bound from the loop facts and reje
     })
     const instantiate = f => new WebAssembly.Instance(new WebAssembly.Module(encodeWat(['module', f]))).exports.f
     const before = instantiate(fn)
-    if (mode !== 'unlinked') walk(fn, n => {
-      if (n[0] === 'block' && n[1] === '$exit')
-        ctx.plans.loweringLinks.set(n, { plan: { hull: { lo: 0, hi: 2 }, step: 1 }, lowering: { ivName: 'i', guardName: 'i' } })
-    })
-    fusedRewrite(fn)
+    const links = ctx.plans.loweringLinks
+    ctx.plans.loweringLinks = new WeakMap()
+    try {
+      if (mode !== 'unlinked') walk(fn, n => {
+        if (n[0] === 'block' && n[1] === '$exit')
+          ctx.plans.loweringLinks.set(n, { plan: { hull: { lo: 0, hi: 2 }, step: 1 }, lowering: { ivName: 'i', guardName: 'i' } })
+      })
+      fusedRewrite(fn)
+    } finally { ctx.plans.loweringLinks = links }
     const after = instantiate(fn)
     for (const again of [0, 0, 1, 0]) is(after(again), before(again), `${mode}, again=${again}`)
     const guards = count(fn, n => n[0] === 'f64.ne')
-    is(guards === 0, mode === 'bounded', 'only the bounded loop drops its guards')
+    is(guards === 0, mode !== 'alias', 'trip bounds and finite steps drop guards; numeric aliases retain them')
   }
 })
 

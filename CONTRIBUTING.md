@@ -1827,6 +1827,11 @@ values recover their low word from the IEEE significand beyond the i64 range.
 The unknown tail converts inline below 2^63 (NaN saturates to ToInt32's zero)
 and calls the kernel only for the infinities and the values beyond, lowered
 after the lane lift, which reads the conversion as the kernel call.
+An f64 local with finite constant steps also has a magnitude enclosure when
+its trip count is unknown: IEEE rounding eventually absorbs each step. The
+all-writes proof checks both rounded endpoints after joining every other
+definition; unknown writes and nonfinite or overflowing endpoints reject it.
+This can remove a ToInt32 magnitude guard but never authorizes i32 storage.
 Intrinsic and user calls share excess-argument sequencing. Collection probes
 retain precomputed literal hashes while using the same boxed-value conversion.
 Schema-tag masks reuse the numeric constant evaluator.

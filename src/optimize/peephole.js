@@ -355,7 +355,8 @@ export function lowerToInt32Tails(fn) {
 }
 
 // All writes must be constants, values with a range of their own (`range`, NaN
-// admitted: a checked element read), or one constant increment per counted iteration.
+// admitted: a checked element read), or finite constant increments. Counted loops
+// can supply tighter bounds; otherwise rounded fixed points enclose every step.
 // The count comes from the facts HIR proved for the loop (loopFacts, on its lowering
 // link): a counter only its step moves stays within its hull, so the body runs at most
 // ⌊(hi - lo) / step⌋ + 1 times per entry. Integer enclosures avoid assuming repeated floating addition equals N * step:
@@ -364,7 +365,7 @@ export function lowerToInt32Tails(fn) {
 // integer-value proof; the accumulator itself remains f64.
 function boundedFloatLocal(name, writes, owners, params, range = null) {
   if (!writes) return null
-  let lo = 0, hi = 0
+  let lo = 0, hi = 0, steps
   const changes = (n, key) => {
     let found = false
     walkAst(n, { enter: x => { if ((x[0] === 'local.set' || x[0] === 'local.tee') && x[1] === key) found = true } })
@@ -407,7 +408,18 @@ function boundedFloatLocal(name, writes, owners, params, range = null) {
     const delta = (op === 'f64.sub' ? -1 : 1) * c[1]
     const info = owners.get(w), loop = info?.node, block = info?.parent?.node
     const facts = block && ctx.plans.loweringLinks?.get(block)?.plan
-    if (!facts?.hull) return null
+    if (!facts?.hull) {
+      // Repeated finite additions eventually stop changing an f64. Choose
+      // endpoints beyond the step's rounding threshold, then verify the
+      // complete all-writes enclosure below. This bounds magnitude only;
+      // it says nothing about integer storage or how many iterations run.
+      const end = delta === 0 ? 0 : 2 ** (Math.ceil(Math.log2(Math.abs(delta))) + 54)
+      if (!Number.isFinite(end)) return null
+      if (delta < 0) lo = Math.min(lo, -end)
+      else hi = Math.max(hi, end)
+      ;(steps ||= []).push(delta)
+      continue
+    }
     let valueWrites = 0
     walkAst(loop, { enter: n => { if ((n[0] === 'local.set' || n[0] === 'local.tee') && n[1] === name) valueWrites++ } })
     if (valueWrites !== 1) return null
@@ -421,6 +433,10 @@ function boundedFloatLocal(name, writes, owners, params, range = null) {
     if (!Number.isSafeInteger(low) || !Number.isSafeInteger(high)) return null
     lo = Math.min(lo, low); hi = Math.max(hi, high)
   }
+  // Addition is monotone over finite f64 values. If both rounded endpoints
+  // stay inside, every interior value does too, including under cancellation.
+  if (steps) for (const delta of steps)
+    if (!(lo + delta >= lo && lo + delta <= hi && hi + delta >= lo && hi + delta <= hi)) return null
   return { lo, hi }
 }
 
