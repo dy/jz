@@ -1,7 +1,7 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { run, oracle, wat, funcWat } from './util.js'
-import { belowOpt } from './_matrix.js'
+import { belowOpt, levels } from './_matrix.js'
 
 const WORDS = [-2147483648, -715827883, -1, -0, 0, 1, 2, 715827883, 2147483647, 2147483648, 4294967295]
 const compare = (src, inputs) => {
@@ -91,4 +91,29 @@ test('typed wide index: views, missing receivers and throwing values keep their 
     try { values[x * 6 + 1] = (effects++, fail()) } catch (e) { caught++ }
     return [storage, view[x * 6 + 1], effects, caught]
   }`, WORDS.flatMap(n => [0, 1, 8].flatMap(len => [[n, len, false], [n, len, true]])))
+})
+
+
+test('typed wide index: nested misses and a wide RHS preserve the original store key', () => {
+  for (const ctor of ['Int32Array', 'Uint32Array']) {
+    const source = `export function f(n, innerLen, outerLen) {
+      const words = new ${ctor}(1); words[0] = n
+      const indices = new Int32Array(innerLen), values = new Float64Array(outerLen)
+      for (let i = 0; i < innerLen; i++) indices[i] = i % 3
+      for (let i = 0; i < outerLen; i++) values[i] = i + 0.5
+      let x = words[0], effects = 0
+      const before = values[indices[x * 6]]
+      const assigned = values[indices[x * 6]] = (effects++, x = -x, values[indices[x * 6 + 1]])
+      return [before, assigned, effects, x, values]
+    }`
+    const expected = oracle(source)
+    for (const optimize of levels(0, 1, 2, 3, 'size')) {
+      const actual = run(source, { optimize })
+      for (const n of WORDS) for (const innerLen of [0, 1, 8]) for (const outerLen of [0, 1, 8]) {
+        const got = actual.f(n, innerLen, outerLen)
+        is(got, expected.f(n, innerLen, outerLen), `${ctor} ${n}, lengths ${innerLen}/${outerLen}, ${optimize}`)
+        is(got[2], 1, 'the RHS executes once even when either index read misses')
+      }
+    }
+  }
 })
