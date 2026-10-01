@@ -1402,6 +1402,10 @@ both methods throws a TypeError. Programs without user methods retain the
 constant inherited tag. The two functions are runtime roots
 (`ctx.funcs.runtimeRoots`): address-taken, boxed ABI. Implicit coercions retain
 surrounding catches, since method calls only become explicit during emission.
+Closure classes register their accessor slots in the same census as object
+literals. Property lookup retains hidden slots in the own-property view;
+enumeration keeps its separate filtered view. Getter and setter calls retain
+surrounding catches even when their receiver has a known layout.
 Date uses the same own-method lookup before its inherited timestamp or string
 method. Numeric conversion and relational operators request the number hint;
 addition and loose equality preserve Date's string default. Dictionary-backed

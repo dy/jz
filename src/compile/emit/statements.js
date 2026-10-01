@@ -17,20 +17,24 @@ import { withFinallyStack, withTryState } from '../flow-state.js'
 import { representationProgramHasBigint, representationReturnAction } from '../representation-plan.js'
 import { emit, emitBlockBody, emitDecl, emitIdentitySafe, emitVoid, toBool } from './dispatch.js'
 import { storedValue } from '../../bridge.js'
+import { runsAccessor } from '../../evaluation-effects.js'
+import { frameNode } from '../../function.js'
 
 
 const BIGINT_THROWING_OPS = new Set(['+', '-', '*', '/', '%', '**', '&', '|', '^', '<<', '>>', '>>>', 'u+',
   '+=', '-=', '*=', '/=', '%=', '**=', '&=', '|=', '^=', '<<=', '>>=', '>>>=', '++', '--'])
 const COERCING_OPS = new Set([...BIGINT_THROWING_OPS, 'u-', '~', '<', '<=', '>', '>=', '==', '!='])
 const PRIMITIVE_TAGS = bitOf(K.NUMBER) | bitOf(K.STRING) | bitOf(K.BOOL) | bitOf(K.BIGINT)
-const mayBePrimitive = (recv) => {
-  const k = ctx.summary?.at(ctx.func.current).kindOfExpr(recv)
+const mayBePrimitive = (recv, view) => {
+  const k = view?.kindOfExpr(recv)
   return k == null || tagOf(k) === K.ANY || (tagsOf(k) & PRIMITIVE_TAGS) !== 0
 }
-function canThrow(body, seen = new Set()) {
+function canThrow(body, seen = new Set(), view = ctx.summary?.at(ctx.func.current)) {
   if (!Array.isArray(body)) return false
   const op = body[0]
   if (op === 'throw') return true
+  // Accessor calls appear during emission, including on a known class layout.
+  if (runsAccessor(view, body)) return true
   // Prepared delete stores receiver/key as separate operands. Nullish bases,
   // key conversion and non-configurable properties can throw without a call.
   if (op === 'delete') return true
@@ -45,7 +49,7 @@ function canThrow(body, seen = new Set()) {
   // Any unresolved property receiver can be nullish. Its runtime check must
   // retain catch/finally even without an explicit throw or call in the source.
   if ((op === '.' || op === '[]') && (valTypeOf(body[1]) == null ||
-      ctx.summary?.at(ctx.func.current).mayBeNullishExpr(body[1]))) return true
+      view?.mayBeNullishExpr(body[1]))) return true
   // Typed element assignment can throw during ToNumber/ToBigInt even for an
   // OOB index. Keep a surrounding catch visible; the typed emitter either
   // emits the supported runtime throw or rejects an unrepresentable catch.
@@ -57,7 +61,7 @@ function canThrow(body, seen = new Set()) {
       (valTypeOf(body[1][1]) == null || valTypeOf(body[1][1]) === VAL.ARRAY)) return true
   // A store on a primitive throws (emit-assign.js primitiveStore, __dyn_set).
   if ((ASSIGN_OPS.has(op) || op === '++' || op === '--') && Array.isArray(body[1]) &&
-      (body[1][0] === '.' || body[1][0] === '[]') && mayBePrimitive(body[1][1])) return true
+      (body[1][0] === '.' || body[1][0] === '[]') && mayBePrimitive(body[1][1], view)) return true
   if (op === '=>') return false
   if (op === '()') {
     const callee = body[1]
@@ -71,10 +75,10 @@ function canThrow(body, seen = new Set()) {
     if (!f?.body || f.raw) return true
     if (!seen.has(f.name)) {
       seen.add(f.name)
-      if (canThrow(f.body, seen)) return true
+      if (canThrow(frameNode(f), seen, ctx.summary?.at(f.sig))) return true
     }
   }
-  for (let i = 1; i < body.length; i++) if (canThrow(body[i], seen)) return true
+  for (let i = 1; i < body.length; i++) if (canThrow(body[i], seen, view)) return true
   return false
 }
 

@@ -659,6 +659,9 @@ function lowerClass(name, heritage, body, hoists, trailers) {
     for (const [, , mbody] of methods) assignedThisFields(mbody, assigned)
     for (const fname of assigned) if (!fields.some(([f]) => f === fname)) litProps.push([':', fname, UNDEF])
   }
+  for (const it of items)
+    if (Array.isArray(it) && (it[0] === 'get' || it[0] === 'set'))
+      (ctx.transform.literalAccessorNames ??= new Set()).add(typeof it[1] === 'string' ? it[1] : constStringKey(it[1], constStrings))
   for (const [mname, mparams, mbody, kind] of methods)
     litProps.push([':', mname, methodValue(mparams, mbody, kind, self)])
   // `o.constructor` is the instance's class: the factory, bound below for the slot to hold.

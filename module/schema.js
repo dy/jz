@@ -19,11 +19,17 @@ export { ENUM_DATA, ENUM_GET, ENUM_SET } from '../src/ast.js'
 
 /** Enumeration's view of a layout in this program (src/ast.js layoutView):
  *  Object.keys, values and entries, for-in, spread, Object.assign,
- *  JSON.stringify and a computed key see an object literal's accessor as the
+ *  JSON.stringify see an object literal's accessor as the
  *  one property it defines, and none of the slots the layout hides
  *  (ctx.schema.hidden: an Error's `message` and `name`). Null for a layout
- *  with neither. */
+ *  with neither. `includeHidden` retains non-enumerable slots for property
+ *  lookup and own-name reflection. */
 export const enumView = (names, includeHidden = false) => layoutView(names, ctx.transform.literalAccessorNames, includeHidden ? null : ctx.schema.hidden.get(names))
+
+/** Property lookup includes class accessors hidden from enumeration. */
+export const accessorTable = () => ctx.transform.literalAccessorNames?.size && [...ctx.schema.hidden].some(([names, slots]) =>
+  names.some(name => slots.has(name) && accessorOf(name, ctx.transform.literalAccessorNames)))
+  ? '__schema_own_view' : '__schema_view'
 
 /** Whether code the program lowers builds an object literal with an accessor:
  *  the runtime view table (`__schema_view`, src/wat/assemble/start-fn.js), every

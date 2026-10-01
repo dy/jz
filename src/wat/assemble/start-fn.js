@@ -22,7 +22,7 @@ import { mintRepresentationPlan, representationProgramHasBigint } from '../../co
 import { mintTypedStoragePlan } from '../../compile/typed-storage-plan.js'
 import { emit, emitVoid } from '../../compile/emit.js'
 import { staticArrayPtr, mkPtrIR, findBodyStart, extractF64Bits, asF64 } from '../../ir.js'
-import { enumView, enumViewsOn } from '../../../module/schema.js'
+import { enumView, enumViewsOn, accessorTable } from '../../../module/schema.js'
 import { strHashLiteral } from '../../../module/collection.js'
 import { dataLen, dataAlign, dataPush, pushStaticSlots } from '../../static-data.js'
 
@@ -255,7 +255,7 @@ function buildSchemaInit() {
       // both boxed static arrays; zeros for a layout without one. A span of
       // their own: the host reads them without the table (interop decoding
       // through __view_data), and a live view span keeps the table before it.
-      for (const table of ['__schema_view', ...(ctx.scope.globals.has('__schema_own_view') ? ['__schema_own_view'] : [])]) {
+      for (const table of ['__schema_view', ...(ctx.scope.globals.has('__schema_own_view') || accessorTable() === '__schema_own_view' ? ['__schema_own_view'] : [])]) {
         const views = viewsOf(table === '__schema_own_view')
         if (views) {
           const zero = '0x0000000000000000', viewDataStart = dataLen()
@@ -299,7 +299,7 @@ function buildSchemaInit() {
           ['f64.store', ['i32.add', ['local.get', `$${stbl}`], ['i32.const', s * 8]],
             mkPtrIR(PTR.ARRAY, 0, ['local.get', `$${sarr}`])])
       }
-      for (const table of ['__schema_view', ...(ctx.scope.globals.has('__schema_own_view') ? ['__schema_own_view'] : [])]) {
+      for (const table of ['__schema_view', ...(ctx.scope.globals.has('__schema_own_view') || accessorTable() === '__schema_own_view' ? ['__schema_own_view'] : [])]) {
         const views = viewsOf(table === '__schema_own_view')
         if (views) schemaInit.push(...viewInitIR(views, nSchemas + runtimeReserve, table))
       }

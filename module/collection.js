@@ -28,7 +28,7 @@ import { sameValueZeroIdentityChain, mapHashStringArm, mapHashBigintArm } from '
 import { trySlotUpdate } from '../src/compile/slot-update.js'
 import { captureCallback } from './array/callback.js'
 import { demandHostReceiver } from '../src/compile/func-exports.js'
-import { ENUM_DATA, ENUM_GET, ownKeys, viewsOn, enumViewsOn } from './schema.js'
+import { ENUM_DATA, ENUM_GET, ownKeys, viewsOn, enumViewsOn, accessorTable } from './schema.js'
 import { ACCESSOR_CALL } from '../src/compile/emit/accessor-call.js'
 
 const SSO_BIT_I64 = ssoBitI64Hex()
@@ -1506,7 +1506,7 @@ export default (ctx) => {
   ctx.core.stdlib['__schema_slot_h'] = () => schemaSlotBody('__schema_slot_h', true)
   // A computed key naming an object literal's accessor (module/schema.js
   // enumView) misses the schema search, whose rows hold the accessor's slots
-  // `x__get`/`x__set`: the layout's view (`__schema_view`, start-fn.js) lists it
+  // `x__get`/`x__set`: the layout's property view (start-fn.js) lists it
   // by name. `__view_find` answers the view entry of `key` on an OBJECT (its
   // map number, object.js viewRowIR), -1 where the layout has no view or no
   // such key; `__view_get` reads through the getter (undefined for a setter
@@ -1514,12 +1514,14 @@ export default (ctx) => {
   // setter and answers whether `key` names an accessor (a getter alone keeps
   // its value, as in sloppy JS).
   ctx.core.stdlib['__view_find'] = () => {
-    if (!ctx.scope.globals.has('__schema_view')) declGlobal('__schema_view', 'i32')
+    // Closure classes hide accessor slots from enumeration, not property reads.
+    const table = accessorTable()
+    if (!ctx.scope.globals.has(table)) declGlobal(table, 'i32')
     return `(func $__view_find (param $obj i64) (param $key i64) (result i64)
     (local $row i32) (local $keys i32) (local $n i32) (local $i i32) (local $e i64)
     ${ctx.types.anyDelete ? '(local $off i32) (local $slot i32) (local $dmask i32) (local $val i64)' : ''}
-    (if (i32.eqz (global.get $__schema_view)) (then (return (i64.const -1))))
-    (local.set $row (i32.add (global.get $__schema_view) (i32.shl
+    (if (i32.eqz (global.get $${table})) (then (return (i64.const -1))))
+    (local.set $row (i32.add (global.get $${table}) (i32.shl
       (i32.wrap_i64 (i64.and (i64.shr_u (local.get $obj) (i64.const ${LAYOUT.AUX_SHIFT})) (i64.const ${LAYOUT.AUX_MASK})))
       (i32.const 4))))
     (if (i64.eqz (i64.load (local.get $row))) (then (return (i64.const -1))))

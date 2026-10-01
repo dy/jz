@@ -12,6 +12,46 @@ const check = (src, args, reference = src) => {
   }
 }
 
+test('ToPrimitive: closure-class hidden getters remain callable but do not enumerate', () => {
+  check(`export function f(mode) {
+    let trace='';class Value {
+      get toString(){trace+='s';if(mode===2)throw 7;
+        return ()=>{trace+='S';return mode===3?{}:'class'}}
+      get valueOf(){trace+='v';return ()=>{trace+='V';return 19}}
+    }
+    const value=new Value();let result;
+    try{result=mode===1?Number(value):String(value)}catch(e){result=e}
+    return[result,trace,Object.keys(value),JSON.stringify(value)]
+  }`, [0,0,1,2,3,0])
+})
+
+test('closure-class accessors: computed reads and writes retain hidden entries', () => {
+  check(`export function f(mode){class Value{fake__get(){return 3}}
+    const value=new Value();const key=mode?'missing':'fake';
+    return[value.fake__get(),typeof value[key],Object.keys(value)]}`, [0,0,1,0])
+  check(`export function f(mode) {
+    let trace='';class Value {
+      constructor(){this.n=2}
+      get pair(){trace+='g';if(mode===4)throw 9;return this.n}
+      set pair(v){trace+='s';if(mode===3)throw 7;this.n=v}
+      set sink(v){trace+='w';this.n=v}
+    }
+    const value=new Value(),other=new Value();
+    const key=mode===1?'sink':mode===2?'missing':'pair';
+    let before,after,error=0;
+    try{before=value[key];value[key]=7;after=value[key]}catch(e){error=e}
+    return[before,after,value.n,other.n,error,trace,Object.keys(value),JSON.stringify(value)]
+  }`, [0,0,1,2,3,4,0])
+})
+
+test('accessor exceptions: direct calls use their own frame and defaults', () => {
+  check(`function read(value){return value.x}
+    function fail(){throw 7}function take(value=fail()){return value}
+    export function f(mode){const value=1;
+      try{return mode===1?take():mode===2?take(3):read({get x(){throw 9}})}
+      catch(e){return[e,value]}}`, [0,0,1,2,0])
+})
+
 test('ToPrimitive: method getters run once in hint order and preserve absence', () => {
   for (const hint of ['String(value)', 'Number(value)']) check(`
     export function f(mode) {
