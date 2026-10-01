@@ -1,108 +1,33 @@
 #!/usr/bin/env node
-// Runs a jz-built wasm with host imports for env.logResult and performance.now
-// (mirrors AssemblyScript's env.perfNow/env.logLine approach for fair size comparison)
+// Run the host benchmark ABI through the same initialization and value codec
+// as every prebuilt jz module. Each workload times its kernel internally.
 import fs from 'node:fs'
 import { performance } from 'node:perf_hooks'
+import { instantiate } from '../../interop.js'
 
 const file = process.argv[2]
 if (!file) { console.error('usage: run-jz-host.mjs <case.wasm>'); process.exit(2) }
 
-// Host imports use the i64 carrier ABI: every arg arrives as a BigInt holding
-// the f64 NaN-box bits, and the result is i64 too. Numeric (NUMBER) args are
-// just the f64 bits reinterpreted; pointer args are NaN-boxed pointers.
-const _f64 = new Float64Array(1)
-const _u64 = new BigUint64Array(_f64.buffer)
-const i64ToNum = bits => { _u64[0] = bits; return _f64[0] }
-const SSO_BIT = 0x4000n
-const TAG_SHIFT = 47n, TAG_MASK = 0xFn, AUX_SHIFT = 32n, AUX_MASK = 0x7FFFn, OFFSET_MASK = 0xFFFFFFFFn
-
-const bytes = fs.readFileSync(file)
-let instance
-let memU8 = null
-const memBytes = () => {
-  // Re-snapshot only when memory has grown (buffer object identity changes).
-  const buf = instance.exports.memory.buffer
-  if (!memU8 || memU8.buffer !== buf) memU8 = new Uint8Array(buf)
-  return memU8
-}
-const _dec = new TextDecoder()
-
-// Decode a jz value carried as i64 NaN-box bits to a JS string (for host
-// parseInt/parseFloat — legacy artifacts only; current builds parse natively).
-// Numbers stringify; non-strings come back as ''. Handles all three string
-// encodings: SSO (7-bit char lanes across the 45-bit payload, length at
-// payload bits 42-44), slice views (SLICE_BIT, length in aux[12:0], offset
-// into the parent's bytes), and own-heap ([len u32][bytes] at offset-4).
-const SLICE_BIT = 0x2000, SLICE_LEN_MASK = 0x1FFF
-const jzStr = (val) => {
-  if (!Number.isNaN(i64ToNum(val))) return String(i64ToNum(val))
-  const type = Number((val >> TAG_SHIFT) & TAG_MASK)
-  if (type !== 4) return ''
-  const aux = Number((val >> AUX_SHIFT) & AUX_MASK)
-  const offset = Number(val & OFFSET_MASK)
-  if (aux & Number(SSO_BIT)) {
-    const len = Number((val >> 42n) & 7n), chars = []
-    for (let i = 0; i < len; i++) chars.push(String.fromCharCode(Number((val >> BigInt(i * 7)) & 0x7Fn)))
-    return chars.join('')
-  }
-  const mem = memBytes()
-  if (aux & SLICE_BIT) return _dec.decode(mem.subarray(offset, offset + (aux & SLICE_LEN_MASK)))
-  if (offset <= 4) return ''
-  const len = mem[offset - 4] | (mem[offset - 3] << 8) | (mem[offset - 2] << 16) | (mem[offset - 1] << 24)
-  return _dec.decode(mem.subarray(offset, offset + len))
-}
+const module = await WebAssembly.compile(fs.readFileSync(file))
 const imports = {
   env: {
     logResult: (medianUs, checksum, samples, stages, runs) => {
-      console.log(`median_us=${i64ToNum(medianUs)} checksum=${i64ToNum(checksum) >>> 0} samples=${i64ToNum(samples)} stages=${i64ToNum(stages)} runs=${i64ToNum(runs)}`)
-      return 0n
-    },
-    __ext_prop: () => 0n,
-    __ext_has: () => 0n,
-    __ext_set: () => 0n,
-    __ext_call: () => { throw new Error('__ext_call called in host-import bench') },
-    parseInt: (val, radix) => parseInt(jzStr(val), radix || undefined),
-    parseFloat: (val) => parseFloat(jzStr(val)),
-    print: (val, fd, sep) => {
-      if (i64ToNum(fd) !== 1 || i64ToNum(sep) !== 10) return 0n
-      const type = Number((val >> TAG_SHIFT) & TAG_MASK)
-      const aux = Number((val >> AUX_SHIFT) & AUX_MASK)
-      const offset = Number(val & OFFSET_MASK)
-      if (type === 4 && (aux & Number(SSO_BIT))) {
-        const len = aux & 7
-        const chars = []
-        for (let i = 0; i < len; i++) chars.push(String.fromCharCode((offset >>> (i * 8)) & 0xFF))
-        process.stdout.write(chars.join('') + '\n')
-      } else if (type === 4 && offset > 4) {
-        const mem = new Uint8Array(instance.exports.memory.buffer)
-        const len = mem[offset - 4] | (mem[offset - 3] << 8) | (mem[offset - 2] << 16) | (mem[offset - 1] << 24)
-        process.stdout.write(new TextDecoder().decode(mem.slice(offset, offset + len)) + '\n')
-      }
-      return 0n
+      console.log(`median_us=${medianUs} checksum=${checksum >>> 0} samples=${samples} stages=${stages} runs=${runs}`)
     },
   },
-  performance: {
-    now: () => {
-      _f64[0] = performance.now()
-      return _u64[0]
-    },
-  },
+  performance: { now: () => performance.now() },
 }
 
-// A case's graph may declare host modules the bench does not provide (a
-// library's device, codec and worklet adapters, compiled as externals): each
-// such import answers `undefined`, the host's honest value for a module it
-// lacks. A case whose result depends on one diverges in its checksum or fails
-// in the wasm, never silently in the host.
-const UNDEF_NAN = 0x7ff8000200000000n
-const module = await WebAssembly.compile(bytes)
+// Absent graph modules still answer undefined. Runtime imports are wired by
+// interop, including host property reads and calls and the console decoder.
 for (const { module: m, name, kind } of WebAssembly.Module.imports(module)) {
-  if (kind !== 'function' || imports[m]?.[name]) continue
-  ;(imports[m] ??= {})[name] = () => UNDEF_NAN
+  if (kind !== 'function' || imports[m]?.[name] ||
+      m === 'env' && /^(?:__ext_|parseInt$|parseFloat$|print$)/.test(name)) continue
+  ;(imports[m] ??= {})[name] = () => undefined
 }
-instance = await WebAssembly.instantiate(module, imports)
-if (typeof instance.exports.main !== 'function') {
+const { exports } = instantiate(module, { imports })
+if (typeof exports.main !== 'function') {
   console.error('wasm has no exported main()')
   process.exit(2)
 }
-instance.exports.main()
+exports.main()

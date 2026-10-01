@@ -1,12 +1,83 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { spawnSync } from 'node:child_process'
+import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { compile } from '../index.js'
 import { instantiate } from '../interop.js'
 import { compileJzAt } from '../bench/_lib/compile.js'
 import { agreement, exactAgreement, channelsAgree, agrees } from '../bench/_audiojs/compare.mjs'
 
 const ROOT = join(import.meta.dirname, '..')
+
+const runHost = source => {
+  const dir = mkdtempSync(join(tmpdir(), 'jz-bench-host-'))
+  try {
+    const file = join(dir, 'case.wasm')
+    writeFileSync(file, compile(source, { host: 'js', alloc: false, imports: {
+      env: { logResult: { params: 5 } },
+      performance: { now: { params: 0, returns: 'number' } },
+      'optional-device': { absent: { params: 0 } },
+    } }))
+    const result = spawnSync(process.execPath, [join(ROOT, 'bench/_lib/run-jz-host.mjs'), file], {
+      encoding: 'utf8', timeout: 30000,
+    })
+    if (result.error) throw result.error
+    return result
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+}
+
+test('bench host: deferred initialization completes before the first kernel call', () => {
+  const result = runHost(`
+    const data = new Float64Array([performance.now() >= 0 ? 7 : 0])
+    export function main() { env.logResult(0, data[0], data.length, 1, 1) }
+  `)
+  is(result.status, 0, result.stderr)
+  is(result.stdout.trim(), 'median_us=0 checksum=7 samples=1 stages=1 runs=1')
+})
+
+test('bench host: deferred initialization and host globals use the runtime bridge once', () => {
+  const result = runHost(`
+    const host = globalThis
+    host.__jzBenchInitCount = (host.__jzBenchInitCount || 0) + 1
+    const data = new Float64Array([host.Math.abs(-7)])
+    function run(n) {
+      let sum = 0
+      for (let i = 0; i < n; i++) sum += data[0]
+      env.logResult(0, sum + host.__jzBenchInitCount * 100, n, 1, 1)
+    }
+    export function main() {
+      run(0); run(2); run(2); run(1); run(0)
+    }
+  `)
+  is(result.status, 0, result.stderr)
+  is(result.stdout.trim().split('\n'), [0, 2, 2, 1, 0].map(n =>
+    `median_us=0 checksum=${100 + 7 * n} samples=${n} stages=1 runs=1`))
+})
+
+test('bench host: absent graph imports stay undefined and the clock returns numbers', () => {
+  const result = runHost(`
+    import { absent } from 'optional-device'
+    export function main() {
+      const start = performance.now(), end = performance.now()
+      const result = absent() === undefined && end >= start && start >= 0
+      env.logResult(0, result ? 1 : 0, 0, 1, 1)
+    }
+  `)
+  is(result.status, 0, result.stderr)
+  is(result.stdout.trim(), 'median_us=0 checksum=1 samples=0 stages=1 runs=1')
+})
+
+test('bench host: missing entry points and unsupported host calls fail visibly', () => {
+  const missing = runHost('export function other() { return 1 }')
+  is(missing.status, 2)
+  ok(missing.stderr.includes('wasm has no exported main()'))
+  const unsupported = runHost('export function main() { return globalThis.__jzMissingBenchMethod() }')
+  is(unsupported.status, 1)
+  ok(unsupported.stderr.includes('__jzMissingBenchMethod'), 'the missing method names the failure')
+  is(unsupported.stdout, '', 'a failure cannot report benchmark results')
+})
 
 test('bench build: every committed workload is a valid JavaScript module', () => {
   const result = spawnSync(process.execPath, ['--experimental-vm-modules', '--input-type=module', '-e', `
