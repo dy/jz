@@ -36,7 +36,7 @@ import {
 } from '../../type.js'
 import { VAL } from '../../reps.js'
 import { includeModule } from '../../autoload.js'
-import { analyzeBody, setFuncBody } from '../analyze.js'
+import { analyzeValueFacts, setFuncBody } from '../analyze.js'
 import { scanBindingUses, USE, BINDING_USE_DECLS, BINDING_USE_INIT, BINDING_USE_USES, BINDING_USE_KIND, BINDING_USE_NULL_CMP, BINDING_USE_STORE } from '../analyze-scans.js'
 import {
   isSimpleArg, fixedScalarTypedArray, fixedTypedArraysInBody, maxScalarTypedArrayLen, freshTypedArrayLocals,
@@ -1537,9 +1537,9 @@ const promoteIntArrayLiteralsInBody = (body) => {
   if (!candidates.size) return { node: body, changed: false }
   const initSet = new Set()
   for (const { initDecl } of candidates.values()) initSet.add(initDecl)
-  // valTypes from analyzeBody gives per-local VAL.* kinds, used by
+  // valTypes from analyzeValueFacts gives per-local VAL.* kinds, used by
   // _disqualifyPromotion to prove index keys are numeric (see _isNumericKey).
-  const { valTypes } = analyzeBody(body)
+  const { valTypes } = analyzeValueFacts(body)
   const disqualified = new Set()
   _disqualifyPromotion(body, candidates, disqualified, initSet, valTypes)
 

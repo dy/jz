@@ -12,7 +12,7 @@ import { ctx } from '../../ctx.js'
 import { VAL, repOf } from '../../reps.js'
 import { valTypeOf } from '../../kind.js'
 import { typedElemCtor } from '../../type.js'
-import { analyzeBody } from '../analyze.js'
+import { analyzeValueFacts } from '../analyze.js'
 import { withValueOverlay } from '../flow-state.js'
 import {
   arrayUsesSafe, scanBindingUses, USE, BINDING_USE_DECLS, BINDING_USE_INIT, BINDING_USE_USES, BINDING_USE_KIND,
@@ -78,7 +78,7 @@ export function analyzeParamNeverGrown(paramReps, callSites = [], addressTaken =
   withValueOverlay(null, () => {
   for (const func of ctx.funcs.list) {
     if (!func.body || func.raw) continue
-    const facts = analyzeBody(func.body)
+    const facts = analyzeValueFacts(func.body)
     factsOf.set(func.name, facts)
     // Receiver kinds the body facts miss: narrowed param kinds (post-
     // narrowSignatures paramReps) and `{}`-literal decl locals — the

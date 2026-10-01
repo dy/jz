@@ -12,7 +12,7 @@
  * @module program-facts/shared
  */
 import { walkAst } from '../../ast.js'
-import { analyzeBody } from '../analyze.js'
+import { analyzeValueFacts } from '../analyze.js'
 
 // Array methods that can change length or relocate the payload (grow copies to a
 // new arena block and forwards the header). sort/reverse/fill/copyWithin mutate
@@ -26,7 +26,7 @@ export const ARR_RESIZE_METHODS = new Set(['push', 'pop', 'shift', 'unshift', 's
  *  very slots the census just proved). */
 export function collectBodyElemSids(func, paramReps) {
   if (!paramReps || !func?.body || func.raw) return null
-  const facts = analyzeBody(func.body)
+  const facts = analyzeValueFacts(func.body)
   const reps = paramReps.get(func.name)
   const paramIdx = new Map((func.sig?.params || []).map((p, k) => [p.name, k]))
   const elemSidOf = (arr) => facts.arrElemSchemas?.get(arr)

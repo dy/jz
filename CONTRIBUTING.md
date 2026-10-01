@@ -1831,6 +1831,15 @@ Number conversions before ordinary IR optimization.
 
 ### Body-fact freshness
 
+`analyzeValueFacts` requests kinds, shapes and allocation identities without
+new scalar storage proofs. `analyzeBody` additionally requests complete local
+widths. Both share one cache entry and invalidation authority: a later storage
+query upgrades the pending scalar candidates without repeating constructor or
+schema discovery. It reuses the original provisional locals and range facts,
+then runs the same narrowing/widening rules as a cold full query; earlier returned
+maps remain unchanged. Existing typed-read presence walks still collect scalar
+hulls alongside their occurrence proofs.
+
 `analyzeBody` caches observations, not an immutable semantic snapshot. Its
 signature fingerprint covers only the current function signature. Every other
 dependency has an explicit invalidation owner:

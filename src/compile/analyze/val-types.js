@@ -7,7 +7,7 @@ import { valTypeOf, shapeOf, boolTagged } from '../../kind.js'
 import { intExprRange, objLiteralSchemaId } from '../../static.js'
 import { isCondExpr, intCertainMap } from '../../type.js'
 import { makeTypedTracker, joinReassignedTypedLens, dropDisagreeingTypedDefs } from './trackers.js'
-import { analyzeBody } from './body-facts.js'
+import { analyzeValueFacts } from './body-facts.js'
 import { findMutations, hasSingleInitializer } from '../analyze-scans.js'
 import { K, hasTag, valOf, valBesidePresence, core, ANY } from '../../summary/kind.js'
 
@@ -164,13 +164,13 @@ export function analyzeValTypes(body) {
   // Pre-walk: observe Array<schema> facts so `const p = arr[i]` can bind a schemaId
   // on `p`, unlocking schema slot reads + skipping str_key dispatch on `.prop` access.
   // The element kind, holes and typed constructor are the program summary's
-  // cell, read by analyzeBody at each array's declaration: rep.arrayElemValType
+  // cell, read by analyzeValueFacts at each array's declaration: rep.arrayElemValType
   // lets valTypeOf's `arr[i]` rule elide __to_num and route method dispatch on
   // `arr[i].method()`; an unwritten slot of `Array(n)` is a hole reading
   // undefined, a NaN through every numeric path (`arrayHoles`: toNumF64
   // canonicalizes it, an identity compare stays live); an array of typed
   // arrays names their ctor so `arr[i][j]` / `let o = arr[i]; o[j]` inline.
-  const facts = analyzeBody(body)
+  const facts = analyzeValueFacts(body)
   const arrElems = facts.arrElemSchemas
   for (const [name, vt] of facts.arrElemValTypes) {
     if (vt != null) updateRep(name, { arrayElemValType: vt })
@@ -338,7 +338,7 @@ export function analyzeValTypes(body) {
             // Installed typed lengths can refine the early width-based hull.
             // Widening would invalidate proofs that already consumed it.
             if (prior && (declRange[0] < prior[0] || declRange[1] > prior[1]))
-              throw new Error(`analyzeValTypes: declRange restamp for '${a[1]}' widens analyzeBody's early stamp — prior=[${prior}] new=[${declRange}]`)
+              throw new Error(`analyzeValTypes: declRange restamp for '${a[1]}' widens analyzeValueFacts's early stamp — prior=[${prior}] new=[${declRange}]`)
           }
           updateRep(a[1], { range: declRange })
         }
@@ -358,7 +358,7 @@ export function analyzeValTypes(body) {
           // Array of fixed-shape OBJECTs: register elem schema so `it = items[j]`
           // → `it.prop` lowers to slot read via the existing arr-elem-schema path.
           // The element kind itself is the summary's (a store of another kind
-          // poisons the schema slice: analyzeBody readElemFacts).
+          // poisons the schema slice: analyzeValueFacts readElemFacts).
           if (sh.val === VAL.ARRAY && sh.elem?.val === VAL.OBJECT && sh.elem.names && ctx.schema.register && arrElems.get(a[1]) !== null) {
             const elemSid = ctx.schema.register(sh.elem.names)
             updateRep(a[1], { arrayElemSchema: elemSid })

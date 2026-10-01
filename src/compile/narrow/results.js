@@ -10,7 +10,7 @@
 import { ctx } from '../../ctx.js'
 import { withCurrentFunction, withTypedElems } from '../flow-state.js'
 import { isBlockBody, alwaysReturns, hasBareReturn, returnExprs, walkAst, isReassigned } from '../../ast.js'
-import { analyzeBody, reanalyzeBody, clearBodyFacts } from '../analyze.js'
+import { analyzeBody, analyzeValueFacts, reanalyzeBody, clearBodyFacts } from '../analyze.js'
 import { exprType, typedStaticLen } from '../../type.js'
 import { ctorFromElemAux, TYPED_ELEM_ANY_VIEW_FLAG } from '../../../layout.js'
 import { hasAmbiguousBoolMerge } from '../../kind.js'
@@ -388,7 +388,7 @@ export function narrowReturnArrayElemSets(paramReps, addressTaken) {
       if (isBlock && !alwaysReturns(func.body)) continue
       const exprs = returnExprs(func.body)
       if (!exprs.length) continue
-      const facts = analyzeBody(func.body)
+      const facts = analyzeValueFacts(func.body)
       const localElems = facts[sliceKey]
       const paramElemMap = paramFactsOf(paramReps, func, field) || new Map()
       // Set-valued slices ride as canonical 'a,b,…' keys so the exact-agreement

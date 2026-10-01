@@ -57,7 +57,7 @@ const EMPTY_BODY_FACT_MAP = new Map()
 const EMPTY_BODY_FACT_SET = new Set()
 const EMPTY_OBJECT_ARRAY_FACTS = [EMPTY_BODY_FACT_MAP, EMPTY_BODY_FACT_SET, EMPTY_BODY_FACT_SET, EMPTY_BODY_FACT_SET]
 
-export function analyzeBody(body) {
+export function analyzeBody(body, storage = true) {
   // Non-object bodies (`() => 0`, `() => x`, missing) have nothing to observe
   // for any slice and can't be WeakMap-keyed. Return empty maps without caching.
   if (body === null || typeof body !== 'object') return {
@@ -66,7 +66,7 @@ export function analyzeBody(body) {
     escapes: new Map(), flatObjects: new Map(),
   }
   const bodyFacts = getFactStore().bodyFacts
-  const hit = bodyFacts.get(body)
+  let hit = bodyFacts.get(body)
   if (hit) {
     // B1 live freshness gate (walk-count design §2.4/§5 item 3): a hit whose
     // __sig no longer matches this function's CURRENT signature was cached
@@ -78,25 +78,112 @@ export function analyzeBody(body) {
     // whenever either side is null — no reference to compare against is
     // "unknown", not "known unchanged" (same fail-open rule the former
     // DBG_INVARIANTS-only assertBodyFactsFresh used).
-    if (hit.__sig == null || !ctx.func.current || hit.__sig === sigFingerprint(ctx.func.current))
-      return hit
-    bodyFacts.delete(body)
+    if (hit.__sig == null || !ctx.func.current || hit.__sig === sigFingerprint(ctx.func.current)) {
+      if (!storage || !hit.__storagePending) return hit
+    } else { bodyFacts.delete(body); hit = null }
   }
   // The names declared in the body and the arrays whose initial contents it
   // described: two tables keyed by the body's names, dropped at exit.
-  const elemOrigin = takeScratchSet()
+  const elemOrigin = hit ? null : takeScratchSet()
   // Program queries also visit bodies without entering their emission frame.
   // Their chained range facts are scratch state, not facts about the caller.
   const frame = ctx.func, previous = frame.localReps, scoped = frame.body !== body
   if (scoped) frame.localReps = makeMapOverlay(previous)
-  try { return computeBodyFacts(body, bodyFacts, elemOrigin) }
+  try { return hit ? refineStorageFacts(body, hit, bodyFacts) : computeBodyFacts(body, bodyFacts, elemOrigin, storage) }
   finally {
     if (scoped) frame.localReps = previous
-    releaseScratchSet(elemOrigin)
+    if (elemOrigin) releaseScratchSet(elemOrigin)
   }
 }
 
-function computeBodyFacts(body, bodyFacts, elemOrigin) {
+/** Kind, shape and storage-identity queries do not request new scalar-width
+ * proofs. A later full query upgrades the same epoch's cached observations. */
+export const analyzeValueFacts = body => analyzeBody(body, false)
+
+const bindingRequests = (body, locals, valTypes) => {
+  let requests
+  const uses = scanBindingUses(body)
+  for (const name of uses.keys()) {
+    const binding = uses.get(name)
+    if (!locals.has(name) || binding[BINDING_USE_DECLS] !== 1 || binding[BINDING_USE_INIT] === undefined ||
+        ctx.func.localReps?.get(name)?.range ||
+        locals.get(name) !== 'i32' && valTypes.get(name) !== VAL.NUMBER ||
+        binding[BINDING_USE_USES].some(u => u[BINDING_USE_KIND] === USE.CAPTURE)) continue
+    ;(requests ||= new Map()).set(name, undefined)
+  }
+  return requests
+}
+const publishBindingHulls = hulls => {
+  if (hulls) for (const name of hulls.keys()) {
+    const range = hulls.get(name)
+    if (!range) continue
+    updateRep(name, { range })
+  }
+}
+
+function refineStorageFacts(body, facts, cache) {
+  let result
+  withValueOverlay(facts.valTypes, () => withTypedElemOverlay(facts.typedElems, () => {
+    const pending = facts.__storagePending, hulls = new Map(pending.hulls)
+    for (const [name, range] of pending.ranges) updateRep(name, { range })
+    const lens = n => facts.locals.has(n) ? facts.typedLens.get(n) ?? null
+      : ctx.func.typedLen?.get(n) ?? ctx.scope.globalTypedLen?.get(n) ?? null
+    const entry = new Map()
+    for (const p of ctx.func.current?.params || []) entry.set(p.name, ctx.func.localReps?.get(p.name)?.range ?? null)
+    scanIntervalIdx(body, null, lens, null, null, entry, null, null, hulls)
+    // Copy only the storage map; kind/schema/length observations remain shared
+    // and previously returned maps stay immutable. No declaration walk repeats.
+    const locals = new Map(pending.locals)
+    stampLoopCounterRanges(body)
+    stampBodyRanges(body, facts.readPresent, facts.typedLens)
+    publishBindingHulls(hulls)
+    const [unsignedLocals, wordLocals] = finalizeLocals(body, locals, facts.valTypes, facts.readPresent)
+    result = { ...facts, locals, unsignedLocals, wordLocals, __storagePending: null }
+  }))
+  cache.set(body, result)
+  return result
+}
+
+function finalizeLocals(body, locals, valTypes, presentNodes) {
+  const unsignedLocals = narrowUint32(body, locals, e => e[0] === '[]' &&
+    typeof e[1] === 'string' && (typedElemAux(typedStorageNameCtor(ctx, e[1], locals)) & 7) === 5 && presentNodes.has(e))
+  for (const nm of unsignedLocals) updateRep(nm, { unsigned: true })
+  const wordLocals = ctx.transform.optimize?.wordLocals
+    ? narrowWordLocals(body, locals, nm => valTypes.get(nm) === VAL.NUMBER, wordStoreOf(body, locals)) : EMPTY_BODY_FACT_SET
+  widenLocalTypes(body, locals, presentNodes, unsignedLocals, wordLocals)
+  // A narrowing above retypes a never-reassigned decl whose initializer
+  // reads the narrowed name (`const np = 20 + t % 101` over `const t = s
+  // >>> 0`): the first pass typed it f64 through t's provisional f64. Re-
+  // derive such decls under the final local types, to a fixpoint (a
+  // retyped decl may feed the next). Initializers processDecl types by
+  // their own shape (`>>>`, a typed read) are left as they are.
+  if (unsignedLocals.size) {
+    let narrowed = new Set(unsignedLocals)
+    while (narrowed.size) {
+      const next = new Set()
+      walkAst(body, { enter: n => {
+        if (n[0] === '=>') return false
+        if (n[0] !== 'const' && n[0] !== 'let') return
+        for (let i = 1; i < n.length; i++) {
+          const d = n[i]
+          if (!Array.isArray(d) || d[0] !== '=' || typeof d[1] !== 'string' || !Array.isArray(d[2])) continue
+          const [name, rhs] = [d[1], d[2]]
+          if (locals.get(name) !== 'f64' || rhs[0] === '>>>' || rhs[0] === '[]' || unsignedLocals.has(name)) continue
+          if (!some(rhs, x => x.some(c => typeof c === 'string' && narrowed.has(c)))) continue
+          if (n[0] === 'let' && isReassigned(body, name)) continue
+          // a proven SIGNED hull only: a bare uint32 name flowing through (`c ? h : h2`)
+          // keeps its magnitude in f64 storage
+          const r = intExprRange(rhs)
+          if (r && r[0] >= -0x80000000 && r[1] <= 0x7fffffff && exprType(rhs, locals) === 'i32') { locals.set(name, 'i32'); next.add(name) }
+        }
+      } })
+      narrowed = next
+    }
+  }
+  return [unsignedLocals, wordLocals]
+}
+
+function computeBodyFacts(body, bodyFacts, elemOrigin, storage) {
   const locals = new Map()
   const valTypes = new Map()
   const arrElemSchemas = new Map()
@@ -437,69 +524,33 @@ function computeBodyFacts(body, bodyFacts, elemOrigin) {
   // Install the in-progress valTypes as a lookup overlay so successive decls
   // resolve chains (`const a = new TypedArr(); const b = a[0]` → b: NUMBER)
   // and shorthand-bound `{a}` props see a's type. Restored after walk completes.
-  let unsignedLocals, wordLocals
+  let unsignedLocals, wordLocals, deferredHulls, storagePending
   stampLoopCounterRanges(body)
   withValueOverlay(valTypes, () =>
     withTypedElemOverlay(typedElems, () => {
     walk(body)
     joinReassignedTypedLens(body, n => typedElems.has(n), n => typedLens?.get(n) ?? ctx.func.typedLen?.get(n) ?? ctx.scope.globalTypedLen?.get(n) ?? null,
       (n, l) => { (typedLens ||= new Map()).set(n, l) })
-    // Request only unresolved numeric locals in bodies with loops. The same
-    // interval walk supplies checked-read presence and complete binding hulls;
-    // no new walk/cache is allocated for straight-line or already bounded code.
-    const uses = hasLoop ? scanBindingUses(body) : null
-    if (uses) for (const name of uses.keys()) {
-      const binding = uses.get(name)
-      if (!locals.has(name) || binding[BINDING_USE_DECLS] !== 1 || binding[BINDING_USE_INIT] === undefined ||
-          ctx.func.localReps?.get(name)?.range ||
-          locals.get(name) !== 'i32' && valTypes.get(name) !== VAL.NUMBER ||
-          binding[BINDING_USE_USES].some(u => u[BINDING_USE_KIND] === USE.CAPTURE)) continue
-      ;(bindingHulls ||= new Map()).set(name, undefined)
-    }
+    // Existing typed-read presence walks can collect scalar hulls for free.
+    // Other bodies defer that work until a storage-width consumer asks for it.
+    const requestedHulls = hasLoop ? bindingRequests(body, locals, valTypes) : null
+    if (storage || typedReads.length) bindingHulls = requestedHulls
+    else deferredHulls = requestedHulls
     for (const read of typedReads) if (readPresent(read)) presentNodes.add(read)
     if (bindingHulls && !presentKeys) readPresent(null)
     // Prove accumulator bounds and join every write to mutable scalars before
     // widening: an observed local needs its complete hull, not just its init.
     stampBodyRanges(body, presentNodes, typedLens)
-    if (bindingHulls) for (const name of bindingHulls.keys()) {
-      const range = bindingHulls.get(name)
-      if (range) updateRep(name, { range })
-    }
-    unsignedLocals = narrowUint32(body, locals, e => e[0] === '[]' &&
-      typeof e[1] === 'string' && (typedElemAux(typedStorageNameCtor(ctx, e[1], locals)) & 7) === 5 && presentNodes.has(e))
-    for (const nm of unsignedLocals) updateRep(nm, { unsigned: true })
-    wordLocals = ctx.transform.optimize?.wordLocals
-      ? narrowWordLocals(body, locals, nm => valTypes.get(nm) === VAL.NUMBER, wordStoreOf(body, locals)) : EMPTY_BODY_FACT_SET
-    widenLocalTypes(body, locals, presentNodes, unsignedLocals, wordLocals)
-    // A narrowing above retypes a never-reassigned decl whose initializer
-    // reads the narrowed name (`const np = 20 + t % 101` over `const t = s
-    // >>> 0`): the first pass typed it f64 through t's provisional f64. Re-
-    // derive such decls under the final local types, to a fixpoint (a
-    // retyped decl may feed the next). Initializers processDecl types by
-    // their own shape (`>>>`, a typed read) are left as they are.
-    if (unsignedLocals.size) {
-      let narrowed = new Set(unsignedLocals)
-      while (narrowed.size) {
-        const next = new Set()
-        walkAst(body, { enter: n => {
-          if (n[0] === '=>') return false
-          if (n[0] !== 'const' && n[0] !== 'let') return
-          for (let i = 1; i < n.length; i++) {
-            const d = n[i]
-            if (!Array.isArray(d) || d[0] !== '=' || typeof d[1] !== 'string' || !Array.isArray(d[2])) continue
-            const [name, rhs] = [d[1], d[2]]
-            if (locals.get(name) !== 'f64' || rhs[0] === '>>>' || rhs[0] === '[]' || unsignedLocals.has(name)) continue
-            if (!some(rhs, x => x.some(c => typeof c === 'string' && narrowed.has(c)))) continue
-            if (n[0] === 'let' && isReassigned(body, name)) continue
-            // a proven SIGNED hull only: a bare uint32 name flowing through (`c ? h : h2`)
-            // keeps its magnitude in f64 storage
-            const r = intExprRange(rhs)
-            if (r && r[0] >= -0x80000000 && r[1] <= 0x7fffffff && exprType(rhs, locals) === 'i32') { locals.set(name, 'i32'); next.add(name) }
-          }
-        } })
-        narrowed = next
+    publishBindingHulls(bindingHulls)
+    if (deferredHulls) {
+      const ranges = new Map()
+      for (const name of locals.keys()) {
+        const range = ctx.func.localReps?.get(name)?.range
+        if (range) ranges.set(name, range)
       }
+      storagePending = { hulls: deferredHulls, locals: new Map(locals), ranges }
     }
+    ;[unsignedLocals, wordLocals] = finalizeLocals(body, locals, valTypes, presentNodes)
   }))
 
   // SRoA: dissolve non-escaping object-literal bindings into field locals.
@@ -518,8 +569,12 @@ function computeBodyFacts(body, bodyFacts, elemOrigin) {
     ? scanObjectArrayFacts(body)
     : EMPTY_OBJECT_ARRAY_FACTS
   for (const [name, props] of flatObjects) {
-    for (let i = 0; i < props.names.length; i++) locals.set(`${name}#${i}`, 'f64')
+    for (let i = 0; i < props.names.length; i++) {
+      locals.set(`${name}#${i}`, 'f64')
+      storagePending?.locals.set(`${name}#${i}`, 'f64')
+    }
     locals.delete(name)
+    storagePending?.locals.delete(name)
   }
 
   const result = {
@@ -540,6 +595,7 @@ function computeBodyFacts(body, bodyFacts, elemOrigin) {
   // see the live freshness gate above (cache-hit path), which skips the check
   // whenever either side is null. Always computed (walk-count design B1) — this
   // is the cache-coherence contract now, not a debug-only extra.
+  result.__storagePending = storagePending || null
   result.__sig = ctx.func.current ? sigFingerprint(ctx.func.current) : null
   bodyFacts.set(body, result)
   return result

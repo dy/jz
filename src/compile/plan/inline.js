@@ -38,7 +38,7 @@ import { freshId } from '../../ir.js'
 import { cloneWithSubst } from '../../type.js'
 import { constIntExpr, constNumExpr } from '../../static.js'
 import { K, kind, core, tagOf, hasModeledResult, answeredAtCall } from '../../summary/index.js'
-import { analyzeBody } from '../analyze.js'
+import { analyzeValueFacts } from '../analyze.js'
 import {
   LOOP_OPS, isSimpleArg, mutatesAny, loopDepth, nodeSize, clonePlain, collectBindings,
   fixedTypedArraysInBody, forLoopBodyIndex, withForLoopBody,
@@ -930,7 +930,7 @@ export const inlineHotInternalCalls = (programFacts, ast) => {
   callerBound = cfg?.sourceInlineDup !== false
 
   const fixedByFunc = new Map(ctx.funcs.list.map(func => [func, fixedTypedArraysInBody(func.body)]))
-  const typedByFunc = new Map(ctx.funcs.list.map(func => [func, analyzeBody(func.body).typedElems]))
+  const typedByFunc = new Map(ctx.funcs.list.map(func => [func, analyzeValueFacts(func.body).typedElems]))
   // A dispatcher's arm and a binder's closure call the member for a receiver
   // the summary cannot name (class-dispatch.js): the function stays for them
   // whatever the splice does, so they are no sites of it.

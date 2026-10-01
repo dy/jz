@@ -19,7 +19,7 @@ import { ctx, reset } from '../src/ctx.js'
 import { cloneIR } from '../src/ir/coerce.js'
 import { DBG_INVARIANTS, assertCtxInvariants, resetInvariants, assertFeatureWrite, assertLinkDemandWrite } from '../src/debug.js'
 import { createActiveFunction } from '../src/compile/active-function.js'
-import { analyzeBody, reanalyzeBody, setFuncBody, clearBodyFacts } from '../src/compile/analyze.js'
+import { analyzeBody, analyzeValueFacts, reanalyzeBody, setFuncBody, clearBodyFacts } from '../src/compile/analyze.js'
 import { emitter, emissionHooks } from '../src/compile/emit.js'
 import { GLOBALS } from '../src/prepare/index.js'
 import { run, wat } from './util.js'
@@ -296,6 +296,63 @@ test('invariant: division always produces f64 result', () => {
 // Body facts: signature freshness is checked on every hit; explicit mutation
 // seams cover AST and ambient changes. Global invalidation includes anonymous
 // bodies, not just the named function registry.
+
+test('invariant: value facts defer storage work and upgrade without changing query order', () => {
+  if (onKernel()) return
+  for (const source of [
+    'let i=0; while(i<64)i++; i',
+    'let i=0; while(i<16){const offset=i*2; i++}',
+    'let i=8; while(--i)i;',
+    'let i=0; const o={x:1,y:2}; while(i<16){o.x+=i; i++} o.x',
+    'let i=0; while(i<4){i=-0; break} i',
+    'let i=2147483646; while(i<2147483648)i++; i',
+    'let i; while(i<4)i++; i',
+    'let i=0; const change=()=>{i=0.5}; while(i<4){change(); break} i',
+    'const a=new Int32Array(4); let i=0; while(i<4){const v=a[i]; i++}',
+  ]) for (const active of [false, true]) {
+    reset(emitter, GLOBALS, emissionHooks())
+    const body = parse(source)
+    ctx.func = createActiveFunction({ body: active ? body : null })
+    const cold = analyzeBody(body)
+    clearBodyFacts()
+    ctx.func = createActiveFunction({ body: active ? body : null })
+    const value = analyzeValueFacts(body), before = [...value.locals]
+    const pending = value.__storagePending ? [...value.__storagePending.hulls] : null
+    ok(analyzeValueFacts(body) === value, 'value-only repeat reuses the entry')
+    const full = analyzeBody(body)
+    is([...full.locals], [...cold.locals], `${source}: cold and deferred storage agree`)
+    is([...full.unsignedLocals], [...cold.unsignedLocals], 'unsigned storage agrees')
+    is([...full.wordLocals], [...cold.wordLocals], 'word-only storage agrees')
+    is([...value.locals], before, 'upgrade leaves the earlier map immutable')
+    if (pending) is([...value.__storagePending.hulls], pending, 'upgrade leaves pending inputs immutable too')
+    ok(full.valTypes === value.valTypes && full.typedElems === value.typedElems &&
+      full.arrElemSchemas === value.arrElemSchemas, 'upgrade shares unchanged value observations')
+    ok(analyzeBody(body) === full && analyzeValueFacts(body) === full, 'both demands reuse completed facts')
+  }
+})
+
+test('invariant: deferred storage facts share signature and body invalidation', () => {
+  if (onKernel()) return
+  reset(emitter, GLOBALS, emissionHooks())
+  const body = parse('let i=0; while(i<64)i++; i')
+  const sig = { params: [{ name: 'p', type: 'f64' }], results: ['f64'] }
+  ctx.func = createActiveFunction({ body, sig })
+  const first = analyzeValueFacts(body)
+  is(first.locals.get('i'), 'f64', 'schema demand does not solve the bounded while lifetime')
+  ok(first.__storagePending, 'storage proof remains explicitly pending')
+  sig.params[0].type = 'i32'
+  const value = analyzeValueFacts(body)
+  ok(value !== first, 'signature mutation invalidates pending observations')
+  const full = analyzeBody(body)
+  is(full.locals.get('i'), 'i32', 'storage demand proves the bounded while lifetime')
+  ok(!full.__storagePending, 'completed facts do not retain pending scratch maps')
+  clearBodyFacts()
+  ctx.func = createActiveFunction({ body, sig })
+  body[1][1][2][1] = 2147483648
+  const changed = analyzeValueFacts(body)
+  ok(changed !== value && changed !== full, 'same-node AST invalidation drops both demand levels')
+  is(analyzeBody(body).locals.get('i'), 'f64', 'the replacement wide initializer cannot borrow the previous hull')
+})
 
 test('invariant: a signature retype invalidates a cached body on its next read', () => {
   if (onKernel()) return

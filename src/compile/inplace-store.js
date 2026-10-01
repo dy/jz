@@ -36,7 +36,7 @@
  */
 import { ctx } from '../ctx.js'
 import { refsName } from '../ast.js'
-import { analyzeBody } from './analyze.js'
+import { analyzeValueFacts } from './analyze.js'
 import { staticObjectProps, inplaceKey } from '../static.js'
 import { VAL } from '../reps.js'
 
@@ -72,7 +72,7 @@ export function scanInplaceStores(programFacts) {
       seen++
       const arg = cs.argList?.[k]
       const cf = cs.callerFunc
-      const cfacts = cf?.body && !cf.raw ? analyzeBody(cf.body) : null
+      const cfacts = cf?.body && !cf.raw ? analyzeValueFacts(cf.body) : null
       let proven = false
       if (typeof arg === 'string' && cfacts) {
         if (cfacts.typedElems?.has(arg) || cfacts.locals?.get(arg) === 'typed') proven = true
@@ -92,7 +92,7 @@ export function scanInplaceStores(programFacts) {
 
   for (const fn of ctx.funcs.list) {
     if (!fn.body || fn.raw) continue
-    const facts = analyzeBody(fn.body)
+    const facts = analyzeValueFacts(fn.body)
     const reps = paramReps?.get(fn.name)
     const paramIdx = new Map(fn.sig.params.map((p, k) => [p.name, k]))
 

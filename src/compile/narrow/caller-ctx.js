@@ -11,7 +11,7 @@
 import { ctx } from '../../ctx.js'
 import { withTypedElems } from '../flow-state.js'
 import { makeMapOverlay } from '../map-overlay.js'
-import { analyzeBody, reanalyzeBody, clearBodyFacts } from '../analyze.js'
+import { analyzeBody, analyzeValueFacts, reanalyzeBody, clearBodyFacts } from '../analyze.js'
 import { ctorFromElemAux } from '../../../layout.js'
 import { VAL } from '../../reps.js'
 
@@ -56,7 +56,7 @@ function buildCallerElems(sliceKey) {
   m.set(null, new Map())
   for (const func of ctx.funcs.list) {
     if (!func.body || func.raw) continue
-    m.set(func, analyzeBody(func.body)[sliceKey])
+    m.set(func, analyzeValueFacts(func.body)[sliceKey])
   }
   return m
 }
@@ -70,7 +70,7 @@ export function buildCallerTypedLenCtx() {
   out.set(null, globalTL)
   for (const func of ctx.funcs.list) {
     if (!func.body || func.raw) continue
-    const facts = analyzeBody(func.body)
+    const facts = analyzeValueFacts(func.body)
     const local = facts.typedLens || new Map()
     if (!globalTL.size) { out.set(func, local); continue }
     const merged = makeMapOverlay(globalTL)

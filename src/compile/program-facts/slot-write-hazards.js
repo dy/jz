@@ -12,7 +12,7 @@ import { ctx, getFactStore } from '../../ctx.js'
 import { VAL, repOf } from '../../reps.js'
 import { valTypeOf } from '../../kind.js'
 import { objLiteralSchemaId } from '../../static.js'
-import { analyzeBody } from '../analyze.js'
+import { analyzeValueFacts } from '../analyze.js'
 import { withValueOverlay } from '../flow-state.js'
 import { collectBodyElemSids } from './shared.js'
 import { isExported } from '../func-exports.js'
@@ -390,7 +390,7 @@ export function collectSlotWriteHazards(ast, opts) {
   for (const func of ctx.funcs.list) {
     if (!func.body || func.raw) continue
     if (reached && !reached(func)) continue
-    withValueOverlay(analyzeBody(func.body).valTypes, () => {
+    withValueOverlay(analyzeValueFacts(func.body).valTypes, () => {
       curSids = late ? collectBodyElemSids(func, opts.paramReps) : null
       // Late mode: narrowed param reps type this body's params (the early pass
       // can't — `re[j] = tr` on a TYPED param must classify as an element write).

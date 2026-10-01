@@ -23,7 +23,7 @@ import { scanIntervalIdx } from '../../type/interval-proof.js'
 import { ensureParamRep } from '../../param-reps.js'
 import { enterActiveFunction, restoreActiveFunction } from '../active-function.js'
 import { isExported } from '../func-exports.js'
-import { analyzeBody } from '../analyze.js'
+import { analyzeValueFacts } from '../analyze.js'
 import { VAL } from '../../reps.js'
 import { K, kind, core } from '../../summary/index.js'
 import { typedElementKey, typedCtorBase } from '../../typed-provenance.js'
@@ -67,7 +67,7 @@ export function inferNumericRanges(paramReps, callSites, callerCtx, addressTaken
   // Existing kind/body facts rule out functions with no numeric-call or
   // typed-store consumer. Walking their loops creates only discarded facts.
   const queue = ctx.funcs.list.filter(f => f.body && !f.raw &&
-    (outgoing.has(f) || hasKind(f, VAL.TYPED) || analyzeBody(f.body).typedElems.size))
+    (outgoing.has(f) || hasKind(f, VAL.TYPED) || analyzeValueFacts(f.body).typedElems.size))
   if (outgoing.has(null)) queue.push(null)
   const queued = new Set(queue), visits = new Map()
   for (let head = 0; head < queue.length; head++) {
@@ -80,7 +80,7 @@ export function inferNumericRanges(paramReps, callSites, callerCtx, addressTaken
     for (let k = 0; k < (caller?.sig.params.length ?? 0); k++)
       entry.set(caller.sig.params[k].name, reps?.get(k)?.range ?? null)
     const calls = new Map((outgoing.get(caller) ?? []).filter(cs => !cs.synthetic).map(cs => [cs.node, undefined]))
-    const writes = new Map(), receivers = new Set(caller ? analyzeBody(body).typedElems.keys() : [])
+    const writes = new Map(), receivers = new Set(caller ? analyzeValueFacts(body).typedElems.keys() : [])
     for (let k = 0; k < (caller?.sig.params.length ?? 0); k++) {
       const r = reps?.get(k)
       if (r?.val === VAL.TYPED || r?.presentVal === VAL.TYPED) receivers.add(caller.sig.params[k].name)
