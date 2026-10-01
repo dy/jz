@@ -43,6 +43,33 @@ const condIvName = (cnd) => {
   return Array.isArray(c) && (c[0] === '<' || c[0] === '<=') && typeof c[1] === 'string' ? c[1] : null
 }
 
+// The same byte-count ceiling applies to both owned storage and views.
+const lengthCeiling = (recv, locals) => {
+  const len = ctx.func.typedLen?.get(recv) ?? ctx.scope?.globalTypedLen?.get(recv)
+  if (len != null) return len
+  const aux = typedElemAux(typedCtorBase(typedStorageNameCtor(ctx, recv, locals)))
+  return aux == null ? null : Math.floor(0xffffffff / STRIDE[aux & 7])
+}
+
+// The f64-bound guard admits only finite raw Numbers with |B| <= 2^31.
+// For a positive affine access, a*(ceil(B)-1)+c < length also bounds B.
+// If that entire domain was excluded by an enclosing source test, this
+// proposed fast copy is unreachable. No storage or index fact is published.
+const excludedExtent = (L, locals) => {
+  const range = typeof L.bound === 'string' && ctx.func.refinements?.get(L.bound)?.excludedNumberRange
+  if (!range || L.bKind !== 'f64' || L.stepBy && L.stepBy.lit !== 1 || range[0] > -2147483648) return false
+  for (const c of L.cands) {
+    if (c.range || c.ind != null || c.cursor != null || c.presence || !(c.a > 0) || c.slots?.length ||
+        !Number.isSafeInteger(c.a) || !Number.isSafeInteger(c.bConst)) continue
+    const len = lengthCeiling(c.recv, locals)
+    // floor(B) for <= only strengthens this closed upper enclosure. Positive
+    // post-increment bumps likewise make the emitted high extent larger.
+    const span = len == null ? null : len - 1 - c.bConst
+    if (Number.isSafeInteger(span) && Math.floor(span / c.a) + 1 <= range[1]) return true
+  }
+  return false
+}
+
 export function versionableTypedNest(init, cond, step, body, locals) {
   if (containsNestedClosure(body)) return null
   const levels = []
@@ -139,13 +166,8 @@ export function versionableTypedNest(init, cond, step, body, locals) {
     // the full encode/decode kernel, then always execute the checked twin).
     L.cands = L.cands.filter(c => {
       if (!Array.isArray(c.range) || c.range.hiName != null) return true
-      const len = ctx.func.typedLen?.get(c.recv) ?? ctx.scope?.globalTypedLen?.get(c.recv)
-      if (len != null) return c.range[1] < len
-      // Every typed header holds an unsigned wasm32 byte count. A hull
-      // beyond its largest representable element count can never pass,
-      // even when the receiver's actual length is not known here.
-      const aux = typedElemAux(typedCtorBase(typedStorageNameCtor(ctx, c.recv, locals)))
-      return aux == null || c.range[1] < Math.floor(0xffffffff / STRIDE[aux & 7])
+      const len = lengthCeiling(c.recv, locals)
+      return len == null || c.range[1] < len
     })
     if (!L.cands.length) return false
     if (!L.top) {
@@ -185,6 +207,7 @@ export function versionableTypedNest(init, cond, step, body, locals) {
   })
   const keep = keepPre
   if (!keep.length) return null
+  for (const L of keep) if (excludedExtent(L, locals)) { keep.checkedOnly = true; return keep }
   // FLAT-CURSOR inductions: `j++` exactly once in the whole nest (the universal
   // image-kernel pixel cursor `px[j] = …; j++`). Its value spans
   // [j0, j0 + slope·(Π level-trips − 1 or − 0)] — every containing loop must be a

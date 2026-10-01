@@ -3,10 +3,131 @@
 // (plan/integral-loops.js): the same values, so the same results for every
 // number, integral or not.
 import test from 'tst'
-import { is, ok } from 'tst/assert.js'
+import { is, ok, throws } from 'tst/assert.js'
 import jz from '../index.js'
 import { belowOpt, levels } from './_matrix.js'
 import { oracle, wat, funcWat } from './util.js'
+import { ctx } from '../src/ctx.js'
+import { TYPEOF } from '../src/ast.js'
+import { createActiveFunction } from '../src/compile/active-function.js'
+import { extractRefinements, withRefinements } from '../src/compile/flow-types.js'
+import { versionableTypedNest } from '../src/type/loop-versioning-nest.js'
+import { VAL } from '../src/reps.js'
+
+test('integral loops: rejected Number ranges stay scoped to unchanged private bindings', () => {
+  const type = ['===', ['typeof', 'n'], ['str', 'number']]
+  const range = ['&&', type, ['&&', ['>=', 'n', [null, -2147483648]], ['<=', 'n', [null, 2147483647]]]]
+  const get = condition => extractRefinements(condition, new Map(), false).get('n')?.excludedNumberRange
+  is(get(range), [-2147483648,2147483647], 'the complete failed conjunction excludes fractions too')
+  is(get(['&&',['===',['typeof','n'],[undefined,TYPEOF.number]],['&&',['>=','n',[undefined,-2147483648]],['<=','n',[undefined,2147483647]]]]),get(range),'prepared typeof and literal nodes')
+  for (const extra of [ ['===','flag',[null,1]], ['()', 'change'], ['=','n',[null,3]], ['<=','other',[null,8]] ])
+    is(get(['&&',range,extra]),undefined,'an unrelated failed conjunct cannot exclude the range')
+  is(get(range[2]),undefined,'a comparison alone supplies no Number predicate')
+  is(get(['&&',type,['>=','n',[null,0]]]),undefined,'one-sided tests stay conservative')
+  is(get(['&&',type,['&&',['>=','n',[null,-Infinity]],['<=','n',[null,8]]]]),undefined,'infinite bounds stay conservative')
+  const prior = ctx.func, summary = ctx.summary
+  try {
+    ctx.summary = null
+    ctx.func = createActiveFunction({sig:{params:[{name:'n',type:'f64'}]}})
+    const refs = extractRefinements(range,new Map(),false), body = [';', ['()', 'use', 'n']]
+    for (let round=0;round<2;round++) {
+      withRefinements(refs,body,()=>is(ctx.func.refinements.get('n').excludedNumberRange,get(range),'same branch twice'))
+      is(ctx.func.refinements.get('n'),undefined,'branch scope restored')
+    }
+    withRefinements(refs,['=', 'n', [null,3]],()=>is(ctx.func.refinements.get('n'),undefined,'a later assignment invalidates the exclusion'))
+    withRefinements(refs,body,()=>{
+      withRefinements(new Map([['n',{rlo:0}]]),body,()=>is(ctx.func.refinements.get('n').excludedNumberRange,undefined,'a later positive refinement may conservatively replace the exclusion'))
+      is(ctx.func.refinements.get('n').excludedNumberRange,get(range),'nested branch restores the outer exclusion')
+    })
+    ctx.func.boxed.set('n','cell')
+    withRefinements(refs,body,()=>is(ctx.func.refinements.get('n'),undefined,'a captured parameter can change through a call'))
+    ctx.func.boxed.delete('n')
+    ctx.func.current.params=[]
+    withRefinements(refs,body,()=>is(ctx.func.refinements.get('n'),undefined,'module and unbound names do not get a private fact'))
+    ctx.func.current.params=[{name:'n',type:'f64'}]
+    throws(()=>withRefinements(refs,body,()=>{throw 7}),e=>e===7,'exception propagates')
+    is(ctx.func.refinements.get('n'),undefined,'exception restores scope')
+    withRefinements(refs,body,()=>is(ctx.func.refinements.get('n').excludedNumberRange,get(range),'A after changed and exceptional scopes'))
+  } finally {ctx.func=prior;ctx.summary=summary}
+})
+
+test('integral loops: impossible typed twins disappear without losing SIMD or Number fallbacks', () => {
+  const src=`export function f(a,n){let s=0;for(let i=0;i<n;i++)s+=a[i];return s}`
+  for(const optimize of levels(0,1,2,3,'size')) {
+    const got=jz(src,{optimize}).exports,host=oracle(src)
+    for(const C of [Float64Array,Float32Array]) for(const length of [0,1,8]) {
+      const a=C.from({length},(_,i)=>i+0.5)
+      for(const n of [0,3,3.5,3,-0,-1,NaN,-Infinity,0,3]) is(got.f(a,n),host.f(a,n),`O${optimize} ${C.name} length${length}, count${n}`)
+    }
+  }
+  if(!belowOpt(2)) {
+    const text=wat(src,{optimize:2})
+    ok(text.includes('v128'),'the bounded Number copy still vectorizes')
+    is((text.match(/\(loop /g)||[]).length,8,'each export keeps vector, tail, checked-word and checked-Number loops only')
+    ok(text.includes('f64.lt'),'wide and non-number counts keep their original comparison')
+    const prior=ctx.func,summary=ctx.summary
+    try {
+      ctx.summary=null
+      for(const [name,checkedOnly] of [['Uint8Array',false],['Float64Array',true]]) {
+        const init=['let',['=','i',[null,0]]],cond=['<','i','n'],step=['++','i'],body=[';', ['+=','s',['[]','a','i']]]
+        ctx.func=createActiveFunction({sig:{params:[{name:'n',type:'f64'}]},body:[';',init,['for',init,cond,step,body]]})
+        ctx.func.locals=new Map([['i','f64'],['s','f64'],['a','i32']])
+        ctx.func.typedElem=new Map([['a','new.'+name]])
+        ctx.func.localReps=new Map([['a',{val:VAL.TYPED,ptrKind:VAL.TYPED}]])
+        ctx.func.refinements=new Map([['n',{excludedNumberRange:[-2147483648,2147483647]}]])
+        const spec=versionableTypedNest(init,cond,step,body,ctx.func.locals)
+        ok(spec?.length,'the typed loop admits a bounds guard')
+        is(!!spec.checkedOnly,checkedOnly,`${name}: the byte-count ceiling must prove the implication`)
+      }
+    } finally {ctx.func=prior;ctx.summary=summary}
+    for(const [lo,hi,idx,step,expected] of [
+      [-2147483648,2147483647,'i','i++',1], [-2147483648,2,'i','i++',2],
+      [0,2147483647,'i','i++',2], [-2147483648,2147483647,'i+off','i++',2],
+      [-2147483648,2147483647,'i','i+=stride',2],
+    ]) {
+      const source=`export function f(n,off,stride){const a=new Float64Array(16);
+        if(typeof n==='number'&&n>=${lo}&&n<=${hi})return -1;
+        else {let s=0,count=0;for(let i=0;i<n;${step}){s+=a[${idx}];if(++count===5)break}return s}}`
+      const options={optimize:{level:2,versionIntegralLoops:false,specializeLoops:false}}
+      const body=funcWat(wat(source,options),'f')
+      is((body.match(/\(loop /g)||[]).length,expected,`${lo}..${hi}, ${idx}, ${step}: only the implied guard is removed`)
+      const got=jz(source,options).exports,host=oracle(source)
+      for(const n of [0,9,Infinity,2147483648,NaN,9]) for(const [off,stride] of [[0,1],[0.5,1.5],[-1,0],[2147483648,-1]])
+        is(got.f(n,off,stride),host.f(n,off,stride),'retained and removed guards preserve their reachable arms')
+    }
+  }
+})
+
+test('integral loops: excluded extents preserve count coercions, writes, captures and offsets', () => {
+  const src=`
+    export function bounded(n,off){const a=new Float64Array([1,2,3,4,5,6,7,8]),b=new Float32Array([9,10,11]);let s=0,count=0;
+      for(let i=0;i<n;i++){s+=a[i+off]+b[i];count++;if(count===5)break}return [s,count]}
+    export function inclusive(n){const a=new Float64Array([1,2,3,4]);let s=0,count=0;
+      for(let i=0;i<=n;i++){s+=a[i];count++;if(count===5)break}return[s,count]}
+    export function initialized(n){const a=new Float64Array([1,2,3,4]);let sum=0,count=0,checks=0;
+      if(typeof n==='number'&&n>=-2147483648&&n<=2147483647)return [0,0,0];
+      else for(let i=(checks++,0);i<n;i++){sum+=a[i];if(++count===5)break}return[sum,count,checks]}
+    export function boundary(n){const a=new Float64Array(4);let sum=0,count=0,last=0;for(let i=2147483646;i<n;i++){last=i;sum+=a[i];if(++count===5)break}return[sum,count,last]}
+    export function coercion(n){let calls=0;const a=new Float64Array([1,2,3,4]);const bound={valueOf(){calls++;return n}};let s=0,count=0;
+      for(let i=0;i<bound;i++){s+=a[i];count++;if(count===5)break}return[s,count,calls]}
+    export function reassigned(n){const a=new Float64Array([1,2,3,4]);let s=0;
+      if(typeof n==='number'&&n>=-2147483648&&n<=2147483647)return -1;
+      else {n=3.5;for(let i=0;i<n;i++)s+=a[i]}return s}
+    export function captured(n){const a=new Float64Array([1,2,3,4]);let s=0;const change=()=>{n=3.5};
+      if(typeof n==='number'&&n>=-2147483648&&n<=2147483647)return -1;
+      else {change();for(let i=0;i<n;i++)s+=a[i]}return s}
+    export function partial(n){const a=new Float64Array(16);let count=0;
+      if(typeof n==='number'&&n>=-2147483648&&n<=8)return -1;
+      else for(let i=0;i<n;i++){a[i]=i;count++;if(count===5)break}return[a[4],count]}
+  `
+  for(const optimize of levels(0,1,2,3,'size')) {
+    const got=jz(src,{optimize}).exports,host=oracle(src)
+    for(const n of [0,3,3.5,3,-0,-1,NaN,Infinity,-Infinity,2147483647,2147483648,-2147483649,4294967296,'3',true,null,undefined,0,3]) {
+      for(const name of ['inclusive','boundary','initialized','coercion','reassigned','captured','partial']) is(got[name](n),host[name](n),`O${optimize} ${name}(${n})`)
+      for(const off of [-1,0,0.5,1,2147483648]) is(got.bounded(n,off),host.bounded(n,off),`O${optimize} offset${off},count${n}`)
+    }
+  }
+})
 
 // a ring buffer's cursor and a tap count read back from a state record
 const fir = `const st = { p: 0, taps: 5 }

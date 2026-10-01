@@ -19,7 +19,7 @@
 
 import { ctx, getFactStore } from '../ctx.js'
 import { VAL } from '../reps.js'
-import { isReassigned, TYPEOF, typeofPredicate, walkAst } from '../ast.js'
+import { isReassigned, TYPEOF, typeofPredicate, isNumberGuard, walkAst } from '../ast.js'
 import { constIntExpr } from '../static.js'
 import { TYPED_ELEM_NAMES } from '../../layout.js'
 
@@ -48,6 +48,11 @@ export function extractRefinements(cond, out, sense = true) {
   if (op === '=' && typeof cond[1] === 'string') { if (sense) mergeRefinement(out, cond[1], { notNullish: true }); return out }
   // && under positive sense refines with union of both branches.
   // || under negative sense (De Morgan) similarly refines the else-branch.
+  if (op === '&&' && !sense) {
+    const rejected = numberRangeTest(cond)
+    if (rejected) mergeRefinement(out, rejected.name, { excludedNumberRange: rejected.range })
+    return out
+  }
   if (op === '&&' && sense)  { extractRefinements(cond[1], out, true);  extractRefinements(cond[2], out, true);  return out }
   if (op === '||' && !sense) { extractRefinements(cond[1], out, false); extractRefinements(cond[2], out, false); return out }
   // typeof x == 'number' | 'string' | 'function' — sense must be positive for "==", negative for "!="
@@ -101,6 +106,30 @@ export function extractRefinements(cond, out, sense = true) {
     if (val != null) { mergeRefinement(out, cond[1], { val }); return out }
   }
   return out
+}
+
+// A failed closed Number test excludes its interval, including fractional
+// values. Keep the whole predicate: one failed conjunct alone says nothing.
+// Only a single binding and literal bounds qualify; no calls or assignments.
+function numberRangeTest(cond) {
+  let first = cond
+  while (first?.[0] === '&&') first = first[1]
+  const tp = typeofPredicate(first)
+  const name = isNumberGuard(first) ? first[1][1] : tp?.eq && tp.code === TYPEOF.number ? tp.name : null
+  if (typeof name !== 'string') return null
+  let lo = -Infinity, hi = Infinity
+  const pending = [cond]
+  while (pending.length) {
+    const n = pending.pop()
+    if (n === first) continue
+    if (!Array.isArray(n)) return null
+    if (n[0] === '&&') { pending.push(n[2], n[1]); continue }
+    const rhs = n[2], value = Array.isArray(rhs) && rhs[0] == null ? rhs[1]
+      : rhs?.[0] === '-' && rhs.length === 2 && Array.isArray(rhs[1]) && rhs[1][0] == null ? -rhs[1][1] : NaN
+    if ((n[0] !== '>=' && n[0] !== '<=') || n[1] !== name || !Number.isFinite(value)) return null
+    if (n[0] === '>=') lo = Math.max(lo, value); else hi = Math.min(hi, value)
+  }
+  return Number.isFinite(lo) && Number.isFinite(hi) && lo <= hi ? { name, range: [lo, hi] } : null
 }
 
 /** When an exact integer comparison uses an immutable `obj.tag` alias,
@@ -358,6 +387,14 @@ export function withRefinements(refs, body, fn) {
   const view = ctx.summary?.at(ctx.func.current)
   for (const [name, val] of refs) {
     if (isReassigned(body, name)) continue
+    // The negative fact must still describe this binding when a nested loop
+    // reads it. Captured cells and module names can change through calls.
+    if (val.excludedNumberRange) {
+      let local = ctx.func.locals?.has(name)
+      if (!local && ctx.func.current?.params)
+        for (const param of ctx.func.current.params) if (param.name === name) { local = true; break }
+      if (!local || ctx.scope.globals?.has(name) || ctx.func.boxed?.has(name)) continue
+    }
     saved.push([name, cur.get(name)])
     cur.set(name, val)
     // A name a guard proved present reads, for every summary consumer, as its

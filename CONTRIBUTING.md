@@ -39,6 +39,13 @@ operations and intervening input writes keep their evaluation order.
 The shared folded-code guard also detects partially supplied numeric operands,
 so these passes preserve values consumed from the Wasm stack.
 
+Failed closed Number guards retain their excluded interval only for unchanged,
+uncaptured local bindings. Typed-loop versioning uses its existing byte-length
+ceiling and exact affine extent guard to reject a fast copy that would require
+that interval. The surviving checked loop keeps its existing no-respecialization
+mark; the Number/SIMD fast path stays unchanged. Unknown offsets, non-unit
+strides, incomplete predicates and mutable bindings retain both paths.
+
 Generic local propagation and merging run in watr after linking, including
 the fast tier. The same local-slot allocator runs in the lightweight tail,
 including level 1: disjoint temporaries share storage instead of inflating

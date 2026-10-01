@@ -675,6 +675,18 @@ export const controlFlowOps = {
         const checkedFrom = ctx.func.checkedRecv?.length ?? 0
         if (init != null) result.push(...emitVoid(init))
         const initRefs = init != null ? initPresent(checkedFrom) : new Map()
+        if (levels.checkedOnly) {
+          const checked = withRefinements(initRefs, body, () => withRefinements(topCounterRefs, body,
+            () => controlFlowOps['for'](init, cond, step, body, true)))
+          // Preserve the checked twin's existing no-respecialization contract
+          // after deleting its impossible sibling and now-unneeded guard.
+          const stmts = Array.isArray(checked[0]) ? checked : [checked]
+          for (const stmt of stmts) {
+            stmt.checkedTwin = true
+            walkAst(stmt, { enter: n => { if (n[0] === 'loop') n.checkedTwin = true } })
+          }
+          return [...result, ...stmts]
+        }
         const i64c = (n) => ['i64.const', n]
         const ext = (ir) => ['i64.extend_i32_s', ir]
         const conjs = []
