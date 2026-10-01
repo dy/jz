@@ -7,6 +7,18 @@ import { run, oracle } from './util.js'
 import { levels, onWasi, onKernel } from './_matrix.js'
 import { ptrBits, PTR } from '../layout.js'
 
+test('Symbol: interned-only modules do not export an unused identity counter', () => {
+  const source = `export function f(){return Symbol.for('shared')}`
+  const bytes = compile(source)
+  ok(!WebAssembly.Module.exports(new WebAssembly.Module(bytes)).some(e => e.name === '__symbol_id'),
+    'only a runtime factory needs the shared counter')
+  if (!onWasi() && !onKernel()) {
+    const one = jz(source).exports, two = jz(source).exports
+    is(one.f() === Symbol.for('shared'), true, 'host registry identity survives without a counter')
+    is(one.f() === two.f(), true, 'separate instances agree on the registry identity')
+  }
+})
+
 test('Symbol: factory and loop invocations retain distinct identities across calls', () => {
   const src = `let previous=Symbol(),saved=Symbol.for('saved')
     function make(){return Symbol('same')}

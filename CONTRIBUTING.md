@@ -129,6 +129,8 @@ The host adapter maps each instance's Symbol identities in both directions.
 Interned names travel in metadata; fresh host inputs advance the same counter
 as compiled factories. Arena reset restores source globals but never reissues
 an identity. These maps and counters remain local to an instance.
+The shared counter is emitted only for a compiled Symbol factory; loading the
+module or using interned names alone does not add a public counter export.
 Native method wrappers use internal tag predicates and runtime brand errors.
 Preparing an unused wrapper therefore does not add source-level BigInt or throw
 demand; its error data and exception support follow actual emission. Their

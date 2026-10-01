@@ -52,8 +52,8 @@ export default (ctx) => {
     return id
   }
 
-  declGlobal('__symbol_id', 'i64', atomNanHex(RESERVED), { export: '__symbol_id' })
   ctx.core.emit['Symbol'] = (nameExpr, ...ignored) => {
+    declGlobal('__symbol_id', 'i64', atomNanHex(RESERVED), { export: '__symbol_id' })
     const primitive = nameExpr === undefined || primitiveKind(ctx.summary?.at(ctx.func.current), nameExpr)
     return withIgnoredArgs(nameExpr ?? undefExpr(), ignored, value => {
       const id = tempI64('symbol')
