@@ -651,7 +651,17 @@ test('frame effects: a value read off the receiver it is stored into is no escap
 
 test('frame effects: an element store writes no binding, and a runtime import keeps nothing it is handed', () => {
   const fill = 'export function f(n) { const a = []; for (let i = 0; i < n; i++) a[i] = i * 2; let s = 0; for (let i = 0; i < n; i++) s += a[i]; return s }'
-  ok(rewinds(fill) && !flagged(fill), 'the local array stays fresh: a plain rewind')
+  // The checked twin also accepts counters beyond the array-index domain.
+  // Its property-table store requires the escape flag; numeric-index calls
+  // still release all their temporary storage.
+  ok(rewinds(fill), 'the local array frame can restore its heap')
+  for (const optimize of levels(1, 2, 3, 'size')) {
+    const { exports: m, memory } = jz(fill, { optimize }), js = oracle(fill)
+    for (const n of [0, 0, 1, 20, 2.5, -1, NaN, 1]) {
+      is(m.f(n), js.f(n), `local fill at ${n}, O${optimize}`)
+      is(growth(memory, () => m.f(n), 20), 0, `local fill releases storage at ${n}, O${optimize}`)
+    }
+  }
   const log = 'export function f(n) { const t = new Array(n).fill(0); console.log(t.length); return t.length }'
   ok(rewinds(log) && !flagged(log), 'console.log decodes its arguments: a plain rewind')
 })
