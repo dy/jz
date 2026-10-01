@@ -83,6 +83,9 @@ Equal-width literal tuples in every arm of a conditional use the existing
 multiple-result ABI. Expression and statement returns share element boxing
 and finalizer emission. A block must pass the shared return-path proof before
 selecting multiple results; a possible fallthrough needs to carry undefined.
+Native method wrappers use internal tag predicates and runtime brand errors.
+Preparing an unused wrapper therefore does not add source-level BigInt or throw
+demand; its error data and exception support follow actual emission.
 Try, catch and finally bodies establish their block declarations before closures
 are prepared, including parser bodies represented as bare statement lists. Recursive
 and forward-capturing closures therefore share the block's renamed bindings.

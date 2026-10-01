@@ -847,7 +847,7 @@ function census(view, roots, declRoots, params, typedParams = NO_NAMES, conditio
     const op = n[0]
     if (op == null || op === 'bool' || op === 'str') return
     if (isFunctionNode(n)) { allocates(); return }   // its own frame; a call to it is counted at the call
-    if (isObjectLiteral(n) || op === '[' || op === 'strcat') allocates()
+    if (isObjectLiteral(n) || op === '[' || op === 'strcat' || op === '__throw_method_receiver') allocates()
     if (op === '+' && !scalarKind(view, n)) allocates()   // a concatenation
     if (op === 'yield' || op === 'await') escape(op, SITE.ZERO, { suspends: true })   // the frame is suspended: what runs meanwhile allocates too
     if (op === '__tp_call') unknownCall('conversion method')   // an own toString/valueOf closure (emit/to-primitive.js)

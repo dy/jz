@@ -62,8 +62,7 @@ const wrapBuiltinValues = (ast) => {
   const sourceFuncs = ctx.funcs.list.slice()
   const methodReaders = new Map()
   // These are compiler intrinsics, independent of same-named user bindings.
-  const receiverIs = (name, ctor) => ['&&', ['===', ['typeof', name], ['str', 'object']],
-    ['===', ['()', '__ptr_type', name], [null, PTR[ctor.toUpperCase()]]]]
+  const receiverIs = (name, ctor) => ['__ptr_is', name, [null, PTR[ctor.toUpperCase()]]]
   const declare = (name, params, body) => {
     const decl = prep(['const', ['=', name, ['=>', ['()', params], body]]])
     if (decl != null) inits.push(decl)
@@ -85,7 +84,7 @@ const wrapBuiltinValues = (ast) => {
     if (prop === 'forEach') params[1] = ['=', params[1], []]
     const wrapper = ['=>', ['()', params.length === 1 ? params[0] : [',', ...params]], ['{}', [';',
       ['const', ['=', recv, ['this']]],
-      ['if', ['!', receiverIs(recv, ctor)], ['throw', ['()', 'new.TypeError', ['str', 'incompatible method receiver']]]],
+      ['if', ['!', receiverIs(recv, ctor)], ['__throw_method_receiver']],
       ['return', result]]]]
     declare(name, [','], ['{}', ['return', wrapper]])
     return ['()', name, [',']]

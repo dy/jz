@@ -732,3 +732,23 @@ test('computed collection readers retain bridges for module-init and returned cl
     throws(()=>fn('x'),TypeError,`returned unbound native wrapper preserves its brand check O${optimize}`)
   }
 })
+
+test('inactive collection readers add no runtime error or BigInt demand', () => {
+  const src=`export function f(i){const a=[1,2];return a[i|0]}`
+  for(const optimize of levels(0,1,2,3,'size')){
+    const wat=jz.compile(src,{optimize,wat:true})
+    is(wat.includes('(tag '),false,`inactive brand error has no exception tag O${optimize}`)
+    is(wat.includes('i\\00n\\00c\\00o\\00m'),false,`inactive brand error has no message data O${optimize}`)
+    is(wat.includes('__bigint'),false,`inactive tag predicate has no BigInt runtime O${optimize}`)
+    const got=jz(src,{optimize}).exports,want=oracle(src)
+    for(const i of [0,0,1,2,-1,0])is(got.f(i),want.f(i),`numeric read O${optimize}, ${i}`)
+  }
+  const active=`export function f(mode){const m=new Map([['x',3]]),fn=m.get;
+    const bits=new Uint32Array([0,0xfffc8000]),negativeNaN=new Float64Array(bits.buffer)[0];
+    const values=[0,-0,NaN,undefined,null,17n,{},[],new Set(),m,negativeNaN];
+    try{return fn.call(values[mode|0],'x')}catch(e){return e instanceof TypeError?'TypeError':e.name}}`
+  for(const optimize of levels(0,1,2,3,'size')){
+    const got=jz(active,{optimize}).exports,want=oracle(active)
+    for(const mode of [0,0,1,2,3,4,5,6,7,8,9,10,0])is(got.f(mode),want.f(mode),`active native brand O${optimize}, ${mode}`)
+  }
+})

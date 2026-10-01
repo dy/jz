@@ -11,7 +11,7 @@ import print from 'watr/print'
  * @module core
  */
 
-import { typed, asF64, asI32, asI64, NULL_NAN, UNDEF_NAN, TOMB_NAN, FALSE_NAN, TRUE_NAN, temp, tempI32, usesDynProps, ptrOffsetIR, ptrTypeEq, isNullish, isUndef, valKindToPtr, sidecarOverride, undefExpr, cloneIR, boxBigInt, unboxBigInt, deferBigintBox, isPlanTaggedBigint, throwTypeErrorIR, valueTruthyIR } from '../src/ir.js'
+import { typed, asF64, asI32, asI64, NULL_NAN, UNDEF_NAN, TOMB_NAN, FALSE_NAN, TRUE_NAN, temp, tempI32, usesDynProps, ptrOffsetIR, ptrTypeEq, boxedPtrTypeEq, isNullish, isUndef, valKindToPtr, sidecarOverride, undefExpr, cloneIR, boxBigInt, unboxBigInt, deferBigintBox, isPlanTaggedBigint, throwTypeErrorIR, throwErrorIR, valueTruthyIR } from '../src/ir.js'
 import { emit, emitReference, emitIdentitySafe, storedValue, spread, deps, wat } from '../src/bridge.js'
 import { reconstructArgsWithSpreads } from '../src/ir.js'
 import { valTypeOf, shapeOf, hasAmbiguousBoolMerge } from '../src/kind.js'
@@ -2359,6 +2359,9 @@ export default (ctx) => {
   // The native method-value readers have already checked own membership;
   // their fallback reads data without recursively selecting a method value.
   ctx.core.emit['__data_prop'] = (obj, prop) => emitPropAccess(emit(obj), obj, prop[1])
+  // A native brand guard is demanded by emitted wrappers, not source throws.
+  ctx.core.emit.__throw_method_receiver = () => throwErrorIR('TypeError', 'incompatible method receiver')
+
   ctx.core.emit['__data_key'] = (obj, key) => {
     if (ctx.transform.targetProfile.envImports && hasExternalIngress()) setLinkDemand('external')
     return emitDynGetAnyTyped(storedValue(obj), asI64(storedValue(key)), null)
@@ -2882,6 +2885,7 @@ export default (ctx) => {
   // inlines `call $__ptr_*` to bit-ops (the func is then dead-code-eliminated), but
   // the inc() must fire first so pullStdlib has the body when watr assembles at opt0.
   ctx.core.emit['__mkptr'] = (t, a, o) => (inc('__mkptr'), typed(['call', '$__mkptr', asI32(emit(t)), asI32(emit(a)), asI32(emit(o))], 'f64'))
+  ctx.core.emit.__ptr_is = (value, kind) => boxedPtrTypeEq(storedValue(value), kind[1])
   ctx.core.emit['__ptr_type'] = (p) => (inc('__ptr_type'), typed(['f64.convert_i32_s', ['call', '$__ptr_type', asI64(emit(p))]], 'f64'))
   ctx.core.emit['__ptr_aux'] = (p) => (inc('__ptr_aux'), typed(['f64.convert_i32_s', ['call', '$__ptr_aux', asI64(emit(p))]], 'f64'))
   ctx.core.emit['__ptr_offset'] = (p) => (inc('__ptr_offset'), typed(['f64.convert_i32_s', ['call', '$__ptr_offset', asI64(emit(p))]], 'f64'))

@@ -15,6 +15,7 @@ import { resetTape, fromWat, toWat } from '../src/ir/tape.js'
 import { arenaRewind } from '../src/optimize/arena-rewind.js'
 import { listedBuiltin, transitiveFrameEffects } from '../src/compile/analyze/frame-effects.js'
 import { includeAllMods } from '../src/autoload.js'
+import { representationProgramHasBigint } from '../src/compile/representation-plan.js'
 import { ctx } from '../src/ctx.js'
 import { levels, onKernel, belowOpt } from './_matrix.js'
 import { oracle } from './util.js'
@@ -601,7 +602,7 @@ test('frame effects: a builtin called by name is listed by what it keeps', () =>
     'break', 'continue', 'this', 'typeof', 'str', 'strcat', 'delete', 'in', 'navigator.hardwareConcurrency'])
   // the host keeps the callback it schedules and what a request or a file is handed; the rest the emitter alone calls
   const KEEPS = new Set(['setTimeout', 'setInterval', 'clearTimeout', 'clearInterval', 'requestAnimationFrame', 'cancelAnimationFrame', 'fetch', 'fs.read', 'fs.write',
-    '__raw_prop', '__data_prop', '__data_key', '__raw_local', '__iter_arr_ctor', '__typed_len', '__park_begin', '__park_finish', '__park_rewind',
+    '__ptr_is', '__throw_method_receiver', '__raw_prop', '__data_prop', '__data_key', '__raw_local', '__iter_arr_ctor', '__typed_len', '__park_begin', '__park_finish', '__park_rewind',
     ...['u8', 'u32', 'f64', 'i64', 'str'].flatMap(t => ['__park_write_' + t, '__park_read_' + t])])
   const names = Object.keys(ctx.core.emit).filter(k => !k.includes(':') && /^[A-Za-z_$]/.test(k) && !SYNTAX.has(k))
   ok(names.length > 200, `the runtime's names are read: ${names.length}`)
@@ -1284,4 +1285,11 @@ test('frame effects: computed collection readers retain fallback getter effects'
       is(got.read(),want.read(),`saved getter allocation O${optimize}, ${n}`)
     }
   }
+})
+
+test('frame effects: inactive native readers do not manufacture source effects', () => {
+  if(onKernel()) return
+  _compileInProcess(`export function f(i){const a=[1,2];return a[i|0]}`,{optimize:0})
+  is(ctx.runtime.userThrows,false,'runtime brand guards are not user-authored throws')
+  is(representationProgramHasBigint(ctx),false,'runtime tag predicates are not source typeof probes')
 })
