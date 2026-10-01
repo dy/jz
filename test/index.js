@@ -138,6 +138,7 @@ const TESTS = [
   'typed-payload',
   'typed-decode',
   'typed-store',
+  'typed-wide-index',
   'shift-precedence',
   'loop-step',
   'field-cse',
