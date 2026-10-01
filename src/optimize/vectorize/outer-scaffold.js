@@ -76,7 +76,7 @@ export function epilogueIsSafe(epilogue, loopNode, laneMap, pivType) {
 }
 // Pixel induction variables may be i32 (const-bound loops) or f64 (param-bound loops,
 // e.g. `for (x=0; x<width; ++x)` with f64 `width`). Match `v += 1` and `v < bound` for both.
-const matchPixelInc = (stmt) => {
+export const matchNumericInc1 = (stmt) => {
   if (!isArr(stmt) || stmt[0] !== 'local.set' || stmt.length !== 3) return null
   const x = stmt[1], v = stmt[2]
   if (!isArr(v) || v.length !== 3 || !isLocalGet(v[1], x)) return null
@@ -120,7 +120,7 @@ export function matchOuterPixelLoop(blockNode) {
   const pixelIVs = []   // [{ name, type }]
   let pivStart = oEnd
   for (let i = oEnd - 1; i >= 3; i--) {
-    const m = matchPixelInc(loopNode[i])
+    const m = matchNumericInc1(loopNode[i])
     if (!m) break
     pixelIVs.unshift(m); pivStart = i
   }

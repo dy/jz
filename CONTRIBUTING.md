@@ -3204,6 +3204,14 @@ query uses that fact only for the guarded bound; other operands and the
 original fallback retain their conversion effects.
 
 
+Escape-loop vectorization preserves the iterator's scalar Number or word type
+through pair execution and scalar tails; f64x2 lane counters do not justify
+truncating a Number counter. The iterator needs a per-pixel positive-zero seed,
+one terminal unit update, and no use in the orbit recurrence. Logical
+negations retain their original comparison and invert its boolean result,
+including unordered Number comparisons. Fractional/NaN limits, odd widths,
+zero work and counters carried between pixels are pinned in `test/simd.js`.
+
 Discipline (non-negotiable — these run in the default `speed` build that ships to everyone):
 
 - **Bit-exact.** Compile `{optimize:3}` vs `{optimize:3, noSimd:true}`, run N frames, compare output

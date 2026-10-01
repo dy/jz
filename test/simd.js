@@ -3198,6 +3198,56 @@ const dualRun = (src, ...a) => {
   return [s.cs(4096) >>> 0, d.cs(4096) >>> 0, /f64x2\./.test(w) && !/v128\.bitselect/.test(w)]
 }
 
+test('escape-time f64x2 - Number counters preserve fractional and unordered limits', () => {
+  const source = body => `export function f(width,limit,delta){
+    width=width|0;limit=+limit;delta=+delta;const out=new Float64Array(width*2);
+    for(let px=0;px<width;px++){const step=px*delta+delta;let x=0.0,y=0.0,it=0;
+      ${body}
+      out[px]=it;out[width+px]=x+y;
+    }return out
+  }`
+  for (const loop of [
+    'while(x*x<=4){x+=step;if(it>=limit)break;it++}',
+    'while(!(it>=limit)){x+=step;if(x>4)break;y+=x;it++}',
+  ]) {
+    const src=source(loop), expected=oracle(src).f
+    const simd=runVec(src,ESC_VEC), scalar=runVec(src,ESC_SCALAR)
+    ok(/f64x2\./.test(wat(src,ESC_VEC)), 'Number iterator keeps the vectorized escape loop')
+    for(const [width,limit,delta] of [[0,0,1],[1,0,1],[2,-0,1],[3,2.5,0.5],[7,3,0.5],
+      [8,NaN,3],[3,Infinity,3],[3,2147483648,3],[3,-1,3],[3,3,NaN],[7,3,0.5],[0,0,1]]) {
+      const want=expected(width,limit,delta)
+      is(scalar.f(width,limit,delta),want, `scalar ${width}/${limit}/${delta}`)
+      is(simd.f(width,limit,delta),want, `SIMD ${width}/${limit}/${delta}`)
+    }
+  }
+})
+
+test('escape-time f64x2 - counters read by updates and negative-zero seeds stay scalar', () => {
+  for(const [seed,update] of [['0','x+=it+step'],['-0','x+=step']]) {
+    const src=`export function f(width){const out=new Float64Array(width*2);
+      for(let px=0;px<width;px++){const step=px+3.0;let x=0.0,it=${seed};
+        while(x*x<=4){${update};if(it>=0)break;it++}
+        out[px]=1/it;out[width+px]=x;
+      }return out}`
+    const expected=oracle(src).f, got=runVec(src,ESC_VEC)
+    ok(!/f64x2\./.test(wat(src,ESC_VEC)), 'unsupported counter recurrence stays scalar')
+    for(const width of [0,1,2,3,7,7,0])is(got.f(width),expected(width), `${seed}: ${update}, width=${width}`)
+  }
+})
+
+test('escape-time f64x2 - a counter carried between pixels is not reset', () => {
+  const src=`export function f(width,limit){width=width|0;limit=+limit;
+    const out=new Float64Array(width*2);let it=0;
+    for(let px=0;px<width;px++){const step=px*0.25+0.25;let x=0.0;
+      while(x*x<=4){x+=step;if(it>=limit)break;it++}
+      out[px]=it;out[width+px]=x;
+    }return out}`
+  const expected=oracle(src).f, got=runVec(src,ESC_VEC)
+  for(const [width,limit] of [[0,0],[1,2.5],[2,2.5],[3,2.5],[7,2.5],[8,3],[3,NaN],[0,0],[7,2.5]])
+    is(got.f(width,limit),expected(width,limit), `${width}/${limit}`)
+  ok(!/f64x2\./.test(wat(src,ESC_VEC)), 'per-pixel vectorization needs a per-pixel counter seed')
+})
+
 test('escape-time f64x2 - dual-exit smooth colour (escape=while-cond, f64 IV)', () => {
   const [sc, dc, vec] = dualRun(DUAL(256, DUAL_SMOOTH), 64, 48, 0.05, -2.0, -1.2)
   is(dc, sc); ok(vec, 'dual-exit vectorized')

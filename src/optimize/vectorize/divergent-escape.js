@@ -1,8 +1,8 @@
 import { walkAst } from '../../ast.js'
-import { constNum, hasSideEffect, isLocalGet, matchInc1 } from './addr-model.js'
+import { hasSideEffect, isLocalGet } from './addr-model.js'
 import { LANE_PURE } from './lane-tables.js'
 import { isArr } from './node-utils.js'
-import { CMP_LANE, CMP_NEG, bumpPixelIV, readsVar, writesName } from './outer-scaffold.js'
+import { CMP_LANE, bumpPixelIV, matchNumericInc1, readsVar, writesName } from './outer-scaffold.js'
 
 export function tryDivergentEscapeVectorize(blockNode, fnLocals, freshIdRef, outer) {
   // Outer per-pixel scaffold (+ LICM preamble feeding both SIMD path and tail) —
@@ -32,8 +32,12 @@ export function tryDivergentEscapeVectorize(blockNode, fnLocals, freshIdRef, out
   // in EITHER order (mandelbrot/ship: limit at top; example-mandelbrot: escape at top). ----
   const iEnd = innerLoop.length - 1
   if (!(isArr(innerLoop[iEnd]) && innerLoop[iEnd][0] === 'br' && innerLoop[iEnd][1] === ilLabel)) return null
-  const itVar = matchInc1(innerLoop[iEnd - 1])
-  if (!itVar || fnLocals.get(itVar) !== 'i32') return null
+  const iterator = matchNumericInc1(innerLoop[iEnd - 1])
+  if (!iterator || fnLocals.get(iterator.name) !== iterator.type) return null
+  const { name: itVar, type: itType } = iterator
+  // Number counters retain Number updates/extraction. Other assignments would
+  // require a separate per-lane recurrence proof, so keep those scalar.
+  if (itType === 'f64' && writesName(innerLoop.slice(0, iEnd - 1), itVar)) return null
 
   // A break statement (br_if, or `if BC (then (br iLabel))`) → its break-when condition.
   // breakCond: does this statement break the inner loop?  Returns { cond, assigns } where
@@ -62,10 +66,9 @@ export function tryDivergentEscapeVectorize(blockNode, fnLocals, freshIdRef, out
   // wrongly deactivate. Instead keep the DIRECT comparison and negate the lane mask with
   // v128.not (NaN-exact: gt is false on NaN, ¬false = keep, matching scalar).
   const keepOf = (bc) => {
-    if (!isArr(bc)) return null
-    if (bc[0] === 'i32.eqz' && isArr(bc[1]) && CMP_LANE[bc[1][0]]) return { cmp: bc[1], negate: false }
-    if (CMP_NEG[bc[0]]) return { cmp: bc, negate: true }
-    return null
+    let negate = true
+    while (isArr(bc) && bc[0] === 'i32.eqz') { negate = !negate; bc = bc[1] }
+    return isArr(bc) && CMP_LANE[bc[0]] ? { cmp: bc, negate } : null
   }
   const topBcR = breakCond(innerLoop[2])
   const topBc = topBcR?.cond   // raw condition expr (backward-compat name for compound-top checks)
@@ -173,7 +176,8 @@ export function tryDivergentEscapeVectorize(blockNode, fnLocals, freshIdRef, out
       if (bad) return false
       if (n[0] === 'local.get') {
         const v = n[1]
-        if (v !== itVar && !carried.has(v) && !temp.has(v)) {
+        if (v === itVar) { bad = true; return false }
+        if (!carried.has(v) && !temp.has(v)) {
           if (fnLocals.get(v) !== 'f64') { bad = true; return false }
           cVars.add(v)
         }
@@ -236,18 +240,23 @@ export function tryDivergentEscapeVectorize(blockNode, fnLocals, freshIdRef, out
     for (const { tgt, expr } of preStmts) if (needed.has(tgt))
       for (const v of preTgt) if (v !== tgt && promotable(v) && !needed.has(v) && readsVar(expr, v)) { needed.add(v); changed = true }
   }
+  let hasCounterInit = false
   for (const { tgt, expr } of preStmts) {
     if (carried.has(tgt)) {
       // z₀ seed: a constant (mandelbrot/burning-ship z₀=0) OR a per-pixel expr (Julia set, where
       // z₀ = the pixel and c is constant — the dual of mandelbrot). liftCLane handles both at emit.
       carriedInit.set(tgt, expr)
     } else if (temp.has(tgt)) { /* recomputed each iteration — init ignored */ }
-    else if (tgt === itVar) { if (constNum(expr) !== 0) return null }
+    else if (tgt === itVar) {
+      if (expr?.[0] !== `${itType}.const` || !Object.is(Number(expr[1]), 0)) return null
+      hasCounterInit = true
+    }
     else if (needed.has(tgt)) { cVars.add(tgt); perPxInit.set(tgt, expr) }
     else if (outcomeVarSetEarly.has(tgt)) { /* i32 outcome var default init — ignored, handled per-lane */ }
     else if (!hasSideEffect(expr)) { /* dead per-pixel local — the escape update never reads it, drop */ }
     else return null
   }
+  if (!hasCounterInit) return null
   for (const c of carried) if (!carriedInit.has(c)) return null
   // The epilogue runs scalar per lane; it may only read carried/it/pixel-IV/invariant
   // values (each statement's reads, before that statement's writes). A read of an
@@ -340,7 +349,7 @@ export function tryDivergentEscapeVectorize(blockNode, fnLocals, freshIdRef, out
 
   // FAST PATH — the common escape-time shape `while (it<MAX){ …updates…; if (|z|²>T) break }`:
   // break the pair the instant the FIRST lane escapes (no per-iteration freeze/mask), keep `it`
-  // a scalar i32, raw f64x2 updates. A short scalar tail then finishes whichever lane lagged (≈0
+  // in its original scalar type, raw f64x2 updates. A short scalar tail then finishes whichever lane lagged (≈0
   // iterations when the pair is coherent, which adjacent pixels overwhelmingly are). Inside-set
   // pixels (both lanes to MAX) run clean 2× with zero mask overhead — exactly where the masked
   // loop bled its speedup. Other shapes (escape-at-top, body after the break) take the masked path.
@@ -359,9 +368,9 @@ export function tryDivergentEscapeVectorize(blockNode, fnLocals, freshIdRef, out
 
   if (fastPath) {
     const shIt = nm('shit'), escF = nm('escf')
-    newLocalDecls.push(['local', shIt, 'i32'], ['local', escF, 'i32'])
-    pre.push(['local.set', itVar, ['i32.const', 0]], ['local.set', escF, ['i32.const', 0]])
-    const limOf = (keepC) => keepC.negate ? [CMP_NEG[keepC.cmp[0]], keepC.cmp[1], keepC.cmp[2]] : keepC.cmp
+    newLocalDecls.push(['local', shIt, itType], ['local', escF, 'i32'])
+    pre.push(['local.set', itVar, [`${itType}.const`, 0]], ['local.set', escF, ['i32.const', 0]])
+    const limOf = (keepC) => keepC.negate ? ['i32.eqz', keepC.cmp] : keepC.cmp
     // emit a keep at its source position: a LIMIT (it is shared) → a scalar i32 guard; an ESCAPE
     // → an any_true break. `escF` records whether the loop exited via an escape (vs the limit) —
     // they can BOTH land at it=MAX (escape-at-top fires before the limit-at-mid's final update),
@@ -383,7 +392,7 @@ export function tryDivergentEscapeVectorize(blockNode, fnLocals, freshIdRef, out
       if (!compoundTop && i === midIdx) sbody.push(...fastKeep(keepMidC, kMid, tees.slice(teeTop)))
       else sbody.push(['local.set', shadow.get(ibody[i][1]), lift(ibody[i][2])])   // raw update, no freeze
     }
-    sbody.push(['local.set', itVar, ['i32.add', ['local.get', itVar], ['i32.const', 1]]])
+    sbody.push(['local.set', itVar, [`${itType}.add`, ['local.get', itVar], [`${itType}.const`, 1]]])
     simdInner = ['block', sIn, ['loop', sIl, ...sbody, ['br', sIl]]]
     postLoop = [['local.set', shIt, ['local.get', itVar]]]   // capture the break `it` AFTER the block exits
 
@@ -412,7 +421,7 @@ export function tryDivergentEscapeVectorize(blockNode, fnLocals, freshIdRef, out
         ['if', notEsc, ['then',                                      // …and THIS lane hadn't escaped → finish it
           // escape-at-MID already ran this iteration's update, so step past it before resuming;
           // escape-at-TOP tests before the update, so resume at the same it.
-          ...(escAtMid ? [['local.set', itVar, ['i32.add', ['local.get', itVar], ['i32.const', 1]]]] : []),
+          ...(escAtMid ? [['local.set', itVar, [`${itType}.add`, ['local.get', itVar], [`${itType}.const`, 1]]]] : []),
           relabelInner()]]]])
       for (const s of epilogue) out.push(bumpPixelIV(pivType, s, k))
       return out
@@ -502,7 +511,7 @@ export function tryDivergentEscapeVectorize(blockNode, fnLocals, freshIdRef, out
     epiLane = (k) => {
       const out = []
       for (const v of carriedInEpi) out.push(['local.set', v, ['f64x2.extract_lane', k, ['local.get', shadow.get(v)]]])
-      out.push(['local.set', itVar, ['i32.trunc_f64_s', ['f64x2.extract_lane', k, ['local.get', iterV]]]])
+      out.push(['local.set', itVar, itType === 'f64' ? ['f64x2.extract_lane', k, ['local.get', iterV]] : ['i32.trunc_f64_s', ['f64x2.extract_lane', k, ['local.get', iterV]]]])
       // Extract per-lane outcome variables from their i32x4 shadows (i32 lane = 2*k).
       for (const [v, sv] of outcomeVec) out.push(['local.set', v, ['i32x4.extract_lane', 2 * k, ['local.get', sv]]])
       for (const s of epilogue) out.push(bumpPixelIV(pivType, s, k))
@@ -544,7 +553,7 @@ export function tryDivergentEscapeVectorize(blockNode, fnLocals, freshIdRef, out
     epiLane = (k) => {
       const out = []
       for (const v of carriedInEpi) out.push(['local.set', v, ['f64x2.extract_lane', k, ['local.get', shadow.get(v)]]])
-      out.push(['local.set', itVar, ['i32.trunc_f64_s', ['f64x2.extract_lane', k, ['local.get', iterV]]]])
+      out.push(['local.set', itVar, itType === 'f64' ? ['f64x2.extract_lane', k, ['local.get', iterV]] : ['i32.trunc_f64_s', ['f64x2.extract_lane', k, ['local.get', iterV]]]])
       for (const s of epilogue) out.push(bumpPixelIV(pivType, s, k))
       return out
     }
