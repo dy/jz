@@ -417,6 +417,10 @@ export function createTransform(opts) {
       if (callee === 'URLSearchParams' && !shadowsBuiltin('URLSearchParams') && _gen) {
         return ['()', '__usp_new', ...rest.map(a => a == null ? a : transform(a))]
       }
+      // Constructors consume protocol values one entry at a time: entry errors
+      // close the iterator before its next step. The runtime retains native copies.
+      if (_gen?.iterProto?.on && !_gen.iterProto.std && (callee === 'Map' || callee === 'Set') && !shadowsBuiltin(callee))
+        return transform(['()', callee === 'Map' ? '__it_map' : '__it_set', ...rest])
       // Terminal iterator helper (toArray/reduce/forEach/some/every/find) on a
       // chain rooted at a known generator call → fused IIFE loop.
       if (_gen && Array.isArray(callee) && callee[0] === '.') {

@@ -17,17 +17,21 @@ const pool = [record(), record(), record(), record()]
 const recycle = r => { r.iterator = undefined; r.next = undefined; r.busy = false }
 export let __it_open = (v) => {
   if (v == null) throw new TypeError('value is not iterable')
-  // Native collection methods expose snapshot views (see README.md).
-  if (v instanceof Map) v = v.entries()
-  else if (v instanceof Set) v = v.values()
   let w = v
-  let indexed = Array.isArray(v) || (ArrayBuffer.isView(v) && !(v instanceof DataView)) || typeof v === 'string'
-  let method = indexed ? undefined : w['@@iterator']
+  let indexed = false
+  let method = w['@@iterator']
   if (method != null) {
     if (typeof method !== 'function') throw new TypeError('iterator method is not callable')
     w = method.call(w)
-    if (w == null || typeof w !== 'object') throw new TypeError('iterator is not an object')
-  } else if (!indexed && typeof w.next !== 'function') throw new TypeError('value is not iterable')
+    if (w == null || typeof w !== 'object' && typeof w !== 'function') throw new TypeError('iterator is not an object')
+  } else {
+    if (Object.hasOwn(v, '@@iterator')) throw new TypeError('value is not iterable')
+    // Native collection methods expose snapshot views (see README.md).
+    if (v instanceof Map) w = v.entries()
+    else if (v instanceof Set) w = v.values()
+    indexed = Array.isArray(w) || (ArrayBuffer.isView(w) && !(w instanceof DataView)) || typeof w === 'string'
+    if (!indexed) throw new TypeError('value is not iterable')
+  }
   // Read next before borrowing: a throwing getter must not lose a record.
   const next = indexed ? undefined : w.next
   let r = null
@@ -67,7 +71,7 @@ export let __it_pull = (r, value) => {
   let next = r.next
   if (typeof next !== 'function') throw new TypeError('iterator next is not callable')
   let step = next.call(r.iterator)
-  if (step == null || typeof step !== 'object') throw new TypeError('iterator result is not an object')
+  if (step == null || typeof step !== 'object' && typeof step !== 'function') throw new TypeError('iterator result is not an object')
   if (step.done) return undefined
   let v = value ? step.value : undefined
   r.done = false
@@ -88,7 +92,7 @@ export let __it_close = (r, abrupt) => {
     if (close != null) {
       if (typeof close !== 'function') throw new TypeError('iterator return is not callable')
       let result = close.call(r.iterator)
-      if (!abrupt && (result == null || typeof result !== 'object')) throw new TypeError('iterator return is not an object')
+      if (!abrupt && (result == null || typeof result !== 'object' && typeof result !== 'function')) throw new TypeError('iterator return is not an object')
     }
   } catch (e) { recycle(r); if (!abrupt) throw e; return }
   // A user return() can destructure again: release after it completes.
@@ -101,5 +105,35 @@ export let __it_drain = (v) => {
   let r = v.next(), a = []
   while (!r.done) { a.push(r.value); r = v.next() }
   return a
+}
+
+const nativeIterable = v => !Object.hasOwn(v, '@@iterator') &&
+  (Array.isArray(v) || v instanceof Map || v instanceof Set || typeof v === 'string' ||
+    ArrayBuffer.isView(v) && !(v instanceof DataView))
+export let __it_map = (source) => {
+  if (source == null || nativeIterable(source)) return new Map(source)
+  const out = new Map(), r = __it_open(source)
+  try {
+    while (!r.done) {
+      const entry = __it_step(r)
+      if (r.done) break
+      if (entry == null || typeof entry !== 'object' && typeof entry !== 'function') throw new TypeError('iterator entry is not an object')
+      out.set(entry[0], entry[1])
+    }
+  } catch (e) { __it_close(r, true); throw e }
+  __it_close(r, false)
+  return out
+}
+export let __it_set = (source) => {
+  if (source == null || nativeIterable(source)) return new Set(source)
+  const out = new Set(), r = __it_open(source)
+  try {
+    while (!r.done) {
+      const value = __it_step(r)
+      if (!r.done) out.add(value)
+    }
+  } catch (e) { __it_close(r, true); throw e }
+  __it_close(r, false)
+  return out
 }
 `

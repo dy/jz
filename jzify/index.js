@@ -25,7 +25,7 @@ import { err } from '../src/ctx.js'
 
 const names = createNames()
 const SHADOW_SENSITIVE = new Set([
-  'Array', 'SharedArrayBuffer', 'URLSearchParams', 'Promise', 'queueMicrotask',
+  'Array', 'Map', 'Set', 'SharedArrayBuffer', 'URLSearchParams', 'Promise', 'queueMicrotask',
   'Function', 'Iterator', 'Symbol',
 ])
 let builtinScopes = new WeakMap()
@@ -301,8 +301,8 @@ function canonSymbols(node, bindings = false) {
     // polyfill `Symbol.dispose ||= Symbol('dispose')` is a no-op statement
     if (!shadowsJzifyBuiltin('Symbol') && (op === '||=' || op === '??=' || op === '=') &&
         symbolProp(node[1])) { node.splice(0, node.length, null); return node }
-    // computed key: [':', ['[]', Symbol.X], value]
-    if (!shadowsJzifyBuiltin('Symbol') && op === ':' && Array.isArray(node[1]) && node[1][0] === '[]' && node[1].length === 2) {
+    // Computed data, method and accessor keys share the same symbol name.
+    if (!shadowsJzifyBuiltin('Symbol') && (op === ':' || op === 'get' || op === 'set') && Array.isArray(node[1]) && node[1][0] === '[]' && node[1].length === 2) {
       const prop = symbolProp(node[1][1])
       if (prop) { node[1] = prop; if (prop === '@@iterator') iterProto.on = true }
     }

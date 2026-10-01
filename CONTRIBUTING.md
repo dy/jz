@@ -2568,6 +2568,11 @@ stay in the pool, each marked while it is open: opening and closing one
 stores no pointer, so a call that destructures keeps nothing, and the frame
 census counts no store into a record for an escape (`SCRATCH`): the iterator
 it holds is lent from its opening to its close.
+Map and Set constructors stream custom iterators through these records, closing
+after entry errors before another step. Native inputs keep their copy path unless
+an own iterator overrides it. Generator records expose their self-returning iterator
+method; a plain next-only object is not an iterable. Iterator/result objects may
+also be callable, as required by the ordinary object protocol.
 
 An object rest `{a, ...r} = o` is the spread of `o` without the keys the
 pattern names (`expandDestruct`, `src/prepare/handlers.js`): the spread item

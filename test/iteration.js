@@ -251,3 +251,117 @@ test('Map construction reads entry properties in order and keeps its array itera
     for (const n of [0, 0, 1, 0]) is(got.copy(n), want.copy(n), 'Map-copy fast path preserves order and independence')
   }
 })
+
+test('collection constructors stream custom iterators and close only unfinished abrupt iteration', () => {
+  const src = `export function f(map, mode, count) {
+    let trace = '', index = 0;
+    const iterator = {
+      get next() {
+        trace += 'g';
+        if (mode === 9) throw new Error('next getter');
+        if (mode === 10) return 3;
+        return () => {
+          trace += 'n' + index;
+          if (mode === 1) throw new Error('next');
+          if (index >= count) return {done:true};
+          const at = index++;
+          return {
+            get done(){trace += 'd' + at;if(mode === 2) throw new Error('done');return false},
+            get value(){trace += 'v' + at;if(mode === 3) throw new Error('value');
+              if (!map) return at;
+              if (mode === 4 || mode === 7 || mode === 8) return 3;
+              return {get 0(){trace += 'k' + at;if(mode === 5)throw new Error('key');return 'k' + at},
+                get 1(){trace += 'x' + at;if(mode === 6)throw new Error('entry value');return at + 10}}
+            }
+          }
+        }
+      },
+      get return(){trace += 'r';if(mode === 8)return 3;return () => {trace += 'c';if(mode === 7)throw new Error('close');return {done:true}}}
+    };
+    const source = {get [Symbol.iterator](){trace += 'i';if(mode === 11)return 3;
+      return () => {trace += 'o';return mode === 12 ? 3 : iterator}}};
+    try { const out = map ? new Map(source) : new Set(source);return [[...out], trace] }
+    catch(e){return [e.name, trace]}
+  }`
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const got = jz(src, {optimize, sourceInline:false}).exports, want = oracle(src)
+    const held = []
+    for (const map of [true, false]) for (const mode of [0,0,1,2,3,4,5,6,7,8,9,10,11,12,0]) {
+      const count = mode === 0 ? held.length % 3 : 2;
+      const actual = got.f(map, mode, count), expected = want.f(map, mode, count);
+      is(actual, expected, `O${optimize}: ${map ? 'Map' : 'Set'}, mode ${mode}, count ${count}`)
+      held.push([actual, expected])
+    }
+    for (const [actual, expected] of held) is(actual, expected, 'later errors and iteration preserve earlier results')
+  }
+})
+
+test('collection constructors honor iterator overrides, generators and shadowed constructors', () => {
+  const src = `function* entries(n){for(let i = 0; i < n; i++) yield ['k' + i, i + 2]}
+    function* values(n){for(let i = 0; i < n; i++) yield i % 2}
+    export function generated(n){return [[...new Map(entries(n))], [...new Set(values(n))],
+      typeof entries(0)[Symbol.iterator]]}
+    export function overridden(which, map) {
+      let trace = '';
+      const a = which === 0 ? [['original', 3]] : which === 1 ? new Map([['original', 3]]) : new Set([3]);
+      a[Symbol.iterator] = () => {trace += 'o';let i = 0;return {next(){trace += 'n';return i++ ? {done:true} : {done:false,value:map ? ['custom',7] : 7}}}};
+      return [map ? [...new Map(a)] : [...new Set(a)], trace]
+    }
+    export function invalid(mode){const a = [1];a[Symbol.iterator] = mode ? null : undefined;
+      try{return [...new Set(a)]}catch(e){return e.name}}
+    export function bare(){try{return [...new Set({next(){return{done:true}}})]}catch(e){return e.name}}
+    export function shadow(){class Map{constructor(x){this.x=x} }return new Map(7).x}
+    export function extra(){let calls=0;const out=new Set(values(2),calls++);return[[...out],calls]}
+    function* args(n){yield entries(n)}
+    export function spread(n){return [...new Map(...args(n))]}
+    class Source { constructor(n){this.n=n} *[Symbol.iterator](){for(let i=0;i<this.n;i++)yield ['c'+i,i]} }
+    export function classes(n){return [...new Map(new Source(n))]}
+    export function subclasses(n){class SourceMap extends Map { *[Symbol.iterator](){for(let i=0;i<n;i++)yield ['s'+i,i]} }
+      return [...new Map(new SourceMap())]}
+    export function argumentOrder(){let trace='';const source = {[Symbol.iterator](){trace+='old';return{next(){return{done:true}}}}};
+      function extra(){trace+='arg';source[Symbol.iterator]=()=>{trace+='new';return{next(){trace+='n';return{done:true}}}}}
+      const out = new Map(source,extra());return [out.size,trace]}`
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const got = jz(src, {optimize, sourceInline:false}).exports, want = oracle(src)
+    for (const n of [0,0,1,4,0]) is(got.generated(n), want.generated(n), `O${optimize}: generator length ${n}`)
+    for (const which of [0,0,1,2,0]) for (const map of [true,false])
+      is(got.overridden(which,map), want.overridden(which,map), 'own iterator overrides builtin iteration')
+    for (const mode of [0,1,0]) is(got.invalid(mode), want.invalid(mode), 'an own nullish method does not select the builtin iterator')
+    is(got.bare(), want.bare(), 'a next-only object is not iterable')
+    is(got.shadow(), want.shadow(), 'a shadowed constructor keeps its own behavior')
+    is(got.extra(), want.extra(), 'ignored constructor arguments still evaluate')
+    for (const n of [0,1,3,0]) {
+      is(got.spread(n), want.spread(n), 'spread constructor arguments consume their iterator first')
+      is(got.classes(n), want.classes(n), 'class iterator methods keep their receiver')
+      is(got.subclasses(n), want.subclasses(n), 'collection subclasses retain their iterator override')
+    }
+    is(got.argumentOrder(), want.argumentOrder(), 'ignored arguments finish before the iterator method is read')
+  }
+  const plain = `const a = new Map([['a', 1]]), b = new Set([1,2]);export function f(){return [new Map(a).size,new Set(b).size]}`
+  is(jz.compile(plain, {wat:true, optimize:0}).includes('__it_open'), false, 'a later native-only compilation does not link protocol records')
+  is(jz(plain).exports.f(), oracle(plain).f(), 'native copies remain exact after compiling protocol users')
+})
+
+test('iterator records accept callable objects and release records after empty binding', () => {
+  const src = `export function f() {
+    let calls = 0;
+    function iterator(){}
+    iterator.next = () => {function step(){};step.done = calls > 0;step.value = ['a', 7];calls++;return step};
+    const source = {[Symbol.iterator](){return iterator}};
+    return [[...new Map(source)], calls]
+  }
+  export function close(empty) {
+    let trace = '';
+    const source = {[Symbol.iterator](){return {next(){trace+='n';return{done:false,value:3}},
+      return(){trace+='r';return ()=>0}}}};
+    if (empty) { const [] = source } else { const [first] = source;trace += first }
+    return trace
+  }`
+  for (const optimize of levels(0,1,2,3,'size')) {
+    const got = jz(src, {optimize, sourceInline:false}).exports, want = oracle(src)
+    for (const empty of [true,true,false,true]) {
+      is(got.f(), want.f(), `O${optimize}: callable iterator and result objects`)
+      is(got.close(empty), want.close(empty), 'a callable return result is an object, including zero-work close')
+    }
+  }
+})

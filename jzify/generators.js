@@ -623,13 +623,16 @@ export function createGeneratorLowering({ transform, transformParams, err, gener
       return ['=>', transformParams(params), ['{}', [';', ...paramInit, ...decls,
         ['return', ['()', '__it_mk', [',', nextFn, returnFn, throwFn]]]]]]
     }
+    const iterator = genTemp('iterator')
     const genObj = ['{}', [',',
       [':', 'next', nextFn],
       [':', 'return', returnFn],
       [':', 'throw', throwFn],
+      [':', '@@iterator', ['=>', null, iterator]],
     ]]
 
-    return ['=>', transformParams(params), ['{}', [';', ...paramInit, ...decls, ['return', genObj]]]]
+    return ['=>', transformParams(params), ['{}', [';', ...paramInit, ...decls,
+      ['const', ['=', iterator, genObj]], ['return', iterator]]]]
   }
 
   // ---- ES2025 iterator-helper chain fusion ----
