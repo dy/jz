@@ -223,10 +223,11 @@ test('ordinary array Number keys preserve compound updates, deletion and key con
 })
 
 test('ordinary array Number keys preserve direct proved element loops', () => {
-  const src=`export function f(){const a=[1,2,3,4];for(let i=0;i<a.length;i++)a[i]=i+1;return a[3]}`
-  for(const optimize of levels(0,1,2,3,'size')) {
+  for (const init of ['[]', '[1]', '[1,2,3,4]']) for(const optimize of levels(0,1,2,3,'size')) {
+    const src=`export function f(){const a=${init};for(let i=0;i<a.length;i++)a[i]=i+1;return a[3]}`
     const {f}=jz(src,{optimize}).exports
-    is(f(),4,`O${optimize}`);is(f(),4,`repeat O${optimize}`)
+    const expected=oracle(src).f()
+    is(f(),expected,`${init} O${optimize}`);is(f(),expected,`repeat ${init} O${optimize}`)
     if(!onKernel()) {
       const body=funcWat(compile(src,{optimize,wat:true}),'f')
       ok(!/call \$__dyn_(?:get|set)/.test(body),`proved indices stay direct, O${optimize}`)

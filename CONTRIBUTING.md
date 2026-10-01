@@ -131,6 +131,9 @@ also retain the receiver across value conversion. Uncaptured private bindings
 keep their existing index proofs when no operand writes them. Property-key
 conversion precedes a strict primitive-write error, after RHS evaluation;
 nullish receivers reject before key conversion.
+Ordinary-array stores reuse the canonical loop bounds proof at every tier;
+skipping interval analysis does not discard a proved element key. Calls and
+coercions that can resize an alias invalidate that proof.
 Prepared computed deletes keep receiver and key as separate operands. Binding,
 numeric-buffer and frame-effect scans must visit both; key conversion can call
 user code, throw, and publish storage. The surrounding handler stays live.
@@ -2862,7 +2865,10 @@ The dynamic method dispatch (`src/compile/emit/method-dispatch.js`) gives
 leg. Object methods use an explicit trailing receiver slot in the uniform
 closure ABI; programs without receiver reads omit it, while explicit receiver
 arguments still evaluate for their effects. Detached calls pass
-undefined. The receiver is captured before arguments, and generator/async
+undefined. Direct-only closure ABI shrinking preserves every supplied argument
+slot, including ignored arguments whose evaluation may mutate or throw. It
+rewrites each shared call node once, after collecting all incoming arities.
+The receiver is captured before arguments, and generator/async
 methods capture it before suspension. Iterator records call cached protocol
 methods with their original receiver. The summary joins receivers at calls,
 including accessors; source inlining must preserve that call frame. Class
