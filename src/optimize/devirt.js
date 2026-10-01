@@ -12,6 +12,7 @@
  *
  * @module optimize/devirt
  */
+import { NUMBER } from '../summary/kind.js'
 import { LAYOUT, ctx, declGlobal } from '../ctx.js'
 import { findBodyStart, nextLocalId, cloneIR, isPureIR } from '../ir.js'
 import { walkAst } from '../ast.js'
@@ -159,6 +160,15 @@ export function devirtSchemaReads(fn) {
     // receiver bits for arms/default: the stable local read inline (fresh clone
     // per use — IR nodes must not alias), or the spill
     const recvBits = () => stable ? cloneIR(stable.bits) : ['local.get', rT]
+    // Schema loads enter the same generic carrier as the fallback call.
+    // Raw Number slots need its domain conversion even when dispatch is inlined.
+    const numberField = withProp.some(({ id }) => ctx.summary?.fieldKind(id, prop) === NUMBER)
+    const slotLoad = slot => {
+      const load = ['i64.load', ['i32.add', ['i32.wrap_i64', recvBits()],
+        typeof slot === 'number' ? ['i32.const', slot * 8] : ['i32.shl', slot, ['i32.const', 3]]]]
+      return numberField ? ['call', '$__schema_value', recvBits(),
+        typeof slot === 'number' ? ['i32.const', slot] : cloneIR(slot), load] : load
+    }
     const out = `$__dsro${id}`, dflt = `$__dsrd${id}`
     // Inline cache: the generic read records the static schema slot it
     // resolved (module/collection.js buildObjectSchemaArm) in two shared
@@ -177,7 +187,7 @@ export function devirtSchemaReads(fn) {
       if (!stable) fallback[2] = ['local.get', rT]
       const dispatch = ['if', ['result', 'i64'],
         ['i64.eq', ['i64.and', recvBits(), ['i64.const', OBJECT_SCHEMA_HI_MASK]], ['global.get', `$${hiG}`]],
-        ['then', ['i64.load', ['i32.add', ['i32.wrap_i64', recvBits()], ['i32.shl', ['global.get', `$${slotG}`], ['i32.const', 3]]]]],
+        ['then', slotLoad(['global.get', `$${slotG}`])],
         ['else', ['block', ['result', 'i64'],
           ['global.set', '$__ic_found_slot', ['i32.const', -1]],
           ['local.set', vT, fallback],
@@ -201,8 +211,7 @@ export function devirtSchemaReads(fn) {
       const slot = withProp[0].slot
       const dispatch = ['if', ['result', 'i64'],
         ['i32.lt_u', sidRead(stable), ['i32.const', schemas.length]],
-        ['then', ['i64.load',
-          ['i32.add', ['i32.wrap_i64', recvBits()], ['i32.const', slot * 8]]]],
+        ['then', slotLoad(slot)],
         ['else', genericCall]]
       parent[i] = teeHoists.length
         ? ['block', out, ['result', 'i64'], ...teeHoists, dispatch]
@@ -217,7 +226,7 @@ export function devirtSchemaReads(fn) {
         const { id: sid, slot } = withProp[k]
         choice = ['if', ['result', 'i64'],
           ['i32.eq', stable ? sidRead(stable) : sidExprFor(recvBits(), node.dvObject === true), ['i32.const', sid]],
-          ['then', ['i64.load', ['i32.add', ['i32.wrap_i64', recvBits()], ['i32.const', slot * 8]]]],
+          ['then', slotLoad(slot)],
           ['else', choice]]
       }
       parent[i] = ['block', out, ['result', 'i64'], ...teeHoists,
@@ -247,8 +256,7 @@ export function devirtSchemaReads(fn) {
       inner]
     for (let k = 0; k < slots.length; k++) {
       const slot = slots[k]
-      const arm = ['br', out, ['i64.load',
-        ['i32.add', ['i32.wrap_i64', recvBits()], ['i32.const', slot * 8]]]]
+      const arm = ['br', out, slotLoad(slot)]
       const nextLabel = k + 1 < slots.length ? `$__dsr${id}_${slots[k + 1]}` : dflt
       inner = ['block', nextLabel, inner, arm]
     }

@@ -13,6 +13,7 @@ import { callWithArgs, typed, block64, undefExpr, asF64, asI32, asI32Sat, asI64,
 import { isUndefinedLiteral } from './ast.js'
 import { REP_EDGE_BOX, REP_EDGE_REJECT, representationStorageWriteAction } from './compile/representation-plan.js'
 import { hasAmbiguousBoolMerge, valTypeOf } from './kind.js'
+import { NUMBER } from './summary/kind.js'
 import { VAL } from './reps.js'
 
 export { emitter } from './ctx.js'
@@ -78,7 +79,8 @@ export const storedFieldValue = (node, sid, prop, boxed = ctx.schema.slotBigintB
     if (!slots) ctx.schema.slotRawBigint.set(sid, slots = new Set())
     slots.add(ctx.schema.list[sid].indexOf(prop))
   }
-  return (boxed ? storedValue : storedValueNarrow)(node)
+  const value = (boxed ? storedValue : storedValueNarrow)(node)
+  return ctx.summary?.fieldKind(sid, prop) === NUMBER ? value : asF64(numberCarrierIR(node, value))
 }
 
 // Non-boxing twin of storedValue: for positions guarded by a static-kind-

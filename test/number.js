@@ -646,3 +646,111 @@ test('Number container and closure boundaries preserve identity across retained 
     }
   }
 })
+
+test('Number schema reads canonicalize generic values and retain raw numeric slots', () => {
+  const src=`function raw(hi,lo){const a=new Float64Array(1),w=new Uint32Array(a.buffer);w[0]=lo;w[1]=hi;return a[0]}
+    function see(v){return[typeof v,Number.isNaN(v),String(v),Boolean(v)]}
+    function read(o,k){return[see(o[k]),see(o.exact),see(o.exact)]}
+    function values(o){return Object.values(o)}
+    export function f(hi,lo,key){const o={exact:raw(hi,lo),label:'n'};
+      return[values(o),Object.entries(o),JSON.stringify(o),read(o,String(key)),
+        Object.values({...o}),Object.values(Object.assign({},o)),Object.values(structuredClone(o)),
+        Object.getOwnPropertyDescriptor(o,'exact').value]}
+    export function copy(hi,lo){const o={uniform:raw(hi,lo)},a=new Float64Array(3),p={...o},q={uniform:0};
+      Object.assign(q,o);a[0]=o.uniform;a[1]=p.uniform;a[2]=q.uniform;return Array.from(new Uint32Array(a.buffer))}
+    export function mixed(hi,lo,mode){const o={mixed:undefined};if(mode!==1)o.mixed=raw(hi,lo);if(mode===2)o.mixed='text';
+      const p={...(mode?{maybe:raw(hi,lo)}:{})};return[Object.values(o),JSON.stringify(o),Object.values(p),JSON.stringify(p)]}`
+  const words=[[0,0],[0x80000000,0],[0x3ff00000,0],[0x7ff00000,0],[0xfff00000,0],
+    [0x7ff80001,0],[0x7ff80002,0],[0x7ff80005,0],[0x7ff80010,0],
+    ...Array.from({length:16},(_,tag)=>[0x7ff80000+tag*0x8000,0x12345678])]
+  for(const optimize of levels(0,1,2,3,'size')){
+    const want=oracle(src),got=jz(src,{optimize:{level:optimize,sourceInline:false}}).exports
+    for(const [hi,lo]of [...words,...words.slice(0,2)]){
+      for(const key of ['exact','exact','label','missing','exact'])
+        is(got.f(hi,lo,key),want.f(hi,lo,key),`schema readers ${hi.toString(16)} key${key} O${optimize}`)
+      is(got.copy(hi,lo),[lo,hi,lo,hi,lo,hi],`Number-only schema copies retain payload bits O${optimize}`)
+      for(const mode of [0,1,2,0])is(got.mixed(hi,lo,mode),want.mixed(hi,lo,mode),`mixed schema slots mode${mode} O${optimize}`)
+    }
+  }
+})
+
+test('Number property receivers preserve primitive identity and evaluation order', () => {
+  const src=`let log='';function raw(hi){const a=new Float64Array(1),w=new Uint32Array(a.buffer);w[1]=hi;return a[0]}
+    function receiver(hi){log+='r';return raw(hi)}
+    function key(fail){log+='k';return{toString(){log+='s';if(fail)throw 7;return 'missing'}}}
+    export function f(hi,k){const v=raw(hi);return[v?.missing,v['missing'],v[String(k)],v?.[String(k)],v.length,v?.length]}
+    export function effect(hi,fail){log='';try{return[receiver(hi)[key(fail)],log]}catch(e){return[e,log]}}`
+  for(const optimize of levels(0,1,2,3,'size')){
+    const want=oracle(src),got=jz(src,{optimize:{level:optimize,sourceInline:false}}).exports
+    for(const hi of [0,0x80000000,0x3ff00000,0x7ff00000,0x7ff80001,0x7ff80002,0x7ff88000,0x7ffa8000]){
+      for(const key of ['missing','missing','length','0','missing'])
+        is(got.f(hi,key),want.f(hi,key),`primitive Number receiver ${hi.toString(16)} ${key} O${optimize}`)
+      for(const fail of [false,false,true,false])is(got.effect(hi,fail),want.effect(hi,fail),`key conversion order and recovery O${optimize}`)
+    }
+  }
+})
+
+test('Number schema reader tables relocate and reset across compilations', () => {
+  const raw=`function raw(){const a=new Float64Array(1),w=new Uint32Array(a.buffer);w[1]=2146959362;return a[0]}`
+  const a=raw+`export function f(){return Object.values({n:raw(),label:'A'})}`
+  const b=raw+`export function f(){const o={get label(){return 'B'},n:raw()};return [Object.values(o),JSON.stringify(o)]}`
+  const empty=`export function f(){return Object.values({})}`
+  for(const optimize of levels(0,1,2,3,'size')){
+    const retained=[]
+    for(const src of [a,a,empty,b,a]){
+      const instance=jz(src,{optimize:{level:optimize,sourceInline:false}}).exports,want=oracle(src).f()
+      retained.push([instance,want]);is(instance.f(),want,`fresh schema table O${optimize}`)
+      for(const [old,answer]of retained)is(old.f(),answer,`retained schema table O${optimize}`)
+    }
+    if(!onWasi()&&!onKernel())for(const opts of [
+      {sharedMemory:true,memory:new WebAssembly.Memory({initial:16,maximum:64,shared:true})},
+      {importMemory:true,memory:new WebAssembly.Memory({initial:16})}]){
+      const got=jz(b,{...opts,optimize:{level:optimize,sourceInline:false}}).exports,want=oracle(b).f()
+      is(got.f(),want,`relocated schema table O${optimize}`);is(got.f(),want,`relocated table reuse O${optimize}`)
+    }
+  }
+})
+
+test('Number schema dispatch fast paths preserve the generic carrier contract', async () => {
+  if(onKernel())return
+  const {ctx}=await import('../src/ctx.js'),{devirtSchemaReads}=await import('../src/optimize/devirt.js')
+  const {NUMBER,STRING}=await import('../src/summary/kind.js'),{objectSchemaGuardHex}=await import('../layout.js')
+  for(const form of ['single','dense','sparse','cache']){
+    jz.compile('',{optimize:{level:1,watr:false}})
+    const count=form==='single'?1:form==='cache'?30:form==='sparse'?12:3
+    const schemas=[]
+    for(let i=0;i<count;i++)schemas.push(form==='sparse'&&i%3?['other'+i]:
+      i%2?['pad'+i,'value']:['value','tail'+i])
+    for(const names of schemas)ctx.schema.register(names)
+    ctx.summary={...ctx.summary,fieldKind:sid=>sid%2?STRING:NUMBER}
+    ctx.core.includes.add('__ptr_type')
+    const c=n=>['i32.const',n],get=n=>['local.get','$'+n]
+    const normalize=['func','$__schema_value',['param','$obj','i64'],['param','$slot','i32'],['param','$v','i64'],['result','i64'],
+      ['if',['result','i64'],['i32.and',['i32.eqz',['i32.and',['i32.wrap_i64',['i64.shr_u',get('obj'),['i64.const',32]]],c(1)]],
+        ['f64.ne',['f64.reinterpret_i64',get('v')],['f64.reinterpret_i64',get('v')]]],
+        ['then',['i64.const','0x7ff8000000000000']],['else',get('v')]]]
+    const dyn=['func','$__dyn_get_test',['param','$obj','i64'],['result','i64'],
+      ['global.set','$__ic_found_hi',['i64.and',get('obj'),['i64.const','0xffffffff00000000']]],
+      ['global.set','$__ic_found_slot',c(0)],
+      ['call','$__schema_value',get('obj'),c(0),['i64.load',c(128)]]]
+    const read=['call','$__dyn_get_test',get('obj')];read.dvProp='value';read.dvObject=true
+    const fn=['func','$f',['export','"f"'],['param','$obj','i64'],['result','i64'],read]
+    devirtSchemaReads(fn)
+    const globals=new Map([['$__ic_found_hi','i64'],['$__ic_found_slot','i32']])
+    const scan=n=>{if(!Array.isArray(n))return;if((n[0]==='global.get'||n[0]==='global.set')&&n[1].startsWith('$__ic_'))
+      globals.set(n[1],n[1].includes('_hi')?'i64':'i32');for(const child of n)scan(child)}
+    scan(fn)
+    const ast=['module',['memory',['export','"memory"'],1],
+      ...[...globals].map(([name,type])=>['global',name,['mut',type],[type+'.const',type==='i64'?-1:0]]),normalize,dyn,fn]
+    const ex=new WebAssembly.Instance(new WebAssembly.Module(encodeWat(ast))).exports,mem=new DataView(ex.memory.buffer)
+    ok(JSON.stringify(fn).includes('$__schema_value'),`${form} direct load retains Number-domain conversion`)
+    for(const sid of [...schemas.keys(),...schemas.keys()].filter(i=>schemas[i].includes('value')))
+      for(const bits of [0x7ff8000200000000n,0x7ff8800012345678n,0x8000000000000000n,0x3ff0000000000000n]){
+        for(let i=0;i<3;i++)mem.setBigUint64(128+i*8,bits,true)
+        const want=sid%2===0&&((bits>>52n)&0x7ffn)===0x7ffn?0x7ff8000000000000n:bits
+        const object=BigInt(objectSchemaGuardHex(sid))|128n
+        is(BigInt.asUintN(64,ex.f(object)),want,`${form} sid${sid} payload${bits.toString(16)}`)
+        is(BigInt.asUintN(64,ex.f(object)),want,`${form} repeated cache hit sid${sid}`)
+      }
+  }
+})

@@ -8,7 +8,7 @@
  * @module array
  */
 
-import { throwErrorIR, numberNanIR, typed, asF64, asI64, asI32, keyIndex, UNDEF_NAN, TOMB_NAN, temp, tempI32, allocPtr, staticArrayPtr, arrayLoop, arrayValue, deferBigintBox, elemStore, throwTypeErrorIR, truthyIR, extractF64Bits, slotAddr, isLiteralStr, resolveValType, isGlobal, undefExpr, ptrTypeEq, boxedPtrTypeEq, isPureIR, freshId, isNullish, isUndef, toStrI64, fwdOffsetIR } from '../src/ir.js'
+import { throwErrorIR, numberCarrierIR, numberNanIR, typed, asF64, asI64, asI32, keyIndex, UNDEF_NAN, TOMB_NAN, temp, tempI32, allocPtr, staticArrayPtr, arrayLoop, arrayValue, deferBigintBox, elemStore, throwTypeErrorIR, truthyIR, extractF64Bits, slotAddr, isLiteralStr, resolveValType, isGlobal, undefExpr, ptrTypeEq, boxedPtrTypeEq, isPureIR, freshId, isNullish, isUndef, toStrI64, fwdOffsetIR } from '../src/ir.js'
 import { inBoundsArrIdx, typedIdxProven, wholeKey } from '../src/type.js'
 import { emit, spread, deps, idx as emitIndex, storedValue, storedValuePlanned, positionArgs } from '../src/bridge.js'
 import { censusMaybeUndefinedKind, isPresentNumber, valTypeOf } from '../src/kind.js'
@@ -744,7 +744,7 @@ export default (ctx) => {
       const prevThrow = ctx.func.throwAbsent
       if (absentOnly) ctx.func.throwAbsent = arr
       let source
-      try { source = asF64(emit(arr)) } finally { ctx.func.throwAbsent = prevThrow }
+      try { source = asF64(numberCarrierIR(arr, emit(arr))) } finally { ctx.func.throwAbsent = prevThrow }
       const present = absentOnly && source.presentRead === true
       // A numeric name/literal key cannot change a direct local receiver.
       // Keep its identity visible to loop proofs instead of capturing it.
@@ -950,7 +950,7 @@ export default (ctx) => {
     // f64 convert/trunc round-trip. Non-i32 keys (string dispatch) fall back to
     // asI32(emit) inside emitIndex, so this is a strict improvement for every branch.
     const va = emit(arr), vi = emitIndex(idx)
-    const ptrExpr = asF64(va)
+    const ptrExpr = asF64(numberCarrierIR(arr, va))
     // Unknown property receivers can be host objects, just as for dot reads.
     // Numeric element paths do not request this fallback.
     const ensureHostOpaqueGet = () => {

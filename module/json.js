@@ -170,7 +170,7 @@ export default (ctx) => {
     // needsArrayDynMove-gated deps thunks) — a program that never writes a
     // dynamic prop anywhere never loads collection.js.
     __json_obj: () => [...toJSONDeps(), ...(ctx.schema.dateSid != null ? ['__date_to_iso_string'] : []),
-      '__ptr_offset', '__ptr_aux', '__len', '__jput', '__jindent', '__jput_str', '__json_omit', '__json_enter', '__json_leave', '__json_val', '__prop_order', '__str_index_key', '__str_eq',
+      '__schema_value', '__ptr_offset', '__ptr_aux', '__len', '__jput', '__jindent', '__jput_str', '__json_omit', '__json_enter', '__json_leave', '__json_val', '__prop_order', '__str_index_key', '__str_eq',
       ...(ctx.scope.globals.has('__dyn_props') ? ['__ihash_get_local', '__is_nullish'] : [])],
     // Chain edges ($__jput_num → $__jput_str → $__jput): each body CALLS the
     // next stage; without the explicit edge they ride the auto-dep scan, which
@@ -704,8 +704,9 @@ export default (ctx) => {
         ['if', ['global.get', '$__jgaplen'], ['then', ['call', '$__jput', ['i32.const', 32]]]],
         ['call', '$__json_val', ['local.get', '$pv']]]]]
     const at = base => ['i64.load', ['i32.add', ['local.get', base], ['i32.shl', ['local.get', '$i'], ['i32.const', 3]]]]
-    const slotValue = () => !accessors ? at('$off')
-      : ['if', ['result', 'i64'], ['i32.eq', ['local.get', '$kind'], ['i32.const', ENUM_DATA]], ['then', at('$off')],
+    const value = () => ['call', '$__schema_value', ['local.get', '$val'], ['local.get', '$i'], at('$off')]
+    const slotValue = () => !accessors ? value()
+      : ['if', ['result', 'i64'], ['i32.eq', ['local.get', '$kind'], ['i32.const', ENUM_DATA]], ['then', value()],
         ['else', ['if', ['result', 'i64'], ['i32.eq', ['local.get', '$kind'], ['i32.const', ENUM_GET]],
           ['then', ['i64.reinterpret_f64', ['call', `$${ACCESSOR_CALL}`, ['f64.reinterpret_i64', at('$off')],
             ['f64.reinterpret_i64', ['local.get', '$val']], ['f64.reinterpret_i64', ['i64.const', UNDEF_NAN]]]]],

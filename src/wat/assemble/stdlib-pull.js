@@ -225,8 +225,8 @@ export function pullStdlib(sec) {
       start.splice(findBodyStart(start), 0, ['global.set', '$__roots', ['call', '$__alloc', ['i32.const', ROOT_LOG_BYTES]]])
     }
   }
-  // Lazy data-table injection — decimal corrections (245 B) and shared
-  // power-of-five seeds (828 B), module/number.js. Each table is appended only when
+  // Lazy data-table injection — schema Number-slot bits and numeric conversion
+  // tables. Each table is appended only when
   // its owning function survived pruning, and its base global declared at the
   // offset. Must run HERE so dataPages (below) accounts for the addition; keeps
   // the tables out of programs that never convert decimals at runtime.
@@ -258,6 +258,7 @@ export function pullStdlib(sec) {
     return true
   }
   // prevent double-injection on re-entry (null-sentinel; jz forbids delete)
+  if (injectTable('__schema_value', '__schema_number', ctx.runtime.schemaNumberTable)) ctx.runtime.schemaNumberTable = null
   if (injectTable('__dec_to_f64', '__el_tbl', ctx.runtime.elTable)) ctx.runtime.elTable = null
   if (injectTable('__ryu_pow5', '__ryu_tbl', ctx.runtime.ryuTable)) ctx.runtime.ryuTable = null
   // CR-pow log2/exp2 breakpoint tables (module/math.js's $math.pow_transcend) — both gated on

@@ -7,15 +7,26 @@
  * @module schema
  */
 
-import { typed, asF64 } from '../src/ir.js'
+import { typed, asF64, asI64, canonicalNumberIR } from '../src/ir.js'
 import { emit } from '../src/bridge.js'
-import { K, hasTag } from '../src/summary/kind.js'
+import { K, NUMBER, hasTag } from '../src/summary/kind.js'
 import { VAL, lookupValType, repOf } from '../src/reps.js'
 import { ctx, inc } from '../src/ctx.js'
 import { BRAND, isBrand, canonicalKeyOrder, isArrayIndexKey, schemaKey, layoutView, accessorOf, ACCESSOR_GET, ACCESSOR_SET } from '../src/ast.js'
 import { ERR_CLASS_NAMES, ERR_SCHEMA_PROPS } from '../err-codes.js'
 
 export { ENUM_DATA, ENUM_GET, ENUM_SET } from '../src/ast.js'
+
+/** A schema slot entering a generic value consumer. Exact Number slots stay
+ * raw in storage; this edge canonicalizes their NaN payload before tag tests. */
+export function schemaValueIR(obj, slot, value, sid = -1) {
+  if (sid >= 0 && typeof slot === 'number')
+    return ctx.summary?.fieldKind(sid, ctx.schema.list[sid]?.[slot]) === NUMBER
+      ? canonicalNumberIR(typed(value, 'f64')) : value
+  inc('__schema_value')
+  return ['f64.reinterpret_i64', ['call', '$__schema_value', asI64(typed(obj, 'f64')),
+    typeof slot === 'number' ? ['i32.const', slot] : slot, ['i64.reinterpret_f64', value]]]
+}
 
 /** Enumeration's view of a layout in this program (src/ast.js layoutView):
  *  Object.keys, values and entries, for-in, spread, Object.assign,

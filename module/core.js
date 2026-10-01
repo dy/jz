@@ -11,7 +11,7 @@ import print from 'watr/print'
  * @module core
  */
 
-import { typed, asF64, asI32, asI64, NULL_NAN, UNDEF_NAN, TOMB_NAN, FALSE_NAN, TRUE_NAN, temp, tempI32, usesDynProps, ptrOffsetIR, ptrTypeEq, boxedPtrTypeEq, isNullish, isUndef, valKindToPtr, sidecarOverride, undefExpr, cloneIR, boxBigInt, unboxBigInt, deferBigintBox, isPlanTaggedBigint, throwTypeErrorIR, throwErrorIR, valueTruthyIR, numberNanIR } from '../src/ir.js'
+import { typed, asF64, asI32, asI64, NULL_NAN, UNDEF_NAN, TOMB_NAN, FALSE_NAN, TRUE_NAN, temp, tempI32, usesDynProps, ptrOffsetIR, ptrTypeEq, boxedPtrTypeEq, isNullish, isUndef, valKindToPtr, sidecarOverride, undefExpr, cloneIR, boxBigInt, unboxBigInt, deferBigintBox, isPlanTaggedBigint, throwTypeErrorIR, throwErrorIR, valueTruthyIR, numberNanIR, numberCarrierIR } from '../src/ir.js'
 import { emit, emitReference, emitIdentitySafe, storedValue, deps, wat } from '../src/bridge.js'
 import { valTypeOf, shapeOf, hasAmbiguousBoolMerge } from '../src/kind.js'
 import { ACCESSOR_GET, COMPARE_OPS, isBrand } from '../src/ast.js'
@@ -24,7 +24,7 @@ import { VAL, lookupValType, repOf } from '../src/reps.js'
 import { ctx, err, inc, warnDeopt, PTR, LAYOUT, HEAP, FORWARDING_MASK, emitArity, followForwardingWat, declGlobal, registerGetter, setLinkDemand } from '../src/ctx.js'
 import { ptrOffsetFwdWat, deletedMaskWat, SYMBOL_MIN, HIDDEN_PROPERTY_SEQ, ssoBitI64Hex } from '../layout.js'
 import { nanPrefixHex, nanPrefixMaskHex, OBJECT_SCHEMA_HI_MASK, objectSchemaGuardHex, TYPED_ELEM_BIGINT_FLAG, DATA_VIEW_FLAG, i64Hex } from '../layout.js'
-import { initSchema } from './schema.js'
+import { schemaValueIR, initSchema } from './schema.js'
 import { strHashLiteral, heapResetWat, durableLenLogIR, durableArrSnapIR, LENGTH_SSO_I64, MAP_ENTRY, collectionLaneBytes, stringIndexWat } from './collection.js'
 import { hasDurableReset } from './collection/durable.js'
 import { eqIdentityChain } from '../layout-kinds.js'
@@ -1690,7 +1690,7 @@ export default (ctx) => {
       const off = ['i32.wrap_i64', ['i64.and', bits(), ['i64.const', LAYOUT.OFFSET_MASK]]]
       chain = typed(['if', ['result', 'f64'],
         ['i64.eq', ['i64.and', bits(), ['i64.const', OBJECT_SCHEMA_HI_MASK]], ['i64.const', objectSchemaGuardHex(sid)]],
-        ['then', typed(ctx.abi.object.ops.load(off, slot), 'f64')],
+        ['then', schemaValueIR(cloneIR(va), slot, typed(ctx.abi.object.ops.load(off, slot), 'f64'), sid)],
         ['else', chain]], 'f64')
     }
     return chain
@@ -1763,7 +1763,7 @@ export default (ctx) => {
     // (emitPropAccess's `vt == null` branch) — the same "structural fallback
     // gets false" scope-out §16 already established for the chain-receiver
     // case, not a new gap.
-    const fast = typed(ctx.abi.object.ops.load(off, guard.slot), 'f64')
+    const fast = schemaValueIR(cloneIR(va), guard.slot, typed(ctx.abi.object.ops.load(off, guard.slot), 'f64'), guard.sid)
     const ir = typed(['if', ['result', 'f64'],
       cond,
       ['then', fast],
@@ -1973,6 +1973,7 @@ export default (ctx) => {
     return { slot, i32Certain, bigintProven }
   }
   function emitPropAccess(va, obj, prop) {
+    va = numberCarrierIR(obj, va)
     // Anonymous-literal fast path: when `obj` resolves at compile time to an
     // object literal `{...}` (either directly, or through a `.prop` chain
     // walked back to one), use the literal's slot index instead of falling
@@ -2544,7 +2545,7 @@ export default (ctx) => {
       // dispatch to `wasm:js-string.length` instead of forcing through f64.
       const recv = emit(obj)
       if (recv?.type === 'externref') return emitLengthAccess(recv, vt, arrayOrTyped)
-      return emitLengthAccess(asF64(recv), vt, arrayOrTyped)
+      return emitLengthAccess(asF64(numberCarrierIR(obj, recv)), vt, arrayOrTyped)
     }
 
     // Type-specific property emitter (`.regex:source`, …) — the property-read
@@ -2646,7 +2647,7 @@ export default (ctx) => {
   // the useFn callback so it runs before the consumer IR consults reps.
   const evalOnce = (value, useFn, otherwise = undefExpr()) => {
     const t = temp()
-    const va = asF64(emit(value))
+    const va = asF64(numberCarrierIR(value, emit(value)))
     return ctx.summary?.at(ctx.func.current).kindOfExpr(value) === NUMBER
       ? typed(['block', ['result', 'f64'], ['local.set', `$${t}`, va], asF64(useFn(t))], 'f64')
       : optionalGuard(t, va, useFn(t), otherwise)

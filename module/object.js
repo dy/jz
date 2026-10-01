@@ -13,6 +13,7 @@ import { DBG_INVARIANTS } from '../src/debug.js'
 import { dataAlign, dataPush, dataLen, pushStaticSlots } from '../src/static-data.js'
 import { staticArrayPtr, typed, asF64, asI64, asI32, NULL_NAN, UNDEF_NAN, TOMB_NAN, TRUE_NAN, FALSE_NAN, temp, tempI32, tempI64, block64, ptrTypeEq, dispatchByPtrType, allocPtr, needsDynShadow, mkPtrIR, extractF64Bits, slotAddr, elemStore, freshId, undefExpr, isNullish } from '../src/ir.js'
 import { emit, storedValue, storedFieldValue, withIgnoredArgs, deps } from '../src/bridge.js'
+import { NUMBER } from '../src/summary/kind.js'
 import { valTypeOf, shapeOf } from '../src/kind.js'
 import { VAL, lookupValType, repOf } from '../src/reps.js'
 import { ctx, err, inc, PTR, LAYOUT, declGlobal, setLinkDemand } from '../src/ctx.js'
@@ -20,7 +21,7 @@ import { isReassigned, MUTATE_OPS, some, isBrand, canonicalKeyOrder, spreadExclu
 import { staticObjectProps, dictCapacity } from '../src/static.js'
 import { errorCodeLiteral, ERR, ERR_CLASS_NAMES, ERR_SCHEMA_PROPS } from '../err-codes.js'
 import { deletedMaskIR, deletedSlotIR, HEAP, DATA_VIEW_FLAG, nanPrefixHex } from '../layout.js'
-import { enumView, enumKeys, ownKeys, viewsOn, enumViewsOn, ENUM_DATA, ENUM_GET } from './schema.js'
+import { schemaValueIR, enumView, enumKeys, ownKeys, viewsOn, enumViewsOn, ENUM_DATA, ENUM_GET } from './schema.js'
 import { ACCESSOR_CALL } from '../src/compile/emit/accessor-call.js'
 import { demandHostReceiver } from '../src/compile/func-exports.js'
 import { isGlobal } from '../src/ir/vars.js'
@@ -722,7 +723,7 @@ export default (ctx) => {
       body.push(['local.set', `$${sBase2}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${s}`]]]])
       for (const e of enumEntries(sSchema)) {
         const slot = tSchema.indexOf(e.key)
-        body.push(['local.set', `$${field}`, enumValue(e, ['local.get', `$${sBase2}`], ['local.get', `$${s}`])])
+        body.push(['local.set', `$${field}`, enumValue(e, ['local.get', `$${sBase2}`], ['local.get', `$${s}`], tSid == null || ctx.summary?.fieldKind(tSid, e.key) !== NUMBER)])
         if (hasDurableReset()) body.push(durableObjSnapNode(tBase, fieldGet, slot))
         body.push(ctx.abi.object.ops.store(['local.get', `$${tBase}`], slot, fieldGet))
       }
@@ -948,8 +949,7 @@ function emitObjectAssignDynamic(target, sources) {
     if (sSchema) {
       body.push(['local.set', `$${sBase}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${s}`]]]])
       for (const e of enumEntries(sSchema))
-        body.push(setKey(asI64(emit(['str', String(e.key)])), e.kind === ENUM_DATA ? ctx.abi.object.ops.loadBits(['local.get', `$${sBase}`], e.slot)
-          : asI64(typed(enumValue(e, ['local.get', `$${sBase}`], ['local.get', `$${s}`]), 'f64'))))
+        body.push(setKey(asI64(emit(['str', String(e.key)])), asI64(typed(enumValue(e, ['local.get', `$${sBase}`], ['local.get', `$${s}`]), 'f64'))))
       continue
     }
     body.push(
@@ -1049,12 +1049,18 @@ function closedLayoutOf(obj) {
 // The value an enumerated entry reads off an object, `base` its payload and
 // `obj` its box: the slot, the getter's result (compile/emit/accessor-call.js),
 // or undefined for a setter alone.
-const enumValue = (e, base, obj) => e.kind === ENUM_DATA ? ctx.abi.object.ops.load(base, e.slot)
+const enumValue = (e, base, obj, generic = true) => e.kind === ENUM_DATA
+  ? generic ? schemaValueIR(obj, e.slot, ctx.abi.object.ops.load(base, e.slot), e.sid) : ctx.abi.object.ops.load(base, e.slot)
   : e.kind === ENUM_GET ? ['call', `$${ACCESSOR_CALL}`, ctx.abi.object.ops.load(base, e.slot), obj, undefExpr()]
   : undefExpr()
 
 // Every entry a layout enumerates, a data slot per name when it has no view.
-const enumEntries = (names) => enumView(names) ?? names.map((key, slot) => ({ key, slot, kind: ENUM_DATA }))
+const enumEntries = (names) => {
+  const entries = enumView(names) ?? names.map((key, slot) => ({ key, slot, kind: ENUM_DATA }))
+  const sid = ctx.schema.list.indexOf(names)
+  for (const entry of entries) entry.sid = sid
+  return entries
+}
 
 // Point a walk's schema row (`src`, `sn`) at the layout's view keys, and `map`
 // at its map, when `sid` has a view: `__schema_view[sid]`
@@ -1073,11 +1079,12 @@ const viewRowIR = (sid, src, sn, map, table = '__schema_view') => {
 // A schema slot's value in a walk (walkObjectProperties): the slot, or under a
 // view (`kind`) its getter's result, undefined for a setter alone.
 const slotValue = ({ base, i, kind, obj }) => {
-  const load = ['f64.load', ['i32.add', ['local.get', `$${base}`], ['i32.shl', ['local.get', `$${i}`], ['i32.const', 3]]]]
-  if (!kind) return load
-  return ['if', ['result', 'f64'], ['i32.eqz', ['local.get', `$${kind}`]], ['then', load],
+  const load = () => ['f64.load', ['i32.add', ['local.get', `$${base}`], ['i32.shl', ['local.get', `$${i}`], ['i32.const', 3]]]]
+  const value = schemaValueIR(['local.get', `$${obj}`], ['local.get', `$${i}`], load())
+  if (!kind) return value
+  return ['if', ['result', 'f64'], ['i32.eqz', ['local.get', `$${kind}`]], ['then', value],
     ['else', ['if', ['result', 'f64'], ['i32.eq', ['local.get', `$${kind}`], ['i32.const', ENUM_GET]],
-      ['then', ['call', `$${ACCESSOR_CALL}`, load, ['local.get', `$${obj}`], undefExpr()]],
+      ['then', ['call', `$${ACCESSOR_CALL}`, load(), ['local.get', `$${obj}`], undefExpr()]],
       ['else', undefExpr()]]]]
 }
 
@@ -1265,7 +1272,9 @@ function emitObjectSpread(props, _target = takeLiteralTarget()) {
         group.props.forEach((gp, gi) => {
           const ti = schema.indexOf(group.keys[gi])
           if (ti < 0) return
-          present.push(ctx.abi.object.ops.store(['local.get', `$${t}`], ti, ctx.abi.object.ops.load(['local.get', `$${go}`], gi)))
+          const value = ctx.abi.object.ops.load(['local.get', `$${go}`], gi)
+          present.push(ctx.abi.object.ops.store(['local.get', `$${t}`], ti,
+            ctx.summary?.fieldKind(schemaId, group.keys[gi]) === NUMBER ? value : schemaValueIR(['local.get', `$${gv}`], gi, value)))
           absent.push(ctx.abi.object.ops.store(['local.get', `$${t}`], ti, undefExpr()))
         })
         body.push(
@@ -1284,15 +1293,19 @@ function emitObjectSpread(props, _target = takeLiteralTarget()) {
           ['local.set', `$${src}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${sv}`]]]])
         for (const e of view) {
           const ti = skip?.includes(e.key) ? -1 : schema.indexOf(e.key)
-          if (ti >= 0) body.push(ctx.abi.object.ops.store(['local.get', `$${t}`], ti, enumValue(e, ['local.get', `$${src}`], ['local.get', `$${sv}`])))
+          if (ti >= 0) body.push(ctx.abi.object.ops.store(['local.get', `$${t}`], ti, enumValue(e, ['local.get', `$${src}`], ['local.get', `$${sv}`], ctx.summary?.fieldKind(schemaId, e.key) !== NUMBER)))
         }
         continue
       }
-      body.push(['local.set', `$${src}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', asF64(emit(p[1]))]]])
+      const sv = temp('ospv')
+      body.push(['local.set', `$${sv}`, asF64(emit(p[1]))],
+        ['local.set', `$${src}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${sv}`]]]])
       for (let si = 0; si < sSchema.length; si++) {
         const ti = skip?.includes(sSchema[si]) ? -1 : schema.indexOf(sSchema[si])
         if (ti < 0) continue
-        body.push(ctx.abi.object.ops.store(['local.get', `$${t}`], ti, ctx.abi.object.ops.load(['local.get', `$${src}`], si)))
+        const value = ctx.abi.object.ops.load(['local.get', `$${src}`], si)
+        body.push(ctx.abi.object.ops.store(['local.get', `$${t}`], ti,
+          ctx.summary?.fieldKind(schemaId, sSchema[si]) === NUMBER ? value : schemaValueIR(['local.get', `$${sv}`], si, value)))
       }
     } else if (Array.isArray(p) && p[0] === ':') {
       const ti = schema.indexOf(p[1])
@@ -1372,8 +1385,7 @@ function emitDynamicSpread(props, excluded = null) {
       inc('__ptr_type')
       body.push(['local.set', `$${s}`, asF64(emit(p[1]))])
       const setKeys = enumEntries(canonicalKeyOrder(group.keys)).map(e =>
-        setKey(asI64(emit(['str', String(e.key)])), e.kind === ENUM_DATA ? ctx.abi.object.ops.loadBits(['local.get', `$${sBase}`], e.slot)
-          : asI64(typed(enumValue(e, ['local.get', `$${sBase}`], ['local.get', `$${s}`]), 'f64'))))
+        setKey(asI64(emit(['str', String(e.key)])), asI64(typed(enumValue(e, ['local.get', `$${sBase}`], ['local.get', `$${s}`]), 'f64'))))
       body.push(['if', ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${s}`]]], ['i32.const', PTR.OBJECT]],
         ['then', ['local.set', `$${sBase}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${s}`]]]], ...setKeys]])
       continue
@@ -1385,8 +1397,7 @@ function emitDynamicSpread(props, excluded = null) {
       for (const e of enumEntries(sSchema)) {
         if (skip?.names.includes(e.key)) continue
         const k = asI64(emit(['str', String(e.key)]))
-        body.push(unless(k, skip?.exprs ?? [], setKey(k, e.kind === ENUM_DATA ? ctx.abi.object.ops.loadBits(['local.get', `$${sBase}`], e.slot)
-          : asI64(typed(enumValue(e, ['local.get', `$${sBase}`], ['local.get', `$${s}`]), 'f64')))))
+        body.push(unless(k, skip?.exprs ?? [], setKey(k, asI64(typed(enumValue(e, ['local.get', `$${sBase}`], ['local.get', `$${s}`]), 'f64')))))
       }
       continue
     }

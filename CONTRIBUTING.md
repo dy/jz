@@ -74,6 +74,12 @@ Number enters a generic slot, mixed join, nullable result or parameter with an
 active default. Checked reads normalize only their present arm. Uniform Number
 parameters, results and typed stores retain their bits; `typeof` and nullish
 checks use their semantic Number proof. No generic consumer guesses a lost kind.
+Exact Number schema slots retain raw payloads. Enumeration, JSON and generic
+property dispatch normalize them using the settled per-slot Number contract;
+static guards and schema dispatch fast paths obey the same boundary. A lazy
+packed table serves runtime slots and follows ordinary static-data relocation.
+Mixed slots normalize Number writes before storage, while Number-only slot copies
+retain their bits. Number property receivers normalize before generic tag tests.
 Guarded scalar updates are converted to selects in watr using Wasm types,
 after JZ lowers the original branches with their settled representation facts.
 The statement scheduler orders adjacent integer min/max updates so an input

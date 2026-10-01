@@ -100,7 +100,7 @@ export function numberNanIR(get) {
 
 /** A Number entering a generic value slot cannot retain pointer-looking NaN
  *  bits. Uniform numeric computation and typed storage do not use this edge. */
-function canonicalNumberIR(value) {
+export function canonicalNumberIR(value) {
   if (value.type === 'i32' || value.numberCanonical || value[0] === 'f64.const' && typeof value[1] === 'number' ||
       /^f64\.convert_i(?:32|64)_[su]$/.test(value[0])) return value
   const name = temp('cn'), get = ['local.get', `$${name}`]

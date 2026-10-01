@@ -17,6 +17,7 @@ import { representationProgramHasBigint } from '../src/compile/representation-pl
 import { staticArrayPtr, throwErrorIR, throwTypeErrorIR, typed, asF64, asI64, asI32, UNDEF_NAN, TOMB_NAN, temp, tempI32, tempI64, allocPtr, mkPtrIR, ptrTypeEq, boxedPtrTypeEq, elemStore, arrayValue, elemLoad, boolBoxIR, freshId, callWithArgs, numberNanIR, undefExpr } from '../src/ir.js'
 import { emit, deps, call, storedValue, withIgnoredArgs } from '../src/bridge.js'
 import { valTypeOf } from '../src/kind.js'
+import { NUMBER } from '../src/summary/kind.js'
 import { VAL, lookupValType } from '../src/reps.js'
 import { isLiteralStr, ACCESSOR_GET, ACCESSOR_SET } from '../src/ast.js'
 import { ctx, inc, PTR, LAYOUT, registerGetter, declGlobal, setLinkDemand } from '../src/ctx.js'
@@ -255,6 +256,7 @@ export default (ctx) => {
   const errorSidTest = (sid) => [...ctx.schema.errorSidEntries().keys()]
     .map(id => `(i32.eq ${sid} (i32.const ${id}))`).reduce((a, b) => `(i32.or ${a} ${b})`, '(i32.const 0)')
   deps({
+    __schema_value: [],
     __schema_slot: ['__key_eq', '__str_hash'],
     __schema_slot_h: ['__key_eq'],
     __view_find: ['__key_eq'],
@@ -333,8 +335,8 @@ export default (ctx) => {
     __ihash_get_local: ['__map_hash'],
     __ihash_set_local: () => ['__map_hash', '__alloc_hdr_n', '__mkptr', '__zomb_scan', '__coll_rehash', ...slotLogDeps()],
     __dyn_get_t: ['__dyn_get_t_h', '__str_hash', '__is_str_key', '__to_key'],
-    __dyn_get_t_h: () => [...(ctx.schema.regexSids.size ? ['__regex_prop'] : []), '__arr_value', ...viewDeps('__view_get'), ...builtinPropDeps(), '__is_str_key', '__schema_slot_h', '__ihash_get_local', '__key_eq', '__is_nullish', '__hash_get_local_h', '__hash_get_local_hm', '__str_arr_idx', '__str_length', '__ptr_aux', ...(ctx.core.stdlib['__str_idx'] ? ['__str_idx'] : []), ...(ctx.linkDemand.typedProperties ? ['__typed_str_idx', '__typed_prop_get', '__len', representationProgramHasBigint(ctx) ? '__typed_idx_tagged' : '__typed_idx'] : [])],
-    __dyn_get_t_hm: () => [...viewDeps('__view_get'), ...builtinPropDeps(), '__is_str_key', '__schema_slot_h', '__ihash_get_local', '__key_eq', '__is_nullish', '__hash_get_local_hm', '__str_arr_idx', '__str_length', '__ptr_aux', ...(ctx.linkDemand.typedProperties ? ['__typed_str_idx', '__typed_prop_get', '__len', representationProgramHasBigint(ctx) ? '__typed_idx_tagged' : '__typed_idx'] : [])],
+    __dyn_get_t_h: () => [...(ctx.schema.regexSids.size ? ['__regex_prop'] : []), '__arr_value', ...viewDeps('__view_get'), ...builtinPropDeps(), '__is_str_key', '__schema_slot_h', '__schema_value', '__ihash_get_local', '__key_eq', '__is_nullish', '__hash_get_local_h', '__hash_get_local_hm', '__str_arr_idx', '__str_length', '__ptr_aux', ...(ctx.core.stdlib['__str_idx'] ? ['__str_idx'] : []), ...(ctx.linkDemand.typedProperties ? ['__typed_str_idx', '__typed_prop_get', '__len', representationProgramHasBigint(ctx) ? '__typed_idx_tagged' : '__typed_idx'] : [])],
+    __dyn_get_t_hm: () => [...viewDeps('__view_get'), ...builtinPropDeps(), '__is_str_key', '__schema_slot_h', '__schema_value', '__ihash_get_local', '__key_eq', '__is_nullish', '__hash_get_local_hm', '__str_arr_idx', '__str_length', '__ptr_aux', ...(ctx.linkDemand.typedProperties ? ['__typed_str_idx', '__typed_prop_get', '__len', representationProgramHasBigint(ctx) ? '__typed_idx_tagged' : '__typed_idx'] : [])],
     __dyn_has: ['__dyn_get_t_hm', '__ptr_type', '__str_hash', '__is_str_key', '__to_key'],
     __dyn_get: ['__dyn_get_t', '__ptr_type'],
     __dyn_get_expr_t: ['__arr_value', '__dyn_get_t', '__hash_get_local', '__is_str_key', '__to_key', '__ptr_offset', '__ptr_offset_fwd'],
@@ -1530,6 +1532,38 @@ export default (ctx) => {
       (local.set $i (i32.add (local.get $i) (i32.const 1)))
       (br $scan)))
     (i32.const -1))` }
+  // Only compile-time schema slots can be raw Numbers. Runtime schemas use
+  // ordinary generic storage; callers have already validated the slot index.
+  ctx.core.stdlib.__schema_value = () => {
+    const n = ctx.schema.list.length, rows = [], offsets = new Uint32Array(n)
+    let size = n * 4
+    for (let sid = 0; sid < n; sid++) {
+      const keys = ctx.schema.list[sid], row = new Uint8Array(Math.ceil(keys.length / 8))
+      let any = false
+      for (let i = 0; i < keys.length; i++) if (ctx.summary?.fieldKind(sid, keys[i]) === NUMBER) {
+        row[i >> 3] |= 1 << (i & 7); any = true
+      }
+      if (any) { offsets[sid] = size; size += row.length; rows.push(row) }
+    }
+    if (!rows.length) return '(func $__schema_value (param i64) (param i32) (param $value i64) (result i64) (local.get $value))'
+    const bytes = new Uint8Array(size), data = new DataView(bytes.buffer)
+    for (let i = 0; i < n; i++) data.setUint32(i * 4, offsets[i], true)
+    let at = n * 4
+    for (const row of rows) { bytes.set(row, at); at += row.length }
+    ctx.runtime.schemaNumberTable = bytes
+    return `(func $__schema_value (param $obj i64) (param $slot i32) (param $value i64) (result i64)
+      (local $sid i32) (local $row i32) (local $f f64)
+      (local.set $f (f64.reinterpret_i64 (local.get $value)))
+      (if (f64.eq (local.get $f) (local.get $f)) (then (return (local.get $value))))
+      (local.set $sid (i32.and (i32.wrap_i64 (i64.shr_u (local.get $obj) (i64.const ${LAYOUT.AUX_SHIFT}))) (i32.const ${LAYOUT.AUX_MASK})))
+      (if (i32.ge_u (local.get $sid) (i32.const ${n})) (then (return (local.get $value))))
+      (local.set $row (i32.load (i32.add (global.get $__schema_number) (i32.shl (local.get $sid) (i32.const 2)))))
+      (if (local.get $row) (then
+        (if (i32.and (i32.load8_u (i32.add (i32.add (global.get $__schema_number) (local.get $row)) (i32.shr_u (local.get $slot) (i32.const 3))))
+              (i32.shl (i32.const 1) (i32.and (local.get $slot) (i32.const 7))))
+          (then (return (i64.const ${nanPrefixHex()}))))))
+      (local.get $value))`
+  }
   ctx.core.stdlib['__schema_slot'] = () => schemaSlotBody('__schema_slot', false)
   ctx.core.stdlib['__schema_slot_h'] = () => schemaSlotBody('__schema_slot_h', true)
   // A computed key naming an object literal's accessor (module/schema.js
@@ -1726,8 +1760,8 @@ export default (ctx) => {
                (if (i32.lt_u (i32.wrap_i64 (i64.and (i64.shr_u (local.get $obj) (i64.const ${LAYOUT.AUX_SHIFT})) (i64.const ${LAYOUT.AUX_MASK}))) (i32.const ${ctx.schema.list.length}))
                  (then (global.set $__ic_found_slot (local.get $idx))
                        (global.set $__ic_found_hi (i64.and (local.get $obj) (i64.const ${OBJECT_SCHEMA_HI_MASK})))))`}
-               (return (i64.load (i32.add (local.get $off) (i32.shl (local.get $idx) (i32.const 3)))))`
-            : `(local.set $val (i64.load (i32.add (local.get $off) (i32.shl (local.get $idx) (i32.const 3)))))
+               (return (call $__schema_value (local.get $obj) (local.get $idx) (i64.load (i32.add (local.get $off) (i32.shl (local.get $idx) (i32.const 3))))))`
+            : `(local.set $val (call $__schema_value (local.get $obj) (local.get $idx) (i64.load (i32.add (local.get $off) (i32.shl (local.get $idx) (i32.const 3))))))
                (local.set $dmask ${deletedMaskWat('$off')})
                (return (select (i64.const ${TOMB_NAN}) (local.get $val) ${deletedSlotWat('$dmask', '$idx', '$val')}))`}))
         ${!viewsOn() ? '' : !presence ? `
