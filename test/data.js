@@ -6,6 +6,41 @@ import jz, { compile, _compileInProcess } from '../index.js'
 import { onWasi, onKernel, adaptI64, levels } from './_matrix.js'
 import { BIGINT_TYPED_STORE_CALLS, BIGINT_TYPED_STORE_CATCH_SOURCE, BIGINT_TYPED_STORE_ERROR_SOURCE, BIGINT_TYPED_STORE_PAYLOAD, BIGINT_TYPED_STORE_SOURCE, BIGINT_TYPED_STORE_THROW_CALLS } from './_bigint-typed-store-corpus.js'
 import { cases, oracle } from './util.js'
+import parseWat from 'watr/parse'
+
+// Prepared method readers can own the generic fallback for a source read.
+// Follow actual direct/tail calls, never an unrelated helper elsewhere in WAT.
+const dynamicReadIn = wat => {
+  const funcs = new Map(parseWat(wat).filter(n => n?.[0] === 'func').map(n => [n[1], n]))
+  return name => {
+    const root = funcs.get('$' + name), seen = new Set()
+    ok(root, `${name}: the structural control names an emitted function`)
+    const visit = n => {
+      if (!Array.isArray(n)) return false
+      if (n[0] === 'call' || n[0] === 'return_call') {
+        if (/^\$__dyn_get_(?:expr|any)(?:_|$)/.test(n[1])) return true
+        if (!seen.has(n[1])) { seen.add(n[1]); if (visit(funcs.get(n[1]))) return true }
+      }
+      return n.some(visit)
+    }
+    return visit(root)
+  }
+}
+
+const checkDynamicRead = read => {
+  if (onWasi()) return // these calls pass live host objects through the JS boundary
+  const array = [11, 23]
+  const object = { 0: 'object index', note: 41, absent: undefined, '-1': -7, 1.5: 'fraction', 4294967296: 'wide' }
+  for (const [receiver, key] of [[array, 0], [array, 0], [object, 0], [array, 0],
+    [array, 'note'], [object, 'note'], [object, -1], [object, 1.5], [object, 4294967296],
+    [array, 'length'], [array, 2], [[], 0], [object, 'absent'], [object, 'missing'],
+    ['xy', 1], ['xy', 'length'], [7, 'note']])
+    is(read(receiver, key), receiver[key], `unproven receiver/key: ${typeof receiver}, ${key}`)
+  object.note = 'changed'
+  is(read(object, 'note'), object.note, 'a later call observes the changed named property')
+  for (const receiver of [null, undefined])
+    throws(() => read(receiver, 'note'), new TypeError(), `${receiver}: a nullish receiver still throws`)
+}
 
 test('builtin method conditions preserve receiver families and own overrides', () => {
   const source = `let calls = 0
@@ -4541,16 +4576,15 @@ test('RepresentationPlan: a param fed only a `.`-property read of a proven-schem
     export function useProp() { return dispatch(1, CTX) }
     export function useUnproven(o, k) { return o[k] }
   `
-  const extractBody = (wat, fname) => {
-    const start = wat.indexOf(`(func $${fname}`)
-    const next = wat.indexOf('\n  (func ', start + 1)
-    return wat.slice(start, next)
-  }
   const wat = String(compile(src, { optimize: false, wat: true }))
-  ok(!/__dyn_get_(?:expr|any)/.test(extractBody(wat, 'grab')), "O0: grab's list param, fed only dispatch's own `c.items` property read, proves ARRAY through the receiver's schemaId + SlotFact kind census and keeps direct array codegen — no shadow probe")
-  ok(/__dyn_get_(?:expr|any)/.test(extractBody(wat, 'useUnproven')), 'O0: useUnproven (a genuinely unprovable dynamic-key read) DOES get the shadow probe — confirms the probe machinery is live in this exact compiled unit, so the grab result above is not vacuous')
-  for (const optimize of levels(false, 2, 3))
-    is(jz(src, { optimize }).exports.useProp(), 20, `O${optimize || 0}: dispatch(1, CTX) -> grab(1, CTX.items) -> CTX.items[1] === 20, JS-correct`)
+  const hasDynamicRead = dynamicReadIn(wat)
+  ok(!hasDynamicRead('grab'), "O0: grab's list param, fed only dispatch's own `c.items` property read, proves ARRAY through the receiver's schemaId + SlotFact kind census and keeps direct array codegen — no shadow probe")
+  ok(hasDynamicRead('useUnproven'), 'O0: useUnproven (a genuinely unprovable dynamic-key read) DOES get the shadow probe — confirms the probe machinery is live in this exact compiled unit, so the grab result above is not vacuous')
+  for (const optimize of levels(false, 2, 3)) {
+    const ex = jz(src, { optimize }).exports
+    checkDynamicRead(ex.useUnproven)
+    is(ex.useProp(), 20, `O${optimize || 0}: dispatch(1, CTX) -> grab(1, CTX.items) -> CTX.items[1] === 20, JS-correct`)
+  }
 })
 
 test('RepresentationPlan: a `.`-property read chained off a proven array-element read also proves the field (positive, array-element-chained receiver)', () => {
@@ -4726,10 +4760,14 @@ test('DictKindIndex: a for-in-unrolled array-as-dictionary proves a direct `.`-p
     export function otherUse(o, k) { return useUnproven(o, k) }
   `
   const wat = String(compile(src, { optimize: false, wat: true }))
-  ok(!/__dyn_get_(?:expr|any)/.test(extractFnBody(wat, 'id')), "O0: id's list param, fed only assemble's own ctx.type read, proves ARRAY through the for-in-unroll census and keeps direct array codegen — no shadow probe")
-  ok(/__dyn_get_(?:expr|any)/.test(extractFnBody(wat, 'useUnproven')), 'O0: useUnproven (a genuinely unprovable dynamic-key read) DOES get the shadow probe — confirms the probe machinery is live in this exact compiled unit, so the id result above is not vacuous')
-  for (const optimize of levels(false, 2, 3))
-    is(jz(src, { optimize }).exports.main(), 42, `O${optimize || 0}: assemble() -> ctx.type.push(42); id(0, ctx.type) === 42, JS-correct`)
+  const hasDynamicRead = dynamicReadIn(wat)
+  ok(!hasDynamicRead('id'), "O0: id's list param, fed only assemble's own ctx.type read, proves ARRAY through the for-in-unroll census and keeps direct array codegen — no shadow probe")
+  ok(hasDynamicRead('useUnproven'), 'O0: useUnproven (a genuinely unprovable dynamic-key read) DOES get the shadow probe — confirms the probe machinery is live in this exact compiled unit, so the id result above is not vacuous')
+  for (const optimize of levels(false, 2, 3)) {
+    const ex = jz(src, { optimize }).exports
+    checkDynamicRead(ex.otherUse)
+    is(ex.main(), 42, `O${optimize || 0}: assemble() -> ctx.type.push(42); id(0, ctx.type) === 42, JS-correct`)
+  }
 })
 
 test('DictKindIndex: the for-in-unroll census survives a same-module named-function AND a computed-dispatch-table forwarding chain (positive, watr\'s real shape)', () => {
@@ -4760,10 +4798,14 @@ test('DictKindIndex: the for-in-unroll census survives a same-module named-funct
     export function otherUse(o, k) { return useUnproven(o, k) }
   `
   const wat = String(compile(src, { optimize: false, wat: true }))
-  ok(!/__dyn_get_(?:expr|any)/.test(extractFnBody(wat, 'id')), "O0: id's list param, reached through instr's named-function forward THEN HANDLER's computed-dispatch forward, still proves ARRAY — no shadow probe")
-  ok(/__dyn_get_(?:expr|any)/.test(extractFnBody(wat, 'useUnproven')), 'O0: sanity — the shadow-probe machinery is live in this exact compiled unit')
-  for (const optimize of levels(false, 2, 3))
-    is(jz(src, { optimize }).exports.main(), 22, `O${optimize || 0}: instr(['funcidx',1], ctx) -> id(1, ctx.func) === 22, JS-correct`)
+  const hasDynamicRead = dynamicReadIn(wat)
+  ok(!hasDynamicRead('id'), "O0: id's list param, reached through instr's named-function forward THEN HANDLER's computed-dispatch forward, still proves ARRAY — no shadow probe")
+  ok(hasDynamicRead('useUnproven'), 'O0: sanity — the shadow-probe machinery is live in this exact compiled unit')
+  for (const optimize of levels(false, 2, 3)) {
+    const ex = jz(src, { optimize }).exports
+    checkDynamicRead(ex.otherUse)
+    is(ex.main(), 22, `O${optimize || 0}: instr(['funcidx',1], ctx) -> id(1, ctx.func) === 22, JS-correct`)
+  }
 })
 
 test('DictKindIndex: a POSITIONAL array-of-arrows dispatch table forwards the same way as an object-literal table (positive, watr\'s real build[] shape)', () => {
@@ -4793,10 +4835,14 @@ test('DictKindIndex: a POSITIONAL array-of-arrows dispatch table forwards the sa
     export function otherUse(o, k) { return useUnproven(o, k) }
   `
   const wat = String(compile(src, { optimize: false, wat: true }))
-  ok(!/__dyn_get_(?:expr|any)/.test(extractFnBody(wat, 'id')), "O0: id's list param, reached through TABLE's array-of-arrows forward (position 1, past a shorter-arity sibling member), still proves ARRAY")
-  ok(/__dyn_get_(?:expr|any)/.test(extractFnBody(wat, 'useUnproven')), 'O0: sanity — the shadow-probe machinery is live in this exact compiled unit')
-  for (const optimize of levels(false, 2, 3))
-    is(jz(src, { optimize }).exports.main(), 77, `O${optimize || 0}: dispatch(1,[1,2,3],ctx) -> id(0, ctx.type) === 77, JS-correct`)
+  const hasDynamicRead = dynamicReadIn(wat)
+  ok(!hasDynamicRead('id'), "O0: id's list param, reached through TABLE's array-of-arrows forward (position 1, past a shorter-arity sibling member), still proves ARRAY")
+  ok(hasDynamicRead('useUnproven'), 'O0: sanity — the shadow-probe machinery is live in this exact compiled unit')
+  for (const optimize of levels(false, 2, 3)) {
+    const ex = jz(src, { optimize }).exports
+    checkDynamicRead(ex.otherUse)
+    is(ex.main(), 77, `O${optimize || 0}: dispatch(1,[1,2,3],ctx) -> id(0, ctx.type) === 77, JS-correct`)
+  }
 })
 
 test('DictKindIndex: `??=`/`||=`/`&&=` fold their RHS the same as a plain `=` write (positive, watr\'s real metadata idiom)', () => {
