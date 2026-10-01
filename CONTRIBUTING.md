@@ -3190,6 +3190,9 @@ user conversion. Source loop planning asks effect queries before emission has
 settled accessor views or synthesized conversion helpers, so those queries use
 source accessor facts and conservatively retain object-conversion effects.
 Optional calls are effects even when their AST carries no argument slot.
+When an existing entry guard proves a module bound is a Number, the effect
+query uses that fact only for the guarded bound; other operands and the
+original fallback retain their conversion effects.
 
 
 Discipline (non-negotiable — these run in the default `speed` build that ships to everyone):

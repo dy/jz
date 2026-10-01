@@ -295,10 +295,16 @@ const versionBody = (body, params, view, func, programFacts) => {
     const outerOk = (n) => locals.has(n) && !inner.has(n) && !captured.has(n) && !ctx.funcs.names.has(n)
     // A module binding can supply the same snapshot as a local only when
     // the entire loop cannot run code that changes it between comparisons.
-    const stableBound = n => outerOk(n) || typeof n === 'string' && ctx.scope.globals.has(n) &&
-      !loopWrites.has(n) && !some(loop, e => runsAccessor(view, e, true) || runsConversion(view, e, true) ||
+    const stableBound = n => {
+      if (outerOk(n)) return true
+      if (typeof n !== 'string' || !ctx.scope.globals.has(n) || loopWrites.has(n)) return false
+      // This copy is entered only after numberGuard(n). Effects through other
+      // operands remain unknown; converting this guarded bound runs no user code.
+      const guardedView = { kindOfExpr: e => e === n ? NUMBER : kindOfExpr(e) }
+      return !some(loop, e => runsAccessor(guardedView, e, true) || runsConversion(guardedView, e, true) ||
         e[0] === 'new' || ((e[0] === '?.()' || e[0] === '()' && e.length > 2) &&
-          !(e[0] === '()' && typeof e[1] === 'string' && e[1].startsWith('math.') && callArgs(e).every(arg => core(kindOfExpr(arg)) === NUMBER))))
+          !(e[0] === '()' && typeof e[1] === 'string' && e[1].startsWith('math.') && callArgs(e).every(arg => core(guardedView.kindOfExpr(arg)) === NUMBER))))
+    }
     // A counter's integer-valued updates do not prove its magnitude. Where a
     // stable numeric bound fits i32, round that bound once in a private copy;
     // the shared counter-range proof then includes its final increment. The

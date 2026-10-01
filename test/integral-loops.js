@@ -81,7 +81,8 @@ test('integral loops: loop guards add no coercions and retain an integer fast co
   if (!belowOpt(2)) {
     const source = `let N=0;export function set(n){N=n}
       export function f(){const a=new Int32Array(16);let i=0,s=0;while(i<N){s+=a[i];i++}return s}`
-    const text = funcWat(wat(source, {optimize:3}), 'f')
+    // Check source carrier names before watr can coalesce them with pointer locals.
+    const text = funcWat(wat(source, {optimize:{level:3,watr:false}}), 'f')
     ok(/\(local \$i\S*int\d+ i32\)/.test(text), 'the guarded copy holds its counter in an integer local')
     ok(/i32\.(?:lt|ge)_s/.test(text), 'the guarded loop compares integer counters')
     ok(text.includes('f64.lt') || text.includes('f64.ge'), 'the original full Number bound keeps its fallback')

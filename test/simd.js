@@ -3737,14 +3737,15 @@ test('conv-column i16x8 - int8 conv2d strip-mines the output column, bit-exact +
 test('guarded module index snapshots preserve Number edges and module effects', () => {
   const source = effect => `let offset=0,stop=0,calls=0;
     function change(){calls++;offset=3;stop=2;return 0}
+    ${effect === 'class getter' ? 'class Box {get x(){return change()}}' : ''}
     export function f(base,start,count,skip){
       offset=+base;stop=+count;calls=0;let k=+start;
-      const a=new Float64Array(16),obj={get x(){return change()},valueOf(){return change()}};
+      const a=new Float64Array(16),obj=${effect === 'class getter' ? 'new Box()' : '{get x(){return change()},valueOf(){return change()}}'};
       const fn=skip?null:change;
-      while(k<stop){const value=Math.log(k+2);a[k]=value;a[offset-k]=value;${effect};k++}
+      while(k<stop){const value=Math.log(k+2);a[k]=value;a[offset-k]=value;${effect === 'class getter' ? 'obj.x' : effect};k++}
       return [a,offset,k,1/offset,calls,stop]
     }`
-  for (const effect of ['0', 'change()', 'fn?.()', 'obj.x', '+obj']) {
+  for (const effect of ['0', 'change()', 'fn?.()', 'obj.x', '+obj', 'class getter']) {
     const src=source(effect), expected=oracle(src).f
     for (const optimize of levels(0,1,2,3,'size')) {
       const f=jz(src,{optimize:{level:optimize,sourceInline:false}}).exports.f
