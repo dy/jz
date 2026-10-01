@@ -7,12 +7,16 @@
  * @module regex
  */
 
-import { typed, asF64, asI64, UNDEF_NAN, NULL_NAN, TRUE_IR, FALSE_IR, mkPtrIR, temp, tempI32, toStrI64, MAX_CLOSURE_ARITY } from '../src/ir.js'
+import { typed, asF64, asI64, UNDEF_NAN, NULL_NAN, TRUE_IR, FALSE_IR, mkPtrIR, allocPtr, temp, tempI32, toStrI64, MAX_CLOSURE_ARITY } from '../src/ir.js'
 import { walkAst } from '../src/ast.js'
 import { emit, deps } from '../src/bridge.js'
 import { ctx, err, inc, PTR, LAYOUT, registerGetter, declGlobal, registerResetHook } from '../src/ctx.js'
 import { valTypeOf } from '../src/kind.js'
 import { VAL } from '../src/reps.js'
+import { OBJECT_SCHEMA_HI_MASK, objectSchemaGuardHex } from '../layout.js'
+import print from 'watr/print'
+import { throwErrorWat } from './core/error-object.js'
+import { TOMB_NAN, TRUE_NAN, FALSE_NAN } from '../src/ir/sentinels.js'
 import { replacementHasPatterns } from './string.js'
 import { memberUses } from '../src/compile/emit/class-dispatch.js'
 
@@ -1119,13 +1123,6 @@ export default (ctx) => {
         (br $next)))
       (i32.const -1) (i32.const -1))`
 
-    // lastIndex mutable global for /g or /y regexes — tracks position across exec() calls
-    if ((flags || '').includes('g') || (flags || '').includes('y')) {
-      const liGlobal = `__re_lastIndex_${id}`
-      if (!ctx.scope.globals.has(liGlobal))
-        declGlobal(liGlobal, 'f64')
-    }
-
     inc(funcName, searchName, searchFromName, '__str_to_buf')
     ctx.runtime.regex.compiled.set(key, id)
     return id
@@ -1141,52 +1138,99 @@ export default (ctx) => {
     return null
   }
 
-  // Regex literal: ['//','pattern','flags?'] → compile + store
-  ctx.core.emit['//'] = (pattern, flags) => {
-    const id = compileRegexToStdlib(pattern, flags)
-    ctx.runtime.regex._lastId = id // for variable tracking
-    return typed(['i32.const', id], 'i32')
+  // Matcher code is shared by pattern; every evaluated literal owns fresh state.
+  const regexSid = (pattern, flags = '') => {
+    const sid = ctx.schema.register(['lastIndex'], 'RegExp:' + JSON.stringify([pattern, flags]))
+    ctx.schema.regexSids.set(sid, [pattern, flags])
+    ctx.schema.hidden.set(ctx.schema.list[sid], new Set(['lastIndex']))
+    ctx.schema.hiddenViews = true
+    return sid
+  }
+  ctx.core.stdlib.__is_regexp = () => {
+    const tests = [...ctx.schema.regexSids.keys()].map(sid =>
+      `(i64.eq (i64.and (local.get $v) (i64.const ${OBJECT_SCHEMA_HI_MASK})) (i64.const ${objectSchemaGuardHex(sid)}))`)
+    return `(func $__is_regexp (param $v i64) (result i32) ${tests.length ? tests.reduce((a,b) => `(i32.or ${a} ${b})`) : '(i32.const 0)'})`
   }
 
-  // ToLength(Get(R, "lastIndex")) at exec time (22.2.7.2 step 2): the global
+  // Regex literal: ['//','pattern','flags?'] → compile + fresh OBJECT instance.
+  // Immutable prototype getters are shared by direct and computed reads.
+  // Own fields still use the ordinary schema/sidecar path first.
+  const flagProps = [['global', 'g'], ['ignoreCase', 'i'], ['multiline', 'm'],
+    ['dotAll', 's'], ['unicode', 'u'], ['sticky', 'y'], ['hasIndices', 'd'], ['unicodeSets', 'v']]
+  const flagString = flags => [...'dgimsuvy'].filter(c => flags.includes(c)).join('')
+  const sourceString = pattern => {
+    let out = ''
+    for (let i = 0; i < pattern.length; i++) {
+      const c = pattern[i]
+      if (c === '\\' && i + 1 < pattern.length) out += c + pattern[++i]
+      else out += c === '/' ? '\\/' : c === '\n' ? '\\n' : c === '\r' ? '\\r' : c === '\u2028' ? '\\u2028' : c === '\u2029' ? '\\u2029' : c
+    }
+    return out || '(?:)'
+  }
+  const stringWat = value => print(asI64(emit(['str', value])))
+  const sidTest = sid => `(i64.eq (i64.and (local.get $obj) (i64.const ${OBJECT_SCHEMA_HI_MASK})) (i64.const ${objectSchemaGuardHex(sid)}))`
+  deps({ __regex_prop: ['__str_eq', '__is_str_key'], __regex_string: [], __throw_regex_readonly: ['__alloc_hdr', '__mkptr'] })
+  ctx.core.stdlib.__throw_regex_readonly = () => throwErrorWat(ctx, '__throw_regex_readonly', 'TypeError', 'Cannot set a getter-only RegExp property')
+  ctx.core.stdlib.__regex_prop = () => `(func $__regex_prop (param $obj i64) (param $key i64) (result i64)
+    (if (i32.eqz (call $__is_str_key (local.get $key))) (then (return (i64.const ${TOMB_NAN}))))
+    ${[...ctx.schema.regexSids].map(([sid, [pattern, flags]]) => `(if ${sidTest(sid)} (then
+      ${[['source', sourceString(pattern)], ['flags', flagString(flags)], ...flagProps.map(([key, flag]) => [key, flags.includes(flag)])].map(([key, value]) =>
+        `(if (call $__str_eq (local.get $key) ${stringWat(key)}) (then (return ${typeof value === 'string' ? stringWat(value) : `(i64.const ${value ? TRUE_NAN : FALSE_NAN})`})))`).join('\n')}))`).join('\n')}
+    (i64.const ${TOMB_NAN}))`
+  ctx.core.stdlib.__regex_string = () => `(func $__regex_string (param $obj i64) (result i64)
+    ${[...ctx.schema.regexSids].map(([sid, [pattern, flags]]) => `(if ${sidTest(sid)} (then (return ${stringWat('/' + sourceString(pattern) + '/' + flagString(flags))})))`).join('\n')}
+    (i64.const ${TOMB_NAN}))`
+  ctx.core.emit['//'] = (pattern, flags) => {
+    compileRegexToStdlib(pattern, flags)
+    const out = allocPtr({type: PTR.OBJECT, aux: regexSid(pattern, flags), len: 0, cap: 1, stride: 8, tag: 'regex'})
+    return typed(['block', ['result','f64'], out.init,
+      ['f64.store', ['local.get', `$${out.local}`], ['f64.const', 0]], out.ptr], 'f64')
+  }
+
+  // ToLength(Get(R, "lastIndex")) at exec time: the instance slot
   // holds whatever the program wrote (its own identity survives a read back),
   // converted once here — a number directly, anything else through ToNumber —
   // and clamped to [0, INT32_MAX] so a past-the-end cursor fails the search.
-  const lastIndexRead = (liGlobal) => {
+  const lastIndexRead = (receiver) => {
+    if (!receiver) return ['i32.const', 0]
     ctx.module.include('number')
     inc('__to_num')
     const t = temp('rli'), get = ['local.get', `$${t}`]
     return ['i32.trunc_sat_f64_s', ['f64.min', ['f64.max', ['f64.const', 0],
       ['block', ['result', 'f64'],
-        ['local.set', `$${t}`, ['global.get', liGlobal]],
+        ['local.set', `$${t}`, ['f64.load', ['i32.wrap_i64', ['i64.reinterpret_f64', receiver]]]],
         ['if', ['result', 'f64'], ['f64.eq', get, get], ['then', get], ['else', ['call', '$__to_num', ['i64.reinterpret_f64', get]]]]]],
       ['f64.const', 2147483647]]]
   }
-  // A non-global, non-sticky exec still reads lastIndex once (its ToLength
-  // may run user code) when the program has written it.
-  const lastIndexTouch = (id) => ctx.scope.globals.has(`__re_lastIndex_${id}`) ? [['drop', lastIndexRead(`$__re_lastIndex_${id}`)]] : []
+  // Matcher updates store a Number, never an arena reference. As for any
+  // numeric OBJECT field store, no durable snapshot or escape log is needed.
+  const lastIndexSet = (receiver, value) => receiver
+    ? ctx.abi.object.ops.store(['i32.wrap_i64', ['i64.reinterpret_f64', receiver]], 0, value)
+    : ['nop']
 
   // regex.test(str) → search, return 1/0
   ctx.core.emit['.regex:test'] = (obj, str) => {
     const id = resolveRegex(obj)
     if (id == null) err('regex.test: argument must be a literal /pattern/flags or a variable assigned one directly — jz resolves regexes at compile time')
+    const r = Array.isArray(obj) && obj[0] === '//' ? null : temp('rrecv'), recv = r ? ['local.get', `$${r}`] : null
     const s = temp('rt'), mstart = tempI32('rms'), mend = tempI32('rme')
     const flags = flagsOf(obj)
     if (flags.includes('g') || flags.includes('y')) {
       // RegExpBuiltinExec: search from lastIndex, advance it on a match, reset it on a miss.
-      const liGlobal = `$__re_lastIndex_${id}`
       inc(`__regex_search_from_${id}`)
       return typed(['block', ['result', 'f64'],
+        ...(r ? [['local.set', `$${r}`, asF64(emit(obj))]] : []),
         ['local.set', `$${s}`, asF64(emit(['()', 'String', str ?? [, undefined]]))],
         ['local.set', `$${mstart}`, ['local.set', `$${mend}`,
-          ['call', `$__regex_search_from_${id}`, ['i64.reinterpret_f64', ['local.get', `$${s}`]], lastIndexRead(liGlobal)]]],
+          ['call', `$__regex_search_from_${id}`, ['i64.reinterpret_f64', ['local.get', `$${s}`]], lastIndexRead(recv)]]],
         ['if', ['result', 'f64'], ['i32.lt_s', ['local.get', `$${mstart}`], ['i32.const', 0]],
-          ['then', ['global.set', liGlobal, ['f64.const', 0]], ['f64.const', 0]],
-          ['else', ['global.set', liGlobal, ['f64.convert_i32_s', ['local.get', `$${mend}`]]], ['f64.const', 1]]]], 'f64')
+          ['then', lastIndexSet(recv, ['f64.const', 0]), ['f64.const', 0]],
+          ['else', lastIndexSet(recv, ['f64.convert_i32_s', ['local.get', `$${mend}`]]), ['f64.const', 1]]]], 'f64')
     }
     return typed(['block', ['result', 'f64'],
+      ...(r ? [['local.set', `$${r}`, asF64(emit(obj))]] : []),
       ['local.set', `$${s}`, asF64(emit(['()', 'String', str ?? [, undefined]]))],
-      ...lastIndexTouch(id),
+      ['drop', lastIndexRead(recv)],
       ['local.set', `$${mstart}`, ['local.set', `$${mend}`,
         ['call', `$__regex_search_${id}`, ['i64.reinterpret_f64', ['local.get', `$${s}`]]]]],
       // search returns (start, end) multi-value; capture both
@@ -1205,29 +1249,31 @@ export default (ctx) => {
     const groupNames = ctx.runtime.regex.groupNames.get(id) || []
     const flags = flagsOf(obj)
     const isGlobal = flags.includes('g') || flags.includes('y')
+    const r = Array.isArray(obj) && obj[0] === '//' ? null : temp('rrecv'), recv = r ? ['local.get', `$${r}`] : null
     const s = temp('re'), ms = tempI32('rems'), me = tempI32('reme')
     const nullIR = ['f64.const', `nan:${NULL_NAN}`]
     if (isGlobal) {
       // Stateful path: read lastIndex, search from there, update/reset lastIndex.
-      const liGlobal = `$__re_lastIndex_${id}`
       inc(`__regex_search_from_${id}`)
       return typed(['block', ['result', 'f64'],
+        ...(r ? [['local.set', `$${r}`, asF64(emit(obj))]] : []),
         ['local.set', `$${s}`, asF64(emit(['()', 'String', str ?? [, undefined]]))],
         ['local.set', `$${ms}`, ['local.set', `$${me}`,
           ['call', `$__regex_search_from_${id}`,
             ['i64.reinterpret_f64', ['local.get', `$${s}`]],
-            lastIndexRead(liGlobal)]]],
+            lastIndexRead(recv)]]],
         ['if', ['result', 'f64'], ['i32.lt_s', ['local.get', `$${ms}`], ['i32.const', 0]],
           // no match — reset lastIndex, return null
-          ['then', ['global.set', liGlobal, ['f64.const', 0]], nullIR],
+          ['then', lastIndexSet(recv, ['f64.const', 0]), nullIR],
           // lastIndex is the end of the match, including a zero-length match.
           ['else',
-            ['global.set', liGlobal, ['f64.convert_i32_s', ['local.get', `$${me}`]]],
+            lastIndexSet(recv, ['f64.convert_i32_s', ['local.get', `$${me}`]]),
             buildMatchArr(s, ms, me, nGroups, groupNames)]]], 'f64')
     }
     return typed(['block', ['result', 'f64'],
+      ...(r ? [['local.set', `$${r}`, asF64(emit(obj))]] : []),
       ['local.set', `$${s}`, asF64(emit(['()', 'String', str ?? [, undefined]]))],
-      ...lastIndexTouch(id),
+      ['drop', lastIndexRead(recv)],
       ['local.set', `$${ms}`, ['local.set', `$${me}`,
         ['call', `$__regex_search_${id}`, ['i64.reinterpret_f64', ['local.get', `$${s}`]]]]],
       ['if', ['result', 'f64'], ['i32.lt_s', ['local.get', `$${ms}`], ['i32.const', 0]],
@@ -1236,9 +1282,9 @@ export default (ctx) => {
   }
 
   // === Regex instance properties ===
-  // A regex value is a compile-time id; pattern + flags live in the literal AST
-  // (`['//', pattern, flags]`) or in the regex-var table. Every property below
-  // resolves entirely at compile time. Routed by the `.regex:<prop>` dispatch
+  // The compiled matcher identity stays in the literal AST; pattern + flags live there
+  // (`['//', pattern, flags]`) or in the regex-var table. Immutable metadata
+  // resolves at compile time; lastIndex always reads the actual receiver. Routed by the `.regex:<prop>` dispatch
   // added to core's `.` handler — registered with arity ≤ 1 (receiver only).
 
   /** Resolve a regex-typed operand to its `['//', pattern, flags]` literal AST. */
@@ -1249,52 +1295,31 @@ export default (ctx) => {
   }
   const flagsOf = (obj) => { const a = regexAstOf(obj); return (a && a[2]) || '' }
 
-  // RegExp.prototype.source — the pattern text. A literal stores it verbatim
-  // (already grammar-escaped), so `/A/.source` is the 6-char "A".
-  // An empty pattern serializes to "(?:)" so the result re-parses to a regex.
-  registerGetter('.regex:source', (obj) => {
-    const a = regexAstOf(obj)
-    return emit(['str', (a && a[1]) || '(?:)'])
+  // A direct literal's metadata has no observable instance; other receivers
+  // are evaluated once, and unknown pattern identities use the same runtime
+  // getter as a computed property read.
+  const getter = (prop, valueOf) => registerGetter(`.regex:${prop}`, obj => {
+    const ast = regexAstOf(obj)
+    if (!ast) {
+      inc('__regex_prop')
+      return typed(['f64.reinterpret_i64', ['call', '$__regex_prop', asI64(emit(obj)), asI64(emit(['str', prop]))]], 'f64')
+    }
+    const value = valueOf(ast)
+    const ir = typeof value === 'string' ? asF64(emit(['str', value])) : (value ? TRUE_IR : FALSE_IR).slice()
+    return typed(Array.isArray(obj) && obj[0] === '//' ? ir
+      : ['block', ['result', 'f64'], ['drop', asF64(emit(obj))], ir], 'f64')
   })
-
-  // RegExp.prototype.flags — flag characters in canonical order (sec-get-regexp.prototype.flags).
-  const FLAG_ORDER = 'dgimsvy'
-  registerGetter('.regex:flags', (obj) => {
-    const f = flagsOf(obj)
-    return emit(['str', [...FLAG_ORDER].filter(c => f.includes(c)).join('')])
-  })
-
-  // Individual flag accessors — a boxed TRUE/FALSE atom, not a raw 0/1 f64
-  // constant: this is a boxed-VALUE slot (a getter return can flow straight
-  // into `=== true`/`typeof`/a stored binding, all identity-observing), the
-  // same "boxed-value slot" contract as any other untyped carrier (ir.js
-  // carrierF64's own doc comment). A raw `f64.const 0/1` here was audit-#12's
-  // BOOL_CARRIER regexp sub-family (S7.8.5_A3.1_T1..T6): `regexp.global ===
-  // true` compared the getter's plain NUMBER bits against `true`'s TRUE_NAN
-  // atom and always lost. The flag is a compile-time-known constant (resolved
-  // from the literal's own AST via flagsOf), so this emits the literal atom
-  // IR directly — same TRUE_IR/FALSE_IR ir.js hands any other known-constant
-  // boolean site.
-  for (const [prop, ch] of [
-    ['global', 'g'], ['ignoreCase', 'i'], ['multiline', 'm'], ['dotAll', 's'],
-    ['unicode', 'u'], ['sticky', 'y'], ['hasIndices', 'd'], ['unicodeSets', 'v'],
-  ]) registerGetter(`.regex:${prop}`, (obj) => typed((flagsOf(obj).includes(ch) ? TRUE_IR : FALSE_IR).slice(), 'f64'))
-
-  // lastIndex — for /g and /y regexes, reads the mutable global; others always 0.
-  registerGetter('.regex:lastIndex', (obj) => {
-    const id = resolveRegex(obj)
-    if (id != null && ctx.scope.globals.has(`__re_lastIndex_${id}`))
-      return typed(['global.get', `$__re_lastIndex_${id}`], 'f64')
-    return typed(['f64.const', 0], 'f64')
-  })
-  // `re.lastIndex = n` (emit-assign.js): the global, declared on first write.
-  ctx.runtime.regex.lastIndexGlobal = (obj) => {
-    const id = resolveRegex(obj)
-    if (id == null) return null
-    const name = `__re_lastIndex_${id}`
-    if (!ctx.scope.globals.has(name)) declGlobal(name, 'f64')
-    return name
+  getter('source', ast => sourceString(ast[1]))
+  getter('flags', ast => flagString(ast[2] || ''))
+  for (const [prop, ch] of flagProps) getter(prop, ast => (ast[2] || '').includes(ch))
+  ctx.core.emit['.regex:toString'] = obj => {
+    if (Array.isArray(obj) && obj[0] === '//') return emit(['str', '/' + sourceString(obj[1]) + '/' + flagString(obj[2] || '')])
+    inc('__regex_string')
+    return typed(['f64.reinterpret_i64', ['call', '$__regex_string', asI64(emit(obj))]], 'f64')
   }
+  // lastIndex is the instance's ordinary, non-enumerable own slot.
+  registerGetter('.regex:lastIndex', obj => Array.isArray(obj) && obj[0] === '//'
+    ? typed(['f64.const', 0], 'f64') : typed(['f64.load', ['i32.wrap_i64', asI64(emit(obj))]], 'f64'))
 
   // str.search(/re/) → first match position or -1
   ctx.core.emit['.string:search'] = (str, search) => {

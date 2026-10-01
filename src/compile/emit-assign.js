@@ -902,23 +902,6 @@ export function emitPropertyAssign(obj, prop, val, raw = false) {
     const acc = accessorStore(obj, prop, val)
     if (acc) return acc
   }
-  // Regex instances carry lastIndex in compiler-generated globals, not as an
-  // ordinary object slot. Accepting a source write would update only a dynamic
-  // sidecar while exec() reads the hidden global, a silent split-brain value.
-  // Until ToLength + accessor effects can be preserved, reject the proven
-  // regex write and leave user objects with an ordinary `lastIndex` untouched.
-  // A regex's lastIndex is a compiler global (module/regex.js) holding the
-  // written value itself; exec applies ToLength when it reads it.
-  if (prop === 'lastIndex' && (valTypeOf(obj) === VAL.REGEX ||
-      typeof obj === 'string' && ctx.runtime.regex?.vars?.has(obj))) {
-    const name = ctx.runtime.regex?.lastIndexGlobal?.(obj)
-    if (!name) err('RegExp.lastIndex assignment needs a literal /pattern/flags or a variable assigned one directly — jz resolves regexes at compile time')
-    const t = temp('rli')
-    return typed(['block', ['result', 'f64'],
-      ['local.set', `$${t}`, storedValue(val)],
-      ['global.set', `$${name}`, ['local.get', `$${t}`]],
-      ['local.get', `$${t}`]], 'f64')
-  }
   // arr.length = N — array resize. Intercept before the schema/object paths
   // (`length` is never a schema field). An ARRAY receiver resizes; a known
   // OBJECT/Map/etc. keeps `.length =` as a plain property write below; an
@@ -1089,6 +1072,7 @@ export function emitPropertyAssign(obj, prop, val, raw = false) {
       // Builtin property names can preload only their method owner. A dynamic
       // store also needs the array-index arm of __dyn_set, even on a Map.
       ctx.module.include('array')
+      ctx.module.include('collection')
       inc('__dyn_set')
       return typed(['f64.reinterpret_i64', ['call', '$__dyn_set', asI64(emit(obj)), asI64(emit(['str', prop])), asI64(storedValue(val))]], 'f64')
     }

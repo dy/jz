@@ -174,7 +174,7 @@ const variableRead = (n) => {
  *  to PTR.ARRAY but callers that want to skip forwarding must check separately. */
 const VAL_TO_PTR = {
   array: PTR.ARRAY, object: PTR.OBJECT, set: PTR.SET, map: PTR.MAP,
-  closure: PTR.CLOSURE, typed: PTR.TYPED, buffer: PTR.BUFFER, date: PTR.OBJECT,
+  closure: PTR.CLOSURE, typed: PTR.TYPED, buffer: PTR.BUFFER, date: PTR.OBJECT, regex: PTR.OBJECT,
 }
 
 export const valKindToPtr = (vt) => VAL_TO_PTR[vt]

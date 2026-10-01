@@ -237,7 +237,7 @@ export default (ctx) => {
     __str_encode_into: ['__utf8_encode', '__byte_length', '__typed_data', '__ptr_type', '__ptr_aux'],
     __key_eq: ['__str_eq'],
     __to_key: ['__is_symbol', '__to_str'],
-    __to_str: () => ['__ftoa', '__static_str', '__str_join', '__mkptr',
+    __to_str: () => [...(ctx.schema.regexSids.size ? ['__is_regexp', '__regex_string'] : []), '__ftoa', '__static_str', '__str_join', '__mkptr',
       ...(ctx.module.modules.date && ctx.schema.dateSid != null ? ['__ptr_aux', '__date_to_string'] : [])],
     __str_length: ['__ptr_type', '__ptr_aux', '__str_len'],
   })
@@ -1095,6 +1095,8 @@ export default (ctx) => {
         ${ctx.funcs.runtimeRoots.has('__jz_tp_str') ? `(return (call $__to_str (i64.reinterpret_f64 (call $__jz_tp_str (f64.reinterpret_i64 (local.get $val))))))`
           : ctx.module.modules.date && ctx.schema.dateSid != null ? `(if (i32.eq (call $__ptr_aux (local.get $val)) (i32.const ${ctx.schema.dateSid}))
           (then (return (i64.reinterpret_f64 (call $__date_to_string (f64.load (i32.wrap_i64 (local.get $val))))))))` : ''}
+        ${ctx.schema.regexSids.size && !ctx.funcs.runtimeRoots.has('__jz_tp_str') ? `(if (call $__is_regexp (local.get $val))
+          (then (return (call $__regex_string (local.get $val)))))` : ''}
         (return (i64.reinterpret_f64 (call $__static_str (i32.const 12))))))
     (if (i32.eq (local.get $type) (i32.const ${PTR.HASH}))
       (then ${ctx.funcs.runtimeRoots.has('__jz_tp_str')

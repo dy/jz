@@ -295,9 +295,9 @@ const _enhanced = new WeakSet()
  * nested [null, name] (synthetic shape), type 3 a JSON-escaped property name
  * without its quotes, type 2 legacy text.
  */
-const NO_TABLES = { errorClasses: new Map(), brands: new Map(), fields: [], schemas: [], views: new Set() }
+const NO_TABLES = { errorClasses: new Map(), brands: new Map(), regexes: new Map(), fields: [], schemas: [], views: new Set() }
 const moduleTables = (mod) => {
-  const errorClasses = new Map(), brands = new Map(), fields = [], schemas = [], views = new Set()
+  const errorClasses = new Map(), brands = new Map(), regexes = new Map(), fields = [], schemas = [], views = new Set()
   // the schemas with an object literal's accessor: read through the module's data copy (`__view_data`)
   const viewBytes = customSection(mod, 'jz:views')
   if (viewBytes) {
@@ -313,6 +313,11 @@ const moduleTables = (mod) => {
   if (brandBytes) {
     const r = sectionReader(brandBytes), n = r.varint()
     for (let j = 0; j < n; j++) { const sid = r.varint(); brands.set(sid, r.str(r.varint())) }
+  }
+  const regexBytes = customSection(mod, 'jz:regexp')
+  if (regexBytes) {
+    const r = sectionReader(regexBytes), n = r.varint()
+    for (let j = 0; j < n; j++) { const sid = r.varint(); regexes.set(sid, [JSON.parse(r.str(r.varint())), r.str(r.varint())]) }
   }
   const fieldBytes = customSection(mod, 'jz:fields')
   if (fieldBytes) {
@@ -339,7 +344,7 @@ const moduleTables = (mod) => {
     const n = r.varint()
     for (let j = 0; j < n; j++) { const k = r.varint(), props = []; for (let p = 0; p < k; p++) props.push(dec()); schemas.push(props) }
   }
-  return { errorClasses, brands, fields, schemas, views }
+  return { errorClasses, brands, regexes, fields, schemas, views }
 }
 
 /**
@@ -364,23 +369,24 @@ const moduleTables = (mod) => {
  * from which a salted key cannot be recovered.
  */
 const mergeTables = (mem, t) => {
-  const errorSidToClass = new Map(mem.errorSidToClass), brandOfSid = new Map(mem.brandOfSid)
+  const errorSidToClass = new Map(mem.errorSidToClass), brandOfSid = new Map(mem.brandOfSid), regexOfSid = new Map(mem.regexOfSid)
   const schemas = [...(mem.schemas || [])], _schemaKeyToId = new Map(mem._schemaKeyToId), fieldContracts = [...(mem.fieldContracts || [])]
   const views = new Set([...(mem.views || []), ...t.views])
   for (const [sid, name] of t.errorClasses) if (!errorSidToClass.has(sid)) errorSidToClass.set(sid, name)
-  const keys = t.schemas.map((s, j) => { const salt = t.errorClasses.get(j) ?? t.brands.get(j); return JSON.stringify(s) + (salt ? '\x02' + salt : '') })
+  const keys = t.schemas.map((s, j) => { const salt = t.errorClasses.get(j) ?? t.brands.get(j) ?? (t.regexes.has(j) ? 'RegExp:' + JSON.stringify(t.regexes.get(j)) : null); return JSON.stringify(s) + (salt ? '\x02' + salt : '') })
   keys.forEach((key, j) => {
     let sid = _schemaKeyToId.get(key)
     if (sid === undefined) { _schemaKeyToId.set(key, sid = schemas.length); schemas.push(t.schemas[j]) }
     if (sid !== j) throw new TypeError(`jz: schema ${j} {${t.schemas[j].join(', ')}} of this module binds as schema ${sid} in the memory it shares; modules sharing a memory must bind their schemas at the same ids (compile them together, or give each its own memory)`)
     if (t.brands.has(j)) brandOfSid.set(j, t.brands.get(j))
+    if (t.regexes.has(j)) regexOfSid.set(j, t.regexes.get(j))
     const row = t.fields[j]
     if (!row?.length) return
     if (fieldContracts[j] && JSON.stringify(fieldContracts[j]) !== JSON.stringify(row))
       throw new TypeError('jz: incompatible field contracts for a schema already bound to this memory')
     fieldContracts[j] = row
   })
-  return { schemas, _schemaKeyToId, errorSidToClass, brandOfSid, fieldContracts, views }
+  return { schemas, _schemaKeyToId, errorSidToClass, brandOfSid, regexOfSid, fieldContracts, views }
 }
 
 /**
@@ -684,9 +690,9 @@ export const memory = (src) => {
       const plain = matches.filter(i => !mem.brandOfSid.has(i))
       return plain.length === 1 ? plain[0] : -2
     }
-    let matches = schemas.reduce((a, s, i) => (s.join(',') === key ? a.concat(i) : a), [])
+    let matches = schemas.reduce((a, s, i) => (!mem.regexOfSid.has(i) && s.join(',') === key ? a.concat(i) : a), [])
     if (!matches.length) matches = schemas.reduce((a, s, i) =>
-      (s.length === objKeys.length && objKeys.every(k => s.includes(k)) ? a.concat(i) : a), [])
+      (!mem.regexOfSid.has(i) && s.length === objKeys.length && objKeys.every(k => s.includes(k)) ? a.concat(i) : a), [])
     const sid = pick(matches)
     if (sid === -2) throw Error(`Ambiguous schema for {${key}} — ${matches.length} compiled shapes match this key set; pass keys in one of these orders: ${matches.map(i => schemas[i].join(',')).join(' | ')}`)
     if (sid === -1) return mem.Hash(obj)   // no compiled schema: first-class hash (External loses nested-mutation identity)
@@ -807,10 +813,10 @@ export const memory = (src) => {
       // An object literal's accessor reads through its getter: the module
       // copies such an object's data into a dictionary, decoded below.
       // Error transport reads its stored message before constructing the host Error.
-      if (mem.views?.has(a) && mem.viewData && !mem.errorSidToClass?.has(a)) return mem.read(mem.viewData(p), fnOf)
+      if (mem.views?.has(a) && mem.viewData && !mem.errorSidToClass?.has(a) && !mem.regexOfSid?.has(a)) return mem.read(mem.viewData(p), fnOf)
       const keys = mem.schemas[a]
       if (!keys) { if (off >= mem._above) mem._held = true; return p }
-      const obj = {}
+      const re = mem.regexOfSid?.get(a), obj = re ? new RegExp(re[0], re[1]) : {}
       // A deleted slot keeps undefined and a bit of the mask (layout.js
       // deletedSlotWat): from slot 31 on one sticky bit covers the undefined ones.
       const mask = mem.objDeleted ? mem.objDeleted(p) : 0

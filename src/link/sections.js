@@ -23,7 +23,7 @@ const encProp = (out, p) => {
   else { out.push(3); encStr(out, JSON.stringify(p).slice(1, -1)) }
 }
 
-export function schemaSections(root, { schemas, fieldContracts, namedUses, errorSids, brandSids, viewSids }) {
+export function schemaSections(root, { schemas, fieldContracts, namedUses, errorSids, brandSids, regexSids, viewSids }) {
   const FUNC = intern('func')
   const used = new Set()
   walk(root, (id) => { if (T.sid[id] !== NONE) used.add(T.sid[id]) })
@@ -76,6 +76,13 @@ export function schemaSections(root, { schemas, fieldContracts, namedUses, error
     varint(out, brands.length)
     for (const [sid, brand] of brands) { varint(out, sid); encStr(out, brand) }
     custom('jz:brand', out)
+  }
+  const regexes = (regexSids ?? []).filter(([sid]) => used.has(sid))
+  if (regexes.length) {
+    const out = []
+    varint(out, regexes.length)
+    for (const [sid, [pattern, flags]] of regexes) { varint(out, sid); encStr(out, JSON.stringify(pattern)); encStr(out, flags) }
+    custom('jz:regexp', out)
   }
   // A layout with an object literal's accessor (src/ast.js layoutView): the
   // host decodes such an object through the data copy the module exports.

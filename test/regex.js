@@ -1,7 +1,7 @@
 import test from 'tst'
 import { is, throws } from 'tst/assert.js'
 import { parseRegex, compileRegex } from '../module/regex.js'
-import { evaluate, cases } from './util.js'
+import { evaluate, cases, oracle } from './util.js'
 import jz, { compile } from '../index.js'
 import { adaptI64, onKernel, levels } from './_matrix.js'
 
@@ -14,6 +14,146 @@ function evalStr(code) {
   const m = jz.memory({ module: mod, instance: inst })
   return m.read(adaptI64(mod, inst.exports).main())
 }
+
+test('regex: each instance owns its properties and matching cursor', () => {
+  const src=`export function f(key,n){
+    const a=/x/g,b=new RegExp('x','g'),alias=a;
+    a.extra=n;b[key]=n+1;alias[key]=n+2;
+    const first=a.test('xx'),second=b.exec('xx');
+    return [a===b,alias===a,typeof a,a instanceof RegExp,a instanceof Object,
+      a.extra,a[key],b[key],first,second[0],a.lastIndex,b.lastIndex,
+      a.test('xx'),a.lastIndex,b.lastIndex,Object.keys(a),Object.getOwnPropertyNames(a),
+      JSON.stringify({a,b})]}
+    export function make(n){const r=/x/gi;r.extra=n;r.lastIndex=n;return r}`
+  const ref=oracle(src)
+  for(const optimize of levels(0,1,2,3,'size')){
+    const got=jz(src,{optimize}).exports
+    for(const [key,n] of [['extra',1],['extra',1],['other',7],['other',0],['extra',2]])
+      is(got.f(key,n),ref.f(key,n),`properties/cursors ${key} ${n} O${optimize}`)
+    for(const n of [0,0,3,1]){
+      const r=got.make(n),want=ref.make(n)
+      is([r instanceof RegExp,r.source,r.flags,r.lastIndex,r.extra,Object.keys(r)],
+        [true,want.source,want.flags,want.lastIndex,want.extra,Object.keys(want)],`host RegExp ${n} O${optimize}`)
+    }
+  }
+})
+
+test('regex: aliases and same-site allocations retain separate instance identity', () => {
+  const src=`function make(){return /x/g}
+    export function f(){const a=/x/g,alias=a,b=/x/g,other=b;
+      alias.lastIndex=1;other.lastIndex=0;const first=alias.exec('xx'),second=other.exec('xx');
+      const x=make(),y=make();x.extra=3;y.extra=7;
+      return [first.index,second.index,a.lastIndex,b.lastIndex,alias.source,alias.flags,
+        a===alias,a===b,x===y,x.extra,y.extra]}`
+  const ref=oracle(src)
+  for(const optimize of levels(0,1,2,3,'size')){
+    const got=jz(src,{optimize}).exports
+    for(let i=0;i<3;i++)is(got.f(),ref.f(),`aliases/repeated constructors O${optimize}`)
+  }
+})
+
+test('regex: lastIndex conversion preserves argument order, effects and errors', () => {
+  const src=`export function f(mode){let trace='',a=/x/g;const old=a,b=/x/g;
+    a.lastIndex={valueOf(){trace+='l';if(mode===2)throw 9;return mode===3?-3:1}};
+    const input={toString(){trace+='s';if(mode===1)throw 7;a=b;return 'xx'}};
+    try{const match=a.exec(input);return [trace,match[0],match.index,old.lastIndex,b.lastIndex]}
+    catch(e){return [trace,e,old.lastIndex===old.lastIndex,b.lastIndex]}}
+    export function nonGlobal(){let n=0;const r=/x/;r.lastIndex={valueOf(){n++;return 9}};
+      return [r.test('x'),n]}`
+  const ref=oracle(src)
+  for(const optimize of levels(0,1,2,3,'size')){
+    const got=jz(src,{optimize}).exports
+    for(const mode of [0,0,1,2,3,0])is(got.f(mode),ref.f(mode),`coercion/throw ${mode} O${optimize}`)
+    is(got.nonGlobal(),ref.nonGlobal(),`nonglobal ToLength O${optimize}`)
+  }
+})
+
+test('regex: computed deletion rejects lastIndex after key coercion', () => {
+  const src=`export function f(name){"use strict";const r=/x/;r.extra=7;let trace='';
+    const key={toString(){trace+='k';return name}};
+    try{return [delete r[key],trace,r.lastIndex,r.extra]}
+    catch(e){return [e instanceof TypeError,trace,r.lastIndex,r.extra]}}`
+  const ref=oracle(src)
+  for(const optimize of levels(0,1,2,3,'size')){
+    const got=jz(src,{optimize}).exports
+    for(const key of ['extra','missing','lastIndex','extra'])is(got.f(key),ref.f(key),`delete ${key} O${optimize}`)
+  }
+})
+
+test('regex: native getters and conversions preserve receiver effects', () => {
+  const src=`export function f(key,mode){"use strict";const r=/x/ig;let trace='';
+    const k={toString(){trace+='k';if(mode===1)throw 8;return key}};
+    function value(){trace+='v';if(mode===2)throw 9;return 7}
+    let threw=false;try{r[k]=value()}catch(e){threw=e instanceof TypeError||e===8||e===9}
+    return [threw,trace,r[key],r.source,r.flags,r.lastIndex,String(r),r.toString(),Object.prototype.toString.call(r),Object.hasOwn(r,key)]}
+    export function custom(mode){const r=/x/;r.toString=()=>mode?'own':7;return [String(r),r+'',r.toString()]}
+    export function number(mode){const r=/x/;r.valueOf=()=>mode?7:0;return [Number(r),r*2]}
+    export function tag(mode){const v=mode?/x/:{};return Object.prototype.toString.call(v)}
+    export function absent(n){let r=/x/;if(n)r=null;try{return [r.source,r.lastIndex]}catch(e){return e instanceof TypeError}}
+    export function unicode(key){const r=/a/gu;return [r.flags,r[key],String(/a/u),r.toString(),r]}
+    export function meta(mode){let calls=0;function make(){calls++;return mode?/a/g:/b/i}return [make().source,make().flags,make().global,calls]}`
+  const ref=oracle(src)
+  for(const optimize of levels(0,1,2,3,'size')){
+    const got=jz(src,{optimize}).exports
+    for(const key of ['source','flags','global','lastIndex','extra',1,-0,2.5])for(const mode of [0,1,2])is(got.f(key,mode),ref.f(key,mode),`${key}/${mode} O${optimize}`)
+    const u=got.unicode('flags'),v=ref.unicode('flags');is(u.slice(0,4),v.slice(0,4),`unicode getters O${optimize}`);is([u[4].source,u[4].flags,u[4] instanceof RegExp],['a','gu',true],`unicode host O${optimize}`)
+    for(const mode of [0,1]){is(got.custom(mode),ref.custom(mode),`override O${optimize}`);is(got.number(mode),ref.number(mode),`number hint O${optimize}`);is(got.tag(mode),ref.tag(mode),`brand O${optimize}`);is(got.meta(mode),ref.meta(mode),`dynamic metadata O${optimize}`);is(got.absent(mode),ref.absent(mode),`nullable receiver O${optimize}`)}
+  }
+})
+
+test('regex: schemas and pattern metadata reset between compilations', () => {
+  const first=`export function f(){return [/x/g,{lastIndex:3},{get value(){return 4}}]}
+    export function names(){const r=/x/g;const o={get value(){return 4}};return [Object.getOwnPropertyNames(r),Object.getOwnPropertyNames(o)]}`
+  const other=`export function f(){return [new RegExp(${JSON.stringify('\ud800')}),/a\\/b/i]}`
+  for(const optimize of levels(0,1,2,3,'size'))for(const src of [first,first,other,first]){
+    const got=jz(src,{optimize}).exports,want=oracle(src)
+    const a=got.f(),b=want.f()
+    is(a.map(v=>v instanceof RegExp),b.map(v=>v instanceof RegExp),`native identity O${optimize}`)
+    is(a.map(v=>v instanceof RegExp?[v.source,v.flags,v.lastIndex]:v),b.map(v=>v instanceof RegExp?[v.source,v.flags,v.lastIndex]:v),`metadata O${optimize}`)
+    if(got.names)is(got.names(),want.names(),`own accessor names O${optimize}`)
+  }
+})
+
+test('regex: module cursors and empty matches retain their own state across calls', () => {
+  const src=`const a=/x/g,b=/(?:)/g;export function f(text,reset){if(reset){a.lastIndex=0;b.lastIndex=0}
+    const x=a.exec(text),y=b.exec(text);return [x?x.index:-1,y?y.index:-1,a.lastIndex,b.lastIndex]}`
+  for(const optimize of levels(0,1,2,3,'size')){
+    const got=jz(src,{optimize}).exports,want=oracle(src)
+    for(const args of [['xx',1],['xx',0],['',0],['x',0],['xx',1],['xx',0]])is(got.f(...args),want.f(...args),`retained cursors O${optimize}`)
+  }
+})
+
+test('regex: cursor conversion handles Number boundaries and rejects implicit BigInt', () => {
+  const src=`export function f(n){const r=/x/g;r.lastIndex=n;const before=r.lastIndex;const m=r.exec('xx');return [before,m?m.index:-1,r.lastIndex]}
+    export function big(){const r=/x/g;r.lastIndex=1n;try{r.exec('x');return false}catch(e){return e instanceof TypeError}}`
+  const ref=oracle(src)
+  for(const optimize of levels(0,1,2,3,'size')){
+    const got=jz(src,{optimize}).exports
+    for(const n of [0,-0,-3,0.5,1.9,2,2147483648,Infinity,-Infinity,NaN])is(got.f(n),ref.f(n),`cursor ${n} O${optimize}`)
+    is(got.big(),true,`implicit BigInt O${optimize}`)
+  }
+})
+
+test('regex: an own toJSON hook uses the ordinary property protocol', () => {
+  const src=`export function f(mode){const r=/x/;const o={};let trace='';
+    function hook(key){trace+=key||'root';if(mode===1)throw 9;return mode===2?undefined:3}
+    r.toJSON=hook;o.toJSON=hook;
+    try{return [JSON.stringify(r),JSON.stringify(o),JSON.stringify({r,o}),trace]}
+    catch(e){return [e,trace]}}`
+  const ref=oracle(src)
+  for(const optimize of levels(0,1,2,3,'size'))for(const mode of [0,1,2])is(jz(src,{optimize}).exports.f(mode),ref.f(mode),`own JSON hook ${mode} O${optimize}`)
+})
+
+test('regex: brand checks cannot read raw BigInt payloads as object pointers', () => {
+  const src=`export function f(mode){const r=/x/,n=0x7ffb000000000001n;
+    const v=mode===0?n:mode===1?r:mode===2?null:7;
+    return [n instanceof RegExp,n instanceof Object,v instanceof RegExp,v instanceof Object]}`
+  const ref=oracle(src)
+  for(const optimize of levels(0,1,2,3,'size')){
+    const got=jz(src,{optimize}).exports
+    for(const mode of [0,1,2,3,0])is(got.f(mode),ref.f(mode),`brand domain ${mode} O${optimize}`)
+  }
+})
 
 // === Parser tests ===
 

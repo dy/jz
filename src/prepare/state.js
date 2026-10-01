@@ -38,7 +38,7 @@ export const ERR_CLASS_SET = new Set(ERR_CLASS_NAMES)
 //     WeakMap/WeakSet below, extended here to a collision the design doc's own RHS
 //     table didn't flag.
 export const TYPED_INSTANCEOF = [...TYPED_ELEM_NAMES, 'Float16Array', 'Uint8ClampedArray']
-export const INSTANCEOF_ALLOW = new Set(['Array', 'Map', 'Set', 'ArrayBuffer', 'DataView', ...TYPED_INSTANCEOF, ...ERR_CLASS_NAMES])
+export const INSTANCEOF_ALLOW = new Set(['Array', 'Map', 'Set', 'ArrayBuffer', 'DataView', 'RegExp', ...TYPED_INSTANCEOF, ...ERR_CLASS_NAMES])
 
 // Module-level prepare state. Six independent stacks/scalars that together form
 // the prepare-pass working set. Lifecycle: reinitialized by `resetPrepState()`,

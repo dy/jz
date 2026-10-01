@@ -210,7 +210,8 @@ export function analyzeValTypes(body) {
     return s != null && s.size >= 2 ? [...s].sort((a, b) => a - b) : null
   }
   function trackRegex(name, rhs) {
-    if (ctx.runtime.regex && Array.isArray(rhs) && rhs[0] === '//') ctx.runtime.regex.hold(name, rhs)
+    const re = typeof rhs === 'string' ? ctx.runtime.regex?.vars.get(rhs) : rhs
+    if (ctx.runtime.regex && Array.isArray(re) && re[0] === '//') ctx.runtime.regex.hold(name, re)
   }
   // ctx.func.typedElem slice (lazily created on first write, as before — readers
   // tolerate null). Disagreeing decls poison the name (jz hoists `let` to function

@@ -87,6 +87,11 @@ export function synthesizeToPrimitive() {
     ctx.core.emit.__tp_date_value = ctx.core.emit['.date:valueOf']
     ctx.core.emit.__tp_date_string = ctx.core.emit['.date:toString']
   }
+  const regex = ctx.module.demanded.has('regex')
+  if (regex) {
+    ctx.core.emit.__tp_isregex = r => { inc('__is_regexp'); return typed(['call', '$__is_regexp', asI64(emit(r))], 'i32') }
+    ctx.core.emit.__tp_regex_string = r => { inc('__regex_string'); return typed(['f64.reinterpret_i64', ['call', '$__regex_string', asI64(emit(r))]], 'f64') }
+  }
   const call = (fn, arg) => ['()', fn, arg]
   const block = (...stmts) => ['{}', [';', ...stmts]]
   const accept = (value) => block(['=', V, value], ['if', ['__isprim', V], ['return', V]])
@@ -94,6 +99,7 @@ export function synthesizeToPrimitive() {
     // Only absence reaches inherited methods. A non-callable own slot skips
     // this method; an object result proceeds to the next lookup, after effects.
     let inherited = prop === 'toString' ? ['return', ['str', '[object Object]']] : block()
+    if (regex && prop === 'toString') inherited = ['if', ['__tp_isregex', R], ['return', call('__tp_regex_string', R)], inherited]
     if (date) inherited = ['if', ['__tp_isdate', R],
       ['return', call(prop === 'toString' ? '__tp_date_string' : '__tp_date_value', R)], inherited]
     for (const e of classesWith(prop).reverse()) {

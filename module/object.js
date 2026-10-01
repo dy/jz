@@ -18,7 +18,7 @@ import { isReassigned, MUTATE_OPS, some, isBrand, canonicalKeyOrder, spreadExclu
 import { staticObjectProps, dictCapacity } from '../src/static.js'
 import { errorCodeLiteral, ERR, ERR_CLASS_NAMES, ERR_SCHEMA_PROPS } from '../err-codes.js'
 import { deletedMaskIR, deletedSlotIR, HEAP, DATA_VIEW_FLAG, nanPrefixHex } from '../layout.js'
-import { enumView, enumKeys, viewsOn, enumViewsOn, ENUM_DATA, ENUM_GET } from './schema.js'
+import { enumView, enumKeys, ownKeys, viewsOn, enumViewsOn, ENUM_DATA, ENUM_GET } from './schema.js'
 import { ACCESSOR_CALL } from '../src/compile/emit/accessor-call.js'
 import { demandHostReceiver } from '../src/compile/func-exports.js'
 import { isGlobal } from '../src/ir/vars.js'
@@ -356,7 +356,8 @@ export default (ctx) => {
   // is read-only by construction (the lowering only reads ks[i]/ks.length), so
   // the HASH arms may serve the shared enum-cache array (core.js __hash_keys_ro)
   // instead of a fresh copy. Object.keys stays fresh — callers may mutate it.
-  const emitKeysGeneric = (obj, ro) => {
+  const emitKeysGeneric = (obj, ro, own = false) => {
+    const keys = own ? ownKeys : enumKeys
     // Shared memory: cache globals are per-instance but the table is cross-thread,
     // and shared's `__clear` (plain rewind, core.js) takes no reset injections —
     // both break the cache's invalidation story. Serve the uncached path there.
@@ -380,17 +381,17 @@ export default (ctx) => {
     // flattened function property or a store through an alias; the summary
     // sees the object.
     const closed = typeof obj === 'string' ? closedLayoutOf(obj) : null
-    if (closed) return emitStringArray(enumKeys(closed))
+    if (closed) return emitStringArray(keys(closed))
     const schema = runtimePresence(obj) ? null : resolveSchema(obj)
     const literalUnsafe = Array.isArray(obj) && obj[0] === '{}' && hasUnsafeLiteralValueEffect(obj)
     if (schema && !hasOutOfSchemaWrites(obj, schema) && !mayHaveDynProps(obj) && !literalUnsafe)
-      return emitStringArray(enumKeys(schema))
+      return emitStringArray(keys(schema))
     // Unknown receiver, schema with possible dyn props, or (rare) a direct
     // literal argument whose values aren't provably side-effect-free: dispatch
     // on ptr-type at runtime (HASH probe table / OBJECT schema+dyn merge /
     // else []) — this path genuinely emit()s `obj`, so its construction (and
     // any side effect in it) runs exactly once, in place, like any other value.
-    return emitRuntimeKeys(obj, ro)
+    return emitRuntimeKeys(obj, ro, own)
   }
   ctx.core.emit['Object.keys'] = (obj) => emitKeysGeneric(obj, false)
 
@@ -458,7 +459,7 @@ export default (ctx) => {
     const t = temp('dk')
     return typed(['block', ['result', 'f64'], ['local.set', `$${t}`, asF64(emit(obj))], objectKeysFromTemp(t, !ctx.memory.shared, true)], 'f64')
   }
-  ctx.core.emit['Object.getOwnPropertyNames'] = ctx.core.emit['Object.keys']
+  ctx.core.emit['Object.getOwnPropertyNames'] = obj => emitKeysGeneric(obj, false, true)
 
   // for-in's read-only key enumeration (src/prepare for…in lowering). Identical to
   // Object.keys EXCEPT: when the receiver is a bare variable with a complete static
@@ -557,6 +558,10 @@ export default (ctx) => {
 
     const value = temp('otag'), type = tempI32('otagt')
     const bits = ['i64.reinterpret_f64', ['local.get', `$${value}`]]
+    if (ctx.module.demanded.has('regex')) { ctx.module.include('regex'); inc('__is_regexp') }
+    const objectTag = ctx.module.demanded.has('regex')
+      ? ['if', ['result', 'f64'], ['call', '$__is_regexp', bits], ['then', emitTag('[object RegExp]')], ['else', emitTag('[object Object]')]]
+      : emitTag('[object Object]')
     const byType = dispatchByPtrType(type, [
       [PTR.STRING,  emitTag('[object String]')],
       [PTR.ARRAY,   emitTag('[object Array]')],
@@ -564,7 +569,7 @@ export default (ctx) => {
       [PTR.CLOSURE, emitTag('[object Function]')],
       [PTR.SET,     emitTag('[object Set]')],
       [PTR.MAP,     emitTag('[object Map]')],
-    ], emitTag('[object Object]'))
+    ], objectTag)
     const pointerTag = block64(['local.set', `$${type}`, ['call', '$__ptr_type', bits]], byType)
     const is = (k) => ['i64.eq', bits, ['i64.const', k]]
     const nonNumericTag = ['if', ['result', 'f64'], is(NULL_NAN),
@@ -1091,10 +1096,10 @@ const enumEntries = (names) => enumView(names) ?? names.map((key, slot) => ({ ke
 // at its map, when `sid` has a view: `__schema_view[sid]`
 // (src/wat/assemble/start-fn.js) holds an accessor-bearing layout's view keys
 // and its map, each position's `slot + kind·2^24 + (setter slot + 1)·2^26`.
-const viewRowIR = (sid, src, sn, map) => {
-  const at = (k) => ['i64.load', ['i32.add', ['global.get', '$__schema_view'], ['i32.add', ['i32.shl', ['local.get', `$${sid}`], ['i32.const', 4]], ['i32.const', k]]]]
+const viewRowIR = (sid, src, sn, map, table = '__schema_view') => {
+  const at = (k) => ['i64.load', ['i32.add', ['global.get', `$${table}`], ['i32.add', ['i32.shl', ['local.get', `$${sid}`], ['i32.const', 4]], ['i32.const', k]]]]
   const off = (k) => ['i32.wrap_i64', ['i64.and', at(k), ['i64.const', LAYOUT.OFFSET_MASK]]]
-  return ['if', ['i32.ne', ['global.get', '$__schema_view'], ['i32.const', 0]], ['then',
+  return ['if', ['i32.ne', ['global.get', `$${table}`], ['i32.const', 0]], ['then',
     ['if', ['i64.ne', at(0), ['i64.const', 0]], ['then',
       ['local.set', `$${src}`, off(0)],
       ['local.set', `$${sn}`, ['i32.load', ['i32.sub', ['local.get', `$${src}`], ['i32.const', 8]]]],
@@ -1609,14 +1614,14 @@ function requireEnumReceiver(t) {
 // indexed collections include indices and named properties; primitives without
 // indices return an empty array. The empty-array
 // fallback is allocated in all arms for type uniformity at the if boundary.
-function emitRuntimeKeys(obj, ro) {
+function emitRuntimeKeys(obj, ro, own = false) {
   const t = temp('rk')
   return typed(['block', ['result', 'f64'],
     ['local.set', `$${t}`, asF64(emit(obj))],
-    ...(ro ? [] : [requireEnumReceiver(t)]), runtimeKeysFromTemp(t, 'rk', ro)], 'f64')
+    ...(ro ? [] : [requireEnumReceiver(t)]), runtimeKeysFromTemp(t, 'rk', ro, false, own)], 'f64')
 }
 
-function runtimeKeysFromTemp(t, tag, ro, symbols = false) {
+function runtimeKeysFromTemp(t, tag, ro, symbols = false, own = false) {
   if (ctx.memory.shared) ro = false  // see emitKeysGeneric — no enum cache under shared memory
   inc('__enum_type')
   // Ensure the schema table global exists even in programs that never use
@@ -1640,7 +1645,7 @@ function runtimeKeysFromTemp(t, tag, ro, symbols = false) {
         : hashKeysFromTemp(t, symbols)],
       ['else', ['if', ['result', 'f64'],
         ['i32.eq', ['local.get', `$${tt}`], ['i32.const', PTR.OBJECT]],
-        ['then', objectKeysFromTemp(t, ro, false, null, symbols)],
+        ['then', objectKeysFromTemp(t, ro, false, null, symbols, own)],
         ['else', idxEnum(t, 0, symbols)]]]]]
 }
 
@@ -1824,7 +1829,7 @@ export function walkObjectProperties(env, onStatic, onDynamic, local) {
 // seeds the result with indexed elements, then appends the same ordered
 // sidecar properties. Arrays have a header even in static data; typed views
 // and buffers have no sidecar and keep named properties in the global table.
-function emitEnumerateObject(t, emitStaticStore, emitDynStore, ro, dynOnly = false, indexed = null, symbols = false) {
+function emitEnumerateObject(t, emitStaticStore, emitDynStore, ro, dynOnly = false, indexed = null, symbols = false, own = false) {
   const order = symbols ? '__own_order' : '__prop_order'
   inc('__alloc_hdr', '__ptr_offset', order, '__str_index_key', '__key_eq')
   if (symbols) inc('__is_str_key')
@@ -1864,9 +1869,10 @@ function emitEnumerateObject(t, emitStaticStore, emitDynStore, ro, dynOnly = fal
   const out = tempI32('oeo'), i = tempI32('oei'), o = tempI32('oej')
   // Under a view (viewRowIR) the schema stream's position and slot differ;
   // only an accessor's gives a slot a kind other than data.
-  const map = enumViewsOn() ? tempI32('oemap') : null
+  const map = (own ? viewsOn() : enumViewsOn()) ? tempI32('oemap') : null
+  const viewTable = own ? '__schema_own_view' : '__schema_view'
   const row = map ? tempI32('oerow') : i, kind = map && viewsOn() ? tempI32('oekind') : null
-  if (map && !ctx.scope.globals.has('__schema_view')) declGlobal('__schema_view', 'i32')
+  if (map && !ctx.scope.globals.has(viewTable)) declGlobal(viewTable, 'i32')
   const slot = tempI32('oesl')
   // The deleted-slot mask (layout.js): a deleted schema field keeps undefined in
   // its slot, so its absence is read from the header, not the slot.
@@ -1961,7 +1967,7 @@ function emitEnumerateObject(t, emitStaticStore, emitDynStore, ro, dynOnly = fal
           ['i64.load', ['i32.add', ['global.get', '$__schema_tbl'], ['i32.shl', ['local.get', `$${sid}`], ['i32.const', 3]]]],
           ['i64.const', LAYOUT.OFFSET_MASK]]]],
         ['local.set', `$${sn}`, ['i32.load', ['i32.sub', ['local.get', `$${src}`], ['i32.const', 8]]]]]]]),
-    ...(map ? [['local.set', `$${map}`, ['i32.const', 0]], ...(dynOnly ? [] : [viewRowIR(sid, src, sn, map)])] : []),
+    ...(map ? [['local.set', `$${map}`, ['i32.const', 0]], ...(dynOnly ? [] : [viewRowIR(sid, src, sn, map, viewTable)])] : []),
     // Dyn-props: heap OBJECTs carry a HASH propsPtr either at base-16
     // (populated by an init-time write, or by any write at all on an
     // EPHEMERAL receiver — one allocated after the post-init high-water
@@ -2058,7 +2064,7 @@ function emitEnumerateObject(t, emitStaticStore, emitDynStore, ro, dynOnly = fal
 
 // Object.keys for an OBJECT — copy schema key (i64@src+i*8) then dyn key (i64@slot+8).
 // ro (for-in): serve the static schema array / enum cache — see emitEnumerateObject.
-const objectKeysFromTemp = (t, ro, dynOnly = false, indexed = null, symbols = false) => emitEnumerateObject(t,
+const objectKeysFromTemp = (t, ro, dynOnly = false, indexed = null, symbols = false, own = false) => emitEnumerateObject(t,
   ({ out, o, src, row }) => [
     ['i64.store',
       ['i32.add', ['local.get', `$${out}`], ['i32.shl', ['local.get', `$${o}`], ['i32.const', 3]]],
@@ -2066,7 +2072,7 @@ const objectKeysFromTemp = (t, ro, dynOnly = false, indexed = null, symbols = fa
   ({ out, o, slot }) => [
     ['i64.store',
       ['i32.add', ['local.get', `$${out}`], ['i32.shl', ['local.get', `$${o}`], ['i32.const', 3]]],
-      ['i64.load', ['i32.add', ['local.get', `$${slot}`], ['i32.const', 8]]]]], ro, dynOnly, indexed, symbols)
+      ['i64.load', ['i32.add', ['local.get', `$${slot}`], ['i32.const', 8]]]]], ro, dynOnly, indexed, symbols, own)
 
 // Object.values for an OBJECT — copy schema value (f64@base+i*8) then dyn value (f64@slot+16).
 const objectValuesFromTemp = (t, indexed = null) => emitEnumerateObject(t,

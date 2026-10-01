@@ -595,12 +595,10 @@ function coerceRest(node, v, vt) {
   // object tag, never the dictionary's JSON-like debug rendering.
   if (Array.isArray(node) && node[0] === '{}' && node.length === 1)
     return inheritedObjectString(v)
-  // A regex value is a compile-time id; its ToString is the literal's text.
-  if (vt === VAL.REGEX) {
-    const ast = Array.isArray(node) && node[0] === '//' ? node : typeof node === 'string' ? ctx.runtime.regex?.vars?.get(node) : null
-    if (ast) { ctx.module.include('string'); return asI64(ctx.core.emit['str'](`/${ast[1] || '(?:)'}/${ast[2] || ''}`)) }
-  }
-  if (vt === VAL.OBJECT) {
+  // A fresh literal has no own conversion override or observable identity.
+  if (Array.isArray(node) && node[0] === '//')
+    return asI64(ctx.core.emit['.regex:toString'](node))
+  if (vt === VAL.OBJECT || vt === VAL.REGEX) {
     const prim = objectToPrimitive(v, 'string')
     if (prim) {
       inc('__to_str')

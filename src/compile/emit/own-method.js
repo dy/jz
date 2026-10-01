@@ -10,7 +10,7 @@
 import { ctx, inc, PTR } from '../../ctx.js'
 import { typed, asF64, asI64, ptrTypeEq, TOMB_NAN, UNDEF_NAN } from '../../ir.js'
 import { emit } from '../../bridge.js'
-import { stringHash } from '../../string-data.js'
+import { strHashLiteral } from '../../../module/collection.js'
 
 export function defineOwnMethodOps() {
   // `r`'s own property `name`, TOMB where it has none
@@ -21,7 +21,7 @@ export function defineOwnMethodOps() {
     inc('__dyn_get_t_hm', '__ptr_type')
     const bits = asI64(emit(r))
     return typed(['f64.reinterpret_i64', ['call', '$__dyn_get_t_hm', bits, asI64(emit(name)),
-      ['call', '$__ptr_type', bits], ['i32.const', stringHash(name[1])]]], 'f64')
+      ['call', '$__ptr_type', bits], ['i32.const', strHashLiteral(name[1])]]], 'f64')
   }
   ctx.core.emit.__own_missing = (v) => typed(['i64.eq', asI64(emit(v)), ['i64.const', TOMB_NAN]], 'i32')
   ctx.core.emit.__own_callable = (v) => ptrTypeEq(asF64(emit(v)), PTR.CLOSURE)

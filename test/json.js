@@ -501,10 +501,9 @@ test('json: nullish reviver is spec-ignored; runtime replacer rejects', () => {
   is(rejected, 1)
 })
 
-test('JSON.stringify calls a toJSON hook and rejects a nested regex value it cannot represent', () => {
+test('JSON.stringify calls a toJSON hook and enumerates nested regex values', () => {
   is(run(`export let f = () => JSON.stringify({ toJSON: () => 42 })`).f(), JSON.stringify({ toJSON: () => 42 }))
-  throws(() => compile(`const r = /x/; export let f = () => JSON.stringify({ r })`),
-    /dynamically nested RegExp/)
+  is(run(`const r = /x/; export let f = () => JSON.stringify({ r })`).f(), '{"r":{}}')
   is(run(`export let f = () => JSON.stringify({ r: /x/ })`).f(), '{"r":{}}')
   is(run(`export let f = () => JSON.stringify({ toJSON: 0 })`).f(), '{"toJSON":0}')
 })

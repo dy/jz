@@ -326,7 +326,7 @@ export default (ctx) => {
     __ihash_get_local: ['__map_hash'],
     __ihash_set_local: () => ['__map_hash', '__alloc_hdr_n', '__mkptr', '__zomb_scan', ...slotLogDeps()],
     __dyn_get_t: ['__dyn_get_t_h', '__str_hash', '__is_str_key', '__to_key'],
-    __dyn_get_t_h: () => ['__arr_value', ...viewDeps('__view_get'), ...builtinPropDeps(), '__schema_slot_h', '__ihash_get_local', '__key_eq', '__is_nullish', '__hash_get_local_h', '__hash_get_local_hm', '__str_arr_idx', '__str_length', '__ptr_aux', ...(ctx.core.stdlib['__str_idx'] ? ['__str_idx'] : []), ...(ctx.linkDemand.typedProperties ? ['__typed_str_idx', '__typed_prop_get', '__len', representationProgramHasBigint(ctx) ? '__typed_idx_tagged' : '__typed_idx'] : [])],
+    __dyn_get_t_h: () => [...(ctx.schema.regexSids.size ? ['__regex_prop'] : []), '__arr_value', ...viewDeps('__view_get'), ...builtinPropDeps(), '__schema_slot_h', '__ihash_get_local', '__key_eq', '__is_nullish', '__hash_get_local_h', '__hash_get_local_hm', '__str_arr_idx', '__str_length', '__ptr_aux', ...(ctx.core.stdlib['__str_idx'] ? ['__str_idx'] : []), ...(ctx.linkDemand.typedProperties ? ['__typed_str_idx', '__typed_prop_get', '__len', representationProgramHasBigint(ctx) ? '__typed_idx_tagged' : '__typed_idx'] : [])],
     __dyn_get_t_hm: () => [...viewDeps('__view_get'), ...builtinPropDeps(), '__schema_slot_h', '__ihash_get_local', '__key_eq', '__is_nullish', '__hash_get_local_hm', '__str_arr_idx', '__str_length', '__ptr_aux', ...(ctx.linkDemand.typedProperties ? ['__typed_str_idx', '__typed_prop_get', '__len', representationProgramHasBigint(ctx) ? '__typed_idx_tagged' : '__typed_idx'] : [])],
     __dyn_has: ['__dyn_get_t_hm', '__ptr_type', '__str_hash', '__is_str_key', '__to_key'],
     __dyn_get: ['__dyn_get_t', '__ptr_type'],
@@ -343,13 +343,13 @@ export default (ctx) => {
       '__dyn_get_t_h', '__hash_get_local_h', ...(ctx.linkDemand.external ? ['__ext_prop'] : []),
     ],
     __dyn_get_or: ['__dyn_get'],
-    __dyn_set: () => ['__dyn_set_own', '__is_nullish', '__key_eq', '__is_str_key', '__to_key', '__arr_set_idx_ptr', '__arr_set_length', '__str_arr_idx', ...(ctx.linkDemand.typedProperties ? ['__typed_key_idx', '__typed_set_idx_tagged'] : [])],
+    __dyn_set: () => [...(ctx.schema.regexSids.size ? ['__regex_prop', '__throw_regex_readonly'] : []), '__dyn_set_own', '__is_nullish', '__key_eq', '__is_str_key', '__to_key', '__arr_set_idx_ptr', '__arr_set_length', '__str_arr_idx', ...(ctx.linkDemand.typedProperties ? ['__typed_key_idx', '__typed_set_idx_tagged'] : [])],
     __dyn_set_own: () => [...viewDeps('__view_set'), ...(hasDurableReset() ? ['__durable_obj_snap', '__is_eph_bits'] : []), '__schema_slot', '__hash_new', '__hash_new_small', '__ihash_get_local', '__ihash_set_local', '__hash_set_local', '__ptr_offset', '__ptr_offset_fwd', '__is_nullish', '__key_eq', '__ptr_aux', '__obj_props'],
     __obj_props: ['__ihash_get_local', '__is_nullish', '__ptr_type'],
     __dyn_move: ['__ihash_get_local', '__ihash_set_local', '__is_nullish'],
     __hash_del_local: () => ['__str_hash', '__key_eq', '__ptr_type', ...relogDeps()],
     // a deleted slot is gone for the host too: it reads the mask through __obj_deleted
-    __dyn_del: () => [...viewDeps('__view_del'), '__schema_slot', '__hash_del_local', '__ihash_get_local', '__is_nullish', '__is_str_key', '__to_key', '__str_arr_idx', '__str_u32_idx', '__len', '__str_length', '__ptr_aux', '__key_eq', '__obj_deleted', ...(ctx.linkDemand.external ? ['__ext_delete'] : [])],
+    __dyn_del: () => [...viewDeps('__view_del'), ...(ctx.schema.regexSids.size ? ['__is_regexp'] : []), '__schema_slot', '__hash_del_local', '__ihash_get_local', '__is_nullish', '__is_str_key', '__to_key', '__str_arr_idx', '__str_u32_idx', '__len', '__str_length', '__ptr_aux', '__key_eq', '__obj_deleted', ...(ctx.linkDemand.external ? ['__ext_delete'] : [])],
     __str_arr_idx: ['__str_length'],
     __str_u32_idx: ['__str_length'],
     __typed_str_idx: ['__str_length'],
@@ -1797,6 +1797,10 @@ export default (ctx) => {
       (i32.and (i32.eq (local.get $type) (i32.const ${PTR.CLOSURE})) (call $__key_eq (local.get $key) (i64.const ${LENGTH_SSO_I64})))
       (then ${presence ? '(i64.const 0)' : '(i64.reinterpret_f64 (f64.convert_i32_u (call $__closure_length (local.get $obj))))'})
       (else ${fallback}))`
+    if (!presence && ctx.schema.regexSids.size) fallback = `(block (result i64)
+      (local.set $val (call $__regex_prop (local.get $obj) (local.get $key)))
+      (if (result i64) (i64.ne (local.get $val) (i64.const ${TOMB_NAN}))
+        (then (local.get $val)) (else ${fallback})))`
     const hasFallback = fallback !== miss
     return `(func $${name} (param $obj i64) (param $key i64) (param $type i32) (param $h i32) (result i64)
     (local $props i64) (local $off i32) (local $val i64)
@@ -2202,6 +2206,8 @@ export default (ctx) => {
       (then (local.set $key (call $__to_key (local.get $key)))))
     ;; A strict primitive write rejects only after observable key conversion.
     ${requireObjectWat('(local.get $obj)', '(local.get $type)')}
+    ${ctx.schema.regexSids.size ? `(if (i64.ne (call $__regex_prop (local.get $obj) (local.get $key)) (i64.const ${TOMB_NAN}))
+      (then (call $__throw_regex_readonly) (unreachable)))` : ''}
     ;; ARRAY + integer key → ELEMENT store (grow + hole-fill via the same
     ;; helper the statically-proven \`a[i]=v\` path uses), matching JS index
     ;; semantics and the element arms in the dyn read entries. Guard real-
@@ -2504,6 +2510,9 @@ export default (ctx) => {
       (then
         (if (i32.lt_u (call $__str_u32_idx (local.get $key)) (call $__len (local.get $obj)))
           (then ${deletePropertyErrorWat()}))))
+    ${ctx.schema.regexSids.size ? `(if (i32.and (call $__is_regexp (local.get $obj))
+      (i32.eq (call $__schema_slot (local.get $obj) (local.get $key)) (i32.const 0)))
+      (then ${deletePropertyErrorWat()}))` : ''}
     ;; HASH receiver is ITS OWN storage (dictionary-mode {} — __dyn_set/__dyn_get
     ;; write/read its entry table directly): delete the entry there. Every arm
     ;; below only probes the props SIDECAR, which a dictionary doesn't use for

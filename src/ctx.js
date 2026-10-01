@@ -587,6 +587,7 @@ export function reset(proto, globals, bridge) {
                            //   (inferAssignSchema).
     register: null,
     find: null,
+    regexSids: new Map(),   // schema id → [pattern, flags] for boxed RegExp instances
     dateSid: null,
     ensureDateSid: null,
     targetStack: [],

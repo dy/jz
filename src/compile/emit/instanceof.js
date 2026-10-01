@@ -15,6 +15,7 @@ import { K, hasTag, tagsOf, bitOf, NULL_BITS } from '../../summary/kind.js'
 import { VAL, repOf } from '../../reps.js'
 import { plannedTypedStorageInfo } from '../typed-storage-plan.js'
 import { emit } from './dispatch.js'
+import { storedValue } from '../../bridge.js'
 import { classInstanceof } from './class-dispatch.js'
 import { isBrand } from '../../ast.js'
 
@@ -170,9 +171,19 @@ export function emitInstanceof(a, rhs) {
       return foldInstanceof(emit(a), false)
     err(`instanceof: ${rhs} requires a proven primitive input; boxed primitives are unsupported`)
   }
+  if (rhs === 'RegExp') {
+    const vt = valTypeOf(a)
+    if (vt != null && !mayBeMissing(a)) return foldInstanceof(emit(a), vt === VAL.REGEX)
+    ctx.module.include('regex'); inc('__is_regexp')
+    return typed(['call', '$__is_regexp', asI64(storedValue(a))], 'i32')
+  }
   if (rhs === 'Object') {
+    const vt = valTypeOf(a)
+    const tags = tagsOf(ctx.summary?.at(ctx.func.current).kindOfExpr(a) ?? 0)
+    if (vt === VAL.NUMBER || vt === VAL.STRING || vt === VAL.BOOL || vt === VAL.BIGINT ||
+        tags !== 0 && (tags & ~PRIMITIVE_BITS) === 0) return foldInstanceof(emit(a), false)
     inc('__is_object')
-    return typed(['call', '$__is_object', asI64(emit(a))], 'i32')
+    return typed(['call', '$__is_object', asI64(storedValue(a))], 'i32')
   }
   if (rhs in INSTANCEOF_TAG) return emitTagInstanceof(a, rhs)
   if (rhs === 'DataView' || TYPED_ELEM_NAMES.includes(rhs) || rhs === 'Float16Array' || rhs === 'Uint8ClampedArray') return emitTypedInstanceof(a, rhs)

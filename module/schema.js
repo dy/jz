@@ -23,7 +23,7 @@ export { ENUM_DATA, ENUM_GET, ENUM_SET } from '../src/ast.js'
  *  one property it defines, and none of the slots the layout hides
  *  (ctx.schema.hidden: an Error's `message` and `name`). Null for a layout
  *  with neither. */
-export const enumView = (names) => layoutView(names, ctx.transform.literalAccessorNames, ctx.schema.hidden.get(names))
+export const enumView = (names, includeHidden = false) => layoutView(names, ctx.transform.literalAccessorNames, includeHidden ? null : ctx.schema.hidden.get(names))
 
 /** Whether code the program lowers builds an object literal with an accessor:
  *  the runtime view table (`__schema_view`, src/wat/assemble/start-fn.js), every
@@ -43,16 +43,16 @@ export const enumViewsOn = () => ctx.schema.views || ctx.schema.hiddenViews
 export function settleViews(roots) {
   const acc = ctx.transform.literalAccessorNames
   ctx.schema.views = !!acc?.size && roots.some(r => buildsView(r, acc))
-  ctx.schema.hiddenViews = !!ctx.transform.classMembers?.size || roots.some(seesError)
+  ctx.schema.hiddenViews = !!ctx.transform.classMembers?.size || roots.some(seesHidden)
 }
 
-// An Error the code constructs (`new TypeError(m)`, prepared as a call) or a
-// bound catch, which may hold one the runtime threw.
-const seesError = (n) => {
+// A RegExp or Error the code constructs, or a bound catch which may hold
+// an Error the runtime threw, carries non-enumerable own slots.
+const seesHidden = (n) => {
   if (!Array.isArray(n)) return false
-  if (n[0] === '()' && ERR_CLASS_NAMES.includes(n[1])) return true
+  if (n[0] === '//' || n[0] === '()' && ERR_CLASS_NAMES.includes(n[1])) return true
   if (n[0] === 'catch' && typeof n[2] === 'string') return true
-  for (let i = 1; i < n.length; i++) if (seesError(n[i])) return true
+  for (let i = 1; i < n.length; i++) if (seesHidden(n[i])) return true
   return false
 }
 

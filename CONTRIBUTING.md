@@ -3778,6 +3778,19 @@ cursor. A name stored a second, other literal holds no one expression (`regex.ho
 compile says so where a method of it is called, where it used to run the literal registered
 last, whatever the name held (`test/held-regex.js`).
 
+
+The shared matcher is not the RegExp value. Every evaluated literal allocates an ordinary
+OBJECT header with a salted `lastIndex` schema, its own cursor and dynamic properties;
+a direct literal method call can omit that unobservable instance. The header's length
+word remains the OBJECT deleted-slot mask (zero), not its field count. A cursor read
+converts after the argument string, through the captured receiver; updating it uses the
+ordinary numeric field store. `jz:regexp` records pattern/flags by schema id, preserving
+lone surrogates with JSON escaping, so interop returns real RegExp instances and keeps
+plain objects with a `lastIndex` field distinct. Runtime branding, getters, conversion,
+JSON and deletion share this schema identity. `Object.getOwnPropertyNames` uses the same
+property walk as enumeration, with a demand-only accessor view that includes hidden
+slots; ordinary enumeration still excludes them (`test/regex.js`).
+
 A module binding nothing that runs reads is not declared, where its value runs nothing
 (`dropUnreadGlobals`, plan/scope.js, at every level): a name, a literal, a closure, an
 operator that converts nothing (`typeof`, `===`, `&&`), or one that converts numbers, strings

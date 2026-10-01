@@ -41,41 +41,9 @@ function jsonConstString(ctx, expr) {
 // is a legitimate literal — an array hole or a bare `undefined`).
 const NOT_LIT = Symbol('not-literal')
 
-// Evaluate a prepared AST node to its constant JS value, or NOT_LIT if any
-// part is dynamic. Mirrors the literal grammar prepare produces: `[null, v]`
-// for primitives, `['str', s]`, `['[' …]` arrays, `['{}' …]` objects.
-//
-// `'//'` (fix/wrong-values-3): a regex LITERAL. module/regex.js's own doc
-// ("Regex literals become compile-time WASM functions") is the root cause of
-// the sibling runtime bug this static fold exists to avoid — jz's regex
-// VALUE representation (ctx.core.emit['//']) is a bare i32 compile-time
-// table index, boxed to f64 the same as any real number, so a regex reaching
-// __json_val's runtime tag-dispatch (module/json.js) is bit-identical to the
-// NUMBER 0/1/2/… and gets misrendered as that raw index — confirmed live,
-// `JSON.stringify({toJSON: /re/})` produced `{"toJSON":0}`. No runtime tag
-// exists to recover "this was a regex" once degraded to f64, so the fix
-// lives here, at the STATIC layer, before that degradation happens. `{}` —
-// not `new RegExp(pattern, flags)` — deliberately: real JS's OWN answer is
-// unconditionally `{}` for every regex regardless of pattern (RegExp has no
-// OWN ENUMERABLE properties — `source`/`flags`/`global`/… are prototype
-// getters, and `lastIndex`, the one own property, is non-enumerable; verified
-// against Node/V8: `JSON.stringify(/x/gi)` is `"{}"`), so this needs no
-// pattern/flags parsing at all — and sidesteps any host-vs-jz regex-dialect
-// syntax mismatch `new RegExp(pattern, flags)` could throw on.
-const literalChildren = node => {
-  if (!Array.isArray(node)) return []
-  if (node[0] === '[') return node.slice(1)
-  if (node[0] === '{}') return node.slice(1)
-    .filter(e => Array.isArray(e) && e[0] === ':').map(e => e[2])
-  return []
-}
-const literalTreeHasDynamicRegex = node => {
-  if (typeof node === 'string') return valTypeOf(node) === VAL.REGEX
-  if (!Array.isArray(node)) return false
-  if (node[0] !== '//' && valTypeOf(node) === VAL.REGEX) return true
-  return literalChildren(node).some(literalTreeHasDynamicRegex)
-}
-
+// Evaluate a prepared literal tree, or return NOT_LIT for a dynamic value.
+// A fresh regex literal has no enumerable own fields. Fold it to an empty
+// object without invoking the host regex parser (the supported dialect differs).
 function literalValue(node) {
   if (node === undefined) return undefined            // array hole
   if (!Array.isArray(node)) return NOT_LIT
@@ -1594,8 +1562,6 @@ ${localDecls}
   // the runtime call entirely. The runtime `__stringify` path (which ignores a
   // replacer) handles every non-constant case unchanged.
   ctx.core.emit['JSON.stringify'] = (x, replacer, space) => {
-    if (literalTreeHasDynamicRegex(x))
-      err('JSON.stringify cannot serialize a dynamically nested RegExp value; stringify it separately or replace it with a plain object')
     // An explicit `null`/`undefined` replacer is spec-equivalent to none; only a
     // real array/function replacer changes the result. (foldStringify normalizes
     // the same way via literalValue.) Used by both peepholes below.
@@ -1622,21 +1588,6 @@ ${localDecls}
     // true/false — exactly bool. Guard on no replacer: a replacer function may
     // rewrite the top-level value, in which case fall to runtime.
     if (noReplacer && valTypeOf(x) === VAL.BOOL) return bool(x)
-    // Provably-regex top-level value (fix/wrong-values-3): the const-fold
-    // above already renders a LITERAL regex tree exactly (literalValue's
-    // '//' case, this file) — this arm is the sibling for a NON-literal
-    // expression (a name, a property, a call) whose VAL kind is still
-    // statically known to be REGEX. Needed because module/regex.js's own
-    // VALUE representation (ctx.core.emit['//']) is a bare compile-time
-    // table-index i32, boxed to f64 the SAME as any real number — once
-    // reached at runtime it is bit-identical to that index as a NUMBER, and
-    // no tag exists to recover "this was a regex" from it (see
-    // literalValue's own '//' doc, above, for the full mechanism and the
-    // {} answer's spec citation — unconditional regardless of pattern/flags,
-    // so this needs no runtime value at all). `x` is still emitted, for any
-    // side effect a non-trivial expression might carry, then dropped.
-    if (noReplacer && valTypeOf(x) === VAL.REGEX)
-      return typed(['block', ['result', 'f64'], ['drop', asF64(emit(x))], asF64(emit(['str', '{}']))], 'f64')
     inc('__stringify')
     // a value of unknown kind may be, or hold, a host object (__json_val's host arm)
     demandHostReceiver()
