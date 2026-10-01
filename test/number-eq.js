@@ -20,6 +20,8 @@ const pairs = [
   [0, 0, 'equal numbers'], [1, 1, 'different numbers'], [2, 2, 'the NaN against itself'],
   [3, 3, '-0 against 0'], [9, 9, 'two reads past the end'], [9, 0, 'a read past the end against a number'],
   [4, 9, 'a number against a read past the end'], [2, 9, 'the NaN against a read past the end'],
+  [0.5, -1, 'fractional and negative keys'], [NaN, Infinity, 'nonfinite keys'],
+  ['0', '0', 'numeric property names'], ['length', 'length', 'array lengths'],
 ]
 
 test('number equality: every pair answers what the host answers', () => {
@@ -34,7 +36,16 @@ test('number equality: every pair answers what the host answers', () => {
 })
 
 test('number equality: the compare is inline, the helper is not called', () => {
-  const text = wat(src, { optimize: 2 })
+  // Unconstrained property keys can read methods as well as numeric elements.
+  // Subtraction supplies the numeric-key premise without truncating fractions.
+  const numeric = src.replaceAll('a[i]', 'a[i - 0]').replaceAll('b[j]', 'b[j - 0]')
+  const host = oracle(numeric)
+  const wasm = run(numeric, { optimize: 2 })
+  for (const [i, j, why] of pairs) {
+    is(wasm.f(i, j), host.f(i, j), `numeric === ${why}`)
+    is(wasm.g(i, j), host.g(i, j), `numeric !== ${why}`)
+  }
+  const text = wat(numeric, { optimize: 2 })
   ok(!/call \$__eq_strict/.test(text), 'no strict-equality helper call in the module')
   const body = fnText(text, 'f')
   ok(/f64\.eq/.test(body), 'the numbers compare as f64')
