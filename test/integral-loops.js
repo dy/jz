@@ -6,7 +6,7 @@ import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import jz from '../index.js'
 import { belowOpt, levels } from './_matrix.js'
-import { oracle, wat } from './util.js'
+import { oracle, wat, funcWat } from './util.js'
 
 // a ring buffer's cursor and a tap count read back from a state record
 const fir = `const st = { p: 0, taps: 5 }
@@ -18,6 +18,75 @@ export let run = (n) => { let N = st.taps, p = st.p, out = 0
     out += acc; p = (p + 1) % N }
   st.p = p; return out }
 export let cursor = () => st.p`
+
+test('integral loops: while counter copies preserve full entries, bounds and landing values', () => {
+  for (const [cmp, step] of [['<', 'i++'], ['<=', 'i++'], ['<', 'i+=3'], ['<', 'i++;if(count&1)i++']]) {
+    const src = `export function run(start, n) {
+      const a = new Int32Array([2, 3, 5, 7, 11, 13, 17, 19]), out = []
+      let i = start, count = 0
+      while (i ${cmp} n) {
+        out.push(i, a[i & 7]); count++
+        if (count > 4) break
+        ${step}
+      }
+      return [out, i, 1 / i]
+    }`
+    const host = oracle(src)
+    for (const optimize of levels(0, 1, 2, 3, 'size')) {
+      const got = jz(src, { optimize }).exports
+      for (const [start, n] of [[0, 0], [0, 3], [0, 2.5], [0, 3], [-0, 0], [-0, 2], [-3, -1],
+        [2147483645, 2147483647], [2147483646, 2147483648], [-2147483648, -2147483645],
+        [-2147483649, -2147483646], [4294967296, 4294967299], [0.5, 3], [NaN, 2],
+        [0, NaN], [0, -Infinity], [0, Infinity], [Infinity, Infinity], [0, 0], [0, 3]])
+        is(got.run(start, n), host.run(start, n), `O${optimize}: ${start} ${cmp} ${n}, ${step}`)
+    }
+  }
+})
+
+test('integral loops: global bounds snapshot only while their value remains stable', () => {
+  for (const loop of ['for (let i=0; i<N; i++)', 'let i=0; while(i<N)']) {
+    const step = loop.startsWith('let') ? 'i++' : ''
+    for (const change of ['', 'if (i===0) N=1', 'if(i===0) change()', 'sum+=box.x', 'sum+=box', 'sum+=Math.abs(box)']) {
+      const src = `let N = 0
+        function change(){N=1}
+        const box = {get x(){N=1;return 1},valueOf(){N=1;return 1}}
+        export function run(n) {
+          N=n; const a=new Int32Array([2,3,5,7,11,13,17,19]);let sum=0,count=0
+          ${loop} { sum+=a[i&7];count++;${change};${step};if(count>4)break }
+          return [sum,count,N]
+        }`
+      const host = oracle(src)
+      for (const optimize of levels(0, 1, 2, 3, 'size')) {
+        const got = jz(src, { optimize }).exports
+        for (const n of [0, 3, 2.5, 3, -1, -0, NaN, Infinity, 2147483648, 0, 3])
+          is(got.run(n), host.run(n), `O${optimize}: ${loop}, ${change || 'stable'}, n=${n}`)
+      }
+    }
+  }
+})
+
+test('integral loops: loop guards add no coercions and retain an integer fast copy', () => {
+  const src = `export function run(start, n) {
+    let checks=0, count=0, i=start
+    const bound={valueOf(){checks++;return n}}
+    while(i<bound){count++;i++;if(count>4)break}
+    return [checks,count,i,1/i]
+  }`
+  const host = oracle(src)
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const got = jz(src, { optimize }).exports
+    for (const [start,n] of [[0,0],[0,3],[-0,2],[0.5,3],[4294967296,4294967298],[0,NaN],[0,0],[0,3]])
+      is(got.run(start,n),host.run(start,n), `O${optimize}: object bound ${start}, ${n}`)
+  }
+  if (!belowOpt(2)) {
+    const source = `let N=0;export function set(n){N=n}
+      export function f(){const a=new Int32Array(16);let i=0,s=0;while(i<N){s+=a[i];i++}return s}`
+    const text = funcWat(wat(source, {optimize:3}), 'f')
+    ok(/\(local \$i\S*int\d+ i32\)/.test(text), 'the guarded copy holds its counter in an integer local')
+    ok(/i32\.(?:lt|ge)_s/.test(text), 'the guarded loop compares integer counters')
+    ok(text.includes('f64.lt') || text.includes('f64.ge'), 'the original full Number bound keeps its fallback')
+  }
+})
 
 test('integral loops: every cursor and count agrees with JS, integral or not', () => {
   const js = oracle(fir)

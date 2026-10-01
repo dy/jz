@@ -53,7 +53,9 @@ import { cloneWithSubst } from '../../type.js'
 import { collectBindings, nodeSize } from './common.js'
 import { occursOutside } from './counted-loops.js'
 import { isExported } from '../func-exports.js'
-import { forCounterRange, intExprRange } from '../../static.js'
+import { constIntExpr, forCounterRange, intExprRange } from '../../static.js'
+import { maxAdvanceBudget } from '../../type/canonical-bounds.js'
+import { runsAccessor, runsConversion } from '../analyze/frame-effects.js'
 import { K, core, hasTag, tagOf } from '../../summary/kind.js'
 import { invalidateBodies } from '../analyze.js'
 import { invalidateProgramFactsCache } from '../program-facts.js'
@@ -290,6 +292,11 @@ const versionBody = (body, params, view, func, programFacts) => {
     // a name the summary knows holds no number (an object key) is never an int32
     const mayBeNumber = (n) => { const k = view?.kindOfExpr(n); return k == null || hasTag(k, K.NUMBER) || tagOf(core(k)) === K.ANY }
     const outerOk = (n) => locals.has(n) && !inner.has(n) && !captured.has(n) && !ctx.funcs.names.has(n)
+    // A module binding can supply the same snapshot as a local only when
+    // the entire loop cannot run code that changes it between comparisons.
+    const stableBound = n => outerOk(n) || typeof n === 'string' && ctx.scope.globals.has(n) &&
+      !loopWrites.has(n) && !some(loop, e => runsAccessor(view, e) || runsConversion(view, e) ||
+        e[0] === 'new' || (e[0] === '()' && e.length > 2))
     // A counter's integer-valued updates do not prove its magnitude. Where a
     // stable numeric bound fits i32, round that bound once in a private copy;
     // the shared counter-range proof then includes its final increment. The
@@ -305,10 +312,26 @@ const versionBody = (body, params, view, func, programFacts) => {
       const rounded = ['()', `math.${direction}`, n]
       const bound = ['>>', adjust ? ['+', rounded, [null, adjust]] : rounded, [null, 0]]
       const range = forCounterRange(loop[1], [comparison, counter, bound], loop[3], counter)
-      if (loop[2][1] === counter && typeof n === 'string' && outerOk(n) && !loopWrites.has(n) &&
+      if (loop[2][1] === counter && typeof n === 'string' && stableBound(n) && !loopWrites.has(n) &&
           !captured.has(counter) && !writesIn(loop[4]).has(counter) && init?.[0] == null &&
           range && range.test[0] >= -2147483648 && range.test[1] <= 2147483647 &&
-          !intExprRange(n) && !integralEntry(n)) counterBound = { name: n, bound, comparison, min: -2147483648 - Math.min(0, adjust), max: 2147483647 - Math.max(0, adjust) }
+          !intExprRange(n) && !integralEntry(n)) counterBound = { name: n, bound, comparison, testAt: 2, min: -2147483648 - Math.min(0, adjust), max: 2147483647 - Math.max(0, adjust) }
+    }
+    // A while counter has an observable entry outside the loop. Capture its
+    // word only behind the same exact-entry guard, then reserve room for every
+    // positive step before the next comparison (including the final landing).
+    if (loop[0] === 'while' && (loop[1]?.[0] === '<' || loop[1]?.[0] === '<=')) {
+      const counter = loop[1][1], n = loop[1][2], inclusive = loop[1][0] === '<='
+      if (typeof counter === 'string' && outerOk(counter) && mayBeNumber(counter) &&
+          typeof n === 'string' && stableBound(n) && !loopWrites.has(n) && !intExprRange(n)) {
+        const advance = maxAdvanceBudget(loop[2], counter, { constInt: constIntExpr, evRange: intExprRange, closureWrites: captured, MUTATE_OPS })
+        if (advance > 0 && advance <= 2147483647) {
+          const rounded = ['()', inclusive ? 'math.floor' : 'math.ceil', n]
+          counterBound = { name: n, counter, testAt: 1, comparison: '<',
+            bound: ['>>', inclusive ? ['+', rounded, [null, 1]] : rounded, [null, 0]],
+            min: -2147483648, max: 2147483647 - advance + (inclusive ? 0 : 1) }
+        }
+      }
     }
     const indexed = [...indexNames(loop, loopWrites, intArray)].filter(n => outerOk(n) && !already(n) && mayBeNumber(n))
     // the names a counter is tested against (`i < n`, n read from a parameter): the
@@ -321,6 +344,7 @@ const versionBody = (body, params, view, func, programFacts) => {
     // or counts, under a bound that is an integer, is affine over its counters, which the
     // typed-bounds versioning already proves; nor is such an index a Number to copy for
     const names = bounds.length || indexed.some(n => loopWrites.has(n) && !counted(loop, n)) ? [...new Set([...indexed, ...bounds])] : []
+    if (counterBound?.counter && !names.includes(counterBound.counter)) names.push(counterBound.counter)
     let numbers = [...numberNames(loop, loopWrites, inner, kindOf, kindOfExpr, outerOk)].filter(n => !indexed.includes(n))
     // a Number the loop carries (`z1 = x - a1 * y`): what it only reads converts once per use, as it would
     if (!numbers.some(n => loopWrites.has(n))) numbers = []
@@ -346,8 +370,8 @@ const versionBody = (body, params, view, func, programFacts) => {
       includeModule('math')
       const bound = `${counterBound.name}${T}bound${freshId(ctx)}`
       boundDecl.push(['=', bound, counterBound.bound])
-      copy[2][0] = counterBound.comparison
-      copy[2][2] = bound
+      copy[counterBound.testAt][0] = counterBound.comparison
+      copy[counterBound.testAt][2] = bound
     }
     // Capture the word in its fresh alias inside the type-guarded equality.
     // Its exact assignment is visible to flow analysis and is evaluated once.

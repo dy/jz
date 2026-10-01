@@ -752,6 +752,10 @@ the f64 unless a complete range proves i32 storage. Neither a comparison nor
 truthiness proves the counter's width. Unit-step loops with stable numeric
 bounds get a guarded copy: a private rounded bound and the final counter step
 must fit i32, while the original Number loop handles the remaining inputs.
+An outer `while` counter also guards its entry, including negative zero, and
+reserves space for every positive step before the next test. Module bounds
+can supply snapshots only when the loop cannot write them or invoke user code;
+calls, accessors and coercions keep the original repeated reads.
 Other written locals of fixed nonnumeric kinds keep their original binding in
 both arms; loop versioning must not create aliases of a private string builder.
 Explicitly wrapping i32 counters compare against exact invariant i64 thresholds;
