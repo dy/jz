@@ -14,6 +14,40 @@ const lit = value => [null, value]
 const typed = ['()', 'new.BigInt64Array', lit(0)]
 const reduce = (callback, initial) => ['()', ['.', typed, 'reduce'], [',', callback, initial]]
 
+test('summary queries: declaration census keeps scope, missing writes and cold Boolean stores', () => {
+  const options = { schemas: [['HIGH']], brandOf: () => null, imports: new Map(), exported: () => false }
+  const build = value => {
+    const ast = [';', ['let', 'high'], ['const', ['=', 'limits', ['{}', [':', 'HIGH', lit(typeof value === 'boolean' ? 19 : value)]]]],
+      ['=', 'high', ['.', 'limits', 'HIGH']], ['let', 'flag'], ['??=', 'flag', lit(value)],
+      ['const', ['=', 'dict', ['{}']]], ['=', ['[]', 'dict', ['str', 'entry']], lit(value)],
+      ['const', ['=', 'copy', ['{}']]], ['()', 'Object.assign', [',', 'copy', 'dict']],
+      ['const', ['=', 'fixed', ['[', lit(1), lit(2)]]]]
+    const funcs = [{ name: 'cold', sig: { params: [{ name: 'p' }] }, body: [';',
+      ['let', ['=', 'flag', lit(true)]], ['let', ['=', 'mixed', lit(false)]], ['++', 'mixed'],
+      ['const', ['=', 'callback', ['=>', [], [';', ['let', ['=', 'flag', lit(false)]], ['return', 'flag']]]]],
+      ['=', 'late', lit(value)], ['return', 'flag']] }]
+    return summarize(ast, { ...options, funcs, moduleGlobals: new Map([['late', true]]) })
+  }
+  let retained
+  for (const value of [7, 7, true, 7]) {
+    const summary = build(value), q = summary.at(''), cold = summary.at('cold')
+    is(summary.held.get('high'), typeof value === 'boolean' ? 19 : value, 'a bare module declaration keeps its one later initializer')
+    is(q.boolStores('flag'), typeof value === 'boolean' ? 3 : 2, 'the implicit undefined and later write both count')
+    is(cold.boolStores('flag'), 1, 'an unreachable body keeps its scoped Boolean syntax')
+    is(cold.boolStores('mixed'), 3, 'compound mutation adds its numeric store beside a Boolean')
+    is(cold.boolStores('p'), 2, 'a parameter keeps its incoming-value store')
+    is(q.fixedLenOf('fixed'), 2, 'a literal declaration preserves its exact extent')
+    is(hasTag(q.bindingKindOf('late'), K.NULLISH), true, 'a planned module binding starts missing until its conditional writer runs')
+    is(q.kindOfExpr(['[]', 'dict', ['str', 'entry']]), join(kind(typeof value === 'boolean' ? K.BOOL : K.NUMBER), kind(K.ABSENT)), 'computed writes retain their dictionary root')
+    retained ??= summary
+    is(retained.held.get('high'), 7, 'another census leaves the published snapshot intact')
+  }
+  throws(() => summarize(null, { ...options, funcs: [{ name: 'bad', sig: { params: [] }, body: null }],
+    exported: () => { throw new Error('census failure') } }), /census failure/)
+  is(summarize(null, { ...options, funcs: [] }).at('').boolStores('flag'), 0, 'empty work after an error has no old stores')
+  is(retained.held.get('high'), 7, 'an error does not alter a retained reader')
+})
+
 test('summary queries: unseen literal shapes follow live aliases without changing scalar reads', () => {
   const object = props => ['{}', ...props.map(name => [':', name, lit(1)])]
   const schemas = [['a'], ['b'], ['a', 'tail'], ['b', 'tail']]

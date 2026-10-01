@@ -3252,12 +3252,11 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   const scopeOfParams = new Map()    // a closure's parameter node (its stable identity through emission) → its id
   const MODULE = ''
   const nameKeys = new Map()         // name → binding ids (one, or a function and its specialized variants)
-  const writes = []                 // collected beside declarations; one initializer proves a fixed extent
+  const writes = []                 // flat scope, name, initializer, bare, store-bits records
   // The stores of a binding by their syntax, in every body, walked or not: a
   // body no walk reaches keeps no kind, and its bindings answer by these
   // (`storeBits`): 1 a store that may be a Boolean, 2 one that may be another
   // value (a declaration without one holds undefined; a parameter what a call passes).
-  const storeWrites = []            // [scope, name, bits]
   // A Boolean by its syntax: a literal, a comparison, a predicate builtin (`Array.isArray`).
   const bool = (e) => e[0] === 'bool' || (e[0] == null && typeof e[1] === 'boolean') || BOOL_OPS.has(e[0]) ||
     (e[0] === '()' && e.length === 3 && typeof e[1] === 'string' && builtinCalleeVal(e[1]) === VAL.BOOL)
@@ -3295,7 +3294,11 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     if (op === 'let' || op === 'const') {
       for (let i = 1; i < n.length; i++) {
         const d = n[i], name = typeof d === 'string' ? d : d?.[0] === '=' ? d[1] : null
-        if (typeof name === 'string') { declareIn(scope, name); writes.push(typeof d === 'string' ? [scope, name, null, true] : [scope, name, d[2]]); storeWrites.push([scope, name, storeBitsOf(typeof d === 'string' ? undefined : d[2])]) }
+        if (typeof name === 'string') {
+          declareIn(scope, name)
+          const bare = typeof d === 'string'
+          writes.push(scope, name, bare ? null : d[2], bare, storeBitsOf(bare ? undefined : d[2]))
+        }
         if (Array.isArray(d)) collect(d[2], scope)
       }
       return
@@ -3312,13 +3315,14 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       return
     }
     else if (op === 'catch' && typeof n[2] === 'string') declareIn(scope, n[2])
-    if (MUTATE_OPS.has(op) && typeof n[1] === 'string') { writes.push([scope, n[1], straight && scope === MODULE && op === '=' ? n[2] : null]); storeWrites.push([scope, n[1], op === '=' || op === '||=' || op === '&&=' || op === '??=' ? storeBitsOf(n[2]) : 2]) }
+    if (MUTATE_OPS.has(op) && typeof n[1] === 'string') writes.push(scope, n[1], straight && scope === MODULE && op === '=' ? n[2] : null, false,
+      op === '=' || op === '||=' || op === '&&=' || op === '??=' ? storeBitsOf(n[2]) : 2)
     // Writes make an empty literal a dictionary unless it has a materialized schema.
-    if (MUTATE_OPS.has(op) && Array.isArray(n[1]) && (n[1][0] === '[]' || n[1][0] === '.')) { let root = n[1][1]; while (Array.isArray(root) && root[0] === '[]') root = root[1]; if (typeof root === 'string') dictUses.push([scope, root]) }
-    if (op === '()' && n[1] === 'Object.assign') { const t = args(n[2])[0]; if (typeof t === 'string') dictUses.push([scope, t]) }
+    if (MUTATE_OPS.has(op) && Array.isArray(n[1]) && (n[1][0] === '[]' || n[1][0] === '.')) { let root = n[1][1]; while (Array.isArray(root) && root[0] === '[]') root = root[1]; if (typeof root === 'string') dictUses.push(scope, root) }
+    if (op === '()' && n[1] === 'Object.assign') { const t = args(n[2])[0]; if (typeof t === 'string') dictUses.push(scope, t) }
     for (let i = 1; i < n.length; i++) collect(n[i], scope, straight && (op === ';' || op === ','))
   }
-  const dictUses = [], dictKeys = new Set()   // computed-write roots, then their resolved binding keys
+  const dictUses = [], dictKeys = new Set()   // flat scope/root pairs, then their resolved binding keys
   for (const f of funcs) {
     for (const p of f.sig.params) paramKeys.add(declareIn(f.name, p.name))
     if (f.rest) paramKeys.add(declareIn(f.name, f.rest))
@@ -3364,26 +3368,32 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   }
 
   let current = null  // the scope (and result key) of the function being walked; null at module scope
-  for (const [scope, name] of dictUses) { current = scope === MODULE ? null : scope; const key = keyOf(name); if (key !== null) dictKeys.add(key) }
+  for (let i = 0; i < dictUses.length; i += 2) { const scope = dictUses[i]; current = scope === MODULE ? null : scope; const key = keyOf(dictUses[i + 1]); if (key !== null) dictKeys.add(key) }
   // A global the plan declared without a declaration statement (a function
   // property flattened to a module global, plan/scope.js flattenFuncNamespaces)
   // is a module binding named by its writes: undefined until the first one,
   // unless a top-level statement assigns it unconditionally (`initWrites`).
-  for (const [scope, name] of writes)
+  for (let i = 0; i < writes.length; i += 5) {
+    const scope = writes[i], name = writes[i + 1]
     if (moduleGlobals.has(name) && keyOf(name, scope) === null) {
       const key = declareIn(MODULE, name)
       if (!initWrites.has(name)) raise(kinds, key, NULLISH)
     }
+  }
   current = null
   const storeBits = new Map()        // binding id → the bits of its stores by syntax
   for (const key of paramKeys) storeBits.set(key, 2)
-  for (const [scope, name, bits] of storeWrites) { const key = keyOf(name, scope); if (key !== null) storeBits.set(key, (storeBits.get(key) ?? 0) | bits) }
+  for (let i = 0; i < writes.length; i += 5) {
+    const key = keyOf(writes[i + 1], writes[i])
+    if (key !== null) storeBits.set(key, (storeBits.get(key) ?? 0) | writes[i + 4])
+  }
   // A binding's one definition: its declaration's value, or the one value a
   // statement of the module assigns it where no read sees it unassigned
   // (`let HIGH` then `HIGH = 1`: the bare declaration writes nothing a read finds).
   const definitions = new Map()
   const unseen = (scope, name, bare) => bare === true && scope === MODULE && moduleAssigned().has(name)
-  for (const [scope, name, value, bare] of writes) {
+  for (let i = 0; i < writes.length; i += 5) {
+    const scope = writes[i], name = writes[i + 1], value = writes[i + 2], bare = writes[i + 3]
     const key = keyOf(name, scope)
     if (key !== null && !unseen(scope, name, bare)) definitions.set(key, definitions.has(key) || value == null ? null : [scope, value])
   }

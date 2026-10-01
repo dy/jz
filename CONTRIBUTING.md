@@ -532,6 +532,9 @@ Mixed object joins use numeric pair keys. Shape-union cache hits stay outside th
 closure factory that builds a new member list, avoiding discarded environments.
 Spread analysis snapshots keys and kinds in flat private lists, preserving the
 read-before-merge order without allocating a tuple for each copied field.
+The declaration census shares one flat record per write for scope, initializer,
+missing-declaration and Boolean-store facts. Its dictionary roots use flat pairs;
+no per-write tuple or duplicated scope/name record survives the collection pass.
 Flow-sensitive assignment and refinement facts use those same IDs in sparse
 collections, reset per function; branch rollback stores IDs as well. Dense
 arrays for these sparse facts increased allocation without improving throughput.
