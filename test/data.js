@@ -2312,6 +2312,36 @@ test('structuredClone: arrays preserve holes and clone named string properties a
   }
 })
 
+test('structuredClone: fresh destinations keep saved array indices and growing named properties', () => {
+  const source=`export function f(mode){const a=[{get value(){
+      if(mode===1){a.length=1;a[2]=9;const key='k'+(mode+2);delete a[key];a[key]=33}
+      if(mode===2)throw 17;if(mode===3){a[7]=70;a.extra=80}return 7}},4,5];
+    a['-1']=-1;a['01']=1;a['4294967295']=42;
+    for(let i=0;i<40;i++)a['k'+i]=i;a.self=a;
+    try{const b=structuredClone(a);return[b.length,Object.keys(b),b[0].value,1 in b,b[1],b[2],
+      b['-1'],b['01'],b['4294967295'],b.k3,b.k39,b.extra,b.self===b,b!==a]}
+    catch(e){return e}}
+    export function dictionary(){const a={};for(let i=0;i<40;i++)a['k'+i]=i;a.self=a;
+      const b=structuredClone(a);return[Object.keys(b),b.k39,b.self===b,b!==a]}`
+  const expected=oracle(source)
+  // StructuredSerializeInternal step 26.4 snapshots ALL enumerable keys before
+  // recursive Gets, including array named keys. Node 25.9's dense-array path
+  // snapshots named keys later, so use the specification for these two mutations:
+  // https://html.spec.whatwg.org/multipage/structured-data.html#structuredserializeinternal
+  const saved=['0','1','2','-1','01','4294967295',...Array.from({length:40},(_,i)=>'k'+i),'self']
+  const mutation=mode=>[3,mode===1?saved.filter(k=>k!=='1'):saved,7,mode!==1,
+    mode===1?undefined:4,mode===1?9:5,-1,1,42,mode===1?33:3,39,undefined,true,true]
+  for(const optimize of levels(0,1,2,3,'size')){
+    const got=jz(source,{optimize}).exports,held=[]
+    for(const mode of [0,0,1,2,3,0]){
+      const actual=got.f(mode),want=mode===1||mode===3?mutation(mode):expected.f(mode)
+      is(actual,want,`${optimize}: saved keys mode ${mode}`);held.push([actual,want])
+    }
+    is(got.dictionary(),expected.dictionary(),`${optimize}: growing dictionary retains cyclic identity`)
+    for(const [actual,want] of held)is(actual,want,'later calls preserve retained clone answers')
+  }
+})
+
 test('structuredClone: Symbol values throw while Symbol keys and native own fields stay excluded', () => {
   const src=`export function f(mode){try{const value=mode===1?Symbol('x'):mode===2?{x:Symbol('x')}:
       mode===3?new Map([[1,Symbol('x')]]):mode===4?new Set([Symbol('x')]):[null,undefined,false,true,-0,NaN,Infinity,7n];

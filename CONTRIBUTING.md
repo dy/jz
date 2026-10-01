@@ -116,6 +116,11 @@ undefined/error path; they must not reach emission as absent compiler nodes.
 Copies snapshot keys before invoking getters, then test each saved key's current
 presence and read its current value. Getter deletion/reinsertion and target
 setters can change later reads; a cached slot/value is not a presence proof.
+Structured clones write only into fresh dictionaries or arrays sized before
+recursive getters run. Saved array indices fit that original extent; named
+properties use the clone's private side table. These destinations need no
+general receiver dispatch, coercion or setter checks. Memoized cycles follow
+dictionary forwarding when property storage grows.
 Host copies snapshot all own string/Symbol keys, check each current enumerable
 descriptor without Get, then preserve the value's identity through the raw host read.
 Object spread sources proved to be only null, undefined, Boolean, Number or

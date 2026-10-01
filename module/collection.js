@@ -285,7 +285,7 @@ export default (ctx) => {
     __set_delete: () => ['__map_hash', '__same_value_zero', ...relogDeps()],
     __sclone: ['__sclone_rec', '__mkptr', '__alloc_hdr_n'],
     __sclone_rec: () => ['__ptr_type', '__ptr_offset', '__ptr_offset_fwd', '__ptr_aux', '__is_nullish', '__len', '__alloc', '__alloc_hdr_n', '__mkptr', '__map_get', '__map_set', '__set_add', '__coll_order', '__arr_fill', '__obj_clone', '__hash_new', '__is_symbol', '__sclone_properties'],
-    __sclone_properties: ['__copy_keys', '__sclone_rec', '__ptr_offset', '__len', '__dyn_has', '__dyn_get_any', '__dyn_set'],
+    __sclone_properties: ['__copy_keys', '__sclone_rec', '__ptr_offset', '__ptr_type', '__len', '__dyn_has', '__dyn_get_any', '__str_arr_idx', '__hash_new_small', '__hash_set_local'],
     __map_set: () => [...(ctx.linkDemand.external ? ['__map_hash', '__same_value_zero', '__ptr_offset', '__ptr_offset_fwd', '__alloc_hdr_n', '__zomb_scan', '__coll_rehash', '__ext_set'] : ['__map_hash', '__same_value_zero', '__ptr_offset', '__ptr_offset_fwd', '__alloc_hdr_n', '__zomb_scan', '__coll_rehash']), ...(needsDurableFwdLog() ? ['__durable_fwd_log'] : []), ...slotLogDeps()],
     // Region-arena rebuild fix — MAP-shaped sibling of __set_add_h.
     __map_set_h: () => ['__same_value_zero', '__zomb_scan', ...slotLogDeps()],
@@ -901,6 +901,11 @@ export default (ctx) => {
   // any later source property before its recursive serialization begins.
   ctx.core.stdlib.__sclone_properties = `(func $__sclone_properties (param $source i64) (param $out i64) (param $memo i64)
     (local $keys i64) (local $base i32) (local $n i32) (local $i i32) (local $key i64)
+    (local $value i64) (local $array i32) (local $dst i32) (local $index i32) (local $props i64)
+    ;; The destination is a fresh dictionary or an array already sized to
+    ;; the source length. No user code can observe it before the clone returns.
+    (local.set $array (i32.eq (call $__ptr_type (local.get $out)) (i32.const ${PTR.ARRAY})))
+    (if (local.get $array) (then (local.set $dst (call $__ptr_offset (local.get $out)))))
     (local.set $keys (i64.reinterpret_f64 (call $__copy_keys (f64.reinterpret_i64 (local.get $source)))))
     (local.set $base (call $__ptr_offset (local.get $keys)))
     (local.set $n (call $__len (local.get $keys)))
@@ -908,9 +913,20 @@ export default (ctx) => {
       (br_if $done (i32.ge_u (local.get $i) (local.get $n)))
       (local.set $key (i64.load (i32.add (local.get $base) (i32.shl (local.get $i) (i32.const 3)))))
       (if (call $__dyn_has (local.get $source) (local.get $key)) (then
-        (drop (call $__dyn_set (local.get $out) (local.get $key)
-          (i64.reinterpret_f64 (call $__sclone_rec
-            (f64.reinterpret_i64 (call $__dyn_get_any (local.get $source) (local.get $key))) (local.get $memo)))))))
+        (local.set $value (i64.reinterpret_f64 (call $__sclone_rec
+          (f64.reinterpret_i64 (call $__dyn_get_any (local.get $source) (local.get $key))) (local.get $memo))))
+        (if (local.get $array)
+          (then
+            (local.set $index (call $__str_arr_idx (local.get $key)))
+            (if (i32.ge_s (local.get $index) (i32.const 0))
+              ;; A saved index is below the original length, even if a getter
+              ;; has since resized the source. The clone keeps that length.
+              (then (i64.store (i32.add (local.get $dst) (i32.shl (local.get $index) (i32.const 3))) (local.get $value)))
+              (else
+                (if (i64.eqz (local.get $props)) (then (local.set $props (i64.reinterpret_f64 (call $__hash_new_small)))))
+                (local.set $props (call $__hash_set_local (local.get $props) (local.get $key) (local.get $value)))
+                (i64.store (i32.sub (local.get $dst) (i32.const 16)) (local.get $props)))))
+          (else (drop (call $__hash_set_local (local.get $out) (local.get $key) (local.get $value)))))))
       (local.set $i (i32.add (local.get $i) (i32.const 1)))
       (br $next))))`
 
