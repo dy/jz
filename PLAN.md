@@ -29,7 +29,16 @@ below their unchanged AssemblyScript references of 1,758 B and 1,657 B.
 
 The remaining release blockers are:
 
-- Recursive compilation: kernel18 at `7968fc4f` builds fresh and passes all
+- Recursive compilation: kernel23 at `5a88e83b` passes all nine reuse/recovery
+  sequences but still exhausts 4 GiB after closure analysis. Its fresh artifact
+  is 28,320,064 bytes, SHA-256 prefix `6d6aa8976d73`. Pre-emission heap is
+  3,381,609,088 bytes, 89,469,288 below kernel22; named-function emission reaches
+  4,098,087,048 and closure analysis 4,290,263,464. This diagnostic still enables
+  arena rewind explicitly at O1; the default preset is unchanged. A new allocation
+  sample reproduces the same failure; a byte-identical named rebuild maps its
+  stacks to source owners. Sampled allocation volume includes temporary regions
+  later rewound and must not be reported as retained memory.
+  Earlier evidence follows: kernel18 at `7968fc4f` builds fresh and passes all
   nine reuse/recovery sequences, but still exhausts 4 GiB after publishing
   parameter ABIs. The heap reaches 4,082,653,440 bytes before code emission,
   down 27,275,328 bytes from kernel16. The artifact is 26,692,199 bytes,
@@ -64,8 +73,7 @@ The remaining release blockers are:
   and immutable-field snapshots. Provisional spread layouts also settle their
   transitive closure before restarting: a twelve-layer call chain takes two
   solves instead of thirteen, with identical canonical IDs and field kinds.
-  Focused native/WASI checks pass; their combined recursive heap effect still
-  needs a fresh kernel measurement.
+  Focused native/WASI checks pass; kernel23 above measures the combined effect.
 - Dependency release: the complete, tested watr 5.11.9 tarball awaits publication
   approval. JZ still declares and locks 5.11.8. Publication, the dependency bump
   and a clean registry installation gate must precede release.
@@ -103,7 +111,7 @@ keeps computed array-key coercion order. Direct native/WASI regressions cover
 missing values, signed boundaries, wide products, empty loops and repeated calls.
 Sound bounded-loop optimization proofs are being restored where those changes
 removed unsupported shortcuts; performance assertions remain reviewable.
-The latest full core diagnostic on frozen `c57af10f` passes 6,081 of 6,099
+The earlier full core diagnostic on frozen `c57af10f` passes 6,081 of 6,099
 cases (278,140 assertions), with 18 failures. Subsequent focused fixes restore
 numeric-key and extent facts after reference staging, stride-3 SIMD, codec
 cursor budgets, constructor copy dispatch, native host-field write-back and
@@ -160,7 +168,7 @@ supply those loop theorems, because calls and coercions can write them. The
 unchanged byte-copy size test now passes at 438 B (limit 475 B).
 The combined final core matrix and bootstrap gates are not yet complete.
 
-The next frozen core diagnostic (`15a7e087`) passes 6,177 of 6,211 tests,
+The frozen core diagnostic (`15a7e087`) passes 6,177 of 6,211 tests,
 with 291,453 assertions. Of its 34 failures, 26 were an unused public Symbol
 counter added by eager module loading. The counter now follows factory demand;
 interned-only modules keep host registry identity without it. Focused Symbol
@@ -170,7 +178,13 @@ WAT, three inlined membership helpers, and strict module oracle semantics.
 The property-owner registry was regenerated for RegExp.toString. The remaining
 size failure is fixed without changing its limit: the dictionary-count module
 falls from 2,520 to 2,465 bytes against 2,466, by sharing canonical key equality.
-These fixes need a new full combined run.
+The subsequent R6 diagnostic (`e1d526c6`) passes 6,243 of 6,252 tests with
+296,629 assertions. Six failures now have focused resolutions: four codegen
+checks count the actual source function/loop rather than unrelated reflection
+helpers; the import check observes synchronous and post-await states without
+racing host loading; Number-only catches use operand proofs even when a catch
+binding enables BigInt carriers. Three BigInt typed-update failures remain
+under repair. The combined final candidate still needs a full rerun.
 
 Object copies and structuredClone now preserve saved-key order and current
 property presence while running getters once. StructuredClone additionally
@@ -178,7 +192,12 @@ snapshots Map/Set entries, preserves array holes and named fields, and memoizes
 cycles before descending. Focused native/WASI clone tests pass 23 groups with
 1,800 / 1,620 assertions. The general traversal adds code: the O2 plain-object
 fixture grows from 9,660 to 25,188 bytes, and the array fixture from 6,752 to
-24,036 bytes. Demand-based reduction remains work; no size cap was relaxed.
+24,036 bytes. A later fresh-output storage reduction lowers its exact-parent
+plain-object O2 fixture from 24,656 to 18,321 bytes and its array fixture from
+23,798 to 17,886. Saved indices, growing named-property tables, cycles, getter
+errors and repeated/retained outputs pass native and WASI checks. No size cap
+was relaxed. Cyclic summary property escape now marks its cell before descending
+and includes later stored values; 73 native summary groups / 3,764 assertions pass.
 Host property reads preserve unbound function identity and caught host exceptions
 retain their original values. Generic numeric NaN classification now shares one
 predicate across conversions, truthiness and equality; focused native/WASI tests
@@ -194,10 +213,21 @@ reject numeric NaNs before boxed identity dispatch, with 4 groups / 4,403
 assertions on each host and an unchanged 2,465-byte dictionary size result.
 Collection constructors, grouping and structuredClone preserve argument order;
 the final focus passes 4 groups / 214 assertions per host. Ordinary Map/Set/clone
-calls remain byte-identical, as do the O2/size grouping fixture sizes. Well-known
-Symbol identity, pointer-looking Number NaNs at generic storage boundaries and
-groupBy iterator semantics remain under review. The frozen core R6 diagnostic
-is still running and does not include every subsequent focused fix.
+calls remain byte-identical, as do the O2/size grouping fixture sizes. Grouping
+now reloads native-array lengths and consumes custom iterators live through the
+shared iterator runtime, with proper abrupt closing: native/WASI each pass seven
+groups / 674 assertions. Native-only O0 artifacts remain the same size and
+O2/size shrink four bytes. Number values now normalize only at generic carrier
+boundaries; the new source-boundary cases pass 2,690 assertions on each host.
+Exact Number schema slots now normalize at generic property readers using their
+settled slot contract. Four new groups pass 2,442 native / 2,422 WASI assertions;
+273 neighboring groups pass on both hosts. Uniform numeric storage retains raw
+bits. Membership now evaluates operands left to right, rejects primitive
+receivers before key conversion and preserves receiver identity through key
+effects. Its five-tier regression passes 415 assertions on each host and enables
+the previously skipped `S11.8.7_A3` conformance test. Well-known Symbol identity
+and host Number ingress are still under review. R6 does not include every
+subsequent focused fix.
 
 The proposed scalar operation-ratchet accounting change is uncommitted and
 excluded from frozen gates. It preserves entered-loop ceilings but increases
