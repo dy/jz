@@ -1382,3 +1382,39 @@ test('strict mode: array patterns lower through the runtime while the program\'s
   try { compile('export const f = (x) => x == null ? 1 : 0', { strict: true }) } catch (e) { error = e }
   ok(error && error.message.includes('prohibited'), 'the program\'s own loose equality is still rejected')
 })
+
+
+test('host decode: runtime Array errors retain their schema through callback dispatch', () => {
+  // No explicit Error constructor or instanceof in this source: either would
+  // add another schema use and could hide metadata dropped by an IR clone.
+  const src = `export function f(n){return new Array(n).fill(1).map((v,i)=>v+i).reduce((a,b)=>a+b,0)}`
+  const js = oracle(src)
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const wasm = jz(src, { optimize }).exports
+    for (const n of [0,0,1,-1,2.5,NaN,Infinity,-Infinity,4294967296,4,1,0]) {
+      if (Number.isInteger(n) && n >= 0 && n < 10) is(wasm.f(n), js.f(n), `valid/reused array ${n}, ${optimize}`)
+      else {
+        let error
+        try { wasm.f(n) } catch (e) { error = e }
+        ok(error instanceof RangeError, `Array error decodes as RangeError for ${n}, ${optimize}`)
+        is(error.message, 'Invalid array length', 'RangeError message survives schema decoding')
+        is(wasm.f(1), js.f(1), 'a valid call recovers after the throw')
+      }
+    }
+  }
+})
+
+test('runtime Array errors: callback pipelines preserve typed catches and sibling errors', () => {
+  const src = `
+    function pipeline(n){return new Array(n).fill(1).map((v,i)=>v+i).reduce((a,b)=>a+b,0)}
+    export function caught(n){try{return [pipeline(n),'ok']}catch(e){return [e instanceof RangeError,e instanceof TypeError,e instanceof Error,e.name,e.message]}}
+    export function emptyReduce(){try{return [].reduce((a,b)=>a+b)}catch(e){return [e instanceof TypeError,e instanceof RangeError,e.name]}}
+  `
+  const js=oracle(src)
+  for(const optimize of levels(0,1,2,3,'size')) {
+    const wasm=jz(src,{optimize}).exports
+    for(const n of [0,0,-1,1,2.5,NaN,4,0,-1,1]) is(wasm.caught(n),js.caught(n),`typed catch ${n}, ${optimize}`)
+    is(wasm.emptyReduce(),js.emptyReduce(),'an empty reduce retains its distinct TypeError brand')
+    is(wasm.caught(1),js.caught(1),'valid pipeline after the sibling error')
+  }
+})

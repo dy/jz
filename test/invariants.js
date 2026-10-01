@@ -16,6 +16,7 @@ import jz, { compile } from '../index.js'
 import { compile as compileWat } from 'watr'
 import { instantiate } from '../interop.js'
 import { ctx, reset } from '../src/ctx.js'
+import { cloneIR } from '../src/ir/coerce.js'
 import { DBG_INVARIANTS, assertCtxInvariants, resetInvariants, assertFeatureWrite, assertLinkDemandWrite } from '../src/debug.js'
 import { createActiveFunction } from '../src/compile/active-function.js'
 import { analyzeBody, reanalyzeBody, setFuncBody, clearBodyFacts } from '../src/compile/analyze.js'
@@ -1523,4 +1524,23 @@ test('invariant: front-end rewrites copy only changed paths', () => {
   ok(names.has('x'), 'hoisting still records the declaration')
   is(JSON.stringify(assignment), JSON.stringify(['=', 'x', value]))
   ok(hoistVars(assignment, new Set()) === assignment, 'a repeated hoist has no work')
+})
+
+
+test('invariant: IR clones retain nested schema liveness without sharing occurrences', () => {
+  const a = ['call', '$__mkptr', ['i32.const', 6], ['i32.const', 0], ['local.get', '$a']]
+  const b = ['call', '$__mkptr', ['i32.const', 6], ['i32.const', 7], ['local.get', '$b']]
+  a.schemaSid = 0; b.schemaSid = 7
+  const tree = ['block', a, ['if', ['i32.const', 1], ['then', b], ['else', a]]]
+  for (let i = 0; i < 2; i++) {
+    const copy = cloneIR(tree)
+    is(copy[1].schemaSid, 0, 'schema zero remains live')
+    is(copy[2][2][1].schemaSid, 7, 'nested schema remains live')
+    is(copy[2][3][1].schemaSid, 0, 'each occurrence retains its own tag')
+    ok(copy[1] !== a && copy[1] !== copy[2][3][1], 'cloned occurrences have distinct ownership')
+    copy[1][4][1] = '$changed'
+    is(a[4][1], '$a', 'the source remains unchanged')
+    is(copy[2][3][1][4][1], '$a', 'a sibling occurrence remains unchanged')
+  }
+  is(cloneIR(null), null, 'empty child')
 })

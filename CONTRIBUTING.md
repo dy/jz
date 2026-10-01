@@ -107,6 +107,9 @@ checks cannot redirect packed cells through ordinary object loads. Effectful
 keys capture receiver identity first and resolve forwarding after the key.
 Dynamic property-key reads retain ordinary boxed arrays because their dispatch
 cannot interpret inline record cells.
+IR clones retain schema-liveness tags on every copied producer. Method dispatch
+can replace a constructor's original tree with its clone; losing that tag makes
+the linker omit live object fields and Error brands from host metadata.
 Array `for…of` loops capture their source once and reread its length each step.
 Appends, shrinking and writes through called helpers remain visible, including
 new nodes added while the compiler solves representation plans.
