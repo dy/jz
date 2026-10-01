@@ -2,7 +2,7 @@ import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
 import jz, { compile } from '../index.js'
 import { instantiate } from '../interop.js'
-import { onKernel, levels } from './_matrix.js'
+import { belowOpt, onKernel, levels } from './_matrix.js'
 import { funcWat, oracle, agree } from './util.js'
 import { ctx } from '../src/ctx.js'
 import { dictCapacity } from '../src/static.js'
@@ -402,6 +402,49 @@ test('audit: bounded element products preserve negative zero', () => {
     const wasm = jz(src, { optimize }).exports
     for (const name of ['p','q']) for (const n of [0,1,2,4,5,5,0])
       ok(Object.is(wasm[name](n), js[name](n)), `${optimize}: ${name}(${n}) preserves zero sign`)
+  }
+})
+
+test('audit: integer products preserve zero sign through every numeric carrier', () => {
+  const rows = [
+    ['word times zero', '', '(x|0)*0'],
+    ['zero times word', '', '0*(x|0)'],
+    ['word times negative zero', '', '(x|0)*-0'],
+    ['negative zero times word', '', '-0*(x|0)'],
+    ['masked times negative', '', '(x&255)*-1'],
+    ['negative times masked', '', '-1*(x&255)'],
+    ['signed and unsigned words', '', '(x>>24)*(y&15)'],
+    ['signed bytes', 'const a=new Int8Array([x,y]);', 'a[0]*a[1]'],
+    ['signed shorts', 'const a=new Int16Array([x,y]);', 'a[0]*a[1]'],
+    ['effectful zero factor', '', '((count++,x)|0)*0'],
+    ['effectful negative zero factor', '', '-0*((count++,x)|0)'],
+    ['compound assignment', 'let z=x&255;', '(z*=-1)'],
+    ['compound zero factor', 'let z=x|0;', '(z*=0)'],
+    ['compound negative zero factor', 'let z=x|0;', '(z*=-0)'],
+  ]
+  const src = rows.map(([, setup, product], i) => `
+    export function f${i}(x,y){let count=0;${setup}const v=${product};
+      const a0=[v],o={v},t=new Float64Array([v]),t32=new Float32Array([v]);
+      return [v,1/v,a0[0],1/a0[0],o.v,1/o.v,t[0],1/t[0],t32[0],1/t32[0],count]}
+  `).join('\n')
+  const js = oracle(src)
+  const inputs = [[-2147483648,0],[-1,0],[0,-1],[0,0],[1,0],
+    [2147483647,-1],[-1,1],[NaN,Infinity],[-0,1],[1,-0],[0,-1]]
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const wasm = jz(src, {optimize}).exports
+    for (let i=0;i<rows.length;i++) for (const args of inputs) {
+      const actual=wasm[`f${i}`](...args), expected=js[`f${i}`](...args)
+      for (let k=0;k<expected.length;k++)
+        ok(Object.is(actual[k],expected[k]), `${optimize}: ${rows[i][0]}, ${args}, carrier ${k}`)
+    }
+  }
+  if (!onKernel() && !belowOpt(2)) {
+    const wat = compile(`export function positive(x,y){return (x&255)*(y&255)}
+      export function square(x){const v=x>>24;return v*v}`, {optimize:2,wat:true})
+    for (const name of ['positive','square']) {
+      const body = funcWat(wat, name)
+      ok(body.includes('i32.mul') && !body.includes('f64.mul'), `${name}: faithful products retain integer multiplication`)
+    }
   }
 })
 

@@ -18,7 +18,7 @@ import {
 } from './bigint.js'
 import { emit, emitBoolStr, tryConcatChain } from './dispatch.js'
 import {
-  addBoundedFaithful, addFitsI32, addLiteralFitsI32, addRangeFitsI32, i32Mag, mulBoundedFaithful, mulFitsI32, mulRangeFitsI32, subLiteralFitsI32, subRangeFitsI32,
+  addBoundedFaithful, addFitsI32, addLiteralFitsI32, addRangeFitsI32, mulBoundedFaithful, mulFitsI32, mulRangeFitsI32, subLiteralFitsI32, subRangeFitsI32,
 } from './i32-bounds.js'
 import { foldOperandPure, isI32Num, isNumArm, isSideEffectFree } from './shared.js'
 
@@ -513,14 +513,6 @@ export const arithmeticOps = {
     if (_f) return _f
     if (isLit(vb) && litVal(vb) === 1) return toNumF64(a, va)
     if (isLit(va) && litVal(va) === 1) return toNumF64(b, vb)
-    // `x * 0` → 0 only when the other factor is provably finite (i32, or a finite
-    // literal): JS `NaN*0` / `±Inf*0` are NaN, so a non-finite f64 must fall
-    // through to `f64.mul` (which yields NaN). For finite x the dropped product is
-    // ±0 — and -0 === +0, so consumers are unaffected. The block evaluates x for
-    // its side effects before dropping.
-    const finiteFactor = (v) => isI32Num(v) || (isLit(v) && Number.isFinite(litVal(v)))
-    if (isLit(vb) && litVal(vb) === 0 && finiteFactor(va)) return isLit(va) ? vb : typed(['block', ['result', vb.type], va, 'drop', vb], vb.type)
-    if (isLit(va) && litVal(va) === 0 && finiteFactor(vb)) return isLit(vb) ? va : typed(['block', ['result', va.type], vb, 'drop', va], va.type)
     // `.unsigned` operand is a uint32 ([0, 2^32)); its product can exceed i32, so
     // `i32.mul` would wrap ((2^32-1)*2 → -2). Widen to f64 — see `+` above.
     if (isI32Num(va) && isI32Num(vb) && !widensUnsigned(va) && !widensUnsigned(vb)
@@ -528,7 +520,7 @@ export const arithmeticOps = {
     // Typed-element reads arrive PRE-converted (`.typed:[]` returns
     // f64.convert_i32_{s,u}(loadN)), so the faithful-product gate above never
     // sees them. Peel the convert to expose the bounded integer source: when
-    // |a|·|b| ≤ 2^31−1 the exact product fits signed i32, so
+    // |a|·|b| ≤ 2^31−1 and zero sign is preserved, the exact product fits signed i32, so
     // f64.mul(convert(x), convert(y)) == convert_s(i32.mul(x, y)) in every
     // consumer context — one int op instead of two converts + f64.mul, and the
     // i32 product chain is lane-vectorizable. Unsigned converts are safe here
@@ -537,7 +529,7 @@ export const arithmeticOps = {
     const peeled = (v) => Array.isArray(v) && (v[0] === 'f64.convert_i32_s' || v[0] === 'f64.convert_i32_u') && v.length === 2 ? v[1]
       : isI32Num(v) && !widensUnsigned(v) ? v : null
     const pa = peeled(va), pb = peeled(vb)
-    if (pa && pb && (i32Mag(pa) * i32Mag(pb) <= 0x7fffffff || mulRangeFitsI32(a, b))) return typed(['i32.mul', pa, pb], 'i32')
+    if (pa && pb && (mulBoundedFaithful(pa, pb) || mulRangeFitsI32(a, b))) return typed(['i32.mul', pa, pb], 'i32')
     const i32mul = tryI32Arith('i32.mul', '*', a, b, va, vb); if (i32mul) return i32mul
     return typed(['f64.mul', stripCanon(toNumF64(a, va)), stripCanon(toNumF64(b, vb))], 'f64')
   },

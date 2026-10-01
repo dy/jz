@@ -698,6 +698,10 @@ and its captured value. The peephole and wide-accumulator pass share the exact
 conversion recognizer; arbitrary selects and property-key guards remain distinct.
 Local typing and emission share the interval-product proof, including the
 negative-zero check; a product fitting i32's magnitude alone is insufficient.
+The emitter's mask and typed-load shortcuts use the same zero-sign proof,
+including compound multiplication. Multiplication by zero retains its floating
+operation unless both operands are constant: its other operand's sign and any
+side effects remain observable through returns, storage and reciprocals.
 
 A typed array a guard proves is read as that typed array (`plan/guard-views.js`,
 the `guardViews` pass): past `if (!(a instanceof Float32Array)) throw …` the

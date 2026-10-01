@@ -7,7 +7,7 @@
 import { ctx } from '../../ctx.js'
 import { isLit, litVal, maskBound } from '../../ir.js'
 import { repOf } from '../../reps.js'
-import { constIntExpr, intExprRange } from '../../static.js'
+import { constIntExpr, intExprRange, mulRangesKeepZeroSign } from '../../static.js'
 
 
 // JS `*` is an f64 multiply; `i32.mul` yields only the exact product mod 2^32.
@@ -27,7 +27,7 @@ import { constIntExpr, intExprRange } from '../../static.js'
 // (2**31) for anything it can't prove tighter, so an unguarded operand costs
 // the full range in the product check, exactly as it should.
 const opBound = (v) => isLit(v) ? Math.abs(litVal(v)) : maskBound(v)
-export const mulFitsI32 = (va, vb) => opBound(va) * opBound(vb) <= 0x7fffffff
+export const mulFitsI32 = (va, vb) => opBound(va) * opBound(vb) <= 0x7fffffff && mulRangesKeepZeroSign(opRange(va), opRange(vb))
 
 // Max |value| of an i32-typed operand from a narrowing typed-array load width — the
 // element-read twin of maskBound's `x & 0xff` case (load8_u and `x & 0xff` carry the
@@ -40,15 +40,27 @@ export const i32Mag = (v) =>
   (v[0] === 'i32.const' && typeof v[1] === 'number') ? Math.abs(v[1]) :
   (v[0] === 'i32.and' || v[0] === 'i32.shr_u') ? maskBound(v) :
   Infinity
+// Magnitude alone loses the sign of zero: a signed load or word multiplied
+// by zero can answer -0. Reuse the AST product's sign proof for emitted i32
+// carriers, retaining narrow load, mask and counter facts when available.
+const opRange = (v) => {
+  if (isLit(v)) return [litVal(v), litVal(v)]
+  if (v.irange) return v.irange
+  const op = v[0], mag = I32_LOAD_MAG[op]
+  if (mag != null) return op.endsWith('_u') ? [0, mag] : [-mag, mag - 1]
+  const bound = maskBound(v)
+  return bound < 0x80000000 ? [0, bound] : [-0x80000000, 0x7fffffff]
+}
 // `int8[i]*int8[j]` and friends: a product of two range-bounded integer typed-array
 // elements whose magnitudes multiply to ≤ 2^31−1 is FAITHFUL as i32.mul — the exact
-// product fits signed i32, so i32.mul == the true value in EVERY consumer context
-// (i32 sink AND f64 value), independent of the widen pass. Covers i8/u8/i16 pairs and
-// i16×u16 (32768·65535 < 2^31); correctly EXCLUDES u16×u16 (65535² > 2^31). JS `*` of
+// product fits signed i32 and cannot be -0, so i32.mul == the true value in every
+// consumer context (i32 sink AND f64 value), independent of the widen pass. The
+// magnitude admits i8/u8/i16 pairs and i16×u16 (32768·65535 < 2^31); signed loads
+// that can meet zero still require f64. u16×u16 exceeds i32 (65535² > 2^31). JS `*` of
 // two such reads — the int-conv / correlation / quantised-MAC kernel shape — then rides
 // the i32 ABI (one op, no f64 round-trip) on V8 / JSC / wasmtime alike, and the i32
 // product is lane-vectorizable where the f64 form was not.
-export const mulBoundedFaithful = (va, vb) => i32Mag(va) * i32Mag(vb) <= 0x7fffffff
+export const mulBoundedFaithful = (va, vb) => i32Mag(va) * i32Mag(vb) <= 0x7fffffff && mulRangesKeepZeroSign(opRange(va), opRange(vb))
 export { mulRangeFitsI32 } from '../../static.js'
 export const addFitsI32 = (va, vb) => opBound(va) + opBound(vb) <= 0x7fffffff
 export const addBoundedFaithful = (va, vb) => i32Mag(va) + i32Mag(vb) <= 0x7fffffff

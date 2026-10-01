@@ -256,14 +256,18 @@ export function intExprRange(n, nameRange = null) {
   return null
 }
 
+/** Multiplying integer carriers cannot produce -0 when no zero-valued
+ *  operand can meet a negative one. The operands themselves must exclude -0. */
+export const mulRangesKeepZeroSign = (a, b) =>
+  !(a[0] <= 0 && a[1] >= 0 && b[0] < 0 || b[0] <= 0 && b[1] >= 0 && a[0] < 0)
+
 /** A numeric product that preserves both signed-i32 magnitude and zero sign.
  *  The callers separately require i32 operands; squaring the same i32 binding
  *  therefore cannot produce -0, even when its interval spans both signs. */
 export function mulRangeFitsI32(a, b) {
   const ra = intExprRange(a), rb = intExprRange(b)
   if (!ra || !rb) return false
-  if (!(typeof a === 'string' && a === b) &&
-      (ra[0] <= 0 && ra[1] >= 0 && rb[0] < 0 || rb[0] <= 0 && rb[1] >= 0 && ra[0] < 0)) return false
+  if (!(typeof a === 'string' && a === b) && !mulRangesKeepZeroSign(ra, rb)) return false
   const p = [ra[0] * rb[0], ra[0] * rb[1], ra[1] * rb[0], ra[1] * rb[1]]
   return Math.min(...p) >= I32_MIN && Math.max(...p) <= I32_MAX
 }
