@@ -19,7 +19,7 @@ const src = `const comb = (data, st) => {
 }
 const chans = [{ fs: 1 }, { fs: 2 }], buf = new Float64Array(16)
 export let run = (k, n) => { let s = 0
-  for (let r = 0; r < n; r++) { for (let i = 0; i < buf.length; i++) buf[i] = ((i + r) % 7) * 0.25 - 0.5; comb(buf, chans[k]); s += buf[3] + buf[15] }
+  for (let r = 0; r < n; r++) { for (let i = 0; i < buf.length; i++) buf[i] = ((i + r) % 7) * 0.25 - 0.5; comb(buf, chans[+k]); s += buf[3] + buf[15] }
   return s }
 export let sum = (o) => { let s = 0; for (let v of o.list) s += v; return s }`
 
@@ -48,5 +48,19 @@ test('iterate present: the loop over the list tests no receiver', () => {
   ok(inner.length > 0, 'found the loop over the list')
   for (const l of inner) {
     ok(!/__ptr_offset_fwd|__throw_property_nullish/.test(l), 'no forwarding chase and no missing-receiver throw inside the loop')
+  }
+})
+
+test('iterate present: arbitrary channel properties retain missing-receiver errors', () => {
+  const dynamic=src.replace('chans[+k]','chans[k]')
+  for(const optimize of levels(0,1,2,3,'size')) {
+    const want=oracle(dynamic), got=run(dynamic,{optimize})
+    for(const key of [0,0,'length','missing',1,0]) {
+      if(typeof key==='number') is(got.run(key,2),want.run(key,2),`channel ${key}, O${optimize}`)
+      else {
+        throws(()=>want.run(key,2),TypeError,`Node ${key}`)
+        throws(()=>got.run(key,2),TypeError,`channel ${key}, O${optimize}`)
+      }
+    }
   }
 })

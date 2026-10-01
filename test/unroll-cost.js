@@ -5,6 +5,7 @@ import test from 'tst'
 import { ok } from 'tst/assert.js'
 import { levels } from './_matrix.js'
 import { agree, funcWat, wat } from './util.js'
+import parseWat from 'watr/parse'
 
 // How many times a literal only the loop body holds is emitted: copies × loop versions.
 const copies = (src, name, literal) => (funcWat(wat(src, { optimize: 3 }), name).match(new RegExp(`f64\\.const ${literal.replace('.', '\\.')}\\b`, 'g')) || []).length
@@ -61,6 +62,16 @@ test('unroll cost: a stage loop of counter addressing unrolls', () => {
 })
 
 test('unroll cost: a large body the counter barely touches stays rolled', () => {
-  ok(copies(heavy, 'f', '0.015625') <= 2, 'one body per loop version')
+  // Source and IR specialization can each copy the outer loop. The costly
+  // stage body must remain in its own loop in every copy, not just one.
+  const depths = []
+  const visit = (n, depth = 0) => {
+    if (!Array.isArray(n)) return
+    if (n[0] === 'loop') depth++
+    if (n[0] === 'f64.const' && Number(n[1]) === 0.015625) depths.push(depth)
+    for (const child of n) visit(child, depth)
+  }
+  visit(parseWat(funcWat(wat(heavy, { optimize: 3 }), 'f')))
+  ok(depths.length > 0 && depths.every(depth => depth >= 2), 'every stage body stays in its inner loop')
   for (const optimize of levels(0, 2, 3, 'size')) agree(heavy, 'f', [16], { optimize }, `heavy at ${optimize}`)
 })

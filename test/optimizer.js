@@ -408,7 +408,7 @@ test('LICM: checked-access length HEADER decode hoists once per function (neverG
   // pre-watr: `f` releases what it made as it returns, so its call of `scan` is one watr inlines
   // (a specialized copy of a loop computes its own values ahead of itself,
   // beside the loop as written: the count is the hoist's, with the copies off)
-  const fnOn = findFunc(parse(src, preWatr({ level: 'speed', specializeLoops: false })), '$scan')
+  const fnOn = findFunc(parse(src, preWatr({ level: 'speed', specializeLoops: false, versionIntegralLoops: false })), '$scan')
   is(loopCount(findFunc(parse(src, preWatr('speed')), '$scan'), isHeaderDecode), 0, 'no decode inside a loop, specialized or not')
   ok(fnOn, 'the JZ pass is inspected before backend inlining')
   is(loopCount(fnOn, isHeaderDecode), 0, 'length header decode fully hoisted out of both loops')

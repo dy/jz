@@ -109,7 +109,8 @@ test('audit: affine integer bounds cross helper chains', () => {
       let s=0;for(let r=0;r<8;r++)s+=forward(a,r);return s}`
   for (const optimize of TIERS) is(jz(src, { optimize }).exports.calculate(), 152)
   if (!onKernel()) {
-    const worker = funcWat(compile(src, { optimize: 0, wat: true }), 'pair')
+    // The low tiers omit the cross-function interval solve by default.
+    const worker = funcWat(compile(src, { optimize: { level: 0, intervalRanges: true }, wat: true }), 'pair')
     ok(worker.includes('(param $o i32)'), 'closed helper uses an integer offset')
     ok(!/trunc|convert|__typed_idx/.test(worker), 'proven accesses need no numeric round trips or checked helper')
   }
