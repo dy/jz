@@ -204,6 +204,9 @@ No analysis result is reused across an untracked semantic mutation.
 Summary queries build unseen object-literal shapes in their own helper. Its
 captured name list belongs only to that fallback, so scalar expression queries
 need no literal-builder environment. Alias and presence refinements remain live.
+Solver query views expose only expression kinds, binding keys and call targets.
+The full emission interface is created for published views, after solving; its
+scope caches, alias refinements and retained-reader behavior stay independent.
 Memory page limits are validated before either compiler host encodes options.
 Assembly also rejects static data that would require more than the maximum.
 The hosted compiler applies the same fixed-memory scratch and final-code proofs;

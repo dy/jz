@@ -413,6 +413,10 @@ export function summaryQueries(facts, internal = false) {
       } else ck = kindOfExpr(callee)
       return tagOf(ck) === K.CLOSURE && paramOf(ck) !== UNKNOWN ? paramOf(ck) : null
     }
+    // Solver readers keep construction identities and use only these queries.
+    // Public emission helpers close over this scope too; create them only for
+    // published readers, after the solver has settled the facts.
+    if (internal) return { kindOfExpr, calleeOf, keyOfName: keyOf }
     return {
       kindOf: name => pub(readKind(name)), kindOfExpr: e => pub(kindOfExpr(e)), calleeOf, keyOfName: keyOf,
       // An emission temp holding the value of `e` (see `aliases`), present

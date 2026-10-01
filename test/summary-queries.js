@@ -14,6 +14,34 @@ const lit = value => [null, value]
 const typed = ['()', 'new.BigInt64Array', lit(0)]
 const reduce = (callback, initial) => ['()', ['.', typed, 'reduce'], [',', callback, initial]]
 
+test('summary queries: internal readers leave complete cached public views across repeated summaries', () => {
+  let retained
+  for (const value of [7, 7, 'changed', 7]) {
+    const summary = summarize(['const', ['=', 'value', lit(value)]], {
+      funcs: [
+        { name: 'scale', sig: { params: [{ name: 'value' }] }, body: ['*', 'value', lit(2)] },
+        { name: 'mixed', sig: { params: [{ name: 'value' }, { name: 'take' }] }, body: ['?:', 'take', lit(9n), 'value'] },
+        { name: 'through', sig: { params: [{ name: 'value' }, { name: 'take' }] }, body: ['()', 'mixed', [',', 'value', 'take']] },
+      ], schemas: [], brandOf: () => null, imports: new Map(), exported: () => true,
+    })
+    const q = summary.at('scale')
+    is(q === summary.at('scale'), true, 'a scope reuses its completed view')
+    is(q.numericDemand('value'), true, 'the internal demand reader keeps the parameter separate from the module binding')
+    is(q.paramKindOf('value'), kind(K.NUMBER), 'the public view exposes the settled incoming parameter kind')
+    is(summary.kindOf('value'), kind(typeof value === 'number' ? K.NUMBER : K.STRING), 'the module view retains its own binding')
+    is(summary.resultContract('mixed').carrier, CARRIER.BOXED, 'the internal key reader preserves a BigInt beside an unknown result')
+    is(summary.resultContract('through').carrier, CARRIER.BOXED, 'the internal callee reader propagates the BigInt result contract')
+    q.alias('temporary', lit(true))
+    is(q.kindOf('temporary'), kind(K.BOOL), 'public alias operations remain available')
+    q.unalias('temporary')
+    is(q.kindOf('temporary'), K.NONE, 'temporary aliases do not survive their scope')
+    retained ??= summary
+    is(retained.kindOf('value'), kind(K.NUMBER), 'later summaries leave retained public readers unchanged')
+  }
+  is(summarize(null, { funcs: [], schemas: [], brandOf: () => null, imports: new Map(), exported: () => false }).kindOf('value'), K.NONE, 'an empty summary has no stale view')
+  is(retained.kindOf('value'), kind(K.NUMBER), 'empty work does not alter the retained view')
+})
+
 test('summary queries: lazy traversal scratch preserves aliases, cycles and zero extents', () => {
   const options = { funcs: [], schemas: [], brandOf: () => null, imports: new Map(), exported: () => false }
   const decl = (name, value) => ['const', ['=', name, value]]
