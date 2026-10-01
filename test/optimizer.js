@@ -21,7 +21,7 @@ import { EQ_ZERO_KERNEL } from './_optimizer-kernels.js'
 import { optimize as watOptimize } from 'watr/optimize'
 import parseWat from 'watr/parse'
 import encodeWat from 'watr/compile'
-import { hoistInvariantLoop, splitLoopPrivateScratch } from '../src/optimize/licm.js'
+import { hoistInvariantLoop, splitLoopPrivateScratch, narrowLoopBound } from '../src/optimize/licm.js'
 import { devirtSchemaReads } from '../src/optimize/devirt.js'
 import { hoistAddrBase, hoistPtrType } from '../src/optimize/cse-address.js'
 import { peelNarrowConv } from '../src/optimize/vectorize/lift.js'
@@ -3652,7 +3652,7 @@ test('wat copy-prop: a copy whose source is later reassigned is NOT propagated p
 // `i32.trunc_sat_f64_s(f64.ceil(n))` to the pre-header when the counter is a
 // proven-non-negative i32 local (NaN→0 trips, fractional rounds up).
 
-test('narrowLoopBound: f64 export-param bound compares in i32, trunc hoisted', () => {
+test('bounded loop copy: Number export-param bound compares in i32, trunc hoisted', () => {
   const body = compileMain(`
     export const main = (n) => {
       let s = 0
@@ -3660,10 +3660,12 @@ test('narrowLoopBound: f64 export-param bound compares in i32, trunc hoisted', (
       return s
     }
   `)
-  ok(/i32\.trunc_sat_f64_s/.test(body) && /f64\.ceil/.test(body), 'bound snapped via trunc_sat(ceil(n))')
-  ok(/i32\.lt_s/.test(body), 'loop compares in i32')
-  const loop = body.slice(body.indexOf('(loop'))
-  ok(!/f64\.convert_i32_s/.test(loop), 'no per-iteration counter convert left in the loop')
+  ok(/trunc_sat_f64_s/.test(body) && /f64\.ceil/.test(body), 'bound rounds and converts before the fast loop')
+  const loops = []
+  const walk = n => { if (!Array.isArray(n)) return; if (n[0] === 'loop') loops.push(JSON.stringify(n)); else n.forEach(walk) }
+  walk(parseWat(body))
+  ok(loops.some(n => /i32\.lt_s/.test(n) && !/f64\.(lt|le|gt|ge|convert_i32)|trunc_sat/.test(n)), 'fast loop has no floating counter operation or repeated conversion')
+  ok(loops.some(n => /f64\.lt/.test(n)), 'unbounded Numbers retain the original loop')
 })
 
 test('narrowLoopBound: unlocks lane-vectorizer for the naive (ptr, n) DSP shape', () => {
@@ -6243,4 +6245,19 @@ test('unknown-receiver element reads: inline array arm at speed, the helper at s
   ok(!/f64\.load/.test(size) && !/i32\.lt_u/.test(size) && /call \$__typed_idx/.test(size), 'size: the helper alone')
   is(run(src).at([5, 6, 7], 1), 6)
   is(run(src, { optimize: 'size' }).at([5, 6, 7], 2), 7)
+})
+
+
+test('narrowLoopBound: raw i32 comparisons preserve every Number threshold', () => {
+  for (const [compare, reverse] of [['lt', false], ['le', false], ['gt', true], ['ge', true]]) {
+    const i = ['f64.convert_i32_s', ['local.get', '$i']], n = ['local.get', '$n']
+    const fn = ['func', '$f', ['export', '"f"'], ['param', '$i', 'i32'], ['param', '$n', 'f64'], ['result', 'i32'],
+      ['loop', '$loop', ['return', [`f64.${compare}`, ...(reverse ? [n, i] : [i, n])]]], ['i32.const', 0]]
+    narrowLoopBound(fn)
+    const m = new WebAssembly.Instance(new WebAssembly.Module(encodeWat(['module', fn]))).exports
+    ok(JSON.stringify(fn).includes('i64.trunc_sat_f64_s'), 'one exact wide threshold')
+    for (const value of [-2147483648, -2, -1, 0, 1, 2147483646, 2147483647])
+      for (const bound of [NaN, -Infinity, -1e30, -2147483649, -2147483648, -2.5, -2, -0, 0.5, 2147483646.5, 2147483647, 2147483647.5, 2147483648, 1e30, Infinity])
+        is(m.f(value, bound), Number(compare === 'lt' || compare === 'gt' ? value < bound : value <= bound), `${compare} i=${value}, n=${bound}`)
+  }
 })

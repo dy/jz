@@ -1102,21 +1102,15 @@ const AFFINE_INDEX_OPS = new Set(['+', '-', '*', '<<', 'u-'])
  * ONE slot for the whole function, so a later unguarded bare read (`return
  * id` after `id *= 100000`) would silently read back a wrapped value. See
  * collectBareEscapes' own doc for the exemption rules (index position,
- * ToInt32-rooted, provable range, or a governing comparison).
+ * ToInt32-rooted or a proved range).
  */
 // An integer literal that fits signed i32 — the only constant a promoted i32
 // local may hold. A larger integer (`0xFFFFFFFF`, a NaN-box mask) is emitted as
 // an f64.const, so treating it as an i32 leaf would store f64 into an i32 local.
 const isI32Lit = (v) => typeof v === 'number' && Number.isInteger(v) && v >= -2147483648 && v <= 2147483647
 
-// ToInt32-rooted operators (`&|^~<<>>>>>`) AND comparisons: JS applies the
-// identical truncation — or collapses to a fresh i32 boolean — to the TRUE
-// value before these run, so a wrapped-i32 read here reproduces exactly what
-// JS would compute from the untruncated double. Comparisons additionally
-// carry their own SEPARATE, pre-existing, deliberately-scoped soundness
-// contract ("sound for n ≤ 2³¹", widenLocalTypes' CMP_OPS pass) — folding
-// them into a fresh proof obligation here would just double-count that
-// already-accepted tolerance, not add real safety.
+// Word operators consume truncated operands; comparisons consume the original
+// numeric magnitude. The walk distinguishes these two roots below.
 const ESCAPE_SAFE_ROOT_OPS = new Set(['&', '|', '^', '~', '<<', '>>', '>>>', '<', '>', '<=', '>=', '==', '!=', '===', '!=='])
 
 // Assignment forms whose RHS merely feeds the TARGET's OWN storage — no
@@ -1150,17 +1144,6 @@ const escapeInRangeI32 = (node) => {
   return r != null && r[0] >= -2147483648 && r[1] <= 2147483647
 }
 
-// Names appearing as a DIRECT operand of a comparison anywhere in `body` —
-// the canonical loop-counter shape (`i < n`). These already carry their OWN
-// separate, deliberately-scoped soundness tolerance ("sound for n ≤ 2³¹",
-// widenLocalTypes' CMP_OPS pass, untouched by this fix) — a var governed by
-// SOME comparison is exactly a loop-counter-shaped var, and its OTHER
-// arithmetic (`a[i] = (i+1)*0.125`, the mat4 perf-guard shape) inherits that
-// SAME accepted tolerance rather than a fresh, stricter one: keeping it i32
-// storage is no riskier than the comparison itself already accepts. A var
-// with NO governing comparison anywhere (an unbounded accumulator like `id`
-// in `id *= 100000` / `id += d`) gets no such pass, so it stays subject to
-// the full bare-escape proof below.
 // Math.imul/Math.clz32: JS ToInt32-coerces every argument before computing
 // (spec-defined, unconditionally — same "wrap IS the semantics" contract as
 // the bitwise operators; mirrors type.js intLevelMap's INT_MATH_FNS_I32,
@@ -1172,108 +1155,21 @@ const mathFnName = (callee) =>
   typeof callee === 'string' && callee.startsWith('math.') ? callee.slice(5)
     : Array.isArray(callee) && callee[0] === '.' && callee[1] === 'Math' ? callee[2] : null
 
-// `crossClosure`: descend into nested `=>` bodies instead of stopping at the
-// boundary. A LOCAL's relevant scope is exactly its one function body (nested
-// arrows are a separate scope for a same-named local, boxed-capture handles
-// the mutated-and-shared case), so the default (false) stops there. A MODULE
-// GLOBAL's relevant scope is the WHOLE PROGRAM — an inline arrow passed as a
-// callback (`.forEach(x => { g = x })`) is not lifted to its own ctx.funcs.list
-// entry at prepare time (only named function/arrow bindings are), so it stays
-// an inline `=>` node in the enclosing body and would be invisible to a scan
-// that stops there. See collectBareEscapes' own crossClosure doc.
-// A loop's test on its counter (`while (--i)`, `for (; n; n--)`, `while (i--)`,
-// wrapped in `postfix` by prepare, a do-while's `while (flag || --i)`)
-// compares it with a constant: the same governing comparison as `i < n`.
-function testedCounters(test, add) {
-  if (typeof test === 'string') return add(test)
-  if (!Array.isArray(test)) return
-  if (test[0] === 'postfix') return testedCounters(test[1], add)
-  if ((test[0] === '--' || test[0] === '++') && typeof test[1] === 'string') return add(test[1])
-  if ((test[0] === '+' || test[0] === '-') && test.length === 3 && constIntExpr(test[2]) != null) return testedCounters(test[1], add)
-  if (test[0] === '&&' || test[0] === '||' || test[0] === '!') for (let i = 1; i < test.length; i++) testedCounters(test[i], add)
-}
-function collectComparedNames(body, crossClosure) {
-  let names = null
-  const add = (name) => { (names ||= new Set()).add(name) }
-  const enter = (node) => {
-    if (node[0] === '=>') { if (crossClosure) walkAst(node[2], { enter }); return false }
-    if (COMPARE_OPS.has(node[0])) {
-      if (typeof node[1] === 'string') add(node[1])
-      if (typeof node[2] === 'string') add(node[2])
-    }
-    if (node[0] === 'while' || node[0] === 'if' || node[0] === '?:') testedCounters(node[1], add)
-    else if (node[0] === 'for' || node[0] === 'do') testedCounters(node[2], add)
-  }
-  walkAst(body, { enter })
-  return names || EMPTY_SCAN_SET
-}
-
-/**
- * Names with at least one "bare escape" anywhere in `body` — a value-position
- * read whose exact double value could diverge from a wrapped-i32
- * approximation, with no static proof it stays in range. A var with ANY such
- * escape must never be promoted to permanent i32 storage: once a local's WASM
- * storage is i32, `writeVar`'s `toI32` coercion (ir.js) wraps EVERY write mod
- * 2^32 unconditionally — sound for a value ONLY ever consumed by another
- * ToInt32 sink (an index, a bitwise op, another i32-storage local), unsound
- * the instant it's read bare (`return id` after `id *= 100000`) even though
- * some OTHER, earlier use of the same var (feeding an array index) was
- * perfectly sound at that point of use. See collectI32SafeIndexVars' own doc
- * and .work/archive/todo.md's KNOWN GAP #1 entry for the full diagnosis.
- *
- * Occurrences exempt from the proof requirement (mirrors the three-source
- * contract in collectI32SafeIndexVars' doc):
- *   'idx'  — an affine component of a `[]` index, a direct operand of a
- *            ToInt32-rooted op / comparison (ESCAPE_SAFE_ROOT_OPS), the
- *            target OR rhs of a ToInt32-rooted COMPOUND assign (`x ^= y` ≡
- *            `x = x ^ y`, ESCAPE_ROOT_EDGE_OPS — same root-op exemption as
- *            the binary form, just spelled as assignment sugar), or an
- *            argument to Math.imul/Math.clz32 (INT_MATH_FNS_I32 — spec-
- *            defined ToInt32 on every argument, including through the `,`
- *            multi-arg-list wrapper node): the wasm32 trap bound, or JS's
- *            own truncation, already proves it (rules b,c).
- *   'edge' — the affine-reachable RHS of a tracked assignment edge into
- *            ANOTHER local (ESCAPE_EDGE_OPS): identical to what the backprop
- *            fixpoint below already trusts — the feeder inherits the TARGET's
- *            own contract, not a fresh one.
- * Anything else needs a static `intExprRange` proof (rule a) or it's blamed.
- *
- * `crossClosure` (default false, LOCAL mode — unchanged behavior: a nested
- * `=>` is a separate scope/body, not scanned): pass `true` for a MODULE
- * GLOBAL's whole-program scan (plan/scope.js `inferModuleIntGlobals`) — a
- * global's storage is ONE cell for the entire program, so an escape hiding
- * inside an inline closure (never lifted to its own ctx.funcs.list entry,
- * e.g. `.forEach(x => { g = x })`) is exactly as disqualifying as one at
- * top level. Callers pass a synthetic whole-program body (module-init AST +
- * every function body concatenated) so the SAME comparison-governed
- * tolerance this function already grants a local — "compared ANYWHERE in
- * the relevant scope" — is evaluated over the global's true relevant scope
- * (the whole program) rather than one function at a time. No shadow
- * tracking: a same-named local elsewhere only makes the scan MORE
- * conservative (a spurious blame just keeps a global at f64, never the
- * reverse), matching the flat by-name matching inferModuleIntGlobals's own
- * evidence walk already uses program-wide.
- */
+/** Names whose observed value needs its original Number magnitude. Integer
+ *  storage is safe only with a closed i32 hull or when every use applies a
+ *  word conversion. Comparisons observe magnitude too: being compared never
+ *  proves a counter cannot overflow. Definition edges carry this demand back
+ *  to their arithmetic sources; crossClosure includes module-global readers. */
 export function collectBareEscapes(body, locals, crossClosure) {
   // The global census spans functions; definition edges belong to one body.
-  return bareEscapeScan(body, crossClosure, collectComparedNames(body, crossClosure), null, !crossClosure).escaped()
+  return bareEscapeScan(body, crossClosure, null, !crossClosure).escaped()
 }
 
-/**
- * The bare-escape census of module globals: one scan per body (module inits,
- * each function), so a definition edge binds the names of its own body, and
- * one comparison tolerance, the program's. A global is one cell for every
- * body: blamed in one, it blames what flows into it in the others
- * (`const d = G` at module level, `x * d` in a function).
- *
- * `wide` names hold a constant outside the i32 range. No comparison bounds
- * such a value, so they get no comparison tolerance, and a comparison reads
- * their exact value: only a ToInt32 sink leaves them storable as i32.
- */
+/** One scan per body keeps definition edges scoped; observed module globals
+ *  carry their magnitude demand across bodies. Explicitly wide globals cannot
+ *  borrow a same-named local's range from the current overlay. */
 export function collectGlobalBareEscapes(bodies, isGlobal, wide) {
-  let compared = null
-  for (const body of bodies) for (const name of collectComparedNames(body, true)) (compared ||= new Set()).add(name)
-  const scans = bodies.map(body => bareEscapeScan(body, true, compared || EMPTY_SCAN_SET, wide, true))
+  const scans = bodies.map(body => bareEscapeScan(body, true, wide, true))
   const out = new Set(), queue = []
   const take = (names) => { for (const name of names) if (isGlobal(name) && !out.has(name)) { out.add(name); queue.push(name) } }
   for (const scan of scans) take(scan.escaped())
@@ -1283,7 +1179,7 @@ export function collectGlobalBareEscapes(bodies, isGlobal, wide) {
 
 const THROUGH_ARROWS = { skipArrow: false }
 
-function bareEscapeScan(body, crossClosure, compared, wide, keepEdges) {
+function bareEscapeScan(body, crossClosure, wide, keepEdges) {
   let escaped = null
   const edges = new Map(), queue = []
   let collecting = true, drained = 0
@@ -1294,7 +1190,7 @@ function bareEscapeScan(body, crossClosure, compared, wide, keepEdges) {
   }
   const escape = name => {
     if (escaped?.has(name)) return
-    if (!wide?.has(name) && (compared.has(name) || escapeInRangeI32(name))) return
+    if (!wide?.has(name) && escapeInRangeI32(name)) return
     ;(escaped ||= new Set()).add(name)
     queue.push(name)
   }
@@ -1302,7 +1198,7 @@ function bareEscapeScan(body, crossClosure, compared, wide, keepEdges) {
     // A closed binding hull can prove a bare use safe even under an operator
     // the range query cannot model, such as division. Otherwise value uses
     // propagate back through definitions; word conversions stop that demand.
-    if (typeof node === 'string') { if (mode === 'value' || (mode === 'cmp' && wide?.has(node))) escape(node); return }
+    if (typeof node === 'string') { if (mode === 'value' || mode === 'cmp') escape(node); return }
     if (!Array.isArray(node)) return
     const op = node[0]
     if (op === '=>') { if (crossClosure) walk(node[2], isBlockBody(node[2]) ? 'stmt' : 'value'); return }  // local mode: separate scope/body; global mode: descend (see doc)
@@ -1504,7 +1400,10 @@ export function stampLoopCounterRanges(body) {
       } })
     }
     if (decls.get(name) !== 1 || isReassigned(loopBody, name) || isReassigned(cond, name) || closureWrites(body, name)) return
-    const range = forCounterRange(init, cond, step, name)
+    const range = forCounterRange(init, cond, step, name, e => intExprRange(e, n => {
+      const binding = scanBindingUses(body).get(n)
+      return hasSingleInitializer(body, n) ? intExprRange(binding[BINDING_USE_INIT]) : null
+    }))
     if (!range || range.test[0] < -2147483648 || range.test[1] > 2147483647) return
     updateRep(name, { range: range.test })
   } })

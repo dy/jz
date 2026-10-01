@@ -46,12 +46,14 @@
  * @module compile/plan/integral-loops
  */
 import { ctx } from '../../ctx.js'
+import { includeModule } from '../../autoload.js'
 import { T, MUTATE_OPS, TYPEOF, numberGuard, some, walkAst, extractParams, collectParamName } from '../../ast.js'
 import { freshId } from '../../ir.js'
 import { cloneWithSubst } from '../../type.js'
 import { collectBindings, nodeSize } from './common.js'
 import { occursOutside } from './counted-loops.js'
 import { isExported } from '../func-exports.js'
+import { forCounterRange, intExprRange } from '../../static.js'
 import { K, core, hasTag, tagOf } from '../../summary/kind.js'
 import { invalidateBodies } from '../analyze.js'
 import { invalidateProgramFactsCache } from '../program-facts.js'
@@ -288,6 +290,26 @@ const versionBody = (body, params, view, func, programFacts) => {
     // a name the summary knows holds no number (an object key) is never an int32
     const mayBeNumber = (n) => { const k = view?.kindOfExpr(n); return k == null || hasTag(k, K.NUMBER) || tagOf(core(k)) === K.ANY }
     const outerOk = (n) => locals.has(n) && !inner.has(n) && !captured.has(n) && !ctx.funcs.names.has(n)
+    // A counter's integer-valued updates do not prove its magnitude. Where a
+    // stable numeric bound fits i32, round that bound once in a private copy;
+    // the shared counter-range proof then includes its final increment. The
+    // original bound stays unchanged for uses in the body (including fractions).
+    let counterBound = null
+    if (loop[0] === 'for' && loop[1]?.[0] === 'let' && loop[1].length === 2 &&
+        loop[1][1]?.[0] === '=' && typeof loop[1][1][1] === 'string' &&
+        BOUND_TESTS.has(loop[2]?.[0])) {
+      const n = loop[2][2], counter = loop[1][1][1], init = loop[1][1][2]
+      const up = loop[2][0][0] === '<', inclusive = loop[2][0].length === 2
+      const comparison = up ? '<' : '>', adjust = inclusive ? up ? 1 : -1 : 0
+      const direction = up !== inclusive ? 'ceil' : 'floor'
+      const rounded = ['()', `math.${direction}`, n]
+      const bound = ['>>', adjust ? ['+', rounded, [null, adjust]] : rounded, [null, 0]]
+      const range = forCounterRange(loop[1], [comparison, counter, bound], loop[3], counter)
+      if (loop[2][1] === counter && typeof n === 'string' && outerOk(n) && !loopWrites.has(n) &&
+          !captured.has(counter) && !writesIn(loop[4]).has(counter) && init?.[0] == null &&
+          range && range.test[0] >= -2147483648 && range.test[1] <= 2147483647 &&
+          !intExprRange(n) && !integralEntry(n)) counterBound = { name: n, bound, comparison, min: -2147483648 - Math.min(0, adjust), max: 2147483647 - Math.max(0, adjust) }
+    }
     const indexed = [...indexNames(loop, loopWrites, intArray)].filter(n => outerOk(n) && !already(n) && mayBeNumber(n))
     // the names a counter is tested against (`i < n`, n read from a parameter): the
     // counter is an int32 only where they are
@@ -303,7 +325,7 @@ const versionBody = (body, params, view, func, programFacts) => {
     // a Number the loop carries (`z1 = x - a1 * y`): what it only reads converts once per use, as it would
     if (!numbers.some(n => loopWrites.has(n))) numbers = []
     const present = [...presentNames(loop, loopWrites, kindOf, outerOk)]
-    if (!names.length && !numbers.length && !present.length) continue
+    if (!names.length && !numbers.length && !present.length && !counterBound) continue
     // Every local the copy writes gets a name of its own too, from its
     // value: a local is one representation, and the loop's keep the float
     // values the copy's do not. So do the copy's own declarations. A
@@ -313,15 +335,24 @@ const versionBody = (body, params, view, func, programFacts) => {
     const outer = [...new Set([...names, ...numbers, ...present, ...written])]
     const own = new Map([...outer, ...inner].map(n => [n, `${n}${T}int${freshId(ctx)}`]))
     const copy = cloneWithSubst(loop, new Map(), own)
+    const boundDecl = []
+    if (counterBound) {
+      includeModule('math')
+      const bound = `${counterBound.name}${T}bound${freshId(ctx)}`
+      boundDecl.push(['=', bound, counterBound.bound])
+      copy[2][0] = counterBound.comparison
+      copy[2][2] = bound
+    }
     // a number, an int32 and not -0: `typeof x === 'number' && x === (x | 0) && (x !== 0 || 1 / x > 0)`;
     // the type first, so the test converts no object (a key's valueOf runs where the loop reads it);
     // a Number alone: `typeof x === 'number'`, the form whose arm the summary reads as a Number;
     // present: `x != null`
-    const test = [...names.map(n => ['&&', ['&&', numberGuard(n), ['===', n, ['|', n, [null, 0]]]], ['||', ['!==', n, [null, 0]], ['>', ['/', [null, 1], n], [null, 0]]]]),
+    const boundTest = counterBound ? [['&&', numberGuard(counterBound.name), ['&&', ['>=', counterBound.name, [null, counterBound.min]], ['<=', counterBound.name, [null, counterBound.max]]]]] : []
+    const test = [...boundTest, ...names.map(n => ['&&', ['&&', numberGuard(n), ['===', n, ['|', n, [null, 0]]]], ['||', ['!==', n, [null, 0]], ['>', ['/', [null, 1], n], [null, 0]]]]),
       ...numbers.map(n => ['===', ['typeof', n], [null, TYPEOF.number]]),
       ...present.map(n => ['!=', n, [null, null]])]
       .reduce((a, b) => ['&&', a, b])
-    const version = ['{}', [';', ['let', ...outer.map(n => ['=', own.get(n), names.includes(n) ? ['|', n, [null, 0]] : already(n) ? ['u+', n] : n])], copy,
+    const version = ['{}', [';', ['let', ...boundDecl, ...outer.map(n => ['=', own.get(n), names.includes(n) ? ['|', n, [null, 0]] : already(n) ? ['u+', n] : n])], copy,
       // what the copy wrote under a name of its own, where the body reads it after the loop
       // (a Number every write keeps an integer is renamed too: its sum is the copy's)
       ...outer.filter(n => loopWrites.has(n) && occursOutside(body, loop, n)).map(n => ['=', n, own.get(n)])]]

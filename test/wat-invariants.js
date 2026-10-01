@@ -54,21 +54,17 @@ const LI_SNAP = (n) => typeof n[1] === 'string' && /^\$__li\d/.test(n[1])
 //    (control proves the check has teeth; on-state proves the named pass fires.)
 // ════════════════════════════════════════════════════════════════════════════
 
-test('ablation: narrowLoopBound kills the per-iteration f64 trip-count compare', () => {
-  // f64 param bound `n`: without narrowing the loop test is `f64.lt(convert(i), n)`
-  // every iteration; with it, the bound snaps to i32 once and the test is i32.lt_s.
-  const src = `export let f = (buf, n) => { let s = 0; for (let i = 0; i < n; i++) s = (s + i) | 0; return s | 0 }`
-  ok(loopHas(parse(src, { narrowLoopBound: false }), F64_CMP_OR_CONVERT), 'control: f64 trip-count compare present with pass OFF')
-  ok(!loopHas(parse(src, 2), F64_CMP_OR_CONVERT), 'INVARIANT: no f64 trip-count compare in loop with pass ON')
-})
+const boundedLoop = tree => {
+  const loops = []
+  walk(tree, n => { if (n[0] === 'loop') loops.push(n) })
+  return loops.some(n => has(n, head(/^i32\.(lt|le|gt|ge)_s$/)) && !has(n, F64_CMP_OR_CONVERT))
+}
 
-test('ablation: narrowLoopBound also snaps an inclusive `i <= n` bound (NaN-safe)', () => {
-  // `<=` snaps via floor with a NaN→I32_MIN guard (trunc_sat(floor(NaN))=0 would
-  // wrongly run i=0). Correctness across NaN/Inf is in test/fuzz.js fuzzLoopBound;
-  // this pins that the per-iteration f64.le is gone. (Was: factorial/sieve gap.)
-  const src = `export let f = (n) => { let s = 0; for (let i = 0; i <= n; i++) s = (s + i) | 0; return s | 0 }`
-  ok(loopHas(parse(src, { narrowLoopBound: false }), F64_CMP_OR_CONVERT), 'control: f64 <= compare present with pass OFF')
-  ok(!loopHas(parse(src, 2), F64_CMP_OR_CONVERT), 'INVARIANT: inclusive bound narrowed to i32.le_s with pass ON')
+for (const comparison of ['<', '<=']) test(`ablation: bounded loop copies keep ${comparison} counters in integer registers`, () => {
+  const src = `export let f = (n) => { let s = 0; for (let i = 0; i ${comparison} n; i++) s = (s + i) | 0; return s | 0 }`
+  ok(!boundedLoop(parse(src, { versionIntegralLoops: false })), 'control: no bounded integer loop with copies disabled')
+  ok(boundedLoop(parse(src, 2)), 'a guarded loop has no floating trip-count operation')
+  ok(loopHas(parse(src, 2), F64_CMP_OR_CONVERT), 'the fallback retains full Number semantics')
 })
 
 test('ablation: hoistGlobalPtrOffset lifts the global NaN-box base decode out of the loop', () => {

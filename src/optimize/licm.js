@@ -934,32 +934,12 @@ export function hoistInvariantLoop(fn) {
 }
 
 /**
- * Narrow an f64 loop bound to i32. `for (let i = 0; i < n; i++)` with an f64
- * param `n` emits `(f64.lt (f64.convert_i32_s $i) (local.get $n))` — an f64
- * convert+compare every iteration that ALSO blocks the lane-vectorizer (it
- * requires an i32-governed trip count). The naive-DSP export shape
- * `(ptr, n) => { for (i = 0; i < n; i++) … }` therefore never vectorized
- * without a hand-written `n|0`. This pass is that annotation, as a proof.
- *
- * When $i is a proven-non-negative i32 counter and $n is loop-invariant:
- *   convert_i32_s(i) < n  ⟺  i < trunc_sat(ceil(n))      for all i ≥ 0
- *   - fractional n rounds up (i < 5.5 ⟺ i < 6); integral n exact
- *   - NaN: ceil→NaN, trunc_sat→0 ⇒ `i < 0` false — matches the false f64 compare
- *     (THIS case is why i ≥ 0 must be proven: a negative i would flip it true)
- *   - n ≤ −2³¹ saturates to INT32_MIN ⇒ always false — matches
- *   - n ≥ 2³¹ saturates to INT32_MAX ⇒ terminates after 2³¹−1 iterations where
- *     the original wrapped $i negative and spun forever — the only divergence,
- *     pathological in both versions (a JS double counter would keep counting).
- * Non-negativity proof: $i is a non-param i32 local whose EVERY write in the
- * function (counters get re-zeroed between loops) is a non-negative i32.const
- * or `$i + positive-const`. Wrap-around past 2³¹ needs 2³¹ agreeing iterations
- * first, so trajectories are identical in every non-pathological program.
- *
- * Snap `(local.set $__lbK (i32.trunc_sat_f64_s (f64.ceil (local.get $n))))`
- * goes in the loop pre-header (re-snapped per outer iteration when nested —
- * trunc_sat/ceil are total, safe even for zero-trip loops); the compare becomes
- * `(i32.lt_s $i $__lbK)` — the exact shape the lane-vectorizer matches.
- * Bottom-up, refcount-guarded, idempotent (rewritten conds no longer match).
+ * Snap an invariant Number threshold once for comparisons with an i32 counter.
+ * An i64 threshold represents both endpoints beyond every signed word: finite
+ * fractions round toward the comparison, infinities saturate, and NaN takes
+ * I64_MIN (below all counters). The counter may wrap by the source's explicit
+ * word conversion; an increment is not a proof of permanent non-negativity.
+ * Ordinary Number counters get bounded i32 copies at source-loop planning.
  */
 export function narrowLoopBound(fn) {
   if (!Array.isArray(fn) || fn[0] !== 'func') return
@@ -975,41 +955,10 @@ export function narrowLoopBound(fn) {
   for (let i = bodyStart; i < fn.length && !hasLoop; i++) walkAst(fn[i], findLoop)
   if (!hasLoop) return
 
-  // Header types. Params are excluded as counters: their init is caller-supplied,
-  // so non-negativity is unprovable.
-  const localTypes = new Map(), params = new Set()
+  const localTypes = new Map()
   for (let i = 2; i < bodyStart; i++) {
     const c = fn[i]
-    if (!Array.isArray(c) || typeof c[1] !== 'string') continue
-    if (c[0] === 'param') params.add(c[1])
-    if (c[0] === 'param' || c[0] === 'local') localTypes.set(c[1], c[2])
-  }
-
-  // Every write per local across the WHOLE function — not just in-loop: a counter
-  // reused by a later loop is re-zeroed between them, and a negative write
-  // anywhere voids the proof.
-  const writes = new Map()
-  const collectWrites = n => {
-    if ((n[0] === 'local.set' || n[0] === 'local.tee') && typeof n[1] === 'string') {
-      let arr = writes.get(n[1]); if (!arr) writes.set(n[1], arr = [])
-      arr.push(n[2])
-    }
-  }
-  for (let i = bodyStart; i < fn.length; i++) walkAst(fn[i], { enter: collectWrites })
-
-  const constVal = (n) => Array.isArray(n) && n[0] === 'i32.const' ? Number(n[1]) : NaN
-  const nonNegCounter = (name) => {
-    if (params.has(name) || localTypes.get(name) !== 'i32') return false
-    const ws = writes.get(name)
-    if (!ws) return true  // never written ⇒ stays at default 0
-    return ws.every(v => {
-      if (!Array.isArray(v)) return false
-      if (v[0] === 'i32.const') return Number(v[1]) >= 0
-      if (v[0] !== 'i32.add') return false
-      if (Array.isArray(v[1]) && v[1][0] === 'local.get' && v[1][1] === name) return constVal(v[2]) > 0
-      if (Array.isArray(v[2]) && v[2][0] === 'local.get' && v[2][1] === name) return constVal(v[1]) > 0
-      return false
-    })
+    if (Array.isArray(c) && (c[0] === 'param' || c[0] === 'local') && typeof c[1] === 'string') localTypes.set(c[1], c[2])
   }
 
   // Collision-proof snap ids (same scheme as hoistInvariantLoop's $__li).
@@ -1058,7 +1007,7 @@ export function narrowLoopBound(fn) {
       const m = match(node)
       if (m && (refcount.get(node) || 0) <= 1
             && localTypes.get(m.bound) === 'f64' && !written.has(m.bound)
-            && nonNegCounter(m.ctr)) { sites.push({ node, m }); return false }
+            && localTypes.get(m.ctr) === 'i32') { sites.push({ node, m }); return false }
     }
     walkAst(loopNode, { enter: collect })
 
@@ -1066,30 +1015,21 @@ export function narrowLoopBound(fn) {
     // need different snapped i32 values (ceil vs floor).
     const snapFor = new Map()
     const snaps = []
-    const I32_MIN = -2147483648
     for (const { node, m } of sites) {
       const key = `${m.bound}|${m.op}`
       let snap = snapFor.get(key)
       if (!snap) {
         snap = freshLb()
         snapFor.set(key, snap)
-        newLocals.push(['local', snap, 'i32'])
-        // `i < n`  ⟺ `i < ceil(n)`: trunc_sat(NaN)=0 makes `i<0` false — matches `i<NaN`;
-        //   ±Inf → I32_MAX/I32_MIN, both correct. NaN-safe for free.
-        // `i <= n` ⟺ `i <= floor(n)`, BUT trunc_sat(floor(NaN))=0 would make `i<=0` run
-        //   one iteration at i=0, while JS (`i<=NaN` is false) runs zero. Guard the NaN
-        //   case to I32_MIN (below any non-negative counter ⇒ zero iterations). ±Inf are
-        //   already correct (floor(+Inf)→I32_MAX, floor(-Inf)→I32_MIN; Inf==Inf is true).
-        snaps.push(['local.set', snap, m.op === 'le'
-          ? ['select',
-              ['i32.trunc_sat_f64_s', ['f64.floor', ['local.get', m.bound]]],
-              ['i32.const', I32_MIN],
-              ['f64.eq', ['local.get', m.bound], ['local.get', m.bound]]]
-          : ['i32.trunc_sat_f64_s', ['f64.ceil', ['local.get', m.bound]]]])
+        newLocals.push(['local', snap, 'i64'])
+        snaps.push(['local.set', snap, ['select',
+          ['i64.trunc_sat_f64_s', [m.op === 'le' ? 'f64.floor' : 'f64.ceil', ['local.get', m.bound]]],
+          ['i64.const', '-9223372036854775808'],
+          ['f64.eq', ['local.get', m.bound], ['local.get', m.bound]]]])
       }
       node.length = 3
-      node[0] = m.op === 'le' ? 'i32.le_s' : 'i32.lt_s'
-      node[1] = ['local.get', m.ctr]; node[2] = ['local.get', snap]
+      node[0] = m.op === 'le' ? 'i64.le_s' : 'i64.lt_s'
+      node[1] = ['i64.extend_i32_s', ['local.get', m.ctr]]; node[2] = ['local.get', snap]
     }
     return snaps
   }

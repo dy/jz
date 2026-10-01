@@ -1302,14 +1302,8 @@ test('compoundAssign requires the same bound proof as the binary operators when 
 //      escape (collectBareEscapes) widens to f64; level 2 (STRICT
 //      i32-range-safe by construction: literals, bitwise ops, comparisons)
 //      needs no check, since every value it can hold already fits i32.
-// Both fixes share ONE exemption, matching the pre-existing, deliberately-
-// scoped "sound for n<=2^31" loop-counter tolerance (widenLocalTypes' CMP_OPS
-// pass, untouched): a name appearing as a direct operand of ANY comparison
-// ANYWHERE in the body is never blamed — this is exactly what keeps the
-// canonical `for(i=0;i<n;i++) a[i]` hot-loop shape (perf-ratchet's hottest
-// class) on the i32 fast path even when its OWN arithmetic (`a[i]=(i+1)*k`)
-// isn't statically range-provable — i itself is comparison-governed, id
-// (this repro) is not.
+// Comparisons also observe magnitude. A closed range or a guarded loop copy
+// keeps bounded counters narrow; being compared alone supplies no width proof.
 test('compound-assign on an index-back-propagated local no longer wraps on a later bare read (collectI32SafeIndexVars + widenLocalTypes intCertain sibling, 2026-08-02)', () => {
   const srcMul = `
     let N = 0; let x;
@@ -1369,7 +1363,8 @@ test('safe control: index-use counters with no unresolved bare escape keep i32 s
     }
   `, { wat: true, optimize: 2 })
   const fnIdx = watIdx.slice(watIdx.indexOf('(func $f'), watIdx.indexOf('(func', watIdx.indexOf('(func $f') + 6))
-  ok(/\(local \$i i32\)/.test(fnIdx), 'loop counter `i` stays i32 storage (comparison-governed, index-positioned)')
+  ok(/\(local \$[^ ]*i[^ ]*int[^ ]* i32\)/.test(fnIdx), 'the range-guarded counter copy keeps i32 storage')
+  ok(/\(local \$i f64\)/.test(fnIdx), 'the full Number fallback preserves wide counters')
 
   const watAcc = jz.compile(`
     export let f = (n, a) => {
@@ -1543,20 +1538,15 @@ test('module-global i32-narrowing no longer wraps a bare-escaped compound-assign
   is(mCross.read2(), 4 * 100000 * 100000, 'FIXED: cross-function growth then bare read matches JS exactly')
 })
 
-// SAFE-CONTROL structural pin (companion to the fix above, module-global
-// twin of the local safe-control pin): a canonical module-global counter
-// used soundly — either comparison-governed (the loop-counter shape) or
-// every write ToInt32-rooted — must KEEP i32 storage. Over-disqualifying
-// these would regress the exact perf-critical shape (module-level counters/
-// accumulators, sizes, strides) `inferModuleIntGlobals`'s own doc names as
-// its reason to exist.
-test('safe control: module-global counters with no unresolved bare escape keep i32 storage', () => {
+// A module-global Number retains its width across calls; an explicit word
+// accumulator may still keep i32 because every write applies that conversion.
+test('module-global counter widths distinguish Number growth from explicit words', () => {
   const watIdx = jz.compile(`
     let idx = 0
     export let advance = (n) => { for (idx = 0; idx < n; idx++) {} ; return idx }
   `, { wat: true })
   const gIdx = watIdx.slice(watIdx.indexOf('(global $idx'), watIdx.indexOf('(global $idx') + 60)
-  ok(/\(mut i32\)/.test(gIdx), 'comparison-governed module-global counter `idx` stays i32 storage')
+  ok(/\(mut f64\)/.test(gIdx), 'a compared module-global counter preserves its Number magnitude')
   const eIdx = run(`
     let idx = 0
     export let advance = (n) => { for (idx = 0; idx < n; idx++) {} ; return idx }

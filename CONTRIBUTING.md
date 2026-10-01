@@ -683,9 +683,12 @@ gives (`narrowWordLocals`, the `wordLocals` pass): the conversions are
 idempotent, so a hash seeded past 2^31 and stepped by Math.imul and `^` is an
 i32. A read that observes the number (a return, a comparison, a truthiness
 test, an index, an arithmetic step, a float or clamped store, a capture) keeps
-the f64. A truthiness test governs an integer local as a comparison with zero
-does: `while (sp)` keeps a stepped stack pointer in i32 under the tolerance
-`while (sp !== 0)` has (`collectComparedNames`). Primitive parameters consumed
+the f64 unless a complete range proves i32 storage. Neither a comparison nor
+truthiness proves the counter's width. Unit-step loops with stable numeric
+bounds get a guarded copy: a private rounded bound and the final counter step
+must fit i32, while the original Number loop handles the remaining inputs.
+Explicitly wrapping i32 counters compare against exact invariant i64 thresholds;
+NaN selects a threshold below every i32 value. Primitive parameters consumed
 only by word operators may convert once at the call boundary, as established
 by the binding-use census.
 Comparison emission and folding share one signedness proof: equal word bits

@@ -567,37 +567,10 @@ function sigFingerprint(sig) {
 /**
  * Post-walk wasm-type widening over `locals`, in place — analyzeBody stage 2.
  *
- * Pass A (widenPass): i32 locals compared against f64 widen — EXCEPT integer
- * counters used as affine array indices (collectI32SafeIndexVars: i32-range
- * proven, direct indexing with no per-access trunc_sat) and integer-certain
- * locals (intCertainMap: every definition integer-valued). An f64 counter
- * would poison the loop body's arithmetic and the increment (f64.add per
- * iteration), the dominant cost of `for (i<n) acc=(acc+i)|0` — measured ~18×
- * vs V8 before this. The compare coerces the counter once. Sound for n ≤ 2³¹
- * (the asm.js-style integer contract); a fractional assignment poisons
- * intCertain → widens normally.
- *
- * Pass B (assignment fixpoint): re-resolve decl/assign RHS types now that
- * pass A widened. `let x2 = zx*zx` declared i32 because zx was i32 at scan
- * time must widen when zx re-types to f64 — else trunc_sat silently floors
- * the fractional value (mandelbrot escape: 3.515 → 3). Re-checks `=` and
- * compound assigns too: a single-pass walk sees each assign once with stale
- * operand types, missing widens through loop back-edges. keepI32 vars are
- * exempt: a hoisted product `o = y*w` types f64 but is proven integer.
- * Monotonic (i32 → f64 only), bounded by locals count.
- *
- * Pass D: Pass A/B's
- * `keepI32`/exprType checks are magnitude-blind BY DESIGN (a value merely
- * STORED i32 is safe regardless of magnitude ONLY WHEN every read re-applies
- * the same ToInt32 the write did — type.js's widening invariant (load-bearing perf
- * tradeoff) — so an intCertain-but-UNBOUNDED (intLevelMap level 1: `+`/`-`/
- * `*` are "integral-closed, range-open") local that grows past i32 range via
- * a compound-assign NEVER widens through them. That premise breaks the
- * instant such a local is ALSO read bare with no governing comparison
- * anywhere (collectBareEscapes) — `id` after `id *= 100000` / `id += d`
- * (the FFT-butterfly KNOWN-FAIL, test/inference.js). Level 2 (STRICT
- * i32-range-safe by construction: literals, bitwise ops, comparisons,
- * Math.imul/clz32) needs no check — every value it can hold already fits i32.
+ * Pass A/B widen comparisons and assignments after their inputs widen.
+ * Integer certainty permits word storage provisionally; Pass D checks every
+ * magnitude-observing use (including comparisons) against its closed range.
+ * A loop's bounded copy carries its own proof through stampLoopCounterRanges.
  */
 const WIDEN_CMP_OPS = new Set(['<', '>', '<=', '>=', '==', '!='])
 /** A use that is the value stored, its result discarded, to an integer element
@@ -613,7 +586,7 @@ function widenLocalTypes(body, locals, readPresent, unsignedLocals, wordLocals) 
   // Shared, lazily-memoized across collectI32SafeIndexVars' own internal use
   // and Pass D below — both want the identical collectBareEscapes(body,
   // locals) fact (same body, same locals, no crossClosure), and it's a real
-  // full-body walk (plus its own collectComparedNames sub-walk); computing
+  // full-body walk; computing
   // it once here instead of once per consumer avoids a duplicate traversal
   // whenever both fire (collectI32SafeIndexVars' own dynamic-index early
   // exit, or Pass D's level1I32 gate, mean it's often needed by only one or
@@ -721,20 +694,8 @@ function widenLocalTypes(body, locals, readPresent, unsignedLocals, wordLocals) 
     recheck(body)
   }
 
-  // Pass D: close the level-1 sibling of collectI32SafeIndexVars' own bare-
-  // escape gap. Passes A-C above all keep i32 storage via MAGNITUDE-BLIND
-  // exprType checks (a value merely STORED i32 is safe regardless of
-  // magnitude ONLY WHEN every read re-applies the same ToInt32 conversion
-  // the write did — the P0-2 ledger's own load-bearing perf tradeoff, kept
-  // exactly as-is here) — so an intCertain-but-unbounded (level 1) local
-  // that grows past i32 range via a compound-assign/assign NEVER widens
-  // through them, by design. That premise breaks the instant such a local
-  // is ALSO read bare with no governing comparison anywhere (the loop-
-  // counter "sound for n<=2^31" tolerance is scoped to compared names only,
-  // untouched — collectBareEscapes' own compared-name exemption) — `id`
-  // after `id *= 100000` / `id += d` (test/inference.js's FFT-butterfly
-  // KNOWN-FAIL). Level 2 (STRICT i32-range-safe by construction) needs no
-  // check: every value it can ever hold already fits i32.
+  // Integer arithmetic may exceed one word. A comparison observes that width
+  // just like a returned value; only a proved hull or word-only uses keep i32.
   let level1I32 = false
   for (const [name, level] of intLevels) if (level === 1 && locals.get(name) === 'i32') { level1I32 = true; break }
   if (level1I32) {

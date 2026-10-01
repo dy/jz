@@ -230,3 +230,55 @@ test('integral loops: a loop that jumps to a label outside it agrees with JS', (
     for (const x of [0, 1, 3, 7, 2.5]) is([m.f(x), m.g(x, 6)], [js.f(x), js.g(x, 6)], `x = ${x} at ${optimize}${splitBindings ? '' : ', bindings whole'}`)
   }
 })
+
+
+test('integral loops: Number counters cross signed-word boundaries without wrapping', () => {
+  const src = `function keep(x) { return x }
+    export function up(n) { let out = []; for (let i = 2147483647; i < n; i++) { out.push(i, keep(i % 6)); if (out.length === 4) break } return out }
+    export function down(n) { let out = []; for (let i = -2147483648; i > n; i--) { out.push(i, keep(i % 6)); if (out.length === 4) break } return out }
+    export function stride(n) { let out = []; for (let i = 2147483646; i < n; i += 3) { out.push(i); if (out.length === 3) break } return out }
+    export function observed(n) { let i = 2147483647; if (i < n) i++; const j = i; return [i, j, i < n, i === 2147483648] }
+    let counter = 0;
+    export function global(n) { counter = 2147483647; let out = []; while (counter < n) { out.push(counter++); if (out.length === 2) break } return out }
+  `
+  const js = oracle(src)
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const m = jz(src, { optimize }).exports
+    for (const n of [2147483647, 2147483649, 2147483649, 2147483651, 2147483649, NaN, Infinity, -Infinity])
+      for (const name of ['up', 'stride', 'observed', 'global']) is(m[name](n), js[name](n), `${name}(${n}) at ${optimize}`)
+    for (const n of [-2147483648, -2147483650, -2147483650, -2147483652, -2147483650, NaN, Infinity, -Infinity])
+      is(m.down(n), js.down(n), `down(${n}) at ${optimize}`)
+  }
+})
+
+test('integral loops: bounded copies preserve fractional bounds, initialization, mutation and exits', () => {
+  const src = `
+    export function ordinary(n) { let out = []; for (let i = 0; i < n; i++) { out.push(i, n); if (out.length === 6) break } return out }
+    export function negative(n) { let out = []; for (let i = -2; i < n; i++) { out.push(i, n); if (out.length === 6) break } return out }
+    export function descending(n) { let out = []; for (let i = 2; i > n; i--) { out.push(i, n); if (out.length === 6) break } return out }
+    export function inclusive(n) { let out = []; for (let i = 2147483647; i <= n; i++) { out.push(i); if (out.length === 3) break } return out }
+    export function changed(n) { let out = []; for (let i = (n = 2147483649, 2147483647); i < n; i++) { out.push(i); if (out.length === 3) break } return out }
+    export function captured(n) { let out = [], bound = n; function change() { bound = 2147483650 } for (let i = 2147483647; i < bound; i++) { out.push(i); change(); if (out.length === 3) break } return out }
+    export function moving(n) { let out = []; for (let i = 2147483647; i < n; i++) { out.push(i); n = 2147483650; if (out.length === 3) break } return out }
+    export function jumped(n) { let out = []; for (let i = 2147483647; i < n; i++) { if (i === 2147483647) continue; out.push(i); break } return out }
+    export function fractional(n) { let out = []; for (let i = -0; i < n; i += 0.5) { out.push(i); if (out.length === 3) break } return out }
+  `
+  const js = oracle(src)
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const m = jz(src, { optimize }).exports
+    for (const n of [0, 1, 1, 2.5, 1, -0, -1.5, NaN, Infinity, -Infinity, 2147483649])
+      for (const name of ['ordinary', 'negative', 'descending', 'inclusive', 'changed', 'captured', 'moving', 'jumped', 'fractional'])
+        is(m[name](n), js[name](n), `${name}(${n}) at ${optimize}`)
+  }
+})
+
+test('integral loops: explicit word counters preserve wrapping and full Number thresholds', () => {
+  const functions = [['lt', 'i < n'], ['le', 'i <= n'], ['gtMirror', 'n > i'], ['geMirror', 'n >= i']]
+    .flatMap(([name, condition]) => [2147483647, -2].map((start, index) => `export function ${name}${index}(n) { let out = []; for (let i = ${start}; ${condition}; i = (i + 1) | 0) { out.push(i); if (out.length === 3) break } return out }`)).join('\n')
+  const js = oracle(functions)
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const m = jz(functions, { optimize }).exports
+    for (const n of [2147483647, 2147483649, 2147483649, -1.5, 2147483649, -2147483649, -0, NaN, Infinity, -Infinity])
+      for (const name of Object.keys(js)) is(m[name](n), js[name](n), `${name}(${n}) at ${optimize}`)
+  }
+})
