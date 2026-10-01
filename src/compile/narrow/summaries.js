@@ -13,7 +13,7 @@
 
 import { ctx } from '../../ctx.js'
 import {
-  returnExprs, callArgs, ASSIGN_OPS, MUTATE_OPS, refsName, carriesName, REFS_THROUGH_ARROWS, walkAst, isReassigned,
+  returnExprs, alwaysReturns, hasBareReturn, callArgs, ASSIGN_OPS, MUTATE_OPS, refsName, carriesName, REFS_THROUGH_ARROWS, walkAst, isReassigned,
 } from '../../ast.js'
 import {
   staticArrayElems, staticArrayLen, hull, typedValueLiteral, typedValueExprRange,
@@ -25,7 +25,7 @@ import { enterActiveFunction, restoreActiveFunction } from '../active-function.j
 import { isExported } from '../func-exports.js'
 import { analyzeValueFacts } from '../analyze.js'
 import { VAL } from '../../reps.js'
-import { K, kind, core } from '../../summary/index.js'
+import { K, kind, core, tagOf, valOf } from '../../summary/index.js'
 import { typedElementKey, typedCtorBase } from '../../typed-provenance.js'
 import { scanBindingUses, USE, BINDING_USE_DECLS, BINDING_USE_INIT, BINDING_USE_USES, BINDING_USE_KIND } from '../analyze-scans.js'
 import { frameNode } from '../../function.js'
@@ -42,6 +42,7 @@ const carries = (n, name) => {
   if (op === ',') return carries(n[n.length - 1], name)
   if (op === '(' || op === '()' && n.length === 2 || op === '...') return carries(n[1], name)
   if (op === '=' || op === ':') return carries(n[2], name)
+  if (op === '()' && n[1]?.[0] === '.' && n[1][2] === 'fill') return carries(n[1][1], name)
   return (op === '[' || op === '{}') && n.slice(1).some(v => carries(v, name))
 }
 
@@ -451,8 +452,8 @@ export function inferInternalArrayLengths() {
 // Whole-program typed-element hulls for fresh local and module typed arrays. A callee
 // summary records only values written through each parameter; callers union
 // that effect with the fresh array's initial zero. This is deliberately not a
-// general alias analysis: aliases, external calls, returns, unknown writes, and
-// closures poison the fact. The useful class is broad nevertheless — fill(a)
+// general alias analysis: retained aliases, external calls, unknown writes, and
+// closures poison the fact; only a fresh result transfers ownership. The useful class is broad nevertheless — fill(a)
 // helpers followed by compute(a), common in codecs and generated kernels.
 export function inferTypedValueRanges(storeRanges) {
   // Store effects use flow intervals when available, with a context-free
@@ -491,9 +492,20 @@ export function inferTypedValueRanges(storeRanges) {
   // Exposing the backing buffer permits writes through an unrelated view.
   // An arbitrary member key can read that buffer too; numeric element reads
   // and the three scalar storage properties cannot expose storage.
-  const exposesBuffer = (n, name, scope) => n[1] === name &&
+  const exposesBuffer = (n, name, scope) => carries(n[1], name) &&
     ((n[0] === '.' || n[0] === '?.') && !['length', 'byteLength', 'byteOffset'].includes(n[2]) ||
      (n[0] === '[]' || n[0] === '?.[]') && !typedElementKey(n[2], core(scope.kindOfExpr(n[2])) === kind(K.NUMBER)))
+  // Only the intrinsic receiver-returning method has a known write effect.
+  // Its result still carries the receiver, so aliases/escapes keep poisoning
+  // the invariant just as a bare name would. Held/optional methods decline.
+  const fillReceiver = (n, scope) => n?.[0] === '()' && n.length > 2 &&
+    n[1]?.[0] === '.' && n[1][2] === 'fill' && typeof n[1][1] === 'string' &&
+    tagOf(scope.kindOfExpr(n[1][1])) === K.TYPED &&
+    !ctx.summary.memberMayBeOwnOn('fill', valOf(core(scope.kindOfExpr(n[1][1])))) ? n[1][1] : null
+  const fillRange = n => {
+    const args = callArgs(n)
+    return args.length ? exprRange(args[0]) : [0, 0]
+  }
   const funcs = ctx.funcs.list.filter(f => !f.raw && Array.isArray(f.body))
   const summaries = new Map()
   for (const f of funcs) summaries.set(f.name, f.sig.params.map(() => ({ range: null, writes: false, bad: false })))
@@ -530,14 +542,21 @@ export function inferTypedValueRanges(storeRanges) {
       const sum = summaries.get(f.name), scope = ctx.summary.at(f.sig)
       for (const d of Object.values(f.defaults || {}))
         for (const [name, k] of ps) if (carries(d, name)) sum[k].bad = true
-      const walk = (n, inClosure = false) => {
+      const walk = (n, inClosure = false, parent = null) => {
         if (!Array.isArray(n)) return
         const closure = inClosure || n[0] === '=>'
         if (closure && n !== f.body) {
           for (const [name, k] of ps) if (mentions(n, name)) sum[k].bad = true
           return
         }
-        for (const [name, k] of ps) if (exposesBuffer(n, name, scope)) sum[k].bad = true
+        const fill = fillReceiver(n, scope)
+        if (fill && ps.has(fill)) {
+          const s = sum[ps.get(fill)], r = fillRange(n)
+          s.writes = true
+          if (!r) s.bad = true; else s.range = hull(s.range, r)
+        }
+        for (const [name, k] of ps) if (exposesBuffer(n, name, scope) &&
+          !(parent?.[1] === n && fillReceiver(parent, scope) === name)) sum[k].bad = true
         // Optional calls are not part of the direct-call effect graph.
         if (n[0] === '?.()') for (const [name, k] of ps) if (mentions(n, name)) sum[k].bad = true
         if (MUTATE_OPS.has(n[0]) && Array.isArray(n[1]) && n[1][0] === '[]' && ps.has(n[1][1])) {
@@ -559,11 +578,11 @@ export function inferTypedValueRanges(storeRanges) {
             // Calling a method on the receiver may mutate it. A direct argument
             // to a known user function is handled by the summary fixpoint;
             // unknown or expression-hidden aliases poison immediately.
-            if (mentions(n[1], name)) sum[k].bad = true
+            if (fill !== name && mentions(n[1], name)) sum[k].bad = true
             for (const a of args) if (carries(a, name) && (!callee || !summaries.has(callee) || a !== name)) sum[k].bad = true
           }
         }
-        for (let i = 1; i < n.length; i++) walk(n[i], closure)
+        for (let i = 1; i < n.length; i++) walk(n[i], closure, n)
       }
       walk(frameNode(f))
     }
@@ -600,10 +619,23 @@ export function inferTypedValueRanges(storeRanges) {
   // literal-initialized decl (initialRange), then narrow it at every element
   // store (storedRange) and every settled call-forwarding site (the param
   // summaries computeDirectEffects/propagateCallForwarding produced) —
-  // poisoning on any alias/return-escape/opaque call, same discipline as the
-  // param summaries above.
+  // poisoning on retained aliases and opaque calls. A fresh returned allocation
+  // transfers its entry hull after the producer has contributed every writer.
   function computeLocalRanges() {
-    const locals = new Map()
+    const locals = new Map(), returned = new Map(), visiting = new Set()
+    const allocation = (rhs, scope) => {
+      const ctor = typedElemCtor(rhs)
+      if (ctor) {
+        const range = initialRange(rhs, ctor, scope)
+        return range && { ctor, range }
+      }
+      if (rhs?.[0] !== '()' || rhs.length < 3 || typeof rhs[1] !== 'string' ||
+        tagOf(scope.kindOfExpr(rhs)) !== K.TYPED || scope.calleeOf(rhs) !== rhs[1]) return null
+      const f = ctx.funcs.map.get(rhs[1])
+      if (!f || f.raw || !Array.isArray(f.body) || visiting.has(f)) return null
+      analyze(f)
+      return returned.get(f) ?? null
+    }
     // Module allocations share the same all-writers census. Keep their effects
     // separate until every frame has contributed; an earlier reader must not
     // retain a hull that a later writer or escaping alias invalidates.
@@ -621,7 +653,12 @@ export function inferTypedValueRanges(storeRanges) {
       if (range) { globalSeeds.set(name, range); globalCtors.set(name, ctor); globalRanges.set(name, range) }
     }
     const frames = globalSeeds.size ? [moduleFrame, ...funcs] : funcs
-    for (const f of frames) {
+    function analyze(f) {
+      if (locals.has(f === moduleFrame ? null : f)) return
+      visiting.add(f)
+      const results = f === moduleFrame || tagOf(ctx.summary.resultOf(f.name)) !== K.TYPED ||
+        !alwaysReturns(f.body) || hasBareReturn(f.body) ? [] : returnExprs(f.body)
+      const resultName = results.length && typeof results[0] === 'string' && results.every(r => r === results[0]) ? results[0] : null
       const ranges = new Map(), ctors = new Map(), poisoned = new Set(), freshDefs = new Set(), inherited = new Set()
       const scope = f === moduleFrame ? moduleScope : ctx.summary.at(f.sig)
       for (const [name, range] of globalSeeds) if (scope.keyOfName(name) === moduleScope.keyOfName(name)) {
@@ -633,7 +670,7 @@ export function inferTypedValueRanges(storeRanges) {
         if (!r) { poisoned.add(name); ranges.delete(name); return }
         ranges.set(name, hull(ranges.get(name), r))
       }
-      walkAst(frameNode(f), { enter: n => {
+      walkAst(frameNode(f), { enter: (n, parent) => {
         if (globalSeeds.size) for (let i = 1; i < n.length; i++) if (typeof n[i] === 'string' && inherited.has(n[i])) {
           let used = globalUses.get(f)
           if (!used) globalUses.set(f, used = new Set())
@@ -651,15 +688,18 @@ export function inferTypedValueRanges(storeRanges) {
             if (binding?.[BINDING_USE_DECLS] !== 1 || binding[BINDING_USE_USES].some(u =>
               u[BINDING_USE_KIND] === USE.REASSIGN || u[BINDING_USE_KIND] === USE.CAPTURE)) continue
             if (f !== moduleFrame && globalSeeds.has(d[1])) { merge(d[1], null); continue }
-            const ctor = typedElemCtor(d[2]), init = ctor && initialRange(d[2], ctor, scope)
-            if (ctor && init) {
-              ranges.set(d[1], init)
-              ctors.set(d[1], ctor)
+            const fresh = allocation(d[2], scope)
+            if (fresh) {
+              ranges.set(d[1], fresh.range)
+              ctors.set(d[1], fresh.ctor)
               freshDefs.add(d)
             }
           }
         }
-        for (const name of [...ranges.keys()]) if (exposesBuffer(n, name, scope)) merge(name, null)
+        const fill = fillReceiver(n, scope)
+        if (ranges.has(fill)) merge(fill, storedRange(ctors.get(fill), fillRange(n)))
+        for (const name of [...ranges.keys()]) if (exposesBuffer(n, name, scope) &&
+          !(parent?.[1] === n && fillReceiver(parent, scope) === name)) merge(name, null)
         if (n[0] === '?.()') for (const name of [...ranges.keys()]) if (mentions(n, name)) merge(name, null)
         if (MUTATE_OPS.has(n[0])) {
           if (Array.isArray(n[1]) && n[1][0] === '[]' && ranges.has(n[1][1]))
@@ -670,12 +710,13 @@ export function inferTypedValueRanges(storeRanges) {
               : n[1][1] !== name && mentions(n[1][1], name))) merge(name, null)
           }
         }
-        if (n[0] === 'return' || n[0] === 'throw' || n[0] === 'yield') for (const name of [...ranges.keys()]) if (carries(n[1], name)) merge(name, null)
+        if (n[0] === 'return' || n[0] === 'throw' || n[0] === 'yield') for (const name of [...ranges.keys()])
+          if (carries(n[1], name) && !(n[0] === 'return' && n[1] === resultName && name === resultName && !inherited.has(name))) merge(name, null)
         if (n[0] === '()') {
           const args = callArgs(n), callee = typeof n[1] === 'string' ? n[1] : null
           const target = callee ? summaries.get(callee) : null
           for (const name of [...ranges.keys()]) {
-            if (mentions(n[1], name)) merge(name, null)
+            if (fill !== name && mentions(n[1], name)) merge(name, null)
             for (let k = 0; k < args.length; k++) if (carries(args[k], name)) {
               if (args[k] !== name || !target?.[k] || target[k].bad) merge(name, null)
               else if (target[k].writes) merge(name, storedRange(ctors.get(name), target[k].range))
@@ -683,6 +724,20 @@ export function inferTypedValueRanges(storeRanges) {
           }
         }
       } })
+      // A return transfers one unaliased fresh allocation. This is an entry
+      // hull for each caller allocation, not a promise about later mutations.
+      if (resultName && ranges.has(resultName) && !inherited.has(resultName))
+        returned.set(f, { ctor: ctors.get(resultName), range: ranges.get(resultName) })
+      else if (results.length) {
+        let result = null
+        for (const expr of results) {
+          const fresh = allocation(expr, scope)
+          if (!fresh || result && fresh.ctor !== result.ctor) { result = null; break }
+          result = { ctor: fresh.ctor, range: hull(result?.range, fresh.range) }
+        }
+        if (result) returned.set(f, result)
+      }
+      visiting.delete(f)
       for (const name of inherited) {
         if (poisoned.has(name)) globalBad.add(name)
         else globalRanges.set(name, hull(globalRanges.get(name), ranges.get(name)))
@@ -690,22 +745,22 @@ export function inferTypedValueRanges(storeRanges) {
       }
       locals.set(f === moduleFrame ? null : f, ranges)
     }
+    for (const f of frames) analyze(f)
     for (const [f, names] of globalUses) for (const name of names) if (!globalBad.has(name))
       locals.get(f === moduleFrame ? null : f).set(name, globalRanges.get(name))
-    return locals
+    return { locals, allocation }
   }
 
   computeDirectEffects()
   propagateCallForwarding()
-  const locals = computeLocalRanges()
+  const { locals, allocation } = computeLocalRanges()
   // A constructor passed directly has no caller binding whose invariant can
   // include the callee's writes. Close that invariant here, before publishing
   // it on a parameter (including writes in defaults and forwarded helpers).
   const constructedRange = (arg, caller, callee, k) => {
-    const effect = summaries.get(callee)?.[k], ctor = typedElemCtor(arg)
-    if (!ctor || !effect || effect.bad) return null
-    const initial = initialRange(arg, ctor, ctx.summary.at(caller?.sig ?? ''))
-    if (!initial) return null
+    const effect = summaries.get(callee)?.[k], fresh = allocation(arg, ctx.summary.at(caller?.sig ?? ''))
+    if (!fresh || !effect || effect.bad) return null
+    const { ctor, range: initial } = fresh
     if (!effect.writes) return initial
     const writes = storedRange(ctor, effect.range)
     return writes && hull(initial, writes)

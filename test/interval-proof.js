@@ -1323,3 +1323,130 @@ test('typed named properties: returned buffers survive later allocations', () =>
         is(f(n, key), expected(n, key), `O${level}: retained ${key}, length ${n}`)
   }
 })
+
+test('interval proof: returned fresh typed arrays transfer their entry element domain', () => {
+  const producers = [
+    ['const a = new Int32Array([1, 2, 3, 0]); return a', [0, 3]],
+    ['const a = new Int32Array(4); a[0] = 2; return a', [0, 2]],
+    ['const a = new Int32Array(4); a.fill(3, 0, 1); return a', [0, 3]],
+    ['const a = new Int32Array(4); initialize(a); return a', [0, 3]],
+    ['return new Int32Array([1, 2, 0])', [0, 2]],
+  ]
+  for (const [producer, range] of producers) for (const direct of [false, true]) {
+    const factory = `function initialize(a, x = (a.fill(3), 0)) {} function make() { ${producer} }`
+    const caller = `function read(a) { return a[a[0]] }
+      export function f() { ${direct ? 'return read(make())' : 'const a = make(); return read(a)'} }`
+    const src = direct ? caller + factory : factory + caller
+    const host = oracle(src).f
+    for (const level of levels(0, 1, 2, 3, 'size')) {
+      const f = jz(src, { optimize: { level, sourceInline: false } }).exports.f
+      is(f(), host(), `O${level}: ${direct ? 'direct call' : 'local result'}`)
+      is(f(), host(), `O${level}: each call owns its result`)
+    }
+    if (!onKernel()) is(compile(src, { optimize: { level: 2, sourceInline: false }, inspect: true })
+      .inspect.functions.read.params[0].arrayElemRange, range, 'the transferred hull reaches the consumer')
+  }
+})
+
+test('interval proof: typed fill closes writer effects without retaining result aliases', () => {
+  for (const [ctor, value, range] of [
+    ['Int32Array', -1, [-1, 0]], ['Uint8Array', -1, [0, 255]],
+    ['Int16Array', 3, [0, 3]], ['Uint8ClampedArray', 300, [0, 255]],
+  ]) {
+    const src = `function fill(a) { a.fill(${value}, 0, 1) }
+      function read(a) { return a[0] }
+      export function f(n) { const a = new ${ctor}(n | 0); fill(a); return [read(a), a.length] }`
+    const host = oracle(src).f
+    for (const level of levels(0, 1, 2, 3, 'size')) {
+      const f = jz(src, { optimize: { level, sourceInline: false } }).exports.f
+      for (const n of [0, 1, 4, 4, 0, 4]) is(f(n), host(n), `${ctor}/O${level}: length ${n}`)
+    }
+    if (!onKernel()) is(compile(src, { optimize: { level: 2, sourceInline: false }, inspect: true })
+      .inspect.functions.read.params[0].arrayElemRange, range, 'intrinsic fill contributes stored values')
+  }
+  const src = `function make(n = 4) {
+      if (n < 0) throw 9
+      const a = new Int32Array(n); a.fill(3, -3, -1); return a
+    }
+    function read(a) { return a[a[0]] }
+    export function f(n) {
+      try { const a = make(n), b = make(); a.fill(7, 0, 1); return [read(a), b[0], b[1], a.length] }
+      catch(e) { return e }
+    }`
+  const host = oracle(src).f
+  for (const level of levels(0, 1, 2, 3, 'size')) {
+    const f = jz(src, { optimize: { level, sourceInline: false } }).exports.f
+    for (const n of [undefined, 0, 1, 4, 4, -1, 2, 4]) is(f(n), host(n), `O${level}: defaults/error/reuse ${n}`)
+  }
+})
+
+test('interval proof: returned array domains reject retained and mutated aliases', () => {
+  const sources = [
+    `let held; function make() { const a = new Int32Array([1, 2, 0]); held = a; return a }
+      export function f() { const a = make(); held[0] = 9; return read(a) }`,
+    `let change; function make() { const a = new Int32Array([1, 2, 0]); change = () => { a[0] = 9 }; return a }
+      export function f() { const a = make(); change(); return read(a) }`,
+    `let held; function make() { const a = new Int32Array([1, 2, 0]); held = a.buffer; return a }
+      export function f() { const a = make(); const b = new Int32Array(held); b[0] = 9; return read(a) }`,
+    `const a = new Int32Array([1, 2, 0]); function make() { return a }
+      export function f() { const b = make(); a[0] = 9; return read(b) }`,
+    `function make(a = new Int32Array([1, 2, 0])) { return a }
+      export function f() { const a = new Int32Array([9]); return read(make(a)) }`,
+    `function make() { const a = new Int32Array([1, 2, 0]); const b = a.fill(0); b[0] = 9; return a }
+      export function f() { return read(make()) }`,
+    `let held; function make() { const a = new Int32Array([1, 2, 0]); held = a.fill(1).buffer; return a }
+      export function f() { const a = make(); const b = new Int32Array(held); b[0] = 9; return read(a) }`,
+    `function make() { const a = new Int32Array([1, 2, 0]); return a }
+      export function f() { const a = make(), b = a; b[0] = 9; return read(a) }`,
+    `function make() { const a = new Int32Array([1, 2, 0]); return a }
+      function change(a, x = (a[0] = 9)) {}
+      export function f() { const a = make(); change(a); return read(a) }`,
+  ].map(src => `function read(a) { return a[a[0]] } ${src}`)
+  for (const src of sources) {
+    const host = oracle(src).f
+    for (const level of levels(0, 1, 2, 3, 'size')) {
+      const f = jz(src, { optimize: { level, sourceInline: false } }).exports.f
+      is(f(), host(), `O${level}: alias mutation remains visible`)
+      is(f(), host(), `O${level}: repeated alias mutation remains visible`)
+    }
+  }
+  if (onKernel()) return
+  for (const src of sources.slice(0, 7)) ok(!compile(src, { optimize: { level: 2, sourceInline: false }, inspect: true })
+    .inspect.functions.read.params[0].arrayElemRange, 'an escaped/shared allocation has no fresh-result contract')
+})
+
+test('interval proof: fill and fresh returns require their own intrinsic and callable identities', () => {
+  const fixtures = [
+    ['Int32Array', 'a.fill()', [0, 0]],
+    ['Int32Array', 'a.fill(1.5)', null],
+    ['Int32Array', 'a.fill(NaN)', null],
+    ['Float32Array', 'a.fill()', null],
+    ['Float64Array', 'a.fill()', null],
+    ['Int32Array', 'a.fill = () => { a[0] = 9 }; a.fill(1)', null],
+    ['Int32Array', 'const start = () => { a[0] = 9; return 1 }; a.fill(1, start())', null],
+    ['Int32Array', 'a.fill({ valueOf() { a[0] = 9; return 1 } }, 1)', null],
+  ]
+  for (const [ctor, action, range] of fixtures) {
+    const src = `function make() { const a = new ${ctor}(4); ${action}; return a }
+      function read(a) { return a[a[0]] }
+      export function f() { return read(make()) }`
+    const host = oracle(src).f
+    for (const level of levels(0, 1, 2, 3, 'size')) {
+      const f = jz(src, { optimize: { level, sourceInline: false } }).exports.f
+      is(f(), host(), `${ctor}/O${level}: ${action}`)
+      is(f(), host(), `${ctor}/O${level}: repeat after possible coercion/throw`)
+    }
+    if (!onKernel()) is(compile(src, { optimize: { level: 2, sourceInline: false }, inspect: true })
+      .inspect.functions.read.params[0].arrayElemRange ?? null, range, 'only a closed intrinsic integer writer publishes a hull')
+  }
+  const src = `function make() { return new Int32Array([1, 2, 0]) }
+    function read(a) { return a[a[0]] }
+    function via(make) { return read(make()) }
+    function forward() { return make() }
+    export function f(which) { return which ? via(() => new Int32Array([9])) : read(forward()) }`
+  const host = oracle(src).f
+  for (const level of levels(0, 1, 2, 3, 'size')) {
+    const f = jz(src, { optimize: { level, sourceInline: false } }).exports.f
+    for (const which of [0, 0, 1, 0]) is(f(which), host(which), `O${level}: callee identity ${which}`)
+  }
+})

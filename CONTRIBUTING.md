@@ -890,6 +890,16 @@ counter landing and ring-reset transients; body initializer syntax alone supplie
 no dominance proof. Every intermediate must fit the signed word before these
 hulls authorize storage (`test/interval-proof.js`).
 
+A direct factory can transfer a fresh typed array's element hull to its caller.
+The producer must return only unaliased allocations; returned parameters, globals,
+closures and exposed buffers do not establish ownership. Each caller closes the
+transferred entry hull over its own writes before publishing it. Factory discovery
+uses settled callable identities and visits each body once; recursive dependencies
+remain unknown. Intrinsic typed `fill` contributes its stored integer values to
+the same census, including representation wrap/clamp; its returned receiver still
+counts as an alias, and own/optional/held methods retain the unknown-write path.
+`test/interval-proof.js` pins fresh/retained results, defaults, mutation and reuse.
+
 Runtime-sized index buffers have a separate relational proof
 (`narrow/element-bounds.js`). Zero initialization, own-index stores and same-array
 copies preserve the invariant that every present element indexes its own buffer.
