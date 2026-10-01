@@ -2606,3 +2606,40 @@ test('closure: a helper reading its parameter first splices with a call for its 
   const text = wat(src, { optimize: { level: 2, watr: false } })
   ok(text.split('\n  (func ').filter(b => /^\$\W?closure/.test(b)).every(b => !/call \$\W?lin2db\b/.test(b)), 'no closure calls lin2db')
 })
+
+test('closures: try and finally predeclare recursive block bindings', () => {
+  const sources = [
+    `export function f(n){try{const scan=x=>x?scan(x-1)+1:0;return scan(n)}finally{n++}}`,
+    `export function f(n){let out=0;try{out=1}finally{const scan=x=>x?scan(x-1)+1:0;out+=scan(n)}return out}`,
+    `export function f(n){try{throw n}catch(value){const even=x=>x?odd(x-1):true;const odd=x=>x?even(x-1):false;return[even(value),odd(value)]}}`,
+    `export function f(n){try{const scan=(x,again=()=>scan(x-1))=>x?again()+1:0;return scan(n)}finally{n++}}`,
+  ]
+  for(const optimize of levels(0,1,2,3,'size'))for(const src of sources){
+    const got=jz(src,{optimize,sourceInline:false}).exports,want=oracle(src)
+    for(const n of [0,0,1,4,7,0])is(got.f(n),want.f(n),`recursive protected block O${optimize}, ${n}`)
+  }
+})
+
+test('closures: protected block captures mutate the declared binding before dependent reads', () => {
+  const src=`export function f(flag){const a=[];if(flag)a.push({x:3});let reads=0;
+    try{let b=a;function cut(){b=[]}for(let i=0;i<b.length;i++){cut();reads++;return b[i].x};return 'none:'+reads}
+    catch(e){return e.name+':'+reads}}`
+  for(const optimize of levels(0,1,2,3,'size')){
+    const got=jz(src,{optimize,sourceInline:false}).exports,want=oracle(src)
+    for(const flag of [0,0,1,1,0,1,0])is(got.f(flag),want.f(flag),`captured protected receiver O${optimize}, ${flag}`)
+  }
+})
+
+test('closures: protected block shadows stay separate through errors and finalizers', () => {
+  const src=`export function f(mode){let value=1,out=[];
+    try{const read=()=>value;let value=2;out.push(read());
+      try{const read=()=>value;let value=3;out.push(read());if(mode)throw read()}
+      finally{const read=()=>value;let value=4;out.push(read())}
+    }catch(error){const read=()=>value+error;let value=5;out.push(read())}
+    finally{const read=()=>value;let value=6;out.push(read())}
+    out.push(value);return out}`
+  for(const optimize of levels(0,1,2,3,'size')){
+    const got=jz(src,{optimize,sourceInline:false}).exports,want=oracle(src)
+    for(const mode of [0,0,1,1,0])is(got.f(mode),want.f(mode),`protected lexical identity O${optimize}, ${mode}`)
+  }
+})

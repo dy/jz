@@ -83,6 +83,9 @@ Equal-width literal tuples in every arm of a conditional use the existing
 multiple-result ABI. Expression and statement returns share element boxing
 and finalizer emission. A block must pass the shared return-path proof before
 selecting multiple results; a possible fallthrough needs to carry undefined.
+Try, catch and finally bodies establish their block declarations before closures
+are prepared, including parser bodies represented as bare statement lists. Recursive
+and forward-capturing closures therefore share the block's renamed bindings.
 Source inlining captures arguments in call order before defaults or the body
 run. Parameter writes in defaults and nested closures require private mutable
 storage. Unwritten literals substitute directly. A leaf can also substitute a

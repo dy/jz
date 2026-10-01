@@ -534,7 +534,7 @@ const handlers = {
   'try'(body, ...clauses) {
     const catchClause = clauses.find(c => Array.isArray(c) && c[0] === 'catch')
     const finallyClause = clauses.find(c => Array.isArray(c) && c[0] === 'finally')
-    const tryBody = prep(body)
+    const tryBody = prepBlock(body)
     // Bind observable catch parameters through ordinary declarations so capture,
     // mutation and destructuring share analysis and cell lifetime. An unread
     // binding must not acquire a synthetic read that demands error decoding.
@@ -581,7 +581,7 @@ const handlers = {
       caught = ['catch', tryBody, cParam, prep(cHandler)]
       popScope()
     }
-    return finallyClause ? ['finally', caught, prep(finallyClause[1])] : caught
+    return finallyClause ? ['finally', caught, prepBlock(finallyClause[1])] : caught
   },
   'throw'(expr) { return ['throw', prep(expr)] },
 
@@ -1832,6 +1832,14 @@ function capturedLoopContinues(node, done, label, nested = false) {
     if (out) out.push(child)
   }
   return out ? withLoc(out, node) : node
+}
+
+// Parser try/finally bodies can be bare statement lists. Establish their
+// lexical declarations before preparing closures, as for ordinary blocks.
+function prepBlock(node) {
+  pushScope()
+  try { prescanBlockDecls(node); return prep(node) }
+  finally { popScope() }
 }
 
 // An ignored assignment can scalarize a tuple; a value-position assignment
