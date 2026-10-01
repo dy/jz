@@ -214,6 +214,20 @@ export function finalizeClosureTable(sec) {
       rest: !!cb.rest,
     })
   }
+  // IR arms may share one call node. Record it once before changing the ABI,
+  // and keep supplied argument slots even when the body ignores them: their
+  // evaluation can throw or mutate a value another argument/body reads.
+  const calls = [], seen = new WeakSet()
+  const collectCalls = node => walkAst(node, { exit: n => {
+    if ((n[0] !== 'call' && n[0] !== 'return_call') || typeof n[1] !== 'string' || seen.has(n)) return
+    const abi = abiOf.get(n[1].slice(1))
+    if (!abi) return
+    seen.add(n); calls.push(n)
+    const argc = n[3]
+    abi.usedSlots = Math.max(abi.usedSlots, argc?.[0] === 'i32.const' ? Math.min(W, Number(argc[1])) : W)
+  } })
+  for (const fn of sec.funcs) collectCalls(fn)
+  for (const fn of sec.start) collectCalls(fn)
   for (const fn of sec.funcs) {
     if (!Array.isArray(fn) || fn[0] !== 'func') continue
     const fnName = typeof fn[1] === 'string' && fn[1][0] === '$' ? fn[1].slice(1) : null
@@ -231,19 +245,12 @@ export function finalizeClosureTable(sec) {
       }
     }
   }
-  const rewriteCalls = (node) => walkAst(node, { exit: n => {
-    if ((n[0] === 'call' || n[0] === 'return_call') && typeof n[1] === 'string') {
-      const callee = n[1].slice(1)
-      const abi = abiOf.get(callee)
-      if (!abi) return
-      const newArgs = []
-      if (abi.needEnv) newArgs.push(n[2])
-      if (abi.needArgc) newArgs.push(n[3])
-      for (let i = 0; i < abi.usedSlots; i++) newArgs.push(n[4 + i])
-      if (ctx.closure.receiver) newArgs.push(n[4 + W])
-      n.splice(2, n.length - 2, ...newArgs)
-    }
-  } })
-  for (const fn of sec.funcs) rewriteCalls(fn)
-  for (const fn of sec.start) rewriteCalls(fn)
+  for (const n of calls) {
+    const abi = abiOf.get(n[1].slice(1)), newArgs = []
+    if (abi.needEnv) newArgs.push(n[2])
+    if (abi.needArgc) newArgs.push(n[3])
+    for (let i = 0; i < abi.usedSlots; i++) newArgs.push(n[4 + i])
+    if (ctx.closure.receiver) newArgs.push(n[4 + W])
+    n.splice(2, n.length - 2, ...newArgs)
+  }
 }

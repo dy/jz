@@ -13,6 +13,38 @@ import { T } from '../src/ast.js'
 // jz() wires host imports needed by dynamic-property and full-runtime paths.
 const runHost = (code, opts) => jz(code, opts).exports
 
+test('closure ABI: shared checked-store RHS calls keep their argument slots', () => {
+  const src=`export function f(mode){const a=[1,2,3,4],alias=a;let count=0;
+    function value(i){count++;if(mode===1)alias.length=1;if(mode===2&&i===0)alias.push(5);return i+7}
+    for(let i=0;i<a.length;i++)a[i]=value(i);
+    return[a,count]}`
+  for(const optimize of levels(0,1,2,3,'size')) {
+    const got=jz(src,{optimize}).exports,want=oracle(src)
+    for(const mode of [0,0,1,2,0,1]) is(got.f(mode),want.f(mode),`changing length O${optimize}, ${mode}`)
+  }
+})
+
+test('closure ABI: discarded extra arguments retain evaluation order and errors', () => {
+  const rows = [
+    `export function f(mode){let count=0;const fn=x=>{count++;return x};
+      const value=fn(2,count+=10);return[value,count]}`,
+    `export function f(mode){let trace='';const fn=x=>{trace+='b';return x};
+      function extra(){trace+='e';if(mode)throw 7;return 9}
+      try{const value=fn(trace+='a',extra());return[value,trace]}
+      catch(e){return[e,trace]}}`,
+    `export function f(mode){let trace='';const fn=()=>7;
+      function extra(){trace+='e';if(mode)throw 7;return 9}
+      try{const value=fn(extra());return[value,trace]}catch(e){return[e,trace]}}`,
+    `export function f(mode){let count=0;const fn=x=>{count++;return x};
+      const first=fn(),second=fn(mode,count+=10);
+      return[first,second,fn(fn(3,count+=100),count+=1000),count]}`,
+  ]
+  for(let i=0;i<rows.length;i++) for(const level of levels(0,1,2,3,'size')) {
+    const src=rows[i],want=oracle(src),got=jz(src,{optimize:{level,sourceInline:false}}).exports
+    for(const mode of [0,0,1,0,1]) is(got.f(mode),want.f(mode),`extra argument ${i} O${level}, ${mode}`)
+  }
+})
+
 test('closure: fractional writes invalidate captured integer facts', () => {
   const src = `
     function make() {
