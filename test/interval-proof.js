@@ -13,6 +13,58 @@ import { typedIdxProven } from '../src/type/loop-versioning.js'
 import { ctx } from '../src/ctx.js'
 import { createActiveFunction } from '../src/compile/active-function.js'
 
+test('interval proof: unknown bindings survive sparse control-flow snapshots', () => {
+  const cases = [
+    ['bare declaration', ['let', 'x'], null],
+    ['unknown parameter', [';'], null, null],
+    ['invalidated global', ['()', 'mutate'], null, [0, 0]],
+    ['one-sided definition', [';', ['let', 'x'], ['if', 'flag', ['=', 'x', 1]]], null],
+    ['two-sided definition', ['if', 'flag', ['=', 'x', 1], ['=', 'x', 2]], [1, 2]],
+    ['unknown branch', [';', ['let', ['=', 'x', 0]], ['if', 'flag', ['=', 'x', 'unknown']]], null],
+    ['zero-work definition', [';', ['let', 'x'], ['for', ['let', ['=', 'i', 0]], ['<', 'i', 0], ['++', 'i'], ['=', 'x', 1]]], null],
+    ['captured write', [';', ['let', ['=', 'x', 0]], ['=>', [], ['=', 'x', 'unknown']]], null],
+    ['destructured definition', ['let', ['=', ['[', 'x'], 'values']], null],
+    ['exceptional write', [';', ['let', ['=', 'x', 0]], ['catch', ['=', 'x', 1], ['=', 'x', 'unknown']]], null],
+  ]
+  const previous = ctx.func, constants = ctx.scope.constInts, globals = ctx.scope.globalTypes
+  try {
+    // A rejected local constant must not expose a same-named outer constant
+    // when a branch restores an unknown binding without a range-map entry.
+    ctx.scope.constInts = new Map([['x', 3]])
+    for (const [name, statements, expected, input] of cases) {
+      const call = ['()', 'take', 'x'], read = ['[]', 'src', 'x'], body = [';', statements, call, read]
+      ctx.func = createActiveFunction({ body })
+      ctx.func.localReps = new Map([['x', { intConst: Infinity }]])
+      ctx.scope.globalTypes = name === 'invalidated global' ? new Map([['x', 'f64']]) : globals
+      const calls = new Map([[call, undefined]]), out = new Set(), bindings = new Map([['x', undefined]])
+      const entry = new Map([['flag', null]])
+      if (input !== undefined) entry.set('x', input)
+      scanIntervalIdx(body, out, n => n === 'src' ? 4 : null, null, calls, entry, null, null, bindings)
+      is(calls.get(call), [expected], `${name}: scalar call hull`)
+      is(out.has(read), !!expected, `${name}: unknown does not become a proven index`)
+    }
+  } finally { ctx.func = previous; ctx.scope.constInts = constants; ctx.scope.globalTypes = globals }
+})
+
+test('interval proof: shadowed missing indices and exception reuse match JavaScript', () => {
+  const src = `const index = 0
+    export function f(mode, empty) {
+      const a = new Int32Array(empty ? 0 : 1); if (!empty) a[0] = 7
+      let index
+      if (mode === 1) index = 0
+      if (mode === 2) { try { index = 0; throw 1 } catch(e) { index = undefined } }
+      const reset = () => { index = undefined }
+      if (mode === 3) { index = 0; reset() }
+      return [a[index], index]
+    }`
+  const want = oracle(src)
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const got = jz(src, { optimize }).exports
+    for (const mode of [0, 1, 1, 2, 3, 0, 1]) for (const empty of [0, 1])
+      is(got.f(mode, empty), want.f(mode, empty), `O${optimize}: mode ${mode}, empty ${empty}`)
+  }
+})
+
 test('interval proof: monotone counter sign bounds remainder without an i32 counter hull', () => {
   const cases = [
     ['unit', 0, ['++', 'i'], null, 6, [0, 5]],

@@ -697,7 +697,11 @@ sentinel postconditions and unequal affine lengths are not inferred here.
 The interval interpreter spans the full signed word; overflowing transfers
 become unknown. Its call hulls may authorize integer parameter storage, so
 negative-zero literals and sign-changing transfers that can produce negative
-zero also become unknown; a magnitude bound alone cannot preserve that value. Body analysis can request complete scalar binding hulls from
+zero also become unknown; a magnitude bound alone cannot preserve that value.
+Control-flow snapshots store only known ranges. A separate binding census keeps
+unknown parameters, declarations and writes from revealing cached outer constants;
+joins retain only names known on every edge. Body analysis can request complete
+scalar binding hulls from
 that same walk, before storage widening and vectorization. Only stable loop
 passes contribute; every read and write joins, including initializers and final
 updates. Missing entries and unknown writes reject a hull, and captured bindings

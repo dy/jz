@@ -45,7 +45,14 @@ const RANGE_GUARD_OPS = new Set(['&&', '<', '<=', '>', '>=', '===', '!=='])
 export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = null, stores = null, misses = null, bindings = null) {
   // Branches retain their completed map and resume the saved entry map.
   // Range pairs are immutable, so unchanged bounds can be shared at joins.
-  let env = new Map(entry)   // name → [lo, hi] | null (unknown)
+  // Missing map entries are unknown. Keep lexical/write ownership separately:
+  // discarding an unknown interval must not reveal a same-named module constant.
+  let env = new Map()   // name → known [lo, hi]
+  const declared = new Set()
+  if (entry) for (const [name, value] of entry) {
+    declared.add(name)
+    if (value) env.set(name, value)
+  }
   // Structural keys survive lowering clones, but each occurrence must prove
   // its own bounds. One unchecked twin permanently rejects the shared proof.
   // The access node itself carries its own occurrence's proof: a clone made
@@ -83,6 +90,15 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
     if (typeof n === 'string') return bindings?.has(n) ?? false
     if (!Array.isArray(n)) return false
     const into = inClosure || n[0] === '=>'
+    if (n[0] === 'let' || n[0] === 'const') for (let k = 1; k < n.length; k++) {
+      const d = n[k]
+      if (typeof d === 'string') declared.add(d)
+      else if (Array.isArray(d) && d[0] === '=') collectNames(d[1], declared)
+    }
+    if (MUTATE_OPS.has(n[0])) {
+      if (typeof n[1] === 'string') declared.add(n[1])
+      else if (Array.isArray(n[1]) && n[1][0] !== '[]' && n[1][0] !== '.' && n[1][0] !== '?.') collectNames(n[1], declared)
+    }
     if (into && MUTATE_OPS.has(n[0])) {
       if (typeof n[1] === 'string') closureWrites.add(n[1])
       // member writes (`o[i]=…`, `o.p=…`) rebind no name; only PATTERN targets do
@@ -134,13 +150,14 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
     if (f && v && Number.isFinite(v[1]) && v[1] > f[1]) v = [v[0], f[1]]
     if (closureWrites.has(name) || !ipOk(v)) v = null
     if (f) v = v ? [Math.max(v[0], f[0]), Math.min(v[1], f[1])] : f
-    env.set(name, v)
+    if (v) env.set(name, v)
+    else env.delete(name)
     recordBinding(name, v)
   }
   const constInt = (e) => {
     const n = intLiteralValue(e)
     if (n != null) return Object.is(n, -0) ? null : n
-    if (typeof e === 'string' && !env.has(e) && !closureWrites.has(e)) {
+    if (typeof e === 'string' && !declared.has(e) && !env.has(e) && !closureWrites.has(e)) {
       const ci = ctx.scope?.constInts?.get?.(e)
       if (ci != null && isI32(ci)) return ci
     }
@@ -427,9 +444,9 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
   // descend into closures too — capture-writes stay dead
   const killAssigned = (n) => walkAst(n, { enter: n2 => {
     if (MUTATE_OPS.has(n2[0])) {
-      if (typeof n2[1] === 'string') { invalidateBool(n2[1]); env.set(n2[1], null) }
+      if (typeof n2[1] === 'string') { invalidateBool(n2[1]); env.delete(n2[1]) }
       else if (Array.isArray(n2[1]) && n2[1][0] !== '[]' && n2[1][0] !== '.' && n2[1][0] !== '?.') {
-        const s = new Set(); collectNames(n2[1], s); for (const x of s) { invalidateBool(x); env.set(x, null) }
+        const s = new Set(); collectNames(n2[1], s); for (const x of s) { invalidateBool(x); env.delete(x) }
       }
     }
   } })
@@ -457,13 +474,13 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
   // conservatively feed every open one.
   const loopStack = []
   const hullInto = (snap) => {
-    // Join existing bindings in place, then add snapshot-only bindings as
-    // unknown. No temporary union of the two key sets is needed.
+    // A name known on just one edge is unknown at the join. Only the
+    // intersection belongs in the map; unknown names remain in the census.
     for (const k2 of env.keys()) {
       const a = env.get(k2), b = snap.get(k2)
-      if (a !== b) env.set(k2, a && b ? [Math.min(a[0], b[0]), Math.max(a[1], b[1])] : null)
+      if (!b) env.delete(k2)
+      else if (a !== b) env.set(k2, [Math.min(a[0], b[0]), Math.max(a[1], b[1])])
     }
-    for (const k2 of snap.keys()) if (!env.has(k2)) env.set(k2, null)
   }
   // LOOP FIXPOINT over the loop HEAD, the state where the condition is
   // evaluated: entry ∪ back edges (2-round widening). Each pass restores a
@@ -509,11 +526,9 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
     const joined = new Map()
     for (const k2 of entryEnv.keys()) {
       const a = entryEnv.get(k2), b = env.get(k2)
-      joined.set(k2, a && b
-        ? [b[0] < a[0] ? I32_MIN : Math.min(a[0], b[0]), b[1] > a[1] ? I32_MAX : Math.max(a[1], b[1])]
-        : null)
+      if (b) joined.set(k2,
+        [b[0] < a[0] ? I32_MIN : Math.min(a[0], b[0]), b[1] > a[1] ? I32_MAX : Math.max(a[1], b[1])])
     }
-    for (const k2 of env.keys()) if (!joined.has(k2)) joined.set(k2, null)
     // FIELD BOUNDS: a widened name may hold a bit-pattern invariant the linear
     // hull cannot express — `bit >>= 1` never leaves [0, bit₀], `j ^= bit`
     // never leaves the field below bit₀'s width — and the sentinel itself is
@@ -548,7 +563,7 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
         failed.clear()
       }
     }
-    for (const k2 of failed) joined.set(k2, null)
+    for (const k2 of failed) joined.delete(k2)
     // NARROWING (≤2 decreasing passes): the widened invariant is sound but
     // loose — a name with no cond conjunct to re-clamp it sits at a word boundary even
     // when the loop's true range is finite (`i = child` copy chains: i only
@@ -628,7 +643,7 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
     // only unknown writes; do not allocate widening states that nobody reads.
     if (needed && !needed.has(n) && (op === 'for' || op === 'while')) {
       killAssigned(n)
-      for (const name of env.keys()) if (ctx.scope?.globalTypes?.has(name)) { invalidateBool(name); env.set(name, null) }
+      for (const name of env.keys()) if (ctx.scope?.globalTypes?.has(name)) { invalidateBool(name); env.delete(name) }
       symEnv.clear(); coupledEnv.clear()
       return
     }
@@ -678,8 +693,8 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
             if (![...free].some(f => closureWrites.has(f))) boolDefs.set(d[1], { def: d[2], free })
           }
         }
-        else if (typeof d === 'string') { invalidateBool(d); env.set(d, null); recordBinding(d, null) }
-        else if (Array.isArray(d)) { visit(d); const s = new Set(); collectNames(d[0] === '=' ? d[1] : d, s); for (const x of s) { invalidateBool(x); env.set(x, null); recordBinding(x, null) } }
+        else if (typeof d === 'string') { invalidateBool(d); env.delete(d); recordBinding(d, null) }
+        else if (Array.isArray(d)) { visit(d); const s = new Set(); collectNames(d[0] === '=' ? d[1] : d, s); for (const x of s) { invalidateBool(x); env.delete(x); recordBinding(x, null) } }
       }
       return
     }
@@ -718,7 +733,7 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
         visit(n[1])   // records the member-write access proof (`out[idx] = …`)
         for (let k = 2; k < n.length; k++) visit(n[k])
         if (Array.isArray(n[1]) && n[1][0] !== '[]' && n[1][0] !== '.' && n[1][0] !== '?.') {
-          const s = new Set(); collectNames(n[1], s); for (const x of s) { invalidateBool(x); env.set(x, null); recordBinding(x, null) }
+          const s = new Set(); collectNames(n[1], s); for (const x of s) { invalidateBool(x); env.delete(x); recordBinding(x, null) }
         }
       }
       return
@@ -1017,8 +1032,8 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
       for (const [name, h] of budgeted) activeFacts.set(name, h)
       for (const [name, h] of capped) activeFacts.set(name, h)
       const seeds = () => {
-        if (seeded) env.set(iv, ipOk(headRange) ? headRange : null)
-        else if (iv) env.set(iv, null)
+        if (seeded && ipOk(headRange)) env.set(iv, headRange)
+        else if (iv) env.delete(iv)
         for (const [name, h, incNode] of coupled) coupledEnv.set(name, { h, incNode })
         for (const [name, h] of budgeted) setEnv(name, h)
       }
@@ -1034,7 +1049,7 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
         if (prior) activeFacts.set(name, prior)
         else activeFacts.delete(name)
       }
-      if (iv) env.set(iv, null)   // iv holds the exit value after the loop
+      if (iv) env.delete(iv)   // iv holds the exit value after the loop
       for (const [name] of coupled) {
         const prior = priorCoupled.get(name)
         if (prior) coupledEnv.set(name, prior)
@@ -1239,7 +1254,7 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
         for (const free of bd.free) if (ctx.scope?.globalTypes?.has?.(free)) { boolDefs.delete(name); break }
       }
       for (const [k2] of env) if (!closureWrites.has(k2) && (ctx.scope?.globalTypes?.has?.(k2) || ctx.func?.typedElem?.has?.(k2))) {
-        invalidateBool(k2); env.set(k2, null)
+        invalidateBool(k2); env.delete(k2)
       }
       return
     }
