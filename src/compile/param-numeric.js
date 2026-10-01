@@ -443,8 +443,8 @@ export function paramNeverString(body, name, _seen = new Set()) {
     // paramNeverString then wrongly returned true, and the exported-param
     // trust optimization (`if (func.exported) …`, above this function's own
     // caller) stamped the param VAL.NUMBER — corrupting every dynamic-key
-    // write through it (root-caused via `emitElementAssign`'s idxNumericName
-    // trusting that stamp to skip the runtime `__is_str_key` fork).
+    // write through it: element assignment trusted that stamp to bypass
+    // computed-key dispatch.
     if (op === '=>') {
       const ps = node[1]
       const shadowed = Array.isArray(ps)

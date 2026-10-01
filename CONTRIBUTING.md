@@ -273,6 +273,12 @@ Solver and query views share typed-element and typed-method transfer rules.
 An unresolved index can still read an array element or named property. The
 solver may defer its transfer while the index has no evidence; a public query
 must retain those possible values instead of proving the read absent.
+Numeric payload facts alone cannot bypass computed-key coercion: the key must
+also be present. Shared reads and writes route boxed keys through ToPropertyKey;
+Array and TypedArray writers classify a coerced key before choosing elements or
+named properties. A computed store captures its receiver, key and RHS in that
+order, then coerces the held key once. Array growth writes back only while the
+receiver binding still denotes that captured array.
 
 Collection enumeration shares the ordered property walk with plain objects.
 Array and typed-array indices precede named properties; initialized and runtime

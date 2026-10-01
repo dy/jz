@@ -2156,6 +2156,11 @@ export default (ctx) => {
     (local.set $off (i32.wrap_i64 (i64.and (local.get $obj) (i64.const ${LAYOUT.OFFSET_MASK}))))
     (local.set $type (i32.wrap_i64 (i64.and (i64.shr_u (local.get $obj) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK}))))
     ${requireObjectWat('(local.get $obj)', '(local.get $type)')}
+    ;; Convert boxed keys before choosing an exotic element path: a BigInt or
+    ;; object can name an array index too. Real numbers keep the numeric arm.
+    (if (i32.and (f64.ne (f64.reinterpret_i64 (local.get $key)) (f64.reinterpret_i64 (local.get $key)))
+          (i32.eqz (call $__is_str_key (local.get $key))))
+      (then (local.set $key (call $__to_str (local.get $key)))))
     ;; ARRAY + integer key → ELEMENT store (grow + hole-fill via the same
     ;; helper the statically-proven \`a[i]=v\` path uses), matching JS index
     ;; semantics and the element arms in the dyn read entries. Guard real-
@@ -2194,9 +2199,6 @@ export default (ctx) => {
     ${ctx.linkDemand.typedProperties ? `(if (i32.and (i32.eq (local.get $type) (i32.const ${PTR.TYPED}))
           (f64.ne (f64.reinterpret_i64 (local.get $obj)) (f64.reinterpret_i64 (local.get $obj))))
       (then
-        (if (i32.and (f64.ne (f64.reinterpret_i64 (local.get $key)) (f64.reinterpret_i64 (local.get $key)))
-              (i32.eqz (call $__is_str_key (local.get $key))))
-          (then (local.set $key (call $__to_str (local.get $key)))))
         (local.set $kidx (call $__typed_key_idx (local.get $key)))
         (if (i32.ne (local.get $kidx) (i32.const -2))
           (then

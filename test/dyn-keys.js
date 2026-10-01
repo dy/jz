@@ -1051,9 +1051,9 @@ test('dictionary slot updates hash every string representation after key normali
   }
 })
 
-test('dyn-keys: atom-vs-NaN key split (index contract preserved)', () => {
-  // A real NaN names no element (a[NaN] is undefined); only ATOM boxes
-  // (undefined/null) stringify to a property key.
+test('dyn-keys: NaN never aliases element zero; undefined keeps its named key', () => {
+  // Neither key can use element zero. A missing NaN property reads undefined;
+  // an undefined key finds the named property when it exists.
   is(run(`const a = [11, 22]; const k = 0/0; return a[k]`), undefined)
   is(run(`const d = {}; d['undefined'] = 7; const u = [, 1][0]; return d[u]`), 7)
 })

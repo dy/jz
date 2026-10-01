@@ -170,7 +170,7 @@ function ensureDynSetAllowed(arr) {
  *  f64 box's low word, 0). Every write path for an i32-lean receiver must agree
  *  with the read's raw-i32 contract, so this is the single choke point (dynSetCall
  *  is also step 7b's HASH fallback) that applies it uniformly. */
-function dynSetCall(arr, keyExpr, valueExpr) {
+function dynSetCall(arr, keyExpr, valueExpr, receiver = null) {
   ensureDynSetAllowed(arr)
   const setter = valTypeOf(arr) === VAL.HASH ? '__hash_set_value' : '__dyn_set'
   inc(setter)
@@ -183,7 +183,7 @@ function dynSetCall(arr, keyExpr, valueExpr) {
     const recv = typed(['local.get', `$${recvTmp}`], 'f64')
     const persist = persistBindingPtr(arr, mkPtrIR(PTR.ARRAY, 0, fwdOffsetIR(recv)))
     return block64(
-      ['local.set', `$${recvTmp}`, asF64(emit(arr))],
+      ['local.set', `$${recvTmp}`, receiver ?? asF64(emit(arr))],
       ['local.set', `$${valTmp}`, ['f64.reinterpret_i64', ['call', `$${setter}`, asI64(recv), asI64(keyExpr), asI64(valueExpr)]]],
       repOf(arr)?.ownCurrent ? persist
         : ['if', ['i64.eq', asI64(asF64(emit(arr))), asI64(recv)], ['then', persist]],
@@ -193,23 +193,24 @@ function dynSetCall(arr, keyExpr, valueExpr) {
     const valTmp = temp()
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${valTmp}`, valueExpr],
-      ['drop', ['call', `$${setter}`, asI64(emit(arr)), asI64(keyExpr),
+      ['drop', ['call', `$${setter}`, asI64(receiver ?? emit(arr)), asI64(keyExpr),
         ['i64.extend_i32_u', asI32(typed(['local.get', `$${valTmp}`], 'f64'))]]],
       ['local.get', `$${valTmp}`]], 'f64')
   }
-  return typed(['f64.reinterpret_i64', ['call', `$${setter}`, asI64(emit(arr)), asI64(keyExpr), asI64(valueExpr)]], 'f64')
+  return typed(['f64.reinterpret_i64', ['call', `$${setter}`, asI64(receiver ?? emit(arr)), asI64(keyExpr), asI64(valueExpr)]], 'f64')
 }
 
-/** Runtime fork by key kind: string keys go to `__dyn_set`, numeric keys go through
- *  `numericIR(keyExpr)`. Used when key type is unknown at compile time. */
+/** Boxed keys need ToPropertyKey; ordinary numbers retain the indexed path. */
 function dispatchByKeyKind(arr, keyExpr, valueExpr, numericIR) {
   ensureDynSetAllowed(arr)
-  const keyTmp = temp()
+  const objTmp = temp('dko'), keyTmp = temp()
+  const receiver = typed(['local.get', `$${objTmp}`], 'f64')
   return block64(
+    ['local.set', `$${objTmp}`, asF64(emit(arr))],
     ['local.set', `$${keyTmp}`, keyExpr],
-    ['if', ['result', 'f64'], ['call', '$__is_str_key', ['i64.reinterpret_f64', ['local.get', `$${keyTmp}`]]],
-      ['then', dynSetCall(arr, typed(['local.get', `$${keyTmp}`], 'f64'), valueExpr)],
-      ['else', numericIR(['local.get', `$${keyTmp}`])]])
+    ['if', ['result', 'f64'], ['f64.ne', ['local.get', `$${keyTmp}`], ['local.get', `$${keyTmp}`]],
+      ['then', dynSetCall(arr, typed(['local.get', `$${keyTmp}`], 'f64'), valueExpr, receiver)],
+      ['else', numericIR(['local.get', `$${keyTmp}`], receiver)]])
 }
 
 /** Outlined runtime element store for an opaque receiver. The helper owns the
@@ -266,8 +267,7 @@ function tryInplaceReplaceStore(arr, idx, val) {
   const entry = ctx.schema.inplaceStores?.get(key)
   if (!entry) return null
   if (valTypeOf(arr) !== VAL.ARRAY) return null
-  const idxNumeric = (typeof idx === 'string' &&
-    (repOf(idx)?.intCertain === true || repOf(idx)?.val === VAL.NUMBER)) || valTypeOf(idx) === VAL.NUMBER
+  const idxNumeric = valTypeOf(idx) === VAL.NUMBER && isPresentNumber(ctx, idx)
   if (!idxNumeric) return null
   const parsed = staticObjectProps(val.slice(1))
   if (!parsed || !parsed.values.every(v => valTypeOf(v) === VAL.NUMBER)) return null
@@ -550,14 +550,9 @@ export function emitElementAssign(arr, idx, val, node = null) {
     ctx.module.include('string')
     setLinkDemand('typedProperties')
   }
-  // A provably-numeric index name — an int-certain loop counter or a NUMBER-typed
-  // local — can never be a string key, so the runtime `__is_str_key` → `__dyn_set`
-  // dispatch is dead. Mirrors the index *read* path (`intIndexIR`), closing the
-  // read/write asymmetry on `arr[i] = …` inside refined-array loops.
-  const idxNumericName = typeof idx === 'string' &&
-    (repOf(idx)?.intCertain === true || repOf(idx)?.val === VAL.NUMBER)
-  const useRuntimeKeyDispatch = !idxNumericName &&
-    (keyType == null || (typeof idx === 'string' && keyType !== VAL.STRING))
+  // A numeric payload does not exclude an absent value. Only a present Number
+  // can bypass ToPropertyKey; nullish, boolean and pointer boxes retain it.
+  const useRuntimeKeyDispatch = !numericKey && keyType !== VAL.STRING
   // storedValue (not asF64(emit(idx))): the universal computed-key emit site
   // feeding $__dyn_set — an 18th unswept MECHANISM A site (.work/archive/todo.md
   // §deletion-sweep). storedValue already returns f64-typed IR in every
@@ -715,26 +710,24 @@ export function emitElementAssign(arr, idx, val, node = null) {
 
   // 6. Boxed schema array — payload pointer is stored at the receiver's payload offset.
   if (typeof arr === 'string' && ctx.schema.isBoxed?.(arr)) {
-    const inner = ctx.schema.emitInner(arr)
     const arrVT = lookupValType(arr) || VAL.OBJECT
-    const storeNumeric = keyNode => storeArrayPayload(inner, keyNode, valueExpr, ptr =>
-      ['f64.store', ptrOffsetIR(asF64(emit(arr)), arrVT), ptr])
-    if (useRuntimeKeyDispatch) {
-      inc('__dyn_set', '__is_str_key')
-      return dispatchByKeyKind(arr, keyExpr, valueExpr, storeNumeric)
+    const storeNumeric = (keyNode, receiver = asF64(emit(arr))) => {
+      const offset = ptrOffsetIR(receiver, arrVT)
+      return storeArrayPayload(typed(['f64.load', offset], 'f64'), keyNode, valueExpr,
+        ptr => ['f64.store', offset, ptr])
     }
+    if (useRuntimeKeyDispatch) return dispatchByKeyKind(arr, keyExpr, valueExpr, storeNumeric)
     return typed(storeNumeric(keyExpr), 'f64')
   }
 
   // 7. Known-ARRAY receiver, generic key.
   if (typeof arr === 'string' && valTypeOf(arr) === VAL.ARRAY) {
     const persist = persistBinding(arr)
-    const arrExpr = asF64(emit(arr))
-    if (useRuntimeKeyDispatch) {
-      inc('__dyn_set', '__is_str_key')
-      return dispatchByKeyKind(arr, keyExpr, valueExpr, keyNode => storeArrayPayload(arrExpr, keyNode, valueExpr, persist))
-    }
-    return storeArrayPayload(arrExpr, keyExpr, valueExpr, persist)
+    if (useRuntimeKeyDispatch)
+      return dispatchByKeyKind(arr, keyExpr, valueExpr, (keyNode, receiver) =>
+        storeArrayPayload(receiver, keyNode, valueExpr, ptr =>
+          ['if', ['i64.eq', asI64(asF64(emit(arr))), asI64(receiver)], ['then', persist(ptr)]]))
+    return storeArrayPayload(asF64(emit(arr)), keyExpr, valueExpr, persist)
   }
 
   // A local the dictionary census classified (lean or i32-lean) is a HASH whatever
@@ -784,10 +777,10 @@ export function emitElementAssign(arr, idx, val, node = null) {
   //    fork instead, closing the gap at its root: one dispatch, no receiver
   //    shape special-cased out of the ARRAY check again by omission.
   if (useRuntimeKeyDispatch) {
-    inc('__dyn_set', '__is_str_key')
-    const persist = typeof arr === 'string' ? persistBinding(arr) : null
-    return dispatchByKeyKind(arr, keyExpr, valueExpr, keyNode =>
-      emitPolymorphicElementStore(emit(arr), keyIndex(typed(keyNode, 'f64')), runtimeTypedValueExpr(), valueDomain, persist, mayBeObject))
+    return dispatchByKeyKind(arr, keyExpr, valueExpr, (keyNode, receiver) =>
+      emitPolymorphicElementStore(receiver, keyIndex(typed(keyNode, 'f64')), runtimeTypedValueExpr(), valueDomain,
+        typeof arr === 'string' ? ptr => ['if', ['i64.eq', asI64(asF64(emit(arr))), asI64(receiver)],
+          ['then', persistBindingPtr(arr, ptr)]] : null, mayBeObject))
   }
 
   // 9. Opaque receiver (non-string expr) or string-named with unknown VT — pure

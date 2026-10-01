@@ -809,7 +809,7 @@ export default (ctx) => {
     }
     const keyType = typeof idx === 'string' ? lookupValType(idx) : valTypeOf(idx)
     const vt = typeof arr === 'string' ? lookupValType(arr) : valTypeOf(arr)
-    const numericKey = (vt == null || vt === VAL.TYPED) && keyType === VAL.NUMBER && isPresentNumber(ctx, idx)
+    const numericKey = keyType === VAL.NUMBER && isPresentNumber(ctx, idx)
     // An object key needs ToPropertyKey even when produced by an expression.
     // Primitive keys keep the checked atom/BigInt and numeric-index paths below.
     if (keyType != null && keyType !== VAL.STRING && keyType !== VAL.NUMBER &&
@@ -822,7 +822,7 @@ export default (ctx) => {
       ctx.func.localValTypesOverlay.set(key, VAL.STRING)
       return typed(['block', ['result', 'f64'], ...setup, asF64(ctx.core.emit['[]'](arr, key))], 'f64')
     }
-    const useRuntimeKeyDispatch = keyType == null || (typeof idx === 'string' && keyType !== VAL.STRING)
+    const useRuntimeKeyDispatch = !numericKey && keyType !== VAL.STRING
     // A proven count/histogram dictionary stores only each value's observable
     // ToInt32 bits. All reads were proven bitwise-coerced, so wrap the standard
     // hash lookup's low word directly (missing undefined has low word zero).
@@ -1026,35 +1026,14 @@ export default (ctx) => {
       : arrayFast(ix => ['call', `$${runtimeElemRead}`, ['i64.reinterpret_f64', ptrExpr], ix])
     const emitDynamicKeyDispatch = (objExpr, numericLoad) => {
       const keyTmp = temp()
-      // ToPropertyKey of an atom key is the string module's `__to_str`: own
-      // that dependency here (a program without a string of its own has not
-      // loaded the module, and a template requested unregistered fails the pull).
+      // All boxed keys (and NaN) need ToPropertyKey. The dynamic helper owns
+      // coercion, including object hooks; the numeric arm keeps index checks.
       ctx.module.include('string')
-      inc('__is_str_key', '__to_str')
-      // storedValue (not asF64(emit(idx))): READ-side sibling of MECHANISM A
-      // (.work/archive/todo.md §deletion-sweep Finding #2) — same ambiguous-merge-key
-      // producer bypass as the HASH/OBJECT dyn-get sites below.
       return typed(['block', ['result', 'f64'],
         ['local.set', `$${keyTmp}`, storedValue(idx)],
-        ['if', ['result', 'f64'], ['call', '$__is_str_key', ['i64.reinterpret_f64', ['local.get', `$${keyTmp}`]]],
+        ['if', ['result', 'f64'], ['f64.ne', ['local.get', `$${keyTmp}`], ['local.get', `$${keyTmp}`]],
           ['then', dynLoad(objExpr, ['local.get', `$${keyTmp}`])],
-          // Non-string key: an ATOM box (null/undefined/false/true — hi-word
-          // 0x7FF80001..5, aux 1..5 under the zero ATOM tag) takes ToPropertyKey:
-          // stringify → dyn read. A two-way arm that instead trunc_sat's the box
-          // straight to index 0 makes `prec[undefined]` READ SLOT 0 of whatever
-          // the receiver is — the wrong-hit that made subscript's
-          // isStmt(prec[hole]) truthy in the kernel, breaking the literal-key
-          // shorthand method "Unclosed {" family. EVERYTHING ELSE — real numbers AND canonical
-          // arithmetic NaN (hi 0x7FF80000, aux 0) — keeps the documented
-          // numeric index check: fractional/non-finite keys name no element.
-          ['else', ['if', ['result', 'f64'],
-            ['i32.le_u',
-              ['i32.sub',
-                ['i32.wrap_i64', ['i64.shr_u', ['i64.reinterpret_f64', ['local.get', `$${keyTmp}`]], ['i64.const', 32]]],
-                ['i32.const', 0x7FF80001]],
-              ['i32.const', 4]],
-            ['then', dynLoad(objExpr, ['f64.reinterpret_i64', ['call', '$__to_str', ['i64.reinterpret_f64', ['local.get', `$${keyTmp}`]]]])],
-            ['else', numericLoad(['local.get', `$${keyTmp}`])]]]]], 'f64')
+          ['else', numericLoad(['local.get', `$${keyTmp}`])]]], 'f64')
     }
     // Boxed object: string keys address the box, numeric keys address the inner array.
     if (typeof arr === 'string' && ctx.schema.isBoxed?.(arr)) {
@@ -1111,7 +1090,7 @@ export default (ctx) => {
       // Presence is independent of the element kind. The checked array
       // helper handles an absent receiver before touching its header.
       if (mayBeUndefined(arr)) {
-        if (useRuntimeKeyDispatch && keyType !== VAL.NUMBER) {
+        if (useRuntimeKeyDispatch && !numericKey) {
           inc('__arr_idx')
           return emitDynamicKeyDispatch(ptrExpr, key => ['call', '$__arr_idx', asI64(ptrExpr), keyIndex(typed(key, 'f64'))])
         }
@@ -1185,7 +1164,7 @@ export default (ctx) => {
       // Known-ARRAY → __arr_idx (single forwarding follow + inline bounds check),
       // not __typed_idx (which does __len + __ptr_offset = two forwarding follows
       // plus type-dispatch overhead irrelevant for plain arrays).
-      const keyIsNum = keyType === VAL.NUMBER
+      const keyIsNum = numericKey
       // Inline fast path for any known plain ARRAY + numeric key: the type-tag
       // dispatch and bounds check inside __arr_idx(_known) are dead weight in hot
       // kernels — most visibly AST walkers doing `node[i]` over heterogeneous
@@ -1281,9 +1260,7 @@ export default (ctx) => {
         return rd
       }
       const baseTmp = temp()
-      // Numeric key (literal or known-NUMBER name) → skip __is_str_key dispatch;
-      // arrays don't honor string-key access for numeric keys (keys aren't coerced
-      // back to numbers for ARRAY index reads). Mirrors the VAL.TYPED branch below.
+      // A present Number keeps the element path; boxed keys need ToPropertyKey.
       if (useRuntimeKeyDispatch && !keyIsNum)
         return typed(['block', ['result', 'f64'],
           ['local.set', `$${baseTmp}`, ptrExpr],
@@ -1306,7 +1283,7 @@ export default (ctx) => {
     // str-key check is dead — emit the direct __typed_idx call. Other key shapes keep
     // the runtime str_key dispatch (rare for typed arrays but legal: arr['length']).
     if (vt === 'typed') {
-      const keyIsNum = keyType === VAL.NUMBER
+      const keyIsNum = numericKey
       if (useRuntimeKeyDispatch && !keyIsNum)
         return emitDynamicKeyDispatch(ptrExpr, keyExpr => {
           const keyI32 = keyIndex(typed(keyExpr, 'f64'))
@@ -1335,12 +1312,11 @@ export default (ctx) => {
     // isDisjointFrom (reps.js, .work/archive/lattice-design.md §5 Slice 2 precedent) —
     // same computation, now through the projection idiom later slices reuse.
     const recvArrTyped = typeof arr === 'string' && isDisjointFrom(arr, NOT_ARRAY_OR_TYPED)
-    // A provably-NUMBER key can never be a string key, so the `__is_str_key`
-    // dispatch is statically dead — its numeric arm is what runs. Fall through
+    // A present Number skips the boxed-key dispatch; its numeric arm is what runs. Fall through
     // to the direct ptr_type==STRING ? __str_idx : __typed_idx form below, which
     // indexes with the i32 `vi` and skips the per-element f64 round-trip + call.
     // Mirrors the `&& !keyIsNum` guard in the known-array/typed branches above.
-    if (useRuntimeKeyDispatch && keyType !== VAL.NUMBER)
+    if (useRuntimeKeyDispatch && !numericKey)
       return emitDynamicKeyDispatch(ptrExpr, keyExpr => {
         const keyI32 = keyIndex(typed(keyExpr, 'f64'))
         // recvArrTyped: the receiver-CLASS proof above rules out OBJECT/HASH/
@@ -1348,7 +1324,7 @@ export default (ctx) => {
         // take its other arm — collapse straight to the bare __typed_idx call.
         if (recvArrTyped) return ['call', `$${runtimeElemRead}`, ['i64.reinterpret_f64', ptrExpr], keyI32]
         // Receiver AND key kind are both statically unproven here (the runtime
-        // is_str_key dispatch above already ruled out string/atom — this arm is
+        // boxed-key dispatch above already ruled out boxes — this arm is
         // the "real number, unknown receiver" case). ARRAY/TYPED keep the lean
         // ctor-aware element read (__typed_idx); an OBJECT/HASH/CLOSURE receiver
         // with a numeric-looking key (`o={}; o['1']=9; o[numArr[j]]`) instead
