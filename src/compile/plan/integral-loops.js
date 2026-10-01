@@ -46,6 +46,7 @@
  * @module compile/plan/integral-loops
  */
 import { ctx } from '../../ctx.js'
+import { frameNode } from '../../function.js'
 import { includeModule } from '../../autoload.js'
 import { T, MUTATE_OPS, TYPEOF, numberGuard, some, walkAst, extractParams, collectParamName, isReassigned, callArgs } from '../../ast.js'
 import { freshId } from '../../ir.js'
@@ -236,10 +237,11 @@ const presentNames = (loop, writes, kindOf, outerOk) => {
  *  (`params`, the names it binds; `view`, the summary's scope for it; `func`,
  *  the function whose calls bind them, null for a closure): whether any was
  *  rewritten. A closure inside the body is a body of its own. */
-const versionBody = (body, params, view, func, programFacts) => {
-  // what a closure of the body names, it reads or writes where the copy cannot see
+const versionBody = (body, params, view, func, programFacts, frame = func ? frameNode(func) : body) => {
+  // A closure created by a default or the body can read or write where the
+  // copy cannot see. Both belong to this function's capture census.
   const captured = new Set()
-  walkAst(body, { enter: (n) => {
+  walkAst(frame, { enter: (n) => {
     if (n[0] !== '=>') return
     walkAst(n, { enter: (m) => { for (let i = 1; i < m.length; i++) if (typeof m[i] === 'string') captured.add(m[i]) } })
     return false
@@ -424,7 +426,7 @@ export const versionIntegralLoops = (programFacts) => {
       if (n[0] !== '=>' || !Array.isArray(n[2]) || n[2][0] !== '{}') return
       const params = new Set()
       for (const p of extractParams(n[1])) collectParamName(p, params)
-      if (versionBody(n[2], params, ctx.summary?.at(n[1]), null, programFacts)) rewrote = true
+      if (versionBody(n[2], params, ctx.summary?.at(n[1]), null, programFacts, [';', n[1], n[2]])) rewrote = true
     } })
     // rewritten in place: the facts cached for the body describe what it was
     if (rewrote) { invalidateProgramFactsCache(func.body); invalidateBodies([func.body]); changed = true }

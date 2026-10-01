@@ -44,6 +44,23 @@ test('param defaults: captured parameter cells exist before their default closur
   }
 })
 
+test('param defaults: loop copies include captures from closure parameter heads', () => {
+  const body = `let sum=0,x=0;while(x<w){
+    let k=-r;while(k<=r){let xi=x+k;if(xi<0)xi=0;else if(xi>=w)xi=w-1;sum+=xi;k++}
+    change();x++}return [sum,x,w]`
+  const cases = [
+    `export const value=(w,r,change=()=>{w--})=>{${body}}`,
+    `export function value(a,b){const run=(w,r,change=()=>{w--})=>{${body}};return run(a,b)}`,
+    `function run(w,r,change=()=>{w--}){${body}};export function value(a,b){return run(a,b)}`,
+  ]
+  for (const src of cases) for (const level of levels(0, 1, 2, 3, 'size')) {
+    const got = jz(src, { optimize: { level, sourceInline: false } }).exports.value
+    const ref = oracle(src).value
+    for (const input of [[6,1],[6,1],[0,1],[1,0],[3,0],[6,1]])
+      is(got(...input), ref(...input), `O${level}, ${input}: ${src.slice(0,50)}`)
+  }
+})
+
 test('param defaults: retained captures survive repeated, changed and throwing initialization', () => {
   const src = `let held=()=>-1;
     function fail(){throw 9}
