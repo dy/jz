@@ -2950,6 +2950,9 @@ Planning and pre-rewrite analysis request function effects without per-loop
 rewind proofs. The final census computes those proofs from the rewritten bodies,
 after variants exist; no earlier consumer reads them. `test/frame-effects.js`
 compares both modes' function effects and retains the final loop proof.
+Private census lookup tables lease the AST scratch pools and release them in
+`finally`; published effects own their maps and sets. Nested walks, query errors,
+and repeated compilations must not alter previously returned facts.
 A store into a fresh local aggregate, a binding
 declared in the body whose every write is a literal or a `new`, is a store into
 fresh memory. A nested function's writes count wherever it is made, a

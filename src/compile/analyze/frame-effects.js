@@ -117,7 +117,7 @@
  *
  * @module compile/analyze/frame-effects
  */
-import { ASSIGN_OPS, ACCESSOR_GET, ACCESSOR_SET, RELATIONAL_OPS, isFunctionNode, extractParams } from '../../ast.js'
+import { ASSIGN_OPS, ACCESSOR_GET, ACCESSOR_SET, RELATIONAL_OPS, isFunctionNode, extractParams, takeScratchMap, releaseScratchMap, takeScratchSet, releaseScratchSet } from '../../ast.js'
 import { K, tagOf, hasTag, tagsOf, valOf, core, NUMBER_OPS } from '../../summary/kind.js'
 import { TO_PRIMITIVE, runsAccessor, runsConversion, primitiveKind, primitiveElements, mayBeTyped } from '../../evaluation-effects.js'
 export { runsAccessor, runsConversion } from '../../evaluation-effects.js'
@@ -432,6 +432,10 @@ const argList = (args) => args == null ? [] : isArr(args) && args[0] === ',' ? a
  * and callbackArg run synchronously and for local arrows called from this scope.
  */
 function census(view, roots, declRoots, params, typedParams = NO_NAMES, conditional = false, scratch = false) {
+  // These tables belong only to this walk; published facts own their storage.
+  const decl = takeScratchMap(), arrows = takeScratchMap(), reads = takeScratchMap()
+  const assigned = takeScratchSet(), scanned = takeScratchSet(), writtenNested = takeScratchSet(), nestedDecl = takeScratchSet()
+  try {
   // A parameter the export boundary types (narrow/param-abi.js `boundaryTyped`)
   // is a typed array the summary, built before the narrowing, still holds as
   // any value: element stores into it are numbers into fixed storage.
@@ -485,13 +489,9 @@ function census(view, roots, declRoots, params, typedParams = NO_NAMES, conditio
   // 1. Fresh locals: declared here, every write a fresh initializer, no write
   //    from any nested function. Arrows bound to a const are scanned inline
   //    when called.
-  const decl = new Map()      // name → 'fresh' | 'other'
-  const arrows = new Map()    // name → arrow node bound by a const, never reassigned
-  const reads = new Map()     // name → the member or element read its one write, its declaration, binds
-  const assigned = new Set()  // names an assignment of this scope writes
-  const scanned = new Set()   // arrows already walked as part of this scope (a recursive arrow calls itself)
-  const writtenNested = new Set()
-  const nestedDecl = new Set()   // names a nested function declares or binds: its own locals
+  // `decl`: fresh/other origin; `arrows`: constant callbacks; `reads`: the
+  // member read bound by one declaration. The sets track writes, visited
+  // callbacks, writes from nested functions and their local declarations.
   // `declared`: a let/const/var of this scope. A write to a name the scope does
   // not declare is a write to an enclosing binding and must not enter `decl`,
   // or the effect walk would take it for a local.
@@ -953,6 +953,10 @@ function census(view, roots, declRoots, params, typedParams = NO_NAMES, conditio
   }
   for (const r of roots) walkExpr(r)
   return out
+  } finally {
+    releaseScratchSet(nestedDecl); releaseScratchSet(writtenNested); releaseScratchSet(scanned); releaseScratchSet(assigned)
+    releaseScratchMap(reads); releaseScratchMap(arrows); releaseScratchMap(decl)
+  }
 }
 
 /** Every loop of a body, outermost first, with the nodes its iteration runs.

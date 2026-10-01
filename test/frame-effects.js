@@ -9,7 +9,7 @@
 // heap: on every call (`escape: …`), or on a call that runs an escape
 // (`kept on a call that runs an escape: …`, the first the frame may reach).
 import test from 'tst'
-import { is, ok } from 'tst/assert.js'
+import { is, ok, throws } from 'tst/assert.js'
 import jz, { compile, _compileInProcess } from '../index.js'
 import { resetTape, fromWat, toWat } from '../src/ir/tape.js'
 import { arenaRewind } from '../src/optimize/arena-rewind.js'
@@ -29,6 +29,43 @@ const whyNot = (src, opts = {}) => { const why = []; compile(src, { ...TAPE, ...
 const growth = (memory, call, calls = 200, settle = 1) => { for (let i = 0; i < settle; i++) call(); const used = memory.used; for (let i = 0; i < calls; i++) call(); return memory.used - used }
 // Each `(loop …)` span of a body, by its parentheses.
 const loopSpans = (wat) => [...wat.matchAll(/\(loop/g)].map(({ index }) => { let d = 0, j = index; do { d += wat[j] === '(' ? 1 : wat[j] === ')' ? -1 : 0; j++ } while (d > 0); return wat.slice(index, j) })
+
+test('frame effects: census scratch survives nested walks, errors and changed programs', () => {
+  if (onKernel()) return
+  const src = `let kept;
+    export function f(n) { const a=[]; const add=()=>a.push(n); add(); kept=a; return a[0] }
+    export function clean(n) { let s=0; for(let i=0;i<n;i++){const a=new Float64Array(i);s+=a.length} return s }`
+  _compileInProcess(src, { optimize: { level: 2, sourceInline: false } })
+  const funcs = ctx.funcs.list, summary = ctx.summary
+  const facts = result => [...result].map(([name, f]) => [name, f.writesOuter, f.arenaUnsafe,
+    f.keeps, f.flagged, f.unsited, f.allocates, f.callsUnknown, [...f.callees], [...f.sites],
+    [...f.loops], [...f.freshObjects ?? []]])
+  const retained = transitiveFrameEffects(funcs), expected = facts(retained)
+  let nested = false
+  ctx.summary = { ...summary, at(scope) {
+    const view = summary.at(scope)
+    return { ...view, kindOfExpr(n) {
+      if (!nested) {
+        nested = true
+        is(facts(transitiveFrameEffects(funcs)), expected, 'nested census has independent scratch')
+      }
+      return view.kindOfExpr(n)
+    } }
+  } }
+  try { is(facts(transitiveFrameEffects(funcs)), expected, 'outer census resumes after the nested walk') }
+  finally { ctx.summary = summary }
+  ok(nested, 'the query reentered an active census')
+  ctx.summary = { ...summary, at() { return { kindOfExpr() { throw Error('census probe') } } } }
+  try { throws(() => transitiveFrameEffects(funcs), /census probe/, 'query errors release census scratch') }
+  finally { ctx.summary = summary }
+  is(facts(transitiveFrameEffects(funcs)), expected, 'A repeats after a failed census')
+  _compileInProcess('export const f=n=>n+1')
+  transitiveFrameEffects(ctx.funcs.list)
+  is(facts(retained), expected, 'B preserves published facts from A')
+  is(transitiveFrameEffects([]).size, 0, 'empty function list has no effects')
+  _compileInProcess(src, { optimize: { level: 2, sourceInline: false } })
+  is(facts(transitiveFrameEffects(ctx.funcs.list)), expected, 'A repeats after B and an empty census')
+})
 
 test('frame effects: planning omits loop proofs without changing function effects', () => {
   if (onKernel()) return
@@ -564,7 +601,7 @@ test('frame effects: a builtin called by name is listed by what it keeps', () =>
     'break', 'continue', 'this', 'typeof', 'str', 'strcat', 'delete', 'in', 'navigator.hardwareConcurrency'])
   // the host keeps the callback it schedules and what a request or a file is handed; the rest the emitter alone calls
   const KEEPS = new Set(['setTimeout', 'setInterval', 'clearTimeout', 'clearInterval', 'requestAnimationFrame', 'cancelAnimationFrame', 'fetch', 'fs.read', 'fs.write',
-    '__raw_prop', '__raw_local', '__iter_arr_ctor', '__typed_len', '__park_begin', '__park_finish', '__park_rewind',
+    '__raw_prop', '__data_prop', '__raw_local', '__iter_arr_ctor', '__typed_len', '__park_begin', '__park_finish', '__park_rewind',
     ...['u8', 'u32', 'f64', 'i64', 'str'].flatMap(t => ['__park_write_' + t, '__park_read_' + t])])
   const names = Object.keys(ctx.core.emit).filter(k => !k.includes(':') && /^[A-Za-z_$]/.test(k) && !SYNTAX.has(k))
   ok(names.length > 200, `the runtime's names are read: ${names.length}`)
