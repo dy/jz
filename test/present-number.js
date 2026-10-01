@@ -6,8 +6,8 @@
 // header, and a subarray sorted in place reads no length through the runtime. Every
 // value is a differential against the host.
 import test from 'tst'
-import { is } from 'tst/assert.js'
-import { agree, wat } from './util.js'
+import { is, ok } from 'tst/assert.js'
+import { agree, wat, funcWat } from './util.js'
 import { belowOpt } from './_matrix.js'
 
 // The kernel is the module's only user code: the counts are over the module. The
@@ -70,10 +70,15 @@ test('present-number: a subarray sorted in place reads its bounds from the heade
   return s
 }`
   shapes(src, w => {
-    is(calls(w, '__len'), 0, 'no runtime length read')
-    is(calls(w, '__length.value'), 0, 'no runtime length dispatch')
+    // Generic ToNumber support for k includes array/string conversion helpers,
+    // whose unrelated reads need runtime lengths. Inspect the typed operation.
+    const f = funcWat(w, 'f$exp') || funcWat(w, 'f')
+    ok(f.length > 0, 'inspect the function containing the typed sort')
+    is(calls(f, '__len'), 0, 'the typed sort reads length from its header')
+    is(calls(f, '__length.value'), 0, 'the typed sort has no runtime length dispatch')
   })
-  for (const [n, k] of [[0, 0], [1, 1], [10, 0], [10, 4], [10, 10], [40, 30], [40, 60]]) agree(src, 'f', [n, k])
+  for (const [n, k] of [[0, 0], [1, 1], [10, 0], [10, 4], [10, 10], [40, 30], [40, 60], [10, -1], [10, 2.5], [10, NaN],
+    [10, Infinity], [10, -Infinity], [10, '4'], [10, [4]], [10, null], [10, undefined]]) agree(src, 'f', [n, k])
 })
 
 // A number that may be missing (an element of a typed binding that is a box)
