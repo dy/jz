@@ -135,8 +135,6 @@ export function optimizeFunc(fn, cfg, globalTypes, reachableWrites) {
     // iteration in hot dot/sum-style reduction loops.
     foldV128Memargs(fn)
   }
-  // After the lift: scalar accumulator copies otherwise hide the original loop scaffold.
-  if (cfg && cfg.wideAccumulator === true) wideAccumulator(fn)
   // After the lift: the vectorizer reads a conditional update in its branch form.
   if (cfg && cfg.guardedUpdate === true) foldGuardedUpdates(fn)
   // After the unswitch and the lift: the accesses they left to the helpers.
@@ -168,6 +166,9 @@ export function optimizeFunc(fn, cfg, globalTypes, reachableWrites) {
     // Over the integers: the guards of the copies, where one test decides many.
     if (copies && cfg.combineGuards !== false) combineGuards(fn)
   }
+  // Stronger signed-word proofs run first. Wide fallback copies otherwise
+  // hide both the vector loop scaffold and checked-access i32 certificates.
+  if (cfg && cfg.wideAccumulator === true) wideAccumulator(fn)
   if (!cfg || cfg.narrowFloat32 !== false) narrowFloat32(fn)
   // Helper calls are the form every pass above reasons about: LICM hoists an invariant
   // `$__ptr_offset`, unswitch and devirt recognize it. Its inline fast path is lowering

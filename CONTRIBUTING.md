@@ -4096,15 +4096,16 @@ still allocate. It does not certify host marshalling or wall-clock latency.
 Levels 2 and above carry integer accumulators in guarded i64 loops, whether or
 not a ToInt32 read is present: the carried update alone shortens the chain. It restores f64 on exit or before leaving the exact-integer
 range. Exception handlers, negative-zero constants, numeric local aliases and
-live guard temporaries decline the transformation. The default and size tiers
-retain one loop; their structural size/work budgets are unchanged.
+live guard temporaries decline the transformation. The size tier retains one
+loop; its structural size/work budgets are unchanged.
 An unrelated local read as a float declines only its own integer carrier;
 the remaining carriers are rechecked from the original loop. Structural tests
 verify each widened loop never reads its original float accumulator, allowing
 independent float counters to keep their comparisons and conversions.
-Accumulator versioning runs after SIMD lowering: its bailout scaffold must not
-hide a Number loop from lane recognition. Scalar tails and loops that remain
-scalar still receive the same guarded integer optimization.
+Accumulator versioning runs after SIMD lowering and signed-word narrowing: its
+bailout scaffold must not hide a Number loop or a stronger checked-access i32
+proof. Scalar tails and remaining wide carriers still receive the same guarded
+integer optimization.
 
 Returned closures decoded by `interop.mem.read` hold their environment just as
 a typed-array view holds its backing storage. Mark the handle before constructing
