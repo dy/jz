@@ -35,6 +35,7 @@ import { plannedTypedStorageInfo, plannedTypedPayloadInfo } from './typed-storag
 import { typedIdxProven, inBoundsArrIdx, wholeKey } from '../type.js'
 import { trySlotUpdate } from './slot-update.js'
 import { durableArrSnapNode, durableObjSnapNode, hasDurableReset } from '../../module/collection/durable.js'
+import { demandHostReceiver } from './func-exports.js'
 
 // Boxed-bool-aware store value: booleans persist as their tagged atom. Now
 // THE chokepoint, promoted to bridge.js (research.md §Carrier invariant) — every
@@ -173,6 +174,7 @@ function ensureDynSetAllowed(arr) {
  *  is also step 7b's HASH fallback) that applies it uniformly. */
 function dynSetCall(arr, keyExpr, valueExpr, receiver = null) {
   ensureDynSetAllowed(arr)
+  if (valTypeOf(arr) == null) demandHostReceiver()
   const setter = valTypeOf(arr) === VAL.HASH ? '__hash_set_value' : '__dyn_set'
   inc(setter)
   // A computed key can name `length` or an index and relocate an array.
@@ -220,6 +222,7 @@ function dispatchByKeyKind(arr, keyExpr, valueExpr, numericIR) {
  * EXTERNAL branches; keeping that fork out of a hot loop also gives the
  * Float64 unswitch one canonical call shape to eliminate. */
 function emitPolymorphicElementStore(arrExpr, index, valueExpr, valueDomain, persist, mayBeObject) {
+  if (mayBeObject) demandHostReceiver()
   ctx.module.include('typedarray')
   setLinkDemand('typedarray')
   setLinkDemand('typedRuntime')

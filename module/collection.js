@@ -344,7 +344,7 @@ export default (ctx) => {
     ],
     __dyn_get_or: ['__dyn_get'],
     __dyn_set: () => [...(ctx.schema.regexSids.size ? ['__regex_prop', '__throw_regex_readonly'] : []), '__dyn_set_own', '__is_nullish', '__key_eq', '__is_str_key', '__to_key', '__arr_set_idx_ptr', '__arr_set_length', '__str_arr_idx', ...(ctx.linkDemand.typedProperties ? ['__typed_key_idx', '__typed_set_idx_tagged'] : [])],
-    __dyn_set_own: () => [...viewDeps('__view_set'), ...(hasDurableReset() ? ['__durable_obj_snap', '__is_eph_bits'] : []), '__schema_slot', '__hash_new', '__hash_new_small', '__ihash_get_local', '__ihash_set_local', '__hash_set_local', '__ptr_offset', '__ptr_offset_fwd', '__is_nullish', '__key_eq', '__ptr_aux', '__obj_props'],
+    __dyn_set_own: () => [...viewDeps('__view_set'), ...(ctx.linkDemand.external ? ['__ext_set'] : []), ...(hasDurableReset() ? ['__durable_obj_snap', '__is_eph_bits'] : []), '__schema_slot', '__hash_new', '__hash_new_small', '__ihash_get_local', '__ihash_set_local', '__hash_set_local', '__ptr_offset', '__ptr_offset_fwd', '__is_nullish', '__key_eq', '__ptr_aux', '__obj_props'],
     __obj_props: ['__ihash_get_local', '__is_nullish', '__ptr_type'],
     __dyn_move: ['__ihash_get_local', '__ihash_set_local', '__is_nullish'],
     __hash_del_local: () => ['__str_hash', '__key_eq', '__ptr_type', ...relogDeps()],
@@ -2274,6 +2274,10 @@ export default (ctx) => {
     (local $off i32) (local $type i32) ${buildObjectSchemaSetLocals()}
     (local.set $off (i32.wrap_i64 (i64.and (local.get $obj) (i64.const ${LAYOUT.OFFSET_MASK}))))
     (local.set $type (i32.wrap_i64 (i64.and (i64.shr_u (local.get $obj) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK}))))
+    ${ctx.linkDemand.external ? `(if (i32.eq (local.get $type) (i32.const ${PTR.EXTERNAL}))
+      (then
+        (drop (call $__ext_set (local.get $obj) (local.get $key) (local.get $val)))
+        (return (local.get $val))))` : ''}
     ;; CLOSURE with no env (offset 0): key __dyn_props on the function table index — see __dyn_get_t.
     (if (i32.and (i32.eq (local.get $type) (i32.const ${PTR.CLOSURE})) (i32.eqz (local.get $off)))
       (then (local.set $off (i32.sub (i32.const -1)

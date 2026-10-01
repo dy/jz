@@ -187,6 +187,96 @@ test('interop: property dispatch converts once regardless of declaration order',
   }
 })
 
+test('interop: computed stores reach the host receiver for string and Symbol keys', () => {
+  if (onWasi() || onKernel()) return
+  const src = `import {get} from 'host';
+    export function f(key,value){const o=get();const assigned=o[key]=value;
+      return [assigned,o[key],key in o,delete o[key],key in o]}
+    export function own(value){const o=get(),key=Symbol('key');o[key]=value;
+      return [key,o[key],key in o,delete o[key],key in o]}`
+  for (const optimize of levels(0,1,2,3,'size')) {
+    let current, watched
+    const events = [], keys = ['field','',0,-1,1.5,4294967296,Symbol.for('external store'),Symbol('same'),Symbol('same')]
+    const receiver = () => new Proxy(new class {}, {
+      get(o,k){if(k===watched)events.push('g');return Reflect.get(o,k)},
+      set(o,k,v){events.push('s');return Reflect.set(o,k,typeof v==='number'?v+1:v)},
+      has(o,k){events.push('h');return Reflect.has(o,k)},
+      deleteProperty(o,k){events.push('d');return Reflect.deleteProperty(o,k)}
+    })
+    const a=receiver(),b=receiver()
+    const got=interop.instantiate(compile(src,{optimize,imports:{host:{get:{params:0}}}}),
+      {imports:{host:{get:()=>current}}}).exports
+    for(const object of [a,a,b,a]) for(const key of keys) for(const value of [7,'text',null,undefined,Symbol.for('value')]) {
+      current=object;watched=typeof key==='symbol'?key:String(key);events.length=0
+      is(got.f(key,value),[value,typeof value==='number'?value+1:value,true,true,false],`O${optimize}: host result ${String(key)}`)
+      is(events.join(''),'sghdh','one host set, read, membership, delete, membership')
+    }
+    const symbols=[]
+    current=a
+    for(let i=0;i<3;i++) {
+      events.length=0
+      const result=got.own(i)
+      is(typeof result[0],'symbol','a compiled Symbol remains a host property key')
+      is(result.slice(1),[i+1,true,true,false],'compiled Symbol writes share the host property')
+      ok(!symbols.includes(result[0]),'each call keeps its fresh Symbol identity')
+      symbols.push(result[0])
+    }
+  }
+})
+
+test('interop: computed host stores preserve reference, key and RHS effects', () => {
+  if (onWasi() || onKernel()) return
+  const src=`import {get,key,value} from 'host';export function f(){const o=get();return o[key()]=value()}`
+  for(const optimize of levels(0,1,2,3,'size')) {
+    let state
+    const got=interop.instantiate(compile(src,{optimize,imports:{host:{get:{params:0},key:{params:0},value:{params:0}}}}),
+      {imports:{host:{get:()=>state.get(),key:()=>state.key(),value:()=>state.value()}}}).exports
+    const run=(call,mode,symbol)=>{
+      const trace=[],before={},after={},property=symbol?Symbol('key'):'field'
+      let active
+      const target=new Proxy(new class {},{set(o,k,v){trace.push('s');
+        if(mode===5)throw new RangeError('setter');if(mode===6)return false;before[k]=v;return true}})
+      active=target
+      state={
+        get(){trace.push('r');if(mode===1)throw new RangeError('receiver');return mode===7?null:active},
+        key(){trace.push('q');if(mode===2)throw new RangeError('key expression');
+          return{[Symbol.toPrimitive](hint){trace.push(hint);if(mode===4)throw new RangeError('key conversion');active=after;return property}}},
+        value(){trace.push('v');if(mode===3)throw new RangeError('RHS');active=after;return 19}
+      }
+      let answer
+      try{answer=['value',call()]}catch(e){answer=['error',e.name,e.message]}
+      return [answer,trace,before[property],Reflect.ownKeys(after).length]
+    }
+    const plain=()=>{const o=state.get();return o[state.key()]=state.value()}
+    for(const mode of [0,0,1,2,3,4,5,6,7,0])for(const symbol of [false,true]) {
+      const actual=run(()=>got.f(),mode,symbol),expected=run(plain,mode,symbol)
+      // Native engines choose their own TypeError text for rejected writes.
+      if(actual[0][0]==='error')actual[0].length=2
+      if(expected[0][0]==='error')expected[0].length=2
+      is(actual,expected,`O${optimize}: order/error ${mode}, Symbol ${symbol}`)
+    }
+  }
+})
+
+test('interop: write-only host stores link their own external dispatch', () => {
+  if (onWasi() || onKernel()) return
+  for(const optimize of levels(0,1,2,3,'size'))for(const target of ['o[k]','o[0]','o.field']) {
+    const src=`import {get} from 'host';export function f(k,v){const o=get();return ${target}=v}`
+    let calls=0
+    const object=new Proxy(new class {},{set(o,k,v){calls++;return Reflect.set(o,k,v)}})
+    const got=interop.instantiate(compile(src,{optimize,imports:{host:{get:{params:0}}}}),
+      {imports:{host:{get:()=>object}}}).exports
+    for(const key of ['field','',-1,1.5,4294967296,Symbol('key')])for(const value of [7,undefined]) {
+      const actualKey=target==='o[0]'?'0':target==='o.field'?'field':key
+      const before=calls
+      is(got.f(target==='o[k]'?key:0,value),value,`O${optimize}: assignment returns RHS`)
+      is(calls,before+1,`${target}: host setter invoked once without a read forcing host demand`)
+      ok(Object.hasOwn(object,actualKey),'the host has the stored property even for undefined')
+      is(object[actualKey],value,'the host holds the assigned value')
+    }
+  }
+})
+
 test('interop: computed host reads preserve empty keys, errors and optional receivers', () => {
   if (onWasi() || onKernel()) return
   const src = `export function read(o,k){return o[k]}

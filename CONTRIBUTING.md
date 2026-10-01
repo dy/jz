@@ -1298,6 +1298,10 @@ by computed and chained reads, cached in the session fact store for imports and
 public parameters, and observes host globals as their producers are emitted.
 Thus a helper emitted before its host-valued caller keeps the needed fallback,
 while a closed program's dispatcher collapses to its internal body.
+Computed stores likewise request host dispatch from the receiver, even in a
+write-only module. After key conversion, the shared property writer sends an
+external receiver to its host setter and returns the original RHS. It never
+substitutes an internal property table for the host object's storage.
 
 Named functions stored in internal objects or bindings retain their identities
 in the summary's existing closure sets. Calls through those values bind the same
