@@ -349,8 +349,9 @@ export default (ctx) => {
     __dyn_move: ['__ihash_get_local', '__ihash_set_local', '__is_nullish'],
     __hash_del_local: () => ['__str_hash', '__str_eq', '__ptr_type', ...relogDeps()],
     // a deleted slot is gone for the host too: it reads the mask through __obj_deleted
-    __dyn_del: () => [...viewDeps('__view_del'), '__schema_slot', '__hash_del_local', '__ihash_get_local', '__is_nullish', '__is_str_key', '__to_str', '__str_arr_idx', '__ptr_aux', '__str_eq', '__obj_deleted'],
+    __dyn_del: () => [...viewDeps('__view_del'), '__schema_slot', '__hash_del_local', '__ihash_get_local', '__is_nullish', '__is_str_key', '__to_str', '__str_arr_idx', '__str_u32_idx', '__len', '__str_length', '__ptr_aux', '__str_eq', '__obj_deleted'],
     __str_arr_idx: ['__str_length'],
+    __str_u32_idx: ['__str_length'],
     __typed_str_idx: ['__str_length'],
     __typed_key_idx: ['__typed_str_idx', '__str_eq', '__to_num', '__ftoa', '__str_length', '__char_at'],
     __coll_clear: ['__ptr_type', '__ptr_offset', '__ptr_offset_fwd'],
@@ -1702,6 +1703,7 @@ export default (ctx) => {
   // __char_at returns the true byte (0 only past the REAL length, which
   // $__str_length bounds first), so embedded-NUL keys can't false-match.
   ctx.core.stdlib['__str_arr_idx'] = stringIndexWat('__str_arr_idx', 2147483646)
+  ctx.core.stdlib['__str_u32_idx'] = stringIndexWat('__str_u32_idx', 4294967294)
   ctx.core.stdlib['__typed_str_idx'] = stringIndexWat('__typed_str_idx', 2147483647)
 
   // A typed-array key is an element index, an invalid canonical numeric key
@@ -2422,8 +2424,9 @@ export default (ctx) => {
       (then (call $__hash_hide (call $__ihash_get_local (i64.reinterpret_f64 (global.get $__dyn_props))
         (i64.reinterpret_f64 (f64.convert_i32_s (local.get $off)))) (local.get $key)))))`
 
-  // Tag-dispatched delete (mirrors __dyn_set's dispatch). Returns 1 if a slot was
-  // found+tombstoned, 0 otherwise. Header types (ARRAY non-shifted, OBJECT heap-only,
+  // Tag-dispatched delete (mirrors __dyn_set's dispatch). Successful deletion
+  // returns 1, including absent properties; nonconfigurable own properties throw.
+  // Header types (ARRAY non-shifted, OBJECT heap-only,
   // TYPED/HASH/SET/MAP) carry propsPtr at off-16; others fall back to the global
   // __dyn_props hash keyed by offset.
   // Schema-aware delete arm: when the receiver is an OBJECT with a known schema and
@@ -2450,20 +2453,48 @@ export default (ctx) => {
             (global.set $__enumc_epoch (i32.add (global.get $__enumc_epoch) (i32.const 1)))
             (local.set $hit (i32.const 1))))))` : ''}))` : ''
 
+  const deletePropertyErrorWat = () => `
+    (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${errorCodeLiteral(ERR.DELETE_PROPERTY)})))
+    (throw $__jz_err (f64.const ${errorCodeLiteral(ERR.DELETE_PROPERTY)}))`
+
   ctx.core.stdlib['__dyn_del'] = () => `(func $__dyn_del (param $obj i64) (param $key i64) (result i32)
     (local $root i64) (local $props i64) (local $oldProps i64)
     (local $off i32) (local $type i32) (local $hit i32) (local $delidx i32) ${buildObjectSchemaSetLocals()}
+    ${requireReceiverWat('(local.get $obj)')}
     ;; ToPropertyKey — see __dyn_get_t. Stored keys are always strings.
     (if (i32.eqz (call $__is_str_key (local.get $key)))
       (then (local.set $key (call $__to_str (local.get $key)))))
     (local.set $off (i32.wrap_i64 (i64.and (local.get $obj) (i64.const ${LAYOUT.OFFSET_MASK}))))
     (local.set $type (i32.wrap_i64 (i64.and (i64.shr_u (local.get $obj) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK}))))
+    ;; Numbers have no properties to delete; their raw bits are not pointer tags.
+    (if (f64.eq (f64.reinterpret_i64 (local.get $obj)) (f64.reinterpret_i64 (local.get $obj)))
+      (then (return (i32.const 1))))
+    (if (i32.or (i32.eq (local.get $type) (i32.const ${PTR.ATOM}))
+                (i32.eq (local.get $type) (i32.const ${PTR.BIGINT})))
+      (then (return (i32.const 1))))
+    ;; Built-in nonconfigurable own properties. Compare unsigned indices against
+    ;; unsigned lengths: a typed byte array need not fit the signed i32 domain.
+    (if (i32.or (i32.eq (local.get $type) (i32.const ${PTR.STRING}))
+                (i32.eq (local.get $type) (i32.const ${PTR.ARRAY})))
+      (then
+        (if (call $__str_eq (local.get $key) (i64.const ${LENGTH_SSO_I64}))
+          (then ${deletePropertyErrorWat()}))))
+    (if (i32.eq (local.get $type) (i32.const ${PTR.STRING}))
+      (then
+        (if (i32.lt_u (call $__str_u32_idx (local.get $key)) (call $__str_length (local.get $obj)))
+          (then ${deletePropertyErrorWat()}))
+        (return (i32.const 1))))
+    (if (i32.and (i32.eq (local.get $type) (i32.const ${PTR.TYPED}))
+                (i32.eqz (i32.and (call $__ptr_aux (local.get $obj)) (i32.const ${DATA_VIEW_FLAG}))))
+      (then
+        (if (i32.lt_u (call $__str_u32_idx (local.get $key)) (call $__len (local.get $obj)))
+          (then ${deletePropertyErrorWat()}))))
     ;; HASH receiver is ITS OWN storage (dictionary-mode {} — __dyn_set/__dyn_get
     ;; write/read its entry table directly): delete the entry there. Every arm
     ;; below only probes the props SIDECAR, which a dictionary doesn't use for
     ;; its own keys — without this arm, delete d[k] silently no-ops.
     (if (i32.eq (local.get $type) (i32.const ${PTR.HASH}))
-      (then (return (call $__hash_del_local (local.get $obj) (local.get $key)))))
+      (then (drop (call $__hash_del_local (local.get $obj) (local.get $key))) (return (i32.const 1))))
     ${buildObjectSchemaDelArm()}
     ;; CLOSURE with no env: rekey to function table index (parallels __dyn_set / __dyn_get_t_h).
     (if (i32.and (i32.eq (local.get $type) (i32.const ${PTR.CLOSURE})) (i32.eqz (local.get $off)))
@@ -2500,7 +2531,7 @@ export default (ctx) => {
     ;; DURABLE-RECEIVER POLICY (see __dyn_get_t_h's declaration comment for the
     ;; full rationale): a durable receiver's key can live in EITHER the global
     ;; table (runtime-written) or its off-16 sidecar (init-time-written) — try
-    ;; BOTH and OR the hit bits, not just the first that resolves. This is the
+    ;; BOTH, not just the first that resolves. This is the
     ;; delete-specific twist: a key set at init then reassigned at runtime
     ;; exists in BOTH places (global shadows it for reads), so deleting only
     ;; the global copy would leave the stale sidecar entry to resurface on the
@@ -2516,15 +2547,15 @@ export default (ctx) => {
               (then
                 (local.set $props (call $__ihash_get_local (local.get $root) (i64.reinterpret_f64 (f64.convert_i32_s (local.get $off)))))
                 (if (i32.eqz (call $__is_nullish (local.get $props)))
-                  (then (local.set $hit (i32.or (local.get $hit) (call $__hash_del_local (local.get $props) (local.get $key))))))))))
+                  (then (drop (call $__hash_del_local (local.get $props) (local.get $key)))))))))
         (if (i32.and ${hasPropsSidecarWat('(local.get $type)', '(local.get $obj)')} (i32.ge_u (local.get $off) (i32.const 16)))
           (then
             (local.set $oldProps (i64.and (i64.load (i32.sub (local.get $off) (i32.const 16))) (i64.const -2)))
             (if (i32.eq
                   (i32.wrap_i64 (i64.and (i64.shr_u (local.get $oldProps) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK})))
                   (i32.const ${PTR.HASH}))
-              (then (local.set $hit (i32.or (local.get $hit) (call $__hash_del_local (local.get $oldProps) (local.get $key))))))))
-        (return (local.get $hit))))
+              (then (drop (call $__hash_del_local (local.get $oldProps) (local.get $key)))))))
+        (return (i32.const 1))))
     ;; ARRAY landed propsPtr (HASH-tagged means real sidecar; else fall through
     ;; to global). Ephemeral only — durable receivers already returned above.
     (if (i32.and (i32.eq (local.get $type) (i32.const ${PTR.ARRAY}))
@@ -2535,14 +2566,14 @@ export default (ctx) => {
         (if (i32.eq
               (i32.wrap_i64 (i64.and (i64.shr_u (local.get $oldProps) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK})))
               (i32.const ${PTR.HASH}))
-          (then (return (i32.or (local.get $hit) (call $__hash_del_local (local.get $oldProps) (local.get $key))))))))
+          (then (drop (call $__hash_del_local (local.get $oldProps) (local.get $key))) (return (i32.const 1))))))
     ;; OBJECT heap: propsPtr directly at off-16 — ephemeral only.
     (if (i32.and (i32.eq (local.get $type) (i32.const ${PTR.OBJECT}))
                  (i32.ge_u (local.get $off) ${heapResetWat()}))
       (then
         (local.set $oldProps (i64.and (i64.load (i32.sub (local.get $off) (i32.const 16))) (i64.const -2)))
-        (if (i64.eqz (local.get $oldProps)) (then (return (local.get $hit))))
-        (return (i32.or (local.get $hit) (call $__hash_del_local (local.get $oldProps) (local.get $key))))))
+        (if (i64.eqz (local.get $oldProps)) (then (return (i32.const 1))))
+        (drop (call $__hash_del_local (local.get $oldProps) (local.get $key))) (return (i32.const 1))))
     ;; Other header types (TYPED/HASH/SET/MAP) — ephemeral only. TYPED only when
     ;; OWNED (aux&8==0) — see hasPropsSidecarWat's doc; a VIEW falls through to
     ;; the global-table fallback below instead.
@@ -2554,17 +2585,18 @@ export default (ctx) => {
                       (i32.eq (local.get $type) (i32.const ${PTR.MAP}))))))
       (then
         (local.set $oldProps (i64.and (i64.load (i32.sub (local.get $off) (i32.const 16))) (i64.const -2)))
-        (if (i64.eqz (local.get $oldProps)) (then (return (local.get $hit))))
-        (return (i32.or (local.get $hit) (call $__hash_del_local (local.get $oldProps) (local.get $key))))))
+        (if (i64.eqz (local.get $oldProps)) (then (return (i32.const 1))))
+        (drop (call $__hash_del_local (local.get $oldProps) (local.get $key))) (return (i32.const 1))))
     ;; Fallback: global __dyn_props keyed by offset.
     (local.set $root (i64.reinterpret_f64 (global.get $__dyn_props)))
-    (if (i64.eqz (local.get $root)) (then (return (local.get $hit))))
+    (if (i64.eqz (local.get $root)) (then (return (i32.const 1))))
     ;; Filter-proven absent: this offset was never inserted into __dyn_props,
     ;; so there's nothing to delete — skip the __ihash_get_local probe.
-    (if ${dynPropsFilterMissIR('(local.get $off)')} (then (return (local.get $hit))))
+    (if ${dynPropsFilterMissIR('(local.get $off)')} (then (return (i32.const 1))))
     (local.set $props (call $__ihash_get_local (local.get $root) (i64.reinterpret_f64 (f64.convert_i32_s (local.get $off)))))
-    (if (call $__is_nullish (local.get $props)) (then (return (local.get $hit))))
-    (i32.or (local.get $hit) (call $__hash_del_local (local.get $props) (local.get $key))))`
+    (if (call $__is_nullish (local.get $props)) (then (return (i32.const 1))))
+    (drop (call $__hash_del_local (local.get $props) (local.get $key)))
+    (i32.const 1))`
 
   // Called on EVERY array shift/grow once __dyn_set is included (module has any
   // dynamic-prop write) — almost always a miss (arrays with dyn props are rare).
@@ -2594,11 +2626,11 @@ export default (ctx) => {
 
   // === `delete obj[k]`: lift from prepare for computed-key removal ===
   // Static-key `delete obj.x` / `delete obj["x"]` is rejected in prepare (fixed schema);
-  // only the runtime-dispatched form reaches here. JS returns `true` on success — we
-  // surface the actual found/not-found bit as i32 (`true`/`false` ↔ 1/0 in jz NaN-box).
+  // only the runtime-dispatched form reaches here. Return true after deletion
+  // or a missing key; nonconfigurable own properties throw.
   ctx.core.emit['delete'] = (obj, key) => {
     inc('__dyn_del')
-    return typed(['call', '$__dyn_del', asI64(emit(obj)), asI64(emit(key))], 'i32')
+    return typed(['call', '$__dyn_del', asI64(storedValue(obj)), asI64(storedValue(key))], 'i32')
   }
 
   // === `in` operator: key in obj → HASH key existence check ===

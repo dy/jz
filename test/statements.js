@@ -1124,6 +1124,85 @@ test('delete: computed keys retain their bindings, conversion and catch effects'
   }
 })
 
+test('delete: successful and missing keys retain Boolean results and own storage', () => {
+  const src = `const held={x:1};const grown=[1];const alias=grown;
+    export function f(mode){'use strict';const key=mode?'missing':'x';
+      const o={x:1,y:2}, d={};d[key]=3;
+      const out=[delete o[key],delete o[key],typeof(delete o[key]),o.x,o.y,
+        delete d[key],delete d[key],Object.keys(d).length];
+      held[key]=4;out.push(delete held[key],delete held[key],held[key]);
+      grown.push(2,3,4,5,6,7,8,9);const index=mode?100:0;
+      out.push(delete alias[index],delete alias[index],index in grown,grown.length);
+      return out}`
+  for(const optimize of levels(0,1,2,3,'size')){
+    const got=jz(src,{optimize}).exports,want=oracle(src)
+    for(const mode of [0,0,1,0,1])is(got.f(mode),want.f(mode),`delete storage O${optimize}, ${mode}`)
+  }
+})
+
+test('delete: primitive and built-in own properties follow strict deletion rules', () => {
+  const src = `export function f(mode,key){'use strict';
+    const value=mode===0?null:mode===1?undefined:mode===2?NaN:mode===3?Infinity:
+      mode===4?-Infinity:mode===5?-0:mode===6?1.0000000000000002:mode===7?true:
+      mode===8?12n:mode===9?'':mode===10?'abc':mode===11?'A😀B':
+      mode===12?[4,5]:mode===13?new Uint8Array([4,5]):
+      mode===14?new Float64Array([4,5]):mode===15?new BigInt64Array([4n,5n]):
+      mode===16?new Uint8Array([1,4,5,8]).subarray(1,3):
+      mode===17?new Uint8Array(0):new DataView(new ArrayBuffer(8));
+    try {const result=delete value[key];return[result,typeof result]}
+    catch(e){return e.name}}`
+  const keys=[0,-0,1,2,3,-1,0.5,NaN,Infinity,2147483647,2147483648,4294967294,4294967295,
+    '0','-0','01','1.0','+0','1e0','length','missing','0\0']
+  for(const optimize of levels(0,1,2,3,'size')){
+    const got=jz(src,{optimize}).exports,want=oracle(src)
+    for(let mode=0;mode<19;mode++)for(const key of keys)
+      is(got.f(mode,key),want.f(mode,key),`delete exotic O${optimize}, ${mode}, ${JSON.stringify(key)}`)
+    for(const mode of [13,13,10,0,16,17,13])is(got.f(mode,0),want.f(mode,0),`delete reuse O${optimize}, ${mode}`)
+  }
+})
+
+test('delete: nullish bases precede key conversion and other keys convert once', () => {
+  const src = `export function f(mode){'use strict';let trace='',obj={x:1};const old=obj;
+    function recv(){trace+='r';return mode===0||mode===5?null:mode===1?undefined:mode===2?3:obj}
+    function key(){trace+='k';if(mode===5)throw 9;return {toString(){trace+='s';obj={x:9};if(mode===4)throw 7;return 'x'}}}
+    try{return [delete recv()[key()],trace,old.x,obj.x]}
+    catch(e){return [e===7||e===9?e:e.name,trace,old.x,obj.x]}}`
+  for(const optimize of levels(0,1,2,3,'size')){
+    const got=jz(src,{optimize}).exports,want=oracle(src)
+    for(const mode of [0,1,2,3,4,5,4,3,0,3])is(got.f(mode),want.f(mode),`delete key O${optimize}, ${mode}`)
+  }
+})
+
+test('delete: property keys preserve primitive identities before coercion', () => {
+  const sources=[
+    `export function f(){'use strict';const a={'true':4,'false':5,'1':6,'undefined':7,'null':8};
+      const u=undefined,n=null;
+      return[delete a[true],delete a[false],delete a[1n],delete a[u],delete a[n],Object.keys(a)]}`,
+    `export function f(mode){'use strict';let calls=0;const a={get x(){calls++;return 3},y:4};
+      const key=mode?'missing':'x';const removed=delete a[key];return[removed,calls,Object.keys(a)]}`,
+    `export function f(mode){'use strict';const a=[1],old=a;let calls=0;
+      const key={toString(){calls++;a.push(2,3,4,5,6,7,8,9);return mode?'length':'0'}};
+      try{return[delete old[key],calls,0 in a,a.length]}
+      catch(e){return[e.name,calls,0 in a,a.length]}}`,
+  ]
+  for(const optimize of levels(0,1,2,3,'size'))for(const src of sources){
+    const got=jz(src,{optimize}).exports,want=oracle(src)
+    for(const mode of [0,0,1,0])is(got.f(mode),want.f(mode),`delete coercion O${optimize}, ${mode}`)
+  }
+})
+
+test('delete: typed named properties and views keep their element storage', () => {
+  const src = `export function f(view,key){'use strict';const root=new Int16Array([1,4,5,8]);
+    const a=view?root.subarray(1,3):root;a['01']=7;a.extra=undefined;
+    let result;try{result=delete a[key]}catch(e){result=e.name}
+    return[result,a[0],a[1],a.length,Object.hasOwn(a,'01'),Object.hasOwn(a,'extra')]}`
+  for(const optimize of levels(0,1,2,3,'size')){
+    const got=jz(src,{optimize}).exports,want=oracle(src)
+    for(const view of [0,1,1,0])for(const key of ['01','extra','0','-0','4','length','missing'])
+      is(got.f(view,key),want.f(view,key),`delete typed props O${optimize}, ${view}, ${key}`)
+  }
+})
+
 test('delete: literal-key form rejected (fixed schema)', () => {
   let err
   try { compile(`export let f = () => { let o = {x: 1}; delete o.x; return o.x }`) }

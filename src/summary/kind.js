@@ -93,7 +93,7 @@ export const NUMBER_OPS = new Set(['-', '*', '/', '%', '**', '&', '|', '^', '<<'
 // carriers, including the inliner's eager boolean operators. Membership
 // operators stay outside integer certainty because their operands may throw.
 export const CMP_OPS = new Set(['!', ...COMPARE_OPS, '__eager&&', '__eager||'])
-export const BOOL_OPS = new Set([...CMP_OPS, 'in', 'instanceof'])
+export const BOOL_OPS = new Set([...CMP_OPS, 'in', 'instanceof', 'delete'])
 
 const COERCION_UNKNOWN = bitOf(K.TYPED) | bitOf(K.ARRAY) | bitOf(K.OBJECT) |
   bitOf(K.CLOSURE) | bitOf(K.MAP) | bitOf(K.SET) | bitOf(K.DATE) |

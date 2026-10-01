@@ -2946,6 +2946,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     if (NUMBER_OPS.has(op) || op === 'u-') { let k = n.length > 2 ? expr(n[1]) : arith(op, expr(n[1])); for (let i = 2; i < n.length; i++) k = arith(op, k, expr(n[i])); return k }
     if (op === '+1' || op === '-1') return arith(op, expr(n[1]))  // a member's ++/-- (prepare)
     if (op === 'u+') { expr(n[1]); return NUMBER }
+    if (op === 'delete') { stmt(n); return BOOL }
     if (BOOL_OPS.has(op)) {
       // Loose equality, ordering and property-key tests may coerce their values.
       const passive = op === '!' || op === '===' || op === '!=='
@@ -2980,7 +2981,6 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     }
     if (op === ',') { let k = NULLISH; for (let i = 1; i < n.length; i++) k = selectedExpr(n[i], i === n.length - 1 ? mask : 0); return k }
     if (op === 'typeof') { selectedExpr(n[1], 0); return STRING }
-    if (op === 'delete') { stmt(n); return BOOL }
     if (op === 'void') { selectedExpr(n[1], 0); return NULLISH }
     if (op === 'await') return expr(n[1]) === K.NONE ? K.NONE : ANY
     // A spread reads its source's elements (an array's, a typed array's, a

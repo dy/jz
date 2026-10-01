@@ -137,6 +137,11 @@ coercions that can resize an alias invalidate that proof.
 Prepared computed deletes keep receiver and key as separate operands. Binding,
 numeric-buffer and frame-effect scans must visit both; key conversion can call
 user code, throw, and publish storage. The surrounding handler stays live.
+The runtime rejects nullish bases before key conversion, preserves primitive
+key identities, and returns Boolean true for both deleted and absent properties.
+Array length, string length/indices and in-bounds typed elements reject strict
+deletion. Typed index checks compare full unsigned indices and lengths; numeric
+receivers never reach pointer-header dispatch.
 An initializer emitted as a proved pointer establishes presence for its local
 binding just as a proved element read does. Captures and later writes reject
 this block-scoped fact; a checked cursor keeps its possible undefined value.
