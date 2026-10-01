@@ -147,12 +147,6 @@ const rememberZombie = () => hasProbeLane()
   ? '(local.set $zb (local.get $slot)) (local.set $zbl (local.get $ls))'
   : '(local.set $zb (local.get $slot))'
 const restoreZombieProbe = () => hasProbeLane() ? '(local.set $ls (local.get $zbl))' : ''
-const laneBaseInit = (base, cap, entrySize) => hasProbeLane()
-  ? `(local.set $${base} (i32.add (local.get $newptr) (i32.mul (local.get $${cap}) (i32.const ${entrySize}))))`
-  : ''
-const laneRehashStore = (base, idx) => hasProbeLane()
-  ? `(i32.store (i32.add (local.get $${base}) (i32.shl (local.get $${idx}) (i32.const 2))) (local.get $h))`
-  : ''
 const deleteShiftInit = () => hasProbeLane()
   ? `(local.set $i (local.get $slot))
     (local.set $j (local.get $slot))
@@ -186,8 +180,9 @@ const zombieRescan = (entrySize) => hasProbeLane()
 // Store a fresh entry's hash word, packing a monotonic insertion sequence
 // (global $__seq) into its free high 32 bits. The hash itself only ever occupies
 // the low 32 (always ≥2), so "empty slot ⇔ word==0" and the i32.wrap_i64
-// home-bucket math are untouched; rehash/back-shift copy the whole word, so the
-// sequence rides along for free. Iteration reads it back (via __coll_order) to
+// home-bucket math are untouched; rehash reads the stored low word rather than
+// hashing the key again. Rehash/back-shift copy the whole word, so the sequence
+// rides along for free. Iteration reads it back (via __coll_order) to
 // restore JS insertion order. Emitted only on the insert-new branch — updates
 // keep the original entry (and its sequence) in place.
 const seqStore = () => `${ctx.linkDemand.hiddenMembers ? `(if (i32.eq (global.get $__seq) (i32.const ${HIDDEN_PROPERTY_SEQ})) (then (global.set $__seq (i32.const 0))))` : ''}
@@ -199,6 +194,37 @@ const seqStore = () => `${ctx.linkDemand.hiddenMembers ? `(if (i32.eq (global.ge
 const revealProperty = () => ctx.linkDemand.hiddenMembers
   ? `(if (i32.eq (i32.load offset=4 (local.get $slot)) (i32.const ${HIDDEN_PROPERTY_SEQ}))
       (then ${seqStore()} (global.set $__enumc_epoch (i32.add (global.get $__enumc_epoch) (i32.const 1)))))` : ''
+
+// Grow paths share the table's stored hash, insertion sequence and key/value
+// bytes. Probes remain in their callers; only a missing key at capacity calls
+// this cold rebuild, for either Set's 16-byte or Map/HASH's 24-byte entries.
+// Healed keys are probe-chain tombstones, not live entries in the new table.
+function genRehash() {
+  return `(func $__coll_rehash (param $off i32) (param $newptr i32)
+    (param $cap i32) (param $newcap i32) (param $es i32)
+    (local $i i32) (local $oldslot i32) (local $newidx i32) (local $newslot i32) (local $h i32)
+    ${hasProbeLane() ? '(local $nlb i32)' : ''}
+    ${hasProbeLane() ? '(local.set $nlb (i32.add (local.get $newptr) (i32.mul (local.get $newcap) (local.get $es))))' : ''}
+    (block $rd (loop $rl
+      (br_if $rd (i32.ge_s (local.get $i) (local.get $cap)))
+      (local.set $oldslot (i32.add (local.get $off) (i32.mul (local.get $i) (local.get $es))))
+      (if (i32.and (i64.ne (i64.load (local.get $oldslot)) (i64.const 0))
+            (i64.ne (i64.load offset=8 (local.get $oldslot)) (i64.const ${TOMB_NAN})))
+        (then
+          (local.set $h (i32.load (local.get $oldslot)))
+          (local.set $newidx (i32.and (local.get $h) (i32.sub (local.get $newcap) (i32.const 1))))
+          (block $ins (loop $probe
+            (local.set $newslot (i32.add (local.get $newptr) (i32.mul (local.get $newidx) (local.get $es))))
+            (br_if $ins (i64.eqz (i64.load (local.get $newslot))))
+            (local.set $newidx (i32.and (i32.add (local.get $newidx) (i32.const 1)) (i32.sub (local.get $newcap) (i32.const 1))))
+            (br $probe)))
+          (memory.copy (local.get $newslot) (local.get $oldslot) (local.get $es))
+          ${hasProbeLane() ? '(i32.store (i32.add (local.get $nlb) (i32.shl (local.get $newidx) (i32.const 2))) (local.get $h))' : ''}
+          (i32.store (i32.sub (local.get $newptr) (i32.const 8))
+            (i32.add (i32.load (i32.sub (local.get $newptr) (i32.const 8))) (i32.const 1)))))
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (br $rl))))`
+}
 
 /** Generate upsert (add/set) probe for a growable collection (Set/Map). hasVal: store
  *  value at slot+16. hasExt: emit EXTERNAL fallthrough (call $__ext_set on non-matching
@@ -221,9 +247,6 @@ function genUpsert(name, entrySize, hashFn, eqExpr, expectedType, hasVal, hasExt
   const onMatch = hasVal && !slotOnly
     ? `(then\n          ${revealProperty()} (i64.store offset=16 (local.get $slot) (local.get $val))${slotLog}\n          (br $done))`
     : `(then ${slotOnly ? revealProperty() : ''} (br $done))`
-  const rehashVal = hasVal
-    ? `\n              (i64.store offset=16 (local.get $newslot) (i64.load offset=16 (local.get $oldslot)))`
-    : ''
 
   const extBranch = hasVal
     ? '(then (call $__ext_set (local.get $coll) (local.get $key) (local.get $val)) drop)'
@@ -235,9 +258,9 @@ function genUpsert(name, entrySize, hashFn, eqExpr, expectedType, hasVal, hasExt
     : `(if (i32.ne ${tExpr} (i32.const ${expectedType})) (then (return ${miss})))`
   return `(func $${name} (param $coll i64) (param $key i64) ${valParam}(result ${slotOnly ? 'i32' : 'i64'})
     (local $off i32) (local $cap i32) (local $h i32) (local $end i32) (local $slot i32)
-    (local $size i32) (local $newptr i32) (local $newcap i32) (local $i i32)
-    (local $oldslot i32) (local $newidx i32) (local $newslot i32) (local $zb i32) (local $ztr i32)
-    ${laneLocals} (local $zbl i32) (local $nlb i32)
+    (local $size i32) (local $newptr i32) (local $newcap i32)
+    (local $zb i32) (local $ztr i32)
+    ${laneLocals} (local $zbl i32)
     ${slotOnly ? '(local $kaux i32) (local $koff i32)' : ''}
     ${typeGuard}
     (local.set $off (i32.wrap_i64 (i64.and (local.get $coll) (i64.const ${LAYOUT.OFFSET_MASK}))))
@@ -291,28 +314,9 @@ function genUpsert(name, entrySize, hashFn, eqExpr, expectedType, hasVal, hasExt
     ;; Only a missing key can reach the growth path.
         ${nextCapIR()}
         (local.set $newptr (call $__alloc_hdr_n (i32.const 0) (local.get $newcap) (i32.const ${collectionStride(entrySize)})))
-        ${laneBaseInit('nlb', 'newcap', entrySize)}
         (i64.store (i32.sub (local.get $newptr) (i32.const 16)) (i64.load (i32.sub (local.get $off) (i32.const 16))))
-        (local.set $i (i32.const 0))
-        (block $rd (loop $rl
-          (br_if $rd (i32.ge_s (local.get $i) (local.get $cap)))
-          (local.set $oldslot (i32.add (local.get $off) (i32.mul (local.get $i) (i32.const ${entrySize}))))
-          (if (i64.ne (i64.load (local.get $oldslot)) (i64.const 0))
-            (then
-              (local.set $h (call ${hashFn} (i64.load offset=8 (local.get $oldslot))))
-              (local.set $newidx (i32.and (local.get $h) (i32.sub (local.get $newcap) (i32.const 1))))
-              (block $ins (loop $probe2
-                (local.set $newslot (i32.add (local.get $newptr) (i32.mul (local.get $newidx) (i32.const ${entrySize}))))
-                (br_if $ins (i64.eqz (i64.load (local.get $newslot))))
-                (local.set $newidx (i32.and (i32.add (local.get $newidx) (i32.const 1)) (i32.sub (local.get $newcap) (i32.const 1))))
-                (br $probe2)))
-              (i64.store (local.get $newslot) (i64.load (local.get $oldslot)))
-              (i64.store offset=8 (local.get $newslot) (i64.load offset=8 (local.get $oldslot)))${rehashVal}
-              ${laneRehashStore('nlb', 'newidx')}
-              (i32.store (i32.sub (local.get $newptr) (i32.const 8))
-                (i32.add (i32.load (i32.sub (local.get $newptr) (i32.const 8))) (i32.const 1)))))
-          (local.set $i (i32.add (local.get $i) (i32.const 1)))
-          (br $rl)))
+        (call $__coll_rehash (local.get $off) (local.get $newptr)
+          (local.get $cap) (local.get $newcap) (i32.const ${entrySize}))
         ${durableFwdLogIR('off', 'newptr', 'size', 'cap')}
         (i32.store (i32.sub (local.get $off) (i32.const 8)) (local.get $newptr))
         (i32.store (i32.sub (local.get $off) (i32.const 4)) (i32.const -1))
@@ -478,9 +482,9 @@ function genUpsertGrow(name, entrySize, hashFn, eqExpr, typeConst, strict = fals
           (return (local.get $obj))))`
   return `(func $${name} (param $obj i64) (param $key i64) (param $val i64) (result i64)
     (local $off i32) (local $cap i32) (local $h i32) (local $end i32) (local $slot i32)
-    (local $size i32) (local $newptr i32) (local $newcap i32) (local $i i32)
-    (local $oldslot i32) (local $newidx i32) (local $newslot i32) (local $zb i32) (local $ztr i32)
-    ${laneLocals} (local $zbl i32) (local $nlb i32)
+    (local $size i32) (local $newptr i32) (local $newcap i32)
+    (local $zb i32) (local $ztr i32)
+    ${laneLocals} (local $zbl i32)
     ${typeGuard}
     (local.set $off (i32.wrap_i64 (i64.and (local.get $obj) (i64.const ${LAYOUT.OFFSET_MASK}))))
     (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))
@@ -536,28 +540,8 @@ function genUpsertGrow(name, entrySize, hashFn, eqExpr, typeConst, strict = fals
     ;; Only a missing key can reach the growth path.
         ${nextCapIR()}
         (local.set $newptr (call $__alloc_hdr_n (i32.const 0) (local.get $newcap) (i32.const ${collectionStride(entrySize)})))
-        ${laneBaseInit('nlb', 'newcap', entrySize)}
-        (local.set $i (i32.const 0))
-        (block $rd (loop $rl
-          (br_if $rd (i32.ge_s (local.get $i) (local.get $cap)))
-          (local.set $oldslot (i32.add (local.get $off) (i32.mul (local.get $i) (i32.const ${entrySize}))))
-          (if (i64.ne (i64.load (local.get $oldslot)) (i64.const 0))
-            (then
-              (local.set $h (call ${hashFn} (i64.load offset=8 (local.get $oldslot))))
-              (local.set $newidx (i32.and (local.get $h) (i32.sub (local.get $newcap) (i32.const 1))))
-              (block $ins (loop $probe2
-                (local.set $newslot (i32.add (local.get $newptr) (i32.mul (local.get $newidx) (i32.const ${entrySize}))))
-                (br_if $ins (i64.eqz (i64.load (local.get $newslot))))
-                (local.set $newidx (i32.and (i32.add (local.get $newidx) (i32.const 1)) (i32.sub (local.get $newcap) (i32.const 1))))
-                (br $probe2)))
-              (i64.store (local.get $newslot) (i64.load (local.get $oldslot)))
-              (i64.store offset=8 (local.get $newslot) (i64.load offset=8 (local.get $oldslot)))
-              (i64.store offset=16 (local.get $newslot) (i64.load offset=16 (local.get $oldslot)))
-              ${laneRehashStore('nlb', 'newidx')}
-              (i32.store (i32.sub (local.get $newptr) (i32.const 8))
-                (i32.add (i32.load (i32.sub (local.get $newptr) (i32.const 8))) (i32.const 1)))))
-          (local.set $i (i32.add (local.get $i) (i32.const 1)))
-          (br $rl)))
+        (call $__coll_rehash (local.get $off) (local.get $newptr)
+          (local.get $cap) (local.get $newcap) (i32.const ${entrySize}))
         ${forward
           // Forward-mark the old header (cap=-1 sentinel at -4, new offset at -8) and
           // keep the boxed pointer the caller holds: any alias resolves through
@@ -838,7 +822,7 @@ function genUpsertStrictPrehashed(name, entrySize, eqExpr, expectedType, hasVal 
 }
 
 export {
-  genUpsert, genLookup, genDelete, genUpsertGrow,
+  genUpsert, genLookup, genDelete, genUpsertGrow, genRehash,
   genEphemeralSlotUpsert, genEphemeralFixedSlot, genLookupStrict,
   genUpsertStrictPrehashed,
 }

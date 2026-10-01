@@ -1658,6 +1658,11 @@ Every growable collection probes before testing its load threshold: replacing
 a Map or dictionary value and adding an existing Set key reuse the current
 entry even at 75% load. A missing key alone grows and retries the same probe;
 the bounded probe also handles a completely full minimum-capacity table.
+Map, Set and dictionary growth share one cold rehash body. It uses the stored
+hash word and copies the complete entry, preserving insertion sequence, keys
+and values across both entry widths and compact or separate-lane layouts.
+Healed tombstones keep old probe chains connected but are excluded from a
+rebuilt table, whose length counts only live entries. The existing probe, forwarding and reset-log paths remain at the caller.
 One shared lowering recognizes both `d[k] = f(d[k])` and
 `m.set(k, f(m.get(k)))`, proving safety and counting reads in one walk.
 Map methods must retain their builtin identities; Map keys keep their boxed

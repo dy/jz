@@ -209,7 +209,7 @@ const keyEq = (fullEq) =>
 const propEqG = keyEq('(call $__key_eq (i64.load offset=8 (local.get $slot)) (local.get $key))')
 const sameValueZeroEqG = keyEq('(call $__same_value_zero (i64.load offset=8 (local.get $slot)) (local.get $key))')
 
-import { collectionLaneBytes, genUpsert, genLookup, genDelete, genUpsertGrow, genEphemeralSlotUpsert, genEphemeralFixedSlot, genLookupStrict, genUpsertStrictPrehashed } from './collection/upsert.js'
+import { collectionLaneBytes, genRehash, genUpsert, genLookup, genDelete, genUpsertGrow, genEphemeralSlotUpsert, genEphemeralFixedSlot, genLookupStrict, genUpsertStrictPrehashed } from './collection/upsert.js'
 import { classHasMember, classMemberIn } from '../src/compile/emit/class-dispatch.js'
 export { collectionLaneBytes }
 
@@ -270,7 +270,7 @@ export default (ctx) => {
     // log (durableEntryLogIR) still calls $__durable_slot_log — without the
     // explicit edge the kernel leg drops the helper (auto-scan divergence, the
     // self-compile-includes class) and every `new Set(...)` fails to compile there.
-    __set_add: () => [...(ctx.linkDemand.external ? ['__map_hash', '__same_value_zero', '__ptr_offset', '__ptr_offset_fwd', '__alloc_hdr_n', '__zomb_scan', '__ext_set'] : ['__map_hash', '__same_value_zero', '__ptr_offset', '__ptr_offset_fwd', '__alloc_hdr_n', '__zomb_scan']), ...(needsDurableFwdLog() ? ['__durable_fwd_log'] : []), ...slotLogDeps()],
+    __set_add: () => [...(ctx.linkDemand.external ? ['__map_hash', '__same_value_zero', '__ptr_offset', '__ptr_offset_fwd', '__alloc_hdr_n', '__zomb_scan', '__coll_rehash', '__ext_set'] : ['__map_hash', '__same_value_zero', '__ptr_offset', '__ptr_offset_fwd', '__alloc_hdr_n', '__zomb_scan', '__coll_rehash']), ...(needsDurableFwdLog() ? ['__durable_fwd_log'] : []), ...slotLogDeps()],
     // Region-arena rebuild fix — caller (layout-kinds.js regionArmSetMap)
     // folds the hash, mirrors __hash_set_local_h's own prehashed dep shape.
     __set_add_h: () => ['__same_value_zero', '__zomb_scan', ...slotLogDeps()],
@@ -279,7 +279,7 @@ export default (ctx) => {
     __sclone: ['__sclone_rec', '__mkptr', '__alloc_hdr_n'],
     __sclone_rec: () => ['__ptr_type', '__ptr_offset', '__ptr_offset_fwd', '__ptr_aux', '__is_nullish', '__len', '__alloc', '__alloc_hdr_n', '__mkptr', '__map_get', '__map_set', '__set_add', '__coll_order', '__arr_from', '__obj_clone', '__sclone_hash_vals', ...(enumViewsOn() ? ['__view_has', '__view_data'] : [])],
     __sclone_hash_vals: ['__sclone_rec', '__is_symbol', '__hash_del_local', '__mkptr'],
-    __map_set: () => [...(ctx.linkDemand.external ? ['__map_hash', '__same_value_zero', '__ptr_offset', '__ptr_offset_fwd', '__alloc_hdr_n', '__zomb_scan', '__ext_set'] : ['__map_hash', '__same_value_zero', '__ptr_offset', '__ptr_offset_fwd', '__alloc_hdr_n', '__zomb_scan']), ...(needsDurableFwdLog() ? ['__durable_fwd_log'] : []), ...slotLogDeps()],
+    __map_set: () => [...(ctx.linkDemand.external ? ['__map_hash', '__same_value_zero', '__ptr_offset', '__ptr_offset_fwd', '__alloc_hdr_n', '__zomb_scan', '__coll_rehash', '__ext_set'] : ['__map_hash', '__same_value_zero', '__ptr_offset', '__ptr_offset_fwd', '__alloc_hdr_n', '__zomb_scan', '__coll_rehash']), ...(needsDurableFwdLog() ? ['__durable_fwd_log'] : []), ...slotLogDeps()],
     // Region-arena rebuild fix — MAP-shaped sibling of __set_add_h.
     __map_set_h: () => ['__same_value_zero', '__zomb_scan', ...slotLogDeps()],
     __map_get: () => ctx.linkDemand.external ? ['__ext_prop', '__map_hash', '__same_value_zero', '__ptr_offset', '__ptr_offset_fwd'] : ['__map_hash', '__same_value_zero', '__ptr_offset', '__ptr_offset_fwd'],
@@ -297,7 +297,7 @@ export default (ctx) => {
     __map_new: ['__alloc_hdr_n'],
     __hash_set: () => [
       ...(ctx.linkDemand.external ? ['__str_hash', '__key_eq', '__ptr_type', '__ext_set', '__dyn_set'] : ['__str_hash', '__key_eq', '__ptr_type', '__dyn_set']),
-      '__zomb_scan',
+      '__zomb_scan', '__coll_rehash',
       ...(needsDurableFwdLog() ? ['__durable_fwd_log'] : []),
       ...slotLogDeps(),
     ],
@@ -312,10 +312,10 @@ export default (ctx) => {
     __hash_get_local: ['__str_hash', '__key_eq'],
     __hash_get_local_h: ['__key_eq'],
     __hash_set_local_h: () => ['__key_eq', '__zomb_scan', ...slotLogDeps()],
-    __hash_set_local: () => ['__str_hash', '__key_eq', '__alloc_hdr_n', '__mkptr', '__zomb_scan', ...(needsDurableFwdLog() ? ['__durable_fwd_log'] : []), ...slotLogDeps()],
+    __hash_set_local: () => ['__str_hash', '__key_eq', '__alloc_hdr_n', '__mkptr', '__zomb_scan', '__coll_rehash', ...(needsDurableFwdLog() ? ['__durable_fwd_log'] : []), ...slotLogDeps()],
     __hash_set_value: ['__hash_set_local', '__to_key', '__is_nullish'],
-    __map_slot: () => ['__map_hash', '__same_value_zero', '__alloc_hdr_n', '__ptr_offset_fwd', '__zomb_scan', ...(needsDurableFwdLog() ? ['__durable_fwd_log'] : []), ...slotLogDeps()],
-    __hash_slot: () => ['__str_hash', '__key_eq', '__alloc_hdr_n', '__ptr_type', '__ptr_offset', '__ptr_offset_fwd', '__zomb_scan', ...(needsDurableFwdLog() ? ['__durable_fwd_log'] : []), ...slotLogDeps()],
+    __map_slot: () => ['__map_hash', '__same_value_zero', '__alloc_hdr_n', '__ptr_offset_fwd', '__zomb_scan', '__coll_rehash', ...(needsDurableFwdLog() ? ['__durable_fwd_log'] : []), ...slotLogDeps()],
+    __hash_slot: () => ['__str_hash', '__key_eq', '__alloc_hdr_n', '__ptr_type', '__ptr_offset', '__ptr_offset_fwd', '__zomb_scan', '__coll_rehash', ...(needsDurableFwdLog() ? ['__durable_fwd_log'] : []), ...slotLogDeps()],
     __hash_lookup_slot: ['__str_hash', '__key_eq', '__ptr_offset_fwd'],
     __hash_hide: ['__hash_lookup_slot'],
     __hide_member: ['__ptr_type', '__ptr_offset', '__ptr_aux', '__ihash_get_local', '__hash_hide'],
@@ -324,7 +324,7 @@ export default (ctx) => {
     __hash_reuse_eph: ['__ptr_type', '__ptr_offset_fwd', '__alloc_hdr_n', '__mkptr'],
     __slot_write: () => slotLogDeps(),
     __ihash_get_local: ['__map_hash'],
-    __ihash_set_local: () => ['__map_hash', '__alloc_hdr_n', '__mkptr', '__zomb_scan', ...slotLogDeps()],
+    __ihash_set_local: () => ['__map_hash', '__alloc_hdr_n', '__mkptr', '__zomb_scan', '__coll_rehash', ...slotLogDeps()],
     __dyn_get_t: ['__dyn_get_t_h', '__str_hash', '__is_str_key', '__to_key'],
     __dyn_get_t_h: () => [...(ctx.schema.regexSids.size ? ['__regex_prop'] : []), '__arr_value', ...viewDeps('__view_get'), ...builtinPropDeps(), '__schema_slot_h', '__ihash_get_local', '__key_eq', '__is_nullish', '__hash_get_local_h', '__hash_get_local_hm', '__str_arr_idx', '__str_length', '__ptr_aux', ...(ctx.core.stdlib['__str_idx'] ? ['__str_idx'] : []), ...(ctx.linkDemand.typedProperties ? ['__typed_str_idx', '__typed_prop_get', '__len', representationProgramHasBigint(ctx) ? '__typed_idx_tagged' : '__typed_idx'] : [])],
     __dyn_get_t_hm: () => [...viewDeps('__view_get'), ...builtinPropDeps(), '__schema_slot_h', '__ihash_get_local', '__key_eq', '__is_nullish', '__hash_get_local_hm', '__str_arr_idx', '__str_length', '__ptr_aux', ...(ctx.linkDemand.typedProperties ? ['__typed_str_idx', '__typed_prop_get', '__len', representationProgramHasBigint(ctx) ? '__typed_idx_tagged' : '__typed_idx'] : [])],
@@ -661,6 +661,7 @@ export default (ctx) => {
   })
 
   // Generated Set probe functions
+  ctx.core.stdlib.__coll_rehash = genRehash
   ctx.core.stdlib['__set_add'] = () => genUpsert('__set_add', SET_ENTRY, '$__map_hash', sameValueZeroEqG, PTR.SET, false, ctx.linkDemand.external)
   // Region-arena rebuild fix (.work/evidence.md §Region arena, front-boundary
   // hunt): __region_copy_rec's SET/MAP arm (layout-kinds.js regionArmSetMap)

@@ -139,6 +139,72 @@ test('Map copy allocates one table for a dense source', () => {
   }
 })
 
+test('collection rehash drops healed tombstones before counting the new table', () => {
+  const src = `const m = new Map([['seed',7]]), s = new Set(['seed'])
+    export function fill(prefix,n) {
+      for (let i=0;i<n;i++) { const key=prefix+'-'+i; m.set(key,i); s.add(key) }
+      return m.size+':'+s.size+':'+m.get('seed')+':'+s.has('seed')
+    }
+    export function snapshot() {
+      let nm=0,ns=0,sum=0
+      for (const [k,v] of m) { nm++; sum+=v }
+      for (const k of s) ns++
+      return nm+':'+ns+':'+sum
+    }`
+  for (const optimize of levels(0,1,2,3,'size')) for (const _compactCollections of [false,true]) {
+    const {exports, memory} = jz(src,{optimize,_compactCollections})
+    for (const [prefix,n] of [['a',5],['b',80],['b',80],['a',5],['z',0]]) {
+      const js = oracle(src)
+      for(let repeat=0;repeat<2;repeat++) {
+        is(exports.fill(prefix,n),js.fill(prefix,n), `${optimize}, compact=${_compactCollections}: ${prefix}/${n} size after reset/growth/update`)
+        is(exports.snapshot(),js.snapshot(), 'iteration and lookup retain only live entries')
+      }
+      memory.reset()
+    }
+  }
+})
+
+test('collection rehash shares stored hashes across entry widths and preserves key order', () => {
+  const src = `export function f(n, stop) {
+    const a = {}, b = {}, s1 = Symbol('same'), s2 = Symbol('same')
+    const keys = [0, -0, NaN, NaN, 1n, 1n, 1, 'short', 'long Unicode key λ漢字', a, b, a, s1, s2, undefined, null]
+    const m = new Map(), st = new Set(), dict = {}, alias = m
+    try {
+      for (let i = 0; i < n; i++) {
+        const k = i < keys.length ? keys[i] : 'generated-long-key-' + i
+        m.set(k, i); st.add(k); dict['property-' + i] = i
+        if (i === stop) throw 7
+      }
+    } catch (e) { if (e !== 7) throw e }
+    m.delete('short'); st.delete('short'); delete dict['property-3']
+    alias.set('short', -1); st.add('short'); dict['property-3'] = -1
+    let out = m.size + ':' + st.size + ':' + Object.keys(dict).length + '|'
+    for (const k of keys) out += m.get(k) + ',' + st.has(k) + ';'
+    out += '|'
+    for (const [k, v] of alias) out += v + ','
+    out += '|'
+    for (const k of st) out += m.get(k) + ','
+    out += '|' + dict['property-3'] + ':' + dict['property-' + (n - 1)]
+    return out
+  }`
+  const js = oracle(src).f
+  for (const optimize of levels(0, 1, 2, 3, 'size')) for (const _compactCollections of [false, true]) {
+    const { exports, memory } = jz(src, { optimize, _compactCollections })
+    for (const [n, stop] of [[0,-1],[1,-1],[6,-1],[7,-1],[80,-1],[80,-1],[80,23],[2,-1],[80,-1]]) {
+      is(exports.f(n, stop), js(n, stop), `${optimize}, compact=${_compactCollections}, n=${n}, stop=${stop}`)
+      memory.reset()
+    }
+  }
+  const wat = compile(`export function f(o, key, value) { o[key] = value; return o[key] }`, { optimize: 0, wat: true })
+  const funcs = new Map(parseWat(wat).filter(n => n?.[0] === 'func').map(n => [n[1], n]))
+  const rehash = funcs.get('$__coll_rehash')
+  ok(rehash, 'generic property tables share one cold rehash body')
+  const calls = n => Array.isArray(n) && (n[0] === 'call' || n.some(calls))
+  ok(!calls(rehash), 'the rebuild copies stored hashes without hashing keys or invoking user code')
+  for (const name of ['$__hash_set_local', '$__ihash_set_local'])
+    ok(JSON.stringify(funcs.get(name)).includes('$__coll_rehash'), `${name} uses the shared rebuild`)
+})
+
 test('Map updates use one probe and preserve growth, aliases and insertion order', () => {
   const src = `export function f(n) {
     const m = new Map(), alias = m
