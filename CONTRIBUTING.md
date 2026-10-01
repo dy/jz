@@ -3109,10 +3109,12 @@ An export whose result is asked is one the host releases (`jz:release`),
 whether or not it copies an argument in.
 A function with several results (an array literal returned as its elements)
 holds each in a local past its restore and asks each.
-Asked frames come and go with the walk (`arenaReach`). Without that runtime,
-a mixed numeric result can still release its frame when it returns an ordinary
-number; NaNs and boxed values retain the frame. The host applies the same check
-before releasing copied arguments. A tail call leaves the frame
+Asked results need only the rewind (`arenaRewind`), independently of the walk
+(`arenaReach`). Their address test also releases pure scratch frames returning
+older values, where no escape flag is demanded. When inner rewind is disabled,
+the host can still release a mixed numeric result's copied arguments if the
+result is an ordinary number; NaNs and boxed values retain those copies.
+A tail call leaves the frame
 before its epilogue, so one whose callee never runs the function again
 becomes a plain call under the restore, at the price of one frame, and one
 that may (a recursion written as tail calls) stays, the function keeping its

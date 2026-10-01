@@ -16,6 +16,25 @@ const CALLS = 2000
 // Heap growth over CALLS calls of `call`, after one call to settle first-call state.
 const growth = (memory, call) => { call(); const u0 = memory.used; for (let i = 0; i < CALLS; i++) call(); return memory.used - u0 }
 
+test('call release: old boxed results release inner scratch without a reachability walk', () => {
+  const source = `const kept=[{value:7},{value:9}];
+    function lookup(n){const scratch=new Float64Array(128);scratch[0]=n;
+      return n<0?{value:scratch[0]}:kept[scratch[0]&1]}
+    export function run(n){const a=lookup(n),b=lookup(n+1),c=lookup(n+2);
+      return new Float64Array([a.value+b.value+c.value])}`
+  for(const level of [0,1,2,3,'size']) {
+    const {exports,memory}=jz(source,{optimize:{level,sourceInline:false,arenaReach:false,arenaRewind:true}})
+    const want=oracle(source), held=[]
+    for(const n of [0,0,7,-4,2,0]) {
+      const start=memory.used, result=exports.run(n)
+      held.push([result,Array.from(want.run(n))])
+      is(Array.from(result),held.at(-1)[1],`result O${level}, ${n}`)
+      if(n>=0)is(memory.used-start,24,`only the returned typed view survives O${level}, ${n}`)
+      for(const [view,expected]of held)is(Array.from(view),expected,`retained view O${level}, ${n}`)
+    }
+  }
+})
+
 test('call release: memory.used reads the heap the calls and the host keep', () => {
   const { exports, memory } = jz(`let kept = []
     export let keep = (n) => { kept.push(new Float64Array(n)); return kept.length }`)
@@ -292,7 +311,7 @@ test('call release: a call of numbers made while another runs tells it what it k
 // give back what it allocated; one it made is the caller's, and the host, which
 // takes a copy of a string, an array, an object or a collection, releases it
 // then. A typed array is a view of the module's memory: it holds the call's.
-// Off at the size tier, with the walk.
+// The result test is independent of the optional reachability walk.
 for (const optimize of levels(2, 3))
   test(`call release: a call whose result may be a heap value releases unless the result is of its making, at ${optimize}`, () => {
     const src = `const kept = ['a string the module holds, too long to pack', [7, 8, 9]]

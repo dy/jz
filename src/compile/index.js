@@ -1017,9 +1017,11 @@ export function assemble(ast, profiler) {
     else if (frame.flagged) conditional.set(`$${f.name}`, frame.siteWhy ?? 'an escape')
     // A heap result permits restoring only when it predates the frame. Tuple
     // lanes are boxed element carriers and each must pass that same check.
+    // This address test needs no reachability walk: flagged stores still decide
+    // whether anything besides the result keeps the frame.
     const results = f.sig.results, ty = results[0], name = `$${f.name}`
     if (results.length === 1 && f.sig.ptrKind == null && (ty === 'i32' || (ty === 'f64' && (f.valResult === VAL.NUMBER || holdsNoHeap(ctx.summary?.resultOf(f.name)))))) rewindable.set(name, ty)
-    else if (reachOn() && results.length && (results.length === 1 ? ty === 'i32' || ty === 'f64' : results.every(t => t === 'f64'))) {
+    else if (ctx.transform.optimize?.arenaRewind !== false && results.length && (results.length === 1 ? ty === 'i32' || ty === 'f64' : results.every(t => t === 'f64'))) {
       rewindable.set(name, results.length === 1 ? ty : results)
       asked.add(name)
     }

@@ -18,7 +18,7 @@ import { dataAlign, dataPush, dataLen, strPoolLen } from '../../static-data.js'
 import { MEM_OPS, findBodyStart } from '../../ir.js'
 import { DYN_CACHE_EMPTY } from '../../../layout.js'
 import { installHelperCounters, instrumentHelperCounter } from '../../helper-counters.js'
-import { ROOT_LOG_BYTES, reachOn } from '../../../module/core/reach.js'
+import { ROOT_LOG_BYTES } from '../../../module/core/reach.js'
 
 // Each helper is parsed once into its owned, mutable IR. Late SIMD helpers
 // are parsed only when absent from the assembled module. Generated templates
@@ -209,7 +209,7 @@ export function pullStdlib(sec) {
   // What a frame asks of a result that may be a heap value, in the epilogue
   // link gives it: there for a module that allocates, dropped by link where
   // no frame asks.
-  if (needsAlloc && reachOn() && ctx.plans.escapeFlag && ctx.core.stdlib['__made'] != null) inc('__made')
+  if (needsAlloc && ctx.transform.optimize?.arenaRewind !== false && ctx.core.stdlib['__made'] != null) inc('__made')
   if (ctx.core.includes.has('__root')) {
     inc('__survive', '__root_reset'); resolveIncludes()
     // Its log is made first thing as the module starts, below every mark a

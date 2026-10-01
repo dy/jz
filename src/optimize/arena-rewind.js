@@ -640,8 +640,8 @@ export function arenaRewind(root, { rewindable, numberResult = NO_NAMES, asked =
   const unlessMade = (ask, save, nodes) => {
     if (ask == null) return nodes
     const madeOf = (ret, type) => {
-      // Without the reachability runtime, only ordinary numbers prove the
-      // result cannot name this frame. NaNs (including boxes) keep it.
+      // The numeric-only fallback accepts ordinary numbers. NaNs (including
+      // boxes) keep the frame; asked results use the age test below.
       if (ask.numeric) {
         const boxed = node(intern('f64.ne'))
         push(boxed, localGet(ret)); push(boxed, localGet(ret))
