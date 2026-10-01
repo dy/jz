@@ -590,6 +590,10 @@ signed zero, NaN and infinities; presence checks accept zero-valued bindings.
 Shared callback construction retains its source kind for builtin overloads and
 owns separate IR at each branch. A BigInt representation describes the BigInt
 member of a value; call-edge boxing still requires the shared semantic proof.
+Catch removal checks the operands' Number proofs even when another operation
+enables BigInt carriers for the module. A catch binding itself can carry a
+host-thrown BigInt; that does not make Number arithmetic throw. Nested operand
+evaluation still retains catches for calls, conversion hooks and BigInt work.
 Regex alternatives retry the remaining sequence before committing a branch;
 capture boundaries remain inside that continuation.
 Terminal character runs omit retries when only capture-end markers and a

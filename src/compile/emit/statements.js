@@ -10,7 +10,7 @@ import {
 } from '../../ir.js'
 import { ASSIGN_OPS, REFS_THROUGH_ARROWS, refsName } from '../../ast.js'
 import { K, bitOf, tagOf, tagsOf } from '../../summary/kind.js'
-import { hasAmbiguousBoolMerge, valTypeOf } from '../../kind.js'
+import { hasAmbiguousBoolMerge, isPresentNumber, valTypeOf } from '../../kind.js'
 import { VAL } from '../../reps.js'
 import { isTerminator } from '../../type.js'
 import { withFinallyStack, withTryState } from '../flow-state.js'
@@ -42,7 +42,11 @@ function canThrow(body, seen = new Set(), view = ctx.summary?.at(ctx.func.curren
   // zero, and a Number beside a BigInt at runtime (the joint dispatch's
   // TypeError) in every arithmetic, bitwise and shift operator and its
   // compound. A program proven to have no BigInts keeps its Number-only fast path.
-  if (BIGINT_THROWING_OPS.has(op) && representationProgramHasBigint(ctx)) return true
+  if (BIGINT_THROWING_OPS.has(op) && representationProgramHasBigint(ctx)) {
+    const active = view === ctx.summary?.at(ctx.func.current)
+    for (let i = 1; i < body.length; i++)
+      if (!(active && isPresentNumber(ctx, body[i])) && tagsOf(view?.kindOfExpr(body[i]) ?? 0) !== bitOf(K.NUMBER)) return true
+  }
   // Implicit ToPrimitive can invoke user code or exhaust both methods. Its
   // calls appear during emit, so a source-only call scan cannot discard the catch.
   if (ctx.funcs.runtimeRoots.has('__jz_tp_num') && COERCING_OPS.has(op)) return true

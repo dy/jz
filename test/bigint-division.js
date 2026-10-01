@@ -130,9 +130,9 @@ test('BigInt division and remainder: constant nonzero divisors demand no error r
 })
 
 test('Number division and remainder: nonthrowing catches cost no output bytes', () => {
-  for (const optimize of LEVELS) for (const op of ['/', '%'])
-    is(compile(`export function f(a,b){try{return a ${op} b}catch(e){return 0}}`,{optimize}),
-      compile(`export function f(a,b){return a ${op} b}`,{optimize}), `${op} O${optimize || 0}`)
+  for (const optimize of LEVELS) for (const op of ['/', '%']) for (const prefix of ['', 'export const big=()=>1n;'])
+    is(compile(`${prefix}export function f(a,b){try{return a ${op} b}catch(e){return 0}}`,{optimize}),
+      compile(`${prefix}export function f(a,b){return a ${op} b}`,{optimize}), `${op} O${optimize || 0}, BigInt ${!!prefix}`)
 })
 
 for (const op of ['/', '%']) test(`joint ${op}: Number zero stays numeric; mixed zero is TypeError, not RangeError`, () => {
