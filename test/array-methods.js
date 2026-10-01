@@ -81,6 +81,41 @@ test('computed array writes refresh relocated storage without undoing a rebind',
   }
 })
 
+test('Array constructor: an unknown argument works without collection registration', () => {
+  // A numeric export boundary still has an unknown source kind here. Emission
+  // builds the singleton arm as well as the numeric length arm.
+  const src = `export function value(n) {
+    return new Array(n).fill(1).map((v, i) => v + i).reduce((acc, v) => acc + v, 0)
+  }`
+  const host = oracle(src)
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const got = runHost(src, { optimize })
+    for (const n of [-0, 0, 1, 4, 4, 0, 4]) is(got.value(n), host.value(n), `O${optimize}, length ${n}`)
+    for (const n of [-1, 1.5, NaN, Infinity, -Infinity, 4294967296]) {
+      throws(() => got.value(n), `reject ${n}`)
+      is(got.value(4), host.value(4), 'invalid length does not poison the reusable instance')
+    }
+  }
+})
+
+test('Array constructor: a captured non-number stays one element and evaluates once', () => {
+  const src = `let calls = 0
+  function take(value) { calls++; return value }
+  export function value(mode) {
+    calls = 0
+    const a = new Array(take(mode === 0 ? 0 : mode === 1 ? 3 : mode === 2 ? 'x' : mode === 3 ? null : undefined))
+    return [a.length, a[0], calls]
+  }
+  export function empty() { return new Array().length }`
+  const host = oracle(src)
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const got = runHost(src, { optimize })
+    is(got.empty(), 0)
+    for (const mode of [0, 1, 2, 2, 3, 4, 0, 2])
+      is(got.value(mode), host.value(mode), `O${optimize}, argument ${mode}`)
+  }
+})
+
 test('array callbacks: map preserves its initial length while source storage changes', () => {
   const src = `export function value(n, mode) {
     let calls = 0

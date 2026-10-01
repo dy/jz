@@ -110,6 +110,9 @@ mutate it; a proven pure callback retains exact-sized two-pass allocation.
 Pipeline fusion checks defaults, getters, coercions and seed evaluation with
 the existing effect queries. Literal typed-array promotion and fusion preserve the
 callback's original receiver whenever named or rest parameters can observe it.
+Captured-local AST references belong to the base emitter table: array, typed
+array and collection lowerings may reuse an evaluated value independently of
+which language modules the current compilation loads.
 Array-literal lowering keeps its completed child walk even when no spread needs
 rewriting. Falling back after transforming children repeats work at every nested
 literal and can repeat stateful lowerings; holes and child locations stay intact.

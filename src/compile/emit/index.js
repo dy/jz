@@ -22,6 +22,7 @@ import { logicalOps } from './logical.js'
 import { bitwiseOps } from './bitwise.js'
 import { controlFlowOps } from './control-flow.js'
 import { callOps } from './call.js'
+import { typed } from '../../ir/tag.js'
 
 // === Core emitter dispatch table ===
 // ctx.core.emit is seeded with a flat copy of this object on reset;
@@ -32,6 +33,8 @@ import { callOps } from './call.js'
  * @type {Record<string, (...args: any[]) => Array>}
  */
 export const emitter = {
+  // A captured boxed value passed back through AST emission by any family.
+  __raw_local: name => typed(['local.get', `$${name}`], 'f64'),
   ...spreadOp,
   ...statementOps,
   ...assignmentOps,

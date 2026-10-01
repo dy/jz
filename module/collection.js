@@ -2843,9 +2843,6 @@ export default (ctx) => {
         ['then', ['local.get', `$${t}`]],
         ['else', asF64(emit(['()', '__iter_arr', ['__raw_local', t]]))]]], 'f64')
   }
-  // Raw pre-bound local reference for the tolerant path above — lets the
-  // non-nullish arm re-enter __iter_arr without re-evaluating the source expr.
-  ctx.core.emit['__raw_local'] = (name) => typed(['local.get', `$${name}`], 'f64')
 }
 
 // Walk a Set/Map backing table (bound f64 local `t`), copying one column of each
