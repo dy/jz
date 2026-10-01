@@ -337,15 +337,33 @@ export function scanBindingUses(body, trackNames) {
   return collectBindingUses(body, trackNames, bindingUses)
 }
 
+// The census reports this frame's declarations and explicitly tracked names.
+// Find that domain before recording uses, including uses preceding a declaration.
+function bindingDeclarations(node, names) {
+  if (!Array.isArray(node)) return
+  const op = node[0]
+  if (typeof op !== 'string' || op === 'str' || op === '=>') return
+  if (op === 'let' || op === 'const') for (let i = 1; i < node.length; i++) {
+    const d = node[i]
+    if (typeof d === 'string') names.add(d)
+    else if (Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string') names.add(d[1])
+  }
+  for (let i = 1; i < node.length; i++) bindingDeclarations(node[i], names)
+}
+
 // Cache hits never need the mutually recursive scanners' captured cells.
 function collectBindingUses(body, trackNames, bindingUses) {
+  const declared = new Set()
+  bindingDeclarations(body, declared)
   const summary = new Map()                    // name → [decls, initRhs, uses]
   const slot = (name) => {
     let s = summary.get(name)
     if (!s) { s = [0, undefined, []]; summary.set(name, s) }
     return s
   }
-  const use = (name, kind, record) => { slot(name)[BINDING_USE_USES].push(record || SIMPLE_USE[kind]) }
+  const use = (name, kind, record) => {
+    if (declared.has(name) || trackNames?.has(name)) slot(name)[BINDING_USE_USES].push(record || SIMPLE_USE[kind])
+  }
   // Names a test excluded a missing element from, on the arms it guards.
   const guarded = new Map()
   const underGuards = (test, fn) => {
@@ -570,7 +588,6 @@ function collectBindingUses(body, trackNames, bindingUses) {
 
   walk(body, false)
 
-  for (const [name, s] of summary) if (s[BINDING_USE_DECLS] === 0 && !trackNames?.has(name)) summary.delete(name)
   // `body` can be null (a module whose every top-level statement got lifted
   // into ctx.funcs.list, e.g. a single `export const f = () => …` leaves
   // nothing at module scope) — WeakMap keys must be objects.

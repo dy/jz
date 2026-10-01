@@ -12,7 +12,48 @@ import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import jz, { _compileInProcess } from '../index.js'
 import { run, oracle } from './util.js'
-import { scanBindingUses, scanObjectArrayFacts, arrayUsesSafe, BINDING_USE_USES, BINDING_USE_KIND, BINDING_USE_STORE, USE } from '../src/compile/analyze-scans.js'
+import { scanBindingUses, invalidateBindingUsesCache, scanObjectArrayFacts, arrayUsesSafe, BINDING_USE_DECLS, BINDING_USE_INIT, BINDING_USE_USES, BINDING_USE_KIND, BINDING_USE_STORE, USE } from '../src/compile/analyze-scans.js'
+
+test('binding census: declaration demand retains forward uses and outer captures', () => {
+  _compileInProcess('export function empty(){return 0}')
+  const init = 'source'
+  const body = [';', ['()', 'external', [',', 'late', 'never']],
+    ['let', ['=', 'capturing', ['=>', 'p', [';',
+      ['let', ['=', 'inner', 'late']], ['=', 'late', 'inner'], ['return', 'outside']]]]],
+    ['let', ['=', 'late', init]], ['let', 'late'], ['const', ['=', 'unused', [null, 0]]]]
+  const first = scanBindingUses(body)
+  is([...first.keys()], ['late', 'capturing', 'unused'], 'first-use order survives declaration filtering')
+  is(first.get('late')[BINDING_USE_DECLS], 2, 'duplicate declarations still veto single-initializer proofs')
+  is(first.get('late')[BINDING_USE_INIT], init, 'the original initializer is retained')
+  is(first.get('late')[BINDING_USE_USES].map(u => u[BINDING_USE_KIND]), [USE.CALL_ARG, USE.CAPTURE, USE.CAPTURE], 'forward argument and closure writes are retained')
+  is(first.get('unused')[BINDING_USE_USES], [], 'an unread declared local remains in the census')
+  is(scanBindingUses(body), first, 'unchanged body reuses the same census')
+
+  const tracked = scanBindingUses(body, new Set(['outside', 'never', 'absent']))
+  is([...tracked.keys()], ['late', 'never', 'capturing', 'outside', 'unused'], 'explicit names retain uses without a local declaration')
+  is(tracked.get('outside')[BINDING_USE_USES][0][BINDING_USE_KIND], USE.CAPTURE)
+  is(tracked.has('absent'), false, 'an unmentioned requested name still has no entry')
+  is(scanBindingUses(body, new Set(['source'])).has('outside'), false, 'tracking sets do not share cached results')
+  is(scanBindingUses(body), first, 'explicit tracking does not replace the ordinary cache')
+
+  body.push(['let', ['=', 'never', [null, 3]]])
+  invalidateBindingUsesCache(body)
+  const changed = scanBindingUses(body)
+  is(changed.has('never'), true, 'a later declaration makes its earlier argument use relevant')
+  is(changed.get('never')[BINDING_USE_USES][0][BINDING_USE_KIND], USE.CALL_ARG)
+  is([...first.keys()], ['late', 'capturing', 'unused'], 'the retained old census is unchanged')
+  is(scanBindingUses([';']).size, 0, 'empty body')
+  is(scanBindingUses(null).size, 0, 'empty lifted module')
+
+  const caught = ['catch', [';', ['let', ['=', 'protected', 'input']]],
+    ['{}', [':', 'code', 'caught']],
+    [';', ['let', ['=', 'handled', 'caught']], ['return', 'protected']]]
+  const handler = scanBindingUses(caught)
+  is([...handler.keys()], ['protected', 'handled'], 'protected and handler declarations belong to the same census domain')
+  is(handler.get('handled')[BINDING_USE_INIT], 'caught', 'a catch pattern reference stays an initializer')
+  is(handler.has('caught'), false, 'a raw catch pattern does not invent a prepared local declaration')
+  is(scanBindingUses(caught, new Set(['caught'])).has('caught'), true, 'explicit tracking still includes a catch pattern reference')
+})
 
 test('array census: reads, calls, writes and escapes have distinct safety policies', () => {
   _compileInProcess('export const empty = () => 0')

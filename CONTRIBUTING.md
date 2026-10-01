@@ -1913,6 +1913,10 @@ cache or allocation. Size mode retains the single content-comparison loop.
 Array read-only/current-pointer policies and multi-site push counts reuse the
 binding-use census. It distinguishes property reads from member calls, preserving
 indexed access, optional calls, writes, aliases and captures as separate evidence.
+On a cache miss, a declaration census first bounds which names need use records;
+free names receive records only when the caller explicitly tracks them. Forward
+uses, capture records and encounter order stay intact without allocating discarded
+tuples for every referenced global or nested closure local.
 String self-appends consume that same census: only a local empty-string builder
 with no retained aliases may extend its buffer. A self-assignment alone proves
 nothing about ownership. Discarded appends and empty resets preserve it; a sole
