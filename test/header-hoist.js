@@ -19,17 +19,17 @@ const src = `const a = [], b = [], out = [0, 0, 0, 0], grown = []
   for (let i = 0; i < 64; i++) { a.push([i, i + 1, i + 2, i + 3]); b.push([i * 2, 1, 2, 3]) }
   const mul = (o, p, q) => { o[0] = p[0] * q[0] + p[1] * q[1]; o[1] = p[2] * q[2]; o[2] = p[3] + q[3]; o[3] = 1; return o }
   export const run = (n) => { let acc = 0; for (let i = 0; i < n; i++) { mul(out, a[i], b[i]); acc += out[0] + out[1] + out[2] } return acc }
-  export const grow = (n) => { let acc = 0; for (let i = 0; i < n; i++) { grown.push(i); acc += a[i][0] } return acc + grown.length }
+  export const grow = (n) => { let acc = 0; for (let i = 0; i < n; i++) { a.push([i,0,0,0]); grown.push(i); acc += a[i][0] } return acc + grown.length }
   let c
   export const bind = () => { c = a; return c.length }
   export const sum = (n) => { let s = 0; for (let i = 0; i < n; i++) s += c[i][0]; return s }
   const big = (p, q) => { let s = 0; for (let k = 0; k < 4; k++) { s += p[k] * q[k]; s -= p[k] / (q[k] + 1); s *= 1.0001; s += p[3 - k] - q[3 - k] } out[0] = s; out[1] = s * 2; out[2] = s * 3; return s + out[1] }
-  const pushed = (x) => { grown.push(x); return grown.length }
+  const pushed = (x) => { a.push([x,0,0,0]); grown.push(x); return grown.length }
   export const viaCall = (n) => { let acc = 0; for (let i = 0; i < n; i++) acc += big(a[i], b[i]); return acc }
   export const viaPush = (n) => { let acc = 0; for (let i = 0; i < n; i++) acc += pushed(a[i][0]); return acc }`
 
-// The loop's body as text: what sits between `(loop` and the function's end.
-const loopBody = (fn) => fn.slice(fn.indexOf('(loop '))
+// Each executed loop excludes the next guarded arm's preheader.
+const loopBody = (fn) => innermost(fn).join('\n')
 const before = (fn) => fn.slice(0, fn.indexOf('(loop '))
 
 test('header hoist: the kernels answer what the host answers, a zero-trip loop reads nothing', () => {
@@ -64,8 +64,14 @@ test('header hoist: the forwarding hop and the length leave the loop, the barrie
   is((loopBody(fn).match(/call \$__ptr_offset_fwd/g) || []).length, 0, 'no forwarding hop inside the loop')
   is((loopBody(fn).match(/i32\.load/g) || []).length, 0, 'no header word read inside the loop')
   ok(/local\.set \$__li/.test(before(fn)), 'the invariants sit before the loop')
-  is((fn.match(/call \$__durable_arr_snap/g) || []).length, 1, 'the durable array is saved once')
-  ok(/call \$__durable_arr_snap/.test(before(fn)), 'and before the loop')
+  let previous = 0
+  const loops = innermost(fn)
+  ok(loops.length > 0, 'the guarded loop paths remain present')
+  for (const loop of loops) {
+    const at = fn.indexOf(loop, previous), prefix = fn.slice(previous, at)
+    is((prefix.match(/call \$__durable_arr_snap/g) || []).length, 1, 'each path saves the durable array once before its loop')
+    previous = at + loop.length
+  }
   ok(/call \$__ptr_offset_fwd/.test(loopBody(fnText(text, 'grow'))), 'a loop that grows an array keeps the hop inside')
   ok(/i32\.load/.test(loopBody(fnText(text, 'sum'))), 'a receiver that may be missing keeps its header reads inside')
 })

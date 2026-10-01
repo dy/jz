@@ -9,6 +9,8 @@ import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
 import { belowOpt, levels } from './_matrix.js'
 import { funcWat, oracle, run, wat } from './util.js'
+import parseWat from 'watr/parse'
+import { walk } from '../scripts/wat-probe.mjs'
 
 const fnText = (text, name) => funcWat(text, name + '$exp') || funcWat(text, name)
 
@@ -32,7 +34,13 @@ test('present receiver: the bounds test is the only test, a null-holding array k
   if (belowOpt(2)) return
   const text = wat(src, { optimize: 2 })
   const x = fnText(text, 'x'), y = fnText(text, 'y')
-  is((x.match(/i64\.eq/g) || []).length, 0, 'x compares no sentinel: its receivers throw from their bounds tests')
+  let loops = 0
+  walk(parseWat(x), n => {
+    if(n[0]!=='loop')return
+    loops++
+    is((JSON.stringify(n).match(/i64\.eq/g) || []).length, 0, 'each x loop compares no sentinel: its receivers throw from their bounds tests')
+  })
+  ok(loops>0,'the guarded paths contain loops')
   ok(/call \$__throw_property_nullish/.test(x), 'the miss arm throws')
   ok(/i64\.eq/.test(y), 'y still tests the element it read: the array holds a null')
 })

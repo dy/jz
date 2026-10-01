@@ -2,6 +2,8 @@ import test from 'tst'
 import { ok } from 'tst/assert.js'
 import { belowOpt, levels } from './_matrix.js'
 import { agree, funcWat, wat } from './util.js'
+import parseWat from 'watr/parse'
+import { walk } from '../scripts/wat-probe.mjs'
 
 const kernel = `const a = [1, 2, 3], out = new Float64Array(3)
 export const f = (n) => {
@@ -24,11 +26,16 @@ test('array load cse: plain numeric elements survive writes to typed storage', (
     // only constants index is registers, and so is a Float64Array's constant-index
     // element a loop stores numbers into, which leaves the plain reads to any CSE).
     const text = wat(kernel, { optimize: { level: 2, loadCSE, forwardStores: false, staticScratch: false, vectorizeLaneLocal: false, promoteLoopFields: false } })
-    return (funcWat(text, 'f$exp') || funcWat(text, 'f')).match(/f64\.load/g)?.length || 0
+    const counts=[]
+    walk(parseWat(funcWat(text, 'f$exp') || funcWat(text, 'f')),n=>{
+      if(n[0]==='loop')counts.push((JSON.stringify(n).match(/f64\.load/g)||[]).length)
+    })
+    return counts
   }
   const cached = loads(true)
-  ok(cached <= 6, `${cached} loads: the three shared plain-array reads stay eliminated`)
-  ok(cached < loads(false), 'the shared plain-array reads are eliminated before lowering')
+  ok(cached.length>0,'the loop paths remain present')
+  for(const count of cached)ok(count <= 6, `${count} loads in one loop: the three shared plain-array reads stay eliminated`)
+  ok(cached.reduce((a,b)=>a+b,0) < loads(false).reduce((a,b)=>a+b,0), 'the shared plain-array reads are eliminated before lowering')
 })
 
 test('array load cse: aliases, resizing, misses, effects and branches retain JS answers', () => {

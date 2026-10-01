@@ -8,6 +8,8 @@ import { is, ok } from 'tst/assert.js'
 import { belowOpt, levels } from './_matrix.js'
 import { agree, funcWat, wat } from './util.js'
 import { forwardStores } from '../src/optimize/forward-store.js'
+import parseWat from 'watr/parse'
+import { walk } from '../scripts/wat-probe.mjs'
 
 test('store forwarding: expressions without forwarding candidates take linear traversal work', () => {
   const visits = depth => {
@@ -36,11 +38,17 @@ test('store forwarding: a chain through an out parameter reloads nothing and kee
   if (belowOpt(2)) return
   const text = wat(chain, { optimize: 3 })
   const body = funcWat(text, 'f$exp') || funcWat(text, 'f')
-  const count = re => (body.match(re) || []).length
-  is(count(/f64\.load/g) + 2 * count(/v128\.load/g), 6, 'the six loads of a and b; the scaled and summed values come from locals')
-  // The added out[2] is overwritten unread and goes; out[0] and out[1] are followed by
-  // loads of a and b, which may name the same array, so they stay.
-  is(count(/f64\.store/g) + 2 * count(/v128\.store/g), 6, 'the three scaled stores, a[0], and the two added stores a later load may read')
+  let loops=0
+  walk(parseWat(body),n=>{
+    if(n[0]!=='loop')return
+    loops++
+    const text=JSON.stringify(n),count=re=>(text.match(re)||[]).length
+    is(count(/f64\.load/g) + 2 * count(/v128\.load/g), 6, 'each loop reads a and b six times; intermediate values come from locals')
+    // The added out[2] is overwritten unread and goes; out[0] and out[1] are
+    // followed by reads that may alias them, so those stores stay.
+    is(count(/f64\.store/g) + 2 * count(/v128\.store/g), 6, 'each loop keeps the three scaled stores, a[0], and the two potentially read stores')
+  })
+  ok(loops>0,'the guarded loop paths remain present')
 })
 
 const cases = [

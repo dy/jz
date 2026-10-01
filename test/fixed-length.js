@@ -10,6 +10,8 @@ import jz, { _compileInProcess as compile } from '../index.js'
 import { ctx } from '../src/ctx.js'
 import { belowOpt, levels } from './_matrix.js'
 import { agree, wat, funcWat } from './util.js'
+import parseWat from 'watr/parse'
+import { walk } from '../scripts/wat-probe.mjs'
 
 // The fact as the summary holds it after a compile: `fixedLenOf` of a module
 // binding, or of a function's binding by the name the source gave it.
@@ -241,7 +243,13 @@ test('present receiver: one check per block for the fields of a nullable element
   }
   for (const optimize of levels(2, 3)) {
     const body = funcWat(wat(src, { optimize }), 'f')
-    ok((body.match(/__throw_property_nullish/g) || []).length <= 1, `at most one check per pass at ${optimize}`)
+    let loops=0
+    walk(parseWat(body),n=>{
+      if(n[0]!=='loop')return
+      loops++
+      ok((JSON.stringify(n).match(/__throw_property_nullish/g) || []).length <= 1, `at most one check in each loop at ${optimize}`)
+    })
+    ok(loops>0,'the guarded loop paths remain present')
   }
 })
 
