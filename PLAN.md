@@ -60,8 +60,12 @@ The remaining release blockers are:
   recursion still fails after `emitFuncs`: 3,471,078,376 bytes before emission,
   4,181,100,024 after it, then the 4 GiB ceiling. The fresh artifact is
   27,429,790 bytes, SHA-256 prefix `574f243a3b9f`. The small combined reduction
-  does not resolve this blocker. A published typed-read callback still reaches
-  mutable solver inputs; replacing it with settled facts is under review.
+  does not resolve this blocker. Typed-read presence now uses settled binding
+  and immutable-field snapshots. Provisional spread layouts also settle their
+  transitive closure before restarting: a twelve-layer call chain takes two
+  solves instead of thirteen, with identical canonical IDs and field kinds.
+  Focused native/WASI checks pass; their combined recursive heap effect still
+  needs a fresh kernel measurement.
 - Dependency release: the complete, tested watr 5.11.9 tarball awaits publication
   approval. JZ still declares and locks 5.11.8. Publication, the dependency bump
   and a clean registry installation gate must precede release.
@@ -135,9 +139,11 @@ identity, dynamic concat, and observed typed-store assignment results now have
 passing native/WASI regression coverage. Argument settlement has 60 passing
 summary-query groups on both hosts. Existing-key table updates retain allocation
 headroom and reduce focused module sizes by 9–75 bytes.
-The integer-loop operation ratchet retains its 647 hot-operation ceiling and
-accounts separately for the required cold Number fallback. Nine other operation
-ratchet failures remain under investigation; they have not been rebaselined.
+An uncommitted scalar-ratchet proposal preserves the original entered-loop
+ceilings and counts required cold Number fallbacks separately. Automatic approval
+review rejected its higher total ceilings; explicit approval remains pending.
+The accepted ratchet is unchanged. Its nine failing categories remain blockers;
+neither their limits nor the other performance gates have been relaxed.
 Subsequent fixes preserve source
 locations through loop copies, bound secondary counters, retain shared literal
 objects across in-place replacement, and check absent packed-array receivers.
@@ -181,8 +187,17 @@ before bounds checks and preserve catch behavior and assignment results: the
 native five-tier focus passes 3 groups / 834 assertions, with matching WASI
 coverage and 2,332 nullable-receiver assertions. Known Number/raw-BigInt fixture
 bytes are unchanged; generic conversion grows one O2 fixture by 714 bytes and a
-previously incorrect Number-or-string fixture by 6,686 bytes. DataView setters,
-Map/Set NaN keys and well-known Symbol reflection remain under review.
+previously incorrect Number-or-string fixture by 6,686 bytes. DataView operations
+now preserve argument capture, conversion and unsigned bounds order; native and
+WASI checks pass 13 groups / 5,534 assertions each. Map/Set hash and equality
+reject numeric NaNs before boxed identity dispatch, with 4 groups / 4,403
+assertions on each host and an unchanged 2,465-byte dictionary size result.
+Collection constructors, grouping and structuredClone preserve argument order;
+the final focus passes 4 groups / 214 assertions per host. Ordinary Map/Set/clone
+calls remain byte-identical, as do the O2/size grouping fixture sizes. Well-known
+Symbol identity, pointer-looking Number NaNs at generic storage boundaries and
+groupBy iterator semantics remain under review. The frozen core R6 diagnostic
+is still running and does not include every subsequent focused fix.
 
 The proposed scalar operation-ratchet accounting change is uncommitted and
 excluded from frozen gates. It preserves entered-loop ceilings but increases
