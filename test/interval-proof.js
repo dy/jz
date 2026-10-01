@@ -13,6 +13,40 @@ import { typedIdxProven } from '../src/type/loop-versioning.js'
 import { ctx } from '../src/ctx.js'
 import { createActiveFunction } from '../src/compile/active-function.js'
 
+test('interval proof: monotone counter sign bounds remainder without an i32 counter hull', () => {
+  const cases = [
+    ['unit', 0, ['++', 'i'], null, 6, [0, 5]],
+    ['stride', 1, ['+=', 'i', 3], null, 6, [0, 5]],
+    ['commuted', 0, ['=', 'i', ['+', 2, 'i']], null, 6, [0, 5]],
+    ['negative zero', -0, ['++', 'i'], null, 6, null],
+    ['negative start', -1, ['++', 'i'], null, 6, null],
+    ['fractional step', 0, ['+=', 'i', 0.5], null, 6, null],
+    ['zero divisor', 0, ['++', 'i'], null, 0, null],
+    ['body write', 0, ['++', 'i'], ['=', 'i', -6], 6, null],
+    ['captured write', 0, ['++', 'i'], ['=>', [], ['=', 'i', -6]], 6, null],
+    ['condition write', 0, ['++', 'i'], null, 6, null, ['<', ['=', 'i', -6], 'n']],
+    ['redeclaration', 0, ['++', 'i'], ['let', ['=', 'i', -6]], 6, null],
+    ['later initializer write', 0, ['++', 'i'], null, 6, null, null, ['let', ['=', 'i', 0], ['=', 'j', ['=', 'i', -6]]]],
+    ['later initializer negative zero', 0, ['++', 'i'], null, 6, null, null, ['let', ['=', 'i', 0], ['=', 'j', ['=', 'i', -0]]]],
+  ]
+  for (const [name, start, step, effect, divisor, want, condition, init] of cases) {
+    const read = ['()', 'take', ['%', 'i', divisor]], counter = ['()', 'take', 'i']
+    const after = ['()', 'take', ['%', 'i', divisor]]
+    const loop = ['for', init ?? ['let', ['=', 'i', start]], condition ?? ['<', 'i', 'n'], step,
+      [';', ...(effect ? [effect] : []), read, counter]]
+    const body = [';', loop, after], calls = new Map([[read, undefined], [counter, undefined], [after, undefined]])
+    const prior = ctx.func
+    ctx.func = createActiveFunction({ body })
+    try { scanIntervalIdx(body, null, () => null, null, calls) }
+    finally { ctx.func = prior }
+    is(calls.get(read), [want], `${name}: remainder hull`)
+    if (want) {
+      is(calls.get(counter), [null], 'a sign proof does not claim an i32 counter bound')
+      is(calls.get(after), [null], 'the counter sign does not escape its lexical loop')
+    }
+  }
+})
+
 test('interval proof: assignment-valued indices retain bounds and execute mutations once', () => {
   for (const initial of [0, 0, 3, 4, -1]) {
     const first = ['[]', 'a', ['=', 'x', ['++', 'i']]], next = ['[]', 'a', 'x']

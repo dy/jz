@@ -86,14 +86,15 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
   const collectNames = (n, set) => someDeep(n, x => { if (typeof x === 'string') set.add(x); return false })
   collectClosureWrites(body, false)
   const activeFacts = new Map()   // name → [lo, hi] theorem stamped by a rewrite pass (peel)
-  // consts bound to a uint32 draw (`const h = s >>> 0`): non-negative even
-  // where the interval cannot hold the value — the `%` rule's dividend
-  const nonNegConsts = new Set()
+  // Immutable uint32 draws and lexically active increasing counters remain
+  // finite nonnegative integers even when their interval exceeds signed i32.
+  // This is only a dividend-sign proof for `%`, never a storage-width proof.
+  const nonNegIntegers = new Set()
   walkAst(body, { enter: n => {
     if (n[0] === '=>') return false
     if (n[0] === 'const') for (let i = 1; i < n.length; i++) {
       const d = n[i]
-      if (Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string' && Array.isArray(d[2]) && d[2][0] === '>>>' && !closureWrites.has(d[1])) nonNegConsts.add(d[1])
+      if (Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string' && Array.isArray(d[2]) && d[2][0] === '>>>' && !closureWrites.has(d[1])) nonNegIntegers.add(d[1])
     }
   } })
   // Preserve range facts through an immutable named guard:
@@ -214,7 +215,7 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
       // draw `rnd() % 101` over a uint32 word the interval cannot hold (beyond signed i32)
       if (op === '%' && B && B[0] === B[1] && B[0] > 0
           && ((Array.isArray(x) && (x[0] === '>>>' || (x[0] === '&' && (intLiteralValue(x[1]) ?? intLiteralValue(x[2])) >= 0)))
-            || (typeof x === 'string' && nonNegConsts.has(x))))
+            || (typeof x === 'string' && nonNegIntegers.has(x))))
         return [0, B[0] - 1]
       return null
     }
@@ -713,7 +714,7 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
       // canonical literal-interval iv: `for (iv = A; iv </<= B; iv += STEP)` —
       // including affine tests (`iv + WIDTH <= B`) — or the DOWNWARD unit-step
       // twin (heapify roots, reverse scans). A/B fold through the full evaluator.
-      let iv = null, range = null, ivStep = null
+      let iv = null, range = null, ivStep = null, nonNegCounter = null
       const decls = new Map(); collectDecls(init, decls)
       const stepDelta = (s, name) => {
         if (!Array.isArray(s)) return null
@@ -741,6 +742,16 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
           const A = As && As[0] === As[1] ? As[0] : null
           const B = Bs && Bs[0] === Bs[1] ? Bs[0] : null
           const delta = down ? null : stepDelta(step, name)
+          // A loop-local integer started at +0 or above and advanced only by
+          // a positive constant stays finite and nonnegative. Rounded Number
+          // addition eventually stops advancing; it cannot wrap or make -0.
+          // The upper loop bound need not be known to bound `counter % K`.
+          // Later declarators may have overwritten the counter initializer.
+          const start = dv != null ? constInt(dv) : null, afterInit = env.get(name)
+          if (start != null && start >= 0 && !Object.is(start, -0) && delta > 0 &&
+              afterInit && Object.is(afterInit[0], start) && Object.is(afterInit[1], start) &&
+              !closureWrites.has(name) && !isReassigned(cond, name) &&
+              !isReassigned(lbody, name) && !redeclaresName(lbody, name)) nonNegCounter = name
           if (A != null && B != null && !isReassigned(lbody, name) && !redeclaresName(lbody, name)
               && (cond[2] == null || boundInvariant(cond[2], lbody))
               && (down ? isUnitDecrement(step, name) : delta != null && delta > 0)) {
@@ -751,6 +762,8 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
           }
         }
       }
+      const hadNonNeg = nonNegCounter && nonNegIntegers.has(nonNegCounter)
+      if (nonNegCounter) nonNegIntegers.add(nonNegCounter)
       // Companion-IV theorem. If a positive cursor has one direct positive
       // increment in the loop body, its value BEFORE that increment is bounded
       // by the statically known trip count. This is deliberately a lexical
@@ -1000,6 +1013,7 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
         if (prior) coupledEnv.set(name, prior)
         else coupledEnv.delete(name)
       }
+      if (nonNegCounter && !hadNonNeg) nonNegIntegers.delete(nonNegCounter)
       return
     }
     if (op === 'while') {

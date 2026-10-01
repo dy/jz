@@ -1604,6 +1604,12 @@ preserve writes to existing bindings and introduce only private temporary locals
 so changing loop arithmetic does not require rescanning all nested closures.
 
 The interval interpreter also supplies call-argument and typed-store bounds.
+A loop-local counter initialized to a nonnegative integer other than `-0`, then
+advanced only by a positive integer constant, keeps its sign even with an unknown
+upper bound. This lexical fact bounds `counter % K` for positive constant `K`;
+it proves no i32 magnitude for the counter itself. Body, condition and captured
+writes reject it. `test/interval-proof.js` pins the fact's scope and rejections,
+and the remainder and dense-switch tests pin signed-zero behavior and lowering.
 Its branches retain completed environments and share one hull join. Range pairs
 are immutable, so unchanged bounds survive a join without another allocation.
 Compile-time bitwise and integer-store folds share exact ToInt32 conversion;

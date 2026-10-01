@@ -17,6 +17,36 @@ export let wrap = (x, n) => (x % n + n) % n
 export let ring = (n, len, steps) => { let buf = new Float64Array(len), p = 0, s = 0
   for (let i = 0; i < steps; i++) { buf[p] = i; s += buf[(p + len - 1) % len]; p = (p + 1) % n } return s + p }`
 
+test('remainder: dynamic counter bounds preserve sign and effects across calls', () => {
+  const loops = {
+    positive: 'for(let i=0;i<n;i++) out.push(keep(i%6))',
+    negativeZero: 'for(let i=-0;i<n;i++) out.push(keep(i%6))',
+    negative: 'for(let i=-6;i<n;i++) out.push(keep(i%6))',
+    fraction: 'for(let i=0;i<n;i+=0.5) out.push(keep(i%6))',
+    bodyWrite: 'for(let i=0;i<n;i++){if(i===1)i=-6;out.push(keep(i%6));if(i===-6)break}',
+    captured: 'for(let i=0;i<n;i++){const change=()=>{i=-6};change();out.push(keep(i%6));break}',
+    condition: 'for(let i=0;(i=-6)<n;i++){out.push(keep(i%6));break}',
+    divisorEffect: 'for(let i=0;i<n;i++) out.push(keep(i%step()))',
+    initializerWrite: 'for(let i=0,j=(i=-6);i<n;i++) out.push(keep(i%6))',
+    initializerNegativeZero: 'for(let i=0,j=(i=-0);i<n;i++) out.push(keep(i%6))',
+    exits: 'for(let i=0;i<n;i++){if(i===2)continue;out.push(keep(i%6));if(i===7)break}',
+  }
+  for (const optimize of levels(0, 2, 3, 'size')) {
+    for (const name of ['positive', 'positive', 'negativeZero', 'positive', 'negative', 'fraction', 'bodyWrite', 'captured', 'condition', 'divisorEffect', 'initializerWrite', 'initializerNegativeZero', 'exits']) {
+      const source = `let calls=0; function keep(x){calls++;return x}
+        function step(){calls++;return 6}
+        export function f(n){calls=0;let out=[];${loops[name]};return out}
+        export function effects(){return calls}`
+      const host = oracle(source), wasm = run(source, { optimize })
+      for (const n of [0, 1, 9, 1, 1.5, NaN]) {
+        const got = wasm.f(n), want = host.f(n)
+        ok(got.length === want.length && got.every((v, i) => Object.is(v, want[i])), `${optimize}: ${name}(${n}) preserves every value and zero sign`)
+        is(wasm.effects(), host.effects(), 'each argument, divisor and callee effect occurs once')
+      }
+    }
+  }
+})
+
 test('remainder: integer dividends retain zero sign through returns, storage and updates', () => {
   const source = `
     export function direct(x) { return (x | 0) % 3 }
