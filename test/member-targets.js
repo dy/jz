@@ -22,6 +22,37 @@ const agree = (cases) => {
   }
 }
 
+test('member targets: saved numeric keys keep their value across RHS mutations and throws', () => {
+  for (const array of ['[2,3]', 'new Float64Array([2,3])']) for (const captured of [false, true]) {
+    const source = `export function f(start, next, mode) {
+      const a=${array}; let index=${captured ? 'start' : 'start >>> 0'}, calls=0, caught=0
+      function value() { calls++; ${captured ? 'index=next;' : ''} if(mode)throw 7; return 19 }
+      try { a[index+0]=value() } catch(e) { caught=e }
+      return [a[0],a[1],a[start+0],index,calls,caught]
+    }`
+    for (const optimize of levels(0,1,2,3,'size')) {
+      const got=jz(source,{optimize:{level:optimize,sourceInline:false}}).exports.f, want=oracle(source).f
+      for (const args of [[0,1,0],[0,1,0],[1,0,0],[0,1,1],[-0,1,0],[0.5,0,0],
+        [2147483648,0,0],[4294967296,0,0],[NaN,0,0],[Infinity,0,0],[undefined,0,0],[0,1,0]])
+        is(got(...args),want(...args),`O${optimize}, captured=${captured}, ${args}`)
+    }
+  }
+  for (const source of [
+    `export function f(mode) { const a=new Float64Array([1,2,3]);let i=1;
+      a[i+1]=(i=mode,19);return[a,i] }`,
+    `export function f(mode) { let a=new Float64Array([1,2]),i=0,calls=0;const old=a;
+      function value(){calls++;if(mode)throw 7;return 19}
+      try { a[(a=new Float64Array([5,6]),i++)]=value() }
+      catch(e){return[old,a,i,calls,e]};return[old,a,i,calls,0] }`,
+    `export function f(mode) { let a=new Float64Array([1,2]),i=0,calls=0;const old=a;
+      function value(){calls++;a=new Float64Array(mode?0:2);return 19}
+      a[i++]=value();return[old,a,i,calls] }`,
+  ]) for (const optimize of levels(0,1,2,3,'size')) {
+    const got=jz(source,{optimize:{level:optimize,sourceInline:false}}).exports.f, want=oracle(source).f
+    for(const mode of [0,0,1,0])is(got(mode),want(mode),`O${optimize}, receiver and key snapshot, ${mode}`)
+  }
+})
+
 test('member targets: scalar-replaced receivers preserve effectful stores', () => {
   const cases = [
     `function next(n){if(n<0)throw 7;return n+1}

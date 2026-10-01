@@ -7,10 +7,12 @@
 import { ctx, err, inc } from '../../ctx.js'
 import { isReassigned } from '../../ast.js'
 import {
-  applyBigintRepresentationAction, asF64, boxBigInt, f64rem, fromI64, isBoundName, isConst, isGlobal, isNullish, isNullishLit, readI64, readVar, temp, throwTypeErrorIR, toNumF64, toStrI64, truthyIR, typed, writeVar,
+  applyBigintRepresentationAction, asF64, asI32, boxBigInt, f64rem, fromI64, isBoundName, isConst, isGlobal, isNullish, isNullishLit, readI64, readVar, temp, throwTypeErrorIR, toNumF64, toStrI64, truthyIR, typed, writeVar,
 } from '../../ir.js'
-import { hasAmbiguousBoolMerge, valTypeOf, boolTagged } from '../../kind.js'
-import { VAL, repOf } from '../../reps.js'
+import { hasAmbiguousBoolMerge, valTypeOf, boolTagged, isPresentNumber } from '../../kind.js'
+import { VAL, repOf, updateRep } from '../../reps.js'
+import { intExprRange } from '../../static.js'
+import { wholeKey, typedIdxProven } from '../../type.js'
 import { emitElementAssign, emitPropertyAssign } from '../emit-assign.js'
 import { withInitializerScope } from '../flow-state.js'
 import {
@@ -40,6 +42,18 @@ const implicitEffect = (n, view) => {
   return false
 }
 const effectful = (n) => Array.isArray(n) && (!isSideEffectFree(n) || implicitEffect(n, ctx.summary?.at(ctx.func.current)))
+const NUMBER_KEY_OPS = new Set(['+', '-', '*', '/', '%', 'u+', 'u-', '~', '|', '&', '^', '<<', '>>', '>>>'])
+// These expressions cannot call user code or observe memory. Their private
+// operands keep the same values across the RHS, so saving the key adds no work.
+function stableNumberKey(node, rhs) {
+  if (typeof node === 'string') return isPresentNumber(ctx, node) &&
+    (isConst(node) || isBoundName(node) && !ctx.func.boxed?.has(node)) && !isReassigned(rhs, node)
+  if (!Array.isArray(node)) return false
+  if (node[0] == null) return typeof node[1] === 'number'
+  if (!NUMBER_KEY_OPS.has(node[0])) return false
+  for (let i = 1; i < node.length; i++) if (!stableNumberKey(node[i], rhs)) return false
+  return true
+}
 function stagedReference(name, update = true, rhs) {
   if (!Array.isArray(name) || (name[0] !== '.' && name[0] !== '[]')) return null
   const pre = []
@@ -53,6 +67,7 @@ function stagedReference(name, update = true, rhs) {
     if (always && !key && typeof node === 'string' &&
         (isConst(node) || (isBoundName(node) || ctx.func.flatObjects?.has(node)) && !ctx.func.boxed?.has(node)) &&
         !isReassigned(rhs, node) && !(name[0] === '[]' && isReassigned(name[2], node))) always = false
+    if (always && !key && tag === 'key' && stableNumberKey(node, rhs)) always = false
     if (!always && !effectful(node)) return node
     // Staging a host field's copied container also retains its owner. The
     // eventual store must write back to that owner, even if the RHS replaces
@@ -74,8 +89,27 @@ function stagedReference(name, update = true, rhs) {
     const sid = vt === VAL.OBJECT ? ctx.summary?.at(ctx.func.current).objectSidOfExpr(node) : null
     // the transient channel ctx.schema.idOf and class dispatch read first: a class instance held here keeps its class
     if (sid != null) (ctx.func.refinements ??= new Map()).set(h, { schemaId: sid, notNullish: ctx.summary.at(ctx.func.current).mayBeNullishExpr(node) === false })
+    let range = vt === VAL.NUMBER ? intExprRange(node) : null
+    const len = tag === 'key' && valTypeOf(recv) === VAL.TYPED
+      ? ctx.func.typedLen?.get(name[1]) ?? ctx.scope.globalTypedLen?.get(name[1]) ?? repOf(name[1])?.arrayLen : null
+    const extent = len > 0 && typedIdxProven(name[1], node, name) ? len : null
     const value = emit(node)
-    pre.push(['local.set', `$${h}`, asF64(value)])
+    // A captured Number keeps its actual carrier and current hull. Staging
+    // fixes the value before later operand effects; it must not erase the
+    // integer/extent proof that already justified the original expression.
+    const boundedWord = tag === 'key' && range && range[0] >= -2147483648 && range[1] <= 2147483647 &&
+      isPresentNumber(ctx, node) && wholeKey(node)
+    const word = vt === VAL.NUMBER && !key && (value.type === 'i32' && value.ptrKind == null || boundedWord)
+    if (word) {
+      ctx.func.locals.set(h, 'i32')
+      // An occurrence can have a tighter hull than its counter's lifetime
+      // (postincrement includes the terminal value). The saved old key keeps
+      // that fixed-extent fact even when the source counter has advanced.
+      if (extent != null)
+        range = [Math.max(0, range?.[0] ?? 0), Math.min(extent - 1, range?.[1] ?? extent - 1)]
+      if (range || value.unsigned) updateRep(h, { range, unsigned: !!value.unsigned })
+    }
+    pre.push(['local.set', `$${h}`, word ? asI32(value) : asF64(value)])
     // GetValue rejects a nullish base after evaluating the key expression,
     // but before invoking that key's conversion hooks.
     if (key && ctx.summary?.at(ctx.func.current).mayBeNullishExpr(recv) !== false &&

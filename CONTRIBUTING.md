@@ -140,6 +140,12 @@ also retain the receiver across value conversion. Uncaptured private bindings
 keep their existing index proofs when no operand writes them. Property-key
 conversion precedes a strict primitive-write error, after RHS evaluation;
 nullish receivers reject before key conversion.
+Pure Number arithmetic over unchanged private bindings needs no key snapshot.
+When a key must be saved, its numeric carrier, unsigned interpretation and
+current range travel with the value. A proven typed access can tighten that
+snapshot to the fixed extent even when a postincrement's complete counter hull
+includes its terminal value; RHS effects still see the original evaluation
+order (`test/member-targets.js`, the AoS and codec cursor regressions).
 Ordinary-array stores reuse the canonical loop bounds proof at every tier;
 skipping interval analysis does not discard a proved element key. Calls and
 coercions that can resize an alias invalidate that proof.
