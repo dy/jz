@@ -632,6 +632,453 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
     // is an every-point invariant that covers break states)
     for (const s of lcF.breaks) hullInto(s)
   }
+  // These helpers use the live scan environment, but their closures belong to
+  // the scan, not each repeated visit of a for-loop during fixpoint iteration.
+  const stepDelta = (s, name) => {
+    if (!Array.isArray(s)) return null
+    if (s[0] === 'postfix') s = s[1]
+    if (s[0] === '++' && s[1] === name) return 1
+    if (s[0] === '+=' && s[1] === name) return constInt(s[2])
+    if (s[0] === '=' && s[1] === name && Array.isArray(s[2]) && s[2][0] === '+') {
+      if (s[2][1] === name) return constInt(s[2][2])
+      if (s[2][2] === name) return constInt(s[2][1])
+    }
+    return null
+  }
+  // Multi-branch monotone cursor budget. A codec cursor often advances a
+  // different number of times in mutually-exclusive arms (`ip++` once for
+  // INDEX, five times for RGBA). Compute the MAXIMUM positive constant
+  // advance along any one body path; over a literal-trip loop this gives a
+  // whole-body invariant `entry <= cursor <= entry + trips*maxAdvance`.
+  // Unknown writes, nested control loops, abrupt edges, or closures reject.
+  const advanceBudget = (root, name, upperOnly = false) => maxAdvanceBudget(root, name, { constInt, evRange: ev, closureWrites, MUTATE_OPS, upperOnly })
+  // Two-counter amortized budget. Track `cursor + credit` path-sensitively
+  // through one loop body. This proves buffered/RLE emitters where a rare
+  // path writes K+1 bytes only after `credit > 0` and resets the credit:
+  // the extra byte spends accumulated credit, so the per-iteration
+  // potential still rises by at most K. Only positive constant cursor
+  // advances and affine/zero credit writes are accepted; complex control
+  // or state explosion fails closed.
+  const potentialAdvance = (root, cursor, credit) => {
+    const LIM = 128, INF = I32_MAX
+    const norm = (xs) => {
+      const m = new Map()
+      for (const s of xs) {
+        if (s.lo > s.hi) continue
+        const k = `${s.mode},${s.rv},${s.lo},${s.hi}`
+        const p = m.get(k)
+        if (!p || s.c > p.c) m.set(k, s)
+      }
+      const out = [...m.values()]
+      return out.length <= LIM ? out : null
+    }
+    const addC = (xs, d) => d != null && d > 0 ? xs.map(s => ({ ...s, c: s.c + d })) : null
+    const setCredit = (xs, mode, rv) => xs.map(s => ({ ...s, mode, rv }))
+    const cmp = (a, op2, b) => op2 === '<' ? a < b : op2 === '<=' ? a <= b : op2 === '>' ? a > b
+      : op2 === '>=' ? a >= b : op2 === '===' || op2 === '==' ? a === b : a !== b
+    const split = (xs, cond2, truth) => {
+      if (!Array.isArray(cond2) || cond2.length !== 3 ||
+          !['<', '<=', '>', '>=', '===', '==', '!==', '!='].includes(cond2[0])) return xs.map(s => ({ ...s }))
+      let op2 = cond2[0], k = constInt(cond2[2])
+      if (cond2[1] !== credit || k == null) {
+        if (cond2[2] === credit && (k = constInt(cond2[1])) != null)
+          op2 = op2 === '<' ? '>' : op2 === '<=' ? '>=' : op2 === '>' ? '<' : op2 === '>=' ? '<=' : op2
+        else return xs.map(s => ({ ...s }))
+      }
+      if (!truth) op2 = op2 === '<' ? '>=' : op2 === '<=' ? '>' : op2 === '>' ? '<=' : op2 === '>=' ? '<'
+        : op2 === '===' || op2 === '==' ? '!==' : '==='
+      const out = []
+      for (const s of xs) {
+        if (s.mode === 'const') { if (cmp(s.rv, op2, k)) out.push({ ...s }); continue }
+        const q = k - s.rv
+        let lo = s.lo, hi = s.hi
+        if (op2 === '<') hi = Math.min(hi, q - 1)
+        else if (op2 === '<=') hi = Math.min(hi, q)
+        else if (op2 === '>') lo = Math.max(lo, q + 1)
+        else if (op2 === '>=') lo = Math.max(lo, q)
+        else if (op2 === '===' || op2 === '==') { lo = Math.max(lo, q); hi = Math.min(hi, q) }
+        // `!=` removes an interior point which an interval cannot express;
+        // retain the wider interval (safe, merely less precise).
+        if (lo <= hi) out.push({ ...s, lo, hi })
+      }
+      return out
+    }
+    const directDelta = (n, name) => {
+      if (!Array.isArray(n) || n[1] !== name) return null
+      if (n[0] === '++') return 1
+      if (n[0] === '--') return -1
+      if (n[0] === '+=' || n[0] === '-=') { const d = constInt(n[2]); return d == null ? null : n[0] === '+=' ? d : -d }
+      if (n[0] === '=' && Array.isArray(n[2]) && (n[2][0] === '+' || n[2][0] === '-')) {
+        if (n[2][1] !== name) return null
+        const d = constInt(n[2][2]); return d == null ? null : n[2][0] === '+' ? d : -d
+      }
+      return null
+    }
+    const walk = (n, xs) => {
+      if (!xs) return null
+      if (!Array.isArray(n)) return xs
+      const op2 = n[0]
+      if (op2 === '=>') return isReassigned(n, cursor) || isReassigned(n, credit) ? null : xs
+      if (MUTATE_OPS.has(op2) && (n[1] === cursor || n[1] === credit)) {
+        // Evaluate embedded lhs/rhs effects first only when they are not the
+        // direct recurrence itself; accepted recurrences contain no calls.
+        if (n[1] === cursor) return addC(xs, directDelta(n, cursor))
+        if (op2 === '=' && constInt(n[2]) != null) return setCredit(xs, 'const', constInt(n[2]))
+        const d = directDelta(n, credit)
+        if (d == null) return null
+        return xs.map(s => ({ ...s, rv: s.rv + d }))
+      }
+      if (op2 === 'if') {
+        let base = walk(n[1], xs)
+        if (!base) return null
+        const a = walk(n[2], split(base, n[1], true))
+        const b = n.length > 3 ? walk(n[3], split(base, n[1], false)) : split(base, n[1], false)
+        return a && b ? norm([...a, ...b]) : null
+      }
+      if (op2 === '?:') {
+        let base = walk(n[1], xs)
+        if (!base) return null
+        const a = walk(n[2], split(base, n[1], true)), b = walk(n[3], split(base, n[1], false))
+        return a && b ? norm([...a, ...b]) : null
+      }
+      if (op2 === '&&' || op2 === '||') {
+        const left = walk(n[1], xs)
+        if (!left) return null
+        const right = walk(n[2], left)
+        return right ? norm([...left, ...right]) : null // RHS may be skipped
+      }
+      if (op2 === 'break' || op2 === 'continue' || op2 === 'return' || op2 === 'throw') return null
+      if (op2 === 'while' || op2 === 'for' ||
+          op2 === 'catch' || op2 === 'finally')
+        return isReassigned(n, cursor) || isReassigned(n, credit) ? null : xs
+      let out = xs
+      for (let j = 1; j < n.length; j++) { out = walk(n[j], out); if (!out) return null }
+      return out
+    }
+    const end = walk(root, [{ c: 0, mode: 'rel', rv: 0, lo: 0, hi: INF }])
+    if (!end?.length) return null
+    let max = 0
+    for (const s of end) {
+      const creditLo = s.mode === 'rel' ? s.lo + s.rv : s.rv
+      if (creditLo < 0 || s.c < 0) return null
+      const d = s.mode === 'rel' ? s.c + s.rv : s.c + s.rv - s.lo
+      if (!Number.isInteger(d)) return null
+      max = Math.max(max, d)
+    }
+    return max
+  }
+  let forDecls = null
+  const declarationsOf = init => {
+    let decls = forDecls?.get(init)
+    if (!decls) {
+      decls = new Map()
+      collectDecls(init, decls)
+      ;(forDecls ??= new Map()).set(init, decls)
+    }
+    return decls
+  }
+  // Loop-only captured state is allocated only when a for-loop is visited.
+  // The ordinary walker remains small even when nested fixpoints revisit it.
+  const visitFor = n => {
+    const [, init, cond, step, lbody] = n
+    visit(init)
+    // canonical literal-interval iv: `for (iv = A; iv </<= B; iv += STEP)` —
+    // including affine tests (`iv + WIDTH <= B`) — or the DOWNWARD unit-step
+    // twin (heapify roots, reverse scans). A/B fold through the full evaluator.
+    let iv = null, range = null, ivStep = null, nonNegCounter = null
+    const decls = declarationsOf(init)
+    const down = Array.isArray(cond) && (cond[0] === '>' || cond[0] === '>=')
+    if (Array.isArray(cond) && (cond[0] === '<' || cond[0] === '<=' || down)) {
+      let name = cond[1], bias = 0
+      if (!down && Array.isArray(name) && name.length === 3 && (name[0] === '+' || name[0] === '-')) {
+        const r = constInt(name[2]), l = constInt(name[1])
+        if (typeof name[1] === 'string' && r != null) { bias = name[0] === '+' ? r : -r; name = name[1] }
+        else if (name[0] === '+' && typeof name[2] === 'string' && l != null) { bias = l; name = name[2] }
+      }
+      if (typeof name === 'string') {
+        const dv = decls.get(name)
+        const As = dv != null ? ev(dv) : env.get(name)
+        const Bs = cond[2] != null ? ev(cond[2]) : null
+        const A = As && As[0] === As[1] ? As[0] : null
+        const B = Bs && Bs[0] === Bs[1] ? Bs[0] : null
+        const delta = down ? null : stepDelta(step, name)
+        // A loop-local integer started at +0 or above and advanced only by
+        // a positive constant stays finite and nonnegative. Rounded Number
+        // addition eventually stops advancing; it cannot wrap or make -0.
+        // The upper loop bound need not be known to bound `counter % K`.
+        // Later declarators may have overwritten the counter initializer.
+        const start = dv != null ? constInt(dv) : null, afterInit = env.get(name)
+        if (start != null && start >= 0 && !Object.is(start, -0) && delta > 0 &&
+            afterInit && Object.is(afterInit[0], start) && Object.is(afterInit[1], start) &&
+            !loopMutable(name) && !isReassigned(cond, name) &&
+            !isReassigned(lbody, name) && !redeclaresName(lbody, name)) nonNegCounter = name
+        if (A != null && B != null && !loopMutable(name) && !isReassigned(lbody, name) && !redeclaresName(lbody, name)
+            && (cond[2] == null || boundInvariant(cond[2], lbody))
+            && (down ? isUnitDecrement(step, name) : delta != null && delta > 0)) {
+          iv = name
+          ivStep = down ? -1 : delta
+          range = down ? [cond[0] === '>' ? B + 1 : B, A]
+            : [A, B - bias - (cond[0] === '<' ? 1 : 0)]
+        }
+      }
+    }
+    const hadNonNeg = nonNegCounter && nonNegIntegers.has(nonNegCounter)
+    if (nonNegCounter) nonNegIntegers.add(nonNegCounter)
+    // Companion-IV theorem. If a positive cursor has one direct positive
+    // increment in the loop body, its value BEFORE that increment is bounded
+    // by the statically known trip count. This is deliberately a lexical
+    // window: after the increment the theorem is removed, so `out[op+k]`
+    // becomes raw while a post-increment access remains checked.
+    const coupled = []
+    const budgeted = []
+    // Upper caps for cursors that also fall: every write inside the loop is
+    // capped, no seed is set, and the loop fixpoint discovers the lower bound.
+    const capped = []
+    if (iv && ivStep > 0 && range && range[0] <= range[1]) {
+      const trips = Math.floor((range[1] - range[0]) / ivStep) + 1
+      const stmts = Array.isArray(lbody) && (lbody[0] === ';' || lbody[0] === '{}') ? lbody.slice(1) : [lbody]
+      const writesTo = (root, name) => {
+        let count = 0
+        walkAst(root, { enter: x => {
+          if (MUTATE_OPS.has(x[0])) {
+            if (x[1] === name) count++
+            else if (Array.isArray(x[1]) && x[1][0] !== '[]' && x[1][0] !== '.' && x[1][0] !== '?.') {
+              const names = new Set(); collectNames(x[1], names)
+              if (names.has(name)) count++
+            }
+          }
+        } })
+        return count
+      }
+      for (const incNode of stmts) {
+        if (!Array.isArray(incNode)) continue
+        const name = typeof incNode[1] === 'string' ? incNode[1] : null
+        if (!name || name === iv || loopMutable(name) || redeclaresName(lbody, name)) continue
+        let delta = null
+        if (incNode[0] === '++') delta = 1
+        else if (incNode[0] === '+=') delta = constInt(incNode[2])
+        else if (incNode[0] === '=' && Array.isArray(incNode[2]) && incNode[2][0] === '+') {
+          if (incNode[2][1] === name) delta = constInt(incNode[2][2])
+          else if (incNode[2][2] === name) delta = constInt(incNode[2][1])
+        }
+        const entry = env.get(name)
+        const h = entry && delta != null && delta > 0
+          ? [entry[0], entry[1] + (trips - 1) * delta] : null
+        if (ipOk(h) && writesTo(lbody, name) === 1) coupled.push([name, h, incNode])
+      }
+      const changedNames = new Set()
+      walkAst(lbody, { enter: x => {
+        if (x[0] === '=>') return false
+        if (MUTATE_OPS.has(x[0]) && typeof x[1] === 'string') changedNames.add(x[1])
+      } })
+      // Only build cursor budgets for names that actually feed a typed index
+      // in this loop. The amortized path scanner is intentionally demand-
+      // driven: running it for every pair of mutated scalar locals made the
+      // compiler itself pay O(locals²) on unrelated arithmetic loops.
+      const indexCaps = new Map()
+      walkAst(lbody, { enter: x => {
+        if (x[0] === '=>') return false
+        if (x[0] === '[]' && typeof x[1] === 'string') {
+          const L = lens(x[1])
+          if (L != null) {
+            const names = new Set(); collectNames(x[2], names)
+            for (const name of names) if (changedNames.has(name)) {
+              let a = indexCaps.get(name); if (!a) indexCaps.set(name, a = [])
+              if (!a.includes(L)) a.push(L)
+            }
+          }
+        }
+      } })
+      for (const name of changedNames) {
+        const caps = indexCaps.get(name)
+        if (!caps?.length) continue
+        if (name === iv || loopMutable(name) || redeclaresName(lbody, name)) continue
+        const entry = env.get(name), maxAdvance = advanceBudget(lbody, name)
+        let h = entry && entry[0] >= 0 && maxAdvance != null && maxAdvance > 0
+          ? [entry[0], entry[1] + trips * maxAdvance] : null
+        // Try every non-negative changed counter as an amortization credit;
+        // keep only a strictly tighter, fully verified potential budget.
+        if (h && caps.some(L => h[1] >= L)) for (const credit of changedNames) {
+          if (credit === name || credit === iv || loopMutable(credit) || redeclaresName(lbody, credit)) continue
+          const ce = env.get(credit)
+          if (!ce || ce[0] < 0) continue
+          const K = potentialAdvance(lbody, name, credit)
+          const ph = K != null && K >= 0 ? [entry[0], entry[1] + ce[1] + trips * K] : null
+          if (ipOk(ph) && ph[1] < h[1]) h = ph
+        }
+        if (ipOk(h)) budgeted.push([name, h])
+        else if (entry) {
+          // No decrement raises the cursor, so its rise stays budgeted when it also falls.
+          const up = advanceBudget(lbody, name, true)
+          const cap = up != null ? [I32_MIN, entry[1] + trips * up] : null
+          if (ipOk(cap)) capped.push([name, cap])
+        }
+      }
+    }
+    // Body fixpoint (same engine as `while` below): the canonical-iv range is
+    // a body-independent theorem re-seeded each pass; everything else
+    // discovers its invariant. This is what proves heapsort's `child` chains,
+    // medianUs's `samples[mid]`, and strided codec input/output cursors.
+    // The condition sees the iv's HEAD range, one step past the body range
+    // (the test that exits); the body sees the body range.
+    const seeded = iv && ipOk(range) && range[0] <= range[1] && !closureWrites.has(iv)
+    const headRange = seeded ? (ivStep > 0 ? [range[0], range[1] + ivStep] : [range[0] - 1, range[1]]) : null
+    const priorCoupled = new Map(coupled.map(([name]) => [name, coupledEnv.get(name)]))
+    const priorFacts = new Map([...budgeted, ...capped].map(([name]) => [name, activeFacts.get(name)]))
+    for (const [name, h] of budgeted) activeFacts.set(name, h)
+    for (const [name, h] of capped) activeFacts.set(name, h)
+    const seeds = () => {
+      if (seeded && ipOk(headRange)) env.set(iv, headRange)
+      else if (iv) env.delete(iv)
+      for (const [name, h, incNode] of coupled) coupledEnv.set(name, { h, incNode })
+      for (const [name, h] of budgeted) setEnv(name, h)
+    }
+    loopFixpoint(seeds,
+      (afterCond) => {
+        if (cond != null) visit(cond)
+        if (seeded) env.set(iv, range)
+        if (afterCond()) { visit(lbody); if (step != null) visit(step) }
+      },
+      cond, seeded)
+    for (const [name] of [...budgeted, ...capped]) {
+      const prior = priorFacts.get(name)
+      if (prior) activeFacts.set(name, prior)
+      else activeFacts.delete(name)
+    }
+    if (iv) env.delete(iv)   // iv holds the exit value after the loop
+    for (const [name] of coupled) {
+      const prior = priorCoupled.get(name)
+      if (prior) coupledEnv.set(name, prior)
+      else coupledEnv.delete(name)
+    }
+    if (nonNegCounter && !hadNonNeg) nonNegIntegers.delete(nonNegCounter)
+    return
+  }
+  const visitWhile = (n, wrapEntry) => {
+    // `while (iv < B)` with a known iv at entry, monotone +1 advances, and a
+    // bounded B: inside the body iv ∈ [entryLo, B_hi-1] (cond holds at body top);
+    // at exit iv ∈ [min(entryLo, B_lo), max(entryHi, B_hi)] — the peel's split
+    // loops chain through this. Anything else: kill and walk.
+    const [, c, wbody] = n
+    let iv = null, entry = null, brange = null
+    if (Array.isArray(c) && c[0] === '<' && typeof c[1] === 'string' && wbody != null) {
+      entry = env.get(c[1]); brange = c[2] != null ? ev(c[2], pureExpr(c[2])) : null
+      if (entry && brange && !loopMutable(c[1]) && ivMonotoneInc(wbody, c[1]) && !redeclaresName(wbody, c[1])
+          && boundInvariant(c[2], wbody)) iv = c[1]
+    }
+    // Every continuing body path advances the tested cursor. Its finite
+    // trip budget also bounds positive companion cursors, including the
+    // increment's final landing. A possible zero advance proves no budget.
+    const budgeted = []
+    if (iv && constInt(c[2]) != null) {
+      const changed = new Set()
+      walkAst(wbody, { enter: x => {
+        if (x[0] === '=>') return false
+        if (MUTATE_OPS.has(x[0]) && typeof x[1] === 'string' && x[1] !== iv &&
+            env.get(x[1]) && !loopMutable(x[1])) changed.add(x[1])
+      } })
+      const options = { constInt, evRange: ev, closureWrites, MUTATE_OPS }
+      const minimum = changed.size ? minAdvanceBudget(wbody, iv, options) : 0
+      const trips = minimum > 0 ? Math.max(0, Math.ceil((brange[1] - entry[0]) / minimum)) : 0
+      if (trips > 0) {
+        for (const name of changed) {
+          if (redeclaresName(wbody, name)) continue
+          const start = env.get(name)
+          const advance = maxAdvanceBudget(wbody, name, options)
+          const h = advance > 0 ? [start[0], start[1] + trips * advance] : null
+          if (ipOk(h)) budgeted.push([name, h])
+        }
+      }
+    }
+    const priorFacts = new Map(budgeted.map(([name]) => [name, activeFacts.get(name)]))
+    for (const [name, h] of budgeted) activeFacts.set(name, h)
+    // WRAPPING-CURSOR invariant (`si = si + K; if (si >= C) si = 0` — the ring
+    // index of table-driven maps): the pair is self-closing on [0, C-1], so an
+    // entry inside that range keeps the name there for the WHOLE loop. Seeded
+    // before the kill; the pair must be the name's only writes in this loop.
+    const wraps = [], symWraps = []
+    if (wbody != null) {
+      const stmts = Array.isArray(wbody) && (wbody[0] === ';' || wbody[0] === '{}') ? wbody : [';', wbody]
+      // one-statement MASK cursor `nm = (nm + K) & M` (the ulam direction ring):
+      // self-closing on [0, M] for any entry inside it — no reset pair needed
+      for (let k = 1; k < stmts.length; k++) {
+        const a2 = stmts[k]
+        if (!(Array.isArray(a2) && a2[0] === '=' && typeof a2[1] === 'string')) continue
+        let rhs = a2[2]
+        if (!(Array.isArray(rhs) && rhs[0] === '&' && rhs.length === 3)) continue
+        const M = intLiteralValue(rhs[1]) ?? intLiteralValue(rhs[2])
+        const inner = intLiteralValue(rhs[1]) != null ? rhs[2] : rhs[1]
+        if (M == null || M < 0) continue
+        if (!(Array.isArray(inner) && inner[0] === '+' && (inner[1] === a2[1] || inner[2] === a2[1]))) continue
+        const e0 = env.get(a2[1])
+        if (!e0 || e0[0] < 0 || e0[1] > M) continue
+        let writes = 0
+        walkAst(wbody, { enter: x => { if (MUTATE_OPS.has(x[0]) && x[1] === a2[1]) writes++ } })
+        if (writes === 1 && !loopMutable(a2[1])) wraps.push([a2[1], [0, M]])
+      }
+      for (let k = 1; k < stmts.length - 1; k++) {
+        const a2 = stmts[k], b2 = stmts[k + 1]
+        let nm = null, K = null
+        if (Array.isArray(a2) && a2[0] === '=' && typeof a2[1] === 'string'
+            && Array.isArray(a2[2]) && a2[2][0] === '+' && a2[2][1] === a2[1]) { nm = a2[1]; K = intLiteralValue(a2[2][2]) }
+        else if (Array.isArray(a2) && a2[0] === '+=' && typeof a2[1] === 'string') { nm = a2[1]; K = intLiteralValue(a2[2]) }
+        else if (Array.isArray(a2) && a2[0] === '++' && typeof a2[1] === 'string') { nm = a2[1]; K = 1 }
+        if (nm == null || K == null || K < 1) continue
+        if (!(Array.isArray(b2) && b2[0] === 'if' && b2.length === 3
+            && Array.isArray(b2[1]) && b2[1][0] === '>=' && b2[1][1] === nm
+            && Array.isArray(b2[2]) && b2[2][0] === '=' && b2[2][1] === nm && intLiteralValue(b2[2][2]) === 0)) continue
+        const C = constInt(b2[1][2])
+        const Cname = C == null && typeof b2[1][2] === 'string' ? b2[1][2] : null
+        if ((C == null || C < 1) && Cname == null) continue
+        const e0 = env.get(nm)
+        const prior = Cname && wrapEntry?.find(([name, h]) => name === nm && h.hiName === Cname)?.[1]
+        if ((!e0 && !prior) || e0 && (e0[0] < 0 || (C != null && e0[1] > C - 1))) continue
+        if (Cname && !boundInvariant(Cname, wbody)) continue
+        // the pair must be the only writes (2 exact: the add and the reset)
+        let writes = 0
+        walkAst(wbody, { enter: x => { if (MUTATE_OPS.has(x[0]) && x[1] === nm) writes++ } })
+        if (writes !== 2 || loopMutable(nm)) continue
+        if (C != null) wraps.push([nm, [0, C - 1]])
+        // symbolic bound (`let SEQLEN = 5` — mutable): the invariant is
+        // si ∈ [0, C-1] RELATIVE to C's runtime value — recorded as a symbolic
+        // hull for reads BEFORE the increment (the versioning guard closes it
+        // with `C ≥ entryHi+1 ∧ C ≤ len`); no numeric env seeding is possible
+        else symWraps.push([nm, { lo: 0, hiName: Cname, hiBias: -1, entryHi: prior?.entryHi ?? e0[1] }, a2])
+      }
+    }
+    // Body fixpoint (loopFixpoint below): the wrap/symWrap seeds are theorems
+    // independent of the body, re-applied each pass; the monotone iv's body
+    // range (entry lo up to the bound, the test having held) applies after
+    // the test; everything else discovers its invariant. Bounds heapsort's
+    // `while (child < n)` chains, medianUs's downward insertion scan, and
+    // interpreter `while (pc < N)` dispatch — shapes the single-kill walk
+    // lost entirely.
+    const seeds = () => {
+      for (const [name, h] of budgeted) setEnv(name, h)
+      for (const [nm, r] of wraps) if (!closureWrites.has(nm)) env.set(nm, r)
+      for (const [nm, h, incNode] of symWraps) if (!closureWrites.has(nm)) symEnv.set(nm, { h, incNode })
+    }
+    loopFixpoint(seeds, (afterCond) => {
+      visit(c)
+      if (iv) env.set(iv, [entry[0], brange[1] - 1])
+      if (afterCond()) for (let k = 2; k < n.length; k++) visit(n[k])
+    }, c)
+    for (const [name] of budgeted) {
+      const prior = priorFacts.get(name)
+      if (prior) activeFacts.set(name, prior)
+      else activeFacts.delete(name)
+    }
+    // exit state: the head invariant where the test failed (already in env);
+    // an iv stepping by more than one can pass its bound (`i += 2` exits at
+    // B + 1), which the head invariant carries and a `[., B]` form did not.
+    // Wraps publish their tighter exit forms.
+    for (const [nm, r] of wraps) if (!closureWrites.has(nm)) env.set(nm, r)   // holds at exit too
+    for (const [nm] of symWraps) symEnv.delete(nm)
+    // The adjacent increment/reset pair also holds at exit. An unknown call
+    // could change the bound; only call-free phases export that theorem.
+    return symWraps.length && symWraps.every(([nm, h]) => !isReassigned(c, nm) && boundInvariant(h.hiName, c)) &&
+      !some(c, x => x[0] === '()' && x.length > 2) && !some(wbody, x => x[0] === '()' && x.length > 2) ? symWraps : null
+  }
   const visit = (n, wrapEntry = null) => {
     if (typeof n === 'string') { recordBinding(n, closureWrites.has(n) ? null : env.get(n)); return }
     if (!Array.isArray(n) || n[0] === '=>') return
@@ -764,439 +1211,8 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
       }
       return
     }
-    if (op === 'for' && n.length === 5) {
-      const [, init, cond, step, lbody] = n
-      visit(init)
-      // canonical literal-interval iv: `for (iv = A; iv </<= B; iv += STEP)` —
-      // including affine tests (`iv + WIDTH <= B`) — or the DOWNWARD unit-step
-      // twin (heapify roots, reverse scans). A/B fold through the full evaluator.
-      let iv = null, range = null, ivStep = null, nonNegCounter = null
-      const decls = new Map(); collectDecls(init, decls)
-      const stepDelta = (s, name) => {
-        if (!Array.isArray(s)) return null
-        if (s[0] === 'postfix') s = s[1]
-        if (s[0] === '++' && s[1] === name) return 1
-        if (s[0] === '+=' && s[1] === name) return constInt(s[2])
-        if (s[0] === '=' && s[1] === name && Array.isArray(s[2]) && s[2][0] === '+') {
-          if (s[2][1] === name) return constInt(s[2][2])
-          if (s[2][2] === name) return constInt(s[2][1])
-        }
-        return null
-      }
-      const down = Array.isArray(cond) && (cond[0] === '>' || cond[0] === '>=')
-      if (Array.isArray(cond) && (cond[0] === '<' || cond[0] === '<=' || down)) {
-        let name = cond[1], bias = 0
-        if (!down && Array.isArray(name) && name.length === 3 && (name[0] === '+' || name[0] === '-')) {
-          const r = constInt(name[2]), l = constInt(name[1])
-          if (typeof name[1] === 'string' && r != null) { bias = name[0] === '+' ? r : -r; name = name[1] }
-          else if (name[0] === '+' && typeof name[2] === 'string' && l != null) { bias = l; name = name[2] }
-        }
-        if (typeof name === 'string') {
-          const dv = decls.get(name)
-          const As = dv != null ? ev(dv) : env.get(name)
-          const Bs = cond[2] != null ? ev(cond[2]) : null
-          const A = As && As[0] === As[1] ? As[0] : null
-          const B = Bs && Bs[0] === Bs[1] ? Bs[0] : null
-          const delta = down ? null : stepDelta(step, name)
-          // A loop-local integer started at +0 or above and advanced only by
-          // a positive constant stays finite and nonnegative. Rounded Number
-          // addition eventually stops advancing; it cannot wrap or make -0.
-          // The upper loop bound need not be known to bound `counter % K`.
-          // Later declarators may have overwritten the counter initializer.
-          const start = dv != null ? constInt(dv) : null, afterInit = env.get(name)
-          if (start != null && start >= 0 && !Object.is(start, -0) && delta > 0 &&
-              afterInit && Object.is(afterInit[0], start) && Object.is(afterInit[1], start) &&
-              !loopMutable(name) && !isReassigned(cond, name) &&
-              !isReassigned(lbody, name) && !redeclaresName(lbody, name)) nonNegCounter = name
-          if (A != null && B != null && !loopMutable(name) && !isReassigned(lbody, name) && !redeclaresName(lbody, name)
-              && (cond[2] == null || boundInvariant(cond[2], lbody))
-              && (down ? isUnitDecrement(step, name) : delta != null && delta > 0)) {
-            iv = name
-            ivStep = down ? -1 : delta
-            range = down ? [cond[0] === '>' ? B + 1 : B, A]
-              : [A, B - bias - (cond[0] === '<' ? 1 : 0)]
-          }
-        }
-      }
-      const hadNonNeg = nonNegCounter && nonNegIntegers.has(nonNegCounter)
-      if (nonNegCounter) nonNegIntegers.add(nonNegCounter)
-      // Companion-IV theorem. If a positive cursor has one direct positive
-      // increment in the loop body, its value BEFORE that increment is bounded
-      // by the statically known trip count. This is deliberately a lexical
-      // window: after the increment the theorem is removed, so `out[op+k]`
-      // becomes raw while a post-increment access remains checked.
-      const coupled = []
-      // Multi-branch monotone cursor budget. A codec cursor often advances a
-      // different number of times in mutually-exclusive arms (`ip++` once for
-      // INDEX, five times for RGBA). Compute the MAXIMUM positive constant
-      // advance along any one body path; over a literal-trip loop this gives a
-      // whole-body invariant `entry <= cursor <= entry + trips*maxAdvance`.
-      // Unknown writes, nested control loops, abrupt edges, or closures reject.
-      const advanceBudget = (root, name, upperOnly = false) => maxAdvanceBudget(root, name, { constInt, evRange: ev, closureWrites, MUTATE_OPS, upperOnly })
-      // Two-counter amortized budget. Track `cursor + credit` path-sensitively
-      // through one loop body. This proves buffered/RLE emitters where a rare
-      // path writes K+1 bytes only after `credit > 0` and resets the credit:
-      // the extra byte spends accumulated credit, so the per-iteration
-      // potential still rises by at most K. Only positive constant cursor
-      // advances and affine/zero credit writes are accepted; complex control
-      // or state explosion fails closed.
-      const potentialAdvance = (root, cursor, credit) => {
-        const LIM = 128, INF = I32_MAX
-        const norm = (xs) => {
-          const m = new Map()
-          for (const s of xs) {
-            if (s.lo > s.hi) continue
-            const k = `${s.mode},${s.rv},${s.lo},${s.hi}`
-            const p = m.get(k)
-            if (!p || s.c > p.c) m.set(k, s)
-          }
-          const out = [...m.values()]
-          return out.length <= LIM ? out : null
-        }
-        const addC = (xs, d) => d != null && d > 0 ? xs.map(s => ({ ...s, c: s.c + d })) : null
-        const setCredit = (xs, mode, rv) => xs.map(s => ({ ...s, mode, rv }))
-        const cmp = (a, op2, b) => op2 === '<' ? a < b : op2 === '<=' ? a <= b : op2 === '>' ? a > b
-          : op2 === '>=' ? a >= b : op2 === '===' || op2 === '==' ? a === b : a !== b
-        const split = (xs, cond2, truth) => {
-          if (!Array.isArray(cond2) || cond2.length !== 3 ||
-              !['<', '<=', '>', '>=', '===', '==', '!==', '!='].includes(cond2[0])) return xs.map(s => ({ ...s }))
-          let op2 = cond2[0], k = constInt(cond2[2])
-          if (cond2[1] !== credit || k == null) {
-            if (cond2[2] === credit && (k = constInt(cond2[1])) != null)
-              op2 = op2 === '<' ? '>' : op2 === '<=' ? '>=' : op2 === '>' ? '<' : op2 === '>=' ? '<=' : op2
-            else return xs.map(s => ({ ...s }))
-          }
-          if (!truth) op2 = op2 === '<' ? '>=' : op2 === '<=' ? '>' : op2 === '>' ? '<=' : op2 === '>=' ? '<'
-            : op2 === '===' || op2 === '==' ? '!==' : '==='
-          const out = []
-          for (const s of xs) {
-            if (s.mode === 'const') { if (cmp(s.rv, op2, k)) out.push({ ...s }); continue }
-            const q = k - s.rv
-            let lo = s.lo, hi = s.hi
-            if (op2 === '<') hi = Math.min(hi, q - 1)
-            else if (op2 === '<=') hi = Math.min(hi, q)
-            else if (op2 === '>') lo = Math.max(lo, q + 1)
-            else if (op2 === '>=') lo = Math.max(lo, q)
-            else if (op2 === '===' || op2 === '==') { lo = Math.max(lo, q); hi = Math.min(hi, q) }
-            // `!=` removes an interior point which an interval cannot express;
-            // retain the wider interval (safe, merely less precise).
-            if (lo <= hi) out.push({ ...s, lo, hi })
-          }
-          return out
-        }
-        const directDelta = (n, name) => {
-          if (!Array.isArray(n) || n[1] !== name) return null
-          if (n[0] === '++') return 1
-          if (n[0] === '--') return -1
-          if (n[0] === '+=' || n[0] === '-=') { const d = constInt(n[2]); return d == null ? null : n[0] === '+=' ? d : -d }
-          if (n[0] === '=' && Array.isArray(n[2]) && (n[2][0] === '+' || n[2][0] === '-')) {
-            if (n[2][1] !== name) return null
-            const d = constInt(n[2][2]); return d == null ? null : n[2][0] === '+' ? d : -d
-          }
-          return null
-        }
-        const walk = (n, xs) => {
-          if (!xs) return null
-          if (!Array.isArray(n)) return xs
-          const op2 = n[0]
-          if (op2 === '=>') return isReassigned(n, cursor) || isReassigned(n, credit) ? null : xs
-          if (MUTATE_OPS.has(op2) && (n[1] === cursor || n[1] === credit)) {
-            // Evaluate embedded lhs/rhs effects first only when they are not the
-            // direct recurrence itself; accepted recurrences contain no calls.
-            if (n[1] === cursor) return addC(xs, directDelta(n, cursor))
-            if (op2 === '=' && constInt(n[2]) != null) return setCredit(xs, 'const', constInt(n[2]))
-            const d = directDelta(n, credit)
-            if (d == null) return null
-            return xs.map(s => ({ ...s, rv: s.rv + d }))
-          }
-          if (op2 === 'if') {
-            let base = walk(n[1], xs)
-            if (!base) return null
-            const a = walk(n[2], split(base, n[1], true))
-            const b = n.length > 3 ? walk(n[3], split(base, n[1], false)) : split(base, n[1], false)
-            return a && b ? norm([...a, ...b]) : null
-          }
-          if (op2 === '?:') {
-            let base = walk(n[1], xs)
-            if (!base) return null
-            const a = walk(n[2], split(base, n[1], true)), b = walk(n[3], split(base, n[1], false))
-            return a && b ? norm([...a, ...b]) : null
-          }
-          if (op2 === '&&' || op2 === '||') {
-            const left = walk(n[1], xs)
-            if (!left) return null
-            const right = walk(n[2], left)
-            return right ? norm([...left, ...right]) : null // RHS may be skipped
-          }
-          if (op2 === 'break' || op2 === 'continue' || op2 === 'return' || op2 === 'throw') return null
-          if (op2 === 'while' || op2 === 'for' ||
-              op2 === 'catch' || op2 === 'finally')
-            return isReassigned(n, cursor) || isReassigned(n, credit) ? null : xs
-          let out = xs
-          for (let j = 1; j < n.length; j++) { out = walk(n[j], out); if (!out) return null }
-          return out
-        }
-        const end = walk(root, [{ c: 0, mode: 'rel', rv: 0, lo: 0, hi: INF }])
-        if (!end?.length) return null
-        let max = 0
-        for (const s of end) {
-          const creditLo = s.mode === 'rel' ? s.lo + s.rv : s.rv
-          if (creditLo < 0 || s.c < 0) return null
-          const d = s.mode === 'rel' ? s.c + s.rv : s.c + s.rv - s.lo
-          if (!Number.isInteger(d)) return null
-          max = Math.max(max, d)
-        }
-        return max
-      }
-      const budgeted = []
-      // Upper caps for cursors that also fall: every write inside the loop is
-      // capped, no seed is set, and the loop fixpoint discovers the lower bound.
-      const capped = []
-      if (iv && ivStep > 0 && range && range[0] <= range[1]) {
-        const trips = Math.floor((range[1] - range[0]) / ivStep) + 1
-        const stmts = Array.isArray(lbody) && (lbody[0] === ';' || lbody[0] === '{}') ? lbody.slice(1) : [lbody]
-        const writesTo = (root, name) => {
-          let count = 0
-          walkAst(root, { enter: x => {
-            if (MUTATE_OPS.has(x[0])) {
-              if (x[1] === name) count++
-              else if (Array.isArray(x[1]) && x[1][0] !== '[]' && x[1][0] !== '.' && x[1][0] !== '?.') {
-                const names = new Set(); collectNames(x[1], names)
-                if (names.has(name)) count++
-              }
-            }
-          } })
-          return count
-        }
-        for (const incNode of stmts) {
-          if (!Array.isArray(incNode)) continue
-          const name = typeof incNode[1] === 'string' ? incNode[1] : null
-          if (!name || name === iv || loopMutable(name) || redeclaresName(lbody, name)) continue
-          let delta = null
-          if (incNode[0] === '++') delta = 1
-          else if (incNode[0] === '+=') delta = constInt(incNode[2])
-          else if (incNode[0] === '=' && Array.isArray(incNode[2]) && incNode[2][0] === '+') {
-            if (incNode[2][1] === name) delta = constInt(incNode[2][2])
-            else if (incNode[2][2] === name) delta = constInt(incNode[2][1])
-          }
-          const entry = env.get(name)
-          const h = entry && delta != null && delta > 0
-            ? [entry[0], entry[1] + (trips - 1) * delta] : null
-          if (ipOk(h) && writesTo(lbody, name) === 1) coupled.push([name, h, incNode])
-        }
-        const changedNames = new Set()
-        walkAst(lbody, { enter: x => {
-          if (x[0] === '=>') return false
-          if (MUTATE_OPS.has(x[0]) && typeof x[1] === 'string') changedNames.add(x[1])
-        } })
-        // Only build cursor budgets for names that actually feed a typed index
-        // in this loop. The amortized path scanner is intentionally demand-
-        // driven: running it for every pair of mutated scalar locals made the
-        // compiler itself pay O(locals²) on unrelated arithmetic loops.
-        const indexCaps = new Map()
-        walkAst(lbody, { enter: x => {
-          if (x[0] === '=>') return false
-          if (x[0] === '[]' && typeof x[1] === 'string') {
-            const L = lens(x[1])
-            if (L != null) {
-              const names = new Set(); collectNames(x[2], names)
-              for (const name of names) if (changedNames.has(name)) {
-                let a = indexCaps.get(name); if (!a) indexCaps.set(name, a = [])
-                if (!a.includes(L)) a.push(L)
-              }
-            }
-          }
-        } })
-        for (const name of changedNames) {
-          const caps = indexCaps.get(name)
-          if (!caps?.length) continue
-          if (name === iv || loopMutable(name) || redeclaresName(lbody, name)) continue
-          const entry = env.get(name), maxAdvance = advanceBudget(lbody, name)
-          let h = entry && entry[0] >= 0 && maxAdvance != null && maxAdvance > 0
-            ? [entry[0], entry[1] + trips * maxAdvance] : null
-          // Try every non-negative changed counter as an amortization credit;
-          // keep only a strictly tighter, fully verified potential budget.
-          if (h && caps.some(L => h[1] >= L)) for (const credit of changedNames) {
-            if (credit === name || credit === iv || loopMutable(credit) || redeclaresName(lbody, credit)) continue
-            const ce = env.get(credit)
-            if (!ce || ce[0] < 0) continue
-            const K = potentialAdvance(lbody, name, credit)
-            const ph = K != null && K >= 0 ? [entry[0], entry[1] + ce[1] + trips * K] : null
-            if (ipOk(ph) && ph[1] < h[1]) h = ph
-          }
-          if (ipOk(h)) budgeted.push([name, h])
-          else if (entry) {
-            // No decrement raises the cursor, so its rise stays budgeted when it also falls.
-            const up = advanceBudget(lbody, name, true)
-            const cap = up != null ? [I32_MIN, entry[1] + trips * up] : null
-            if (ipOk(cap)) capped.push([name, cap])
-          }
-        }
-      }
-      // Body fixpoint (same engine as `while` below): the canonical-iv range is
-      // a body-independent theorem re-seeded each pass; everything else
-      // discovers its invariant. This is what proves heapsort's `child` chains,
-      // medianUs's `samples[mid]`, and strided codec input/output cursors.
-      // The condition sees the iv's HEAD range, one step past the body range
-      // (the test that exits); the body sees the body range.
-      const seeded = iv && ipOk(range) && range[0] <= range[1] && !closureWrites.has(iv)
-      const headRange = seeded ? (ivStep > 0 ? [range[0], range[1] + ivStep] : [range[0] - 1, range[1]]) : null
-      const priorCoupled = new Map(coupled.map(([name]) => [name, coupledEnv.get(name)]))
-      const priorFacts = new Map([...budgeted, ...capped].map(([name]) => [name, activeFacts.get(name)]))
-      for (const [name, h] of budgeted) activeFacts.set(name, h)
-      for (const [name, h] of capped) activeFacts.set(name, h)
-      const seeds = () => {
-        if (seeded && ipOk(headRange)) env.set(iv, headRange)
-        else if (iv) env.delete(iv)
-        for (const [name, h, incNode] of coupled) coupledEnv.set(name, { h, incNode })
-        for (const [name, h] of budgeted) setEnv(name, h)
-      }
-      loopFixpoint(seeds,
-        (afterCond) => {
-          if (cond != null) visit(cond)
-          if (seeded) env.set(iv, range)
-          if (afterCond()) { visit(lbody); if (step != null) visit(step) }
-        },
-        cond, seeded)
-      for (const [name] of [...budgeted, ...capped]) {
-        const prior = priorFacts.get(name)
-        if (prior) activeFacts.set(name, prior)
-        else activeFacts.delete(name)
-      }
-      if (iv) env.delete(iv)   // iv holds the exit value after the loop
-      for (const [name] of coupled) {
-        const prior = priorCoupled.get(name)
-        if (prior) coupledEnv.set(name, prior)
-        else coupledEnv.delete(name)
-      }
-      if (nonNegCounter && !hadNonNeg) nonNegIntegers.delete(nonNegCounter)
-      return
-    }
-    if (op === 'while') {
-      // `while (iv < B)` with a known iv at entry, monotone +1 advances, and a
-      // bounded B: inside the body iv ∈ [entryLo, B_hi-1] (cond holds at body top);
-      // at exit iv ∈ [min(entryLo, B_lo), max(entryHi, B_hi)] — the peel's split
-      // loops chain through this. Anything else: kill and walk.
-      const [, c, wbody] = n
-      let iv = null, entry = null, brange = null
-      if (Array.isArray(c) && c[0] === '<' && typeof c[1] === 'string' && wbody != null) {
-        entry = env.get(c[1]); brange = c[2] != null ? ev(c[2], pureExpr(c[2])) : null
-        if (entry && brange && !loopMutable(c[1]) && ivMonotoneInc(wbody, c[1]) && !redeclaresName(wbody, c[1])
-            && boundInvariant(c[2], wbody)) iv = c[1]
-      }
-      // Every continuing body path advances the tested cursor. Its finite
-      // trip budget also bounds positive companion cursors, including the
-      // increment's final landing. A possible zero advance proves no budget.
-      const budgeted = []
-      if (iv && constInt(c[2]) != null) {
-        const changed = new Set()
-        walkAst(wbody, { enter: x => {
-          if (x[0] === '=>') return false
-          if (MUTATE_OPS.has(x[0]) && typeof x[1] === 'string' && x[1] !== iv &&
-              env.get(x[1]) && !loopMutable(x[1])) changed.add(x[1])
-        } })
-        const options = { constInt, evRange: ev, closureWrites, MUTATE_OPS }
-        const minimum = changed.size ? minAdvanceBudget(wbody, iv, options) : 0
-        const trips = minimum > 0 ? Math.max(0, Math.ceil((brange[1] - entry[0]) / minimum)) : 0
-        if (trips > 0) {
-          for (const name of changed) {
-            if (redeclaresName(wbody, name)) continue
-            const start = env.get(name)
-            const advance = maxAdvanceBudget(wbody, name, options)
-            const h = advance > 0 ? [start[0], start[1] + trips * advance] : null
-            if (ipOk(h)) budgeted.push([name, h])
-          }
-        }
-      }
-      const priorFacts = new Map(budgeted.map(([name]) => [name, activeFacts.get(name)]))
-      for (const [name, h] of budgeted) activeFacts.set(name, h)
-      // WRAPPING-CURSOR invariant (`si = si + K; if (si >= C) si = 0` — the ring
-      // index of table-driven maps): the pair is self-closing on [0, C-1], so an
-      // entry inside that range keeps the name there for the WHOLE loop. Seeded
-      // before the kill; the pair must be the name's only writes in this loop.
-      const wraps = [], symWraps = []
-      if (wbody != null) {
-        const stmts = Array.isArray(wbody) && (wbody[0] === ';' || wbody[0] === '{}') ? wbody : [';', wbody]
-        // one-statement MASK cursor `nm = (nm + K) & M` (the ulam direction ring):
-        // self-closing on [0, M] for any entry inside it — no reset pair needed
-        for (let k = 1; k < stmts.length; k++) {
-          const a2 = stmts[k]
-          if (!(Array.isArray(a2) && a2[0] === '=' && typeof a2[1] === 'string')) continue
-          let rhs = a2[2]
-          if (!(Array.isArray(rhs) && rhs[0] === '&' && rhs.length === 3)) continue
-          const M = intLiteralValue(rhs[1]) ?? intLiteralValue(rhs[2])
-          const inner = intLiteralValue(rhs[1]) != null ? rhs[2] : rhs[1]
-          if (M == null || M < 0) continue
-          if (!(Array.isArray(inner) && inner[0] === '+' && (inner[1] === a2[1] || inner[2] === a2[1]))) continue
-          const e0 = env.get(a2[1])
-          if (!e0 || e0[0] < 0 || e0[1] > M) continue
-          let writes = 0
-          walkAst(wbody, { enter: x => { if (MUTATE_OPS.has(x[0]) && x[1] === a2[1]) writes++ } })
-          if (writes === 1 && !loopMutable(a2[1])) wraps.push([a2[1], [0, M]])
-        }
-        for (let k = 1; k < stmts.length - 1; k++) {
-          const a2 = stmts[k], b2 = stmts[k + 1]
-          let nm = null, K = null
-          if (Array.isArray(a2) && a2[0] === '=' && typeof a2[1] === 'string'
-              && Array.isArray(a2[2]) && a2[2][0] === '+' && a2[2][1] === a2[1]) { nm = a2[1]; K = intLiteralValue(a2[2][2]) }
-          else if (Array.isArray(a2) && a2[0] === '+=' && typeof a2[1] === 'string') { nm = a2[1]; K = intLiteralValue(a2[2]) }
-          else if (Array.isArray(a2) && a2[0] === '++' && typeof a2[1] === 'string') { nm = a2[1]; K = 1 }
-          if (nm == null || K == null || K < 1) continue
-          if (!(Array.isArray(b2) && b2[0] === 'if' && b2.length === 3
-              && Array.isArray(b2[1]) && b2[1][0] === '>=' && b2[1][1] === nm
-              && Array.isArray(b2[2]) && b2[2][0] === '=' && b2[2][1] === nm && intLiteralValue(b2[2][2]) === 0)) continue
-          const C = constInt(b2[1][2])
-          const Cname = C == null && typeof b2[1][2] === 'string' ? b2[1][2] : null
-          if ((C == null || C < 1) && Cname == null) continue
-          const e0 = env.get(nm)
-          const prior = Cname && wrapEntry?.find(([name, h]) => name === nm && h.hiName === Cname)?.[1]
-          if ((!e0 && !prior) || e0 && (e0[0] < 0 || (C != null && e0[1] > C - 1))) continue
-          if (Cname && !boundInvariant(Cname, wbody)) continue
-          // the pair must be the only writes (2 exact: the add and the reset)
-          let writes = 0
-          walkAst(wbody, { enter: x => { if (MUTATE_OPS.has(x[0]) && x[1] === nm) writes++ } })
-          if (writes !== 2 || loopMutable(nm)) continue
-          if (C != null) wraps.push([nm, [0, C - 1]])
-          // symbolic bound (`let SEQLEN = 5` — mutable): the invariant is
-          // si ∈ [0, C-1] RELATIVE to C's runtime value — recorded as a symbolic
-          // hull for reads BEFORE the increment (the versioning guard closes it
-          // with `C ≥ entryHi+1 ∧ C ≤ len`); no numeric env seeding is possible
-          else symWraps.push([nm, { lo: 0, hiName: Cname, hiBias: -1, entryHi: prior?.entryHi ?? e0[1] }, a2])
-        }
-      }
-      // Body fixpoint (loopFixpoint below): the wrap/symWrap seeds are theorems
-      // independent of the body, re-applied each pass; the monotone iv's body
-      // range (entry lo up to the bound, the test having held) applies after
-      // the test; everything else discovers its invariant. Bounds heapsort's
-      // `while (child < n)` chains, medianUs's downward insertion scan, and
-      // interpreter `while (pc < N)` dispatch — shapes the single-kill walk
-      // lost entirely.
-      const seeds = () => {
-        for (const [name, h] of budgeted) setEnv(name, h)
-        for (const [nm, r] of wraps) if (!closureWrites.has(nm)) env.set(nm, r)
-        for (const [nm, h, incNode] of symWraps) if (!closureWrites.has(nm)) symEnv.set(nm, { h, incNode })
-      }
-      loopFixpoint(seeds, (afterCond) => {
-        visit(c)
-        if (iv) env.set(iv, [entry[0], brange[1] - 1])
-        if (afterCond()) for (let k = 2; k < n.length; k++) visit(n[k])
-      }, c)
-      for (const [name] of budgeted) {
-        const prior = priorFacts.get(name)
-        if (prior) activeFacts.set(name, prior)
-        else activeFacts.delete(name)
-      }
-      // exit state: the head invariant where the test failed (already in env);
-      // an iv stepping by more than one can pass its bound (`i += 2` exits at
-      // B + 1), which the head invariant carries and a `[., B]` form did not.
-      // Wraps publish their tighter exit forms.
-      for (const [nm, r] of wraps) if (!closureWrites.has(nm)) env.set(nm, r)   // holds at exit too
-      for (const [nm] of symWraps) symEnv.delete(nm)
-      // The adjacent increment/reset pair also holds at exit. An unknown call
-      // could change the bound; only call-free phases export that theorem.
-      return symWraps.length && symWraps.every(([nm, h]) => !isReassigned(c, nm) && boundInvariant(h.hiName, c)) &&
-        !some(c, x => x[0] === '()' && x.length > 2) && !some(wbody, x => x[0] === '()' && x.length > 2) ? symWraps : null
-    }
+    if (op === 'for' && n.length === 5) return visitFor(n)
+    if (op === 'while') return visitWhile(n, wrapEntry)
     if (op === 'label' || op === 'catch' || op === 'finally') {
       // ('try' is the parser shape; prepare lowers it to 'catch'/'finally' nodes,
       // which is what this walk actually receives)

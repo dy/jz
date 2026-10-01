@@ -45,6 +45,41 @@ test('interval proof: rounding identities and bounded shift counts preserve exac
   } } finally { ctx.func = prior }
 })
 
+test('interval proof: revisited loop syntax reads live entries and each scan owns its state', () => {
+  const read=['[]','a','j'], call=['()','take','j']
+  const init=['let',['=','j','seed']], cond=['<','j',['+','seed',2]]
+  const loop=['for',init,cond,['++','j'],[';',read,call]]
+  // One syntax node is revisited with a changed entry, just as nested
+  // fixpoint passes revisit inner loops under successive outer invariants.
+  const body=[';',loop,['+=','seed',4],loop]
+  const previous=ctx.func, globals=ctx.scope.globalTypes
+  ctx.func=createActiveFunction({body});ctx.scope.globalTypes=new Map()
+  try {
+    const scan=(seed, lens=()=>16, tree=body)=>{
+      const out=new Set(),calls=new Map([[call,undefined]]),bindings=new Map([['j',undefined]])
+      scanIntervalIdx(tree,out,lens,null,calls,new Map([['seed',seed]]),null,null,bindings)
+      return [calls.get(call),bindings.get('j'),out.has(read)]
+    }
+    const first=scan([0,0])
+    is(first,[[[0,5]],[0,6],true],'both occurrences contribute their current initializer value')
+    for(const seed of [[0,0],[8,8],null,[0,0]]) {
+      const expected=seed ? [[[seed[0],seed[0]+5]],[seed[0],seed[0]+6],true] : [[null],null,false]
+      is(scan(seed),expected,'A → A → B → unknown → A uses each call’s entry facts')
+      is(first,[[[0,5]],[0,6],true],'previous output hulls remain snapshots')
+    }
+    is(scan([0,0],()=>4),[[[0,5]],[0,6],false],'an earlier valid occurrence cannot prove the later out-of-bounds read')
+    let failed=false
+    try { scan([0,0],()=>{throw Error('lens failure')}) } catch(e) { failed=e.message==='lens failure' }
+    ok(failed,'the lens callback error propagates')
+    is(scan([0,0]),first,'an interrupted scan leaves no reusable flow state')
+    init[1][2]=['+','seed',1]
+    is(scan([0,0]),[[[1,5]],[1,6],true],'a new scan reads changed initializer syntax on the same node')
+    init[1][2]='seed'
+    is(scan([0,0]),first,'restored syntax has its original proofs')
+    is(scan([0,0],()=>16,[';']),[undefined,undefined,false],'an empty body publishes no requested proof')
+  } finally {ctx.func=previous;ctx.scope.globalTypes=globals}
+})
+
 test('interval proof: pure shifted bounds keep word storage separate from their intermediates', () => {
   for (const [op, insideWant, exitWant] of [
     ['-', [1, 2147483645], [1, 2147483646]],
