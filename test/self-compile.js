@@ -744,3 +744,28 @@ test('self-compile: WAT output shares checkpoints and bounds wide-node printer a
     ok(allocated < 256 * 1024 * 1024, `printer allocation ${allocated} bytes stays below 256 MiB`)
   }
 })
+
+test('self-compile: data packing bounds literal allocation and preserves output after errors', () => {
+  const s = instantiate(selfBytes(), { memory: 8192 })
+  const a = 'x'.repeat(4096), b = 'é😀\0"\\'.repeat(512)
+  const source = value => `export function f(){return ${JSON.stringify(value)}}`
+  let retained
+  for (const optimize of [0, 1, 2, 3]) {
+    for (const value of ['', 'x', a, a, b, a, '']) {
+      s.exports._clear()
+      const out = s.exports.default(s.memory.String(source(value)), 0, s.memory.String(String(optimize)))
+      const bytes = s.memory.read(out).slice(), marks = readMarks(s)
+      const p = instantiate(bytes)
+      is(p.exports.f(), value, `literal value at O${optimize}`)
+      is(p.exports.f(), value, 'same runtime instance again')
+      ok(marks.heapCheckpoint > 0, 'the compile completed every stage')
+      const allocated = marks.heapOptimize - marks.heapEmit
+      ok(allocated < 16 * 1024 * 1024, `data packing allocated ${allocated} bytes at O${optimize}`)
+      if (value === a && !retained) retained = bytes
+    }
+    throws(() => s.exports.default(s.memory.String('export function f( {'), 0, s.memory.String(String(optimize))))
+    const out = s.exports.default(s.memory.String(source(b)), 0, s.memory.String(String(optimize)))
+    is(instantiate(s.memory.read(out).slice()).exports.f(), b, 'valid compile after a rejected source')
+    is(instantiate(retained).exports.f(), a, 'retained bytes survive later calls, clears and errors')
+  }
+})
