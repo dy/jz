@@ -779,7 +779,7 @@ export default (ctx) => {
         // key even if computing the key reassigns the source binding; a name
         // or a literal computes nothing and stays in place (an i32 counter
         // then indexes as i32).
-        if (!(typeof idx === 'string' || (Array.isArray(idx) && idx[0] == null))) {
+        if (!(typeof idx === 'string' || (Array.isArray(idx) && (idx[0] == null || idx[0] === 'str')))) {
           key = temp('key')
           const keyType = valTypeOf(idx)
           const presentNumber = isPresentNumber(ctx, idx)

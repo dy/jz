@@ -22,7 +22,7 @@ import { restViewLength } from '../src/compile/rest-view.js'
 import { inlineArraySid, inlineArrayUnion } from '../src/static.js'
 import { packedI32, structInline } from '../src/abi/index.js'
 import { VAL, lookupValType, repOf } from '../src/reps.js'
-import { ctx, err, inc, warnDeopt, PTR, LAYOUT, HEAP, FORWARDING_MASK, emitArity, followForwardingWat, declGlobal, setLinkDemand } from '../src/ctx.js'
+import { ctx, err, inc, warnDeopt, PTR, LAYOUT, HEAP, FORWARDING_MASK, emitArity, followForwardingWat, declGlobal, registerGetter, setLinkDemand } from '../src/ctx.js'
 import { ptrOffsetFwdWat, deletedMaskWat, HIDDEN_PROPERTY_SEQ, ssoBitI64Hex } from '../layout.js'
 import { nanPrefixHex, OBJECT_SCHEMA_HI_MASK, objectSchemaGuardHex, TYPED_ELEM_BIGINT_FLAG, DATA_VIEW_FLAG, i64Hex } from '../layout.js'
 import { initSchema } from './schema.js'
@@ -2322,11 +2322,24 @@ export default (ctx) => {
     if (accessorHolders(obj, getter) === 0) return null
     let recv = obj
     const pre = []
-    if (typeof obj !== 'string') { recv = temp('acc'); pre.push(['local.set', `$${recv}`, asF64(emit(obj))]) }
-    const node = emit(['?:', ['===', ['typeof', ['.', recv, getter]], ['str', 'function']],
-      ['()', ['.', recv, getter]], ['__raw_prop', recv, prop]])
-    return pre.length ? typed(['block', ['result', 'f64'], ...pre, asF64(node)], 'f64') : node
+    const view = ctx.summary?.at(ctx.func.current)
+    if (typeof obj !== 'string') {
+      recv = temp('acc')
+      pre.push(['local.set', `$${recv}`, asF64(emit(obj))])
+      copyReceiverFacts(obj, recv)
+      view?.alias(recv, obj, false)
+    }
+    try {
+      const node = emit(['?:', ['===', ['typeof', ['.', recv, getter]], ['str', 'function']],
+        ['()', ['.', recv, getter]], ['__raw_prop', recv, prop]])
+      return pre.length ? typed(['block', ['result', 'f64'], ...pre, asF64(node)], 'f64') : node
+    } finally { if (recv !== obj) view?.unalias(recv) }
   }
+  // Lowered classes have instance methods, so their prototype reflection is
+  // empty. Register the getter once for direct and null-checked receiver reads.
+  registerGetter('.closure:prototype', obj => typed(['block', ['result', 'f64'],
+    ['drop', asF64(emit(obj))], asF64(emit(['{}']))], 'f64'))
+
   ctx.core.emit['__raw_prop'] = (obj, prop) => dotRead(obj, prop, true)
   ctx.core.emit['.'] = (obj, prop) => dotRead(obj, prop, false)
   const dotRead = (obj, prop, raw) => {
@@ -2385,11 +2398,6 @@ export default (ctx) => {
           read], 'f64')
       }
     }
-    // `C.prototype` of a class (a factory closure): jz classes have no
-    // prototype object – methods live on the instance – so the read is a
-    // fresh empty object, and prototype reflection (`getOwnPropertyNames(C.prototype)`)
-    // sees nothing to touch
-    if (prop === 'prototype' && (typeof obj === 'string' ? lookupValType(obj) : valTypeOf(obj)) === VAL.CLOSURE) return emit(['{}'])
     // SRoA flat object: `o.prop` → `local.get $o#i` (analyze.js flatObjectCandidate).
     const flatR = typeof obj === 'string' ? ctx.func.flatObjects?.get(obj) : null
     if (flatR) {
@@ -2510,7 +2518,7 @@ export default (ctx) => {
     // but reading `m.keys`/`re.test` is not a call and must not invoke the
     // method (which would materialize a view / run the probe).
     const ptRep = typeof obj === 'string' ? repOf(obj) : null
-    const ptVt = ptRep ? ptRep.val : valTypeOf(obj)
+    const ptVt = summaryTagOf(receiverKind) === K.CLOSURE ? VAL.CLOSURE : ptRep ? ptRep.val : valTypeOf(obj)
     if (ptVt) {
       const tpKey = `.${ptVt}:${prop}`
       const tpEmitter = ctx.core.emit[tpKey]
@@ -2622,7 +2630,9 @@ export default (ctx) => {
   const readHoistedProp = (obj, prop, t, raw = false, layout = null) => {
     if (obj !== t) copyReceiverFacts(obj, t)
     const rep = typeof obj === 'string' ? repOf(obj) : null
-    const vt = typeof obj === 'string' ? lookupValType(obj) : valTypeOf(obj)
+    const receiverKind = ctx.summary?.at(ctx.func.current).kindOfExpr(obj)
+    const vt = summaryTagOf(receiverKind) === K.CLOSURE ? VAL.CLOSURE
+      : typeof obj === 'string' ? lookupValType(obj) : valTypeOf(obj)
     if (prop === 'length') {
       // A typed array whose element kind the plan knows reads its header's length word.
       const n = vt === VAL.TYPED && obj === t ? ctx.core.emit['__typed_len']?.(obj) : null
@@ -2660,20 +2670,14 @@ export default (ctx) => {
     return emitPropAccess(receiver, obj, prop)
   }
 
-  // Optional index: arr?.[i] → null if arr is null, else arr[i]
-  // Cache base in temp, propagate valType so []'s type dispatch works
-  ctx.core.emit['?.[]'] = (arr, idx) => evalOnce(arr, (t) => {
-    // Transient seed on the fresh `?.[]` hoist-temp (slice 3c-a): the temp
-    // lives one expression — its kind goes on the OVERLAY (tier #2, torn
-    // down with scope), not on durable reps. enterFunc/buildStartFn
-    // guarantee the overlay exists for all emission.
-    const srcType = typeof arr === 'string' ? repOf(arr)?.val : null
-    if (srcType) ctx.func.localValTypesOverlay.set(t, srcType)
-    if (typeof arr === 'string' && ctx.func.typedElem?.has(arr)) {
-      if (!ctx.func.typedElem) ctx.func.typedElem = new Map()
-      ctx.func.typedElem.set(t, ctx.func.typedElem.get(arr))
-    }
-    return asF64(ctx.core.emit['[]'](t, idx))
+  // Optional index: the captured receiver retains the same semantic facts as
+  // an ordinary checked index read, including expression receivers.
+  ctx.core.emit['?.[]'] = (arr, idx) => evalOnce(arr, t => {
+    copyReceiverFacts(arr, t)
+    const view = ctx.summary?.at(ctx.func.current)
+    view?.alias(t, arr, true)
+    try { return asF64(ctx.core.emit['[]'](t, idx)) }
+    finally { view?.unalias(t) }
   })
 
   // Optional call: fn?.(...args) → null if fn is null, else call fn

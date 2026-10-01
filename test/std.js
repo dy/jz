@@ -8,7 +8,8 @@
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
 import jz, { compile } from '../index.js'
-import { onKernel, onWasi } from './_matrix.js'
+import { onKernel, onWasi, levels } from './_matrix.js'
+import { oracle } from './util.js'
 
 const run = (src, opts) => jz(src, opts).exports.f()
 
@@ -151,4 +152,39 @@ test('host import: a missing argument crosses as undefined in the i64 carrier', 
   const m = jz(`import dec from '@audio/decode'\nexport let f = (x) => dec(x)`,
     { imports: { '@audio/decode': { default: (a, b, c) => a * 10 + (b === undefined ? 1 : 0) + (c === undefined ? 1 : 0) } } })
   is(m.exports.f(1), 12)
+})
+
+
+test('reflection: held class prototypes share guarded property reads and evaluate receivers once', () => {
+  const src = `class G { get gain(){return 1} } class H extends G {}
+    function Plain(){}
+    const classes = [G, H];
+    export function direct(){return [Object.keys(G.prototype), Object.keys(H.prototype)]}
+    export function held(){const result = []; for (const cls of classes) result.push(Object.keys(cls.prototype)); return result}
+    export function f(mode, optional) {
+      let trace = '';
+      function take(){trace += 'r'; if(mode === 3) throw new Error('factory');return mode === 2 ? null : classes[mode & 1]}
+      try {
+        const proto = optional === 2 ? take()?.['prototype'] : optional ? take()?.prototype : take()['prototype'];
+        return [proto === undefined ? undefined : Object.keys(proto), trace]
+      } catch(e){return [e.name, trace]}
+    }
+    export function ordinary(mode){let calls=0;function read(){calls++;if(mode===2)throw new Error('read');return Plain}
+      try{return[Object.keys(read().prototype),calls]}catch(e){return[e.name,calls]}}
+    export function own(mode){let trace = ''; const a = [{prototype:{x:1}}, {get prototype(){trace += 'p';return {y:2}}}];
+      return [Object.keys(a[mode & 1].prototype),trace]}`
+  for (const optimize of levels(0,1,2,3,'size')) {
+    const got = jz(src, {optimize, sourceInline:false}).exports, want = oracle(src)
+    is(got.direct(), want.direct(), `O${optimize}: named constructors`)
+    is(got.held(), want.held(), 'loop-held constructors')
+    const retained = []
+    for (const mode of [0,0,1,2,3,0]) for (const optional of [0,1,2]) {
+      const actual = got.f(mode, optional), expected = want.f(mode, optional)
+      is(actual, expected, `O${optimize}: receiver ${mode}, optional ${optional}`)
+      retained.push([actual, expected])
+    }
+    for (const [actual, expected] of retained) is(actual, expected, 'later errors and reads preserve earlier reflection output')
+    for (const mode of [0,0,1,0]) is(got.own(mode), want.own(mode), 'ordinary own properties and getters retain their values')
+    for (const mode of [0,0,2,0]) is(got.ordinary(mode), want.ordinary(mode), 'ordinary function receiver effects and error recovery')
+  }
 })

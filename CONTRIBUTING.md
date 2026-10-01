@@ -2596,6 +2596,10 @@ see (`Error`, an expression) or as an expression with statics, and the
 instance's class as it would through a prototype (`classMemberIn`); a static
 call `C.s(…)` reaches the lifted function `C$s` in the summary as in the
 emitter (`liftedProp`, method-dispatch.js `tryFnPropCall`).
+The supported empty class-prototype reflection uses the ordinary getter registry,
+with the settled closure kind rather than its storage hint. Accessor probes and
+optional reads retain captured receiver facts in a scoped alias, preserving receiver
+evaluation. Static string keys retain their identity across a nullish receiver check.
 
 A bundled module's statements run at start-up, before its importers', in the
 order ES evaluates them (`ctx.module.moduleInits`). `import('x')` of a
