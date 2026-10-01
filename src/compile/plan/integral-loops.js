@@ -336,6 +336,10 @@ const versionBody = (body, params, view, func, programFacts) => {
     const written = [...locals].filter(n => loopWrites.has(n) && !inner.has(n) && !captured.has(n) && !ctx.funcs.names.has(n) && mayBeNumber(n) && !already(n))
     const outer = [...new Set([...names, ...numbers, ...present, ...written])]
     const own = new Map([...outer, ...inner].map(n => [n, `${n}${T}int${freshId(ctx)}`]))
+    // A non-counted index recurrence gets the nonnegative index domain;
+    // a positive count closes wrap/decrement recurrences. Readonly offsets
+    // retain signed entries. Subsequent writes still need a complete hull.
+    const moving = names.filter(n => indexed.includes(n) && loopWrites.has(n) && !counted(loop, n))
     const copy = cloneWithSubst(loop, new Map(), own)
     const boundDecl = []
     if (counterBound) {
@@ -345,20 +349,25 @@ const versionBody = (body, params, view, func, programFacts) => {
       copy[2][0] = counterBound.comparison
       copy[2][2] = bound
     }
-    // a number, an int32 and not -0: `typeof x === 'number' && x === (x | 0) && (x !== 0 || 1 / x > 0)`;
+    // Capture the word in its fresh alias inside the type-guarded equality.
+    // Its exact assignment is visible to flow analysis and is evaluated once.
+    // A number, an int32 and not -0: `typeof x === 'number' && x === (x$ = x | 0) && (x !== 0 || 1 / x > 0)`;
     // the type first, so the test converts no object (a key's valueOf runs where the loop reads it);
     // a Number alone: `typeof x === 'number'`, the form whose arm the summary reads as a Number;
     // present: `x != null`
     const boundTest = counterBound ? [['&&', numberGuard(counterBound.name), ['&&', ['>=', counterBound.name, [null, counterBound.min]], ['<=', counterBound.name, [null, counterBound.max]]]]] : []
-    const test = [...boundTest, ...names.map(n => ['&&', ['&&', numberGuard(n), ['===', n, ['|', n, [null, 0]]]], ['||', ['!==', n, [null, 0]], ['>', ['/', [null, 1], n], [null, 0]]]]),
+    const test = [...boundTest, ...names.map(n => ['&&', ['&&', numberGuard(n), ['===', n, ['=', own.get(n), ['|', n, [null, 0]]]]], ['||', ['!==', n, [null, 0]], ['>', ['/', [null, 1], n], [null, 0]]]]),
+      ...moving.map(n => ['>=', own.get(n), [null, 0]]),
+      ...(moving.length ? bounds.map(n => ['>', own.get(n), [null, 0]]) : []),
       ...numbers.map(n => ['===', ['typeof', n], [null, TYPEOF.number]]),
       ...present.map(n => ['!=', n, [null, null]])]
       .reduce((a, b) => ['&&', a, b])
-    const version = ['{}', [';', ['let', ...boundDecl, ...outer.map(n => ['=', own.get(n), names.includes(n) ? ['|', n, [null, 0]] : already(n) ? ['u+', n] : n])], copy,
+    const version = ['{}', [';', ['let', ...boundDecl, ...outer.filter(n => !names.includes(n)).map(n => ['=', own.get(n), already(n) ? ['u+', n] : n])], copy,
       // what the copy wrote under a name of its own, where the body reads it after the loop
       // (a Number every write keeps an integer is renamed too: its sum is the copy's)
       ...outer.filter(n => loopWrites.has(n) && occursOutside(body, loop, n)).map(n => ['=', n, own.get(n)])]]
-    parent[idx] = ['if', test, version, ['{}', [';', loop]]]
+    const guarded = ['if', test, version, ['{}', [';', loop]]]
+    parent[idx] = names.length ? ['{}', [';', ['let', ...names.map(n => ['=', own.get(n), [null, 0]])], guarded]] : guarded
     for (const [n, values] of writesIn(version)) { const l = bodyWrites.get(n); if (l) l.push(...values); else bodyWrites.set(n, values) }
     rewrote = true
   }

@@ -213,8 +213,8 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
     // any non-arithmetic node (call, assignment, ternary, indexing…) routes through
     // visit so its env effects and access proofs are processed, value unknown
     if (e.length !== 3 || !ARITH.has(op)) { visit(e); return null }
-    // `x|0` — ToInt32 is identity on an in-range interval
-    if (op === '|' && intLiteralValue(y) === 0) { const v = ev(x); return ipOk(v) ? v : null }
+    // ToInt32 establishes a signed word even when its input is unknown.
+    if (op === '|' && intLiteralValue(y) === 0) { const v = ev(x); return ipOk(v) ? v : [I32_MIN, I32_MAX] }
     const A = ev(x), B = ev(y)
     if (!A || !B) {
       // a const mask bounds one-sidedly even when the other side is unknown

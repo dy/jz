@@ -675,6 +675,11 @@ updates. Missing entries and unknown writes reject a hull, and captured bindings
 are excluded. Requests are lazy, share typed-read presence analysis, and skip
 unrelated loops. Numeric bounds never override a producer's presence or signed-zero
 requirements. Integer payloads alone never prove bounded accumulation.
+Private integer loop copies capture word conversions within their type guards,
+so the interval interpreter sees the exact assigned words. Non-counted mutable
+indices enter that lane nonnegative, with positive loop counts; readonly affine
+offsets retain signed entries. The original loop handles other inputs. Every
+subsequent cursor write still needs the complete lifetime proof before narrowing.
 Counted reductions combine element bounds with the trip count, including every
 intermediate step. Counter proofs reject additional writes in the loop header.
 Loop facts have one producer: the `for` emitter derives them once per loop it

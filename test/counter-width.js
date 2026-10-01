@@ -206,6 +206,7 @@ test('counter width: interval binding hulls include every stable read and write'
   const cases = [
     ['landing', [';', ['let', ['=', 'i', 0]], loop, ['return', 'i']], [0, 7]],
     ['zero work', [';', ['let', ['=', 'i', 5]], loop, ['return', 'i']], [5, 5]],
+    ['unknown word producer', [';', ['let', ['=', 'i', ['|', 'unknown', 0]]], ['return', 'i']], [-2147483648, 2147483647]],
     ['late unknown write', [';', ['let', ['=', 'i', 0]], loop, ['=', 'i', 'unknown']], null],
     ['earlier missing read', [';', ['return', 'i'], ['let', ['=', 'i', 0]], loop], null],
     ['bare declaration', [';', ['let', 'i'], ['=', 'i', 0], loop], null],
@@ -258,4 +259,48 @@ test('counter width: lifetime hulls reject overflow, missing entries and conditi
     while (i < 4) { if (mode) { i = -0; break } i++ }
     return [i, 1 / i]
   }`, [[0], [1], [1], [0]])
+})
+
+
+test('counter width: guarded ring copies prove full cursor lifetime and preserve fallback inputs', () => {
+  const source = `export function f(start, count, offset, limit) {
+    const a = new Float64Array([2, 3, 5, 7, 11, 13, 17, 19])
+    let idx = start, N = count, off = offset, sum = 0, seen = 0
+    for (let k = 0; k < N; k++) {
+      sum += a[idx + off]
+      idx = idx === 0 ? N - 1 : idx - 1
+      if (++seen === limit) break
+    }
+    return [sum, idx, seen, 1 / idx]
+  }`
+  compare(source, [
+    [0, 4, 0, 4], [4, 3, -1, 3], [0, 0, 0, 3], [0, -1, 0, 3],
+    [-1, 3, 0, 3], [-2147483648, 3, 0, 3], [2147483647, 3, 0, 3],
+    [0, -2147483648, 0, 3], [0, 2147483647, 0, 3], [0, 2147483648, 0, 3],
+    [0.5, 4, 0, 3], [0, 3.5, 0, 3], [NaN, 4, 0, 3], [0, NaN, 0, 3],
+    [-0, 3, 0, 3], [-0, 0, 0, 3], [0, 4, -2147483648, 3], [0, 4, 2147483647, 3],
+  ])
+})
+
+test('counter width: guarded words preserve mutation order and object coercion on zero work', () => {
+  const source = `export function f(n) {
+    let calls = 0, index = 0
+    const key = { valueOf() { calls++; return index++ } }
+    const a = new Float64Array([2, 3, 5, 7])
+    let cursor = key, N = n, sum = 0
+    for (let k = 0; k < N; k++) { sum += a[cursor]; cursor = cursor === 0 ? N - 1 : cursor - 1 }
+    return [sum, calls, index]
+  }`
+  compare(source, [[0], [1], [2], [4], [0]])
+  compare(`export function f(mode) {
+    const a = new Float64Array([2, 3, 5, 7])
+    let cursor = 0, N = 4, sum = 0
+    for (let k = 0; k < N; k++) {
+      sum += a[cursor]
+      cursor = cursor === 0 ? N - 1 : cursor - 1
+      if (mode) { N = 4294967296; cursor = -2147483648 }
+      if (k === 2) break
+    }
+    return [sum, cursor, N]
+  }`, [[0], [1]])
 })
