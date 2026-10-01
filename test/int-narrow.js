@@ -17,6 +17,72 @@ const count = (text, op) => (text.match(new RegExp(`\\(${op.replace('.', '\\.')}
 const shapes = (src, check) => { if (!belowOpt(2)) check(wat(src)) }
 const ARGS = [0, 1, 2, 3, 5, 7, -1, -3, 16, 100, 2147483647, -2147483648, 0.5, NaN]
 
+test('int-narrow: short-circuit conditions retain path bounds and current values', () => {
+  for (const truth of [false, true]) for (const saved of [false, true]) for (const changed of [false, true]) {
+    const range = changed
+      ? '(f64.lt (local.get $x) (local.tee $x (f64.const 100)))'
+      : '(i32.and (f64.ge (local.get $x) (f64.const -8)) (f64.le (local.get $x) (f64.const 7)))'
+    const selected = truth ? range : `(i32.eqz ${range})`
+    const other = saved ? '(local.get $gate)' : `(i32.const ${truth ? 0 : 1})`
+    const ir = parseWat(`(module (func $f (export "f") (param $x f64) (param $mode i32) (result f64)
+      (local $gate i32)
+      (if (result f64)
+        (if (result i32) (local.tee $gate (local.get $mode))
+          (then ${truth ? selected : other}) (else ${truth ? other : selected}))
+        (then ${truth ? '(local.get $x)' : '(f64.const nan)'})
+        (else ${truth ? '(f64.const nan)' : '(local.get $x)'}))))`)
+    const fn = ir[1], outer = fn.at(-1), read = outer[truth ? 3 : 4][1]
+    const facts = intRanges(fn, fn.indexOf(outer)).av.get(read)
+    if (changed) ok(!facts || facts.lo <= 100 && facts.hi >= 100, 'a selected-arm write cannot donate bounds for the earlier value')
+    else is([facts.lo, facts.hi], [-8, 7], 'the selected short-circuit arm supplies its magnitude bounds')
+    const before = new WebAssembly.Instance(new WebAssembly.Module(encodeWat(ir))).exports.f
+    narrowInts(fn)
+    const after = new WebAssembly.Instance(new WebAssembly.Module(encodeWat(ir))).exports.f
+    for (const mode of [0, 1, -1]) for (const x of [0, 0, 2, -0, NaN, -8, 7, 7.5, -8.5, 100, Infinity, -Infinity, 0])
+      ok(Object.is(after(x, mode), before(x, mode)), 'short-circuit values, zero signs and repeated calls agree')
+  }
+})
+
+test('int-narrow: entry assumptions retain established magnitude and zero facts', () => {
+  const wide = { lo: -(2 ** 51), hi: 2 ** 51, int: true, nz: false, nan: false }
+  for (const [value, assumption, expected] of [
+    ['(f64.convert_i32_s (local.get $arg))', wide, [-2147483648, 2147483647, false, false]],
+    ['(f64.const 0)', wide, [0, 0, false, false]],
+    ['(f64.const -0)', { ...wide, nz: true }, [-0, -0, true, false]],
+    ['(f64.const nan)', { ...wide, nan: true }, [Infinity, -Infinity, false, true]],
+    ['(f64.const 7)', null, null],
+    ['(f64.const 7)', undefined, null],
+  ]) {
+    const ir = parseWat(`(module (func $f (export "f") (param $arg i32) (result f64) (local $x f64)
+      (local.set $x ${value}) (block $assume (result f64) (local.get $x))))`)
+    const fn = ir[1], region = fn.at(-1), read = region.at(-1), assume = new Map([[region, new Map([['$x', assumption]])]])
+    const v = intRanges(fn, fn.indexOf(region) - 1, assume).av.get(read)
+    is(v ? [v.lo, v.hi, v.nz, v.nan] : null, expected, 'the entry certificate intersects the live numeric fact')
+    const before = new WebAssembly.Instance(new WebAssembly.Module(encodeWat(ir))).exports.f
+    narrowInts(fn, assume)
+    const after = new WebAssembly.Instance(new WebAssembly.Module(encodeWat(ir))).exports.f
+    for (const arg of [0, 0, 1, -1, 2147483647, -2147483648, 0])
+      ok(Object.is(after(arg), before(arg)), 'intersected assumptions preserve boundary values across reuse')
+  }
+})
+
+test('int-narrow: nested fast loops reuse the established Number bound', () => {
+  const source = `export function f(n) { let s=0
+    for(let i=0;i<n;i++) for(let j=0;j<n;j++) s=(s+i)|0
+    return s }`
+  shapes(source, text => {
+    const loops = []
+    const walk = n => { if (!Array.isArray(n)) return; if (n[0] === 'loop') loops.push(n); n.forEach(walk) }
+    walk(parseWat(text))
+    const nested = n => Array.isArray(n) && (n[0] === 'loop' || n.some(nested))
+    ok(loops.some(loop => loop.some(nested) && !/"(?:f64\.(?:lt|le|gt|ge)|i64\.(?:lt|le|gt|ge)_s)"/.test(JSON.stringify(loop))),
+      'a nested integer fast path repeats no Number or wide-integer bound guards')
+  })
+  const actual = run(source), expected = oracle(source)
+  for (const n of [0, 0, 1, 4, 3.5, -0, -1, NaN, 7, 0, 4])
+    is(actual.f(n), expected.f(n), `the guarded path and Number fallback agree for ${n}`)
+})
+
 test('int-narrow: removing selected bits closes a signed-word recurrence', () => {
   for (const saved of [false, true]) for (const commuted of [false, true]) {
     const word = '(i32.trunc_sat_f64_s (local.get $v))'

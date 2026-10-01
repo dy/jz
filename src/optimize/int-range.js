@@ -504,6 +504,18 @@ export function intRanges(fn, bodyStart, assume = null, regions = null) {
     const op = c[0]
     if (op === 'i32.eqz') return refine(c.find(isArr), !truth, env, stale, root, proof)
     if ((op === 'i32.and' && truth) || (op === 'i32.or' && !truth)) { for (const k of c) if (isArr(k)) refine(k, truth, env, stale, root, proof); return }
+    if (op === 'if' && c[1]?.[0] === 'result' && c[1][1] === 'i32') {
+      const { test, then, otherwise } = conditional(c)
+      const kept = truth ? then : otherwise, other = truth ? otherwise : then
+      const value = other?.length === 2 ? other[1] : null
+      const saved = value?.[0] === 'local.get' && value[1] === readName(test)
+      const constant = value?.[0] === 'i32.const' ? constValue(value) : null
+      if (kept?.length === 2 && (saved || constant != null && Boolean(constant) !== truth)) {
+        refine(test, truth, env, stale, root, proof)
+        refine(kept[1], truth, env, stale, root, proof)
+      }
+      return
+    }
     if ((op === 'local.get' || op === 'local.tee') && types.get(c[1]) === 'i32') {
       if (!stale.has(c)) {
         definitions ||= guardDefinitions(wexprs)
@@ -594,7 +606,18 @@ export function intRanges(fn, bodyStart, assume = null, regions = null) {
   }
   const args = (n, st, from = 1) => { const out = []; for (let i = from; i < n.length; i++) out.push(isArr(n[i]) ? ev(n[i], st) : null); return out }
   const given = (n, st) => {
-    if (assume?.has(n)) for (const [k, v] of assume.get(n)) bind(st.env, k, v)
+    if (assume?.has(n)) for (const [k, v] of assume.get(n)) {
+      // An integer certificate adds to the bounds of the path that reached it.
+      const prior = boundOf(st.env, k)
+      let next = v
+      if (prior && v && !prior.of && !v.of) {
+        const int = prior.int || v.int
+        const lo = Math.max(prior.lo, v.lo), hi = Math.min(prior.hi, v.hi)
+        next = val(int ? Math.ceil(lo) : lo, int ? Math.floor(hi) : hi,
+          int, prior.nz && v.nz, prior.nan && v.nan) ?? v
+      }
+      bind(st.env, k, next)
+    }
   }
   const starts = (n, st) => {
     if (provisional || !regions?.has(n)) return

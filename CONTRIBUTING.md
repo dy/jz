@@ -2446,7 +2446,13 @@ word's range to its original Number while preserving the Number's possible -0.
 This bounds a checked worklist's integer fast copy; truthiness alone never
 narrows its fallback. Bounded lookup exhaustion simply stops propagation.
 A comparison refines only reads that later guard operands have not overwritten;
-this applies through eager compound tests and negation. Arms hull at their join,
+this applies through eager compound tests and negation. A short-circuit value
+conditional also refines its selected arm when the opposite arm cannot produce
+the requested truth: a fixed boolean, or the condition's unchanged saved value.
+Specialization assumptions intersect these path bounds instead of replacing
+them with a wider integer interval, retaining NaN and negative-zero exclusions.
+Nested integer loops can then reuse the entry's Number bounds without testing
+them again each outer iteration. Arms hull at their join,
 and a loop head is the hull of its entry
 and its back edges, widened where a bound still moves after two walks and
 narrowed again by the loop's own tests. Only a local on a cycle of writes (a
