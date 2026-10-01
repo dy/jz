@@ -354,6 +354,76 @@ test('stdlib: let declared bare, assigned before the loop, vectorizes', () => {
 test('stdlib: cursor induction variable beside the counter vectorizes', () => {
   vectorizes(dot(`function dot(n, x, y) { let t = 0.0, ix = 0; for (let i = 0; i < n; i++) { t += x[ix] * y[ix]; ix += 1 } return t }`))
 })
+test('stdlib: counted cursors preserve their full entry, updates and zero-work landing', () => {
+  for (const start of ['0', 'start']) for (const step of [1, -1, 3]) {
+    const src = `const A=new Float64Array([1,2,3,4,5,6]);
+      export function f(start,n,off){let ix=off,t=0;
+        for(let i=${start};i<n;i++){t+=A[ix];ix+=${step}}
+        return [t,ix]}`
+    const expected=oracle(src)
+    for (const optimize of ownedLevels(0, 1, 2, 3, 'size')) {
+      const actual=run(src,{optimize})
+      for (const [from,n] of [[0,0],[0,1],[0,3],[0,3],[1,3],[1,1],[1,3.5],[0,NaN],[0,-1],[0,0]])
+        for (const off of [0,-0,.5,-.5,1,2147483647,-2147483648,4294967296,NaN,Infinity,-Infinity])
+          is(actual.f(from,n,off),expected.f(from,n,off),`O${optimize}: ${start}/${step}, ${from}/${n}/${off}`)
+    }
+  }
+})
+test('stdlib: counted cursors and bounds remain live across callbacks', () => {
+  const sources = [
+    `const A=new Float64Array([1,2,3,4,5,6]);export function f(start,n,off){
+      let ix=off,t=0;const bump=()=>{ix+=1;return 1};
+      for(let i=start;i<n;i++){t+=A[ix]+bump();ix++}return [t,ix]}`,
+    `let n=3;const A=new Float64Array([1,2,3,4,5,6]);function bump(){n--;return 1}
+      export function f(start,count,off){n=count;let ix=off,t=0;
+      for(let i=start;i<n;i++){t+=A[ix]+bump();ix++}return [t,ix]}`,
+    `const A=new Float64Array([1,2,3,4,5,6]);export function f(start,n,off){
+      let ix=off,t=0,sx=1;const bump=()=>{sx=2;return 1};
+      for(let i=start;i<n;i++){t+=A[ix]+bump();ix+=sx}return [t,ix]}`,
+    `export function f(start,n,off){const A=[1,2,3,4,5,6];let ix=off,t=0;
+      for(let i=start;i<A.length;i++){t+=A[ix];ix++;A.pop()}return [t,ix,A.length]}`,
+    `const A=new Float64Array([1,2,3,4,5,6]);export function f(start,n,off){
+      let hits=0;const end={valueOf(){hits++;return n}};let ix=off,t=0;
+      for(let i=start;i<+end;i++){t+=A[ix];ix++}return[t,ix,hits]}`,
+    `const A=new Float64Array([1,2,3,4,5,6]);export function f(start,n,off){
+      let hits=0,ix={valueOf(){hits++;return off},toString(){hits+=10;return'1'}},t=0;
+      for(let i=start;i<n;i++){t+=A[ix];ix++}return[t,hits]}`,
+  ]
+  for (const src of sources) {
+    const expected=oracle(src)
+    for (const optimize of ownedLevels(0, 1, 2, 3, 'size')) {
+      const actual=run(src,{optimize})
+      for (const args of [[1,3,0],[1,3,0],[0,3,0],[0,0,-0],[1,3,.5],[1,1,0],[1,3,0]])
+        is(actual.f(...args),expected.f(...args),`O${optimize}: ${args}`)
+    }
+  }
+})
+test('stdlib: counted loop starts preserve negative zero as a value', () => {
+  for (const start of ['start', '-0']) {
+    const src=`const A=new Float64Array([1,2,3]);export function f(start,n){
+      let s=0,ix=0;for(let i=${start};i<n;i++){s+=1/i+A[ix];ix++}return[s,ix]}`
+    const expected=oracle(src)
+    for(const optimize of ownedLevels(0,1,2,3,'size')) {
+      const actual=run(src,{optimize})
+      for(const args of [[-0,1],[-0,1],[0,1],[1,2],[-0,0],[-0,1]])
+        is(actual.f(...args),expected.f(...args),`O${optimize}: ${start}/${args}`)
+    }
+  }
+})
+test('stdlib: counted cursor updates remain visible to exception handlers', () => {
+  for (const start of ['0','start']) for (const action of ['throw 1','fail()']) {
+    const src=`const A=new Float64Array([1,2,3]);function fail(){throw 1}
+      export function f(start,n){let ix=0,s=0;
+        try{for(let i=${start};i<n;i++){s+=A[ix];ix++;${action}}}catch{}
+        return[s,ix]}`
+    const expected=oracle(src)
+    for(const optimize of ownedLevels(0,1,2,3,'size')) {
+      const actual=run(src,{optimize})
+      for(const args of [[0,0],[0,2],[0,2],[1,3],[0,0],[0,1]])
+        is(actual.f(...args),expected.f(...args),`O${optimize}: ${start}/${action}/${args}`)
+    }
+  }
+})
 test('stdlib: loop starting at a computed bound vectorizes', () => {
   vectorizes(dot(`function dot(n, x, y) { let t = 0.0; const m = n % 4; for (let i = m; i < n; i++) { t += x[i] * y[i] } return t }`))
 })

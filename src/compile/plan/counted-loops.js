@@ -25,8 +25,8 @@
  *     plus an offset against a length (`i + k < n`, a lag or a tap) is the
  *     counter against the length less the offset (`offsetTest`).
  *
- * A cursor is read as an element index only, where a number is an integer
- * (README, 32-bit element indices). A computed start is an integer by test:
+ * A cursor is read as an element index only; the entry and final update must
+ * both fit signed int32 without losing negative zero. A computed start is an integer by test:
  * the rewrite runs under `v === floor(v)` with the original loop as the other
  * arm. The trip count is the closed form, corrected by comparison so that a
  * fractional bound counts as the loop itself would.
@@ -35,14 +35,15 @@
  */
 
 import { ctx } from '../../ctx.js'
-import { T, MUTATE_OPS, some, walkAst, stmtList, cloneNode } from '../../ast.js'
+import { T, MUTATE_OPS, numberGuard, some, walkAst, stmtList, cloneNode } from '../../ast.js'
 import { freshId } from '../../ir.js'
 import { includeModule } from '../../autoload.js'
 import { optimizing } from './common.js'
 import { intLevelMap } from '../../type.js'
-import { K, core, tagOf } from '../../summary/kind.js'
+import { K, NUMBER, core, tagOf } from '../../summary/kind.js'
 
 const lit = (v) => [null, v]
+const TRY = new Set(['try', 'catch', 'finally'])
 const isInt = (n) => Array.isArray(n) && n[0] == null && typeof n[1] === 'number' && Number.isInteger(n[1]) && Math.abs(n[1]) <= 0x7fffffff
 /** The integer `n` is: a literal, or a module constant by name (`var M = 5`). Null otherwise. */
 const intOf = (n) => isInt(n) ? n[1] : typeof n === 'string' && ctx.scope.constInts?.has(n) ? ctx.scope.constInts.get(n) : null
@@ -63,14 +64,20 @@ const mentions = (node, name) => {
   for (let i = 1; i < node.length; i++) if (mentions(node[i], name)) return true
   return false
 }
-/** An expression that runs nothing: names, literals, arithmetic, `.length`. */
+/** Arithmetic over proved Numbers, or immutable built-in lengths: no coercion calls. */
 const PURE_OPS = new Set(['+', '-', '*', '/', '%', '&', '|', '^', '<<', '>>', '>>>', 'u-', 'u+', '~'])
-const pure = (n) => {
-  if (typeof n === 'string' || typeof n === 'number') return true
+const pure = (n, view) => {
+  if (typeof n === 'string') return view.kindOfExpr(n) === NUMBER
+  if (typeof n === 'number') return true
   if (!Array.isArray(n)) return false
-  if (n[0] == null) return true
-  if (n[0] === '.' && n[2] === 'length') return typeof n[1] === 'string'
-  return PURE_OPS.has(n[0]) && n.slice(1).every(pure)
+  if (n[0] == null) return typeof n[1] === 'number'
+  if (n[0] === '.' && n[2] === 'length' && typeof n[1] === 'string') {
+    const tag = tagOf(core(view.kindOfExpr(n[1])))
+    return tag === K.TYPED || tag === K.STRING
+  }
+  if (!PURE_OPS.has(n[0])) return false
+  for (let i = 1; i < n.length; i++) if (!pure(n[i], view)) return false
+  return true
 }
 const namesOf = (n, out = new Set()) => {
   if (typeof n === 'string') out.add(n)
@@ -243,14 +250,15 @@ function reroll(stmts, k, q) {
   return null
 }
 
-function canonicalize(node, parent, idx, live) {
+function canonicalize(node, parent, idx, live, captured, view) {
   const [, init, test, step, body] = node
   if (!Array.isArray(init) || init[0] !== 'let' || init.length !== 2 || !Array.isArray(init[1]) || init[1][0] !== '=' || typeof init[1][1] !== 'string') return false
   const i = init[1][1], start = init[1][2]
   if (!Array.isArray(test) || (test[0] !== '<' && test[0] !== '<=') || test[1] !== i) return false
   const bound = test[2], incl = test[0] === '<='
   const s = stepOf(step, i)
-  if (s <= 0 || !pure(bound) || !pure(start) || mentions(bound, i)) return false
+  if (s <= 0 || !pure(bound, view) || !pure(start, view) || mentions(bound, i) || captured.has(i)) return false
+  for (const name of namesOf(bound)) if (captured.has(name) || ctx.scope.globals.has(name) && !ctx.scope.constInts?.has(name)) return false
   if (some(body, n => n[0] === '=>' || n[0] === 'break' || n[0] === 'continue' || n[0] === ':' || n[0] === 'label')) return false
   if (writes(body, i)) return false
   for (const name of namesOf(bound)) if (writes(body, name)) return false
@@ -260,7 +268,7 @@ function canonicalize(node, parent, idx, live) {
   const cursors = []
   for (let at = 0; at < stmts.length; at++) {
     const st = stmts[at], name = Array.isArray(st) && MUTATE_OPS.has(st[0]) && typeof st[1] === 'string' ? st[1] : null
-    if (name == null || name === i || ctx.scope.globals.has(name)) continue
+    if (name == null || name === i || ctx.scope.globals.has(name) || captured.has(name)) continue
     const K = stepOf(st, name)
     if (!K) continue
     let count = 0
@@ -274,6 +282,7 @@ function canonicalize(node, parent, idx, live) {
   const reads = [i, ...cursors.map(c => c.name)]
   if (!some(body, n => n[0] === '[]' && n.length === 3 && reads.some(r => mentions(n[2], r)))) return false
   const startAt = intOf(start)
+  if (Object.is(startAt, -0)) return false
   const computed = startAt == null
 
   // The body over the trip number `k`: the counter is `a + s·k`, a cursor `c + K·k`.
@@ -295,10 +304,9 @@ function canonicalize(node, parent, idx, live) {
 
   const q = fresh('clq')
   const roll = s > 1 || cursors.some(c => Math.abs(c.K) > 1) ? reroll(kept, k, q) : null
-  // A loop that keeps its own counter (a literal start, nothing to roll) is
-  // left to the lane vectorizer, which rewrites its cursors over the counter
-  // itself (optimize/vectorize/counter-run.js) and knows its idioms.
-  if (!roll && !computed) return false
+  // A literal-start loop without secondary cursors already has canonical
+  // addresses. Float cursors need this guarded rewrite before lane matching.
+  if (!roll && !computed && !cursors.length) return false
   const own = false
 
   includeModule('math')
@@ -344,7 +352,16 @@ function canonicalize(node, parent, idx, live) {
     const count = fresh('cln')
     // under the test the start is an integer and the trips fit a counter
     const tests = [['<=', trips, lit(Math.floor(MAX / M))], ['<=', cloneNode(bound), lit(MAX)]]
-    if (computed) tests.unshift(['===', v, call('math.floor', v)], ['<=', call('math.abs', v), lit(MAX)])
+    if (computed) tests.unshift(['===', v, call('math.floor', v)], ['<=', call('math.abs', v), lit(MAX)],
+      ['||', ['!==', v, lit(0)], ['>', ['/', lit(1), v], lit(0)]])
+    // Index use does not make the stored cursor an int32. Preserve fractional,
+    // unsigned and signed-zero entries, and every update through the landing.
+    for (const c of cursors) {
+      const end = ['+', c.name, scale(c.K, trips)]
+      tests.push(numberGuard(c.name), ['===', c.name, ['|', c.name, lit(0)]],
+        ['||', ['!==', c.name, lit(0)], ['>', ['/', lit(1), c.name], lit(0)]],
+        ['>=', end, lit(-2147483648)], ['<=', cloneNode(end), lit(MAX)])
+    }
     const guard = tests.reduce((l, r) => ['&&', l, r])
     const fast = [
       ...(computed ? [['const', ['=', a, ['|', v, lit(0)]]]] : []),
@@ -366,7 +383,7 @@ function canonicalize(node, parent, idx, live) {
  * reads like any other. Not where the same test, on an arm that leaves the
  * function, already stands ahead of the loop: there it cannot hold.
  */
-function versionUnitStride(node, parent, idx) {
+function versionUnitStride(node, parent, idx, captured) {
   const body = node[4]
   if (some(body, n => n[0] === '=>')) return false
   const names = new Set()
@@ -374,7 +391,7 @@ function versionUnitStride(node, parent, idx) {
   for (let at = 0; at < stmts.length; at++) {
     const st = stmts[at], name = strideOf(st)
     if (name == null) continue
-    if (ctx.scope.globals.has(name) || ctx.scope.globals.has(st[1]) || writes(body, name) || writes(node[3], name)) return false
+    if (ctx.scope.globals.has(name) || ctx.scope.globals.has(st[1]) || captured.has(name) || captured.has(st[1]) || writes(body, name) || writes(node[3], name)) return false
     // a cursor indexes an array; an accumulator stepped by a parameter (`acc = acc + p`) is none
     if (!stmts.some((r, j) => j !== at && some(r, n => n[0] === '[]' && n.length === 3 && mentions(n[2], st[1])))) continue
     if (!stmts.every((r, j) => j === at || indexOnly(r, st[1]))) continue
@@ -410,18 +427,31 @@ export const canonicalizeCountedLoops = () => {
   let changed = false
   for (const func of ctx.funcs.list) {
     if (func.raw || !func.body) continue
+    const captured = new Set(), guarded = new Set()
+    let protectedDepth = 0
     const strided = []
     walkAst(func.body, { enter: (node, parent, idx) => {
-      if (node[0] === '=>') return false
-      if (node[0] === 'for' && node.length === 5 && parent) strided.push([node, parent, idx])
-    } })
-    for (const [node, parent, idx] of strided) if (parent[idx] === node && versionUnitStride(node, parent, idx)) changed = true
+      if (node[0] === '=>') {
+        walkAst(node, { enter: m => { for (let j = 1; j < m.length; j++) if (typeof m[j] === 'string') captured.add(m[j]) } })
+        return false
+      }
+      if (TRY.has(node[0])) protectedDepth++
+      if (node[0] === 'for' && node.length === 5 && parent) {
+        // An exception bypasses delayed cursor writeback; its handler must
+        // observe every update made before the throwing operation.
+        if (protectedDepth) guarded.add(node)
+        else strided.push([node, parent, idx])
+      }
+    }, exit: node => { if (TRY.has(node[0])) protectedDepth-- } })
+    for (const [node, parent, idx] of strided) if (parent[idx] === node && versionUnitStride(node, parent, idx, captured)) changed = true
     const loops = []
     walkAst(func.body, { enter: (node, parent, idx) => {
       if (node[0] === '=>') return false
+      if (guarded.has(node)) return false
       if (node[0] === 'for' && node.length === 5 && parent) loops.push([node, parent, idx])
     } })
     let levels = null
+    const view = loops.length ? ctx.summary.at(func.sig) : null
     for (const [node] of loops) if (offsetTest(node, func, () => levels ??= intLevelMap(func.body))) changed = true
     // innermost first: an outer loop is matched over its rewritten body
     for (let n = loops.length - 1; n >= 0; n--) {
@@ -430,7 +460,7 @@ export const canonicalizeCountedLoops = () => {
       // a cursor lives on when anything outside the loop names it, or an enclosing loop runs the loop again
       const nested = loops.some(([outer]) => outer !== node && some(outer, m => m === node))
       const live = (name) => nested || occursOutside(func.body, node, name)
-      if (canonicalize(node, parent, idx, live)) changed = true
+      if (canonicalize(node, parent, idx, live, captured, view)) changed = true
     }
   }
   return changed
