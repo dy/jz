@@ -40,6 +40,11 @@ The remaining release blockers are:
   Kernel7's build at `414a4fbb` exposed a captured-loop scope regression before
   that gate. Its fix preserves the original body block below the synthetic
   continue label; native/WASI lifecycle checks each pass 20 tests / 1,032 assertions.
+  Kernel8 at `68570f7b` then builds successfully and passes all nine sequence
+  checks. Its recursive run still exhausts 4 GiB after the same phase, whose
+  retained heap is 3.349 GB. The ordinary artifact is 24,571,236 bytes, SHA-256
+  `91214de30f2157fdf7860124f5d18245b9c6a98e1b2c45149266fba0a25d0bd9`.
+  Sparse snapshots alone do not resolve this blocker.
 - Dependency release: the complete, tested watr 5.11.9 tarball awaits publication
   approval. JZ still declares and locks 5.11.8. Publication, the dependency bump
   and a clean registry installation gate must precede release.

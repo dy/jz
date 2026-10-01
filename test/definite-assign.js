@@ -176,8 +176,8 @@ test('definite assignment: every module matches the host', () => {
 // The integer-global inference (plan/scope.js inferModuleIntGlobals) stores a
 // module number as i32. One a read can find unassigned or null, where a read
 // observes that (a presence test, the value handed on), keeps f64: an i32
-// reads 0 there. One read only as a number, or one with a value from its
-// declaration, stays i32.
+// reads 0 there. Numeric demand alone does not prove a preceding store:
+// undefined participates as NaN. A declaration with its word value can use i32.
 // [name, source, the call, the global, its storage]
 const globals = [
   ['null at first, tested for it', `let H = null
@@ -199,9 +199,9 @@ const globals = [
     function t(v) { return v === undefined ? 5 : v }
     export let set = (v) => { H = v | 0 }
     export let f = () => t(H)`, e => e.f(), 'H', 'f64'],
-  ['read only as a number (a loop bound)', `let N
+  ['unassigned module number used after a helper store', `let N
     export let init = (k) => { N = k | 0 }
-    export let f = () => { init(4); let s = 0; for (let i = 0; i < N; i++) s += i; return s }`, e => e.f(), 'N', 'i32'],
+    export let f = () => { init(4); let s = 0; for (let i = 0; i < N; i++) s += i; return s }`, e => e.f(), 'N', 'f64'],
   ['declared with its value', `let W = 0
     export let init = (k) => { W = k | 0 }
     export let f = () => { init(4); return W * 2 }`, e => e.f(), 'W', 'i32'],
@@ -214,5 +214,54 @@ test('integer global: one a read can observe unassigned keeps the f64 carrier', 
     if (belowOpt(2)) continue
     const decl = wat(src, { optimize: 2 }).match(new RegExp('\\(global \\$' + g + '\\s[^\\n]*'))?.[0] ?? ''
     is(/\bi32\b/.test(decl) ? 'i32' : 'f64', storage, `${name}: $${g} is ${storage}`)
+  }
+})
+
+test('integer global: numeric observations preserve absence before the first store', () => {
+  for (const initial of ['', ' = null']) for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const src = `let N${initial}
+    export function init(k) { N = k | 0 }
+    export function f() { return [N < 1, N <= 0, N > -1, N >= 0,
+      +N, -N, N + 1, 1 + N, N - 1, N * 2, 1 / N, N % 3, N ** 2, Math.sqrt(N)] }`
+    const expected = oracle(src), actual = run(src, { optimize })
+    is(actual.f(), expected.f(), `unassigned, O${optimize}`)
+    is(actual.f(), expected.f(), `unassigned again, O${optimize}`)
+    for (const n of [0, 0, -1, -2147483648, 2147483647, 4294967295, 0]) {
+      expected.init(n); actual.init(n)
+      is(actual.f(), expected.f(), `after init(${n}), O${optimize}`)
+    }
+  }
+})
+
+test('integer global: compound numeric stores replace missing values with Number results', () => {
+  for (const op of ['+=', '-=', '*=', '/=', '%=', '**=']) {
+    const src = `let N
+      export function init(k) { N = k | 0 }
+      export function f() { N ${op} 2; return N }`
+    for (const optimize of levels(0, 1, 2, 3, 'size')) {
+      const expected = oracle(src), actual = run(src, { optimize })
+      is(actual.f(), expected.f(), `${op}: missing, O${optimize}`)
+      is(actual.f(), expected.f(), `${op}: resulting NaN, O${optimize}`)
+      for (const n of [0, -4, 2147483647, 0]) {
+        expected.init(n); actual.init(n)
+        is(actual.f(), expected.f(), `${op}: after init(${n}), O${optimize}`)
+      }
+    }
+  }
+})
+
+test('numeric global: Boolean payloads retain missing and null values before initialization', () => {
+  for (const initial of ['', ' = null']) for (const optimize of levels(0, 1, 2, 3, 'size', { level: 2, sourceInline: false })) {
+    const src = `let N${initial}, reads = 0
+      export function init(k) { N = !!k }
+      function read() { reads++; return N }
+      export function f() { return [N < 1, N <= 0, +N, N * 2, +read(), reads] }`
+    const expected = oracle(src), actual = run(src, { optimize })
+    is(actual.f(), expected.f(), `initial${initial}, O${optimize}`)
+    is(actual.f(), expected.f(), `initial again${initial}, O${optimize}`)
+    for (const n of [0, 0, 1, 0]) {
+      expected.init(n); actual.init(n)
+      is(actual.f(), expected.f(), `after init(${n}), O${optimize}`)
+    }
   }
 })

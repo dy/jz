@@ -143,6 +143,14 @@ export const mayYieldUndef = (v, scope = v) => {
   return false
 }
 
+/** Whether the value `v` of the expression `node` shows the undefined of a
+ *  miss (`mayYieldUndef`), read against the expression that made it: a sum's
+ *  helper calls return its result, never a miss. */
+export const mayYieldUndefOf = (node, v) => mayMissValue(node, v, false)
+// Operators whose result is their own: a sum or a concatenation, a product, a
+// comparison, a `typeof`. Their operands convert where they are read.
+const OWN_RESULT_OPS = new Set([...NUMBER_OPS, ...COMPOUND_NUMERIC_OPS, ...COMPARE_OPS, '+', '+=', 'u-', 'u+', '!', 'typeof', 'in', 'instanceof', '`', 'str'])
+const armTail = (v, tag) => { const a = v.find(c => Array.isArray(c) && c[0] === tag); return a && a.length > 1 ? a[a.length - 1] : null }
 /** Whether the summary lets the expression `node` be missing, and its value
  *  `v` is no shape that is a number by construction (arithmetic, a conversion,
  *  a load the emitter made without a bounds test): a `find` that matched
@@ -152,15 +160,6 @@ export const mayYieldUndef = (v, scope = v) => {
  *  loaded each (`a[i] > m ? a[i] : m` over an index in range is two numbers).
  *  A binding that is an arm answers by what it holds: one that normalizes on
  *  write, or that a guard or its definition holds present, is a number. */
-const mayMissExpr = (node, v) => typeof node !== 'string' && mayMissValue(node, v)
-/** Whether the value `v` of the expression `node` shows the undefined of a
- *  miss (`mayYieldUndef`), read against the expression that made it: a sum's
- *  helper calls return its result, never a miss. */
-export const mayYieldUndefOf = (node, v) => mayMissValue(node, v, false)
-// Operators whose result is their own: a sum or a concatenation, a product, a
-// comparison, a `typeof`. Their operands convert where they are read.
-const OWN_RESULT_OPS = new Set([...NUMBER_OPS, ...COMPOUND_NUMERIC_OPS, ...COMPARE_OPS, '+', '+=', 'u-', 'u+', '!', 'typeof', 'in', 'instanceof', '`', 'str'])
-const armTail = (v, tag) => { const a = v.find(c => Array.isArray(c) && c[0] === tag); return a && a.length > 1 ? a[a.length - 1] : null }
 const mayMissValue = (node, v, byKind = true) => {
   if (!Array.isArray(v)) return false
   if (Array.isArray(node) && OWN_RESULT_OPS.has(node[0])) return false
@@ -169,7 +168,7 @@ const mayMissValue = (node, v, byKind = true) => {
     const hit = v[0] === 'if' ? armTail(v, 'then') : null, miss = hit && armTail(v, 'else')
     if (miss) return mayMissValue(node[2], hit, byKind) || mayMissValue(node[3], miss, byKind)
   }
-  if (typeof node === 'string' && (v[0] === 'local.get' || v[0] === 'local.tee') && v[1] === `$${node}`) {
+  if (typeof node === 'string' && (v[0] === 'local.get' || v[0] === 'local.tee' || v[0] === 'global.get') && v[1] === `$${node}`) {
     if (v[0] === 'local.tee') return mayMissValue(node, v[2], byKind)
     if (numericStorage(node) || ctx.func.refinements?.get(node)?.notNullish) return false
     if (ctx.func.maybeNullish?.has(node) || mayBeUndefined(node)) return true
@@ -290,8 +289,12 @@ export function toNumF64(node, v) {
       ['global.set', '$__jz_last_err_bits', ['i64.reinterpret_f64', ['f64.const', code]]],
       ['throw', '$__jz_err', ['f64.const', code]]], 'f64')
   }
-  if (vt === VAL.BOOL) return typeof node === 'string' && ctx.func.maybeNullish?.has(node)
-    ? coerceAtomsToNum(asF64(v)) : typed(['f64.convert_i32_s', truthyIR(v)], 'f64')
+  if (vt === VAL.BOOL) {
+    if (!mayMissValue(node, v)) return typed(['f64.convert_i32_s', truthyIR(v)], 'f64')
+    const t = temp('atom')
+    return typed(['block', ['result', 'f64'], ['local.set', `$${t}`, asF64(v)],
+      coerceAtomsToNum(typed(['local.get', `$${t}`], 'f64'))], 'f64')
+  }
   // Slice 7 widening (.work/archive/todo.md §deletion-sweep §14/§15's own
   // honest-boundary gap): `vt` stays permanently null for a decl/param/capture-
   // hopped census-NUMBER claim (§14 point 3 — `val` never carries a census
@@ -312,7 +315,7 @@ export function toNumF64(node, v) {
     // the overwhelming hot-path case) pays zero new cost — same node object,
     // same asF64(v) call, no new branch taken.
     if ((vt === VAL.NUMBER || censusNum) &&
-        (typeof node === 'string' && (ctx.func.maybeNullish?.has(node) || mayBeUndefined(node)) || censusMaybeUndefined(node))) {
+        (typeof node === 'string' && (ctx.func.maybeNullish?.has(node) || mayBeUndefined(node) || mayMissValue(node, v)) || censusMaybeUndefined(node))) {
       // A computed read can invoke a key's conversion hook; even a pure
       // Map/dictionary probe is costly to repeat. Evaluate every expression
       // once, then duplicate only its local read in the sentinel branches.
@@ -331,7 +334,7 @@ export function toNumF64(node, v) {
       return coerceNullishToNum(asF64(v))
     }
     // The kind names what a read finds; a read that finds nothing answers undefined.
-    if (typeof node !== 'string' && (mayYieldUndef(v) || mayMissExpr(node, v))) return missToNaN(v)
+    if (typeof node !== 'string' && (mayYieldUndef(v) || mayMissValue(node, v))) return missToNaN(v)
     return asF64(v)
   }
   if (vt === VAL.DATE) {
@@ -449,7 +452,7 @@ export function toNumF64(node, v) {
     }
     // An expression the summary lets be missing converts where it is used:
     // null is 0 and undefined NaN, a number itself.
-    if (mayYieldUndef(f) || mayMissExpr(node, f)) {
+    if (mayYieldUndef(f) || mayMissValue(node, f)) {
       const t = temp('miss')
       return typed(['block', ['result', 'f64'], ['local.set', `$${t}`, f], coerceNullishToNum(typed(['local.get', `$${t}`], 'f64'))], 'f64')
     }

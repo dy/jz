@@ -486,7 +486,10 @@ undefined: an index past the end of an array, a typed array or a string, an
 empty array's `pop`, a `find` that matched nothing, a key a Map does not hold.
 The undefined box is a NaN whose payload f64 arithmetic carries to its result,
 which then reads as undefined again, so ToNumber (`toNumF64`) converts a value
-that may be the box before a number is made of it. A constant miss arm folds
+that may be the box before a number is made of it. Module reads consult the
+same presence facts as local reads: numeric demand does not initialize a
+binding. Relational comparisons also convert nullable Number payloads, so null
+compares as zero and undefined as NaN. A constant miss arm folds
 to NaN (`checkedNumRead`); a value whose IR may yield the box (`mayYieldUndef`:
 a constant arm, a runtime reader's result, a local the expression set to
 either) or whose expression the summary lets be missing takes one compare and

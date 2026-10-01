@@ -698,9 +698,13 @@ function emitStrictEq(a, b, negate) {
 
 /** Comparison op factory with constant folding. */
 const cmpOp = (i32op, f64op, fn) => (a, b) => {
-  // A Boolean in its f64 carrier may be its atom: compare its number (ToNumber).
-  const boolNum = (n, v) => v.type === 'f64' && resolveValType(n, valTypeOf, lookupValType) === VAL.BOOL ? toNumF64(n, v) : v
-  const va = boolNum(a, emit(a)), vb = boolNum(b, emit(b))
+  // Number/Boolean payload kinds can still carry nullish atoms. Compare
+  // their numeric values; ToNumber elides conversion for present carriers.
+  const scalarNum = (n, v) => {
+    const kind = resolveValType(n, valTypeOf, lookupValType)
+    return v.type === 'f64' && (kind === VAL.NUMBER || kind === VAL.BOOL) ? toNumF64(n, v) : v
+  }
+  const va = scalarNum(a, emit(a)), vb = scalarNum(b, emit(b))
   // Skip the const-fold for `.unsigned` operands: `litVal` is the signed bit pattern
   // (-1, not 4294967295), so folding the order would be wrong. Fall through to the
   // f64 widen path below, which converts each operand by its own signedness.
