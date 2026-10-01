@@ -679,22 +679,10 @@ test('codegen: guarded global-bound array indices stay integer in the fast arm',
   ok(run.includes('(local $i f64)'), 'the fallback retains the original counter')
 })
 
-test('codegen: nested-loop index seeded from an outer counter narrows transitively', () => {
-  if (onWasi()) return  // wasi: run-reserved renames locals
-  // FFT-butterfly shape: an inner index is seeded from an outer counter and stepped
-  // by an i32 stride. i32-safety back-propagates through the affine assignment/step
-  // edges (i0 ← ix, i0 += id) so the whole nest stays i32 — the pattern that drove
-  // the manual hoist in the rfft example.
-  //
-  // P0-2 ledger (2026-08-02): `ix = 2*(id-1)`'s `2*(id-1)` used to admit `i32.mul`
-  // by bounding only the literal `2` side (the old, unsound `mulFitsI32` rule) —
-  // `id` itself is an unbounded compound-multiplied accumulator (`id *= 4` — see
-  // .work/archive/todo.md for the SEPARATE, still-open finding that `compoundAssign`'s own
-  // `*=`/`+=`/`-=` fast path has NO magnitude gate at all). The corrected,
-  // bilateral-bound `mulFitsI32` can't prove `2*(id-1)` fits i32 from `id`'s
-  // (nonexistent) range fact, so that ONE outer-loop-only assignment now round-
-  // trips through f64 (still exact — `id` and `ix` both stay declared i32 locals,
-  // confirmed below; this is a once-per-OUTER-iteration cost, not per element).
+test('codegen: nested-loop indices retain full Number growth', () => {
+  if (onWasi()) return
+  // An index use does not bound id*=4 or 2*(id-1). This original FFT-shaped
+  // source needs its Number fallback; bounded FFT fast arms are pinned in simd.js.
   const wat = compile(`
     let N = 0; let x;
     export let init = (k) => { N = k; x = new Float64Array(k); return x; };
@@ -708,11 +696,32 @@ test('codegen: nested-loop index seeded from an outer counter narrows transitive
       }
     };
   `, { wat: true })
-  const run = wat.match(/\(func \$run[\s\S]*?\n  \)/)?.[0] || ''
-  ok(/\(local \$ix i32\)/.test(run) && /\(local \$i0 i32\)/.test(run) && /\(local \$id i32\)/.test(run),
-    'ix, i0, id all stay i32 through transitive back-propagation')
-  const inner = run.match(/loop \$loop1[\s\S]*?\n\s*\)\n\s*\)/)?.[0] || ''
-  is((inner.match(/trunc_sat_f64_s|trunc_f64_s/g) || []).length, 0, 'no per-access trunc_sat in the HOT inner loop')
+  const run = funcWat(wat, 'run')
+  for(const name of ['ix','i0','id'])ok(new RegExp(`\\(local \\$${name} f64\\)`).test(run), `${name} retains its full Number domain`)
+  ok(run.includes('f64.mul'), 'the geometric stride keeps Number multiplication')
+})
+
+// These bounded-work siblings expose the values that an unchecked int32
+// carrier would wrap, without allocating a huge array or running billions of trips.
+test('codegen: index recurrences preserve wide Number intermediates', () => {
+  const src=`export function nested(n,id){let ix=0,i0=0,steps=0;const out=[];
+    while(ix<n&&steps<3){i0=ix;let inner=0;
+      while(i0<n&&inner<3){out.push(i0);i0+=id;inner++}
+      ix=2*(id-1);id*=4;out.push(ix,id);steps++
+    }return out}
+    export function index(p,w,q){p=p|0;w=w|0;q=q|0;
+      const a=new Float64Array([7,11]),idx=p*w+q;return[idx,a[idx],idx|0]}`
+  const expected=oracle(src)
+  for(const optimize of levels(0,1,2,3,'size')) {
+    const got=jz(src,{optimize}).exports
+    for(const [n,id] of [[0,4],[32,4],[2147483649,2147483647],[4294967300,1073741824],
+      [2**55,2**53],[4,0.5],[4,-0],[3,NaN],[Infinity,Infinity],[32,4],[0,4]])
+      is(got.nested(n,id),expected.nested(n,id), `O${optimize}: nested ${n}/${id}`)
+    for(const args of [[0,1,0],[0,1,1],[1,1,0],[2147483647,2147483647,0],
+      [2147483647,2147483647,1],[-2147483648,2147483647,2147483647],[65536,65536,0],
+      [0,1,1],[0,1,0]])
+      is(got.index(...args),expected.index(...args), `O${optimize}: index ${args}`)
+  }
 })
 
 test('codegen: float→int |0 of a finite, in-range value drops the +∞-guard select', () => {
@@ -1429,12 +1438,9 @@ test('codegen: f64 threshold in a recurrence lowers to a branchless select at sp
   is(jz(psrc, { optimize: 'speed' }).exports.h(5), -5, 'param read subtracts its value, not select(param)')
 })
 
-test('codegen: named i32 index feeder (let idx = y*W + x) computes in native i32', () => {
-  // The per-pixel `let idx = py*W + qx` bound to an i32 index local used to emit the
-  // f64 round-trip `i32.trunc_sat_f64_s(f64.add(f64.mul(convert py, convert W), …))`
-  // + an Infinity-guard select — because exprType keeps a non-literal product f64
-  // (it may overflow i32). For an i32 destination, wrapping i32 arithmetic is bit-
-  // identical (ToInt32 ≡ two's-complement wrap), so emitDecl now lowers it natively.
+test('codegen: named index feeder hoists the row product out of its fast loop', () => {
+  // py*w can exceed the exact integer range. Preserve Number multiplication
+  // once per row; the guarded hot loop must not repeat it for each element.
   const wat = compile(`
     let img = new Float64Array(4096)
     export let sum = (W, H) => {
@@ -1450,14 +1456,15 @@ test('codegen: named i32 index feeder (let idx = y*W + x) computes in native i32
       }
       return s
     }`, { wat: true })
-  const at = wat.indexOf('(func $sum')
-  const fn = firstLoopArm(wat.slice(at, wat.indexOf('(func', at + 6)))
+  const sum = funcWat(wat, 'sum')
+  const fn = firstLoopArm(sum)
   // Root F versioning: the checked twin's f64 paths are by design — measure the
   // FAST arm (paren-matched: the arm holds its own ifs)
   const n = (re) => (fn.match(re) || []).length
-  is(n(/i32\.trunc_sat_f64_s/g), 0, 'no f64→i32 truncation of the index')
-  is(n(/f64\.mul/g), 0, 'row offset py*w is an i32.mul, not f64.mul')
-  ok(n(/i32\.mul/g) >= 1, 'py*w computed with i32.mul')
+  is(n(/i32\.trunc_sat_f64_s/g), 0, 'no signed-i32 saturating conversion of the index')
+  is(n(/f64\.mul/g), 0, 'no row multiplication in the hot element loop')
+  ok(sum.includes('f64.mul'), 'the row product retains Number rounding outside the hot loop')
+  ok(fn.includes('f64.load'), 'the measured arm actually reads image elements')
 })
 
 test('codegen: unknown-receiver index with NUMBER key guards receiver kind once, not per-key is_str_key', () => {

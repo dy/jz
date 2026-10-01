@@ -29,6 +29,16 @@ export let run = (n, off) => {
   return decode(s, flags, off | 0, n | 0)
 }`
 
+const BOUNDED = `const decode = a => {
+  let x=0,h=0
+  for(let i=0;i<16;i++){x+=a[i];h=Math.imul(h^(x|0),16777619)}
+  return h
+}
+export function run(length){const a=new Int16Array(length)
+  for(let i=0;i<length;i++)a[i]=i*1973-7000
+  return decode(a)
+}`
+
 const TWINS_OFF = { level: 'speed', twinLocals: false }
 const kernelOf = (wat) => funcWat(wat, 'decode') || funcWat(wat, 'run') || funcWat(wat, 'run$exp')
 const loops = (w) => (w.match(/\(loop /g) || []).length
@@ -37,31 +47,44 @@ test('twin locals: the glyph decode matches the host in both copies', () => {
   const native = oracle(GLYPH).run
   for (const optimize of [...levels(0, 2, 3, 'size'), TWINS_OFF]) {
     const wasm = jz(GLYPH, { optimize }).exports.run
-    for (const n of [-3, 0, 1, 5, 16, 23, 24, 25, 40]) for (const off of [-2, 0, 3, 30, 39, 40])
+    for (const n of [-3, 0, 1, 5, 16, 23, 24, 25, 40]) for (const off of [-2, 0, 3, 30, 39, 40, 2147483647, -2147483648])
       is(wasm(n, off), native(n, off), `${JSON.stringify(optimize)}: n ${n}, off ${off}`)
   }
 })
 
 test('twin locals: the fast copy accumulates in i32 while its twin keeps f64', () => {
-  if (onKernel()) return
-  const split = kernelOf(compile(GLYPH, { optimize: 'speed', wat: true }))
-  const shared = kernelOf(compile(GLYPH, { optimize: TWINS_OFF, wat: true }))
-  ok(/\(local \$(?:[^\s)]*_)?x i32\)/.test(split), 'the fast coordinate is an i32 local')
-  ok(/\(local \$[^\s)]*tw\d+_x f64\)/.test(split), 'the twin coordinate is an f64 local of its own')
-  ok(/\(local \$(?:[^\s)]*_)?x f64\)/.test(shared), 'without the split both copies share one f64 coordinate')
-  is(loops(split), loops(shared), 'the emitter versions neither copy again')
+  if (!onKernel()) {
+    // A finite trip count and present signed elements bound every addition.
+    // GLYPH's dynamic cursor/trip facts do not yet prove that bounded region.
+    // Inspect before watr can merge the two copies' local names.
+    const options={level:'speed',watr:false,sourceInline:false}
+    const split = kernelOf(compile(BOUNDED, { optimize: options, wat: true }))
+    const shared = kernelOf(compile(BOUNDED, { optimize: {...options,twinLocals:false}, wat: true }))
+    ok(/\(local \$(?:[^\s)]*_)?x i32\)/.test(split), 'the fast coordinate is an i32 local')
+    ok(/\(local \$[^\s)]*tw\d+_x f64\)/.test(split), 'the twin coordinate is an f64 local of its own')
+    ok(/\(local \$(?:[^\s)]*_)?x f64\)/.test(shared), 'without the split both copies share one f64 coordinate')
+    is(loops(split), 2, 'the source split emits exactly its fast and checked loops')
+  }
+  const expected=oracle(BOUNDED).run
+  for(const optimize of [...levels(0,2,3,'size'),TWINS_OFF]) {
+    const run=jz(BOUNDED,{optimize}).exports.run
+    for(const length of [0,1,15,16,17,32,16,0])is(run(length),expected(length), `${JSON.stringify(optimize)}: length ${length}`)
+  }
 })
 
 test('twin locals: the size tier copies nothing', () => {
   if (onKernel()) return
-  is(compile(GLYPH, { optimize: 'size', wat: true }), compile(GLYPH, { optimize: { level: 'size', twinLocals: false }, wat: true }))
+  for(const src of [GLYPH,BOUNDED])
+    is(compile(src, { optimize: 'size', wat: true }), compile(src, { optimize: { level: 'size', twinLocals: false }, wat: true }))
 })
 
 // Loops the pass leaves to the emitter: an accumulator live after the loop
 // (the twin shares it, so no local narrows), a counter that starts at a
 // variable, float reads (a miss is NaN either way) and a closure in the body (one
 // with two returns: a lambda of one is spliced where it is called, plan/inline.js).
-// Each compiles exactly as without the pass, and matches the host.
+// Before counted-loop canonicalization, each compiles exactly as without the
+// pass. Canonicalization may produce a qualifying constant-start copy; runtime
+// checks keep the complete pipeline enabled.
 test('twin locals: a live accumulator, a variable start, float reads and a closure keep the emitted versioning', () => {
   const cases = {
     liveAfter: `const f = (a, n) => { let x = 0
@@ -82,7 +105,7 @@ test('twin locals: a live accumulator, a variable start, float reads and a closu
       export let run = (n) => { const a = new Uint8Array(16); for (let i = 0; i < 16; i++) a[i] = i * 9; return f(a, n | 0) }`,
   }
   for (const [name, src] of Object.entries(cases)) {
-    if (!onKernel()) is(compile(src, { optimize: 'speed', wat: true }), compile(src, { optimize: TWINS_OFF, wat: true }), `${name}: unchanged`)
+    if (!onKernel()) is(compile(src, { optimize: {level:'speed',countedLoops:false}, wat: true }), compile(src, { optimize: {...TWINS_OFF,countedLoops:false}, wat: true }), `${name}: unchanged before counted-loop canonicalization`)
     const native = oracle(src).run
     for (const optimize of levels(0, 2, 3, 'size')) {
       const wasm = jz(src, { optimize }).exports.run

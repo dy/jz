@@ -1950,7 +1950,17 @@ The fast copy keeps its names and G proves its candidate reads; the twin
 declares its own names and a fresh copy of each outer local dead after the
 loop, and reads its original's summary kind through a summary alias. The
 emitter versions neither copy again, and a split that narrows no local is
-undone. A typed read emitted as proven marks its IR `presentNumRead`, so the
+undone. Present integer reads alone do not bound an accumulated sum: its
+complete trip/step hull or another exact-word proof must justify the carrier.
+The positive twin test uses a fixed-trip signed-element reduction; the
+variable-trip glyph fixture retains semantic checks, including wide cursors.
+Negative source-shape checks run before counted-loop canonicalization, which
+can turn a variable-start loop into a qualifying constant-start copy.
+Likewise, using a geometric stride as an index does not justify wrapping
+`id *= 4`, and a word-sized product's operands do not justify losing Number
+rounding above 2^53. The named row-index test pins hoisting outside the hot
+element loop; it does not require that hoisted Number product to become i32.
+A typed read emitted as proven marks its IR `presentNumRead`, so the
 binding it initializes records a present Number rather than the summary's
 nullable kind. A pass that rewrites a body in place calls
 `invalidateRewrittenBody`: the binding-use census, interval proof and mutation
