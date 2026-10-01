@@ -1744,6 +1744,10 @@ const prepareInterop = (opts) => {
     const prop = state.mem.read(propBig)
     return (prop in extRecv(objBig, prop, 'membership test')) ? 1 : 0
   }
+  opts._interp.__ext_delete = (objBig, propBig) => {
+    const prop = state.mem.read(propBig)
+    return Reflect.deleteProperty(extRecv(objBig, prop, 'property deletion'), prop) ? 1 : 0
+  }
   opts._interp.__ext_set = (objBig, propBig, valBig) => {
     const v = state.mem.read(valBig, state.fnOf)
     // A typed array (or DataView) the module stores on a host object keeps its

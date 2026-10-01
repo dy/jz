@@ -1,7 +1,7 @@
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
 import jz, { compile } from '../index.js'
-import { onWasi } from './_matrix.js'
+import { onWasi, levels } from './_matrix.js'
 
 // Helper: compile and run
 function run(code, imports = {}) {
@@ -131,6 +131,62 @@ test('Set property on external object', () => {
   const mockNode = { innerHTML: '' }
   setProp(mockNode, 'Hello')
   is(mockNode.innerHTML, 'Hello')
+})
+
+test('Computed delete reaches host storage and preserves strict failure and reuse', () => {
+  if (onWasi()) return
+  const src=`export function remove(obj,key){'use strict';return delete obj[key]}
+    export function caught(obj,key){'use strict';try{return [delete obj[key],'ok']}catch(e){return e.name}}`
+  for (const optimize of levels(0,1,2,3,'size')) {
+    const instance=jz(src,{optimize}),{remove,caught}=instance.exports
+    let getterCalls=0
+    const first={x:1,get accessor(){getterCalls++;return 2}},second={x:9}
+    Object.defineProperty(first,'locked',{value:3,configurable:false})
+    for (const obj of [first,first,second,first]) {
+      is(remove(obj,'x'),true,`host delete O${optimize}`)
+      is(Object.hasOwn(obj,'x'),false)
+      is(remove(obj,'missing'),true)
+    }
+    is(remove(first,'accessor'),true)
+    is(getterCalls,0,'delete does not read a getter')
+    is(caught(first,'locked'),'TypeError','strict nonconfigurable failure is catchable in source')
+    is(first.locked,3)
+    throws(()=>remove(first,'locked'),TypeError)
+    first.x=7
+    is(caught(first,'x'),[true,'ok'],'successful call after a throwing call')
+    is(Object.hasOwn(first,'x'),false)
+    is(caught(null,'x'),'TypeError')
+    is(caught(undefined,'x'),'TypeError')
+    const array=[2],typed=new Uint8Array([2]),fn=function native(){}
+    for(const [obj,key,expected] of [[array,'0',[true,'ok']],[array,'length','TypeError'],
+      [typed,'0','TypeError'],[typed,'-0',[true,'ok']],[typed,'length',[true,'ok']],
+      [fn,'prototype','TypeError'],[()=>{},'prototype',[true,'ok']]])
+      is(caught(instance.memory.External(obj),key),expected,`explicit host ${key}`)
+    is(0 in array,false)
+    is(typed[0],2)
+  }
+  const wat=compile(`export function f(){const a={x:1};let key='x';return delete a[key]}`,{wat:true})
+  ok(!wat.includes('$__ext_delete'),'closed internal deletion does not link a host import')
+})
+
+test('Computed host delete captures its receiver and converts the key once', () => {
+  if (onWasi()) return
+  const src=`import {load,changed,note} from 'host';
+    export function f(mode){'use strict';
+      function key(){note('k');return {toString(){note('s');changed();if(mode)throw 7;return 'x'}}}
+      try{return delete load()[key()]}catch(e){return e}}`
+  for (const optimize of levels(0,1,2,3,'size')) {
+    let trace='',current,old
+    const {f}=jz(src,{optimize,imports:{host:{load(){trace+='r';return current},
+      note(s){trace+=s},changed(){current={x:9}}}}}).exports
+    for(const mode of [0,0,1,0]){
+      trace='';old=current={x:1}
+      is(f(mode),mode?7:true)
+      is(trace,'rks')
+      is(Object.hasOwn(old,'x'),!!mode)
+      is(current.x,9)
+    }
+  }
 })
 
 test('Return external object from JZ', () => {

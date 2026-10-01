@@ -349,7 +349,7 @@ export default (ctx) => {
     __dyn_move: ['__ihash_get_local', '__ihash_set_local', '__is_nullish'],
     __hash_del_local: () => ['__str_hash', '__str_eq', '__ptr_type', ...relogDeps()],
     // a deleted slot is gone for the host too: it reads the mask through __obj_deleted
-    __dyn_del: () => [...viewDeps('__view_del'), '__schema_slot', '__hash_del_local', '__ihash_get_local', '__is_nullish', '__is_str_key', '__to_str', '__str_arr_idx', '__str_u32_idx', '__len', '__str_length', '__ptr_aux', '__str_eq', '__obj_deleted'],
+    __dyn_del: () => [...viewDeps('__view_del'), '__schema_slot', '__hash_del_local', '__ihash_get_local', '__is_nullish', '__is_str_key', '__to_str', '__str_arr_idx', '__str_u32_idx', '__len', '__str_length', '__ptr_aux', '__str_eq', '__obj_deleted', ...(ctx.linkDemand.external ? ['__ext_delete'] : [])],
     __str_arr_idx: ['__str_length'],
     __str_u32_idx: ['__str_length'],
     __typed_str_idx: ['__str_length'],
@@ -420,6 +420,7 @@ export default (ctx) => {
   // i32 returns (has/set) and arg shapes stay; only boxed-pointer carriers move.
   ctx.core.stdlib['__ext_prop'] = '(import "env" "__ext_prop" (func $__ext_prop (param i64 i64) (result i64)))'
   ctx.core.stdlib['__ext_has_iterator'] = '(import "env" "__ext_has_iterator" (func $__ext_has_iterator (param i64) (result i32)))'
+  ctx.core.stdlib['__ext_delete'] = '(import "env" "__ext_delete" (func $__ext_delete (param i64 i64) (result i32)))'
   ctx.core.stdlib['__ext_has'] = '(import "env" "__ext_has" (func $__ext_has (param i64 i64) (result i32)))'
   // A host object's own enumerable keys (mode 0), values (1) or entries (2), a jz array (interop.js)
   ctx.core.stdlib['__ext_enum'] = '(import "env" "__ext_enum" (func $__ext_enum (param i64 i32) (result i64)))'
@@ -2472,6 +2473,11 @@ export default (ctx) => {
     (if (i32.or (i32.eq (local.get $type) (i32.const ${PTR.ATOM}))
                 (i32.eq (local.get $type) (i32.const ${PTR.BIGINT})))
       (then (return (i32.const 1))))
+    ${ctx.linkDemand.external ? `(if (i32.eq (local.get $type) (i32.const ${PTR.EXTERNAL}))
+      (then
+        (if (i32.eqz (call $__ext_delete (local.get $obj) (local.get $key)))
+          (then ${deletePropertyErrorWat()}))
+        (return (i32.const 1))))` : ''}
     ;; Built-in nonconfigurable own properties. Compare unsigned indices against
     ;; unsigned lengths: a typed byte array need not fit the signed i32 domain.
     (if (i32.or (i32.eq (local.get $type) (i32.const ${PTR.STRING}))

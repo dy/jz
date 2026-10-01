@@ -144,7 +144,9 @@ The runtime rejects nullish bases before key conversion, preserves primitive
 key identities, and returns Boolean true for both deleted and absent properties.
 Array length, string length/indices and in-bounds typed elements reject strict
 deletion. Typed index checks compare full unsigned indices and lengths; numeric
-receivers never reach pointer-header dispatch.
+receivers never reach pointer-header dispatch. Explicit host handles use the
+matching deletion bridge; a nonconfigurable host property raises the same
+source-catchable TypeError.
 An initializer emitted as a proved pointer establishes presence for its local
 binding just as a proved element read does. Captures and later writes reject
 this block-scoped fact; a checked cursor keeps its possible undefined value.
