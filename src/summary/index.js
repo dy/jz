@@ -693,6 +693,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   // (query.js paramRangesOf).
   const argRanges = new Map()   // function name → { ranges: ([lo, hi] | null)[] }, the settled hulls of the last round
   const roundArgs = new Map()    // reusable buffers for the next round's arguments
+  const argumentEntries = []     // same entries, in insertion order, without per-round Map iterator pairs
   let argumentRound = 0
   const moved = new Map()        // function name → each position's bound-change count; four opens it
   // A function the host, a dispatcher or a caller the walk never sees may
@@ -718,7 +719,10 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     const f = funcByName.get(name)
     if (!f || openCaller(name, f)) return
     let entry = roundArgs.get(name)
-    if (!entry) roundArgs.set(name, entry = { ranges: names.map(() => undefined), round: argumentRound })
+    if (!entry) {
+      entry = { name, ranges: names.map(() => undefined), round: argumentRound }
+      roundArgs.set(name, entry); argumentEntries.push(entry)
+    }
     else if (entry.round !== argumentRound) { entry.ranges.fill(undefined); entry.round = argumentRound }
     let spread = false
     for (let i = 0; i < names.length; i++) {
@@ -738,25 +742,26 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   // At a round's end: a hull that changed changes the summary; one that has
   // changed four rounds over opens. The round's hulls are then the settled ones.
   const settleArgs = () => {
-    for (const [name, entry] of roundArgs) {
-      if (entry.round !== argumentRound) continue
-      const prev = argRanges.get(name)?.ranges
-      entry.ranges.forEach((r, i) => {
+    for (const entry of argumentEntries) {
+      const name = entry.name
+      if (entry.round !== argumentRound) {
+        if (argRanges.delete(name)) changed = true
+        continue
+      }
+      let last = argRanges.get(name)
+      const prev = last?.ranges
+      for (let i = 0; i < entry.ranges.length; i++) {
+        let r = entry.ranges[i]
         if (r === undefined) r = entry.ranges[i] = null
         const p = prev?.[i] ?? null
-        if (r === p || (r && p && r[0] === p[0] && r[1] === p[1])) return
+        if (r === p || (r && p && r[0] === p[0] && r[1] === p[1])) continue
         changed = true
         let moves = moved.get(name)
         if (!moves) moved.set(name, moves = [])
         const m = (moves[i] ?? 0) + 1
         moves[i] = m
         if (m >= 4) entry.ranges[i] = null
-      })
-    }
-    for (const name of argRanges.keys()) if (roundArgs.get(name)?.round !== argumentRound) { argRanges.delete(name); changed = true }
-    for (const [name, entry] of roundArgs) {
-      if (entry.round !== argumentRound) continue
-      let last = argRanges.get(name)
+      }
       if (!last) argRanges.set(name, last = { ranges: [] })
       const reusable = last.ranges
       last.ranges = entry.ranges; entry.ranges = reusable
@@ -4422,7 +4427,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   if (seeded.length) {
     if (losses) losses.length = 0
     kinds.length = 0; incoming.length = 0; fields.length = 0; objectKinds.clear(); decisions.clear(); opaqueSchemas.clear(); hostSchemas.clear(); retainedSchemas.clear(); hostArrays.clear(); retainedArrays.clear(); hostClosures.clear(); results.clear(); escaped.clear(); certainKeys.clear(); boolKeys.clear(); for (let i = 0; i < elems.length; i++) { elems[i] = K.NONE; cellUp[i] = i }
-    tuples.clear(); lens.clear(); stores.clear(); built.clear(); grown.clear(); unknown.clear(); presentReads.clear(); spreadSources.clear(); argRanges.clear(); roundArgs.clear(); moved.clear()
+    tuples.clear(); lens.clear(); stores.clear(); built.clear(); grown.clear(); unknown.clear(); presentReads.clear(); spreadSources.clear(); argRanges.clear(); roundArgs.clear(); argumentEntries.length = 0; moved.clear()
     pendingAll = false; pendingIndexed = false; wildValues = K.NONE; wildProps.clear(); sideProps.clear(); sideWild.clear(); closureProps.clear(); sideByProp.clear(); foreignObjects = false; foreignProps.clear(); lostFieldsRead = 0; deletable.clear(); deleteReach.unknown = false; keysSeen.clear(); copiedSchemas.clear()
     seed(seeded)
     fixpoint()

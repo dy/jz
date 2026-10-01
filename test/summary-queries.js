@@ -176,6 +176,29 @@ test('summary queries: alternating argument hull buffers preserve late calls and
   }
 })
 
+test('summary queries: argument settling isolates empty, missing and recursively widening positions', () => {
+  const options = { schemas: [], brandOf: () => null, imports: new Map(), exported: () => false }
+  const fn = (name, params, body) => ({ name, sig: { params: params.map(name => ({ name })) }, body })
+  let retained
+  for (const value of [3, 3, 'changed', 19, 3]) {
+    const funcs = [fn('zero', [], lit(1)), fn('pair', ['a', 'b'], ['+', 'a', 'b']),
+      fn('cycle', ['n'], [';', ['()', 'cycle', ['+', 'n', lit(1)]], 'n']),
+      fn('point', ['v'], ['*', 'v', lit(2)])]
+    const summary = summarize([';', ['()', 'zero', null],
+      ['()', 'pair', [',', lit(2), lit(value)]], ['()', 'pair', lit(4)],
+      ['()', 'cycle', lit(0)], ['()', 'point', lit(value)]], { ...options, funcs })
+    const q = summary.at('')
+    is(q.paramRangesOf('zero'), [], 'a zero-parameter entry has an empty buffer')
+    is(q.paramRangesOf('pair'), [[2, 4], null], 'a missing later argument opens only its own position')
+    is(q.paramRangesOf('cycle'), [null], 'a changing recursive hull widens to unknown')
+    is(q.paramRangesOf('point'), [typeof value === 'number' ? [value, value] : null], 'unrelated entries retain their own hull')
+    retained ??= q
+    is(retained.paramRangesOf('point'), [[3, 3]], 'later solves do not recycle a retained reader’s buffers')
+  }
+  is(summarize(null, { ...options, funcs: [] }).at('').paramRangesOf('point'), null, 'zero work has no previous argument registry')
+  is(retained.paramRangesOf('pair'), [[2, 4], null], 'empty work leaves prior multi-position bounds intact')
+})
+
 test('summary queries: repeated point ranges preserve signed zero and late bounds', () => {
   const options = { schemas: [], brandOf: () => null, imports: new Map(), exported: () => false }
   let retained

@@ -692,6 +692,10 @@ and visit parameter defaults and bodies without temporary frame records. Argumen
 hulls alternate current and previous buffers; published summaries own their buffers.
 Immutable point ranges share storage within each summary, preserving both zero signs;
 a repeated argument reuses its existing hull when the bounds do not change.
+Argument-range settlement keeps one ordered registry of its per-function buffers.
+It compares and swaps each buffer in place, without per-round Map entry pairs or
+per-function callback environments. Missing calls clear their old hull; numeric
+reseeding clears both the lookup and its registry before solving again.
 Mixed object joins use numeric pair keys. Shape-union cache hits stay outside the
 closure factory that builds a new member list, avoiding discarded environments.
 Spread analysis snapshots keys and kinds in flat private lists, preserving the
