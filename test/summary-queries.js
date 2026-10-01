@@ -803,6 +803,26 @@ test('summary containers: enum values and entry tuples feed numeric Map payloads
   }
 })
 
+test('summary containers: mapped entry payloads settle after missing callback results', () => {
+  const entries = [['1 << i', K.NUMBER], ['name + i', K.STRING], ['i === 0', K.BOOL]]
+  let retained
+  for (const [value, payload] of entries) for (const tags of ['{}', "{a:'a'}", "{a:'a'}", "{a:'a',b:'b'}", "{a:'a'}"])
+    for (const optimize of levels(0, 1, 2, 3, 'size')) {
+      const src = `const tags = ${tags}
+        const bits = new Map(Object.values(tags).map((name, i) => [name, ${value}]))
+        export function f() { return [bits.get('a'), bits.get('b'), bits.get('missing')] }`
+      const binary = _compileInProcess(src, { optimize: { level: optimize, sourceInline: false } })
+      if (tags !== '{}') {
+        is(ctx.summary.at(null).elemKindOf('bits'), kind(payload), `${value}: the completed entry supplies its payload`)
+        if (!retained) retained = ctx.summary
+      }
+      if (retained) is(retained.at(null).elemKindOf('bits'), kind(K.NUMBER), 'later solver rounds leave the published snapshot intact')
+      const actual = instantiate(onKernel() ? compile(src, { optimize }) : binary).exports, expected = oracle(src)
+      is(actual.f(), expected.f(), `${value}, ${tags}, O${optimize}`)
+      is(actual.f(), expected.f(), 'same instance repeats the mapped entry read')
+    }
+})
+
 test('summary spreads: a schema does not exclude properties added through aliases', () => {
   const src = `const extend = (env, key) => { const next = {...env}; next[key] = 1; return next }
     const merge = env => ({...env, done: true})

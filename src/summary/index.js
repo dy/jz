@@ -870,7 +870,10 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       const source = ks[base], t = tagOf(source)
       if (t === K.MAP) value = elemOf(source)
       else if (t === K.ARRAY) {
-        const entry = elemOf(source)
+        // A missing/null entry cannot complete Map construction. In early
+        // solver rounds an unvisited callback can contribute absence alone;
+        // retain bottom until its actual entry shape arrives.
+        const entry = core(elemOf(source))
         const row = tagOf(entry) === K.ARRAY && paramOf(entry) !== UNKNOWN ? tuples.get(cell(paramOf(entry))) : null
         value = row ? row[1] ?? NULLISH : tagOf(entry) === K.NONE ? K.NONE : tagOf(entry) === K.ARRAY ? elemOf(entry) : ANY
       } else if (t !== K.NONE && t !== K.NULLISH && t !== K.ABSENT) value = ANY
@@ -881,7 +884,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       const source = ks[base], t = tagOf(source)
       if (t === K.MAP) raiseKey(map, keysOf(source))
       else if (t === K.ARRAY) {
-        const entry = elemOf(source)
+        const entry = core(elemOf(source))
         const row = tagOf(entry) === K.ARRAY && paramOf(entry) !== UNKNOWN ? tuples.get(cell(paramOf(entry))) : null
         raiseKey(map, row ? row[0] ?? NULLISH : tagOf(entry) === K.NONE ? K.NONE : tagOf(entry) === K.ARRAY ? elemOf(entry) : ANY)
       } else if (t !== K.NONE && t !== K.NULLISH && t !== K.ABSENT) raiseKey(map, ANY)

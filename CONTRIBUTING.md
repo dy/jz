@@ -137,6 +137,9 @@ new nodes added while the compiler solves representation plans.
 Array callback methods keep their initial iteration bound but refresh mutable
 storage before each read. Shrunk indices are skipped except by the find family,
 which visits them as undefined. Fixed-length proofs retain the direct loop.
+Map construction joins completed entry payloads. A callback whose result is
+still absent in an early solver round cannot supply a completed entry, so it
+keeps the payload at bottom until its tuple becomes known.
 `flatMap` appends each callback result immediately, before another callback can
 mutate it; a proven pure callback retains exact-sized two-pass allocation.
 Pipeline fusion checks defaults, getters, coercions and seed evaluation with
