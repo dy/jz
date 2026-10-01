@@ -123,6 +123,21 @@ test('regex: module cursors and empty matches retain their own state across call
   }
 })
 
+test('regex: host results are snapshots and reset retains numeric cursor state', () => {
+  const src=`const r=/x/g;export function next(){return [r.test('xxx'),r.lastIndex]}
+    export function read(){return r}`
+  for(const optimize of levels(0,1,2,3,'size')){
+    const mod=jz(src,{optimize}),got=mod.exports
+    is(got.next(),[true,1],`first cursor O${optimize}`)
+    const first=got.read();first.lastIndex=99;first.extra=7
+    const second=got.read()
+    is([first===second,second.lastIndex,second.extra],[false,1,undefined],`host snapshot O${optimize}`)
+    mod.memory.reset()
+    is(got.next(),[true,2],`numeric state survives reset O${optimize}`)
+    is(got.next(),[true,3],`reuse after reset O${optimize}`)
+  }
+})
+
 test('regex: cursor conversion handles Number boundaries and rejects implicit BigInt', () => {
   const src=`export function f(n){const r=/x/g;r.lastIndex=n;const before=r.lastIndex;const m=r.exec('xx');return [before,m?m.index:-1,r.lastIndex]}
     export function big(){const r=/x/g;r.lastIndex=1n;try{r.exec('x');return false}catch(e){return e instanceof TypeError}}`
