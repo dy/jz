@@ -6,7 +6,7 @@
 // against the host, at every level, key order included.
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import jz, { compile } from '../index.js'
+import jz from '../index.js'
 import { levels, onWasi } from './_matrix.js'
 import { oracle } from './util.js'
 import { parse, has } from '../scripts/wat-probe.mjs'
@@ -120,6 +120,9 @@ test('object rest: the fields of a rest whose source layout only the summary kno
   const src = `let g = ({a, ...r}) => r.b * 2 + r.c\nexport let f = (n) => g({a: 1, b: n, c: 3}) + g({a: 2, b: 5, c: n})`
   for (const optimize of levels(0, 2, 3)) {
     is(jz(src, { optimize }).exports.f(4), oracle(src).f(4), `O${optimize}`)
-    ok(!/\$__dyn_get/.test(compile(src, { optimize, wat: true })), `a layout of its own O${optimize}`)
+    // Reflection exports may link generic readers. The source functions and
+    // their rest-specialized copies must still read these fields as slots.
+    const functions = parse(src, optimize).filter(n => n[0] === 'func' && !n[1].startsWith('$__'))
+    ok(functions.length && functions.every(fn => !has(fn, n => n[0] === 'call' && /^\$__dyn_get/.test(n[1]))), `a layout of its own O${optimize}`)
   }
 })

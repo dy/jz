@@ -1298,7 +1298,7 @@ test('summary: instanceof narrows a name on both sides of its test', () => {
   const text = compile(src, { optimize: 2, wat: true, warnings: w => warnings.push(w) })
   ok(!warnings.some(w => w.code === 'shape-lost'), 'the options record keeps its shape')
   // the loops of batch, wherever the inliner put them (beside opts' spread, which copies keys by name)
-  const holder = funcWat(text, 'batch') || funcWat(text, 'f$exp')
+  const holder = funcWat(text, 'batch') || funcWat(text, 'f$exp') || funcWat(text, 'f')
   const loops = []
   for (let at = holder.indexOf('(loop'); at >= 0; at = holder.indexOf('(loop', at + 1)) {
     let depth = 0, end = at

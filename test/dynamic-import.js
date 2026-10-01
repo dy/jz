@@ -53,7 +53,10 @@ test('import(): a module evaluates at its first import, once', () => agree([
   ['also imported statically', dep, `import { log } from './log.js'\nimport { twice } from './dep.js'\nlog.push('main')\nexport let f = async () => log.join() + (await import('./dep.js')).twice(3) + twice(1)`],
   ['its lazy imports first', chain, `import { log } from './log.js'\nlog.push('main')\nexport let f = async () => { await import('./a.js'); return log.join() }`],
   ['a static import stays at start-up', chain, `import { log } from './log.js'\nimport './c.js'\nlog.push('main')\nexport let f = async () => { await import('./a.js'); return log.join() }`],
-  ['module level, not awaited', dep, `import { log } from './log.js'\nlet p = import('./dep.js')\nlog.push('main')\nexport let f = async () => log.join() + (await p).twice(5)`],
+  // Module loading may finish synchronously or asynchronously (HostLoadImportedModule).
+  // Capture before yielding, then observe completion after await; a later host
+  // call's pre-await read races Node's file loader against the bundled loader.
+  ['module level, not awaited', dep, `import { log } from './log.js'\nlet p = import('./dep.js')\nlog.push('main')\nconst before=log.join()\nexport let f = async () => {const m=await p;return [before,log.join(),m.twice(5)]}`],
   ['module level, awaited', dep, `let d = await import('./dep.js')\nexport let f = () => d.twice(4) + d.default`],
   ['from a lazy module', { ...dep, 'outer.js': `export let get = async () => (await import('./dep.js')).twice(7)` }, `export let f = async () => (await import('./outer.js')).get()`],
 ]))

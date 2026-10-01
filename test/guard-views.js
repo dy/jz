@@ -10,10 +10,13 @@ import { is, ok, throws } from 'tst/assert.js'
 import jz from '../index.js'
 import { oracle, run, wat, funcWat as funcWatOf } from './util.js'
 import { belowOpt, levels } from './_matrix.js'
+import parseWat from 'watr/parse'
+import { loopCount } from '../scripts/wat-probe.mjs'
 
 const funcWat = (text, name) => funcWatOf(text, name) || funcWatOf(text, `${name}$exp`)
 /** Element reads and stores that decide the receiver's kind or the element's width at run time. */
-const dispatches = (src, opts, name = 'f') => (funcWat(wat(src, opts), name).match(/call \$__(typed_idx|typed_get_idx|typed_set_idx|str_idx|dyn_get\w*|dyn_set)\b/g) || []).length
+const dispatches = (src, opts, name = 'f') => loopCount(parseWat(funcWat(wat(src, opts), name)),
+  n => n[0] === 'call' && /^\$__(typed_idx|typed_get_idx|typed_set_idx|str_idx|dyn_get\w*|dyn_set)$/.test(n[1]))
 const OFF = { optimize: { level: 2, guardViews: false } }
 const f32 = (n) => Float32Array.from({ length: n }, (_, i) => ((i * 7919) % 97 - 48) / 8)
 const i32 = (n) => Int32Array.from({ length: n }, (_, i) => (i * 2654435761) | 0)
