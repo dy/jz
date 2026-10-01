@@ -20,6 +20,25 @@ const shapes = (src, check) => { if (!belowOpt(2)) check(wat(src)) }
 const SIZES = [0, 1, 2, 3, 5, 7, 16, 100]
 const ANY = [...SIZES, -1, -3, 0.5, 2.75, NaN, -0, 1e9]
 
+test('specialize: impossible byte extents do not hide reachable nested loops', () => {
+  for (const ctor of ['Int32Array', 'Float32Array', 'Float64Array']) {
+    const src = `export function f(n, view) {
+      const storage = new ${ctor}(n + 2)
+      const a = view ? storage.subarray(1, n + 1) : new ${ctor}(n); a[0] = 3
+      let s = 0
+      for (let r = 0; r < 3; r++) {
+        let j = 0
+        for (let i = 0; i < n; i++) { s += a[j]; j = (j + 1) & 2147483647 }
+      }
+      return s
+    }`
+    shapes(src, w => ok(copies(w) > 0, `${ctor}: reachable loops retain integer copies`))
+    const actual = run(src), expected = oracle(src)
+    for (const n of [0, 1, 8, 8, 3.5, NaN, 2, 8, -0]) for (const view of [false, true])
+      ok(Object.is(actual.f(n, view), expected.f(n, view)), `${ctor}, view=${view}, length=${n}`)
+  }
+})
+
 test('specialize: nested copies restore all live values on outward branches', () => {
   const condition = `(f64.gt (local.tee $p (f64.convert_i32_s
     (i32.rem_s (i32.trunc_sat_f64_s (f64.add (local.get $p) (f64.const 3)))

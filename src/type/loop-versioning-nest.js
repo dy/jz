@@ -12,6 +12,10 @@ import {
   MUTATE_OPS, walkAst, some, someDeep, REFS_THROUGH_ARROWS,
 } from '../ast.js'
 import { ctx } from '../ctx.js'
+import { typedElemAux } from '../../layout.js'
+import { STRIDE } from '../../module/typedarray/elem-tables.js'
+import { typedStorageNameCtor } from '../typed-context.js'
+import { typedCtorBase } from '../typed-provenance.js'
 import { intLiteralValue } from '../static.js'
 import { idxKey, redeclaresName, lengthRecv } from './canonical-bounds.js'
 import { intervalIdxRanges } from './interval-proof.js'
@@ -136,7 +140,12 @@ export function versionableTypedNest(init, cond, step, body, locals) {
     L.cands = L.cands.filter(c => {
       if (!Array.isArray(c.range) || c.range.hiName != null) return true
       const len = ctx.func.typedLen?.get(c.recv) ?? ctx.scope?.globalTypedLen?.get(c.recv)
-      return len == null || c.range[1] < len
+      if (len != null) return c.range[1] < len
+      // Every typed header holds an unsigned wasm32 byte count. A hull
+      // beyond its largest representable element count can never pass,
+      // even when the receiver's actual length is not known here.
+      const aux = typedElemAux(typedCtorBase(typedStorageNameCtor(ctx, c.recv, locals)))
+      return aux == null || c.range[1] < Math.floor(0xffffffff / STRIDE[aux & 7])
     })
     if (!L.cands.length) return false
     if (!L.top) {

@@ -1060,6 +1060,13 @@ present read with that all-writes proof converts exactly to a uint32 for `%`;
 a proven positive divisor then needs only word remainder. Missing reads keep
 the generic path, and the unsigned literal proof excludes negative zero.
 
+Typed bounds versioning rejects a numeric hull when no receiver length can
+satisfy it: the known length when available, otherwise the unsigned wasm32 byte
+header divided by the element stride. Owned arrays and views have the same
+ceiling. This leaves the checked accesses in place without hiding an entire
+loop nest behind an impossible fast-arm guard; later specialization can still
+optimize the loops that execute.
+
 A typed array a guard proves is read as that typed array (`plan/guard-views.js`,
 the `guardViews` pass): past `if (!(a instanceof Float32Array)) throw …` the
 statements that follow read a view of the proven constructor over the same
