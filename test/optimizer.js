@@ -6237,8 +6237,64 @@ const step = (ps) => { for (let i = 0; i < ps.length; i++) { const p = ps[i]; p.
 const run2 = (ps) => { for (let f = 0; f < 4; f++) step(ps) }
 export let main = () => { const ps = mk(100); run2(ps); return ps[0].x }`
   const w = compile(src, { optimize: { level: 'size' }, wat: true })
-  ok(!/__throw_property_nullish/.test(funcWat(w, 'main')), 'no nullish guard on the element reads')
+  const main = findFunc(parseWat(w), '$main')
+  is(loopCount(main, n => n[0] === 'call' && n[1] === '$__throw_property_nullish'), 0, 'loop element field reads need no nullish guard')
+  ok(loopCount(main, n => n[0] === 'f64.load') >= 2, 'the hot loop still reads both object fields directly')
+  ok(loopCount(main, n => n[0] === 'f64.store') > 0, 'the hot loop updates the object field directly')
   is(run(src).main(), 4)
+})
+
+test('array element presence: empty, hole, null, shrink and terminal reads keep their semantics', () => {
+  const src = `export function f(n, mode) {
+    const ps = []
+    for (let i = 0; i < n; i++) ps.push({x:i+1, vx:2})
+    if (mode === 1 && n) ps[0] = null
+    if (mode === 2 && n) delete ps[mode-2]
+    let visited = 0, total = 0
+    try {
+      for (let i = 0; i < ps.length; i++) {
+        if (mode === 3) ps.length = 0
+        const p = ps[i]
+        total += p.x
+        p.x += p.vx
+        visited++
+      }
+      if (mode === 4) return ps[ps.length].x
+      return [visited, total, n ? ps[0].x : 0, '']
+    } catch(e) { return [visited, total, ps.length, e.name] }
+  }`
+  const expected = oracle(src)
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const actual = run(src, {optimize})
+    for (const [n, mode] of [[1,0], [1,0], [4,0], [1,0], [0,0], [0,3], [1,1], [4,2], [4,3], [0,4], [1,4], [1,0]])
+      is(actual.f(n,mode), expected.f(n,mode), `O${optimize}: n=${n}, mode=${mode}`)
+  }
+})
+
+test('array bounds: aliases, calls, coercions and later initializers cannot keep a stale length proof', () => {
+  const cases = {
+    alias: `const b = a; for (let i=0;i<a.length;i++) { b.length=0; reads++; return a[i].x }`,
+    computed: `const b = a, key = flag ? 'length' : 'other'; for (let i=0;i<a.length;i++) { b[key]=0; reads++; return a[i].x }`,
+    called: `const cut = () => { a.length=0 }; for (let i=0;i<a.length;i++) { cut(); reads++; return a[i].x }`,
+    method: `for (let i=0;i<a.length;i++) { a.pop(); reads++; return a[i].x }`,
+    accessor: `const o = {get value(){a.length=0;return 0}}; for (let i=0;i<a.length;i++) { reads+=o.value+1; return a[i].x }`,
+    conversion: `const o = {valueOf(){a.length=0;return 0}}; for (let i=0;i<a.length;i++) { reads+=+o+1; return a[i].x }`,
+    hoisted: `for (let i=0,len=a.length,cut=(a.length=0);i<len;i++) { reads++; return a[i].x }`,
+    counter: `for (let i=0,cut=(i=-1);i<a.length;i++) { reads++; return a[i].x }`,
+    charCounter: `const s='x'; for (let i=0,cut=(i=-1);i<s.length;i++) return s.charCodeAt(i)`,
+  }
+  for (const [name, body] of Object.entries(cases)) {
+    const src = `export function f(flag) {
+      const a=[]; if(flag) a.push({x:3}); let reads=0
+      try { ${body}; return 'none:'+reads }
+      catch(e) { return e.name+':'+reads }
+    }`
+    const expected=oracle(src)
+    for (const optimize of levels(0,1,2,3,'size')) {
+      const actual=run(src,{optimize:{level:optimize,sourceInline:false}})
+      for (const flag of [0,1,1,0,1]) is(actual.f(flag),expected.f(flag),`${name}, O${optimize}, flag=${flag}`)
+    }
+  }
 })
 
 // A constant array literal indexed in place (prepare hoists it to a static const)

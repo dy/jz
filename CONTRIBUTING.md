@@ -953,7 +953,11 @@ nor bytes per element.
 Typed constructor provenance describes storage, not presence. A field or index
 result needs a separate non-nullish proof before pointer unboxing: the
 summary's, or for `arr[i]` over a hole-free array, the loop's in-bounds proof
-(`inBoundsArrIdx`), so a record visitor's element pointer stays raw. A static
+(`inBoundsArrIdx`), so a record visitor's element pointer stays raw. That proof
+requires the complete initializer to preserve the counter, and no length store,
+unknown call, accessor or coercion between the bound and the read to shrink an
+array through an alias. An independent read after the loop still needs its own
+bounds proof. A static
 const array's reads fold their base and length to the literal's
 (`optimize/devirt.js` `foldStaticConstArrayReads`, which recognizes the speed
 tier's inline forwarding hop as well as the `__ptr_offset` call it replaced:

@@ -10,9 +10,11 @@
  *
  * @module type/canonical-bounds
  */
-import { isReassigned, some, walkAst, hasOptionalChain } from '../ast.js'
+import { isReassigned, some, walkAst, hasOptionalChain, MUTATE_OPS, callArgs } from '../ast.js'
 import { ctx, getFactStore } from '../ctx.js'
-import { intLiteralValue, constIntExpr, intExprRange } from '../static.js'
+import { intLiteralValue, constIntExpr, intExprRange, counterInit } from '../static.js'
+import { NUMBER } from '../summary/kind.js'
+import { runsAccessor, runsConversion } from '../compile/analyze/frame-effects.js'
 
 /** Structural key for a `recv[idx]` site — the assumedBounds channel between the
  *  versioning scan and typedIdxProven. JSON is structural, so the key matches even
@@ -131,7 +133,7 @@ export function scanBoundedLoops(node, set) {
       collectDecls(init, decls)
       idx = cond[1]
       // index must be declared in `init` as `let i = C`, C an integer literal ≥ 0
-      const start = decls.has(idx) ? intLiteralValue(decls.get(idx)) : null
+      const start = decls.has(idx) ? intLiteralValue(counterInit(init, idx)) : null
       if (start == null || start < 0) idx = null
       // bound is `recv.length`, directly or via a hoisted temp declared in `init`
       let bound = cond[2]
@@ -181,6 +183,31 @@ function collectBoundedArrIdx(node, recv, idxVar, set, nodes) {
   } })
 }
 
+// The condition's length describes the read only while no intervening effect
+// can shrink the receiver through any alias. Plain field/Number-key stores
+// cannot shrink arrays; accessors, coercions and calls need their own proof.
+function preservesArrayBounds(root, view) {
+  return !some(root, n => {
+    if (runsAccessor(view, n) || runsConversion(view, n)) return true
+    const op = n[0]
+    if (op === '()' || op === '?.()' || op === 'new') {
+      const callee = n[1]
+      if (op === '()' && typeof callee === 'string') {
+        if (ctx.funcs.map?.get(callee)?.frame?.writesOuter === false) return false
+        if (callee.startsWith('math.') && callArgs(n).every(a => view?.kindOfExpr(a) === NUMBER)) return false
+      }
+      return true
+    }
+    if (!MUTATE_OPS.has(op) || !Array.isArray(n[1])) return false
+    const lhs = n[1]
+    if (lhs[0] === '.' || lhs[0] === '?.') return lhs[2] === 'length'
+    if (lhs[0] !== '[]') return false
+    const key = lhs[2]
+    if (Array.isArray(key) && (key[0] == null || key[0] === 'str')) return key[1] === 'length'
+    return view?.kindOfExpr(key) !== NUMBER
+  })
+}
+
 /** Walk `node`, recording `"recv\x00idx"` pairs for `recv[idx]` reads proven within
  *  `[0, recv.length)` by an enclosing canonical loop `for (let i = C; i < recv.length;
  *  i++)`. Same loop contract as `scanBoundedLoops` (charCodeAt) — sibling proof for
@@ -194,7 +221,7 @@ export function scanBoundedArrIdx(node, set, litSet, nodes) {
       const decls = new Map()
       collectDecls(init, decls)
       idx = cond[1]
-      const start = decls.has(idx) ? intLiteralValue(decls.get(idx)) : null
+      const start = decls.has(idx) ? intLiteralValue(counterInit(init, idx)) : null
       if (start == null || start < 0) idx = null
       let bound = cond[2]
       if (typeof bound === 'string') { boundVar = bound; bound = decls.get(bound) }
@@ -203,8 +230,12 @@ export function scanBoundedArrIdx(node, set, litSet, nodes) {
     if (idx && recv && idx !== recv && isUnitIncrement(step, idx)
         && !isReassigned(body, idx) && !isReassigned(body, recv)
         && (boundVar == null || !isReassigned(body, boundVar))
-        && !redeclaresName(body, idx))
-      collectBoundedArrIdx(body, recv, idx, set, nodes)
+        && !redeclaresName(body, idx)) {
+      const view = ctx.summary?.at(ctx.func.current)
+      if (preservesArrayBounds(body, view) && preservesArrayBounds(cond, view) &&
+          (boundVar == null || preservesArrayBounds(init, view)))
+        collectBoundedArrIdx(body, recv, idx, set, nodes)
+    }
     // LITERAL-bound loop `for (let i = C≥0; i < B; i++)`: every `X[i]` read is in
     // [C, B) — provable against a receiver whose STATIC length ≥ B (typedIdxProven
     // consults litSet's recorded bound vs ctx.func.typedLen). Collected for every
@@ -218,7 +249,7 @@ export function scanBoundedArrIdx(node, set, litSet, nodes) {
         const decls = new Map()
         collectDecls(init, decls)
         const idx2 = cond[1]
-        const start = decls.has(idx2) ? intLiteralValue(decls.get(idx2)) : null
+        const start = decls.has(idx2) ? intLiteralValue(counterInit(init, idx2)) : null
         let bound = cond[2]
         if (typeof bound === 'string' && decls.has(bound)) bound = decls.get(bound)
         const B = intLiteralValue(bound)
