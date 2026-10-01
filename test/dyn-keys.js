@@ -11,6 +11,101 @@ import { oracle, funcWat } from './util.js'
 
 const run = (body) => jz('export let f = () => {' + body + '}', { jzify: true }).exports.f()
 
+test('array property projections distinguish dynamic length from object elements', () => {
+  const src = `function rows(){const a=[];a.push({x:3,y:4});a.push({x:5,y:6});return a}
+    export function f(k){k=String(k);const a=rows();return a[k].x}
+    export function captured(k){k=String(k);const a=rows(),p=a[k];return p.x}`
+  const expected = oracle(src)
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const actual = jz(src, { optimize }).exports
+    for (const name of ['f', 'captured']) {
+      for (const k of [0, 0, 1, '0', '1', 'length', 'length', 0])
+        is(actual[name](k), expected[name](k), `${name} ${k}, O${optimize}`)
+      for (const k of [2, -1, 'missing']) {
+        throws(() => expected[name](k), TypeError, `Node missing ${k}`)
+        throws(() => actual[name](k), TypeError, `${name} missing ${k}, O${optimize}`)
+        is(actual[name]('0'), 3, `${name} recovers after ${k}, O${optimize}`)
+      }
+    }
+  }
+})
+
+test('array property projections preserve own properties and JSON element shapes', () => {
+  for (const init of [
+    '[]', '[{x:3,y:4}]', '[{x:3,y:4},{x:5,y:6}]',
+    `JSON.parse('[]')`, `JSON.parse('[{"x":3,"y":4},{"x":5,"y":6}]')`,
+  ]) {
+    const src = `export function f(k){k=String(k);const a=${init};
+      a.owned={y:10,x:9};a.scalar=17;const p=a[k];return p.x}`
+    const expected = oracle(src).f
+    for (const optimize of levels(0, 1, 2, 3, 'size')) {
+      const actual = jz(src, { optimize }).exports.f
+      for (const k of ['length', 'length', 'owned', 'scalar', 'length', 'owned'])
+        is(actual(k), expected(k), `${init} ${k}, O${optimize}`)
+      for (const k of [0, '0', '1', 'missing']) {
+        let value, missing = false
+        try { value = expected(k) } catch (error) { missing = error instanceof TypeError }
+        if (missing) throws(() => actual(k), TypeError, `${init} missing ${k}, O${optimize}`)
+        else is(actual(k), value, `${init} ${k}, O${optimize}`)
+        is(actual('owned'), 9, `${init} recovers after ${k}, O${optimize}`)
+      }
+    }
+  }
+})
+
+test('array property projections preserve primitive receivers and property result kinds', () => {
+  const src = `function field(value){return value.x}
+    export function f(k){k=String(k);const a=[17,true,19n,'text',{x:23}];
+      const p=a[k];return [field(p),typeof p]}
+    export function length(k){k=String(k);const a=['text',''];return a[k].length}`
+  const expected = oracle(src)
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const actual = jz(src, { optimize, sourceInline: false }).exports
+    for (const k of [0, '0', '1', '2', '3', '4', 'length', 'length', '4', '0'])
+      is(actual.f(k), expected.f(k), `${k}, O${optimize}`)
+    for (const k of [0, 0, '1', 'length', '0'])
+      is(actual.length(k), expected.length(k), `length ${k}, O${optimize}`)
+  }
+})
+
+test('array property projections retain named properties behind nullable numeric keys', () => {
+  for (const value of ['7', '{y:4,x:9}']) {
+    const src = `function key(flag){if(flag===1)return 0;if(flag===2)return null}
+      export function f(flag){const a=[{x:3}];a.undefined=${value};a.null=true;return a[key(flag)].x}`
+    const expected = oracle(src).f
+    for (const optimize of levels(0, 1, 2, 3, 'size')) {
+      const actual = jz(src, { optimize, sourceInline: false }).exports.f
+      for (const flag of [0, 0, 1, 2, 1, 0])
+        is(actual(flag), expected(flag), `${value} flag=${flag}, O${optimize}`)
+    }
+  }
+})
+
+test('nullable numeric key writes invalidate named array and object property projections', () => {
+  for (const init of ['[{x:3}]', "{'0':{x:3}}"]) {
+    const src = `function key(flag){if(flag===1)return 0;if(flag===2)return null}
+      export function f(flag){const a=${init};a.undefined={x:9};a.null={x:11};
+        a[key(flag)]=7;return [a[0].x,a.undefined.x,a.null.x]}`
+    const expected = oracle(src).f
+    for (const optimize of levels(0, 1, 2, 3, 'size')) {
+      const actual = jz(src, { optimize, sourceInline: false }).exports.f
+      for (const flag of [0, 0, 1, 2, 1, 0])
+        is(actual(flag), expected(flag), `${init} flag=${flag}, O${optimize}`)
+    }
+  }
+})
+
+test('array property projections preserve BigInt fields across distinct element and own layouts', () => {
+  const src = `export function f(k){k=String(k);const a=[{x:7n}];
+    a.owned={y:4,x:9n};const p=a[k];return p.x}`
+  const expected = oracle(src).f
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const actual = jz(src, { optimize }).exports.f
+    for (const k of [0, 0, 'owned', 'length', 'owned', '0'])
+      is(actual(k), expected(k), `${k}, O${optimize}`)
+  }
+})
+
 test('dictionary writes preserve key coercion order, assigned values and growing aliases', () => {
   for (const value of ['7', "'saved'", '9221120237041090577n']) {
     const src = `export function f(){

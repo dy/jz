@@ -110,6 +110,14 @@ cannot interpret inline record cells.
 IR clones retain schema-liveness tags on every copied producer. Method dispatch
 can replace a constructor's original tree with its clone; losing that tag makes
 the linker omit live object fields and Error brands from host metadata.
+Array element facts apply only to element reads. A dynamic string key can also
+name `length`, a method or an own property; solver and read-only queries join
+those kinds before projecting a field. Local schema and JSON-shape propagation
+must retain that distinction, including when an indexed result is captured.
+Only a present Number key restricts write effects to numeric properties;
+nullish keys can change named slots.
+Losing an object layout uses the summary's effectful merge, so dynamically read
+BigInt fields retain self-describing storage.
 Array `for…of` loops capture their source once and reread its length each step.
 Appends, shrinking and writes through called helpers remain visible, including
 new nodes added while the compiler solves representation plans.

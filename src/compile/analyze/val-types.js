@@ -384,7 +384,7 @@ export function analyzeValTypes(body) {
         // `const p = arr[i]` — when arr's element schema is known (from .push observations
         // or from paramReps arrayElemSchema binding), p inherits the schema. Unlocks slotVT-driven
         // numeric typing on `.prop` reads + slot-direct loads.
-        if (Array.isArray(a[2]) && a[2][0] === '[]' && typeof a[2][1] === 'string') {
+        if (vt === VAL.OBJECT && Array.isArray(a[2]) && a[2][0] === '[]' && typeof a[2][1] === 'string') {
           const elemSid = arrElemSchemaOf(a[2][1])
           if (elemSid != null) {
             updateRep(a[1], { schemaId: elemSid })

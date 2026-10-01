@@ -140,6 +140,7 @@ export function shapeOf(expr) {
       const lit = Array.isArray(k) && k.length === 2 && k[0] == null ? k[1]
         : Array.isArray(k) && k[0] === 'str' ? k[1] : undefined
       if (typeof lit === 'string' && !/^(0|[1-9][0-9]*)$/.test(lit)) return null
+      if (lit === undefined && ctx.summary?.at(ctx.func.current).valOfExpr(k) !== VAL.NUMBER) return null
       return parent.elem || null
     }
   }

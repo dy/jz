@@ -275,6 +275,8 @@ test('summary queries: an unresolved array index retains possible element and na
     is(view.kindOf('key'), K.NONE, 'the uncalled parameter has no incoming evidence')
     is(hasTag(k, K.ARRAY), values.length > 0, 'possible elements survive an unresolved key')
     is(hasTag(k, K.STRING), true, 'the key can name a side property')
+    is(hasTag(k, K.NUMBER), true, 'the key can name length')
+    is(hasTag(k, K.CLOSURE), true, 'the key can name an inherited method')
     is(hasTag(k, K.ABSENT), true, 'the key can also miss')
     is(view.kindOf('key'), K.NONE, 'queries do not mutate the solver')
   }
@@ -528,6 +530,7 @@ const contractProgram = () => {
     ['const', ['=', 'other', ['=>', 'unused', lit(3)]]],
     ['const', ['=', 'set', ['?:', lit(true), closure, numberClosure]]],
     ['const', ['=', 'table', ['[', closure, numberClosure]]],
+    ['const', ['=', 'index', lit(0)]], // this call selects an element, not an arbitrary property
     ['()', 'cb', lit(1)], ['()', 'set', lit(1)], ['()', ['[]', 'table', 'index'], lit(1)],
     ['()', 'erased', lit('any')], ['()', 'through', lit('any')], ['()', 'unbounded', lit('any')],
     // the summary walks what the program reaches: each pinned function is called

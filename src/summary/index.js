@@ -973,7 +973,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   const raiseWildCell = (c, k) => { const old = cellWild.get(c) ?? K.NONE, nk = merge(old, k); if (nk !== old) { cellWild.set(c, nk); changed = true } }
   const hashPropOf = (h, prop) => { const c = cell(paramOf(h)); if (!keyedCells.has(c)) return elemOf(h); return join(cellProps.get(c)?.get(prop) ?? K.NONE, cellWild.get(c) ?? K.NONE) }
   const propOf = (arr, prop) => { const c = cell(paramOf(arr)); return join(isArrayIndexKey(prop) ? elemOf(arr) : cellProps.get(c)?.get(prop) ?? K.NONE, cellWild.get(c) ?? K.NONE) }
-  const anyPropOf = (arr) => { const c = cell(paramOf(arr)); let k = join(elemOf(arr), cellWild.get(c) ?? K.NONE); for (const pk of cellProps.get(c)?.values() ?? []) k = join(k, pk); return k }
+  const anyPropOf = (arr) => { const c = cell(paramOf(arr)); let k = merge(elemOf(arr), cellWild.get(c) ?? K.NONE); for (const pk of cellProps.get(c)?.values() ?? []) k = merge(k, pk); return k }
   const raiseProp = (arr, prop, k) => {
     const t = tagOf(arr)
     if (!(t === K.ARRAY || isDict(arr)) || paramOf(arr) === UNKNOWN) return
@@ -1023,9 +1023,16 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     }
     return pair
   }
-  /** An array's entry under a key of kind `ik`: elements by a number, dictionary entries by a string, everything by an unknown key. */
-  const entryOf = (arr, ik) => { const t = tagOf(ik); if (paramOf(arr) === UNKNOWN) return ANY; return t === K.NUMBER ? elemOf(arr) : t === K.STRING ? anyPropOf(arr) : t === K.NONE ? K.NONE : join(elemOf(arr), anyPropOf(arr)) }
-  const raiseEntry = (arr, ik, k) => { const t = tagOf(ik); if (t === K.NUMBER) raiseElem(arr, k); else if (t === K.STRING) raiseWild(arr, k); else if (t !== K.NONE) { raiseElem(arr, k); raiseWild(arr, k) } }
+  /** A numeric key names an element. Other keys can also name length or an
+   * inherited method, independently of the values stored beside the elements. */
+  const entryOf = (arr, ik) => {
+    const t = tagOf(ik)
+    if (paramOf(arr) === UNKNOWN) return ANY
+    if (ik === NUMBER) return elemOf(arr)
+    if (t === K.NONE) return K.NONE
+    return merge(anyPropOf(arr), join(NUMBER, kind(K.CLOSURE)))
+  }
+  const raiseEntry = (arr, ik, k) => { const t = tagOf(ik); if (ik === NUMBER) raiseElem(arr, k); else if (t === K.STRING) raiseWild(arr, k); else if (t !== K.NONE) { raiseElem(arr, k); raiseWild(arr, k) } }
   /** A value the summary no longer follows: a closure's callers become unknown, an array's elements too. */
   // A lost shape's fields are read through receivers the summary cannot
   // name: their values are lost with it (`raiseSlot` loses later stores).
@@ -3048,7 +3055,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   const poisonIndexed = (sid) => { openSchema(sid); indexSchema(sid); for (const i of indexSlotsOf(sid)) raiseSlot(sid, i, ANY) }
   const poisonAll = (recv, key = ANY, v = ANY) => {
     if (tagOf(key) === K.NONE || !hasTag(recv, K.OBJECT)) return
-    const numeric = tagOf(key) === K.NUMBER
+    const numeric = key === NUMBER
     if (tagOf(recv) === K.OBJECT && paramOf(recv) !== UNKNOWN) { for (const sid of shapesOf(paramOf(recv))) if (numeric) poisonIndexed(sid); else { raiseAllSlots(sid, v); raiseSideWild(sid, v) } return }
     if (numeric) {
       if (pendingIndexed) return
