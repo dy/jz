@@ -38,6 +38,8 @@ function canThrow(body, seen = new Set(), view = ctx.summary?.at(ctx.func.curren
   // Prepared delete stores receiver/key as separate operands. Nullish bases,
   // key conversion and non-configurable properties can throw without a call.
   if (op === 'delete') return true
+  // Membership rejects primitive receivers before converting its key.
+  if (op === 'in') return true
   // BigInt arithmetic can throw without a call in this subtree: division by
   // zero, and a Number beside a BigInt at runtime (the joint dispatch's
   // TypeError) in every arithmetic, bitwise and shift operator and its

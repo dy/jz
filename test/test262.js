@@ -323,7 +323,6 @@ const LEGACY_LANG_LIMITATIONS = new Map([
   ['test/language/expressions/in/S11.8.7_A2.1_T1.js', 'in operator on built-in constructor object'],
   ['test/language/expressions/in/S11.8.7_A2.4_T1.js', 'in operator on built-in constructor object'],
   ['test/language/expressions/in/S11.8.7_A2.4_T2.js', 'in operator on built-in constructor object'],
-  ['test/language/expressions/in/S11.8.7_A3.js', 'in operator: RHS-not-object TypeError'],
   ['test/language/expressions/in/S11.8.7_A4.js', 'in operator: non-string key ToString coercion'],
   ['test/language/expressions/in/S8.12.6_A2_T1.js', 'in operator: inherited Object.prototype property'],
   ['test/language/expressions/in/S8.12.6_A3.js', 'in operator: property present with undefined value'],

@@ -14,6 +14,36 @@ import { oracle, funcWat } from './util.js'
 
 const run = (body) => jz('export let f = () => {' + body + '}', { jzify: true }).exports.f()
 
+test('in: operands run left to right and primitive receivers reject before key conversion', () => {
+  const source=`export function f(mode,stage){let trace=0;
+    const values=[undefined,null,false,0,-0,NaN,Infinity,'abc',2n,Symbol('x'),{x:undefined},[],new Uint8Array(1),()=>0];
+    const key={toString(){trace=trace*10+3;if(stage===3)throw 33;return 'x'}};
+    function left(){trace=trace*10+1;if(stage===1)throw 11;return key}
+    function right(){trace=trace*10+2;if(stage===2)throw 22;return values[mode]}
+    try{return [left() in right(),trace]}catch(e){return [typeof e==='number'?e:e.name,trace]}}
+    export function literal(mode){try{if(mode===0)return 'length' in 'abc';if(mode===1)return 'x' in 1;
+      if(mode===2)return 'x' in null;if(mode===3)return 'x' in undefined;return 'x' in false}catch(e){return e.name}}
+    export function effects(){let n=0;function get(){n++;return {x:1}}
+      const answer='x' in get();return [answer,n]}
+    export function nativeFields(missing){const a=missing?null:[],t=missing?undefined:new Float64Array(0);
+      let ar,tr;try{ar='length' in a}catch(e){ar=e.name}try{tr='length' in t}catch(e){tr=e.name}
+      const m=new Map(),s=new Set(),d=new DataView(new ArrayBuffer(0));
+      return [ar,tr,'length' in m,'length' in s,'size' in m,'size' in s,'length' in d]}
+    export function getter(){const o={get x(){throw 99}};return 'x' in o}
+    export function capture(){let o={x:1};const key={toString(){o={y:2};return 'x'}};return [key in o,'x' in o]}`
+  const expected=oracle(source)
+  for(const optimize of levels(0,1,2,3,'size')){
+    const actual=jz(source,{optimize}).exports
+    for(const mode of [...Array.from({length:14},(_,i)=>i),10,10,0,10])
+      for(const stage of [0,1,2,3])is(actual.f(mode,stage),expected.f(mode,stage),`${optimize}: mode ${mode}, stage ${stage}`)
+    for(let mode=0;mode<5;mode++)is(actual.literal(mode),expected.literal(mode),`${optimize}: known primitive ${mode}`)
+    is(actual.effects(),expected.effects(),`${optimize}: a constant membership answer retains receiver effects`)
+    for(const missing of [false,true,false])is(actual.nativeFields(missing),expected.nativeFields(missing),`${optimize}: native field membership ${missing}`)
+    is(actual.getter(),expected.getter(),`${optimize}: membership does not run the getter`)
+    is(actual.capture(),expected.capture(),`${optimize}: key conversion cannot replace the captured receiver`)
+  }
+})
+
 test('dynamic string indices keep the complete property-key domain', () => {
   const src=`export function read(value,key){return value[key]}
     export function slice(value,key){return value.slice(1,-1)[key]}

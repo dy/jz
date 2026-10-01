@@ -122,6 +122,10 @@ imported caller. Native-only grouping keeps the direct collection emitter.
 Copies snapshot keys before invoking getters, then test each saved key's current
 presence and read its current value. Getter deletion/reinsertion and target
 setters can change later reads; a cached slot/value is not a presence proof.
+Membership evaluates the key expression before the receiver, rejects a primitive
+receiver before ToPropertyKey, and preserves that captured receiver while the
+key's conversion hooks run. Constant membership answers require a present named
+receiver; they cannot erase a receiver expression's effects or a nullish check.
 Structured clones write only into fresh dictionaries or arrays sized before
 recursive getters run. Saved array indices fit that original extent; named
 properties use the clone's private side table. These destinations need no

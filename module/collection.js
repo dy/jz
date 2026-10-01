@@ -14,7 +14,7 @@
 
 import print from 'watr/print'
 import { representationProgramHasBigint } from '../src/compile/representation-plan.js'
-import { staticArrayPtr, throwErrorIR, typed, asF64, asI64, asI32, UNDEF_NAN, TOMB_NAN, temp, tempI32, tempI64, allocPtr, mkPtrIR, ptrTypeEq, boxedPtrTypeEq, elemStore, arrayValue, elemLoad, boolBoxIR, freshId, callWithArgs, numberNanIR, undefExpr } from '../src/ir.js'
+import { staticArrayPtr, throwErrorIR, throwTypeErrorIR, typed, asF64, asI64, asI32, UNDEF_NAN, TOMB_NAN, temp, tempI32, tempI64, allocPtr, mkPtrIR, ptrTypeEq, boxedPtrTypeEq, elemStore, arrayValue, elemLoad, boolBoxIR, freshId, callWithArgs, numberNanIR, undefExpr } from '../src/ir.js'
 import { emit, deps, call, storedValue, withIgnoredArgs } from '../src/bridge.js'
 import { valTypeOf } from '../src/kind.js'
 import { VAL, lookupValType } from '../src/reps.js'
@@ -2738,7 +2738,7 @@ export default (ctx) => {
       const raw = Object.assign(['str', key[1]], { memberProbe: true })
       let recv = obj
       const pre = []
-      if (typeof obj !== 'string') { recv = temp('in_o'); pre.push(['local.set', `$${recv}`, asF64(emit(obj))]) }
+      if (typeof obj !== 'string') { recv = temp('in_o'); pre.push(['local.set', `$${recv}`, asF64(storedValue(obj))]) }
       const probe = typed(['i32.or', asI32(classMemberIn(recv, key[1])), asI32(emit(['in', raw, recv]))], 'i32')
       return pre.length ? typed(['block', ['result', 'i32'], ...pre, probe], 'i32') : probe
     }
@@ -2754,7 +2754,7 @@ export default (ctx) => {
       const raw = Object.assign(['str', key[1]], { accessorProbe: true })
       let recv = obj
       const pre = []
-      if (typeof obj !== 'string') { recv = temp('in_o'); pre.push(['local.set', `$${recv}`, asF64(emit(obj))]) }
+      if (typeof obj !== 'string') { recv = temp('in_o'); pre.push(['local.set', `$${recv}`, asF64(storedValue(obj))]) }
       const probe = emit(['||', ['in', raw, recv], ['||', ['in', ['str', key[1] + ACCESSOR_GET], recv], ['in', ['str', key[1] + ACCESSOR_SET], recv]]])
       return pre.length ? typed(['block', ['result', 'i32'], ...pre, asI32(probe)], 'i32') : probe
     }
@@ -2815,7 +2815,7 @@ export default (ctx) => {
           ['then', ['i32.const', 1]], ['else', present]]
       }
       return typed(['block', ['result', 'i32'],
-        ['local.set', `$${keyTmp}`, asF64(emit(key))],
+        ['local.set', `$${keyTmp}`, asF64(storedValue(key))],
         ['if', ['i32.eqz', ['call', '$__is_str_key', keyBits]],
           ['then', ['local.set', `$${keyTmp}`, ['f64.reinterpret_i64', ['call', '$__to_key', keyBits]]]]],
         present], 'i32')
@@ -2823,14 +2823,15 @@ export default (ctx) => {
 
     if (Array.isArray(key) && key[0] === 'str') {
       const prop = key[1]
-      if (prop === 'length' && objType === VAL.TYPED) {
+      const present = typeof obj === 'string' && ctx.summary?.at(ctx.func.current).mayBeNullishExpr(obj) === false
+      if (prop === 'length' && objType === VAL.TYPED && present) {
         inc('__ptr_aux')
         return typed(['i32.eqz', ['i32.and', ['call', '$__ptr_aux', asI64(emit(obj))], ['i32.const', DATA_VIEW_FLAG]]], 'i32')
       }
-      if (prop === 'length' && (objType === VAL.ARRAY || objType === VAL.STRING || objType === VAL.SET || objType === VAL.MAP))
+      if (prop === 'length' && objType === VAL.ARRAY && present)
         return typed(['i32.const', 1], 'i32')
 
-      const schemaIdx = typeof obj === 'string' ? ctx.schema.slotOf(obj, prop) : ctx.schema.slotOf(null, prop)
+      const schemaIdx = present && objType === VAL.OBJECT ? ctx.schema.slotOf(obj, prop) : -1
       if (!ctx.types.anyDelete && schemaIdx >= 0)
         return typed(['i32.const', 1], 'i32')
       // A schema MISS does not prove absence: an OBJECT can carry off-schema
@@ -2871,7 +2872,7 @@ export default (ctx) => {
             ['i32.or', ['i32.eq', typeVal, ['i32.const', PTR.CLOSURE]],
               ['i32.eq', typeVal, ['i32.const', PTR.BUFFER]]]]]]]
 
-    inc('__ptr_type', '__len', '__str_length', '__hash_has', '__is_str_key', '__to_key', '__dyn_has', '__ptr_offset')
+    inc('__ptr_type', '__len', '__str_length', '__hash_has', '__is_str_key', '__to_key', '__dyn_has', '__ptr_offset', '__is_object')
     // The receiver may be a host object, which the host answers for, as dot
     // reads ask it (array.js ensureHostOpaqueGet).
     const ext = demandHostReceiver()
@@ -2879,8 +2880,10 @@ export default (ctx) => {
     const dynHas = () => ['call', '$__dyn_has', ['i64.reinterpret_f64', objVal], ['i64.reinterpret_f64', keyVal]]
 
     return typed(['block', ['result', 'i32'],
-      ['local.set', `$${objTmp}`, asF64(emit(obj))],
-      ['local.set', `$${keyTmp}`, asF64(emit(key))],
+      ['local.set', `$${keyTmp}`, asF64(storedValue(key))],
+      ['local.set', `$${objTmp}`, asF64(storedValue(obj))],
+      ['if', ['i32.eqz', ['call', '$__is_object', ['i64.reinterpret_f64', objVal]]],
+        ['then', ['drop', throwTypeErrorIR()]]],
       ['local.set', `$${outTmp}`, ['i32.const', 0]],
       ['local.set', `$${typeTmp}`, ['call', '$__ptr_type', ['i64.reinterpret_f64', objVal]]],
       ['local.set', `$${idxTmp}`, ['i32.trunc_sat_f64_s', keyVal]],
