@@ -8,7 +8,7 @@
  * @module array
  */
 
-import { throwErrorIR, numberNanIR, typed, asF64, asI64, asI32, keyIndex, UNDEF_NAN, temp, tempI32, allocPtr, staticArrayPtr, arrayLoop, deferBigintBox, elemStore, throwTypeErrorIR, truthyIR, extractF64Bits, slotAddr, isLiteralStr, resolveValType, undefExpr, ptrTypeEq, isPureIR, freshId, isNullish, isUndef, toStrI64, fwdOffsetIR } from '../src/ir.js'
+import { throwErrorIR, numberNanIR, typed, asF64, asI64, asI32, keyIndex, UNDEF_NAN, TOMB_NAN, temp, tempI32, allocPtr, staticArrayPtr, arrayLoop, arrayValue, deferBigintBox, elemStore, throwTypeErrorIR, truthyIR, extractF64Bits, slotAddr, isLiteralStr, resolveValType, undefExpr, ptrTypeEq, isPureIR, freshId, isNullish, isUndef, toStrI64, fwdOffsetIR } from '../src/ir.js'
 import { inBoundsArrIdx, typedIdxProven, wholeKey } from '../src/type.js'
 import { emit, spread, deps, idx as emitIndex, storedValue, storedValuePlanned, positionArgs } from '../src/bridge.js'
 import { censusMaybeUndefinedKind, isPresentNumber, valTypeOf } from '../src/kind.js'
@@ -164,11 +164,11 @@ export default (ctx) => {
   }
 
   deps({
-    __arr_idx: ['__ptr_offset_fwd'],
+    __arr_idx: ['__ptr_offset_fwd', '__arr_value'],
     __arr_grow: arrayGrowDeps(false),
     __arr_grow_known: arrayGrowDeps(true),
     __arr_shift: () => [
-      '__ptr_offset',
+      '__ptr_offset', '__arr_value',
       ...(needsDurableFwdLog() ? ['__durable_fwd_log'] : []),  // explicit edge — see arrayGrowDeps's comment
       ...(needsArrayDynMove() ? ['__dyn_move', '__hash_new', '__ihash_set_local'] : []),
     ],
@@ -193,9 +193,9 @@ export default (ctx) => {
     __arr_splice: ['__arr_grow', '__len', '__ptr_offset', '__alloc_hdr', '__mkptr', ...(needsDurableFwdLog() ? ['__durable_arr_snap'] : [])],
     __arr_flat: ['__ptr_offset', '__len', '__ptr_type', '__alloc_hdr', '__mkptr'],  // body-calls __alloc_hdr; declare it (self-compile auto-scan can't be relied on — see test/self-compile-includes.js)
     __typed_idx: () => ctx.linkDemand.typedarray || ctx.linkDemand.external
-      ? ['__len', '__ptr_offset_fwd']
-      : ['__len', '__ptr_offset', '__ptr_offset_fwd'],
-    __arr_idx_known: ['__ptr_offset_fwd'],
+      ? ['__len', '__ptr_offset_fwd', '__arr_value']
+      : ['__len', '__ptr_offset', '__ptr_offset_fwd', '__arr_value'],
+    __arr_idx_known: ['__ptr_offset_fwd', '__arr_value'],
   })
 
   // Iteration methods invoke callbacks with an implicit trailing index: .map/
@@ -242,7 +242,7 @@ export default (ctx) => {
       ['local.set', `$${k}`, ['i32.const', 0]],
       ['block', `$hbrk${id}`, ['loop', `$hloop${id}`,
         ['br_if', `$hbrk${id}`, ['i32.ge_s', ['local.get', `$${k}`], nIR]],
-        ['i64.store', ['i32.add', ['local.get', `$${out.local}`], ['i32.shl', ['local.get', `$${k}`], ['i32.const', 3]]], ['i64.const', UNDEF_NAN]],
+        ['i64.store', ['i32.add', ['local.get', `$${out.local}`], ['i32.shl', ['local.get', `$${k}`], ['i32.const', 3]]], ['i64.const', TOMB_NAN]],
         ['local.set', `$${k}`, ['i32.add', ['local.get', `$${k}`], ['i32.const', 1]]],
         ['br', `$hloop${id}`]]]]
     // `new Array(len)` (23.1.1.1): a Number argument is the length, and one
@@ -286,7 +286,7 @@ export default (ctx) => {
             (i32.and
               (i32.ge_s (local.get $i) (i32.const 0))
               (i32.lt_u (local.get $i) (i32.load (i32.sub (local.get $off) (i32.const 8))))))
-          (then (f64.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 3)))))
+          (then (call $__arr_value (f64.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 3))))))
           (else (f64.const nan:${UNDEF_NAN})))))) `
 
   ctx.core.stdlib['__arr_idx_known'] = `(func $__arr_idx_known (param $ptr i64) (param $i i32) (result f64)
@@ -299,7 +299,7 @@ export default (ctx) => {
         (i32.and
           (i32.ge_s (local.get $i) (i32.const 0))
           (i32.lt_u (local.get $i) (i32.load (i32.sub (local.get $off) (i32.const 8))))))
-      (then (f64.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 3)))))
+      (then (call $__arr_value (f64.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 3))))))
       (else (f64.const nan:${UNDEF_NAN}))))`
 
   // Runtime-dispatch index: element-type aware load with bounds check + view indirection.
@@ -331,6 +331,23 @@ export default (ctx) => {
           (local.set $i (i32.add (local.get $i) (i32.const 1)))
           (br $loop)))))
     (call $__mkptr (i32.const ${PTR.ARRAY}) (i32.const 0) (local.get $dst)))`
+
+  // Value-copy consumers (spread, Array.from, change-by-copy methods) make
+  // holes into own undefined slots; raw clones/slices preserve occupancy.
+  deps({ __arr_values: ['__arr_value'], __arr_dense: ['__arr_from', '__ptr_offset', '__arr_values'] })
+  ctx.core.stdlib['__arr_values'] = `(func $__arr_values (param $base i32) (param $n i32)
+    (local $i i32) (local $p i32)
+    (block $done (loop $next
+      (br_if $done (i32.ge_u (local.get $i) (local.get $n)))
+      (local.set $p (i32.add (local.get $base) (i32.shl (local.get $i) (i32.const 3))))
+      (f64.store (local.get $p) (call $__arr_value (f64.load (local.get $p))))
+      (local.set $i (i32.add (local.get $i) (i32.const 1))) (br $next))))`
+  ctx.core.stdlib['__arr_dense'] = `(func $__arr_dense (param $src i64) (result f64)
+    (local $out f64) (local $base i32)
+    (local.set $out (call $__arr_from (local.get $src)))
+    (local.set $base (call $__ptr_offset (i64.reinterpret_f64 (local.get $out))))
+    (call $__arr_values (local.get $base) (i32.load (i32.sub (local.get $base) (i32.const 8))))
+    (local.get $out))`
 
   ctx.core.emit['Array.from'] = arrayFromEmit
 
@@ -467,7 +484,7 @@ export default (ctx) => {
         (local.set $k (local.get $oldLen))
         (block $fdone (loop $fill
           (br_if $fdone (i32.ge_u (local.get $k) (local.get $i)))
-          (i64.store (i32.add (local.get $base) (i32.shl (local.get $k) (i32.const 3))) (i64.const ${UNDEF_NAN}))
+          (i64.store (i32.add (local.get $base) (i32.shl (local.get $k) (i32.const 3))) (i64.const ${TOMB_NAN}))
           (local.set $k (i32.add (local.get $k) (i32.const 1)))
           (br $fill)))))
     (f64.store
@@ -617,7 +634,7 @@ export default (ctx) => {
         (local.set $k (local.get $oldLen))
         (block $fdone (loop $fill
           (br_if $fdone (i32.ge_u (local.get $k) (local.get $n)))
-          (i64.store (i32.add (local.get $base) (i32.shl (local.get $k) (i32.const 3))) (i64.const ${UNDEF_NAN}))
+          (i64.store (i32.add (local.get $base) (i32.shl (local.get $k) (i32.const 3))) (i64.const ${TOMB_NAN}))
           (local.set $k (i32.add (local.get $k) (i32.const 1)))
           (br $fill)))))
     (i32.store (i32.sub (local.get $base) (i32.const 8)) (local.get $n))
@@ -627,6 +644,7 @@ export default (ctx) => {
 
   const arrayLiteral = (elems, capacity = 0) => {
     const hasSpread = elems.some(e => Array.isArray(e) && e[0] === '...')
+    const value = e => e == null ? typed(['f64.const', `nan:${TOMB_NAN}`], 'f64') : taggedStoredValue(e)
 
     // Synthetic destructuring arrays use the same tagged slots as ordinary
     // literals. Proven scalarization can erase the array before emission.
@@ -645,7 +663,7 @@ export default (ctx) => {
         // asF64 folds i32.const → f64.const literally, so int-literal arrays also qualify.
         // storedValue: a bool literal folds to its TRUE/FALSE atom const — still
         // static-extractable, and the element keeps boolean identity in the segment.
-        vals = elems.map(taggedStoredValue)
+        vals = elems.map(value)
         const slots = vals.map(v => extractF64Bits(v))
         if (slots.every(b => b !== null)) {
           const ptr = staticArrayPtr(slots)
@@ -668,7 +686,7 @@ export default (ctx) => {
       const a = allocArray(len, Math.max(len, minCap, capacity))
       const body = [...a.setup]
       for (let i = 0; i < len; i++)
-        body.push(['f64.store', slotAddr(a.local, i), vals ? vals[i] : taggedStoredValue(elems[i])])
+        body.push(['f64.store', slotAddr(a.local, i), vals ? vals[i] : value(elems[i])])
       body.push(a.ptr)
       return typed(['block', ['result', 'f64'], ...body], 'f64')
     }
@@ -1000,7 +1018,7 @@ export default (ctx) => {
               ['then', ['local.set', `$${off}`, ['call', '$__ptr_offset_fwd', ['local.get', `$${off}`]]]]],
             ['if', ['result', 'f64'],
               ['i32.lt_u', ['local.get', `$${ix}`], ['i32.load', ['i32.sub', ['local.get', `$${off}`], ['i32.const', 8]]]],
-              ['then', ctx.abi.array.ops.load(['local.get', `$${off}`], ['local.get', `$${ix}`])],
+              ['then', arrayValue(ctx.abi.array.ops.load(['local.get', `$${off}`], ['local.get', `$${ix}`]))],
               ['else', undefExpr()]]],
           ['else', slow(['local.get', `$${ix}`])]]]
     }
@@ -1119,6 +1137,8 @@ export default (ctx) => {
       // offset, its length the count.
       // A module const frozen after init (plan/scope.js) knows its length the same way.
       const rep = typeof arr === 'string' ? ctx.func.localReps?.get(arr) ?? repOfGlobal(arr) : null
+      const dense = ctx.summary?.at(ctx.func.current).arrayDenseOfExpr(arr) === true
+      const value = load => dense ? load : arrayValue(load)
       const fixedLen = ctx.summary?.at(ctx.func.current)?.fixedLenOfExpr(arr) ?? (rep?.neverGrown === true ? rep.arrayLen ?? null : null)
       const neverGrown = fixedLen != null || rep?.neverGrown === true
       const arrBase = (pointer = ptrExpr, current = true) => neverGrown || (current && typeof arr === 'string' && currentBinding(arr))
@@ -1229,9 +1249,9 @@ export default (ctx) => {
         // `i32.wrap_i64 (i64.reinterpret_f64 (f64.load …))` → `i32.load …`
         // when this load feeds a ptrUnboxed OBJECT field.
         const baseI32 = tempI32('ab')
-        return typed(saTag(ctx.abi.array.ops.load(
+        return typed(saTag(value(ctx.abi.array.ops.load(
           ['local.tee', `$${baseI32}`, arrBase()],
-          vi)), 'f64')
+          vi))), 'f64')
       }
       // Known plain array, numeric key, NOT proven in-bounds → inline bounds-checked
       // load: `idx < len ? load : undefined`. Same semantics as __arr_idx_known but
@@ -1252,9 +1272,9 @@ export default (ctx) => {
           ['i32.lt_u',
             ['local.tee', `$${idxI32}`, vi],
             fixedLen != null ? ['i32.const', fixedLen] : ['i32.load', ['i32.sub', arrBase(), ['i32.const', 8]]]],
-          ['then', ctx.abi.array.ops.load(arrBase(), ['local.get', `$${idxI32}`])],
+          ['then', value(ctx.abi.array.ops.load(arrBase(), ['local.get', `$${idxI32}`]))],
           ['else', throwing ? throwTypeErrorIR() : undefExpr()]]), 'f64')
-        if (throwing) rd.presentRead = true
+        if (throwing && dense) rd.presentRead = true
         // Same number|undefined contract as the typed checked read — but ONLY
         // when the elements are PROVEN numeric (arrayElemValType): a plain
         // array is heterogeneous, and tagging a string-element read would make
@@ -1692,7 +1712,7 @@ export default (ctx) => {
           ['else',
             ['local.set', `$${len}`, ['i32.sub', ['local.get', `$${len}`], ['i32.const', 1]]],
             ['call', '$__set_len', ['i64.reinterpret_f64', ['local.get', `$${t}`]], ['local.get', `$${len}`]],
-            ['f64.load', ['i32.add', ['local.get', `$${off}`], ['i32.shl', ['local.get', `$${len}`], ['i32.const', 3]]]]]]], 'f64')
+            arrayValue(['f64.load', ['i32.add', ['local.get', `$${off}`], ['i32.shl', ['local.get', `$${len}`], ['i32.const', 3]]]])]]], 'f64')
     }
     const rawLen = ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]
     return typed(['block', ['result', 'f64'],
@@ -1703,8 +1723,8 @@ export default (ctx) => {
         ['else',
           ['local.set', `$${len}`, ['i32.sub', ['local.get', `$${len}`], ['i32.const', 1]]],
           ['call', '$__set_len', ['i64.reinterpret_f64', ['local.get', `$${t}`]], ['local.get', `$${len}`]],
-          ['f64.load',
-            ['i32.add', ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${t}`]]], ['i32.shl', ['local.get', `$${len}`], ['i32.const', 3]]]]]]], 'f64')
+          arrayValue(['f64.load',
+            ['i32.add', ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${t}`]]], ['i32.shl', ['local.get', `$${len}`], ['i32.const', 3]]]])]]], 'f64')
   }
 
   // .shift() → remove first element, shift remaining left, return removed
@@ -1736,7 +1756,7 @@ export default (ctx) => {
         (if (result f64) (i32.le_s (local.get $len) (i32.const 0))
           (then (f64.const nan:${UNDEF_NAN}))
           (else
-            (local.set $val (f64.load (local.get $off)))
+            (local.set $val (call $__arr_value (f64.load (local.get $off))))
             (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))
             (local.set $newOff (i32.add (local.get $off) (i32.const 8)))
             ${arrBaseWat('$off', '$base')}
@@ -2075,7 +2095,7 @@ export default (ctx) => {
     // Reuse the precomputed len local in arrayLoop (skip its internal load).
     const loop = callbackLoop(recv, (_ptr, _len, i, item) => [
       elemStore(out.local, i, asF64(cb.stored([item, idxArg(cb, i), arrArg(cb, recv.value)])))
-    ], len, base, false, { onMissing: i => [elemStore(out.local, i, undefExpr())] })
+    ], len, base, false, { onMissing: i => [elemStore(out.local, i, ['f64.const', `nan:${TOMB_NAN}`])] })
     inc('__ptr_offset')
     return typed(['block', ['result', 'f64'],
       recv.setup,
@@ -2138,8 +2158,8 @@ export default (ctx) => {
   }
 
   // A fold without an explicit seed must have consumed a first element.
-  // Plain/map folds use the captured input length; filter folds use their
-  // existing seeded flag, since a nonempty source can have no passing item.
+  // Dense folds use the captured length; sparse/filter folds use a seeded
+  // flag because a nonempty source can have no present/passing element.
   const reductionResult = (acc, seed) => {
     const value = typed(['local.get', `$${acc}`], 'f64')
     return seed == null ? value : typed(['if', ['result', 'f64'],
@@ -2152,6 +2172,7 @@ export default (ctx) => {
     if (up && up.method === 'map' && isPureCallback(fn, init) && !callbackReadsArray(fn, 3)) {
       const recv = hoistArrayValue(up.source)
       const acc = temp('ra'), mapped = temp('mv')
+      const seeded = init === undefined && !recv.dense ? tempI32('rs') : null
       const upReps = callbackArgReps(up.source)
       const mapCb = makeCallback(up.fn, upReps, callbackElem(up.source)), redCb = makeCallback(fn, [{ tagged: true }])
       const mget = typed(['local.get', `$${mapped}`], 'f64')
@@ -2164,16 +2185,17 @@ export default (ctx) => {
           ['local.set', `$${mapped}`, asF64(mapCb.stored([item, idxArg(mapCb, i), arrArg(mapCb, recv.value)]))],
           // No-init: seed accumulator with the first mapped element (see base path).
           init !== undefined ? fold(i)
-            : ['if', ['i32.eqz', ['local.get', `$${i}`]],
-                ['then', ['local.set', `$${acc}`, mget]],
+            : ['if', ['i32.eqz', ['local.get', `$${seeded || i}`]],
+                ['then', ['local.set', `$${acc}`, mget], ...(seeded ? [['local.set', `$${seeded}`, ['i32.const', 1]]] : [])],
                 ['else', fold(i)]]
         ]
       })
       return typed(['block', ['result', 'f64'],
         recv.setup, mapCb.setup, redCb.setup,
+        ...(seeded ? [['local.set', `$${seeded}`, ['i32.const', 0]]] : []),
         ['local.set', `$${acc}`, init !== undefined ? storedValue(init) : ['f64.const', 0]],
         redCb.check,
-        ...loop, reductionResult(acc, init !== undefined ? null : inputLen)], 'f64')
+        ...loop, reductionResult(acc, init !== undefined ? null : seeded || inputLen)], 'f64')
     }
     // .filter(f).reduce(g, init) → single loop: test f, accumulate with g if passes
     if (up && up.method === 'filter' && isPureCallback(fn, init) && !callbackReadsArray(fn, 3)) {
@@ -2214,32 +2236,33 @@ export default (ctx) => {
     }
     const recv = hoistArrayValue(arr)
     const acc = temp('ra')
+    const seeded = init === undefined && !recv.dense ? tempI32('rs') : null
     // reduce cb signature: (acc, item, idx). Item rep mirrors recv's elem val type.
     // The accumulator is a tagged value across the seed, callback result,
     // and next iteration. Its kind can change during the fold.
     const reps = callbackArgReps(arr)
     const accRep = { tagged: true }
     const cb = makeCallback(fn, [accRep, reps[0], { val: VAL.NUMBER }, reps[2]])
-    // No initial value: JS seeds the accumulator with element 0 and folds from
-    // index 1 — NOT a 0 seed folded over every element. A 0 seed is invisible
-    // for `+` (additive identity) but wrong for `*` (→0) and corrupts non-numeric
-    // folds (string reduce emits a bare `0` in the joined result). Seed at i==0.
+    // No initial value: JS seeds the accumulator with the first present element
+    // and folds over later present elements. A 0 seed is invisible for `+`
+    // (additive identity) but wrong for `*` and non-numeric folds.
     const fold = (item, i) => ['local.set', `$${acc}`, asF64(cb.stored([typed(['local.get', `$${acc}`], 'f64'), item, idxArg(cb, i, 2), arrArg(cb, recv.value, 3)]))]
     let inputLen
     const loop = callbackLoop(recv, (_ptr, len, i, item) => {
       inputLen = len
       return [init !== undefined ? fold(item, i)
-        : ['if', ['i32.eqz', ['local.get', `$${i}`]],
-            ['then', ['local.set', `$${acc}`, asF64(item)]],
+        : ['if', ['i32.eqz', ['local.get', `$${seeded || i}`]],
+            ['then', ['local.set', `$${acc}`, asF64(item)], ...(seeded ? [['local.set', `$${seeded}`, ['i32.const', 1]]] : [])],
             ['else', fold(item, i)]]]
     })
     return typed(['block', ['result', 'f64'],
       recv.setup,
       cb.setup,
+      ...(seeded ? [['local.set', `$${seeded}`, ['i32.const', 0]]] : []),
       ['local.set', `$${acc}`, init !== undefined ? storedValue(init) : ['f64.const', 0]],
       cb.check,
       ...loop,
-      reductionResult(acc, init !== undefined ? null : inputLen)], 'f64')
+      reductionResult(acc, init !== undefined ? null : seeded || inputLen)], 'f64')
   }
 
   // .reduceRight(fn, init) — same accumulator fold as .reduce but the last
@@ -2250,25 +2273,27 @@ export default (ctx) => {
   ctx.core.emit['.reduceRight'] = (arr, fn, init) => {
     const recv = hoistArrayValue(arr)
     const acc = temp('ra')
+    const seeded = init === undefined && !recv.dense ? tempI32('rs') : null
     const reps = callbackArgReps(arr)
     const cb = makeCallback(fn, [{ tagged: true }, reps[0], { val: VAL.NUMBER }, reps[2]])
-    // No-init: reverse walk seeds with the last element (i == len-1), folds down.
+    // No-init: reverse walk seeds with the last present element, then folds down.
     const fold = (item, i) => ['local.set', `$${acc}`, asF64(cb.stored([typed(['local.get', `$${acc}`], 'f64'), item, idxArg(cb, i, 2), arrArg(cb, recv.value, 3)]))]
     let inputLen
     const loop = callbackLoop(recv, (_ptr, len, i, item) => {
       inputLen = len
       return [init !== undefined ? fold(item, i)
-        : ['if', ['i32.eq', ['local.get', `$${i}`], ['i32.sub', ['local.get', `$${len}`], ['i32.const', 1]]],
-            ['then', ['local.set', `$${acc}`, asF64(item)]],
+        : ['if', seeded ? ['i32.eqz', ['local.get', `$${seeded}`]] : ['i32.eq', ['local.get', `$${i}`], ['i32.sub', ['local.get', `$${len}`], ['i32.const', 1]]],
+            ['then', ['local.set', `$${acc}`, asF64(item)], ...(seeded ? [['local.set', `$${seeded}`, ['i32.const', 1]]] : [])],
             ['else', fold(item, i)]]]
     }, null, null, true)
     return typed(['block', ['result', 'f64'],
       recv.setup,
       cb.setup,
+      ...(seeded ? [['local.set', `$${seeded}`, ['i32.const', 0]]] : []),
       ['local.set', `$${acc}`, init !== undefined ? storedValue(init) : ['f64.const', 0]],
       cb.check,
       ...loop,
-      reductionResult(acc, init !== undefined ? null : inputLen)], 'f64')
+      reductionResult(acc, init !== undefined ? null : seeded || inputLen)], 'f64')
   }
 
   ctx.core.emit['.forEach'] = (arr, fn, thisArg) => {
@@ -2349,8 +2374,9 @@ export default (ctx) => {
     return emitArrayReverseInPlace(recv.setup, recv.value)
   }
   ctx.core.emit['.toReversed'] = (arr) => {
-    inc('__arr_from')
-    return emitArrayReverseInPlace(['nop'], typed(['call', '$__arr_from', asI64(emit(arr))], 'f64'))
+    const copy = ctx.summary?.at(ctx.func.current).arrayDenseOfExpr(arr) ? '__arr_from' : '__arr_dense'
+    inc(copy)
+    return emitArrayReverseInPlace(['nop'], typed(['call', '$' + copy, asI64(emit(arr))], 'f64'))
   }
 
   // Sort an array VALUE in place, returning it: `.sort` sorts the receiver,
@@ -2362,9 +2388,9 @@ export default (ctx) => {
   // result puts a after b; NaN is no order. The default order compares each
   // element's string once made (__to_str → __str_cmp, code unit order, not
   // locale-aware): records of a key and its value.
-  function emitArraySortInPlace(setup, value, fn) {
+  function emitArraySortInPlace(setup, value, fn, dense = false) {
     const arrTmp = temp('sr'), base = tempI32('sb'), len = tempI32('sl'), m = tempI32('sm'), i = tempI32('si')
-    const buf = tempI32('sbf'), tmp = tempI32('stp'), v = temp('sv')
+    const buf = tempI32('sbf'), tmp = tempI32('stp'), v = temp('sv'), present = dense ? null : tempI32('sn')
     const id = freshId(ctx)
     const shift = fn == null ? 4 : 3
     let cmpSetup = ['nop'], after
@@ -2385,6 +2411,12 @@ export default (ctx) => {
     const slot = (b, k) => ['i32.add', get(b), ['i32.shl', get(k), ['i32.const', 3]]]
     const rec = (k) => ['i32.add', get(buf), ['i32.shl', get(k), ['i32.const', shift]]]
     const scratch = heapScratch(buf, ['i32.shl', get(len), ['i32.const', shift + 1]])
+    const collect = ['if', ['i32.eqz', isUndef(get(v))], ['then',
+      ...(fn == null
+        ? [['i64.store', rec(m), ['call', '$__to_str', ['i64.reinterpret_f64', get(v)]]],
+           ['f64.store', ['i32.add', rec(m), ['i32.const', 8]], get(v)]]
+        : [['f64.store', rec(m), get(v)]]),
+      ['local.set', `$${m}`, ['i32.add', get(m), ['i32.const', 1]]]]]
     return typed(['block', ['result', 'f64'],
       setup,
       cmpSetup,
@@ -2396,15 +2428,12 @@ export default (ctx) => {
         ['local.set', `$${tmp}`, ['i32.add', get(buf), ['i32.shl', get(len), ['i32.const', shift]]]],
         // the elements out, undefined set aside
         ['local.set', `$${m}`, ['i32.const', 0]], ['local.set', `$${i}`, ['i32.const', 0]],
+        ...(dense ? [] : [['local.set', `$${present}`, ['i32.const', 0]]]),
         ['block', `$sortgd${id}`, ['loop', `$sortg${id}`,
           ['br_if', `$sortgd${id}`, ['i32.ge_s', get(i), get(len)]],
           ['local.set', `$${v}`, ['f64.load', slot(base, i)]],
-          ['if', ['i32.eqz', isUndef(get(v))], ['then',
-            ...(fn == null
-              ? [['i64.store', rec(m), ['call', '$__to_str', ['i64.reinterpret_f64', get(v)]]],
-                 ['f64.store', ['i32.add', rec(m), ['i32.const', 8]], get(v)]]
-              : [['f64.store', rec(m), get(v)]]),
-            ['local.set', `$${m}`, ['i32.add', get(m), ['i32.const', 1]]]]],
+          dense ? collect : ['if', ['i64.ne', ['i64.reinterpret_f64', get(v)], ['i64.const', TOMB_NAN]], ['then',
+            ['local.set', `$${present}`, ['i32.add', get(present), ['i32.const', 1]]], collect]],
           ['local.set', `$${i}`, ['i32.add', get(i), ['i32.const', 1]]],
           ['br', `$sortg${id}`]]],
         mergeSortIR(buf, tmp, m, shift, after),
@@ -2416,7 +2445,8 @@ export default (ctx) => {
           ['br_if', `$sortwd${id}`, ['i32.ge_s', get(i), get(len)]],
           ['f64.store', slot(base, i), ['if', ['result', 'f64'], ['i32.lt_s', get(i), get(m)],
             ['then', ['f64.load', fn == null ? ['i32.add', rec(i), ['i32.const', 8]] : rec(i)]],
-            ['else', undefExpr()]]],
+            ['else', dense ? undefExpr() : ['if', ['result', 'f64'], ['i32.lt_s', get(i), get(present)],
+              ['then', undefExpr()], ['else', ['f64.const', `nan:${TOMB_NAN}`]]]]]],
           ['local.set', `$${i}`, ['i32.add', get(i), ['i32.const', 1]]],
           ['br', `$sortw${id}`]]],
         scratch.release]],
@@ -2425,23 +2455,25 @@ export default (ctx) => {
   }
   ctx.core.emit['.sort'] = (arr, fn) => {
     const recv = hoistArrayValue(arr)
-    return emitArraySortInPlace(recv.setup, recv.value, fn)
+    return emitArraySortInPlace(recv.setup, recv.value, fn, recv.dense)
   }
   ctx.core.emit['.toSorted'] = (arr, fn) => {
-    inc('__arr_from')
-    return emitArraySortInPlace(['nop'], typed(['call', '$__arr_from', asI64(emit(arr))], 'f64'), fn)
+    const copy = ctx.summary?.at(ctx.func.current).arrayDenseOfExpr(arr) ? '__arr_from' : '__arr_dense'
+    inc(copy)
+    return emitArraySortInPlace(['nop'], typed(['call', '$' + copy, asI64(emit(arr))], 'f64'), fn, true)
   }
 
   // .with(index, value) (ES2023) — a COPY with one element replaced. Negative
   // index counts from the end; an out-of-range index throws (RangeError in JS —
   // jz collapses Error subclasses to one generic throw, like .typed:with).
   ctx.core.emit['.with'] = (arr, index, value) => {
-    inc('__arr_from', '__ptr_offset')
+    const copy = ctx.summary?.at(ctx.func.current).arrayDenseOfExpr(arr) ? '__arr_from' : '__arr_dense'
+    inc(copy, '__ptr_offset')
     ctx.runtime.throws = true
     const c = temp('awc'), base = tempI32('awb'), len = tempI32('awl'), idx = tempI32('awi')
     const positions = positionArgs([index])
     return typed(['block', ['result', 'f64'],
-      ['local.set', `$${c}`, typed(['call', '$__arr_from', asI64(emit(arr))], 'f64')],
+      ['local.set', `$${c}`, typed(['call', '$' + copy, asI64(emit(arr))], 'f64')],
       ['local.set', `$${base}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${c}`]]]],
       ['local.set', `$${len}`, ['i32.load', ['i32.sub', ['local.get', `$${base}`], ['i32.const', 8]]]],
       // ToIntegerOrInfinity position arg (23.1.3.42 step 3) through positionArgs:
@@ -2542,7 +2574,7 @@ export default (ctx) => {
     const loop = arrayLoop(recv.value, (_ptr, _len, i, item) => [
       ['if', eq(item, vv),
         ['then', ['local.set', `$${result}`, ['local.get', `$${i}`]], ['br', exit]]]
-    ], len, ptr, false, ['local.get', `$${from.local}`])
+    ], len, ptr, false, ['local.get', `$${from.local}`], { fixed: true, dense: recv.dense })
     return typed(['block', ['result', 'f64'],
       recv.setup,
       ['local.set', `$${value}`, asF64(val === undefined ? undefExpr() : storedValue(val))],
@@ -2580,7 +2612,7 @@ export default (ctx) => {
     const loop = arrayLoop(recv.value, (_ptr, _len, i, item) => [
       ['if', eq(item),
         ['then', ['local.set', `$${result}`, ['i32.const', 1]], ['br', exit]]]
-    ], len, ptr, false, ['local.get', `$${from.local}`])
+    ], len, ptr, false, ['local.get', `$${from.local}`], { fixed: true, dense: recv.dense, visitMissing: true })
     return typed(['block', ['result', 'f64'],
       recv.setup,
       ['local.set', `$${vv}`, asF64(val === undefined ? undefExpr() : storedValue(val))],
@@ -2608,7 +2640,7 @@ export default (ctx) => {
     const loop = arrayLoop(recv.value, (_ptr, _len, i, item) => [
       ['if', eq(item, vv),
         ['then', ['local.set', `$${result}`, ['local.get', `$${i}`]], ['br', exit]]]
-    ], len, ptr, true, ['local.get', `$${from.local}`])
+    ], len, ptr, true, ['local.get', `$${from.local}`], { fixed: true, dense: recv.dense })
     return typed(['block', ['result', 'f64'],
       recv.setup,
       ['local.set', `$${value}`, asF64(val === undefined ? undefExpr() : storedValue(val))],
@@ -2646,8 +2678,8 @@ export default (ctx) => {
         // Conversion can grow/forward or shrink the receiver. Keep the original
         // relative length, but read the current element through the shared helper.
         ['else', read ? ['call', `$${read}`, asI64(recv.value), ['local.get', `$${t}`]]
-          : ['f64.load', ['i32.add', ['local.get', `$${off}`],
-            ['i32.shl', ['local.get', `$${t}`], ['i32.const', 3]]]]]]], 'f64')
+          : arrayValue(['f64.load', ['i32.add', ['local.get', `$${off}`],
+            ['i32.shl', ['local.get', `$${t}`], ['i32.const', 3]]]])]]], 'f64')
   }
   ctx.core.emit['.array:at'].argc = 2
   ctx.core.emit['.at'] = ctx.core.emit['.array:at']
@@ -2802,6 +2834,8 @@ export default (ctx) => {
     (block $c2 (loop $cl2
       (br_if $c2 (i32.ge_s (local.get $i) (local.get $len)))
       (local.set $elem (f64.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 3)))))
+      (if (i64.eq (i64.reinterpret_f64 (local.get $elem)) (i64.const ${TOMB_NAN})) (then
+        (local.set $i (i32.add (local.get $i) (i32.const 1))) (br $cl2)))
       (if (i32.and (f64.ne (local.get $elem) (local.get $elem))
         (i32.eq (call $__ptr_type (i64.reinterpret_f64 (local.get $elem))) (i32.const ${PTR.ARRAY})))
         (then
@@ -2810,9 +2844,10 @@ export default (ctx) => {
           (local.set $j (i32.const 0))
           (block $s (loop $sl
             (br_if $s (i32.ge_s (local.get $j) (local.get $subLen)))
-            (f64.store (i32.add (local.get $dst) (i32.shl (local.get $pos) (i32.const 3)))
-              (f64.load (i32.add (local.get $subOff) (i32.shl (local.get $j) (i32.const 3)))))
-            (local.set $pos (i32.add (local.get $pos) (i32.const 1)))
+            (local.set $elem (f64.load (i32.add (local.get $subOff) (i32.shl (local.get $j) (i32.const 3)))))
+            (if (i64.ne (i64.reinterpret_f64 (local.get $elem)) (i64.const ${TOMB_NAN})) (then
+              (f64.store (i32.add (local.get $dst) (i32.shl (local.get $pos) (i32.const 3))) (local.get $elem))
+              (local.set $pos (i32.add (local.get $pos) (i32.const 1)))))
             (local.set $j (i32.add (local.get $j) (i32.const 1)))
             (br $sl))))
         (else
@@ -2820,6 +2855,7 @@ export default (ctx) => {
           (local.set $pos (i32.add (local.get $pos) (i32.const 1)))))
       (local.set $i (i32.add (local.get $i) (i32.const 1)))
       (br $cl2)))
+    (i32.store (i32.sub (local.get $dst) (i32.const 8)) (local.get $pos))
     (call $__mkptr (i32.const ${PTR.ARRAY}) (i32.const 0) (local.get $dst)))`
 
   ctx.core.emit['.flat'] = (arr) => (inc('__arr_flat'),
@@ -2845,7 +2881,7 @@ export default (ctx) => {
     const loop = callbackLoop(recv, (_ptr, _len, i, item) => [
       ['local.set', `$${mapped}`, asF64(cb.stored([item, idxArg(cb, i), arrArg(cb, recv.value)]))],
       ['if', ['i32.and', ['f64.ne', value, value], ptrTypeEq(value, PTR.ARRAY)],
-        ['then', ...arrayLoop(value, (_p, _l, _i, nested) => [append(nested)])],
+        ['then', ...arrayLoop(value, (_p, _l, _i, nested) => [append(nested)], undefined, undefined, false, undefined, { fixed: true })],
         ['else', append(value)]]
     ])
     return typed(['block', ['result', 'f64'], recv.setup, cb.setup, cb.check,

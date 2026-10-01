@@ -201,12 +201,13 @@ function trySpliceInsert(callee, obj, method, parsed) {
 // positions, inserts and spreads take one path), and returned.
 function tryToSpliced(callee, obj, method, parsed) {
   if (method !== 'toSpliced' || !ctx.core.emit['.splice']) return
-  inc('__arr_from')
+  const helper = ctx.summary?.at(ctx.func.current).arrayDenseOfExpr(obj) ? '__arr_from' : '__arr_dense'
+  inc(helper)
   const c = temp('tsp'), copy = ['__raw_local', c]
   ctx.func.localValTypesOverlay.set(c, VAL.ARRAY)
   const spliced = trySpliceInsert(callee, copy, 'splice', parsed) ?? ctx.core.emit['.splice'](copy, ...parsed.normal)
   return typed(['block', ['result', 'f64'],
-    ['local.set', `$${c}`, ['call', '$__arr_from', asI64(emit(obj))]],
+    ['local.set', `$${c}`, ['call', '$' + helper, asI64(emit(obj))]],
     ['drop', asF64(spliced)],
     ['local.get', `$${c}`]], 'f64')
 }

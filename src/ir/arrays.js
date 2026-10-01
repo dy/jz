@@ -12,8 +12,14 @@ import { temp, tempI32, freshId } from './locals.js'
 import { mkPtrIR } from './pointers.js'
 import { asF64 } from './numeric.js'
 import { isPureIR } from './classify.js'
-import { UNDEF_NAN } from './sentinels.js'
+import { UNDEF_NAN, TOMB_NAN } from './sentinels.js'
 import { dataAlign, dataPush, dataLen, pushStaticSlots } from '../static-data.js'
+
+/** Read a boxed array cell as a value: an absent cell answers undefined. */
+export function arrayValue(value) {
+  inc('__arr_value')
+  return typed(['call', '$__arr_value', value], 'f64')
+}
 
 /** Slot address: element `idx` off `baseLocal`. Constant idx folds the `*8`. */
 export function slotAddr(baseLocal, idx) {
@@ -45,13 +51,14 @@ export function elemStore(ptr, i, val) {
  *  initial length. Missing indices are skipped, visited as undefined, or
  *  passed to onMissing (map preserves its result length). */
 export function arrayLoop(arrExpr, bodyFn, lenLocal, ptrLocal, reverse, from, callbacks) {
-  const arr = ptrLocal && !callbacks ? null : temp('aa'), ptr = ptrLocal ?? tempI32('ap'), i = tempI32('ai'), item = temp('av')
+  const refresh = callbacks && !callbacks.fixed
+  const arr = ptrLocal && !refresh ? null : temp('aa'), ptr = ptrLocal ?? tempI32('ap'), i = tempI32('ai'), item = temp('av')
   const len = lenLocal ?? tempI32('al')
   const id = freshId(ctx)
   const setup = []
   if (arr) setup.push(['local.set', `$${arr}`, asF64(arrExpr)])
   const resolve = ['local.set', `$${ptr}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${arr}`]]]]
-  if (!ptrLocal || callbacks) inc('__ptr_offset')
+  if (!ptrLocal || refresh) inc('__ptr_offset')
   if (!ptrLocal) setup.push(resolve)
   if (!lenLocal) setup.push(
     ['local.set', `$${len}`, ['i32.load', ['i32.sub', ['local.get', `$${ptr}`], ['i32.const', 8]]]])
@@ -66,16 +73,20 @@ export function arrayLoop(arrExpr, bodyFn, lenLocal, ptrLocal, reverse, from, ca
   const load = ['local.set', `$${item}`, elemLoad(ptr, i)]
   let visit = [load, ...body]
   if (callbacks) {
-    // The iteration limit is the original length, but callbacks may shorten,
-    // regrow or relocate the receiver before the next property read.
+    const read = [load, ...(callbacks.dense ? body : [['if',
+      ['i64.ne', ['i64.reinterpret_f64', ['local.get', `$${item}`]], ['i64.const', TOMB_NAN]],
+      ['then', ...body], ...(callbacks.onMissing ? [['else', ...callbacks.onMissing(i)]] : [])]])]
     const present = ['i32.lt_u', ['local.get', `$${i}`],
       ['i32.load', ['i32.sub', ['local.get', `$${ptr}`], ['i32.const', 8]]]]
-    visit = callbacks.visitMissing
-      ? [resolve, ['local.set', `$${item}`, ['if', ['result', 'f64'], present,
-          ['then', elemLoad(ptr, i)], ['else', ['f64.reinterpret_i64', ['i64.const', UNDEF_NAN]]]]], ...body]
-      : [resolve, ['if', present, ['then', ...visit],
-          ...(callbacks.onMissing ? [['else', ...callbacks.onMissing(i)]] : [])]]
-  }
+    if (callbacks.visitMissing) {
+      const value = callbacks.dense ? elemLoad(ptr, i) : arrayValue(elemLoad(ptr, i))
+      visit = [...(refresh ? [resolve] : []), ['local.set', `$${item}`, refresh
+        ? ['if', ['result', 'f64'], present, ['then', value], ['else', ['f64.reinterpret_i64', ['i64.const', UNDEF_NAN]]]]
+        : value], ...body]
+    } else visit = refresh
+      ? [resolve, ['if', present, ['then', ...read], ...(callbacks.onMissing ? [['else', ...callbacks.onMissing(i)]] : [])]]
+      : read
+  } else visit = [['local.set', `$${item}`, arrayValue(elemLoad(ptr, i))], ...body]
   setup.push(
     ['local.set', `$${i}`, start],
     ['block', `$brk${id}`, ['loop', `$loop${id}`,

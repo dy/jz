@@ -31,13 +31,14 @@ import { K, hasTag } from '../../src/summary/kind.js'
 // Callback methods retain the initial bound and observe receiver mutations.
 const SKIP_MISSING = {}
 export const callbackLoop = (recv, body, len, ptr, reverse, options = SKIP_MISSING) =>
-  arrayLoop(recv.value, body, len, ptr, reverse, undefined, recv.fixed ? null : options)
+  arrayLoop(recv.value, body, len, ptr, reverse, undefined, { ...options, fixed: recv.fixed, dense: recv.dense })
 
 export function hoistArrayValue(arr) {
   const recv = temp('ar')
   return {
     setup: ['local.set', `$${recv}`, asF64(emit(arr))],
     value: typed(['local.get', `$${recv}`], 'f64'),
+    dense: ctx.summary?.at(ctx.func.current).arrayDenseOfExpr(arr) === true,
     fixed: (ctx.summary?.at(ctx.func.current).fixedLenOfExpr(arr) ?? -1) >= 0,
   }
 }
@@ -228,6 +229,8 @@ export function callbackArgReps(arr) {
       // body census (rep.arrayElemValType) names a kind without presence,
       // so it hints nothing (`slots.every(b => b !== null)` folded to true
       // over a null slot: module/array.js's static literal path).
+      // ABSENT can also be a hole read stored into a present cell, so even
+      // callbacks that skip holes must preserve its undefined alternative.
       const ek = ctx.summary?.at(ctx.func.current)?.elemKindOf(arr)
       const elemVt = ek != null ? summaryValOf(ek) : null
       // An element is a tagged slot: a BigInt item arrives boxed.

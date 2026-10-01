@@ -13,7 +13,7 @@
  */
 
 import { representationProgramHasBigint } from '../src/compile/representation-plan.js'
-import { staticArrayPtr, typed, asF64, asI64, asI32, UNDEF_NAN, TOMB_NAN, temp, tempI32, tempI64, allocPtr, mkPtrIR, ptrTypeEq, elemStore, elemLoad, boolBoxIR, freshId, callWithArgs } from '../src/ir.js'
+import { staticArrayPtr, typed, asF64, asI64, asI32, UNDEF_NAN, TOMB_NAN, temp, tempI32, tempI64, allocPtr, mkPtrIR, ptrTypeEq, elemStore, arrayValue, elemLoad, boolBoxIR, freshId, callWithArgs } from '../src/ir.js'
 import { emit, deps, call, storedValue } from '../src/bridge.js'
 import { valTypeOf } from '../src/kind.js'
 import { VAL, lookupValType } from '../src/reps.js'
@@ -324,19 +324,19 @@ export default (ctx) => {
     __ihash_get_local: ['__map_hash'],
     __ihash_set_local: () => ['__map_hash', '__alloc_hdr_n', '__mkptr', '__zomb_scan', ...slotLogDeps()],
     __dyn_get_t: ['__dyn_get_t_h', '__str_hash', '__is_str_key', '__to_str'],
-    __dyn_get_t_h: () => [...viewDeps('__view_get'), ...builtinPropDeps(), '__schema_slot_h', '__ihash_get_local', '__str_eq', '__is_nullish', '__hash_get_local_h', '__hash_get_local_hm', '__str_arr_idx', '__str_length', '__ptr_aux', ...(ctx.core.stdlib['__str_idx'] ? ['__str_idx'] : []), ...(ctx.linkDemand.typedProperties ? ['__typed_str_idx', '__typed_prop_get', '__len', representationProgramHasBigint(ctx) ? '__typed_idx_tagged' : '__typed_idx'] : [])],
+    __dyn_get_t_h: () => ['__arr_value', ...viewDeps('__view_get'), ...builtinPropDeps(), '__schema_slot_h', '__ihash_get_local', '__str_eq', '__is_nullish', '__hash_get_local_h', '__hash_get_local_hm', '__str_arr_idx', '__str_length', '__ptr_aux', ...(ctx.core.stdlib['__str_idx'] ? ['__str_idx'] : []), ...(ctx.linkDemand.typedProperties ? ['__typed_str_idx', '__typed_prop_get', '__len', representationProgramHasBigint(ctx) ? '__typed_idx_tagged' : '__typed_idx'] : [])],
     __dyn_get_t_hm: () => [...viewDeps('__view_get'), ...builtinPropDeps(), '__schema_slot_h', '__ihash_get_local', '__str_eq', '__is_nullish', '__hash_get_local_hm', '__str_arr_idx', '__str_length', '__ptr_aux', ...(ctx.linkDemand.typedProperties ? ['__typed_str_idx', '__typed_prop_get', '__len', representationProgramHasBigint(ctx) ? '__typed_idx_tagged' : '__typed_idx'] : [])],
     __dyn_has: ['__dyn_get_t_hm', '__ptr_type', '__str_hash', '__is_str_key', '__to_str'],
     __dyn_get: ['__dyn_get_t', '__ptr_type'],
-    __dyn_get_expr_t: ['__dyn_get_t', '__hash_get_local', '__is_str_key', '__to_str', '__ptr_offset', '__ptr_offset_fwd'],
+    __dyn_get_expr_t: ['__arr_value', '__dyn_get_t', '__hash_get_local', '__is_str_key', '__to_str', '__ptr_offset', '__ptr_offset_fwd'],
     __dyn_get_expr_t_h: () => ['__dyn_get_t_h', '__hash_get_local_h'],
     __dyn_get_expr: ['__dyn_get_expr_t', '__ptr_type'],
     __dyn_get_expr_h: ['__dyn_get_expr_t_h', '__ptr_type'],
     __dyn_get_any: ['__dyn_get_any_t', '__ptr_type'],
     __dyn_get_any_h: ['__dyn_get_any_t_h', '__ptr_type'],
     __dyn_get_any_t: () => ctx.linkDemand.external
-      ? ['__dyn_get_t', '__hash_get_local', '__ext_prop', '__is_str_key', '__to_str', '__ptr_offset', '__ptr_offset_fwd']
-      : ['__dyn_get_t', '__hash_get_local', '__is_str_key', '__to_str', '__ptr_offset', '__ptr_offset_fwd'],
+      ? ['__arr_value', '__dyn_get_t', '__hash_get_local', '__ext_prop', '__is_str_key', '__to_str', '__ptr_offset', '__ptr_offset_fwd']
+      : ['__arr_value', '__dyn_get_t', '__hash_get_local', '__is_str_key', '__to_str', '__ptr_offset', '__ptr_offset_fwd'],
     __dyn_get_any_t_h: () => [
       '__dyn_get_t_h', '__hash_get_local_h', ...(ctx.linkDemand.external ? ['__ext_prop'] : []),
     ],
@@ -1849,7 +1849,7 @@ export default (ctx) => {
             (if (i32.ge_s (local.get $idx) (i32.const 0))
               (then
                 (if (i32.lt_u (local.get $idx) (i32.load (i32.sub (local.get $off) (i32.const 8))))
-                  (then (return (i64.load (i32.add (local.get $off) (i32.shl (local.get $idx) (i32.const 3)))))))
+                  (then (return ${presence ? '(i64.load (i32.add (local.get $off) (i32.shl (local.get $idx) (i32.const 3))))' : '(i64.reinterpret_f64 (call $__arr_value (f64.load (i32.add (local.get $off) (i32.shl (local.get $idx) (i32.const 3))))))'})))
                 (return ${miss})))))))
     ;; DURABLE-RECEIVER POLICY: a receiver allocated at/below the post-init
     ;; high-water mark (__heap_reset) outlives _clear, but a sidecar CREATED
@@ -2071,7 +2071,7 @@ export default (ctx) => {
               (then
                 (local.set $base (call $__ptr_offset (local.get $obj)))
                 (if (i32.lt_u (local.get $idx) (i32.load (i32.sub (local.get $base) (i32.const 8))))
-                  (then (return (i64.load (i32.add (local.get $base) (i32.shl (local.get $idx) (i32.const 3)))))))
+                  (then (return (i64.reinterpret_f64 (call $__arr_value (f64.load (i32.add (local.get $base) (i32.shl (local.get $idx) (i32.const 3)))))))))
                 (return (i64.const ${UNDEF_NAN}))))))))`}
     ;; Dictionaries have no sidecar; their lookup owns the key's hash.
     (if (i32.eq (local.get $t) (i32.const ${PTR.HASH}))
@@ -2466,7 +2466,7 @@ export default (ctx) => {
             (if (i32.ge_s (local.get $delidx) (i32.const 0))
               (then
                 (if (i32.lt_u (local.get $delidx) (i32.load (i32.sub (local.get $off) (i32.const 8))))
-                  (then (i64.store (i32.add (local.get $off) (i32.shl (local.get $delidx) (i32.const 3))) (i64.const ${UNDEF_NAN}))))
+                  (then (i64.store (i32.add (local.get $off) (i32.shl (local.get $delidx) (i32.const 3))) (i64.const ${TOMB_NAN}))))
                 (return (i32.const 1))))))))
     ;; DURABLE-RECEIVER POLICY (see __dyn_get_t_h's declaration comment for the
     ;; full rationale): a durable receiver's key can live in EITHER the global
@@ -2727,7 +2727,7 @@ export default (ctx) => {
       ['i32.or', ['i32.eq', typeVal, ['i32.const', PTR.OBJECT]],
         ['i32.eq', typeVal, ['i32.const', PTR.CLOSURE]]]]
 
-    inc('__ptr_type', '__len', '__str_length', '__hash_has', '__is_str_key', '__to_str', '__dyn_has')
+    inc('__ptr_type', '__len', '__str_length', '__hash_has', '__is_str_key', '__to_str', '__dyn_has', '__ptr_offset')
     // The receiver may be a host object, which the host answers for, as dot
     // reads ask it (array.js ensureHostOpaqueGet).
     const ext = demandHostReceiver()
@@ -2750,7 +2750,11 @@ export default (ctx) => {
           ['if', isStringLike,
             ['then', ['local.set', `$${outTmp}`, ['i32.lt_u', idxVal, ['call', '$__str_length', ['i64.reinterpret_f64', objVal]]]]]],
           ['if', isArrayLike,
-            ['then', ['local.set', `$${outTmp}`, ['i32.lt_u', idxVal, ['call', '$__len', ['i64.reinterpret_f64', objVal]]]]]]]],
+            ['then', ['local.set', `$${outTmp}`, ['i32.lt_u', idxVal, ['call', '$__len', ['i64.reinterpret_f64', objVal]]]],
+              ['if', ['i32.and', ['local.get', `$${outTmp}`], ['i32.eq', typeVal, ['i32.const', PTR.ARRAY]]],
+                ['then', ['local.set', `$${outTmp}`, ['i64.ne',
+                  ['i64.load', ['i32.add', ['call', '$__ptr_offset', ['i64.reinterpret_f64', objVal]], ['i32.shl', idxVal, ['i32.const', 3]]]],
+                  ['i64.const', TOMB_NAN]]]]]]]]],
 
       ['if', isStringKey,
         ['then',
@@ -2956,7 +2960,7 @@ function arrEntriesFromTemp(t) {
       ['br_if', `$aebrk${id}`, ['i32.ge_s', ['local.get', `$${i}`], ['local.get', `$${n}`]]],
       ['local.set', `$${pair}`, ['call', '$__alloc_hdr', ['i32.const', 2], ['i32.const', 2]]],
       ['f64.store', ['local.get', `$${pair}`], ['f64.convert_i32_s', ['local.get', `$${i}`]]],
-      ['f64.store', ['i32.add', ['local.get', `$${pair}`], ['i32.const', 8]], elemLoad(src, i)],
+      ['f64.store', ['i32.add', ['local.get', `$${pair}`], ['i32.const', 8]], arrayValue(elemLoad(src, i))],
       elemStore(out.local, i, mkPtrIR(PTR.ARRAY, 0, ['local.get', `$${pair}`])),
       ['local.set', `$${i}`, ['i32.add', ['local.get', `$${i}`], ['i32.const', 1]]],
       ['br', `$aeloop${id}`]]],

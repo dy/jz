@@ -110,6 +110,15 @@ cannot interpret inline record cells.
 IR clones retain schema-liveness tags on every copied producer. Method dispatch
 can replace a constructor's original tree with its clone; losing that tag makes
 the linker omit live object fields and Error brands from host metadata.
+Boxed arrays use the existing private `TOMB_NAN` atom for an absent slot;
+explicit `undefined` keeps its own value atom. Construction, skipped stores,
+length growth and deletion preserve that distinction. Indexed value reads
+normalize absence; reflection and property-callback iteration check occupancy.
+Raw copies (slice, concat, reverse and structured cloning) retain holes;
+value copies (spread, Array.from and change-by-copy methods) densify them.
+The settled element kind's ABSENT bit is the shared density proof: proven
+dense reads and iteration keep their direct loads, while sparse reductions
+find the first present element before seeding their accumulator.
 Array element facts apply only to element reads. A dynamic string key can also
 name `length`, a method or an own property; solver and read-only queries join
 those kinds before projecting a field. Local schema and JSON-shape propagation

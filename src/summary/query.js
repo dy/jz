@@ -514,6 +514,10 @@ export function summaryQueries(facts, internal = false) {
       presentTypedRead: n => Array.isArray(n) && n[0] === '[]' && tagOf(kindOfExpr(n[1])) === K.TYPED && typedElementKey(n[2], kindOfExpr(n[2]) === NUMBER) && (typedReadPresent(scope, n) || presentReads.has(n)),
       // The element cell's own kind: presence included, no absent member for a read past the end.
       elemKindOf: name => { const k = readKind(name); return celled(k) ? pub(elemOf(k)) : null },
+      arrayDenseOfExpr: node => {
+        const k = kindOfExpr(node), e = elemOf(k)
+        return tagOf(k) === K.ARRAY && e !== K.NONE && !hasTag(e, K.ABSENT)
+      },
       arrayElemSidOf: name => { const k = readKind(name); if (tagOf(k) !== K.ARRAY || paramOf(k) === UNKNOWN) return null; const e = elemOf(k); return tagOf(e) === K.OBJECT && !isNullable(e) && publicSid(e) !== UNKNOWN ? publicSid(e) : null },
       /** The name's value is read as a string somewhere it flows: through a copy, a call, a sum. */
       stringDemand: name => { const key = keyOfAnywhere(name); return key !== null && (typeof key === 'number' ? strung.has(key) : key.some(k => strung.has(k))) },

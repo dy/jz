@@ -83,7 +83,8 @@ export default (ctx) => {
     __len: ['__typed_shift', '__ptr_offset', '__ptr_offset_fwd'],
     __cap: ['__typed_shift', '__ptr_type', '__ptr_offset', '__ptr_aux'],
     __typed_data: ['__ptr_aux'],
-    __typed_idx: () => ['__is_nullish', ...(ctx.linkDemand.f16 ? ['__f16_to_f64'] : [])],
+    __arr_value: [],
+    __typed_idx: () => ['__is_nullish', '__arr_value', ...(ctx.linkDemand.f16 ? ['__f16_to_f64'] : [])],
     __typed_idx_tagged: ['__typed_idx', '__typed_data', '__len', '__ptr_type', '__ptr_aux', '__alloc', '__mkptr'],
     __box_bigint: ['__alloc', '__mkptr'],
     __ptr_offset: ['__ptr_offset_fwd'],
@@ -160,6 +161,10 @@ export default (ctx) => {
     (i32.or
       (i64.eq (local.get $v) (i64.const ${NULL_NAN}))
       (i64.eq (local.get $v) (i64.const ${UNDEF_NAN}))))`
+
+  ctx.core.stdlib['__arr_value'] = `(func $__arr_value (param $v f64) (result f64)
+    (select (f64.const nan:${UNDEF_NAN}) (local.get $v)
+      (i64.eq (i64.reinterpret_f64 (local.get $v)) (i64.const ${TOMB_NAN}))))`
 
   // "$x holds a PTR.BIGINT box": a NaN-box with the BIGINT tag. The NaN test
   // comes first, as everywhere (a Number's bits spell any tag: 12.0 reads
@@ -364,7 +369,7 @@ export default (ctx) => {
     (if (result f64)
       (i32.ge_u (local.get $i) (local.get $len))
       (then (f64.const nan:${UNDEF_NAN}))
-      (else (f64.load (i32.add (call $__ptr_offset (local.get $ptr)) (i32.shl (local.get $i) (i32.const 3)))))))`
+      (else (call $__arr_value (f64.load (i32.add (call $__ptr_offset (local.get $ptr)) (i32.shl (local.get $i) (i32.const 3))))))))`
     }
     // Hot (~37M calls in watr self-compile). Type/aux/offset extracted once from $ptr.
     return `(func $__typed_idx (param $ptr i64) (param $i i32) (result f64)
@@ -377,7 +382,7 @@ export default (ctx) => {
         ${followForwardingWat('$off', { lowGuard: false })}
         (return (if (result f64)
           (i32.lt_u (local.get $i) (i32.load (i32.sub (local.get $off) (i32.const 8))))
-          (then (f64.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 3)))))
+          (then (call $__arr_value (f64.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 3))))))
           (else (f64.const nan:${UNDEF_NAN}))))))
     ${requireReceiverWat('(local.get $ptr)')}
     (if (i32.or (i32.ne (local.get $t) (i32.const ${PTR.TYPED}))

@@ -245,11 +245,12 @@ export function toNumF64(node, v) {
     if (v[1] === `nan:${UNDEF_NAN}`) return typed(['f64.const', 'nan'], 'f64')
     if (v[1] === `nan:${NULL_NAN}`) return typed(['f64.const', 0], 'f64')
   }
-  // A construct-then-fill array's element (`arrayHoles`): the NUMBER claim
-  // covers every written slot; an unwritten one is a hole reading undefined,
-  // whose sentinel would ride f64 arithmetic out as `undefined`. One compare
-  // and select canonicalize it to NaN, no ToNumber call.
-  if (Array.isArray(node) && node[0] === '[]' && typeof node[1] === 'string' && repOf(node[1])?.arrayHoles) {
+  // Number|absent needs only undefined→NaN, including values carried through
+  // aliases and callback parameters. The settled kind excludes null, booleans,
+  // strings and objects, whose numeric conversion has other behavior.
+  const readKind = ctx.summary?.at(ctx.func.current).kindOfExpr(node) ?? K.NONE
+  if ((readKind & TAGS) === (bitOf(K.NUMBER) | bitOf(K.ABSENT)) ||
+      Array.isArray(node) && node[0] === '[]' && typeof node[1] === 'string' && repOf(node[1])?.arrayHoles) {
     const t = temp('hole')
     return typed(['block', ['result', 'f64'], ['local.set', `$${t}`, asF64(v)],
       ['select', ['f64.const', 'nan'], ['local.get', `$${t}`],

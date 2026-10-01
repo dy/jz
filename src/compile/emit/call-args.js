@@ -10,7 +10,7 @@ import { includeForArrayLiteral, includeForStringOnly } from '../../autoload.js'
 import { PTR, ctx, emitArity, inc } from '../../ctx.js'
 import { storedValue } from '../../bridge.js'
 import {
-  throwTypeErrorIR, allocPtr, asF64, block64, deferBigintBox, dispatchByPtrType, freshId, isPureIR, materializeDeferredBigint, multiCount, reconstructArgsWithSpreads, temp, tempI32,
+  TOMB_NAN, throwTypeErrorIR, allocPtr, asF64, block64, deferBigintBox, dispatchByPtrType, freshId, isPureIR, materializeDeferredBigint, multiCount, reconstructArgsWithSpreads, temp, tempI32,
 } from '../../ir.js'
 import { valTypeOf } from '../../kind.js'
 import { VAL } from '../../reps.js'
@@ -80,13 +80,18 @@ export function materializeMultiIR(callIR, n) {
  * statically known it is resolved exactly once (one `__ptr_type`) and branched,
  * never re-checked per element. Returns a list of IR instructions.
  */
-function emitSpreadCopy(dest, posLocal, srcLocal, srcLenLocal, staticVT, arrayBase = null) {
+function emitSpreadCopy(dest, posLocal, srcLocal, srcLenLocal, staticVT, arrayBase = null, dense = false) {
   const srcI64 = () => ['i64.reinterpret_f64', ['local.get', `$${srcLocal}`]]
   const destAddr = idx => ['i32.add', ['local.get', `$${dest}`], ['i32.shl', idx, ['i32.const', 3]]]
-  const arrCopy = () => (inc('__ptr_offset'),
-    ['memory.copy', destAddr(['local.get', `$${posLocal}`]),
+  const arrCopy = () => {
+    inc('__ptr_offset')
+    const copy = ['memory.copy', destAddr(['local.get', `$${posLocal}`]),
       arrayBase || ['call', '$__ptr_offset', srcI64()],
-      ['i32.shl', ['local.get', `$${srcLenLocal}`], ['i32.const', 3]]])
+      ['i32.shl', ['local.get', `$${srcLenLocal}`], ['i32.const', 3]]]
+    if (dense) return copy
+    inc('__arr_values')
+    return ['block', copy, ['call', '$__arr_values', destAddr(['local.get', `$${posLocal}`]), ['local.get', `$${srcLenLocal}`]]]
+  }
   const scalarLoop = () => {
     const sidx = `${T}sidx${freshId(ctx)}`
     ctx.func.locals.set(sidx, 'i32')
@@ -250,7 +255,7 @@ export function buildArrayWithSpreads(items) {
         const it = `${T}ai${freshId(ctx)}`
         ctx.func.locals.set(it, 'f64')
         sec.itemLocals.push(it)
-        const value = storedValue(sec.items[i])
+        const value = sec.items[i] == null ? ['f64.const', `nan:${TOMB_NAN}`] : storedValue(sec.items[i])
         if (!isPureIR(value)) lastEffect = s
         sec.setup.push(['local.set', `$${it}`, value])
       }
@@ -261,6 +266,7 @@ export function buildArrayWithSpreads(items) {
       sec.local = src.local
       sec.lenLocal = src.lenLocal
       sec.val = src.val
+      sec.dense = ctx.summary?.at(ctx.func.current).arrayDenseOfExpr(sec.expr) === true
       sec.setup = src.ir
       sec.start = src.start
       if (!isPureIR(src.ir[0][2])) lastEffect = s
@@ -276,9 +282,10 @@ export function buildArrayWithSpreads(items) {
         const copy = allocPtr({ type: PTR.ARRAY, len: ['local.get', `$${sec.lenLocal}`], tag: 'spread' })
         const at = tempI32('spreadPos')
         ir.push(copy.init, ['local.set', `$${at}`, ['i32.const', 0]],
-          ...emitSpreadCopy(copy.local, at, sec.local, sec.lenLocal, sec.val, rangeBase(sec)),
+          ...emitSpreadCopy(copy.local, at, sec.local, sec.lenLocal, sec.val, rangeBase(sec), sec.dense),
           ['local.set', `$${sec.local}`, copy.ptr])
         sec.val = VAL.ARRAY
+        sec.dense = true
         sec.start = null
       }
     }
@@ -302,7 +309,7 @@ export function buildArrayWithSpreads(items) {
         )
       }
     } else {
-      ir.push(...emitSpreadCopy(result, pos, sec.local, sec.lenLocal, sec.val, rangeBase(sec)))
+      ir.push(...emitSpreadCopy(result, pos, sec.local, sec.lenLocal, sec.val, rangeBase(sec), sec.dense))
     }
   }
 

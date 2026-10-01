@@ -371,7 +371,8 @@ const handlers = {
       : [op, prep(name), prep(value)]
   }])),
 
-  // Static-key delete (.x, ["x"], [literal]) would change the fixed schema → reject.
+  // Named static-key delete (.x, ["x"]) would change the fixed schema → reject.
+  // Numeric indexed deletes use the same runtime presence store as computed keys.
   // Computed-key delete (obj[expr]) — including jessie's `delete ctx[k]` — lowers
   // to runtime __dyn_del against the per-object shadow property store.
   'delete'(target) {
@@ -379,7 +380,7 @@ const handlers = {
     if (Array.isArray(t) && t[0] === '[]' && t.length === 3) {
       const key = t[2]
       const isLiteralKey = Array.isArray(key) && key[0] == null && key.length === 2
-      if (!isLiteralKey) {
+      if (!isLiteralKey || typeof key[1] === 'number') {
         ctx.types.anyDelete = true
         return ['delete', t[1], key]
       }
@@ -1207,7 +1208,7 @@ const handlers = {
       if (inner == null) return ['[']
       // jessie consumes the trailing comma itself; every remaining `null` in the
       // element list is a genuine elision (`[,]` → length 1, `[1,,]` → length 2).
-      if (Array.isArray(inner) && inner[0] === ',') { const items = inner.slice(1); return ['[', ...items.map(item => item == null ? [, undefined] : prep(item))] }
+      if (Array.isArray(inner) && inner[0] === ',') { const items = inner.slice(1); return ['[', ...items.map(item => item == null ? null : prep(item))] }
       return ['[', prep(inner)]
     }
     if (typeof args[0] === 'string' && !shadowsBuiltin(args[0]) && ctx.module.namespaces?.[args[0]]) {

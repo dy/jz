@@ -152,8 +152,9 @@ export const arrayFromEmit = (src, mapFn, thisArg) => {
   // Preserve the raw-copy fast path for statically-known Array/TypedArray
   // sources without a mapper.
   if (!mapFn && (sourceVt === VAL.ARRAY || sourceVt === VAL.TYPED)) {
-    inc('__arr_from')
-    return typed(['call', '$__arr_from', asI64(emit(src))], 'f64')
+    const copy = sourceVt === VAL.TYPED || ctx.summary?.at(ctx.func.current).arrayDenseOfExpr(src) ? '__arr_from' : '__arr_dense'
+    inc(copy)
+    return typed(['call', '$' + copy, asI64(emit(src))], 'f64')
   }
 
   // Known Array/TypedArray + mapper: fixed integer length, but each element

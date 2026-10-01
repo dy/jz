@@ -791,6 +791,9 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     const c = lenCell(arr)
     if (c < 0) return
     const span = typeof idx === 'string' && isArrayIndexKey(idx) ? [+idx, +idx] : spanOf(idx)
+    // A store can skip positions beyond the constructed count. Those cells
+    // are absent even when every value explicitly stored is a Number/object.
+    if (!span || lens.get(c) == null || lens.get(c) < 0 || span[1] > lens.get(c)) raiseElem(arr, ABSENT)
     if (!span || span[0] < 0) { setLen(c, LEN_OPEN, 'stored at an index the walk cannot bound'); unknown.add(c) }
     else if (!(stores.get(c) >= span[1])) {
       if (onOpen && lens.get(c) >= 0 && span[1] >= lens.get(c)) onOpen(lens.get(c), `stored at index ${span[1]}`, current, site)
@@ -986,14 +989,14 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     const t = tagOf(arr)
     if (!(t === K.ARRAY || isDict(arr)) || paramOf(arr) === UNKNOWN) return
     if (t === K.ARRAY && isArrayIndexKey(prop)) { storeAt(arr, prop); raiseElem(arr, k); return }
-    if (t === K.ARRAY && prop === 'length') openLen(arr, 'length written as a property')
+    if (t === K.ARRAY && prop === 'length') { openLen(arr, 'length written as a property'); raiseElem(arr, ABSENT) }
     if (t !== K.ARRAY) raiseElem(arr, k, false, true)
     const c = cell(paramOf(arr)); let m = cellProps.get(c)
     if (!m) cellProps.set(c, m = new Map())
     const old = m.get(prop) ?? K.NONE, nk = merge(old, k)
     if (nk !== old) { m.set(prop, nk); changed = true }
   }
-  const raiseWild = (arr, k) => { const t = tagOf(arr); if (!(t === K.ARRAY || isDict(arr)) || paramOf(arr) === UNKNOWN) return; if (t === K.ARRAY) openLen(arr, 'stored under an unknown property'); raiseElem(arr, k, false, true); const c = cell(paramOf(arr)); const old = cellWild.get(c) ?? K.NONE, nk = merge(old, k); if (nk !== old) { cellWild.set(c, nk); changed = true } }
+  const raiseWild = (arr, k) => { const t = tagOf(arr); if (!(t === K.ARRAY || isDict(arr)) || paramOf(arr) === UNKNOWN) return; if (t === K.ARRAY) { openLen(arr, 'stored under an unknown property'); raiseElem(arr, ABSENT) } raiseElem(arr, k, false, true); const c = cell(paramOf(arr)); const old = cellWild.get(c) ?? K.NONE, nk = merge(old, k); if (nk !== old) { cellWild.set(c, nk); changed = true } }
   // A map's keys: stored by `set`, handed out only by enumeration (keys(),
   // entries(), forEach, iteration, a copy). A key kept in a map is lost when
   // the map enumerates or is itself lost, not when it is stored.
@@ -2154,7 +2157,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     const cb = argumentAt(base, n, 0)
     if (tagOf(cb) !== K.CLOSURE || paramOf(cb) === UNKNOWN) { escapeArgs(base, n); return ANY }
     for (let i = 2; i < n; i++) escape(ks[base + i])
-    const mayMiss = fixedLen(recv) < 0
+    const mayMiss = fixedLen(recv) < 0 || hasTag(elemOf(recv), K.ABSENT)
     const finds = name === 'find' || name === 'findLast' || name === 'findIndex' || name === 'findLastIndex'
     const elem = mayMiss && finds ? orAbsent(elemOf(recv)) : elemOf(recv)
     const b = sp
@@ -2817,7 +2820,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       const arr = arrayOf(n, K.NONE), id = paramOf(arr)
       if (id !== UNKNOWN && !tuples.has(cell(id))) tuples.set(cell(id), [])
       for (let i = 1; i < n.length; i++) {
-        const k = expr(n[i]), row = id === UNKNOWN ? null : tuples.get(cell(id))
+        const k = n[i] == null ? ABSENT : expr(n[i]), row = id === UNKNOWN ? null : tuples.get(cell(id))
         if (Array.isArray(n[i]) && n[i][0] === '...') invalidateTuple(arr)
         else if (row) { const next = merge(row[i - 1] ?? K.NONE, k); if (next !== row[i - 1]) { row[i - 1] = next; changed = true } }
         raiseElem(arr, k, true)
@@ -3634,7 +3637,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       // Prepared as `['delete', receiver, key]`. A static key on a fixed shape
       // is rejected downstream; a computed key may remove any slot.
       const r = expr(n[1]), k = expr(n[2])
-      if (tagOf(r) === K.ARRAY) { invalidateTuple(r); openLen(r, 'an element is deleted') }
+      if (tagOf(r) === K.ARRAY) { invalidateTuple(r); openLen(r, 'an element is deleted'); raiseElem(r, ABSENT) }
       if (tagOf(r) === K.OBJECT && paramOf(r) !== UNKNOWN) for (const sid of shapesOf(paramOf(r))) deletable.add(sid)
       else if (dictOrObject(r)) { for (const sid of shapesInCell(cell(paramOf(r)))) deletable.add(sid); if (cellLostObject.has(cell(paramOf(r)))) deleteReach.unknown = true }
       else if (hasTag(r, K.OBJECT)) deleteReach.unknown = true

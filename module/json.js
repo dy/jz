@@ -191,7 +191,7 @@ export default (ctx) => {
     __json_omit: () => ['__ptr_type', '__ptr_aux', ...(ctx.linkDemand.external ? ['__ext_json_omits'] : [])],
     __json_enter: ['__alloc'],
     __jindent: ['__jput'],
-    __json_val: () => [...toJSONDeps(), '__ptr_type', '__len', '__ptr_offset', '__jput', '__jindent', '__jput_num', '__jput_str', '__json_enter', '__json_leave', '__json_hash', '__json_obj',
+    __json_val: () => ['__arr_value', ...toJSONDeps(), '__ptr_type', '__len', '__ptr_offset', '__jput', '__jindent', '__jput_num', '__jput_str', '__json_enter', '__json_leave', '__json_hash', '__json_obj',
       ...(ctx.linkDemand.external ? ['__ext_json', '__jput_raw'] : []),
       ...(typedLive() ? ['__json_typed'] : [])],
     __json_typed: ['__ptr_aux', '__len', '__typed_idx', '__jput', '__jindent', '__jput_num', '__json_val'],
@@ -605,7 +605,7 @@ export default (ctx) => {
           (br_if $d (i32.ge_s (local.get $i) (local.get $len)))
           (if (local.get $i) (then (call $__jput (i32.const 44))))  ;; ,
           (call $__jindent)
-          (call $__json_val ${jsonTo('(i64.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 3))))', '(i64.reinterpret_f64 (f64.convert_i32_s (local.get $i)))')})
+          (call $__json_val ${jsonTo('(i64.reinterpret_f64 (call $__arr_value (f64.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 3))))))', '(i64.reinterpret_f64 (f64.convert_i32_s (local.get $i)))')})
           (local.set $i (i32.add (local.get $i) (i32.const 1)))
           (br $l)))
         (if (i32.gt_s (local.get $len) (i32.const 0))

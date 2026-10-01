@@ -18,7 +18,7 @@ export const registerEarlyExit = () => {
     const recv = hoistArrayValue(arr)
     const r = temp(tag)
     const exit = `$exit${freshId(ctx)}`
-    const reps = callbackArgReps(arr), mayMiss = visitMissing && !recv.fixed
+    const reps = callbackArgReps(arr), mayMiss = visitMissing && (!recv.fixed || !recv.dense)
     if (mayMiss) reps[0] = null
     const cb = makeCallback(fn, reps, mayMiss ? null : callbackElem(arr), thisArg)
     const loop = callbackLoop(recv, (_ptr, _len, i, item) => [

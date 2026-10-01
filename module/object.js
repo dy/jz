@@ -9,7 +9,7 @@
 
 import { DBG_INVARIANTS } from '../src/debug.js'
 import { dataAlign, dataPush, dataLen, pushStaticSlots } from '../src/static-data.js'
-import { staticArrayPtr, typed, asF64, asI64, asI32, NULL_NAN, UNDEF_NAN, TRUE_NAN, FALSE_NAN, temp, tempI32, tempI64, block64, ptrTypeEq, dispatchByPtrType, allocPtr, needsDynShadow, mkPtrIR, extractF64Bits, slotAddr, elemStore, freshId, undefExpr, isNullish } from '../src/ir.js'
+import { staticArrayPtr, typed, asF64, asI64, asI32, NULL_NAN, UNDEF_NAN, TOMB_NAN, TRUE_NAN, FALSE_NAN, temp, tempI32, tempI64, block64, ptrTypeEq, dispatchByPtrType, allocPtr, needsDynShadow, mkPtrIR, extractF64Bits, slotAddr, elemStore, freshId, undefExpr, isNullish } from '../src/ir.js'
 import { emit, storedValue, storedFieldValue, withIgnoredArgs, deps } from '../src/bridge.js'
 import { valTypeOf, shapeOf } from '../src/kind.js'
 import { VAL, lookupValType, repOf } from '../src/reps.js'
@@ -410,7 +410,7 @@ export default (ctx) => {
       (then (call $__ptr_offset (i64.reinterpret_f64 (call $__idx_enum (local.get $v) (i32.const 1)))))
       (else (i32.const 0))))`
   ctx.core.stdlib['__idx_enum'] = `(func $__idx_enum (param $v i64) (param $mode i32) (result f64)
-    (local $t i32) (local $n i32) (local $i i32) (local $base i32) (local $out i32) (local $pair i32) (local $k f64) (local $e f64)
+    (local $count i32) (local $t i32) (local $n i32) (local $i i32) (local $base i32) (local $out i32) (local $pair i32) (local $k f64) (local $e f64)
     (local.set $t (call $__enum_type (local.get $v)))
     (if (i32.eq (local.get $t) (i32.const ${PTR.ARRAY}))
       (then (local.set $n (call $__len (local.get $v))) (local.set $base (call $__ptr_offset (local.get $v)))))
@@ -422,6 +422,9 @@ export default (ctx) => {
     (local.set $out (call $__alloc_hdr (local.get $n) (local.get $n)))
     (block $d (loop $l
       (br_if $d (i32.ge_s (local.get $i) (local.get $n)))
+      (if (i32.eq (local.get $t) (i32.const ${PTR.ARRAY})) (then
+        (if (i64.eq (i64.load (i32.add (local.get $base) (i32.shl (local.get $i) (i32.const 3)))) (i64.const ${TOMB_NAN})) (then
+          (local.set $i (i32.add (local.get $i) (i32.const 1))) (br $l)))))
       (if (i32.ne (local.get $mode) (i32.const 1))
         (then (local.set $k (f64.reinterpret_i64 (call $__to_str (i64.reinterpret_f64 (f64.convert_i32_s (local.get $i))))))))
       (if (local.get $mode) (then
@@ -435,10 +438,12 @@ export default (ctx) => {
         (f64.store (local.get $pair) (local.get $k))
         (f64.store offset=8 (local.get $pair) (local.get $e))
         (local.set $e (call $__mkptr (i32.const ${PTR.ARRAY}) (i32.const 0) (local.get $pair)))))
-      (f64.store (i32.add (local.get $out) (i32.shl (local.get $i) (i32.const 3)))
+      (f64.store (i32.add (local.get $out) (i32.shl (local.get $count) (i32.const 3)))
         (select (local.get $k) (local.get $e) (i32.eqz (local.get $mode))))
       (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (local.set $count (i32.add (local.get $count) (i32.const 1)))
       (br $l)))
+    (i32.store (i32.sub (local.get $out) (i32.const 8)) (local.get $count))
     (call $__mkptr (i32.const ${PTR.ARRAY}) (i32.const 0) (local.get $out)))`
   // The keys a layout gained after its literal – for-in's tail behind the
   // unrolled declared keys (control-flow.js unrollForIn): the sidecar's and
