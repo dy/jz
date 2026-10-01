@@ -6505,6 +6505,24 @@ test('array bounds: aliases, calls, coercions and later initializers cannot keep
   }
 })
 
+test('string bounds: a callee cannot change the receiver or a captured index under the proof', () => {
+  const cases = [
+    `let s=input; function cut(){s=''}; for(let i=0;i<s.length;i++){cut();return s.charCodeAt(i)}`,
+    `let s=input; function cut(){s=''}; function relay(){cut()}; for(let i=0,len=s.length;i<len;i++){relay();return s.charCodeAt(i)}`,
+    `let s=input; function cut(x=(s='')){}; for(let i=0;i<s.length;i++){cut();return s.charCodeAt(i)}`,
+    `let s=input; const box={get value(){s='';return 0}};for(let i=0;i<s.length;i++){box.value;return s.charCodeAt(i)}`,
+    `let s=input; const box={valueOf(){s='';return 0}};for(let i=0;i<s.length;i++){+box;return s.charCodeAt(i)}`,
+    `const s=input;for(let i=0;i<s.length;i++){function cut(){i=7}cut();return s.charCodeAt(i)}`,
+  ]
+  for(const body of cases){
+    const src=`export function f(input){${body};return -1}`, want=oracle(src).f
+    for(const level of levels(0,1,2,3,'size')){
+      const f=run(src,{optimize:{level,sourceInline:false}}).f
+      for(const input of ['', 'a', 'a', 'xyz', '', 'z'])is(f(input),want(input),`O${level}, ${JSON.stringify(input)}: ${body}`)
+    }
+  }
+})
+
 test('array bounds: resolved callees may write fields and typed storage without changing extents', () => {
   const src = `class Node {
       constructor(){this.buf=new Float64Array(1);this.count=0}

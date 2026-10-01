@@ -3006,6 +3006,9 @@ Canonical array bounds also inspect resolved callees with their own summary
 views: writes to unrelated fields or typed elements preserve array extents.
 Defaults are included; array-length writes, accessors, conversions, unknown calls,
 recursive cycles and changes to the caller's receiver/counter bindings decline.
+String bounds share the binding-preservation proof: an immutable string can
+still be replaced through a captured variable between its length test and read.
+The boundary-carrier prepass supplies each scanned function's own summary view.
 Planning and pre-rewrite analysis request function effects without per-loop
 rewind proofs. The final census computes those proofs from the rewritten bodies,
 after variants exist; no earlier consumer reads them. `test/frame-effects.js`

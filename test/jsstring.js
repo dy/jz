@@ -42,6 +42,22 @@ test('jsstring opt-in: bounded charCodeAt + length flips to externref', () => {
   ok(wat.includes('"jz:extparam"'), 'should record externref params in jz:extparam custom section')
 })
 
+test('jsstring opt-in: a getter that changes the loop index keeps checked reads', () => {
+  const src = `export function read(s) {
+    for(let i=0;i<s.length;i++) {
+      const box={get value(){i=7;return 0}}
+      box.value
+      return s.charCodeAt(i)
+    }
+    return -1
+  }`
+  const wat=jz.compile(src,{wat:true,optimize:{watr:false}})
+  ok(!/\(param \$s externref\)/.test(wat), 'source accessor effects are checked before boundary carriers are chosen')
+  const {read}=run(src)
+  for(const s of ['', 'a', 'a', 'abcdefgh', '', 'x'])
+    is(read(s),s.length ? s.charCodeAt(7) : -1,JSON.stringify(s))
+})
+
 test('jsstring opt-in: runtime correctness — sum of char codes', () => {
   const { sum } = run(`
     export const sum = (s) => {

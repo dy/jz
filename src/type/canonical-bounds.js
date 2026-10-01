@@ -13,7 +13,7 @@
 import { isReassigned, some, walkAst, hasOptionalChain, MUTATE_OPS, callArgs, refsName, REFS_THROUGH_ARROWS } from '../ast.js'
 import { ctx, getFactStore } from '../ctx.js'
 import { intLiteralValue, constIntExpr, intExprRange, counterInit } from '../static.js'
-import { NUMBER } from '../summary/kind.js'
+import { NUMBER, STRING } from '../summary/kind.js'
 import { runsAccessor, runsConversion, primitiveKind } from '../evaluation-effects.js'
 import { frameNode } from '../function.js'
 
@@ -124,7 +124,7 @@ export function collectDecls(node, out) {
  *  scanBoundedArrIdx (the array-idx sibling below) does NOT take this same
  *  fallback: a mutable receiver's length could shrink mid-activation, which
  *  this proof does not (yet) account for. */
-export function scanBoundedLoops(node, set) {
+export function scanBoundedLoops(node, set, view = ctx.summary?.at(ctx.func.current)) {
   if (!Array.isArray(node)) return
   if (node[0] === 'for' && node.length === 5) {
     const [, init, cond, step, body] = node
@@ -148,10 +148,14 @@ export function scanBoundedLoops(node, set) {
     if (idx && recv && idx !== recv && isUnitIncrement(step, idx)
         && !isReassigned(body, idx) && !isReassigned(body, recv)
         && (boundVar == null || !isReassigned(body, boundVar))
-        && !redeclaresName(body, idx))
-      collectBoundedCC(body, recv, idx, set)
+        && !redeclaresName(body, idx)) {
+      const bindings = [recv, idx, boundVar], callees = new Map()
+      if (preservesLoopBounds(body, view, bindings, callees, false) && preservesLoopBounds(cond, view, bindings, callees, false) &&
+          (boundVar == null || preservesLoopHead(init, view, bindings, callees, idx, boundVar, false)))
+        collectBoundedCC(body, recv, idx, set)
+    }
   }
-  for (let k = 1; k < node.length; k++) scanBoundedLoops(node[k], set)
+  for (let k = 1; k < node.length; k++) scanBoundedLoops(node[k], set, view)
 }
 
 const NO_BOUNDED_CC = new Set()  // shared immutable empty result
@@ -184,12 +188,12 @@ function collectBoundedArrIdx(node, recv, idxVar, set, nodes) {
   } })
 }
 
-// The condition's length describes the read only while no intervening effect
-// can shrink the receiver through any alias. Plain field/Number-key stores
-// cannot shrink arrays; accessors, coercions and calls need their own proof.
-function preservesArrayBounds(root, view, bindings, callees) {
+// The condition describes the read only while no intervening effect changes
+// its receiver or index. Arrays also need their extent preserved through aliases;
+// strings are immutable, but their bindings can be replaced by called closures.
+function preservesLoopBounds(root, view, bindings, callees, mutable = true) {
   return !some(root, n => {
-    if (runsAccessor(view, n) || runsConversion(view, n)) return true
+    if (runsAccessor(view, n, true) || runsConversion(view, n)) return true
     const op = n[0]
     if (op === '()' || op === '?.()' || op === 'new') {
       const callee = n[1]
@@ -202,17 +206,22 @@ function preservesArrayBounds(root, view, bindings, callees) {
             // A cycle declines. The same proof applies to defaults and callees:
             // writes to unrelated fields or typed elements cannot shrink arrays.
             callees.set(func, false)
-            callees.set(func, preservesArrayBounds(frameNode(func), ctx.summary?.at(func.sig), bindings, callees))
+            callees.set(func, preservesLoopBounds(frameNode(func), ctx.summary?.at(func.sig), bindings, callees, mutable))
           }
           return !callees.get(func)
         }
+        // The string proof is conditional on this very receiver being a string;
+        // boundary planning may establish that carrier only after this scan.
+        if (Array.isArray(callee) && callee[0] === '.' && callee[2] === 'charCodeAt' &&
+            (!mutable && callee[1] === bindings[0] && n[2] === bindings[1] ||
+              view?.kindOfExpr(callee[1]) === STRING && callArgs(n).every(a => primitiveKind(view, a)))) return false
         if (typeof callee === 'string' && callee.startsWith('math.') && callArgs(n).every(a => primitiveKind(view, a))) return false
       }
       return true
     }
     if (!MUTATE_OPS.has(op)) return false
-    if (typeof n[1] === 'string') return bindings.has(n[1])
-    if (!Array.isArray(n[1])) return false
+    if (typeof n[1] === 'string') return bindings.includes(n[1])
+    if (!mutable || !Array.isArray(n[1])) return false
     const lhs = n[1]
     if (lhs[0] === '.' || lhs[0] === '?.') return lhs[2] === 'length'
     if (lhs[0] !== '[]') return false
@@ -224,12 +233,12 @@ function preservesArrayBounds(root, view, bindings, callees) {
 
 // The canonical head declares the induction variable and possibly its bound.
 // Inspect their initializers without treating the declarations as later writes.
-function preservesArrayHead(root, view, bindings, callees, idx, bound) {
+function preservesLoopHead(root, view, bindings, callees, idx, bound, mutable = true) {
   if (!Array.isArray(root)) return true
-  if (root[0] === ';') return root.slice(1).every(n => preservesArrayHead(n, view, bindings, callees, idx, bound))
+  if (root[0] === ';') return root.slice(1).every(n => preservesLoopHead(n, view, bindings, callees, idx, bound, mutable))
   if (root[0] === 'let' || root[0] === 'const') return root.slice(1).every(n =>
-    preservesArrayBounds(Array.isArray(n) && n[0] === '=' && (n[1] === idx || n[1] === bound) ? n[2] : n, view, bindings, callees))
-  return preservesArrayBounds(root, view, bindings, callees)
+    preservesLoopBounds(Array.isArray(n) && n[0] === '=' && (n[1] === idx || n[1] === bound) ? n[2] : n, view, bindings, callees, mutable))
+  return preservesLoopBounds(root, view, bindings, callees, mutable)
 }
 
 /** Walk `node`, recording `"recv\x00idx"` pairs for `recv[idx]` reads proven within
@@ -255,9 +264,9 @@ export function scanBoundedArrIdx(node, set, litSet, nodes, view = ctx.summary?.
         && !isReassigned(body, idx) && !isReassigned(body, recv)
         && (boundVar == null || !isReassigned(body, boundVar))
         && !redeclaresName(body, idx)) {
-      const bindings = new Set([recv, idx, boundVar]), callees = new Map()
-      if (preservesArrayBounds(body, view, bindings, callees) && preservesArrayBounds(cond, view, bindings, callees) &&
-          (boundVar == null || preservesArrayHead(init, view, bindings, callees, idx, boundVar)))
+      const bindings = [recv, idx, boundVar], callees = new Map()
+      if (preservesLoopBounds(body, view, bindings, callees) && preservesLoopBounds(cond, view, bindings, callees) &&
+          (boundVar == null || preservesLoopHead(init, view, bindings, callees, idx, boundVar)))
         collectBoundedArrIdx(body, recv, idx, set, nodes)
     }
     // LITERAL-bound loop `for (let i = C≥0; i < B; i++)`: every `X[i]` read is in

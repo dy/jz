@@ -123,7 +123,7 @@ export function applyJsstringBoundaryCarrier(paramReps, addressTaken) {
     if (addressTaken.has(func.name)) continue       // indirect callers may pass non-string
     // Pre-compute the in-bounds .charCodeAt callee nodes once per body.
     const safeCC = new Set()
-    scanBoundedLoops(func.body, safeCC)
+    scanBoundedLoops(func.body, safeCC, ctx.summary?.at(func.sig))
     const reps = paramReps.get(func.name)
     for (let k = 0; k < func.sig.params.length; k++) {
       const p = func.sig.params[k]
@@ -163,7 +163,7 @@ export function adviseJsstringCarrier(paramReps, addressTaken) {
     if (addressTaken?.has(func.name)) continue
 
     const safeCC = new Set()
-    scanBoundedLoops(func.body, safeCC)
+    scanBoundedLoops(func.body, safeCC, ctx.summary?.at(func.sig))
     const reps = paramReps?.get(func.name)
 
     for (let k = 0; k < func.sig.params.length; k++) {
