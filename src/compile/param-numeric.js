@@ -352,13 +352,13 @@ export function paramAllUsesNumeric(body, name, _seen = new Set(), requireProof 
       for (let i = 2; i < node.length; i++) numArg(node[i])
       return
     }
-    // Binary `+` is overloaded (numeric add | string concat). A string-literal
+    // Binary `+` and a binding's `+=` are overloaded (numeric add | string concat). A string-literal
     // operand means concat intent → reject. Otherwise it is numeric-COMPATIBLE but
     // not self-PROVING (a string param would concat) — recurse the non-param operand
     // and treat a bare param as compatible (neither prove nor reject), exactly like
     // paramNeverString. The numeric proof must still come from a ToNumber-forcing use
     // (`*`, `Math.*`, …); a param used ONLY in `+` stays unproven (sound).
-    if (op === '+' && node.length === 3) {
+    if ((op === '+' || op === '+=' && typeof node[1] === 'string') && node.length === 3) {
       if (isStr(node[1]) || isStr(node[2])) { ok = false; return }
       if (!names.has(node[1])) walk(node[1])
       if (!names.has(node[2])) walk(node[2])

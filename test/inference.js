@@ -43,6 +43,7 @@ import { ctx } from '../src/ctx.js'
 import { VAL } from '../src/reps.js'
 import { constIntExpr, intLiteralValue } from '../src/static.js'
 import { I32_MIN, I32_MAX } from '../src/ast.js'
+import { paramAllUsesNumeric } from '../src/compile/param-numeric.js'
 
 test('integer width: only nonzero masked unsigned shifts prove signed storage', () => {
   const shifts = [1, 31, 32, 33, -1, -32, 1.75, NaN, Infinity, -Infinity, 1e100, -1e100, 2 ** 64]
@@ -614,6 +615,56 @@ test('inferTypedCtor: typed + array caller disagreement keeps runtime dispatch',
   const { exports } = jz(src)
   is(exports.m1(), 10, 'typed caller exact (guarded fast path allowed)')
   is(exports.m2(), 6, 'plain-array caller exact through the original')
+})
+
+test('paramAllUsesNumeric: copied binding additions are compatible, not numeric proofs', () => {
+  const elem = '__demand_elem', copy = '__demand_copy', seed = '__demand_seed'
+  const assign = ['+=', copy, elem], binary = ['=', copy, ['+', copy, elem]]
+  const bodies = [
+    update => [';', ['let', ['=', copy, seed]], update],
+    update => [';', ['let', ['=', copy, ['str', 'prefix']]], update],
+    update => ['=>', ['()', ['=', copy, seed]], update],
+    update => [';', ['let', ['=', copy, seed]], ['=>', ['()'], update]],
+  ]
+  for (const body of bodies) for (const proof of [false, true]) {
+    is(paramAllUsesNumeric(body(assign), elem, new Set(), proof), !proof, 'unknown copy is only compatible')
+    is(paramAllUsesNumeric(body(assign), elem, new Set(), proof),
+      paramAllUsesNumeric(body(binary), elem, new Set(), proof), 'compound and explicit binding addition agree')
+  }
+  for (const update of [assign, binary]) {
+    is(paramAllUsesNumeric([';', update, ['*', elem, 2]], elem), true, 'independent conversion supplies the proof')
+    is(paramAllUsesNumeric([';', update, ['return', elem]], elem, new Set(), false), false, 'identity observation rejects')
+    is(paramAllUsesNumeric([';', update, ['+', elem, ['str', '!']]], elem, new Set(), false), false, 'explicit concatenation rejects')
+  }
+  is(paramAllUsesNumeric(['+=', ['.', 'record', 'value'], elem], elem, new Set(), false), false, 'property update does not inherit binding compatibility')
+})
+
+test('paramAllUsesNumeric: copied accumulators retain strings and absent elements', () => {
+  const src = `
+    export function copied(a, box) { let acc=box[0]; let next=acc; next+=a[0]; return [next,a[0]] }
+    export function defaults(a, box) { const add=(seed='p')=>{let next=seed;next+=a[0];return next};return add(box[0]) }
+    export function captured(a, box) { let acc=box[0]; const change=()=>{acc='q'}; change(); let next=acc; next+=a[0]; return next }
+    export function missing(out, index) {
+      const src=new Float64Array([3]); let acc=0
+      for(let i=0;i<2;i++){out[0]=src[index];let next=acc;next+=out[0];acc=next}
+      return acc
+    }`
+  for (const optimize of levels(0,1,2,3,'size')) {
+    const got=jz(src,{optimize}).exports, want=oracle(src)
+    for(const value of [4,4,'text',undefined,null,true,4]) {
+      for(const seed of [2,'prefix',undefined]) {
+        is(got.copied([value],[seed]),want.copied([value],[seed]),`O${optimize}: copied ${typeof seed}/${typeof value}`)
+        is(got.defaults([value],[seed]),want.defaults([value],[seed]),`O${optimize}: default ${typeof seed}/${typeof value}`)
+        is(got.captured([value],[seed]),want.captured([value],[seed]),`O${optimize}: captured mutation ${typeof value}`)
+      }
+    }
+    for(const index of [0,0,1,-1,0]) {
+      const actual=[7],expected=[7]
+      is(got.missing(actual,index),want.missing(expected,index),`O${optimize}: numeric or absent copy result`)
+      is(actual,expected,`O${optimize}: absent store remains undefined`)
+      is(0 in actual,true,'undefined is a present element')
+    }
+  }
 })
 
 test('paramAllUsesNumeric: relational use proves a TypedArray-length param numeric', () => {

@@ -1763,6 +1763,10 @@ its origin, so the summary is rebuilt no more often than without it. A variant
 calls what its origin calls, from its own body: those calls join the call-site
 census, so a callee fed both kinds splits per kind (specializeBimorphicTyped)
 instead of going generic.
+An accumulator copied into a guarded loop keeps the same numeric-use contract:
+a binding's `s += value` is compatible wherever `s = s + value` is. An unknown
+accumulator does not itself prove a Number; the array contract still needs an
+independent numeric operation or stores proven to supply present Numbers.
 Boxed arrays preserve holes across the host boundary: absent cells use the
 reserved tombstone, while present `undefined` uses its value atom. Encoding and
 staged writes test each index's presence; decoding leaves holes unassigned.

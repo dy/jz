@@ -1345,7 +1345,7 @@ test('arena: a per-iteration rewind stays with the function whose loop proved it
   }`
   const keep = `const kept = []
   export function keep(n) {
-    for (let b = 0; b < (n | 0); b++) {
+    for (let b = 0; b < n; b++) {
       const blk = new Float64Array(4)
       blk[0] = b * 2
       kept.push(blk)
@@ -1357,8 +1357,8 @@ test('arena: a per-iteration rewind stays with the function whose loop proved it
   for (const src of [render + '\n' + keep, keep + '\n' + render]) {
     const wat = compile(src, { optimize: 'speed', wat: true })
     const fn = name => funcWat(wat, name) || funcWat(wat, name + '$exp')
-    // A word bound keeps the retaining loop from gaining counter versions;
-    // pin a collision with an actually rewound loop, including complete labels.
+    // Both Number bounds gain guarded counter versions; pin a collision
+    // with an actually rewound loop, including complete labels.
     const keptLabels = [...fn('keep').matchAll(/\(loop (\$[^\s()]+)/g)].map(m => m[1])
     ok(rewoundLoops(fn('render')).some(label => keptLabels.includes(label)), 'a rewound and a retaining loop carry one label')
     ok(loopRestores(fn('render')) > 0, 'the render loop rewinds')
