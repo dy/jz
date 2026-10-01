@@ -10,12 +10,39 @@ import { is, ok } from 'tst/assert.js'
 import { funcWat as funcWatOf, run, wat } from './util.js'
 import { buildPureFuncMap } from '../src/optimize/pure-funcs.js'
 import { collectReachableMemoryWrites } from '../src/optimize/globals.js'
+import parseWat from 'watr/parse'
 
 const ON = { optimize: 'speed' }
 const OFF = { optimize: { level: 'speed', valueNumber: false } }
 const calls = (text, name) => (text.match(new RegExp(`\\(call \\$${name.replace(/\./g, '\\.')}\\b`, 'g')) || []).length
 /** The function's WAT, under its own name or its export wrapper's. */
 const funcWat = (text, name) => funcWatOf(text, name) || funcWatOf(text, `${name}$exp`)
+// A function may keep mutually exclusive integer and full-Number loop copies.
+// Every executing copy must deduplicate its own calls.
+const callsPerLoop = (text, name) => {
+  const counts = []
+  const walk = n => {
+    if (!Array.isArray(n)) return
+    if (n[0] === 'loop') {
+      let count = 0
+      const countCalls = child => {
+        if (!Array.isArray(child) || child !== n && child[0] === 'loop') return
+        if (child[0] === 'call' && child[1] === '$' + name) count++
+        child.forEach(countCalls)
+      }
+      countCalls(n)
+      if (count) counts.push(count)
+    }
+    n.forEach(walk)
+  }
+  walk(parseWat(text))
+  return counts
+}
+const eachLoopCalls = (text, name, expected, message) => {
+  const counts = callsPerLoop(text, name)
+  ok(counts.length > 0, message + ': at least one loop calls the kernel')
+  for (const count of counts) is(count, expected, message)
+}
 
 // A typed array crosses the boundary by copy, so every case reads its
 // results back through a return value, never through the host's array.
@@ -24,14 +51,17 @@ export let f = (src, n, e) => { const dst = new Float64Array(n); for (let i = 0;
 
 test('value numbering: a helper inlined twice with one argument runs once', () => {
   const on = funcWat(wat(SPOW, ON), 'f'), off = funcWat(wat(SPOW, OFF), 'f')
-  is(calls(off, 'math.pow2'), 2, 'without the pass: two lane calls')
-  is(calls(off, 'math.pow'), 4, 'without the pass: two scalar calls per scalar loop copy')
-  is(calls(on, 'math.pow2'), 1, 'the lane loop calls the kernel once')
-  is(calls(on, 'math.pow'), 2, 'each scalar loop copy calls the kernel once')
+  eachLoopCalls(off, 'math.pow2', 2, 'without the pass: two lane calls')
+  eachLoopCalls(off, 'math.pow', 2, 'without the pass: two scalar calls per scalar loop copy')
+  eachLoopCalls(on, 'math.pow2', 1, 'the lane loop calls the kernel once')
+  eachLoopCalls(on, 'math.pow', 1, 'each scalar loop copy calls the kernel once')
   const src = new Float64Array(37)
   for (let i = 0; i < src.length; i++) src[i] = (i - 18) * 7.3
-  const want = run(SPOW, OFF).f(src, src.length, 0.16), got = run(SPOW, ON).f(src, src.length, 0.16)
-  ok(Object.is(got, want), `${got} vs ${want}`)
+  const expected = run(SPOW, OFF), actual = run(SPOW, ON)
+  for (const n of [0, 1, 8, 37, 37, 3.5, 0]) {
+    const want = expected.f(src, n, 0.16), got = actual.f(src, n, 0.16)
+    ok(Object.is(got, want), `n=${n}: ${got} vs ${want}`)
+  }
 })
 
 test('value numbering: a reassigned operand keeps both calls', () => {
@@ -50,11 +80,13 @@ test('value numbering: a loop body shares within an iteration, never across', ()
   const src = `export let k = (n) => { let x = 0.5, s = 0; for (let i = 0; i < n; i++) { s += Math.sin(x); x = Math.sin(x) } return s }
 export let k2 = (n) => { let x = 0.5, s = 0; for (let i = 0; i < n; i++) { s += Math.sin(x); x = x * 2; s += Math.sin(x) } return s }`
   const w = wat(src, ON)
-  is(calls(funcWat(w, 'k'), 'math.sin'), 1, 'both reads of x precede its write: one call')
-  is(calls(funcWat(w, 'k2'), 'math.sin'), 2, 'x changes between the calls: two')
+  eachLoopCalls(funcWat(w, 'k'), 'math.sin', 1, 'both reads of x precede its write: one call')
+  eachLoopCalls(funcWat(w, 'k2'), 'math.sin', 2, 'x changes between the calls: two')
   const on = run(src, ON), off = run(src, OFF)
-  is(on.k(20), off.k(20))
-  is(on.k2(20), off.k2(20))
+  for (const n of [0, 1, 20, 20, 3.5, -1, NaN, 0]) {
+    is(on.k(n), off.k(n))
+    is(on.k2(n), off.k2(n))
+  }
 })
 
 test('value numbering: a store advances the memory clock', () => {
@@ -141,4 +173,3 @@ test('purity: random calls and atomic writes stay effectful', () => {
   ok(!buildPureFuncMap([writer]).has('$write'))
   ok(collectReachableMemoryWrites([writer]).get('$write').has('*'))
 })
-
