@@ -319,6 +319,9 @@ named-property sidecars on every WAT node; public parsing retains source offsets
 and syntax errors retain offsets in both modes. WAT tokens retain source spans until committed,
 avoiding quadratic copying of names, quoted strings and comments.
 Helper-reference scans collect whole names without unused regex capture records.
+AST substitution clones retain source locations, including member and literal
+nodes. Diagnostics identify the original site across loop copies while separate
+sites keep separate advisories; escape-origin and bounds metadata remain selective.
 Schema-read dispatch consumes the registration index of fields and slots; it
 never rebuilds that index per read. The index is read-only to the optimizer,
 and its registration order supplies dispatch labels. Functions with no tagged

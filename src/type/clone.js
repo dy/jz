@@ -19,8 +19,7 @@ export function cloneWithSubst(node, subst, rename = null, closures = false) {
     if (node[0] === '=>') return node
     const out = node.map(x => cloneWithSubst(x, name, value))
     stampClonedIdxProof(node, out)
-    carrySite(node, out)
-    return out
+    return carrySite(node, out)
   }
   const ren = rename instanceof Map ? rename : new Map()
   if (typeof node === 'string') {
@@ -29,25 +28,27 @@ export function cloneWithSubst(node, subst, rename = null, closures = false) {
   }
   if (!Array.isArray(node)) return node
   const op = node[0]
-  if (op === 'str') return node.slice()
+  if (op === 'str') return carrySite(node, node.slice())
   // A closure is cloned where the caller names its bindings anew with the body's
   // (a spliced body that makes closures, plan/inline.js); else it is the node itself.
   if (op === '=>' && !closures) return node
-  if (op === '.' || op === '?.') return [op, cloneWithSubst(node[1], subst, ren, closures), node[2]]
-  if (op === ':') return [op, node[1], cloneWithSubst(node[2], subst, ren, closures)]
+  if (op === '.' || op === '?.') return carrySite(node, [op, cloneWithSubst(node[1], subst, ren, closures), node[2]])
+  if (op === ':') return carrySite(node, [op, node[1], cloneWithSubst(node[2], subst, ren, closures)])
   const out = node.map((part, i) => i === 0 ? part : cloneWithSubst(part, subst, ren, closures))
   stampClonedIdxProof(node, out)
-  carrySite(node, out)
-  return out
+  return carrySite(node, out)
 }
 
-/** An escape site's clone (a loop unrolled at emission) is a site of the same
- *  origin: whichever copy is emitted flags it (emit/dispatch.js). */
+/** A clone keeps its source site for diagnostics. An escape site's clone is
+ *  also a site of the same origin: whichever copy is emitted flags it. */
 function carrySite(node, out) {
+  if (node.loc != null) out.loc = node.loc
   const sites = ctx.plans?.escapeSites
-  if (!sites?.has(node)) return
-  sites.add(out)
-  ;(ctx.plans.siteOrigin ??= new WeakMap()).set(out, ctx.plans.siteOrigin.get(node) ?? node)
+  if (sites?.has(node)) {
+    sites.add(out)
+    ;(ctx.plans.siteOrigin ??= new WeakMap()).set(out, ctx.plans.siteOrigin.get(node) ?? node)
+  }
+  return out
 }
 
 /** Proof carry-over for clones: substitution only SHRINKS an index's value set (an

@@ -1,7 +1,7 @@
 // Compile-time advisories (opts.warnings / ctx.warn). See .work/archive/todo.md.
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import { belowOpt, onWasi } from './_matrix.js'
+import { belowOpt, levels, onWasi } from './_matrix.js'
 import jz, { compile } from '../index.js'
 
 function warningsFor(code, opts = {}) {
@@ -139,6 +139,25 @@ test('warnings: deopt-dyn-read on a dynamic bracket read', () => {
 test('warnings: deopt-dyn-write on a dynamic bracket write', () => {
   const ws = warningsFor('let o = {a:0,b:0}; let ks = ["a","b"]; export let f = (n) => { for (let i = 0; i < n; i++) o[ks[i & 1]] = i; return o.a }')
   is(ws.filter(e => e.code === 'deopt-dyn-write').length, 1)
+})
+
+test('warnings: loop copies retain distinct source sites without duplicate advisories', () => {
+  const src = `let o = {a: 1, b: 2}, ks = ['a', 'b'];
+export function f(n) {
+  let s = 0;
+  for (let i = 0; i < n; i++) {
+    let k = ks[i & 1];
+    s += o[k];
+    s += o[ks[(i + 1) & 1]];
+  }
+  return s;
+}`
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    for (const code of [src, 'export function empty() {}', src, src]) {
+      const entries = warningsFor(code, { optimize }).filter(e => e.code === 'deopt-dyn-read')
+      is(entries.map(e => [e.fn, e.line, e.column]), code === src ? [['f', 6, 11], ['f', 7, 11]] : [], `O${optimize}: each original read owns its source location`)
+    }
+  }
 })
 
 test('warnings: deopt-method on an unknown-receiver method call', () => {
