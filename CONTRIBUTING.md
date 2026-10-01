@@ -2991,7 +2991,10 @@ word's bytes at consecutive addresses (`o[k] = u & 0xff; o[k + 1] = u >>> 8`,
 `writeU32`) are the word's little-endian store16/store32 (`mergeByteStores`);
 word scales canonicalize to shifts before this fusion and SIMD recognition.
 Pure address sums compare independently of their parenthesization, retaining
-operand order and the original store evaluation.
+operand order and the original store evaluation. Address CSE also recognizes
+an unscaled local byte offset after the zero shift disappears, using the same
+dependency writes and control-region boundaries as scaled addresses. The blur
+channel lift therefore keeps one shared byte-address value.
 wav's sample loop stores its truncation directly. The
 integer element store (`module/typedarray.js`) stores the word its value narrows to
 (`i32Narrowed`, ir/numeric.js, the narrowing toInt32 itself starts with, seen before a

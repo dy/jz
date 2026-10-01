@@ -253,15 +253,19 @@ export function hoistAddrBase(fn) {
       } else if (Array.isArray(b) && b[0] === 'local.get' && typeof b[1] === 'string' &&
                  Array.isArray(a) && a[0] === 'i32.shl' && a.length === 3) {
         baseGet = b; shlNode = a
+      } else if (a?.[0] === 'local.get' && typeof a[1] === 'string' && b?.[0] === 'local.get' && typeof b[1] === 'string') {
+        // A byte index's zero shift canonicalizes away before this pass.
+        // Keep the same region/dependency proof for its unscaled address.
+        baseGet = a
       } else return null
-      const idx = shlNode[1], shamt = shlNode[2]
-      if (!Array.isArray(shamt) || shamt[0] !== 'i32.const' || typeof shamt[1] !== 'number') return null
+      const idx = shlNode ? shlNode[1] : b, shamt = shlNode?.[2]
+      if (shlNode && (!Array.isArray(shamt) || shamt[0] !== 'i32.const' || typeof shamt[1] !== 'number')) return null
       // idx may be a plain `local.get` (the original biquad case) or any compound
       // pure-i32 subscript (stencil neighbour `arr[idx+W-1]`); both CSE the same way.
       const deps = new Set([baseGet[1]])
       const idxKey = pureI32AddrKey(idx, deps)
       if (idxKey == null) return null
-      return { key: `${baseGet[1]}|${idxKey}|${shamt[1]}`, deps: [...deps] }
+      return { key: `${baseGet[1]}|${idxKey}|${shamt ? shamt[1] : 0}`, deps: [...deps] }
     },
     localPrefix: 'ab',
     localType: 'i32',

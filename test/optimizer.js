@@ -128,10 +128,11 @@ test('LICM array presence: module constants, defaults and shadowing stay distinc
 })
 
 test('address CSE: exits and sibling writes end the dominating region', () => {
-  for (const pass of [hoistAddrBase, hoistPtrType]) {
-    const site = pass === hoistAddrBase
-      ? '(i32.add (local.get $x) (i32.shl (local.get $i) (i32.const 3)))'
-      : '(call $__ptr_type (local.get $x))'
+  for (const [pass, site] of [
+    [hoistAddrBase, '(i32.add (local.get $x) (i32.shl (local.get $i) (i32.const 3)))'],
+    [hoistAddrBase, '(i32.add (local.get $x) (local.get $i))'],
+    [hoistPtrType, '(call $__ptr_type (local.get $x))'],
+  ]) {
     for (const body of [
       `(block $out (br_if $out (local.get $skip)) (drop ${site})) ${site}`,
       `(block $out (try_table (catch_all $out) (if (local.get $skip) (then (throw $err))) (drop ${site}))) ${site}`,
@@ -155,6 +156,7 @@ test('address and tag CSE: branch exits and exception handlers cannot reuse skip
   if (onKernel()) return
   for (const [pass, expr] of [
     [hoistAddrBase, '(i32.load (i32.add (local.get $base) (i32.shl (local.get $index) (i32.const 3))))'],
+    [hoistAddrBase, '(i32.load8_u (i32.add (local.get $base) (local.get $index)))'],
     [hoistPtrType, '(call $__ptr_type (local.get $ptr))'],
   ]) {
     const drop = `(drop ${expr})`
@@ -166,7 +168,7 @@ test('address and tag CSE: branch exits and exception handlers cannot reuse skip
         (if (local.get $skip) (then (throw $error))) ${drop})) ${expr}`,
       `(block $exit (loop $again (br_if $exit (local.get $skip)) ${drop})) ${expr}`,
     ]) {
-      const source = `(module (memory 1) (data (i32.const 88) "%") (tag $error)
+      const source = `(module (memory 1) (data (i32.const 88) "%") (data (i32.const 67) "+") (tag $error)
         (func $__ptr_type (param $ptr i64) (result i32) (i32.wrap_i64 (local.get $ptr)))
         (func $f (export "f") (param $skip i32) (param $base i32) (param $index i32) (param $ptr i64) (result i32)
           ${body}))`
