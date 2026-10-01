@@ -24,30 +24,16 @@ import { frameNode } from '../../function.js'
 import { materializeVariant } from '../variant.js'
 import { mixesNumericKinds } from '../numeric-mix.js'
 
-// narrowMutatedParams: admit a body-WRITTEN param into the i32 specialization
-// when every mutation of it is provably int-preserving. Reuses type.js's
-// intLevelMap fixpoint — the SAME prover that grounds ordinary intCertain
-// locals — rather than inventing a parallel one: seed the param optimistically
-// i32 (so a self-referential def like `nc = nc + 1` doesn't vacuously ground
-// at the anti-fixpoint's level 0, see intLevelMap's param-seeding comment) and
-// read back its settled level. collectIntDefs (intLevelMap's def-collector)
-// already recognizes exactly the classic shapes — `p++`,
-// `p += <int>`, `p = p + <int>`, `p = <int-expr of p>` desugar to the same
-// def-list entries a plain int-certain local would produce. Anything it can't
-// see (a write inside a nested arrow — capturedNames not passed) or that
-// doesn't reach level ≥1 (float ops, an unresolved call, a non-int rhs) fails
-// CLOSED: the level lookup misses or stays 0, so the optimistic seed is
-// reverted and the param stays f64 — never a miscompile, only a forgone
-// optimization. On success the seed IS the specialization (p.type stays
-// 'i32'); the reassignment then needs writeVar (src/ir.js) to honor the
-// param's declared type on the store side, not the generic f64 assign path
-// (mirrors readVar's own params fallback).
+// A mutable i32 parameter needs the shared lattice's STRICT signed-word
+// level, not merely its integer-valued level: `p++`, arithmetic, unsigned
+// shifts and negation can exceed signed width or produce -0. Include writes
+// through nested closures so the representation covers the binding's lifetime.
 function isIntSafeMutatedParam(func, p) {
   const saved = p.type
   p.type = 'i32'
   const level = withCurrentFunction(func.sig,
-    () => intLevelMap(func.body, undefined, null).get(p.name) ?? 0)
-  if (level < 1) { p.type = saved; return false }
+    () => intLevelMap(frameNode(func), new Set([p.name]), null).get(p.name) ?? 0)
+  if (level < 2) { p.type = saved; return false }
   return true
 }
 
@@ -101,7 +87,7 @@ export function applyI32ParamSpecialization(paramReps, addressTaken, sitesByCall
     const restIdx = func.rest ? func.sig.params.length - 1 : -1
     // A narrowed param type is a CALLER-side contract; a body-written param
     // keeps it ONLY when narrowMutatedParams (isIntSafeMutatedParam /
-    // callerArgSelfConsistentI32, above) proves every mutation int-preserving
+    // callerArgSelfConsistentI32, above) proves every mutation fits signed i32
     // AND the caller side self-consistent — otherwise the reassignment's RHS
     // isn't provably representable as i32 and the param stays f64. The blanket
     // "never written" exclusion still applies unmodified to
@@ -118,7 +104,7 @@ export function applyI32ParamSpecialization(paramReps, addressTaken, sitesByCall
       // A Boolean beside a number, a read observing which, keeps the tagged
       // f64 (kind.js boolTagged): the integer carrier reads a Boolean as 0 or 1.
       if (view && holdsBoolBeside(p.name, view) && !view.numericDemand(p.name)) continue
-      // Admit f64 evidence when mutations preserve integer values, or every
+      // Admit f64 evidence when mutations preserve signed-word values, or every
       // read applies a word conversion at the boundary below. A mixed i32/f64
       // caller consensus has no Wasm type; its settled numeric kind can still
       // prove this conversion without choosing a representation for the callers.

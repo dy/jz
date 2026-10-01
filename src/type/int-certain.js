@@ -166,7 +166,6 @@ export function intLevelMap(body, capturedNames, slotLevelOf, readPresent, param
 }
 function intLevelMapIn(body, capturedNames, slotLevelOf, defs, readPresent, params) {
   collectIntDefs(body, capturedNames, defs)
-  if (defs.size === 0) return new Map()
   const levels = new Map()
   for (const name of defs.keys()) levels.set(name, 2)
   // A parameter has no def in `body` — its entry value is whatever the caller
@@ -180,8 +179,13 @@ function intLevelMapIn(body, capturedNames, slotLevelOf, defs, readPresent, para
   // are the analyzed body's own parameters (`params`, the current function's
   // by default): without them a reassigned parameter reads as the Boolean or
   // the integer the body gives it, never as the caller's number.
-  for (const p of params || [])
-    if (p.type !== 'i32' && levels.has(p.name)) levels.set(p.name, 0)
+  for (const p of params || []) {
+    // Unwritten numeric parameters also ground derived locals. SSA may turn
+    // `p += 1` into `const next = p + 1`; without this entry, next is level 0
+    // and misses the level-1 magnitude check that keeps its storage lossless.
+    if (p.type === 'i32' && p.ptrKind == null) levels.set(p.name, 2)
+    else if (levels.has(p.name)) levels.set(p.name, 0)
+  }
   const levelOf = makeIntLevelExpr(levels, slotLevelOf, readPresent)
   // The defs as two lists, read by index in every round: an entry-pair walk
   // of the map would allocate a pair per name per round.

@@ -3094,6 +3094,13 @@ passes that read a loop by its shape match (a clamp against `w - 1`, a window of
 the blur recognizers stopped firing on a literal), and the emitter folds a constant of the
 source where it is read. `test/constants.js` pins the flows and the folds.
 
+A mutable parameter uses an i32 carrier only when the shared integer lattice
+proves every write fits signed width and excludes negative zero. Integer-valued
+arithmetic alone does not prove that: increments, multiplication, negation and
+unsigned shifts can leave the signed range. The mutation census includes nested
+closure writes; callers agreeing on i32 entry values cannot bound later updates.
+Explicit word operations keep the direct integer ABI (`test/inference.js`).
+
 A parameter every call fixes to one integer reads as that integer in its body
 (`substituteIntConstParams`, narrow/param-abi.js, once the signatures settle; validated as
 `intConst` is: never written, no default, not the rest): an index, a stride, an offset the

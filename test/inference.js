@@ -2340,43 +2340,101 @@ test('val-kind dichotomy: a number-or-object parameter is cloned per kind, and a
     is((text.match(/__to_num|__add_slow|__is_str_key/g) || []).length, 0, 'the array element stays a number: no conversion or string dispatch')
 })
 
-test('narrowMutatedParams: monotone int-mutated param promotes to i32 param+result (cursor-through-helper)', () => {
-  // `i` is a body-written param AND the return value — the trace bench's `nc`
-  // shape (a monotone array-write cursor threaded through a helper: `i =
-  // bump(buf, i, k)` feeds the caller's own local back into the same slot).
-  // Was stuck f64 forever: applyI32ParamSpecialization excluded any body-
-  // written param outright, and even fixing that alone hits an anti-vacuous-
-  // fixpoint — the caller's `i` widens to f64 because bump's OWN result isn't
-  // narrowed yet, and bump's result narrows only from an already-i32 param.
-  // watr/sourceInline off so `bump` stays a real, separately emitted function
-  // whose own signature can be inspected directly.
+test('narrowMutatedParams: every write must preserve signed width', () => {
+  // A cursor threaded through a helper may outgrow its array. Its Number
+  // update needs f64 storage even though every caller starts with an integer.
+  // Explicit word conversion closes that lifetime proof and keeps the i32 ABI.
+  for (const bounded of [false, true]) {
+    const src = `
+      const bump = (buf, i, n) => {
+        buf[i] = n
+        i = ${bounded ? '(i + 1) | 0' : 'i + 1'}
+        return i
+      }
+      export let cursor = (n) => {
+        const buf = new Int32Array(64)
+        let i = 0
+        for (let k = 0; k < n; k++) i = bump(buf, i, k)
+        return i
+      }
+    `
+    const wat = jz.compile(src, { wat: true, optimize: { watr: false, sourceInline: false } })
+    const bumpSeg = wat.slice(wat.indexOf('(func $bump'), wat.indexOf('(func $cursor'))
+    ok(new RegExp(`\\(param \\$i ${bounded ? 'i32' : 'f64'}\\)`).test(bumpSeg), 'parameter storage covers every possible update')
+    ok(new RegExp(`\\(result ${bounded ? 'i32' : 'f64'}\\)`).test(bumpSeg), 'result keeps the same proven width')
+    if (bounded) {
+      const bump = parseWat(wat).find(n => n[0] === 'func' && n[1] === '$bump')
+      let converted = 0, added = 0
+      walk(bump, n => {
+        if (n[0] === 'i32.add' && n[1]?.[0] === 'local.get' && n[1][1] === '$i') added++
+        if (/trunc|convert/.test(n[0])) walk(n, r => { if (r[0] === 'local.get' && r[1] === '$i') converted++ })
+      })
+      ok(added > 0, 'word-bounded cursor advances with i32.add')
+      is(converted, 0, 'no counter conversion; the separately unbounded value may convert for its typed store')
+    }
+    const { exports } = jz(src, { memory: 4, optimize: { sourceInline: false } })
+    for (const n of [0, 5, 5, 65, 0, 5]) is(exports.cursor(n), oracle(src).cursor(n), `cursor(${n}), bounded=${bounded}`)
+  }
+})
+
+test('narrowMutatedParams: boundary writes retain full Numbers and negative zero', () => {
+  const bodies = [
+    'const old = i++; return [old, i]',
+    'const old = i--; return [old, i]',
+    'i += 1; return i',
+    'i -= 1; return i',
+    'i *= 2; return i',
+    'i = -i; return i',
+    'i >>>= 0; return i',
+    'i %= 2; return i',
+    'i = flag ? i + 1 : i - 1; return i',
+    'const a = new Int32Array(1); a[i++] = 7; return [i, a[0]]',
+    'i |= 0; const edit = () => { i++ }; edit(); return i',
+    'i |= 0; return () => ++i',
+  ]
+  for (let c = 0; c < bodies.length; c++) {
+    const src = `function step(i, flag) { ${bodies[c]} }
+      export function value(k, flag) {
+        const result = step(k | 0, flag)
+        return ${c === bodies.length - 1 ? '[result(), result()]' : 'result'}
+      }`
+    const want = oracle(src)
+    for (const level of levels(0, 1, 2, 3, 'size')) {
+      const got = jz(src, { optimize: { level, sourceInline: false } }).exports
+      for (const k of [0, 2147483647, 2147483647, -2147483648, -1, 1, 0, 2147483647])
+        for (const flag of [0, 1]) is(got.value(k, flag), want.value(k, flag), `write ${c}, O${level}, input ${k}/${flag}`)
+    }
+  }
+})
+
+test('narrowMutatedParams: default and throwing writes recover on the next call', () => {
   const src = `
-    const bump = (buf, i, n) => {
-      buf[i++] = n
+    function step(i, fail = false) {
+      i += 1
+      if (fail) throw new Error('updated')
       return i
     }
-    export let run = (n) => {
-      const buf = new Int32Array(64)
-      let i = 0
-      for (let k = 0; k < n; k++) i = bump(buf, i, k)
-      return i
-    }
+    export function value(k, fail) { return step(k | 0, fail) }
+    export function missing(k) { return step(k | 0) }
+    function defaultWrite(i, ignored = i++) { return i }
+    export function changedDefault(k) { return defaultWrite(k | 0) }
   `
-  const wat = jz.compile(src, { wat: true, optimize: { watr: false, sourceInline: false } })
-  const bumpSeg = wat.slice(wat.indexOf('(func $bump'), wat.indexOf('(func $run'))
-  ok(/\(param \$i i32\)/.test(bumpSeg), 'mutated monotone-counter param narrows to i32')
-  ok(/\(result i32\)/.test(bumpSeg), 'result promotes to i32 too (narrowI32Results reads the updated param type)')
-  is(count(bumpSeg, /i64\.trunc_sat_f64_s|f64\.convert_i32/g), 0, 'no f64 round-trip left on the promoted counter')
-  const { exports } = jz(src, { memory: 4 })
-  is(exports.run(5), 5, 'functional result unchanged by the narrowing')
+  const want = oracle(src)
+  for (const level of levels(0, 1, 2, 3, 'size')) {
+    const got = jz(src, { optimize: { level, sourceInline: false } }).exports
+    for (const k of [2147483647, 2147483647, -2147483648, 0, 2147483647]) {
+      is(got.value(k, false), want.value(k, false), `O${level}: normal call`)
+      throws(() => got.value(k, true), /updated/, `O${level}: error after update`)
+      is(got.missing(k), want.missing(k), `O${level}: default after error`)
+      is(got.changedDefault(k), want.changedDefault(k), `O${level}: later default writes the earlier parameter`)
+    }
+  }
 })
 
 test('narrowMutatedParams: float-mutated param stays f64', () => {
   // Same cursor-through-helper shape as above, but the mutation itself
-  // (`i = i + 0.5`) isn't int-preserving — intLevelMap must settle it below
-  // level 1 (a `+` between two int32-level operands needs BOTH integral; 0.5
-  // isn't), so the param stays f64. Never a miscompile risk either way — this
-  // pins the "bail on anything else" half of the lever's contract.
+  // (`i = i + 0.5`) isn't integer-valued, so it cannot meet the strict
+  // signed-word requirement. Its parameter and result keep their f64 carrier.
   const src = `
     const drift = (buf, i, n) => {
       buf[i | 0] = n
