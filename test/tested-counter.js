@@ -1,12 +1,11 @@
-// A counter a loop tests for truthiness is a counter a loop compares with zero:
-// `while (sp)` over an integer is `while (sp !== 0)`. The test governs the name
-// as a comparison does (src/compile/analyze-scans.js collectComparedNames), so a
-// stack pointer stepped by `++`/`--` keeps its i32 and indexes without a
-// conversion per push and pop. Values are differentials against the host.
+// Truthiness alone proves no width. A successful checked pop bounds the fast
+// copy's pointer by the stack's length, including the later pushes. The original
+// fallback keeps its full Number; values are differentials against the host.
 import test from 'tst'
-import { is, ok } from 'tst/assert.js'
+import { ok } from 'tst/assert.js'
 import { agree, wat, funcWat as funcWatOf } from './util.js'
 import { belowOpt } from './_matrix.js'
+import parseWat from 'watr/parse'
 
 const funcWat = (text, name) => funcWatOf(text, name) || funcWatOf(text, `${name}$exp`)
 // The storage holds once the optimizer ran; every leg runs the differentials.
@@ -15,7 +14,25 @@ const storage = (src, name) => {
   const m = new RegExp(`\\(local \\$(?:\\w+_)?${name} (i32|f64)\\)`).exec(funcWat(wat(src), 'f'))
   return m ? m[1] : null
 }
-const holds = (src, name, type, label) => { if (!belowOpt(2)) is(storage(src, name), type, label) }
+
+const fastWord = src => {
+  if (belowOpt(2)) return
+  const text = funcWat(wat(src), 'f')
+  const words = new Set([...text.matchAll(/\(local (\$[^\s()]*sp(?:\.f\d+)?) i32\)/g)].map(m => m[1]))
+  const operations = new Map()
+  const scan = (n, inLoop = false) => {
+    if (!Array.isArray(n)) return
+    inLoop ||= n[0] === 'loop'
+    if (inLoop && (n[0] === 'local.set' || n[0] === 'local.tee') && words.has(n[1]) && /^i32\.(?:add|sub)$/.test(n[2]?.[0])) {
+      const ops = operations.get(n[1]) ?? operations.set(n[1], new Set()).get(n[1])
+      ops.add(n[2][0])
+    }
+    for (let i = 1; i < n.length; i++) scan(n[i], inLoop)
+  }
+  scan(parseWat(text))
+  ok([...operations.values()].some(ops => ops.has('i32.add') && ops.has('i32.sub')),
+    'the guarded traversal pops and pushes through the same i32 pointer')
+}
 
 // A worklist over an implicit binary tree of n nodes: every node is visited once.
 const WALK = (test) => `export let f = (n) => {
@@ -33,16 +50,16 @@ const WALK = (test) => `export let f = (n) => {
   }
   return count * 100000 + sum }`
 
-test('tested counter: while (sp) keeps the stack pointer an i32', () => {
+test('tested counter: while (sp) keeps the guarded stack pointer an i32', () => {
   const src = WALK('while (sp)')
-  holds(src, 'sp', 'i32')
-  for (const n of [0, 1, 2, 7, 100]) agree(src, 'f', [n])
+  fastWord(src)
+  for (const n of [0, -0, 1, 2, 7, 100, 0.5, 2.5, NaN]) agree(src, 'f', [n])
 })
 
 test('tested counter: the forms of a truthiness test', () => {
   for (const t of ['while (sp !== 0)', 'while (sp > 0)', 'while (!!sp)', 'while (sp && count < 1000)', 'for (; sp;)']) {
     const src = WALK(t)
-    holds(src, 'sp', 'i32', t)
+    fastWord(src)
     for (const n of [0, 3, 40]) agree(src, 'f', [n])
   }
 })

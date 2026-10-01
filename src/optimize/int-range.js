@@ -27,6 +27,7 @@
 // take to settle, whatever the nesting. Only the last walk records.
 
 import { isPureIR, writesLocal } from '../ir/classify.js'
+import { guardDefinitions } from './guard-defs.js'
 
 const isArr = Array.isArray
 
@@ -205,11 +206,12 @@ export const readBack = (y, x) => {
   const ops = []
   for (; isArr(y) && y[0] !== 'local.get'; y = y[y.length - 1]) {
     if (y[0] === 'local.tee' && y.length === 3) continue
-    if (y.length !== 2 || ops.length === 2) return null
+    if (y.length !== 2 || ops.length === 3) return null
     ops.push(y[0])
   }
   if (!isArr(y) || y[1] !== x) return null
-  const [out, inner] = ops
+  const [out, inner, third] = ops
+  if (third) return out === 'f64.convert_i32_s' && inner === 'i32.wrap_i64' && third === 'i64.trunc_sat_f64_s' ? 'i32' : null
   return out == null ? 'self' : inner == null ? (out === 'f64.trunc' ? 'whole' : null)
     : out === 'f64.convert_i32_s' && inner === 'i32.trunc_sat_f64_s' ? 'i32'
     : out === 'f64.convert_i32_u' && inner === 'i32.trunc_sat_f64_u' ? 'u32'
@@ -440,7 +442,40 @@ export function intRanges(fn, bodyStart, assume = null, regions = null) {
   // What a test establishes: the intervals of the locals it compares, in the
   // environment where it holds (`truth`) or fails.
   const readName = x => isArr(x) && (x[0] === 'local.get' || x[0] === 'local.tee') && typeof x[1] === 'string' && tracked(x[1]) ? x[1] : null
-  const bound = (env, name, rel, o, floats) => {
+  let definitions
+  const publish = (env, name, value, proof = null) => {
+    if (proof && --proof.left < 0) return
+    bind(env, name, value)
+    if (!proof || proof.active.has(name)) return
+    proof.active.add(name)
+    const take = other => {
+      if (other === name || proof.active.has(other)) return
+      const old = boundOf(env, other)
+      if (old?.of) return
+      const lo = Math.max(old ? old.lo : -Infinity, value.lo), hi = Math.min(old ? old.hi : Infinity, value.hi)
+      if (lo <= hi) publish(env, other, { lo, hi, int: value.int || !!old?.int,
+        nz: types.get(other) === 'f64' && (old ? old.nz : true) && lo <= 0 && hi >= 0, nan: value.nan && (!old || old.nan) }, proof)
+    }
+    for (const [a, b] of proof.links) { if (a === name) take(b); else if (b === name) take(a) }
+    const d = definitions.get(name, proof.path)
+    const follow = (n, path) => {
+      if (!isArr(n)) return
+      if (n[0] === 'local.get') {
+        if (definitions.current(n[1], path, proof.path, proof.guard)) take(n[1])
+      } else if (n[0] === 'local.tee') {
+        if (definitions.holds(n, proof.path, path)) take(n[1])
+        follow(n[2], [...path, n[2]])
+      } else if (n[0] === 'select') {
+        const c = n[3], v = c?.[0] === 'local.get' ? boundOf(env, c[1]) : null
+        const at = c?.[0] === 'local.get' && definitions.current(c[1], [...path, c], proof.path, proof.guard)
+          ? v?.lo > 0 || v?.hi < 0 ? 1 : v?.lo === 0 && v?.hi === 0 ? 2 : 0 : 0
+        if (at) follow(n[at], [...path, n[at]])
+      }
+    }
+    if (d) follow(d.value, d.path)
+    proof.active.delete(name)
+  }
+  const bound = (env, name, rel, o, floats, proof = null) => {
     const x = boundOf(env, name)
     if (x?.of || o.of) return
     // An integer's strict bound steps to the next integer.
@@ -456,28 +491,44 @@ export function intRanges(fn, bodyStart, assume = null, regions = null) {
       if (!x || !whole || o.lo !== o.hi) return
       if (lo === o.lo) lo++
       if (hi === o.lo) hi--
-      if (lo <= hi) bind(env, name, { lo, hi, int: x.int, nz: x.nz && lo <= 0 && hi >= 0, nan: x.nan })
+      if (lo <= hi) publish(env, name, { lo, hi, int: x.int, nz: x.nz && lo <= 0 && hi >= 0, nan: x.nan }, proof)
       return
     }
     if (!(lo <= hi)) return
     // A comparison that holds has numbers on both sides: NaN fails it, and a
     // box is a NaN.
-    bind(env, name, { lo, hi, int: whole, nz: (x ? x.nz : floats) && lo <= 0 && hi >= 0, nan: false })
+    publish(env, name, { lo, hi, int: whole, nz: (x ? x.nz : floats) && lo <= 0 && hi >= 0, nan: false }, proof)
   }
-  const refine = (c, truth, env, stale = staleReads(c)) => {
+  const refine = (c, truth, env, stale = staleReads(c), root = c, proof = null) => {
     if (!isArr(c)) return
     const op = c[0]
-    if (op === 'i32.eqz') return refine(c.find(isArr), !truth, env, stale)
-    if ((op === 'i32.and' && truth) || (op === 'i32.or' && !truth)) { for (const k of c) if (isArr(k)) refine(k, truth, env, stale); return }
+    if (op === 'i32.eqz') return refine(c.find(isArr), !truth, env, stale, root, proof)
+    if ((op === 'i32.and' && truth) || (op === 'i32.or' && !truth)) { for (const k of c) if (isArr(k)) refine(k, truth, env, stale, root, proof); return }
     if ((op === 'local.get' || op === 'local.tee') && types.get(c[1]) === 'i32') {
-      if (!stale.has(c)) bound(env, c[1], truth ? 'ne' : 'eq', { lo: 0, hi: 0 }, false)
+      if (!stale.has(c)) {
+        definitions ||= guardDefinitions(wexprs)
+        const d = op === 'local.get' ? definitions.saved(c[1], proof?.path ?? stack, root) : null
+        if (d && (!proof || proof.left-- > 0 && !proof.active.has(c[1]))) {
+          proof ||= { path: stack.slice(), guard: root, links: [], active: new Set(), left: 256 }
+          proof.active.add(c[1])
+          refine(d.value, truth, env, staleReads(d.value), root, proof)
+          proof.active.delete(c[1])
+        }
+        bound(env, c[1], truth ? 'ne' : 'eq', { lo: 0, hi: 0 }, false, proof)
+      }
       return
     }
     const [p, q] = c.filter(isArr)
     const a = seenAt.get(p) ?? null, b = seenAt.get(q) ?? null
-    const x = stale.has(p) ? null : readName(p), y = stale.has(q) ? null : readName(q)
+    let x = stale.has(p) ? null : readName(p)
+    const y = stale.has(q) ? null : readName(q)
     const floats = op in F64_CMP
-    const back = (op === 'f64.eq' || op === 'f64.ne') && x != null ? readBack(q, x) : null
+    let back = (op === 'f64.eq' || op === 'f64.ne') && x != null ? readBack(q, x) : null
+    let converted = q
+    if (!back && (op === 'f64.eq' || op === 'f64.ne') && y != null) {
+      back = readBack(p, y)
+      if (back) { x = y; converted = p }
+    }
     if (back) {
       // (where it fails the value is a box, a NaN, or a number the way back does not hold)
       if (truth !== (op === 'f64.eq')) return
@@ -485,7 +536,13 @@ export function intRanges(fn, bodyStart, assume = null, regions = null) {
       if (v && none(v)) return
       if (back === 'self') { bind(env, x, v ? { lo: v.lo, hi: v.hi, int: v.int, nz: v.nz, nan: false } : { lo: -Infinity, hi: Infinity, int: false, nz: true, nan: false }); return }
       const lo = Math.max(v ? Math.ceil(v.lo) : -Infinity, BACK[back][0]), hi = Math.min(v ? Math.floor(v.hi) : Infinity, BACK[back][1])
-      if (lo <= hi) bind(env, x, { lo, hi, int: true, nz: (v ? v.nz : true) && lo <= 0 && hi >= 0, nan: false })
+      if (lo <= hi) {
+        if (proof && back === 'i32') {
+          const word = converted?.[1], alias = readName(word)
+          if (alias && types.get(alias) === 'i32') proof.links.push([x, alias])
+        }
+        publish(env, x, { lo, hi, int: true, nz: (v ? v.nz : true) && lo <= 0 && hi >= 0, nan: false }, proof)
+      }
       return
     }
     let rel = F64_CMP[op] ?? INT_CMP[op]
@@ -493,16 +550,16 @@ export function intRanges(fn, bodyStart, assume = null, regions = null) {
       rel = UNSIGNED_CMP[op]
       if (rel == null || !truth) return
       // `x <u n` with n non-negative holds for 0 ≤ x < n alone.
-      if ((rel === 'lt' || rel === 'le') && x && b && b.lo >= 0) { bound(env, x, 'ge', { lo: 0, hi: 0 }, false); bound(env, x, rel, b, false) }
-      if ((rel === 'gt' || rel === 'ge') && y && a && a.lo >= 0) { bound(env, y, 'ge', { lo: 0, hi: 0 }, false); bound(env, y, FLIP[rel], a, false) }
+      if ((rel === 'lt' || rel === 'le') && x && b && b.lo >= 0) { bound(env, x, 'ge', { lo: 0, hi: 0 }, false, proof); bound(env, x, rel, b, false, proof) }
+      if ((rel === 'gt' || rel === 'ge') && y && a && a.lo >= 0) { bound(env, y, 'ge', { lo: 0, hi: 0 }, false, proof); bound(env, y, FLIP[rel], a, false, proof) }
       return
     }
     // Where an f64 test fails, either operand may be NaN: only numbers that
     // are none turn the failure into the opposite test.
     if (floats && (truth ? rel === 'ne' : rel !== 'ne') && !(real(a) && real(b))) return
     if (!truth) rel = NOT[rel]
-    if (x && b && !none(b)) bound(env, x, rel, b, floats)
-    if (y && a && !none(a)) bound(env, y, FLIP[rel], a, floats)
+    if (x && b && !none(b)) bound(env, x, rel, b, floats, proof)
+    if (y && a && !none(a)) bound(env, y, FLIP[rel], a, floats, proof)
   }
 
   const answer = t => val(t, t)

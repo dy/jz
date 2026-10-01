@@ -2172,6 +2172,15 @@ without borrowing across bits. The interval walk uses that identity to close
 bit-removal recurrences, including a mask saved by the immediately preceding
 assignment when its producer cannot change `x`. Unknown, wide or negative-zero
 inputs and intervening writes keep ordinary Number arithmetic.
+Saved scalar predicates retain those refinements only while a dominating
+assignment and every read's reaching definition remain unchanged. The lookup is
+requested at a guard and cached across interval rounds; conditional writes,
+loop-carried definitions and ambiguous shared occurrences decline it. Equal
+copies, tee results and a selected arm with an unchanged condition can carry
+the bound back to its producer. A faithful signed-word conversion relates the
+word's range to its original Number while preserving the Number's possible -0.
+This bounds a checked worklist's integer fast copy; truthiness alone never
+narrows its fallback. Bounded lookup exhaustion simply stops propagation.
 A comparison refines only reads that later guard operands have not overwritten;
 this applies through eager compound tests and negation. Arms hull at their join,
 and a loop head is the hull of its entry

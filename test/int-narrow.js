@@ -10,6 +10,8 @@ import { belowOpt } from './_matrix.js'
 import parseWat from 'watr/parse'
 import encodeWat from 'watr/compile'
 import { narrowInts } from '../src/optimize/int-narrow.js'
+import { intRanges } from '../src/optimize/int-range.js'
+import { guardDefinitions } from '../src/optimize/guard-defs.js'
 
 const count = (text, op) => (text.match(new RegExp(`\\(${op.replace('.', '\\.')}[\\s)]`, 'g')) || []).length
 const shapes = (src, check) => { if (!belowOpt(2)) check(wat(src)) }
@@ -592,4 +594,137 @@ test('int-narrow: eager compound guards keep refinements on current reads', () =
     const after = new WebAssembly.Instance(new WebAssembly.Module(encodeWat(ir))).exports.f
     for (const n of [6, 6, 0, 6, -1, 1, 2, 3, 4, 5, 7, 8, 14]) is(after(n), before(n), `${guard}, n=${n}`)
   }
+})
+
+test('int-narrow: saved checked indices close the fast counter recurrence', () => {
+  for (const change of ['', 'value', 'word', 'choice']) {
+    const ir = parseWat(`(module
+      (func $f (export "f") (param $seed i32) (param $n i32) (param $other f64) (result f64 i32)
+        (local $v f64) (local $ix f64) (local $word i32) (local $valid i32)
+        (local $choice i32) (local $address i32) (local $present i32) (local $i i32) (local $sum i32)
+        (local.set $v ${change ? '(f64.convert_i32_s (local.get $seed))' : '(f64.const 1)'})
+        (block $done (loop $again
+          (br_if $done (i32.ge_s (local.get $i) (local.get $n)))
+          (br_if $done (f64.eq (local.get $v) (f64.const 0)))
+          (local.set $ix (local.tee $v (f64.sub (local.get $v) (f64.const 1))))
+          (local.set $valid (f64.eq (f64.convert_i32_s (local.tee $word
+            (i32.wrap_i64 (i64.trunc_sat_f64_s (local.get $ix))))) (local.get $ix)))
+          ${change === 'value' ? '(local.set $v (local.get $other))' : ''}
+          ${change === 'word' ? '(local.set $word (i32.const 0))' : ''}
+          (local.set $choice ${change === 'choice' ? '(i32.const 0)' : '(local.get $valid)'})
+          (local.set $address (select (local.get $word) (i32.const ${change === 'choice' ? '0' : '-1'}) (local.get $${change === 'choice' ? 'choice' : 'valid'})))
+          ${change === 'choice' ? '(local.set $choice (i32.const 1))' : ''}
+          (local.set $present (i32.and (local.get $valid) (i32.lt_u (local.get $address) (i32.const 16))))
+          (br_if $done (i32.eqz (local.get $present)))
+          (local.set $sum (i32.add (local.get $sum) (i32.wrap_i64 (i64.trunc_sat_f64_s (local.get $v)))))
+          (local.set $v (f64.add (local.get $v) (f64.const 2)))
+          (local.set $i (i32.add (local.get $i) (i32.const 1))) (br $again)))
+        (local.get $v) (local.get $sum)))`)
+    const before = new WebAssembly.Instance(new WebAssembly.Module(encodeWat(ir))).exports.f
+    const fn = ir[1]
+    narrowInts(fn)
+    if (!change) ok(fn.some(n => n[0] === 'local' && n[1] === '$v' && n[2] === 'i32'), 'the guarded recurrence has complete word storage')
+    else ok(!fn.some(n => n[0] === 'local' && n[1] === '$v' && n[2] === 'i32'), `${change}: stale bounds cannot narrow the counter`)
+    const after = new WebAssembly.Instance(new WebAssembly.Module(encodeWat(ir))).exports.f
+    for (const seed of [0, 1, -1, 16, 2147483647, -2147483648]) for (const n of [0, 1, 2, 7, 7, 0, 30])
+      for (const other of [0, -0, 0.25, 2 ** 32, Infinity, NaN])
+        ok(after(seed, n, other).every((value, i) => Object.is(value, before(seed, n, other)[i])), `${change || 'stable'}, seed=${seed}, n=${n}, other=${other}`)
+  }
+})
+
+test('int-narrow: saved guards do not refine overwritten or conditional values', () => {
+  const patterns = [
+    ['(local.set $saved (f64.eq (local.get $v) (local.get $v))) (local.set $v (local.get $other))', '(local.get $saved)'],
+    ['(local.set $saved (f64.eq (local.get $v) (local.get $v))) (if (local.get $n) (then (local.set $v (local.get $other))))', '(local.get $saved)'],
+    ['(local.set $saved (f64.eq (local.get $v) (local.get $v)))', '(local.tee $saved (i32.const 1))'],
+    ['(local.set $saved (f64.eq (local.get $v) (local.get $v)))', '(i32.and (local.get $saved) (i32.eqz (i32.trunc_sat_f64_s (local.tee $v (local.get $other)))))'],
+    ['(local.set $saved (f64.eq (local.get $v) (local.get $v))) (block $done (loop $again (br_if $done (i32.eqz (local.get $n))) (local.set $v (local.get $other)) (local.set $n (i32.sub (local.get $n) (i32.const 1))) (br $again)))', '(local.get $saved)'],
+  ]
+  for (const [setup, guard] of patterns) {
+    const ir = parseWat(`(module (func $f (export "f") (param $x f64) (param $other f64) (param $n i32) (result f64)
+      (local $v f64) (local $saved i32)
+      (local.set $v (local.get $x)) ${setup}
+      (if (result f64) ${guard}
+        (then (f64.div (f64.const 1) (local.get $v))) (else (f64.const 7)))))`)
+    const before = new WebAssembly.Instance(new WebAssembly.Module(encodeWat(ir))).exports.f
+    narrowInts(ir[1])
+    const after = new WebAssembly.Instance(new WebAssembly.Module(encodeWat(ir))).exports.f
+    for (const x of [0, -0, 1, -1, 2147483648, Infinity, NaN]) for (const other of [0, -0, 0.5, -1, Infinity, NaN])
+      for (const n of [0, 1, 2, 2, 0]) ok(Object.is(after(x, other, n), before(x, other, n)), `${setup}, ${x}, ${other}, ${n}`)
+  }
+})
+
+test('int-narrow: saved predicate lookup tolerates shared IR and bounded exhaustion', () => {
+  for (const shared of [false, true]) {
+    const steps = Array.from({ length: 300 }, (_, i) => `(local.set $p${i} (local.get $${i ? 'p' + (i - 1) : 'saved'}))`).join('\n')
+    const locals = Array.from({ length: 300 }, (_, i) => `(local $p${i} i32)`).join(' ')
+    const ir = parseWat(`(module (func $f (export "f") (param $x f64) (param $other f64) (result f64)
+      (local $v f64) (local $saved i32) ${locals}
+      (local.set $v (local.get $x))
+      (local.set $saved (f64.eq (local.get $v) (local.get $v)))
+      ${steps}
+      (if (local.get $saved) (then (local.set $v (local.get $other))))
+      (if (result f64) (local.get $p299)
+        (then (f64.div (f64.const 1) (local.get $v))) (else (f64.const 7)))))`)
+    if (shared) {
+      const value = ['local.get', '$v']
+      const visit = n => {
+        if (!Array.isArray(n)) return
+        for (let i = 1; i < n.length; i++) {
+          if (n[i]?.[0] === 'local.get' && n[i][1] === '$v') n[i] = value
+          else visit(n[i])
+        }
+      }
+      visit(ir)
+    }
+    const before = new WebAssembly.Instance(new WebAssembly.Module(encodeWat(ir))).exports.f
+    narrowInts(ir[1])
+    const after = new WebAssembly.Instance(new WebAssembly.Module(encodeWat(ir))).exports.f
+    for (const x of [0, -0, 1, NaN, Infinity]) for (const other of [0, -0, 1, -1, NaN, Infinity])
+      ok(Object.is(after(x, other), before(x, other)), `shared=${shared}, x=${x}, other=${other}`)
+  }
+})
+
+test('int-narrow: a shared write has distinct reaching occurrences', () => {
+  for (const sameParent of [false, true]) {
+    const ir = parseWat(`(module (func $f (export "f") (param $n f64) (result i32)
+      (local $arg f64) (local $x f64) (local $copy f64) (local $saved i32)
+      (local.set $arg (f64.const 1))
+      (drop (local.tee $x (local.get $arg)))
+      (local.set $saved (f64.lt (local.get $x) (f64.const 10)))
+      (local.set $arg (local.get $n))
+      (local.set $copy (local.tee $x (local.get $arg)))
+      (if (result i32) (local.get $saved)
+        (then (f64.eq (local.get $x) (f64.const 20))) (else (i32.const 0)))))`)
+    const fn = ir[1], first = fn.find(n => n[0] === 'drop')
+    const at = fn.findIndex(n => n[0] === 'local.set' && n[1] === '$copy')
+    if (sameParent) fn[at] = first
+    else fn[at][2] = first[1]
+    const branch = fn[fn.length - 1]
+    is(guardDefinitions().saved('$saved', [fn, branch], branch[2]), null, 'the saved predicate cannot describe a different execution of the shared writer')
+    const before = new WebAssembly.Instance(new WebAssembly.Module(encodeWat(ir))).exports.f
+    narrowInts(fn)
+    const after = new WebAssembly.Instance(new WebAssembly.Module(encodeWat(ir))).exports.f
+    for (const n of [0, -0, 1, 20, 20, -1, 0.5, Infinity, NaN, 2147483648]) is(after(n), before(n), `shared writer, same parent=${sameParent}, n=${n}`)
+  }
+})
+
+
+test('int-narrow: a saved select condition can be negative or zero', () => {
+  const ir = parseWat(`(module (func $f (export "f") (param $n i32) (param $v i32) (result i32)
+    (local $choice i32) (local $value i32) (local $saved i32)
+    (block (result i32)
+      (local.set $choice (select (i32.const -1) (i32.const 0) (local.get $n)))
+      (local.set $value (select (i32.const 0) (local.get $v) (local.get $choice)))
+      (local.set $saved (i32.lt_s (local.get $value) (i32.const 10)))
+      (if (result i32) (local.get $saved)
+        (then (local.get $v)) (else (i32.const 30))))))`)
+  const fn = ir[1], start = fn.findIndex(n => n[0] === 'block')
+  const read = fn[start].at(-1).find(n => n[0] === 'then')[1]
+  is(intRanges(fn, start).av.get(read).hi, 2147483647, '[-1, 0] does not establish the false arm')
+  const before = new WebAssembly.Instance(new WebAssembly.Module(encodeWat(ir))).exports.f
+  narrowInts(fn)
+  const after = new WebAssembly.Instance(new WebAssembly.Module(encodeWat(ir))).exports.f
+  for (const n of [0, 1, -1]) for (const v of [-2147483648, -1, 0, 9, 10, 20, 2147483647])
+    is(after(n, v), before(n, v), `n=${n}, v=${v}`)
 })
