@@ -789,6 +789,9 @@ so the interval interpreter sees the exact assigned words. Non-counted mutable
 indices enter that lane nonnegative, with positive loop counts; readonly affine
 offsets retain signed entries. The original loop handles other inputs. Every
 subsequent cursor write still needs the complete lifetime proof before narrowing.
+An outer scan can receive the same bounded counter copy when its work contains
+another loop. Inner copies settle first and count against the existing size
+budget; state and presence copies remain confined to leaf loops.
 Counted reductions combine element bounds with the trip count, including every
 intermediate step. Counter proofs reject additional writes in the loop header.
 Loop-local secondary counters can borrow that bounded step count before storage
@@ -2900,7 +2903,9 @@ constant after the vector loop when any lane's BITS differ from that splat
 (`constantFlagStore`, `map.js`; a float compare read a NaN entry as changed).
 The typed-param unswitch
 (`src/optimize/unswitch.js`) looks through the inline array arm to the
-typed read it specializes. The accesses it leaves to the helpers (a loop of
+typed read it specializes, including the BigInt-capable tagged helper: its
+Float64 gate proves those reads produce Numbers. Other element kinds retain the
+original helper. The accesses it leaves to the helpers (a loop of
 several output receivers, a body too large to copy, a stored value of open
 kind) decode their receiver once before the loop (`src/optimize/typed-decode.js`):
 the element count, the data address and the float width in three locals, no
@@ -2952,6 +2957,9 @@ if-expression or select, and only under its NaN-admitting query, since the
 failed side of a comparison may hold NaN. Consecutive byte stores of one
 word's bytes at consecutive addresses (`o[k] = u & 0xff; o[k + 1] = u >>> 8`,
 `writeU32`) are the word's little-endian store16/store32 (`mergeByteStores`);
+word scales canonicalize to shifts before this fusion and SIMD recognition.
+Pure address sums compare independently of their parenthesization, retaining
+operand order and the original store evaluation.
 wav's sample loop stores its truncation directly. The
 integer element store (`module/typedarray.js`) stores the word its value narrows to
 (`i32Narrowed`, ir/numeric.js, the narrowing toInt32 itself starts with, seen before a

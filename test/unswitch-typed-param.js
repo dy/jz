@@ -38,6 +38,23 @@ test('unswitch: Float64Array param self-map gets a vectorized fast path', () => 
   ok(/v128|f64x2/.test(fProcess(POLY_MAP)), 'fast loop lifts to SIMD lanes')
 })
 
+test('unswitch: tagged numeric reads retain repeated receiver and BigInt fallbacks', () => {
+  const src = `export function process(buf,n){for(let i=0;i<n;i++)buf[i]=buf[i]+buf[i]*2}
+    export let runX=x=>process(x,4);
+    export function run(){let a=new Float64Array([1,-0,Infinity,NaN]);process(a,4);process(a,0);
+      let b=new Float64Array([2,3,4,5]);process(b.subarray(1),2);process(a,1);
+      return [a[0],1/a[1],a[2],a[3],b[0],b[1],b[2],b[3]]}`
+  if (!onWasi()) {
+    const want = oracle(src).run()
+    for (const optimize of [speed, { level: 'speed', noSimd: true }, { level: 0 }]) {
+      const api = jz(src, { optimize }).exports
+      for (let i=0;i<2;i++) is(api.run(), want, 'A/A and changed receiver retain exact values')
+    }
+  }
+  consistent('BigInt typed fallback', `export function process(buf,n){for(let i=0;i<n;i++)buf[i]=buf[i]+1n}
+    export let run=()=>{let a=new BigInt64Array([2n,7n]);process(a,2);return a[0]+a[1]}`, 11n)
+})
+
 test('ablation: pass off → the polymorphic param loop does NOT vectorize', () => {
   const off = fProcess(POLY_MAP, { level: 'speed', unswitchTypedParamLoop: false })
   ok(!/\$__utb/.test(off), 'control: no base-hoist with pass OFF')

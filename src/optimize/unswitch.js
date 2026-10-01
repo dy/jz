@@ -71,7 +71,7 @@ export function unswitchTypedParamLoop(fn, f16 = false) {
   }
   const writes = (n, name) => has(n, (x) => (x[0] === 'local.set' || x[0] === 'local.tee') && x[1] === name)
   const reintParam = (n, p) => Array.isArray(n) && n[0] === 'i64.reinterpret_f64' && Array.isArray(n[1]) && n[1][0] === 'local.get' && n[1][1] === p
-  const typedIdx = (n, p) => Array.isArray(n) && n[0] === 'call' && n[1] === '$__typed_idx' && n.length >= 4 && reintParam(n[2], p)
+  const typedIdx = (n, p) => Array.isArray(n) && n[0] === 'call' && (n[1] === '$__typed_idx' || n[1] === '$__typed_idx_tagged') && n.length >= 4 && reintParam(n[2], p)
 
   // A receiver-pointer-kind guard on the SAME param `p` — module/array.js's
   // unknown-receiver, proven-NUMBER-key read fallback:

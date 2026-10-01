@@ -462,7 +462,7 @@ const addrKey = n => {
   if (op === 'i32.add' && n.length === 3) {
     const a = addrKey(n[1]), b = addrKey(n[2])
     if (!a || !b) return null
-    const key = a.key && b.key ? `(+ ${a.key} ${b.key})` : a.key || b.key
+    const key = a.key && b.key ? `${a.key} ${b.key}` : a.key || b.key
     return { key, offset: a.offset + b.offset, reads: [...a.reads, ...b.reads] }
   }
   if ((op === 'i32.shl' || op === 'i32.mul') && n.length === 3 && Array.isArray(n[2]) && n[2][0] === 'i32.const' && typeof n[2][1] === 'number') {
@@ -815,12 +815,23 @@ function walkRewrite(node, doInline, freshI64, freshF64, get, bigint, inlineTrut
     if (cmp) return cmp
   }
 
+  // Canonical word scales expose the byte stride before lane recognition.
+  if (op === 'i32.mul' && node.length === 3) {
+    const a = node[1], b = node[2], c = a?.[0] === 'i32.const' ? a : b
+    const value = c === a ? b : a, n = c?.[0] === 'i32.const' ? Number(c[1]) : 0
+    if (Number.isInteger(n) && n > 0 && n <= 2147483648 && (n & (n - 1)) === 0)
+      return ['i32.shl', value, ['i32.const', 31 - Math.clz32(n)]]
+  }
+  if (op === 'i32.add' && node[2]?.[0] === 'i32.add' && node[2][2]?.[0] === 'i32.shl')
+    return ['i32.add', ['i32.add', node[1], node[2][1]], node[2][2]]
+
   // shl-distribute-over-add: (i32.shl (i32.add x (i32.const K)) (i32.const S))
   // → (i32.add (i32.shl x S) (i32.const K<<S)). Overflow-safe — both forms wrap
   // mod 2^32 identically. Unlocks memarg offset= folding for biquad-style
   // `arr[c+K0..KN]` reads where idx is precomputed but K is a small literal.
   if (op === 'i32.shl' && node.length === 3) {
     const a = node[1], b = node[2]
+    if (b?.[0] === 'i32.const' && Number.isInteger(Number(b[1])) && (Number(b[1]) & 31) === 0) return a
     // shl-shl-merge: (i32.shl (i32.shl x K1) K2) → (i32.shl x (K1+K2))
     // when K1+K2 < 32. Biquad: `sb = s<<2` then `__ab1 = state + (sb<<3)` ⇒
     // `s<<5` directly.

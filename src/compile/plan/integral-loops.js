@@ -232,7 +232,7 @@ const presentNames = (loop, writes, kindOf, outerOk) => {
   return out
 }
 
-/** Version the innermost loops of one body, a function's or a closure's
+/** Version the loops of one body, a function's or a closure's
  *  (`params`, the names it binds; `view`, the summary's scope for it; `func`,
  *  the function whose calls bind them, null for a closure): whether any was
  *  rewritten. A closure inside the body is a body of its own. */
@@ -254,10 +254,10 @@ const versionBody = (body, params, view, func, programFacts) => {
     if (TRY.has(n[0]) && Array.isArray(n[1])) walkAst(n[1], { enter: (m) => { if (m[0] === '=>') return false; if (LOOPS.has(m[0])) guarded.add(m) } })
   } })
   const loops = []
-  walkAst(body, { enter: (node, parent, idx) => {
-    if (node[0] === '=>') return false
-    // an innermost loop: a nest copies its inner loops alone, each under its own test
-    if (LOOPS.has(node[0]) && parent && !some(node, n => n !== node && LOOPS.has(n[0]))) { if (!guarded.has(node)) loops.push([node, parent, idx]); return false }
+  walkAst(body, { enter: node => node[0] === '=>' ? false : undefined, exit: (node, parent, idx) => {
+    // Inner copies settle first; the existing size budget includes them when
+    // an outer counter needs its own guarded domain.
+    if (LOOPS.has(node[0]) && parent && !guarded.has(node)) loops.push([node, parent, idx])
   } })
   // a parameter only the program's own calls bind, each to an integer of no name (`off | 0`)
   const sites = func ? programFacts?.callSites.filter(cs => cs.callee === func.name) ?? [] : []
@@ -337,6 +337,9 @@ const versionBody = (body, params, view, func, programFacts) => {
         }
       }
     }
+    // State/presence copies belong to leaf loops. A surrounding scan may
+    // still need a bounded counter even when its work contains another loop.
+    if (!counterBound && some(loop, n => n !== loop && LOOPS.has(n[0]))) continue
     const indexed = [...indexNames(loop, loopWrites, intArray)].filter(n => outerOk(n) && !already(n) && mayBeNumber(n))
     // the names a counter is tested against (`i < n`, n read from a parameter): the
     // counter is an int32 only where they are

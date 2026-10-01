@@ -6,7 +6,7 @@ import { is, ok } from 'tst/assert.js'
 import { compile as compileWat } from 'watr'
 import { tryPrefilter } from '../src/optimize/vectorize/prefilter.js'
 import { levels } from './_matrix.js'
-import { agree, wat } from './util.js'
+import { agree, oracle, run, wat } from './util.js'
 
 const scans = src => /\.bitmask/.test(wat(src, { optimize: 3 }))
 const check = (src, args, name) => {
@@ -62,6 +62,40 @@ test('prefilter: skipped spans retain the saved false predicate', () => {
       for (const i of marks) bytes[i] = 1
     }
     for (const n of [0, 1, 15, 16, 17, 32, 33]) is(vector.f(n), scalar.f(n), `${marks}: n=${n}`)
+  }
+})
+
+test('prefilter: outer counter copies keep fractional and wide bounds exact', () => {
+  const src = `export function f(n) {
+    const a=new Uint8Array([1,2,3,4]);let sum=0,count=0;
+    for(let i=0;i<n;i++) {
+      for(let j=0;j<2;j++) sum+=a[i]+j;
+      count++;if(i===2)break;
+    }
+    return [sum,count];
+  }`
+  for (const n of [0, -0, -1, 0.5, 1, 2.5, 3, NaN, Infinity, -Infinity, 2147483648, 4294967296, '2.5'])
+    check(src, [n], `outer bound ${n}`)
+})
+
+test('prefilter: outer copies preserve nested transfers and captured counters', () => {
+  for (const capture of [false, true]) {
+    const src = `export function f(n,mode){let sum=0;${capture ? 'let seen=()=>-1;' : ''}
+      for(let i=0;i<n;i++) {
+        ${capture ? 'seen=()=>i;' : ''}
+        for(let j=0;j<3;j++){if(j===1)continue;sum+=i+j;}
+        if(mode===1&&i===1)break;
+        if(mode===2&&i===1)return [sum,i];
+        if(i===3)break;
+      }
+      return [sum,${capture ? 'seen()' : '-1'}];
+    }`
+    const js=oracle(src).f
+    for (const optimize of levels(0,2,3,'size')) {
+      const f=run(src,{optimize}).f
+      for(const n of [0,0.5,2,4,4294967296]) for(const mode of [0,1,2])
+        is(f(n,mode),js(n,mode), `capture=${capture}, n=${n}, mode=${mode}, O${optimize}`)
+    }
   }
 })
 
