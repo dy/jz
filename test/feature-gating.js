@@ -23,17 +23,18 @@ const hasCall = (w, name) => new RegExp(`\\(call \\$${name}\\b`).test(w)
 
 test('features.external OFF: pure scalar — no __ext_* imports', () => {
   const w = wat(`export let f = (x) => x + 1`)
-  is(hasImport(w, '__ext_prop'), false)
+  is(hasImport(w, '__ext_get'), false)
   is(hasImport(w, '__ext_has'), false)
   is(hasImport(w, '__ext_set'), false)
   is(hasImport(w, '__ext_call'), false)
+  is(hasImport(w, '__ext_prop'), false)
   is(hasImport(w, '__ext_method'), false)
   is(hasImport(w, '__ext_invoke'), false)
 })
 
 test('features.external OFF: schema object — no __ext_* imports', () => {
   const w = wat(`export let f = () => { let p = {x:1, y:2}; return p.x + p.y }`)
-  is(hasImport(w, '__ext_prop'), false)
+  is(hasImport(w, '__ext_get'), false)
   is(hasImport(w, '__ext_set'), false)
 })
 
@@ -47,7 +48,7 @@ test('features.external ON: erased indexable .length may be an external array-li
     for (let i = 0; i < a.length; i++) t += a[i]
     return t
   }`)
-  is(hasImport(typed, '__ext_prop'), false)
+  is(hasImport(typed, '__ext_get'), false)
   // Forwarded an unknown value from another export, the receiver stays
   // erased and may be an external array-like: the host read is present.
   const w = wat(`export let s = (a) => {
@@ -56,34 +57,34 @@ test('features.external ON: erased indexable .length may be an external array-li
     return t
   }
   export let g = (x) => s(x)`)
-  is(hasImport(w, '__ext_prop'), true)
+  is(hasImport(w, '__ext_get'), true)
   is(hasImport(w, '__ext_has'), false)
 })
 
-test('features.external ON: untyped .prop read — __ext_prop import present', () => {
+test('features.external ON: untyped .prop read — __ext_get import present', () => {
   if (onWasi()) return  // wasi: external object
   const w = wat(`export let f = (o) => o.x`)
-  is(hasImport(w, '__ext_prop'), true)
+  is(hasImport(w, '__ext_get'), true)
 })
 
 test('features.external: computed reads use receiver facts, not previous demand', () => {
   for (const expr of ['o[k]', 'o?.[k]']) {
     const w = wat(`export function f(o,k){return ${expr}}`)
-    is(hasImport(w, '__ext_prop'), !onWasi(), expr)
+    is(hasImport(w, '__ext_get'), !onWasi(), expr)
   }
   for (const init of ['{a:7}', 'new Float64Array([3,5])']) {
     const w = wat(`export function f(k){const o=${init};return o[k]}`)
-    is(hasImport(w, '__ext_prop'), false, init)
+    is(hasImport(w, '__ext_get'), false, init)
   }
   const numeric = wat(`export function f(a){let s=0;for(let i=0;i<a.length;i++)s+=a[i];return s}`)
-  is(hasImport(numeric, '__ext_prop'), false, 'numeric array boundary stays internal')
+  is(hasImport(numeric, '__ext_get'), false, 'numeric array boundary stays internal')
   const closed = wat(`export function f(){return /abc/.exec('xabcy')[0]}`)
-  is(hasImport(closed, '__ext_prop'), false, 'closed program has no host ingress')
+  is(hasImport(closed, '__ext_get'), false, 'closed program has no host ingress')
   const again = wat(`export function f(o,k){return o[k]}`)
-  is(hasImport(again, '__ext_prop'), !onWasi(), 'ingress facts reset for the next compile')
+  is(hasImport(again, '__ext_get'), !onWasi(), 'ingress facts reset for the next compile')
 })
 
-test('features.external ON: untyped ?.prop read — __ext_prop import present', () => {
+test('features.external ON: untyped ?.prop read — __ext_get import present', () => {
   if (onWasi()) return  // wasi: external object
   // `?.` on an unknown receiver delegates to the SAME emitPropAccess arm the
   // plain `.` read uses (module/core.js) — same demand, same import. `o` itself
@@ -93,10 +94,10 @@ test('features.external ON: untyped ?.prop read — __ext_prop import present', 
   // regression). A prior version exempted `?.` from the demand on the false
   // premise that the nullish short-circuit makes the EXTERNAL arm unreachable
   // unless something else set it first — it doesn't; the short-circuit rules
-  // out null/undefined only, and dropped __ext_prop for every `opts?.x ?? dflt`
+  // out null/undefined only, and dropped __ext_get for every `opts?.x ?? dflt`
   // whose only property access was itself optional-chained.
   const w = wat(`export let f = (o) => o?.x`)
-  is(hasImport(w, '__ext_prop'), true)
+  is(hasImport(w, '__ext_get'), true)
 })
 
 test('features.external ON: untyped .prop write — __ext_set import present', () => {
@@ -112,24 +113,24 @@ test('features.external ON: untyped method call captures and invokes a host memb
   is(hasImport(w, '__ext_invoke'), true)
 })
 
-test('features.external ON: HOST_GLOBALS reference — __ext_prop import present', () => {
+test('features.external ON: HOST_GLOBALS reference — __ext_get import present', () => {
   if (onWasi()) return  // wasi: host import
   const w = wat(`export let f = () => globalThis.foo`)
-  is(hasImport(w, '__ext_prop'), true)
+  is(hasImport(w, '__ext_get'), true)
 })
 
 // === Stdlib factory collapse (EXTERNAL off → shorter bodies) ===
 
-test('features.external OFF: __dyn_get_any factory collapses (no __ext_prop call in body)', () => {
+test('features.external OFF: __dyn_get_any factory collapses (no __ext_get call in body)', () => {
   // Need __dyn_get_any in output but without EXTERNAL arm — force via `?.prop` on dyn-type var
   const w = wat(`export let f = () => {
     let a = [1,2,3]
     return a.x
   }`)
   if (hasDef(w, '__dyn_get_any')) {
-    // body must not call __ext_prop when external is off
+    // body must not call __ext_get when external is off
     const body = w.match(/\(func \$__dyn_get_any[\s\S]*?\)\s*(?=\(func|\(export|\(start|$)/)[0]
-    is(/__ext_prop/.test(body), false)
+    is(/__ext_get/.test(body), false)
   }
 })
 
@@ -139,7 +140,7 @@ test('features.external ON: __dyn_get_any_t factory has EXTERNAL arm', () => {
   const w = wat(`export let f = (o) => o.x`)
   ok(hasDef(w, '__dyn_get_any_t_h'))
   const body = w.match(/\(func \$__dyn_get_any_t_h[\s\S]*?\)\s*(?=\(func|\(export|\(start|$)/)[0]
-  is(/__ext_prop/.test(body), true)
+  is(/__ext_get/.test(body), true)
 })
 
 // === Organically usage-gated substrates (no ctx.linkDemand flag — inc(__*) drives them) ===

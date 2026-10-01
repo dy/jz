@@ -71,7 +71,9 @@ test('interop: host throws enter source catch without changing their values', ()
 test('interop: legacy host calls keep their object-key-arguments ABI', () => {
   const bytes=wasm(`(module
     (import "env" "__ext_call" (func $call (param i64 i64 i64) (result i64)))
+    (import "env" "__ext_prop" (func $read (param i64 i64) (result i64)))
     (memory (export "memory") 1)
+    (func (export "read") (param i64 i64) (result i64) (call $read (local.get 0) (local.get 1)))
     (func (export "invoke") (param i64 i64 i64) (result i64)
       (call $call (local.get 0) (local.get 1) (local.get 2))))`)
   const {instance,memory}=interop.instantiate(bytes)
@@ -80,6 +82,9 @@ test('interop: legacy host calls keep their object-key-arguments ABI', () => {
   const receiver=memory.External(object),args=memory.Array([3])
   is(memory.read(instance.exports.invoke(receiver,memory.String('run'),args)),7,'legacy method receiver')
   is(gets,1,'legacy method getter runs once')
+  const bound=instance.exports.read(receiver,memory.String('run'))
+  is(memory.read(instance.exports.invoke(bound,interop.UNDEF_NAN,args)),7,'legacy property method remains bound')
+  is(gets,2,'legacy property getter runs once')
   const plain=memory.External(function(x){return this===undefined?x+2:-1})
   is(memory.read(instance.exports.invoke(plain,interop.UNDEF_NAN,args)),5,'legacy direct function')
   throws(()=>instance.exports.invoke(receiver,memory.String('missing'),args),TypeError,'missing legacy method throws')
@@ -204,6 +209,59 @@ test('interop: host exception transport survives callbacks and module initializa
     const initBytes=compile(`import {fail} from 'host';try{fail()}finally{};export function f(){return 7}`,
       {optimize,imports:{host:{fail:{params:0}}}})
     throws(()=>interop.instantiate(initBytes,{imports:{host:{fail(){throw escaping}}}}),e=>e===escaping,`uncaught init O${optimize}`)
+  }
+})
+
+test('interop: host property reads preserve unbound values and method receivers', () => {
+  if(onWasi()||onKernel())return
+  const src=`import {get,arg} from 'host';
+    export function read(k){return get()[k]}
+    export function named(){return get().run}
+    export function same(){const o=get();return o.run===o.run}
+    export function held(){const fn=get().run;return fn(arg())}
+    export function borrowed(k){const o=get(),fn=o[k];return fn.call(o,arg())}
+    export function method(){return get().run(arg())}
+    export function computed(k){return get()[k](arg())}
+    export function optional(k){return get()[k]?.(arg())}
+    export function caught(k){try{return get()[k]}catch(e){return e}}
+    export function nested(){return get().child.value}
+    export function length(){return get().items.length}
+    export function sum(){const a=get().items;return a[0]+a[1]}
+    export function pushed(){return get().items.push(5)}`
+  for(const optimize of levels(0,1,2,3,'size')) {
+    let trace='',failure
+    const fn=function(n){trace+='f';return this===undefined?n:this===object?n+10:-1}
+    for(const key of ['name','length','bind','apply'])Object.defineProperty(fn,key,{get(){throw new Error(`unexpected ${key}`)}})
+    const child={value:9},items=[2,4],symbol=Symbol('value')
+    const object=new class{
+      get run(){trace+='r';return fn}
+      get bad(){trace+='b';throw failure}
+      child=child;items=items;symbol=symbol
+    }
+    const options={optimize,imports:{host:{get:{params:0},arg:{params:0}}}}
+    const {exports:g,memory}=interop.instantiate(compile(src,options),{imports:{host:{get(){trace+='g';return object},arg(){trace+='a';return 3}}}})
+    for(let i=0;i<2;i++) {
+      trace='';ok(g.named()===fn,'named function identity');is(trace,'gr','named getter once')
+      trace='';ok(g.read('run')===fn,'computed function identity');is(trace,'gr','computed getter once')
+      trace='';is(g.same(),true,'repeated property reads retain identity');is(trace,'grr','both reads occur')
+      trace='';is(g.held(),3,'extracted call has undefined receiver');is(trace,'graf','extracted call order')
+      trace='';is(g.borrowed('run'),13,'an extracted function accepts an explicit receiver');is(trace,'graf','explicit receiver call order')
+      for(const name of ['method','computed','optional']) {
+        trace='';is(g[name]('run'),13,`${name} retains receiver`);is(trace,'graf',`${name} order`)
+      }
+      ok(g.read('child')===child,'nested object identity');is(g.read('items'),items,'array retains native marshalling')
+      ok(g.read('symbol')===symbol,'Symbol identity')
+      is(g.nested(),9,'nested property access')
+      is(g.length(),2,'nested array length');is(g.sum(),6,'nested array indexed reads');is(g.pushed(),3,'native array method on marshalled value')
+    }
+    failure=new RangeError('get');trace=''
+    throws(()=>g.read('bad'),e=>e===failure,'uncaught property error identity');is(trace,'gb','throwing getter once')
+    ok(g.caught('bad')===failure,'caught property error identity')
+    memory.reset();ok(g.named()===fn,'identity after reset')
+    const bare=interop.instantiate(compile(`import {get,arg} from 'host';export function f(k){const o=get(),fn=o[k];return [fn===o[k],fn(arg()),o[k](arg())]}`,options),
+      {imports:{host:{get(){trace+='g';return object},arg(){trace+='a';return 3}}}})
+    trace='';is(bare.exports.f('run'),[true,3,13],'same calls without any source handler');is(trace,'grrafraf','bare calls preserve evaluation order')
+    ok(!bare.instance.exports.__jz_throw_host,'unbound reads do not require exception ingress')
   }
 })
 

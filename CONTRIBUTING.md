@@ -1429,6 +1429,11 @@ same-instance exceptions retain the existing exported tag. Imported slots are
 wrapped once even if multiple import records name them. Host method reads capture
 the callable before arguments, then `__ext_invoke` receives that callable and its
 receiver; `__ext_call` retains the object/key/arguments ABI of older modules.
+Generic host reads use `__ext_get`: functions retain identity and stay unbound
+until a member call supplies its receiver, while containers keep their native
+marshalling contract. Raw copy and call-reference reads use `__ext_method` to
+avoid inspecting the returned value. Both share one property-read routine.
+Legacy `__ext_prop` remains supported for previously compiled modules.
 
 Coercion distinguishes absence from an own non-callable value through the
 existing property-presence probe. Only absence selects an inherited method. Calls evaluate their receiver, property and

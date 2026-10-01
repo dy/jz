@@ -283,8 +283,8 @@ export default (ctx) => {
     __map_set: () => [...(ctx.linkDemand.external ? ['__map_hash', '__same_value_zero', '__ptr_offset', '__ptr_offset_fwd', '__alloc_hdr_n', '__zomb_scan', '__coll_rehash', '__ext_set'] : ['__map_hash', '__same_value_zero', '__ptr_offset', '__ptr_offset_fwd', '__alloc_hdr_n', '__zomb_scan', '__coll_rehash']), ...(needsDurableFwdLog() ? ['__durable_fwd_log'] : []), ...slotLogDeps()],
     // Region-arena rebuild fix — MAP-shaped sibling of __set_add_h.
     __map_set_h: () => ['__same_value_zero', '__zomb_scan', ...slotLogDeps()],
-    __map_get: () => ctx.linkDemand.external ? ['__ext_prop', '__map_hash', '__same_value_zero', '__ptr_offset', '__ptr_offset_fwd'] : ['__map_hash', '__same_value_zero', '__ptr_offset', '__ptr_offset_fwd'],
-    __map_get_h: () => ctx.linkDemand.external ? ['__ext_prop', '__same_value_zero', '__ptr_offset', '__ptr_offset_fwd'] : ['__same_value_zero', '__ptr_offset', '__ptr_offset_fwd'],
+    __map_get: () => ctx.linkDemand.external ? ['__ext_get', '__map_hash', '__same_value_zero', '__ptr_offset', '__ptr_offset_fwd'] : ['__map_hash', '__same_value_zero', '__ptr_offset', '__ptr_offset_fwd'],
+    __map_get_h: () => ctx.linkDemand.external ? ['__ext_get', '__same_value_zero', '__ptr_offset', '__ptr_offset_fwd'] : ['__same_value_zero', '__ptr_offset', '__ptr_offset_fwd'],
     __map_has: () => ctx.linkDemand.external ? ['__map_hash', '__same_value_zero', '__ptr_offset', '__ptr_offset_fwd', '__ext_has'] : ['__map_hash', '__same_value_zero', '__ptr_offset', '__ptr_offset_fwd'],
     // Prehashed has-probes: caller folds the hash, so no __map_hash dependency.
     __map_has_h: () => ctx.linkDemand.external ? ['__same_value_zero', '__ptr_offset', '__ptr_offset_fwd', '__ext_has'] : ['__same_value_zero', '__ptr_offset', '__ptr_offset_fwd'],
@@ -303,7 +303,7 @@ export default (ctx) => {
       ...slotLogDeps(),
     ],
     __hash_get: () => ctx.linkDemand.external
-      ? ['__str_hash', '__key_eq', '__ptr_type', '__ext_prop']
+      ? ['__str_hash', '__key_eq', '__ptr_type', '__ext_get']
       : ['__str_hash', '__key_eq', '__ptr_type'],
     __hash_has: () => ctx.linkDemand.external
       ? ['__str_hash', '__key_eq', '__ptr_type', '__ext_has']
@@ -338,10 +338,10 @@ export default (ctx) => {
     __dyn_get_any: ['__dyn_get_any_t', '__ptr_type'],
     __dyn_get_any_h: ['__dyn_get_any_t_h', '__ptr_type'],
     __dyn_get_any_t: () => ctx.linkDemand.external
-      ? ['__arr_value', '__dyn_get_t', '__hash_get_local', '__ext_prop', '__is_str_key', '__to_key', '__ptr_offset', '__ptr_offset_fwd']
+      ? ['__arr_value', '__dyn_get_t', '__hash_get_local', '__ext_get', '__is_str_key', '__to_key', '__ptr_offset', '__ptr_offset_fwd']
       : ['__arr_value', '__dyn_get_t', '__hash_get_local', '__is_str_key', '__to_key', '__ptr_offset', '__ptr_offset_fwd'],
     __dyn_get_any_t_h: () => [
-      '__dyn_get_t_h', '__hash_get_local_h', ...(ctx.linkDemand.external ? ['__ext_prop'] : []),
+      '__dyn_get_t_h', '__hash_get_local_h', ...(ctx.linkDemand.external ? ['__ext_get'] : []),
     ],
     __dyn_get_or: ['__dyn_get'],
     __dyn_set: () => [...(ctx.schema.regexSids.size ? ['__regex_prop', '__throw_regex_readonly'] : []), '__dyn_set_own', '__is_nullish', '__key_eq', '__is_str_key', '__to_key', '__arr_set_idx_ptr', '__arr_set_length', '__str_arr_idx', ...(ctx.linkDemand.typedProperties ? ['__typed_key_idx', '__typed_set_idx_tagged'] : [])],
@@ -420,6 +420,7 @@ export default (ctx) => {
   // same hazard as env.print / env.setTimeout (see module/console.js header).
   // i32 returns (has/set) and arg shapes stay; only boxed-pointer carriers move.
   ctx.core.stdlib['__ext_prop'] = '(import "env" "__ext_prop" (func $__ext_prop (param i64 i64) (result i64)))'
+  ctx.core.stdlib['__ext_get'] = '(import "env" "__ext_get" (func $__ext_get (param i64 i64) (result i64)))'
   ctx.core.stdlib['__ext_is_error'] = '(import "env" "__ext_is_error" (func $__ext_is_error (param i64 i32) (result i32)))'
   ctx.core.stdlib['__ext_has_iterator'] = '(import "env" "__ext_has_iterator" (func $__ext_has_iterator (param i64) (result i32)))'
   ctx.core.stdlib['__ext_delete'] = '(import "env" "__ext_delete" (func $__ext_delete (param i64 i64) (result i32)))'
@@ -2162,7 +2163,7 @@ export default (ctx) => {
       (then ${normalize}
         (local.set $val (call $__dyn_get_t_h (local.get $obj) (local.get $key) (local.get $t) ${h}))
         (if (i64.ne (local.get $val) (i64.const ${UNDEF_NAN})) (then (return (local.get $val))))
-        (return (call $__ext_prop (local.get $obj) (local.get $key)))))` : ''}
+        (return (call $__ext_get (local.get $obj) (local.get $key)))))` : ''}
     (call $${prehashed ? '__dyn_get_t_h' : '__dyn_get_t'}
       (local.get $obj) (local.get $key) (local.get $t) ${prehashed ? h : ''}))`
   }
@@ -2175,7 +2176,7 @@ export default (ctx) => {
 
   ctx.core.stdlib['__dyn_get_expr_t_h'] = () => dynGetExpr('__dyn_get_expr_t_h', true)
 
-  // Like __dyn_get_expr but also resolves EXTERNAL host objects via __ext_prop.
+  // Like __dyn_get_expr but also reads EXTERNAL host properties without binding.
   // Used at call sites where receiver type is statically unknown.
   // When linkDemand.external is off, collapses to __dyn_get_expr shape (no EXTERNAL probe).
   ctx.core.stdlib['__dyn_get_any'] = () => {

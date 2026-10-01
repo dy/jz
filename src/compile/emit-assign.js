@@ -507,7 +507,7 @@ function emitElementStore(arr, idx, val, node) {
   if (isLiteralStr(idx) && (idx[1] === 'length' || ctx.summary?.at(ctx.func.current).objectSidOfExpr(arr) != null))
     return emitPropertyAssign(arr, idx[1], val)
   // 0. `obj.prop[idx] = val` where `obj`'s type is fully unknown (so `obj`
-  // could be a host EXTERNAL object at runtime) — `__ext_prop` (interop.js)
+  // could be a host EXTERNAL object at runtime) — `__ext_get` (interop.js)
   // always re-marshals a FRESH, disconnected copy of a container-valued
   // property (`wrapVal` deep-copies an array into fresh wasm memory, no
   // identity preserved with the host), so an index-write through THAT read —

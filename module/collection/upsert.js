@@ -332,7 +332,7 @@ function genUpsert(name, entrySize, hashFn, eqExpr, expectedType, hasVal, hasExt
 /** Generate lookup probe function.
  *  wantValue=true: return slot value, or `missing` (default: undefined).
  *  wantValue=false: return i32 0/1 existence flag.
- *  hasExt: emit EXTERNAL fallthrough (delegate to __ext_prop/__ext_has).
+ *  hasExt: emit EXTERNAL fallthrough (delegate to __ext_get/__ext_has).
  *  hashFn=null: accept the hash as a parameter instead of computing it. */
 function genLookup(name, entrySize, hashFn, eqExpr, expectedType, wantValue = true, hasExt = false, missing = UNDEF_NAN) {
   const slot = wantValue === 'slot'
@@ -351,7 +351,7 @@ function genLookup(name, entrySize, hashFn, eqExpr, expectedType, wantValue = tr
   const typeGuard = hasExt
     ? `(if (i32.ne ${tExpr} (i32.const ${expectedType})) (then (if (i32.eq ${tExpr} (i32.const ${PTR.EXTERNAL}))
         (then (return ${wantValue
-          ? '(call $__ext_prop (local.get $coll) (local.get $key))'
+          ? '(call $__ext_get (local.get $coll) (local.get $key))'
           : '(call $__ext_has (local.get $coll) (local.get $key))'}))
         (else ${onEmpty}))))`
     : `(if (i32.ne ${tExpr} (i32.const ${expectedType})) (then ${onEmpty}))`

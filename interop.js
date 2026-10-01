@@ -1801,10 +1801,11 @@ const prepareInterop = (opts) => {
     if (obj == null) throw new Error(`'${String(prop)}' — jz dispatched this ${what} to the host, but the receiver is not a host object (an unsupported builtin method, or a receiver type jz couldn't resolve)`)
     return obj
   }
-  opts._interp.__ext_prop = (objBig, propBig) => {
+  const readProperty = (objBig, propBig, legacy = false, raw = false) => {
     const prop = state.mem.read(propBig)
     const obj = extRecv(objBig, prop, 'property read')
     const value = obj[prop]
+    if (raw || !legacy && typeof value === 'function') return bits(hostValue(state, value))
     // An explicitly-external BigInt64Array/BigUint64Array still carries exact
     // runtime BigInt evidence (ordinary host values use the typed-memory codec).
     // Box it instead of routing a plain bigint through evidence-free wrapVal.
@@ -1812,9 +1813,13 @@ const prepareInterop = (opts) => {
     const bigTyped = typeof value === 'bigint' &&
       (obj instanceof BigInt64Array || obj instanceof BigUint64Array)
     const wrapped = bigTyped ? state.mem.BigInt(value)
-      : state.mem.wrapVal(typeof value === 'function' ? value.bind(obj) : value)
+      : state.mem.wrapVal(legacy && typeof value === 'function' ? value.bind(obj) : value)
     return bits(wrapped)
   }
+  // New reads preserve the native container codec but never bind functions.
+  // The older import keeps its bound-method behavior for existing binaries.
+  opts._interp.__ext_prop = (objBig, propBig) => readProperty(objBig, propBig, true)
+  opts._interp.__ext_get = (objBig, propBig) => readProperty(objBig, propBig)
   opts._interp.__ext_has_iterator = objBig => {
     const obj = extRecv(objBig, Symbol.iterator, 'iterator-method test')
     const method = obj[Symbol.iterator]
@@ -1867,12 +1872,9 @@ const prepareInterop = (opts) => {
     extRecv(objBig, prop, 'property write')[prop] = v
     return 1
   }
-  // Get the callable before source arguments run; callability is checked after
-  // them. Do not bind here: Function.bind observes the function's name/length.
-  opts._interp.__ext_method = (objBig, propBig) => {
-    const prop = state.mem.read(propBig), obj = extRecv(objBig, prop, 'method call')
-    return bits(hostValue(state, obj[prop]))
-  }
+  // Raw property Get, shared by reads, copies and method references. Do not
+  // bind functions: that changes identity/this and observes name/length.
+  opts._interp.__ext_method = (objBig, propBig) => readProperty(objBig, propBig, false, true)
   const invoke = (fn, obj, args) => {
     if (typeof fn !== 'function') throw new TypeError('Host value is not callable')
     const value = Reflect.apply(fn, obj, args)

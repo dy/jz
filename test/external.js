@@ -93,7 +93,7 @@ test('Nested external dispatch follows imported results and remains ingress-gate
     'an unknown helper chain does not commit its nested result to the internal dispatcher')
 
   const nativeWat = compile(`export let f = () => ({ a: { b: 42 } }).a.b`, { wat: true, optimize: 0 })
-  ok(!nativeWat.includes('$__ext_prop'),
+  ok(!nativeWat.includes('$__ext_get') && !nativeWat.includes('$__ext_prop'),
     'a program with no host ingress does not link external property dispatch')
 })
 
