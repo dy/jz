@@ -294,8 +294,10 @@ b.exports.read(a.exports.make()) // 30
 ```
 
 `memory: { shared: true }` compiles for threads, with `Atomics` lowering to
-wasm atomics. Shared typed arrays and scalars cross; strings and objects stay
-thread-local.
+wasm atomics. Shared typed arrays and numeric scalars cross; strings, objects and
+Symbols stay local to their instance. Symbol values retain identity across ordinary
+host calls, and `Symbol.for` uses the host registry. Fresh compiled Symbols cross
+without a description.
 
 </details>
 

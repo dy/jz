@@ -15,6 +15,7 @@ import * as interop from 'jz/interop'
 import { onWasi, onKernel, levels, belowOpt } from './_matrix.js'
 import { HEAP } from '../layout.js'
 import { oracle } from './util.js'
+import { compile as wasm } from 'watr'
 
 // ── subpath surface ─────────────────────────────────────────────────────────
 
@@ -666,4 +667,116 @@ test('interop: the NaN-box codec keeps every bit', () => {
   for (const n of [0, -0, 1.5, -2.25, 1e308, 5e-324, Infinity, -Infinity, Math.PI]) ok(Object.is(i64ToF64(f64ToI64(n)), n), `${n} round trips`)
   is(f64ToI64(1), 0x3ff0000000000000n)
   is([offset(-5n), type(-5n), aux(-5n)], [2 ** 32 - 5, 15, 0x7fff], 'a negative BigInt reads as its two\'s complement bits')
+})
+
+test('interop: Symbols retain identity through arguments, results, containers and resets', () => {
+  if(onKernel())return // Requires the candidate host ABI metadata and runtime counter.
+  const key='jz:registry:\uD800',other='jz:registry:other'
+  const source=`const shared=Symbol.for(${JSON.stringify(key)}),other=Symbol.for(${JSON.stringify(other)})
+    let held=Symbol('initial')
+    export function fresh(){return Symbol('fresh')}
+    export function registry(){return [shared,other]}
+    export function exchange(v){const prior=held;held=v;return prior}
+    export function same(a,b){return a===b}
+    export function nested(v){return {value:v,array:[v,v],map:new Map([[v,v]]),set:new Set([v,v])}}
+    export function property(v){const out={};out[v]=7;return out}
+    export function fail(v){throw v}`
+  for(const optimize of levels(0,1,2,3,'size')){
+    const bytes=compile(source,{optimize}),a=interop.instantiate(bytes),b=interop.instantiate(bytes)
+    const f=a.exports,first=f.fresh(),second=f.fresh(),foreign=b.exports.fresh()
+    is(typeof first,'symbol',`O${optimize} decoded Symbol`)
+    ok(first!==second && first!==foreign,'factories and independent instances retain distinct identities')
+    is(f.registry(),[Symbol.for(key),Symbol.for(other)],'registry keys retain exact strings, including lone surrogates')
+    is(b.exports.registry(),f.registry(),'the host registry is shared across instances')
+    const prior=f.exchange(first)
+    is(typeof prior,'symbol','module initializer Symbol decodes')
+    const host=Symbol('host'),otherHost=Symbol('host'),retained=[]
+    // Each observation uses identity, not descriptions or stringification.
+    let expected=first
+    for(const value of [host,host,otherHost,Symbol.for(key),foreign,first,host]){
+      is(f.exchange(value),expected,'the previous identity survives the next call')
+      expected=value
+      const out=f.nested(value)
+      is(out.value,value,'object value')
+      is(out.array,[value,value],'array values')
+      is([...out.map],[[value,value]],'Map key and value')
+      is([...out.set],[value],'Set identity')
+      const keyed=f.property(value)
+      is(Reflect.ownKeys(keyed),[value],'returned property keys decode as the same Symbol')
+      is(keyed[value],7)
+      ok(!f.same(value,f.fresh()),'host and Wasm allocation share one counter')
+      retained.push([out,value])
+    }
+    let error
+    try{f.fail(host)}catch(e){error=e}
+    is(error?.thrown,host,'thrown Symbol retains the existing thrown-value transport')
+    is(f.exchange(first),host,'error recovery leaves the instance reusable')
+    a.memory.reset()
+    is(f.exchange(host),prior,'heap reset restores the original module Symbol')
+    ok(![first,second,foreign,host,otherHost].includes(f.fresh()),'heap reset never reissues a held identity')
+    for(const [out,value] of retained){is(out.value,value);is(out.array[0],value);is([...out.map.keys()][0],value)}
+  }
+})
+
+test('interop: Symbol property keys marshal through explicit dictionaries and host objects', () => {
+  if(onKernel())return
+  const mem=interop.memory(),a=Symbol('same'),b=Symbol('same'),registry=Symbol.for('jz:key')
+  for(const value of [{},{[a]:7,[b]:9,[registry]:11,a:13},{[b]:undefined},{}]){
+    const out=mem.read(mem.Hash(value))
+    is(Reflect.ownKeys(out),Reflect.ownKeys(value),'own string and Symbol keys retain order')
+    for(const key of Reflect.ownKeys(value))is(out[key],value[key],'key identity and value survive')
+  }
+  const effects={get first(){delete this[b];return 1},[a]:undefined,[b]:9}
+  Object.defineProperty(effects,registry,{value:11,enumerable:false})
+  const changed=mem.read(mem.Hash(effects))
+  is(Reflect.ownKeys(changed),['first',a],'earlier getters affect later Symbol presence; hidden keys stay hidden')
+  is(changed[a],undefined,'present undefined retains its Symbol key')
+  is(mem.read(mem.Hash('ab')),{'0':'a','1':'b'},'primitive string boxing is preserved')
+  throws(()=>mem.Hash(null),TypeError)
+  if(onWasi())return // External object imports belong to the JS host.
+  const src=`import {get} from 'host';export function f(key){const o=get();return [o[key],key in o,delete o[key],key in o]}
+    export function value(){return get().token}`
+  for(const optimize of levels(0,1,2,3,'size')){
+    const object={},bytes=compile(src,{optimize,imports:{host:{get:{params:0}}}})
+    const {exports}=interop.instantiate(bytes,{imports:{host:{get:()=>object}}})
+    for(const key of [a,a,b,registry,a]){
+      object[key]=17;object.token=key
+      is(exports.value(),key,'a host property Symbol enters through the same codec')
+      is(exports.f(key),[17,true,true,false],`O${optimize} external Symbol key`)
+      is(Object.hasOwn(object,key),false,'delete affected the exact host key')
+    }
+  }
+})
+
+
+test('interop: memoryless Symbol codecs retain identity and reject numeric field carriers', () => {
+  if(onKernel())return
+  const source=String.raw`(module
+    (global $id (export "__symbol_id") (mut i64) (i64.const 0x7ff8001000000000))
+    (func (export "fresh") (result i64)
+      (global.set $id (i64.add (global.get $id) (i64.const 1))) (global.get $id))
+    (func (export "echo") (param i64) (result i64) (local.get 0))
+    (func (export "registry") (result i64) (i64.const 0x7ff8001000000000))
+    (@custom "jz:symbols" "[[\"jz:memoryless\",16]]")
+    (@custom "jz:i64exp" "[{\"name\":\"fresh\",\"r\":true},{\"name\":\"echo\",\"p\":[0],\"r\":true},{\"name\":\"registry\",\"r\":true}]"))`
+  const a=interop.instantiate(wasm(source)),b=interop.instantiate(wasm(source)),f=a.exports
+  is(a.memory,null,'fixture has no linear memory')
+  const first=f.fresh(),foreign=b.exports.fresh(),host=Symbol('host')
+  is(typeof first,'symbol');ok(first!==foreign,'memoryless instances keep separate identities')
+  for(const value of [first,first,host,foreign,Symbol.for('jz:memoryless'),first])
+    is(f.echo(value),value,'memoryless ingress and egress share their identity table')
+  is(f.registry(),Symbol.for('jz:memoryless'))
+  const raw=a.instance.exports.fresh(),reader=interop.memory(a),held=reader.read(raw)
+  is(interop.memory(a).read(raw),held,'rebuilding a memoryless adapter reuses its codec')
+  is(interop.wrap(a).echo(first),first,'another export wrapper shares identity')
+  ok(f.fresh()!==host,'host ingress advances the runtime counter')
+  a.instance.exports.__symbol_id.value=0x7ff87ffffffffffen
+  for(let i=0;i<2;i++)throws(()=>f.echo(Symbol()),RangeError,'host identity exhaustion never wraps')
+  is(f.echo(first),first,'known identities remain usable after allocation errors')
+  for(const optimize of levels(0,1,2,3,'size')){
+    const numeric=interop.instantiate(compile('export function f(){return {value:1}}',{optimize})).memory
+    throws(()=>numeric.Object({value:host}),TypeError,'a Symbol cannot enter a proved numeric field')
+    const generic=interop.instantiate(compile('export function f(v){return {value:v}}',{optimize})).memory
+    is(generic.read(generic.Object({value:host})).value,host,'an unknown field admits Symbol identity')
+  }
 })

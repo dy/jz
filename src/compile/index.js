@@ -63,7 +63,7 @@ import {
 } from '../wat/assemble.js'
 import { link } from '../link/index.js'
 import { summarize, K, hasTag, tagOf, tagsOf, paramOf, UNKNOWN } from '../summary/index.js'
-import { bitOf, NULL_BITS } from '../summary/kind.js'
+import { bitOf, NULL_BITS, ANY } from '../summary/kind.js'
 import { programPins } from '../optimize/watr-tail.js'
 import { stablePtrGlobalNames } from '../optimize/globals.js'
 import { synthesizeClassDispatchers } from './emit/class-dispatch.js'
@@ -860,6 +860,11 @@ export function assemble(ast, profiler) {
   if (strPoolLen())
     sec.data.push(['data', '$__strPool', '"' + escBytes(strPoolBytes()) + '"'])
 
+  // Interned Symbol identities name the same host registry entry on every instance.
+  // Fresh identities share the exported counter with host argument marshaling.
+  if (ctx.runtime.atom?.table.size)
+    sec.customs.push(['@custom', '"jz:symbols"', `"${JSON.stringify([...ctx.runtime.atom.table]).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`])
+
   // Custom section: rest params for exported functions (JS-side wrapping).
   // Entry per JS-visible export name (not per internal func name) — host's
   // interop.js wrap() keys by export name. Aliased re-export
@@ -1069,7 +1074,7 @@ export function assemble(ast, profiler) {
     const raw = ctx.schema.slotRawBigint.get(sid)?.has(i) || (tag === K.BIGINT && !boxed)
     const integer = raw ? (mask === (1 << PTR.BIGINT) && !boxed ? 4 : 8)
       : ctx.schema.slotI32Certain.get(sid)?.[i] ? 2 : ctx.schema.slotIntCertain.get(sid)?.[i] ? 1 : 0
-    return [k ? mask : FIELD.ANY, detail, integer, ctx.schema.slotConstUsed.get(sid)?.has(i) ? ctx.schema.slotConstInts.get(sid)?.[i] ?? null : null]
+    return [k && k !== ANY ? mask : FIELD.ANY, detail, integer, ctx.schema.slotConstUsed.get(sid)?.has(i) ? ctx.schema.slotConstInts.get(sid)?.[i] ?? null : null]
   }))
   return { module, link: {
     optimize: ctx.transform.optimize,

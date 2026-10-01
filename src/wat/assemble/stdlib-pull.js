@@ -319,11 +319,12 @@ export function pullStdlib(sec) {
       // the log of escapes, which its table, memory no reset touches, has to agree
       // with), `__tof_*` coercion scratch (written-before-read within one
       // expression, can never carry state across a round) and `__hc_*` helper counters
-      // (diagnostics must observe rounds, not be reset by them).
+      // (diagnostics must observe rounds, not be reset by them). Symbol identities
+      // also outlive arena rounds: resetting their counter could reissue a held value.
       const globalRestores = []
       if (!ctx.memory.shared && ctx.scope.globals.has('__heap_reset')) {
         const startFn = sec.start.find(n => Array.isArray(n) && n[0] === 'func' && n[1] === '$__start')
-        const SNAP_PROTOCOL = new Set(['__heap', '__heap_reset', '__heap_start',
+        const SNAP_PROTOCOL = new Set(['__heap', '__heap_reset', '__heap_start', '__symbol_id',
           '__dyn_get_cache_off', '__dyn_get_cache_props', '__durable_fwd_buf', '__durable_fwd_n',
           '__durable_arr_seen', '__durable_arr_log', '__gsnap_base', '__esc', '__base', '__esc_low', '__rootn', '__rootl'])
         const runtimeWritten = new Set()

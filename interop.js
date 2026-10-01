@@ -25,7 +25,7 @@
  */
 
 import { wasi, attachTimers } from './wasi.js'
-import { HEAP, PTR, FIELD, encodePtrHi, decodePtrType, decodePtrAux, ATOM, ATOM_HI, LAYOUT, TOMB_NAN, DATA_VIEW_FLAG, DATA_VIEW_AUX, TYPED_ELEM_VIEW_FLAG, ctorFromElemAux, HIDDEN_PROPERTY_SEQ } from './layout.js'
+import { HEAP, PTR, FIELD, encodePtrHi, decodePtrType, decodePtrAux, ATOM, ATOM_HI, LAYOUT, SYMBOL_MIN, TOMB_NAN, DATA_VIEW_FLAG, DATA_VIEW_AUX, TYPED_ELEM_VIEW_FLAG, ctorFromElemAux, HIDDEN_PROPERTY_SEQ } from './layout.js'
 import { ERROR_CODE_HI, ERR_INFO } from './err-codes.js'
 import { decodeUtf8 } from './utf8.js'
 
@@ -207,18 +207,49 @@ const decodeSSO = (b) => {
   return s
 }
 
+// A Symbol belongs to one compiled instance. Host inputs and compiled factories
+// draw from the same counter; interned ids resolve through the host registry.
+// Keep this table across arena resets: Symbols have identity but no heap storage.
+const symbolCodecs = new WeakMap()
+const symbolsOf = (owner, mod, raw) => {
+  let codec = symbolCodecs.get(owner)
+  if (codec) return codec
+  const values = new Map(), ids = new Map(), counter = raw?.__symbol_id
+  let next = ptr(PTR.ATOM, SYMBOL_MIN, 0)
+  const remember = (id, value) => { values.set(id, value); ids.set(value, id); return value }
+  const section = mod && customSection(mod, 'jz:symbols')
+  if (section) for (const [key, id] of JSON.parse(TEXT_DEC.decode(section)))
+    remember(ptr(PTR.ATOM, id, 0), Symbol.for(key))
+  codec = {
+    read(id) { return values.has(id) ? values.get(id) : remember(id, Symbol()) },
+    write(value) {
+      if (ids.has(value)) return ids.get(value)
+      let id = (counter ? counter.value : next) + 1n
+      if (!(id & MASK32)) id++
+      if (id >= TOMB_BITS) throw new RangeError('Symbol identity space exhausted')
+      if (counter) counter.value = id
+      else next = id
+      remember(id, value)
+      return id
+    },
+  }
+  symbolCodecs.set(owner, codec)
+  return codec
+}
+
 // Memory-free decode of an i64-bits boundary value: numbers pass through, a box becomes
 // its atom / SSO string. Exactly the forms a *memoryless* module can carry (no linear
 // memory → no heap string/array/object). Heap-carrying modules route through `mem.read`.
 // `fnOf` reads a closure as a JS function (wrap's reader): a module with no
 // heap holds closures too, one that captures nothing needs none.
-const decode = (v, fnOf = null) => {
-  if (Array.isArray(v)) return v.map(x => decode(x, fnOf))   // multi-value tuple, each lane an i64-carrier (memoryless)
+const decode = (v, fnOf = null, symbols = null) => {
+  if (Array.isArray(v)) return v.map(x => decode(x, fnOf, symbols))   // multi-value tuple, each lane an i64-carrier (memoryless)
   if (typeof v === 'number') { if (v === v) return v; v = f64ToI64(v) }  // f64 NaN-box (intact on V8) → bits
   else if (typeof v !== 'bigint') return v     // already-decoded JS value
   if (!isBox(v)) return i64ToF64(v)            // non-NaN bits → number
   if (type(v) === 4 && (aux(v) & LAYOUT.SSO_BIT)) return decodeSSO(v)
   if (type(v) === 10 && fnOf) return fnOf(v)
+  if (symbols && type(v) === PTR.ATOM && aux(v) >= SYMBOL_MIN && v !== TOMB_BITS) return symbols.read(v)
   if (offset(v) === 0) {
     if (v === NULL_NAN) return null
     if (v === UNDEF_NAN) return undefined
@@ -370,12 +401,13 @@ export const memory = (src) => {
   }
 
   // Resolve the WebAssembly.Memory object
-  let mem, wasmExports, extMap, mod
+  let mem, wasmExports, extMap, mod, symbols
   if (src instanceof WebAssembly.Memory) {
     mem = src
     wasmExports = null
     extMap = null
     mod = null
+    symbols = symbolsOf(mem, null, null)
   } else {
     // Instance result: { module, instance, exports, extMap }
     const raw = src?.instance?.exports || src?.exports || src
@@ -384,7 +416,12 @@ export const memory = (src) => {
     // hand back a minimal reader instead of null so callers can still decode its
     // boundary values from bits. `read`/`wrapVal` cover the value forms that exist
     // without memory; `scalar` flags the fast path that skips heap marshaling.
-    if (!mem) return { read: decode, wrapVal: coerce, scalar: true }
+    symbols = symbolsOf(src.instance || src, src.module, raw)
+    if (!mem) return {
+      read: (v, fnOf) => decode(v, fnOf, symbols),
+      wrapVal: v => typeof v === 'symbol' ? symbols.write(v) : coerce(v),
+      scalar: true,
+    }
     wasmExports = { ...raw, memory: mem }
     extMap = src.extMap || null
     mod = src.module || null
@@ -422,6 +459,8 @@ export const memory = (src) => {
   if (wasmExports?.__view_data) mem.viewData = wasmExports.__view_data
   if (wasmExports?.__obj_props) mem.objProps = wasmExports.__obj_props
   if (wasmExports?.__obj_deleted) mem.objDeleted = wasmExports.__obj_deleted
+
+  mem._symbols = symbols
 
   // If already enhanced, just update bindings (new module compiled into same memory)
   if (_enhanced.has(mem)) {
@@ -494,6 +533,7 @@ export const memory = (src) => {
     if (typeof v === 'number') return v
     if (typeof v === 'boolean') return v ? TRUE_NAN : FALSE_NAN
     if (typeof v === 'string') return mem.String(v)
+    if (typeof v === 'symbol') return mem._symbols.write(v)
     // A BigInt that is a NaN-box (jz's i64 carrier — e.g. a value pre-built via memory.String/
     // ptr/BigInt) passes straight through. A plain bigint VALUE has no per-slot host-ABI
     // evidence to consult here — wrapVal is the GENERAL memory.*/mem.Array/mem.Hash/host-import-
@@ -551,6 +591,7 @@ export const memory = (src) => {
   const clampHash = (h) => ((h >>> 0) <= 1 ? (h + 2) | 0 : h)
   const jzStrHash = (box) => {
     const b = bits(box)
+    if (type(b) === PTR.ATOM) return (Math.imul(aux(b) ^ offset(b), 0x9E3779B9) | 2) >>> 0
     if ((b >> 32n) & BigInt(LAYOUT.SSO_BIT)) {   // SSO: fixed-cost mix over payload
       const lo = Number(b & 0xFFFFFFFFn) | 0
       const hi = Number((b >> 32n) & 0x1FFFn) | 0
@@ -566,7 +607,10 @@ export const memory = (src) => {
     return clampHash(h) >>> 0
   }
   mem.Hash = function(obj) {
-    const entries = Object.entries(obj)
+    if (obj == null) throw new TypeError('Cannot convert undefined or null to object')
+    const entries = [], source = Object(obj)
+    for (const key of Reflect.ownKeys(source))
+      if (Object.prototype.propertyIsEnumerable.call(source, key)) entries.push([key, source[key]])
     let cap = 8
     while (entries.length * 4 >= cap * 3) cap <<= 1   // stay under the 75% grow trigger
     // cap × (24-B entry + 4-B probe hash lane) — collection.js's exact layout;
@@ -576,7 +620,7 @@ export const memory = (src) => {
     const staged = new BigInt64Array(cap * 3)
     const lane = new Int32Array(cap)
     entries.forEach(([k, v], seq) => {
-      const keyBox = mem.String(k)
+      const keyBox = typeof k === 'symbol' ? mem._symbols.write(k) : mem.String(k)
       const h = jzStrHash(keyBox)
       let idx = h & (cap - 1)
       while (staged[idx * 3] !== 0n) idx = (idx + 1) & (cap - 1)
@@ -616,7 +660,7 @@ export const memory = (src) => {
     let family = typeof value === 'boolean' ? FIELD.BOOL : FIELD.NUMBER
     if (typeof wrapped === 'bigint' && isBox(wrapped)) {
       const t = type(wrapped), a = aux(wrapped)
-      family = t === PTR.ATOM ? (a === ATOM.NULL || a === ATOM.UNDEF ? FIELD.NULLISH : a === ATOM.FALSE || a === ATOM.TRUE ? FIELD.BOOL : FIELD.NUMBER) : 1 << t
+      family = t === PTR.ATOM ? (a === ATOM.NULL || a === ATOM.UNDEF ? FIELD.NULLISH : a === ATOM.FALSE || a === ATOM.TRUE ? FIELD.BOOL : a >= SYMBOL_MIN ? 1 << PTR.ATOM : FIELD.NUMBER) : 1 << t
     }
     const nested = family === (1 << PTR.OBJECT), typed = family === (1 << PTR.TYPED)
     const badDetail = (nested || typed) && detail >= 0 && aux(wrapped) !== detail
@@ -697,6 +741,7 @@ export const memory = (src) => {
     if (!isBox(p)) return i64ToF64(p)    // non-NaN bits → genuine number
     const m = dv(), t = type(p), a = aux(p)
     let off = offset(p)
+    if (t === PTR.ATOM && a >= SYMBOL_MIN && p !== TOMB_BITS) return mem._symbols.read(p)
     // Arrays and collections retain their identity when storage grows.
     if (t === 1 || t >= 7 && t <= 9)
       while (m.getInt32(off - 4, true) === -1) off = m.getUint32(off - 8, true)
@@ -1507,15 +1552,15 @@ export const wrap = (memSrc, inst, state) => {
         // fresh call never starts with a stale marker from a PRIOR call.
         if (lastErrBitsWritable) lastErrBits.value = 0n
         try {
-          const ret = fn(...args.map(i64Arg(ie, ext, coerce, hostAbi, name)))
+          const ret = fn(...args.map(i64Arg(ie, ext, mem.wrapVal, hostAbi, name)))
           // A proven raw-BigInt result stays raw; tagged results set `r` and
           // take the generic decoder.
           if (typeof ret === 'bigint' && !(ie && ie.r)) return ret
-          return decode(ret, fnOf)
+          return mem.read(ret, fnOf)
         } catch (e) { decodeThrown(e) }
       }
       exports[name] = plainLanes(ie, ext, hostAbi) && !asyncMod
-        ? crossing(fn, general, (ret) => typeof ret === 'bigint' && !(ie && ie.r) ? ret : decode(ret, fnOf), always, idle) : general
+        ? crossing(fn, general, (ret) => typeof ret === 'bigint' && !(ie && ie.r) ? ret : mem.read(ret, fnOf), always, idle) : general
     }
     return exports
   }

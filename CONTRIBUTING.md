@@ -91,6 +91,10 @@ own-key order. Structured cloning retains only string-keyed properties.
 Symbol factories evaluate every argument before converting the description;
 conversion getters, fallback methods and errors follow the string hint even
 though descriptions are not retained. Ignored arguments keep their effects.
+The host adapter maps each instance's Symbol identities in both directions.
+Interned names travel in metadata; fresh host inputs advance the same counter
+as compiled factories. Arena reset restores source globals but never reissues
+an identity. These maps and counters remain local to an instance.
 Native method wrappers use internal tag predicates and runtime brand errors.
 Preparing an unused wrapper therefore does not add source-level BigInt or throw
 demand; its error data and exception support follow actual emission. Their
