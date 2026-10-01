@@ -102,9 +102,9 @@ function emitBuiltinCall(callee, parsed) {
   const math = callee.startsWith('math.'), fixed = math && !VARIADIC_MATH.has(callee)
   const n = fixed ? emitArity(ctx.core.emit[callee], callee) ?? 0 : parsed.normal.length
   const view = ctx.summary?.at(ctx.func.current)
-  // Call arguments finish evaluating before any Math operand is converted.
-  // A valueOf may write a later argument's source; ignored arguments still run.
-  const capture = math && (parsed.normal.length > n ||
+  // Arguments finish before conversion or Object.assign's property copies.
+  // Hooks may write a later argument's source; ignored Math arguments still run.
+  const capture = callee === 'Object.assign' || math && (parsed.normal.length > n ||
     parsed.normal.length > 1 && parsed.normal.some(a => !primitiveKind(view, a) || hasTag(view?.kindOfExpr(a) ?? -1, K.BIGINT)))
   if (!capture) return ctx.core.emit[callee](...parsed.normal,
     ...Array.from({ length: n - parsed.normal.length }, () => [, undefined]))

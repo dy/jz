@@ -1230,24 +1230,10 @@ test('errors: Object.keys, JSON, for-in, spread and assign see no Error field, a
 // overwrote slots the target literal's OWN props already declared, so a
 // genuinely new source key had no slot to land in and was silently dropped
 // (`Object.assign({}, {a:1})` gave `[]`, real JS gives `['a']`). Root cause:
-// module/object.js's `resolveSchema` read a `{}` literal's own props as its
-// COMPLETE, fixed schema — correct for a pre-existing allocation (a bound
-// name, or any other already-constructed value, whose physical slot layout
-// can only be OVERWRITTEN, never resized — matching src/prepare/index.js's
-// `inferAssignSchema`, which already grows a BOUND name's schema at prepare
-// time and was never affected by this bug) but wrong for a fresh literal
-// target, which Object.assign is free to size however it likes since IT is
-// the one allocating it right here. Fixed by recognizing a literal target as
-// structurally equivalent to a spread merge — `Object.assign({...t}, s1, s2)`
-// reduces to `{...t, ...s1, ...s2}` (identical left-to-right, later-source-
-// wins copy; jz has no getters/Proxies to tell Object.assign's [[Set]] and
-// spread's CreateDataProperty apart) — and reusing emitObjectSpread's
-// existing schema-growth instead of the fixed-slot copy loop below
-// (module/object.js, `ctx.core.emit['Object.assign']`'s literal-target
-// branch, right after the RequireObjectCoercible check). A BOUND target
-// (`let t = {}; Object.assign(t, {a:1})`) already grew correctly before this
-// fix, and still does, unchanged — see objects.js's "extends target with new
-// fields" regression test.
+// A literal target keeps its construction layout. Source keys outside that
+// layout must use ordinary property storage, while existing fields overwrite
+// their slots. Replacing the call with object spread would interleave getters
+// with argument evaluation; the call stages arguments before it copies.
 test('Object.assign onto an object-literal target grows the result with every source key (ECMA-262: OrdinarySetWithOwnDescriptor copies left-to-right, later source wins a collision, a target key absent from every source survives)', () => {
   is(jz(`export let f = () => Object.keys(Object.assign({}, {a: 1})).length`).exports.f(), 1, 'a brand-new key from the source lands — the original pin (real JS: 1, [\'a\'])')
   is(jz(`export let f = () => Object.keys(Object.assign({}, {a: 1})).sort().join(',')`).exports.f(), 'a', 'key name matches')

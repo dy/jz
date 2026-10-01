@@ -686,37 +686,6 @@ export default (ctx) => {
     const targetType = valTypeOf(target)
     if (targetType === VAL.STRING || targetType === VAL.NUMBER || targetType === VAL.BOOL || targetType === VAL.BIGINT)
       err('Object.assign primitive targets require ToObject boxing, which is not supported; pass an object target')
-    // A fresh, anonymous object-LITERAL target (`Object.assign({}, {a:1})`,
-    // `Object.assign({b:2}, {a:1}, {c:3})`) is not a pre-existing allocation —
-    // nothing else can hold a reference to it, so unlike every other target
-    // shape below (a bound name or any other pre-existing value, whose
-    // physical slot layout was already fixed at ITS OWN construction site and
-    // can only be OVERWRITTEN — see `tSchema.indexOf(...) < 0 ⇒ continue` a
-    // few lines down, and src/prepare/index.js's inferAssignSchema, which
-    // grows a BOUND name's registered schema but explicitly bails
-    // `typeof target !== 'string'`), Object.assign here is free to choose the
-    // result's layout, because IT is the one constructing it. ECMA-262
-    // Object.assign copies each source's own enumerable keys onto target
-    // left-to-right via an ordinary [[Set]] (later source wins on a
-    // collision); CopyDataProperties (object spread) merges the identical run
-    // of props/sources the identical way unless the target defines an
-    // accessor, whose setter [[Set]] calls and a spread would replace with
-    // data (such a literal keeps the assign). So for a literal target ONLY,
-    // `Object.assign({...targetProps}, s1, s2)` reduces structurally to
-    // `{...targetProps, ...s1, ...s2}` — the exact merge emitObjectSpread
-    // already builds (own props first, each source as a spread group, later
-    // wins, first-occurrence slot order) — reusing its schema-growth instead
-    // of re-deriving a second copy of it. Previously this shape fell through
-    // to `resolveSchema(target)` below, which reads a literal's OWN props as
-    // its COMPLETE fixed schema (correct for a real pre-existing object,
-    // wrong here) — so any source key absent from the target literal silently
-    // had no slot to land in (`Object.assign({}, {a:1})` produced a 0-slot
-    // object; JS gives `{a:1}`).
-    // An unknown source can make spread choose dictionary storage; the assign
-    // result still promises its original target layout. Keep that target in place.
-    if (Array.isArray(target) && target[0] === '{}' && sources.every(s => copiedSchema(s)) &&
-        !enumView(literalProps(target).filter(p => Array.isArray(p) && p[0] === ':').map(p => p[1])))
-      return emitObjectSpread([...literalProps(target), ...sources.map(s => ['...', s])])
     // A target that is no plain object (an array, a function, a collection,
     // a dictionary) keeps its identity: the copied keys are its own
     // properties, beside its elements or entries (the computed-key store).
@@ -726,7 +695,7 @@ export default (ctx) => {
     }
     // An expression target (`list[i]`) the summary holds to one layout: that
     // layout's slots, as for a bound name, past a test that it is there.
-    const view = typeof target !== 'string' && ctx.summary ? ctx.summary.at(ctx.func.current) : null
+    const view = ctx.summary?.at(ctx.func.current)
     const summarySid = view ? view.targetSidOfExpr(target) : null
     const tSchema = resolveSchema(target) ?? (summarySid != null ? ctx.schema.list[summarySid] : null)
     const resolveSchemas = sources.map(copiedSchema)
@@ -739,8 +708,7 @@ export default (ctx) => {
     if (enumView(tSchema) || resolveSchemas.some(s => !s || enumKeys(s).some(p => !tSchema.includes(p)))) return emitObjectAssignDynamic(target, sources)
     // Extern-write belt: cross-schema slot copies into the TARGET's sid below
     // (plan's hazard scan marks the same target when it resolves it).
-    const tSid = typeof target === 'string'
-      ? (repOf(target)?.schemaId ?? ctx.schema.vars.get(target)) : summarySid
+    const tSid = summarySid ?? (typeof target === 'string' ? (repOf(target)?.schemaId ?? ctx.schema.vars.get(target)) : null)
     if (tSid != null) ctx.schema.externSlotSids?.add(tSid)
     const t = temp('at'), s = temp('as')
     const tBase = tempI32('tb'), sBase2 = tempI32('sb')
@@ -748,12 +716,7 @@ export default (ctx) => {
     // Object.assign(t, …); r.a`) dispatches through __dyn_get_any, whose
     // schema arm reads the same slot (the field's only home).
     const body = [['local.set', `$${t}`, asF64(emit(target))]]
-    if (summarySid != null && view.mayBeNullishExpr(target)) {
-      ctx.runtime.throws = true
-      body.push(['if', isNullish(['local.get', `$${t}`]), ['then',
-        ['global.set', '$__jz_last_err_bits', ['i64.reinterpret_f64', ['f64.const', errorCodeLiteral(ERR.OBJECT_NULLISH)]]],
-        ['throw', '$__jz_err', ['f64.const', errorCodeLiteral(ERR.OBJECT_NULLISH)]]]])
-    }
+    body.push(...assignTargetGuard(target, t))
     body.push(['local.set', `$${tBase}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]])
     // Each copied value runs before logging its destination field. Only a
     // heap value needs an undo record; numeric fields keep their mutations.
@@ -957,12 +920,24 @@ export default (ctx) => {
 
 // --- Helpers ---
 
+// Arguments are captured before this check: even a null target cannot skip a
+// later argument's effects. A present target needs no runtime check.
+function assignTargetGuard(target, name) {
+  if (ctx.summary && !ctx.summary.at(ctx.func.current).mayBeNullishExpr(target)) return []
+  ctx.runtime.throws = true
+  const error = ['f64.const', errorCodeLiteral(ERR.OBJECT_NULLISH)]
+  return [['if', isNullish(['local.get', `$${name}`]), ['then',
+    ['global.set', '$__jz_last_err_bits', ['i64.reinterpret_f64', error]],
+    ['throw', '$__jz_err', error]]]]
+}
+
 // Object.assign into a target whose schema is unknown at compile time (e.g.
 // `ctx.core.stdlibDeps` — an empty `{}` grown dynamically). Copy every source
 // key into the target's dynamic props via __dyn_set, which updates the
 // per-object hash in place: the target pointer stays stable, so no write-back
 // to the (possibly member-access) lvalue is needed. Returns the target.
 function emitObjectAssignDynamic(target, sources) {
+  ctx.module.include('array')
   ctx.module.include('collection')
   inc('__dyn_set', '__dyn_get_any', '__ptr_offset', '__len')
   const t = temp('oat'), s = temp('oas'), sBase = tempI32('oasb')
@@ -971,7 +946,7 @@ function emitObjectAssignDynamic(target, sources) {
   const id = freshId(ctx)
   const setKey = (keyBits, valBits) =>
     ['drop', ['call', '$__dyn_set', ['i64.reinterpret_f64', ['local.get', `$${t}`]], keyBits, valBits]]
-  const body = [['local.set', `$${t}`, asF64(emit(target))]]
+  const body = [['local.set', `$${t}`, asF64(emit(target))], ...assignTargetGuard(target, t)]
 
   for (let si = 0; si < sources.length; si++) {
     const source = sources[si]
@@ -1006,6 +981,7 @@ function emitObjectAssignDynamic(target, sources) {
 // property outside it (an added key the sidecar holds), which the copy reads
 // by its runtime keys.
 const copiedSchema = (src) => {
+  if (ctx.summary) return closedLayoutOf(src)
   const s = resolveSchema(src)
   return s && !hasOutOfSchemaWrites(src, s) && !mayHaveDynProps(src) ? s : null
 }
@@ -1045,15 +1021,8 @@ const hasOutOfSchemaWrites = (obj, schema) => {
 // binding, src/prepare/schema.js's `bindSchema`) with no help needed here;
 // this closes the one shape that binding doesn't cover — an Error constructed
 // and used inline, never given a name (`Object.assign(new TypeError('x'), …)`,
-// `Object.keys(new TypeError('x'))`) — which previously left `resolveSchema`
-// returning null for the un-recognized call node, routing callers into
-// dynamic-runtime-keys machinery. For most callers that dynamic path just
-// works (if slowly); `Object.assign`'s dynamic arm (`emitObjectAssignDynamic`)
-// has an unrelated pre-existing bug (never pulls the `array` module its own
-// `__dyn_set` dependency needs, "internal: stdlib '__arr_set_idx_ptr' was
-// requested but never registered") that this closes the same way the sibling
-// spread-source crash is closed: by making the schema KNOWN, not by fixing
-// the dynamic path itself.
+// `Object.keys(new TypeError('x'))`) — which otherwise leaves `resolveSchema`
+// unknown and routes the copy through runtime enumeration.
 const errorLiteralSchema = (obj) =>
   Array.isArray(obj) && obj[0] === '()' && typeof obj[1] === 'string' && ERR_CLASS_NAMES.includes(obj[1])
     ? ERR_SCHEMA_PROPS : null
@@ -1061,9 +1030,8 @@ const errorLiteralSchema = (obj) =>
 // A `{}` literal AST NODE's own props, flattened. Comma-grouped children
 // arrive as `['{}', [',', p1, p2, …]]` (prep's grouping of 2+ props) —
 // same unwrap needed everywhere a tagged '{}' node (not yet destructured
-// into an emit call's `...rawProps`) is inspected directly: resolveSchema,
-// conditionalSpreadGroup, and Object.assign's literal-target reduction
-// below all resolve the identical node shape and must agree on its props.
+// into an emit call's `...rawProps`) is inspected directly: resolveSchema
+// and conditionalSpreadGroup must agree on its props.
 const literalProps = (node) =>
   node.length === 2 && Array.isArray(node[1]) && node[1][0] === ',' ? node[1].slice(1) : node.slice(1)
 

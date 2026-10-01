@@ -2947,3 +2947,84 @@ test('Object.assign preserves known layouts and recovers after dynamic getter er
     for(const fail of [false,false,true,false,true,false])is(got.f(fail),want.f(fail),`O${optimize} error/recovery ${fail}`)
   }
 })
+
+test('Object.assign evaluates arguments before copying properties', () => {
+  const bodies = [
+    `let log='';const a={get x(){log+='g';return 7}};
+      function later(){log+='a';return {y:9}}
+      const out=Object.assign({},a,later());return [out.x,out.y,log]`,
+    `let log='';const target={x:0,y:0},original=target;
+      const a={get x(){log+='g';return 7}};
+      function later(){log+='a';return {y:9}}
+      const out=Object.assign(target,a,later());return [out===original,out.x,out.y,log]`,
+    `let log='',target={x:1},source={x:7};const original=target;
+      function later(){log+='a';target={x:2};source={x:9};return {y:3}}
+      const out=Object.assign(target,source,later());
+      return [out===original,out.x,out.y,target.x,source.x,log]`,
+    `let log='';const first={get x(){log+='g';return 7}};
+      function source(){log+='s';return first}
+      function later(){log+='a';if(fail)throw new RangeError('argument');return {y:9}}
+      try{const out=Object.assign({},source(),later());return [out.x,out.y,log]}
+      catch(e){return [e.name,e.message,log]}`,
+    `let log='';const first={get x(){log+='g';if(fail)throw new TypeError('getter');return 7}};
+      function later(){log+='a';return {get y(){log+='h';return 9}}}
+      try{const out=Object.assign({},first,later());return [out.x,out.y,log]}
+      catch(e){return [e.name,e.message,log]}`,
+    `let log='',value=0;const target={set x(v){log+='s';value=v;if(fail)throw new TypeError('setter')}};
+      const source={get x(){log+='g';return 7}};
+      function later(){log+='a';return {y:9}}
+      try{const out=Object.assign(target,source,later());return [out===target,value,out.y,log]}
+      catch(e){return [e.name,e.message,value,log]}`,
+    `let log='';const source={x:1};
+      function later(){log+='a';source.x=7;return {y:9}}
+      const out=Object.assign({},source,later());return [out.x,out.y,log]`,
+    `let log='',second={y:9};const first={get x(){log+='g';second={y:11};return 7}};
+      const out=Object.assign({},first,second);return [out.x,out.y,second.y,log]`,
+    `let log='';const source={get x(){log+='g';return 7}};
+      function later(){log+='a';if(fail)throw new RangeError('argument');return {}}
+      try{Object.assign(null,source,later());return log}
+      catch(e){return [e.name,e.message,log]}`,
+    `let log='';const source={get x(){log+='g';return 7}};
+      function target(){log+='t';return {seed:3}}
+      function later(){log+='a';return {y:9}}
+      const out=Object.assign(target(),source,later());return [out.seed,out.x,out.y,log]`,
+  ]
+  for (const body of bodies) {
+    const src=`export function f(fail){${body}}`,expected=oracle(src).f
+    for (const optimize of levels(0,1,2,3,'size')) {
+      const f=jz(src,{optimize}).exports.f
+      for (const fail of [false,false,true,false,true,false])
+        is(f(fail),expected(fail),`O${optimize}, fail=${fail}: ${body}`)
+    }
+  }
+})
+
+test('Object.assign checks nullish targets after arguments even with no properties to copy', () => {
+  for (const target of ['null','undefined','mode?{}:null','mode?{x:1}:undefined'])
+    for (const sources of ['',',{}',',null,undefined',',source()']) {
+      const src=`export function f(mode){let log='';function source(){log+='s';return {}}
+        try{const out=Object.assign(${target}${sources});return ['ok',out.x,log]}
+        catch(e){return [e.name,log]}}`,expected=oracle(src).f
+      for (const optimize of levels(0,1,2,3,'size')) {
+        const f=jz(src,{optimize}).exports.f
+        for (const mode of [0,0,1,0,1]) is(f(mode),expected(mode),`O${optimize}: ${target}${sources}, mode=${mode}`)
+      }
+    }
+  const src=`export function f(){try{Object.assign()}catch(e){return e.name}}`
+  for (const optimize of levels(0,1,2,3,'size')) is(jz(src,{optimize}).exports.f(),'TypeError',`missing target O${optimize}`)
+})
+
+test('Object.assign literal results own their copy dependencies', () => {
+  for (const body of [
+    `return Object.assign({seed:1},{x:4})`,
+    `const source={};source.x=4;return Object.assign({seed:1},source)`,
+    `return Object.assign({seed:1},null,undefined)`,
+  ]) {
+    const src=`export function f(){${body}}`,expected=oracle(src).f()
+    for (const optimize of levels(0,1,2,3,'size')) {
+      const f=jz(src,{optimize}).exports.f
+      is(f(),expected,`O${optimize}: ${body}`)
+      is(f(),expected,`repeat O${optimize}: ${body}`)
+    }
+  }
+})
