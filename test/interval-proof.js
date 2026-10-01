@@ -184,13 +184,14 @@ const assertCompileHistoryIndependent = (src, predecessors, opts, label) => {
 }
 const hasTypedBoundsTemp = wat => /\$[^\s)]*(?:tb[in]|ixv)\d*/.test(wat)
 // Match the guard's tree, not a character window: exact f64 index validation
-// can sit between the unsigned bounds test and its load or store.
+// can sit between the unsigned bounds test and its load or store. Wide keys
+// compare their full i64 value before narrowing the memory address.
 const someWat = (n, test) => Array.isArray(n) && (test(n) || n.some(c => someWat(c, test)))
 const hasCheckedTypedAccess = wat => hasTypedBoundsTemp(wat) || parseWat(wat).some(f =>
   Array.isArray(f) && f[0] === 'func' && /^\$(?!__)/.test(f[1]) && someWat(f, n => {
     if (n[0] !== 'if') return false
     const at = n[1]?.[0] === 'result' ? 2 : 1
-    return n[at]?.[0] === 'i32.lt_u' && n[at + 1]?.[0] === 'then' &&
+    return (n[at]?.[0] === 'i32.lt_u' || n[at]?.[0] === 'i64.lt_u') && n[at + 1]?.[0] === 'then' &&
       someWat(n[at + 1], x => /^(?:f32|f64|i32|i64)\.(?:load|store)/.test(x[0]))
   }))
 
