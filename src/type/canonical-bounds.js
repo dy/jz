@@ -15,6 +15,7 @@ import { ctx, getFactStore } from '../ctx.js'
 import { intLiteralValue, constIntExpr, intExprRange, counterInit } from '../static.js'
 import { NUMBER } from '../summary/kind.js'
 import { runsAccessor, runsConversion, primitiveKind } from '../evaluation-effects.js'
+import { frameNode } from '../function.js'
 
 /** Structural key for a `recv[idx]` site — the assumedBounds channel between the
  *  versioning scan and typedIdxProven. JSON is structural, so the key matches even
@@ -186,7 +187,7 @@ function collectBoundedArrIdx(node, recv, idxVar, set, nodes) {
 // The condition's length describes the read only while no intervening effect
 // can shrink the receiver through any alias. Plain field/Number-key stores
 // cannot shrink arrays; accessors, coercions and calls need their own proof.
-function preservesArrayBounds(root, view) {
+function preservesArrayBounds(root, view, bindings, callees) {
   return !some(root, n => {
     if (runsAccessor(view, n) || runsConversion(view, n)) return true
     const op = n[0]
@@ -194,12 +195,24 @@ function preservesArrayBounds(root, view) {
       const callee = n[1]
       if (op === '()') {
         const target = typeof callee === 'string' ? callee : view?.calleeOf?.(n)
-        if (typeof target === 'string' && ctx.funcs.map?.get(target)?.frame?.writesOuter === false) return false
+        const func = typeof target === 'string' && ctx.funcs.map?.get(target)
+        if (func?.frame?.writesOuter === false) return false
+        if (func && !func.raw && Array.isArray(func.body)) {
+          if (!callees.has(func)) {
+            // A cycle declines. The same proof applies to defaults and callees:
+            // writes to unrelated fields or typed elements cannot shrink arrays.
+            callees.set(func, false)
+            callees.set(func, preservesArrayBounds(frameNode(func), ctx.summary?.at(func.sig), bindings, callees))
+          }
+          return !callees.get(func)
+        }
         if (typeof callee === 'string' && callee.startsWith('math.') && callArgs(n).every(a => primitiveKind(view, a))) return false
       }
       return true
     }
-    if (!MUTATE_OPS.has(op) || !Array.isArray(n[1])) return false
+    if (!MUTATE_OPS.has(op)) return false
+    if (typeof n[1] === 'string') return bindings.has(n[1])
+    if (!Array.isArray(n[1])) return false
     const lhs = n[1]
     if (lhs[0] === '.' || lhs[0] === '?.') return lhs[2] === 'length'
     if (lhs[0] !== '[]') return false
@@ -207,6 +220,16 @@ function preservesArrayBounds(root, view) {
     if (Array.isArray(key) && (key[0] == null || key[0] === 'str')) return key[1] === 'length'
     return view?.kindOfExpr(key) !== NUMBER
   })
+}
+
+// The canonical head declares the induction variable and possibly its bound.
+// Inspect their initializers without treating the declarations as later writes.
+function preservesArrayHead(root, view, bindings, callees, idx, bound) {
+  if (!Array.isArray(root)) return true
+  if (root[0] === ';') return root.slice(1).every(n => preservesArrayHead(n, view, bindings, callees, idx, bound))
+  if (root[0] === 'let' || root[0] === 'const') return root.slice(1).every(n =>
+    preservesArrayBounds(Array.isArray(n) && n[0] === '=' && (n[1] === idx || n[1] === bound) ? n[2] : n, view, bindings, callees))
+  return preservesArrayBounds(root, view, bindings, callees)
 }
 
 /** Walk `node`, recording `"recv\x00idx"` pairs for `recv[idx]` reads proven within
@@ -232,8 +255,9 @@ export function scanBoundedArrIdx(node, set, litSet, nodes, view = ctx.summary?.
         && !isReassigned(body, idx) && !isReassigned(body, recv)
         && (boundVar == null || !isReassigned(body, boundVar))
         && !redeclaresName(body, idx)) {
-      if (preservesArrayBounds(body, view) && preservesArrayBounds(cond, view) &&
-          (boundVar == null || preservesArrayBounds(init, view)))
+      const bindings = new Set([recv, idx, boundVar]), callees = new Map()
+      if (preservesArrayBounds(body, view, bindings, callees) && preservesArrayBounds(cond, view, bindings, callees) &&
+          (boundVar == null || preservesArrayHead(init, view, bindings, callees, idx, boundVar)))
         collectBoundedArrIdx(body, recv, idx, set, nodes)
     }
     // LITERAL-bound loop `for (let i = C≥0; i < B; i++)`: every `X[i]` read is in

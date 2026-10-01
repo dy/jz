@@ -2996,6 +2996,10 @@ parameter order, just as on the indirect closure entry path. A default runs
 only where its argument is missing, so the summary treats its writes as conditional.
 Integral loop copies use the same complete capture census: a default-created
 closure can change the original binding while a copied loop runs.
+Canonical array bounds also inspect resolved callees with their own summary
+views: writes to unrelated fields or typed elements preserve array extents.
+Defaults are included; array-length writes, accessors, conversions, unknown calls,
+recursive cycles and changes to the caller's receiver/counter bindings decline.
 Planning and pre-rewrite analysis request function effects without per-loop
 rewind proofs. The final census computes those proofs from the rewritten bodies,
 after variants exist; no earlier consumer reads them. `test/frame-effects.js`
@@ -4095,3 +4099,9 @@ independent float counters to keep their comparisons and conversions.
 Accumulator versioning runs after SIMD lowering: its bailout scaffold must not
 hide a Number loop from lane recognition. Scalar tails and loops that remain
 scalar still receive the same guarded integer optimization.
+
+Returned closures decoded by `interop.mem.read` hold their environment just as
+a typed-array view holds its backing storage. Mark the handle before constructing
+the host callable, including closures nested in copied arrays, objects and Maps;
+a later releasing export must not reuse that environment. `test/call-release.js`
+retains factories and mutable counters through repeated factories and scratch calls.
