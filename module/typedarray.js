@@ -9,7 +9,7 @@ import print from 'watr/print'
  * @module typed
  */
 
-import { typed, asF64, asI32, asI32Sat, asI64, toInt32, i32Narrowed, i32Word, f64Range, toNumF64, coerceNullishToNum, coerceAtomsToNum, numberNanIR, NULL_NAN, TRUE_NAN, FALSE_NAN, allocPtr, boxBigInt, rawBigInt, deferBigintBox, isBigIntBox, mkPtrIR, ptrOffsetIR, ptrTypeEq, boxedPtrTypeEq, temp, tempI32, tempI64, undefExpr, throwTypeErrorIR, truthyIR, isLit, isConst, isPureIR, litVal, freshId, readI64MayUnbox, readI64, unboxBigInt, maybeUnboxBigInt, fromI64, isNullish } from '../src/ir.js'
+import { typed, asF64, asI32, asI32Sat, asI64, toInt32, i32Narrowed, i32Word, f64Range, toNumF64, coerceNullishToNum, coerceAtomsToNum, numberNanIR, NULL_NAN, TRUE_NAN, FALSE_NAN, allocPtr, boxBigInt, rawBigInt, deferBigintBox, isBigIntBox, mkPtrIR, ptrOffsetIR, ptrTypeEq, boxedPtrTypeEq, temp, tempI32, tempI64, undefExpr, throwTypeErrorIR, truthyIR, isLit, isConst, isPureIR, litVal, freshId, readI64, unboxBigInt, maybeUnboxBigInt, fromI64, isNullish } from '../src/ir.js'
 import { isReassigned, T, ASSIGN_OPS, walkAst, some, every, REFS_THROUGH_ARROWS } from '../src/ast.js'
 import { emit, storedValue, idx, deps, call, positionArgs } from '../src/bridge.js'
 import { strHashLiteral } from './collection.js'
@@ -107,7 +107,7 @@ export default (ctx) => {
     __to_buffer: ['__ptr_type', '__ptr_offset', '__ptr_aux', '__mkptr'],
     __typed_set_idx: () => ['__ptr_aux', '__ptr_type', '__to_int32',
       ...(ctx.linkDemand.f16 ? ['__f64_to_f16'] : []), ...(ctx.linkDemand.clamped ? ['__u8_clamp'] : [])],
-    __typed_set_idx_tagged: () => ['__typed_set_idx', '__is_nullish', '__ptr_aux', '__ptr_type', '__ptr_offset', '__len', ...(ctx.core.stdlib['__to_num'] ? ['__to_num'] : [])],
+    __typed_set_idx_tagged: ['__typed_set_idx', '__is_nullish', '__ptr_aux', '__len', '__to_num', '__to_bigint_strict'],
     __typed_get_idx: () => ['__ptr_aux', ...(ctx.linkDemand.f16 ? ['__f16_to_f64'] : [])],
     __typed_elem_arg: ['__ptr_aux', '__box_bigint'],
     __typed_value: ['__ptr_aux', '__to_num', '__to_bigint_strict'],
@@ -1545,13 +1545,12 @@ export default (ctx) => {
                     (else (i32.store8 (i32.add (local.get $off) (local.get $i)) (local.get $bits))))))))))))
     (local.get $v))`
 
-  // Representation-safe writer for a receiver whose concrete typed ctor is
-  // unknown. Its value channel is generic/tagged: BigInt must arrive as a
-  // PTR.BIGINT box, while every other value follows numeric TypedArray
-  // coercion. The raw helper above remains for same-typed get→set algorithms
-  // (reverse/sort/copyWithin), where raw i64 transport is intentional.
+  // The dynamic writer receives tagged values: domain 1 proves BigInt,
+  // 2 proves Number, and other values need runtime ToNumber/ToBigInt
+  // conversion. Conversion precedes the bounds check and keeps the RHS value.
+  // The raw writer above serves same-element copy/reverse/sort operations.
   ctx.core.stdlib['__typed_set_idx_tagged'] = () => `(func $__typed_set_idx_tagged (param $ptr i64) (param $i i32) (param $v f64) (param $domain i32) (result f64)
-    (local $aux i32) (local $t i32) (local $raw f64)
+    (local $aux i32) (local $raw f64)
     ${requireReceiverWat('(local.get $ptr)')}
     (local.set $aux (call $__ptr_aux (local.get $ptr)))
     (if (i32.and (local.get $aux) (i32.const ${DATA_VIEW_FLAG}))
@@ -1559,32 +1558,15 @@ export default (ctx) => {
         (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${errorCodeLiteral(ERR.DATAVIEW_INDEX_WRITE)})))
         (throw $__jz_err (f64.const ${errorCodeLiteral(ERR.DATAVIEW_INDEX_WRITE)}))))
     (local.set $raw (local.get $v))
-    (local.set $t
-      (if (result i32) (f64.ne (local.get $v) (local.get $v))
-        (then (call $__ptr_type (i64.reinterpret_f64 (local.get $v))))
-        (else (i32.const 0))))
     (if (i32.and (local.get $aux) (i32.const ${TYPED_ELEM_BIGINT_FLAG}))
-      (then
-        (if (i32.eq (local.get $t) (i32.const ${PTR.BIGINT}))
-          (then
-            (local.set $raw (f64.reinterpret_i64 (i64.load (call $__ptr_offset (i64.reinterpret_f64 (local.get $v)))))))
-          ;; domain=1 permits raw BigInt; other domains require its box.
-          (else (if (i32.ne (local.get $domain) (i32.const 1))
-            (then
-              (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${errorCodeLiteral(ERR.BIGINT_UNDEF_MIX)})))
-              (throw $__jz_err (f64.const ${errorCodeLiteral(ERR.BIGINT_UNDEF_MIX)})))))))
+      (then (local.set $raw (call $__to_bigint_strict (i64.reinterpret_f64 (local.get $v)))))
       (else
-        (if (i32.or (i32.eq (local.get $domain) (i32.const 1)) (i32.eq (local.get $t) (i32.const ${PTR.BIGINT})))
+        (if (i32.eq (local.get $domain) (i32.const 1))
           (then
             (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${errorCodeLiteral(ERR.BIGINT_UNDEF_MIX)})))
             (throw $__jz_err (f64.const ${errorCodeLiteral(ERR.BIGINT_UNDEF_MIX)}))))
-    ${ctx.core.stdlib['__to_num'] ? `(if (i32.ne (local.get $domain) (i32.const 2))
-      (then (local.set $raw (call $__to_num (i64.reinterpret_f64 (local.get $v))))))` : `(local.set $raw
-      (select (f64.const 1)
-        (select (f64.const 0) (local.get $v)
-          (i32.or (i64.eq (i64.reinterpret_f64 (local.get $v)) (i64.const ${FALSE_NAN}))
-            (i64.eq (i64.reinterpret_f64 (local.get $v)) (i64.const ${NULL_NAN}))))
-        (i64.eq (i64.reinterpret_f64 (local.get $v)) (i64.const ${TRUE_NAN}))))`}))
+        (if (i32.ne (local.get $domain) (i32.const 2))
+          (then (local.set $raw (call $__to_num (i64.reinterpret_f64 (local.get $v))))))))
     (if (i32.lt_u (local.get $i) (call $__len (local.get $ptr)))
       (then (drop (call $__typed_set_idx (local.get $ptr) (local.get $i) (local.get $raw)))))
     (local.get $v))`
@@ -2524,6 +2506,7 @@ export default (ctx) => {
     const rmwKey = typeof arr === 'string' && typeof i === 'string' ? idxKey(arr, i) : null
     let rmwCandidate = !nullable && !proven && void_ && et <= 5 && !r.isClamped && rmwKey != null &&
       i32Rhs && hasSameRead(val) && safeRmwAst(val)
+    const bigintValue = isBigInt && tagsOf(ctx.summary?.at(ctx.func.current).kindOfExpr(val) ?? 0) === bitOf(K.BIGINT)
     let valIR, rmwAddr = null, rmwValue = null
     if (rmwCandidate) {
       rmwAddr = tempI32('tra')
@@ -2537,7 +2520,7 @@ export default (ctx) => {
       // must restore checked reads instead of using its unloaded RMW scratch.
       const word = i32Narrowed(valIR)
       if (!word || !pureStorable(word)) { rmwCandidate = false; valIR = emit(val) }
-    } else valIR = emit(val)
+    } else valIR = isBigInt && !bigintValue ? storedValue(val) : emit(val)
     // PutValue reads the key before the value. A key that reads what the value's
     // effects may store to (a global or an element a call changes, a local the
     // value assigns) is taken first: `OUT[ at ] = step()` stores where `at` was.
@@ -2605,40 +2588,22 @@ export default (ctx) => {
         : ['block', ['result', 'f64'], ...pre, ...take, guard(conv), ['local.get', `$${vt}`]], void_ ? 'void' : 'f64')
     }
     if (isBigInt) {
-      // Typed storage needs the raw i64 payload. A materialized union can carry
-      // that payload in PTR.BIGINT, so use the RepresentationPlan-aware readI64
-      // authority instead of reinterpreting the box pointer itself. Do not use
-      // maybeUnboxBigInt unconditionally: a genuine raw payload can have the same
-      // bits as a PTR.BIGINT tag (watr emits such NaN payloads), and must stay on
-      // readI64's unchanged raw path. Temp reads are explicitly f64-typed so that
-      // raw fallback is a bit reinterpretation, never a numeric conversion.
-      const tagged = readI64MayUnbox(val), valueKind = valTypeOf(val)
-      if (!tagged && valueKind != null && valueKind !== VAL.BIGINT)
-        err('BigInt typed-array element store cannot prove ToBigInt for this value — pass a BigInt value or convert it with BigInt(...)')
-      if (tagged) {
-        // A successful BigInt-element write cannot consume the Number arm of a
-        // materialized union. Validate before the bounds guard (matching JS even
-        // for OOB indices), then dereference only the proven PTR.BIGINT value.
-        if (ctx.func.inTry)
-          err('A Number-or-BigInt value stored into a BigInt typed array inside try/catch is not supported — narrow or convert the value before the try block')
+      // Only a proved BigInt owns raw i64 bits. Every other value uses the
+      // same ToBigInt conversion as fill/with, before the bounds guard; the
+      // assignment still yields its original, once-evaluated RHS.
+      if (!bigintValue) {
+        ctx.module.include('number')
         ctx.runtime.throws = true
-        const vt = temp('tw'), bits = tempI64('twb')
-        const get = typed(['local.get', `$${vt}`], 'f64')
-        const mismatch = [
-          ['global.set', '$__jz_last_err_bits', ['i64.reinterpret_f64', ['f64.const', errorCodeLiteral(ERR.BIGINT_UNDEF_MIX)]]],
-          ['throw', '$__jz_err', ['f64.const', errorCodeLiteral(ERR.BIGINT_UNDEF_MIX)]],
+        inc('__to_bigint_strict')
+        const vt = temp('tw'), bits = temp('twb')
+        const get = ['local.get', `$${vt}`]
+        const take = [
+          ['local.set', `$${vt}`, asF64(valIR)],
+          ['local.set', `$${bits}`, ['call', '$__to_bigint_strict', ['i64.reinterpret_f64', get]]],
+          guard(['i64.store', off, ['i64.reinterpret_f64', ['local.get', `$${bits}`]]]),
         ]
-        return typed(void_ ? ['block', ...pre,
-          ['local.set', `$${vt}`, asF64(valIR)],
-          ['if', ['i32.eqz', isBigIntBox(get, vt)], ['then', ...mismatch]],
-          ['local.set', `$${bits}`, unboxBigInt(get)],
-          guard(['i64.store', off, ['local.get', `$${bits}`]])]
-          : ['block', ['result', 'f64'], ...pre,
-          ['local.set', `$${vt}`, asF64(valIR)],
-          ['if', ['i32.eqz', isBigIntBox(get, vt)], ['then', ...mismatch]],
-          ['local.set', `$${bits}`, unboxBigInt(get)],
-          guard(['i64.store', off, ['local.get', `$${bits}`]]),
-          get], void_ ? 'void' : 'f64')
+        return typed(void_ ? ['block', ...pre, ...take]
+          : ['block', ['result', 'f64'], ...pre, ...take, get], void_ ? 'void' : 'f64')
       }
       if (void_ && (ctx.transform.optFlags & OPTF.leanCheckedIdx) && pureStorable(valIR)) return typed(['block', ...pre,
         guard(['i64.store', off, readI64(val, asF64(valIR))])], 'void')

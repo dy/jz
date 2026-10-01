@@ -30,7 +30,7 @@ import {
   freshId, boxBigInt, isNullish, throwTypeErrorIR,
 } from '../ir.js'
 import { emit, idx as emitIndex, storedValue, storedValueNarrow, storedFieldValue } from '../bridge.js'
-import { REP_EDGE_BOX, representationProgramHasBigint, representationStorageWriteAction } from './representation-plan.js'
+import { REP_EDGE_BOX, representationStorageWriteAction } from './representation-plan.js'
 import { plannedTypedStorageInfo, plannedTypedPayloadInfo } from './typed-storage-plan.js'
 import { typedIdxProven, inBoundsArrIdx, wholeKey } from '../type.js'
 import { trySlotUpdate } from './slot-update.js'
@@ -623,7 +623,7 @@ function emitElementStore(arr, idx, val, node) {
   const taggedValueExpr = () => valueVT === VAL.BIGINT &&
       representationStorageWriteAction(ctx, val) !== REP_EDGE_BOX
     ? boxBigInt(asI64(valueExpr)) : valueExpr
-  const runtimeTypedValueExpr = () => representationProgramHasBigint(ctx) ? taggedValueExpr() : valueExpr
+  const runtimeTypedValueExpr = taggedValueExpr
   // dyn-closure-tables.js: `arr[idx] = val` into a proven-safe candidate closure
   // table — record this write's provenance (direct closure literal, or a call
   // to a function resolveDynFnTables can later prove is a closure factory) for

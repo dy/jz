@@ -266,7 +266,9 @@ const MOD_DEPS = {
   // derived rows for typedarray-only properties (buffer/byteLength/byteOffset, the
   // DataView accessor family, subarray) have no such accompanying module — this
   // entry is the actual, general fix (root cause, not per-row patching).
-  typedarray: ['core'],
+  // Generic element stores need number's ToNumber/ToBigInt helpers even when
+  // no source-level conversion caused that module to be registered.
+  typedarray: ['core', 'number'],
 }
 
 // `onRegister(modName, newKeys)` is an OPTIONAL build-time-only observation hook —

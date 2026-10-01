@@ -3696,16 +3696,15 @@ test('bigint: BigInt typed-array stores recover a materialized RHS payload (was 
     catch (error) { return trace * 10 + (error instanceof TypeError ? 1 : 0) }
   }
   is(hostCaughtMismatch(), 11, 'Node oracle: OOB conversion throws after the index effect and is catchable')
-  // JZ's compact runtime code-error channel becomes a real host TypeError, but
-  // is not a source-level Error object; reject a surrounding catch rather than
-  // accept different catch identity/effects.
-  for (const optimize of levels(false, 2, 3))
-    throws(() => jz(BIGINT_TYPED_STORE_CATCH_SOURCE, { optimize }), /inside try\/catch is not supported/)
-  // Other statically non-BigInt inputs take the allowed correct-or-reject path;
-  // JZ does not pretend their raw carriers are i64 payloads.
-  for (const value of ['1', 'true', "'1'"])
-    throws(() => compile(`export let f = () => { const arr = new BigInt64Array(1); arr[0] = ${value} }`),
-      /BigInt typed-array element store cannot prove ToBigInt/)
+  for (const optimize of levels(false, 2, 3)) {
+    is(jz(BIGINT_TYPED_STORE_CATCH_SOURCE, { optimize }).exports.caughtMismatch(), 11,
+      'OOB conversion remains catchable after the index effect')
+    for (const value of ['1', 'true', "'1'"]) {
+      const source = `export let f = () => { const arr = new BigInt64Array(1); try { arr[0] = ${value}; return Number(arr[0]) } catch(e) { return e.name } }`
+      is(jz(source, { optimize }).exports.f(), value === '1' ? 'TypeError' : 1,
+        `ToBigInt converts ${value} by its value domain`)
+    }
+  }
 
   // Shared native/kernel source pairs the positive case with the load-bearing
   // negative control: raw bits that look exactly like PTR.BIGINT must not be
@@ -3727,8 +3726,8 @@ test('bigint: BigInt typed-array stores recover a materialized RHS payload (was 
     const next = wat.indexOf('\n  (func ', start + 1)
     return next < 0 ? wat.slice(start) : wat.slice(start, next)
   }
-  ok(/call \$__ptr_type/.test(bodyOf(BIGINT_TYPED_STORE_SOURCE, 'boxedI64')),
-    'materialized store uses readI64\'s PTR.BIGINT check')
+  ok(/call \$__to_bigint_strict/.test(bodyOf(BIGINT_TYPED_STORE_SOURCE, 'boxedI64')),
+    'materialized union uses ToBigInt before storing')
   ok(!/call \$__ptr_type/.test(bodyOf(BIGINT_TYPED_STORE_SOURCE, 'rawI64')),
     'proven-raw store remains a direct reinterpret with no tag check')
 
@@ -3747,6 +3746,53 @@ test('bigint: BigInt typed-array stores recover a materialized RHS payload (was 
   is(hostEffects(), 11, 'Node oracle: computed index evaluates once before the write')
   for (const optimize of levels(false, 3))
     is(jz(effectSource, { optimize }).exports.f(), 11, `O${optimize || 0}: matches Node source order and effects`)
+})
+
+test('bigint: typed stores convert unknown values before bounds and preserve the assignment value', async () => {
+  for (const ctor of ['BigInt64Array', 'BigUint64Array']) {
+    const source = `let trace=''
+      function value(mode){
+        if(mode===0)return 1.5;if(mode===1)return '7';if(mode===2)return true;
+        if(mode===3)return 9n;if(mode===4)return null;if(mode===5)return undefined;
+        if(mode===6)return {valueOf(){trace+='v';return 11n}};
+        if(mode===7)return {valueOf(){trace+='v';throw 17}};
+        if(mode===8)return Symbol('x');return 'bad'
+      }
+      export function f(mode,index,length){
+        const a=new ${ctor}(length),input=value(mode);trace='';
+        function base(){trace+='b';return a}
+        function key(){trace+='k';return index}
+        function rhs(){trace+='r';return input}
+        try { const answer=base()[key()]=rhs();
+          return [trace,answer===input,Number(a[0]??0n),'']
+        } catch(e){return [trace,false,Number(a[0]??0n),typeof e==='number'?'17':e.name]}
+      }`
+    const js = await oracle(source)
+    for (const level of levels(0, 1, 2, 3, 'size')) {
+      const m = jz(source, { optimize: { level, sourceInline: false } })
+      // Empty storage, last valid element, first invalid element, fractional
+      // and negative keys all convert. A/A/B/error/A exercises one instance.
+      for (const [index, length] of [[0, 0], [0, 1], [1, 1], [-1, 1], [0.5, 1]])
+        for (const mode of [1, 1, 6, 7, 1, 0, 2, 3, 4, 5, 8, 9])
+          is(m.exports.f(mode, index, length), js.f(mode, index, length), `${ctor} ${level}: mode=${mode}, index=${index}, length=${length}`)
+    }
+  }
+})
+
+test('bigint: known typed stores never treat an unknown Number carrier as raw BigInt', () => {
+  const source = `function value(hi,mode){if(mode)return '7';
+      const raw=new Uint32Array([305419896,hi]);return new Float64Array(raw.buffer)[0]}
+    export function f(hi,mode,index){const v=value(hi,mode),a=new BigInt64Array(1);
+      try{const result=a[index]=v;return [result===v,Number(a[0]),'']}
+      catch(e){return [false,Number(a[0]),e.name]}}`
+  for (const level of levels(0, 1, 2, 3, 'size')) {
+    const { f } = jz(source, { optimize: { level, sourceInline: false } }).exports
+    for (const index of [0, 1, -1, 0.5]) {
+      for (const high of [0x3ff00000, 0x7ff00000, 0x7ff08000, 0x7ff28000, 0x7ff80000, 0xfff80000])
+        is(f(high, 0, index), [false, 0, 'TypeError'], `${level}: ${high.toString(16)} at ${index}`)
+      is(f(0, 1, index), [true, index === 0 ? 7 : 0, ''], `${level}: valid string after errors at ${index}`)
+    }
+  }
 })
 
 test('bigint: unary "-"/"~" and joint-binary census results materialize through RepresentationPlan', () => {

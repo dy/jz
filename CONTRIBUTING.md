@@ -3086,6 +3086,11 @@ and copying, preserving mutations made by conversion hooks. Search arguments
 also evaluate before conversion, but an empty search never coerces fromIndex.
 Captured values cannot use the original local's live numeric shadow: only a
 direct read of that local may use its shadow.
+Indexed BigInt stores share that ToBigInt conversion for every value not proved
+BigInt, including unknown call results. Both known and dynamic receivers convert
+before the bounds guard, preserve the original assignment value, and allow source
+handlers to catch conversion errors. Only a proved BigInt uses a raw i64 carrier;
+the generic writer receives tagged values even when its domain proves BigInt.
 
 Every array position argument (fill, copyWithin, slice, splice, with, the
 search methods' fromIndex) is captured and coerced through `positionArgs`

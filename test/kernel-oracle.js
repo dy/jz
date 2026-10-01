@@ -493,8 +493,8 @@ test('kernel oracle: BigInt typed-array stores reject a Number before in-range o
   is(caught.caughtMismatch(), 11, 'JS oracle catches the OOB Number-to-BigInt conversion after the index effect')
   for (const opt of levels(0, 2, 3)) {
     const nat = runNative(src, opt), ker = runKernel(src, opt)
-    throws(() => runNative(BIGINT_TYPED_STORE_CATCH_SOURCE, opt), /inside try\/catch is not supported/)
-    throws(() => runKernel(BIGINT_TYPED_STORE_CATCH_SOURCE, opt), /inside try\/catch is not supported/)
+    is(runNative(BIGINT_TYPED_STORE_CATCH_SOURCE, opt).caughtMismatch(), 11, 'native catches conversion error')
+    is(runKernel(BIGINT_TYPED_STORE_CATCH_SOURCE, opt).caughtMismatch(), 11, 'kernel catches conversion error')
     for (const { fn, args } of BIGINT_TYPED_STORE_THROW_CALLS) {
       throws(() => mod[fn](...args), error => error instanceof TypeError)
       throws(() => nat[fn](...args), error => error instanceof TypeError)
