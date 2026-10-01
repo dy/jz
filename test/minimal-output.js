@@ -110,14 +110,21 @@ test('minimal: alloc:false omits the uncallable arena-reset heal protocol', () =
 // table, or exported). An eager include or a dead-branch dependency that nothing actually
 // calls is pure over-production — e.g. string concat used to ship the alloc trio's
 // `__alloc_hdr` (which it never calls) and a stray `__str_len`. Holds at every opt level.
-const deadInternalFuncs = (src, optimize) => {
-  const w = wat(src, optimize)
-  const internal = (n) => n !== '$__start' && (n.startsWith('$__') || /^\$[a-z_]+\./.test(n))
-  const defined = [...w.matchAll(/\(func (\$[\w.]+)/g)].map((m) => m[1]).filter(internal)
+const deadInternalFuncs = (w) => {
+  const internal = (n) => typeof n === 'string' && n !== '$__start' && (n.startsWith('$__') || /^\$[a-z_]+\./.test(n))
+  const defined = parseWat(w).slice(1).filter(n => n[0] === 'func' && internal(n[1]) &&
+    !n.some(p => Array.isArray(p) && p[0] === 'export')).map(n => n[1])
   // A defined helper that appears exactly once in the module text is referenced nowhere but
-  // its own definition — dead. Any real reference (call/elem/export) makes the count ≥ 2.
+  // its own definition — dead. Inline exports above are roots without a second name;
+  // other real references (call/elem/separate export) make the count ≥ 2.
   return defined.filter((fn) => (w.match(new RegExp('\\' + fn + '(?![\\w.])', 'g')) || []).length <= 1)
 }
+test('minimal: dead-helper probe recognizes inline and separate export roots', () => {
+  is(deadInternalFuncs(`(module (func) (func $__dead)
+    (func $__inline (export "inline"))
+    (func $__separate) (export "separate" (func $__separate))
+    (func $__called) (func $main (call $__called)))`), ['$__dead'])
+})
 const NO_DEAD = {
   'string concat': "export let f = (s) => s + '!'",
   'untyped property read': 'export let f = (o) => o.x',
@@ -130,7 +137,7 @@ for (const [name, src] of Object.entries(NO_DEAD)) {
   test(`minimal: ${name} emits no dead internal func`, () => {
     if (skip) return
     for (const O of levels(0, 2)) {
-      const dead = deadInternalFuncs(src, O)
+      const dead = deadInternalFuncs(wat(src, O))
       is(dead.length, 0, `${name} @O${O}: dead internal funcs — ${dead.join(', ')}`)
     }
   })

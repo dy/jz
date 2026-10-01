@@ -341,7 +341,16 @@ test('summary: two closures joined are a set; a call through the join calls each
     const T = { a: (s) => s.length, b: (s) => s + '!' }
     const g = (k) => T[k]('abc')
     export const f = (i, v) => tbl[i & 1](v) + g('a')`)
-  for (const id of [0, 1, 2, 3]) ok(!ctx.summary.escaped.has(id), `closure ${id} is called through the table, not escaped`)
+  const members = []
+  for (const [fn, recv, key] of [['f', 'tbl', ['&', binding('f', 'i'), [null, 1]]], ['g', 'T', binding('g', 'k')]]) {
+    const id = ctx.summary.at(fn).calleeOf(['()', ['[]', recv, key], null])
+    ok(id !== null, `${recv} resolves its callable members`)
+    const ids = ctx.summary.closureMembers(id)
+    is(ids.length, 2, `${recv} joins both source closures`)
+    members.push(...ids)
+  }
+  is(new Set(members).size, 4, 'the two tables retain four distinct source closures')
+  for (const id of members) ok(!ctx.summary.escaped.has(id), `closure ${id} is called through the table, not escaped`)
   is(tagOf(ctx.summary.resultOf('g')), K.ANY, 'a computed key on a known shape reads one of its slots: the call is the join of the members\' results (a number, a string), and may miss')
   is(jz(`const T = { a: (s) => s.length, b: (s) => s + '!' }
     export const g = (k) => T[k]('abc')`).exports.g('b'), 'abc!')
