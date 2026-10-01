@@ -141,6 +141,7 @@ const TESTS = [
   'typed-decode',
   'typed-store',
   'typed-wide-index',
+  'index-width',
   'shift-precedence',
   'loop-step',
   'field-cse',

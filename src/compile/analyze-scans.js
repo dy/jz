@@ -13,7 +13,6 @@ import { exprType } from '../type.js'
 import { maxAdvanceBudget } from '../type/canonical-bounds.js'
 import { repOf, updateRep } from '../reps.js'
 import { typedElemAux } from '../../layout.js'
-import { NUMBER } from '../summary/kind.js'
 
 export function findFreeVars(node, bound, free, scope) {
   if (node == null) return
@@ -1066,48 +1065,10 @@ export function narrowWordLocals(body, locals, isNumber, wordStore) {
   return words
 }
 
-// Operators under which a counter remains a *monotone, bounded* function of the
-// index root: an affine index `base + i*stride` (and `i << k`) whose computed
-// offset must fit i32-addressable wasm32 memory therefore bounds the counter to
-// i32 range. `/ % & | ^ >> >>>` are excluded — they decouple the index magnitude
-// from the counter (`arr[i & 7]` stays small however large `i` grows), so they
-// prove nothing about the counter's range.
+// Arithmetic paths through which an index exposes its operand magnitudes.
+// The index use supplies no range proof: checked accesses accept out-of-bounds
+// keys, and wrapping such a key can turn a missing read into an in-bounds one.
 const AFFINE_INDEX_OPS = new Set(['+', '-', '*', '<<', 'u-'])
-
-/**
- * Locals proven to stay within i32 range, so they need not widen to f64 when
- * compared against an f64 loop bound. Keeping them i32 yields direct i32 indexing
- * (no per-access `trunc_sat_f64_s`) and lets the relational compare coerce the
- * counter instead — the compiler-inferred form of the manual `let n = N | 0` hoist.
- *
- * Two sound sources of an i32-range proof:
- *   1. Direct: a local appears as an *affine* component of an array index. A valid
- *      wasm32 access requires the byte offset to fit i32, and an affine index is
- *      monotone in the local, so the local is i32-bounded for every non-trapping run.
- *   2. Transitive (back-propagation): a local that flows — via affine
- *      assignment/step (`let i0 = ix`, `i0 += id`) — into an already-bounded index
- *      var is itself bounded by that var's range. This captures the common
- *      nested-loop shape where the outer bound seeds an inner index (FFT butterflies:
- *      `while (ix < N) { let i0 = ix; while (i0 < N) … x[i0] … i0 += id }`).
- *
- * Fractional locals are unaffected: this set only suppresses *comparison*-driven
- * widening; the assignment fixpoint that follows still widens any local with an
- * f64-typed RHS (`i = i / 3`), overriding membership here.
- *
- * THIRD requirement, layered on top of both sources above (.work/archive/todo.md
- * KNOWN GAP #1): membership alone is NOT sufficient — a var is
- * excluded from the returned set if `collectBareEscapes` finds it in an
- * unresolved bare-escape position anywhere in `body`. Both sources' proofs
- * are true only AT THE POINT of the index/edge use; the var's WASM storage is
- * ONE slot for the whole function, so a later unguarded bare read (`return
- * id` after `id *= 100000`) would silently read back a wrapped value. See
- * collectBareEscapes' own doc for the exemption rules (index position,
- * ToInt32-rooted or a proved range).
- */
-// An integer literal that fits signed i32 — the only constant a promoted i32
-// local may hold. A larger integer (`0xFFFFFFFF`, a NaN-box mask) is emitted as
-// an f64.const, so treating it as an i32 leaf would store f64 into an i32 local.
-const isI32Lit = (v) => typeof v === 'number' && Number.isInteger(v) && v >= -2147483648 && v <= 2147483647
 
 // Word operators consume truncated operands; comparisons consume the original
 // numeric magnitude. The walk distinguishes these two roots below.
@@ -1214,7 +1175,7 @@ function bareEscapeScan(body, crossClosure, wide, keepEdges) {
       if (mode === 'value') escape(node[1])
       return
     }
-    if (op === '[]' && !isLiteralStr(node[2])) { walk(node[1], 'value'); walk(node[2], 'idx'); return }
+    if (op === '[]' && !isLiteralStr(node[2])) { walk(node[1], 'value'); walk(node[2], 'value'); return }
     if (op === '=' && mode === 'stmt' && Array.isArray(node[1]) && node[1][0] === '[]' && typeof node[1][1] === 'string'
         && constIntExpr(node[1][2]) != null) {
       const target = node[1], aux = typedElemAux(typedCtorRawOf(target[1]))
@@ -1593,116 +1554,25 @@ export function stampBodyRanges(body, readPresent, typedLens) {
 }
 
 const isDynamicIndexNode = n => n[0] === '[]' && !isLiteralStr(n[2])
-// `bareEscapesOf` (optional): a zero-arg thunk returning `collectBareEscapes(body,
-// locals)`, for a caller (widenLocalTypes) that ALSO needs that same fact for its
-// own Pass D and would otherwise trigger it twice — collectBareEscapes is itself a
-// full-body walk plus a collectComparedNames sub-walk, so a shared, once-computed
-// value (the caller's thunk typically memoizes) avoids a real duplicate traversal
-// whenever both consumers fire. Defaults to a fresh call, matching prior behavior
-// exactly for any other caller.
-export function collectI32SafeIndexVars(body, locals, bareEscapesOf = () => collectBareEscapes(body, locals)) {
+/** Index locals whose complete value hull already proves signed i32 storage.
+ *  An affine expression or a small downstream index cannot bound its feeders.
+ *  The canonical range authority includes all writes; unknown hulls stay f64. */
+export function collectI32SafeIndexVars(body, locals) {
   if (!some(body, isDynamicIndexNode)) return EMPTY_SCAN_SET
-  const defs = takeScratchMap()
-  try { return collectI32SafeIndexVarsIn(body, locals, bareEscapesOf, defs) } finally { releaseScratchMap(defs) }
-}
-function collectI32SafeIndexVarsIn(body, locals, bareEscapesOf, defs) {
-  const safe = new Set()
-  let changed = false
-  // Add the names reachable from `node` through affine ops only to `safe`,
-  // noting whether any was new.
-  const addAffine = (node) => {
-    if (typeof node === 'string') { if (!safe.has(node)) { safe.add(node); changed = true } return }
-    if (!Array.isArray(node)) return
-    if (AFFINE_INDEX_OPS.has(node[0])) for (let i = 1; i < node.length; i++) addAffine(node[i])
-  }
-  // Pass 1: record assignment edges (back-prop; target and rhs as two parallel
-  // lists) + a name→definitions map (for the integer-shape test). `+= …`
-  // reconstructs to `name + …` so its shape includes the prior value.
-  const edgeTargets = [], edgeSources = []
-  const addEdge = (name, rhs) => { edgeTargets.push(name); edgeSources.push(rhs) }
-  const addDef = (name, rhs) => { (defs.get(name) ?? defs.set(name, []).get(name)).push(rhs) }
-  const collect = (node) => {
-    const op = node[0]
-    if (op === 'let' || op === 'const') {
-      for (let i = 1; i < node.length; i++) {
-        const d = node[i]
-        if (Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string') { addEdge(d[1], d[2]); addDef(d[1], d[2]) }
-        // The implicit undefined is a write too, unless the settled summary
-        // proves every read follows an assignment on all reaching paths.
-        else if (typeof d === 'string' && ctx.summary?.at(body).bindingKindOf(d) !== NUMBER) addDef(d, null)
-      }
-    } else if (op === '=' && typeof node[1] === 'string') { addEdge(node[1], node[2]); addDef(node[1], node[2]) }
-    else if ((op === '+=' || op === '-=' || op === '*=') && typeof node[1] === 'string') { addEdge(node[1], node[2]); addDef(node[1], [op[0], node[1], node[2]]) }
-    if (op === '=>') return false
-  }
-  walkAst(body, { enter: collect })
-
-  // Integer-shaped AND i32-representable: provably an integer through `+ - * << u-`
-  // (AFFINE_INDEX_OPS — excludes `/`/`**`/fractional ops) over leaves that are
-  // i32-typed, i32-range integer literals, or other integer-shaped locals. Lets a
-  // hoisted offset `let o = y*w` (f64-typed product, integer-valued) qualify as an
-  // index leaf before narrowing. A fractional leaf, an out-of-i32-range literal, or
-  // a param of unknown type disqualifies — so no truncation and no f64.const→i32.
-  // `seen` holds the names on the current definition path: a name is added
-  // before its definitions are checked and removed after, so the set is what
-  // it was at entry whenever a call returns, and one set serves every call.
-  const seen = new Set()
-  const isIntShaped = (node) => {
-    if (typeof node === 'number') return isI32Lit(node)
+  let safe
+  const add = node => {
     if (typeof node === 'string') {
-      if (exprType(node, locals) === 'i32') return true
-      if (seen.has(node)) return true  // recursion through a self-step — other defs still gate
-      const ds = defs.get(node)
-      if (!ds || !ds.length) return false  // param / unknown source — not provably integer
-      seen.add(node)
-      const r = ds.every(d => isIntShaped(d))
-      seen.delete(node)
-      return r
-    }
-    if (!Array.isArray(node)) return false
-    const op = node[0]
-    if (op == null) return isI32Lit(node[1])  // [null, value] literal
-    if (!AFFINE_INDEX_OPS.has(op)) return false
-    for (let i = 1; i < node.length; i++) if (node[i] != null && !isIntShaped(node[i])) return false
-    return true
+      if (!escapeInRangeI32(node)) return
+      ;(safe ||= new Set()).add(node)
+      if (locals.get(node) === 'f64' && !ctx.func.boxed?.has(node)) locals.set(node, 'i32')
+    } else if (Array.isArray(node) && AFFINE_INDEX_OPS.has(node[0]))
+      for (let i = 1; i < node.length; i++) add(node[i])
   }
-
-  // Pass 2: seed from array indices already i32 OR integer-shaped (the latter
-  // rescues hoisted integer offsets the type pass left at f64). A fractional index
-  // (`mem[y*w+x]` with fractional `w`) is not integer-shaped → still truncs per
-  // access and is left to widen, preserving the prior guard.
-  const seed = (node) => {
-    const op = node[0]
-    if (op === '[]' && !isLiteralStr(node[2]) && (exprType(node[2], locals) === 'i32' || isIntShaped(node[2]))) addAffine(node[2])
-    if (op === '=>') return false
-  }
-  walkAst(body, { enter: seed })
-
-  // Back-propagate to a fixpoint: feeders of a bounded index var are bounded.
-  changed = true
-  while (changed) {
-    changed = false
-    for (let i = 0; i < edgeTargets.length; i++) if (safe.has(edgeTargets[i])) addAffine(edgeSources[i])
-  }
-  // A var promoted to PERMANENT i32 storage must have NO unproven bare escape
-  // ANYWHERE in the body — the storage is a single WASM local slot, so ANY
-  // later unguarded bare read (`return id` after `id *= 100000`, the
-  // FFT-butterfly KNOWN-FAIL this closes — see collectBareEscapes' doc)
-  // corrupts the value regardless of where in the function the escape sits
-  // relative to the sound index-feeding use. Filtering AFTER the fixpoint
-  // (rather than gating each backprop step) is sound without a re-fixpoint:
-  // removing a var here never needs to cascade to vars that reached `safe`
-  // THROUGH it — each var's own storage-safety rests on ITS OWN index/edge
-  // role, not on some other excluded var's escape status (a plain local
-  // copy `e = id` already routes through the SAME edge-exemption regardless
-  // of id's verdict, so e's own qualification — if any — is unaffected).
-  for (const n of bareEscapesOf()) safe.delete(n)
-  // Promote integer-shaped index feeders the type pass left at f64 (a hoisted
-  // `o = y*w`). The byte offset must fit i32-addressable memory, so the i32-wrap
-  // residue reproduces the true in-bounds value — same contract as inline `a[y*w+x]`.
-  // Skip boxed (closure-captured) cells — those live as f64 in memory.
-  for (const n of safe) if (locals.get(n) === 'f64' && !ctx.func.boxed?.has(n) && isIntShaped(n)) locals.set(n, 'i32')
-  return safe
+  walkAst(body, { enter: node => {
+    if (isDynamicIndexNode(node)) add(node[2])
+    if (node[0] === '=>') return false
+  } })
+  return safe || EMPTY_SCAN_SET
 }
 
 /**

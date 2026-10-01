@@ -67,6 +67,9 @@ export function exprType(expr, locals, valTypes, strict, bodyRoot, readPresent) 
   if (typeof expr === 'number')
     return isI32(expr) ? 'i32' : 'f64'
   if (typeof expr === 'string') {
+    // A captured mutable name's local is its cell pointer, not its value.
+    // Match readVar: only an explicitly narrowed cell yields an i32 payload.
+    if (locals === ctx.func.locals && ctx.func.boxed?.has(expr)) return ctx.func.cellTypes?.has(expr) ? 'i32' : 'f64'
     // An unboxed pointer (a typed-array parameter, a raw OBJECT local) lives in
     // an i32 but is an offset, not an integer value: a local assigned from it
     // (`let target = cond ? left : right`) must not narrow to an integer i32,

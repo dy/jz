@@ -583,18 +583,7 @@ const wordStoreOf = (body, locals) => u => {
   return aux != null && (aux & 7) <= 5 && !(aux & (32 | 64))
 }
 function widenLocalTypes(body, locals, readPresent, unsignedLocals, wordLocals) {
-  // Shared, lazily-memoized across collectI32SafeIndexVars' own internal use
-  // and Pass D below — both want the identical collectBareEscapes(body,
-  // locals) fact (same body, same locals, no crossClosure), and it's a real
-  // full-body walk; computing
-  // it once here instead of once per consumer avoids a duplicate traversal
-  // whenever both fire (collectI32SafeIndexVars' own dynamic-index early
-  // exit, or Pass D's level1I32 gate, mean it's often needed by only one or
-  // neither — this only computes it when at least one consumer actually
-  // asks, still zero-cost when neither does).
-  let bareEscapesCache
-  const bareEscapesOf = () => bareEscapesCache ??= collectBareEscapes(body, locals)
-  const i32SafeIdx = collectI32SafeIndexVars(body, locals, bareEscapesOf)
+  const i32SafeIdx = collectI32SafeIndexVars(body, locals)
   // Names this scope's own locals map might be reassigned FROM INSIDE A NESTED
   // ARROW — a captured, mutated variable. analyzeBody runs before boxedCaptures
   // populates ctx.func.boxed, so recompute the same "some arrow writes this
@@ -699,7 +688,7 @@ function widenLocalTypes(body, locals, readPresent, unsignedLocals, wordLocals) 
   let level1I32 = false
   for (const [name, level] of intLevels) if (level === 1 && locals.get(name) === 'i32') { level1I32 = true; break }
   if (level1I32) {
-    const bareEscapes = bareEscapesOf()
+    const bareEscapes = collectBareEscapes(body, locals)
     for (const [name, level] of intLevels)
       if (level === 1 && locals.get(name) === 'i32' && bareEscapes.has(name) && !wordLocals.has(name)) locals.set(name, 'f64')
   }

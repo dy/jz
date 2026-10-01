@@ -696,6 +696,13 @@ do not imply equal numbers across signed and unsigned domains.
 Checked reads share one lowering for integer conversion and comparison:
 conversion maps absence to zero; comparison keeps the answer for undefined.
 Dependent index reads use branches to avoid address clamps on serial load chains.
+Index-only locals still preserve their full Number magnitude: an out-of-bounds
+access is a valid missing read or ignored store, not proof that its index fits.
+Only the existing closed signed-i32 value hull can promote an affine index local;
+small downstream results cannot bound their arithmetic feeders. Captured names
+use their cell payload type, independently of the i32 pointer that addresses it.
+Actual word
+consumers retain their separate modulo conversion proof (`test/index-width.js`).
 Index arithmetic can keep its low word when its hull lies in [-2^31, 2^32):
 unsigned bounds tests reject both negative words and values past the length.
 Typed allocations cap byte counts below 2^31. The shared `intExprRange` query
