@@ -45,7 +45,7 @@ import { constIntExpr, intLiteralValue } from '../src/static.js'
 import { I32_MIN, I32_MAX } from '../src/ast.js'
 
 test('integer width: only nonzero masked unsigned shifts prove signed storage', () => {
-  const shifts = [1, 31, 32, 33, -1, -32, 1.75, NaN, Infinity, -Infinity]
+  const shifts = [1, 31, 32, 33, -1, -32, 1.75, NaN, Infinity, -Infinity, 1e100, -1e100, 2 ** 64]
   const src = `let ${shifts.map((_,i)=>`g${i}=0`).join(',')}, dynamic=0;
     export function set(n,s){${shifts.map((s,i)=>`g${i}=n>>>(${s});`).join('')}dynamic=n>>>s}
     export function read(){return [${shifts.map((_,i)=>`g${i}`).join(',')},dynamic]}`
@@ -57,6 +57,17 @@ test('integer width: only nonzero masked unsigned shifts prove signed storage', 
         got.set(n,shift);host.set(n,shift)
         is(got.read(),host.read(),`O${optimize}: ${n} shifted by ${shift}`)
       }
+    }
+  }
+  const localSource = shifts.map((shift,i) => `export function f${i}(n) {
+    const v = n >>> (${shift}); return [v, v + 4294967296, -v]
+  }`).join('\n')
+  const localHost = oracle(localSource)
+  for (const optimize of levels(0,1,2,3,'size')) {
+    const got = jz(localSource,{optimize}).exports
+    for (let i = 0; i < shifts.length; i++) for (const n of [-1,-1,0,-0,2147483648,4294967295,undefined,null,NaN,Infinity]) {
+      const actual = got[`f${i}`](n), expected = localHost[`f${i}`](n)
+      ok(actual.every((value,k)=>Object.is(value,expected[k])), `O${optimize}: local shift ${shifts[i]} of ${n}`)
     }
   }
   if (!belowOpt(2)) {

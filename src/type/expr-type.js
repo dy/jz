@@ -17,7 +17,7 @@ import {
   hasAmbiguousBoolMerge, censusShapedNode,
 } from '../kind.js'
 import { propValType, CMP_OPS } from '../kind-traits.js'
-import { NO_VALUE, staticValue, intExprRange, constIntExpr, mulRangeFitsI32, negRangeFitsI32 } from '../static.js'
+import { NO_VALUE, staticValue, intExprRange, constIntExpr, mulRangeFitsI32, negRangeFitsI32, unsignedShiftFitsI32 } from '../static.js'
 import { typedElemAux } from '../../layout.js'
 import { typedStorageNameCtor } from '../typed-context.js'
 import { isPresentNumber } from '../kind.js'
@@ -156,7 +156,7 @@ export function exprType(expr, locals, valTypes, strict, bodyRoot, readPresent) 
   // Comparisons always yield i32. Unsigned shifts have an i32 payload, but
   // lossless signed storage must preserve their full uint32 magnitude.
   if (CMP_OPS.has(op)) return 'i32'
-  if (op === '>>>') return readPresent ? 'f64' : 'i32'
+  if (op === '>>>') return readPresent && !unsignedShiftFitsI32(expr[2]) ? 'f64' : 'i32'
   // Bitwise & signed-shift: i32 on numbers, but f64 when operands are BigInt — the
   // result is a bigint carried in the i64-bits-as-f64 ABI, not a 32-bit int.
   if (SIGNED_BIT_OPS.has(op)) {

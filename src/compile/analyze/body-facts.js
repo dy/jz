@@ -12,7 +12,7 @@ import { commaList, isReassigned, collectParamNames, walkAst, some, takeScratchS
 import { withValueOverlay, withTypedElemOverlay } from '../flow-state.js'
 import { makeMapOverlay } from '../map-overlay.js'
 import { VAL, updateRep } from '../../reps.js'
-import { intExprRange, staticPropertyKey, staticArrayElems, exprSchemaId } from '../../static.js'
+import { intExprRange, staticPropertyKey, staticArrayElems, exprSchemaId, unsignedShiftFitsI32 } from '../../static.js'
 import { exprType, intLevelMap } from '../../type.js'
 import { K, tagOf, paramOf, hasTag, valOf, core, UNKNOWN } from '../../summary/index.js'
 import { ctorFromElemAux, typedElemAux } from '../../../layout.js'
@@ -301,8 +301,7 @@ function computeBodyFacts(body, bodyFacts, elemOrigin, storage) {
     // Only `>>> 0` (and variable shifts, which could be 0) need widening. (ToUint32 accumulators
     // init from a literal and narrowUint32 re-narrows them — so this only governs `let u = x >>> k`.)
     const shr = Array.isArray(rhs) && rhs[0] === '>>>'
-    const shrFitsI32 = shr && Array.isArray(rhs[2]) && rhs[2][0] == null
-      && typeof rhs[2][1] === 'number' && (rhs[2][1] & 31) >= 1
+    const shrFitsI32 = shr && unsignedShiftFitsI32(rhs[2])
     const wt = (shr && !shrFitsI32) ? 'f64' : exprType(rhs, locals)
     if (!locals.has(name)) locals.set(name, wt)
     else if (locals.get(name) === 'i32' && wt === 'f64') locals.set(name, 'f64')

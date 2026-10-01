@@ -508,6 +508,13 @@ function forCounterBoundsIn(init, cond, step, name, rangeOf, rangedStep) {
 
 export const NO_VALUE = Symbol('no-static-property-key')
 
+/** A nonzero masked unsigned shift removes the uint32 sign bit. */
+export function unsignedShiftFitsI32(count) {
+  const shift = staticValue(count)
+  return typeof shift === 'number' && (int32(shift) & 31) !== 0
+}
+
+
 export function staticPropertyKey(node) {
   const value = staticValue(node)
   return value === NO_VALUE ? null : String(value)

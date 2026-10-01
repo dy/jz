@@ -793,7 +793,9 @@ Comparison emission and folding share one signedness proof: equal word bits
 do not imply equal numbers across signed and unsigned domains.
 An unsigned shift by a known nonzero masked count clears the high bit and
 proves signed storage width. Zero, unknown and modulo-32-zero counts retain
-the complete unsigned range.
+the complete unsigned range. The expression result query, declaration typing
+and integer lattice use the same masked-count proof, including hosted reduction
+of enormous counts. A lossless value query must not discard that signed bound.
 Checked reads share one lowering for integer conversion and comparison:
 conversion maps absence to zero; comparison keeps the answer for undefined.
 Dependent index reads use branches to avoid address clamps on serial load chains.

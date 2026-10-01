@@ -12,7 +12,7 @@ import { walkAst, takeScratchMap, releaseScratchMap } from '../ast.js'
 import { ctx } from '../ctx.js'
 import { VAL, lookupValType } from '../reps.js'
 import { propValType, CMP_OPS } from '../kind-traits.js'
-import { NO_VALUE, staticValue } from '../static.js'
+import { NO_VALUE, staticValue, unsignedShiftFitsI32 } from '../static.js'
 import { typedStorageNameCtor } from '../typed-context.js'
 import { typedElemAux } from '../../layout.js'
 import { NUMBER } from '../summary/kind.js'
@@ -96,11 +96,7 @@ function makeIntLevelExpr(intLevels, slotLevelOf, readPresent) {
     if (sv !== NO_VALUE && typeof sv === 'number' && Object.is(sv, -0)) return 0
     const op = expr[0]
     if (op == null) return _numLevel(expr[1])
-    if (op === '>>>') {
-      const shift = staticValue(expr[2])
-      // A nonzero masked shift removes the sign bit from every uint32 input.
-      return typeof shift === 'number' && (shift & 31) !== 0 ? 2 : 1
-    }
+    if (op === '>>>') return unsignedShiftFitsI32(expr[2]) ? 2 : 1
     if (INT_BIT_OPS.has(op) || CMP_OPS.has(op)) return 2
     if (op === '[]' && readPresent?.has(expr) && typeof expr[1] === 'string') {
       const aux = typedElemAux(typedStorageNameCtor(ctx, expr[1]))
