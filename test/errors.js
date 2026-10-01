@@ -1272,7 +1272,7 @@ test('instanceof: unsupported RHS rejects loudly at compile time (jz has no prot
   const rejects = (code) => throws(code, 'instanceof', 'unsupported instanceof RHS should error', { strict: true })
   rejects(`export let f = (x) => x instanceof Object`)
   rejects(`export let f = (x) => x instanceof Function`)
-  rejects(`export let f = (x) => x instanceof RegExp`)
+  rejects(`export let f = (x) => { const RegExp = 4; return x instanceof RegExp }`)
   rejects(`export let f = (x) => x instanceof Promise`)
   rejects(`export let f = (x) => x instanceof BigInt64Array`)
   rejects(`export let f = (x) => x instanceof BigUint64Array`)
