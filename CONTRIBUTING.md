@@ -703,6 +703,8 @@ the f64 unless a complete range proves i32 storage. Neither a comparison nor
 truthiness proves the counter's width. Unit-step loops with stable numeric
 bounds get a guarded copy: a private rounded bound and the final counter step
 must fit i32, while the original Number loop handles the remaining inputs.
+Other written locals of fixed nonnumeric kinds keep their original binding in
+both arms; loop versioning must not create aliases of a private string builder.
 Explicitly wrapping i32 counters compare against exact invariant i64 thresholds;
 NaN selects a threshold below every i32 value. Primitive parameters consumed
 only by word operators may convert once at the call boundary, as established

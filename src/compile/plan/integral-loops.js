@@ -326,12 +326,14 @@ const versionBody = (body, params, view, func, programFacts) => {
     if (!numbers.some(n => loopWrites.has(n))) numbers = []
     const present = [...presentNames(loop, loopWrites, kindOf, outerOk)]
     if (!names.length && !numbers.length && !present.length && !counterBound) continue
-    // Every local the copy writes gets a name of its own too, from its
-    // value: a local is one representation, and the loop's keep the float
-    // values the copy's do not. So do the copy's own declarations. A
+    // A Number the copy writes gets a name of its own too: a local has one
+    // representation, and the original loop keeps the float values the copy
+    // does not. The copy's own declarations also get fresh names. Fixed
+    // nonnumeric outer values keep their binding, so copying a loop creates
+    // no alias of a private string builder. A
     // number (every write an integer) is read by `+`: a plain read would
     // count as an integer use of the loop's own name.
-    const written = [...locals].filter(n => loopWrites.has(n) && !inner.has(n) && !captured.has(n) && !ctx.funcs.names.has(n) && !already(n))
+    const written = [...locals].filter(n => loopWrites.has(n) && !inner.has(n) && !captured.has(n) && !ctx.funcs.names.has(n) && mayBeNumber(n) && !already(n))
     const outer = [...new Set([...names, ...numbers, ...present, ...written])]
     const own = new Map([...outer, ...inner].map(n => [n, `${n}${T}int${freshId(ctx)}`]))
     const copy = cloneWithSubst(loop, new Map(), own)

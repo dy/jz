@@ -4,7 +4,7 @@ import { is, ok, almost, throws } from 'tst/assert.js'
 import jz, { compile } from '../index.js'
 import { i64ToF64, instantiate } from '../interop.js'
 import { onWasi, onKernel, adaptI64, levels, belowOpt } from './_matrix.js'
-import { oracle } from './util.js'
+import { oracle, funcWat } from './util.js'
 
 // interop's instantiate (not raw WebAssembly.instantiate): a module whose
 // unproven-receiver reads pull the env external machinery declares imports —
@@ -1290,7 +1290,8 @@ test('host memory: boolean tags survive structured construction and writes', () 
 // node the peephole walk had copied away (its label survives).
 // A loop's per-iteration rewind in the final text: a restore of the heap
 // pointer at the top of the loop (the marker local's name is the link's).
-const loopRestores = (wat) => (wat.match(/\(loop \$[^\s()]+\n\s*\(global\.set \$__heap \(local\.get \$[^\s()]+\)\)/g) || []).length
+const rewoundLoops = wat => [...wat.matchAll(/\(loop (\$[^\s()]+)\n\s*\(global\.set \$__heap \(local\.get \$[^\s()]+\)\)/g)].map(m => m[1])
+const loopRestores = wat => rewoundLoops(wat).length
 
 test('arena: a per-iteration rewind holds a render loop flat', () => {
   const src = `export function render(out, blocks) {
@@ -1336,7 +1337,7 @@ test('arena: a per-iteration rewind stays with the function whose loop proved it
   }`
   const keep = `const kept = []
   export function keep(n) {
-    for (let b = 0; b < n; b++) {
+    for (let b = 0; b < (n | 0); b++) {
       const blk = new Float64Array(4)
       blk[0] = b * 2
       kept.push(blk)
@@ -1347,16 +1348,22 @@ test('arena: a per-iteration rewind stays with the function whose loop proved it
   }`
   for (const src of [render + '\n' + keep, keep + '\n' + render]) {
     const wat = compile(src, { optimize: 'speed', wat: true })
-    const fn = name => { const at = wat.indexOf('(func $' + name), next = wat.slice(at + 1).search(/\n\s*\(func /); return wat.slice(at, next < 0 ? undefined : at + 1 + next) }
-    const label = body => body.match(/\(loop (\$\w+)/)[1]
-    is(label(fn('render')), label(fn('keep')), 'the two loops carry one label')
+    const fn = name => funcWat(wat, name) || funcWat(wat, name + '$exp')
+    // A word bound keeps the retaining loop from gaining counter versions;
+    // pin a collision with an actually rewound loop, including complete labels.
+    const keptLabels = [...fn('keep').matchAll(/\(loop (\$[^\s()]+)/g)].map(m => m[1])
+    ok(rewoundLoops(fn('render')).some(label => keptLabels.includes(label)), 'a rewound and a retaining loop carry one label')
     ok(loopRestores(fn('render')) > 0, 'the render loop rewinds')
     is(loopRestores(fn('keep')), 0, 'the retaining loop does not')
     const inst = jz(src, { optimize: 'speed' })
     const out = new Float64Array(128), before = inst.memory.buffer.byteLength
+    is(inst.exports.render(out, 0), 0, 'zero blocks do no work')
+    is(inst.exports.keep(0), 0, 'zero retained blocks start empty')
     inst.exports.render(out, 20000)
     is(inst.memory.buffer.byteLength, before, 'twenty thousand blocks grow nothing')
     is(inst.exports.keep(1000), 999000, 'the retained blocks keep their values')
+    is(inst.exports.keep(0), 999000, 'zero further work preserves every retained block')
+    is(inst.exports.keep(3), 999006, 'another call retains new blocks beside the old ones')
   }
 })
 

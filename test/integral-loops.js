@@ -34,6 +34,20 @@ test('integral loops: every cursor and count agrees with JS, integral or not', (
   }
 })
 
+test('integral loops: fixed nonnumeric writes keep identity in either loop arm', () => {
+  const src = `export function run(n) {
+    let text='', value={i:-1}, flag=false;const initial=value
+    for(let i=0;i<n;i++){text+='ab';value={i};flag=!flag;if(i===2)break}
+    return[text,value.i,flag,initial.i,value===initial]
+  }`
+  const js = oracle(src)
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const { run } = jz(src, { optimize }).exports
+    for (const n of [0, 1, 1, 2.25, -1, 2147483648, NaN, Infinity, 0])
+      is(run(n), js.run(n), `O${optimize}: ${n}`)
+  }
+})
+
 test('integral loops: what else the loop writes reads the same after it', () => {
   const src = `const buf = new Float64Array(8)
     export let run = (p0, n, tag) => { let p = p0, s = tag, count = 0, last = null
