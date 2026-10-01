@@ -101,9 +101,11 @@ summary's settled cell identity and existing demand lattice; unknown readers,
 unmodeled copying methods, escaped arrays and callback defaults prevent numeric
 seeding. A concat argument that might itself be an array also keeps its identity.
 Summary length columns use the same dense cell ids as element kinds;
-definition and store-kind columns use binding ids. Sparse stores keep their map. Published readers retain their own columns across
-later summaries. The typeof-predicate cache retains successful structural matches only;
-nonmatching conditions need no stored record.
+definition and store-kind columns use binding ids. Sparse stores keep their map.
+Name lookup stores a single binding id directly; only names shared by specialized
+variants need a list. Scoped readers still select their binding before joining.
+Published readers retain their own columns across later summaries. The typeof
+predicate cache retains successful matches; other conditions need no record.
 Boolean values that may be absent use the tagged carrier, just like nullable
 BigInts. A payload kind cannot erase absence when projecting a binding into
 local or captured-cell storage; callback writes and their enclosing reads
@@ -111,8 +113,8 @@ must agree on that carrier.
 Closure bodies contribute demand only in their own frame. An assignment's
 original value also flows to its expression reader, independently of the
 stored slot; scalarization must preserve that observation.
-A fixed typed receiver and an integer range wholly outside it prove a missing read before an eager
-load is emitted. Receiver and index evaluation remain in order, and the missing
+A fixed typed receiver and an integer range wholly outside it prove a missing
+read before an eager load is emitted. Receiver and index evaluation remain in order, and the missing
 index bit propagates through nested gathers. Nullable receivers keep checks.
 Typed-array scalar replacement keeps observed writes on the memory path and
 converts discarded compound writes back to the element type. Conversion hooks

@@ -3294,7 +3294,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   const scopeOfBody = new Map(funcs.filter(f => f.body !== null && typeof f.body === 'object').map(f => [f.body, f.name]))   // a function's block body → its scope; a closure's is in closuresByBody
   const scopeOfParams = new Map()    // a closure's parameter node (its stable identity through emission) → its id
   const MODULE = ''
-  const nameKeys = new Map()         // name → binding ids (one, or a function and its specialized variants)
+  const nameKeys = new Map()         // name → one binding id, or the ids of its specialized variants
   const writes = []                 // flat scope, name, initializer, bare, store-bits records
   // The stores of a binding by their syntax, in every body, walked or not: a
   // body no walk reaches keeps no kind, and its bindings answer by these
@@ -3319,9 +3319,10 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     const key = nextBinding++
     bindingScope[key] = scope
     d.set(name, key)
-    let keys = nameKeys.get(name)
-    if (!keys) nameKeys.set(name, keys = [])
-    keys.push(key)
+    const keys = nameKeys.get(name)
+    if (keys === undefined) nameKeys.set(name, key)
+    else if (typeof keys === 'number') nameKeys.set(name, [keys, key])
+    else keys.push(key)
     return key
   }
   // Module bindings a top-level statement assigns unconditionally (`straight`:
@@ -3450,9 +3451,9 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     for (let i = 1; i < n.length; i++) {
       const c = n[i]
       if (typeof c === 'string') {
-        const keys = nameKeys.get(c)
-        if (keys?.length !== 1) continue
-        const value = definitions[keys[0]]?.[1]
+        const key = nameKeys.get(c)
+        if (typeof key !== 'number') continue
+        const value = definitions[key]?.[1]
         if (typeof value !== 'string' && !(Array.isArray(value) && value[0] === '{}')) continue
         let l = nameSites.get(c); if (!l) nameSites.set(c, l = [])
         l.push(n, i, up)
@@ -3466,7 +3467,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   // name of one definition whose every mention reads a field by name
   // (`idx.HIGH`) or declares an alias held the same way. Any other mention
   // (an argument, a store, a computed key, a value handed on) may write it.
-  const soleKey = (name) => { const keys = nameKeys.get(name); return keys?.length === 1 ? keys[0] : null }
+  const soleKey = (name) => { const key = nameKeys.get(name); return typeof key === 'number' ? key : null }
   const onlyRead = (name, seen) => {
     const key = soleKey(name), def = key === null ? null : definitions[key]
     if (!def || seen.has(key)) return false
@@ -3526,7 +3527,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   // Any number a name holds for good is what a module name's reads fold to (compile/plan/scope.js).
   const held = new Map()
   for (const [name, keys] of nameKeys) {
-    const def = keys.length === 1 ? definitions[keys[0]] : null
+    const def = typeof keys === 'number' ? definitions[keys] : null
     if (!def) continue
     const v = staticValue(def[0], def[1])
     if (Number.isInteger(v)) ints.set(name, v)

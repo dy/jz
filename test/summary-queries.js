@@ -42,6 +42,22 @@ test('summary queries: internal readers leave complete cached public views acros
   is(retained.kindOf('value'), kind(K.NUMBER), 'empty work does not alter the retained view')
 })
 
+test('summary queries: single names and shared variants keep scoped and unscoped facts', () => {
+  const values = [7, 'changed', true], tags = [K.NUMBER, K.STRING, K.BOOL]
+  let retained
+  for (const count of [1, 1, 3, 0, 1]) {
+    const funcs = values.slice(0, count).map((value, i) => ({ name: 'fn' + i, sig: { params: [] },
+      body: ['{}', [';', ['const', ['=', 'shared', lit(value)]], ['return', 'shared']]] }))
+    const q = summarize(null, { funcs, schemas: [], brandOf: () => null, imports: new Map(), exported: () => true })
+    is(q.kindOf('shared'), tags.slice(0, count).reduce((k, t) => join(k, kind(t)), K.NONE),
+      'unscoped reads join every existing variant, including the first binding id')
+    for (let i = 0; i < count; i++) is(q.at('fn' + i).kindOf('shared'), kind(tags[i]), 'scoped reads select one binding')
+    is(q.held.get('shared'), count === 1 ? 7 : undefined, 'only an unambiguous definition supplies a held constant')
+    retained ??= q
+    is(retained.kindOf('shared'), kind(K.NUMBER), 'later variants and empty work preserve earlier readers')
+  }
+})
+
 test('summary queries: cell lengths preserve zero, joins, init growth and retained snapshots', () => {
   const options = { funcs: [], schemas: [], brandOf: () => null, imports: new Map(), exported: () => false }
   const decl = (name, value) => ['const', ['=', name, value]]
