@@ -7,8 +7,8 @@
 import { ctx, inc, LAYOUT } from '../../ctx.js'
 import { asF64, asI32, asI64, block64, coerceNullishToNum, emitNum, f64rem, isGlobal, isLit, isPureIR, litVal, readI64, temp, tempI32, toNumF64, toStrI64, typed, withTemp } from '../../ir.js'
 import { MUTATE_OPS, some } from '../../ast.js'
-import { censusMaybeUndefined, censusMaybeUndefinedKind, numericDenied, valTypeOf } from '../../kind.js'
-import { VAL, mayBeUndefined } from '../../reps.js'
+import { censusMaybeUndefined, censusMaybeUndefinedKind, isPresentNumber, numericDenied, valTypeOf } from '../../kind.js'
+import { VAL, mayBeUndefined, repOf } from '../../reps.js'
 import { intExprRange, negRangeFitsI32 } from '../../static.js'
 import { K, core, hasTag, tagsOf, tagOf, paramOf, UNKNOWN } from '../../summary/kind.js'
 import { exprType, inBoundsArrIdx } from '../../type.js'
@@ -31,6 +31,14 @@ const peelI32 = (v) =>
     : (Array.isArray(v) && (v[0] === 'f64.convert_i32_s' || v[0] === 'f64.convert_i32_u'))
       ? (Array.isArray(v[1]) ? typed(v[1], 'i32') : v[1])
       : null
+
+// A source-inlined uint32 result may retain f64 storage. Its settled all-writes
+// fact still proves an exact unsigned word, provided the read is present.
+const unsignedWord = (a, v) =>
+  isI32Num(v) && v.unsigned ? v
+    : v[0] === 'f64.convert_i32_u' ? typed(v[1], 'i32')
+      : typeof a === 'string' && repOf(a)?.unsigned && isPresentNumber(ctx, a)
+        ? typed(['i32.trunc_sat_f64_u', toNumF64(a, v)], 'i32') : null
 
 // Native wrapping i32 arithmetic for `+`/`-`/`*` whose result is consumed as i32. Peels the
 // f64.convert_i32_s/u that integer reads (`DX[i]`, a global Int32Array) wrap their load in, so
@@ -616,8 +624,7 @@ export const arithmeticOps = {
     // literal is `i32.rem_u` on its bits, exact; the remainder is below K, so
     // it is a plain signed i32 whenever K fits one.
     if (isLit(vb) && Number.isInteger(litVal(vb)) && litVal(vb) > 0 && litVal(vb) < 2 ** 32 && !vb.unsigned) {
-      const pa = isI32Num(va) && va.unsigned ? va
-        : Array.isArray(va) && va[0] === 'f64.convert_i32_u' ? (Array.isArray(va[1]) ? typed(va[1], 'i32') : va[1]) : null
+      const pa = unsignedWord(a, va)
       if (pa) {
         const r = typed(['i32.rem_u', pa, ['i32.const', litVal(vb) >>> 0 | 0]], 'i32')
         if (litVal(vb) > 2 ** 31) r.unsigned = true
@@ -628,11 +635,10 @@ export const arithmeticOps = {
     // for runtime divisors. The operands must already have faithful i32 views;
     // a range alone does not prove a possibly missing read is a number.
     if (!isLit(vb) && divisorRange && divisorRange[0] > 0 && divisorRange[1] <= 0x7fffffff) {
-      const pa = peelI32(va), pb = peelI32(vb)
+      const pu = unsignedWord(a, va), pa = pu || peelI32(va), pb = peelI32(vb)
       if (pa && pb) {
-        const unsigned = va.unsigned || va[0] === 'f64.convert_i32_u'
-        if (unsigned || range && range[0] >= 0)
-          return typed([unsigned ? 'i32.rem_u' : 'i32.rem_s', pa, pb], 'i32')
+        if (pu || range && range[0] >= 0)
+          return typed([pu ? 'i32.rem_u' : 'i32.rem_s', pa, pb], 'i32')
         const t = `$${tempI32('rem')}`
         return typed(['f64.copysign',
           ['f64.convert_i32_s', ['i32.rem_s', ['local.tee', t, pa], pb]],

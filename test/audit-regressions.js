@@ -442,7 +442,7 @@ test('audit: integer products preserve zero sign through every numeric carrier',
     const wat = compile(`export function positive(x,y){return (x&255)*(y&255)}
       export function square(x){const v=x>>24;return v*v}`, {optimize:2,wat:true})
     for (const name of ['positive','square']) {
-      const body = funcWat(wat, name)
+      const body = funcWat(wat, name) || funcWat(wat, `${name}$exp`)
       ok(body.includes('i32.mul') && !body.includes('f64.mul'), `${name}: faithful products retain integer multiplication`)
     }
   }

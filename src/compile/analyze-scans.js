@@ -962,7 +962,7 @@ function narrowUint32In(body, locals, states, isTypedU32) {
   const isU32Lit = e => {
     const v = typeof e === 'number' ? e
       : Array.isArray(e) && e[0] == null && typeof e[1] === 'number' ? e[1] : NaN
-    return Number.isInteger(v) && v >= 0 && v < 4294967296
+    return Number.isInteger(v) && !Object.is(v, -0) && v >= 0 && v < 4294967296
   }
   const isU32 = e => Array.isArray(e) && (e[0] === '>>>' || isTypedU32?.(e) ||
     (e[0] === '()' && typeof e[1] === 'string' && ctx.funcs.map.get(e[1])?.sig.unsignedResult === true) ||

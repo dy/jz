@@ -702,6 +702,10 @@ The emitter's mask and typed-load shortcuts use the same zero-sign proof,
 including compound multiplication. Multiplication by zero retains its floating
 operation unless both operands are constant: its other operand's sign and any
 side effects remain observable through returns, storage and reciprocals.
+Unsigned-word facts also survive f64 locals created by source inlining. A
+present read with that all-writes proof converts exactly to a uint32 for `%`;
+a proven positive divisor then needs only word remainder. Missing reads keep
+the generic path, and the unsigned literal proof excludes negative zero.
 
 A typed array a guard proves is read as that typed array (`plan/guard-views.js`,
 the `guardViews` pass): past `if (!(a instanceof Float32Array)) throw …` the

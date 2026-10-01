@@ -97,6 +97,43 @@ test('remainder: cyclic bounds preserve fractions and negative writes', () => {
   }
 })
 
+test('remainder: unsigned helper results retain their word proof in floating locals', () => {
+  const source = `export function sequence(seed,n){
+    let state=seed|0;
+    const next=()=>{state=(state+1)|0;return state>>>0};
+    let sum=0;
+    for(let i=0;i<n;i++){const count=3+next()%5;sum+=next()%(16-count)}
+    return [sum,state]
+  }`
+  const unsafe = `
+    export function absent(x,i,y){const a=new Uint32Array([x]);const v=a[i];return v%((y&7)+1)}
+    export function union(x,c,y){let v=x>>>0;if(c)v=undefined;return v%((y&7)+1)}
+    export function plain(x,y){const v=x;return v%((y&7)+1)}
+    export function zero(y){let v=-0;return v%((y&7)+1)}
+    export function order(x,y){let value=x|0,calls=0;
+      const next=()=>{calls++;value=(value+1)|0;return value>>>0};
+      const r=next()%((next()&7)+1);return [r,value,calls]}
+  `
+  const host=oracle(source), fallback=oracle(unsafe)
+  for(const optimize of levels(0,1,2,3,'size')) {
+    const wasm=run(source,{optimize}), other=run(unsafe,{optimize})
+    for(const seed of [0,-1,2147483646,2147483647,4294967295,NaN])
+      for(const n of [0,1,2,9,9,0]) is(wasm.sequence(seed,n),host.sequence(seed,n),`${optimize}: sequence(${seed},${n})`)
+    for(const x of [0,-0,-6,-1,2147483648,4294967295,2**40+0.5,NaN,Infinity])
+      for(const y of [0,1,7]) {
+        for(const i of [-1,0,1]) ok(Object.is(other.absent(x,i,y),fallback.absent(x,i,y)),`${optimize}: present element required`)
+        for(const c of [0,1]) ok(Object.is(other.union(x,c,y),fallback.union(x,c,y)),`${optimize}: missing union retained`)
+        ok(Object.is(other.plain(x,y),fallback.plain(x,y)),`${optimize}: unproven number retained`)
+        ok(Object.is(other.zero(y),-0),`${optimize}: negative zero is not uint32`)
+        is(other.order(x,y),fallback.order(x,y),`${optimize}: both source calls run once in order`)
+      }
+  }
+  if(belowOpt(2)) return
+  const text=wat(source,{optimize:'size'})
+  ok(text.includes('i32.rem_u'),'helper results use unsigned word remainder')
+  ok(!text.includes('$__rem'),'bounded divisors need no generic remainder runtime')
+})
+
 test('remainder: the wrap runs without the division loop', () => {
   if (belowOpt(2)) return
   const text = wat(src, { optimize: 2 })
