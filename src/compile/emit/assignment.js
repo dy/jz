@@ -122,10 +122,10 @@ function stagedReference(name, update = true, rhs) {
     if (key && !vt) {
       // Unknown keys retain primitive payloads (including symbol atoms).
       // Only an object can run user code during ToPropertyKey.
-      inc('__is_object', '__to_str')
+      inc('__is_object', '__to_key')
       const bits = ['i64.reinterpret_f64', ['local.get', `$${h}`]]
       pre.push(['if', ['call', '$__is_object', bits], ['then',
-        ['local.set', `$${h}`, ['f64.reinterpret_i64', ['call', '$__to_str', bits]]]]])
+        ['local.set', `$${h}`, ['f64.reinterpret_i64', ['call', '$__to_key', bits]]]]])
     }
     return h
   }

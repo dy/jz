@@ -834,17 +834,17 @@ export default (ctx) => {
       const obj = asI64(emit(arr))
       if (keyType === VAL.STRING || isLiteralStr(idx))
         return typed(['i32.wrap_i64', ['call', '$__hash_get_local', obj, asI64(emit(idx))]], 'i32')
-      inc('__is_str_key', '__to_str')
+      inc('__is_str_key', '__to_key')
       const kt = temp()
       // storedValue (not asF64(emit(idx))): READ-side sibling of MECHANISM A
       // (.work/archive/todo.md §deletion-sweep Finding #2) — an ambiguous BOOL∪NUMBER
-      // merge key must reach __to_str/__hash_get_local boxed, or ToPropertyKey
+      // merge key must reach __to_key/__hash_get_local boxed, or ToPropertyKey
       // normalizes the wrong (collapsed-number) bits. storedValue already
       // returns f64-typed IR, so no asF64 wrap is needed.
       return typed(['block', ['result', 'i32'],
         ['local.set', `$${kt}`, storedValue(idx)],
         ['if', ['i32.eqz', ['call', '$__is_str_key', ['i64.reinterpret_f64', ['local.get', `$${kt}`]]]],
-          ['then', ['local.set', `$${kt}`, ['f64.reinterpret_i64', ['call', '$__to_str', ['i64.reinterpret_f64', ['local.get', `$${kt}`]]]]]]],
+          ['then', ['local.set', `$${kt}`, ['f64.reinterpret_i64', ['call', '$__to_key', ['i64.reinterpret_f64', ['local.get', `$${kt}`]]]]]]],
         ['i32.wrap_i64', ['call', '$__hash_get_local', obj, ['i64.reinterpret_f64', ['local.get', `$${kt}`]]]]], 'i32')
     }
     // TypedArray: type-aware load

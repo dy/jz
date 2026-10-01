@@ -507,16 +507,16 @@ export default (ctx) => {
   const stringHasOwn = (obj, key) => {
     ctx.module.include('collection')
     ctx.module.include('string')
-    inc('__str_arr_idx', '__str_length', '__is_str_key', '__to_str', '__str_eq')
+    inc('__str_arr_idx', '__str_length', '__is_str_key', '__to_key', '__key_eq')
     const s = temp('hos'), k = tempI64('hok'), i = tempI32('hoi')
     return typed(['block', ['result', 'i32'],
       ['local.set', `$${s}`, asF64(emit(obj))],
       ['local.set', `$${k}`, asI64(emit(key))],
-      ['if', ['i32.eqz', ['call', '$__is_str_key', ['local.get', `$${k}`]]], ['then', ['local.set', `$${k}`, ['call', '$__to_str', ['local.get', `$${k}`]]]]],
+      ['if', ['i32.eqz', ['call', '$__is_str_key', ['local.get', `$${k}`]]], ['then', ['local.set', `$${k}`, ['call', '$__to_key', ['local.get', `$${k}`]]]]],
       ['local.set', `$${i}`, ['call', '$__str_arr_idx', ['local.get', `$${k}`]]],
       ['i32.or',
         ['i32.and', ['i32.ge_s', ['local.get', `$${i}`], ['i32.const', 0]], ['i32.lt_s', ['local.get', `$${i}`], ['call', '$__str_length', ['i64.reinterpret_f64', ['local.get', `$${s}`]]]]],
-        ['call', '$__str_eq', ['local.get', `$${k}`], asI64(emit(['str', 'length']))]]], 'i32')
+        ['call', '$__key_eq', ['local.get', `$${k}`], asI64(emit(['str', 'length']))]]], 'i32')
   }
   ctx.core.emit['.hasOwnProperty'] = (obj, key) => {
     const litKey = Array.isArray(key) && key[0] === 'str' ? String(key[1]) : null
@@ -837,8 +837,8 @@ export default (ctx) => {
     }
     const nullishThrow = requireCoercible(arr)
     if (nullishThrow) return nullishThrow
-    inc('__hash_new', '__hash_set_local', '__is_str_key', '__to_str')
-    inc('__str_hash', '__str_eq')
+    inc('__hash_new', '__hash_set_local', '__is_str_key', '__to_key')
+    inc('__str_hash', '__key_eq')
     const va = asF64(emit(arr))
     const t = temp('fe'), ptr = tempI32('fp'), len = tempI32('fl')
     const i = tempI32('fi'), pair = tempI32('fv'), key = tempI64('fk')
@@ -856,7 +856,7 @@ export default (ctx) => {
         // ToPropertyKey (as `o[k] = v` does, __dyn_set): a stored key is always a string, so `o[-1]` finds the entry `[-1, v]` made.
         ['local.set', `$${key}`, ['i64.load', ['local.get', `$${pair}`]]],
         ['if', ['i32.eqz', ['call', '$__is_str_key', ['local.get', `$${key}`]]],
-          ['then', ['local.set', `$${key}`, ['call', '$__to_str', ['local.get', `$${key}`]]]]],
+          ['then', ['local.set', `$${key}`, ['call', '$__to_key', ['local.get', `$${key}`]]]]],
         // the result is the HASH made above: its store needs no other kind's arm
         ['local.set', `$${t}`, ['f64.reinterpret_i64', ['call', '$__hash_set_local', ['i64.reinterpret_f64', ['local.get', `$${t}`]],
           ['local.get', `$${key}`],
@@ -977,7 +977,7 @@ function emitObjectAssignDynamic(target, sources) {
       continue
     }
     body.push(
-      ['local.set', `$${keys}`, runtimeKeysFromTemp(s, 'oak')],
+      ['local.set', `$${keys}`, runtimeKeysFromTemp(s, 'oak', false, true)],
       ['local.set', `$${keysBase}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${keys}`]]]],
       ['local.set', `$${valsBase}`, idxValuesBase(s)],
       ['local.set', `$${len}`, ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${keys}`]]]],
@@ -1361,8 +1361,8 @@ function emitDynamicSpread(props, excluded = null) {
   const unless = (keyBits, keys, store) => {
     if (!keys.length) return store
     ctx.module.include('string')
-    inc('__str_eq')
-    const hit = keys.map(k => ['call', '$__str_eq', keyBits, asI64(emit(k))]).reduce((a, b) => ['i32.or', a, b])
+    inc('__key_eq')
+    const hit = keys.map(k => ['call', '$__key_eq', keyBits, asI64(emit(k))]).reduce((a, b) => ['i32.or', a, b])
     return ['if', ['i32.eqz', hit], ['then', store]]
   }
   const body = [['local.set', `$${t}`, ['call', '$__hash_new']]]
@@ -1419,7 +1419,7 @@ function emitDynamicSpread(props, excluded = null) {
       continue
     }
     body.push(
-      ['local.set', `$${keys}`, runtimeKeysFromTemp(s, 'dsk')],
+      ['local.set', `$${keys}`, runtimeKeysFromTemp(s, 'dsk', false, true)],
       ['local.set', `$${keysBase}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${keys}`]]]],
       ['local.set', `$${valsBase}`, idxValuesBase(s)],
       ['local.set', `$${len}`, ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${keys}`]]]],
@@ -1512,8 +1512,9 @@ function emitHashEntries(obj) {
 // the static-HASH path and the runtime-dispatch path so both produce the same
 // IR shape from the same source — only difference is whether they enter from
 // a static type guard or a runtime ptr-type check.
-function hashKeysFromTemp(t) {
-  inc('__ptr_offset', '__cap', '__prop_order')
+function hashKeysFromTemp(t, symbols = false) {
+  const order = symbols ? '__own_order' : '__prop_order'
+  inc('__ptr_offset', '__cap', order)
   const off = tempI32('hko'), cap = tempI32('hkc'), n = tempI32('hkn')
   const i = tempI32('hki'), ord = tempI32('hkr'), slot = tempI32('hks')
   // len is __coll_order's OWN live count, not the header length (core.js
@@ -1524,7 +1525,7 @@ function hashKeysFromTemp(t) {
   return ['block', ['result', 'f64'],
     ['local.set', `$${off}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
     ['local.set', `$${cap}`, ['call', '$__cap', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
-    ['local.set', `$${ord}`, ['call', '$__prop_order', ['local.get', `$${off}`], ['local.get', `$${cap}`], ['i32.const', 24]]],
+    ['local.set', `$${ord}`, ['call', '$' + order, ['local.get', `$${off}`], ['local.get', `$${cap}`], ['i32.const', 24]]],
     ['local.set', `$${n}`, ['global.get', '$__coll_order_n']],
     out.init,
     ['local.set', `$${i}`, ['i32.const', 0]],
@@ -1615,7 +1616,7 @@ function emitRuntimeKeys(obj, ro) {
     ...(ro ? [] : [requireEnumReceiver(t)]), runtimeKeysFromTemp(t, 'rk', ro)], 'f64')
 }
 
-function runtimeKeysFromTemp(t, tag, ro) {
+function runtimeKeysFromTemp(t, tag, ro, symbols = false) {
   if (ctx.memory.shared) ro = false  // see emitKeysGeneric — no enum cache under shared memory
   inc('__enum_type')
   // Ensure the schema table global exists even in programs that never use
@@ -1636,21 +1637,21 @@ function runtimeKeysFromTemp(t, tag, ro) {
       ['then', ro
         ? (inc('__hash_keys_ro'), declEnumcGlobals(),
           ['call', '$__hash_keys_ro', ['i64.reinterpret_f64', ['local.get', `$${t}`]]])
-        : hashKeysFromTemp(t)],
+        : hashKeysFromTemp(t, symbols)],
       ['else', ['if', ['result', 'f64'],
         ['i32.eq', ['local.get', `$${tt}`], ['i32.const', PTR.OBJECT]],
-        ['then', objectKeysFromTemp(t, ro)],
-        ['else', idxEnum(t, 0)]]]]]
+        ['then', objectKeysFromTemp(t, ro, false, null, symbols)],
+        ['else', idxEnum(t, 0, symbols)]]]]]
 }
 
 // An index-keyed receiver's keys, values or entries (__idx_enum): what a
 // runtime enumeration lists for a kind neither a layout nor a dictionary holds.
 // Collections append their named properties through the shared property walk.
-const idxEnum = (t, mode) => {
+const idxEnum = (t, mode, symbols = false) => {
   ctx.module.include('string')
   ctx.module.include('collection')
   inc('__idx_enum', '__enum_type', '__ptr_aux')
-  const named = mode === 0 ? objectKeysFromTemp(t, false, true, mode)
+  const named = mode === 0 ? objectKeysFromTemp(t, false, true, mode, symbols)
     : mode === 1 ? objectValuesFromTemp(t, mode) : objectEntriesFromTemp(t, mode)
   const own = ['if', ['result', 'f64'],
     [PTR.ARRAY, PTR.TYPED, PTR.SET, PTR.MAP, PTR.BUFFER].map(type =>
@@ -1773,13 +1774,15 @@ export function walkObjectProperties(env, onStatic, onDynamic, local) {
       set(s.key, s.nsrc ? ['i64.load', ['i32.add', get(s.slot), c(8)]] : load(src, s.pos)),
       set(j, ['call', '$__str_index_key', get(s.key)]),
       set(s.rank, ['if', ['result', 'i64'], ['i32.ne', get(j), c(-1)],
-        ['then', ['i64.extend_i32_u', get(j)]], ['else', ['i64.const', (s.nsrc + 1) * 4294967296]]])]],
+        ['then', ['i64.extend_i32_u', get(j)]], ['else', env.symbols
+          ? ['select', ['i64.const', (s.nsrc + 1) * 4294967296], ['i64.const', (s.nsrc + 5) * 4294967296], ['call', '$__is_str_key', get(s.key)]]
+          : ['i64.const', (s.nsrc + 1) * 4294967296]]])]],
   ]
   // Schema slots own values even when a reinsertion record supplies their order.
   // Content equality also handles non-interned keys.
   const scan = (label, n, candidate, hit) => [set(j, c(0)), ['block', label, ['loop', label + 'loop',
     ['br_if', label, ['i32.ge_u', get(j), get(n)]],
-    ['if', ['call', '$__str_eq', get(key), candidate], ['then', ...hit, ['br', label]]],
+    ['if', ['call', '$__key_eq', get(key), candidate], ['then', ...hit, ['br', label]]],
     set(j, ['i32.add', get(j), c(1)]), ['br', label + 'loop']]]]
   const dynKey = ord => ['i64.load', ['i32.add', ['local.tee', `$${other}`,
     ['i32.load', ['i32.add', get(ord), ['i32.shl', get(j), c(2)]]]], c(8)]]
@@ -1821,8 +1824,10 @@ export function walkObjectProperties(env, onStatic, onDynamic, local) {
 // seeds the result with indexed elements, then appends the same ordered
 // sidecar properties. Arrays have a header even in static data; typed views
 // and buffers have no sidecar and keep named properties in the global table.
-function emitEnumerateObject(t, emitStaticStore, emitDynStore, ro, dynOnly = false, indexed = null) {
-  inc('__alloc_hdr', '__ptr_offset', '__prop_order', '__str_index_key', '__str_eq')
+function emitEnumerateObject(t, emitStaticStore, emitDynStore, ro, dynOnly = false, indexed = null, symbols = false) {
+  const order = symbols ? '__own_order' : '__prop_order'
+  inc('__alloc_hdr', '__ptr_offset', order, '__str_index_key', '__key_eq')
+  if (symbols) inc('__is_str_key')
   ctx.module.include('string')
   if (ro) declEnumcGlobals()
   // Durable-receiver global-table merge (see below) only when collection.js's
@@ -2036,13 +2041,13 @@ function emitEnumerateObject(t, emitStaticStore, emitDynStore, ro, dynOnly = fal
       ['i32.shl', ['local.get', `$${ni}`], ['i32.const', 3]]]]),
     ['if', ['i32.ne', ['local.get', `$${poffG}`], ['i32.const', 0]],
       ['then',
-        ['local.set', `$${ordG}`, ['call', '$__prop_order', ['local.get', `$${poffG}`], ['local.get', `$${pcapG}`], ['i32.const', 24]]],
+        ['local.set', `$${ordG}`, ['call', '$' + order, ['local.get', `$${poffG}`], ['local.get', `$${pcapG}`], ['i32.const', 24]]],
         ['local.set', `$${dnGReal}`, ['global.get', '$__coll_order_n']]]],
     ['if', ['i32.ne', ['local.get', `$${poffS}`], ['i32.const', 0]],
       ['then',
-        ['local.set', `$${ordS}`, ['call', '$__prop_order', ['local.get', `$${poffS}`], ['local.get', `$${pcapS}`], ['i32.const', 24]]],
+        ['local.set', `$${ordS}`, ['call', '$' + order, ['local.get', `$${poffS}`], ['local.get', `$${pcapS}`], ['i32.const', 24]]],
         ['local.set', `$${dnSReal}`, ['global.get', '$__coll_order_n']]]],
-    ...walkObjectProperties({ src, sn, base, mask, ordS, dnS: dnSReal, ordG, dnG: dnGReal, i, slot, row, map, kind },
+    ...walkObjectProperties({ src, sn, base, mask, ordS, dnS: dnSReal, ordG, dnG: dnGReal, i, slot, row, map, kind, symbols },
       () => [...emitStaticStore(env), ['local.set', `$${o}`, ['i32.add', ['local.get', `$${o}`], ['i32.const', 1]]]],
       () => [...emitDynStore(env), ['local.set', `$${o}`, ['i32.add', ['local.get', `$${o}`], ['i32.const', 1]]]],
       (name, type) => type === 'i64' ? tempI64(name) : tempI32(name)),
@@ -2053,7 +2058,7 @@ function emitEnumerateObject(t, emitStaticStore, emitDynStore, ro, dynOnly = fal
 
 // Object.keys for an OBJECT — copy schema key (i64@src+i*8) then dyn key (i64@slot+8).
 // ro (for-in): serve the static schema array / enum cache — see emitEnumerateObject.
-const objectKeysFromTemp = (t, ro, dynOnly = false, indexed = null) => emitEnumerateObject(t,
+const objectKeysFromTemp = (t, ro, dynOnly = false, indexed = null, symbols = false) => emitEnumerateObject(t,
   ({ out, o, src, row }) => [
     ['i64.store',
       ['i32.add', ['local.get', `$${out}`], ['i32.shl', ['local.get', `$${o}`], ['i32.const', 3]]],
@@ -2061,7 +2066,7 @@ const objectKeysFromTemp = (t, ro, dynOnly = false, indexed = null) => emitEnume
   ({ out, o, slot }) => [
     ['i64.store',
       ['i32.add', ['local.get', `$${out}`], ['i32.shl', ['local.get', `$${o}`], ['i32.const', 3]]],
-      ['i64.load', ['i32.add', ['local.get', `$${slot}`], ['i32.const', 8]]]]], ro, dynOnly, indexed)
+      ['i64.load', ['i32.add', ['local.get', `$${slot}`], ['i32.const', 8]]]]], ro, dynOnly, indexed, symbols)
 
 // Object.values for an OBJECT — copy schema value (f64@base+i*8) then dyn value (f64@slot+16).
 const objectValuesFromTemp = (t, indexed = null) => emitEnumerateObject(t,

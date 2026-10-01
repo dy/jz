@@ -21,12 +21,12 @@
 
 import { mkPtrIR, typed, tempI64, throwErrorIR } from '../src/ir.js'
 import { err, inc, PTR, declGlobal } from '../src/ctx.js'
-import { atomNanHex, TOMB_NAN } from '../layout.js'
+import { atomNanHex, TOMB_NAN, SYMBOL_MIN } from '../layout.js'
 
 // fix/wrong-values-3: exported — module/json.js's __json_omit needs this
 // exact threshold to tell a genuine user Symbol apart from a canonical
 // arithmetic NaN (aux=0, explicitly "reserved" above, never a real atom).
-export const RESERVED = 16  // first user atom ID
+export const RESERVED = SYMBOL_MIN  // first user atom ID
 
 export default (ctx) => {
   inc('__mkptr')

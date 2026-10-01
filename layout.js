@@ -47,6 +47,7 @@ export const FIELD = { NUMBER: 1 << 12, BOOL: 1 << 13, NULLISH: 1 << 14, ANY: (1
 /** Reserved atom aux ids (PTR.ATOM). Aux 3 is private error-code transport
  *  (err-codes.js), materialized before a source catch observes it. */
 export const ATOM = { NULL: 1, UNDEF: 2, FALSE: 4, TRUE: 5 }
+export const SYMBOL_MIN = 16  // first user Symbol atom id
 
 /** Private absent-slot marker; no JavaScript value encodes this atom. */
 export const TOMB_NAN = '0x7FF87FFFFFFFFFFF'

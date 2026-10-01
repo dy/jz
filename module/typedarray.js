@@ -103,7 +103,7 @@ export default (ctx) => {
   deps({
     __byte_length: ['__ptr_type', '__ptr_offset', '__ptr_aux'],
     __byte_offset: ['__ptr_type', '__ptr_offset', '__ptr_aux'],
-    __typed_prop_get: ['__len', '__byte_length', '__byte_offset', '__to_buffer', '__typed_shift', '__ptr_aux', '__str_eq', '__mkptr'],
+    __typed_prop_get: ['__len', '__byte_length', '__byte_offset', '__to_buffer', '__typed_shift', '__ptr_aux', '__key_eq', '__mkptr'],
     __to_buffer: ['__ptr_type', '__ptr_offset', '__ptr_aux', '__mkptr'],
     __typed_set_idx: () => ['__ptr_aux', '__ptr_type', '__to_int32',
       ...(ctx.linkDemand.f16 ? ['__f64_to_f16'] : []), ...(ctx.linkDemand.clamped ? ['__u8_clamp'] : [])],
@@ -750,7 +750,7 @@ export default (ctx) => {
     ].map(([name, value]) => {
       const key = print(asI64(emit(['str', name])))
       return `(if (i32.eq (local.get $h) (i32.const ${strHashLiteral(name)}))
-        (then (if (call $__str_eq (local.get $key) ${key})
+        (then (if (call $__key_eq (local.get $key) ${key})
           (then ${name === 'length' || name === 'BYTES_PER_ELEMENT' ? `(if (i32.and (call $__ptr_aux (local.get $ptr)) (i32.const ${DATA_VIEW_FLAG}))
             (then (return (local.get $miss))))` : ''}
             (return (i64.reinterpret_f64 ${value}))))))`

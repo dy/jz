@@ -23,7 +23,7 @@ import { inlineArraySid, inlineArrayUnion } from '../src/static.js'
 import { packedI32, structInline } from '../src/abi/index.js'
 import { VAL, lookupValType, repOf } from '../src/reps.js'
 import { ctx, err, inc, warnDeopt, PTR, LAYOUT, HEAP, FORWARDING_MASK, emitArity, followForwardingWat, declGlobal, registerGetter, setLinkDemand } from '../src/ctx.js'
-import { ptrOffsetFwdWat, deletedMaskWat, HIDDEN_PROPERTY_SEQ, ssoBitI64Hex } from '../layout.js'
+import { ptrOffsetFwdWat, deletedMaskWat, SYMBOL_MIN, HIDDEN_PROPERTY_SEQ, ssoBitI64Hex } from '../layout.js'
 import { nanPrefixHex, nanPrefixMaskHex, OBJECT_SCHEMA_HI_MASK, objectSchemaGuardHex, TYPED_ELEM_BIGINT_FLAG, DATA_VIEW_FLAG, i64Hex } from '../layout.js'
 import { initSchema } from './schema.js'
 import { strHashLiteral, heapResetWat, durableLenLogIR, durableArrSnapIR, LENGTH_SSO_I64, MAP_ENTRY, collectionLaneBytes, stringIndexWat } from './collection.js'
@@ -121,7 +121,8 @@ export default (ctx) => {
     __alloc_hdr_n: ['__alloc'],
     __hash_keys_ro: ['__ptr_offset', '__prop_order', '__alloc_hdr', '__mkptr'],
     __coll_order: ['__alloc'],
-    __prop_order: () => ['__alloc', ...(ctx.core.stdlib['__char_at'] ? ['__is_str_key', '__str_index_key'] : [])],
+    __own_order: () => ['__alloc', '__is_str_key', ...(ctx.core.stdlib['__char_at'] ? ['__str_index_key'] : [])],
+    __prop_order: () => ['__alloc', '__is_str_key', ...(ctx.core.stdlib['__char_at'] ? ['__str_index_key'] : [])],
     __str_index_key: ['__str_length'],
     // Durable-receiver global-table merge (see __obj_clone's body) pulls in
     // __ihash_get_local/__is_nullish only when collection.js's dyn-props
@@ -316,6 +317,13 @@ export default (ctx) => {
       (else
         (i32.eq (call $__ptr_type (i64.reinterpret_f64 (local.get $f))) (i32.const ${PTR.STRING})))))`
 
+
+  // User Symbols are atom identities, distinct from reserved nullish/boolean atoms.
+  ctx.core.stdlib.__is_symbol = `(func $__is_symbol (param $v i64) (result i32)
+    (i32.and ${print(boxedPtrTypeEq(['f64.reinterpret_i64', ['local.get', '$v']], PTR.ATOM))}
+      (i32.and (i64.ne (local.get $v) (i64.const ${TOMB_NAN}))
+        (i32.ge_u (i32.wrap_i64 (i64.shr_u (local.get $v) (i64.const ${LAYOUT.AUX_SHIFT})))
+          (i32.const ${((LAYOUT.NAN_PREFIX << 16) | SYMBOL_MIN) >>> 0}))))))`
 
   // Default dynamic-property helpers are harmless stubs. The collection module
   // overrides them with the real sidecar-property implementation.
@@ -1047,7 +1055,7 @@ export default (ctx) => {
           (then
             (local.set $ix (call $__str_index_key (i64.load offset=8 (local.get $slot))))
             (if (i32.ne (local.get $ix) (i32.const -1)) (then (local.set $rank (i64.extend_i32_u (local.get $ix)))))))` : ''
-  for (const [name, propKeys] of [['__coll_order', false], ['__prop_order', true]])
+  for (const [name, propKeys, symbols] of [['__coll_order', false, true], ['__prop_order', true, false], ['__own_order', true, true]])
   ctx.core.stdlib[name] = () => `(func $${name} (param $off i32) (param $cap i32) (param $stride i32) (result i32)
     (local $i i32) (local $n i32) (local $slot i32) (local $buf i32) ${propKeys ? '(local $rk i32) (local $ix i32)' : ''}
     (local $j i32) (local $k i32) (local $cur i32) (local $rank i64)
@@ -1062,13 +1070,13 @@ export default (ctx) => {
     (block $gd (loop $gl
       (br_if $gd (i32.ge_s (local.get $i) (local.get $cap)))
       (local.set $slot (i32.add (local.get $off) (i32.mul (local.get $i) (local.get $stride))))
-      (if (i32.and
+      (if ${propKeys && !symbols ? '(i32.and (call $__is_str_key (i64.load offset=8 (local.get $slot)))' : ''}(i32.and
             (i64.ne (i64.load (local.get $slot)) (i64.const 0))
             ;; skip healed zombie entries (durable-slot heal: key = TOMB sentinel)
             ${ctx.linkDemand.hiddenMembers ? `(i32.and (i32.ne (i32.load offset=4 (local.get $slot)) (i32.const ${HIDDEN_PROPERTY_SEQ}))` : ''}
-            (i64.ne (i64.load (i32.add (local.get $slot) (i32.const 8))) (i64.const ${TOMB_NAN}))${ctx.linkDemand.hiddenMembers ? ')' : ''})
+            (i64.ne (i64.load (i32.add (local.get $slot) (i32.const 8))) (i64.const ${TOMB_NAN}))${ctx.linkDemand.hiddenMembers ? ')' : ''})${propKeys && !symbols ? ')' : ''}
         (then
-          ${propKeys ? `(local.set $rank (i64.or (i64.const 0x100000000) (i64.shr_u (i64.load (local.get $slot)) (i64.const 32))))
+          ${propKeys ? `(local.set $rank (i64.or ${symbols ? '(select (i64.const 0x100000000) (i64.const 0x200000000) (call $__is_str_key (i64.load offset=8 (local.get $slot))))' : '(i64.const 0x100000000)'} (i64.shr_u (i64.load (local.get $slot)) (i64.const 32))))
           ${indexRank()}` : ''}
           (i32.store (i32.add (local.get $buf) (i32.shl (local.get $n) (i32.const 2))) (local.get $slot))
           ${propKeys ? '(i64.store (i32.add (local.get $rk) (i32.shl (local.get $n) (i32.const 3))) (local.get $rank))' : ''}

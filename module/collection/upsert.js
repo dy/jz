@@ -36,7 +36,7 @@ const hasProbeLane = () => collectionLaneBytes() !== 0
 // directly. The layout proof belongs here, before generic WAT optimization.
 
 // The slot-update emitter normalizes dictionary keys before probing. Map keys
-// use their own hash helper; the inline arms below therefore receive strings.
+// use their own hash helper; property keys are strings or Symbol atoms.
 // The key's hash into `$h`. Speed tiers inline `$__str_hash`'s two FAST arms
 // (the SSO arithmetic mix and the heap lazy-hash-cell load, one of which the
 // dictionary-count hot path pays per probe) and call the helper only for the
@@ -47,10 +47,10 @@ const hasProbeLane = () => collectionLaneBytes() !== 0
 // cells. The size tier (`leanRuntime`) calls the helper outright.
 const keyHashIR = (hashFn = '$__str_hash') => hashFn !== '$__str_hash' || ctx.transform.optimize?.leanRuntime
   ? `(local.set $h (call ${hashFn} (local.get $key)))`
-  : `(local.set $kaux (i32.wrap_i64 (i64.and (i64.shr_u (local.get $key) (i64.const ${LAYOUT.AUX_SHIFT})) (i64.const ${LAYOUT.AUX_MASK}))))
+  : `(local.set $kaux (i32.wrap_i64 (i64.shr_u (local.get $key) (i64.const ${LAYOUT.AUX_SHIFT}))))
     (local.set $koff (i32.wrap_i64 (i64.and (local.get $key) (i64.const ${LAYOUT.OFFSET_MASK}))))
     (local.set $h (i32.const 0))
-    (if (i32.shr_u (local.get $kaux) (i32.const 14))
+    (if (i32.eq (i32.and (local.get $kaux) (i32.const ${(LAYOUT.TAG_MASK << (LAYOUT.TAG_SHIFT - 32)) | LAYOUT.SSO_BIT})) (i32.const ${(PTR.STRING << (LAYOUT.TAG_SHIFT - 32)) | LAYOUT.SSO_BIT}))
       (then
         (local.set $h (i32.mul
           (i32.xor (local.get $koff) (i32.mul (i32.xor (i32.and (local.get $kaux) (i32.const 0x1FFF)) (i32.const 0x9E3779B9)) (i32.const 0x85EBCA6B)))
@@ -59,7 +59,7 @@ const keyHashIR = (hashFn = '$__str_hash') => hashFn !== '$__str_hash' || ctx.tr
         (if (i32.le_u (local.get $h) (i32.const 1)) (then (local.set $h (i32.add (local.get $h) (i32.const 2))))))
       (else
         (if (i32.and (i32.ge_u (local.get $koff) (i32.const 8))
-              (i32.eq (i32.and (local.get $kaux) (i32.const ${LAYOUT.SLICE_BIT | STR_HCACHE_BIT})) (i32.const ${STR_HCACHE_BIT})))
+              (i32.eq (i32.and (local.get $kaux) (i32.const ${(LAYOUT.TAG_MASK << (LAYOUT.TAG_SHIFT - 32)) | LAYOUT.SLICE_BIT | STR_HCACHE_BIT})) (i32.const ${(PTR.STRING << (LAYOUT.TAG_SHIFT - 32)) | STR_HCACHE_BIT})))
           (then (local.set $h (i32.load (i32.sub (local.get $koff) (i32.const 8))))))))
     (if (i32.eqz (local.get $h)) (then (local.set $h (call $__str_hash (local.get $key)))))`
 

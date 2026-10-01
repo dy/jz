@@ -457,7 +457,7 @@ function primitiveStore(obj, key, val) {
   const code = errorCodeLiteral(ERR.PRIMITIVE_PROPERTY)
   const converts = key != null && !primitiveKind(ctx.summary?.at(ctx.func.current), key)
   const recv = converts ? temp('pr') : null, heldKey = converts ? temp('pk') : null
-  if (converts) inc('__to_str')
+  if (converts) inc('__to_key')
   return typed(['block', ['result', 'f64'],
     recv ? ['local.set', `$${recv}`, asF64(emit(obj))] : ['drop', asF64(emit(obj))],
     ...(key == null ? [] : [heldKey ? ['local.set', `$${heldKey}`, storedValue(key)] : ['drop', asF64(emit(key))]]),
@@ -465,7 +465,7 @@ function primitiveStore(obj, key, val) {
     // PutValue rejects a nullish base first. Other primitives still perform
     // ToPropertyKey, whose user code/error precedes the strict write error.
     ...(converts ? [['if', ['i32.eqz', isNullish(typed(['local.get', `$${recv}`], 'f64'))], ['then',
-      ['drop', ['call', '$__to_str', ['i64.reinterpret_f64', ['local.get', `$${heldKey}`]]]]]]] : []),
+      ['drop', ['call', '$__to_key', ['i64.reinterpret_f64', ['local.get', `$${heldKey}`]]]]]]] : []),
     ['global.set', '$__jz_last_err_bits', ['i64.reinterpret_f64', ['f64.const', code]]],
     ['throw', '$__jz_err', ['f64.const', code]]], 'f64')
 }

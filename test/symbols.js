@@ -5,6 +5,7 @@ import jz, { compile, instantiate } from '../index.js'
 import { compile as wasm } from 'watr'
 import { run, oracle } from './util.js'
 import { levels, onWasi, onKernel } from './_matrix.js'
+import { ptrBits, PTR } from '../layout.js'
 
 test('Symbol: factory and loop invocations retain distinct identities across calls', () => {
   const src = `let previous=Symbol(),saved=Symbol.for('saved')
@@ -137,4 +138,144 @@ test('Symbol: the constructor by typeof, its well-known symbols undefined', () =
     export let f = () => hasToStringTag ? 'tagged' : 'plain'`
   is(jz(feature).exports.f(), 'plain')
   ok(!/toStringTag/.test(compile(feature, { wat: true })), 'the arm of the missing feature is gone')
+})
+
+
+test('Symbol property keys preserve identity, string collisions and presence', () => {
+  const src = `
+    const s1=Symbol('value'),s2=Symbol('value'),shared=Symbol.for('shared')
+    export function f(mode, value) {
+      const values=[{},[],new Int32Array(2),new Map(),new Set(),new Date(10),new ArrayBuffer(2)]
+      const o=values[mode|0]
+      o[s1]=value;o[s2]=9;o[shared]=11;o.NaN=13;o.Symbol=17;o['']=19
+      const before=[o[s1],o[s2],o[Symbol.for('shared')],o.NaN,o.Symbol,o[''],s1 in o,s2 in o,Object.hasOwn(o,s1)]
+      const removed=delete o[s1]
+      const after=[removed,s1 in o,s2 in o,o[s1],o[s2],o.NaN]
+      o[s1]=23
+      return [before,after,o[s1]]
+    }`
+  for (const optimize of levels(0,1,2,3,'size')) {
+    const got=jz(src,{optimize}).exports,want=oracle(src)
+    for (const [mode,value] of [[0,7],[0,7],[1,0],[2,-1],[3,5],[4,6],[5,8],[6,10],[0,3]])
+      is(got.f(mode,value),want.f(mode,value),`identity and delete/reinsert O${optimize}, family${mode}`)
+  }
+})
+
+
+test('Symbol property keys are copied but excluded from string enumeration', () => {
+  const src = `
+    const s1=Symbol('value'),s2=Symbol('value')
+    function copy(o){return {...o}}
+    export function f(mode) {
+      const values=[{},[],new Map(),new Set(),new ArrayBuffer(2)]
+      const o=values[mode|0];o[s1]=7;o.b=11;o['2']=13;o[s2]=9;o.a=17
+      let names='';for(const key in o)names+=key+','
+      const a=copy(o),b=Object.assign({},o),{a:removed,...rest}=o
+      return [Object.keys(o),Object.values(o),Object.entries(o),names,
+        [a[s1],a[s2],a.a],[b[s1],b[s2]],[rest[s1],rest[s2],rest.a],removed]
+    }`
+  for (const optimize of levels(0,1,2,3,'size')) {
+    const got=jz(src,{optimize,sourceInline:false}).exports,want=oracle(src)
+    for (const mode of [0,0,1,2,3,4,0])is(got.f(mode),want.f(mode),`copy and enum O${optimize}, family${mode}`)
+  }
+})
+
+
+test('Symbol property keys preserve string-hint conversion and abrupt completion', () => {
+  const src = `
+    const key=Symbol('key'),other=Symbol('key')
+    export function f(mode) {
+      let log='';const o={NaN:13}
+      const k={get toString(){log+='g';return function(){log+='s';if(mode===2)throw new Error('key');return mode===1?{}:key}},
+        valueOf(){log+='v';return other}}
+      function receiver(){log+='r';return o}
+      function rhs(){log+='x';return 7}
+      try{receiver()[k]=rhs();const literal={[k]:11};
+        return [o[key],o[other],o.NaN,literal[key],literal[other],k in o,log]}
+      catch(e){return [e.message,log,o[key],o[other],o.NaN]}
+    }`
+  for (const optimize of levels(0,1,2,3,'size')) {
+    const got=jz(src,{optimize,sourceInline:false}).exports,want=oracle(src)
+    for (const mode of [0,0,1,2,0,1])is(got.f(mode),want.f(mode),`key conversion and recovery O${optimize}, ${mode}`)
+  }
+})
+
+
+test('Symbol property keys survive constructors and method conversion', () => {
+  const src = `
+    const a=Symbol('value'),b=Symbol('value')
+    export function f(mode){
+      let log='';const key={toString(){log+='s';return mode?{}:a},valueOf(){log+='v';return b}}
+      const obj=Object.fromEntries([[a,7],[b,9],['NaN',13],['Symbol',17]])
+      obj[key]=21
+      const grouped=Object.groupBy([1,2,3],x=>x%2?a:b)
+      const map=new Map([[a,7],[b,9]]),set=new Set([a,b,a])
+      return [obj[a],obj[b],obj.NaN,obj.Symbol,grouped[a],grouped[b],map.get(a),map.get(b),set.size,log]
+    }`
+  for (const optimize of levels(0,1,2,3,'size')) {
+    const got=jz(src,{optimize,sourceInline:false}).exports,want=oracle(src)
+    for(const mode of [0,0,1,0])is(got.f(mode),want.f(mode),`construct and convert O${optimize}, ${mode}`)
+  }
+})
+
+
+test('Symbol property keys keep numeric NaNs separate and clone only string keys', () => {
+  const src = `
+    const a=Symbol('NaN'),b=Symbol('NaN')
+    export function f(n){
+      const words=new Uint32Array([0,0xfffc8000]),negativeNaN=new Float64Array(words.buffer)[0]
+      const o={x:{value:n}};o[a]=7;o[b]=9;o.NaN=11;o[negativeNaN]=13
+      const clone=structuredClone(o)
+      clone.x.value++
+      return [o[a],o[b],o.NaN,o[NaN],String(negativeNaN),clone[a],clone[b],Object.keys(clone),clone.NaN,o.x.value,clone.x.value]
+    }`
+  for (const optimize of levels(0,1,2,3,'size')) {
+    const got=jz(src,{optimize,sourceInline:false}).exports,want=oracle(src)
+    for(const n of [0,0,7,-1,0])is(got.f(n),want.f(n),`numeric keys and cloning O${optimize}, ${n}`)
+  }
+})
+
+
+test('Symbol property keys preserve empty and durable enumeration across reuse', () => {
+  const src = `
+    const s=Symbol.for('hidden'),o={}
+    export function f(mode){
+      if(mode===1)o[s]=7
+      if(mode===2)delete o[s]
+      const keys=Object.keys(o),values=Object.values(o),entries=Object.entries(o)
+      let count=0;for(const key in o)count++
+      return [keys,values,entries,count,s in o,o[s],Object.hasOwn(o,s)]
+    }`
+  for (const optimize of levels(0,1,2,3,'size')) {
+    const got=jz(src,{optimize}).exports,want=oracle(src),held=[]
+    for(const mode of [0,0,1,1,0,2,0,1]){
+      const result=got.f(mode),expected=want.f(mode)
+      is(result,expected,`empty/durable O${optimize}, ${mode}`)
+      held.push([result,expected])
+    }
+    for(const [result,expected] of held)is(result,expected,`retained outputs O${optimize}`)
+  }
+})
+
+
+test('Symbol property keys never treat identity payloads as string addresses', () => {
+  if(onKernel())return
+  const src = `export function f(a,b){
+    const o={};o[a]=7;o[b]=9;o.NaN=13
+    const before=[o[a],o[b],a in o,b in o,Object.hasOwn(o,a)]
+    delete o[a]
+    const after=[o[a],o[b],a in o,b in o]
+    o[a]=21
+    return [before,after,o[a],Object.keys(o)]
+  }`
+  // The raw ABI preserves the actual identity bits. These auxiliary words
+  // overlap string-cache/SSO flags; their low words are identities, not pointers.
+  const keys=[ptrBits(PTR.ATOM,18,0xf0000010),ptrBits(PTR.ATOM,16384,0x10),
+    ptrBits(PTR.ATOM,19,0xf0000011),ptrBits(PTR.ATOM,18,0)]
+  const expected=[[7,9,true,true,true],[undefined,9,false,true],21,['NaN']]
+  for(const optimize of levels(0,1,2,3,'size')){
+    const mod=jz(src,{optimize,sourceInline:false})
+    for(const [a,b] of [[0,1],[0,1],[2,3],[1,0],[0,2],[0,1]])
+      is(mod.memory.read(mod.instance.exports.f(keys[a],keys[b])),expected,`raw identity O${optimize}, ${a}/${b}`)
+  }
 })

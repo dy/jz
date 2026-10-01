@@ -83,6 +83,11 @@ Equal-width literal tuples in every arm of a conditional use the existing
 multiple-result ABI. Expression and statement returns share element boxing
 and finalizer emission. A block must pass the shared return-path proof before
 selecting multiple results; a possible fallthrough needs to carry undefined.
+Property tables share a canonical String-or-Symbol key conversion. String-hint
+hooks run once and may return a Symbol; hashing and equality then preserve its
+whole identity without interpreting payload bits as string addresses. Public
+string enumeration omits Symbols, while object copies and rest retain them in
+own-key order. Structured cloning retains only string-keyed properties.
 Native method wrappers use internal tag predicates and runtime brand errors.
 Preparing an unused wrapper therefore does not add source-level BigInt or throw
 demand; its error data and exception support follow actual emission. Their

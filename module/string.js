@@ -21,14 +21,15 @@
  * @module string
  */
 
+import print from 'watr/print'
 import { T } from '../src/ast.js'
-import { typed, asF64, asI32Sat, asI64, asPtrOffset, toInt32, NULL_NAN, UNDEF_NAN, FALSE_NAN, TRUE_NAN, mkPtrIR, temp, tempI32, toNumF64, toStrI64, MAX_CLOSURE_ARITY } from '../src/ir.js'
+import { typed, boxedPtrTypeEq, asF64, asI32Sat, asI64, asPtrOffset, toInt32, NULL_NAN, UNDEF_NAN, FALSE_NAN, TRUE_NAN, mkPtrIR, temp, tempI32, toNumF64, toStrI64, MAX_CLOSURE_ARITY } from '../src/ir.js'
 import { emit, argIR, storedValue, positionArgs, withIgnoredArgs, bool, method, deps, general, wat, bind } from '../src/bridge.js'
 import { valTypeOf, hasAmbiguousBoolMerge, censusMaybeUndefined, isPresentNumber } from '../src/kind.js'
 import { VAL } from '../src/reps.js'
 import { ctx, inc, PTR, LAYOUT, err, declGlobal } from '../src/ctx.js'
 import { dataAlign, dataPush, dataLen, strPoolPush } from '../src/static-data.js'
-import { ssoBitI64Hex, sliceBitI64Hex, hcacheBitI64Hex, ptrNanHex, STR_INTERN_BIT, STR_HCACHE_BIT } from '../layout.js'
+import { ssoBitI64Hex, sliceBitI64Hex, i64Hex, hcacheBitI64Hex, ptrNanHex, STR_INTERN_BIT, STR_HCACHE_BIT } from '../layout.js'
 import { errorCodeLiteral, ERR } from '../err-codes.js'
 import { stringBytes, stringHash } from '../src/string-data.js'
 import { representationProgramHasBigint } from '../src/compile/representation-plan.js'
@@ -234,6 +235,8 @@ export default (ctx) => {
     __hex_set: ['__hex_dec_raw', '__u8_data', '__len'],
     __u8_data: ['__ptr_type', '__ptr_aux', '__typed_data'],
     __str_encode_into: ['__utf8_encode', '__byte_length', '__typed_data', '__ptr_type', '__ptr_aux'],
+    __key_eq: ['__str_eq'],
+    __to_key: ['__is_symbol', '__to_str'],
     __to_str: () => ['__ftoa', '__static_str', '__str_join', '__mkptr',
       ...(ctx.module.modules.date && ctx.schema.dateSid != null ? ['__ptr_aux', '__date_to_string'] : [])],
     __str_length: ['__ptr_type', '__ptr_aux', '__str_len'],
@@ -1026,6 +1029,26 @@ export default (ctx) => {
       (then (return (call $__sso_norm (call $__mkptr (i32.const ${PTR.STRING}) (i32.const 0) (local.get $off))))))
     (call $__mkptr (i32.const ${PTR.STRING}) (i32.const 0) (local.get $off)))`)
 
+  // Canonical property keys are strings or Symbols. Only strings compare by
+  // contents; a Symbol's payload is an identity, never a string-memory offset.
+  wat('__key_eq', `(func $__key_eq (param $a i64) (param $b i64) (result i32)
+    (if (i64.eq (local.get $a) (local.get $b)) (then (return (i32.const 1))))
+    (if (result i32)
+      (i64.eq (i64.and (i64.and (local.get $a) (local.get $b))
+        (i64.const ${i64Hex(BigInt(LAYOUT.TAG_MASK) << BigInt(LAYOUT.TAG_SHIFT))}))
+        (i64.const ${i64Hex(BigInt(PTR.STRING) << BigInt(LAYOUT.TAG_SHIFT))}))
+      (then (call $__str_eq (local.get $a) (local.get $b))) (else (i32.const 0))))`)
+
+  // ToPropertyKey has a string hint but preserves a Symbol primitive, including
+  // one returned by a user conversion method. Ordinary String conversion does not.
+  wat('__to_key', () => `(func $__to_key (param $val i64) (result i64)
+    ${ctx.funcs.runtimeRoots.has('__jz_tp_str') ? `(if (i32.or
+      ${print(boxedPtrTypeEq(['f64.reinterpret_i64', ['local.get', '$val']], PTR.OBJECT))}
+      ${print(boxedPtrTypeEq(['f64.reinterpret_i64', ['local.get', '$val']], PTR.HASH))})
+      (then (local.set $val (i64.reinterpret_f64 (call $__jz_tp_str (f64.reinterpret_i64 (local.get $val)))))))` : ''}
+    (if (result i64) (call $__is_symbol (local.get $val))
+      (then (local.get $val)) (else (call $__to_str (local.get $val)))))`)
+
   // Coerce value to string: numbers → __ftoa, nullish → static strings,
   // plain NaN → "NaN", arrays → join(","), other string-like pointers pass through.
   // The body is realized at link: a BigInt program's arm formats a boxed
@@ -1038,6 +1061,9 @@ export default (ctx) => {
     ;; Not NaN → number, convert
     (if (f64.eq (local.get $f) (local.get $f))
       (then (return (i64.reinterpret_f64 (call $__ftoa (local.get $f) (i32.const 0) (i32.const 0))))))
+    ;; Negative NaNs are numeric even when their payload resembles a pointer tag.
+    (if (i64.lt_s (local.get $val) (i64.const 0))
+      (then (return (i64.reinterpret_f64 (call $__static_str (i32.const 0))))))
     (if (i64.eq (local.get $val) (i64.const ${NULL_NAN}))
       (then (return (i64.reinterpret_f64 (call $__static_str (i32.const 5))))))
     (if (i64.eq (local.get $val) (i64.const ${UNDEF_NAN}))
@@ -1779,8 +1805,8 @@ export default (ctx) => {
   // Property keys preserve symbol atoms; every other value takes the shared
   // string-hint conversion, including user toString/valueOf hooks.
   bind(T + 'key', value => {
-    inc('__to_str')
-    return typed(['f64.reinterpret_i64', ['call', '$__to_str', asI64(storedValue(value))]], 'f64')
+    inc('__to_key')
+    return typed(['f64.reinterpret_i64', ['call', '$__to_key', asI64(storedValue(value))]], 'f64')
   })
   bind('.normalize', (val) => {
     inc('__to_str')
