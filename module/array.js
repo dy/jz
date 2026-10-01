@@ -2695,8 +2695,8 @@ export default (ctx) => {
   ctx.core.emit['.slice'] = (arr, start, end, ...extra) => {
     // BUFFER slice → byte-level copy handled in typedarray module.
     const ctor = typeof arr === 'string' ? plannedTypedStorageCtor(ctx, arr) : null
-    if ((valTypeOf(arr) === VAL.BUFFER || ctor === 'new.ArrayBuffer') && ctx.core.emit['.buf:slice'])
-      return ctx.core.emit['.buf:slice'](arr, start, end, ...extra)
+    if ((valTypeOf(arr) === VAL.BUFFER || ctor === 'new.ArrayBuffer') && ctx.core.emit['.buffer:slice'])
+      return ctx.core.emit['.buffer:slice'](arr, start, end, ...extra)
     const recv = hoistArrayValue(arr)
     const s = tempI32('ss'), e = tempI32('se'), len = tempI32('sl'), outLen = tempI32('sn'), ptr = tempI32('sp')
     // ToIntegerOrInfinity position args (23.1.3.28 step 3/5) — asI32Sat, not asI32: an

@@ -761,7 +761,7 @@ export default (ctx) => {
   // Dispatches statically for proven buffer receivers, including expressions.
   // Indices normalize through __clamp_idx (negative wraps from the end, then
   // clamp to [0, byteLength]) — the same bounds dance as every other range op.
-  ctx.core.emit['.buf:slice'] = (obj, ...args) => {
+  ctx.core.emit['.buffer:slice'] = (obj, ...args) => {
     const receiver = asF64(emit(obj)), positions = positionArgs(args)
     inc('__clamp_idx')
     const src = temp('bss')
@@ -789,7 +789,7 @@ export default (ctx) => {
       out.ptr], 'f64')
   }
 
-  ctx.core.emit['.buf:slice'].argc = 3
+  ctx.core.emit['.buffer:slice'].argc = 3
 
   // DataView endianness — wasm memory is natively little-endian. The DV `littleEndian`
   // arg defaults to `false` per ECMA-262 (big-endian); when LE is false we have to

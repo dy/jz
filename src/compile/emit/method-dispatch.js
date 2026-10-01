@@ -400,10 +400,10 @@ function tryStaticDispatch({ obj, method, parsed, vt, callMethod }) {
   return sidecarOverride(emit(obj), asI64(emit(['str', method])), callOverride, callBuiltin)
 }
 
-// 8. Unknown / guessed-array type, (string and/or typed) + generic exist → runtime
+// 8. Unknown receiver with registered family emitters → runtime
 // dispatch by ptr type. analyze.js defaults untyped `.slice()` results to VAL.ARRAY,
 // which is a guess, not a proof; runtime dispatch resolves whether the operand is
-// actually a string, a typed array, or a plain array. Concretely-typed values whose
+// actually a string, typed array, ArrayBuffer, or plain array. Concretely-typed values whose
 // kind IS proven (BUFFER, MAP, a proven STRING/TYPED/ARRAY, …) never reach here —
 // `vt` is set and strategy 7 (tryStaticDispatch) already dispatched them statically.
 //
@@ -425,8 +425,9 @@ function tryRuntimePtrTypeFork({ obj, method, parsed, vt, callMethod, optional }
   // Only fork when vt is truly unknown (!vt), not for proven types.
   const strEmitter = builtinMethod(method, 'string')
   const typedEmitter = builtinMethod(method, 'typed')
+  const bufferEmitter = builtinMethod(method, VAL.BUFFER)
   const genEmitter = builtinMethod(method)
-  if (!vt && (strEmitter || typedEmitter)) {
+  if (!vt && (strEmitter || typedEmitter || bufferEmitter)) {
     // Block-bodied callbacks require closures in every arm. Lower each source
     // callback once, then reuse its construction expression on the mutually
     // exclusive paths. Re-emitting the AST minted a whole body (including its
@@ -504,6 +505,7 @@ function tryRuntimePtrTypeFork({ obj, method, parsed, vt, callMethod, optional }
     const cases = []
     if (strEmitter && mayBe(K.STRING)) cases.push([PTR.STRING, materializeBuiltinResult(VAL.STRING, callMethod(t, strEmitter))])
     if (typedEmitter && mayBe(K.TYPED)) cases.push([PTR.TYPED, materializeBuiltinResult(VAL.TYPED, callMethod(t, typedEmitter))])
+    if (bufferEmitter && mayBe(K.BUFFER)) cases.push([PTR.BUFFER, materializeBuiltinResult(VAL.BUFFER, callMethod(t, bufferEmitter))])
     // A boxed BigInt receiver (`x.toString(16)` on a carrier the program
     // could not kind) takes the `.bigint:` emitter; `t` holds the box, so the
     // emitter's readI64 unboxes it (ir/bigint.js isTaggedLocal).
@@ -1007,10 +1009,10 @@ export function emitMethodCall(callee, parsed, callArgs, optional = false) {
   // at `=>`). Drop to runtime dispatch, but only for guessy types: STRING/ARRAY
   // dispatch correctly either way, and BUFFER/TYPED are construction proofs
   // (`new ArrayBuffer`/`new XxxArray`) — the runtime String/Array fallback has
-  // no branch for them, so nulling `vt` would miscompile `ab.slice()` into an
-  // f64-array copy. jzify also splits every `var x = init` into `let x; x = init`,
-  // marking single-assignment vars "reassigned"; keeping definite BUFFER/TYPED
-  // is what keeps `var`-declared buffers correct.
+  // branches for each family, but keeping construction proofs avoids needless
+  // dispatch. jzify also splits every `var x = init` into `let x; x = init`,
+  // marking single-assignment vars "reassigned"; those constructions still
+  // establish the receiver family.
   if (typeof obj === 'string' && isReassigned(ctx.func.body, obj)
     && (method === 'slice' || method === 'concat')
     && vt !== VAL.STRING && vt !== VAL.ARRAY

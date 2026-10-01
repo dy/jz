@@ -1069,3 +1069,38 @@ test('typed helpers decode fixed storage directly across widths and views', () =
       is(exports.run(kind, n), host.run(kind, n), `width ${kind}, view length ${n}, O${optimize}`)
   }
 })
+
+test('ArrayBuffer slice dispatch preserves uncertain receivers, bounds and argument order', () => {
+  const src = `export function f(which, start, end, mode) {
+    let trace = '';
+    const original = new Uint8Array([1, 2, 3, 4]);
+    const items = [original.buffer, new ArrayBuffer(0), null, 'abcd', [1,2,3,4],
+      new Int16Array([1,2,3,4]), {slice(){return 'own'}}];
+    function recv(){trace += 'r'; return items[which]}
+    function begin(){trace += 'b'; return {valueOf(){trace += 'B';
+      if(mode === 1) throw new Error('begin'); return mode === 2 ? 1n : start}}}
+    function finish(){trace += 'e'; return {valueOf(){trace += 'E';return end}}}
+    try {
+      const a = recv(), result = a.slice(begin(), finish());
+      if (result instanceof ArrayBuffer) {
+        const bytes = new Uint8Array(result), copied = Array.from(bytes);
+        if (bytes.length) bytes[0] = 99;
+        return [copied, trace, result !== a, Array.from(original)]
+      }
+      return [typeof result === 'string' ? result : Array.from(result), trace]
+    } catch(e) {return [e.name, trace]}
+  }`
+  const cases = [[0,0,4,0], [0,0,4,0], [1,0,4,0], [0,-2,Infinity,0],
+    [0,-Infinity,NaN,0], [0,.5,2.9,0], [0,4,1,0], [0,NaN,Infinity,0],
+    [0,Infinity,Infinity,0], [0,0,4,1], [0,0,4,2], [0,0,4,0],
+    ...[2,3,4,5,6,7,-1,0].map(which => [which,1,3,0])]
+  for (const optimize of levels(0,1,2,3,'size')) {
+    const got = jz(src, {optimize}).exports, want = oracle(src), retained = []
+    for (const args of cases) {
+      const actual = got.f(...args), expected = want.f(...args)
+      is(actual, expected, `O${optimize}: source/bounds/error ${args}`)
+      retained.push([actual, expected])
+    }
+    for (const [actual, expected] of retained) is(actual, expected, 'later successes and errors preserve earlier copies')
+  }
+})

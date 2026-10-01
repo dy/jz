@@ -235,6 +235,7 @@ export function methodValType(method, obj, objType, ctx) {
   if (NUMBER_METHODS.has(method)) return VAL.NUMBER
   if (BIGINT_METHODS.has(method)) return VAL.BIGINT
   if (method === 'split') return VAL.ARRAY
+  if (method === 'slice' && objType === VAL.BUFFER) return VAL.BUFFER
   if (method === 'slice' || method === 'concat') {
     if (objType === VAL.STRING || objType === VAL.ARRAY || objType === VAL.TYPED) return objType
     return null

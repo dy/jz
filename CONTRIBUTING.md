@@ -188,6 +188,9 @@ the tagged element reader when BigInts are possible.
 Map construction validates each entry object and reads its properties in key,
 value order. Entry getters retain ordinary call effects and can change the
 source array's live iteration length. Native Map copies keep their table path.
+ArrayBuffer methods use the same receiver-family registry as arrays, strings
+and typed arrays. An uncertain receiver selects its real family before calling
+its builtin; nullish receiver checks still precede argument evaluation.
 Array `for…of` loops capture their source once and reread its length each step.
 Appends, shrinking and writes through called helpers remain visible, including
 new nodes added while the compiler solves representation plans.
