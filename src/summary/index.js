@@ -49,7 +49,7 @@
  * @module summary
  */
 import { MUTATE_OPS, EXACT_MATH, extractParams, isBrand, returnExprs, ACCESSOR_GET, ACCESSOR_SET, CLASS_T, TYPEOF, isNumberGuard, typeofPredicate, canonicalKeyOrder, schemaKey, isArrayIndexKey, layoutView, ENUM_DATA, isTdzDecl, spreadExclusions } from '../ast.js'
-import { encodeTypedElemAux, TYPED_ELEM_CODE, TYPED_ELEM_VIEW_FLAG, TYPED_ELEM_ANY_VIEW_FLAG, ctorFromElemAux, TYPED_ELEM_BIGINT_FLAG } from '../../layout.js'
+import { encodeTypedElemAux, TYPED_ELEM_CODE, TYPED_ELEM_VIEW_FLAG, TYPED_ELEM_ANY_VIEW_FLAG, ctorFromElemAux, TYPED_ELEM_BIGINT_FLAG, DATA_VIEW_FLAG } from '../../layout.js'
 import { ITER_RECORD_KEYS } from '../std/iter-helpers.js'
 import { PROMISE_KEYS } from '../std/async.js'
 import { VAL } from '../reps.js'
@@ -1431,12 +1431,12 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       else for (let i = names.rest; i < n; i++) escape(ks[base + i])
     }
   }
-  // An iterable read by index: an array, a typed array or a buffer is itself;
+  // An iterable read by index: an array or a typed array is itself;
   // a Set, a Map or a string materializes its members, the [key, value] pairs
   // (as `entries()` builds them) or the code points. Null for another kind.
   const iterArray = (node, src) => {
     const t = tagOf(src)
-    if (t === K.ARRAY || t === K.TYPED || t === K.BUFFER) return src
+    if (t === K.ARRAY || t === K.TYPED && (typedAux(src) === UNKNOWN || !(typedAux(src) & DATA_VIEW_FLAG))) return src
     if (t !== K.SET && t !== K.MAP && t !== K.STRING) return null
     const out = arrayOf(node, K.NONE)
     if (t === K.SET) raiseElem(out, elemOf(src))
@@ -1700,7 +1700,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       if (callee === 'String' || callee.startsWith('String.')) return STRING
       if (callee === 'Number' || callee.startsWith('Math.') || callee.startsWith('Number.')) return NUMBER
       // jzify's `for…of` lowering iterates `__iter_arr(v)` by index (module/collection.js):
-      // an array, a typed array, a string or a buffer iterates as itself, a Set or a Map as
+      // an array or typed array iterates as itself, a string, Set or Map as
       // an array it materializes, an iterable of unknown kind as the runtime resolves it;
       // `__keys_ro` is `for…in`'s key list.
       if (callee === '__iter_arr') {
@@ -3272,9 +3272,9 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   // when that is undefined), an array pattern's names read its elements, a
   // rest element copies the remaining elements into a fresh array. A computed
   // key or an object rest enumerates the source, which is read as a whole.
-  /** Whether iterating a value of this kind can yield anything: arrays, typed arrays, buffers, strings,
+  /** Whether iterating a value of this kind can yield anything: arrays, typed arrays, strings,
    *  maps, sets, objects (an iterator of their own) and unknown values; nullish and the other primitives throw. */
-  const iterable = (k) => { const t = tagOf(k); return t === K.ANY || t === K.ARRAY || t === K.TYPED || t === K.BUFFER || t === K.STRING || t === K.MAP || t === K.SET || t === K.OBJECT }
+  const iterable = (k) => { const t = tagOf(k); return t === K.ANY || t === K.ARRAY || t === K.TYPED && (typedAux(k) === UNKNOWN || !(typedAux(k) & DATA_VIEW_FLAG)) || t === K.STRING || t === K.MAP || t === K.SET || t === K.OBJECT }
   const iterElemOf = (it) => !iterable(it) ? K.NONE : tagOf(it) === K.ARRAY ? elemOf(it) : tagOf(it) === K.TYPED ? typedElemKind(it) : tagOf(it) === K.STRING ? STRING : ANY
   const rowOf = (src) => tagOf(src) === K.ARRAY && paramOf(src) !== UNKNOWN ? tuples.get(cell(paramOf(src))) : null
   const elemAt = (src, i) => { const row = rowOf(src); return row ? row[i] ?? ABSENT : orAbsent(iterElemOf(src)) }

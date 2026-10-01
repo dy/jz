@@ -180,6 +180,11 @@ exclude BigInt, or the whole program excludes it. Unknown or BigInt-bearing
 bodies retain the normal closure ABI and its nested storage/join plan; rebuilding
 their syntax is not a transfer of those proofs. Numeric callback kernels keep
 the existing inline path.
+Iterable normalization rejects non-iterable primitives, objects, ArrayBuffers
+and DataViews before an index loop begins. Known arrays, strings, typed arrays
+and collections retain their existing direct paths. Set construction skips only
+nullish inputs; typed elements passed into collections or grouping callbacks use
+the tagged element reader when BigInts are possible.
 Array `for…of` loops capture their source once and reread its length each step.
 Appends, shrinking and writes through called helpers remain visible, including
 new nodes added while the compiler solves representation plans.

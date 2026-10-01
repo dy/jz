@@ -13,7 +13,7 @@
  */
 
 import { representationProgramHasBigint } from '../src/compile/representation-plan.js'
-import { staticArrayPtr, typed, asF64, asI64, asI32, UNDEF_NAN, TOMB_NAN, temp, tempI32, tempI64, allocPtr, mkPtrIR, ptrTypeEq, elemStore, arrayValue, elemLoad, boolBoxIR, freshId, callWithArgs } from '../src/ir.js'
+import { staticArrayPtr, throwErrorIR, typed, asF64, asI64, asI32, UNDEF_NAN, TOMB_NAN, temp, tempI32, tempI64, allocPtr, mkPtrIR, ptrTypeEq, elemStore, arrayValue, elemLoad, boolBoxIR, freshId, callWithArgs } from '../src/ir.js'
 import { emit, deps, call, storedValue } from '../src/bridge.js'
 import { valTypeOf } from '../src/kind.js'
 import { VAL, lookupValType } from '../src/reps.js'
@@ -493,15 +493,16 @@ export default (ctx) => {
     // new Set(iterable): __iter_arr normalizes any iterable to an index-iterable
     // dense array (Set→keys, Map→[k,v] entries, Array/String/TypedArray pass
     // through), so a Set/Map/Array source all seed uniformly. __set_add does
-    // SameValueZero dedup + −0 normalization. A non-iterable normalizes to a
-    // non-array value — the ptr_type guard zeroes the length so the loop is skipped.
+    // SameValueZero dedup + −0 normalization. Only a nullish constructor
+    // argument skips iteration; every other non-iterable throws.
     //
     // __set_add grows on demand, but pre-sizing the table to fit the source array
     // skips the rehash churn of building it up from initCap. Round 2*len up
     // to a power of two, with initCap as a floor rather than added reserve:
     // distinct entries ≤ len, so the table lands ≤50% full and never needs to grow
     // while seeding. Floors at initCap for the empty/short case.
-    inc('__set_add', '__ptr_type', '__len', '__typed_idx')
+    const read = representationProgramHasBigint(ctx) ? '__typed_idx_tagged' : '__typed_idx'
+    inc('__set_add', '__ptr_type', '__len', read)
     const setL = temp('nss'), arrL = temp('nsa')
     const iL = tempI32('nsi'), lenL = tempI32('nsl')
     const capExpr = ['select', ['i32.const', initCap],
@@ -512,9 +513,7 @@ export default (ctx) => {
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${arrL}`, asF64(emit(['()', '__iter_arr_ctor', [',', iterExpr]]))],
       ['local.set', `$${lenL}`, ['i32.const', 0]],
-      ['if', ['i32.eq',
-          ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${arrL}`]]],
-          ['i32.const', PTR.ARRAY]],
+      ['if', ['i32.or', ptrTypeEq(['local.get', `$${arrL}`], PTR.ARRAY), ptrTypeEq(['local.get', `$${arrL}`], PTR.TYPED)],
         ['then', ['local.set', `$${lenL}`,
           ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${arrL}`]]]]]],
       out.init,
@@ -525,7 +524,7 @@ export default (ctx) => {
         ['local.set', `$${setL}`, ['f64.reinterpret_i64',
           ['call', '$__set_add',
             ['i64.reinterpret_f64', ['local.get', `$${setL}`]],
-            ['i64.reinterpret_f64', ['call', '$__typed_idx',
+            ['i64.reinterpret_f64', ['call', '$' + read,
               ['i64.reinterpret_f64', ['local.get', `$${arrL}`]],
               ['local.get', `$${iL}`]]]]]],
         ['local.set', `$${iL}`, ['i32.add', ['local.get', `$${iL}`], ['i32.const', 1]]],
@@ -803,7 +802,8 @@ export default (ctx) => {
   // source normalizes through __iter_arr (Array/String/TypedArray pass through,
   // Set→keys, Map→entries) and reads elements via the polymorphic __typed_idx.
   const emitGroupBy = (isMap) => (items, fn) => {
-    inc('__iter_arr', '__len', '__typed_idx', '__arr_push1')
+    const read = representationProgramHasBigint(ctx) ? '__typed_idx_tagged' : '__typed_idx'
+    inc('__iter_arr', '__len', read, '__arr_push1')
     inc(...(isMap ? ['__map_set', '__map_get'] : ['__hash_new', '__hash_set', '__hash_get', '__to_str']))
     const recv = temp('gbs'), cb = temp('gbc'), result = temp('gbr')
     const len = tempI32('gbl'), i = tempI32('gbi')
@@ -831,7 +831,7 @@ export default (ctx) => {
       ['local.set', `$${i}`, ['i32.const', 0]],
       ['block', `$gbrk${id}`, ['loop', `$gloop${id}`,
         ['br_if', `$gbrk${id}`, ['i32.ge_s', ['local.get', `$${i}`], ['local.get', `$${len}`]]],
-        ['local.set', `$${item}`, ['call', '$__typed_idx', ['i64.reinterpret_f64', ['local.get', `$${recv}`]], ['local.get', `$${i}`]]],
+        ['local.set', `$${item}`, ['call', '$' + read, ['i64.reinterpret_f64', ['local.get', `$${recv}`]], ['local.get', `$${i}`]]],
         ['local.set', `$${key}`, keyOf(ctx.closure.call(typed(['local.get', `$${cb}`], 'f64'),
           [typed(['local.get', `$${item}`], 'f64'), typed(['f64.convert_i32_s', ['local.get', `$${i}`]], 'f64')]))],
         ['local.set', `$${bucket}`, ['f64.reinterpret_i64', ['call', get, resI64, ['local.get', `$${key}`]]]],
@@ -2788,14 +2788,15 @@ export default (ctx) => {
   // Set/Map → ARRAY, everything else → x's own type, so the downstream `arr[i]`
   // / `.length` dispatch stays statically typed.
   ctx.core.emit['__iter_arr'] = (src) => {
-    const nullish = ctx.summary?.at(ctx.func.current).mayBeNullishExpr(src) === true
-    const vt = valTypeOf(src)
-    if (!nullish && (vt === VAL.ARRAY || vt === VAL.TYPED || vt === VAL.BUFFER))
+    const view = ctx.summary?.at(ctx.func.current)
+    const nullish = view?.mayBeNullishExpr(src) === true
+    const vt = valTypeOf(src), typedArray = vt === VAL.TYPED && view?.typedPayloadCtorOfExpr(src) != null
+    if (!nullish && (vt === VAL.ARRAY || typedArray))
       return asF64(emit(src))
     const stringPoints = ir => { ctx.module.include('string'); inc('__str_points'); return ['call', '$__str_points', ['i64.reinterpret_f64', ir]] }
     if (!nullish && vt === VAL.STRING) return typed(stringPoints(asF64(emit(src))), 'f64')
     const t = temp('iter')
-    const bind = ['local.set', `$${t}`, asF64(emit(src))]
+    const bind = ['local.set', `$${t}`, storedValue(src)]
     if (!nullish && vt === VAL.SET) return typed(['block', ['result', 'f64'], bind, collKeysFromTemp(t, SET_ENTRY, 8, true)], 'f64')
     if (!nullish && vt === VAL.MAP) return typed(['block', ['result', 'f64'], bind, collEntriesFromTemp(t, MAP_ENTRY, 8, 16, true)], 'f64')
     // Unknown receiver: resolve the kind once at runtime (loop-invariant).
@@ -2810,19 +2811,27 @@ export default (ctx) => {
       ['then', ['global.set', '$__jz_last_err_bits', ['i64.reinterpret_f64', ['f64.const', errorCodeLiteral(ERR.ITERATE_NULLISH)]]], ['throw', '$__jz_err', ['f64.const', errorCodeLiteral(ERR.ITERATE_NULLISH)]]]]
     // A source of a known kind that may be missing (a field set on first
     // use): the missing one throws, the present one iterates as its kind.
-    const known = vt === VAL.ARRAY || vt === VAL.TYPED || vt === VAL.BUFFER ? ['local.get', `$${t}`]
+    const known = vt === VAL.ARRAY || typedArray ? ['local.get', `$${t}`]
       : vt === VAL.STRING ? stringPoints(['local.get', `$${t}`])
       : vt === VAL.SET ? collKeysFromTemp(t, SET_ENTRY) : vt === VAL.MAP ? collEntriesFromTemp(t, MAP_ENTRY) : null
     if (known) return typed(['block', ['result', 'f64'], bind, missing, known], 'f64')
     // Unknown receiver: resolve the kind once at runtime (loop-invariant).
+    inc('__ptr_aux')
     const ptrType = () => ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]
     return typed(['block', ['result', 'f64'], bind, missing,
+      ['if', ['f64.eq', ['local.get', `$${t}`], ['local.get', `$${t}`]],
+        ['then', ['drop', throwErrorIR('TypeError', 'value is not iterable')]]],
       ['if', ['result', 'f64'], ['i32.eq', ptrType(), ['i32.const', PTR.SET]],
         ['then', collKeysFromTemp(t, SET_ENTRY, 8, true)],
         ['else', ['if', ['result', 'f64'], ['i32.eq', ptrType(), ['i32.const', PTR.MAP]],
           ['then', collEntriesFromTemp(t, MAP_ENTRY, 8, 16, true)],
           ['else', ['if', ['result', 'f64'], ['i32.eq', ptrType(), ['i32.const', PTR.STRING]],
-            ['then', stringPoints(['local.get', `$${t}`])], ['else', ['local.get', `$${t}`]]]]]]]], 'f64')
+            ['then', stringPoints(['local.get', `$${t}`])],
+            ['else', ['if', ['result', 'f64'], ['i32.or',
+              ['i32.eq', ptrType(), ['i32.const', PTR.ARRAY]],
+              ['i32.and', ['i32.eq', ptrType(), ['i32.const', PTR.TYPED]],
+                ['i32.eqz', ['i32.and', ['call', '$__ptr_aux', ['i64.reinterpret_f64', ['local.get', `$${t}`]]], ['i32.const', DATA_VIEW_FLAG]]]]],
+              ['then', ['local.get', `$${t}`]], ['else', throwErrorIR('TypeError', 'value is not iterable')]]]]]]]]], 'f64')
   }
 
   // Constructor-tolerant iterable normalization: ES's Set/Map CONSTRUCTORS
@@ -2836,12 +2845,12 @@ export default (ctx) => {
   // TypeError when the compiler itself runs in-kernel — the census-row class.
   ctx.core.emit['__iter_arr_ctor'] = (src) => {
     const vt = ctx.summary?.at(ctx.func.current).mayBeNullishExpr(src) === true ? null : valTypeOf(src)
-    if (vt === VAL.ARRAY || vt === VAL.STRING || vt === VAL.TYPED || vt === VAL.BUFFER || vt === VAL.SET || vt === VAL.MAP)
+    if (vt === VAL.ARRAY || vt === VAL.STRING || vt === VAL.TYPED || vt === VAL.SET || vt === VAL.MAP)
       return emit(['()', '__iter_arr', [',', src]])
     inc('__is_nullish')
     const t = temp('iterc')
     return typed(['block', ['result', 'f64'],
-      ['local.set', `$${t}`, asF64(emit(src))],
+      ['local.set', `$${t}`, storedValue(src)],
       ['if', ['result', 'f64'],
         ['call', '$__is_nullish', ['i64.reinterpret_f64', ['local.get', `$${t}`]]],
         ['then', ['local.get', `$${t}`]],
