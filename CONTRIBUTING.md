@@ -2904,6 +2904,11 @@ string. A test of the analyzers' rule for a second write puts the write in an ar
 agreement of both forms with the host. A pass that copies a node or puts one in its place
 carries what the parser noted on it (its position, `loc`) through `copyNode` and `noted`
 (`src/ast.js`), not `slice`: a statement rewritten without them has no source position.
+The list keeps its current binding names and applies them once when reaching each
+statement; it advances the assigned name after reading the RHS. Rewriting the remaining
+suffix after every assignment made both traversal and temporary AST allocation quadratic.
+The split-binding tests pin linear visits, unchanged nodes and source positions, and
+repeated/changed/error compilation sequences with retained modules.
 
 A split binding of the type of the one it continues takes its slot
 (`src/optimize/split-slots.js`, last before the generic optimizer): the one before is dead

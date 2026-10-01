@@ -6,7 +6,7 @@
 // arm, a loop) assigns the binding of its place; a binding a closure names stays
 // whole. Both forms answer what the host answers.
 import test from 'tst'
-import { is, ok } from 'tst/assert.js'
+import { is, ok, throws } from 'tst/assert.js'
 import { T } from '../src/ast.js'
 import { splitReassigned } from '../src/prepare/split-bindings.js'
 import { parse } from '../src/parse.js'
@@ -171,6 +171,70 @@ test('split bindings: the statements it leaves', () => {
     const out = splitReassigned({ body, sig: { params: params.map(p => ({ name: p })) } })
     if (want === null) is(out, body, `${name}: the body itself`)
     else is(JSON.stringify(out), JSON.stringify(['{}', [';', ...want]]), name)
+  }
+})
+
+test('split bindings: statement renaming takes linear work', () => {
+  for (const count of [0, 1, 128]) {
+    let reads = 0
+    const value = new Proxy(['[]', 'a', lit(0)], {
+      get(target, key, receiver) {
+        if (key === '0' || key === '1' || key === '2') reads++
+        return Reflect.get(target, key, receiver)
+      }
+    })
+    const list = [';', ['let', ['=', 'sum', lit(0)]]]
+    for (let i = 0; i < count; i++) {
+      const stmt = ['+=', 'sum', value]
+      stmt.loc = i + 10
+      list.push(stmt)
+    }
+    list.push(['return', 'sum'])
+    const body = ['{}', list], before = JSON.stringify(body)
+    reads = 0
+    const out = splitReassigned({ body, sig: { params: [{ name: 'a' }] } })
+    // Every assignment used to rename the whole remaining suffix: 65,792
+    // reads at 128 statements. Allow a constant number of visits per node.
+    ok(reads <= count * 32 + 32, `${count} reassignments: bounded traversal (${reads} reads)`)
+    const want = [';', list[1]]
+    for (let i = 0; i < count; i++) want.push(['let', ['=', N('sum', i), ['+', i ? N('sum', i - 1) : 'sum', value]]])
+    want.push(['return', count ? N('sum', count - 1) : 'sum'])
+    is(JSON.stringify(out), JSON.stringify(['{}', want]), `${count} reassignments: every RHS reads its predecessor`)
+    is(JSON.stringify(body), before, `${count} reassignments: input is unchanged`)
+    for (let i = 0; i < count; i++) {
+      is(out[1][i + 2].loc, i + 10, 'rewritten statement retains its position')
+      ok(out[1][i + 2][1][2][2] === value, 'unchanged indexed read retains its identity')
+    }
+  }
+})
+
+test('split bindings: repeated and changed compilations preserve effects and prior modules', () => {
+  const source = count => `
+    let calls = 0
+    function key() { calls++; return 0 }
+    export function f(x) {
+      calls = 0
+      const a = new Float64Array(1)
+      a[0] = x
+      let sum = 0
+      ${'sum += a[key()];'.repeat(count)}
+      return sum
+    }
+    export function effects() { return calls }
+  `
+  const retained = []
+  for (const count of [0, 1, 32, 32, 7, 32]) {
+    if (count === 7) throws(() => compile('export function f( {'), /./, 'a failed compile between repeated inputs')
+    const m = run(source(count))
+    retained.push([m, count])
+    for (const x of [0, 3, -2]) {
+      is(m.f(x), count * x || 0, `${count} indexed additions of ${x}`)
+      is(m.effects(), count, 'each key is evaluated once, including zero work')
+    }
+  }
+  for (const [m, count] of retained) {
+    is(m.f(5), count * 5, 'an earlier module still computes its own body')
+    is(m.effects(), count, 'an earlier module keeps its own effects')
   }
 })
 

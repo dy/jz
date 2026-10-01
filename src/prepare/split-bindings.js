@@ -36,15 +36,17 @@ const census = (n, own, captured, inArrow) => {
   for (let i = 1; i < n.length; i++) census(n[i], own, captured, arrow)
 }
 
-// `node` with the binding `from` named `to`: a property name and a key name no binding.
-const rename = (n, from, to) => {
-  if (n === from) return to
+// Apply the latest binding names to one statement. Property names and literal
+// keys are not bindings; unchanged nodes retain their identity and metadata.
+const rename = (n, names) => {
+  if (typeof n === 'string') return names.get(n) ?? n
   if (!Array.isArray(n) || n[0] === 'str') return n
   let out = n
-  const at = (i) => { const c = rename(n[i], from, to); if (c !== n[i]) { if (out === n) out = copyNode(n); out[i] = c } }
-  if (n[0] === '.' || n[0] === '?.') at(1)
-  else if (n[0] === ':') at(2)
-  else for (let i = 1; i < n.length; i++) at(i)
+  const start = n[0] === ':' ? 2 : 1, end = n[0] === '.' || n[0] === '?.' ? 2 : n[0] === ':' ? 3 : n.length
+  for (let i = start; i < end; i++) {
+    const c = rename(n[i], names)
+    if (c !== n[i]) { if (out === n) out = copyNode(n); out[i] = c }
+  }
   return out
 }
 
@@ -103,15 +105,19 @@ export function splitReassigned(fn, nested = false) {
   // `list` split over the bindings `mine(name)` admits
   const split = (list, mine) => {
     let out = null
-    const declared = new Set()
+    const declared = new Set(), names = new Map()
     for (let k = 1; k < list.length; k++) {
-      const s = (out ?? list)[k]
+      const s = names.size ? rename(list[k], names) : list[k]
+      if (s !== list[k]) { if (!out) out = copyNode(list); out[k] = s }
       declares(s, declared)
       if (isAssign(s) && !captured.has(s[1]) && mine(s[1], declared, out ?? list, k)) {
         const name = s[1], root = roots.get(name) ?? name, next = `${root}${T}s${serial++}`
         if (!out) out = copyNode(list)
         out[k] = noted(s, ['let', noted(s, ['=', next, s[0] === '=' ? s[2] : [COMPOUND.get(s[0]), name, s[2]]])])
-        for (let j = k + 1; j < out.length; j++) out[j] = rename(out[j], name, next)
+        // The RHS above still reads the previous name. Later statements read
+        // the new one when reached, so each is renamed once instead of once
+        // for every earlier assignment in its list.
+        names.set(root, next)
         declared.add(next); own.add(next); roots.set(next, root)
         continue
       }
