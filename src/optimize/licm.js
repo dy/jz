@@ -4,7 +4,7 @@
  * NON_MUTATING_CALLS / PURE_CALL_I32), the shared invariance/purity predicate
  * (computeLoopInvariance, consumed by both splitLoopPrivateScratch and
  * hoistInvariantLoop), the two loop-shape hoists (splitLoopPrivateScratch,
- * hoistInvariantLoop), the f64→i32 loop-bound narrowing that feeds LICM
+ * hoistInvariantLoop), invariant Number threshold snapping
  * (narrowLoopBound), the entry-hoisted pointer-offset snapshot
  * (hoistInvariantPtrOffset), and straight-line scalar-load CSE (cseScalarLoad).
  *
@@ -1012,7 +1012,7 @@ export function narrowLoopBound(fn) {
     walkAst(loopNode, { enter: collect })
 
     // One snap per distinct (bound, op): `i < n` and `i <= n` of the SAME bound
-    // need different snapped i32 values (ceil vs floor).
+    // need different integer thresholds (ceil vs floor).
     const snapFor = new Map()
     const snaps = []
     for (const { node, m } of sites) {

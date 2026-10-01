@@ -3645,12 +3645,8 @@ test('wat copy-prop: a copy whose source is later reassigned is NOT propagated p
   is(ex.exports.f(3), 12)   // 3 + 9, NOT 9 + 9
 })
 
-// === narrowLoopBound (f64 loop bound → hoisted i32) ===
-// `(ptr, n) => { for (let i = 0; i < n; i++) … }` with an f64 export param kept
-// an f64 convert+compare in the loop header — and blocked the lane-vectorizer,
-// which needs an i32-governed trip count. The pass hoists
-// `i32.trunc_sat_f64_s(f64.ceil(n))` to the pre-header when the counter is a
-// proven-non-negative i32 local (NaN→0 trips, fractional rounds up).
+// Unknown Number bounds retain the original loop beside a range-guarded i32
+// copy. Explicit word counters use exact wide thresholds in narrowLoopBound.
 
 test('bounded loop copy: Number export-param bound compares in i32, trunc hoisted', () => {
   const body = compileMain(`
@@ -3683,10 +3679,10 @@ test('narrowLoopBound: fractional / NaN / negative / zero bounds match JS', () =
   for (const n of [10, 5.5, 0.5, 1e-9, 0, -3, NaN]) is(main(n), js(n), `n=${n}`)
 })
 
-test('narrowLoopBound: counter that starts negative is NOT narrowed (NaN soundness)', () => {
+test('bounded loop copy: negative starts preserve NaN zero-work behavior', () => {
   // i ∈ [-2, …): with bound NaN the f64 compare is false at i=-2 (zero trips);
-  // a naive i32 rewrite (NaN→0) would run two iterations. The non-negativity
-  // proof must reject this counter and keep the f64 compare.
+  // a naive i32 rewrite (NaN→0) would run two iterations. NaN takes the
+  // original Number loop, where the comparison remains false.
   const src = `export const main = (n) => { let s = 0; for (let i = -2; i < n; i++) s += 1; return s }`
   const js = (n) => { let s = 0; for (let i = -2; i < n; i++) s += 1; return s }
   const { main } = run(src)
