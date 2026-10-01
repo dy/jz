@@ -170,7 +170,8 @@ test('audit: cursor guards join offsets and retain negative-offset checks', () =
   const js = oracle(src)
   for (const optimize of TIERS) {
     const wasm = jz(src, { optimize }).exports
-    for (const args of [[0, 0, 0], [0, 4, 1], [1, 4, 0], [1, 4, 1], [2, 4, 1], [3, 4, 1], [4, 9, 2], [1, 4, -1],
+    for (const args of [[0, 0, 0], [0, 4, 1], [0.5, 4, 1], [1.5, 4, 1], [NaN, 4, 1], [-Infinity, 4, 1],
+      [1, 4, 0], [1, 4, 1], [2, 4, 1], [3, 4, 1], [4, 9, 2], [1, 4, -1],
       [0, 0, -2147483648], [1, 4, -2147483648], [1, 4, 2147483647], [2, 4, 2147483647]])
       is(wasm.run(...args), js.run(...args), `${optimize}: ${args}`)
     for (const n of [0, 0, 1, 2, 3, 0, 2147483647, -2147483648])
@@ -178,25 +179,36 @@ test('audit: cursor guards join offsets and retain negative-offset checks', () =
   }
   if (!onKernel()) {
     // pre-watr: `run` releases what it made as it returns, so its call of `scan` is one watr inlines;
-    // one loop: its int32 copy (plan/integral-loops.js) guards its own extents alike
+    // Keep integral-loop specialization off; counted-loop canonicalization still
+    // has a word cursor copy and its original Number loop as the fallback.
     const wat = funcWat(compile(src, { optimize: { level: 'speed', watr: false, versionIntegralLoops: false }, wat: true }), 'scan')
     ok(wat.length > 0, 'inspect cursor extents before backend inlining')
-    // Saturating conversions in the checked twin can compare against the
-    // signed-word endpoints too. Count only the loop's entry condition.
-    const entry = parseWat(wat).find(n => Array.isArray(n) && n[0] === 'if')
-    ok(entry, 'cursor loop has an entry guard')
-    const guard = JSON.stringify(entry[1])
-    is((guard.match(/i64\.lt_s/g) || []).length, 1, 'one upper extent for all cursor offsets')
-    is((guard.match(/i64\.ge_s/g) || []).length, 1, 'one lower extent for all cursor offsets')
-    const addresses = []
-    const loads = n => {
+    // Number-bound rounding can precede the range guard. Inspect the guarded
+    // loop's full extent test, wherever its word copy is nested.
+    const entries = []
+    const findEntry = n => {
       if (!Array.isArray(n)) return
-      if (n[0] === 'f64.load') addresses.push(n[n.length - 1])
-      for (let i = 1; i < n.length; i++) loads(n[i])
+      if (n[0] === 'if' && /i64\.lt_s/.test(JSON.stringify(n[1])) && /i64\.ge_s/.test(JSON.stringify(n[1]))) entries.push(n)
+      for (let i = 1; i < n.length; i++) findEntry(n[i])
     }
-    loads(entry[2])
-    is(addresses.length, 3, 'inspect all cursor reads in the fast arm')
-    ok(addresses.every(a => !/trunc_sat_f64_s|i64\.lt_s/.test(JSON.stringify(a))), 'proved negative offsets use word arithmetic in the fast arm')
+    findEntry(parseWat(wat))
+    is(entries.length, 2, 'word cursor copy and Number fallback each share one extent guard')
+    let wordArms = 0
+    for (const entry of entries) {
+      const guard = JSON.stringify(entry[1])
+      is((guard.match(/i64\.lt_s/g) || []).length, 1, 'one upper extent for all cursor offsets')
+      is((guard.match(/i64\.ge_s/g) || []).length, 1, 'one lower extent for all cursor offsets')
+      const addresses = []
+      const loads = n => {
+        if (!Array.isArray(n)) return
+        if (n[0] === 'f64.load') addresses.push(n[n.length - 1])
+        for (let i = 1; i < n.length; i++) loads(n[i])
+      }
+      loads(entry[2])
+      is(addresses.length, 3, 'inspect all cursor reads in each fast arm')
+      if (addresses.every(a => !/trunc_sat_f64_s|i64\.lt_s/.test(JSON.stringify(a)))) wordArms++
+    }
+    is(wordArms, 1, 'proved negative offsets use word arithmetic in the cursor copy')
   }
 })
 
