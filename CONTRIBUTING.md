@@ -102,6 +102,9 @@ including SIMD lanes and the full magnitude of unsigned helper results.
 Array `for…of` loops capture their source once and reread its length each step.
 Appends, shrinking and writes through called helpers remain visible, including
 new nodes added while the compiler solves representation plans.
+Array-literal lowering keeps its completed child walk even when no spread needs
+rewriting. Falling back after transforming children repeats work at every nested
+literal and can repeat stateful lowerings; holes and child locations stay intact.
 Memory page limits are validated before either compiler host encodes options.
 Assembly also rejects static data that would require more than the maximum.
 The hosted compiler applies the same fixed-memory scratch and final-code proofs;

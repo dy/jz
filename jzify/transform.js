@@ -524,10 +524,9 @@ export function createTransform(opts) {
       }
       if (payload === undefined) return
       if (Array.isArray(payload) && payload[0] === ',') {
-        let hit = false
-        const mapped = payload.slice(1).map((e) => { const r = rewrite(e); if (r) hit = true; return r ?? transform(e) })
-        if (hit) return ['[]', [',', ...mapped]]
-        return
+        // Keep the completed walk even when no spread rewrites: falling back
+        // to the generic walk would lower every nested literal a second time.
+        return ['[]', rewriteChildren(payload, e => rewrite(e) ?? transform(e))]
       }
       const one = rewrite(payload)
       if (one) return ['[]', one]

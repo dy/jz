@@ -31,7 +31,40 @@ import { rewriteChildren } from '../src/ast.js'
 
 import { canonicalizeObjectIdioms } from '../jzify/bundler.js'
 import { hoistVars } from '../jzify/hoist-vars.js'
+import { createTransform } from '../jzify/transform.js'
 import { foldStaticConstAggregates } from '../src/compile/plan/literals.js'
+
+test('invariant: nested array literals lower each element once', () => {
+  const seen = new Map()
+  const { transform } = createTransform({
+    enterBuiltinScope(node) { if (Array.isArray(node)) seen.set(node, (seen.get(node) ?? 0) + 1) },
+    leaveBuiltinScope() {},
+  })
+  for (const depth of [0, 1, 8, 8, 2, 0]) {
+    const leaf = [null, 7]
+    let node = ['[]', leaf]
+    const lists = []
+    for (let i = 0; i < depth; i++) {
+      const items = [',', node, [null, i], undefined]
+      items.loc = i + 10
+      items.sourceLoc = i + 100
+      lists.push(items)
+      node = ['[]', items]
+    }
+    seen.clear()
+    const out = transform(node)
+    is(out, node, 'nested values, holes and source positions survive lowering')
+    is(seen.get(leaf), 1, `${depth} nested literals visit the innermost element once`)
+    let cursor = out
+    for (let i = lists.length - 1; i >= 0; i--) {
+      is(cursor[1].loc, lists[i].loc, 'comma-list location is retained')
+      is(cursor[1].sourceLoc, lists[i].sourceLoc, 'original source location is retained')
+      cursor = cursor[1][1]
+    }
+  }
+  is(transform(['[]']), ['[]'], 'empty literal')
+  is(transform(['[]', 'values', [null, 0]]), ['[]', 'values', [null, 0]], 'indexing retains the generic walk')
+})
 
 test('invariant: WAT token parsing uses source-sized storage', () => {
   const parser = readFileSync(new URL(import.meta.resolve('watr/parse')), 'utf8')

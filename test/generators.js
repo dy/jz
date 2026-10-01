@@ -15,6 +15,53 @@ const j = (code) => jz(code).exports.f()
 // Several standalone arrows as one compile, each called once.
 const jMany = (arrows) => batch(arrows).map(f => f())
 
+test('generators: nested array literals preserve holes and spread evaluation order', () => {
+  const source = `function* values(n) { for (let i = 0; i < n; i++) yield i * 2 }
+    export function f(n) {
+      let order = ''
+      const mark = x => { order += x; return x }
+      const items = [mark('a'), [mark('b'), ...values(n), , [mark('c')]], mark('d')]
+      return [JSON.stringify(items), order]
+    }`
+  const expected = Function(source.replace('export ', '') + '; return f')()
+  for (const optimize of [0, 2, 3, 'size']) {
+    const { f } = jz(source, { optimize }).exports
+    for (const n of [0, 1, 1, 4, 0]) is(f(n), expected(n), `level ${optimize}, count ${n}`)
+  }
+})
+
+test('generators: nested literal factories keep independent captures and close after errors', () => {
+  const source = `export function f(n, fail) {
+    let order = ''
+    const factories = [0, [function* () {
+      order += 'a'
+      const sent = yield n
+      order += 'b'
+      if (fail) throw sent
+      return sent + 1
+    }, , function* () {
+      order += 'c'
+      yield n + 2
+      return n + 3
+    }], []]
+    const a = factories[1][0](), b = factories[1][2]()
+    const before = order, first = a.next(), second = b.next()
+    const out = [before, first.value, first.done, second.value, second.done, order]
+    try { const last = a.next(7); out.push(last.value, last.done) }
+    catch (e) { out.push(e, 'caught') }
+    const closed = a.next(), last = b.next()
+    out.push(closed.value, closed.done, last.value, last.done, order,
+      factories[1].length, factories[1][1] === undefined, factories[2].length)
+    return out
+  }`
+  const expected = oracle(source)
+  for (const optimize of [0, 2, 3, 'size']) {
+    const actual = jz(source, { optimize }).exports
+    for (const args of [[0, 0], [0, 0], [4, 1], [-3, 0], [0, 1], [0, 0]])
+      is(actual.f(...args), expected.f(...args), `level ${optimize}, ${args}`)
+  }
+})
+
 test('generators: defaults and body vars have separate environments', () => {
   const { f } = jz(`export function f() {
     var x = 'outside', params, body
