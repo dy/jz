@@ -129,3 +129,21 @@ test('constants: a remainder is a number', () => {
   const body = funcWat(wat('export let f = (a, b) => { a = +a; b = +b; return 1.5 + (a - b) % b }', { optimize: 2 }), 'f')
   ok(!/0x7FF8000200000000/.test(body), 'no test for undefined on what `%` answers')
 })
+
+// A call that passes a module's number constant: the splice's bindings hold
+// what arithmetic over it gives, so a once-per-call setup folds to its value.
+test('constants: a module constant passed to a splice settles the bindings it seeds', () => {
+  const src = `const N = 4096
+    const cosPoly = (x) => { const x2 = x * x; return 1 + x2 * (-0.5 + x2 * 0.041666666666666664) }
+    const build = (w, n) => { const dt = -6.283185307179586 / n; const c1 = cosPoly(dt); let cr = 1
+      for (let k = 0; k < (n >> 1); k++) { w[k] = cr; cr = cr * c1 } }
+    export let f = (i) => { const w = new Float64Array(N >> 1); build(w, N); return w[i] }`
+  const want = oracle(src).f
+  for (const optimize of levels(0, 2, 3, 'size')) {
+    const got = run(src, { optimize }).f
+    for (const i of [0, 1, 5, 2047]) is(got(i), want(i), `O${optimize}: f(${i})`)
+  }
+  if (belowOpt(2)) return
+  const m = funcWat(wat(src, { optimize: 'size' }), 'f')
+  is((m.match(/f64\.mul/g) || []).length, 1, 'only the recurrence multiplies: the cosine of the step is a literal')
+})

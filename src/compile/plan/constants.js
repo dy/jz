@@ -118,11 +118,31 @@ const captured = (n, out = new Set(), inArrow = false) => {
 /** `f`'s body with each read of a binding that holds a literal there the literal. */
 export const constantsIn = (f) => {
   const body = f.body
+  // A module's number constant (plan/scope.js foldModuleConstants) read where a
+  // splice binds it: the argument `N` of a call that passed it. The source's own
+  // reads of the name stay the name, as its bindings do.
+  const own = written(body)
+  for (const p of f.sig?.params ?? []) if (typeof p?.name === 'string') own.add(p.name)
+  const constant = (v) => {
+    if (typeof v !== 'string' || own.has(v)) return null
+    const c = ctx.scope.constNums?.get(v)
+    return typeof c === 'number' && Number.isFinite(c) ? num(c) : null
+  }
+  // What a splice stores: a literal, or arithmetic over literals and constants.
+  const settle = (n) => {
+    if (isLit(n)) return n
+    if (typeof n === 'string') return constant(n)
+    if (!isArr(n) || !(ARITH.has(n[0]) && n.length === 3 || n[0] === 'u-' && n.length === 2)) return null
+    const args = []
+    for (let i = 1; i < n.length; i++) { const a = settle(n[i]); if (!a) return null; args.push(a) }
+    const v = fold([n[0], ...args], false)
+    return isLit(v) ? v : null
+  }
   // nothing to follow without a binding a literal is stored to
   let any = false
   const seek = (n) => {
     if (any || !isArr(n) || n[0] == null || n[0] === 'str' || n[0] === '=>') return
-    if (n[0] === '=' && typeof n[1] === 'string' && n[1].startsWith(T) && isLit(n[2])) { any = true; return }
+    if (n[0] === '=' && typeof n[1] === 'string' && n[1].startsWith(T) && settle(n[2])) { any = true; return }
     for (let i = 1; i < n.length; i++) seek(n[i])
   }
   seek(body)
@@ -144,6 +164,8 @@ export const constantsIn = (f) => {
   const into = (st, from) => { st.env = from.env; st.dead = from.dead }
   const forget = (st, names) => { for (const x of names) st.env.delete(x) }
   const hold = (st, name, v) => { if (isLit(v) && follows(name)) st.env.set(name, v); else st.env.delete(name) }
+  // the value a spliced binding is given: settled where it can be
+  const given = (name, v) => isLit(v) || !follows(name) ? v : settle(v) ?? v
 
   const children = (n, st, from = 1) => {
     let out = n
@@ -186,7 +208,7 @@ export const constantsIn = (f) => {
         const d = n[i]
         if (typeof d === 'string') { st.env.delete(d); continue }
         if (isArr(d) && d[0] === '=' && typeof d[1] === 'string') {
-          const v = walk(d[2], st)
+          const v = given(d[1], walk(d[2], st))
           hold(st, d[1], v)
           if (v !== d[2]) { if (out === n) out = n.slice(); out[i] = ['=', d[1], v] }
           continue
@@ -200,8 +222,12 @@ export const constantsIn = (f) => {
     if (MUTATE_OPS.has(op)) {
       const t = n[1]
       if (typeof t === 'string') {
-        const out = children(n, st, 2)
-        if (op === '=') hold(st, t, out[2]); else st.env.delete(t)
+        let out = children(n, st, 2)
+        if (op === '=') {
+          const v = given(t, out[2])
+          if (v !== out[2]) out = [op, t, v]
+          hold(st, t, v)
+        } else st.env.delete(t)
         return out
       }
       const target = isArr(t) && RECEIVER_OPS.has(t[0]) ? member(t, st) : walk(t, st)
