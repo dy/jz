@@ -271,7 +271,7 @@ test('using: scope-exit disposal', () => {
   // batched into one compile even though they're not textually adjacent.
   const [okVal, threw] = jMany([
     `() => { using a = null; return 'ok' }`,
-    `() => { try { using a = { x: 1 }; return 'no' } catch (e) { return e.includes('dispose') ? 'threw' : e } }`,
+    `() => { try { using a = { x: 1 }; return 'no' } catch (e) { return e instanceof TypeError && e.message.includes('dispose') ? 'threw' : e } }`,
   ])
   is(okVal, 'ok')
   is(j(`let log = ''
@@ -279,6 +279,14 @@ test('using: scope-exit disposal', () => {
         let g = () => { using a = open(); log += 'b'; return 9 }
         export let f = () => '' + g() + log`), '9bd')
   is(threw, 'threw')
+  // The method is read once, at binding, and called on the resource.
+  is(j(`let reads = 0, log = ''
+        let open = () => ({ get [Symbol.dispose]() { reads++; return () => { log += 'd' } } })
+        export let f = () => { { using a = open(); log += 'b' } return log + reads }`), 'bd1')
+  is(j(`let log = ''
+        let open = (n) => ({ n, [Symbol.dispose]() { log += this.n } })
+        export let f = () => { { using a = open(4), b = open(5); log += 'b' } return log }`), 'b54')
+  is(j(`export let f = () => { try { using a = { [Symbol.dispose]: 1 }; return 'no' } catch (e) { return e instanceof TypeError ? 'threw' : e } }`), 'threw')
 })
 
 test('using: classic for initializer is disposed on every exit', () => {

@@ -57,3 +57,14 @@ for (const optimize of levels(0, 2, 3))
   test(`late field: a module binding grown later keeps its identity and its keys at ${optimize}`, () => {
     for (const name of ['f', 'g', 'h', 'm']) agree(grownSrc, name, [], { optimize }, `${name} at ${optimize}`)
   })
+
+// A numeric-demanded export parameter (`n`, a loop bound) reseeds the summary's
+// kinds: a function property, a module global the plan names by its writes,
+// starts undefined in that second seeding too.
+const reseedSrc = `function g() { return 1 }
+export let fnProp = () => { let before = typeof g.count; g.count = (g.count ?? 0) + 1; return [before, g.count].join() }
+export let loop = (n) => { let s = 0; for (let i = 0; i < n; i++) s += i; return s }`
+for (const optimize of levels(0, 2, 3, 'size'))
+  test(`late field: a function property starts undefined after the kinds reseed at ${optimize}`, () => {
+    agree(reseedSrc, 'fnProp', [], { optimize }, `fnProp at ${optimize}`)
+  })

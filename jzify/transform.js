@@ -164,23 +164,24 @@ export function createTransform(opts) {
     return decl
   }
 
-  // `using x = res` (ERM): bind, resolve [Symbol.dispose] up front (TypeError
-  // if absent on a non-null resource — spec checks at binding), then wrap the
-  // REST of the scope in try/finally calling it. Multiple resources nest —
-  // LIFO disposal falls out of the nesting. Divergence (documented): if both
-  // the body and a dispose throw, the dispose error propagates (no
-  // SuppressedError aggregation).
+  // `using x = res` (ERM): bind, read [Symbol.dispose] once up front (a
+  // TypeError unless a non-null resource's is callable — spec checks at
+  // binding), then wrap the REST of the scope in try/finally calling that
+  // method on the resource. Multiple resources nest — LIFO disposal falls out
+  // of the nesting. Divergence (documented): if both the body and a dispose
+  // throw, the dispose error propagates (no SuppressedError aggregation).
   function lowerUsing(declarators, remaining) {
     const NULL = [null, null]
-    const dispose = (name) => ['if', ['!=', name, NULL], ['()', ['.', name, '@@dispose'], null]]
     let inner = remaining.length ? transformScope([';', ...remaining]) : null
     for (let k = declarators.length - 1; k >= 0; k--) {
       const [, name, init] = declarators[k]
+      const method = names.genTemp('dsp')
       inner = [';',
         ['let', ['=', name, transform(init)]],
-        ['if', ['&&', ['!=', name, NULL], ['==', ['.', name, '@@dispose'], NULL]],
-          ['throw', [null, 'using: value has no [Symbol.dispose]() method']]],
-        ['try', inner ?? ['{}', null], ['finally', dispose(name)]],
+        ['let', ['=', method, ['?:', ['!=', name, NULL], ['.', name, '@@dispose'], NULL]]],
+        ['if', ['&&', ['!=', name, NULL], ['!==', ['typeof', method], [null, 'function']]],
+          ['throw', ['new', ['()', 'TypeError', [null, 'using: value has no [Symbol.dispose]() method']]]]],
+        ['try', inner ?? ['{}', null], ['finally', ['if', ['!=', name, NULL], ['()', ['.', method, 'call'], name]]]],
       ]
     }
     return inner

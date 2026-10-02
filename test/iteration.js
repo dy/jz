@@ -342,6 +342,22 @@ test('collection constructors honor iterator overrides, generators and shadowed 
   is(jz(plain).exports.f(), oracle(plain).f(), 'native copies remain exact after compiling protocol users')
 })
 
+// A rest parameter is the array its call collects, the host's included: an
+// array pattern over it reads by index, and the protocol's record pool, which
+// nothing then reads, is not made.
+test('array patterns over a rest parameter read by index and keep no records', () => {
+  const src = `export let f = (...ys) => { let [a, b] = ys; return a + b }
+    let inner = (...ys) => { const [a, , c = 9] = ys; return a * 10 + c }
+    export let g = (n) => inner(n, 2) + inner(n, 2, 3)`
+  for (const optimize of levels(0, 2, 3, 'size')) {
+    // O0 is the reference tier: it keeps the protocol.
+    if (optimize !== 0) is(/jz_iter\$/.test(jz.compile(src, { wat: true, optimize })), false, `O${optimize}: no protocol call or record pool`)
+    const got = jz(src, { optimize }).exports, want = oracle(src)
+    for (const args of [[1, 2], ['a', 'b'], [], [4]]) is(got.f(...args), want.f(...args), `O${optimize}: f(${args})`)
+    for (const n of [0, 1, 5]) is(got.g(n), want.g(n), `O${optimize}: g(${n})`)
+  }
+})
+
 test('iterator records accept callable objects and release records after empty binding', () => {
   const src = `export function f() {
     let calls = 0;

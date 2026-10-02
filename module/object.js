@@ -84,7 +84,11 @@ export default (ctx) => {
       // write censuses is physical allocation provenance; a broad flow kind is
       // not, because prepared IIFEs and spreads can forward another literal.
       const writtenAsRecord = target && ctx.types.literalWriteKeys?.get(target)?.size
+      // A module binding is read by every function: it holds a dictionary only
+      // where the plan published it as one (classifyHashDictGlobals), else its
+      // readers take it for the object the summary sees.
       if (target && !merged?.length &&
+          (!isGlobal(target) || ctx.scope.globalValTypes?.get(target) === VAL.HASH) &&
           (ctx.types.dynWriteVars?.has(target) || writtenAsRecord)) {
         ctx.module.include('collection')
         const domain = ctx.func.leanHashDomains?.get(target)
@@ -526,10 +530,15 @@ export default (ctx) => {
         return typed(['i32.const', 1], 'i32')
     }
     if (stringValType(obj)) return stringHasOwn(obj, key)
-    // This fallback is emitted as an `in` AST node; own the operator module
-    // even when no source-level `in` triggered prepare-time autoload.
+    // The fallback is the `in` probe in its own-property mode; own the operator
+    // module even when no source-level `in` triggered prepare-time autoload.
+    // The receiver is evaluated before the key, as the call's arguments are.
     ctx.module.include('collection')
-    return emit(['in', key, obj])
+    const pure = (n) => typeof n === 'string' || Array.isArray(n) && (n[0] === 'str' || n[0] == null)
+    if (typeof obj === 'string' && pure(key)) return ctx.core.emit['in'](key, obj, true)
+    const recv = temp('ho_o')
+    return typed(['block', ['result', 'i32'], ['local.set', `$${recv}`, asF64(storedValue(obj))],
+      asI32(ctx.core.emit['in'](key, recv, true))], 'i32')
   }
   ctx.core.emit[`.${VAL.HASH}:hasOwnProperty`] = ctx.core.emit['.hasOwnProperty']
   ctx.core.emit[`.${VAL.OBJECT}:hasOwnProperty`] = ctx.core.emit['.hasOwnProperty']

@@ -34,6 +34,8 @@ import { K, tagOf, hasTag, core } from '../../summary/kind.js'
 import { VAL } from '../../reps.js'
 import { isReassigned, T } from '../../ast.js'
 import { freshId } from '../../ir.js'
+import { invalidateProgramFactsCache } from '../program-facts.js'
+import { invalidateBodies } from '../analyze.js'
 import {
   scanBindingUses, USE, BINDING_USE_DECLS, BINDING_USE_INIT, BINDING_USE_USES,
   BINDING_USE_KIND, BINDING_USE_KEY, BINDING_USE_OP,
@@ -205,7 +207,12 @@ export const indexArrayPatterns = () => {
   for (const f of ctx.funcs.list) if (f.body && !f.raw) {
     body = f.body
     bindings = null
+    const before = changed
+    changed = false
     walk(f.body, ctx.summary.at(f.sig))
+    // The body changed in place: its cached walks name the protocol's calls.
+    if (changed) { invalidateProgramFactsCache(f.body); invalidateBodies([f.body]) }
+    changed ||= before
   }
   return changed
 }

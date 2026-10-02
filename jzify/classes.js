@@ -450,7 +450,8 @@ function lowerStruct({ name, base, nativeCollection, ctorParams, ctorBody, metho
     const [mparams, mbody] = ownArguments(params, body)
     hoists.push(['let', ['=', methodFn(cls, mname), fnOf(kind, rewrite(mparams), block(rewrite(mbody)))]])
     const plist = extractParams(arrowParams(mparams ?? null))
-    const simple = plist.every(p => typeof p === 'string')
+    // Past the closure's inline lanes, the bound value takes its arguments as a rest.
+    const simple = plist.length <= MAX_CLOSURE_ARITY && plist.every(p => typeof p === 'string')
     const args = simple ? plist.map((_, i) => names.classSuperArg(i)) : [['...', names.classSuperArg(0)]]
     hoists.push(['let', ['=', methodFn(cls, mname) + BIND,
       ['=>', ['()', self], ['=>', ['()', args.length === 0 ? null : args.length === 1 ? args[0] : [',', ...args]],

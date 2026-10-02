@@ -150,9 +150,11 @@ const CLOSURE_LOOP_B = `
     return total + acc + counter
   }`
 
+// The session frame's counter is shared by session-level passes (plan, boundary
+// wrappers: isInactiveFunction), so the source is one only prepare names in.
 test('prepare naming is compile-owned and distinct from EmitFrame names', () => {
   if (onKernel()) return
-  compile('export let f = ({ x }, ...ys) => { let [a, b] = ys; return x + a + b }')
+  compile('export let f = ({ x }, ...ys) => x + ys[0] + ys[1]')
   const firstPrepareCount = ctx.names.prepare
   ok(firstPrepareCount > 0 && ctx.func.uniq === 0,
     'prepare consumed its own counter while the restored inactive EmitFrame stayed untouched')

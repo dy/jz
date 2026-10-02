@@ -1236,14 +1236,30 @@ const CONVERTING_OPS = new Set(['+', '-', '*', '/', '%', '**', 'u-', 'u+', '~', 
   '&', '|', '^', '<<', '>>', '>>>'])
 const SCALAR_TAGS = new Set([K.NUMBER, K.STRING, K.BOOL])
 // An expression whose evaluation has no effect, `view` the summary of the module's own statements.
-const inert = (e, view) => {
+// A fresh array or object literal of such parts only allocates; so does a call
+// of a module function whose body is one (a record factory), given such arguments.
+const inert = (e, view, calling = new Set()) => {
   if (e == null || typeof e === 'string' || typeof e === 'number') return true
   if (!Array.isArray(e)) return false
   if (e[0] == null || e[0] === 'str' || e[0] === 'bool' || e[0] === '=>') return true
   if (heldBuiltin(e)) return true
-  if (PLAIN_OPS.has(e[0])) return e.slice(1).every(o => inert(o, view))
+  if (e[0] === '[') return e.slice(1).every(o => inert(o, view, calling))
+  if (e[0] === '{}') return e.slice(1).every(p => Array.isArray(p) && p[0] === ':' && typeof p[1] === 'string' && inert(p[2], view, calling))
+  if (e[0] === '()' && typeof e[1] === 'string') return inertFactory(e[1], view, calling) &&
+    (e[2] == null || (Array.isArray(e[2]) && e[2][0] === ',' ? e[2].slice(1) : [e[2]]).every(a => inert(a, view, calling)))
+  if (PLAIN_OPS.has(e[0])) return e.slice(1).every(o => inert(o, view, calling))
   if (!CONVERTING_OPS.has(e[0]) || !view) return false
-  return e.slice(1).every(o => inert(o, view) && SCALAR_TAGS.has(tagOf(core(view.kindOfExpr(o)))))
+  return e.slice(1).every(o => inert(o, view, calling) && SCALAR_TAGS.has(tagOf(core(view.kindOfExpr(o)))))
+}
+// A program function whose body is a literal of inert parts, without defaults.
+const inertFactory = (name, view, calling) => {
+  const f = ctx.funcs.map.get(name)
+  if (!f || f.raw || f.defaults || calling.has(name)) return false
+  let body = f.body
+  if (Array.isArray(body) && body[0] === '{}' && body.length === 2 && Array.isArray(body[1]) && body[1][0] === 'return') body = body[1][1]
+  if (!Array.isArray(body) || (body[0] !== '[' && body[0] !== '{}')) return false
+  calling.add(name)
+  try { return inert(body, view, calling) } finally { calling.delete(name) }
 }
 
 /**

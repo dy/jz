@@ -559,6 +559,22 @@ test('class struct: nullable method values retain binding and reject missing rec
   }
 })
 
+// A method wider than the closure's inline lanes (three.js's 16-argument
+// Matrix4.set) still has a bound value: it takes its arguments as a rest.
+test('class struct: a method wider than the closure lanes keeps a bound value', () => {
+  const src = `class M { constructor() { this.e = [] }
+      set(a, b, c, d, e, f, g, h, i, j) { const t = this.e; t[0] = a; t[7] = h; t[8] = i; t[9] = j; return this } }
+    class V { constructor() { this.x = 0 } set(x) { this.x = x; return this } }
+    export const f = (k) => { const o = k ? new M() : new V(), s = o.set
+      return k ? s(1, 2, 3, 4, 5, 6, 7, 8).e[7] + (s(1).e[9] === undefined ? 100 : 0) : s(5).x }
+    export const g = () => new M().set(1, 2, 3, 4, 5, 6, 7, 8, 9, 10).e[9]`
+  for (const optimize of [0, 2, 3, 'size']) {
+    const { f, g } = jz(src, { optimize }).exports
+    for (const k of [1, 1, 0, 1]) is(f(k), k ? 108 : 5, `O${optimize}: value ${k}`)
+    is(g(), 10, `O${optimize}: direct call`)
+  }
+})
+
 test('class struct: accessors on a known receiver, an unknown receiver, a plain object', () => {
   const { f, unknown } = compile(`
     class T { #c = 0; constructor(v) { this.v = v } get twice() { return this.v * 2 } set twice(x) { this.v = x / 2 } }

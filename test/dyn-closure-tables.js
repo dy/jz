@@ -38,6 +38,23 @@ test('dyn-closure-tables: checked dispatch tags the outer call after argument ef
   }
 })
 
+// A typed element as the key may be past the end, an element read that misses:
+// the key is a number or undefined, which names an element or a stored
+// "undefined" entry, never `length` or a method. The table's callees stay the
+// table's, and their numeric parameters numeric (no generic `+`).
+test('dyn-closure-tables: a typed element key keeps the table callees and their kinds', () => {
+  const src = `const ops = [(x, k) => (x + k) | 0, (x, k) => x ^ k, (x, k) => Math.imul(x, k | 1), (x, k) => (k - x) | 0]
+    export const run = (n) => { const code = new Int32Array(n), ks = new Int32Array(n)
+      for (let i = 0; i < n; i++) { code[i] = (i * 7) & 3; ks[i] = i * 31 }
+      let x = 1; for (let i = 0; i < n; i++) x = ops[code[i]](x, ks[i]); return x }`
+  for (const level of ['speed', 'size']) {
+    const w = wat(src, { level })
+    ok(!/__add_slow|__str_concat/.test(w), `${level}: the callees add numbers`)
+    const { run } = jz(src, { optimize: { level } }).exports, want = oracle(src)
+    for (const n of [0, 1, 17, 64]) is(run(n), want.run(n), `${level}: n=${n}`)
+  }
+})
+
 test('dyn-closure-tables: open keys retain named values and the checked fallback', () => {
   const src=`const ops=[x=>x|0,x=>(x*2)|0];ops.extra=()=>3.5;
     export function f(sel,x){try{return ops[sel](x)}catch(e){return e instanceof TypeError?'TypeError':e}}`

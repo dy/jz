@@ -2762,7 +2762,10 @@ export default (ctx) => {
   }
 
   // === `in` operator: key in obj → HASH key existence check ===
-  ctx.core.emit['in'] = (key, obj) => {
+  // `own` is the own-property probe of Object.hasOwn/hasOwnProperty: its
+  // receiver passes through ToObject, so only a nullish one throws and a
+  // primitive answers for itself (a string its indices and length).
+  ctx.core.emit['in'] = (key, obj, own = false) => {
     const objType = typeof obj === 'string' ? lookupValType(obj) : valTypeOf(obj)
     // A class member (jzify/classes.js): an instance of a class with it has it,
     // as through a prototype; a store under the name on any receiver is an own
@@ -2773,7 +2776,7 @@ export default (ctx) => {
       let recv = obj
       const pre = []
       if (typeof obj !== 'string') { recv = temp('in_o'); pre.push(['local.set', `$${recv}`, asF64(storedValue(obj))]) }
-      const probe = typed(['i32.or', asI32(classMemberIn(recv, key[1])), asI32(emit(['in', raw, recv]))], 'i32')
+      const probe = typed(['i32.or', asI32(classMemberIn(recv, key[1])), asI32(ctx.core.emit['in'](raw, recv, own))], 'i32')
       return pre.length ? typed(['block', ['result', 'i32'], ...pre, probe], 'i32') : probe
     }
     if (objType == null || objType === VAL.TYPED) {
@@ -2789,8 +2792,9 @@ export default (ctx) => {
       let recv = obj
       const pre = []
       if (typeof obj !== 'string') { recv = temp('in_o'); pre.push(['local.set', `$${recv}`, asF64(storedValue(obj))]) }
-      const probe = emit(['||', ['in', raw, recv], ['||', ['in', ['str', key[1] + ACCESSOR_GET], recv], ['in', ['str', key[1] + ACCESSOR_SET], recv]]])
-      return pre.length ? typed(['block', ['result', 'i32'], ...pre, asI32(probe)], 'i32') : probe
+      const probe = typed(['i32.or', asI32(ctx.core.emit['in'](raw, recv, own)),
+        ['i32.or', asI32(ctx.core.emit['in'](['str', key[1] + ACCESSOR_GET], recv, own)), asI32(ctx.core.emit['in'](['str', key[1] + ACCESSOR_SET], recv, own))]], 'i32')
+      return pre.length ? typed(['block', ['result', 'i32'], ...pre, probe], 'i32') : probe
     }
 
     // A precise, closed OBJECT schema answers membership without reading a
@@ -2906,7 +2910,7 @@ export default (ctx) => {
             ['i32.or', ['i32.eq', typeVal, ['i32.const', PTR.CLOSURE]],
               ['i32.eq', typeVal, ['i32.const', PTR.BUFFER]]]]]]]
 
-    inc('__ptr_type', '__len', '__str_length', '__hash_has', '__is_str_key', '__to_key', '__dyn_has', '__ptr_offset', '__is_object')
+    inc('__ptr_type', '__len', '__str_length', '__hash_has', '__is_str_key', '__to_key', '__dyn_has', '__ptr_offset', own ? '__is_nullish' : '__is_object')
     // The receiver may be a host object, which the host answers for, as dot
     // reads ask it (array.js ensureHostOpaqueGet).
     const ext = demandHostReceiver()
@@ -2916,7 +2920,7 @@ export default (ctx) => {
     return typed(['block', ['result', 'i32'],
       ['local.set', `$${keyTmp}`, asF64(storedValue(key))],
       ['local.set', `$${objTmp}`, asF64(storedValue(obj))],
-      ['if', ['i32.eqz', ['call', '$__is_object', ['i64.reinterpret_f64', objVal]]],
+      ['if', own ? ['call', '$__is_nullish', ['i64.reinterpret_f64', objVal]] : ['i32.eqz', ['call', '$__is_object', ['i64.reinterpret_f64', objVal]]],
         ['then', ['drop', throwTypeErrorIR()]]],
       ['local.set', `$${outTmp}`, ['i32.const', 0]],
       ['local.set', `$${typeTmp}`, ['call', '$__ptr_type', ['i64.reinterpret_f64', objVal]]],

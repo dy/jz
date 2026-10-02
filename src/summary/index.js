@@ -1063,13 +1063,16 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     }
     return pair
   }
-  /** A numeric key names an element. Other keys can also name length or an
-   * inherited method, independently of the values stored beside the elements. */
+  /** A numeric key names an element. A number that may be missing can also
+   * name the property "undefined" or "null", a stored entry, never length or
+   * a method. Other keys can also name length or an inherited method,
+   * independently of the values stored beside the elements. */
   const entryOf = (arr, ik) => {
     const t = tagOf(ik)
     if (paramOf(arr) === UNKNOWN) return ANY
     if (ik === NUMBER) return merge(elemOf(arr), numericPropsOf(arr))
     if (t === K.NONE) return K.NONE
+    if (core(ik) === NUMBER) return anyPropOf(arr)
     return merge(anyPropOf(arr), join(NUMBER, kind(K.CLOSURE)))
   }
   const raiseNumeric = (arr, k) => {
@@ -3483,15 +3486,18 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
 
   let current = null  // the scope (and result key) of the function being walked; null at module scope
   for (let i = 0; i < dictUses.length; i += 2) { const scope = dictUses[i]; current = scope === MODULE ? null : scope; const key = keyOf(dictUses[i + 1]); if (key !== null) dictKeys.add(key) }
+  current = null
   // A global the plan declared without a declaration statement (a function
   // property flattened to a module global, plan/scope.js flattenFuncNamespaces)
   // is a module binding named by its writes: undefined until the first one,
   // unless a top-level statement assigns it unconditionally (`initWrites`).
+  // Every seeding of the kinds starts it so (`seed`, below).
+  const undeclaredGlobals = []
   for (let i = 0; i < writes.length; i += 5) {
     const scope = writes[i], name = writes[i + 1]
     if (moduleGlobals.has(name) && keyOf(name, scope) === null) {
       const key = declareIn(MODULE, name)
-      if (!initWrites.has(name)) raise(kinds, key, NULLISH)
+      if (!initWrites.has(name)) undeclaredGlobals.push(key)
     }
   }
   current = null
@@ -3727,8 +3733,9 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
       if (tagOf(r) === K.OBJECT && paramOf(r) !== UNKNOWN) for (const sid of shapesOf(paramOf(r))) deletable.add(sid)
       else if (dictOrObject(r)) { for (const sid of shapesInCell(cell(paramOf(r)))) deletable.add(sid); if (cellLostObject.has(cell(paramOf(r)))) deleteReach.unknown = true }
       else if (hasTag(r, K.OBJECT)) deleteReach.unknown = true
-      // A deleted field reads as absent.
-      if (tagOf(r) === K.OBJECT || tagOf(r) === K.ANY) poisonAll(r, k, ABSENT)
+      // A deleted field reads as absent: through a cell, on every shape it holds (as a store does).
+      if (dictOrObject(r)) { const c = cell(paramOf(r)); for (const sid of shapesInCell(c)) { raiseAllSlots(sid, ABSENT); raiseSideWild(sid, ABSENT) } if (cellLostObject.has(c)) poisonAll(r, k, ABSENT) }
+      else if (tagOf(r) === K.OBJECT || tagOf(r) === K.ANY) poisonAll(r, k, ABSENT)
       return
     }
     if (op === 'label') { stmt(n[2]); return }
@@ -4423,7 +4430,8 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     for (const f of funcs) {
       if (exportedNames.has(f.name) || hostClosures.has(f.name) || escaped.has(f.name) || f.sig.dispatcher) reach(f.name)   // a dispatcher is called by emitted code
       if (!reached.has(f.name)) continue
-      if (f.rest) { if (escaped.has(f.name)) restUnknown(f.name, f.rest); else raise(kinds, keyIn(f.name, f.rest), restArrayOf(f.name)) }
+      // A caller the walk never sees (the host, an escape) hands a rest array of anything.
+      if (f.rest) { if (openCaller(f.name, f)) restUnknown(f.name, f.rest); else raise(kinds, keyIn(f.name, f.rest), restArrayOf(f.name)) }
       if (escaped.has(f.name)) for (const p of f.sig.params) if (!p.rest) bindParam(keyIn(f.name, p.name), ANY)
       if (exportedNames.has(f.name) || hostClosures.has(f.name) || escaped.has(f.name)) runDefaults(f.name, f.defaults)
       const contexts = initContexts.get(f.name)
@@ -4459,9 +4467,11 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   })
   // What the host may pass: an exported function's parameters; one the export
   // contract normalizes at entry (`boundaryTyped`, narrow/param-abi.js: its
-  // constructor, then `+` when written) arrives as that typed array.
+  // constructor, then `+` when written) arrives as that typed array. A rest
+  // parameter is always the array the export collects (the fixpoint binds it).
   const seed = (numeric) => {
-    for (const f of funcs) if (exportedNames.has(f.name)) for (const p of f.sig.params) { const key = keyIn(f.name, p.name); bindParam(key, p.boundaryTyped ? kind(K.TYPED, encodeTypedElemAux(p.boundaryTyped.replace('+', ''), false)) : numeric.includes(key) ? NUMBER : ANY) }
+    for (const key of undeclaredGlobals) raise(kinds, key, NULLISH)
+    for (const f of funcs) if (exportedNames.has(f.name)) for (const p of f.sig.params) { if (p.rest) continue; const key = keyIn(f.name, p.name); bindParam(key, p.boundaryTyped ? kind(K.TYPED, encodeTypedElemAux(p.boundaryTyped.replace('+', ''), false)) : numeric.includes(key) ? NUMBER : ANY) }
   }
   seed([])
   fixpoint()

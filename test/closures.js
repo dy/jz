@@ -87,6 +87,20 @@ test('fixed rest: mutations keep independent array storage', () => {
     is(runHost(src, { optimize }).f(), 'undefined:7:2:undefined|number:7:2:undefined')
 })
 
+// A store past `arguments.length` defines a property beside the elements: the
+// length stays, and iteration (which reads the length every step) stops there.
+test('arguments: a store past the length keeps it, and iteration follows the length', () => {
+  const source = `function visit() { let out = '', i = 0
+      for (var value of arguments) { out += value + ','; i++; arguments[i] *= 2 }
+      return out + i }
+    function grow() { arguments[5] = 1; return [arguments.length, arguments[5], arguments[4]] }
+    function shrink() { arguments.length = 1; let n = 0; for (const v of arguments) n += v; return [n, arguments[1]] }
+    function untouched() { let n = 0; for (const v of arguments) n += v; return n + arguments.length }
+    export function f() { return [visit(1, 2, 3), grow(1, 2, 3), shrink(4, 5), untouched(1, 2), visit()] }`
+  for (const optimize of levels(0, 2, 3))
+    is(runHost(source, { optimize }).f(), ['1,4,6,3', [3, 1, undefined], [4, 5], 5, '0'])
+})
+
 test('rest calls: tuple returns materialize after ordinary and spread arguments', () => {
   const source = `function defaults(x, _ = 0) { const before = x; arguments[0] = 1; return [before, x, arguments[0]] }
     function rest(x, ...xs) { xs[0] = 7; return [x, xs[0], xs.length] }

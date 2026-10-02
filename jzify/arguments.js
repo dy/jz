@@ -3,7 +3,7 @@
  * @module jzify/arguments
  */
 
-import { collectParamNames, extractParams, withLoc } from '../src/ast.js'
+import { collectParamNames, extractParams, withLoc, MUTATE_OPS } from '../src/ast.js'
 import { hasArrayPattern } from '../src/iterator-pattern.js'
 import { isDestructurePat } from './hoist-vars.js'
 
@@ -122,6 +122,32 @@ function renameArgumentsNode(node, to) {
   return node.map(n => renameArguments(n, to))
 }
 
+// The arguments object keeps its length: a store at or past it defines a
+// property beside the elements (jz's array grows instead), and `length` is a
+// property of its own. A function that writes either reads its length from a
+// binding of its own, and iterates `for…of arguments` by that length, live as
+// the array iterator is. Other whole-object uses see the array.
+const writesArguments = (node, name) => Array.isArray(node) && node[0] != null && (
+  MUTATE_OPS.has(node[0]) && Array.isArray(node[1]) && node[1][1] === name && (node[1][0] === '[]' || node[1][0] === '.' && node[1][2] === 'length') ||
+  node.some((c, i) => i > 0 && writesArguments(c, name)))
+function argumentsLength(node, name, len, temp) {
+  if (!Array.isArray(node) || node[0] == null) return node
+  if (node[0] === '.' && node[1] === name && node[2] === 'length') return withLoc(len, node)
+  if (node[0] === 'for' && Array.isArray(node[1]) && node[1][0] === 'of' && node[1][2] === name) {
+    const i = temp('ai'), head = node[1][1], at = ['[]', name, i]
+    const bind = Array.isArray(head) && (head[0] === 'var' || head[0] === 'let' || head[0] === 'const')
+      ? [head[0], ['=', head[1], at]] : ['=', head, at]
+    return withLoc(['for', [';', ['let', ['=', i, [null, 0]]], ['<', i, len], ['++', i]],
+      ['{}', [';', bind, argumentsLength(node[2], name, len, temp)]]], node)
+  }
+  let out = node
+  for (let k = 1; k < node.length; k++) {
+    const c = argumentsLength(node[k], name, len, temp)
+    if (c !== node[k]) { if (out === node) out = node.slice(); out[k] = c }
+  }
+  return out === node ? node : withLoc(out, node)
+}
+
 function prependParamDecls(decl, body) { return withLoc(prependParamDeclsTo(decl, body), body) }
 function prependParamDeclsTo(decl, body) {
   if (Array.isArray(body) && body[0] === '{}') {
@@ -209,7 +235,11 @@ export function createArgumentsLowering(names) {
       }
       bind(param, ['[]', name, [null, idx]], param)
     }
-    const renamed = usesArgsObj ? renameArguments(body, name) : body
+    let renamed = usesArgsObj ? renameArguments(body, name) : body
+    if (usesArgsObj && writesArguments(renamed, name)) {
+      const len = names.genTemp('alen')
+      renamed = prependParamDecls(['let', ['=', len, ['.', name, 'length']]], argumentsLength(renamed, name, len, names.genTemp))
+    }
     const initializers = decls.length ? [withLoc(['let', ...decls], decls[0])] : []
     for (const st of init) initializers.push(usesArgsObj ? renameArguments(st, name) : st)
     return finish(['()', ['...', name]], renamed, initializers)

@@ -17,7 +17,7 @@ export const AUDITED_OUT = new Map([
   ['test/language/statements/using/syntax/using-invalid-assignment-next-expression-for.js', 'using in for-statement heads outside the jzify lowering'],
   ['test/language/statements/using/syntax/using-invalid-assignment-statement-body-for-of.js', 'using in for-statement heads outside the jzify lowering'],
   ['test/language/statements/using/syntax/using-outer-inner-using-bindings.js', 'using in for-statement heads outside the jzify lowering'],
-  ['test/language/statements/using/throws-if-initializer-Symbol.dispose-property-not-callable.js', 'dispose callability check (v1 checks presence only)'],
+  ['test/language/statements/using/throws-if-initializer-Symbol.dispose-property-not-callable.js', 'assert.throws(TypeError) passes TypeError as a value (the callability check itself is pinned in test/generators.js)'],
   ['test/language/statements/using/throws-suppressederror-if-multiple-errors-during-disposal.js', 'no SuppressedError aggregation (documented divergence)'],
   ['test/language/computed-property-names/class/static/generator-prototype.js', 'generator reflection outside jzify subset'],
   ['test/language/expressions/array/spread-err-mult-err-expr-throws.js', 'spread iterator protocol unsupported'],

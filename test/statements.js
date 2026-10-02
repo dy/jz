@@ -1173,6 +1173,19 @@ test('delete: nullish bases precede key conversion and other keys convert once',
   }
 })
 
+test('delete: a receiver that may be a Number deletes from the shapes it may hold', () => {
+  // `recv()` joins a Number with the object: its shape lives in a mixed cell, and
+  // the deleted field must read undefined through every name, not a canonical NaN.
+  const src = `export function f(mode){let obj={x:1};const old=obj;
+    function recv(){return mode===2?3:obj}
+    function key(){return {toString(){return 'x'}}}
+    return [delete recv()[key()],old.x,obj.x]}`
+  for(const optimize of levels(0,1,2,3,'size')){
+    const got=jz(src,{optimize}).exports,want=oracle(src)
+    for(const mode of [0,2,0])is(got.f(mode),want.f(mode),`delete via union O${optimize}, ${mode}`)
+  }
+})
+
 test('delete: property keys preserve primitive identities before coercion', () => {
   const sources=[
     `export function f(){'use strict';const a={'true':4,'false':5,'1':6,'undefined':7,'null':8};

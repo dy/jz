@@ -44,6 +44,30 @@ test('in: operands run left to right and primitive receivers reject before key c
   }
 })
 
+// Own-property presence takes its receiver through ToObject: a nullish one
+// throws, a primitive answers for itself (a string its indices and length), as
+// the `in` operator, which rejects every primitive, does not.
+test('hasOwn: primitive receivers answer, nullish ones throw, the receiver runs first', () => {
+  const source=`const values=[()=>'ab',()=>'',()=>7,()=>true,()=>null,()=>undefined,()=>({x:1,0:2}),()=>[5,6]]
+    const keys=['x',0,'0',1,'length',2]
+    export function own(vi,ki){try{return Object.hasOwn(values[vi](),keys[ki])}catch(e){return e.name}}
+    export function method(vi,ki){const v=values[vi]();try{return v.hasOwnProperty(keys[ki])}catch(e){return e.name}}
+    export function order(){let log='',o={a:1};const r=Object.hasOwn((log+='o',o),(log+='k',o=null,'a'));return log+r}
+    export function nullish(){let log='';try{Object.hasOwn((log+='o',null),(log+='k','a'))}catch(e){log+=e.name}return log}
+    export function destructure(){let r='';for(const k in {ab:1,'':2}){const [x,y]=k;r+=x+'|'+y+';'}return r}`
+  const expected=oracle(source)
+  for(const optimize of levels(0,2,3,'size')){
+    const actual=jz(source,{optimize}).exports
+    for(let vi=0;vi<8;vi++)for(let ki=0;ki<6;ki++){
+      is(actual.own(vi,ki),expected.own(vi,ki),`${optimize}: Object.hasOwn ${vi} ${ki}`)
+      if(vi!==4&&vi!==5)is(actual.method(vi,ki),expected.method(vi,ki),`${optimize}: hasOwnProperty ${vi} ${ki}`)
+    }
+    is(actual.order(),expected.order(),`${optimize}: the receiver is read before the key`)
+    is(actual.nullish(),expected.nullish(),`${optimize}: a nullish receiver throws after both arguments`)
+    is(actual.destructure(),expected.destructure(),`${optimize}: a string key destructures by code point`)
+  }
+})
+
 test('dynamic string indices keep the complete property-key domain', () => {
   const src=`export function read(value,key){return value[key]}
     export function slice(value,key){return value.slice(1,-1)[key]}
@@ -3463,5 +3487,19 @@ test('typed stores take the number of an object value for every element kind, in
       const { f } = jz(src, { optimize }).exports
       for (const i of [0, 1, 5, -1]) is(f(i), expected(i), `O${optimize}: ${ctor}[${i}]`)
     }
+  }
+})
+
+test('a module binding given an empty literal inside a function reads its keys from every function', () => {
+  // `cache = {}` in one function, keys stored in another and read by name in a third:
+  // the allocation takes the binding's published kind, which every reader shares.
+  const src = `let cache = null
+    export function f(n) { if (!cache) cache = {}; const t = [n, n]; return t.length }
+    export function g(n) { const z = [7, 8, 9, n]; cache['k' + (n & 1)] = n; cache.last = n; return z.length }
+    export let read = () => 'k:' + cache.k0 + cache['k1'] + ':' + cache.last`
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const m = jz(src, { optimize }).exports, js = oracle(src)
+    for (const x of [m, js]) { x.f(1); x.g(5); x.f(2); x.g(6) }
+    is(m.read(), js.read(), `O${optimize}`)
   }
 })

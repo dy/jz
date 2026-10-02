@@ -530,6 +530,8 @@ export function staticValue(node) {
   const arity = node.length - 1
   if (op == null) return arity ? node[1] : undefined
   if (op === 'str') return node[1]
+  // parse.js's `NaN` marker: a value like any literal (`{NaN: v}` names "NaN").
+  if (op === 'nan') return NaN
   // parse.js tags a literal bool as `['bool', 1|0]` (self-compile kernel boundary
   // marker — the same convention as bigint literals' `['bigint', decimalStr]`,
   // see kind.js), where native subscript's own literal shape `[, true]` would
