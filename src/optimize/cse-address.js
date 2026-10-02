@@ -225,17 +225,26 @@ function regionTrackCSE(fn, { matchSite, localPrefix, localType, barrier }) {
 
   if (regions.size === 0) return
 
+  // A node the emitter placed at several positions is one slot, walked at each
+  // of them: rewritten once it would answer for all, a later site's `get`
+  // replacing the `tee` an earlier walk made of it. Its regions stay as written.
+  const walks = new Map()   // parent → Map(idx → times walked)
+  for (const regs of regions.values()) for (const r of regs) for (const { parent, idx } of r) {
+    let slots = walks.get(parent)
+    if (!slots) walks.set(parent, slots = new Map())
+    slots.set(idx, (slots.get(idx) ?? 0) + 1)
+  }
+  const usableRegion = (r) => r.length >= 2 && r.every(({ parent, idx }) => walks.get(parent).get(idx) === 1)
+
   // Commit: ≥2 sites per region to be worthwhile (a singleton is pure cost).
   let hoistId = nextLocalId(fn, localPrefix)
   const locals = []
   for (const [, regs] of regions) {
-    let usable = false
-    for (const r of regs) if (r.length >= 2) { usable = true; break }
-    if (!usable) continue
+    if (!regs.some(usableRegion)) continue
     const tLocal = `$__${localPrefix}${hoistId++}`
     locals.push(['local', tLocal, localType])
     for (const r of regs) {
-      if (r.length < 2) continue
+      if (!usableRegion(r)) continue
       for (let i = 0; i < r.length; i++) {
         const { parent, idx, role } = r[i]
         if (role === 'tee') parent[idx] = ['local.tee', tLocal, parent[idx]]
