@@ -6,6 +6,90 @@ passing conformance, speed, size and memory gates. README owns the public
 contract; CONTRIBUTING owns compiler invariants. This file holds the decisions
 that shaped the tree, the work left before release and the latest gate reading.
 
+## Consolidation, October 2
+
+Every agent branch and worktree is consolidated on local main. `v1-blockers`
+landed whole (267 commits, pushed as `origin/main` at `0815801f`); the other
+139 branches were its ancestors or held the same changes under other hashes.
+Each branch tip, each stash and the uncommitted state of every worktree is
+kept under `refs/archive/v1-consolidation/` (`git for-each-ref refs/archive`);
+the 158 worktrees and 139 branches are removed. `audiojs-math` stays as the
+exact-V8 Math alternative. Nothing further is pushed or published. V1 is not
+ready to tag.
+
+That tip had never run as a whole: default core failed 64 of 6,282 tests, the
+O0 leg 15. The cloud session `claude/v1-readiness-ci-perf-mem` fixed the
+causes on top of `0815801f`; its four commits are on main under their own
+messages, followed by five more. The causes, each fixed at its root:
+
+- Host imports take i64 parameters; a Number or Boolean argument left as an
+  f64 carrier, so every such call failed Wasm validation.
+- Number normalization ran on every typed-array read into a local and every
+  Number stored into a plain array or a generic binding. The select removed
+  loop vectorization, SLP pairing and loop specialization, and a v128 binding
+  reached the normalizer. A binding every read of which consumes a Number now
+  stores raw, the vectorizers read through a normalizing select, the
+  specializer through a normalized checked read, and a value whose source can
+  carry no payload (`kind/payload.js`, CONTRIBUTING) is not normalized at all:
+  a plain-array kernel pays nothing.
+- The summary held facts it had not proved, which the new Number folds turned
+  into wrong answers: a delete through a union of a shape and primitives left
+  the shape's slots Number-only; a flattened function property lost its
+  initial undefined when the solve restarted; a Number-keyed store under a
+  canonical name (`o[NaN]`) reached no named read.
+- `hasOwnProperty` and `Object.hasOwn` took the membership operator's new
+  rejection of primitive receivers; the iterator runtime probes values so.
+- The three BigInt typed-update failures of the R6 run, `arguments.length`
+  after a write, `using` with a non-callable dispose, class binders past eight
+  lanes, the frame-effects census of `__to_property_key`, and the pins that
+  compile at the leg's level (`belowOpt(2)`) since interval fixpoints start
+  at level 2.
+- The splice lowering reuses one length-address node at several positions;
+  the new `__ptr_offset` CSE rewrote that slot last as a get, so every read
+  went through address zero (`array-methods`, all tiers). A frame left
+  unrewound because its result is all it made is released by the host; the
+  kept-memory advisory read it as kept.
+- The top-level reassignment census copied every ancestor's names into each
+  nested frame, quadratic in nesting depth.
+
+Core matrix on main (`JZ_TEST_JOBS=4`, registry watr 5.11.8): default
+6,291 / 6,294, O0 6,137 / 6,137, O3 6,148 / 6,151, WASI 6,192 / 6,196.
+Import lint, public types and the file audit pass. Every failure is one of:
+
+- `typed decode: a missing receiver throws where the access runs`,
+  `audit: integer products preserve zero sign through every numeric carrier`,
+  `audit: checked integer locals keep words where a miss meets only tests
+  zero answers alike`: inside watr 5.11.8 (signed zero in structural keys; a
+  checked load sunk past a local write), fixed on watr's local main (5.11.9,
+  unpublished). JZ still declares and locks 5.11.8.
+- `specialize: impossible byte extents do not hide reachable nested loops`
+  (O3): the pin landed with `dcf9e458` while the specialization it needs,
+  "Specialize reachable loops behind impossible extent guards"
+  (`refs/archive/v1-consolidation/branch/v1-mikk-costs`), stays held for its
+  copy cost (Mikk 72,705 -> 115,153 bytes).
+- `codegen: receiver proven ARRAY-or-TYPED across disagreeing call sites drops
+  the guard entirely` (WASI): since `aad658a9` an ordinary array holds named
+  numeric keys, so a read by an unproven Number index keeps one cold arm on
+  every host; the pin counts `__dyn_get_expr` and passes on the JS host only
+  because that arm is `__dyn_get_any` there. The fix is an interprocedural
+  integer-index proof for the counter, not the pin.
+
+Left open by this consolidation, beside the blockers listed below:
+
+- Number payload identity has paths it does not cover. A float typed element
+  read through a generic receiver (a union, an array pattern, a spread,
+  `Array.from`, `.at`, `.find`), through a non-constant index into a generic
+  binding, or written by a closure to a captured binding keeps its raw bits:
+  a NaN whose payload spells the undefined atom reads as undefined, and one
+  that spells a BigInt box throws in generic addition. Each reproduces on
+  `0815801f`.
+- Well-known Symbol identity (`Symbol.iterator`, `dispose`, `asyncIterator` as
+  real atoms through schemas and class members) is an unverified 45-file
+  change: `refs/archive/v1-consolidation/wip/jz-v1-well-known-symbols`. A
+  wider BigInt staged-update carrier change, superseded by the typed-store
+  fix above, is `refs/archive/v1-consolidation/wip/eval-wt-bigint`.
+- watr's local main carries 5.11.9 and three later fixes, unpublished.
+
 ## Blocker work, October 1
 
 All handed-over compiler branches are consolidated on local main. The subsequent
