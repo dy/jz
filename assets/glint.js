@@ -90,7 +90,7 @@ const layout = () => {
       if (!boxes.has(el)) { el.classList.add('reflect-box'); boxes.set(el, edge(el)) }
       boxes.get(el).rect = el.getBoundingClientRect()
     }
-    for (const el of document.querySelectorAll('a')) glare(el)
+    for (const el of document.querySelectorAll('a, .lnk')) glare(el)
     ink = [...document.querySelectorAll('h1.title, footer .legal > :not(a)')]
       .filter(el => el.textContent.trim()).map(el => {
         const heading = el.matches('h1.title')

@@ -29,12 +29,15 @@
   /* light = blueprint paper: near-white, ink near-black */
   --ink:   light-dark(#111214, #f0f0f2);   /* primary text */
   --soft:  light-dark(#45484d, #b7b7c1);   /* secondary text */
+  --link:  light-dark(#666a70, #d7d7de);   /* content links */
   --dim:   light-dark(#6c6f74, #7e7e8a);   /* tertiary / labels */
   --mute:  light-dark(#a0a3a8, #50505a);   /* faintest text / separators */
   --paper: light-dark(#f7f7f7, #000000);   /* page background */
   --band:  light-dark(#f7f7f7, #000000);   /* chrome blends with the page (header has no band) */
   --line:  light-dark(#dedfe1, #1c1c25);   /* hairline */
   --rule:  light-dark(rgb(0 0 0 / .14), rgb(255 255 255 / .12)); /* translucent: crossings accumulate light */
+  --code-bg: #000;
+  --code-rule: #333;
 
 
   /* ── Blueprint grid: 80px major lines (= half the logo) · 40px mid lines · 8px unit lines — all translucent,
@@ -125,15 +128,17 @@ html.paper:not(.jz-saver):not(.jz-embed) .ruler-refl { display: block; }
 
 /* Futura (the brand face) for every title, site-wide. */
 h1, h2, h3, h4, h5, h6 { font-family: var(--font); }
-/* The brushed rim and elliptical silver reflection follow the same cursor light. */
+/* The brushed rim and diagonal silver glare follow the same cursor light. */
 .reflect-title { display: grid; position: relative; font-variant-ligatures: none; }
 .reflect-title > span { grid-area: 1 / 1; text-box: inherit; padding: .25em; margin: -.25em; }
 .title-outline { visibility: hidden; pointer-events: none; user-select: none; }
 .reflect-title[data-metal-ready="true"] > .title-fill { -webkit-text-fill-color: transparent; }
 .reflect-title[data-metal-ready="true"] > .title-outline { visibility: visible; }
 .metal-face {
-  mask-image: radial-gradient(ellipse 260px 150px at var(--fill-x, 50%) var(--fill-y, 50%), #000, #000d 25%, transparent),
-    radial-gradient(ellipse 200px 90px at var(--fill-x, 50%) calc(200% - var(--fill-y, 50%)), #0003, transparent),
+  --glare: calc(var(--fill-x, 0px) * sin(120deg) - var(--fill-y, 0px) * cos(120deg));
+  mask-image: linear-gradient(120deg, transparent calc(var(--glare) - 260px),
+      #0005 calc(var(--glare) - 135px), #000c calc(var(--glare) - 55px), #000 var(--glare),
+      #000b calc(var(--glare) + 80px), transparent calc(var(--glare) + 220px)),
     linear-gradient(145deg, #00000008, #00000002);
   pointer-events: none;
 }
@@ -177,7 +182,7 @@ h1, h2, h3, h4, h5, h6 { font-family: var(--font); }
   mask: var(--icon-mask) center / contain no-repeat; }
 /* Inline padding gives the paint room for descenders without changing line metrics. */
 .glare-ink { padding-block: .25em; -webkit-box-decoration-break: clone; box-decoration-break: clone; }
-.glare-link:is(:hover, :focus-visible) .glare-ink,
+.glare-link:is(:hover, :focus-visible, [aria-expanded="true"]) .glare-ink,
 .glare-icon:is(:hover, :focus-visible)::before,
 .metrics .stat:is(:hover, :focus-visible) .lab { background-position: 0% 0; }
 @media (prefers-reduced-motion: reduce) {
@@ -243,7 +248,7 @@ footer .wordmark > .edge-refl { inset: 1px -1px -1px 1px; }
 .masthead nav { margin-left: auto; }
 .site-nav { display: flex; align-items: center; --nav-gap: 24px; gap: var(--nav-gap); }
 @media (min-width: 800px) { .site-nav { padding-right: var(--U); } }
-.site-nav a { color: var(--soft); text-decoration: none; font-size: var(--fs-caps);
+.site-nav a { color: var(--soft); font-size: var(--fs-caps);
   text-transform: uppercase; letter-spacing: var(--ls-caps); }
 .site-nav .ver { font-size: var(--fs-small); text-transform: none; letter-spacing: .02em; opacity: .5; margin-left: var(--nav-gap); }   /* set apart from the menu: twice its gap */
 /* the two icons take a grid cell each. A cell
@@ -266,16 +271,19 @@ footer .wordmark > .edge-refl { inset: 1px -1px -1px 1px; }
 :root[data-theme="light"] .theme-toggle .i-sun  { display: none; }
 :root[data-theme="light"] .theme-toggle .i-moon { display: block; }   /* light theme → show the moon */
 
-/* Prose links are brighter ink; the shared glare supplies their hover and focus state. */
-.lnk { color: var(--ink); cursor: pointer; text-decoration: none; }
+/* Content links share one color and the glare's hover/focus treatment. */
+a, .lnk, s { text-decoration-color: color-mix(in srgb, currentColor 35%, transparent); text-decoration-thickness: 1px; }
+a, .lnk { color: var(--link); cursor: pointer; text-decoration-line: underline; text-underline-offset: .25em; }
+a:hover, .lnk:hover { text-decoration-color: currentColor; }
+nav a, footer a { text-decoration: none; }
 
 /* Shared reading style: FAQ answers and the getting-started guide. */
 .prose { max-width: 720px; font-size: var(--fs-body); line-height: 24px; color: var(--soft); }
 .prose :is(h1, h2, h3, h4, h5, h6) { color: var(--ink); }
 .prose p { margin: 0; }
 .prose p+p { margin-top: 16px; }
-.prose a { color: var(--ink); text-decoration: none; }
 .prose :not(pre)>code { font-family: var(--font-mono); font-size: var(--fs-mono); line-height: 0; color: var(--ink); background: light-dark(rgba(0,0,0,.06), rgba(255,255,255,.08)); padding: .1em .4em; white-space: nowrap; }   /* line-height 0: a second font must not grow the line box off the 24px rhythm */
+.prose a code { color: inherit; }
 
 /* ─── CTA chip — the ONE call-to-action button, shared: the bench page's "Report a slow case" and the
    landing's "Sponsor the dev". Outline box in ink on paper; inverts on hover. Pattern: a plain 16px
@@ -293,11 +301,11 @@ footer .fwrap { max-width: var(--cw); margin-inline: calc(var(--gx-pad) - var(--
 footer .wordmark { display: inline-flex; width: 40px; height: 40px; padding: 1px 0 0 1px; box-sizing: border-box; line-height: 0; text-decoration: none; }
 footer .wordmark > :is(img, svg) { width: 39px; height: 39px; display: block; }
 footer .fcol { display: flex; flex-direction: column; gap: var(--u); width: var(--U); padding-top: calc(1.5 * var(--u)); }
-footer .fcol a { text-decoration: none; color: var(--soft); font-size: var(--fs-small); transition: color .16s; }
+footer .fcol a { color: var(--soft); font-size: var(--fs-small); transition: color .16s; }
 footer .legal { margin-left: auto; align-self: flex-end; display: flex; flex-direction: column; align-items: flex-end; gap: var(--u); font-size: var(--fs-small); line-height: 24px; text-align: right; color: var(--dim); }
 footer .legal .credit { color: var(--mute); }   /* "made with watr and jessie" — muted lead, soft links (jz's parser + assembler) */
 footer .legal .dot { color: var(--mute); }       /* the middot between MIT and ॐ */
-footer .legal a { color: var(--soft); text-decoration: none; }
+footer .legal a { color: var(--soft); }
 footer .legal .om { font-size: 15px; font-weight: 700; }   /* Devanagari strokes are thin — bump weight so ॐ reads as dark as the MIT link (same colour, matched density) */
 @supports (text-box: trim-both cap alphabetic) {
   footer .fcol a, footer .legal > * { text-box: trim-both cap alphabetic; padding-top: var(--bl); }

@@ -25,26 +25,9 @@ npm install jz
 ```
 
 ```js
-import { compile } from 'jz'
-
-const wasm = compile('export const dist = (x, y) => (x*x + y*y) ** 0.5')
-const { instance } = await WebAssembly.instantiate(wasm)
-
-instance.exports.dist(3, 4) // 5
-```
-
-A numeric module like this one needs no runtime. For strings, arrays and
-objects use `jz()` (compile and instantiate in one step) or `jz/interop`
-(instantiate prebuilt wasm); both marshal values across the boundary:
-
-```js
 import jz from 'jz'
-
-const { exports, memory } = jz`
-  export const sum = a => { let n = 0; for (const x of a) n += x; return n }
-`
-exports.sum(new Float64Array([1, 2, 3])) // 6
-memory.used                               // 0: the call kept nothing it allocated
+const { exports } = jz`export const square = x => x * x`
+exports.square(7) // 49
 ```
 
 <details>
@@ -122,7 +105,8 @@ See [all examples](https://jz.js.org/examples/).
 <summary><strong>What is not supported?</strong></summary>
 
 - **Runtime code:** `eval`, `Function`, `with`.
-- **Reflection:** `Proxy`, `Reflect`, property descriptors, prototype chains and `__proto__`.
+- **Reflection:** `Proxy`, `Reflect` and general prototype-chain lookup or mutation. Classes, inheritance and statically resolved prototype members are supported.
+- **Accessor descriptors:** `Object.defineProperty` with `get`/`set` is unsupported; declare accessors on a class or fixed-layout object literal instead. Data-property definitions and descriptor reads work, with the differences below.
 - **Object accessors:** getters/setters need a fixed property layout; mixing them with runtime-computed keys or a spread of unknown keys is unsupported.
 - **Module dynamics:** top-level `await` other than `await import('./x.js')`, and `import()` of a specifier computed at run time. A literal `import('./x.js')` bundles `x.js`, which evaluates at the first `import()` unless a static import loaded it.
 - **Platform:** DOM, Node modules, `Intl`, `Temporal`.
@@ -145,6 +129,8 @@ Where behaviour differs from JS:
 - **Regexes compile at build time.** `new RegExp(pattern)` needs a literal; `\p{…}`, `d` and `v` flags are unsupported.
 - **ASCII case, UTC dates.** No locale or timezone tables: case conversion is ASCII, `normalize` returns its input, Date getters use UTC.
 - **Fixed shapes.** Object fields are slots resolved at compile time; `Object.freeze` does nothing and errors carry `name` and `message` only.
+- **Data descriptors only.** `Object.defineProperty` stores the value but ignores `writable`, `enumerable` and `configurable`. `Object.getOwnPropertyDescriptor` reports all three flags as true; a property whose value is `undefined` is reported as absent.
+- **No runtime prototype chain.** `Object.create(null)` creates an empty object; `Object.create(obj)` copies supported object layouts instead of linking a prototype. Class inheritance and supported prototype assignments are resolved at compile time.
 - **Class methods stay bound.** An extracted class method retains its instance. Object-literal methods use the call receiver.
 - **Numeric export parameters.** A parameter an exported function never uses as a string is compiled as a number and converted at the boundary: `export let add = (a, b) => a + b` gives `add(1, '2')` as 3, where JavaScript concatenates. A use as a string counts through a copy, a call and a sum: `(s) => (s + s).slice(1)` takes a string.
 
@@ -166,8 +152,7 @@ slower dynamic path, and `why` shows where.
 Numbers pass directly. Strings, arrays and typed arrays are copied in and
 decoded on the way out; numeric writes to an array argument are copied back
 after the call at the length the function left it, its non-numeric elements are
-not. A
-typed array keeps its element kind: a Float32Array block runs as one. The copies
+not. A typed array keeps its element kind: a Float32Array block runs as one. The copies
 are released after the call unless the function keeps them. A plain object
 passes by reference: the module reads, writes, lists and serializes it through
 the host, so the caller sees its changes; a typed array the module stores on it
@@ -329,6 +314,10 @@ Faster than V8 and AssemblyScript on almost every kernel we measure, about 2×
 on average. Every number, and every loss, is on the
 [bench page](https://jz.js.org/bench/).
 
+V8 also compiles hot JS to machine code. JZ can beat it by analyzing the whole
+program ahead of time: inferred types, fixed layouts, direct calls and SIMD on
+suitable loops, with no garbage collector.
+
 Nothing ships that the program does not reach: a heap-free numeric module has
 no memory, allocator or startup, and an empty program is an empty module.
 Size-optimized JZ stays within 5% of AssemblyScript's geomean while keeping
@@ -362,6 +351,7 @@ JavaScript's bounds checks.
   WASM target. JZ emits WASM first for an inferred typed subset. JZ may not lose
   to Porffor's native artifact on speed or size per case or by geomean.
 - **[scriptc](https://github.com/vercel-labs/scriptc)** also AOT-compiles typed JS/TS without an engine (TS annotations → LLVM), embedding QuickJS only as an opt-in fallback for dynamic code. It is native-first with WASI as a target; JZ is WASM-first, infers types from idiomatic untyped JS, and keeps dynamic fallbacks inside the WASM module.
+- **[TypeScriptCompiler](https://github.com/ASDAlexander77/TypeScriptCompiler)** (`tslang`) compiles TypeScript through LLVM/MLIR to native executables or WebAssembly. Our native benchmark lane feeds it the unchanged JavaScript corpus saved as `.ts`, with its default library and garbage collector.
 - **[Perry](https://perryts.com/)** compiles JS/TS through LLVM to native executables with a linked runtime and garbage collector. Our [benchmarks](bench/README.md) cover its native output on the unchanged JS corpus.
 - **[AssemblyScript](https://github.com/AssemblyScript/assemblyscript)** produces lean WASM, but is not directly executable JavaScript.
 - **Rust, C, Zig, Go, and MoonBit** compiled to wasm run behind JZ by geomean on

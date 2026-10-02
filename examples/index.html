@@ -29,28 +29,26 @@ html, body {
    so the examples grid lines up edge-to-edge with the landing and bench. */
 .masthead { max-width: var(--colw); margin-inline: calc(var(--gx-pad) - var(--padx)) auto; padding-inline: var(--padx); }
 
-/* The gallery on the blueprint grid: a card per 4-unit module — a 3.5-unit shot and caption, half a unit of
-   gutter — from the left ruler; rows 4 units apart, the first on a major line (the script lands the intro's end
-   there); under 720px, one full-column card per row. */
+/* Cards fill the shared column, with half-unit gutters and proportional previews. */
 .grid {
   max-width: var(--colw);
   margin-inline: calc(var(--gx-pad) - var(--padx)) auto;
   padding: 0 var(--padx) var(--U);   /* starts at the menu ruler: the title (.title, assets/site.css) sets its own distance */
   display: grid;
-  grid-template-columns: repeat(auto-fill, calc(3.5 * var(--U)));
+  grid-template-columns: repeat(auto-fill, minmax(calc(3.5 * var(--U)), 1fr));
   column-gap: var(--u2);
   grid-template-rows: auto;
-  grid-auto-rows: calc(4 * var(--U));
+  grid-auto-rows: minmax(calc(4 * var(--U)), auto);
 }
 
 .intro { grid-column: 1 / -1; max-width: 60ch; padding-bottom: var(--u2); }
 .intro h1 { margin-bottom: 24px; }
 .intro p { color: var(--soft); font-size: var(--fs-body); line-height: 24px; }
 
-.cell { display: block; text-decoration: none; color: inherit; }
+.cell { display: block; padding-bottom: var(--u2); color: inherit; text-decoration: none; }   /* the name alone is underlined */
 
 .cell .shot {
-  height: calc(2.5 * var(--U));
+  aspect-ratio: 7 / 5;
   overflow: hidden;
   background: #000;
 }
@@ -77,8 +75,11 @@ html, body {
   font-size: var(--fs-body);
   font-weight: 400;
   letter-spacing: -.01em;
-  color: var(--ink);
+  color: var(--link);
+  text-decoration: underline 1px color-mix(in srgb, currentColor 35%, transparent);
+  text-underline-offset: .25em;
 }
+.cell:hover .name { text-decoration-color: currentColor; }
 
 .cell .desc {
   display: block;

@@ -31,10 +31,11 @@ h2 code { font-size: .9em; background: none; padding: 0; }
 /* the idea in one picture: one file, two runtimes */
 .flow { display: block; width: 100%; max-width: calc(7 * var(--U)); height: auto; margin: 0 0 8px; overflow: visible; color: var(--ink); }   /* the side notes overflow into the column */
 .flow rect, .flow path { fill: none; stroke: currentColor; stroke-width: 1; }
+.flow rect { fill: var(--code-bg); stroke: var(--code-rule); }
 .flow path { stroke: var(--dim); }
 .flow .head { fill: var(--dim); stroke: none; }
 .flow text { font-family: var(--font); fill: currentColor; }
-.flow .file { font: 13px var(--font-mono); text-anchor: middle; }
+.flow .file { font: 13px var(--font-mono); text-anchor: middle; fill: #e8e8ea; }
 .flow .edge { font-size: 12px; text-transform: uppercase; letter-spacing: .1em; text-anchor: middle; fill: var(--dim); }
 .flow .note { font-size: 13px; fill: var(--dim); }
 
@@ -58,12 +59,11 @@ h2 code { font-size: .9em; background: none; padding: 0; }
 
 /* where to go next: the menu's caps, in a row */
 .next { display: flex; flex-wrap: wrap; gap: 8px 32px; margin-top: 40px; }
-.next a { font-size: var(--fs-caps); text-transform: uppercase; letter-spacing: var(--ls-caps); text-decoration: none; color: var(--ink); }
+.next a { font-size: var(--fs-caps); text-transform: uppercase; letter-spacing: var(--ls-caps); }
 .next a::after { content: ' →'; color: var(--dim); }
-.next a:hover { text-decoration: underline; text-underline-offset: 4px; }
 @supports (text-box: trim-both cap alphabetic) { h2 { text-box: trim-both cap alphabetic; } .terminal { text-box: trim-both cap alphabetic; } }
 /* code: 24px lines, the first baseline 24px into the box, the box's edge drawn inside (no border height) */
-.terminal { margin: 24px 0; padding: calc(24px - 1cap) 24px 16px; background: #000; color: #e6e6e6; box-shadow: inset 0 0 0 1px #222; overflow: auto hidden; font: var(--fs-mono)/24px var(--font-mono); color-scheme: dark; }   /* hidden on y: the trimmed line space under the last baseline is not overflow */
+.terminal { margin: 24px 0; padding: calc(24px - 1cap) 24px 16px; background: var(--code-bg); color: #e6e6e6; box-shadow: inset 0 0 0 1px var(--code-rule); overflow: auto hidden; font: var(--fs-mono)/24px var(--font-mono); color-scheme: dark; }   /* hidden on y: the trimmed line space under the last baseline is not overflow */
 .terminal code { font: inherit; }
 .terminal:focus-visible { outline: 2px solid var(--ink); outline-offset: 3px; }
 .terminal ::selection { color: #000; background: #ddd; }

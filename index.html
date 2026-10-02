@@ -50,10 +50,6 @@
         text-rendering: optimizeLegibility;
       }
 
-      a {
-        color: inherit;
-      }
-
       /* the column every section's content sits in: ruler to ruler */
       .col {
         width: var(--cw);
@@ -76,7 +72,6 @@
         .metrics .lab,
         .faq .fq,
         .faq .ans p,
-        .faq .ans .rl,
         .faq .ans .tags,
         .examples h2,
         .ex-all span,
@@ -90,7 +85,6 @@
         .hero h1,
         .metrics b,
         .faq .ans p,
-        .faq .ans .rl,
         .faq .ans .tags,
         .examples h2,
         .author h2,
@@ -312,15 +306,16 @@
         justify-content: space-between;
         align-items: flex-start;
         gap: 24px;
-        height: var(--U);
-        padding-top: 32px;
+        min-height: var(--U);
+        padding: 32px 0 24px;
         color: var(--ink);
         -webkit-tap-highlight-color: transparent;
         transition: color .16s;
       }
 
       .faq details[open] summary {
-        height: 64px;
+        min-height: 64px;
+        padding-bottom: 16px;
       }
 
       .faq summary::-webkit-details-marker {
@@ -335,7 +330,7 @@
       .faq summary .fq {
         font-size: var(--fs-head);
         font-weight: 600;
-        line-height: 1;
+        line-height: 24px;
         max-width: 720px;
       }
 
@@ -359,15 +354,88 @@
       }
 
       .faq .ans p + table,
-      .faq .ans p + .bench-svg,
-      .faq .ans p + .subset,
-      .faq .ans .subset + p,
       .faq .ans .bench-svg + p {
         margin-top: var(--u2);
       }
 
-      .faq .ans p + p {
+      .faq .ans p + p,
+      .faq .ans pre + p,
+      .faq .ans ul + p,
+      .faq .ans .pipeline + p,
+      .faq .ans .tags + p {
         margin-top: 16px;
+      }
+
+      .faq .ans :is(pre, .pipeline li) {
+        background: var(--code-bg);
+        box-shadow: inset 0 0 0 1px var(--code-rule);
+      }
+
+      .faq .ans pre {
+        padding: 16px;
+        color-scheme: dark;
+        font: var(--fs-mono)/24px var(--mono);
+        color: var(--ink);
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+      }
+
+      /* The shared highlighter's tone ladder on the dark code surface. */
+      .faq pre .k { font-weight: 700; color: var(--dim); }
+      .faq pre .d { font-weight: 700; color: var(--ink); }
+      .faq pre .f { color: var(--ink); }
+      .faq pre .t { font-weight: 600; }
+      .faq pre .n { font-weight: 600; color: var(--soft); }
+      .faq pre .s { color: var(--soft); }
+      .faq pre .c { color: var(--dim); font-style: italic; }
+      .faq pre .p { color: var(--dim); }
+
+      .faq .ans ul {
+        list-style: none;
+      }
+
+      .faq .ans li + li {
+        margin-top: 8px;
+      }
+
+      /* The guide's 160 × 40 blocks, with readable labels on narrow screens. */
+      .faq .ans .pipeline {
+        display: grid;
+        grid-template-columns: repeat(3, calc(2 * var(--U)));
+        gap: var(--u2);
+        width: max-content;
+        margin-top: 16px;
+        list-style: none;
+      }
+
+      .faq .ans .pipeline li {
+        position: relative;
+        display: grid;
+        place-items: center;
+        height: var(--u2);
+        margin: 0;
+        color: #e8e8ea;
+        font: 13px var(--font-mono);
+      }
+
+      .pipeline li + li::before {
+        content: '→';
+        position: absolute;
+        left: calc(-1 * var(--u2));
+        top: 0;
+        width: var(--u2);
+        color: var(--dim);
+        font: 16px/40px var(--font);
+        text-align: center;
+      }
+
+      @container (max-width: 559px) {
+        .faq .ans .pipeline { grid-template-columns: repeat(3, var(--U)); }
+      }
+
+      @container (max-width: 319px) {
+        .faq .ans .pipeline { grid-template-columns: calc(2 * var(--U)); }
+        .pipeline li + li::before { content: '↓'; left: 0; top: calc(-1 * var(--u2)); width: 100%; }
       }
 
       .faq details[open] .ans {
@@ -440,55 +508,30 @@
         color: var(--soft);
       }
 
-      /* the chart's 720×474 box, its height rounded down to whole cells so the text after it stays on the grid */
+      /* The chart's width snaps to the 40px row grid, bounded by the answer. */
       .faq .ans .bench-svg {
         display: block;
         width: 100%;
-        max-width: calc(7 * var(--U));
-        aspect-ratio: 720 / 474;
-        height: round(down, min(100cqw, 7 * var(--U)) * 474 / 720, var(--u));
         color: var(--ink);
       }
 
-      /* transparent currentColor chart, inlined so it inherits --ink and follows the theme toggle; aspect-ratio reserves space pre-inject (no layout shift) */
-      .faq .ans .bench-svg svg {
+      /* The image works without JS; the inline SVG follows the theme toggle. */
+      .faq .ans .bench-svg :is(svg, img) {
         display: block;
         width: 100%;
-        height: 100%;
-      }
-
-      /* "What is not supported" — a hairline box of struck tags (not compiled), on the grid: 16px insets, 24px rows */
-      .faq .ans .subset {
-        max-width: calc(8 * var(--U));
-      }
-
-      .faq .ans .ring {
-        border: 1px solid light-dark(rgba(0, 0, 0, .14), rgba(255, 255, 255, .14));
-        padding: 15px 16px 15px 15px;
-      }
-
-      .faq .ans .rl {
-        display: block;
-        margin-bottom: 16px;
-        font-size: var(--fs-caps);
-        text-transform: uppercase;
-        letter-spacing: var(--ls-caps);
-        color: var(--soft);
+        height: auto;
       }
 
       .faq .ans .tags {
-        font-family: var(--mono);
-        font-size: var(--fs-mono);
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px 24px;
         line-height: 24px;
       }
 
-      /* a tag is one unbreakable phrase; a wider gap (space + margin) sets tags apart from the words inside them */
-      .faq .ans .t {
-        margin-right: 8px;
-        white-space: nowrap;
+      .faq .ans .tags .t {
         color: var(--ink);
-        text-decoration: line-through;
-        text-decoration-color: var(--mute);
+        text-decoration-line: line-through;
       }
 
       /* INSTALL — a 3-unit × half-unit command box, centred on the column: click to copy */
@@ -498,7 +541,7 @@
       }
 
       .install {
-        --gbox: light-dark(#0c0e11, var(--rule));
+        --gbox: var(--code-rule);
         display: flex;
         align-items: flex-start;
         gap: 9px;
@@ -508,7 +551,7 @@
         padding: 0 16px;
         font-family: var(--mono);
         font-size: var(--fs-mono);
-        background: #000;
+        background: var(--code-bg);
         color: #e8e8ea;
         cursor: copy;
       }
@@ -605,7 +648,6 @@
       .exrow .ex-all {
         display: flex;
         justify-content: center;
-        text-decoration: none;
         color: var(--soft);
         font-size: var(--fs-small);
         transition: color .16s;
@@ -644,8 +686,6 @@
       .author p + p {
         margin-top: 16px;
       }
-
-      .author p a { color: var(--ink); text-decoration: none; }
 
       /* the shared CTA chip (assets/site.css), squared to 2 units × half a unit */
       .sponsor .report {
@@ -891,66 +931,67 @@
         <details>
           <summary><h2 class="fq">How do I use it?</h2><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="square" aria-hidden="true"><path d="M5 9l7 7 7-7" /></svg></summary>
           <div class="ans prose">
-            <p>The CLI (<code>jz kernel.js</code>) or the API (<code>compile()</code>) produces a plain <code>.wasm</code> you load like any other module. <a href="https://github.com/dy/jz" target="_blank" rel="noopener">Setup &amp; options →</a></p>
+            <pre><code class="language-javascript">import jz from 'jz'
+const { exports } = jz`export const square = x => x * x`
+exports.square(7) // 49</code></pre>
+            <p><a href="guide/">Guide →</a></p>
           </div>
         </details>
         <details>
           <summary><h2 class="fq">Is it fast?</h2><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="square" aria-hidden="true"><path d="M5 9l7 7 7-7" /></svg></summary>
           <div class="ans prose">
-            <p>Faster than V8 and AssemblyScript on almost every kernel we measure, about 2× on average. Every number, and every loss, is on the <a href="bench/">bench page</a>.</p>
-            <a href="bench/" class="bench-svg" id="bench-chart" role="img" aria-label="Geomean speed across the bench corpus – jz vs the wasm field (C, Rust, Go, Zig, MoonBit, AssemblyScript, compiled to WASM and run in V8), V8 itself, and Porffor's native AOT; native C the lone reference, jz = 1.00× baseline"></a>
-            <p>If you hit a slow case, <a href="https://github.com/dy/jz/issues/new?title=Slow%20case%3A%20&amp;body=Paste%20the%20slow%20JS%20(or%20a%20%2Frepl%2F%20link)%2C%20which%20engine%20it%20loses%20to%2C%20and%20the%20slowdown%3A%0A%0A" target="_blank" rel="noopener">report it →</a></p>
-          </div>
-        </details>
-        <details>
-          <summary><h2 class="fq">How can it beat V8?</h2><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="square" aria-hidden="true"><path d="M5 9l7 7 7-7" /></svg></summary>
-          <div class="ans prose">
-            <p>WASM isn’t magically faster: V8 also compiles hot JS to machine code. But V8 has to stay ready for any JavaScript, so every hot loop carries checks and a garbage collector. JZ sees the whole program before it runs: fixed layouts, direct calls, no GC, and SIMD on loops V8 leaves scalar.</p>
+            <a href="bench/" class="bench-svg" id="bench-chart" aria-label="Speed benchmarks: JZ compared with other compilers and JavaScript engines"><img src="bench/bench.svg" alt="Benchmark speed chart; lower is faster, JZ = 1.00×" loading="lazy"></a>
+            <p><a href="https://github.com/dy/jz/issues/new?title=Slow%20case%3A%20&amp;body=Paste%20the%20slow%20JS%20(or%20a%20%2Frepl%2F%20link)%2C%20which%20engine%20it%20loses%20to%2C%20and%20the%20slowdown%3A%0A%0A" target="_blank" rel="noopener">Report a slow case →</a></p>
           </div>
         </details>
         <details>
           <summary><h2 class="fq">What is not supported?</h2><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="square" aria-hidden="true"><path d="M5 9l7 7 7-7" /></svg></summary>
           <div class="ans prose">
-            <div class="subset">
-              <div class="ring out">
-                <span class="rl">Not supported</span>
-                <div class="tags"><span class="t">eval Function with</span> <span class="t">Proxy Reflect</span> <span class="t">descriptors</span> <span class="t">prototype chains</span> <span class="t">top-level await</span> <span class="t">import()</span> <span class="t">DOM</span> <span class="t">Node Intl Temporal</span></div>
-              </div>
-            </div>
-            <p>What differs: no GC (call <code>memory.reset()</code>), 64-bit BigInt, compile-time regexes, ASCII case and UTC dates. <a href="https://github.com/dy/jz#faq" target="_blank" rel="noopener">Details →</a></p>
+            <div class="tags"><s class="t">Runtime-generated code</s><s class="t">Proxies &amp; reflection</s><s class="t">Dynamic prototype chains</s><s class="t">Browser DOM</s><s class="t">Node.js APIs</s><s class="t">Intl &amp; Temporal</s></div>
+            <p><a href="https://github.com/dy/jz#faq" target="_blank" rel="noopener">Language support →</a></p>
           </div>
         </details>
         <details>
           <summary><h2 class="fq">Why no types?</h2><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="square" aria-hidden="true"><path d="M5 9l7 7 7-7" /></svg></summary>
           <div class="ans prose">
-            <p>JS code already carries useful type evidence: <code>let x = 0.5</code>, <code>Float32Array</code>, an array index, a loop counter. JZ infers it instead of turning the file into another language. Ambiguous values take a slower dynamic path.</p>
+            <p>JZ infers types from your code.</p>
           </div>
         </details>
-        <details>
-          <summary><h2 class="fq">How does it compare?</h2><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="square" aria-hidden="true"><path d="M5 9l7 7 7-7" /></svg></summary>
+        <details id="compare">
+          <summary><h2 class="fq">Why not AS, scriptc, Porffor, ...?</h2><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="square" aria-hidden="true"><path d="M5 9l7 7 7-7" /></svg></summary>
           <div class="ans prose">
-            <p>Porffor aims at the full spec but emits no WASM and runs slower than V8 on the <a href="bench/">cases</a> it completes. AssemblyScript compiles a typed TypeScript dialect; its WASM runs about 2× behind JZ on the corpus. scriptc makes native binaries from TypeScript, no WASM.</p>
-            <p>Rust, C, Zig and Go compiled to WASM run about 2× behind JZ by geomean, Go’s over 4×; as native binaries only C is level. If it is already Rust, keep it in Rust. If it is JavaScript, a rewrite buys a second toolchain and test suite for slower WASM.</p>
+            <ul>
+              <li><b>AssemblyScript:</b> TypeScript-ish.</li>
+              <li><b>scriptc:</b> fails to run benches.</li>
+              <li><b>Porffor:</b> nice but broad, not fast.</li>
+              <li><b>Javy:</b> QuickJS runtime in WASM.</li>
+              <li><b>Perry:</b> TypeScript → native apps.</li>
+            </ul>
+            <p><a href="bench/">Benchmarks →</a></p>
           </div>
         </details>
         <details id="native">
           <summary><h2 class="fq">Can it go native?</h2><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="square" aria-hidden="true"><path d="M5 9l7 7 7-7" /></svg></summary>
           <div class="ans prose">
-            <p><code>jz → wasm2c → clang -O3</code> produces a standalone native binary. See <a href="https://github.com/dy/jz/blob/main/scripts/native/README.md" target="_blank" rel="noopener">full pipeline →</a>.</p>
+            <p>Yes.</p>
+            <ol class="pipeline" aria-label="Native compilation">
+              <li>jz</li>
+              <li>wasm2c</li>
+              <li>clang -O3</li>
+            </ol>
+            <p><a href="https://github.com/dy/jz/blob/main/scripts/native/README.md" target="_blank" rel="noopener">Native guide →</a></p>
           </div>
         </details>
         <details>
           <summary><h2 class="fq">Can it compile itself?</h2><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="square" aria-hidden="true"><path d="M5 9l7 7 7-7" /></svg></summary>
           <div class="ans prose">
-            <p>JZ compiles itself to <a href="https://github.com/dy/jz/releases/latest/" target="_blank" rel="noopener"><code>jz.wasm</code></a>. CI checks the wasm-hosted compiler against the test suite. <a href="https://github.com/dy/jz/actions/workflows/self-compile.yml" target="_blank" rel="noopener" aria-label="self-compile CI status"><img src="https://github.com/dy/jz/actions/workflows/self-compile.yml/badge.svg" alt="self-compile CI status" style="height:16px;vertical-align:baseline"></a></p>
+            <p>Yes. <a href="https://github.com/dy/jz/actions/workflows/self-compile.yml" target="_blank" rel="noopener" aria-label="self-compile CI status"><img src="https://github.com/dy/jz/actions/workflows/self-compile.yml/badge.svg" alt="self-compile CI status" style="height:16px;vertical-align:baseline"></a></p>
           </div>
         </details>
         <details>
           <summary><h2 class="fq">Is it production ready?</h2><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="square" aria-hidden="true"><path d="M5 9l7 7 7-7" /></svg></summary>
           <div class="ans prose">
-            <p>It’s <b>experimental</b> (pre-1.0) – ABI can still shift.</p>
-            <p>But real code already ships on it: <a href="https://github.com/colorjs/color-space#wasm" target="_blank" rel="noopener">color-space v3</a> builds its precompiled 27-space WASM backend with JZ.</p>
-            <p>And the exit is free: valid JZ is valid JS – drop the compile step and the same file keeps running.</p>
+            <p>Unstable yet, pre-1.0.0, but main contract gets stabilized soon.</p>
           </div>
         </details>
 
@@ -997,9 +1038,10 @@
       <div class="author-wrap col">
         <div class="author-text">
           <h2>Inspiration</h2>
-          <p>JS is considered unfit for speed, not a real language. Runtime with JIT, GC arbitrary hits, language quirks. Spec only adds and never deprecates.</p>
-          <p>I liked minimal, functional style JS, <a href="https://www.crockford.com/javascript/" target="_blank" rel="noopener">Crockford’s good parts</a>, and I decided to secure that subset – drop the legacy, OOP, classes, runtime. Called it Javascript Zero. I am not a compiler engineer, so I went in steps: <a href="https://github.com/dy/subscript" target="_blank" rel="noopener">subscript</a> parser, then <a href="https://github.com/dy/watr" target="_blank" rel="noopener">watr</a> compiler, and these turned out well. JZ followed. Foundation was done by hand, AI took off the details.</p>
-          <p>The ambition: faster than V8, smaller than AssemblyScript, JZ ⊂ JS.</p>
+          <p>JS is not a "real" language: runtime with JIT, GC hits, language quirks. Spec only adds and never deprecates.</p>
+          <p>There is good minimal, functional subset, <a href="https://www.crockford.com/javascript/" target="_blank" rel="noopener">Crockford’s good parts</a>. I didn't want to migrate to other languages, I just wanted JS that is good: fast, minimal. So I attempted to save the best parts and drop the legacy, OOP, classes, runtime. <em>Javascript Zero</em>.</p>
+          <p>I am not a compiler engineer, so I had to go in steps: <a href="https://github.com/dy/subscript" target="_blank" rel="noopener">subscript</a> parser first (sparse arrays proved to be fast!), then <a href="https://github.com/dy/watr" target="_blank" rel="noopener">watr</a> compiler. Then JZ. Foundation was done by hand, AI took off the details.</p>
+          <p>The ambition: faster than V8/JSC (otherwise what's the point?), smaller than AssemblyScript, JZ ⊂ JS.</p>
         </div>
         <div class="sponsor">
           <h2>Find it useful?</h2>
@@ -1038,8 +1080,10 @@
       import sprae from './assets/sprae.js'
       import { figure, CLS_ICO } from './assets/headline.js'
       import rhythm, { snap } from './assets/rhythm.js'
+      import { highlight } from './assets/highlight.js'
       const $ = id => document.getElementById(id)
       const root = document.documentElement
+      for (const code of document.querySelectorAll('code.language-javascript')) code.innerHTML = highlight(code.textContent)
 
         // ── Bench row: five cells, each rotating through a field of targets — JZ ÷ target in the named quantity
         //    (speed: above 1× is faster; memory, size: below 1× is less). A cell steps every few seconds
@@ -1090,19 +1134,48 @@
           })
         })()
 
+        let snapBench = () => {}
         // Bench chart (FAQ "Is it fast?"): inline the committed bench/bench.svg rather than <img> it, so its
         // `currentColor` marks inherit the page's --ink and follow the light/dark toggle (an <img> SVG can
         // only track the OS, not our toggle). Strips the file's width/height + color-scheme so CSS sizes it
-        // and the inherited ink wins. Progressive enhancement — the bench link beside it stands alone.
+        // and the inherited ink wins. Keep the linked image if the inline fetch fails.
         ; (async () => {
           const host = $('bench-chart')
           if (!host) return
           try {
-            host.innerHTML = await (await fetch('bench/bench.svg')).text()
-            const el = host.querySelector('svg')
-            if (!el) return host.remove()                  // 404/non-svg → don't leave an empty reserved box (an aria image with no content)
+            const response = await fetch('bench/bench.svg')
+            if (!response.ok) return
+            const doc = new DOMParser().parseFromString(await response.text(), 'image/svg+xml')
+            const el = doc.documentElement
+            if (el.localName !== 'svg') return
             el.removeAttribute('width'); el.removeAttribute('height'); el.removeAttribute('style'); el.setAttribute('aria-hidden', 'true')
-          } catch { host.remove() }
+            host.replaceChildren(el)
+
+            // Scale to whole 40px rows; on narrow screens, keep that spacing as the chart shrinks.
+            const lanes = [...el.querySelectorAll(':scope > g')].filter(g => g.querySelector('circle'))
+            if (lanes.length < 2) return
+            const first = lanes[0].querySelector('circle').cy.baseVal.value
+            const pitch = lanes[1].querySelector('circle').cy.baseVal.value - first
+            const captions = [...el.querySelectorAll(':scope > text')]
+            const { width, height } = el.viewBox.baseVal
+            snapBench = () => {
+              if (!host.closest('details').open || !host.clientWidth) return
+              const unit = parseFloat(getComputedStyle(root).getPropertyValue('--u2'))
+              const available = host.parentElement.clientWidth
+              const step = Math.max(1, Math.floor(available * pitch / width / unit)) * unit
+              host.style.width = Math.min(available, width * step / pitch) + 'px'
+              const scale = host.clientWidth / width
+              const shift = step / scale - pitch
+              lanes.forEach((lane, i) => lane.setAttribute('transform', `translate(0 ${i * shift})`))
+              const delta = (lanes.length - 1) * shift
+              captions.forEach(caption => caption.setAttribute('transform', `translate(0 ${delta})`))
+              el.setAttribute('viewBox', `0 0 ${width} ${height + delta}`)
+              host.style.marginTop = '0px'
+              const y = host.getBoundingClientRect().top + scrollY + first * scale
+              host.style.marginTop = Math.ceil((y - .01) / unit) * unit - y + 'px'
+            }
+            snapBench()
+          } catch {}
         })()
 
         // ── Rhythm (assets/rhythm.js): an open answer ends on a half-unit line, so the next question hangs from one;
@@ -1111,7 +1184,12 @@
         rhythm(() => {
           snap(document.querySelector('.metrics'), 'marginTop', 'top', 40)       // the bench row hangs from a half-unit line
           snap(document.querySelector('.hero'), 'paddingBottom', 'bottom', 40)   // and the hero ends on one (both no-ops where the CSS already lands there)
-          for (const el of document.querySelectorAll('.faq details[open] .ans')) snap(el, 'paddingBottom', 'bottom', 40)
+          for (const el of document.querySelectorAll('.faq details[open] .ans')) {
+            if (el.querySelector('#bench-chart')) snapBench()
+            const pipeline = el.querySelector('.pipeline')
+            if (pipeline) snap(pipeline, 'marginTop', 'top', 40)
+            snap(el, 'paddingBottom', 'bottom', 40)
+          }
           snap(document.querySelector('.sponsor'), 'marginTop', 'top', 40)   // stacked under the story (narrow screens), the ask hangs from a half-unit line
           for (const el of document.querySelectorAll('.faq, .author')) snap(el, 'paddingBottom', 'bottom', 80)
           const row = document.querySelector('.exrow'), n = 2 * Math.round(row.clientWidth / 80) - 1

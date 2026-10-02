@@ -361,8 +361,7 @@ export const hud = ({ kind = 'jz', onSwitch, src = '', code = '', nav = '', mete
       /* full caption — never trimmed; the bar grows taller (min-height above) to fit every line. */
       .jz-bar .jz-desc { flex: 1 1 auto; min-width: 0; font-size: 13px; line-height: 1.3; color: var(--dim); letter-spacing: .01em; }
       .jz-bar .jz-links { display: block; margin-top: 3px; }   /* wiki/code links on their OWN line under the title */
-      .jz-bar .jz-wiki { color: var(--soft); text-decoration: underline; text-underline-offset: 2px; white-space: nowrap; }
-      .jz-bar .jz-wiki:hover { color: var(--ink); }
+      .jz-bar .jz-wiki { white-space: nowrap; }
       /* segmented JS|JZ switch — labels inside the track, knob centered over the active one (equal
          padding-x); labels inherit Futura from the bar (a bare <button> would otherwise fall back to
          the system UI font). */
@@ -437,14 +436,13 @@ export const hud = ({ kind = 'jz', onSwitch, src = '', code = '', nav = '', mete
       html.jz-saver .jz-engine { margin-left: auto !important; }
       /* code preview: a "code" link in the description + a panel that slides over the demo area
          (between the two bands, same column as the canvas) showing the kernel's own source. */
-      .jz-codelink { font: inherit; color: var(--soft); background: none; border: 0; padding: 0; cursor: pointer;
-        text-decoration: underline; text-underline-offset: 2px; white-space: nowrap; }
-      .jz-codelink:hover, .jz-codelink.on { color: var(--ink); }
+      .jz-codelink { font: inherit; background: none; border: 0; padding: 0; white-space: nowrap; }
       .jz-code-panel { position: fixed; top: calc(var(--jz-top) + 1px); left: calc(var(--gx-pad) + 1px);   /* the demo's own cell */
         width: calc(var(--cw) - 1px); height: calc(var(--jz-h) - 1px); z-index: 140; background: rgba(6,6,9,.96);
         opacity: 0; visibility: hidden; transition: opacity .18s ease; }
       .jz-code-panel.on { opacity: 1; visibility: visible; }
-      .jz-code-scroll { position: absolute; inset: 0; overflow: auto; overscroll-behavior: contain; }
+      .jz-code-scroll { position: absolute; inset: 0; overflow: auto; overscroll-behavior: contain;
+        scrollbar-color: #ffffff40 transparent; scrollbar-width: thin; }
       .jz-code-pre { margin: 0; padding: 30px 34px; color: #d6d6de; tab-size: 2;
         font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
         font-size: 12.5px; line-height: 1.62; white-space: pre; }
@@ -496,7 +494,7 @@ export const hud = ({ kind = 'jz', onSwitch, src = '', code = '', nav = '', mete
   // "code" — slides the kernel source in over the demo area (the same .js that IS the example)
   if (code) {
     const link = document.createElement('button')
-    link.type = 'button'; link.className = 'jz-codelink'; link.textContent = 'code'
+    link.type = 'button'; link.className = 'jz-codelink lnk'; link.textContent = 'code'
     link.setAttribute('aria-expanded', 'false')
     addLink(link)
     setupCode(link, code)
