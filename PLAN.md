@@ -13,14 +13,17 @@ landed whole (267 commits, pushed as `origin/main` at `0815801f`); the other
 139 branches were its ancestors or held the same changes under other hashes.
 Each branch tip, each stash and the uncommitted state of every worktree is
 kept under `refs/archive/v1-consolidation/` (`git for-each-ref refs/archive`);
-the 158 worktrees and 139 branches are removed. `audiojs-math` stays as the
-exact-V8 Math alternative. Nothing further is pushed or published. V1 is not
-ready to tag.
+the 158 worktrees and 139 branches are removed. `audiojs-math` is kept as
+`origin/audiojs-math`: the exact-V8 Math port, 7 commits on `31e00afa`, which
+costs 75% on the floatbeat corpus against the 9% of the kernels in use
+(CONTRIBUTING, Math); it is reference, not a merge candidate. Main is pushed.
+V1 is not ready to tag.
 
 That tip had never run as a whole: default core failed 64 of 6,282 tests, the
 O0 leg 15. The cloud session `claude/v1-readiness-ci-perf-mem` fixed the
-causes on top of `0815801f`; its four commits are on main under their own
-messages, followed by five more. The causes, each fixed at its root:
+causes on top of `0815801f`; its commits are on main under their own messages
+(the four that overlapped local work, through `79d88625`, with the local
+duplicates dropped), beside five more. The causes, each fixed at its root:
 
 - Host imports take i64 parameters; a Number or Boolean argument left as an
   f64 carrier, so every such call failed Wasm validation.
