@@ -56,15 +56,14 @@ duplicates dropped), beside five more. The causes, each fixed at its root:
   nested frame, quadratic in nesting depth.
 
 Core matrix on main (`JZ_TEST_JOBS=4`, registry watr 5.11.8): default
-6,291 / 6,294, O0 6,137 / 6,137, O3 6,148 / 6,151, WASI 6,192 / 6,196.
+6,107 / 6,108, O0 6,140 / 6,140, O3 6,153 / 6,154, WASI 6,197 / 6,199.
 Import lint, public types and the file audit pass. Every failure is one of:
 
-- `typed decode: a missing receiver throws where the access runs`,
-  `audit: integer products preserve zero sign through every numeric carrier`,
-  `audit: checked integer locals keep words where a miss meets only tests
-  zero answers alike`: inside watr 5.11.8 (signed zero in structural keys; a
-  checked load sunk past a local write), fixed on watr's local main (5.11.9,
-  unpublished). JZ still declares and locks 5.11.8.
+- `typed decode: a missing receiver throws where the access runs` (size
+  tier): watr 5.11.8 sinks a checked load past a store-address side effect;
+  fixed on watr's local main (5.11.9, unpublished). JZ still declares and
+  locks 5.11.8. The two signed-zero audit failures of 5.11.8 are closed by
+  handing watr float zeros in its own signed text.
 - `specialize: impossible byte extents do not hide reachable nested loops`
   (O3): the pin landed with `dcf9e458` while the specialization it needs,
   "Specialize reachable loops behind impossible extent guards"
