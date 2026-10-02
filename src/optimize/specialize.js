@@ -444,8 +444,7 @@ export function specializeLoops(fn) {
     // which every way to the read passes. The targets are the stretches a
     // read left.
     const targets = new Map()
-    // (`all`: what every way through the stretch wrote and read first, shared by its arms)
-    const stretchAt = (stmt, path, list) => ({ stmt, path, list, saves: new Map(), all: { may: new Set(), exposed: new Set() }, st: { dirty: false, must: new Set(), may: new Set(), exposed: new Set() } })
+    const stretchAt = (stmt, path, list) => ({ stmt, path, list, saves: new Map(), st: { dirty: false, must: new Set(), may: new Set(), exposed: new Set() } })
     const placed = rg => {
       const chain = [...rg.path, rg.stmt].map(c => twin.get(c)), stmt = chain[chain.length - 1]
       let t = targets.get(stmt)
@@ -456,7 +455,7 @@ export function specializeLoops(fn) {
         // the locals the statement finds live, of the ones the copy keeps in its own
         const back = []
         for (const [name, mine] of own) if (written.has(name) && live.in.has(name)) back.push(once(name, mine))
-        t = { id: 0, stmt, path: chain.slice(0, -1), saved: [], back, first: rg.stmt, list: rg.list, saves: rg.saves, all: rg.all, uses: [] }
+        t = { id: 0, stmt, path: chain.slice(0, -1), saved: [], back, first: rg.stmt, list: rg.list, saves: rg.saves, uses: [] }
       }
       targets.set(stmt, t)
       return t
@@ -473,12 +472,19 @@ export function specializeLoops(fn) {
     }
     let guards = 0, weight = 0, saved = 0
     /** The branch a read at this point leaves by, or null where its stretch
-     *  cannot run again. `worth`: what the copy gains by it. */
+     *  cannot run again. A local the stretch read and then wrote is saved
+     *  when the stretch starts. `worth`: what the copy gains by it. */
     const leaveBy = (rg, op, test, worth = 4) => {
       const st = rg.st
       if (st.dirty) return null
       const t = placed(rg)
       if (!t) return null
+      for (const x of st.may) if (st.exposed.has(x) && !rg.saves.has(x)) {
+        const s = local(`${x}.t${tag.slice(2)}_${saved++}`, types.get(x))
+        decls[decls.length - 1].copyOf = x   // it takes the type its local is narrowed to
+        rg.saves.set(x, s)
+        t.saved.push(once(x, s))
+      }
       if (worth) guards++
       weight += worth
       const by = test ? [op, null, test] : [op, null]
@@ -494,7 +500,7 @@ export function specializeLoops(fn) {
       const op = n[0], st = rg.st
       if (n.checkedNumRead === true) num = true
       if (op === 'loop') { st.dirty = true; return }   // (a loop inside a statement runs its writes more than once)
-      if (op === 'local.get') { if (!st.must.has(n[1])) { st.exposed.add(n[1]); rg.all.exposed.add(n[1]) } return }
+      if (op === 'local.get') { if (!st.must.has(n[1])) st.exposed.add(n[1]); return }
       if (op === 'if') {
         const read = checkedRead(n)
         if (!read) { branch(n, rg, null); return }
@@ -513,7 +519,7 @@ export function specializeLoops(fn) {
       }
       const read = op === 'select' ? checkedRead(n) : null
       if (read) {
-        if (!st.must.has(read.valid)) { st.exposed.add(read.valid); rg.all.exposed.add(read.valid) }
+        if (!st.must.has(read.valid)) st.exposed.add(read.valid)
         const by = leaveBy(rg, 'br_if', ['i32.eqz', ['local.get', read.valid]])
         if (by) {
           const hit = unclamp(n[1], read.valid)
@@ -526,7 +532,7 @@ export function specializeLoops(fn) {
       }
       const value = op === 'block' && num ? n.length - 1 : 0
       for (let i = 1; i < n.length; i++) expr(n[i], n, i, rg, i === value)
-      if (op === 'local.set' || op === 'local.tee') { st.must.add(n[1]); st.may.add(n[1]); rg.all.may.add(n[1]) }
+      if (op === 'local.set' || op === 'local.tee') { st.must.add(n[1]); st.may.add(n[1]) }
       else if (STORE.test(op) || calls(n)) st.dirty = true
     }
     // A conditional: its test, then its arms from what the test left. The arm
@@ -555,8 +561,8 @@ export function specializeLoops(fn) {
         cold.push(by)
         return walk(kept, rg) === rg && !rg.st.dirty ? rg : null
       }
-      const a = { stmt: rg.stmt, path: rg.path, list: rg.list, saves: rg.saves, all: rg.all, st: fork(rg.st) }
-      const b = { stmt: rg.stmt, path: rg.path, list: rg.list, saves: rg.saves, all: rg.all, st: fork(rg.st) }
+      const a = { stmt: rg.stmt, path: rg.path, list: rg.list, saves: rg.saves, st: fork(rg.st) }
+      const b = { stmt: rg.stmt, path: rg.path, list: rg.list, saves: rg.saves, st: fork(rg.st) }
       const same = walk(then, a) === a && walk(otherwise, b) === b
       join(rg.st, a.st, b.st)
       return same && !rg.st.dirty ? rg : null
@@ -584,17 +590,6 @@ export function specializeLoops(fn) {
       return rg
     }
     statements(fastLoop, 2, [], null)
-    // A local the stretch reads and then writes is saved where the stretch
-    // starts and put back where a read leaves. Every such local of the whole
-    // stretch, not only of what precedes the read: the generic optimizer may
-    // move a read later within its stretch (past a write of a local it does
-    // not read), and the loop as written runs the stretch again from its start.
-    for (const t of targets.values()) if (t && t.uses.length) for (const x of t.all.may) if (t.all.exposed.has(x) && !t.saves.has(x)) {
-      const s = local(`${x}.t${tag.slice(2)}_${saved++}`, types.get(x))
-      decls[decls.length - 1].copyOf = x   // it takes the type its local is narrowed to
-      t.saves.set(x, s)
-      t.saved.push(once(x, s))
-    }
     // The targets in the order the loop as written runs them; each stretch
     // takes its copies where it starts.
     const spot = new Map(statementsOf(loop, 2).map((s, k) => [s, k]))
