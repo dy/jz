@@ -116,15 +116,15 @@ export function optimizeModule(sec, profiler) {
     // The guarded form necessarily writes a declared v128 local. Keep scalar
     // programs on the old allocation-free path; only SIMD functions pay for
     // the DAG-safe deep opcode probe.
-    const mayHaveMasks = cfg.maskedSuffixGuard !== false && allFuncs.some(fn =>
-      fn.some(n => Array.isArray(n) && n[0] === 'local' && n[2] === 'v128'))
-    const wantMasks = mayHaveMasks && hasIROp(allFuncs, 'v128.bitselect')
-    if (!wantLoads && !wantMasks) return
+    const simd = cfg.maskedSuffixGuard !== false ? allFuncs.filter(fn =>
+      fn.some(n => Array.isArray(n) && n[0] === 'local' && n[2] === 'v128')) : []
+    const masked = new Set(simd.filter(fn => hasIROp(fn, 'v128.bitselect')))
+    if (!wantLoads && !masked.size) return
     const writes = globalWrites()
     const memoryWrites = collectReachableMemoryWrites(allFuncs)
     for (const s of allFuncs) {
       if (wantLoads) hoistStableGlobalConstLoads(s, memoryWrites, writes)
-      if (wantMasks) guardMaskedVectorSuffix(s, memoryWrites)
+      if (masked.has(s)) guardMaskedVectorSuffix(s, memoryWrites)
     }
   })
   // Redundant low-word masks under `i32.wrap_i64` go last: the global-base

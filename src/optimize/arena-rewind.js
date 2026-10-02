@@ -301,6 +301,54 @@ export function arenaRewind(root, { rewindable, numberResult = NO_NAMES, asked =
       if (values.some(v => reaches(v, tainted))) { tableResults.add(name); changed = true }
     }
   }
+  // Whether every value `f` returns is storage it allocated: an allocator's
+  // address boxed, growth of such storage (its receiver or fresh storage), or
+  // a local every assignment of which is one. A local's assignments are
+  // assumed made while they are being proven (a loop carrying the value).
+  const resultMade = (f) => {
+    const defs = new Map()
+    eachBody(f, (id) => {
+      const s = opText(id)
+      if (s === 'local.set' || s === 'local.tee') { const n = text(T.a[id]); (defs.get(n) ?? defs.set(n, []).get(n)).push(T.next[T.a[id]]) }
+    })
+    const proving = new Set()
+    const lastOf = (id) => { let l = NONE; for (let c = T.a[id]; c !== NONE; c = T.next[c]) if (T.op[c] >= 0 && T.op[c] !== RESULT) l = c; return l }
+    const made = (id) => {
+      if (id === NONE) return false
+      const s = opText(id), a = T.a[id]
+      if (s === 'call') {
+        const c = text(a), args = T.next[a]
+        if (ALLOCATES.has(c)) return true
+        if (c === '$__mkptr') { let x = args; for (let i = 0; i < 2 && x !== NONE; i++) x = T.next[x]; return made(x) }
+        return GROWS.has(c) && made(args)
+      }
+      if (s === 'local.get') {
+        const n = text(a), ds = defs.get(n)
+        if (!ds) return false
+        if (proving.has(n)) return true
+        proving.add(n)
+        const all = ds.every(made)
+        proving.delete(n)
+        return all
+      }
+      if (s === 'local.tee') return made(T.next[a])
+      if (s === 'block') return made(lastOf(id))
+      if (s === 'if') {
+        let arms = 0
+        for (let c = a; c !== NONE; c = T.next[c]) if (T.op[c] === THEN || T.op[c] === ELSE) { if (!made(lastOf(c))) return false; arms++ }
+        return arms === 2
+      }
+      if (s === 'select') return made(a) && made(T.next[a])
+      return false
+    }
+    let last = NONE
+    for (let c = T.a[f]; c !== NONE; c = T.next[c]) if (T.op[c] >= 0 && !isHeader(c)) last = c
+    const values = []
+    if (last !== NONE && T.op[last] !== RETURN) values.push(last)
+    eachBody(f, (id) => { if (T.op[id] === RETURN) values.push(T.a[id]) })
+    return values.length > 0 && values.every(made)
+  }
+
   // The stores of a runtime kernel through an address a global reaches: it
   // files a value into a module-wide table (a property cache, a pool), where
   // it outlives every frame. Stores through parameters are the caller's
@@ -738,6 +786,9 @@ export function arenaRewind(root, { rewindable, numberResult = NO_NAMES, asked =
     if (!unsafe) { releasable.add(name); if (cond) { flagged.add(name); if (hosted.has(name)) readers.add(name) } }
     if (!rewrite) continue
     if (unsafe || !hasAlloc) { report?.(name, unsafe ? 'return_call' : 'no allocation'); continue }
+    // A result asked by its age that is always storage the frame made gives
+    // nothing back on any call: the rewind would only test it.
+    if (asked.has(name) && !numberResult.has(name) && types.length === 1 && resultMade(f)) { report?.(name, 'result: always storage the frame made'); continue }
     if (heapless) continue
     // `(return_call $k args…)` → `(return (call $k args…))`: the children move
     // under a new call node, and the return wrapping below treats it like any

@@ -19,7 +19,7 @@ import { DBG_INVARIANTS } from '../debug.js'
 import { resetTape, fromWat, toWat, verify } from '../ir/tape.js'
 import { treeshake } from './treeshake.js'
 import { schemaSections, releaseSection } from './sections.js'
-import { pruneUnusedThrowRuntime } from './throw-runtime.js'
+import { pruneUnusedThrowRuntime, reduceThrowHelpers } from './throw-runtime.js'
 import { orderFuncs } from './order.js'
 import { stripLocalRenameSuffixes } from './rename-locals.js'
 import { funcs } from '../optimize/fn.js'
@@ -47,6 +47,9 @@ export function link(module, facts) {
   }
   if (DBG_INVARIANTS) check(root, 'after the body passes')
   if (!cfg || cfg.fusedRewrite !== false) foldLowWordMasks(root)
+  // A throw nothing can observe allocates nothing: its helpers reduce before the
+  // rewind's proof and the treeshake read their calls.
+  reduceThrowHelpers(root, facts)
   // The rewind's proof runs at every level (the host's release of a call's
   // argument copies reads it); the rewrite only where the rewind is on.
   const rewind = !cfg || cfg.arenaRewind !== false

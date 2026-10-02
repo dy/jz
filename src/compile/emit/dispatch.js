@@ -956,11 +956,12 @@ export function emitDecl(...inits) {
     const localType = ctx.func.locals.get(name) || 'f64'
     const ptrKind = repOf(name)?.ptrKind
     // A binding the summary lets be absent, initialized from an element the
-    // emitter loaded without a check or a proved pointer: this definition is
-    // present. One whose elements may be null or undefined themselves (`[undefined]`
-    // beside `[{ b0 }]`) holds whatever the element holds.
+    // emitter loaded without a check, one that threw for a missing element
+    // (`throwAbsent`) or a proved pointer: this definition is present. One whose
+    // elements may be null or undefined themselves (`[undefined]` beside
+    // `[{ b0 }]`) holds whatever the element holds.
     if (localType === 'f64' && !ctx.func.boxed?.has(name) &&
-        (presentElement(val) || val.ptrKind != null || val.srcPtrKind != null) && mayBeUndefined(name) &&
+        (presentElement(val) || val.presentRead === true || val.ptrKind != null || val.srcPtrKind != null) && mayBeUndefined(name) &&
         !hasTag(ctx.summary?.at(ctx.func.current)?.kindOfExpr(name) ?? 0, K.NULLISH)) (ctx.func.presentInits ??= []).push(name)
     // ptrKind inheritance for alias-init decls is predicted at PLAN time
     // (inheritPtrAliases — slice-4 P1); emit only asserts parity here.
@@ -1181,6 +1182,33 @@ export const provedPresent = (s, checked) => {
   return out
 }
 
+// The operation a statement runs first: the leftmost one its operands reach
+// through reads and operators (a name or a literal runs nothing), or the
+// statement itself where it calls, stores or branches.
+const IN_ORDER = new Set(['+', '-', '*', '/', '%', '**', '&', '|', '^', '<<', '>>', '>>>', '<', '<=', '>', '>=',
+  '==', '!=', '===', '!==', 'u-', 'u+', '!', '~', '.', '[]'])
+const runsNothing = (e) => !Array.isArray(e) || e[0] == null || e[0] === 'str'
+const firstOp = (e) => {
+  if (runsNothing(e)) return null
+  const op = e[0]
+  if (op === 'let' || op === 'const') return Array.isArray(e[1]) && e[1][0] === '=' ? firstOp(e[1][2]) : null
+  if (op === '=' && typeof e[1] === 'string') return firstOp(e[2])
+  if (!IN_ORDER.has(op)) return e
+  for (let i = 1; i < e.length; i++) { const r = firstOp(e[i]); if (r) return r }
+  return e
+}
+// `const p = a[i]` followed by a statement that first reads a field of `p`:
+// the element read, whose only missing value is absence.
+const projectedNext = (s, next) => {
+  if (!Array.isArray(s) || (s[0] !== 'const' && s[0] !== 'let') || s.length !== 2) return null
+  const d = s[1], init = Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string' ? d[2] : null
+  if (!Array.isArray(init) || init[0] !== '[]' || init.length !== 3) return null
+  const first = firstOp(next)
+  if (!Array.isArray(first) || first[0] !== '.' || first[1] !== d[1] || typeof first[2] !== 'string') return null
+  const k = ctx.summary?.at(ctx.func.current)?.kindOfExpr(init)
+  return k == null || hasTag(k, K.NULLISH) ? null : init
+}
+
 export function emitBlockBody(node) {
   const inner = node[1]
   const stmts = Array.isArray(inner) && inner[0] === ';' ? inner.slice(1) : [inner]
@@ -1215,7 +1243,12 @@ export function emitBlockBody(node) {
       if (cellInits) out.push(...cellInits)
       const presentFrom = frame.presentInits?.length ?? 0
       const savedFrom = frame.savedStores?.length ?? 0, checkedFrom = frame.checkedRecv?.length ?? 0
-      out.push(...emitVoid(s))
+      // `const p = a[i]` whose next statement first reads a field of `p`: the
+      // read throws for a missing element itself (module/array.js
+      // `throwAbsent`), as the field read would before anything else runs.
+      const prevThrow = frame.throwAbsent, absent = projectedNext(s, stmts[i + 1])
+      if (absent) frame.throwAbsent = absent
+      try { out.push(...emitVoid(s)) } finally { frame.throwAbsent = prevThrow }
       // A receiver the statement read an element of or stored one into on
       // every path, and checked (the emitter threw for a missing one), holds
       // an object for the rest of this block: a binding of the function

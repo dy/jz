@@ -15,7 +15,7 @@ import { verifyFn } from '../ir.js'
 import { recursionUnroll } from './recurse.js'
 import { forwardStores } from './forward-store.js'
 import { vectorizeLaneLocal } from './vectorize/index.js'
-import { hoistPtrType, hoistAddrBase } from './cse-address.js'
+import { hoistPtrType, hoistPtrOffset, hoistAddrBase } from './cse-address.js'
 import {
   boolConvertToSelect, foldV128Memargs, inlinePtrOffsetFastPass, fusedRewrite, lowerToInt32Tails,
 } from './peephole.js'
@@ -78,7 +78,7 @@ export function optimizeFunc(fn, cfg, globalTypes, reachableWrites) {
   // post-watr re-optimize doesn't unroll a second time).
   if (cfg && cfg.recursionUnroll === true) recursionUnroll(fn)
   if (!cfg || cfg.hoistPtrType !== false) hoistPtrType(fn)
-  if (!cfg || cfg.hoistInvariantPtrOffset !== false) hoistInvariantPtrOffset(fn)
+  if (!cfg || cfg.hoistInvariantPtrOffset !== false) { hoistInvariantPtrOffset(fn); hoistPtrOffset(fn) }
   // Before LICM: the snapped i32 bound is itself a hoistable hard-op subtree, so
   // an outer loop's LICM can lift it further when the bound is outer-invariant.
   if (!cfg || cfg.narrowLoopBound !== false) narrowLoopBound(fn)

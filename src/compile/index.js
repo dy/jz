@@ -1100,6 +1100,6 @@ export function assemble(ast, profiler) {
     schemas: ctx.schema.list, fieldContracts, namedUses: ctx.schema.namedUses, errorSids: lateFacts.errorSidEntries, brandSids: ctx.schema.brandEntries(), regexSids: [...ctx.schema.regexSids],
     viewSids: ctx.schema.list.flatMap((names, sid) => enumView(names) ? [sid] : []),
     throws: ctx.runtime.throws, userThrows: ctx.runtime.userThrows, noEhAbort: ctx.transform.noEhAbort,
-    rawAbi: ctx.transform.alloc === false,
+    rawAbi: ctx.transform.alloc === false, throwHelpers: ctx.runtime.throwHelpers,
   } }
 }

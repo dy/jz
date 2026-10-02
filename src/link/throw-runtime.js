@@ -16,19 +16,46 @@
  *
  * @module link/throw-runtime
  */
-import { T, NONE, intern, text, walk, node, replace, remove } from '../ir/tape.js'
+import { T, NONE, OP_STR, intern, text, walk, node, push, replace, remove } from '../ir/tape.js'
+
+/** Whether a surviving function can catch: a `try_table`, `catch` or `catch_all`. */
+const catches = (root) => {
+  const FUNC = intern('func'), TRY_TABLE = intern('try_table'), CATCH = intern('catch'), CATCH_ALL = intern('catch_all')
+  let caught = false
+  for (let f = T.a[root]; f !== NONE && !caught; f = T.next[f])
+    if (T.op[f] === FUNC) walk(f, (id) => { const op = T.op[id]; if (op === TRY_TABLE || op === CATCH || op === CATCH_ALL) caught = true })
+  return caught
+}
+
+/**
+ * A runtime throw helper (module/core/error-object.js) builds the error it
+ * throws. With no catch and no decoder (the raw ABI) nothing can read that
+ * error: the throw is a trap, and the helper is `unreachable`. Before the
+ * treeshake, so the allocator calls it made leave with it.
+ */
+export function reduceThrowHelpers(root, { throws, userThrows, noEhAbort, rawAbi, throwHelpers }) {
+  if (!throws || !rawAbi || !throwHelpers?.size || userThrows && !noEhAbort || catches(root)) return
+  const FUNC = intern('func'), HEAD = new Set(['export', 'type', 'param', 'result', 'local'].map(intern))
+  for (let f = T.a[root]; f !== NONE; f = T.next[f]) {
+    if (T.op[f] !== FUNC || !throwHelpers.has(text(T.a[f]))) continue
+    for (let c = T.a[f], next; c !== NONE; c = next) {
+      next = T.next[c]
+      if (T.op[c] !== OP_STR && !HEAD.has(T.op[c])) remove(f, c)
+    }
+    push(f, node(intern('unreachable')))
+  }
+}
 
 export function pruneUnusedThrowRuntime(root, { throws, userThrows, noEhAbort, rawAbi }) {
   if (!throws) return
   if (userThrows && !noEhAbort) return
   const FUNC = intern('func'), TAG = intern('tag'), GLOBAL = intern('global'), EXPORT = intern('export')
-  const TRY_TABLE = intern('try_table'), CATCH = intern('catch'), CATCH_ALL = intern('catch_all')
   const THROW = intern('throw'), UNREACHABLE = intern('unreachable'), GLOBAL_GET = intern('global.get'), GLOBAL_SET = intern('global.set'), DROP = intern('drop')
-  let caught = false, errorRef = false
+  const caught = catches(root)
+  let errorRef = false
   for (let f = T.a[root]; f !== NONE; f = T.next[f])
     if (T.op[f] === FUNC) walk(f, (id) => {
       const op = T.op[id]
-      if (op === TRY_TABLE || op === CATCH || op === CATCH_ALL) caught = true
       if ((op === GLOBAL_GET || op === GLOBAL_SET) && text(T.a[id]) === '$__jz_last_err_bits') errorRef = true
     })
   // An exported signal is normally a reachability root. Compiler-generated

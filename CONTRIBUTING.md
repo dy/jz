@@ -2352,6 +2352,19 @@ that throws only when the use executes. The old per-parameter coercion hoist
 is removed; numeric proofs and the export boundary contract eliminate known
 Number conversions before ordinary IR optimization.
 
+Number canonicalization applies to f64 carriers only: an i32 word or a v128
+lane vector holds no box. A module binding's empty literal allocates the
+dictionary only where the plan published that binding as one; every reader
+shares that kind. A `delete` through a receiver joined with primitives raises
+absence on each shape its cell holds, as a store does. Under the raw ABI with
+no catch site, a runtime throw helper is `unreachable` before the treeshake:
+nothing can read the error it would build. A frame whose result is always
+storage it allocated is not rewound (the age test would always keep it).
+`__ptr_offset` of one root is shared across straight-line code until a store or
+any call that can move storage; arms that trap or return do not reach a merge.
+`const p = a[i]` followed by a statement whose first operation reads a field of
+`p` throws for a missing element at the read itself, which proves `p` present.
+
 ### Body-fact freshness
 
 `analyzeValueFacts` requests kinds, shapes and allocation identities without
