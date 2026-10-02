@@ -5,7 +5,7 @@ import { ASSIGN_OPS, MUTATE_OPS, refsName, REFS_IN_EXPR } from '../../ast.js'
 import { VAL, repOf, updateRep } from '../../reps.js'
 import { valTypeOf, shapeOf, boolTagged } from '../../kind.js'
 import { intExprRange, objLiteralSchemaId } from '../../static.js'
-import { isCondExpr, intCertainMap } from '../../type.js'
+import { isCondExpr, intCertainMaps } from '../../type.js'
 import { makeTypedTracker, joinReassignedTypedLens, dropDisagreeingTypedDefs } from './trackers.js'
 import { analyzeValueFacts } from './body-facts.js'
 import { findMutations, hasSingleInitializer } from '../analyze-scans.js'
@@ -464,7 +464,7 @@ export function analyzeIntCertain(body) {
       return ctx.schema.slotIntCertainAt(obj, prop)
     }
     : undefined
-  for (const [name, intC] of intCertainMap(body, captured, slotIntOf)) {
-    if (intC && !boolTagged(name)) updateRep(name, { intCertain: true })
-  }
+  const { certain, missable } = intCertainMaps(body, captured, slotIntOf)
+  for (const [name, l] of certain) if (l && !boolTagged(name)) updateRep(name, { intCertain: true })
+  for (const [name, l] of missable) if (l && !certain.get(name) && !boolTagged(name)) updateRep(name, { intOrMiss: true })
 }

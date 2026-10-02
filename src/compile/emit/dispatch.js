@@ -17,7 +17,7 @@ import { BIGINT_JOINT_BINARY_OPS, isPresentNumber, hasAmbiguousBoolMerge, nullis
 import { VAL, lookupValType, repOf, repOfGlobal, numericStorage, mayBeUndefined } from '../../reps.js'
 import { constIntExpr, staticPropertyKey, staticArrayElems, staticObjectProps, intExprRange } from '../../static.js'
 import { functionLength } from '../../function.js'
-import { exprType, wholeKey, isTerminator } from '../../type.js'
+import { exprType, wholeKey, wholeOrMissKey, isTerminator } from '../../type.js'
 import {
   BINDING_USE_COMPUTED, BINDING_USE_DECLS, BINDING_USE_KEY, BINDING_USE_KIND, BINDING_USE_OPTIONAL, BINDING_USE_USES, USE, scanBindingUses,
 } from '../analyze-scans.js'
@@ -106,12 +106,14 @@ export const emitIndex = (index, whole = false, wide = false, bounded = false) =
   if (direct) return direct
   const proven = whole
   whole ||= wholeKey(index)
+  // Integral where its typed reads hit: a miss is NaN, which the whole path tests.
+  const missable = !whole && wholeOrMissKey(index)
   // `x ± k` with k an i32 and x a name: the key is an integer exactly when x
   // is (a boxed x makes both NaN), so the test reads x alone, where a loop
   // over k leaves it invariant (`a[o + i]`, o read from an offsets table).
   // An x past the i32 range names no element either: with |k| < 2^31 the sum
   // could come back only for an array of 2^31 elements.
-  if (!whole && Array.isArray(index) && (index[0] === '+' || index[0] === '-') && index.length === 3) {
+  if (!whole && !missable && Array.isArray(index) && (index[0] === '+' || index[0] === '-') && index.length === 3) {
     const [, l, r] = index, i32 = e => exprType(e, ctx.func.locals) === 'i32' || Array.isArray(e) && e[0] == null && (e[1] | 0) === e[1]
     const x = i32(r) ? l : i32(l) && index[0] === '+' ? r : null
     if (typeof x === 'string') {
@@ -152,10 +154,11 @@ export const emitIndex = (index, whole = false, wide = false, bounded = false) =
   // walk models integer values only).
   // A constant folds exactly in keyIndex; a runtime value saturates (asI32's
   // ToInt32 would wrap 2^32 + 1 to 1).
-  if (whole && !(Array.isArray(value) && value[0] === 'f64.const')) {
+  if ((whole || missable) && !(Array.isArray(value) && value[0] === 'f64.const')) {
     if (proven) return typed(['i32.trunc_sat_f64_s', asF64(value)], 'i32')
     // An integer-certain name may hold NaN (`Math.floor` of one, `Infinity -
-    // Infinity`), which names no element, where the truncation reads index 0.
+    // Infinity`, a missed typed read), which names no element, where the
+    // truncation reads index 0.
     const t = temp('ix'), get = ['local.get', `$${t}`]
     const out = typed(['block', ['result', 'i32'], ['local.set', `$${t}`, asF64(value)],
       ['select', ['i32.trunc_sat_f64_s', get], ['i32.const', -1], ['f64.eq', get, get]]], 'i32')

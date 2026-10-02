@@ -499,6 +499,27 @@ export function intRanges(fn, bodyStart, assume = null, regions = null) {
     // box is a NaN.
     publish(env, name, { lo, hi, int: whole, nz: (x ? x.nz : floats) && lo <= 0 && hi >= 0, nan: false }, proof)
   }
+  // The word `i32.trunc_sat_f64_s(x)` of an integer that is never NaN equals x
+  // wherever it lies inside the i32 range: a checked read's index test on the
+  // word (`word <u n`) bounds the number it was truncated from.
+  const truncated = (env, w, hi, stale, root, proof) => {
+    if (w?.[0] === 'local.tee') w = w[2]
+    else if (w?.[0] === 'local.get' && types.get(w[1]) === 'i32' && !stale.has(w)) {
+      definitions ||= guardDefinitions(wexprs)
+      w = definitions.saved(w[1], proof?.path ?? stack, root)?.value
+    }
+    // (a missing index's -1 passes no unsigned bound: the word that passed is the truncation)
+    if (w?.[0] === 'select' && w.length === 4 && w[2]?.[0] === 'i32.const' && Number(w[2][1]) === -1) w = w[1]
+    if (w?.[0] !== 'i32.trunc_sat_f64_s' || stale.has(w[1])) return
+    const x = readName(w[1]), v = x && boundOf(env, x)
+    if (!v || v.of || !v.int || v.nan || hi >= I32.hi) return
+    const lo = Math.max(v.lo, 0), top = Math.min(v.hi, hi)
+    if (!(lo <= top)) return
+    // (published along the copies the number was saved from)
+    definitions ||= guardDefinitions(wexprs)
+    proof ||= { path: stack.slice(), guard: root, links: [], active: new Set(), left: 256 }
+    publish(env, x, { lo, hi: top, int: true, nz: v.nz && lo <= 0, nan: false }, proof)
+  }
   const refine = (c, truth, env, stale = staleReads(c), root = c, proof = null) => {
     if (!isArr(c)) return
     const op = c[0]
@@ -564,6 +585,8 @@ export function intRanges(fn, bodyStart, assume = null, regions = null) {
       // `x <u n` with n non-negative holds for 0 ≤ x < n alone.
       if ((rel === 'lt' || rel === 'le') && x && b && b.lo >= 0) { bound(env, x, 'ge', { lo: 0, hi: 0 }, false, proof); bound(env, x, rel, b, false, proof) }
       if ((rel === 'gt' || rel === 'ge') && y && a && a.lo >= 0) { bound(env, y, 'ge', { lo: 0, hi: 0 }, false, proof); bound(env, y, FLIP[rel], a, false, proof) }
+      if ((rel === 'lt' || rel === 'le') && b && b.lo >= 0) truncated(env, p, b.hi - (rel === 'lt' ? 1 : 0), stale, root, proof)
+      if ((rel === 'gt' || rel === 'ge') && a && a.lo >= 0) truncated(env, q, a.hi - (rel === 'gt' ? 1 : 0), stale, root, proof)
       return
     }
     // Where an f64 test fails, either operand may be NaN: only numbers that

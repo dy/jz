@@ -58,6 +58,8 @@ export const VAL = {
  * @property {number}  [schemaId]         object-shape id (OBJECT kind).
  * @property {number}  [intConst]         proven constant integer value.
  * @property {boolean} [intCertain]       integer-valued on every path.
+ * @property {boolean} [intOrMiss]        integer-valued where its integer typed reads hit; a miss
+ *   leaves undefined (NaN through arithmetic). Never a fraction, never a string.
  * @property {boolean} [notString]        proven not a string (skips string-path guards).
  * @property {number}  [arrayElemSchema]  element object-schema id for arrays.
  * @property {number[]} [arrayElemSchemaSet] CLOSED element-schema union for arrays whose
@@ -111,7 +113,7 @@ export const VAL = {
  *   guard just stays); never gates soundness.
  */
 export const REP_FIELDS = new Set([
-  'val', 'ptrKind', 'ptrAux', 'schemaId', 'intConst', 'intCertain', 'notString',
+  'val', 'ptrKind', 'ptrAux', 'schemaId', 'intConst', 'intCertain', 'intOrMiss', 'notString',
   'arrayElemSchema', 'arrayElemSchemaSet', 'schemaIdSet', 'arrayElemValType', 'arrayHoles', 'arrayElemRange', 'arrayLen', 'arrayCap', 'arrayElemElemValType', 'arrayElemTypedCtor', 'carrier', 'unsigned', 'jsonShape', 'range',
   'typedCtor', 'wasm', 'nullable', 'neverGrown', 'ownCurrent', 'recvArrTyped',
   'mayBeUndefined', 'presentVal', 'presence',

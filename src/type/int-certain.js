@@ -1,6 +1,6 @@
 /**
  * Integer-certainty fixpoint: a monotone-down dataflow over a body's binding
- * defs, answering "is this expression provably integer-valued" (`intCertainMap`)
+ * defs, answering "is this expression provably integer-valued" (`intCertainMaps`)
  * or the richer 3-level lattice (`intLevelMap`/`intLevelChecker`
  * — see the lattice doc comment below `makeIntLevelExpr`). Shared by
  * `analyzeIntCertain` and `program-facts.js`. Fully independent of every other
@@ -166,6 +166,9 @@ export function intLevelMap(body, capturedNames, slotLevelOf, readPresent, param
 }
 function intLevelMapIn(body, capturedNames, slotLevelOf, defs, readPresent, params) {
   collectIntDefs(body, capturedNames, defs)
+  return levelsOfDefs(defs, slotLevelOf, readPresent, params)
+}
+function levelsOfDefs(defs, slotLevelOf, readPresent, params) {
   const levels = new Map()
   for (const name of defs.keys()) levels.set(name, 2)
   // A parameter has no def in `body` — its entry value is whatever the caller
@@ -207,13 +210,22 @@ function intLevelMapIn(body, capturedNames, slotLevelOf, defs, readPresent, para
   return levels
 }
 
-/** Monotone fixpoint over binding defs in `body`. Map name → intCertain
- *  (boolean — the level ≥1 projection; see `intLevelMap` for the raw levels). */
-export function intCertainMap(body, capturedNames, slotIntOf) {
-  const levels = intLevelMap(body, capturedNames, _slotLevelAdapter(slotIntOf))
-  const out = new Map()
-  for (const [name, l] of levels) out.set(name, l >= 1)
-  return out
+// Every integer typed read, its element or the miss.
+const ANY_READ = { has: () => true }
+/** Monotone fixpoints over binding defs in `body`: name → level (the level ≥1
+ *  projection is intCertain) in `certain`, and in `missable` the names integral
+ *  wherever their integer typed reads are present (`let r = offs[g]; … r++`):
+ *  a miss leaves undefined, which arithmetic carries as NaN, never a fraction.
+ *  One def collection feeds both. */
+export function intCertainMaps(body, capturedNames, slotIntOf) {
+  const defs = takeScratchMap()
+  try {
+    collectIntDefs(body, capturedNames, defs)
+    const slots = _slotLevelAdapter(slotIntOf), params = ctx.func.current?.params
+    const certain = levelsOfDefs(defs, slots, undefined, params)
+    const missable = levelsOfDefs(defs, slots, ANY_READ, params)
+    return { certain, missable }
+  } finally { releaseScratchMap(defs) }
 }
 
 /** Returns `expr => 0|1|2` over `body`'s level fixpoint (slot census / raw-i32 consumers). */

@@ -301,5 +301,18 @@ export const wholeKey = (e) => {
   if (typeof e === 'string') return exprType(e, ctx.func.locals) === 'i32' || repOf(e)?.intCertain === true
   if (!Array.isArray(e)) return false
   if (e[0] == null) return Number.isInteger(e[1])
+  // A cursor stepped in place (`buf[r++]`, `buf[++r]`): its old and new
+  // values are both the name's, whose every definition is integral.
+  if (e[0] === 'postfix') return wholeKey(e[1])
+  if ((e[0] === '++' || e[0] === '--') && e.length === 2) return wholeKey(e[1])
   return WHOLE_OPS.has(e[0]) && e.length === 3 && wholeKey(e[1]) && wholeKey(e[2])
+}
+// A key integral wherever its typed reads hit: wholeKey, or names whose miss
+// carries NaN (`intOrMiss`). A NaN names no element; the index test finds it.
+export const wholeOrMissKey = (e) => {
+  if (typeof e === 'string') return wholeKey(e) || repOf(e)?.intOrMiss === true
+  if (!Array.isArray(e) || e[0] == null) return wholeKey(e)
+  if (e[0] === 'postfix') return wholeOrMissKey(e[1])
+  if ((e[0] === '++' || e[0] === '--') && e.length === 2) return wholeOrMissKey(e[1])
+  return WHOLE_OPS.has(e[0]) && e.length === 3 && wholeOrMissKey(e[1]) && wholeOrMissKey(e[2])
 }

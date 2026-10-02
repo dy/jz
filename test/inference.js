@@ -1150,6 +1150,26 @@ test('typed-array index with bounded literal terms stays pure i32', () => {
   if(!belowOpt(2)) is(count(fn,/i32\.mul\b/g),0,'power-of-two width uses shifts')
 })
 
+test('a cursor stepped from a typed read indexes without the float round trip', () => {
+  // `r` starts at an element that may be missing and steps in place: an
+  // integer wherever the read hits, NaN after a miss — never a fraction.
+  const src=`const parse=(s,offs,n)=>{let h=0
+    for(let g=0;g<n;g++){let r=offs[g]
+      for(let i=0;i<8;i++){const v=s[r++];h+=v===undefined?100:v;if(h>50)h-=s[++r]??1}}
+    return h}
+  export const run=(n)=>{const s=new Uint8Array(32),offs=new Int32Array(4)
+    for(let i=0;i<32;i++)s[i]=i*7
+    offs[1]=5;offs[2]=30;offs[3]=-3
+    return parse(s,offs,n)}`
+  const want=oracle(src)
+  for (const optimize of levels(0,1,2,'size')) {
+    const wat=jz.compile(src,{wat:true,optimize})
+    is(count(wat,/f64\.convert_i32_s\s*\(local\.tee \$\S+\s*\(i32\.wrap_i64\s*\(i64\.trunc_sat_f64_s/g),0,`O${optimize}: no int32 round-trip test on the cursor`)
+    const got=jz(src,{optimize}).exports
+    for (const n of [0,1,3,4,6]) is(got.run(n),want.run(n),`O${optimize}: ${n} offsets, misses included`)
+  }
+})
+
 test('plain-array index with bounded literal terms stays pure i32', () => {
   const wat=jz.compile(`export const f=(arr,jj,xx)=>{let j=jj&65535,x=xx&65535,W=4;
     return arr[j*W+x]+arr[j*W+x+1]+arr[(j+1)*W+x]}`,{wat:true})
