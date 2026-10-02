@@ -82,7 +82,13 @@ const writesMemory = n => isArr(n) && (STORE.test(n[0]) || calls(n) || n.some(wr
 const nanConst = n => isArr(n) && n[0] === 'f64.const' && (plainNaN(n) || (typeof n[1] === 'number' && Number.isNaN(n[1])) || (typeof n[1] === 'string' && /^[-+]?nan/.test(n[1])))
 const zeroConst = n => isArr(n) && n[0] === 'i32.const' && Number(n[1]) === 0
 const LOADS = /^(f64\.load|f32\.load|i32\.load|i64\.load)/
-const loads = n => isArr(n) && (LOADS.test(n[0]) || ((n[0] === 'f64.convert_i32_s' || n[0] === 'f64.convert_i32_u' || n[0] === 'f64.promote_f32') && loads(n[1])))
+// A Number normalized on its way into a generic slot (ir/sentinels.js
+// canonicalNumberIR): `(block (result f64) (local.set $t V) (select nan $t ($t != $t)))`. The value V, or null.
+const canonOf = n => isArr(n) && n[0] === 'block' && n.length === 4 && n[1]?.[0] === 'result' && n[1][1] === 'f64' &&
+  n[2]?.[0] === 'local.set' && n[3]?.[0] === 'select' && n[3][1]?.[0] === 'f64.const' && n[3][1][1] === 'nan' &&
+  n[3][2]?.[0] === 'local.get' && n[3][2][1] === n[2][1] && n[3][3]?.[0] === 'f64.ne' ? n[2][2] : null
+const loads = n => isArr(n) && (LOADS.test(n[0]) || ((n[0] === 'f64.convert_i32_s' || n[0] === 'f64.convert_i32_u' || n[0] === 'f64.promote_f32') && loads(n[1])) ||
+  loads(canonOf(n)))
 const wordLoad = n => isArr(n) && /^i32\.load/.test(n[0])
 // The clamp of a checked read's address: `select(index, 0, valid)`.
 const clampOf = (n, valid) => isArr(n) && n[0] === 'select' && n.length === 4 && n[2]?.[0] === 'i32.const' && Number(n[2][1]) === 0 &&
@@ -502,7 +508,8 @@ export function specializeLoops(fn) {
         const by = leaveBy(rg, 'br_if', ['i32.eqz', n[2]])
         if (by) {
           const hit = n[3][1]
-          if (num && hit[0] === 'f64.load') hit.numberRead = true   // a typed element, where it is read at all
+          const load = canonOf(hit) ?? hit
+          if (num && load[0] === 'f64.load') load.numberRead = true   // a typed element, where it is read at all
           holder[at] = ['block', ['result', read.type], by, hit]
           expr(hit, holder[at], 3, rg)
           return
@@ -516,7 +523,8 @@ export function specializeLoops(fn) {
         const by = leaveBy(rg, 'br_if', ['i32.eqz', ['local.get', read.valid]])
         if (by) {
           const hit = unclamp(n[1], read.valid)
-          if (num && hit[0] === 'f64.load') hit.numberRead = true
+          const load = canonOf(hit) ?? hit
+          if (num && load[0] === 'f64.load') load.numberRead = true
           holder[at] = ['block', ['result', read.type], by, hit]
           expr(hit, holder[at], 3, rg)
           return
