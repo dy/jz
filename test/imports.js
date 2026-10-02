@@ -487,6 +487,22 @@ test('import: host function', () => {
   is(exports.f(5), 11)
 })
 
+// A host import takes every argument as the i64 bits of its value: a number,
+// a Boolean (its atom, not the raw 0/1), a string, a missing argument.
+test('import: host function arguments cross as values at every level', () => {
+  const src = `import { seen } from "host"
+    export let num = (x) => seen(x * 2)
+    export let bool = (x) => seen(x > 1)
+    export let str = (x) => seen('s' + x)
+    export let none = () => seen()`
+  for (const optimize of [0, 1, 2, 3, 'size']) {
+    const got = []
+    const { exports } = jz(src, { optimize, imports: { host: { seen: (v) => { got.push(v); return 0 } } } })
+    exports.num(3); exports.bool(3); exports.bool(0); exports.str(3); exports.none()
+    is(got, [6, true, false, 's3', undefined], `O${optimize}`)
+  }
+})
+
 test('import: multiple host functions', () => {
   const { exports } = jz(
     'import { a, b } from "mylib"; export let f = (x) => a(x) + b(x)',

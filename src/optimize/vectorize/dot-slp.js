@@ -322,12 +322,29 @@ const slpPlaceFieldPairs = (fn, sp) => {
   }
 }
 
+// A NaN-canonicalized lane — `select(C, X, ne(X, X))`, a Number entering generic
+// storage — with X staged in a temp the test alone reads (the result may tee it once
+// more, unread): { val: X, C }, else null. `own` is the lane's refilled local: a temp
+// of that name may be read elsewhere too, since those reads see the refill.
+const slpCanonLane = (n, counts, own) => {
+  let sel = n, outer = null
+  if (isArr(sel) && sel[0] === 'local.tee' && sel.length === 3) { outer = sel[1]; sel = sel[2] }
+  if (!isArr(sel) || sel[0] !== 'select' || sel.length !== 4) return null
+  const [, C, x, test] = sel
+  if (!(isArr(C) && (C[0] === 'f64.const' && String(C[1]).toLowerCase() === 'nan' || C[0] === 'global.get'))) return null
+  if (!(isArr(test) && test[0] === 'f64.ne' && isArr(x) && x[0] === 'local.tee' && x.length === 3)) return null
+  const t = x[1]
+  if (localGetName(test[1]) !== t || localGetName(test[2]) !== t || counts.get(t) !== 2 && t !== own) return null
+  if (outer !== null && outer !== t && counts.has(outer)) return null
+  return { val: x[2], C }
+}
+
 // Pack two isomorphic f64 trees [lo, hi] into an f64x2 value, or null if it isn't
 // overhead-free (adjacent loads → v128.load, a field pair → its v128, identical pure
 // scalar → splat, matching op → recurse). The overhead-free restriction is what makes it
 // both profitable and unable to grow code; every f64x2 lane op is bit-identical to its
-// scalar f64 op.
-const slpPackF64x2 = (lo, hi, sp) => {
+// scalar f64 op. `ownLo`/`ownHi` name the top-level lanes' refilled locals.
+const slpPackF64x2 = (lo, hi, sp, ownLo, ownHi) => {
   if (!isArr(lo) || !isArr(hi)) return null
   if (lo[0] === 'f64.load' && hi[0] === 'f64.load') {
     const a = accessOf(lo), b = accessOf(hi)
@@ -343,6 +360,16 @@ const slpPackF64x2 = (lo, hi, sp) => {
     return ['local.get', p.name]
   }
   if (exprEq(lo, hi) && slpSplatSafe(lo)) return ['f64x2.splat', lo]
+  // Two canonicalized lanes: the pair of their values, canonicalized per lane — the
+  // scalar selects' bits exactly (C in a NaN lane, the value elsewhere).
+  const cl = slpCanonLane(lo, sp.getCounts, ownLo), ch = cl && slpCanonLane(hi, sp.getCounts, ownHi)
+  if (cl && ch && exprEq(cl.C, ch.C)) {
+    const v = slpPackF64x2(cl.val, ch.val, sp)
+    if (!v) return null
+    const t = `$__slpc${sp.freshIdRef.next++}`
+    sp.pendingLocals.push(t)
+    return ['v128.bitselect', ['f64x2.splat', cl.C], ['local.tee', t, v], ['f64x2.ne', ['local.get', t], ['local.get', t]]]
+  }
   if (lo[0] === hi[0]) {
     const bin = F64X2_BIN[lo[0]]
     if (bin && lo.length === 3 && hi.length === 3) {
@@ -378,6 +405,10 @@ const slpUnitAt = (stmts, i, getCounts) => {
     if (inert) { u.value = d[2]; u.def = j; u.keep = getCounts.get(t) > 1 ? t : null }
     break
   }
+  // A value teed into a local read elsewhere (a forwarded load) is `keep` too, unless
+  // the address reads it: the refill lands before the packed store's address.
+  const v = u.value
+  if (!u.keep && isArr(v) && v[0] === 'local.tee' && v.length === 3 && getCounts.has(v[1]) && !localReads(u.addr).has(v[1])) { u.keep = v[1]; u.value = v[2] }
   return u
 }
 
@@ -400,16 +431,21 @@ const slpStorePairsIn = (node, sp) => {
     if (!u1 || u1.off - u0.off !== 8 || u1.def >= 0 && u1.def <= i || !deadTees(u1.addr, sp.getCounts)) continue
     const lo = u0.def >= 0 ? u0.def : i
     if (!sameBase(u0.base, i, u1.base, k, windowDefs(node, Math.max(1, lo - SLP_WINDOW), k))) continue
-    // Between the stores: the high value moves up, the high store moves up to the low one.
+    // Between the stores: the high value moves up, the high store moves up to the low one;
+    // the high refill moves up too — before the low address, past the high value.
     const reads = new Set([...localReads(u0.value), ...localReads(u1.value)])
+    if (u1.keep) reads.add(u1.keep)
+    if (u0.keep && localReads(u1.value).has(u0.keep) || u1.keep && localReads(u0.addr).has(u1.keep)) continue
     let inert = true
     for (let j = i + 1; j < k && inert; j++) inert = j === u1.def || inertFor(node[j], reads, true) && !(u1.keep && localReads(node[j]).has(u1.keep))
     if (!inert || slpReadsSlot(u1.value, u0.off)) continue
     sp.touched = []
-    const packed = slpPackF64x2(u0.value, u1.value, sp)
+    sp.pendingLocals = []
+    const packed = slpPackF64x2(u0.value, u1.value, sp, u0.keep, u1.keep)
     // A pair the pack named stays a pair only with the pack: an abandoned pack unnames it.
     if (!packed) { for (const p of sp.touched) p.name = null; continue }
     for (const p of sp.touched) { sp.newLocalDecls.push(['local', p.name, 'v128']); sp.fnLocals.set(p.name, 'v128') }
+    for (const name of sp.pendingLocals) { sp.newLocalDecls.push(['local', name, 'v128']); sp.fnLocals.set(name, 'v128') }
     const t = `$__slp${sp.freshIdRef.next++}`
     sp.newLocalDecls.push(['local', t, 'v128']); sp.fnLocals.set(t, 'v128')
     const baseReads = localReads(u1.addr)
@@ -423,6 +459,26 @@ const slpStorePairsIn = (node, sp) => {
     node.splice(i, 1, ['local.set', t, packed], ...refill, memarg('v128.store', u0.off, u0.base, ['local.get', t]))
     if (u0.def >= 0) { node.splice(u0.def, 1); i-- }
     i += 1 + refill.length
+  }
+}
+
+// jz stages a canonicalized store value in two statements — `(local.set $c X)` then
+// `(local.set $v (select C (local.get $c) (f64.ne (local.get $c) (local.get $c))))`.
+// Adjacent, they are one: `(local.set $v (select C (local.tee $c X) (f64.ne …)))`
+// evaluates the same (C is a constant), and the store packer sees the lane whole.
+// Only a value an element store reads: a reduction keeps its own shape.
+const fuseCanonStaging = (node, stored) => {
+  if (!isArr(node)) return
+  for (let i = 1; i < node.length; i++) if (isArr(node[i])) fuseCanonStaging(node[i], stored)
+  for (let i = node.length - 1; i > 1; i--) {
+    const a = node[i - 1], b = node[i]
+    if (!(isArr(a) && a[0] === 'local.set' && a.length === 3 && isArr(b) && b[0] === 'local.set' && b.length === 3 && b[1] !== a[1])) continue
+    if (!stored.has(b[1])) continue
+    const c = a[1], sel = b[2]
+    if (isArr(sel) && sel[0] === 'select' && sel.length === 4 && localGetName(sel[2]) === c &&
+        isArr(sel[1]) && (sel[1][0] === 'f64.const' || sel[1][0] === 'global.get') &&
+        isArr(sel[3]) && sel[3][0] === 'f64.ne' && localGetName(sel[3][1]) === c && localGetName(sel[3][2]) === c)
+      node.splice(i - 1, 2, ['local.set', b[1], ['select', sel[1], ['local.tee', c, a[2]], sel[3]]])
   }
 }
 
@@ -450,7 +506,10 @@ export function slpPairsIn(fn, fnLocals, freshIdRef, newLocalDeclsAll, relaxedFm
   // SLP walkers. They only reject functions that cannot contain either seed.
   if (hasF64Mul) vectorizeStraightLineF64DotPairsIn(fn, fnLocals, freshIdRef, newLocalDeclsAll, relaxedFma)
   if (f64Stores >= 2 && slp && !ctx.linkDemand.typedView) {
-    const sp = { fnLocals, freshIdRef, newLocalDecls: newLocalDeclsAll, getCounts: localGetCounts(fn), pairs: slpFieldPairs(fn), touched: [] }
+    const stored = new Set()
+    walkAst(fn, { enter: n => { if (n[0] === 'f64.store') { const v = localGetName(n[n.length - 1]); if (v) stored.add(v) } } })
+    fuseCanonStaging(fn, stored)
+    const sp = { fnLocals, freshIdRef, newLocalDecls: newLocalDeclsAll, getCounts: localGetCounts(fn), pairs: slpFieldPairs(fn), touched: [], pendingLocals: [] }
     slpStorePairsIn(fn, sp)
     slpPlaceFieldPairs(fn, sp)
   }

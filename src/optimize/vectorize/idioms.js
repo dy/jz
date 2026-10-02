@@ -32,14 +32,16 @@ export function normTee(n) {
 }
 
 // An element read as a value carries its hole test — `select(nan, X, eq(bits X, HOLE))`
+// — or, entering a generic binding, its NaN canonicalization — `select(nan, X, ne(X, X))`
 // — where a compare read the same element bare (a hole's bits are NaN either way). In
 // the branch a `>`/`<` compare selects, X is no NaN, so the value is X.
 const stripHoleSelect = (n) => {
   if (!isArr(n) || n[0] !== 'select' || n.length !== 4) return n
   const [, nan, x, test] = n
   if (!(isArr(nan) && nan[0] === 'f64.const' && String(nan[1]).toLowerCase() === 'nan')) return n
-  if (!(isArr(test) && test[0] === 'i64.eq' && isArr(test[1]) && test[1][0] === 'i64.reinterpret_f64' && isArr(test[2]) && test[2][0] === 'i64.const' && test[2][1] === HOLE_NAN)) return n
-  return exprEq(normTee(x), normTee(test[1][1])) ? x : n
+  const tested = isArr(test) && test[0] === 'i64.eq' && isArr(test[1]) && test[1][0] === 'i64.reinterpret_f64' && isArr(test[2]) && test[2][0] === 'i64.const' && test[2][1] === HOLE_NAN ? test[1][1]
+    : isArr(test) && test[0] === 'f64.ne' && exprEq(normTee(test[1]), normTee(test[2])) ? test[1] : null
+  return tested && exprEq(normTee(x), normTee(tested)) ? stripHoleSelect(x) : n
 }
 
 // Recognize an integer min/max reduction body. WASM has no scalar i32.min/max, so

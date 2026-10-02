@@ -98,11 +98,20 @@ export function numberNanIR(get) {
     ['i64.eqz', ['i64.and', bits, ['i64.const', TAG_AUX_MASK]]]]]
 }
 
+/** Whether an f64 expression carries no NaN payload: a canonicalized value,
+ *  an integer conversion, a constant, or a choice (if, select, block) of such. */
+const payloadFree = (v) => Array.isArray(v) && (v.numberCanonical ||
+  v[0] === 'f64.const' && (typeof v[1] === 'number' || v[1] === 'nan') ||
+  /^f64\.convert_i(?:32|64)_[su]$/.test(v[0]) ||
+  v[0] === 'select' && v.length === 4 && payloadFree(v[1]) && payloadFree(v[2]) ||
+  v[0] === 'block' && payloadFree(v[v.length - 1]) ||
+  v[0] === 'if' && v.length === 5 && v[3]?.[0] === 'then' && v[4]?.[0] === 'else' &&
+    payloadFree(v[3][v[3].length - 1]) && payloadFree(v[4][v[4].length - 1]))
+
 /** A Number entering a generic value slot cannot retain pointer-looking NaN
  *  bits. Uniform numeric computation and typed storage do not use this edge. */
 export function canonicalNumberIR(value) {
-  if (value.type === 'i32' || value.numberCanonical || value[0] === 'f64.const' && typeof value[1] === 'number' ||
-      /^f64\.convert_i(?:32|64)_[su]$/.test(value[0])) return value
+  if (value.type === 'i32' || value.type === 'v128' || payloadFree(value)) return value
   const name = temp('cn'), get = ['local.get', `$${name}`]
   const out = typed(['block', ['result', 'f64'], ['local.set', `$${name}`, asF64(value)],
     ['select', ['f64.const', 'nan'], get, ['f64.ne', get, get]]], 'f64')
@@ -112,7 +121,8 @@ export function canonicalNumberIR(value) {
 
 /** Preserve a checked read's undefined arm while normalizing its Number arm. */
 export function numberCarrierIR(node, value) {
-  if (value.type === 'i32' || value.numberArmsCanonical) return value
+  // a word or a lane vector holds no NaN box
+  if (value.type === 'i32' || value.type === 'v128' || value.numberArmsCanonical) return value
   if (value.checkedNumRead) {
     const missing = n => n?.[0] === 'f64.const' && n[1] === `nan:${UNDEF_NAN}`
     const hit = n => {

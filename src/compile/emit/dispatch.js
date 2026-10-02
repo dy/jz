@@ -11,7 +11,7 @@ import { STR_HCACHE_BIT, HEAP } from '../../../layout.js'
 import { ASSIGN_OPS, MUTATE_OPS, T, commaList, firstRefKind, isBlockBody, isReassigned, walkAst } from '../../ast.js'
 import { PTR, ctx, err, inc, emitArity, setLinkDemand } from '../../ctx.js'
 import {
-  keyIndex, int32Bits, callWithArgs, FALSE_NAN, MAX_CLOSURE_ARITY, TRUE_NAN, WASM_OPS, applyBigintRepresentationAction, asF64, asI32, asI64, asParamType, asPtrOffset, block64, boolBoxIR, boxBigInt, carrierF64, numberCarrierIR, carrierF64Narrow, emitNum, extractF64Bits, flat, fromI64, isBoundName, isGlobal, boxedAddr, boxedPtrTypeEq, isLit, isNullish, isNullishLit, litVal, materializeDeferredBigint, mayYieldUndefOf, maybeUnboxBigInt, mkPtrIR, nullExpr, nullableBoolBoxIR, ptrOffsetIR, readVar, resolveValType, temp, tempI32, tempI64, toI32, toNumF64, toStrI64, truthyIR, typed, unboxBoolIR, undefExpr, valKindToPtr,
+  keyIndex, int32Bits, callWithArgs, bindingCarrierIR, FALSE_NAN, MAX_CLOSURE_ARITY, TRUE_NAN, WASM_OPS, applyBigintRepresentationAction, asF64, asI32, asI64, asParamType, asPtrOffset, block64, boolBoxIR, boxBigInt, carrierF64, numberCarrierIR, carrierF64Narrow, emitNum, extractF64Bits, flat, fromI64, isBoundName, isGlobal, boxedAddr, boxedPtrTypeEq, isLit, isNullish, isNullishLit, litVal, materializeDeferredBigint, mayYieldUndefOf, maybeUnboxBigInt, mkPtrIR, nullExpr, nullableBoolBoxIR, ptrOffsetIR, readVar, resolveValType, temp, tempI32, tempI64, toI32, toNumF64, toStrI64, truthyIR, typed, unboxBoolIR, undefExpr, valKindToPtr,
 } from '../../ir.js'
 import { BIGINT_JOINT_BINARY_OPS, isPresentNumber, hasAmbiguousBoolMerge, nullishArm, valTypeOf, boolTagged, mixedBoolKind } from '../../kind.js'
 import { VAL, lookupValType, repOf, repOfGlobal, numericStorage, mayBeUndefined } from '../../reps.js'
@@ -370,9 +370,12 @@ export function coerceArg(ir, param, node, repAction = REP_EDGE_REJECT, func = n
   const view = func && ir.type !== 'i32' && ctx.summary?.at(func.sig)
   const generic = view && (view.kindOfExpr(param?.name) !== NUMBER ||
     func.defaults && Object.hasOwn(func.defaults, param?.name) && view.defaultMayRun(param.name))
-  if (node !== undefined) {
-    if (param == null || param.type !== 'i32' && param.val == null) return carrierF64(node, ir)
-    if (param.type !== 'i32' && generic) return asParamType(numberCarrierIR(node, ir), param.type)
+  // A value carrier: an f64 slot, or a host import's i64 box bits. i32 and
+  // v128 parameters are numeric positions and keep their representation.
+  const carrier = param == null || param.type == null || param.type === 'f64' || param.type === 'i64'
+  if (node !== undefined && carrier) {
+    if (param == null || param.val == null) return asParamType(carrierF64(node, ir), param?.type)
+    if (generic) return asParamType(numberCarrierIR(node, ir), param.type)
   }
   return asParamType(ir, param?.type)
 }
@@ -853,7 +856,7 @@ export function emitDecl(...inits) {
     }
     val = applyBigintRepresentationAction(val, init, representationBindingWriteAction(ctx, name, init))
     if (!viewInit) val = boolCarrier(name, init, val)
-    if (val.type !== 'i32' && ctx.summary?.at(ctx.func.current).kindOfExpr(name) !== NUMBER) val = numberCarrierIR(init, val)
+    val = bindingCarrierIR(name, val, init)
     if (isObjLit) ctx.schema.targetStack.pop()
     // Record the declared name's valTypeOf(init) into the flow overlay right after
     // emitting init — not just for sibling `let`s in the same block (emitBlockBody used

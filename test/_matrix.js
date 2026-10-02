@@ -75,7 +75,9 @@ export function adaptI64(mod, raw) {
         const slot = t?.[String(i)]
         // `Array+` is a plain array: it crosses the generic lane as itself.
         if (slot && slot !== 'Array+') return typedArg(x, slot.endsWith('+') ? slot.slice(0, -1) : slot, slot.endsWith('+'), back)
-        return piSet.has(i) ? argBits(coerce(x)) : x
+        // The raw host passes a pointer carrier as it received it: a NaN's bits
+        // are the box (interop's coerce reads every Number as a Number).
+        return piSet.has(i) ? argBits(typeof x === 'number' && x !== x ? x : coerce(x)) : x
       })
       const ret = fn(...a)
       for (const [host, off, len, Ctor] of back) {

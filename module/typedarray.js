@@ -2463,7 +2463,10 @@ export default (ctx) => {
     const rmwKey = typeof arr === 'string' && typeof i === 'string' ? idxKey(arr, i) : null
     let rmwCandidate = !nullable && !proven && void_ && et <= 5 && !r.isClamped && rmwKey != null &&
       i32Rhs && hasSameRead(val) && safeRmwAst(val)
-    const bigintValue = isBigInt && tagsOf(ctx.summary?.at(ctx.func.current).kindOfExpr(val) ?? 0) === bitOf(K.BIGINT)
+    // A BigInt by the summary, or by the emitter's own typing: an update's
+    // staged sum (`ref[k] + 1n`) names temps the summary never saw.
+    const bigintValue = isBigInt && (valTypeOf(val) === VAL.BIGINT ||
+      tagsOf(ctx.summary?.at(ctx.func.current).kindOfExpr(val) ?? 0) === bitOf(K.BIGINT))
     let valIR, rmwAddr = null, rmwValue = null
     if (rmwCandidate) {
       rmwAddr = tempI32('tra')

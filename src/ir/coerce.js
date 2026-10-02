@@ -162,7 +162,8 @@ const armTail = (v, tag) => { const a = v.find(c => Array.isArray(c) && c[0] ===
  *  A binding that is an arm answers by what it holds: one that normalizes on
  *  write, or that a guard or its definition holds present, is a number. */
 const mayMissValue = (node, v, byKind = true) => {
-  if (!Array.isArray(v)) return false
+  // A canonicalized Number (sentinels.js canonicalNumberIR) holds no box.
+  if (!Array.isArray(v) || v.numberCanonical) return false
   if (Array.isArray(node) && OWN_RESULT_OPS.has(node[0])) return false
   if (Array.isArray(node) && node[0] === '?:' && node.length === 4) {
     if (v[0] === 'select' && v.length === 4) return mayMissValue(node[2], v[1], byKind) || mayMissValue(node[3], v[2], byKind)

@@ -10,6 +10,7 @@ import {
   constIntExpr, constNumExpr, counterInit, guardCounterName, forCounterRange, forCounterBounds, typedCtorRawOf,
 } from '../static.js'
 import { exprType } from '../type.js'
+import { K, NUMBER, tagOf, hasTag, typedElemKind } from '../summary/kind.js'
 import { maxAdvanceBudget } from '../type/canonical-bounds.js'
 import { repOf, updateRep } from '../reps.js'
 import { typedElemAux } from '../../layout.js'
@@ -1739,4 +1740,49 @@ export function collectF64StridedIndexVars(body, locals) {
     if (node[0] === '=>') return false
   } })
   return set || EMPTY_SCAN_SET
+}
+
+// A local every read of which consumes a Number — an arithmetic or bitwise
+// operand, a relational comparison, a Math argument, a typed element's stored
+// value, or a `?:` arm in such a place — never shows its NaN payload as a box:
+// what arithmetic makes of it is canonicalized where it reaches generic storage.
+// Its writes need no canonical NaN (sentinels.js numberCarrierIR).
+const NUMERIC_READ_OPS = new Set(['-', '*', '/', '%', '**', '&', '|', '^', '<<', '>>', '>>>', '~', 'u-', 'u+', '<', '<=', '>', '>='])
+const numericOnly = new WeakMap()
+export function numericOnlyNames(body, view) {
+  if (body == null || typeof body !== 'object') return null
+  let names = numericOnly.get(body)
+  if (names) return names
+  const ok = new Map()
+  const see = (name, numeric) => { if (ok.get(name) !== false) ok.set(name, numeric) }
+  const walk = (n, numeric) => {
+    if (typeof n === 'string') { see(n, numeric); return }
+    if (!Array.isArray(n) || n[0] == null || n[0] === 'str') return
+    const op = n[0]
+    if (op === '=>') { walkAst(n, { enter: (c) => { for (let i = 1; i < c.length; i++) if (typeof c[i] === 'string') see(c[i], false) } }); return }
+    if (NUMERIC_READ_OPS.has(op)) { for (let i = 1; i < n.length; i++) walk(n[i], true); return }
+    if (op === '?:' && n.length === 4) { walk(n[1], false); walk(n[2], numeric); walk(n[3], numeric); return }
+    if (op === '()' && typeof n[1] === 'string' && n[1].startsWith('math.')) {
+      const args = n[2] == null ? [] : Array.isArray(n[2]) && n[2][0] === ',' ? n[2].slice(1) : [n[2]]
+      for (const a of args) walk(a, true)
+      return
+    }
+    if (op === 'let' || op === 'const') {
+      for (let i = 1; i < n.length; i++) { const d = n[i]; if (Array.isArray(d) && d[0] === '=') { if (typeof d[1] !== 'string') walk(d[1], false); walk(d[2], false) } }
+      return
+    }
+    if (op === '=' && typeof n[1] === 'string') { walk(n[2], false); return }
+    if (op === '=' && Array.isArray(n[1]) && n[1][0] === '[]') {
+      const k = view?.kindOfExpr(n[1][1])
+      walk(n[1], false)
+      walk(n[2], k != null && tagOf(k) === K.TYPED && !hasTag(k, K.NULLISH) && !hasTag(k, K.ABSENT) && typedElemKind(k) === NUMBER)
+      return
+    }
+    for (let i = 1; i < n.length; i++) walk(n[i], false)
+  }
+  walk(body, false)
+  names = new Set()
+  for (const [name, numeric] of ok) if (numeric) names.add(name)
+  numericOnly.set(body, names)
+  return names
 }

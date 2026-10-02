@@ -92,9 +92,20 @@ function tryReduceReassoc(bl, fnLocals, freshIdRef, multiAcc = false) {
   // `m = a[i] > m ? a[i] : m`; rewrite it to the select-assign form so one recognizer covers both.
   // Sound for recognition: the lane EXPR (an array load) is pure, and the SIMD lift reads it
   // unconditionally anyway (pmax), while the scalar remainder keeps the original conditional store.
+  // The arm may stage its value in a temp first (`t = X; m = canon(t)`, a NaN
+  // canonicalization into a generic binding): the value is `canon(X)`.
+  const usesLocal = (n, name) => isArr(n) && ((n[0] === 'local.get' || n[0] === 'local.tee') && n[1] === name || n.some(c => usesLocal(c, name)))
   const asSelectAssign = (stmt) => {
-    if (isArr(stmt) && stmt[0] === 'if' && stmt.length === 3 && isArr(stmt[2]) && stmt[2][0] === 'then' && stmt[2].length === 2) {
-      const set = stmt[2][1]
+    if (isArr(stmt) && stmt[0] === 'if' && stmt.length === 3 && isArr(stmt[2]) && stmt[2][0] === 'then' && (stmt[2].length === 2 || stmt[2].length === 3)) {
+      let set = stmt[2][stmt[2].length - 1]
+      if (stmt[2].length === 3) {
+        const stage = stmt[2][1]
+        // the temp is the arm's own: nothing past the loop reads what the lift leaves in it
+        if (!(isArr(stage) && stage[0] === 'local.set' && stage.length === 3 && !hasSideEffect(stage[2]) && !usesLocal(stage[2], stage[1]) && !bl.outsideReads?.has(stage[1]) &&
+            isArr(set) && set[0] === 'local.set' && set.length === 3 && set[1] !== stage[1])) return stmt
+        const t = stage[1], subst = (n) => isArr(n) ? (n[0] === 'local.get' && n[1] === t ? stage[2] : n.map(subst)) : n
+        set = ['local.set', set[1], subst(set[2])]
+      }
       if (isArr(set) && set[0] === 'local.set' && set.length === 3 && !hasSideEffect(set[2]))
         return ['local.set', set[1], ['select', set[2], ['local.get', set[1]], stmt[1]]]
     }
