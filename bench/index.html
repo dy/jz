@@ -48,8 +48,6 @@ h2 { height: var(--u2); padding-top: calc(20px - 1cap / 2); margin: 0; font-size
 @supports (text-box: trim-both cap alphabetic) { h2, .bandlab, #outro, p { text-box: trim-both cap alphabetic; } #outro, p { padding-top: var(--bl); } }
 p { font-size: var(--fs-body); line-height: 24px; max-width: 70ch; }
 p + p { margin-top: 16px; }
-#speed > p { margin: 0 0 24px; }   /* corpus note, sits under the heading above the bars */
-a { color: var(--ink); }
 .dim { color: var(--mid); }
 code, .mono { font-family: var(--mono); font-size: var(--fs-mono); }
 
@@ -77,11 +75,10 @@ code, .mono { font-family: var(--mono); font-size: var(--fs-mono); }
   opacity: 1; visibility: visible; transform: translateY(0); transition-delay: .4s; }
 
 /* intro */
-/* intro: the page title (display size, as the landing's) and the CI badge, the run control at the line's right
-   end, all standing on the title's baseline; the selected machine's provenance under it */
+/* Page title and CI badge, with the selected machine's provenance below. */
 .intro { display: flex; flex-direction: column; gap: 16px; }
 .introtop { display: flex; align-items: flex-end; gap: 24px; flex-wrap: wrap; }
-.introtop .runall { margin-left: auto; }
+#speed .shead { justify-content: flex-start; align-items: center; gap: 0 16px; }
 #runAll { height: 32px; padding: 0 16px; }
 .ci { display: flex; line-height: 0; }
 .ci[aria-current] img { outline: 1px solid var(--ink); outline-offset: 2px; }   /* the CI view is on */
@@ -141,6 +138,17 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--ink); outline-o
 .row.fail .bar::after { content: ''; position: absolute; inset: 12px 0 auto 0; border-top: 1px dotted var(--mid); }
 .bandlab { height: 24px; padding-top: calc(16px - 1cap); margin-top: 8px; font-size: var(--fs-caps); text-transform: uppercase; letter-spacing: var(--ls-caps); color: var(--mid); }
 
+/* Toolchain overview; the table keeps its columns on narrow screens. */
+.alternatives .table-wrap { overflow-x: auto; }
+.alternatives .table-wrap:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+.alternatives table { width: 100%; min-width: 720px; border-collapse: separate; border-spacing: 0;
+  font-size: var(--fs-small); line-height: 24px; color: var(--soft); }
+.alternatives th, .alternatives td { padding: 4px 16px 4px 0; text-align: left; vertical-align: top; }
+.alternatives tr > :last-child { padding-right: 0; }
+.alternatives th { color: var(--ink); font-weight: 600; }
+.alternatives th[scope="row"] { white-space: nowrap; }
+.alternatives thead th { font-size: var(--fs-caps); letter-spacing: var(--ls-caps); text-transform: uppercase; }
+
 /* per-case cards; the family filter: outlined chips, three units tall, centred in the heading band
    (wrapped on a phone, the rows stay a unit apart) */
 .chips { display: flex; gap: 8px; flex-wrap: wrap; margin-block: var(--u); }
@@ -160,11 +168,11 @@ h2 .cnt { font-weight: 400; letter-spacing: 0; color: var(--mid); font-variant-n
 .card h3 .size { font-family: var(--mono); font-weight: 400; font-size: var(--fs-mono); color: var(--mid); }
 .card h3 .play { display: inline-flex; align-items: center; gap: 4px;
   font-size: var(--fs-small); font-weight: 400; letter-spacing: .02em;
-  text-transform: none; text-decoration: none; border: 0; padding: 0; cursor: pointer; background: none; color: var(--mid); }
+  text-transform: none; text-decoration: none; border: 0; padding: 0; cursor: pointer; background: none; color: var(--link); }
 .card h3 .play ~ .play { margin-left: 10px; }
 .card h3 .play .ico { display: block; }
 .card h3 .actions { margin-left: auto; display: inline-flex; align-items: baseline; padding-left: 18px; }   /* repl/src right-aligned in each card */
-.card h3 .play:hover { background: none; color: var(--ink); }
+.card h3 .play:hover { background: none; }
 .card .row { grid-column: 1 / -1; grid-template-columns: subgrid; }
 .card .val { text-align: right; }
 
@@ -205,18 +213,39 @@ h2 .cnt { font-weight: 400; letter-spacing: 0; color: var(--mid); font-variant-n
     <h1 class="title">Benchmark</h1>
     <!-- the CI run's status; it switches the page to the CI runner's results (and back) -->
     <a class="ci" id="machine-ci" href="?machine=ci" title="Show the CI runner's results"><img src="https://github.com/dy/jz/actions/workflows/bench.yml/badge.svg" alt="bench CI" height="20"></a>
-    <!-- re-run every case in this browser -->
-    <div class="runall">
-      <span id="globalstat"></span>
-      <button id="runAll">▶ Run on this machine</button>
-    </div>
   </div>
   <p class="dim" id="outro">loading…</p>
 </div>
 
+<section class="alternatives" id="alternatives">
+  <div class="table-wrap" role="region" aria-label="Compilers" tabindex="0">
+    <table>
+      <thead>
+        <tr><td></td><th scope="col">Input → output</th><th scope="col">Method</th><th scope="col">Features &amp; limits</th></tr>
+      </thead>
+      <tbody>
+        <tr><th scope="row">JZ</th><td>JavaScript → WASM</td><td>Ahead-of-time, inferred types</td><td>SIMD, no GC; JavaScript subset</td></tr>
+        <tr><th scope="row"><a href="https://github.com/vercel-labs/scriptc" target="_blank" rel="noopener">scriptc</a></th><td>JS/TS → native, WASI</td><td>LLVM ahead-of-time</td><td>Node API subset; opt-in QuickJS fallback</td></tr>
+        <tr><th scope="row"><a href="https://github.com/ASDAlexander77/TypeScriptCompiler" target="_blank" rel="noopener">TypeScriptCompiler</a></th><td>TypeScript → native, WASM</td><td>LLVM/MLIR ahead-of-time or JIT</td><td>Default library, GC; typed subset</td></tr>
+        <tr><th scope="row"><a href="https://github.com/CanadaHonk/porffor" target="_blank" rel="noopener">Porffor</a></th><td>JavaScript → C → native</td><td>Ahead-of-time</td><td>Compiled JS engine; experimental</td></tr>
+        <tr><th scope="row"><a href="https://www.assemblyscript.org/concepts.html" target="_blank" rel="noopener">AssemblyScript</a></th><td>TypeScript-like → WASM</td><td>Ahead-of-time, explicit types</td><td>Managed memory; existing JS needs porting</td></tr>
+        <tr><th scope="row"><a href="https://github.com/bytecodealliance/javy" target="_blank" rel="noopener">Javy</a></th><td>JavaScript → WASI</td><td>Embedded QuickJS</td><td>Broad JS support; engine bundled or shared</td></tr>
+        <tr><th scope="row"><a href="https://github.com/bytecodealliance/ComponentizeJS" target="_blank" rel="noopener">ComponentizeJS</a></th><td>JS + WIT → WASM component</td><td>SpiderMonkey, optional AOT</td><td>Component interfaces, Web APIs; embedded engine</td></tr>
+        <tr><th scope="row"><a href="https://perryts.com/" target="_blank" rel="noopener">Perry</a></th><td>TypeScript → native, WASM</td><td>LLVM ahead-of-time</td><td>Native UI; linked runtime and GC</td></tr>
+        <tr><th scope="row"><a href="https://emscripten.org/docs/introducing_emscripten/about_emscripten.html" target="_blank" rel="noopener">Emscripten</a></th><td>C/C++ → WASM</td><td>LLVM ahead-of-time</td><td>C/C++ libraries, browser bindings; rewrite JS</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
 <section id="speed">
-  <h2>Corpus</h2>
-  <p class="dim">Target ÷ JZ, geometric mean over matched, correct cases. JZ = 1×; lower is better. Click a heading to sort within each runtime group; the bars follow that column. Hover or focus a heading for measurement details.</p>
+  <div class="shead">
+    <h2>Corpus</h2>
+    <div class="runall">
+      <button id="runAll">▶ Run on this machine</button>
+      <span id="globalstat"></span>
+    </div>
+  </div>
   <div id="geomean"></div>
 </section>
 
@@ -260,8 +289,9 @@ h2 .cnt { font-weight: 400; letter-spacing: 0; color: var(--mid); font-variant-n
 <script type="module">
 import { benchmarkRatio, correctBenchmarkRow, timedBenchmarkRow, CLS_ICO, LAB } from '../assets/headline.js'
 const $ = id => document.getElementById(id)
-const machine = new URLSearchParams(location.search).get('machine') === 'ci' ? 'ci' : 'reference'
-const snapshot = machine === 'ci' ? 'results-ci.json' : 'results.json'
+const requestedMachine = new URLSearchParams(location.search).get('machine')
+const machine = ['ci', 'linux'].includes(requestedMachine) ? requestedMachine : 'reference'
+const snapshot = machine === 'reference' ? 'results.json' : `results-${machine}.json`
 $('machine-' + machine)?.setAttribute('aria-current', 'page')   // the CI badge marks the CI view; the reference view is the plain page
 if (machine === 'ci') { $('machine-ci').href = './'; $('machine-ci').title = "Back to the reference machine's results" }
 
@@ -289,7 +319,7 @@ const TARGETS = {
   'go-wasm':   { label: 'Go', sub: 'gc → wasm', band: 'wasm' },
   'c-wasm':    { label: 'C', sub: 'clang → wasm', band: 'wasm' },
   'zig-wasm':  { label: 'Zig', sub: 'zig → wasm', band: 'wasm' },
-  tinygo: { label: 'Go', sub: 'TinyGo → wasm', band: 'wasm' },
+  tinygo: { label: 'TinyGo', band: 'wasm' },
   moonbit: { label: 'MoonBit', band: 'wasm' },
   jawsm: { label: 'jawsm', band: 'wasm', hatch: true },
   javy:  { label: 'Javy QuickJS', band: 'wasm', hatch: true },
@@ -308,6 +338,7 @@ const TARGETS = {
   shermes: { label: 'Static Hermes', band: 'native', hatch: true },
   'porf-native': { label: 'Porffor', sub: 'native', band: 'native', hatch: true },
   scriptc: { label: 'scriptc', sub: 'native', band: 'native', hatch: true },
+  tslang: { label: 'TypeScriptCompiler', sub: 'native', band: 'native', hatch: true },
   perry: { label: 'Perry', sub: 'native', band: 'native', hatch: true },
   numpy: { label: 'NumPy', band: 'native', hatch: true },
 }
@@ -340,7 +371,8 @@ const DESC = {
   go: 'Go native binary (gc).',
   shermes: 'Static Hermes – JavaScript ahead-of-time compiled to a native binary.',
   'porf-native': 'Porffor’s `porf native` – JS AOT-compiled through its C backend into a standalone native binary (its shipping artifact).',
-  scriptc: 'scriptc (vercel-labs) – TS/JS AOT-compiled to a static native binary via the TypeScript checker + LLVM; no embedded engine (its --dynamic island is never used here).',
+  scriptc: 'scriptc (vercel-labs) – JavaScript compiled to a native executable through the TypeScript checker and LLVM, with its static runtime.',
+  tslang: 'TypeScriptCompiler (tslang) – TypeScript compiled to a native executable through LLVM/MLIR, with its default library and garbage collector.',
   perry: 'Perry – JavaScript compiled through LLVM to a native executable with its runtime and garbage collector.',
   numpy: 'NumPy – vectorized C kernels driven from Python.',
 }
@@ -351,7 +383,7 @@ const REPO = 'https://github.com/dy/jz/blob/main/bench'
 // limitation to fix, so the row links to a search of that project's issues for the error (find the
 // existing report, or file one from there). jz's own targets point back at jz.
 const REPOS = {
-  'porf-native': 'CanadaHonk/porffor', scriptc: 'vercel-labs/scriptc', perry: 'PerryTS/perry', as: 'AssemblyScript/assemblyscript', javy: 'bytecodealliance/javy',
+  'porf-native': 'CanadaHonk/porffor', scriptc: 'vercel-labs/scriptc', tslang: 'ASDAlexander77/TypeScriptCompiler', perry: 'PerryTS/perry', as: 'AssemblyScript/assemblyscript', javy: 'bytecodealliance/javy',
   moonbit: 'moonbitlang/core', 'go-wasm': 'golang/go', go: 'golang/go', tinygo: 'tinygo-org/tinygo',
   'zig-wasm': 'ziglang/zig', zig: 'ziglang/zig', 'rust-wasm': 'rust-lang/rust', rust: 'rust-lang/rust',
   graaljs: 'oracle/graal', spidermonkey: 'mozilla/gecko-dev', shermes: 'facebook/hermes', jawsm: 'wasmerio/wasmer',
@@ -359,7 +391,7 @@ const REPOS = {
 }
 const SRC_EXT = {
   v8: '.js', deno: '.js', bun: '.js', jsc: '.js', spidermonkey: '.js', graaljs: '.js',
-  'porf-native': '.js', scriptc: '.js', perry: '.js', javy: '.js', jawsm: '.js', shermes: '.js', jz: '.js', 'jz-wasmtime': '.js', 'jz-w2c': '.js', 'jz-w2c2': '.js',
+  'porf-native': '.js', scriptc: '.js', tslang: '.js', perry: '.js', javy: '.js', jawsm: '.js', shermes: '.js', jz: '.js', 'jz-wasmtime': '.js', 'jz-w2c': '.js', 'jz-w2c2': '.js',
   as: '.as.ts', 'rust-wasm': '.rs', rust: '.rs', 'c-wasm': '.c', nat: '.c',
   'go-wasm': '.go', go: '.go', tinygo: '.go', 'zig-wasm': '.zig', zig: '.zig',
   moonbit: '.mbt', wat: '.wat', numpy: '.npy.py',
@@ -520,16 +552,16 @@ let filter = 'all'
 // meta.memory) · size = shipped bytes (module / binary / script source).
 let sortBy = 'speed'
 const COLS = [
-  ['speed', 'speed', 'medianUs', 'Sort by run time, lowest first within each runtime group.\nGeometric mean of target time ÷ JZ time on matched, correct cases. 2× means twice as long.'],
-  ['mem', 'memory', 'memKb', 'Sort by peak process RSS, lowest first within each runtime group.\nGeometric mean of target RSS ÷ JZ RSS on matched, correct cases. 2× means twice the memory. Includes the host, not just the WASM heap.'],
-  ['size', 'size', 'bytes', 'Sort by shipped bytes, lowest first within each runtime group.\nGeometric mean of target bytes ÷ JZ bytes on matched, correct cases. 2× means twice the size. WASM module, native binary or JS source, depending on target.'],
+  ['speed', 'speed', 'medianUs', 'Geometric mean of target time ÷ JZ time on matched, correct cases. 2× means twice as long.'],
+  ['mem', 'memory', 'memKb', 'Geometric mean of target RSS ÷ JZ RSS on matched, correct cases. 2× means twice the memory. Includes the host, not just the WASM heap.'],
+  ['size', 'size', 'bytes', 'Geometric mean of target bytes ÷ JZ bytes on matched, correct cases. 2× means twice the size. WASM module, native binary or JS source, depending on target.'],
 ]
 
 const fmtMs = us => us >= 100000 ? (us / 1000).toFixed(0) + ' ms' : us >= 1000 ? (us / 1000).toFixed(2) + ' ms' : us + ' µs'
 const fmtB = b => b == null ? '' : b < 1024 ? b + ' B' : (b / 1024).toFixed(1) + ' kB'
 const fmtMem = kb => kb == null ? '' : kb < 1024 ? kb + ' kB' : (kb / 1024).toFixed(1) + ' MB'
 const fmtX = x => x >= 100 ? x.toFixed(0) + '×' : x >= 10 ? x.toFixed(1) + '×' : x.toFixed(2) + '×'
-const esc = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;')
+const esc = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
 const geo = xs => Math.exp(xs.reduce((s, x) => s + Math.log(x), 0) / xs.length)
 const median = xs => { const a = [...xs].sort((x, y) => x - y); return a.length ? (a[a.length >> 1] + a[(a.length - 1) >> 1]) / 2 : null }
 const nCases = n => `${n} case${n === 1 ? '' : 's'}`
@@ -554,7 +586,7 @@ const rowHtml = ({ label, sub, rel, maxLin, text, cells, solid, strong, parity, 
   const parityTag = unranked ? parity || 'unclassified' : null
   return `<div class="row${strong ? ' strong' : ''}${unranked ? ' unranked' : ''}"${tip ? ` data-tip="${esc(tip)}"` : ''}>
     ${lab}
-    <span class="bar">${unranked ? '' : `<i class="${barCls}" style="width:${w.toFixed(2)}%"></i>${cut ? '<span class="cut"></span>' : ''}`}</span>
+    <span class="bar">${unranked || !rel ? '' : `<i class="${barCls}" style="width:${w.toFixed(2)}%"></i>${cut ? '<span class="cut"></span>' : ''}`}</span>
     <span class="val">${cells ?? esc(text ?? '')}${parityTag ? `<span class="par">${esc(parityTag)}</span>` : ''}</span>
   </div>`
 }
@@ -564,8 +596,9 @@ const rowHtml = ({ label, sub, rel, maxLin, text, cells, solid, strong, parity, 
 const failKind = reason => {
   const r = reason || ''
   if (/out of bounds|RangeError|offset|memory/i.test(r)) return 'memory error'
-  if (/is not defined|not a function|not implemented|unsupported|SyntaxError|TypeError/i.test(r)) return 'unsupported'
+  if (/is not defined|not a function|not implemented|not supported|unsupported|has no .*lowering|SyntaxError|TypeError/i.test(r)) return 'unsupported'
   if (/timeout/i.test(r)) return 'timeout'
+  if (/SIGSEGV|SIGABRT|segmentation fault/i.test(r)) return 'crashed'
   if (/exit \d|RuntimeError|Error/i.test(r)) return 'runtime error'
   return 'did not run'
 }
@@ -609,7 +642,8 @@ const renderGeomean = () => {
   for (const [tid, t] of Object.entries(TARGETS)) {
     // g = per-column geomeans vs jz: { speed|mem|size: {geo,n}|null }
     const g = Object.fromEntries(COLS.map(([m, , metric]) => [m, benchmarkRatio(CORPUS, tid, metric)]))
-    if (g.speed) rows.push({ tid, band: t.band, ...t, g, n: g.speed.n })
+    if (g.speed || BENCHMARKS.some(c => c.targets[tid]))
+      rows.push({ tid, band: t.band, ...t, g, n: g.speed?.n ?? 0 })
   }
   // your-browser rows fold in as regular rows, sorted with the rest: JZ browser
   // (your jz, = 1× like the reference JZ) and JS browser (your JS ÷ your jz).
@@ -793,8 +827,10 @@ $('cards').addEventListener('click', async e => {
 const renderMeta = () => {
   const m = DATA.meta
   $('outro').innerHTML =
-    `${machine === 'ci' ? 'CI runner' : 'Reference'}: ${esc(m.host.cpu)}, ${esc(m.date)}, <a href="https://github.com/dy/jz/commit/${esc(m.commit)}"><code>${esc(m.commit)}</code></a>, ` +
-    `<a href="${snapshot}"><code>${snapshot}</code></a>.`
+    `${machine === 'ci' ? 'CI runner' : machine === 'linux' ? 'Linux validation' : 'Reference'}: ${esc(m.host.cpu)}${m.host.note ? ` (${esc(m.host.note)})` : ''}, ${esc(m.date)}, ` +
+    (m.commit ? `<a href="https://github.com/dy/jz/commit/${esc(m.commit)}"><code>${esc(m.commit)}</code></a>, ` : '') +
+    `<a href="${snapshot}"><code>${snapshot}</code></a>. ` +
+    (machine === 'linux' ? '<a href="./">Reference results</a>.' : '<a href="?machine=linux">Linux validation</a>.')
 }
 
 // ── live runner ──────────────────────────────────────────────────────────────

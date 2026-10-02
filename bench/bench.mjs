@@ -2,7 +2,7 @@
 import { compileJzAt, compileJzSelf, watrModuleSources } from './_lib/compile.js'
 import { GRAPH_CASES, LOWERED_CASES, HOST_ADAPTERS, graphSources } from './_lib/graph.js'
 import { execFileSync, spawnSync } from 'node:child_process'
-import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { cpus, homedir, tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -70,6 +70,7 @@ const SHERMES_BIN = process.env.SHERMES_BIN || 'shermes'
 // scriptc (vercel-labs) — TS/JS → native AOT (TypeScript-checker typing + LLVM,
 // C fallback lane; no engine unless --dynamic). npm: `npm i -g scriptc`.
 const SCRIPTC_BIN = process.env.SCRIPTC_BIN || 'scriptc'
+const TSLANG_BIN = process.env.TSLANG_BIN || 'tslang'
 const PERRY_BIN = process.env.PERRY_BIN || 'perry'
 const GRAALJS_BIN = process.env.GRAALJS_BIN || 'graaljs'
 const SPIDERMONKEY_BIN = process.env.SPIDERMONKEY_BIN || ''
@@ -246,7 +247,7 @@ const versionText = cmd => {
   }
 }
 // Porffor identity for evidence metadata and the prep cache. A release binary
-// names its commit in its version text (`alpha 4 (a415d19 2026-08-29)`), which
+// names its commit in its version text (`alpha 13 (547c781 2026-09-30)`), which
 // identifies the artifact. Alpha 3's checkout `porf --version` still prints
 // alpha 1, so clean checkouts use git HEAD. Dirty checkouts, and a PATH entry
 // with no commit in its version, are labeled and bypass persistent caching.
@@ -407,7 +408,7 @@ const tryRun = (id, c, prep, argv, opts = {}) => {
       const stamp = join(caseBuild(c), `.prep-${id}`)
       const identity = id === 'porf-native' ? porfIdentity() : ''
       const cacheable = !process.env.JZ_BENCH_REBUILD && !id.startsWith('jz') &&
-        id !== 'perry' &&
+        !['perry', 'scriptc', 'tslang'].includes(id) &&
         !(id === 'porf-native' && _porfCheckoutDirty)
       const artifact = targets[id]?.bin?.(c)
       let fresh = false
@@ -417,7 +418,13 @@ const tryRun = (id, c, prep, argv, opts = {}) => {
           readFileSync(stamp, 'utf8') === (identity || '')
       } catch { fresh = false }
       if (!fresh) {
-        try { prep() } catch (e) { return { id, error: e.message, buildFailed: true } }
+        try {
+          // A successful exit without output must not reuse an older artifact.
+          rmSync(stamp, { force: true })
+          if (artifact) rmSync(artifact, { force: true })
+          prep()
+          if (artifact && !existsSync(artifact)) throw new Error(`compiler did not produce ${artifact}`)
+        } catch (e) { return { id, error: e.message, buildFailed: true } }
         if (cacheable) writeFileSync(stamp, identity || '')
       }
       pairedBuilt.add(key)
@@ -445,6 +452,7 @@ const perryBinPath = c => join(caseBuild(c), `${c.id}-perry`)
 const shermesBinPath = c => join(caseBuild(c), `${c.id}-shermes`)
 const porfNatPath = c => join(caseBuild(c), `${c.id}-porfnat`)
 const scriptcBinPath = c => join(caseBuild(c), `${c.id}-scriptc`)
+const tslangBinPath = c => join(caseBuild(c), `${c.id}-tslang`)
 const rustPath = c => join(caseBuild(c), `${c.id}-rust`)
 const goPath = c => join(caseBuild(c), `${c.id}-go`)
 const zigPath = c => join(caseBuild(c), `${c.id}-zig`)
@@ -883,7 +891,7 @@ const targets = {
     }),
   },
   // The ONE Porffor lane: `porf native` AOT-compiles JS through its C backend
-  // and links a standalone binary (cc/clang, -flto) — the rewrite's shipping
+  // and links a standalone binary (cc/clang -O3) — the rewrite's shipping
   // artifact, native-band sibling of shermes. (The engine-style `porf <file>`
   // run mode measures its in-process compiler alongside the workload and ships
   // nothing, so it isn't showcased.) Rewrite CLI only — the alpha (2026-08)
@@ -916,8 +924,28 @@ const targets = {
       const env = macSysrootArgs.length && !process.env.SDKROOT
         ? { ...process.env, SDKROOT: macSysrootArgs[1], CLANG_NO_DEFAULT_CONFIG: '1' }
         : process.env
-      execFileSync(SCRIPTC_BIN, ['build', src, '-o', scriptcBinPath(c)], { cwd: BENCH_DIR, stdio: 'pipe', env })
-    }),
+      execFileSync(SCRIPTC_BIN, ['build', src, '-o', scriptcBinPath(c)], {
+        cwd: caseBuild(c), stdio: 'pipe', env, timeout: 120_000, killSignal: 'SIGKILL',
+      })
+    }, { nativeGlobals: true, timeout: 60_000 }),
+  },
+  tslang: {
+    name: 'TypeScriptCompiler → native (LLVM/MLIR)',
+    available: () => has(TSLANG_BIN) && has('clang'),
+    bin: tslangBinPath,
+    run: c => runFlat('tslang', c, () => [tslangBinPath(c)], src => {
+      const ts = join(caseBuild(c), `${c.id}-tslang.ts`)
+      const clock = join(caseBuild(c), 'tslang-clock.o')
+      // tslang has no performance global. Bind only the host clock; no kernel
+      // annotations, inferred-width hints, or replacement array implementations.
+      writeFileSync(ts, 'declare function jz_bench_now(): number;\nconst performance = { now: () => jz_bench_now() };\n' + readFileSync(src, 'utf8'))
+      execFileSync('clang', ['-O2', '-fPIC', ...macSysrootArgs, '-c', join(LIB, 'tslang-clock.c'), '-o', clock], {
+        cwd: caseBuild(c), stdio: 'pipe', timeout: 120_000, killSignal: 'SIGKILL',
+      })
+      execFileSync(TSLANG_BIN, ['--emit=exe', '--opt', '--opt_level=3', '--relocation-model=pic', `--obj=${clock}`, ts, '-o', tslangBinPath(c)], {
+        cwd: caseBuild(c), stdio: 'pipe', timeout: 120_000, killSignal: 'SIGKILL',
+      })
+    }, { nativeGlobals: true, timeout: 60_000 }),
   },
   perry: {
     name: 'Perry → native (LLVM)',
@@ -1131,8 +1159,9 @@ const TARGET_CMDS = {
   jsc: 'jsc <case>-flat.js',
   shermes: 'shermes -O <case>-flat.js -o <case>',
   graaljs: 'graaljs <case>-flat.js',
-  'porf-native': 'porf native <case>-porf-flat.js -o <case>-porfnat  (AOT via C, cc -flto) → run binary',
-  scriptc: 'scriptc build <case>-flat.js -o <case>-scriptc  (static AOT: TS-checker typing + LLVM, no engine) → run binary',
+  'porf-native': 'porf native <case>-porf-flat.js -o <case>-porfnat (AOT via C, default cc -O3; LTO follows Porffor build mode) → run binary',
+  scriptc: 'scriptc build <case>-native-flat.js -o <case>-scriptc (default release optimization, static runtime) → run binary',
+  tslang: 'tslang --emit=exe --opt --opt_level=3 --relocation-model=pic --obj=tslang-clock.o <case>-tslang.ts -o <case>-tslang (unchanged JS saved as .ts; clock_gettime host timer) → run binary',
   perry: 'perry compile <case>-native-flat.js -o <case>-perry --fp-contract off --cache-dir <build>/perry-cache (default LLVM optimization, native CPU, linked runtime + GC) → run binary',
   jz: "time: compile(src, { optimize: 'speed' }); size: compile(src, { optimize: 'size' }) → node (V8 wasm)",
   'jz-base': 'the same builds by the compiler at JZ_BASE_ROOT (meta.base) → node (V8 wasm)',
@@ -1150,6 +1179,17 @@ const TARGET_CMDS = {
   moonbit: 'moon build --target wasm --release <case>.mbt → moonrun (V8 wasm)',
 }
 
+// A partial refresh must not relabel untouched artifacts with whichever
+// compiler versions happen to be installed today. Same-name tools use their id.
+const TARGET_VERSIONS = {
+  v8: ['node'], as: ['asc', 'node'], 'porf-native': ['porffor'], nat: ['clang'],
+  jz: ['jz', 'watr', 'node'], 'jz-base': ['node'], 'jz-wasmtime': ['jz', 'watr'],
+  'jz-w2c': ['jz', 'watr', 'clang'], 'jz-w2c2': ['jz', 'watr', 'clang'],
+  'c-wasm': ['node'], 'rust-wasm': ['node'], 'go-wasm': ['node'], 'zig-wasm': ['node'],
+  wat: ['node'], jawsm: ['node'], javy: ['node'], tinygo: ['node'],
+  tslang: ['tslang', 'clang'],
+}
+
 const allCases = discoverCases()
 const caseById = Object.fromEntries(allCases.map(c => [c.id, c]))
 const targetIds = Object.keys(targets)
@@ -1163,6 +1203,7 @@ let selectedTargets = targetIds
 // path pages.yml runs to (re)build the live-runner artifacts at deploy time.
 let JSON_PATH = null
 let EMIT_WEB = false
+let NO_WEB_EMIT = false
 // --paired[=N]: the release-verdict measurement protocol. Each case first runs
 // one UNCOUNTED warm round (builds every artifact once — tryRun memoizes the
 // prep — and heats caches), then N counted rounds (default 4), each executing
@@ -1213,6 +1254,7 @@ for (const arg of process.argv.slice(2)) {
   else if (arg === '--json') JSON_PATH = join(BENCH_DIR, 'results.json')
   else if (arg.startsWith('--json=')) JSON_PATH = resolve(arg.slice(7))
   else if (arg === '--emit-web') EMIT_WEB = true
+  else if (arg === '--no-web') NO_WEB_EMIT = true
   else if (arg === '--merge') MERGE = true
   else if (arg === '--merge-allow-shrink') MERGE_ALLOW_SHRINK = true
   else if (arg === '--verify-anchors') VERIFY_ANCHORS = 3
@@ -1305,6 +1347,7 @@ const SVG_TARGETS = [
   { id: 'moonbit', label: 'MoonBit', sub: 'moonrun → wasm' },
   { id: 'as', label: 'AssemblyScript', sub: 'asc -O3' },
   { id: 'porf-native', label: 'Porffor', sub: 'JS → C, AOT' },
+  { id: 'scriptc', label: 'scriptc', sub: 'JS → LLVM, AOT' },
   { id: 'perry', label: 'Perry', sub: 'JS → LLVM, AOT' },
   { id: 'v8', label: 'V8', sub: 'Node (JS)' },
   { id: 'nat', label: 'native C', sub: 'clang -O3, ref' },
@@ -1609,7 +1652,7 @@ if (completeBenchSvgRun(SVG_TARGETS, selectedTargets, svgCases, selectedCases)) 
     }
     if (!ratios.length) continue
     const geo = Math.exp(ratios.reduce((s, r) => s + Math.log(r), 0) / ratios.length)
-    rows.push({ label: t.label, ratio: geo, sub: ['porf-native', 'perry'].includes(t.id) ? `native, runs ${ratios.length} / ${geoCases.length}` : t.sub })
+    rows.push({ label: t.label, ratio: geo, sub: ['porf-native', 'scriptc', 'perry'].includes(t.id) ? `native, runs ${ratios.length} / ${geoCases.length}` : t.sub })
   }
   if (completeBenchSvgRun(SVG_TARGETS, selectedTargets, svgCases, selectedCases, rows)) {
     renderBenchSvg(rows, geoCases.length)
@@ -1671,7 +1714,8 @@ if (JSON_PATH) {
     commit: gitHead(ROOT),
     // The commit `jz-base` rows were compiled by.
     ...(JZ_BASE_ROOT && usedTargets.has('jz-base') && { base: gitHead(JZ_BASE_ROOT) }),
-    host: { platform: process.platform, arch: process.arch, cpu: cpus()[0]?.model ?? null },
+    host: { platform: process.platform, arch: process.arch, cpu: cpus()[0]?.model ?? null,
+      ...(process.env.JZ_BENCH_HOST_NOTE && { note: process.env.JZ_BENCH_HOST_NOTE }) },
     versions: Object.fromEntries(Object.entries({
       jz: JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')).version,
       // the codegen dependency the claims gate cross-checks (test/bench-claims.js
@@ -1682,6 +1726,7 @@ if (JSON_PATH) {
       // Includes checkout HEAD when available; also invalidates the prep cache.
       porffor: has(PORF_BIN) && porfIdentity(),
       scriptc: has(SCRIPTC_BIN) && ver(SCRIPTC_BIN),
+      tslang: has(TSLANG_BIN) && (versionText(TSLANG_BIN).match(/tslang version[^\n]*/)?.[0] || ver(TSLANG_BIN)),
       perry: has(PERRY_BIN) && ver(PERRY_BIN),
       bun: has(BUN_BIN) && ver(BUN_BIN),
       deno: has(DENO_BIN) && ver(DENO_BIN),
@@ -1706,7 +1751,8 @@ if (JSON_PATH) {
   // Per-case wasm for the in-page runner (playable cases only — the self-compile
   // graph rows (NO_WEB) never ship their multi-MB artifacts).
   // compileMs lands back on each case as the page's live compile-time reference.
-  const { built, compileMs } = emitWebWasm(selectedCases.filter(cid => !NO_WEB.has(cid)))
+  const { built, compileMs } = NO_WEB_EMIT ? { built: [], compileMs: {} }
+    : emitWebWasm(selectedCases.filter(cid => !NO_WEB.has(cid)))
   for (const [cid, ms] of Object.entries(compileMs)) if (jsonOut.cases[cid]) jsonOut.cases[cid].compileMs = ms
 
   // --merge (design Piece 1): fold only the measured (case,target) rows into
@@ -1753,6 +1799,9 @@ if (JSON_PATH) {
     // from usedTargets, i.e. only the cases/targets this run touched)
     // silently drop every other target's invocation string.
     const mergedInvocations = { ...PREV.meta?.invocations, ...jsonOut.meta.invocations }
+    const versionKeys = new Set([...usedTargets].flatMap(id => TARGET_VERSIONS[id] || [id]))
+    const versions = { ...PREV.meta?.versions, ...Object.fromEntries(
+      Object.entries(jsonOut.meta.versions).filter(([key]) => versionKeys.has(key))) }
     // anchors carry-forward (audit-#13 item 2a, tightened per audit-#14 item
     // 8): this run's own --verify-anchors verdict wins when present; a PREV
     // verdict rides through for the RECORD but stamped carried:true — it was
@@ -1761,7 +1810,7 @@ if (JSON_PATH) {
     // a carried verdict can never satisfy the partial-write guard below.
     const anchorsForMeta = anchorsResult
       || (PREV.meta?.anchors ? { ...PREV.meta.anchors, carried: true } : null)
-    finalOut = { meta: { ...jsonOut.meta, invocations: mergedInvocations, ...(mixedVintage && { partial: true }), ...(anchorsForMeta && { anchors: anchorsForMeta }) }, cases: mergedCases }
+    finalOut = { meta: { ...jsonOut.meta, versions, invocations: mergedInvocations, ...(mixedVintage && { partial: true }), ...(anchorsForMeta && { anchors: anchorsForMeta }) }, cases: mergedCases }
 
     // Shrink-guard, defense in depth (audit-#12 item 4): the spread-then-
     // overlay merge above can only ADD/UPDATE case and target keys, never
@@ -1801,5 +1850,5 @@ if (JSON_PATH) {
   }
 
   writeFileSync(JSON_PATH, JSON.stringify(finalOut, null, 1))
-  console.log(`\nwrote ${JSON_PATH}${MERGE && PREV ? ' (merged)' : ''} + bench/web/{${built.join(',')}}.wasm`)
+  console.log(`\nwrote ${JSON_PATH}${MERGE && PREV ? ' (merged)' : ''}${NO_WEB_EMIT ? '' : ` + bench/web/{${built.join(',')}}.wasm`}`)
 }

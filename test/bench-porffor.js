@@ -75,6 +75,7 @@ fs.appendFileSync(${JSON.stringify(builds)}, 'build\\n')
 const out = args[args.indexOf('-o') + 1]
 fs.writeFileSync(out, ${JSON.stringify(nativeProgram)})
 fs.chmodSync(out, 0o755)
+if (fs.readFileSync(${JSON.stringify(mode)}, 'utf8').trim() === 'fail-after-write') process.exit(7)
 `)
     chmodSync(porf, 0o755)
     writeFileSync(shell, `#!/usr/bin/env node
@@ -303,6 +304,15 @@ console.log(${JSON.stringify(METRIC)})
     const recovered = JSON.parse(readFileSync(json, 'utf8')).cases.alpha
     is(recovered.ref, 633180752, 'an older snapshot missing its oracle recovers the canonical reference')
     is(recovered.targets['porf-native'].parity, 'ok', 'the canonical oracle classifies the recovered row')
+
+    const beforeFailedBuild = lines(builds).length
+    writeFileSync(mode, 'fail-after-write')
+    ok(bench('porf-native', [], { JZ_BENCH_REBUILD: '1' }).includes('FAIL:'),
+      'a rebuild that writes output and then fails is rejected')
+    writeFileSync(mode, 'ok')
+    bench()
+    is(lines(builds).length, beforeFailedBuild + 2,
+      'a failed rebuild invalidates the prior cache stamp even when output exists')
   } finally {
     rmSync(scratch, { recursive: true, force: true })
   }

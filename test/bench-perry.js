@@ -56,6 +56,7 @@ if (/__benchGlobal|^var performance =/m.test(src)) process.exit(4)
 if (!src.includes('performance.now()') || !src.endsWith('main()\\n')) process.exit(5)
 if (process.env.PERRY_NO_UPDATE_CHECK !== '1' || process.env.PERRY_UPDATE_MODE !== 'off') process.exit(6)
 const mode = fs.readFileSync(${JSON.stringify(mode)}, 'utf8')
+if (mode === 'no-artifact') process.exit(0)
 if (mode === 'fail') { console.error('intentional Perry compile failure'); process.exit(7) }
 if (mode === 'compile-hang') { ${hang} }
 else {
@@ -97,6 +98,7 @@ fs.chmodSync(out, 0o755)
     is(read().cases.alpha.targets.v8, baseline.cases.alpha.targets.v8, 'unmeasured siblings survive')
 
     for (const [state, reason] of [
+      ['no-artifact', /compiler did not produce/],
       ['fail', /intentional Perry compile failure/],
       ['empty', /unparseable stdout/],
       ['exit', /exit 9: intentional runtime failure/],

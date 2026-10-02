@@ -18,7 +18,7 @@ test('bench-svg: caption names the geomean, case count, and execution substrates
   ok(/geometric mean on the 12-case benchmark corpus/.test(svg), 'caption must state geomean + corpus size')
   ok(svg.includes('lower is faster'), 'caption must state the direction')
   ok(/Wasm rivals run in V8/i.test(svg), 'chart names the apples-to-apples wasm field')
-  ok(/Porffor, Perry and native C are native targets/i.test(svg), 'native targets are not mislabeled as wasm peers')
+  ok(/Porffor, scriptc, Perry and native C run natively/i.test(svg), 'native targets are not mislabeled as wasm peers')
 })
 
 test('bench-svg: missing count degrades to corpus wording, never "undefined"', () => {
@@ -42,7 +42,7 @@ test('bench-svg: snapshot ratios reproduce committed accepted-checksum evidence'
   const targetByLabel = new Map([
     ['JZ', 'jz'], ['native C', 'nat'], ['C', 'c-wasm'], ['Rust', 'rust-wasm'],
     ['AssemblyScript', 'as'], ['Zig', 'zig-wasm'], ['V8', 'v8'], ['Go', 'go-wasm'],
-    ['MoonBit', 'moonbit'], ['Porffor', 'porf-native'], ['Perry', 'perry'],
+    ['MoonBit', 'moonbit'], ['Porffor', 'porf-native'], ['scriptc', 'scriptc'], ['Perry', 'perry'],
   ])
   is(SNAPSHOT.map(r => r.label).sort().join(','), [...targetByLabel.keys()].sort().join(','),
     'offline snapshot includes every chart lane')
@@ -60,7 +60,7 @@ test('bench-svg: snapshot ratios reproduce committed accepted-checksum evidence'
     ok(ratios.length > 0, `${row.label} has accepted-checksum evidence`)
     const geomean = Math.exp(ratios.reduce((sum, ratio) => sum + Math.log(ratio), 0) / ratios.length)
     is(row.ratio, +geomean.toFixed(2), `${row.label} snapshot ratio matches results.json`)
-    if (['Porffor', 'Perry'].includes(row.label)) ok(row.sub.includes(`${ratios.length} / ${ids.length}`), `${row.label} coverage label matches evidence`)
+    if (['Porffor', 'scriptc', 'Perry'].includes(row.label)) ok(row.sub.includes(`${ratios.length} / ${ids.length}`), `${row.label} coverage label matches evidence`)
   }
 })
 

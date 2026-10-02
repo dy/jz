@@ -84,7 +84,7 @@ test('bench publication: documentation preserves evidence; changed inputs and hi
     cwd, encoding: 'utf8', env: { ...process.env, GITHUB_SHA: sha },
   }).includes('publish allowed')
   ok(allowed(), 'an unchanged source tip can publish')
-  for (const file of ['PLAN.md', 'bench/README.md', 'bench/bench.svg', 'bench/index.html', '.work/probe.js', 'LICENSE', 'bench/results.json', 'bench/results-ci.json']) {
+  for (const file of ['PLAN.md', 'bench/README.md', 'bench/bench.svg', 'bench/index.html', '.work/probe.js', 'LICENSE', 'bench/results.json', 'bench/results-ci.json', 'bench/results-linux.json']) {
     commit(file, 'updated')
     ok(allowed(), `${file} does not invalidate the measured inputs`)
   }

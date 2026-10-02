@@ -5,7 +5,7 @@ const generated = new Set(['fuzz', 'wat-invariants', 'perf-ratchet'])
 const integration = new Set([
   'pmath', 'watr', 'examples', 'refactor-oracle', 'reachability-mutants',
   'web-smoke', 'site', 'guide', 'headline', 'cli', 'bench-build',
-  'bench-c', 'native-lowering', 'bench-porffor', 'bench-perry', 'bench-memory', 'bench-svg',
+  'bench-c', 'native-lowering', 'bench-porffor', 'bench-perry', 'bench-competitors', 'bench-memory', 'bench-svg',
 ])
 export const SUITES = ['core', 'integration', 'generated', 'bootstrap']
 export const suiteOf = name => bootstrap.has(name) ? 'bootstrap' : generated.has(name) ? 'generated' : integration.has(name) ? 'integration' : 'core'

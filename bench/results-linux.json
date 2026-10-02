@@ -1,0 +1,770 @@
+{
+ "meta": {
+  "date": "2026-09-30 14:08 UTC",
+  "commit": null,
+  "host": {
+   "platform": "linux",
+   "arch": "x64",
+   "cpu": "VirtualApple @ 2.50GHz",
+   "note": "Linux x64 via Rosetta on Apple M4 Max; compatibility validation"
+  },
+  "versions": {
+   "jz": "0.9.2",
+   "watr": "5.11.8",
+   "node": "v24.14.0",
+   "tslang": "tslang version v0.0-pre-alpha87",
+   "clang": "Ubuntu clang version 18.1.3 (1ubuntu1)"
+  },
+  "invocations": {
+   "tslang": "tslang --emit=exe --opt --opt_level=3 --relocation-model=pic --obj=tslang-clock.o <case>-tslang.ts -o <case>-tslang (unchanged JS saved as .ts; clock_gettime host timer) → run binary"
+  },
+  "machineState": {
+   "swapUsedMB": 0,
+   "uptimeDays": 0.01,
+   "load1": 1.41,
+   "powermode": null
+  }
+ },
+ "cases": {
+  "alpha": {
+   "name": "alpha",
+   "ref": 633180752,
+   "targets": {
+    "tslang": {
+     "status": "fail",
+     "reason": "exit null: SIGSEGV"
+    }
+   }
+  },
+  "bezfit": {
+   "name": "bezfit",
+   "ref": 3345492967,
+   "targets": {
+    "tslang": {
+     "status": "fail",
+     "reason": "Command failed: /opt/tslang/tslang --emit=exe --opt --opt_level=3 --relocation-model=pic --obj=/tmp/jz-bench/bezfit/tslang-clock.o /tmp/jz-bench/bezfit/bezfit-tslang.ts -o /tmp/jz-bench/bezfit/bezfit-tslang\n/tmp/jz-bench/bezfit/bezfit-tslang.ts:16:29: error: Class member 'buffer' can't be found\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n                            ^\n/tmp/jz-bench/bezfit/bezfit-tslang.ts:16:41: error: Class member 'byteOffset' can't be found\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n                                        ^\n/tmp/jz-bench/bezfit/bezfit-tslang.ts:16:29: error: can't resolve property/field/base 'buffer' of class 'TypedArray<f64>'\n\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n                            ^\n/tmp/jz-bench/bezfit/bezfit-tslang.ts:16:29: error: Can't resolve property 'buffer' of type TypedArray<f64>\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n                            ^\n/tmp/jz-bench/bezfit/bezfit-tslang.ts:16:13: error: Call constructor: can't resolve values of all parameters\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n            ^\n/tmp/jz-bench/bezfit/bezfit-tslang.ts:16:9: error: Can't resolve variable 'u' type\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n        ^\n/tmp/jz-bench/bezfit/bezfit-tslang.ts:184:34: error: can't instantiate function. '.afL15C21FH104778470' not all generic types can be identified\n  printResult(medianUs(samples), checksumF64(ctrl), RUNS * K * N_ITERS, 3, N_RUNS)\n                                 ^\n/tmp/jz-bench/bezfit/bezfit-tslang.ts:170:7: error: Can't resolve variable 'main' type\nconst main = () => {\n      ^\n/tmp/jz-bench/bezfit/bezfit-tslang.ts:170:1: error: failed statement\nconst main = () => {\n^\n"
+    }
+   }
+  },
+  "blur": {
+   "name": "blur",
+   "ref": 3578880432,
+   "targets": {
+    "tslang": {
+     "status": "fail",
+     "reason": "exit null: SIGSEGV"
+    }
+   }
+  },
+  "bytebeat": {
+   "name": "bytebeat",
+   "ref": 3667072453,
+   "targets": {
+    "tslang": {
+     "status": "fail",
+     "reason": "exit null: SIGSEGV"
+    }
+   }
+  },
+  "delayline": {
+   "name": "delayline",
+   "ref": 1887209008,
+   "targets": {
+    "tslang": {
+     "status": "fail",
+     "reason": "Command failed: /opt/tslang/tslang --emit=exe --opt --opt_level=3 --relocation-model=pic --obj=/tmp/jz-bench/delayline/tslang-clock.o /tmp/jz-bench/delayline/delayline-tslang.ts -o /tmp/jz-bench/delayline/delayline-tslang\n/tmp/jz-bench/delayline/delayline-tslang.ts:16:29: error: Class member 'buffer' can't be found\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n                            ^\n/tmp/jz-bench/delayline/delayline-tslang.ts:16:41: error: Class member 'byteOffset' can't be found\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n                                        ^\n/tmp/jz-bench/delayline/delayline-tslang.ts:16:29: error: can't resolve property/field/base 'buffer' of class 'TypedArray<f64>'\n\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n                            ^\n/tmp/jz-bench/delayline/delayline-tslang.ts:16:29: error: Can't resolve property 'buffer' of type TypedArray<f64>\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n                            ^\n/tmp/jz-bench/delayline/delayline-tslang.ts:16:13: error: Call constructor: can't resolve values of all parameters\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n            ^\n/tmp/jz-bench/delayline/delayline-tslang.ts:16:9: error: Can't resolve variable 'u' type\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n        ^\n/tmp/jz-bench/delayline/delayline-tslang.ts:115:34: error: can't instantiate function. '.afL15C21FH104778457' not all generic types can be identified\n  printResult(medianUs(samples), checksumF64(out), N * N_ITERS, N_ITERS, N_RUNS)\n                                 ^\n/tmp/jz-bench/delayline/delayline-tslang.ts:101:7: error: Can't resolve variable 'main' type\nconst main = () => {\n      ^\n/tmp/jz-bench/delayline/delayline-tslang.ts:101:1: error: failed statement\nconst main = () => {\n^\n"
+    }
+   }
+  },
+  "deltae": {
+   "name": "deltae",
+   "ref": 3180227460,
+   "targets": {
+    "tslang": {
+     "status": "fail",
+     "reason": "Command failed: /opt/tslang/tslang --emit=exe --opt --opt_level=3 --relocation-model=pic --obj=/tmp/jz-bench/deltae/tslang-clock.o /tmp/jz-bench/deltae/deltae-tslang.ts -o /tmp/jz-bench/deltae/deltae-tslang\n/tmp/jz-bench/deltae/deltae-tslang.ts:16:29: error: Class member 'buffer' can't be found\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n                            ^\n/tmp/jz-bench/deltae/deltae-tslang.ts:16:41: error: Class member 'byteOffset' can't be found\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n                                        ^\n/tmp/jz-bench/deltae/deltae-tslang.ts:16:29: error: can't resolve property/field/base 'buffer' of class 'TypedArray<f64>'\n\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n                            ^\n/tmp/jz-bench/deltae/deltae-tslang.ts:16:29: error: Can't resolve property 'buffer' of type TypedArray<f64>\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n                            ^\n/tmp/jz-bench/deltae/deltae-tslang.ts:16:13: error: Call constructor: can't resolve values of all parameters\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n            ^\n/tmp/jz-bench/deltae/deltae-tslang.ts:16:9: error: Can't resolve variable 'u' type\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n        ^\n/tmp/jz-bench/deltae/deltae-tslang.ts:162:34: error: can't instantiate function. '.afL15C21FH104778470' not all generic types can be identified\n  printResult(medianUs(samples), checksumF64(out), NPAIR * N_ITERS, 1, N_RUNS)\n                                 ^\n/tmp/jz-bench/deltae/deltae-tslang.ts:148:7: error: Can't resolve variable 'main' type\nconst main = () => {\n      ^\n/tmp/jz-bench/deltae/deltae-tslang.ts:148:1: error: failed statement\nconst main = () => {\n^\n"
+    }
+   }
+  },
+  "dotprod": {
+   "name": "dotprod",
+   "ref": 199828677,
+   "targets": {
+    "tslang": {
+     "status": "fail",
+     "reason": "exit null: SIGSEGV"
+    }
+   }
+  },
+  "fft": {
+   "name": "fft",
+   "ref": 4234940375,
+   "targets": {
+    "tslang": {
+     "status": "fail",
+     "reason": "Command failed: /opt/tslang/tslang --emit=exe --opt --opt_level=3 --relocation-model=pic --obj=/tmp/jz-bench/fft/tslang-clock.o /tmp/jz-bench/fft/fft-tslang.ts -o /tmp/jz-bench/fft/fft-tslang\n/tmp/jz-bench/fft/fft-tslang.ts:16:29: error: Class member 'buffer' can't be found\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n                            ^\n/tmp/jz-bench/fft/fft-tslang.ts:16:41: error: Class member 'byteOffset' can't be found\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n                                        ^\n/tmp/jz-bench/fft/fft-tslang.ts:16:29: error: can't resolve property/field/base 'buffer' of class 'TypedArray<f64>'\n\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n                            ^\n/tmp/jz-bench/fft/fft-tslang.ts:16:29: error: Can't resolve property 'buffer' of type TypedArray<f64>\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n                            ^\n/tmp/jz-bench/fft/fft-tslang.ts:16:13: error: Call constructor: can't resolve values of all parameters\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n            ^\n/tmp/jz-bench/fft/fft-tslang.ts:16:9: error: Can't resolve variable 'u' type\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n        ^\n/tmp/jz-bench/fft/fft-tslang.ts:160:34: error: can't instantiate function. '.afL15C21FH104778470' not all generic types can be identified\n  printResult(medianUs(samples), checksumF64(re), (N * LOG2N) >> 1, LOG2N, N_RUNS)\n                                 ^\n/tmp/jz-bench/fft/fft-tslang.ts:139:7: error: Can't resolve variable 'main' type\nconst main = () => {\n      ^\n/tmp/jz-bench/fft/fft-tslang.ts:139:1: error: failed statement\nconst main = () => {\n^\n"
+    }
+   }
+  },
+  "fftplan": {
+   "name": "fftplan",
+   "ref": 2894300847,
+   "targets": {
+    "tslang": {
+     "status": "fail",
+     "reason": "Command failed: /opt/tslang/tslang --emit=exe --opt --opt_level=3 --relocation-model=pic --obj=/tmp/jz-bench/fftplan/tslang-clock.o /tmp/jz-bench/fftplan/fftplan-tslang.ts -o /tmp/jz-bench/fftplan/fftplan-tslang\n/tmp/jz-bench/fftplan/fftplan-tslang.ts:171:3: error: not all types could be inferred\n  transform(re, im, plan.perm, plan.twRe, plan.twFwd, n)\n  ^\n/tmp/jz-bench/fftplan/fftplan-tslang.ts:171:3: error: can't instantiate function. 'transform' not all generic types can be identified\n  transform(re, im, plan.perm, plan.twRe, plan.twFwd, n)\n  ^\n/tmp/jz-bench/fftplan/fftplan-tslang.ts:202:7: error: can't instantiate function. 'cfft' not all generic types can be identified\n      cfft(re, im, N)\n      ^\n/tmp/jz-bench/fftplan/fftplan-tslang.ts:193:1: error: failed statement\nconst main = () => {\n^\n"
+    }
+   }
+  },
+  "gainclass": {
+   "name": "gainclass",
+   "ref": 1297017192,
+   "targets": {
+    "tslang": {
+     "status": "fail",
+     "reason": "Command failed: /opt/tslang/tslang --emit=exe --opt --opt_level=3 --relocation-model=pic --obj=/tmp/jz-bench/gainclass/tslang-clock.o /tmp/jz-bench/gainclass/gainclass-tslang.ts -o /tmp/jz-bench/gainclass/gainclass-tslang\n/tmp/jz-bench/gainclass/gainclass-tslang.ts:16:29: error: Class member 'buffer' can't be found\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n                            ^\n/tmp/jz-bench/gainclass/gainclass-tslang.ts:16:41: error: Class member 'byteOffset' can't be found\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n                                        ^\n/tmp/jz-bench/gainclass/gainclass-tslang.ts:91:46: error: Can't resolve property 'process' of type any\n  for (let k = 0; k < nodes.length; k++) x = nodes[k].process(x)\n                                             ^\n/tmp/jz-bench/gainclass/gainclass-tslang.ts:99:38: error: can't instantiate function. '.afL89C16FH104778457' not all generic types can be identified\n  for (let i = 0; i < N_WARMUP; i++) render(input, nodes)\n                                     ^\n/tmp/jz-bench/gainclass/gainclass-tslang.ts:95:7: error: Can't resolve variable 'run' type\nconst run = () => {\n      ^\n/tmp/jz-bench/gainclass/gainclass-tslang.ts:95:1: error: failed statement\nconst run = () => {\n^\n"
+    }
+   }
+  },
+  "glyfparse": {
+   "name": "glyfparse",
+   "ref": 4073289688,
+   "targets": {
+    "tslang": {
+     "status": "fail",
+     "reason": "exit null: SIGSEGV"
+    }
+   }
+  },
+  "hashjoin": {
+   "name": "hashjoin",
+   "ref": 730663173,
+   "targets": {
+    "tslang": {
+     "status": "fail",
+     "reason": "Command failed: /opt/tslang/tslang --emit=exe --opt --opt_level=3 --relocation-model=pic --obj=/tmp/jz-bench/hashjoin/tslang-clock.o /tmp/jz-bench/hashjoin/hashjoin-tslang.ts -o /tmp/jz-bench/hashjoin/hashjoin-tslang\n/tmp/jz-bench/hashjoin/hashjoin-tslang.ts:123:16: error: Generic class 'TypedArray' is missing type arguments \n  const keys = new Int32Array(CAP)\n               ^\n/tmp/jz-bench/hashjoin/hashjoin-tslang.ts:122:1: error: failed statement\nconst main = () => {\n^\n"
+    }
+   }
+  },
+  "lorenz": {
+   "name": "lorenz",
+   "ref": 4004855102,
+   "targets": {
+    "tslang": {
+     "status": "fail",
+     "reason": "Command failed: /opt/tslang/tslang --emit=exe --opt --opt_level=3 --relocation-model=pic --obj=/tmp/jz-bench/lorenz/tslang-clock.o /tmp/jz-bench/lorenz/lorenz-tslang.ts -o /tmp/jz-bench/lorenz/lorenz-tslang\n/tmp/jz-bench/lorenz/lorenz-tslang.ts:16:29: error: Class member 'buffer' can't be found\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n                            ^\n/tmp/jz-bench/lorenz/lorenz-tslang.ts:16:41: error: Class member 'byteOffset' can't be found\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n                                        ^\n/tmp/jz-bench/lorenz/lorenz-tslang.ts:16:29: error: can't resolve property/field/base 'buffer' of class 'TypedArray<f64>'\n\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n                            ^\n/tmp/jz-bench/lorenz/lorenz-tslang.ts:16:29: error: Can't resolve property 'buffer' of type TypedArray<f64>\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n                            ^\n/tmp/jz-bench/lorenz/lorenz-tslang.ts:16:13: error: Call constructor: can't resolve values of all parameters\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n            ^\n/tmp/jz-bench/lorenz/lorenz-tslang.ts:16:9: error: Can't resolve variable 'u' type\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n        ^\n/tmp/jz-bench/lorenz/lorenz-tslang.ts:97:34: error: can't instantiate function. '.afL15C21FH104778470' not all generic types can be identified\n  printResult(medianUs(samples), checksumF64(xs), N_SAMPLES * SUBSTEPS, SUBSTEPS, N_RUNS)\n                                 ^\n/tmp/jz-bench/lorenz/lorenz-tslang.ts:86:7: error: Can't resolve variable 'main' type\nconst main = () => {\n      ^\n/tmp/jz-bench/lorenz/lorenz-tslang.ts:86:1: error: failed statement\nconst main = () => {\n^\n"
+    }
+   }
+  },
+  "nbody": {
+   "name": "nbody",
+   "ref": 784143951,
+   "targets": {
+    "tslang": {
+     "status": "fail",
+     "reason": "Command failed: /opt/tslang/tslang --emit=exe --opt --opt_level=3 --relocation-model=pic --obj=/tmp/jz-bench/nbody/tslang-clock.o /tmp/jz-bench/nbody/nbody-tslang.ts -o /tmp/jz-bench/nbody/nbody-tslang\n/tmp/jz-bench/nbody/nbody-tslang.ts:16:29: error: Class member 'buffer' can't be found\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n                            ^\n/tmp/jz-bench/nbody/nbody-tslang.ts:16:41: error: Class member 'byteOffset' can't be found\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n                                        ^\n/tmp/jz-bench/nbody/nbody-tslang.ts:16:29: error: can't resolve property/field/base 'buffer' of class 'TypedArray<f64>'\n\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n                            ^\n/tmp/jz-bench/nbody/nbody-tslang.ts:16:29: error: Can't resolve property 'buffer' of type TypedArray<f64>\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n                            ^\n/tmp/jz-bench/nbody/nbody-tslang.ts:16:13: error: Call constructor: can't resolve values of all parameters\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n            ^\n/tmp/jz-bench/nbody/nbody-tslang.ts:16:9: error: Can't resolve variable 'u' type\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n        ^\n/tmp/jz-bench/nbody/nbody-tslang.ts:113:35: error: can't instantiate function. '.afL15C21FH104778470' not all generic types can be identified\n  printResult(medianUs(samples), (checksumF64(px) ^ checksumF64(vx)) >>> 0, N * N * STEPS, STEPS, N_RUNS)\n                                  ^\n/tmp/jz-bench/nbody/nbody-tslang.ts:94:7: error: Can't resolve variable 'main' type\nconst main = () => {\n      ^\n/tmp/jz-bench/nbody/nbody-tslang.ts:94:1: error: failed statement\nconst main = () => {\n^\n"
+    }
+   }
+  },
+  "particle": {
+   "name": "particle",
+   "ref": 1275530752,
+   "targets": {
+    "tslang": {
+     "status": "fail",
+     "reason": "Command failed: /opt/tslang/tslang --emit=exe --opt --opt_level=3 --relocation-model=pic --obj=/tmp/jz-bench/particle/tslang-clock.o /tmp/jz-bench/particle/particle-tslang.ts -o /tmp/jz-bench/particle/particle-tslang\n/tmp/jz-bench/particle/particle-tslang.ts:16:29: error: Class member 'buffer' can't be found\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n                            ^\n/tmp/jz-bench/particle/particle-tslang.ts:16:41: error: Class member 'byteOffset' can't be found\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n                                        ^\n/tmp/jz-bench/particle/particle-tslang.ts:16:29: error: can't resolve property/field/base 'buffer' of class 'TypedArray<f64>'\n\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n                            ^\n/tmp/jz-bench/particle/particle-tslang.ts:16:29: error: Can't resolve property 'buffer' of type TypedArray<f64>\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n                            ^\n/tmp/jz-bench/particle/particle-tslang.ts:16:13: error: Call constructor: can't resolve values of all parameters\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n            ^\n/tmp/jz-bench/particle/particle-tslang.ts:16:9: error: Can't resolve variable 'u' type\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n        ^\n/tmp/jz-bench/particle/particle-tslang.ts:103:35: error: can't instantiate function. '.afL15C21FH104778471' not all generic types can be identified\n  printResult(medianUs(samples), (checksumF64(py) ^ checksumF64(px)) >>> 0, N * STEPS, STEPS, N_RUNS)\n                                  ^\n/tmp/jz-bench/particle/particle-tslang.ts:90:7: error: Can't resolve variable 'main' type\nconst main = () => {\n      ^\n/tmp/jz-bench/particle/particle-tslang.ts:90:1: error: failed statement\nconst main = () => {\n^\n"
+    }
+   }
+  },
+  "provenance": {
+   "name": "provenance",
+   "ref": 842980037,
+   "targets": {
+    "tslang": {
+     "status": "fail",
+     "reason": "Command failed: /opt/tslang/tslang --emit=exe --opt --opt_level=3 --relocation-model=pic --obj=/tmp/jz-bench/provenance/tslang-clock.o /tmp/jz-bench/provenance/provenance-tslang.ts -o /tmp/jz-bench/provenance/provenance-tslang\n/tmp/jz-bench/provenance/provenance-tslang.ts:198:9: error: invalid cast from i32 to TypedArray<f64>\n    h = edge(wreRet, wimRet, h)\n        ^\n/tmp/jz-bench/provenance/provenance-tslang.ts:170:1: error: failed statement\nconst main = () => {\n^\n"
+    }
+   }
+  },
+  "resample": {
+   "name": "resample",
+   "ref": 1711808418,
+   "targets": {
+    "tslang": {
+     "status": "fail",
+     "reason": "Command failed: /opt/tslang/tslang --emit=exe --opt --opt_level=3 --relocation-model=pic --obj=/tmp/jz-bench/resample/tslang-clock.o /tmp/jz-bench/resample/resample-tslang.ts -o /tmp/jz-bench/resample/resample-tslang\n/tmp/jz-bench/resample/resample-tslang.ts:16:29: error: Class member 'buffer' can't be found\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n                            ^\n/tmp/jz-bench/resample/resample-tslang.ts:16:41: error: Class member 'byteOffset' can't be found\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n                                        ^\n/tmp/jz-bench/resample/resample-tslang.ts:16:29: error: can't resolve property/field/base 'buffer' of class 'TypedArray<f64>'\n\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n                            ^\n/tmp/jz-bench/resample/resample-tslang.ts:16:29: error: Can't resolve property 'buffer' of type TypedArray<f64>\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n                            ^\n/tmp/jz-bench/resample/resample-tslang.ts:16:13: error: Call constructor: can't resolve values of all parameters\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n            ^\n/tmp/jz-bench/resample/resample-tslang.ts:16:9: error: Can't resolve variable 'u' type\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n        ^\n/tmp/jz-bench/resample/resample-tslang.ts:117:11: error: can't instantiate function. '.afL15C21FH104778471' not all generic types can be identified\n  let h = checksumF64(up)\n          ^\n/tmp/jz-bench/resample/resample-tslang.ts:117:7: error: Can't resolve variable 'h' type\n  let h = checksumF64(up)\n      ^\n/tmp/jz-bench/resample/resample-tslang.ts:103:7: error: Can't resolve variable 'main' type\nconst main = () => {\n      ^\n/tmp/jz-bench/resample/resample-tslang.ts:103:1: error: failed statement\nconst main = () => {\n^\n"
+    }
+   }
+  },
+  "sdf": {
+   "name": "sdf",
+   "ref": 1749682117,
+   "targets": {
+    "tslang": {
+     "status": "fail",
+     "reason": "Command failed: /opt/tslang/tslang --emit=exe --opt --opt_level=3 --relocation-model=pic --obj=/tmp/jz-bench/sdf/tslang-clock.o /tmp/jz-bench/sdf/sdf-tslang.ts -o /tmp/jz-bench/sdf/sdf-tslang\n/tmp/jz-bench/sdf/sdf-tslang.ts:16:29: error: Class member 'buffer' can't be found\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n                            ^\n/tmp/jz-bench/sdf/sdf-tslang.ts:16:41: error: Class member 'byteOffset' can't be found\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n                                        ^\n/tmp/jz-bench/sdf/sdf-tslang.ts:16:29: error: can't resolve property/field/base 'buffer' of class 'TypedArray<f64>'\n\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n                            ^\n/tmp/jz-bench/sdf/sdf-tslang.ts:16:29: error: Can't resolve property 'buffer' of type TypedArray<f64>\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n                            ^\n/tmp/jz-bench/sdf/sdf-tslang.ts:16:13: error: Call constructor: can't resolve values of all parameters\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n            ^\n/tmp/jz-bench/sdf/sdf-tslang.ts:16:9: error: Can't resolve variable 'u' type\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n        ^\n/tmp/jz-bench/sdf/sdf-tslang.ts:151:34: error: can't instantiate function. '.afL15C21FH104778470' not all generic types can be identified\n  printResult(medianUs(samples), checksumF64(dist), W * H * N_ITERS, 2, N_RUNS)\n                                 ^\n/tmp/jz-bench/sdf/sdf-tslang.ts:134:7: error: Can't resolve variable 'main' type\nconst main = () => {\n      ^\n/tmp/jz-bench/sdf/sdf-tslang.ts:134:1: error: failed statement\nconst main = () => {\n^\n"
+    }
+   }
+  },
+  "slices": {
+   "name": "slices",
+   "ref": 3020911897,
+   "targets": {
+    "tslang": {
+     "status": "fail",
+     "reason": "Command failed: /opt/tslang/tslang --emit=exe --opt --opt_level=3 --relocation-model=pic --obj=/tmp/jz-bench/slices/tslang-clock.o /tmp/jz-bench/slices/slices-tslang.ts -o /tmp/jz-bench/slices/slices-tslang\n/tmp/jz-bench/slices/slices-tslang.ts:16:29: error: Class member 'buffer' can't be found\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n                            ^\n/tmp/jz-bench/slices/slices-tslang.ts:16:41: error: Class member 'byteOffset' can't be found\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n                                        ^\n/tmp/jz-bench/slices/slices-tslang.ts:16:29: error: can't resolve property/field/base 'buffer' of class 'TypedArray<f64>'\n\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n                            ^\n/tmp/jz-bench/slices/slices-tslang.ts:16:29: error: Can't resolve property 'buffer' of type TypedArray<f64>\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n                            ^\n/tmp/jz-bench/slices/slices-tslang.ts:16:13: error: Call constructor: can't resolve values of all parameters\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n            ^\n/tmp/jz-bench/slices/slices-tslang.ts:16:9: error: Can't resolve variable 'u' type\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n        ^\n/tmp/jz-bench/slices/slices-tslang.ts:115:34: error: can't instantiate function. '.afL15C21FH104778470' not all generic types can be identified\n  printResult(medianUs(samples), checksumF64(bus), NB * N_ITERS, N_ITERS, N_RUNS)\n                                 ^\n/tmp/jz-bench/slices/slices-tslang.ts:99:7: error: Can't resolve variable 'main' type\nconst main = () => {\n      ^\n/tmp/jz-bench/slices/slices-tslang.ts:99:1: error: failed statement\nconst main = () => {\n^\n"
+    }
+   }
+  },
+  "synth": {
+   "name": "synth",
+   "ref": 41574153,
+   "targets": {
+    "tslang": {
+     "status": "fail",
+     "reason": "Command failed: /opt/tslang/tslang --emit=exe --opt --opt_level=3 --relocation-model=pic --obj=/tmp/jz-bench/synth/tslang-clock.o /tmp/jz-bench/synth/synth-tslang.ts -o /tmp/jz-bench/synth/synth-tslang\n/tmp/jz-bench/synth/synth-tslang.ts:16:29: error: Class member 'buffer' can't be found\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n                            ^\n/tmp/jz-bench/synth/synth-tslang.ts:16:41: error: Class member 'byteOffset' can't be found\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n                                        ^\n/tmp/jz-bench/synth/synth-tslang.ts:16:29: error: can't resolve property/field/base 'buffer' of class 'TypedArray<f64>'\n\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n                            ^\n/tmp/jz-bench/synth/synth-tslang.ts:16:29: error: Can't resolve property 'buffer' of type TypedArray<f64>\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n                            ^\n/tmp/jz-bench/synth/synth-tslang.ts:16:13: error: Call constructor: can't resolve values of all parameters\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n            ^\n/tmp/jz-bench/synth/synth-tslang.ts:16:9: error: Can't resolve variable 'u' type\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n        ^\n/tmp/jz-bench/synth/synth-tslang.ts:124:34: error: can't instantiate function. '.afL15C21FH104778470' not all generic types can be identified\n  printResult(medianUs(samples), checksumF64(out), N, N_NOTES, N_RUNS)\n                                 ^\n/tmp/jz-bench/synth/synth-tslang.ts:114:7: error: Can't resolve variable 'main' type\nconst main = () => {\n      ^\n/tmp/jz-bench/synth/synth-tslang.ts:114:1: error: failed statement\nconst main = () => {\n^\n"
+    }
+   }
+  },
+  "trace": {
+   "name": "trace",
+   "ref": 1827210493,
+   "targets": {
+    "tslang": {
+     "status": "fail",
+     "reason": "exit null: SIGSEGV"
+    }
+   }
+  },
+  "stdlib-special": {
+   "name": "stdlib special functions",
+   "ref": null,
+   "targets": {
+    "tslang": {
+     "status": "fail",
+     "reason": "Command failed: /opt/tslang/tslang --emit=exe --opt --opt_level=3 --relocation-model=pic --obj=/tmp/jz-bench/stdlib-special/tslang-clock.o /tmp/jz-bench/stdlib-special/stdlib-special-tslang.ts -o /tmp/jz-bench/stdlib-special/stdlib-special-tslang"
+    }
+   }
+  },
+  "stdlib-dists": {
+   "name": "stdlib distributions",
+   "ref": null,
+   "targets": {
+    "tslang": {
+     "status": "fail",
+     "reason": "Command failed: /opt/tslang/tslang --emit=exe --opt --opt_level=3 --relocation-model=pic --obj=/tmp/jz-bench/stdlib-dists/tslang-clock.o /tmp/jz-bench/stdlib-dists/stdlib-dists-tslang.ts -o /tmp/jz-bench/stdlib-dists/stdlib-dists-tslang"
+    }
+   }
+  },
+  "stdlib-exp": {
+   "name": "stdlib exp",
+   "ref": null,
+   "targets": {
+    "tslang": {
+     "status": "fail",
+     "reason": "Command failed: /opt/tslang/tslang --emit=exe --opt --opt_level=3 --relocation-model=pic --obj=/tmp/jz-bench/stdlib-exp/tslang-clock.o /tmp/jz-bench/stdlib-exp/stdlib-exp-tslang.ts -o /tmp/jz-bench/stdlib-exp/stdlib-exp-tslang"
+    }
+   }
+  },
+  "stdlib-gamma": {
+   "name": "stdlib gamma",
+   "ref": null,
+   "targets": {
+    "tslang": {
+     "status": "fail",
+     "reason": "Command failed: /opt/tslang/tslang --emit=exe --opt --opt_level=3 --relocation-model=pic --obj=/tmp/jz-bench/stdlib-gamma/tslang-clock.o /tmp/jz-bench/stdlib-gamma/stdlib-gamma-tslang.ts -o /tmp/jz-bench/stdlib-gamma/stdlib-gamma-tslang"
+    }
+   }
+  },
+  "stdlib-erf": {
+   "name": "stdlib erf",
+   "ref": null,
+   "targets": {
+    "tslang": {
+     "status": "fail",
+     "reason": "Command failed: /opt/tslang/tslang --emit=exe --opt --opt_level=3 --relocation-model=pic --obj=/tmp/jz-bench/stdlib-erf/tslang-clock.o /tmp/jz-bench/stdlib-erf/stdlib-erf-tslang.ts -o /tmp/jz-bench/stdlib-erf/stdlib-erf-tslang"
+    }
+   }
+  },
+  "stdlib-pow": {
+   "name": "stdlib pow",
+   "ref": null,
+   "targets": {
+    "tslang": {
+     "status": "fail",
+     "reason": "Command failed: /opt/tslang/tslang --emit=exe --opt --opt_level=3 --relocation-model=pic --obj=/tmp/jz-bench/stdlib-pow/tslang-clock.o /tmp/jz-bench/stdlib-pow/stdlib-pow-tslang.ts -o /tmp/jz-bench/stdlib-pow/stdlib-pow-tslang"
+    }
+   }
+  },
+  "stdlib-ddot": {
+   "name": "stdlib ddot",
+   "ref": null,
+   "targets": {
+    "tslang": {
+     "status": "fail",
+     "reason": "Command failed: /opt/tslang/tslang --emit=exe --opt --opt_level=3 --relocation-model=pic --obj=/tmp/jz-bench/stdlib-ddot/tslang-clock.o /tmp/jz-bench/stdlib-ddot/stdlib-ddot-tslang.ts -o /tmp/jz-bench/stdlib-ddot/stdlib-ddot-tslang"
+    }
+   }
+  },
+  "biquad": {
+   "name": "biquad filter cascade",
+   "ref": 422839881,
+   "targets": {
+    "tslang": {
+     "status": "fail",
+     "reason": "Command failed: /opt/tslang/tslang --emit=exe --opt --opt_level=3 --relocation-model=pic --obj=/tmp/jz-bench/biquad/tslang-clock.o /tmp/jz-bench/biquad/biquad-tslang.ts -o /tmp/jz-bench/biquad/biquad-tslang\n/tmp/jz-bench/biquad/biquad-tslang.ts:16:29: error: Class member 'buffer' can't be found\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n                            ^\n/tmp/jz-bench/biquad/biquad-tslang.ts:16:41: error: Class member 'byteOffset' can't be found\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n                                        ^\n/tmp/jz-bench/biquad/biquad-tslang.ts:16:29: error: can't resolve property/field/base 'buffer' of class 'TypedArray<f64>'\n\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n                            ^\n/tmp/jz-bench/biquad/biquad-tslang.ts:16:29: error: Can't resolve property 'buffer' of type TypedArray<f64>\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n                            ^\n/tmp/jz-bench/biquad/biquad-tslang.ts:16:13: error: Call constructor: can't resolve values of all parameters\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n            ^\n/tmp/jz-bench/biquad/biquad-tslang.ts:16:9: error: Can't resolve variable 'u' type\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n        ^\n/tmp/jz-bench/biquad/biquad-tslang.ts:140:34: error: can't instantiate function. '.afL15C21FH104778470' not all generic types can be identified\n  printResult(medianUs(samples), checksumF64(out), N_SAMPLES, N_STAGES, N_RUNS)\n                                 ^\n/tmp/jz-bench/biquad/biquad-tslang.ts:119:7: error: Can't resolve variable 'run' type\nconst run = () => {\n      ^\n/tmp/jz-bench/biquad/biquad-tslang.ts:119:1: error: failed statement\nconst run = () => {\n^\n"
+    }
+   }
+  },
+  "mat4": {
+   "name": "mat4 multiply",
+   "ref": 2929747182,
+   "targets": {
+    "tslang": {
+     "status": "fail",
+     "reason": "Command failed: /opt/tslang/tslang --emit=exe --opt --opt_level=3 --relocation-model=pic --obj=/tmp/jz-bench/mat4/tslang-clock.o /tmp/jz-bench/mat4/mat4-tslang.ts -o /tmp/jz-bench/mat4/mat4-tslang\n/tmp/jz-bench/mat4/mat4-tslang.ts:16:29: error: Class member 'buffer' can't be found\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n                            ^\n/tmp/jz-bench/mat4/mat4-tslang.ts:16:41: error: Class member 'byteOffset' can't be found\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n                                        ^\n/tmp/jz-bench/mat4/mat4-tslang.ts:16:29: error: can't resolve property/field/base 'buffer' of class 'TypedArray<f64>'\n\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n                            ^\n/tmp/jz-bench/mat4/mat4-tslang.ts:16:29: error: Can't resolve property 'buffer' of type TypedArray<f64>\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n                            ^\n/tmp/jz-bench/mat4/mat4-tslang.ts:16:13: error: Call constructor: can't resolve values of all parameters\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n            ^\n/tmp/jz-bench/mat4/mat4-tslang.ts:16:9: error: Can't resolve variable 'u' type\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n        ^\n/tmp/jz-bench/mat4/mat4-tslang.ts:84:34: error: can't instantiate function. '.afL15C21FH104778470' not all generic types can be identified\n  printResult(medianUs(samples), checksumF64(out), N_ITERS * 16, 4, N_RUNS)\n                                 ^\n/tmp/jz-bench/mat4/mat4-tslang.ts:70:7: error: Can't resolve variable 'main' type\nconst main = () => {\n      ^\n/tmp/jz-bench/mat4/mat4-tslang.ts:70:1: error: failed statement\nconst main = () => {\n^\n"
+    }
+   }
+  },
+  "poly": {
+   "name": "polymorphic reduce",
+   "ref": 3026383685,
+   "targets": {
+    "tslang": {
+     "status": "fail",
+     "reason": "exit null: SIGSEGV"
+    }
+   }
+  },
+  "bitwise": {
+   "name": "bitwise mix",
+   "ref": 3216842766,
+   "targets": {
+    "tslang": {
+     "status": "fail",
+     "reason": "exit null: SIGSEGV"
+    }
+   }
+  },
+  "tokenizer": {
+   "name": "tokenizer scan",
+   "ref": 2031286465,
+   "targets": {
+    "tslang": {
+     "status": "fail",
+     "reason": "exit null: SIGSEGV"
+    }
+   }
+  },
+  "callback": {
+   "name": "callback map",
+   "ref": 893685701,
+   "targets": {
+    "tslang": {
+     "status": "fail",
+     "reason": "exit null: SIGSEGV"
+    }
+   }
+  },
+  "aos": {
+   "name": "AoS to SoA",
+   "ref": 2813671365,
+   "targets": {
+    "tslang": {
+     "status": "fail",
+     "reason": "Command failed: /opt/tslang/tslang --emit=exe --opt --opt_level=3 --relocation-model=pic --obj=/tmp/jz-bench/aos/tslang-clock.o /tmp/jz-bench/aos/aos-tslang.ts -o /tmp/jz-bench/aos/aos-tslang\n/tmp/jz-bench/aos/aos-tslang.ts:16:29: error: Class member 'buffer' can't be found\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n                            ^\n/tmp/jz-bench/aos/aos-tslang.ts:16:41: error: Class member 'byteOffset' can't be found\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n                                        ^\n/tmp/jz-bench/aos/aos-tslang.ts:57:15: error: Can't resolve property 'x' of type any\n      xs[i] = p.x + p.y * 0.25 + r\n              ^\n/tmp/jz-bench/aos/aos-tslang.ts:69:38: error: can't instantiate function. '.afL53C19FH104778470' not all generic types can be identified\n  for (let i = 0; i < N_WARMUP; i++) runKernel(rows, xs, ys, zs)\n                                     ^\n/tmp/jz-bench/aos/aos-tslang.ts:64:7: error: Can't resolve variable 'main' type\nconst main = () => {\n      ^\n/tmp/jz-bench/aos/aos-tslang.ts:64:1: error: failed statement\nconst main = () => {\n^\n"
+    }
+   }
+  },
+  "entity": {
+   "name": "in-place entity field updates",
+   "ref": 1275530752,
+   "targets": {
+    "tslang": {
+     "status": "fail",
+     "reason": "Command failed: /opt/tslang/tslang --emit=exe --opt --opt_level=3 --relocation-model=pic --obj=/tmp/jz-bench/entity/tslang-clock.o /tmp/jz-bench/entity/entity-tslang.ts -o /tmp/jz-bench/entity/entity-tslang\n/tmp/jz-bench/entity/entity-tslang.ts:16:29: error: Class member 'buffer' can't be found\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n                            ^\n/tmp/jz-bench/entity/entity-tslang.ts:16:41: error: Class member 'byteOffset' can't be found\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n                                        ^\n/tmp/jz-bench/entity/entity-tslang.ts:82:5: error: Can't resolve property 'x' of type any\n    p.x = r(); p.y = r(); p.vx = r(); p.vy = r()\n    ^\n/tmp/jz-bench/entity/entity-tslang.ts:104:40: error: can't instantiate function. '.afL74C19FH104778470' not all generic types can be identified\n  for (let i = 0; i < N_WARMUP; i++) { seedState(ps); run(ps) }\n                                       ^\n/tmp/jz-bench/entity/entity-tslang.ts:101:7: error: Can't resolve variable 'main' type\nconst main = () => {\n      ^\n/tmp/jz-bench/entity/entity-tslang.ts:101:1: error: failed statement\nconst main = () => {\n^\n"
+    }
+   }
+  },
+  "mandelbrot": {
+   "name": "mandelbrot escape",
+   "ref": 3520419621,
+   "targets": {
+    "tslang": {
+     "status": "fail",
+     "reason": "exit null: SIGSEGV"
+    }
+   }
+  },
+  "json": {
+   "name": "JSON parse+walk (single literal source)",
+   "ref": 2797819845,
+   "targets": {
+    "tslang": {
+     "status": "fail",
+     "reason": "Command failed: /opt/tslang/tslang --emit=exe --opt --opt_level=3 --relocation-model=pic --obj=/tmp/jz-bench/json/tslang-clock.o /tmp/jz-bench/json/json-tslang.ts -o /tmp/jz-bench/json/json-tslang\n/tmp/jz-bench/json/json-tslang.ts:54:15: error: can't resolve name: JSON\n    const o = JSON.parse(SRC)\n              ^\n/tmp/jz-bench/json/json-tslang.ts:57:25: error: can't resolve name: items\n    for (let j = 0; j < items.length; j++) {\n                        ^\n/tmp/jz-bench/json/json-tslang.ts:51:1: error: failed statement\nconst walk = () => {\n^\n"
+    }
+   }
+  },
+  "sort": {
+   "name": "in-place heapsort",
+   "ref": 1238395589,
+   "targets": {
+    "tslang": {
+     "status": "fail",
+     "reason": "Command failed: /opt/tslang/tslang --emit=exe --opt --opt_level=3 --relocation-model=pic --obj=/tmp/jz-bench/sort/tslang-clock.o /tmp/jz-bench/sort/sort-tslang.ts -o /tmp/jz-bench/sort/sort-tslang\n/tmp/jz-bench/sort/sort-tslang.ts:92:15: error: Generic class 'TypedArray' is missing type arguments \n  const src = new Float64Array(N)\n              ^\n/tmp/jz-bench/sort/sort-tslang.ts:91:1: error: failed statement\nconst main = () => {\n^\n"
+    }
+   }
+  },
+  "crc32": {
+   "name": "CRC-32 table hash",
+   "ref": 304463882,
+   "targets": {
+    "tslang": {
+     "status": "fail",
+     "reason": "exit null: SIGSEGV"
+    }
+   }
+  },
+  "matmul": {
+   "name": "matrix multiply (A·Bᵀ)",
+   "ref": 1299645893,
+   "targets": {
+    "tslang": {
+     "status": "fail",
+     "reason": "Command failed: /opt/tslang/tslang --emit=exe --opt --opt_level=3 --relocation-model=pic --obj=/tmp/jz-bench/matmul/tslang-clock.o /tmp/jz-bench/matmul/matmul-tslang.ts -o /tmp/jz-bench/matmul/matmul-tslang\n/tmp/jz-bench/matmul/matmul-tslang.ts:16:29: error: Class member 'buffer' can't be found\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n                            ^\n/tmp/jz-bench/matmul/matmul-tslang.ts:16:41: error: Class member 'byteOffset' can't be found\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n                                        ^\n/tmp/jz-bench/matmul/matmul-tslang.ts:16:29: error: can't resolve property/field/base 'buffer' of class 'TypedArray<f64>'\n\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n                            ^\n/tmp/jz-bench/matmul/matmul-tslang.ts:16:29: error: Can't resolve property 'buffer' of type TypedArray<f64>\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n                            ^\n/tmp/jz-bench/matmul/matmul-tslang.ts:16:13: error: Call constructor: can't resolve values of all parameters\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n            ^\n/tmp/jz-bench/matmul/matmul-tslang.ts:16:9: error: Can't resolve variable 'u' type\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n        ^\n/tmp/jz-bench/matmul/matmul-tslang.ts:93:34: error: can't instantiate function. '.afL15C21FH104778470' not all generic types can be identified\n  printResult(medianUs(samples), checksumF64(C), N * N * N, 2, N_RUNS)\n                                 ^\n/tmp/jz-bench/matmul/matmul-tslang.ts:80:7: error: Can't resolve variable 'main' type\nconst main = () => {\n      ^\n/tmp/jz-bench/matmul/matmul-tslang.ts:80:1: error: failed statement\nconst main = () => {\n^\n"
+    }
+   }
+  },
+  "heat": {
+   "name": "2-D heat diffusion (5-point stencil)",
+   "ref": 2564029013,
+   "targets": {
+    "tslang": {
+     "status": "fail",
+     "reason": "Command failed: /opt/tslang/tslang --emit=exe --opt --opt_level=3 --relocation-model=pic --obj=/tmp/jz-bench/heat/tslang-clock.o /tmp/jz-bench/heat/heat-tslang.ts -o /tmp/jz-bench/heat/heat-tslang\n/tmp/jz-bench/heat/heat-tslang.ts:16:29: error: Class member 'buffer' can't be found\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n                            ^\n/tmp/jz-bench/heat/heat-tslang.ts:16:41: error: Class member 'byteOffset' can't be found\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n                                        ^\n/tmp/jz-bench/heat/heat-tslang.ts:16:29: error: can't resolve property/field/base 'buffer' of class 'TypedArray<f64>'\n\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n                            ^\n/tmp/jz-bench/heat/heat-tslang.ts:16:29: error: Can't resolve property 'buffer' of type TypedArray<f64>\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n                            ^\n/tmp/jz-bench/heat/heat-tslang.ts:16:13: error: Call constructor: can't resolve values of all parameters\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n            ^\n/tmp/jz-bench/heat/heat-tslang.ts:16:9: error: Can't resolve variable 'u' type\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n        ^\n/tmp/jz-bench/heat/heat-tslang.ts:102:34: error: can't instantiate function. '.afL15C21FH104778470' not all generic types can be identified\n  printResult(medianUs(samples), checksumF64(a), (W - 2) * (H - 2) * STEPS, 6, N_RUNS)\n                                 ^\n/tmp/jz-bench/heat/heat-tslang.ts:90:7: error: Can't resolve variable 'main' type\nconst main = () => {\n      ^\n/tmp/jz-bench/heat/heat-tslang.ts:90:1: error: failed statement\nconst main = () => {\n^\n"
+    }
+   }
+  },
+  "conv2d": {
+   "name": "int8 conv2d layer (NN inference)",
+   "ref": 2649699616,
+   "targets": {
+    "tslang": {
+     "status": "fail",
+     "reason": "exit null: SIGSEGV"
+    }
+   }
+  },
+  "qoi": {
+   "name": "QOI image codec (encode + decode)",
+   "ref": 1486080151,
+   "targets": {
+    "tslang": {
+     "status": "fail",
+     "reason": "exit null: SIGSEGV"
+    }
+   }
+  },
+  "hash": {
+   "name": "MurmurHash3 (x86 32-bit)",
+   "ref": 1334379566,
+   "targets": {
+    "tslang": {
+     "status": "fail",
+     "reason": "exit null: SIGSEGV"
+    }
+   }
+  },
+  "lz": {
+   "name": "LZSS compress + inflate",
+   "ref": 2900100982,
+   "targets": {
+    "tslang": {
+     "status": "fail",
+     "reason": "exit null: SIGSEGV"
+    }
+   }
+  },
+  "base64": {
+   "name": "Base64 encode + decode",
+   "ref": 1353105291,
+   "targets": {
+    "tslang": {
+     "status": "fail",
+     "reason": "exit null: SIGSEGV"
+    }
+   }
+  },
+  "wav": {
+   "name": "WAV PCM-16 encode",
+   "ref": 211188261,
+   "targets": {
+    "tslang": {
+     "status": "fail",
+     "reason": "exit null: SIGSEGV"
+    }
+   }
+  },
+  "raytrace": {
+   "name": "sphere ray tracer (closest-hit + Lambert)",
+   "ref": 306875421,
+   "targets": {
+    "tslang": {
+     "status": "fail",
+     "reason": "Command failed: /opt/tslang/tslang --emit=exe --opt --opt_level=3 --relocation-model=pic --obj=/tmp/jz-bench/raytrace/tslang-clock.o /tmp/jz-bench/raytrace/raytrace-tslang.ts -o /tmp/jz-bench/raytrace/raytrace-tslang\n/tmp/jz-bench/raytrace/raytrace-tslang.ts:16:29: error: Class member 'buffer' can't be found\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n                            ^\n/tmp/jz-bench/raytrace/raytrace-tslang.ts:16:41: error: Class member 'byteOffset' can't be found\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n                                        ^\n/tmp/jz-bench/raytrace/raytrace-tslang.ts:16:29: error: can't resolve property/field/base 'buffer' of class 'TypedArray<f64>'\n\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n                            ^\n/tmp/jz-bench/raytrace/raytrace-tslang.ts:16:29: error: Can't resolve property 'buffer' of type TypedArray<f64>\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n                            ^\n/tmp/jz-bench/raytrace/raytrace-tslang.ts:16:13: error: Call constructor: can't resolve values of all parameters\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n            ^\n/tmp/jz-bench/raytrace/raytrace-tslang.ts:16:9: error: Can't resolve variable 'u' type\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n        ^\n/tmp/jz-bench/raytrace/raytrace-tslang.ts:138:34: error: can't instantiate function. '.afL15C21FH104778471' not all generic types can be identified\n  printResult(medianUs(samples), checksumF64(fb), W * H, NS, N_RUNS)\n                                 ^\n/tmp/jz-bench/raytrace/raytrace-tslang.ts:121:7: error: Can't resolve variable 'main' type\nconst main = () => {\n      ^\n/tmp/jz-bench/raytrace/raytrace-tslang.ts:121:1: error: failed statement\nconst main = () => {\n^\n"
+    }
+   }
+  },
+  "noise": {
+   "name": "Perlin fBm noise field",
+   "ref": 2977367493,
+   "targets": {
+    "tslang": {
+     "status": "fail",
+     "reason": "Command failed: /opt/tslang/tslang --emit=exe --opt --opt_level=3 --relocation-model=pic --obj=/tmp/jz-bench/noise/tslang-clock.o /tmp/jz-bench/noise/noise-tslang.ts -o /tmp/jz-bench/noise/noise-tslang\n/tmp/jz-bench/noise/noise-tslang.ts:16:29: error: Class member 'buffer' can't be found\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n                            ^\n/tmp/jz-bench/noise/noise-tslang.ts:16:41: error: Class member 'byteOffset' can't be found\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n                                        ^\n/tmp/jz-bench/noise/noise-tslang.ts:16:29: error: can't resolve property/field/base 'buffer' of class 'TypedArray<f64>'\n\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n                            ^\n/tmp/jz-bench/noise/noise-tslang.ts:16:29: error: Can't resolve property 'buffer' of type TypedArray<f64>\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n                            ^\n/tmp/jz-bench/noise/noise-tslang.ts:16:13: error: Call constructor: can't resolve values of all parameters\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n            ^\n/tmp/jz-bench/noise/noise-tslang.ts:16:9: error: Can't resolve variable 'u' type\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n        ^\n/tmp/jz-bench/noise/noise-tslang.ts:143:34: error: can't instantiate function. '.afL15C21FH104778470' not all generic types can be identified\n  printResult(medianUs(samples), checksumF64(field), W * H, OCT, N_RUNS)\n                                 ^\n/tmp/jz-bench/noise/noise-tslang.ts:131:7: error: Can't resolve variable 'main' type\nconst main = () => {\n      ^\n/tmp/jz-bench/noise/noise-tslang.ts:131:1: error: failed statement\nconst main = () => {\n^\n"
+    }
+   }
+  },
+  "radixsort": {
+   "name": "LSD radix sort (u32 keys)",
+   "ref": 2475082232,
+   "targets": {
+    "tslang": {
+     "status": "fail",
+     "reason": "Command failed: /opt/tslang/tslang --emit=exe --opt --opt_level=3 --relocation-model=pic --obj=/tmp/jz-bench/radixsort/tslang-clock.o /tmp/jz-bench/radixsort/radixsort-tslang.ts -o /tmp/jz-bench/radixsort/radixsort-tslang\n/tmp/jz-bench/radixsort/radixsort-tslang.ts:101:16: error: Generic class 'TypedArray' is missing type arguments \n  const base = new Uint32Array(N)\n               ^\n/tmp/jz-bench/radixsort/radixsort-tslang.ts:100:1: error: failed statement\nconst main = () => {\n^\n"
+    }
+   }
+  },
+  "levenshtein": {
+   "name": "Levenshtein edit-distance DP",
+   "ref": 981953199,
+   "targets": {
+    "tslang": {
+     "status": "fail",
+     "reason": "Command failed: /opt/tslang/tslang --emit=exe --opt --opt_level=3 --relocation-model=pic --obj=/tmp/jz-bench/levenshtein/tslang-clock.o /tmp/jz-bench/levenshtein/levenshtein-tslang.ts -o /tmp/jz-bench/levenshtein/levenshtein-tslang\n/tmp/jz-bench/levenshtein/levenshtein-tslang.ts:108:13: error: Generic class 'TypedArray' is missing type arguments \n  const a = new Uint8Array(LA)\n            ^\n/tmp/jz-bench/levenshtein/levenshtein-tslang.ts:107:1: error: failed statement\nconst main = () => {\n^\n"
+    }
+   }
+  },
+  "nqueens": {
+   "name": "N-Queens bitmask backtracking",
+   "ref": 1121018765,
+   "targets": {
+    "tslang": {
+     "status": "fail",
+     "reason": "Command failed: /opt/tslang/tslang --emit=exe --opt --opt_level=3 --relocation-model=pic --obj=/tmp/jz-bench/nqueens/tslang-clock.o /tmp/jz-bench/nqueens/nqueens-tslang.ts -o /tmp/jz-bench/nqueens/nqueens-tslang\n/tmp/jz-bench/nqueens/nqueens-tslang.ts:90:17: error: can't instantiate function. '.afL83C15FH104778470' not all generic types can be identified\n    cnt = cnt + solve(all, cols | b, (d1 | b) << 1, (d2 | b) >> 1)\n                ^\n/tmp/jz-bench/nqueens/nqueens-tslang.ts:95:23: error: can't instantiate function. '.afL83C15FH104778470' not all generic types can be identified\nconst countN = (n) => solve((1 << n) - 1, 0, 0, 0)\n                      ^\n/tmp/jz-bench/nqueens/nqueens-tslang.ts:107:48: error: can't instantiate function. '.afL95C16FH104778470' not all generic types can be identified\n  for (let q = 0; q < NQ; q++) total = total + countN(sizes[q])\n                                               ^\n/tmp/jz-bench/nqueens/nqueens-tslang.ts:103:7: error: Can't resolve variable 'main' type\nconst main = () => {\n      ^\n/tmp/jz-bench/nqueens/nqueens-tslang.ts:103:1: error: failed statement\nconst main = () => {\n^\n"
+    }
+   }
+  },
+  "dict": {
+   "name": "open-addressing hash table",
+   "ref": 1968764697,
+   "targets": {
+    "tslang": {
+     "status": "fail",
+     "reason": "Command failed: /opt/tslang/tslang --emit=exe --opt --opt_level=3 --relocation-model=pic --obj=/tmp/jz-bench/dict/tslang-clock.o /tmp/jz-bench/dict/dict-tslang.ts -o /tmp/jz-bench/dict/dict-tslang\n/tmp/jz-bench/dict/dict-tslang.ts:111:16: error: Generic class 'TypedArray' is missing type arguments \n  const keys = new Int32Array(CAP)\n               ^\n/tmp/jz-bench/dict/dict-tslang.ts:110:1: error: failed statement\nconst main = () => {\n^\n"
+    }
+   }
+  },
+  "sieve": {
+   "name": "Sieve of Eratosthenes",
+   "ref": 3811242000,
+   "targets": {
+    "tslang": {
+     "status": "fail",
+     "reason": "exit null: SIGSEGV"
+    }
+   }
+  },
+  "vm": {
+   "name": "bytecode interpreter dispatch",
+   "ref": 750010871,
+   "targets": {
+    "tslang": {
+     "status": "fail",
+     "reason": "exit null: SIGSEGV"
+    }
+   }
+  },
+  "spmv": {
+   "name": "sparse matrix×vector (CSR)",
+   "ref": 187360325,
+   "targets": {
+    "tslang": {
+     "status": "fail",
+     "reason": "Command failed: /opt/tslang/tslang --emit=exe --opt --opt_level=3 --relocation-model=pic --obj=/tmp/jz-bench/spmv/tslang-clock.o /tmp/jz-bench/spmv/spmv-tslang.ts -o /tmp/jz-bench/spmv/spmv-tslang\n/tmp/jz-bench/spmv/spmv-tslang.ts:16:29: error: Class member 'buffer' can't be found\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n                            ^\n/tmp/jz-bench/spmv/spmv-tslang.ts:16:41: error: Class member 'byteOffset' can't be found\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n                                        ^\n/tmp/jz-bench/spmv/spmv-tslang.ts:16:29: error: can't resolve property/field/base 'buffer' of class 'TypedArray<f64>'\n\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n                            ^\n/tmp/jz-bench/spmv/spmv-tslang.ts:16:29: error: Can't resolve property 'buffer' of type TypedArray<f64>\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n                            ^\n/tmp/jz-bench/spmv/spmv-tslang.ts:16:13: error: Call constructor: can't resolve values of all parameters\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n            ^\n/tmp/jz-bench/spmv/spmv-tslang.ts:16:9: error: Can't resolve variable 'u' type\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n        ^\n/tmp/jz-bench/spmv/spmv-tslang.ts:113:34: error: can't instantiate function. '.afL15C21FH104778470' not all generic types can be identified\n  printResult(medianUs(samples), checksumF64(y), NNZ * N_ITERS, 2, N_RUNS)\n                                 ^\n/tmp/jz-bench/spmv/spmv-tslang.ts:97:7: error: Can't resolve variable 'main' type\nconst main = () => {\n      ^\n/tmp/jz-bench/spmv/spmv-tslang.ts:97:1: error: failed statement\nconst main = () => {\n^\n"
+    }
+   }
+  },
+  "dispatch": {
+   "name": "function-table dispatch",
+   "ref": 2625728358,
+   "targets": {
+    "tslang": {
+     "status": "fail",
+     "reason": "Command failed: /opt/tslang/tslang --emit=exe --opt --opt_level=3 --relocation-model=pic --obj=/tmp/jz-bench/dispatch/tslang-clock.o /tmp/jz-bench/dispatch/dispatch-tslang.ts -o /tmp/jz-bench/dispatch/dispatch-tslang\n/tmp/jz-bench/dispatch/dispatch-tslang.ts:86:5: error: access expression is not applicable to s32\n    ks[i] = s >> 3\n    ^\n/opt/tslang/defaultlib/generics/lib.generics.ts:478:16: error: can't instantiate function. 'fill' not all generic types can be identified\n        return this.data.fill(value, start, end);\n               ^\n/tmp/jz-bench/dispatch/dispatch-tslang.ts:101:16: error: Generic class 'TypedArray' is missing type arguments \n  const code = new Int32Array(N)\n               ^\n/tmp/jz-bench/dispatch/dispatch-tslang.ts:100:1: error: failed statement\nconst main = () => {\n^\n"
+    }
+   }
+  },
+  "shapes": {
+   "name": "polymorphic shape scan",
+   "ref": 2400445253,
+   "targets": {
+    "tslang": {
+     "status": "fail",
+     "reason": "Command failed: /opt/tslang/tslang --emit=exe --opt --opt_level=3 --relocation-model=pic --obj=/tmp/jz-bench/shapes/tslang-clock.o /tmp/jz-bench/shapes/shapes-tslang.ts -o /tmp/jz-bench/shapes/shapes-tslang\n/tmp/jz-bench/shapes/shapes-tslang.ts:89:7: error: can't resolve name: k\n  if (k === 0) return (o.x + o.y) | 0\n      ^\n/tmp/jz-bench/shapes/shapes-tslang.ts:106:56: error: can't instantiate function. 'measure' not all generic types can be identified\n    for (let i = 0; i < rows.length; i++) sum = (sum + measure(rows[i])) | 0\n                                                       ^\n/tmp/jz-bench/shapes/shapes-tslang.ts:115:43: error: can't instantiate function. 'runKernel' not all generic types can be identified\n  for (let i = 0; i < N_WARMUP; i++) cs = runKernel(rows)\n                                          ^\n/tmp/jz-bench/shapes/shapes-tslang.ts:112:1: error: failed statement\nconst main = () => {\n^\n"
+    }
+   }
+  },
+  "strbuild": {
+   "name": "per-record string formatting",
+   "ref": 545957244,
+   "targets": {
+    "tslang": {
+     "status": "fail",
+     "reason": "Command failed: /opt/tslang/tslang --emit=exe --opt --opt_level=3 --relocation-model=pic --obj=/tmp/jz-bench/strbuild/tslang-clock.o /tmp/jz-bench/strbuild/strbuild-tslang.ts -o /tmp/jz-bench/strbuild/strbuild-tslang\n/tmp/jz-bench/strbuild/strbuild-tslang.ts:82:5: error: access expression is not applicable to s32\n    vals[i] = s >> 4\n    ^\n/opt/tslang/defaultlib/generics/lib.generics.ts:478:16: error: can't instantiate function. 'fill' not all generic types can be identified\n        return this.data.fill(value, start, end);\n               ^\n/tmp/jz-bench/strbuild/strbuild-tslang.ts:98:16: error: Generic class 'TypedArray' is missing type arguments \n  const code = new Int32Array(N)\n               ^\n/tmp/jz-bench/strbuild/strbuild-tslang.ts:97:1: error: failed statement\nconst main = () => {\n^\n"
+    }
+   }
+  },
+  "wordcount": {
+   "name": "word-frequency map (string keys)",
+   "ref": 2370237189,
+   "targets": {
+    "tslang": {
+     "status": "fail",
+     "reason": "Command failed: /opt/tslang/tslang --emit=exe --opt --opt_level=3 --relocation-model=pic --obj=/tmp/jz-bench/wordcount/tslang-clock.o /tmp/jz-bench/wordcount/wordcount-tslang.ts -o /tmp/jz-bench/wordcount/wordcount-tslang\n/tmp/jz-bench/wordcount/wordcount-tslang.ts:104:7: error: Element access with a non-constant index is not supported on this type; only array types and constant keys (obj[\"literal\"]) can be indexed\n      counts[w] = (counts[w] | 0) + 1\n      ^\n/tmp/jz-bench/wordcount/wordcount-tslang.ts:120:43: error: can't instantiate function. 'runKernel' not all generic types can be identified\n  for (let i = 0; i < N_WARMUP; i++) cs = runKernel(words, toks, probes)\n                                          ^\n/tmp/jz-bench/wordcount/wordcount-tslang.ts:111:1: error: failed statement\nconst main = () => {\n^\n"
+    }
+   }
+  },
+  "immutable": {
+   "name": "immutable-update particle step",
+   "ref": 1726748178,
+   "targets": {
+    "tslang": {
+     "status": "fail",
+     "reason": "Command failed: /opt/tslang/tslang --emit=exe --opt --opt_level=3 --relocation-model=pic --obj=/tmp/jz-bench/immutable/tslang-clock.o /tmp/jz-bench/immutable/immutable-tslang.ts -o /tmp/jz-bench/immutable/immutable-tslang\n/tmp/jz-bench/immutable/immutable-tslang.ts:92:20: error: can't resolve name: nx\n      const hitX = nx < 0 || nx > LIM, hitY = ny < 0 || ny > LIM\n                   ^\n/tmp/jz-bench/immutable/immutable-tslang.ts:107:43: error: can't instantiate function. 'runKernel' not all generic types can be identified\n  for (let i = 0; i < N_WARMUP; i++) cs = runKernel(initParticles())\n                                          ^\n/tmp/jz-bench/immutable/immutable-tslang.ts:103:1: error: failed statement\nconst main = () => {\n^\n"
+    }
+   }
+  },
+  "colorconv": {
+   "name": "sRGB → Oklab batch",
+   "ref": 754011132,
+   "targets": {
+    "tslang": {
+     "status": "fail",
+     "reason": "Command failed: /opt/tslang/tslang --emit=exe --opt --opt_level=3 --relocation-model=pic --obj=/tmp/jz-bench/colorconv/tslang-clock.o /tmp/jz-bench/colorconv/colorconv-tslang.ts -o /tmp/jz-bench/colorconv/colorconv-tslang\n/tmp/jz-bench/colorconv/colorconv-tslang.ts:16:29: error: Class member 'buffer' can't be found\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n                            ^\n/tmp/jz-bench/colorconv/colorconv-tslang.ts:16:41: error: Class member 'byteOffset' can't be found\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n                                        ^\n/tmp/jz-bench/colorconv/colorconv-tslang.ts:16:29: error: can't resolve property/field/base 'buffer' of class 'TypedArray<f64>'\n\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n                            ^\n/tmp/jz-bench/colorconv/colorconv-tslang.ts:16:29: error: Can't resolve property 'buffer' of type TypedArray<f64>\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n                            ^\n/tmp/jz-bench/colorconv/colorconv-tslang.ts:16:13: error: Call constructor: can't resolve values of all parameters\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n            ^\n/tmp/jz-bench/colorconv/colorconv-tslang.ts:16:9: error: Can't resolve variable 'u' type\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n        ^\n/tmp/jz-bench/colorconv/colorconv-tslang.ts:101:34: error: can't instantiate function. '.afL15C21FH104778457' not all generic types can be identified\n  printResult(medianUs(samples), checksumF64(dst), N_PIXELS, 1, N_RUNS)\n                                 ^\n/tmp/jz-bench/colorconv/colorconv-tslang.ts:88:7: error: Can't resolve variable 'run' type\nconst run = () => {\n      ^\n/tmp/jz-bench/colorconv/colorconv-tslang.ts:88:1: error: failed statement\nconst run = () => {\n^\n"
+    }
+   }
+  },
+  "colorlch": {
+   "name": "sRGB → OkLCh (fused)",
+   "ref": 621217593,
+   "targets": {
+    "tslang": {
+     "status": "fail",
+     "reason": "Command failed: /opt/tslang/tslang --emit=exe --opt --opt_level=3 --relocation-model=pic --obj=/tmp/jz-bench/colorlch/tslang-clock.o /tmp/jz-bench/colorlch/colorlch-tslang.ts -o /tmp/jz-bench/colorlch/colorlch-tslang\n/tmp/jz-bench/colorlch/colorlch-tslang.ts:16:29: error: Class member 'buffer' can't be found\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n                            ^\n/tmp/jz-bench/colorlch/colorlch-tslang.ts:16:41: error: Class member 'byteOffset' can't be found\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n                                        ^\n/tmp/jz-bench/colorlch/colorlch-tslang.ts:16:29: error: can't resolve property/field/base 'buffer' of class 'TypedArray<f64>'\n\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n                            ^\n/tmp/jz-bench/colorlch/colorlch-tslang.ts:16:29: error: Can't resolve property 'buffer' of type TypedArray<f64>\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n                            ^\n/tmp/jz-bench/colorlch/colorlch-tslang.ts:16:13: error: Call constructor: can't resolve values of all parameters\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n            ^\n/tmp/jz-bench/colorlch/colorlch-tslang.ts:16:9: error: Can't resolve variable 'u' type\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n        ^\n/tmp/jz-bench/colorlch/colorlch-tslang.ts:87:34: error: can't instantiate function. '.afL15C21FH104778471' not all generic types can be identified\n  printResult(medianUs(samples), checksumF64(dst), N_PIXELS, 1, N_RUNS)\n                                 ^\n/tmp/jz-bench/colorlch/colorlch-tslang.ts:81:7: error: Can't resolve variable 'run' type\nconst run = () => {\n      ^\n/tmp/jz-bench/colorlch/colorlch-tslang.ts:81:1: error: failed statement\nconst run = () => {\n^\n"
+    }
+   }
+  },
+  "colorlog": {
+   "name": "ARRI LogC4 → XYZ",
+   "ref": 3137122272,
+   "targets": {
+    "tslang": {
+     "status": "fail",
+     "reason": "Command failed: /opt/tslang/tslang --emit=exe --opt --opt_level=3 --relocation-model=pic --obj=/tmp/jz-bench/colorlog/tslang-clock.o /tmp/jz-bench/colorlog/colorlog-tslang.ts -o /tmp/jz-bench/colorlog/colorlog-tslang\n/tmp/jz-bench/colorlog/colorlog-tslang.ts:16:29: error: Class member 'buffer' can't be found\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n                            ^\n/tmp/jz-bench/colorlog/colorlog-tslang.ts:16:41: error: Class member 'byteOffset' can't be found\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n                                        ^\n/tmp/jz-bench/colorlog/colorlog-tslang.ts:16:29: error: can't resolve property/field/base 'buffer' of class 'TypedArray<f64>'\n\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n                            ^\n/tmp/jz-bench/colorlog/colorlog-tslang.ts:16:29: error: Can't resolve property 'buffer' of type TypedArray<f64>\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n                            ^\n/tmp/jz-bench/colorlog/colorlog-tslang.ts:16:13: error: Call constructor: can't resolve values of all parameters\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n            ^\n/tmp/jz-bench/colorlog/colorlog-tslang.ts:16:9: error: Can't resolve variable 'u' type\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n        ^\n/tmp/jz-bench/colorlog/colorlog-tslang.ts:77:34: error: can't instantiate function. '.afL15C21FH104778471' not all generic types can be identified\n  printResult(medianUs(samples), checksumF64(dst), N_PIXELS, 1, N_RUNS)\n                                 ^\n/tmp/jz-bench/colorlog/colorlog-tslang.ts:72:7: error: Can't resolve variable 'run' type\nconst run = () => {\n      ^\n/tmp/jz-bench/colorlog/colorlog-tslang.ts:72:1: error: failed statement\nconst run = () => {\n^\n"
+    }
+   }
+  },
+  "colorpq": {
+   "name": "sRGB → JzAzBz (PQ)",
+   "ref": 2275727820,
+   "targets": {
+    "tslang": {
+     "status": "fail",
+     "reason": "Command failed: /opt/tslang/tslang --emit=exe --opt --opt_level=3 --relocation-model=pic --obj=/tmp/jz-bench/colorpq/tslang-clock.o /tmp/jz-bench/colorpq/colorpq-tslang.ts -o /tmp/jz-bench/colorpq/colorpq-tslang\n/tmp/jz-bench/colorpq/colorpq-tslang.ts:16:29: error: Class member 'buffer' can't be found\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n                            ^\n/tmp/jz-bench/colorpq/colorpq-tslang.ts:16:41: error: Class member 'byteOffset' can't be found\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n                                        ^\n/tmp/jz-bench/colorpq/colorpq-tslang.ts:16:29: error: can't resolve property/field/base 'buffer' of class 'TypedArray<f64>'\n\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n                            ^\n/tmp/jz-bench/colorpq/colorpq-tslang.ts:16:29: error: Can't resolve property 'buffer' of type TypedArray<f64>\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n                            ^\n/tmp/jz-bench/colorpq/colorpq-tslang.ts:16:13: error: Call constructor: can't resolve values of all parameters\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n            ^\n/tmp/jz-bench/colorpq/colorpq-tslang.ts:16:9: error: Can't resolve variable 'u' type\n  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)\n        ^\n/tmp/jz-bench/colorpq/colorpq-tslang.ts:91:34: error: can't instantiate function. '.afL15C21FH104778470' not all generic types can be identified\n  printResult(medianUs(samples), checksumF64(dst), N_PIXELS, 1, N_RUNS)\n                                 ^\n/tmp/jz-bench/colorpq/colorpq-tslang.ts:86:7: error: Can't resolve variable 'run' type\nconst run = () => {\n      ^\n/tmp/jz-bench/colorpq/colorpq-tslang.ts:86:1: error: failed statement\nconst run = () => {\n^\n"
+    }
+   }
+  },
+  "watr": {
+   "name": "watr WAT compiler",
+   "ref": 3419154861,
+   "targets": {
+    "tslang": {
+     "status": "fail",
+     "reason": "Command failed: /opt/tslang/tslang --emit=exe --opt --opt_level=3 --relocation-model=pic --obj=/tmp/jz-bench/watr/tslang-clock.o /tmp/jz-bench/watr/watr-tslang.ts -o /tmp/jz-bench/watr/watr-tslang\n/tmp/jz-bench/watr/watr-tslang.ts:42:1: error: failed statement\n(() => {\n^\n"
+    }
+   }
+  },
+  "jessie": {
+   "name": "jessie parser",
+   "ref": 2418067300,
+   "targets": {
+    "tslang": {
+     "status": "fail",
+     "reason": "Command failed: /opt/tslang/tslang --emit=exe --opt --opt_level=3 --relocation-model=pic --obj=/tmp/jz-bench/jessie/tslang-clock.o /tmp/jz-bench/jessie/jessie-tslang.ts -o /tmp/jz-bench/jessie/jessie-tslang\n/tmp/jz-bench/jessie/jessie-tslang.ts:48:71: error: can't resolve name: at\n  var err = (msg = \"Unexpected token\", at = idx, lines = cur.slice(0, at).split(\"\\n\"), last = lines.pop(), before = cur.slice(Math.max(0, at - 40), at), ptr = \"\\u032D\", chr = (cur[at] || \" \") + ptr, after = cur.slice(at + 1, at + 20)) => {\n                                                                      ^\n<unknown>:0: error: can't resolve type for parameter 'lines'\n/tmp/jz-bench/jessie/jessie-tslang.ts:42:1: error: failed statement\n(() => {\n^\n"
+    }
+   }
+  },
+  "jz": {
+   "name": "jz JS compiler (self-compile)",
+   "ref": 2127455718,
+   "targets": {
+    "tslang": {
+     "status": "fail",
+     "reason": "Command failed: /opt/tslang/tslang --emit=exe --opt --opt_level=3 --relocation-model=pic --obj=/tmp/jz-bench/jz/tslang-clock.o /tmp/jz-bench/jz/jz-tslang.ts -o /tmp/jz-bench/jz/jz-tslang\n/tmp/jz-bench/jz/jz-tslang.ts:118235:18: error: can't resolve name: ___park_read_u8\n    const tag2 = __park_read_u8();\n                 ^\n/tmp/jz-bench/jz/jz-tslang.ts:118236:18: error: can't resolve name: PARK_NULL\n    if (tag2 === PARK_NULL) return null;\n                 ^\n/tmp/jz-bench/jz/jz-tslang.ts:51:3: error: can't resolve dependencies in namespace\n  function createActiveFunction({\n  ^\n/tmp/jz-bench/jz/jz-tslang.ts:43:1: error: failed statement\n(() => {\n^\n"
+    }
+   }
+  },
+  "webaudio": {
+   "name": "Web Audio graph render (web-audio-api engine)",
+   "ref": 2866527759,
+   "targets": {
+    "tslang": {
+     "status": "fail",
+     "reason": "Command failed: /opt/tslang/tslang --emit=exe --opt --opt_level=3 --relocation-model=pic --obj=/tmp/jz-bench/webaudio/tslang-clock.o /tmp/jz-bench/webaudio/webaudio-tslang.ts -o /tmp/jz-bench/webaudio/webaudio-tslang\n/tmp/jz-bench/webaudio/webaudio-tslang.ts:229:3: error: can't resolve dependencies in namespace\n  function fill(buffer, value, start = 0, end = buffer.length) {\n  ^\n/tmp/jz-bench/webaudio/webaudio-tslang.ts:42:1: error: failed statement\n(() => {\n^\n"
+    }
+   }
+  },
+  "polytri": {
+   "name": "polygon triangulation + decomposition (pmndrs/math)",
+   "ref": null,
+   "targets": {
+    "tslang": {
+     "status": "fail",
+     "reason": "Command failed: /opt/tslang/tslang --emit=exe --opt --opt_level=3 --relocation-model=pic --obj=/tmp/jz-bench/polytri/tslang-clock.o /tmp/jz-bench/polytri/polytri-tslang.ts -o /tmp/jz-bench/polytri/polytri-tslang\n/tmp/jz-bench/polytri/polytri-tslang.ts:504:5: error: Expected 5 arguments, but got 3.\n    printResult(medianUs(samples), checksumF64(acc), N_ITERS * 3, 3, N_RUNS);\n    ^\n/tmp/jz-bench/polytri/polytri-tslang.ts:42:1: error: failed statement\n(() => {\n^\n"
+    }
+   }
+  },
+  "worley": {
+   "name": "Worley noise field (pmndrs/math)",
+   "ref": null,
+   "targets": {
+    "tslang": {
+     "status": "fail",
+     "reason": "Command failed: /opt/tslang/tslang --emit=exe --opt --opt_level=3 --relocation-model=pic --obj=/tmp/jz-bench/worley/tslang-clock.o /tmp/jz-bench/worley/worley-tslang.ts -o /tmp/jz-bench/worley/worley-tslang\n/tmp/jz-bench/worley/worley-tslang.ts:646:22: error: can't resolve type for binding pattern '\"perm\"', provide default initializer\n  function sample2({ perm }, x, y, z) {\n                     ^\n/tmp/jz-bench/worley/worley-tslang.ts:621:3: error: can't resolve dependencies in namespace\n  function sample({ perm }, x, y) {\n  ^\n/tmp/jz-bench/worley/worley-tslang.ts:42:1: error: failed statement\n(() => {\n^\n"
+    }
+   }
+  },
+  "fabrik": {
+   "name": "FABRIK inverse kinematics (pmndrs/math)",
+   "ref": null,
+   "targets": {
+    "tslang": {
+     "status": "fail",
+     "reason": "Command failed: /opt/tslang/tslang --emit=exe --opt --opt_level=3 --relocation-model=pic --obj=/tmp/jz-bench/fabrik/tslang-clock.o /tmp/jz-bench/fabrik/fabrik-tslang.ts -o /tmp/jz-bench/fabrik/fabrik-tslang\n/tmp/jz-bench/fabrik/fabrik-tslang.ts:1354:22: error: can't resolve name: DEFAULT_MAX_ITERATIONS\n      maxIterations: DEFAULT_MAX_ITERATIONS,\n                     ^\n/tmp/jz-bench/fabrik/fabrik-tslang.ts:1314:3: error: can't resolve dependencies in namespace\n  function createChain3() {\n  ^\n/tmp/jz-bench/fabrik/fabrik-tslang.ts:42:1: error: failed statement\n(() => {\n^\n"
+    }
+   }
+  },
+  "quatmul": {
+   "name": "quaternion product + inverse (pmndrs/math)",
+   "ref": null,
+   "targets": {
+    "tslang": {
+     "status": "fail",
+     "reason": "Command failed: /opt/tslang/tslang --emit=exe --opt --opt_level=3 --relocation-model=pic --obj=/tmp/jz-bench/quatmul/tslang-clock.o /tmp/jz-bench/quatmul/quatmul-tslang.ts -o /tmp/jz-bench/quatmul/quatmul-tslang\n/tmp/jz-bench/quatmul/quatmul-tslang.ts:382:5: error: Expected 5 arguments, but got 3.\n    printResult(medianUs(samples), checksumF64(acc), N * 2, 2, N_RUNS);\n    ^\n/tmp/jz-bench/quatmul/quatmul-tslang.ts:42:1: error: failed statement\n(() => {\n^\n"
+    }
+   }
+  }
+ }
+}

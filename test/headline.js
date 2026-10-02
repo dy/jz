@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { runInNewContext } from 'node:vm'
 import test from 'tst'
-import { is, almost } from 'tst/assert.js'
+import { is, almost, ok } from 'tst/assert.js'
 import { benchmarkRatio, classifyBenchmarkChecksum, correctBenchmarkRow, figure, timedBenchmarkRow, CLS_ICO, LAB } from '../assets/headline.js'
 
 const C = (jz, rest) => ({ targets: { jz, ...rest } })
@@ -136,7 +136,7 @@ test('bench page: invalid rows stay outside corpus and per-case ratio bars', () 
     'an explicit pending or unknown status remains visible without a fabricated timing')
   is(page.includes("if (!ranked.length) return ''"), false,
     'a card with only invalid or failed rows remains visible')
-  is(page.includes("<span class=\"bar\">${unranked ? '' :"), true,
+  is(page.includes("<span class=\"bar\">${unranked || !rel ? '' :"), true,
     'an unranked measurement gets no relative bar')
   is(page.includes("r.parity = ref == null ? 'unclassified'"), true,
     'a live run without a reference cannot claim parity')
@@ -189,6 +189,29 @@ test('bench page: reference and CI snapshots render Perry independently, with ma
     is(nodes.outro.textContent, '', 'no stuck loading caption')
     is(nodes.runAll.disabled, true, 'no run against missing data')
   }
+  snapshots['./results-ci.json'].cases.alpha.targets.scriptc = { status: 'fail', reason: 'unsupported fixture' }
+  snapshots['./results-ci.json'].cases.alpha.targets.tslang = row(300)
+  snapshots['./results-ci.json'].cases.alpha.targets.v8 = row(400)
+  const rivals = (await boot('?machine=ci')).nodes
+  ok(rivals.geomean.innerHTML.includes('scriptc'), 'zero-coverage competitor remains visible')
+  ok(rivals.geomean.innerHTML.includes('0 / 1 valid cases'), 'zero coverage is explicit')
+  const scriptc = rivals.geomean.innerHTML.match(/<div class="row[^"\n]*"[^>]*>\s*<span class="lab">scriptc[\s\S]*?<\/div>/)?.[0]
+  ok(scriptc?.includes('<span class="bar"></span>'), 'failed competitor has no fabricated bar')
+  is((scriptc?.match(/<span class="m"[^>]*>—<\/span>/g) || []).length, 3, 'failed competitor has no fabricated ratio in any column')
+  ok(rivals.geomean.innerHTML.includes('TypeScriptCompiler'), 'tslang has a named corpus row')
+  ok(rivals.cards.innerHTML.includes('ASDAlexander77') === false, 'successful row links to unchanged corpus source')
+  ok(rivals.cards.innerHTML.includes('vercel-labs/scriptc/issues'), 'failure links to the correct issue tracker')
+  snapshots['./results-linux.json'] = {
+    meta: { host: { cpu: 'Virtual CPU', note: 'x64 via Rosetta <validation>' }, date: '2026-09-30', commit: null },
+    cases: { alpha: { targets: { tslang: { status: 'fail', reason: 'array conversion not supported' } } } },
+  }
+  const linux = await boot('?machine=linux')
+  is(linux.fetched, ['./results-linux.json'], 'Linux validation loads its own dataset')
+  ok(linux.nodes.outro.innerHTML.includes('x64 via Rosetta'), 'emulation is disclosed')
+  ok(linux.nodes.outro.innerHTML.includes('&lt;validation&gt;'), 'host notes render as text')
+  ok(!/\/commit\/(null|undefined)/.test(linux.nodes.outro.innerHTML), 'absent commit has no broken link')
+  ok(linux.nodes.geomean.innerHTML.includes('TypeScriptCompiler'), 'failed-only dataset shows its compiler')
+  ok(!linux.nodes.geomean.innerHTML.includes('Perry'), 'no reference-machine timings leak into validation')
   snapshots['./results-ci.json'].cases = {}
   const { nodes } = await boot('?machine=ci')
   is(nodes.casecount.textContent, 0, 'empty CI snapshot has zero cases')

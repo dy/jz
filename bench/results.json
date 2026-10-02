@@ -1,7 +1,7 @@
 {
  "meta": {
-  "date": "2026-09-24 17:47 UTC",
-  "commit": "07b75c20",
+  "date": "2026-09-30 16:18 UTC",
+  "commit": "88f5f193",
   "host": {
    "platform": "darwin",
    "arch": "arm64",
@@ -12,8 +12,8 @@
    "watr": "5.11.3",
    "node": "v25.9.0",
    "asc": "Version 0.28.19",
-   "porffor": "alpha 4 (a415d19 2026-08-29)",
-   "scriptc": "0.0.30",
+   "porffor": "alpha 13 (547c781 2026-09-30)",
+   "scriptc": "0.1.7 [git 6d1907aa06d8da25b19dc0981ac25e02ed22dd14]",
    "perry": "perry 0.5.1520",
    "bun": "1.3.14",
    "deno": "deno 2.6.7 (stable, release, aarch64-apple-darwin)",
@@ -28,7 +28,7 @@
    "deno": "deno run --allow-read --allow-env run-v8.mjs <case>.js",
    "bun": "bun run-v8.mjs <case>.js",
    "jsc": "jsc <case>-flat.js",
-   "porf-native": "porf native <case>-porf-flat.js -o <case>-porfnat  (AOT via C, cc -flto) → run binary",
+   "porf-native": "porf native <case>-porf-flat.js -o <case>-porfnat (AOT via C, default cc -O3; LTO follows Porffor build mode) → run binary",
    "jz": "time: compile(src, { optimize: 'speed' }); size: compile(src, { optimize: 'size' }) → node (V8 wasm)",
    "as": "time: asc <case>.as.ts -O3; size: asc <case>.as.ts -Osize (--runtime stub --noAssert)",
    "rust-wasm": "rustc --target wasm32-wasip1 -C opt-level=3 <case>.rs → node (V8 wasm)",
@@ -43,13 +43,14 @@
    "numpy": "python3 <case>.npy.py",
    "wat": "wat2wasm <case>.wat → node run-wat.mjs (V8 wasm)",
    "jz-w2c2": "jz --host wasi -O3 --no-tail-call → w2c2 → clang -O3 -ffp-contract=off",
-   "perry": "perry compile <case>-native-flat.js -o <case>-perry --fp-contract off --cache-dir <build>/perry-cache (default LLVM optimization, native CPU, linked runtime + GC) → run binary"
+   "perry": "perry compile <case>-native-flat.js -o <case>-perry --fp-contract off --cache-dir <build>/perry-cache (default LLVM optimization, native CPU, linked runtime + GC) → run binary",
+   "scriptc": "scriptc build <case>-native-flat.js -o <case>-scriptc (default release optimization, static runtime) → run binary"
   },
   "memory": "peak RSS per process run (/usr/bin/time -l)",
   "machineState": {
-   "swapUsedMB": 14738.81,
-   "uptimeDays": 75.8,
-   "load1": 10.04,
+   "swapUsedMB": 25065.31,
+   "uptimeDays": 3.59,
+   "load1": 7.92,
    "powermode": "AC"
   },
   "anchors": {
@@ -58,31 +59,31 @@
      "case": "mat4",
      "target": "c-wasm",
      "storedUs": 2502,
-     "freshUs": 2566,
-     "ratio": 1.0256,
+     "freshUs": 2585,
+     "ratio": 1.0332,
      "pass": true
     },
     {
      "case": "fft",
      "target": "c-wasm",
      "storedUs": 1086,
-     "freshUs": 1162,
-     "ratio": 1.07,
+     "freshUs": 1172,
+     "ratio": 1.0792,
      "pass": true
     },
     {
      "case": "synth",
      "target": "as",
      "storedUs": 2405,
-     "freshUs": 2474,
-     "ratio": 1.0287,
+     "freshUs": 2487,
+     "ratio": 1.0341,
      "pass": true
     }
    ],
    "ratios": {
-    "c-wasm×mat4": 1.0256,
-    "c-wasm×fft": 1.07,
-    "as×synth": 1.0287
+    "c-wasm×mat4": 1.0332,
+    "c-wasm×fft": 1.0792,
+    "as×synth": 1.0341
    },
    "pass": true
   },
@@ -149,11 +150,11 @@
      "parity": "ok"
     },
     "porf-native": {
-     "medianUs": 6342,
-     "bytes": 117232,
-     "memKb": 4864,
+     "medianUs": 5939,
+     "bytes": 100784,
+     "memKb": 4848,
      "parity": "ok",
-     "measuredAt": "0c61c6f3"
+     "measuredAt": "88f5f193"
     },
     "jz": {
      "medianUs": 151,
@@ -235,6 +236,11 @@
      "memKb": null,
      "parity": "ok",
      "measuredAt": "07b75c20"
+    },
+    "scriptc": {
+     "status": "fail",
+     "reason": "exit 1: Uncaught Error: the '|' operator on 'any'-typed values runs in the embedded dynamic engine, which this build does not include [SC2011 at /tmp/jz-rival-update/full-build/alpha/alpha-native-flat.js:62]",
+     "measuredAt": "88f5f193"
     }
    },
    "compileMs": 49.3
@@ -311,11 +317,11 @@
      "parity": "ok"
     },
     "porf-native": {
-     "medianUs": 10934,
-     "bytes": 117240,
-     "memKb": 4784,
+     "medianUs": 11829,
+     "bytes": 133816,
+     "memKb": 4800,
      "parity": "ok",
-     "measuredAt": "0c61c6f3"
+     "measuredAt": "88f5f193"
     },
     "jz": {
      "medianUs": 660,
@@ -397,6 +403,11 @@
      "memKb": null,
      "parity": "ok",
      "measuredAt": "07b75c20"
+    },
+    "scriptc": {
+     "status": "fail",
+     "reason": "timeout after 60000ms",
+     "measuredAt": "88f5f193"
     }
    },
    "compileMs": 40.1
@@ -461,11 +472,11 @@
      "parity": "ok"
     },
     "porf-native": {
-     "medianUs": 91824,
-     "bytes": 133744,
-     "memKb": 1840,
+     "medianUs": 93115,
+     "bytes": 117296,
+     "memKb": 1808,
      "parity": "ok",
-     "measuredAt": "0c61c6f3"
+     "measuredAt": "88f5f193"
     },
     "jz": {
      "medianUs": 3477,
@@ -547,6 +558,11 @@
      "memKb": null,
      "parity": "ok",
      "measuredAt": "07b75c20"
+    },
+    "scriptc": {
+     "status": "fail",
+     "reason": "exit 1: Uncaught Error: the '>>>' operator on 'any'-typed values runs in the embedded dynamic engine, which this build does not include [SC2011 at /tmp/jz-rival-update/full-build/base64/base64-native-flat.js:83]",
+     "measuredAt": "88f5f193"
     }
    },
    "compileMs": 63.8
@@ -597,11 +613,11 @@
      "parity": "ok"
     },
     "porf-native": {
-     "medianUs": 10962,
-     "bytes": 150272,
-     "memKb": 1984,
+     "medianUs": 10166,
+     "bytes": 133824,
+     "memKb": 1968,
      "parity": "ok",
-     "measuredAt": "0c61c6f3"
+     "measuredAt": "88f5f193"
     },
     "jz": {
      "medianUs": 772,
@@ -657,6 +673,11 @@
      "memKb": null,
      "parity": "ok",
      "measuredAt": "07b75c20"
+    },
+    "scriptc": {
+     "status": "fail",
+     "reason": "exit 1: Uncaught Error: compound assignment to non-array elements are not supported yet [SC1090 at /tmp/jz-rival-update/full-build/bezfit/bezfit-native-flat.js:159]",
+     "measuredAt": "88f5f193"
     }
    },
    "compileMs": 1074.9
@@ -727,11 +748,11 @@
      "parity": "ok"
     },
     "porf-native": {
-     "medianUs": 53047,
-     "bytes": 133744,
-     "memKb": 9328,
+     "medianUs": 57362,
+     "bytes": 117296,
+     "memKb": 9296,
      "parity": "DIFF",
-     "measuredAt": "0c61c6f3"
+     "measuredAt": "88f5f193"
     },
     "jz": {
      "medianUs": 4590,
@@ -817,6 +838,11 @@
      "memKb": null,
      "parity": "ok",
      "measuredAt": "07b75c20"
+    },
+    "scriptc": {
+     "status": "fail",
+     "reason": "timeout after 60000ms",
+     "measuredAt": "88f5f193"
     }
    },
    "compileMs": 61.6
@@ -893,11 +919,11 @@
      "parity": "ok"
     },
     "porf-native": {
-     "medianUs": 118695,
-     "bytes": 117232,
-     "memKb": 1968,
+     "medianUs": 121843,
+     "bytes": 100784,
+     "memKb": 1936,
      "parity": "ok",
-     "measuredAt": "0c61c6f3"
+     "measuredAt": "88f5f193"
     },
     "jz": {
      "medianUs": 922,
@@ -979,6 +1005,11 @@
      "memKb": null,
      "parity": "ok",
      "measuredAt": "07b75c20"
+    },
+    "scriptc": {
+     "status": "fail",
+     "reason": "exit 1: Uncaught Error: the '|' operator on 'any'-typed values runs in the embedded dynamic engine, which this build does not include [SC2011 at /tmp/jz-rival-update/full-build/bitwise/bitwise-native-flat.js:58]",
+     "measuredAt": "88f5f193"
     }
    },
    "compileMs": 34.4
@@ -1043,11 +1074,11 @@
      "parity": "ok"
     },
     "porf-native": {
-     "medianUs": 30468,
-     "bytes": 133744,
-     "memKb": 4880,
+     "medianUs": 26814,
+     "bytes": 117296,
+     "memKb": 4848,
      "parity": "ok",
-     "measuredAt": "0c61c6f3"
+     "measuredAt": "88f5f193"
     },
     "jz": {
      "medianUs": 866,
@@ -1129,6 +1160,11 @@
      "memKb": null,
      "parity": "ok",
      "measuredAt": "07b75c20"
+    },
+    "scriptc": {
+     "status": "fail",
+     "reason": "exit 1: Uncaught Error: the '^' operator on 'any'-typed values runs in the embedded dynamic engine, which this build does not include [SC2011 at /tmp/jz-rival-update/full-build/blur/blur-native-flat.js:32]",
+     "measuredAt": "88f5f193"
     }
    },
    "compileMs": 157.2
@@ -1193,11 +1229,11 @@
      "parity": "ok"
     },
     "porf-native": {
-     "medianUs": 29338,
-     "bytes": 100720,
-     "memKb": 3760,
+     "medianUs": 30566,
+     "bytes": 100784,
+     "memKb": 3728,
      "parity": "ok",
-     "measuredAt": "0c61c6f3"
+     "measuredAt": "88f5f193"
     },
     "jz": {
      "medianUs": 1491,
@@ -1279,6 +1315,11 @@
      "memKb": null,
      "parity": "ok",
      "measuredAt": "07b75c20"
+    },
+    "scriptc": {
+     "status": "fail",
+     "reason": "exit 1: Uncaught Error: the '>>' operator on 'any'-typed values runs in the embedded dynamic engine, which this build does not include [SC2011 at /tmp/jz-rival-update/full-build/bytebeat/bytebeat-native-flat.js:66]",
+     "measuredAt": "88f5f193"
     }
    },
    "compileMs": 36.8
@@ -1355,11 +1396,11 @@
      "parity": "ok"
     },
     "porf-native": {
-     "medianUs": 11555,
-     "bytes": 117296,
-     "memKb": 27712,
+     "medianUs": 11500,
+     "bytes": 117344,
+     "memKb": 27744,
      "parity": "ok",
-     "measuredAt": "0c61c6f3"
+     "measuredAt": "88f5f193"
     },
     "jz": {
      "medianUs": 236,
@@ -1441,6 +1482,11 @@
      "memKb": null,
      "parity": "ok",
      "measuredAt": "07b75c20"
+    },
+    "scriptc": {
+     "status": "fail",
+     "reason": "exit 1: Uncaught Error: the '|' operator on 'any'-typed values runs in the embedded dynamic engine, which this build does not include [SC2011 at /tmp/jz-rival-update/full-build/callback/callback-native-flat.js:63]",
+     "measuredAt": "88f5f193"
     }
    },
    "compileMs": 30.6
@@ -1477,11 +1523,11 @@
      "parity": "DIFF"
     },
     "porf-native": {
-     "medianUs": 54740,
-     "bytes": 117312,
-     "memKb": 48816,
+     "medianUs": 52346,
+     "bytes": 117376,
+     "memKb": 48800,
      "parity": "DIFF",
-     "measuredAt": "0c61c6f3"
+     "measuredAt": "88f5f193"
     },
     "jz": {
      "medianUs": 30902,
@@ -1516,6 +1562,13 @@
      "memKb": null,
      "parity": "DIFF",
      "measuredAt": "07b75c20"
+    },
+    "scriptc": {
+     "medianUs": 576192,
+     "bytes": 167824,
+     "memKb": null,
+     "parity": "DIFF",
+     "measuredAt": "88f5f193"
     }
    },
    "compileMs": 173.5
@@ -1552,11 +1605,11 @@
      "parity": "DIFF"
     },
     "porf-native": {
-     "medianUs": 98293,
-     "bytes": 117360,
-     "memKb": 48816,
+     "medianUs": 102053,
+     "bytes": 117424,
+     "memKb": 48800,
      "parity": "DIFF",
-     "measuredAt": "0c61c6f3"
+     "measuredAt": "88f5f193"
     },
     "jz": {
      "medianUs": 61278,
@@ -1591,6 +1644,13 @@
      "memKb": null,
      "parity": "DIFF",
      "measuredAt": "07b75c20"
+    },
+    "scriptc": {
+     "medianUs": 609450,
+     "bytes": 167872,
+     "memKb": null,
+     "parity": "DIFF",
+     "measuredAt": "88f5f193"
     }
    },
    "compileMs": 162.7
@@ -1629,11 +1689,11 @@
      "measuredAt": "2eb3af0b"
     },
     "porf-native": {
-     "medianUs": 23097,
-     "bytes": 117280,
-     "memKb": 48832,
+     "medianUs": 25841,
+     "bytes": 117328,
+     "memKb": 48800,
      "parity": "DIFF",
-     "measuredAt": "0c61c6f3"
+     "measuredAt": "88f5f193"
     },
     "jz": {
      "medianUs": 8702,
@@ -1668,6 +1728,13 @@
      "memKb": null,
      "parity": "ok",
      "measuredAt": "07b75c20"
+    },
+    "scriptc": {
+     "medianUs": 490425,
+     "bytes": 167552,
+     "memKb": null,
+     "parity": "ok",
+     "measuredAt": "88f5f193"
     }
    },
    "compileMs": 112.5
@@ -1705,11 +1772,11 @@
      "parity": "ok"
     },
     "porf-native": {
-     "medianUs": 106527,
-     "bytes": 117280,
-     "memKb": 48816,
+     "medianUs": 109806,
+     "bytes": 117328,
+     "memKb": 48800,
      "parity": "DIFF",
-     "measuredAt": "0c61c6f3"
+     "measuredAt": "88f5f193"
     },
     "jz": {
      "medianUs": 62344,
@@ -1744,6 +1811,13 @@
      "memKb": null,
      "parity": "ok",
      "measuredAt": "07b75c20"
+    },
+    "scriptc": {
+     "medianUs": 838784,
+     "bytes": 167632,
+     "memKb": null,
+     "parity": "ok",
+     "measuredAt": "88f5f193"
     }
    },
    "compileMs": 249.1
@@ -1808,11 +1882,11 @@
      "parity": "ok"
     },
     "porf-native": {
-     "medianUs": 69973,
-     "bytes": 117248,
-     "memKb": 1744,
+     "medianUs": 69948,
+     "bytes": 117312,
+     "memKb": 1728,
      "parity": "ok",
-     "measuredAt": "0c61c6f3"
+     "measuredAt": "88f5f193"
     },
     "jz": {
      "medianUs": 1286,
@@ -1894,6 +1968,11 @@
      "memKb": null,
      "parity": "ok",
      "measuredAt": "07b75c20"
+    },
+    "scriptc": {
+     "status": "fail",
+     "reason": "exit 1: Uncaught Error: the '|' operator on 'any'-typed values runs in the embedded dynamic engine, which this build does not include [SC2011 at /tmp/jz-rival-update/full-build/conv2d/conv2d-native-flat.js:70]",
+     "measuredAt": "88f5f193"
     }
    },
    "compileMs": 246.4
@@ -1964,11 +2043,11 @@
      "parity": "ok"
     },
     "porf-native": {
-     "medianUs": 98836,
-     "bytes": 117232,
-     "memKb": 1744,
+     "medianUs": 104306,
+     "bytes": 100784,
+     "memKb": 1712,
      "parity": "ok",
-     "measuredAt": "0c61c6f3"
+     "measuredAt": "88f5f193"
     },
     "jz": {
      "medianUs": 7596,
@@ -2050,6 +2129,11 @@
      "memKb": null,
      "parity": "ok",
      "measuredAt": "07b75c20"
+    },
+    "scriptc": {
+     "status": "fail",
+     "reason": "exit 1: Uncaught Error: operators on 'unknown' values are not supported yet [SC1100 at /tmp/jz-rival-update/full-build/crc32/crc32-native-flat.js:76]",
+     "measuredAt": "88f5f193"
     }
    },
    "compileMs": 40
@@ -2100,11 +2184,11 @@
      "parity": "ok"
     },
     "porf-native": {
-     "medianUs": 6745,
-     "bytes": 117232,
-     "memKb": 3968,
+     "medianUs": 7129,
+     "bytes": 117296,
+     "memKb": 3936,
      "parity": "ok",
-     "measuredAt": "0c61c6f3"
+     "measuredAt": "88f5f193"
     },
     "jz": {
      "medianUs": 673,
@@ -2160,6 +2244,11 @@
      "memKb": null,
      "parity": "ok",
      "measuredAt": "07b75c20"
+    },
+    "scriptc": {
+     "status": "fail",
+     "reason": "exit 1: Uncaught Error: the '&' operator on 'any'-typed values runs in the embedded dynamic engine, which this build does not include [SC2011 at /tmp/jz-rival-update/full-build/delayline/delayline-native-flat.js:79]",
+     "measuredAt": "88f5f193"
     }
    },
    "compileMs": 57,
@@ -2225,11 +2314,11 @@
      "parity": "DIFF"
     },
     "porf-native": {
-     "medianUs": 64938,
-     "bytes": 133920,
-     "memKb": 10048,
+     "medianUs": 70430,
+     "bytes": 117456,
+     "memKb": 10016,
      "parity": "DIFF",
-     "measuredAt": "0c61c6f3"
+     "measuredAt": "88f5f193"
     },
     "jz": {
      "medianUs": 39801,
@@ -2264,6 +2353,13 @@
      "memKb": null,
      "parity": "DIFF",
      "measuredAt": "07b75c20"
+    },
+    "scriptc": {
+     "medianUs": 294745,
+     "bytes": 184384,
+     "memKb": null,
+     "parity": "DIFF",
+     "measuredAt": "88f5f193"
     }
    },
    "compileMs": 93.4
@@ -2328,11 +2424,11 @@
      "parity": "ok"
     },
     "porf-native": {
-     "medianUs": 30238,
-     "bytes": 117232,
-     "memKb": 1904,
+     "medianUs": 31119,
+     "bytes": 117296,
+     "memKb": 1888,
      "parity": "ok",
-     "measuredAt": "0c61c6f3"
+     "measuredAt": "88f5f193"
     },
     "jz": {
      "medianUs": 1881,
@@ -2414,6 +2510,11 @@
      "memKb": null,
      "parity": "ok",
      "measuredAt": "07b75c20"
+    },
+    "scriptc": {
+     "status": "fail",
+     "reason": "exit 1: Uncaught Error: the '|' operator on 'any'-typed values runs in the embedded dynamic engine, which this build does not include [SC2011 at /tmp/jz-rival-update/full-build/dict/dict-native-flat.js:99]",
+     "measuredAt": "88f5f193"
     }
    },
    "compileMs": 35.7
@@ -2478,11 +2579,11 @@
      "parity": "ok"
     },
     "porf-native": {
-     "medianUs": 21603,
-     "bytes": 117232,
+     "medianUs": 20921,
+     "bytes": 117296,
      "memKb": 1840,
      "parity": "ok",
-     "measuredAt": "0c61c6f3"
+     "measuredAt": "88f5f193"
     },
     "jz": {
      "medianUs": 1763,
@@ -2564,6 +2665,11 @@
      "memKb": null,
      "parity": "ok",
      "measuredAt": "07b75c20"
+    },
+    "scriptc": {
+     "status": "fail",
+     "reason": "exit 1: Uncaught Error: the '^' operator on 'any'-typed values runs in the embedded dynamic engine, which this build does not include [SC2011 at /tmp/jz-rival-update/full-build/dispatch/dispatch-native-flat.js:66]",
+     "measuredAt": "88f5f193"
     }
    },
    "compileMs": 70
@@ -2628,11 +2734,11 @@
      "parity": "ok"
     },
     "porf-native": {
-     "medianUs": 6753,
-     "bytes": 117232,
-     "memKb": 1840,
+     "medianUs": 5815,
+     "bytes": 100784,
+     "memKb": 1824,
      "parity": "ok",
-     "measuredAt": "0c61c6f3"
+     "measuredAt": "88f5f193"
     },
     "jz": {
      "medianUs": 148,
@@ -2714,6 +2820,11 @@
      "memKb": null,
      "parity": "ok",
      "measuredAt": "07b75c20"
+    },
+    "scriptc": {
+     "status": "fail",
+     "reason": "exit 1: Uncaught Error: operators on 'unknown' values are not supported yet [SC1100 at /tmp/jz-rival-update/full-build/dotprod/dotprod-native-flat.js:68]",
+     "measuredAt": "88f5f193"
     }
    },
    "compileMs": 32.7
@@ -2778,11 +2889,11 @@
      "parity": "ok"
     },
     "porf-native": {
-     "medianUs": 7796,
-     "bytes": 133752,
-     "memKb": 3936,
+     "medianUs": 7513,
+     "bytes": 117304,
+     "memKb": 3888,
      "parity": "DIFF",
-     "measuredAt": "0c61c6f3"
+     "measuredAt": "88f5f193"
     },
     "jz": {
      "medianUs": 1003,
@@ -2864,6 +2975,11 @@
      "memKb": null,
      "parity": "ok",
      "measuredAt": "07b75c20"
+    },
+    "scriptc": {
+     "status": "fail",
+     "reason": "exit 1: Uncaught Error: the '>>' operator on 'any'-typed values runs in the embedded dynamic engine, which this build does not include [SC2011 at /tmp/jz-rival-update/full-build/fft/fft-native-flat.js:82]",
+     "measuredAt": "88f5f193"
     }
    },
    "compileMs": 88.9,
@@ -2947,11 +3063,11 @@
      "parity": "ok"
     },
     "porf-native": {
-     "medianUs": 21527,
-     "bytes": 150272,
-     "memKb": 1952,
+     "medianUs": 20958,
+     "bytes": 150352,
+     "memKb": 1920,
      "parity": "DIFF",
-     "measuredAt": "0c61c6f3"
+     "measuredAt": "88f5f193"
     },
     "jz": {
      "medianUs": 1808,
@@ -2986,6 +3102,11 @@
      "memKb": null,
      "parity": "ok",
      "measuredAt": "07b75c20"
+    },
+    "scriptc": {
+     "status": "fail",
+     "reason": "exit 1: Uncaught Error: the '>>' operator on 'any'-typed values runs in the embedded dynamic engine, which this build does not include [SC2011 at /tmp/jz-rival-update/full-build/fftplan/fftplan-native-flat.js:92]",
+     "measuredAt": "88f5f193"
     }
    },
    "compileMs": 416
@@ -3036,11 +3157,11 @@
      "parity": "ok"
     },
     "porf-native": {
-     "medianUs": 27969,
-     "bytes": 150272,
-     "memKb": 2304,
+     "medianUs": 29048,
+     "bytes": 150336,
+     "memKb": 2256,
      "parity": "ok",
-     "measuredAt": "0c61c6f3"
+     "measuredAt": "88f5f193"
     },
     "jz": {
      "medianUs": 2968,
@@ -3096,6 +3217,11 @@
      "memKb": null,
      "parity": "ok",
      "measuredAt": "07b75c20"
+    },
+    "scriptc": {
+     "status": "fail",
+     "reason": "exit 1: Uncaught Error: comparing non-number, non-string values are not supported yet [SC1043 at /tmp/jz-rival-update/full-build/glyfparse/glyfparse-native-flat.js:127]",
+     "measuredAt": "88f5f193"
     }
    },
    "compileMs": 172.5,
@@ -3189,11 +3315,11 @@
      "parity": "ok"
     },
     "porf-native": {
-     "medianUs": 144924,
-     "bytes": 117232,
-     "memKb": 1728,
+     "medianUs": 154796,
+     "bytes": 100784,
+     "memKb": 1696,
      "parity": "ok",
-     "measuredAt": "0c61c6f3"
+     "measuredAt": "88f5f193"
     },
     "jz": {
      "medianUs": 3580,
@@ -3275,6 +3401,11 @@
      "memKb": null,
      "parity": "ok",
      "measuredAt": "07b75c20"
+    },
+    "scriptc": {
+     "status": "fail",
+     "reason": "exit 1: Uncaught Error: operators on 'unknown' values are not supported yet [SC1100 at /tmp/jz-rival-update/full-build/hash/hash-native-flat.js:91]",
+     "measuredAt": "88f5f193"
     }
    },
    "compileMs": 31.5
@@ -3339,11 +3470,11 @@
      "parity": "ok"
     },
     "porf-native": {
-     "medianUs": 70291,
-     "bytes": 117232,
+     "medianUs": 79461,
+     "bytes": 117296,
      "memKb": 2160,
      "parity": "ok",
-     "measuredAt": "0c61c6f3"
+     "measuredAt": "88f5f193"
     },
     "jz": {
      "medianUs": 4912,
@@ -3425,6 +3556,11 @@
      "memKb": null,
      "parity": "ok",
      "measuredAt": "07b75c20"
+    },
+    "scriptc": {
+     "status": "fail",
+     "reason": "exit 1: Uncaught Error: the '|' operator on 'any'-typed values runs in the embedded dynamic engine, which this build does not include [SC2011 at /tmp/jz-rival-update/full-build/hashjoin/hashjoin-native-flat.js:77]",
+     "measuredAt": "88f5f193"
     }
    },
    "compileMs": 46
@@ -3489,11 +3625,11 @@
      "parity": "ok"
     },
     "porf-native": {
-     "medianUs": 46066,
-     "bytes": 133744,
-     "memKb": 2832,
+     "medianUs": 48404,
+     "bytes": 117296,
+     "memKb": 2800,
      "parity": "ok",
-     "measuredAt": "0c61c6f3"
+     "measuredAt": "88f5f193"
     },
     "jz": {
      "medianUs": 2136,
@@ -3575,6 +3711,11 @@
      "memKb": null,
      "parity": "ok",
      "measuredAt": "07b75c20"
+    },
+    "scriptc": {
+     "status": "fail",
+     "reason": "timeout after 60000ms",
+     "measuredAt": "88f5f193"
     }
    },
    "compileMs": 36.6
@@ -3639,11 +3780,11 @@
      "parity": "ok"
     },
     "porf-native": {
-     "medianUs": 5945,
-     "bytes": 117248,
-     "memKb": 39552,
+     "medianUs": 3158,
+     "bytes": 117312,
+     "memKb": 39584,
      "parity": "ok",
-     "measuredAt": "0c61c6f3"
+     "measuredAt": "88f5f193"
     },
     "jz": {
      "medianUs": 137,
@@ -3725,6 +3866,11 @@
      "memKb": null,
      "parity": "ok",
      "measuredAt": "07b75c20"
+    },
+    "scriptc": {
+     "status": "fail",
+     "reason": "exit 1: Uncaught Error: the '|' operator on 'any'-typed values runs in the embedded dynamic engine, which this build does not include [SC2011 at /tmp/jz-rival-update/full-build/immutable/immutable-native-flat.js:89]",
+     "measuredAt": "88f5f193"
     }
    },
    "compileMs": 74
@@ -3779,13 +3925,18 @@
     },
     "porf-native": {
      "status": "fail",
-     "reason": "exit 1: Uncaught TypeError: Cannot set property of null\n        0.17 real         0.00 user         0.00 sys\n             5095424  maximum resident set size\n                   0  average shared memory size\n                   0  average unshared dat",
-     "measuredAt": "0c61c6f3"
+     "reason": "exit 1: Uncaught SyntaxError: Unexpected token at 833:1\n: limit }\ntotal = obj.x + obj.y - obj.z\n\u0000?\n        0.18 real         0.00 user         0.00 sys\n            18792448  maximum resident set size\n                   0  average shared memory size",
+     "measuredAt": "88f5f193"
     },
     "perry": {
      "status": "fail",
      "reason": "timeout after 60000ms",
      "measuredAt": "07b75c20"
+    },
+    "scriptc": {
+     "status": "fail",
+     "reason": "Command failed: /tmp/jz-rival-update/scriptc-current build /tmp/jz-rival-update/full-build/jessie/jessie-native-flat.js -o /tmp/jz-rival-update/full-build/jessie/jessie-scriptc\n/tmp/jz-rival-update/full-build/jessie/jessie-native-flat.js:438:59 - error SC0001: This condition will always return true since this function is always defined. Did you mean to call it instead?\n\n  437 |   var prev = lookup[BACKTICK];\n  438 |   lookup[BACKTICK] = (a, prec2) => a && prec2 < ACCESS4 ? parse.asi && parse.newline ? void 0 : (skip(), [\"``\", a, ...parseBody()]) : (\n      |                                                           ^~~~~~~~~\n  439 |     // tagged\n\n/tmp/jz-rival-update/full-build/jessie/jessie-native-flat.js:642:5 - error SC0001: This condition will always return true since this function is always defined. Did you mean to call it instead?\n\n  641 |   keyword(\"break\", STATEMENT4 + 1, () => {\n  642 |     parse.asi && (parse.newline = false);\n      |     ^~~~~~~~~\n  643 |     const from = idx;\n\n/tmp/jz-rival-update/full-build/jessie/jessie-native-flat.js:654:5 - error SC0001: This condition will always return true since this function is always defined. Did you mean to call it instead?\n\n  653 |   keyword(\"continue\", STATEMENT4 + 1, () => {\n  654 |     parse.asi && (parse.newline = false);\n      |     ^~~~~~~~~\n  655 |     const from = idx;\n\n/tmp/jz-rival-update/full-build/jessie/jessie-native-flat.js:666:5 - error SC0001: This condition will always return true since this function is always defined. Did you mean to call it instead?\n\n  665 |   keyword(\"return\", STATEMENT4 + 1, () => {\n  666 |     parse.asi && (parse.newline = false);\n      |     ^~~~~~~~~\n  667 |     const c = parse.space();\n\n/tmp/jz-rival-update/full-build/jessie/jessie-native-flat.js:689:5 - error SC0001: This condition will always return true since this function is always defined. Did you mean to call it instead?\n\n  688 |   keyword(\"throw\", STATEMENT5 + 1, () => {\n  689 |     parse.asi && (parse.newline = false);\n      |     ^~~~~~~~~\n  690 |     parse.space();\n\n5 errors.\n",
+     "measuredAt": "88f5f193"
     }
    }
   },
@@ -3855,11 +4006,11 @@
      "parity": "ok"
     },
     "porf-native": {
-     "medianUs": 936,
-     "bytes": 117232,
-     "memKb": 37824,
+     "medianUs": 1026,
+     "bytes": 117296,
+     "memKb": 38016,
      "parity": "ok",
-     "measuredAt": "0c61c6f3"
+     "measuredAt": "88f5f193"
     },
     "jz": {
      "medianUs": 132,
@@ -3934,6 +4085,11 @@
      "memKb": null,
      "parity": "ok",
      "measuredAt": "07b75c20"
+    },
+    "scriptc": {
+     "status": "fail",
+     "reason": "exit 1: Uncaught Error: the '|' operator on 'any'-typed values runs in the embedded dynamic engine, which this build does not include [SC2011 at /tmp/jz-rival-update/full-build/json/json-native-flat.js:11]",
+     "measuredAt": "88f5f193"
     }
    },
    "compileMs": 142.9
@@ -3998,11 +4154,11 @@
      "parity": "ok"
     },
     "porf-native": {
-     "medianUs": 31445,
-     "bytes": 117232,
-     "memKb": 1696,
+     "medianUs": 33779,
+     "bytes": 117296,
+     "memKb": 1680,
      "parity": "ok",
-     "measuredAt": "0c61c6f3"
+     "measuredAt": "88f5f193"
     },
     "jz": {
      "medianUs": 1683,
@@ -4084,6 +4240,11 @@
      "memKb": null,
      "parity": "ok",
      "measuredAt": "07b75c20"
+    },
+    "scriptc": {
+     "status": "fail",
+     "reason": "exit 1: Uncaught Error: the '|' operator on 'any'-typed values runs in the embedded dynamic engine, which this build does not include [SC2011 at /tmp/jz-rival-update/full-build/levenshtein/levenshtein-native-flat.js:64]",
+     "measuredAt": "88f5f193"
     }
    },
    "compileMs": 47.7
@@ -4148,11 +4309,11 @@
      "parity": "ok"
     },
     "porf-native": {
-     "medianUs": 11113,
-     "bytes": 117232,
-     "memKb": 2224,
+     "medianUs": 11658,
+     "bytes": 100784,
+     "memKb": 2208,
      "parity": "DIFF",
-     "measuredAt": "0c61c6f3"
+     "measuredAt": "88f5f193"
     },
     "jz": {
      "medianUs": 12310,
@@ -4234,6 +4395,13 @@
      "memKb": null,
      "parity": "ok",
      "measuredAt": "07b75c20"
+    },
+    "scriptc": {
+     "medianUs": 19085,
+     "bytes": 166656,
+     "memKb": null,
+     "parity": "ok",
+     "measuredAt": "88f5f193"
     }
    },
    "compileMs": 41.8
@@ -4298,11 +4466,11 @@
      "parity": "ok"
     },
     "porf-native": {
-     "medianUs": 49485,
-     "bytes": 117224,
-     "memKb": 1744,
+     "medianUs": 48230,
+     "bytes": 117288,
+     "memKb": 1728,
      "parity": "ok",
-     "measuredAt": "0c61c6f3"
+     "measuredAt": "88f5f193"
     },
     "jz": {
      "medianUs": 11447,
@@ -4384,6 +4552,11 @@
      "memKb": null,
      "parity": "ok",
      "measuredAt": "07b75c20"
+    },
+    "scriptc": {
+     "status": "fail",
+     "reason": "exit 1: Uncaught Error: the '&' operator on 'any'-typed values runs in the embedded dynamic engine, which this build does not include [SC2011 at /tmp/jz-rival-update/full-build/lz/lz-native-flat.js:123]",
+     "measuredAt": "88f5f193"
     }
    },
    "compileMs": 134.3,
@@ -4495,11 +4668,11 @@
      "parity": "ok"
     },
     "porf-native": {
-     "medianUs": 21260,
-     "bytes": 117232,
-     "memKb": 1968,
+     "medianUs": 22669,
+     "bytes": 100784,
+     "memKb": 1936,
      "parity": "ok",
-     "measuredAt": "0c61c6f3"
+     "measuredAt": "88f5f193"
     },
     "jz": {
      "medianUs": 4374,
@@ -4581,6 +4754,11 @@
      "memKb": null,
      "parity": "ok",
      "measuredAt": "07b75c20"
+    },
+    "scriptc": {
+     "status": "fail",
+     "reason": "exit 1: Uncaught Error: the '|' operator on 'any'-typed values runs in the embedded dynamic engine, which this build does not include [SC2011 at /tmp/jz-rival-update/full-build/mandelbrot/mandelbrot-native-flat.js:24]",
+     "measuredAt": "88f5f193"
     }
    },
    "compileMs": 45.1
@@ -4651,11 +4829,11 @@
      "parity": "ok"
     },
     "porf-native": {
-     "medianUs": 54983,
-     "bytes": 117232,
-     "memKb": 1680,
+     "medianUs": 52456,
+     "bytes": 117296,
+     "memKb": 1664,
      "parity": "ok",
-     "measuredAt": "0c61c6f3"
+     "measuredAt": "88f5f193"
     },
     "jz": {
      "medianUs": 743,
@@ -4741,6 +4919,11 @@
      "memKb": null,
      "parity": "ok",
      "measuredAt": "07b75c20"
+    },
+    "scriptc": {
+     "status": "fail",
+     "reason": "exit 1: Uncaught Error: compound assignment to non-array elements are not supported yet [SC1090 at /tmp/jz-rival-update/full-build/mat4/mat4-native-flat.js:63]",
+     "measuredAt": "88f5f193"
     }
    },
    "compileMs": 66.6
@@ -4805,11 +4988,11 @@
      "parity": "ok"
     },
     "porf-native": {
-     "medianUs": 50657,
-     "bytes": 117232,
+     "medianUs": 47014,
+     "bytes": 117296,
      "memKb": 3328,
      "parity": "ok",
-     "measuredAt": "0c61c6f3"
+     "measuredAt": "88f5f193"
     },
     "jz": {
      "medianUs": 1795,
@@ -4891,6 +5074,13 @@
      "memKb": null,
      "parity": "ok",
      "measuredAt": "07b75c20"
+    },
+    "scriptc": {
+     "medianUs": 1709263,
+     "bytes": 166672,
+     "memKb": null,
+     "parity": "ok",
+     "measuredAt": "88f5f193"
     }
    },
    "compileMs": 35.7
@@ -4955,11 +5145,11 @@
      "parity": "ok"
     },
     "porf-native": {
-     "medianUs": 73730,
-     "bytes": 150272,
-     "memKb": 1856,
+     "medianUs": 61679,
+     "bytes": 133824,
+     "memKb": 1824,
      "parity": "DIFF",
-     "measuredAt": "0c61c6f3"
+     "measuredAt": "88f5f193"
     },
     "jz": {
      "medianUs": 8898,
@@ -5041,6 +5231,11 @@
      "memKb": null,
      "parity": "ok",
      "measuredAt": "07b75c20"
+    },
+    "scriptc": {
+     "status": "fail",
+     "reason": "exit 1: Uncaught Error: compound assignment to non-array elements are not supported yet [SC1090 at /tmp/jz-rival-update/full-build/nbody/nbody-native-flat.js:87]",
+     "measuredAt": "88f5f193"
     }
    },
    "compileMs": 68.2
@@ -5105,11 +5300,11 @@
      "parity": "ok"
     },
     "porf-native": {
-     "medianUs": 28595,
-     "bytes": 133760,
-     "memKb": 2272,
+     "medianUs": 30070,
+     "bytes": 117312,
+     "memKb": 2240,
      "parity": "ok",
-     "measuredAt": "0c61c6f3"
+     "measuredAt": "88f5f193"
     },
     "jz": {
      "medianUs": 1234,
@@ -5191,6 +5386,11 @@
      "memKb": null,
      "parity": "ok",
      "measuredAt": "07b75c20"
+    },
+    "scriptc": {
+     "status": "fail",
+     "reason": "exit 1: Uncaught Error: the '&' operator on 'any'-typed values runs in the embedded dynamic engine, which this build does not include [SC2011 at /tmp/jz-rival-update/full-build/noise/noise-native-flat.js:85]",
+     "measuredAt": "88f5f193"
     }
    },
    "compileMs": 62.6
@@ -5255,11 +5455,11 @@
      "parity": "ok"
     },
     "porf-native": {
-     "medianUs": 40382,
-     "bytes": 117232,
-     "memKb": 1680,
+     "medianUs": 42259,
+     "bytes": 100784,
+     "memKb": 1664,
      "parity": "ok",
-     "measuredAt": "0c61c6f3"
+     "measuredAt": "88f5f193"
     },
     "jz": {
      "medianUs": 2506,
@@ -5348,6 +5548,11 @@
      "memKb": null,
      "parity": "ok",
      "measuredAt": "07b75c20"
+    },
+    "scriptc": {
+     "status": "fail",
+     "reason": "exit 1: Uncaught Error: the '<<' operator on 'any'-typed values runs in the embedded dynamic engine, which this build does not include [SC2011 at /tmp/jz-rival-update/full-build/nqueens/nqueens-native-flat.js:93]",
+     "measuredAt": "88f5f193"
     }
    },
    "compileMs": 34.6
@@ -5412,11 +5617,11 @@
      "parity": "ok"
     },
     "porf-native": {
-     "medianUs": 130266,
-     "bytes": 117248,
-     "memKb": 3904,
+     "medianUs": 104747,
+     "bytes": 117312,
+     "memKb": 3872,
      "parity": "ok",
-     "measuredAt": "0c61c6f3"
+     "measuredAt": "88f5f193"
     },
     "jz": {
      "medianUs": 6699,
@@ -5498,6 +5703,11 @@
      "memKb": null,
      "parity": "ok",
      "measuredAt": "07b75c20"
+    },
+    "scriptc": {
+     "status": "fail",
+     "reason": "timeout after 60000ms",
+     "measuredAt": "88f5f193"
     }
    },
    "compileMs": 40
@@ -5574,11 +5784,11 @@
      "parity": "ok"
     },
     "porf-native": {
-     "medianUs": 4142,
-     "bytes": 117232,
-     "memKb": 1808,
+     "medianUs": 4358,
+     "bytes": 100784,
+     "memKb": 1776,
      "parity": "ok",
-     "measuredAt": "0c61c6f3"
+     "measuredAt": "88f5f193"
     },
     "jz": {
      "medianUs": 122,
@@ -5660,6 +5870,11 @@
      "memKb": null,
      "parity": "ok",
      "measuredAt": "07b75c20"
+    },
+    "scriptc": {
+     "status": "fail",
+     "reason": "exit 1: Uncaught Error: the '|' operator on 'any'-typed values runs in the embedded dynamic engine, which this build does not include [SC2011 at /tmp/jz-rival-update/full-build/poly/poly-native-flat.js:11]",
+     "measuredAt": "88f5f193"
     }
    },
    "compileMs": 38.6
@@ -5696,11 +5911,11 @@
      "parity": "ok"
     },
     "porf-native": {
-     "medianUs": 21715,
-     "bytes": 150272,
-     "memKb": 1984,
+     "medianUs": 24533,
+     "bytes": 133840,
+     "memKb": 1968,
      "parity": "ok",
-     "measuredAt": "0c61c6f3"
+     "measuredAt": "88f5f193"
     },
     "jz": {
      "medianUs": 1331,
@@ -5735,6 +5950,11 @@
      "memKb": null,
      "parity": "ok",
      "measuredAt": "07b75c20"
+    },
+    "scriptc": {
+     "status": "fail",
+     "reason": "exit 1: Uncaught Error: the '>>' operator on 'any'-typed values runs in the embedded dynamic engine, which this build does not include [SC2011 at /tmp/jz-rival-update/full-build/provenance/provenance-native-flat.js:94]",
+     "measuredAt": "88f5f193"
     }
    },
    "compileMs": 162.1
@@ -5799,11 +6019,11 @@
      "parity": "ok"
     },
     "porf-native": {
-     "medianUs": 70560,
-     "bytes": 150248,
-     "memKb": 2656,
+     "medianUs": 71350,
+     "bytes": 133800,
+     "memKb": 2608,
      "parity": "ok",
-     "measuredAt": "0c61c6f3"
+     "measuredAt": "88f5f193"
     },
     "jz": {
      "medianUs": 7646,
@@ -5885,6 +6105,11 @@
      "memKb": null,
      "parity": "ok",
      "measuredAt": "07b75c20"
+    },
+    "scriptc": {
+     "status": "fail",
+     "reason": "exit 1: Uncaught Error: the '&' operator on 'any'-typed values runs in the embedded dynamic engine, which this build does not include [SC2011 at /tmp/jz-rival-update/full-build/qoi/qoi-native-flat.js:141]",
+     "measuredAt": "88f5f193"
     }
    },
    "compileMs": 159.2
@@ -5950,11 +6175,11 @@
      "parity": "ok"
     },
     "porf-native": {
-     "medianUs": 705675,
-     "bytes": 133744,
-     "memKb": 38176,
+     "medianUs": 558483,
+     "bytes": 117296,
+     "memKb": 38128,
      "parity": "DIFF",
-     "measuredAt": "0c61c6f3"
+     "measuredAt": "88f5f193"
     },
     "jz": {
      "medianUs": 2322,
@@ -6036,6 +6261,11 @@
      "memKb": null,
      "parity": "ok",
      "measuredAt": "07b75c20"
+    },
+    "scriptc": {
+     "status": "fail",
+     "reason": "exit 1: Uncaught Error: the '>>>' operator on 'any'-typed values runs in the embedded dynamic engine, which this build does not include [SC2011 at /tmp/jz-rival-update/full-build/radixsort/radixsort-native-flat.js:93]",
+     "measuredAt": "88f5f193"
     }
    },
    "compileMs": 68.1,
@@ -6147,11 +6377,11 @@
      "parity": "ok"
     },
     "porf-native": {
-     "medianUs": 10603,
-     "bytes": 133744,
-     "memKb": 5184,
+     "medianUs": 9158,
+     "bytes": 117296,
+     "memKb": 5168,
      "parity": "DIFF",
-     "measuredAt": "0c61c6f3"
+     "measuredAt": "88f5f193"
     },
     "jz": {
      "medianUs": 1056,
@@ -6233,6 +6463,13 @@
      "memKb": null,
      "parity": "ok",
      "measuredAt": "07b75c20"
+    },
+    "scriptc": {
+     "medianUs": 314156,
+     "bytes": 166768,
+     "memKb": null,
+     "parity": "ok",
+     "measuredAt": "88f5f193"
     }
    },
    "compileMs": 169.2
@@ -6283,11 +6520,11 @@
      "parity": "ok"
     },
     "porf-native": {
-     "medianUs": 9871,
-     "bytes": 117232,
+     "medianUs": 9676,
+     "bytes": 117312,
      "memKb": 3376,
-     "parity": "DIFF",
-     "measuredAt": "0c61c6f3"
+     "parity": "fma",
+     "measuredAt": "88f5f193"
     },
     "jz": {
      "medianUs": 1311,
@@ -6343,6 +6580,11 @@
      "memKb": null,
      "parity": "ok",
      "measuredAt": "07b75c20"
+    },
+    "scriptc": {
+     "status": "fail",
+     "reason": "exit 1: Uncaught Error: operators on 'unknown' values are not supported yet [SC1100 at /tmp/jz-rival-update/full-build/resample/resample-native-flat.js:116]",
+     "measuredAt": "88f5f193"
     }
    },
    "compileMs": 49.4
@@ -6393,11 +6635,11 @@
      "parity": "ok"
     },
     "porf-native": {
-     "medianUs": 39989,
-     "bytes": 150264,
-     "memKb": 3088,
+     "medianUs": 37375,
+     "bytes": 133816,
+     "memKb": 3072,
      "parity": "ok",
-     "measuredAt": "0c61c6f3"
+     "measuredAt": "88f5f193"
     },
     "jz": {
      "medianUs": 6280,
@@ -6453,6 +6695,13 @@
      "memKb": null,
      "parity": "ok",
      "measuredAt": "07b75c20"
+    },
+    "scriptc": {
+     "medianUs": 1888592,
+     "bytes": 184152,
+     "memKb": null,
+     "parity": "ok",
+     "measuredAt": "88f5f193"
     }
    },
    "compileMs": 89.6,
@@ -6546,11 +6795,11 @@
      "parity": "ok"
     },
     "porf-native": {
-     "medianUs": 15025,
-     "bytes": 117232,
+     "medianUs": 15738,
+     "bytes": 117312,
      "memKb": 4496,
      "parity": "ok",
-     "measuredAt": "0c61c6f3"
+     "measuredAt": "88f5f193"
     },
     "jz": {
      "medianUs": 1203,
@@ -6632,6 +6881,11 @@
      "memKb": null,
      "parity": "ok",
      "measuredAt": "07b75c20"
+    },
+    "scriptc": {
+     "status": "fail",
+     "reason": "exit 1: Uncaught Error: operators on 'unknown' values are not supported yet [SC1100 at /tmp/jz-rival-update/full-build/shapes/shapes-native-flat.js:104]",
+     "measuredAt": "88f5f193"
     }
    },
    "compileMs": 233.4,
@@ -6743,11 +6997,11 @@
      "parity": "ok"
     },
     "porf-native": {
-     "medianUs": 13451,
-     "bytes": 117232,
-     "memKb": 2752,
+     "medianUs": 13860,
+     "bytes": 100784,
+     "memKb": 2720,
      "parity": "ok",
-     "measuredAt": "0c61c6f3"
+     "measuredAt": "88f5f193"
     },
     "jz": {
      "medianUs": 4932,
@@ -6829,6 +7083,11 @@
      "memKb": null,
      "parity": "ok",
      "measuredAt": "07b75c20"
+    },
+    "scriptc": {
+     "status": "fail",
+     "reason": "exit 1: Uncaught Error: the '^' operator on 'any'-typed values runs in the embedded dynamic engine, which this build does not include [SC2011 at /tmp/jz-rival-update/full-build/sieve/sieve-native-flat.js:32]",
+     "measuredAt": "88f5f193"
     }
    },
    "compileMs": 28.7
@@ -6879,11 +7138,11 @@
      "parity": "ok"
     },
     "porf-native": {
-     "medianUs": 11387,
-     "bytes": 133760,
-     "memKb": 5952,
+     "medianUs": 10216,
+     "bytes": 117312,
+     "memKb": 5936,
      "parity": "DIFF",
-     "measuredAt": "0c61c6f3"
+     "measuredAt": "88f5f193"
     },
     "jz": {
      "medianUs": 2719,
@@ -6939,6 +7198,13 @@
      "memKb": null,
      "parity": "ok",
      "measuredAt": "07b75c20"
+    },
+    "scriptc": {
+     "medianUs": 854782,
+     "bytes": 167424,
+     "memKb": null,
+     "parity": "ok",
+     "measuredAt": "88f5f193"
     }
    },
    "compileMs": 50.6,
@@ -7039,11 +7305,11 @@
      "parity": "ok"
     },
     "porf-native": {
-     "medianUs": 27558,
-     "bytes": 133744,
-     "memKb": 1872,
+     "medianUs": 28288,
+     "bytes": 117296,
+     "memKb": 1824,
      "parity": "ok",
-     "measuredAt": "0c61c6f3"
+     "measuredAt": "88f5f193"
     },
     "jz": {
      "medianUs": 4590,
@@ -7125,6 +7391,11 @@
      "memKb": null,
      "parity": "ok",
      "measuredAt": "07b75c20"
+    },
+    "scriptc": {
+     "status": "fail",
+     "reason": "exit 1: Uncaught Error: the '>>' operator on 'any'-typed values runs in the embedded dynamic engine, which this build does not include [SC2011 at /tmp/jz-rival-update/full-build/sort/sort-native-flat.js:57]",
+     "measuredAt": "88f5f193"
     }
    },
    "compileMs": 46.1
@@ -7189,11 +7460,11 @@
      "parity": "ok"
     },
     "porf-native": {
-     "medianUs": 31587,
-     "bytes": 133760,
-     "memKb": 2656,
+     "medianUs": 30372,
+     "bytes": 117312,
+     "memKb": 2624,
      "parity": "ok",
-     "measuredAt": "0c61c6f3"
+     "measuredAt": "88f5f193"
     },
     "jz": {
      "medianUs": 2504,
@@ -7275,6 +7546,13 @@
      "memKb": null,
      "parity": "ok",
      "measuredAt": "07b75c20"
+    },
+    "scriptc": {
+     "medianUs": 1466736,
+     "bytes": 167440,
+     "memKb": null,
+     "parity": "ok",
+     "measuredAt": "88f5f193"
     }
    },
    "compileMs": 49.4
@@ -7339,11 +7617,11 @@
      "parity": "ok"
     },
     "porf-native": {
-     "medianUs": 12052,
-     "bytes": 117232,
-     "memKb": 37680,
+     "medianUs": 9280,
+     "bytes": 117312,
+     "memKb": 37696,
      "parity": "ok",
-     "measuredAt": "0c61c6f3"
+     "measuredAt": "88f5f193"
     },
     "jz": {
      "medianUs": 371,
@@ -7425,6 +7703,11 @@
      "memKb": null,
      "parity": "ok",
      "measuredAt": "07b75c20"
+    },
+    "scriptc": {
+     "status": "fail",
+     "reason": "exit 1: Uncaught Error: indexing with non-number keys are not supported yet [SC1090 at /tmp/jz-rival-update/full-build/strbuild/strbuild-native-flat.js:88]",
+     "measuredAt": "88f5f193"
     }
    },
    "compileMs": 70.9
@@ -7489,11 +7772,11 @@
      "parity": "ok"
     },
     "porf-native": {
-     "medianUs": 3103,
-     "bytes": 117232,
-     "memKb": 5824,
+     "medianUs": 3246,
+     "bytes": 117312,
+     "memKb": 5808,
      "parity": "fma",
-     "measuredAt": "0c61c6f3"
+     "measuredAt": "88f5f193"
     },
     "jz": {
      "medianUs": 2472,
@@ -7575,6 +7858,13 @@
      "memKb": null,
      "parity": "ok",
      "measuredAt": "07b75c20"
+    },
+    "scriptc": {
+     "medianUs": 56465,
+     "bytes": 167056,
+     "memKb": null,
+     "parity": "ok",
+     "measuredAt": "88f5f193"
     }
    },
    "compileMs": 45.8,
@@ -7698,11 +7988,11 @@
      "parity": "ok"
     },
     "porf-native": {
-     "medianUs": 395,
-     "bytes": 117232,
-     "memKb": 11728,
+     "medianUs": 442,
+     "bytes": 100784,
+     "memKb": 11712,
      "parity": "ok",
-     "measuredAt": "0c61c6f3"
+     "measuredAt": "88f5f193"
     },
     "jz": {
      "medianUs": 42,
@@ -7791,6 +8081,11 @@
      "memKb": null,
      "parity": "ok",
      "measuredAt": "07b75c20"
+    },
+    "scriptc": {
+     "status": "fail",
+     "reason": "exit 1: Uncaught Error: loose equality (== and !=) is not supported yet [SC1040 at /tmp/jz-rival-update/full-build/tokenizer/tokenizer-native-flat.js:60]",
+     "measuredAt": "88f5f193"
     }
    },
    "compileMs": 56
@@ -7841,11 +8136,11 @@
      "parity": "ok"
     },
     "porf-native": {
-     "medianUs": 2576,
-     "bytes": 117248,
-     "memKb": 2544,
+     "medianUs": 2891,
+     "bytes": 117296,
+     "memKb": 2528,
      "parity": "ok",
-     "measuredAt": "0c61c6f3"
+     "measuredAt": "88f5f193"
     },
     "jz": {
      "medianUs": 655,
@@ -7901,6 +8196,11 @@
      "memKb": null,
      "parity": "ok",
      "measuredAt": "07b75c20"
+    },
+    "scriptc": {
+     "status": "fail",
+     "reason": "exit 1: Uncaught Error: comparing non-number, non-string values are not supported yet [SC1043 at /tmp/jz-rival-update/full-build/trace/trace-native-flat.js:101]",
+     "measuredAt": "88f5f193"
     }
    },
    "compileMs": 58.7,
@@ -7994,11 +8294,11 @@
      "parity": "ok"
     },
     "porf-native": {
-     "medianUs": 57892,
-     "bytes": 117224,
-     "memKb": 1696,
+     "medianUs": 59591,
+     "bytes": 117304,
+     "memKb": 1680,
      "parity": "ok",
-     "measuredAt": "0c61c6f3"
+     "measuredAt": "88f5f193"
     },
     "jz": {
      "medianUs": 5942,
@@ -8080,6 +8380,11 @@
      "memKb": null,
      "parity": "ok",
      "measuredAt": "07b75c20"
+    },
+    "scriptc": {
+     "status": "fail",
+     "reason": "exit 1: Uncaught Error: the '|' operator on 'any'-typed values runs in the embedded dynamic engine, which this build does not include [SC2011 at /tmp/jz-rival-update/full-build/vm/vm-native-flat.js:100]",
+     "measuredAt": "88f5f193"
     }
    },
    "compileMs": 45.1,
@@ -8179,8 +8484,8 @@
     },
     "porf-native": {
      "status": "fail",
-     "reason": "exit 1: Uncaught Error: Bad export name at 5:9\n        0.29 real         0.00 user         0.00 sys\n             3522560  maximum resident set size\n                   0  average shared memory size\n                   0  average unshared data size\n  ",
-     "measuredAt": "0c61c6f3"
+     "reason": "exit 1: Uncaught Error: Bad export name at 5:9\n        0.27 real         0.00 user         0.00 sys\n             3211264  maximum resident set size\n                   0  average shared memory size\n                   0  average unshared data size\n  ",
+     "measuredAt": "88f5f193"
     },
     "jz-w2c": {
      "medianUs": 808,
@@ -8193,6 +8498,11 @@
      "status": "fail",
      "reason": "exit null: SIGSEGV",
      "measuredAt": "07b75c20"
+    },
+    "scriptc": {
+     "status": "fail",
+     "reason": "Command failed: /tmp/jz-rival-update/scriptc-current build /tmp/jz-rival-update/full-build/watr/watr-native-flat.js -o /tmp/jz-rival-update/full-build/watr/watr-scriptc\n/tmp/jz-rival-update/full-build/watr/watr-native-flat.js:1:1 - error SC9001: internal compiler error: union u11: arm 1 is union — please report this\n\n  1 | const medianUs = (samples) => {\n    | ^\n  2 |   for (let i = 1; i < samples.length; i++) {\n\n/tmp/jz-rival-update/full-build/watr/watr-native-flat.js:1941:5 - error SC9001: internal compiler error: in %fn99: local \"%setVal\" has bare unit type nullT — please report this\n\n  1940 |     // (code): the item appended to the section buffer `out` through the per-function `scratch`; returns its length\n  1941 |     (body, ctx, out, scratch) => {\n       |     ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n  1942 |       let [typeidx, param] = body.shift();\n\n/tmp/jz-rival-update/full-build/watr/watr-native-flat.js:1941:5 - error SC9001: internal compiler error: in %fn99: local \"%setVal\" has bare unit type nullT — please report this\n\n  1940 |     // (code): the item appended to the section buffer `out` through the per-function `scratch`; returns its length\n  1941 |     (body, ctx, out, scratch) => {\n       |     ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n  1942 |       let [typeidx, param] = body.shift();\n\n/tmp/jz-rival-update/full-build/watr/watr-native-flat.js:1941:5 - error SC9001: internal compiler error: in %fn99: local \"%setVal\" has bare unit type nullT — please report this\n\n  1940 |     // (code): the item appended to the section buffer `out` through the per-function `scratch`; returns its length\n  1941 |     (body, ctx, out, scratch) => {\n       |     ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n  1942 |       let [typeidx, param] = body.shift();\n\n/tmp/jz-rival-update/full-build/watr/watr-native-flat.js:1980:52 - error SC9001: internal compiler error: in %fn99: bare unitLit 'null' outside a unionWrap — please report this\n\n  1979 |       }\n  1980 |       ctx.local = ctx.block = ctx.meta = ctx.loc = null;\n       |                                                    ^~~~\n  1981 |       const size = uleb(locals.length + bytes.length);\n\n/tmp/jz-rival-update/full-build/watr/watr-native-flat.js:2376:22 - error SC9001: internal compiler error: in %fn207: local \"%setVal\" has bare unit type nullT — please report this\n\n  2375 |   };\n  2376 |   var codeItemSize = (body, ctx) => {\n       |                      ^~~~~~~~~~~~~~~~\n  2377 |     let [typeidx, param] = body.shift();\n\n/tmp/jz-rival-update/full-build/watr/watr-native-flat.js:2376:22 - error SC9001: internal compiler error: in %fn207: local \"%setVal\" has bare unit type nullT — please report this\n\n  2375 |   };\n  2376 |   var codeItemSize = (body, ctx) => {\n       |                      ^~~~~~~~~~~~~~~~\n  2377 |     let [typeidx, param] = body.shift();\n\n/tmp/jz-rival-update/full-build/watr/watr-native-flat.js:2407:40 - error SC9001: internal compiler error: in %fn207: bare unitLit 'null' outside a unionWrap — please report this\n\n  2406 |     }\n  2407 |     ctx.local = ctx.block = ctx.meta = null;\n       |                                        ^~~~\n  2408 |     const bodyLen = locals.length + bytesLen;\n\n8 errors.\n",
+     "measuredAt": "88f5f193"
     }
    }
   },
@@ -8256,11 +8566,11 @@
      "parity": "ok"
     },
     "porf-native": {
-     "medianUs": 148933,
-     "bytes": 117224,
-     "memKb": 3056,
+     "medianUs": 148208,
+     "bytes": 117288,
+     "memKb": 3024,
      "parity": "ok",
-     "measuredAt": "0c61c6f3"
+     "measuredAt": "88f5f193"
     },
     "jz": {
      "medianUs": 5337,
@@ -8342,6 +8652,11 @@
      "memKb": null,
      "parity": "ok",
      "measuredAt": "07b75c20"
+    },
+    "scriptc": {
+     "status": "fail",
+     "reason": "exit 1: Uncaught Error: the '&' operator on 'any'-typed values runs in the embedded dynamic engine, which this build does not include [SC2011 at /tmp/jz-rival-update/full-build/wav/wav-native-flat.js:74]",
+     "measuredAt": "88f5f193"
     }
    },
    "compileMs": 46.3
@@ -8406,11 +8721,11 @@
      "parity": "ok"
     },
     "porf-native": {
-     "medianUs": 32352,
-     "bytes": 117248,
+     "medianUs": 33078,
+     "bytes": 133824,
      "memKb": 13984,
      "parity": "ok",
-     "measuredAt": "0c61c6f3"
+     "measuredAt": "88f5f193"
     },
     "jz": {
      "medianUs": 659,
@@ -8499,6 +8814,11 @@
      "memKb": null,
      "parity": "ok",
      "measuredAt": "07b75c20"
+    },
+    "scriptc": {
+     "status": "fail",
+     "reason": "exit 1: Uncaught Error: the '|' operator on 'any'-typed values runs in the embedded dynamic engine, which this build does not include [SC2011 at /tmp/jz-rival-update/full-build/wordcount/wordcount-native-flat.js:102]",
+     "measuredAt": "88f5f193"
     }
    },
    "compileMs": 139.1
@@ -8541,8 +8861,8 @@
     },
     "porf-native": {
      "status": "fail",
-     "reason": "Command failed: /Users/div/.local/bin/porf native /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/jz/jz-porf-flat.js -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/jz/jz-porfnat",
-     "measuredAt": "0c61c6f3"
+     "reason": "exit 1: Uncaught TypeError: Cannot mix BigInts and non-BigInts in numeric expressions\n        0.67 real         0.00 user         0.00 sys\n             7290880  maximum resident set size\n                   0  average shared memory size\n            ",
+     "measuredAt": "88f5f193"
     },
     "jz": {
      "status": "fail",
@@ -8553,6 +8873,11 @@
      "status": "fail",
      "reason": "spawnSync /tmp/jz-perry-0.5.1520/package/bin/perry ETIMEDOUT",
      "measuredAt": "07b75c20"
+    },
+    "scriptc": {
+     "status": "fail",
+     "reason": "Command failed: /tmp/jz-rival-update/scriptc-current build /tmp/jz-rival-update/full-build/jz/jz-native-flat.js -o /tmp/jz-rival-update/full-build/jz/jz-scriptc\n/tmp/jz-rival-update/full-build/jz/jz-native-flat.js:629:59 - error SC0001: This condition will always return true since this function is always defined. Did you mean to call it instead?\n\n  628 |   var prev = lookup[BACKTICK];\n  629 |   lookup[BACKTICK] = (a, prec2) => a && prec2 < ACCESS4 ? parse.asi && parse.newline ? void 0 : (skip(), [\"``\", a, ...parseBody()]) : (\n      |                                                           ^~~~~~~~~\n  630 |     // tagged\n\n/tmp/jz-rival-update/full-build/jz/jz-native-flat.js:833:5 - error SC0001: This condition will always return true since this function is always defined. Did you mean to call it instead?\n\n  832 |   keyword(\"break\", STATEMENT4 + 1, () => {\n  833 |     parse.asi && (parse.newline = false);\n      |     ^~~~~~~~~\n  834 |     const from = idx;\n\n/tmp/jz-rival-update/full-build/jz/jz-native-flat.js:845:5 - error SC0001: This condition will always return true since this function is always defined. Did you mean to call it instead?\n\n  844 |   keyword(\"continue\", STATEMENT4 + 1, () => {\n  845 |     parse.asi && (parse.newline = false);\n      |     ^~~~~~~~~\n  846 |     const from = idx;\n\n/tmp/jz-rival-update/full-build/jz/jz-native-flat.js:857:5 - error SC0001: This condition will always return true since this function is always defined. Did you mean to call it instead?\n\n  856 |   keyword(\"return\", STATEMENT4 + 1, () => {\n  857 |     parse.asi && (parse.newline = false);\n      |     ^~~~~~~~~\n  858 |     const c = parse.space();\n\n/tmp/jz-rival-update/full-build/jz/jz-native-flat.js:880:5 - error SC0001: This condition will always return true since this function is always defined. Did you mean to call it instead?\n\n  879 |   keyword(\"throw\", STATEMENT5 + 1, () => {\n  880 |     parse.asi && (parse.newline = false);\n      |     ^~~~~~~~~\n  881 |     parse.space();\n\n/tmp/jz-rival-update/full-build/jz/jz-native-flat.js:4575:27 - error SC0001: Operator '>=' cannot be applied to types 'string | number' and 'number'.\n\n  4574 |       const c = getConst(n);\n  4575 |       return c != null && c.value >= 0;\n       |                           ^~~~~~~~~~~~\n  4576 |     }\n\n/tmp/jz-rival-update/full-build/jz/jz-native-flat.js:4585:26 - error SC0001: Operator '>=' cannot be applied to types 'string | number' and 'number'.\n\n  4584 |         const c = getConst(n[i]);\n  4585 |         if (c != null && c.value >= 0) return true;\n       |                          ^~~~~~~~~~~~\n  4586 |       }\n\n/tmp/jz-rival-update/full-build/jz/jz-native-flat.js:4763:17 - error SC0001: Operator '>' cannot be applied to types 'string | number' and 'number'.\n\n  4762 |       const cb = getConst(b);\n  4763 |       if (cb && cb.value > 0 && (cb.value & cb.value - 1) === 0) {\n       |                 ^~~~~~~~~~~~\n  4764 |         const shift = Math.log2(cb.value);\n\n/tmp/jz-rival-update/full-build/jz/jz-native-flat.js:4768:17 - error SC0001: Operator '>' cannot be applied to types 'string | number' and 'number'.\n\n  4767 |       const ca = getConst(a);\n  4768 |       if (ca && ca.value > 0 && (ca.value & ca.value - 1) === 0) {\n       |                 ^~~~~~~~~~~~\n  4769 |         const shift = Math.log2(ca.value);\n\n/tmp/jz-rival-update/full-build/jz/jz-native-flat.js:4796:17 - error SC0001: Operator '>' cannot be applied to types 'string | number' and 'number'.\n\n  4795 |       const cb = getConst(b);\n  4796 |       if (cb && cb.value > 0 && (cb.value & cb.value - 1) === 0) {\n       |                 ^~~~~~~~~~~~\n  4797 |         const shift = Math.log2(cb.value);\n\n/tmp/jz-rival-update/full-build/jz/jz-native-flat.js:4811:17 - error SC0001: Operator '>' cannot be applied to types 'string | number' and 'number'.\n\n  4810 |       const cb = getConst(b);\n  4811 |       if (cb && cb.value > 0 && (cb.value & cb.value - 1) === 0) {\n       |                 ^~~~~~~~~~~~\n  4812 |         return [\"i32.and\", a, [\"i32.const\", cb.value - 1]];\n\n/tmp/jz-rival-update/full-build/jz/jz-native-flat.js:5212:21 - error SC0001: Operator '>=' cannot be applied to types 'string | number' and 'number'.\n\n  5211 |         const k = getConst(a);\n  5212 |         return k && k.value >= 0 && k.value <= 2147483647;\n       |                     ^~~~~~~~~~~~\n  5213 |       }) || X2[0] === \"i32.shr_u\" && (() => {\n\n/tmp/jz-rival-update/full-build/jz/jz-native-flat.js:5212:37 - error SC0001: Operator '<=' cannot be applied to types 'string | number' and 'number'.\n\n  5211 |         const k = getConst(a);\n  5212 |         return k && k.value >= 0 && k.value <= 2147483647;\n       |                                     ^~~~~~~~~~~~~~~~~~~~~\n  5213 |       }) || X2[0] === \"i32.shr_u\" && (() => {\n\n/tmp/jz-rival-update/full-build/jz/jz-native-flat.js:5218:21 - error SC0001: Operator '>=' cannot be applied to types 'string | number' and 'number'.\n\n  5217 |         const k = getConst(X2);\n  5218 |         return k && k.value >= 0;\n       |                     ^~~~~~~~~~~~\n  5219 |       })());\n\n/tmp/jz-rival-update/full-build/jz/jz-native-flat.js:10630:25 - error SC0001: Operator '+' cannot be applied to types 'number' and 'string | number'.\n\n  10629 |       if (base2 === null || addend === null) return;\n  10630 |       const newOffset = currentOffset + addend;\n        |                         ^~~~~~~~~~~~~~~~~~~~~~\n  10631 |       if (addend < 0 || newOffset < 0 || newOffset > 4294967295 || upper(base2) > 4294967295 - addend) return;\n\n/tmp/jz-rival-update/full-build/jz/jz-native-flat.js:10631:11 - error SC0001: Operator '<' cannot be applied to types 'string | number' and 'number'.\n\n  10630 |       const newOffset = currentOffset + addend;\n  10631 |       if (addend < 0 || newOffset < 0 || newOffset > 4294967295 || upper(base2) > 4294967295 - addend) return;\n        |           ^~~~~~~~~~\n  10632 |       const newNode = [op];\n\n/tmp/jz-rival-update/full-build/jz/jz-native-flat.js:17270:9 - error SC0001: Operator '<' cannot be applied to types 'number | boolean' and 'number'.\n\n  17269 |     const prev2 = previousSourceToken(src2, from);\n  17270 |     if (prev2[0] < 0 || !isIdentCode(src2.charCodeAt(prev2[0]))) return null;\n        |         ^~~~~~~~~~~~\n  17271 |     let start = prev2[0];\n\n/tmp/jz-rival-update/full-build/jz/jz-native-flat.js:17272:12 - error SC0001: Operator '>' cannot be applied to types 'number | boolean' and 'number'.\n\n  17271 |     let start = prev2[0];\n  17272 |     while (start > 0 && isIdentCode(src2.charCodeAt(start - 1))) start--;\n        |            ^~~~~~~~~\n  17273 |     return [src2.slice(start, prev2[0] + 1), start, prev2[1]];\n\n/tmp/jz-rival-update/full-build/jz/jz-native-flat.js:17272:66 - error SC0001: An arithmetic operand must be of type 'any', 'number', 'bigint' or an enum type.\n\n  17271 |     let start = prev2[0];\n  17272 |     while (start > 0 && isIdentCode(src2.charCodeAt(start - 1))) start--;\n        |                                                                  ^~~~~\n  17273 |     return [src2.slice(start, prev2[0] + 1), start, prev2[1]];\n\n/tmp/jz-rival-update/full-build/jz/jz-native-flat.js:17273:31 - error SC0001: Operator '+' cannot be applied to types 'number | boolean' and 'number'.\n\n  17272 |     while (start > 0 && isIdentCode(src2.charCodeAt(start - 1))) start--;\n  17273 |     return [src2.slice(start, prev2[0] + 1), start, prev2[1]];\n        |                               ^~~~~~~~~~~~\n  17274 |   };\n\n/tmp/jz-rival-update/full-build/jz/jz-native-flat.js:17278:9 - error SC0001: Operator '<' cannot be applied to types 'number | boolean' and 'number'.\n\n  17277 |     const nameEnd = previousSourceToken(src2, parenAt)[0];\n  17278 |     if (nameEnd < 0 || !isIdentCode(src2.charCodeAt(nameEnd))) return 0;\n        |         ^~~~~~~~~~~\n  17279 |     let cursor = nameEnd;\n\n/tmp/jz-rival-update/full-build/jz/jz-native-flat.js:17280:12 - error SC0001: Operator '>' cannot be applied to types 'number | boolean' and 'number'.\n\n  17279 |     let cursor = nameEnd;\n  17280 |     while (cursor > 0 && isIdentCode(src2.charCodeAt(cursor - 1))) cursor--;\n        |            ^~~~~~~~~~\n  17281 |     if (src2[cursor - 1] === \"#\") cursor--;\n\n/tmp/jz-rival-update/full-build/jz/jz-native-flat.js:17280:68 - error SC0001: An arithmetic operand must be of type 'any', 'number', 'bigint' or an enum type.\n\n  17279 |     let cursor = nameEnd;\n  17280 |     while (cursor > 0 && isIdentCode(src2.charCodeAt(cursor - 1))) cursor--;\n        |                                                                    ^~~~~~\n  17281 |     if (src2[cursor - 1] === \"#\") cursor--;\n\n/tmp/jz-rival-update/full-build/jz/jz-native-flat.js:17281:35 - error SC0001: An arithmetic operand must be of type 'any', 'number', 'bigint' or an enum type.\n\n  17280 |     while (cursor > 0 && isIdentCode(src2.charCodeAt(cursor - 1))) cursor--;\n  17281 |     if (src2[cursor - 1] === \"#\") cursor--;\n        |                                   ^~~~~~\n  17282 |     let flags = 0;\n\n/tmp/jz-rival-update/full-build/jz/jz-native-flat.js:17284:9 - error SC0001: Operator '>=' cannot be applied to types 'number | boolean' and 'number'.\n\n  17283 |     let prev2 = previousSourceToken(src2, cursor);\n  17284 |     if (prev2[0] >= 0 && src2[prev2[0]] === \"*\") {\n        |         ^~~~~~~~~~~~~\n  17285 |       cursor = prev2[0];\n\n/tmp/jz-rival-update/full-build/jz/jz-native-flat.js:17306:9 - error SC0001: Operator '>=' cannot be applied to types 'number | boolean' and 'number'.\n\n  17305 |     const boundary = previousSourceToken(src2, cursor);\n  17306 |     if (boundary[0] >= 0 && src2[boundary[0]] !== \"{\" && src2[boundary[0]] !== \"}\" && src2[boundary[0]] !== \";\" && !boundary[1]) flags |= M_BAD_BOUNDARY;\n        |         ^~~~~~~~~~~~~~~~\n  17307 |     return flags;\n\n/tmp/jz-rival-update/full-build/jz/jz-native-flat.js:17419:15 - error SC0001: Operator '>=' cannot be applied to types 'number | boolean' and 'number'.\n\n  17418 |           const prev2 = previousSourceToken(src2, start);\n  17419 |           if (prev2[0] >= 0 && src2[prev2[0]] === \";\") {\n        |               ^~~~~~~~~~~~~\n  17420 |             const beforeSemi = previousSourceToken(src2, prev2[0]);\n\n/tmp/jz-rival-update/full-build/jz/jz-native-flat.js:17424:20 - error SC0001: Operator '>=' cannot be applied to types 'number | boolean' and 'number'.\n\n  17423 |           }\n  17424 |           doTail = prev2[0] >= 0 && doBlockEnds.has(prev2[0]);\n        |                    ^~~~~~~~~~~~~\n  17425 |         }\n\n/tmp/jz-rival-update/full-build/jz/jz-native-flat.js:17430:53 - error SC0001: Operator '>=' cannot be applied to types 'string | number | boolean' and 'number'.\n\n  17429 |           const letReference = decl2 === \"let\" && forGroup[P_FOR_TOKENS] === 1 && word2 === \"in\";\n  17430 |           const lhsReady = letReference || (decl2 ? forGroup[P_FOR_TOKENS] >= 2 : forGroup[P_FOR_TOKENS] >= 1);\n        |                                                     ^~~~~~~~~~~~~~~~~~~~~~~~~~~\n  17431 |           if ((word2 === \"in\" || word2 === \"of\") && lhsReady && !forGroup[P_FOR_CONSEQUENT]) {\n\n/tmp/jz-rival-update/full-build/jz/jz-native-flat.js:17430:83 - error SC0001: Operator '>=' cannot be applied to types 'string | number | boolean' and 'number'.\n\n  17429 |           const letReference = decl2 === \"let\" && forGroup[P_FOR_TOKENS] === 1 && word2 === \"in\";\n  17430 |           const lhsReady = letReference || (decl2 ? forGroup[P_FOR_TOKENS] >= 2 : forGroup[P_FOR_TOKENS] >= 1);\n        |                                                                                   ^~~~~~~~~~~~~~~~~~~~~~~~~~~\n  17431 |           if ((word2 === \"in\" || word2 === \"of\") && lhsReady && !forGroup[P_FOR_CONSEQUENT]) {\n\n/tmp/jz-rival-update/full-build/jz/jz-native-flat.js:17440:13 - error SC0001: An arithmetic operand must be of type 'any', 'number', 'bigint' or an enum type.\n\n  17439 |               forGroup[P_FOR_DECL] = word2;\n  17440 |             forGroup[P_FOR_TOKENS]++;\n        |             ^~~~~~~~~~~~~~~~~~~~~~\n  17441 |           }\n\n/tmp/jz-rival-update/full-build/jz/jz-native-flat.js:17515:28 - error SC0001: Operator '>=' cannot be applied to types 'string | number | boolean' and 'number'.\n\n  17514 |         if (group2) {\n  17515 |           group2[P_REST] = group2[P_EXPR_DEPTH] >= 0 ? REST_EXPRESSION : REST_BINDING;\n        |                            ^~~~~~~~~~~~~~~~~~~~~~~~~\n  17516 |           group2[P_REST_DEPTH] = nesting;\n\n/tmp/jz-rival-update/full-build/jz/jz-native-flat.js:17550:136 - error SC0001: An arithmetic operand must be of type 'any', 'number', 'bigint' or an enum type.\n\n  17549 |         const parent = parens2[parens2.length - 1];\n  17550 |         if (parent && parent[P_CONTROL] === \"for\" && parent[P_BASE_DEPTH] === nesting && parent[P_SEMIS] === 0 && !parent[P_FOR_INOF]) parent[P_FOR_TOKENS]++;\n        |                                                                                                                                        ^~~~~~~~~~~~~~~~~~~~\n  17551 |         if (group2 && group2[P_REST_COMMA] && !group2[P_CONTROL]) {\n\n/tmp/jz-rival-update/full-build/jz/jz-native-flat.js:17564:136 - error SC0001: An arithmetic operand must be of type 'any', 'number', 'bigint' or an enum type.\n\n  17563 |         const group2 = parens2[parens2.length - 1];\n  17564 |         if (group2 && group2[P_CONTROL] === \"for\" && group2[P_BASE_DEPTH] === nesting && group2[P_SEMIS] === 0 && !group2[P_FOR_INOF]) group2[P_FOR_TOKENS]++;\n        |                                                                                                                                        ^~~~~~~~~~~~~~~~~~~~\n  17565 |         nesting++;\n\n/tmp/jz-rival-update/full-build/jz/jz-native-flat.js:17572:136 - error SC0001: An arithmetic operand must be of type 'any', 'number', 'bigint' or an enum type.\n\n  17571 |         const group2 = parens2[parens2.length - 1];\n  17572 |         if (group2 && group2[P_CONTROL] === \"for\" && group2[P_BASE_DEPTH] === nesting && group2[P_SEMIS] === 0 && !group2[P_FOR_INOF]) group2[P_FOR_TOKENS]++;\n        |                                                                                                                                        ^~~~~~~~~~~~~~~~~~~~\n  17573 |         nesting++;\n\n/tmp/jz-rival-update/full-build/jz/jz-native-flat.js:17582:41 - error SC0001: Operator '<' cannot be applied to types 'number' and 'string | number | boolean'.\n\n  17581 |         const group2 = parens2[parens2.length - 1];\n  17582 |         if (group2 && group2[P_REST] && nesting < group2[P_REST_DEPTH]) {\n        |                                         ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n  17583 |           if (group2[P_REST] === REST_EXPRESSION) group2[P_REST_COMMA] = false;\n\n/tmp/jz-rival-update/full-build/jz/jz-native-flat.js:17586:23 - error SC0001: Operator '>' cannot be applied to types 'string | number | boolean' and 'number'.\n\n  17585 |         }\n  17586 |         if (group2 && group2[P_EXPR_DEPTH] > nesting) group2[P_EXPR_DEPTH] = -1;\n        |                       ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n  17587 |       } else if (ch === \";\" || ch === \",\") {\n\n/tmp/jz-rival-update/full-build/jz/jz-native-flat.js:17589:102 - error SC0001: An arithmetic operand must be of type 'any', 'number', 'bigint' or an enum type.\n\n  17588 |         const group2 = parens2[parens2.length - 1];\n  17589 |         if (ch === \";\" && group2 && group2[P_CONTROL] === \"for\" && group2[P_BASE_DEPTH] === nesting) group2[P_SEMIS]++;\n        |                                                                                                      ^~~~~~~~~~~~~~~\n  17590 |         if (ch === \",\" && group2 && group2[P_CONTROL] === \"for\" && group2[P_BASE_DEPTH] === nesting && group2[P_SEMIS] === 0 && !group2[P_FOR_INOF]) group2[P_FOR_COMMAS]++;\n\n/tmp/jz-rival-update/full-build/jz/jz-native-flat.js:17590:150 - error SC0001: An arithmetic operand must be of type 'any', 'number', 'bigint' or an enum type.\n\n  17589 |         if (ch === \";\" && group2 && group2[P_CONTROL] === \"for\" && group2[P_BASE_DEPTH] === nesting) group2[P_SEMIS]++;\n  17590 |         if (ch === \",\" && group2 && group2[P_CONTROL] === \"for\" && group2[P_BASE_DEPTH] === nesting && group2[P_SEMIS] === 0 && !group2[P_FOR_INOF]) group2[P_FOR_COMMAS]++;\n        |                                                                                                                                                      ^~~~~~~~~~~~~~~~~~~~\n  17591 |         if (ch === \",\" && group2 && group2[P_REST] && group2[P_REST_DEPTH] === nesting) group2[P_REST_COMMA] = true;\n\n/tmp/jz-rival-update/full-build/jz/jz-native-flat.js:17592:37 - error SC0001: Operator '>=' cannot be applied to types 'string | number | boolean' and 'number'.\n\n  17591 |         if (ch === \",\" && group2 && group2[P_REST] && group2[P_REST_DEPTH] === nesting) group2[P_REST_COMMA] = true;\n  17592 |         if (ch === \",\" && group2 && group2[P_EXPR_DEPTH] >= nesting) group2[P_EXPR_DEPTH] = -1;\n        |                                     ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n  17593 |         optionalDepth = -1;\n\n/tmp/jz-rival-update/full-build/jz/jz-native-flat.js:17596:23 - error SC0001: Operator '<' cannot be applied to types 'string | number | boolean' and 'number'.\n\n  17595 |         const group2 = parens2[parens2.length - 1];\n  17596 |         if (group2 && group2[P_EXPR_DEPTH] < 0) group2[P_EXPR_DEPTH] = nesting;\n        |                       ^~~~~~~~~~~~~~~~~~~~~~~~\n  17597 |         if (group2 && group2[P_CONTROL] === \"for\" && group2[P_BASE_DEPTH] === nesting && group2[P_SEMIS] === 0 && !group2[P_FOR_INOF]) group2[P_FOR_INIT] = true;\n\n/tmp/jz-rival-update/full-build/jz/jz-native-flat.js:17798:9 - error SC0001: Operator '<' cannot be applied to types 'number | boolean' and 'number'.\n\n  17797 |     const close = previousSourceToken(source, boundary)[0];\n  17798 |     if (close < 0 || source[close] !== (pattern[0] === \"[]\" ? \"]\" : \"}\")) return false;\n        |         ^~~~~~~~~\n  17799 |     const comma = previousSourceToken(source, close)[0];\n\n/tmp/jz-rival-update/full-build/jz/jz-native-flat.js:17800:12 - error SC0001: Operator '>=' cannot be applied to types 'number | boolean' and 'number'.\n\n  17799 |     const comma = previousSourceToken(source, close)[0];\n  17800 |     return comma >= 0 && source[comma] === \",\";\n        |            ^~~~~~~~~~\n  17801 |   };\n\n/tmp/jz-rival-update/full-build/jz/jz-native-flat.js:46391:17 - error SC0001: The left-hand side of an 'instanceof' expression must be of type 'any', an object type or a type parameter.\n\n  46390 |     }\n  46391 |     const ren = rename2 instanceof Map ? rename2 : /* @__PURE__ */ new Map();\n        |                 ^~~~~~~\n  46392 |     if (typeof node2 === \"string\") {\n\n/tmp/jz-rival-update/full-build/jz/jz-native-flat.js:75536:60 - error SC0001: Operator '+' cannot be applied to types 'number' and 'string | number | boolean'.\n\n  75535 |     const store = STORES.get(n[0]), kind2 = store || LOADS.get(n[0]);\n  75536 |     const header = !store && a.off >= -HEADER2 && kind2 && a.off + kind2[0] <= 0;\n        |                                                            ^~~~~~~~~~~~~~~~\n  75537 |     const ok = kind2 && (header || a.off >= 0 && a.off + kind2[0] <= b.len);\n\n/tmp/jz-rival-update/full-build/jz/jz-native-flat.js:75537:50 - error SC0001: Operator '+' cannot be applied to types 'number' and 'string | number | boolean'.\n\n  75536 |     const header = !store && a.off >= -HEADER2 && kind2 && a.off + kind2[0] <= 0;\n  75537 |     const ok = kind2 && (header || a.off >= 0 && a.off + kind2[0] <= b.len);\n        |                                                  ^~~~~~~~~~~~~~~~\n  75538 |     return { root: b.root, ok, header, store: !!store, at: b.addr + a.off, size: kind2?.[0] ?? 0, type: kind2?.[1], signed: kind2?.[2] === true, val: a.val };\n\n/tmp/jz-rival-update/full-build/jz/jz-native-flat.js:75739:25 - error SC0001: Operator '<' cannot be applied to types 'number' and 'string | number | boolean'.\n\n  75738 |         const e = { node: n, vi, type: a.type, local: null, lit: isArr(a.val) && a.val[0] === `${a.type}.const` ? a.val : null };\n  75739 |         for (let k = 0; k < a.size; k++) known.set(a.at + k, { e, k });\n        |                         ^~~~~~~~~~\n  75740 |         return;\n\n/tmp/jz-rival-update/full-build/jz/jz-native-flat.js:75744:23 - error SC0001: Operator '<' cannot be applied to types 'number' and 'string | number | boolean'.\n\n  75743 |       const runs = [];\n  75744 |       for (let d = 0; d < a.size; d++) {\n        |                       ^~~~~~~~~~\n  75745 |         const p = known.get(a.at + d);\n\n/tmp/jz-rival-update/full-build/jz/jz-native-flat.js:86909:41 - error SC0001: Type '{ origin: any; name: string; kind: string; paramReps: any; eligibleSites: never[]; fallback: any; }' is missing the following properties from type '{ body: any; eligibleSites: any; factOverrides: any; fallback: any; key: any; kind: any; name: any; origin: any; paramReps: any; rest?: any; sig: any; }': body, factOverrides, key, sig\n\n  86908 |       if (kinds.inPlace !== kinds.other && !(inPlace2 && other)) continue;\n  86909 |       const clone4 = materializeVariant({ origin: func, name: `${func.name}$${kinds.key}`, kind: \"boundary-kind\", paramReps, eligibleSites: [], fallback: func });\n        |                                         ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n  86910 |       clone4.boundaryKinds = kinds;\n\n/tmp/jz-rival-update/full-build/jz/jz-native-flat.js:86966:43 - error SC0001: Type '{ origin: never; name: string; kind: string; paramReps: any; factOverrides: { k: any; patch: (r: any) => void; }[]; eligibleSites: any; fallback: never; }' is missing the following properties from type '{ body: any; eligibleSites: any; factOverrides: any; fallback: any; key: any; kind: any; name: any; origin: any; paramReps: any; rest?: any; sig: any; }': body, key, sig\n\n  86965 |         const ctors = kind2.split(\"|\");\n  86966 |         const clone4 = materializeVariant({\n        |                                           ^\n  86967 |           origin: func,\n\n/tmp/jz-rival-update/full-build/jz/jz-native-flat.js:88522:28 - error SC0001: Type '{ origin: any; name: string; kind: string; sig: { params: any; results: any[]; }; paramReps: any; factOverrides: { k: number; patch: (r: any) => void; }[]; eligibleSites: any; fallback: any; }' is missing the following properties from type '{ body: any; eligibleSites: any; factOverrides: any; fallback: any; key: any; kind: any; name: any; origin: any; paramReps: any; rest?: any; sig: any; }': body, key\n\n  88521 |         };\n  88522 |         materializeVariant({\n        |                            ^\n  88523 |           origin: func,\n\n/tmp/jz-rival-update/full-build/jz/jz-native-flat.js:88601:43 - error SC0001: Type '{ origin: any; name: string; kind: string; paramReps: any; factOverrides: { k: number; patch: (r: any) => void; }[]; eligibleSites: any; fallback: any; }' is missing the following properties from type '{ body: any; eligibleSites: any; factOverrides: any; fallback: any; key: any; kind: any; name: any; origin: any; paramReps: any; rest?: any; sig: any; }': body, key, sig\n\n  88600 |       for (const { kinds, sites: eligibleSites } of combos.values()) {\n  88601 |         const clone4 = materializeVariant({\n        |                                           ^\n  88602 |           origin: func,\n\n/tmp/jz-rival-update/full-build/jz/jz-native-flat.js:88677:41 - error SC0001: Type '{ origin: any; name: string; kind: string; sig: { params: any; results: any[]; }; paramReps: any; eligibleSites: any; fallback: any; }' is missing the following properties from type '{ body: any; eligibleSites: any; factOverrides: any; fallback: any; key: any; kind: any; name: any; origin: any; paramReps: any; rest?: any; sig: any; }': body, factOverrides, key\n\n  88676 |       };\n  88677 |       const clone4 = materializeVariant({\n        |                                         ^\n  88678 |         origin: func,\n\n/tmp/jz-rival-update/full-build/jz/jz-native-flat.js:88843:41 - error SC0001: Type '{ origin: any; name: string; kind: string; sig: { params: any; results: any[]; }; paramReps: any; factOverrides: { k: number; patch: (r: any) => void; }[]; eligibleSites: never[]; fallback: any; }' is missing the following properties from type '{ body: any; eligibleSites: any; factOverrides: any; fallback: any; key: any; kind: any; name: any; origin: any; paramReps: any; rest?: any; sig: any; }': body, key\n\n  88842 |       };\n  88843 |       const clone4 = materializeVariant({\n        |                                         ^\n  88844 |         origin: func,\n\n/tmp/jz-rival-update/full-build/jz/jz-native-flat.js:102119:28 - error SC0001: Type '{ origin: any; key: string; name: string; kind: string; body: any; eligibleSites: any; fallback: any; }' is missing the following properties from type '{ body: any; eligibleSites: any; factOverrides: any; fallback: any; key: any; kind: any; name: any; origin: any; paramReps: any; rest?: any; sig: any; }': factOverrides, paramReps, sig\n\n  102118 |         const name2 = str3 ? `${func.name}${T}s${param}${n++}` : `${func.name}${T}c${fn}`;\n  102119 |         materializeVariant({\n         |                            ^\n  102120 |           origin: func,\n\n/tmp/jz-rival-update/full-build/jz/jz-native-flat.js:104079:26 - error SC0001: Type '{ origin: any; key: string; name: string; kind: string; sig: { params: any[]; results: any[]; }; body: any; rest: null; eligibleSites: any; fallback: any; }' is missing the following properties from type '{ body: any; eligibleSites: any; factOverrides: any; fallback: any; key: any; kind: any; name: any; origin: any; paramReps: any; rest?: any; sig: any; }': factOverrides, paramReps\n\n  104078 |       const cloneName = `${name2}${T}rest${restN}`;\n  104079 |       materializeVariant({\n         |                          ^\n  104080 |         origin: func,\n\n/tmp/jz-rival-update/full-build/jz/jz-native-flat.js:104208:28 - error SC0001: Type '{ origin: never; name: string; kind: string; sig: { params: any; results: any[]; }; body: any; eligibleSites: any; fallback: never; }' is missing the following properties from type '{ body: any; eligibleSites: any; factOverrides: any; fallback: any; key: any; kind: any; name: any; origin: any; paramReps: any; rest?: any; sig: any; }': factOverrides, key, paramReps\n\n  104207 |         const params = func.sig.params.flatMap((q, i) => i === k ? keys.map((key) => ({ name: laneName(key), type: \"f64\" })) : [{ ...q }]);\n  104208 |         materializeVariant({\n         |                            ^\n  104209 |           origin: func,\n\n/tmp/jz-rival-update/full-build/jz/jz-native-flat.js:118107:18 - error SC0001: Type '{ emitter: { \"...\": () => void; \";\": (...args2: any[]) => any; \"{\": (...args2: any[]) => any[]; \",\": (...args2: any[]) => any; let: (...inits: any[]) => any; const: (...inits: any[]) => any; export: () => null; block: (...args2: any[]) => any; throw: (expr3: any) => any; ... 41 more ...; continue: (label: any) => an...' is missing the following properties from type '{ alloc: any; emitter: any; globals: any; hooks: any; host: any; optimize: any; source: any; strict: any; warnings: any; }': source, warnings\n\n  118106 |     const build2 = buildJSON ? JSON.parse(buildJSON) : null;\n  118107 |     beginSession({\n         |                  ^\n  118108 |       emitter: emitter2,\n\n/tmp/jz-rival-update/full-build/jz/jz-native-flat.js:118157:7 - error SC0001: Cannot find name '__park_write_u8'.\n\n  118156 |     if (ref !== void 0) {\n  118157 |       __park_write_u8(PARK_STRREF);\n         |       ^~~~~~~~~~~~~~~\n  118158 |       __park_write_u32(ref);\n\n/tmp/jz-rival-update/full-build/jz/jz-native-flat.js:118158:7 - error SC0001: Cannot find name '__park_write_u32'.\n\n  118157 |       __park_write_u8(PARK_STRREF);\n  118158 |       __park_write_u32(ref);\n         |       ^~~~~~~~~~~~~~~~\n  118159 |       return;\n\n/tmp/jz-rival-update/full-build/jz/jz-native-flat.js:118162:5 - error SC0001: Cannot find name '__park_write_u8'.\n\n  118161 |     parkStrings.set(text2, parkStrings.size);\n  118162 |     __park_write_u8(PARK_STRING);\n         |     ^~~~~~~~~~~~~~~\n  118163 |     __park_write_str(text2);\n\n/tmp/jz-rival-update/full-build/jz/jz-native-flat.js:118163:5 - error SC0001: Cannot find name '__park_write_str'.\n\n  118162 |     __park_write_u8(PARK_STRING);\n  118163 |     __park_write_str(text2);\n         |     ^~~~~~~~~~~~~~~~\n  118164 |   }\n\n/tmp/jz-rival-update/full-build/jz/jz-native-flat.js:118167:7 - error SC0001: Cannot find name '__park_write_u8'.\n\n  118166 |     if (value === null) {\n  118167 |       __park_write_u8(PARK_NULL);\n         |       ^~~~~~~~~~~~~~~\n  118168 |       return;\n\n/tmp/jz-rival-update/full-build/jz/jz-native-flat.js:118171:7 - error SC0001: Cannot find name '__park_write_u8'.\n\n  118170 |     if (value === void 0) {\n  118171 |       __park_write_u8(PARK_UNDEFINED);\n         |       ^~~~~~~~~~~~~~~\n  118172 |       return;\n\n/tmp/jz-rival-update/full-build/jz/jz-native-flat.js:118175:7 - error SC0001: Cannot find name '__park_write_u8'.\n\n  118174 |     if (value === false) {\n  118175 |       __park_write_u8(PARK_FALSE);\n         |       ^~~~~~~~~~~~~~~\n  118176 |       return;\n\n/tmp/jz-rival-update/full-build/jz/jz-native-flat.js:118179:7 - error SC0001: Cannot find name '__park_write_u8'.\n\n  118178 |     if (value === true) {\n  118179 |       __park_write_u8(PARK_TRUE);\n         |       ^~~~~~~~~~~~~~~\n  118180 |       return;\n\n/tmp/jz-rival-update/full-build/jz/jz-native-flat.js:118184:9 - error SC0001: Cannot find name '__park_write_u8'.\n\n  118183 |       if ((value | 0) === value && (value !== 0 || 1 / value > 0)) {\n  118184 |         __park_write_u8(PARK_INT);\n         |         ^~~~~~~~~~~~~~~\n  118185 |         __park_write_u32(value);\n\n/tmp/jz-rival-update/full-build/jz/jz-native-flat.js:118185:9 - error SC0001: Cannot find name '__park_write_u32'.\n\n  118184 |         __park_write_u8(PARK_INT);\n  118185 |         __park_write_u32(value);\n         |         ^~~~~~~~~~~~~~~~\n  118186 |         return;\n\n/tmp/jz-rival-update/full-build/jz/jz-native-flat.js:118188:7 - error SC0001: Cannot find name '__park_write_u8'.\n\n  118187 |       }\n  118188 |       __park_write_u8(PARK_NUMBER);\n         |       ^~~~~~~~~~~~~~~\n  118189 |       __park_write_f64(value);\n\n/tmp/jz-rival-update/full-build/jz/jz-native-flat.js:118189:7 - error SC0001: Cannot find name '__park_write_f64'.\n\n  118188 |       __park_write_u8(PARK_NUMBER);\n  118189 |       __park_write_f64(value);\n         |       ^~~~~~~~~~~~~~~~\n  118190 |       return;\n\n/tmp/jz-rival-update/full-build/jz/jz-native-flat.js:118197:7 - error SC0001: Cannot find name '__park_write_u8'.\n\n  118196 |     if (typeof value === \"bigint\") {\n  118197 |       __park_write_u8(PARK_BIGINT);\n         |       ^~~~~~~~~~~~~~~\n  118198 |       __park_write_i64(value);\n\n/tmp/jz-rival-update/full-build/jz/jz-native-flat.js:118198:7 - error SC0001: Cannot find name '__park_write_i64'.\n\n  118197 |       __park_write_u8(PARK_BIGINT);\n  118198 |       __park_write_i64(value);\n         |       ^~~~~~~~~~~~~~~~\n  118199 |       return;\n\n/tmp/jz-rival-update/full-build/jz/jz-native-flat.js:118207:7 - error SC0001: Cannot find name '__park_write_u8'.\n\n  118206 |       }\n  118207 |       __park_write_u8(PARK_ARRAY);\n         |       ^~~~~~~~~~~~~~~\n  118208 |       __park_write_u32(value.length);\n\n/tmp/jz-rival-update/full-build/jz/jz-native-flat.js:118208:7 - error SC0001: Cannot find name '__park_write_u32'.\n\n  118207 |       __park_write_u8(PARK_ARRAY);\n  118208 |       __park_write_u32(value.length);\n         |       ^~~~~~~~~~~~~~~~\n  118209 |       for (let i = 0; i < value.length; i++) parkValue(value[i]);\n\n/tmp/jz-rival-update/full-build/jz/jz-native-flat.js:118213:7 - error SC0001: Cannot find name '__park_write_u8'.\n\n  118212 |     if (value instanceof Map) {\n  118213 |       __park_write_u8(PARK_MAP);\n         |       ^~~~~~~~~~~~~~~\n  118214 |       __park_write_u32(value.size);\n\n/tmp/jz-rival-update/full-build/jz/jz-native-flat.js:118214:7 - error SC0001: Cannot find name '__park_write_u32'.\n\n  118213 |       __park_write_u8(PARK_MAP);\n  118214 |       __park_write_u32(value.size);\n         |       ^~~~~~~~~~~~~~~~\n  118215 |       for (const [k, v] of value) {\n\n/tmp/jz-rival-update/full-build/jz/jz-native-flat.js:118222:7 - error SC0001: Cannot find name '__park_write_u8'.\n\n  118221 |     if (value instanceof Set) {\n  118222 |       __park_write_u8(PARK_SET);\n         |       ^~~~~~~~~~~~~~~\n  118223 |       __park_write_u32(value.size);\n\n/tmp/jz-rival-update/full-build/jz/jz-native-flat.js:118223:7 - error SC0001: Cannot find name '__park_write_u32'.\n\n  118222 |       __park_write_u8(PARK_SET);\n  118223 |       __park_write_u32(value.size);\n         |       ^~~~~~~~~~~~~~~~\n  118224 |       for (const v of value) parkValue(v);\n\n/tmp/jz-rival-update/full-build/jz/jz-native-flat.js:118229:7 - error SC0001: Cannot find name '__park_write_u8'.\n\n  118228 |       const keys = Object.keys(value);\n  118229 |       __park_write_u8(PARK_OBJECT);\n         |       ^~~~~~~~~~~~~~~\n  118230 |       __park_write_u32(keys.length);\n\n/tmp/jz-rival-update/full-build/jz/jz-native-flat.js:118230:7 - error SC0001: Cannot find name '__park_write_u32'.\n\n  118229 |       __park_write_u8(PARK_OBJECT);\n  118230 |       __park_write_u32(keys.length);\n         |       ^~~~~~~~~~~~~~~~\n  118231 |       for (let i = 0; i < keys.length; i++) {\n\n/tmp/jz-rival-update/full-build/jz/jz-native-flat.js:118232:9 - error SC0001: Cannot find name '__park_write_str'.\n\n  118231 |       for (let i = 0; i < keys.length; i++) {\n  118232 |         __park_write_str(keys[i]);\n         |         ^~~~~~~~~~~~~~~~\n  118233 |         parkValue(value[keys[i]]);\n\n/tmp/jz-rival-update/full-build/jz/jz-native-flat.js:118241:18 - error SC0001: Cannot find name '__park_read_u8'.\n\n  118240 |   function unparkValue() {\n  118241 |     const tag2 = __park_read_u8();\n         |                  ^~~~~~~~~~~~~~\n  118242 |     if (tag2 === PARK_NULL) return null;\n\n/tmp/jz-rival-update/full-build/jz/jz-native-flat.js:118246:38 - error SC0001: Cannot find name '__park_read_f64'.\n\n  118245 |     if (tag2 === PARK_TRUE) return true;\n  118246 |     if (tag2 === PARK_NUMBER) return __park_read_f64();\n         |                                      ^~~~~~~~~~~~~~~\n  118247 |     if (tag2 === PARK_INT) return __park_read_u32() | 0;\n\n/tmp/jz-rival-update/full-build/jz/jz-native-flat.js:118247:35 - error SC0001: Cannot find name '__park_read_u32'.\n\n  118246 |     if (tag2 === PARK_NUMBER) return __park_read_f64();\n  118247 |     if (tag2 === PARK_INT) return __park_read_u32() | 0;\n         |                                   ^~~~~~~~~~~~~~~\n  118248 |     if (tag2 === PARK_STRING) {\n\n/tmp/jz-rival-update/full-build/jz/jz-native-flat.js:118249:21 - error SC0001: Cannot find name '__park_read_str'.\n\n  118248 |     if (tag2 === PARK_STRING) {\n  118249 |       const text2 = __park_read_str();\n         |                     ^~~~~~~~~~~~~~~\n  118250 |       unparkStrings.push(text2);\n\n/tmp/jz-rival-update/full-build/jz/jz-native-flat.js:118253:52 - error SC0001: Cannot find name '__park_read_u32'.\n\n  118252 |     }\n  118253 |     if (tag2 === PARK_STRREF) return unparkStrings[__park_read_u32() >>> 0];\n         |                                                    ^~~~~~~~~~~~~~~\n  118254 |     if (tag2 === PARK_BIGINT) return __park_read_i64();\n\n/tmp/jz-rival-update/full-build/jz/jz-native-flat.js:118254:38 - error SC0001: Cannot find name '__park_read_i64'.\n\n  118253 |     if (tag2 === PARK_STRREF) return unparkStrings[__park_read_u32() >>> 0];\n  118254 |     if (tag2 === PARK_BIGINT) return __park_read_i64();\n         |                                      ^~~~~~~~~~~~~~~\n  118255 |     if (tag2 === PARK_ARRAY) {\n\n/tmp/jz-rival-update/full-build/jz/jz-native-flat.js:118256:19 - error SC0001: Cannot find name '__park_read_u32'.\n\n  118255 |     if (tag2 === PARK_ARRAY) {\n  118256 |       const len = __park_read_u32() >>> 0;\n         |                   ^~~~~~~~~~~~~~~\n  118257 |       const out = new Array(len);\n\n/tmp/jz-rival-update/full-build/jz/jz-native-flat.js:118262:19 - error SC0001: Cannot find name '__park_read_u32'.\n\n  118261 |     if (tag2 === PARK_OBJECT) {\n  118262 |       const len = __park_read_u32() >>> 0;\n         |                   ^~~~~~~~~~~~~~~\n  118263 |       const out = {};\n\n/tmp/jz-rival-update/full-build/jz/jz-native-flat.js:118264:41 - error SC0001: Cannot find name '__park_read_str'.\n\n  118263 |       const out = {};\n  118264 |       for (let i = 0; i < len; i++) out[__park_read_str()] = unparkValue();\n         |                                         ^~~~~~~~~~~~~~~\n  118265 |       return out;\n\n/tmp/jz-rival-update/full-build/jz/jz-native-flat.js:118268:19 - error SC0001: Cannot find name '__park_read_u32'.\n\n  118267 |     if (tag2 === PARK_MAP) {\n  118268 |       const len = __park_read_u32() >>> 0;\n         |                   ^~~~~~~~~~~~~~~\n  118269 |       const out = /* @__PURE__ */ new Map();\n\n/tmp/jz-rival-update/full-build/jz/jz-native-flat.js:118277:19 - error SC0001: Cannot find name '__park_read_u32'.\n\n  118276 |     if (tag2 === PARK_SET) {\n  118277 |       const len = __park_read_u32() >>> 0;\n         |                   ^~~~~~~~~~~~~~~\n  118278 |       const out = /* @__PURE__ */ new Set();\n\n/tmp/jz-rival-update/full-build/jz/jz-native-flat.js:118285:5 - error SC0001: Cannot find name '__park_begin'.\n\n  118284 |   function checkpoint(value) {\n  118285 |     __park_begin();\n         |     ^~~~~~~~~~~~\n  118286 |     parkStrings = /* @__PURE__ */ new Map();\n\n/tmp/jz-rival-update/full-build/jz/jz-native-flat.js:118289:5 - error SC0001: Cannot find name '__park_finish'.\n\n  118288 |     parkStrings = null;\n  118289 |     __park_finish();\n         |     ^~~~~~~~~~~~~\n  118290 |     __park_rewind();\n\n/tmp/jz-rival-update/full-build/jz/jz-native-flat.js:118290:5 - error SC0001: Cannot find name '__park_rewind'.\n\n  118289 |     __park_finish();\n  118290 |     __park_rewind();\n         |     ^~~~~~~~~~~~~\n  118291 |     unparkStrings = [];\n\n95 errors.\n",
+     "measuredAt": "88f5f193"
     }
    }
   },
@@ -8585,11 +8910,11 @@
      "measuredAt": "395c3fc0"
     },
     "porf-native": {
-     "medianUs": 1421,
-     "bytes": 117248,
-     "memKb": 6656,
-     "parity": "DIFF",
-     "measuredAt": "0c61c6f3"
+     "medianUs": 1410,
+     "bytes": 117312,
+     "memKb": 6640,
+     "parity": "fma",
+     "measuredAt": "88f5f193"
     },
     "perry": {
      "medianUs": 2684,
@@ -8597,6 +8922,13 @@
      "memKb": null,
      "parity": "ok",
      "measuredAt": "07b75c20"
+    },
+    "scriptc": {
+     "medianUs": 35240,
+     "bytes": 226288,
+     "memKb": null,
+     "parity": "ok",
+     "measuredAt": "88f5f193"
     }
    },
    "compileMs": 112.8
@@ -8606,8 +8938,8 @@
    "targets": {
     "porf-native": {
      "status": "fail",
-     "reason": "Command failed: /Users/div/.local/bin/porf native /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/webaudio/webaudio-porf-flat.js -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/webaudio/webaudio-porfnat\nUncaught Error: missing #closure_env_local in onaudioprocess\n",
-     "measuredAt": "0c61c6f3"
+     "reason": "exit 1: Uncaught ReferenceError: EventTarget is not defined\n        0.18 real         0.00 user         0.00 sys\n             2048000  maximum resident set size\n                   0  average shared memory size\n                   0  average unshared",
+     "measuredAt": "88f5f193"
     },
     "v8": {
      "medianUs": 4747,
@@ -8627,6 +8959,11 @@
      "status": "fail",
      "reason": "exit 1: TypeError: Expected BaseAudioContext as first argument\n    at <anonymous>",
      "measuredAt": "07b75c20"
+    },
+    "scriptc": {
+     "status": "fail",
+     "reason": "Command failed: /tmp/jz-rival-update/scriptc-current build /tmp/jz-rival-update/full-build/webaudio/webaudio-native-flat.js -o /tmp/jz-rival-update/full-build/webaudio/webaudio-scriptc\n/tmp/jz-rival-update/full-build/webaudio/webaudio-native-flat.js:241:10 - error SC0001: Cannot assign to 'dispose' because it is a read-only property.\n\n  240 |   // node_modules/web-audio-api/src/utils.js\n  241 |   Symbol.dispose ||= /* @__PURE__ */ Symbol(\"dispose\");\n      |          ^~~~~~~\n  242 |   async function decodeAudioData(buffer, done) {\n\n/tmp/jz-rival-update/full-build/webaudio/webaudio-native-flat.js:612:5 - error SC0001: Property 'connect' in type 'AudioInput' is not assignable to the same property in base type 'AudioPort'.\n  Type '(source: any) => false | undefined' is not assignable to type '(otherPort: any) => boolean'.\n    Type 'boolean | undefined' is not assignable to type 'boolean'.\n      Type 'undefined' is not assignable to type 'boolean'.\n\n  611 |     }\n  612 |     connect(source) {\n      |     ^~~~~~~\n  613 |       if (this.connections.includes(source)) return false;\n\n/tmp/jz-rival-update/full-build/webaudio/webaudio-native-flat.js:622:5 - error SC0001: Property 'disconnect' in type 'AudioInput' is not assignable to the same property in base type 'AudioPort'.\n  Type '(source: any) => void' is not assignable to type '(otherPort: any) => boolean'.\n    Type 'void' is not assignable to type 'boolean'.\n\n  621 |     }\n  622 |     disconnect(source) {\n      |     ^~~~~~~~~~\n  623 |       let handler = this._chHandlers.get(source);\n\n/tmp/jz-rival-update/full-build/webaudio/webaudio-native-flat.js:1558:5 - error SC0001: Class 'AudioNode' defines instance member property '_tick', but extended class 'AudioDestinationNode' defines it as instance member function.\n\n  1557 |     }\n  1558 |     _tick() {\n       |     ^~~~~\n  1559 |       return this._inputs[0]._tick();\n\n/tmp/jz-rival-update/full-build/webaudio/webaudio-native-flat.js:1619:5 - error SC0001: Class 'AudioNode' defines instance member property '_tick', but extended class 'AudioScheduledSourceNode' defines it as instance member function.\n\n  1618 |     }\n  1619 |     _tick() {\n       |     ^~~~~\n  1620 |       super._tick();\n\n/tmp/jz-rival-update/full-build/webaudio/webaudio-native-flat.js:1620:13 - error SC0001: Class field '_tick' defined by the parent class is not accessible in the child class via super.\n\n  1619 |     _tick() {\n  1620 |       super._tick();\n       |             ^~~~~\n  1621 |       if (this._ended) return this._zeroBuf;\n\n/tmp/jz-rival-update/full-build/webaudio/webaudio-native-flat.js:1686:29 - error SC0001: The left-hand side of an 'instanceof' expression must be of type 'any', an object type or a type parameter.\n\n  1685 |     set buffer(val) {\n  1686 |       if (val !== null && !(val instanceof AudioBuffer))\n       |                             ^~~\n  1687 |         throw new TypeError(\"buffer must be an AudioBuffer or null\");\n\n/tmp/jz-rival-update/full-build/webaudio/webaudio-native-flat.js:2053:5 - error SC0001: Class 'AudioNode' defines instance member property '_tick', but extended class '_GainNode' defines it as instance member function.\n\n  2052 |     }\n  2053 |     _tick() {\n       |     ^~~~~\n  2054 |       super._tick();\n\n/tmp/jz-rival-update/full-build/webaudio/webaudio-native-flat.js:2054:13 - error SC0001: Class field '_tick' defined by the parent class is not accessible in the child class via super.\n\n  2053 |     _tick() {\n  2054 |       super._tick();\n       |             ^~~~~\n  2055 |       let inBuff = this._inputs[0]._tick();\n\n/tmp/jz-rival-update/full-build/webaudio/webaudio-native-flat.js:2105:5 - error SC0001: Class 'AudioNode' defines instance member property '_tick', but extended class 'StereoPannerNode' defines it as instance member function.\n\n  2104 |     }\n  2105 |     _tick() {\n       |     ^~~~~\n  2106 |       super._tick();\n\n/tmp/jz-rival-update/full-build/webaudio/webaudio-native-flat.js:2106:13 - error SC0001: Class field '_tick' defined by the parent class is not accessible in the child class via super.\n\n  2105 |     _tick() {\n  2106 |       super._tick();\n       |             ^~~~~\n  2107 |       let inBuf = this._inputs[0]._tick();\n\n/tmp/jz-rival-update/full-build/webaudio/webaudio-native-flat.js:2233:5 - error SC0001: Class 'AudioNode' defines instance member property '_tick', but extended class 'DelayNode' defines it as instance member function.\n\n  2232 |     }\n  2233 |     _tick() {\n       |     ^~~~~\n  2234 |       if (this._ticking) {\n\n/tmp/jz-rival-update/full-build/webaudio/webaudio-native-flat.js:2245:13 - error SC0001: Class field '_tick' defined by the parent class is not accessible in the child class via super.\n\n  2244 |       cycle.detected = false;\n  2245 |       super._tick();\n       |             ^~~~~\n  2246 |       let inBuf = this._inputs[0]._tick();\n\n/tmp/jz-rival-update/full-build/webaudio/webaudio-native-flat.js:2554:5 - error SC0001: Class 'AudioNode' defines instance member property '_tick', but extended class '_BiquadFilterNode' defines it as instance member function.\n\n  2553 |     }\n  2554 |     _tick() {\n       |     ^~~~~\n  2555 |       super._tick();\n\n/tmp/jz-rival-update/full-build/webaudio/webaudio-native-flat.js:2555:13 - error SC0001: Class field '_tick' defined by the parent class is not accessible in the child class via super.\n\n  2554 |     _tick() {\n  2555 |       super._tick();\n       |             ^~~~~\n  2556 |       let inBuf = this._inputs[0]._tick();\n\n/tmp/jz-rival-update/full-build/webaudio/webaudio-native-flat.js:2854:11 - error SC0001: The left-hand side of an 'instanceof' expression must be of type 'any', an object type or a type parameter.\n\n  2853 |       }\n  2854 |       if (val instanceof Float32Array) {\n       |           ^~~\n  2855 |         if (val.length < 2) throw new Error(\"curve must have at least 2 elements\");\n\n/tmp/jz-rival-update/full-build/webaudio/webaudio-native-flat.js:2881:5 - error SC0001: Class 'AudioNode' defines instance member property '_tick', but extended class 'WaveShaperNode' defines it as instance member function.\n\n  2880 |     }\n  2881 |     _tick() {\n       |     ^~~~~\n  2882 |       super._tick();\n\n/tmp/jz-rival-update/full-build/webaudio/webaudio-native-flat.js:2882:13 - error SC0001: Class field '_tick' defined by the parent class is not accessible in the child class via super.\n\n  2881 |     _tick() {\n  2882 |       super._tick();\n       |             ^~~~~\n  2883 |       let inBuf = this._inputs[0]._tick();\n\n/tmp/jz-rival-update/full-build/webaudio/webaudio-native-flat.js:3074:5 - error SC0001: Class 'AudioNode' defines instance member property '_tick', but extended class 'IIRFilterNode' defines it as instance member function.\n\n  3073 |     }\n  3074 |     _tick() {\n       |     ^~~~~\n  3075 |       super._tick();\n\n/tmp/jz-rival-update/full-build/webaudio/webaudio-native-flat.js:3075:13 - error SC0001: Class field '_tick' defined by the parent class is not accessible in the child class via super.\n\n  3074 |     _tick() {\n  3075 |       super._tick();\n       |             ^~~~~\n  3076 |       let inBuf = this._inputs[0]._tick();\n\n/tmp/jz-rival-update/full-build/webaudio/webaudio-native-flat.js:3471:5 - error SC0001: Class 'AudioNode' defines instance member property '_tick', but extended class 'ConvolverNode' defines it as instance member function.\n\n  3470 |     }\n  3471 |     _tick() {\n       |     ^~~~~\n  3472 |       super._tick();\n\n/tmp/jz-rival-update/full-build/webaudio/webaudio-native-flat.js:3472:13 - error SC0001: Class field '_tick' defined by the parent class is not accessible in the child class via super.\n\n  3471 |     _tick() {\n  3472 |       super._tick();\n       |             ^~~~~\n  3473 |       let inBuf = this._inputs[0]._tick();\n\n/tmp/jz-rival-update/full-build/webaudio/webaudio-native-flat.js:3672:5 - error SC0001: Class 'AudioNode' defines instance member property '_tick', but extended class 'DynamicsCompressorNode' defines it as instance member function.\n\n  3671 |     }\n  3672 |     _tick() {\n       |     ^~~~~\n  3673 |       super._tick();\n\n/tmp/jz-rival-update/full-build/webaudio/webaudio-native-flat.js:3673:13 - error SC0001: Class field '_tick' defined by the parent class is not accessible in the child class via super.\n\n  3672 |     _tick() {\n  3673 |       super._tick();\n       |             ^~~~~\n  3674 |       let inBuf = this._inputs[0]._tick();\n\n/tmp/jz-rival-update/full-build/webaudio/webaudio-native-flat.js:3736:15 - error SC0001: Class field '_tick' defined by the parent class is not accessible in the child class via super.\n\n  3735 |         this._lastTickTime = this.context.currentTime;\n  3736 |         super._tick();\n       |               ^~~~~\n  3737 |         let inBuf = this._inputs[0]._tick();\n\n/tmp/jz-rival-update/full-build/webaudio/webaudio-native-flat.js:3770:5 - error SC0001: Class 'AudioNode' defines instance member property '_tick', but extended class 'ChannelMergerNode' defines it as instance member function.\n\n  3769 |     }\n  3770 |     _tick() {\n       |     ^~~~~\n  3771 |       super._tick();\n\n/tmp/jz-rival-update/full-build/webaudio/webaudio-native-flat.js:3771:13 - error SC0001: Class field '_tick' defined by the parent class is not accessible in the child class via super.\n\n  3770 |     _tick() {\n  3771 |       super._tick();\n       |             ^~~~~\n  3772 |       let nInputs = this.numberOfInputs;\n\n/tmp/jz-rival-update/full-build/webaudio/webaudio-native-flat.js:3855:5 - error SC0001: Class 'AudioNode' defines instance member property '_tick', but extended class 'AnalyserNode' defines it as instance member function.\n\n  3854 |     }\n  3855 |     _tick() {\n       |     ^~~~~\n  3856 |       super._tick();\n\n/tmp/jz-rival-update/full-build/webaudio/webaudio-native-flat.js:3856:13 - error SC0001: Class field '_tick' defined by the parent class is not accessible in the child class via super.\n\n  3855 |     _tick() {\n  3856 |       super._tick();\n       |             ^~~~~\n  3857 |       let inBuf = this._inputs[0]._tick();\n\n/tmp/jz-rival-update/full-build/webaudio/webaudio-native-flat.js:3932:9 - error SC0001: Property 'onaudioprocess' implicitly has type 'any', because its set accessor lacks a parameter type annotation.\n\n  3931 |     // closure state. SPN is deprecated (W3C spec), so this pattern won't spread.\n  3932 |     set onaudioprocess(onaudioprocess) {\n       |         ^~~~~~~~~~~~~~\n  3933 |       let inputBuffer = null;\n\n/tmp/jz-rival-update/full-build/webaudio/webaudio-native-flat.js:3964:5 - error SC0001: Class 'AudioNode' defines instance member property '_tick', but extended class 'ScriptProcessorNode' defines it as instance member function.\n\n  3963 |     }\n  3964 |     _tick() {\n       |     ^~~~~\n  3965 |       super._tick();\n\n/tmp/jz-rival-update/full-build/webaudio/webaudio-native-flat.js:3965:13 - error SC0001: Class field '_tick' defined by the parent class is not accessible in the child class via super.\n\n  3964 |     _tick() {\n  3965 |       super._tick();\n       |             ^~~~~\n  3966 |       return new AudioBuffer(this.numberOfOutputChannels, BLOCK_SIZE, this.context.sampleRate);\n\n/tmp/jz-rival-update/full-build/webaudio/webaudio-native-flat.js:4219:5 - error SC0001: Class 'AudioNode' defines instance member property '_tick', but extended class 'PannerNode' defines it as instance member function.\n\n  4218 |     // --- DSP ---\n  4219 |     _tick() {\n       |     ^~~~~\n  4220 |       super._tick();\n\n/tmp/jz-rival-update/full-build/webaudio/webaudio-native-flat.js:4220:13 - error SC0001: Class field '_tick' defined by the parent class is not accessible in the child class via super.\n\n  4219 |     _tick() {\n  4220 |       super._tick();\n       |             ^~~~~\n  4221 |       let outL = this._outBuf.getChannelData(0);\n\n/tmp/jz-rival-update/full-build/webaudio/webaudio-native-flat.js:4610:5 - error SC0001: Class 'AudioNode' defines instance member property '_tick', but extended class 'MediaStreamAudioSourceNode' defines it as instance member function.\n\n  4609 |     }\n  4610 |     _tick() {\n       |     ^~~~~\n  4611 |       super._tick();\n\n/tmp/jz-rival-update/full-build/webaudio/webaudio-native-flat.js:4611:13 - error SC0001: Class field '_tick' defined by the parent class is not accessible in the child class via super.\n\n  4610 |     _tick() {\n  4611 |       super._tick();\n       |             ^~~~~\n  4612 |       let out = this._outBuf;\n\n/tmp/jz-rival-update/full-build/webaudio/webaudio-native-flat.js:4679:5 - error SC0001: Class 'AudioNode' defines instance member property '_tick', but extended class 'MediaStreamAudioDestinationNode' defines it as instance member function.\n\n  4678 |     }\n  4679 |     _tick() {\n       |     ^~~~~\n  4680 |       super._tick();\n\n/tmp/jz-rival-update/full-build/webaudio/webaudio-native-flat.js:4680:13 - error SC0001: Class field '_tick' defined by the parent class is not accessible in the child class via super.\n\n  4679 |     _tick() {\n  4680 |       super._tick();\n       |             ^~~~~\n  4681 |       let inBuf = this._inputs[0]._tick();\n\n/tmp/jz-rival-update/full-build/webaudio/webaudio-native-flat.js:4702:5 - error SC0001: Class 'AudioNode' defines instance member property '_tick', but extended class 'MediaElementAudioSourceNode' defines it as instance member function.\n\n  4701 |     }\n  4702 |     _tick() {\n       |     ^~~~~\n  4703 |       super._tick();\n\n/tmp/jz-rival-update/full-build/webaudio/webaudio-native-flat.js:4703:13 - error SC0001: Class field '_tick' defined by the parent class is not accessible in the child class via super.\n\n  4702 |     _tick() {\n  4703 |       super._tick();\n       |             ^~~~~\n  4704 |       for (let ch = 0; ch < this._outBuf.numberOfChannels; ch++) this._outBuf.getChannelData(ch).fill(0);\n\n/tmp/jz-rival-update/full-build/webaudio/webaudio-native-flat.js:4921:63 - error SC0001: Property '_frame' is used before being assigned.\n\n  4920 |         while (this.#written < this.#length) {\n  4921 |           let suspendCallbacks = this.#suspendPoints.get(this._frame);\n       |                                                               ^~~~~~\n  4922 |           if (suspendCallbacks) {\n\n/tmp/jz-rival-update/full-build/webaudio/webaudio-native-flat.js:4923:45 - error SC0001: Property '_frame' is used before being assigned.\n\n  4922 |           if (suspendCallbacks) {\n  4923 |             this.#suspendPoints.delete(this._frame);\n       |                                             ^~~~~~\n  4924 |             this._setState(\"suspended\");\n\n/tmp/jz-rival-update/full-build/webaudio/webaudio-native-flat.js:4972:11 - error SC0001: Expected 1 argument, but got 0. 'new Promise()' needs a JSDoc hint to produce a 'resolve' that can be called without arguments.\n\n  4971 |           this._continueRendering();\n  4972 |           resolve();\n       |           ^~~~~~~\n  4973 |         });\n\n43 errors.\n",
+     "measuredAt": "88f5f193"
     }
    },
    "samples": 44100,
@@ -8639,7 +8976,7 @@
    "samples": 16777216,
    "stages": 256,
    "runs": 21,
-   "ref": null,
+   "ref": 1275530752,
    "targets": {
     "perry": {
      "medianUs": 416254,
@@ -8647,6 +8984,18 @@
      "memKb": null,
      "parity": "unclassified",
      "measuredAt": "07b75c20"
+    },
+    "scriptc": {
+     "status": "fail",
+     "reason": "timeout after 60000ms",
+     "measuredAt": "88f5f193"
+    },
+    "porf-native": {
+     "medianUs": 290225,
+     "bytes": 117312,
+     "memKb": 13808,
+     "parity": "ok",
+     "measuredAt": "88f5f193"
     }
    },
    "compileMs": 61.8

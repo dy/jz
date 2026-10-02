@@ -25,6 +25,7 @@ on:
       - 'CONTRIBUTING.md'
       - 'bench/results.json'
       - 'bench/results-ci.json'
+      - 'bench/results-linux.json'
   pull_request:
     paths-ignore:
       - '**/*.md'
@@ -35,13 +36,14 @@ on:
       - 'CONTRIBUTING.md'
       - 'bench/results.json'
       - 'bench/results-ci.json'
+      - 'bench/results-linux.json'
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   # Publishing a main-branch snapshot must not be interrupted mid-transaction.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   bench:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 360
     # The publish step commits bench/results-ci.json back to main;
     # the default GITHUB_TOKEN is read-only and 403s that push without this.
@@ -53,7 +55,7 @@ jobs:
           fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
-          node-version: ${{ inputs.reference && '24' || '22' }}
+          node-version: '24'
       - run: npm ci --ignore-scripts
       - run: npm rebuild esbuild
       # Extra "Run as JS" runtimes (Deno, Bun). bench.mjs gates every target on
@@ -73,7 +75,7 @@ jobs:
         run: python3 -m pip install --break-system-packages numpy || pip install numpy || true
       # GNU time supplies RSS; SIMDe supplies wasm2c's SIMD headers.
       - name: install measurement and native headers
-        run: sudo apt-get install -y time libsimde-dev
+        run: sudo apt-get install -y time libsimde-dev clang
       # wasmtime runs the standalone `jz → wasmtime` / `jz → wasm2c` reference rows.
       - name: install wasmtime
         run: |
@@ -112,13 +114,13 @@ jobs:
       - run: npm install --ignore-scripts --no-save assemblyscript@~0.27.0 binaryen
       # Porffor's npm 0.61.x is the frozen pre-rewrite engine. The author's
       # install is the release binary (porffor.dev/install.sh); pin the tested
-      # release, alpha 4 (a415d19, 2026-08-29), by its tag so the comparison is
+      # release, alpha 13 (547c781, 2026-09-30), by its tag so the comparison is
       # reproducible; a failed rival install is fatal rather than silently
       # weakening coverage.
-      - name: porffor alpha 4 (release, pinned)
+      - name: porffor alpha 13 (release, pinned)
         env:
-          PORFFOR_RELEASE: alpha-4
-          PORFFOR_REV: a415d194e74948f0ac32b9d608153ea8720c71fd
+          PORFFOR_RELEASE: alpha-13
+          PORFFOR_REV: 547c7815125b6f02474591950f8b0dd7031a03f0
         run: |
           curl -fsSL https://porffor.dev/install.sh | sh -s -- "$PORFFOR_RELEASE"
           test -x "$HOME/.local/bin/porf"
@@ -133,6 +135,32 @@ jobs:
           echo "PERRY_NO_UPDATE_CHECK=1" >> "$GITHUB_ENV"
           echo "PERRY_UPDATE_MODE=off" >> "$GITHUB_ENV"
           perry --version
+      - name: build scriptc current source (pinned)
+        run: |
+          node scripts/install-scriptc.mjs "$RUNNER_TEMP/scriptc"
+          echo "SCRIPTC_BIN=$RUNNER_TEMP/scriptc/scriptc" >> "$GITHUB_ENV"
+          "$RUNNER_TEMP/scriptc/scriptc" --version
+      - name: install TypeScriptCompiler pre-alpha87
+        run: |
+          sudo apt-get install -y clang libcurl4-openssl-dev
+          curl -fsSL -o "$RUNNER_TEMP/tslang.tar.gz" https://github.com/ASDAlexander77/TypeScriptCompiler/releases/download/v0.0-pre-alpha87/tslang-v0.0-pre-alpha87-ubuntu-24.04-x64.tar.gz
+          echo "e1b0cbb0f7325326a2aa83921cd96d3c0a5850321b68f97cc7d9c76b8b3f13a7  $RUNNER_TEMP/tslang.tar.gz" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/tslang"
+          tar xzf "$RUNNER_TEMP/tslang.tar.gz" -C "$RUNNER_TEMP/tslang"
+          for var in GC_LIB_PATH TSLANG_LIB_PATH DEFAULT_LIB_PATH; do
+            echo "$var=$RUNNER_TEMP/tslang" >> "$GITHUB_ENV"
+          done
+          echo "TSLANG_BIN=$RUNNER_TEMP/tslang/tslang" >> "$GITHUB_ENV"
+          "$RUNNER_TEMP/tslang/tslang" --version
+      - name: native compiler installation smoke
+        run: |
+          printf 'console.log("scriptc ready");\n' > "$RUNNER_TEMP/scriptc-smoke.ts"
+          "$SCRIPTC_BIN" build "$RUNNER_TEMP/scriptc-smoke.ts" -o "$RUNNER_TEMP/scriptc-smoke"
+          test "$("$RUNNER_TEMP/scriptc-smoke")" = 'scriptc ready'
+          printf 'declare function jz_bench_now(): number;\nconst performance = { now: () => jz_bench_now() };\nconst main = () => { print(performance.now() > 0 ? "tslang ready" : "bad clock"); };\nmain();\n' > "$RUNNER_TEMP/tslang-smoke.ts"
+          clang -O2 -fPIC -c bench/_lib/tslang-clock.c -o "$RUNNER_TEMP/tslang-clock.o"
+          "$TSLANG_BIN" --emit=exe --opt --opt_level=3 --relocation-model=pic --obj="$RUNNER_TEMP/tslang-clock.o" "$RUNNER_TEMP/tslang-smoke.ts" -o "$RUNNER_TEMP/tslang-smoke"
+          test "$("$RUNNER_TEMP/tslang-smoke")" = 'tslang ready'
       - name: versions
         run: |
           node --version
@@ -233,7 +261,7 @@ jobs:
           # Seed the checksum oracle from current reference evidence, not old CI
           # results. This is a full refresh: all timings below come from this runner.
           cp bench/results.json bench/results-ci.json
-          node bench/bench.mjs --targets=nat,c-wasm,rust-wasm,go-wasm,tinygo,zig-wasm,rust,zig,go,v8,deno,bun,jsc,as,porf-native,perry,jz,jz-wasmtime,jz-w2c,wat,numpy --json=bench/results-ci.json || exit 1
+          node bench/bench.mjs --targets=nat,c-wasm,rust-wasm,go-wasm,tinygo,zig-wasm,rust,zig,go,v8,deno,bun,jsc,as,porf-native,perry,scriptc,tslang,jz,jz-wasmtime,jz-w2c,wat,numpy --json=bench/results-ci.json || exit 1
           # A missing/failed Perry lane must not silently disappear from the page.
           node --input-type=module <<'JS'
           import { readFileSync } from 'node:fs'
@@ -260,7 +288,8 @@ jobs:
                ! git diff --quiet "$GITHUB_SHA" origin/main -- . \
                  ':(glob,exclude)**/*.md' ':(glob,exclude)**/*.svg' ':(glob,exclude)**/*.html' \
                  ':(exclude).work/**' ':(exclude)LICENSE' \
-                 ':(exclude)bench/results.json' ':(exclude)bench/results-ci.json'; then
+                 ':(exclude)bench/results.json' ':(exclude)bench/results-ci.json' \
+                 ':(exclude)bench/results-linux.json'; then
               echo "stale snapshot: benchmark inputs or history changed since $GITHUB_SHA — skipping publish"
               exit 0
             fi

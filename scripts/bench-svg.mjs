@@ -43,9 +43,10 @@ export const SNAPSHOT = [
   { label: 'V8', sub: 'Node (JS)', ratio: 2.36 },
   { label: 'MoonBit', sub: 'moonrun → wasm', ratio: 4.39 },
   { label: 'Go', sub: 'gc → wasm', ratio: 4.71 },
-  { label: 'Porffor', sub: `native, runs 43 / ${SNAPSHOT_N}`, ratio: 16.56 },
+  { label: 'Porffor', sub: `native, runs 45 / ${SNAPSHOT_N}`, ratio: 16.19 },
   // High host swap and older JZ baselines: see bench/README.md for this refresh.
   { label: 'Perry', sub: `native, 53 / ${SNAPSHOT_N} (provisional)`, ratio: 61.71 },
+  { label: 'scriptc', sub: `native, runs 8 / ${SNAPSHOT_N}`, ratio: 150.10 },
 ]
 
 // native C (clang -O3, native binary) is the speed-of-light reference. Porffor
@@ -120,8 +121,8 @@ export function benchSvg(rows, cases) {
   }
 
   const caption = `geometric mean on the ${cases ? `${cases}-case benchmark corpus` : 'benchmark corpus'}; lower is faster, JZ = 1.00× baseline`
-  const scope = `Wasm rivals run in V8; Porffor, Perry and native C are native targets`
-  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" style="color-scheme:light dark" role="img" aria-label="JZ benchmark: ${scope}; ${caption}; each ball's speed is proportional to that engine's geometric-mean runtime across the corpus">
+  const scope = `Wasm rivals run in V8; Porffor, scriptc, Perry and native C run natively`
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" style="color-scheme:light dark" role="img" aria-label="JZ benchmark: ${scope}; ${caption}">
 ${rows.map(lane).join('')}
   <text x="${W / 2}" y="${H - 34}" text-anchor="middle" font-family="${FONT}" font-size="11" font-weight="600" fill="${INK}" fill-opacity="${O.scope}">${scope}</text>
   <text x="${W / 2}" y="${H - 16}" text-anchor="middle" font-family="${FONT}" font-size="11" fill="${INK}" fill-opacity="${O.cap}">${caption}</text>

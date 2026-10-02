@@ -229,6 +229,9 @@ records `{ status: 'fail', reason }` in `results.json`. The page shows a muted
 row with the reason and includes the attempt in its coverage count. Geomeans use
 only cases that completed with an accepted checksum.
 
+The corpus groups competitors by runtime, with sortable speed, memory and size
+columns. Missing measurements remain visible as dashes.
+
 The per-case view is one speed-sorted list. Substrate glyphs distinguish
 Wasm, JavaScript, and native rows. Wrong or unclassified results keep their
 measurements but receive no relative bar.
@@ -339,8 +342,9 @@ counts so a fast path that stops firing reds CI machine-independently, while
 | `jz-w2c` | JZ Wasm translated by wabt `wasm2c`, then clang `-O3`; built with `--no-tail-call` as described above |
 | `jz-w2c2` | JZ wasm translated by `w2c2` (turbolent/w2c2), then clang `-O3` — a second translator on the same wasm input, CI-smoke only; unsupported SIMD and multi-value cases record build failures. Set `W2C2_DIR`/`W2C2_BIN` if not built at `../w2c2` next to this repo |
 | `wat` | hand-written WAT baseline when a case provides `run-wat.mjs` |
-| `porf-native` | Porffor's release binary (`curl -fsSL https://porffor.dev/install.sh \| sh`, alpha 4 at the 2026-09-05 refresh; a git checkout of the same line or `PORF_BIN` otherwise), compiled through its C backend: `porf native <case>-porf-flat.js -o <bin>`. The lane measures the standalone native artifact. Its flat source uses Porffor's high-resolution `performance`; the generic shell shim would be shadowed by alpha 3's global-var lowering and fall back to millisecond `Date.now`. The engine-style `porf <file>` mode includes compilation in the measurement and produces no artifact, so it has no lane. |
-| `scriptc` | scriptc (vercel-labs, npm `scriptc`): TS/JS AOT-compiled to a **static** native binary (TypeScript-checker typing + LLVM; constructs outside its LLVM tier fall back to its C emitter, still static). `scriptc build <case>-flat.js -o <bin>`, then the binary is measured. Its `--dynamic` island (embedded quickjs-ng) is never passed: the lane measures the engine-less shipping artifact, and a case its static tier can't swallow records an honest fail. Set `SCRIPTC_BIN` to override |
+| `porf-native` | Porffor's release binary (`curl -fsSL https://porffor.dev/install.sh \| sh`, alpha 13 (`547c781`, 2026-09-30); a git checkout of the same line or `PORF_BIN` otherwise), compiled through its C backend: `porf native <case>-porf-flat.js -o <bin>`. The lane measures the standalone native artifact. Its flat source uses Porffor's high-resolution `performance`; the generic shell shim would be shadowed by alpha 3's global-var lowering and fall back to millisecond `Date.now`. The engine-style `porf <file>` mode includes compilation in the measurement and produces no artifact, so it has no lane. |
+| `scriptc` | [scriptc](https://github.com/vercel-labs/scriptc) source `6d1907a` (package version 0.1.7): JS/TS compiled through the TypeScript checker and LLVM to a native executable with its static runtime. `scriptc build <case>-native-flat.js -o <bin>` uses default release optimization and native `performance.now()`. No annotations or `--dynamic` fallback are added. Set `SCRIPTC_BIN` to override. |
+| `tslang` | [TypeScriptCompiler](https://github.com/ASDAlexander77/TypeScriptCompiler) pre-alpha87: LLVM/MLIR native output with its default library and Boehm GC. The unchanged flattened JS is saved as `.ts`; a C `clock_gettime(CLOCK_MONOTONIC)` binding supplies `performance.now()`. `tslang --emit=exe --opt --opt_level=3 --relocation-model=pic --obj=tslang-clock.o <case>.ts -o <bin>`. Set `TSLANG_BIN` to override. |
 | `perry` | [Perry](https://perryts.com/): JS/TS compiled through LLVM to a native executable with its runtime and GC. `perry compile <case>-native-flat.js -o <bin> --fp-contract off`, then run the binary. Uses the unchanged JS kernels, native `performance.now()`, default optimization and host CPU tuning; no type annotations, fast-math, or V8 fallback. Set `PERRY_BIN` to override. |
 | `jawsm` | jawsm (JS → WasmGC) when installed |
 | `javy` | Javy (`javy compile`, JS in embedded QuickJS) when installed; fenced interpreter reference, never in the headline geomean |
@@ -356,6 +360,66 @@ so timeout signals reach the binary; their RSS is unmeasured. Each invocation
 calls Perry again (its own object cache remains enabled), while paired rounds
 reuse the binary. Perry's browser/WASM backend is a separate target and is not
 measured by this native lane.
+
+scriptc 0.1.7 remains the latest npm release as of 2026-09-30. The benchmark
+uses the newer source revision
+[`6d1907a`](https://github.com/vercel-labs/scriptc/commit/6d1907aa06d8da25b19dc0981ac25e02ed22dd14),
+92 commits after that release. Build it on macOS arm64 or Linux x64/glibc with
+Node 24+, npm, clang, curl and tar:
+
+```sh
+node scripts/install-scriptc.mjs /path/to/scriptc-current
+SCRIPTC_BIN=/path/to/scriptc-current/scriptc node bench/bench.mjs --targets=scriptc
+```
+
+CI uses the same installer. It builds the compiler and runtime from the pinned
+source and uses the official 0.1.7 LLVM 22.1.8 helper; subsequent helper changes
+add cross-target support and Android TLS, leaving these native host backends
+unchanged. The launcher records both the package version and full source commit.
+
+For TypeScriptCompiler, extract the
+[pre-alpha87 Ubuntu 24.04 x64 release](https://github.com/ASDAlexander77/TypeScriptCompiler/releases/tag/v0.0-pre-alpha87),
+set `TSLANG_BIN` to its `tslang` executable, and set `GC_LIB_PATH`,
+`TSLANG_LIB_PATH`, and `DEFAULT_LIB_PATH` to the extracted directory.
+Install `clang` and `libcurl4-openssl-dev`, then run
+`node bench/bench.mjs --targets=tslang`. CI pins both compilers and the tslang
+archive's SHA-256. The release has no macOS/arm64 binary.
+Both lanes bound compilation to 120 seconds and execution to 60 seconds,
+rebuild on each invocation, and reuse artifacts within paired rounds.
+Rebuilds discard the previous artifact; a successful exit without output is a failure.
+Rejected programs and wrong checksums remain visible; they supply no timing ratios.
+In scriptc's static mode, compilation can succeed while execution rejects an
+untyped operation: `const f = (seed) => seed | 0; console.log(f(7))` throws
+`SC2011`, while the control with `seed: number` prints `7`. The benchmark keeps
+the original JavaScript; it adds neither annotations nor a dynamic engine.
+Use `--json=<file> --no-web` to record competitor results without rebuilding JZ's
+browser artifacts. Add `--merge` to preserve unmeasured target rows in that file.
+
+The 2026-09-30 refresh ran both current compilers on the 63 reference cases:
+
+| compiler | accepted results | checksum mismatches | other failures | timeouts |
+| --- | ---: | ---: | ---: | ---: |
+| scriptc `6d1907a` | 10 | 3 | 45 | 5 |
+| Porffor alpha 13 | 46 (3 documented FMA variants) | 13 | 4 | 0 |
+
+Each failure retains its diagnostic. The other competitors' stored rows are
+unchanged; all three timing anchors passed within the 10% drift limit. These
+remain partial, mixed-vintage measurements on a host with high swap use,
+recorded in `meta.machineState`. The chart labels each native lane's comparable
+coverage; wrong checksums and failures never enter its geomean.
+
+TypeScriptCompiler pre-alpha87 also produced no usable results on the 74 discovered
+cases. Its compiler and monotonic-clock installation smoke passed; corpus failures
+include unsupported array conversions, unresolved types, and runtime crashes.
+This compatibility run used Ubuntu 24.04 x64 under Rosetta on the Apple M4 Max.
+Its [separate dataset](results-linux.json) is displayed under
+[Linux validation](https://jz.js.org/bench/?machine=linux); no emulated timings
+are mixed into the reference or CI machine's ratios. Reproduce on Linux with:
+
+```sh
+JZ_BENCH_HOST_NOTE='describe the validation host' \
+node bench/bench.mjs --targets=tslang --json=bench/results-linux.json --no-web
+```
 
 The 2026-09-24 Perry 0.5.1520 refresh attempted all 63 discovered cases on an
 Apple M4 Max. All three timing anchors passed (1.026×, 1.070×, 1.029× their stored
@@ -393,8 +457,8 @@ same artifact.
 The `mem` column (`memKb` in `results.json`) is the peak resident set of the
 whole per-case process — engine + module + data — read from the child's rusage
 by wrapping every measured run in `time(1)` (`/usr/bin/time -l` on darwin, GNU
-`-v` on linux; no wrapper on the host → the field stays null, the page hides
-the row from the memory view). One number per lane run, the footprint a deploy
+`-v` on linux; no wrapper on the host → the field stays null and the page shows
+an unmeasured value). One number per lane run, the footprint a deploy
 actually pays: node-hosted rows carry the engine baseline (so same-host rows
 differ by their heap alone), native rows just the binary, `porf` compiles
 in-process each run (its deployment shape). Under `--paired` the recorded
@@ -442,8 +506,8 @@ with each other, not with wasm-in-V8.
 
 | target | median | ×v8 | size | parity |
 | --- | ---: | ---: | ---: | --- |
-| **JZ → V8 wasm** | **4.74 ms** | **1.98×** | **1.8 kB** | **ok** |
-| AssemblyScript (asc -O3 --runtime stub) | 6.43 ms | 1.46× | 1.8 kB | ok |
+| **JZ → V8 wasm** | **4.59 ms** | **2.04×** | **1.4 kB** | **ok** |
+| AssemblyScript (asc -O3 --runtime stub) | 6.30 ms | 1.49× | 1.8 kB | ok |
 | V8 (node) raw JS | 9.38 ms | 1.00× | 3.2 kB | ok |
 | hand-WAT → V8 wasm | – | – | – | fail |
 
@@ -454,8 +518,8 @@ offset fusion, and base hoisting produce the dense f64 loop.
 
 | target | median | ×v8 | size | parity |
 | --- | ---: | ---: | ---: | --- |
-| **JZ → V8 wasm** | **0.78 ms** | **10.97×** | **1.5 kB** | **ok** |
-| AssemblyScript (asc -O3 --runtime stub) | 6.69 ms | 1.27× | 1.4 kB | ok |
+| **JZ → V8 wasm** | **0.74 ms** | **11.44×** | **1.2 kB** | **ok** |
+| AssemblyScript (asc -O3 --runtime stub) | 6.53 ms | 1.30× | 1.4 kB | ok |
 | V8 (node) raw JS | 8.50 ms | 1.00× | 1.2 kB | ok |
 | hand-WAT → V8 wasm | – | – | – | fail |
 
@@ -467,8 +531,8 @@ this from JS source.
 
 | target | median | ×v8 | size | parity |
 | --- | ---: | ---: | ---: | --- |
-| **JZ → V8 wasm** | **0.14 ms** | **12.20×** | **1.1 kB** | **ok** |
-| AssemblyScript (asc -O3 --runtime stub) | 0.83 ms | 2.04× | 1.3 kB | ok |
+| **JZ → V8 wasm** | **0.12 ms** | **13.90×** | **985 B** | **ok** |
+| AssemblyScript (asc -O3 --runtime stub) | 0.74 ms | 2.28× | 1.3 kB | ok |
 | V8 (node) raw JS | 1.70 ms | 1.00× | 1014 B | ok |
 
 JZ is 12.2× faster than V8 raw JS and 6.0× faster than AS. The bimorphic
@@ -479,9 +543,9 @@ paths without falling back to generic dispatch.
 
 | target | median | ×v8 | size | parity |
 | --- | ---: | ---: | ---: | --- |
-| **JZ → V8 wasm** | **0.95 ms** | **4.03×** | **1.1 kB** | **ok** |
+| **JZ → V8 wasm** | **0.92 ms** | **4.15×** | **943 B** | **ok** |
 | V8 (node) raw JS | 3.83 ms | 1.00× | 1005 B | ok |
-| AssemblyScript (asc -O3 --runtime stub) | 9.12 ms | 0.42× | 1.3 kB | ok |
+| AssemblyScript (asc -O3 --runtime stub) | 8.96 ms | 0.43× | 1.3 kB | ok |
 | hand-WAT → V8 wasm | 3.51 ms | 1.09× | 355 B | ok |
 
 JZ is 4.0× faster than V8 raw JS and 9.6× faster than AS. The i32 hot path
@@ -492,8 +556,8 @@ overhead on every operation.
 
 | target | median | ×v8 | size | parity |
 | --- | ---: | ---: | ---: | --- |
-| **JZ → V8 wasm** | **0.05 ms** | **2.78×** | **2.0 kB** | **ok** |
-| AssemblyScript (asc -O3 --runtime stub) | 0.06 ms | 2.06× | 1.5 kB | ok |
+| **JZ → V8 wasm** | **0.04 ms** | **3.05×** | **1.4 kB** | **ok** |
+| AssemblyScript (asc -O3 --runtime stub) | 0.05 ms | 2.42× | 1.5 kB | ok |
 | V8 (node) raw JS | 0.13 ms | 1.00× | 2.0 kB | ok |
 
 JZ is 2.8× faster than V8 raw JS and 1.3× faster than AS on this
@@ -503,9 +567,9 @@ JZ is 2.8× faster than V8 raw JS and 1.3× faster than AS on this
 
 | target | median | ×v8 | size | parity |
 | --- | ---: | ---: | ---: | --- |
-| **JZ → V8 wasm** | **0.35 ms** | **1.77×** | **1.6 kB** | **ok** |
+| **JZ → V8 wasm** | **0.24 ms** | **2.63×** | **1.2 kB** | **ok** |
 | V8 (node) raw JS | 0.62 ms | 1.00× | 1.3 kB | ok |
-| AssemblyScript (asc -O3 --runtime stub) | 0.81 ms | 0.76× | 1.8 kB | ok |
+| AssemblyScript (asc -O3 --runtime stub) | 0.77 ms | 0.81× | 1.8 kB | ok |
 
 JZ is 1.8× faster than V8 raw JS and 2.3× faster than AS. Closure +
 `Array.map` lowers to a preallocated typed loop with no per-iteration alloc.
@@ -515,9 +579,9 @@ V8's JIT does not inline the closure across the `map` boundary.
 
 | target | median | ×v8 | size | parity |
 | --- | ---: | ---: | ---: | --- |
-| **JZ → V8 wasm** | **0.68 ms** | **1.87×** | **1.9 kB** | **ok** |
+| **JZ → V8 wasm** | **0.66 ms** | **1.93×** | **1.6 kB** | **ok** |
 | V8 (node) raw JS | 1.28 ms | 1.00× | 1.1 kB | ok |
-| AssemblyScript (asc -O3 --runtime stub) | 1.37 ms | 0.93× | 1.9 kB | ok |
+| AssemblyScript (asc -O3 --runtime stub) | 1.32 ms | 0.96× | 1.9 kB | ok |
 
 JZ is 1.9× faster than V8 raw JS and 2.0× faster than AS. Schema-slot
 reads are direct field offsets; the gap is small because the workload is
@@ -527,8 +591,8 @@ memory-bound.
 
 | target | median | ×v8 | size | parity |
 | --- | ---: | ---: | ---: | --- |
-| AssemblyScript (asc -O3 --runtime stub) | 8.43 ms | 1.10× | 1.3 kB | ok |
-| **JZ → V8 wasm** | **4.83 ms** | **1.92×** | **1.1 kB** | **ok** |
+| AssemblyScript (asc -O3 --runtime stub) | 7.83 ms | 1.18× | 1.3 kB | ok |
+| **JZ → V8 wasm** | **4.37 ms** | **2.12×** | **964 B** | **ok** |
 | V8 (node) raw JS | 9.27 ms | 1.00× | 1.8 kB | ok |
 
 JZ is 1.9× faster than V8 raw JS and 1.7× faster than AS. The dense f64 hot
@@ -538,7 +602,7 @@ loop uses a direct conditional-break path.
 
 | target | median | ×v8 | size | parity |
 | --- | ---: | ---: | ---: | --- |
-| **JZ → V8 wasm** | **0.13 ms** | **2.02×** | **7.9 kB** | **ok** |
+| **JZ → V8 wasm** | **0.13 ms** | **2.04×** | **7.6 kB** | **ok** |
 | V8 (node) raw JS | 0.27 ms | 1.00× | 1.2 kB | ok |
 
 JZ is 2.0× faster than V8 raw JS. The runtime parser is specialized to the
@@ -548,8 +612,8 @@ inferred JSON shape; AS is skipped because it cannot parse JSON at runtime.
 
 | target | median | ×v8 | size | parity |
 | --- | ---: | ---: | ---: | --- |
-| **JZ → V8 wasm** | **6.27 ms** | **1.10×** | **1.6 kB** | **ok** |
-| AssemblyScript (asc -O3 --runtime stub) | 7.73 ms | 0.89× | 1.8 kB | ok |
+| **JZ → V8 wasm** | **4.59 ms** | **1.50×** | **1.3 kB** | **ok** |
+| AssemblyScript (asc -O3 --runtime stub) | 7.61 ms | 0.91× | 1.8 kB | ok |
 | V8 (node) raw JS | 6.90 ms | 1.00× | 1.6 kB | ok |
 
 JZ is 1.1× faster than V8 raw JS and 1.2× faster than AS. Call-heavy
@@ -559,8 +623,8 @@ nested loops with typed-array index propagation stay on the i32 path.
 
 | target | median | ×v8 | size | parity |
 | --- | ---: | ---: | ---: | --- |
-| **JZ → V8 wasm** | **8.80 ms** | **1.09×** | **1.1 kB** | **ok** |
-| AssemblyScript (asc -O3 --runtime stub) | 8.64 ms | 1.11× | 1.3 kB | ok |
+| **JZ → V8 wasm** | **7.60 ms** | **1.26×** | **964 B** | **ok** |
+| AssemblyScript (asc -O3 --runtime stub) | 8.41 ms | 1.14× | 1.3 kB | ok |
 | V8 (node) raw JS | 9.57 ms | 1.00× | 1.8 kB | ok |
 
 JZ is 1.1× faster than V8 raw JS and ties AS. Integer narrowing and
@@ -707,7 +771,7 @@ pinned red in `WASM_TODO` — the deopt work list, loudest first.
 | target | median | ×v8 | size | parity |
 | --- | ---: | ---: | ---: | --- |
 | V8 (node) raw JS | 0.86 ms | 1.00× | 2.6 kB | ok |
-| **JZ → V8 wasm** | **1.12 ms** | **0.77×** | **284.2 kB** | **ok** |
+| **JZ → V8 wasm** | **1.14 ms** | **0.76×** | **301.5 kB** | **ok** |
 
 JZ is 1.30× slower than V8 raw JS on this large compiler bundle. The 284 kB
 artifact contains the jz-compiled watr parser, encoder, and optimizer; V8's JIT
@@ -715,37 +779,19 @@ has the advantage of profile-guided tiering on a long-running compiler.
 
 ### Lab-case native coverage: JS→native compilers and the no-EH build variant
 
-The lab cases (`jz`/`watr`/`jessie` — compiler-class workloads: real,
-multi-file, big-by-corpus-standards programs) get their own native-lane
-coverage attempt, distinct from the small-kernel corpus's `nat`/`jz-w2c`
-lanes. Two things were asked and are recorded here as-interpreted, so a
-different intent can correct them:
+The compiler workloads (`jz`, `watr`, `jessie`) run through the same native
+lanes as the smaller kernels. scriptc `6d1907a` rejects these bundles during
+compilation. Porffor alpha 13 compiles them, but the executables fail at runtime:
 
-**"scriptc" row (JS→native-compiler scale).** Read as: wire whichever
-JS-to-native-binary compilers can actually swallow these programs —
-`shermes` (Static Hermes, AOT via LLVM) first, `porf-native` (Porffor's 2026
-rewrite, AOT via its own C backend) second — as rows on the three lab cases,
-to show the scale of what a full JS→native toolchain does with real
-programs rather than microbenchmarks. *(Update 2026-08-14: scriptc now
-ships on npm and is wired as a real `scriptc` lane (static TS/JS AOT via
-LLVM, no engine), presence-gated like `shermes`; the reading above stays as
-the record this section's verdicts were measured under.)* `shermes` is not installed on the
-reference machine (no local hermes checkout; building it needs the LLVM
-toolchain from source — out of scope for a one-off row) and the target
-already gates cleanly off when the binary is absent (`available: () =>
-has(SHERMES_BIN)`), so it is a documented skip, not a measured row, here.
-`porf-native` IS live and was run against all three:
-
-| case | porf-native verdict |
+| case | Porffor alpha 13 runtime error |
 | --- | --- |
-| `jz` | **fails to compile** — Porffor's own codegen (`compiler/codegen.js`'s `generate`) overflows the JS call stack (`RangeError: Maximum call stack size exceeded`) walking the self-compiled compiler's full source graph. A Porffor-side limit, not a jz defect. |
-| `watr` | **compiles, wrong output at runtime** — `cc -flto -O3` succeeds (~330 s, ~1 GB peak RSS — legitimately slow, not hung) but the resulting binary throws `Uncaught Error: Unknown type $bin` from watr's own type-index resolution (`node_modules/watr/src/compile.js`'s `err(\`Unknown type ${idx}\`)`) on a source every other engine (V8/Deno/Bun/JSC/jz-wasm) compiles correctly. A Porffor codegen correctness bug on this input shape, not a jz/watr defect. |
-| `jessie` | **compiles, crashes at runtime** — builds in ~5 s but the binary segfaults (`SIGSEGV`, exit 139) running the parser workload. Another Porffor-side crash, not a jz/jessie defect. |
-| `webaudio` | **fails to compile** (alpha 4) — `porf native` stops with `missing #closure_env_local in onaudioprocess` (the engine's ScriptProcessorNode setter installs a closure as `this._tick`). The engine-mode run (`porf --module`) of the same bundle gets further: the invalid-Wasm bug of [porffor#380](https://github.com/CanadaHonk/porffor/issues/380) is fixed in alpha 4, `EventTarget` is undefined (a host API the engine's Emitter extends), and with an EventTarget shim it stops at `Tried for..of on non-iterable type` in `AudioParam#_assertNotInCurve`: a class with a `[Symbol.iterator]()` method (automation-events' list) is not iterable there. Porffor-side gaps, not engine defects. |
+| `jz` | `Cannot mix BigInts and non-BigInts in numeric expressions` |
+| `watr` | `Bad export name at 5:9` |
+| `jessie` | `Unexpected token at 833:1` |
+| `webaudio` | `EventTarget is not defined` |
 
-All three verdicts are recorded as `{ status: 'fail', reason }` rows in
-`results.json` (honest coverage, not a hidden skip) — the same discipline
-the small-kernel corpus's Go/Zig 43/60 rows use.
+These failures retain their diagnostics in `results.json` and do not enter
+speed ratios. Static Hermes remains unavailable on the reference machine.
 
 **No-EH build variant for the native lab rows (`jz-w2c`).** The lab cases'
 compiled wasm carries a wasm-exceptions tag section (jz lowers `try`/`catch`/
@@ -805,8 +851,8 @@ Aggregate geomean (JZ / target):
 
 | target | speed | size |
 | --- | ---: | ---: |
-| V8 (node) | **0.46×** | – |
-| AssemblyScript | **0.49×** | **1.04×** |
+| V8 (node) | **0.42×** | – |
+| AssemblyScript | **0.45×** | **0.84×** |
 
 JZ wins or ties V8 on every dense kernel case; the open V8 losses are the
 self-compile lab rows (`watr`, `jessie`) and the deliberate deopt probes above

@@ -248,6 +248,7 @@ const TESTS = [
   'bench-svg',
   'bench-porffor',
   'bench-perry',
+  'bench-competitors',
   'bench-memory',
   'bench-c',
   'native-lowering',
@@ -304,7 +305,7 @@ const KERNEL_EXCLUDE = new Set(['imports', 'external', 'cli', 'options', 'web-sm
   // never-grown: value-correct in-kernel; ONE structural assert (raw-base WAT
   // shape) is an optimization-parity gap like unswitch — re-excluded 2026-07-22
   'never-grown',
-  'self-compile-source', 'self-compile-includes', 'self-checkpoint', 'abi', 'examples', 'bench-porffor', 'bench-perry', 'bench-memory',
+  'self-compile-source', 'self-compile-includes', 'self-checkpoint', 'abi', 'examples', 'bench-porffor', 'bench-perry', 'bench-competitors', 'bench-memory',
   'eager-stdlib-parity', 'refactor-oracle',   // native harnesses: opts._eagerStdlib passthrough and scripts/refactor-oracle.mjs drive the Node compile() directly
   // 'errors','parser-bugs','destruct','closures','json' UN-EXCLUDED FOR GOOD
   // 2026-07-27: the frontier hunt fixed two of the three order-shifted rows
@@ -349,7 +350,7 @@ const LEG_INVARIANT = new Set([
   'strict', // public JS entry options, bundled modules and byte/WAT parity
   'pmath', // the benchmark's fixed JS host and speed build on every leg
   'self-checkpoint', 'self-build', 'self-compile-source', 'kernel-marks', 'eager-stdlib-parity',
-  'reachability-mutants', 'bench-c', 'bench-porffor', 'bench-perry', 'bench-memory', 'bench-svg', 'cli', 'native-lowering',
+  'reachability-mutants', 'bench-c', 'bench-porffor', 'bench-perry', 'bench-competitors', 'bench-memory', 'bench-svg', 'cli', 'native-lowering',
   'headline', 'site', 'guide', 'web-smoke',
 ])
 // Files that choose their own optimize levels (an explicit `optimize` on every
