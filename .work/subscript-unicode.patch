@@ -1,0 +1,402 @@
+Suggested upstream change for subscript 10.8.1 (from jz's src/parse.js, which
+carries the same rules as layers over subscript's parse.id and parse.space).
+
+- feature/unicode.js: a name is ID_Start, then ID_Continue, `$`, `_`, ZWNJ or
+  ZWJ, raw, as a surrogate pair or escaped; an escape must spell a name
+  character. The id test took every code unit from U+00C0 but × and ÷: it
+  missed ª µ º (ID_Start) and · (ID_Continue) and took whitespace, line
+  terminators, symbols and punctuation for letters. The private use area stays
+  a name's, for the template tag's placeholders. The space layer skips NBSP,
+  ZWNBSP, LS, PS and the space separators.
+- feature/unicode-id.js, util/gen-unicode-id.js: the range tables, generated
+  from Node's Unicode data. Tables, not \p{…}: jz compiles subscript into its
+  own compiler, whose regular expressions carry no Unicode property tables.
+- feature/asi.js, feature/comment.js: CR, LS and PS end a line as LF does, for
+  ASI (`break` LS `L` is two statements) and for a `//` comment.
+- test/unicode.js: `\u{1F600}` (an emoji) is no name; the scaling test used
+  unassigned code points after U+086A.
+
+--- a/feature/unicode.js
++++ b/feature/unicode.js
+@@ -1,23 +1,62 @@
+-// Unicode identifier extensions for JS/Jessie source.
+-// Raw escape spelling is preserved in AST identifiers.
+-import { parse, cur, idx } from '../parse.js';
++// Unicode source text for JS/Jessie (ECMAScript §12.2, §12.3, §12.7).
++// A name is ID_Start, then ID_Continue, `$`, `_`, ZWNJ or ZWJ: raw, as a
++// surrogate pair, or as a \uXXXX / \u{X…} escape spelling one (the raw
++// spelling is preserved in AST identifiers). Between tokens stand the space
++// separators, NBSP, ZWNBSP, LS and PS as well; LS and PS end a line
++// (asi.js, comment.js). Tables, not \p{…} (unicode-id.js). The private use
++// area stays a name's: subscript's template tag writes its interpolations so.
++import { parse, cur, idx, skip } from '../parse.js';
++import { ID_START, ID_PART } from './unicode-id.js';
+ 
+-const BSLASH = 92, U = 117, LBRACE = 123, RBRACE = 125, MIDDOT = 183;
++// Range boundaries, absolute: a code point is in a set when an odd number of its boundaries lie at or below it.
++const bounds = (d, b = new Int32Array(d.length), v = 0) => { for (let i = 0; i < d.length; i++) b[i] = v += d[i]; return b },
++  START = bounds(ID_START), PART = bounds(ID_PART),
++  within = (b, c, lo = 0, hi = b.length, m) => { while (lo < hi) b[m = (lo + hi) >> 1] <= c ? lo = m + 1 : hi = m; return (lo & 1) === 1 };
+ 
+ const id = parse.id,
+-  hex = c =>
+-    (c >= 48 && c <= 57) ||
+-    (c >= 65 && c <= 70) ||
+-    (c >= 97 && c <= 102),
++  pua = c => c >= 0xe000 && c <= 0xf8ff,
++  idStart = c => c < 128 ? id(c) && (c < 48 || c > 57) : within(START, c) || pua(c),
++  idPart = c => c < 128 ? !!id(c) : within(START, c) || within(PART, c) || pua(c),
++  high = c => c >= 0xd800 && c <= 0xdbff, low = c => c >= 0xdc00 && c <= 0xdfff,
++  pair = (h, l) => (h - 0xd800) * 1024 + l - 0xdc00 + 0x10000,
++  hex = c => c >= 48 && c <= 57 ? c - 48 : (c |= 32) >= 97 && c <= 102 ? c - 87 : -1;
+ 
+-  uesc = (n = idx + 2, c, cp = 0, i = 0) => {
+-    if (cur.charCodeAt(idx) !== BSLASH || cur.charCodeAt(idx + 1) !== U) return 0;
+-    if (cur.charCodeAt(n) === LBRACE) {
+-      while (hex(c = cur.charCodeAt(++n))) cp = cp * 16 + (c <= 57 ? c - 48 : (c & 31) + 9);
+-      return n > idx + 3 && cp <= 0x10ffff && cur.charCodeAt(n) === RBRACE ? n - idx + 1 : 0;
+-    }
+-    while (i < 4 && hex(cur.charCodeAt(n + i))) i++;
+-    return i === 4 ? 6 : 0;
+-  };
++// The \u escape at i: [code point, length], or undefined.
++const uesc = (i, n = i + 2, cp = 0, h, k = 0) => {
++  if (cur.charCodeAt(i) !== 92 || cur.charCodeAt(i + 1) !== 117) return;
++  if (cur.charCodeAt(n) === 123) {
++    while ((h = hex(cur.charCodeAt(++n))) >= 0) if ((cp = cp * 16 + h) > 0x10ffff) return;
++    return n > i + 3 && cur.charCodeAt(n) === 125 ? [cp, n - i + 1] : undefined;
++  }
++  for (; k < 4; k++) if ((h = hex(cur.charCodeAt(n + k))) < 0) return; else cp = cp * 16 + h;
++  return [cp, 6];
++};
+ 
+-parse.id = c => id(c) || c === MIDDOT || uesc();
+\ No newline at end of file
++// Does the code unit before i end a name character (a name continues at i)?
++const continues = (i, c = cur.charCodeAt(i - 1), j = i - 2) => {
++  if (c === 125) { while (hex(cur.charCodeAt(j)) >= 0) j--; return cur.charCodeAt(j) === 123 && cur.charCodeAt(j - 1) === 117 && cur.charCodeAt(j - 2) === 92; }
++  if (low(c)) return high(cur.charCodeAt(j)) && idPart(pair(cur.charCodeAt(j), c));
++  return i > 0 && idPart(c);
++};
++
++// A character that cannot begin a name (a digit, a combining mark) stands only where one continues.
++const named = (cp, i, len) => idStart(cp) || idPart(cp) && continues(i) ? len : 0;
++
++// The length of the name character at idx, 0 when there is none. Asked about
++// another position (the code unit after a keyword), whether it can continue a name.
++parse.id = (c, e) => {
++  if (c < 128) return id(c) ? 1 : c !== 92 ? 0 : cur.charCodeAt(idx) !== 92 ? 1 : (e = uesc(idx)) ? named(e[0], idx, e[1]) : 0;
++  if (c !== cur.charCodeAt(idx)) return high(c) || idPart(c) ? 1 : 0;
++  if (high(c)) return low(cur.charCodeAt(idx + 1)) ? named(pair(c, cur.charCodeAt(idx + 1)), idx, 2) : 0;
++  return named(c, idx, 1);
++};
++
++// WhiteSpace and LineTerminator above ASCII.
++const space = parse.space,
++  wide = c => c === 0xa0 || c === 0xfeff || c === 0x1680 || c >= 0x2000 && c <= 0x200a ||
++    c === 0x2028 || c === 0x2029 || c === 0x202f || c === 0x205f || c === 0x3000;
++
++parse.space = (cc) => {
++  while (cc = space(), cc >= 0xa0 && wide(cc)) skip();
++  return cc;
++};
+--- /dev/null
++++ b/feature/unicode-id.js
+@@ -0,0 +1,105 @@
++// Generated by util/gen-unicode-id.js from Unicode 17.0 (Node v25.9.0).
++// Do not edit: regenerate with `node util/gen-unicode-id.js`.
++//
++// The code points above ASCII of ECMAScript's IdentifierName: ID_START holds
++// ID_Start, ID_PART holds what ID_Continue adds to it (with ZWNJ and ZWJ). Each
++// is a sorted list of range boundaries [first, last + 1, …], every value the
++// distance from the one before.
++export const UNICODE_VERSION = '17.0'
++
++export const ID_START = [
++  170, 1, 10, 1, 4, 1, 5, 23, 1, 31, 1, 458, 4, 12, 14, 5, 7, 1, 1, 1, 129, 5, 1, 2,
++  2, 4, 1, 1, 6, 1, 1, 3, 1, 1, 1, 20, 1, 83, 1, 139, 8, 166, 1, 38, 2, 1, 6, 41,
++  71, 27, 4, 4, 45, 43, 35, 2, 1, 99, 1, 1, 15, 2, 7, 2, 10, 3, 2, 1, 16, 1, 1, 30,
++  29, 89, 11, 1, 24, 33, 9, 2, 4, 1, 5, 22, 4, 1, 9, 1, 3, 1, 23, 25, 7, 11, 5, 24,
++  1, 7, 16, 42, 58, 54, 3, 1, 18, 1, 7, 10, 15, 16, 4, 8, 2, 2, 2, 22, 1, 7, 1, 1,
++  3, 4, 3, 1, 16, 1, 13, 2, 1, 3, 14, 2, 10, 1, 8, 6, 4, 2, 2, 22, 1, 7, 1, 2,
++  1, 2, 1, 2, 31, 4, 1, 1, 19, 3, 16, 9, 1, 3, 1, 22, 1, 7, 1, 2, 1, 5, 3, 1,
++  18, 1, 15, 2, 23, 1, 11, 8, 2, 2, 2, 22, 1, 7, 1, 2, 1, 5, 3, 1, 30, 2, 1, 3,
++  15, 1, 17, 1, 1, 6, 3, 3, 1, 4, 3, 2, 1, 1, 1, 2, 3, 2, 3, 3, 3, 12, 22, 1,
++  52, 8, 1, 3, 1, 23, 1, 16, 3, 1, 26, 3, 1, 2, 2, 2, 30, 1, 4, 8, 1, 3, 1, 23,
++  1, 10, 1, 5, 3, 1, 30, 3, 1, 2, 15, 2, 17, 9, 1, 3, 1, 41, 2, 1, 16, 1, 5, 3,
++  8, 3, 24, 6, 5, 18, 3, 24, 1, 9, 1, 1, 2, 7, 58, 48, 1, 2, 12, 7, 58, 2, 1, 1,
++  1, 5, 1, 24, 1, 1, 1, 10, 1, 2, 9, 1, 2, 5, 1, 1, 21, 4, 32, 1, 63, 8, 1, 36,
++  27, 5, 115, 43, 20, 1, 16, 6, 4, 4, 3, 1, 3, 2, 7, 3, 4, 13, 12, 1, 17, 38, 1, 1,
++  5, 1, 2, 43, 1, 333, 1, 4, 2, 7, 1, 1, 1, 4, 2, 41, 1, 4, 2, 33, 1, 4, 2, 7,
++  1, 1, 1, 4, 2, 15, 1, 57, 1, 4, 2, 67, 37, 16, 16, 86, 2, 6, 3, 620, 2, 17, 1, 26,
++  5, 75, 3, 11, 7, 18, 13, 19, 14, 18, 14, 13, 1, 3, 15, 52, 35, 1, 4, 1, 67, 89, 7, 41,
++  1, 1, 5, 70, 10, 31, 49, 30, 2, 5, 11, 44, 4, 26, 54, 23, 9, 53, 82, 1, 93, 47, 17, 8,
++  54, 30, 13, 2, 10, 44, 26, 36, 41, 3, 10, 36, 2, 11, 5, 43, 2, 3, 41, 4, 1, 6, 1, 2,
++  3, 1, 5, 192, 64, 278, 2, 6, 2, 38, 2, 6, 2, 8, 1, 1, 1, 1, 1, 1, 1, 31, 2, 53,
++  1, 7, 1, 1, 3, 3, 1, 7, 3, 4, 2, 6, 4, 13, 5, 3, 1, 7, 116, 1, 13, 1, 16, 13,
++  101, 1, 4, 1, 2, 10, 1, 1, 2, 6, 6, 1, 1, 1, 1, 1, 1, 16, 2, 4, 5, 5, 4, 1,
++  17, 41, 2679, 229, 6, 4, 3, 2, 12, 38, 1, 1, 5, 1, 2, 56, 7, 1, 16, 23, 9, 7, 1, 7,
++  1, 7, 1, 7, 1, 7, 1, 7, 1, 7, 1, 7, 550, 3, 25, 9, 7, 5, 2, 5, 4, 86, 4, 5,
++  1, 90, 1, 4, 5, 43, 1, 94, 17, 32, 48, 16, 512, 6592, 64, 22157, 67, 46, 2, 269, 3, 16, 10, 2,
++  20, 47, 16, 31, 2, 80, 39, 9, 2, 103, 2, 82, 20, 17, 1, 3, 1, 4, 1, 23, 29, 52, 14, 50,
++  62, 6, 3, 1, 1, 2, 11, 28, 10, 23, 25, 29, 7, 47, 28, 1, 16, 5, 1, 10, 10, 5, 1, 41,
++  23, 3, 1, 8, 20, 23, 3, 1, 3, 50, 1, 1, 3, 2, 2, 5, 2, 1, 1, 1, 24, 3, 2, 11,
++  7, 3, 12, 6, 2, 6, 2, 6, 9, 7, 1, 7, 1, 43, 1, 14, 6, 115, 29, 11172, 12, 23, 4, 49,
++  8452, 366, 2, 106, 38, 7, 12, 5, 5, 1, 1, 10, 1, 13, 1, 5, 1, 1, 1, 2, 1, 2, 1, 108,
++  33, 363, 18, 64, 2, 54, 40, 12, 116, 5, 1, 135, 36, 26, 6, 26, 11, 89, 3, 6, 2, 6, 2, 6,
++  2, 3, 35, 12, 1, 26, 1, 19, 1, 2, 1, 15, 2, 14, 34, 123, 69, 53, 267, 29, 3, 49, 47, 32,
++  13, 30, 5, 38, 10, 30, 2, 36, 4, 8, 1, 5, 42, 158, 18, 36, 4, 36, 4, 40, 8, 52, 12, 11,
++  1, 15, 1, 7, 1, 2, 1, 11, 1, 15, 1, 7, 1, 2, 3, 52, 12, 311, 9, 22, 10, 8, 24, 6,
++  1, 42, 1, 9, 69, 6, 2, 1, 1, 44, 1, 2, 3, 1, 2, 23, 10, 23, 9, 31, 65, 19, 1, 2,
++  10, 22, 10, 26, 6, 26, 38, 56, 6, 2, 64, 1, 15, 4, 1, 3, 1, 29, 42, 29, 3, 29, 35, 8,
++  1, 28, 27, 54, 10, 22, 10, 19, 13, 18, 110, 73, 55, 51, 13, 51, 13, 36, 38, 28, 9, 23, 250, 42,
++  6, 2, 16, 6, 56, 29, 10, 1, 8, 22, 42, 18, 46, 21, 27, 23, 12, 53, 57, 2, 2, 1, 13, 45,
++  32, 25, 26, 36, 29, 1, 2, 1, 8, 35, 3, 1, 12, 48, 14, 4, 21, 1, 1, 1, 35, 18, 1, 25,
++  19, 2, 63, 7, 1, 1, 1, 4, 1, 15, 1, 10, 7, 47, 38, 8, 2, 2, 2, 22, 1, 7, 1, 2,
++  1, 5, 3, 1, 18, 1, 12, 5, 30, 10, 1, 1, 2, 1, 1, 38, 1, 1, 25, 1, 1, 1, 44, 53,
++  18, 4, 20, 3, 30, 48, 20, 2, 1, 1, 184, 47, 41, 4, 36, 48, 20, 1, 59, 43, 13, 1, 71, 27,
++  37, 7, 185, 44, 116, 64, 31, 8, 2, 1, 2, 8, 1, 2, 1, 24, 15, 1, 1, 1, 94, 8, 2, 39,
++  16, 1, 1, 1, 28, 1, 10, 40, 7, 1, 21, 1, 11, 46, 19, 1, 18, 73, 199, 33, 31, 9, 1, 37,
++  17, 1, 49, 30, 112, 7, 1, 2, 1, 38, 21, 1, 25, 6, 1, 2, 1, 32, 14, 1, 23, 44, 260, 19,
++  15, 1, 1, 13, 1, 34, 124, 1, 79, 922, 102, 111, 17, 196, 2636, 97, 15, 1072, 17, 6, 25, 3995, 5, 583,
++  6841, 30, 1762, 569, 7, 31, 17, 79, 17, 30, 18, 48, 16, 4, 31, 21, 5, 19, 432, 45, 211, 64, 32, 25,
++  2, 25, 44, 75, 5, 1, 66, 13, 64, 2, 1, 1, 14, 5, 9, 7382, 41, 32, 97, 115, 8701, 4, 1, 7,
++  1, 2, 1, 291, 15, 1, 29, 3, 2, 1, 14, 4, 8, 396, 2308, 107, 5, 13, 3, 9, 7, 10, 5990, 85,
++  1, 71, 1, 2, 2, 1, 2, 2, 2, 4, 1, 12, 1, 1, 1, 7, 1, 65, 1, 4, 2, 8, 1, 7,
++  1, 28, 1, 4, 1, 5, 1, 1, 3, 7, 1, 340, 2, 25, 1, 25, 1, 31, 1, 25, 1, 31, 1, 25,
++  1, 31, 1, 25, 1, 31, 1, 25, 1, 8, 1844, 31, 6, 6, 261, 62, 146, 45, 10, 7, 16, 1, 321, 30,
++  18, 44, 484, 28, 228, 30, 2, 1, 207, 31, 1, 3, 1, 2, 1, 7, 2, 5, 9, 2, 224, 7, 1, 4,
++  1, 2, 1, 15, 1, 197, 59, 68, 7, 1, 1204, 4, 1, 27, 1, 2, 1, 1, 2, 1, 1, 10, 1, 4,
++  1, 1, 1, 1, 6, 1, 4, 1, 1, 1, 1, 1, 1, 3, 1, 2, 1, 1, 2, 1, 1, 1, 1, 1,
++  1, 1, 1, 1, 1, 2, 1, 1, 2, 4, 1, 7, 1, 4, 1, 4, 1, 1, 1, 10, 1, 17, 5, 3,
++  1, 5, 1, 17, 4420, 42720, 32, 4382, 2, 5774, 2, 7473, 15, 622, 2466, 542, 1506, 4939, 5, 8490,
++]
++
++export const ID_PART = [
++  183, 1, 584, 112, 23, 1, 251, 5, 265, 45, 1, 1, 1, 2, 1, 2, 1, 1, 72, 11, 48, 31, 6, 1,
++  101, 7, 2, 6, 2, 2, 1, 4, 2, 10, 23, 1, 30, 27, 91, 11, 15, 10, 33, 9, 9, 1, 24, 4,
++  1, 9, 1, 3, 1, 5, 43, 3, 59, 9, 42, 24, 1, 33, 54, 3, 1, 18, 1, 7, 10, 2, 2, 10,
++  17, 3, 56, 1, 1, 7, 2, 2, 2, 3, 9, 1, 10, 2, 2, 10, 14, 1, 2, 3, 56, 1, 1, 5,
++  4, 2, 2, 3, 3, 1, 20, 12, 3, 1, 11, 3, 56, 1, 1, 8, 1, 3, 1, 3, 20, 2, 2, 10,
++  10, 6, 1, 3, 56, 1, 1, 7, 2, 2, 2, 3, 7, 3, 10, 2, 2, 10, 18, 1, 59, 5, 3, 3,
++  1, 4, 9, 1, 14, 10, 16, 5, 55, 1, 1, 7, 1, 3, 1, 4, 7, 2, 11, 2, 2, 10, 17, 3,
++  56, 1, 1, 7, 1, 3, 1, 4, 7, 2, 11, 2, 2, 10, 3, 1, 12, 4, 55, 2, 1, 7, 1, 3,
++  1, 4, 9, 1, 10, 2, 2, 10, 17, 3, 70, 1, 4, 6, 1, 1, 1, 8, 6, 10, 2, 2, 61, 1,
++  2, 7, 12, 8, 1, 10, 87, 1, 2, 9, 11, 7, 1, 10, 62, 2, 6, 10, 11, 1, 1, 1, 1, 1,
++  4, 2, 49, 20, 1, 2, 5, 11, 1, 36, 9, 1, 100, 20, 1, 10, 12, 4, 4, 3, 1, 3, 2, 7,
++  3, 4, 13, 12, 1, 15, 703, 3, 9, 9, 928, 4, 28, 3, 29, 2, 30, 2, 64, 32, 9, 1, 2, 10,
++  33, 3, 1, 11, 143, 1, 118, 12, 4, 12, 10, 10, 128, 11, 60, 5, 57, 10, 1, 29, 2, 11, 6, 10,
++  22, 14, 1, 31, 2, 12, 20, 5, 47, 17, 11, 10, 17, 9, 12, 3, 30, 13, 2, 10, 44, 14, 48, 20,
++  8, 10, 6, 10, 118, 3, 1, 21, 4, 1, 6, 1, 2, 3, 198, 64, 524, 2, 49, 2, 19, 1, 123, 13,
++  4, 1, 3, 12, 3070, 3, 141, 1, 96, 32, 554, 6, 105, 2, 96, 1, 29988, 10, 69, 1, 4, 10, 32, 2,
++  80, 2, 272, 1, 3, 1, 4, 1, 23, 5, 4, 1, 83, 2, 50, 18, 10, 10, 6, 18, 13, 11, 28, 8,
++  25, 13, 44, 4, 47, 14, 15, 10, 11, 1, 10, 10, 47, 14, 12, 1, 8, 2, 2, 10, 33, 3, 50, 1,
++  1, 3, 2, 2, 5, 2, 1, 1, 41, 5, 5, 2, 236, 8, 1, 2, 2, 10, 20260, 1, 737, 16, 16, 16,
++  3, 2, 24, 3, 192, 10, 37, 1, 37, 1, 663, 1, 226, 1, 149, 5, 293, 10, 1367, 3, 1, 2, 5, 4,
++  40, 3, 4, 1, 165, 2, 573, 4, 8, 10, 6, 10, 31, 5, 317, 2, 77, 6, 70, 11, 49, 4, 122, 3,
++  53, 15, 31, 11, 2, 2, 10, 4, 45, 11, 7, 1, 45, 10, 6, 3, 36, 14, 1, 10, 5, 2, 44, 1,
++  12, 3, 48, 14, 8, 4, 1, 12, 82, 12, 6, 1, 2, 1, 157, 12, 5, 10, 6, 4, 55, 2, 1, 7,
++  2, 2, 2, 3, 9, 1, 10, 2, 2, 7, 3, 5, 67, 9, 1, 1, 2, 1, 1, 4, 1, 5, 1, 1,
++  14, 2, 82, 18, 9, 10, 4, 1, 81, 20, 12, 10, 213, 7, 2, 9, 27, 2, 82, 17, 15, 10, 81, 13,
++  8, 10, 6, 20, 57, 15, 4, 10, 242, 15, 165, 10, 70, 6, 1, 2, 2, 4, 1, 1, 1, 2, 12, 10,
++  119, 7, 2, 7, 3, 1, 28, 10, 40, 7, 1, 4, 8, 1, 9, 11, 46, 16, 198, 8, 136, 10, 53, 8,
++  1, 8, 16, 10, 56, 22, 1, 14, 122, 6, 3, 1, 1, 2, 1, 7, 1, 1, 8, 10, 48, 5, 1, 2,
++  1, 5, 8, 10, 54, 10, 265, 4, 9, 2, 1, 1, 48, 7, 3, 5, 13, 11, 5349, 1, 6, 15, 11464, 28,
++  2342, 10, 86, 10, 38, 5, 59, 7, 25, 10, 534, 10, 469, 1, 1, 55, 7, 4, 81, 1, 11, 2, 19627, 2,
++  4177, 10, 518, 46, 2, 23, 542, 5, 3, 6, 8, 8, 2, 7, 30, 4, 148, 3, 1417, 50, 512, 55, 4, 50,
++  8, 1, 14, 1, 22, 5, 1, 15, 1360, 7, 1, 17, 2, 7, 1, 2, 1, 5, 100, 1, 160, 7, 9, 10,
++  356, 1, 61, 14, 498, 14, 244, 2, 1, 10, 232, 1, 2, 1, 7, 2, 5, 1, 474, 7, 109, 7, 5, 10,
++  4758, 10, 787718, 240,
++]
+--- a/feature/asi.js
++++ b/feature/asi.js
+@@ -4,7 +4,9 @@
+ // `}` as implicit terminator) lives here.
+ import { parse, prec, cur, idx, seek } from '../parse.js';
+ 
+-const SPACE = 32, LF = 10, SEMI = 59, BLOCK_END = 125, BRACKET = 91, PAREN = 40;
++const SPACE = 32, LF = 10, CR = 13, LS = 0x2028, PS = 0x2029, SEMI = 59, BLOCK_END = 125, BRACKET = 91, PAREN = 40;
++// LineTerminator (§12.3): LF, CR, LS, PS. LS and PS are whitespace too (unicode.js).
++const lt = c => c === LF || c === CR || c === LS || c === PS;
+ // prec.asi customizable before importing (default: prec[';']).
+ const lvl = prec.asi ?? prec[';'];
+ 
+@@ -24,31 +26,31 @@
+ const isStmt = n => Array.isArray(n) &&
+   (prec[n[0]] <= STMT || (n[0] === '{}' && isStmt(n[1])));
+ 
+-// LF immediately preceding the next non-space at i (used to detect `;\n`).
++// A line terminator immediately preceding the next non-space at i (used to detect `;\n`).
+ const hasLineBreak = (i, c) => {
+-  while ((c = cur.charCodeAt(i)) <= SPACE) {
+-    if (c === LF) return true;
++  while ((c = cur.charCodeAt(i)) <= SPACE || c === LS || c === PS) {
++    if (lt(c)) return true;
+     i++;
+   }
+   return false;
+ };
+ 
+-// True iff an LF immediately precedes idx (only whitespace between).
+-// Computed on demand — robust against nested expr() calls eating the LF.
++// True iff a line terminator immediately precedes idx (only whitespace between).
++// Computed on demand, so nested expr() calls that skip it cannot hide it.
+ const lineBreak = (i = idx, c) => {
+-  while (i-- > 0 && (c = cur.charCodeAt(i)) <= SPACE) if (c === LF) return true;
++  while (i-- > 0 && ((c = cur.charCodeAt(i)) <= SPACE || c === LS || c === PS)) if (lt(c)) return true;
+   return false;
+ };
+ 
+-// Override space: scan whitespace region for LFs (parse.js's space is
+-// LF-agnostic), and swallow `;\n` runs into ASI machinery (avoids deep nary `;`
+-// recursion on long files). parse.semi records that a hard terminator was
++// Override space: scan whitespace region for line terminators (parse.js's
++// space is agnostic), and swallow `;\n` runs into ASI machinery (avoids deep
++// nary `;` recursion on long files). parse.semi records that a hard terminator was
+ // consumed, so the surrounding expression knows to terminate.
+ parse.space = (cc, from) => {
+   for (;;) {
+     from = idx;
+     cc = baseSpace();
+-    while (from < idx) if (cur.charCodeAt(from++) === LF) { parse.newline = true; break; }
++    while (from < idx) if (lt(cur.charCodeAt(from++))) { parse.newline = true; break; }
+     if (cc === SEMI && hasLineBreak(idx + 1)) {
+       seek(idx + 1);
+       parse.newline = parse.semi = true;
+--- a/feature/comment.js
++++ b/feature/comment.js
+@@ -6,13 +6,19 @@
+ // Default C-style comments
+ parse.comment ??= { '//': '\n', '/*': '*/' };
+ 
++// A '\n' terminator stands for any line terminator (§12.3): LF, CR, LS, PS.
++const lineEnd = (i, c) => {
++  for (; i < cur.length; i++) if ((c = cur.charCodeAt(i)) === 10 || c === 13 || c === 0x2028 || c === 0x2029) return i;
++  return -1;
++};
++
+ // Reads parse.comment live — no derived cache to go stale when the config is
+ // extended after load (shebang.js) or reconfigured between parses.
+ parse.space = () => {
+   for (var cc, cm, s, e, i; (cc = space()); ) {
+     for (s in cm = parse.comment) {
+       if (cc === s.charCodeAt(0) && (s.length < 2 || cur.charCodeAt(idx + 1) === s.charCodeAt(1)) && (s.length < 3 || cur.substr(idx, s.length) === s)) {
+-        e = cm[s], i = cur.indexOf(e, idx + s.length);
++        e = cm[s], i = e === '\n' ? lineEnd(idx + s.length) : cur.indexOf(e, idx + s.length);
+         // line comments stop before their `\n` (ASI reads it); others consume the end mark
+         seek(i < 0 ? cur.length : e === '\n' ? i : i + e.length);
+         cc = 0; break;
+--- /dev/null
++++ b/util/gen-unicode-id.js
+@@ -0,0 +1,48 @@
++#!/usr/bin/env node
++// Regenerates feature/unicode-id.js: the code points above ASCII of
++// ECMAScript's IdentifierName (§12.7), from the running Node's Unicode data.
++// Tables, not \p{…}: a parser compiled by a compiler without Unicode property
++// tables (jz compiles subscript into its own compiler) still reads them.
++//   START: ID_Start.  PART: ID_Continue less ID_Start, with ZWNJ and ZWJ.
++// Each is a sorted list of range boundaries [first, last + 1, …], every value
++// the distance from the one before.
++import { writeFileSync } from 'node:fs'
++import { fileURLToPath } from 'node:url'
++
++const OUT = fileURLToPath(new URL('../feature/unicode-id.js', import.meta.url))
++const START = /\p{ID_Start}/u, CONT = /\p{ID_Continue}/u
++const ch = c => String.fromCodePoint(c)
++const bounds = has => {
++  const out = []
++  let inside = false
++  for (let c = 0x80; c <= 0x110000; c++) {
++    const now = c <= 0x10ffff && has(c)
++    if (now !== inside) out.push(c), inside = now
++  }
++  return out.map((v, i) => v - (i ? out[i - 1] : 0))
++}
++const lines = d => {
++  const out = []
++  for (let i = 0; i < d.length; i += 24) out.push('  ' + d.slice(i, i + 24).join(', ') + ',')
++  return out.join('\n')
++}
++const start = bounds(c => START.test(ch(c)))
++const part = bounds(c => !START.test(ch(c)) && (CONT.test(ch(c)) || c === 0x200c || c === 0x200d))
++
++writeFileSync(OUT, `// Generated by util/gen-unicode-id.js from Unicode ${process.versions.unicode} (Node ${process.version}).
++// Do not edit: regenerate with \`node util/gen-unicode-id.js\`.
++//
++// The code points above ASCII of ECMAScript's IdentifierName: ID_START holds
++// ID_Start, ID_PART holds what ID_Continue adds to it (with ZWNJ and ZWJ). Each
++// is a sorted list of range boundaries [first, last + 1, …], every value the
++// distance from the one before.
++export const UNICODE_VERSION = '${process.versions.unicode}'
++
++export const ID_START = [
++${lines(start)}
++]
++
++export const ID_PART = [
++${lines(part)}
++]
++`)
+--- a/test/unicode.js
++++ b/test/unicode.js
+@@ -17,11 +17,17 @@
+ })
+ 
+ test('unicode: \\u{XXXX} escape in identifier (astral)', () => {
+-  const result = parse('let \\u{1F600} = 1')
++  const result = parse('let \\u{1D41A} = 1')
+   is(result[0], 'let')
+-  is(result[1][1], '\\u{1F600}')
++  is(result[1][1], '\\u{1D41A}')
+ })
+ 
++test('unicode: an escape must spell a name character', () => {
++  throws(() => parse('let \\u{1F600} = 1'))       // emoji: no ID_Start
++  throws(() => parse('let \\u0031 = 1'))          // a digit cannot begin a name
++  throws(() => parse('let \\uD835\\uDC1A = 1'))   // each escape is its own code point
++})
++
+ test('unicode: \\uXXXX legacy 4-digit escape in identifier', () => {
+   const result = parse('let \\u0041 = 1')
+   is(result[0], 'let')
+@@ -55,6 +61,31 @@
+   is(result[0], '+')
+ })
+ 
++test('unicode: ID_Start below U+00C0: ª µ º', () => {
++  is(parse('unit.µs'), ['.', 'unit', 'µs'])
++  is(parse('let ª = 1, º = 2')[1][1], 'ª')
++})
++
++test('unicode: astral letter as a surrogate pair', () => {
++  is(parse('let 𝐚 = 1')[1][1], '𝐚')
++  throws(() => parse('let a😀 = 1'))
++})
++
++test('unicode: no symbols, punctuation or whitespace in a name', () => {
++  throws(() => parse('let a×b = 1'))
++  throws(() => parse('let aⸯ = 1'))
++  throws(() => parse('let ·a = 1'))                 // U+00B7 continues a name only
++  throws(() => parse('let \\u200ca = 1'))          // so does ZWNJ
++})
++
++test('unicode: whitespace and line terminators between tokens', () => {
++  is(parse('let a\u00a0= 1'), ['let', ['=', 'a', [, 1]]])
++  is(parse('\ufefflet a = 1'), ['let', ['=', 'a', [, 1]]])
++  is(parse('a\u2028b'), [';', 'a', 'b'])
++  is(parse('a // c\u2029b'), [';', 'a', 'b'])
++  is(parse('break\u2028L'), [';', ['break'], 'L'])
++})
++
+ test('unicode: Other_ID_Continue middle dot in identifier', () => {
+   // test262/language/identifiers/other_id_continue.js: `var a·;`
+   const result = parse('let a· = 1')
+@@ -68,7 +99,7 @@
+ // ============================================================================
+ 
+ test('unicode: many non-ASCII identifiers (scaling)', () => {
+-  const ids = Array.from({ length: 5000 }, (_, i) => String.fromCharCode(0x0860 + i % 64))
++  const ids = Array.from({ length: 5000 }, (_, i) => String.fromCharCode(0x0620 + i % 26))   // Arabic letters U+0620–U+0639
+   const code = ids.map(id => `let ${id} = 1`).join('\n')
+   const result = parse(code)
+   is(result[0], ';')

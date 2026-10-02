@@ -24,8 +24,14 @@ The memory evidence used by the release gate lives in
 Retained reference notes:
 
 - [BigInt representation decision](adr-0001-bigint-representation.md): existing semantic constraints.
-- [Original owner notes](todo-original.md): historical ideas, not release gates.
+- [Owner todo list](todo.md): the pinned v1 list and the targets after it, not release gates.
+- [audiojs findings](audiojs.md): what jz does with audiojs code and the shapes it still needs.
 - [Strategy](strategy.md), [marketing](marketing.md), [ecosystem](ecosystem.md): owner product notes, subordinate to the current goal.
+- [subscript-unicode.patch](subscript-unicode.patch): a proposed upstream change to subscript's identifier rules.
+
+The October 2026 consolidation kept every agent branch tip, stash and
+uncommitted worktree under `refs/archive/v1-consolidation/`
+(`git for-each-ref refs/archive`); PLAN.md names the ones still worth reading.
 
 Keep new correctness cases in tests and measurements beside their benchmark.
 Explain changes in commits. Add a document only when an enduring contract needs
