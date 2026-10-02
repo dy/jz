@@ -610,12 +610,14 @@ export function initSchema(ctx) {
     // trusts). The census's own kind lattice can't carry this proof — it
     // blanket-nulls under pointsTo='ALL' (LAYOUT.NAN_PREFIX_BITS is the live
     // case: decl-literal-only, uniformly BIGINT, kind census null).
-    if (!ctx.types?.writtenProps?.has(prop)) return false
+    // A dynamic-key reader (`o[k]`, for-in) has no receiver kind to fold: it
+    // reads the slot as a self-describing value, so a schema it reaches boxes.
+    if (!ctx.types?.writtenProps?.has(prop)) return ctx.schema.schemaDynReach(sid)
     // A heterogeneous/unknown named-written slot must self-describe each
     // BigInt value even without dynamic-key reach. A raw i64 payload cannot be
     // distinguished from an ordinary Number loaded from the same fixed slot.
     if (ctx.schema.slotVTBySid(sid, prop) !== VAL.BIGINT) return true
-    return schemaShadowed(sid)
+    return schemaShadowed(sid) || ctx.schema.schemaDynReach(sid)
   }
   /** varName convenience form — resolves sid via idOf (precise path only,
    *  same discipline as slotVT/slotI32CertainAt: a poisoned/structural name

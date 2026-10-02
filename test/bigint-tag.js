@@ -407,6 +407,28 @@ test('bigint tag: unresolved addition keeps every non-BigInt kind and string pre
   }
 })
 
+test('bigint tag: a literal field a computed key reads is a tagged slot', () => {
+  // A field only its declaration writes may hold raw bits for readers that
+  // know the schema; a computed-key read or a for-in does not, so it gets a
+  // tagged value (watr's narrowing-store mask table, read by opcode name, threw
+  // "Cannot mix BigInt and other types" in the self-compiled compiler).
+  const SRCS = [
+    `const K = { s8: 0xffn, s16: 0xffffn }; export let f = (k, v) => { const w = K[k]; return w === undefined ? -1 : (BigInt(v) & w) === w ? 1 : 0 }`,
+    `const K = { s8: 0xffn }; export let f = (k, v) => String(K[k])`,
+    `export let f = (k, v) => { const K = { s8: 0xffn, n: v }; return String(K[k]) }`,
+    `const K = { s8: 0xffn }; export let f = (k, v) => { let s = ''; for (const q in K) s += String(K[q]) + q; return s }`,
+    `const K = { s8: 0xffn }; export let f = (k, v) => String(K.s8 + BigInt(v))`,
+  ]
+  for (const src of SRCS) {
+    const host = oracle(src).f
+    for (const optimize of LEVELS) {
+      const { f } = jz(src, { optimize }).exports
+      for (const [k, v] of [['s8', 255], ['s8', 1], ['s16', 65535], ['n', 3], ['x', 0]])
+        is(f(k, v), host(k, v), `${src.slice(0, 60)} f(${k}, ${v}) (O${optimize || 0})`)
+    }
+  }
+})
+
 test('bigint tag: an array element is a tagged slot, whatever wrote it and whoever reads it', () => {
   // A literal, an index write, push/unshift, a compound update and a mapped
   // result all store one carrier; a bare read, an update's own value, an
