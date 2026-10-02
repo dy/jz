@@ -9,12 +9,47 @@ import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
 import { T } from '../src/ast.js'
 import { splitReassigned } from '../src/prepare/split-bindings.js'
+import { scanReassignedTopLevel, writtenNames } from '../src/prepare/ident-purity.js'
 import { parse } from '../src/parse.js'
 import { belowOpt, levels } from './_matrix.js'
 import { compile } from '../index.js'
 import { oracle, run, wat } from './util.js'
 
 const ARGS = [[1, 3], [5, 3], [-2, 3], [0.5, -7], [1e3, 0]]
+
+test('binding census: nested lexical frames preserve shadowing and parameter-default writes', () => {
+  const inputs = [
+    ['', []],
+    ['let a=()=>1; a=()=>2', ['a']],
+    ['let a=()=>1; const f=a=>{a=2;return()=>{a++}}', []],
+    ['let a=()=>1; const f=()=>{let a=0;return()=>{a++}}', []],
+    ['let a=()=>1; const f=(x=(a=2))=>{let a=0;a++}', ['a']],
+    ['let a=()=>1; const f=(a,x=()=>{a=2})=>x()', []],
+    ['const f=a=>{a++}; const g=()=>{a++}', ['a']],
+    ['const f=()=>{try{throw 1}catch(a){a=2}};a=3', ['a']],
+    ['const f=({x:a},...b)=>{[a,b,c]=[1,2,3]}', ['c']],
+    ['const f=()=>{(a)=2;obj.a=3;obj[0]=4}', ['a']],
+  ]
+  let retained
+  for (const [src, expected] of [...inputs, ...inputs.slice(0, 3)]) {
+    const result = scanReassignedTopLevel(parse(src))
+    is([...result].sort(), expected, src || 'empty module')
+    if (expected.length && !retained) retained = result
+    if (retained) is([...retained], ['a'], 'later scans leave prior answers intact')
+  }
+  is([...scanReassignedTopLevel(null)], [], 'zero-work scan')
+  is([...writtenNames(parse('let a=1;[a,b]=[2,3];a++'))].sort(), ['a', 'b'], 'unscoped write collector shares target handling')
+  const src = `let target=()=>1;
+    export function f(mode){
+      const local=target=>{const nested=()=>{target=9};nested();return target};
+      const defaults=(x=(target=()=>7))=>{let target=0;return x()};
+      if(mode)defaults();return[local(3),target()]
+    }`
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const expected = oracle(src), actual = run(src, { optimize })
+    for (const mode of [0, 0, 1, 0]) is(actual.f(mode), expected.f(mode), `shadow/default sequence O${optimize}`)
+  }
+})
 
 const programs = {
   'a split binding split again after folding an arm': 'export let f = (x, y) => { y = -x; let v = y; if (Math.round(3)) { y = v ? 0 : v } else { y = 0 } return ~y }',

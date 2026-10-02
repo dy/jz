@@ -29,7 +29,10 @@ const addWriteTargets = (n, out, bound) => {
 // names no binding.
 const isPattern = (p) => Array.isArray(p) && p.length <= 2 && (p[0] === '[]' || p[0] === '{}')
 const addPatternNames = (p, out, bound) => {
-  if (typeof p === 'string') { if (!bound?.has(p)) out.add(p) }
+  if (typeof p === 'string') {
+    for (let scope = bound; scope; scope = scope.parent) if (scope.names.has(p)) return
+    out.add(p)
+  }
   else if (!Array.isArray(p)) return
   else if (p[0] === '...' || p[0] === '=') addPatternNames(p[1], out, bound)
   else if (p[0] === ':') addPatternNames(p[2], out, bound)
@@ -80,10 +83,11 @@ export const scanReassignedTopLevel = (root) => {
     if (!Array.isArray(n)) return
     if (n[0] === '=>') {
       // defaults run where the parameters are bound, before the body's declarations
-      const params = collectParamNames(extractParams(n[1]), new Set(bound))
-      walk(n[1], params)
-      const inner = new Set(params)
-      declaredIn(n[2], inner)
+      // A lexical frame owns only its declarations. Copying every ancestor's
+      // names into both parameter and body sets makes nested scopes quadratic.
+      const inner = { names: collectParamNames(extractParams(n[1])), parent: bound }
+      walk(n[1], inner)
+      declaredIn(n[2], inner.names)
       walk(n[2], inner)
       return
     }
@@ -102,6 +106,6 @@ export const scanReassignedTopLevel = (root) => {
   }
   // Top-level declarations don't shadow — they ARE the bindings being tested;
   // a top-level `g = …` after `let g = …` is exactly the reassignment case.
-  walk(root, new Set())
+  walk(root, null)
   return out
 }
