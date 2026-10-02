@@ -10,6 +10,7 @@
  *   kind/shape.js        — JSON shape propagation + object-spread schema
  *   kind/val-type-of.js  — the VT dispatch table, valTypeOf,
  *                           hasAmbiguousBoolMerge, shapeOfObjectLiteralAst
+ *   kind/payload.js      — which values can carry a NaN payload
  *
  * @module kind
  */
@@ -24,3 +25,4 @@ export { shapeOf } from './kind/shape.js'
 export {
   hasAmbiguousBoolMerge, valTypeOf, isPresentNumber, shapeOfObjectLiteralAst, numericDenied, mixedBoolKind, holdsBoolBeside, boolTagged,
 } from './kind/val-type-of.js'
+export { payloadFree } from './kind/payload.js'

@@ -16,7 +16,7 @@ import print from 'watr/print'
 import { ERROR_CODE_HI, ERR_CLASS_NAMES, ERR_INFO } from '../../err-codes.js'
 import { ctx, inc, PTR, LAYOUT } from '../ctx.js'
 import { VAL, lookupValType } from '../reps.js'
-import { valTypeOf } from '../kind.js'
+import { valTypeOf, payloadFree as sourcePayloadFree } from '../kind.js'
 import { NUMBER } from '../summary/kind.js'
 import { atomNanHex, nanPrefixHex, nanPrefixMaskHex, i64Hex } from '../../layout.js'
 import { typed } from './tag.js'
@@ -146,7 +146,8 @@ export function numberCarrierIR(node, value) {
     if (value.indexValid) result.indexValid = value.indexValid
     return result
   }
-  return value.presentNumRead || isNumericIR(value) || ctx.summary?.at(ctx.func.current).kindOfExpr(node) === NUMBER
+  // (a value its source proves free of a payload enters as it is: kind/payload.js)
+  return (value.presentNumRead || isNumericIR(value) || ctx.summary?.at(ctx.func.current).kindOfExpr(node) === NUMBER) && !sourcePayloadFree(node)
     ? canonicalNumberIR(value) : value
 }
 

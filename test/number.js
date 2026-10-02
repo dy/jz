@@ -607,6 +607,30 @@ test('Number generic boundaries canonicalize box-looking NaNs without changing n
   }
 })
 
+test('Number payload proofs: plain-array arithmetic stores raw, raw ingress still normalizes', () => {
+  // A plain array's elements were normalized where they were stored, and
+  // arithmetic on them makes no payload: the store back needs no select.
+  const kernel=(make)=>`export function f(n){const a=${make},o=[];for(let i=0;i<n;i++)a[i]=i*0.5;
+    for(let i=0;i<n;i++){const x=a[i];let y=x*2;y=y+a[i];o[i]=Math.sqrt(y)-x}return o}`
+  // canonicalNumberIR's own test of its temp: `cn != cn`
+  const normalized=src=>(funcWat(wat(src,{optimize:{level:2,sourceInline:false,watr:false}}),'f').match(/\(f64\.ne \(local\.get \$\S*cn\d+\S*\) \(local\.get \$\S*cn\d+\S*\)\)/g)||[]).length
+  is(normalized(kernel('[]')),0,'plain elements carry no payload')
+  ok(normalized(kernel('new Float64Array(n)'))>0,'a typed element may')
+  const src=`function see(v){return[typeof v,Number.isNaN(v),Boolean(v),String(v),v===undefined,v==null]}
+    export function f(hi,lo,mode){const t=new Float64Array(2),w=new Uint32Array(t.buffer);w[0]=lo;w[1]=hi;t[1]=2;
+      const a=[1,2],o=[0,0,0,0];
+      const direct=t[0];let closed=a[1];const set=()=>{closed=a[0]+1};set();
+      let first=a[0];if(lo||!mode)first=t[0];
+      o[0]=direct*1;o[1]=closed;o[2]=first;o[3]=a[0]*a[1]+Math.max(a[0],a[1]);
+      return o.map(see)}`
+  const want=oracle(src)
+  for(const optimize of levels(0,1,2,3,'size')){
+    const got=jz(src,{optimize:{level:optimize,sourceInline:false}}).exports
+    for(const [hi,lo] of [[0x7ff80002,0],[0x7ffa8000,0x12345678],[0x7ff88000,1],[0x7ff80001,0],[0x3ff00000,0],[0x7ff80002,0]])
+      for(const mode of [0,1,0])is(got.f(hi,lo,mode),want.f(hi,lo,mode),`payload ${hi.toString(16)}:${lo.toString(16)} mode${mode} O${optimize}`)
+  }
+})
+
 test('Number nullable boundaries retain missing arms and evaluate reads once', () => {
   const src=`let reads=0;
     function see(v){return[typeof v,Number.isNaN(v),typeof v==='number',typeof v==='undefined',Boolean(v),String(v)]}

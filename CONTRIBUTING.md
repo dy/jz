@@ -74,6 +74,12 @@ Number enters a generic slot, mixed join, nullable result or parameter with an
 active default. Checked reads normalize only their present arm. Uniform Number
 parameters, results and typed stores retain their bits; `typeof` and nullish
 checks use their semantic Number proof. No generic consumer guesses a lost kind.
+A binding every read of which consumes a Number takes its bits raw. A value that
+can carry no payload is not normalized at all (`kind/payload.js`): a constant,
+an integer, arithmetic on such operands, an element of a plain array or of an
+integer typed array, a local every write of which is one of these. Raw ingress
+stays a float typed element, a parameter, a call's result and an exact Number
+slot. The loop specializer reads a checked element through its normalization.
 Exact Number schema slots retain raw payloads. Enumeration, JSON and generic
 property dispatch normalize them using the settled per-slot Number contract;
 static guards and schema dispatch fast paths obey the same boundary. A lazy
