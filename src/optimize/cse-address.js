@@ -5,7 +5,7 @@
  *
  * @module optimize/cse-address
  */
-import { findBodyStart, nextLocalId } from '../ir.js'
+import { findBodyStart, nextLocalId, buildRefcount } from '../ir.js'
 
 /**
  * CSE repeated `(call $__ptr_type X)` on same X across stable regions.
@@ -104,6 +104,9 @@ const leaves = (arm) => never(arm[arm.length - 1])
  *      exception handlers enter independently of normal completion.
  *    - an `if` arm that ends in `unreachable` or `return` never reaches the
  *      merge: the other arm's regions stay open.
+ *    - nothing under a node several parents hold (an emitter reuses one IR
+ *      array, e.g. a length read, at several points) is a site: its rewrite
+ *      would land at every reference, a later site's `get` over the first's tee.
  *
  *  `matchSite(node, parent, pi, root)` returns `{ key, deps }` for a CSE-able
  *  site (key is a stable string; deps lists locals whose writes invalidate this
@@ -127,6 +130,8 @@ function regionTrackCSE(fn, { matchSite, localPrefix, localType, barrier }) {
   let alias = new Map()
   const root = (name) => alias.get(name) ?? name
   let exits = 0
+  const refs = buildRefcount(fn)
+  let shared = 0
 
   const closeForLocal = (name) => {
     for (const k of [...open.keys()]) if (keyDeps.get(k)?.includes(name)) open.delete(k)
@@ -144,12 +149,17 @@ function regionTrackCSE(fn, { matchSite, localPrefix, localType, barrier }) {
 
   const walk = (node, parent, pi) => {
     if (!Array.isArray(node)) return
+    if (refs.get(node) > 1) { shared++; visit(node, parent, pi); shared-- }
+    else visit(node, parent, pi)
+  }
+  const visit = (node, parent, pi) => {
     const op = node[0]
     if (op === 'br' || op === 'br_if' || op === 'br_table' || op === 'return' ||
         op === 'throw' || op === 'rethrow' || op === 'try_table') exits++
 
     const m = matchSite(node, parent, pi, root)
     if (m) {
+      if (shared) return
       let region = open.get(m.key)
       if (!region) {
         region = []
@@ -225,26 +235,17 @@ function regionTrackCSE(fn, { matchSite, localPrefix, localType, barrier }) {
 
   if (regions.size === 0) return
 
-  // A node the emitter placed at several positions is one slot, walked at each
-  // of them: rewritten once it would answer for all, a later site's `get`
-  // replacing the `tee` an earlier walk made of it. Its regions stay as written.
-  const walks = new Map()   // parent → Map(idx → times walked)
-  for (const regs of regions.values()) for (const r of regs) for (const { parent, idx } of r) {
-    let slots = walks.get(parent)
-    if (!slots) walks.set(parent, slots = new Map())
-    slots.set(idx, (slots.get(idx) ?? 0) + 1)
-  }
-  const usableRegion = (r) => r.length >= 2 && r.every(({ parent, idx }) => walks.get(parent).get(idx) === 1)
-
   // Commit: ≥2 sites per region to be worthwhile (a singleton is pure cost).
   let hoistId = nextLocalId(fn, localPrefix)
   const locals = []
   for (const [, regs] of regions) {
-    if (!regs.some(usableRegion)) continue
+    let usable = false
+    for (const r of regs) if (r.length >= 2) { usable = true; break }
+    if (!usable) continue
     const tLocal = `$__${localPrefix}${hoistId++}`
     locals.push(['local', tLocal, localType])
     for (const r of regs) {
-      if (!usableRegion(r)) continue
+      if (r.length < 2) continue
       for (let i = 0; i < r.length; i++) {
         const { parent, idx, role } = r[i]
         if (role === 'tee') parent[idx] = ['local.tee', tLocal, parent[idx]]

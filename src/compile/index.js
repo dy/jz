@@ -1041,7 +1041,7 @@ export function assemble(ast, profiler) {
         if (!rewindable.has(inner) && !escapes) continue   // a heap result
         // a frame that walks from what it stored (module/core/reach.js) keeps that much on every call
         const walked = !!f.frame?.keeps && rewound.has(inner)
-        // (a frame left unrewound because its result is all it made is released by the host: link/sections.js)
+        // a releasable frame that is not rewound gives its call back through the host's wrapper
         const held = allocates(inner) && (!rewound.has(inner) && !releasable.has(inner) || walked), copies = boxed.has(exportNamesOf(f.name)[0]) && !releasable.has(inner)
         if (!held && !copies) continue
         const reason = f.frame?.arenaUnsafe ? f.frame.why : f.frame?.keeps ? f.frame.keepsWhy : why(inner) ?? 'its result may hold a heap value'

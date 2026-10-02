@@ -361,6 +361,19 @@ const initTouchesHost = (module) => module.some(n => Array.isArray(n) && n[0] ==
   typeof n[2] === 'string' && (HOST_ENV_GLOBALS.has(n[2].slice(1, -1)) || n[2].startsWith('"__ext_'))) ||
   !!findFuncByName(module, '$__jz_throw_host')
 
+// A float zero's sign, spelled as watr's own text spells it. watr keys values by
+// their string (its duplicate-function hash, value numbering), and a number's
+// toString writes -0 as 0: `x * -0` and `x * 0` would be one function.
+const FLOAT_CONST = new Set(['f64.const', 'f32.const', 'v128.const'])
+function signZeros(module) {
+  const stack = [module]
+  while (stack.length) {
+    const n = stack.pop()
+    if (FLOAT_CONST.has(n[0])) { for (let i = 1; i < n.length; i++) if (n[i] === 0 && 1 / n[i] < 0) n[i] = '-0'; continue }
+    for (let i = 0; i < n.length; i++) if (Array.isArray(n[i])) stack.push(n[i])
+  }
+}
+
 export function legalizeForTarget(module, targetProfile) {
   if (!targetProfile?.commandEntry) {
     if (initTouchesHost(module)) legalizeReactorInit(module)
@@ -498,6 +511,7 @@ export function watrTail(module, cfg, {
   // A split binding of its predecessor's type takes that slot: the generic optimizer
   // then reads the function the source wrote.
   if (cfg.splitBindings !== false) time('shareSplitSlots', () => { for (const n of legalized) shareSplitSlots(n) })
+  time('signZeros', () => signZeros(legalized))
   const watrOpts = resolveWatrOpts(cfg, { funcCount, boundaryPins })
   // watr 5.11.8's stripmut counts only Wasm writes. Exported mutable globals
   // are also writable by the host (heap/escape marks in particular), so its
