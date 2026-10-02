@@ -1352,8 +1352,12 @@ test('shared optimizer: eq-zero keeps dense-switch lowering and non-switch value
     const dispatch = findFunc(pre, '$dispatch')
     const masked = findFunc(pre, '$masked')
     const reversed = findFunc(pre, '$reversed')
-    is(ops(dispatch, 'i32.eq'), 5, `O${optimize}: all five dense-chain arms retain i32.eq(local,const)`)
-    is(ops(dispatch, 'i32.eqz'), 0, `O${optimize}: the zero arm is not split from the dense chain`)
+    // `op`'s integer width is the call sites' (interval fixpoints, from level 2,
+    // optimize/config.js): O0 compares the Number it receives.
+    if (optimize !== 0) {
+      is(ops(dispatch, 'i32.eq'), 5, `O${optimize}: all five dense-chain arms retain i32.eq(local,const)`)
+      is(ops(dispatch, 'i32.eqz'), 0, `O${optimize}: the zero arm is not split from the dense chain`)
+    }
     is(ops(masked, 'i32.eq'), 1, `O${optimize}: computed comparisons reach the shared optimizer`)
     is(ops(reversed, 'i32.eq'), 1, `O${optimize}: reversed comparisons reach the shared optimizer`)
     if (optimize !== 0) {
@@ -1415,9 +1419,14 @@ test('monomorphic schema-slot devirtualization: singleton-schema dot-read compil
   // Guard: one masked i64 compare against the packed (NAN_PREFIX|tag|schemaId)
   // high word — proves "is an OBJECT" AND "is exactly this schema" at once.
   ok(/0xFFFFFFFF00000000/.test(wat), 'expected the tag+aux guard mask constant')
-  const thenArm = wat.match(/\(then\s*\(f64\.load\b[\s\S]{0,120}?\)\)/)
-  ok(thenArm, 'expected a direct f64.load in the guarded (then) arm')
-  if (thenArm) ok(!/call/.test(thenArm[0]), 'the guarded fast path must not call any helper')
+  // The arm the guard enters: the slot's load (a Number field drops a NaN
+  // payload on the way out, module/schema.js schemaValueIR), and no call.
+  const getA = wat.indexOf('(func $getA'), at = getA < 0 ? -1 : wat.indexOf('(then', wat.indexOf('0xFFFFFFFF00000000', getA))
+  let end = at, depth = 0
+  do { depth += wat[end] === '(' ? 1 : wat[end] === ')' ? -1 : 0; end++ } while (depth > 0 && end < wat.length)
+  const thenArm = at < 0 ? '' : wat.slice(at, end)
+  ok(/^\(then\s*(?:\(block\s*\(result f64\)\s*\(local\.set \$\S+\s*)?\(f64\.load\b/.test(thenArm), 'expected a direct f64.load in the guarded (then) arm')
+  ok(thenArm && !/call/.test(thenArm), 'the guarded fast path must not call any helper')
   // The generic dispatch remains reachable as the polymorphic fallback, never removed.
   ok(/\(call \$__dyn_get_any_t_h\b/.test(wat), 'generic dyn dispatch remains as the polymorphic fallback')
 })

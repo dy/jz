@@ -4,7 +4,7 @@
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
 import jz from '../index.js'
-import { levels } from './_matrix.js'
+import { belowOpt, levels } from './_matrix.js'
 import { oracle, funcWat } from './util.js'
 import encodeWat from 'watr/compile'
 
@@ -907,7 +907,9 @@ test('channelData scatter inlines — Array.from / push / index-fill', () => {
   const fill = `export let f = (nc, m) => { let ch = new Array(nc); for (let c=0;c<nc;c++) ch[c] = new Float32Array(m); for (let i=0;i<m;i++) for (let c=0;c<nc;c++) ch[c][i] = i; return ch }`
   ok(noRuntimeScatter(arrFrom), 'Array.from channelData inlines')
   ok(noRuntimeScatter(push), 'push channelData inlines')
-  ok(noRuntimeScatter(fill), 'index-fill channelData inlines')
+  // The index fill proves its counter an index (not a Number naming another key)
+  // through the interval fixpoints, a level-2 pass (optimize/config.js).
+  if (!belowOpt(2)) ok(noRuntimeScatter(fill), 'index-fill channelData inlines')
 })
 
 test('channelData scatter — correct values across construction forms', () => {

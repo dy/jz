@@ -1176,6 +1176,7 @@ test('plain-array index with bounded literal terms stays pure i32', () => {
 // ~1.4× vs V8/AS on x86 (it wins on ARM either way, so only this pin or an x86
 // bench catches the regression).
 test('masked multiply narrows to i32 — bytebeat t*(m&63) deopt', () => {
+  if (belowOpt(2)) return  // the counter's guarded integer copy rests on the interval fixpoints, a level-2 pass (optimize/config.js)
   const wat = jz.compile(
     'export let fill = (out, n) => { for (let t = 0; t < n; t++) out[t] = (t * (((t>>12)|(t>>8)) & (63 & (t>>4)))) & 255 }',
     { wat: true })

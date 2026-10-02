@@ -29,6 +29,9 @@ const whyNot = (src, opts = {}) => { const why = []; compile(src, { ...TAPE, ...
 // Heap growth over `calls` calls of `call`, after `settle` calls that make first-call state.
 const growth = (memory, call, calls = 200, settle = 1) => { for (let i = 0; i < settle; i++) call(); const used = memory.used; for (let i = 0; i < calls; i++) call(); return memory.used - used }
 // Each `(loop …)` span of a body, by its parentheses.
+// A growth's check: the heap it snapshots and compares, the escape it runs. Not
+// the names of its locals, which the temp pool hands to later values too.
+const ESC_CHECK = /\$__esc|\(global\.get \$__heap\)/
 const loopSpans = (wat) => [...wat.matchAll(/\(loop/g)].map(({ index }) => { let d = 0, j = index; do { d += wat[j] === '(' ? 1 : wat[j] === ')' ? -1 : 0; j++ } while (d > 0); return wat.slice(index, j) })
 
 test('frame effects: census scratch survives nested walks, errors and changed programs', () => {
@@ -472,13 +475,13 @@ test('frame effects: a growth\'s check stands around the loop that holds its rec
   // `t` may be an array the store grows: one check per call, outside the loop
   const once = 'export function f(a, b, k, n) { const s = new Array(4).fill(0); const t = k === 1 ? a : b; for (let i = 0; i < n; i = i + 1) t[i] = i + s[0]; return s.length }'
   const body = bodyOf(compile(once, { wat: true, ...TAPE }), 'f')
-  ok(flagged(once) && /\$__esc/.test(body) && loopSpans(body).length && !loopSpans(body).some(l => /\$__esc|esch/.test(l)), 'the check is outside every loop')
+  ok(flagged(once) && /\$__esc/.test(body) && loopSpans(body).length && !loopSpans(body).some(l => ESC_CHECK.test(l)), 'the check is outside every loop')
   const want = oracle(once), m = jz(once).exports
   for (const [a, b] of [[[1, 2], [3]], [new Float64Array(4), [0]]]) is(m.f(a, b, 1, 6), want.f([...a], [...b], 1, 6), 'a growing array and a typed one')
   // a row the outer loop binds anew is the same through the inner loop: its check runs once per row
   const rows = 'export function f(rows, n) { const s = new Array(4).fill(0); for (let i = 0; i < n; i++) { const row = rows[i]; for (let j = 0; j < n; j++) row[j] = j + s[0] } return s.length }'
   const loops = loopSpans(bodyOf(compile(rows, { wat: true, ...TAPE }), 'f')), innermost = loops.filter(l => l.indexOf('(loop', 5) < 0)
-  ok(flagged(rows) && loops.some(l => /\$__esc/.test(l)) && !innermost.some(l => /\$__esc|esch/.test(l)), 'the check runs per row, outside the inner loop')
+  ok(flagged(rows) && loops.some(l => /\$__esc/.test(l)) && !innermost.some(l => ESC_CHECK.test(l)), 'the check runs per row, outside the inner loop')
   // a loop that allocates besides its stores checks each store: what the loop made is no growth of the receiver
   const noisy = `const out = [0, 0, 0, 0]
     export function f(n, k) { for (let i = 0; i < k; i++) { const c = 'k' + n + i; out[i] = c.length } return out[3] }`

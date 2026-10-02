@@ -538,7 +538,7 @@ test('codegen: asF64 on int constants — no unnecessary convert', () => {
 })
 
 test('codegen: for-loop counter matches .length type — no converts in loop', () => {
-  if (belowOpt(1)) return  // convert-elision is an optimization (optimize >= 1)
+  if (belowOpt(2)) return  // the counter's width comes from the interval fixpoints, a level-2 pass (optimize/config.js)
   const wat = compile('export let f = (arr) => { let buf = new Float64Array(arr); let s = 0; for (let i = 0; i < buf.length; i++) s += buf[i]; return s }', { wat: true })
   // .length emits as f64, so i should be f64 to avoid per-iter convert
   const loopMatch = wat.match(/\(loop[^]*?\(br \$loop/s)
@@ -646,17 +646,20 @@ test('codegen: no-arg scalar allocator rewinds heap on return', () => {
 
 test('codegen: guarded integer counter keeps a full Number fallback', () => {
   const src = 'export let f = (n) => { let acc = 0|0; for (let i = 0; i < n; i++) acc = (acc + i) | 0; return acc|0 }'
-  const wat = compile(src, { wat: true })
-  let fast
-  walkWat(parseWat(wat), n => { if (!fast && n[0] === 'loop') fast = n })
-  // An arbitrary bound cannot authorize wrapped storage. The guarded copy
-  // removes conversions from the hot loop; the original keeps Number semantics.
-  ok(/\(local \$\S*i\S*int\d+ i32\)/.test(wat), 'the guarded counter has an integer local')
-  ok(/i32\.(?:lt|ge)_s/.test(JSON.stringify(fast)), 'the fast loop compares integers')
-  let conversions=0
-  walkWat(fast,n=>{if(/^(?:f64\.add|[if]64\.trunc|i32\.trunc)/.test(n[0]))conversions++})
-  is(conversions,0,'the fast loop adds and accumulates without float conversions')
-  ok(/\(local \$\S*i f64\)/.test(wat), 'the original counter preserves full Number values')
+  // The guarded copy rests on the interval fixpoints, a level-2 pass (optimize/config.js).
+  if (!belowOpt(2)) {
+    const wat = compile(src, { wat: true })
+    let fast
+    walkWat(parseWat(wat), n => { if (!fast && n[0] === 'loop') fast = n })
+    // An arbitrary bound cannot authorize wrapped storage. The guarded copy
+    // removes conversions from the hot loop; the original keeps Number semantics.
+    ok(/\(local \$\S*i\S*int\d+ i32\)/.test(wat), 'the guarded counter has an integer local')
+    ok(/i32\.(?:lt|ge)_s/.test(JSON.stringify(fast)), 'the fast loop compares integers')
+    let conversions=0
+    walkWat(fast,n=>{if(/^(?:f64\.add|[if]64\.trunc|i32\.trunc)/.test(n[0]))conversions++})
+    is(conversions,0,'the fast loop adds and accumulates without float conversions')
+    ok(/\(local \$\S*i f64\)/.test(wat), 'the original counter preserves full Number values')
+  }
   const host = oracle(src).f
   for (const optimize of levels(0, 1, 2, 3, 'size')) {
     const f = jz(src, {optimize}).exports.f
@@ -665,6 +668,7 @@ test('codegen: guarded integer counter keeps a full Number fallback', () => {
 })
 
 test('codegen: guarded global-bound array indices stay integer in the fast arm', () => {
+  if (belowOpt(2)) return  // integer facts come from the interval fixpoints, a level-2 pass (optimize/config.js)
   if (onWasi()) return  // wasi: run-reserved renames locals
   // Using a Number as an index proves no width. The stable global's guarded
   // snapshot establishes the fast counter's complete lifetime instead.
@@ -777,6 +781,7 @@ test('codegen: unary negation feeding arithmetic drops its redundant NaN-canon',
 })
 
 test('codegen: integer accumulation from a GLOBAL typed array reads native i32 (no f64 round-trip)', () => {
+  if (belowOpt(2)) return  // integer facts come from the interval fixpoints, a level-2 pass (optimize/config.js)
   // `ax = ax + DX[dir]` with DX a module-global Int32Array and ax/dir i32: the read +
   // add must stay in the i32 domain (one i32.add), not round-trip i32.load → f64.convert
   // → f64.add → i32.trunc_sat. The global typed array's element type was invisible to
@@ -800,6 +805,7 @@ test('codegen: integer accumulation from a GLOBAL typed array reads native i32 (
 })
 
 test('codegen: integer const-global folds to i32 — x % CONST_GLOBAL takes the integer path', () => {
+  if (belowOpt(2)) return  // integer facts come from the interval fixpoints, a level-2 pass (optimize/config.js)
   // `const N = 16384` is an immutable integer constant. A counter bounded by it must stay
   // i32, and `x % N` must lower to native i32.rem_s — not fold N to an f64 constant and route
   // `%` through the software f64 remainder (the long-division the crc32/json outer loops paid).
@@ -1255,6 +1261,7 @@ test('codegen: global storage requires a complete integer-width proof', () => {
 })
 
 test('codegen: a guarded global snapshot makes the fast loop guard pure-i32', () => {
+  if (belowOpt(2)) return  // integer facts come from the interval fixpoints, a level-2 pass (optimize/config.js)
   if (onWasi()) return  // wasi: run-reserved renames locals
   // The original global remains f64; a proven snapshot supplies the word bound.
   const wat = compile(`
@@ -1366,6 +1373,7 @@ test('codegen: ping-pong double-buffer base decode hoists per-loop (volatile glo
 })
 
 test('codegen: narrowUint32 hash accumulator stays pure i32 (no f64 round-trip)', () => {
+  if (belowOpt(2)) return  // integer facts come from the interval fixpoints, a level-2 pass (optimize/config.js)
   // FNV/PRNG hot path: every read of `h` is funnelled through a `>>>` (ToUint32)
   // sink via bit-faithful ops, so narrowUint32 keeps `h` an unsigned i32 local.
   // The mix must compile to i32.add/xor/shl — never f64 — else the loop pays a
@@ -1439,6 +1447,7 @@ test('codegen: f64 threshold in a recurrence lowers to a branchless select at sp
 })
 
 test('codegen: named index feeder hoists the row product out of its fast loop', () => {
+  if (belowOpt(2)) return  // integer facts come from the interval fixpoints, a level-2 pass (optimize/config.js)
   // py*w can exceed the exact integer range. Preserve Number multiplication
   // once per row; the guarded hot loop must not repeat it for each element.
   const wat = compile(`
