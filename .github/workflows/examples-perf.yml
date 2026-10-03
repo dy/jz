@@ -1,0 +1,64 @@
+name: examples-perf
+# Every gallery page, timed as JS and as the jz build the site ships
+# (examples/bench-pages.mjs), on x64 and arm64: Linux x64, Linux arm64 and
+# Apple-silicon macOS. A conversion or a branch costs differently across these
+# targets, so a lowering is weighed on all three before it ships. JS and jz run
+# the same frames in one process: shared-runner noise moves both sides.
+# Informational until every page wins on every target, then a gate.
+on:
+  workflow_dispatch:
+    inputs:
+      opt:
+        description: optimizer overrides for the jz side, as JSON (e.g. {"guardedToInt32":false})
+        default: ''
+      pages:
+        description: space-separated pages (empty = all)
+        default: ''
+  push:
+    paths:
+      - 'src/**'
+      - 'module/**'
+      - 'examples/**'
+      - 'index.js'
+      - 'interop.js'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/examples-perf.yml'
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  pages:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - run: npm ci --ignore-scripts
+      - run: npm rebuild esbuild
+      - name: machine
+        run: |
+          node -p "process.arch + ' ' + require('os').cpus()[0].model + ' × ' + require('os').cpus().length"
+      - name: pages
+        continue-on-error: true
+        env:
+          OPT: ${{ inputs.opt }}
+          PAGES: ${{ inputs.pages }}
+        run: |
+          set -o pipefail
+          node examples/bench-pages.mjs $PAGES ${OPT:+--opt="$OPT"} 2>&1 | tee pages.log
+      - name: summary
+        if: always()
+        run: |
+          { echo "### ${{ matrix.os }}"; echo '```'; cat pages.log; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pages-${{ matrix.os }}
+          path: pages.log

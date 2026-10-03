@@ -80,6 +80,7 @@
     "test:all": "npm run test:matrix && npm run test:extended && npm run test:262 && npm run test:262:builtins && npm run test:bench && npm run test:bootstrap -- --full && npm run test:self:perf",
     "bench": "node bench/bench.mjs",
     "bench:fuzz": "node scripts/fuzz-bench.mjs",
+    "bench:pages": "node examples/bench-pages.mjs",
     "bench:size": "node scripts/bench-size.mjs",
     "bench:compile": "node scripts/bench-compile.mjs",
     "bench:startup": "node scripts/bench-startup.mjs",
