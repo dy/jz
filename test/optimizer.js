@@ -74,6 +74,9 @@ const findFunc = (tree, name) => { let f = null; const w = n => { if (!Array.isA
 // the named `call` disappears while the computation (rightly) stays, so a post-watr
 // call count is vacuous-0 for hoist pins and false-0 for keep pins.
 const preWatr = (opt) => typeof opt === 'object' ? { watr: false, ...opt } : { level: opt, watr: false }
+// A tier without its late ToInt32 lowering, whose 32-bit range test brings an `if`,
+// an `f64.lt` and an `i32.trunc_sat_f64_s` beside every `|0`: for pins on the passes before it.
+const exactToInt32 = (level) => ({ level, guardedToInt32: false })
 const callsInLoop = (src, name, opt = 2) => loopCount(findFunc(parse(src, preWatr(opt)), '$f'), n => n[0] === 'call' && n[1] === name)
 
 // Count the operation on the executed path: mutually exclusive loop copies
@@ -4366,7 +4369,7 @@ test('int-div-lower: a bounded-product chain (mask → ternary → sum-of-produc
       return acc
     }
   `
-  const w = jz.compile(src, { wat: true, optimize: 'speed' })
+  const w = jz.compile(src, { wat: true, optimize: exactToInt32('speed') })
   ok(/i32\.shr_u/.test(w), 'power-of-two divisor with a proven-nonneg dividend strength-reduces to i32.shr_u')
   // i64.trunc_sat_f64_s is the ordinary NaN-boxed param-unboxing ABI boundary (n0's
   // own coercion) — unrelated to the div lever. Only the i32 form is the round-trip
@@ -4416,7 +4419,7 @@ test('Pass-D range-proof exemption: bare-literal-only bounded chain stays i32 (d
       return acc
     }
   `
-  const w = jz.compile(src, { wat: true, optimize: 'speed' })
+  const w = jz.compile(src, { wat: true, optimize: exactToInt32('speed') })
   ok(/i32\.shr_u/.test(w), 'power-of-two divisor over a range-proven bare-literal chain strength-reduces to i32.shr_u')
   ok(!/i32\.trunc_sat_f64_s/.test(w), 'no f64 round-trip survives for the div')
   const { f } = run(src, { optimize: 'speed' })
@@ -6564,7 +6567,7 @@ test('static const array reads fold: inline literal under a mask is one load, a 
 export let f = (k) => T[k & 3]
 export let g = (k) => [2, 4, 2, 9][k & 3]
 export let h = (k) => [1, 2, 3][k & 3]`
-  const w = compile(src, { optimize: 'speed', wat: true })
+  const w = compile(src, { optimize: exactToInt32('speed'), wat: true })
   const gw = funcWat(w, 'g'), fw = funcWat(w, 'f'), hw = funcWat(w, 'h')
   ok(!/__ptr_offset_fwd|i32\.lt_u|\(if/.test(gw) && (gw.match(/f64\.load/g) ?? []).length === 1, 'inline literal: the load alone')
   ok(!/__ptr_offset_fwd|i32\.lt_u|\(if/.test(fw) && (fw.match(/f64\.load/g) ?? []).length === 1, 'named const: the load alone as well')

@@ -409,8 +409,9 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
     const indexed = [...indexNames(loop, loopWrites, intArray)].filter(n => (outerOk(n) || stableGlobal(n)) && !already(n) && mayBeNumber(n))
     // the names a counter is tested against (`i < n`, n read from a parameter): the
     // counter is an int32 only where they are
-    // (not an export's own parameter: the host's value there keeps the boundary's representation)
-    const bounds = [...boundNames(loop)].filter(n => (outerOk(n) || stableGlobal(n)) && !loopWrites.has(n) && !already(n) && mayBeNumber(n) &&
+    // (not an export's own parameter: the host's value there keeps the boundary's representation;
+    // nor a module binding the counter's rounded bound reads: that copy answers its test)
+    const bounds = [...boundNames(loop)].filter(n => (outerOk(n) || stableGlobal(n) && !counterBound?.terms.includes(n)) && !loopWrites.has(n) && !already(n) && mayBeNumber(n) &&
       !(func && isExported(func) && params.has(n)))
     // a cursor the loop moves other than by a constant step (`p = (p + 1) % N`), or a
     // counter's bound of unknown integrality: an index made of names the loop only reads

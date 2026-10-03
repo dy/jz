@@ -966,7 +966,8 @@ test('codegen: a loop guard offset from its counter stays integer within its tes
     }
   }
   if (onKernel()) return
-  const hot = compile(loop(heads[0]), { optimize: 'speed', wat: true })
+  // (without the late ToInt32 lowering: the range test of `x | 0` compares in f64)
+  const hot = compile(loop(heads[0]), { optimize: { level: 'speed', guardedToInt32: false }, wat: true })
   ok(!/f64\.(le|lt|add)/.test(hot), 'a bounded offset guard compares in i32')
   // (f64, or the i64 the integer pass carries the same sum in: no i32 that wraps)
   ok(/f64\.(le|lt)|i64\.(le|lt|gt|ge)_s/.test(compile(loop(heads[4]), { optimize: 'speed', wat: true })), 'a guard sum that can pass INT_MAX keeps f64')
