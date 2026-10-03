@@ -24,9 +24,11 @@ const pack = JSON.parse(execFileSync('npm', ['pack', `@scriptc/llvm-${host}@${he
   cwd: src, encoding: 'utf8',
 }))[0].filename
 run('tar', ['xzf', pack, '-C', join(src, `packages/llvm-${host}`), '--strip-components=1', 'package/bin'])
-run('node', [join(src, `packages/runtime-${host}/scripts/build.mjs`)], {
-  ...process.env, CC: process.env.CC || (process.platform === 'darwin' ? '/usr/bin/clang' : 'clang'),
-})
+// The Linux runtime pack drives its glibc-pinned build through `zig cc` (its
+// toolchain names the compiler `zig` and its arguments `cc`); CC replaces the
+// compiler alone, so only the macOS pack, which calls clang bare, takes one.
+run('node', [join(src, `packages/runtime-${host}/scripts/build.mjs`)], process.platform === 'darwin'
+  ? { ...process.env, CC: process.env.CC || '/usr/bin/clang' } : process.env)
 run('npx', ['--yes', 'pnpm@11.1.3', '-r', '--filter', './packages/*', 'run', 'build'])
 const version = JSON.parse(readFileSync(join(src, 'packages/cli/package.json'))).version
 const launcher = join(root, 'scriptc')
