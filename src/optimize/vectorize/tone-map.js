@@ -26,6 +26,7 @@ import { simdBound } from './scaffold.js'
 // No cross-lane reordering, so no ulp drift. Speculatively-evaluated arms are
 // trap-free (log/convert/mul/min/trunc never trap; there is no div/rem). Gated until
 // proven across the corpus, then promoted like the stencil/outer-strip wins.
+const _toneCalls = (n) => isArr(n) && (n[0] === 'call' || n.some(_toneCalls))
 const _toneStripTee = (n) => isArr(n) && n[0] === 'local.tee' && n.length === 3 ? n[2] : n
 
 // `(i32.wrap_i64 (i64.trunc_sat_f64_{s,u} X))` or `(i32.trunc_sat_f64_{s,u} X)` — the
@@ -340,15 +341,26 @@ export function tryToneMap(bl, fnLocals, freshIdRef, enabled) {
       // (a) Conditional STORE — both arms (or then-only) end in a store to the same address.
       if (thenStore && (elseStore || !hasElse)) {
         if (elseStore && JSON.stringify(thenLast[1]) !== JSON.stringify(elseLast[1])) { liftFail(ctx, 'tonemap: arms store to different addresses'); return }
-        for (const s of thenStmts.slice(0, -1)) { liftS(s, out); if (ctx.fail) return }
-        if (hasElse) for (const s of elseStmts.slice(0, -1)) { liftS(s, out); if (ctx.fail) return }
-        const thenVal = liftV(thenLast[2]); if (ctx.fail) return
-        const elseVal = elseStore ? liftV(elseLast[2]) : ['v128.load64_zero', thenLast[1]]
-        if (ctx.fail) return
+        // The test first, as the scalar loop runs it; its low two i32 lanes are the pixels'.
         const m = liftMask(stmt[1], 'i32'); if (ctx.fail) return
-        const mt = freshMask()
-        out.push(['local.set', mt, m],
-          ['i64.store', thenLast[1], ['i64x2.extract_lane', 0, ['v128.bitselect', thenVal, elseVal, ['local.get', mt]]]])
+        const mt = freshMask(), lanes = ['i64x2.extract_lane', 0, ['local.get', mt]]
+        out.push(['local.set', mt, m])
+        // Each arm, then its value. An arm that calls (a log, an exp) runs only where
+        // a pixel takes it: the scalar loop skips it per pixel, and a sparse density
+        // map leaves most pairs on the cheap arm.
+        const arm = (stmts, last, taken) => {
+          const pre = []
+          for (const s of stmts.slice(0, -1)) { liftS(s, pre); if (ctx.fail) return null }
+          const v = liftV(last[2]); if (ctx.fail) return null
+          if (!stmts.some(s => _toneCalls(s))) { out.push(...pre); return v }
+          const t = freshMask()
+          out.push(['if', taken, ['then', ...pre, ['local.set', t, v]]])
+          return ['local.get', t]
+        }
+        const thenVal = arm(thenStmts, thenLast, ['i64.ne', lanes, ['i64.const', 0]]); if (ctx.fail) return
+        const elseVal = elseStore ? arm(elseStmts, elseLast, ['i64.ne', lanes, ['i64.const', -1]]) : ['v128.load64_zero', thenLast[1]]
+        if (ctx.fail) return
+        out.push(['i64.store', thenLast[1], ['i64x2.extract_lane', 0, ['v128.bitselect', thenVal, elseVal, ['local.get', mt]]]])
         return
       }
       // (b) Conditional VALUE update — `if (cond) { L = …; … }` (no else) updating lane locals.
