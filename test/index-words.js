@@ -1,0 +1,130 @@
+// Element indices and conversions the speed tier computes in integer registers:
+// a loop over module-level dimensions (`while (y < H - 1)`, `a[y * W + x]`), a key
+// with one product among its terms, ToInt32 tested against the 32-bit range, and
+// a tone map that skips its costly arm where no pixel takes it. Each answers
+// what the source answers, at every number the edges reach.
+import test from 'tst'
+import { is, ok } from 'tst/assert.js'
+import jz from '../index.js'
+import { levels } from './_matrix.js'
+import { oracle, wat } from './util.js'
+
+const EDGES = [0, -0, 0.5, -0.5, 1.9999, -1.9999, 2147483647, 2147483648, -2147483648, -2147483649,
+  4294967295.5, 4294967296, 4294967301, -4294967301, 2 ** 53, -(2 ** 53), 2 ** 63, 1e300, -1e300,
+  Infinity, -Infinity, NaN]
+
+test('index words: a stencil over module dimensions answers as JS and runs in lanes', () => {
+  const src = `let W = 0, H = 0, R, I
+    export let resize = (w, h) => { W = w; H = h; R = new Float64Array(w * h > 0 ? w * h : 0); I = new Float64Array(w * h > 0 ? w * h : 0)
+      for (let k = 0; k < R.length; k++) I[k] = (k * 7) % 13 }
+    export let step = () => {
+      let y = 1
+      while (y < H - 1) {
+        let x = 1
+        while (x < W - 1) { let c = y * W + x; R[c] = R[c] + I[c - W] + I[c + W] + I[c - 1] + I[c + 1] - 4 * I[c]; x++ }
+        y++
+      }
+      let s = 0; for (let k = 0; k < R.length; k++) s += R[k] * (k % 5)
+      return s
+    }`
+  for (const optimize of levels(0, 2, 'speed')) {
+    const got = jz(src, { optimize }).exports, host = oracle(src)
+    for (const [w, h] of [[8, 6], [17, 3], [3, 3], [1, 9], [9, 1], [0, 4], [6.5, 4], [5, 4.5]]) {
+      got.resize(w, h); host.resize(w, h)
+      is(got.step(), host.step(), `O${optimize} ${w}×${h}`)
+    }
+  }
+  ok(/f64x2/.test(wat(src, { optimize: 'speed' })), 'the interior runs two cells a step')
+})
+
+test('index words: a key with one product reads and writes the element JS names', () => {
+  const src = `let a = new Float64Array(64)
+    for (let k = 0; k < 64; k++) a[k] = k + 0.5
+    export let get = (y, w, x) => { y = y | 0; w = w | 0; x = x | 0; return a[y * w + x] }
+    export let put = (y, w, x) => { y = y | 0; w = w | 0; x = x | 0; a[y * w - x] = 99; let s = 0; for (let k = 0; k < 64; k++) s += a[k]; a.fill(1); return s }`
+  const cases = [[0, 0, 0], [3, 8, 5], [7, 8, 7], [8, 8, 0], [-1, 8, 9], [1, -8, 70], [65536, 65536, 0], [65536, 65536, 5],
+    [2147483647, 2147483647, 1], [-2147483648, -2147483648, 0], [-2147483648, 2147483647, 63], [46341, 46341, -2147483648], [4294967, 1000, 0]]
+  for (const optimize of levels(0, 2, 'speed')) {
+    const got = jz(src, { optimize }).exports, host = oracle(src)
+    for (const [y, w, x] of cases) {
+      is(got.get(y, w, x), host.get(y, w, x), `O${optimize} get ${y}*${w}+${x}`)
+      is(got.put(y, w, x), host.put(y, w, x), `O${optimize} put ${y}*${w}-${x}`)
+    }
+  }
+})
+
+test('index words: ToInt32 answers at every edge with its 32-bit test first', () => {
+  const src = `export let t = (x) => x | 0
+    export let m = (x) => (x * 1.5) | 0
+    export let pack = (r, g, b) => (255 << 24) | ((b | 0) << 16) | ((g | 0) << 8) | (r | 0)`
+  const guarded = wat(src, { optimize: 'speed' })
+  ok(/f64\.abs[\s\S]*?2147483648/.test(guarded), 'the speed tier tests the magnitude')
+  ok(!/f64\.abs/.test(wat(src, { optimize: 'size' })), 'the size tier keeps the single exact form')
+  // (`|0` saturates past 2^63 by design, src/ir/numeric.js toI32: the edges below it)
+  for (const optimize of levels(0, 2, 'speed', 'size')) {
+    const got = jz(src, { optimize }).exports, host = oracle(src)
+    for (const x of EDGES.filter(x => !(Math.abs(x * 1.5) >= 2 ** 63) || !Number.isFinite(x))) {
+      is(got.t(x), host.t(x), `O${optimize} ${x} | 0`)
+      is(got.m(x), host.m(x), `O${optimize} (${x} * 1.5) | 0`)
+      is(got.pack(x, -x, x / 3), host.pack(x, -x, x / 3), `O${optimize} pack ${x}`)
+    }
+  }
+})
+
+test('index words: a sum with one product under a saturating truncation keeps its element', () => {
+  const src = `let a = new Float64Array(32), ky = new Int32Array(4), kx = new Int32Array(4)
+    for (let k = 0; k < 32; k++) a[k] = k * 3 + 1
+    export let gather = (y, x, dy, dx, w) => {
+      y = y | 0; x = x | 0; w = w | 0; ky[0] = dy; kx[0] = dx
+      let s = 0, k = 0
+      while (k < 2) { let yy = y + ky[k], xx = x + kx[k]; s += a[yy * w + xx]; k++ }
+      return s
+    }`
+  const cases = [[1, 2, 0, 0, 8], [3, 7, 1, -1, 8], [0, 0, -1, 0, 8], [2147483647, 0, 1, 0, 2147483647], [-2147483648, 5, -1, 0, 65536],
+    [65536, 0, 0, 0, 65536], [1, 31, 0, 1, 0], [0, -2147483648, 0, -1, 1]]
+  for (const optimize of levels(0, 2, 'speed')) {
+    const got = jz(src, { optimize }).exports, host = oracle(src)
+    for (const c of cases) is(got.gather(...c), host.gather(...c), `O${optimize} gather ${c}`)
+  }
+})
+
+test('index words: a while bound of stable names converts like the loop it copies', () => {
+  const src = `let N = 0
+    export let setN = (n) => { N = n }
+    export let span = (xs) => { let s = 0, i = 0; while (i < N - 1) { s += xs[i + 1] - xs[i]; i++ } return s }
+    export let count = (n) => { let c = 0, i = 0; while (i <= 2 * n + 1) { c++; i++ } return c }`
+  const xs = Float64Array.from({ length: 40 }, (_, k) => (k * 37) % 23)
+  for (const optimize of levels(0, 2, 'speed')) {
+    const got = jz(src, { optimize }).exports, host = oracle(src)
+    // (a bound past the array reads undefined: NaN, as JS sums it)
+    for (const n of [0, 1, 2, 2.5, 7, 40, 45.5, -3, NaN, -Infinity, -(2 ** 31) - 5, -0]) {
+      got.setN(n); host.setN(n)
+      is(got.span(xs), host.span(xs), `O${optimize} span N=${n}`)
+      is(got.count(n), host.count(n), `O${optimize} count n=${n}`)
+    }
+  }
+})
+
+test('index words: a tone map skips its log where no pixel of a pair takes it', () => {
+  const src = `let dens, px, n = 0
+    export let resize = (w, h) => { n = w * h; dens = new Uint32Array(n); px = new Uint32Array(n) }
+    export let fill = (every) => { for (let i = 0; i < n; i++) dens[i] = i % every === 0 ? 1 + (i & 63) : 0 }
+    export let frame = (pr, ir) => {
+      let i = 0
+      while (i < n) {
+        let d = dens[i]
+        if (d === 0) px[i] = 0xff000000
+        else { let v = (Math.log(d + 1.0) * 44.0) / 255.0; if (v > 1.0) v = 1.0; let r = (pr + (ir - pr) * v) | 0; px[i] = (255 << 24) | (r << 16) | (r << 8) | r }
+        i++
+      }
+      let h = 0; for (let k = 0; k < n; k++) h = (h * 31 + px[k]) | 0
+      return h
+    }`
+  const w = wat(src, { optimize: 'speed' })
+  ok(/math\.log_v/.test(w), 'the map runs two pixels a step')
+  const lanes = jz(src, { optimize: 'speed' }).exports, scalar = jz(src, { optimize: { level: 'speed', toneMap: false } }).exports
+  for (const [width, height] of [[16, 8], [7, 3], [1, 1]]) for (const every of [1, 2, 3, 10, 1000]) {
+    lanes.resize(width, height); scalar.resize(width, height); lanes.fill(every); scalar.fill(every)
+    is(lanes.frame(0, 235), scalar.frame(0, 235), `${width}×${height} every ${every}`)
+  }
+})
