@@ -73,7 +73,7 @@ import { resolveAliases, splitSplicedBindings } from './alias.js'
 import { propagateConstants } from './constants.js'
 import {
   scalarizeFunctionTypedArrays, scalarizeFunctionArrayLiterals,
-  promoteIntArrayLiterals, scalarizeFunctionObjectLiterals, analyzeParamDistinctness,
+  promoteIntArrayLiterals, scalarizeFunctionObjectLiterals, analyzeParamDistinctness, analyzeFreshTypedGlobals,
 } from './literals.js'
 
 /** Plan the program: `summarize` returns the program summary (src/summary) of the AST as it stands, rebuilt only when the program changed. */
@@ -330,6 +330,7 @@ export default function plan(ast, profiler, summarize) {
     // After narrowSignatures (params now carry ptrKind): mark typed-array params that every call
     // site passes a distinct fresh buffer for → enables alias-aware LICM in the optimizer.
     if (optimizing()) t('analyzeParamDistinctness', () => analyzeParamDistinctness(programFacts))
+    if (optimizing()) t('analyzeFreshTypedGlobals', () => analyzeFreshTypedGlobals(ast))
     // Range and alias proofs need hazards resolved against settled parameters.
     t('refineSlotWriteHazards', () => collectSlotWriteHazards(ast, {
       paramReps: programFacts.paramReps, callSites: programFacts.callSites,

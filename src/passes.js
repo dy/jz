@@ -49,6 +49,7 @@ export const PASS_NAMES = [
   'hoistGlobalPtrOffset',     // stable typed GLOBALS: __ptr_offset resolve → once per function (post-watr, module-level)
   'hoistGlobalConstLoads',    // immutable fixed global typed cells → function-entry locals
   'maskedSuffixGuard',        // all-false SIMD masks skip large pure producer suffixes
+  'guardedToInt32',           // ToInt32 tests the 32-bit range first: the narrow truncation, the exact form past it (post-watr)
   'hoistLoopGlobalPtrOffset', // per-loop complement: narrower write/call scan lets a clean loop hoist inside an otherwise-poisoned function
   'fusedRewrite',             // peephole + ptr-helper inline + memarg fold
   'chainConditions',          // `&&`/`||` diamonds in a condition position → jump-if-false/true branch chains
@@ -141,6 +142,7 @@ export const PASS_NAMES = [
  *  read off the optimize object is an unregistered flag and fails the gate. */
 export const TUNING_KEYS = [
   'level', 'arrayMinCap', 'arrayLiteralMinCap', 'hashSmallInitCap', 'collectionInitCap', 'watrProfile', 'watrGuard', 'watrLicm',
+  'wordTruncation',           // how a truncation keeps its word: 'wide' | 'narrow' | 'add' (optimize/int-narrow.js)
   'reduceUnroll', 'relaxedSimd', 'inlineFns', 'rotateLoops', 'leanCheckedIdx', 'watrIfset',
   'leanRuntime',              // size tier: runtime walks link their simplest correct body (no hot/cold
                               // split, no chunked scan, no per-site hash fast arms) — the -Os profile

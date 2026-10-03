@@ -76,6 +76,17 @@ function tryI32Index(e) {
   // forced `convert_i32 … f64.mul/add … trunc_sat_f64_s` across every term.
   const lit = constIntExpr(e)
   if (lit != null) return typed(['i32.const', lit], 'i32')
+  // A choice of keys (`hf[x > 0 ? i - 1 : i]`, a clamped neighbour): each arm a word,
+  // its hull one an unsigned length test reads exactly; the test runs first, as written.
+  if (Array.isArray(e) && e[0] === '?:' && e.length === 4) {
+    for (const arm of [e[2], e[3]]) if (Array.isArray(arm) && I32_INDEX_OP[arm[0]]) {
+      const r = intExprRange(arm, indexWordRange)
+      if (!r || r[0] < -2147483648 || r[1] >= 4294967296) return null
+    }
+    const a = tryI32Index(e[2]); if (a == null) return null
+    const b = tryI32Index(e[3]); if (b == null) return null
+    return typed(['if', ['result', 'i32'], toBool(e[1]), ['then', a], ['else', b]], 'i32')
+  }
   if (Array.isArray(e)) {
     const inner = I32_INDEX_OP[e[0]]
     if (inner && e[2] != null) {
@@ -91,6 +102,56 @@ function tryI32Index(e) {
   }
   return exprType(e, ctx.func.locals) === 'i32' && lookupValType(e) === VAL.NUMBER ? asI32(emit(e)) : null
 }
+/** A word a guard proved exact (every intermediate an integer, the result
+ * within the word: emit/control-flow.js proveGuardedWords), as the word
+ * arithmetic of its operands: modulo 2^32, which the exact value lies in.
+ * An operand held as a Number (a product of a counter and a dimension the
+ * guard snapshotted) is an exact integer too: its ToInt32 is its word. */
+function provedWord(e) {
+  const lit = constIntExpr(e)
+  if (lit != null) return lit === (lit | 0) ? typed(['i32.const', lit], 'i32') : null
+  const word = x => typeof x === 'string' && indexWordRange(x) || constIntExpr(x) != null
+  if (Array.isArray(e) && (e[0] === '+' || e[0] === '-' || e[0] === '*' && word(e[1]) && word(e[2])) && e.length === 3)
+    return typed([I32_INDEX_OP[e[0]], provedWord(e[1]), provedWord(e[2])], 'i32')
+  return typeof e === 'string' && indexWordRange(e) ? asI32(emit(e)) : toI32(asF64(emit(e)))
+}
+
+/** A key of words by sums and differences with one product among them
+ * (`y * w + x`, `(j + 1) * w - i`): its exact integer in i64, or null. Below
+ * 2^53 the Number is that integer. Past it the product rounds, but the rest
+ * stays under 2^52, so either key lies past 2^52 from zero: no element of a
+ * typed array, whose length is a word. */
+const WIDE_INDEX_OP = { '+': 'i64.add', '-': 'i64.sub', '*': 'i64.mul' }
+function tryWideIndex(e) {
+  const unwrap = e => Array.isArray(e) && e[0] === '()' && e.length === 2 ? unwrap(e[1]) : e
+  // the magnitude bound of a term and of the terms beside the product, or null: checked before any IR
+  let products = 0, rest = 0
+  const bound = (e, inProduct) => {
+    e = unwrap(e)
+    const lit = constIntExpr(e)
+    if (lit != null) return Math.abs(lit) <= 2 ** 31 ? Math.abs(lit) : null
+    if (typeof e === 'string') { const r = indexWordRange(e); return r ? Math.max(-r[0], r[1]) : null }
+    if (!Array.isArray(e) || !WIDE_INDEX_OP[e[0]] || e.length !== 3) return null
+    if (e[0] === '*' && (inProduct || ++products > 1)) return null
+    const inner = inProduct || e[0] === '*'
+    const a = bound(e[1], inner), b = a == null ? null : bound(e[2], inner)
+    if (b == null) return null
+    if (!inner) for (const t of [e[1], e[2]]) { const u = unwrap(t); if (!(Array.isArray(u) && WIDE_INDEX_OP[u[0]])) rest += t === e[1] ? a : b }
+    return e[0] === '*' ? a * b : a + b
+  }
+  if (!Array.isArray(unwrap(e)) || !WIDE_INDEX_OP[unwrap(e)[0]]) return null
+  const total = bound(e, false)
+  if (total == null || products !== 1 || total >= 2 ** 63 || rest > 2 ** 52) return null
+  const form = e => {
+    e = unwrap(e)
+    const lit = constIntExpr(e)
+    if (lit != null) return ['i64.const', lit]
+    if (typeof e === 'string') return [indexWordRange(e)[0] < 0 ? 'i64.extend_i32_s' : 'i64.extend_i32_u', asI32(emit(e))]
+    return [WIDE_INDEX_OP[e[0]], form(e[1]), form(e[2])]
+  }
+  return typed(form(e), 'i64')
+}
+
 // `whole` proves a present integer, not its magnitude. `wide` retains a safe
 // full integer for a following bounds check. `bounded` supplies the stronger
 // proof for this typed access: its key lies in [0, receiver.length). It may
@@ -104,6 +165,15 @@ export const emitIndex = (index, whole = false, wide = false, bounded = false) =
     range && range[0] >= -2147483648 && range[1] < 4294967296
   const direct = exact && tryI32Index(index)
   if (direct) return direct
+  // A typed access (its consumer tests the full key, or proved it in range):
+  // the low word of the exact key
+  const wideKey = (wide || bounded) && tryWideIndex(index)
+  if (wideKey) {
+    if (bounded) return typed(['i32.wrap_i64', wideKey], 'i32')
+    const w = tempI64('ixw'), low = typed(['i32.wrap_i64', ['local.tee', `$${w}`, wideKey]], 'i32')
+    low.indexWide = ['local.get', `$${w}`]
+    return low
+  }
   const proven = whole
   whole ||= wholeKey(index)
   // Integral where its typed reads hit: a miss is NaN, which the whole path tests.
@@ -134,7 +204,8 @@ export const emitIndex = (index, whole = false, wide = false, bounded = false) =
   // The caller proves this exact typed access in bounds. Together with the
   // whole-key proof, its index lies in [0, 2^32): keep that address's low word.
   // Individual arithmetic intermediates still retain their Number semantics.
-  if (bounded && proven) return typed(['i32.wrap_i64', ['i64.trunc_sat_f64_s', asF64(value)]], 'i32')
+  // (marked: integer narrowing may take the word by an exact form the interval cannot prove)
+  if (bounded && proven) { const w = typed(['i32.wrap_i64', ['i64.trunc_sat_f64_s', asF64(value)]], 'i32'); w.provenWord = true; return w }
   // A checked typed-array access can compare an integer key with the full
   // unsigned length before using its low word as an address. Keep that value
   // once: saturating to i32 first needs two clamps around every wide scale.
@@ -1019,7 +1090,7 @@ export function emitDecl(...inits) {
       coerced = localType === 'v128' ? val : localType === 'f64' ? asF64(val)
         : val.type === 'i32' ? val
         : valTypeOf(init) === VAL.BOOL ? unboxBoolIR(val)
-        : Array.isArray(init) && I32_INDEX_OP[init[0]] ? tryI32Index(init) ?? toI32(val) : toI32(val)
+        : Array.isArray(init) && I32_INDEX_OP[init[0]] ? (repOf(name)?.provedWord ? provedWord(init) : tryI32Index(init) ?? toI32(val)) : toI32(val)
     }
     // `let x = 0` at function scope is normally elided — WASM zero-inits locals. But loop
     // unrolling flattens iteration bodies into one scope, so the 2nd+ `let x = 0` are

@@ -25,14 +25,14 @@
 
 import { ctx } from '../../ctx.js'
 import {
-  callbackReadsArray, some, walkAst, rewriteChildren, T, stmtList, refsName, REFS_IN_EXPR, REFS_THROUGH_ARROWS, ASSIGN_OPS, COMPARE_OPS, MUTATE_OPS, ACCESSOR_GET, ACCESSOR_SET, isReassigned, hasControlTransfer,
+  callbackReadsArray, some, walkAst, rewriteChildren, T, stmtList, refsName, REFS_IN_EXPR, REFS_THROUGH_ARROWS, ASSIGN_OPS, COMPARE_OPS, MUTATE_OPS, ACCESSOR_GET, ACCESSOR_SET, isReassigned, hasControlTransfer, callArgs,
 } from '../../ast.js'
 import { freshId } from '../../ir.js'
 import {
   intLiteralValue, nonNegIntLiteral, constIntExpr, staticObjectProps, staticPropertyKey,
 } from '../../static.js'
 import {
-  smallConstForTripCount, containsDeclOf, cloneWithSubst,
+  smallConstForTripCount, containsDeclOf, cloneWithSubst, typedElemCtor,
 } from '../../type.js'
 import { VAL } from '../../reps.js'
 import { includeModule } from '../../autoload.js'
@@ -762,6 +762,52 @@ export const analyzeParamDistinctness = (programFacts) => {
     }
     unresolved = next
   }
+}
+
+// Module bindings that only ever hold a buffer of their own: every write is a
+// typed-array allocation whose argument is a primitive or a list (a length or
+// the values to copy, never an ArrayBuffer to view). Two such bindings are two
+// buffers, and neither is a buffer some parameter proven distinct receives (a
+// distinct parameter's argument is a fresh local, which no such binding is
+// assigned). So a loop that stores to one does not change an element of
+// another: optimize/licm.js moves the other's invariant reads out of it.
+const PRIMITIVE_OPS = new Set(['+', '-', '*', '/', '%', '**', '|', '&', '^', '<<', '>>', '>>>', '~', 'u-', 'u+', '!'])
+const ownsBuffer = (e) => {
+  const args = typedElemCtor(e) != null ? callArgs(e) : null
+  if (!args || args.length > 1) return false
+  const a = args[0]
+  if (a == null) return true
+  // (a name may hold an ArrayBuffer, which the array would view)
+  return Array.isArray(a) && (a[0] == null || PRIMITIVE_OPS.has(a[0]) || (a[0] === '[]' && a.length === 2))
+}
+export const analyzeFreshTypedGlobals = (ast) => {
+  const names = [...ctx.scope.globals.keys()].filter(n => ctx.scope.userGlobals.has(n))
+  const fresh = new Set(names), strings = (n, out) => { if (typeof n === 'string') out.add(n); else if (Array.isArray(n)) for (const c of n) strings(c, out); return out }
+  const lose = (n) => { for (const x of strings(n, new Set())) fresh.delete(x) }
+  const top = new Set(Array.isArray(ast) && ast[0] === ';' ? ast.slice(1).flatMap(s => Array.isArray(s) && s[0] === 'export' ? [s, s[1]] : [s]) : [ast])
+  const scan = (root) => walkAst(root, { enter: (n) => {
+    const op = n[0]
+    if (op === 'let' || op === 'const' || op === 'var') {
+      // a module declaration's initial value; a declaration anywhere else shadows the binding
+      for (let i = 1; i < n.length; i++) {
+        const d = n[i]
+        if (!top.has(n)) lose(Array.isArray(d) && d[0] === '=' ? d[1] : d)
+        else if (Array.isArray(d) && d[0] === '=' && (typeof d[1] !== 'string' || !ownsBuffer(d[2]))) lose(d[1])
+      }
+      return
+    }
+    if (op === '=>' || op === 'function' || op === 'catch') { lose(n[1]); return }
+    if (op === 'of' || op === 'in') { lose(n[1]); return }
+    if (MUTATE_OPS.has(op)) {
+      const t = n[1]
+      if (typeof t === 'string') { if (op !== '=' || !ownsBuffer(n[2])) fresh.delete(t) }
+      // a pattern rebinds every name in it (a member target `a.x` or `a[i]` rebinds none)
+      else if (Array.isArray(t) && (t[0] === '{}' || (t[0] === '[]' && t.length === 2) || t[0] === '()')) lose(t)
+    }
+  } })
+  scan(ast)
+  for (const func of ctx.funcs.list) scan(func.body)
+  ctx.scope.freshTypedGlobals = fresh.size ? new Set([...fresh].map(n => `$${n}`)) : null
 }
 
 const scalarizeArrayLiteralSeq = (seq) => {

@@ -304,12 +304,24 @@ const PURE_LICM_OPS = new Set([
   'f64.promote_f32', 'f32.demote_f64', 'select',
 ])
 
+const NUMERIC_INDEX = /^(i32|i64)\.trunc(_sat)?_f64_[su]$/, TEST_OP = /^[if](32|64)\.(eqz?|ne|[lg][te](_[su])?)$/
+// The buffers a function's addresses are proven pairwise distinct among: its
+// typed-array parameters every caller passes fresh (plan/literals.js
+// analyzeParamDistinctness) and the module bindings that only hold buffers of
+// their own (analyzeFreshTypedGlobals), keyed `global $name`.
+const distinctBases = (fn) => {
+  const globals = ctx.scope.freshTypedGlobals
+  if (!globals) return fn.distinctParams || null
+  return new Set([...fn.distinctParams ?? [], ...[...globals].map(g => `global ${g}`)])
+}
+
 // Resolve an address to one parameter through pure arithmetic and single-def
 // locals. Closed numeric recurrences (constants and their own prior value only)
 // contribute no buffer root. Other multi-def locals, loads, calls and globals
 // have unknown origins and block alias-based motion.
 function buildBaseParamOf(fn, bodyStart, distinctParams) {
   if (!distinctParams) return () => null
+  const freshGlobals = ctx.scope.freshTypedGlobals
   const paramNames = new Set()
   for (let i = 2; i < bodyStart; i++)
     if (Array.isArray(fn[i]) && fn[i][0] === 'param' && typeof fn[i][1] === 'string') paramNames.add(fn[i][1])
@@ -332,10 +344,14 @@ function buildBaseParamOf(fn, bodyStart, distinctParams) {
   return addr => {
     const found = new Set(), seen = new Set()
     let bad = false
-    const visit = n => {
+    const visit = (n, parent) => {
       if (bad || !Array.isArray(n)) return
       const op = n[0]
       if (op.endsWith('.const')) return
+      // A number, an answer or a number's integer (an element index): no buffer
+      // root is one, whatever it was computed from. A root reaches an address
+      // as a word, or as the bits of the box that holds it (`i64.reinterpret_f64`).
+      if (freshGlobals && (NUMERIC_INDEX.test(op) || TEST_OP.test(op) || (op.startsWith('f64.') && parent !== 'i64.reinterpret_f64'))) return
       if (op === 'local.get') {
         const name = n[1]
         if (paramNames.has(name)) { found.add(name); return }
@@ -345,17 +361,19 @@ function buildBaseParamOf(fn, bodyStart, distinctParams) {
         // different buffer. Never turn that union into one parameter root.
         if (values.length !== 1 || seen.has(name)) { bad = true; return }
         seen.add(name)
-        visit(values[0])
+        visit(values[0], parent)
         seen.delete(name)
         return
       }
+      // a module binding that holds only buffers of its own (its root, by its name in the distinct set)
+      if (op === 'global.get') { if (freshGlobals?.has(n[1])) found.add(`global ${n[1]}`); else bad = true; return }
       // An emitted conversion may stage its operand in a value block. Trace
       // every statement's origins as well as the result; this does not make
       // those statements pure or permit a load/call to supply an offset.
       if (op !== 'block' && op !== 'result' && op !== 'local.set' && op !== 'local.tee' && !PURE_LICM_OPS.has(op)) { bad = true; return }
-      for (let i = 1; i < n.length; i++) visit(n[i])
+      for (let i = 1; i < n.length; i++) visit(n[i], op)
     }
-    visit(addr)
+    visit(addr, null)
     return !bad && found.size === 1 ? [...found][0] : null
   }
 }
@@ -745,7 +763,7 @@ export function splitLoopPrivateScratch(fn) {
   // survives into this 'post' pass) — lets pureGiven prove a read-only input-array load distinct
   // from the loop's output store, the SOUND replacement for the old address-local-disjointness
   // heuristic (which assumed two loads/stores in different locals never alias — false in general).
-  const distinctParams = fn.distinctParams || null
+  const distinctParams = distinctBases(fn)
   const baseParamOf = buildBaseParamOf(fn, bodyStart, distinctParams)
 
   const hasV128 = (n) => {
@@ -893,7 +911,7 @@ export function splitLoopPrivateScratch(fn) {
 export function hoistInvariantLoop(fn) {
   const bodyStart = findBodyStart(fn)
   if (bodyStart < 0) return
-  const distinctParams = fn.distinctParams || null
+  const distinctParams = distinctBases(fn)
   const baseParamOf = buildBaseParamOf(fn, bodyStart, distinctParams)
   const stableHeaderNames = fn.stableHeaderNames || null
   const presentArrays = fn.presentArrays || null

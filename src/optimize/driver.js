@@ -162,7 +162,7 @@ export function optimizeFunc(fn, cfg, globalTypes, reachableWrites) {
   if ((!cfg || cfg.fusedRewrite !== false) && (!cfg || cfg.inlineToNum !== false)) lowerToInt32Tails(fn)
   if (!cfg || cfg.intNarrow !== false) {
     const copies = cfg && cfg.specializeLoops === true ? specializeLoops(fn) : null
-    narrowInts(fn, copies, cfg?.inlineToNum !== false)
+    narrowInts(fn, copies, cfg?.inlineToNum !== false, cfg?.wordTruncation ?? 'wide')
     // Over the integers: the guards of the copies, where one test decides many.
     if (copies && cfg.combineGuards !== false) combineGuards(fn)
   }

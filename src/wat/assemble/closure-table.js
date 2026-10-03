@@ -104,11 +104,14 @@ export function dedupClosureBodies(closureFuncs, sec) {
     return true
   }
   const buckets = new Map()  // hash -> [{ fn, locals, name }]
+  // Keyed and valued by WAT names (`$c1` → `$c0`), so the module-wide rewrite
+  // below looks up each `$`-string as is instead of slicing a copy of every
+  // local, label and call target in the module.
   const redirect = new Map()
   for (const fn of closureFuncs) {
     const locals = localNamesOf(fn)
     const h = hashOf(fn, locals)
-    const name = fn[1].slice(1)
+    const name = fn[1]
     let bucket = buckets.get(h)
     if (!bucket) buckets.set(h, bucket = [])
     let canonical = null
@@ -121,8 +124,7 @@ export function dedupClosureBodies(closureFuncs, sec) {
   if (!redirect.size) return
   const kept = sec.funcs.filter(fn => {
     if (!Array.isArray(fn) || fn[0] !== 'func') return true
-    const name = typeof fn[1] === 'string' && fn[1][0] === '$' ? fn[1].slice(1) : null
-    return !name || !redirect.has(name)
+    return !(typeof fn[1] === 'string' && redirect.has(fn[1]))
   })
   // Retired onto walkAst (pipeline-minimality slice, `.work/archive/assemble-outliers.md`
   // §5): the hand-rolled recursion only ever rewrote bare `$name` STRING
@@ -134,10 +136,17 @@ export function dedupClosureBodies(closureFuncs, sec) {
   for (const fn of kept) walkAst(fn, { enter: n => {
     for (let i = 0; i < n.length; i++) {
       const c = n[i]
-      if (typeof c === 'string' && c[0] === '$' && redirect.has(c.slice(1))) n[i] = `$${redirect.get(c.slice(1))}`
+      if (typeof c === 'string' && c[0] === '$') {
+        const target = redirect.get(c)
+        if (target) n[i] = target
+      }
     }
   } })
-  ctx.closure.table = ctx.closure.table.map(n => redirect.get(n) || n)
+  // Table entries keep their bare-name contract.
+  ctx.closure.table = ctx.closure.table.map(n => {
+    const target = redirect.get(`$${n}`)
+    return target ? target.slice(1) : n
+  })
   sec.funcs.length = 0
   sec.funcs.push(...kept)
 }

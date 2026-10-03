@@ -754,8 +754,9 @@ test('codegen: float→int |0 of a finite, in-range value drops the +∞-guard s
   const wat = compile(src, { optimize: 'speed', wat: true })
   const beforeLoad = (fn) => fn.slice(0, fn.indexOf('i32.load8_u'))   // s-exprs print outermost-first
   const pack = beforeLoad(wat.match(/\(func \$pack[\s\S]*?\n  \)/)[0])
-  ok(/i32\.wrap_i64\s*\(i64\.trunc_sat_f64_s/.test(pack) && !/\bselect\b/.test(pack) && !/\bi32\.trunc_sat_f64_s/.test(pack),
-    'in-range |0 is the wrapped i64 truncation — no +∞-guard select, no bare i32 trunc_sat')
+  // (the speed tier's word of a bounded value is the add: its 1.5·2^52 sum read as bits)
+  ok(/i64\.reinterpret_f64\s*\(f64\.add\s*\(f64\.trunc/.test(pack) && !/\bselect\b/.test(pack) && !/trunc_sat_f64_s/.test(pack),
+    'in-range |0 is the exact word by the add — no +∞-guard select, no truncation')
   const wide = beforeLoad(wat.match(/\(func \$wide[\s\S]*?\n  \)/)[0])
   ok(!/\bselect\b/.test(wide), 'finite-but-large |0 drops the +∞ guard (keeps the mod-2^32 wrap)')
   const { exports } = jz(src, { optimize: 'speed' })
@@ -966,7 +967,8 @@ test('codegen: a loop guard offset from its counter stays integer within its tes
     }
   }
   if (onKernel()) return
-  const hot = compile(loop(heads[0]), { optimize: 'speed', wat: true })
+  // (without the late ToInt32 lowering: the range test of `x | 0` compares in f64)
+  const hot = compile(loop(heads[0]), { optimize: { level: 'speed', guardedToInt32: false }, wat: true })
   ok(!/f64\.(le|lt|add)/.test(hot), 'a bounded offset guard compares in i32')
   // (f64, or the i64 the integer pass carries the same sum in: no i32 that wraps)
   ok(/f64\.(le|lt)|i64\.(le|lt|gt|ge)_s/.test(compile(loop(heads[4]), { optimize: 'speed', wat: true })), 'a guard sum that can pass INT_MAX keeps f64')

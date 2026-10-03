@@ -3453,10 +3453,19 @@ was the strbuild checksum regression.
 
 ToInt32 of a value whose range is proven finite and below 2^63 (`f64Range`:
 literals, counters, `Math.floor` of a bounded product, a checked byte read) is
-`i32.wrap_i64(i64.trunc_sat_f64_s)` with no ±∞ guard, and the i64 form is
-kept on purpose: V8's arm64 lowering of `i32.trunc_sat_f64_s` adds a float
-round-trip and range checks (bytebeat 1521 → 1370 µs; a 5e7-iteration micro
-294 ns against 446). An unproven value keeps the guarded select. The range
+`i32.wrap_i64(i64.trunc_sat_f64_s)` with no ±∞ guard: V8's arm64 lowering of
+`i32.trunc_sat_f64_s` adds a float round-trip and range checks (bytebeat 1521
+→ 1370 µs; a 5e7-iteration micro 294 ns against 446). On x64 the same V8 runs
+that wide form at four times the cost, so the speed tier (`wordTruncation:
+'add'`) takes a word without any conversion: within ±2^51 and no NaN, the
+value's truncation plus 1.5·2^52 holds the integer in its low bits, exactly.
+Integer narrowing does that where the interval proves the range; elsewhere a
+test of the magnitude guards it, the wide form behind it, and an element
+key's exactness test (`convert(word) == key`) takes the sum's low bits as its
+word. `bench/lowering.mjs`, printed by examples-perf on each target: x64 4.1
+ns wide against 1.0 added, arm64 0.82 against 0.93, Apple M1 0.73 against
+0.81; the gallery on x64 went from 39 to 44 of 65 pages ahead of JS, arm64
+from 45 to 46. An unproven value keeps the guarded select. The range
 is flow-sensitive (`optimize/flow-range.js`): a comparison bounds the local in
 the arm it guards, the arms hull at their join, and a loop's written locals
 are unknown at its head, so a clamp (`if (v > K) v = K; else if (v < L) v = L`)

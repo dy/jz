@@ -115,6 +115,8 @@ const TESTS = [
   'typed-length',
   'declare-unseen-keys',
   'integral-loops',
+  'index-words',
+  'buffer-alias',
   'unswitch-loops',
   'chosen-calls',
   'loop-fields',

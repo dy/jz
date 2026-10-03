@@ -48,7 +48,7 @@
 import { ctx } from '../../ctx.js'
 import { frameNode } from '../../function.js'
 import { includeModule } from '../../autoload.js'
-import { T, MUTATE_OPS, TYPEOF, numberGuard, some, walkAst, extractParams, collectParamName, isReassigned, callArgs } from '../../ast.js'
+import { T, MUTATE_OPS, TYPEOF, numberGuard, some, walkAst, extractParams, collectParamName, isReassigned, callArgs, refsName } from '../../ast.js'
 import { freshId } from '../../ir.js'
 import { cloneWithSubst } from '../../type.js'
 import { collectBindings, nodeSize } from './common.js'
@@ -87,6 +87,17 @@ const integral = (e, out, intArray = NO_ARRAY) => {
   return all
 }
 const NO_ARRAY = () => false
+/** The names a bound made of names and literals by sums, differences and
+ *  products reads (`h - 1`, `2 * n`), or null for any other expression: with
+ *  each name a Number, it runs no user code. */
+const boundTerms = (e, out = []) => {
+  if (typeof e === 'string') { out.push(e); return out }
+  if (!Array.isArray(e)) return null
+  if (e[0] == null) return typeof e[1] === 'number' ? out : null
+  if (e[0] === '()' && e.length === 2) return boundTerms(e[1], out)
+  if ((e[0] === '+' || e[0] === '-' || e[0] === '*') && e.length === 3) return boundTerms(e[1], out) && boundTerms(e[2], out)
+  return null
+}
 const INT_ELEMENTS = /^(Int8|Uint8|Uint8Clamped|Int16|Uint16|Int32|Uint32)Array$/
 
 /** The values the writes in `node` store, by name (`++`'s is integral), null
@@ -107,18 +118,29 @@ const NO_WRITES = []
 
 const COUNTS = new Set(['++', '--', '+1', '-1'])
 const BOUND_TESTS = new Set(['<', '<=', '>', '>='])
-/** The names a `for` loop tests its counter against (`i < n`, `k + i <= n`: every
- *  name of the side the counter is not on), where the counter is its init's
- *  name stepped by a constant. */
+/** The names a loop tests its counter against (`i < n`, `k + i <= n`: every
+ *  name of the side the counter is not on), where the counter is a `for`'s
+ *  init name stepped by a constant, or a name a `while` steps by constants alone. */
 const boundNames = (loop) => {
   const out = new Set()
-  if (loop[0] !== 'for' || loop.length !== 5) return out
-  const [, init, test, step] = loop
-  const i = Array.isArray(init) && (init[0] === 'let' || init[0] === 'var') && Array.isArray(init[1]) && init[1][0] === '=' ? init[1][1] : null
-  if (typeof i !== 'string' || !Array.isArray(step) || step[1] !== i || !(COUNTS.has(step[0]) || step[0] === '+=' || step[0] === '-=')) return out
+  let i = null, test = null
+  if (loop[0] === 'for' && loop.length === 5) {
+    const [, init, t, step] = loop
+    i = Array.isArray(init) && (init[0] === 'let' || init[0] === 'var') && Array.isArray(init[1]) && init[1][0] === '=' ? init[1][1] : null
+    if (typeof i !== 'string' || !Array.isArray(step) || step[1] !== i || !(COUNTS.has(step[0]) || step[0] === '+=' || step[0] === '-=')) return out
+    test = t
+  } else if (loop[0] === 'while') test = loop[1]
+  else return out
   if (!Array.isArray(test) || !BOUND_TESTS.has(test[0])) return out
   const names = (e) => { const found = new Set(); integral(e, found); return found }
   const left = names(test[1]), right = names(test[2])
+  // a while's counter: the one name of its side the loop writes, by constant steps alone
+  if (i == null) {
+    const stepped = side => [...side].filter(n => some(loop, m => MUTATE_OPS.has(m[0]) && m[1] === n) && counted(loop, n))
+    const l = stepped(left), r = stepped(right)
+    i = l.length === 1 && !r.length ? l[0] : r.length === 1 && !l.length ? r[0] : null
+    if (i == null) return out
+  }
   const side = left.has(i) && !right.has(i) ? right : right.has(i) && !left.has(i) ? left : null
   if (side) for (const n of side) out.add(n)
   return out
@@ -154,6 +176,7 @@ const indexNames = (loop, writes, intArray) => {
 }
 
 const ARITH = new Set(['-', '*', '/', '%', '**', '|', '&', '^', '<<', '>>', '>>>'])
+const OPERATED = new Set([...ARITH, '+', 'u-', 'u+', '~', '!', '<', '>', '<=', '>=', '==', '===', '!=', '!==', 'typeof'])
 const OPERANDS = new Set([...ARITH, '+', '<', '>', '<=', '>=', 'u-', 'u+', '~'])
 // The kinds a `+` or a conversion takes as a Number: no string, no object, no BigInt.
 const NOT_NUMERIC = [K.STRING, K.BIGINT, K.TYPED, K.ARRAY, K.OBJECT, K.CLOSURE, K.MAP, K.SET, K.DATE, K.REGEX, K.HASH, K.BUFFER]
@@ -273,6 +296,7 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
   const intArray = (e) => typeof e === 'string' && INT_ELEMENTS.test(view?.typedPayloadCtorOfExpr(e) ?? '')
   const kindOf = (n) => view?.kindOf(n) ?? 0, kindOfExpr = (e) => view?.kindOfExpr(e) ?? 0
   let bodyWrites = null   // the body's writes, indexed once; a copy adds its own
+  const fresh = new Set()  // the copies' own Numbers: int32 aliases and rounded bounds
   let rewrote = false
   for (const [loop, parent, idx] of loops) {
     if (parent[idx] !== loop || nodeSize(loop) > MAX_SIZE) continue
@@ -295,22 +319,51 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
     // a name the summary knows holds no number (an object key) is never an int32
     const mayBeNumber = (n) => { const k = view?.kindOfExpr(n); return k == null || hasTag(k, K.NUMBER) || tagOf(core(k)) === K.ANY }
     const outerOk = (n) => locals.has(n) && !inner.has(n) && !captured.has(n) && !ctx.funcs.names.has(n)
-    // A module binding can supply the same snapshot as a local only when
-    // the entire loop cannot run code that changes it between comparisons.
-    const stableBound = n => {
-      if (outerOk(n)) return true
-      if (typeof n !== 'string' || !ctx.scope.globals.has(n) || loopWrites.has(n)) return false
-      // This copy is entered only after numberGuard(n). Effects through other
-      // operands remain unknown; converting this guarded bound runs no user code.
-      const guardedView = { kindOfExpr: e => e === n ? NUMBER : kindOfExpr(e) }
-      return !some(loop, e => runsAccessor(guardedView, e, true) || runsConversion(guardedView, e, true) ||
-        e[0] === 'new' || ((e[0] === '?.()' || e[0] === '()' && e.length > 2) &&
-          !(e[0] === '()' && typeof e[1] === 'string' && e[1].startsWith('math.') && callArgs(e).every(arg => core(guardedView.kindOfExpr(arg)) === NUMBER))))
+    // The names the copy's guard holds to Numbers (`typeof x === 'number'`):
+    // the stable names the loop converts, whose conversion then runs no user
+    // code. Null where the loop can run code no such guard rules out (a call,
+    // `new`, a getter, a conversion of anything else).
+    let quiet
+    const quietNames = () => {
+      if (quiet !== undefined) return quiet
+      // (an operator's result is a primitive, so are a typed element and a local of the body
+      // only operators write: converting one runs no user code, which is all this view answers)
+      const operated = n => locals.has(n) && !params.has(n) && !captured.has(n) &&
+        !!bodyWrites.get(n)?.every(v => Array.isArray(v) && (v[0] == null || OPERATED.has(v[0])))
+      const primitive = e => typeof e === 'string' ? g.has(e) || fresh.has(e) || operated(e)
+        : Array.isArray(e) && (OPERATED.has(e[0]) || e[0] === '[]' && e.length === 3 && tagOf(core(kindOfExpr(e[1]))) === K.TYPED)
+      const g = new Set(), view = { kindOfExpr: e => primitive(e) ? NUMBER : kindOfExpr(e) }
+      const guardable = x => typeof x === 'string' && !g.has(x) && !loopWrites.has(x) && !inner.has(x) && mayBeNumber(x) &&
+        (outerOk(x) || ctx.scope.globals.has(x) && !locals.has(x) && !captured.has(x))
+      for (;;) {
+        let found = null
+        some(loop, e => {
+          const call = e[0] === '?.()' || e[0] === '()' && e.length > 2
+          const math = call && e[0] === '()' && typeof e[1] === 'string' && e[1].startsWith('math.')
+          if (e[0] === 'new' || call && !math) { found = false; return true }
+          if (math ? callArgs(e).every(arg => core(view.kindOfExpr(arg)) === NUMBER) : !runsAccessor(view, e, true) && !runsConversion(view, e, true)) return false
+          found = (math ? callArgs(e) : e.slice(1)).filter(guardable)
+          return true
+        })
+        if (found === null) return quiet = g
+        if (!found?.length) return quiet = null
+        for (const x of found) g.add(x)
+      }
     }
+    // A module binding supplies the same snapshot as a local only when the
+    // whole loop cannot run code that changes it between comparisons.
+    const stableBound = n => outerOk(n) || typeof n === 'string' && ctx.scope.globals.has(n) && !locals.has(n) && !loopWrites.has(n) && quietNames() != null
     // A counter's integer-valued updates do not prove its magnitude. Where a
     // stable numeric bound fits i32, round that bound once in a private copy;
     // the shared counter-range proof then includes its final increment. The
     // original bound stays unchanged for uses in the body (including fractions).
+    // a bound of stable names, each held to a Number by the guard: one value through the loop
+    // (an expression of them, where some term's integrality is unknown: of integers it is one already)
+    const stableTerms = (n) => {
+      const ns = boundTerms(n)
+      return ns?.length && ns.every(x => stableBound(x) && !loopWrites.has(x)) &&
+        (typeof n === 'string' || ns.some(x => !already(x) && !intExprRange(x))) ? ns : null
+    }
     let counterBound = null
     if (loop[0] === 'for' && loop[1]?.[0] === 'let' && loop[1].length === 2 &&
         loop[1][1]?.[0] === '=' && typeof loop[1][1][1] === 'string' &&
@@ -325,22 +378,23 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
       const values = bodyWrites.get(n)
       const knownBound = intExprRange(n) ?? (!params.has(n) && values?.length === 1 && !isReassigned(body, n) ? intExprRange(values[0]) : null)
       const alreadyBounded = knownBound && forCounterRange(loop[1], loop[2], loop[3], counter, e => e === n ? knownBound : intExprRange(e))
-      if (loop[2][1] === counter && typeof n === 'string' && stableBound(n) && !loopWrites.has(n) &&
+      const terms = stableTerms(n)
+      if (loop[2][1] === counter && terms &&
           !captured.has(counter) && !writesIn(loop[4]).has(counter) && init?.[0] == null &&
           range && range.test[0] >= -2147483648 && range.test[1] <= 2147483647 &&
-          !alreadyBounded && !intExprRange(n) && !integralEntry(n)) counterBound = { name: n, bound, comparison, testAt: 2, min: -2147483648 - Math.min(0, adjust), max: 2147483647 - Math.max(0, adjust) }
+          !alreadyBounded && !intExprRange(n) && !(typeof n === 'string' && integralEntry(n))) counterBound = { name: n, terms, bound, comparison, testAt: 2, min: -2147483648 - Math.min(0, adjust), max: 2147483647 - Math.max(0, adjust) }
     }
     // A while counter has an observable entry outside the loop. Capture its
     // word only behind the same exact-entry guard, then reserve room for every
     // positive step before the next comparison (including the final landing).
     if (loop[0] === 'while' && (loop[1]?.[0] === '<' || loop[1]?.[0] === '<=')) {
       const counter = loop[1][1], n = loop[1][2], inclusive = loop[1][0] === '<='
-      if (typeof counter === 'string' && outerOk(counter) && mayBeNumber(counter) &&
-          typeof n === 'string' && stableBound(n) && !loopWrites.has(n) && !intExprRange(n)) {
+      const terms = stableTerms(n)
+      if (typeof counter === 'string' && outerOk(counter) && mayBeNumber(counter) && terms && !intExprRange(n)) {
         const advance = maxAdvanceBudget(loop[2], counter, { constInt: constIntExpr, evRange: intExprRange, closureWrites: captured, MUTATE_OPS })
         if (advance > 0 && advance <= 2147483647) {
           const rounded = ['()', inclusive ? 'math.floor' : 'math.ceil', n]
-          counterBound = { name: n, counter, testAt: 1, comparison: '<',
+          counterBound = { name: n, terms, counter, testAt: 1, comparison: '<',
             bound: ['>>', inclusive ? ['+', rounded, [null, 1]] : rounded, [null, 0]],
             min: -2147483648, max: 2147483647 - advance + (inclusive ? 0 : 1) }
         }
@@ -349,11 +403,16 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
     // State/presence copies belong to leaf loops. A surrounding scan may
     // still need a bounded counter even when its work contains another loop.
     if (!counterBound && some(loop, n => n !== loop && LOOPS.has(n[0]))) continue
-    const indexed = [...indexNames(loop, loopWrites, intArray)].filter(n => outerOk(n) && !already(n) && mayBeNumber(n))
+    // a module binding the loop cannot change reads as a local would: the copy snapshots it
+    // (one the program already holds to an integer range, a constant, needs no copy)
+    const stableGlobal = (n) => !outerOk(n) && !inner.has(n) && !locals.has(n) && ctx.scope.globals.has(n) && !intExprRange(n) && stableBound(n)
+    const indexed = [...indexNames(loop, loopWrites, intArray)].filter(n => (outerOk(n) || stableGlobal(n)) && !already(n) && mayBeNumber(n))
     // the names a counter is tested against (`i < n`, n read from a parameter): the
     // counter is an int32 only where they are
-    // (not an export's own parameter: the host's value there keeps the boundary's representation)
-    const bounds = [...boundNames(loop)].filter(n => outerOk(n) && !loopWrites.has(n) && !already(n) && mayBeNumber(n) &&
+    // (not an export's own parameter: the host's value there keeps the boundary's representation;
+    // nor a module binding only the counter's test reads: its rounded bound answers that test)
+    const testOnly = n => counterBound?.terms.includes(n) && !loop.some((part, i) => i > 0 && i !== counterBound.testAt && refsName(part, n))
+    const bounds = [...boundNames(loop)].filter(n => (outerOk(n) || stableGlobal(n) && !testOnly(n)) && !loopWrites.has(n) && !already(n) && mayBeNumber(n) &&
       !(func && isExported(func) && params.has(n)))
     // a cursor the loop moves other than by a constant step (`p = (p + 1) % N`), or a
     // counter's bound of unknown integrality: an index made of names the loop only reads
@@ -376,6 +435,7 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
     const written = [...locals].filter(n => loopWrites.has(n) && !inner.has(n) && !captured.has(n) && !ctx.funcs.names.has(n) && mayBeNumber(n) && !already(n))
     const outer = [...new Set([...names, ...numbers, ...present, ...written])]
     const own = new Map([...outer, ...inner].map(n => [n, `${n}${T}int${freshId(ctx)}`]))
+    for (const n of [...names, ...numbers]) fresh.add(own.get(n))
     // A non-counted index recurrence gets the nonnegative index domain;
     // a positive count closes wrap/decrement recurrences. Readonly offsets
     // retain signed entries. Subsequent writes still need a complete hull.
@@ -384,7 +444,8 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
     const boundDecl = []
     if (counterBound) {
       includeModule('math')
-      const bound = `${counterBound.name}${T}bound${freshId(ctx)}`
+      const bound = `${counterBound.terms[0]}${T}bound${freshId(ctx)}`
+      fresh.add(bound)
       boundDecl.push(['=', bound, counterBound.bound])
       copy[counterBound.testAt][0] = counterBound.comparison
       copy[counterBound.testAt][2] = bound
@@ -395,8 +456,11 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
     // the type first, so the test converts no object (a key's valueOf runs where the loop reads it);
     // a Number alone: `typeof x === 'number'`, the form whose arm the summary reads as a Number;
     // present: `x != null`
-    const boundTest = counterBound ? [['&&', numberGuard(counterBound.name), ['&&', ['>=', counterBound.name, [null, counterBound.min]], ['<=', counterBound.name, [null, counterBound.max]]]]] : []
-    const test = [...boundTest, ...names.map(n => ['&&', ['&&', numberGuard(n), ['===', n, ['=', own.get(n), ['|', n, [null, 0]]]]], ['||', ['!==', n, [null, 0]], ['>', ['/', [null, 1], n], [null, 0]]]]),
+    // (a module binding read for the copy takes the guard of every name the loop converts)
+    const quietGuards = [...names, ...counterBound?.terms ?? []].some(n => !outerOk(n)) ? [...quiet ?? []] : []
+    const typeGuards = [...new Set([...counterBound?.terms ?? [], ...quietGuards])].map(numberGuard)
+    const boundTest = counterBound ? [['&&', ['>=', counterBound.name, [null, counterBound.min]], ['<=', counterBound.name, [null, counterBound.max]]]] : []
+    const test = [...typeGuards, ...boundTest, ...names.map(n => ['&&', ['&&', numberGuard(n), ['===', n, ['=', own.get(n), ['|', n, [null, 0]]]]], ['||', ['!==', n, [null, 0]], ['>', ['/', [null, 1], n], [null, 0]]]]),
       ...moving.map(n => ['>=', own.get(n), [null, 0]]),
       ...(moving.length ? bounds.map(n => ['>', own.get(n), [null, 0]]) : []),
       ...numbers.map(n => ['===', ['typeof', n], [null, TYPEOF.number]]),
@@ -409,6 +473,9 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
     const guarded = ['if', test, version, ['{}', [';', loop]]]
     parent[idx] = names.length ? ['{}', [';', ['let', ...names.map(n => ['=', own.get(n), [null, 0]])], guarded]] : guarded
     for (const [n, values] of writesIn(version)) { const l = bodyWrites.get(n); if (l) l.push(...values); else bodyWrites.set(n, values) }
+    // (the copy's names are the body's locals now: an enclosing loop's copy reads them so)
+    for (const n of own.values()) locals.add(n)
+    for (const d of boundDecl) locals.add(d[1])
     rewrote = true
   }
   return rewrote
