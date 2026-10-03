@@ -25,7 +25,8 @@ on:
       - 'package-lock.json'
       - '.github/workflows/examples-perf.yml'
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  # (an A/B dispatch runs beside the push run, and beside its other arm)
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ inputs.opt }}
   cancel-in-progress: true
 jobs:
   pages:
