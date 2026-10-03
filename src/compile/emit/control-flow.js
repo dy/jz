@@ -126,7 +126,8 @@ function emitGuardedWords(words, emitArm) {
     saved.set(name, [locals.get(name), reps.get(name)])
     locals.set(name, 'i32')
     locals.set(fresh, 'i32')
-    reps.set(name, { ...(reps.get(name) ?? repOfGlobal(name)), range: proof.range })
+    // (a definition the proof read: its every intermediate exact, its word arithmetic is its value)
+    reps.set(name, { ...(reps.get(name) ?? repOfGlobal(name)), range: proof.range, provedWord: !proof.entry })
     if (proof.entry) entry.push(['local.set', `$${fresh}`, ['i32.wrap_i64', proof.entry]])
   }
   let ir

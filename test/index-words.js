@@ -161,3 +161,33 @@ test('index words: a tone map wraps each lane past 2^31 as ToInt32 does, and rea
     for (const [pr, ir] of [[0, 235], [235, 0], [3e9, -3e9]]) for (let f = 0; f < 3; f++) is(lanes.frame(pr, ir), scalar.frame(pr, ir), `n=${n} ${pr}→${ir} frame ${f}`)
   }
 })
+
+test('index words: clamped neighbours of a row-major cell read the elements JS names', () => {
+  // `hf[qx > 0 ? i - 1 : i]`: each arm a word key; `i = py * W + qx` a word the guard proved
+  const src = `let W = 0, H = 0, hf, out
+    export let resize = (w, h) => { W = w; H = h; let n = w * h > 0 ? Math.floor(w * h) : 0
+      hf = new Float64Array(n); out = new Float64Array(n); for (let k = 0; k < n; k++) hf[k] = (k * 7) % 13 }
+    export let frame = () => {
+      let py = 0
+      while (py < H) {
+        let qx = 0
+        while (qx < W) {
+          let i = py * W + qx
+          let gl = hf[qx > 0 ? i - 1 : i], gr = hf[qx < W - 1 ? i + 1 : i]
+          let gu = hf[py > 0 ? i - W : i], gd = hf[py < H - 1 ? i + W : i]
+          out[i] = (gr - gl) * 0.5 + (gd - gu) * 0.5 + hf[i]
+          qx++
+        }
+        py++
+      }
+      let s = 0; for (let k = 0; k < out.length; k++) s += out[k] * (k % 7)
+      return s
+    }`
+  for (const optimize of levels(0, 2, 'speed')) {
+    const got = jz(src, { optimize }).exports, host = oracle(src)
+    for (const [w, h] of [[9, 5], [1, 7], [7, 1], [2, 2], [0, 3], [4.5, 3], [3, 4.5], [17, 9]]) {
+      got.resize(w, h); host.resize(w, h)
+      is(got.frame(), host.frame(), `O${optimize} ${w}×${h}`)
+    }
+  }
+})

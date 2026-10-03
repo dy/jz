@@ -76,6 +76,17 @@ function tryI32Index(e) {
   // forced `convert_i32 … f64.mul/add … trunc_sat_f64_s` across every term.
   const lit = constIntExpr(e)
   if (lit != null) return typed(['i32.const', lit], 'i32')
+  // A choice of keys (`hf[x > 0 ? i - 1 : i]`, a clamped neighbour): each arm a word,
+  // its hull one an unsigned length test reads exactly; the test runs first, as written.
+  if (Array.isArray(e) && e[0] === '?:' && e.length === 4) {
+    for (const arm of [e[2], e[3]]) if (Array.isArray(arm) && I32_INDEX_OP[arm[0]]) {
+      const r = intExprRange(arm, indexWordRange)
+      if (!r || r[0] < -2147483648 || r[1] >= 4294967296) return null
+    }
+    const a = tryI32Index(e[2]); if (a == null) return null
+    const b = tryI32Index(e[3]); if (b == null) return null
+    return typed(['if', ['result', 'i32'], toBool(e[1]), ['then', a], ['else', b]], 'i32')
+  }
   if (Array.isArray(e)) {
     const inner = I32_INDEX_OP[e[0]]
     if (inner && e[2] != null) {
@@ -91,6 +102,20 @@ function tryI32Index(e) {
   }
   return exprType(e, ctx.func.locals) === 'i32' && lookupValType(e) === VAL.NUMBER ? asI32(emit(e)) : null
 }
+/** A word a guard proved exact (every intermediate an integer, the result
+ * within the word: emit/control-flow.js proveGuardedWords), as the word
+ * arithmetic of its operands: modulo 2^32, which the exact value lies in.
+ * An operand held as a Number (a product of a counter and a dimension the
+ * guard snapshotted) is an exact integer too: its ToInt32 is its word. */
+function provedWord(e) {
+  const lit = constIntExpr(e)
+  if (lit != null) return lit === (lit | 0) ? typed(['i32.const', lit], 'i32') : null
+  const word = x => typeof x === 'string' && indexWordRange(x) || constIntExpr(x) != null
+  if (Array.isArray(e) && (e[0] === '+' || e[0] === '-' || e[0] === '*' && word(e[1]) && word(e[2])) && e.length === 3)
+    return typed([I32_INDEX_OP[e[0]], provedWord(e[1]), provedWord(e[2])], 'i32')
+  return typeof e === 'string' && indexWordRange(e) ? asI32(emit(e)) : toI32(asF64(emit(e)))
+}
+
 /** A key of words by sums and differences with one product among them
  * (`y * w + x`, `(j + 1) * w - i`): its exact integer in i64, or null. Below
  * 2^53 the Number is that integer. Past it the product rounds, but the rest
@@ -1064,7 +1089,7 @@ export function emitDecl(...inits) {
       coerced = localType === 'v128' ? val : localType === 'f64' ? asF64(val)
         : val.type === 'i32' ? val
         : valTypeOf(init) === VAL.BOOL ? unboxBoolIR(val)
-        : Array.isArray(init) && I32_INDEX_OP[init[0]] ? tryI32Index(init) ?? toI32(val) : toI32(val)
+        : Array.isArray(init) && I32_INDEX_OP[init[0]] ? (repOf(name)?.provedWord ? provedWord(init) : tryI32Index(init) ?? toI32(val)) : toI32(val)
     }
     // `let x = 0` at function scope is normally elided — WASM zero-inits locals. But loop
     // unrolling flattens iteration bodies into one scope, so the 2nd+ `let x = 0` are
