@@ -543,7 +543,7 @@ export function watrTail(module, cfg, {
       for (const node of funcs) hoistGlobalPtrOffset(node, stableGlobals, reach)
     }
   }
-  if (cfg.guardedToInt32 === true) time('guardToInt32', () => guardToInt32(optimized))
+  if (cfg.guardedToInt32 === true) time('guardToInt32', () => guardToInt32(optimized, cfg.wordTruncation === 'add'))
   stripDeadLateData(optimized, lazyDataSpans, staticDataSpan)
   return optimized
 }

@@ -5,7 +5,9 @@
 // cost twice the 32-bit one, and a number nearly always lies inside the 32-bit
 // range, where the 32-bit truncation is the integer. One test of the magnitude
 // takes that path and keeps the exact form for the rest (NaN fails the test and
-// reads zero there). It runs after watr: every pass before reads the exact form.
+// reads zero there). With `add` the path is wider and has no conversion: within
+// ±2^51 the truncation plus 1.5·2^52 holds the word in its low bits.
+// It runs after watr: every pass before reads the exact form.
 
 const isArr = Array.isArray
 const isInf = n => isArr(n) && n[0] === 'f64.const' && (n[1] === Infinity || /^\+?inf$/i.test(String(n[1])))
@@ -21,20 +23,20 @@ const exactForm = n => {
   return isArr(x) && (x[0] === 'local.tee' || x[0] === 'local.get') && x[1] === name ? { x, name } : null
 }
 
-const lower = n => {
+const lower = (n, add) => {
   if (!isArr(n)) return n
-  for (let i = 0; i < n.length; i++) n[i] = lower(n[i])
+  for (let i = 0; i < n.length; i++) n[i] = lower(n[i], add)
   const f = exactForm(n)
   if (!f) return n
   const get = () => ['local.get', f.name]
   // (new nodes throughout: the form may be shared, and its other reader keeps its tee)
-  return ['if', ['result', 'i32'], ['f64.lt', ['f64.abs', f.x], ['f64.const', 2147483648]],
-    ['then', ['i32.trunc_sat_f64_s', get()]],
+  return ['if', ['result', 'i32'], ['f64.lt', ['f64.abs', f.x], ['f64.const', add ? 2 ** 51 : 2147483648]],
+    ['then', add ? ['i32.wrap_i64', ['i64.reinterpret_f64', ['f64.add', ['f64.trunc', get()], ['f64.const', 6755399441055744]]]] : ['i32.trunc_sat_f64_s', get()]],
     ['else', ['select', ['i32.wrap_i64', ['i64.trunc_sat_f64_s', get()]], ['i32.const', 0], ['f64.ne', get(), ['f64.const', Infinity]]]]]
 }
 
-/** Guard each exact ToInt32 of `module`'s functions with the 32-bit path. */
-export function guardToInt32(module) {
-  for (const node of module) if (isArr(node) && node[0] === 'func') for (let i = 2; i < node.length; i++) node[i] = lower(node[i])
+/** Guard each exact ToInt32 of `module`'s functions with the 32-bit path (`add`: the conversion-free one). */
+export function guardToInt32(module, add = false) {
+  for (const node of module) if (isArr(node) && node[0] === 'func') for (let i = 2; i < node.length; i++) node[i] = lower(node[i], add)
   return module
 }

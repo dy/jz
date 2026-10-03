@@ -35,6 +35,8 @@ const ARITH = { 'f64.add': 'add', 'f64.sub': 'sub', 'f64.mul': 'mul' }
 const ROUND = new Set(['f64.floor', 'f64.ceil', 'f64.trunc', 'f64.nearest'])
 const TRUNC = new Set(['i64.trunc_sat_f64_s', 'i32.trunc_sat_f64_s', 'i32.trunc_sat_f64_u'])
 const DIVISION = 8   // what a floating division costs beside a conversion
+// What a truncation of a value within `v` yields (NaN truncates to 0).
+const truncation = v => v && { lo: Math.min(Math.trunc(v.lo), v.nan ? 0 : Infinity), hi: Math.max(Math.trunc(v.hi), v.nan ? 0 : -Infinity), int: true, nz: false, nan: false }
 
 // The value positions of a conditional or a block with a result.
 const shape = n => {
@@ -85,7 +87,6 @@ export function integerPlan(fn, assume = null, regions = null) {
   // instead (`early`): the quotient temp of `(x / 3) | 0`.
   const N = new Map(), early = new Set()
   const bounded = v => !!v && (v.lo > v.hi || (v.lo >= -LIMIT && v.hi <= LIMIT))
-  const truncation = v => v && { lo: Math.min(Math.trunc(v.lo), v.nan ? 0 : Infinity), hi: Math.max(Math.trunc(v.hi), v.nan ? 0 : -Infinity), int: true, nz: false, nan: false }
   // A test the intervals decide reads nothing: it folds to its answer.
   const decided = (chain) => {
     const p = chain[chain.length - 1], t = p?.[0] === 'i64.reinterpret_f64' ? chain[chain.length - 2] : p
@@ -225,7 +226,11 @@ export function integerPlan(fn, assume = null, regions = null) {
 // The same read twice: one node, or two reads of one local.
 const sameRead = (p, q) => p === q || (Array.isArray(p) && Array.isArray(q) && p[0] === 'local.get' && q[0] === 'local.get' && p[1] === q[1])
 
-export function narrowInts(fn, assume = null, expand = true) {
+/** `words`, how a truncation keeps its word: 'wide' (`i64.trunc_sat_f64_s`, then
+ *  its low word), 'narrow' (`i32.trunc_sat_f64_s` where the value is within the
+ *  word) or 'add' (also: a value within ±2^51 that is no NaN, its truncation
+ *  plus 1.5·2^52 read as bits — no conversion instruction at all). */
+export function narrowInts(fn, assume = null, expand = true, words = 'wide') {
   if (!isArr(fn) || fn[0] !== 'func') return false
   const plan = integerPlan(fn, assume)
   if (!plan) return false
@@ -245,8 +250,19 @@ export function narrowInts(fn, assume = null, expand = true) {
   const widthOf = (...es) => es.every(e => fitsI32(at(e))) ? 'i32' : 'i64'
   const as = (node, from, to) => from === to ? node : to === 'i64' ? ['i64.extend_i32_s', node] : ['i32.wrap_i64', node]
   const konst = (c, w) => w === 'i32' ? ['i32.const', int32(c)] : ['i64.const', String(Number(c) + 0)]
-  // The truncation of a value that stays f64: exact, the value is an integer.
-  const truncated = (node, w) => w === 'i64' ? ['i64.trunc_sat_f64_s', node] : ['i32.wrap_i64', ['i64.trunc_sat_f64_s', node]]
+  // The truncation of `node` in width `w`, `of` its value before rewriting: the
+  // conversion the value's interval admits (V8 prices them by architecture,
+  // bench/lowering.mjs). Within ±2^51 and no NaN, the truncation plus 1.5·2^52
+  // holds the integer in its low bits, exactly: no conversion at all.
+  const truncated = (node, w, of = node) => {
+    const v = at(of)
+    if (words === 'add' && v && !v.nan && v.lo > -(2 ** 51) && v.hi < 2 ** 51) {
+      const bits = ['i64.reinterpret_f64', ['f64.add', whole(of) ? node : ['f64.trunc', node], ['f64.const', 6755399441055744]]]
+      return w === 'i64' ? ['i64.sub', bits, ['i64.const', '0x4338000000000000']] : ['i32.wrap_i64', bits]
+    }
+    if (w === 'i64') return ['i64.trunc_sat_f64_s', node]
+    return words !== 'wide' && fitsI32(truncation(v)) ? ['i32.trunc_sat_f64_s', node] : ['i32.wrap_i64', ['i64.trunc_sat_f64_s', node]]
+  }
   const divisor = (x, k) => widthOf(x) === 'i32' && Math.abs(k) < 2 ** 31 ? 'i32' : 'i64'
   const answered = n => { const c = at(n); return c && c.lo === c.hi && pure(n) ? c.lo : null }
 
@@ -262,7 +278,7 @@ export function narrowInts(fn, assume = null, expand = true) {
     if (op === 'f64.convert_i64_s') return as(F(e[1]), 'i64', w)
     if (op === 'local.get') return N.has(e[1]) ? as(e, N.get(e[1]), w) : truncated(e, w)
     if (op === 'local.tee') {
-      if (!N.has(e[1])) return truncated(F(e), w)
+      if (!N.has(e[1])) return truncated(F(e), w, e)
       const t = copy(e)
       t[2] = I(early.has(e[1]) ? held(e[2]) : e[2], N.get(e[1]))
       return as(t, N.get(e[1]), w)
@@ -271,13 +287,13 @@ export function narrowInts(fn, assume = null, expand = true) {
       const c = answered(e[3])
       if (c != null && pure(c ? e[2] : e[1])) return I(c ? e[1] : e[2], w, zero)
       if ([e[1], e[2]].every(a => whole(a) || (zero && nanConst(a)))) return ['select', I(e[1], w, zero), I(e[2], w, zero), F(e[3])]
-      return truncated(F(e), w)
+      return truncated(F(e), w, e)
     }
     const s = (op === 'if' || op === 'block') && shape(e)
     if (s && e[s.resultAt][1] === 'f64' && s.arms.every(([c, k]) => whole(c[k]) || (zero && (nanConst(c[k]) || integral(c[k]))))) return retype(e, s, w, zero)
     const q = quotientOf(e)
     if (q && whole(q.x)) { const x = divisor(q.x, q.k); return as([x + '.div_s', I(q.x, x), konst(q.k, x)], x, w) }
-    if (!whole(e)) return truncated(F(e), w)
+    if (!whole(e)) return truncated(F(e), w, e)
     // `i++` as a value, written as the step taken back: the local as it was,
     // stepped behind it.
     const p = stepped(e)
@@ -287,8 +303,8 @@ export function narrowInts(fn, assume = null, expand = true) {
     }
     const r = remainderOf(e)
     if (r && whole(r.x) && r.again.every(pure)) { const x = divisor(r.x, r.k); return as([x + '.rem_s', I(r.x, x), konst(r.k, x)], x, w) }
-    if (op in ARITH) return whole(e[1]) && whole(e[2]) ? [w + '.' + ARITH[op], I(e[1], w), I(e[2], w)] : truncated(F(e), w)
-    if (ROUND.has(op)) return whole(e[1]) ? I(e[1], w) : truncated(F(e), w)
+    if (op in ARITH) return whole(e[1]) && whole(e[2]) ? [w + '.' + ARITH[op], I(e[1], w), I(e[2], w)] : truncated(F(e), w, e)
+    if (ROUND.has(op)) return whole(e[1]) ? I(e[1], w) : truncated(F(e), w, e)
     if (op === 'f64.neg' && whole(e[1])) { const x = widthOf(e, e[1]); return as([x + '.sub', konst(0, x), I(e[1], x)], x, w) }
     if (op === 'f64.abs' && whole(e[1])) {
       const x = widthOf(e, e[1]), t = temp(x)
@@ -299,7 +315,7 @@ export function narrowInts(fn, assume = null, expand = true) {
       return as(['select', ['local.tee', a, I(e[1], x)], ['local.tee', b, I(e[2], x)],
         [x + (op === 'f64.min' ? '.lt_s' : '.gt_s'), ['local.get', a], ['local.get', b]]], x, w)
     }
-    return truncated(F(e), w)
+    return truncated(F(e), w, e)
   }
   // `(x = x + k) - k` over a narrowed local, k a constant: { name, by }.
   const stepped = e => {
@@ -490,9 +506,23 @@ export function narrowInts(fn, assume = null, expand = true) {
         else if (c === 0 || test(n[o])) { did = true; return F(n[o]) }
       }
     }
-    if (op === 'i32.wrap_i64' && n[1]?.[0] === 'i64.trunc_sat_f64_s') { const v = truncates(n[1][1], 'low'); if (v) { did = true; return v } }
-    if (op === 'i64.trunc_sat_f64_s') { const v = truncates(n[1], 'i64'); if (v) { did = true; return v } }
-    if (op === 'i32.trunc_sat_f64_s') { const v = truncates(n[1], 'i32'); if (v) { did = true; return v } }
+    // (a truncation integer arithmetic does not absorb converts as the interval admits)
+    const conversion = v => (did ||= v[0] !== op || v[1]?.[0] !== n[1]?.[0], v)
+    if (op === 'i32.wrap_i64' && n[1]?.[0] === 'i64.trunc_sat_f64_s') {
+      const v = truncates(n[1][1], 'low')
+      if (v) { did = true; return v }
+      return conversion(truncated(F(n[1][1]), 'i32', n[1][1]))
+    }
+    if (op === 'i64.trunc_sat_f64_s') {
+      const v = truncates(n[1], 'i64')
+      if (v) { did = true; return v }
+      return conversion(truncated(F(n[1]), 'i64', n[1]))
+    }
+    if (op === 'i32.trunc_sat_f64_s') {
+      const v = truncates(n[1], 'i32')
+      if (v) { did = true; return v }
+      if (words === 'add' && fitsI32(truncation(at(n[1])))) return conversion(truncated(F(n[1]), 'i32', n[1]))
+    }
     if (op === 'i32.trunc_sat_f64_u' && fitsI32(at(n[1])) && at(n[1]).lo >= 0 && takes(n[1])) { did = true; return I(n[1], 'i32') }
     if (op in CMP && whole(n[1]) && whole(n[2]) && takes(n[1], n[2])) {
       const x = widthOf(n[1], n[2])
@@ -513,7 +543,7 @@ export function narrowInts(fn, assume = null, expand = true) {
       if (v.nz) {
         const t = temp('f64')
         return ['f64.copysign', [conv, [x + '.rem_s',
-          truncated(['local.tee', t, F(r.x)], x), konst(r.k, x)]], ['local.get', t]]
+          truncated(['local.tee', t, F(r.x)], x, r.x), konst(r.k, x)]], ['local.get', t]]
       }
       const t = temp(x)
       return ['f64.copysign', [conv, [x + '.rem_s', ['local.tee', t, I(r.x, x)], konst(r.k, x)]], [conv, ['local.get', t]]]
