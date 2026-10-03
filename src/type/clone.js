@@ -36,6 +36,8 @@ export function cloneWithSubst(node, subst, rename = null, closures = false) {
   if (op === ':') return carrySite(node, [op, node[1], cloneWithSubst(node[2], subst, ren, closures)])
   const out = node.map((part, i) => i === 0 ? part : cloneWithSubst(part, subst, ren, closures))
   stampClonedIdxProof(node, out)
+  // (a peeled interior's theorems about its names hold of the copy's names for them)
+  if (node._rangeFacts) out._rangeFacts = node._rangeFacts.map(([a, b]) => [ren.get(a) ?? a, typeof b === 'string' ? ren.get(b) ?? b : b])
   return carrySite(node, out)
 }
 
@@ -43,6 +45,7 @@ export function cloneWithSubst(node, subst, rename = null, closures = false) {
  *  also a site of the same origin: whichever copy is emitted flags it. */
 function carrySite(node, out) {
   if (node.loc != null) out.loc = node.loc
+  if (node.cold === true) out.cold = true   // (a loop a version left as written: plan/integral-loops.js)
   const sites = ctx.plans?.escapeSites
   if (sites?.has(node)) {
     sites.add(out)

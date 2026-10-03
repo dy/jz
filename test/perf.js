@@ -678,8 +678,12 @@ test('codegen: guarded global-bound array indices stay integer in the fast arm',
     export let run = () => { let i = 0; while (i < N) { x[i] = x[i] * 2.0; i++; } };
   `, { wat: true })
   const run = wat.match(/\(func \$run[\s\S]*?\n  \)/)?.[0] || ''
-  ok(/\(local \$i\S*int\d+ i32\)/.test(run), 'the guarded index counter stays i32')
-  is((firstLoopArm(run).match(/trunc_sat_f64_s|trunc_f64_s/g) || []).length, 0, 'no per-access trunc_sat in the integer arm')
+  // (the counter's word may share a local with other words: its loop tests in i32)
+  ok(/i32\.(lt|ge)_s/.test(firstLoopArm(run)) && !/f64\.(lt|le|gt|ge)/.test(firstLoopArm(run)), 'the guarded index counter stays i32')
+  // (the bound's own rounding runs once at the arm's entry: the loops convert nothing)
+  let inLoop = 0
+  walkWat(parseWat(firstLoopArm(run)), (n, inside) => { if (inside && /trunc_sat_f64_s|trunc_f64_s/.test(n[0])) inLoop++ })
+  is(inLoop, 0, 'no per-access trunc_sat in the integer arm')
   ok(run.includes('(local $i f64)'), 'the fallback retains the original counter')
 })
 
@@ -1276,7 +1280,7 @@ test('codegen: a guarded global snapshot makes the fast loop guard pure-i32', ()
   // the pure-i32 compare this pin demands; the property is NO f64 widening per iter.
   ok(/i32\.(lt|ge)_s/.test(run), 'guard is a pure-i32 compare')
   ok(!run.includes('f64.convert_i32_s'), 'no per-iteration i32→f64 widening in run')
-  ok(/\(local \$i\S*int\d+ i32\)/.test(run), 'the guarded loop counter stays i32')
+  ok(!/f64\.(lt|le|gt|ge)/.test(firstLoopArm(run)), 'the guarded loop counter stays i32')
 })
 
 test('codegen: typed-array global base decode hoists out of the stencil loop', () => {

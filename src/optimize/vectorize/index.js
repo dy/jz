@@ -209,7 +209,8 @@ export function vectorizeLaneLocal(fn, opts = {}) {
     for (let i = 0; i < node.length; i++) {
       if (isArr(node[i])) walk(node, i, here)
     }
-    if (node[0] === 'block') {
+    // (a cold loop runs for the values a guard rejected, compile/emit/control-flow.js: no lift)
+    if (node[0] === 'block' && !node.some(c => isArr(c) && c[0] === 'loop' && c.cold === true)) {
       if (vecState.whyNotActive) vecState.whyNotReason = null
       // Recognition layer: match the canonical (block (loop)) scaffold ONCE; the
       // inner-scaffold lifters (memcpy/map/reduce) consume the descriptor instead of

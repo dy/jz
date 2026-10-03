@@ -313,15 +313,14 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
     if (n[0] === '=>') return false
     if (TRY.has(n[0]) && Array.isArray(n[1])) walkAst(n[1], { enter: (m) => { if (m[0] === '=>') return false; if (LOOPS.has(m[0])) guarded.add(m) } })
   } })
-  const loops = []
-  let depth = 0
-  walkAst(body, { enter: node => { if (node[0] === '=>') return false; if (ALL_LOOPS.has(node[0])) depth++ }, exit: (node, parent, idx) => {
+  const loops = [], stack = []
+  walkAst(body, { enter: node => { if (node[0] === '=>') return false; if (ALL_LOOPS.has(node[0])) stack.push(node) }, exit: (node, parent, idx) => {
     if (!ALL_LOOPS.has(node[0])) return
-    depth--
+    stack.pop()
     // Inner copies settle first; the existing size budget includes them when
     // an outer counter needs its own guarded domain.
-    // (`enclosed`: a loop around it runs it again, reading what it wrote)
-    if (LOOPS.has(node[0]) && parent && !guarded.has(node)) loops.push([node, parent, idx, depth > 0])
+    // (`enclosing`: the loop around it, which runs it again, reading what it wrote)
+    if (LOOPS.has(node[0]) && parent && !guarded.has(node)) loops.push([node, parent, idx, stack[stack.length - 1] ?? null])
   } })
   // a parameter only the program's own calls bind, each to an integer of no name (`off | 0`)
   const sites = func ? programFacts?.callSites.filter(cs => cs.callee === func.name) ?? [] : []
@@ -347,8 +346,13 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
   // copies of a nest are one, not one per level squared.
   const versions = new Map()
   let rewrote = false
-  for (const [loop, parent, idx, enclosed] of loops) {
+  for (const [loop, parent, idx, enclosing] of loops) {
     if (parent[idx] !== loop || nodeSize(loop) > MAX_SIZE) continue
+    // a name the loop around declares anew each time round is dead after this loop
+    // unless read after it; one from outside carries to the next time round
+    const carried = new Set()
+    if (enclosing) collectBindings(enclosing[enclosing[0] === 'for' ? 4 : enclosing[0] === 'while' ? 2 : 1], carried)
+    const readAfter = (n) => occursOutside(body, loop, n) || (enclosing != null && !carried.has(n))
     // a jump to a label outside (`continue out`) leaves the copy past what it writes back
     if (some(loop, n => n[0] === '=>' || n[0] === 'label' || n[0] === 'yield' || n[0] === 'await' ||
       ((n[0] === 'break' || n[0] === 'continue') && typeof n[1] === 'string'))) continue
@@ -590,11 +594,31 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
       if (!v.names.every(x => (!loopWrites.has(x) && stableBound(x)) || cursors.has(x))) return false
       innerTests.push(v.aliases.length ? cloneWithSubst(v.test, new Map(), own) : v.test)
       for (const a of v.aliases) hoistedAliases.push(own.get(a) ?? a)
-      p[i] = v.version; swapped.push([p, i, v.guarded[3]])
+      // (a Number the inner copy wrote under a name of its own, for the loop as
+      // written beside it: alone in this copy, it writes the name itself)
+      let fast = v.version
+      if (v.undo.size) {
+        fast = cloneWithSubst(v.version, new Map(), v.undo)
+        const list = fast[1], decl = list[1]
+        const self = (d) => Array.isArray(d) && d[0] === '=' && (d[2] === d[1] || Array.isArray(d[2]) && d[2][0] === 'u+' && d[2][1] === d[1])
+        for (let k = decl.length - 1; k >= 1; k--) if (self(decl[k])) decl.splice(k, 1)
+        if (decl.length === 1) list.splice(1, 1)
+        for (let k = list.length - 1; k >= 1; k--) if (self(list[k])) list.splice(k, 1)
+      }
+      p[i] = fast; swapped.push([p, i, v.guarded[3]])
       return false
     } })
     const copy = cloneWithSubst(loop, new Map(), own)
     for (const [p, i, n] of swapped) p[i] = n
+    // (the loop as written is the other arm now: every inner version in it is
+    // its loop as written too, the fast arm there would run as rarely)
+    walkAst(loop, { enter: (n, p, i) => {
+      if (n[0] === '=>') return false
+      const v = versions.get(n)
+      if (!v) return
+      p[i] = v.guarded[3]
+      return false
+    } })
     // the copy steps each cursor's word
     if (cursors.size) {
       const words = new Set([...cursors.keys()].map(c => own.get(c)))
@@ -634,17 +658,22 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
       ...present.map(n => ['!=', n, [null, null]]),
       ...innerTests, ...cursorTests]
       .reduce((a, b) => ['&&', a, b])
-    const version = ['{}', [';', ['let', ...boundDecl, ...outer.filter(n => !names.includes(n)).map(n => ['=', own.get(n), counters.includes(n) || cursors.has(n) ? ['|', n, [null, 0]] : already(n) ? ['u+', n] : n])], copy,
+    // (a counter enters as its literal; a cursor as its word, an int32 by the guard)
+    const version = ['{}', [';', ['let', ...boundDecl, ...outer.filter(n => !names.includes(n)).map(n => ['=', own.get(n), counters.includes(n) ? [null, counterBound.entry] : cursors.has(n) ? ['|', n, [null, 0]] : already(n) ? ['u+', n] : n])], copy,
       // what the copy wrote under a name of its own, where the body reads it after the loop
       // or a loop around runs it again (a Number every write keeps an integer is renamed too: its sum is the copy's)
-      ...outer.filter(n => loopWrites.has(n) && (enclosed || occursOutside(body, loop, n))).map(n => ['=', n, own.get(n)])]]
+      ...outer.filter(n => loopWrites.has(n) && readAfter(n)).map(n => ['=', n, own.get(n)])]]
     const guarded = ['if', test, version, ['{}', [';', loop]]]
     const aliases = [...names.map(n => own.get(n)), ...hoistedAliases]
     const wrapped = aliases.length ? ['{}', [';', ['let', ...aliases.map(a => ['=', a, [null, 0]])], guarded]] : guarded
     parent[idx] = wrapped
+    // (the loop as written runs for the values the guard rejects: cold, with every loop in it;
+    // a mark on the node and its body, which a clone carries: type/clone.js carrySite)
+    walkAst(loop, { enter: (n) => { if (n[0] === '=>') return false; if (ALL_LOOPS.has(n[0])) { n.cold = true; const b = n[n[0] === 'for' ? 4 : n[0] === 'while' ? 2 : 1]; if (Array.isArray(b)) b.cold = true } } })
     const found = new Set()
     walkAst(test, { enter: n => { if (n[0] === 'str') return false; for (let i = 1; i < n.length; i++) if (typeof n[i] === 'string' && n[0] !== '()' && !aliases.includes(n[i])) found.add(n[i]) } })
-    versions.set(wrapped, { test, version, guarded, loop, names: [...found], aliases, trip: counterBound?.trip ?? null, advances: cursors })
+    const undo = new Map(written.filter(n => !names.includes(n) && !counters.includes(n) && !cursors.has(n) && !numbers.includes(n) && !present.includes(n)).map(n => [own.get(n), n]))
+    versions.set(wrapped, { test, version, guarded, loop, names: [...found], aliases, undo, trip: counterBound?.trip ?? null, advances: cursors })
     for (const [n, values] of writesIn(version)) { const l = bodyWrites.get(n); if (l) l.push(...values); else bodyWrites.set(n, values) }
     // (the copy's names are the body's locals now: an enclosing loop's copy reads them so)
     for (const [n, m] of own) { locals.add(m); origin.set(m, origin.get(n) ?? n) }

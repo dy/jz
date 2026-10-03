@@ -635,9 +635,14 @@ export const controlFlowOps = {
     const myLabel = ctx.func.pendingLabel; ctx.func.pendingLabel = null
     const bodyNode0 = body   // identity for assumption owners — survives the hoist rebind below
     const labeledContinue = myLabel != null && hasLabeledContinueTo(body, myLabel)
+    // A loop a source version left as written (plan/integral-loops.js marks its
+    // body `cold`) runs for the values its guard rejects: it is emitted once,
+    // checked, as the twin of the versioning below, and no pass that copies
+    // loops reads it again.
+    const cold = body?.cold === true
     // Don't unroll a loop that is the target of a `continue <label>` — unrolling would lose the
     // continue edge. (Plain loops with no labeled-continue still unroll.)
-    if (!entered && !labeledContinue && (!ctx.transform.optimize || ctx.transform.optimize.smallConstForUnroll !== false)) {
+    if (!entered && !labeledContinue && !cold && (!ctx.transform.optimize || ctx.transform.optimize.smallConstForUnroll !== false)) {
       const unrolled = unrollSmallConstFor(init, cond, step, body)
       if (unrolled) return unrolled
     }
@@ -658,7 +663,7 @@ export const controlFlowOps = {
     // same intercept — per frame, so a REUSED AST (same source compiled twice, the
     // self-compile warm path) versions afresh in the next compile instead of silently
     // skipping, and the AST carries no frame reference.
-    if (!entered && !labeledContinue && !ctx.func.versioned?.has(body) && !getFactStore().sourceVersioned.has(body)
+    if (!entered && !labeledContinue && !cold && !ctx.func.versioned?.has(body) && !getFactStore().sourceVersioned.has(body)
         && (!ctx.transform.optimize || ctx.transform.optimize.versionTypedBounds !== false)) {
       // The scan reads the body's counter ranges (loopFacts), so an access they
       // already bound is no candidate for a runtime guard.
@@ -1136,6 +1141,7 @@ export const controlFlowOps = {
         // a copy of it would run as rarely as it does, optimize/specialize.js)
         const twin = ['else', ...stmts(checked)]
         twin.checkedTwin = true
+        walkAst(twin, { enter: n => { if (n[0] === 'loop') { n.checkedTwin = true; n.cold = true } } })
         result.push(['if', typed(guard, 'i32'), ['then', ...stmts(fast)], twin])
         return result
       }
@@ -1238,6 +1244,8 @@ export const controlFlowOps = {
     if (step) loopBody.push(...withRefinements(initRefs, step, () => emitVoid(step)))
     loopBody.push(['br', loop])
     const loopBlockNode = ['block', brk, ['loop', loop, ...loopBody]]
+    // (`cold` on the IR too: the vectorizer leaves a cold loop; `checkedTwin` is specialize's mark)
+    if (cold) { loopBlockNode.checkedTwin = true; walkAst(loopBlockNode, { enter: n => { if (n[0] === 'loop') { n.checkedTwin = true; n.cold = true } } }) }
     if (frame.boundsMotion) loopBlockNode[2].boundsOwner = frame.loop
     // Per-iteration arena rewind (compile/analyze/frame-effects.js): an iteration
     // that lets no allocation escape and builds a value restores the heap pointer

@@ -148,7 +148,7 @@ export function splitTwins(body, facts, reanalyze) {
   const splits = []
   let queried = false
   withBodyTypedFacts(facts, () => walkAst(body, { enter: (n, parent, index) => {
-    if (n[0] === '=>') return false
+    if (n[0] === '=>' || n.cold === true) return false   // (a loop a version left as written: plan/integral-loops.js)
     if (n[0] !== 'for' || n.length !== 5 || !parent || (parent[0] !== ';' && parent[0] !== '{}')) return
     const [, init, cond, step, lbody] = n
     if (some(lbody, x => LOOPS.has(x[0]) || x[0] === '=>')) return
