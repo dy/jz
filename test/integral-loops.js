@@ -487,3 +487,62 @@ test('integral loops: explicit word counters preserve wrapping and full Number t
       for (const name of Object.keys(js)) is(m[name](n), js[name](n), `${name}(${n}) at ${optimize}`)
   }
 })
+
+test('integral loops: a number carried through a nested loop keeps its value across the outer loop', () => {
+  // The inner copy renames what it writes; the loop around runs it again, so
+  // the copy writes the originals back (this once reset `s` every row).
+  const src = `let px
+    export let init = (n) => { px = new Float64Array(n); return px }
+    export let f = (W, H) => {
+      let s = 0.5, j = 0, py = 0
+      while (py < H) {
+        let qx = 0
+        while (qx < W) { s = s + qx; px[j] = s; j++; qx++ }
+        py++
+      }
+    }`
+  const js = oracle(src)
+  for (const optimize of levels(0, 2, 3)) {
+    const m = jz(src, { optimize }).exports
+    for (const [w, h] of [[4, 3], [1, 5], [3, 1], [0, 2], [2.5, 2], [2, 2.5]]) {
+      const got = m.init(16), want = js.init(16)
+      m.f(w, h); js.f(w, h)
+      is(Array.from(got), Array.from(want), `${w}×${h} at ${optimize}`)
+    }
+  }
+})
+
+test('integral loops: a nest over module dimensions is one version, its pixel cursor a word', () => {
+  // The outer copy decides the inner bound once, holds the inner fast arm alone
+  // (the loop as written keeps the inner loop as written), and budgets the
+  // cursor stepped per pixel by the trips of both levels: `j` runs as i32.
+  const src = `let W = 0, H = 0, px
+    export let resize = (w, h) => { W = w; H = h; px = new Uint32Array(w * h); return px }
+    export let frame = (t) => {
+      let j = 0, py = 0
+      while (py < H) {
+        let qx = 0
+        while (qx < W) {
+          let x = 0.5, L = 0, ai = 0
+          while (ai < 160) { x = 3.7 * x * (1 - x); L = L + Math.log(Math.abs(1 - 2 * x)); ai++ }
+          px[j] = (L > 0 ? 255 : 0) | (255 << 24)
+          j++; qx++
+        }
+        py++
+      }
+    }`
+  const js = oracle(src)
+  for (const optimize of levels(0, 2, 'speed')) {
+    const m = jz(src, { optimize }).exports
+    for (const [w, h] of [[6, 4], [3, 2.5], [0, 3], [5, 1]]) {
+      const got = m.resize(w, h), want = js.resize(w, h)
+      m.frame(0); js.frame(0)
+      is(Array.from(got), Array.from(want), `${w}×${h} at ${optimize}`)
+    }
+  }
+  if (belowOpt(2)) return
+  const frame = funcWat(wat(src, { optimize: 'speed' }), 'frame')
+  ok(/\(local \$jint\d+ i32\)/.test(frame), 'the pixel cursor is carried as a word')
+  const loops = (frame.match(/\(loop /g) || []).length
+  ok(loops <= 24, `one version of the nest (${loops} loops; a version per level squares them)`)
+})
