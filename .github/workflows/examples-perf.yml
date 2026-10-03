@@ -45,6 +45,8 @@ jobs:
       - name: machine
         run: |
           node -p "process.arch + ' ' + require('os').cpus()[0].model + ' × ' + require('os').cpus().length"
+      - name: conversion lowerings
+        run: node bench/lowering.mjs | tee lowering.log
       - name: pages
         continue-on-error: true
         env:
@@ -56,9 +58,11 @@ jobs:
       - name: summary
         if: always()
         run: |
-          { echo "### ${{ matrix.os }}"; echo '```'; cat pages.log; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          { echo "### ${{ matrix.os }}"; echo '```'; cat lowering.log pages.log; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: pages-${{ matrix.os }}
-          path: pages.log
+          path: |
+            lowering.log
+            pages.log
