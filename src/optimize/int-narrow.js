@@ -349,6 +349,28 @@ export function narrowInts(fn, assume = null, expand = true) {
     if (v.hi > 2147483647) out = ['select', ['i32.const', 2147483647], out, ['i64.gt_s', get, ['i64.const', '2147483647']]]
     return out
   }
+  // A sum of integers with one product among them (`(y + dy) * w + x`),
+  // whose interval may pass 2^52: below 2^53 the number is the integer; past
+  // it the product rounds, but the rest lies under 2^52, so the number and
+  // the integer lie past 2^52 on one side, where a saturating truncation
+  // answers alike. Its i64 form, or null.
+  const productSum = e => {
+    let product = null, rest = 0
+    const mag = v => Math.max(-v.lo, v.hi)
+    const form = n => {
+      if (isArr(n) && (n[0] === 'f64.add' || n[0] === 'f64.sub') && n.length === 3 && !whole(n)) {
+        const a = form(n[1]), b = a && form(n[2])
+        return b && [n[0] === 'f64.add' ? 'i64.add' : 'i64.sub', a, b]
+      }
+      if (isArr(n) && n[0] === 'f64.mul' && n.length === 3 && !whole(n) && !product && whole(n[1]) && whole(n[2]) &&
+          mag(at(n[1])) * mag(at(n[2])) < 2 ** 62) { product = n; return ['i64.mul', I(n[1], 'i64'), I(n[2], 'i64')] }
+      if (!whole(n)) return null
+      rest += mag(at(n))
+      return I(n, 'i64')
+    }
+    const out = form(e)
+    return out && product && rest <= LIMIT ? out : null
+  }
   // The operand of a truncation in its integer form, or null: an integer, a
   // quotient, or a conditional of integers and NaN.
   // `to` is the consumer: 'i64', 'i32' (saturating) or
@@ -370,6 +392,12 @@ export function narrowInts(fn, assume = null, expand = true) {
       return as([x + '.div_s', I(q.x, x), konst(q.k, x)], x, w)
     }
     if (to !== 'i32' && integral(e) && !nanConst(e)) return I(e, w, true)
+    const sum = to === 'i32' && expand && productSum(e)
+    if (sum) {
+      const name = temp('i64'), get = ['local.get', name]
+      return ['select', ['i32.const', 2147483647], ['select', ['i32.const', -2147483648], ['i32.wrap_i64', ['local.tee', name, sum]],
+        ['i64.lt_s', get, ['i64.const', '-2147483648']]], ['i64.gt_s', get, ['i64.const', '2147483647']]]
+    }
     return null
   }
 

@@ -91,6 +91,42 @@ function tryI32Index(e) {
   }
   return exprType(e, ctx.func.locals) === 'i32' && lookupValType(e) === VAL.NUMBER ? asI32(emit(e)) : null
 }
+/** A key of words by sums and differences with one product among them
+ * (`y * w + x`, `(j + 1) * w - i`): its exact integer in i64, or null. Below
+ * 2^53 the Number is that integer. Past it the product rounds, but the rest
+ * stays under 2^52, so either key lies past 2^52 from zero: no element of a
+ * typed array, whose length is a word. */
+const WIDE_INDEX_OP = { '+': 'i64.add', '-': 'i64.sub', '*': 'i64.mul' }
+function tryWideIndex(e) {
+  const unwrap = e => Array.isArray(e) && e[0] === '()' && e.length === 2 ? unwrap(e[1]) : e
+  // the magnitude bound of a term and of the terms beside the product, or null: checked before any IR
+  let products = 0, rest = 0
+  const bound = (e, inProduct) => {
+    e = unwrap(e)
+    const lit = constIntExpr(e)
+    if (lit != null) return Math.abs(lit) <= 2 ** 31 ? Math.abs(lit) : null
+    if (typeof e === 'string') { const r = indexWordRange(e); return r ? Math.max(-r[0], r[1]) : null }
+    if (!Array.isArray(e) || !WIDE_INDEX_OP[e[0]] || e.length !== 3) return null
+    if (e[0] === '*' && (inProduct || ++products > 1)) return null
+    const inner = inProduct || e[0] === '*'
+    const a = bound(e[1], inner), b = a == null ? null : bound(e[2], inner)
+    if (b == null) return null
+    if (!inner) for (const t of [e[1], e[2]]) { const u = unwrap(t); if (!(Array.isArray(u) && WIDE_INDEX_OP[u[0]])) rest += t === e[1] ? a : b }
+    return e[0] === '*' ? a * b : a + b
+  }
+  if (!Array.isArray(unwrap(e)) || !WIDE_INDEX_OP[unwrap(e)[0]]) return null
+  const total = bound(e, false)
+  if (total == null || products !== 1 || total >= 2 ** 63 || rest > 2 ** 52) return null
+  const form = e => {
+    e = unwrap(e)
+    const lit = constIntExpr(e)
+    if (lit != null) return ['i64.const', lit]
+    if (typeof e === 'string') return [indexWordRange(e)[0] < 0 ? 'i64.extend_i32_s' : 'i64.extend_i32_u', asI32(emit(e))]
+    return [WIDE_INDEX_OP[e[0]], form(e[1]), form(e[2])]
+  }
+  return typed(form(e), 'i64')
+}
+
 // `whole` proves a present integer, not its magnitude. `wide` retains a safe
 // full integer for a following bounds check. `bounded` supplies the stronger
 // proof for this typed access: its key lies in [0, receiver.length). It may
@@ -104,6 +140,15 @@ export const emitIndex = (index, whole = false, wide = false, bounded = false) =
     range && range[0] >= -2147483648 && range[1] < 4294967296
   const direct = exact && tryI32Index(index)
   if (direct) return direct
+  // A typed access (its consumer tests the full key, or proved it in range):
+  // the low word of the exact key
+  const wideKey = (wide || bounded) && tryWideIndex(index)
+  if (wideKey) {
+    if (bounded) return typed(['i32.wrap_i64', wideKey], 'i32')
+    const w = tempI64('ixw'), low = typed(['i32.wrap_i64', ['local.tee', `$${w}`, wideKey]], 'i32')
+    low.indexWide = ['local.get', `$${w}`]
+    return low
+  }
   const proven = whole
   whole ||= wholeKey(index)
   // Integral where its typed reads hit: a miss is NaN, which the whole path tests.
