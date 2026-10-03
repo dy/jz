@@ -212,7 +212,8 @@ test('audit: cursor guards join offsets and retain negative-offset checks', () =
       ok(loops.length > 0, 'inspect actual cursor loops in the extent arm')
       for (const loop of loops) is(loop.length, 3, 'three cursor reads per loop')
       is(addresses.length, loops.length * 3, 'no cursor reads outside those loops')
-      if (addresses.every(a => !/trunc_sat_f64_s|i64\.lt_s/.test(JSON.stringify(a)))) wordArms++
+      // (a Number's word, by truncation or by the speed tier's add, is no word arithmetic)
+      if (addresses.every(a => !/trunc_sat_f64_s|i64\.lt_s|i64\.reinterpret_f64/.test(JSON.stringify(a)))) wordArms++
     }
     is(wordArms, 1, 'proved negative offsets use word arithmetic in the cursor copy')
   }
