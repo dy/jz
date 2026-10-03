@@ -48,7 +48,7 @@
 import { ctx } from '../../ctx.js'
 import { frameNode } from '../../function.js'
 import { includeModule } from '../../autoload.js'
-import { T, MUTATE_OPS, TYPEOF, numberGuard, some, walkAst, extractParams, collectParamName, isReassigned, callArgs } from '../../ast.js'
+import { T, MUTATE_OPS, TYPEOF, numberGuard, some, walkAst, extractParams, collectParamName, isReassigned, callArgs, refsName } from '../../ast.js'
 import { freshId } from '../../ir.js'
 import { cloneWithSubst } from '../../type.js'
 import { collectBindings, nodeSize } from './common.js'
@@ -410,8 +410,9 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
     // the names a counter is tested against (`i < n`, n read from a parameter): the
     // counter is an int32 only where they are
     // (not an export's own parameter: the host's value there keeps the boundary's representation;
-    // nor a module binding the counter's rounded bound reads: that copy answers its test)
-    const bounds = [...boundNames(loop)].filter(n => (outerOk(n) || stableGlobal(n) && !counterBound?.terms.includes(n)) && !loopWrites.has(n) && !already(n) && mayBeNumber(n) &&
+    // nor a module binding only the counter's test reads: its rounded bound answers that test)
+    const testOnly = n => counterBound?.terms.includes(n) && !loop.some((part, i) => i > 0 && i !== counterBound.testAt && refsName(part, n))
+    const bounds = [...boundNames(loop)].filter(n => (outerOk(n) || stableGlobal(n) && !testOnly(n)) && !loopWrites.has(n) && !already(n) && mayBeNumber(n) &&
       !(func && isExported(func) && params.has(n)))
     // a cursor the loop moves other than by a constant step (`p = (p + 1) % N`), or a
     // counter's bound of unknown integrality: an index made of names the loop only reads

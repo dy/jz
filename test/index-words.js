@@ -5,9 +5,10 @@
 // what the source answers, at every number the edges reach.
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
+import parseWat from 'watr/parse'
 import jz from '../index.js'
 import { levels } from './_matrix.js'
-import { oracle, wat } from './util.js'
+import { funcWat, oracle, wat } from './util.js'
 
 const EDGES = [0, -0, 0.5, -0.5, 1.9999, -1.9999, 2147483647, 2147483648, -2147483648, -2147483649,
   4294967295.5, 4294967296, 4294967301, -4294967301, 2 ** 51 - 0.5, 2 ** 51, -(2 ** 51) + 0.5, -(2 ** 51),
@@ -103,6 +104,34 @@ test('index words: words by the add answer at every edge', () => {
       for (const y of [0, -3, x | 0]) is(got.spiral(x | 0, y), host.spiral(x | 0, y), `O${optimize} spiral ${x | 0}, ${y}`)
     }
   }
+})
+
+// A module bound the loop also reads past its test (`f[k * n + c]` under
+// `while (c < n)`, a lattice's collide step) keeps its int32 alias: the index
+// is integer arithmetic, not a product of numbers.
+test('index words: a module bound read in the body keys its elements in words', () => {
+  const src = `let n = 0, f, solid
+    export let init = (w, h) => { n = w * h; f = new Float64Array(9 * n); solid = new Uint8Array(n)
+      for (let i = 0; i < 9 * n; i++) f[i] = (i % 13) * 0.5; solid[3] = 1 }
+    export let step = () => {
+      let c = 0, s = 0
+      while (c < n) {
+        if (solid[c] === 0) { let k = 0; while (k < 9) { s += f[k * n + c]; k++ } }
+        c++
+      }
+      return s
+    }`
+  for (const optimize of levels(0, 2, 'speed')) {
+    const got = jz(src, { optimize }).exports, host = oracle(src)
+    for (const m of [got, host]) m.init(7, 5)
+    is(got.step(), host.step(), `O${optimize} step`)
+  }
+  const loops = []
+  const walk = n => { if (!Array.isArray(n)) return; if (n[0] === 'loop') loops.push(n); n.forEach(walk) }
+  walk(parseWat(funcWat(wat(src, { optimize: 'speed' }), 'step')))
+  const has = (n, op) => Array.isArray(n) && (n[0] === op || n.some(c => has(c, op)))
+  const inner = loops.filter(l => !l.slice(1).some(c => has(c, 'loop')))
+  ok(inner.some(l => has(l, 'f64.load') && !has(l, 'f64.mul')), 'a row of elements read by an integer key')
 })
 
 test('index words: a sum with one product under a saturating truncation keeps its element', () => {
