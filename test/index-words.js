@@ -128,3 +128,36 @@ test('index words: a tone map skips its log where no pixel of a pair takes it', 
     is(lanes.frame(0, 235), scalar.frame(0, 235), `${width}×${height} every ${every}`)
   }
 })
+
+test('index words: a tone map wraps each lane past 2^31 as ToInt32 does, and reads and writes a Float32Array', () => {
+  // the lanes truncate within the 32-bit range and take the exact form past it
+  const wrap = `let dens, px, n = 0
+    export let resize = (w) => { n = w; dens = new Uint32Array(n); px = new Uint32Array(n); for (let i = 0; i < n; i++) dens[i] = i % 11 }
+    export let frame = (k) => {
+      let i = 0
+      while (i < n) { let d = dens[i]; let v = d * k + 0.5; px[i] = (255 << 24) | ((v | 0) & 0xffffff); i++ }
+      let h = 0; for (let j = 0; j < n; j++) h = (h * 31 + px[j]) | 0
+      return h
+    }`
+  ok(/f64x2/.test(wat(wrap, { optimize: 'speed' })), 'the map runs two pixels a step')
+  const got = jz(wrap, { optimize: 'speed' }).exports, host = oracle(wrap)
+  for (const n of [64, 7, 1]) {
+    got.resize(n); host.resize(n)
+    for (const k of [1, 1e6, 3e9, -7e9, 1e12, NaN, Infinity]) is(got.frame(k), host.frame(k), `n=${n} k=${k}`)
+  }
+  // an exposure buffer fades in place and composites (swarm, lorenz)
+  const ink = `let px, ink, n = 0
+    export let resize = (w) => { n = w; px = new Uint32Array(n); ink = new Float32Array(n); for (let i = 0; i < n; i++) ink[i] = (i % 97) / 50 - 0.3 }
+    export let frame = (pr, ir) => {
+      let i = 0
+      while (i < n) { let e = ink[i] * 0.996; ink[i] = e; let v = e < 1.0 ? e * 0.55 : 0.55; let r = (pr + (ir - pr) * v) | 0; px[i] = (255 << 24) | (r << 16) | r; i++ }
+      let h = 0; for (let j = 0; j < n; j++) h = (h * 31 + px[j] + ((ink[j] * 1e6) | 0)) | 0
+      return h
+    }`
+  ok(/f64x2\.promote_low_f32x4/.test(wat(ink, { optimize: 'speed' })), 'the exposure reads two floats a step')
+  const lanes = jz(ink, { optimize: 'speed' }).exports, scalar = oracle(ink)
+  for (const n of [33, 2, 1]) {
+    lanes.resize(n); scalar.resize(n)
+    for (const [pr, ir] of [[0, 235], [235, 0], [3e9, -3e9]]) for (let f = 0; f < 3; f++) is(lanes.frame(pr, ir), scalar.frame(pr, ir), `n=${n} ${pr}→${ir} frame ${f}`)
+  }
+})

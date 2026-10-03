@@ -30,29 +30,29 @@ const _toneCalls = (n) => isArr(n) && (n[0] === 'call' || n.some(_toneCalls))
 const _toneStripTee = (n) => isArr(n) && n[0] === 'local.tee' && n.length === 3 ? n[2] : n
 
 // `(i32.wrap_i64 (i64.trunc_sat_f64_{s,u} X))` or `(i32.trunc_sat_f64_{s,u} X)` — the
-// f64→i32 `|0` bridge. Returns { inner, signed } (tee on X stripped) or null.
+// f64→i32 `|0` bridge. Returns { inner, signed, wrap } (tee on X stripped) or null: `wrap`,
+// the low word of the 64-bit truncation, which the 32-bit one equals only within its range.
 function matchTruncF64(expr) {
   if (!isArr(expr)) return null
   if (expr[0] === 'i32.wrap_i64' && isArr(expr[1])) {
     const t = expr[1]
-    if (t[0] === 'i64.trunc_sat_f64_s') return { inner: _toneStripTee(t[1]), signed: true }
-    if (t[0] === 'i64.trunc_sat_f64_u') return { inner: _toneStripTee(t[1]), signed: false }
+    if (t[0] === 'i64.trunc_sat_f64_s') return { inner: _toneStripTee(t[1]), signed: true, wrap: true }
+    if (t[0] === 'i64.trunc_sat_f64_u') return { inner: _toneStripTee(t[1]), signed: false, wrap: true }
   }
-  if (expr[0] === 'i32.trunc_sat_f64_s') return { inner: _toneStripTee(expr[1]), signed: true }
-  if (expr[0] === 'i32.trunc_sat_f64_u') return { inner: _toneStripTee(expr[1]), signed: false }
+  if (expr[0] === 'i32.trunc_sat_f64_s') return { inner: _toneStripTee(expr[1]), signed: true, wrap: false }
+  if (expr[0] === 'i32.trunc_sat_f64_u') return { inner: _toneStripTee(expr[1]), signed: false, wrap: false }
   return null
 }
 
-// The `|0` of a known-finite f64: `(select (trunc X) (i32.const 0) (f64.ne X' ±Inf))`.
-// Since the tonemap clamps L into [0,255] before the trunc, the `≠Inf` guard is always
-// true, so this lowers to a plain `trunc_sat` — returns the inner f64 to truncate.
+// ToInt32: `(select (trunc X) (i32.const 0) (f64.ne X' Inf))`, the low word of the
+// 64-bit truncation with Infinity taken to zero. Returns the inner f64 or null.
 function matchInfCanonTone(sel) {
   if (!isArr(sel) || sel[0] !== 'select' || sel.length !== 4) return null
   if (!(isI32Const(sel[2]) && constNum(sel[2]) === 0)) return null
   const c = sel[3]
   if (!(isArr(c) && c[0] === 'f64.ne' && isArr(c[2]) && c[2][0] === 'f64.const' && /inf/i.test(String(c[2][1])))) return null
   const tr = matchTruncF64(sel[1])
-  return tr ? tr.inner : null
+  return tr?.wrap && tr.signed ? tr.inner : null
 }
 
 // Loads tryToneMap accepts as the f64-island input. `i32.load` is the original (stride-4, no
@@ -68,12 +68,22 @@ const TONE_LOAD = {
   'i32.load8_s':  { shift: 0, widen: ['v128.load32_zero', ['i16x8.extend_low_i8x16_s', 'i32x4.extend_low_i16x8_s']], over: 2 },
   'i32.load16_u': { shift: 1, widen: ['v128.load32_zero', ['i32x4.extend_low_i16x8_u']], over: 0 },
   'i32.load16_s': { shift: 1, widen: ['v128.load32_zero', ['i32x4.extend_low_i16x8_s']], over: 0 },
+  // a Float32Array: two floats, promoted where `f64.promote_f32` reads them
+  'f32.load':     { shift: 2, widen: null, over: 0 },
 }
 
 // `base + (i << shift)` (shift 0 ⇒ bare `base + i`) with `base` a loop-invariant array pointer.
 // The address shape for a load/store at its element stride: the u32 store uses shift 2 (stride-4 ⇒
 // load64_zero/i64.store cover exactly 2 consecutive u32); a narrow load uses its own stride (0/1).
-function matchToneAddrShift(addr, ind, shift) {
+// `tees`: an address saved in a local (`(local.tee $a base+(i<<k))`, its other access reads
+// `$a`) — the locals set once so, by their stride exponent.
+function matchToneAddrShift(addr, ind, shift, tees = null) {
+  if (tees && isArr(addr) && addr[0] === 'local.tee' && addr.length === 3) {
+    const m = matchToneAddrShift(addr[2], ind, shift)
+    if (m && tees.once(addr[1])) tees.set(addr[1], shift)
+    return m
+  }
+  if (tees && isArr(addr) && addr[0] === 'local.get' && tees.get(addr[1]) === shift) return addr
   if (!isArr(addr) || addr[0] !== 'i32.add' || addr.length !== 3) return null
   const pair = (baseN, offN) => {
     if (!isArr(baseN) || (baseN[0] !== 'local.get' && baseN[0] !== 'global.get')) return null
@@ -132,20 +142,22 @@ export function tryToneMap(bl, fnLocals, freshIdRef, enabled) {
   // f64-convert requirement is what distinguishes this from a plain i32 map (tryVectorize,
   // which runs earlier and already owns those).
   let hasConvert = false, storeCount = 0, loadCount = 0, overread = 0, ok = true
+  const addrTees = new Map()
+  addrTees.once = name => { let k = 0; for (const s of body) walkAst(s, { enter: n => { if ((n[0] === 'local.set' || n[0] === 'local.tee') && n[1] === name) k++ } }); return k === 1 }
   const inspect = n => {
     if (!ok || !isArr(n)) return false
     const o = n[0]
-    if (o === 'f64.convert_i32_s' || o === 'f64.convert_i32_u') hasConvert = true
-    if (o === 'i32.store') {
+    if (o === 'f64.convert_i32_s' || o === 'f64.convert_i32_u' || o === 'f64.promote_f32') hasConvert = true
+    if (o === 'i32.store' || o === 'f32.store') {
       storeCount++
-      if (!matchToneAddrShift(n[1], incVar, 2)) ok = false
+      if (!matchToneAddrShift(n[1], incVar, 2, addrTees)) ok = false
       if (ok) walkAst(n[2], { enter: inspect })
       return false
     }
     const ld = TONE_LOAD[o]
     if (ld && n.length === 2) {   // i32 (stride-4) or a narrow typed-array read at its own stride
       loadCount++
-      if (!matchToneAddrShift(n[1], incVar, ld.shift)) { ok = false; return false }
+      if (!matchToneAddrShift(n[1], incVar, ld.shift, addrTees)) { ok = false; return false }
       if (ld.over > overread) overread = ld.over
       return false
     }
@@ -208,6 +220,23 @@ export function tryToneMap(bl, fnLocals, freshIdRef, enabled) {
     return 'x'
   }
 
+  // The low word of each lane's 64-bit truncation, as the scalar form answers it: the
+  // 32-bit truncation where both lanes lie within its range (signed: |x| < 2^31,
+  // unsigned: 0 ≤ x < 2^32); otherwise `scalar` per lane, which NaN takes too.
+  function truncLanes(v, signed, scalar) {
+    const t = freshMask(), x = `$__tl${freshIdRef.next++}`, get = ['local.get', t]
+    ctx.extraLocals.push(['local', x, 'f64'])
+    const inRange = signed
+      ? ['f64x2.lt', ['f64x2.abs', get], ['f64x2.splat', ['f64.const', 2147483648]]]
+      : ['v128.and', ['f64x2.ge', get, ['f64x2.splat', ['f64.const', 0]]], ['f64x2.lt', get, ['f64x2.splat', ['f64.const', 4294967296]]]]
+    const lane = k => ['block', ['result', 'i32'], ['local.set', x, ['f64x2.extract_lane', k, get]],
+      scalar(['local.get', x]) ?? ['i32.wrap_i64', [signed ? 'i64.trunc_sat_f64_s' : 'i64.trunc_sat_f64_u', ['local.get', x]]]]
+    return ['block', ['result', 'v128'], ['local.set', t, v],
+      ['if', ['result', 'v128'], ['i64x2.all_true', inRange],
+        ['then', [signed ? 'i32x4.trunc_sat_f64x2_s_zero' : 'i32x4.trunc_sat_f64x2_u_zero', get]],
+        ['else', ['i32x4.replace_lane', 1, ['i32x4.splat', lane(0)], lane(1)]]]]
+  }
+
   // Lift one value expression to v128. Result lane type comes from the op (f64.* → f64x2,
   // i32.* → i32x4; convert/trunc bridge between them). Bit-exact per lane.
   function liftV(expr) {
@@ -221,8 +250,15 @@ export function tryToneMap(bl, fnLocals, freshIdRef, enabled) {
       const a = liftV(inner); if (ctx.fail) return null
       return [op === 'f64.convert_i32_s' ? 'f64x2.convert_low_i32x4_s' : 'f64x2.convert_low_i32x4_u', a]
     }
+    if (op === 'f64.promote_f32' && isArr(expr[1]) && expr[1][0] === 'f32.load' && expr[1].length === 2)
+      return ['f64x2.promote_low_f32x4', ['v128.load64_zero', expr[1][1]]]
     const tr = matchTruncF64(expr)   // f64 → i32 `|0` bridge
-    if (tr) { const a = liftV(tr.inner); if (ctx.fail) return null; return [tr.signed ? 'i32x4.trunc_sat_f64x2_s_zero' : 'i32x4.trunc_sat_f64x2_u_zero', a] }
+    if (tr) {
+      const a = liftV(tr.inner); if (ctx.fail) return null
+      return tr.wrap ? truncLanes(a, tr.signed, x => expr[0] === 'i32.wrap_i64' ? ['i32.wrap_i64', [expr[1][0], x]] : null)
+        : [tr.signed ? 'i32x4.trunc_sat_f64x2_s_zero' : 'i32x4.trunc_sat_f64x2_u_zero', a]
+    }
+    if (op === 'f32.load') return liftFail(ctx, 'tonemap: f32.load read other than promoted')
     if (TONE_LOAD[op] && expr.length === 2) {   // i32 → load64_zero (low 2 lanes); narrow → widen to i32x4 low lanes
       const w = TONE_LOAD[op].widen
       if (!w) return ['v128.load64_zero', expr[1]]   // address kept scalar
@@ -254,7 +290,10 @@ export function tryToneMap(bl, fnLocals, freshIdRef, enabled) {
     }
     if (op === 'select' && expr.length === 4) {
       const inf = matchInfCanonTone(expr)
-      if (inf) { const a = liftV(inf); if (ctx.fail) return null; return ['i32x4.trunc_sat_f64x2_s_zero', a] }
+      if (inf) {
+        const a = liftV(inf); if (ctx.fail) return null
+        return truncLanes(a, true, x => ['select', ['i32.wrap_i64', ['i64.trunc_sat_f64_s', x]], ['i32.const', 0], ['f64.ne', x, ['f64.const', Infinity]]])
+      }
       return liftSel(expr[1], expr[2], expr[3], true)
     }
     if (op === 'if' && isArr(expr[1]) && expr[1][0] === 'result' && isArr(expr[3]) && expr[3][0] === 'then' && isArr(expr[4]) && expr[4][0] === 'else')
@@ -324,6 +363,11 @@ export function tryToneMap(bl, fnLocals, freshIdRef, enabled) {
       if (localKind.get(name) !== 'lane') { liftFail(ctx, `tonemap: set of non-lane ${name}`); return }
       const v = liftV(stmt[2]); if (ctx.fail) return
       out.push(['local.set', laned(name), v]); toneSetBefore.add(name); return
+    }
+    // f32.store ADDR (f32.demote_f64 VAL) → the two demoted lanes, one i64.store
+    if (op === 'f32.store' && stmt.length === 3 && isArr(stmt[2]) && stmt[2][0] === 'f32.demote_f64') {
+      const v = liftV(stmt[2][1]); if (ctx.fail) return
+      out.push(['i64.store', stmt[1], ['i64x2.extract_lane', 0, ['f32x4.demote_f64x2_zero', v]]]); return
     }
     if (STORE_OPS[op]) {   // i32.store ADDR VAL → masked i64.store of the low 2 lanes (2 pixels)
       if (op !== 'i32.store' || stmt.length !== 3) { liftFail(ctx, `tonemap: unsupported store ${op}`); return }
