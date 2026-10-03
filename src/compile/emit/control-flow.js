@@ -1123,8 +1123,10 @@ export const controlFlowOps = {
         // topCounterRefs (the counter's own [lo, hi], unconditional) wraps BOTH
         // arms; freeRefs (bound-name magnitude, sound only once the guard has
         // passed) wraps the fast arm alone — see comments above each.
-        const fast = emitGuardedWords(words, () => withRefinements(initRefs, body, () => withRefinements(topCounterRefs, body,
-          () => freeRefs.size ? withRefinements(freeRefs, body, emitArm) : emitArm())))
+        // (the body's own bindings take fresh locals in this arm: the checked arm's
+        // missing reads then cannot keep a fast arm's element in its f64 carrier)
+        const fast = freshenUnrolledScalarBindings(body, emitGuardedWords(words, () => withRefinements(initRefs, body, () => withRefinements(topCounterRefs, body,
+          () => freeRefs.size ? withRefinements(freeRefs, body, emitArm) : emitArm()))))
         ctx.types.assumedBounds = saved
         ctx.types.assumedConstHull = savedHull
         const checked = withRefinements(initRefs, body, () => withRefinements(topCounterRefs, body, emitArm))
