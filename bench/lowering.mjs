@@ -13,6 +13,9 @@ const FORMS = {
   'i64.trunc_sat_f64_s, wrapped': x => `(i32.wrap_i64 (i64.trunc_sat_f64_s ${x}))`,
   'ToInt32 select (unproven)': x => `(select (i32.wrap_i64 (i64.trunc_sat_f64_s ${x})) (i32.const 0) (f64.ne ${x} (f64.const inf)))`,
   'f64.trunc + 1.5·2^52, low word': x => `(i32.wrap_i64 (i64.reinterpret_f64 (f64.add (f64.trunc ${x}) (f64.const 6755399441055744))))`,
+  'the same under |x| < 2^51, else wide': x => `(if (result i32) (f64.lt (f64.abs ${x}) (f64.const 2251799813685248))
+    (then (i32.wrap_i64 (i64.reinterpret_f64 (f64.add (f64.trunc ${x}) (f64.const 6755399441055744)))))
+    (else (i32.wrap_i64 (i64.trunc_sat_f64_s ${x}))))`,
 }
 
 // a loop whose word keys a byte read, so the conversion sits on the critical path
@@ -30,6 +33,6 @@ for (const [name, conv] of Object.entries(FORMS)) {
   answers.add(f(1 << 20)); f(N)
   const t = []
   for (let r = 0; r < 9; r++) { const a = performance.now(); f(N); t.push(performance.now() - a) }
-  console.log(`${name.padEnd(32)} ${(t.sort((a, b) => a - b)[4] * 1e6 / N).toFixed(2)} ns`)
+  console.log(`${name.padEnd(38)} ${(t.sort((a, b) => a - b)[4] * 1e6 / N).toFixed(2)} ns`)
 }
 if (answers.size !== 1) { console.error('✗ the forms disagree'); process.exit(1) }

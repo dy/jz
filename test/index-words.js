@@ -10,8 +10,8 @@ import { levels } from './_matrix.js'
 import { oracle, wat } from './util.js'
 
 const EDGES = [0, -0, 0.5, -0.5, 1.9999, -1.9999, 2147483647, 2147483648, -2147483648, -2147483649,
-  4294967295.5, 4294967296, 4294967301, -4294967301, 2 ** 53, -(2 ** 53), 2 ** 63, 1e300, -1e300,
-  Infinity, -Infinity, NaN]
+  4294967295.5, 4294967296, 4294967301, -4294967301, 2 ** 51 - 0.5, 2 ** 51, -(2 ** 51) + 0.5, -(2 ** 51),
+  2 ** 52 + 1, 2 ** 53, -(2 ** 53), 2 ** 63, 1e300, -1e300, Infinity, -Infinity, NaN]
 
 test('index words: a stencil over module dimensions answers as JS and runs in lanes', () => {
   const src = `let W = 0, H = 0, R, I
@@ -58,7 +58,7 @@ test('index words: ToInt32 answers at every edge with its 32-bit test first', ()
     export let m = (x) => (x * 1.5) | 0
     export let pack = (r, g, b) => (255 << 24) | ((b | 0) << 16) | ((g | 0) << 8) | (r | 0)`
   const guarded = wat(src, { optimize: 'speed' })
-  ok(/f64\.abs[\s\S]*?2147483648/.test(guarded), 'the speed tier tests the magnitude')
+  ok(/f64\.abs[\s\S]*?2251799813685248[\s\S]*?6755399441055744/.test(guarded), 'the speed tier tests the magnitude, then adds')
   ok(!/f64\.abs/.test(wat(src, { optimize: 'size' })), 'the size tier keeps the single exact form')
   // (`|0` saturates past 2^63 by design, src/ir/numeric.js toI32: the edges below it)
   for (const optimize of levels(0, 2, 'speed', 'size')) {
@@ -67,6 +67,40 @@ test('index words: ToInt32 answers at every edge with its 32-bit test first', ()
       is(got.t(x), host.t(x), `O${optimize} ${x} | 0`)
       is(got.m(x), host.m(x), `O${optimize} (${x} * 1.5) | 0`)
       is(got.pack(x, -x, x / 3), host.pack(x, -x, x / 3), `O${optimize} pack ${x}`)
+    }
+  }
+})
+
+// The speed tier takes an integer's word without a conversion: within ±2^51 its
+// truncation plus 1.5·2^52 holds it in the low bits (wordTruncation: 'add').
+// Each place a word is taken answers as JS past that range too: an element
+// key's test, a bounded ToInt32, 64-bit arithmetic and a key past the word.
+test('index words: words by the add answer at every edge', () => {
+  const src = `let a = new Int32Array(8)
+    for (let i = 0; i < 8; i++) a[i] = i * 10 + 1
+    export let get = (k) => a[k]
+    export let put = (k, v) => { a[k] = v; return a[k & 7] }
+    export let clamp = (x) => { let v = x; if (v > 1) v = 1; if (v < 0) v = 0; return (v * 255) | 0 }
+    export let near = (x) => { let s = 0; for (let i = 0; i < 4; i++) s = (s + (x + i) * 3) | 0; return s }
+    export let spiral = (dx, dy) => {
+      let ax = dx, ay = dy
+      if (ax < 0) ax = -ax
+      if (ay < 0) ay = -ay
+      let k = ax > ay ? ax : ay
+      if (k === 0) return 1
+      let pos = dy === k ? 6 * k + dx + k - 1 : dx === k ? k - 1 - dy : 4 * k + dy + k - 1
+      return (2 * k - 1) * (2 * k - 1) + 1 + pos
+    }`
+  ok(/6755399441055744/.test(wat(src, { optimize: 'speed' })), 'the speed tier adds')
+  for (const optimize of levels(2, 'speed')) {
+    const got = jz(src, { optimize }).exports, host = oracle(src)
+    for (const x of EDGES) {
+      is(got.get(x), host.get(x), `O${optimize} a[${x}]`)
+      // (`k & 7` saturates past 2^63 by design, as `|0` does)
+      if (Math.abs(x) < 2 ** 63 || !Number.isFinite(x)) is(got.put(x, 7), host.put(x, 7), `O${optimize} a[${x}] = 7`)
+      is(got.clamp(x), host.clamp(x), `O${optimize} clamp ${x}`)
+      if (Math.abs(x) < 2 ** 62 || !Number.isFinite(x)) is(got.near(x), host.near(x), `O${optimize} near ${x}`)
+      for (const y of [0, -3, x | 0]) is(got.spiral(x | 0, y), host.spiral(x | 0, y), `O${optimize} spiral ${x | 0}, ${y}`)
     }
   }
 })

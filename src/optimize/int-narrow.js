@@ -254,12 +254,13 @@ export function narrowInts(fn, assume = null, expand = true, words = 'wide') {
   // conversion the value's interval admits (V8 prices them by architecture,
   // bench/lowering.mjs). Within ±2^51 and no NaN, the truncation plus 1.5·2^52
   // holds the integer in its low bits, exactly: no conversion at all.
+  const added = (node, w) => {
+    const bits = ['i64.reinterpret_f64', ['f64.add', node, ['f64.const', 6755399441055744]]]
+    return w === 'i64' ? ['i64.sub', bits, ['i64.const', '0x4338000000000000']] : ['i32.wrap_i64', bits]
+  }
   const truncated = (node, w, of = node) => {
     const v = at(of)
-    if (words === 'add' && v && !v.nan && v.lo > -(2 ** 51) && v.hi < 2 ** 51) {
-      const bits = ['i64.reinterpret_f64', ['f64.add', whole(of) ? node : ['f64.trunc', node], ['f64.const', 6755399441055744]]]
-      return w === 'i64' ? ['i64.sub', bits, ['i64.const', '0x4338000000000000']] : ['i32.wrap_i64', bits]
-    }
+    if (words === 'add' && v && !v.nan && v.lo > -(2 ** 51) && v.hi < 2 ** 51) return added(whole(of) ? node : ['f64.trunc', node], w)
     if (w === 'i64') return ['i64.trunc_sat_f64_s', node]
     return words !== 'wide' && fitsI32(truncation(v)) ? ['i32.trunc_sat_f64_s', node] : ['i32.wrap_i64', ['i64.trunc_sat_f64_s', node]]
   }
@@ -511,6 +512,8 @@ export function narrowInts(fn, assume = null, expand = true, words = 'wide') {
     if (op === 'i32.wrap_i64' && n[1]?.[0] === 'i64.trunc_sat_f64_s') {
       const v = truncates(n[1][1], 'low')
       if (v) { did = true; return v }
+      // (an element key the emitter proved an integer within the 32-bit address range)
+      if (n.provenWord && words === 'add') { did = true; return added(F(n[1][1]), 'i32') }
       return conversion(truncated(F(n[1][1]), 'i32', n[1][1]))
     }
     if (op === 'i64.trunc_sat_f64_s') {

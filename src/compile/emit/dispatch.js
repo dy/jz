@@ -204,7 +204,8 @@ export const emitIndex = (index, whole = false, wide = false, bounded = false) =
   // The caller proves this exact typed access in bounds. Together with the
   // whole-key proof, its index lies in [0, 2^32): keep that address's low word.
   // Individual arithmetic intermediates still retain their Number semantics.
-  if (bounded && proven) return typed(['i32.wrap_i64', ['i64.trunc_sat_f64_s', asF64(value)]], 'i32')
+  // (marked: integer narrowing may take the word by an exact form the interval cannot prove)
+  if (bounded && proven) { const w = typed(['i32.wrap_i64', ['i64.trunc_sat_f64_s', asF64(value)]], 'i32'); w.provenWord = true; return w }
   // A checked typed-array access can compare an integer key with the full
   // unsigned length before using its low word as an address. Keep that value
   // once: saturating to i32 first needs two clamps around every wide scale.

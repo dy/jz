@@ -2562,19 +2562,22 @@ test('if→select: short-circuit || with a side-effecting cond is NOT folded (re
   is(jz(SRC).exports.main(), 7, '|| short-circuit stays correct (0||5=5, 7||9=7, false||3=3)')
 })
 
-test('Math.floor(bounded)|0 → one i64 truncation, no +∞ guard', () => {
+test('Math.floor(bounded)|0 → one exact word, no +∞ guard', () => {
   // f64Range maps through f64.floor: Math.floor(u8 * scale) is a finite value, so toI32
-  // emits i32.wrap_i64(i64.trunc_sat_f64_s) with no (select … f64.ne ∞) guard — and keeps
-  // the i64 form, the fast one on V8 (bytebeat 1521 → 1370 µs against the bare
-  // i32.trunc_sat this used to pin). The image/audio index class (`Math.floor(pixel *
+  // emits i32.wrap_i64(i64.trunc_sat_f64_s) with no (select … f64.ne ∞) guard. The default
+  // tier keeps that i64 form (V8 arm64's fastest; bytebeat 1521 → 1370 µs against the bare
+  // i32.trunc_sat this used to pin); the speed tier takes the word of the bounded integer by
+  // the add (its 1.5·2^52 sum read as bits), no conversion at all: x64 4.1 → 1.0 ns, arm64
+  // within 0.1 ns (bench/lowering.mjs). The image/audio index class (`Math.floor(pixel *
   // scale)`). Bit-exact. (Inert when the floor's input is a bare param/local — f64Range
   // can't bound those without range-of-locals.)
   const SRC = `
     const f = (buf, out, n) => { for (let i = 0; i < n; i++) out[i] = (Math.floor(buf[i] * 0.5) | 0) & 255 }
     export const main = () => { const buf = new Uint8Array(8), out = new Int32Array(8); for (let i = 0; i < 8; i++) buf[i] = i * 31; f(buf, out, 8); f(buf, out, 8); return out[3] | 0 }
   `
+  ok(/i32\.wrap_i64\s*\(i64\.trunc_sat_f64_s/.test(jz.compile(SRC, { wat: true, optimize: 2 })), 'the default tier: the i64 truncation, wrapped')
   const wat = jz.compile(SRC, { wat: true, optimize: { level: 'speed' } })
-  ok(/i32\.wrap_i64\s*\(i64\.trunc_sat_f64_s/.test(wat), 'the i64 truncation, wrapped')
+  ok(/6755399441055744/.test(wat) && !/trunc_sat_f64_s/.test(wat), 'the speed tier: the add, no truncation')
   is(/i32\.trunc_sat_f64_s/.test(wat), false, 'no bare i32 trunc_sat for the bounded floor')
   is(/f64\.const inf/.test(wat), false, 'no +∞ guard for the bounded floor')
   const ref = (() => { const buf = [], out = []; for (let i = 0; i < 8; i++) buf[i] = (i * 31) & 255

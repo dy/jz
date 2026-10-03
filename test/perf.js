@@ -754,8 +754,9 @@ test('codegen: float→int |0 of a finite, in-range value drops the +∞-guard s
   const wat = compile(src, { optimize: 'speed', wat: true })
   const beforeLoad = (fn) => fn.slice(0, fn.indexOf('i32.load8_u'))   // s-exprs print outermost-first
   const pack = beforeLoad(wat.match(/\(func \$pack[\s\S]*?\n  \)/)[0])
-  ok(/i32\.wrap_i64\s*\(i64\.trunc_sat_f64_s/.test(pack) && !/\bselect\b/.test(pack) && !/\bi32\.trunc_sat_f64_s/.test(pack),
-    'in-range |0 is the wrapped i64 truncation — no +∞-guard select, no bare i32 trunc_sat')
+  // (the speed tier's word of a bounded value is the add: its 1.5·2^52 sum read as bits)
+  ok(/i64\.reinterpret_f64\s*\(f64\.add\s*\(f64\.trunc/.test(pack) && !/\bselect\b/.test(pack) && !/trunc_sat_f64_s/.test(pack),
+    'in-range |0 is the exact word by the add — no +∞-guard select, no truncation')
   const wide = beforeLoad(wat.match(/\(func \$wide[\s\S]*?\n  \)/)[0])
   ok(!/\bselect\b/.test(wide), 'finite-but-large |0 drops the +∞ guard (keeps the mod-2^32 wrap)')
   const { exports } = jz(src, { optimize: 'speed' })
