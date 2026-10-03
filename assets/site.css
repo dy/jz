@@ -185,6 +185,21 @@ h1, h2, h3, h4, h5, h6 { font-family: var(--font); }
 .glare-link:is(:hover, :focus-visible, [aria-expanded="true"]) .glare-ink,
 .glare-icon:is(:hover, :focus-visible)::before,
 .metrics .stat:is(:hover, :focus-visible) .lab { background-position: 0% 0; }
+/* Content-link underline: a 1px layer of the same ink, lit by the ruler's cursor light (--lx/--ly, glint.js)
+   and takes the same wipe on hover, so the line is covered by the text's gradient instead of a native decoration. */
+.glare-ul { text-decoration-line: none; --ul-y: calc(100% - .2em); }
+.glare-ul > .glare-ink {
+  background-image:
+    radial-gradient(circle 320px at var(--lx, -999px) var(--ly, -999px), color-mix(in srgb, light-dark(#000, #fff) 65%, transparent),
+      color-mix(in srgb, light-dark(#000, #fff) 22%, transparent) 30%, transparent),
+    linear-gradient(110deg, light-dark(#000, #fff) 45%, color-mix(in srgb, currentColor 18%, transparent) 55%),
+    linear-gradient(110deg, light-dark(#000, #fff) 45%, currentColor 55%);
+  background-size: 100% 1px, 230% 1px, 230% 100%;
+  background-repeat: no-repeat, no-repeat, repeat;
+  background-position: 0 var(--ul-y), 100% var(--ul-y), 100% 0;
+  background-clip: border-box, border-box, text; -webkit-background-clip: border-box, border-box, text;
+}
+.glare-ul:is(:hover, :focus-visible, [aria-expanded="true"]) > .glare-ink { background-position: 0 var(--ul-y), 0% var(--ul-y), 0% 0; }
 @media (prefers-reduced-motion: reduce) {
   .glare-ink, .metrics .lab, .glare-icon::before { transition: none; }
 }
@@ -272,7 +287,8 @@ footer .wordmark > .edge-refl { inset: 1px -1px -1px 1px; }
 :root[data-theme="light"] .theme-toggle .i-moon { display: block; }   /* light theme → show the moon */
 
 /* Content links share one color and the glare's hover/focus treatment. */
-a, .lnk, s { text-decoration-color: color-mix(in srgb, currentColor 35%, transparent); text-decoration-thickness: 1px; }
+a, .lnk { text-decoration-color: color-mix(in srgb, currentColor 18%, transparent); text-decoration-thickness: 1px; }
+s { text-decoration-color: color-mix(in srgb, currentColor 60%, transparent); text-decoration-thickness: 1px; }   /* a strike carries meaning; fainter than this vanishes into the grid */
 a, .lnk { color: var(--link); cursor: pointer; text-decoration-line: underline; text-underline-offset: .25em; }
 a:hover, .lnk:hover { text-decoration-color: currentColor; }
 nav a, footer a { text-decoration: none; }

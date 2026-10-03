@@ -14,7 +14,7 @@ const boxes = new Map()
 const motion = matchMedia('(prefers-reduced-motion: reduce)')
 const mouse = matchMedia('(hover: hover) and (pointer: fine)')
 const field = { x: innerWidth / 2, y: -160 }
-let pointer = null, raf = 0, dirty = true, ink = []
+let pointer = null, raf = 0, dirty = true, ink = [], links = []
 
 let ruler
 if (document.querySelector('html.paper')) {
@@ -59,6 +59,7 @@ const glare = el => {
     el.classList.add('glare-link', 'glare-icon')
     return
   }
+  const underlined = getComputedStyle(el).textDecorationLine.includes('underline')
   const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT), nodes = []
   while (walker.nextNode()) if (walker.currentNode.textContent.trim() && !walker.currentNode.parentElement.closest('svg'))
     nodes.push(walker.currentNode)
@@ -67,6 +68,7 @@ const glare = el => {
     span.className = 'glare-ink'
     node.replaceWith(span); span.append(node)
     el.classList.add('glare-link')
+    if (underlined) el.classList.add('glare-ul')
   }
 }
 const layout = () => {
@@ -105,6 +107,11 @@ const layout = () => {
         }
         return { el, heading, rect, bounds }
       })
+    links = [...document.querySelectorAll('.glare-ul')].map(el => {
+      const ink = el.querySelector('.glare-ink'), rect = ink.getBoundingClientRect()
+      // the line's top edge: --ul-y puts it .2em above the padding box's bottom
+      return { el, rect, line: rect.bottom - .2 * parseFloat(getComputedStyle(ink).fontSize) - 1 }
+    })
   }
   dirty = false
 }
@@ -156,6 +163,12 @@ const frame = () => {
       el.style.setProperty('--shine-x', `${(cx - rect.left + half * Math.tanh((field.x - cx) / half)).toFixed(1)}px`)
       el.style.setProperty('--shine-y', `${(cy - rect.top + 60 * Math.tanh((field.y - cy) / 240)).toFixed(1)}px`)
     } else el.style.setProperty('--light-power', illumination(rect).power.toFixed(3))
+  }
+  // Link underlines take the ruler's light: the same radial falloff, centred on the cursor.
+  for (const { el, rect, line } of links) {
+    if (!rect.width || rect.bottom < 0 || rect.top >= innerHeight) continue
+    el.style.setProperty('--lx', `${(field.x - rect.left).toFixed(1)}px`)
+    el.style.setProperty('--ly', `${(field.y - line).toFixed(1)}px`)
   }
   if (painted && Math.abs(target.x - field.x) + Math.abs(target.y - field.y) > .1) schedule()
 }
