@@ -140,7 +140,7 @@ function emitGuardedWords(words, emitArm) {
   return [...entry, ...renameScalarBindings(Array.isArray(ir[0]) ? ir : [ir], rename)]
 }
 
-function proveGuardedWords(entries, proofs, defs, init, cond, step, body) {
+function proveGuardedWords(entries, proofs, defs, init, cond, step, body, slotRange = () => null) {
   const words = new Map(entries), visiting = new Set()
   let outsideNames = null
   const outside = n => {
@@ -155,6 +155,9 @@ function proveGuardedWords(entries, proofs, defs, init, cond, step, body) {
   // Every intermediate must stay exact in Number arithmetic. A small final
   // address alone does not prove this: a product may round before cancellation.
   const exactRange = e => {
+    // an invariant the guard snapshotted: its conjuncts bound the value the body computes
+    const slot = slotRange(e)
+    if (slot) return slot
     const literal = intLiteralValue(e)
     if (literal != null) return Number.isSafeInteger(literal) && !Object.is(literal, -0) ? [literal, literal] : null
     if (typeof e === 'string') {
@@ -724,7 +727,7 @@ export const controlFlowOps = {
         // the int model of `a*iv + v` is exact only for integral v (trunc does NOT
         // distribute over f64 sums)
         const slotKey = (s) => typeof s === 'string' ? s : JSON.stringify(s)
-        const slots = new Map()
+        const slots = new Map(), slotRanges = new Map()
         const slotI64 = (slot, kind) => {
           const key = slotKey(slot)
           let s = slots.get(key)
@@ -740,6 +743,7 @@ export const controlFlowOps = {
             result.push(snap)
             conjs.push(['f64.eq', ['local.get', `$${nF}`], ['f64.floor', ['local.get', `$${nF}`]]])
             conjs.push(['f64.le', ['f64.abs', ['local.get', `$${nF}`]], ['f64.const', 2147483648]])
+            slotRanges.set(key, [-2147483648, 2147483648])
             const nT = tempI64('tvm')
             result.push(['local.set', `$${nT}`, ['i64.trunc_sat_f64_s', ['local.get', `$${nF}`]]])
             s = ['local.get', `$${nT}`]
@@ -1065,7 +1069,7 @@ export const controlFlowOps = {
             conjs.push(['i64.lt_s', ['local.get', `$${endT}`], len64Of(c.recv)])
           }
         }
-        const words = wordLoop ? proveGuardedWords(wordEntries, wordProofs, wordDefs, init, cond, step, body) : null
+        const words = wordLoop ? proveGuardedWords(wordEntries, wordProofs, wordDefs, init, cond, step, body, e => slotRanges.get(slotKey(e)) ?? null) : null
         if (words) for (const proof of words.values()) conjs.push(...proof.tests)
         let guard = conjs[0]
         for (let k = 1; k < conjs.length; k++) guard = ['i32.and', guard, conjs[k]]
