@@ -1082,14 +1082,17 @@ const BLOCK_CANNOT_PREFIX = new Set([
   ...ASSIGN_OPS, '*', '%', '**', '<', '>', '<=', '>=', '==', '!=', '===', '!==',
   '&', '|', '^', '<<', '>>', '>>>', '&&', '||', '??', 'in', 'of', 'instanceof', '.', '?.',
 ])
-const leftEdgeIsObject = node => {
+const leftEdge = (node, hit) => {
   if (!isNode(node)) return false
-  if (node[0] === '{}') return true
+  if (hit(node)) return true
   if (node[0] === '()' && node.length === 2) return false
   if ((node[0] === '[]' || node[0] === '()') && node.length < 3) return false
   if ((node[0] === '++' || node[0] === '--') && node.length < 3) return false
-  return LEFT_EDGE_OPS.has(node[0]) && leftEdgeIsObject(node[1])
+  return LEFT_EDGE_OPS.has(node[0]) && leftEdge(node[1], hit)
 }
+const leftEdgeIsObject = node => leftEdge(node, n => n[0] === '{}')
+// `let [`: the token pair an ExpressionStatement may not open with (§14.5).
+const leftEdgeIsLetBracket = node => leftEdge(node, n => n[0] === '[]' && n.length === 3 && n[1] === 'let')
 
 const hasIncompleteNamedBackref = pattern => {
   for (let i = 0; i < pattern.length; i++) {
@@ -1442,10 +1445,11 @@ export function validateEarlyErrors(ast, source, sourceType = 'jz', sourceBase =
   }
 
   // soleStmt: this call fills a single-Statement grammar slot (if/while/do/for
-  // body, labeled-statement target) rather than a StatementList — Declaration
-  // (let/const/class) is syntactically excluded from Statement, so it is
-  // legal only when soleStmt is false (top-level, block contents, and for-
-  // header init all reach walk() with soleStmt left at its default).
+  // body) rather than a StatementList — Declaration (let/const/class) is
+  // syntactically excluded from Statement, so it is legal only when soleStmt
+  // is false (top-level, block contents, and for-header init all reach walk()
+  // with soleStmt left at its default). A label hands its statement the slot
+  // it fills itself: `while (x) L: M: function f() {}` is still the loop's body.
   const walk = (node, cx, statementPosition = false, soleStmt = false) => {
     const outer = at
     if (isNode(node) && typeof node.loc === 'number') at = node.loc
@@ -1627,9 +1631,18 @@ export function validateEarlyErrors(ast, source, sourceType = 'jz', sourceBase =
 
     if (op === ':' && statementPosition && typeof node[1] === 'string') {
       if (cx.labels.has(node[1])) fail(`duplicate label '${node[1]}'`)
+      const item = node[2]
+      // LabelledItem (§14.13): a Statement, or in sloppy code a plain function
+      // declaration — never as the body of another statement (IsLabelledFunction).
+      if (isNode(item) && item[0] === 'function') {
+        if (cx.strict) fail('a labelled function declaration is not allowed in strict mode')
+        if (soleStmt) fail('a labelled function cannot be the body of a statement')
+      }
+      // No declaration can claim `let [` here, and an expression may not open with it.
+      if (leftEdgeIsLetBracket(item)) fail("a labelled statement cannot start with 'let ['")
       const labels = new Map(cx.labels)
-      labels.set(node[1], isIteration(node[2]) ? 'loop' : 'other')
-      walk(node[2], { ...cx, labels }, true, true)
+      labels.set(node[1], isIteration(item) ? 'loop' : 'other')
+      walk(item, { ...cx, labels }, true, soleStmt)
       return
     }
 

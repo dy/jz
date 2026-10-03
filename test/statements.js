@@ -1636,6 +1636,18 @@ test('statements: chained loop labels retain validation and object-key domains',
   is(run(`export function f(){const x={a:{b:{c:3}}};return x.a.b.c}`).f(),3)
 })
 
+// A label hands its statement the slot it fills: a labelled function is never
+// a statement's body (IsLabelledFunction), and `let [` opens no labelled item.
+test('statements: a labelled item is checked in the slot its label fills', () => {
+  for (const src of ['while (0) a: b: function f(){}', 'if (1) ; else L: function f(){}',
+    'for (;;) L: function f(){}', 'do L: function f(){} while (0)'])
+    throws(() => compile(src, { jzify: true }), /labelled function cannot be the body/, src)
+  throws(() => compile('"use strict"; L: function f(){}', { jzify: true }), /not allowed in strict mode/)
+  throws(() => compile('if (0) { L: let\n[a] = 0 }', { jzify: true }), /cannot start with 'let \['/)
+  for (const src of ['a: b: function f(){}', 'L: (let)[0] = 1'])
+    ok(!/Early error/.test((() => { try { compile(src, { jzify: true }) } catch (e) { return e.message } return '' })()), src)
+})
+
 // The '{}' node is OVERLOADED: `['{}',[':',…]]` is both a single-prop literal
 // and a single-labeled-statement block. Labels of blocks are recognized ONLY
 // in statement positions — an object prop whose value is a literal must never
