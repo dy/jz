@@ -25,7 +25,7 @@ import { hoistInvariantLoop, splitLoopPrivateScratch, narrowLoopBound } from '..
 import { devirtSchemaReads } from '../src/optimize/devirt.js'
 import { hoistAddrBase, hoistPtrType } from '../src/optimize/cse-address.js'
 import { peelNarrowConv } from '../src/optimize/vectorize/lift.js'
-import { funcWat, run, oracle } from './util.js'
+import { foldWords, funcWat, run, oracle } from './util.js'
 import { belowOpt, onWasi } from './_matrix.js'
 import { parse, loopCount, count, walk } from '../scripts/wat-probe.mjs'
 
@@ -2424,7 +2424,8 @@ test('integer === integer compares in i32 — no f64.eq widen', () => {
   `
   // eqcount is called twice with distinct arguments → stays its own function (value numbering
   // computes one call for two identical ones, and watr inlines a function with one caller).
-  const wat = jz.compile(SRC, { wat: true })
+  // (words folded: the guarded ToInt32 of the counter has an `else` of its own)
+  const wat = foldWords(jz.compile(SRC, { wat: true }))
   const start = wat.indexOf('(func $eqcount')
   let body = wat.slice(start, wat.indexOf('\n  (func ', start + 10) + 1 || undefined)
   // Root F versions the param-bound loops: the cold checked twin (else arm)

@@ -35,7 +35,7 @@ import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
 import { belowOpt, onKernel, onWasi, withBigintStrict, levels } from './_matrix.js'
 import jz, { compile } from '../index.js'
-import { run, oracle } from './util.js'
+import { foldWords, run, oracle } from './util.js'
 import parseWat from 'watr/parse'
 import { parse as watTree, callsOutside, walk } from '../scripts/wat-probe.mjs'
 import { dictValueKindOf, mapValueKindOf } from '../src/kind.js'
@@ -1321,9 +1321,9 @@ test('addFitsI32 sum-range soundness (P0-2 sibling): two full-range i32 operands
 test('addFitsI32 keeps the i32.add/i32.sub fast path when the sum is genuinely range-proven or ToInt32-rooted', () => {
   // Both operands mask-bounded to ≤2^15: the SUM (≤2^16) provably fits signed
   // i32 — must stay on i32.add, not blanket-demote to f64.add.
-  const wat = jz.compile(
+  const wat = foldWords(jz.compile(
     'export let f = (x, y) => { let a = x | 0, b = y | 0; return ((a & 0x7fff) + (b & 0x7fff)) | 0 }',
-    { wat: true })
+    { wat: true }))
   const at = wat.indexOf('(func $f')
   const fn = wat.slice(at, wat.indexOf('(func', at + 6))
   is(count(fn, /f64\.add/g), 0, 'both-mask-bounded sum uses i32.add, not f64.add')
@@ -1333,9 +1333,9 @@ test('addFitsI32 keeps the i32.add/i32.sub fast path when the sum is genuinely r
   // recovers the i32 fast path via narrowI32 (ir.js toI32) — the SAME
   // ring-arithmetic recovery `3b50d504` relies on for `*`, unchanged by this
   // ticket. Structural pin: still ONE i32.add, no f64 round-trip.
-  const watWrap = jz.compile(
+  const watWrap = foldWords(jz.compile(
     'export let f = (a, b) => { let x = a | 0, y = b | 0; return (x + y) | 0 }',
-    { wat: true })
+    { wat: true }))
   const atW = watWrap.indexOf('(func $f')
   const fnW = watWrap.slice(atW, watWrap.indexOf('(func', atW + 6))
   is(count(fnW, /f64\.add/g), 0, '(a+b)|0 stays i32.add — ToInt32 root recovers the fast path via narrowI32')

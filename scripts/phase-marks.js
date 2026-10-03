@@ -37,7 +37,7 @@ export const PHASE_NAMES = [
   'plan:promoteIntArrayLiterals', 'plan:scalarizeTypedArrays', 'plan:unswitchLoops', 'plan:splitLoopKinds', 'plan:versionIntegralLoops', 'plan:synthesizeComputedDispatchCallSites',
   'plan:synthesizeMemberDispatchCallSites', 'plan:releaseLiftedAddressTakenNames', 'plan:buildProgramIndex', 'plan:dropUnreadGlobals',
   'plan:materializeAutoBoxSchemas', 'plan:resolveClosureWidth', 'plan:applyExportTypedArrayAbi', 'plan:splitByListKinds',
-  'plan:collectSlotConstants', 'plan:narrowSignatures', 'plan:analyzeParamDistinctness', 'plan:refineSlotWriteHazards',
+  'plan:collectSlotConstants', 'plan:narrowSignatures', 'plan:analyzeParamDistinctness', 'plan:analyzeFreshTypedGlobals', 'plan:refineSlotWriteHazards',
   'plan:analyzeParamNeverGrown', 'plan:scanInplaceStores', 'plan:specializeBimorphicTyped', 'plan:specializeValKindDichotomy',
   'plan:speculateTypedParams', 'plan:refineDynKeys', 'plan:refineSlotIntCensus',
   'optMod:specializeMkptr', 'optMod:volatileGlobals', 'optMod:reachableWrites', 'optMod:hoistGlobalPtr',
