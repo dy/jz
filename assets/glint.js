@@ -63,9 +63,12 @@ const glare = el => {
   const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT), nodes = []
   while (walker.nextNode()) if (walker.currentNode.textContent.trim() && !walker.currentNode.parentElement.closest('svg'))
     nodes.push(walker.currentNode)
+  // A trailing arrow (→) is its own ink, so the underline ends with the words.
+  const last = nodes.at(-1), arrow = underlined && last?.data.search(/\s*[\u2190-\u21ff]\s*$/)
+  if (arrow > 0) nodes.push(last.splitText(arrow))
   for (const node of nodes) {
     const span = document.createElement('span')
-    span.className = 'glare-ink'
+    span.className = arrow > 0 && node === nodes.at(-1) ? 'glare-ink glare-tail' : 'glare-ink'
     node.replaceWith(span); span.append(node)
     el.classList.add('glare-link')
     if (underlined) el.classList.add('glare-ul')

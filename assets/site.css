@@ -199,6 +199,7 @@ h1, h2, h3, h4, h5, h6 { font-family: var(--font); }
   background-position: 0 var(--ul-y), 100% var(--ul-y), 100% 0;
   background-clip: border-box, border-box, text; -webkit-background-clip: border-box, border-box, text;
 }
+.glare-ul > .glare-tail { background-size: 0 0, 0 0, 230% 100%; }   /* the arrow keeps the wipe, not the line */
 .glare-ul:is(:hover, :focus-visible, [aria-expanded="true"]) > .glare-ink { background-position: 0 var(--ul-y), 0% var(--ul-y), 0% 0; }
 @media (prefers-reduced-motion: reduce) {
   .glare-ink, .metrics .lab, .glare-icon::before { transition: none; }
