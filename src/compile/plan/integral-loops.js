@@ -39,6 +39,18 @@
  * assigns, or a record it only reads fields of. Every access tests it; where
  * each is present (`x != null`), the copy's fresh names are the storage alone.
  *
+ * A cursor the loop steps up by literals (`j++` per pixel, `si = si + 1`),
+ * resetting it to a literal or not (`if (si >= N) si = 0`, a ring counter),
+ * advances over the loop by at most its trips times one run's steps: where its
+ * entry plus that fits i32, the copy steps its own word. A loop under a literal
+ * bound counts its trips without a guard of the bound, and a cursor entering
+ * from a literal, or from the hull a copy just before left it in, needs no test:
+ * such a copy stands alone. A derived integer the loop declares once from the
+ * counter and from names the guard holds to int32s (`rowC = y * w`, `c = rowC +
+ * x`, `xW = x === 0 ? w - 1 : x - 1`), reaching an element index, is a word of
+ * the copy where its hull over the loop, an expression the guard tests, fits
+ * i32: the typed-bounds versioning then reads an affine index of words.
+ *
  * A closure's loops are versioned in its own body, its parameters and
  * declarations its locals: the callback a factory returns runs the per-frame
  * loops.
@@ -48,7 +60,7 @@
 import { ctx } from '../../ctx.js'
 import { frameNode } from '../../function.js'
 import { includeModule } from '../../autoload.js'
-import { T, MUTATE_OPS, TYPEOF, numberGuard, some, walkAst, extractParams, collectParamName, isReassigned, callArgs, refsName } from '../../ast.js'
+import { T, I32_MIN, I32_MAX, MUTATE_OPS, TYPEOF, REFS_THROUGH_ARROWS, numberGuard, some, walkAst, cloneNode, extractParams, collectParamName, isReassigned, callArgs, refsName } from '../../ast.js'
 import { freshId } from '../../ir.js'
 import { cloneWithSubst } from '../../type.js'
 import { collectBindings, nodeSize } from './common.js'
@@ -117,6 +129,16 @@ const writesIn = (node) => {
 const NO_WRITES = []
 
 const COUNTS = new Set(['++', '--', '+1', '-1'])
+/** The literal `name` is stepped up by in `n` (`c++`, `c += k`, `c = c + k`, k ≥ 0), or null. */
+const litStep = (n, name) => {
+  if (!Array.isArray(n) || n[1] !== name) return null
+  if (n[0] === '++' || n[0] === '+1') return 1
+  const k = n[0] === '+=' ? n[2] : n[0] === '=' && Array.isArray(n[2]) && n[2][0] === '+' && n[2].length === 3 ? n[2][1] === name ? n[2][2] : n[2][2] === name ? n[2][1] : null : null
+  return Array.isArray(k) && k[0] == null && Number.isInteger(k[1]) && k[1] >= 0 ? k[1] : null
+}
+/** The int32 literal `n` assigns to `name` (`si = 0`, a ring counter's reset), or null. */
+const litReset = (n, name) => Array.isArray(n) && n[0] === '=' && n[1] === name && Array.isArray(n[2]) && n[2][0] == null &&
+  Number.isInteger(n[2][1]) && Math.abs(n[2][1]) <= 0x7fffffff && !Object.is(n[2][1], -0) ? n[2][1] : null
 const BOUND_TESTS = new Set(['<', '<=', '>', '>='])
 const ALL_LOOPS = new Set(['for', 'while', 'do', 'for-in', 'for-of'])
 /** Whether every run of `body` steps `counter` up by one or more: a step
@@ -126,7 +148,7 @@ const ALL_LOOPS = new Set(['for', 'while', 'do', 'for-in', 'for-of'])
  *  count of times. */
 const unitStep = (body, counter) => {
   const list = Array.isArray(body) && (body[0] === ';' || body[0] === '{}') ? body.slice(1) : [body]
-  const step = (n) => { const st = n?.[0] === 'postfix' ? n[1] : n; return Array.isArray(st) && st[1] === counter && (st[0] === '++' || st[0] === '+1' || st[0] === '+=' && st[2]?.[0] == null && Number.isInteger(st[2][1]) && st[2][1] >= 1) }
+  const step = (n) => { const st = n?.[0] === 'postfix' ? n[1] : n; return (litStep(st, counter) ?? 0) >= 1 }
   if (!list.some(step)) return false
   let ok = true
   const walk = (n, inLoop) => {
@@ -352,7 +374,15 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
     // unless read after it; one from outside carries to the next time round
     const carried = new Set()
     if (enclosing) collectBindings(enclosing[enclosing[0] === 'for' ? 4 : enclosing[0] === 'while' ? 2 : 1], carried)
-    const readAfter = (n) => occursOutside(body, loop, n) || (enclosing != null && !carried.has(n))
+    const readAfter = (n) => {
+      if (enclosing == null) return occursOutside(body, loop, n)
+      if (!carried.has(n)) return true
+      // (declared anew each time round: a later statement of the round reads it, or none does)
+      const list = enclosing[enclosing[0] === 'for' ? 4 : enclosing[0] === 'while' ? 2 : 1]
+      if (parent !== list && !(Array.isArray(list) && list[0] === '{}' && list[1] === parent)) return occursOutside(body, loop, n)
+      for (let k = idx + 1; k < parent.length; k++) if (refsName(parent[k], n, REFS_THROUGH_ARROWS)) return true
+      return false
+    }
     // a jump to a label outside (`continue out`) leaves the copy past what it writes back
     if (some(loop, n => n[0] === '=>' || n[0] === 'label' || n[0] === 'yield' || n[0] === 'await' ||
       ((n[0] === 'break' || n[0] === 'continue') && typeof n[1] === 'string'))) continue
@@ -466,7 +496,8 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
     // a module binding the loop cannot change reads as a local would: the copy snapshots it
     // (one the program already holds to an integer range, a constant, needs no copy)
     const stableGlobal = (n) => !outerOk(n) && !inner.has(n) && !locals.has(n) && ctx.scope.globals.has(n) && !intExprRange(n) && stableBound(n)
-    const indexed = [...indexNames(loop, loopWrites, intArray)].filter(n => (outerOk(n) || stableGlobal(n)) && !already(n) && mayBeNumber(n))
+    const reaching = indexNames(loop, loopWrites, intArray)
+    const indexed = [...reaching].filter(n => (outerOk(n) || stableGlobal(n)) && !already(n) && mayBeNumber(n))
     // the names a counter is tested against (`i < n`, n read from a parameter): the
     // counter is an int32 only where they are
     // (not an export's own parameter: the host's value there keeps the boundary's representation;
@@ -485,22 +516,6 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
     // a Number the loop carries (`z1 = x - a1 * y`): what it only reads converts once per use, as it would
     if (!numbers.some(n => loopWrites.has(n))) numbers = []
     const present = [...presentNames(loop, loopWrites, kindOf, outerOk)]
-    if (!names.length && !numbers.length && !present.length && !counterBound) continue
-    // A Number the copy writes gets a name of its own too: a local has one
-    // representation, and the original loop keeps the float values the copy
-    // does not. The copy's own declarations also get fresh names. Fixed
-    // nonnumeric outer values keep their binding, so copying a loop creates
-    // no alias of a private string builder. A
-    // number (every write an integer) is read by `+`: a plain read would
-    // count as an integer use of the loop's own name.
-    const written = [...locals].filter(n => loopWrites.has(n) && !inner.has(n) && !captured.has(n) && !ctx.funcs.names.has(n) && mayBeNumber(n) && !already(n))
-    const outer = [...new Set([...names, ...counters, ...numbers, ...present, ...written])]
-    const own = new Map([...outer, ...inner].map(n => [n, `${n}${T}int${freshId(ctx)}`]))
-    for (const n of [...names, ...numbers]) fresh.add(own.get(n))
-    // A non-counted index recurrence gets the nonnegative index domain;
-    // a positive count closes wrap/decrement recurrences. Readonly offsets
-    // retain signed entries. Subsequent writes still need a complete hull.
-    const moving = names.filter(n => indexed.includes(n) && loopWrites.has(n) && !counted(loop, n))
     // The trips of a loop as an expression at this loop's entry, where its
     // counter starts at a literal, steps up by one or more every time round and
     // tests a bound of names the loop holds: `max(0, ceil(n) + adj - entry)`.
@@ -518,19 +533,20 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
       if (node[0] === 'while' && (node[1]?.[0] === '<' || node[1]?.[0] === '<=') && typeof node[1][1] === 'string') {
         const c = node[1][1], entry = already(c) ? literalEntry(p, i, c) : null
         return entry != null && !captured.has(c) && unitStep(node[2], c)
-          ? { n: node[1][2], adj: node[1][0] === '<=' ? 1 : 0, entry } : null
+          ? { n: node[1][2], adj: node[1][0] === '<=' ? 1 : 0, entry, counter: c } : null
       }
       if (node[0] === 'for' && node.length === 5 && node[1]?.[0] === 'let' && node[1].length === 2 && node[1][1]?.[0] === '=' &&
           typeof node[1][1][1] === 'string' && node[1][1][2]?.[0] == null && Number.isInteger(node[1][1][2][1]) &&
           (node[2]?.[0] === '<' || node[2]?.[0] === '<=') && node[2][1] === node[1][1][1] && !writesIn(node[4]).has(node[1][1][1])) {
         const step = node[3]?.[0] === 'postfix' ? node[3][1] : node[3]
         return (step?.[0] === '++' || step?.[0] === '+1' || step?.[0] === '+=' && step[2]?.[0] == null && step[2][1] === 1) && step[1] === node[1][1][1]
-          ? { n: node[2][2], adj: node[2][0] === '<=' ? 1 : 0, entry: node[1][1][2][1] } : null
+          ? { n: node[2][2], adj: node[2][0] === '<=' ? 1 : 0, entry: node[1][1][2][1], counter: node[1][1][1] } : null
       }
       return null
     }
     const sum = (terms) => terms.reduce((a, b) => ['+', a, b])
-    const stepOf = (n) => n[0] === '++' || n[0] === '+1' ? 1 : n[0] === '+=' && n[2]?.[0] == null && Number.isInteger(n[2][1]) && n[2][1] >= 0 ? n[2][1] : null
+    let resets = null   // the literal resets of the cursor whose advance is being read
+    const stepOf = (n) => litStep(n, n[1])
     // What `c` advances by over one run of `node`, as terms, or null: a step in
     // statement position by a non-negative literal; a nested loop, its trips
     // times its body's (a version, by the loop as written); nothing else.
@@ -553,6 +569,9 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
         return inner.length ? [['*', t, sum(inner)]] : []
       }
       if (node[0] === 'postfix') return perIteration(node[1], c, p, i, stmt)
+      // (a reset to a literal: no advance, a floor the budget starts from)
+      const reset = litReset(node, c)
+      if (reset != null) { resets?.push(reset); return [] }
       if (MUTATE_OPS.has(node[0]) && node[1] === c) { const k = stepOf(node); return k != null && stmt ? k ? [[null, k]] : [] : null }
       const list = node[0] === ';' || node[0] === '{}'
       const out = []
@@ -569,14 +588,179 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
     // fits i32, the copy steps its own word (every step a `| 0`, so its
     // storage is the word). A step inside an inner loop counts that loop's
     // trips: an inner copy's, which recorded them, or a loop as written.
-    const trips = tripsOf(counterBound?.trip)
-    const cursors = new Map()
-    if (trips) for (const c of locals) {
-      if (!loopWrites.has(c) || !outerOk(c) || c === counterBound.counter || names.includes(c) || !already(c) || !mayBeNumber(c)) continue
-      const terms = perIteration(loop[loop[0] === 'for' ? 4 : 2], c, null, 0, true)
-      if (terms?.length && (loop[0] !== 'for' || !refsName(loop[3], c))) cursors.set(c, terms)
+    // (a loop under a literal bound counts its trips too: its cursors need no guard of the bound)
+    const ownTrip = counterBound?.trip ?? tripOfLoop(loop, parent, idx)
+    const trips = tripsOf(ownTrip)
+    const cursors = new Map(), cursorTests = [], cursorHulls = new Map()
+    // The hull `name` holds within where `list[at]` runs: a literal it was declared
+    // or assigned (`let j = 0`), or the hull a version just before left it in (a
+    // cursor's floor and its budget's top), with no statement between writing it.
+    const entryHull = (list, at, name) => {
+      if (!Array.isArray(list) || (list[0] !== ';' && list[0] !== '{}')) return null
+      for (let i = at - 1; i >= 1; i--) {
+        const st = list[i]
+        if (!Array.isArray(st)) continue
+        const h = versions.get(st)?.cursorHulls.get(name)
+        if (h) return h
+        if (st[0] === 'let' || st[0] === 'const' || st[0] === 'var') {
+          const d = st.slice(1).find(d => Array.isArray(d) && d[0] === '=' && d[1] === name)
+          if (d) { const k = litReset(d, name); return k != null ? [k, k] : null }
+        }
+        const k = litReset(st, name)
+        if (k != null) return [k, k]
+        if (some(st, n => n[0] === '=>' || MUTATE_OPS.has(n[0]) && n[1] === name)) return null
+      }
+      return null
     }
+    // The number `e` comes to where its parts are literals, or null.
+    const numOf = (e) => {
+      if (!Array.isArray(e)) return null
+      if (e[0] == null) return typeof e[1] === 'number' ? e[1] : null
+      if (e[0] === '()' && e.length === 2) return numOf(e[1])
+      if (e[0] === '()' && e.length === 3 && typeof e[1] === 'string' && e[1].startsWith('math.')) {
+        const args = e[2]?.[0] === ',' ? e[2].slice(1).map(numOf) : [numOf(e[2])]
+        const f = Math[e[1].slice(5)]
+        return typeof f === 'function' && args.every(v => v != null) ? f(...args) : null
+      }
+      if (e.length !== 3) return null
+      const a = numOf(e[1]), b = numOf(e[2])
+      return a == null || b == null ? null : e[0] === '+' ? a + b : e[0] === '-' ? a - b : e[0] === '*' ? a * b : null
+    }
+    if (trips) for (const c of locals) {
+      if (!loopWrites.has(c) || !outerOk(c) || c === (counterBound?.counter ?? ownTrip?.counter) || names.includes(c) || !already(c) || !mayBeNumber(c)) continue
+      resets = []
+      const terms = perIteration(loop[loop[0] === 'for' ? 4 : 2], c, null, 0, true)
+      if (!terms?.length || loop[0] === 'for' && refsName(loop[3], c)) continue
+      // an int32 at entry, and not -0, with room for its advance: an entry within a
+      // hull answers that itself, a reset puts the floor at the higher of the two
+      const entry = entryHull(parent, idx, c), floor = resets.length ? Math.max(...resets) : null
+      const base = entry ? [null, floor != null ? Math.max(entry[1], floor) : entry[1]] : floor != null ? ['()', 'math.max', [',', c, [null, floor]]] : c
+      const top = ['+', base, ['*', trips, sum(terms)]], at = numOf(top)
+      if (at != null && at > 2147483647) continue
+      cursors.set(c, terms)
+      if (at == null) cursorTests.push(['<=', top, [null, 2147483647]])
+      if (!entry) cursorTests.push(['&&', ['>=', c, [null, -2147483648]], ['||', ['!==', c, [null, 0]], ['>', ['/', [null, 1], c], [null, 0]]]])
+      // (what the loop leaves the cursor within, for a loop after it)
+      else if (at != null) cursorHulls.set(c, [floor != null ? Math.min(entry[0], floor) : entry[0], at])
+    }
+    resets = null
+    if (!names.length && !numbers.length && !present.length && !counterBound && !cursors.size) continue
+    // A Number the copy writes gets a name of its own too: a local has one
+    // representation, and the original loop keeps the float values the copy
+    // does not. The copy's own declarations also get fresh names. Fixed
+    // nonnumeric outer values keep their binding, so copying a loop creates
+    // no alias of a private string builder. A
+    // number (every write an integer) is read by `+`: a plain read would
+    // count as an integer use of the loop's own name.
+    const written = [...locals].filter(n => loopWrites.has(n) && !inner.has(n) && !captured.has(n) && !ctx.funcs.names.has(n) && mayBeNumber(n) && !already(n))
+    const outer = [...new Set([...names, ...counters, ...numbers, ...present, ...written])]
+    const own = new Map([...outer, ...inner].map(n => [n, `${n}${T}int${freshId(ctx)}`]))
+    for (const n of [...names, ...numbers]) fresh.add(own.get(n))
+    // A non-counted index recurrence gets the nonnegative index domain;
+    // a positive count closes wrap/decrement recurrences. Readonly offsets
+    // retain signed entries. Subsequent writes still need a complete hull.
+    const moving = names.filter(n => indexed.includes(n) && loopWrites.has(n) && !counted(loop, n))
     for (const c of cursors.keys()) if (!own.has(c)) { const m = `${c}${T}int${freshId(ctx)}`; own.set(c, m); outer.push(c) }
+    // Derived integers: a name the loop declares once, by sums, differences,
+    // products, remainders and conditionals of the counter, of stable names the
+    // guard holds to int32s and of such names before it, that reaches an element
+    // index (`rowC = y * w`, `c = rowC + x`, `xW = x === 0 ? w - 1 : x - 1`).
+    // Its hull over the loop is an expression of what the guard reads: the
+    // counter runs from its entry to the bound less one, a stable name is
+    // itself, a conditional the least and most of its arms, a product its
+    // corners. Where the hull fits i32 the copy declares the name as a word
+    // (`| 0`, the identity there): its storage is i32, and an index of such
+    // words is affine in the counter for the typed-bounds versioning.
+    // (no element of a typed array: one past the end reads NaN, which a word takes to zero)
+    const lit = (v) => [null, v], isLit = (e) => Array.isArray(e) && e[0] == null && typeof e[1] === 'number'
+    const same = (a, b) => a === b || Array.isArray(a) && Array.isArray(b) && JSON.stringify(a) === JSON.stringify(b)
+    const add = (a, b) => isLit(a) && isLit(b) ? lit(a[1] + b[1]) : isLit(b) && b[1] === 0 ? a : isLit(a) && a[1] === 0 ? b : ['+', a, b]
+    const sub = (a, b) => isLit(a) && isLit(b) ? lit(a[1] - b[1]) : isLit(b) && b[1] === 0 ? a : ['-', a, b]
+    const mul = (a, b) => isLit(a) && isLit(b) ? lit(a[1] * b[1]) : isLit(a) && a[1] === 0 || isLit(b) && b[1] === 0 ? lit(0) : isLit(a) && a[1] === 1 ? b : isLit(b) && b[1] === 1 ? a : ['*', a, b]
+    const neg = (a) => isLit(a) ? lit(-a[1]) : ['u-', a]
+    const least = (a, b) => isLit(a) && isLit(b) ? lit(Math.min(a[1], b[1])) : same(a, b) ? a : ['()', 'math.min', [',', a, b]]
+    const most = (a, b) => isLit(a) && isLit(b) ? lit(Math.max(a[1], b[1])) : same(a, b) ? a : ['()', 'math.max', [',', a, b]]
+    const point = (h) => same(h[0], h[1])
+    const counter = loop[0] === 'for' ? loop[1]?.[1]?.[1] : counterBound?.counter
+    const hulls = new Map()
+    const counterHull = () => {
+      if (!counterBound || counterBound.comparison !== '<' || typeof counter !== 'string') return null
+      const entry = counterBound.trip ? lit(counterBound.trip.entry) : loop[0] === 'while' && unitStep(loop[2], counter) ? counter : null
+      return entry == null ? null : [entry, sub(cloneNode(counterBound.bound), lit(1))]
+    }
+    const hullOf = (e) => {
+      if (typeof e === 'string') {
+        if (e === counter) return counterHull()
+        if (hulls.has(e)) return hulls.get(e)
+        if (loopWrites.has(e) || inner.has(e)) return null
+        return names.includes(e) || outerOk(e) && already(e) ? [e, e] : null
+      }
+      if (!Array.isArray(e)) return null
+      const op = e[0]
+      if (op == null) return Number.isInteger(e[1]) && e[1] >= I32_MIN && e[1] <= I32_MAX ? [e, e] : null
+      if (op === '()' && e.length === 2) return hullOf(e[1])
+      if (op === 'u-' && e.length === 2) { const a = hullOf(e[1]); return a && [neg(a[1]), neg(a[0])] }
+      if (op === '~' && e.length === 2) return [lit(I32_MIN), lit(I32_MAX)]
+      if (op === '?:' && e.length === 4) { const a = hullOf(e[2]), b = hullOf(e[3]); return a && b ? [least(a[0], b[0]), most(a[1], b[1])] : null }
+      if (e.length !== 3) return null
+      if (op === '&') { const m = isLit(e[1]) ? e[1][1] : isLit(e[2]) ? e[2][1] : null; return m != null && m >= 0 && m <= I32_MAX ? [lit(0), lit(m)] : [lit(I32_MIN), lit(I32_MAX)] }
+      if (op === '|' || op === '^' || op === '<<' || op === '>>') return [lit(I32_MIN), lit(I32_MAX)]
+      if (op === '>>>') { const k = isLit(e[2]) ? e[2][1] & 31 : 0; return k >= 1 ? [lit(0), lit(2 ** (32 - k) - 1)] : null }
+      const a = hullOf(e[1]), b = hullOf(e[2])
+      if (!a || !b) return null
+      if (op === '+') return [add(a[0], b[0]), add(a[1], b[1])]
+      if (op === '-') return [sub(a[0], b[1]), sub(a[1], b[0])]
+      if (op === '%') { const m = isLit(e[2]) && Number.isInteger(e[2][1]) && e[2][1] !== 0 ? Math.abs(e[2][1]) : null; return m == null ? null : isLit(a[0]) && a[0][1] >= 0 ? [lit(0), lit(m - 1)] : [lit(1 - m), lit(m - 1)] }
+      if (op !== '*') return null
+      if (point(a) && isLit(a[0])) return a[0][1] >= 0 ? [mul(a[0], b[0]), mul(a[0], b[1])] : [mul(a[0], b[1]), mul(a[0], b[0])]
+      if (point(b) && isLit(b[0])) return b[0][1] >= 0 ? [mul(b[0], a[0]), mul(b[0], a[1])] : [mul(b[0], a[1]), mul(b[0], a[0])]
+      const corners = point(a) ? [mul(a[0], b[0]), mul(a[0], b[1])] : point(b) ? [mul(b[0], a[0]), mul(b[0], a[1])]
+        : [mul(a[0], b[0]), mul(a[0], b[1]), mul(a[1], b[0]), mul(a[1], b[1])]
+      return [corners.reduce(least), corners.reduce(most)]
+    }
+    // (an invariant product, `py * w` in the element loop, is the typed-bounds
+    // versioning's slot, evaluated once at entry: a word of it would be computed
+    // per element)
+    const invariantProduct = (e) => Array.isArray(e) && (e[0] === '*' && e.length === 3 && !isLit(e[1]) && !isLit(e[2]) && !refsName(e, counter) ||
+      e.slice(1).some(invariantProduct))
+    const words = new Map()   // name → its hull, both ends expressions the guard tests
+    walkAst(loop, { enter: (n) => {
+      if (n[0] === '=>') return false
+      if (n[0] !== 'let' && n[0] !== 'const') return
+      for (let i = 1; i < n.length; i++) {
+        const d = n[i]
+        if (!Array.isArray(d) || d[0] !== '=' || typeof d[1] !== 'string') continue
+        const name = d[1], e = d[2]
+        if (!inner.has(name) || !reaching.has(name) || captured.has(name) || loopWrites.get(name)?.length !== 1 || !mayBeNumber(name)) continue
+        if (!Array.isArray(e) || BITWISE.has(e[0]) || !integral(e, new Set()) || invariantProduct(e)) continue
+        const h = hullOf(e)
+        if (!h || isLit(h[0]) && h[0][1] < I32_MIN || isLit(h[1]) && h[1][1] > I32_MAX) continue
+        hulls.set(name, h)
+        words.set(name, h)
+      }
+    } })
+    // (a test an int32 answers already is left out: a word's end, the least of
+    // ends above the range's floor, the most of ends below its ceiling)
+    const span = (e) => {
+      if (typeof e === 'string') return e === counter ? [counterHull()?.[0]?.[1] ?? -Infinity, I32_MAX] : names.includes(e) ? [I32_MIN, I32_MAX] : [-Infinity, Infinity]
+      if (!Array.isArray(e)) return [-Infinity, Infinity]
+      if (e[0] == null) return [e[1], e[1]]
+      if (e[0] === '>>' || e[0] === '|') return [I32_MIN, I32_MAX]
+      if (e[0] === '()' && e.length === 3 && e[2]?.[0] === ',' && (e[1] === 'math.min' || e[1] === 'math.max')) {
+        const a = span(e[2][1]), b = span(e[2][2])
+        return e[1] === 'math.min' ? [Math.min(a[0], b[0]), Math.min(a[1], b[1])] : [Math.max(a[0], b[0]), Math.max(a[1], b[1])]
+      }
+      if (e[0] === '+' && e.length === 3) { const a = span(e[1]), b = span(e[2]); return [a[0] + b[0], a[1] + b[1]] }
+      if (e[0] === '-' && e.length === 3) { const a = span(e[1]), b = span(e[2]); return [a[0] - b[1], a[1] - b[0]] }
+      if (e[0] === 'u-' && e.length === 2) { const a = span(e[1]); return [-a[1], -a[0]] }
+      return [-Infinity, Infinity]
+    }
+    const wordTests = [], seenTests = new Set()
+    for (const [lo, hi] of words.values()) for (const t of [span(lo)[0] >= I32_MIN ? null : ['>=', lo, lit(I32_MIN)], span(hi)[1] <= I32_MAX ? null : ['<=', hi, lit(I32_MAX)]]) {
+      if (!t) continue
+      const k = JSON.stringify(t)
+      if (!seenTests.has(k)) { seenTests.add(k); wordTests.push(t) }
+    }
     // An inner guard whose names the loop holds (its own locals it does not
     // write, module bindings it cannot change, a cursor the loop budgets) is
     // decided once out here: the copy holds the inner fast arm alone, and the
@@ -592,7 +776,7 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
       const v = versions.get(n)
       if (!v) return
       if (!v.names.every(x => (!loopWrites.has(x) && stableBound(x)) || cursors.has(x))) return false
-      innerTests.push(v.aliases.length ? cloneWithSubst(v.test, new Map(), own) : v.test)
+      if (v.test) innerTests.push(v.aliases.length ? cloneWithSubst(v.test, new Map(), own) : v.test)
       for (const a of v.aliases) hoistedAliases.push(own.get(a) ?? a)
       // (a Number the inner copy wrote under a name of its own, for the loop as
       // written beside it: alone in this copy, it writes the name itself)
@@ -605,18 +789,27 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
         if (decl.length === 1) list.splice(1, 1)
         for (let k = list.length - 1; k >= 1; k--) if (self(list[k])) list.splice(k, 1)
       }
-      p[i] = fast; swapped.push([p, i, v.guarded[3]])
+      p[i] = fast; swapped.push([p, i, v.asWritten])
       return false
     } })
     const copy = cloneWithSubst(loop, new Map(), own)
     for (const [p, i, n] of swapped) p[i] = n
+    // the copy declares each derived integer as its word
+    if (words.size) {
+      const wordNames = new Set([...words.keys()].map(n => own.get(n)))
+      walkAst(copy, { enter: (n) => {
+        if (n[0] === '=>') return false
+        if (n[0] !== 'let' && n[0] !== 'const') return
+        for (let i = 1; i < n.length; i++) { const d = n[i]; if (Array.isArray(d) && d[0] === '=' && wordNames.has(d[1])) d[2] = ['|', d[2], lit(0)] }
+      } })
+    }
     // (the loop as written is the other arm now: every inner version in it is
     // its loop as written too, the fast arm there would run as rarely)
     walkAst(loop, { enter: (n, p, i) => {
       if (n[0] === '=>') return false
       const v = versions.get(n)
       if (!v) return
-      p[i] = v.guarded[3]
+      p[i] = v.asWritten
       return false
     } })
     // the copy steps each cursor's word
@@ -630,8 +823,8 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
       } })
     }
     const boundDecl = []
+    if (counterBound || cursorTests.length || wordTests.length) includeModule('math')
     if (counterBound) {
-      includeModule('math')
       const bound = `${counterBound.terms[0]}${T}bound${freshId(ctx)}`
       fresh.add(bound)
       boundDecl.push(['=', bound, counterBound.bound])
@@ -648,22 +841,22 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
     const quietGuards = [...names, ...counterBound?.terms ?? [], ...tripNames].some(n => !outerOk(n)) ? [...quiet ?? []] : []
     const typeGuards = [...new Set([...counterBound?.terms ?? [], ...tripNames, ...quietGuards])].map(numberGuard)
     const boundTest = counterBound ? [['&&', ['>=', counterBound.name, [null, counterBound.min]], ['<=', counterBound.name, [null, counterBound.max]]]] : []
-    // a cursor: an int32 at entry, and not -0, with room for its advance
-    const cursorTests = [...cursors].map(([c, a]) => ['&&', ['&&', ['>=', c, [null, -2147483648]], ['<=', ['+', c, ['*', trips, sum(a)]], [null, 2147483647]]], ['||', ['!==', c, [null, 0]], ['>', ['/', [null, 1], c], [null, 0]]]])
     // (an inner test comes after the aliases this one captures: it reads them by the copy's names)
-    const test = [...typeGuards, ...boundTest, ...names.map(n => ['&&', ['&&', numberGuard(n), ['===', n, ['=', own.get(n), ['|', n, [null, 0]]]]], ['||', ['!==', n, [null, 0]], ['>', ['/', [null, 1], n], [null, 0]]]]),
+    const tests = [...typeGuards, ...boundTest, ...names.map(n => ['&&', ['&&', numberGuard(n), ['===', n, ['=', own.get(n), ['|', n, [null, 0]]]]], ['||', ['!==', n, [null, 0]], ['>', ['/', [null, 1], n], [null, 0]]]]),
       ...moving.map(n => ['>=', own.get(n), [null, 0]]),
       ...(moving.length ? bounds.map(n => ['>', own.get(n), [null, 0]]) : []),
       ...numbers.map(n => ['===', ['typeof', n], [null, TYPEOF.number]]),
       ...present.map(n => ['!=', n, [null, null]]),
-      ...innerTests, ...cursorTests]
-      .reduce((a, b) => ['&&', a, b])
+      ...innerTests, ...cursorTests, ...wordTests]
+    const test = tests.length ? tests.reduce((a, b) => ['&&', a, b]) : null
     // (a counter enters as its literal; a cursor as its word, an int32 by the guard)
     const version = ['{}', [';', ['let', ...boundDecl, ...outer.filter(n => !names.includes(n)).map(n => ['=', own.get(n), counters.includes(n) ? [null, counterBound.entry] : cursors.has(n) ? ['|', n, [null, 0]] : already(n) ? ['u+', n] : n])], copy,
       // what the copy wrote under a name of its own, where the body reads it after the loop
       // or a loop around runs it again (a Number every write keeps an integer is renamed too: its sum is the copy's)
       ...outer.filter(n => loopWrites.has(n) && readAfter(n)).map(n => ['=', n, own.get(n)])]]
-    const guarded = ['if', test, version, ['{}', [';', loop]]]
+    // (nothing to test, a cursor from a literal: the copy alone, the loop as written for an enclosing version's other arm)
+    const asWritten = ['{}', [';', loop]]
+    const guarded = test ? ['if', test, version, asWritten] : version
     const aliases = [...names.map(n => own.get(n)), ...hoistedAliases]
     const wrapped = aliases.length ? ['{}', [';', ['let', ...aliases.map(a => ['=', a, [null, 0]])], guarded]] : guarded
     parent[idx] = wrapped
@@ -671,9 +864,9 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
     // a mark on the node and its body, which a clone carries: type/clone.js carrySite)
     walkAst(loop, { enter: (n) => { if (n[0] === '=>') return false; if (ALL_LOOPS.has(n[0])) { n.cold = true; const b = n[n[0] === 'for' ? 4 : n[0] === 'while' ? 2 : 1]; if (Array.isArray(b)) b.cold = true } } })
     const found = new Set()
-    walkAst(test, { enter: n => { if (n[0] === 'str') return false; for (let i = 1; i < n.length; i++) if (typeof n[i] === 'string' && n[0] !== '()' && !aliases.includes(n[i])) found.add(n[i]) } })
+    if (test) walkAst(test, { enter: n => { if (n[0] === 'str') return false; for (let i = 1; i < n.length; i++) if (typeof n[i] === 'string' && n[0] !== '()' && !aliases.includes(n[i])) found.add(n[i]) } })
     const undo = new Map(written.filter(n => !names.includes(n) && !counters.includes(n) && !cursors.has(n) && !numbers.includes(n) && !present.includes(n)).map(n => [own.get(n), n]))
-    versions.set(wrapped, { test, version, guarded, loop, names: [...found], aliases, undo, trip: counterBound?.trip ?? null, advances: cursors })
+    versions.set(wrapped, { test, version, asWritten, loop, names: [...found], aliases, undo, trip: counterBound?.trip ?? null, advances: cursors, cursorHulls })
     for (const [n, values] of writesIn(version)) { const l = bodyWrites.get(n); if (l) l.push(...values); else bodyWrites.set(n, values) }
     // (the copy's names are the body's locals now: an enclosing loop's copy reads them so)
     for (const [n, m] of own) { locals.add(m); origin.set(m, origin.get(n) ?? n) }

@@ -546,3 +546,83 @@ test('integral loops: a nest over module dimensions is one version, its pixel cu
   const loops = (frame.match(/\(loop /g) || []).length
   ok(loops <= 24, `one version of the nest (${loops} loops; a version per level squares them)`)
 })
+
+test('integral loops: a raster nest\'s row base and derived index are words, so the stencil lifts', () => {
+  // `rowC = y * w`, `c = rowC + x`, `xW = x === 0 ? w - 1 : x - 1`: integers of the
+  // counter and of names the guard holds to int32s, reaching an element index.
+  // Their hulls over the loop are expressions of what the guard reads; where
+  // they fit i32 the copy declares each as its word, and the typed-bounds
+  // versioning reads an affine index of words: the 5-point stencil lifts. The
+  // loop as written keeps every other input (a fractional width reads past the
+  // row as JS does).
+  const src = `let W = 0, H = 0, uA, uB
+    export let resize = (w, h) => { W = w; H = h; uA = new Float64Array(w * h); uB = new Float64Array(w * h); for (let i = 0; i < uA.length; i++) uA[i] = i % 7; return uB }
+    export let step = () => {
+      let w = W, h = H, y = 0
+      while (y < h) {
+        let yN = y === 0 ? h - 1 : y - 1, yS = y === h - 1 ? 0 : y + 1
+        let rowC = y * w, rowN = yN * w, rowS = yS * w, x = 0
+        while (x < w) {
+          let xW = x === 0 ? w - 1 : x - 1, xE = x === w - 1 ? 0 : x + 1
+          let c = rowC + x
+          uB[c] = uA[rowN + x] + uA[rowS + x] + uA[rowC + xW] + uA[rowC + xE] - 4 * uA[c]
+          x++
+        }
+        y++
+      }
+    }`
+  const js = oracle(src)
+  for (const optimize of levels(0, 2, 'speed')) {
+    const m = jz(src, { optimize }).exports
+    for (const [w, h] of [[0, 0], [1, 1], [3, 5], [7, 1], [1, 7], [16, 12], [6.5, 4], [5, NaN]]) {
+      const got = m.resize(w, h), want = js.resize(w, h)
+      m.step(); js.step()
+      is(Array.from(got).map(v => Number.isNaN(v) ? 'NaN' : v), Array.from(want).map(v => Number.isNaN(v) ? 'NaN' : v), `${w}×${h} at ${optimize}`)
+    }
+  }
+  if (belowOpt(2)) return
+  const step = funcWat(wat(src, { optimize: 'speed' }), 'step')
+  ok((step.match(/v128\.load/g) || []).length >= 4 && /f64x2\.add/.test(step), 'the neighbour stencil lifts to f64x2 (the row base and the derived index are words)')
+})
+
+test('integral loops: a ring counter is a cursor with a floor, and a loop under a literal bound guards nothing', () => {
+  // `si = si + 1; if (si >= N) si = 0` steps up by a literal and resets to one:
+  // its advance over the loop is the trips times the step, from the higher of
+  // its entry and the reset. A loop under a literal bound counts its trips
+  // without a guard of the bound; a cursor entering from a literal, or from the
+  // hull a copy just before left it in, runs as a word with no test at all. The
+  // pixel loop then holds two plain inner loops, and the iterated-map reduction
+  // lifts it.
+  const src = `let W = 0, H = 0, px, SEQLEN = 5, seq
+    export let resize = (w, h) => { W = w; H = h; px = new Uint32Array(w * h); seq = new Int32Array(8); seq[2] = 1; seq[4] = 1; return px }
+    export let setSeq = (bits, len) => { if (len < 2) len = 2; if (len > 6) len = 6; SEQLEN = len; let i = 0; while (i < len) { seq[i] = (bits >> i) & 1; i++ } }
+    export let frame = (ox, oy, span) => {
+      let j = 0, py = 0
+      while (py < H) {
+        let b = 2.5 + oy + py * span, qx = 0
+        while (qx < W) {
+          let a = 2.5 + ox + qx * span, x = 0.5, si = 0, wi = 0
+          while (wi < 80) { let r = seq[si] < 1 ? a : b; x = r * x * (1 - x); si = si + 1; if (si >= SEQLEN) si = 0; wi++ }
+          let L = 0, ai = 0
+          while (ai < 160) { let r = seq[si] < 1 ? a : b; let d = Math.abs(r * (1 - 2 * x)); x = r * x * (1 - x); if (d > 0) L = L + Math.log(d); si = si + 1; if (si >= SEQLEN) si = 0; ai++ }
+          px[j] = (L < 0 ? 255 : 0) | (255 << 24)
+          j++; qx++
+        }
+        py++
+      }
+    }`
+  const js = oracle(src)
+  for (const optimize of levels(0, 2, 'speed')) {
+    const m = jz(src, { optimize }).exports
+    for (const [w, h, bits, len] of [[6, 4, 0b10100, 5], [3, 2, 0b1, 2], [5, 1, 0b111, 3.5], [4, 3, 0b10, NaN], [0, 3, 0b1, 4]]) {
+      const got = m.resize(w, h), want = js.resize(w, h)
+      m.setSeq(bits, len); js.setSeq(bits, len)
+      m.frame(0.1, 0.2, 0.03); js.frame(0.1, 0.2, 0.03)
+      is(Array.from(got), Array.from(want), `${w}×${h} seq ${len} at ${optimize}`)
+    }
+  }
+  if (belowOpt(2)) return
+  const frame = funcWat(wat(src, { optimize: 'speed' }), 'frame')
+  ok(/call \$math\.log_v/.test(frame) && /f64x2\.mul/.test(frame), 'the iterated-map reduction lifts the pixel loop (log → $math.log_v)')
+  ok(/\(local \$si\S* i32\)/.test(frame) && !/\(local \$si\S* f64\)/.test(frame), 'the ring counter is a word in every copy')
+})

@@ -2444,7 +2444,7 @@ src/
                 plan/counted-loops.js: a counted loop over its trip number (computed start, secondary cursors, unrolled body rolled back, unit stride versioned); guards preserve full cursor entries and updates, including signed zero. Bounds must be stable and free of coercion calls; captures and mutable array lengths retain their original loops.
                 plan/unswitch-loops.js: a loop testing a name it never writes (`if (stereo)`), a copy for each answer, its declarations renamed so each copy's values have its arms' kinds
                 plan/kind-split.js: a loop reading a name of several kinds, a typed array among them, a copy over that array where `instanceof` says the name holds it (the constructor from the name's values and its callers' arguments)
-                plan/integral-loops.js: a loop moving a cursor of unknown integrality, a copy over its int32s where a test says it is one
+                plan/integral-loops.js: a loop moving a cursor of unknown integrality, a copy over its int32s where a test says it is one; a cursor stepped by literals (a ring counter with its resets too) as a word under its advance budget, a derived integer of the counter and of proven int32s (a row base, a derived index) as a word where its hull fits i32
                 plan/loop-fields.js: a field or a Float64Array element a loop reads and writes through one receiver, in a local for the loop, stored back after it
                 plan/chosen-calls.js: a local holding one of several named functions and only called, the choice of direct calls
                 plan/called-args.js: a function whose parameter is only called or tested against strings, a copy for each named function or string literal a call passes there

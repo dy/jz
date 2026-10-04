@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { FLOATBEATS, moduleSrc } from '../examples/jukebox/floatbeats.js';
 import { OPT, buildExample, buildKernel } from '../examples/build.mjs';
 import { onWasi } from './_matrix.js';
+import { funcWat } from './util.js';
 
 let mandelbrotSrc = fs.readFileSync(new URL('../examples/mandelbrot/mandelbrot.js', import.meta.url), 'utf8');
 
@@ -134,10 +135,8 @@ test('example: per-pixel-color kernels vectorize (chladni cos, interference sin/
 // BIT-EXACT to the scalar pipeline end-to-end — a lane-parallel stencil reorders nothing per lane.
 test('example: watercolor fluid stencils vectorize f64x2 and stay bit-exact', () => {
     const src = fs.readFileSync(new URL('../examples/watercolor/watercolor.js', import.meta.url), 'utf8');
-    // stencil is now default-on at speed (the build options), so the SCALAR baseline
-    // turns it explicitly off; the vectorized side is the plain build.
-    const base = (jz.compile(src, { ...OPT, stencil: false, wat: true }).match(/f64x2\./g) || []).length;
-    const sten = (jz.compile(src, { ...OPT, wat: true }).match(/f64x2\./g) || []).length;
+    const watText = jz.compile(src, { ...OPT, wat: true });
+    const frame = funcWat(watText, 'frame');
     // RECOVERED (audit-#8 P1-2 follow-up, c8700daa's own named lever): `w`/`h`
     // trace to a resize(w,h) runtime param — genuinely unbounded statically, so
     // `w-1`/`h-1` can never get a STATIC intExprRange proof and tryStencil's
@@ -163,7 +162,15 @@ test('example: watercolor fluid stencils vectorize f64x2 and stay bit-exact', ()
     // 39 → 40 (2026-09-28): the SLP store-pair packer packs two adjacent initial
     // stores of the module initializer (`$__start`) into one v128 store; the sweeps
     // are as before (`slp: false` gives 39 on both sides).
-    is(sten, 40, `watercolor sweeps: velocity stencils lift, ink sweeps wait on an f64 width (${base} → ${sten} f64x2)`);
+    // RECOVERED (2026-10-04): the source versioning takes the ink sweep's row base
+    // `r = y2 * w2` and index `c = r + x2` as words where their hulls fit i32
+    // (plan/integral-loops.js: derived integers), so the typed-bounds versioning
+    // reads an affine index of words and the bleed stencil lifts beside the
+    // velocity sweeps. Pinned by shape, not by an operation count: the SIMD loops
+    // of `frame` and the bleed's neighbour load.
+    const simdLoops = (frame.match(/\(loop \$\S*__simd_loop/g) || []).length;
+    ok(simdLoops >= 5, `watercolor: the velocity sweeps and the ink bleed lift (${simdLoops} SIMD loops in frame)`);
+    ok(/v128\.load offset=8/.test(frame), 'watercolor: the capillary bleed stencil reads its neighbours as lanes');
     const run = (opts) => {
         const { exports } = jz(src, opts);
         const px = exports.resize(64, 48);
@@ -367,11 +374,16 @@ test('example: toroidal-wrap stencils (diffusion, slime) vectorize and stay bit-
     // `i32.wrap_i64(i64.trunc_sat_f64_s(B))` idiom jz's own overflow-canon already uses elsewhere
     // — value-exact for any finite integer-valued f64, not an approximation.
     const cases = [
-        { name: 'diffusion', want: 60, drive: (e) => { const p = e.resize(64, 48); if (e.seedRect) e.seedRect(20, 15, 40, 30); for (let f = 0; f < 8; f++) e.frame(); return [...p]; } },
-        // The present-grid arm still has 17 operations (9 add, 4 mul, 4 splat).
-        // The checked fallback now also vectorizes, adding 18; each call runs
-        // one arm. Pin both copies and compare every frame across resize/reuse.
-        { name: 'slime', want: 35, drive: (e) => {
+        // RECOVERED (2026-10-04): the row bases `rowC = y * w` and the index `c = rowC + x`
+        // are words of the source versioning's copy (plan/integral-loops.js: derived
+        // integers), so the 5-point stencil lifts in both step functions; pinned by
+        // their neighbour loads, not an operation count.
+        { name: 'diffusion', want: (w) => ['stepAtoB', 'stepBtoA'].every(f => (funcWat(w, f).match(/v128\.load/g) || []).length >= 8), drive: (e) => { const p = e.resize(64, 48); if (e.seedRect) e.seedRect(20, 15, 40, 30); for (let f = 0; f < 8; f++) e.frame(); return [...p]; } },
+        // The 3×3 blur lifts in its present-grid arm (the loop as written is the
+        // version's cold arm now: plan/integral-loops.js leaves it scalar); pinned
+        // by the lanes' nine neighbour loads wherever the blur lands (its own
+        // function, or inlined into frame). Compare every frame across resize/reuse.
+        { name: 'slime', want: (w) => ((funcWat(w, 'blurDecay') + funcWat(w, 'frame')).match(/v128\.load/g) || []).length >= 9, drive: (e) => {
             const frames = [];
             for (const [w, h] of [[0, 0], [1, 1], [2, 2], [3, 3], [64, 48], [64, 48], [65, 49], [64, 48]]) {
                 const p = e.resize(w, h); e.seed();
@@ -383,8 +395,9 @@ test('example: toroidal-wrap stencils (diffusion, slime) vectorize and stay bit-
     ];
     for (const { name, want, drive } of cases) {
         const src = fs.readFileSync(new URL(`../examples/${name}/${name}.js`, import.meta.url), 'utf8');
-        const sten = (jz.compile(src, { ...OPT, wat: true }).match(/f64x2\./g) || []).length;
-        is(sten, want, `${name} wrap-stencil recovers under the f64-domain wrap-select lever (${sten} f64x2)`);
+        const watText = jz.compile(src, { ...OPT, wat: true }), sten = (watText.match(/f64x2\./g) || []).length;
+        if (typeof want === 'function') ok(want(watText), `${name} wrap-stencil lifts in every sweep (${sten} f64x2)`);
+        else is(sten, want, `${name} wrap-stencil recovers under the f64-domain wrap-select lever (${sten} f64x2)`);
         const run = (opts) => drive(jz(src, { ...opts, randomSeed: 42 }).exports);
         const simd = run({ ...OPT }), scal = run({ ...OPT, noSimd: true });
         is(simd.length, scal.length);

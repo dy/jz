@@ -216,6 +216,13 @@ export function affineIdxOfIV(idx, iv, body, env) {
       if (B != null && invariantIdxExpr(B, iv, body, env))
         return { a: 0, slots: [{ k: 1, e: B, wrap: true }], bConst: 0 }
     }
+    // The word of an index affine in the iv is the index: the guard proves the
+    // index within [0, length) at the counter's extremes, so it fits i32 and
+    // its ToInt32 is itself (plan/integral-loops.js takes a derived index as a word).
+    if (e.length === 3 && op === '|' && (intLiteralValue(y) === 0 || intLiteralValue(x) === 0)) {
+      const t = aff(intLiteralValue(y) === 0 ? x : y)
+      if (t && (t.a !== 0 || t.slots.some(u => u.wrap))) return t
+    }
     if (e.length === 3 && op === '*') {
       const L = intLiteralValue(x) ?? intLiteralValue(y)
       if (L != null) {
