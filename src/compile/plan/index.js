@@ -27,6 +27,7 @@
  */
 
 import { ctx, getFactStore } from '../../ctx.js'
+import { collectMemberUses, definesToPrimitive } from '../../member-uses.js'
 import { clearBodyFacts } from '../analyze.js'
 import {
   collectProgramFacts, collectSlotConstants, analyzeSchemaSlotIntCertain, collectSlotWriteHazards, analyzeParamNeverGrown,
@@ -79,6 +80,10 @@ import {
 
 /** Plan the program: `summarize` returns the program summary (src/summary) of the AST as it stands, rebuilt only when the program changed. */
 export default function plan(ast, profiler, summarize) {
+  // Whether an operator over a value of unknown kind may run user code (a
+  // `valueOf`): the source defines one, or none does. Taken before any pass
+  // rewrites a body; no pass defines a method.
+  ctx.transform.userConversions = definesToPrimitive(collectMemberUses())
   // Per-pass timing under `plan:` — the plan stage is the compile pipeline's
   // multi-pass hot spot (each mutating pass triggers a whole-program fact
   // refresh), so the profile must show WHICH pass and refresh dominate.

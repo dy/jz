@@ -60,8 +60,10 @@ export function primitiveKind(view, e) {
  *  toString/valueOf: a converting operator (or key conversion) over an operand the
  *  summary cannot prove primitive, in a program that defines those methods. */
 export function runsConversion(view, node, beforeEmit = false) {
-  // Source planning precedes synthesis of the runtime conversion functions.
-  if (!isArr(node) || !beforeEmit && !ctx.funcs.runtimeRoots?.has(TO_PRIMITIVE.number)) return false
+  // Source planning precedes synthesis of the runtime conversion functions: the
+  // plan's census of the source answers there (compile/plan/index.js), where it
+  // was taken; a program defining no `toString`/`valueOf` converts through none.
+  if (!isArr(node) || (beforeEmit ? ctx.transform.userConversions === false : !ctx.funcs.runtimeRoots?.has(TO_PRIMITIVE.number))) return false
   const op = node[0]
   if (CONVERTING_OPS.has(op)) { for (let i = 1; i < node.length; i++) if (!primitiveKind(view, node[i])) return true; return false }
   if ((op === '[]' || op === '?.[]') && node.length === 3) return !primitiveKind(view, node[2])   // ToPropertyKey

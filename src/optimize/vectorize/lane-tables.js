@@ -215,7 +215,9 @@ export const REDUCE_OP_LOOKUP = (() => {
 // a NaN-canonicalizing select, so these arrive as a TWO-statement body —
 //   (local.set $cn (OP (local.get $acc) EXPR))
 //   (local.set $acc (select C (local.get $cn) (OP-type.ne $cn $cn)))
-// — handled separately from the bare single-statement reductions above.
+// — handled separately from the bare single-statement reductions above. Where
+// only arithmetic reads the accumulator the dead-canon pass (optimize/nan-canon.js)
+// has taken the select, and the reduction arrives bare, with these entries too.
 //
 // max/min ARE associative and commutative (exact reassociation, unlike add),
 // so vectorization is value-exact, INCLUDING NaN: f64x2.max/min propagate a

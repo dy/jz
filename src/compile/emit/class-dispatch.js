@@ -11,7 +11,8 @@
 
 import { OBJECT_SCHEMA_HI_MASK, objectSchemaGuardHex } from '../../../layout.js'
 import { ctx, inc } from '../../ctx.js'
-import { createFunction, frameRoots } from '../../function.js'
+import { createFunction } from '../../function.js'
+import { memberUses } from '../../member-uses.js'
 import { CLASS_T, ACCESSOR_GET, ACCESSOR_SET, MUTATE_OPS } from '../../ast.js'
 import { asF64, asI64, boolBoxIR, isNullish, isUndef, ptrOffsetIR, rawBigInt, temp, throwTypeErrorIR, typed, MAX_CLOSURE_ARITY } from '../../ir.js'
 import { valTypeOf } from '../../kind.js'
@@ -222,42 +223,6 @@ export function classInstanceof(a, brand) {
   if (!sids.length || notAnObject(a)) return typed(['block', ['result', 'i32'], ['drop', asF64(emit(a))], ['i32.const', 0]], 'i32')
   const test = sids.map(sid => typed(tagEq(t, sid), 'i32')).reduce((x, y) => typed(['i32.or', x, y], 'i32'))
   return typed(['block', ['result', 'i32'], ['local.set', `$${t}`, asF64(emit(a))], test], 'i32')
-}
-
-/**
- * The member names the program uses, by position: called (`o.m(…)`), read
- * (`o.m`, `o["m"]`), stored (`o.m = v`), defined (literal/class fields and methods).
- * One census per compile, also used to activate coercion helpers.
- */
-export function memberUses() {
-  if (ctx.transform.memberUses) return ctx.transform.memberUses
-  const called = new Set(), read = new Set(), written = new Set(), defined = new Set()
-  const define = name => {
-    defined.add(name)
-    if (typeof name === 'string' && isAccessorSlot(name))
-      defined.add(name.slice(0, -ACCESSOR_GET.length))
-  }
-  // `o.m` and `o["m"]` name the member alike
-  const memberOf = (n) => !Array.isArray(n) ? null
-    : (n[0] === '.' || n[0] === '?.') && typeof n[2] === 'string' ? n[2]
-    : n[0] === '[]' && Array.isArray(n[2]) && (n[2][0] === 'str' || n[2][0] == null) && typeof n[2][1] === 'string' ? n[2][1] : null
-  const walk = (n) => {
-    if (!Array.isArray(n)) return
-    const op = n[0], m = n.length > 1 ? memberOf(n[1]) : null
-    if (op === ':' && typeof n[1] === 'string') define(n[1])
-    // a call through a computed key, or an optional call, reads the member as a value first
-    if ((op === '()' || op === '?.()') && m != null) { (n[1][0] === '[]' || op === '?.()' ? read : called).add(m); walk(n[1][1]); for (let i = 2; i < n.length; i++) walk(n[i]); return }
-    if (MUTATE_OPS.has(op) && m != null) { written.add(m); if (op !== '=') read.add(m); walk(n[1][1]); for (let i = 2; i < n.length; i++) walk(n[i]); return }
-    const own = memberOf(n)
-    if (own != null) { read.add(own); walk(n[1]); return }
-    for (let i = 1; i < n.length; i++) walk(n[i])
-  }
-  for (const f of ctx.funcs.list) for (const r of frameRoots(f)) walk(r)
-  walk(ctx.module.entryInit)
-  for (const init of ctx.module.moduleInits ?? []) walk(init)
-  for (const props of ctx.schema.list) for (const prop of props) define(prop)
-  for (const entry of classes()?.values() ?? []) for (const name of entry.methods.keys()) define(name)
-  return ctx.transform.memberUses = { called, read, written, defined }
 }
 
 /** `['__own', r, ['str', prop]]`: whether `r` carries an own property `prop` where the

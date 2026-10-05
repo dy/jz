@@ -3894,6 +3894,39 @@ test('for-bound snapshot: a mutating call in the body still re-reads the bound',
 // trees compute in i32 with no trunc/Infinity guard. `/`/`%` narrow with const
 // divisors (`/` only at the ToInt32 root; `%` peels faithful converts at emit).
 
+// ---- nanCanon: a canonical-NaN step only arithmetic reads is its value (optimize/nan-canon.js) ----
+const SIGN_SELECT_SRC = `const hs = new Int32Array(8), xs = new Float64Array(8)
+  export let set = (i, h, x) => { hs[i] = h; xs[i] = x }
+  const grad = (h, x, y) => { const u = (h & 1) === 0 ? x : -x; const v = (h & 2) === 0 ? y : -y; return u + v }
+  export let sum = (n) => { let s = 0.0; for (let i = 0; i < n; i++) s = s + grad(hs[i], xs[i], xs[i] * 0.5); return s }`
+
+test('nanCanon: a sign-select through a const local adds without its canon', () => {
+  // The emitter folds a negation's NaN to the canonical pattern; through `u` the
+  // sum cannot strip it at the consumer. Every read of `u` is a sum's operand,
+  // which propagates any NaN alike, so the pass takes the negation as the value.
+  const m = jz(SIGN_SELECT_SRC, { optimize: 'speed' }).exports
+  const hs = [0, 1, 2, 3, 1, 2], xs = [1.5, -2, 3.25, NaN, 0.5, -0]
+  for (let i = 0; i < hs.length; i++) m.set(i, hs[i], xs[i])
+  const js = (n) => { let s = 0; for (let i = 0; i < n; i++) { const h = hs[i], x = xs[i], y = x * 0.5; s += ((h & 1) === 0 ? x : -x) + ((h & 2) === 0 ? y : -y) } return s }
+  for (const n of [0, 3, 5, 6]) ok(Object.is(m.sum(n), js(n)), `${n}: ${m.sum(n)} vs ${js(n)}`)
+  if (onKernel()) return
+  const canons = (opt) => (compile(SIGN_SELECT_SRC, { optimize: opt, wat: true }).match(/select\s*\(f64\.const nan/g) || []).length
+  const on = canons({ level: 'speed' }), off = canons({ level: 'speed', nanCanon: false })
+  ok(on <= off - 4, `the four negations' canons are gone (${on} canons, ${off} without the pass)`)
+})
+
+test('nanCanon: a negation whose value escapes keeps its canon', () => {
+  // A result leaves the function: its consumer may compare bits (`typeof`, `===`
+  // on a value of unknown kind), so a sign-flipped NaN must not reach it.
+  const src = `export let neg = (x) => { const u = -x; return u }`
+  const m = jz(src, { optimize: 'speed' }).exports
+  for (const x of [1, -0, 0, NaN, Infinity]) ok(Object.is(m.neg(x), -x), `neg(${x})`)
+  if (onKernel()) return
+  const canons = (opt) => (compile(src, { optimize: opt, wat: true }).match(/select\s*\(f64\.const nan/g) || []).length
+  is(canons({ level: 'speed' }), canons({ level: 'speed', nanCanon: false }), 'the canon stays')
+  ok(canons({ level: 'speed' }) >= 1, 'and there is one')
+})
+
 test('narrowI32: const-divisor div/mod/mul loops run pure i32', () => {
   for (const stmt of [
     's = (s + ((a[i] / 4) | 0)) | 0',

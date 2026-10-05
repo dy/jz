@@ -1220,3 +1220,97 @@ test('integral loops: a version placed as the one statement of a block stays a b
     for (const limit of [5, 100, 150, 294, 295, 310]) ok(Object.is(m.main(limit), js.main(limit)), `${limit} at ${optimize}: ${m.main(limit)} vs ${js.main(limit)}`)
   }
 })
+
+test('integral loops: an index shifted to the word\'s extreme is no element of the proof, so no guard that cannot hold', () => {
+  // A box blur reads `src[(row + xi) << 2]`: the shifted index spans every
+  // int32, so a test of its ends against the length (`-2147483648 >= 0`) fails
+  // on every run and left the nest as written, cold. The element stays outside
+  // the hull proof; the guard holds the dimensions and the copy runs.
+  const src = `export let hblur = (src, dst, w, h, r) => {
+      const win = 2 * r + 1
+      for (let y = 0; y < h; y++) {
+        const row = y * w
+        for (let x = 0; x < w; x++) {
+          let sr = 0, sg = 0
+          for (let k = -r; k <= r; k++) {
+            let xi = x + k
+            if (xi < 0) xi = 0
+            else if (xi >= w) xi = w - 1
+            const p = (row + xi) << 2
+            sr += src[p]; sg += src[p + 1]
+          }
+          const o = (row + x) << 2
+          dst[o] = (sr / win) | 0
+          dst[o + 1] = (sg / win) | 0
+        }
+      }
+      return dst[5]
+    }`
+  const js = oracle(src)
+  const image = (w, h) => { const a = new Uint8Array(w * h * 4); for (let i = 0; i < a.length; i++) a[i] = (i * 37 + 11) & 255; return a }
+  for (const optimize of levels(0, 2, 'speed')) {
+    const m = jz(src, { optimize }).exports
+    for (const [w, h, r] of [[8, 4, 1], [16, 3, 4], [5, 5, 0]]) {
+      const a = image(w, h), b = new Uint8Array(a.length), c = image(w, h), d = new Uint8Array(c.length)
+      is(m.hblur(a, b, w, h, r), js.hblur(c, d, w, h, r), `${w}×${h} r=${r} at ${optimize}`)
+      is(Array.from(b), Array.from(d), `image ${w}×${h} r=${r} at ${optimize}`)
+    }
+  }
+  if (belowOpt(2)) return
+  const body = planned(src, 'hblur')
+  is(countNodes(body, n => Array.isArray(n) && n[0] === '>=' && Array.isArray(n[1]) && n[1][0] == null && n[1][1] < 0), 0, 'no test of a negative literal end')
+  // (the guard holds for integer dimensions: the copy runs, the trap never fires)
+  const m = jz(src, { optimize: { level: 3, coldTrap: true } }).exports
+  const a = image(8, 4), b = new Uint8Array(a.length)
+  is(m.hblur(a, b, 8, 4, 1), js.hblur(image(8, 4), new Uint8Array(a.length), 8, 4, 1), 'the copy runs for integer dimensions')
+})
+
+test('integral loops: a loop over integer parameters and a peel\'s integer segment ends runs as written', () => {
+  // The dimensions enter from immutable integer module bindings (`hblur(img, tmp,
+  // W, H, R)` under `const W = 512`), the segment ends are the least and most of
+  // them: every bound an integer by its writes. The loop as written runs over
+  // integers already; a copy would guard what the emitter proves, and leave the
+  // loop as written cold beside it. With no version, the channel lift takes the
+  // interior segment.
+  const src = `const W = 64, H = 8, R = 2
+    const hblur = (src, dst, w, h, r) => {
+      const win = 2 * r + 1
+      for (let y = 0; y < h; y++) {
+        const row = y * w
+        for (let x = 0; x < w; x++) {
+          let sr = 0, sg = 0, sb = 0, sa = 0
+          for (let k = -r; k <= r; k++) {
+            let xi = x + k
+            if (xi < 0) xi = 0
+            else if (xi >= w) xi = w - 1
+            const p = (row + xi) << 2
+            sr += src[p]; sg += src[p + 1]; sb += src[p + 2]; sa += src[p + 3]
+          }
+          const o = (row + x) << 2
+          dst[o] = (sr / win) | 0
+          dst[o + 1] = (sg / win) | 0
+          dst[o + 2] = (sb / win) | 0
+          dst[o + 3] = (sa / win) | 0
+        }
+      }
+    }
+    export let main = () => {
+      const img = new Uint8Array(W * H * 4), out = new Uint8Array(W * H * 4)
+      for (let i = 0; i < img.length; i++) img[i] = (i * 37 + 11) & 255
+      hblur(img, out, W, H, R)
+      let sum = 0
+      for (let i = 0; i < out.length; i++) sum = (sum * 31 + out[i]) | 0
+      return sum
+    }`
+  const js = oracle(src)
+  for (const optimize of levels(0, 2, 'speed')) is(jz(src, { optimize }).exports.main(), js.main(), `at ${optimize}`)
+  if (belowOpt(2)) return
+  const body = planned(src, 'hblur')
+  // (the segments ending at the least of the radius and the width, and at the width, run as written;
+  // the interior's end is a difference of them, which the emitter may widen: that segment takes a copy)
+  const counterOf = (n) => n[0] === 'for' && Array.isArray(n[1]) && n[1][0] === 'let' && Array.isArray(n[1][1]) ? n[1][1][1] : null
+  is(countNodes(body, n => Array.isArray(n) && counterOf(n) === 'y' && n.cold === true), 0, 'the nest over the dimensions runs as written')
+  is(countNodes(body, n => Array.isArray(n) && n[0] === 'while' && n.cold === true), 1, 'one segment, under a difference, takes a copy')
+  // (the kernel is spliced into its one caller: the lift's loop is in the module)
+  ok(/__bmpx\d/.test(wat(src, { optimize: 'speed' })), 'the channel lift takes the interior segment')
+})

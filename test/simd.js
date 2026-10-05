@@ -3820,6 +3820,38 @@ test('conv-column i16x8 - int8 conv2d strip-mines the output column, bit-exact +
   ok(!/i16x8\.mul/.test(wat(CONV_SRC, CV_NO)), 'outerStrip:false leaves it scalar (isolates the pass)')
 })
 
+// The same conv over arrays its caller passes: an element read off a parameter
+// may be a box, so the emitter follows each sum with its canonical-NaN steps
+// (`t = acc + p; u = select(nan, t, t != t); acc = select(nan, u, u != u)`).
+// Only the next sum and the requantization read the accumulator, so the steps
+// are dead (optimize/nan-canon.js) and the lift reads the chain as the sum.
+const CONV_PARAM_SRC = `const CIN=3, COUT=2, H=9, W=13, K=3, OH=7, OW=11, SHIFT=6
+  const conv = (inp, wt, bias, out) => {
+    for (let oc = 0; oc < COUT; oc++) { const b = bias[oc]; const ocBase = oc * OH * OW
+      for (let oy = 0; oy < OH; oy++) { for (let ox = 0; ox < OW; ox++) { let acc = b
+        for (let ic = 0; ic < CIN; ic++) { const inCh = ic * H * W; const wCh = ((oc * CIN) + ic) * K * K
+          for (let ky = 0; ky < K; ky++) { const irow = inCh + (oy + ky) * W + ox; const wrow = wCh + ky * K
+            for (let kx = 0; kx < K; kx++) acc += inp[irow + kx] * wt[wrow + kx] } }
+        let q = acc >> SHIFT; if (q < 0) q = 0; if (q > 127) q = 127; out[ocBase + oy * OW + ox] = q } } } }
+  export let run = (n) => {
+    const inp = new Int8Array(CIN * H * W), wt = new Int8Array(COUT * CIN * K * K), bias = new Int32Array(COUT), out = new Uint8Array(COUT * OH * OW)
+    let x = 0x1234abcd | 0
+    for (let i = 0; i < inp.length; i++) { x = (Math.imul(x, 1103515245) + 12345) | 0; inp[i] = x >> 24 }
+    for (let i = 0; i < wt.length; i++) { x = (Math.imul(x, 1103515245) + 12345) | 0; wt[i] = x >> 24 }
+    for (let i = 0; i < bias.length; i++) { x = (Math.imul(x, 1103515245) + 12345) | 0; bias[i] = (x >> 20) & 255 }
+    let h = 0x811c9dc5 | 0
+    for (let it = 0; it < n; it++) { conv(inp, wt, bias, out); for (let i = 0; i < out.length; i++) h = ((h ^ out[i]) * 0x01000193) | 0; inp[it % inp.length] = inp[it % inp.length] + 1 }
+    return h >>> 0
+  }`
+
+test('conv-column i16x8 - a conv over parameter arrays strip-mines through the sums\' canonical-NaN steps', () => {
+  const on = runVec(CONV_PARAM_SRC, CV_ON), no = runVec(CONV_PARAM_SRC, CV_NO)
+  for (const n of [1, 3, 7]) is(on.run(n) >>> 0, no.run(n) >>> 0, `${n} passes bit-exact vs scalar`)
+  if (onKernel()) return
+  const w = wat(CONV_PARAM_SRC, CV_ON)
+  ok(/i16x8\.mul/.test(w) && /v128\.load64_zero/.test(w), `the column loop vectorizes (${(w.match(/i16x8\.mul/g) || []).length} i16x8.mul)`)
+})
+
 // Mirror-lane store: `inp[N−k] = lm` inside a lane-mapped loop targets
 // contiguous DESCENDING addresses — one v128 store at N−k−1 with the f64
 // lanes swapped (i8x16.shuffle). Unlocks the f64x2 transcendental twins on

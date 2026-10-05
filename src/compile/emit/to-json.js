@@ -12,7 +12,7 @@
  */
 import { ctx } from '../../ctx.js'
 import { createFunction } from '../../function.js'
-import { memberUses } from './class-dispatch.js'
+import { memberUses } from '../../member-uses.js'
 import { defineOwnMethodOps } from './own-method.js'
 
 /** `(value, key) → value`, the boxed ABI: `key` the property name or array index. */

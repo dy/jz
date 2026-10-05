@@ -1198,9 +1198,10 @@ test('cursor guards take the exact extent of a read before the round\'s advance'
         const cursorFirst = extent[1]?.[0] === 'local.get' && /tvm\d+$/.test(extent[1][1])
         const cursor = cursorFirst ? extent[1] : extent[2], rounds = cursorFirst ? extent[2] : extent[1]
         is(offset(rounds), advance - 1, advance ? 'a read after the advance: one round more' : 'a read before the advance: the rounds gone by (ceil(n) - 1)')
+        // (the cursor itself, or the loop copy's word of it, which a literal entry declares without a conversion)
         const cursorDefs = definitions.get(cursor[1]) || []
-        ok(cursorDefs.length > 0 && cursorDefs.every(v => JSON.stringify(v).includes('["local.get","$k"]')),
-          'the extent starts at the original cursor')
+        const readsCursor = v => { const t = JSON.stringify(v); return t.includes('["local.get","$k"]') || /\["local\.get","\$k[^"]*int\d+"\]/.test(t) }
+        ok(cursorDefs.length > 0 && cursorDefs.every(readsCursor), 'the extent starts at the original cursor')
       }
     }
   }

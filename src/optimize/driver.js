@@ -13,6 +13,7 @@ import { DBG_INVARIANTS } from '../debug.js'
 import { ctx } from '../ctx.js'
 import { verifyFn } from '../ir.js'
 import { recursionUnroll } from './recurse.js'
+import { stripDeadCanons } from './nan-canon.js'
 import { forwardStores } from './forward-store.js'
 import { vectorizeLaneLocal } from './vectorize/index.js'
 import { hoistPtrType, hoistPtrOffset, hoistAddrBase } from './cse-address.js'
@@ -72,6 +73,8 @@ export function optimizeFunc(fn, cfg, globalTypes, reachableWrites) {
   // (CSE, fused rewrite, LICM temp-splitting) strips array properties — the tag
   // only survives untouched nodes.
   if (!cfg || cfg.foldStaticArrReads !== false) foldStaticConstArrayReads(fn)
+  // Before the lifts read the sums: a canon only arithmetic reads is its value.
+  if (!cfg || cfg.nanCanon !== false) stripDeadCanons(fn)
   // Recursion-unrolling runs first in 'pre': self-calls are still clean `call`
   // nodes (watr's inliner hasn't reshaped them) and the freshly-inlined body then
   // rides every pass below (LICM, fold, sort). Speed-tier only; 'pre' only (so the

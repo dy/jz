@@ -18,7 +18,7 @@ import print from 'watr/print'
 import { throwErrorWat } from './core/error-object.js'
 import { TOMB_NAN, TRUE_NAN, FALSE_NAN } from '../src/ir/sentinels.js'
 import { replacementHasPatterns } from './string.js'
-import { memberUses } from '../src/compile/emit/class-dispatch.js'
+import { memberUses } from '../src/member-uses.js'
 
 const fullUnicode = flags => flags.includes('u') || flags.includes('v')
 const nextIndex = (str, index, unicode) => {

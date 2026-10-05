@@ -21,7 +21,7 @@ import { typed, asF64, asI64, ptrTypeEq, boxedPtrTypeEq, UNDEF_NAN, TOMB_NAN, TO
 import { emit } from '../../bridge.js'
 import { errorCodeLiteral, ERR } from '../../../err-codes.js'
 import { stringHash } from '../../string-data.js'
-import { memberUses } from './class-dispatch.js'
+import { memberUses, definesToPrimitive } from '../../member-uses.js'
 
 const T = '__jz_tp_'
 /** Hint string: `toString`, then `valueOf`. */
@@ -42,8 +42,7 @@ const classesWith = (name) => classes()
  * source member accesses, so the shared census remains valid after synthesis. */
 export function synthesizeToPrimitive() {
   if (ctx.funcs.list.some(f => f.name === TO_PRIM_STR)) return
-  const { defined, written } = memberUses()
-  if (!['toString', 'valueOf'].some(name => defined.has(name) || written.has(name))) return
+  if (!definesToPrimitive(memberUses())) return
   // Preserve absence as TOMB: an own undefined/null/non-callable value
   // shadows the class/prototype method just as a callable own property does.
   ctx.core.emit.__tp_get = (r, propLit) => {

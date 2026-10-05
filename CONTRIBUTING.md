@@ -3426,6 +3426,25 @@ in a local: the fact holds from its write until it or `x` is written, ends at
 a loop's head and after any construct a branch may leave, and each arm of an
 `if` starts from what held after the condition.
 
+A Number's canonical-NaN step only arithmetic reads is its value
+(`src/optimize/nan-canon.js`): the emitter folds the NaN a negation, a root or
+a sum may produce to the one pattern `===` and `typeof` read as a number, and
+strips the fold where it links the consumer itself (`stripCanon`); through a
+local (`const u = h & 1 ? x : -x; … u + v`, a sum's accumulator the next sum
+reads) the link is lost. The pass follows each canon's value up through the
+arms of a conditional, a block's result, a unary operator and a
+reinterpretation to its consumer, or into a local every read of which flows so
+too: an f64 arithmetic operator propagates every NaN alike and is canonical
+where it escapes, a comparison answers alike, a saturating truncation yields
+zero. A value that reaches a store, a call or a return keeps its canon.
+
+Before emission, whether an operator over a value of unknown kind may run user
+code is the source's census (`src/member-uses.js`): a program that defines or
+stores no `toString`/`valueOf` converts through none, so the plan's inliner
+hoists and splices a leaf whose temporaries the summary has not yet typed
+(`ctx.transform.userConversions`, taken at the plan's start; the emitter's own
+answer is the conversion helpers it synthesized, `ctx.funcs.runtimeRoots`).
+
 The export boundary is numeric for a parameter used only as a typed-array
 index or stored into a typed array (README, "Host boundary"): the usage scan
 (`src/compile/param-numeric.js`) counts those uses as numeric, reading the

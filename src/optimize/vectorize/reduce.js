@@ -211,7 +211,7 @@ function tryReduceReassoc(bl, fnLocals, freshIdRef, multiAcc = false) {
     } else {
       if (rhs.length !== 3) return null
       opName = rhs[0]
-      reduceEntry = REDUCE_OP_LOOKUP.get(opName)
+      reduceEntry = plainReduceEntry(opName)
       if (!reduceEntry || !isLocalGet(rhs[1], accName)) return null
       exprNode = rhs[2]
     }
@@ -605,6 +605,11 @@ function tryReduceBitExact(bl, fnLocals, freshIdRef) {
 // (`tryReduceBitExact` — today's `tryMapReduceVectorize`) only when the first bails. Same
 // dispatch order as before the merge (`tryReduceVectorize(...) ?? tryMapReduceVectorize(...)`),
 // so this is a pure entry-point consolidation — behavior is unchanged by construction.
+// A single-statement reduction's entry: the plain operators, and a min/max whose
+// canon the dead-canon pass took (optimize/nan-canon.js) where only arithmetic
+// reads the accumulator; the merge then needs no canon of its own (canonC null).
+const plainReduceEntry = (opName) => REDUCE_OP_LOOKUP.get(opName) ?? REDUCE_CANON[opName] ?? null
+
 export function tryReduce(bl, fnLocals, freshIdRef, multiAcc = false) {
   return tryReduceReassoc(bl, fnLocals, freshIdRef, multiAcc) ?? tryReduceBitExact(bl, fnLocals, freshIdRef)
 }
@@ -684,7 +689,7 @@ export function tryGeneralReduce(bl, fnLocals, freshIdRef, multiAcc = false) {
     } else {
       if (rhs.length !== 3) return null
       opName = rhs[0]
-      reduceEntry = REDUCE_OP_LOOKUP.get(opName)
+      reduceEntry = plainReduceEntry(opName)
       if (!reduceEntry || !isLocalGet(rhs[1], accName)) return null
       exprNode = rhs[2]
     }

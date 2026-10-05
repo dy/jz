@@ -77,8 +77,19 @@
  * hull is none, rather than guarded by a test that holds for a width at most
  * zero and leaves the loop as written, cold. The guard tests every hull's ends
  * and every product's; the copy writes each product as an `imul`, exact
- * there. The typed-bounds versioning then reads an affine index of words, and
+ * there. An index whose hull reaches the extreme (`(row + xi) << 2`) is no
+ * element of the proof: a test of it against the length would hold on no run.
+ * The typed-bounds versioning then reads an affine index of words, and
  * proves a word of the copy in range, which narrows its arithmetic.
+ *
+ * A parameter every call of the program's own passes an integer of no name,
+ * or an immutable integer module binding (`hblur(img, tmp, W, H, R)` under
+ * `const W = 512`), is an integer already; so is a local every write of which
+ * selects among such (`r < w ? r : w`, a peel's segment end), which the emitter
+ * holds to an int32 as written. A loop under a bound of that kind takes no
+ * copy for it: the copy would guard what the emitter proves, and leave the
+ * loop as written cold beside it. A sum or difference of integers the emitter
+ * may widen, so a bound of one still takes the copy's word.
  *
  * A walk over links (`let j = head[c]; while (j >= 0) { … j = next[j] }` over
  * int32 arrays, the name dead after the loop) is a word of the copy too: every
@@ -423,7 +434,18 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
     if (!func) return false
     const at = func.sig.params.findIndex(p => p.name === n)
     if (at < 0 || !sites.length || isExported(func) || programFacts.addressTakenNames.has(func.name) || func.defaults?.[n] != null) return false
-    return sites.every(cs => { const found = new Set(); return at < cs.argList.length && integral(cs.argList[at], found) && !found.size })
+    return sites.every(cs => { const found = new Set(); return at < cs.argList.length && integral(cs.argList[at], found) && [...found].every(x => moduleInt(x, cs)) })
+  }
+  // (an argument of an immutable integer module binding the caller leaves unbound, `hblur(img, tmp, W, H, R)` under `const W = 512`: an integer by its value)
+  const callerBindings = new Map()
+  const moduleInt = (n, cs) => {
+    const g = ctx.scope.globals.get(n)
+    if (!g || g.mut || !Number.isInteger(g.init)) return false
+    const caller = cs.callerFunc
+    if (!caller) return true
+    let bound = callerBindings.get(caller)
+    if (!bound) { bound = new Set((caller.sig?.params ?? []).map(p => p.name)); if (caller.body) collectBindings(caller.body, bound); callerBindings.set(caller, bound) }
+    return !bound.has(n)
   }
   // (a parameter some call passes a visible fraction: a float element, a quotient, `0.95`)
   const fractionalEntry = (n, fractional) => {
@@ -484,6 +506,24 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
       if (params.has(n) ? !integralEntry(n) : values.length === 0) return false
       return values.every(v => v !== null && integral(v, found, intArray)) && [...found].every(x => already(x, seen))
     }
+    // a name the emitter holds to an int32 as written: a parameter every call passes an
+    // integer of none, a local every write of which selects among such (a peel's segment
+    // end, `r < w ? r : w`) or is an int32 by construction; a sum or difference of them
+    // it may widen, and a bound of one takes the copy's word
+    const int32Held = (n, seen = new Set()) => {
+      if (seen.has(n)) return true
+      seen.add(n)
+      if (params.has(n)) return integralEntry(n)
+      const values = bodyWrites.get(n) ?? NO_WRITES
+      return values.length > 0 && values.every(v => selects(v, seen))
+    }
+    const selects = (e, seen) => typeof e === 'string' ? int32Held(e, seen)
+      : !Array.isArray(e) ? false
+      : e[0] == null ? Number.isInteger(e[1]) && e[1] >= I32_MIN && e[1] <= I32_MAX
+      : e[0] === '?:' && e.length === 4 ? selects(e[2], seen) && selects(e[3], seen)
+      : e[0] === '()' && e.length === 3 && (e[1] === 'math.min' || e[1] === 'math.max') && e[2]?.[0] === ',' && e[2].length === 3 ? selects(e[2][1], seen) && selects(e[2][2], seen)
+      : e[0] === '()' && e.length === 2 ? selects(e[1], seen)
+      : BITWISE.has(e[0]) || (e[0] === '.' && e[2] === 'length') || (e[0] === '[]' && e.length === 3 && intArray(e[1]))
     // a name the summary knows holds no number (an object key) is never an int32
     const mayBeNumber = (n) => { const k = view?.kindOfExpr(unrenamed(n)); return k == null || hasTag(k, K.NUMBER) || tagOf(core(k)) === K.ANY }
     const isNumberKind = (n) => { const k = view?.kindOfExpr(unrenamed(n)); return k != null && k !== 0 && tagOf(core(k)) === K.NUMBER && !hasTag(k, K.ABSENT) && !hasTag(k, K.NULLISH) }
@@ -551,7 +591,7 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
       if (loop[2][1] === counter && terms &&
           !captured.has(counter) && !writesIn(loop[4]).has(counter) && init?.[0] == null &&
           range && range.test[0] >= -2147483648 && range.test[1] <= 2147483647 &&
-          !alreadyBounded && !intExprRange(n) && !(typeof n === 'string' && integralEntry(n)))
+          !alreadyBounded && !intExprRange(n) && !(typeof n === 'string' && int32Held(n)))
         counterBound = { name: n, terms, bound, comparison, testAt: 2, min: -2147483648 - Math.min(0, adjust), max: 2147483647 - Math.max(0, adjust),
           // (the trips: a literal start, a unit step up)
           trip: up && Number.isInteger(init[1]) && (COUNTS.has(loop[3]?.[0]) || loop[3]?.[0] === 'postfix' && COUNTS.has(loop[3][1]?.[0]) || loop[3]?.[0] === '+=' && loop[3][2]?.[0] == null && loop[3][2][1] === 1) && !/^-/.test(loop[3][0] ?? loop[3][1]?.[0]) ? { n, adj: inclusive ? 1 : 0, entry: init[1] } : null }
@@ -562,7 +602,7 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
     if (loop[0] === 'while' && (loop[1]?.[0] === '<' || loop[1]?.[0] === '<=')) {
       const counter = loop[1][1], n = loop[1][2], inclusive = loop[1][0] === '<='
       const terms = stableTerms(n)
-      if (typeof counter === 'string' && outerOk(counter) && mayBeNumber(counter) && terms && !intExprRange(n)) {
+      if (typeof counter === 'string' && outerOk(counter) && mayBeNumber(counter) && terms && !intExprRange(n) && !(typeof n === 'string' && int32Held(n))) {
         const advance = maxAdvanceBudget(loop[2], counter, { constInt: constIntExpr, evRange: intExprRange, closureWrites: captured, MUTATE_OPS })
         if (advance > 0 && advance <= 2147483647) {
           const rounded = ['()', inclusive ? 'math.floor' : 'math.ceil', n]
@@ -643,7 +683,8 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
       const ns = boundTerms(trip.n)
       if (!ns || !ns.every(x => !loopWrites.has(x) && stableBound(x))) return null
       for (const x of ns) tripNames.add(x)
-      const count = ['-', ['+', ['()', 'math.ceil', trip.n], [null, trip.adj]], [null, trip.entry]]
+      if (typeof trip.entry !== 'number') for (const x of boundTerms(Array.isArray(trip.entry) && trip.entry[0] === 'u-' ? trip.entry[1] : trip.entry) ?? []) tripNames.add(x)
+      const count = ['-', ['+', ['()', 'math.ceil', trip.n], [null, trip.adj]], typeof trip.entry === 'number' ? [null, trip.entry] : cloneNode(trip.entry)]
       return ['()', 'math.max', [',', [null, 0], count]]
     }
     const tripOfLoop = (node, p, i) => {
@@ -653,14 +694,18 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
           ? { n: node[1][2], adj: node[1][0] === '<=' ? 1 : 0, entry, counter: c } : null
       }
       if (node[0] === 'for' && node.length === 5 && node[1]?.[0] === 'let' && node[1].length === 2 && node[1][1]?.[0] === '=' &&
-          typeof node[1][1][1] === 'string' && node[1][1][2]?.[0] == null && Number.isInteger(node[1][1][2][1]) &&
+          typeof node[1][1][1] === 'string' && (node[1][1][2]?.[0] == null && Number.isInteger(node[1][1][2][1]) || stableEntry(node[1][1][2])) &&
           (node[2]?.[0] === '<' || node[2]?.[0] === '<=') && node[2][1] === node[1][1][1] && !writesIn(node[4]).has(node[1][1][1])) {
         const step = node[3]?.[0] === 'postfix' ? node[3][1] : node[3]
+        const init = node[1][1][2]
+        // (an entry of stable names is the trips' expression: `for (let k = -r; k <= r; k++)` runs 2r + 1 times)
         return (step?.[0] === '++' || step?.[0] === '+1' || step?.[0] === '+=' && step[2]?.[0] == null && step[2][1] === 1) && step[1] === node[1][1][1]
-          ? { n: node[2][2], adj: node[2][0] === '<=' ? 1 : 0, entry: node[1][1][2][1], counter: node[1][1][1] } : null
+          ? { n: node[2][2], adj: node[2][0] === '<=' ? 1 : 0, entry: init[0] == null ? init[1] : init, counter: node[1][1][1] } : null
       }
       return null
     }
+    // an entry of stable names and literals by sums, differences, products and a leading minus
+    const stableEntry = (e) => { const ns = boundTerms(Array.isArray(e) && e[0] === 'u-' && e.length === 2 ? e[1] : e); return !!ns && ns.length > 0 && ns.every(x => !loopWrites.has(x) && stableBound(x)) }
     const sum = (terms) => terms.reduce((a, b) => ['+', a, b])
     let resets = null   // the literal resets of the cursor whose advance is being read
     const stepOf = (n) => litStep(n, n[1])
@@ -731,8 +776,17 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
     const ownTrip = counterBound?.trip ?? tripOfLoop(loop, parent, idx)
     // whether `c` is declared from an integer literal anywhere in the body
     const literalDecl = (c) => some(body, n => (n[0] === 'let' || n[0] === 'var') && n.slice(1).some(d => Array.isArray(d) && d[0] === '=' && d[1] === c && Array.isArray(d[2]) && d[2][0] == null && Number.isInteger(d[2][1])))
+    // the trips as a number where their names are module constants (`for (kx < K)` under `const K = 3`)
+    const literalTrips = (e) => {
+      const sub = (n) => {
+        if (typeof n === 'string') { const g = locals.has(n) ? null : ctx.scope.globals.get(n); return g && !g.mut && typeof g.init === 'number' ? [null, g.init] : n }
+        return Array.isArray(n) ? n.map((c, i) => i ? sub(c) : c) : n
+      }
+      return e == null ? null : numOf(sub(e))
+    }
     const trips = tripsOf(ownTrip)
     const cursors = new Map(), cursorTests = [], cursorHulls = new Map(), cursorRange = new Map()
+    const cursorEntry = new Map()   // a cursor entering from one literal: the copy's word is declared from it
     // The hull `name` holds within where `list[at]` runs: a literal it was declared
     // or assigned (`let j = 0`), or the hull a version just before left it in (a
     // cursor's floor and its budget's top), with no statement between writing it.
@@ -819,13 +873,16 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
       // hull answers that itself, a reset puts the floor at the higher of the two
       const entry = global ? null : entryHull(parent, idx, c)
       // (a cursor declared from a literal is an int32 of the emitter's own where its
-      // steps are literals: a copy for its steps inside expressions would change nothing)
-      const wide = !global && !entry && !literalDecl(c)
+      // steps are literals: a copy for its steps inside expressions would change
+      // nothing; a loop of literal trips unrolls or proves its own ends at emission,
+      // where a guard per entry would only stand between its taps)
+      const wide = !global && !entry && !literalDecl(c) && literalTrips(trips) == null
       const terms = perIteration(loop[loop[0] === 'for' ? 4 : 2], c, null, 0, true, null, wide)
       const budget = trips && terms?.length ? true : false, r = budget ? null : ring(c)
       if (!budget && !r) continue
       if (refsName(loop[loop[0] === 'for' ? 2 : 1], c) || loop[0] === 'for' && refsName(loop[3], c)) continue
       const floor = resets.length ? Math.max(...resets) : null
+      if (entry && entry[0] === entry[1]) cursorEntry.set(c, entry[0])
       if (r) {
         for (const x of boundTerms(r.B)) tripNames.add(x)
         cursorTests.push(['<', c, r.B], ['<=', ['+', r.B, [null, r.k]], [null, 2147483647]])
@@ -896,7 +953,7 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
       }
       if (!ownTrip) return null
       const n = intExprRange(ownTrip.n)
-      return n ? [lit(ownTrip.entry), lit(n[1] + ownTrip.adj - 1)] : null
+      return n && typeof ownTrip.entry === 'number' ? [lit(ownTrip.entry), lit(n[1] + ownTrip.adj - 1)] : null
     }
     const env = new Map()   // name → its hull where the walk stands, null for none known
     const words = new Map(), used = new Set(), prods = [], floats = new Set()   // decl name → hull; guard names the hulls read; product hulls; names hulls read as floats
@@ -988,7 +1045,10 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
         if ((hasTag(k, K.NULLISH) || hasTag(k, K.ABSENT)) && !present.includes(e[1]) && !presentGlobals.includes(e[1])) return null
         const range = ELEMENT_RANGES[ctorOf(e[1])], ix = hullOf(e[2], ps)
         if (!range || !whole(ix)) return null
-        ps?.push(['test', ['>=', ix[0], lit(0)]], ['test', ['<', ix[1], ['.', e[1], 'length']]])
+        // (an index whose hull reaches an int32's extreme, `(row + xi) << 2`, is no element the guard can prove: no test that cannot hold)
+        if (span(ix[0])[1] < 0 || span(ix[1])[0] >= I32_MAX) return null
+        if (!(span(ix[0])[0] >= 0)) ps?.push(['test', ['>=', ix[0], lit(0)]])
+        ps?.push(['test', ['<', ix[1], ['.', e[1], 'length']]])
         return [lit(range[0]), lit(range[1])]
       }
       if (op === 'u-' && e.length === 2) { const a = hullOf(e[1], ps); return a && [neg(a[1]), neg(a[0])] }
@@ -1251,8 +1311,9 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
     if (trips) for (const c of locals) {
       if (!loopWrites.has(c) || !outerOk(c) || c === own_ || names.includes(c) || cursors.has(c) || !mayBeNumber(c) || !already(c)) continue
       if (refsName(loop[loop[0] === 'for' ? 2 : 1], c) || loop[0] === 'for' && refsName(loop[3], c)) continue
-      // (a literal entry under literal trips: ends the emitter proves itself, its storage the word already)
-      if (entryHull(parent, idx, c) && numOf(trips) != null) continue
+      // (literal trips: the emitter unrolls the loop or proves its ends itself; a
+      // guard per entry would only stand between the taps of an unrolled nest)
+      if (literalTrips(trips) != null) continue
       stepCands.set(c, { lo: 0, hi: 0 })
       for (const v of loopWrites.get(c)) if (v != null) walkAst(v, { enter: (n) => { if (n[0] === '=>') return false; for (const x of n) if (typeof x === 'string' && inner.has(x)) stepFeeds.add(x) } })
     }
@@ -1361,6 +1422,7 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
       if (atBottom == null) cursorTests.push(['>=', bottom, lit(I32_MIN)])
       if (!entry) cursorTests.push(['||', ['!==', c, lit(0)], ['>', ['/', lit(1), c], lit(0)]])
       cursorRange.set(c, [bottom, top])
+      if (entry && entry[0] === entry[1]) cursorEntry.set(c, entry[0])
       if (entry && atTop != null && atBottom != null) cursorHulls.set(c, [atBottom, atTop])
       cursors.set(c, RING)   // (no terms for a loop around: its ends are the tests' alone)
     }
@@ -1533,7 +1595,7 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
       ...conj.numberTests.map(t => t.test), ...present.map(n => ['!=', n, [null, null]]), ...presenceTests, ...innerTests, ...cursorTests, ...wordTests]
     const test = tests.length ? tests.reduce((a, b) => ['&&', a, b]) : null
     // (a counter enters as its literal; a cursor as its word, an int32 by the guard)
-    const version = ['{}', [';', ['let', ...boundDecl, ...outer.filter(n => !names.includes(n)).map(n => ['=', own.get(n), counters.includes(n) ? [null, counterBound.entry] : cursors.has(n) ? ['|', n, [null, 0]] : already(n) ? ['u+', n] : n])], copy,
+    const version = ['{}', [';', ['let', ...boundDecl, ...outer.filter(n => !names.includes(n)).map(n => ['=', own.get(n), counters.includes(n) ? [null, counterBound.entry] : cursors.has(n) ? cursorEntry.has(n) ? [null, cursorEntry.get(n)] : ['|', n, [null, 0]] : already(n) ? ['u+', n] : n])], copy,
       // what the copy wrote under a name of its own, where the body reads it after the loop
       // or a loop around runs it again (a Number every write keeps an integer is renamed too: its sum is the copy's)
       ...outer.filter(n => loopWrites.has(n) && readAfter(n)).map(n => ['=', n, own.get(n)])]]
