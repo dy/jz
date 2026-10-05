@@ -384,12 +384,24 @@ function monotoneCursorOf(idx, iv) {
  *  per-inner-iteration advance this per-outer-iteration walk cannot hull — is
  *  non-monotone or unhullable and BAILS the whole candidate (null propagates up
  *  through every sum/max on the way out). */
+/** The literal a write `n` steps `c` up by: `c++`, `c += K`, `c = c + K` / `K + c`, the last
+ *  through a ToInt32 wrap (`c = (c + K) | 0`, the idiom and the form a loop version gives
+ *  a cursor's steps); null for any other write. */
+const cursorStepOf = (n, c) => {
+  if (n[0] === '++' && n[1] === c) return 1
+  if (n[0] === '+=' && n[1] === c) return intLiteralValue(n[2])
+  if (n[0] !== '=' || n[1] !== c || !Array.isArray(n[2])) return null
+  let e = n[2]
+  if (e[0] === '|' && e.length === 3) e = intLiteralValue(e[2]) === 0 ? e[1] : intLiteralValue(e[1]) === 0 ? e[2] : e
+  if (!Array.isArray(e) || e[0] !== '+' || e.length !== 3) return null
+  return e[1] === c ? intLiteralValue(e[2]) : e[2] === c ? intLiteralValue(e[1]) : null
+}
 function maxCursorAdvance(n, c) {
   if (!Array.isArray(n)) return 0
   const op = n[0]
   if (op === '++' && n[1] === c) return 1
   if (op === '--' && n[1] === c) return null
-  if (op === '+=' && n[1] === c) { const k = intLiteralValue(n[2]); return k != null && k > 0 ? k : null }
+  if ((op === '+=' || op === '=') && n[1] === c) { const k = cursorStepOf(n, c); return k != null && k > 0 ? k : null }
   if (WRITE_OPS.has(op) && n[1] === c) return null
   if (op === 'if') {
     const [, cnd, thenB, elseB] = n
@@ -564,7 +576,7 @@ export function versionableTypedFor(init, cond, step, body, locals, entryHint = 
   // Where the body first advances a cursor, by top-level statement: a read in a
   // statement before it sees the entry value plus at most K per round gone by;
   // one in the statement of the advance, or after it, may see this round's too.
-  const advancesIn = (n, name) => { let k = 0; walkAst(n, { enter: x => { if (x[0] === '=>') return false; if ((x[0] === '++' || x[0] === '+=') && x[1] === name) k++ } }); return k }
+  const advancesIn = (n, name) => { let k = 0; walkAst(n, { enter: x => { if (x[0] === '=>') return false; if (x[1] === name && cursorStepOf(x, name) != null) k++ } }); return k }
   const cursorWriteCache = new Map()
   const cursorWriteAt = (name) => {
     if (cursorWriteCache.has(name)) return cursorWriteCache.get(name)

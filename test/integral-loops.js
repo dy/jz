@@ -1146,3 +1146,77 @@ test('integral loops: a self-call\'s argument reading its own parameter ends the
     is(m.run(4), js.run(4), `at ${optimize}`)
   }
 })
+
+test('integral loops: a stream position entering from an element steps inside an index, its coordinates by bytes and 16-bit words', () => {
+  // glyfparse's outline decode: `r` enters each glyph from an Int32Array (no
+  // literal, no hull), steps inside `stream[r++]` and by `r += 2`; `x` steps by
+  // a byte either way or by a 16-bit word. The copy holds both as words under
+  // the budget of the glyph's point count; a stream too short, an offset too
+  // far, a point count of zero run the loop as written.
+  const src = `let NG = 0, stream, off, pts
+    export let setup = (ng, len) => {
+      NG = ng; stream = new Uint8Array(len); off = new Int32Array(ng); pts = new Int32Array(ng)
+      for (let i = 0; i < len; i++) stream[i] = (i * 37 + 11) & 255
+      for (let g = 0; g < ng; g++) { off[g] = g * 9; pts[g] = 3 + (g & 3) }
+    }
+    export let poke = (g, o, n) => { off[g] = o; pts[g] = n }
+    export let scan = () => {
+      let h = 0
+      for (let g = 0; g < NG; g++) {
+        let r = off[g]
+        const np = pts[g]
+        let x = 0
+        for (let i = 0; i < np; i++) {
+          const f = stream[r++]
+          if (f & 2) { const d = stream[r++]; x = (f & 16) ? x + d : x - d }
+          else if (!(f & 16)) { x = x + (((stream[r] << 8) | stream[r + 1]) << 16 >> 16); r += 2 }
+          h = (h ^ x) | 0
+        }
+      }
+      return h
+    }`
+  const js = oracle(src)
+  for (const optimize of levels(0, 2, 'speed')) {
+    const m = jz(src, { optimize }).exports
+    for (const [ng, len] of [[8, 200], [8, 40], [1, 3], [0, 10], [4, 30]]) {
+      m.setup(ng, len); js.setup(ng, len)
+      is(m.scan(), js.scan(), `${ng} glyphs over ${len} bytes at ${optimize}`)
+    }
+    m.setup(4, 200); js.setup(4, 200)
+    for (const [g, o, n] of [[1, 2147483640, 3], [2, -5, 2], [0, 190, 6], [3, 0, 0], [3, 2.5, 2]]) {
+      m.poke(g, o, n); js.poke(g, o, n)
+      is(m.scan(), js.scan(), `glyph ${g} at ${o} with ${n} points at ${optimize}`)
+    }
+  }
+  if (belowOpt(2)) return
+  const body = planned(src, 'scan')
+  const word = (n) => Array.isArray(n) && n[0] === '=' && typeof n[1] === 'string' && Array.isArray(n[2]) && n[2][0] === '|' && Array.isArray(n[2][2]) && n[2][2][1] === 0
+  ok(countNodes(body, n => word(n) && Array.isArray(n[2][1]) && n[2][1][0] === '+' && n[2][1][1] === n[1] && Array.isArray(n[2][1][2]) && n[2][1][2][1] === 1) >= 1, 'the position steps by its word after the statement that read it')
+  ok(countNodes(body, n => word(n) && Array.isArray(n[2][1]) && n[2][1][0] === '?:') >= 1, 'the coordinate steps by its word either way')
+  ok(countNodes(body, n => Array.isArray(n) && (n[0] === 'for' || n[0] === 'while')) >= 3, 'the inner loop has its copy and its loop as written')
+})
+
+test('integral loops: a version placed as the one statement of a block stays a block', () => {
+  // A nest whose inner loop is the body of the outer one (prepare keeps it a
+  // block holding the loop): the inner version's arms go into that slot as the
+  // block's statements, not a block in a block, which reads as an object.
+  const src = `const N = 300
+    export let main = (limit) => {
+      const src = new Uint8Array(N)
+      for (let i = 0; i < N; i++) src[i] = (i * 7) & 255
+      let acc = 0, ip = 4
+      while (ip < limit) {
+        const start = ip - 3
+        for (let j = start; j <= ip - 1; j++) {
+          for (let len = 0; len < 8; len++) acc += src[j + len]
+        }
+        ip += 5
+      }
+      return acc
+    }`
+  const js = oracle(src)
+  for (const optimize of levels(0, 2, 'speed')) {
+    const m = jz(src, { optimize }).exports
+    for (const limit of [5, 100, 150, 294, 295, 310]) ok(Object.is(m.main(limit), js.main(limit)), `${limit} at ${optimize}: ${m.main(limit)} vs ${js.main(limit)}`)
+  }
+})

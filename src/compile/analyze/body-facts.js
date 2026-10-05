@@ -194,7 +194,7 @@ function computeBodyFacts(body, bodyFacts, elemOrigin, storage) {
   // never holds its declared undefined: its first assignment types it, as an
   // initializer would, and the later ones widen it. Any other bare binding may
   // be read undefined and is f64 storage.
-  const definite = definitelyAssigned(body)
+  const definite = definitelyAssigned(body), pending = new Set()   // the definite bare names this walk has not typed yet
   const valTypes = new Map()
   const arrElemSchemas = new Map()
   let arrElemSchemaSets = null  // name → Set<sid> | null — closed heterogeneous union
@@ -440,7 +440,7 @@ function computeBodyFacts(body, bodyFacts, elemOrigin, storage) {
       for (let i = 1; i < node.length; i++) {
         const a = node[i]
         // analyzeBody: bare-name decl
-        if (typeof a === 'string') { if (!locals.has(a) && !definite.has(a)) locals.set(a, 'f64'); continue }
+        if (typeof a === 'string') { if (!locals.has(a)) { if (definite.has(a)) pending.add(a); else locals.set(a, 'f64') } continue }
         if (!Array.isArray(a) || a[0] !== '=') continue
         // analyzeBody: destructuring decl — set destructured names to f64, walk rhs only
         if (typeof a[1] !== 'string') {
@@ -488,7 +488,7 @@ function computeBodyFacts(body, bodyFacts, elemOrigin, storage) {
       markEscape(name)
       markEscapeValue(rhs)
       const wt = exprType(rhs, locals)
-      if (!locals.has(name) && definite.has(name)) locals.set(name, wt)
+      if (!locals.has(name) && pending.delete(name)) locals.set(name, wt)
       else if (locals.has(name) && locals.get(name) === 'i32' && wt === 'f64') locals.set(name, 'f64')
       trackVal(name)
       trackTyped(name, rhs)
@@ -539,6 +539,9 @@ function computeBodyFacts(body, bodyFacts, elemOrigin, storage) {
   withValueOverlay(valTypes, () =>
     withTypedElemOverlay(typedElems, () => {
     walk(body)
+    // (a definite name no assignment of this body typed, one a closure assigns or
+    // none reads: declared as any other bare binding)
+    for (const a of pending) if (!locals.has(a)) locals.set(a, 'f64')
     joinReassignedTypedLens(body, n => typedElems.has(n), n => typedLens?.get(n) ?? ctx.func.typedLen?.get(n) ?? ctx.scope.globalTypedLen?.get(n) ?? null,
       (n, l) => { (typedLens ||= new Map()).set(n, l) })
     // Existing typed-read presence walks can collect scalar hulls for free.

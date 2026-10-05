@@ -643,9 +643,14 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
   }
   // These helpers use the live scan environment, but their closures belong to
   // the scan, not each repeated visit of a for-loop during fixpoint iteration.
+  // (a step written as its word, `x = (x + k) | 0`: the idiom, and the form a loop
+  // version gives a cursor's steps)
+  const unwrapped = (s) => s[0] === '=' && Array.isArray(s[2]) && s[2][0] === '|' && s[2].length === 3
+    ? (constInt(s[2][2]) === 0 ? ['=', s[1], s[2][1]] : constInt(s[2][1]) === 0 ? ['=', s[1], s[2][2]] : s) : s
   const stepDelta = (s, name) => {
     if (!Array.isArray(s)) return null
     if (s[0] === 'postfix') s = s[1]
+    s = unwrapped(s)
     if (s[0] === '++' && s[1] === name) return 1
     if (s[0] === '+=' && s[1] === name) return constInt(s[2])
     if (s[0] === '=' && s[1] === name && Array.isArray(s[2]) && s[2][0] === '+') {
@@ -712,8 +717,9 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
       }
       return out
     }
-    const directDelta = (n, name) => {
-      if (!Array.isArray(n) || n[1] !== name) return null
+    const directDelta = (n0, name) => {
+      if (!Array.isArray(n0) || n0[1] !== name) return null
+      const n = unwrapped(n0)
       if (n[0] === '++') return 1
       if (n[0] === '--') return -1
       if (n[0] === '+=' || n[0] === '-=') { const d = constInt(n[2]); return d == null ? null : n[0] === '+=' ? d : -d }

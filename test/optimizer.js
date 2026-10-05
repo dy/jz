@@ -2428,12 +2428,15 @@ test('integer === integer compares in i32 — no f64.eq widen', () => {
   const wat = foldWords(jz.compile(SRC, { wat: true }))
   const start = wat.indexOf('(func $eqcount')
   let body = wat.slice(start, wat.indexOf('\n  (func ', start + 10) + 1 || undefined)
-  // Root F versions the param-bound loops: the cold checked twin (else arm)
-  // legitimately compares f64 (a checked read is number|undefined) — the pin
-  // measures the FAST arm.
-  if (body.includes('(else')) body = body.slice(0, body.indexOf('(else'))
-  is(/f64\.eq|f64\.ne/.test(body), false, 'no f64 equality — integer operands compare in i32')
-  ok(/i32\.eq/.test(body), 'lowers to i32.eq')
+  // Root F versions the param-bound loops: the cold checked twin legitimately
+  // compares f64 (a checked read is number|undefined), and a guard between the
+  // loops tests a Number — the pin measures the fast arms: the first loop of
+  // each label (its twin, the checked copy, follows under the same label).
+  const fastLoops = [], labels = new Set()
+  walk(parseWat(body), n => { if (n[0] === 'loop' && !labels.has(n[1])) { labels.add(n[1]); fastLoops.push(n) } })
+  ok(fastLoops.length > 0, 'the loops are found')
+  is(fastLoops.reduce((k, fast) => k + count(fast, x => x[0] === 'f64.eq' || x[0] === 'f64.ne'), 0), 0, 'no f64 equality — integer operands compare in i32')
+  ok(fastLoops.some(fast => count(fast, x => x[0] === 'i32.eq') > 0), 'lowers to i32.eq')
   const ref = (() => { const a = [], b = []; for (let i = 0; i < 16; i++) { a[i] = (i * 7) & 7; b[i] = (i * 5) & 7 }
     let f = (n) => { let c = 0; for (let i = 1; i <= n; i++) if (a[i - 1] === b[i - 1]) c++; for (let i = 0; i < n; i++) if (a[i] === b[i]) c++; return c }; return f(16) + f(16) })()
   is(jz(SRC).exports.main(), ref, 'eqcount result bit-exact vs JS')

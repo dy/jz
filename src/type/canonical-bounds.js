@@ -441,7 +441,11 @@ function advanceBudget(root, name, { constInt, evRange, closureWrites, MUTATE_OP
     }
     return null
   }
-  const delta = (n) => {
+  // (a step written as its word, `x = (x + c) | 0` — the idiom, and the form a loop
+  // version gives a cursor's steps — is the step: the word's own wrap is the cursor's)
+  const unwrapped = (n) => n[0] === '=' && Array.isArray(n[2]) && n[2][0] === '|' && n[2].length === 3 ? (constInt(n[2][2]) === 0 ? ['=', n[1], n[2][1]] : constInt(n[2][1]) === 0 ? ['=', n[1], n[2][2]] : n) : n
+  const delta = (n0) => {
+    const n = unwrapped(n0)
     if (absolute) {
       if (n[0] === '++' || n[0] === '--') return 1
       let value = n[0] === '+=' || n[0] === '-=' ? n[2] : null

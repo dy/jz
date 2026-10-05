@@ -50,6 +50,15 @@
  * throw, is a cursor too: the copy steps its word and stores it back after
  * (one the loop resets before every step of it is its scratch, not a cursor:
  * its entry value, perhaps undefined, is never stepped and gets no test).
+ * A cursor entering from no literal (`let r = off[g]`, a stream position) counts
+ * a step inside a statement's expression too (`const f = stream[r++]`): the
+ * copy moves it after the statement, as a step of the word. A cursor stepped
+ * by expressions with a literal hull, up or down (`x = x + d` over a byte `d`,
+ * `x = (f & 16) ? x + d : x - d`, a 16-bit `x + (w << 16 >> 16)`), advances over
+ * one run by the sum of its steps' hulls, an arm's counted whether it runs or
+ * not: where its entry plus the least and the most of that, times the trips,
+ * fit i32, the copy steps its word, the guard testing both ends; a literal
+ * entry under literal trips needs no copy, the emitter proves such ends itself.
  *
  * A derived integer the loop declares once from the counter and from names the
  * guard holds to int32s (`rowC = y * w`, `c = rowC + x`, `xW = x === 0 ? w - 1 :
@@ -200,6 +209,11 @@ const entryStepped = (node, name, reset = false) => {
 }
 const BOUND_TESTS = new Set(['<', '<=', '>', '>='])
 const ALL_LOOPS = new Set(['for', 'while', 'do', 'for-in', 'for-of'])
+const LEAVES = new Set(['break', 'continue', 'return', 'throw'])
+/** Place an arm at `p[i]`: a block arm in a block's single-statement slot (`for (…) { for (…) … }`,
+ *  prepared as a block holding the loop) is its statement list there, not a block in a block
+ *  (which no emitter reads as a block). */
+const place = (p, i, node) => { p[i] = Array.isArray(p) && p[0] === '{}' && i === 1 && Array.isArray(node) && node[0] === '{}' ? node[1] : node }
 /** Whether every run of `body` steps `counter` up by one or more: a step
  *  (`c++`, `c += k`, k ≥ 1) among the body's own statements, every other write
  *  of it in the body a step too, and no `continue` of this loop's own (one in
@@ -650,36 +664,58 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
     const sum = (terms) => terms.reduce((a, b) => ['+', a, b])
     let resets = null   // the literal resets of the cursor whose advance is being read
     const stepOf = (n) => litStep(n, n[1])
-    // What `c` advances by over one run of `node`, as terms, or null: a step in
-    // statement position by a non-negative literal; a nested loop, its trips
-    // times its body's (a version, by the loop as written); nothing else.
-    const perIteration = (node, c, p = null, i = 0, stmt = false) => {
+    // A step of `c` inside an expression of the statement `st` (`buf[w++] = v`,
+    // `const d = a[r++]`) moves after the statement in the copy, as a step of
+    // its word (a step the word's own storage reads as its `| 0`): a
+    // declaration, an assignment or an expression statement that reads `c`
+    // nowhere else, with that one step of it.
+    const hoistableStep = (st, c) => {
+      const n = Array.isArray(st) && st[0] === 'postfix' ? st[1] : st
+      if (!Array.isArray(n) || n[0] === ';' || n[0] === '{}' || n[0] === 'if' || n[0] === 'label' || ALL_LOOPS.has(n[0]) || LEAVES.has(n[0]) || n[0] === 'switch' || n[0] === 'try') return false
+      let refs = 0, steps = 0
+      walkAst(n, { enter: (m) => {
+        if (m[0] === '=>') return false
+        for (let k = 1; k < m.length; k++) if (m[k] === c) refs++
+        if (MUTATE_OPS.has(m[0]) && m[1] === c) steps++
+      } })
+      return refs === 1 && steps === 1
+    }
+    // What `c` advances by over one run of `node`, as terms, or null: a step
+    // by a non-negative literal, a statement or (`wide`: a cursor entering from
+    // no literal, which the emitter's own cursor proofs cannot type) inside one
+    // the copy can move it after; a nested loop, its trips times its body's (a
+    // version, by the loop as written), none in its test or step; nothing else.
+    const perIteration = (node, c, p = null, i = 0, stmt = false, host = null, wide = false) => {
       if (!Array.isArray(node)) return []
       if (node[0] === '=>') return refsName(node, c) ? null : []
       const v = versions.get(node)
       if (v) {
         const t = tripsOf(v.trip)
         if (!t) return refsName(node, c) ? null : []
-        const inner = v.advances.get(c) ?? (loopWrites.has(c) ? perIteration(v.loop[v.loop[0] === 'for' ? 4 : 2], c, null, 0, true) : [])
+        const inner = v.advances.get(c) ?? (loopWrites.has(c) ? perIteration(v.loop[v.loop[0] === 'for' ? 4 : 2], c, null, 0, true, null, wide) : [])
         return inner && inner !== RING ? inner.length ? [['*', t, sum(inner)]] : [] : null
       }
       if (LOOPS.has(node[0])) {
+        // (a step in the loop's own test or step runs as often as the test does)
+        if (refsName(node[node[0] === 'for' ? 2 : 1], c) || node[0] === 'for' && refsName(node[3], c)) return null
         const t = tripsOf(tripOfLoop(node, p, i))
         if (!t) return refsName(node, c) ? null : []
-        const inner = perIteration(node[node[0] === 'for' ? 4 : 2], c, null, 0, true)
+        const inner = perIteration(node[node[0] === 'for' ? 4 : 2], c, null, 0, true, null, wide)
         if (!inner) return null
-        if (node[0] === 'for' && refsName(node[3], c)) return null
         return inner.length ? [['*', t, sum(inner)]] : []
       }
-      if (node[0] === 'postfix') return perIteration(node[1], c, p, i, stmt)
+      if (node[0] === 'postfix') return perIteration(node[1], c, p, i, stmt, host, wide)
       // (a reset to a literal: no advance, a floor the budget starts from)
       const reset = litReset(node, c)
       if (reset != null) { resets?.push(reset); return [] }
-      if (MUTATE_OPS.has(node[0]) && node[1] === c) { const k = stepOf(node); return k != null && stmt ? k ? [[null, k]] : [] : null }
+      if (MUTATE_OPS.has(node[0]) && node[1] === c) {
+        const k = stepOf(node)
+        return k != null && (stmt || wide && host != null && hoistableStep(host, c)) ? k ? [[null, k]] : [] : null
+      }
       const list = node[0] === ';' || node[0] === '{}'
       const out = []
       for (let k = 1; k < node.length; k++) {
-        const terms = perIteration(node[k], c, node, k, list)
+        const terms = perIteration(node[k], c, node, k, list, list ? node[k] : host, wide)
         if (!terms) return null
         out.push(...terms)
       }
@@ -693,6 +729,8 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
     // trips: an inner copy's, which recorded them, or a loop as written.
     // (a loop under a literal bound counts its trips too: its cursors need no guard of the bound)
     const ownTrip = counterBound?.trip ?? tripOfLoop(loop, parent, idx)
+    // whether `c` is declared from an integer literal anywhere in the body
+    const literalDecl = (c) => some(body, n => (n[0] === 'let' || n[0] === 'var') && n.slice(1).some(d => Array.isArray(d) && d[0] === '=' && d[1] === c && Array.isArray(d[2]) && d[2][0] == null && Number.isInteger(d[2][1])))
     const trips = tripsOf(ownTrip)
     const cursors = new Map(), cursorTests = [], cursorHulls = new Map(), cursorRange = new Map()
     // The hull `name` holds within where `list[at]` runs: a literal it was declared
@@ -777,13 +815,17 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
       // (a module binding every step of which follows a reset is the loop's scratch, not what it enters with)
       if (global && !entryStepped(loop[loop[0] === 'for' ? 4 : 2], c)) continue
       resets = []
-      const terms = perIteration(loop[loop[0] === 'for' ? 4 : 2], c, null, 0, true)
-      const budget = trips && terms?.length ? true : false, r = budget ? null : ring(c)
-      if (!budget && !r) continue
-      if (loop[0] === 'for' && refsName(loop[3], c)) continue
       // an int32 at entry, and not -0, with room for its advance: an entry within a
       // hull answers that itself, a reset puts the floor at the higher of the two
-      const entry = global ? null : entryHull(parent, idx, c), floor = resets.length ? Math.max(...resets) : null
+      const entry = global ? null : entryHull(parent, idx, c)
+      // (a cursor declared from a literal is an int32 of the emitter's own where its
+      // steps are literals: a copy for its steps inside expressions would change nothing)
+      const wide = !global && !entry && !literalDecl(c)
+      const terms = perIteration(loop[loop[0] === 'for' ? 4 : 2], c, null, 0, true, null, wide)
+      const budget = trips && terms?.length ? true : false, r = budget ? null : ring(c)
+      if (!budget && !r) continue
+      if (refsName(loop[loop[0] === 'for' ? 2 : 1], c) || loop[0] === 'for' && refsName(loop[3], c)) continue
+      const floor = resets.length ? Math.max(...resets) : null
       if (r) {
         for (const x of boundTerms(r.B)) tripNames.add(x)
         cursorTests.push(['<', c, r.B], ['<=', ['+', r.B, [null, r.k]], [null, 2147483647]])
@@ -961,6 +1003,11 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
         return null
       }
       if (op === '>>' && e.length === 3 && isLit(e[2]) && e[2][1] === 0) { const a = hullOf(e[1], ps); return whole(a) && fits(a) ? a : [lit(I32_MIN), lit(I32_MAX)] }
+      // (a signed shift right by k of any int32 lies within 32 - k bits: `x << 16 >> 16` is an int16)
+      if (op === '>>' && e.length === 3 && isLit(e[2]) && (e[2][1] & 31) >= 1) { const k = e[2][1] & 31; return [lit(I32_MIN >> k), lit(I32_MAX >> k)] }
+      // (a cursor stepped inside an expression, `a[r++]`: the hull its budget holds it within)
+      if (op === 'postfix' && e.length === 2 && Array.isArray(e[1]) && typeof e[1][1] === 'string' && cursors.has(e[1][1]) && litStep(e[1], e[1][1]) != null) return hullOf(e[1][1], ps)
+      if ((op === '++' || op === '+1' || op === '+=') && typeof e[1] === 'string' && cursors.has(e[1]) && litStep(e, e[1]) != null) { const a = hullOf(e[1], ps); return whole(a) ? [add(a[0], lit(litStep(e, e[1]))), add(a[1], lit(litStep(e, e[1])))] : null }
       if (op === '~' && e.length === 2) return [lit(I32_MIN), lit(I32_MAX)]
       if (op === '?:' && e.length === 4) { const a = hullOf(e[2], ps), b = hullOf(e[3], ps); return a && b ? [least(a[0], b[0]), most(a[1], b[1])] : null }
       if (e.length !== 3) return null
@@ -1168,7 +1215,6 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
       for (const t of extra) accept([t])
       absorbs.set(s, { subst, extra, rest })
     }
-    const LEAVES = new Set(['break', 'continue', 'return', 'throw'])
     const leaves = (s) => Array.isArray(s) && (LEAVES.has(s[0]) || (s[0] === ';' || s[0] === '{}') && leaves(s[s.length - 1]))
     const forget = (s) => { for (const n of writesIn(s).keys()) if (env.has(n) || inner.has(n) || outerOk(n)) env.set(n, null) }
     const join = (a, b) => {
@@ -1190,6 +1236,46 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
         wraps.push([n, 2, n[2]]); prods.push(...ps); accept([h, ...ps]); guardLeaves(leaves)
       } })
     }
+    // A cursor the loop moves by expressions with a literal hull, up or down
+    // (`x = x + d` over a byte `d`, `x -= d`, `x = (f & 16) ? x + d : x - d`, a
+    // 16-bit `x + (w << 16 >> 16)`): its advance over one run is the sum of its
+    // steps' hulls, each a statement of the body (an arm's counts whether it
+    // runs or not), and over the loop that times the trips. Where its entry
+    // plus the least and the most of that fit i32 (the guard tests both), the
+    // copy steps its word (every step a `| 0`). A step in a nested loop, in the
+    // loop's test, or inside another expression ends the candidacy. Each step
+    // reads the walk's hulls where it stands: an element it reads is a word
+    // whose presence the guard tests.
+    const stepCands = new Map()   // name → { lo, hi }: the advance so far over one run
+    const stepFeeds = new Set()   // the names the candidates' steps read: declared once from an element, words of the copy
+    if (trips) for (const c of locals) {
+      if (!loopWrites.has(c) || !outerOk(c) || c === own_ || names.includes(c) || cursors.has(c) || !mayBeNumber(c) || !already(c)) continue
+      if (refsName(loop[loop[0] === 'for' ? 2 : 1], c) || loop[0] === 'for' && refsName(loop[3], c)) continue
+      // (a literal entry under literal trips: ends the emitter proves itself, its storage the word already)
+      if (entryHull(parent, idx, c) && numOf(trips) != null) continue
+      stepCands.set(c, { lo: 0, hi: 0 })
+      for (const v of loopWrites.get(c)) if (v != null) walkAst(v, { enter: (n) => { if (n[0] === '=>') return false; for (const x of n) if (typeof x === 'string' && inner.has(x)) stepFeeds.add(x) } })
+    }
+    const endCands = (node) => { if (stepCands.size) for (const n of writesIn(node).keys()) stepCands.delete(n) }
+    // the change a write makes to `c`: a literal step, `c + e`, `e + c`, `c - e`, a conditional of such, `c` itself
+    const delta = (rhs, c) => rhs === c ? lit(0) : !Array.isArray(rhs) ? null
+      : rhs[0] === '+' && rhs.length === 3 ? rhs[1] === c ? rhs[2] : rhs[2] === c ? rhs[1] : null
+      : rhs[0] === '-' && rhs.length === 3 && rhs[1] === c ? ['u-', rhs[2]]
+      : rhs[0] === '?:' && rhs.length === 4 ? (() => { const a = delta(rhs[2], c), b = delta(rhs[3], c); return a && b ? ['?:', rhs[1], a, b] : null })() : null
+    const stepHull = (st, c) => {
+      const n = st[0] === 'postfix' ? st[1] : st
+      const k = litStep(n, c)
+      if (k != null) return [k, k]
+      if (n[0] === '--' || n[0] === '-1') return [-1, -1]
+      const e = n[0] === '+=' ? n[2] : n[0] === '-=' ? ['u-', n[2]] : n[0] === '=' ? delta(n[2], c) : null
+      if (e == null) return null
+      const ps = [], h = hullOf(e, ps)
+      if (!whole(h) || !isLit(h[0]) || !isLit(h[1]) || !ps.every(fits)) return null
+      // (a step of half a word or more, a truncation of any number: no budget of two such fits)
+      if (h[1][1] - h[0][1] >= 2 ** 31) return null
+      if (ps.length) { prods.push(...ps); accept(ps); if (ps.some(x => x[0] === 'test')) needPresence = true }
+      return [h[0][1], h[1][1]]
+    }
     let dead = false
     const step = (s) => {
       if (dead || !Array.isArray(s)) return
@@ -1197,12 +1283,14 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
       if (v || ALL_LOOPS.has(op)) {
         if (v) absorb(s, v)
         for (const n of writesIn(s).keys()) env.set(n, v?.cursorHulls.get(n) ? [lit(v.cursorHulls.get(n)[0]), lit(v.cursorHulls.get(n)[1])] : null)
+        endCands(s)
         return
       }
       if (op === ';' || op === '{}') { for (let i = 1; i < s.length; i++) step(s[i]); return }
-      if (LEAVES.has(op)) { if (s[1] != null) indexWords(s[1]); dead = true; return }
+      if (LEAVES.has(op)) { if (s[1] != null) indexWords(s[1]); endCands(s); dead = true; return }
       if (op === 'if') {
         indexWords(s[1])
+        endCands(s[1])
         const before = new Map(env)
         refine(s[1], true); step(s[2])
         const a = dead ? null : new Map(env); dead = false
@@ -1215,6 +1303,7 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
         return
       }
       if (op === 'let' || op === 'const') {
+        endCands(s)
         for (let i = 1; i < s.length; i++) {
           const d = s[i]
           if (!Array.isArray(d) || d[0] !== '=' || typeof d[1] !== 'string') { if (typeof d === 'string') env.set(d, null); continue }
@@ -1228,7 +1317,7 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
           if (trunc && h && ps.length) { if (ps.every(fits)) { prods.push(...ps); accept(ps) } else env.set(name, [lit(I32_MIN), lit(I32_MAX)]) }
           // (a word where the name would otherwise be a Number: a product in it, a word or a guarded name read, an element)
           const needs = hasProduct(e) || e[0] === '[]' || [...found].some(x => x !== counter && (names.includes(x) || words.has(x) || cursors.has(x) || used.has(x) || guardable(x) && !(locals.has(x) && !ctx.scope.globals.has(x) && already(x))))
-          if (!h || !needs || !inner.has(name) || !reaching.has(name) || captured.has(name) || loopWrites.get(name)?.length !== 1 || !mayBeNumber(name) ||
+          if (!h || !needs || !inner.has(name) || !reaching.has(name) && !stepFeeds.has(name) || captured.has(name) || loopWrites.get(name)?.length !== 1 || !mayBeNumber(name) ||
               BITWISE.has(e[0]) || !fits(h) || !ps.every(fits)) continue
           words.set(name, h); wraps.push([d, 2, e]); prods.push(...ps); accept([h, ...ps]); guardLeaves(leaves)
           if (ps.some(x => x[0] === 'test')) needPresence = true
@@ -1237,6 +1326,12 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
       }
       if (MUTATE_OPS.has(op) && typeof s[1] === 'string') {
         if (s[2] != null) indexWords(s[2])
+        const cand = stepCands.get(s[1])
+        if (cand) {
+          const h = (writesIn(s).get(s[1])?.length ?? 0) === 1 ? stepHull(s, s[1]) : null
+          if (h) { cand.lo += h[0]; cand.hi += h[1] } else stepCands.delete(s[1])
+        }
+        if (s[2] != null) for (const n of writesIn(s[2]).keys()) stepCands.delete(n)
         const cur = env.get(s[1]), k = litStep(s, s[1]), r = litReset(s, s[1])
         if (r != null) env.set(s[1], [lit(r), lit(r)])
         else if (k != null) env.set(s[1], cur ? [add(cur[0], lit(k)), add(cur[1], lit(k))] : null)
@@ -1247,12 +1342,28 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
       }
       if (op === 'postfix') return step(s[1])
       indexWords(s)
+      endCands(s)
       forget(s)
     }
     for (const n of loopWrites.keys()) env.set(n, null)
     if (typeof counter === 'string') env.set(counter, counterHull())
     for (const [c, r] of cursorRange) env.set(c, r)
     step(loop[loop[0] === 'for' ? 4 : 2])
+    // (the stepped cursors the walk kept: their ends over the loop, tested where not literal)
+    for (const [c, { lo, hi }] of stepCands) {
+      if (lo === 0 && hi === 0) continue
+      const entry = entryHull(parent, idx, c)
+      const top = hi > 0 ? ['+', entry ? lit(entry[1]) : c, ['*', trips, lit(hi)]] : entry ? lit(entry[1]) : c
+      const bottom = lo < 0 ? ['+', entry ? lit(entry[0]) : c, ['*', trips, lit(lo)]] : entry ? lit(entry[0]) : c
+      const atTop = numOf(top), atBottom = numOf(bottom)
+      if (atTop != null && atTop > I32_MAX || atBottom != null && atBottom < I32_MIN) continue
+      if (atTop == null) cursorTests.push(['<=', top, lit(I32_MAX)])
+      if (atBottom == null) cursorTests.push(['>=', bottom, lit(I32_MIN)])
+      if (!entry) cursorTests.push(['||', ['!==', c, lit(0)], ['>', ['/', lit(1), c], lit(0)]])
+      cursorRange.set(c, [bottom, top])
+      if (entry && atTop != null && atBottom != null) cursorHulls.set(c, [atBottom, atTop])
+      cursors.set(c, RING)   // (no terms for a loop around: its ends are the tests' alone)
+    }
     for (const n of used) names.push(n)
     const presenceTests = needPresence ? presentGlobals.filter(n => !present.includes(n)).map(n => ['!=', n, [null, null]]) : []
     const wordTests = [], seenTests = new Set()
@@ -1319,7 +1430,7 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
         const decls = [...kept.map(a => ['=', a, [null, 0]]), ...[...ab.subst].map(([a, n]) => ['=', a, ['|', n, [null, 0]]])]
         fast = decls.length ? ['{}', [';', ['let', ...decls], guarded]] : guarded
       }
-      p[i] = fast; swapped.push([p, i, v.asWritten])
+      place(p, i, fast); swapped.push([p, i, v.asWritten])
       return false
     } })
     // (the copy takes each derived integer and each such index as its word, every product in it an imul)
@@ -1339,24 +1450,55 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
       } })
     }
     for (const [n, i, e] of wraps) n[i] = e
-    for (const [p, i, n] of swapped) p[i] = n
+    for (const [p, i, n] of swapped) place(p, i, n)
     // (the loop as written is the other arm now: every inner version in it is
     // its loop as written too, the fast arm there would run as rarely)
     walkAst(loop, { enter: (n, p, i) => {
       if (n[0] === '=>') return false
       const v = versions.get(n)
       if (!v) return
-      p[i] = v.asWritten
+      place(p, i, v.asWritten)
       return false
     } })
     // the copy steps each cursor's word
     if (cursors.size) {
       const words = new Set([...cursors.keys()].map(c => own.get(c)))
-      const stepped = (st) => { const n = st[0] === 'postfix' ? st[1] : st; return Array.isArray(n) && words.has(n[1]) && stepOf(n) != null ? ['=', n[1], ['|', ['+', n[1], [null, stepOf(n)]], [null, 0]]] : null }
+      // (a statement stepping a word: by a literal, by an expression, a conditional of such)
+      const stepped = (st) => {
+        const n = st[0] === 'postfix' ? st[1] : st
+        if (!Array.isArray(n) || !words.has(n[1])) return null
+        if (stepOf(n) != null) return ['=', n[1], ['|', ['+', n[1], [null, stepOf(n)]], [null, 0]]]
+        if (n[0] === '--' || n[0] === '-1') return ['=', n[1], ['|', ['-', n[1], [null, 1]], [null, 0]]]
+        if (n[0] === '+=' || n[0] === '-=') return ['=', n[1], ['|', [n[0][0], n[1], n[2]], [null, 0]]]
+        if (n[0] === '=' && delta(n[2], n[1]) != null) return ['=', n[1], ['|', n[2], [null, 0]]]
+        return null
+      }
+      // (a literal step inside a statement's expression: its value there, the step after)
+      const hoisted = (st) => {
+        let found = null
+        walkAst(st, { enter: (n, p, i) => {
+          if (n[0] === '=>') return false
+          if (n[0] === 'postfix' && Array.isArray(n[1]) && words.has(n[1][1]) && litStep(n[1], n[1][1]) != null) { found = [p, i, n[1][1], litStep(n[1], n[1][1]), n[1][1]]; return false }
+          if (MUTATE_OPS.has(n[0]) && words.has(n[1]) && litStep(n, n[1]) != null && p !== undefined) found = [p, i, n[1], litStep(n, n[1]), ['+', n[1], [null, litStep(n, n[1])]]]
+        } })
+        if (!found) return null
+        const [p, i, w, k, value] = found
+        p[i] = value
+        return ['=', w, ['|', ['+', w, [null, k]], [null, 0]]]
+      }
+      // (a statement of a list, an arm of an `if`, the body of a loop; in a list, a step inside a statement moves after it)
       walkAst(copy, { enter: (n) => {
         if (n[0] === '=>') return false
-        if (n[0] !== ';' && n[0] !== '{}') return
-        for (let k = 1; k < n.length; k++) { const r = Array.isArray(n[k]) && stepped(n[k]); if (r) n[k] = r }
+        const slots = n[0] === ';' || n[0] === '{}' ? null : n[0] === 'if' ? [2, 3] : n[0] === 'for' ? [4] : n[0] === 'while' ? [2] : []
+        for (let k = slots ? 0 : 1; k < (slots ? slots.length : n.length); k++) {
+          const i = slots ? slots[k] : k, st = n[i]
+          if (!Array.isArray(st)) continue
+          const r = stepped(st)
+          if (r) { n[i] = r; continue }
+          if (slots || st[0] === ';' || st[0] === '{}' || st[0] === 'if' || ALL_LOOPS.has(st[0]) || LEAVES.has(st[0]) || st[0] === 'label') continue
+          const after = hoisted(st)
+          if (after) n.splice(++k, 0, after)
+        }
       } })
     }
     const boundDecl = []
