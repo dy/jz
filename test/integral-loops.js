@@ -1102,3 +1102,32 @@ test('integral loops: a nest under inclusive bounds lifts its inner product test
   ok(outer, 'the outer guard tests the cell at the counter\'s ends')
   is(guards.filter(g => product(g) && outer[2].includes(g) === false && countNodes(outer, n => n === g) > 0 && g !== outer).length, 0, 'no product test between the loops')
 })
+
+test('integral loops: optimize.coldTrap throws the version\'s number where the loop as written would run', () => {
+  // A guard failing on the input a copy was meant for runs the loop as written,
+  // cold, with nothing to show for it but time. The diagnostic replaces that arm
+  // with a throw of the version's number: a gallery page or a kernel driven
+  // under it names the guard that fails instead of hiding it.
+  const src = `let W = 0, grid, queue, QN = 0
+    export let resize = (w) => { W = w; grid = new Int32Array(w * w); queue = new Int32Array(w * w); QN = w * w; let i = 0; while (i < QN) { queue[i] = i; i++ } return grid }
+    export let relax = (n) => {
+      let done = 0, qHead = 0, gw = W
+      while (done < n) {
+        let c = queue[qHead]
+        qHead++; if (qHead >= QN) qHead = 0
+        let gx = c % gw
+        if (gx > 0) grid[c] += 1
+        done++
+      }
+      return qHead
+    }`
+  if (belowOpt(2)) return
+  // (the cursor's budget: a count of pops within the queue's length runs the copy; past it, the ring as written)
+  const m = jz(src, { optimize: { level: 3, coldTrap: true } }).exports, js = oracle(src)
+  m.resize(4); js.resize(4)
+  is(m.relax(9), js.relax(9), 'pops within the queue run the copy')
+  throws(() => m.relax(40), 'pops past the queue fail the guard, and the trap names it')
+  const plain = jz(src, { optimize: { level: 3 } }).exports
+  plain.resize(4)
+  is(plain.relax(40), js.relax(40), 'without the diagnostic the ring runs as written')
+})

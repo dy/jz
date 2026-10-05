@@ -147,6 +147,9 @@ const boundTerms = (e, out = []) => {
 const INT_ELEMENTS = /^(Int8|Uint8|Uint8Clamped|Int16|Uint16|Int32|Uint32)Array$/
 // the hull of an element of each integer typed array whose every value is an int32
 const ROUNDINGS = new Set(['math.floor', 'math.ceil', 'math.round', 'math.trunc'])
+// (a Math function of literals by name, each dispatched in place: jz holds no Math object to index)
+const mathOf = (name, a) => name === 'math.floor' ? Math.floor(a[0]) : name === 'math.ceil' ? Math.ceil(a[0]) : name === 'math.round' ? Math.round(a[0]) : name === 'math.trunc' ? Math.trunc(a[0])
+  : name === 'math.abs' ? Math.abs(a[0]) : name === 'math.min' ? Math.min(...a) : name === 'math.max' ? Math.max(...a) : null
 // what is a fraction for most of its domain: a quotient, a root, a transcendental
 const FRACTIONAL = new Set(['math.sqrt', 'math.cbrt', 'math.sin', 'math.cos', 'math.tan', 'math.asin', 'math.acos', 'math.atan', 'math.atan2', 'math.sinh', 'math.cosh', 'math.tanh',
   'math.asinh', 'math.acosh', 'math.atanh', 'math.exp', 'math.expm1', 'math.log', 'math.log2', 'math.log10', 'math.log1p', 'math.pow', 'math.hypot', 'math.random'])
@@ -719,8 +722,7 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
       if (e[0] === '()' && e.length === 2) return numOf(e[1])
       if (e[0] === '()' && e.length === 3 && typeof e[1] === 'string' && e[1].startsWith('math.')) {
         const args = e[2]?.[0] === ',' ? e[2].slice(1).map(numOf) : [numOf(e[2])]
-        const f = Math[e[1].slice(5)]
-        return typeof f === 'function' && args.every(v => v != null) ? f(...args) : null
+        return args.every(v => v != null) ? mathOf(e[1], args) : null
       }
       if (e.length !== 3) return null
       const a = numOf(e[1]), b = numOf(e[2])
@@ -952,7 +954,7 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
           const a = hullOf(e[2][1], ps), b = hullOf(e[2][2], ps)
           return whole(a) && whole(b) ? e[1] === 'math.min' ? [least(a[0], b[0]), least(a[1], b[1])] : [most(a[0], b[0]), most(a[1], b[1])] : null
         }
-        if (ROUNDINGS.has(e[1])) { const a = hullOf(e[2], ps), r = (x) => isLit(x) ? lit(Math[e[1].slice(5)](x[1]) + 0) : ['()', e[1], x]; return whole(a) ? [r(a[0]), r(a[1])] : null }
+        if (ROUNDINGS.has(e[1])) { const a = hullOf(e[2], ps), r = (x) => isLit(x) ? lit(mathOf(e[1], [x[1]]) + 0) : ['()', e[1], x]; return whole(a) ? [r(a[0]), r(a[1])] : null }
         if (e[1] === 'math.imul' && e[2]?.[0] === ',' && e[2].length === 3) return hullOf(['*', e[2][1], e[2][2]], ps)
         return null
       }
@@ -1392,7 +1394,9 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
       // or a loop around runs it again (a Number every write keeps an integer is renamed too: its sum is the copy's)
       ...outer.filter(n => loopWrites.has(n) && readAfter(n)).map(n => ['=', n, own.get(n)])]]
     // (nothing to test, a cursor from a literal: the copy alone, the loop as written for an enclosing version's other arm)
-    const asWritten = ['{}', [';', loop]]
+    // (`optimize.coldTrap`: the loop as written throws its version's number instead of
+    // running, a diagnostic that finds a guard failing on an input the copy was meant for)
+    const asWritten = ctx.transform.optimize?.coldTrap ? ['{}', [';', ['throw', [null, (ctx.transform.coldTraps = (ctx.transform.coldTraps ?? 0) + 1)]]]] : ['{}', [';', loop]]
     const guarded = test ? ['if', test, version, asWritten] : version
     const aliases = [...names.map(n => own.get(n)), ...hoistedAliases]
     const wrapped = aliases.length ? ['{}', [';', ['let', ...aliases.map(a => ['=', a, [null, 0]])], guarded]] : guarded
